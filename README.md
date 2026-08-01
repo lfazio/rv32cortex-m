@@ -319,7 +319,16 @@ subnormals. It remains the default because most guests never look at `fflags`,
 and conformance is a build option away.
 
 That split is the useful outcome: correctness when it is wanted, size and speed
-when it is not.
+when it is not. On the Nucleo, SoftFloat costs about 8.7 KB of flash
+(51.3 KB against 42.6 KB with the JIT enabled), which on a 512 KB part is
+affordable but is real.
+
+Both are validated on hardware. Note that with the JIT enabled the arithmetic
+is translated to VFP and never reaches SoftFloat, so the run that actually
+exercises it is `-DRV32_JIT=OFF`; both configurations pass 139/139. That the
+two backends agree is worth having deliberately — they use genuinely different
+FP implementations, VFP against SoftFloat, so the self-test doubles as a
+differential check between them.
 
 **D is not implemented and is not planned**: the Cortex-M4F and M7 FPUs are
 single-precision, so D would be entirely soft-float on the intended targets.

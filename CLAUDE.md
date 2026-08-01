@@ -50,6 +50,10 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
 - **In the JIT, what you decline costs more than what you translate badly.**
   Ending a block for an untranslatable instruction fragments hot code. Route it
   through a helper call instead — `jit_helper_alu` exists for exactly this.
+- **With the JIT on, FP arithmetic goes to VFP and never reaches SoftFloat.**
+  To validate the SoftFloat path on hardware, build `-DRV32_JIT=OFF`. Running
+  `isatest` both ways is a differential check between two genuinely different
+  FP implementations, and is worth doing after any change to either.
 - **ARM and RISC-V order the FP exception flags in reverse.** ARM is
   `IOC,DZC,OFC,UFC,IXC` from bit 0, RISC-V is `NX,UF,OF,DZ,NV`, so `RBIT` plus
   `LSR #27` converts between them. The JIT also needs `FPSCR.DN` set (ARM's
