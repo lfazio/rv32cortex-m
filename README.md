@@ -148,6 +148,24 @@ walk, the permission and width checks and the fault path, none of which is worth
 open-coding. A faulting helper enters the trap itself and returns a flag that
 makes the block exit immediately.
 
+**Floating point in the JIT.** The `f` registers live in `hart->f[]` rather than
+in ARM VFP registers, which means the F operations that are *bit manipulation*
+rather than arithmetic translate as ordinary integer code: `FLW`/`FSW` go
+through the same inlined guest-RAM path as integer loads and stores, and
+`FMV.X.W`, `FMV.W.X` and the `FSGNJ` family become a few loads, masks and
+stores. None of them can raise an exception flag or depend on the rounding
+mode, so the translation is provably identical to the interpreter's with no
+FPSCR handling at all.
+
+Everything arithmetic — add, multiply, divide, `sqrt`, the fused multiply-adds,
+the conversions, and the comparisons, which raise `NV` on NaN — calls the same
+`rv_hart_fp` the interpreter uses, so the rounding and flag rules exist in one
+place. Emitting those as VFP means driving `FPSCR.RMode` from `frm` and
+harvesting the exception bits back into `fflags` around every operation; that
+is the obvious next step, and it is deliberately not half-done here, because
+getting it subtly wrong would lose flag semantics the interpreter already gets
+right.
+
 ### Cache-block operations
 
 `Zicbom`/`Zicboz` map directly onto ARMv7-M cache maintenance, because both

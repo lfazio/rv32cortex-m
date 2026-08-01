@@ -29,9 +29,15 @@ extern "C" {
 #define OP_JAL        0x6Fu
 #define OP_SYSTEM     0x73u
 
-/* F extension major opcodes, referenced by the RVC expander for Zcf. */
+/* F extension major opcodes, shared by the RVC expander (Zcf), the
+ * interpreter's dispatch and the JIT translator. */
 #define OP_LOAD_FP    0x07u
 #define OP_STORE_FP   0x27u
+#define OP_FP         0x53u
+#define OP_MADD       0x43u
+#define OP_MSUB       0x47u
+#define OP_NMSUB      0x4Bu
+#define OP_NMADD      0x4Fu
 
 /* ------------------------------------------------------------------ */
 /* Field accessors                                                     */

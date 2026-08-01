@@ -40,6 +40,13 @@ _Static_assert(sizeof(((rv_hart_t *)0)->x) == 32u * 4u,
 #if RV_EXT_A
 #define HART_RESV_OFF ((uint32_t)offsetof(rv_hart_t, resv_valid))
 #endif
+#if RV_EXT_F
+#define HART_F_OFF    ((uint32_t)offsetof(rv_hart_t, f))
+/* The f file sits past the 124-byte reach of the 16-bit LDR/STR form, so
+ * it is addressed with the 32-bit imm12 encodings below. */
+_Static_assert(offsetof(rv_hart_t, f) + 31u * 4u < 4096u,
+               "translated code addresses hart->f with a 12-bit offset");
+#endif
 
 /* ARM registers used by translated code. */
 #define R0  0u
@@ -615,6 +622,31 @@ static void emit_helper_call(const void *fn, uint32_t spec, uint32_t pc,
     emit16(POP_REGS);
 }
 
+#if RV_EXT_F
+/* LDR.W/STR.W Rt,[r4,#f_off] -- T3, for the f register file. */
+static void emit_ld_freg(uint32_t rt, uint32_t freg)
+{
+    const uint32_t off = HART_F_OFF + freg * 4u;
+    emit32((uint16_t)(0xF8D0u | R4), (uint16_t)((rt << 12) | off));
+}
+
+static void emit_st_freg(uint32_t freg, uint32_t rt)
+{
+    const uint32_t off = HART_F_OFF + freg * 4u;
+    emit32((uint16_t)(0xF8C0u | R4), (uint16_t)((rt << 12) | off));
+}
+
+/* Mark the FP state dirty, matching what rv_hart_fp does in C. */
+static void emit_fp_dirty(void)
+{
+    const uint32_t off = (uint32_t)offsetof(rv_hart_t, mstatus);
+    emit32((uint16_t)(0xF8D0u | R4), (uint16_t)((R3 << 12) | off));
+    emit_imm32(R2, MSTATUS_FS_MASK);
+    emit_dp_reg(DP_ORR, R3, R2);
+    emit32((uint16_t)(0xF8C0u | R4), (uint16_t)((R3 << 12) | off));
+}
+#endif
+
 /* Register-offset load/store, T1: LDR/STR Rt,[Rn,Rm]. */
 #define LS_STR   0x5000u
 #define LS_STRH  0x5200u
@@ -654,7 +686,7 @@ static void emit_ls_reg(uint16_t op, uint32_t rt, uint32_t rn, uint32_t rm)
  */
 static void emit_mem_access(bool is_store, uint32_t size, uint32_t sign,
                             uint32_t reg, const void *helper, uint32_t spec,
-                            uint32_t pc, uint32_t insns)
+                            uint32_t pc, uint32_t insns, bool is_fp)
 {
     uint16_t *fail_align = NULL;
 
@@ -672,6 +704,9 @@ static void emit_mem_access(bool is_store, uint32_t size, uint32_t sign,
     uint16_t *fail_range = emit_bcond_fwd(C_CS);
 
     if (is_store) {
+#if RV_EXT_F
+        if (is_fp) { emit_ld_freg(R3, reg); } else
+#endif
         emit_ld_greg(R3, reg);
         emit_ls_reg((size == 4u) ? LS_STR : (size == 2u) ? LS_STRH : LS_STRB,
                     R3, R7, R2);
@@ -702,6 +737,12 @@ static void emit_mem_access(bool is_store, uint32_t size, uint32_t sign,
             op = sign ? LS_LDRSB : LS_LDRB;
         }
         emit_ls_reg(op, R2, R7, R2);
+#if RV_EXT_F
+        if (is_fp) {
+            /* f0 is a real register, so unlike x0 it is always written. */
+            emit_st_freg(reg, R2);
+        } else
+#endif
         if (reg != 0u) {
             emit_st_greg(reg, R2);
         }
@@ -871,6 +912,38 @@ static void emit_alu_helper(uint32_t rd, uint32_t rs1, uint32_t rs2, uint32_t op
     emit_imm32(R12, (uint32_t)(uintptr_t)jit_helper_alu | 1u);
     emit16((uint16_t)(0x4780u | (R12 << 3)));      /* BLX r12 */
 }
+
+#if RV_EXT_F
+/*
+ * Slow paths for FLW and FSW. The inlined guest-RAM path handles the common
+ * case; anything else -- MMIO, the passthrough window, a fault, or an FPU
+ * that is Off -- comes here, where rv_hart_fp re-executes the whole
+ * instruction and reports exactly what the interpreter would.
+ *
+ * `spec` is the raw instruction rather than a packed descriptor, which is
+ * why these take it in place of the integer helpers' spec word.
+ */
+static uint32_t jit_helper_fp_load(rv_hart_t *h, uint32_t addr, uint32_t insn,
+                                   uint32_t pc)
+{
+    (void)addr;
+    uint32_t tval = insn;
+    const rv_exc_t exc = rv_hart_fp(h, insn, &tval);
+    if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
+        h->pc = pc;
+        rv_hart_trap(h, exc, tval);
+        return 1u;
+    }
+    return 0u;
+}
+
+static uint32_t jit_helper_fp_store(rv_hart_t *h, uint32_t addr, uint32_t insn,
+                                    uint32_t pc)
+{
+    return jit_helper_fp_load(h, addr, insn, pc);
+}
+
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Translation                                                         */
@@ -1182,7 +1255,7 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
         emit_ld_greg(R1, rs1);
         emit_add_simm12(R1, R1, rv_imm_i(insn));
         emit_mem_access(false, size, sign, rd, (const void *)jit_helper_load,
-                        rd | (size << 8) | (sign << 12), pc, insns_after);
+                        rd | (size << 8) | (sign << 12), pc, insns_after, false);
         return 0;
     }
 
@@ -1197,7 +1270,7 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
         emit_ld_greg(R1, rs1);
         emit_add_simm12(R1, R1, rv_imm_s(insn));
         emit_mem_access(true, size, 0u, rs2, (const void *)jit_helper_store,
-                        rs2 | (size << 8), pc, insns_after);
+                        rs2 | (size << 8), pc, insns_after, false);
         return 0;
     }
 
@@ -1313,6 +1386,98 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
         emit_helper_call((const void *)jit_helper_amo,
                          AMO_SPEC(rd, rs2, funct5), pc, insns_after);
         return 0;
+    }
+#endif
+
+#if RV_EXT_F
+    /*
+     * Only the operations that are independent of both the rounding mode
+     * and the exception flags are emitted inline. Those are exactly the
+     * ones whose semantics are bit manipulation rather than arithmetic:
+     * the loads and stores, the register moves, and sign injection. They
+     * cannot raise a flag, so no FPSCR handling is needed and the result
+     * is provably identical to the interpreter's.
+     *
+     * Everything arithmetic -- add, multiply, divide, sqrt, the fused
+     * multiply-adds, the conversions, and the comparisons, which do raise
+     * NV on NaN -- goes to the shared helper. Emitting those inline means
+     * driving FPSCR.RMode from frm and harvesting the exception bits back
+     * into fflags on every operation, and getting that subtly wrong would
+     * lose the flag semantics the interpreter currently gets right. It is
+     * the obvious next step, not a shortcut taken here.
+     */
+    case OP_LOAD_FP: {
+        if (f3 != 2u) {
+            return -1;
+        }
+        emit_ld_greg(R1, rs1);
+        emit_add_simm12(R1, R1, rv_imm_i(insn));
+        emit_mem_access(false, 4u, 0u, rd, (const void *)jit_helper_fp_load,
+                        insn, pc, insns_after, true);
+        emit_fp_dirty();
+        return 0;
+    }
+
+    case OP_STORE_FP: {
+        if (f3 != 2u) {
+            return -1;
+        }
+        emit_ld_greg(R1, rs1);
+        emit_add_simm12(R1, R1, rv_imm_s(insn));
+        emit_mem_access(true, 4u, 0u, rs2, (const void *)jit_helper_fp_store,
+                        insn, pc, insns_after, true);
+        return 0;
+    }
+
+    case OP_FP: {
+        if ((f7 & 3u) != 0u) {
+            return -1;              /* fmt must be S */
+        }
+        switch (f7 >> 2) {
+        case 0x04u:                 /* FSGNJ.S / FSGNJN.S / FSGNJX.S */
+            if (f3 > 2u) {
+                return -1;
+            }
+            emit_ld_freg(R1, rs1);
+            emit_ld_freg(R2, rs2);
+            emit_imm32(R3, 0x80000000u);
+            if (f3 == 2u) {         /* fsgnjx: xor in the sign of rs2 */
+                emit_dp_reg(DP_AND, R2, R3);
+                emit_dp_reg(DP_EOR, R1, R2);
+            } else {
+                if (f3 == 1u) {     /* fsgnjn: use the inverted sign */
+                    emit_dp_reg(DP_MVN, R2, R2);
+                }
+                emit_dp_reg(DP_AND, R2, R3);
+                emit_dp_reg(DP_BIC, R1, R3);
+                emit_dp_reg(DP_ORR, R1, R2);
+            }
+            emit_st_freg(rd, R1);
+            emit_fp_dirty();
+            return 0;
+
+        case 0x1Cu:                 /* FMV.X.W -- raw bits to an X register */
+            if (f3 != 0u || rs2 != 0u) {
+                return -1;          /* f3 == 1 is FCLASS: helper */
+            }
+            emit_ld_freg(R1, rs1);
+            if (rd != 0u) {
+                emit_st_greg(rd, R1);
+            }
+            return 0;
+
+        case 0x1Eu:                 /* FMV.W.X -- raw bits from an X register */
+            if (f3 != 0u || rs2 != 0u) {
+                return -1;
+            }
+            emit_ld_greg(R1, rs1);
+            emit_st_freg(rd, R1);
+            emit_fp_dirty();
+            return 0;
+
+        default:
+            return -1;              /* arithmetic and compares: helper */
+        }
     }
 #endif
 

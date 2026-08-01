@@ -50,6 +50,10 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
 - **In the JIT, what you decline costs more than what you translate badly.**
   Ending a block for an untranslatable instruction fragments hot code. Route it
   through a helper call instead — `jit_helper_alu` exists for exactly this.
+- **The JIT translates only the F operations that cannot raise a flag** --
+  loads, stores, register moves, sign injection. Arithmetic needs FPSCR.RMode
+  driven from `frm` and the exception bits harvested into `fflags`; until that
+  exists it stays on the shared `rv_hart_fp` helper.
 - **JIT fast paths bypass the C helpers and their side effects.** The inlined
   store had to drop the LR/SC reservation by hand.
 - **Do not conflate "nothing translatable here" with "cache full".** Sharing a

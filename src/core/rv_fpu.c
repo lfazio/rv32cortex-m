@@ -26,6 +26,7 @@
 
 #include "rv32/rv_hart.h"
 #include "rv32/rv_csr.h"
+#include "rv32/rv_decode.h"
 
 #if RV_EXT_F
 
@@ -224,13 +225,8 @@ static uint32_t f_classify(uint32_t a)
 /* Instruction execution                                               */
 /* ------------------------------------------------------------------ */
 
-#define OP_LOAD_FP   0x07u
-#define OP_STORE_FP  0x27u
-#define OP_FP        0x53u
-#define OP_MADD      0x43u
-#define OP_MSUB      0x47u
-#define OP_NMSUB     0x4Bu
-#define OP_NMADD     0x4Fu
+/* Opcodes come from rv_decode.h so the interpreter, the RVC expander and
+ * the JIT translator all agree on them. */
 
 /* Mark the FP state dirty so software can see the registers were used. */
 static void f_dirty(rv_hart_t *h)
