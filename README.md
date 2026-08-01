@@ -41,19 +41,19 @@ silicon.
 
 | Area | State |
 |---|---|
-| RV32IMAC + Zicsr, Zicntr, Zifencei, Zicbom, Zicboz, **B**, **Zacas**, **Zcf**, **Zcb** | implemented |
+| RV32IMAFC + Zicsr, Zicntr, Zifencei, Zicbom, Zicboz, **B**, **Zacas**, **Zcf**, **Zcb** | implemented |
 | Machine-mode traps, interrupts, CLINT timer | implemented |
-| Official `riscv-arch-test` (RVCP) | **224 / 224 pass** |
-| **F** (single precision) | implemented; **224 / 224** with SoftFloat — see below |
+| Official `riscv-arch-test` (RVCP) | **224 / 224** with SoftFloat; 172 / 224 with the host FPU |
+| **F** (single precision) | implemented, two backends — see below |
 | **D** (double precision) | not implemented, and not planned |
 | **Zcd** | not implementable without D — see below |
 | `riscv-tests` (Berkeley) | **77 / 77 pass** |
-| **PMP** | 16 entries, TOR/NA4/NAPOT; validated on hardware |
+| **PMP** | 16 entries, TOR/NA4/NAPOT; inlined in the JIT for the single-entry case |
 | **Sdtrig** | mcontrol triggers on execute/load/store; `rv32mi/breakpoint` passes |
 | Guest ISA self-test (148 checks) | passes on host **and** on hardware, both backends |
-| Nucleo-F446RE firmware | runs; ~29 KB flash, guest gets 70–123 KiB of the 128 KiB SRAM |
-| Thumb-2 JIT backend | implemented; **20.2× slower than native ARM** on CoreMark |
-| Zacas (`amocas.w` / `amocas.d`) | implemented; **135/135** |
+| Nucleo-F446RE firmware | 31–54 KB flash by configuration; guest gets 70–122 KiB of the 128 KiB SRAM |
+| Thumb-2 JIT backend | implemented; **20.6× slower than native ARM** on CoreMark |
+| **Zacas** (`amocas.w` / `amocas.d`) | implemented |
 | V extension | not implemented |
 
 The target the emulator was designed for is Cortex-M7; the board on hand is a
@@ -74,7 +74,7 @@ the target.
 | `0x1000_0000` | 256 B | virtual | Console UART — NS16550 subset |
 | `0x2000_0000` | image | ROM | Guest image, executable in place from ARM flash |
 | `0x4000_0000` | 512 MiB | **passthrough** | ARM peripherals, identity-mapped |
-| `0x8000_0000` | ~123 KiB | RAM | Guest RAM, carved from ARM SRAM |
+| `0x8000_0000` | 70–122 KiB | RAM | Guest RAM, whatever the firmware does not use |
 
 ### Passthrough policy
 
@@ -312,8 +312,23 @@ Console: USART2 on the ST-LINK virtual COM port, **115200 8N1**.
 picocom -b 115200 /dev/ttyACM0
 ```
 
-`-DRV32_GUEST=` selects which guest image is embedded: `isatest`, `hello`,
-`bench`, or `stm32drv`.
+`-DRV32_GUEST=` selects the embedded guest image: `isatest`, `hello`, `bench`,
+`stm32drv` or `coremark`.
+
+The options that change what gets built:
+
+| Option | Default | Effect |
+|---|---|---|
+| `RV32_JIT` | `ON` | Thumb-2 JIT. `OFF` is smaller, and is how a suspected JIT bug is isolated. |
+| `RV32_JIT_CODE_BYTES` | `12288` | Code cache. A small value forces compaction and is a useful stress test. |
+| `RV32_FPU_SOFTFLOAT` | `OFF` | Berkeley SoftFloat instead of the host FPU: conformant, ~5 KB larger. |
+| `RV32_NATIVE_COREMARK` | `OFF` | Run CoreMark natively on the ARM instead of the emulator, for the baseline. |
+| `RV32_EXT_PMP` / `RV32_EXT_SDTRIG` | `ON` | Each costs a little even unused; `OFF` removes it. |
+| `RV_GUEST_MARCH` | see below | Guest ISA. A **cache variable**, so pass it explicitly when changing it. |
+
+Guest images are built `rv32imafc_zicsr_zifencei_zicbom_zicboz_zba_zbb_zbc_zbs_zacas`.
+`Zcb` is supported by the emulator but deliberately absent there — see the
+performance section.
 
 ### Vendor driver pack
 
@@ -360,7 +375,7 @@ also ships a `RISCV` specialization carrying the canonical-NaN and
 NaN-propagation rules. `f32_mulAdd` is a genuine single-rounding fused
 multiply-add, which is where most of the previous failures were.
 
-**The host FPU via `<fenv.h>` (`OFF`, the default) passes 165 of 217.** It is
+**The host FPU via `<fenv.h>` (`OFF`, the default) passes 172 of 224.** It is
 smaller and faster — one hardware instruction per operation on a Cortex-M4F —
 but the flags it can report are the ones the hardware happens to raise, and
 those differ from RISC-V's rules on the fused multiply-adds and around
@@ -374,7 +389,7 @@ affordable but is real.
 
 Both are validated on hardware. Note that with the JIT enabled the arithmetic
 is translated to VFP and never reaches SoftFloat, so the run that actually
-exercises it is `-DRV32_JIT=OFF`; both configurations pass 139/139. That the
+exercises it is `-DRV32_JIT=OFF`; both configurations pass 148/148. That the
 two backends agree is worth having deliberately — they use genuinely different
 FP implementations, VFP against SoftFloat, so the self-test doubles as a
 differential check between them.
@@ -410,14 +425,10 @@ and the UDB gems, then builds and runs.
 Prerequisites beyond the normal toolchain: `uv`, Ruby, and Bundler
 (`gem install --user-install bundler`).
 
-### riscv-tests — 75/77
+### riscv-tests — 77/77
 
-The older Berkeley suite. Two failures remain, both for features this core
-deliberately does not implement, where accessing the missing CSRs correctly
-raises illegal-instruction:
-
-- `rv32mi/breakpoint` — needs the Sdtrig debug trigger module
-- `rv32mi/pmpaddr` — needs PMP
+The older Berkeley suite. All of it passes: `rv32mi/pmpaddr` once PMP was
+implemented, and `rv32mi/breakpoint` once Sdtrig was.
 
 ### Bugs these suites caught
 
@@ -458,7 +469,7 @@ for each backend.
 | | Ticks (µs) | Iterations/s | CoreMark/MHz | vs native |
 |---|---|---|---|---|
 | **Native ARM** | 335,277 | 447.4 | 2.49 | 1× |
-| **JIT** | 6,922,827 | 21.7 | 0.121 | **20.6× slower** |
+| **JIT** | 7,090,000 | 21.2 | 0.118 | **21.1× slower** |
 | Interpreter | 7,894,505 | 19.0 | 0.106 | 23.5× slower |
 
 Full extension set — F, B, Zacas — compiled into the emulator. `Zcb` is
@@ -486,9 +497,12 @@ column is the same guest source rebuilt with `-march=..._zba_zbb_zbc_zbs`.
 
 | Workload | | Interpreter | JIT |
 |---|---|---|---|
-| CoreMark | RV32IMAC | 35.7 | **35.9** |
-| CoreMark | + B | **28.7** | 32.6 |
-| `bench`  | + B | 127.2 | **27.4** |
+| CoreMark | RV32IMAC | 35.7 | 35.9 |
+| CoreMark | + B | **28.7** | 33.4 |
+| `bench`  | + B | 127.2 | **28.7** |
+
+*(The interpreter column is from before PMP and Sdtrig were added; both cost it
+a little. The JIT column is current.)*
 
 B is a clear win for the guest: it removes 12% of CoreMark's instructions
 (42.94 M → 37.67 M) and takes the interpreter from 35.7 to 28.7 cycles each.
@@ -549,8 +563,8 @@ So blocks were extended rather than given more instruction coverage:
 | | Blocks entered | Insns/block | cyc/insn |
 |---|---|---|---|
 | CoreMark before | 9,141,951 | 4.12 | 40.5 |
-| CoreMark after | 5,454,702 | **6.91** | **32.6** |
-| `bench` after | 158,025 | **8.07** | **27.4** |
+| CoreMark after | 5,454,702 | **6.91** | 32.6 |
+| `bench` after | 158,025 | **8.07** | 27.4 |
 
 **CoreMark 19.8% faster, `bench` 20% faster**, and against native ARM CoreMark
 goes from 25.4× to **20.2×** slower. The JIT still trails the interpreter on
