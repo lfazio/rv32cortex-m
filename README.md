@@ -135,6 +135,13 @@ Three design choices worth stating:
   but it means guest state is coherent at every instruction boundary — a trap,
   an interrupt or a debugger read needs no unwinding. Register allocation across
   a block is the next optimisation, not a prerequisite.
+- **The guest-RAM registers are materialised lazily.** `r5`/`r6`/`r7` cost six
+  halfwords and a block with no memory access has no use for them, so they are
+  emitted at the first access that needs them rather than on entry. No pre-pass
+  is required to make that safe: a block has one entry, so every path reaching
+  an instruction has flowed through everything emitted before it, and the
+  earlier exits leave before the emission point. Worth 3.9% on CoreMark
+  (32.65 → 31.39 cycles per instruction).
 - **Blocks end at every control transfer**, with no chaining or inline caching.
   Each block writes `h->pc` and returns, which bounds interrupt latency by one
   block rather than by a chain of them.
@@ -364,7 +371,7 @@ for each backend.
 | | Ticks (µs) | Iterations/s | CoreMark/MHz | vs native |
 |---|---|---|---|---|
 | **Native ARM** | 335,277 | 447.4 | 2.49 | 1× |
-| **JIT** | 6,776,964 | 22.1 | 0.123 | **20.2× slower** |
+| **JIT** | 6,513,827 | 23.0 | 0.128 | **19.4× slower** |
 | Interpreter | 7,894,505 | 19.0 | 0.106 | 23.5× slower |
 
 Full extension set — F, B, Zacas — compiled into the emulator. `Zcb` is

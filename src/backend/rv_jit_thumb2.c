@@ -118,6 +118,25 @@ static int16_t      g_hash[RV_JIT_HASH_SIZE];
 static bool         g_hash_ready;
 static rv_jit_stats_t g_stats;
 
+/*
+ * Guest RAM for the block being translated, and whether r5/r6/r7 have been
+ * loaded with it yet.
+ *
+ * The constants cost six halfwords, and a block with no memory access has
+ * no use for them -- which at an average block of about seven instructions
+ * is a real share of the prologue. They are therefore emitted lazily, at
+ * the first access that needs them rather than on entry.
+ *
+ * Lazy emission is safe here without a pre-pass: a block has one entry, and
+ * every path that reaches a given instruction has flowed through everything
+ * emitted before it. Earlier exits (a taken branch, a faulting helper) leave
+ * before the emission point and never read the registers.
+ */
+static uint32_t g_ram_base;
+static uint32_t g_ram_size;
+static uint32_t g_ram_host;
+static bool     g_ram_live;
+
 /* Emission cursor, valid only while translating. */
 static uint16_t *g_emit;
 static uint16_t *g_emit_end;
@@ -502,14 +521,22 @@ static void patch_fwd(uint16_t *at, bool conditional)
     }
 }
 
-static void emit_prologue(uint32_t ram_base, uint32_t ram_size,
-                          uint32_t ram_host)
+static void emit_prologue(void)
 {
     emit16(PUSH_REGS);
     emit_mov(R4, R0);     /* hart pointer into a callee-saved register */
-    emit_imm32(R5, ram_base);
-    emit_imm32(R6, ram_size);
-    emit_imm32(R7, ram_host);
+}
+
+/* Materialise the guest-RAM registers, once per block, on first use. */
+static void emit_ram_regs(void)
+{
+    if (g_ram_live) {
+        return;
+    }
+    emit_imm32(R5, g_ram_base);
+    emit_imm32(R6, g_ram_size);
+    emit_imm32(R7, g_ram_host);
+    g_ram_live = true;
 }
 
 /* Return `insns` as the retired count. */
@@ -820,6 +847,8 @@ static void emit_mem_access(bool is_store, uint32_t size, uint32_t sign,
                             uint32_t pc, uint32_t insns, bool is_fp)
 {
     uint16_t *fail_align = NULL;
+
+    emit_ram_regs();
 
     /* Alignment. A byte access is always aligned. */
     if (size == 4u) {
@@ -1692,17 +1721,20 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
      * The region table is fixed before execution begins; anything that
      * changes it flushes the JIT, so baking these in is safe.
      */
-    uint32_t ram_base = 0u, ram_size = 0u, ram_host = 0u;
+    g_ram_base = 0u;
+    g_ram_size = 0u;
+    g_ram_host = 0u;
+    g_ram_live = false;
     for (uint32_t i = 0; i < h->bus->count; i++) {
         const rv_region_t *r = &h->bus->regions[i];
         if (r->kind == RV_MEM_RAM && r->perm == RV_PERM_RWX) {
-            ram_base = r->base;
-            ram_size = r->size;
-            ram_host = (uint32_t)(uintptr_t)r->host;
+            g_ram_base = r->base;
+            g_ram_size = r->size;
+            g_ram_host = (uint32_t)(uintptr_t)r->host;
             break;
         }
     }
-    emit_prologue(ram_base, ram_size, ram_host);
+    emit_prologue();
 
     uint32_t cur = pc;
     uint32_t count = 0;
