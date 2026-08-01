@@ -50,7 +50,7 @@
  * report for an extension that is not implemented.
  */
 #ifndef RV_EXT_ZACAS
-#  define RV_EXT_ZACAS 0
+#  define RV_EXT_ZACAS 1
 #endif
 #ifndef RV_EXT_ZBB
 #  define RV_EXT_ZBB    1  /* basic bit manipulation */

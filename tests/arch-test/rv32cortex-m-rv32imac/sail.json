@@ -229,7 +229,11 @@
             "vector": { "None": null },
             "amo": "AlignmentException"
           },
-          "atomic_support": "AMOArithmetic",
+          /* AMOCASD covers amocas.w and amocas.d as well as the arithmetic
+             and logical AMOs. Declaring only AMOArithmetic here makes the
+             golden model *trap* on amocas, and the expected signatures are
+             then generated from that trap rather than from the operation. */
+          "atomic_support": "AMOCASD",
           "misaligned_atomicity_granule_size_exp": 0,
           "vector_misaligned_atomicity_granule_size_exp": 0,
           "reservability": "RsrvEventual",
@@ -329,7 +333,7 @@
     "Zmmul": { "supported": true },
     "Zaamo": { "supported": true },
     "Zabha": { "supported": false },
-    "Zacas": { "supported": false },
+    "Zacas": { "supported": true },
     "Zalrsc": { "supported": true },
     "Zama16b": { "supported": false },
     "Zawrs": {

@@ -40,8 +40,8 @@ else()
     string(APPEND _arch " -mfloat-abi=soft")
 endif()
 
-set(CMAKE_C_FLAGS_INIT   "${_arch} -ffunction-sections -fdata-sections")
-set(CMAKE_CXX_FLAGS_INIT "${_arch} -ffunction-sections -fdata-sections")
+set(CMAKE_C_FLAGS_INIT   "${_arch} -Os -ffunction-sections -fdata-sections")
+set(CMAKE_CXX_FLAGS_INIT "${_arch} -Os -ffunction-sections -fdata-sections")
 set(CMAKE_ASM_FLAGS_INIT "${_arch}")
 
 # No --specs=nano.specs/nosys.specs here on purpose: those ship with ARM's

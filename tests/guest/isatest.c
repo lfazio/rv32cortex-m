@@ -643,34 +643,60 @@ static void test_zacas(void)
     check("amocas-ne-rd",  rd, 0x11112222u);
     check("amocas-ne-mem", g_cas, 0x11112222u);
 
-    /* amocas.d: 64-bit CAS over even-odd register pairs, low half first. */
+    /*
+     * amocas.d: 64-bit CAS over even-odd register pairs, low half first.
+     *
+     * The pair is pinned with local register variables and the results are
+     * copied into plain locals before anything else runs. That second part
+     * matters: check() takes its arguments in a0 and a1, the very registers
+     * pinned here, and a local register variable is only guaranteed live at
+     * the asm statement itself. Reading them across a call is how an earlier
+     * version of this test appeared to show the low half landing in the high
+     * half's register.
+     */
     static volatile uint64_t g_cas64 __attribute__((aligned(8)));
-    register uint32_t a0 __asm__("a0");
-    register uint32_t a1 __asm__("a1");
-    register uint32_t a2 __asm__("a2");
-    register uint32_t a3 __asm__("a3");
+    uint32_t got_lo, got_hi, mem_lo, mem_hi;
 
-    g_cas64 = 0x1111222233334444ull;
-    a0 = 0x33334444u; a1 = 0x11112222u;      /* comparand, lo:hi */
-    a2 = 0xCCCCDDDDu; a3 = 0xAAAABBBBu;      /* swap value, lo:hi */
-    __asm__ volatile ("amocas.d %0, %2, (%4)"
-                      : "+r"(a0), "+r"(a1)
-                      : "r"(a2), "r"(a3), "r"(&g_cas64) : "memory");
-    check("amocas.d-eq-lo",  a0, 0x33334444u);
-    check("amocas.d-eq-hi",  a1, 0x11112222u);
-    check("amocas.d-eq-mem", (uint32_t)g_cas64, 0xCCCCDDDDu);
-    check("amocas.d-eq-memh",(uint32_t)(g_cas64 >> 32), 0xAAAABBBBu);
+    {
+        register uint32_t p0 __asm__("a0") = 0x33334444u;   /* comparand lo */
+        register uint32_t p1 __asm__("a1") = 0x11112222u;   /* comparand hi */
+        register uint32_t s0 __asm__("a2") = 0xCCCCDDDDu;   /* swap lo      */
+        register uint32_t s1 __asm__("a3") = 0xAAAABBBBu;   /* swap hi      */
 
-    /* Mismatching comparand: no store, but rd still takes the old value. */
-    g_cas64 = 0x1111222233334444ull;
-    a0 = 0xDEADBEEFu; a1 = 0x11112222u;
-    a2 = 0xCCCCDDDDu; a3 = 0xAAAABBBBu;
-    __asm__ volatile ("amocas.d %0, %2, (%4)"
-                      : "+r"(a0), "+r"(a1)
-                      : "r"(a2), "r"(a3), "r"(&g_cas64) : "memory");
-    check("amocas.d-ne-lo",  a0, 0x33334444u);
-    check("amocas.d-ne-hi",  a1, 0x11112222u);
-    check("amocas.d-ne-mem", (uint32_t)g_cas64, 0x33334444u);
+        g_cas64 = 0x1111222233334444ull;
+        __asm__ volatile ("amocas.d %0, %2, (%4)"
+                          : "+r"(p0), "+r"(p1)
+                          : "r"(s0), "r"(s1), "r"(&g_cas64) : "memory");
+        got_lo = p0;
+        got_hi = p1;
+    }
+    mem_lo = (uint32_t)g_cas64;
+    mem_hi = (uint32_t)(g_cas64 >> 32);
+    check("amocas.d-eq-lo",   got_lo, 0x33334444u);
+    check("amocas.d-eq-hi",   got_hi, 0x11112222u);
+    check("amocas.d-eq-mem",  mem_lo, 0xCCCCDDDDu);
+    check("amocas.d-eq-memh", mem_hi, 0xAAAABBBBu);
+
+    /* Mismatching comparand: no store, but rd still takes the loaded value. */
+    {
+        register uint32_t p0 __asm__("a0") = 0xDEADBEEFu;
+        register uint32_t p1 __asm__("a1") = 0x11112222u;
+        register uint32_t s0 __asm__("a2") = 0xCCCCDDDDu;
+        register uint32_t s1 __asm__("a3") = 0xAAAABBBBu;
+
+        g_cas64 = 0x1111222233334444ull;
+        __asm__ volatile ("amocas.d %0, %2, (%4)"
+                          : "+r"(p0), "+r"(p1)
+                          : "r"(s0), "r"(s1), "r"(&g_cas64) : "memory");
+        got_lo = p0;
+        got_hi = p1;
+    }
+    mem_lo = (uint32_t)g_cas64;
+    mem_hi = (uint32_t)(g_cas64 >> 32);
+    check("amocas.d-ne-lo",   got_lo, 0x33334444u);
+    check("amocas.d-ne-hi",   got_hi, 0x11112222u);
+    check("amocas.d-ne-mem",  mem_lo, 0x33334444u);
+    check("amocas.d-ne-memh", mem_hi, 0x11112222u);
 }
 #endif
 

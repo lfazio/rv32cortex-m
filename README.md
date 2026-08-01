@@ -41,14 +41,14 @@ silicon.
 
 | Area | State |
 |---|---|
-| RV32IMAC + Zicsr, Zicntr, Zifencei, Zicbom, Zicboz, **B (Zba/Zbb/Zbc/Zbs)** | implemented |
+| RV32IMAC + Zicsr, Zicntr, Zifencei, Zicbom, Zicboz, **B**, **Zacas** | implemented |
 | Machine-mode traps, interrupts, CLINT timer | implemented |
-| Official `riscv-arch-test` (RVCP) | **133 / 133 pass** |
+| Official `riscv-arch-test` (RVCP) | **135 / 135 pass** |
 | `riscv-tests` (Berkeley) | **75 / 77 pass** (2 need PMP / Sdtrig, not implemented) |
 | Guest ISA self-test (104 checks) | passes on host **and** on hardware |
 | Nucleo-F446RE firmware | runs; ~29 KB flash, guest gets 70–123 KiB of the 128 KiB SRAM |
 | Thumb-2 JIT backend | implemented; **20.2× slower than native ARM** on CoreMark |
-| Zacas | `amocas.w` verified, `amocas.d` wrong; **disabled** — see roadmap |
+| Zacas (`amocas.w` / `amocas.d`) | implemented; **135/135** |
 | F / D / V extensions | not implemented |
 
 The target the emulator was designed for is Cortex-M7; the board on hand is a
@@ -223,7 +223,7 @@ cmake --build build/host --target riscv-tests      # Berkeley suite
 cmake --build build/host --target validate         # everything
 ```
 
-### Official RISC-V Architecture Test Suite — 133/133
+### Official RISC-V Architecture Test Suite — 135/135
 
 [`riscv/riscv-arch-test`](https://github.com/riscv/riscv-arch-test), the RVCP
 suite governed by RISC-V International. Modern versions are self-checking: the
@@ -259,6 +259,7 @@ Worth recording, because each was a genuine defect:
 | unit test vs. assembler ground truth | `C.ADDI4SPN` took its destination register from bits `[9:7]` instead of `[4:2]`, corrupting every guest stack-frame address computation |
 | `riscv-tests` `instret_overflow` | a CSR write to `minstret` must *replace* that instruction's increment, not be followed by it |
 | `riscv-arch-test` `Zicntr` | the Sail config declared a clock tick every 100 instructions while the emulator ticks every instruction |
+| `riscv-arch-test` `Zacas` | the Sail config declared `atomic_support: AMOArithmetic` on guest RAM, so the golden model **trapped** on `amocas` and baked trap-derived values into the signatures — three sessions were spent looking for an emulator bug that was never there |
 
 The RVC expansion table in [`tests/unit/test_decode.c`](tests/unit/test_decode.c)
 is assembler-derived, not hand-computed: each entry was produced by assembling
@@ -534,21 +535,12 @@ account for most PDFs).
 Deferred until the current ISA is proven and measured — both of which are now
 done, so these are unblocked:
 
-- **Zacas** — unfinished, and disabled. Three things are known:
-  `amocas.w`'s semantics are **verified** by targeted checks in `isatest.c`
-  (both the matching and non-matching cases); `amocas.d` is implemented over
-  even-odd register pairs (`rv_hart_amocas_d`) but is **wrong** — its targeted
-  checks read the low half back in the high half's register, and whether that
-  is the pair handling or the test's own inline-asm constraints is not
-  established; and the official `Zacas-amocas.w` failure is **not in the
-  instruction**. Disassembling the test shows it loads the operand from a
-  `gp`-relative table and stores it to scratch memory immediately before the
-  CAS, and our value already diverges from the reference there — so the fault
-  is in the prologue's register or `gp` setup, ahead of the instruction under
-  test. Localising it needs an instruction trace compared against Sail.
 - **F / D** — Cortex-M4F and M7 have a single-precision FPU usable for `F`;
   `D` needs soft-float. Needs `f0`–`f31`, `fcsr`, NaN-boxing and correct
-  rounding.
+  rounding. Implement only **F** first, let D aside. The guest can be built with `-march=rv32imacf` and run on a Cortex-M4F, but the emulator will trap every `F` instruction.
+- **PMP** — the Berkeley suite's `rv32mi/pmpaddr` fails because the core does not
+  implement PMP. The official suite has no tests for PMP, so it is not a
+  regression to leave it unimplemented.
 - **V** — largest by far and RAM-hungry (`VLEN=128` alone costs 512 B of
   register file on a part with 128 KiB); needs a `VLEN` budget decision.
 

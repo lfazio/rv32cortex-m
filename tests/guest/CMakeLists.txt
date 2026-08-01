@@ -18,7 +18,7 @@ if(NOT RISCV_GCC OR NOT RISCV_OBJCOPY)
     return()
 endif()
 
-set(RV_GUEST_MARCH "rv32imac_zicsr_zicbom_zicboz" CACHE STRING "ISA for guest images")
+set(RV_GUEST_MARCH "rv32imac_zicsr_zicbom_zicboz_zba_zbb_zbc_zbs" CACHE STRING "ISA for guest images")
 set(RV_GUEST_MABI  "ilp32"          CACHE STRING "ABI for guest images")
 
 set(guest_dir "${CMAKE_CURRENT_SOURCE_DIR}")

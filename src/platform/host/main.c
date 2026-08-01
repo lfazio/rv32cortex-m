@@ -17,6 +17,7 @@
 #include "rv32/rv_dev.h"
 #include "rv32/rv_hart.h"
 #include "rv32/rv_memmap.h"
+#include "rv32/rv_disasm.h"
 #include "rv_elf.h"
 
 #include <errno.h>
@@ -78,6 +79,34 @@ static int host_rx(void *ctx)
 #define REG_A7  17
 
 static int g_exit_code = -1;
+
+#if RV_ENABLE_TRACE
+/*
+ * Instruction trace. Prints pc, the encoding, the disassembly and the
+ * registers the instruction touched, which is what is needed to find where
+ * execution diverges from a reference model.
+ */
+static uint64_t g_trace_skip;
+static uint64_t g_trace_count = 64;
+
+static void host_trace(rv_hart_t *h, uint32_t pc, uint32_t insn, void *user)
+{
+    (void)user;
+    if (h->minstret < g_trace_skip) {
+        return;
+    }
+    if (h->minstret >= g_trace_skip + g_trace_count) {
+        return;
+    }
+    char buf[64];
+    rv_disasm(buf, sizeof(buf), pc, insn);
+    fprintf(stderr, "%8llu %08x  %08x  %-28s",
+            (unsigned long long)h->minstret, pc, insn, buf);
+    /* gp, sp and the operand registers cover most divergence hunts. */
+    fprintf(stderr, " gp=%08x sp=%08x a1=%08x a2=%08x t2=%08x\n",
+            h->x[3], h->x[2], h->x[11], h->x[12], h->x[7]);
+}
+#endif
 
 static bool host_ecall(rv_hart_t *h, void *user)
 {
@@ -292,6 +321,16 @@ int main(int argc, char **argv)
                 max_insn = v;
                 continue;
             }
+#if RV_ENABLE_TRACE
+            if (strcmp(a, "--trace-skip") == 0) {
+                uint32_t v; if (!parse_u32(argv[++i], &v)) { usage(); return 2; }
+                g_trace_skip = v; continue;
+            }
+            if (strcmp(a, "--trace-count") == 0) {
+                uint32_t v; if (!parse_u32(argv[++i], &v)) { usage(); return 2; }
+                g_trace_count = v; continue;
+            }
+#endif
             if (strcmp(a, "--timer-hz") == 0) {
                 if (!parse_u32(argv[++i], &timer_div)) { usage(); return 2; }
                 continue;
@@ -345,6 +384,9 @@ int main(int argc, char **argv)
     rv_uart_init(&uart, host_tx, host_rx, NULL);
 #if RV_ENABLE_ECALL_HOOK
     hart.ecall = host_ecall;
+#endif
+#if RV_ENABLE_TRACE
+    hart.trace = host_trace;
 #endif
 
     /* --- load -------------------------------------------------------- */

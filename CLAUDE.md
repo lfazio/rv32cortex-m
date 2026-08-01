@@ -28,7 +28,7 @@ when changing it), `-DRV32_GUEST=isatest|hello|bench|stm32drv|coremark`.
 ## Validation — run before claiming anything works
 
 ```sh
-./scripts/run-arch-test.sh      # official riscv-arch-test, currently 133/133
+./scripts/run-arch-test.sh      # official riscv-arch-test, currently 135/135
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 75/77 (2 need PMP/Sdtrig)
 ```
 
@@ -54,6 +54,15 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
   store had to drop the LR/SC reservation by hand.
 - **Do not conflate "nothing translatable here" with "cache full".** Sharing a
   recovery path made every interpreted `div` flush the code cache.
+- **A failing arch test may be the Sail config, not the emulator.** ACT runs the
+  golden model to bake expected values into each test, so a wrong `sail.json`
+  produces wrong expectations. `amocas` failed for three sessions because guest
+  RAM declared `atomic_support: AMOArithmetic`, which excludes CAS, so Sail
+  *trapped* and the signatures recorded the trap. When targeted checks say an
+  instruction is right and the suite disagrees, run
+  `sail_riscv_sim --config <sail.json> --trace-instr` on the same ELF and diff
+  against `rv32-host --trace-count N`; a jump to `Mtrampoline` in the reference
+  is the tell.
 - **Measure; do not reason about performance.** Interpreter-in-SRAM was
   *slower*, lazy-IRQ was neutral, and the `clmul` fix was 1.3% when the real
   cost was 4.12-instruction blocks. Layout noise is ±3%, so ignore differences
@@ -68,5 +77,4 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
 way — it builds for ARMv6-M through ARMv8.1-M and for the host. Shared
 semantics (`rv_hart_amo`, `rv_hart_cbo`) live in the core so the interpreter and
 JIT cannot drift apart. New ISA work goes in **both** backends plus
-`tests/arch-test/` config, or is declared unsupported — see Zacas, which is
-implemented but disabled because it does not pass.
+`tests/arch-test/` config, or is declared unsupported.

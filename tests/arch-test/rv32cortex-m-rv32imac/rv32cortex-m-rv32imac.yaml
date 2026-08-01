@@ -30,6 +30,7 @@ implemented_extensions:
   - { name: A, version: "= 2.1" }
   - { name: Zaamo, version: "= 1.0.0" }
   - { name: Zalrsc, version: "= 1.0.0" }
+  - { name: Zacas, version: "= 1.0.0" }
   - { name: Zba, version: "= 1.0.0" }
   - { name: Zbb, version: "= 1.0.0" }
   - { name: Zbc, version: "= 1.0.0" }
