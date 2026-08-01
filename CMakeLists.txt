@@ -123,8 +123,14 @@ target_compile_definitions(rv32core PUBLIC
     RV_ENABLE_JIT=$<BOOL:${RV32_JIT}>
 )
 
+# <fenv.h> is the FPU control/status interface the F extension uses; on both
+# glibc and newlib its implementation lives in libm.
+if(RV32_EXT_F)
+    target_link_libraries(rv32core PUBLIC m)
+endif()
+
 target_compile_options(rv32core PRIVATE
-    -Wall -Wextra -Wshadow -Wconversion -Wundef
+    -Wall -Wextra -Wshadow -Wundef
     $<$<CONFIG:Release,RelWithDebInfo,MinSizeRel>:-fomit-frame-pointer>
 )
 

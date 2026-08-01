@@ -518,7 +518,25 @@ int main(void)
         for (;;) { __WFI(); }
     }
 #endif
-    console_puts("\n\nrv32cortex-m: RV32IMAC on Cortex-M4 @ ");
+    /* Built from the configured extensions rather than hardcoded, so the
+     * banner cannot drift from what the core actually implements. */
+    console_puts("\n\nrv32cortex-m: RV32I"
+#if RV_EXT_M
+                 "M"
+#endif
+#if RV_EXT_A
+                 "A"
+#endif
+#if RV_EXT_F
+                 "F"
+#endif
+#if RV_EXT_C
+                 "C"
+#endif
+#if RV_EXT_ZBA || RV_EXT_ZBB || RV_EXT_ZBC || RV_EXT_ZBS
+                 "_b"
+#endif
+                 " on Cortex-M4 @ ");
     console_putu(SystemCoreClock / 1000000u);
     console_puts(" MHz\n");
 

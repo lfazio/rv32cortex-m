@@ -44,7 +44,7 @@ silicon.
 | RV32IMAC + Zicsr, Zicntr, Zifencei, Zicbom, Zicboz, **B**, **Zacas**, **Zcf** | implemented |
 | Machine-mode traps, interrupts, CLINT timer | implemented |
 | Official `riscv-arch-test` (RVCP), integer | **135 / 135 pass** |
-| **F** (single precision) | implemented; **156 / 217** — see below |
+| **F** (single precision) | implemented; **165 / 217** — see below |
 | **D** (double precision) | not implemented, and not planned |
 | `riscv-tests` (Berkeley) | **75 / 77 pass** (2 need PMP / Sdtrig, not implemented) |
 | Guest ISA self-test (104 checks) | passes on host **and** on hardware |
@@ -231,32 +231,36 @@ F is implemented — the register file, `fcsr`/`frm`/`fflags`, `mstatus.FS`,
 all of OP-FP, the four fused multiply-adds, `FLW`/`FSW`, and `Zcf`'s
 compressed FP load/stores (which `C` on RV32F is defined to include).
 
-**It passes 156 of the 217 official F tests.** The arithmetic, comparisons,
+**It passes 165 of the 217 official F tests.** The arithmetic, comparisons,
 conversions, sign injection, `fclass` and NaN handling are right; what remains
 failing is concentrated in exception-flag edge cases — chiefly `NX` on the
 fused multiply-adds and some subnormal results. It is enabled by default
 because ordinary floating-point code works, but **it is not conformant**, and
 that is stated here rather than implied by a passing subset.
 
-The implementation evaluates in `double` and rounds once to `float`. That is
-what makes the flags computable without a soft-float library: `double` more
-than doubles the significand, so a single-precision multiply is exact and the
-double result can be compared against the rounded float to decide `NX`, `OF`
-and `UF`. Two places where that premise does **not** hold, both found by the
-suite and both handled explicitly:
+The implementation uses `float` and nothing wider, so on a Cortex-M4F or M7
+each operation is one hardware FPU instruction. Rounding modes and exception
+flags come from `<fenv.h>` — the standard interface to exactly the FPU control
+and status bits this needs, and both smaller and more accurate than inferring
+them.
 
-- **Addition is not exact in double.** Aligning `2^127` with `2^-149` needs far
-  more than 53 bits, so the intermediate can round while the conversion still
-  looks exact. A 2Sum recovers the exact error term and forces `NX`.
-- **The `sqrt` seed assumes a normalised exponent.** On a subnormal the
-  exponent-halving bit trick lands several orders of magnitude out and Newton
-  converges to the wrong value. Subnormals are scaled into the normal range
-  first.
+An earlier version evaluated in `double` and rounded once, which made the flags
+easy to derive but pulled in libgcc's soft-float double routines: **17 KiB of
+firmware to emulate a single-precision FPU on a part that has one**. Dropping
+to float took the image from 46 KB to 42.6 KB and *improved* conformance from
+156 to 165, because `fenv` reports what the FPU actually raised instead of
+what the double comparison inferred.
+
+The fused multiply-adds are the one place single precision is not enough on its
+own: `a*b+c` in float rounds twice, and a fused operation must round once. They
+use error-free transformations — Dekker's 2Product and 2Sum recover the exact
+product and sum from float arithmetic alone, so the residual is folded back
+before the single final rounding.
 
 **D is not implemented and is not planned**: the Cortex-M4F and M7 FPUs are
 single-precision, so D would be entirely soft-float on the intended targets.
 
-### Official RISC-V Architecture Test Suite — 135/135 integer, 156/217 F
+### Official RISC-V Architecture Test Suite — 135/135 integer, 165/217 F
 
 [`riscv/riscv-arch-test`](https://github.com/riscv/riscv-arch-test), the RVCP
 suite governed by RISC-V International. Modern versions are self-checking: the

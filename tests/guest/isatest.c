@@ -701,6 +701,141 @@ static void test_zacas(void)
 #endif
 
 /* ------------------------------------------------------------------ */
+/* F extension                                                         */
+/* ------------------------------------------------------------------ */
+
+#if defined(__riscv_flen) && (__riscv_flen >= 32)
+
+/* Operate on raw bit patterns: the guest ABI is ilp32 (soft-float), so
+ * floats cannot be passed to check() as floats without conversion. */
+#define FOP2(mn, a, b) ({                                       \
+    uint32_t r_, x_ = (a), y_ = (b);                            \
+    __asm__ volatile ("fmv.w.x fa0, %1\n\t"                    \
+                      "fmv.w.x fa1, %2\n\t"                    \
+                      mn " fa2, fa0, fa1\n\t"                  \
+                      "fmv.x.w %0, fa2"                         \
+                      : "=r"(r_) : "r"(x_), "r"(y_)             \
+                      : "fa0", "fa1", "fa2");                   \
+    r_; })
+
+#define FCMP(mn, a, b) ({                                       \
+    uint32_t r_, x_ = (a), y_ = (b);                            \
+    __asm__ volatile ("fmv.w.x fa0, %1\n\t"                    \
+                      "fmv.w.x fa1, %2\n\t"                    \
+                      mn " %0, fa0, fa1"                        \
+                      : "=r"(r_) : "r"(x_), "r"(y_)             \
+                      : "fa0", "fa1");                          \
+    r_; })
+
+#define F1_0  0x3F800000u
+#define F2_0  0x40000000u
+#define F3_0  0x40400000u
+#define F4_0  0x40800000u
+#define F_QNAN 0x7FC00000u
+
+static volatile uint32_t g_fmem;
+
+static void test_fpu(void)
+{
+    /* Arithmetic. */
+    check("fadd",  FOP2("fadd.s", F1_0, F2_0), F3_0);
+    check("fsub",  FOP2("fsub.s", F3_0, F1_0), F2_0);
+    check("fmul",  FOP2("fmul.s", F2_0, F2_0), F4_0);
+    check("fdiv",  FOP2("fdiv.s", F4_0, F2_0), F2_0);
+    check("fsqrt", FOP2("fadd.s", 0u, 0u) | 0u, 0u);   /* +0 + +0 == +0 */
+
+    {   /* sqrt(4) == 2 */
+        uint32_t r, x = F4_0;
+        __asm__ volatile ("fmv.w.x fa0, %1\n\t fsqrt.s fa1, fa0\n\t"
+                          "fmv.x.w %0, fa1"
+                          : "=r"(r) : "r"(x) : "fa0", "fa1");
+        check("fsqrt-4", r, F2_0);
+    }
+
+    /* Comparisons return 0/1 in an integer register. */
+    check("feq",   FCMP("feq.s", F1_0, F1_0), 1u);
+    check("flt",   FCMP("flt.s", F1_0, F2_0), 1u);
+    check("fle",   FCMP("fle.s", F2_0, F1_0), 0u);
+    /* Any comparison against NaN is false. */
+    check("feq-nan", FCMP("feq.s", F_QNAN, F1_0), 0u);
+
+    /* Sign injection and min/max. */
+    check("fsgnj", FOP2("fsgnj.s", F1_0, 0x80000000u), F1_0 | 0x80000000u);
+    check("fmin",  FOP2("fmin.s", F1_0, F2_0), F1_0);
+    check("fmax",  FOP2("fmax.s", F1_0, F2_0), F2_0);
+    /* min/max return the non-NaN operand when only one is NaN. */
+    check("fmin-nan", FOP2("fmin.s", F_QNAN, F2_0), F2_0);
+
+    /*
+     * The fused multiply-adds differ in which term is negated. This is the
+     * check that catches negating the finished sum instead, which gives the
+     * right magnitude with the wrong sign.
+     *   fmadd  2*2+1 = 5     fnmsub -(2*2)+1 = -3
+     */
+    {
+        uint32_t r, a = F2_0, b = F2_0, c = F1_0;
+        __asm__ volatile ("fmv.w.x fa0, %1\n\t fmv.w.x fa1, %2\n\t"
+                          "fmv.w.x fa2, %3\n\t fmadd.s fa3, fa0, fa1, fa2\n\t"
+                          "fmv.x.w %0, fa3"
+                          : "=r"(r) : "r"(a), "r"(b), "r"(c)
+                          : "fa0", "fa1", "fa2", "fa3");
+        check("fmadd", r, 0x40A00000u);            /* 5.0 */
+
+        __asm__ volatile ("fmv.w.x fa0, %1\n\t fmv.w.x fa1, %2\n\t"
+                          "fmv.w.x fa2, %3\n\t fnmsub.s fa3, fa0, fa1, fa2\n\t"
+                          "fmv.x.w %0, fa3"
+                          : "=r"(r) : "r"(a), "r"(b), "r"(c)
+                          : "fa0", "fa1", "fa2", "fa3");
+        check("fnmsub", r, 0x40400000u | 0x80000000u);  /* -3.0 */
+    }
+
+    /* Conversions both ways. */
+    {
+        uint32_t r; int32_t i = -7;
+        __asm__ volatile ("fcvt.s.w fa0, %1\n\t fmv.x.w %0, fa0"
+                          : "=r"(r) : "r"(i) : "fa0");
+        check("fcvt.s.w", r, 0x40E00000u | 0x80000000u);   /* -7.0 */
+
+        uint32_t back, src = 0x41200000u;                  /* 10.0 */
+        __asm__ volatile ("fmv.w.x fa0, %1\n\t fcvt.w.s %0, fa0, rtz"
+                          : "=r"(back) : "r"(src) : "fa0");
+        check("fcvt.w.s", back, 10u);
+    }
+
+    /* fclass: 1<<6 is a positive normal, 1<<3 is negative zero. */
+    {
+        uint32_t r, x = F1_0;
+        __asm__ volatile ("fmv.w.x fa0, %1\n\t fclass.s %0, fa0"
+                          : "=r"(r) : "r"(x) : "fa0");
+        check("fclass-norm", r, 1u << 6);
+        x = 0x80000000u;
+        __asm__ volatile ("fmv.w.x fa0, %1\n\t fclass.s %0, fa0"
+                          : "=r"(r) : "r"(x) : "fa0");
+        check("fclass-negzero", r, 1u << 3);
+    }
+
+    /* FLW / FSW through real memory. */
+    {
+        uint32_t r;
+        g_fmem = 0;
+        __asm__ volatile ("fmv.w.x fa0, %1\n\t fsw fa0, 0(%2)"
+                          :: "r"(0), "r"(F3_0), "r"(&g_fmem)
+                          : "fa0", "memory");
+        check("fsw", g_fmem, F3_0);
+        __asm__ volatile ("flw fa0, 0(%1)\n\t fmv.x.w %0, fa0"
+                          : "=r"(r) : "r"(&g_fmem) : "fa0");
+        check("flw", r, F3_0);
+    }
+
+    /* fflags accumulates: 1/0 raises divide-by-zero. */
+    csr_write("fflags", 0u);
+    (void)FOP2("fdiv.s", F1_0, 0u);
+    check("fflags-dz", csr_read("fflags") & 0x08u, 0x08u);
+    csr_write("fflags", 0u);
+}
+#endif /* __riscv_flen */
+
+/* ------------------------------------------------------------------ */
 
 int main(void)
 {
@@ -719,6 +854,9 @@ int main(void)
     test_cbo();
 #if defined(__riscv_zacas)
     test_zacas();
+#endif
+#if defined(__riscv_flen) && (__riscv_flen >= 32)
+    test_fpu();
 #endif
     test_timer_interrupt();
 

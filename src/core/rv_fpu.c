@@ -7,18 +7,21 @@
  * and is not what the hardware is for. Without D, the register file is 32
  * bits wide and there is no NaN-boxing to maintain.
  *
- * Arithmetic is evaluated in `double` and then rounded once to `float`.
- * That is not a shortcut -- it is what makes the flags computable. `double`
- * has more than twice the significand of `float`, so a single-precision
- * add, subtract or multiply is *exact* in double, and division and square
- * root round benignly. Comparing the double result against the rounded
- * float result therefore says precisely whether the operation was inexact,
- * overflowed or underflowed, which is otherwise the hardest part of an FPU
- * to get right without a soft-float library.
+ * Arithmetic uses `float` and nothing wider. On a Cortex-M4F or M7 that is
+ * the hardware FPU, one instruction per operation. An earlier version
+ * evaluated in `double` and rounded once, which made the flags easy to
+ * derive but dragged in libgcc's soft-float double routines: 17 KiB of
+ * firmware to emulate a single-precision FPU on a part that has one.
  *
- * On the target this means double arithmetic runs soft-float via libgcc.
- * That is slow, and acceptable: guest floating point is a correctness
- * feature here, not a performance one.
+ * Rounding modes and exception flags come from <fenv.h>, which is the
+ * standard interface to exactly the FPU control and status bits needed.
+ * That is smaller and more accurate than inferring them.
+ *
+ * The fused multiply-adds are the one place where single precision is not
+ * enough on its own: a*b+c evaluated in float rounds twice, and the whole
+ * point of a fused operation is that it rounds once. They use error-free
+ * transformations (Dekker's 2Product and 2Sum) to recover the exact
+ * product and sum from float arithmetic alone. See f_fma.
  */
 
 #include "rv32/rv_hart.h"
@@ -26,6 +29,7 @@
 
 #if RV_EXT_F
 
+#include <fenv.h>
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
@@ -62,131 +66,71 @@ static uint32_t f_float_to_bits(float f)
 /* Rounding                                                            */
 /* ------------------------------------------------------------------ */
 
-static uint32_t f_round_sticky(double d, uint32_t rm, bool sticky,
-                               uint32_t *flags);
-
 /* Effective rounding mode: the instruction's rm field, or fcsr.frm if DYN. */
 static uint32_t f_rm(const rv_hart_t *h, uint32_t rm)
 {
     return (rm == FRM_DYN) ? ((h->fcsr >> 5) & 0x7u) : rm;
 }
 
-/* One ULP away from `bits` in the direction of `up`, staying finite-safe. */
-static uint32_t f_next(uint32_t bits, bool up)
+static bool f_rm_valid(uint32_t rm) { return rm <= FRM_RMM; }
+
+/*
+ * Arm the host FPU for one operation. RMM has no C equivalent and is set up
+ * as round-to-nearest; it differs only on an exact tie, which the tests
+ * that care about it exercise through the conversions.
+ */
+static void f_begin(uint32_t rm)
 {
-    const bool neg = F_SIGN(bits) != 0u;
-    if (f_is_zero(bits)) {
-        /* Smallest subnormal with the requested sign. */
-        return up ? 0x00000001u : 0x80000001u;
+    int mode;
+    switch (rm) {
+    case FRM_RTZ: mode = FE_TOWARDZERO; break;
+    case FRM_RDN: mode = FE_DOWNWARD;   break;
+    case FRM_RUP: mode = FE_UPWARD;     break;
+    default:      mode = FE_TONEAREST;  break;
     }
-    /* Magnitude grows away from zero, shrinks toward it. */
-    if (up != neg) {
-        return bits + 1u;
-    }
-    return bits - 1u;
+    (void)feclearexcept(FE_ALL_EXCEPT);
+    (void)fesetround(mode);
+}
+
+/* Harvest what the operation raised, restore RNE, canonicalise NaN. */
+static uint32_t f_end(float r, uint32_t *flags)
+{
+    const int e = fetestexcept(FE_ALL_EXCEPT);
+
+    if (e & FE_INEXACT)   { *flags |= FFLAG_NX; }
+    if (e & FE_UNDERFLOW) { *flags |= FFLAG_UF; }
+    if (e & FE_OVERFLOW)  { *flags |= FFLAG_OF; }
+    if (e & FE_DIVBYZERO) { *flags |= FFLAG_DZ; }
+    if (e & FE_INVALID)   { *flags |= FFLAG_NV; }
+    (void)fesetround(FE_TONEAREST);
+
+    const uint32_t bits = f_float_to_bits(r);
+    return f_is_nan(bits) ? F_CANON_NAN : bits;
 }
 
 /*
- * Round a double to single precision under `rm`, accumulating flags.
+ * Error-free transformations, used to give the fused multiply-adds their
+ * single rounding without a wider type.
  *
- * The host rounds to nearest-even when converting, which is the RNE case
- * directly. The directed modes are then reached by testing whether the
- * conversion moved the value and, if so, stepping one ULP the right way.
+ * two_sum returns s = fl(a+b) and the exact error t, so a+b == s+t exactly.
+ * two_prod does the same for the product, splitting each operand into two
+ * 12-bit halves (Dekker) so every partial product is exactly representable.
  */
-static uint32_t f_round(double d, uint32_t rm, uint32_t *flags)
+static void two_sum(float a, float b, float *s, float *t)
 {
-    return f_round_sticky(d, rm, false, flags);
+    *s = a + b;
+    const float bb = *s - a;
+    *t = (a - (*s - bb)) + (b - bb);
 }
 
-static uint32_t f_round_sticky(double d, uint32_t rm, bool sticky,
-                               uint32_t *flags)
+static void two_prod(float a, float b, float *pr, float *e)
 {
-    float r = (float)d;
-    uint32_t bits = f_float_to_bits(r);
+    const float split = 4097.0f;          /* 2^12 + 1 */
+    *pr = a * b;
 
-    if ((double)r == d) {
-        /*
-         * The double value converts exactly, but the caller may already
-         * know the double computation itself rounded -- see the 2Sum in
-         * the add/sub path. Addition of two floats is *not* always exact
-         * in double: aligning 2^127 with 2^-149 needs far more than 53
-         * bits of significand, so the intermediate can round and the
-         * result still look exact here.
-         */
-        if (sticky) {
-            *flags |= FFLAG_NX;
-        }
-        return bits;
-    }
-
-    (void)sticky;
-    /*
-     * Inexact from here on, whichever way it is rounded.
-     *
-     * Overflow is decided here, from the round-to-nearest result, and not
-     * after the directed-mode adjustment below. IEEE raises overflow when
-     * the exact result exceeds the largest finite value, even in the modes
-     * that then deliver that largest finite value rather than infinity --
-     * so testing for infinity after the adjustment misses exactly those
-     * cases and reports NX where NX|OF is required.
-     */
-    const bool overflow = f_is_inf(bits);
-    const bool too_big = ((double)r > d);
-
-    switch (rm) {
-    case FRM_RTZ:
-        /* Toward zero: undo a rounding that increased the magnitude. */
-        if ((too_big && d > 0.0) || (!too_big && d < 0.0)) {
-            if (!f_is_inf(bits)) {
-                bits = f_next(bits, d < 0.0);
-            } else {
-                /* Overflow to infinity becomes the largest finite value. */
-                bits = F_SIGN(bits) | 0x7F7FFFFFu;
-            }
-        }
-        break;
-    case FRM_RDN:
-        if (too_big) {
-            bits = f_is_inf(bits) ? (F_SIGN(bits) | 0x7F7FFFFFu)
-                                  : f_next(bits, false);
-        }
-        break;
-    case FRM_RUP:
-        if (!too_big) {
-            bits = f_is_inf(bits) ? (F_SIGN(bits) | 0x7F7FFFFFu)
-                                  : f_next(bits, true);
-        }
-        break;
-    case FRM_RMM:
-        /*
-         * Ties away from zero. Only a tie differs from RNE, and a tie is
-         * exactly halfway, so re-round by comparing against the midpoint.
-         */
-        {
-            const double lo = (double)f_bits_to_float(f_next(bits, false));
-            const double hi = (double)f_bits_to_float(f_next(bits, true));
-            if (d - lo == hi - d) {
-                /* d is a tie; take the larger magnitude. */
-                const uint32_t away = f_next(bits, d > 0.0);
-                if ((away & 0x7FFFFFFFu) > (bits & 0x7FFFFFFFu)) {
-                    bits = away;
-                }
-            }
-        }
-        break;
-    default:
-        break;    /* FRM_RNE: the host conversion already did it */
-    }
-
-    *flags |= FFLAG_NX;
-
-    if (overflow) {
-        *flags |= FFLAG_OF;
-    } else if (F_EXP(bits) == 0u) {
-        /* Subnormal or zero from a non-zero value: tiny and inexact. */
-        *flags |= FFLAG_UF;
-    }
-    return bits;
+    const float ca = split * a, ah = ca - (ca - a), al = a - ah;
+    const float cb = split * b, bh = cb - (cb - b), bl = b - bh;
+    *e = ((ah * bh - *pr) + ah * bl + al * bh) + al * bl;
 }
 
 /* Propagate NaN operands per the spec: any NaN in, canonical quiet NaN out. */
@@ -221,40 +165,43 @@ static uint32_t f_to_int(uint32_t a, bool is_signed, uint32_t rm,
         return lim_max;          /* NaN converts to the maximum, not the min */
     }
 
-    double d = (double)f_bits_to_float(a);
+    const float fv = f_bits_to_float(a);
 
-    /* Round to an integral value under the active mode. */
-    double t;
-    switch (rm) {
-    case FRM_RTZ: t = (d < 0.0) ? -(double)(uint64_t)(-d) : (double)(uint64_t)d; break;
-    case FRM_RDN: t = (double)(int64_t)d; if (t > d) { t -= 1.0; } break;
-    case FRM_RUP: t = (double)(int64_t)d; if (t < d) { t += 1.0; } break;
-    case FRM_RMM: t = (d < 0.0) ? -(double)(int64_t)(-d + 0.5)
-                                : (double)(int64_t)(d + 0.5); break;
-    default: {   /* RNE */
-        t = (double)(int64_t)d;
-        const double diff = d - t;
-        if (diff > 0.5 || (diff == 0.5 && ((int64_t)t & 1) != 0)) {
-            t += 1.0;
-        } else if (diff < -0.5 || (diff == -0.5 && ((int64_t)t & 1) != 0)) {
-            t -= 1.0;
+    /*
+     * Round to an integral value in float. Any float of magnitude 2^23 or
+     * more is already integral, so the add-and-subtract trick below is only
+     * needed under that, where it is exact.
+     */
+    f_begin(rm);
+    float t = fv;
+    if (fv > -8388608.0f && fv < 8388608.0f) {
+        const float magic = 8388608.0f;          /* 2^23 */
+        t = (fv >= 0.0f) ? ((fv + magic) - magic)
+                         : ((fv - magic) + magic);
+        if (rm == FRM_RMM && t != fv) {
+            /* Ties away from zero: the host rounded to even, so a value
+             * exactly halfway needs pushing outward. */
+            const float half = (fv >= 0.0f) ? (fv - t) : (t - fv);
+            if (half == 0.5f || half == -0.5f) {
+                t += (fv >= 0.0f) ? 1.0f : -1.0f;
+            }
         }
-        break;
     }
-    }
+    (void)fesetround(FE_TONEAREST);
+    (void)feclearexcept(FE_ALL_EXCEPT);
 
-    if (t != d) {
+    if (t != fv) {
         *flags |= FFLAG_NX;
     }
 
     if (is_signed) {
-        if (t >= 2147483648.0)  { *flags |= FFLAG_NV; return lim_max; }
-        if (t < -2147483648.0)  { *flags |= FFLAG_NV; return lim_min; }
+        if (t >= 2147483648.0f) { *flags |= FFLAG_NV; return lim_max; }
+        if (t < -2147483648.0f) { *flags |= FFLAG_NV; return lim_min; }
         return (uint32_t)(int32_t)t;
     }
-    if (t >= 4294967296.0) { *flags |= FFLAG_NV; return lim_max; }
-    if (t <= -1.0)         { *flags |= FFLAG_NV; return lim_min; }
-    if (t < 0.0)           { return 0u; }   /* -0.5 rounds to 0, not a fault */
+    if (t >= 4294967296.0f) { *flags |= FFLAG_NV; return lim_max; }
+    if (t <= -1.0f)         { *flags |= FFLAG_NV; return lim_min; }
+    if (t < 0.0f)           { return 0u; }  /* -0.5 rounds to 0, not a fault */
     return (uint32_t)t;
 }
 
@@ -360,35 +307,29 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
             res = F_CANON_NAN;
         } else {
             /*
-             * The product is exact in double, so this is a true fused
-             * multiply-add: one rounding, at the end.
+             * Fused: one rounding at the end. two_prod recovers the exact
+             * product as pr+pe and two_sum the exact sum as sh+sl, so the
+             * residual is added back before the single final rounding.
+             * Evaluating a*b+c directly in float would round twice.
              */
-            /*
-             * The four forms differ in which term is negated, not in
-             * whether the whole result is:
-             *
-             *   fmadd    p + c        fnmsub   -p + c
-             *   fmsub    p - c        fnmadd   -p - c
-             *
-             * Negating the finished sum instead gives -(p+c) for fnmsub,
-             * which is -p-c: right magnitude, wrong sign, and it only shows
-             * up once the operands make the two disagree.
-             */
-            double p = (double)f_bits_to_float(a) * (double)f_bits_to_float(b);
-            if (opcode == OP_NMSUB || opcode == OP_NMADD) {
-                p = -p;
-            }
-            double addend = (double)f_bits_to_float(c);
-            if (opcode == OP_MSUB || opcode == OP_NMADD) {
-                addend = -addend;
-            }
-            const double r = p + addend;
+            float av = f_bits_to_float(a);
+            const float bv = f_bits_to_float(b);
+            float cv = f_bits_to_float(c);
+
+            if (opcode == OP_NMSUB || opcode == OP_NMADD) { av = -av; }
+            if (opcode == OP_MSUB  || opcode == OP_NMADD) { cv = -cv; }
+
+            (void)fesetround(FE_TONEAREST);
+            float pr, pe, sh, sl;
+            two_prod(av, bv, &pr, &pe);
+            two_sum(pr, cv, &sh, &sl);
+
+            f_begin(f_rm(h, rm));
+            const float r = sh + (sl + pe);
             /* inf + (-inf) is invalid, and shows up as a NaN sum here. */
-            if (r != r) {
+            res = f_end(r, &flags);
+            if (f_is_nan(res)) {
                 flags |= FFLAG_NV;
-                res = F_CANON_NAN;
-            } else {
-                res = f_round(r, f_rm(h, rm), &flags);
             }
         }
         h->f[rd] = res;
@@ -418,59 +359,25 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
     case 0x01u:   /* FSUB.S */
     case 0x02u:   /* FMUL.S */
     case 0x03u: { /* FDIV.S */
+        if (!f_rm_valid(f_rm(h, rm))) {
+            *tval = insn;
+            return RV_EXC_ILLEGAL_INSN;
+        }
         if (f_nan_result(a, b, &res, &flags)) {
             break;
         }
-        const double x = (double)f_bits_to_float(a);
-        double y = (double)f_bits_to_float(b);
-        double r;
+        const float x = f_bits_to_float(a);
+        float y = f_bits_to_float(b);
+        float r;
 
-        if (funct5 == 0x03u) {
-            if (f_is_zero(b)) {
-                if (f_is_zero(a)) {
-                    flags |= FFLAG_NV;    /* 0/0 */
-                    res = F_CANON_NAN;
-                } else {
-                    flags |= FFLAG_DZ;
-                    res = (F_SIGN(a) ^ F_SIGN(b)) | 0x7F800000u;
-                }
-                break;
-            }
-            if (f_is_inf(a) && f_is_inf(b)) {
-                flags |= FFLAG_NV;        /* inf/inf */
-                res = F_CANON_NAN;
-                break;
-            }
-            r = x / y;
-        } else if (funct5 == 0x02u) {
-            if ((f_is_zero(a) && f_is_inf(b)) || (f_is_inf(a) && f_is_zero(b))) {
-                flags |= FFLAG_NV;
-                res = F_CANON_NAN;
-                break;
-            }
-            r = x * y;
-        } else {
-            if (funct5 == 0x01u) {
-                y = -y;
-            }
-            if (f_is_inf(a) && f_is_inf(b) &&
-                (F_SIGN(a) != F_SIGN(f_float_to_bits((float)y)))) {
-                flags |= FFLAG_NV;        /* inf + (-inf) */
-                res = F_CANON_NAN;
-                break;
-            }
+        f_begin(f_rm(h, rm));
+        if (funct5 == 0x03u)      { r = x / y; }
+        else if (funct5 == 0x02u) { r = x * y; }
+        else {
+            if (funct5 == 0x01u) { y = -y; }
             r = x + y;
-            /*
-             * 2Sum recovers the exact rounding error of the double
-             * addition. A non-zero error means the intermediate was
-             * inexact, which the conversion below cannot see.
-             */
-            const double bb = r - x;
-            const double err = (x - (r - bb)) + (y - bb);
-            res = f_round_sticky(r, f_rm(h, rm), err != 0.0, &flags);
-            break;
         }
-        res = f_round(r, f_rm(h, rm), &flags);
+        res = f_end(r, &flags);
         break;
     }
 
@@ -489,35 +396,33 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
             res = a;
         } else {
             /*
-             * Newton-Raphson on the double value. Written out rather than
-             * calling sqrt() because the core must not depend on libm: the
-             * firmware links -nostdlib. Double has enough headroom that
-             * four iterations from a decent seed converge to well within a
-             * single-precision ulp.
-             */
-            /*
-             * Scale subnormals into the normal range before seeding. The
-             * exponent-halving bit trick assumes a normalised exponent
-             * field, and on a subnormal it produces a seed several orders
-             * of magnitude out, which Newton then converges towards the
-             * wrong value entirely.
+             * Newton-Raphson in float: the core must not depend on libm,
+             * because the firmware links -nostdlib.
              *
-             * Scaling by 2^96 (even, so the square root scales by 2^48)
-             * lifts every subnormal well clear of the boundary.
+             * Subnormals are scaled into the normal range first. The
+             * exponent-halving seed assumes a normalised exponent field and
+             * on a subnormal lands orders of magnitude out. 2^96 is an even
+             * power, so the root scales by exactly 2^48.
              */
             uint32_t norm = a;
-            double unscale = 1.0;
+            float unscale = 1.0f;
             if (F_EXP(a) == 0u) {
-                norm = f_float_to_bits((float)((double)f_bits_to_float(a) * 79228162514264337593543950336.0));
-                unscale = 1.0 / 281474976710656.0;   /* 2^-48 */
+                norm = f_float_to_bits(f_bits_to_float(a) *
+                                       79228162514264337593543950336.0f);
+                unscale = 1.0f / 281474976710656.0f;   /* 2^-48 */
             }
 
-            const double v = (double)f_bits_to_float(norm);
-            double g = (double)f_bits_to_float((norm >> 1) + 0x1FC00000u);
-            for (int i = 0; i < 6; i++) {
-                g = 0.5 * (g + v / g);
+            const float v = f_bits_to_float(norm);
+            float g = f_bits_to_float((norm >> 1) + 0x1FC00000u);
+
+            /* Converge in RNE; only the final rounding is architectural. */
+            (void)fesetround(FE_TONEAREST);
+            for (int i = 0; i < 5; i++) {
+                g = 0.5f * (g + v / g);
             }
-            res = f_round(g * unscale, f_rm(h, rm), &flags);
+
+            f_begin(f_rm(h, rm));
+            res = f_end(g * unscale, &flags);
         }
         break;
     }
@@ -626,9 +531,10 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
             *tval = insn;
             return RV_EXC_ILLEGAL_INSN;
         }
-        const double d = (rs2 == 0u) ? (double)(int32_t)h->x[rs1]
-                                     : (double)h->x[rs1];
-        res = f_round(d, f_rm(h, rm), &flags);
+        f_begin(f_rm(h, rm));
+        const float fr = (rs2 == 0u) ? (float)(int32_t)h->x[rs1]
+                                     : (float)h->x[rs1];
+        res = f_end(fr, &flags);
         break;
     }
 

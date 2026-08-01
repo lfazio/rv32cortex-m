@@ -28,7 +28,7 @@ when changing it), `-DRV32_GUEST=isatest|hello|bench|stm32drv|coremark`.
 ## Validation — run before claiming anything works
 
 ```sh
-./scripts/run-arch-test.sh      # official riscv-arch-test: 135/135 integer, 156/217 F
+./scripts/run-arch-test.sh      # official riscv-arch-test: 135/135 integer, 165/217 F
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 75/77 (2 need PMP/Sdtrig)
 ```
 
@@ -69,9 +69,10 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
   below that.
 - Guest images link `-nostdlib`; there is no libc. The **core** must not call
   libm either, which is why `fsqrt` is Newton-Raphson rather than `sqrt()`.
-- **Evaluating float ops in `double` is exact for multiply, not for add.**
-  Aligning far-apart exponents needs more than 53 bits, so the add path needs a
-  2Sum to recover the error term and set `NX`.
+- **The FPU uses `float` only.** `double` on an M4F is libgcc soft-float: 17 KiB
+  of firmware to emulate a single-precision FPU on a part that has one. Flags
+  and rounding come from `<fenv.h>` (in libm on both glibc and newlib); the
+  fused multiply-adds need 2Product/2Sum to round once.
 - Enabling `F` forces `Zcf` on RV32: `C@2.0` is defined to include the
   compressed FP load/stores, and UDB rejects the config without it.
 - CoreMark's `core_main.c` defines `main()`; `-Dmain=...` must be scoped to that

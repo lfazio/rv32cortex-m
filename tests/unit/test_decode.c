@@ -53,11 +53,18 @@ void test_decode(void)
     expand_ok(0x5EFCu, 0x07C6A783u);   /* c.lw a5, 124(a3) */
     expand_ok(0xC188u, 0x00A5A023u);   /* c.sw a0, 0(a1)   */
 
-    /* F/D loads and stores: no FPU on this core */
+    /* D loads and stores stay illegal: this core implements F, not D. */
     expand_illegal(0x2188u);   /* c.fld */
-    expand_illegal(0x6188u);   /* c.flw */
     expand_illegal(0xA188u);   /* c.fsd */
-    expand_illegal(0xE188u);   /* c.fsw */
+#if RV_EXT_F
+    /* Zcf: C on RV32F includes the compressed FP load/stores. They expand
+     * to FLW/FSW, which share the CL/CS immediate layout with C.LW/C.SW. */
+    expand_ok(0x6188u, 0x0005A507u);   /* c.flw fa0, 0(a1) */
+    expand_ok(0xE188u, 0x00A5A027u);   /* c.fsw fa0, 0(a1) */
+#else
+    expand_illegal(0x6188u);
+    expand_illegal(0xE188u);
+#endif
 
     /* ---- quadrant 1 ---- */
 
