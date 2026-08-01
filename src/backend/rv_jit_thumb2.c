@@ -360,6 +360,35 @@ static void emit_dp_reg(uint16_t op, uint32_t rdn, uint32_t rm)
 #define DP_CMP 0x4280u
 #define DP_ORR 0x4300u
 #define DP_MUL 0x4340u
+#define DP_BIC 0x4380u   /* Rdn &= ~Rm            */
+#define DP_MVN 0x43C0u   /* Rd  = ~Rm             */
+#define DP_ROR 0x41C0u   /* Rdn = Rdn ROR Rm[7:0] */
+#define DP_RSB 0x4240u   /* Rd  = -Rm  (RSBS #0)  */
+
+#if RV_EXT_ZBB
+/* Sign/zero extension, T1: SXTB/SXTH/UXTH Rd,Rm. */
+#define XT_SXTH 0xB200u
+#define XT_SXTB 0xB240u
+#define XT_UXTH 0xB280u
+#define XT_REV  0xBA00u   /* REV Rd,Rm: byte-reverse a word */
+
+static void emit_xt(uint16_t op, uint32_t rd, uint32_t rm)
+{
+    emit16((uint16_t)(op | (rm << 3) | rd));
+}
+
+/* CLZ Rd,Rm -- T1, 32-bit. */
+static void emit_clz(uint32_t rd, uint32_t rm)
+{
+    emit32((uint16_t)(0xFAB0u | rm), (uint16_t)(0xF080u | (rd << 8) | rm));
+}
+
+/* RBIT Rd,Rm -- T1, 32-bit. Reversing the bits turns ctz into clz. */
+static void emit_rbit(uint32_t rd, uint32_t rm)
+{
+    emit32((uint16_t)(0xFA90u | rm), (uint16_t)(0xF0A0u | (rd << 8) | rm));
+}
+#endif
 
 /* Shift Rd,Rm,#imm5 -- T1. */
 static void emit_shift_imm(uint16_t op, uint32_t rd, uint32_t rm, uint32_t imm5)
@@ -746,18 +775,43 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
         case 0:  /* ADDI */
             emit_add_simm12(R1, R1, imm);
             break;
-        case 1:  /* SLLI */
-            if (f7 != 0u) {
-                return -1;
+        case 1:  /* SLLI, and the Zbb unary ops sharing its slot */
+            if (f7 == 0u) {
+                emit_shift_imm(SH_LSL, R1, R1, rs2);
+                break;
             }
-            emit_shift_imm(SH_LSL, R1, R1, rs2);
-            break;
-        case 5:  /* SRLI / SRAI */
+#if RV_EXT_ZBB
+            if (f7 == 0x30u) {
+                switch (rs2) {
+                case 0: emit_clz(R1, R1); break;                    /* clz    */
+                /* Reversing the bits turns a trailing-zero count into a
+                 * leading-zero count, which ARM does have. */
+                case 1: emit_rbit(R1, R1); emit_clz(R1, R1); break;  /* ctz    */
+                case 4: emit_xt(XT_SXTB, R1, R1); break;            /* sext.b */
+                case 5: emit_xt(XT_SXTH, R1, R1); break;            /* sext.h */
+                /* cpop has no ARMv7-M equivalent; leave it interpreted. */
+                default: return -1;
+                }
+                break;
+            }
+#endif
+            return -1;
+        case 5:  /* SRLI / SRAI, plus Zbb rori / rev8 */
             if (f7 == 0u) {
                 emit_shift_imm(SH_LSR, R1, R1, rs2);
             } else if (f7 == 0x20u) {
                 emit_shift_imm(SH_ASR, R1, R1, rs2);
-            } else {
+            }
+#if RV_EXT_ZBB
+            else if (f7 == 0x30u) {                       /* rori */
+                emit_mov_imm8(R2, rs2);
+                emit_dp_reg(DP_ROR, R1, R2);
+            } else if (f7 == 0x34u && rs2 == 24u) {       /* rev8 */
+                emit_xt(XT_REV, R1, R1);
+            }
+            /* orc.b (f7 0x14) has no ARM equivalent; left interpreted. */
+#endif
+            else {
                 return -1;
             }
             break;
@@ -836,6 +890,58 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
             emit_ld_greg(R1, rs1);
             emit_ld_greg(R2, rs2);
             emit_dp_reg(DP_MUL, R1, R2); /* MULS r1, r2, r1 */
+            emit_st_greg(rd, R1);
+            return 0;
+        }
+#endif
+#if RV_EXT_ZBB
+        if (f7 == 0x20u && (f3 == 4u || f3 == 6u || f3 == 7u)) {
+            emit_ld_greg(R1, rs1);
+            emit_ld_greg(R2, rs2);
+            if (f3 == 7u) {                       /* andn */
+                emit_dp_reg(DP_BIC, R1, R2);
+            } else if (f3 == 6u) {                /* orn  */
+                emit_dp_reg(DP_MVN, R2, R2);
+                emit_dp_reg(DP_ORR, R1, R2);
+            } else {                              /* xnor */
+                emit_dp_reg(DP_EOR, R1, R2);
+                emit_dp_reg(DP_MVN, R1, R1);
+            }
+            emit_st_greg(rd, R1);
+            return 0;
+        }
+
+        if (f7 == 0x05u && f3 >= 4u) {            /* min / minu / max / maxu */
+            static const uint32_t cond[4] = { C_LT, C_CC, C_GE, C_CS };
+            emit_ld_greg(R1, rs1);
+            emit_ld_greg(R2, rs2);
+            emit_dp_reg(DP_CMP, R1, R2);
+            emit_it(cond[f3 - 4u]);
+            emit_mov(R2, R1);                     /* keep rs1 when it wins */
+            emit_st_greg(rd, R2);
+            return 0;
+        }
+
+        if (f7 == 0x30u && (f3 == 1u || f3 == 5u)) {   /* rol / ror */
+            emit_ld_greg(R1, rs1);
+            emit_ld_greg(R2, rs2);
+            emit_ubfx5(R2, R2);                   /* RISC-V uses rs2[4:0] */
+            if (f3 == 1u) {
+                /*
+                 * ARM has no rotate-left. Negating the amount works because
+                 * ROR uses Rm[7:0] modulo 32, and (-n) mod 32 == 32-n for
+                 * n in 1..31, while n==0 negates to 0 and rotates by none.
+                 */
+                emit_dp_reg(DP_RSB, R2, R2);
+            }
+            emit_dp_reg(DP_ROR, R1, R2);
+            emit_st_greg(rd, R1);
+            return 0;
+        }
+
+        if (f7 == 0x04u && f3 == 4u && rs2 == 0u) {    /* zext.h */
+            emit_ld_greg(R1, rs1);
+            emit_xt(XT_UXTH, R1, R1);
             emit_st_greg(rd, R1);
             return 0;
         }

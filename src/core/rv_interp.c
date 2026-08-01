@@ -430,9 +430,20 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
             case 6: wr(h, rd, a | (uint32_t)imm); break;                  /* ORI   */
             case 7: wr(h, rd, a & (uint32_t)imm); break;                  /* ANDI  */
 
-            case 1:  /* SLLI, and the Zbb unary ops that share its slot */
+            case 1: {  /* SLLI, and the Zbb unary ops sharing its slot */
+                /*
+                 * SLLI is tested first because it is overwhelmingly the
+                 * common case: putting the Zbb decode ahead of it made
+                 * every shift pay an extra funct7 compare, which cost more
+                 * than Zbb saved.
+                 */
+                const uint32_t f7i = rv_funct7(insn);
+                if (RV_LIKELY(f7i == 0u)) {
+                    wr(h, rd, a << rv_rs2(insn));
+                    break;
+                }
 #if RV_EXT_ZBB
-                if (rv_funct7(insn) == 0x30u) {
+                if (f7i == 0x30u) {
                     switch (rv_rs2(insn)) {
                     case 0: wr(h, rd, zbb_clz(a)); break;             /* clz    */
                     case 1: wr(h, rd, zbb_ctz(a)); break;             /* ctz    */
@@ -444,35 +455,37 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
                     break;
                 }
 #endif
-                if (RV_UNLIKELY(rv_funct7(insn) != 0u)) {
-                    TRAP(RV_EXC_ILLEGAL_INSN, insn);
-                }
-                wr(h, rd, a << rv_rs2(insn));
-                break;
+                TRAP(RV_EXC_ILLEGAL_INSN, insn);
+            }
 
-            case 5:  /* SRLI / SRAI, plus Zbb rori / orc.b / rev8 */
-#if RV_EXT_ZBB
-                if (rv_funct7(insn) == 0x30u) {
-                    wr(h, rd, zbb_ror(a, rv_rs2(insn)));             /* rori */
+            case 5: {  /* SRLI / SRAI, plus Zbb rori / orc.b / rev8 */
+                const uint32_t f7i = rv_funct7(insn);
+                if (RV_LIKELY(f7i == 0u)) {
+                    wr(h, rd, a >> rv_rs2(insn));
                     break;
                 }
-                if ((insn >> 20) == 0x287u) {
+                if (f7i == 0x20u) {
+                    wr(h, rd, (uint32_t)((int32_t)a >> rv_rs2(insn)));
+                    break;
+                }
+#if RV_EXT_ZBB
+                /* orc.b is imm 0x287 and rev8 is 0x698; neither collides
+                 * with the shift funct7 values, so one compare each. */
+                if (f7i == 0x30u) {
+                    wr(h, rd, zbb_ror(a, rv_rs2(insn)));             /* rori  */
+                    break;
+                }
+                if (f7i == 0x14u && rv_rs2(insn) == 7u) {
                     wr(h, rd, zbb_orcb(a));                          /* orc.b */
                     break;
                 }
-                if ((insn >> 20) == 0x698u) {
-                    wr(h, rd, __builtin_bswap32(a));                 /* rev8 */
+                if (f7i == 0x34u && rv_rs2(insn) == 24u) {
+                    wr(h, rd, __builtin_bswap32(a));                 /* rev8  */
                     break;
                 }
 #endif
-                if (rv_funct7(insn) == 0u) {
-                    wr(h, rd, a >> rv_rs2(insn));
-                } else if (rv_funct7(insn) == 0x20u) {
-                    wr(h, rd, (uint32_t)((int32_t)a >> rv_rs2(insn)));
-                } else {
-                    TRAP(RV_EXC_ILLEGAL_INSN, insn);
-                }
-                break;
+                TRAP(RV_EXC_ILLEGAL_INSN, insn);
+            }
 
             default:
                 TRAP(RV_EXC_ILLEGAL_INSN, insn);

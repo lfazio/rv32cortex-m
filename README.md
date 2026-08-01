@@ -41,13 +41,13 @@ silicon.
 
 | Area | State |
 |---|---|
-| RV32IMAC + Zicsr, Zicntr, Zifencei, Zicbom, Zicboz | implemented |
+| RV32IMAC + Zicsr, Zicntr, Zifencei, Zicbom, Zicboz, **Zbb** | implemented |
 | Machine-mode traps, interrupts, CLINT timer | implemented |
-| Official `riscv-arch-test` (RVCP) | **101 / 101 pass** |
+| Official `riscv-arch-test` (RVCP) | **119 / 119 pass** |
 | `riscv-tests` (Berkeley) | **75 / 77 pass** (2 need PMP / Sdtrig, not implemented) |
 | Guest ISA self-test (104 checks) | passes on host **and** on hardware |
 | Nucleo-F446RE firmware | runs; 19–29 KB flash, guest gets 107–123 KiB of the 128 KiB SRAM |
-| Thumb-2 JIT backend | implemented; **workload-dependent** — 2.1× on ALU-heavy code, 0.75× on CoreMark |
+| Thumb-2 JIT backend | implemented; **25.4× slower than native ARM** on CoreMark |
 | F / D / B / V extensions | not implemented |
 
 The target the emulator was designed for is Cortex-M7; the board on hand is a
@@ -222,7 +222,7 @@ cmake --build build/host --target riscv-tests      # Berkeley suite
 cmake --build build/host --target validate         # everything
 ```
 
-### Official RISC-V Architecture Test Suite — 101/101
+### Official RISC-V Architecture Test Suite — 119/119
 
 [`riscv/riscv-arch-test`](https://github.com/riscv/riscv-arch-test), the RVCP
 suite governed by RISC-V International. Modern versions are self-checking: the
@@ -273,39 +273,52 @@ states and the ART accelerator enabled), using
 [`tests/guest/bench.c`](tests/guest/bench.c) — a compute-bound workload with no
 I/O between the start and end markers.
 
-Two workloads, measured on hardware with the DWT cycle counter, and they
-disagree — which is the most useful thing the benchmarking turned up.
+### CoreMark: native vs interpreted vs JIT
 
-| Workload | Backend | Host cycles / guest insn | Throughput |
-|---|---|---|---|
-| `bench` (ALU-heavy) | interpreter | 127.2 | 1.42 MIPS |
-| `bench` | **JIT** | **60.9** | **2.96 MIPS** |
-| CoreMark (memory-heavy) | **interpreter** | **35.7** | **5.04 MIPS** |
-| CoreMark | JIT | 47.9 | 3.76 MIPS |
+The same CoreMark sources, 150 iterations, on the same 180 MHz Cortex-M4 —
+compiled natively for ARM, and compiled for RV32 and run under each backend.
+This is the number that says what emulation actually costs.
 
-**The JIT is 2.1× faster on `bench` and 1.34× slower on CoreMark.** It is not a
-general win, and reporting it as one would have been wrong.
+| | Ticks (µs) | Iterations/s | CoreMark/MHz | vs native |
+|---|---|---|---|---|
+| **Native ARM** | 335,277 | 447.4 | 2.49 | 1× |
+| **JIT** | 8,507,759 | 17.6 | 0.098 | **25.4× slower** |
+| Interpreter | 8,803,596 | 17.0 | 0.095 | 26.3× slower |
 
-The asymmetry comes from memory access. In the JIT every load and store is a
-helper call — roughly ten ARM instructions of argument marshalling plus the C
-helper body — whereas the interpreter, with LTO, has the bus fast path inlined
-directly into its dispatch loop. CoreMark's list-join, matrix and state kernels
-are dominated by pointer traffic, so the JIT pays that cost on most
-instructions; `bench` is dominated by ALU work, where the JIT's translated code
-is close to native.
+All three produce **`crcfinal 0xca90`** — native ARM and emulated RISC-V agree
+bit for bit, which is independent confirmation that the emulation is correct.
 
-Note also how much more the *interpreter* varies (127.2 vs 35.7) than the JIT
-(60.9 vs 47.9): translated code cost is dominated by the memory-resident
-register file and is fairly uniform per instruction.
+The 2.49 CoreMark/MHz native figure is in the expected band for a Cortex-M4,
+which is a useful sanity check on the measurement itself.
 
-The obvious next step is to inline the RAM fast path into generated code —
-compare against the cached data region and emit a direct `LDR`/`STR`, falling
-back to the helper only on a miss. That is the one change most likely to flip
-CoreMark.
+*(These are not reportable CoreMark scores: EEMBC requires a ≥10 s run and a
+specific disclosure format, and the native run takes 0.34 s. They are valid
+as a relative comparison, which is what they are used for here.)*
 
-CoreMark reports **"Correct operation validated"** under both backends with
-matching CRCs (`crclist 0xe714`, `crcmatrix 0x1fd7`, `crcstate 0x8e3a`), 150
-iterations over the required 10 seconds.
+### Per-instruction cost
+
+| Workload | Interpreter | JIT |
+|---|---|---|
+| CoreMark (memory-heavy) | 37.1 | **35.9** |
+| `bench` (ALU-heavy) | 127.2 | **64.5** |
+
+*(host cycles per guest instruction)*
+
+The JIT is ahead on both. Getting there took two rounds of measurement:
+
+1. **Inlining the guest-RAM fast path.** Every load and store had been a helper
+   call; describing guest RAM in callee-saved registers turned a RAM access
+   into a subtract, a compare and a register-offset load. CoreMark: 47.9 → 35.7.
+2. **Translating Zbb.** Untranslated Zbb instructions each ended a block and
+   fell back, fragmenting hot code: **307,128 fallbacks**. Adding `clz`/`ctz`
+   (`RBIT`+`CLZ`), `min`/`max`, `andn`/`orn`/`xnor`, `rol`/`ror`/`rori`,
+   `sext.*`/`zext.h` and `rev8` brought it to **89**. CoreMark: 44.2 → 35.9.
+
+`cpop` and `orc.b` have no ARMv7-M equivalent and stay interpreted.
+
+The interpreter needed a fix too: the Zbb decode had been placed *ahead* of
+`SLLI`/`SRLI`/`SRAI` in the opcode slot they share, so every shift paid an
+extra `funct7` compare. Testing the common case first: 38.4 → 37.1.
 
 ### Block retention
 
@@ -362,9 +375,9 @@ Only `bench` is a throughput figure. The other two are dominated by waiting on
 real hardware, which is a property of the workload, not of the emulator.
 
 Remaining headroom, in rough order of expected value: allocating guest registers
-to ARM registers across a block (the JIT currently loads and stores every
-operand), teaching the translator `DIV`/`REM`/`MULH`, and chaining blocks so a
-hot loop stops returning to the dispatcher.
+to ARM registers across a block (the JIT still loads and stores every operand,
+which is the bulk of the remaining 25× gap), chaining blocks so a hot loop stops
+returning to the dispatcher, and teaching the translator `DIV`/`REM`/`MULH`.
 
 ---
 
@@ -459,8 +472,7 @@ Deferred until the current ISA is proven and measured — both of which are now
 done, so these are unblocked:
 
 - **Zacas** — the atomic compare-and-swap instruction.
-- **B** (`Zba`/`Zbb`/`Zbc`/`Zbs`) — cheapest of the four; maps well onto Thumb-2
-  `CLZ`, `RBIT`, `REV`, `UBFX`.
+- [ ] **Zba / Zbc / Zbs** — `Zbb` is done; these are the remaining B subsets.
 - **F / D** — Cortex-M4F and M7 have a single-precision FPU usable for `F`;
   `D` needs soft-float. Needs `f0`–`f31`, `fcsr`, NaN-boxing and correct
   rounding.

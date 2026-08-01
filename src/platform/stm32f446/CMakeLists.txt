@@ -79,6 +79,31 @@ endif()
 
 target_compile_options(rv32-stm32f446 PRIVATE -Wall -Wextra)
 
+# Native CoreMark baseline: the same sources the guest runs, compiled for
+# the ARM host. core_main.c defines main(), so it is renamed at compile
+# time and called from our own main.
+option(RV32_NATIVE_COREMARK "Run CoreMark natively instead of the emulator" OFF)
+if(RV32_NATIVE_COREMARK AND EXISTS "${COREMARK_DIR}/core_main.c")
+    target_sources(rv32-stm32f446 PRIVATE
+        "${COREMARK_DIR}/core_main.c"
+        "${COREMARK_DIR}/core_list_join.c"
+        "${COREMARK_DIR}/core_matrix.c"
+        "${COREMARK_DIR}/core_state.c"
+        "${COREMARK_DIR}/core_util.c"
+        coremark_native.c)
+    target_include_directories(rv32-stm32f446 PRIVATE
+        "${COREMARK_DIR}" "${CMAKE_SOURCE_DIR}/tests/guest/coremark")
+    target_compile_definitions(rv32-stm32f446 PRIVATE
+        RV32_NATIVE_COREMARK=1 PERFORMANCE_RUN=1
+        ITERATIONS=${COREMARK_ITERATIONS})
+    # The main= rename must apply to CoreMark's core_main.c alone; applied
+    # target-wide it would also rename the firmware's own entry point.
+    set_source_files_properties("${COREMARK_DIR}/core_main.c" PROPERTIES
+        COMPILE_DEFINITIONS "main=coremark_native_main")
+    target_compile_options(rv32-stm32f446 PRIVATE
+        -Wno-unused-parameter -Wno-sign-compare -Wno-implicit-fallthrough)
+endif()
+
 # Guest RAM size is not a compile definition: the link script computes it
 # from what is left over, and main.c reads it from __guest_ram_start/end.
 

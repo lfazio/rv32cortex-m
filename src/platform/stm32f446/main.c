@@ -75,12 +75,14 @@ static UART_HandleTypeDef g_console;
 /* Console                                                             */
 /* ------------------------------------------------------------------ */
 
-static void console_putc(uint8_t c)
+void rv_console_putc(uint8_t c)
 {
     /* Blocking, with a generous timeout: output is for humans, and losing
      * a byte is worse than stalling briefly. */
     HAL_UART_Transmit(&g_console, &c, 1u, 100u);
 }
+
+#define console_putc rv_console_putc
 
 static void console_puts(const char *s)
 {
@@ -497,6 +499,25 @@ int main(void)
     console_init();
     dwt_init();
 
+#if RV32_NATIVE_COREMARK
+    /*
+     * Native baseline: the same CoreMark sources compiled for Cortex-M4
+     * and run directly, with no emulation, so the interpreter and JIT
+     * numbers can be put against something absolute.
+     */
+    {
+        extern int coremark_native_main(void);
+        console_puts("\n\nrv32cortex-m: NATIVE CoreMark on Cortex-M4 @ ");
+        console_putu(SystemCoreClock / 1000000u);
+        console_puts(" MHz\n\n");
+        const uint32_t c0 = dwt_cycles();
+        (void)coremark_native_main();
+        console_puts("\n-- native --\n  host     ");
+        console_putu(dwt_cycles() - c0);
+        console_puts(" cycles\n");
+        for (;;) { __WFI(); }
+    }
+#endif
     console_puts("\n\nrv32cortex-m: RV32IMAC on Cortex-M4 @ ");
     console_putu(SystemCoreClock / 1000000u);
     console_puts(" MHz\n");
