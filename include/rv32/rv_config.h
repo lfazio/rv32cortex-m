@@ -37,6 +37,14 @@
  * express. With this clear, an amocas encoding raises illegal-instruction,
  * which is the correct report for an extension that is not implemented.
  */
+/*
+ * Zacas. amocas.w is implemented and its semantics are verified by targeted
+ * checks in tests/guest/isatest.c, but amocas.d is not: on RV32 it operates
+ * on even-odd register pairs that rv_hart_amo's single-register interface
+ * cannot express. The extension is defined to include both, so it stays off
+ * and amocas raises illegal-instruction, which is the correct report for
+ * something not implemented.
+ */
 #ifndef RV_EXT_ZACAS
 #  define RV_EXT_ZACAS 0
 #endif

@@ -46,9 +46,10 @@ silicon.
 | Official `riscv-arch-test` (RVCP) | **133 / 133 pass** |
 | `riscv-tests` (Berkeley) | **75 / 77 pass** (2 need PMP / Sdtrig, not implemented) |
 | Guest ISA self-test (104 checks) | passes on host **and** on hardware |
-| Nucleo-F446RE firmware | runs; 19–29 KB flash, guest gets 107–123 KiB of the 128 KiB SRAM |
-| Thumb-2 JIT backend | implemented; **25.4× slower than native ARM** on CoreMark |
-| F / D / B / V extensions | not implemented |
+| Nucleo-F446RE firmware | runs; ~29 KB flash, guest gets 70–123 KiB of the 128 KiB SRAM |
+| Thumb-2 JIT backend | implemented; **20.2× slower than native ARM** on CoreMark |
+| Zacas | implemented but **disabled**: does not pass the suite |
+| F / D / V extensions | not implemented |
 
 The target the emulator was designed for is Cortex-M7; the board on hand is a
 **Cortex-M4F**, which shares the ARMv7E-M instruction set. The core is portable
@@ -279,11 +280,14 @@ The same CoreMark sources, 150 iterations, on the same 180 MHz Cortex-M4 —
 compiled natively for ARM, and compiled for RV32 and run under each backend.
 This is the number that says what emulation actually costs.
 
+These use the full B extension in the guest, which is the best configuration
+for each backend.
+
 | | Ticks (µs) | Iterations/s | CoreMark/MHz | vs native |
 |---|---|---|---|---|
 | **Native ARM** | 335,277 | 447.4 | 2.49 | 1× |
-| **JIT** | 8,507,759 | 17.6 | 0.098 | **25.4× slower** |
-| Interpreter | 8,803,596 | 17.0 | 0.095 | 26.3× slower |
+| **JIT** | 6,759,965 | 22.2 | 0.123 | **20.2× slower** |
+| Interpreter | 5,944,190 | 25.2 | 0.140 | 17.7× slower |
 
 All three produce **`crcfinal 0xca90`** — native ARM and emulated RISC-V agree
 bit for bit, which is independent confirmation that the emulation is correct.
@@ -484,6 +488,7 @@ For a different ARM core, retarget with
 ```
 include/rv32/     public headers — the core's entire API
 src/core/         portable interpreter: hart, bus, decode, CSRs, traps
+src/backend/      Thumb-2 JIT: emitter, translator, code cache
 src/devices/      virtual CLINT and console UART
 src/platform/
   host/           native runner, ELF loader (host-only; never built into firmware)
@@ -504,6 +509,7 @@ Guest images (`tests/guest/`):
 | `hello`   | smallest useful guest; confirms the console path |
 | `bench`   | compute-bound workload for throughput measurement |
 | `stm32drv`| GPIO and USART2 drivers written as guest code |
+| `coremark`| CoreMark, fetched from upstream and built for RV32 |
 
 ---
 

@@ -604,6 +604,48 @@ static void test_cbo(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Zacas                                                               */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Only built when the guest is compiled with _zacas. These checks pass,
+ * which is what localises the remaining Zacas problem: amocas.w's
+ * compare-and-swap semantics are right, so the official suite's failure is
+ * elsewhere. See the roadmap note in README.md.
+ *
+ * This guard is on the *guest* compiler's march, which cannot see whether
+ * the emulator was built with RV_EXT_ZACAS. Building the guest with _zacas
+ * against an emulator without it is a valid configuration and these checks
+ * will fail there, correctly: amocas raises illegal-instruction.
+ */
+#if defined(__riscv_zacas)
+static volatile uint32_t g_cas;
+
+static void test_zacas(void)
+{
+    uint32_t rd, sw;
+
+    /* Comparand matches: the swap happens and rd returns the old value. */
+    g_cas = 0x11112222u;
+    rd = 0x11112222u;
+    sw = 0xAABBCCDDu;
+    __asm__ volatile ("amocas.w %0, %2, (%1)"
+                      : "+r"(rd) : "r"(&g_cas), "r"(sw) : "memory");
+    check("amocas-eq-rd",  rd, 0x11112222u);
+    check("amocas-eq-mem", g_cas, 0xAABBCCDDu);
+
+    /* Comparand differs: no store, rd still returns what memory held. */
+    g_cas = 0x11112222u;
+    rd = 0x99998888u;
+    sw = 0xAABBCCDDu;
+    __asm__ volatile ("amocas.w %0, %2, (%1)"
+                      : "+r"(rd) : "r"(&g_cas), "r"(sw) : "memory");
+    check("amocas-ne-rd",  rd, 0x11112222u);
+    check("amocas-ne-mem", g_cas, 0x11112222u);
+}
+#endif
+
+/* ------------------------------------------------------------------ */
 
 int main(void)
 {
@@ -620,6 +662,9 @@ int main(void)
     test_csr();
     test_traps();
     test_cbo();
+#if defined(__riscv_zacas)
+    test_zacas();
+#endif
     test_timer_interrupt();
 
     puts_("checks   ");
