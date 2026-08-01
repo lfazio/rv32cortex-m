@@ -87,6 +87,16 @@
 #  define RV_PMP_ENTRIES 16u
 #endif
 
+/*
+ * Sdtrig debug triggers. Like PMP, free until software arms one.
+ */
+#ifndef RV_EXT_SDTRIG
+#  define RV_EXT_SDTRIG 1
+#endif
+#ifndef RV_TRIG_COUNT
+#  define RV_TRIG_COUNT 2u
+#endif
+
 #ifndef RV_EXT_ZICBOM
 #  define RV_EXT_ZICBOM 1   /* cbo.clean / cbo.inval / cbo.flush */
 #endif

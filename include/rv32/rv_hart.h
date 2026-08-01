@@ -74,6 +74,14 @@ typedef struct rv_hart {
     uint32_t fcsr;               /* frm in [7:5], fflags in [4:0] */
 #endif
 
+#if RV_EXT_SDTRIG
+    uint32_t tselect;
+    uint32_t tdata1[RV_TRIG_COUNT];
+    uint32_t tdata2[RV_TRIG_COUNT];
+    /* True once some trigger is armed; gates the checks out of the hot path. */
+    bool     trig_active;
+#endif
+
 #if RV_EXT_PMP
     uint32_t pmpcfg[RV_PMP_ENTRIES / 4u];
     uint32_t pmpaddr[RV_PMP_ENTRIES];
@@ -199,6 +207,14 @@ void rv_hart_set_irq(rv_hart_t *h, unsigned cause, bool level);
 rv_exc_t rv_hart_load(rv_hart_t *h, uint32_t addr, uint32_t size,
                       bool sign_extend, uint32_t *out);
 rv_exc_t rv_hart_store(rv_hart_t *h, uint32_t addr, uint32_t size, uint32_t val);
+
+#if RV_EXT_SDTRIG
+void rv_trig_refresh(rv_hart_t *h);
+void rv_trig_write_tdata1(rv_hart_t *h, uint32_t val);
+
+/* True if an armed trigger matches. Only consulted when trig_active. */
+bool rv_trig_check(const rv_hart_t *h, uint32_t addr, rv_access_t acc);
+#endif
 
 #if RV_EXT_PMP
 /* Recompute pmp_active. Call after any write to a pmpcfg CSR. */

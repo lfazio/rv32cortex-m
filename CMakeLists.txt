@@ -95,6 +95,7 @@ option(RV32_JIT_HOT_REG_STATS "Count hot-register reads per block" OFF)
 option(RV32_FPU_SOFTFLOAT "Use Berkeley SoftFloat for F" OFF)
 set(SOFTFLOAT_DIR "${CMAKE_BINARY_DIR}/softfloat" CACHE PATH "Berkeley SoftFloat source")
 
+option(RV32_EXT_SDTRIG "Sdtrig debug triggers" ON)
 option(RV32_EXT_PMP "Physical memory protection" ON)
 option(RV32_EXT_ZCB "Zcb compressed instructions" ON)
 option(RV32_EXT_F "Single-precision floating point" ON)
@@ -118,6 +119,7 @@ add_library(rv32core STATIC
     src/core/rv_hart.c
     src/core/rv_interp.c
     src/core/rv_pmp.c
+    src/core/rv_trig.c
     src/devices/rv_clint.c
     src/devices/rv_uart.c
     # Compiles to nothing unless RV_ENABLE_JIT is set, which needs a
@@ -132,6 +134,7 @@ target_compile_definitions(rv32core PUBLIC
     RV_EXT_F=$<BOOL:${RV32_EXT_F}>
     RV_EXT_ZCB=$<BOOL:${RV32_EXT_ZCB}>
     RV_EXT_PMP=$<BOOL:${RV32_EXT_PMP}>
+    RV_EXT_SDTRIG=$<BOOL:${RV32_EXT_SDTRIG}>
     RV_FPU_SOFTFLOAT=$<BOOL:${RV32_FPU_SOFTFLOAT}>
     RV_EXT_M=$<BOOL:${RV32_EXT_M}>
     RV_EXT_A=$<BOOL:${RV32_EXT_A}>

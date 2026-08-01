@@ -85,6 +85,22 @@ rv_exc_t rv_csr_read(rv_hart_t *h, uint32_t csr, uint32_t *out)
     case CSR_MTVAL:         *out = h->mtval;     break;
     case CSR_MIP:           *out = h->mip;       break;
 
+#if RV_EXT_SDTRIG
+    /* --- debug triggers --- */
+    case CSR_TSELECT: *out = h->tselect; break;
+    case CSR_TDATA1:
+        *out = (h->tselect < RV_TRIG_COUNT) ? h->tdata1[h->tselect] : 0u;
+        break;
+    case CSR_TDATA2:
+        *out = (h->tselect < RV_TRIG_COUNT) ? h->tdata2[h->tselect] : 0u;
+        break;
+    case CSR_TDATA3: *out = 0u; break;
+    case CSR_TINFO:
+        /* Bit n set means trigger type n is supported; only mcontrol. */
+        *out = 1u << 2;
+        break;
+#endif
+
 #if RV_EXT_PMP
     /* --- physical memory protection --- */
     case CSR_PMPCFG0: case CSR_PMPCFG0 + 1: case CSR_PMPCFG0 + 2:
@@ -211,6 +227,25 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
         h->mip = (h->mip & ~MIP_WMASK) | (val & MIP_WMASK);
         break;
 
+#if RV_EXT_SDTRIG
+    case CSR_TSELECT:
+        /* WARL: an out-of-range index leaves the previous selection. */
+        if (val < RV_TRIG_COUNT) {
+            h->tselect = val;
+        }
+        break;
+    case CSR_TDATA1:
+        rv_trig_write_tdata1(h, val);
+        break;
+    case CSR_TDATA2:
+        if (h->tselect < RV_TRIG_COUNT) {
+            h->tdata2[h->tselect] = val;
+        }
+        break;
+    case CSR_TDATA3:
+        break;
+#endif
+
 #if RV_EXT_PMP
     case CSR_PMPCFG0: case CSR_PMPCFG0 + 1: case CSR_PMPCFG0 + 2:
     case CSR_PMPCFG0 + 3: {
@@ -335,6 +370,13 @@ const char *rv_csr_name(uint32_t csr)
     case CSR_MCYCLEH:       return "mcycleh";
     case CSR_MINSTRETH:     return "minstreth";
     case CSR_MCOUNTINHIBIT: return "mcountinhibit";
+#if RV_EXT_SDTRIG
+    case CSR_TSELECT:       return "tselect";
+    case CSR_TDATA1:        return "tdata1";
+    case CSR_TDATA2:        return "tdata2";
+    case CSR_TDATA3:        return "tdata3";
+    case CSR_TINFO:         return "tinfo";
+#endif
 #if RV_EXT_PMP
     case CSR_PMPCFG0: case CSR_PMPCFG0 + 1: case CSR_PMPCFG0 + 2:
     case CSR_PMPCFG0 + 3: return "pmpcfg";

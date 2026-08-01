@@ -68,6 +68,13 @@ void rv_hart_reset(rv_hart_t *h, uint32_t reset_pc)
     h->mstatus |= (1u << MSTATUS_FS_SHIFT);
 #endif
 
+#if RV_EXT_SDTRIG
+    h->tselect = 0u;
+    memset(h->tdata1, 0, sizeof(h->tdata1));
+    memset(h->tdata2, 0, sizeof(h->tdata2));
+    h->trig_active = false;
+#endif
+
 #if RV_EXT_PMP
     memset(h->pmpcfg, 0, sizeof(h->pmpcfg));
     memset(h->pmpaddr, 0, sizeof(h->pmpaddr));
@@ -203,6 +210,11 @@ rv_exc_t rv_hart_load(rv_hart_t *h, uint32_t addr, uint32_t size,
     }
 #endif
 
+#if RV_EXT_SDTRIG
+    if (RV_UNLIKELY(h->trig_active) && rv_trig_check(h, addr, RV_ACC_LOAD)) {
+        return RV_EXC_BREAKPOINT;
+    }
+#endif
 #if RV_EXT_PMP
     if (RV_UNLIKELY(h->pmp_active) &&
         !rv_pmp_check(h, addr, size, RV_ACC_LOAD)) {
@@ -457,6 +469,11 @@ rv_exc_t rv_hart_store(rv_hart_t *h, uint32_t addr, uint32_t size, uint32_t val)
     }
 #endif
 
+#if RV_EXT_SDTRIG
+    if (RV_UNLIKELY(h->trig_active) && rv_trig_check(h, addr, RV_ACC_STORE)) {
+        return RV_EXC_BREAKPOINT;
+    }
+#endif
 #if RV_EXT_PMP
     if (RV_UNLIKELY(h->pmp_active) &&
         !rv_pmp_check(h, addr, size, RV_ACC_STORE)) {

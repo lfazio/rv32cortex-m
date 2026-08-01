@@ -135,6 +135,11 @@ static rv_jit_stats_t g_stats;
 /* The hart being translated for, so translate_one can read mstatus. */
 static rv_hart_t *g_xlate_hart;
 
+#if RV_EXT_SDTRIG
+/* Whether the cached blocks were translated with triggers armed. */
+static bool g_trig_seen;
+#endif
+
 #if RV_EXT_PMP
 /*
  * The value of hart->pmp_active the cached blocks were translated against.
@@ -2217,6 +2222,31 @@ static rv_run_reason_t jit_run(rv_hart_t *h, uint32_t budget, uint32_t *retired)
             reason = (h->state == RV_STATE_HALTED) ? RV_RUN_HALTED : RV_RUN_WFI;
             break;
         }
+
+#if RV_EXT_SDTRIG
+        /*
+         * An armed trigger needs a check before every fetch, which a
+         * translated block cannot express, and its load and store checks
+         * live in rv_hart_load/store which the inlined path bypasses. While
+         * any trigger is armed the interpreter runs everything.
+         */
+        if (RV_UNLIKELY(h->trig_active)) {
+            if (g_trig_seen != h->trig_active) {
+                g_trig_seen = true;
+                rv_jit_flush();
+            }
+            uint32_t n = 0;
+            const rv_run_reason_t r = rv_backend_interp.run(h, 1u, &n);
+            done += n;
+            g_stats.interp_fallbacks += n;
+            if (r == RV_RUN_HALTED || r == RV_RUN_WFI) {
+                reason = r;
+                break;
+            }
+            continue;
+        }
+        g_trig_seen = false;
+#endif
 
 #if RV_EXT_PMP
         /*

@@ -68,6 +68,13 @@ struct rv_hart;
 #define CSR_MTVAL           0x343
 #define CSR_MIP             0x344
 
+/* Sdtrig debug triggers. */
+#define CSR_TSELECT         0x7A0
+#define CSR_TDATA1          0x7A1
+#define CSR_TDATA2          0x7A2
+#define CSR_TDATA3          0x7A3
+#define CSR_TINFO           0x7A4
+
 /* Physical memory protection. */
 #define CSR_PMPCFG0         0x3A0
 #define CSR_PMPADDR0        0x3B0

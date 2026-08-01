@@ -313,6 +313,18 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
                 TRAP(RV_EXC_INSN_MISALIGNED, pc);
             }
 
+#if RV_EXT_SDTRIG
+            /*
+             * An execute trigger fires before the instruction runs, so mepc
+             * points at it rather than past it -- the handler is expected to
+             * step over or resume it deliberately.
+             */
+            if (RV_UNLIKELY(h->trig_active) &&
+                rv_trig_check(h, pc, RV_ACC_FETCH)) {
+                TRAP(RV_EXC_BREAKPOINT, pc);
+            }
+#endif
+
             uint16_t lo;
             rv_exc_t exc = rv_bus_fetch16(h->bus, pc, &lo);
             if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
