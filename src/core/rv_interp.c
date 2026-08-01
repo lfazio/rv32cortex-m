@@ -684,11 +684,29 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
         /* ---------------- atomics ---------------- */
 #if RV_EXT_A
         case OP_AMO >> 2: {
+            const uint32_t funct5 = rv_funct7(insn) >> 2;
+
+#if RV_EXT_ZACAS
+            if (rv_funct3(insn) == 3u && funct5 == RV_AMO_CAS) {
+                /* amocas.d: even-odd register pairs, so odd operands are
+                 * not encodable and must raise illegal instruction. */
+                if (RV_UNLIKELY((rv_rd(insn) & 1u) || (rv_rs2(insn) & 1u))) {
+                    TRAP(RV_EXC_ILLEGAL_INSN, insn);
+                }
+                const uint32_t daddr = h->x[rv_rs1(insn)];
+                const rv_exc_t dexc =
+                    rv_hart_amocas_d(h, rv_rd(insn), rv_rs2(insn), daddr);
+                if (RV_UNLIKELY(dexc != RV_EXC_NONE)) {
+                    TRAP(dexc, daddr);
+                }
+                h->x[0] = 0u;
+                break;
+            }
+#endif
             if (RV_UNLIKELY(rv_funct3(insn) != 2u)) {
-                TRAP(RV_EXC_ILLEGAL_INSN, insn);   /* only 32-bit AMOs on RV32 */
+                TRAP(RV_EXC_ILLEGAL_INSN, insn);   /* only 32/64-bit AMOs */
             }
 
-            const uint32_t funct5 = rv_funct7(insn) >> 2;
             if (RV_UNLIKELY(!rv_amo_valid(funct5))) {
                 TRAP(RV_EXC_ILLEGAL_INSN, insn);
             }

@@ -210,6 +210,18 @@ bool rv_amo_valid(uint32_t funct5);
  */
 rv_exc_t rv_hart_amo(rv_hart_t *h, uint32_t funct5, uint32_t rd,
                      uint32_t addr, uint32_t src);
+
+#if RV_EXT_ZACAS
+/*
+ * amocas.d on RV32: a 64-bit compare-and-swap whose operands are even-odd
+ * register pairs, (rd, rd+1) and (rs2, rs2+1), low half first. This needs
+ * its own entry point because rv_hart_amo's single-register interface
+ * cannot express a pair. rd and rs2 must be even; the caller checks that.
+ * x0 names a pair that reads as zero and discards the result.
+ */
+rv_exc_t rv_hart_amocas_d(rv_hart_t *h, uint32_t rd, uint32_t rs2,
+                          uint32_t addr);
+#endif
 #endif
 
 #if RV_EXT_ZICBOM || RV_EXT_ZICBOZ

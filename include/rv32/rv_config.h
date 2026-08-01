@@ -38,12 +38,16 @@
  * which is the correct report for an extension that is not implemented.
  */
 /*
- * Zacas. amocas.w is implemented and its semantics are verified by targeted
- * checks in tests/guest/isatest.c, but amocas.d is not: on RV32 it operates
- * on even-odd register pairs that rv_hart_amo's single-register interface
- * cannot express. The extension is defined to include both, so it stays off
- * and amocas raises illegal-instruction, which is the correct report for
- * something not implemented.
+ * Zacas, off because it is unfinished.
+ *
+ * amocas.w is implemented and its semantics are verified by targeted checks
+ * in tests/guest/isatest.c. amocas.d is implemented too (rv_hart_amocas_d,
+ * even-odd register pairs) but is *wrong*: its targeted checks read the low
+ * half back in the high half's register. Whether the fault is in the pair
+ * handling or in the test's inline-asm constraints is not yet established.
+ *
+ * With this clear, amocas raises illegal-instruction, which is the correct
+ * report for an extension that is not implemented.
  */
 #ifndef RV_EXT_ZACAS
 #  define RV_EXT_ZACAS 0

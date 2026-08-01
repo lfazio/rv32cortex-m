@@ -642,6 +642,35 @@ static void test_zacas(void)
                       : "+r"(rd) : "r"(&g_cas), "r"(sw) : "memory");
     check("amocas-ne-rd",  rd, 0x11112222u);
     check("amocas-ne-mem", g_cas, 0x11112222u);
+
+    /* amocas.d: 64-bit CAS over even-odd register pairs, low half first. */
+    static volatile uint64_t g_cas64 __attribute__((aligned(8)));
+    register uint32_t a0 __asm__("a0");
+    register uint32_t a1 __asm__("a1");
+    register uint32_t a2 __asm__("a2");
+    register uint32_t a3 __asm__("a3");
+
+    g_cas64 = 0x1111222233334444ull;
+    a0 = 0x33334444u; a1 = 0x11112222u;      /* comparand, lo:hi */
+    a2 = 0xCCCCDDDDu; a3 = 0xAAAABBBBu;      /* swap value, lo:hi */
+    __asm__ volatile ("amocas.d %0, %2, (%4)"
+                      : "+r"(a0), "+r"(a1)
+                      : "r"(a2), "r"(a3), "r"(&g_cas64) : "memory");
+    check("amocas.d-eq-lo",  a0, 0x33334444u);
+    check("amocas.d-eq-hi",  a1, 0x11112222u);
+    check("amocas.d-eq-mem", (uint32_t)g_cas64, 0xCCCCDDDDu);
+    check("amocas.d-eq-memh",(uint32_t)(g_cas64 >> 32), 0xAAAABBBBu);
+
+    /* Mismatching comparand: no store, but rd still takes the old value. */
+    g_cas64 = 0x1111222233334444ull;
+    a0 = 0xDEADBEEFu; a1 = 0x11112222u;
+    a2 = 0xCCCCDDDDu; a3 = 0xAAAABBBBu;
+    __asm__ volatile ("amocas.d %0, %2, (%4)"
+                      : "+r"(a0), "+r"(a1)
+                      : "r"(a2), "r"(a3), "r"(&g_cas64) : "memory");
+    check("amocas.d-ne-lo",  a0, 0x33334444u);
+    check("amocas.d-ne-hi",  a1, 0x11112222u);
+    check("amocas.d-ne-mem", (uint32_t)g_cas64, 0x33334444u);
 }
 #endif
 

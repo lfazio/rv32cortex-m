@@ -308,6 +308,47 @@ rv_exc_t rv_hart_amo(rv_hart_t *h, uint32_t funct5, uint32_t rd,
     return RV_EXC_NONE;
 }
 
+#if RV_EXT_ZACAS
+rv_exc_t rv_hart_amocas_d(rv_hart_t *h, uint32_t rd, uint32_t rs2,
+                          uint32_t addr)
+{
+    /* A 64-bit atomic needs 8-byte alignment, not 4. */
+    if (RV_UNLIKELY((addr & 7u) != 0u)) {
+        return RV_EXC_STORE_MISALIGNED;
+    }
+
+    uint32_t lo, hi;
+    if (rv_bus_read(h->bus, addr, 4u, &lo) != RV_EXC_NONE ||
+        rv_bus_read(h->bus, addr + 4u, 4u, &hi) != RV_EXC_NONE) {
+        return RV_EXC_STORE_ACCESS_FAULT;
+    }
+
+    /* x0 names a pair that reads as zero in both halves. */
+    const uint32_t cmp_lo = (rd == 0u) ? 0u : h->x[rd];
+    const uint32_t cmp_hi = (rd == 0u) ? 0u : h->x[rd + 1u];
+
+    if (lo == cmp_lo && hi == cmp_hi) {
+        const uint32_t new_lo = (rs2 == 0u) ? 0u : h->x[rs2];
+        const uint32_t new_hi = (rs2 == 0u) ? 0u : h->x[rs2 + 1u];
+        rv_exc_t exc = rv_bus_write(h->bus, addr, 4u, new_lo);
+        if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
+            return exc;
+        }
+        exc = rv_bus_write(h->bus, addr + 4u, 4u, new_hi);
+        if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
+            return exc;
+        }
+    }
+
+    /* The loaded value goes to rd either way. */
+    if (rd != 0u) {
+        h->x[rd] = lo;
+        h->x[rd + 1u] = hi;
+    }
+    return RV_EXC_NONE;
+}
+#endif /* RV_EXT_ZACAS */
+
 #endif /* RV_EXT_A */
 
 #if RV_EXT_ZICBOM || RV_EXT_ZICBOZ

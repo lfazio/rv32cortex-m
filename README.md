@@ -48,7 +48,7 @@ silicon.
 | Guest ISA self-test (104 checks) | passes on host **and** on hardware |
 | Nucleo-F446RE firmware | runs; ~29 KB flash, guest gets 70–123 KiB of the 128 KiB SRAM |
 | Thumb-2 JIT backend | implemented; **20.2× slower than native ARM** on CoreMark |
-| Zacas | implemented but **disabled**: does not pass the suite |
+| Zacas | `amocas.w` verified, `amocas.d` wrong; **disabled** — see roadmap |
 | F / D / V extensions | not implemented |
 
 The target the emulator was designed for is Cortex-M7; the board on hand is a
@@ -534,7 +534,18 @@ account for most PDFs).
 Deferred until the current ISA is proven and measured — both of which are now
 done, so these are unblocked:
 
-- **Zacas** — the atomic compare-and-swap instruction.
+- **Zacas** — unfinished, and disabled. Three things are known:
+  `amocas.w`'s semantics are **verified** by targeted checks in `isatest.c`
+  (both the matching and non-matching cases); `amocas.d` is implemented over
+  even-odd register pairs (`rv_hart_amocas_d`) but is **wrong** — its targeted
+  checks read the low half back in the high half's register, and whether that
+  is the pair handling or the test's own inline-asm constraints is not
+  established; and the official `Zacas-amocas.w` failure is **not in the
+  instruction**. Disassembling the test shows it loads the operand from a
+  `gp`-relative table and stores it to scratch memory immediately before the
+  CAS, and our value already diverges from the reference there — so the fault
+  is in the prologue's register or `gp` setup, ahead of the instruction under
+  test. Localising it needs an instruction trace compared against Sail.
 - **F / D** — Cortex-M4F and M7 have a single-precision FPU usable for `F`;
   `D` needs soft-float. Needs `f0`–`f31`, `fcsr`, NaN-boxing and correct
   rounding.
