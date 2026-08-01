@@ -115,6 +115,9 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
     case CSR_MSTATUS:
         /* WARL: keep the bits we implement, ignore the rest. */
         h->mstatus = (h->mstatus & ~MSTATUS_WMASK) | (val & MSTATUS_WMASK);
+#if RV_LAZY_IRQ_CHECK
+        h->irq_dirty = true;   /* MIE may have been set */
+#endif
         break;
 
     case CSR_MSTATUSH:
@@ -125,6 +128,9 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
 
     case CSR_MIE:
         h->mie = val & MIE_WMASK;
+#if RV_LAZY_IRQ_CHECK
+        h->irq_dirty = true;
+#endif
         break;
 
     case CSR_MTVEC:

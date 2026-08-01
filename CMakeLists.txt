@@ -47,6 +47,29 @@ set(RV32_GUEST_RAM_KIB "48" CACHE STRING "Guest RAM size in KiB")
 # calls, and they are the hottest code in the project.
 option(RV32_LTO "Link-time optimisation" ON)
 
+# Run the interpreter loop from SRAM.
+#
+# Off by default because it was measured *slower* on the STM32F446: 162 vs
+# 122 host cycles per guest instruction, while also taking 8 KiB from the
+# guest. Executing from flash lets the Cortex-M4 fetch over the I-bus while
+# data goes to SRAM over the D-bus, and the ART accelerator keeps a hot
+# loop effectively wait-state free; moving code into SRAM puts fetch and
+# data on the same interface and serialises them.
+#
+# Kept as an option because that trade-off is part-specific: it can pay off
+# on a device with slower flash, no accelerator, or true TCM.
+option(RV32_INTERP_IN_RAM "Place the interpreter loop in SRAM" OFF)
+
+# Evaluate interrupt delivery only when something could have changed it.
+#
+# No measurable gain on the interrupt-free benchmark, and that is expected:
+# with mstatus.MIE clear, rv_hart_pending_irq already returns after one
+# load and one test, which the dirty flag cannot beat. It pays when a guest
+# actually enables interrupts, where the eager check costs three loads.
+# Left on because that is the realistic case and the cost otherwise is
+# below the noise floor.
+option(RV32_LAZY_IRQ "Lazy interrupt-delivery evaluation" ON)
+
 option(RV32_EXT_M "Integer multiply/divide" ON)
 option(RV32_EXT_A "Atomics" ON)
 option(RV32_EXT_C "Compressed instructions" ON)
@@ -79,6 +102,8 @@ target_compile_definitions(rv32core PUBLIC
     RV_ENABLE_DISASM=$<BOOL:${RV32_ENABLE_DISASM}>
     RV_ENABLE_TRACE=$<BOOL:${RV32_ENABLE_TRACE}>
     RV_ENABLE_STATS=$<BOOL:${RV32_ENABLE_STATS}>
+    RV_INTERP_RAMFUNC=$<BOOL:${RV32_INTERP_IN_RAM}>
+    RV_LAZY_IRQ_CHECK=$<BOOL:${RV32_LAZY_IRQ}>
 )
 
 target_compile_options(rv32core PRIVATE

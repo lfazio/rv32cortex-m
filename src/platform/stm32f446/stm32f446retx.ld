@@ -114,6 +114,21 @@ SECTIONS
         _sdata = .;
         *(.data)
         *(.data*)
+
+        /*
+         * Code that runs from SRAM. Placed inside .data so ST's startup
+         * copies it from flash along with everything else -- no extra
+         * loader needed. Executing from RAM avoids the 5 flash wait states
+         * this part runs at 180 MHz, which matters for the interpreter's
+         * dispatch loop and for JIT-emitted code.
+         */
+        . = ALIGN(8);
+        __ramfunc_start = .;
+        *(.ramfunc)
+        *(.ramfunc*)
+        . = ALIGN(8);
+        __ramfunc_end = .;
+
         . = ALIGN(4);
         _edata = .;
     } > RAM AT> FLASH

@@ -378,14 +378,15 @@ account for most PDFs).
 Deferred until the current ISA is proven and measured — both of which are now
 done, so these are unblocked:
 
+- [ ] **Zacas** — the atomic compare-and-swap instruction.
+- [ ] **Thumb-2 JIT backend** — the interface is already in place.
 - **B** (`Zba`/`Zbb`/`Zbc`/`Zbs`) — cheapest of the four; maps well onto Thumb-2
   `CLZ`, `RBIT`, `REV`, `UBFX`.
-- **F / D** — Cortex-M4F and M7 have a single-precision FPU usable for `F`;
+- [ ] **F / D** — Cortex-M4F and M7 have a single-precision FPU usable for `F`;
   `D` needs soft-float. Needs `f0`–`f31`, `fcsr`, NaN-boxing and correct
   rounding.
-- **V** — largest by far and RAM-hungry (`VLEN=128` alone costs 512 B of
+- [ ] **V** — largest by far and RAM-hungry (`VLEN=128` alone costs 512 B of
   register file on a part with 128 KiB); needs a `VLEN` budget decision.
-- **Thumb-2 JIT backend** — the interface is already in place.
 
 ---
 

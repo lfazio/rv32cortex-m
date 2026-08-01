@@ -82,6 +82,28 @@
 #endif
 
 /*
+ * Place the interpreter's run loop in a .ramfunc section so it executes
+ * from SRAM rather than flash. On a part with wait states (5 at 180 MHz on
+ * the STM32F446) the dispatch loop is the hottest code in the system and
+ * pays them on every miss of the flash accelerator's small cache.
+ *
+ * Costs a few KiB of RAM that would otherwise go to the guest, and needs a
+ * link script that places .ramfunc in RAM with a flash load address, so it
+ * is off by default and enabled per platform.
+ */
+#ifndef RV_INTERP_RAMFUNC
+#  define RV_INTERP_RAMFUNC 0
+#endif
+
+/*
+ * Re-evaluate interrupt delivery only when something could have changed
+ * it, rather than on every instruction. See rv_hart_t::irq_dirty.
+ */
+#ifndef RV_LAZY_IRQ_CHECK
+#  define RV_LAZY_IRQ_CHECK 1
+#endif
+
+/*
  * How many instructions rv_backend_t::run executes before returning to the
  * host so it can service ARM-side work (timers, USB, RTOS ticks).
  */

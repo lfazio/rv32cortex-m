@@ -64,6 +64,11 @@ void rv_hart_reset(rv_hart_t *h, uint32_t reset_pc)
     h->priv = RV_PRIV_M;
     h->state = RV_STATE_RUNNING;
 
+#if RV_LAZY_IRQ_CHECK
+    /* Force one evaluation after reset rather than assuming the state. */
+    h->irq_dirty = true;
+#endif
+
 #if RV_ENABLE_STATS
     h->trap_count = 0u;
     h->insn_retired_lo = 0u;
@@ -150,6 +155,16 @@ void rv_hart_set_irq(rv_hart_t *h, unsigned cause, bool level)
     } else {
         h->mip &= ~bit;
     }
+
+#if RV_LAZY_IRQ_CHECK
+    /*
+     * Dirty unconditionally rather than only when mip changed: this is
+     * called from device code and, on some platforms, from an ARM
+     * interrupt handler, and an extra evaluation costs far less than
+     * reasoning about whether a redundant-looking write really was.
+     */
+    h->irq_dirty = true;
+#endif
 }
 
 /* ------------------------------------------------------------------ */

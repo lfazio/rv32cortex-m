@@ -79,6 +79,23 @@ typedef struct rv_hart {
     const rv_cache_ops_t *cache;
 #endif
 
+#if RV_LAZY_IRQ_CHECK
+    /*
+     * Set whenever something may have made an interrupt deliverable: a
+     * device raising a line, a write to mstatus or mie, or an MRET
+     * restoring MIE. The run loop calls rv_hart_pending_irq only when this
+     * is set, and clears it when the check comes back empty.
+     *
+     * volatile because a platform may raise a line from an ARM interrupt
+     * handler while the run loop is executing. The loop must clear this
+     * *before* evaluating, not after: clearing afterwards would overwrite
+     * a set that an interrupt handler performed during the evaluation, and
+     * that interrupt would then go unnoticed until something else happened
+     * to dirty the flag again.
+     */
+    volatile bool irq_dirty;
+#endif
+
     uint32_t hartid;
     uint8_t  priv;               /* always RV_PRIV_M on this implementation */
     uint8_t  state;              /* rv_state_t */

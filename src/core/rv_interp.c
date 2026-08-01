@@ -113,8 +113,20 @@ static RV_ALWAYS_INLINE uint32_t rem_u(uint32_t a, uint32_t b)
 /* The interpreter                                                     */
 /* ------------------------------------------------------------------ */
 
-static rv_run_reason_t interp_run(rv_hart_t *h, uint32_t budget,
-                                  uint32_t *retired)
+/*
+ * When RV_INTERP_RAMFUNC is set the run loop is placed in .ramfunc, which
+ * the link script maps into SRAM with a load address in flash. noinline
+ * keeps it from being folded back into a caller that lives in flash.
+ */
+#if RV_INTERP_RAMFUNC
+#  define RV_INTERP_SECTION __attribute__((section(".ramfunc"), noinline))
+#else
+#  define RV_INTERP_SECTION
+#endif
+
+static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
+                                                    uint32_t budget,
+                                                    uint32_t *retired)
 {
     uint32_t done = 0;
     rv_run_reason_t reason = RV_RUN_BUDGET;
@@ -126,6 +138,25 @@ static rv_run_reason_t interp_run(rv_hart_t *h, uint32_t budget,
      */
     uint32_t pc = h->pc;
     uint32_t next;
+
+    /*
+     * A parked hart is handled once here rather than tested inside the
+     * dispatch loop: it has nothing to execute, so carrying the test
+     * through the loop would cost a load per instruction to serve a case
+     * that cannot occur while the loop is running.
+     */
+    if (RV_UNLIKELY(h->state == RV_STATE_WFI)) {
+        if (rv_hart_pending_irq(h) == RV_EXC_NONE) {
+            if (retired != NULL) {
+                *retired = 0u;
+            }
+            return RV_RUN_WFI;
+        }
+        h->state = RV_STATE_RUNNING;
+#if RV_LAZY_IRQ_CHECK
+        h->irq_dirty = true;   /* let the loop below deliver it */
+#endif
+    }
 
 /* Enter a trap. mepc must be the faulting instruction, so restore pc. */
 #define TRAP(cause_, tval_)                     \
@@ -149,13 +180,30 @@ static rv_run_reason_t interp_run(rv_hart_t *h, uint32_t budget,
 #define CTR_CYCLE   1u
 #define CTR_INSTRET 2u
 
-        if (RV_UNLIKELY(h->state == RV_STATE_HALTED)) {
-            reason = RV_RUN_HALTED;
+        /* One test covers both halt and WFI; neither can continue here. */
+        if (RV_UNLIKELY(h->state != RV_STATE_RUNNING)) {
+            reason = (h->state == RV_STATE_HALTED) ? RV_RUN_HALTED : RV_RUN_WFI;
             break;
         }
 
         /* --- 1. interrupts ------------------------------------------- */
+        /*
+         * Evaluating delivery means reading mstatus, mip and mie and
+         * combining them; doing that per instruction was measurable. The
+         * dirty flag reduces it to one load and a predictable branch in
+         * the common case.
+         *
+         * The flag is cleared before evaluating, not after: a device or an
+         * ARM interrupt handler can set it while the evaluation runs, and
+         * clearing afterwards would discard that.
+         */
+#if RV_LAZY_IRQ_CHECK
+        if (RV_UNLIKELY(h->irq_dirty))
+#endif
         {
+#if RV_LAZY_IRQ_CHECK
+            h->irq_dirty = false;
+#endif
             const rv_exc_t irq = rv_hart_pending_irq(h);
             if (RV_UNLIKELY(irq != RV_EXC_NONE)) {
                 /*
@@ -168,14 +216,6 @@ static rv_run_reason_t interp_run(rv_hart_t *h, uint32_t budget,
                 rv_hart_trap(h, RV_CAUSE_INTERRUPT | irq, 0u);
                 pc = h->pc;
                 goto retired_insn;
-            }
-            if (RV_UNLIKELY(h->state == RV_STATE_WFI)) {
-                /*
-                 * Nothing pending. Hand control back so the host can run
-                 * its own timers and devices; re-entering will retry.
-                 */
-                reason = RV_RUN_WFI;
-                break;
             }
         }
 
@@ -625,6 +665,10 @@ static rv_run_reason_t interp_run(rv_hart_t *h, uint32_t budget,
                                | MSTATUS_MPIE
                                | ((uint32_t)RV_PRIV_M << MSTATUS_MPP_SHIFT);
                     h->priv = RV_PRIV_M;
+#if RV_LAZY_IRQ_CHECK
+                    /* MIE was just restored from MPIE. */
+                    h->irq_dirty = true;
+#endif
                     next = h->mepc;
                     break;
                 }
