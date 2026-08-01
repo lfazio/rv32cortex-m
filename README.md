@@ -47,7 +47,8 @@ silicon.
 | **F** (single precision) | implemented; **224 / 224** with SoftFloat — see below |
 | **D** (double precision) | not implemented, and not planned |
 | **Zcd** | not implementable without D — see below |
-| `riscv-tests` (Berkeley) | **75 / 77 pass** (2 need PMP / Sdtrig, not implemented) |
+| `riscv-tests` (Berkeley) | **75 / 77 pass** (`breakpoint` needs Sdtrig; `csr` is a known F gap, below) |
+| **PMP** | 16 entries, TOR/NA4/NAPOT; `rv32mi/pmpaddr` passes |
 | Guest ISA self-test (104 checks) | passes on host **and** on hardware |
 | Nucleo-F446RE firmware | runs; ~29 KB flash, guest gets 70–123 KiB of the 128 KiB SRAM |
 | Thumb-2 JIT backend | implemented; **20.2× slower than native ARM** on CoreMark |

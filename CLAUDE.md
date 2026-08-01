@@ -29,7 +29,14 @@ when changing it), `-DRV32_GUEST=isatest|hello|bench|stm32drv|coremark`.
 
 ```sh
 ./scripts/run-arch-test.sh      # official riscv-arch-test: 135/135 integer, 224/224 with -DRV32_FPU_SOFTFLOAT=ON, 172/224 without
-./scripts/run-riscv-tests.sh    # Berkeley suite, 75/77 (2 need PMP/Sdtrig)
+./scripts/run-riscv-tests.sh    # Berkeley suite, 75/77
+```
+
+**Run both.** They cover different things, and a regression that only the
+Berkeley suite catches will sit unnoticed if only arch-test is run -- which is
+exactly what happened to `rv32mi/csr` when F was added.
+
+```sh
 ```
 
 The JIT cannot be exercised by the x86 host suites. Validate it by flashing

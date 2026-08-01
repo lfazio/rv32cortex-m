@@ -288,7 +288,11 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
     const uint32_t funct7 = (insn >> 25) & 0x7Fu;
     uint32_t flags = 0u;
 
-    /* An FPU that is Off cannot execute anything. */
+    /*
+     * An FPU that is Off cannot execute anything -- including the loads and
+     * stores. mstatus.FS gates the whole extension, not just the arithmetic,
+     * so a guest that clears FS must see FSW leave memory untouched.
+     */
     if ((h->mstatus & MSTATUS_FS_MASK) == 0u) {
         *tval = insn;
         return RV_EXC_ILLEGAL_INSN;

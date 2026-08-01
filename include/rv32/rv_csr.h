@@ -68,6 +68,10 @@ struct rv_hart;
 #define CSR_MTVAL           0x343
 #define CSR_MIP             0x344
 
+/* Physical memory protection. */
+#define CSR_PMPCFG0         0x3A0
+#define CSR_PMPADDR0        0x3B0
+
 /* Machine counters. */
 #define CSR_MCYCLE          0xB00
 #define CSR_MINSTRET        0xB02

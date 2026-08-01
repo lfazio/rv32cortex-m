@@ -85,6 +85,20 @@ rv_exc_t rv_csr_read(rv_hart_t *h, uint32_t csr, uint32_t *out)
     case CSR_MTVAL:         *out = h->mtval;     break;
     case CSR_MIP:           *out = h->mip;       break;
 
+#if RV_EXT_PMP
+    /* --- physical memory protection --- */
+    case CSR_PMPCFG0: case CSR_PMPCFG0 + 1: case CSR_PMPCFG0 + 2:
+    case CSR_PMPCFG0 + 3:
+        *out = h->pmpcfg[csr - CSR_PMPCFG0];
+        break;
+    default:
+        if (csr >= CSR_PMPADDR0 && csr < CSR_PMPADDR0 + RV_PMP_ENTRIES) {
+            *out = h->pmpaddr[csr - CSR_PMPADDR0];
+            break;
+        }
+        return RV_EXC_ILLEGAL_INSN;
+#endif
+
     /* --- counters --- */
 #if RV_EXT_ZICNTR
     case CSR_MCYCLE:
@@ -100,8 +114,6 @@ rv_exc_t rv_csr_read(rv_hart_t *h, uint32_t csr, uint32_t *out)
     case CSR_MCOUNTINHIBIT: *out = h->mcountinhibit;              break;
 #endif
 
-    default:
-        return RV_EXC_ILLEGAL_INSN;
     }
 
     return RV_EXC_NONE;
@@ -199,6 +211,34 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
         h->mip = (h->mip & ~MIP_WMASK) | (val & MIP_WMASK);
         break;
 
+#if RV_EXT_PMP
+    case CSR_PMPCFG0: case CSR_PMPCFG0 + 1: case CSR_PMPCFG0 + 2:
+    case CSR_PMPCFG0 + 3: {
+        /*
+         * A locked entry is locked until reset: neither its cfg byte nor
+         * its address register may be changed, which is what makes PMP
+         * usable to constrain M-mode itself.
+         */
+        const uint32_t idx = csr - CSR_PMPCFG0;
+        uint32_t cur = h->pmpcfg[idx];
+        for (uint32_t b = 0; b < 4u; b++) {
+            const uint32_t sh = b * 8u;
+            if ((cur >> sh) & 0x80u) {
+                continue;                       /* locked byte */
+            }
+            /* A == 2 (NA4) is reserved when the grain exceeds 4 bytes;
+             * this implementation supports it, so nothing is masked out
+             * beyond the bits that have no meaning. */
+            const uint32_t nb = (val >> sh) & 0x9Fu;
+            cur = (cur & ~(0xFFu << sh)) | (nb << sh);
+        }
+        h->pmpcfg[idx] = cur;
+        rv_pmp_refresh(h);
+        break;
+    }
+#endif
+
+
 #if RV_EXT_ZICNTR
     case CSR_MCYCLE:
         h->mcycle = (h->mcycle & 0xFFFFFFFF00000000ull) | val;
@@ -219,6 +259,31 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
 #endif
 
     default:
+#if RV_EXT_PMP
+        if (csr >= CSR_PMPADDR0 && csr < CSR_PMPADDR0 + RV_PMP_ENTRIES) {
+            const uint32_t i = csr - CSR_PMPADDR0;
+            /*
+             * An address register is read-only while its own entry is
+             * locked, and also while the *next* entry is a locked TOR --
+             * that entry uses this register as its lower bound, so allowing
+             * a write here would let software move a locked range.
+             */
+            const uint32_t own = (h->pmpcfg[i / 4u] >> ((i % 4u) * 8u)) & 0xFFu;
+            if ((own & 0x80u) != 0u) {
+                break;
+            }
+            if (i + 1u < RV_PMP_ENTRIES) {
+                const uint32_t j = i + 1u;
+                const uint32_t nxt =
+                    (h->pmpcfg[j / 4u] >> ((j % 4u) * 8u)) & 0xFFu;
+                if ((nxt & 0x80u) != 0u && ((nxt & 0x18u) >> 3) == 1u) {
+                    break;
+                }
+            }
+            h->pmpaddr[i] = val;
+            break;
+        }
+#endif
         return RV_EXC_ILLEGAL_INSN;
     }
 
@@ -270,7 +335,17 @@ const char *rv_csr_name(uint32_t csr)
     case CSR_MCYCLEH:       return "mcycleh";
     case CSR_MINSTRETH:     return "minstreth";
     case CSR_MCOUNTINHIBIT: return "mcountinhibit";
-    default:                return NULL;
+#if RV_EXT_PMP
+    case CSR_PMPCFG0: case CSR_PMPCFG0 + 1: case CSR_PMPCFG0 + 2:
+    case CSR_PMPCFG0 + 3: return "pmpcfg";
+#endif
+    default:
+#if RV_EXT_PMP
+        if (csr >= CSR_PMPADDR0 && csr < CSR_PMPADDR0 + RV_PMP_ENTRIES) {
+            return "pmpaddr";
+        }
+#endif
+        return NULL;
     }
 }
 

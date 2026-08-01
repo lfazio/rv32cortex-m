@@ -68,6 +68,12 @@ void rv_hart_reset(rv_hart_t *h, uint32_t reset_pc)
     h->mstatus |= (1u << MSTATUS_FS_SHIFT);
 #endif
 
+#if RV_EXT_PMP
+    memset(h->pmpcfg, 0, sizeof(h->pmpcfg));
+    memset(h->pmpaddr, 0, sizeof(h->pmpaddr));
+    h->pmp_active = false;
+#endif
+
 #if RV_EXT_A
     h->resv_valid = false;
     h->resv_addr = 0u;
@@ -194,6 +200,13 @@ rv_exc_t rv_hart_load(rv_hart_t *h, uint32_t addr, uint32_t size,
 #if !RV_MISALIGNED_OK
     if (RV_UNLIKELY((addr & (size - 1u)) != 0u)) {
         return RV_EXC_LOAD_MISALIGNED;
+    }
+#endif
+
+#if RV_EXT_PMP
+    if (RV_UNLIKELY(h->pmp_active) &&
+        !rv_pmp_check(h, addr, size, RV_ACC_LOAD)) {
+        return RV_EXC_LOAD_ACCESS_FAULT;
     }
 #endif
 
@@ -441,6 +454,13 @@ rv_exc_t rv_hart_store(rv_hart_t *h, uint32_t addr, uint32_t size, uint32_t val)
 #if !RV_MISALIGNED_OK
     if (RV_UNLIKELY((addr & (size - 1u)) != 0u)) {
         return RV_EXC_STORE_MISALIGNED;
+    }
+#endif
+
+#if RV_EXT_PMP
+    if (RV_UNLIKELY(h->pmp_active) &&
+        !rv_pmp_check(h, addr, size, RV_ACC_STORE)) {
+        return RV_EXC_STORE_ACCESS_FAULT;
     }
 #endif
 

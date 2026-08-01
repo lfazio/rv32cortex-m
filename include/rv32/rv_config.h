@@ -75,6 +75,18 @@
 #ifndef RV_EXT_ZBS
 #  define RV_EXT_ZBS    1  /* single-bit: bset/bclr/binv/bext */
 #endif
+/*
+ * Physical memory protection. Costs nothing until a guest locks an entry:
+ * an unlocked entry does not restrict M-mode, so the access path skips the
+ * check entirely while none is locked. See src/core/rv_pmp.c.
+ */
+#ifndef RV_EXT_PMP
+#  define RV_EXT_PMP    1
+#endif
+#ifndef RV_PMP_ENTRIES
+#  define RV_PMP_ENTRIES 16u
+#endif
+
 #ifndef RV_EXT_ZICBOM
 #  define RV_EXT_ZICBOM 1   /* cbo.clean / cbo.inval / cbo.flush */
 #endif

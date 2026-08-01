@@ -132,6 +132,9 @@ static rv_jit_stats_t g_stats;
  * emitted before it. Earlier exits (a taken branch, a faulting helper) leave
  * before the emission point and never read the registers.
  */
+/* The hart being translated for, so translate_one can read mstatus. */
+static rv_hart_t *g_xlate_hart;
+
 static uint32_t g_ram_base;
 static uint32_t g_ram_size;
 static uint32_t g_ram_host;
@@ -1182,6 +1185,10 @@ static uint32_t jit_helper_fp_store(rv_hart_t *h, uint32_t addr, uint32_t insn,
 static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
                          uint32_t insns_after, uint32_t *redirect)
 {
+#if RV_EXT_F
+    /* FP state as it stands at translation time; see the FLW case below. */
+    const bool h_fs_off = (g_xlate_hart->mstatus & MSTATUS_FS_MASK) == 0u;
+#endif
     const uint32_t rd  = rv_rd(insn);
     const uint32_t rs1 = rv_rs1(insn);
     const uint32_t rs2 = rv_rs2(insn);
@@ -1634,6 +1641,16 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
         if (f3 != 2u) {
             return -1;
         }
+        /*
+         * mstatus.FS gates the whole extension, so an FPU that is Off must
+         * make even FLW and FSW trap. The inlined path cannot see FS, and a
+         * block is translated once and then reused across changes to it --
+         * so translation is refused unless FS is on at translate time, and
+         * the interpreter, which does check, handles the rest.
+         */
+        if ((h_fs_off)) {
+            return -1;
+        }
         emit_ld_greg(R1, rs1);
         emit_add_simm12(R1, R1, rv_imm_i(insn));
         emit_mem_access(false, 4u, 0u, rd, (const void *)jit_helper_fp_load,
@@ -1643,7 +1660,7 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
     }
 
     case OP_STORE_FP: {
-        if (f3 != 2u) {
+        if (f3 != 2u || (h_fs_off)) {
             return -1;
         }
         emit_ld_greg(R1, rs1);
@@ -1945,6 +1962,7 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
     g_ram_size = 0u;
     g_ram_host = 0u;
     g_ram_live = false;
+    g_xlate_hart = h;
     for (uint32_t i = 0; i < h->bus->count; i++) {
         const rv_region_t *r = &h->bus->regions[i];
         if (r->kind == RV_MEM_RAM && r->perm == RV_PERM_RWX) {

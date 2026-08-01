@@ -74,6 +74,17 @@ typedef struct rv_hart {
     uint32_t fcsr;               /* frm in [7:5], fflags in [4:0] */
 #endif
 
+#if RV_EXT_PMP
+    uint32_t pmpcfg[RV_PMP_ENTRIES / 4u];
+    uint32_t pmpaddr[RV_PMP_ENTRIES];
+    /*
+     * True when some entry is both locked and enabled. Only then can PMP
+     * deny an M-mode access, so this gates the check out of the hot path
+     * for every guest that does not use it.
+     */
+    bool     pmp_active;
+#endif
+
 #if RV_EXT_A
     /* LR/SC reservation set. One hart, so one reservation. */
     uint32_t resv_addr;
@@ -188,6 +199,18 @@ void rv_hart_set_irq(rv_hart_t *h, unsigned cause, bool level);
 rv_exc_t rv_hart_load(rv_hart_t *h, uint32_t addr, uint32_t size,
                       bool sign_extend, uint32_t *out);
 rv_exc_t rv_hart_store(rv_hart_t *h, uint32_t addr, uint32_t size, uint32_t val);
+
+#if RV_EXT_PMP
+/* Recompute pmp_active. Call after any write to a pmpcfg CSR. */
+void rv_pmp_refresh(rv_hart_t *h);
+
+/*
+ * True if the access is permitted. Only consulted when pmp_active, which
+ * is what keeps PMP off the hot path for guests that never lock an entry.
+ */
+bool rv_pmp_check(const rv_hart_t *h, uint32_t addr, uint32_t size,
+                  rv_access_t acc);
+#endif
 
 #if RV_EXT_F
 /*
