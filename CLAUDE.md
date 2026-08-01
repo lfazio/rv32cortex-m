@@ -68,6 +68,12 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
   `sail_riscv_sim --config <sail.json> --trace-instr` on the same ELF and diff
   against `rv32-host --trace-count N`; a jump to `Mtrampoline` in the reference
   is the tell.
+- **Compressed guest code is slower to interpret, not faster.** Enabling Zcb in
+  guest codegen cost ~9% on CoreMark at an identical instruction count: the
+  compiler swapped 32-bit encodings for Zcb ones, each of which now pays an RVC
+  expansion. Supporting Zcb in the *emulator* is a small win (38.0 vs 39.2
+  cyc/insn); it is the *guest* march that costs. Toggle `RV32_EXT_ZCB` against
+  a fixed guest binary to separate the two.
 - **Measure; do not reason about performance.** Interpreter-in-SRAM was
   *slower*, lazy-IRQ was neutral, and the `clmul` fix was 1.3% when the real
   cost was 4.12-instruction blocks. Layout noise is ±3%, so ignore differences

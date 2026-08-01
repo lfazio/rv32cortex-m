@@ -376,13 +376,28 @@ instruction executes. The JIT is unchanged within noise (32.9 against 32.5 host
 cycles per guest instruction). Showing the FP translation as a speedup needs an
 FP-bearing benchmark, which this is not.
 
-The interpreter, though, gave up about 9% on the same guest binary — 43.0
-against 39.2 cycles per instruction for an **identical 37,670,524 instructions
-retired**. Same code in, same work done, so the cost is decode-side, and Zcb is
-what changed: it adds cases to the RVC expander, which runs on every compressed
-instruction. That is above the ±3% layout noise and is worth chasing; the
-likely fix is the same one Zbb needed, which is to order the switch so the
-common encodings are tested first.
+The interpreter gave up about 9% between two runs, and chasing it produced a
+result worth keeping — because the obvious explanation was wrong.
+
+The suspicion was that Zcb's new cases had slowed the RVC expander, which runs
+on every compressed instruction. An A/B with the **same guest binary**, toggling
+only `RV32_EXT_ZCB` in the emulator, says otherwise:
+
+| Emulator | cycles/guest insn |
+|---|---|
+| Zcb decode **on** | **38.01** |
+| Zcb decode off | 39.20 |
+
+Supporting Zcb is 3% *faster*, not slower. The regression is on the other side:
+it appears only when the **guest** is compiled with `_zcb`, and it comes with an
+**identical 37,670,524 instructions retired**. Same count, different mix — the
+compiler replaced 32-bit encodings with Zcb compressed ones, and each of those
+costs an expansion through the RVC path that the 32-bit form does not.
+
+So on this emulator, building a guest with Zcb trades speed for code size. That
+is the opposite of the usual reason to enable it, and it is a property of
+expand-then-execute: a compressed instruction is never cheaper to *interpret*
+than the 32-bit instruction it stands in for, only cheaper to store.
 
 All three produce **`crcfinal 0xca90`** — native ARM and emulated RISC-V agree
 bit for bit, which is independent confirmation that the emulation is correct.
