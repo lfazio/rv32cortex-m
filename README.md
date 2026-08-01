@@ -474,17 +474,32 @@ for each backend.
 
 Both rows measured on the current tree, `crcfinal 0xca90` throughout.
 
-**The interpreter has regressed 35%** — 38.01 to 51.38 cycles per guest
-instruction — since PMP and Sdtrig were added. The cause is in the fetch path:
-Sdtrig's execute-trigger test sits inside the per-instruction loop, so every
-instruction pays a load of `trig_active` and a branch, for a feature almost no
-guest uses. PMP's load and store checks add to it.
+**The interpreter costs 46% for two features almost no guest uses.** Measured
+by compiling each out:
 
-The JIT does not have this problem because it tests `trig_active` once per
-block dispatch rather than per instruction. The same treatment would work
-here: hoist the check to the top of `interp_run` and take a slower path only
-while a trigger is armed, exactly as WFI is handled. `-DRV32_EXT_SDTRIG=OFF`
-removes it today for anyone who does not need debug triggers.
+| Configuration | cycles/guest insn |
+|---|---|
+| neither | **35.18** |
+| PMP only | 38.36 |
+| Sdtrig only | 49.96 |
+| both (default) | 51.38 |
+
+So Sdtrig is 14.8 cycles per instruction and PMP 3.2. The JIT pays far less
+because it tests `trig_active` once per block dispatch rather than per
+instruction.
+
+The obvious fix is not the fix. Hoisting `trig_active` into a local, so the
+fetch path tests a register instead of loading hart state, measured *slower*
+— 51.38 to 53.66 — because maintaining it across the loop costs more register
+pressure than the load did. The cost is not the load; the likely culprit is
+the `TRAP` call site the check introduces into the fetch sequence, which
+constrains register allocation for the whole dispatch loop. Confirming that
+means reading the generated code, not guessing again.
+
+`-DRV32_EXT_SDTRIG=OFF` recovers 29% today, at the price of `rv32mi/breakpoint`
+and a 76/77 on `riscv-tests`. Both remain on by default because conformance is
+the more defensible default for an emulator, but a deployment that will never
+attach a debugger should turn Sdtrig off.
 
 Full extension set — F, B, Zacas — compiled into the emulator. `Zcb` is
 supported but deliberately **not** used by the guest; see below.
