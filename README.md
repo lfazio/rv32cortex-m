@@ -50,7 +50,7 @@ silicon.
 | `riscv-tests` (Berkeley) | **77 / 77 pass** |
 | **PMP** | 16 entries, TOR/NA4/NAPOT; validated on hardware |
 | **Sdtrig** | mcontrol triggers on execute/load/store; `rv32mi/breakpoint` passes |
-| Guest ISA self-test (104 checks) | passes on host **and** on hardware |
+| Guest ISA self-test (148 checks) | passes on host **and** on hardware, both backends |
 | Nucleo-F446RE firmware | runs; ~29 KB flash, guest gets 70–123 KiB of the 128 KiB SRAM |
 | Thumb-2 JIT backend | implemented; **20.2× slower than native ARM** on CoreMark |
 | Zacas (`amocas.w` / `amocas.d`) | implemented; **135/135** |
@@ -169,15 +169,19 @@ Three design choices worth stating:
   matters is the *cost difference* between cached and uncached access, and with
   the register file already at a single load off `r4`, that difference was
   never a whole instruction to begin with.
-- **PMP forces memory through the helper, and flushes on activation.** The
-  inlined path writes guest RAM directly and so cannot consult PMP. That is
-  harmless while PMP cannot deny anything — the state until a guest locks an
-  entry — but blocks are translated once and reused, so a block emitted before
-  the lock would keep bypassing the check afterwards. The JIT compares
-  `pmp_active` on each block dispatch and flushes on a change, which costs one
-  load and one compare per block and nothing per instruction. Measured cost on
-  CoreMark, which never touches PMP: 31.5 → 32.6 cycles per guest instruction,
-  about 3.4%.
+- **PMP is inlined as a range test when it can be.** The inlined memory path
+  writes guest RAM directly and cannot consult PMP, so arming a PMP entry
+  originally forced every access through the helper. When exactly one entry is
+  enabled — a guest protecting one buffer, which is the common shape — the JIT
+  instead emits a subtract, a compare and a not-taken branch, sending only
+  addresses *inside* that entry to the helper. Everything outside matches no
+  entry, and the no-match rule for M-mode is allow, so the fast path stays
+  correct. Two or more entries fall back to the helper, because then the lowest
+  match wins and one compare cannot express which entry an address hits first.
+- **Sdtrig disables translation entirely while a trigger is armed.** An execute
+  trigger needs a check before every fetch, which a block cannot express. No
+  flush is needed in either direction: blocks are only translated while unarmed
+  and only executed while unarmed.
 - **The guest-RAM registers are materialised lazily.** `r5`/`r6`/`r7` cost six
   halfwords and a block with no memory access has no use for them, so they are
   emitted at the first access that needs them rather than on entry. No pre-pass
@@ -454,7 +458,7 @@ for each backend.
 | | Ticks (µs) | Iterations/s | CoreMark/MHz | vs native |
 |---|---|---|---|---|
 | **Native ARM** | 335,277 | 447.4 | 2.49 | 1× |
-| **JIT** | 6,513,827 | 23.0 | 0.128 | **19.4× slower** |
+| **JIT** | 7,090,000 | 21.2 | 0.118 | **21.1× slower** |
 | Interpreter | 7,894,505 | 19.0 | 0.106 | 23.5× slower |
 
 Full extension set — F, B, Zacas — compiled into the emulator. `Zcb` is
@@ -716,6 +720,12 @@ done, so these are unblocked:
 - **PMP** — the Berkeley suite's `rv32mi/pmpaddr` fails because the core does not
   implement PMP. The official suite has no tests for PMP, so it is not a
   regression to leave it unimplemented.
+- **U** — user mode, which is the only way to run a guest that is not trusted. The
+  emulator currently runs all guests in machine mode, which is fine for the
+  self-test and for the STM32 driver, but a real guest OS needs U.
+- **S** — supervisor mode, which is the only way to run a guest that is not trusted. The
+  emulator currently runs all guests in machine mode, which is fine for the
+  self-test and for the STM32 driver, but a real guest OS needs S.
 - **V** — largest by far and RAM-hungry (`VLEN=128` alone costs 512 B of
   register file on a part with 128 KiB); needs a `VLEN` budget decision.
 

@@ -226,6 +226,14 @@ void rv_pmp_refresh(rv_hart_t *h);
  */
 bool rv_pmp_check(const rv_hart_t *h, uint32_t addr, uint32_t size,
                   rv_access_t acc);
+
+/*
+ * When exactly one PMP entry is enabled, report its bounds and return true.
+ * The range is where the full check is *required*, not what is permitted:
+ * anything outside matches no entry and is allowed in M-mode. The JIT uses
+ * it to keep its inlined memory path when a guest arms PMP.
+ */
+bool rv_pmp_simple(const rv_hart_t *h, uint32_t *lo, uint32_t *hi);
 #endif
 
 #if RV_EXT_F

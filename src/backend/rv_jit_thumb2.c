@@ -135,11 +135,6 @@ static rv_jit_stats_t g_stats;
 /* The hart being translated for, so translate_one can read mstatus. */
 static rv_hart_t *g_xlate_hart;
 
-#if RV_EXT_SDTRIG
-/* Whether the cached blocks were translated with triggers armed. */
-static bool g_trig_seen;
-#endif
-
 #if RV_EXT_PMP
 /*
  * The value of hart->pmp_active the cached blocks were translated against.
@@ -941,9 +936,26 @@ static void emit_mem_access(bool is_store, uint32_t size, uint32_t sign,
      * which calls rv_hart_load/store and therefore checks it. The inlined
      * path writes memory directly and would silently ignore a locked entry.
      */
+    uint16_t *pmp_slow = NULL;
     if (g_xlate_hart->pmp_active) {
-        emit_helper_call(helper, spec, pc, insns);
-        return;
+        uint32_t plo, phi;
+        if (!rv_pmp_simple(g_xlate_hart, &plo, &phi)) {
+            /* More than one entry: the walk cannot be inlined. */
+            emit_helper_call(helper, spec, pc, insns);
+            return;
+        }
+        /*
+         * One entry, so one range test: addresses inside it go to the
+         * helper for the real check, everything else keeps the fast path.
+         * That is the common shape -- a guest protecting one buffer -- and
+         * it costs a subtract, a compare and a not-taken branch rather than
+         * a call.
+         */
+        emit_imm32(R2, plo);
+        emit_sub_reg(R2, R1, R2);
+        emit_imm32(R3, phi - plo);
+        emit_dp_reg(DP_CMP, R2, R3);
+        pmp_slow = emit_bcond_fwd(C_CC);   /* unsigned below: inside */
     }
 #endif
 
@@ -1011,6 +1023,9 @@ static void emit_mem_access(bool is_store, uint32_t size, uint32_t sign,
     /* slow: */
     patch_fwd(fail_align, true);
     patch_fwd(fail_range, true);
+#if RV_EXT_PMP
+    patch_fwd(pmp_slow, true);
+#endif
     emit_helper_call(helper, spec, pc, insns);
 
     /* done: */
@@ -2227,14 +2242,18 @@ static rv_run_reason_t jit_run(rv_hart_t *h, uint32_t budget, uint32_t *retired)
         /*
          * An armed trigger needs a check before every fetch, which a
          * translated block cannot express, and its load and store checks
-         * live in rv_hart_load/store which the inlined path bypasses. While
-         * any trigger is armed the interpreter runs everything.
+         * live in rv_hart_load/store which the inlined path bypasses. So
+         * while any trigger is armed the interpreter runs everything.
+         *
+         * No flush is needed either way, which is worth stating because the
+         * first version did one and paid for it. Blocks are only ever
+         * translated while unarmed and only ever executed while unarmed, so
+         * a cached block cannot have been built under the wrong assumption.
+         * That first version also stored a "seen" flag unconditionally on
+         * every dispatch, which cost 16% on CoreMark for a guest that never
+         * arms a trigger at all.
          */
         if (RV_UNLIKELY(h->trig_active)) {
-            if (g_trig_seen != h->trig_active) {
-                g_trig_seen = true;
-                rv_jit_flush();
-            }
             uint32_t n = 0;
             const rv_run_reason_t r = rv_backend_interp.run(h, 1u, &n);
             done += n;
@@ -2245,7 +2264,6 @@ static rv_run_reason_t jit_run(rv_hart_t *h, uint32_t budget, uint32_t *retired)
             }
             continue;
         }
-        g_trig_seen = false;
 #endif
 
 #if RV_EXT_PMP

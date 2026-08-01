@@ -106,6 +106,49 @@ void rv_pmp_refresh(rv_hart_t *h)
     }
 }
 
+bool rv_pmp_simple(const rv_hart_t *h, uint32_t *lo, uint32_t *hi)
+{
+    bool found = false;
+
+    /*
+     * Report the bounds of the single enabled entry, if there is exactly
+     * one, so a caller can inline a range test instead of calling the full
+     * check.
+     *
+     * The contract is deliberately weak, and that is what makes it safe:
+     * the range says where the *slow path is required*, not what is
+     * permitted. An address outside every entry matches nothing, and the
+     * no-match rule for M-mode is allow -- so the inlined path is correct
+     * for anything outside. An address inside goes to the helper, which
+     * applies permissions, the straddle rule and privilege exactly as
+     * before.
+     *
+     * Reasoning about which side is permitted would be a mistake here: a
+     * single entry that grants R denies W at the same addresses, so
+     * "permitted window" is not even well defined without fixing the access
+     * kind, and getting it backwards would silently allow a denied store.
+     * Bounds alone need no such reasoning.
+     *
+     * Two or more enabled entries return false, because then the lowest
+     * match wins and one compare cannot express which entry an address
+     * hits first.
+     */
+    for (uint32_t i = 0; i < RV_PMP_ENTRIES; i++) {
+        uint32_t elo, ehi;
+
+        if (!pmp_range(h, i, pmp_cfg(h, i), &elo, &ehi)) {
+            continue;
+        }
+        if (found) {
+            return false;
+        }
+        *lo = elo;
+        *hi = ehi;
+        found = true;
+    }
+    return found;
+}
+
 bool rv_pmp_check(const rv_hart_t *h, uint32_t addr, uint32_t size,
                   rv_access_t acc)
 {
