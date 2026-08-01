@@ -351,7 +351,7 @@
     "Zcf": { "supported": true },
     "Zcd": { "supported": false },
     // Zcb is not implemented: those encodings raise illegal instruction.
-    "Zcb": { "supported": false },
+    "Zcb": { "supported": true },
     "Zcmop": { "supported": false },
     "Zba": { "supported": true },
     "Zbb": { "supported": true },

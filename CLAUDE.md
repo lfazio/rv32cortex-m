@@ -28,7 +28,7 @@ when changing it), `-DRV32_GUEST=isatest|hello|bench|stm32drv|coremark`.
 ## Validation — run before claiming anything works
 
 ```sh
-./scripts/run-arch-test.sh      # official riscv-arch-test: 135/135 integer, 165/217 F
+./scripts/run-arch-test.sh      # official riscv-arch-test: 135/135 integer, 172/224 incl. F
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 75/77 (2 need PMP/Sdtrig)
 ```
 

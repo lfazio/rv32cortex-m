@@ -63,6 +63,9 @@
 #ifndef RV_EXT_ZBB
 #  define RV_EXT_ZBB    1  /* basic bit manipulation */
 #endif
+#ifndef RV_EXT_ZCB
+#  define RV_EXT_ZCB    1  /* extra compressed loads/stores and ALU ops */
+#endif
 #ifndef RV_EXT_ZBA
 #  define RV_EXT_ZBA    1  /* address generation: sh1add/sh2add/sh3add */
 #endif

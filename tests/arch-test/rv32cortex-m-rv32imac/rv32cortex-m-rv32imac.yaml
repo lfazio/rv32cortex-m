@@ -40,6 +40,7 @@ implemented_extensions:
   - { name: Zca, version: "= 1.0.0" }
   # C on RV32F is defined to include the compressed FP load/stores.
   - { name: Zcf, version: "= 1.0.0" }
+  - { name: Zcb, version: "= 1.0.0" }
   - { name: Zicsr, version: "= 2.0" }
   - { name: Zicntr, version: "= 2.0" }
   - { name: Zifencei, version: "= 2.0" }

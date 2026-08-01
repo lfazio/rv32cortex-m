@@ -41,11 +41,12 @@ silicon.
 
 | Area | State |
 |---|---|
-| RV32IMAC + Zicsr, Zicntr, Zifencei, Zicbom, Zicboz, **B**, **Zacas**, **Zcf** | implemented |
+| RV32IMAC + Zicsr, Zicntr, Zifencei, Zicbom, Zicboz, **B**, **Zacas**, **Zcf**, **Zcb** | implemented |
 | Machine-mode traps, interrupts, CLINT timer | implemented |
 | Official `riscv-arch-test` (RVCP), integer | **135 / 135 pass** |
-| **F** (single precision) | implemented; **165 / 217** — see below |
+| **F** (single precision) | implemented; **172 / 224** overall — see below |
 | **D** (double precision) | not implemented, and not planned |
+| **Zcd** | not implementable without D — see below |
 | `riscv-tests` (Berkeley) | **75 / 77 pass** (2 need PMP / Sdtrig, not implemented) |
 | Guest ISA self-test (104 checks) | passes on host **and** on hardware |
 | Nucleo-F446RE firmware | runs; ~29 KB flash, guest gets 70–123 KiB of the 128 KiB SRAM |
@@ -231,7 +232,7 @@ F is implemented — the register file, `fcsr`/`frm`/`fflags`, `mstatus.FS`,
 all of OP-FP, the four fused multiply-adds, `FLW`/`FSW`, and `Zcf`'s
 compressed FP load/stores (which `C` on RV32F is defined to include).
 
-**It passes 165 of the 217 official F tests.** The arithmetic, comparisons,
+**It passes 165 of the 217 official F tests** (`Zcb` adds 7 more, all passing). The arithmetic, comparisons,
 conversions, sign injection, `fclass` and NaN handling are right; what remains
 failing is concentrated in exception-flag edge cases — chiefly `NX` on the
 fused multiply-adds and some subnormal results. It is enabled by default
@@ -259,6 +260,16 @@ before the single final rounding.
 
 **D is not implemented and is not planned**: the Cortex-M4F and M7 FPUs are
 single-precision, so D would be entirely soft-float on the intended targets.
+**Zcd follows from that** — it is the compressed *double* load/stores
+(`c.fld`/`c.fldsp`/`c.fsd`/`c.fsdsp`), which target 64-bit FP registers that do
+not exist without D. It is ruled out by the D decision, not separately skipped.
+
+**Zcb is implemented and passes 7/7.** It reuses the `funct6=100111` slot that
+RV64 spends on `c.subw`/`c.addw`: bits [6:5] select `c.mul` or a group of unary
+operations, and the byte/halfword accesses sit in quadrant 0 under `funct3=100`.
+Three of the unary ops (`c.sext.b`, `c.zext.h`, `c.sext.h`) expand to Zbb
+instructions, which is why the spec makes Zcb depend on Zbb — without it there
+would be nothing to expand them into.
 
 ### Official RISC-V Architecture Test Suite — 135/135 integer, 165/217 F
 

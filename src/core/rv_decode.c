@@ -123,6 +123,39 @@ static uint32_t expand_q0(uint16_t c)
     }
 #endif
 
+#if RV_EXT_ZCB
+    case 4: {
+        /*
+         * Zcb byte and halfword accesses. rs1' is the [9:7] field and the
+         * data register the [4:2] field, as in C.LW/C.SW.
+         *
+         * The immediates are tiny and laid out differently per instruction:
+         * C.LBU and C.SB take two bits with uimm[1] at bit 5 and uimm[0] at
+         * bit 6, while the halfword forms take a single bit at 5 that is
+         * already the halfword index, so it shifts left by one. Bit 6 on
+         * the halfword loads selects sign extension instead.
+         */
+        const uint32_t b5 = ((uint32_t)c >> 5) & 1u;
+        const uint32_t b6 = ((uint32_t)c >> 6) & 1u;
+
+        switch (((uint32_t)c >> 10) & 0x7u) {
+        case 0:  /* C.LBU -> lbu rd', uimm(rs1') */
+            return enc_i((b5 << 1) | b6, c_rdp(c), 4u, c_rs2p(c), OP_LOAD);
+        case 1:  /* C.LHU / C.LH -> lhu / lh rd', uimm(rs1') */
+            return enc_i(b5 << 1, c_rdp(c), b6 ? 1u : 5u, c_rs2p(c), OP_LOAD);
+        case 2:  /* C.SB -> sb rs2', uimm(rs1') */
+            return enc_s((b5 << 1) | b6, c_rs2p(c), c_rdp(c), 0u, OP_STORE);
+        case 3:  /* C.SH -> sh rs2', uimm(rs1') */
+            if (b6 != 0u) {
+                return ILLEGAL;      /* bit 6 is reserved for stores */
+            }
+            return enc_s(b5 << 1, c_rs2p(c), c_rdp(c), 1u, OP_STORE);
+        default:
+            return ILLEGAL;
+        }
+    }
+#endif
+
     /* 1 and 5 are C.FLD/C.FSD, which need D. */
     default:
         return ILLEGAL;
@@ -201,7 +234,46 @@ static uint32_t expand_q1(uint16_t c)
 
         /* sel == 3: register-register ops */
         if (c & 0x1000u) {
+            /*
+             * funct6 100111. On RV64 this is C.SUBW/C.ADDW; on RV32 Zcb
+             * reuses the two encodings above them for C.MUL and a group of
+             * unary operations. Bits [6:5] select between them.
+             */
+#if RV_EXT_ZCB
+            switch (((uint32_t)c >> 5) & 0x3u) {
+            case 2:   /* C.MUL -> mul rd', rd', rs2' */
+                return enc_r(0x01u, c_rs2p(c), c_rdp(c), 0u, c_rdp(c), OP_OP);
+            case 3:
+                /*
+                 * Unary. Three of these are Zbb instructions, so Zcb on a
+                 * core without Zbb would have nothing to expand them to --
+                 * which is why the spec makes Zcb depend on it.
+                 */
+                switch (((uint32_t)c >> 2) & 0x7u) {
+                case 0:  /* C.ZEXT.B -> andi rd', rd', 255 */
+                    return enc_i(255u, c_rdp(c), 7u, c_rdp(c), OP_IMM);
+#if RV_EXT_ZBB
+                case 1:  /* C.SEXT.B -> sext.b rd', rd' */
+                    return enc_i((0x30u << 5) | 4u, c_rdp(c), 1u,
+                                 c_rdp(c), OP_IMM);
+                case 2:  /* C.ZEXT.H -> zext.h rd', rd' */
+                    return enc_r(0x04u, 0u, c_rdp(c), 4u, c_rdp(c), OP_OP);
+                case 3:  /* C.SEXT.H -> sext.h rd', rd' */
+                    return enc_i((0x30u << 5) | 5u, c_rdp(c), 1u,
+                                 c_rdp(c), OP_IMM);
+#endif
+                case 5:  /* C.NOT -> xori rd', rd', -1 */
+                    return enc_i(0xFFFu, c_rdp(c), 4u, c_rdp(c), OP_IMM);
+                /* 4 is C.ZEXT.W (RV64); 6 and 7 are reserved. */
+                default:
+                    return ILLEGAL;
+                }
+            default:
+                return ILLEGAL;                 /* C.SUBW/C.ADDW: RV64 only */
+            }
+#else
             return ILLEGAL;                     /* C.SUBW/C.ADDW: RV64 only */
+#endif
         }
         switch ((c >> 5) & 0x3u) {
         case 0: return enc_r(0x20u, c_rs2p(c), c_rdp(c), 0u, c_rdp(c), OP_OP); /* SUB */
