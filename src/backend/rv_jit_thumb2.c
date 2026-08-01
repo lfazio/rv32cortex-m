@@ -37,6 +37,9 @@ _Static_assert(sizeof(((rv_hart_t *)0)->x) == 32u * 4u,
                "translated code assumes 32 32-bit guest registers");
 
 #define HART_PC_OFF   ((uint32_t)offsetof(rv_hart_t, pc))
+#if RV_EXT_A
+#define HART_RESV_OFF ((uint32_t)offsetof(rv_hart_t, resv_valid))
+#endif
 
 /* ARM registers used by translated code. */
 #define R0  0u
@@ -44,7 +47,20 @@ _Static_assert(sizeof(((rv_hart_t *)0)->x) == 32u * 4u,
 #define R2  2u
 #define R3  3u
 #define R4  4u   /* hart pointer, callee-saved so it survives helper calls */
+/*
+ * Guest RAM described in callee-saved registers for the whole block, so an
+ * inlined memory access is a subtract, a compare and a register-offset
+ * load rather than a helper call. Materialising these three constants
+ * costs ~6 halfwords once per block entry and saves ~30 cycles on every
+ * load and store that hits RAM.
+ */
+#define R5  5u   /* guest RAM base   */
+#define R6  6u   /* guest RAM size   */
+#define R7  7u   /* host pointer to guest RAM base */
 #define R12 12u  /* helper address before BLX */
+
+#define PUSH_REGS 0xB5F0u   /* PUSH {r4-r7, lr} */
+#define POP_REGS  0xBDF0u   /* POP  {r4-r7, pc} */
 
 /* Condition codes. */
 #define C_EQ 0u
@@ -408,17 +424,53 @@ static void emit_cbz_skip4(uint32_t rn)
     emit16((uint16_t)(0xB100u | (1u << 3) | rn));
 }
 
-static void emit_prologue(void)
+/* B<cond> with the displacement filled in later; returns where to patch. */
+static uint16_t *emit_bcond_fwd(uint32_t cond)
 {
-    emit16(0xB510u);      /* PUSH {r4, lr} */
+    uint16_t *at = g_emit;
+    emit16((uint16_t)(0xD000u | (cond << 8)));
+    return at;
+}
+
+/* Unconditional B, likewise. */
+static uint16_t *emit_b_fwd(void)
+{
+    uint16_t *at = g_emit;
+    emit16(0xE000u);
+    return at;
+}
+
+static void patch_fwd(uint16_t *at, bool conditional)
+{
+    if (at == NULL || at >= g_emit_end) {
+        return;                     /* the block overflowed and is discarded */
+    }
+    /* Thumb branch displacements are relative to PC, which reads as the
+     * instruction address plus 4. */
+    const int32_t off =
+        (int32_t)((uint8_t *)g_emit - (uint8_t *)at) - 4;
+    if (conditional) {
+        *at = (uint16_t)((*at & 0xFF00u) | (((uint32_t)(off >> 1)) & 0xFFu));
+    } else {
+        *at = (uint16_t)(0xE000u | (((uint32_t)(off >> 1)) & 0x7FFu));
+    }
+}
+
+static void emit_prologue(uint32_t ram_base, uint32_t ram_size,
+                          uint32_t ram_host)
+{
+    emit16(PUSH_REGS);
     emit_mov(R4, R0);     /* hart pointer into a callee-saved register */
+    emit_imm32(R5, ram_base);
+    emit_imm32(R6, ram_size);
+    emit_imm32(R7, ram_host);
 }
 
 /* Return `insns` as the retired count. */
 static void emit_epilogue(uint32_t insns)
 {
     emit_mov_imm8(R0, insns);
-    emit16(0xBD10u);      /* POP {r4, pc} */
+    emit16(POP_REGS);
 }
 
 /* Write a constant guest pc into hart->pc using r`scratch`. */
@@ -521,7 +573,109 @@ static void emit_helper_call(const void *fn, uint32_t spec, uint32_t pc,
 
     emit_cbz_skip4(R0);
     emit_mov_imm8(R0, insns);
-    emit16(0xBD10u);                                  /* POP {r4, pc} */
+    emit16(POP_REGS);
+}
+
+/* Register-offset load/store, T1: LDR/STR Rt,[Rn,Rm]. */
+#define LS_STR   0x5000u
+#define LS_STRH  0x5200u
+#define LS_STRB  0x5400u
+#define LS_LDRSB 0x5600u
+#define LS_LDR   0x5800u
+#define LS_LDRH  0x5A00u
+#define LS_LDRSH 0x5E00u
+#define LS_LDRB  0x5C00u
+
+static void emit_ls_reg(uint16_t op, uint32_t rt, uint32_t rn, uint32_t rm)
+{
+    emit16((uint16_t)(op | (rm << 6) | (rn << 3) | rt));
+}
+
+/*
+ * Inline the guest-RAM case of a load or store, falling back to the helper
+ * for everything else (MMIO, the passthrough window, ROM, faults).
+ *
+ * With r1 holding the address:
+ *
+ *     LSLS r3, r1, #30      alignment: Z set iff the low bits are clear
+ *     BNE  slow
+ *     SUB  r2, r1, r5       offset into guest RAM
+ *     CMP  r2, r6
+ *     BHS  slow             unsigned, so below-base wraps and fails too
+ *     LDR  r2, [r7, r2]
+ *     STR  r2, [r4, rd]
+ *     B    done
+ *   slow:
+ *     <helper call>
+ *   done:
+ *
+ * One compare suffices for the upper bound because the alignment check has
+ * already run and guest RAM is a whole number of words: an aligned offset
+ * strictly below the size cannot have its last byte past the end.
+ */
+static void emit_mem_access(bool is_store, uint32_t size, uint32_t sign,
+                            uint32_t reg, const void *helper, uint32_t spec,
+                            uint32_t pc, uint32_t insns)
+{
+    uint16_t *fail_align = NULL;
+
+    /* Alignment. A byte access is always aligned. */
+    if (size == 4u) {
+        emit_shift_imm(SH_LSL, R3, R1, 30u);
+        fail_align = emit_bcond_fwd(C_NE);
+    } else if (size == 2u) {
+        emit_shift_imm(SH_LSL, R3, R1, 31u);
+        fail_align = emit_bcond_fwd(C_NE);
+    }
+
+    emit_sub_reg(R2, R1, R5);
+    emit_dp_reg(DP_CMP, R2, R6);
+    uint16_t *fail_range = emit_bcond_fwd(C_CS);
+
+    if (is_store) {
+        emit_ld_greg(R3, reg);
+        emit_ls_reg((size == 4u) ? LS_STR : (size == 2u) ? LS_STRH : LS_STRB,
+                    R3, R7, R2);
+#if RV_EXT_A
+        /*
+         * rv_hart_store() breaks an outstanding LR/SC reservation when the
+         * store touches the reserved word; the inlined path bypasses it, so
+         * the reservation has to be dropped here or a later SC would
+         * wrongly succeed after an intervening store.
+         *
+         * Dropping it unconditionally rather than comparing against
+         * resv_addr costs one store instead of a compare and a branch, and
+         * is architecturally sound: the spec allows SC to fail spuriously,
+         * and the constrained LR/SC sequence it must succeed for contains
+         * no memory instructions between the pair, so nothing can reach
+         * this code inside one.
+         */
+        emit_mov_imm8(R2, 0u);
+        emit32((uint16_t)(0xF880u | R4), (uint16_t)((R2 << 12) | HART_RESV_OFF));
+#endif
+    } else {
+        uint16_t op;
+        if (size == 4u) {
+            op = LS_LDR;
+        } else if (size == 2u) {
+            op = sign ? LS_LDRSH : LS_LDRH;
+        } else {
+            op = sign ? LS_LDRSB : LS_LDRB;
+        }
+        emit_ls_reg(op, R2, R7, R2);
+        if (reg != 0u) {
+            emit_st_greg(reg, R2);
+        }
+    }
+    uint16_t *skip_slow = emit_b_fwd();
+
+    /* slow: */
+    patch_fwd(fail_align, true);
+    patch_fwd(fail_range, true);
+    emit_helper_call(helper, spec, pc, insns);
+
+    /* done: */
+    patch_fwd(skip_slow, false);
 }
 
 #if RV_EXT_ZICBOM || RV_EXT_ZICBOZ
@@ -702,8 +856,8 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
         }
         emit_ld_greg(R1, rs1);
         emit_add_simm12(R1, R1, rv_imm_i(insn));
-        emit_helper_call((const void *)jit_helper_load,
-                         rd | (size << 8) | (sign << 12), pc, insns_after);
+        emit_mem_access(false, size, sign, rd, (const void *)jit_helper_load,
+                        rd | (size << 8) | (sign << 12), pc, insns_after);
         return 0;
     }
 
@@ -717,8 +871,8 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
         }
         emit_ld_greg(R1, rs1);
         emit_add_simm12(R1, R1, rv_imm_s(insn));
-        emit_helper_call((const void *)jit_helper_store,
-                         rs2 | (size << 8), pc, insns_after);
+        emit_mem_access(true, size, 0u, rs2, (const void *)jit_helper_store,
+                        rs2 | (size << 8), pc, insns_after);
         return 0;
     }
 
@@ -851,7 +1005,23 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
     g_emit_overflow = false;
 
     uint16_t *const start = g_emit;
-    emit_prologue();
+
+    /*
+     * Describe guest RAM to the block so memory accesses can be inlined.
+     * The region table is fixed before execution begins; anything that
+     * changes it flushes the JIT, so baking these in is safe.
+     */
+    uint32_t ram_base = 0u, ram_size = 0u, ram_host = 0u;
+    for (uint32_t i = 0; i < h->bus->count; i++) {
+        const rv_region_t *r = &h->bus->regions[i];
+        if (r->kind == RV_MEM_RAM && r->perm == RV_PERM_RWX) {
+            ram_base = r->base;
+            ram_size = r->size;
+            ram_host = (uint32_t)(uintptr_t)r->host;
+            break;
+        }
+    }
+    emit_prologue(ram_base, ram_size, ram_host);
 
     uint32_t cur = pc;
     uint32_t count = 0;
