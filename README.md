@@ -364,15 +364,25 @@ for each backend.
 | | Ticks (µs) | Iterations/s | CoreMark/MHz | vs native |
 |---|---|---|---|---|
 | **Native ARM** | 335,277 | 447.4 | 2.49 | 1× |
-| **JIT** | 6,752,837 | 22.2 | 0.124 | **20.1× slower** |
-| Interpreter | 8,144,963 | 18.4 | 0.103 | 24.3× slower |
+| **JIT** | 6,831,409 | 22.0 | 0.122 | **20.4× slower** |
+| Interpreter | 8,928,313 | 16.8 | 0.094 | 26.6× slower |
 
-Measured with the full extension set including F compiled into the emulator and
-available to the guest. CoreMark itself is integer-only — our port sets
-`HAS_FLOAT 0` to avoid soft-float in the guest — so this shows what carrying F
-*costs*, not what it accelerates: the JIT is unchanged within noise (32.5 vs
-32.6 cycles per instruction) and the interpreter gives up about 5% (39.2 vs
-37.1) to the wider dispatch.
+Measured with the full extension set — F, B, Zacas, Zcb — compiled into the
+emulator and available to the guest.
+
+**CoreMark cannot measure the VFP work.** It is integer-only: our port sets
+`HAS_FLOAT 0` to keep soft-float out of the guest, so not one translated FP
+instruction executes. The JIT is unchanged within noise (32.9 against 32.5 host
+cycles per guest instruction). Showing the FP translation as a speedup needs an
+FP-bearing benchmark, which this is not.
+
+The interpreter, though, gave up about 9% on the same guest binary — 43.0
+against 39.2 cycles per instruction for an **identical 37,670,524 instructions
+retired**. Same code in, same work done, so the cost is decode-side, and Zcb is
+what changed: it adds cases to the RVC expander, which runs on every compressed
+instruction. That is above the ±3% layout noise and is worth chasing; the
+likely fix is the same one Zbb needed, which is to order the switch so the
+common encodings are tested first.
 
 All three produce **`crcfinal 0xca90`** — native ARM and emulated RISC-V agree
 bit for bit, which is independent confirmation that the emulation is correct.
