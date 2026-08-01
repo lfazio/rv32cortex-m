@@ -764,6 +764,18 @@ rather than a missing optimisation:
       check being the hard part, since the current design relies on block
       boundaries to bound latency.
 
+      **Implemented behind `RV32_JIT_LOOP_CHAIN`, and off**, because as
+      written it matches too little to pay: it fires only for loops whose
+      body is exactly one block starting at the loop head, which removed 1%
+      of block entries on `bench` (158,025 → 156,489) and measured 3.6%
+      slower, 28.66 → 29.69. The running instruction count it needs costs
+      every block a pushed register and two instructions per exit, so the
+      cost is spread over all blocks and the benefit reaches almost none.
+      Widening the match — recording the code offset of every guest pc in
+      the block, not only its first, so a backward jump into the middle of a
+      block chains too — is the remaining work; the accumulator and the
+      interrupt cap are in place and validated.
+
       The two *cheap* parts of this were tried and are not there to be had:
       the prologue is already minimal at `PUSH {r4-r7,lr}` plus one `MOV`, and
       a last-block dispatch cache in front of the hash walk measured **1.2%

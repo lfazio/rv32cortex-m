@@ -185,6 +185,25 @@
 #  define RV_JIT_HOT_REG_STATS 0
 #endif
 
+/*
+ * Chain a backward jump that re-enters the block, so a loop branches within
+ * translated code instead of returning to the dispatcher.
+ *
+ * Off, because as written it is a net loss: it fires only for loops whose
+ * body is exactly one block starting at the loop head, which on bench
+ * removed 1% of block entries, while the running instruction count it needs
+ * costs every block an extra pushed register and two instructions per exit.
+ * Measured 28.66 -> 29.69 host cycles per guest instruction.
+ *
+ * What would make it pay is matching more loops: recording the code offset
+ * of every guest pc in the block, not just its first, so a backward jump
+ * into the middle of a block chains too. The accumulator machinery is
+ * already in place and correct, so that is the remaining work.
+ */
+#ifndef RV_JIT_LOOP_CHAIN
+#  define RV_JIT_LOOP_CHAIN 0
+#endif
+
 #ifndef RV_ENABLE_JIT
 #  if defined(__ARM_ARCH) && (__ARM_ARCH >= 7) && defined(__thumb2__)
 #    define RV_ENABLE_JIT 1

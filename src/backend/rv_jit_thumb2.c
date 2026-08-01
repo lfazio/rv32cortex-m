@@ -66,8 +66,28 @@ _Static_assert(offsetof(rv_hart_t, f) + 31u * 4u < 4096u,
 #define R7  7u   /* host pointer to guest RAM base */
 #define R12 12u  /* helper address before BLX */
 
-#define PUSH_REGS 0xB5F0u   /* PUSH {r4-r7, lr} */
-#define POP_REGS  0xBDF0u   /* POP  {r4-r7, pc} */
+/*
+ * PUSH {r4-r8, lr} / POP {r4-r8, pc}, the 32-bit T2 forms.
+ *
+ * r8 holds the running count of instructions retired by this block. It has
+ * to be callee-saved: a chained loop passes its exits more than once, so
+ * the count must accumulate, and the helper calls clobber r0-r3. One extra
+ * word of stack traffic per block buys the loop chaining below.
+ */
+#if RV_JIT_LOOP_CHAIN
+#define PUSH_HW1 0xE92Du
+#define PUSH_HW2 0x41F0u   /* {r4-r8, lr} */
+#define POP_HW1  0xE8BDu
+#define POP_HW2  0x81F0u   /* {r4-r8, pc} */
+#else
+/* Without chaining the count is a per-path constant, so r8 is not needed
+ * and the 16-bit forms suffice. */
+#define PUSH_HW1 0xB5F0u   /* PUSH {r4-r7, lr}, 16-bit  */
+#define PUSH_HW2 0u
+#define POP_HW1  0xBDF0u   /* POP  {r4-r7, pc}, 16-bit  */
+#define POP_HW2  0u
+#endif
+#define R8 8u
 
 /* Condition codes. */
 #define C_EQ 0u
@@ -149,6 +169,17 @@ static rv_hart_t *g_xlate_hart;
  */
 static bool g_pmp_seen;
 #endif
+
+/*
+ * Loop chaining state for the block being translated.
+ *
+ * g_loop_start is the first instruction after the prologue, and g_block_pc
+ * the guest pc it corresponds to. A backward jump landing exactly there is
+ * a loop whose body is this block, and can branch within the translated
+ * code instead of returning to the dispatcher.
+ */
+static uint16_t *g_loop_start;
+static uint32_t  g_block_pc;
 
 static uint32_t g_ram_base;
 static uint32_t g_ram_size;
@@ -539,10 +570,32 @@ static void patch_fwd(uint16_t *at, bool conditional)
     }
 }
 
+static void emit_push(void)
+{
+#if RV_JIT_LOOP_CHAIN
+    emit32(PUSH_HW1, PUSH_HW2);
+#else
+    emit16(PUSH_HW1);
+#endif
+}
+
+static void emit_pop(void)
+{
+#if RV_JIT_LOOP_CHAIN
+    emit32(POP_HW1, POP_HW2);
+#else
+    emit16(POP_HW1);
+#endif
+}
+
 static void emit_prologue(void)
 {
-    emit16(PUSH_REGS);
+    emit_push();
     emit_mov(R4, R0);     /* hart pointer into a callee-saved register */
+#if RV_JIT_LOOP_CHAIN
+    emit_mov_imm8(R0, 0u);
+    emit_mov(R8, R0);     /* retired-instruction accumulator */
+#endif
 }
 
 /* Materialise the guest-RAM registers, once per block, on first use. */
@@ -557,11 +610,17 @@ static void emit_ram_regs(void)
     g_ram_live = true;
 }
 
-/* Return `insns` as the retired count. */
+/* Add this path's instruction count to the running total and return it. */
 static void emit_epilogue(uint32_t insns)
 {
+#if RV_JIT_LOOP_CHAIN
+    /* ADD.W r8, r8, #insns, then return it in r0. */
+    emit32(0xF108u, (uint16_t)((R8 << 8) | (insns & 0xFFu)));
+    emit_mov(R0, R8);
+#else
     emit_mov_imm8(R0, insns);
-    emit16(POP_REGS);
+#endif
+    emit_pop();
 }
 
 /* Write a constant guest pc into hart->pc using r`scratch`. */
@@ -662,9 +721,30 @@ static void emit_helper_call(const void *fn, uint32_t spec, uint32_t pc,
     emit_imm32(R12, (uint32_t)(uintptr_t)fn | 1u);   /* Thumb bit */
     emit16((uint16_t)(0x4780u | (R12 << 3)));        /* BLX r12 */
 
+    /*
+     * A faulting helper exits with the count so far. The test is on the
+     * helper's return value in r0, which is why the total is only added
+     * after the branch that skips this stub.
+     */
+    /*
+     * A faulting helper exits with the count so far.
+     *
+     * The stub below is ADD.W (4) + MOV (2) + POP.W (4) = 10 bytes, and CBZ
+     * is PC-relative with PC reading as the instruction address plus 4. The
+     * branch is at addr, the instruction after the stub at addr+2+10, so
+     * the displacement is 8 and imm5 is 4. Encoding it for the old 4-byte
+     * stub lands in the middle of this one, which is what produced a guest
+     * that ran off into nonsense.
+     */
+#if RV_JIT_LOOP_CHAIN
+    emit16((uint16_t)(0xB100u | (4u << 3) | R0));   /* CBZ r0, over the stub */
+    emit32(0xF108u, (uint16_t)((R8 << 8) | (insns & 0xFFu)));
+    emit_mov(R0, R8);
+#else
     emit_cbz_skip4(R0);
     emit_mov_imm8(R0, insns);
-    emit16(POP_REGS);
+#endif
+    emit_pop();
 }
 
 #if RV_EXT_F
@@ -1569,6 +1649,35 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
             *redirect = target;
             return 2;
         }
+        /*
+         * Backward to the block's own start: a loop. Branch back rather
+         * than exiting, after adding this pass to the accumulator and
+         * checking it against a cap.
+         *
+         * The cap is what keeps interrupt latency bounded. Delivery happens
+         * between blocks, so looping without one would defer an interrupt
+         * for the whole loop; 64 guest instructions is a few iterations of
+         * a typical body, which amortises the dispatch while keeping the
+         * worst case in the same order as before.
+         */
+        if (RV_JIT_LOOP_CHAIN && target == g_block_pc && g_loop_start != NULL) {
+            emit32(0xF108u, (uint16_t)((R8 << 8) | (insns_after & 0xFFu)));
+            emit_imm32(R1, 64u);
+            emit_dp_reg(DP_CMP, R8, R1);
+
+            /* Branch back if still under the cap. The displacement is
+             * negative and computed from the emit cursor. */
+            const int32_t off =
+                (int32_t)((uint8_t *)g_loop_start - (uint8_t *)g_emit) - 4;
+            emit16((uint16_t)(0xD300u | (((uint32_t)(off >> 1)) & 0xFFu)));
+
+            /* Cap reached: fall out to the dispatcher at the loop target.
+             * The accumulator already holds everything retired. */
+            emit_set_pc(R1, target);
+            emit_mov(R0, R8);
+            emit_pop();
+            return 1;
+        }
         emit_set_pc(R1, target);
         emit_epilogue(insns_after);
         return 1;
@@ -2020,6 +2129,14 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
         }
     }
     emit_prologue();
+    /*
+     * A backward jump landing exactly here re-enters the block, so it can
+     * branch within the translated code instead of returning to the
+     * dispatcher. Recorded after the prologue: the pushes and the
+     * accumulator init must not run again.
+     */
+    g_loop_start = g_emit;
+    g_block_pc = pc;
 
     uint32_t cur = pc;
     uint32_t count = 0;

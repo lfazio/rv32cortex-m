@@ -79,6 +79,10 @@ set(RV32_JIT_CODE_BYTES "12288" CACHE STRING "JIT code cache size in bytes")
 # miscompile gets isolated from a core bug.
 option(RV32_JIT "Thumb-2 JIT backend" ON)
 
+# Chain loop back edges inside translated code. Implemented and correct, but
+# a net loss as written -- see RV_JIT_LOOP_CHAIN in rv_config.h.
+option(RV32_JIT_LOOP_CHAIN "Chain loop back edges in the JIT" OFF)
+
 # Histogram how often a block reads sp/ra/a0/a1, to decide whether a
 # per-block register cache could pay. Measurement scaffolding, off by default.
 option(RV32_JIT_HOT_REG_STATS "Count hot-register reads per block" OFF)
@@ -146,6 +150,7 @@ target_compile_definitions(rv32core PUBLIC
     RV_LAZY_IRQ_CHECK=$<BOOL:${RV32_LAZY_IRQ}>
     RV_JIT_CODE_SIZE=${RV32_JIT_CODE_BYTES}u
     RV_ENABLE_JIT=$<BOOL:${RV32_JIT}>
+    RV_JIT_LOOP_CHAIN=$<BOOL:${RV32_JIT_LOOP_CHAIN}>
     RV_JIT_HOT_REG_STATS=$<BOOL:${RV32_JIT_HOT_REG_STATS}>
 )
 
