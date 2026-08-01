@@ -47,7 +47,7 @@ silicon.
 | **F** (single precision) | implemented; **224 / 224** with SoftFloat — see below |
 | **D** (double precision) | not implemented, and not planned |
 | **Zcd** | not implementable without D — see below |
-| `riscv-tests` (Berkeley) | **75 / 77 pass** (`breakpoint` needs Sdtrig; `csr` is a known F gap, below) |
+| `riscv-tests` (Berkeley) | **76 / 77 pass** (`breakpoint` needs Sdtrig) |
 | **PMP** | 16 entries, TOR/NA4/NAPOT; `rv32mi/pmpaddr` passes, validated on hardware |
 | Guest ISA self-test (104 checks) | passes on host **and** on hardware |
 | Nucleo-F446RE firmware | runs; ~29 KB flash, guest gets 70–123 KiB of the 128 KiB SRAM |
@@ -424,6 +424,8 @@ Worth recording, because each was a genuine defect:
 | `riscv-tests` `instret_overflow` | a CSR write to `minstret` must *replace* that instruction's increment, not be followed by it |
 | `riscv-arch-test` `Zicntr` | the Sail config declared a clock tick every 100 instructions while the emulator ticks every instruction |
 | `riscv-arch-test` `Zacas` | the Sail config declared `atomic_support: AMOArithmetic` on guest RAM, so the golden model **trapped** on `amocas` and baked trap-derived values into the signatures — three sessions were spent looking for an emulator bug that was never there |
+| `riscv-tests` `rv32mi/csr` | the suite was built for `rv32imac` while `misa` advertised F. The test detects exactly that mismatch and fails on purpose; the emulator was correct and the runner's `-march` was not |
+| hardware `isatest` | the JIT's inlined store wrote guest RAM without consulting PMP, so a protected region was writable under the JIT and not under the interpreter |
 
 The RVC expansion table in [`tests/unit/test_decode.c`](tests/unit/test_decode.c)
 is assembler-derived, not hand-computed: each entry was produced by assembling

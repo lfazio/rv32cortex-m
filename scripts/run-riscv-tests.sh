@@ -22,7 +22,11 @@ build="${BUILD_DIR:-$here/build/riscv-tests}"
 runner="${RV32_HOST:-$here/build/host/rv32-host}"
 tests="${RISCV_TESTS:-$build/src}"
 
-march="${RV_MARCH:-rv32imac_zicsr_zifencei}"
+# Must match what misa advertises. rv32mi/csr deliberately fails if it is
+# built without F and then run on a core that reports F, which is exactly
+# the mismatch this had before -- the failure was the test doing its job,
+# not a bug in the emulator.
+march="${RV_MARCH:-rv32imafc_zicsr_zifencei}"
 mabi="${RV_MABI:-ilp32}"
 suites="rv32ui rv32um rv32ua rv32uc rv32mi"
 verbose=0

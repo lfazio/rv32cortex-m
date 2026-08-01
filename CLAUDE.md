@@ -29,8 +29,12 @@ when changing it), `-DRV32_GUEST=isatest|hello|bench|stm32drv|coremark`.
 
 ```sh
 ./scripts/run-arch-test.sh      # official riscv-arch-test: 135/135 integer, 224/224 with -DRV32_FPU_SOFTFLOAT=ON, 172/224 without
-./scripts/run-riscv-tests.sh    # Berkeley suite, 75/77
+./scripts/run-riscv-tests.sh    # Berkeley suite, 76/77 (breakpoint needs Sdtrig)
 ```
+
+Keep the suites' `-march` in step with what `misa` advertises: `rv32mi/csr`
+deliberately fails when built without F and run on a core reporting F, and that
+failure looks like an emulator bug until you disassemble the test.
 
 **Run both.** They cover different things, and a regression that only the
 Berkeley suite catches will sit unnoticed if only arch-test is run -- which is
