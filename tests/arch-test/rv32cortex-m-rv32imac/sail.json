@@ -349,10 +349,10 @@
     // Zcb is not implemented: those encodings raise illegal instruction.
     "Zcb": { "supported": false },
     "Zcmop": { "supported": false },
-    "Zba": { "supported": false },
+    "Zba": { "supported": true },
     "Zbb": { "supported": true },
-    "Zbs": { "supported": false },
-    "Zbc": { "supported": false },
+    "Zbs": { "supported": true },
+    "Zbc": { "supported": true },
     "Zbkb": { "supported": false },
     "Zbkc": { "supported": false },
     "Zbkx": { "supported": false },

@@ -43,6 +43,15 @@
 #ifndef RV_EXT_ZBB
 #  define RV_EXT_ZBB    1  /* basic bit manipulation */
 #endif
+#ifndef RV_EXT_ZBA
+#  define RV_EXT_ZBA    1  /* address generation: sh1add/sh2add/sh3add */
+#endif
+#ifndef RV_EXT_ZBC
+#  define RV_EXT_ZBC    1  /* carry-less multiply */
+#endif
+#ifndef RV_EXT_ZBS
+#  define RV_EXT_ZBS    1  /* single-bit: bset/bclr/binv/bext */
+#endif
 #ifndef RV_EXT_ZICBOM
 #  define RV_EXT_ZICBOM 1   /* cbo.clean / cbo.inval / cbo.flush */
 #endif

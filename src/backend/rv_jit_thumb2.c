@@ -365,6 +365,16 @@ static void emit_dp_reg(uint16_t op, uint32_t rdn, uint32_t rm)
 #define DP_ROR 0x41C0u   /* Rdn = Rdn ROR Rm[7:0] */
 #define DP_RSB 0x4240u   /* Rd  = -Rm  (RSBS #0)  */
 
+#if RV_EXT_ZBA
+/* ADD.W Rd,Rn,Rm,LSL #imm5 -- T3. Exactly what sh1add/sh2add/sh3add want. */
+static void emit_add_lsl(uint32_t rd, uint32_t rn, uint32_t rm, uint32_t sh)
+{
+    emit32((uint16_t)(0xEB00u | rn),
+           (uint16_t)((((sh >> 2) & 7u) << 12) | (rd << 8) |
+                      ((sh & 3u) << 6) | rm));
+}
+#endif
+
 #if RV_EXT_ZBB
 /* Sign/zero extension, T1: SXTB/SXTH/UXTH Rd,Rm. */
 #define XT_SXTH 0xB200u
@@ -728,6 +738,94 @@ static uint32_t jit_helper_cbo(rv_hart_t *h, uint32_t addr, uint32_t spec,
 #endif
 
 /* ------------------------------------------------------------------ */
+/* ALU helper                                                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Operations with no short Thumb-2 equivalent -- the M extension's high
+ * multiplies and divides, and Zbc/Zbb's clmul, cpop and orc.b.
+ *
+ * These used to end the block and fall back to the interpreter, which cost
+ * far more than the instruction: CoreMark alone took 175,305 fallbacks, and
+ * every one of them fragmented otherwise-hot code. A plain call keeps the
+ * block intact. None of them can fault, so there is no result to check.
+ *
+ * `spec` packs rd, rs1, rs2 and the operation into one 32-bit immediate.
+ */
+enum {
+    ALU_MULH = 0, ALU_MULHSU, ALU_MULHU, ALU_DIV, ALU_DIVU, ALU_REM, ALU_REMU,
+    ALU_CLMUL, ALU_CLMULR, ALU_CLMULH, ALU_CPOP, ALU_ORCB,
+};
+
+#define ALU_SPEC(rd, rs1, rs2, op) \
+    ((rd) | ((rs1) << 5) | ((rs2) << 10) | ((uint32_t)(op) << 15))
+
+static void jit_helper_alu(rv_hart_t *h, uint32_t spec)
+{
+    const uint32_t rd = spec & 0x1Fu;
+    const uint32_t a = h->x[(spec >> 5) & 0x1Fu];
+    const uint32_t b = h->x[(spec >> 10) & 0x1Fu];
+    uint32_t r;
+
+    switch (spec >> 15) {
+    case ALU_MULH:   r = (uint32_t)(((int64_t)(int32_t)a * (int64_t)(int32_t)b) >> 32); break;
+    case ALU_MULHSU: r = (uint32_t)(((int64_t)(int32_t)a * (int64_t)(uint64_t)b) >> 32); break;
+    case ALU_MULHU:  r = (uint32_t)(((uint64_t)a * (uint64_t)b) >> 32); break;
+    /* RISC-V defines these rather than leaving them undefined as C does. */
+    case ALU_DIV:
+        r = (b == 0u) ? 0xFFFFFFFFu
+          : ((a == 0x80000000u && b == 0xFFFFFFFFu) ? 0x80000000u
+          : (uint32_t)((int32_t)a / (int32_t)b));
+        break;
+    case ALU_DIVU:   r = (b == 0u) ? 0xFFFFFFFFu : (a / b); break;
+    case ALU_REM:
+        r = (b == 0u) ? a
+          : ((a == 0x80000000u && b == 0xFFFFFFFFu) ? 0u
+          : (uint32_t)((int32_t)a % (int32_t)b));
+        break;
+    case ALU_REMU:   r = (b == 0u) ? a : (a % b); break;
+    case ALU_CPOP:   r = (uint32_t)__builtin_popcount(a); break;
+    case ALU_ORCB: {
+        r = 0u;
+        for (unsigned i = 0; i < 4u; i++) {
+            if ((a & (0xFFu << (i * 8u))) != 0u) {
+                r |= 0xFFu << (i * 8u);
+            }
+        }
+        break;
+    }
+    case ALU_CLMUL: {
+        r = 0u;
+        for (unsigned i = 0; i < 32u; i++) { if ((b >> i) & 1u) { r ^= a << i; } }
+        break;
+    }
+    case ALU_CLMULR: {
+        r = 0u;
+        for (unsigned i = 0; i < 32u; i++) { if ((b >> i) & 1u) { r ^= a >> (31u - i); } }
+        break;
+    }
+    default: {   /* ALU_CLMULH */
+        r = 0u;
+        for (unsigned i = 1; i < 32u; i++) { if ((b >> i) & 1u) { r ^= a >> (32u - i); } }
+        break;
+    }
+    }
+
+    if (rd != 0u) {
+        h->x[rd] = r;
+    }
+}
+
+/* Call jit_helper_alu; no fault is possible so nothing is checked. */
+static void emit_alu_helper(uint32_t rd, uint32_t rs1, uint32_t rs2, uint32_t op)
+{
+    emit_mov(R0, R4);
+    emit_imm32(R1, ALU_SPEC(rd, rs1, rs2, op));
+    emit_imm32(R12, (uint32_t)(uintptr_t)jit_helper_alu | 1u);
+    emit16((uint16_t)(0x4780u | (R12 << 3)));      /* BLX r12 */
+}
+
+/* ------------------------------------------------------------------ */
 /* Translation                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -789,9 +887,22 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
                 case 1: emit_rbit(R1, R1); emit_clz(R1, R1); break;  /* ctz    */
                 case 4: emit_xt(XT_SXTB, R1, R1); break;            /* sext.b */
                 case 5: emit_xt(XT_SXTH, R1, R1); break;            /* sext.h */
-                /* cpop has no ARMv7-M equivalent; leave it interpreted. */
+                /* cpop has no ARMv7-M equivalent, so it goes via a call
+                 * rather than ending the block. */
+                case 2: emit_alu_helper(rd, rs1, 0u, ALU_CPOP); return 0;
                 default: return -1;
                 }
+                break;
+            }
+#endif
+#if RV_EXT_ZBS
+            /* bseti/bclri/binvi: the shift amount is known, so the mask is
+             * a compile-time constant and needs no runtime shift. */
+            if (f7 == 0x14u || f7 == 0x24u || f7 == 0x34u) {
+                emit_imm32(R2, 1u << rs2);
+                if (f7 == 0x14u)      { emit_dp_reg(DP_ORR, R1, R2); }
+                else if (f7 == 0x24u) { emit_dp_reg(DP_BIC, R1, R2); }
+                else                  { emit_dp_reg(DP_EOR, R1, R2); }
                 break;
             }
 #endif
@@ -809,7 +920,17 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
             } else if (f7 == 0x34u && rs2 == 24u) {       /* rev8 */
                 emit_xt(XT_REV, R1, R1);
             }
-            /* orc.b (f7 0x14) has no ARM equivalent; left interpreted. */
+            else if (f7 == 0x14u && rs2 == 7u) {          /* orc.b */
+                emit_alu_helper(rd, rs1, 0u, ALU_ORCB);
+                return 0;
+            }
+#endif
+#if RV_EXT_ZBS
+            else if (f7 == 0x24u) {                       /* bexti */
+                emit_shift_imm(SH_LSR, R1, R1, rs2);
+                emit_mov_imm8(R2, 1u);
+                emit_dp_reg(DP_AND, R1, R2);
+            }
 #endif
             else {
                 return -1;
@@ -946,7 +1067,51 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
             return 0;
         }
 #endif
-        /* MULH*, DIV*, REM*: helper-shaped, left to the interpreter. */
+#if RV_EXT_ZBA
+        if (f7 == 0x10u && (f3 == 2u || f3 == 4u || f3 == 6u)) {
+            /* sh1add/sh2add/sh3add: rd = (rs1 << n) + rs2, one instruction. */
+            emit_ld_greg(R1, rs1);
+            emit_ld_greg(R2, rs2);
+            emit_add_lsl(R1, R2, R1, f3 >> 1);
+            emit_st_greg(rd, R1);
+            return 0;
+        }
+#endif
+#if RV_EXT_ZBS
+        if ((f7 == 0x14u || f7 == 0x24u || f7 == 0x34u) &&
+            (f3 == 1u || (f7 == 0x24u && f3 == 5u))) {
+            emit_ld_greg(R1, rs1);
+            emit_ld_greg(R2, rs2);
+            emit_ubfx5(R2, R2);                   /* RISC-V uses rs2[4:0] */
+            if (f7 == 0x24u && f3 == 5u) {        /* bext */
+                emit_dp_reg(DP_LSR, R1, R2);
+                emit_mov_imm8(R3, 1u);
+                emit_dp_reg(DP_AND, R1, R3);
+            } else {
+                emit_mov_imm8(R3, 1u);
+                emit_dp_reg(DP_LSL, R3, R2);      /* mask = 1 << n */
+                if (f7 == 0x14u)      { emit_dp_reg(DP_ORR, R1, R3); } /* bset */
+                else if (f7 == 0x24u) { emit_dp_reg(DP_BIC, R1, R3); } /* bclr */
+                else                  { emit_dp_reg(DP_EOR, R1, R3); } /* binv */
+            }
+            emit_st_greg(rd, R1);
+            return 0;
+        }
+#endif
+#if RV_EXT_M
+        if (f7 == 1u && f3 >= 1u) {
+            /* MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU -> helper. */
+            emit_alu_helper(rd, rs1, rs2, ALU_MULH + (f3 - 1u));
+            return 0;
+        }
+#endif
+#if RV_EXT_ZBC
+        if (f7 == 0x05u && f3 >= 1u && f3 <= 3u) {
+            static const uint32_t op[3] = { ALU_CLMUL, ALU_CLMULR, ALU_CLMULH };
+            emit_alu_helper(rd, rs1, rs2, op[f3 - 1u]);
+            return 0;
+        }
+#endif
         return -1;
     }
 

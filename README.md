@@ -41,9 +41,9 @@ silicon.
 
 | Area | State |
 |---|---|
-| RV32IMAC + Zicsr, Zicntr, Zifencei, Zicbom, Zicboz, **Zbb** | implemented |
+| RV32IMAC + Zicsr, Zicntr, Zifencei, Zicbom, Zicboz, **B (Zba/Zbb/Zbc/Zbs)** | implemented |
 | Machine-mode traps, interrupts, CLINT timer | implemented |
-| Official `riscv-arch-test` (RVCP) | **119 / 119 pass** |
+| Official `riscv-arch-test` (RVCP) | **133 / 133 pass** |
 | `riscv-tests` (Berkeley) | **75 / 77 pass** (2 need PMP / Sdtrig, not implemented) |
 | Guest ISA self-test (104 checks) | passes on host **and** on hardware |
 | Nucleo-F446RE firmware | runs; 19–29 KB flash, guest gets 107–123 KiB of the 128 KiB SRAM |
@@ -222,7 +222,7 @@ cmake --build build/host --target riscv-tests      # Berkeley suite
 cmake --build build/host --target validate         # everything
 ```
 
-### Official RISC-V Architecture Test Suite — 119/119
+### Official RISC-V Architecture Test Suite — 133/133
 
 [`riscv/riscv-arch-test`](https://github.com/riscv/riscv-arch-test), the RVCP
 suite governed by RISC-V International. Modern versions are self-checking: the
@@ -297,28 +297,52 @@ as a relative comparison, which is what they are used for here.)*
 
 ### Per-instruction cost
 
-| Workload | Interpreter | JIT |
-|---|---|---|
-| CoreMark (memory-heavy) | 37.1 | **35.9** |
-| `bench` (ALU-heavy) | 127.2 | **64.5** |
+Host cycles per guest instruction, measured on hardware. The B extension
+column is the same guest source rebuilt with `-march=..._zba_zbb_zbc_zbs`.
 
-*(host cycles per guest instruction)*
+| Workload | | Interpreter | JIT |
+|---|---|---|---|
+| CoreMark | RV32IMAC | 35.7 | **35.9** |
+| CoreMark | + B | **28.7** | 40.8 |
+| `bench`  | + B | 127.2 | **34.3** |
 
-The JIT is ahead on both. Getting there took two rounds of measurement:
+B is a clear win for the guest: it removes 12% of CoreMark's instructions
+(42.94 M → 37.67 M) and takes the interpreter from 35.7 to 28.7 cycles each.
+Against native ARM, CoreMark interpreted improves from 26.3× to **17.7×**.
 
-1. **Inlining the guest-RAM fast path.** Every load and store had been a helper
-   call; describing guest RAM in callee-saved registers turned a RAM access
-   into a subtract, a compare and a register-offset load. CoreMark: 47.9 → 35.7.
-2. **Translating Zbb.** Untranslated Zbb instructions each ended a block and
-   fell back, fragmenting hot code: **307,128 fallbacks**. Adding `clz`/`ctz`
-   (`RBIT`+`CLZ`), `min`/`max`, `andn`/`orn`/`xnor`, `rol`/`ror`/`rori`,
-   `sext.*`/`zext.h` and `rev8` brought it to **89**. CoreMark: 44.2 → 35.9.
+The JIT does not benefit as much, and on CoreMark it is now the slower of the
+two. That is an honest open result rather than a tuned one — see below.
 
-`cpop` and `orc.b` have no ARMv7-M equivalent and stay interpreted.
+### What the JIT needed along the way
 
-The interpreter needed a fix too: the Zbb decode had been placed *ahead* of
-`SLLI`/`SRLI`/`SRAI` in the opcode slot they share, so every shift paid an
-extra `funct7` compare. Testing the common case first: 38.4 → 37.1.
+Each of these was found by measurement, not by inspection:
+
+1. **Inlining the guest-RAM fast path.** Loads and stores had each been a
+   helper call; describing guest RAM in callee-saved registers turned a RAM
+   access into a subtract, a compare and a register-offset load.
+   CoreMark 47.9 → 35.7.
+2. **Translating Zbb.** Untranslated Zbb ended a block every time and fell back:
+   307,128 fallbacks. Adding `clz`/`ctz` (`RBIT`+`CLZ`), `min`/`max`,
+   `andn`/`orn`/`xnor`, `rol`/`ror`, `sext.*`/`zext.h`, `rev8` → 89 fallbacks,
+   44.2 → 35.9.
+3. **A helper call for what cannot be translated.** `MULH`/`DIV`/`REM`, `clmul`,
+   `cpop` and `orc.b` have no short Thumb-2 form. Ending the block for them cost
+   far more than the instruction: CoreMark took 175,305 fallbacks and `bench`
+   40,010. Calling a helper instead keeps the block intact — **fallbacks fell to
+   1 and 3**, `bench` went 64.5 → 34.3 and CoreMark 46.3 → 40.8.
+
+The recurring lesson is that what a translator *declines* costs more than what
+it translates badly.
+
+**Still open:** with the full B set the interpreter beats the JIT on CoreMark
+(28.7 vs 40.8) while the JIT wins decisively on `bench` (34.3 vs 127.2). The
+gap is not yet explained; the leading suspect is that CoreMark's `clmul`-heavy
+CRC now pays a call per operation in the JIT while the interpreter runs the same
+loop inline. It has not been profiled, and is deliberately not presented as
+understood.
+
+Zbc's `clmul` is not translated: ARMv7-M has no carry-less multiply (`PMULL` is
+a NEON/crypto instruction, absent on Cortex-M).
 
 ### Block retention
 
@@ -472,7 +496,6 @@ Deferred until the current ISA is proven and measured — both of which are now
 done, so these are unblocked:
 
 - **Zacas** — the atomic compare-and-swap instruction.
-- [ ] **Zba / Zbc / Zbs** — `Zbb` is done; these are the remaining B subsets.
 - **F / D** — Cortex-M4F and M7 have a single-precision FPU usable for `F`;
   `D` needs soft-float. Needs `f0`–`f31`, `fcsr`, NaN-boxing and correct
   rounding.

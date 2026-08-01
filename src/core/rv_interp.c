@@ -140,6 +140,48 @@ static RV_ALWAYS_INLINE uint32_t zbb_orcb(uint32_t v)
 }
 #endif /* RV_EXT_ZBB */
 
+#if RV_EXT_ZBC
+/*
+ * Carry-less multiply: the same shift-and-accumulate as an ordinary
+ * multiply with XOR in place of addition, so there are no carries between
+ * bit positions. clmulh takes the high half of the 64-bit product and
+ * clmulr the middle 32 bits (63:31), which is why their shifts differ by
+ * one.
+ */
+static uint32_t zbc_clmul(uint32_t a, uint32_t b)
+{
+    uint32_t r = 0u;
+    for (unsigned i = 0; i < 32u; i++) {
+        if ((b >> i) & 1u) {
+            r ^= a << i;
+        }
+    }
+    return r;
+}
+
+static uint32_t zbc_clmulh(uint32_t a, uint32_t b)
+{
+    uint32_t r = 0u;
+    for (unsigned i = 1; i < 32u; i++) {
+        if ((b >> i) & 1u) {
+            r ^= a >> (32u - i);
+        }
+    }
+    return r;
+}
+
+static uint32_t zbc_clmulr(uint32_t a, uint32_t b)
+{
+    uint32_t r = 0u;
+    for (unsigned i = 0; i < 32u; i++) {
+        if ((b >> i) & 1u) {
+            r ^= a >> (31u - i);
+        }
+    }
+    return r;
+}
+#endif /* RV_EXT_ZBC */
+
 /* ------------------------------------------------------------------ */
 /* Control-transfer target validation                                  */
 /* ------------------------------------------------------------------ */
@@ -455,6 +497,12 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
                     break;
                 }
 #endif
+#if RV_EXT_ZBS
+                /* Single-bit immediate forms; shamt is the rs2 field. */
+                if (f7i == 0x14u) { wr(h, rd, a | (1u << rv_rs2(insn))); break; }
+                if (f7i == 0x24u) { wr(h, rd, a & ~(1u << rv_rs2(insn))); break; }
+                if (f7i == 0x34u) { wr(h, rd, a ^ (1u << rv_rs2(insn))); break; }
+#endif
                 TRAP(RV_EXC_ILLEGAL_INSN, insn);
             }
 
@@ -481,6 +529,12 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
                 }
                 if (f7i == 0x34u && rv_rs2(insn) == 24u) {
                     wr(h, rd, __builtin_bswap32(a));                 /* rev8  */
+                    break;
+                }
+#endif
+#if RV_EXT_ZBS
+                if (f7i == 0x24u) {
+                    wr(h, rd, (a >> rv_rs2(insn)) & 1u);             /* bexti */
                     break;
                 }
 #endif
@@ -529,11 +583,19 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
             }
 #if RV_EXT_ZBB
             else if (f7 == 0x05u) {
+                /* Zbb's min/max and Zbc's clmul share this funct7, so they
+                 * are decoded together: a separate branch further down the
+                 * chain would never be reached. */
                 switch (f3) {
                 case 4: wr(h, rd, ((int32_t)a < (int32_t)b) ? a : b); break; /* min  */
                 case 5: wr(h, rd, (a < b) ? a : b); break;                   /* minu */
                 case 6: wr(h, rd, ((int32_t)a > (int32_t)b) ? a : b); break; /* max  */
                 case 7: wr(h, rd, (a > b) ? a : b); break;                   /* maxu */
+#if RV_EXT_ZBC
+                case 1: wr(h, rd, zbc_clmul(a, b)); break;
+                case 2: wr(h, rd, zbc_clmulr(a, b)); break;
+                case 3: wr(h, rd, zbc_clmulh(a, b)); break;
+#endif
                 default: TRAP(RV_EXC_ILLEGAL_INSN, insn);
                 }
             }
@@ -545,6 +607,18 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
             else if (f7 == 0x04u && f3 == 4u && rv_rs2(insn) == 0u) {
                 wr(h, rd, a & 0xFFFFu);                                 /* zext.h */
             }
+#endif
+#if RV_EXT_ZBA
+            else if (f7 == 0x10u && (f3 == 2u || f3 == 4u || f3 == 6u)) {
+                /* sh1add / sh2add / sh3add: rd = (rs1 << n) + rs2 */
+                wr(h, rd, (a << (f3 >> 1)) + b);
+            }
+#endif
+#if RV_EXT_ZBS
+            else if (f7 == 0x14u && f3 == 1u) { wr(h, rd, a | (1u << (b & 31u))); }
+            else if (f7 == 0x24u && f3 == 1u) { wr(h, rd, a & ~(1u << (b & 31u))); }
+            else if (f7 == 0x34u && f3 == 1u) { wr(h, rd, a ^ (1u << (b & 31u))); }
+            else if (f7 == 0x24u && f3 == 5u) { wr(h, rd, (a >> (b & 31u)) & 1u); }
 #endif
 #if RV_EXT_M
             else if (f7 == 1u) {
