@@ -18,8 +18,20 @@ if(NOT RISCV_GCC OR NOT RISCV_OBJCOPY)
     return()
 endif()
 
-set(RV_GUEST_MARCH "rv32imac_zicsr_zicbom_zicboz_zba_zbb_zbc_zbs" CACHE STRING "ISA for guest images")
-set(RV_GUEST_MABI  "ilp32"          CACHE STRING "ABI for guest images")
+# Every extension the emulator implements, so the default guest exercises
+# what the core actually supports and a new extension reaches the images by
+# editing one line. D is absent deliberately: the emulator implements F
+# only, matching the single-precision FPU of the Cortex-M4F/M7 targets.
+#
+# This is a CACHE variable, so an existing build tree keeps its old value:
+# pass -DRV_GUEST_MARCH=... explicitly when changing it.
+set(RV_GUEST_MARCH
+    "rv32imafc_zicsr_zifencei_zicbom_zicboz_zba_zbb_zbc_zbs_zacas"
+    CACHE STRING "ISA for guest images")
+# ilp32 rather than ilp32f: the guest ABI stays soft-float so images built
+# with and without F are interchangeable, and F is exercised explicitly by
+# the self-test rather than implicitly by the calling convention.
+set(RV_GUEST_MABI  "ilp32" CACHE STRING "ABI for guest images")
 
 set(guest_dir "${CMAKE_CURRENT_SOURCE_DIR}")
 set(guest_out "${CMAKE_BINARY_DIR}/guest")

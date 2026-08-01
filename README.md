@@ -41,15 +41,17 @@ silicon.
 
 | Area | State |
 |---|---|
-| RV32IMAC + Zicsr, Zicntr, Zifencei, Zicbom, Zicboz, **B**, **Zacas** | implemented |
+| RV32IMAC + Zicsr, Zicntr, Zifencei, Zicbom, Zicboz, **B**, **Zacas**, **Zcf** | implemented |
 | Machine-mode traps, interrupts, CLINT timer | implemented |
-| Official `riscv-arch-test` (RVCP) | **135 / 135 pass** |
+| Official `riscv-arch-test` (RVCP), integer | **135 / 135 pass** |
+| **F** (single precision) | implemented; **156 / 217** — see below |
+| **D** (double precision) | not implemented, and not planned |
 | `riscv-tests` (Berkeley) | **75 / 77 pass** (2 need PMP / Sdtrig, not implemented) |
 | Guest ISA self-test (104 checks) | passes on host **and** on hardware |
 | Nucleo-F446RE firmware | runs; ~29 KB flash, guest gets 70–123 KiB of the 128 KiB SRAM |
 | Thumb-2 JIT backend | implemented; **20.2× slower than native ARM** on CoreMark |
 | Zacas (`amocas.w` / `amocas.d`) | implemented; **135/135** |
-| F / D / V extensions | not implemented |
+| V extension | not implemented |
 
 The target the emulator was designed for is Cortex-M7; the board on hand is a
 **Cortex-M4F**, which shares the ARMv7E-M instruction set. The core is portable
@@ -223,7 +225,38 @@ cmake --build build/host --target riscv-tests      # Berkeley suite
 cmake --build build/host --target validate         # everything
 ```
 
-### Official RISC-V Architecture Test Suite — 135/135
+### Floating point (F)
+
+F is implemented — the register file, `fcsr`/`frm`/`fflags`, `mstatus.FS`,
+all of OP-FP, the four fused multiply-adds, `FLW`/`FSW`, and `Zcf`'s
+compressed FP load/stores (which `C` on RV32F is defined to include).
+
+**It passes 156 of the 217 official F tests.** The arithmetic, comparisons,
+conversions, sign injection, `fclass` and NaN handling are right; what remains
+failing is concentrated in exception-flag edge cases — chiefly `NX` on the
+fused multiply-adds and some subnormal results. It is enabled by default
+because ordinary floating-point code works, but **it is not conformant**, and
+that is stated here rather than implied by a passing subset.
+
+The implementation evaluates in `double` and rounds once to `float`. That is
+what makes the flags computable without a soft-float library: `double` more
+than doubles the significand, so a single-precision multiply is exact and the
+double result can be compared against the rounded float to decide `NX`, `OF`
+and `UF`. Two places where that premise does **not** hold, both found by the
+suite and both handled explicitly:
+
+- **Addition is not exact in double.** Aligning `2^127` with `2^-149` needs far
+  more than 53 bits, so the intermediate can round while the conversion still
+  looks exact. A 2Sum recovers the exact error term and forces `NX`.
+- **The `sqrt` seed assumes a normalised exponent.** On a subnormal the
+  exponent-halving bit trick lands several orders of magnitude out and Newton
+  converges to the wrong value. Subnormals are scaled into the normal range
+  first.
+
+**D is not implemented and is not planned**: the Cortex-M4F and M7 FPUs are
+single-precision, so D would be entirely soft-float on the intended targets.
+
+### Official RISC-V Architecture Test Suite — 135/135 integer, 156/217 F
 
 [`riscv/riscv-arch-test`](https://github.com/riscv/riscv-arch-test), the RVCP
 suite governed by RISC-V International. Modern versions are self-checking: the

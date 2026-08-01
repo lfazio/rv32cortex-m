@@ -23,6 +23,9 @@ uint32_t rv_hart_misa(void)
 #if RV_EXT_C
     misa |= MISA_EXT('C');
 #endif
+#if RV_EXT_F
+    misa |= MISA_EXT('F');
+#endif
     return misa;
 }
 
@@ -55,6 +58,15 @@ void rv_hart_reset(rv_hart_t *h, uint32_t reset_pc)
     h->mcountinhibit = 0u;
     h->mcycle = 0u;
     h->minstret = 0u;
+
+#if RV_EXT_F
+    memset(h->f, 0, sizeof(h->f));
+    h->fcsr = 0u;
+    /* Report the FPU as Initial so software can use it without first
+     * writing mstatus; the spec leaves the reset value implementation
+     * defined and leaving it Off would make every FP instruction trap. */
+    h->mstatus |= (1u << MSTATUS_FS_SHIFT);
+#endif
 
 #if RV_EXT_A
     h->resv_valid = false;

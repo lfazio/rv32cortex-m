@@ -10,12 +10,31 @@
 #define RV32_RV_CSR_H
 
 #include "rv_types.h"
+#include "rv_config.h"
 
 struct rv_hart;
 
 /* ------------------------------------------------------------------ */
 /* CSR addresses                                                       */
 /* ------------------------------------------------------------------ */
+
+/* Floating-point CSRs (F). fflags and frm are windows onto fcsr. */
+#define CSR_FFLAGS          0x001
+#define CSR_FRM             0x002
+#define CSR_FCSR            0x003
+
+#define FFLAG_NX            0x01u   /* inexact          */
+#define FFLAG_UF            0x02u   /* underflow        */
+#define FFLAG_OF            0x04u   /* overflow         */
+#define FFLAG_DZ            0x08u   /* divide by zero   */
+#define FFLAG_NV            0x10u   /* invalid operation*/
+
+#define FRM_RNE 0u  /* nearest, ties to even */
+#define FRM_RTZ 1u  /* toward zero           */
+#define FRM_RDN 2u  /* down, toward -inf     */
+#define FRM_RUP 3u  /* up, toward +inf       */
+#define FRM_RMM 4u  /* nearest, ties to max magnitude */
+#define FRM_DYN 7u  /* use fcsr.frm          */
 
 /* Unprivileged counters (Zicntr), read-only shadows of the M-mode ones. */
 #define CSR_CYCLE           0xC00
@@ -65,9 +84,18 @@ struct rv_hart;
 #define MSTATUS_MPP_SHIFT   11
 #define MSTATUS_MPP_MASK    (3u << MSTATUS_MPP_SHIFT)
 #define MSTATUS_MPRV        (1u << 17)
+#define MSTATUS_FS_SHIFT    13
+#define MSTATUS_FS_MASK     (3u << MSTATUS_FS_SHIFT)
+#define MSTATUS_SD          (1u << 31)
 
 /* Bits software is allowed to change in mstatus on this implementation. */
+#if RV_EXT_F
+/* FS must be writable, or software cannot enable the FPU at all. */
+#define MSTATUS_WMASK       (MSTATUS_MIE | MSTATUS_MPIE | MSTATUS_MPP_MASK | \
+                             MSTATUS_FS_MASK)
+#else
 #define MSTATUS_WMASK       (MSTATUS_MIE | MSTATUS_MPIE | MSTATUS_MPP_MASK)
+#endif
 
 /* ------------------------------------------------------------------ */
 /* mie / mip fields                                                    */

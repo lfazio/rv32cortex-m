@@ -23,6 +23,14 @@
 #ifndef RV_EXT_C
 #  define RV_EXT_C      1   /* compressed 16-bit instructions */
 #endif
+/*
+ * Single-precision floating point. D is deliberately not implemented: the
+ * Cortex-M4F and M7 FPUs are single-precision, so D would be entirely
+ * soft-float on the intended targets.
+ */
+#ifndef RV_EXT_F
+#  define RV_EXT_F      1
+#endif
 #ifndef RV_EXT_ZICSR
 #  define RV_EXT_ZICSR  1   /* CSR access instructions */
 #endif

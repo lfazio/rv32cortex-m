@@ -51,6 +51,12 @@ rv_exc_t rv_csr_read(rv_hart_t *h, uint32_t csr, uint32_t *out)
     }
 
     switch (csr) {
+#if RV_EXT_F
+    case CSR_FFLAGS:        *out = h->fcsr & 0x1Fu; break;
+    case CSR_FRM:           *out = (h->fcsr >> 5) & 0x7u; break;
+    case CSR_FCSR:          *out = h->fcsr & 0xFFu; break;
+#endif
+
     /* --- machine information --- */
     case CSR_MVENDORID:     *out = RV_MVENDORID; break;
     case CSR_MARCHID:       *out = RV_MARCHID;   break;
@@ -112,6 +118,18 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
     }
 
     switch (csr) {
+#if RV_EXT_F
+    case CSR_FFLAGS:
+        h->fcsr = (h->fcsr & ~0x1Fu) | (val & 0x1Fu);
+        break;
+    case CSR_FRM:
+        h->fcsr = (h->fcsr & 0x1Fu) | ((val & 0x7u) << 5);
+        break;
+    case CSR_FCSR:
+        h->fcsr = val & 0xFFu;
+        break;
+#endif
+
     case CSR_MSTATUS:
         /* WARL: keep the bits we implement, ignore the rest. */
         h->mstatus = (h->mstatus & ~MSTATUS_WMASK) | (val & MSTATUS_WMASK);
@@ -218,6 +236,11 @@ bool rv_csr_exists(uint32_t csr)
 const char *rv_csr_name(uint32_t csr)
 {
     switch (csr) {
+#if RV_EXT_F
+    case CSR_FFLAGS:        return "fflags";
+    case CSR_FRM:           return "frm";
+    case CSR_FCSR:          return "fcsr";
+#endif
     case CSR_CYCLE:         return "cycle";
     case CSR_TIME:          return "time";
     case CSR_INSTRET:       return "instret";

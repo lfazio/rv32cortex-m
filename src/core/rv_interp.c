@@ -857,6 +857,29 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
 #endif
         }
 
+#if RV_EXT_F
+        /*
+         * All of F routes to one place: OP-FP, the four fused multiply-adds
+         * and FLW/FSW. Keeping it out of this switch means a JIT helper can
+         * share the same implementation rather than restate the rounding
+         * and flag rules.
+         */
+        case 0x07u >> 2:      /* OP-LOAD-FP  */
+        case 0x27u >> 2:      /* OP-STORE-FP */
+        case 0x43u >> 2:      /* FMADD.S     */
+        case 0x47u >> 2:      /* FMSUB.S     */
+        case 0x4Bu >> 2:      /* FNMSUB.S    */
+        case 0x4Fu >> 2:      /* FNMADD.S    */
+        case 0x53u >> 2: {    /* OP-FP       */
+            uint32_t ftval = insn;
+            const rv_exc_t exc = rv_hart_fp(h, insn, &ftval);
+            if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
+                TRAP(exc, ftval);
+            }
+            break;
+        }
+#endif
+
         default:
             TRAP(RV_EXC_ILLEGAL_INSN, insn);
         }

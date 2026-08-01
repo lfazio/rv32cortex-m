@@ -88,7 +88,7 @@
     },
     "mstatus": {
       // No FPU and no vector unit.
-      "fs_legal_states": "ExtContext_Off",
+      "fs_legal_states": "ExtContext_FourState",
       "vs_legal_states": "ExtContext_Off"
     },
     "privileged_isa_version": "Privileged_ISA_1_12"
@@ -285,7 +285,7 @@
     "M": { "supported": true },
     "A": { "supported": true },
     "F": {
-      "supported": false,
+      "supported": true,
       "fflags_dirty_policy": "Fflags_Dirty_Precise"
     },
     "D": { "supported": false },
@@ -348,7 +348,7 @@
     "Zfinx": { "supported": false },
     "Zdinx": { "supported": false },
     "Zca": { "supported": true },
-    "Zcf": { "supported": false },
+    "Zcf": { "supported": true },
     "Zcd": { "supported": false },
     // Zcb is not implemented: those encodings raise illegal instruction.
     "Zcb": { "supported": false },

@@ -107,7 +107,23 @@ static uint32_t expand_q0(uint16_t c)
         return enc_s(off, c_rs2p(c), c_rdp(c), 2u, OP_STORE);
     }
 
-    /* 1/5 are FLD/FSD, 3/7 are FLW/FSW: no F or D on this core. */
+#if RV_EXT_F
+    case 3: { /* C.FLW -> flw rd', off(rs1')  (Zcf) */
+        uint32_t off = (((uint32_t)c >> 7) & 0x38u)
+                     | (((uint32_t)c >> 4) & 0x4u)
+                     | (((uint32_t)c << 1) & 0x40u);
+        return enc_i(off, c_rdp(c), 2u, c_rs2p(c), OP_LOAD_FP);
+    }
+
+    case 7: { /* C.FSW -> fsw rs2', off(rs1')  (Zcf) */
+        uint32_t off = (((uint32_t)c >> 7) & 0x38u)
+                     | (((uint32_t)c >> 4) & 0x4u)
+                     | (((uint32_t)c << 1) & 0x40u);
+        return enc_s(off, c_rs2p(c), c_rdp(c), 2u, OP_STORE_FP);
+    }
+#endif
+
+    /* 1 and 5 are C.FLD/C.FSD, which need D. */
     default:
         return ILLEGAL;
     }
@@ -281,7 +297,23 @@ static uint32_t expand_q2(uint16_t c)
         return enc_s(off, rs2, 2u, 2u, OP_STORE);
     }
 
-    /* 1/5 are FLDSP/FSDSP, 3/7 are FLWSP/FSWSP. */
+#if RV_EXT_F
+    case 3: { /* C.FLWSP -> flw rd, off(x2)  (Zcf) */
+        uint32_t off = (((uint32_t)c >> 7) & 0x20u)
+                     | (((uint32_t)c >> 2) & 0x1Cu)
+                     | (((uint32_t)c << 4) & 0xC0u);
+        /* Unlike C.LWSP, rd == 0 is legal here: f0 is an ordinary register. */
+        return enc_i(off, 2u, 2u, rd, OP_LOAD_FP);
+    }
+
+    case 7: { /* C.FSWSP -> fsw rs2, off(x2)  (Zcf) */
+        uint32_t off = (((uint32_t)c >> 7) & 0x3Cu)
+                     | (((uint32_t)c >> 1) & 0xC0u);
+        return enc_s(off, rs2, 2u, 2u, OP_STORE_FP);
+    }
+#endif
+
+    /* 1 and 5 are C.FLDSP/C.FSDSP, which need D. */
     default:
         return ILLEGAL;
     }

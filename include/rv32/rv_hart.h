@@ -64,6 +64,16 @@ typedef struct rv_hart {
      */
     const volatile uint64_t *mtime;
 
+#if RV_EXT_F
+    /*
+     * Single-precision register file. 32 bits per register because D is not
+     * implemented; with D these would be 64-bit and F values NaN-boxed into
+     * the low half.
+     */
+    uint32_t f[32];
+    uint32_t fcsr;               /* frm in [7:5], fflags in [4:0] */
+#endif
+
 #if RV_EXT_A
     /* LR/SC reservation set. One hart, so one reservation. */
     uint32_t resv_addr;
@@ -178,6 +188,19 @@ void rv_hart_set_irq(rv_hart_t *h, unsigned cause, bool level);
 rv_exc_t rv_hart_load(rv_hart_t *h, uint32_t addr, uint32_t size,
                       bool sign_extend, uint32_t *out);
 rv_exc_t rv_hart_store(rv_hart_t *h, uint32_t addr, uint32_t size, uint32_t val);
+
+#if RV_EXT_F
+/*
+ * Execute one F-extension instruction. `insn` is the full 32-bit encoding;
+ * OP-FP, the fused multiply-adds, FLW and FSW all route here. Returns
+ * RV_EXC_NONE, or the cause to report; *tval receives the value for mtval,
+ * which for a load or store fault is the address.
+ *
+ * Kept out of the interpreter's switch so the same implementation can back
+ * a JIT helper without duplicating the rounding and flag rules.
+ */
+rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval);
+#endif
 
 #if RV_EXT_A
 /* funct5 field of an AMO encoding (inst[31:27]). */

@@ -79,6 +79,7 @@ set(RV32_JIT_CODE_BYTES "12288" CACHE STRING "JIT code cache size in bytes")
 # miscompile gets isolated from a core bug.
 option(RV32_JIT "Thumb-2 JIT backend" ON)
 
+option(RV32_EXT_F "Single-precision floating point" ON)
 option(RV32_EXT_M "Integer multiply/divide" ON)
 option(RV32_EXT_A "Atomics" ON)
 option(RV32_EXT_C "Compressed instructions" ON)
@@ -95,6 +96,7 @@ add_library(rv32core STATIC
     src/core/rv_csr.c
     src/core/rv_decode.c
     src/core/rv_disasm.c
+    src/core/rv_fpu.c
     src/core/rv_hart.c
     src/core/rv_interp.c
     src/devices/rv_clint.c
@@ -108,6 +110,7 @@ target_include_directories(rv32core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 
 target_compile_definitions(rv32core PUBLIC
+    RV_EXT_F=$<BOOL:${RV32_EXT_F}>
     RV_EXT_M=$<BOOL:${RV32_EXT_M}>
     RV_EXT_A=$<BOOL:${RV32_EXT_A}>
     RV_EXT_C=$<BOOL:${RV32_EXT_C}>
