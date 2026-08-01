@@ -1,0 +1,26 @@
+# Build trees. These also hold the fetched third-party material: the
+# STM32Cube driver pack, the RISC-V test suites, the Sail golden model and
+# the UDB gems. All of it is reproducible from the scripts, so none of it
+# belongs in the repository.
+/build/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
+cmake_install.cmake
+
+# Firmware artefacts
+*.elf
+*.bin
+*.hex
+*.map
+*.o
+*.obj
+*.a
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~

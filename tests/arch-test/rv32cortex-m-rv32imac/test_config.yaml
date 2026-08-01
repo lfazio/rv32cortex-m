@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+# ACT build configuration for the rv32cortex-m emulator.
+name: rv32cortex-m-rv32imac
+compiler_exe: riscv64-unknown-elf-gcc
+objdump_exe: riscv64-unknown-elf-objdump
+ref_model_exe: sail_riscv_sim
+udb_config: rv32cortex-m-rv32imac.yaml
+linker_script: link.ld
+dut_include_dir: .

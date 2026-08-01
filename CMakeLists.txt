@@ -1,0 +1,146 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# rv32cortex-m - a RISC-V RV32IMAC emulator for ARM Cortex-M hosts.
+#
+# Two build configurations share one core:
+#
+#   host        native binary for development and the ISA test suite
+#   stm32f446   firmware for the Nucleo-F446RE, built with the ST driver pack
+#
+# Select with -DRV32_PLATFORM=... ; the ARM build additionally needs the
+# cross toolchain file:
+#
+#   cmake -B build/host -DRV32_PLATFORM=host
+#   cmake -B build/stm32f446 -DRV32_PLATFORM=stm32f446 \
+#         -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake
+
+cmake_minimum_required(VERSION 3.20)
+
+project(rv32cortex-m
+    VERSION 1.0.0
+    DESCRIPTION "RV32IMAC emulator for ARM Cortex-M"
+    LANGUAGES C ASM)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    # The interpreter's speed depends heavily on optimisation, and a debug
+    # build of the emulator is rarely what anyone wants.
+    set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
+endif()
+
+set(RV32_PLATFORM "host" CACHE STRING "Target platform (host|stm32f446)")
+set_property(CACHE RV32_PLATFORM PROPERTY STRINGS host stm32f446)
+
+# ---------------------------------------------------------------------
+# ISA configuration
+# ---------------------------------------------------------------------
+
+# Guest RAM size. Shared between the guest link script and the firmware's
+# static carve-out so the two can never disagree; see tests/guest/guest.ld.in.
+set(RV32_GUEST_RAM_KIB "48" CACHE STRING "Guest RAM size in KiB")
+
+# Link-time optimisation. The interpreter calls into rv_hart and rv_bus on
+# every emulated instruction; without cross-TU inlining those stay real
+# calls, and they are the hottest code in the project.
+option(RV32_LTO "Link-time optimisation" ON)
+
+option(RV32_EXT_M "Integer multiply/divide" ON)
+option(RV32_EXT_A "Atomics" ON)
+option(RV32_EXT_C "Compressed instructions" ON)
+option(RV32_ENABLE_DISASM "Build the disassembler" ON)
+option(RV32_ENABLE_TRACE "Per-instruction trace hook (slow)" OFF)
+option(RV32_ENABLE_STATS "Collect run statistics" ON)
+
+# ---------------------------------------------------------------------
+# Core library: portable C11, no platform dependencies
+# ---------------------------------------------------------------------
+
+add_library(rv32core STATIC
+    src/core/rv_bus.c
+    src/core/rv_csr.c
+    src/core/rv_decode.c
+    src/core/rv_disasm.c
+    src/core/rv_hart.c
+    src/core/rv_interp.c
+    src/devices/rv_clint.c
+    src/devices/rv_uart.c
+)
+
+target_include_directories(rv32core PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+
+target_compile_definitions(rv32core PUBLIC
+    RV_EXT_M=$<BOOL:${RV32_EXT_M}>
+    RV_EXT_A=$<BOOL:${RV32_EXT_A}>
+    RV_EXT_C=$<BOOL:${RV32_EXT_C}>
+    RV_ENABLE_DISASM=$<BOOL:${RV32_ENABLE_DISASM}>
+    RV_ENABLE_TRACE=$<BOOL:${RV32_ENABLE_TRACE}>
+    RV_ENABLE_STATS=$<BOOL:${RV32_ENABLE_STATS}>
+)
+
+target_compile_options(rv32core PRIVATE
+    -Wall -Wextra -Wshadow -Wconversion -Wundef
+    $<$<CONFIG:Release,RelWithDebInfo,MinSizeRel>:-fomit-frame-pointer>
+)
+
+if(RV32_LTO AND CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo|MinSizeRel")
+    set_property(TARGET rv32core PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+endif()
+
+# ---------------------------------------------------------------------
+# Platform
+# ---------------------------------------------------------------------
+
+if(RV32_PLATFORM STREQUAL "host")
+    add_subdirectory(src/platform/host)
+elseif(RV32_PLATFORM STREQUAL "stm32f446")
+    if(NOT CMAKE_CROSSCOMPILING)
+        message(FATAL_ERROR
+            "RV32_PLATFORM=stm32f446 needs the cross toolchain:\n"
+            "  -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake")
+    endif()
+    add_subdirectory(src/platform/stm32f446)
+else()
+    message(FATAL_ERROR "unknown RV32_PLATFORM '${RV32_PLATFORM}'")
+endif()
+
+# ---------------------------------------------------------------------
+# Guest images (built with the RISC-V toolchain, on any host)
+# ---------------------------------------------------------------------
+
+add_subdirectory(tests/guest)
+
+# ---------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------
+
+if(RV32_PLATFORM STREQUAL "host")
+    include(CTest)
+    if(BUILD_TESTING)
+        add_subdirectory(tests/unit)
+    endif()
+    include(cmake/validation.cmake)
+endif()
+
+# ---------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------
+
+# Built up as a plain string: message() does not evaluate generator
+# expressions, so $<BOOL:...> would be printed verbatim.
+set(_isa "RV32I")
+foreach(_ext M A C)
+    if(RV32_EXT_${_ext})
+        string(APPEND _isa "${_ext}")
+    endif()
+endforeach()
+
+message(STATUS "")
+message(STATUS "rv32cortex-m ${PROJECT_VERSION}")
+message(STATUS "  platform    ${RV32_PLATFORM}")
+message(STATUS "  build type  ${CMAKE_BUILD_TYPE}")
+message(STATUS "  ISA         ${_isa}_zicsr_zicntr_zifencei")
+message(STATUS "")

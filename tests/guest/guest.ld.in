@@ -1,0 +1,68 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/*
+ * guest.ld - Link script for RV32 guest images.
+ *
+ * Generated from guest.ld.in: LENGTH is substituted from
+ * RV32_GUEST_RAM_KIB so it always matches the RAM the emulator actually
+ * maps at RV_GUEST_RAM_BASE. Getting this wrong is not a link error --
+ * _stack_top simply ends up past the end of guest RAM, and the guest takes
+ * a store access fault on its first push, before it has installed a trap
+ * handler that could report it.
+ *
+ * Everything lands in one contiguous RAM region starting at the guest
+ * reset address, so the resulting flat binary can be loaded at 0x80000000
+ * and entered at offset 0.
+ */
+
+OUTPUT_ARCH(riscv)
+ENTRY(_start)
+
+MEMORY
+{
+    RAM (rwx) : ORIGIN = 0x80000000, LENGTH = @RV32_GUEST_RAM_KIB@K
+}
+
+SECTIONS
+{
+    .text : ALIGN(4)
+    {
+        KEEP(*(.text.init))     /* _start must be first: entry is at +0 */
+        *(.text .text.*)
+    } > RAM
+
+    .rodata : ALIGN(4)
+    {
+        *(.rodata .rodata.*)
+        *(.srodata .srodata.*)
+    } > RAM
+
+    .data : ALIGN(4)
+    {
+        *(.data .data.*)
+        /*
+         * __global_pointer$ addresses the middle of the small-data area so
+         * a signed 12-bit offset from gp reaches all of it.
+         */
+        . = ALIGN(8);
+        PROVIDE(__global_pointer$ = . + 0x800);
+        *(.sdata .sdata.*)
+    } > RAM
+
+    .bss (NOLOAD) : ALIGN(4)
+    {
+        __bss_start = .;
+        *(.sbss .sbss.*)
+        *(.bss .bss.*)
+        *(COMMON)
+        . = ALIGN(4);
+        __bss_end = .;
+    } > RAM
+
+    . = ALIGN(16);
+    _end = .;
+
+    /* Stack grows down from the top of RAM. */
+    _stack_top = ORIGIN(RAM) + LENGTH(RAM);
+
+    /DISCARD/ : { *(.comment) *(.note.*) *(.riscv.attributes) }
+}
