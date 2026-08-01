@@ -470,10 +470,21 @@ for each backend.
 |---|---|---|---|---|
 | **Native ARM** | 335,277 | 447.4 | 2.49 | 1× |
 | **JIT** | 6,439,144 | 23.3 | 0.129 | **19.2× slower** |
-| Interpreter | 7,894,505 | 19.0 | 0.106 | 23.5× slower |
+| Interpreter | 10,691,596 | 14.0 | 0.078 | 31.9× slower |
 
-*(The JIT row is current. The interpreter row predates PMP and Sdtrig, each of
-which costs it a little, so it is a lower bound on the current figure.)*
+Both rows measured on the current tree, `crcfinal 0xca90` throughout.
+
+**The interpreter has regressed 35%** — 38.01 to 51.38 cycles per guest
+instruction — since PMP and Sdtrig were added. The cause is in the fetch path:
+Sdtrig's execute-trigger test sits inside the per-instruction loop, so every
+instruction pays a load of `trig_active` and a branch, for a feature almost no
+guest uses. PMP's load and store checks add to it.
+
+The JIT does not have this problem because it tests `trig_active` once per
+block dispatch rather than per instruction. The same treatment would work
+here: hoist the check to the top of `interp_run` and take a slower path only
+while a trigger is armed, exactly as WFI is handled. `-DRV32_EXT_SDTRIG=OFF`
+removes it today for anyone who does not need debug triggers.
 
 Full extension set — F, B, Zacas — compiled into the emulator. `Zcb` is
 supported but deliberately **not** used by the guest; see below.

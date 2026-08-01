@@ -109,6 +109,11 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
   plus a `MOV`, and the hash lookup is a shift, mask, load and compare -- a
   last-block cache in front of it measured 1.2% slower. What is left in block
   entry needs chaining across loop back edges, not micro-optimisation.
+- **The interpreter's Sdtrig fetch check is per instruction and costs 35%.**
+  It should be hoisted out of the loop the way WFI and the JIT's dispatch
+  check are. Adding a feature to the fetch or access path costs every
+  instruction whether or not the feature is used -- measure the interpreter
+  after doing so, not only the JIT.
 - **Measure; do not reason about performance.** Interpreter-in-SRAM was
   *slower*, lazy-IRQ was neutral, and the `clmul` fix was 1.3% when the real
   cost was 4.12-instruction blocks. Layout noise is ±3%, so ignore differences
