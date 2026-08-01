@@ -195,10 +195,13 @@
  * costs every block an extra pushed register and two instructions per exit.
  * Measured 28.66 -> 29.69 host cycles per guest instruction.
  *
- * What would make it pay is matching more loops: recording the code offset
- * of every guest pc in the block, not just its first, so a backward jump
- * into the middle of a block chains too. The accumulator machinery is
- * already in place and correct, so that is the remaining work.
+ * Widening the match to every guest pc in the block -- so a backward jump
+ * into the middle of a block chains too -- was tried and removed exactly one
+ * further block entry out of 156,489. The reason is that it only ever
+ * inspects backward JAL, and compilers put the loop test at the bottom, so
+ * a loop's back edge is a conditional branch. Chaining the taken path of a
+ * backward OP_BRANCH is where the remaining work is; the pc-to-code map,
+ * the accumulator and the interrupt cap are all in place for it.
  */
 #ifndef RV_JIT_LOOP_CHAIN
 #  define RV_JIT_LOOP_CHAIN 0

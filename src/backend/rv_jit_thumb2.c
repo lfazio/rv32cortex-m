@@ -181,6 +181,32 @@ static bool g_pmp_seen;
 static uint16_t *g_loop_start;
 static uint32_t  g_block_pc;
 
+#if RV_JIT_LOOP_CHAIN
+/*
+ * Where each guest instruction of this block starts in the emitted code.
+ *
+ * Matching only the block's first pc caught just the loops whose body is
+ * exactly one block beginning at the loop head, which was 1% of block
+ * entries. Recording every instruction lets a backward jump into the middle
+ * of a block chain too, which is the common shape once forward branches
+ * have been merged into the block.
+ */
+static uint32_t  g_pc_map[RV_JIT_MAX_BLOCK_INSNS];
+static uint16_t *g_code_map[RV_JIT_MAX_BLOCK_INSNS];
+static uint32_t  g_map_len;
+
+/* Emitted code for `pc` in this block, or NULL. */
+static uint16_t *chain_target(uint32_t pc)
+{
+    for (uint32_t i = 0; i < g_map_len; i++) {
+        if (g_pc_map[i] == pc) {
+            return g_code_map[i];
+        }
+    }
+    return NULL;
+}
+#endif
+
 static uint32_t g_ram_base;
 static uint32_t g_ram_size;
 static uint32_t g_ram_host;
@@ -1660,15 +1686,24 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
          * a typical body, which amortises the dispatch while keeping the
          * worst case in the same order as before.
          */
-        if (RV_JIT_LOOP_CHAIN && target == g_block_pc && g_loop_start != NULL) {
+#if RV_JIT_LOOP_CHAIN
+        uint16_t *const back = chain_target(target);
+        /*
+         * The 16-bit conditional branch reaches +/-254 bytes. A block that
+         * has grown past that falls through to the normal exit rather than
+         * being given a wider encoding, which would cost the common case.
+         */
+        const int32_t back_off = (back == NULL) ? 0
+            : (int32_t)((uint8_t *)back - (uint8_t *)g_emit) - 4;
+        if (back != NULL && back_off >= -252) {
             emit32(0xF108u, (uint16_t)((R8 << 8) | (insns_after & 0xFFu)));
             emit_imm32(R1, 64u);
             emit_dp_reg(DP_CMP, R8, R1);
 
-            /* Branch back if still under the cap. The displacement is
-             * negative and computed from the emit cursor. */
+            /* Branch back if still under the cap. Recomputed here: the
+             * three instructions above moved the cursor. */
             const int32_t off =
-                (int32_t)((uint8_t *)g_loop_start - (uint8_t *)g_emit) - 4;
+                (int32_t)((uint8_t *)back - (uint8_t *)g_emit) - 4;
             emit16((uint16_t)(0xD300u | (((uint32_t)(off >> 1)) & 0xFFu)));
 
             /* Cap reached: fall out to the dispatcher at the loop target.
@@ -1678,6 +1713,7 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
             emit_pop();
             return 1;
         }
+#endif
         emit_set_pc(R1, target);
         emit_epilogue(insns_after);
         return 1;
@@ -2137,6 +2173,9 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
      */
     g_loop_start = g_emit;
     g_block_pc = pc;
+#if RV_JIT_LOOP_CHAIN
+    g_map_len = 0u;
+#endif
 
     uint32_t cur = pc;
     uint32_t count = 0;
@@ -2177,6 +2216,13 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
 
         /* Snapshot the cursor so an untranslatable instruction can be
          * rolled back out of the block cleanly. */
+#if RV_JIT_LOOP_CHAIN
+        if (g_map_len < RV_JIT_MAX_BLOCK_INSNS) {
+            g_pc_map[g_map_len] = cur;
+            g_code_map[g_map_len] = g_emit;
+            g_map_len++;
+        }
+#endif
         count_hot_reads(insn, hot);
 
         uint16_t *const before = g_emit;

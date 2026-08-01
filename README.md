@@ -771,10 +771,13 @@ rather than a missing optimisation:
       slower, 28.66 → 29.69. The running instruction count it needs costs
       every block a pushed register and two instructions per exit, so the
       cost is spread over all blocks and the benefit reaches almost none.
-      Widening the match — recording the code offset of every guest pc in
-      the block, not only its first, so a backward jump into the middle of a
-      block chains too — is the remaining work; the accumulator and the
-      interrupt cap are in place and validated.
+      Widening the match to every guest pc in the block was then tried and
+      removed **one further block entry out of 156,489**. The diagnosis is
+      the useful part: the chaining only inspects backward `JAL`, and
+      compilers put the loop test at the bottom, so a loop's back edge is a
+      **conditional branch**. Chaining the taken path of a backward
+      `OP_BRANCH` is the remaining work — the pc-to-code map, the
+      accumulator and the interrupt cap are all in place for it.
 
       The two *cheap* parts of this were tried and are not there to be had:
       the prologue is already minimal at `PUSH {r4-r7,lr}` plus one `MOV`, and
