@@ -79,6 +79,10 @@ set(RV32_JIT_CODE_BYTES "12288" CACHE STRING "JIT code cache size in bytes")
 # miscompile gets isolated from a core bug.
 option(RV32_JIT "Thumb-2 JIT backend" ON)
 
+# Histogram how often a block reads sp/ra/a0/a1, to decide whether a
+# per-block register cache could pay. Measurement scaffolding, off by default.
+option(RV32_JIT_HOT_REG_STATS "Count hot-register reads per block" OFF)
+
 option(RV32_EXT_ZCB "Zcb compressed instructions" ON)
 option(RV32_EXT_F "Single-precision floating point" ON)
 option(RV32_EXT_M "Integer multiply/divide" ON)
@@ -123,6 +127,7 @@ target_compile_definitions(rv32core PUBLIC
     RV_LAZY_IRQ_CHECK=$<BOOL:${RV32_LAZY_IRQ}>
     RV_JIT_CODE_SIZE=${RV32_JIT_CODE_BYTES}u
     RV_ENABLE_JIT=$<BOOL:${RV32_JIT}>
+    RV_JIT_HOT_REG_STATS=$<BOOL:${RV32_JIT_HOT_REG_STATS}>
 )
 
 # <fenv.h> is the FPU control/status interface the F extension uses; on both

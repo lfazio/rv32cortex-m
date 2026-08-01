@@ -1695,6 +1695,57 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
  * nothing could be translated (the first instruction is unsupported) or
  * the caches are full.
  */
+/*
+ * Candidate registers for a per-block cache, and how often a block reads
+ * them. Measurement only: nothing is cached yet, and the point is to find
+ * out whether caching could pay before writing the invalidation logic that
+ * would make it correct.
+ */
+#if RV_JIT_HOT_REG_STATS
+static const uint8_t k_hot_regs[4] = { 2u, 1u, 10u, 11u };   /* sp ra a0 a1 */
+
+/* Bit 0 set if the instruction reads rs1, bit 1 if it reads rs2. */
+static uint32_t insn_reads(uint32_t insn)
+{
+    switch (rv_opcode(insn)) {
+    case OP_OP:
+    case OP_STORE:
+    case OP_BRANCH:
+    case OP_AMO:
+        return 3u;                      /* both */
+    case OP_IMM:
+    case OP_LOAD:
+    case OP_JALR:
+    case OP_LOAD_FP:
+    case OP_STORE_FP:                   /* rs2 here is an f register */
+        return 1u;                      /* rs1 only */
+    case OP_SYSTEM:
+        /* The CSR immediate forms put a constant in the rs1 field. */
+        return (rv_funct3(insn) != 0u && (rv_funct3(insn) & 4u) == 0u) ? 1u : 0u;
+    default:
+        return 0u;                      /* LUI, AUIPC, JAL, MISC-MEM, OP-FP */
+    }
+}
+
+static void count_hot_reads(uint32_t insn, uint32_t *per_block)
+{
+    const uint32_t rd_mask = insn_reads(insn);
+
+    for (uint32_t i = 0; i < 4u; i++) {
+        const uint32_t r = k_hot_regs[i];
+        if ((rd_mask & 1u) && rv_rs1(insn) == r) { per_block[i]++; }
+        if ((rd_mask & 2u) && rv_rs2(insn) == r) { per_block[i]++; }
+    }
+}
+
+#else
+static void count_hot_reads(uint32_t insn, uint32_t *per_block)
+{
+    (void)insn;
+    (void)per_block;
+}
+#endif
+
 /* True when the block table or the code buffer has no room for a block. */
 static bool space_low(void)
 {
@@ -1739,6 +1790,7 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
     uint32_t cur = pc;
     uint32_t count = 0;
     bool ended = false;
+    uint32_t hot[4] = { 0u, 0u, 0u, 0u };
 
     while (count < RV_JIT_MAX_BLOCK_INSNS && !g_emit_overflow) {
         /*
@@ -1774,6 +1826,8 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
 
         /* Snapshot the cursor so an untranslatable instruction can be
          * rolled back out of the block cleanly. */
+        count_hot_reads(insn, hot);
+
         uint16_t *const before = g_emit;
         uint32_t redirect = 0u;
         const int r = translate_one(insn, cur, len, count + 1u, &redirect);
@@ -1819,6 +1873,13 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
     g_block_count++;
     g_code_used = (uint32_t)((uint8_t *)g_emit - g_code);
     g_stats.translations++;
+
+    for (uint32_t i = 0; i < 4u; i++) {
+        if (hot[i] != 0u) {
+            g_stats.hot_reads[i] += hot[i];
+            g_stats.hot_blocks[i]++;
+        }
+    }
 
     /*
      * The code was written as data. On ARMv7-M without a data cache a DSB

@@ -664,6 +664,30 @@ int main(void)
         console_putu(js.alu_calls_bit);
         console_puts("\n  blk entr ");
         console_putu(js.block_entries);
+        /*
+         * Reads per block that uses the register, x100. Below 100 a cache
+         * cannot pay: the block would spend a load to save fewer than one.
+         */
+        {
+            static const char *const nm[4] = { "sp", "ra", "a0", "a1" };
+            console_puts("\n  reads/blk");
+            for (unsigned i = 0; i < 4u; i++) {
+                console_putc(' ');
+                console_puts(nm[i]);
+                console_putc('=');
+                if (js.hot_blocks[i] != 0u) {
+                    const uint32_t x100 = js.hot_reads[i] * 100u / js.hot_blocks[i];
+                    console_putu(x100 / 100u);
+                    console_putc('.');
+                    console_putu((x100 % 100u) / 10u);
+                    console_putu(x100 % 10u);
+                } else {
+                    console_puts("-");
+                }
+                console_puts(" in ");
+                console_putu(js.hot_blocks[i]);
+            }
+        }
         console_putc('\n');
     }
 #endif

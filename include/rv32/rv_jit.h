@@ -92,6 +92,16 @@ typedef struct rv_jit_stats {
     /* Block entries. Divided into instructions retired this gives the
      * average block length, which is what per-block overhead is paid on. */
     uint32_t block_entries;
+    /*
+     * Reads of the registers a per-block cache would hold, in translation
+     * order: sp(x2), ra(x1), a0(x10), a1(x11). `hot_reads` totals the reads
+     * and `hot_blocks` counts the blocks that read each at least once, so
+     * hot_reads/hot_blocks is the average reads per block that uses it --
+     * which is the number that decides whether caching it can pay for the
+     * load that sets it up.
+     */
+    uint32_t hot_reads[4];
+    uint32_t hot_blocks[4];
 } rv_jit_stats_t;
 
 void rv_jit_get_stats(rv_jit_stats_t *out);

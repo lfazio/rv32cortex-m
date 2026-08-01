@@ -154,6 +154,15 @@
  * cache; the interpreter remains available and handles every encoding the
  * translator does not cover, so this is a speed option, not a feature one.
  */
+/*
+ * Count how often a block reads the registers a per-block cache would
+ * hold. Translation-time only, but it is measurement scaffolding rather
+ * than a feature, so it is off unless asked for.
+ */
+#ifndef RV_JIT_HOT_REG_STATS
+#  define RV_JIT_HOT_REG_STATS 0
+#endif
+
 #ifndef RV_ENABLE_JIT
 #  if defined(__ARM_ARCH) && (__ARM_ARCH >= 7) && defined(__thumb2__)
 #    define RV_ENABLE_JIT 1

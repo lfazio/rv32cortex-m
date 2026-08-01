@@ -135,6 +135,24 @@ Three design choices worth stating:
   but it means guest state is coherent at every instruction boundary — a trap,
   an interrupt or a debugger read needs no unwinding. Register allocation across
   a block is the next optimisation, not a prerequisite.
+- **A per-block register cache is measured but not built.** Holding hot guest
+  registers in `r8`–`r11` only pays if a block reads them enough to repay the
+  load that sets each one up. Instrumenting the translator
+  (`-DRV32_JIT_HOT_REG_STATS=ON`) says, over CoreMark's 12,602 translated
+  blocks:
+
+  | Register | Reads per block that uses it | Blocks using it |
+  |---|---|---|
+  | `sp` | **7.78** | 3,719 |
+  | `a0` | **4.80** | 8,738 |
+  | `a1` | 2.55 | 7,499 |
+  | `ra` | **1.02** | 6,443 |
+
+  So `sp` and `a0` are clearly worth caching and `a1` marginally, but **`ra` is
+  not**: it is read essentially once per block, so caching it spends a load to
+  save a load. The obvious four-register set is the wrong set, which is exactly
+  what the measurement was for. Note also that only 30% of blocks touch `sp` at
+  all, so the decision has to be per block rather than fixed in the prologue.
 - **The guest-RAM registers are materialised lazily.** `r5`/`r6`/`r7` cost six
   halfwords and a block with no memory access has no use for them, so they are
   emitted at the first access that needs them rather than on entry. No pre-pass
