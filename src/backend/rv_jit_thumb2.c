@@ -1760,6 +1760,61 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
         emit_dp_reg(DP_CMP, R1, R2);
         uint16_t *skip = emit_bcond_fwd(inv[f3]);
 
+#if RV_JIT_LOOP_CHAIN
+        /*
+         * A backward branch into this block is a loop back edge, and this
+         * is the shape that actually occurs: compilers put the loop test at
+         * the bottom, so the edge is a conditional branch rather than a JAL.
+         * The taken path branches back into the translated code instead of
+         * exiting, after adding this pass to the accumulator and checking it
+         * against the cap that bounds interrupt latency.
+         *
+         * r1 and r2 held the comparison operands, but the CMP above has
+         * already consumed them, so both are free.
+         */
+        /*
+         * DISABLED: the mechanism works but the accounting does not.
+         *
+         * Chaining here collapsed bench from 158,025 block entries to
+         * 31,363, so the branch really is the loop edge that matters. But
+         * the accumulator adds insns_after, the count from the *block
+         * start*, while a loop iteration only re-executes from the loop
+         * target to this branch. Every iteration over-counts by the prefix,
+         * and bench reported 2,065,933 instructions retired against a true
+         * 1,274,518 -- which corrupts mcycle, minstret and the run loop's
+         * budget, and made the cycles-per-instruction figure look like a
+         * 2.75x win purely by inflating the denominator.
+         *
+         * Fixing it means accumulating per loop body rather than per exit:
+         * add (insns_after - i) here, where i is the target's index in
+         * g_pc_map, and have each exit add only what it retired since the
+         * last accumulation point rather than the whole path. The pc map
+         * already carries i, so the information is present; the exits are
+         * what need reworking.
+         */
+        uint16_t *const back = NULL;
+        if (back != NULL) {
+            emit32(0xF108u, (uint16_t)((R8 << 8) | (insns_after & 0xFFu)));
+            emit_imm32(R1, 64u);
+            emit_dp_reg(DP_CMP, R8, R1);
+
+            const int32_t off =
+                (int32_t)((uint8_t *)back - (uint8_t *)g_emit) - 4;
+            if (off >= -252) {
+                emit16((uint16_t)(0xD300u |
+                                  (((uint32_t)(off >> 1)) & 0xFFu)));  /* BLO */
+            }
+            /* Cap reached, or the target is out of branch range: leave with
+             * the accumulated count. */
+            emit_set_pc(R1, target);
+            emit_mov(R0, R8);
+            emit_pop();
+
+            patch_fwd(skip, true);
+            return 0;
+        }
+#endif
+
         emit_set_pc(R1, target);
         emit_epilogue(insns_after);
 

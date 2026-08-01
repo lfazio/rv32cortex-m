@@ -195,13 +195,25 @@
  * costs every block an extra pushed register and two instructions per exit.
  * Measured 28.66 -> 29.69 host cycles per guest instruction.
  *
- * Widening the match to every guest pc in the block -- so a backward jump
- * into the middle of a block chains too -- was tried and removed exactly one
- * further block entry out of 156,489. The reason is that it only ever
- * inspects backward JAL, and compilers put the loop test at the bottom, so
- * a loop's back edge is a conditional branch. Chaining the taken path of a
- * backward OP_BRANCH is where the remaining work is; the pc-to-code map,
- * the accumulator and the interrupt cap are all in place for it.
+ * It is also KNOWN TO MISCOUNT, which is the more important reason to leave
+ * it off. The accumulator adds the instruction count from the *block start*
+ * at each chained edge, but a loop iteration only re-executes from the loop
+ * target to the back edge, so every iteration over-counts by the prefix.
+ * With only backward JAL chained the error is small -- bench reports
+ * 1,280,666 retired against a true 1,274,518 -- but it is an error, and it
+ * lands in mcycle, minstret and the run loop's budget.
+ *
+ * Chaining the taken path of a backward OP_BRANCH is written and disabled
+ * in rv_jit_thumb2.c. It is where the win is: it collapsed bench from
+ * 158,025 block entries to 31,363, five times fewer dispatches. It is also
+ * where the miscount becomes serious, reporting 2,065,933 instructions
+ * against 1,274,518 -- which inflated the denominator enough to look like a
+ * 2.75x speedup.
+ *
+ * The fix is to accumulate per loop body rather than per exit: add
+ * (insns_after - i) at the edge, where i is the target's index in g_pc_map,
+ * and have each exit add only what it retired since the last accumulation
+ * point. The map already carries i; the exits are what need reworking.
  */
 #ifndef RV_JIT_LOOP_CHAIN
 #  define RV_JIT_LOOP_CHAIN 0

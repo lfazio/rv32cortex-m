@@ -771,13 +771,28 @@ rather than a missing optimisation:
       slower, 28.66 → 29.69. The running instruction count it needs costs
       every block a pushed register and two instructions per exit, so the
       cost is spread over all blocks and the benefit reaches almost none.
-      Widening the match to every guest pc in the block was then tried and
-      removed **one further block entry out of 156,489**. The diagnosis is
-      the useful part: the chaining only inspects backward `JAL`, and
-      compilers put the loop test at the bottom, so a loop's back edge is a
-      **conditional branch**. Chaining the taken path of a backward
-      `OP_BRANCH` is the remaining work — the pc-to-code map, the
-      accumulator and the interrupt cap are all in place for it.
+      Widening the match to every guest pc removed one further block entry
+      out of 156,489, which identified the real problem: it inspects backward
+      `JAL` only, and compilers put the loop test at the bottom, so a loop's
+      back edge is a **conditional branch**.
+
+      Chaining that is written, and disabled. It works — `bench` went from
+      158,025 block entries to **31,363**, five times fewer dispatches — but
+      it exposed an accounting bug the `JAL` path shares: the accumulator
+      adds the count from the *block start* at each chained edge, while an
+      iteration only re-executes from the loop target onward, so every
+      iteration over-counts by the prefix. `bench` reported 2,065,933
+      instructions retired against a true 1,274,518, which inflated the
+      cycles-per-instruction denominator enough to look like a 2.75×
+      speedup. That error lands in `mcycle`, `minstret` and the run budget.
+
+      The fix is to accumulate per loop body rather than per exit — add
+      `insns_after - i` at the edge, where `i` is the target's index in the
+      pc map, and have each exit add only what it retired since the last
+      accumulation point. The map already carries `i`; the exits need
+      reworking. **This is the one place in the project where a measured
+      "win" was an artefact**, and it is worth knowing that the instruction
+      count is the thing to check first when a JIT change looks too good.
 
       The two *cheap* parts of this were tried and are not there to be had:
       the prologue is already minimal at `PUSH {r4-r7,lr}` plus one `MOV`, and
