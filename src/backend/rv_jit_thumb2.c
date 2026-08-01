@@ -733,6 +733,33 @@ static void emit_vsqrt(uint32_t vd, uint32_t vm)
     emit32(0xEEB1u, (uint16_t)((vd << 12) | 0x0AC0u | vm));
 }
 
+/*
+ * VCMP/VCMPE.F32 Sd,Sm, followed by VMRS APSR_nzcv to move the result into
+ * the condition flags.
+ *
+ * The quiet/signalling split maps exactly onto RISC-V's: VCMP raises the
+ * invalid flag only for a signalling NaN, which is FEQ's rule, and VCMPE
+ * raises it for any NaN, which is FLT's and FLE's.
+ *
+ * The resulting condition codes also line up, once unordered is accounted
+ * for. Unordered leaves N=0, Z=0, C=1, V=1, so EQ is false for it, MI is
+ * false because N is clear, and LS is false because C is set and Z clear --
+ * which is what RISC-V wants, every comparison against NaN being false.
+ */
+static void emit_vcmp(uint32_t vd, uint32_t vm, bool signalling)
+{
+    emit32((uint16_t)(0xEEB4u),
+           (uint16_t)((vd << 12) | 0x0A40u | (signalling ? 0x80u : 0u) | vm));
+}
+
+static void emit_vmrs_apsr(void)
+{
+    emit32(0xEEF1u, 0xFA10u);
+}
+
+#define C_MI 4u   /* N set: strictly less, and false when unordered */
+#define C_LS 9u   /* C clear or Z set: less or equal, false when unordered */
+
 /* VMOV Sn,Rt  (core register into a VFP register). */
 static void emit_vmov_s_r(uint32_t vn, uint32_t rt)
 {
@@ -1679,6 +1706,45 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
             emit_st_freg(rd, R1);
             emit_fp_dirty();
             return 0;
+
+        case 0x14u: {               /* FEQ.S / FLT.S / FLE.S */
+            if (f3 > 2u) {
+                return -1;
+            }
+            /* Rounding is irrelevant to a comparison, but the invalid flag
+             * is not, so the FPSCR exception bits still have to be cleared
+             * and harvested. RNE is passed simply because f_begin needs a
+             * mode. */
+            emit_fp_setmode(FRM_RNE);
+
+            emit_ld_freg(R1, rs1);
+            emit_vmov_s_r(VS0, R1);
+            emit_ld_freg(R1, rs2);
+            emit_vmov_s_r(VS2, R1);
+
+            /*
+             * The false result is set up *before* the comparison. MOVS on a
+             * low register writes N and Z, so zeroing the destination after
+             * VMRS would overwrite the very flags being tested -- leaving
+             * Z set and N clear, which makes EQ always true, MI always
+             * false and LS always true. The conditional MOV below is inside
+             * an IT block and so does not set flags.
+             */
+            emit_mov_imm8(R1, 0u);
+
+            /* FEQ is the quiet comparison; FLT and FLE are signalling. */
+            emit_vcmp(VS0, VS2, f3 != 2u);
+            emit_vmrs_apsr();
+
+            emit_it((f3 == 2u) ? C_EQ : ((f3 == 1u) ? C_MI : C_LS));
+            emit_mov_imm8(R1, 1u);
+
+            if (rd != 0u) {
+                emit_st_greg(rd, R1);
+            }
+            emit_fp_getflags();
+            return 0;
+        }
 
         case 0x1Cu:                 /* FMV.X.W -- raw bits to an X register */
             if (f3 != 0u || rs2 != 0u) {

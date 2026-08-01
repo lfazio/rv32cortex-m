@@ -226,11 +226,17 @@ which ARM expresses by negating the accumulator, so it maps to `VFNMA` and not
 | `FNMSUB` | `-rs1*rs2 + rs3` | `VFMS` |
 | `FNMADD` | `-rs1*rs2 - rs3` | `VFNMS` |
 
-**Still on the helper:** `FEQ`/`FLT`/`FLE`, the six `FCVT` forms, `FMIN`/`FMAX`,
-`FCLASS`, and anything using `RMM`. The comparisons and conversions have direct
-VFP equivalents (`VCMP.F32` with `VMRS APSR_nzcv`, and `VCVT`) and are the
-obvious next increment; `FMIN`/`FMAX` do not, because ARMv7-M has no scalar
-`VMINNM`/`VMAXNM` and RISC-V's NaN rules would need open-coding anyway, and
+The comparisons are translated too, and the correspondence is again exact.
+`VCMP` raises the invalid flag only for a signalling NaN, which is `FEQ`'s
+rule, and `VCMPE` raises it for any NaN, which is `FLT`'s and `FLE`'s. The
+condition codes line up once unordered is accounted for — it leaves `N=0`,
+`Z=0`, `C=1`, `V=1`, so `EQ`, `MI` and `LS` are all false for it, which is
+RISC-V's requirement that every comparison against NaN be false.
+
+**Still on the helper:** the six `FCVT` forms, `FMIN`/`FMAX`, `FCLASS`, and
+anything using `RMM`. The conversions have a direct `VCVT` equivalent and are
+the next increment. `FMIN`/`FMAX` do not: ARMv7-M has no scalar
+`VMINNM`/`VMAXNM`, and RISC-V's NaN rules would need open-coding regardless.
 `FCLASS` has no equivalent at all.
 
 ### Cache-block operations
