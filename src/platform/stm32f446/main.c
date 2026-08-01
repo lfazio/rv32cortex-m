@@ -601,7 +601,13 @@ int main(void)
         console_putu(js.code_used);
         console_putc('/');
         console_putu(js.code_size);
-        console_puts(" bytes\n  flushes  ");
+        console_puts(" bytes\n  blks/xlat ");
+        console_putu(js.translations);
+        console_puts("\n  compact  ");
+        console_putu(js.compactions);
+        console_puts(" (");
+        console_putu(js.evictions);
+        console_puts(" evicted)\n  flushes  ");
         console_putu(js.flushes);
         /*
          * Instructions the translator declined and the interpreter ran.

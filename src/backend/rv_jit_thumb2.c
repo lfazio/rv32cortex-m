@@ -60,10 +60,31 @@ _Static_assert(sizeof(((rv_hart_t *)0)->x) == 32u * 4u,
 
 typedef struct {
     uint32_t  guest_pc;
-    uint16_t *code;        /* first halfword of the translated block */
-    uint16_t  insns;       /* guest instructions the block retires   */
-    int16_t   next;        /* hash chain, -1 terminates              */
+    uint16_t *code;        /* first halfword of the translated block  */
+    uint16_t  code_len;    /* bytes, needed to relocate during compaction */
+    uint16_t  insns;       /* guest instructions the block retires    */
+    uint16_t  hits;        /* executions since the last ageing pass   */
+    int16_t   next;        /* hash chain, -1 terminates               */
 } jit_block_t;
+
+/*
+ * Hit counts are bucketed rather than compared directly, so choosing what
+ * to retain is a histogram walk instead of a sort.
+ */
+#define HIT_BINS 16u
+
+static uint32_t hit_bin(uint32_t hits)
+{
+    return (hits >= HIT_BINS) ? (HIT_BINS - 1u) : hits;
+}
+
+/*
+ * Space kept free so a compaction leaves room to translate. A block is at
+ * most RV_JIT_MAX_BLOCK_INSNS instructions and the largest translation is
+ * well under 48 bytes per instruction, but the emitter bounds-checks every
+ * write anyway, so this only avoids wasted work.
+ */
+#define JIT_HEADROOM 512u
 
 static uint8_t     *g_code;
 static uint32_t     g_code_size;
@@ -115,10 +136,106 @@ static jit_block_t *lookup(uint32_t pc)
 {
     for (int16_t i = g_hash[pc_hash(pc)]; i >= 0; i = g_blocks[i].next) {
         if (g_blocks[i].guest_pc == pc) {
+            /* Saturating: what matters is the ordering, not the magnitude. */
+            if (g_blocks[i].hits != 0xFFFFu) {
+                g_blocks[i].hits++;
+            }
             return &g_blocks[i];
         }
     }
     return NULL;
+}
+
+static void rebuild_hash(void)
+{
+    for (uint32_t i = 0; i < RV_JIT_HASH_SIZE; i++) {
+        g_hash[i] = -1;
+    }
+    for (uint32_t i = 0; i < g_block_count; i++) {
+        const uint32_t hidx = pc_hash(g_blocks[i].guest_pc);
+        g_blocks[i].next = g_hash[hidx];
+        g_hash[hidx] = (int16_t)i;
+    }
+}
+
+/* Make the code just written visible to the instruction side. */
+static void sync_icache(void)
+{
+#if defined(__ARM_ARCH)
+    __asm__ volatile ("dsb 0xF" ::: "memory");
+    __asm__ volatile ("isb 0xF" ::: "memory");
+#endif
+}
+
+/*
+ * Reclaim space by discarding the least-used blocks and sliding the rest
+ * down, instead of throwing the whole cache away.
+ *
+ * This is only possible because translated blocks are position
+ * independent: every guest pc and helper address is materialised as an
+ * absolute constant with MOVW/MOVT, and the sole pc-relative branch is the
+ * CBZ that skips a block's own early-exit. So a block can simply be moved.
+ *
+ * Retention is by hit count, with a budget so compaction leaves room to
+ * translate afterwards, and an ageing pass so a block that was hot long
+ * ago cannot hold its place forever.
+ */
+static void compact(void)
+{
+    uint32_t bytes[HIT_BINS];
+    memset(bytes, 0, sizeof(bytes));
+
+    for (uint32_t i = 0; i < g_block_count; i++) {
+        bytes[hit_bin(g_blocks[i].hits)] += g_blocks[i].code_len;
+    }
+
+    /* Walk from hottest to coldest, taking bins while they fit. */
+    const uint32_t budget = g_code_size - (g_code_size / 4u) - JIT_HEADROOM;
+    uint32_t acc = 0u;
+    uint32_t threshold = HIT_BINS;      /* nothing retained by default */
+    for (int32_t b = (int32_t)HIT_BINS - 1; b >= 0; b--) {
+        if (acc + bytes[b] > budget) {
+            break;
+        }
+        acc += bytes[b];
+        threshold = (uint32_t)b;
+    }
+
+    /*
+     * Never retain blocks that have run only once: they are as likely to
+     * be first-execution noise as working set, and keeping them is what
+     * fills the cache in the first place.
+     */
+    if (threshold < 2u) {
+        threshold = 2u;
+    }
+
+    uint8_t *dst = g_code;
+    uint32_t kept = 0u;
+
+    /* Blocks are appended by a bump allocator, so this array is already in
+     * increasing code-address order and dst never overtakes the source. */
+    for (uint32_t i = 0; i < g_block_count; i++) {
+        jit_block_t b = g_blocks[i];
+        if (hit_bin(b.hits) < threshold) {
+            g_stats.evictions++;
+            continue;
+        }
+        dst = (uint8_t *)(((uintptr_t)dst + 3u) & ~(uintptr_t)3u);
+        if (dst != (uint8_t *)b.code) {
+            memmove(dst, b.code, b.code_len);
+        }
+        b.code = (uint16_t *)(void *)dst;
+        b.hits >>= 1;                   /* age */
+        dst += b.code_len;
+        g_blocks[kept++] = b;
+    }
+
+    g_block_count = kept;
+    g_code_used = (uint32_t)(dst - g_code);
+    rebuild_hash();
+    sync_icache();
+    g_stats.compactions++;
 }
 
 /* ------------------------------------------------------------------ */
@@ -360,6 +477,33 @@ static uint32_t jit_helper_store(rv_hart_t *h, uint32_t addr, uint32_t spec,
     return 0u;
 }
 
+#if RV_EXT_A
+/*
+ * Atomics. The reservation bookkeeping and the read-modify-write live in
+ * rv_hart_amo, shared with the interpreter, so the two cannot drift apart.
+ * `spec` packs rd, rs2 and funct5; the translator has already checked that
+ * funct5 names an implemented operation.
+ */
+#define AMO_SPEC(rd, rs2, f5)  ((rd) | ((rs2) << 5) | ((f5) << 10))
+#define AMO_RD(s)              ((s) & 0x1Fu)
+#define AMO_RS2(s)             (((s) >> 5) & 0x1Fu)
+#define AMO_F5(s)              (((s) >> 10) & 0x1Fu)
+
+static uint32_t jit_helper_amo(rv_hart_t *h, uint32_t addr, uint32_t spec,
+                               uint32_t pc)
+{
+    const rv_exc_t exc = rv_hart_amo(h, AMO_F5(spec), AMO_RD(spec), addr,
+                                     h->x[AMO_RS2(spec)]);
+    if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
+        h->pc = pc;
+        rv_hart_trap(h, exc, addr);
+        return 1u;
+    }
+    h->x[0] = 0u;   /* rv_hart_amo skips rd==0; keep x0 canonical */
+    return 0u;
+}
+#endif
+
 /*
  * Call a helper: r0=hart, r1=addr (already in place), r2=spec, r3=pc.
  * On a non-zero return the block exits with `insns` retired, which
@@ -379,6 +523,26 @@ static void emit_helper_call(const void *fn, uint32_t spec, uint32_t pc,
     emit_mov_imm8(R0, insns);
     emit16(0xBD10u);                                  /* POP {r4, pc} */
 }
+
+#if RV_EXT_ZICBOM || RV_EXT_ZICBOZ
+/*
+ * Cache-block operations. `spec` is the raw 12-bit CBO immediate, already
+ * validated by the translator. The block base is derived inside
+ * rv_hart_cbo, which is shared with the interpreter.
+ */
+static uint32_t jit_helper_cbo(rv_hart_t *h, uint32_t addr, uint32_t spec,
+                               uint32_t pc)
+{
+    uint32_t fault_addr;
+    const rv_exc_t exc = rv_hart_cbo(h, spec, addr, &fault_addr);
+    if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
+        h->pc = pc;
+        rv_hart_trap(h, exc, fault_addr);
+        return 1u;
+    }
+    return 0u;
+}
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Translation                                                         */
@@ -611,8 +775,53 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
         return 1;
     }
 
+#if RV_EXT_ZICBOM || RV_EXT_ZICBOZ
+    case OP_MISC_MEM: {
+        /*
+         * FENCE (f3==0) is a no-op on this single-hart, cacheless-to-device
+         * design, so it translates to nothing at all. FENCE.I (f3==1) must
+         * discard translations, which cannot be done from inside a block --
+         * it would be invalidating the very code that is executing -- so it
+         * ends the block and the interpreter handles it.
+         */
+        if (f3 == 0u) {
+            return 0;
+        }
+        if (f3 != 2u) {
+            return -1;
+        }
+        const uint32_t op = insn >> 20;
+        if (rd != 0u || !rv_cbo_valid(op)) {
+            return -1;          /* let the interpreter raise illegal */
+        }
+        emit_ld_greg(R1, rs1);
+        emit_helper_call((const void *)jit_helper_cbo, op, pc, insns_after);
+        return 0;
+    }
+#endif
+
+#if RV_EXT_A
+    case OP_AMO: {
+        if (f3 != 2u) {
+            return -1;              /* only 32-bit AMOs exist on RV32 */
+        }
+        const uint32_t funct5 = f7 >> 2;
+        if (!rv_amo_valid(funct5)) {
+            return -1;              /* let the interpreter raise illegal */
+        }
+        if (funct5 == RV_AMO_LR && rs2 != 0u) {
+            return -1;              /* rs2 must be zero for LR */
+        }
+        /* The address is rs1 with no offset. */
+        emit_ld_greg(R1, rs1);
+        emit_helper_call((const void *)jit_helper_amo,
+                         AMO_SPEC(rd, rs2, funct5), pc, insns_after);
+        return 0;
+    }
+#endif
+
     default:
-        /* SYSTEM, AMO, MISC-MEM and anything else: interpreter's job. */
+        /* SYSTEM, MISC-MEM and anything else: the interpreter's job. */
         return -1;
     }
 }
@@ -622,10 +831,16 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
  * nothing could be translated (the first instruction is unsupported) or
  * the caches are full.
  */
-static jit_block_t *translate(rv_hart_t *h, uint32_t pc)
+/* True when the block table or the code buffer has no room for a block. */
+static bool space_low(void)
 {
-    if (g_block_count >= RV_JIT_MAX_BLOCKS ||
-        g_code_used + 64u >= g_code_size) {
+    return g_block_count >= RV_JIT_MAX_BLOCKS ||
+           g_code_used + JIT_HEADROOM >= g_code_size;
+}
+
+static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
+{
+    if (space_low()) {
         return NULL;
     }
 
@@ -709,7 +924,9 @@ static jit_block_t *translate(rv_hart_t *h, uint32_t pc)
     jit_block_t *b = &g_blocks[g_block_count];
     b->guest_pc = pc;
     b->code = start;
+    b->code_len = (uint16_t)((uint8_t *)g_emit - (uint8_t *)start);
     b->insns = (uint16_t)count;
+    b->hits = 1u;
 
     const uint32_t hidx = pc_hash(pc);
     b->next = g_hash[hidx];
@@ -724,12 +941,57 @@ static jit_block_t *translate(rv_hart_t *h, uint32_t pc)
      * on a core with caches the platform's cache maintenance would also be
      * required before this point.
      */
-#if defined(__ARM_ARCH)
-    __asm__ volatile ("dsb 0xF" ::: "memory");
-    __asm__ volatile ("isb 0xF" ::: "memory");
-#endif
+    sync_icache();
 
     return b;
+}
+
+/*
+ * Translate, reclaiming space if the caches are full.
+ *
+ * Without this, a guest whose working set outgrows the cache would fall
+ * back to the interpreter permanently the first time it filled: nothing
+ * ever freed anything, so every later lookup missed and every later
+ * translation was refused. Compaction keeps the hot blocks and only
+ * full-flushes when even that cannot make room.
+ */
+static jit_block_t *translate(rv_hart_t *h, uint32_t pc)
+{
+    if (!space_low()) {
+        jit_block_t *b = translate_once(h, pc);
+        if (b != NULL) {
+            return b;
+        }
+        /*
+         * Failing with space available means this pc simply starts with an
+         * instruction the translator does not handle. That is the normal,
+         * frequent case -- every interpreted DIV lands here -- and it must
+         * not be confused with the cache being full. Reclaiming here would
+         * compact, and often flush, the entire cache once per interpreted
+         * instruction, which is exactly the pathology that made a
+         * div-heavy loop translate the same blocks tens of thousands of
+         * times.
+         */
+        if (!g_emit_overflow) {
+            return NULL;
+        }
+    }
+
+    /* Genuinely out of room. Keep the hot blocks, drop the rest. */
+    compact();
+    if (!space_low()) {
+        jit_block_t *b = translate_once(h, pc);
+        if (b != NULL) {
+            return b;
+        }
+        if (!g_emit_overflow) {
+            return NULL;
+        }
+    }
+
+    /* Compaction could not free enough: start over. */
+    rv_jit_flush();
+    return translate_once(h, pc);
 }
 
 /* ------------------------------------------------------------------ */

@@ -47,7 +47,7 @@ silicon.
 | `riscv-tests` (Berkeley) | **75 / 77 pass** (2 need PMP / Sdtrig, not implemented) |
 | Guest ISA self-test (104 checks) | passes on host **and** on hardware |
 | Nucleo-F446RE firmware | runs; 19–29 KB flash, guest gets 107–123 KiB of the 128 KiB SRAM |
-| Thumb-2 JIT backend | implemented; **2.07× over the interpreter** on hardware |
+| Thumb-2 JIT backend | implemented; **workload-dependent** — 2.1× on ALU-heavy code, 0.75× on CoreMark |
 | F / D / B / V extensions | not implemented |
 
 The target the emulator was designed for is Cortex-M7; the board on hand is a
@@ -273,26 +273,55 @@ states and the ART accelerator enabled), using
 [`tests/guest/bench.c`](tests/guest/bench.c) — a compute-bound workload with no
 I/O between the start and end markers.
 
-**1,275,036 guest instructions**, timed with the DWT cycle counter.
+Two workloads, measured on hardware with the DWT cycle counter, and they
+disagree — which is the most useful thing the benchmarking turned up.
 
-| Configuration | Host cycles / guest instruction | Throughput |
-|---|---|---|
-| interpreter, inline bus fast paths | 166.9 | 1.08 MIPS |
-| \+ LTO | 121.9 | 1.48 MIPS |
-| interpreter in SRAM | 162.3 | 1.11 MIPS |
-| **Thumb-2 JIT** | **58.8** | **3.06 MIPS** |
+| Workload | Backend | Host cycles / guest insn | Throughput |
+|---|---|---|---|
+| `bench` (ALU-heavy) | interpreter | 127.2 | 1.42 MIPS |
+| `bench` | **JIT** | **60.9** | **2.96 MIPS** |
+| CoreMark (memory-heavy) | **interpreter** | **35.7** | **5.04 MIPS** |
+| CoreMark | JIT | 47.9 | 3.76 MIPS |
 
-The JIT is **2.07× faster** than the tuned interpreter: the emulated core runs
-at roughly **3 MHz-equivalent** on a 180 MHz host, against ~1.5 MHz interpreted.
-It translated 96.9% of executed instructions — 87 blocks in 10.7 KB of a 12 KB
-code cache, with 40,010 of 1,275,036 instructions falling back to the
-interpreter. Those fallbacks are exactly the `div`/`rem` pairs in the muldiv
-kernel, which names the next thing worth teaching the translator.
+**The JIT is 2.1× faster on `bench` and 1.34× slower on CoreMark.** It is not a
+general win, and reporting it as one would have been wrong.
 
-The JIT costs 12 KB of RAM for the code cache, taking the guest from 123 KiB to
-107 KiB. Correctness is validated by the 104-check guest ISA self-test running
-on hardware with the JIT active, which covers ALU, shifts, every load/store
-width with sign extension, branches, jumps, M, A, CSRs, traps and CBO.
+The asymmetry comes from memory access. In the JIT every load and store is a
+helper call — roughly ten ARM instructions of argument marshalling plus the C
+helper body — whereas the interpreter, with LTO, has the bus fast path inlined
+directly into its dispatch loop. CoreMark's list-join, matrix and state kernels
+are dominated by pointer traffic, so the JIT pays that cost on most
+instructions; `bench` is dominated by ALU work, where the JIT's translated code
+is close to native.
+
+Note also how much more the *interpreter* varies (127.2 vs 35.7) than the JIT
+(60.9 vs 47.9): translated code cost is dominated by the memory-resident
+register file and is fairly uniform per instruction.
+
+The obvious next step is to inline the RAM fast path into generated code —
+compare against the cached data region and emit a direct `LDR`/`STR`, falling
+back to the helper only on a miss. That is the one change most likely to flip
+CoreMark.
+
+CoreMark reports **"Correct operation validated"** under both backends with
+matching CRCs (`crclist 0xe714`, `crcmatrix 0x1fd7`, `crcstate 0x8e3a`), 150
+iterations over the required 10 seconds.
+
+### Block retention
+
+The code cache keeps the most-used blocks rather than discarding everything
+when it fills. Blocks are relocatable — every guest pc and helper address is an
+absolute `MOVW`/`MOVT` constant and the only pc-relative branch is internal —
+so compaction slides the hot ones down and drops the cold, with an ageing pass
+so past popularity decays.
+
+It matters at realistic cache sizes. CoreMark's working set does not fit in
+12 KB:
+
+| Code cache | Translations | Compactions | Ticks |
+|---|---|---|---|
+| 12 KB | 106,799 | 3,676 | 12,881,419 |
+| 48 KB | 3,005 | 168 | 11,462,247 |
 
 ### Two optimisations that did not work
 
@@ -429,13 +458,13 @@ account for most PDFs).
 Deferred until the current ISA is proven and measured — both of which are now
 done, so these are unblocked:
 
-- [ ] **Zacas** — the atomic compare-and-swap instruction.
+- **Zacas** — the atomic compare-and-swap instruction.
 - **B** (`Zba`/`Zbb`/`Zbc`/`Zbs`) — cheapest of the four; maps well onto Thumb-2
   `CLZ`, `RBIT`, `REV`, `UBFX`.
-- [ ] **F / D** — Cortex-M4F and M7 have a single-precision FPU usable for `F`;
+- **F / D** — Cortex-M4F and M7 have a single-precision FPU usable for `F`;
   `D` needs soft-float. Needs `f0`–`f31`, `fcsr`, NaN-boxing and correct
   rounding.
-- [ ] **V** — largest by far and RAM-hungry (`VLEN=128` alone costs 512 B of
+- **V** — largest by far and RAM-hungry (`VLEN=128` alone costs 512 B of
   register file on a part with 128 KiB); needs a `VLEN` budget decision.
 
 ---

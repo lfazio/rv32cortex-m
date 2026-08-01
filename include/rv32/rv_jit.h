@@ -76,11 +76,13 @@ void rv_jit_flush(void);
 
 /* Statistics, for reporting how well translation is going. */
 typedef struct rv_jit_stats {
-    uint32_t blocks;         /* blocks currently translated       */
-    uint32_t code_used;      /* bytes of code cache in use        */
-    uint32_t code_size;      /* bytes available                   */
-    uint32_t flushes;        /* times the cache filled and reset  */
-    uint32_t translations;   /* blocks translated since reset     */
+    uint32_t blocks;         /* blocks currently translated         */
+    uint32_t code_used;      /* bytes of code cache in use          */
+    uint32_t code_size;      /* bytes available                     */
+    uint32_t flushes;        /* whole-cache resets                  */
+    uint32_t compactions;    /* reclaims that kept the hot blocks   */
+    uint32_t evictions;      /* blocks discarded by compaction      */
+    uint32_t translations;   /* blocks translated since reset       */
     uint32_t interp_fallbacks; /* instructions run by the interpreter */
 } rv_jit_stats_t;
 

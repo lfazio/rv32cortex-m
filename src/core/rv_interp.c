@@ -479,61 +479,18 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
                 /*
                  * CBO.*: the operation is selected by the whole 12-bit
                  * immediate, and rd must be zero. The address is any byte
-                 * in the block; the block itself is what gets operated on.
+                 * in the block; the block itself is what is operated on.
                  */
-                if (RV_UNLIKELY(rv_rd(insn) != 0u)) {
+                const uint32_t op = insn >> 20;
+                if (RV_UNLIKELY(rv_rd(insn) != 0u || !rv_cbo_valid(op))) {
                     TRAP(RV_EXC_ILLEGAL_INSN, insn);
                 }
 
-                const uint32_t base =
-                    h->x[rv_rs1(insn)] & ~(RV_CACHE_BLOCK_SIZE - 1u);
-
-                switch (insn >> 20) {
-#if RV_EXT_ZICBOZ
-                case 4u: {   /* cbo.zero */
-                    /*
-                     * Unlike the maintenance operations, this one has an
-                     * architecturally visible effect and must go through
-                     * the permission-checked store path.
-                     */
-                    for (uint32_t i = 0; i < RV_CACHE_BLOCK_SIZE; i += 4u) {
-                        const rv_exc_t exc = rv_hart_store(h, base + i, 4u, 0u);
-                        if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
-                            TRAP(exc, base + i);
-                        }
-                    }
-                    break;
-                }
-#endif
-#if RV_EXT_ZICBOM
-                case 0u:     /* cbo.inval */
-                case 1u:     /* cbo.clean */
-                case 2u: {   /* cbo.flush */
-                    /*
-                     * Maintenance applies to the host memory backing the
-                     * block, so a guest cleaning a DMA buffer cleans the
-                     * ARM cache lines that really hold it.
-                     */
-                    void *host = rv_bus_host_ptr(h->bus, base,
-                                                 RV_CACHE_BLOCK_SIZE);
-                    if (RV_UNLIKELY(host == NULL)) {
-                        TRAP(RV_EXC_STORE_ACCESS_FAULT, base);
-                    }
-                    if (h->cache != NULL && h->cache->maint != NULL) {
-                        static const rv_cbo_op_t map[3] = {
-                            RV_CBO_INVAL, RV_CBO_CLEAN, RV_CBO_FLUSH
-                        };
-                        h->cache->maint(h->cache->ctx, host,
-                                        RV_CACHE_BLOCK_SIZE,
-                                        map[insn >> 20]);
-                    }
-                    /* No cache maintenance configured: retiring without
-                     * doing anything is architecturally legal. */
-                    break;
-                }
-#endif
-                default:
-                    TRAP(RV_EXC_ILLEGAL_INSN, insn);
+                uint32_t fault_addr;
+                const rv_exc_t exc = rv_hart_cbo(h, op, h->x[rv_rs1(insn)],
+                                                 &fault_addr);
+                if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
+                    TRAP(exc, fault_addr);
                 }
                 break;
             }
@@ -550,75 +507,22 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
                 TRAP(RV_EXC_ILLEGAL_INSN, insn);   /* only 32-bit AMOs on RV32 */
             }
 
-            const uint32_t addr = h->x[rv_rs1(insn)];
-            const uint32_t src = h->x[rv_rs2(insn)];
-            const uint32_t rd = rv_rd(insn);
             const uint32_t funct5 = rv_funct7(insn) >> 2;
-
-            /* All AMOs require a naturally aligned address. */
-            if (RV_UNLIKELY((addr & 3u) != 0u)) {
-                TRAP(funct5 == 0x02u ? RV_EXC_LOAD_MISALIGNED
-                                     : RV_EXC_STORE_MISALIGNED, addr);
+            if (RV_UNLIKELY(!rv_amo_valid(funct5))) {
+                TRAP(RV_EXC_ILLEGAL_INSN, insn);
+            }
+            /* LR takes no source operand; a non-zero rs2 is not an LR. */
+            if (RV_UNLIKELY(funct5 == RV_AMO_LR && rv_rs2(insn) != 0u)) {
+                TRAP(RV_EXC_ILLEGAL_INSN, insn);
             }
 
-            if (funct5 == 0x02u) {           /* LR.W */
-                if (RV_UNLIKELY(rv_rs2(insn) != 0u)) {
-                    TRAP(RV_EXC_ILLEGAL_INSN, insn);   /* rs2 must be zero */
-                }
-                uint32_t v;
-                const rv_exc_t exc = rv_bus_read(h->bus, addr, 4u, &v);
-                if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
-                    TRAP(exc, addr);
-                }
-                h->resv_addr = addr;
-                h->resv_valid = true;
-                wr(h, rd, v);
-                break;
-            }
-
-            if (funct5 == 0x03u) {           /* SC.W */
-                if (!h->resv_valid || h->resv_addr != addr) {
-                    wr(h, rd, 1u);           /* non-zero: store did not occur */
-                    break;
-                }
-                const rv_exc_t exc = rv_bus_write(h->bus, addr, 4u, src);
-                if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
-                    h->resv_valid = false;
-                    TRAP(exc, addr);
-                }
-                h->resv_valid = false;
-                wr(h, rd, 0u);               /* zero: success */
-                break;
-            }
-
-            /* Read-modify-write AMOs. */
-            uint32_t old;
-            rv_exc_t exc = rv_bus_read(h->bus, addr, 4u, &old);
-            if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
-                /* An AMO reports load and store faults alike as store. */
-                TRAP(RV_EXC_STORE_ACCESS_FAULT, addr);
-            }
-
-            uint32_t val;
-            switch (funct5) {
-            case 0x00u: val = old + src; break;                     /* AMOADD  */
-            case 0x01u: val = src; break;                           /* AMOSWAP */
-            case 0x04u: val = old ^ src; break;                     /* AMOXOR  */
-            case 0x08u: val = old | src; break;                     /* AMOOR   */
-            case 0x0Cu: val = old & src; break;                     /* AMOAND  */
-            case 0x10u: val = ((int32_t)old < (int32_t)src) ? old : src; break;  /* AMOMIN  */
-            case 0x14u: val = ((int32_t)old > (int32_t)src) ? old : src; break;  /* AMOMAX  */
-            case 0x18u: val = (old < src) ? old : src; break;       /* AMOMINU */
-            case 0x1Cu: val = (old > src) ? old : src; break;       /* AMOMAXU */
-            default: TRAP(RV_EXC_ILLEGAL_INSN, insn);
-            }
-
-            exc = rv_bus_write(h->bus, addr, 4u, val);
+            const uint32_t addr = h->x[rv_rs1(insn)];
+            const rv_exc_t exc = rv_hart_amo(h, funct5, rv_rd(insn), addr,
+                                             h->x[rv_rs2(insn)]);
             if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
                 TRAP(exc, addr);
             }
-            /* rd gets the value read, after the write, in case rd == rs2. */
-            wr(h, rd, old);
+            h->x[0] = 0u;   /* rv_hart_amo skips rd==0; keep x0 canonical */
             break;
         }
 #endif /* RV_EXT_A */

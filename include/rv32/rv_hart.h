@@ -179,6 +179,59 @@ rv_exc_t rv_hart_load(rv_hart_t *h, uint32_t addr, uint32_t size,
                       bool sign_extend, uint32_t *out);
 rv_exc_t rv_hart_store(rv_hart_t *h, uint32_t addr, uint32_t size, uint32_t val);
 
+#if RV_EXT_A
+/* funct5 field of an AMO encoding (inst[31:27]). */
+#define RV_AMO_ADD   0x00u
+#define RV_AMO_SWAP  0x01u
+#define RV_AMO_LR    0x02u
+#define RV_AMO_SC    0x03u
+#define RV_AMO_XOR   0x04u
+#define RV_AMO_OR    0x08u
+#define RV_AMO_AND   0x0Cu
+#define RV_AMO_MIN   0x10u
+#define RV_AMO_MAX   0x14u
+#define RV_AMO_MINU  0x18u
+#define RV_AMO_MAXU  0x1Cu
+
+/* True if `funct5` names an operation this core implements. */
+bool rv_amo_valid(uint32_t funct5);
+
+/*
+ * Execute one A-extension operation, including the alignment check, the
+ * reservation bookkeeping and the write of rd. `src` is the rs2 value,
+ * unused by LR. Returns RV_EXC_NONE, or the cause to report with the
+ * address as mtval.
+ *
+ * Shared by the interpreter and the JIT deliberately: two copies of the
+ * LR/SC reservation rules would be a place for them to drift apart, and a
+ * divergence there is exactly the kind of bug that only shows up under a
+ * specific interleaving. `funct5` must already have passed rv_amo_valid.
+ */
+rv_exc_t rv_hart_amo(rv_hart_t *h, uint32_t funct5, uint32_t rd,
+                     uint32_t addr, uint32_t src);
+#endif
+
+#if RV_EXT_ZICBOM || RV_EXT_ZICBOZ
+/* The 12-bit immediate of a CBO encoding selects the operation. */
+#define RV_CBO_OP_INVAL  0u
+#define RV_CBO_OP_CLEAN  1u
+#define RV_CBO_OP_FLUSH  2u
+#define RV_CBO_OP_ZERO   4u
+
+bool rv_cbo_valid(uint32_t op);
+
+/*
+ * Execute one cache-block operation on the block containing `addr`.
+ * Returns RV_EXC_NONE, or the cause to report; on failure *fault_addr
+ * receives the address to place in mtval, which for cbo.zero is the
+ * specific word that faulted rather than the block base.
+ *
+ * Shared by the interpreter and the JIT.
+ */
+rv_exc_t rv_hart_cbo(rv_hart_t *h, uint32_t op, uint32_t addr,
+                     uint32_t *fault_addr);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

@@ -198,6 +198,167 @@ rv_exc_t rv_hart_load(rv_hart_t *h, uint32_t addr, uint32_t size,
     return RV_EXC_NONE;
 }
 
+#if RV_EXT_A
+
+bool rv_amo_valid(uint32_t funct5)
+{
+    switch (funct5) {
+    case RV_AMO_ADD:  case RV_AMO_SWAP: case RV_AMO_LR:  case RV_AMO_SC:
+    case RV_AMO_XOR:  case RV_AMO_OR:   case RV_AMO_AND:
+    case RV_AMO_MIN:  case RV_AMO_MAX:  case RV_AMO_MINU: case RV_AMO_MAXU:
+        return true;
+    default:
+        return false;
+    }
+}
+
+rv_exc_t rv_hart_amo(rv_hart_t *h, uint32_t funct5, uint32_t rd,
+                     uint32_t addr, uint32_t src)
+{
+    /* Every AMO requires a naturally aligned address. */
+    if (RV_UNLIKELY((addr & 3u) != 0u)) {
+        return (funct5 == RV_AMO_LR) ? RV_EXC_LOAD_MISALIGNED
+                                     : RV_EXC_STORE_MISALIGNED;
+    }
+
+    if (funct5 == RV_AMO_LR) {
+        uint32_t v;
+        const rv_exc_t exc = rv_bus_read(h->bus, addr, 4u, &v);
+        if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
+            return exc;
+        }
+        h->resv_addr = addr;
+        h->resv_valid = true;
+        if (rd != 0u) {
+            h->x[rd] = v;
+        }
+        return RV_EXC_NONE;
+    }
+
+    if (funct5 == RV_AMO_SC) {
+        if (!h->resv_valid || h->resv_addr != addr) {
+            if (rd != 0u) {
+                h->x[rd] = 1u;      /* non-zero: the store did not occur */
+            }
+            return RV_EXC_NONE;
+        }
+        const rv_exc_t exc = rv_bus_write(h->bus, addr, 4u, src);
+        h->resv_valid = false;
+        if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
+            return exc;
+        }
+        if (rd != 0u) {
+            h->x[rd] = 0u;          /* zero: success */
+        }
+        return RV_EXC_NONE;
+    }
+
+    uint32_t old;
+    rv_exc_t exc = rv_bus_read(h->bus, addr, 4u, &old);
+    if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
+        /* An AMO reports load and store faults alike as store. */
+        return RV_EXC_STORE_ACCESS_FAULT;
+    }
+
+    uint32_t val;
+    switch (funct5) {
+    case RV_AMO_ADD:  val = old + src; break;
+    case RV_AMO_SWAP: val = src; break;
+    case RV_AMO_XOR:  val = old ^ src; break;
+    case RV_AMO_OR:   val = old | src; break;
+    case RV_AMO_AND:  val = old & src; break;
+    case RV_AMO_MIN:  val = ((int32_t)old < (int32_t)src) ? old : src; break;
+    case RV_AMO_MAX:  val = ((int32_t)old > (int32_t)src) ? old : src; break;
+    case RV_AMO_MINU: val = (old < src) ? old : src; break;
+    default:          val = (old > src) ? old : src; break;   /* MAXU */
+    }
+
+    exc = rv_bus_write(h->bus, addr, 4u, val);
+    if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
+        return exc;
+    }
+    /* rd takes the value read, written after the store in case rd == rs2. */
+    if (rd != 0u) {
+        h->x[rd] = old;
+    }
+    return RV_EXC_NONE;
+}
+
+#endif /* RV_EXT_A */
+
+#if RV_EXT_ZICBOM || RV_EXT_ZICBOZ
+
+bool rv_cbo_valid(uint32_t op)
+{
+    switch (op) {
+#if RV_EXT_ZICBOZ
+    case RV_CBO_OP_ZERO:
+        return true;
+#endif
+#if RV_EXT_ZICBOM
+    case RV_CBO_OP_INVAL:
+    case RV_CBO_OP_CLEAN:
+    case RV_CBO_OP_FLUSH:
+        return true;
+#endif
+    default:
+        return false;
+    }
+}
+
+rv_exc_t rv_hart_cbo(rv_hart_t *h, uint32_t op, uint32_t addr,
+                     uint32_t *fault_addr)
+{
+    const uint32_t base = addr & ~(RV_CACHE_BLOCK_SIZE - 1u);
+
+    *fault_addr = base;
+
+#if RV_EXT_ZICBOZ
+    if (op == RV_CBO_OP_ZERO) {
+        /*
+         * Unlike the maintenance operations this has an architecturally
+         * visible effect, so it goes through the permission-checked store
+         * path rather than writing host memory directly.
+         */
+        for (uint32_t i = 0; i < RV_CACHE_BLOCK_SIZE; i += 4u) {
+            const rv_exc_t exc = rv_hart_store(h, base + i, 4u, 0u);
+            if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
+                *fault_addr = base + i;
+                return exc;
+            }
+        }
+        return RV_EXC_NONE;
+    }
+#endif
+
+#if RV_EXT_ZICBOM
+    {
+        /*
+         * Maintenance applies to the host memory backing the block, so a
+         * guest cleaning a DMA buffer cleans the ARM cache lines that
+         * really hold it.
+         */
+        void *host = rv_bus_host_ptr(h->bus, base, RV_CACHE_BLOCK_SIZE);
+        if (RV_UNLIKELY(host == NULL)) {
+            return RV_EXC_STORE_ACCESS_FAULT;
+        }
+        if (h->cache != NULL && h->cache->maint != NULL) {
+            static const rv_cbo_op_t map[3] = {
+                RV_CBO_INVAL, RV_CBO_CLEAN, RV_CBO_FLUSH
+            };
+            h->cache->maint(h->cache->ctx, host, RV_CACHE_BLOCK_SIZE, map[op]);
+        }
+        /* No cache maintenance configured: retiring without doing anything
+         * is architecturally legal. */
+        return RV_EXC_NONE;
+    }
+#else
+    return RV_EXC_ILLEGAL_INSN;
+#endif
+}
+
+#endif /* RV_EXT_ZICBOM || RV_EXT_ZICBOZ */
+
 rv_exc_t rv_hart_store(rv_hart_t *h, uint32_t addr, uint32_t size, uint32_t val)
 {
 #if !RV_MISALIGNED_OK

@@ -70,6 +70,15 @@ option(RV32_INTERP_IN_RAM "Place the interpreter loop in SRAM" OFF)
 # below the noise floor.
 option(RV32_LAZY_IRQ "Lazy interrupt-delivery evaluation" ON)
 
+# Bytes of RAM for the JIT code cache, taken from what the guest would get.
+# Setting this very small is also how the compaction path gets exercised.
+set(RV32_JIT_CODE_BYTES "12288" CACHE STRING "JIT code cache size in bytes")
+
+# Build and use the Thumb-2 JIT. Turning this off is how the same guest
+# image is measured on the interpreter, which is also how a suspected JIT
+# miscompile gets isolated from a core bug.
+option(RV32_JIT "Thumb-2 JIT backend" ON)
+
 option(RV32_EXT_M "Integer multiply/divide" ON)
 option(RV32_EXT_A "Atomics" ON)
 option(RV32_EXT_C "Compressed instructions" ON)
@@ -107,6 +116,8 @@ target_compile_definitions(rv32core PUBLIC
     RV_ENABLE_STATS=$<BOOL:${RV32_ENABLE_STATS}>
     RV_INTERP_RAMFUNC=$<BOOL:${RV32_INTERP_IN_RAM}>
     RV_LAZY_IRQ_CHECK=$<BOOL:${RV32_LAZY_IRQ}>
+    RV_JIT_CODE_SIZE=${RV32_JIT_CODE_BYTES}u
+    RV_ENABLE_JIT=$<BOOL:${RV32_JIT}>
 )
 
 target_compile_options(rv32core PRIVATE
