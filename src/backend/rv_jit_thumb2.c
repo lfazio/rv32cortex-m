@@ -195,6 +195,13 @@ static uint32_t  g_pc_map[RV_JIT_MAX_BLOCK_INSNS];
 static uint16_t *g_code_map[RV_JIT_MAX_BLOCK_INSNS];
 static uint32_t  g_map_len;
 
+/*
+ * Instructions already added to the accumulator along the path being
+ * emitted. Exits add only what they retired since this point, which is what
+ * makes the count right once an edge has accumulated mid-block.
+ */
+static uint32_t  g_acc_base;
+
 /* Emitted code for `pc` in this block, or NULL. */
 static uint16_t *chain_target(uint32_t pc)
 {
@@ -640,8 +647,8 @@ static void emit_ram_regs(void)
 static void emit_epilogue(uint32_t insns)
 {
 #if RV_JIT_LOOP_CHAIN
-    /* ADD.W r8, r8, #insns, then return it in r0. */
-    emit32(0xF108u, (uint16_t)((R8 << 8) | (insns & 0xFFu)));
+    /* ADD.W r8, r8, #delta, then return it in r0. */
+    emit32(0xF108u, (uint16_t)((R8 << 8) | ((insns - g_acc_base) & 0xFFu)));
     emit_mov(R0, R8);
 #else
     emit_mov_imm8(R0, insns);
@@ -764,7 +771,7 @@ static void emit_helper_call(const void *fn, uint32_t spec, uint32_t pc,
      */
 #if RV_JIT_LOOP_CHAIN
     emit16((uint16_t)(0xB100u | (4u << 3) | R0));   /* CBZ r0, over the stub */
-    emit32(0xF108u, (uint16_t)((R8 << 8) | (insns & 0xFFu)));
+    emit32(0xF108u, (uint16_t)((R8 << 8) | ((insns - g_acc_base) & 0xFFu)));
     emit_mov(R0, R8);
 #else
     emit_cbz_skip4(R0);
@@ -1687,7 +1694,8 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
          * worst case in the same order as before.
          */
 #if RV_JIT_LOOP_CHAIN
-        uint16_t *const back = chain_target(target);
+        uint16_t *const back =
+            (target == g_block_pc) ? g_loop_start : NULL;
         /*
          * The 16-bit conditional branch reaches +/-254 bytes. A block that
          * has grown past that falls through to the normal exit rather than
@@ -1696,8 +1704,9 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
         const int32_t back_off = (back == NULL) ? 0
             : (int32_t)((uint8_t *)back - (uint8_t *)g_emit) - 4;
         if (back != NULL && back_off >= -252) {
-            emit32(0xF108u, (uint16_t)((R8 << 8) | (insns_after & 0xFFu)));
-            emit_imm32(R1, 64u);
+            emit32(0xF108u,
+                   (uint16_t)((R8 << 8) | ((insns_after - g_acc_base) & 0xFFu)));
+            emit_imm32(R1, RV_JIT_LOOP_CAP);
             emit_dp_reg(DP_CMP, R8, R1);
 
             /* Branch back if still under the cap. Recomputed here: the
@@ -1757,59 +1766,44 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
          */
         emit_ld_greg(R1, rs1);
         emit_ld_greg(R2, rs2);
+
+#if RV_JIT_LOOP_CHAIN
+        /*
+         * Only a branch back to the block's own start is chained: the edge
+         * emits one constant, executed on the first pass and every
+         * iteration alike, so the loop body must be the whole path.
+         *
+         * The accumulation goes *before* the conditional split, so both
+         * paths account for the same instructions. Putting it on the taken
+         * path while advancing the translate-time base for both made the
+         * fall-through under-count by exactly the loop body. ADD.W does not
+         * set flags, so it is safe ahead of the compare.
+         */
+        const bool chain = (target == g_block_pc) && (g_loop_start != NULL);
+        if (chain) {
+            emit32(0xF108u,
+                   (uint16_t)((R8 << 8) | ((insns_after - g_acc_base) & 0xFFu)));
+            g_acc_base = insns_after;
+        }
+#endif
+
         emit_dp_reg(DP_CMP, R1, R2);
         uint16_t *skip = emit_bcond_fwd(inv[f3]);
 
 #if RV_JIT_LOOP_CHAIN
-        /*
-         * A backward branch into this block is a loop back edge, and this
-         * is the shape that actually occurs: compilers put the loop test at
-         * the bottom, so the edge is a conditional branch rather than a JAL.
-         * The taken path branches back into the translated code instead of
-         * exiting, after adding this pass to the accumulator and checking it
-         * against the cap that bounds interrupt latency.
-         *
-         * r1 and r2 held the comparison operands, but the CMP above has
-         * already consumed them, so both are free.
-         */
-        /*
-         * DISABLED: the mechanism works but the accounting does not.
-         *
-         * Chaining here collapsed bench from 158,025 block entries to
-         * 31,363, so the branch really is the loop edge that matters. But
-         * the accumulator adds insns_after, the count from the *block
-         * start*, while a loop iteration only re-executes from the loop
-         * target to this branch. Every iteration over-counts by the prefix,
-         * and bench reported 2,065,933 instructions retired against a true
-         * 1,274,518 -- which corrupts mcycle, minstret and the run loop's
-         * budget, and made the cycles-per-instruction figure look like a
-         * 2.75x win purely by inflating the denominator.
-         *
-         * Fixing it means accumulating per loop body rather than per exit:
-         * add (insns_after - i) here, where i is the target's index in
-         * g_pc_map, and have each exit add only what it retired since the
-         * last accumulation point rather than the whole path. The pc map
-         * already carries i, so the information is present; the exits are
-         * what need reworking.
-         */
-        uint16_t *const back = NULL;
-        if (back != NULL) {
-            emit32(0xF108u, (uint16_t)((R8 << 8) | (insns_after & 0xFFu)));
-            emit_imm32(R1, 64u);
+        if (chain) {
+            emit_imm32(R1, RV_JIT_LOOP_CAP);
             emit_dp_reg(DP_CMP, R8, R1);
-
             const int32_t off =
-                (int32_t)((uint8_t *)back - (uint8_t *)g_emit) - 4;
+                (int32_t)((uint8_t *)g_loop_start - (uint8_t *)g_emit) - 4;
             if (off >= -252) {
                 emit16((uint16_t)(0xD300u |
                                   (((uint32_t)(off >> 1)) & 0xFFu)));  /* BLO */
             }
-            /* Cap reached, or the target is out of branch range: leave with
-             * the accumulated count. */
+            /* Cap reached, or out of branch range: leave with the total. */
             emit_set_pc(R1, target);
             emit_mov(R0, R8);
             emit_pop();
-
             patch_fwd(skip, true);
             return 0;
         }
@@ -2230,6 +2224,7 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
     g_block_pc = pc;
 #if RV_JIT_LOOP_CHAIN
     g_map_len = 0u;
+    g_acc_base = 0u;
 #endif
 
     uint32_t cur = pc;

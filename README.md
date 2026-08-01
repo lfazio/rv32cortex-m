@@ -756,50 +756,24 @@ Ordered by what would most repay the effort.
 **Performance.** The JIT is 20.6× native and the remaining cost is structural
 rather than a missing optimisation:
 
-- [ ] **Chain across loop back edges.** Block chaining took blocks from 4.12 to
-      6.91 instructions and bought 19.8%, but a backward jump still ends the
-      block, so a loop pays a full dispatch per iteration. Turning that into a
-      branch within the translated code needs an in-block instruction budget
-      and an interrupt check that does not cost a block exit — the interrupt
-      check being the hard part, since the current design relies on block
-      boundaries to bound latency.
+- **Chain across loop back edges** — *done*. A backward branch to the block's
+      own start now branches within the translated code instead of returning
+      to the dispatcher. `bench` went from 158,025 block entries to 40,285 and
+      **28.66 → 18.68 cycles per guest instruction, 35%**; CoreMark 33.35 →
+      31.04, 7%. `RV_JIT_LOOP_CAP` bounds interrupt latency at 64 guest
+      instructions, since delivery happens between blocks.
 
-      **Implemented behind `RV32_JIT_LOOP_CHAIN`, and off**, because as
-      written it matches too little to pay: it fires only for loops whose
-      body is exactly one block starting at the loop head, which removed 1%
-      of block entries on `bench` (158,025 → 156,489) and measured 3.6%
-      slower, 28.66 → 29.69. The running instruction count it needs costs
-      every block a pushed register and two instructions per exit, so the
-      cost is spread over all blocks and the benefit reaches almost none.
-      Widening the match to every guest pc removed one further block entry
-      out of 156,489, which identified the real problem: it inspects backward
-      `JAL` only, and compilers put the loop test at the bottom, so a loop's
-      back edge is a **conditional branch**.
+      Getting there took three wrong versions, all of which *ran correctly*
+      and miscounted retired instructions — which matters, because that count
+      feeds `mcycle`, `minstret` and the run budget, and because dividing host
+      cycles by an inflated count once produced an apparent 2.75× win that was
+      pure artefact. What fixed it: chain only to the block start, so one
+      constant is right on the first pass and every iteration; put the
+      accumulation *before* the conditional split, so both paths account for
+      the same instructions; and have each exit add only what it retired since
+      that point. **The instruction count is the first thing to check when a
+      JIT change looks too good.**
 
-      Chaining that is written, and disabled. It works — `bench` went from
-      158,025 block entries to **31,363**, five times fewer dispatches — but
-      it exposed an accounting bug the `JAL` path shares: the accumulator
-      adds the count from the *block start* at each chained edge, while an
-      iteration only re-executes from the loop target onward, so every
-      iteration over-counts by the prefix. `bench` reported 2,065,933
-      instructions retired against a true 1,274,518, which inflated the
-      cycles-per-instruction denominator enough to look like a 2.75×
-      speedup. That error lands in `mcycle`, `minstret` and the run budget.
-
-      The fix is to accumulate per loop body rather than per exit — add
-      `insns_after - i` at the edge, where `i` is the target's index in the
-      pc map, and have each exit add only what it retired since the last
-      accumulation point. The map already carries `i`; the exits need
-      reworking. **This is the one place in the project where a measured
-      "win" was an artefact**, and it is worth knowing that the instruction
-      count is the thing to check first when a JIT change looks too good.
-
-      The two *cheap* parts of this were tried and are not there to be had:
-      the prologue is already minimal at `PUSH {r4-r7,lr}` plus one `MOV`, and
-      a last-block dispatch cache in front of the hash walk measured **1.2%
-      slower** (28.66 → 29.01 on `bench`). The hash is a shift, a mask, an
-      indexed load and a compare; a cache in front of it adds two loads and a
-      compare that are wasted on every miss.
 - [ ] **Fewer helper calls for memory.** The inlined RAM path already covers the
       common case; MMIO and the passthrough window still call out. A second
       inlined window for the peripheral region would cover most guest driver

@@ -186,37 +186,29 @@
 #endif
 
 /*
- * Chain a backward jump that re-enters the block, so a loop branches within
- * translated code instead of returning to the dispatcher.
+ * Chain a loop back edge inside translated code, so a loop branches within
+ * the block instead of returning to the dispatcher every iteration.
  *
- * Off, because as written it is a net loss: it fires only for loops whose
- * body is exactly one block starting at the loop head, which on bench
- * removed 1% of block entries, while the running instruction count it needs
- * costs every block an extra pushed register and two instructions per exit.
- * Measured 28.66 -> 29.69 host cycles per guest instruction.
+ * Only a backward branch to the block's own start is chained. The edge
+ * emits one constant addition to the retired-instruction count, executed on
+ * the first pass and on every iteration alike, so the loop body has to be
+ * the whole path -- which is true exactly when the target is the start. A
+ * mid-block target would need a different constant on the first pass than
+ * on the rest, and getting that wrong is what made two earlier versions
+ * miscount.
  *
- * It is also KNOWN TO MISCOUNT, which is the more important reason to leave
- * it off. The accumulator adds the instruction count from the *block start*
- * at each chained edge, but a loop iteration only re-executes from the loop
- * target to the back edge, so every iteration over-counts by the prefix.
- * With only backward JAL chained the error is small -- bench reports
- * 1,280,666 retired against a true 1,274,518 -- but it is an error, and it
- * lands in mcycle, minstret and the run loop's budget.
+ * The accumulation is emitted before the conditional split so both paths
+ * account for the same instructions, and each exit adds only what it
+ * retired since that point.
  *
- * Chaining the taken path of a backward OP_BRANCH is written and disabled
- * in rv_jit_thumb2.c. It is where the win is: it collapsed bench from
- * 158,025 block entries to 31,363, five times fewer dispatches. It is also
- * where the miscount becomes serious, reporting 2,065,933 instructions
- * against 1,274,518 -- which inflated the denominator enough to look like a
- * 2.75x speedup.
- *
- * The fix is to accumulate per loop body rather than per exit: add
- * (insns_after - i) at the edge, where i is the target's index in g_pc_map,
- * and have each exit add only what it retired since the last accumulation
- * point. The map already carries i; the exits are what need reworking.
+ * RV_JIT_LOOP_CAP bounds interrupt latency: delivery happens between
+ * blocks, so a loop must return to the dispatcher eventually.
  */
 #ifndef RV_JIT_LOOP_CHAIN
-#  define RV_JIT_LOOP_CHAIN 0
+#  define RV_JIT_LOOP_CHAIN 1
+#endif
+#ifndef RV_JIT_LOOP_CAP
+#  define RV_JIT_LOOP_CAP 64u
 #endif
 
 #ifndef RV_ENABLE_JIT
