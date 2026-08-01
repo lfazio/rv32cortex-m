@@ -469,8 +469,11 @@ for each backend.
 | | Ticks (µs) | Iterations/s | CoreMark/MHz | vs native |
 |---|---|---|---|---|
 | **Native ARM** | 335,277 | 447.4 | 2.49 | 1× |
-| **JIT** | 7,090,000 | 21.2 | 0.118 | **21.1× slower** |
+| **JIT** | 6,439,144 | 23.3 | 0.129 | **19.2× slower** |
 | Interpreter | 7,894,505 | 19.0 | 0.106 | 23.5× slower |
+
+*(The JIT row is current. The interpreter row predates PMP and Sdtrig, each of
+which costs it a little, so it is a lower bound on the current figure.)*
 
 Full extension set — F, B, Zacas — compiled into the emulator. `Zcb` is
 supported but deliberately **not** used by the guest; see below.
