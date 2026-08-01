@@ -43,8 +43,8 @@ silicon.
 |---|---|
 | RV32IMAC + Zicsr, Zicntr, Zifencei, Zicbom, Zicboz, **B**, **Zacas**, **Zcf**, **Zcb** | implemented |
 | Machine-mode traps, interrupts, CLINT timer | implemented |
-| Official `riscv-arch-test` (RVCP), integer | **135 / 135 pass** |
-| **F** (single precision) | implemented; **172 / 224** overall — see below |
+| Official `riscv-arch-test` (RVCP) | **224 / 224 pass** |
+| **F** (single precision) | implemented; **224 / 224** with SoftFloat — see below |
 | **D** (double precision) | not implemented, and not planned |
 | **Zcd** | not implementable without D — see below |
 | `riscv-tests` (Berkeley) | **75 / 77 pass** (2 need PMP / Sdtrig, not implemented) |
@@ -300,31 +300,26 @@ F is implemented — the register file, `fcsr`/`frm`/`fflags`, `mstatus.FS`,
 all of OP-FP, the four fused multiply-adds, `FLW`/`FSW`, and `Zcf`'s
 compressed FP load/stores (which `C` on RV32F is defined to include).
 
-**It passes 165 of the 217 official F tests** (`Zcb` adds 7 more, all passing). The arithmetic, comparisons,
-conversions, sign injection, `fclass` and NaN handling are right; what remains
-failing is concentrated in exception-flag edge cases — chiefly `NX` on the
-fused multiply-adds and some subnormal results. It is enabled by default
-because ordinary floating-point code works, but **it is not conformant**, and
-that is stated here rather than implied by a passing subset.
+There are two implementations, chosen with `-DRV32_FPU_SOFTFLOAT`.
 
-The implementation uses `float` and nothing wider, so on a Cortex-M4F or M7
-each operation is one hardware FPU instruction. Rounding modes and exception
-flags come from `<fenv.h>` — the standard interface to exactly the FPU control
-and status bits this needs, and both smaller and more accurate than inferring
-them.
+**Berkeley SoftFloat (`ON`) passes all 224 tests.** It is the library the
+RISC-V FP spec was written against, and the fit is exact rather than
+convenient: its rounding modes are numerically identical to `frm`
+(`near_even`/`minMag`/`min`/`max`/`near_maxMag` = 0..4) and its exception
+flags identical to `fflags` (1/2/4/8/16), so neither needs translating. It
+also ships a `RISCV` specialization carrying the canonical-NaN and
+NaN-propagation rules. `f32_mulAdd` is a genuine single-rounding fused
+multiply-add, which is where most of the previous failures were.
 
-An earlier version evaluated in `double` and rounded once, which made the flags
-easy to derive but pulled in libgcc's soft-float double routines: **17 KiB of
-firmware to emulate a single-precision FPU on a part that has one**. Dropping
-to float took the image from 46 KB to 42.6 KB and *improved* conformance from
-156 to 165, because `fenv` reports what the FPU actually raised instead of
-what the double comparison inferred.
+**The host FPU via `<fenv.h>` (`OFF`, the default) passes 165 of 217.** It is
+smaller and faster — one hardware instruction per operation on a Cortex-M4F —
+but the flags it can report are the ones the hardware happens to raise, and
+those differ from RISC-V's rules on the fused multiply-adds and around
+subnormals. It remains the default because most guests never look at `fflags`,
+and conformance is a build option away.
 
-The fused multiply-adds are the one place single precision is not enough on its
-own: `a*b+c` in float rounds twice, and a fused operation must round once. They
-use error-free transformations — Dekker's 2Product and 2Sum recover the exact
-product and sum from float arithmetic alone, so the residual is folded back
-before the single final rounding.
+That split is the useful outcome: correctness when it is wanted, size and speed
+when it is not.
 
 **D is not implemented and is not planned**: the Cortex-M4F and M7 FPUs are
 single-precision, so D would be entirely soft-float on the intended targets.
@@ -339,7 +334,7 @@ Three of the unary ops (`c.sext.b`, `c.zext.h`, `c.sext.h`) expand to Zbb
 instructions, which is why the spec makes Zcb depend on Zbb — without it there
 would be nothing to expand them into.
 
-### Official RISC-V Architecture Test Suite — 135/135 integer, 165/217 F
+### Official RISC-V Architecture Test Suite — 224/224
 
 [`riscv/riscv-arch-test`](https://github.com/riscv/riscv-arch-test), the RVCP
 suite governed by RISC-V International. Modern versions are self-checking: the

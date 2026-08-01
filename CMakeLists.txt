@@ -83,6 +83,18 @@ option(RV32_JIT "Thumb-2 JIT backend" ON)
 # per-block register cache could pay. Measurement scaffolding, off by default.
 option(RV32_JIT_HOT_REG_STATS "Count hot-register reads per block" OFF)
 
+# Use Berkeley SoftFloat for the F extension instead of the host FPU.
+#
+# The host-FPU path via <fenv.h> is smaller and faster but passes 165 of the
+# 217 official F tests: the flags it can report are the ones the hardware
+# happens to raise, which differ from RISC-V's rules on the fused
+# multiply-adds and around subnormals. SoftFloat is the implementation the
+# RISC-V FP spec was written against -- its rounding modes and exception
+# flags are numerically identical to frm and fflags, and it ships a RISCV
+# specialization with the right canonical-NaN behaviour.
+option(RV32_FPU_SOFTFLOAT "Use Berkeley SoftFloat for F" OFF)
+set(SOFTFLOAT_DIR "${CMAKE_BINARY_DIR}/softfloat" CACHE PATH "Berkeley SoftFloat source")
+
 option(RV32_EXT_ZCB "Zcb compressed instructions" ON)
 option(RV32_EXT_F "Single-precision floating point" ON)
 option(RV32_EXT_M "Integer multiply/divide" ON)
@@ -117,6 +129,7 @@ target_include_directories(rv32core PUBLIC
 target_compile_definitions(rv32core PUBLIC
     RV_EXT_F=$<BOOL:${RV32_EXT_F}>
     RV_EXT_ZCB=$<BOOL:${RV32_EXT_ZCB}>
+    RV_FPU_SOFTFLOAT=$<BOOL:${RV32_FPU_SOFTFLOAT}>
     RV_EXT_M=$<BOOL:${RV32_EXT_M}>
     RV_EXT_A=$<BOOL:${RV32_EXT_A}>
     RV_EXT_C=$<BOOL:${RV32_EXT_C}>
@@ -132,8 +145,64 @@ target_compile_definitions(rv32core PUBLIC
 
 # <fenv.h> is the FPU control/status interface the F extension uses; on both
 # glibc and newlib its implementation lives in libm.
-if(RV32_EXT_F)
+if(RV32_EXT_F AND NOT RV32_FPU_SOFTFLOAT)
     target_link_libraries(rv32core PUBLIC m)
+endif()
+
+if(RV32_EXT_F AND RV32_FPU_SOFTFLOAT)
+    if(NOT EXISTS "${SOFTFLOAT_DIR}/source/include/softfloat.h")
+        find_package(Git QUIET)
+        if(GIT_FOUND)
+            message(STATUS "Fetching Berkeley SoftFloat into ${SOFTFLOAT_DIR}")
+            execute_process(COMMAND ${GIT_EXECUTABLE} clone --depth 1 -q
+                https://github.com/ucb-bar/berkeley-softfloat-3.git
+                "${SOFTFLOAT_DIR}")
+        endif()
+    endif()
+
+    # Only the single-precision entry points and the primitives they need.
+    # Pulling in the whole library would drag f64, f128 and extF80 along for
+    # an extension this core does not implement.
+    set(_sf_names
+        f32_add f32_sub f32_mul f32_div f32_sqrt f32_mulAdd
+        f32_eq f32_le f32_lt f32_eq_signaling f32_le_quiet f32_lt_quiet
+        f32_to_i32 f32_to_ui32 f32_to_i32_r_minMag f32_to_ui32_r_minMag
+        f32_roundToInt f32_isSignalingNaN
+        i32_to_f32 ui32_to_f32
+        s_addMagsF32 s_subMagsF32 s_mulAddF32
+        s_normSubnormalF32Sig s_roundPackToF32 s_normRoundPackToF32
+        s_shiftRightJam32 s_shiftRightJam64
+        s_countLeadingZeros8 s_countLeadingZeros32
+        s_approxRecip_1Ks s_approxRecipSqrt_1Ks s_approxRecipSqrt32_1
+        s_approxRecip32_1 s_countLeadingZeros64 s_roundToI32 s_roundToUI32
+        s_shortShiftRightJam64
+        softfloat_state softfloat_raiseFlags)
+    set(_sf_src "")
+    foreach(_n IN LISTS _sf_names)
+        foreach(_d "source" "source/RISCV")
+            if(EXISTS "${SOFTFLOAT_DIR}/${_d}/${_n}.c")
+                list(APPEND _sf_src "${SOFTFLOAT_DIR}/${_d}/${_n}.c")
+            endif()
+        endforeach()
+    endforeach()
+    # Only the f32 parts of the RISCV specialization. Globbing the whole
+    # directory drags in the f128M and extF80 variants, which need the
+    # opposite SOFTFLOAT_FAST_INT64 setting and do not compile here.
+    foreach(_n softfloat_raiseFlags s_f32UIToCommonNaN s_commonNaNToF32UI
+               s_propagateNaNF32UI)
+        if(EXISTS "${SOFTFLOAT_DIR}/source/RISCV/${_n}.c")
+            list(APPEND _sf_src "${SOFTFLOAT_DIR}/source/RISCV/${_n}.c")
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES _sf_src)
+
+    target_sources(rv32core PRIVATE ${_sf_src})
+    target_include_directories(rv32core PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/core/softfloat"
+        "${SOFTFLOAT_DIR}/source/include"
+        "${SOFTFLOAT_DIR}/source/RISCV")
+    # Third-party code, not warning-clean under our flags.
+    set_source_files_properties(${_sf_src} PROPERTIES COMPILE_OPTIONS "-w")
 endif()
 
 target_compile_options(rv32core PRIVATE

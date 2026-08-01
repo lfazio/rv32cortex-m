@@ -30,7 +30,18 @@
 
 #if RV_EXT_F
 
+#if RV_FPU_SOFTFLOAT
+/*
+ * Berkeley SoftFloat. Its rounding modes and exception flags are
+ * numerically identical to RISC-V's frm and fflags -- near_even/minMag/
+ * min/max/near_maxMag are 0..4 and inexact/underflow/overflow/infinite/
+ * invalid are 1/2/4/8/16 -- so neither needs translating. That is not a
+ * coincidence: the RISC-V FP spec was written against this library.
+ */
+#include "softfloat.h"
+#else
 #include <fenv.h>
+#endif
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
@@ -80,6 +91,21 @@ static bool f_rm_valid(uint32_t rm) { return rm <= FRM_RMM; }
  * as round-to-nearest; it differs only on an exact tie, which the tests
  * that care about it exercise through the conversions.
  */
+#if RV_FPU_SOFTFLOAT
+static void f_begin(uint32_t rm)
+{
+    softfloat_roundingMode = (uint_fast8_t)rm;   /* identical encodings */
+    softfloat_exceptionFlags = 0u;
+}
+
+static uint32_t f_end(float32_t r, uint32_t *flags)
+{
+    *flags |= (uint32_t)softfloat_exceptionFlags;   /* identical bit values */
+    return r.v;
+}
+
+static float32_t f_v(uint32_t bits) { float32_t f; f.v = bits; return f; }
+#else
 static void f_begin(uint32_t rm)
 {
     int mode;
@@ -108,6 +134,7 @@ static uint32_t f_end(float r, uint32_t *flags)
     const uint32_t bits = f_float_to_bits(r);
     return f_is_nan(bits) ? F_CANON_NAN : bits;
 }
+#endif /* RV_FPU_SOFTFLOAT */
 
 /*
  * Error-free transformations, used to give the fused multiply-adds their
@@ -166,6 +193,19 @@ static uint32_t f_to_int(uint32_t a, bool is_signed, uint32_t rm,
         return lim_max;          /* NaN converts to the maximum, not the min */
     }
 
+#if RV_FPU_SOFTFLOAT
+    /*
+     * SoftFloat's converters take the rounding mode directly and apply
+     * RISC-V's saturation rules, including NaN converting to the maximum
+     * rather than the minimum. `exact` asks it to raise inexact.
+     */
+    softfloat_exceptionFlags = 0u;
+    const uint32_t sres = is_signed
+        ? (uint32_t)f32_to_i32(f_v(a), (uint_fast8_t)rm, true)
+        : (uint32_t)f32_to_ui32(f_v(a), (uint_fast8_t)rm, true);
+    *flags |= (uint32_t)softfloat_exceptionFlags;
+    return sres;
+#else
     const float fv = f_bits_to_float(a);
 
     /*
@@ -188,8 +228,10 @@ static uint32_t f_to_int(uint32_t a, bool is_signed, uint32_t rm,
             }
         }
     }
+#if !RV_FPU_SOFTFLOAT
     (void)fesetround(FE_TONEAREST);
     (void)feclearexcept(FE_ALL_EXCEPT);
+#endif
 
     if (t != fv) {
         *flags |= FFLAG_NX;
@@ -204,6 +246,7 @@ static uint32_t f_to_int(uint32_t a, bool is_signed, uint32_t rm,
     if (t <= -1.0f)         { *flags |= FFLAG_NV; return lim_min; }
     if (t < 0.0f)           { return 0u; }  /* -0.5 rounds to 0, not a fault */
     return (uint32_t)t;
+#endif
 }
 
 /* ------------------------------------------------------------------ */
@@ -302,6 +345,25 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
             flags |= FFLAG_NV;            /* 0 * inf is invalid */
             res = F_CANON_NAN;
         } else {
+#if RV_FPU_SOFTFLOAT
+            /*
+             * f32_mulAdd is a genuine fused multiply-add: one rounding, and
+             * the NaN and infinity cases handled to the letter. The sign
+             * convention is the same as the error-free version below --
+             * negate the product for the N forms, the addend for the
+             * subtracting ones.
+             */
+            uint32_t sa = a, sc = c;
+            if (opcode == OP_NMSUB || opcode == OP_NMADD) { sa ^= 0x80000000u; }
+            if (opcode == OP_MSUB  || opcode == OP_NMADD) { sc ^= 0x80000000u; }
+
+            f_begin(f_rm(h, rm));
+            res = f_end(f32_mulAdd(f_v(sa), f_v(b), f_v(sc)), &flags);
+            h->f[rd] = res;
+            h->fcsr |= flags;
+            f_dirty(h);
+            return RV_EXC_NONE;
+#else
             /*
              * Fused: one rounding at the end. two_prod recovers the exact
              * product as pr+pe and two_sum the exact sum as sh+sl, so the
@@ -327,6 +389,7 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
             if (f_is_nan(res)) {
                 flags |= FFLAG_NV;
             }
+#endif
         }
         h->f[rd] = res;
         h->fcsr |= flags;
@@ -362,6 +425,17 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
         if (f_nan_result(a, b, &res, &flags)) {
             break;
         }
+#if RV_FPU_SOFTFLOAT
+        f_begin(f_rm(h, rm));
+        float32_t sr;
+        switch (funct5) {
+        case 0x03u: sr = f32_div(f_v(a), f_v(b)); break;
+        case 0x02u: sr = f32_mul(f_v(a), f_v(b)); break;
+        case 0x01u: sr = f32_sub(f_v(a), f_v(b)); break;
+        default:    sr = f32_add(f_v(a), f_v(b)); break;
+        }
+        res = f_end(sr, &flags);
+#else
         const float x = f_bits_to_float(a);
         float y = f_bits_to_float(b);
         float r;
@@ -374,10 +448,18 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
             r = x + y;
         }
         res = f_end(r, &flags);
+#endif
         break;
     }
 
     case 0x0Bu: { /* FSQRT.S */
+#if RV_FPU_SOFTFLOAT
+        f_begin(f_rm(h, rm));
+        res = f_end(f32_sqrt(f_v(a)), &flags);
+        break;
+    }
+    case 0xFFu: {   /* unreachable; keeps the host-FPU arm below intact */
+#endif
         if (f_is_snan(a)) {
             flags |= FFLAG_NV;
             res = F_CANON_NAN;
@@ -412,13 +494,20 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
             float g = f_bits_to_float((norm >> 1) + 0x1FC00000u);
 
             /* Converge in RNE; only the final rounding is architectural. */
+#if !RV_FPU_SOFTFLOAT
             (void)fesetround(FE_TONEAREST);
+#endif
             for (int i = 0; i < 5; i++) {
                 g = 0.5f * (g + v / g);
             }
 
+#if RV_FPU_SOFTFLOAT
+            (void)g; (void)unscale;
+            res = F_CANON_NAN;      /* unreachable: handled by f32_sqrt above */
+#else
             f_begin(f_rm(h, rm));
             res = f_end(g * unscale, &flags);
+#endif
         }
         break;
     }
@@ -528,9 +617,14 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
             return RV_EXC_ILLEGAL_INSN;
         }
         f_begin(f_rm(h, rm));
+#if RV_FPU_SOFTFLOAT
+        res = f_end((rs2 == 0u) ? i32_to_f32((int32_t)h->x[rs1])
+                                : ui32_to_f32(h->x[rs1]), &flags);
+#else
         const float fr = (rs2 == 0u) ? (float)(int32_t)h->x[rs1]
                                      : (float)h->x[rs1];
         res = f_end(fr, &flags);
+#endif
         break;
     }
 
