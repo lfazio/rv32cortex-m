@@ -148,11 +148,25 @@ Three design choices worth stating:
   | `a1` | 2.55 | 7,499 |
   | `ra` | **1.02** | 6,443 |
 
-  So `sp` and `a0` are clearly worth caching and `a1` marginally, but **`ra` is
-  not**: it is read essentially once per block, so caching it spends a load to
-  save a load. The obvious four-register set is the wrong set, which is exactly
-  what the measurement was for. Note also that only 30% of blocks touch `sp` at
-  all, so the decision has to be per block rather than fixed in the prologue.
+  `ra` is clearly not worth caching — read about once per block, so it would
+  spend a load to save a load. `sp` and `a0` looked well worth it.
+
+  **They were not.** A write-through cache holding `sp`, `a0` and `a1` in
+  `r8`–`r10` was implemented, verified correct (139/139 on hardware, CoreMark
+  CRC unchanged) and measured **15.5% slower**: 31.39 → 36.26 cycles per guest
+  instruction. It is reverted.
+
+  The read counts were real but measured the wrong thing. A cached read becomes
+  `MOV rt, r8` where an uncached one is `LDR rt,[r4,#n]` — the same *one*
+  instruction, saving roughly a cycle, not eliminating work. Meanwhile
+  write-through adds an instruction to every write, and `a0`/`a1` are written
+  about as often as they are read. Add three more registers to the `PUSH`/`POP`
+  on all 5.45 M block entries and the arithmetic goes negative.
+
+  The lesson is that reads-per-block was necessary but not sufficient: what
+  matters is the *cost difference* between cached and uncached access, and with
+  the register file already at a single load off `r4`, that difference was
+  never a whole instruction to begin with.
 - **The guest-RAM registers are materialised lazily.** `r5`/`r6`/`r7` cost six
   halfwords and a block with no memory access has no use for them, so they are
   emitted at the first access that needs them rather than on entry. No pre-pass
