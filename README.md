@@ -46,8 +46,8 @@ silicon.
 | Official `riscv-arch-test` (RVCP) | **101 / 101 pass** |
 | `riscv-tests` (Berkeley) | **75 / 77 pass** (2 need PMP / Sdtrig, not implemented) |
 | Guest ISA self-test (104 checks) | passes on host **and** on hardware |
-| Nucleo-F446RE firmware | runs; 19 KB flash, guest gets 123 KiB of the 128 KiB SRAM |
-| Thumb-2 JIT backend | not implemented; interface in place |
+| Nucleo-F446RE firmware | runs; 19–29 KB flash, guest gets 107–123 KiB of the 128 KiB SRAM |
+| Thumb-2 JIT backend | implemented; **2.07× over the interpreter** on hardware |
 | F / D / B / V extensions | not implemented |
 
 The target the emulator was designed for is Cortex-M7; the board on hand is a
@@ -102,7 +102,7 @@ firmware and defeat the design.
 │  bus         region table, permissions, width checks,     │
 │              passthrough translation, fast-path caches    │
 ├──────────────────────────────────────────────────────────┤
-│  backend     rv_backend_t  ──▶ interpreter  [JIT later]   │
+│  backend     rv_backend_t ──▶ interpreter | Thumb-2 JIT   │
 ├──────────────────────────────────────────────────────────┤
 │  core        hart state · RVC expansion · CSRs · traps    │
 └──────────────────────────────────────────────────────────┘
@@ -111,12 +111,38 @@ firmware and defeat the design.
 `src/core/` is portable C11 with no platform dependencies — it compiles
 unchanged for ARMv6-M, ARMv7E-M, ARMv8.1-M and for a native host build.
 
-**JIT readiness.** The core never calls the interpreter directly; it goes
-through [`rv_backend_t`](include/rv32/rv_backend.h). `run` is budgeted rather
-than free-running so a JIT can execute a whole translated block and report what
-it retired, and `invalidate` already exists so `FENCE.I` and image loads can
-discard translations. Adding a Thumb-2 backend does not require touching the
-core.
+### Backends
+
+The core never calls the interpreter directly; it goes through
+[`rv_backend_t`](include/rv32/rv_backend.h). `run` is budgeted rather than
+free-running so a JIT can execute a whole translated block and report what it
+retired, and `invalidate` lets `FENCE.I` and image loads discard translations.
+
+**Thumb-2 JIT** ([`src/backend/rv_jit_thumb2.c`](src/backend/rv_jit_thumb2.c)).
+RV32 basic blocks are translated into Thumb-2 held in a RAM code cache,
+eliminating the per-instruction costs the interpreter cannot avoid: the bus call
+to fetch, RVC expansion, the dispatch switch, the pc write and the counter
+update.
+
+Three design choices worth stating:
+
+- **The guest register file stays in memory.** `hart->x` is at offset 0, so
+  every access is a single 16-bit `LDR/STR Rt,[r4,#n]`. That sounds wasteful,
+  but it means guest state is coherent at every instruction boundary — a trap,
+  an interrupt or a debugger read needs no unwinding. Register allocation across
+  a block is the next optimisation, not a prerequisite.
+- **Blocks end at every control transfer**, with no chaining or inline caching.
+  Each block writes `h->pc` and returns, which bounds interrupt latency by one
+  block rather than by a chain of them.
+- **Untranslated encodings end the block and fall back to the interpreter.**
+  The JIT is a fast path over the interpreter, never a replacement, so
+  correctness does not depend on covering every encoding. `SYSTEM`, atomics and
+  the `MULH`/`DIV`/`REM` helpers are currently interpreted.
+
+Memory access stays in C and is reached by a helper call: it needs the region
+walk, the permission and width checks and the fault path, none of which is worth
+open-coding. A faulting helper enters the trap itself and returns a flag that
+makes the block exit immediately.
 
 ### Cache-block operations
 
@@ -247,20 +273,44 @@ states and the ART accelerator enabled), using
 [`tests/guest/bench.c`](tests/guest/bench.c) — a compute-bound workload with no
 I/O between the start and end markers.
 
-**1,275,036 guest instructions in 155,439,139 host cycles.**
+**1,275,036 guest instructions**, timed with the DWT cycle counter.
 
 | Configuration | Host cycles / guest instruction | Throughput |
 |---|---|---|
-| inline bus fast paths | 166.9 | 1.08 MIPS |
-| \+ LTO | **121.9** | **1.48 MIPS** |
+| interpreter, inline bus fast paths | 166.9 | 1.08 MIPS |
+| \+ LTO | 121.9 | 1.48 MIPS |
+| interpreter in SRAM | 162.3 | 1.11 MIPS |
+| **Thumb-2 JIT** | **58.8** | **3.06 MIPS** |
 
-So the emulated core runs at roughly **1.5 MHz-equivalent** on a 180 MHz host —
-about a 120× slowdown versus native, which is the expected order for a
-straightforward interpreter with no translation cache.
+The JIT is **2.07× faster** than the tuned interpreter: the emulated core runs
+at roughly **3 MHz-equivalent** on a 180 MHz host, against ~1.5 MHz interpreted.
+It translated 96.9% of executed instructions — 87 blocks in 10.7 KB of a 12 KB
+code cache, with 40,010 of 1,275,036 instructions falling back to the
+interpreter. Those fallbacks are exactly the `div`/`rem` pairs in the muldiv
+kernel, which names the next thing worth teaching the translator.
 
-The pre-optimisation figure on *this* workload was not captured, so the table
-only reports what was measured; the fast paths were introduced before the first
-`bench` run.
+The JIT costs 12 KB of RAM for the code cache, taking the guest from 123 KiB to
+107 KiB. Correctness is validated by the 104-check guest ISA self-test running
+on hardware with the JIT active, which covers ALU, shifts, every load/store
+width with sign extension, branches, jumps, M, A, CSRs, traps and CBO.
+
+### Two optimisations that did not work
+
+Recorded because the negative results are as informative as the wins:
+
+**Interpreter in SRAM** (`RV32_INTERP_IN_RAM`, default off) measured *slower* —
+162 vs 122 cycles — while also taking 8 KiB from the guest. Executing from flash
+lets the Cortex-M4 fetch over the I-bus while data goes to SRAM over the D-bus,
+and the ART accelerator keeps a hot loop effectively wait-state free; moving code
+into SRAM puts fetch and data on the same interface and serialises them. Kept as
+an option because the trade-off is part-specific.
+
+**Lazy interrupt evaluation** (`RV32_LAZY_IRQ`, default on) showed no measurable
+gain, which is the expected result: with `mstatus.MIE` clear the eager check
+already returns after one load and one test. It pays when a guest enables
+interrupts. Measurements across these interpreter builds span 155–160 M cycles
+for identical instruction counts, so differences of a few percent are code
+layout, not algorithm.
 
 The two optimisations that mattered:
 
@@ -282,9 +332,10 @@ The two optimisations that mattered:
 Only `bench` is a throughput figure. The other two are dominated by waiting on
 real hardware, which is a property of the workload, not of the emulator.
 
-Remaining headroom, in rough order of expected value: relocating the interpreter
-loop into SRAM to escape flash wait states, hoisting the per-instruction
-interrupt check, and a Thumb-2 JIT backend.
+Remaining headroom, in rough order of expected value: allocating guest registers
+to ARM registers across a block (the JIT currently loads and stores every
+operand), teaching the translator `DIV`/`REM`/`MULH`, and chaining blocks so a
+hot loop stops returning to the dispatcher.
 
 ---
 
@@ -379,7 +430,6 @@ Deferred until the current ISA is proven and measured — both of which are now
 done, so these are unblocked:
 
 - [ ] **Zacas** — the atomic compare-and-swap instruction.
-- [ ] **Thumb-2 JIT backend** — the interface is already in place.
 - **B** (`Zba`/`Zbb`/`Zbc`/`Zbs`) — cheapest of the four; maps well onto Thumb-2
   `CLZ`, `RBIT`, `REV`, `UBFX`.
 - [ ] **F / D** — Cortex-M4F and M7 have a single-precision FPU usable for `F`;

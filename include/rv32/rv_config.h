@@ -104,6 +104,19 @@
 #endif
 
 /*
+ * Build the Thumb-2 JIT backend. Requires an ARM host and a RAM code
+ * cache; the interpreter remains available and handles every encoding the
+ * translator does not cover, so this is a speed option, not a feature one.
+ */
+#ifndef RV_ENABLE_JIT
+#  if defined(__ARM_ARCH) && (__ARM_ARCH >= 7) && defined(__thumb2__)
+#    define RV_ENABLE_JIT 1
+#  else
+#    define RV_ENABLE_JIT 0
+#  endif
+#endif
+
+/*
  * How many instructions rv_backend_t::run executes before returning to the
  * host so it can service ARM-side work (timers, USB, RTOS ticks).
  */

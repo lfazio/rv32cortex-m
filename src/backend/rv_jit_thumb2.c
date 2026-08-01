@@ -1,0 +1,866 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/*
+ * rv_jit_thumb2.c - Thumb-2 JIT backend.
+ *
+ * See include/rv32/rv_jit.h for the design rationale. In short: RV32 basic
+ * blocks are translated into Thumb-2 held in a RAM code cache, the guest
+ * register file stays in the hart struct (so guest state is coherent at
+ * every instruction boundary), and anything not translated ends the block
+ * and is executed by the interpreter.
+ *
+ * All encodings below are from the ARMv7-M Architecture Reference Manual.
+ * Each emitter names the encoding it uses (T1, T3, ...) because the same
+ * mnemonic often has several, and picking the wrong one produces code that
+ * assembles into something plausible and behaves subtly differently.
+ */
+
+#include "rv32/rv_jit.h"
+
+#if RV_ENABLE_JIT
+
+#include "rv32/rv_backend.h"
+#include "rv32/rv_decode.h"
+#include "rv32/rv_hart.h"
+
+#include <stddef.h>
+#include <string.h>
+
+/*
+ * The translated code addresses the guest register file as [r4, #n*4]
+ * using the 16-bit LDR/STR encoding, which requires x[] at offset 0 and a
+ * maximum byte offset of 124. Both hold by construction; assert it so a
+ * struct reshuffle fails the build instead of miscompiling guests.
+ */
+_Static_assert(offsetof(rv_hart_t, x) == 0,
+               "translated code assumes hart->x is at offset 0");
+_Static_assert(sizeof(((rv_hart_t *)0)->x) == 32u * 4u,
+               "translated code assumes 32 32-bit guest registers");
+
+#define HART_PC_OFF   ((uint32_t)offsetof(rv_hart_t, pc))
+
+/* ARM registers used by translated code. */
+#define R0  0u
+#define R1  1u
+#define R2  2u
+#define R3  3u
+#define R4  4u   /* hart pointer, callee-saved so it survives helper calls */
+#define R12 12u  /* helper address before BLX */
+
+/* Condition codes. */
+#define C_EQ 0u
+#define C_NE 1u
+#define C_CS 2u   /* unsigned >= */
+#define C_CC 3u   /* unsigned <  */
+#define C_GE 10u
+#define C_LT 11u
+
+/* ------------------------------------------------------------------ */
+/* Code cache                                                          */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    uint32_t  guest_pc;
+    uint16_t *code;        /* first halfword of the translated block */
+    uint16_t  insns;       /* guest instructions the block retires   */
+    int16_t   next;        /* hash chain, -1 terminates              */
+} jit_block_t;
+
+static uint8_t     *g_code;
+static uint32_t     g_code_size;
+static uint32_t     g_code_used;
+static jit_block_t  g_blocks[RV_JIT_MAX_BLOCKS];
+static uint32_t     g_block_count;
+static int16_t      g_hash[RV_JIT_HASH_SIZE];
+static bool         g_hash_ready;
+static rv_jit_stats_t g_stats;
+
+/* Emission cursor, valid only while translating. */
+static uint16_t *g_emit;
+static uint16_t *g_emit_end;
+static bool      g_emit_overflow;
+
+static uint32_t pc_hash(uint32_t pc)
+{
+    /* pc is at least 2-byte aligned, so the low bit carries nothing. */
+    return (pc >> 1) & (RV_JIT_HASH_SIZE - 1u);
+}
+
+void rv_jit_set_code_buffer(void *buf, uint32_t size)
+{
+    g_code = (uint8_t *)buf;
+    g_code_size = size;
+    rv_jit_flush();
+}
+
+void rv_jit_flush(void)
+{
+    g_code_used = 0u;
+    g_block_count = 0u;
+    for (uint32_t i = 0; i < RV_JIT_HASH_SIZE; i++) {
+        g_hash[i] = -1;
+    }
+    g_hash_ready = true;
+    g_stats.flushes++;
+}
+
+void rv_jit_get_stats(rv_jit_stats_t *out)
+{
+    *out = g_stats;
+    out->blocks = g_block_count;
+    out->code_used = g_code_used;
+    out->code_size = g_code_size;
+}
+
+static jit_block_t *lookup(uint32_t pc)
+{
+    for (int16_t i = g_hash[pc_hash(pc)]; i >= 0; i = g_blocks[i].next) {
+        if (g_blocks[i].guest_pc == pc) {
+            return &g_blocks[i];
+        }
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------ */
+/* Emitters                                                            */
+/* ------------------------------------------------------------------ */
+
+static void emit16(uint16_t hw)
+{
+    if (RV_UNLIKELY(g_emit >= g_emit_end)) {
+        g_emit_overflow = true;
+        return;
+    }
+    *g_emit++ = hw;
+}
+
+/* Thumb-2 32-bit instructions are stored as two halfwords, high first. */
+static void emit32(uint16_t hw1, uint16_t hw2)
+{
+    emit16(hw1);
+    emit16(hw2);
+}
+
+/* LDR Rt,[R4,#reg*4]  -- T1, requires Rt and Rn low and offset <= 124. */
+static void emit_ld_greg(uint32_t rt, uint32_t greg)
+{
+    emit16((uint16_t)(0x6800u | (greg << 6) | (R4 << 3) | rt));
+}
+
+/* STR Rt,[R4,#reg*4] -- T1. Writes to x0 are dropped by the caller. */
+static void emit_st_greg(uint32_t greg, uint32_t rt)
+{
+    emit16((uint16_t)(0x6000u | (greg << 6) | (R4 << 3) | rt));
+}
+
+/* STR<c>.W Rt,[Rn,#imm12] -- T3, for offsets the 16-bit form cannot reach. */
+static void emit_str_imm12(uint32_t rt, uint32_t rn, uint32_t imm12)
+{
+    emit32((uint16_t)(0xF8C0u | rn), (uint16_t)((rt << 12) | imm12));
+}
+
+/* MOVW Rd,#imm16 -- T3. */
+static void emit_movw(uint32_t rd, uint32_t imm16)
+{
+    const uint32_t imm4 = (imm16 >> 12) & 0xFu;
+    const uint32_t i    = (imm16 >> 11) & 0x1u;
+    const uint32_t imm3 = (imm16 >> 8) & 0x7u;
+    const uint32_t imm8 = imm16 & 0xFFu;
+    emit32((uint16_t)(0xF240u | (i << 10) | imm4),
+           (uint16_t)((imm3 << 12) | (rd << 8) | imm8));
+}
+
+/* MOVT Rd,#imm16 -- T1. */
+static void emit_movt(uint32_t rd, uint32_t imm16)
+{
+    const uint32_t imm4 = (imm16 >> 12) & 0xFu;
+    const uint32_t i    = (imm16 >> 11) & 0x1u;
+    const uint32_t imm3 = (imm16 >> 8) & 0x7u;
+    const uint32_t imm8 = imm16 & 0xFFu;
+    emit32((uint16_t)(0xF2C0u | (i << 10) | imm4),
+           (uint16_t)((imm3 << 12) | (rd << 8) | imm8));
+}
+
+/* Materialise a 32-bit constant, skipping MOVT when the top half is zero. */
+static void emit_imm32(uint32_t rd, uint32_t val)
+{
+    emit_movw(rd, val & 0xFFFFu);
+    if ((val >> 16) != 0u) {
+        emit_movt(rd, val >> 16);
+    }
+}
+
+/* MOV Rd,Rm -- T1, works across the full register file. */
+static void emit_mov(uint32_t rd, uint32_t rm)
+{
+    emit16((uint16_t)(0x4600u | ((rd & 0x8u) << 4) | (rm << 3) | (rd & 0x7u)));
+}
+
+/* MOVS Rd,#imm8 -- T1. Inside an IT block this does not set flags. */
+static void emit_mov_imm8(uint32_t rd, uint32_t imm8)
+{
+    emit16((uint16_t)(0x2000u | (rd << 8) | imm8));
+}
+
+/* ADD/SUB Rd,Rn,Rm -- T1, low registers only. */
+static void emit_add_reg(uint32_t rd, uint32_t rn, uint32_t rm)
+{
+    emit16((uint16_t)(0x1800u | (rm << 6) | (rn << 3) | rd));
+}
+
+static void emit_sub_reg(uint32_t rd, uint32_t rn, uint32_t rm)
+{
+    emit16((uint16_t)(0x1A00u | (rm << 6) | (rn << 3) | rd));
+}
+
+/* Data-processing Rdn,Rm -- T1 (AND/EOR/ORR/shifts/CMP/MVN share a form). */
+static void emit_dp_reg(uint16_t op, uint32_t rdn, uint32_t rm)
+{
+    emit16((uint16_t)(op | (rm << 3) | rdn));
+}
+
+#define DP_AND 0x4000u
+#define DP_EOR 0x4040u
+#define DP_LSL 0x4080u
+#define DP_LSR 0x40C0u
+#define DP_ASR 0x4100u
+#define DP_CMP 0x4280u
+#define DP_ORR 0x4300u
+#define DP_MUL 0x4340u
+
+/* Shift Rd,Rm,#imm5 -- T1. */
+static void emit_shift_imm(uint16_t op, uint32_t rd, uint32_t rm, uint32_t imm5)
+{
+    emit16((uint16_t)(op | (imm5 << 6) | (rm << 3) | rd));
+}
+
+#define SH_LSL 0x0000u
+#define SH_LSR 0x0800u
+#define SH_ASR 0x1000u
+
+/* ADDW/SUBW Rd,Rn,#imm12 -- T4, no flags, full 0..4095 range. */
+static void emit_addw(uint32_t rd, uint32_t rn, uint32_t imm12)
+{
+    const uint32_t i    = (imm12 >> 11) & 1u;
+    const uint32_t imm3 = (imm12 >> 8) & 7u;
+    const uint32_t imm8 = imm12 & 0xFFu;
+    emit32((uint16_t)(0xF200u | (i << 10) | rn),
+           (uint16_t)((imm3 << 12) | (rd << 8) | imm8));
+}
+
+static void emit_subw(uint32_t rd, uint32_t rn, uint32_t imm12)
+{
+    const uint32_t i    = (imm12 >> 11) & 1u;
+    const uint32_t imm3 = (imm12 >> 8) & 7u;
+    const uint32_t imm8 = imm12 & 0xFFu;
+    emit32((uint16_t)(0xF2A0u | (i << 10) | rn),
+           (uint16_t)((imm3 << 12) | (rd << 8) | imm8));
+}
+
+/* Add a signed 12-bit RISC-V immediate to a register, in place. */
+static void emit_add_simm12(uint32_t rd, uint32_t rn, int32_t imm)
+{
+    if (imm >= 0) {
+        emit_addw(rd, rn, (uint32_t)imm);
+    } else {
+        emit_subw(rd, rn, (uint32_t)(-imm));
+    }
+}
+
+/* UBFX Rd,Rn,#0,#5 -- isolate a RISC-V shift amount. */
+static void emit_ubfx5(uint32_t rd, uint32_t rn)
+{
+    emit32((uint16_t)(0xF3C0u | rn), (uint16_t)((rd << 8) | 4u));
+}
+
+/* BIC Rd,Rn,#1 -- T1 modified-immediate form, used to mask a JALR target. */
+static void emit_bic1(uint32_t rd, uint32_t rn)
+{
+    emit32((uint16_t)(0xF020u | rn), (uint16_t)((rd << 8) | 1u));
+}
+
+/* IT <cond> -- one conditional instruction follows. */
+static void emit_it(uint32_t cond)
+{
+    emit16((uint16_t)(0xBF08u | (cond << 4)));
+}
+
+/* CBZ Rn,<+4 bytes> -- skips the two-instruction early exit below. */
+static void emit_cbz_skip4(uint32_t rn)
+{
+    emit16((uint16_t)(0xB100u | (1u << 3) | rn));
+}
+
+static void emit_prologue(void)
+{
+    emit16(0xB510u);      /* PUSH {r4, lr} */
+    emit_mov(R4, R0);     /* hart pointer into a callee-saved register */
+}
+
+/* Return `insns` as the retired count. */
+static void emit_epilogue(uint32_t insns)
+{
+    emit_mov_imm8(R0, insns);
+    emit16(0xBD10u);      /* POP {r4, pc} */
+}
+
+/* Write a constant guest pc into hart->pc using r`scratch`. */
+static void emit_set_pc(uint32_t scratch, uint32_t pc)
+{
+    emit_imm32(scratch, pc);
+    emit_str_imm12(scratch, R4, HART_PC_OFF);
+}
+
+/* ------------------------------------------------------------------ */
+/* Helpers called from translated code                                 */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Memory access stays in C: it needs the region walk, the permission and
+ * width checks and the fault path, none of which is worth open-coding.
+ * The helper does the whole instruction including the register write, so
+ * the emitted sequence is just argument setup, a call and a fault test.
+ *
+ * `spec` packs the operand register, the access size and (for loads) the
+ * sign-extension flag. Returns 0 to continue, or 1 meaning the helper has
+ * already entered a trap and the block must exit immediately.
+ */
+#define SPEC_REG(s)   ((s) & 0x1Fu)
+#define SPEC_SIZE(s)  (((s) >> 8) & 0x7u)
+#define SPEC_SIGNED(s) (((s) >> 12) & 1u)
+
+static uint32_t jit_helper_load(rv_hart_t *h, uint32_t addr, uint32_t spec,
+                                uint32_t pc)
+{
+    uint32_t v;
+    const rv_exc_t exc = rv_hart_load(h, addr, SPEC_SIZE(spec),
+                                      SPEC_SIGNED(spec) != 0u, &v);
+    if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
+        h->pc = pc;
+        rv_hart_trap(h, exc, addr);
+        return 1u;
+    }
+    const uint32_t rd = SPEC_REG(spec);
+    if (rd != 0u) {
+        h->x[rd] = v;
+    }
+    return 0u;
+}
+
+static uint32_t jit_helper_store(rv_hart_t *h, uint32_t addr, uint32_t spec,
+                                 uint32_t pc)
+{
+    const rv_exc_t exc = rv_hart_store(h, addr, SPEC_SIZE(spec),
+                                       h->x[SPEC_REG(spec)]);
+    if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
+        h->pc = pc;
+        rv_hart_trap(h, exc, addr);
+        return 1u;
+    }
+    return 0u;
+}
+
+/*
+ * Call a helper: r0=hart, r1=addr (already in place), r2=spec, r3=pc.
+ * On a non-zero return the block exits with `insns` retired, which
+ * includes the faulting instruction so the counters match the
+ * interpreter's accounting.
+ */
+static void emit_helper_call(const void *fn, uint32_t spec, uint32_t pc,
+                             uint32_t insns)
+{
+    emit_mov(R0, R4);
+    emit_imm32(R2, spec);
+    emit_imm32(R3, pc);
+    emit_imm32(R12, (uint32_t)(uintptr_t)fn | 1u);   /* Thumb bit */
+    emit16((uint16_t)(0x4780u | (R12 << 3)));        /* BLX r12 */
+
+    emit_cbz_skip4(R0);
+    emit_mov_imm8(R0, insns);
+    emit16(0xBD10u);                                  /* POP {r4, pc} */
+}
+
+/* ------------------------------------------------------------------ */
+/* Translation                                                         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Translate one instruction. Returns:
+ *   0  translated, block continues
+ *   1  translated, block ends here (control transfer)
+ *  -1  not translated; the block must end *before* this instruction
+ */
+static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
+                         uint32_t insns_after)
+{
+    const uint32_t rd  = rv_rd(insn);
+    const uint32_t rs1 = rv_rs1(insn);
+    const uint32_t rs2 = rv_rs2(insn);
+    const uint32_t f3  = rv_funct3(insn);
+    const uint32_t f7  = rv_funct7(insn);
+    const uint32_t next_pc = pc + len;
+
+    switch (rv_opcode(insn)) {
+
+    case OP_LUI:
+        if (rd != 0u) {
+            emit_imm32(R1, rv_imm_u(insn));
+            emit_st_greg(rd, R1);
+        }
+        return 0;
+
+    case OP_AUIPC:
+        if (rd != 0u) {
+            emit_imm32(R1, pc + rv_imm_u(insn));
+            emit_st_greg(rd, R1);
+        }
+        return 0;
+
+    case OP_IMM: {
+        const int32_t imm = rv_imm_i(insn);
+
+        if (rd == 0u) {
+            return 0;   /* result discarded; nothing to emit */
+        }
+        emit_ld_greg(R1, rs1);
+
+        switch (f3) {
+        case 0:  /* ADDI */
+            emit_add_simm12(R1, R1, imm);
+            break;
+        case 1:  /* SLLI */
+            if (f7 != 0u) {
+                return -1;
+            }
+            emit_shift_imm(SH_LSL, R1, R1, rs2);
+            break;
+        case 5:  /* SRLI / SRAI */
+            if (f7 == 0u) {
+                emit_shift_imm(SH_LSR, R1, R1, rs2);
+            } else if (f7 == 0x20u) {
+                emit_shift_imm(SH_ASR, R1, R1, rs2);
+            } else {
+                return -1;
+            }
+            break;
+        case 2:  /* SLTI */
+        case 3:  /* SLTIU */
+            emit_imm32(R2, (uint32_t)imm);
+            emit_mov_imm8(R3, 0u);
+            emit_dp_reg(DP_CMP, R1, R2);
+            emit_it(f3 == 2u ? C_LT : C_CC);
+            emit_mov_imm8(R3, 1u);
+            emit_mov(R1, R3);
+            break;
+        case 4:  /* XORI */
+            emit_imm32(R2, (uint32_t)imm);
+            emit_dp_reg(DP_EOR, R1, R2);
+            break;
+        case 6:  /* ORI */
+            emit_imm32(R2, (uint32_t)imm);
+            emit_dp_reg(DP_ORR, R1, R2);
+            break;
+        default: /* ANDI */
+            emit_imm32(R2, (uint32_t)imm);
+            emit_dp_reg(DP_AND, R1, R2);
+            break;
+        }
+        emit_st_greg(rd, R1);
+        return 0;
+    }
+
+    case OP_OP: {
+        if (rd == 0u) {
+            return 0;
+        }
+
+        if (f7 == 0u || f7 == 0x20u) {
+            emit_ld_greg(R1, rs1);
+            emit_ld_greg(R2, rs2);
+
+            if (f7 == 0x20u) {
+                if (f3 == 0u) {
+                    emit_sub_reg(R1, R1, R2);          /* SUB */
+                } else if (f3 == 5u) {
+                    emit_ubfx5(R2, R2);
+                    emit_dp_reg(DP_ASR, R1, R2);       /* SRA */
+                } else {
+                    return -1;
+                }
+            } else {
+                switch (f3) {
+                case 0: emit_add_reg(R1, R1, R2); break;          /* ADD  */
+                case 1: emit_ubfx5(R2, R2);
+                        emit_dp_reg(DP_LSL, R1, R2); break;       /* SLL  */
+                case 4: emit_dp_reg(DP_EOR, R1, R2); break;       /* XOR  */
+                case 5: emit_ubfx5(R2, R2);
+                        emit_dp_reg(DP_LSR, R1, R2); break;       /* SRL  */
+                case 6: emit_dp_reg(DP_ORR, R1, R2); break;       /* OR   */
+                case 7: emit_dp_reg(DP_AND, R1, R2); break;       /* AND  */
+                case 2:                                            /* SLT  */
+                case 3:                                            /* SLTU */
+                    emit_mov_imm8(R3, 0u);
+                    emit_dp_reg(DP_CMP, R1, R2);
+                    emit_it(f3 == 2u ? C_LT : C_CC);
+                    emit_mov_imm8(R3, 1u);
+                    emit_mov(R1, R3);
+                    break;
+                default:
+                    return -1;
+                }
+            }
+            emit_st_greg(rd, R1);
+            return 0;
+        }
+
+#if RV_EXT_M
+        if (f7 == 1u && f3 == 0u) {      /* MUL: the only M op worth inlining */
+            emit_ld_greg(R1, rs1);
+            emit_ld_greg(R2, rs2);
+            emit_dp_reg(DP_MUL, R1, R2); /* MULS r1, r2, r1 */
+            emit_st_greg(rd, R1);
+            return 0;
+        }
+#endif
+        /* MULH*, DIV*, REM*: helper-shaped, left to the interpreter. */
+        return -1;
+    }
+
+    case OP_LOAD: {
+        uint32_t size, sign;
+        switch (f3) {
+        case 0: size = 1u; sign = 1u; break;   /* LB  */
+        case 1: size = 2u; sign = 1u; break;   /* LH  */
+        case 2: size = 4u; sign = 0u; break;   /* LW  */
+        case 4: size = 1u; sign = 0u; break;   /* LBU */
+        case 5: size = 2u; sign = 0u; break;   /* LHU */
+        default: return -1;
+        }
+        emit_ld_greg(R1, rs1);
+        emit_add_simm12(R1, R1, rv_imm_i(insn));
+        emit_helper_call((const void *)jit_helper_load,
+                         rd | (size << 8) | (sign << 12), pc, insns_after);
+        return 0;
+    }
+
+    case OP_STORE: {
+        uint32_t size;
+        switch (f3) {
+        case 0: size = 1u; break;
+        case 1: size = 2u; break;
+        case 2: size = 4u; break;
+        default: return -1;
+        }
+        emit_ld_greg(R1, rs1);
+        emit_add_simm12(R1, R1, rv_imm_s(insn));
+        emit_helper_call((const void *)jit_helper_store,
+                         rs2 | (size << 8), pc, insns_after);
+        return 0;
+    }
+
+    case OP_JAL: {
+        const uint32_t target = pc + (uint32_t)rv_imm_j(insn);
+        if (rd != 0u) {
+            emit_imm32(R1, next_pc);
+            emit_st_greg(rd, R1);
+        }
+        emit_set_pc(R1, target);
+        emit_epilogue(insns_after);
+        return 1;
+    }
+
+    case OP_JALR: {
+        if (f3 != 0u) {
+            return -1;
+        }
+        /* rs1 is read before rd is written: they may be the same register. */
+        emit_ld_greg(R1, rs1);
+        emit_add_simm12(R1, R1, rv_imm_i(insn));
+        emit_bic1(R1, R1);
+        if (rd != 0u) {
+            emit_imm32(R2, next_pc);
+            emit_st_greg(rd, R2);
+        }
+        emit_str_imm12(R1, R4, HART_PC_OFF);
+        emit_epilogue(insns_after);
+        return 1;
+    }
+
+    case OP_BRANCH: {
+        uint32_t cond;
+        switch (f3) {
+        case 0: cond = C_EQ; break;
+        case 1: cond = C_NE; break;
+        case 4: cond = C_LT; break;
+        case 5: cond = C_GE; break;
+        case 6: cond = C_CC; break;
+        case 7: cond = C_CS; break;
+        default: return -1;
+        }
+        const uint32_t target = pc + (uint32_t)rv_imm_b(insn);
+
+        emit_ld_greg(R1, rs1);
+        emit_ld_greg(R2, rs2);
+        emit_imm32(R3, next_pc);
+        emit_imm32(R0, target);
+        emit_dp_reg(DP_CMP, R1, R2);
+        emit_it(cond);
+        emit_mov(R3, R0);
+        emit_str_imm12(R3, R4, HART_PC_OFF);
+        emit_epilogue(insns_after);
+        return 1;
+    }
+
+    default:
+        /* SYSTEM, AMO, MISC-MEM and anything else: interpreter's job. */
+        return -1;
+    }
+}
+
+/*
+ * Translate the block starting at `pc`. Returns the block, or NULL if
+ * nothing could be translated (the first instruction is unsupported) or
+ * the caches are full.
+ */
+static jit_block_t *translate(rv_hart_t *h, uint32_t pc)
+{
+    if (g_block_count >= RV_JIT_MAX_BLOCKS ||
+        g_code_used + 64u >= g_code_size) {
+        return NULL;
+    }
+
+    /* 4-byte align so the block entry is well-formed. */
+    g_code_used = (g_code_used + 3u) & ~3u;
+    g_emit = (uint16_t *)(void *)(g_code + g_code_used);
+    g_emit_end = (uint16_t *)(void *)(g_code + g_code_size);
+    g_emit_overflow = false;
+
+    uint16_t *const start = g_emit;
+    emit_prologue();
+
+    uint32_t cur = pc;
+    uint32_t count = 0;
+    bool ended = false;
+
+    while (count < RV_JIT_MAX_BLOCK_INSNS && !g_emit_overflow) {
+        /*
+         * Fetch through the bus so permissions are honoured. A fetch fault
+         * during translation simply ends the block; the interpreter will
+         * re-fetch and raise the trap with the right cause and mtval.
+         */
+        uint16_t lo;
+        if (rv_bus_fetch16(h->bus, cur, &lo) != RV_EXC_NONE) {
+            break;
+        }
+
+        uint32_t insn;
+        unsigned len;
+        if (rv_is_32bit(lo)) {
+            uint16_t hi;
+            if (rv_bus_fetch16(h->bus, cur + 2u, &hi) != RV_EXC_NONE) {
+                break;
+            }
+            insn = (uint32_t)lo | ((uint32_t)hi << 16);
+            len = 4u;
+        } else {
+#if RV_EXT_C
+            insn = rv_decode_expand_c(lo);
+            len = 2u;
+            if (insn == 0u) {
+                break;   /* illegal: let the interpreter report it */
+            }
+#else
+            break;
+#endif
+        }
+
+        /* Snapshot the cursor so an untranslatable instruction can be
+         * rolled back out of the block cleanly. */
+        uint16_t *const before = g_emit;
+        const int r = translate_one(insn, cur, len, count + 1u);
+
+        if (r < 0) {
+            g_emit = before;
+            break;
+        }
+        count++;
+        cur += len;
+        if (r == 1) {
+            ended = true;
+            break;
+        }
+    }
+
+    if (g_emit_overflow || count == 0u) {
+        return NULL;
+    }
+
+    /* A block that ran out of translatable instructions falls through: set
+     * pc to where the interpreter should resume. */
+    if (!ended) {
+        emit_set_pc(R1, cur);
+        emit_epilogue(count);
+    }
+
+    if (g_emit_overflow) {
+        return NULL;
+    }
+
+    jit_block_t *b = &g_blocks[g_block_count];
+    b->guest_pc = pc;
+    b->code = start;
+    b->insns = (uint16_t)count;
+
+    const uint32_t hidx = pc_hash(pc);
+    b->next = g_hash[hidx];
+    g_hash[hidx] = (int16_t)g_block_count;
+    g_block_count++;
+    g_code_used = (uint32_t)((uint8_t *)g_emit - g_code);
+    g_stats.translations++;
+
+    /*
+     * The code was written as data. On ARMv7-M without a data cache a DSB
+     * followed by an ISB is what makes it visible to the instruction side;
+     * on a core with caches the platform's cache maintenance would also be
+     * required before this point.
+     */
+#if defined(__ARM_ARCH)
+    __asm__ volatile ("dsb 0xF" ::: "memory");
+    __asm__ volatile ("isb 0xF" ::: "memory");
+#endif
+
+    return b;
+}
+
+/* ------------------------------------------------------------------ */
+/* Backend                                                             */
+/* ------------------------------------------------------------------ */
+
+typedef uint32_t (*block_fn_t)(rv_hart_t *h);
+
+static bool jit_init(rv_hart_t *h)
+{
+    (void)h;
+    if (!g_hash_ready) {
+        rv_jit_flush();
+    }
+    return true;
+}
+
+static void jit_reset(rv_hart_t *h)
+{
+    (void)h;
+    rv_jit_flush();
+}
+
+static void jit_invalidate(rv_hart_t *h, uint32_t addr, uint32_t len)
+{
+    (void)h;
+    (void)addr;
+    (void)len;
+    /* Whole-cache flush: translations are cheap to rebuild and tracking
+     * which blocks covered a given range would cost more than it saves. */
+    rv_jit_flush();
+}
+
+static rv_run_reason_t jit_run(rv_hart_t *h, uint32_t budget, uint32_t *retired)
+{
+    uint32_t done = 0;
+    rv_run_reason_t reason = RV_RUN_BUDGET;
+
+    if (RV_UNLIKELY(g_code == NULL)) {
+        /* No code buffer configured: behave exactly like the interpreter. */
+        return rv_backend_interp.run(h, budget, retired);
+    }
+
+    if (RV_UNLIKELY(h->state == RV_STATE_WFI)) {
+        if (rv_hart_pending_irq(h) == RV_EXC_NONE) {
+            if (retired != NULL) {
+                *retired = 0u;
+            }
+            return RV_RUN_WFI;
+        }
+        h->state = RV_STATE_RUNNING;
+#if RV_LAZY_IRQ_CHECK
+        h->irq_dirty = true;
+#endif
+    }
+
+    while (done < budget) {
+        if (RV_UNLIKELY(h->state != RV_STATE_RUNNING)) {
+            reason = (h->state == RV_STATE_HALTED) ? RV_RUN_HALTED : RV_RUN_WFI;
+            break;
+        }
+
+        /* Interrupts are delivered between blocks, which bounds latency by
+         * the block length rather than by a chain of them. */
+#if RV_LAZY_IRQ_CHECK
+        if (RV_UNLIKELY(h->irq_dirty))
+#endif
+        {
+#if RV_LAZY_IRQ_CHECK
+            h->irq_dirty = false;
+#endif
+            const rv_exc_t irq = rv_hart_pending_irq(h);
+            if (RV_UNLIKELY(irq != RV_EXC_NONE)) {
+                rv_hart_trap(h, RV_CAUSE_INTERRUPT | irq, 0u);
+                done++;
+                continue;
+            }
+        }
+
+        jit_block_t *b = lookup(h->pc);
+        if (b == NULL) {
+            b = translate(h, h->pc);
+            if (b == NULL) {
+                /*
+                 * Nothing translatable here. Run a single instruction on
+                 * the interpreter and try again; that covers SYSTEM, AMO,
+                 * the M helpers and every encoding the translator skips.
+                 */
+                uint32_t n = 0;
+                const rv_run_reason_t r = rv_backend_interp.run(h, 1u, &n);
+                done += n;
+                g_stats.interp_fallbacks += n;
+                if (r == RV_RUN_HALTED || r == RV_RUN_WFI) {
+                    reason = r;
+                    break;
+                }
+                continue;
+            }
+        }
+
+        /* Thumb bit set so BLX enters in Thumb state. */
+        const block_fn_t fn =
+            (block_fn_t)(uintptr_t)((uint32_t)(uintptr_t)b->code | 1u);
+        const uint32_t n = fn(h);
+        done += n;
+
+#if RV_EXT_ZICNTR
+        if (RV_LIKELY((h->mcountinhibit & 0x1u) == 0u)) {
+            h->mcycle += n;
+        }
+        if (RV_LIKELY((h->mcountinhibit & 0x4u) == 0u)) {
+            h->minstret += n;
+        }
+#endif
+    }
+
+#if RV_ENABLE_STATS
+    h->insn_retired_lo += done;
+#endif
+    if (retired != NULL) {
+        *retired = done;
+    }
+    return reason;
+}
+
+const rv_backend_t rv_backend_jit = {
+    .name       = "jit-thumb2",
+    .init       = jit_init,
+    .reset      = jit_reset,
+    .run        = jit_run,
+    .invalidate = jit_invalidate,
+};
+
+#endif /* RV_ENABLE_JIT */

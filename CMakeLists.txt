@@ -90,6 +90,9 @@ add_library(rv32core STATIC
     src/core/rv_interp.c
     src/devices/rv_clint.c
     src/devices/rv_uart.c
+    # Compiles to nothing unless RV_ENABLE_JIT is set, which needs a
+    # Thumb-2 host; the file guards itself so it can stay in the list.
+    src/backend/rv_jit_thumb2.c
 )
 
 target_include_directories(rv32core PUBLIC

@@ -18,6 +18,7 @@
 #include "rv32/rv_backend.h"
 #include "rv32/rv_dev.h"
 #include "rv32/rv_hart.h"
+#include "rv32/rv_jit.h"
 #include "rv32/rv_memmap.h"
 
 #include <string.h>
@@ -53,6 +54,16 @@ extern uint8_t __guest_ram_end[];
 /* ------------------------------------------------------------------ */
 /* State                                                               */
 /* ------------------------------------------------------------------ */
+
+#if RV_ENABLE_JIT
+/*
+ * Code cache for translated blocks. Ordinary .bss: the ARMv7-M default
+ * memory map makes SRAM executable, so no MPU work is needed. This comes
+ * out of what the guest would otherwise get, which is the trade the JIT
+ * asks for.
+ */
+static uint8_t g_jit_code[RV_JIT_CODE_SIZE] __attribute__((aligned(8)));
+#endif
 
 static rv_bus_t    g_bus;
 static rv_hart_t   g_hart;
@@ -501,6 +512,15 @@ int main(void)
     g_hart.ecall = guest_ecall;
     g_hart.cache = &g_cache_ops;
 
+#if RV_ENABLE_JIT
+    rv_jit_set_code_buffer(g_jit_code, sizeof(g_jit_code));
+    rv_backend = &rv_backend_jit;
+    if (rv_backend->init != NULL && !rv_backend->init(&g_hart)) {
+        console_puts("jit init failed; falling back to the interpreter\n");
+        rv_backend = &rv_backend_interp;
+    }
+#endif
+
     /*
      * The image is linked to run from guest RAM, so copy it out of flash.
      * Guests linked for the ROM window can skip this and reset straight to
@@ -570,6 +590,30 @@ int main(void)
         console_putu(kips);
         console_puts(" KIPS\n");
     }
+
+#if RV_ENABLE_JIT
+    if (rv_backend == &rv_backend_jit) {
+        rv_jit_stats_t js;
+        rv_jit_get_stats(&js);
+        console_puts("\n-- jit --\n  blocks   ");
+        console_putu(js.blocks);
+        console_puts("\n  code     ");
+        console_putu(js.code_used);
+        console_putc('/');
+        console_putu(js.code_size);
+        console_puts(" bytes\n  flushes  ");
+        console_putu(js.flushes);
+        /*
+         * Instructions the translator declined and the interpreter ran.
+         * A high share here is the first place to look when the speedup
+         * is smaller than expected: it names exactly which encodings are
+         * worth teaching the translator next.
+         */
+        console_puts("\n  interp   ");
+        console_putu(js.interp_fallbacks);
+        console_puts(" instructions fell back\n");
+    }
+#endif
 
     report_state();
 
