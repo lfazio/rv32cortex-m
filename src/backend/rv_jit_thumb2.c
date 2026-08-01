@@ -135,6 +135,21 @@ static rv_jit_stats_t g_stats;
 /* The hart being translated for, so translate_one can read mstatus. */
 static rv_hart_t *g_xlate_hart;
 
+#if RV_EXT_PMP
+/*
+ * The value of hart->pmp_active the cached blocks were translated against.
+ *
+ * The inlined memory path writes guest RAM directly and so cannot consult
+ * PMP. That is fine while PMP cannot deny anything, which is the state
+ * until a guest locks an entry -- but blocks are translated once and reused,
+ * so a block emitted before the lock would keep bypassing the check
+ * afterwards. Comparing this on each block dispatch and flushing on a
+ * change costs one load and one compare per block, and nothing per
+ * instruction.
+ */
+static bool g_pmp_seen;
+#endif
+
 static uint32_t g_ram_base;
 static uint32_t g_ram_size;
 static uint32_t g_ram_host;
@@ -914,6 +929,18 @@ static void emit_mem_access(bool is_store, uint32_t size, uint32_t sign,
                             uint32_t pc, uint32_t insns, bool is_fp)
 {
     uint16_t *fail_align = NULL;
+
+#if RV_EXT_PMP
+    /*
+     * With PMP able to deny, every access has to go through the helper,
+     * which calls rv_hart_load/store and therefore checks it. The inlined
+     * path writes memory directly and would silently ignore a locked entry.
+     */
+    if (g_xlate_hart->pmp_active) {
+        emit_helper_call(helper, spec, pc, insns);
+        return;
+    }
+#endif
 
     emit_ram_regs();
 
@@ -2144,7 +2171,11 @@ static bool jit_init(rv_hart_t *h)
 
 static void jit_reset(rv_hart_t *h)
 {
+#if RV_EXT_PMP
+    g_pmp_seen = h->pmp_active;
+#else
     (void)h;
+#endif
     rv_jit_flush();
 }
 
@@ -2186,6 +2217,19 @@ static rv_run_reason_t jit_run(rv_hart_t *h, uint32_t budget, uint32_t *retired)
             reason = (h->state == RV_STATE_HALTED) ? RV_RUN_HALTED : RV_RUN_WFI;
             break;
         }
+
+#if RV_EXT_PMP
+        /*
+         * A guest that has just locked a PMP entry invalidates every block
+         * translated while PMP was inert, because those inlined their
+         * memory accesses.
+         */
+        if (RV_UNLIKELY(h->pmp_active != g_pmp_seen)) {
+            g_pmp_seen = h->pmp_active;
+            rv_jit_flush();
+            continue;
+        }
+#endif
 
         /* Interrupts are delivered between blocks, which bounds latency by
          * the block length rather than by a chain of them. */

@@ -71,7 +71,11 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
   default NaN is RISC-V's canonical NaN) and `FZ` clear (RISC-V wants real
   subnormals). `RMM` has no ARM rounding mode and stays on the helper.
 - **JIT fast paths bypass the C helpers and their side effects.** The inlined
-  store had to drop the LR/SC reservation by hand.
+  store had to drop the LR/SC reservation by hand, and had to be abandoned
+  entirely once PMP is active, because it writes guest RAM without checking.
+  Both were found on hardware, not by the x86 suites. When adding anything that
+  `rv_hart_load`/`rv_hart_store` does beyond the access itself, ask what the
+  inlined path does about it.
 - **Do not conflate "nothing translatable here" with "cache full".** Sharing a
   recovery path made every interpreted `div` flush the code cache.
 - **A failing arch test may be the Sail config, not the emulator.** ACT runs the

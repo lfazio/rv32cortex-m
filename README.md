@@ -48,7 +48,7 @@ silicon.
 | **D** (double precision) | not implemented, and not planned |
 | **Zcd** | not implementable without D — see below |
 | `riscv-tests` (Berkeley) | **75 / 77 pass** (`breakpoint` needs Sdtrig; `csr` is a known F gap, below) |
-| **PMP** | 16 entries, TOR/NA4/NAPOT; `rv32mi/pmpaddr` passes |
+| **PMP** | 16 entries, TOR/NA4/NAPOT; `rv32mi/pmpaddr` passes, validated on hardware |
 | Guest ISA self-test (104 checks) | passes on host **and** on hardware |
 | Nucleo-F446RE firmware | runs; ~29 KB flash, guest gets 70–123 KiB of the 128 KiB SRAM |
 | Thumb-2 JIT backend | implemented; **20.2× slower than native ARM** on CoreMark |
@@ -168,6 +168,15 @@ Three design choices worth stating:
   matters is the *cost difference* between cached and uncached access, and with
   the register file already at a single load off `r4`, that difference was
   never a whole instruction to begin with.
+- **PMP forces memory through the helper, and flushes on activation.** The
+  inlined path writes guest RAM directly and so cannot consult PMP. That is
+  harmless while PMP cannot deny anything — the state until a guest locks an
+  entry — but blocks are translated once and reused, so a block emitted before
+  the lock would keep bypassing the check afterwards. The JIT compares
+  `pmp_active` on each block dispatch and flushes on a change, which costs one
+  load and one compare per block and nothing per instruction. Measured cost on
+  CoreMark, which never touches PMP: 31.5 → 32.6 cycles per guest instruction,
+  about 3.4%.
 - **The guest-RAM registers are materialised lazily.** `r5`/`r6`/`r7` cost six
   halfwords and a block with no memory access has no use for them, so they are
   emitted at the first access that needs them rather than on entry. No pre-pass

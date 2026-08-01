@@ -836,6 +836,66 @@ static void test_fpu(void)
 #endif /* __riscv_flen */
 
 /* ------------------------------------------------------------------ */
+/* PMP                                                                 */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Guarded region for the lock test. Eight bytes, eight-byte aligned, so a
+ * single NAPOT entry covers it exactly and nothing else.
+ *
+ * Locking is permanent until reset, so this buffer must not be touched by
+ * anything else afterwards -- which is why it is a dedicated object rather
+ * than a slice of an existing one.
+ */
+static volatile uint32_t g_pmp_area[2] __attribute__((aligned(8)));
+
+static void test_pmp(void)
+{
+    /* The address registers are plain read/write while unlocked. */
+    csr_write("pmpaddr1", 0x12345678u);
+    check("pmpaddr-rw", csr_read("pmpaddr1"), 0x12345678u);
+    csr_write("pmpaddr1", 0u);
+
+    /* Reserved bits of a cfg byte read back as zero. */
+    csr_write("pmpcfg0", 0x00006000u);
+    check("pmpcfg-wpri", csr_read("pmpcfg0") & 0x6000u, 0u);
+    csr_write("pmpcfg0", 0u);
+
+    g_pmp_area[0] = 0xA5A5A5A5u;
+    g_pmp_area[1] = 0x5A5A5A5Au;
+
+    /*
+     * Entry 0: NAPOT over the eight bytes, locked, readable but not
+     * writable. Locked is what makes it apply to M-mode at all.
+     */
+    csr_write("pmpaddr0", ((uint32_t)(uintptr_t)g_pmp_area) >> 2);
+    csr_write("pmpcfg0", 0x99u);          /* L | NAPOT | R */
+
+    /* Reads still work. */
+    check("pmp-read-ok", g_pmp_area[0], 0xA5A5A5A5u);
+
+    /* Writes now fault, and report a store access fault at the address. */
+    uint32_t before = g_trap_count;
+    __asm__ volatile ("sw %0, 0(%1)"
+                      :: "r"(0xDEADBEEFu), "r"(g_pmp_area) : "memory");
+    check("pmp-write-traps", g_trap_count - before, 1u);
+    check("pmp-write-cause", g_last_cause, 7u);   /* store access fault */
+    check("pmp-write-blocked", g_pmp_area[0], 0xA5A5A5A5u);
+
+    /* A locked entry is immutable until reset: both cfg and address. */
+    csr_write("pmpcfg0", 0u);
+    check("pmp-cfg-locked", csr_read("pmpcfg0") & 0xFFu, 0x99u);
+    const uint32_t locked_addr = csr_read("pmpaddr0");
+    csr_write("pmpaddr0", 0xFFFFFFFFu);
+    check("pmp-addr-locked", csr_read("pmpaddr0"), locked_addr);
+
+    /* Memory outside the entry is unaffected. */
+    static volatile uint32_t elsewhere;
+    elsewhere = 0x1234u;
+    check("pmp-outside-ok", elsewhere, 0x1234u);
+}
+
+/* ------------------------------------------------------------------ */
 
 int main(void)
 {
@@ -852,6 +912,7 @@ int main(void)
     test_csr();
     test_traps();
     test_cbo();
+    test_pmp();
 #if defined(__riscv_zacas)
     test_zacas();
 #endif
