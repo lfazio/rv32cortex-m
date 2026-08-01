@@ -752,6 +752,16 @@ static void emit_vcmp(uint32_t vd, uint32_t vm, bool signalling)
            (uint16_t)((vd << 12) | 0x0A40u | (signalling ? 0x80u : 0u) | vm));
 }
 
+/*
+ * VCVT.F32.S32 / VCVT.F32.U32 Sd,Sm -- integer to single precision.
+ * `is_signed` selects between them.
+ */
+static void emit_vcvt_f32_from_int(uint32_t vd, uint32_t vm, bool is_signed)
+{
+    emit32(0xEEB8u,
+           (uint16_t)((vd << 12) | 0x0A40u | (is_signed ? 0x80u : 0u) | vm));
+}
+
 static void emit_vmrs_apsr(void)
 {
     emit32(0xEEF1u, 0xFA10u);
@@ -1743,6 +1753,35 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
                 emit_st_greg(rd, R1);
             }
             emit_fp_getflags();
+            return 0;
+        }
+
+        case 0x1Au: {               /* FCVT.S.W / FCVT.S.WU */
+            /*
+             * Integer to float only. The other direction is left on the
+             * helper because ARM and RISC-V disagree on NaN: ARM's VCVT
+             * gives zero, RISC-V requires the maximum representable value.
+             * Both saturate on overflow and both raise invalid, so the
+             * divergence is confined to that one input, but detecting it
+             * inline would cost a compare and a branch on every conversion
+             * -- and getting it wrong would be silent.
+             */
+            if (rs2 > 1u) {
+                return -1;
+            }
+            const uint32_t rmf = f3;
+            if (rmf == FRM_RMM || (rmf > FRM_RMM && rmf != FRM_DYN)) {
+                return -1;
+            }
+
+            emit_fp_setmode(rmf);
+            emit_ld_greg(R1, rs1);
+            emit_vmov_s_r(VS0, R1);
+            emit_vcvt_f32_from_int(VS4, VS0, rs2 == 0u);
+            emit_vmov_r_s(R1, VS4);
+            emit_st_freg(rd, R1);
+            emit_fp_getflags();
+            emit_fp_dirty();
             return 0;
         }
 

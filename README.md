@@ -233,11 +233,22 @@ condition codes line up once unordered is accounted for — it leaves `N=0`,
 `Z=0`, `C=1`, `V=1`, so `EQ`, `MI` and `LS` are all false for it, which is
 RISC-V's requirement that every comparison against NaN be false.
 
-**Still on the helper:** the six `FCVT` forms, `FMIN`/`FMAX`, `FCLASS`, and
-anything using `RMM`. The conversions have a direct `VCVT` equivalent and are
-the next increment. `FMIN`/`FMAX` do not: ARMv7-M has no scalar
-`VMINNM`/`VMAXNM`, and RISC-V's NaN rules would need open-coding regardless.
-`FCLASS` has no equivalent at all.
+`FCVT.S.W` and `FCVT.S.WU` are translated as `VCVT.F32.S32`/`VCVT.F32.U32`.
+
+**Still on the helper**, each for a reason rather than for lack of time:
+
+- `FCVT.W.S` and `FCVT.WU.S` — ARM and RISC-V **disagree on NaN**. ARM's
+  `VCVT` yields zero; RISC-V requires the maximum representable value. Both
+  saturate on overflow and both raise invalid, so the divergence is one input
+  wide, but detecting it inline costs a compare and a branch on every
+  conversion and getting it wrong would be silent.
+- `FMIN`/`FMAX` — ARMv7-M has no scalar `VMINNM`/`VMAXNM`, and RISC-V's NaN
+  rules would need open-coding regardless.
+- `FCLASS` — no ARM equivalent at all.
+- anything using `RMM` — no ARM rounding mode.
+
+Interpreter fallbacks on the guest self-test are down from 93 to 79 across this
+work.
 
 ### Cache-block operations
 
