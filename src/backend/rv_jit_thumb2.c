@@ -883,7 +883,7 @@ static void emit_alu_helper(uint32_t rd, uint32_t rs1, uint32_t rs2, uint32_t op
  *  -1  not translated; the block must end *before* this instruction
  */
 static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
-                         uint32_t insns_after)
+                         uint32_t insns_after, uint32_t *redirect)
 {
     const uint32_t rd  = rv_rd(insn);
     const uint32_t rs1 = rv_rs1(insn);
@@ -1207,6 +1207,17 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
             emit_imm32(R1, next_pc);
             emit_st_greg(rd, R1);
         }
+        /*
+         * A forward jump can simply be followed: nothing needs to be
+         * emitted for it at all, and the block keeps growing. Backward
+         * jumps are left to end the block -- they are loop back edges, and
+         * returning to the dispatcher there is what bounds interrupt
+         * latency and stops translation looping over the same body.
+         */
+        if (target > pc) {
+            *redirect = target;
+            return 2;
+        }
         emit_set_pc(R1, target);
         emit_epilogue(insns_after);
         return 1;
@@ -1230,28 +1241,34 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
     }
 
     case OP_BRANCH: {
-        uint32_t cond;
-        switch (f3) {
-        case 0: cond = C_EQ; break;
-        case 1: cond = C_NE; break;
-        case 4: cond = C_LT; break;
-        case 5: cond = C_GE; break;
-        case 6: cond = C_CC; break;
-        case 7: cond = C_CS; break;
-        default: return -1;
+        if (f3 == 2u || f3 == 3u) {
+            return -1;              /* no such branch condition */
         }
+        /* Condition to skip the taken-path exit, i.e. the inverse. */
+        static const uint32_t inv[8] = {
+            C_NE, C_EQ, 0u, 0u, C_GE, C_LT, C_CS, C_CC
+        };
         const uint32_t target = pc + (uint32_t)rv_imm_b(insn);
 
+        /*
+         * Only the taken path leaves the block; the fall-through carries on
+         * being translated. This is what lengthens blocks: CoreMark is full
+         * of forward if/else branches that would otherwise end one every
+         * few instructions.
+         *
+         * The skip branch jumps over the exit stub, which is at most eight
+         * halfwords, so the 16-bit conditional form always reaches.
+         */
         emit_ld_greg(R1, rs1);
         emit_ld_greg(R2, rs2);
-        emit_imm32(R3, next_pc);
-        emit_imm32(R0, target);
         emit_dp_reg(DP_CMP, R1, R2);
-        emit_it(cond);
-        emit_mov(R3, R0);
-        emit_str_imm12(R3, R4, HART_PC_OFF);
+        uint16_t *skip = emit_bcond_fwd(inv[f3]);
+
+        emit_set_pc(R1, target);
         emit_epilogue(insns_after);
-        return 1;
+
+        patch_fwd(skip, true);
+        return 0;
     }
 
 #if RV_EXT_ZICBOM || RV_EXT_ZICBOZ
@@ -1387,18 +1404,20 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
         /* Snapshot the cursor so an untranslatable instruction can be
          * rolled back out of the block cleanly. */
         uint16_t *const before = g_emit;
-        const int r = translate_one(insn, cur, len, count + 1u);
+        uint32_t redirect = 0u;
+        const int r = translate_one(insn, cur, len, count + 1u, &redirect);
 
         if (r < 0) {
             g_emit = before;
             break;
         }
         count++;
-        cur += len;
         if (r == 1) {
             ended = true;
             break;
         }
+        /* r == 2: a followed jump; carry on at the target. */
+        cur = (r == 2) ? redirect : (cur + len);
     }
 
     if (g_emit_overflow || count == 0u) {

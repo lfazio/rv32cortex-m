@@ -302,7 +302,7 @@
         }
       }
     },
-    "B": { "supported": false },
+    "B": { "supported": true },
     // Machine mode only.
     "S": { "supported": false },
     "U": { "supported": false },

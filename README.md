@@ -303,8 +303,8 @@ column is the same guest source rebuilt with `-march=..._zba_zbb_zbc_zbs`.
 | Workload | | Interpreter | JIT |
 |---|---|---|---|
 | CoreMark | RV32IMAC | 35.7 | **35.9** |
-| CoreMark | + B | **28.7** | 40.5 |
-| `bench`  | + B | 127.2 | **34.3** |
+| CoreMark | + B | **28.7** | 32.6 |
+| `bench`  | + B | 127.2 | **27.4** |
 
 B is a clear win for the guest: it removes 12% of CoreMark's instructions
 (42.94 M → 37.67 M) and takes the interpreter from 35.7 to 28.7 cycles each.
@@ -334,34 +334,45 @@ Each of these was found by measurement, not by inspection:
 The recurring lesson is that what a translator *declines* costs more than what
 it translates badly.
 
-### Why the JIT loses to the interpreter on CoreMark
+### Block chaining, and how it was found
 
-This was profiled rather than guessed, and the first hypothesis was wrong.
+The JIT trailed the interpreter on CoreMark, and the first explanation was
+wrong. Per-operation counters showed **175,216 `clmul` helper calls** against 88
+for multiply/divide, so `clmul` was translated inline — a shift-and-XOR loop
+that exits at the highest set bit instead of the helper's fixed 32 iterations.
+It worked and it barely mattered: **1.3%**.
 
-Per-operation counters showed CoreMark making **175,216 `clmul` helper calls**
-against 88 for multiply/divide, so `clmul` was translated inline — a
-shift-and-XOR loop that exits at the highest set bit of the multiplier instead
-of the helper's fixed 32 iterations. It worked, and it barely mattered:
-41.0 → 40.5 cycles per instruction, about **1.3%**.
+The arithmetic said why: an ~11.8 cycle-per-instruction gap over 37.67 M
+instructions is ~446 M cycles, which 87 k operations cannot account for. It was
+spread across everything.
 
-The arithmetic said why. The JIT trails the interpreter by ~11.8 cycles per
-instruction over 37.67 M instructions — roughly 446 M cycles — which cannot come
-from 87 k `clmul` operations. It is spread across everything.
+A block-entry counter found it — **9,141,951 entries for 37,670,524
+instructions, an average block of 4.12 instructions.** Every block paid a hash
+lookup, `PUSH {r4-r7,lr}`, three constants for the guest-RAM registers, an
+epilogue and a return: 30–40 cycles amortised over four instructions.
 
-A block-entry counter found it: **9,141,951 block entries for 37,670,524
-instructions, an average block of 4.12 instructions.** CoreMark's list and state
-kernels are branch-dense, and every block pays a fixed cost — a hash lookup to
-find it, `PUSH {r4-r7,lr}`, three constants materialised for the guest-RAM
-registers, then the epilogue and return. That is roughly 30–40 cycles amortised
-over four instructions, which is most of the gap.
+So blocks were extended rather than given more instruction coverage:
 
-So the fix is **block chaining** — branching directly from one block to the next
-instead of returning to the dispatcher — and a cheaper prologue, not more
-instruction coverage. `bench` has longer blocks, which is why the JIT wins there
-(34.3 vs 127.2) and loses here.
+- **Forward `JAL` is simply followed.** Nothing is emitted for it at all and
+  translation continues at the target. Backward jumps still end the block —
+  they are loop back edges, and returning to the dispatcher there is what
+  bounds interrupt latency and stops translation looping over a body.
+- **A conditional branch only exits on the taken path.** The fall-through keeps
+  being translated behind a short skip-branch over the exit stub. CoreMark is
+  full of forward if/else branches that previously ended a block every few
+  instructions.
 
-*(The block counter itself costs ~0.8 cycles per instruction, so measured
-numbers taken with it enabled are slightly pessimistic.)*
+| | Blocks entered | Insns/block | cyc/insn |
+|---|---|---|---|
+| CoreMark before | 9,141,951 | 4.12 | 40.5 |
+| CoreMark after | 5,454,702 | **6.91** | **32.6** |
+| `bench` after | 158,025 | **8.07** | **27.4** |
+
+**CoreMark 19.8% faster, `bench` 20% faster**, and against native ARM CoreMark
+goes from 25.4× to **20.2×** slower. The JIT still trails the interpreter on
+CoreMark (32.6 vs 28.7) but the gap is now 14% rather than 41%; the remaining
+per-block cost is the prologue, and the next step is to emit the guest-RAM
+registers only for blocks that actually access memory.
 
 Zbc's `clmul` is not translated: ARMv7-M has no carry-less multiply (`PMULL` is
 a NEON/crypto instruction, absent on Cortex-M).
