@@ -196,9 +196,10 @@ stores. None of them can raise an exception flag or depend on the rounding
 mode, so the translation is provably identical to the interpreter's with no
 FPSCR handling at all.
 
-**The arithmetic is now real VFP.** `FADD`/`FSUB`/`FMUL`/`FDIV`/`FSQRT` are
-emitted as `VADD.F32`/`VSUB.F32`/`VMUL.F32`/`VDIV.F32`/`VSQRT.F32`, wrapped in
-the FPSCR handling that makes them architecturally correct:
+**The arithmetic is now real VFP.** `FADD`/`FSUB`/`FMUL`/`FDIV`/`FSQRT` and the
+four fused multiply-adds are emitted as `VADD.F32`/`VSUB.F32`/`VMUL.F32`/
+`VDIV.F32`/`VSQRT.F32` and `VFMA`/`VFMS`/`VFNMA`/`VFNMS`, wrapped in the FPSCR
+handling that makes them architecturally correct:
 
 - **Rounding.** `FPSCR.RMode` is set from the instruction's `rm`, or when that
   is `DYN`, looked up at run time from `fcsr.frm` through a two-bits-per-entry
@@ -212,9 +213,25 @@ the FPSCR handling that makes them architecturally correct:
   bit-identical to RISC-V's canonical `0x7FC00000`. `FZ` is cleared, because
   RISC-V requires real subnormals rather than flush-to-zero.
 
-The conversions and comparisons still call `rv_hart_fp`, as does anything using
-`RMM`, so the rounding and flag rules exist in one place for the cases not
-worth open-coding.
+The fused multiply-adds are worth a note. ARM's four accumulate into `Sd` and
+negate the *accumulator*; RISC-V's negate the *product*. The correspondence is
+therefore not the one the names suggest — RISC-V `FMSUB` subtracts the addend,
+which ARM expresses by negating the accumulator, so it maps to `VFNMA` and not
+`VFMS`:
+
+| RISC-V | | ARM |
+|---|---|---|
+| `FMADD` | `rs1*rs2 + rs3` | `VFMA` |
+| `FMSUB` | `rs1*rs2 - rs3` | `VFNMA` |
+| `FNMSUB` | `-rs1*rs2 + rs3` | `VFMS` |
+| `FNMADD` | `-rs1*rs2 - rs3` | `VFNMS` |
+
+**Still on the helper:** `FEQ`/`FLT`/`FLE`, the six `FCVT` forms, `FMIN`/`FMAX`,
+`FCLASS`, and anything using `RMM`. The comparisons and conversions have direct
+VFP equivalents (`VCMP.F32` with `VMRS APSR_nzcv`, and `VCVT`) and are the
+obvious next increment; `FMIN`/`FMAX` do not, because ARMv7-M has no scalar
+`VMINNM`/`VMAXNM` and RISC-V's NaN rules would need open-coding anyway, and
+`FCLASS` has no equivalent at all.
 
 ### Cache-block operations
 

@@ -700,6 +700,33 @@ static void emit_vfp3(uint16_t hw1_base, uint32_t vd, uint32_t vn,
 #define VFP_MUL 0xEE20u
 #define VFP_DIV 0xEE80u
 
+/*
+ * Fused multiply-add, VFPv4 (present on FPv4-SP, so on the M4F and M7).
+ * All four accumulate into Sd, which must therefore be preloaded with the
+ * RISC-V rs3 operand.
+ *
+ *   VFMA   Sd =  Sd + Sn*Sm      VFMS   Sd =  Sd - Sn*Sm
+ *   VFNMA  Sd = -Sd + Sn*Sm      VFNMS  Sd = -Sd - Sn*Sm
+ *
+ * against RISC-V's, which negate the product rather than the accumulator:
+ *
+ *   FMADD   rs1*rs2 + rs3  -> VFMA     FMSUB   rs1*rs2 - rs3  -> VFNMA
+ *   FNMSUB -rs1*rs2 + rs3  -> VFMS     FNMADD -rs1*rs2 - rs3  -> VFNMS
+ *
+ * The pairing is not the one the names suggest: RISC-V FMSUB subtracts the
+ * addend, which ARM expresses by negating the accumulator, so it becomes
+ * VFNMA and not VFMS.
+ */
+#define VFP_FMA  0xEEA0u   /* VFMA / VFMS  */
+#define VFP_FNMA 0xEE90u   /* VFNMS / VFNMA */
+
+static void emit_vfma(uint16_t hw1_base, uint32_t vd, uint32_t vn,
+                      uint32_t vm, bool op1)
+{
+    emit32((uint16_t)(hw1_base | vn),
+           (uint16_t)((vd << 12) | 0x0A00u | (op1 ? 0x40u : 0u) | vm));
+}
+
 /* VSQRT.F32 Sd,Sm. */
 static void emit_vsqrt(uint32_t vd, uint32_t vm)
 {
@@ -1586,6 +1613,43 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
         emit_add_simm12(R1, R1, rv_imm_s(insn));
         emit_mem_access(true, 4u, 0u, rs2, (const void *)jit_helper_fp_store,
                         insn, pc, insns_after, true);
+        return 0;
+    }
+
+    case OP_MADD:
+    case OP_MSUB:
+    case OP_NMSUB:
+    case OP_NMADD: {
+        if ((f7 & 3u) != 0u) {
+            return -1;              /* fmt must be S */
+        }
+        const uint32_t rmf = f3;
+        if (rmf == FRM_RMM || (rmf > FRM_RMM && rmf != FRM_DYN)) {
+            return -1;              /* RMM has no ARM rounding mode */
+        }
+        const uint32_t rs3 = (insn >> 27) & 0x1Fu;
+
+        emit_fp_setmode(rmf);
+
+        /* s4 accumulates, so it takes rs3; s0 and s2 take the product. */
+        emit_ld_freg(R1, rs3);
+        emit_vmov_s_r(VS4, R1);
+        emit_ld_freg(R1, rs1);
+        emit_vmov_s_r(VS0, R1);
+        emit_ld_freg(R1, rs2);
+        emit_vmov_s_r(VS2, R1);
+
+        switch (rv_opcode(insn)) {
+        case OP_MADD:  emit_vfma(VFP_FMA,  VS4, VS0, VS2, false); break;
+        case OP_MSUB:  emit_vfma(VFP_FNMA, VS4, VS0, VS2, true);  break;
+        case OP_NMSUB: emit_vfma(VFP_FMA,  VS4, VS0, VS2, true);  break;
+        default:       emit_vfma(VFP_FNMA, VS4, VS0, VS2, false); break;
+        }
+
+        emit_vmov_r_s(R1, VS4);
+        emit_st_freg(rd, R1);
+        emit_fp_getflags();
+        emit_fp_dirty();
         return 0;
     }
 
