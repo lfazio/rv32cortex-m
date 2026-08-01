@@ -157,14 +157,25 @@ stores. None of them can raise an exception flag or depend on the rounding
 mode, so the translation is provably identical to the interpreter's with no
 FPSCR handling at all.
 
-Everything arithmetic — add, multiply, divide, `sqrt`, the fused multiply-adds,
-the conversions, and the comparisons, which raise `NV` on NaN — calls the same
-`rv_hart_fp` the interpreter uses, so the rounding and flag rules exist in one
-place. Emitting those as VFP means driving `FPSCR.RMode` from `frm` and
-harvesting the exception bits back into `fflags` around every operation; that
-is the obvious next step, and it is deliberately not half-done here, because
-getting it subtly wrong would lose flag semantics the interpreter already gets
-right.
+**The arithmetic is now real VFP.** `FADD`/`FSUB`/`FMUL`/`FDIV`/`FSQRT` are
+emitted as `VADD.F32`/`VSUB.F32`/`VMUL.F32`/`VDIV.F32`/`VSQRT.F32`, wrapped in
+the FPSCR handling that makes them architecturally correct:
+
+- **Rounding.** `FPSCR.RMode` is set from the instruction's `rm`, or when that
+  is `DYN`, looked up at run time from `fcsr.frm` through a two-bits-per-entry
+  packed constant. `RMM` has no ARM equivalent, so instructions using it stay
+  on the helper rather than silently rounding ties to even.
+- **Flags.** ARM orders the cumulative bits `IOC, DZC, OFC, UFC, IXC` from bit
+  0; RISC-V orders them `NX, UF, OF, DZ, NV`. That is the same five flags in
+  exactly reversed order, so a 32-bit `RBIT` and a shift down by 27 converts
+  one to the other — no table and no branches.
+- **NaN.** `FPSCR.DN` is set, so a NaN result is ARM's default NaN, which is
+  bit-identical to RISC-V's canonical `0x7FC00000`. `FZ` is cleared, because
+  RISC-V requires real subnormals rather than flush-to-zero.
+
+The conversions and comparisons still call `rv_hart_fp`, as does anything using
+`RMM`, so the rounding and flag rules exist in one place for the cases not
+worth open-coding.
 
 ### Cache-block operations
 

@@ -647,6 +647,137 @@ static void emit_fp_dirty(void)
 }
 #endif
 
+#if RV_EXT_F
+/* ------------------------------------------------------------------ */
+/* VFP (ARMv7-M ARM A7.7)                                              */
+/* ------------------------------------------------------------------ */
+/*
+ * Only the even single-precision registers s0, s2 and s4 are used, so the
+ * D/N/M bits are always zero and the V field is simply reg/2. That keeps
+ * the encodings below readable at the cost of three registers nothing else
+ * wants.
+ */
+#define VS0 0u
+#define VS2 1u
+#define VS4 2u
+
+/* VADD/VSUB/VMUL/VDIV.F32 Sd,Sn,Sm. */
+static void emit_vfp3(uint16_t hw1_base, uint32_t vd, uint32_t vn,
+                      uint32_t vm, bool sub)
+{
+    emit32((uint16_t)(hw1_base | vn),
+           (uint16_t)((vd << 12) | 0x0A00u | (sub ? 0x40u : 0u) | vm));
+}
+
+#define VFP_ADD 0xEE30u
+#define VFP_MUL 0xEE20u
+#define VFP_DIV 0xEE80u
+
+/* VSQRT.F32 Sd,Sm. */
+static void emit_vsqrt(uint32_t vd, uint32_t vm)
+{
+    emit32(0xEEB1u, (uint16_t)((vd << 12) | 0x0AC0u | vm));
+}
+
+/* VMOV Sn,Rt  (core register into a VFP register). */
+static void emit_vmov_s_r(uint32_t vn, uint32_t rt)
+{
+    emit32((uint16_t)(0xEE00u | vn), (uint16_t)((rt << 12) | 0x0A10u));
+}
+
+/* VMOV Rt,Sn  (VFP register back into a core register). */
+static void emit_vmov_r_s(uint32_t rt, uint32_t vn)
+{
+    emit32((uint16_t)(0xEE10u | vn), (uint16_t)((rt << 12) | 0x0A10u));
+}
+
+static void emit_vmrs(uint32_t rt)   /* VMRS Rt,FPSCR */
+{
+    emit32(0xEEF1u, (uint16_t)((rt << 12) | 0x0A10u));
+}
+
+static void emit_vmsr(uint32_t rt)   /* VMSR FPSCR,Rt */
+{
+    emit32(0xEEE1u, (uint16_t)((rt << 12) | 0x0A10u));
+}
+
+/* emit_rbit is defined with the Zbb emitters above; RBIT is what turns
+ * ARM's flag order into RISC-V's, so it is used by both. */
+
+/*
+ * ARM FPSCR.RMode for a RISC-V rounding mode, in its [23:22] position.
+ *
+ *   RNE -> RN (00)   RTZ -> RZ (11)   RDN -> RM (10)   RUP -> RP (01)
+ *
+ * RMM has no ARM equivalent and maps to RN, which differs only on an exact
+ * tie; instructions using it are left to the helper rather than translated
+ * with the wrong tie behaviour.
+ */
+static const uint8_t k_rmode[5] = { 0u, 3u, 2u, 1u, 0u };
+
+/*
+ * Emit the prologue of a rounding-mode-sensitive FP operation: put the ARM
+ * RMode bits for `rm` into r3, then load FPSCR, replace RMode, clear the
+ * cumulative exception bits, and set DN so a NaN result comes out as ARM's
+ * default NaN -- which is bit-identical to RISC-V's canonical 0x7FC00000.
+ * FZ is cleared because RISC-V requires real subnormals, not flush-to-zero.
+ *
+ * `rm` is FRM_DYN when the instruction defers to fcsr.frm, in which case
+ * the mode is looked up at run time from a packed two-bits-per-entry table.
+ */
+static void emit_fp_setmode(uint32_t rm)
+{
+    if (rm == FRM_DYN) {
+        /* r3 = k_rmode[(fcsr >> 5) & 7], from a packed constant. */
+        const uint32_t off = (uint32_t)offsetof(rv_hart_t, fcsr);
+        emit32((uint16_t)(0xF8D0u | R4), (uint16_t)((R3 << 12) | off));
+        emit_shift_imm(SH_LSR, R3, R3, 5u);
+        emit_mov_imm8(R2, 7u);
+        emit_dp_reg(DP_AND, R3, R2);
+        emit_shift_imm(SH_LSL, R3, R3, 1u);      /* two bits per entry */
+        emit_imm32(R2, 0x0000006Cu);             /* 0,3,2,1,0 packed */
+        emit_dp_reg(DP_LSR, R2, R3);
+        emit_mov_imm8(R3, 3u);
+        emit_dp_reg(DP_AND, R2, R3);
+        emit_mov(R3, R2);
+    } else {
+        emit_mov_imm8(R3, k_rmode[rm]);
+    }
+    emit_shift_imm(SH_LSL, R3, R3, 22u);
+    emit_imm32(R2, 1u << 25);                    /* DN: default NaN */
+    emit_dp_reg(DP_ORR, R3, R2);
+
+    emit_vmrs(R2);
+    emit_imm32(R1, 0x03C0001Fu);   /* RMode | FZ | DN | cumulative flags */
+    emit_dp_reg(DP_BIC, R2, R1);
+    emit_dp_reg(DP_ORR, R2, R3);
+    emit_vmsr(R2);
+}
+
+/*
+ * Emit the epilogue: read back FPSCR and fold the cumulative exception bits
+ * into hart->fcsr.
+ *
+ * ARM orders them IOC, DZC, OFC, UFC, IXC from bit 0; RISC-V orders them
+ * NX, UF, OF, DZ, NV. That is the same five flags in exactly reversed
+ * order, so a 32-bit RBIT followed by a shift down by 27 converts one to
+ * the other -- no table, no branches.
+ */
+static void emit_fp_getflags(void)
+{
+    emit_vmrs(R2);
+    emit_mov_imm8(R1, 0x1Fu);
+    emit_dp_reg(DP_AND, R2, R1);
+    emit_rbit(R2, R2);
+    emit_shift_imm(SH_LSR, R2, R2, 27u);
+
+    const uint32_t off = (uint32_t)offsetof(rv_hart_t, fcsr);
+    emit32((uint16_t)(0xF8D0u | R4), (uint16_t)((R1 << 12) | off));
+    emit_dp_reg(DP_ORR, R1, R2);
+    emit32((uint16_t)(0xF8C0u | R4), (uint16_t)((R1 << 12) | off));
+}
+#endif /* RV_EXT_F */
+
 /* Register-offset load/store, T1: LDR/STR Rt,[Rn,Rm]. */
 #define LS_STR   0x5000u
 #define LS_STRH  0x5200u
@@ -1475,8 +1606,51 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
             emit_fp_dirty();
             return 0;
 
+        case 0x00u:   /* FADD.S */
+        case 0x01u:   /* FSUB.S */
+        case 0x02u:   /* FMUL.S */
+        case 0x03u:   /* FDIV.S */
+        case 0x0Bu: { /* FSQRT.S */
+            /*
+             * RMM has no ARM rounding mode; translating it as
+             * round-to-nearest would silently give ties-to-even. Leave it
+             * to the helper, which implements it properly.
+             */
+            const uint32_t rmf = f3;
+            if (rmf == FRM_RMM || (rmf > FRM_RMM && rmf != FRM_DYN)) {
+                return -1;
+            }
+            const uint32_t f5 = f7 >> 2;
+            if (f5 == 0x0Bu && rs2 != 0u) {
+                return -1;
+            }
+
+            emit_fp_setmode(rmf);
+
+            emit_ld_freg(R1, rs1);
+            emit_vmov_s_r(VS0, R1);
+            if (f5 != 0x0Bu) {
+                emit_ld_freg(R1, rs2);
+                emit_vmov_s_r(VS2, R1);
+            }
+
+            switch (f5) {
+            case 0x00u: emit_vfp3(VFP_ADD, VS4, VS0, VS2, false); break;
+            case 0x01u: emit_vfp3(VFP_ADD, VS4, VS0, VS2, true);  break;
+            case 0x02u: emit_vfp3(VFP_MUL, VS4, VS0, VS2, false); break;
+            case 0x03u: emit_vfp3(VFP_DIV, VS4, VS0, VS2, false); break;
+            default:    emit_vsqrt(VS4, VS0);                     break;
+            }
+
+            emit_vmov_r_s(R1, VS4);
+            emit_st_freg(rd, R1);
+            emit_fp_getflags();
+            emit_fp_dirty();
+            return 0;
+        }
+
         default:
-            return -1;              /* arithmetic and compares: helper */
+            return -1;              /* conversions and compares: helper */
         }
     }
 #endif
