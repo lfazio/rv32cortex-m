@@ -324,8 +324,15 @@ for each backend.
 | | Ticks (µs) | Iterations/s | CoreMark/MHz | vs native |
 |---|---|---|---|---|
 | **Native ARM** | 335,277 | 447.4 | 2.49 | 1× |
-| **JIT** | 6,759,965 | 22.2 | 0.123 | **20.2× slower** |
-| Interpreter | 5,944,190 | 25.2 | 0.140 | 17.7× slower |
+| **JIT** | 6,752,837 | 22.2 | 0.124 | **20.1× slower** |
+| Interpreter | 8,144,963 | 18.4 | 0.103 | 24.3× slower |
+
+Measured with the full extension set including F compiled into the emulator and
+available to the guest. CoreMark itself is integer-only — our port sets
+`HAS_FLOAT 0` to avoid soft-float in the guest — so this shows what carrying F
+*costs*, not what it accelerates: the JIT is unchanged within noise (32.5 vs
+32.6 cycles per instruction) and the interpreter gives up about 5% (39.2 vs
+37.1) to the wider dispatch.
 
 All three produce **`crcfinal 0xca90`** — native ARM and emulated RISC-V agree
 bit for bit, which is independent confirmation that the emulation is correct.
