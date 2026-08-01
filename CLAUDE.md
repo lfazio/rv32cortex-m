@@ -105,6 +105,10 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
 - **`-Os` is 33% smaller and 8.8% slower** on the F446. The ART accelerator is
   not the binding constraint, so the code-density argument does not pay. Use
   `MinSizeRel` only when flash is actually scarce.
+- **The JIT's block dispatch is already cheap.** The prologue is `PUSH {r4-r7,lr}`
+  plus a `MOV`, and the hash lookup is a shift, mask, load and compare -- a
+  last-block cache in front of it measured 1.2% slower. What is left in block
+  entry needs chaining across loop back edges, not micro-optimisation.
 - **Measure; do not reason about performance.** Interpreter-in-SRAM was
   *slower*, lazy-IRQ was neutral, and the `clmul` fix was 1.3% when the real
   cost was 4.12-instruction blocks. Layout noise is ±3%, so ignore differences

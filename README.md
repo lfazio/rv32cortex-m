@@ -756,11 +756,20 @@ Ordered by what would most repay the effort.
 **Performance.** The JIT is 20.6× native and the remaining cost is structural
 rather than a missing optimisation:
 
-- [ ] **Cheaper block entry.** At 6.91 instructions per block, `PUSH {r4-r10,lr}`,
-      the hart-pointer move, the hash lookup and the epilogue dominate. Block
-      chaining took blocks from 4.12 to 6.91 instructions and bought 19.8%;
-      going further means chaining across the back edge of a loop, which needs
-      an interrupt-check that does not cost a block exit.
+- [ ] **Chain across loop back edges.** Block chaining took blocks from 4.12 to
+      6.91 instructions and bought 19.8%, but a backward jump still ends the
+      block, so a loop pays a full dispatch per iteration. Turning that into a
+      branch within the translated code needs an in-block instruction budget
+      and an interrupt check that does not cost a block exit — the interrupt
+      check being the hard part, since the current design relies on block
+      boundaries to bound latency.
+
+      The two *cheap* parts of this were tried and are not there to be had:
+      the prologue is already minimal at `PUSH {r4-r7,lr}` plus one `MOV`, and
+      a last-block dispatch cache in front of the hash walk measured **1.2%
+      slower** (28.66 → 29.01 on `bench`). The hash is a shift, a mask, an
+      indexed load and a compare; a cache in front of it adds two loads and a
+      compare that are wasted on every miss.
 - [ ] **Fewer helper calls for memory.** The inlined RAM path already covers the
       common case; MMIO and the passthrough window still call out. A second
       inlined window for the peripheral region would cover most guest driver
