@@ -591,6 +591,28 @@ It matters at realistic cache sizes. CoreMark's working set does not fit in
 | 12 KB | 106,799 | 3,676 | 12,881,419 |
 | 48 KB | 3,005 | 168 | 11,462,247 |
 
+### `-Os` versus `-O3`
+
+The STM32F446's ART accelerator holds about 1 KB of instructions, so a smaller
+emulator might plausibly fit its hot loop better. Measured, on the same guest
+and the same run length:
+
+| Build | Flash | cycles/guest insn |
+|---|---|---|
+| `Release` (`-O3`) | 49,652 B | **57.2** |
+| `MinSizeRel` (`-Os`) | 33,240 B | 62.2 |
+
+**A third smaller, and 8.8% slower.** The accelerator is evidently not the
+binding constraint — what `-Os` gives up in inlining and loop structure costs
+more than the extra code density recovers.
+
+`-O3` is therefore the default. `-Os` is the right choice on a part where flash
+is genuinely scarce: 33 KB against 50 KB is a real difference on a 64 KB device,
+and 9% of emulator speed is a reasonable price for fitting at all.
+
+*(These figures come from a short run and include startup, so they are higher
+than the 150-iteration numbers above. Only the ratio between them is meant.)*
+
 ### Two optimisations that did not work
 
 Recorded because the negative results are as informative as the wins:
@@ -755,10 +777,14 @@ rather than a missing optimisation:
       `medeleg`/`mideleg`/`mcounteren` real, adds `ECALL` from U as a distinct
       cause, and invalidates the "M-mode only" simplifications throughout
       `rv_csr.c` and `rv_pmp.c`.
+- [ ] **S-mode** — the same as U-mode, but with a third privilege level and a second
+      set of CSRs. The Cortex-M4 has no MMU, so S-mode would be entirely
+      soft-trap and would need a second set of `mstatus`/`mepc`/`mcause`/`mtval`
+      to hold the S-mode state.
 - [ ] **V** — the largest remaining item and RAM-hungry: `VLEN=128` alone costs
       512 B of register file on a part with 128 KiB. Needs a `VLEN` budget
       decision before any code.
-- **D**, and therefore **Zcd** — *not planned*. The Cortex-M4F and M7 FPUs are
+- [ ] **D**, and therefore **Zcd** — *not planned*. The Cortex-M4F and M7 FPUs are
   single precision, so D would be entirely soft-float on the intended targets,
   and Zcd is the compressed double load/stores it would need.
 

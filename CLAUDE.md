@@ -102,6 +102,9 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
   uncached one is `LDR` -- one instruction either way -- while write-through
   adds an instruction per write and three more registers hit every PUSH/POP.
   Do not retry without a cost model, not just a frequency count.
+- **`-Os` is 33% smaller and 8.8% slower** on the F446. The ART accelerator is
+  not the binding constraint, so the code-density argument does not pay. Use
+  `MinSizeRel` only when flash is actually scarce.
 - **Measure; do not reason about performance.** Interpreter-in-SRAM was
   *slower*, lazy-IRQ was neutral, and the `clmul` fix was 1.3% when the real
   cost was 4.12-instruction blocks. Layout noise is ±3%, so ignore differences
