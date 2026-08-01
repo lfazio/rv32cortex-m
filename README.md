@@ -709,39 +709,66 @@ Guest images (`tests/guest/`):
 
 ## Documentation
 
-Reference material is classified by vendor under `docs/`:
+Reference material, classified by vendor under `docs/`:
 
-| Path | Document |
-|---|---|
-| `docs/riscv/riscv-spec-unprivileged-2026-07-29.pdf` | RISC-V Unprivileged ISA (release `310a111`) |
-| `docs/st/rm0390-...pdf` | RM0390 — STM32F446xx Reference Manual |
-| `docs/st/stm32f446mc.pdf` | STM32F446 datasheet |
+| Path | Document | Used for |
+|---|---|---|
+| `docs/riscv/riscv-spec-unprivileged-2026-07-29.pdf` | RISC-V Unprivileged ISA, release `310a111` | instruction semantics, RVC expansion, the B and F encodings |
+| `docs/arm/DDI0403E_e_armv7m_arm.pdf` | ARMv7-M Architecture Reference Manual | Thumb-2 and VFP encodings for the JIT — A4.13 for floating point, A7.7 for the instruction details |
+| `docs/arm/DDI0419E_armv6m_arm.pdf` | ARMv6-M Architecture Reference Manual | what the core must avoid to stay portable to Cortex-M0+ |
+| `docs/arm/DDI0553B_z_armv8m_arm.pdf` | ARMv8-M Architecture Reference Manual | the other end of the portability range |
+| `docs/st/rm0390-...pdf` | RM0390 — STM32F446xx Reference Manual | the peripheral addresses the passthrough window exposes, and which of them the guest may write |
+| `docs/st/stm32f446mc.pdf` | STM32F446 datasheet | pin functions and clock limits for the board bring-up |
+| `docs/st/pm0223-...pdf` | STM32 Cortex-M0 programming manual | reference for an eventual M0+ port |
 
-Not yet collected: the RISC-V **Privileged** ISA specification, and ARM's
-ARMv7-M Architecture Reference Manual / Cortex-M7 TRM (ARM's site requires an
-account for most PDFs).
+Not collected: the RISC-V **Privileged** ISA specification, which the trap,
+CSR, PMP and Sdtrig work was written against from the online version. Worth
+adding, since it is the reference for most of `src/core/`.
 
 ---
 
 ## Roadmap
 
-Deferred until the current ISA is proven and measured — both of which are now
-done, so these are unblocked:
+Ordered by what would most repay the effort.
 
-- **F / D** — Cortex-M4F and M7 have a single-precision FPU usable for `F`;
-  `D` needs soft-float. Needs `f0`–`f31`, `fcsr`, NaN-boxing and correct
-  rounding. Implement only **F** first, let D aside. The guest can be built with `-march=rv32imacf` and run on a Cortex-M4F, but the emulator will trap every `F` instruction.
-- **PMP** — the Berkeley suite's `rv32mi/pmpaddr` fails because the core does not
-  implement PMP. The official suite has no tests for PMP, so it is not a
-  regression to leave it unimplemented.
-- **U** — user mode, which is the only way to run a guest that is not trusted. The
-  emulator currently runs all guests in machine mode, which is fine for the
-  self-test and for the STM32 driver, but a real guest OS needs U.
-- **S** — supervisor mode, which is the only way to run a guest that is not trusted. The
-  emulator currently runs all guests in machine mode, which is fine for the
-  self-test and for the STM32 driver, but a real guest OS needs S.
-- **V** — largest by far and RAM-hungry (`VLEN=128` alone costs 512 B of
-  register file on a part with 128 KiB); needs a `VLEN` budget decision.
+**Performance.** The JIT is 20.6× native and the remaining cost is structural
+rather than a missing optimisation:
+
+- [ ] **Cheaper block entry.** At 6.91 instructions per block, `PUSH {r4-r10,lr}`,
+      the hart-pointer move, the hash lookup and the epilogue dominate. Block
+      chaining took blocks from 4.12 to 6.91 instructions and bought 19.8%;
+      going further means chaining across the back edge of a loop, which needs
+      an interrupt-check that does not cost a block exit.
+- [ ] **Fewer helper calls for memory.** The inlined RAM path already covers the
+      common case; MMIO and the passthrough window still call out. A second
+      inlined window for the peripheral region would cover most guest driver
+      code.
+
+**ISA.** What is left is either small or deliberately excluded:
+
+- [ ] **`FCVT.W.S` / `FCVT.WU.S` in the JIT** — ARM and RISC-V disagree only on
+      NaN, so this is a `VCMP` and a conditional fixup, about four extra
+      instructions.
+- [ ] **`FMIN`/`FMAX`, `FCLASS` in the JIT** — no ARMv7-M equivalent exists;
+      these stay interpreted unless open-coded.
+- [ ] **U-mode** — invasive rather than large. A second privilege level makes
+      `medeleg`/`mideleg`/`mcounteren` real, adds `ECALL` from U as a distinct
+      cause, and invalidates the "M-mode only" simplifications throughout
+      `rv_csr.c` and `rv_pmp.c`.
+- [ ] **V** — the largest remaining item and RAM-hungry: `VLEN=128` alone costs
+      512 B of register file on a part with 128 KiB. Needs a `VLEN` budget
+      decision before any code.
+- **D**, and therefore **Zcd** — *not planned*. The Cortex-M4F and M7 FPUs are
+  single precision, so D would be entirely soft-float on the intended targets,
+  and Zcd is the compressed double load/stores it would need.
+
+**Measured and rejected**, kept here so they are not retried blind:
+
+| Idea | Result |
+|---|---|
+| Interpreter loop in SRAM | **slower** — 162 vs 122 cycles, and 8 KiB off the guest |
+| Guest registers cached in `r8`–`r10` | **15.5% slower** — a cached read is `MOV` where an uncached one is `LDR`, one instruction either way |
+| PMP mapped onto the ARM MPU | **not possible** — the MPU cannot distinguish a guest access from an emulator access, because the JIT's inlined load *is* both |
 
 ---
 

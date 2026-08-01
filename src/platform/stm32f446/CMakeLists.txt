@@ -8,7 +8,21 @@
 include(${CMAKE_SOURCE_DIR}/cmake/stm32cube.cmake)
 
 set(RV32_GUEST "isatest" CACHE STRING "Guest image to embed in the firmware")
-set(guest_bin "${CMAKE_BINARY_DIR}/guest/${RV32_GUEST}.bin")
+set(guest_src "${CMAKE_BINARY_DIR}/guest/${RV32_GUEST}.bin")
+
+# The image is produced in tests/guest, and a cross-directory file
+# dependency is where the two generators diverge: OBJECT_DEPENDS on a path
+# in another directory's scope leaves the Makefile generator with "No rule
+# to make target". Copying it here with a local custom command makes the
+# dependency intra-directory, which both handle identically.
+set(guest_bin "${CMAKE_CURRENT_BINARY_DIR}/guest_image.bin")
+add_custom_command(
+    OUTPUT "${guest_bin}"
+    COMMAND ${CMAKE_COMMAND} -E copy "${guest_src}" "${guest_bin}"
+    DEPENDS guest-${RV32_GUEST}
+    COMMENT "Staging guest image ${RV32_GUEST}.bin"
+    VERBATIM)
+add_custom_target(guest-image-staged DEPENDS "${guest_bin}")
 
 # ---------------------------------------------------------------------
 # Vendor sources
@@ -70,7 +84,7 @@ set_source_files_properties(guest_image.S PROPERTIES
     OBJECT_DEPENDS "${guest_bin}")
 
 if(TARGET guest-${RV32_GUEST})
-    add_dependencies(rv32-stm32f446 guest-${RV32_GUEST})
+    add_dependencies(rv32-stm32f446 guest-image-staged)
 else()
     message(WARNING
         "Guest image '${RV32_GUEST}' is not built (no RISC-V toolchain?); "
