@@ -84,6 +84,14 @@ typedef struct rv_jit_stats {
     uint32_t evictions;      /* blocks discarded by compaction      */
     uint32_t translations;   /* blocks translated since reset       */
     uint32_t interp_fallbacks; /* instructions run by the interpreter */
+    /* Helper calls emitted for operations with no short Thumb-2 form,
+     * split so a hot one can be identified rather than guessed at. */
+    uint32_t alu_calls_muldiv;
+    uint32_t alu_calls_clmul;
+    uint32_t alu_calls_bit;
+    /* Block entries. Divided into instructions retired this gives the
+     * average block length, which is what per-block overhead is paid on. */
+    uint32_t block_entries;
 } rv_jit_stats_t;
 
 void rv_jit_get_stats(rv_jit_stats_t *out);

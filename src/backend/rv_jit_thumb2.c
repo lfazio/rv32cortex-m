@@ -762,6 +762,11 @@ enum {
 
 static void jit_helper_alu(rv_hart_t *h, uint32_t spec)
 {
+    const uint32_t op = spec >> 15;
+    if (op <= ALU_REMU)        { g_stats.alu_calls_muldiv++; }
+    else if (op >= ALU_CLMUL && op <= ALU_CLMULH) { g_stats.alu_calls_clmul++; }
+    else                       { g_stats.alu_calls_bit++; }
+
     const uint32_t rd = spec & 0x1Fu;
     const uint32_t a = h->x[(spec >> 5) & 0x1Fu];
     const uint32_t b = h->x[(spec >> 10) & 0x1Fu];
@@ -815,6 +820,48 @@ static void jit_helper_alu(rv_hart_t *h, uint32_t spec)
         h->x[rd] = r;
     }
 }
+
+#if RV_EXT_ZBC
+/*
+ * clmul inline. ARMv7-M has no carry-less multiply, but the operation is
+ * shift-and-XOR, which is six instructions in a loop:
+ *
+ *       MOVS r3, #0
+ *   1:  CBZ  r2, 2f          ; stop as soon as no source bits remain
+ *       LSRS r2, r2, #1      ; C = the bit just shifted out
+ *       IT   CS
+ *       EOR  r3, r1          ; accumulate when that bit was set
+ *       LSLS r1, r1, #1
+ *       B    1b
+ *   2:
+ *
+ * The early exit is why this is worth doing rather than calling the helper:
+ * the helper always runs 32 iterations, while this stops at the highest set
+ * bit of the multiplier, which for CRC operands is usually well short of 32.
+ *
+ * Offsets are hard-coded because the sequence is fixed-size; they are
+ * derived below from the byte layout, where PC reads as the instruction
+ * address plus 4.
+ */
+static void emit_clmul(uint32_t rd, uint32_t rs1, uint32_t rs2)
+{
+    emit_ld_greg(R1, rs1);              /* a */
+    emit_ld_greg(R2, rs2);              /* b */
+    emit_mov_imm8(R3, 0u);              /* @0  result = 0            */
+    /* @2 CBZ r2 -> done(@14): PC=@6, offset 8, so (i:imm5) = 4. */
+    emit16((uint16_t)(0xB100u | (4u << 3) | R2));
+    emit_shift_imm(SH_LSR, R2, R2, 1u); /* @4  b >>= 1, C = old bit0 */
+    emit_it(C_CS);                      /* @6                        */
+    emit_dp_reg(DP_EOR, R3, R1);        /* @8  conditional in the IT  */
+    emit_shift_imm(SH_LSL, R1, R1, 1u); /* @10 a <<= 1                */
+    /* @12 B -> loop(@2): PC=@16, offset -14, imm11 = -7. */
+    emit16((uint16_t)(0xE000u | (((uint32_t)-7) & 0x7FFu)));
+    /* @14 done */
+    if (rd != 0u) {
+        emit_st_greg(rd, R3);
+    }
+}
+#endif
 
 /* Call jit_helper_alu; no fault is possible so nothing is checked. */
 static void emit_alu_helper(uint32_t rd, uint32_t rs1, uint32_t rs2, uint32_t op)
@@ -1107,8 +1154,15 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
 #endif
 #if RV_EXT_ZBC
         if (f7 == 0x05u && f3 >= 1u && f3 <= 3u) {
-            static const uint32_t op[3] = { ALU_CLMUL, ALU_CLMULR, ALU_CLMULH };
-            emit_alu_helper(rd, rs1, rs2, op[f3 - 1u]);
+            if (f3 == 1u) {
+                emit_clmul(rd, rs1, rs2);       /* the hot one; inlined */
+                return 0;
+            }
+            /* clmulh/clmulr take the high and middle words of the product,
+             * whose shifts do not fold into the same loop; they are rare
+             * and stay on the helper. */
+            emit_alu_helper(rd, rs1, rs2,
+                            (f3 == 2u) ? ALU_CLMULR : ALU_CLMULH);
             return 0;
         }
 #endif
@@ -1537,6 +1591,7 @@ static rv_run_reason_t jit_run(rv_hart_t *h, uint32_t budget, uint32_t *retired)
         const block_fn_t fn =
             (block_fn_t)(uintptr_t)((uint32_t)(uintptr_t)b->code | 1u);
         const uint32_t n = fn(h);
+        g_stats.block_entries++;
         done += n;
 
 #if RV_EXT_ZICNTR

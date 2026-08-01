@@ -638,7 +638,15 @@ int main(void)
          */
         console_puts("\n  interp   ");
         console_putu(js.interp_fallbacks);
-        console_puts(" instructions fell back\n");
+        console_puts(" instructions fell back\n  helpers  muldiv ");
+        console_putu(js.alu_calls_muldiv);
+        console_puts("  clmul ");
+        console_putu(js.alu_calls_clmul);
+        console_puts("  bit ");
+        console_putu(js.alu_calls_bit);
+        console_puts("\n  blk entr ");
+        console_putu(js.block_entries);
+        console_putc('\n');
     }
 #endif
 

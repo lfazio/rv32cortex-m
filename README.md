@@ -303,7 +303,7 @@ column is the same guest source rebuilt with `-march=..._zba_zbb_zbc_zbs`.
 | Workload | | Interpreter | JIT |
 |---|---|---|---|
 | CoreMark | RV32IMAC | 35.7 | **35.9** |
-| CoreMark | + B | **28.7** | 40.8 |
+| CoreMark | + B | **28.7** | 40.5 |
 | `bench`  | + B | 127.2 | **34.3** |
 
 B is a clear win for the guest: it removes 12% of CoreMark's instructions
@@ -334,12 +334,34 @@ Each of these was found by measurement, not by inspection:
 The recurring lesson is that what a translator *declines* costs more than what
 it translates badly.
 
-**Still open:** with the full B set the interpreter beats the JIT on CoreMark
-(28.7 vs 40.8) while the JIT wins decisively on `bench` (34.3 vs 127.2). The
-gap is not yet explained; the leading suspect is that CoreMark's `clmul`-heavy
-CRC now pays a call per operation in the JIT while the interpreter runs the same
-loop inline. It has not been profiled, and is deliberately not presented as
-understood.
+### Why the JIT loses to the interpreter on CoreMark
+
+This was profiled rather than guessed, and the first hypothesis was wrong.
+
+Per-operation counters showed CoreMark making **175,216 `clmul` helper calls**
+against 88 for multiply/divide, so `clmul` was translated inline — a
+shift-and-XOR loop that exits at the highest set bit of the multiplier instead
+of the helper's fixed 32 iterations. It worked, and it barely mattered:
+41.0 → 40.5 cycles per instruction, about **1.3%**.
+
+The arithmetic said why. The JIT trails the interpreter by ~11.8 cycles per
+instruction over 37.67 M instructions — roughly 446 M cycles — which cannot come
+from 87 k `clmul` operations. It is spread across everything.
+
+A block-entry counter found it: **9,141,951 block entries for 37,670,524
+instructions, an average block of 4.12 instructions.** CoreMark's list and state
+kernels are branch-dense, and every block pays a fixed cost — a hash lookup to
+find it, `PUSH {r4-r7,lr}`, three constants materialised for the guest-RAM
+registers, then the epilogue and return. That is roughly 30–40 cycles amortised
+over four instructions, which is most of the gap.
+
+So the fix is **block chaining** — branching directly from one block to the next
+instead of returning to the dispatcher — and a cheaper prologue, not more
+instruction coverage. `bench` has longer blocks, which is why the JIT wins there
+(34.3 vs 127.2) and loses here.
+
+*(The block counter itself costs ~0.8 cycles per instruction, so measured
+numbers taken with it enabled are slightly pessimistic.)*
 
 Zbc's `clmul` is not translated: ARMv7-M has no carry-less multiply (`PMULL` is
 a NEON/crypto instruction, absent on Cortex-M).
