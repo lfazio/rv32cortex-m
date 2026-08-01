@@ -23,6 +23,13 @@ endif()
 # editing one line. D is absent deliberately: the emulator implements F
 # only, matching the single-precision FPU of the Cortex-M4F/M7 targets.
 #
+# Zcb is supported by the emulator but deliberately absent here. Building
+# the guest with it cost ~9% on CoreMark at an identical instruction count:
+# the compiler swaps 32-bit encodings for compressed ones, and under
+# expand-then-execute a compressed instruction is never cheaper to
+# interpret than the 32-bit form it replaces, only cheaper to store. Add
+# _zcb back if guest flash is the binding constraint.
+#
 # This is a CACHE variable, so an existing build tree keeps its old value:
 # pass -DRV_GUEST_MARCH=... explicitly when changing it.
 set(RV_GUEST_MARCH

@@ -364,40 +364,16 @@ for each backend.
 | | Ticks (µs) | Iterations/s | CoreMark/MHz | vs native |
 |---|---|---|---|---|
 | **Native ARM** | 335,277 | 447.4 | 2.49 | 1× |
-| **JIT** | 6,831,409 | 22.0 | 0.122 | **20.4× slower** |
-| Interpreter | 8,928,313 | 16.8 | 0.094 | 26.6× slower |
+| **JIT** | 6,776,964 | 22.1 | 0.123 | **20.2× slower** |
+| Interpreter | 7,894,505 | 19.0 | 0.106 | 23.5× slower |
 
-Measured with the full extension set — F, B, Zacas, Zcb — compiled into the
-emulator and available to the guest.
+Full extension set — F, B, Zacas — compiled into the emulator. `Zcb` is
+supported but deliberately **not** used by the guest; see below.
 
 **CoreMark cannot measure the VFP work.** It is integer-only: our port sets
 `HAS_FLOAT 0` to keep soft-float out of the guest, so not one translated FP
-instruction executes. The JIT is unchanged within noise (32.9 against 32.5 host
-cycles per guest instruction). Showing the FP translation as a speedup needs an
+instruction executes. Showing the FP translation as a speedup needs an
 FP-bearing benchmark, which this is not.
-
-The interpreter gave up about 9% between two runs, and chasing it produced a
-result worth keeping — because the obvious explanation was wrong.
-
-The suspicion was that Zcb's new cases had slowed the RVC expander, which runs
-on every compressed instruction. An A/B with the **same guest binary**, toggling
-only `RV32_EXT_ZCB` in the emulator, says otherwise:
-
-| Emulator | cycles/guest insn |
-|---|---|
-| Zcb decode **on** | **38.01** |
-| Zcb decode off | 39.20 |
-
-Supporting Zcb is 3% *faster*, not slower. The regression is on the other side:
-it appears only when the **guest** is compiled with `_zcb`, and it comes with an
-**identical 37,670,524 instructions retired**. Same count, different mix — the
-compiler replaced 32-bit encodings with Zcb compressed ones, and each of those
-costs an expansion through the RVC path that the 32-bit form does not.
-
-So on this emulator, building a guest with Zcb trades speed for code size. That
-is the opposite of the usual reason to enable it, and it is a property of
-expand-then-execute: a compressed instruction is never cheaper to *interpret*
-than the 32-bit instruction it stands in for, only cheaper to store.
 
 All three produce **`crcfinal 0xca90`** — native ARM and emulated RISC-V agree
 bit for bit, which is independent confirmation that the emulation is correct.
