@@ -192,6 +192,7 @@ rv_exc_t rv_hart_store(rv_hart_t *h, uint32_t addr, uint32_t size, uint32_t val)
 #define RV_AMO_MAX   0x14u
 #define RV_AMO_MINU  0x18u
 #define RV_AMO_MAXU  0x1Cu
+#define RV_AMO_CAS   0x05u   /* Zacas: amocas.w */
 
 /* True if `funct5` names an operation this core implements. */
 bool rv_amo_valid(uint32_t funct5);

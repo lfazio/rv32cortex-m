@@ -350,7 +350,7 @@
     "Zcb": { "supported": false },
     "Zcmop": { "supported": false },
     "Zba": { "supported": false },
-    "Zbb": { "supported": false },
+    "Zbb": { "supported": true },
     "Zbs": { "supported": false },
     "Zbc": { "supported": false },
     "Zbkb": { "supported": false },

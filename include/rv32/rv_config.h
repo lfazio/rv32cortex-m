@@ -29,6 +29,20 @@
 #ifndef RV_EXT_ZICNTR
 #  define RV_EXT_ZICNTR 1   /* cycle / time / instret counters */
 #endif
+/*
+ * Zacas (amocas). Off: the implementation below is incomplete and does not
+ * pass the official suite. amocas.w returns the wrong prior value, and
+ * amocas.d is not implemented at all -- on RV32 it operates on even-odd
+ * register pairs, which rv_hart_amo's single-register interface cannot
+ * express. With this clear, an amocas encoding raises illegal-instruction,
+ * which is the correct report for an extension that is not implemented.
+ */
+#ifndef RV_EXT_ZACAS
+#  define RV_EXT_ZACAS 0
+#endif
+#ifndef RV_EXT_ZBB
+#  define RV_EXT_ZBB    1  /* basic bit manipulation */
+#endif
 #ifndef RV_EXT_ZICBOM
 #  define RV_EXT_ZICBOM 1   /* cbo.clean / cbo.inval / cbo.flush */
 #endif

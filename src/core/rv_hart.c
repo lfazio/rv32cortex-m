@@ -207,6 +207,10 @@ bool rv_amo_valid(uint32_t funct5)
     case RV_AMO_XOR:  case RV_AMO_OR:   case RV_AMO_AND:
     case RV_AMO_MIN:  case RV_AMO_MAX:  case RV_AMO_MINU: case RV_AMO_MAXU:
         return true;
+#if RV_EXT_ZACAS
+    case RV_AMO_CAS:
+        return true;
+#endif
     default:
         return false;
     }
@@ -259,6 +263,26 @@ rv_exc_t rv_hart_amo(rv_hart_t *h, uint32_t funct5, uint32_t rd,
         /* An AMO reports load and store faults alike as store. */
         return RV_EXC_STORE_ACCESS_FAULT;
     }
+
+#if RV_EXT_ZACAS
+    if (funct5 == RV_AMO_CAS) {
+        /*
+         * amocas.w: rd is both the comparand and the destination, so its
+         * old value must be read before rd is written. The store happens
+         * only on a match, but rd is updated either way.
+         */
+        if (old == h->x[rd]) {
+            exc = rv_bus_write(h->bus, addr, 4u, src);
+            if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
+                return exc;
+            }
+        }
+        if (rd != 0u) {
+            h->x[rd] = old;
+        }
+        return RV_EXC_NONE;
+    }
+#endif
 
     uint32_t val;
     switch (funct5) {

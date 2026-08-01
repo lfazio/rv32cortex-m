@@ -99,6 +99,48 @@ static RV_ALWAYS_INLINE uint32_t rem_u(uint32_t a, uint32_t b)
 #endif /* RV_EXT_M */
 
 /* ------------------------------------------------------------------ */
+/* Zbb helpers                                                         */
+/* ------------------------------------------------------------------ */
+
+#if RV_EXT_ZBB
+/* __builtin_clz/ctz are undefined for zero; Zbb defines both as 32. */
+static RV_ALWAYS_INLINE uint32_t zbb_clz(uint32_t v)
+{
+    return (v == 0u) ? 32u : (uint32_t)__builtin_clz(v);
+}
+
+static RV_ALWAYS_INLINE uint32_t zbb_ctz(uint32_t v)
+{
+    return (v == 0u) ? 32u : (uint32_t)__builtin_ctz(v);
+}
+
+/* Rotates by a multiple of 32 must not shift by 32, which is UB in C. */
+static RV_ALWAYS_INLINE uint32_t zbb_ror(uint32_t v, uint32_t n)
+{
+    n &= 31u;
+    return (n == 0u) ? v : ((v >> n) | (v << (32u - n)));
+}
+
+static RV_ALWAYS_INLINE uint32_t zbb_rol(uint32_t v, uint32_t n)
+{
+    n &= 31u;
+    return (n == 0u) ? v : ((v << n) | (v >> (32u - n)));
+}
+
+/* orc.b: each byte becomes 0xFF if any of its bits are set, else 0x00. */
+static RV_ALWAYS_INLINE uint32_t zbb_orcb(uint32_t v)
+{
+    uint32_t r = 0u;
+    for (unsigned i = 0; i < 4u; i++) {
+        if ((v & (0xFFu << (i * 8u))) != 0u) {
+            r |= 0xFFu << (i * 8u);
+        }
+    }
+    return r;
+}
+#endif /* RV_EXT_ZBB */
+
+/* ------------------------------------------------------------------ */
 /* Control-transfer target validation                                  */
 /* ------------------------------------------------------------------ */
 
@@ -388,14 +430,41 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
             case 6: wr(h, rd, a | (uint32_t)imm); break;                  /* ORI   */
             case 7: wr(h, rd, a & (uint32_t)imm); break;                  /* ANDI  */
 
-            case 1:  /* SLLI */
+            case 1:  /* SLLI, and the Zbb unary ops that share its slot */
+#if RV_EXT_ZBB
+                if (rv_funct7(insn) == 0x30u) {
+                    switch (rv_rs2(insn)) {
+                    case 0: wr(h, rd, zbb_clz(a)); break;             /* clz    */
+                    case 1: wr(h, rd, zbb_ctz(a)); break;             /* ctz    */
+                    case 2: wr(h, rd, (uint32_t)__builtin_popcount(a)); break;
+                    case 4: wr(h, rd, (uint32_t)(int8_t)a); break;    /* sext.b */
+                    case 5: wr(h, rd, (uint32_t)(int16_t)a); break;   /* sext.h */
+                    default: TRAP(RV_EXC_ILLEGAL_INSN, insn);
+                    }
+                    break;
+                }
+#endif
                 if (RV_UNLIKELY(rv_funct7(insn) != 0u)) {
                     TRAP(RV_EXC_ILLEGAL_INSN, insn);
                 }
                 wr(h, rd, a << rv_rs2(insn));
                 break;
 
-            case 5:  /* SRLI / SRAI */
+            case 5:  /* SRLI / SRAI, plus Zbb rori / orc.b / rev8 */
+#if RV_EXT_ZBB
+                if (rv_funct7(insn) == 0x30u) {
+                    wr(h, rd, zbb_ror(a, rv_rs2(insn)));             /* rori */
+                    break;
+                }
+                if ((insn >> 20) == 0x287u) {
+                    wr(h, rd, zbb_orcb(a));                          /* orc.b */
+                    break;
+                }
+                if ((insn >> 20) == 0x698u) {
+                    wr(h, rd, __builtin_bswap32(a));                 /* rev8 */
+                    break;
+                }
+#endif
                 if (rv_funct7(insn) == 0u) {
                     wr(h, rd, a >> rv_rs2(insn));
                 } else if (rv_funct7(insn) == 0x20u) {
@@ -435,10 +504,35 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
                     wr(h, rd, a - b);                                   /* SUB */
                 } else if (f3 == 5u) {
                     wr(h, rd, (uint32_t)((int32_t)a >> (b & 0x1Fu)));   /* SRA */
-                } else {
+                }
+#if RV_EXT_ZBB
+                else if (f3 == 7u) { wr(h, rd, a & ~b); }               /* andn */
+                else if (f3 == 6u) { wr(h, rd, a | ~b); }               /* orn  */
+                else if (f3 == 4u) { wr(h, rd, ~(a ^ b)); }             /* xnor */
+#endif
+                else {
                     TRAP(RV_EXC_ILLEGAL_INSN, insn);
                 }
             }
+#if RV_EXT_ZBB
+            else if (f7 == 0x05u) {
+                switch (f3) {
+                case 4: wr(h, rd, ((int32_t)a < (int32_t)b) ? a : b); break; /* min  */
+                case 5: wr(h, rd, (a < b) ? a : b); break;                   /* minu */
+                case 6: wr(h, rd, ((int32_t)a > (int32_t)b) ? a : b); break; /* max  */
+                case 7: wr(h, rd, (a > b) ? a : b); break;                   /* maxu */
+                default: TRAP(RV_EXC_ILLEGAL_INSN, insn);
+                }
+            }
+            else if (f7 == 0x30u) {
+                if (f3 == 1u)      { wr(h, rd, zbb_rol(a, b)); }        /* rol */
+                else if (f3 == 5u) { wr(h, rd, zbb_ror(a, b)); }        /* ror */
+                else               { TRAP(RV_EXC_ILLEGAL_INSN, insn); }
+            }
+            else if (f7 == 0x04u && f3 == 4u && rv_rs2(insn) == 0u) {
+                wr(h, rd, a & 0xFFFFu);                                 /* zext.h */
+            }
+#endif
 #if RV_EXT_M
             else if (f7 == 1u) {
                 switch (f3) {

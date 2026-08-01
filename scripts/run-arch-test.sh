@@ -27,7 +27,7 @@ cfg_src="$here/tests/arch-test/$cfg_name"
 
 # The extensions this core implements. RV32IMAC decomposes into these in
 # the modern ISA taxonomy the suite uses.
-extensions="${ARCH_TEST_EXTENSIONS:-I,M,Zmmul,Zaamo,Zalrsc,Zca,Zicsr,Zicntr,Zifencei,Zicbom,Zicboz}"
+extensions="${ARCH_TEST_EXTENSIONS:-I,M,Zmmul,Zaamo,Zalrsc,Zca,Zicsr,Zicntr,Zifencei,Zicbom,Zicboz,Zbb}"
 jobs="$(nproc)"
 verbose=""
 
