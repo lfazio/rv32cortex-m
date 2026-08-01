@@ -458,7 +458,7 @@ for each backend.
 | | Ticks (µs) | Iterations/s | CoreMark/MHz | vs native |
 |---|---|---|---|---|
 | **Native ARM** | 335,277 | 447.4 | 2.49 | 1× |
-| **JIT** | 7,090,000 | 21.2 | 0.118 | **21.1× slower** |
+| **JIT** | 6,922,827 | 21.7 | 0.121 | **20.6× slower** |
 | Interpreter | 7,894,505 | 19.0 | 0.106 | 23.5× slower |
 
 Full extension set — F, B, Zacas — compiled into the emulator. `Zcb` is
