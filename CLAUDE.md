@@ -86,6 +86,17 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
   on the self-test. Open-coding costs 25-35 emitted instructions each in the
   code cache, which sets performance more than the translator does, and makes
   a second copy of semantics the core owns. Reach for the helper first.
+- **Inlining a memory access is only sound while nothing can deny it.** That
+  holds in M-mode with no locked PMP entry, and stops holding below M, where
+  matching no entry *denies* rather than permits. `pmp_active` therefore
+  depends on `h->priv`, not only on the entry configuration, and anything
+  changing the privilege level must call `rv_pmp_refresh`. The same flag
+  gates the interpreter's skip of `rv_pmp_check`, so getting it wrong permits
+  accesses that should fault -- in both backends. Snapshotting it in the JIT
+  also snapshots privilege, which is what stops a block built for M-mode
+  running below M: privilege only *drops* through `MRET`, a SYSTEM
+  instruction the translator declines, so it lands on the interpreter
+  fallback where the snapshot is checked.
 - **Every translate-time read of mutable hart state is a staleness bug until
   proven otherwise.** The full list, swept:
 

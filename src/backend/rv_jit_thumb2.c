@@ -183,7 +183,19 @@ static uint32_t g_pmp_seen_lo;
 static uint32_t g_pmp_seen_hi;
 
 #if RV_EXT_PMP
-/* Capture what emit_mem_access would bake in right now. */
+/*
+ * Capture what emit_mem_access would bake in right now.
+ *
+ * pmp_active is privilege-dependent -- rv_pmp_refresh forces it true below
+ * M-mode -- so snapshotting it also snapshots the privilege level, and a
+ * block translated for M-mode is discarded before it can run below M.
+ *
+ * That works because privilege only *drops* through MRET, which is a SYSTEM
+ * instruction the translator declines, so it runs on the interpreter
+ * fallback where this is checked. Traps raise privilege instead, and a
+ * block built for a lower level running at M is conservative rather than
+ * wrong: it declined to inline.
+ */
 static void jit_pmp_snapshot(const rv_hart_t *h, bool *active, bool *simple,
                              uint32_t *lo, uint32_t *hi)
 {
@@ -1422,6 +1434,25 @@ static void emit_mem_access(bool is_store, uint32_t size, uint32_t sign,
                             uint32_t pc, uint32_t insns, bool is_fp)
 {
     uint16_t *fail_align = NULL;
+
+    /*
+     * Inlining an access means performing it with no permission check, so
+     * it is only ever sound while nothing can deny it. In M-mode with no
+     * locked PMP entry, nothing can. Below M-mode something always can --
+     * matching no entry denies rather than permits -- so the inlined path
+     * must not be emitted at all.
+     *
+     * rv_pmp_refresh already folds that into pmp_active, so the test below
+     * covers it; this is stated separately because it is the load-bearing
+     * assumption of the fastest path in the emulator and should not have to
+     * be rediscovered from the definition of a flag in another file. If a
+     * privilege level below M is ever reachable, everything here has to be
+     * re-argued rather than assumed.
+     */
+    if (g_xlate_hart->priv != RV_PRIV_M) {
+        emit_helper_call(helper, spec, pc, insns);
+        return;
+    }
 
 #if RV_EXT_PMP
     /*

@@ -1154,7 +1154,19 @@ rather than a missing optimisation:
       layout work unchanged, which the self-test's timer checks demonstrate
       by passing untouched. What ACLINT adds, and what this gains, is that a
       platform may place the two devices independently.
-- [ ] **U-mode** — invasive rather than large. A second privilege level makes
+- [ ] **U-mode** — invasive rather than large. The privilege plumbing is
+      mostly present: `h->priv` exists, `csr_min_priv` already gates CSR
+      access by it, and `rv_pmp_check` already returns the U-mode answer.
+      What is left is making `MPP` real on trap entry and `MRET`, adding
+      `ECALL` from U as its own cause, and setting `misa.U`.
+
+      The gate that had to come first is done: **inlining a memory access is
+      only sound while nothing can deny it**, which is true in M-mode with no
+      locked PMP entry and false below M, where matching no entry denies. So
+      `pmp_active` now depends on the privilege level rather than only on the
+      entry configuration — in the *core*, because the interpreter skips
+      `rv_pmp_check` on the same flag and had the identical hole. Doing this
+      before U-mode rather than alongside it means the hole cannot appear. A second privilege level makes
       `medeleg`/`mideleg`/`mcounteren` real, adds `ECALL` from U as a distinct
       cause, and invalidates the "M-mode only" simplifications throughout
       `rv_csr.c` and `rv_pmp.c`.

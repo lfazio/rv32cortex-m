@@ -217,7 +217,11 @@ bool rv_trig_check(const rv_hart_t *h, uint32_t addr, rv_access_t acc);
 #endif
 
 #if RV_EXT_PMP
-/* Recompute pmp_active. Call after any write to a pmpcfg CSR. */
+/*
+ * Recompute pmp_active. Call after any write to a pmpcfg CSR *and* after
+ * any change to h->priv: below M-mode PMP must always be consulted, because
+ * matching no entry denies rather than permits.
+ */
 void rv_pmp_refresh(rv_hart_t *h);
 
 /*

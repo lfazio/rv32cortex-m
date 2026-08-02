@@ -94,8 +94,30 @@ static bool pmp_range(const rv_hart_t *h, uint32_t i, uint32_t cfg,
     }
 }
 
+/*
+ * Recompute whether PMP has to be consulted at all.
+ *
+ * "Some entry is locked and enabled" is the M-mode answer, and it is only
+ * the whole answer while M-mode is the only mode. Two things change below
+ * M: an *unlocked* entry restricts, and matching no entry at all denies
+ * rather than permits. So a hart running below M must always consult PMP,
+ * even with no entries configured -- the opposite of the M-mode case, where
+ * no entries means nothing can be denied.
+ *
+ * That is why this depends on h->priv, and why anything that changes the
+ * privilege level has to call this. It is not merely a cache of the entry
+ * configuration; it is the predicate both backends use to decide whether
+ * the access path may skip PMP entirely, and the JIT additionally uses it
+ * to decide whether a memory access may be inlined without a permission
+ * test. Getting it wrong does not slow anything down -- it permits accesses
+ * that should fault.
+ */
 void rv_pmp_refresh(rv_hart_t *h)
 {
+    if (h->priv != RV_PRIV_M) {
+        h->pmp_active = true;
+        return;
+    }
     h->pmp_active = false;
     for (uint32_t i = 0; i < RV_PMP_ENTRIES; i++) {
         const uint32_t cfg = pmp_cfg(h, i);
