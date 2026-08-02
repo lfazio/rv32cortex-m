@@ -80,6 +80,17 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
   Both were found on hardware, not by the x86 suites. When adding anything that
   `rv_hart_load`/`rv_hart_store` does beyond the access itself, ask what the
   inlined path does about it.
+- **A helper call is a translation; declining is not.** `FMIN`/`FMAX` and
+  `FCLASS` have no ARMv7-M equivalent, but routing them to `rv_hart_fp` still
+  keeps the block whole -- worth 24 interpreted instructions and 23 dispatches
+  on the self-test. Open-coding costs 25-35 emitted instructions each in the
+  code cache, which sets performance more than the translator does, and makes
+  a second copy of semantics the core owns. Reach for the helper first.
+- **`mstatus.FS` is checked for FP loads and stores but not for OP-FP.**
+  `h_fs_off` gates `OP_LOAD_FP`/`OP_STORE_FP` only, so the open-coded
+  arithmetic paths run whatever FS says, and nothing flushes when FS changes.
+  Helper-routed OP-FP is correct because `rv_hart_fp` checks it. Whether a
+  guest can observe the gap is unverified -- test before assuming either way.
 - **JIT blocks are specialised on `frm`; changing it flushes.** `dyn` is
   resolved at translation, not at run time, which is what lets `RMM` be
   declined to the helper -- ARM has no ties-away mode, and the old run-time

@@ -276,17 +276,34 @@ signalling form would raise it again for a quiet NaN.
 
 Measured on `isatest`, this moves 22 instructions per run off the helper.
 
-**Still on the helper**, each for a reason rather than for lack of time:
-- `FMIN`/`FMAX` — ARMv7-M has no scalar `VMINNM`/`VMAXNM`, and RISC-V's NaN
-  rules would need open-coding regardless.
+**Routed through a helper rather than open-coded**, which is not the same as
+declined — the block continues across them:
+
+- `FMIN`/`FMAX` — ARMv7-M has no scalar `VMINNM`/`VMAXNM`.
 - `FCLASS` — no ARM equivalent at all.
+
+Open-coding these would mean reimplementing by hand which NaN wins, that a
+signalling NaN raises invalid where a quiet one does not, that `-0.0` ranks
+below `+0.0` for min and max although IEEE calls them equal, and the ten-way
+split `FCLASS` reports. That is 25–35 emitted instructions each, for
+instructions no hot loop contains, spent in the resource this JIT is shortest
+of — the code cache sets overall performance more than anything in the
+translator. It would also be a second implementation of semantics the core
+already owns, which is the drift the conventions forbid; `rv_hart_fp` is the
+interpreter's own entry point, validated at 224/224.
+
+What changed is that they no longer **end the block**. Declining costs a
+dispatcher round trip, an interpreted instruction and a fresh block beyond
+it; a call costs five instructions. Measured by forcing the old behaviour
+back, the self-test goes from 146 interpreted instructions and 755 block
+entries to 122 and 732. The helper path also honours `mstatus.FS`, which the
+open-coded OP-FP paths do not.
+
+**Still declined**, so the block ends there:
+
 - Anything rounding **`RMM`** — ARM has no ties-away mode. Blocks are
   specialised on `frm`, so an `rm=dyn` instruction is resolved at translation
   and declined when it lands on `RMM`, just as a static `rmm` is.
-- anything using `RMM` — no ARM rounding mode.
-
-Interpreter fallbacks on the guest self-test are down from 93 to 79 across this
-work.
 
 ### Cache-block operations
 
@@ -992,8 +1009,19 @@ rather than a missing optimisation:
       every rounding mode the translation claims, dynamic rounding, and the
       exception flags — the one pre-existing check (`10.0` with `rtz`) would
       have passed with the NaN fixup deleted entirely.
-- [ ] **`FMIN`/`FMAX`, `FCLASS` in the JIT** — no ARMv7-M equivalent exists;
-      these stay interpreted unless open-coded.
+- [x] **`FMIN`/`FMAX`, `FCLASS` in the JIT** — *done*, by routing them to a
+      helper rather than open-coding them. No ARMv7-M equivalent exists, and
+      hand-rolling RISC-V's NaN, signalling-NaN and signed-zero rules would
+      cost 25–35 emitted instructions each in the resource that turned out to
+      set JIT performance overall. The win was never avoiding the call: it is
+      that these no longer end the block. 146 interpreted instructions and
+      755 block entries on the self-test become 122 and 732.
+
+      Covered by 19 new checks pinning the cases an inline version would get
+      wrong — two NaNs giving the canonical NaN rather than either input,
+      `-0.0` ranking below `+0.0` for both operations in both operand orders,
+      quiet against signalling NaN for the invalid flag, and every one of
+      `FCLASS`'s ten bits.
 - [x] **`RMM` in the JIT** — *resolved*, by declining it correctly rather
       than by translating it. No ARMv7-M rounding mode expresses ties-away,
       so it stays on the helper; what changed is that it now reliably gets
