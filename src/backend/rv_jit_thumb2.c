@@ -1753,6 +1753,41 @@ static uint32_t jit_helper_fp_store(rv_hart_t *h, uint32_t addr, uint32_t insn,
     return jit_helper_fp_load(h, addr, insn, pc);
 }
 
+/*
+ * Any OP-FP instruction the translator does not open-code: FMIN/FMAX and
+ * FCLASS today.
+ *
+ * These are *not* open-coded, and that is a deliberate choice rather than
+ * unfinished work. ARMv7-M has no scalar VMINNM/VMAXNM and no classify
+ * instruction at all, so an inline version means reimplementing RISC-V's
+ * rules by hand: which NaN wins, that a signalling NaN raises invalid where
+ * a quiet one does not, that -0.0 compares below +0.0 for min and max
+ * although IEEE says they are equal, and the ten-way split FCLASS reports.
+ * That is 25 to 35 emitted instructions each, for instructions no hot loop
+ * contains, in the resource this JIT is most short of -- the code cache
+ * turned out to set overall performance more than anything in the
+ * translator, 12 KB against 48 KB being worth 68% on CoreMark.
+ *
+ * It would also be a second implementation of semantics the core already
+ * owns, which is exactly the drift the conventions in CLAUDE.md forbid.
+ * rv_hart_fp is the interpreter's own entry point, validated at 224/224, so
+ * routing here cannot disagree with it.
+ *
+ * What matters is that the instruction no longer *ends the block*. Declining
+ * costs a dispatcher round trip, an interpreted instruction and a fresh
+ * block on the far side, and it fragments the code cache; a call costs five
+ * instructions and keeps the block whole. Unlike the inline paths above,
+ * this one also honours mstatus.FS, because rv_hart_fp checks it.
+ *
+ * The signature matches the memory helpers so emit_helper_call can be
+ * reused unchanged; `addr` is unused.
+ */
+static uint32_t jit_helper_fp_op(rv_hart_t *h, uint32_t addr, uint32_t insn,
+                                 uint32_t pc)
+{
+    return jit_helper_fp_load(h, addr, insn, pc);
+}
+
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -2384,6 +2419,15 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
             emit_fp_dirty();
             return 0;
 
+        case 0x05u:                 /* FMIN.S / FMAX.S */
+            if (f3 > 1u) {
+                return -1;
+            }
+            emit_helper_call((const void *)jit_helper_fp_op, insn, pc,
+                             insns_after);
+            emit_fp_dirty();
+            return 0;
+
         case 0x14u: {               /* FEQ.S / FLT.S / FLE.S */
             if (f3 > 2u) {
                 return -1;
@@ -2500,9 +2544,14 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
             return 0;
         }
 
-        case 0x1Cu:                 /* FMV.X.W -- raw bits to an X register */
-            if (f3 != 0u || rs2 != 0u) {
-                return -1;          /* f3 == 1 is FCLASS: helper */
+        case 0x1Cu:                 /* FMV.X.W / FCLASS.S */
+            if (rs2 != 0u || f3 > 1u) {
+                return -1;
+            }
+            if (f3 == 1u) {         /* FCLASS: no ARM equivalent exists */
+                emit_helper_call((const void *)jit_helper_fp_op, insn, pc,
+                                 insns_after);
+                return 0;           /* writes an X register: FS stays clean */
             }
             emit_ld_freg(R1, rs1);
             if (rd != 0u) {

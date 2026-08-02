@@ -784,6 +784,39 @@ static void test_fpu(void)
     check("fmin-nan", FOP2("fmin.s", F_QNAN, F2_0), F2_0);
 
     /*
+     * The parts of min/max that an open-coded version gets wrong.
+     *
+     * ARMv7-M has no scalar VMINNM/VMAXNM, so these run through the helper
+     * and share the interpreter's implementation. These checks pin the
+     * behaviour anyway, because the tempting inline version -- compare and
+     * conditionally select -- is wrong on both of the cases below.
+     */
+    check("fmax-nan",    FOP2("fmax.s", F_QNAN, F2_0), F2_0);
+    check("fmin-nan-rs2", FOP2("fmin.s", F2_0, F_QNAN), F2_0);
+    /* Two NaNs give the canonical NaN, not either input. */
+    check("fmin-2nan",   FOP2("fmin.s", F_QNAN, F_QNAN), 0x7FC00000u);
+    check("fmax-2nan",   FOP2("fmax.s", F_QNAN, F_QNAN), 0x7FC00000u);
+    /*
+     * -0.0 is *below* +0.0 here, though IEEE comparison calls them equal.
+     * A select driven by VCMP returns whichever operand it was told to
+     * prefer on equality, so it gets one of these two wrong whichever way
+     * it is written.
+     */
+    check("fmin-zeros",  FOP2("fmin.s", 0x80000000u, 0u), 0x80000000u);
+    check("fmax-zeros",  FOP2("fmax.s", 0x80000000u, 0u), 0u);
+    check("fmin-zeros-rev", FOP2("fmin.s", 0u, 0x80000000u), 0x80000000u);
+    check("fmax-zeros-rev", FOP2("fmax.s", 0u, 0x80000000u), 0u);
+
+    /* A quiet NaN operand is not an invalid operation; a signalling one is. */
+    csr_write("fflags", 0u);
+    (void)FOP2("fmin.s", F_QNAN, F2_0);
+    check("fmin-qnan-noflag", csr_read("fflags") & 0x10u, 0u);
+    csr_write("fflags", 0u);
+    (void)FOP2("fmin.s", 0x7F800001u, F2_0);   /* signalling NaN */
+    check("fmin-snan-nv", csr_read("fflags") & 0x10u, 0x10u);
+    csr_write("fflags", 0u);
+
+    /*
      * The fused multiply-adds differ in which term is negated. This is the
      * check that catches negating the finished sum instead, which gives the
      * right magnitude with the wrong sign.
@@ -972,6 +1005,32 @@ static void test_fpu(void)
         __asm__ volatile ("fmv.w.x fa0, %1\n\t fclass.s %0, fa0"
                           : "=r"(r) : "r"(x) : "fa0");
         check("fclass-negzero", r, 1u << 3);
+
+        /*
+         * The rest of the ten-way split. FCLASS has no ARM equivalent at
+         * all, so it runs through the helper; these pin every bit of the
+         * result so that stays honest.
+         */
+#define FCLASS(bits) ({                                                   \
+    uint32_t c_;                                                          \
+    const uint32_t b_ = (bits);                                           \
+    __asm__ volatile ("fmv.w.x fa0, %1\n\t fclass.s %0, fa0"              \
+                      : "=r"(c_) : "r"(b_) : "fa0");                      \
+    c_; })
+
+        check("fclass-neginf",  FCLASS(0xFF800000u), 1u << 0);
+        check("fclass-negnorm", FCLASS(0xBF800000u), 1u << 1);  /* -1.0 */
+        check("fclass-negsub",  FCLASS(0x80000001u), 1u << 2);
+        check("fclass-poszero", FCLASS(0x00000000u), 1u << 4);
+        check("fclass-possub",  FCLASS(0x00000001u), 1u << 5);
+        check("fclass-posinf",  FCLASS(0x7F800000u), 1u << 7);
+        check("fclass-snan",    FCLASS(0x7F800001u), 1u << 8);
+        check("fclass-qnan",    FCLASS(0x7FC00000u), 1u << 9);
+        /* Classifying a signalling NaN must not itself raise invalid. */
+        csr_write("fflags", 0u);
+        (void)FCLASS(0x7F800001u);
+        check("fclass-snan-noflag", csr_read("fflags"), 0u);
+#undef FCLASS
     }
 
     /* FLW / FSW through real memory. */
