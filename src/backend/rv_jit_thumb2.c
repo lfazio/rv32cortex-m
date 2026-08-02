@@ -214,10 +214,49 @@ static uint16_t *chain_target(uint32_t pc)
 }
 #endif
 
+static bool     g_regions_scanned;
 static uint32_t g_ram_base;
 static uint32_t g_ram_size;
 static uint32_t g_ram_host;
 static bool     g_ram_live;
+
+#if RV_JIT_INLINE_PERIPH
+/*
+ * The inlinable part of the peripheral window: one contiguous run of
+ * identity-mapped passthrough regions, minus the sub-ranges a store must
+ * not take. Holes are held as offsets from the window base rather than as
+ * absolute addresses, which is not just tidiness -- 0x40023800 is not a
+ * Thumb-2 modified immediate but 0x23800 is, so the offset form makes each
+ * hole test two instructions instead of five.
+ *
+ * A size of zero disables the path, which is what the host build gets:
+ * there the window is ordinary simulated RAM, not passthrough at all.
+ */
+static uint32_t g_pt_base;
+static uint32_t g_pt_size;
+static struct { uint32_t off, size; } g_pt_hole[RV_JIT_PT_MAX_HOLES];
+static uint32_t g_pt_holes;
+static bool     g_pt_store_ok;
+
+/*
+ * Whether to emit the window test at all, and the count of passthrough
+ * accesses that have gone through the helper so far.
+ *
+ * This is not emitted unconditionally because the code it adds is not free:
+ * about 18 bytes per load and 48 per store, which on CoreMark grew the
+ * translated image from 39.6 KB to 48.5 KB against a 48 KB cache. The
+ * result was constant compaction -- evictions went from 27k to 42k -- and
+ * CoreMark ran 53% slower. Driver code gained 2-3x and compute code lost
+ * half its speed, which is not a trade worth making in either direction.
+ *
+ * So the guest decides. A guest that touches the window arms the path and
+ * pays one flush; a guest that never does never pays anything, and that
+ * includes every compute benchmark, whose console is a virtual device
+ * outside the window rather than real silicon inside it.
+ */
+static bool     g_pt_armed;
+static uint32_t g_pt_hits;
+#endif /* RV_JIT_INLINE_PERIPH */
 
 /* Emission cursor, valid only while translating. */
 static uint16_t *g_emit;
@@ -239,6 +278,7 @@ void rv_jit_set_code_buffer(void *buf, uint32_t size)
 
 void rv_jit_flush(void)
 {
+    g_regions_scanned = false;
     g_code_used = 0u;
     g_block_count = 0u;
     for (uint32_t i = 0; i < RV_JIT_HASH_SIZE; i++) {
@@ -431,6 +471,65 @@ static void emit_imm32(uint32_t rd, uint32_t val)
     }
 }
 
+/*
+ * Thumb-2 "modified immediate": the 12-bit field shared by the 32-bit
+ * data-processing encodings. It represents either an 8-bit value splatted
+ * into one, two or four bytes, or an 8-bit value with bit 7 set rotated
+ * right by 8..31. Returns false for constants it cannot express, which the
+ * callers handle by materialising the value into a register instead.
+ *
+ * Worth having because the two constants that matter here -- 0x40000000 and
+ * 0x20000000, the base and size of the peripheral window -- both encode,
+ * turning a four-instruction range test into two.
+ */
+static bool thumb_imm12(uint32_t val, uint32_t *out)
+{
+    const uint32_t b = val & 0xFFu;
+
+    if (val < 0x100u) {
+        *out = val;
+        return true;
+    }
+    if ((val & 0xFF00FF00u) == 0u && b == ((val >> 16) & 0xFFu)) {
+        *out = (1u << 8) | b;                       /* 0x00XY00XY */
+        return true;
+    }
+    if ((val & 0x00FF00FFu) == 0u &&
+        ((val >> 8) & 0xFFu) == ((val >> 24) & 0xFFu)) {
+        *out = (2u << 8) | ((val >> 8) & 0xFFu);    /* 0xXY00XY00 */
+        return true;
+    }
+    if (b == ((val >> 8) & 0xFFu) && b == ((val >> 16) & 0xFFu) &&
+        b == ((val >> 24) & 0xFFu)) {
+        *out = (3u << 8) | b;                       /* 0xXYXYXYXY */
+        return true;
+    }
+
+    for (uint32_t rot = 8u; rot < 32u; rot++) {
+        /* Rotating the target left by rot must recover the 8-bit source. */
+        const uint32_t v = (val << rot) | (val >> (32u - rot));
+        if (v <= 0xFFu && (v & 0x80u) != 0u) {
+            *out = (rot << 7) | (v & 0x7Fu);
+            return true;
+        }
+    }
+    return false;
+}
+
+/* SUB.W Rd,Rn,#imm -- T3, taking an already-encoded modified immediate. */
+static void emit_sub_imm_w(uint32_t rd, uint32_t rn, uint32_t enc)
+{
+    emit32((uint16_t)(0xF1A0u | (((enc >> 11) & 1u) << 10) | rn),
+           (uint16_t)((((enc >> 8) & 7u) << 12) | (rd << 8) | (enc & 0xFFu)));
+}
+
+/* CMP.W Rn,#imm -- T2, which is SUBS with the result discarded into PC. */
+static void emit_cmp_imm_w(uint32_t rn, uint32_t enc)
+{
+    emit32((uint16_t)(0xF1B0u | (((enc >> 11) & 1u) << 10) | rn),
+           (uint16_t)((((enc >> 8) & 7u) << 12) | (0xFu << 8) | (enc & 0xFFu)));
+}
+
 /* MOV Rd,Rm -- T1, works across the full register file. */
 static void emit_mov(uint32_t rd, uint32_t rm)
 {
@@ -458,6 +557,23 @@ static void emit_sub_reg(uint32_t rd, uint32_t rn, uint32_t rm)
 static void emit_dp_reg(uint16_t op, uint32_t rdn, uint32_t rm)
 {
     emit16((uint16_t)(op | (rm << 3) | rdn));
+}
+
+/*
+ * CMP Rn,Rm -- T2, the form that reaches the high registers.
+ *
+ * The T1 form above encodes three bits of Rn, so passing it r8 sets a bit
+ * that belongs to Rm and it assembles as a comparison of two entirely
+ * different registers. That is not hypothetical: the loop-chain cap did
+ * exactly this, comparing r0 against the limit instead of the accumulator
+ * in r8, so a chained loop never saw its cap and ran to completion in one
+ * block entry -- 3700 guest instructions per entry where 64 was intended.
+ * It looked like a win on throughput and was really the interrupt-latency
+ * bound being silently discarded.
+ */
+static void emit_cmp_hi(uint32_t rn, uint32_t rm)
+{
+    emit16((uint16_t)(0x4500u | ((rn & 0x8u) << 4) | (rm << 3) | (rn & 0x7u)));
 }
 
 #define DP_AND 0x4000u
@@ -579,6 +695,36 @@ static uint16_t *emit_bcond_fwd(uint32_t cond)
     return at;
 }
 
+/*
+ * Backward B<cond> to an already-emitted point, choosing the encoding by
+ * reach: the 16-bit T1 form where it fits, the 32-bit T3 form (+/-1 MB)
+ * where it does not.
+ *
+ * The widening matters more than the two bytes suggest. Loop chaining is
+ * only emitted when the back edge is reachable, so before this existed a
+ * block that outgrew T1's +/-254 bytes did not get a longer branch -- it
+ * silently stopped chaining and went back through the dispatcher every
+ * iteration. Inlining the peripheral window pushed two-access loop bodies
+ * over that line and cost them 2.4x. The common case still gets T1, so
+ * nothing is paid for the safety.
+ */
+static void emit_bcond_back(uint32_t cond, const uint16_t *dst)
+{
+    /* PC reads as the instruction address plus 4, for both encodings. */
+    const int32_t off = (int32_t)((const uint8_t *)dst - (const uint8_t *)g_emit) - 4;
+
+    if (off >= -252) {
+        emit16((uint16_t)(0xD000u | (cond << 8) |
+                          (((uint32_t)(off >> 1)) & 0xFFu)));
+        return;
+    }
+    const uint32_t val = (uint32_t)off >> 1;   /* S:J2:J1:imm6:imm11 */
+    emit32((uint16_t)(0xF000u | (((val >> 19) & 1u) << 10) | (cond << 6) |
+                      ((val >> 11) & 0x3Fu)),
+           (uint16_t)(0x8000u | (((val >> 17) & 1u) << 13) |
+                      (((val >> 18) & 1u) << 11) | (val & 0x7FFu)));
+}
+
 /* Unconditional B, likewise. */
 static uint16_t *emit_b_fwd(void)
 {
@@ -681,6 +827,38 @@ static void emit_set_pc(uint32_t scratch, uint32_t pc)
 #define SPEC_SIZE(s)  (((s) >> 8) & 0x7u)
 #define SPEC_SIGNED(s) (((s) >> 12) & 1u)
 
+#if RV_JIT_INLINE_PERIPH
+/*
+ * Note a helper access that landed in the peripheral window, and arm the
+ * inlined path once the guest has made enough of them to show it is driving
+ * hardware rather than computing.
+ *
+ * Flushing from inside a helper is safe, and worth stating because it looks
+ * like it should not be. rv_jit_flush only resets bookkeeping: the block
+ * currently executing stays intact in the code buffer, runs to its end and
+ * returns to the dispatcher normally. Only the *next* translation reuses
+ * that memory, and translation happens in the dispatch loop, never
+ * underneath a running block.
+ *
+ * The alternative -- a pending-flush flag tested at every block entry --
+ * would put the cost on the hot path, where an earlier version of the
+ * trigger check cost 16% on CoreMark for exactly that kind of per-dispatch
+ * bookkeeping. Here the cost sits in the helper, which is already slow.
+ */
+static void pt_note(uint32_t addr)
+{
+    if (g_pt_armed || g_pt_size == 0u || (addr - g_pt_base) >= g_pt_size) {
+        return;
+    }
+    if (++g_pt_hits >= RV_JIT_PT_ARM_AT) {
+        g_pt_armed = true;
+        rv_jit_flush();
+    }
+    g_stats.pt_hits = g_pt_hits;
+    g_stats.pt_armed = g_pt_armed ? 1u : 0u;
+}
+#endif
+
 static uint32_t jit_helper_load(rv_hart_t *h, uint32_t addr, uint32_t spec,
                                 uint32_t pc)
 {
@@ -696,6 +874,9 @@ static uint32_t jit_helper_load(rv_hart_t *h, uint32_t addr, uint32_t spec,
     if (rd != 0u) {
         h->x[rd] = v;
     }
+#if RV_JIT_INLINE_PERIPH
+    pt_note(addr);
+#endif
     return 0u;
 }
 
@@ -709,6 +890,9 @@ static uint32_t jit_helper_store(rv_hart_t *h, uint32_t addr, uint32_t spec,
         rv_hart_trap(h, exc, addr);
         return 1u;
     }
+#if RV_JIT_INLINE_PERIPH
+    pt_note(addr);
+#endif
     return 0u;
 }
 
@@ -1015,9 +1199,125 @@ static void emit_ls_reg(uint16_t op, uint32_t rt, uint32_t rn, uint32_t rm)
     emit16((uint16_t)(op | (rm << 6) | (rn << 3) | rt));
 }
 
+#if RV_JIT_INLINE_PERIPH
 /*
- * Inline the guest-RAM case of a load or store, falling back to the helper
- * for everything else (MMIO, the passthrough window, ROM, faults).
+ * Qualifies for the window: passthrough, identity-mapped, readable and
+ * indifferent to access width.
+ *
+ * Identity is required rather than merely a uniform offset because it is
+ * what makes the emitted access a bare load from the address register. A
+ * platform that maps the window somewhere else keeps working; it just
+ * keeps the helper call.
+ */
+static bool pt_region_ok(const rv_region_t *r)
+{
+    return r->kind == RV_MEM_PASSTHRU && r->size != 0u &&
+           r->host_base == (uintptr_t)r->base &&
+           (r->perm & RV_PERM_R) != 0u && r->widths == RV_WANY;
+}
+
+static void scan_passthru(const rv_bus_t *bus)
+{
+    g_pt_base = 0u;
+    g_pt_size = 0u;
+    g_pt_holes = 0u;
+    g_pt_store_ok = true;
+
+    /* The run starts at the lowest qualifying region. */
+    const rv_region_t *first = NULL;
+    for (uint32_t i = 0; i < bus->count; i++) {
+        const rv_region_t *r = &bus->regions[i];
+        if (pt_region_ok(r) && (first == NULL || r->base < first->base)) {
+            first = r;
+        }
+    }
+    if (first == NULL) {
+        return;
+    }
+
+    /*
+     * Extend upwards while some region begins exactly where the run ends.
+     * The table is not required to be sorted, hence the rescan; it holds a
+     * handful of entries and this runs once per translated block.
+     */
+    const uint32_t base = first->base;
+    uint32_t end = base + first->size;
+    for (bool grew = true; grew; ) {
+        grew = false;
+        for (uint32_t i = 0; i < bus->count; i++) {
+            const rv_region_t *r = &bus->regions[i];
+            if (pt_region_ok(r) && r->base == end && r->size <= 0xFFFFFFFFu - end) {
+                end += r->size;
+                grew = true;
+                break;
+            }
+        }
+    }
+
+    /* Read-only members of the run become holes that stores must avoid. */
+    for (uint32_t i = 0; i < bus->count; i++) {
+        const rv_region_t *r = &bus->regions[i];
+        uint32_t enc;
+
+        if (!pt_region_ok(r) || r->base < base || r->base >= end ||
+            (r->perm & RV_PERM_W) != 0u) {
+            continue;
+        }
+        /*
+         * A hole the emitter cannot express in one instruction pair costs
+         * more to test than the helper call it avoids, so give up on
+         * inlining stores rather than emit the long form. Loads are
+         * unaffected: every region in the run is readable by construction.
+         */
+        if (g_pt_holes == RV_JIT_PT_MAX_HOLES ||
+            !thumb_imm12(r->base - base, &enc) || !thumb_imm12(r->size, &enc)) {
+            g_pt_store_ok = false;
+            break;
+        }
+        g_pt_hole[g_pt_holes].off = r->base - base;
+        g_pt_hole[g_pt_holes].size = r->size;
+        g_pt_holes++;
+    }
+
+    g_pt_base = base;
+    g_pt_size = end - base;
+}
+
+/*
+ * Set flags so that CC (unsigned lower) means "inside [base, base+size)".
+ * Leaves the offset into the range in `scratch`, which the hole tests then
+ * reuse. Falls back to materialising the constants when they are not
+ * modified immediates; R3 is free at every call site that can need it.
+ */
+static void emit_range_test(uint32_t scratch, uint32_t rn, uint32_t base,
+                            uint32_t size)
+{
+    uint32_t enc;
+
+    if (thumb_imm12(base, &enc)) {
+        emit_sub_imm_w(scratch, rn, enc);
+    } else {
+        emit_imm32(scratch, base);
+        emit_sub_reg(scratch, rn, scratch);
+    }
+    if (thumb_imm12(size, &enc)) {
+        emit_cmp_imm_w(scratch, enc);
+    } else {
+        emit_imm32(R3, size);
+        emit_dp_reg(DP_CMP, scratch, R3);
+    }
+}
+#endif /* RV_JIT_INLINE_PERIPH */
+
+/*
+ * Inline a load or store, falling back to the helper for anything the
+ * emitted tests cannot settle (virtual devices, ROM, faults).
+ *
+ * Two windows are inlined. Guest RAM is the one that matters for compute,
+ * and the peripheral window is the one that matters for drivers; a guest
+ * that talks to real silicon spends its accesses in the second, and before
+ * it was inlined each of those cost around 165 host cycles more than a RAM
+ * access on the F446.
  *
  * With r1 holding the address:
  *
@@ -1025,17 +1325,27 @@ static void emit_ls_reg(uint16_t op, uint32_t rt, uint32_t rn, uint32_t rm)
  *     BNE  slow
  *     SUB  r2, r1, r5       offset into guest RAM
  *     CMP  r2, r6
- *     BHS  slow             unsigned, so below-base wraps and fails too
+ *     BHS  periph           unsigned, so below-base wraps and fails too
  *     LDR  r2, [r7, r2]
  *     STR  r2, [r4, rd]
+ *     B    done
+ *   periph:
+ *     SUB  r2, r1, #base    the passthrough window
+ *     CMP  r2, #size
+ *     BHS  slow
+ *     SUB  r3, r2, #hole    stores only: a read-only sub-range
+ *     CMP  r3, #hole_size
+ *     BLO  slow
+ *     MOVS r2, #0
+ *     LDR  r3, [r2, r1]     identity map, so the guest address is the host's
  *     B    done
  *   slow:
  *     <helper call>
  *   done:
  *
- * One compare suffices for the upper bound because the alignment check has
- * already run and guest RAM is a whole number of words: an aligned offset
- * strictly below the size cannot have its last byte past the end.
+ * One compare suffices for each upper bound because the alignment check has
+ * already run and both windows are a whole number of words: an aligned
+ * offset strictly below the size cannot have its last byte past the end.
  */
 static void emit_mem_access(bool is_store, uint32_t size, uint32_t sign,
                             uint32_t reg, const void *helper, uint32_t spec,
@@ -1133,16 +1443,96 @@ static void emit_mem_access(bool is_store, uint32_t size, uint32_t sign,
     }
     uint16_t *skip_slow = emit_b_fwd();
 
+#if RV_JIT_INLINE_PERIPH
+    uint16_t *skip_pt = NULL;
+    uint16_t *pt_miss = NULL;
+    uint16_t *pt_hole[RV_JIT_PT_MAX_HOLES] = { NULL };
+    uint32_t  pt_holes = 0u;
+
+    /*
+     * periph: reached when the address is not in guest RAM. A store also
+     * has to clear the read-only holes; a load does not, because every
+     * region in the window is readable by construction.
+     */
+    if (g_pt_armed && g_pt_size != 0u && (!is_store || g_pt_store_ok)) {
+        patch_fwd(fail_range, true);
+        fail_range = NULL;
+
+        emit_range_test(R2, R1, g_pt_base, g_pt_size);
+        pt_miss = emit_bcond_fwd(C_CS);
+
+        if (is_store) {
+            for (uint32_t i = 0; i < g_pt_holes; i++) {
+                uint32_t enc;
+                /* Offsets from the window base, so r2 is what to test. */
+                (void)thumb_imm12(g_pt_hole[i].off, &enc);
+                emit_sub_imm_w(R3, R2, enc);
+                (void)thumb_imm12(g_pt_hole[i].size, &enc);
+                emit_cmp_imm_w(R3, enc);
+                pt_hole[pt_holes++] = emit_bcond_fwd(C_CC);
+            }
+
+#if RV_EXT_F
+            if (is_fp) { emit_ld_freg(R3, reg); } else
+#endif
+            emit_ld_greg(R3, reg);
+            emit_mov_imm8(R2, 0u);
+            emit_ls_reg((size == 4u) ? LS_STR : (size == 2u) ? LS_STRH : LS_STRB,
+                        R3, R2, R1);
+#if RV_EXT_A
+            /*
+             * Drop any LR/SC reservation, as the RAM path does. A guest
+             * that reserved a peripheral address is a strange guest, but
+             * the reservation address is not checked here and a store that
+             * silently left it standing would let a later SC succeed across
+             * an intervening write. r2 already holds zero.
+             */
+            emit32((uint16_t)(0xF880u | R4),
+                   (uint16_t)((R2 << 12) | HART_RESV_OFF));
+#endif
+        } else {
+            uint16_t op;
+            if (size == 4u) {
+                op = LS_LDR;
+            } else if (size == 2u) {
+                op = sign ? LS_LDRSH : LS_LDRH;
+            } else {
+                op = sign ? LS_LDRSB : LS_LDRB;
+            }
+            emit_mov_imm8(R2, 0u);
+            emit_ls_reg(op, R3, R2, R1);
+#if RV_EXT_F
+            if (is_fp) {
+                emit_st_freg(reg, R3);
+            } else
+#endif
+            if (reg != 0u) {
+                emit_st_greg(reg, R3);
+            }
+        }
+        skip_pt = emit_b_fwd();
+    }
+#endif /* RV_JIT_INLINE_PERIPH */
+
     /* slow: */
     patch_fwd(fail_align, true);
     patch_fwd(fail_range, true);
 #if RV_EXT_PMP
     patch_fwd(pmp_slow, true);
 #endif
+#if RV_JIT_INLINE_PERIPH
+    patch_fwd(pt_miss, true);
+    for (uint32_t i = 0; i < pt_holes; i++) {
+        patch_fwd(pt_hole[i], true);
+    }
+#endif
     emit_helper_call(helper, spec, pc, insns);
 
     /* done: */
     patch_fwd(skip_slow, false);
+#if RV_JIT_INLINE_PERIPH
+    patch_fwd(skip_pt, false);
+#endif
 }
 
 #if RV_EXT_ZICBOM || RV_EXT_ZICBOZ
@@ -1696,24 +2086,14 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
 #if RV_JIT_LOOP_CHAIN
         uint16_t *const back =
             (target == g_block_pc) ? g_loop_start : NULL;
-        /*
-         * The 16-bit conditional branch reaches +/-254 bytes. A block that
-         * has grown past that falls through to the normal exit rather than
-         * being given a wider encoding, which would cost the common case.
-         */
-        const int32_t back_off = (back == NULL) ? 0
-            : (int32_t)((uint8_t *)back - (uint8_t *)g_emit) - 4;
-        if (back != NULL && back_off >= -252) {
+        if (back != NULL) {
             emit32(0xF108u,
                    (uint16_t)((R8 << 8) | ((insns_after - g_acc_base) & 0xFFu)));
             emit_imm32(R1, RV_JIT_LOOP_CAP);
-            emit_dp_reg(DP_CMP, R8, R1);
+            emit_cmp_hi(R8, R1);
 
-            /* Branch back if still under the cap. Recomputed here: the
-             * three instructions above moved the cursor. */
-            const int32_t off =
-                (int32_t)((uint8_t *)back - (uint8_t *)g_emit) - 4;
-            emit16((uint16_t)(0xD300u | (((uint32_t)(off >> 1)) & 0xFFu)));
+            /* Branch back if still under the cap. */
+            emit_bcond_back(C_CC, back);
 
             /* Cap reached: fall out to the dispatcher at the loop target.
              * The accumulator already holds everything retired. */
@@ -1793,14 +2173,10 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
 #if RV_JIT_LOOP_CHAIN
         if (chain) {
             emit_imm32(R1, RV_JIT_LOOP_CAP);
-            emit_dp_reg(DP_CMP, R8, R1);
-            const int32_t off =
-                (int32_t)((uint8_t *)g_loop_start - (uint8_t *)g_emit) - 4;
-            if (off >= -252) {
-                emit16((uint16_t)(0xD300u |
-                                  (((uint32_t)(off >> 1)) & 0xFFu)));  /* BLO */
-            }
-            /* Cap reached, or out of branch range: leave with the total. */
+            emit_cmp_hi(R8, R1);
+            emit_bcond_back(C_CC, g_loop_start);   /* BLO, still under cap */
+
+            /* Cap reached: leave with the total. */
             emit_set_pc(R1, target);
             emit_mov(R0, R8);
             emit_pop();
@@ -2195,23 +2571,32 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
     uint16_t *const start = g_emit;
 
     /*
-     * Describe guest RAM to the block so memory accesses can be inlined.
-     * The region table is fixed before execution begins; anything that
-     * changes it flushes the JIT, so baking these in is safe.
+     * Describe the inlinable regions to the block. The region table is
+     * fixed before execution begins and anything that changes it flushes
+     * the JIT, so this is scanned once per flush rather than once per
+     * block: doing it per block put a bus walk in front of every
+     * translation, and a workload that re-translates as hard as CoreMark
+     * does -- 26575 evictions in one run -- paid 8% for it.
      */
-    g_ram_base = 0u;
-    g_ram_size = 0u;
-    g_ram_host = 0u;
     g_ram_live = false;
     g_xlate_hart = h;
-    for (uint32_t i = 0; i < h->bus->count; i++) {
-        const rv_region_t *r = &h->bus->regions[i];
-        if (r->kind == RV_MEM_RAM && r->perm == RV_PERM_RWX) {
-            g_ram_base = r->base;
-            g_ram_size = r->size;
-            g_ram_host = (uint32_t)(uintptr_t)r->host;
-            break;
+    if (!g_regions_scanned) {
+        g_ram_base = 0u;
+        g_ram_size = 0u;
+        g_ram_host = 0u;
+        for (uint32_t i = 0; i < h->bus->count; i++) {
+            const rv_region_t *r = &h->bus->regions[i];
+            if (r->kind == RV_MEM_RAM && r->perm == RV_PERM_RWX) {
+                g_ram_base = r->base;
+                g_ram_size = r->size;
+                g_ram_host = (uint32_t)(uintptr_t)r->host;
+                break;
+            }
         }
+#if RV_JIT_INLINE_PERIPH
+        scan_passthru(h->bus);
+#endif
+        g_regions_scanned = true;
     }
     emit_prologue();
     /*

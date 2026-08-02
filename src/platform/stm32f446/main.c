@@ -662,6 +662,10 @@ int main(void)
         console_putu(js.alu_calls_clmul);
         console_puts("  bit ");
         console_putu(js.alu_calls_bit);
+        console_puts("\n  pt hits  ");
+        console_putu(js.pt_hits);
+        console_puts(" armed ");
+        console_putu(js.pt_armed);
         console_puts("\n  blk entr ");
         console_putu(js.block_entries);
         /*

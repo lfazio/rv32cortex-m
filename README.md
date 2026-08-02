@@ -474,6 +474,55 @@ for each backend.
 
 Both rows measured on the current tree, `crcfinal 0xca90` throughout.
 
+### Driver performance: the passthrough window
+
+CoreMark and `bench` are deliberately I/O free, so neither says anything about
+the path a guest *driver* takes. `mmiobench` measures that one. Each kernel
+runs twice with identical machine code, once against the peripheral window and
+once against guest RAM; the RAM form is the control, so dividing removes the
+loop overhead and leaves the access path.
+
+Nanoseconds per access on the F446, `RV32_JIT_INLINE_PERIPH` off and on:
+
+| kernel | helper | inlined | speedup | vs its RAM control |
+|---|---|---|---|---|
+| `read` — load a status register | 1493 | **654** | 2.28x | 1.34x |
+| `write` — store a command register | 1236 | **558** | 2.22x | 1.44x |
+| `rmw` — read-modify-write | 2286 | **735** | 3.11x | 1.38x |
+| `poll` — read, test a bit, branch | 1337 | **479** | 2.79x | 1.15x |
+
+Overall 46.66 to **24.40** cycles per guest instruction. The RAM controls move
+by at most 4%, which is inside the noise, and CoreMark by 0.66% — the point of
+arming the path from guest behaviour rather than always emitting it.
+
+The residual 1.15-1.44x over RAM is not emulator overhead: a GPIO register on
+AHB1 costs more to reach than SRAM on this part, and native ARM code pays that
+too.
+
+**Two bugs surfaced here that had nothing to do with peripherals**, both found
+because inlining changed block sizes and made them observable:
+
+*Chaining was silently dropped for large blocks.* The loop back edge was only
+emitted when it fit the 16-bit conditional branch's ±254 bytes; past that the
+block quietly stopped chaining instead of getting a wider encoding. Inlining
+pushed two-access loop bodies over the line and cost them 2.4x. Now the
+32-bit form (±1 MB) is used exactly when the short one will not reach, so the
+common case pays nothing.
+
+*A silently malformed compare.* `RV_JIT_LOOP_CAP` is enforced by comparing the
+retired-instruction accumulator in r8 against the limit — through the 16-bit
+`CMP`, which encodes only r0-r7. Passing it r8 set a bit belonging to the
+other operand and it assembled as `CMP r0, r1`. The cap therefore never
+applied: chained loops ran to completion in one block entry, 3700 guest
+instructions where 64 was intended. It read as a throughput win and was
+really the interrupt-latency bound being discarded. Fixing it restored 64
+(`blk entr` 434 to 25125 on `mmiobench`) at about 10% on tight loops.
+
+The lesson both share is the one this file keeps relearning: **on ARM, a
+register number that does not fit the encoding does not fail — it assembles
+as a different instruction.** Neither bug produced a wrong result, so no test
+caught either; they only showed up as performance that made no sense.
+
 **The interpreter costs 46% for two features almost no guest uses.** Measured
 by compiling each out:
 
@@ -792,6 +841,12 @@ rather than a missing optimisation:
       31.04, 7%. `RV_JIT_LOOP_CAP` bounds interrupt latency at 64 guest
       instructions, since delivery happens between blocks.
 
+      That bound was not real until later: the cap compared the wrong
+      register (see *A silently malformed compare*, below), so chained loops
+      ran to completion in a single block entry. Fixing it cost tight loops
+      about 10% and cost `bench` 1% -- 18.68 to 18.88 cycles per guest
+      instruction -- which is what bounded interrupt latency actually costs.
+
       Getting there took three wrong versions, all of which *ran correctly*
       and miscounted retired instructions — which matters, because that count
       feeds `mcycle`, `minstret` and the run budget, and because dividing host
@@ -803,10 +858,19 @@ rather than a missing optimisation:
       that point. **The instruction count is the first thing to check when a
       JIT change looks too good.**
 
-- [ ] **Fewer helper calls for memory.** The inlined RAM path already covers the
-      common case; MMIO and the passthrough window still call out. A second
-      inlined window for the peripheral region would cover most guest driver
-      code.
+- [x] **Fewer helper calls for memory** — *done*. The passthrough window is
+      inlined alongside guest RAM, worth **2.2-3.1x** on driver-shaped access
+      (see *Driver performance* above). Two things had to be true first: the
+      window is an identity map, so the emitted access is a bare load from the
+      address register; and its read-only sub-ranges are few and small enough
+      to test as holes punched out of one range check.
+
+      It is armed by the guest rather than always emitted, because the code is
+      not free -- about 18 bytes per load and 48 per store, which grew
+      CoreMark's translated image past the 48 KB cache and cost it 53%. What
+      is left here is a *third* window for the guest ROM, which would only
+      matter for an execute-in-place guest; the images built here run from
+      RAM, so it would be unmeasurable.
 
 **ISA.** What is left is either small or deliberately excluded:
 
@@ -815,6 +879,14 @@ rather than a missing optimisation:
       instructions.
 - [ ] **`FMIN`/`FMAX`, `FCLASS` in the JIT** — no ARMv7-M equivalent exists;
       these stay interpreted unless open-coded.
+- [ ] **`RMM` in the JIT** — no ARMv7-M rounding mode exists; this stays
+      interpreted unless open-coded.
+- [ ] **ACLINT/APLIC** — the emulator has a CLINT and an APLIC, but the guest self-test
+      does not exercise them. The CLINT is a 64-bit timer and the APLIC is a
+      32-bit interrupt controller; both are soft-trap and would need a second
+      set of CSRs to hold their state. The ACLINT/APLIC will be mapped to the
+      passthrough window and mapped to cortex-m IRQ lines, so the guest can use
+      them, but they are not needed for the self-test and are therefore low priority.
 - [ ] **U-mode** — invasive rather than large. A second privilege level makes
       `medeleg`/`mideleg`/`mcounteren` real, adds `ECALL` from U as a distinct
       cause, and invalidates the "M-mode only" simplifications throughout

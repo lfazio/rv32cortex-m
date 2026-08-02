@@ -80,6 +80,43 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
   Both were found on hardware, not by the x86 suites. When adding anything that
   `rv_hart_load`/`rv_hart_store` does beyond the access itself, ask what the
   inlined path does about it.
+- **A register that does not fit a Thumb-2 encoding assembles as a different
+  instruction, not an error.** The 16-bit `CMP`/data-processing form encodes
+  r0-r7; `emit_dp_reg(DP_CMP, R8, R1)` set a bit belonging to `rm` and became
+  `CMP r0, r1`, so `RV_JIT_LOOP_CAP` never applied and chained loops ran
+  unbounded -- 3700 guest instructions per block entry where 64 was intended.
+  It looked like extra throughput and was the interrupt-latency bound being
+  thrown away. Use `emit_cmp_hi` for r8 and above. Nothing computed a wrong
+  answer, so no test caught it.
+- **Branch range is a silent cliff.** Loop chaining was emitted only when the
+  back edge fitted the 16-bit conditional branch (+/-254 bytes); a larger
+  block stopped chaining rather than widening the encoding, costing 2.4x on
+  the loops that crossed the line. `emit_bcond_back` picks the encoding by
+  reach, so the common case still gets the short form.
+- **Inlining the peripheral window is worth 2.2-3.1x to drivers and -53% to
+  compute, so the guest arms it.** The emitted test is ~18 bytes per load and
+  ~48 per store; always-on grew CoreMark's image past the 48 KB code cache and
+  doubled evictions. `pt_note` counts passthrough accesses through the helper
+  and flushes once at `RV_JIT_PT_ARM_AT`. Flushing from inside a helper is
+  safe -- the running block stays intact and only the next translation reuses
+  its memory -- and a pending-flush flag tested per dispatch would put the
+  cost back on the hot path.
+- **Scan the bus once per flush, not once per block.** The region scan sat in
+  `translate()`, so a workload that re-translates hard (CoreMark: 26575
+  evictions) paid a bus walk per block and 8% overall. The region table is
+  fixed before execution and anything changing it flushes.
+- **Reserved peripheral addresses are not a harmless near miss.** An
+  unimplemented address in the passthrough window makes the AHB signal an
+  error, which is a HardFault in the *emulator*, not a fault delivered to the
+  guest: the firmware dies rather than the test failing. Every hole in the
+  STM32 policy table begins just above reserved space, so there is no register
+  immediately below one to probe with. Test the window with registers that
+  exist.
+- **`add_custom_command(DEPENDS <target>)` is ordering, not staleness.** The
+  guest image was staged with a target-only dependency, so the copy ran once
+  and never again: editing a guest source rebuilt the `.bin`, left the staged
+  copy alone, and produced firmware carrying the *previous* guest. Nothing
+  failed. Name the file and the target.
 - **Do not conflate "nothing translatable here" with "cache full".** Sharing a
   recovery path made every interpreted `div` flush the code cache.
 - **A failing arch test may be the Sail config, not the emulator.** ACT runs the

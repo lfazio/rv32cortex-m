@@ -35,8 +35,14 @@
  * The host has no ARM peripherals to pass through to, so the peripheral
  * window is backed by plain memory. Guest drivers still run; they just talk
  * to nothing. This keeps guest images identical across host and target.
+ *
+ * Sized to reach 0x40024000, the end of the STM32F446's APB1/APB2/AHB1
+ * block, because that is where RCC lives at 0x40023800. A driver's first
+ * act is to ungate its own peripheral's clock, so a window that stops short
+ * of RCC faults on the first store every real guest driver makes -- which
+ * is exactly what a 64 KiB window did.
  */
-#define PERIPH_SIM_SIZE   (64u * 1024u)
+#define PERIPH_SIM_SIZE   0x24000u
 
 static uint8_t *g_ram;
 static uint8_t *g_periph;

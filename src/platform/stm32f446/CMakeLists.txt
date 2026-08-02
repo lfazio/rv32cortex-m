@@ -16,10 +16,17 @@ set(guest_src "${CMAKE_BINARY_DIR}/guest/${RV32_GUEST}.bin")
 # to make target". Copying it here with a local custom command makes the
 # dependency intra-directory, which both handle identically.
 set(guest_bin "${CMAKE_CURRENT_BINARY_DIR}/guest_image.bin")
+#
+# Both the file and the target are named, and both are needed. The target
+# supplies the rule that builds the image; the *file* supplies staleness.
+# Depending on the target alone is an ordering constraint only, so the copy
+# ran once and never again: editing a guest source rebuilt the .bin, left
+# the staged copy untouched, and produced firmware still carrying the
+# previous guest. Nothing failed, which is what made it dangerous.
 add_custom_command(
     OUTPUT "${guest_bin}"
     COMMAND ${CMAKE_COMMAND} -E copy "${guest_src}" "${guest_bin}"
-    DEPENDS guest-${RV32_GUEST}
+    DEPENDS "${guest_src}" guest-${RV32_GUEST}
     COMMENT "Staging guest image ${RV32_GUEST}.bin"
     VERBATIM)
 add_custom_target(guest-image-staged DEPENDS "${guest_bin}")

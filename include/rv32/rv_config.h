@@ -211,6 +211,44 @@
 #  define RV_JIT_LOOP_CAP 64u
 #endif
 
+/*
+ * Inline the peripheral window as well as guest RAM.
+ *
+ * Guest drivers spend their time in the passthrough window, and until this
+ * existed every one of those accesses left the block through a helper call,
+ * rv_hart_load/store and a bus region walk. Measured on the F446 with
+ * mmiobench, that path cost about 165 host cycles more per access than the
+ * inlined RAM one.
+ *
+ * What makes it inlinable is that the window is an identity map, so the
+ * host address is the guest address and there is nothing to translate: the
+ * whole fast path is a range test and the access itself.
+ *
+ * Stores are the awkward half, because a few sub-ranges are deliberately
+ * read-only -- on the STM32 the PLL, PWR and flash controller, the three
+ * registers a guest could use to take the emulator down with it. Those
+ * become holes punched out of the window, and a store tests them all. Three
+ * is enough for the F446 and for any policy table shaped like it; a
+ * platform needing more falls back to the helper for stores and keeps the
+ * inlined loads.
+ */
+#ifndef RV_JIT_INLINE_PERIPH
+#  define RV_JIT_INLINE_PERIPH 1
+#endif
+#ifndef RV_JIT_PT_MAX_HOLES
+#  define RV_JIT_PT_MAX_HOLES 3u
+#endif
+
+/*
+ * Passthrough accesses that must go through the helper before the inlined
+ * path is emitted. Low enough that a driver converts during its own setup,
+ * high enough that a guest poking one register at boot and then computing
+ * for an hour keeps the smaller code.
+ */
+#ifndef RV_JIT_PT_ARM_AT
+#  define RV_JIT_PT_ARM_AT 64u
+#endif
+
 #ifndef RV_ENABLE_JIT
 #  if defined(__ARM_ARCH) && (__ARM_ARCH >= 7) && defined(__thumb2__)
 #    define RV_ENABLE_JIT 1

@@ -101,6 +101,12 @@ add_guest_image(stm32drv SOURCES start.S stm32drv.c)
 # Compute-bound workload for throughput measurement.
 add_guest_image(bench    SOURCES start.S bench.c)
 
+# Driver-shaped workload for the passthrough window. Unlike bench, this one
+# only measures anything on the STM32: the host runner backs the peripheral
+# window with plain memory, so both halves of each comparison take the same
+# path and the ratio is 1 by construction.
+add_guest_image(mmiobench SOURCES start.S mmiobench.c)
+
 # ---------------------------------------------------------------------
 # CoreMark
 # ---------------------------------------------------------------------
