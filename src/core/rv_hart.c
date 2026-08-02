@@ -42,6 +42,9 @@ uint32_t rv_hart_misa(void)
 #if RV_EXT_ZBA && RV_EXT_ZBB && RV_EXT_ZBS
     misa |= MISA_EXT('B');
 #endif
+#if RV_EXT_U
+    misa |= MISA_EXT('U');
+#endif
     return misa;
 }
 
@@ -136,13 +139,24 @@ void rv_hart_trap(rv_hart_t *h, uint32_t cause, uint32_t tval)
 
     /*
      * Push the interrupt-enable stack: MPIE takes the old MIE, MIE clears,
-     * and MPP records the privilege we came from. With M-mode only, MPP is
-     * always M.
+     * and MPP records the privilege we came from.
      */
     const uint32_t mie_was = (h->mstatus & MSTATUS_MIE) ? MSTATUS_MPIE : 0u;
     h->mstatus = (h->mstatus & ~(MSTATUS_MIE | MSTATUS_MPIE | MSTATUS_MPP_MASK))
                | mie_was
-               | ((uint32_t)RV_PRIV_M << MSTATUS_MPP_SHIFT);
+               | ((uint32_t)h->priv << MSTATUS_MPP_SHIFT);
+
+#if RV_EXT_U
+    /*
+     * A trap always lands in M-mode. Refreshing PMP is not bookkeeping:
+     * whether PMP has to be consulted at all depends on the privilege
+     * level, because below M matching no entry denies rather than permits.
+     */
+    h->priv = RV_PRIV_M;
+#  if RV_EXT_PMP
+    rv_pmp_refresh(h);
+#  endif
+#endif
 
     uint32_t base = h->mtvec & ~MTVEC_MODE_MASK;
     if ((h->mtvec & MTVEC_MODE_MASK) == MTVEC_MODE_VECTORED &&

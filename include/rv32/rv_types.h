@@ -12,6 +12,8 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#include "rv_config.h"   /* RV_EXT_U, for RV_PRIV_LEAST below */
+
 /* ------------------------------------------------------------------ */
 /* Exception / trap causes (RISC-V privileged spec, mcause low bits)   */
 /* ------------------------------------------------------------------ */
@@ -54,6 +56,16 @@ typedef uint32_t rv_exc_t;
 #define RV_PRIV_U                   0u
 #define RV_PRIV_S                   1u
 #define RV_PRIV_M                   3u
+
+/*
+ * What MRET leaves in MPP: the least-privileged mode the implementation
+ * supports, which the privileged spec requires rather than merely allows.
+ */
+#if RV_EXT_U
+#  define RV_PRIV_LEAST             RV_PRIV_U
+#else
+#  define RV_PRIV_LEAST             RV_PRIV_M
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Small helpers                                                       */

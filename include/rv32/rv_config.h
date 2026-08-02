@@ -80,6 +80,19 @@
  * an unlocked entry does not restrict M-mode, so the access path skips the
  * check entirely while none is locked. See src/core/rv_pmp.c.
  */
+/*
+ * User mode. A second privilege level is what makes PMP able to deny
+ * anything at all: in M-mode an unlocked entry restricts nothing and
+ * matching no entry permits, and both invert below M.
+ *
+ * S-mode is deliberately not implied by this. It needs a third level and a
+ * second bank of mstatus/mepc/mcause/mtval, and on a core with no MMU it
+ * would be entirely soft-trap.
+ */
+#ifndef RV_EXT_U
+#  define RV_EXT_U      1
+#endif
+
 #ifndef RV_EXT_PMP
 #  define RV_EXT_PMP    1
 #endif

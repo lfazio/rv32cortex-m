@@ -760,7 +760,12 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
                         }
                     }
 #endif
+#if RV_EXT_U
+                    TRAP((h->priv == RV_PRIV_U) ? RV_EXC_ECALL_U
+                                                : RV_EXC_ECALL_M, 0u);
+#else
                     TRAP(RV_EXC_ECALL_M, 0u);
+#endif
 
                 case 0x001u:                    /* EBREAK */
                     TRAP(RV_EXC_BREAKPOINT, pc);
@@ -774,12 +779,25 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
                      */
                     const uint32_t mpie =
                         (h->mstatus & MSTATUS_MPIE) ? MSTATUS_MIE : 0u;
+#if RV_EXT_U
+                    const uint32_t mpp =
+                        (h->mstatus & MSTATUS_MPP_MASK) >> MSTATUS_MPP_SHIFT;
+                    /* MPP is WARL over the supported modes; S is not one. */
+                    const uint32_t back =
+                        (mpp == RV_PRIV_U) ? RV_PRIV_U : RV_PRIV_M;
+#else
+                    const uint32_t back = RV_PRIV_M;
+#endif
                     h->mstatus = (h->mstatus & ~(MSTATUS_MIE | MSTATUS_MPIE |
                                                  MSTATUS_MPP_MASK))
                                | mpie
                                | MSTATUS_MPIE
-                               | ((uint32_t)RV_PRIV_M << MSTATUS_MPP_SHIFT);
-                    h->priv = RV_PRIV_M;
+                               | ((uint32_t)RV_PRIV_LEAST << MSTATUS_MPP_SHIFT);
+                    h->priv = (uint8_t)back;
+#if RV_EXT_U && RV_EXT_PMP
+                    /* See rv_hart_trap: the predicate depends on privilege. */
+                    rv_pmp_refresh(h);
+#endif
 #if RV_LAZY_IRQ_CHECK
                     /* MIE was just restored from MPIE. */
                     h->irq_dirty = true;
