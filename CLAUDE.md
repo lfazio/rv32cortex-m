@@ -80,6 +80,19 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
   Both were found on hardware, not by the x86 suites. When adding anything that
   `rv_hart_load`/`rv_hart_store` does beyond the access itself, ask what the
   inlined path does about it.
+- **`RV32_JIT_CODE_BYTES` dominates JIT performance, and the 12 KB default is
+  worse than no JIT at all.** CoreMark's translated working set is ~48 KB.
+  Measured: 12 KB 10,850,998 ticks (8533 compactions, 94240 evictions), 24 KB
+  9,329,706, 32 KB 8,525,192, 48 KB 6,463,217 (904), 64 KB 5,148,168 (231).
+  The interpreter is 10,691,637 -- so at the default the JIT *loses*. Guest RAM
+  pays one for one: 122 KiB with no JIT, 106 at 12 KB, 70 at 48 KB, 54 at 64 KB.
+- **CMake cache variables silently outlive the tree you set them in.** Every
+  performance figure in this repo had been measured with a 48 KB code cache
+  inherited from an old build directory while the declared default was 12 KB;
+  `rm -rf build/` and the numbers changed by 68% with no code change. Before
+  quoting a measurement, check `CMakeCache.txt` for what actually built it --
+  `RV32_JIT_CODE_BYTES`, `RV_GUEST_MARCH` and `COREMARK_ITERATIONS` are all
+  cache variables and all change the result.
 - **`RV_JIT_LOOP_CAP` is an interrupt-latency knob, and CoreMark cannot see
   it.** Measured at 64/128/256: CoreMark 31.39/31.16/31.25 (noise -- its loops
   end on unchainable branches, so the cap is not what exits them), `bench`

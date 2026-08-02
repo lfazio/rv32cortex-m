@@ -52,7 +52,7 @@ silicon.
 | **Sdtrig** | mcontrol triggers on execute/load/store; `rv32mi/breakpoint` passes |
 | Guest ISA self-test (148 checks) | passes on host **and** on hardware, both backends |
 | Nucleo-F446RE firmware | 31–54 KB flash by configuration; guest gets 70–122 KiB of the 128 KiB SRAM |
-| Thumb-2 JIT backend | implemented; **20.6× slower than native ARM** on CoreMark |
+| Thumb-2 JIT backend | implemented; **19.2× slower than native ARM** on CoreMark with a 48 KB code cache, 15.3× with 64 KB, and *slower than the interpreter* at the 12 KB default — see below |
 | **Zacas** (`amocas.w` / `amocas.d`) | implemented |
 | V extension | not implemented |
 
@@ -358,6 +358,32 @@ cmake --build build/host --target riscv-tests      # Berkeley suite
 cmake --build build/host --target validate         # everything
 ```
 
+Current state, all re-run on the tree as it stands:
+
+| | result | runs on |
+|---|---|---|
+| `riscv-arch-test`, `-DRV32_FPU_SOFTFLOAT=ON` | **224 / 224** | host |
+| `riscv-arch-test`, default (host FPU) | 172 / 224 — every failure in `F` | host |
+| `riscv-tests` | **77 / 77** | host |
+| host unit + guest self-test (`ctest -L fast`) | **2 / 2** | host |
+| `isatest`, JIT | **148 / 148** | hardware |
+| `isatest`, `-DRV32_JIT=OFF` | **148 / 148** | hardware |
+| `mmiobench` | **72 / 72** | hardware |
+| CoreMark | `crcfinal 0xca90` on all three backends | hardware |
+
+**What these suites do not cover: the JIT.** Both run the host interpreter, so
+nothing in `src/backend/rv_jit_thumb2.c` is exercised by either — it only
+compiles for ARM. Everything the translator emits is validated by `isatest`
+and `mmiobench` on the board, and by CoreMark's CRC agreeing across native
+ARM, interpreter and JIT.
+
+That gap is not theoretical. The JIT bugs found so far were all found on
+hardware: an inlined store that ignored PMP, another that skipped the LR/SC
+reservation break, a loop cap that compared the wrong register, and loop
+chaining silently dropped past a branch's reach. The last two produced no
+wrong answer at all — only performance that made no sense — so no
+signature-checking suite could have caught them however long it ran.
+
 ### Floating point (F)
 
 F is implemented — the register file, `fcsr`/`frm`/`fflags`, `mstatus.FS`,
@@ -407,7 +433,7 @@ Three of the unary ops (`c.sext.b`, `c.zext.h`, `c.sext.h`) expand to Zbb
 instructions, which is why the spec makes Zcb depend on Zbb — without it there
 would be nothing to expand them into.
 
-### Official RISC-V Architecture Test Suite — 224/224
+### Official RISC-V Architecture Test Suite — 224/224 with SoftFloat
 
 [`riscv/riscv-arch-test`](https://github.com/riscv/riscv-arch-test), the RVCP
 suite governed by RISC-V International. Modern versions are self-checking: the
@@ -427,8 +453,16 @@ Prerequisites beyond the normal toolchain: `uv`, Ruby, and Bundler
 
 ### riscv-tests — 77/77
 
-The older Berkeley suite. All of it passes: `rv32mi/pmpaddr` once PMP was
-implemented, and `rv32mi/breakpoint` once Sdtrig was.
+The older Berkeley suite: `rv32ui`, `rv32um`, `rv32ua`, `rv32uc` and `rv32mi`.
+All of it passes, none skipped — `rv32mi/pmpaddr` once PMP was implemented,
+and `rv32mi/breakpoint` once Sdtrig was.
+
+It has no `rv32uf`, so it contributes nothing to FP coverage; that comes
+entirely from arch-test's `F` family. Two of its tests are load-bearing in a
+way the count hides: `rv32mi/csr` fails on purpose when the runner's `-march`
+disagrees with what `misa` advertises, and `rv32mi/breakpoint` is the single
+test standing between the default build and the 29% interpreter gain that
+compiling Sdtrig out would give.
 
 ### Bugs these suites caught
 
@@ -468,11 +502,34 @@ for each backend.
 
 | | Ticks (µs) | Iterations/s | CoreMark/MHz | vs native |
 |---|---|---|---|---|
-| **Native ARM** | 335,277 | 447.4 | 2.49 | 1× |
-| **JIT** | 6,439,144 | 23.3 | 0.129 | **19.2× slower** |
-| Interpreter | 10,691,596 | 14.0 | 0.078 | 31.9× slower |
+| **Native ARM** | 336,130 | 446.3 | 2.479 | 1× |
+| **JIT**, 64 KB code cache | 5,148,168 | 29.1 | 0.162 | **15.3× slower** |
+| JIT, 48 KB | 6,463,217 | 23.2 | 0.129 | 19.2× slower |
+| JIT, 32 KB | 8,525,192 | 17.6 | 0.098 | 25.4× slower |
+| JIT, 24 KB | 9,329,706 | 16.1 | 0.089 | 27.8× slower |
+| JIT, **12 KB — the default** | 10,850,998 | 13.8 | 0.077 | 32.3× slower |
+| Interpreter | 10,691,637 | 14.0 | 0.078 | 31.8× slower |
 
-Both rows measured on the current tree, `crcfinal 0xca90` throughout.
+All rows measured on the current tree at 150 iterations, `crcfinal 0xca90`
+throughout.
+
+**The JIT's speed is set by `RV32_JIT_CODE_BYTES` more than by anything in the
+translator**, and the default is not the configuration to quote. CoreMark's
+translated working set is about 48 KB; below that the cache thrashes, and the
+compaction counts show it directly — 231 compactions at 64 KB, 904 at 48 KB,
+8,533 at 12 KB, with evictions going from 8,585 to 94,240.
+
+At the 12 KB default the JIT is **slower than the interpreter**. That is the
+number a fresh checkout reproduces, and it means the default currently buys
+12 KB of SRAM worth of nothing: a build that small should use
+`-DRV32_JIT=OFF` and hand the guest all 122 KiB instead. The JIT starts
+earning its RAM at about 24 KB and is worth 2.1× at 64 KB.
+
+The cost is guest RAM, one for one: 122 KiB with no JIT, 106 at 12 KB, 70 at
+48 KB, 54 at 64 KB. Which end of that to sit at depends on whether the guest
+needs memory or speed, so it is left as a build option rather than decided
+here — but every performance figure below is quoted at **48 KB**, and figures
+from any other size are not comparable.
 
 ### Driver performance: the passthrough window
 
@@ -859,7 +916,7 @@ adding, since it is the reference for most of `src/core/`.
 
 Ordered by what would most repay the effort.
 
-**Performance.** The JIT is 20.6× native and the remaining cost is structural
+**Performance.** The JIT is 19.2× native at a 48 KB code cache and the remaining cost is structural
 rather than a missing optimisation:
 
 - [x] **Chain across loop back edges** — *done*. A backward branch to the block's
