@@ -40,6 +40,9 @@
 #define csr_set(name, val) \
     __asm__ volatile ("csrs " name ", %0" :: "r"((uint32_t)(val)))
 
+#define csr_clear(name, val) \
+    __asm__ volatile ("csrc " name ", %0" :: "r"((uint32_t)(val)))
+
 /* ------------------------------------------------------------------ */
 /* Console                                                             */
 /* ------------------------------------------------------------------ */
@@ -743,6 +746,23 @@ static volatile uint32_t g_fmem;
  * rebuild. Separate call sites would let each get its own translation and
  * prove nothing.
  */
+/*
+ * Three FP instructions at one address, called with mstatus.FS on and then
+ * Off. Out of line for the same reason as cvt_w_dyn: the block must already
+ * be translated when FS changes, so that a JIT deciding FP legality at
+ * translation time -- rather than per execution, or with a flush -- is
+ * caught running instructions the guest has just disabled.
+ */
+__attribute__((noinline))
+static uint32_t fp_site(uint32_t bits)
+{
+    uint32_t r;
+    __asm__ volatile ("fmv.w.x fa0, %1\n\t fadd.s fa1, fa0, fa0\n\t"
+                      "fmv.x.w %0, fa1"
+                      : "=r"(r) : "r"(bits) : "fa0", "fa1");
+    return r;
+}
+
 __attribute__((noinline))
 static uint32_t cvt_w_dyn(uint32_t bits)
 {
@@ -991,6 +1011,35 @@ static void test_fpu(void)
         check("dyn-rup-again", cvt_w_dyn(f2_5), 3u);
 
         csr_write("frm", 0u);
+    }
+
+    /*
+     * mstatus.FS gates the whole extension, so with it Off every FP
+     * instruction must raise illegal-instruction -- including fmv, which
+     * touches no arithmetic.
+     *
+     * The site is called once first so the block exists, then again with FS
+     * cleared. A backend that decides FP legality when it *translates*,
+     * rather than when it executes, runs the instructions anyway and reports
+     * no traps at all.
+     */
+    {
+        check("fs-on", fp_site(F1_0), F2_0);        /* 1.0 + 1.0 */
+
+        const uint32_t before = g_trap_count;
+        csr_clear("mstatus", 3u << 13);             /* FS = Off */
+        (void)fp_site(F1_0);
+        const uint32_t traps = g_trap_count - before;
+
+        /* Restore before checking, so a failure here does not kill the
+         * remaining FP tests as well. */
+        csr_set("mstatus", 1u << 13);               /* FS = Initial */
+
+        check("fs-off-traps", traps, 3u);           /* one per FP insn */
+        check("fs-off-cause", g_last_cause, 2u);    /* illegal instruction */
+
+        /* And with FS back on it works again. */
+        check("fs-restored", fp_site(F1_0), F2_0);
     }
 #undef CVT_W
 #undef CVT_WU

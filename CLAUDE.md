@@ -86,11 +86,17 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
   on the self-test. Open-coding costs 25-35 emitted instructions each in the
   code cache, which sets performance more than the translator does, and makes
   a second copy of semantics the core owns. Reach for the helper first.
-- **`mstatus.FS` is checked for FP loads and stores but not for OP-FP.**
-  `h_fs_off` gates `OP_LOAD_FP`/`OP_STORE_FP` only, so the open-coded
-  arithmetic paths run whatever FS says, and nothing flushes when FS changes.
-  Helper-routed OP-FP is correct because `rv_hart_fp` checks it. Whether a
-  guest can observe the gap is unverified -- test before assuming either way.
+- **A translate-time legality check is only half a guard; the block outlives
+  it.** `mstatus.FS` was consulted when translating FP loads and stores (and
+  not at all for OP-FP or the FMAs), on the reasoning that refusing to
+  translate while FS is Off was enough. It is not: a block built while FS was
+  on stays cached and keeps executing after the guest turns the FPU off, so
+  three instructions that must raise illegal-instruction ran silently. Fixed
+  the same way as `frm` -- specialise, and flush on the interpreter fallback
+  where FS can change. Track FS *off-ness*, not the two-bit field, or
+  `emit_fp_dirty` moving Initial/Clean to Dirty flushes the cache on every FP
+  operation. The same question applies to anything else decided at
+  translation from mutable hart state.
 - **JIT blocks are specialised on `frm`; changing it flushes.** `dyn` is
   resolved at translation, not at run time, which is what lets `RMM` be
   declined to the helper -- ARM has no ties-away mode, and the old run-time

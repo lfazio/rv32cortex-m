@@ -1159,6 +1159,18 @@ static const uint8_t k_rmode[5] = { 0u, 3u, 2u, 1u, 0u };
 static uint8_t g_frm_seen;
 static bool    g_frm_specialised;
 
+/*
+ * Whether mstatus.FS was Off when the cached blocks were built, and whether
+ * any of them actually contains an FP instruction.
+ *
+ * Off-ness rather than the raw two-bit field: emit_fp_dirty moves FS from
+ * Initial or Clean to Dirty on most FP operations, and flushing for that
+ * would throw the cache away continuously. Only the Off boundary changes
+ * whether an instruction is legal.
+ */
+static bool g_fs_off_seen;
+static bool g_fp_translated;
+
 static uint32_t fp_effective_rm(uint32_t rm)
 {
     if (rm != FRM_DYN) {
@@ -2336,6 +2348,7 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
         if ((h_fs_off)) {
             return -1;
         }
+        g_fp_translated = true;
         emit_ld_greg(R1, rs1);
         emit_add_simm12(R1, R1, rv_imm_i(insn));
         emit_mem_access(false, 4u, 0u, rd, (const void *)jit_helper_fp_load,
@@ -2348,6 +2361,7 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
         if (f3 != 2u || (h_fs_off)) {
             return -1;
         }
+        g_fp_translated = true;
         emit_ld_greg(R1, rs1);
         emit_add_simm12(R1, R1, rv_imm_s(insn));
         emit_mem_access(true, 4u, 0u, rs2, (const void *)jit_helper_fp_store,
@@ -2359,6 +2373,10 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
     case OP_MSUB:
     case OP_NMSUB:
     case OP_NMADD: {
+        if ((h_fs_off)) {
+            return -1;
+        }
+        g_fp_translated = true;
         if ((f7 & 3u) != 0u) {
             return -1;              /* fmt must be S */
         }
@@ -2396,6 +2414,10 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
         if ((f7 & 3u) != 0u) {
             return -1;              /* fmt must be S */
         }
+        if ((h_fs_off)) {
+            return -1;
+        }
+        g_fp_translated = true;
         switch (f7 >> 2) {
         case 0x04u:                 /* FSGNJ.S / FSGNJN.S / FSGNJX.S */
             if (f3 > 2u) {
@@ -2925,6 +2947,8 @@ static void jit_reset(rv_hart_t *h)
 #if RV_EXT_F
     g_frm_seen = (uint8_t)((h->fcsr >> 5) & 7u);
     g_frm_specialised = false;
+    g_fs_off_seen = (h->mstatus & MSTATUS_FS_MASK) == 0u;
+    g_fp_translated = false;
 #endif
 #if !RV_EXT_PMP && !RV_EXT_F
     (void)h;
@@ -2963,6 +2987,29 @@ static void jit_invalidate(rv_hart_t *h, uint32_t addr, uint32_t len)
 static void jit_note_frm(const rv_hart_t *h)
 {
     const uint8_t frm = (uint8_t)((h->fcsr >> 5) & 7u);
+    const bool fs_off = (h->mstatus & MSTATUS_FS_MASK) == 0u;
+
+    if (RV_UNLIKELY(fs_off != g_fs_off_seen)) {
+        /*
+         * mstatus.FS decides whether FP instructions are legal at all, and
+         * a block records that decision when it is built. Refusing to
+         * translate while FS is Off -- which the FP cases do -- only covers
+         * half of it: a block built while FS was on stays in the cache and
+         * keeps running after the guest turns the FPU off. That is
+         * observable, and `fs-off-traps` in the self-test observes it.
+         *
+         * FS reaches Off only through a CSR write to mstatus, so this sits
+         * on the same path as frm for the same reason. mret and trap entry
+         * do not touch it, and emit_fp_dirty only ever moves it away from
+         * Off.
+         */
+        g_fs_off_seen = fs_off;
+        if (g_fp_translated) {
+            g_fp_translated = false;
+            g_frm_specialised = false;
+            rv_jit_flush();
+        }
+    }
 
     if (RV_LIKELY(frm == g_frm_seen)) {
         return;

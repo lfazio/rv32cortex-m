@@ -296,8 +296,25 @@ What changed is that they no longer **end the block**. Declining costs a
 dispatcher round trip, an interpreted instruction and a fresh block beyond
 it; a call costs five instructions. Measured by forcing the old behaviour
 back, the self-test goes from 146 interpreted instructions and 755 block
-entries to 122 and 732. The helper path also honours `mstatus.FS`, which the
-open-coded OP-FP paths do not.
+entries to 122 and 732.
+
+### `mstatus.FS` and cached blocks
+
+FS gates the whole extension: with it Off every FP instruction must raise
+illegal-instruction, `fmv` included. The JIT decided that when it *translated*
+a block, which is half a guard — a block built while FS was on stayed in the
+cache and kept running after the guest turned the FPU off. A targeted test
+confirmed it: three instructions that had to trap produced no traps at all.
+OP-FP and the fused multiply-adds were not consulting FS in the first place.
+
+Fixed the way `frm` is: FS off-ness is recorded when a block is built, and a
+change flushes. Both checks sit on the interpreter fallback, because a CSR
+write to `mstatus` is the only thing that reaches Off — trap entry and `mret`
+do not touch FS, and `emit_fp_dirty` only ever moves it away from Off. It is
+*off-ness* that is tracked rather than the two-bit field, since `emit_fp_dirty`
+moves Initial or Clean to Dirty on most operations and flushing for that would
+discard the cache continuously. A guest with no FP never flushes for either:
+CoreMark still reports one flush for its whole run.
 
 **Still declined**, so the block ends there:
 
