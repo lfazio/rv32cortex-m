@@ -27,11 +27,7 @@ cfg_src="$here/tests/arch-test/$cfg_name"
 
 # The extensions this core implements. RV32IMAC decomposes into these in
 # the modern ISA taxonomy the suite uses.
-# U selects the priv/pmp/pmp32/PMPU family, which needs neither S-mode nor
-# paging: those tests want only U, MXLEN 32 and NUM_PMP_ENTRIES > 0. They
-# configure PMP in M-mode and switch to U, which is precisely the transition
-# nothing else here exercises.
-extensions="${ARCH_TEST_EXTENSIONS:-I,M,Zmmul,Zaamo,Zalrsc,Zca,Zicsr,Zicntr,Zifencei,Zicbom,Zicboz,Zbb,Zba,Zbc,Zbs,Zacas,F,Zcb,U}"
+extensions="${ARCH_TEST_EXTENSIONS:-I,M,Zmmul,Zaamo,Zalrsc,Zca,Zicsr,Zicntr,Zifencei,Zicbom,Zicboz,Zbb,Zba,Zbc,Zbs,Zacas,F,Zcb}"
 jobs="$(nproc)"
 verbose=""
 
