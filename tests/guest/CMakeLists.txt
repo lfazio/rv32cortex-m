@@ -41,6 +41,14 @@ set(RV_GUEST_MARCH
 set(RV_GUEST_MABI  "ilp32" CACHE STRING "ABI for guest images")
 
 set(guest_dir "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# Headers are named explicitly in every image's DEPENDS. A custom command
+# depends on what it lists and nothing else, so without this a header edit
+# rebuilt nothing and the image kept the previous definitions -- silently,
+# which is how the same omission in the firmware's image staging produced
+# firmware carrying a stale guest.
+file(GLOB_RECURSE guest_headers CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/*.h")
 set(guest_out "${CMAKE_BINARY_DIR}/guest")
 file(MAKE_DIRECTORY "${guest_out}")
 
@@ -75,7 +83,7 @@ function(add_guest_image name)
                 -T "${guest_ld}"
                 ${srcs}
                 -o "${elf}"
-        DEPENDS ${srcs} "${guest_ld}"
+        DEPENDS ${srcs} ${guest_headers} "${guest_ld}"
         COMMENT "Building guest image ${name}.elf"
         VERBATIM)
 
@@ -102,6 +110,12 @@ add_guest_image(stm32drv SOURCES start.S stm32drv.c)
 # meaningful on the board; on the host the peripheral window is plain
 # memory, so it detects the absent timer and reports rather than hanging.
 add_guest_image(irqtest SOURCES start.S irqtest.c)
+
+# The CMSIS-Core shim, taking the same interrupt through the vendor API
+# rather than through APLIC registers.
+add_guest_image(cmsistest
+    SOURCES start.S cmsistest.c cmsis/cmsis_rv32.c
+    FLAGS -I "${guest_dir}/cmsis")
 
 # Compute-bound workload for throughput measurement.
 add_guest_image(bench    SOURCES start.S bench.c)
