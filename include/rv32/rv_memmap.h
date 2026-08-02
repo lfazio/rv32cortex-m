@@ -29,11 +29,12 @@
 #define RV_GUEST_APLIC_BASE     0x0C000000u
 
 /*
- * APLIC source numbers for the real interrupt lines a platform bridges.
- * Shared with guest code, which needs them to program sourcecfg and setie,
- * so they live here beside the addresses rather than in the platform.
+ * An APLIC source number is the host's interrupt number: on the STM32
+ * platform, the NVIC line. So a guest names TIM6's interrupt by the same 54
+ * that TIM6_DAC_IRQn has on the ARM side, and no translation table exists on
+ * either side of the bridge.
  */
-#define RV_IRQ_SRC_TIM6         1u
+#define RV_IRQ_TIM6_DAC         54u
 #define RV_GUEST_UART_BASE      0x10000000u
 #define RV_GUEST_ROM_BASE       0x20000000u
 

@@ -50,9 +50,9 @@ static uint32_t aplic_topi(const rv_aplic_t *a)
     uint32_t best_src = 0u;
     uint32_t best_prio = 0u;
 
-    const uint32_t ready = a->pending & a->enabled;
     for (uint32_t i = 1u; i < RV_APLIC_SOURCES; i++) {
-        if ((ready & (1u << i)) == 0u || !src_active(a, i)) {
+        const uint32_t w = i / 32u, b = 1u << (i % 32u);
+        if ((a->pending[w] & a->enabled[w] & b) == 0u || !src_active(a, i)) {
             continue;
         }
         uint32_t prio = a->target[i];
@@ -103,26 +103,27 @@ static void aplic_update(rv_aplic_t *a)
  * host handler ran, because nothing on the host side can service the
  * device -- only the guest's driver can, through the passthrough window.
  */
-static void aplic_clear_pending(rv_aplic_t *a, uint32_t mask)
+static void aplic_clear_pending(rv_aplic_t *a, uint32_t word, uint32_t mask)
 {
-    const uint32_t cleared = a->pending & mask;
+    const uint32_t cleared = a->pending[word] & mask;
 
-    a->pending &= ~mask;
+    a->pending[word] &= ~mask;
     if (cleared != 0u && a->eoi != NULL) {
-        for (uint32_t i = 1u; i < RV_APLIC_SOURCES; i++) {
-            if ((cleared & (1u << i)) != 0u) {
-                a->eoi(a->eoi_ctx, i);
+        for (uint32_t b = 0u; b < 32u; b++) {
+            if ((cleared & (1u << b)) != 0u) {
+                a->eoi(a->eoi_ctx, word * 32u + b);
             }
         }
     }
 }
 
 /* Only sources whose mode is active can become pending (4.7). */
-static void aplic_set_pending(rv_aplic_t *a, uint32_t mask)
+static void aplic_set_pending(rv_aplic_t *a, uint32_t word, uint32_t mask)
 {
-    for (uint32_t i = 1u; i < RV_APLIC_SOURCES; i++) {
-        if ((mask & (1u << i)) != 0u && src_active(a, i)) {
-            a->pending |= 1u << i;
+    for (uint32_t b = 0u; b < 32u; b++) {
+        const uint32_t i = word * 32u + b;
+        if ((mask & (1u << b)) != 0u && src_active(a, i)) {
+            a->pending[word] |= 1u << b;
         }
     }
 }
@@ -162,10 +163,18 @@ static rv_exc_t aplic_read(void *ctx, uint32_t off, uint32_t size,
         return RV_EXC_NONE;
     }
 
-    switch (off) {
-    case RV_APLIC_SETIP:
-        *out = a->pending;
+    if (off >= RV_APLIC_SETIP && off < RV_APLIC_SETIP + 4u * 32u) {
+        const uint32_t w = (off - RV_APLIC_SETIP) / 4u;
+        *out = (w < RV_APLIC_WORDS) ? a->pending[w] : 0u;
         return RV_EXC_NONE;
+    }
+    if (off >= RV_APLIC_SETIE && off < RV_APLIC_SETIE + 4u * 32u) {
+        const uint32_t w = (off - RV_APLIC_SETIE) / 4u;
+        *out = (w < RV_APLIC_WORDS) ? a->enabled[w] : 0u;
+        return RV_EXC_NONE;
+    }
+
+    switch (off) {
     case RV_APLIC_IN_CLRIP:
         /*
          * Reads the *rectified input* of each source, not the pending bit.
@@ -173,16 +182,13 @@ static rv_exc_t aplic_read(void *ctx, uint32_t off, uint32_t size,
          * the emulator can sample, the pending bit is the best available
          * answer for a level source and zero is right for an edge one.
          */
-        for (uint32_t i = 1u; i < RV_APLIC_SOURCES; i++) {
+        for (uint32_t i = 1u; i < 32u; i++) {
             const uint32_t sm = a->sourcecfg[i] & 0x7u;
             if ((sm == RV_APLIC_SM_LEVEL_HIGH || sm == RV_APLIC_SM_LEVEL_LOW) &&
-                (a->pending & (1u << i)) != 0u) {
+                (a->pending[0] & (1u << i)) != 0u) {
                 *out |= 1u << i;
             }
         }
-        return RV_EXC_NONE;
-    case RV_APLIC_SETIE:
-        *out = a->enabled;
         return RV_EXC_NONE;
     default:
         break;
@@ -205,7 +211,8 @@ static rv_exc_t aplic_read(void *ctx, uint32_t off, uint32_t size,
             if (topi == 0u) {
                 a->iforce = 0u;
             } else {
-                aplic_clear_pending(a, 1u << (topi >> 16));
+                const uint32_t src = topi >> 16;
+                aplic_clear_pending(a, src / 32u, 1u << (src % 32u));
             }
             *out = topi;
             aplic_update(a);
@@ -250,8 +257,8 @@ static rv_exc_t aplic_write(void *ctx, uint32_t off, uint32_t size,
             a->sourcecfg[i] = (uint8_t)sm;
             if (sm == RV_APLIC_SM_INACTIVE) {
                 /* An inactive source keeps neither pending nor enable. */
-                a->pending &= ~(1u << i);
-                a->enabled &= ~(1u << i);
+                a->pending[i / 32u] &= ~(1u << (i % 32u));
+                a->enabled[i / 32u] &= ~(1u << (i % 32u));
             }
             aplic_update(a);
         }
@@ -267,37 +274,50 @@ static rv_exc_t aplic_write(void *ctx, uint32_t off, uint32_t size,
         return RV_EXC_NONE;
     }
 
+    if (off >= RV_APLIC_SETIP && off < RV_APLIC_SETIP + 4u * 32u) {
+        const uint32_t w = (off - RV_APLIC_SETIP) / 4u;
+        if (w < RV_APLIC_WORDS) { aplic_set_pending(a, w, val); }
+        aplic_update(a);
+        return RV_EXC_NONE;
+    }
+    if (off >= RV_APLIC_IN_CLRIP && off < RV_APLIC_IN_CLRIP + 4u * 32u) {
+        const uint32_t w = (off - RV_APLIC_IN_CLRIP) / 4u;
+        if (w < RV_APLIC_WORDS) { aplic_clear_pending(a, w, val); }
+        aplic_update(a);
+        return RV_EXC_NONE;
+    }
+    if (off >= RV_APLIC_SETIE && off < RV_APLIC_SETIE + 4u * 32u) {
+        const uint32_t w = (off - RV_APLIC_SETIE) / 4u;
+        if (w < RV_APLIC_WORDS) { a->enabled[w] |= (w == 0u) ? (val & ~1u) : val; }
+        aplic_update(a);
+        return RV_EXC_NONE;
+    }
+    if (off >= RV_APLIC_CLRIE && off < RV_APLIC_CLRIE + 4u * 32u) {
+        const uint32_t w = (off - RV_APLIC_CLRIE) / 4u;
+        if (w < RV_APLIC_WORDS) { a->enabled[w] &= ~val; }
+        aplic_update(a);
+        return RV_EXC_NONE;
+    }
+
     switch (off) {
-    case RV_APLIC_SETIP:
-        aplic_set_pending(a, val);
-        break;
     case RV_APLIC_SETIPNUM:
         if (val < RV_APLIC_SOURCES) {
-            aplic_set_pending(a, 1u << val);
+            aplic_set_pending(a, val / 32u, 1u << (val % 32u));
         }
-        break;
-    case RV_APLIC_IN_CLRIP:
-        aplic_clear_pending(a, val);
         break;
     case RV_APLIC_CLRIPNUM:
         if (val < RV_APLIC_SOURCES && val != 0u) {
-            aplic_clear_pending(a, 1u << val);
+            aplic_clear_pending(a, val / 32u, 1u << (val % 32u));
         }
-        break;
-    case RV_APLIC_SETIE:
-        a->enabled |= val & ~1u;
         break;
     case RV_APLIC_SETIENUM:
         if (val < RV_APLIC_SOURCES && val != 0u) {
-            a->enabled |= 1u << val;
+            a->enabled[val / 32u] |= 1u << (val % 32u);
         }
-        break;
-    case RV_APLIC_CLRIE:
-        a->enabled &= ~val;
         break;
     case RV_APLIC_CLRIENUM:
         if (val < RV_APLIC_SOURCES && val != 0u) {
-            a->enabled &= ~(1u << val);
+            a->enabled[val / 32u] &= ~(1u << (val % 32u));
         }
         break;
     default:
@@ -329,8 +349,10 @@ void rv_aplic_init(rv_aplic_t *a, struct rv_hart *hart)
         a->target[i] = 1u;              /* a usable default priority */
     }
     a->domaincfg = 0u;                  /* IE clear at reset (4.5.1) */
-    a->pending = 0u;
-    a->enabled = 0u;
+    for (uint32_t w = 0; w < RV_APLIC_WORDS; w++) {
+        a->pending[w] = 0u;
+        a->enabled[w] = 0u;
+    }
     a->idelivery = 0u;
     a->iforce = 0u;
     a->ithreshold = 0u;
@@ -351,6 +373,6 @@ void rv_aplic_raise(rv_aplic_t *a, uint32_t source)
     if (source == 0u || source >= RV_APLIC_SOURCES) {
         return;
     }
-    aplic_set_pending(a, 1u << source);
+    aplic_set_pending(a, source / 32u, 1u << (source % 32u));
     aplic_update(a);
 }

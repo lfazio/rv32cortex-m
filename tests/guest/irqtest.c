@@ -57,8 +57,12 @@
 
 #define APLIC_SM_EDGE_RISE  4u
 
-/* The source the firmware binds TIM6 to; see RV_IRQ_SRC_TIM6. */
-#define SRC_TIM6            1u
+/*
+ * TIM6_DAC_IRQn. The APLIC source number is the NVIC line number, so this is
+ * literally the value ST's headers give the ARM interrupt -- a guest driver
+ * ported from CMSIS keeps using the constant it already had.
+ */
+#define SRC_TIM6            54u
 
 /* ---- STM32F446 registers, verbatim from RM0390 --------------------- */
 

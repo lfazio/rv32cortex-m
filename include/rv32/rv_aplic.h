@@ -47,9 +47,17 @@ extern "C" {
 
 struct rv_hart;
 
+/*
+ * Enough sources that a source number can *be* the host's interrupt number.
+ * The STM32F446 has 97 NVIC lines, and making the two numbering spaces the
+ * same removes a translation table from the firmware and another from every
+ * guest driver: a guest that would call HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn)
+ * writes that same number to setienum instead.
+ */
 #ifndef RV_APLIC_SOURCES
-#  define RV_APLIC_SOURCES 32u      /* one bitmap word; 1..31 usable */
+#  define RV_APLIC_SOURCES 128u
 #endif
+#define RV_APLIC_WORDS  (RV_APLIC_SOURCES / 32u)
 
 #define RV_APLIC_SIZE       0x8000u
 
@@ -97,8 +105,8 @@ typedef struct rv_aplic {
     uint32_t domaincfg;
     uint8_t  sourcecfg[RV_APLIC_SOURCES];
     uint8_t  target[RV_APLIC_SOURCES];    /* IPRIO; 0 means "never deliver" */
-    uint32_t pending;
-    uint32_t enabled;
+    uint32_t pending[RV_APLIC_WORDS];
+    uint32_t enabled[RV_APLIC_WORDS];
     uint32_t idelivery;
     uint32_t iforce;
     uint32_t ithreshold;

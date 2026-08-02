@@ -413,22 +413,39 @@ static const struct {
  * Adding a peripheral is one table entry and one handler; the table is the
  * policy, the same way g_periph_map is for addresses.
  */
-static const IRQn_Type g_irq_map[RV_APLIC_SOURCES] = {
-    [RV_IRQ_SRC_TIM6] = TIM6_DAC_IRQn,
+/*
+ * An APLIC source number *is* the NVIC line number, so there is no mapping
+ * table -- and, more to the point, none in the guest either. A driver that
+ * would call HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn) writes that same 54 to the
+ * APLIC's setienum, and the two numbering spaces never have to be
+ * reconciled. It is the reason RV_APLIC_SOURCES is 128 rather than 32.
+ */
+static const IRQn_Type g_bridged[] = {
+    TIM6_DAC_IRQn,
 };
 
-static void aplic_line_entry(uint32_t source)
+static bool irq_is_bridged(uint32_t source)
 {
-    NVIC_DisableIRQ(g_irq_map[source]);
-    rv_aplic_raise(&g_aplic, source);
+    for (unsigned i = 0; i < sizeof(g_bridged) / sizeof(g_bridged[0]); i++) {
+        if ((uint32_t)g_bridged[i] == source) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void aplic_line_entry(IRQn_Type irqn)
+{
+    NVIC_DisableIRQ(irqn);
+    rv_aplic_raise(&g_aplic, (uint32_t)irqn);
 }
 
 static void aplic_unmask_line(void *ctx, uint32_t source)
 {
     (void)ctx;
-    if (source < RV_APLIC_SOURCES && g_irq_map[source] != 0) {
-        NVIC_ClearPendingIRQ(g_irq_map[source]);
-        NVIC_EnableIRQ(g_irq_map[source]);
+    if (irq_is_bridged(source)) {
+        NVIC_ClearPendingIRQ((IRQn_Type)source);
+        NVIC_EnableIRQ((IRQn_Type)source);
     }
 }
 
@@ -439,16 +456,14 @@ static void aplic_unmask_line(void *ctx, uint32_t source)
  */
 static void bridged_irqs_init(void)
 {
-    for (uint32_t i = 1u; i < RV_APLIC_SOURCES; i++) {
-        if (g_irq_map[i] != 0) {
-            NVIC_EnableIRQ(g_irq_map[i]);
-        }
+    for (unsigned i = 0; i < sizeof(g_bridged) / sizeof(g_bridged[0]); i++) {
+        NVIC_EnableIRQ(g_bridged[i]);
     }
 }
 
 void TIM6_DAC_IRQHandler(void)
 {
-    aplic_line_entry(RV_IRQ_SRC_TIM6);
+    aplic_line_entry(TIM6_DAC_IRQn);
 }
 
 static bool build_address_space(void)
