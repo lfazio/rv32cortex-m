@@ -50,7 +50,7 @@ silicon.
 | `riscv-tests` (Berkeley) | **77 / 77 pass** |
 | **PMP** | 16 entries, TOR/NA4/NAPOT; inlined in the JIT for the single-entry case |
 | **Sdtrig** | mcontrol triggers on execute/load/store; `rv32mi/breakpoint` passes |
-| Guest ISA self-test (148 checks) | passes on host **and** on hardware, both backends |
+| Guest ISA self-test (211 checks) | passes on host **and** on hardware, both backends |
 | Nucleo-F446RE firmware | 31–54 KB flash by configuration; guest gets 70–122 KiB of the 128 KiB SRAM |
 | Thumb-2 JIT backend | implemented; **19.2× slower than native ARM** on CoreMark with a 48 KB code cache, 15.3× with 64 KB, and *slower than the interpreter* at the 12 KB default — see below |
 | **Zacas** (`amocas.w` / `amocas.d`) | implemented |
@@ -455,8 +455,9 @@ Current state, all re-run on the tree as it stands:
 | `riscv-arch-test`, default (host FPU) | 172 / 224 — every failure in `F` | host |
 | `riscv-tests` | **77 / 77** | host |
 | host unit + guest self-test (`ctest -L fast`) | **2 / 2** | host |
-| `isatest`, JIT | **148 / 148** | hardware |
-| `isatest`, `-DRV32_JIT=OFF` | **148 / 148** | hardware |
+| `isatest`, JIT | **211 / 211** | hardware |
+| `isatest`, `-DRV32_JIT=OFF` | **211 / 211** | hardware |
+| `isatest`, host, both FP backends | **211 / 211** | host |
 | `mmiobench` | **72 / 72** | hardware |
 | CoreMark | `crcfinal 0xca90` on all three backends | hardware |
 
@@ -466,12 +467,27 @@ compiles for ARM. Everything the translator emits is validated by `isatest`
 and `mmiobench` on the board, and by CoreMark's CRC agreeing across native
 ARM, interpreter and JIT.
 
-That gap is not theoretical. The JIT bugs found so far were all found on
-hardware: an inlined store that ignored PMP, another that skipped the LR/SC
-reservation break, a loop cap that compared the wrong register, and loop
-chaining silently dropped past a branch's reach. The last two produced no
-wrong answer at all — only performance that made no sense — so no
-signature-checking suite could have caught them however long it ran.
+That gap is not theoretical. Every JIT defect found so far was found on
+hardware, and none of them could have been caught by a signature-checking
+suite:
+
+| defect | how it presented |
+|---|---|
+| inlined store ignored PMP | a protected region was writable under the JIT only |
+| inlined store skipped the LR/SC reservation break | a later `SC` wrongly succeeded |
+| loop cap compared the wrong register | *no* wrong answer — chained loops simply ran unbounded |
+| loop chaining dropped past a branch's reach | *no* wrong answer — one loop shape ran 2.4× slower |
+| `rm=dyn` resolved `RMM` as round-to-nearest | ties rounded to even where the guest asked for away |
+| `mstatus.FS` decided at translation | FP ran after the guest turned the FPU off |
+| PMP flush watched a flag, not the configuration | a store landed in memory PMP had been told to deny |
+
+Two of those produced no wrong answer at all, only performance that made no
+sense. Three were staleness: a decision taken when a block was translated,
+still in force after the state behind it changed. The self-test grew from 148
+checks to 211 chasing them, and the checks that matter are the ones that
+re-execute *one* instruction at *one* address after changing the state it was
+compiled against — a fresh call site is translated against the current
+configuration and proves nothing.
 
 ### Floating point (F)
 
@@ -504,7 +520,7 @@ affordable but is real.
 
 Both are validated on hardware. Note that with the JIT enabled the arithmetic
 is translated to VFP and never reaches SoftFloat, so the run that actually
-exercises it is `-DRV32_JIT=OFF`; both configurations pass 148/148. That the
+exercises it is `-DRV32_JIT=OFF`; both configurations pass 211/211. That the
 two backends agree is worth having deliberately — they use genuinely different
 FP implementations, VFP against SoftFloat, so the self-test doubles as a
 differential check between them.
