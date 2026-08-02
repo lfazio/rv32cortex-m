@@ -473,8 +473,18 @@ static bool build_address_space(void)
                          RV_APLIC_SIZE, &rv_aplic_ops, &g_aplic)) {
         return false;
     }
-    if (!rv_bus_add_mmio(&g_bus, "clint", RV_GUEST_CLINT_BASE,
-                         RV_CLINT_SIZE, &rv_clint_ops, &g_clint)) {
+    /*
+     * ACLINT rather than the legacy CLINT window: two devices at the
+     * offsets the old layout implied, so guests written for either work.
+     */
+    if (!rv_bus_add_mmio(&g_bus, "aclint-mswi", RV_GUEST_ACLINT_MSWI_BASE,
+                         RV_ACLINT_MSWI_SIZE, &rv_aclint_mswi_ops,
+                         &g_clint)) {
+        return false;
+    }
+    if (!rv_bus_add_mmio(&g_bus, "aclint-mtimer", RV_GUEST_ACLINT_MTIMER_BASE,
+                         RV_ACLINT_MTIMER_SIZE, &rv_aclint_mtimer_ops,
+                         &g_clint)) {
         return false;
     }
     if (!rv_bus_add_mmio(&g_bus, "uart0", RV_GUEST_UART_BASE,

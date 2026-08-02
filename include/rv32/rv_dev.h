@@ -49,6 +49,19 @@ typedef struct rv_clint {
 
 extern const rv_dev_ops_t rv_clint_ops;
 
+/*
+ * ACLINT presents the same state as two devices that a platform may place
+ * independently: MSWI (msip) and MTIMER (mtimecmp, and mtime at 0x7FF8).
+ * Mapped at RV_GUEST_CLINT_BASE and +0x4000 they occupy exactly the legacy
+ * CLINT window, which is why guests written for either layout work.
+ */
+#define RV_ACLINT_MSWI_SIZE     0x4000u
+#define RV_ACLINT_MTIMER_SIZE   0x8000u
+#define RV_ACLINT_MTIMER_MTIME  0x7FF8u
+
+extern const rv_dev_ops_t rv_aclint_mswi_ops;
+extern const rv_dev_ops_t rv_aclint_mtimer_ops;
+
 /* Attach the CLINT to a hart and wire the hart's `time` CSR to mtime. */
 void rv_clint_init(rv_clint_t *c, struct rv_hart *hart);
 

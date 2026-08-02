@@ -122,6 +122,55 @@ static rv_exc_t clint_write(void *ctx, uint32_t off, uint32_t size, uint32_t val
     return RV_EXC_NONE;
 }
 
+/*
+ * ACLINT views of the same state.
+ *
+ * ACLINT splits the legacy SiFive CLINT into separately addressable
+ * devices: MSWI, holding the msip registers, and MTIMER, holding mtimecmp
+ * and mtime at offset 0x7FF8. The split is a renaming rather than a
+ * redesign, because the de-facto CLINT layout already *is* those two
+ * devices at fixed relative offsets -- MSWI at +0x0000 and MTIMER at
+ * +0x4000, which puts mtime at 0x4000 + 0x7FF8 = 0xBFF8, exactly where the
+ * legacy layout has it.
+ *
+ * So these ops translate an offset and share every byte of state with the
+ * CLINT above. Mapping the two devices at the addresses the legacy layout
+ * used leaves existing guests working unchanged while giving software that
+ * expects ACLINT the device boundaries it looks for, and a platform is free
+ * to map them somewhere else entirely, which is the part ACLINT adds.
+ */
+static rv_exc_t mswi_read(void *ctx, uint32_t off, uint32_t size, uint32_t *out)
+{
+    return clint_read(ctx, off, size, out);
+}
+
+static rv_exc_t mswi_write(void *ctx, uint32_t off, uint32_t size, uint32_t val)
+{
+    return clint_write(ctx, off, size, val);
+}
+
+static rv_exc_t mtimer_read(void *ctx, uint32_t off, uint32_t size, uint32_t *out)
+{
+    return clint_read(ctx, off + RV_CLINT_MTIMECMP, size, out);
+}
+
+static rv_exc_t mtimer_write(void *ctx, uint32_t off, uint32_t size, uint32_t val)
+{
+    return clint_write(ctx, off + RV_CLINT_MTIMECMP, size, val);
+}
+
+const rv_dev_ops_t rv_aclint_mswi_ops = {
+    .read  = mswi_read,
+    .write = mswi_write,
+    .tick  = NULL,
+};
+
+const rv_dev_ops_t rv_aclint_mtimer_ops = {
+    .read  = mtimer_read,
+    .write = mtimer_write,
+    .tick  = NULL,
+};
+
 const rv_dev_ops_t rv_clint_ops = {
     .read  = clint_read,
     .write = clint_write,

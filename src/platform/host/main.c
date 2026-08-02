@@ -381,8 +381,11 @@ int main(int argc, char **argv)
                         g_periph, PERIPH_SIM_SIZE) ||
         !rv_bus_add_mmio(&bus, "aplic", RV_GUEST_APLIC_BASE, RV_APLIC_SIZE,
                          &rv_aplic_ops, &aplic) ||
-        !rv_bus_add_mmio(&bus, "clint", RV_GUEST_CLINT_BASE, RV_CLINT_SIZE,
-                         &rv_clint_ops, &clint) ||
+        !rv_bus_add_mmio(&bus, "aclint-mswi", RV_GUEST_ACLINT_MSWI_BASE,
+                         RV_ACLINT_MSWI_SIZE, &rv_aclint_mswi_ops, &clint) ||
+        !rv_bus_add_mmio(&bus, "aclint-mtimer", RV_GUEST_ACLINT_MTIMER_BASE,
+                         RV_ACLINT_MTIMER_SIZE, &rv_aclint_mtimer_ops,
+                         &clint) ||
         !rv_bus_add_mmio(&bus, "uart0", RV_GUEST_UART_BASE, RV_UART_SIZE,
                          &rv_uart_ops, &uart)) {
         fprintf(stderr, "rv32: failed to build the guest memory map\n");

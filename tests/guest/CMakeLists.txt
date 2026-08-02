@@ -98,6 +98,11 @@ add_guest_image(hello    SOURCES start.S hello.c)
 # runs but drives nothing.
 add_guest_image(stm32drv SOURCES start.S stm32drv.c)
 
+# A real peripheral interrupt taken by guest code. Like stm32drv, only
+# meaningful on the board; on the host the peripheral window is plain
+# memory, so it detects the absent timer and reports rather than hanging.
+add_guest_image(irqtest SOURCES start.S irqtest.c)
+
 # Compute-bound workload for throughput measurement.
 add_guest_image(bench    SOURCES start.S bench.c)
 
