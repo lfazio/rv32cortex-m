@@ -1140,33 +1140,48 @@ static void emit_vmsr(uint32_t rt)   /* VMSR FPSCR,Rt */
 static const uint8_t k_rmode[5] = { 0u, 3u, 2u, 1u, 0u };
 
 /*
+ * The rounding mode the cached blocks were translated against, and whether
+ * any of them resolved a `dyn` instruction to it.
+ *
+ * A `dyn` instruction defers to fcsr.frm, which is not known when the block
+ * is built -- so the block is *specialised* for the frm in force at
+ * translation, and the cache is flushed if frm later changes. That is what
+ * makes RMM safe: it has no ARM rounding mode, so resolving it here means
+ * such an instruction is declined and goes to the helper rather than being
+ * emitted with the nearest mode that happens to fit.
+ *
+ * The previous version resolved `dyn` at run time through a packed table
+ * whose RMM entry was RN, so `frm = RMM` plus any `dyn` instruction rounded
+ * ties to even where the guest asked for ties away -- silently, and only
+ * under the JIT. Specialising also deletes that ten-instruction lookup from
+ * the front of every dynamically-rounded FP operation.
+ */
+static uint8_t g_frm_seen;
+static bool    g_frm_specialised;
+
+static uint32_t fp_effective_rm(uint32_t rm)
+{
+    if (rm != FRM_DYN) {
+        return rm;
+    }
+    /* Only now does a flush on an frm change become necessary. */
+    g_frm_specialised = true;
+    return (g_xlate_hart->fcsr >> 5) & 7u;
+}
+
+/*
  * Emit the prologue of a rounding-mode-sensitive FP operation: put the ARM
  * RMode bits for `rm` into r3, then load FPSCR, replace RMode, clear the
  * cumulative exception bits, and set DN so a NaN result comes out as ARM's
  * default NaN -- which is bit-identical to RISC-V's canonical 0x7FC00000.
  * FZ is cleared because RISC-V requires real subnormals, not flush-to-zero.
  *
- * `rm` is FRM_DYN when the instruction defers to fcsr.frm, in which case
- * the mode is looked up at run time from a packed two-bits-per-entry table.
+ * `rm` is always a concrete mode in 0..3 here; callers resolve `dyn` and
+ * decline anything ARM cannot express.
  */
 static void emit_fp_setmode(uint32_t rm)
 {
-    if (rm == FRM_DYN) {
-        /* r3 = k_rmode[(fcsr >> 5) & 7], from a packed constant. */
-        const uint32_t off = (uint32_t)offsetof(rv_hart_t, fcsr);
-        emit32((uint16_t)(0xF8D0u | R4), (uint16_t)((R3 << 12) | off));
-        emit_shift_imm(SH_LSR, R3, R3, 5u);
-        emit_mov_imm8(R2, 7u);
-        emit_dp_reg(DP_AND, R3, R2);
-        emit_shift_imm(SH_LSL, R3, R3, 1u);      /* two bits per entry */
-        emit_imm32(R2, 0x0000006Cu);             /* 0,3,2,1,0 packed */
-        emit_dp_reg(DP_LSR, R2, R3);
-        emit_mov_imm8(R3, 3u);
-        emit_dp_reg(DP_AND, R2, R3);
-        emit_mov(R3, R2);
-    } else {
-        emit_mov_imm8(R3, k_rmode[rm]);
-    }
+    emit_mov_imm8(R3, k_rmode[rm]);
     emit_shift_imm(SH_LSL, R3, R3, 22u);
     emit_imm32(R2, 1u << 25);                    /* DN: default NaN */
     emit_dp_reg(DP_ORR, R3, R2);
@@ -2312,9 +2327,9 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
         if ((f7 & 3u) != 0u) {
             return -1;              /* fmt must be S */
         }
-        const uint32_t rmf = f3;
-        if (rmf == FRM_RMM || (rmf > FRM_RMM && rmf != FRM_DYN)) {
-            return -1;              /* RMM has no ARM rounding mode */
+        const uint32_t rmf = fp_effective_rm(f3);
+        if (rmf > FRM_RUP) {
+            return -1;          /* RMM, or a reserved encoding */
         }
         const uint32_t rs3 = (insn >> 27) & 0x1Fu;
 
@@ -2421,9 +2436,9 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
             if (rs2 > 1u) {
                 return -1;
             }
-            const uint32_t rmf18 = f3;
-            if (rmf18 == FRM_RMM || (rmf18 > FRM_RMM && rmf18 != FRM_DYN)) {
-                return -1;
+            const uint32_t rmf18 = fp_effective_rm(f3);
+            if (rmf18 > FRM_RUP) {
+                return -1;          /* RMM, or a reserved encoding */
             }
             const bool cvt_signed = (rs2 == 0u);
 
@@ -2469,9 +2484,9 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
             if (rs2 > 1u) {
                 return -1;
             }
-            const uint32_t rmf = f3;
-            if (rmf == FRM_RMM || (rmf > FRM_RMM && rmf != FRM_DYN)) {
-                return -1;
+            const uint32_t rmf = fp_effective_rm(f3);
+            if (rmf > FRM_RUP) {
+                return -1;          /* RMM, or a reserved encoding */
             }
 
             emit_fp_setmode(rmf);
@@ -2514,9 +2529,9 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
              * round-to-nearest would silently give ties-to-even. Leave it
              * to the helper, which implements it properly.
              */
-            const uint32_t rmf = f3;
-            if (rmf == FRM_RMM || (rmf > FRM_RMM && rmf != FRM_DYN)) {
-                return -1;
+            const uint32_t rmf = fp_effective_rm(f3);
+            if (rmf > FRM_RUP) {
+                return -1;          /* RMM, or a reserved encoding */
             }
             const uint32_t f5 = f7 >> 2;
             if (f5 == 0x0Bu && rs2 != 0u) {
@@ -2857,7 +2872,12 @@ static void jit_reset(rv_hart_t *h)
 {
 #if RV_EXT_PMP
     g_pmp_seen = h->pmp_active;
-#else
+#endif
+#if RV_EXT_F
+    g_frm_seen = (uint8_t)((h->fcsr >> 5) & 7u);
+    g_frm_specialised = false;
+#endif
+#if !RV_EXT_PMP && !RV_EXT_F
     (void)h;
 #endif
     rv_jit_flush();
@@ -2872,6 +2892,41 @@ static void jit_invalidate(rv_hart_t *h, uint32_t addr, uint32_t len)
      * which blocks covered a given range would cost more than it saves. */
     rv_jit_flush();
 }
+
+#if RV_EXT_F
+/*
+ * Notice a change of rounding mode and drop blocks specialised for the old
+ * one.
+ *
+ * Called only after the interpreter has run an instruction, which is enough
+ * because frm cannot change any other way: it moves only on a CSR write, and
+ * the translator declines SYSTEM entirely, so every write to it happens on
+ * exactly this path. Putting the check here rather than in the dispatch loop
+ * keeps it off the hot path completely -- CoreMark enters blocks 2.9 million
+ * times per run and must not pay for a feature it never uses.
+ *
+ * The FP instructions themselves cannot disturb it: they OR their exception
+ * flags into fcsr, and those occupy bits 0..4 while frm is bits 5..7.
+ *
+ * g_frm_specialised keeps a guest that toggles frm without any dynamically
+ * rounded FP code -- or with no FP code at all -- from flushing for nothing.
+ */
+static void jit_note_frm(const rv_hart_t *h)
+{
+    const uint8_t frm = (uint8_t)((h->fcsr >> 5) & 7u);
+
+    if (RV_LIKELY(frm == g_frm_seen)) {
+        return;
+    }
+    g_frm_seen = frm;
+    if (g_frm_specialised) {
+        g_frm_specialised = false;
+        rv_jit_flush();
+    }
+}
+#else
+#define jit_note_frm(h) ((void)(h))
+#endif
 
 static rv_run_reason_t jit_run(rv_hart_t *h, uint32_t budget, uint32_t *retired)
 {
@@ -2922,6 +2977,7 @@ static rv_run_reason_t jit_run(rv_hart_t *h, uint32_t budget, uint32_t *retired)
             const rv_run_reason_t r = rv_backend_interp.run(h, 1u, &n);
             done += n;
             g_stats.interp_fallbacks += n;
+            jit_note_frm(h);
             if (r == RV_RUN_HALTED || r == RV_RUN_WFI) {
                 reason = r;
                 break;
@@ -2973,6 +3029,7 @@ static rv_run_reason_t jit_run(rv_hart_t *h, uint32_t budget, uint32_t *retired)
                 const rv_run_reason_t r = rv_backend_interp.run(h, 1u, &n);
                 done += n;
                 g_stats.interp_fallbacks += n;
+                jit_note_frm(h);
                 if (r == RV_RUN_HALTED || r == RV_RUN_WFI) {
                     reason = r;
                     break;

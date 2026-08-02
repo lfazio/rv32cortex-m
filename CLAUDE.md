@@ -80,13 +80,14 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
   Both were found on hardware, not by the x86 suites. When adding anything that
   `rv_hart_load`/`rv_hart_store` does beyond the access itself, ask what the
   inlined path does about it.
-- **The JIT rounds `RMM` as `RNE` when it arrives dynamically.** Static `rmm`
-  is declined and goes to the helper, but `rm=dyn` resolves `frm` at run time
-  through the packed table in `emit_fp_setmode`, whose entry 4 is `RN`. So
-  `frm=RMM` plus any `dyn` FP instruction is silently wrong under the JIT and
-  right under the interpreter. Compilers emit `dyn` almost exclusively, so
-  declining it is not an option; it needs a run-time guard or frm
-  specialisation with a flush. Unfixed -- see the Roadmap.
+- **JIT blocks are specialised on `frm`; changing it flushes.** `dyn` is
+  resolved at translation, not at run time, which is what lets `RMM` be
+  declined to the helper -- ARM has no ties-away mode, and the old run-time
+  table silently mapped it to `RN`. The flush is safe to hang off the
+  interpreter fallback alone: `frm` moves only on a CSR write, and the
+  translator declines `SYSTEM`, so every write lands there. Do not move that
+  check into the dispatch loop; CoreMark enters blocks 2.9M times a run.
+  `g_frm_specialised` skips the flush entirely for guests with no `dyn` FP.
 - **ARM and RISC-V float-to-int agree except on NaN.** Both saturate
   out-of-range to the target's limit, both raise invalid doing so, and
   neither adds inexact. Only NaN differs: ARM gives 0, RISC-V gives the

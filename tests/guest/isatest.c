@@ -735,6 +735,23 @@ static void test_zacas(void)
 
 static volatile uint32_t g_fmem;
 
+/*
+ * One `fcvt.w.s ..., dyn` at one address, called repeatedly under different
+ * rounding modes. Kept out of line and un-inlined on purpose: the point is
+ * that the *same* instruction is executed each time, so a JIT that
+ * specialises a translated block on frm has to notice frm changing and
+ * rebuild. Separate call sites would let each get its own translation and
+ * prove nothing.
+ */
+__attribute__((noinline))
+static uint32_t cvt_w_dyn(uint32_t bits)
+{
+    uint32_t r;
+    __asm__ volatile ("fmv.w.x fa0, %1\n\t fcvt.w.s %0, fa0, dyn"
+                      : "=r"(r) : "r"(bits) : "fa0");
+    return r;
+}
+
 static void test_fpu(void)
 {
     /* Arithmetic. */
@@ -904,6 +921,42 @@ static void test_fpu(void)
         csr_write("frm", 1u);                    /* RTZ */
         CVT_W(r, 0x40200000u, "dyn");
         check("fcvt.w.s-dyn-rtz", r, 2u);
+        csr_write("frm", 0u);
+    }
+
+    /*
+     * Dynamic rounding, same instruction, mode changed underneath it.
+     *
+     * Two separate things are on trial. That a JIT specialising a block on
+     * frm notices frm changing and rebuilds -- the RDN and second RUP cases
+     * fail if it does not. And that RMM, which no ARM rounding mode can
+     * express, is declined rather than translated as round-to-nearest: 2.5
+     * is a tie, so ties-away gives 3 where ties-to-even gives 2, and a JIT
+     * quietly substituting the wrong mode reports 2.
+     *
+     * 2.5 rather than 3.5 on purpose. 3.5 rounds to 4 under both, and would
+     * have passed throughout the entire period this was broken.
+     */
+    {
+        const uint32_t f2_5 = 0x40200000u;      /*  2.5 */
+        const uint32_t fn2_5 = 0xC0200000u;     /* -2.5 */
+
+        csr_write("frm", 3u);                   /* RUP */
+        check("dyn-rup", cvt_w_dyn(f2_5), 3u);
+
+        csr_write("frm", 2u);                   /* RDN: needs the rebuild */
+        check("dyn-rdn", cvt_w_dyn(f2_5), 2u);
+
+        csr_write("frm", 0u);                   /* RNE: ties to even */
+        check("dyn-rne", cvt_w_dyn(f2_5), 2u);
+
+        csr_write("frm", 4u);                   /* RMM: ties away */
+        check("dyn-rmm", cvt_w_dyn(f2_5), 3u);
+        check("dyn-rmm-neg", cvt_w_dyn(fn2_5), (uint32_t)-3);
+
+        csr_write("frm", 3u);                   /* RUP: re-specialise */
+        check("dyn-rup-again", cvt_w_dyn(f2_5), 3u);
+
         csr_write("frm", 0u);
     }
 #undef CVT_W

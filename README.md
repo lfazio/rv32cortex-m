@@ -280,6 +280,9 @@ Measured on `isatest`, this moves 22 instructions per run off the helper.
 - `FMIN`/`FMAX` — ARMv7-M has no scalar `VMINNM`/`VMAXNM`, and RISC-V's NaN
   rules would need open-coding regardless.
 - `FCLASS` — no ARM equivalent at all.
+- Anything rounding **`RMM`** — ARM has no ties-away mode. Blocks are
+  specialised on `frm`, so an `rm=dyn` instruction is resolved at translation
+  and declined when it lands on `RMM`, just as a static `rmm` is.
 - anything using `RMM` — no ARM rounding mode.
 
 Interpreter fallbacks on the guest self-test are down from 93 to 79 across this
@@ -991,26 +994,32 @@ rather than a missing optimisation:
       have passed with the NaN fixup deleted entirely.
 - [ ] **`FMIN`/`FMAX`, `FCLASS` in the JIT** — no ARMv7-M equivalent exists;
       these stay interpreted unless open-coded.
-- [ ] **`RMM` in the JIT** — no ARMv7-M rounding mode exists; this stays
-      interpreted unless open-coded. Instructions naming `rmm` *statically*
-      are declined and go to the helper, which is correct.
+- [x] **`RMM` in the JIT** — *resolved*, by declining it correctly rather
+      than by translating it. No ARMv7-M rounding mode expresses ties-away,
+      so it stays on the helper; what changed is that it now reliably gets
+      there.
 
-      **`rmm` reached dynamically is not**, and this is a live bug rather
-      than a limitation. When an instruction uses `rm=dyn`, the translation
-      reads `frm` at run time through a packed table in `emit_fp_setmode`,
-      and that table maps `RMM` onto ARM's `RN`. A guest that sets
-      `frm=RMM` and then executes any dynamically-rounded FP instruction
-      gets round-to-nearest-ties-even where it asked for ties-away, silently
-      and only under the JIT. It predates the conversion work and affects
-      arithmetic, `FCVT.S.W` and `FCVT.W.S` alike. Neither host suite can see
-      it, because neither runs the JIT.
+      Blocks are **specialised on `frm`**. A `dyn` instruction is resolved at
+      translation against the `frm` then in force, so `dyn` under `frm=RMM`
+      is declined exactly as a static `rmm` always was. Previously the mode
+      was resolved at run time through a packed table whose `RMM` entry was
+      `RN`, so such a guest got ties-to-even where it asked for ties-away —
+      silently, and only under the JIT.
 
-      Fixing it needs a decision rather than a patch: declining `dyn`
-      outright would gut the FP JIT, since compilers emit `dyn` for
-      essentially everything, so it wants either a run-time guard that exits
-      to the helper when `frm` reads 4, or translate-time specialisation on
-      `frm` with a flush when it changes — the shape already used for
-      `pmp_active`.
+      The flush that makes specialisation safe costs nothing on the hot
+      path. `frm` moves only on a CSR write, the translator declines
+      `SYSTEM` entirely, so every write to it lands on the interpreter
+      fallback — and that is the only place the check runs. It is skipped
+      altogether unless some cached block actually resolved a `dyn`, so a
+      guest with no FP never flushes. Specialising also deletes the
+      ten-instruction table lookup from the front of every dynamically
+      rounded FP operation.
+
+      Caught by six new self-test checks that execute one `fcvt.w.s ..., dyn`
+      at one address under five modes in turn: two fail without the fix
+      (`2.5` under `RMM` gives 2, not 3), and the rest fail if a block is not
+      rebuilt when `frm` changes. The tie value matters — `3.5` rounds to 4
+      under both modes and would have passed throughout.
 - [ ] **ACLINT/APLIC** — the emulator has a CLINT and an APLIC, but the guest self-test
       does not exercise them. The CLINT is a 64-bit timer and the APLIC is a
       32-bit interrupt controller; both are soft-trap and would need a second
