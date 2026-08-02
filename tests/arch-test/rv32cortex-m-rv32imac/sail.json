@@ -16,7 +16,9 @@
       "len": 32,
       "value": "0x00000000"
     },
-    // No S or U mode, so these counter-enable CSRs have nothing to grant.
+    // No S mode, so scounteren has nothing to grant. mcounteren does, now
+    // that U-mode exists, but this core leaves it read-only zero: the
+    // counters stay M-only rather than being delegated.
     "scounteren_writable_bits": {
       "len": 32,
       "value": "0x0"
@@ -95,10 +97,18 @@
   },
   "memory": {
     "physaddr_bits": 32,
+    // 16 entries, matching RV_PMP_ENTRIES and the NUM_PMP_ENTRIES declared
+    // to UDB. Zero here would be the Zacas mistake again: the golden model
+    // would have no PMP registers at all, so it could deny nothing, and it
+    // would bake permissive expectations into every test that configures
+    // PMP -- which then reads as an emulator bug.
+    //
+    // grain 0 means the finest supported region is 4 bytes, which is what
+    // NA4 being supported requires.
     "pmp": {
       "grain": 0,
-      "count": 0,
-      "usable_count": 0,
+      "count": 16,
+      "usable_count": 16,
       "tor_supported": true,
       "na4_supported": true,
       "napot_supported": true
@@ -282,6 +292,10 @@
     "max_time_to_wait": 0
   },
   "extensions": {
+    // U-mode is implemented; S is not, so there is nothing to delegate to
+    // and medeleg/mideleg stay read-only zero.
+    "U": { "supported": true },
+    "S": { "supported": false },
     "M": { "supported": true },
     "A": { "supported": true },
     "F": {
@@ -309,7 +323,7 @@
     "B": { "supported": true },
     // Machine mode only.
     "S": { "supported": false },
-    "U": { "supported": false },
+    "U": { "supported": true },
     "Zibi": { "supported": false },
     "Zicbom": { "supported": true },
     "Zicbop": { "supported": false },
@@ -389,7 +403,7 @@
     },
     "Svade": { "supported": false },
     "Svadu": { "supported": false },
-    "Svnapot": { "supported": false },
+    "Svnapot": { "supported": true },
     "Ssnpm": {
       "supported": false,
       "supported_pmlen_7": true,

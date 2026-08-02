@@ -49,6 +49,9 @@ implemented_extensions:
   - { name: Zicbom, version: "= 1.0.0" }
   - { name: Zicboz, version: "= 1.0.0" }
   - { name: Sm, version: "= 1.12.0" }
+  # User mode. S is absent, so medeleg and mideleg have nothing to delegate
+  # to and read as zero.
+  - { name: U, version: "= 1.12.0" }
 
 params:
   # ---- base ----
@@ -155,7 +158,11 @@ params:
   # ---- Sm ----
   PRECISE_SYNCHRONOUS_EXCEPTIONS: true
   PMA_GRANULARITY: 2
-  NUM_PMP_ENTRIES: 0
+  # 16, matching RV_PMP_ENTRIES. Declaring zero here excluded the whole
+  # priv/pmp family from selection -- every test there requires '>0' -- so
+  # PMP had never been exercised by the official suite at all, in M-mode or
+  # U-mode, despite being implemented and covered by the guest self-test.
+  NUM_PMP_ENTRIES: 16
 
   # ---- counters ----
   # mcycle and minstret only; no hardware performance monitors.
