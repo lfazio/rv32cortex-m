@@ -1077,12 +1077,30 @@ static void emit_vcvt_f32_from_int(uint32_t vd, uint32_t vm, bool is_signed)
            (uint16_t)((vd << 12) | 0x0A40u | (is_signed ? 0x80u : 0u) | vm));
 }
 
+/*
+ * VCVTR.S32.F32 / VCVTR.U32.F32 Sd,Sm -- single precision to integer.
+ *
+ * The R form, which rounds by FPSCR.RMode. The plain VCVT would force
+ * round-toward-zero no matter what `frm` asked for, which is right for
+ * exactly one of the five RISC-V rounding modes.
+ *
+ * opc2 selects the target type: 100 unsigned, 101 signed. That is the
+ * opposite sense to the integer-to-float direction above, where the type
+ * lives in `op` instead.
+ */
+static void emit_vcvtr_int_from_f32(uint32_t vd, uint32_t vm, bool is_signed)
+{
+    emit32((uint16_t)(0xEEB8u | (is_signed ? 5u : 4u)),
+           (uint16_t)((vd << 12) | 0x0A40u | vm));
+}
+
 static void emit_vmrs_apsr(void)
 {
     emit32(0xEEF1u, 0xFA10u);
 }
 
 #define C_MI 4u   /* N set: strictly less, and false when unordered */
+#define C_VS 6u   /* V set: unordered, which for VCMP means a NaN operand */
 #define C_LS 9u   /* C clear or Z set: less or equal, false when unordered */
 
 /* VMOV Sn,Rt  (core register into a VFP register). */
@@ -2390,16 +2408,64 @@ static int translate_one(uint32_t insn, uint32_t pc, unsigned len,
             return 0;
         }
 
-        case 0x1Au: {               /* FCVT.S.W / FCVT.S.WU */
+        case 0x18u: {               /* FCVT.W.S / FCVT.WU.S */
             /*
-             * Integer to float only. The other direction is left on the
-             * helper because ARM and RISC-V disagree on NaN: ARM's VCVT
-             * gives zero, RISC-V requires the maximum representable value.
-             * Both saturate on overflow and both raise invalid, so the
-             * divergence is confined to that one input, but detecting it
-             * inline would cost a compare and a branch on every conversion
-             * -- and getting it wrong would be silent.
+             * Float to integer. ARM and RISC-V agree on far more of this
+             * than they disagree on: both saturate an out-of-range value to
+             * the limit of the target type, both raise invalid when they do,
+             * and neither raises inexact on top of it. The whole divergence
+             * is one input -- ARM converts a NaN to zero, RISC-V to the
+             * *maximum* value of the target type -- so a compare against
+             * self, which is unordered exactly for a NaN, settles it.
              */
+            if (rs2 > 1u) {
+                return -1;
+            }
+            const uint32_t rmf18 = f3;
+            if (rmf18 == FRM_RMM || (rmf18 > FRM_RMM && rmf18 != FRM_DYN)) {
+                return -1;
+            }
+            const bool cvt_signed = (rs2 == 0u);
+
+            emit_fp_setmode(rmf18);
+            emit_ld_freg(R1, rs1);
+            emit_vmov_s_r(VS0, R1);
+            emit_vcvtr_int_from_f32(VS4, VS0, cvt_signed);
+            emit_vmov_r_s(R1, VS4);
+
+            /*
+             * The NaN replacement is materialised *before* the compare.
+             * MOVW/MOVT do not write flags so it would survive either way,
+             * but the ordering is what the FEQ path above had to learn the
+             * hard way and keeping it uniform is cheaper than re-deriving
+             * which materialisations are safe.
+             */
+            emit_imm32(R2, cvt_signed ? 0x7FFFFFFFu : 0xFFFFFFFFu);
+
+            /*
+             * Quiet, not signalling: the conversion has already raised
+             * invalid for a NaN, and VCMPE would raise it a second time for
+             * a quiet NaN that RISC-V says nothing about here.
+             */
+            emit_vcmp(VS0, VS0, false);
+            emit_vmrs_apsr();
+            emit_it(C_VS);
+            emit_mov(R1, R2);       /* MOV register: no flags, IT-safe */
+
+            if (rd != 0u) {
+                emit_st_greg(rd, R1);
+            }
+            /*
+             * No emit_fp_dirty: the result goes to an X register, and the
+             * interpreter does not mark FS dirty here either. The two
+             * backends have to agree on this or a guest that checks FS sees
+             * different state depending on which one ran.
+             */
+            emit_fp_getflags();
+            return 0;
+        }
+
+        case 0x1Au: {               /* FCVT.S.W / FCVT.S.WU */
             if (rs2 > 1u) {
                 return -1;
             }

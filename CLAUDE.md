@@ -80,6 +80,25 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
   Both were found on hardware, not by the x86 suites. When adding anything that
   `rv_hart_load`/`rv_hart_store` does beyond the access itself, ask what the
   inlined path does about it.
+- **The JIT rounds `RMM` as `RNE` when it arrives dynamically.** Static `rmm`
+  is declined and goes to the helper, but `rm=dyn` resolves `frm` at run time
+  through the packed table in `emit_fp_setmode`, whose entry 4 is `RN`. So
+  `frm=RMM` plus any `dyn` FP instruction is silently wrong under the JIT and
+  right under the interpreter. Compilers emit `dyn` almost exclusively, so
+  declining it is not an option; it needs a run-time guard or frm
+  specialisation with a flush. Unfixed -- see the Roadmap.
+- **ARM and RISC-V float-to-int agree except on NaN.** Both saturate
+  out-of-range to the target's limit, both raise invalid doing so, and
+  neither adds inexact. Only NaN differs: ARM gives 0, RISC-V gives the
+  *maximum*. `VCMP` of the operand against itself is unordered exactly for
+  NaN, so `IT VS` / `MOV` patches it in seven instructions. Use `VCVTR`, not
+  `VCVT` -- the latter forces round-toward-zero regardless of FPSCR.
+- **One weak test is worse than none, because it reads as coverage.**
+  `isatest` had a single `FCVT.W.S` check, `10.0` with `rtz`, which passes
+  whether or not the NaN fixup exists at all. When adding a translation whose
+  whole difficulty is one input, test *that* input. Proving the new path even
+  runs is separate again: force it back to the helper and diff the
+  `interp ... fell back` counter (112 against 134 here).
 - **`RV32_JIT_CODE_BYTES` dominates JIT performance, and the 12 KB default is
   worse than no JIT at all.** CoreMark's translated working set is ~48 KB.
   Measured: 12 KB 10,850,998 ticks (8533 compactions, 94240 evictions), 24 KB

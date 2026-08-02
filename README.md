@@ -250,13 +250,33 @@ RISC-V's requirement that every comparison against NaN be false.
 
 `FCVT.S.W` and `FCVT.S.WU` are translated as `VCVT.F32.S32`/`VCVT.F32.U32`.
 
-**Still on the helper**, each for a reason rather than for lack of time:
+`FCVT.W.S` and `FCVT.WU.S` go the other way, as **`VCVTR`** — the rounding
+form, since plain `VCVT` would force round-toward-zero whatever `frm` asked
+for. ARM and RISC-V agree on more of this than they disagree on: both saturate
+an out-of-range value to the limit of the target type, both raise invalid when
+they do, and neither adds inexact on top. The entire divergence is one input —
+ARM converts a NaN to zero, RISC-V to the *maximum* value of the target type —
+so a `VCMP` of the operand against itself, which is unordered exactly for a
+NaN, selects between them:
 
-- `FCVT.W.S` and `FCVT.WU.S` — ARM and RISC-V **disagree on NaN**. ARM's
-  `VCVT` yields zero; RISC-V requires the maximum representable value. Both
-  saturate on overflow and both raise invalid, so the divergence is one input
-  wide, but detecting it inline costs a compare and a branch on every
-  conversion and getting it wrong would be silent.
+```
+VCVTR.S32.F32 s4, s0
+VMOV   r1, s4          ARM's answer
+MOVW/MOVT r2, #0x7FFFFFFF   the replacement, set up before the compare
+VCMP.F32 s0, s0        unordered iff s0 is NaN
+VMRS   APSR_nzcv
+IT     VS
+MOVVS  r1, r2
+```
+
+The replacement is materialised *before* the compare, for the reason the
+comparison path above documents. The compare is the quiet `VCMP`, not
+`VCMPE`: the conversion has already raised invalid for a NaN, and the
+signalling form would raise it again for a quiet NaN.
+
+Measured on `isatest`, this moves 22 instructions per run off the helper.
+
+**Still on the helper**, each for a reason rather than for lack of time:
 - `FMIN`/`FMAX` — ARMv7-M has no scalar `VMINNM`/`VMAXNM`, and RISC-V's NaN
   rules would need open-coding regardless.
 - `FCLASS` — no ARM equivalent at all.
@@ -962,13 +982,35 @@ rather than a missing optimisation:
 
 **ISA.** What is left is either small or deliberately excluded:
 
-- [ ] **`FCVT.W.S` / `FCVT.WU.S` in the JIT** — ARM and RISC-V disagree only on
-      NaN, so this is a `VCMP` and a conditional fixup, about four extra
-      instructions.
+- [x] **`FCVT.W.S` / `FCVT.WU.S` in the JIT** — *done*. `VCVTR` plus a
+      compare-against-self for the NaN case, seven instructions; 22 per
+      `isatest` run move off the helper. Covered by 25 new self-test checks
+      spanning NaN of both signs, both infinities, over- and under-range,
+      every rounding mode the translation claims, dynamic rounding, and the
+      exception flags — the one pre-existing check (`10.0` with `rtz`) would
+      have passed with the NaN fixup deleted entirely.
 - [ ] **`FMIN`/`FMAX`, `FCLASS` in the JIT** — no ARMv7-M equivalent exists;
       these stay interpreted unless open-coded.
 - [ ] **`RMM` in the JIT** — no ARMv7-M rounding mode exists; this stays
-      interpreted unless open-coded.
+      interpreted unless open-coded. Instructions naming `rmm` *statically*
+      are declined and go to the helper, which is correct.
+
+      **`rmm` reached dynamically is not**, and this is a live bug rather
+      than a limitation. When an instruction uses `rm=dyn`, the translation
+      reads `frm` at run time through a packed table in `emit_fp_setmode`,
+      and that table maps `RMM` onto ARM's `RN`. A guest that sets
+      `frm=RMM` and then executes any dynamically-rounded FP instruction
+      gets round-to-nearest-ties-even where it asked for ties-away, silently
+      and only under the JIT. It predates the conversion work and affects
+      arithmetic, `FCVT.S.W` and `FCVT.W.S` alike. Neither host suite can see
+      it, because neither runs the JIT.
+
+      Fixing it needs a decision rather than a patch: declining `dyn`
+      outright would gut the FP JIT, since compilers emit `dyn` for
+      essentially everything, so it wants either a run-time guard that exits
+      to the helper when `frm` reads 4, or translate-time specialisation on
+      `frm` with a flush when it changes — the shape already used for
+      `pmp_active`.
 - [ ] **ACLINT/APLIC** — the emulator has a CLINT and an APLIC, but the guest self-test
       does not exercise them. The CLINT is a 64-bit timer and the APLIC is a
       32-bit interrupt controller; both are soft-trap and would need a second

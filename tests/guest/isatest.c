@@ -802,6 +802,113 @@ static void test_fpu(void)
         check("fcvt.w.s", back, 10u);
     }
 
+    /*
+     * Float to integer, in detail.
+     *
+     * The JIT translates these to ARM's VCVTR, which agrees with RISC-V on
+     * saturation and on the exception flags but *not* on NaN: ARM yields
+     * zero where RISC-V requires the maximum value of the target type. The
+     * translation patches that up with a compare-against-self, so these
+     * checks exist to prove the patch fires exactly when it should and
+     * never otherwise. The single 10.0 case above would pass with the
+     * fixup deleted.
+     */
+#define CVT_W(dst, bits, mode)                                            \
+    __asm__ volatile ("fmv.w.x fa0, %1\n\t fcvt.w.s %0, fa0, " mode       \
+                      : "=r"(dst) : "r"(bits) : "fa0")
+#define CVT_WU(dst, bits, mode)                                           \
+    __asm__ volatile ("fmv.w.x fa0, %1\n\t fcvt.wu.s %0, fa0, " mode      \
+                      : "=r"(dst) : "r"(bits) : "fa0")
+
+    {
+        uint32_t r;
+
+        /* The divergence itself. NaN goes to the maximum, not to zero. */
+        csr_write("fflags", 0u);
+        CVT_W(r, 0x7FC00000u, "rtz");            /* canonical qNaN */
+        check("fcvt.w.s-nan", r, 0x7FFFFFFFu);
+        check("fcvt.w.s-nan-nv", csr_read("fflags"), 0x10u);
+
+        csr_write("fflags", 0u);
+        CVT_WU(r, 0x7FC00000u, "rtz");
+        check("fcvt.wu.s-nan", r, 0xFFFFFFFFu);
+        check("fcvt.wu.s-nan-nv", csr_read("fflags"), 0x10u);
+
+        /* A negative NaN is still a NaN, and still goes to the maximum. */
+        CVT_W(r, 0xFFC00000u, "rtz");
+        check("fcvt.w.s-negnan", r, 0x7FFFFFFFu);
+
+        /* Saturation, where the two agree. Invalid, and *not* inexact. */
+        csr_write("fflags", 0u);
+        CVT_W(r, 0x7F800000u, "rtz");            /* +inf */
+        check("fcvt.w.s-posinf", r, 0x7FFFFFFFu);
+        check("fcvt.w.s-posinf-nv", csr_read("fflags"), 0x10u);
+
+        CVT_W(r, 0xFF800000u, "rtz");            /* -inf */
+        check("fcvt.w.s-neginf", r, 0x80000000u);
+
+        CVT_W(r, 0x4F800000u, "rtz");            /* 2^32, over signed range */
+        check("fcvt.w.s-over", r, 0x7FFFFFFFu);
+
+        CVT_WU(r, 0xBF800000u, "rtz");           /* -1.0, under unsigned */
+        check("fcvt.wu.s-neg", r, 0u);
+
+        CVT_WU(r, 0xFF800000u, "rtz");           /* -inf */
+        check("fcvt.wu.s-neginf", r, 0u);
+
+        /* An exact conversion raises nothing at all. */
+        csr_write("fflags", 0u);
+        CVT_W(r, 0xC1200000u, "rtz");            /* -10.0 */
+        check("fcvt.w.s-exact", r, (uint32_t)-10);
+        check("fcvt.w.s-exact-noflags", csr_read("fflags"), 0u);
+
+        /* Every rounding mode the JIT claims to translate, on a tie. */
+        CVT_W(r, 0x40200000u, "rne");            /* 2.5 -> 2, ties to even */
+        check("fcvt.w.s-rne", r, 2u);
+        CVT_W(r, 0x40600000u, "rne");            /* 3.5 -> 4, ties to even */
+        check("fcvt.w.s-rne-odd", r, 4u);
+        CVT_W(r, 0x40200000u, "rtz");
+        check("fcvt.w.s-rtz", r, 2u);
+        CVT_W(r, 0x40200000u, "rdn");
+        check("fcvt.w.s-rdn", r, 2u);
+        CVT_W(r, 0x40200000u, "rup");
+        check("fcvt.w.s-rup", r, 3u);
+
+        CVT_W(r, 0xC0200000u, "rtz");            /* -2.5 */
+        check("fcvt.w.s-neg-rtz", r, (uint32_t)-2);
+        CVT_W(r, 0xC0200000u, "rdn");
+        check("fcvt.w.s-neg-rdn", r, (uint32_t)-3);
+        CVT_W(r, 0xC0200000u, "rup");
+        check("fcvt.w.s-neg-rup", r, (uint32_t)-2);
+
+        /* Rounding away a fraction is inexact and nothing else. */
+        csr_write("fflags", 0u);
+        CVT_W(r, 0x40200000u, "rtz");
+        check("fcvt.w.s-inexact", csr_read("fflags"), 0x01u);
+
+        /*
+         * Unsigned, negative, but rounding to zero: in range, so inexact
+         * only. Getting this wrong by testing the sign rather than the
+         * rounded value would raise invalid here.
+         */
+        csr_write("fflags", 0u);
+        CVT_WU(r, 0xBF000000u, "rtz");           /* -0.5 */
+        check("fcvt.wu.s-negzero", r, 0u);
+        check("fcvt.wu.s-negzero-nx", csr_read("fflags"), 0x01u);
+
+        /* Dynamic rounding: the mode comes from frm, not the encoding. */
+        csr_write("fflags", 0u);
+        csr_write("frm", 3u);                    /* RUP */
+        CVT_W(r, 0x40200000u, "dyn");
+        check("fcvt.w.s-dyn-rup", r, 3u);
+        csr_write("frm", 1u);                    /* RTZ */
+        CVT_W(r, 0x40200000u, "dyn");
+        check("fcvt.w.s-dyn-rtz", r, 2u);
+        csr_write("frm", 0u);
+    }
+#undef CVT_W
+#undef CVT_WU
+
     /* fclass: 1<<6 is a positive normal, 1<<3 is negative zero. */
     {
         uint32_t r, x = F1_0;
