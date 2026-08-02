@@ -599,8 +599,15 @@ for each backend.
 | JIT, **12 KB — the default** | 10,850,998 | 13.8 | 0.077 | 32.3× slower |
 | Interpreter | 10,691,637 | 14.0 | 0.078 | 31.8× slower |
 
-All rows measured on the current tree at 150 iterations, `crcfinal 0xca90`
-throughout.
+All rows at 150 iterations, `crcfinal 0xca90` throughout.
+
+Re-measured after the correctness work on `frm`, `mstatus.FS`, PMP staleness
+and the FP translations: 10,851,525 at 12 KB and 6,375,722 at 48 KB, against
+the 10,850,998 and 6,463,217 above. Both inside the ±3% layout noise, with
+identical compaction and eviction counts — the translated code is byte for
+byte what it was. None of those fixes costs a guest that does not use the
+feature anything, which the flush count confirms: CoreMark reports one flush
+for a whole run.
 
 **The JIT's speed is set by `RV32_JIT_CODE_BYTES` more than by anything in the
 translator**, and the default is not the configuration to quote. CoreMark's
