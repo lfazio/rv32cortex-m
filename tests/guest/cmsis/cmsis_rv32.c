@@ -12,6 +12,17 @@
 
 DWT_Type_shadow cmsis_rv32_dwt;
 
+/*
+ * Shadows for the Cortex-M blocks that have no counterpart. Writes land
+ * somewhere harmless rather than faulting, which is what lets vendor
+ * startup code run unmodified.
+ */
+#ifdef CORE_CM4_H_SHIM
+SCB_Type_shim     cmsis_rv32_scb;
+SysTick_Type_shim cmsis_rv32_systick;
+MPU_Type_shim     cmsis_rv32_mpu;
+#endif
+
 uint32_t SystemCoreClock = 180000000u;
 
 /* One slot per APLIC source, which is one per NVIC line. */

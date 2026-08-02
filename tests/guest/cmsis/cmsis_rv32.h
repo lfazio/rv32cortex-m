@@ -148,6 +148,54 @@ __STATIC_INLINE uint32_t __RBIT(uint32_t v)
     return __builtin_bswap32(v);
 }
 
+/*
+ * Exclusive access. This one is not an approximation: ARM's load-exclusive
+ * and store-exclusive are what RISC-V's A extension calls LR and SC, down
+ * to the return convention -- STREX and SC.W both yield zero on success.
+ * The reservation granule and the rules about what breaks it differ, but no
+ * HAL use depends on that: they are all a read-modify-write of one word.
+ */
+__STATIC_INLINE uint32_t __LDREXW(volatile uint32_t *addr)
+{
+    uint32_t v;
+    __asm__ volatile ("lr.w %0, (%1)" : "=r"(v) : "r"(addr) : "memory");
+    return v;
+}
+
+__STATIC_INLINE uint32_t __STREXW(uint32_t value, volatile uint32_t *addr)
+{
+    uint32_t fail;
+    __asm__ volatile ("sc.w %0, %2, (%1)"
+                      : "=&r"(fail) : "r"(addr), "r"(value) : "memory");
+    return fail;
+}
+
+__STATIC_INLINE uint8_t __LDREXB(volatile uint8_t *addr)
+{
+    /* No byte-wide LR: read the containing word and extract. Sufficient
+     * because every HAL user of this pairs it with a STREXB on the same
+     * byte and retries on failure. */
+    volatile uint32_t *w = (volatile uint32_t *)((uintptr_t)addr & ~3u);
+    const uint32_t sh = ((uintptr_t)addr & 3u) * 8u;
+    return (uint8_t)(__LDREXW(w) >> sh);
+}
+
+__STATIC_INLINE uint32_t __STREXB(uint8_t value, volatile uint8_t *addr)
+{
+    volatile uint32_t *w = (volatile uint32_t *)((uintptr_t)addr & ~3u);
+    const uint32_t sh = ((uintptr_t)addr & 3u) * 8u;
+    uint32_t cur = __LDREXW(w);
+    cur = (cur & ~(0xFFu << sh)) | ((uint32_t)value << sh);
+    return __STREXW(cur, w);
+}
+
+__STATIC_INLINE void __CLREX(void)
+{
+    /* An SC to a location no LR reserved drops the reservation. */
+    uint32_t scratch = 0u;
+    (void)__STREXW(0u, &scratch);
+}
+
 /* ------------------------------------------------------------------ */
 /* Cycle counter                                                       */
 /* ------------------------------------------------------------------ */
