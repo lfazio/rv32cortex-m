@@ -499,6 +499,34 @@ The residual 1.15-1.44x over RAM is not emulator overhead: a GPIO register on
 AHB1 costs more to reach than SRAM on this part, and native ARM code pays that
 too.
 
+### Tuning the loop cap
+
+`RV_JIT_LOOP_CAP` is how many guest instructions a chained loop runs before
+returning to the dispatcher. Interrupts are delivered between blocks, so it is
+directly the guest's worst-case interrupt latency — a throughput-against-
+latency knob, not a free parameter. Measured on the F446, cycles per guest
+instruction:
+
+| | 64 | 128 | 256 |
+|---|---|---|---|
+| `bench` | 18.88 | 18.39 | 18.13 |
+| `mmiobench` | 24.40 | 23.46 | 22.99 |
+| CoreMark | 31.39 | 31.16 | 31.25 |
+| worst-case latency | ~11 µs | ~22 µs | ~44 µs |
+
+**CoreMark does not care at all.** Its loops end on branches the translator
+cannot chain, so the cap is not what exits them — its 0.7% spread is inside
+the noise. The tightest loops care most: `mmiobench`'s block entries halve
+exactly with each doubling (25,125 → 12,810 → 6,600), and its RAM-only
+kernels gain 5% at 128 and 18% at 256.
+
+Each doubling returns about half of the previous one, which puts **128** on
+the knee, and that is the default. The cost is linear and certain where the
+gain is small and diminishing: 256 buys a further 2% on aggregate for double
+the latency again, which is a poor trade for an emulator whose guest drives
+real peripherals. Drop to 64 if a guest ISR has a deadline tighter than
+~22 µs; `-DRV32_JIT_LOOP_CAP=` sets it.
+
 **Two bugs surfaced here that had nothing to do with peripherals**, both found
 because inlining changed block sizes and made them observable:
 
@@ -834,7 +862,7 @@ Ordered by what would most repay the effort.
 **Performance.** The JIT is 20.6× native and the remaining cost is structural
 rather than a missing optimisation:
 
-- **Chain across loop back edges** — *done*. A backward branch to the block's
+- [x] **Chain across loop back edges** — *done*. A backward branch to the block's
       own start now branches within the translated code instead of returning
       to the dispatcher. `bench` went from 158,025 block entries to 40,285 and
       **28.66 → 18.68 cycles per guest instruction, 35%**; CoreMark 33.35 →
@@ -846,6 +874,9 @@ rather than a missing optimisation:
       ran to completion in a single block entry. Fixing it cost tight loops
       about 10% and cost `bench` 1% -- 18.68 to 18.88 cycles per guest
       instruction -- which is what bounded interrupt latency actually costs.
+
+      With the bound real, the cap was tuned. `RV_JIT_LOOP_CAP` is now
+      **128**; see *Tuning the loop cap* below.
 
       Getting there took three wrong versions, all of which *ran correctly*
       and miscounted retired instructions — which matters, because that count

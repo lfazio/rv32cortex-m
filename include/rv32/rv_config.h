@@ -207,8 +207,34 @@
 #ifndef RV_JIT_LOOP_CHAIN
 #  define RV_JIT_LOOP_CHAIN 1
 #endif
+/*
+ * Guest instructions a chained loop runs before returning to the
+ * dispatcher, which is where interrupts are delivered -- so this is
+ * directly the worst-case interrupt latency the guest sees, and the reason
+ * the knob exists at all.
+ *
+ * Measured on the F446 at 64, 128 and 256 (cycles per guest instruction):
+ *
+ *              64      128     256
+ *   bench      18.88   18.39   18.13
+ *   mmiobench  24.40   23.46   22.99
+ *   CoreMark   31.39   31.16   31.25
+ *
+ * Each doubling returns about half of the previous one, which puts 128 on
+ * the knee. CoreMark does not care at all -- its loops end on branches the
+ * translator cannot chain, so the cap is not what exits them -- while the
+ * tightest loops care most: mmiobench's block entries halve exactly with
+ * each doubling, and its RAM-only kernels gain 5% at 128 and 18% at 256.
+ *
+ * The cost is linear and certain where the gain is small and diminishing.
+ * At ~31 cycles per guest instruction, 128 is about 22 us of worst-case
+ * latency against 11 us at 64 and 44 us at 256. 256 buys a further 2% on
+ * aggregate for double that again, which is not a good trade for an
+ * emulator whose guest is driving real peripherals; drop to 64 if a guest
+ * ISR has a tighter deadline than this.
+ */
 #ifndef RV_JIT_LOOP_CAP
-#  define RV_JIT_LOOP_CAP 64u
+#  define RV_JIT_LOOP_CAP 128u
 #endif
 
 /*

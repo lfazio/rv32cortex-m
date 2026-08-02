@@ -80,6 +80,14 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
   Both were found on hardware, not by the x86 suites. When adding anything that
   `rv_hart_load`/`rv_hart_store` does beyond the access itself, ask what the
   inlined path does about it.
+- **`RV_JIT_LOOP_CAP` is an interrupt-latency knob, and CoreMark cannot see
+  it.** Measured at 64/128/256: CoreMark 31.39/31.16/31.25 (noise -- its loops
+  end on unchainable branches, so the cap is not what exits them), `bench`
+  18.88/18.39/18.13, `mmiobench` 24.40/23.46/22.99 with block entries halving
+  exactly per doubling and its tightest kernels gaining 18% at 256. Each
+  doubling returns half the previous one and doubles worst-case latency
+  (~11/22/44 us), so 128 is the knee and the default. Do not tune this on
+  CoreMark alone.
 - **A register that does not fit a Thumb-2 encoding assembles as a different
   instruction, not an error.** The 16-bit `CMP`/data-processing form encodes
   r0-r7; `emit_dp_reg(DP_CMP, R8, R1)` set a bit belonging to `rm` and became

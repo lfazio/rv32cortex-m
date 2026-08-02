@@ -82,6 +82,8 @@ option(RV32_JIT "Thumb-2 JIT backend" ON)
 # Chain loop back edges inside translated code: 35% on bench, 7% on CoreMark.
 option(RV32_JIT_LOOP_CHAIN "Chain loop back edges in the JIT" ON)
 option(RV32_JIT_INLINE_PERIPH "Inline the peripheral window in the JIT" ON)
+set(RV32_JIT_LOOP_CAP "128" CACHE STRING
+    "Guest instructions a chained loop runs before returning to the dispatcher")
 
 # Histogram how often a block reads sp/ra/a0/a1, to decide whether a
 # per-block register cache could pay. Measurement scaffolding, off by default.
@@ -152,6 +154,7 @@ target_compile_definitions(rv32core PUBLIC
     RV_ENABLE_JIT=$<BOOL:${RV32_JIT}>
     RV_JIT_LOOP_CHAIN=$<BOOL:${RV32_JIT_LOOP_CHAIN}>
     RV_JIT_INLINE_PERIPH=$<BOOL:${RV32_JIT_INLINE_PERIPH}>
+    RV_JIT_LOOP_CAP=${RV32_JIT_LOOP_CAP}u
     RV_JIT_HOT_REG_STATS=$<BOOL:${RV32_JIT_HOT_REG_STATS}>
 )
 
