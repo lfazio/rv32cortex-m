@@ -1137,12 +1137,23 @@ rather than a missing optimisation:
       device — only the guest's driver can — so the line is masked on entry
       and unmasked only when the guest clears the APLIC pending bit. One
       table entry and one handler adds a peripheral, the way `g_periph_map`
-      works for addresses. TIM6 is wired as the first line; **no guest test
-      drives a real interrupt end to end yet**, so that path is built but
-      unproven.
-- [ ] **ACLINT** — the CLINT is the legacy SiFive layout, which is
-      functionally ACLINT's MTIMER and MSWI at the older offsets. Exposing
-      the ACLINT offsets alongside is small and not yet done.
+      works for addresses. TIM6 is wired as the first line, and the
+      `irqtest` guest drives it end to end on the board: **100 real timer
+      interrupts taken by guest code**, `mcause 0x8000000b`, with the guest
+      clearing TIM6's own flag through the passthrough window. The count is
+      the assertion — one interrupt would only prove the line was unmasked
+      at reset, whereas every further one requires the mask-and-unmask
+      handshake to have completed. A bridge that masked and never unmasked
+      delivers exactly one.
+- [x] **ACLINT** — *implemented*. MSWI and MTIMER are separate bus devices
+      sharing one set of state, mapped at `0x0200_0000` and `0x0200_4000` —
+      exactly the window the legacy CLINT occupied. The split is a renaming
+      rather than a redesign: the de-facto SiFive layout already *is* those
+      two devices at fixed relative offsets, `mtime` at `0x4000 + 0x7FF8`
+      being the same `0x0200_BFF8` it always was. Guests written for either
+      layout work unchanged, which the self-test's timer checks demonstrate
+      by passing untouched. What ACLINT adds, and what this gains, is that a
+      platform may place the two devices independently.
 - [ ] **U-mode** — invasive rather than large. A second privilege level makes
       `medeleg`/`mideleg`/`mcounteren` real, adds `ECALL` from U as a distinct
       cause, and invalidates the "M-mode only" simplifications throughout
