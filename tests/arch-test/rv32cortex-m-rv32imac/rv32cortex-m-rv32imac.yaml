@@ -155,7 +155,18 @@ params:
   # ---- Sm ----
   PRECISE_SYNCHRONOUS_EXCEPTIONS: true
   PMA_GRANULARITY: 2
-  NUM_PMP_ENTRIES: 0
+  # 16, matching RV_PMP_ENTRIES. Declaring zero excluded the entire
+  # priv/pmp test family, every test of which requires '>0' -- so PMP has
+  # never been exercised by the official suite despite being implemented.
+  NUM_PMP_ENTRIES: 16
+  NUM_USABLE_PMP_ENTRIES: 16
+  # log2 of the granule in bytes, so 2 is the 4-byte granule NA4 needs. This
+  # is not the privileged spec's G, which is 0 for the same granule and is
+  # what sail.json's pmp.grain means.
+  PMP_GRANULARITY: 2
+  PMP_TOR_SUPPORTED: true
+  PMP_NA4_SUPPORTED: true
+  PMP_NAPOT_SUPPORTED: true
 
   # ---- counters ----
   # mcycle and minstret only; no hardware performance monitors.

@@ -95,10 +95,20 @@
   },
   "memory": {
     "physaddr_bits": 32,
+    // 16 entries, matching RV_PMP_ENTRIES. Zero here is the Zacas mistake
+    // again: sail.json configures the golden model that bakes each test's
+    // expected values, and a model with no PMP registers can deny nothing,
+    // so it would generate permissive expectations for every test that
+    // configures PMP -- which then reads as an emulator bug.
+    //
+    // grain is the privileged spec's G, so 0 means a 4-byte granule, which
+    // is what NA4 support requires. Note this is *not* the same units as
+    // UDB's PMP_GRANULARITY, which is log2 of the granule in bytes and is
+    // therefore 2 for the same thing.
     "pmp": {
       "grain": 0,
-      "count": 0,
-      "usable_count": 0,
+      "count": 16,
+      "usable_count": 16,
       "tor_supported": true,
       "na4_supported": true,
       "napot_supported": true
