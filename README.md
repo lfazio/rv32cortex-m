@@ -298,6 +298,38 @@ it; a call costs five instructions. Measured by forcing the old behaviour
 back, the self-test goes from 146 interpreted instructions and 755 block
 entries to 122 and 732.
 
+### What a block bakes in
+
+A translated block records decisions taken from hart state at the moment it
+was built, and then outlives that state. Every such read was swept:
+
+| read at translation | outcome |
+|---|---|
+| `fcsr` frm, for `rm=dyn` | wrong for `RMM` — fixed |
+| `mstatus.FS` | unchecked for OP-FP, stale for loads and stores — fixed |
+| `pmp_active` and the `rv_pmp_simple` bounds | **permission bypass** — fixed |
+| bus regions | safe: written only at init, before execution |
+| the peripheral window's armed flag | safe: flushes when it changes |
+| the guest instruction bytes themselves | safe: `FENCE.I` invalidates |
+
+The PMP one was the worst. What a block bakes in is the *bounds* of the single
+enabled entry, but the flush compared `pmp_active` — a boolean. Locking a
+second entry leaves that flag true while the one-entry assumption stops
+holding, so a store to the newly protected region kept taking the inlined
+path. The self-test's `pmp2-write-blocked` reported `0xdeadbeef` where the
+guest had denied writes: not a slow path taken by mistake, an access that
+should have faulted and did not.
+
+All three defects were invisible to `riscv-tests` and `riscv-arch-test`,
+because neither runs the JIT, and each needed a hardware run with the fix
+reverted to demonstrate.
+
+frm, FS and PMP share a fix and a hook. Each changes only through a CSR write,
+and the translator declines `SYSTEM`, so `jit_note_csr` on the interpreter
+fallback is the one place any of them can move — which also keeps all three
+off the dispatch path, where CoreMark would pay for them 2.9 million times a
+run.
+
 ### `mstatus.FS` and cached blocks
 
 FS gates the whole extension: with it Off every FP instruction must raise

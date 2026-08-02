@@ -86,6 +86,32 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
   on the self-test. Open-coding costs 25-35 emitted instructions each in the
   code cache, which sets performance more than the translator does, and makes
   a second copy of semantics the core owns. Reach for the helper first.
+- **Every translate-time read of mutable hart state is a staleness bug until
+  proven otherwise.** The full list, swept:
+
+  | read at translation | outcome |
+  |---|---|
+  | `fcsr` frm, for `rm=dyn` | was wrong for RMM -- fixed |
+  | `mstatus.FS` (`h_fs_off`) | unchecked for OP-FP, and stale for loads/stores -- fixed |
+  | `pmp_active` + `rv_pmp_simple` bounds | **permission bypass** -- fixed |
+  | bus regions (RAM and passthrough windows) | safe: written only at init |
+  | `g_pt_armed` | safe: flushes on change |
+  | guest instruction bytes | safe: `FENCE.I` calls `rv_invalidate` |
+
+  All three defects were invisible to both host suites, because neither runs
+  the JIT. All three needed a hardware test with the fix reverted to prove.
+- **Watching a flag is not watching the configuration.** The PMP flush
+  compared `pmp_active`, but what a block bakes in is the *bounds*
+  `rv_pmp_simple` reported. Locking a second entry leaves the flag true while
+  the one-entry assumption it encodes stops holding, so a store to the new
+  region took the inlined path and wrote memory PMP had been told to deny.
+  Snapshot what was baked, not what enabled it.
+- **frm, `mstatus.FS` and PMP all change only through a CSR write**, and the
+  translator declines `SYSTEM`, so `jit_note_csr` on the interpreter fallback
+  is the single place any of them can move. Do not put these in the dispatch
+  loop: CoreMark enters blocks 2.9M times a run. Moving the PMP check off the
+  dispatch path measured neutral, so the branch was predicting well -- the
+  reason to do it is that the fallback is where the check is *correct*.
 - **A translate-time legality check is only half a guard; the block outlives
   it.** `mstatus.FS` was consulted when translating FP loads and stores (and
   not at all for OP-FP or the FMAs), on the reasoning that refusing to

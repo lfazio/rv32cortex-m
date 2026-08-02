@@ -167,7 +167,32 @@ static rv_hart_t *g_xlate_hart;
  * change costs one load and one compare per block, and nothing per
  * instruction.
  */
-static bool g_pmp_seen;
+/*
+ * The PMP configuration the cached blocks were translated against.
+ *
+ * The active flag alone is not enough. What a block bakes in is the *bounds*
+ * rv_pmp_simple reported, and those change without the flag changing: lock a
+ * second entry while one is already locked and PMP stays active while the
+ * one-entry assumption stops holding. A block then keeps testing the old
+ * range and takes its inlined path for addresses the new entry covers, which
+ * is a silent permission bypass rather than a slow path.
+ */
+static bool     g_pmp_seen;         /* pmp_active                       */
+static bool     g_pmp_seen_simple;  /* rv_pmp_simple succeeded          */
+static uint32_t g_pmp_seen_lo;
+static uint32_t g_pmp_seen_hi;
+
+#if RV_EXT_PMP
+/* Capture what emit_mem_access would bake in right now. */
+static void jit_pmp_snapshot(const rv_hart_t *h, bool *active, bool *simple,
+                             uint32_t *lo, uint32_t *hi)
+{
+    *active = h->pmp_active;
+    *lo = 0u;
+    *hi = 0u;
+    *simple = *active && rv_pmp_simple(h, lo, hi);
+}
+#endif
 #endif
 
 /*
@@ -2942,7 +2967,8 @@ static bool jit_init(rv_hart_t *h)
 static void jit_reset(rv_hart_t *h)
 {
 #if RV_EXT_PMP
-    g_pmp_seen = h->pmp_active;
+    jit_pmp_snapshot(h, &g_pmp_seen, &g_pmp_seen_simple,
+                    &g_pmp_seen_lo, &g_pmp_seen_hi);
 #endif
 #if RV_EXT_F
     g_frm_seen = (uint8_t)((h->fcsr >> 5) & 7u);
@@ -3020,9 +3046,40 @@ static void jit_note_frm(const rv_hart_t *h)
         rv_jit_flush();
     }
 }
-#else
-#define jit_note_frm(h) ((void)(h))
+#endif /* RV_EXT_F */
+
+/*
+ * Everything the translator reads from mutable hart state, checked in the
+ * one place any of it can change.
+ *
+ * frm, mstatus.FS and the PMP configuration all move only through a CSR
+ * write, and the translator declines SYSTEM, so every such write runs here
+ * on the interpreter fallback. Keeping the checks here rather than in the
+ * dispatch loop means a guest that uses none of these pays nothing:
+ * CoreMark enters blocks 2.9 million times a run.
+ */
+static void jit_note_csr(rv_hart_t *h)
+{
+#if RV_EXT_F
+    jit_note_frm(h);
 #endif
+#if RV_EXT_PMP
+    bool active, simple;
+    uint32_t lo, hi;
+
+    jit_pmp_snapshot(h, &active, &simple, &lo, &hi);
+    if (RV_UNLIKELY(active != g_pmp_seen || simple != g_pmp_seen_simple ||
+                    lo != g_pmp_seen_lo || hi != g_pmp_seen_hi)) {
+        g_pmp_seen = active;
+        g_pmp_seen_simple = simple;
+        g_pmp_seen_lo = lo;
+        g_pmp_seen_hi = hi;
+        rv_jit_flush();
+    }
+#else
+    (void)h;
+#endif
+}
 
 static rv_run_reason_t jit_run(rv_hart_t *h, uint32_t budget, uint32_t *retired)
 {
@@ -3073,24 +3130,11 @@ static rv_run_reason_t jit_run(rv_hart_t *h, uint32_t budget, uint32_t *retired)
             const rv_run_reason_t r = rv_backend_interp.run(h, 1u, &n);
             done += n;
             g_stats.interp_fallbacks += n;
-            jit_note_frm(h);
+            jit_note_csr(h);
             if (r == RV_RUN_HALTED || r == RV_RUN_WFI) {
                 reason = r;
                 break;
             }
-            continue;
-        }
-#endif
-
-#if RV_EXT_PMP
-        /*
-         * A guest that has just locked a PMP entry invalidates every block
-         * translated while PMP was inert, because those inlined their
-         * memory accesses.
-         */
-        if (RV_UNLIKELY(h->pmp_active != g_pmp_seen)) {
-            g_pmp_seen = h->pmp_active;
-            rv_jit_flush();
             continue;
         }
 #endif
@@ -3125,7 +3169,7 @@ static rv_run_reason_t jit_run(rv_hart_t *h, uint32_t budget, uint32_t *retired)
                 const rv_run_reason_t r = rv_backend_interp.run(h, 1u, &n);
                 done += n;
                 g_stats.interp_fallbacks += n;
-                jit_note_frm(h);
+                jit_note_csr(h);
                 if (r == RV_RUN_HALTED || r == RV_RUN_WFI) {
                     reason = r;
                     break;

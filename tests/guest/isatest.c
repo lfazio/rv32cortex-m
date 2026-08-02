@@ -1116,6 +1116,21 @@ static void test_fpu(void)
  * than a slice of an existing one.
  */
 static volatile uint32_t g_pmp_area[2] __attribute__((aligned(8)));
+static volatile uint32_t g_pmp_area2[2] __attribute__((aligned(8)));
+
+/*
+ * One store at one address, used against both protected regions.
+ *
+ * Out of line and un-inlined so the *same* translated block is reused. A JIT
+ * may inline the memory access and test the PMP range at translation time;
+ * if it does, this is the site that catches it still using bounds the guest
+ * has since changed.
+ */
+__attribute__((noinline))
+static void pmp_store(volatile uint32_t *p, uint32_t v)
+{
+    *p = v;
+}
 
 static void test_pmp(void)
 {
@@ -1161,6 +1176,46 @@ static void test_pmp(void)
     static volatile uint32_t elsewhere;
     elsewhere = 0x1234u;
     check("pmp-outside-ok", elsewhere, 0x1234u);
+
+    /*
+     * A *second* locked entry, added while PMP is already active.
+     *
+     * This is the case a JIT can miss. Inlining the memory access means
+     * baking in the bounds of the one enabled entry and testing against
+     * them, which is only sound while there is one; a backend that watches
+     * whether PMP is active, rather than what it contains, sees no change
+     * here, because it was already active before entry 1 was locked.
+     *
+     * The store site is shared with the call below, so it is translated
+     * before entry 1 exists and reused afterwards. Doing it the other way
+     * round -- a fresh call site each time -- would be translated against
+     * the current configuration and would pass regardless.
+     */
+    g_pmp_area2[0] = 0x11223344u;
+
+    /* Unprotected so far: the write lands, and nothing traps. */
+    before = g_trap_count;
+    pmp_store(&g_pmp_area2[0], 0x55667788u);
+    check("pmp2-before-ok", g_pmp_area2[0], 0x55667788u);
+    check("pmp2-before-notrap", g_trap_count - before, 0u);
+
+    /* Entry 1: same shape as entry 0, over the second area. */
+    csr_write("pmpaddr1", ((uint32_t)(uintptr_t)g_pmp_area2) >> 2);
+    csr_write("pmpcfg0", 0x9900u);        /* byte 1: L | NAPOT | R */
+    check("pmp2-cfg", (csr_read("pmpcfg0") >> 8) & 0xFFu, 0x99u);
+
+    /* The same store must now be denied. */
+    before = g_trap_count;
+    pmp_store(&g_pmp_area2[0], 0xDEADBEEFu);
+    check("pmp2-write-traps", g_trap_count - before, 1u);
+    check("pmp2-write-cause", g_last_cause, 7u);
+    check("pmp2-write-blocked", g_pmp_area2[0], 0x55667788u);
+
+    /* And entry 0 still denies, with two entries in play. */
+    before = g_trap_count;
+    pmp_store(&g_pmp_area[0], 0xDEADBEEFu);
+    check("pmp1-still-traps", g_trap_count - before, 1u);
+    check("pmp1-still-blocked", g_pmp_area[0], 0xA5A5A5A5u);
 }
 
 /* ------------------------------------------------------------------ */
