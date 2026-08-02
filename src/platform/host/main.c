@@ -15,6 +15,7 @@
 
 #include "rv32/rv_backend.h"
 #include "rv32/rv_dev.h"
+#include "rv32/rv_aplic.h"
 #include "rv32/rv_hart.h"
 #include "rv32/rv_memmap.h"
 #include "rv32/rv_disasm.h"
@@ -371,12 +372,15 @@ int main(int argc, char **argv)
     static rv_bus_t bus;
     static rv_hart_t hart;
     static rv_clint_t clint;
+    static rv_aplic_t aplic;
     static rv_uart_t uart;
 
     rv_bus_init(&bus);
     if (!rv_bus_add_ram(&bus, "ram", RV_GUEST_RAM_BASE, g_ram, ram_size) ||
         !rv_bus_add_ram(&bus, "periph-sim", RV_GUEST_PERIPH_BASE,
                         g_periph, PERIPH_SIM_SIZE) ||
+        !rv_bus_add_mmio(&bus, "aplic", RV_GUEST_APLIC_BASE, RV_APLIC_SIZE,
+                         &rv_aplic_ops, &aplic) ||
         !rv_bus_add_mmio(&bus, "clint", RV_GUEST_CLINT_BASE, RV_CLINT_SIZE,
                          &rv_clint_ops, &clint) ||
         !rv_bus_add_mmio(&bus, "uart0", RV_GUEST_UART_BASE, RV_UART_SIZE,
@@ -387,6 +391,7 @@ int main(int argc, char **argv)
 
     rv_hart_init(&hart, &bus, 0u);
     rv_clint_init(&clint, &hart);
+    rv_aplic_init(&aplic, &hart);
     rv_uart_init(&uart, host_tx, host_rx, NULL);
 #if RV_ENABLE_ECALL_HOOK
     hart.ecall = host_ecall;

@@ -17,6 +17,7 @@
 
 #include "rv32/rv_backend.h"
 #include "rv32/rv_dev.h"
+#include "rv32/rv_aplic.h"
 #include "rv32/rv_hart.h"
 #include "rv32/rv_jit.h"
 #include "rv32/rv_memmap.h"
@@ -68,6 +69,7 @@ static uint8_t g_jit_code[RV_JIT_CODE_SIZE] __attribute__((aligned(8)));
 static rv_bus_t    g_bus;
 static rv_hart_t   g_hart;
 static rv_clint_t  g_clint;
+static rv_aplic_t  g_aplic;
 static rv_uart_t   g_uart;
 static UART_HandleTypeDef g_console;
 
@@ -387,6 +389,68 @@ static const struct {
     { "ahb1b+ahb2", 0x40024000u, 0x1FFDC000u, RV_PERM_RW },
 };
 
+/* ------------------------------------------------------------------ */
+/* Real interrupt lines                                                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Bridging the NVIC to the APLIC.
+ *
+ * An interrupt is the one thing the passthrough window cannot carry. A
+ * guest driver reaches a peripheral by using its address, but when that
+ * peripheral raises an interrupt the NVIC vectors here, into the emulator,
+ * with the guest nowhere in sight.
+ *
+ * The handshake is forced by one fact: nothing on this side can service the
+ * device. Only the guest's driver knows how, and it will not run until the
+ * emulator returns from the ISR. A level-triggered peripheral therefore
+ * re-asserts the moment the handler exits, and the emulator would spin in
+ * interrupt entry forever without the guest ever making progress. So the
+ * line is masked on entry and stays masked until the guest clears the
+ * APLIC pending bit, which is its way of saying the device has been dealt
+ * with -- see aplic_unmask_line, reached through the APLIC's eoi hook.
+ *
+ * Adding a peripheral is one table entry and one handler; the table is the
+ * policy, the same way g_periph_map is for addresses.
+ */
+static const IRQn_Type g_irq_map[RV_APLIC_SOURCES] = {
+    [RV_IRQ_SRC_TIM6] = TIM6_DAC_IRQn,
+};
+
+static void aplic_line_entry(uint32_t source)
+{
+    NVIC_DisableIRQ(g_irq_map[source]);
+    rv_aplic_raise(&g_aplic, source);
+}
+
+static void aplic_unmask_line(void *ctx, uint32_t source)
+{
+    (void)ctx;
+    if (source < RV_APLIC_SOURCES && g_irq_map[source] != 0) {
+        NVIC_ClearPendingIRQ(g_irq_map[source]);
+        NVIC_EnableIRQ(g_irq_map[source]);
+    }
+}
+
+/*
+ * Enable the bridged lines at the NVIC. Priority is left at the default:
+ * these handlers do almost nothing, and the emulator has no other interrupt
+ * to rank them against.
+ */
+static void bridged_irqs_init(void)
+{
+    for (uint32_t i = 1u; i < RV_APLIC_SOURCES; i++) {
+        if (g_irq_map[i] != 0) {
+            NVIC_EnableIRQ(g_irq_map[i]);
+        }
+    }
+}
+
+void TIM6_DAC_IRQHandler(void)
+{
+    aplic_line_entry(RV_IRQ_SRC_TIM6);
+}
+
 static bool build_address_space(void)
 {
     rv_bus_init(&g_bus);
@@ -405,6 +469,10 @@ static bool build_address_space(void)
         return false;
     }
 
+    if (!rv_bus_add_mmio(&g_bus, "aplic", RV_GUEST_APLIC_BASE,
+                         RV_APLIC_SIZE, &rv_aplic_ops, &g_aplic)) {
+        return false;
+    }
     if (!rv_bus_add_mmio(&g_bus, "clint", RV_GUEST_CLINT_BASE,
                          RV_CLINT_SIZE, &rv_clint_ops, &g_clint)) {
         return false;
@@ -533,8 +601,12 @@ int main(void)
 #if RV_EXT_C
                  "C"
 #endif
-#if RV_EXT_ZBA || RV_EXT_ZBB || RV_EXT_ZBC || RV_EXT_ZBS
-                 "_b"
+/* B is exactly Zba+Zbb+Zbs, and is what misa reports; Zbc is separate. */
+#if RV_EXT_ZBA && RV_EXT_ZBB && RV_EXT_ZBS
+                 "B"
+#endif
+#if RV_EXT_ZBC
+                 "_zbc"
 #endif
                  " on Cortex-M4 @ ");
     console_putu(SystemCoreClock / 1000000u);
@@ -547,6 +619,9 @@ int main(void)
 
     rv_hart_init(&g_hart, &g_bus, 0u);
     rv_clint_init(&g_clint, &g_hart);
+    rv_aplic_init(&g_aplic, &g_hart);
+    rv_aplic_set_eoi(&g_aplic, aplic_unmask_line, NULL);
+    bridged_irqs_init();
     rv_uart_init(&g_uart, guest_uart_tx, guest_uart_rx, NULL);
     g_hart.ecall = guest_ecall;
     g_hart.cache = &g_cache_ops;

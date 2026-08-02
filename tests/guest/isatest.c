@@ -99,12 +99,37 @@ static inline uint32_t opaque(uint32_t v)
 }
 
 /* ------------------------------------------------------------------ */
+/* APLIC (AIA), direct delivery mode                                   */
+/* ------------------------------------------------------------------ */
+
+#define APLIC_BASE          0x0C000000u
+#define APLIC_R(off)        (*(volatile uint32_t *)(APLIC_BASE + (off)))
+#define APLIC_DOMAINCFG     APLIC_R(0x0000u)
+#define APLIC_SOURCECFG(i)  APLIC_R(0x0004u + 4u * ((i) - 1u))
+#define APLIC_SETIP         APLIC_R(0x1C00u)
+#define APLIC_SETIPNUM      APLIC_R(0x1CDCu)
+#define APLIC_CLRIPNUM      APLIC_R(0x1DDCu)
+#define APLIC_SETIE         APLIC_R(0x1E00u)
+#define APLIC_SETIENUM      APLIC_R(0x1EDCu)
+#define APLIC_CLRIENUM      APLIC_R(0x1FDCu)
+#define APLIC_TARGET(i)     APLIC_R(0x3004u + 4u * ((i) - 1u))
+#define APLIC_IDELIVERY     APLIC_R(0x4000u)
+#define APLIC_ITHRESHOLD    APLIC_R(0x4008u)
+#define APLIC_TOPI          APLIC_R(0x4018u)
+#define APLIC_CLAIMI        APLIC_R(0x401Cu)
+
+#define APLIC_SM_INACTIVE   0u
+#define APLIC_SM_EDGE_RISE  4u
+
+/* ------------------------------------------------------------------ */
 /* Trap handling                                                       */
 /* ------------------------------------------------------------------ */
 
 static volatile uint32_t g_trap_count;
 static volatile uint32_t g_last_cause;
 static volatile uint32_t g_last_tval;
+static volatile uint32_t g_last_claim;
+static volatile uint32_t g_ext_count;
 
 /*
  * GCC's "machine" interrupt attribute emits the register save/restore and
@@ -122,10 +147,17 @@ static void trap_handler(void)
     g_trap_count++;
 
     if (cause & 0x80000000u) {
-        /* Interrupt. Disarm the timer; mepc must not move. */
+        /* Interrupt. mepc must not move: it already points at the resume. */
         if ((cause & 0xFFu) == 7u) {
             CLINT_MTIMECMP_HI = 0xFFFFFFFFu;
             CLINT_MTIMECMP_LO = 0xFFFFFFFFu;
+        } else if ((cause & 0xFFu) == 11u) {
+            /*
+             * External interrupt. Claiming is what clears the pending bit,
+             * so without it the hart would re-enter this handler forever.
+             */
+            g_last_claim = APLIC_CLAIMI;
+            g_ext_count++;
         }
         return;
     }
@@ -1219,6 +1251,112 @@ static void test_pmp(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* APLIC                                                               */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Delivery is driven through setipnum rather than a real interrupt line, so
+ * this runs identically on the host and on the board. What it proves is the
+ * whole path a bridged hardware interrupt takes once the platform has
+ * called rv_aplic_raise: pending and enable combine, the domain and the IDC
+ * both gate delivery, MEIP reaches the hart, and claiming clears it.
+ */
+static void test_aplic(void)
+{
+    const uint32_t A = 3u, B = 4u;
+
+    /* Bits 31:24 read back 0x80 so software can identify the register. */
+    APLIC_DOMAINCFG = 0u;
+    check("aplic-domaincfg-id", APLIC_DOMAINCFG & 0xFF000000u, 0x80000000u);
+    check("aplic-ie-clear", APLIC_DOMAINCFG & 0x100u, 0u);
+    APLIC_DOMAINCFG = 0x100u;
+    check("aplic-ie-set", APLIC_DOMAINCFG & 0x100u, 0x100u);
+
+    /* SM is WARL: 2 and 3 are undefined and must read back as Inactive. */
+    APLIC_SOURCECFG(A) = APLIC_SM_EDGE_RISE;
+    check("aplic-sourcecfg", APLIC_SOURCECFG(A), APLIC_SM_EDGE_RISE);
+    APLIC_SOURCECFG(A) = 2u;
+    check("aplic-sourcecfg-warl", APLIC_SOURCECFG(A), APLIC_SM_INACTIVE);
+
+    /* An inactive source cannot become pending at all. */
+    APLIC_SETIPNUM = A;
+    check("aplic-inactive-not-pending", APLIC_SETIP & (1u << A), 0u);
+
+    APLIC_SOURCECFG(A) = APLIC_SM_EDGE_RISE;
+    APLIC_SOURCECFG(B) = APLIC_SM_EDGE_RISE;
+    APLIC_TARGET(A) = 5u;               /* lower number is higher priority */
+    APLIC_TARGET(B) = 2u;
+    APLIC_SETIENUM = A;
+    APLIC_SETIENUM = B;
+    check("aplic-setie", APLIC_SETIE & ((1u << A) | (1u << B)),
+          (1u << A) | (1u << B));
+
+    /* Pending but not yet delivered: idelivery is still clear. */
+    APLIC_SETIPNUM = A;
+    check("aplic-pending", APLIC_SETIP & (1u << A), 1u << A);
+    check("aplic-topi", APLIC_TOPI, (A << 16) | 5u);
+
+    /* Claim without delivery still works, and clears the pending bit. */
+    check("aplic-claimi", APLIC_CLAIMI, (A << 16) | 5u);
+    check("aplic-claim-clears", APLIC_SETIP & (1u << A), 0u);
+    check("aplic-topi-empty", APLIC_TOPI, 0u);
+
+    /* Priority: the lower IPRIO wins regardless of source number. */
+    APLIC_SETIPNUM = A;
+    APLIC_SETIPNUM = B;
+    check("aplic-priority", APLIC_TOPI, (B << 16) | 2u);
+    (void)APLIC_CLAIMI;
+    check("aplic-priority-next", APLIC_TOPI, (A << 16) | 5u);
+    (void)APLIC_CLAIMI;
+
+    /* ithreshold admits only priorities strictly below it. */
+    APLIC_ITHRESHOLD = 5u;
+    APLIC_SETIPNUM = A;                 /* priority 5, not below 5 */
+    check("aplic-threshold-blocks", APLIC_TOPI, 0u);
+    APLIC_ITHRESHOLD = 6u;
+    check("aplic-threshold-admits", APLIC_TOPI, (A << 16) | 5u);
+    APLIC_ITHRESHOLD = 0u;              /* zero disables the filter */
+    APLIC_CLRIPNUM = A;
+    check("aplic-clripnum", APLIC_SETIP & (1u << A), 0u);
+
+    /* Now the delivery path, end to end. */
+    APLIC_IDELIVERY = 1u;
+    csr_set("mie", 1u << 11);           /* MEIE */
+
+    const uint32_t before = g_ext_count;
+    APLIC_SETIPNUM = B;
+    csr_set("mstatus", 1u << 3);        /* MIE: the trap fires here */
+    csr_clear("mstatus", 1u << 3);
+
+    check("aplic-delivered", g_ext_count - before, 1u);
+    check("aplic-claim-value", g_last_claim, (B << 16) | 2u);
+    check("aplic-cause-ext", g_last_cause, 0x8000000Bu);
+    check("aplic-quiet-after", APLIC_TOPI, 0u);
+
+    /*
+     * domaincfg.IE gates delivery without disturbing any other state:
+     * topi keeps reporting the source even while nothing can be delivered.
+     */
+    APLIC_DOMAINCFG = 0u;
+    APLIC_SETIPNUM = B;
+    check("aplic-ie-off-topi", APLIC_TOPI, (B << 16) | 2u);
+    const uint32_t before2 = g_ext_count;
+    csr_set("mstatus", 1u << 3);
+    csr_clear("mstatus", 1u << 3);
+    check("aplic-ie-off-quiet", g_ext_count - before2, 0u);
+
+    /* Re-enabling the domain delivers what was already pending. */
+    APLIC_DOMAINCFG = 0x100u;
+    csr_set("mstatus", 1u << 3);
+    csr_clear("mstatus", 1u << 3);
+    check("aplic-ie-on-delivers", g_ext_count - before2, 1u);
+
+    csr_clear("mie", 1u << 11);
+    APLIC_IDELIVERY = 0u;
+    APLIC_DOMAINCFG = 0u;
+}
+
+/* ------------------------------------------------------------------ */
 
 int main(void)
 {
@@ -1236,6 +1374,7 @@ int main(void)
     test_traps();
     test_cbo();
     test_pmp();
+    test_aplic();
 #if defined(__riscv_zacas)
     test_zacas();
 #endif

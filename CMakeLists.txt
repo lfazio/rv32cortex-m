@@ -126,6 +126,7 @@ add_library(rv32core STATIC
     src/core/rv_interp.c
     src/core/rv_pmp.c
     src/core/rv_trig.c
+    src/devices/rv_aplic.c
     src/devices/rv_clint.c
     src/devices/rv_uart.c
     # Compiles to nothing unless RV_ENABLE_JIT is set, which needs a

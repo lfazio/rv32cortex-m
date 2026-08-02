@@ -1120,12 +1120,29 @@ rather than a missing optimisation:
       (`2.5` under `RMM` gives 2, not 3), and the rest fail if a block is not
       rebuilt when `frm` changes. The tie value matters — `3.5` rounds to 4
       under both modes and would have passed throughout.
-- [ ] **ACLINT/APLIC** — the emulator has a CLINT and an APLIC, but the guest self-test
-      does not exercise them. The CLINT is a 64-bit timer and the APLIC is a
-      32-bit interrupt controller; both are soft-trap and would need a second
-      set of CSRs to hold their state. The ACLINT/APLIC will be mapped to the
-      passthrough window and mapped to cortex-m IRQ lines, so the guest can use
-      them, but they are not needed for the self-test and are therefore low priority.
+- [x] **APLIC** — *implemented*, direct delivery mode, one domain, one hart,
+      at `0x0C00_0000`. Written against the AIA specification 20250312 in
+      `docs/riscv/`. `domaincfg`, `sourcecfg`, the pending and enable
+      bitmaps with their `*num` forms, `target` priorities, and an IDC with
+      `idelivery`/`iforce`/`ithreshold`/`topi`/`claimi`. 24 self-test checks
+      drive it through `setipnum`, so they run on the host as well as the
+      board. MSI delivery is not implemented and will not be: it targets an
+      IMSIC, which needs S-mode CSRs this core does not have.
+
+      **The NVIC bridge is the part that matters** and is what makes an
+      interrupt from real silicon reachable by a guest driver. An interrupt
+      is the one thing the passthrough window cannot carry: the NVIC vectors
+      into the emulator, with the guest nowhere in sight. The handshake is
+      forced by the fact that nothing on the host side can service the
+      device — only the guest's driver can — so the line is masked on entry
+      and unmasked only when the guest clears the APLIC pending bit. One
+      table entry and one handler adds a peripheral, the way `g_periph_map`
+      works for addresses. TIM6 is wired as the first line; **no guest test
+      drives a real interrupt end to end yet**, so that path is built but
+      unproven.
+- [ ] **ACLINT** — the CLINT is the legacy SiFive layout, which is
+      functionally ACLINT's MTIMER and MSWI at the older offsets. Exposing
+      the ACLINT offsets alongside is small and not yet done.
 - [ ] **U-mode** — invasive rather than large. A second privilege level makes
       `medeleg`/`mideleg`/`mcounteren` real, adds `ECALL` from U as a distinct
       cause, and invalidates the "M-mode only" simplifications throughout

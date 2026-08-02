@@ -26,6 +26,22 @@ uint32_t rv_hart_misa(void)
 #if RV_EXT_F
     misa |= MISA_EXT('F');
 #endif
+    /*
+     * B is exactly Zba, Zbb and Zbs -- the three the 2024 ratification
+     * folded into it. Zbc is deliberately absent from that list: it was
+     * moved out of B before ratification and remains a separate extension,
+     * so implementing it neither grants nor withholds this bit.
+     *
+     * Advertising it matters. A guest that checks misa.B and finds it clear
+     * will take its fallback paths for byte swaps, counts and single-bit
+     * work, which is the opposite of what a core implementing all three
+     * wants. Anything built with -march=..._zba_zbb_zbs and run against a
+     * core reporting no B is the same disagreement rv32mi/csr exists to
+     * catch, just in the other direction.
+     */
+#if RV_EXT_ZBA && RV_EXT_ZBB && RV_EXT_ZBS
+    misa |= MISA_EXT('B');
+#endif
     return misa;
 }
 
