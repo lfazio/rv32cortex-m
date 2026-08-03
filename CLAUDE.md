@@ -28,8 +28,8 @@ when changing it), `-DRV32_GUEST=isatest|hello|bench|stm32drv|coremark`.
 ## Validation — run before claiming anything works
 
 ```sh
-./scripts/run-arch-test.sh      # official riscv-arch-test: 135/135 integer, 224/224 with -DRV32_FPU_SOFTFLOAT=ON, 172/224 without
-./scripts/run-riscv-tests.sh    # Berkeley suite, 76/77 (breakpoint needs Sdtrig)
+./scripts/run-arch-test.sh      # official riscv-arch-test: 229/230 with -DRV32_FPU_SOFTFLOAT=ON, 177/230 without (the one non-F failure is MPRV)
+./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77
 ```
 
 Keep the suites' `-march` in step with what `misa` advertises: `rv32mi/csr`
@@ -214,6 +214,38 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
   failed. Name the file and the target.
 - **Do not conflate "nothing translatable here" with "cache full".** Sharing a
   recovery path made every interpreted `div` flush the code cache.
+- **ACT's `--extensions` selects test suites by *directory name*, not by
+  required extension.** `generate_test_dict` globs `tests/*/<name>/*.S`, so
+  `U` matches nothing and silently builds nothing -- which is why declaring
+  U-mode to UDB and Sail changed the results not at all. The U-mode PMP
+  tests live in `tests/priv/pmp/pmp32/**PMPU**`. What a test *requires* is
+  declared in its own `REQUIRED_EXTENSIONS` header and checked against the
+  UDB config by `select_tests`; naming a suite on the command line only
+  offers it. Four rounds of guessing the flag would have been one round of
+  reading `framework/src/act/parse_test_constraints.py`.
+- **The PMP lock bit says who an entry applies to, not whether it is in
+  force.** `L` clear means the entry is invisible to M-mode; below M it
+  binds exactly as a locked one does. `rv_pmp_check` read it alone --
+  "unlocked, therefore permitted" -- which is right in M-mode and denies
+  every U-mode access matching an unlocked entry, i.e. the usual background
+  region. Consult `L` only together with the privilege level.
+- **Execute permission was never checked at all.** `RV_ACC_FETCH` existed
+  and was passed only to Sdtrig; no caller ever handed it to
+  `rv_pmp_check`. Grep for the enumerator, not for the feature. The check
+  belongs per *halfword*, which gets the straddle rule for a 32-bit
+  instruction crossing a region boundary for free.
+- **`1u << 32` decoded the widest PMP region as the narrowest.** NAPOT with
+  `pmpaddr` all ones is a shift by 32 -- undefined, and in practice 1, so
+  the permit-everything entry that `riscv-tests` installs became four bytes
+  at the top of memory. Invisible in M-mode, where matching nothing
+  permits; fatal in U-mode, where it does not. The whole encoding reaches
+  sizes that overflow 32 bits, so `pmp_range` does the arithmetic in 64 and
+  saturates.
+- **U-mode turns three latent M-mode bugs into failures at once.** All
+  three above sat in shipped, suite-passing code because every M-mode path
+  through them ends in "matching nothing permits". Any privilege work
+  should assume the PMP code is wrong until the privileged tests say
+  otherwise -- and they will not run until the suite is *named* correctly.
 - **A failing arch test may be the Sail config, not the emulator.** ACT runs the
   golden model to bake expected values into each test, so a wrong `sail.json`
   produces wrong expectations. `amocas` failed for three sessions because guest

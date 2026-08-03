@@ -3,9 +3,10 @@
  * rv_pmp.c - Physical memory protection.
  *
  * The thing that makes PMP affordable here is a detail of the privileged
- * spec: an *unlocked* PMP entry does not restrict M-mode. This core runs
- * M-mode only, so until software sets a lock bit, PMP cannot deny anything
- * and the checks are pure overhead.
+ * spec: an *unlocked* PMP entry does not restrict M-mode. A guest that
+ * stays in M-mode and never sets a lock bit therefore cannot be denied
+ * anything, and the checks are pure overhead -- which is the common case,
+ * since U-mode is optional and most guests here never leave M.
  *
  * rv_hart_t::pmp_active records whether any entry is both locked and
  * enabled. While it is false -- which is the state at reset and stays the
@@ -37,11 +38,29 @@ static uint32_t pmp_cfg(const rv_hart_t *h, uint32_t i)
 }
 
 /*
+ * pmpaddr counts four-byte units, so it addresses 34 bits and any bound at
+ * or above 2^30 units lies outside what this core can reach. Saturate
+ * rather than truncate: a permit-everything entry is written as a bound at
+ * the very top, and truncating that wraps it to a low address, turning the
+ * widest possible region into one of the narrowest.
+ *
+ * The cost of saturating is that a region ending exactly at 2^32 is
+ * reported as ending at 0xFFFFFFFF, so the single byte there matches
+ * nothing. Nothing is mapped at the top of the address space on any
+ * platform this runs on, and the alternative -- carrying the end bound in
+ * 64 bits through both backends and the JIT's inlined range test -- is not
+ * worth it for one unreachable byte.
+ */
+static uint32_t pmp_bytes(uint64_t words)
+{
+    return (words >= ((uint64_t)1u << 30)) ? 0xFFFFFFFFu
+                                           : (uint32_t)(words << 2);
+}
+
+/*
  * The address range entry `i` covers, as [lo, hi) in bytes.
  *
- * pmpaddr holds address bits [33:2], so everything here works in units of
- * four bytes and is shifted up at the end. Returns false for OFF and for a
- * TOR entry whose range is empty.
+ * Returns false for OFF and for a TOR entry whose range is empty.
  */
 static bool pmp_range(const rv_hart_t *h, uint32_t i, uint32_t cfg,
                       uint32_t *lo, uint32_t *hi)
@@ -55,38 +74,35 @@ static bool pmp_range(const rv_hart_t *h, uint32_t i, uint32_t cfg,
         if (addr <= prev) {
             return false;             /* empty or inverted range */
         }
-        *lo = prev << 2;
-        *hi = addr << 2;
+        *lo = pmp_bytes(prev);
+        *hi = pmp_bytes(addr);
         return true;
     }
     case PMP_A_NA4:
-        *lo = addr << 2;
-        *hi = *lo + 4u;
+        *lo = pmp_bytes(addr);
+        *hi = pmp_bytes((uint64_t)addr + 1u);
         return true;
     case PMP_A_NAPOT: {
         /*
          * NAPOT encodes the size in a run of low one bits: the lowest zero
-         * bit marks the boundary. All ones would mean the whole address
-         * space, which cannot be expressed in 32 bits here, so it is
-         * treated as the largest range that can.
+         * bit marks the boundary, and a run of n ones means 2^(n+1) units.
+         *
+         * The arithmetic is done in 64 bits because the encoding reaches
+         * exactly the sizes that overflow 32. `pmpaddr` all ones -- the
+         * permit-everything entry riscv-tests installs -- is n == 31, where
+         * `1u << (n + 1)` is a shift by 32: undefined, and in practice
+         * yields 1, which decodes the widest region in the encoding as a
+         * four-byte one at the top of memory. That is invisible in M-mode,
+         * where matching nothing permits, and denies everything in U-mode,
+         * where matching nothing does not.
          */
         const uint32_t inv = ~addr;
-        if (inv == 0u) {
-            *lo = 0u;
-            *hi = 0xFFFFFFFFu;
-            return true;
-        }
-        /* Bit position of the lowest zero. */
-        const uint32_t n = (uint32_t)__builtin_ctz(inv);
-        const uint32_t size_words = 1u << (n + 1u);
-        const uint32_t base = (addr & ~((size_words) - 1u)) << 2;
-        *lo = base;
-        /* size in bytes; guard the shift that would overflow 32 bits. */
-        if (n + 3u >= 32u) {
-            *hi = 0xFFFFFFFFu;
-        } else {
-            *hi = base + (size_words << 2);
-        }
+        const uint32_t n = (inv == 0u) ? 31u : (uint32_t)__builtin_ctz(inv);
+        const uint64_t size = (uint64_t)1u << (n + 1u);
+        const uint64_t base = (uint64_t)addr & ~(size - 1u);
+
+        *lo = pmp_bytes(base);
+        *hi = pmp_bytes(base + size);
         return true;
     }
     default:
@@ -196,10 +212,19 @@ bool rv_pmp_check(const rv_hart_t *h, uint32_t addr, uint32_t size,
             return false;             /* access straddles the top */
         }
 
-        /* Lowest matching entry decides, matched or not. */
-        if ((cfg & PMP_L) == 0u) {
-            /* Unlocked entries do not constrain M-mode. */
-            return h->priv == RV_PRIV_M;
+        /*
+         * Lowest matching entry decides, matched or not.
+         *
+         * L says *who the entry applies to*, not whether it is in force. An
+         * unlocked entry is invisible to M-mode and fully binding below it,
+         * so the lock bit may only be consulted together with the privilege
+         * level. Reading it alone -- "unlocked, therefore permitted" -- is
+         * right in M-mode and denies every U-mode access that matches an
+         * unlocked entry, which is the usual configuration: the background
+         * region a supervisor leaves unlocked so it can still edit it.
+         */
+        if ((cfg & PMP_L) == 0u && h->priv == RV_PRIV_M) {
+            return true;
         }
         switch (acc) {
         case RV_ACC_FETCH: return (cfg & PMP_X) != 0u;

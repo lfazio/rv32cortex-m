@@ -25,9 +25,18 @@ runner="${RV32_HOST:-$here/build/host/rv32-host}"
 cfg_name="rv32cortex-m-rv32imac"
 cfg_src="$here/tests/arch-test/$cfg_name"
 
-# The extensions this core implements. RV32IMAC decomposes into these in
-# the modern ISA taxonomy the suite uses.
-extensions="${ARCH_TEST_EXTENSIONS:-I,M,Zmmul,Zaamo,Zalrsc,Zca,Zicsr,Zicntr,Zifencei,Zicbom,Zicboz,Zbb,Zba,Zbc,Zbs,Zacas,F,Zcb}"
+# The test suites to build, which ACT selects by *directory name* under
+# tests/ -- not by required extension, however much the option is called
+# --extensions. That distinction is the whole reason the privileged tests
+# went unnoticed: `U` matches no directory and silently builds nothing,
+# while the U-mode PMP tests live in a directory called PMPU. What each
+# test actually requires is declared in its own header and checked against
+# the UDB config, so naming a suite here only offers it for selection.
+#
+# PMPU is the only privileged suite this core qualifies for: the rest of
+# tests/priv/ needs S-mode or Sv paging. Ten of its eleven tests are built
+# -- pmpu_na4_legal_lxwr requires S.
+extensions="${ARCH_TEST_EXTENSIONS:-I,M,Zmmul,Zaamo,Zalrsc,Zca,Zicsr,Zicntr,Zifencei,Zicbom,Zicboz,Zbb,Zba,Zbc,Zbs,Zacas,F,Zcb,PMPU}"
 jobs="$(nproc)"
 verbose=""
 

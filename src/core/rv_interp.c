@@ -325,6 +325,21 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
             }
 #endif
 
+#if RV_EXT_PMP
+            /*
+             * Execute permission. This is per halfword rather than per
+             * instruction on purpose: PMP requires every byte of an access
+             * to fall in one entry, and a 32-bit instruction may straddle a
+             * region boundary. Checking each half as it is fetched gives the
+             * straddle rule for free and reports the half that faulted in
+             * mtval, which is what a handler needs to place the boundary.
+             */
+            if (RV_UNLIKELY(h->pmp_active) &&
+                !rv_pmp_check(h, pc, 2u, RV_ACC_FETCH)) {
+                TRAP(RV_EXC_INSN_ACCESS_FAULT, pc);
+            }
+#endif
+
             uint16_t lo;
             rv_exc_t exc = rv_bus_fetch16(h->bus, pc, &lo);
             if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
@@ -333,6 +348,12 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
 
             if (rv_is_32bit(lo)) {
                 uint16_t hi;
+#if RV_EXT_PMP
+                if (RV_UNLIKELY(h->pmp_active) &&
+                    !rv_pmp_check(h, pc + 2u, 2u, RV_ACC_FETCH)) {
+                    TRAP(RV_EXC_INSN_ACCESS_FAULT, pc + 2u);
+                }
+#endif
                 exc = rv_bus_fetch16(h->bus, pc + 2u, &hi);
                 if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
                     TRAP(exc, pc + 2u);
