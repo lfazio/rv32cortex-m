@@ -292,6 +292,7 @@
     "max_time_to_wait": 0
   },
   "extensions": {
+    "U": { "supported": true },
     "M": { "supported": true },
     "A": { "supported": true },
     "F": {

@@ -49,6 +49,11 @@ implemented_extensions:
   - { name: Zicbom, version: "= 1.0.0" }
   - { name: Zicboz, version: "= 1.0.0" }
   - { name: Sm, version: "= 1.12.0" }
+  # User mode. One ratified version, 1.0.0 -- there is no 1.12.0, and
+  # declaring one makes UDB reject the whole configuration so that nothing
+  # builds at all. S is absent, so medeleg and mideleg have nothing to
+  # delegate to and read as zero.
+  - { name: U, version: "= 1.0.0" }
 
 params:
   # ---- base ----
@@ -151,6 +156,17 @@ params:
   # Only the low two bits are masked, so BASE needs 4-byte alignment.
   MTVEC_BASE_ALIGNMENT_DIRECT: 4
   MTVEC_BASE_ALIGNMENT_VECTORED: 4
+
+  # ---- U ----
+  # A list: a hart may support several widths below M. This one supports
+  # only 32, but the parameter is still a list and a scalar is rejected.
+  UXLEN: [32]
+  U_MODE_ENDIANNESS: little
+  # ECALL from U reports cause 8 rather than being merged into M's 11.
+  TRAP_ON_ECALL_FROM_U: true
+  # misa is read-only: rv_hart_misa fixes the extension set at build time,
+  # so U cannot be switched off by writing it.
+  MUTABLE_MISA_U: false
 
   # ---- Sm ----
   PRECISE_SYNCHRONOUS_EXCEPTIONS: true
