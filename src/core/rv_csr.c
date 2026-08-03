@@ -164,6 +164,15 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
 #if RV_LAZY_IRQ_CHECK
         h->irq_dirty = true;   /* MIE may have been set */
 #endif
+#if RV_EXT_U && RV_EXT_PMP
+        /*
+         * MPRV and MPP together decide the privilege a load or store is
+         * checked at, so writing mstatus can arm PMP without touching a
+         * single pmpcfg. Missing this leaves the access path skipping the
+         * check that MPRV just made necessary.
+         */
+        rv_pmp_refresh(h);
+#endif
         break;
 
     case CSR_MSTATUSH:

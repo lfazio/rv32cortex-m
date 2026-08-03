@@ -216,11 +216,36 @@ void rv_trig_write_tdata1(rv_hart_t *h, uint32_t val);
 bool rv_trig_check(const rv_hart_t *h, uint32_t addr, rv_access_t acc);
 #endif
 
+/*
+ * The privilege level a load or store is checked at, which is not always
+ * the one the hart is running at.
+ *
+ * MPRV makes data accesses use MPP's privilege instead, so that M-mode
+ * software can touch memory exactly as the mode it is about to return to
+ * would see it -- the way a kernel validates a pointer a user process
+ * handed it. Instruction fetch is explicitly *not* affected and always
+ * uses h->priv, which is what makes this a separate accessor rather than a
+ * correction applied to h->priv itself.
+ *
+ * MPRV can only be set by M-mode, and MRET clears it when returning below
+ * M, so it cannot outlive the mode that armed it.
+ */
+static RV_ALWAYS_INLINE uint32_t rv_hart_data_priv(const rv_hart_t *h)
+{
+#if RV_EXT_U
+    if ((h->mstatus & MSTATUS_MPRV) != 0u) {
+        return (h->mstatus & MSTATUS_MPP_MASK) >> MSTATUS_MPP_SHIFT;
+    }
+#endif
+    return h->priv;
+}
+
 #if RV_EXT_PMP
 /*
- * Recompute pmp_active. Call after any write to a pmpcfg CSR *and* after
- * any change to h->priv: below M-mode PMP must always be consulted, because
- * matching no entry denies rather than permits.
+ * Recompute pmp_active. Call after any write to a pmpcfg CSR, after any
+ * change to h->priv, and after any write to mstatus (MPRV and MPP move the
+ * privilege data accesses are checked at). Below M-mode PMP must always be
+ * consulted, because matching no entry denies rather than permits.
  */
 void rv_pmp_refresh(rv_hart_t *h);
 

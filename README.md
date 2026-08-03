@@ -43,7 +43,7 @@ silicon.
 |---|---|
 | RV32IMAFC + Zicsr, Zicntr, Zifencei, Zicbom, Zicboz, **B**, **Zacas**, **Zcf**, **Zcb** | implemented |
 | Machine-mode traps, interrupts, CLINT timer | implemented |
-| Official `riscv-arch-test` (RVCP) | **229 / 230** with SoftFloat; 177 / 230 with the host FPU |
+| Official `riscv-arch-test` (RVCP) | **230 / 230** with SoftFloat; 178 / 230 with the host FPU |
 | **F** (single precision) | implemented, two backends — see below |
 | **D** (double precision) | not implemented, and not planned |
 | **Zcd** | not implementable without D — see below |
@@ -290,7 +290,7 @@ instructions no hot loop contains, spent in the resource this JIT is shortest
 of — the code cache sets overall performance more than anything in the
 translator. It would also be a second implementation of semantics the core
 already owns, which is the drift the conventions forbid; `rv_hart_fp` is the
-interpreter's own entry point, validated at 229/230.
+interpreter's own entry point, validated at 230/230.
 
 What changed is that they no longer **end the block**. Declining costs a
 dispatcher round trip, an interpreted instruction and a fresh block beyond
@@ -451,8 +451,8 @@ Current state, all re-run on the tree as it stands:
 
 | | result | runs on |
 |---|---|---|
-| `riscv-arch-test`, `-DRV32_FPU_SOFTFLOAT=ON` | **229 / 230** — the one failure is MPRV | host |
-| `riscv-arch-test`, default (host FPU) | 177 / 230 — 52 in `F`, one MPRV | host |
+| `riscv-arch-test`, `-DRV32_FPU_SOFTFLOAT=ON` | **230 / 230** | host |
+| `riscv-arch-test`, default (host FPU) | 178 / 230 — every failure in `F` | host |
 | `riscv-tests` | **77 / 77** | host |
 | host unit + guest self-test (`ctest -L fast`) | **2 / 2** | host |
 | `isatest`, JIT | **211 / 211** | hardware |
@@ -538,7 +538,7 @@ Three of the unary ops (`c.sext.b`, `c.zext.h`, `c.sext.h`) expand to Zbb
 instructions, which is why the spec makes Zcb depend on Zbb — without it there
 would be nothing to expand them into.
 
-### Official RISC-V Architecture Test Suite — 229/230 with SoftFloat
+### Official RISC-V Architecture Test Suite — 230/230 with SoftFloat
 
 [`riscv/riscv-arch-test`](https://github.com/riscv/riscv-arch-test), the RVCP
 suite governed by RISC-V International. Modern versions are self-checking: the
@@ -1155,8 +1155,9 @@ rather than a missing optimisation:
       by passing untouched. What ACLINT adds, and what this gains, is that a
       platform may place the two devices independently.
 - [x] **U-mode** — implemented and exercised by the suite's `PMPU` tests,
-      9 of the 10 this core qualifies for. `MPP` is real on trap entry and
-      `MRET`, `ECALL` from U has its own cause, and `misa.U` is set.
+      all 10 of the 10 this core qualifies for. `MPP` is real on trap entry
+      and `MRET`, `ECALL` from U has its own cause, `MPRV` borrows `MPP`'s
+      privilege for data accesses, and `misa.U` is set.
 
       The gate that had to come first was: **inlining a memory access is
       only sound while nothing can deny it**, which is true in M-mode with no
@@ -1167,8 +1168,9 @@ rather than a missing optimisation:
 
       Running the privileged tests then found three defects that no M-mode
       guest could reach, described under *Things that have bitten* below.
-      What remains is **MPRV** — the one failing `PMPU` test — and, until
-      that lands, the JIT does not check execute permission at all.
+      What remains is that the **JIT does not check execute permission** —
+      it reads guest instruction bytes at translate time and emits no fetch
+      check, so `X` is unenforced there. The interpreter checks it.
 - [ ] **S-mode** — the same as U-mode, but with a third privilege level and a second
       set of CSRs. The Cortex-M4 has no MMU, so S-mode would be entirely
       soft-trap and would need a second set of `mstatus`/`mepc`/`mcause`/`mtval`

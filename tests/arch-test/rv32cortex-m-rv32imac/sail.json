@@ -320,7 +320,7 @@
     "B": { "supported": true },
     // Machine mode only.
     "S": { "supported": false },
-    "U": { "supported": false },
+    "U": { "supported": true },
     "Zibi": { "supported": false },
     "Zicbom": { "supported": true },
     "Zicbop": { "supported": false },

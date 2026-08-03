@@ -793,24 +793,33 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
 
                 case 0x302u: {                  /* MRET */
                     /*
-                     * Pop the interrupt-enable stack. MPP would select the
-                     * privilege to return to; with M-mode only it stays M
-                     * and is reset to M (the least-privileged supported
-                     * mode) as the spec requires.
+                     * Pop the interrupt-enable stack. MPP selects the
+                     * privilege to return to, and is then reset to the
+                     * least-privileged supported mode as the spec requires.
                      */
                     const uint32_t mpie =
                         (h->mstatus & MSTATUS_MPIE) ? MSTATUS_MIE : 0u;
+                    uint32_t clear = MSTATUS_MIE | MSTATUS_MPIE |
+                                     MSTATUS_MPP_MASK;
 #if RV_EXT_U
                     const uint32_t mpp =
                         (h->mstatus & MSTATUS_MPP_MASK) >> MSTATUS_MPP_SHIFT;
                     /* MPP is WARL over the supported modes; S is not one. */
                     const uint32_t back =
                         (mpp == RV_PRIV_U) ? RV_PRIV_U : RV_PRIV_M;
+                    /*
+                     * Returning below M clears MPRV. Without this, M-mode
+                     * could leave data accesses borrowing U's privilege and
+                     * that setting would outlive the return -- the spec
+                     * closes the hole here rather than trusting software to.
+                     */
+                    if (back != RV_PRIV_M) {
+                        clear |= MSTATUS_MPRV;
+                    }
 #else
                     const uint32_t back = RV_PRIV_M;
 #endif
-                    h->mstatus = (h->mstatus & ~(MSTATUS_MIE | MSTATUS_MPIE |
-                                                 MSTATUS_MPP_MASK))
+                    h->mstatus = (h->mstatus & ~clear)
                                | mpie
                                | MSTATUS_MPIE
                                | ((uint32_t)RV_PRIV_LEAST << MSTATUS_MPP_SHIFT);

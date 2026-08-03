@@ -130,7 +130,12 @@ static bool pmp_range(const rv_hart_t *h, uint32_t i, uint32_t cfg,
  */
 void rv_pmp_refresh(rv_hart_t *h)
 {
-    if (h->priv != RV_PRIV_M) {
+    /*
+     * Either privilege being below M is enough: fetch is checked at
+     * h->priv and data at rv_hart_data_priv, and MPRV can pull the second
+     * below M while the first is still M.
+     */
+    if (h->priv != RV_PRIV_M || rv_hart_data_priv(h) != RV_PRIV_M) {
         h->pmp_active = true;
         return;
     }
@@ -198,6 +203,14 @@ bool rv_pmp_check(const rv_hart_t *h, uint32_t addr, uint32_t size,
      */
     const uint32_t last = addr + size - 1u;
 
+    /*
+     * Fetch is checked at the privilege the hart is running at; a load or
+     * store at whatever MPRV says. Both the M-mode exemption for unlocked
+     * entries and the no-match rule below turn on this, not on h->priv.
+     */
+    const uint32_t eff = (acc == RV_ACC_FETCH) ? (uint32_t)h->priv
+                                               : rv_hart_data_priv(h);
+
     for (uint32_t i = 0; i < RV_PMP_ENTRIES; i++) {
         const uint32_t cfg = pmp_cfg(h, i);
         uint32_t lo, hi;
@@ -223,7 +236,7 @@ bool rv_pmp_check(const rv_hart_t *h, uint32_t addr, uint32_t size,
          * unlocked entry, which is the usual configuration: the background
          * region a supervisor leaves unlocked so it can still edit it.
          */
-        if ((cfg & PMP_L) == 0u && h->priv == RV_PRIV_M) {
+        if ((cfg & PMP_L) == 0u && eff == RV_PRIV_M) {
             return true;
         }
         switch (acc) {
@@ -234,7 +247,7 @@ bool rv_pmp_check(const rv_hart_t *h, uint32_t addr, uint32_t size,
     }
 
     /* No entry matched: M-mode is unrestricted, anything else is denied. */
-    return h->priv == RV_PRIV_M;
+    return eff == RV_PRIV_M;
 }
 
 #endif /* RV_EXT_PMP */

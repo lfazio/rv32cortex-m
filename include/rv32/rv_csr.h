@@ -102,11 +102,19 @@ struct rv_hart;
 /* Bits software is allowed to change in mstatus on this implementation. */
 #if RV_EXT_F
 /* FS must be writable, or software cannot enable the FPU at all. */
-#define MSTATUS_WMASK       (MSTATUS_MIE | MSTATUS_MPIE | MSTATUS_MPP_MASK | \
-                             MSTATUS_FS_MASK)
+#  define MSTATUS_WMASK_F   MSTATUS_FS_MASK
 #else
-#define MSTATUS_WMASK       (MSTATUS_MIE | MSTATUS_MPIE | MSTATUS_MPP_MASK)
+#  define MSTATUS_WMASK_F   0u
 #endif
+/* MPRV is meaningless without a second privilege level to borrow. */
+#if RV_EXT_U
+#  define MSTATUS_WMASK_U   MSTATUS_MPRV
+#else
+#  define MSTATUS_WMASK_U   0u
+#endif
+
+#define MSTATUS_WMASK       (MSTATUS_MIE | MSTATUS_MPIE | MSTATUS_MPP_MASK | \
+                             MSTATUS_WMASK_F | MSTATUS_WMASK_U)
 
 /* ------------------------------------------------------------------ */
 /* mie / mip fields                                                    */

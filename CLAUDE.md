@@ -28,7 +28,7 @@ when changing it), `-DRV32_GUEST=isatest|hello|bench|stm32drv|coremark`.
 ## Validation — run before claiming anything works
 
 ```sh
-./scripts/run-arch-test.sh      # official riscv-arch-test: 229/230 with -DRV32_FPU_SOFTFLOAT=ON, 177/230 without (the one non-F failure is MPRV)
+./scripts/run-arch-test.sh      # official riscv-arch-test: 230/230 with -DRV32_FPU_SOFTFLOAT=ON, 178/230 without (every failure is F)
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77
 ```
 

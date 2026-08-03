@@ -177,12 +177,16 @@ static rv_hart_t *g_xlate_hart;
  * range and takes its inlined path for addresses the new entry covers, which
  * is a silent permission bypass rather than a slow path.
  */
-static bool     g_pmp_seen;         /* pmp_active                       */
-static bool     g_pmp_seen_simple;  /* rv_pmp_simple succeeded          */
-static uint32_t g_pmp_seen_lo;
-static uint32_t g_pmp_seen_hi;
+typedef struct {
+    bool     active;    /* pmp_active                              */
+    bool     simple;    /* rv_pmp_simple succeeded                 */
+    uint8_t  dpriv;     /* privilege data accesses are checked at  */
+    uint32_t lo;
+    uint32_t hi;
+} jit_pmp_state_t;
 
-#if RV_EXT_PMP
+static jit_pmp_state_t g_pmp_seen;
+
 /*
  * Capture what emit_mem_access would bake in right now.
  *
@@ -195,16 +199,29 @@ static uint32_t g_pmp_seen_hi;
  * fallback where this is checked. Traps raise privilege instead, and a
  * block built for a lower level running at M is conservative rather than
  * wrong: it declined to inline.
+ *
+ * dpriv is here because pmp_active does not separate the two ways it can be
+ * true. Set MPRV while an entry is already locked and pmp_active, simple
+ * and the bounds all stay exactly as they were, while the privilege data
+ * accesses are checked at drops from M to U -- so a block that inlined its
+ * accesses stays cached and keeps performing them unchecked. This is a
+ * struct rather than four out-parameters for the same reason: the failure
+ * mode of this snapshot is always a field someone forgot to add.
  */
-static void jit_pmp_snapshot(const rv_hart_t *h, bool *active, bool *simple,
-                             uint32_t *lo, uint32_t *hi)
+static void jit_pmp_snapshot(const rv_hart_t *h, jit_pmp_state_t *s)
 {
-    *active = h->pmp_active;
-    *lo = 0u;
-    *hi = 0u;
-    *simple = *active && rv_pmp_simple(h, lo, hi);
+    s->active = h->pmp_active;
+    s->dpriv = (uint8_t)rv_hart_data_priv(h);
+    s->lo = 0u;
+    s->hi = 0u;
+    s->simple = s->active && rv_pmp_simple(h, &s->lo, &s->hi);
 }
-#endif
+
+static bool jit_pmp_differs(const jit_pmp_state_t *a, const jit_pmp_state_t *b)
+{
+    return a->active != b->active || a->simple != b->simple ||
+           a->dpriv != b->dpriv || a->lo != b->lo || a->hi != b->hi;
+}
 #endif
 
 /*
@@ -1448,8 +1465,13 @@ static void emit_mem_access(bool is_store, uint32_t size, uint32_t sign,
      * be rediscovered from the definition of a flag in another file. If a
      * privilege level below M is ever reachable, everything here has to be
      * re-argued rather than assumed.
+     *
+     * The privilege that matters here is the one a *data* access is checked
+     * at, which MPRV can pull below M while the hart is still running in M.
+     * Reading h->priv would inline exactly the accesses MPRV exists to have
+     * checked.
      */
-    if (g_xlate_hart->priv != RV_PRIV_M) {
+    if (rv_hart_data_priv(g_xlate_hart) != RV_PRIV_M) {
         emit_helper_call(helper, spec, pc, insns);
         return;
     }
@@ -2998,8 +3020,7 @@ static bool jit_init(rv_hart_t *h)
 static void jit_reset(rv_hart_t *h)
 {
 #if RV_EXT_PMP
-    jit_pmp_snapshot(h, &g_pmp_seen, &g_pmp_seen_simple,
-                    &g_pmp_seen_lo, &g_pmp_seen_hi);
+    jit_pmp_snapshot(h, &g_pmp_seen);
 #endif
 #if RV_EXT_F
     g_frm_seen = (uint8_t)((h->fcsr >> 5) & 7u);
@@ -3095,16 +3116,11 @@ static void jit_note_csr(rv_hart_t *h)
     jit_note_frm(h);
 #endif
 #if RV_EXT_PMP
-    bool active, simple;
-    uint32_t lo, hi;
+    jit_pmp_state_t now;
 
-    jit_pmp_snapshot(h, &active, &simple, &lo, &hi);
-    if (RV_UNLIKELY(active != g_pmp_seen || simple != g_pmp_seen_simple ||
-                    lo != g_pmp_seen_lo || hi != g_pmp_seen_hi)) {
-        g_pmp_seen = active;
-        g_pmp_seen_simple = simple;
-        g_pmp_seen_lo = lo;
-        g_pmp_seen_hi = hi;
+    jit_pmp_snapshot(h, &now);
+    if (RV_UNLIKELY(jit_pmp_differs(&now, &g_pmp_seen))) {
+        g_pmp_seen = now;
         rv_jit_flush();
     }
 #else
