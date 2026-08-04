@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# rv32cortex-m - a RISC-V RV32IMAC emulator for ARM Cortex-M hosts.
+# rv32cortex-m - a RISC-V RV32 emulator for ARM Cortex-M hosts.
 #
 # Two build configurations share one core:
 #
@@ -18,7 +18,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(rv32cortex-m
     VERSION 1.0.0
-    DESCRIPTION "RV32IMAC emulator for ARM Cortex-M"
+    DESCRIPTION "RV32 emulator for ARM Cortex-M"
     LANGUAGES C ASM)
 
 set(CMAKE_C_STANDARD 11)
@@ -31,8 +31,8 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
 endif()
 
-set(RV32_PLATFORM "host" CACHE STRING "Target platform (host|stm32f446)")
-set_property(CACHE RV32_PLATFORM PROPERTY STRINGS host stm32f446)
+set(RV32_PLATFORM "host" CACHE STRING "Target platform (host|stm32f446|stm32f746)")
+set_property(CACHE RV32_PLATFORM PROPERTY STRINGS host stm32f446 stm32f746)
 
 # ---------------------------------------------------------------------
 # ISA configuration
@@ -236,13 +236,13 @@ endif()
 
 if(RV32_PLATFORM STREQUAL "host")
     add_subdirectory(src/platform/host)
-elseif(RV32_PLATFORM STREQUAL "stm32f446")
+elseif(RV32_PLATFORM STREQUAL "stm32f446" OR RV32_PLATFORM STREQUAL "stm32f746")
     if(NOT CMAKE_CROSSCOMPILING)
         message(FATAL_ERROR
-            "RV32_PLATFORM=stm32f446 needs the cross toolchain:\n"
+            "RV32_PLATFORM=${RV32_PLATFORM} needs the cross toolchain:\n"
             "  -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake")
     endif()
-    add_subdirectory(src/platform/stm32f446)
+    add_subdirectory(src/platform/${RV32_PLATFORM})
 else()
     message(FATAL_ERROR "unknown RV32_PLATFORM '${RV32_PLATFORM}'")
 endif()
@@ -272,11 +272,22 @@ endif()
 # Built up as a plain string: message() does not evaluate generator
 # expressions, so $<BOOL:...> would be printed verbatim.
 set(_isa "RV32I")
-foreach(_ext M A C)
+foreach(_ext M A F C B)
     if(RV32_EXT_${_ext})
         string(APPEND _isa "${_ext}")
     endif()
 endforeach()
+# B is the union of Zba, Zbb and Zbs rather than an option of its own, and
+# misa advertises it on exactly that basis, so the banner has to agree.
+if(NOT RV32_EXT_B AND RV32_EXT_ZBA AND RV32_EXT_ZBB AND RV32_EXT_ZBS)
+    string(APPEND _isa "B")
+endif()
+if(RV32_EXT_U)
+    string(APPEND _isa "U")
+endif()
+if(RV32_EXT_S)
+    string(APPEND _isa "S")
+endif()
 
 message(STATUS "")
 message(STATUS "rv32cortex-m ${PROJECT_VERSION}")

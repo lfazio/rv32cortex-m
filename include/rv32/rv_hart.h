@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * rv_hart.h - Architectural state of one RV32IMAC hart.
+ * rv_hart.h - Architectural state of one RV32 hart.
  *
  * The struct is laid out so the fields the interpreter touches every
  * instruction (x[], pc) sit at offset 0: on Thumb-2 that keeps them within

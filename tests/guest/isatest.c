@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * isatest.c - RV32IMAC self-test, run as a guest inside the emulator.
+ * isatest.c - RV32 self-test, run as a guest inside the emulator.
  *
  * This is the primary correctness check for the core. It runs identically
  * on the host runner and on the STM32 firmware, so a result that differs

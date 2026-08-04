@@ -1,0 +1,214 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# UDB architecture configuration for rv32cortex-m, the RV32 emulator
+# that runs on ARM Cortex-M hosts.
+#
+# Every value here states what the interpreter in src/core actually does.
+# Two of them differ from most soft cores and are worth calling out:
+#
+#   MISALIGNED_LDST: false
+#       Alignment is checked before the bus access, so a misaligned load or
+#       store raises the misaligned exception rather than being split into
+#       two transactions. See rv_hart_load/rv_hart_store.
+#
+#   REPORT_*_IN_MTVAL: true
+#       mtval carries the faulting address (or the instruction encoding for
+#       illegal instructions) rather than being hardwired to zero.
+---
+$schema: config_schema.json#
+kind: architecture configuration
+type: fully configured
+name: rv32cortex_m_rv32
+description: >-
+  rv32cortex-m - RV32 interpreter hosted on ARMv6-M/v7E-M/v8.1-M,
+  machine mode only.
+
+implemented_extensions:
+  - { name: I, version: "= 2.1" }
+  - { name: M, version: "= 2.0" }
+  - { name: Zmmul, version: "= 1.0" }
+  - { name: A, version: "= 2.1" }
+  - { name: Zaamo, version: "= 1.0.0" }
+  - { name: Zalrsc, version: "= 1.0.0" }
+  - { name: F, version: "= 2.2" }
+  - { name: Zacas, version: "= 1.0.0" }
+  - { name: Zba, version: "= 1.0.0" }
+  - { name: Zbb, version: "= 1.0.0" }
+  - { name: Zbc, version: "= 1.0.0" }
+  - { name: Zbs, version: "= 1.0.0" }
+  - { name: C, version: "= 2.0" }
+  - { name: Zca, version: "= 1.0.0" }
+  # C on RV32F is defined to include the compressed FP load/stores.
+  - { name: Zcf, version: "= 1.0.0" }
+  - { name: Zcb, version: "= 1.0.0" }
+  - { name: Zicsr, version: "= 2.0" }
+  - { name: Zicntr, version: "= 2.0" }
+  - { name: Zifencei, version: "= 2.0" }
+  # Cache-block operations, forwarded to the host's cache maintenance
+  # (SCB_*DCache_by_Addr on an ARMv7-M with a data cache).
+  - { name: Zicbom, version: "= 1.0.0" }
+  - { name: Zicboz, version: "= 1.0.0" }
+  - { name: Sm, version: "= 1.12.0" }
+  # User mode. One ratified version, 1.0.0 -- there is no 1.12.0, and
+  # declaring one makes UDB reject the whole configuration so that nothing
+  # builds at all. S is absent, so medeleg and mideleg have nothing to
+  # delegate to and read as zero.
+  - { name: U, version: "= 1.0.0" }
+
+params:
+  # ---- base ----
+  MXLEN: 32
+  PHYS_ADDR_WIDTH: 32
+  M_MODE_ENDIANNESS: little
+
+  # ---- misa ----
+  # The extension set is fixed at build time (rv_hart_misa), so no misa bit
+  # is writable.
+  MUTABLE_MISA_M: false
+  MUTABLE_MISA_A: false
+  MUTABLE_MISA_C: false
+  MUTABLE_MISA_F: false
+
+  # ---- floating point (F) ----
+  # rv_hart_fp sets FS to Dirty on every instruction that writes an f
+  # register, which is the "precise" behaviour.
+  HW_MSTATUS_FS_DIRTY_UPDATE: precise
+  # All four states are supported: Off disables the FPU, and the other three
+  # are distinguished so software can track whether FP state needs saving.
+  MSTATUS_FS_LEGAL_VALUES: [0, 1, 2, 3]
+  MISA_CSR_IMPLEMENTED: true
+
+  # ---- traps ----
+  TRAP_ON_ECALL_FROM_M: true
+  TRAP_ON_EBREAK: true
+  TRAP_ON_UNIMPLEMENTED_INSTRUCTION: true
+  TRAP_ON_RESERVED_INSTRUCTION: true
+  TRAP_ON_UNIMPLEMENTED_CSR: true
+  # CSR writes are masked to the implemented fields (WARL), never trapped.
+  TRAP_ON_ILLEGAL_WLRL: false
+
+  # ---- mtval ----
+  # rv_hart_trap stores the faulting address for every address-related
+  # cause, the pc for breakpoints, and the encoding for illegal
+  # instructions.
+  REPORT_VA_IN_MTVAL_ON_BREAKPOINT: true
+  REPORT_VA_IN_MTVAL_ON_LOAD_MISALIGNED: true
+  REPORT_VA_IN_MTVAL_ON_STORE_AMO_MISALIGNED: true
+  REPORT_VA_IN_MTVAL_ON_INSTRUCTION_MISALIGNED: true
+  REPORT_VA_IN_MTVAL_ON_LOAD_ACCESS_FAULT: true
+  REPORT_VA_IN_MTVAL_ON_STORE_AMO_ACCESS_FAULT: true
+  REPORT_VA_IN_MTVAL_ON_INSTRUCTION_ACCESS_FAULT: true
+  REPORT_ENCODING_IN_MTVAL_ON_ILLEGAL_INSTRUCTION: true
+  MTVAL_WIDTH: 32
+
+  # ---- misaligned access ----
+  # This core reports rather than emulates misaligned accesses, so
+  # MISALIGNED_SPLIT_STRATEGY and MISALIGNED_MAX_ATOMICITY_GRANULE_SIZE do
+  # not apply and are deliberately absent: UDB gates both on
+  # MISALIGNED_LDST being true.
+  MISALIGNED_LDST: false
+  # Alignment is checked before the region lookup, so a misaligned access to
+  # an unmapped address reports misaligned, not access fault.
+  MISALIGNED_LDST_EXCEPTION_PRIORITY: high
+
+  # ---- atomics (Zaamo / Zalrsc) ----
+  # AMOs check alignment up front and raise, like ordinary loads and stores.
+  MISALIGNED_AMO: false
+  LRSC_MISALIGNED_BEHAVIOR: always raise misaligned exception
+  # rv_hart stores a single reserved word address, so the reservation
+  # covers exactly the access and an SC to any other address fails.
+  LRSC_RESERVATION_STRATEGY: reserve exactly enough to cover the access
+  LRSC_FAIL_ON_NON_EXACT_LRSC: true
+  # No MMU, so virtual and physical addresses are the same thing and
+  # synonyms cannot arise.
+  LRSC_FAIL_ON_VA_SYNONYM: false
+
+  # ---- counters (Zicntr) ----
+  # `time` is a real readable CSR, sourced from the CLINT's mtime rather
+  # than trapped and emulated.
+  TIME_CSR_IMPLEMENTED: true
+
+  # ---- cache blocks (Zicbom / Zicboz) ----
+  # 32 bytes matches the Cortex-M7 L1 line size, which is what the
+  # maintenance operations map onto. Must equal RV_CACHE_BLOCK_SIZE.
+  CACHE_BLOCK_SIZE: 32
+  # cbo.inval performs a real invalidate; it is not upgraded to a flush.
+  FORCE_UPGRADE_CBO_INVAL_TO_FLUSH: false
+
+  # ---- identification ----
+  # mvendorid reads as zero, the encoding reserved for a non-commercial
+  # implementation. marchid is likewise zero, which architecturally means
+  # "not implemented", so MARCHID_IMPLEMENTED is false and ARCH_ID_VALUE is
+  # omitted (UDB requires it to be non-zero when it is implemented).
+  VENDOR_ID_BANK: 0x0
+  VENDOR_ID_OFFSET: 0x0
+  MARCHID_IMPLEMENTED: false
+  MIMPID_IMPLEMENTED: true
+  IMP_ID_VALUE: 0x00010000
+  CONFIG_PTR_ADDRESS: 0
+
+  # ---- mtvec ----
+  # Both direct and vectored modes are supported; a reserved mode value is
+  # rejected and the previous mode kept (WARL).
+  MTVEC_MODES: [0, 1]
+  MTVEC_ACCESS: rw
+  MTVEC_ILLEGAL_WRITE_BEHAVIOR: custom
+  # Only the low two bits are masked, so BASE needs 4-byte alignment.
+  MTVEC_BASE_ALIGNMENT_DIRECT: 4
+  MTVEC_BASE_ALIGNMENT_VECTORED: 4
+
+  # ---- U ----
+  # A list: a hart may support several widths below M. This one supports
+  # only 32, but the parameter is still a list and a scalar is rejected.
+  UXLEN: [32]
+  U_MODE_ENDIANNESS: little
+  # ECALL from U reports cause 8 rather than being merged into M's 11.
+  TRAP_ON_ECALL_FROM_U: true
+  # misa is read-only: rv_hart_misa fixes the extension set at build time,
+  # so U cannot be switched off by writing it.
+  MUTABLE_MISA_U: false
+
+  # ---- Sm ----
+  PRECISE_SYNCHRONOUS_EXCEPTIONS: true
+  PMA_GRANULARITY: 2
+  # 16, matching RV_PMP_ENTRIES. Declaring zero excluded the entire
+  # priv/pmp test family, every test of which requires '>0' -- so PMP has
+  # never been exercised by the official suite despite being implemented.
+  NUM_PMP_ENTRIES: 16
+  NUM_USABLE_PMP_ENTRIES: 16
+  # log2 of the granule in bytes, so 2 is the 4-byte granule NA4 needs. This
+  # is not the privileged spec's G, which is 0 for the same granule and is
+  # what sail.json's pmp.grain means.
+  PMP_GRANULARITY: 2
+  PMP_TOR_SUPPORTED: true
+  PMP_NA4_SUPPORTED: true
+  PMP_NAPOT_SUPPORTED: true
+
+  # ---- counters ----
+  # mcycle and minstret only; no hardware performance monitors.
+  HPM_COUNTER_EN:
+    [
+      false, false, false, false, false, false, false, false,
+      false, false, false, false, false, false, false, false,
+      false, false, false, false, false, false, false, false,
+      false, false, false, false, false, false, false, false,
+    ]
+  # mcounteren is hardwired to zero: there is no lower privilege level for
+  # it to grant anything to.
+  MCOUNTENABLE_EN:
+    [
+      false, false, false, false, false, false, false, false,
+      false, false, false, false, false, false, false, false,
+      false, false, false, false, false, false, false, false,
+      false, false, false, false, false, false, false, false,
+    ]
+  MCOUNTINHIBIT_IMPLEMENTED: true
+  # CY (bit 0) and IR (bit 2) are writable; TM is always false per UDB.
+  COUNTINHIBIT_EN:
+    [
+      true, false, true, false, false, false, false, false,
+      false, false, false, false, false, false, false, false,
+      false, false, false, false, false, false, false, false,
+      false, false, false, false, false, false, false, false,
+    ]
+# end

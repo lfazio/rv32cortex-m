@@ -22,8 +22,24 @@ set(CMAKE_SYSTEM_PROCESSOR arm)
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 
 set(RV32_ARM_TOOLCHAIN_PREFIX "arm-none-eabi-" CACHE STRING "Cross toolchain prefix")
-set(RV32_ARM_CPU       "cortex-m4"   CACHE STRING "Target CPU (-mcpu)")
-set(RV32_ARM_FPU       "fpv4-sp-d16" CACHE STRING "Target FPU (-mfpu); empty for soft-float")
+
+# Defaults follow RV32_PLATFORM, which is already in the cache by the time
+# the toolchain file runs because it comes from the command line. Getting
+# this wrong is not a build error: -mcpu=cortex-m4 code runs on a Cortex-M7
+# and simply never uses its caches or its wider pipeline, so the port would
+# look like it worked and quietly leave most of the part behind.
+if(RV32_PLATFORM STREQUAL "stm32f746")
+    set(_def_cpu "cortex-m7")
+    # The F7 FPU is single precision only, like the M4's -- fpv5-d16 would
+    # emit double-precision instructions this part does not have.
+    set(_def_fpu "fpv5-sp-d16")
+else()
+    set(_def_cpu "cortex-m4")
+    set(_def_fpu "fpv4-sp-d16")
+endif()
+
+set(RV32_ARM_CPU       "${_def_cpu}" CACHE STRING "Target CPU (-mcpu)")
+set(RV32_ARM_FPU       "${_def_fpu}" CACHE STRING "Target FPU (-mfpu); empty for soft-float")
 set(RV32_ARM_FLOAT_ABI "hard"        CACHE STRING "Float ABI (-mfloat-abi)")
 
 find_program(CMAKE_C_COMPILER   ${RV32_ARM_TOOLCHAIN_PREFIX}gcc REQUIRED)

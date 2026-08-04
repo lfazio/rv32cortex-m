@@ -1,6 +1,6 @@
 # rv32cortex-m
 
-A RISC-V **RV32IMAC** emulator that runs on ARM Cortex-M microcontrollers, with
+A RISC-V **RV32** emulator that runs on ARM Cortex-M microcontrollers, with
 the emulated guest driving the host's **real peripherals** through an
 identity-mapped passthrough window.
 
@@ -547,7 +547,7 @@ into each test, which then reports `RVCP-SUMMARY: TEST PASSED/FAILED` and sets
 its exit status.
 
 Our device description lives in
-[`tests/arch-test/`](tests/arch-test/rv32cortex-m-rv32imac) — a UDB
+[`tests/arch-test/`](tests/arch-test/rv32cortex-m-rv32) — a UDB
 configuration, a Sail model configuration, the `RVMODEL_*` macros and a linker
 script — and is version controlled with the emulator rather than inside a
 third-party clone. `scripts/run-arch-test.sh` fetches the suite, the Sail model
@@ -579,7 +579,7 @@ Worth recording, because each was a genuine defect:
 | `riscv-tests` `instret_overflow` | a CSR write to `minstret` must *replace* that instruction's increment, not be followed by it |
 | `riscv-arch-test` `Zicntr` | the Sail config declared a clock tick every 100 instructions while the emulator ticks every instruction |
 | `riscv-arch-test` `Zacas` | the Sail config declared `atomic_support: AMOArithmetic` on guest RAM, so the golden model **trapped** on `amocas` and baked trap-derived values into the signatures — three sessions were spent looking for an emulator bug that was never there |
-| `riscv-tests` `rv32mi/csr` | the suite was built for `rv32imac` while `misa` advertised F. The test detects exactly that mismatch and fails on purpose; the emulator was correct and the runner's `-march` was not |
+| `riscv-tests` `rv32mi/csr` | the suite was built without F while `misa` advertised it. The test detects exactly that mismatch and fails on purpose; the emulator was correct and the runner's `-march` was not |
 | hardware `isatest` | the JIT's inlined store wrote guest RAM without consulting PMP, so a protected region was writable under the JIT and not under the interpreter |
 
 The RVC expansion table in [`tests/unit/test_decode.c`](tests/unit/test_decode.c)
@@ -772,7 +772,7 @@ column is the same guest source rebuilt with `-march=..._zba_zbb_zbc_zbs`.
 
 | Workload | | Interpreter | JIT |
 |---|---|---|---|
-| CoreMark | RV32IMAC | 35.7 | 35.9 |
+| CoreMark | RV32 | 35.7 | 35.9 |
 | CoreMark | + B | **28.7** | 33.4 |
 | `bench`  | + B | 127.2 | **28.7** |
 
@@ -996,7 +996,7 @@ Guest images (`tests/guest/`):
 
 | Image | Purpose |
 |---|---|
-| `isatest` | 104-check RV32IMAC self-test, including traps and CBO |
+| `isatest` | RV32 self-test, including traps and CBO |
 | `hello`   | smallest useful guest; confirms the console path |
 | `bench`   | compute-bound workload for throughput measurement |
 | `stm32drv`| GPIO and USART2 drivers written as guest code |

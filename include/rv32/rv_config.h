@@ -110,6 +110,25 @@
 #  error "S-mode requires U-mode"
 #endif
 
+/*
+ * Does the ARM host have caches?
+ *
+ * Only the JIT cares, and it cares a great deal: it writes instructions as
+ * data and then branches to them. On a Cortex-M4 there are no caches and
+ * ordering is the whole problem, so DSB/ISB is the whole answer. On a
+ * Cortex-M7 the bytes sit in the data cache while the instruction side
+ * fetches through its own, and without maintenance the core executes
+ * whatever was at those addresses before -- which is not a subtle
+ * misbehaviour, it is arbitrary code.
+ *
+ * Set by the platform, because nothing about the compiler flags
+ * distinguishes the two: -mcpu=cortex-m4 and -mcpu=cortex-m7 both define
+ * __ARM_ARCH_7EM__.
+ */
+#ifndef RV_ARM_HAS_CACHES
+#  define RV_ARM_HAS_CACHES 0
+#endif
+
 #ifndef RV_EXT_PMP
 #  define RV_EXT_PMP    1
 #endif

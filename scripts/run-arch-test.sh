@@ -22,7 +22,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 suite="${ARCH_TEST_DIR:-$here/build/arch-test}"
 runner="${RV32_HOST:-$here/build/host/rv32-host}"
 
-cfg_name="rv32cortex-m-rv32imac"
+cfg_name="rv32cortex-m-rv32"
 cfg_src="$here/tests/arch-test/$cfg_name"
 
 # The test suites to build, which ACT selects by *directory name* under

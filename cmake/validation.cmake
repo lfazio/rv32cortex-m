@@ -2,7 +2,7 @@
 #
 # Validation targets.
 #
-#   make arch-test          official riscv-arch-test, full RV32IMAC set
+#   make arch-test          official riscv-arch-test, the full set
 #   make arch-test-quick    same, base integer set only (fast smoke check)
 #   make riscv-tests        the older Berkeley riscv-tests suite
 #   make validate           unit + guest self-test + arch-test
@@ -27,7 +27,7 @@ add_custom_target(arch-test
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     DEPENDS rv32-host
     USES_TERMINAL
-    COMMENT "Running the official RISC-V architecture tests (RV32IMAC)")
+    COMMENT "Running the official RISC-V architecture tests")
 
 add_custom_target(arch-test-quick
     COMMAND "${_scripts}/run-arch-test.sh" --extensions I

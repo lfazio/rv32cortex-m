@@ -5,6 +5,8 @@
 # The vendor driver pack supplies the startup code, the device headers,
 # system_stm32f4xx.c and the HAL drivers; only the emulator glue is local.
 
+# Which vendor pack to fetch; see the note in stm32f746/CMakeLists.txt.
+set(STM32CUBE_FAMILY "f4")
 include(${CMAKE_SOURCE_DIR}/cmake/stm32cube.cmake)
 
 set(RV32_GUEST "isatest" CACHE STRING "Guest image to embed in the firmware")

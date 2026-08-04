@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * main.c - RV32IMAC emulator firmware for the Nucleo-F446RE.
+ * main.c - RV32 emulator firmware for the Nucleo-F446RE.
  *
  * Bring-up is done entirely with ST's own driver pack: the CMSIS device
  * headers for register definitions, ST's startup file and

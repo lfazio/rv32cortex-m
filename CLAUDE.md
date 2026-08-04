@@ -13,6 +13,12 @@ cmake -B build/host -DRV32_PLATFORM=host -DCMAKE_BUILD_TYPE=Release
 cmake --build build/host && ctest --test-dir build/host -L fast
 
 # firmware
+cmake -B build/f746 -DRV32_PLATFORM=stm32f746 \
+      -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
+      -DCMAKE_BUILD_TYPE=Release -DRV32_GUEST=isatest
+cmake --build build/f746 --target flash
+
+# the older board; RV32_PLATFORM picks the CPU, FPU and vendor pack
 cmake -B build/stm32f446 -DRV32_PLATFORM=stm32f446 \
       -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
       -DCMAKE_BUILD_TYPE=Release -DRV32_GUEST=isatest
@@ -47,8 +53,12 @@ The JIT cannot be exercised by the x86 host suites. Validate it by flashing
 `isatest` (104 checks) and reading the UART — **this has caught real JIT bugs**,
 including an inlined store that skipped the LR/SC reservation break.
 
-Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
-`probe-rs download --chip STM32F446RETx <elf>` then `probe-rs reset`.
+Hardware: Nucleo-**F746ZG** (Cortex-M7, 216 MHz) on ST-LINK, console
+`/dev/ttyACM1` at 115200 8N1 -- a Nucleo-144 puts the VCP on USART3
+(PD8/PD9), not USART2. `probe-rs download --chip STM32F746ZGTx <elf>` then
+`probe-rs reset`; add `--connect-under-reset` when running firmware holds
+the debug port. The Nucleo-F446RE is still supported and is
+`--chip STM32F446RETx` on `/dev/ttyACM0`.
 
 ## Things that have bitten, and will again
 
@@ -263,6 +273,35 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
   through them ends in "matching nothing permits". Any privilege work
   should assume the PMP code is wrong until the privileged tests say
   otherwise -- and they will not run until the suite is *named* correctly.
+- **Porting to a Cortex-M7 is mostly about the two things the M4 does not
+  have: caches and a DWT lock.** The JIT writes instructions as data and
+  branches to them, which needs a real clean-to-PoU and I-cache invalidate
+  by address, not the DSB/ISB that sufficed with no caches -- getting it
+  wrong executes arbitrary bytes rather than producing a wrong answer.
+  `RV_ARM_HAS_CACHES` is set by the platform because nothing in the
+  compiler flags distinguishes the parts: `-mcpu=cortex-m4` and
+  `-mcpu=cortex-m7` both define `__ARM_ARCH_7EM__`. And the M7 implements
+  the optional DWT software lock, so `DWT->LAR = 0xC5ACCE55` has to come
+  before enabling CYCCNT; without it the writes are discarded silently, the
+  cycle counter never runs, and every guest timer interrupt stops -- which
+  is exactly how it presented (`timer-fired` and `timer-cause`, nothing
+  else).
+- **The other F7 differences are the ones that fail loudly, and so cost
+  nothing.** `USART_TypeDef` splits F4's `DR` into `RDR`/`TDR`, which does
+  not compile. The ones that would have been silent are in the HAL config:
+  F4 spells the flash accelerator `INSTRUCTION_CACHE_ENABLE` /
+  `DATA_CACHE_ENABLE` and F7 spells it `ART_ACCELERATOR_ENABLE`, so a
+  renamed F4 `hal_conf.h` leaves the accelerator off with nothing to show
+  for it. Do not rename the vendor config; start from the family's own
+  template.
+- **The peripheral policy table survived the move, and that is a checked
+  result rather than luck.** PWR, RCC and the flash interface sit at
+  identical addresses in RM0390 and RM0385, and everything the F7 adds
+  falls inside spans that were already read-write. Check the boundary
+  table before assuming this again for another part.
+- **`set(STM32CUBE_FAMILY ...)` has to precede the `include()`.** After it,
+  the pack has already been chosen and fetched, so the line is a no-op that
+  reads exactly like a fix.
 - **A failing arch test may be the Sail config, not the emulator.** ACT runs the
   golden model to bake expected values into each test, so a wrong `sail.json`
   produces wrong expectations. `amocas` failed for three sessions because guest

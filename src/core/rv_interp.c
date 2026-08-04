@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * rv_interp.c - Threaded RV32IMAC interpreter.
+ * rv_interp.c - Threaded RV32 interpreter.
  *
  * One instruction per loop iteration:
  *

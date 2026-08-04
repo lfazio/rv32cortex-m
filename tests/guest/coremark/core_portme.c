@@ -8,7 +8,7 @@
  * and output goes to the virtual console UART.
  *
  * Built with HAS_FLOAT=0 so nothing here needs soft-float support: guest
- * images link -nostdlib and RV32IMAC has no FPU, so pulling in the
+ * images link -nostdlib, so pulling in the
  * floating-point helpers would mean linking libgcc for the sake of
  * printing one number. CoreMark reports ticks instead, and the iteration
  * count and tick rate are enough to compute the score.

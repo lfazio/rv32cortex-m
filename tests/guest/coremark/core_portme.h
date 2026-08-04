@@ -4,7 +4,7 @@
  *
  * Derived from CoreMark's barebones port. The differences that matter:
  *
- *   HAS_FLOAT 0     guest images link -nostdlib and RV32IMAC has no FPU,
+ *   HAS_FLOAT 0     guest images link -nostdlib, so there is no printf
  *                   so avoiding float avoids needing libgcc's soft-float
  *   HAS_TIME_H 0    no C library
  *   MEM_METHOD      MEM_STATIC, because there is no allocator
@@ -21,7 +21,7 @@
 #define HAS_PRINTF  0
 
 #define COMPILER_VERSION "GCC" __VERSION__
-#define COMPILER_FLAGS   "-O2 -march=rv32imac"
+#define COMPILER_FLAGS   "-O2"
 #define MEM_LOCATION     "STATIC"
 
 /* ---- data types ---- */

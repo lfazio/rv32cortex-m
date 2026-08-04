@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * rv_disasm.c - RV32IMAC disassembler.
+ * rv_disasm.c - RV32 disassembler.
  *
  * Formatting is done with a small hand-rolled emitter rather than snprintf
  * so the firmware does not have to pull in the printf machinery; on a part

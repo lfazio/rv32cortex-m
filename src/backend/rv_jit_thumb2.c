@@ -423,9 +423,47 @@ static void rebuild_hash(void)
     }
 }
 
-/* Make the code just written visible to the instruction side. */
-static void sync_icache(void)
+/*
+ * Make the code just written visible to the instruction side.
+ *
+ * Without caches this is purely about ordering and DSB/ISB covers it. With
+ * them the freshly written instructions are still in the data cache, and
+ * the instruction side has a separate one holding whatever those addresses
+ * used to contain -- so the lines must be cleaned out to the point of
+ * unification and the stale instruction lines discarded, in that order.
+ * Getting it wrong does not corrupt a result; it executes arbitrary bytes.
+ *
+ * By address rather than wholesale: a full clean of a 320 KB data cache on
+ * every translation would cost more than the translation. The registers are
+ * written directly instead of through CMSIS because this file is already
+ * the one part of the core that knows the host is ARM, and the library it
+ * belongs to does not depend on the vendor pack.
+ */
+static void sync_icache(const void *addr, uint32_t len)
 {
+#if RV_ARM_HAS_CACHES
+    /* ARMv7-M SCB, clean/invalidate by MVA to the point of unification. */
+    volatile uint32_t *const dccmvau = (volatile uint32_t *)0xE000EF64u;
+    volatile uint32_t *const icimvau = (volatile uint32_t *)0xE000EF58u;
+    /* Both caches are 32 bytes per line on every Cortex-M7. */
+    const uint32_t line = 32u;
+    const uint32_t base = (uint32_t)(uintptr_t)addr & ~(line - 1u);
+    const uint32_t end  = (uint32_t)(uintptr_t)addr + len;
+
+    for (uint32_t p = base; p < end; p += line) {
+        *dccmvau = p;
+    }
+    /* The clean must have landed before the instruction side is told to
+     * re-read those addresses, or it can refill from memory that has not
+     * been written back yet. */
+    __asm__ volatile ("dsb 0xF" ::: "memory");
+    for (uint32_t p = base; p < end; p += line) {
+        *icimvau = p;
+    }
+#else
+    (void)addr;
+    (void)len;
+#endif
 #if defined(__ARM_ARCH)
     __asm__ volatile ("dsb 0xF" ::: "memory");
     __asm__ volatile ("isb 0xF" ::: "memory");
@@ -499,7 +537,9 @@ static void compact(void)
     g_block_count = kept;
     g_code_used = (uint32_t)(dst - g_code);
     rebuild_hash();
-    sync_icache();
+    /* Compaction moved every surviving block, so the whole live range of
+     * the buffer is freshly written. */
+    sync_icache(g_code, g_code_used);
     g_stats.compactions++;
 }
 
@@ -3013,13 +3053,8 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
         }
     }
 
-    /*
-     * The code was written as data. On ARMv7-M without a data cache a DSB
-     * followed by an ISB is what makes it visible to the instruction side;
-     * on a core with caches the platform's cache maintenance would also be
-     * required before this point.
-     */
-    sync_icache();
+    /* The code was written as data; make it fetchable. */
+    sync_icache(b->code, b->code_len);
 
     return b;
 }

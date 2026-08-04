@@ -2,7 +2,7 @@
 /*
  * rv_csr.c - Machine-mode control and status registers.
  *
- * Only the CSRs that a machine-mode-only RV32IMAC core actually needs are
+ * Only the CSRs this core actually implements are
  * implemented. Anything else raises an illegal-instruction exception, which
  * is the architecturally correct response to an access to a non-existent
  * CSR and is also how guest software probes for optional features.
