@@ -232,6 +232,13 @@ static void dump_state(const rv_hart_t *h)
     fprintf(stderr, "  mcause  %08x  (%s)\n", h->mcause, cause_name(h->mcause));
     fprintf(stderr, "  mepc    %08x   mtval %08x\n", h->mepc, h->mtval);
     fprintf(stderr, "  mstatus %08x   mtvec %08x\n", h->mstatus, h->mtvec);
+    fprintf(stderr, "  priv    %u\n", (unsigned)h->priv);
+#if RV_EXT_S
+    fprintf(stderr, "  scause  %08x   sepc  %08x  stval %08x\n",
+            h->scause, h->sepc, h->stval);
+    fprintf(stderr, "  stvec   %08x   medeleg %08x  mideleg %08x\n",
+            h->stvec, h->medeleg, h->mideleg);
+#endif
     for (unsigned i = 0; i < 32u; i += 4u) {
         fprintf(stderr, "  ");
         for (unsigned j = 0; j < 4u; j++) {

@@ -43,6 +43,9 @@ typedef uint32_t rv_exc_t;
 #define RV_EXC_STORE_PAGE_FAULT     15u
 
 /* Interrupt cause codes (mcause with the MSB set). */
+#define RV_INT_S_SOFT               1u
+#define RV_INT_S_TIMER              5u
+#define RV_INT_S_EXT                9u
 #define RV_INT_M_SOFT               3u
 #define RV_INT_M_TIMER              7u
 #define RV_INT_M_EXT                11u

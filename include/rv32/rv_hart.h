@@ -74,6 +74,25 @@ typedef struct rv_hart {
     uint32_t fcsr;               /* frm in [7:5], fflags in [4:0] */
 #endif
 
+    uint32_t mcounteren;
+
+#if RV_EXT_S
+    /*
+     * The supervisor bank. sstatus, sie and sip are deliberately absent:
+     * they are restricted *views* of mstatus, mie and mip rather than
+     * registers, so giving them storage would be two places for one piece
+     * of state and one of them would go stale.
+     */
+    uint32_t stvec;
+    uint32_t sscratch;
+    uint32_t sepc;
+    uint32_t scause;
+    uint32_t stval;
+    uint32_t scounteren;
+    uint32_t medeleg;
+    uint32_t mideleg;
+#endif
+
 #if RV_EXT_SDTRIG
     uint32_t tselect;
     uint32_t tdata1[RV_TRIG_COUNT];
@@ -209,6 +228,25 @@ void rv_hart_trap(rv_hart_t *h, uint32_t cause, uint32_t tval);
  * mstatus.MIE, so it returns nothing while interrupts are globally masked.
  */
 rv_exc_t rv_hart_pending_irq(const rv_hart_t *h);
+
+/*
+ * True if WFI should resume.
+ *
+ * Deliberately *not* rv_hart_pending_irq. The enable bits mstatus.MIE and
+ * mstatus.SIE decide whether a trap is taken; they do not decide whether a
+ * parked hart wakes. The spec is explicit that the global enable is not
+ * consulted for resumption, and the reason is visible the moment there is
+ * a second privilege level: a supervisor executing WFI with SIE clear --
+ * which is the normal state inside its own trap handler -- would otherwise
+ * park forever on an interrupt that is pending and enabled for it.
+ *
+ * Waking without a deliverable interrupt is harmless and intended:
+ * execution simply resumes at the instruction after the WFI.
+ */
+static RV_ALWAYS_INLINE bool rv_hart_wfi_wake(const rv_hart_t *h)
+{
+    return (h->mip & h->mie) != 0u;
+}
 
 /* Raise or clear a device interrupt line (RV_INT_M_*). */
 void rv_hart_set_irq(rv_hart_t *h, unsigned cause, bool level);

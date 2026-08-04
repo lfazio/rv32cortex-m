@@ -40,6 +40,32 @@ static uint64_t read_time(const rv_hart_t *h)
     return h->mcycle;
 }
 
+/*
+ * May the current privilege read this unprivileged counter shadow?
+ *
+ * mcounteren gates S-mode, and scounteren gates U-mode *in addition* --
+ * a supervisor can withhold from its users what M-mode granted it, but
+ * cannot grant what it was not given. M-mode is never gated.
+ */
+static bool counter_enabled(const rv_hart_t *h, uint32_t csr)
+{
+    if (h->priv == RV_PRIV_M) {
+        return true;
+    }
+    /* cycle/time/instret are bits 0/1/2 of both registers. */
+    const uint32_t bit = 1u << (csr & 3u);
+
+    if ((h->mcounteren & bit) == 0u) {
+        return false;
+    }
+#if RV_EXT_S
+    if (h->priv == RV_PRIV_U && (h->scounteren & bit) == 0u) {
+        return false;
+    }
+#endif
+    return true;
+}
+
 /* ------------------------------------------------------------------ */
 /* Read                                                                */
 /* ------------------------------------------------------------------ */
@@ -70,13 +96,43 @@ rv_exc_t rv_csr_read(rv_hart_t *h, uint32_t csr, uint32_t *out)
     case CSR_MISA:          *out = rv_hart_misa(); break;
     case CSR_MIE:           *out = h->mie;       break;
     case CSR_MTVEC:         *out = h->mtvec;     break;
-    /*
-     * No S or U mode, so nothing can be delegated and no counters can be
-     * enabled for a lower privilege level. These read as zero (WARL).
-     */
+#if RV_EXT_S
+    case CSR_MEDELEG:       *out = h->medeleg;   break;
+    case CSR_MIDELEG:       *out = h->mideleg;   break;
+#else
+    /* Nothing to delegate to, so both read as zero (WARL). */
     case CSR_MEDELEG:
-    case CSR_MIDELEG:
-    case CSR_MCOUNTEREN:    *out = 0u;           break;
+    case CSR_MIDELEG:       *out = 0u;           break;
+#endif
+    case CSR_MCOUNTEREN:    *out = h->mcounteren; break;
+
+#if RV_EXT_S
+    /* --- supervisor trap setup --- */
+    case CSR_SSTATUS:       *out = h->mstatus & SSTATUS_RMASK;   break;
+    /*
+     * sie and sip show only the delegated interrupts. An interrupt M-mode
+     * has kept is not the supervisor's to see, let alone to mask.
+     */
+    case CSR_SIE:           *out = h->mie & h->mideleg;          break;
+    case CSR_SIP:           *out = h->mip & h->mideleg;          break;
+    case CSR_STVEC:         *out = h->stvec;     break;
+    case CSR_SCOUNTEREN:    *out = h->scounteren; break;
+
+    /* --- supervisor trap handling --- */
+    case CSR_SSCRATCH:      *out = h->sscratch;  break;
+    case CSR_SEPC:          *out = h->sepc;      break;
+    case CSR_SCAUSE:        *out = h->scause;    break;
+    case CSR_STVAL:         *out = h->stval;     break;
+
+    /*
+     * satp exists and reads zero, which is Bare -- the only mode this core
+     * has. It must not trap: a supervisor reads it to find out what
+     * translation is available, and an illegal instruction is not an
+     * answer to that question. TVM would be the way to make it trap, and
+     * TVM is hardwired zero here for the same reason SUM and MXR are.
+     */
+    case CSR_SATP:          *out = 0u;           break;
+#endif
 
     /* --- trap handling --- */
     case CSR_MSCRATCH:      *out = h->mscratch;  break;
@@ -117,16 +173,32 @@ rv_exc_t rv_csr_read(rv_hart_t *h, uint32_t csr, uint32_t *out)
 
     /* --- counters --- */
 #if RV_EXT_ZICNTR
-    case CSR_MCYCLE:
-    case CSR_CYCLE:         *out = (uint32_t)h->mcycle;          break;
-    case CSR_MCYCLEH:
-    case CSR_CYCLEH:        *out = (uint32_t)(h->mcycle >> 32);  break;
-    case CSR_MINSTRET:
-    case CSR_INSTRET:       *out = (uint32_t)h->minstret;        break;
-    case CSR_MINSTRETH:
-    case CSR_INSTRETH:      *out = (uint32_t)(h->minstret >> 32); break;
-    case CSR_TIME:          *out = (uint32_t)read_time(h);        break;
-    case CSR_TIMEH:         *out = (uint32_t)(read_time(h) >> 32); break;
+    /*
+     * The unprivileged shadows are readable only where mcounteren (for
+     * S-mode) and then scounteren (for U-mode) allow it. The machine
+     * numbers above have their own privilege from csr_min_priv and are not
+     * affected; this is only about cycle/time/instret.
+     */
+    case CSR_CYCLE: case CSR_CYCLEH:
+    case CSR_TIME:  case CSR_TIMEH:
+    case CSR_INSTRET: case CSR_INSTRETH:
+        if (!counter_enabled(h, csr)) {
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        switch (csr) {
+        case CSR_CYCLE:    *out = (uint32_t)h->mcycle;           break;
+        case CSR_CYCLEH:   *out = (uint32_t)(h->mcycle >> 32);   break;
+        case CSR_INSTRET:  *out = (uint32_t)h->minstret;         break;
+        case CSR_INSTRETH: *out = (uint32_t)(h->minstret >> 32); break;
+        case CSR_TIME:     *out = (uint32_t)read_time(h);        break;
+        default:           *out = (uint32_t)(read_time(h) >> 32); break;
+        }
+        break;
+
+    case CSR_MCYCLE:        *out = (uint32_t)h->mcycle;          break;
+    case CSR_MCYCLEH:       *out = (uint32_t)(h->mcycle >> 32);  break;
+    case CSR_MINSTRET:      *out = (uint32_t)h->minstret;        break;
+    case CSR_MINSTRETH:     *out = (uint32_t)(h->minstret >> 32); break;
     case CSR_MCOUNTINHIBIT: *out = h->mcountinhibit;              break;
 #endif
 
@@ -178,6 +250,78 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
     case CSR_MSTATUSH:
         break;   /* all implemented fields are read-only zero */
 
+#if RV_EXT_S
+    case CSR_SSTATUS:
+        /*
+         * A view, not a register: only the S-visible bits move, and the
+         * machine bits sharing the word are left exactly as they were.
+         * Writing mstatus wholesale here would let a supervisor clear MIE.
+         */
+        h->mstatus = (h->mstatus & ~SSTATUS_WMASK) | (val & SSTATUS_WMASK);
+#if RV_LAZY_IRQ_CHECK
+        h->irq_dirty = true;   /* SIE may have been set */
+#endif
+        break;
+
+    case CSR_SIE:
+        /* Only the delegated bits, and only those, are the supervisor's. */
+        h->mie = (h->mie & ~h->mideleg) | (val & h->mideleg & MIE_WMASK);
+#if RV_LAZY_IRQ_CHECK
+        h->irq_dirty = true;
+#endif
+        break;
+
+    case CSR_SIP:
+        /*
+         * Of the delegated interrupts a supervisor may only clear its own
+         * software one; the timer and external bits belong to whatever
+         * raises them.
+         */
+        h->mip = (h->mip & ~(h->mideleg & MIP_SSIP))
+               | (val & h->mideleg & MIP_SSIP);
+#if RV_LAZY_IRQ_CHECK
+        h->irq_dirty = true;
+#endif
+        break;
+
+    case CSR_STVEC:
+        /* Same WARL rule as mtvec: only direct and vectored exist. */
+        if ((val & MTVEC_MODE_MASK) <= MTVEC_MODE_VECTORED) {
+            h->stvec = val & ~2u;
+        }
+        break;
+
+    case CSR_SCOUNTEREN:  h->scounteren = val & 0x7u; break;
+    case CSR_SSCRATCH:    h->sscratch = val;          break;
+    case CSR_SEPC:        h->sepc = val & ~1u;        break;
+    case CSR_SCAUSE:      h->scause = val;            break;
+    case CSR_STVAL:       h->stval = val;             break;
+
+    case CSR_SATP:
+        /*
+         * Entirely WARL to zero. With Bare the only mode, there is no ASID
+         * to hold and no root page number to point at, so there is nothing
+         * for a write to keep.
+         */
+        break;
+
+    case CSR_MEDELEG:
+        h->medeleg = val & MEDELEG_WMASK;
+        break;
+
+    case CSR_MIDELEG:
+        h->mideleg = val & MIDELEG_WMASK;
+#if RV_LAZY_IRQ_CHECK
+        /* Moving an interrupt between M and S changes who may take it. */
+        h->irq_dirty = true;
+#endif
+        break;
+#endif /* RV_EXT_S */
+
+    case CSR_MCOUNTEREN:
+        h->mcounteren = val & 0x7u;
+        break;
+
     case CSR_MISA:
         break;   /* the extension set is fixed at build time */
 
@@ -199,10 +343,11 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
         h->mtvec = val;
         break;
 
+#if !RV_EXT_S
     case CSR_MEDELEG:
     case CSR_MIDELEG:
-    case CSR_MCOUNTEREN:
-        break;   /* no lower privilege levels; hardwired zero */
+        break;   /* nothing to delegate to; hardwired zero */
+#endif
 
     case CSR_MSCRATCH:
         h->mscratch = val;
@@ -368,6 +513,18 @@ const char *rv_csr_name(uint32_t csr)
     case CSR_MIE:           return "mie";
     case CSR_MTVEC:         return "mtvec";
     case CSR_MCOUNTEREN:    return "mcounteren";
+#if RV_EXT_S
+    case CSR_SSTATUS:       return "sstatus";
+    case CSR_SIE:           return "sie";
+    case CSR_STVEC:         return "stvec";
+    case CSR_SCOUNTEREN:    return "scounteren";
+    case CSR_SSCRATCH:      return "sscratch";
+    case CSR_SEPC:          return "sepc";
+    case CSR_SCAUSE:        return "scause";
+    case CSR_STVAL:         return "stval";
+    case CSR_SIP:           return "sip";
+    case CSR_SATP:          return "satp";
+#endif
     case CSR_MSTATUSH:      return "mstatush";
     case CSR_MSCRATCH:      return "mscratch";
     case CSR_MEPC:          return "mepc";

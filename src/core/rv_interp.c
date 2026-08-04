@@ -230,7 +230,7 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
      * that cannot occur while the loop is running.
      */
     if (RV_UNLIKELY(h->state == RV_STATE_WFI)) {
-        if (rv_hart_pending_irq(h) == RV_EXC_NONE) {
+        if (!rv_hart_wfi_wake(h)) {
             if (retired != NULL) {
                 *retired = 0u;
             }
@@ -791,7 +791,11 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
                         }
                     }
 #endif
-#if RV_EXT_U
+#if RV_EXT_S
+                    TRAP((h->priv == RV_PRIV_U) ? RV_EXC_ECALL_U :
+                         (h->priv == RV_PRIV_S) ? RV_EXC_ECALL_S
+                                                : RV_EXC_ECALL_M, 0u);
+#elif RV_EXT_U
                     TRAP((h->priv == RV_PRIV_U) ? RV_EXC_ECALL_U
                                                 : RV_EXC_ECALL_M, 0u);
 #else
@@ -814,9 +818,24 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
 #if RV_EXT_U
                     const uint32_t mpp =
                         (h->mstatus & MSTATUS_MPP_MASK) >> MSTATUS_MPP_SHIFT;
-                    /* MPP is WARL over the supported modes; S is not one. */
-                    const uint32_t back =
-                        (mpp == RV_PRIV_U) ? RV_PRIV_U : RV_PRIV_M;
+                    /*
+                     * MPP is WARL over the modes that exist, and anything
+                     * else -- including the reserved encoding 2 -- comes
+                     * back as M. Collapsing this to "U or else M" is right
+                     * with two privilege levels and silently promotes a
+                     * supervisor to machine mode once there are three: the
+                     * trap that entered M from S then returns to M, and
+                     * every later privilege test answers the wrong
+                     * question.
+                     */
+                    uint32_t back;
+                    switch (mpp) {
+                    case RV_PRIV_U: back = RV_PRIV_U; break;
+#if RV_EXT_S
+                    case RV_PRIV_S: back = RV_PRIV_S; break;
+#endif
+                    default:        back = RV_PRIV_M; break;
+                    }
                     /*
                      * Returning below M clears MPRV. Without this, M-mode
                      * could leave data accesses borrowing U's privilege and
@@ -846,12 +865,63 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
                     break;
                 }
 
+#if RV_EXT_S
+                case 0x102u: {                  /* SRET */
+                    /*
+                     * TSR is how M-mode keeps a supervisor from returning
+                     * without its knowledge -- the hook a hypervisor needs.
+                     * It applies in S-mode only; M-mode is never trapped by
+                     * its own control bit.
+                     */
+                    if (h->priv < RV_PRIV_S ||
+                        (h->priv == RV_PRIV_S &&
+                         (h->mstatus & MSTATUS_TSR) != 0u)) {
+                        TRAP(RV_EXC_ILLEGAL_INSN, insn);
+                    }
+
+                    const uint32_t spie =
+                        (h->mstatus & MSTATUS_SPIE) ? MSTATUS_SIE : 0u;
+                    const uint32_t back = (h->mstatus & MSTATUS_SPP)
+                                        ? RV_PRIV_S : RV_PRIV_U;
+                    /*
+                     * SPP resets to U, and MPRV always clears: SRET can
+                     * only ever land below M, so the borrowed data
+                     * privilege can never survive it.
+                     */
+                    h->mstatus = (h->mstatus & ~(MSTATUS_SIE | MSTATUS_SPIE |
+                                                 MSTATUS_SPP | MSTATUS_MPRV))
+                               | spie
+                               | MSTATUS_SPIE;
+                    h->priv = (uint8_t)back;
+#if RV_EXT_PMP
+                    rv_pmp_refresh(h);
+#endif
+#if RV_LAZY_IRQ_CHECK
+                    h->irq_dirty = true;
+#endif
+                    next = h->sepc;
+                    break;
+                }
+#endif
+
                 case 0x105u:                    /* WFI */
                     /*
                      * Implemented as a hint that parks the hart. Retiring
                      * it first means mepc points past the WFI when the
                      * wake-up interrupt is taken.
                      */
+#if RV_EXT_S
+                    /*
+                     * TW makes WFI below M-mode illegal. The spec allows a
+                     * bounded wait first; raising immediately is the
+                     * degenerate legal choice of that bound, and the honest
+                     * one on a core where WFI parks until an interrupt
+                     * arrives and so has no bound of its own.
+                     */
+                    if (h->priv < RV_PRIV_M && (h->mstatus & MSTATUS_TW) != 0u) {
+                        TRAP(RV_EXC_ILLEGAL_INSN, insn);
+                    }
+#endif
                     h->state = RV_STATE_WFI;
                     break;
 

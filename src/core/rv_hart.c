@@ -42,6 +42,9 @@ uint32_t rv_hart_misa(void)
 #if RV_EXT_ZBA && RV_EXT_ZBB && RV_EXT_ZBS
     misa |= MISA_EXT('B');
 #endif
+#if RV_EXT_S
+    misa |= MISA_EXT('S');
+#endif
 #if RV_EXT_U
     misa |= MISA_EXT('U');
 #endif
@@ -85,6 +88,19 @@ void rv_hart_reset(rv_hart_t *h, uint32_t reset_pc)
      * writing mstatus; the spec leaves the reset value implementation
      * defined and leaving it Off would make every FP instruction trap. */
     h->mstatus |= (1u << MSTATUS_FS_SHIFT);
+#endif
+
+    h->mcounteren = 0u;
+
+#if RV_EXT_S
+    h->stvec = 0u;
+    h->sscratch = 0u;
+    h->sepc = 0u;
+    h->scause = 0u;
+    h->stval = 0u;
+    h->scounteren = 0u;
+    h->medeleg = 0u;
+    h->mideleg = 0u;
 #endif
 
 #if RV_EXT_SDTRIG
@@ -131,35 +147,85 @@ void rv_hart_boot(rv_hart_t *h, uint32_t ram_base, uint32_t ram_size)
 /* Traps                                                               */
 /* ------------------------------------------------------------------ */
 
+#if RV_EXT_S
+/*
+ * Does this trap go to S-mode?
+ *
+ * Only if it is delegated *and* it came from S or U. Delegation cannot
+ * move a trap taken in M-mode to a less privileged handler -- that would
+ * hand the supervisor the machine's own faults -- so the privilege test is
+ * not a shortcut for the common case, it is half the rule.
+ */
+static bool trap_to_s(const rv_hart_t *h, uint32_t cause)
+{
+    if (h->priv > RV_PRIV_S) {
+        return false;
+    }
+    const uint32_t code = cause & ~RV_CAUSE_INTERRUPT;
+    const uint32_t deleg = (cause & RV_CAUSE_INTERRUPT) ? h->mideleg
+                                                        : h->medeleg;
+    return code < 32u && ((deleg >> code) & 1u) != 0u;
+}
+#endif
+
 void rv_hart_trap(rv_hart_t *h, uint32_t cause, uint32_t tval)
 {
-    h->mepc = h->pc;
-    h->mcause = cause;
-    h->mtval = tval;
+    uint32_t tvec;
 
-    /*
-     * Push the interrupt-enable stack: MPIE takes the old MIE, MIE clears,
-     * and MPP records the privilege we came from.
-     */
-    const uint32_t mie_was = (h->mstatus & MSTATUS_MIE) ? MSTATUS_MPIE : 0u;
-    h->mstatus = (h->mstatus & ~(MSTATUS_MIE | MSTATUS_MPIE | MSTATUS_MPP_MASK))
-               | mie_was
-               | ((uint32_t)h->priv << MSTATUS_MPP_SHIFT);
+#if RV_EXT_S
+    if (trap_to_s(h, cause)) {
+        h->sepc = h->pc;
+        h->scause = cause;
+        h->stval = tval;
+
+        /*
+         * The same enable stack as the machine one, one level down: SPIE
+         * takes the old SIE, SIE clears, SPP records where we came from.
+         * SPP is a single bit because the only modes that can reach an
+         * S-mode handler are S and U.
+         */
+        const uint32_t sie_was = (h->mstatus & MSTATUS_SIE) ? MSTATUS_SPIE : 0u;
+        h->mstatus = (h->mstatus & ~(MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP))
+                   | sie_was
+                   | ((h->priv == RV_PRIV_S) ? MSTATUS_SPP : 0u);
+
+        h->priv = RV_PRIV_S;
+        tvec = h->stvec;
+    } else
+#endif
+    {
+        h->mepc = h->pc;
+        h->mcause = cause;
+        h->mtval = tval;
+
+        /*
+         * Push the interrupt-enable stack: MPIE takes the old MIE, MIE
+         * clears, and MPP records the privilege we came from.
+         */
+        const uint32_t mie_was = (h->mstatus & MSTATUS_MIE) ? MSTATUS_MPIE : 0u;
+        h->mstatus = (h->mstatus &
+                      ~(MSTATUS_MIE | MSTATUS_MPIE | MSTATUS_MPP_MASK))
+                   | mie_was
+                   | ((uint32_t)h->priv << MSTATUS_MPP_SHIFT);
+
+        h->priv = RV_PRIV_M;
+        tvec = h->mtvec;
+    }
 
 #if RV_EXT_U
     /*
-     * A trap always lands in M-mode. Refreshing PMP is not bookkeeping:
-     * whether PMP has to be consulted at all depends on the privilege
-     * level, because below M matching no entry denies rather than permits.
+     * Refreshing PMP is not bookkeeping: whether PMP has to be consulted at
+     * all depends on the privilege level, because below M matching no entry
+     * denies rather than permits. A trap into S-mode raises privilege
+     * without reaching M, so this is as load-bearing there as anywhere.
      */
-    h->priv = RV_PRIV_M;
 #  if RV_EXT_PMP
     rv_pmp_refresh(h);
 #  endif
 #endif
 
-    uint32_t base = h->mtvec & ~MTVEC_MODE_MASK;
-    if ((h->mtvec & MTVEC_MODE_MASK) == MTVEC_MODE_VECTORED &&
+    uint32_t base = tvec & ~MTVEC_MODE_MASK;
+    if ((tvec & MTVEC_MODE_MASK) == MTVEC_MODE_VECTORED &&
         (cause & RV_CAUSE_INTERRUPT)) {
         /* Vectored mode applies to interrupts only; exceptions use base. */
         base += 4u * (cause & ~RV_CAUSE_INTERRUPT);
@@ -182,24 +248,64 @@ void rv_hart_trap(rv_hart_t *h, uint32_t cause, uint32_t tval)
 
 rv_exc_t rv_hart_pending_irq(const rv_hart_t *h)
 {
-    /* Globally masked: nothing can be taken, even if pending and enabled. */
-    if ((h->mstatus & MSTATUS_MIE) == 0u) {
-        return RV_EXC_NONE;
-    }
-
-    const uint32_t active = h->mip & h->mie;
+    uint32_t active = h->mip & h->mie;
     if (active == 0u) {
         return RV_EXC_NONE;
     }
 
-    /* Priority order from the privileged spec: MEI, MSI, MTI. */
+    /*
+     * mstatus.MIE gates M-mode interrupts *only while running in M-mode*.
+     * Below M they are always enabled, because a less privileged mode is
+     * not allowed to mask the machine's own interrupts by clearing a bit it
+     * cannot even see. Testing MIE unconditionally -- which is all that was
+     * needed while M was the only mode -- means a guest that MRETs to U
+     * with MPIE clear never takes another timer interrupt and simply hangs.
+     */
+    if (h->priv == RV_PRIV_M && (h->mstatus & MSTATUS_MIE) == 0u) {
+        /* Delegated interrupts are not a way around this: an S-mode
+         * interrupt does not preempt M-mode either. */
+        return RV_EXC_NONE;
+    }
+
+#if RV_EXT_S
+    /*
+     * A delegated interrupt is destined for S-mode, so it obeys SIE rather
+     * than MIE and only while running in S; in M-mode it cannot be taken at
+     * all, and in U-mode it is always enabled. Undelegated interrupts stay
+     * with M and are already enabled by the test above.
+     */
+    if (h->priv == RV_PRIV_M) {
+        active &= ~h->mideleg;
+    } else if (h->priv == RV_PRIV_S && (h->mstatus & MSTATUS_SIE) == 0u) {
+        active &= ~h->mideleg;
+    }
+    if (active == 0u) {
+        return RV_EXC_NONE;
+    }
+#endif
+
+    /* Priority order from the privileged spec: MEI, MSI, MTI, then SEI,
+     * SSI, STI. Machine interrupts outrank supervisor ones throughout. */
     if (active & MIP_MEIP) {
         return RV_INT_M_EXT;
     }
     if (active & MIP_MSIP) {
         return RV_INT_M_SOFT;
     }
+    if (active & MIP_MTIP) {
+        return RV_INT_M_TIMER;
+    }
+#if RV_EXT_S
+    if (active & MIP_SEIP) {
+        return RV_INT_S_EXT;
+    }
+    if (active & MIP_SSIP) {
+        return RV_INT_S_SOFT;
+    }
+    return RV_INT_S_TIMER;
+#else
     return RV_INT_M_TIMER;
+#endif
 }
 
 void rv_hart_set_irq(rv_hart_t *h, unsigned cause, bool level)

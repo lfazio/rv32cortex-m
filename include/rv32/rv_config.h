@@ -85,12 +85,29 @@
  * anything at all: in M-mode an unlocked entry restricts nothing and
  * matching no entry permits, and both invert below M.
  *
- * S-mode is deliberately not implied by this. It needs a third level and a
- * second bank of mstatus/mepc/mcause/mtval, and on a core with no MMU it
- * would be entirely soft-trap.
+ * S-mode is separate (RV_EXT_S) and implies this one: the privileged spec
+ * has no configuration with S and without U.
  */
 #ifndef RV_EXT_U
 #  define RV_EXT_U      1
+#endif
+
+/*
+ * Supervisor mode.
+ *
+ * Address translation is Bare only: satp.MODE is WARL and accepts nothing
+ * but 0. Sv32 would put a page-table walk on the fetch and access paths,
+ * which is the most expensive place in this emulator to add anything --
+ * the measurements in CLAUDE.md are all about exactly that -- and it is a
+ * separate piece of work rather than a corner of this one. Everything that
+ * does not need a page table is here: the third privilege level, the S
+ * bank of CSRs, trap delegation, SRET, and the TVM/TW/TSR traps.
+ */
+#ifndef RV_EXT_S
+#  define RV_EXT_S      1
+#endif
+#if RV_EXT_S && !RV_EXT_U
+#  error "S-mode requires U-mode"
 #endif
 
 #ifndef RV_EXT_PMP

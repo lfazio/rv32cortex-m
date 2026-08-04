@@ -3209,7 +3209,7 @@ static rv_run_reason_t jit_run(rv_hart_t *h, uint32_t budget, uint32_t *retired)
     }
 
     if (RV_UNLIKELY(h->state == RV_STATE_WFI)) {
-        if (rv_hart_pending_irq(h) == RV_EXC_NONE) {
+        if (!rv_hart_wfi_wake(h)) {
             if (retired != NULL) {
                 *retired = 0u;
             }

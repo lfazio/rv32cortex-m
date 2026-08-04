@@ -68,6 +68,23 @@ struct rv_hart;
 #define CSR_MTVAL           0x343
 #define CSR_MIP             0x344
 
+/* Supervisor trap setup. sstatus/sie/sip are restricted views of the
+ * machine registers, not storage of their own. */
+#define CSR_SSTATUS         0x100
+#define CSR_SIE             0x104
+#define CSR_STVEC           0x105
+#define CSR_SCOUNTEREN      0x106
+
+/* Supervisor trap handling. */
+#define CSR_SSCRATCH        0x140
+#define CSR_SEPC            0x141
+#define CSR_SCAUSE          0x142
+#define CSR_STVAL           0x143
+#define CSR_SIP             0x144
+
+/* Supervisor address translation. Bare only here; see RV_EXT_S. */
+#define CSR_SATP            0x180
+
 /* Sdtrig debug triggers. */
 #define CSR_TSELECT         0x7A0
 #define CSR_TDATA1          0x7A1
@@ -90,11 +107,19 @@ struct rv_hart;
 /* mstatus fields                                                      */
 /* ------------------------------------------------------------------ */
 
+#define MSTATUS_SIE         (1u << 1)
 #define MSTATUS_MIE         (1u << 3)
+#define MSTATUS_SPIE        (1u << 5)
 #define MSTATUS_MPIE        (1u << 7)
+#define MSTATUS_SPP         (1u << 8)
 #define MSTATUS_MPP_SHIFT   11
 #define MSTATUS_MPP_MASK    (3u << MSTATUS_MPP_SHIFT)
 #define MSTATUS_MPRV        (1u << 17)
+#define MSTATUS_SUM         (1u << 18)
+#define MSTATUS_MXR         (1u << 19)
+#define MSTATUS_TVM         (1u << 20)
+#define MSTATUS_TW          (1u << 21)
+#define MSTATUS_TSR         (1u << 22)
 #define MSTATUS_FS_SHIFT    13
 #define MSTATUS_FS_MASK     (3u << MSTATUS_FS_SHIFT)
 #define MSTATUS_SD          (1u << 31)
@@ -112,25 +137,86 @@ struct rv_hart;
 #else
 #  define MSTATUS_WMASK_U   0u
 #endif
+/*
+ * The S bank.
+ *
+ * SUM, MXR and TVM are *not* here, and that is the interface for "S-mode
+ * without address translation" rather than an omission. All three exist
+ * only to qualify a virtual-memory access, and with no translation modes
+ * there are none to qualify; software probes for paging by setting SUM and
+ * MXR and reading them back, so leaving them writable claims a page table
+ * this core does not have. rv32mi/illegal makes exactly that probe and
+ * changes what it demands of SFENCE.VMA on the answer.
+ */
+#if RV_EXT_S
+#  define MSTATUS_WMASK_S   (MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP | \
+                             MSTATUS_TW | MSTATUS_TSR)
+#else
+#  define MSTATUS_WMASK_S   0u
+#endif
 
 #define MSTATUS_WMASK       (MSTATUS_MIE | MSTATUS_MPIE | MSTATUS_MPP_MASK | \
-                             MSTATUS_WMASK_F | MSTATUS_WMASK_U)
+                             MSTATUS_WMASK_F | MSTATUS_WMASK_U | \
+                             MSTATUS_WMASK_S)
+
+/*
+ * What sstatus exposes of mstatus. Reads outside this mask return zero and
+ * writes to it leave the rest of mstatus alone, which is the whole of what
+ * makes sstatus a view rather than a register.
+ */
+#define SSTATUS_RMASK       (MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP | \
+                             MSTATUS_FS_MASK | MSTATUS_SD)
+#define SSTATUS_WMASK       (SSTATUS_RMASK & MSTATUS_WMASK)
 
 /* ------------------------------------------------------------------ */
 /* mie / mip fields                                                    */
 /* ------------------------------------------------------------------ */
 
+#define MIP_SSIP            (1u << RV_INT_S_SOFT)
+#define MIP_STIP            (1u << RV_INT_S_TIMER)
+#define MIP_SEIP            (1u << RV_INT_S_EXT)
 #define MIP_MSIP            (1u << RV_INT_M_SOFT)
 #define MIP_MTIP            (1u << RV_INT_M_TIMER)
 #define MIP_MEIP            (1u << RV_INT_M_EXT)
 
+#define MIE_SSIE            MIP_SSIP
+#define MIE_STIE            MIP_STIP
+#define MIE_SEIE            MIP_SEIP
 #define MIE_MSIE            MIP_MSIP
 #define MIE_MTIE            MIP_MTIP
 #define MIE_MEIE            MIP_MEIP
 
-/* mip bits are driven by devices, not by CSR writes. */
-#define MIP_WMASK           0u
-#define MIE_WMASK           (MIE_MSIE | MIE_MTIE | MIE_MEIE)
+/* The S bits, as a set. Everything delegable to S-mode. */
+#define MIP_S_ALL           (MIP_SSIP | MIP_STIP | MIP_SEIP)
+
+/*
+ * mip bits are driven by devices, not by CSR writes -- except the S ones,
+ * which have no device behind them here. SSIP and STIP are how M-mode
+ * software posts work to a supervisor, so they have to be writable; SEIP
+ * is writable in M-mode for the same reason.
+ */
+#if RV_EXT_S
+#  define MIP_WMASK         MIP_S_ALL
+#  define MIE_WMASK         (MIE_MSIE | MIE_MTIE | MIE_MEIE | MIP_S_ALL)
+#else
+#  define MIP_WMASK         0u
+#  define MIE_WMASK         (MIE_MSIE | MIE_MTIE | MIE_MEIE)
+#endif
+
+/*
+ * What may be delegated. Only S-mode interrupts: an M-mode interrupt
+ * delegated to S could never be taken, since it is precisely the one the
+ * supervisor is not trusted with.
+ */
+#define MIDELEG_WMASK       MIP_S_ALL
+/*
+ * Every exception this core can raise except ECALL from M, which cannot be
+ * delegated to a mode less privileged than the one that took it. That is
+ * causes 0 through 9; the page faults are left out because with satp Bare
+ * nothing can raise them, and medeleg is WARL, so a bit that could only
+ * ever describe an impossible trap is better read back as zero.
+ */
+#define MEDELEG_WMASK       0x000003FFu
 
 /* ------------------------------------------------------------------ */
 /* mtvec                                                               */
