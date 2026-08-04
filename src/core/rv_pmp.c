@@ -135,18 +135,19 @@ void rv_pmp_refresh(rv_hart_t *h)
      * h->priv and data at rv_hart_data_priv, and MPRV can pull the second
      * below M while the first is still M.
      */
+    h->pmp_active = false;
     if (h->priv != RV_PRIV_M || rv_hart_data_priv(h) != RV_PRIV_M) {
         h->pmp_active = true;
-        return;
-    }
-    h->pmp_active = false;
-    for (uint32_t i = 0; i < RV_PMP_ENTRIES; i++) {
-        const uint32_t cfg = pmp_cfg(h, i);
-        if ((cfg & PMP_L) != 0u && (cfg & PMP_A) != 0u) {
-            h->pmp_active = true;
-            return;
+    } else {
+        for (uint32_t i = 0; i < RV_PMP_ENTRIES; i++) {
+            const uint32_t cfg = pmp_cfg(h, i);
+            if ((cfg & PMP_L) != 0u && (cfg & PMP_A) != 0u) {
+                h->pmp_active = true;
+                break;
+            }
         }
     }
+    rv_hart_refresh_fetch_guard(h);
 }
 
 bool rv_pmp_simple(const rv_hart_t *h, uint32_t *lo, uint32_t *hi)

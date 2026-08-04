@@ -229,6 +229,23 @@ Hardware: Nucleo-F446RE on ST-LINK, console `/dev/ttyACM0` at 115200 8N1.
   "unlocked, therefore permitted" -- which is right in M-mode and denies
   every U-mode access matching an unlocked entry, i.e. the usual background
   region. Consult `L` only together with the privilege level.
+- **Anything on the fetch path is paid per instruction by every guest, so
+  give the features one branch, not one each.** The PMP execute check
+  measured **9.3%** on CoreMark -- which never arms PMP -- as its own
+  `RV_UNLIKELY(h->pmp_active)` test next to Sdtrig's `trig_active` one.
+  Folding both behind a single `h->fetch_guard` (maintained by the two
+  refresh functions, the only writers of the flags it combines) brought
+  that to **2.7%**, at the noise floor. The second halfword needs its own
+  check only when `pc & 2`, because every PMP bound is 4-byte aligned.
+  Measured on the interpreter (`-DRV32_JIT=OFF`), which is where a fetch
+  cost lands -- the JIT pays it once per *translation*.
+- **An A/B that only half-reverts the fix reads as a passing test.** The
+  translator checks fetch permission at two sites, one per halfword.
+  Disabling the first alone still gave a clean 243/243, because the
+  instruction was 32-bit and the second site caught it -- which looked
+  exactly like "the test does not exercise this path". Disable every site,
+  and confirm the failure names the mechanism: `pmpx-exec-noeffect` got
+  `0xBAD`, i.e. the store really had run inside a no-execute region.
 - **Execute permission was never checked at all.** `RV_ACC_FETCH` existed
   and was passed only to Sdtrig; no caller ever handed it to
   `rv_pmp_check`. Grep for the enumerator, not for the feature. The check

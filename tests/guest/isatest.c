@@ -131,6 +131,9 @@ static volatile uint32_t g_last_tval;
 static volatile uint32_t g_last_claim;
 static volatile uint32_t g_ext_count;
 
+/* Where to resume after an instruction access fault. See trap_handler. */
+static volatile uint32_t g_fetch_resume;
+
 /*
  * GCC's "machine" interrupt attribute emits the register save/restore and
  * the closing mret. Exceptions still need mepc advanced past the faulting
@@ -159,6 +162,16 @@ static void trap_handler(void)
             g_last_claim = APLIC_CLAIMI;
             g_ext_count++;
         }
+        return;
+    }
+
+    if (cause == 1u) {
+        /*
+         * Instruction access fault. Stepping over it is not an option: the
+         * next instruction is in the same denied region and would fault
+         * again, forever. The test that provoked it says where to resume.
+         */
+        csr_write("mepc", g_fetch_resume);
         return;
     }
 
@@ -1250,6 +1263,109 @@ static void test_pmp(void)
     check("pmp1-still-blocked", g_pmp_area[0], 0xA5A5A5A5u);
 }
 
+/*
+ * Execute permission, which is the one PMP question a JIT answers
+ * differently from an interpreter.
+ *
+ * The interpreter checks X as part of fetching, once per instruction. A JIT
+ * reads the guest's instruction bytes at *translation* time and then emits
+ * nothing at all for the fetch -- so unless the translator refuses to
+ * translate what PMP will not let the guest execute, X is simply
+ * unenforced, and no amount of running the block will discover that.
+ *
+ * Sixty-four bytes, 64-byte aligned, so one NAPOT entry covers the buffer
+ * exactly and nothing that shares its cache line. It holds a single
+ * instruction: `jalr x0, 0(ra)`, a bare return.
+ */
+static uint32_t g_xbuf[16] __attribute__((aligned(64)));
+
+/*
+ * Written by the stub, and the reason the stub is two instructions rather
+ * than a bare return.
+ *
+ * A one-instruction stub does not discriminate. `jalr` is not translatable,
+ * so the block would be empty, the interpreter would run it, and the
+ * interpreter's own fetch check would raise the fault whether or not the
+ * translator has one -- the test would pass with the fix reverted, which
+ * was exactly what happened. Leading with a store gives the translator
+ * something it *will* take, so a missing check shows up as the store having
+ * happened before the fault the trailing `jalr` eventually causes.
+ */
+static volatile uint32_t g_xflag;
+
+/*
+ * Call the stub with a0/a1 set up for its store, recording where to resume
+ * if the call faults.
+ *
+ * The resume label lives inside the asm, immediately after the jalr, so the
+ * point the handler returns to is one the compiler already believes control
+ * reaches -- taking the address of a C label and mret-ing to it would resume
+ * with the register state of a call that never returned.
+ */
+static void call_stub(uint32_t entry, uint32_t val)
+{
+    register uint32_t a0_ __asm__("a0") = (uint32_t)(uintptr_t)&g_xflag;
+    register uint32_t a1_ __asm__("a1") = val;
+
+    __asm__ volatile (
+        "la   t0, 1f\n"
+        "sw   t0, 0(%1)\n"
+        "jalr %0\n"
+        "1:\n"
+        :: "r"(entry), "r"(&g_fetch_resume), "r"(a0_), "r"(a1_)
+         : "t0", "ra", "memory");
+}
+
+static void test_pmp_exec(void)
+{
+    g_xbuf[0] = 0x00b52023u;             /* sw   a1, 0(a0)  */
+    g_xbuf[1] = 0x00008067u;             /* jalr x0, 0(ra)  */
+    __asm__ volatile ("fence.i" ::: "memory");
+
+    const uint32_t base = (uint32_t)(uintptr_t)g_xbuf;
+
+    /*
+     * Run it once before protecting it. This is the load-bearing half of
+     * the test: it is what puts a *translated block* for this address in
+     * the code cache, so the call below reuses it. A backend that trusts a
+     * cached block after the configuration it was built against has changed
+     * fails here and passes if the order is reversed.
+     */
+    uint32_t before = g_trap_count;
+    g_xflag = 0u;
+    call_stub(base, 0x600Du);
+    check("pmpx-before-ok", g_trap_count - before, 0u);
+    check("pmpx-before-ran", g_xflag, 0x600Du);
+
+    /*
+     * Entry 2: NAPOT over the 64 bytes, locked, readable and writable but
+     * *not* executable. A NAPOT region of 2^k bytes sets the low k-3 bits
+     * of pmpaddr, so 64 bytes is three bits.
+     */
+    csr_write("pmpaddr2", (base >> 2) | 0x7u);
+    csr_write("pmpcfg0", (csr_read("pmpcfg0") & 0xFFFFu) | 0x9B0000u);
+    check("pmpx-cfg", (csr_read("pmpcfg0") >> 16) & 0xFFu, 0x9Bu);
+
+    /* Reading it is still allowed -- only X was withheld. */
+    check("pmpx-read-ok", g_xbuf[0], 0x00b52023u);
+
+    /* Executing it now faults, before the instruction has any effect. */
+    before = g_trap_count;
+    g_xflag = 0u;
+    call_stub(base, 0xBADu);
+    check("pmpx-exec-traps", g_trap_count - before, 1u);
+    check("pmpx-exec-cause", g_last_cause, 1u);   /* insn access fault */
+    check("pmpx-exec-tval", g_last_tval, base);
+
+    /*
+     * And nothing in the region ran. This is the check that separates the
+     * two backends: the trap above happens either way, because the `jalr`
+     * ends the block and lands on the interpreter, which checks. Only a
+     * translator that also checks stops the store in front of it.
+     */
+    check("pmpx-exec-noeffect", g_xflag, 0u);
+}
+
 /* ------------------------------------------------------------------ */
 /* APLIC                                                               */
 /* ------------------------------------------------------------------ */
@@ -1374,6 +1490,7 @@ int main(void)
     test_traps();
     test_cbo();
     test_pmp();
+    test_pmp_exec();
     test_aplic();
 #if defined(__riscv_zacas)
     test_zacas();

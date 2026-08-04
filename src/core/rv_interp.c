@@ -313,32 +313,34 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
                 TRAP(RV_EXC_INSN_MISALIGNED, pc);
             }
 
+            /*
+             * Everything that can refuse a fetch, behind one test.
+             *
+             * Both of these are almost always false, and this is the
+             * hottest sequence in the emulator -- one instruction pays it
+             * per fetch whether or not the guest uses either feature.
+             * Testing them separately measured 9.3% on CoreMark, which arms
+             * neither; folding them into one flag puts the second feature
+             * on the first one's branch for nothing.
+             */
+            if (RV_UNLIKELY(h->fetch_guard)) {
 #if RV_EXT_SDTRIG
-            /*
-             * An execute trigger fires before the instruction runs, so mepc
-             * points at it rather than past it -- the handler is expected to
-             * step over or resume it deliberately.
-             */
-            if (RV_UNLIKELY(h->trig_active) &&
-                rv_trig_check(h, pc, RV_ACC_FETCH)) {
-                TRAP(RV_EXC_BREAKPOINT, pc);
-            }
+                /*
+                 * An execute trigger fires before the instruction runs, so
+                 * mepc points at it rather than past it -- the handler is
+                 * expected to step over or resume it deliberately.
+                 */
+                if (h->trig_active && rv_trig_check(h, pc, RV_ACC_FETCH)) {
+                    TRAP(RV_EXC_BREAKPOINT, pc);
+                }
 #endif
-
 #if RV_EXT_PMP
-            /*
-             * Execute permission. This is per halfword rather than per
-             * instruction on purpose: PMP requires every byte of an access
-             * to fall in one entry, and a 32-bit instruction may straddle a
-             * region boundary. Checking each half as it is fetched gives the
-             * straddle rule for free and reports the half that faulted in
-             * mtval, which is what a handler needs to place the boundary.
-             */
-            if (RV_UNLIKELY(h->pmp_active) &&
-                !rv_pmp_check(h, pc, 2u, RV_ACC_FETCH)) {
-                TRAP(RV_EXC_INSN_ACCESS_FAULT, pc);
-            }
+                if (h->pmp_active &&
+                    !rv_pmp_check(h, pc, 2u, RV_ACC_FETCH)) {
+                    TRAP(RV_EXC_INSN_ACCESS_FAULT, pc);
+                }
 #endif
+            }
 
             uint16_t lo;
             rv_exc_t exc = rv_bus_fetch16(h->bus, pc, &lo);
@@ -349,7 +351,15 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
             if (rv_is_32bit(lo)) {
                 uint16_t hi;
 #if RV_EXT_PMP
-                if (RV_UNLIKELY(h->pmp_active) &&
+                /*
+                 * The second halfword needs its own check only when it can
+                 * fall in a different entry from the first. Every PMP bound
+                 * is a multiple of four bytes, so that is exactly when the
+                 * instruction is not 4-byte aligned -- which C code almost
+                 * never is, so this costs an already-live register test
+                 * rather than a second walk.
+                 */
+                if (RV_UNLIKELY(h->pmp_active && (pc & 2u) != 0u) &&
                     !rv_pmp_check(h, pc + 2u, 2u, RV_ACC_FETCH)) {
                     TRAP(RV_EXC_INSN_ACCESS_FAULT, pc + 2u);
                 }

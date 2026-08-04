@@ -50,7 +50,7 @@ silicon.
 | `riscv-tests` (Berkeley) | **77 / 77 pass** |
 | **PMP** | 16 entries, TOR/NA4/NAPOT; inlined in the JIT for the single-entry case |
 | **Sdtrig** | mcontrol triggers on execute/load/store; `rv32mi/breakpoint` passes |
-| Guest ISA self-test (211 checks) | passes on host **and** on hardware, both backends |
+| Guest ISA self-test (243 checks) | passes on host **and** on hardware, both backends |
 | Nucleo-F446RE firmware | 31–54 KB flash by configuration; guest gets 70–122 KiB of the 128 KiB SRAM |
 | Thumb-2 JIT backend | implemented; **19.2× slower than native ARM** on CoreMark with a 48 KB code cache, 15.3× with 64 KB, and *slower than the interpreter* at the 12 KB default — see below |
 | **Zacas** (`amocas.w` / `amocas.d`) | implemented |
@@ -455,9 +455,9 @@ Current state, all re-run on the tree as it stands:
 | `riscv-arch-test`, default (host FPU) | 178 / 230 — every failure in `F` | host |
 | `riscv-tests` | **77 / 77** | host |
 | host unit + guest self-test (`ctest -L fast`) | **2 / 2** | host |
-| `isatest`, JIT | **211 / 211** | hardware |
-| `isatest`, `-DRV32_JIT=OFF` | **211 / 211** | hardware |
-| `isatest`, host, both FP backends | **211 / 211** | host |
+| `isatest`, JIT | **243 / 243** | hardware |
+| `isatest`, `-DRV32_JIT=OFF` | **243 / 243** | hardware |
+| `isatest`, host, both FP backends | **243 / 243** | host |
 | `mmiobench` | **72 / 72** | hardware |
 | CoreMark | `crcfinal 0xca90` on all three backends | hardware |
 
@@ -484,7 +484,7 @@ suite:
 Two of those produced no wrong answer at all, only performance that made no
 sense. Three were staleness: a decision taken when a block was translated,
 still in force after the state behind it changed. The self-test grew from 148
-checks to 211 chasing them, and the checks that matter are the ones that
+checks to 243 chasing them, and the checks that matter are the ones that
 re-execute *one* instruction at *one* address after changing the state it was
 compiled against — a fresh call site is translated against the current
 configuration and proves nothing.
@@ -520,7 +520,7 @@ affordable but is real.
 
 Both are validated on hardware. Note that with the JIT enabled the arithmetic
 is translated to VFP and never reaches SoftFloat, so the run that actually
-exercises it is `-DRV32_JIT=OFF`; both configurations pass 211/211. That the
+exercises it is `-DRV32_JIT=OFF`; both configurations pass 243/243. That the
 two backends agree is worth having deliberately — they use genuinely different
 FP implementations, VFP against SoftFloat, so the self-test doubles as a
 differential check between them.
@@ -1168,9 +1168,13 @@ rather than a missing optimisation:
 
       Running the privileged tests then found three defects that no M-mode
       guest could reach, described under *Things that have bitten* below.
-      What remains is that the **JIT does not check execute permission** —
-      it reads guest instruction bytes at translate time and emits no fetch
-      check, so `X` is unenforced there. The interpreter checks it.
+      Execute permission needed a check in *both* backends and for
+      different reasons: the interpreter checks it per fetch, while the JIT
+      reads the guest's instruction bytes at translate time and emits
+      nothing at all for a fetch, so it has to refuse to translate what PMP
+      will not let the guest run. `pmpx-exec-noeffect` in `isatest` is what
+      tells those two apart — with the translator's check reverted, the
+      store at the top of a no-execute region runs on hardware.
 - [ ] **S-mode** — the same as U-mode, but with a third privilege level and a second
       set of CSRs. The Cortex-M4 has no MMU, so S-mode would be entirely
       soft-trap and would need a second set of `mstatus`/`mepc`/`mcause`/`mtval`

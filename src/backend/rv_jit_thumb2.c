@@ -183,6 +183,20 @@ typedef struct {
     uint8_t  dpriv;     /* privilege data accesses are checked at  */
     uint32_t lo;
     uint32_t hi;
+    /*
+     * The entries themselves, captured only while PMP is active.
+     *
+     * Bounds are what the data path bakes in, and bounds were enough while
+     * that was the only thing decided at translation. The fetch check bakes
+     * in a *permission* -- "these instruction bytes were executable" -- and
+     * a permission moves with every field above it held constant: clear X
+     * in one cfg byte and active, simple, dpriv, lo and hi are all exactly
+     * what they were, while a cached block keeps executing bytes PMP has
+     * been told to refuse. Nothing short of the configuration itself
+     * distinguishes those two states.
+     */
+    uint32_t cfg[RV_PMP_ENTRIES / 4u];
+    uint32_t addr[RV_PMP_ENTRIES];
 } jit_pmp_state_t;
 
 static jit_pmp_state_t g_pmp_seen;
@@ -215,12 +229,45 @@ static void jit_pmp_snapshot(const rv_hart_t *h, jit_pmp_state_t *s)
     s->lo = 0u;
     s->hi = 0u;
     s->simple = s->active && rv_pmp_simple(h, &s->lo, &s->hi);
+
+    if (s->active) {
+        for (uint32_t i = 0; i < RV_PMP_ENTRIES / 4u; i++) {
+            s->cfg[i] = h->pmpcfg[i];
+        }
+        for (uint32_t i = 0; i < RV_PMP_ENTRIES; i++) {
+            s->addr[i] = h->pmpaddr[i];
+        }
+    }
 }
 
 static bool jit_pmp_differs(const jit_pmp_state_t *a, const jit_pmp_state_t *b)
 {
-    return a->active != b->active || a->simple != b->simple ||
-           a->dpriv != b->dpriv || a->lo != b->lo || a->hi != b->hi;
+    if (a->active != b->active) {
+        return true;
+    }
+    if (!a->active) {
+        /*
+         * PMP cannot deny anything, so nothing below was recorded and
+         * nothing below was baked in. Guests that never touch PMP -- which
+         * is most of them -- stop here, at one compare.
+         */
+        return false;
+    }
+    if (a->simple != b->simple || a->dpriv != b->dpriv ||
+        a->lo != b->lo || a->hi != b->hi) {
+        return true;
+    }
+    for (uint32_t i = 0; i < RV_PMP_ENTRIES / 4u; i++) {
+        if (a->cfg[i] != b->cfg[i]) {
+            return true;
+        }
+    }
+    for (uint32_t i = 0; i < RV_PMP_ENTRIES; i++) {
+        if (a->addr[i] != b->addr[i]) {
+            return true;
+        }
+    }
+    return false;
 }
 #endif
 
@@ -2853,6 +2900,22 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
          * during translation simply ends the block; the interpreter will
          * re-fetch and raise the trap with the right cause and mtval.
          */
+#if RV_EXT_PMP
+        /*
+         * Execute permission, for the same reason and by the same means as
+         * the bus fault below: stop the block here and let the interpreter
+         * re-fetch and raise it, so the cause and mtval have one
+         * implementation rather than two.
+         *
+         * Nothing is emitted for this, which is what makes it a decision
+         * baked into the block rather than a test it performs -- so it is
+         * sound only while the configuration it was read from cannot move
+         * underneath. jit_pmp_state_t carries the entries for that reason.
+         */
+        if (h->pmp_active && !rv_pmp_check(h, cur, 2u, RV_ACC_FETCH)) {
+            break;
+        }
+#endif
         uint16_t lo;
         if (rv_bus_fetch16(h->bus, cur, &lo) != RV_EXC_NONE) {
             break;
@@ -2862,6 +2925,13 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
         unsigned len;
         if (rv_is_32bit(lo)) {
             uint16_t hi;
+#if RV_EXT_PMP
+            /* The halves are checked separately so a 32-bit instruction
+             * straddling a region boundary needs both. */
+            if (h->pmp_active && !rv_pmp_check(h, cur + 2u, 2u, RV_ACC_FETCH)) {
+                break;
+            }
+#endif
             if (rv_bus_fetch16(h->bus, cur + 2u, &hi) != RV_EXC_NONE) {
                 break;
             }

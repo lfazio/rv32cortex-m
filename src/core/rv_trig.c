@@ -74,9 +74,10 @@ void rv_trig_refresh(rv_hart_t *h)
             (h->tdata1[i] & MC_M) != 0u &&
             (h->tdata1[i] & (MC_EXECUTE | MC_STORE | MC_LOAD)) != 0u) {
             h->trig_active = true;
-            return;
+            break;
         }
     }
+    rv_hart_refresh_fetch_guard(h);
 }
 
 bool rv_trig_check(const rv_hart_t *h, uint32_t addr, rv_access_t acc)
