@@ -43,7 +43,7 @@ silicon.
 |---|---|
 | RV32IMAFC + Zicsr, Zicntr, Zifencei, Zicbom, Zicboz, **B**, **Zacas**, **Zcf**, **Zcb** | implemented |
 | Machine-mode traps, interrupts, CLINT timer | implemented |
-| Official `riscv-arch-test` (RVCP) | **230 / 230** with SoftFloat; 178 / 230 with the host FPU |
+| Official `riscv-arch-test` (RVCP) | **231 / 231** with SoftFloat; 179 / 231 with the host FPU |
 | **F** (single precision) | implemented, two backends — see below |
 | **D** (double precision) | not implemented, and not planned |
 | **Zcd** | not implementable without D — see below |
@@ -290,7 +290,7 @@ instructions no hot loop contains, spent in the resource this JIT is shortest
 of — the code cache sets overall performance more than anything in the
 translator. It would also be a second implementation of semantics the core
 already owns, which is the drift the conventions forbid; `rv_hart_fp` is the
-interpreter's own entry point, validated at 230/230.
+interpreter's own entry point, validated at 231/231.
 
 What changed is that they no longer **end the block**. Declining costs a
 dispatcher round trip, an interpreted instruction and a fresh block beyond
@@ -451,8 +451,8 @@ Current state, all re-run on the tree as it stands:
 
 | | result | runs on |
 |---|---|---|
-| `riscv-arch-test`, `-DRV32_FPU_SOFTFLOAT=ON` | **230 / 230** | host |
-| `riscv-arch-test`, default (host FPU) | 178 / 230 — every failure in `F` | host |
+| `riscv-arch-test`, `-DRV32_FPU_SOFTFLOAT=ON` | **231 / 231** | host |
+| `riscv-arch-test`, default (host FPU) | 179 / 231 — every failure in `F` | host |
 | `riscv-tests` | **77 / 77** | host |
 | host unit + guest self-test (`ctest -L fast`) | **2 / 2** | host |
 | `isatest`, JIT | **243 / 243** | hardware |
@@ -538,7 +538,7 @@ Three of the unary ops (`c.sext.b`, `c.zext.h`, `c.sext.h`) expand to Zbb
 instructions, which is why the spec makes Zcb depend on Zbb — without it there
 would be nothing to expand them into.
 
-### Official RISC-V Architecture Test Suite — 230/230 with SoftFloat
+### Official RISC-V Architecture Test Suite — 231/231 with SoftFloat
 
 [`riscv/riscv-arch-test`](https://github.com/riscv/riscv-arch-test), the RVCP
 suite governed by RISC-V International. Modern versions are self-checking: the

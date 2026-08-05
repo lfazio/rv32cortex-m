@@ -34,7 +34,7 @@ when changing it), `-DRV32_GUEST=isatest|hello|bench|stm32drv|coremark`.
 ## Validation — run before claiming anything works
 
 ```sh
-./scripts/run-arch-test.sh      # official riscv-arch-test: 230/230 with -DRV32_FPU_SOFTFLOAT=ON, 178/230 without (every failure is F)
+./scripts/run-arch-test.sh      # official riscv-arch-test: 231/231 with -DRV32_FPU_SOFTFLOAT=ON, 179/231 without (every failure is F)
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77
 ```
 
@@ -273,6 +273,21 @@ the debug port. The Nucleo-F446RE is still supported and is
   through them ends in "matching nothing permits". Any privilege work
   should assume the PMP code is wrong until the privileged tests say
   otherwise -- and they will not run until the suite is *named* correctly.
+- **Declaring an extension to UDB and to Sail are two separate jobs, and
+  the Sail half can make the golden model disagree about correct
+  behaviour.** `sail.json` had `medeleg.delegatable_bits = 0x0`, exactly
+  right while there was no S-mode. Left at zero once S exists, the
+  reference takes in M-mode every trap the emulator correctly delegates to
+  S, and eight PMPU tests fail on the one field that is right -- the
+  signature's handler mode. Keep both masks equal to `MEDELEG_WMASK` and
+  `MIDELEG_WMASK`. A config value meaning "this cannot happen" stops being
+  a safe default the moment it can.
+- **UDB names every parameter it wants, so let it.** Adding S asked for 25;
+  fill them from an existing config that already has S
+  (`udb-*/.data/cfgs/rv32-riscv-tests.yaml`) rather than guessing schemas.
+  It also caught `MCOUNTENABLE_EN` still declared all-false from when
+  `mcounteren` was hardwired zero for want of a lower privilege level --
+  true when written, and not since U-mode.
 - **Porting to a Cortex-M7 is mostly about the two things the M4 does not
   have: caches and a DWT lock.** The JIT writes instructions as data and
   branches to them, which needs a real clean-to-PoU and I-cache invalidate

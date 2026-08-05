@@ -49,16 +49,27 @@
         "base_alignment": 2
       }
     },
+    // What may be delegated, matching MEDELEG_WMASK and MIDELEG_WMASK.
+    // Both were 0x0 while there was no S-mode to delegate to, and leaving
+    // them so once S exists does not merely under-describe the hart -- it
+    // makes the golden model take in M-mode every trap the emulator
+    // correctly hands to S, so the signatures disagree on the one field
+    // that is right.
+    //
+    // medeleg: causes 0 through 9, which is everything this core can raise
+    // except ECALL from M. The page faults are absent because with Bare
+    // translation nothing can raise them.
     "medeleg": {
       "delegatable_bits": {
         "len": 64,
-        "value": "0x0"
+        "value": "0x3ff"
       }
     },
+    // mideleg: the three supervisor interrupts, SSIP/STIP/SEIP.
     "mideleg": {
       "delegatable_bits": {
         "len": "xlen",
-        "value": "0x0"
+        "value": "0x222"
       }
     },
     // rv_hart_trap records the faulting address for every address-related

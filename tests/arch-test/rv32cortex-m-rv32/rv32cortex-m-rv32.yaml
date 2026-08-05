@@ -51,9 +51,11 @@ implemented_extensions:
   - { name: Sm, version: "= 1.12.0" }
   # User mode. One ratified version, 1.0.0 -- there is no 1.12.0, and
   # declaring one makes UDB reject the whole configuration so that nothing
-  # builds at all. S is absent, so medeleg and mideleg have nothing to
-  # delegate to and read as zero.
+  # builds at all.
   - { name: U, version: "= 1.0.0" }
+  # Supervisor mode, matching Sm's 1.12.0. Address translation is Bare
+  # only, which is what SATP_MODE_BARE below says; there is no Sv32.
+  - { name: S, version: "= 1.12.0" }
 
 params:
   # ---- base ----
@@ -168,6 +170,55 @@ params:
   # so U cannot be switched off by writing it.
   MUTABLE_MISA_U: false
 
+  # ---- S ----
+  SXLEN: [32]
+  S_MODE_ENDIANNESS: little
+  MUTABLE_MISA_S: false
+  TRAP_ON_ECALL_FROM_S: true
+  STVAL_WIDTH: 32
+  STVEC_MODE_DIRECT: true
+  STVEC_MODE_VECTORED: true
+
+  # Bare is the only translation mode, so there is no ASID to hold: satp
+  # is WARL to zero. SFENCE.VMA has nothing to order and is illegal, which
+  # is what the read-only-satp parameter below describes -- and what
+  # rv32mi/illegal requires of a hart that reports no paging.
+  SATP_MODE_BARE: true
+  ASID_WIDTH: 0
+  TRAP_ON_SFENCE_VMA_WHEN_SATP_MODE_IS_READ_ONLY: true
+
+  # scounteren mirrors mcounteren: CY, TM and IR, no HPM counters.
+  SCOUNTENABLE_EN:
+    [
+      true,  true,  true,  false, false, false, false, false,
+      false, false, false, false, false, false, false, false,
+      false, false, false, false, false, false, false, false,
+      false, false, false, false, false, false, false, false,
+    ]
+
+  # No vector extension, so mstatus.VS is read-only zero.
+  MSTATUS_VS_LEGAL_VALUES: [0]
+
+  # Every trap that carries an address puts it in the tval of whichever
+  # mode took it, so the S answers match the M ones already declared
+  # above. The page-fault entries are vacuous -- with Bare translation
+  # nothing can raise one -- but UDB requires a value, and saying "we
+  # would report the address" is the answer consistent with the rest.
+  REPORT_ENCODING_IN_STVAL_ON_ILLEGAL_INSTRUCTION: true
+  REPORT_VA_IN_STVAL_ON_BREAKPOINT: true
+  REPORT_VA_IN_STVAL_ON_INSTRUCTION_MISALIGNED: true
+  REPORT_VA_IN_STVAL_ON_INSTRUCTION_ACCESS_FAULT: true
+  REPORT_VA_IN_STVAL_ON_LOAD_MISALIGNED: true
+  REPORT_VA_IN_STVAL_ON_LOAD_ACCESS_FAULT: true
+  REPORT_VA_IN_STVAL_ON_STORE_AMO_MISALIGNED: true
+  REPORT_VA_IN_STVAL_ON_STORE_AMO_ACCESS_FAULT: true
+  REPORT_VA_IN_STVAL_ON_INSTRUCTION_PAGE_FAULT: true
+  REPORT_VA_IN_STVAL_ON_LOAD_PAGE_FAULT: true
+  REPORT_VA_IN_STVAL_ON_STORE_AMO_PAGE_FAULT: true
+  REPORT_VA_IN_MTVAL_ON_INSTRUCTION_PAGE_FAULT: true
+  REPORT_VA_IN_MTVAL_ON_LOAD_PAGE_FAULT: true
+  REPORT_VA_IN_MTVAL_ON_STORE_AMO_PAGE_FAULT: true
+
   # ---- Sm ----
   PRECISE_SYNCHRONOUS_EXCEPTIONS: true
   PMA_GRANULARITY: 2
@@ -193,11 +244,12 @@ params:
       false, false, false, false, false, false, false, false,
       false, false, false, false, false, false, false, false,
     ]
-  # mcounteren is hardwired to zero: there is no lower privilege level for
-  # it to grant anything to.
+  # CY, TM and IR are writable; there are no HPM counters to grant. This
+  # was all-false while M was the only mode and there was nothing to grant
+  # anything to -- with S and U it is a real register.
   MCOUNTENABLE_EN:
     [
-      false, false, false, false, false, false, false, false,
+      true,  true,  true,  false, false, false, false, false,
       false, false, false, false, false, false, false, false,
       false, false, false, false, false, false, false, false,
       false, false, false, false, false, false, false, false,
