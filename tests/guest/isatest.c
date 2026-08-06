@@ -134,6 +134,9 @@ static volatile uint32_t g_ext_count;
 /* Where to resume after an instruction access fault. See trap_handler. */
 static volatile uint32_t g_fetch_resume;
 
+/* Where to resume in M-mode when an S-mode test ecalls its way back. */
+static volatile uint32_t g_smode_resume;
+
 /*
  * GCC's "machine" interrupt attribute emits the register save/restore and
  * the closing mret. Exceptions still need mepc advanced past the faulting
@@ -165,11 +168,30 @@ static void trap_handler(void)
         return;
     }
 
-    if (cause == 1u) {
+    if (cause == 9u) {
         /*
-         * Instruction access fault. Stepping over it is not an option: the
-         * next instruction is in the same denied region and would fault
-         * again, forever. The test that provoked it says where to resume.
+         * ECALL from S-mode: how an S-mode test hands control back.
+         *
+         * MPP is set to M so the mret below returns to machine mode rather
+         * than to the supervisor that called, and mepc to the point the
+         * caller recorded before it left. This is the whole return path --
+         * there is no other way back up a privilege level.
+         */
+        csr_write("mepc", g_smode_resume);
+        csr_set("mstatus", 0x1800u);          /* MPP = M */
+        return;
+    }
+
+    if (cause == 1u || cause == 12u) {
+        /*
+         * Instruction access fault, or instruction page fault. Stepping
+         * over is not an option: the next instruction is in the same
+         * denied or unmapped page and would fault again, forever. The test
+         * that provoked it says where to resume.
+         *
+         * Reading the faulting parcel to measure its length -- what the
+         * generic path below does -- is not an option either, for the same
+         * reason it faulted.
          */
         csr_write("mepc", g_fetch_resume);
         return;
@@ -1377,6 +1399,557 @@ static void test_pmp_exec(void)
  * called rv_aplic_raise: pending and enable combine, the domain and the IDC
  * both gate delivery, MEIP reaches the hart, and claiming clears it.
  */
+/* ------------------------------------------------------------------ */
+/* S-mode and Sv32                                                     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * These are the checks the host suites cannot give the *JIT*.
+ *
+ * riscv-tests and the architecture suite cover S-mode and paging
+ * thoroughly, but only on the host, where the x86-64 backend hands
+ * anything behind fetch_guard -- which includes every translated access
+ * while paging is on -- straight to the interpreter. The Thumb-2 backend
+ * does translate under Sv32: it declines to inline memory accesses and
+ * walks the page table itself to find the instruction bytes. Neither of
+ * those paths had ever run on hardware before this file exercised them.
+ */
+
+#define MSTATUS_MPP_MASK 0x00001800u
+#define MSTATUS_MPP_S    0x00000800u
+#define MSTATUS_SUM      0x00040000u
+#define MSTATUS_TW       0x00200000u
+#define MSTATUS_TSR      0x00400000u
+
+#define PTE_V 0x001u
+#define PTE_R 0x002u
+#define PTE_W 0x004u
+#define PTE_X 0x008u
+#define PTE_U 0x010u
+#define PTE_A 0x040u
+#define PTE_D 0x080u
+
+#define SATP_SV32 0x80000000u
+
+/*
+ * Page tables. The root alone would do for an identity map built from
+ * megapages; the second level exists so the 4 KiB path is exercised too,
+ * and so there is somewhere to change one PTE and watch the effect.
+ */
+static uint32_t g_root[1024] __attribute__((aligned(4096)));
+static uint32_t g_leaf[1024] __attribute__((aligned(4096)));
+/*
+ * Three pages, and they must be three.
+ *
+ * Page 0 is the data page every data VA below maps to; pages 1 and 2 hold
+ * the two stubs the execute test points one VA at each of in turn. Sharing
+ * page 0 between the data tests and the stub is what the first version did,
+ * and the store through VA_RW then overwrote the instruction the execute
+ * test was about to jump to -- which presents as a fetch fault on a page
+ * that is mapped executable, and reads as an emulator bug.
+ */
+#define PAGE_DATA  0u
+#define PAGE_EXEC1 1u
+#define PAGE_EXEC2 2u
+static uint32_t g_page[3 * 1024] __attribute__((aligned(4096)));
+
+static uint32_t page_pa(uint32_t which)
+{
+    return (uint32_t)(uintptr_t)g_page + which * 4096u;
+}
+
+/*
+ * Virtual addresses for the mapped test page. Two of them, so the same
+ * physical page can be reached through PTEs with different permissions --
+ * which is what separates "the walk found the page" from "the walk applied
+ * the permissions".
+ */
+#define VA_RW   0x90000000u
+#define VA_RO   0x90001000u
+#define VA_USER 0x90002000u
+#define VA_NOA  0x90003000u
+#define VA_HOLE 0x90004000u
+#define VA_X    0x90005000u
+
+#define VPN1(va) ((va) >> 22)
+#define VPN0(va) (((va) >> 12) & 0x3FFu)
+
+/* A leaf PTE mapping `pa`, which must be page aligned. */
+static uint32_t leaf_pte(uint32_t pa, uint32_t perm)
+{
+    return ((pa >> 12) << 10) | perm;
+}
+
+static void build_page_tables(void)
+{
+    /*
+     * Identity map the whole address space with 4 MiB megapages, so that
+     * turning translation on changes nothing about where anything lives.
+     * That is what makes the *failures* below legible: any fault is
+     * something the test asked for, not the map being wrong.
+     *
+     * These are supervisor pages (no U bit): S-mode code runs from them,
+     * and U-mode is not entered here.
+     */
+    for (uint32_t i = 0; i < 1024u; i++) {
+        g_root[i] = (i << 20) | PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D;
+    }
+
+    /* One second-level table, reached through a pointer PTE -- V and
+     * nothing else, which is what distinguishes a pointer from a leaf. */
+    g_root[VPN1(VA_RW)] = leaf_pte((uint32_t)(uintptr_t)g_leaf, PTE_V);
+
+    for (uint32_t i = 0; i < 1024u; i++) {
+        g_leaf[i] = 0u;                       /* unmapped by default */
+    }
+
+    const uint32_t pa = page_pa(PAGE_DATA);
+
+    g_leaf[VPN0(VA_RW)]   = leaf_pte(pa, PTE_V|PTE_R|PTE_W|PTE_A|PTE_D);
+    g_leaf[VPN0(VA_RO)]   = leaf_pte(pa, PTE_V|PTE_R|PTE_A);
+    g_leaf[VPN0(VA_USER)] = leaf_pte(pa, PTE_V|PTE_R|PTE_W|PTE_U|PTE_A|PTE_D);
+    /* A is clear: under Svade the hardware never sets it, so the first
+     * touch faults and software is expected to fix it up. */
+    g_leaf[VPN0(VA_NOA)]  = leaf_pte(pa, PTE_V|PTE_R|PTE_W|PTE_D);
+    g_leaf[VPN0(VA_X)]    = leaf_pte(page_pa(PAGE_EXEC1),
+                                     PTE_V|PTE_R|PTE_X|PTE_A);
+    /* VA_HOLE is left invalid on purpose. */
+}
+
+/*
+ * Run `fn` in S-mode and come back.
+ *
+ * The resume label lives inside the asm, immediately after the mret, so
+ * the point the handler returns to is one the compiler already believes
+ * control reaches. Taking the address of a C label and returning there
+ * instead resumes with a register state belonging to a call that never
+ * returned -- which is how the first attempt at this re-entered earlier
+ * tests rather than continuing.
+ *
+ * `fn` ends by executing ecall; cause 9 is not delegated, so it lands in
+ * the machine handler, which restores MPP and mepc from here.
+ */
+/*
+ * Somewhere to park the registers that survive a call but not this.
+ *
+ * `fn` is entered by mret rather than called, and leaves by ecall rather
+ * than returning: its prologue runs and its epilogue never does. So every
+ * callee-saved register it touched keeps fn's value, and the stack pointer
+ * comes back below where this function left it -- the caller's locals are
+ * simply gone. That does not present as a stack bug; it presents as the
+ * test suite restarting from the top, which is how the first attempt at
+ * this was misread as a resume-address problem.
+ *
+ * The base address is reloaded with `la` on the way back rather than kept
+ * in an operand register, because that register is caller-saved and is one
+ * of the things fn was free to destroy.
+ */
+static volatile uint32_t g_smode_regs[13];
+
+static void enter_smode(void (*fn)(void))
+{
+    __asm__ volatile (
+        "la   t0, g_smode_regs\n"
+        "sw   sp,  0(t0)\n"
+        "sw   s0,  4(t0)\n"
+        "sw   s1,  8(t0)\n"
+        "sw   s2, 12(t0)\n"
+        "sw   s3, 16(t0)\n"
+        "sw   s4, 20(t0)\n"
+        "sw   s5, 24(t0)\n"
+        "sw   s6, 28(t0)\n"
+        "sw   s7, 32(t0)\n"
+        "sw   s8, 36(t0)\n"
+        "sw   s9, 40(t0)\n"
+        "sw   s10, 44(t0)\n"
+        "sw   s11, 48(t0)\n"
+        "la   t0, 1f\n"
+        "sw   t0, 0(%1)\n"
+        "csrw mepc, %0\n"
+        "li   t0, %2\n"
+        "csrc mstatus, t0\n"
+        "li   t0, %3\n"
+        "csrs mstatus, t0\n"
+        "mret\n"
+        "1:\n"
+        "la   t0, g_smode_regs\n"
+        "lw   sp,  0(t0)\n"
+        "lw   s0,  4(t0)\n"
+        "lw   s1,  8(t0)\n"
+        "lw   s2, 12(t0)\n"
+        "lw   s3, 16(t0)\n"
+        "lw   s4, 20(t0)\n"
+        "lw   s5, 24(t0)\n"
+        "lw   s6, 28(t0)\n"
+        "lw   s7, 32(t0)\n"
+        "lw   s8, 36(t0)\n"
+        "lw   s9, 40(t0)\n"
+        "lw   s10, 44(t0)\n"
+        "lw   s11, 48(t0)\n"
+        :: "r"(fn), "r"(&g_smode_resume),
+           "i"(MSTATUS_MPP_MASK), "i"(MSTATUS_MPP_S)
+        : "t0", "t1", "t2", "a0", "a1", "a2", "a3", "a4", "a5",
+          "a6", "a7", "ra", "memory");
+}
+
+/* Every S-mode test body ends with this. */
+#define LEAVE_SMODE() __asm__ volatile ("ecall" ::: "memory")
+
+/* ---- the S-mode bodies -------------------------------------------- */
+
+static volatile uint32_t g_s_scratch;
+
+static void smode_basics(void)
+{
+    /*
+     * Reading an M-mode CSR from S-mode is an illegal instruction, and
+     * that -- not a flag anywhere -- is the only way code can tell what
+     * privilege it is actually running at.
+     */
+    const uint32_t before = g_trap_count;
+    (void)csr_read("mstatus");
+    check("s-mstatus-traps", g_trap_count - before, 1u);
+    check("s-mstatus-cause", g_last_cause, 2u);
+
+    /* sstatus is a *view* of mstatus, so it must be readable here. */
+    (void)csr_read("sstatus");
+    check("s-sstatus-ok", g_trap_count - before, 1u);
+
+    /* And writable, through the S-visible bits only. */
+    csr_write("sscratch", 0xA5A5A5A5u);
+    check("s-sscratch", csr_read("sscratch"), 0xA5A5A5A5u);
+
+    LEAVE_SMODE();
+}
+
+static void smode_ecall_cause(void)
+{
+    /* Recorded by the handler on the way out; checked by the caller. */
+    LEAVE_SMODE();
+}
+
+static void smode_tw_wfi(void)
+{
+    const uint32_t before = g_trap_count;
+    __asm__ volatile ("wfi");
+    check("s-tw-wfi-traps", g_trap_count - before, 1u);
+    check("s-tw-wfi-cause", g_last_cause, 2u);
+    LEAVE_SMODE();
+}
+
+static void smode_tsr_sret(void)
+{
+    const uint32_t before = g_trap_count;
+    __asm__ volatile ("sret");
+    check("s-tsr-sret-traps", g_trap_count - before, 1u);
+    check("s-tsr-sret-cause", g_last_cause, 2u);
+    LEAVE_SMODE();
+}
+
+static void smode_paging(void)
+{
+    uint32_t before;
+
+    /* The identity map is transparent: this is ordinary RAM, reached at
+     * the address it has always had, with translation now in the path. */
+    g_s_scratch = 0x12345678u;
+    check("sv32-identity", g_s_scratch, 0x12345678u);
+
+    /* A 4 KiB page, reached through the second-level table. Writing it
+     * through VA_RW must land in the physical page underneath. */
+    *(volatile uint32_t *)VA_RW = 0xCAFEBABEu;
+    check("sv32-4k-write", g_page[0], 0xCAFEBABEu);
+
+    /* The same physical page through a read-only PTE: the load works and
+     * the store faults, which is the permission being applied rather than
+     * the mapping being found. */
+    check("sv32-ro-load", *(volatile uint32_t *)VA_RO, 0xCAFEBABEu);
+
+    before = g_trap_count;
+    *(volatile uint32_t *)VA_RO = 0u;
+    check("sv32-ro-store-traps", g_trap_count - before, 1u);
+    check("sv32-ro-store-cause", g_last_cause, 15u);
+    check("sv32-ro-store-tval", g_last_tval, VA_RO);
+    check("sv32-ro-store-blocked", g_page[0], 0xCAFEBABEu);
+
+    /* An invalid PTE. */
+    before = g_trap_count;
+    (void)*(volatile uint32_t *)VA_HOLE;
+    check("sv32-hole-traps", g_trap_count - before, 1u);
+    check("sv32-hole-cause", g_last_cause, 13u);
+    check("sv32-hole-tval", g_last_tval, VA_HOLE);
+
+    /*
+     * A U-page is unreachable from S-mode unless SUM says otherwise. This
+     * is the check that a supervisor cannot read user memory by accident,
+     * and it is a property of the *access*, not of the mapping -- the same
+     * PTE serves both halves below.
+     */
+    before = g_trap_count;
+    (void)*(volatile uint32_t *)VA_USER;
+    check("sv32-upage-nosum-traps", g_trap_count - before, 1u);
+    check("sv32-upage-nosum-cause", g_last_cause, 13u);
+
+    csr_set("sstatus", MSTATUS_SUM);
+    before = g_trap_count;
+    check("sv32-upage-sum-load", *(volatile uint32_t *)VA_USER, 0xCAFEBABEu);
+    check("sv32-upage-sum-notrap", g_trap_count - before, 0u);
+    csr_clear("sstatus", MSTATUS_SUM);
+
+    /*
+     * Svade: A is checked and never set by the walk, so the first touch of
+     * a page whose A is clear faults. An implementation that updated the
+     * PTE instead would pass silently here and differ from the golden
+     * model on every A/D test.
+     */
+    before = g_trap_count;
+    (void)*(volatile uint32_t *)VA_NOA;
+    check("sv32-noa-traps", g_trap_count - before, 1u);
+    check("sv32-noa-cause", g_last_cause, 13u);
+    check("sv32-noa-unchanged",
+          g_leaf[VPN0(VA_NOA)] & PTE_A, 0u);
+
+    /* D is the same rule for stores: readable, not writable. */
+    g_leaf[VPN0(VA_NOA)] |= PTE_A;
+    g_leaf[VPN0(VA_NOA)] &= ~PTE_D;
+    __asm__ volatile ("sfence.vma" ::: "memory");
+    before = g_trap_count;
+    (void)*(volatile uint32_t *)VA_NOA;
+    check("sv32-nod-load-ok", g_trap_count - before, 0u);
+    *(volatile uint32_t *)VA_NOA = 0u;
+    check("sv32-nod-store-traps", g_trap_count - before, 1u);
+    check("sv32-nod-store-cause", g_last_cause, 15u);
+
+    /*
+     * A PTE change is not visible until SFENCE.VMA. Making VA_HOLE valid
+     * and *not* fencing may legally still fault -- so the check that means
+     * something is the one after the fence.
+     */
+    g_leaf[VPN0(VA_HOLE)] = leaf_pte(page_pa(PAGE_DATA),
+                                     PTE_V|PTE_R|PTE_W|PTE_A|PTE_D);
+    __asm__ volatile ("sfence.vma" ::: "memory");
+    before = g_trap_count;
+    check("sv32-sfence-visible", *(volatile uint32_t *)VA_HOLE, 0xCAFEBABEu);
+    check("sv32-sfence-notrap", g_trap_count - before, 0u);
+
+    /*
+     * The reserved encodings, which are the half of a walk that has no
+     * legitimate use and so never appears by accident.
+     *
+     * W without R is reserved. It is not "write-only" -- it is a fault,
+     * and reserving it is what keeps the encoding free for a future
+     * extension to define.
+     *
+     * Applied at the *root*, deliberately. At the leaf level the same
+     * encoding faults whether or not anything checks for it, because a PTE
+     * with neither R nor X is by definition a pointer and there is no
+     * level below the last one -- so a test there passes against an
+     * implementation that never heard of the rule. At the root, an
+     * implementation that skips the check follows it as a pointer to a
+     * perfectly good second-level table and the access *succeeds*.
+     */
+    const uint32_t saved_root = g_root[VPN1(VA_RW)];
+
+    g_root[VPN1(VA_RW)] = leaf_pte((uint32_t)(uintptr_t)g_leaf,
+                                   PTE_V|PTE_W);
+    __asm__ volatile ("sfence.vma" ::: "memory");
+    before = g_trap_count;
+    (void)*(volatile uint32_t *)VA_RW;
+    check("sv32-wnor-traps", g_trap_count - before, 1u);
+    check("sv32-wnor-cause", g_last_cause, 13u);
+    g_root[VPN1(VA_RW)] = saved_root;
+    __asm__ volatile ("sfence.vma" ::: "memory");
+
+    /*
+     * D, A and U are reserved in a *non-leaf* PTE and must be clear. An
+     * implementation that ignores them still translates every legal table
+     * correctly, which is why this needs asking directly.
+     */
+    g_root[VPN1(VA_RW)] |= PTE_A;
+    __asm__ volatile ("sfence.vma" ::: "memory");
+    before = g_trap_count;
+    (void)*(volatile uint32_t *)VA_RW;
+    check("sv32-nonleaf-a-traps", g_trap_count - before, 1u);
+    check("sv32-nonleaf-a-cause", g_last_cause, 13u);
+
+    g_root[VPN1(VA_RW)] &= ~PTE_A;
+    g_root[VPN1(VA_RW)] |= PTE_U;
+    __asm__ volatile ("sfence.vma" ::: "memory");
+    before = g_trap_count;
+    (void)*(volatile uint32_t *)VA_RW;
+    check("sv32-nonleaf-u-traps", g_trap_count - before, 1u);
+
+    /* Put the table back, and prove it: the same access now works. */
+    g_root[VPN1(VA_RW)] &= ~PTE_U;
+    __asm__ volatile ("sfence.vma" ::: "memory");
+    before = g_trap_count;
+    check("sv32-restored", *(volatile uint32_t *)VA_RW, 0xCAFEBABEu);
+    check("sv32-restored-notrap", g_trap_count - before, 0u);
+
+    LEAVE_SMODE();
+}
+
+/* ---- executing from a translated page ------------------------------ */
+
+/*
+ * The JIT's own path. A block translated from a *virtual* address has to
+ * be found by walking the page table, and invalidated when the mapping
+ * changes -- neither of which the interpreter has to get right, and
+ * neither of which any host suite reaches on the Thumb-2 backend.
+ *
+ * The stub is `li a0, imm; jalr x0, 0(ra)`, so the value it returns says
+ * which copy actually ran.
+ */
+/*
+ * Jump to `entry`, resuming after the jump if the fetch faults.
+ *
+ * The resume address is a label *inside* the asm, and that is the whole
+ * point. Taking the address of a C label with `&&label` and handing it to
+ * the trap handler looks equivalent and is not: the compiler owns basic
+ * block layout, and here it placed the label's block ahead of the call, so
+ * resuming there re-ran the call that faulted -- forever. A label the
+ * assembler emits between two instructions cannot be moved out from under
+ * the code that jumps to it.
+ */
+static void call_may_fault(uint32_t entry)
+{
+    __asm__ volatile (
+        "la   t0, 1f\n"
+        "sw   t0, 0(%1)\n"
+        "jalr %0\n"
+        "1:\n"
+        :: "r"(entry), "r"(&g_fetch_resume)
+         : "t0", "t1", "t2", "ra", "a0", "a1", "a2", "a3", "a4", "a5",
+           "a6", "a7", "memory");
+}
+
+static void smode_exec(void)
+{
+    uint32_t (*fn)(void) = (uint32_t (*)(void))VA_X;
+    uint32_t before;
+
+    check("sv32-exec-first", fn(), 0x111u);
+
+    /* Repoint the same VA at the second stub. Without the fence a stale
+     * translation -- in the TLB or in a cached JIT block -- would keep
+     * answering with the first. */
+    g_leaf[VPN0(VA_X)] = leaf_pte(page_pa(PAGE_EXEC2),
+                                  PTE_V|PTE_R|PTE_X|PTE_A);
+    __asm__ volatile ("sfence.vma" ::: "memory");
+    check("sv32-exec-remapped", fn(), 0x222u);
+
+    /* Withdraw execute permission and the fetch itself must fault. */
+    g_leaf[VPN0(VA_X)] = leaf_pte(page_pa(PAGE_EXEC2),
+                                  PTE_V|PTE_R|PTE_A);
+    __asm__ volatile ("sfence.vma" ::: "memory");
+    before = g_trap_count;
+    call_may_fault(VA_X);
+    check("sv32-exec-nox-traps", g_trap_count - before, 1u);
+    check("sv32-exec-nox-cause", g_last_cause, 12u);
+    check("sv32-exec-nox-tval", g_last_tval, VA_X);
+
+    LEAVE_SMODE();
+}
+
+/* ---- the M-mode driver --------------------------------------------- */
+
+static void test_smode(void)
+{
+    /*
+     * A background PMP entry first, and this is not optional.
+     *
+     * Below M-mode, matching *no* PMP entry denies rather than permits,
+     * and the tests above have locked three small regions. Entering S-mode
+     * without a catch-all would fault on the first instruction fetched,
+     * with no handler reachable to report it. Index 15 is the lowest
+     * priority, so the three locked entries keep their meaning.
+     */
+    csr_write("pmpaddr15", 0xFFFFFFFFu);
+    csr_write("pmpcfg3", 0x9F000000u);     /* byte 3: L | NAPOT | RWX */
+    check("s-pmp-background", (csr_read("pmpcfg3") >> 24) & 0xFFu, 0x9Fu);
+
+    csr_write("stvec", 0u);
+    csr_write("medeleg", 0u);              /* everything to M for now */
+    csr_write("mideleg", 0u);
+
+    uint32_t before = g_trap_count;
+    enter_smode(smode_basics);
+    /* The illegal mstatus read, and the ecall on the way out. */
+    check("s-returned", g_trap_count - before, 2u);
+
+    before = g_trap_count;
+    enter_smode(smode_ecall_cause);
+    check("s-ecall-cause", g_last_cause, 9u);
+    check("s-ecall-once", g_trap_count - before, 1u);
+
+    /* TW and TSR are how M-mode keeps a supervisor from waiting or
+     * returning behind its back. Both apply to S-mode only. */
+    csr_set("mstatus", MSTATUS_TW);
+    enter_smode(smode_tw_wfi);
+    csr_clear("mstatus", MSTATUS_TW);
+
+    csr_set("mstatus", MSTATUS_TSR);
+    enter_smode(smode_tsr_sret);
+    csr_clear("mstatus", MSTATUS_TSR);
+
+    /* With TSR clear, SRET is legal again -- the trap above was the bit
+     * doing its job, not SRET being unimplemented. */
+    check("s-tsr-cleared", (csr_read("mstatus") & MSTATUS_TSR), 0u);
+
+    /* medeleg and mideleg are real registers now, and WARL. */
+    csr_write("medeleg", 0xFFFFFFFFu);
+    check("s-medeleg-warl", csr_read("medeleg"), 0x3FFu);
+    csr_write("medeleg", 0u);
+    csr_write("mideleg", 0xFFFFFFFFu);
+    check("s-mideleg-warl", csr_read("mideleg"), 0x222u);
+    csr_write("mideleg", 0u);
+}
+
+static void test_sv32(void)
+{
+    /*
+     * satp.PPN is 20 bits here, not the 22 Sv32 defines: the field is WARL
+     * and its width follows the *physical* address space, which is 32-bit
+     * on this bus. Reporting a root table the walk cannot reach would be
+     * worse than reporting a narrower one.
+     */
+    csr_write("satp", 0xFFFFFFFFu);
+    /* MODE, nine bits of ASID, and twenty of PPN: 0xFFCFFFFF. The two
+     * bits missing from the architectural 22-bit PPN are the ones a
+     * 32-bit physical address cannot name. */
+    check("sv32-satp-warl", csr_read("satp"), 0xFFCFFFFFu);
+    csr_write("satp", 0u);
+
+    build_page_tables();
+
+    /*
+     * The two stubs the execute test jumps to, written into the two pages
+     * that VA_X is pointed at in turn.
+     *
+     *   li a0, imm ; jalr x0, 0(ra)
+     */
+    g_page[1024] = 0x11100513u;   /* li a0, 0x111 */
+    g_page[1025] = 0x00008067u;   /* ret          */
+    g_page[2048] = 0x22200513u;
+    g_page[2049] = 0x00008067u;
+    __asm__ volatile ("fence.i" ::: "memory");
+
+    csr_write("satp", SATP_SV32 |
+                      ((uint32_t)(uintptr_t)g_root >> 12));
+    check("sv32-satp-on", csr_read("satp") >> 31, 1u);
+
+    /* M-mode is never translated, so nothing has changed here yet. */
+    g_s_scratch = 0x5A5A5A5Au;
+    check("sv32-m-untranslated", g_s_scratch, 0x5A5A5A5Au);
+
+    enter_smode(smode_paging);
+    enter_smode(smode_exec);
+
+    /* Back to Bare, so nothing after this runs under a stale map. */
+    csr_write("satp", 0u);
+    check("sv32-satp-off", csr_read("satp"), 0u);
+}
+
 static void test_aplic(void)
 {
     const uint32_t A = 3u, B = 4u;
@@ -1491,6 +2064,8 @@ int main(void)
     test_cbo();
     test_pmp();
     test_pmp_exec();
+    test_smode();
+    test_sv32();
     test_aplic();
 #if defined(__riscv_zacas)
     test_zacas();

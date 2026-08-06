@@ -285,6 +285,25 @@ the debug port. The Nucleo-F446RE is still supported and is
   through them ends in "matching nothing permits". Any privilege work
   should assume the PMP code is wrong until the privileged tests say
   otherwise -- and they will not run until the suite is *named* correctly.
+- **`&&label` is not a resume address.** Handing the address of a C label
+  to a trap handler looks equivalent to a label inside an asm block and is
+  not: the compiler owns basic-block layout, and here it placed the
+  label's block *ahead* of the faulting call, so resuming there re-ran the
+  fault -- forever. Emit the label between two instructions in the asm, as
+  `call_stub` and `call_may_fault` do.
+- **Entering S-mode by `mret` and leaving by `ecall` destroys the caller's
+  frame.** The callee's prologue runs and its epilogue never does, so `sp`
+  comes back low and every callee-saved register still holds the callee's
+  value. It does not present as a stack bug -- it presents as the test
+  suite restarting from the top. `enter_smode` saves sp and s0-s11 to a
+  global and reloads them at the resume label, reloading the base address
+  with `la` because the operand register is caller-saved too.
+- **A reserved-encoding test can pass against an implementation that never
+  heard of the rule.** `W` without `R` faults at the *leaf* level either
+  way, because a PTE with neither R nor X is by definition a pointer and
+  there is no level below the last. Only at the root does the check
+  discriminate: skip it and the walk follows a perfectly good table and
+  the access succeeds. Put the encoding where the two behaviours differ.
 - **A block backend may retire more than its budget, and one caller's
   arithmetic could not survive that.** The host runner sized each slice as
   `max_insn - total`; the JIT overshoots because it can only stop between

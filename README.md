@@ -52,7 +52,7 @@ silicon.
 | **U-mode, S-mode** | implemented, including `MPRV` and trap delegation |
 | **Sv32** | two-level paging, 4 MiB megapages, 32-entry TLB; Svade (A/D are checked, not written) |
 | **Sdtrig** | mcontrol triggers on execute/load/store; `rv32mi/breakpoint` passes |
-| Guest ISA self-test (243 checks) | passes on host **and** on hardware, both backends |
+| Guest ISA self-test (296 checks) | passes on host **and** on hardware, both backends |
 | **JIT backends** | Thumb-2 (ARMv7E-M) and x86-64; the x86-64 one puts translated code under the host suites |
 | Nucleo-F446RE firmware | 31–54 KB flash by configuration; guest gets 70–122 KiB of the 128 KiB SRAM |
 | Thumb-2 JIT backend | implemented; **19.2× slower than native ARM** on CoreMark with a 48 KB code cache, 15.3× with 64 KB, and *slower than the interpreter* at the 12 KB default — see below |
@@ -461,9 +461,9 @@ Current state, all re-run on the tree as it stands:
 | `riscv-arch-test`, `--jit` + SoftFloat | **274 / 274** — the whole suite through translated code | host |
 | `riscv-arch-test`, `--jit`, host FPU | 222 / 274 — identical to the interpreter on the same build | host |
 | `riscv-tests`, `--jit` | **77 / 77** | host |
-| `isatest`, JIT | **243 / 243** | hardware |
-| `isatest`, `-DRV32_JIT=OFF` | **243 / 243** | hardware |
-| `isatest`, host, both FP backends | **243 / 243** | host |
+| `isatest`, JIT | **296 / 296** | hardware |
+| `isatest`, `-DRV32_JIT=OFF` | **296 / 296** | hardware |
+| `isatest`, host, both FP backends | **296 / 296** | host |
 | `mmiobench` | **72 / 72** | hardware |
 | CoreMark | `crcfinal 0xca90` on all three backends | hardware |
 
@@ -490,7 +490,7 @@ suite:
 Two of those produced no wrong answer at all, only performance that made no
 sense. Three were staleness: a decision taken when a block was translated,
 still in force after the state behind it changed. The self-test grew from 148
-checks to 243 chasing them, and the checks that matter are the ones that
+checks to 296 chasing them, and the checks that matter are the ones that
 re-execute *one* instruction at *one* address after changing the state it was
 compiled against — a fresh call site is translated against the current
 configuration and proves nothing.
@@ -526,7 +526,7 @@ affordable but is real.
 
 Both are validated on hardware. Note that with the JIT enabled the arithmetic
 is translated to VFP and never reaches SoftFloat, so the run that actually
-exercises it is `-DRV32_JIT=OFF`; both configurations pass 243/243. That the
+exercises it is `-DRV32_JIT=OFF`; both configurations pass 296/296. That the
 two backends agree is worth having deliberately — they use genuinely different
 FP implementations, VFP against SoftFloat, so the self-test doubles as a
 differential check between them.
