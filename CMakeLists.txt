@@ -133,6 +133,7 @@ add_library(rv32core STATIC
     # Compiles to nothing unless RV_ENABLE_JIT is set, which needs a
     # Thumb-2 host; the file guards itself so it can stay in the list.
     src/backend/rv_jit_thumb2.c
+    src/backend/rv_jit_x86_64.c
 )
 
 target_include_directories(rv32core PUBLIC

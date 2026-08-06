@@ -44,7 +44,7 @@ silicon.
 | RV32IMAFC + Zicsr, Zicntr, Zifencei, Zicbom, Zicboz, **B**, **Zacas**, **Zcf**, **Zcb** | implemented |
 | Machine-mode traps, interrupts, CLINT timer | implemented |
 | Official `riscv-arch-test` (RVCP) | **274 / 274** with SoftFloat; 222 / 274 with the host FPU |
-| **F** (single precision) | implemented, two backends — see below |
+| **F** (single precision) | implemented, two FP backends; routed through `rv_hart_fp` from both JITs |
 | **D** (double precision) | not implemented, and not planned |
 | **Zcd** | not implementable without D — see below |
 | `riscv-tests` (Berkeley) | **77 / 77 pass** |
@@ -53,6 +53,7 @@ silicon.
 | **Sv32** | two-level paging, 4 MiB megapages, 32-entry TLB; Svade (A/D are checked, not written) |
 | **Sdtrig** | mcontrol triggers on execute/load/store; `rv32mi/breakpoint` passes |
 | Guest ISA self-test (243 checks) | passes on host **and** on hardware, both backends |
+| **JIT backends** | Thumb-2 (ARMv7E-M) and x86-64; the x86-64 one puts translated code under the host suites |
 | Nucleo-F446RE firmware | 31–54 KB flash by configuration; guest gets 70–122 KiB of the 128 KiB SRAM |
 | Thumb-2 JIT backend | implemented; **19.2× slower than native ARM** on CoreMark with a 48 KB code cache, 15.3× with 64 KB, and *slower than the interpreter* at the 12 KB default — see below |
 | **Zacas** (`amocas.w` / `amocas.d`) | implemented |
@@ -456,7 +457,10 @@ Current state, all re-run on the tree as it stands:
 | `riscv-arch-test`, `-DRV32_FPU_SOFTFLOAT=ON` | **274 / 274** | host |
 | `riscv-arch-test`, default (host FPU) | 222 / 274 — every failure in `F` | host |
 | `riscv-tests` | **77 / 77** | host |
-| host unit + guest self-test (`ctest -L fast`) | **2 / 2** | host |
+| host unit + guest self-tests (`ctest -L fast`) | **3 / 3**, one of them through the JIT | host |
+| `riscv-arch-test`, `--jit` + SoftFloat | **274 / 274** — the whole suite through translated code | host |
+| `riscv-arch-test`, `--jit`, host FPU | 222 / 274 — identical to the interpreter on the same build | host |
+| `riscv-tests`, `--jit` | **77 / 77** | host |
 | `isatest`, JIT | **243 / 243** | hardware |
 | `isatest`, `-DRV32_JIT=OFF` | **243 / 243** | hardware |
 | `isatest`, host, both FP backends | **243 / 243** | host |

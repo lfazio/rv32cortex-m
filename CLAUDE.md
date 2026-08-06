@@ -49,9 +49,21 @@ exactly what happened to `rv32mi/csr` when F was added.
 ```sh
 ```
 
-The JIT cannot be exercised by the x86 host suites. Validate it by flashing
-`isatest` (104 checks) and reading the UART — **this has caught real JIT bugs**,
-including an inlined store that skipped the LR/SC reservation break.
+There are two JIT backends, selected by host architecture in `rv_config.h`:
+Thumb-2 for ARMv7E-M and **x86-64 for the host**. The x86-64 one exists for
+coverage, not speed — with `--jit` the architecture suite and riscv-tests
+run against *translated* code, and `ctest -L fast` includes
+`guest-isatest-jit`:
+
+```sh
+./build/host/rv32-host --jit --quiet --load 0x80000000 build/host/guest/isatest.bin
+RV32_HOST=<wrapper adding --jit> ./scripts/run-riscv-tests.sh
+```
+
+The **Thumb-2** backend still cannot be exercised by any host suite.
+Validate it by flashing `isatest` and reading the UART — **this has caught
+real JIT bugs**, including an inlined store that skipped the LR/SC
+reservation break.
 
 Hardware: Nucleo-**F746ZG** (Cortex-M7, 216 MHz) on ST-LINK, console
 `/dev/ttyACM1` at 115200 8N1 -- a Nucleo-144 puts the VCP on USART3
@@ -273,6 +285,28 @@ the debug port. The Nucleo-F446RE is still supported and is
   through them ends in "matching nothing permits". Any privilege work
   should assume the PMP code is wrong until the privileged tests say
   otherwise -- and they will not run until the suite is *named* correctly.
+- **The x86-64 JIT is for coverage, and its stats line is what proves it.**
+  A backend that declines everything and falls back passes every test while
+  proving nothing, so the host runner prints `xlat/entries/interp`. First
+  run said `interp 7807` of 8527 -- 92% interpreted, because compressed
+  encodings were skipped and `isatest` locks a PMP entry early, after which
+  `fetch_guard` sends *everything* to the interpreter. On CoreMark, which
+  arms nothing, it is 42026 of 520078. Read the ratio before believing a
+  pass.
+- **The MCU's JIT tuning is wrong for a host, in the direction that hides
+  bugs.** `RV_JIT_CODE_SIZE` 12 KB and `RV_JIT_MAX_BLOCKS` 256 exist
+  because on a microcontroller those bytes are the guest's; on a host they
+  made CoreMark flush 19 times per run, and constant retranslation is
+  exactly what would mask a translator bug behind a fresh translation. The
+  x86-64 backend sets its own sizes.
+- **System V wants rsp 16-byte aligned at a `call`.** Entry leaves it 8
+  past, two pushes bring it back to 8, so the block prologue needs one more
+  8. Getting it wrong does not fault in the emitted code -- it faults
+  inside whatever libc routine a helper eventually reaches that uses an
+  aligned SSE store.
+- **`jalr rd, rs1` may name the same register twice.** Compute the target
+  before writing the link, or `jalr ra, ra` -- an indirect call through a
+  saved pointer -- jumps to the return address it just wrote.
 - **Sv32 goes behind `vm_active`, folded into `fetch_guard`.** Translation
   is on the fetch and access paths, the two places this repo has measured
   as the most expensive to touch, so it is gated exactly as PMP is: false

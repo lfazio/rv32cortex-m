@@ -14,6 +14,7 @@
  */
 
 #include "rv32/rv_backend.h"
+#include "rv32/rv_jit.h"
 #include "rv32/rv_dev.h"
 #include "rv32/rv_aplic.h"
 #include "rv32/rv_hart.h"
@@ -274,6 +275,7 @@ static void usage(void)
         "  --ram BYTES          guest RAM size (default %u)\n"
         "  --max-insn N         stop after N instructions (0 = unlimited)\n"
         "  --timer-hz N         CLINT mtime ticks per second of guest time\n"
+        "  --jit                use the JIT backend instead of the interpreter\n"
         "  --quiet              suppress the exit summary\n"
         "  --dump               dump register state on exit\n",
         RV_GUEST_RAM_BASE, DEFAULT_RAM_SIZE);
@@ -305,6 +307,8 @@ int main(int argc, char **argv)
     bool quiet = false;
     bool dump = false;
 
+    bool want_jit = false;
+
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
 
@@ -335,8 +339,23 @@ int main(int argc, char **argv)
                 max_insn = v;
                 continue;
             }
+            if (strcmp(a, "--jit") == 0) {
+#if RV_ENABLE_JIT
+                /*
+                 * The whole reason the x86-64 backend exists: with this,
+                 * the architecture suite and riscv-tests run against
+                 * *translated* code -- coverage the Thumb-2 backend can
+                 * only get by flashing a board.
+                 */
+                want_jit = true;
+#else
+                fprintf(stderr, "rv32: no JIT backend for this host\n");
+                return 2;
+#endif
+                continue;
+            }
 #if RV_ENABLE_TRACE
-            if (strcmp(a, "--trace-skip") == 0) {
+        if (strcmp(a, "--trace-skip") == 0) {
                 uint32_t v; if (!parse_u32(argv[++i], &v)) { usage(); return 2; }
                 g_trace_skip = v; continue;
             }
@@ -403,6 +422,23 @@ int main(int argc, char **argv)
     rv_clint_init(&clint, &hart);
     rv_aplic_init(&aplic, &hart);
     rv_uart_init(&uart, host_tx, host_rx, NULL);
+
+#if RV_ENABLE_JIT
+    /*
+     * After rv_hart_init, because a backend's init may need the hart -- and
+     * because selecting it earlier would leave the JIT holding a pointer to
+     * a hart that has since been reset.
+     */
+    if (want_jit) {
+        rv_backend = &rv_backend_jit;
+        if (rv_backend->init != NULL && !rv_backend->init(&hart)) {
+            fprintf(stderr, "rv32: jit init failed\n");
+            return 1;
+        }
+    }
+#else
+    (void)want_jit;
+#endif
 #if RV_ENABLE_ECALL_HOOK
     hart.ecall = host_ecall;
 #endif
@@ -499,6 +535,24 @@ int main(int argc, char **argv)
     if (!quiet) {
         fprintf(stderr, "rv32: %llu instructions retired\n",
                 (unsigned long long)total);
+#if RV_ENABLE_JIT
+        /*
+         * Printed only when the JIT ran. `interp` is the number that
+         * matters when reading a suite result: a backend that translated
+         * nothing and fell back for everything would pass every test while
+         * proving nothing about the translator.
+         */
+        if (rv_backend == &rv_backend_jit) {
+            rv_jit_stats_t st;
+            rv_jit_get_stats(&st);
+            fprintf(stderr,
+                    "rv32: jit blocks %u  xlat %u  entries %u  interp %u  "
+                    "code %u/%u  flushes %u\n",
+                    st.blocks, st.translations, st.block_entries,
+                    st.interp_fallbacks, st.code_used, st.code_size,
+                    st.flushes);
+        }
+#endif
     }
 
     return (g_exit_code >= 0) ? g_exit_code : 0;

@@ -4,6 +4,7 @@ add_executable(rv32-unit
     test_main.c
     test_decode.c
     test_bus.c
+    test_fpu.c
 )
 
 target_link_libraries(rv32-unit PRIVATE rv32core)
@@ -20,4 +21,17 @@ if(TARGET guest-isatest)
              COMMAND rv32-host --quiet --load 0x80000000
                      "${CMAKE_BINARY_DIR}/guest/isatest.bin")
     set_tests_properties(guest-isatest PROPERTIES LABELS fast)
+
+    # The same self-test through the JIT.
+    #
+    # This is the check the Thumb-2 backend can never have: every JIT bug
+    # this project has found needed a board, a flash cycle and a UART, and
+    # three of them were live for months first. On a host with a JIT
+    # backend, translated code is covered by `ctest -L fast`.
+    if(RV32_JIT)
+        add_test(NAME guest-isatest-jit
+                 COMMAND rv32-host --jit --quiet --load 0x80000000
+                         "${CMAKE_BINARY_DIR}/guest/isatest.bin")
+        set_tests_properties(guest-isatest-jit PROPERTIES LABELS fast)
+    endif()
 endif()

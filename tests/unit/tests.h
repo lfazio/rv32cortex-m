@@ -18,5 +18,6 @@ void check_eq(const char *file, int line, const char *expr,
 
 void test_decode(void);
 void test_bus(void);
+void test_fpu(void);
 
 #endif /* RV32_TESTS_H */

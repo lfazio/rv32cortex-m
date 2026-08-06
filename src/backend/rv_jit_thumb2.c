@@ -16,7 +16,7 @@
 
 #include "rv32/rv_jit.h"
 
-#if RV_ENABLE_JIT
+#if RV_ENABLE_JIT && defined(RV_JIT_THUMB2)
 
 #include "rv32/rv_backend.h"
 #include "rv32/rv_decode.h"

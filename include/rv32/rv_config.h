@@ -353,8 +353,19 @@
 #  define RV_JIT_PT_ARM_AT 64u
 #endif
 
+/*
+ * Which JIT, if any, the host can run. Exactly one backend defines
+ * rv_backend_jit, so the choice is made once here rather than in the
+ * build system, where a mismatch would surface as a duplicate symbol.
+ */
+#if defined(__ARM_ARCH) && (__ARM_ARCH >= 7) && defined(__thumb2__)
+#  define RV_JIT_THUMB2 1
+#elif defined(__x86_64__) && defined(__linux__)
+#  define RV_JIT_X86_64 1
+#endif
+
 #ifndef RV_ENABLE_JIT
-#  if defined(__ARM_ARCH) && (__ARM_ARCH >= 7) && defined(__thumb2__)
+#  if defined(RV_JIT_THUMB2) || defined(RV_JIT_X86_64)
 #    define RV_ENABLE_JIT 1
 #  else
 #    define RV_ENABLE_JIT 0
