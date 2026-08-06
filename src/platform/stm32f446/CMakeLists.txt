@@ -81,6 +81,7 @@ target_compile_options(stm32cube PRIVATE -Wno-unused-parameter)
 
 add_executable(rv32-stm32f446
     main.c
+    board.c
     stm32f4xx_it.c
     guest_image.S
 )

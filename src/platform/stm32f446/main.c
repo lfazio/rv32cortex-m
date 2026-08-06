@@ -14,6 +14,7 @@
  */
 
 #include "stm32f4xx_hal.h"
+#include "board.h"
 
 #include "rv32/rv_backend.h"
 #include "rv32/rv_dev.h"
@@ -71,17 +72,22 @@ static rv_hart_t   g_hart;
 static rv_clint_t  g_clint;
 static rv_aplic_t  g_aplic;
 static rv_uart_t   g_uart;
-static UART_HandleTypeDef g_console;
 
 /* ------------------------------------------------------------------ */
 /* Console                                                             */
 /* ------------------------------------------------------------------ */
 
+/* Nothing this early can be reported; halt so a debugger sees where. */
+static void fatal_halt(void)
+{
+    __disable_irq();
+    for (;;) {
+    }
+}
+
 void rv_console_putc(uint8_t c)
 {
-    /* Blocking, with a generous timeout: output is for humans, and losing
-     * a byte is worse than stalling briefly. */
-    HAL_UART_Transmit(&g_console, &c, 1u, 100u);
+    board_console_putc(c);
 }
 
 #define console_putc rv_console_putc
@@ -131,11 +137,7 @@ static void guest_uart_tx(void *ctx, uint8_t c)
 static int guest_uart_rx(void *ctx)
 {
     (void)ctx;
-    /* Non-blocking poll of the receive data register. */
-    if (__HAL_UART_GET_FLAG(&g_console, UART_FLAG_RXNE)) {
-        return (int)(g_console.Instance->DR & 0xFFu);
-    }
-    return -1;
+    return board_console_getc();
 }
 
 /* ------------------------------------------------------------------ */
@@ -231,117 +233,6 @@ static const rv_cache_ops_t g_cache_ops = {
     .maint = arm_cache_maint,
     .ctx = NULL,
 };
-
-/* ------------------------------------------------------------------ */
-/* Cycle counter                                                       */
-/* ------------------------------------------------------------------ */
-
-static void dwt_init(void)
-{
-    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    DWT->CYCCNT = 0u;
-    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-}
-
-static inline uint32_t dwt_cycles(void)
-{
-    return DWT->CYCCNT;
-}
-
-/* ------------------------------------------------------------------ */
-/* Clock tree                                                          */
-/* ------------------------------------------------------------------ */
-
-static void Error_Handler(void)
-{
-    __disable_irq();
-    for (;;) {
-        /* A failure this early cannot be reported; halt so a debugger can
-         * see where we stopped. */
-    }
-}
-
-/*
- * 180 MHz from the internal 16 MHz HSI. HSI rather than HSE because the
- * Nucleo-F446RE ships without a populated crystal, and the ST-LINK MCO
- * path depends on solder-bridge options that vary between board revisions;
- * HSI works on an unmodified board.
- *
- *   HSI 16 MHz / PLLM 8 = 2 MHz  -> x PLLN 180 = 360 MHz -> / PLLP 2 = 180 MHz
- */
-static void SystemClock_Config(void)
-{
-    RCC_OscInitTypeDef osc = { 0 };
-    RCC_ClkInitTypeDef clk = { 0 };
-
-    __HAL_RCC_PWR_CLK_ENABLE();
-    __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
-
-    osc.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-    osc.HSIState = RCC_HSI_ON;
-    osc.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-    osc.PLL.PLLState = RCC_PLL_ON;
-    osc.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-    osc.PLL.PLLM = 8;
-    osc.PLL.PLLN = 180;
-    osc.PLL.PLLP = RCC_PLLP_DIV2;
-    osc.PLL.PLLQ = 4;
-    osc.PLL.PLLR = 2;
-    if (HAL_RCC_OscConfig(&osc) != HAL_OK) {
-        Error_Handler();
-    }
-
-    /* Over-drive is mandatory above 168 MHz on this part. */
-    if (HAL_PWREx_EnableOverDrive() != HAL_OK) {
-        Error_Handler();
-    }
-
-    clk.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
-                    RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
-    clk.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-    clk.AHBCLKDivider = RCC_SYSCLK_DIV1;
-    clk.APB1CLKDivider = RCC_HCLK_DIV4;    /* 45 MHz, APB1 max */
-    clk.APB2CLKDivider = RCC_HCLK_DIV2;    /* 90 MHz, APB2 max */
-    if (HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_5) != HAL_OK) {
-        Error_Handler();
-    }
-}
-
-static void console_init(void)
-{
-    g_console.Instance = USART2;             /* wired to the ST-LINK VCP */
-    g_console.Init.BaudRate = 115200;
-    g_console.Init.WordLength = UART_WORDLENGTH_8B;
-    g_console.Init.StopBits = UART_STOPBITS_1;
-    g_console.Init.Parity = UART_PARITY_NONE;
-    g_console.Init.Mode = UART_MODE_TX_RX;
-    g_console.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-    g_console.Init.OverSampling = UART_OVERSAMPLING_16;
-    if (HAL_UART_Init(&g_console) != HAL_OK) {
-        Error_Handler();
-    }
-}
-
-/* Called by HAL_UART_Init. */
-void HAL_UART_MspInit(UART_HandleTypeDef *huart)
-{
-    GPIO_InitTypeDef gpio = { 0 };
-
-    if (huart->Instance != USART2) {
-        return;
-    }
-
-    __HAL_RCC_USART2_CLK_ENABLE();
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-
-    /* PA2 = USART2_TX, PA3 = USART2_RX, both AF7. */
-    gpio.Pin = GPIO_PIN_2 | GPIO_PIN_3;
-    gpio.Mode = GPIO_MODE_AF_PP;
-    gpio.Pull = GPIO_PULLUP;
-    gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    gpio.Alternate = GPIO_AF7_USART2;
-    HAL_GPIO_Init(GPIOA, &gpio);
-}
 
 /* ------------------------------------------------------------------ */
 /* Guest address space                                                 */
@@ -587,10 +478,7 @@ static void report_state(void)
 
 int main(void)
 {
-    HAL_Init();
-    SystemClock_Config();
-    console_init();
-    dwt_init();
+    board_init();
 
 #if RV32_NATIVE_COREMARK
     /*
@@ -600,13 +488,15 @@ int main(void)
      */
     {
         extern int coremark_native_main(void);
-        console_puts("\n\nrv32cortex-m: NATIVE CoreMark on Cortex-M4 @ ");
-        console_putu(SystemCoreClock / 1000000u);
+        console_puts("\n\nrv32cortex-m: NATIVE CoreMark on ");
+        console_puts(board_name());
+        console_puts(" @ ");
+        console_putu(board_clock_hz() / 1000000u);
         console_puts(" MHz\n\n");
-        const uint32_t c0 = dwt_cycles();
+        const uint32_t c0 = board_cycles();
         (void)coremark_native_main();
         console_puts("\n-- native --\n  host     ");
-        console_putu(dwt_cycles() - c0);
+        console_putu(board_cycles() - c0);
         console_puts(" cycles\n");
         for (;;) { __WFI(); }
     }
@@ -633,13 +523,15 @@ int main(void)
 #if RV_EXT_ZBC
                  "_zbc"
 #endif
-                 " on Cortex-M4 @ ");
-    console_putu(SystemCoreClock / 1000000u);
+                 " on ");
+    console_puts(board_name());
+    console_puts(" @ ");
+    console_putu(board_clock_hz() / 1000000u);
     console_puts(" MHz\n");
 
     if (!build_address_space()) {
         console_puts("fatal: could not build the guest address space\n");
-        Error_Handler();
+        fatal_halt();
     }
 
     rv_hart_init(&g_hart, &g_bus, 0u);
@@ -667,7 +559,7 @@ int main(void)
      */
     if (rv_guest_image_size > GUEST_RAM_SIZE) {
         console_puts("fatal: guest image larger than guest RAM\n");
-        Error_Handler();
+        fatal_halt();
     }
     memcpy(GUEST_RAM_BASE_PTR, rv_guest_image, rv_guest_image_size);
 
@@ -687,7 +579,7 @@ int main(void)
     rv_hart_boot(&g_hart, RV_GUEST_RAM_BASE, GUEST_RAM_SIZE);
 
     const uint32_t cycles_per_tick = SystemCoreClock / RV_CLINT_HZ;
-    const uint32_t start_cycles = dwt_cycles();
+    const uint32_t start_cycles = board_cycles();
     uint64_t retired_total = 0;
 
     for (;;) {
@@ -697,7 +589,7 @@ int main(void)
 
         /* Guest time tracks real time through the DWT cycle counter. */
         rv_clint_set_time(&g_clint,
-                          (uint64_t)(dwt_cycles() - start_cycles) / cycles_per_tick);
+                          (uint64_t)(board_cycles() - start_cycles) / cycles_per_tick);
 
         if (why == RV_RUN_HALTED) {
             break;
@@ -708,7 +600,7 @@ int main(void)
         }
     }
 
-    const uint32_t elapsed = dwt_cycles() - start_cycles;
+    const uint32_t elapsed = board_cycles() - start_cycles;
 
     console_puts("\n-- done --\n  retired  ");
     console_putu((uint32_t)retired_total);

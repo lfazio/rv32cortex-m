@@ -93,6 +93,7 @@ target_compile_options(stm32cube PRIVATE -Wno-unused-parameter)
 
 add_executable(rv32-stm32f746
     main.c
+    board.c
     stm32f7xx_it.c
     guest_image.S
 )

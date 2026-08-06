@@ -398,10 +398,12 @@ cmake --build build/stm32f446
 cmake --build build/stm32f446 --target flash     # probe-rs over ST-LINK
 ```
 
-Console: USART2 on the ST-LINK virtual COM port, **115200 8N1**.
+Console: the ST-LINK virtual COM port, **921600 8N1** — USART2 on the
+Nucleo-F446RE, USART3 on the Nucleo-F746ZG (a Nucleo-144 wires the VCP to
+PD8/PD9).
 
 ```sh
-picocom -b 115200 /dev/ttyACM0
+picocom -b 921600 /dev/ttyACM0
 ```
 
 `-DRV32_GUEST=` selects the embedded guest image: `isatest`, `hello`, `bench`,
@@ -969,7 +971,7 @@ The two optimisations that mattered:
 |---|---|---|
 | `bench` | 122 cyc/insn, 1.48 MIPS | the interpreter |
 | `stm32drv` | 330 cyc/insn, 545 KIPS | mostly USART2 TX waits and MMIO polling |
-| `isatest` | 427 cyc/insn, 421 KIPS | mostly 115200-baud console and the timer spin |
+| `isatest` | 427 cyc/insn, 421 KIPS | mostly console output and the timer spin |
 
 Only `bench` is a throughput figure. The other two are dominated by waiting on
 real hardware, which is a property of the workload, not of the emulator.

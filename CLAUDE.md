@@ -66,11 +66,17 @@ real JIT bugs**, including an inlined store that skipped the LR/SC
 reservation break.
 
 Hardware: Nucleo-**F746ZG** (Cortex-M7, 216 MHz) on ST-LINK, console
-`/dev/ttyACM1` at 115200 8N1 -- a Nucleo-144 puts the VCP on USART3
+`/dev/ttyACM1` at **921600** 8N1 -- a Nucleo-144 puts the VCP on USART3
 (PD8/PD9), not USART2. `probe-rs download --chip STM32F746ZGTx <elf>` then
 `probe-rs reset`; add `--connect-under-reset` when running firmware holds
 the debug port. The Nucleo-F446RE is still supported and is
-`--chip STM32F446RETx` on `/dev/ttyACM0`.
+`--chip STM32F446RETx` on `/dev/ttyACM0`. With both boards plugged in
+`probe-rs` needs `--probe <serial>` to pick one.
+
+Board bring-up -- clock tree, console instance and pins, cycle counter,
+caches -- lives in each platform's `board.c` behind `board.h`, not in
+`main.c`. Diffing the two `board.c` files is the shortest statement of
+what changes between the parts.
 
 ## Things that have bitten, and will again
 
