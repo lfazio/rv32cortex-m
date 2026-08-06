@@ -53,9 +53,14 @@ implemented_extensions:
   # declaring one makes UDB reject the whole configuration so that nothing
   # builds at all.
   - { name: U, version: "= 1.0.0" }
-  # Supervisor mode, matching Sm's 1.12.0. Address translation is Bare
-  # only, which is what SATP_MODE_BARE below says; there is no Sv32.
+  # Supervisor mode, matching Sm's 1.12.0.
   - { name: S, version: "= 1.12.0" }
+  # Sv32 paging, and Svade rather than Svadu: the walk checks A and D and
+  # raises a page fault rather than writing the PTE, which the privileged
+  # spec permits and which keeps the walk out of the business of updating
+  # guest memory atomically.
+  - { name: Sv32, version: "= 1.0" }
+  - { name: Svade, version: "= 1.0.0" }
 
 params:
   # ---- base ----
@@ -179,13 +184,14 @@ params:
   STVEC_MODE_DIRECT: true
   STVEC_MODE_VECTORED: true
 
-  # Bare is the only translation mode, so there is no ASID to hold: satp
-  # is WARL to zero. SFENCE.VMA has nothing to order and is illegal, which
-  # is what the read-only-satp parameter below describes -- and what
-  # rv32mi/illegal requires of a hart that reports no paging.
+  # Bare and Sv32. satp is a real register now, so SFENCE.VMA is a real
+  # instruction and the read-only-satp rule no longer applies.
   SATP_MODE_BARE: true
-  ASID_WIDTH: 0
-  TRAP_ON_SFENCE_VMA_WHEN_SATP_MODE_IS_READ_ONLY: true
+  # Nine bits of ASID exist in satp and are stored, but the TLB is tagged
+  # by full VPN and flushed wholesale, so nothing distinguishes address
+  # spaces -- which is a legal implementation of an ASID that never has to
+  # be believed.
+  ASID_WIDTH: 9
 
   # scounteren mirrors mcounteren: CY, TM and IR, no HPM counters.
   SCOUNTENABLE_EN:

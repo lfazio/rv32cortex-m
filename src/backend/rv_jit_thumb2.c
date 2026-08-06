@@ -197,6 +197,17 @@ typedef struct {
      */
     uint32_t cfg[RV_PMP_ENTRIES / 4u];
     uint32_t addr[RV_PMP_ENTRIES];
+#if RV_EXT_SV32
+    /*
+     * Translation state. A block is built from the bytes at a *virtual*
+     * address and inlines accesses to virtual addresses, so both what maps
+     * them (satp) and when that mapping last changed (vm_gen) are baked in
+     * as surely as any permission is.
+     */
+    bool     vm_active;
+    uint32_t satp;
+    uint32_t vm_gen;
+#endif
 } jit_pmp_state_t;
 
 static jit_pmp_state_t g_pmp_seen;
@@ -230,6 +241,12 @@ static void jit_pmp_snapshot(const rv_hart_t *h, jit_pmp_state_t *s)
     s->hi = 0u;
     s->simple = s->active && rv_pmp_simple(h, &s->lo, &s->hi);
 
+#if RV_EXT_SV32
+    s->vm_active = h->vm_active;
+    s->satp = h->satp;
+    s->vm_gen = h->vm_gen;
+#endif
+
     if (s->active) {
         for (uint32_t i = 0; i < RV_PMP_ENTRIES / 4u; i++) {
             s->cfg[i] = h->pmpcfg[i];
@@ -242,6 +259,12 @@ static void jit_pmp_snapshot(const rv_hart_t *h, jit_pmp_state_t *s)
 
 static bool jit_pmp_differs(const jit_pmp_state_t *a, const jit_pmp_state_t *b)
 {
+#if RV_EXT_SV32
+    if (a->vm_active != b->vm_active || a->satp != b->satp ||
+        a->vm_gen != b->vm_gen) {
+        return true;
+    }
+#endif
     if (a->active != b->active) {
         return true;
     }
@@ -1562,6 +1585,18 @@ static void emit_mem_access(bool is_store, uint32_t size, uint32_t sign,
         emit_helper_call(helper, spec, pc, insns);
         return;
     }
+
+#if RV_EXT_SV32
+    /*
+     * Under translation the inlined path is wrong twice over: the address
+     * it computes is virtual, and the mapping can deny the access outright.
+     * Both are the helper's job.
+     */
+    if (g_xlate_hart->vm_active) {
+        emit_helper_call(helper, spec, pc, insns);
+        return;
+    }
+#endif
 
 #if RV_EXT_PMP
     /*
@@ -2940,6 +2975,19 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
          * during translation simply ends the block; the interpreter will
          * re-fetch and raise the trap with the right cause and mtval.
          */
+        /*
+         * Where the instruction bytes actually live. Under translation the
+         * translator has to walk exactly as the interpreter would, or it
+         * reads whatever physical memory happens to sit at the virtual
+         * address and compiles it.
+         */
+        uint32_t fcur = cur;
+#if RV_EXT_SV32
+        if (h->vm_active &&
+            rv_mmu_translate(h, cur, RV_ACC_FETCH, &fcur) != RV_EXC_NONE) {
+            break;   /* let the interpreter re-walk and raise the fault */
+        }
+#endif
 #if RV_EXT_PMP
         /*
          * Execute permission, for the same reason and by the same means as
@@ -2952,12 +3000,12 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
          * sound only while the configuration it was read from cannot move
          * underneath. jit_pmp_state_t carries the entries for that reason.
          */
-        if (h->pmp_active && !rv_pmp_check(h, cur, 2u, RV_ACC_FETCH)) {
+        if (h->pmp_active && !rv_pmp_check(h, fcur, 2u, RV_ACC_FETCH)) {
             break;
         }
 #endif
         uint16_t lo;
-        if (rv_bus_fetch16(h->bus, cur, &lo) != RV_EXC_NONE) {
+        if (rv_bus_fetch16(h->bus, fcur, &lo) != RV_EXC_NONE) {
             break;
         }
 
@@ -2965,14 +3013,25 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
         unsigned len;
         if (rv_is_32bit(lo)) {
             uint16_t hi;
-#if RV_EXT_PMP
-            /* The halves are checked separately so a 32-bit instruction
-             * straddling a region boundary needs both. */
-            if (h->pmp_active && !rv_pmp_check(h, cur + 2u, 2u, RV_ACC_FETCH)) {
+            uint32_t fcur2 = fcur + 2u;
+#if RV_EXT_SV32
+            /* Two bytes from the end of a page the halves live in
+             * different pages, and the second need not be mapped. */
+            if (h->vm_active &&
+                (cur & (RV_PAGE_SIZE - 1u)) == RV_PAGE_SIZE - 2u &&
+                rv_mmu_translate(h, cur + 2u, RV_ACC_FETCH, &fcur2)
+                    != RV_EXC_NONE) {
                 break;
             }
 #endif
-            if (rv_bus_fetch16(h->bus, cur + 2u, &hi) != RV_EXC_NONE) {
+#if RV_EXT_PMP
+            /* The halves are checked separately so a 32-bit instruction
+             * straddling a region boundary needs both. */
+            if (h->pmp_active && !rv_pmp_check(h, fcur2, 2u, RV_ACC_FETCH)) {
+                break;
+            }
+#endif
+            if (rv_bus_fetch16(h->bus, fcur2, &hi) != RV_EXC_NONE) {
                 break;
             }
             insn = (uint32_t)lo | ((uint32_t)hi << 16);

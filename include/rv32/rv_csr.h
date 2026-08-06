@@ -60,6 +60,24 @@ struct rv_hart;
 #define CSR_MTVEC           0x305
 #define CSR_MCOUNTEREN      0x306
 #define CSR_MSTATUSH        0x310
+#define CSR_MENVCFG         0x30A
+#define CSR_MENVCFGH        0x31A
+#define CSR_SENVCFG         0x10A
+
+/*
+ * The environment-configuration registers, which say what a *lower*
+ * privilege level may do. Only the cache-block bits mean anything here:
+ * FIOM (fence-implies-IO) is vacuous with no distinct IO ordering, and
+ * every field in the high half belongs to an extension this core does not
+ * have -- PBMTE to Svpbmt, STCE to Sstc, and ADUE to Svadu, whose absence
+ * is precisely the statement that A and D are software's to set.
+ */
+#define ENVCFG_FIOM         (1u << 0)
+#define ENVCFG_CBIE         (3u << 4)
+#define ENVCFG_CBCFE        (1u << 6)
+#define ENVCFG_CBZE         (1u << 7)
+#define ENVCFG_WMASK        (ENVCFG_FIOM | ENVCFG_CBIE | ENVCFG_CBCFE | \
+                             ENVCFG_CBZE)
 
 /* Machine trap handling. */
 #define CSR_MSCRATCH        0x340
@@ -82,8 +100,20 @@ struct rv_hart;
 #define CSR_STVAL           0x143
 #define CSR_SIP             0x144
 
-/* Supervisor address translation. Bare only here; see RV_EXT_S. */
+/* Supervisor address translation. */
 #define CSR_SATP            0x180
+#define SATP_MODE_SV32      0x80000000u
+#define SATP_ASID_SHIFT     22
+#define SATP_ASID_MASK      (0x1FFu << SATP_ASID_SHIFT)
+/*
+ * 20 bits, not the 22 Sv32 allows. satp.PPN is WARL and its width follows
+ * the physical address space: this core's bus is 32-bit, so a page number
+ * is PA[31:12] and the top two bits of the architectural field cannot name
+ * anything. Masking them off is what makes that visible to software --
+ * keeping them would let satp report a root table that the walk then
+ * silently truncates when it shifts the PPN back up.
+ */
+#define SATP_PPN_MASK       0x000FFFFFu
 
 /* Sdtrig debug triggers. */
 #define CSR_TSELECT         0x7A0
@@ -140,17 +170,20 @@ struct rv_hart;
 /*
  * The S bank.
  *
- * SUM, MXR and TVM are *not* here, and that is the interface for "S-mode
- * without address translation" rather than an omission. All three exist
- * only to qualify a virtual-memory access, and with no translation modes
- * there are none to qualify; software probes for paging by setting SUM and
- * MXR and reading them back, so leaving them writable claims a page table
- * this core does not have. rv32mi/illegal makes exactly that probe and
- * changes what it demands of SFENCE.VMA on the answer.
+ * SUM, MXR and TVM belong to address translation, and software probes for
+ * paging by setting SUM and MXR and reading them back -- rv32mi/illegal
+ * makes exactly that probe and changes what it then demands of SFENCE.VMA.
+ * So they are writable exactly when Sv32 is built in, and read as zero
+ * when it is not, which is the honest answer to that probe either way.
  */
+#if RV_EXT_SV32
+#  define MSTATUS_WMASK_VM  (MSTATUS_SUM | MSTATUS_MXR | MSTATUS_TVM)
+#else
+#  define MSTATUS_WMASK_VM  0u
+#endif
 #if RV_EXT_S
 #  define MSTATUS_WMASK_S   (MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP | \
-                             MSTATUS_TW | MSTATUS_TSR)
+                             MSTATUS_TW | MSTATUS_TSR | MSTATUS_WMASK_VM)
 #else
 #  define MSTATUS_WMASK_S   0u
 #endif
@@ -165,6 +198,7 @@ struct rv_hart;
  * makes sstatus a view rather than a register.
  */
 #define SSTATUS_RMASK       (MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP | \
+                             MSTATUS_SUM | MSTATUS_MXR | \
                              MSTATUS_FS_MASK | MSTATUS_SD)
 #define SSTATUS_WMASK       (SSTATUS_RMASK & MSTATUS_WMASK)
 

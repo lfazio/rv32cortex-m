@@ -34,7 +34,7 @@ when changing it), `-DRV32_GUEST=isatest|hello|bench|stm32drv|coremark`.
 ## Validation — run before claiming anything works
 
 ```sh
-./scripts/run-arch-test.sh      # official riscv-arch-test: 231/231 with -DRV32_FPU_SOFTFLOAT=ON, 179/231 without (every failure is F)
+./scripts/run-arch-test.sh      # official riscv-arch-test: 274/274 with -DRV32_FPU_SOFTFLOAT=ON, 222/274 without (every failure is F)
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77
 ```
 
@@ -273,6 +273,34 @@ the debug port. The Nucleo-F446RE is still supported and is
   through them ends in "matching nothing permits". Any privilege work
   should assume the PMP code is wrong until the privileged tests say
   otherwise -- and they will not run until the suite is *named* correctly.
+- **Sv32 goes behind `vm_active`, folded into `fetch_guard`.** Translation
+  is on the fetch and access paths, the two places this repo has measured
+  as the most expensive to touch, so it is gated exactly as PMP is: false
+  whenever satp is Bare or every relevant privilege is M. Interpreter
+  CoreMark was unchanged by adding it, because CoreMark never enables
+  paging and pays one already-existing branch.
+- **`satp.PPN` is 20 bits here, not the 22 Sv32 defines.** The field is
+  WARL and its width follows the *physical* address space; this bus is
+  32-bit, so a page number is PA[31:12]. Masking to 22 does not widen
+  anything -- the walk shifts the PPN back up and silently drops the top
+  two bits -- it just lets satp report a root table the walk cannot reach.
+  `sv32_satp_access_test` writes all-ones and checks the readback.
+- **`mstatus.SD` has to be computed on read, not stored.** It summarises
+  the extension-state fields, so storing it means every write to FS has to
+  remember to maintain it, and the one place that cannot forget is the
+  read. Two Sv tests check it and nothing before them did.
+- **A 32-bit instruction can straddle a page.** Both halves are fetched,
+  and with paging the second may be in a different page that is not
+  mapped, so it needs its own translation -- but only when
+  `pc & 0xFFF == 0xFFE`, which keeps it off the common path. The same
+  applies in the JIT's translator, which walks exactly as the interpreter
+  does or it compiles whatever physical memory sits at the virtual address.
+- **JIT blocks are keyed on virtual addresses, so a mapping change
+  invalidates them even when satp does not move.** Editing a PTE and
+  issuing `SFENCE.VMA` is exactly that case, which is why `rv_mmu_flush`
+  bumps a generation counter the JIT snapshots. Watching satp alone would
+  miss it -- the same shape as watching `pmp_active` instead of the PMP
+  entries.
 - **Declaring an extension to UDB and to Sail are two separate jobs, and
   the Sail half can make the golden model disagree about correct
   behaviour.** `sail.json` had `medeleg.delegatable_bits = 0x0`, exactly

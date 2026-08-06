@@ -323,33 +323,72 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
              * neither; folding them into one flag puts the second feature
              * on the first one's branch for nothing.
              */
+            /*
+             * The address the bus is actually given. It differs from pc
+             * only under translation, but it has to be a separate variable
+             * even so: every fault below reports the *virtual* address in
+             * mtval, so pc must survive untouched.
+             */
+            uint32_t fpc = pc;
+
             if (RV_UNLIKELY(h->fetch_guard)) {
 #if RV_EXT_SDTRIG
                 /*
                  * An execute trigger fires before the instruction runs, so
                  * mepc points at it rather than past it -- the handler is
-                 * expected to step over or resume it deliberately.
+                 * expected to step over or resume it deliberately. It
+                 * watches virtual addresses, so it goes before the walk.
                  */
                 if (h->trig_active && rv_trig_check(h, pc, RV_ACC_FETCH)) {
                     TRAP(RV_EXC_BREAKPOINT, pc);
                 }
 #endif
+#if RV_EXT_SV32
+                if (h->vm_active) {
+                    const rv_exc_t t =
+                        rv_mmu_translate(h, pc, RV_ACC_FETCH, &fpc);
+                    if (RV_UNLIKELY(t != RV_EXC_NONE)) {
+                        TRAP(t, pc);
+                    }
+                }
+#endif
 #if RV_EXT_PMP
+                /* PMP describes physical memory, so it sees the translated
+                 * address, not the one the guest branched to. */
                 if (h->pmp_active &&
-                    !rv_pmp_check(h, pc, 2u, RV_ACC_FETCH)) {
+                    !rv_pmp_check(h, fpc, 2u, RV_ACC_FETCH)) {
                     TRAP(RV_EXC_INSN_ACCESS_FAULT, pc);
                 }
 #endif
             }
 
             uint16_t lo;
-            rv_exc_t exc = rv_bus_fetch16(h->bus, pc, &lo);
+            rv_exc_t exc = rv_bus_fetch16(h->bus, fpc, &lo);
             if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
                 TRAP(exc, pc);
             }
 
             if (rv_is_32bit(lo)) {
                 uint16_t hi;
+                uint32_t fpc2 = fpc + 2u;
+#if RV_EXT_SV32
+                /*
+                 * A 32-bit instruction two bytes from the end of a page has
+                 * its halves in two different pages, and the second may be
+                 * unmapped while the first is fine. Translating it
+                 * separately is not defensive -- it is the only way the
+                 * second half is reachable at all once the pages stop being
+                 * adjacent in physical memory.
+                 */
+                if (RV_UNLIKELY(h->vm_active && (pc & (RV_PAGE_SIZE - 1u))
+                                                 == RV_PAGE_SIZE - 2u)) {
+                    const rv_exc_t t =
+                        rv_mmu_translate(h, pc + 2u, RV_ACC_FETCH, &fpc2);
+                    if (RV_UNLIKELY(t != RV_EXC_NONE)) {
+                        TRAP(t, pc + 2u);
+                    }
+                }
+#endif
 #if RV_EXT_PMP
                 /*
                  * The second halfword needs its own check only when it can
@@ -360,11 +399,11 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
                  * rather than a second walk.
                  */
                 if (RV_UNLIKELY(h->pmp_active && (pc & 2u) != 0u) &&
-                    !rv_pmp_check(h, pc + 2u, 2u, RV_ACC_FETCH)) {
+                    !rv_pmp_check(h, fpc2, 2u, RV_ACC_FETCH)) {
                     TRAP(RV_EXC_INSN_ACCESS_FAULT, pc + 2u);
                 }
 #endif
-                exc = rv_bus_fetch16(h->bus, pc + 2u, &hi);
+                exc = rv_bus_fetch16(h->bus, fpc2, &hi);
                 if (RV_UNLIKELY(exc != RV_EXC_NONE)) {
                     TRAP(exc, pc + 2u);
                 }
@@ -774,6 +813,27 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
             const uint32_t f3 = rv_funct3(insn);
 
             if (f3 == 0u) {
+#if RV_EXT_SV32
+                /*
+                 * SFENCE.VMA, which unlike the rest of this group takes
+                 * operands in rs1 and rs2 and so must be matched on funct7
+                 * before the rs1-must-be-zero rule below.
+                 *
+                 * The operands narrow what is flushed; discarding
+                 * everything is always a legal answer to a narrower
+                 * request, and with a direct-mapped TLB of a few dozen
+                 * entries it is also the cheap one.
+                 */
+                if ((insn >> 25) == 0x09u && rv_rd(insn) == 0u) {
+                    if (h->priv < RV_PRIV_S ||
+                        (h->priv == RV_PRIV_S &&
+                         (h->mstatus & MSTATUS_TVM) != 0u)) {
+                        TRAP(RV_EXC_ILLEGAL_INSN, insn);
+                    }
+                    rv_mmu_flush(h);
+                    break;
+                }
+#endif
                 /* Privileged instructions: rd and rs1 must both be zero. */
                 if (RV_UNLIKELY(rv_rd(insn) != 0u || rv_rs1(insn) != 0u)) {
                     TRAP(RV_EXC_ILLEGAL_INSN, insn);
@@ -857,6 +917,9 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
                     /* See rv_hart_trap: the predicate depends on privilege. */
                     rv_pmp_refresh(h);
 #endif
+#if RV_EXT_SV32
+                    rv_mmu_refresh(h);
+#endif
 #if RV_LAZY_IRQ_CHECK
                     /* MIE was just restored from MPIE. */
                     h->irq_dirty = true;
@@ -895,6 +958,9 @@ static RV_INTERP_SECTION rv_run_reason_t interp_run(rv_hart_t *h,
                     h->priv = (uint8_t)back;
 #if RV_EXT_PMP
                     rv_pmp_refresh(h);
+#endif
+#if RV_EXT_SV32
+                    rv_mmu_refresh(h);
 #endif
 #if RV_LAZY_IRQ_CHECK
                     h->irq_dirty = true;

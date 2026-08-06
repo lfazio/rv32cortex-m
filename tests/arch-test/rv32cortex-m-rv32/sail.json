@@ -81,13 +81,20 @@
       "hardware_breakpoint": false,
       "load_address_misaligned": true,
       "load_access_fault": true,
-      "load_page_fault": false,
+      /* The three page-fault causes report the faulting *virtual* address,
+         which is what the walk was given and the only thing a handler can
+         use to find the mapping. They were false while there was no
+         translation and nothing could raise them, and had to move with
+         Sv32 -- they must equal the REPORT_VA_IN_xTVAL_ON_*_PAGE_FAULT
+         parameters in the UDB config, which say the same thing to the
+         other model. */
+      "load_page_fault": true,
       "samo_address_misaligned": true,
       "samo_access_fault": true,
-      "samo_page_fault": false,
+      "samo_page_fault": true,
       "fetch_address_misaligned": true,
       "fetch_access_fault": true,
-      "fetch_page_fault": false,
+      "fetch_page_fault": true,
       "software_check": false,
       "reserved_exceptions": false
     },
@@ -262,7 +269,21 @@
           "vector_misaligned_atomicity_granule_size_exp": 0,
           "reservability": "RsrvEventual",
           "supports_cbo_zero": true,
-          "supports_pte_read": false,
+          /* A page table lives in ordinary guest RAM, so this region has to
+             admit that it can hold one. Declaring false was right while
+             there was no paging; left false once Sv32 exists, the golden
+             model fails the *PTE read* with a memory-access error and bakes
+             an access fault into the signature where the architecture calls
+             for a page fault -- the same shape as the atomic_support
+             mistake above, and just as invisible, because the emulator is
+             behaving correctly and the reference is not being asked the
+             right question.
+
+             pte_write stays false: this core implements Svade, so the walk
+             checks A and D and raises a page fault rather than writing them
+             back. A model permitted to update them in place would disagree
+             with every A/D test, for the right reason. */
+          "supports_pte_read": true,
           "supports_pte_write": false
         },
         "include_in_device_tree": true
@@ -410,7 +431,10 @@
       "supported": false,
       "sfence_vma_illegal_if_svbare_only": true
     },
-    "Svade": { "supported": false },
+    // The walk checks A and D and raises a page fault; it never writes the
+    // PTE. Leaving this false lets the golden model update them in place
+    // and then disagree with every A/D test for the right reason.
+    "Svade": { "supported": true },
     "Svadu": { "supported": false },
     "Svnapot": { "supported": false },
     "Ssnpm": {
@@ -430,7 +454,9 @@
     },
     "Svpbmt": { "supported": false },
     "Svvptc": { "supported": false },
-    "Sv32": { "supported": false },
+    // Sv32 paging, with Svade -- the walk checks A and D and faults rather
+    // than writing the PTE.
+    "Sv32": { "supported": true },
     "Sv39": { "supported": false },
     "Sv48": { "supported": false },
     "Sv57": { "supported": false },

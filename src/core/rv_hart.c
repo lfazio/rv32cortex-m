@@ -91,6 +91,16 @@ void rv_hart_reset(rv_hart_t *h, uint32_t reset_pc)
 #endif
 
     h->mcounteren = 0u;
+    h->menvcfg = 0u;
+#if RV_EXT_S
+    h->senvcfg = 0u;
+#endif
+
+#if RV_EXT_SV32
+    h->satp = 0u;
+    h->vm_active = false;
+    rv_mmu_flush(h);
+#endif
 
 #if RV_EXT_S
     h->stvec = 0u;
@@ -222,6 +232,9 @@ void rv_hart_trap(rv_hart_t *h, uint32_t cause, uint32_t tval)
 #  if RV_EXT_PMP
     rv_pmp_refresh(h);
 #  endif
+#  if RV_EXT_SV32
+    rv_mmu_refresh(h);
+#  endif
 #endif
 
     uint32_t base = tvec & ~MTVEC_MODE_MASK;
@@ -349,6 +362,18 @@ rv_exc_t rv_hart_load(rv_hart_t *h, uint32_t addr, uint32_t size,
 #if RV_EXT_SDTRIG
     if (RV_UNLIKELY(h->trig_active) && rv_trig_check(h, addr, RV_ACC_LOAD)) {
         return RV_EXC_BREAKPOINT;
+    }
+#endif
+#if RV_EXT_SV32
+    /*
+     * Translate before PMP: PMP describes physical memory, so it has to
+     * see the address the bus will.
+     */
+    if (RV_UNLIKELY(h->vm_active)) {
+        const rv_exc_t texc = rv_mmu_translate(h, addr, RV_ACC_LOAD, &addr);
+        if (RV_UNLIKELY(texc != RV_EXC_NONE)) {
+            return texc;
+        }
     }
 #endif
 #if RV_EXT_PMP
@@ -608,6 +633,14 @@ rv_exc_t rv_hart_store(rv_hart_t *h, uint32_t addr, uint32_t size, uint32_t val)
 #if RV_EXT_SDTRIG
     if (RV_UNLIKELY(h->trig_active) && rv_trig_check(h, addr, RV_ACC_STORE)) {
         return RV_EXC_BREAKPOINT;
+    }
+#endif
+#if RV_EXT_SV32
+    if (RV_UNLIKELY(h->vm_active)) {
+        const rv_exc_t texc = rv_mmu_translate(h, addr, RV_ACC_STORE, &addr);
+        if (RV_UNLIKELY(texc != RV_EXC_NONE)) {
+            return texc;
+        }
     }
 #endif
 #if RV_EXT_PMP

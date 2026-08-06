@@ -111,6 +111,35 @@
 #endif
 
 /*
+ * Sv32 address translation.
+ *
+ * A two-level page walk on the fetch and access paths, which is the most
+ * expensive place in this emulator to put anything -- so it is gated on a
+ * single flag the way PMP is, and backed by a TLB. With satp in Bare mode,
+ * or in M-mode, the cost is one predictable branch.
+ */
+#ifndef RV_EXT_SV32
+#  define RV_EXT_SV32   RV_EXT_S
+#endif
+#if RV_EXT_SV32 && !RV_EXT_S
+#  error "Sv32 requires S-mode"
+#endif
+
+/*
+ * Translation lookaside buffer, direct mapped, one entry per 4 KiB page.
+ *
+ * Not an optimisation to add later: without it every guest load costs two
+ * more loads to walk the table, and every fetch likewise. Sized in entries;
+ * each is 12 bytes.
+ */
+/* Sv32 pages are 4 KiB. */
+#define RV_PAGE_SIZE 4096u
+
+#ifndef RV_TLB_ENTRIES
+#  define RV_TLB_ENTRIES 32u
+#endif
+
+/*
  * Does the ARM host have caches?
  *
  * Only the JIT cares, and it cares a great deal: it writes instructions as

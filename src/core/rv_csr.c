@@ -41,6 +41,24 @@ static uint64_t read_time(const rv_hart_t *h)
 }
 
 /*
+ * mstatus as software sees it.
+ *
+ * SD is read-only and summarises the extension state fields: it reads as
+ * one exactly when some of them is Dirty. It is not stored, because
+ * storing it would mean every write to FS had to remember to maintain it,
+ * and the one place that cannot forget is the read itself.
+ */
+static uint32_t mstatus_read(const rv_hart_t *h)
+{
+#if RV_EXT_F
+    if ((h->mstatus & MSTATUS_FS_MASK) == MSTATUS_FS_MASK) {
+        return h->mstatus | MSTATUS_SD;
+    }
+#endif
+    return h->mstatus & ~MSTATUS_SD;
+}
+
+/*
  * May the current privilege read this unprivileged counter shadow?
  *
  * mcounteren gates S-mode, and scounteren gates U-mode *in addition* --
@@ -91,7 +109,7 @@ rv_exc_t rv_csr_read(rv_hart_t *h, uint32_t csr, uint32_t *out)
     case CSR_MCONFIGPTR:    *out = 0u;           break;
 
     /* --- trap setup --- */
-    case CSR_MSTATUS:       *out = h->mstatus;   break;
+    case CSR_MSTATUS:       *out = mstatus_read(h);              break;
     case CSR_MSTATUSH:      *out = 0u;           break;
     case CSR_MISA:          *out = rv_hart_misa(); break;
     case CSR_MIE:           *out = h->mie;       break;
@@ -105,10 +123,13 @@ rv_exc_t rv_csr_read(rv_hart_t *h, uint32_t csr, uint32_t *out)
     case CSR_MIDELEG:       *out = 0u;           break;
 #endif
     case CSR_MCOUNTEREN:    *out = h->mcounteren; break;
+    case CSR_MENVCFG:       *out = h->menvcfg;    break;
+    /* The high half is entirely fields of extensions this core lacks. */
+    case CSR_MENVCFGH:      *out = 0u;            break;
 
 #if RV_EXT_S
     /* --- supervisor trap setup --- */
-    case CSR_SSTATUS:       *out = h->mstatus & SSTATUS_RMASK;   break;
+    case CSR_SSTATUS:       *out = mstatus_read(h) & SSTATUS_RMASK; break;
     /*
      * sie and sip show only the delegated interrupts. An interrupt M-mode
      * has kept is not the supervisor's to see, let alone to mask.
@@ -117,6 +138,7 @@ rv_exc_t rv_csr_read(rv_hart_t *h, uint32_t csr, uint32_t *out)
     case CSR_SIP:           *out = h->mip & h->mideleg;          break;
     case CSR_STVEC:         *out = h->stvec;     break;
     case CSR_SCOUNTEREN:    *out = h->scounteren; break;
+    case CSR_SENVCFG:       *out = h->senvcfg;    break;
 
     /* --- supervisor trap handling --- */
     case CSR_SSCRATCH:      *out = h->sscratch;  break;
@@ -124,14 +146,25 @@ rv_exc_t rv_csr_read(rv_hart_t *h, uint32_t csr, uint32_t *out)
     case CSR_SCAUSE:        *out = h->scause;    break;
     case CSR_STVAL:         *out = h->stval;     break;
 
-    /*
-     * satp exists and reads zero, which is Bare -- the only mode this core
-     * has. It must not trap: a supervisor reads it to find out what
-     * translation is available, and an illegal instruction is not an
-     * answer to that question. TVM would be the way to make it trap, and
-     * TVM is hardwired zero here for the same reason SUM and MXR are.
-     */
-    case CSR_SATP:          *out = 0u;           break;
+    case CSR_SATP:
+#if RV_EXT_SV32
+        /*
+         * TVM lets M-mode trap a supervisor touching address translation,
+         * which is the hook a hypervisor needs. It covers reads as well as
+         * writes, and never applies to M-mode itself.
+         */
+        if (h->priv == RV_PRIV_S && (h->mstatus & MSTATUS_TVM) != 0u) {
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        *out = h->satp;
+#else
+        /* Bare is the only mode, so satp has no state -- but it must still
+         * read rather than trap: software reads it to discover what
+         * translation exists, and an illegal instruction is not an answer
+         * to that question. */
+        *out = 0u;
+#endif
+        break;
 #endif
 
     /* --- trap handling --- */
@@ -245,6 +278,11 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
          */
         rv_pmp_refresh(h);
 #endif
+#if RV_EXT_SV32
+        /* MPRV and MPP decide the privilege data accesses translate at, so
+         * writing mstatus can start or stop translation on its own. */
+        rv_mmu_refresh(h);
+#endif
         break;
 
     case CSR_MSTATUSH:
@@ -292,17 +330,29 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
         break;
 
     case CSR_SCOUNTEREN:  h->scounteren = val & 0x7u; break;
+    case CSR_SENVCFG:     h->senvcfg = val & ENVCFG_WMASK; break;
     case CSR_SSCRATCH:    h->sscratch = val;          break;
     case CSR_SEPC:        h->sepc = val & ~1u;        break;
     case CSR_SCAUSE:      h->scause = val;            break;
     case CSR_STVAL:       h->stval = val;             break;
 
     case CSR_SATP:
+#if RV_EXT_SV32
+        if (h->priv == RV_PRIV_S && (h->mstatus & MSTATUS_TVM) != 0u) {
+            return RV_EXC_ILLEGAL_INSN;
+        }
         /*
-         * Entirely WARL to zero. With Bare the only mode, there is no ASID
-         * to hold and no root page number to point at, so there is nothing
-         * for a write to keep.
+         * MODE is WARL over {Bare, Sv32}; on RV32 those are the only two
+         * encodings, so every value is legal and none has to be rejected.
+         * Changing the root table or the ASID invalidates everything
+         * cached -- the conservative reading of the spec's "no ordering
+         * guarantee without SFENCE.VMA", and cheaper than being clever
+         * about it.
          */
+        h->satp = val & (SATP_MODE_SV32 | SATP_ASID_MASK | SATP_PPN_MASK);
+        rv_mmu_flush(h);
+        rv_mmu_refresh(h);
+#endif
         break;
 
     case CSR_MEDELEG:
@@ -321,6 +371,12 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
     case CSR_MCOUNTEREN:
         h->mcounteren = val & 0x7u;
         break;
+
+    case CSR_MENVCFG:
+        h->menvcfg = val & ENVCFG_WMASK;
+        break;
+    case CSR_MENVCFGH:
+        break;   /* every field belongs to an absent extension */
 
     case CSR_MISA:
         break;   /* the extension set is fixed at build time */
@@ -513,11 +569,14 @@ const char *rv_csr_name(uint32_t csr)
     case CSR_MIE:           return "mie";
     case CSR_MTVEC:         return "mtvec";
     case CSR_MCOUNTEREN:    return "mcounteren";
+    case CSR_MENVCFG:       return "menvcfg";
+    case CSR_MENVCFGH:      return "menvcfgh";
 #if RV_EXT_S
     case CSR_SSTATUS:       return "sstatus";
     case CSR_SIE:           return "sie";
     case CSR_STVEC:         return "stvec";
     case CSR_SCOUNTEREN:    return "scounteren";
+    case CSR_SENVCFG:       return "senvcfg";
     case CSR_SSCRATCH:      return "sscratch";
     case CSR_SEPC:          return "sepc";
     case CSR_SCAUSE:        return "scause";

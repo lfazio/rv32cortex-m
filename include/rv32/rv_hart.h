@@ -75,6 +75,10 @@ typedef struct rv_hart {
 #endif
 
     uint32_t mcounteren;
+    uint32_t menvcfg;
+#if RV_EXT_S
+    uint32_t senvcfg;
+#endif
 
 #if RV_EXT_S
     /*
@@ -91,6 +95,43 @@ typedef struct rv_hart {
     uint32_t scounteren;
     uint32_t medeleg;
     uint32_t mideleg;
+#endif
+
+#if RV_EXT_SV32
+    uint32_t satp;
+    /*
+     * True when translation is in force for *some* access: satp selects
+     * Sv32 and either the fetch privilege or the data privilege is below
+     * M. One flag rather than two because it only gates entry to the slow
+     * path, which then asks which privilege this particular access uses --
+     * MPRV can put those two in different modes.
+     */
+    bool     vm_active;
+
+    /*
+     * Bumped by every rv_mmu_flush. The JIT keys its blocks on *virtual*
+     * addresses, so a change of mapping invalidates translated code even
+     * though satp may not have moved -- SFENCE.VMA after editing a PTE is
+     * exactly that case. Comparing a counter is what lets the JIT notice.
+     */
+    uint32_t vm_gen;
+
+    /*
+     * Direct-mapped TLB. Tagged with the full VPN, so no flush is needed
+     * on an ASID change that does not alter the mapping -- but satp writes
+     * and SFENCE.VMA flush it wholesale, which is the conservative reading
+     * of both and costs nothing measurable next to a walk.
+     *
+     * Permissions are stored rather than resolved, because whether an
+     * entry may serve an access depends on the privilege, SUM and MXR at
+     * the time of the access, not at the time of the fill.
+     */
+    struct {
+        uint32_t vpn;      /* virtual page number; entry invalid if !valid */
+        uint32_t ppn;      /* physical base of the page                    */
+        uint8_t  pte;      /* the PTE's V/R/W/X/U/G/A/D bits, verbatim     */
+        bool     valid;
+    } tlb[RV_TLB_ENTRIES];
 #endif
 
 #if RV_EXT_SDTRIG
@@ -291,6 +332,9 @@ static RV_ALWAYS_INLINE void rv_hart_refresh_fetch_guard(rv_hart_t *h)
 #if RV_EXT_PMP
     g = g || h->pmp_active;
 #endif
+#if RV_EXT_SV32
+    g = g || h->vm_active;
+#endif
     h->fetch_guard = g;
 }
 
@@ -303,6 +347,27 @@ static RV_ALWAYS_INLINE uint32_t rv_hart_data_priv(const rv_hart_t *h)
 #endif
     return h->priv;
 }
+
+#if RV_EXT_SV32
+/*
+ * Recompute vm_active. Call after any write to satp or mstatus, and after
+ * any change to h->priv -- all three can start or stop translation.
+ */
+void rv_mmu_refresh(rv_hart_t *h);
+
+/* Discard every cached translation. SFENCE.VMA and satp writes land here. */
+void rv_mmu_flush(rv_hart_t *h);
+
+/*
+ * Translate a virtual address for one access. Returns RV_EXC_NONE and
+ * writes *pa, or the page-fault cause for `acc`.
+ *
+ * Only called when vm_active; a hart with satp in Bare mode, or running in
+ * M-mode, never reaches it.
+ */
+rv_exc_t rv_mmu_translate(rv_hart_t *h, uint32_t va, rv_access_t acc,
+                          uint32_t *pa);
+#endif
 
 #if RV_EXT_PMP
 /*

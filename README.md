@@ -43,12 +43,14 @@ silicon.
 |---|---|
 | RV32IMAFC + Zicsr, Zicntr, Zifencei, Zicbom, Zicboz, **B**, **Zacas**, **Zcf**, **Zcb** | implemented |
 | Machine-mode traps, interrupts, CLINT timer | implemented |
-| Official `riscv-arch-test` (RVCP) | **231 / 231** with SoftFloat; 179 / 231 with the host FPU |
+| Official `riscv-arch-test` (RVCP) | **274 / 274** with SoftFloat; 222 / 274 with the host FPU |
 | **F** (single precision) | implemented, two backends — see below |
 | **D** (double precision) | not implemented, and not planned |
 | **Zcd** | not implementable without D — see below |
 | `riscv-tests` (Berkeley) | **77 / 77 pass** |
 | **PMP** | 16 entries, TOR/NA4/NAPOT; inlined in the JIT for the single-entry case |
+| **U-mode, S-mode** | implemented, including `MPRV` and trap delegation |
+| **Sv32** | two-level paging, 4 MiB megapages, 32-entry TLB; Svade (A/D are checked, not written) |
 | **Sdtrig** | mcontrol triggers on execute/load/store; `rv32mi/breakpoint` passes |
 | Guest ISA self-test (243 checks) | passes on host **and** on hardware, both backends |
 | Nucleo-F446RE firmware | 31–54 KB flash by configuration; guest gets 70–122 KiB of the 128 KiB SRAM |
@@ -290,7 +292,7 @@ instructions no hot loop contains, spent in the resource this JIT is shortest
 of — the code cache sets overall performance more than anything in the
 translator. It would also be a second implementation of semantics the core
 already owns, which is the drift the conventions forbid; `rv_hart_fp` is the
-interpreter's own entry point, validated at 231/231.
+interpreter's own entry point, validated at 274/274.
 
 What changed is that they no longer **end the block**. Declining costs a
 dispatcher round trip, an interpreted instruction and a fresh block beyond
@@ -451,8 +453,8 @@ Current state, all re-run on the tree as it stands:
 
 | | result | runs on |
 |---|---|---|
-| `riscv-arch-test`, `-DRV32_FPU_SOFTFLOAT=ON` | **231 / 231** | host |
-| `riscv-arch-test`, default (host FPU) | 179 / 231 — every failure in `F` | host |
+| `riscv-arch-test`, `-DRV32_FPU_SOFTFLOAT=ON` | **274 / 274** | host |
+| `riscv-arch-test`, default (host FPU) | 222 / 274 — every failure in `F` | host |
 | `riscv-tests` | **77 / 77** | host |
 | host unit + guest self-test (`ctest -L fast`) | **2 / 2** | host |
 | `isatest`, JIT | **243 / 243** | hardware |
@@ -538,7 +540,7 @@ Three of the unary ops (`c.sext.b`, `c.zext.h`, `c.sext.h`) expand to Zbb
 instructions, which is why the spec makes Zcb depend on Zbb — without it there
 would be nothing to expand them into.
 
-### Official RISC-V Architecture Test Suite — 231/231 with SoftFloat
+### Official RISC-V Architecture Test Suite — 274/274 with SoftFloat
 
 [`riscv/riscv-arch-test`](https://github.com/riscv/riscv-arch-test), the RVCP
 suite governed by RISC-V International. Modern versions are self-checking: the
@@ -581,6 +583,28 @@ Worth recording, because each was a genuine defect:
 | `riscv-arch-test` `Zacas` | the Sail config declared `atomic_support: AMOArithmetic` on guest RAM, so the golden model **trapped** on `amocas` and baked trap-derived values into the signatures — three sessions were spent looking for an emulator bug that was never there |
 | `riscv-tests` `rv32mi/csr` | the suite was built without F while `misa` advertised it. The test detects exactly that mismatch and fails on purpose; the emulator was correct and the runner's `-march` was not |
 | hardware `isatest` | the JIT's inlined store wrote guest RAM without consulting PMP, so a protected region was writable under the JIT and not under the interpreter |
+
+#### What the Sv32 tests found
+
+Declaring Sv32 built 37 more tests than S-mode alone, and getting them to
+pass took two config fixes and three code fixes. The config half is worth
+recording because both entries were *correct* before paging existed:
+
+| `sail.json` field | was | why it had to move |
+|---|---|---|
+| `supports_pte_read` on guest RAM | `false` | a page table lives in ordinary RAM. With it false the golden model fails the PTE *read*, reports an access fault where the architecture calls for a page fault, and bakes that into the signature |
+| `xtval_nonzero.*_page_fault` | `false` | the three page-fault causes report the faulting virtual address, and the UDB config already said so — the two models have to agree |
+
+Both are the same shape as the `Zacas` row above: a value that described
+"this cannot happen" outlived the thing that made it true.
+
+The code half was three genuine gaps, none of them reachable before there
+was a page table: non-leaf PTEs did not reject the reserved `D`/`A`/`U`
+bits, a PMP-denied PTE read reported a *load* access fault rather than one
+matching the access that caused the walk, and `menvcfg`/`menvcfgh` were
+not implemented at all — so the framework's prolog took an
+illegal-instruction trap the reference did not, and every later signature
+disagreed about the privilege it was in.
 
 The RVC expansion table in [`tests/unit/test_decode.c`](tests/unit/test_decode.c)
 is assembler-derived, not hand-computed: each entry was produced by assembling
@@ -1175,10 +1199,21 @@ rather than a missing optimisation:
       will not let the guest run. `pmpx-exec-noeffect` in `isatest` is what
       tells those two apart — with the translator's check reverted, the
       store at the top of a no-execute region runs on hardware.
-- [ ] **S-mode** — the same as U-mode, but with a third privilege level and a second
-      set of CSRs. The Cortex-M4 has no MMU, so S-mode would be entirely
-      soft-trap and would need a second set of `mstatus`/`mepc`/`mcause`/`mtval`
-      to hold the S-mode state.
+- [x] **S-mode and Sv32** — a third privilege level, the supervisor CSR
+      bank, trap delegation, `SRET`, the TVM/TW/TSR traps, and two-level
+      Sv32 paging with 4 MiB megapages behind a 32-entry direct-mapped TLB.
+      The host has no MMU of its own, so all of this is soft — which is the
+      point: the guest gets a page table the ARM part cannot provide.
+
+      A and D are checked and never written (Svade), because writing them
+      means an atomic read-modify-write of guest memory from inside the
+      walk, for a hart with nothing to race against. Software sets them in
+      its fault handler.
+
+      The cost is gated the way PMP is. `vm_active` is false whenever satp
+      is Bare or every relevant privilege is M, so a guest that never
+      enables paging pays one predictable branch, folded into the same
+      `fetch_guard` that already covered PMP and Sdtrig.
 - [ ] **V** — the largest remaining item and RAM-hungry: `VLEN=128` alone costs
       512 B of register file on a part with 128 KiB. Needs a `VLEN` budget
       decision before any code.

@@ -33,10 +33,14 @@ cfg_src="$here/tests/arch-test/$cfg_name"
 # test actually requires is declared in its own header and checked against
 # the UDB config, so naming a suite here only offers it for selection.
 #
-# PMPU is the only privileged suite this core qualifies for: the rest of
-# tests/priv/ needs S-mode or Sv paging. Ten of its eleven tests are built
-# -- pmpu_na4_legal_lxwr requires S.
-extensions="${ARCH_TEST_EXTENSIONS:-I,M,Zmmul,Zaamo,Zalrsc,Zca,Zicsr,Zicntr,Zifencei,Zicbom,Zicboz,Zbb,Zba,Zbc,Zbs,Zacas,F,Zcb,PMPU}"
+# The privileged suites are named here too, and naming them is the only
+# way they are offered: PMPU, and the Sv families now that there is paging.
+# Each test states its own REQUIRED_EXTENSIONS, so the Sv39/Sv48/Sv57
+# members of these directories are filtered out against the UDB config and
+# only the Sv32 ones build -- naming a suite offers it, it does not force
+# it. Svadu is deliberately absent: this core implements Svade, which is
+# the opposite choice about who sets A and D.
+extensions="${ARCH_TEST_EXTENSIONS:-I,M,Zmmul,Zaamo,Zalrsc,Zca,Zicsr,Zicntr,Zifencei,Zicbom,Zicboz,Zbb,Zba,Zbc,Zbs,Zacas,F,Zcb,PMPU,Sv,Svbare,Svade,ExceptionsSv,SvPMP}"
 jobs="$(nproc)"
 verbose=""
 

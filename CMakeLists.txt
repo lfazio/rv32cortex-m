@@ -125,6 +125,7 @@ add_library(rv32core STATIC
     src/core/rv_hart.c
     src/core/rv_interp.c
     src/core/rv_pmp.c
+    src/core/rv_mmu.c
     src/core/rv_trig.c
     src/devices/rv_aplic.c
     src/devices/rv_clint.c
