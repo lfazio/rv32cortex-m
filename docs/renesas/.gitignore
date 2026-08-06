@@ -1,8 +1,23 @@
-# The U2B hardware manual is 181 MB -- it is 10,221 pages and ships every
+# The U2B hardware manual is 173 MB -- it is 10,221 pages and ships every
 # peripheral chapter. Committing it would put a permanent, unshrinkable
 # blob in the history for a file that is one download away, so it stays on
-# disk and out of git. The other three are in line with docs/arm and
+# disk and out of git. The other PDFs here are in line with docs/arm and
 # docs/st and are tracked.
 #
 #   https://www.renesas.com/en/document/mah/rh850u2b-hardware-users-manual-rev-130-r01uh0923ej0130
-r01uh0923ej0130-rh850u2b-hardware-manual.pdf
+#
+# The name below is the file as it actually lands from that link. It was
+# previously written as "...-rh850u2b-hardware-manual.pdf", which matches
+# nothing -- a .gitignore entry that silently does not apply, so the blob
+# was staged anyway the first time anything ran `git add -A`.
+r01uh0923ej0130-rh850u2b.pdf
+
+# The toolchain installer, its licence manager and the Y-ASK board package
+# are 175 MB between them, and the same argument applies: all three are
+# vendor downloads rather than anything this repo produces, and the
+# installers are licensed software that should not be redistributed here.
+# The Dockerfile beside this file is what turns the first two into the
+# ccrh:latest image the G4MH guest is built with.
+cc-rh_v20800/
+license-manager_v20900/
+Y-ASK-RH850U2B-v0200/

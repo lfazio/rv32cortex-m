@@ -528,11 +528,21 @@ static void test_trap_and_syscall(void)
      */
     uint16_t prog[0x40];
     memset(prog, 0, sizeof(prog));
-    prog[0] = F2(OP_MOVI, 9, 6);
-    prog[1] = W0(OP_SYSTEM, 3, 0);
-    prog[2] = SUB_TRAP;
-    prog[3] = 0x07E0u;              /* halt, if the trap is consumed  */
-    prog[4] = SUB_HALT;
+    /*
+     * r11 carries the syscall number and r6 the first argument; the TRAP
+     * vector is deliberately a *different* value, because the two used to
+     * be conflated. The vector is five bits, so it cannot name the numbers
+     * the host harness answers to (newlib's 64 and 93) -- every syscall
+     * from a real ccrh-built guest fell through to the architectural trap.
+     * Assembling the words here had encoded the same misunderstanding, so
+     * this test agreed with the bug until an actual RH850 binary ran.
+     */
+    prog[0] = F2(OP_MOVI, 9, 6);    /* r6  = 9, argument 0            */
+    prog[1] = F2(OP_MOVI, 11, 11);  /* r11 = 11, the syscall number   */
+    prog[2] = W0(OP_SYSTEM, 3, 0);  /* trap 3 -- vector, not number   */
+    prog[3] = SUB_TRAP;
+    prog[4] = 0x07E0u;              /* halt, if the trap is consumed  */
+    prog[5] = SUB_HALT;
     /* The TRAP 0-15 handler, at RBASE + 0x40. */
     prog[0x20] = 0x07E0u;
     prog[0x21] = SUB_HALT;
@@ -548,7 +558,8 @@ static void test_trap_and_syscall(void)
         return;
     }
     CHECK(g_hook_seen);
-    CHECK_EQ(g_hook_nr, 3u);      /* the TRAP vector selects */
+    /* From r11, not from the TRAP vector, which is 3 here. */
+    CHECK_EQ(g_hook_nr, 11u);
     CHECK_EQ(g_hook_arg0, 9u);    /* r6 is argument 0 */
     CHECK_EQ(reg(10), 0x5A5Au);   /* and the result lands in r10 */
     CHECK_EQ(why, EMU_RUN_HALTED);

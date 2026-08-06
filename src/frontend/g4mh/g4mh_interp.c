@@ -820,14 +820,29 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 /*
                  * The platform's syscall hook gets first refusal, so the
                  * host test harness can offer write/exit the way it does
-                 * to a RISC-V guest. The vector selects, and r6/r7/r8/r9
-                 * carry the arguments -- the RH850 calling convention's
-                 * first four.
+                 * to a RISC-V guest. Arguments are r6-r9, the RH850
+                 * calling convention's first four, and the result goes to
+                 * r10, its return register.
+                 *
+                 * The number comes from r11, *not* from the trap vector.
+                 * The vector is five bits, so it can only say 0-31, while
+                 * the numbers the harness answers to are newlib's 64 and
+                 * 93 -- a guest could never name them, and every syscall
+                 * fell through to the architectural trap instead. Real
+                 * ccrh-built code found this; the unit tests could not,
+                 * because they assemble their own instruction words and
+                 * had encoded the same misunderstanding.
+                 *
+                 * r11 is caller-saved and is not an argument register, so
+                 * it is free at a call boundary -- the same role a7 plays
+                 * on RISC-V. A hook that does not recognise the number
+                 * returns false and the architectural trap happens after
+                 * all, which is what keeps TRAP usable for its own sake.
                  */
                 if (c->syscall != NULL) {
                     c->pc = pc;
                     emu_syscall_t sc = {
-                        .nr  = r1,
+                        .nr  = c->r[11],
                         .arg = { c->r[6], c->r[7], c->r[8], c->r[9] },
                         .ret = 0u,
                     };

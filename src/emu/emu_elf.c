@@ -76,8 +76,8 @@ static uint32_t rd32(const uint8_t *p)
 }
 
 const char *emu_elf_load(emu_bus_t *bus, const void *image, size_t len,
-                         uint16_t machine, uint32_t *entry,
-                         uint16_t *out_machine)
+                         uint16_t machine, uint16_t alt_machine,
+                         uint32_t *entry, uint16_t *out_machine)
 {
     const uint8_t *img = (const uint8_t *)image;
 
@@ -104,7 +104,12 @@ const char *emu_elf_load(emu_bus_t *bus, const void *image, size_t len,
     if (e_type != ET_EXEC) {
         return "not a static executable (ET_EXEC)";
     }
-    if (machine != EMU_ELF_ANY_MACHINE && e_machine != machine) {
+    /*
+     * A frontend may answer to more than one machine number; see the note
+     * on EMU_EM_V800. alt_machine is that second answer, or zero.
+     */
+    if (machine != EMU_ELF_ANY_MACHINE && e_machine != machine &&
+        !(alt_machine != 0u && e_machine == alt_machine)) {
         return "wrong architecture for this frontend";
     }
     if (out_machine != NULL) {

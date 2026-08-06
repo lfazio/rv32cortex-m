@@ -52,8 +52,11 @@ const emu_cpu_ops_t *emu_frontend_for_elf(uint16_t machine)
 {
     for (const emu_cpu_ops_t *const *p = emu_frontends; *p != NULL; p++) {
         /* elf_machine 0 means "takes anything", for a frontend with no
-         * ELF machine number of its own. */
-        if ((*p)->elf_machine == 0u || (*p)->elf_machine == machine) {
+         * ELF machine number of its own. elf_machine_alt is a second
+         * number the same frontend answers to -- see EMU_EM_V800. */
+        if ((*p)->elf_machine == 0u || (*p)->elf_machine == machine ||
+            ((*p)->elf_machine_alt != 0u &&
+             (*p)->elf_machine_alt == machine)) {
             return *p;
         }
     }

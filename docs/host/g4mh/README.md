@@ -168,3 +168,37 @@ Architecture not modelled:
   in the manual. Using the architectural addresses is what makes a vendor
   driver work unported, which is the same argument as the STM32
   passthrough window.
+
+## Building a guest with the real toolchain
+
+The unit tests assemble their own instruction words, which means they agree
+with whatever the frontend already believes. Building with Renesas CC-RH
+does not, and the first RH850 binary to run here found two things the unit
+tests could not:
+
+- **CC-RH emits `e_machine` 36 (`EM_V800`)**, the number the RH850 ABI
+  document specifies, where the frontend accepted only 87 (`EM_V850`),
+  which is what GNU's v850 target emits. `readelf` prints both as "Renesas
+  V850 (using RH850 ABI)". A frontend that takes one rejects half the
+  world's binaries, and `ccrh`'s own linker output would not load.
+- **The syscall number cannot be the `TRAP` vector.** That field is five
+  bits, so it can say 0-31, while the host harness answers to newlib's 64
+  and 93 -- no guest could ever name them, and every syscall fell through
+  to the architectural trap. The number now comes from `r11`, which is
+  caller-saved and not an argument register: the role `a7` plays on
+  RISC-V.
+
+The ABI, then: number in `r11`, arguments in `r6`-`r9`, result in `r10`,
+entered with `TRAP`. A hook that does not recognise the number returns
+false and the architectural trap happens after all, so `TRAP` stays usable
+for its own sake.
+
+`tests/guest/g4mh/hello.asm` is the smallest guest that exercises it, and
+carries its own build line. The image is linked at `EMU_GUEST_RAM_BASE`
+rather than at a U2B address; the on-chip map from the Y-ASK board's
+linker scripts -- code flash at `0x00000000`, per-PE local RAM at
+`0xFDE00000`, cluster RAM at `0xFE000000` -- is not modelled yet, and is
+the obvious next step for running vendor code unmodified.
+
+There is no JIT for this frontend. `g4mh_backend_interp` is the only
+backend; the x86-64 JIT is an RV32 one.

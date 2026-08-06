@@ -542,7 +542,8 @@ int main(int argc, char **argv)
     if (looks_like_elf(image, len)) {
         uint32_t elf_entry = 0;
         const char *err = emu_elf_load(g_core.bus, image, len,
-                                       ops->elf_machine, &elf_entry, NULL);
+                                       ops->elf_machine, ops->elf_machine_alt,
+                                       &elf_entry, NULL);
         if (err != NULL) {
             fprintf(stderr, "emu: %s: %s\n", path, err);
             free(image);

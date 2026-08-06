@@ -60,7 +60,19 @@ typedef struct emu_cpu emu_cpu_t;
  * rather than in emu_elf.h because the loader is host-only and a frontend
  * declares this whether or not it was built into one.
  */
-#define EMU_EM_V850         87u   /* Renesas V850 / RH850 */
+/*
+ * RH850 objects carry one of two machine numbers, and which one depends on
+ * the toolchain rather than on the part.
+ *
+ * Renesas CC-RH emits EM_V800 (36), the original NEC V800 number, which is
+ * what the RH850 ABI document specifies. GNU's v850 target emits EM_V850
+ * (87). readelf prints both as "Renesas V850 (using RH850 ABI)". A
+ * frontend that accepts only one rejects half the world's binaries with a
+ * message about the wrong architecture, which is how this was found:
+ * ccrh's own linker output would not load.
+ */
+#define EMU_EM_V800         36u   /* Renesas CC-RH */
+#define EMU_EM_V850         87u   /* GNU v850      */
 #define EMU_EM_RISCV        243u
 
 /* ------------------------------------------------------------------ */
@@ -145,6 +157,8 @@ typedef struct emu_cpu_ops {
     const char *desc;
     /* ELF e_machine this frontend accepts. 0 accepts anything. */
     uint16_t    elf_machine;
+    /* A second e_machine this frontend also answers to, or zero. */
+    uint16_t    elf_machine_alt;
 
     /*
      * Cores this frontend models. A platform asks rather than assumes,

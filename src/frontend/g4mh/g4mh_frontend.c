@@ -378,7 +378,8 @@ static void g4mh_ops_dump(const emu_cpu_t *cpu, emu_print_fn out, void *ctx)
 const emu_cpu_ops_t g4mh_frontend = {
     .name        = "g4mh",
     .desc        = "Renesas RH850 G4MH",
-    .elf_machine = EMU_EM_V850,
+    .elf_machine     = EMU_EM_V850,
+    .elf_machine_alt = EMU_EM_V800,
 
     .instance    = g4mh_instance,
     .init        = g4mh_ops_init,
