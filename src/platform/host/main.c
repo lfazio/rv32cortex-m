@@ -22,6 +22,7 @@
 #include "emu/emu_dev.h"
 #include "emu/emu_elf.h"
 #include "emu/emu_memmap.h"
+#include "emu/emu_jit.h"
 
 #if EMU_FRONTEND_RV32
 /* --jit selects the backend, and the summary reports what it did. */
@@ -503,17 +504,18 @@ int main(int argc, char **argv)
         return 1;
     }
 
+
 #if EMU_FRONTEND_RV32 && RV_ENABLE_JIT
     /*
      * The frontend prefers the JIT wherever it is compiled in, which is
-     * the right default for firmware: there it is a speed choice, and the
-     * backend falls back per instruction for anything it cannot translate.
+     * right for firmware: there it is a speed choice, and the backend
+     * falls back per instruction for anything it cannot translate.
      *
      * On the host it is a *coverage* choice, and the two must be runnable
-     * against each other -- the architecture suite passing under the
-     * interpreter and under translated code are different claims, and the
-     * figures in the README distinguish them. So the host states which it
-     * wants rather than inheriting a default that could change under it.
+     * against each other -- the architecture suite passing interpreted and
+     * passing through translated code are different claims, and the README
+     * distinguishes them. So the host states which it wants rather than
+     * inheriting a default that could move under it.
      */
     rv_backend = want_jit ? &rv_backend_jit : &rv_backend_interp;
     if (rv_backend->init != NULL && !rv_backend->init(g_core.cpu)) {
@@ -665,24 +667,29 @@ int main(int argc, char **argv)
                         (unsigned long long)st.retired);
             }
         }
-#if EMU_FRONTEND_RV32 && RV_ENABLE_JIT
         /*
-         * Printed only when the JIT ran. `interp` is the number that
-         * matters when reading a suite result: a backend that translated
-         * nothing and fell back for everything would pass every test while
-         * proving nothing about the translator.
+         * Printed whenever anything was translated, for any frontend --
+         * the framework owns these now, so there is one place to read them
+         * from rather than one per backend.
+         *
+         * `interp` against the retired count is what matters when reading
+         * a suite result: a backend that translated nothing and fell back
+         * for everything passes every test while proving nothing about the
+         * translator, which has already happened here once.
          */
-        if (rv_backend == &rv_backend_jit) {
-            rv_jit_stats_t st;
-            rv_jit_get_stats(&st);
-            fprintf(stderr,
-                    "rv32: jit blocks %u  xlat %u  entries %u  interp %u  "
-                    "code %u/%u  flushes %u\n",
-                    st.blocks, st.translations, st.block_entries,
-                    st.interp_fallbacks, st.code_used, st.code_size,
-                    st.flushes);
+        {
+            emu_jit_stats_t st;
+
+            emu_jit_get_stats(&st);
+            if (st.translations != 0u || st.block_entries != 0u) {
+                fprintf(stderr,
+                        "emu: jit blocks %u  xlat %u  entries %u  interp %u  "
+                        "code %u/%u  flushes %u\n",
+                        st.blocks, st.translations, st.block_entries,
+                        st.interp_fallbacks, st.code_used, st.code_size,
+                        st.flushes);
+            }
         }
-#endif
     }
 
     return (g_exit_code >= 0) ? g_exit_code : 0;

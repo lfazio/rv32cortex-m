@@ -170,3 +170,59 @@ its architecture, so it gets the default.
   guest register access. Opaque pointer plus a cast instead.
 - **Per-instruction hooks in the contract.** See the note at the top of
   `emu_cpu.h`; this is the one rule the interface must not break.
+
+## JIT backends
+
+Three axes, three files, so a new one only writes the part that is new:
+
+| | owns | files |
+|---|---|---|
+| framework | code buffer, block table, hash, flush, dispatch, stats | `emu/emu_jit.{h,c}` |
+| host | how to spell an instruction, and the ABI | `emu/emu_x86_64.{h,c}` |
+| frontend | which guest instructions translate, and to what | `frontend/<isa>/*_jit_*.c` |
+
+A frontend supplies `emu_jit_ops_t`: `translate`, plus small accessors for
+pc, state, counters and interrupts. Two of its fields carry the lessons
+this project paid for:
+
+- **`generation`** — everything the translator bakes into a block, as one
+  value. The framework compares it every dispatch and flushes when it
+  moves. Nearly every staleness bug found here was a block outliving
+  something it was specialised on: a rounding mode resolved at
+  translation, an FPU switched off afterwards, a PMP entry locked
+  afterwards, a page table edited under a block keyed on virtual
+  addresses. Returning a constant is only correct for a translator that
+  reads nothing, and both current backends do return NULL — as a claim,
+  not an omission.
+- **`may_run`** — state the emitted code cannot check for itself, as
+  opposed to state it bakes in. RV32 answers false whenever PMP, Sdtrig or
+  paging is armed, because each needs a per-fetch check that translated
+  code does not perform.
+
+The framework also owns two things that were bugs before it existed: a
+block retiring zero instructions still costs the budget one, so a trap on
+a block's first instruction cannot spin the dispatch loop forever; and
+`emu_jit_rewind` exists because a translator cannot always tell it must
+decline before it has emitted part of an instruction.
+
+### Coverage, not speed
+
+`emu_jit_stats_t` is printed by the host whenever anything was translated,
+for any frontend. Read `interp` against the retired count before believing
+a passing suite: a backend that declines everything and falls back passes
+every test while proving nothing, and that has happened here — the first
+x86-64 run interpreted 92% of the self-test and looked perfectly healthy.
+
+### What exists
+
+| frontend | host | state |
+|---|---|---|
+| RV32 | Thumb-2 | its own file; predates the framework and keeps compaction, loop chaining and the PMP/passthrough specialisations the framework has no notion of |
+| RV32 | x86-64 | on the framework |
+| G4MH | x86-64 | on the framework |
+
+The Thumb-2 backend is deliberately not ported. It is 3,700 lines whose
+value is in exactly the specialisations the framework does not model, and
+the only way to test it is to flash a board — a bad trade against a
+refactor whose benefit is tidiness. The framework was shaped so it could
+adopt it later.

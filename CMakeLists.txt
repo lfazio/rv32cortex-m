@@ -172,6 +172,8 @@ set(G4MH_PE_COUNT "1" CACHE STRING "G4MH processing elements (1..3)")
 
 add_library(rv32core STATIC
     src/emu/emu_bus.c
+    src/emu/emu_jit.c
+    src/emu/emu_x86_64.c
     src/emu/emu_cpu.c
     src/emu/emu_elf.c
     src/emu/emu_uart.c
@@ -251,6 +253,7 @@ if(EMU_FRONTEND_G4MH)
         src/frontend/g4mh/g4mh_disasm.c
         src/frontend/g4mh/g4mh_frontend.c
         src/frontend/g4mh/g4mh_intc.c
+        src/frontend/g4mh/g4mh_jit_x86_64.c
         src/frontend/g4mh/g4mh_interp.c
     )
 

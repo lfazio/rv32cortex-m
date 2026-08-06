@@ -248,3 +248,28 @@ bits, so it matters only to a guest that reads them.
 
 There is no JIT for this frontend. `g4mh_backend_interp` is the only
 backend; the x86-64 JIT is an RV32 one.
+
+## The JIT
+
+`g4mh_jit_x86_64.c`, on the shared framework -- see docs/Architecture.md.
+
+The hard part of this ISA is not arithmetic, it is PSW: almost every
+instruction writes Z, S, OV and CY, and the interpreter does four tests
+per instruction to produce them. x86 has the same four in EFLAGS for free,
+and they line up exactly -- ZF, SF, OF, CF against Z, S, OV, CY, with CF a
+borrow on subtract just as CY is -- so translation pays off precisely
+where interpreting is slowest.
+
+Capturing them is the fiddly part, because everything that combines them
+destroys them. `seto al` then `lahf` gets all four into one register with
+no flag-clobbering instruction in between; only then is it safe to shift
+and mask. The sequence must confine itself to eax, ecx and edx: the caller
+stashes the operation's result in esi across it, and the first version
+used esi as a scratch, so the block stored the flag word where the result
+belonged. `lram.asm` caught that on its first run.
+
+Translated: the register-register and imm5 forms of MOV, the logical ops,
+ADD, SUB, CMP. Not translated, and so ending the block: loads, stores,
+branches, TRAP, the system registers, and every long-form encoding. On
+`lram.asm` that is 6 of 22 instructions -- honest for a first cut against
+a guest that is mostly `mov imm32` and memory.

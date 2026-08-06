@@ -14,6 +14,7 @@
 #include "emu/emu_memmap.h"
 
 #include "g4mh/g4mh_cpu.h"
+#include "emu/emu_jit.h"
 #include "g4mh/g4mh_decode.h"
 #include "g4mh/g4mh_disasm.h"
 #include "g4mh/g4mh_intc.h"
@@ -65,6 +66,17 @@ static void g4mh_ops_init(emu_cpu_t *cpu, emu_bus_t *bus, uint32_t coreid)
      * broken by another core's store. */
     g4mh_ll_register(c);
 
+#if defined(RV_JIT_X86_64) || defined(EMU_JIT_X86_64)
+    /*
+     * Prefer the JIT where it exists. It translates what it can and hands
+     * everything else to the interpreter per instruction, so this is a
+     * speed choice rather than a coverage one -- but see the host
+     * platform, which states which backend it wants rather than
+     * inheriting this, because for it the difference *is* coverage.
+     */
+    extern const emu_backend_t g4mh_backend_jit;
+    g4mh_backend = &g4mh_backend_jit;
+#endif
     if (g4mh_backend->init != NULL && !g4mh_backend->init(cpu)) {
         g4mh_backend = &g4mh_backend_interp;
     }
