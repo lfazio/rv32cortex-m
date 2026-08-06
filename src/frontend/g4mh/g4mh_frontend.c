@@ -120,9 +120,38 @@ static emu_run_reason_t g4mh_ops_step(emu_cpu_t *cpu)
  * INTC2 and the OS timer: one object, mapped into every core's bus at the
  * same address, so all cores see the same global controller.
  */
+/*
+ * Backing memory for the map above.
+ *
+ * Static rather than allocated because the frontend has no teardown hook
+ * and the host runs one system per process; 3 MiB of flash plus 384 KiB of
+ * cluster RAM plus 64 KiB per PE is a few megabytes of .bss on a machine
+ * that has gigabytes. On a target where that mattered this would have to
+ * come from the platform, which is why the sizes are named in the header
+ * rather than written here.
+ */
+static uint8_t g_flash[G4MH_FLASH_SIZE];
+static uint8_t g_cram[G4MH_CRAM_SIZE];
+static uint8_t g_lram[G4MH_PE_COUNT][G4MH_LRAM_SIZE];
+
 static bool g4mh_ops_add_shared_devices(emu_bus_t *bus)
 {
-    return emu_bus_add_mmio(bus, "intc2", G4MH_INTC2_BASE,
+    /*
+     * Code flash and cluster RAM are one memory the whole cluster shares,
+     * so every core's bus points at the same backing store -- which is
+     * what makes a store from one PE visible to the next.
+     *
+     * Flash is added as RAM rather than as a read-only region: there is no
+     * flash controller here, the image is loaded by the ELF loader
+     * writing straight to it, and a guest that writes to its own code is
+     * doing something a real part would refuse. Modelling that refusal
+     * needs the flash sequencer, which is a separate piece of work.
+     */
+    return emu_bus_add_ram(bus, "flash", G4MH_FLASH_BASE,
+                           g_flash, G4MH_FLASH_SIZE) &&
+           emu_bus_add_ram(bus, "cram", G4MH_CRAM_BASE,
+                           g_cram, G4MH_CRAM_SIZE) &&
+           emu_bus_add_mmio(bus, "intc2", G4MH_INTC2_BASE,
                             G4MH_INTC2_SIZE, &g4mh_intc2_ops, &g_intc[0]) &&
            emu_bus_add_mmio(bus, "ostm0", G4MH_OSTM0_BASE,
                             G4MH_OSTM0_SIZE, &g4mh_ostm_ops, &g_intc[0]);
@@ -149,6 +178,29 @@ static bool g4mh_ops_add_core_devices(emu_cpu_t *cpu, emu_bus_t *bus,
     if (!emu_bus_add_mmio(bus, "intc1-self", G4MH_INTC1_SELF_BASE,
                           G4MH_INTC1_SIZE, &g4mh_intc1_ops, &g_intc[index])) {
         return false;
+    }
+
+    /*
+     * Local RAM, mapped twice for the same reason INTC1 is: once at the
+     * SELF alias, which on this core means *this* core's RAM, and once at
+     * every PE's absolute address, which means the same memory whichever
+     * core is looking. One image linked against the SELF window therefore
+     * runs on any PE and gets its own copy of everything.
+     *
+     * The absolute windows descend from PE0, so PE n is at
+     * PE0_BASE - n * STRIDE -- see the note in g4mh_memmap.h.
+     */
+    if (!emu_bus_add_ram(bus, "lram-self", G4MH_LRAM_SELF_BASE,
+                         g_lram[index], G4MH_LRAM_SIZE)) {
+        return false;
+    }
+    for (unsigned pe = 0; pe < G4MH_PE_COUNT; pe++) {
+        static const char *const lnm[3] = { "lram-pe0", "lram-pe1",
+                                            "lram-pe2" };
+        if (!emu_bus_add_ram(bus, lnm[pe], G4MH_LRAM_PE_BASE(pe),
+                             g_lram[pe], G4MH_LRAM_SIZE)) {
+            return false;
+        }
     }
     for (unsigned pe = 0; pe < G4MH_PE_COUNT; pe++) {
         static const char *const nm[3] = { "intc1-pe0", "intc1-pe1",

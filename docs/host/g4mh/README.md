@@ -194,11 +194,49 @@ false and the architectural trap happens after all, so `TRAP` stays usable
 for its own sake.
 
 `tests/guest/g4mh/hello.asm` is the smallest guest that exercises it, and
-carries its own build line. The image is linked at `EMU_GUEST_RAM_BASE`
-rather than at a U2B address; the on-chip map from the Y-ASK board's
-linker scripts -- code flash at `0x00000000`, per-PE local RAM at
-`0xFDE00000`, cluster RAM at `0xFE000000` -- is not modelled yet, and is
-the obvious next step for running vendor code unmodified.
+carries its own build line.
+
+## The memory map
+
+Taken from the Y-ASK board package's linker scripts
+(`Source/Make/CSP/r7f7025*.csp.ld`), which is what the vendor's own
+toolchain reads and therefore the authority a real guest is built
+against. The three device variants differ in how much of each region
+exists, never in where it starts:
+
+| | flash banks | local RAM | cluster RAM | PEs |
+|---|---|---|---|---|
+| U2B6 | 2 x 3M | 3 x 64K | 384K | 3 |
+| U2B10 | 3M, 3M, 2M, 2M | 4 x 64K | 1M | 4 |
+| U2B24 | 6 x 4M | 6 x 64K | 1.5M + 2.5M | 6 |
+
+Modelled: code flash at `0x00000000`, local RAM, cluster RAM at
+`0xFE000000`. A guest linked by the vendor's scripts loads and runs from
+flash at the real reset address.
+
+Local RAM is where this gets interesting, and it is the same shape as
+INTC1: every PE sees its own at the SELF alias `0xFDE00000`, and every
+PE's at an absolute address. The absolute windows run *downwards* from PE0
+at `0xFDC00000`, 2 MiB apart, so PE n is at `PE0 - n * stride` -- easy to
+get backwards, and backwards puts PE1's RAM where nothing is mapped rather
+than producing a wrong answer. One image can therefore be shared by every
+PE and still get its own data, which is what the SELF window is for.
+
+Not modelled: the second flash bank and the boot clusters, the retention
+and ERAM regions, and the flash sequencer -- flash is plain RAM here, so a
+guest that writes to its own code succeeds where a real part would refuse.
+
+`tests/guest/g4mh/lram.asm` checks the aliasing from the guest side, and
+was A/B'd by collapsing the three local RAMs into one.
+
+## Open: HTCFG0's layout
+
+The frontend puts the raw PE number in HTCFG0, and `lram.asm` relies on
+that to tell the cores apart. The real register has PEID in a bit field,
+and the layout could not be confirmed from the manuals here -- HTCFG0
+appears in neither G4MH software manual's extractable text. Worth
+checking against the U2B hardware manual before any guest depends on the
+surrounding bits.
 
 There is no JIT for this frontend. `g4mh_backend_interp` is the only
 backend; the x86-64 JIT is an RV32 one.
