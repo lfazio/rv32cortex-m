@@ -229,14 +229,22 @@ guest that writes to its own code succeeds where a real part would refuse.
 `tests/guest/g4mh/lram.asm` checks the aliasing from the guest side, and
 was A/B'd by collapsing the three local RAMs into one.
 
-## Open: HTCFG0's layout
+## The PE number
 
-The frontend puts the raw PE number in HTCFG0, and `lram.asm` relies on
-that to tell the cores apart. The real register has PEID in a bit field,
-and the layout could not be confirmed from the manuals here -- HTCFG0
-appears in neither G4MH software manual's extractable text. Worth
-checking against the U2B hardware manual before any guest depends on the
-surrounding bits.
+PE *n* reports *n*, and the frontend returns exactly that. The U2B manual
+§3.2.2.10, "Acquiring the CPU Number", says a program identifies the core
+it is running on by reading the PEID register, which holds "a unique
+number within a multi-processor system ... according to the specification
+of the product"; Table 3.1's column is headed "CPU (PEID)" and runs 0
+upwards. `lram.asm` reads it with `stsr 0, rN, 2` and gets 0, 1, 2 on the
+three-PE build.
+
+One loose thread, and it is naming rather than behaviour: the U2B manual
+calls this the PEID register, while the frontend and this document call
+the system register HTCFG0. The value is confirmed; whether PEID occupies
+the whole of HTCFG0 or a field within it is not settled by the text that
+extracts cleanly from these PDFs. Nothing here depends on the surrounding
+bits, so it matters only to a guest that reads them.
 
 There is no JIT for this frontend. `g4mh_backend_interp` is the only
 backend; the x86-64 JIT is an RV32 one.

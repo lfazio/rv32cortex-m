@@ -47,10 +47,14 @@ void g4mh_cpu_reset(g4mh_cpu_t *c, uint32_t reset_pc)
     c->sr[1][G4MH_SR_EBASE] = reset_pc;
 
     /*
-     * HTCFG0 reports which PE this is. Real startup code reads it and
-     * branches on it, because every PE comes out of reset at the same
-     * address running the same image -- so without it a multicore guest
-     * cannot tell the cores apart.
+     * The PE number, which is what real startup code branches on: every PE
+     * comes out of reset at the same address running the same image, so
+     * without this a multicore guest cannot tell the cores apart.
+     *
+     * PE n reports n. The U2B manual §3.2.2.10 has a program identify its
+     * core by reading PEID, "a unique number within a multi-processor
+     * system", and Table 3.1 numbers the CPUs from 0 -- so the coreid goes
+     * in unmodified rather than being placed in a field.
      */
     c->sr[2][G4MH_SR_HTCFG0] = c->coreid;
 

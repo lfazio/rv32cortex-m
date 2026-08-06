@@ -31,7 +31,7 @@
 __start:
     ; Which PE am I? HTCFG0 (SR2, selID 2) reports it -- the same register
     ; real startup code reads to pick its own stack.
-    stsr    0, r19, 2              ; r19 = HTCFG0 = PE number
+    stsr    0, r19, 2              ; r19 = PE number; PE n reads n
 
     ; Tag this PE's own local RAM through the SELF alias with a value only
     ; this PE would write.
