@@ -460,7 +460,7 @@ Current state, all re-run on the tree as it stands:
 | host unit + guest self-tests (`ctest -L fast`) | **3 / 3**, one of them through the JIT | host |
 | `riscv-arch-test`, `--jit` + SoftFloat | **274 / 274** — the whole suite through translated code | host |
 | `riscv-arch-test`, `--jit`, host FPU | 222 / 274 — identical to the interpreter on the same build | host |
-| `riscv-tests`, `--jit` | **not passing — see below** | host |
+| `riscv-tests`, `--jit` | **77 / 77** | host |
 | `isatest`, JIT | **243 / 243** | hardware |
 | `isatest`, `-DRV32_JIT=OFF` | **243 / 243** | hardware |
 | `isatest`, host, both FP backends | **243 / 243** | host |
@@ -588,29 +588,25 @@ Worth recording, because each was a genuine defect:
 | `riscv-tests` `rv32mi/csr` | the suite was built without F while `misa` advertised it. The test detects exactly that mismatch and fails on purpose; the emulator was correct and the runner's `-march` was not |
 | hardware `isatest` | the JIT's inlined store wrote guest RAM without consulting PMP, so a protected region was writable under the JIT and not under the interpreter |
 
-#### Known defect: the x86-64 JIT stalls on `riscv-tests`
+#### What the second backend found in the first runner
 
-`rv32mi/scall` and `rv32ui/ma_data` do not complete under `--jit`. The
-interpreter runs 20M instructions of `scall` in 257 ms; the JIT does not
-reach 300k in sixty seconds, which is not "slower" — it is something
-structurally wrong that has not been root-caused.
+`rv32mi/scall` and `rv32ui/ma_data` hung under `--jit`, and the bug was
+not in the translator: it was in the host runner's instruction cap, which
+had been correct for as long as there was only one backend.
 
-What is established:
+The runner sized each slice as `max_insn - total`. A backend may retire
+*more* than the budget it was given — the JIT executes whole translated
+blocks and can only stop between them, so the last one overshoots. `total`
+then passes `max_insn`, the unsigned subtraction goes below zero into a
+very large number, the budget never reaches zero, and the loop never ends.
+The guest kept running perfectly; the cap simply stopped existing.
 
-- It is **not** a correctness difference. Both backends reach the same
-  place, `write_tohost`, with `gp = 1` — the test's own pass code. Both
-  spin there, because that loop is how these tests signal completion and
-  this runner terminates them by instruction cap.
-- It is not translation churn from a small cache: the same build runs
-  CoreMark with 511 blocks, 511 translations and two flushes.
-- It is not the fallback path — the hart is in M-mode with `fetch_guard`
-  clear, executing a translated five-instruction block.
-
-An earlier revision of the backend did pass 77/77 under `--jit`, before
-the block tables were resized and branches, `JALR`, RVC expansion and the
-F helper were added; one of those is responsible. Until it is found, the
-architecture suite is the JIT's real coverage — it passes 274/274 there,
-including every `F` test — and `riscv-tests` is interpreter-only.
+The interpreter retires one instruction at a time and lands exactly on the
+cap, which is why this was invisible for the entire life of the project.
+It is only reachable by the two tests that *rely* on the cap to terminate
+— they spin in `write_tohost` by design — and only with a backend that
+retires in blocks. The ARM firmware's loop is unaffected: it runs a fixed
+slice with no cap, so there is no subtraction to underflow.
 
 #### What the Sv32 tests found
 

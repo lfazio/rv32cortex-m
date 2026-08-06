@@ -23,14 +23,6 @@
  *     the Thumb-2 modified-immediate encoder and nothing has to be
  *     materialised through a constant pool.
  *
- * KNOWN DEFECT: rv32mi/scall and rv32ui/ma_data do not complete under this
- * backend -- see the README section of the same name. Both reach the
- * correct place with the correct result and then fail to make progress at
- * a rate anything like the interpreter's, and it has not been root-caused.
- * The architecture suite passes 274/274 here, so this is not a general
- * correctness problem, but it is unexplained and riscv-tests is
- * interpreter-only until it is understood.
- *
  * What is translated is the integer core: LUI, AUIPC, the OP-IMM and OP
  * groups, and loads and stores through a helper. Everything else ends the
  * block and is executed by the interpreter, which is the same policy the

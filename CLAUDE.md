@@ -285,6 +285,15 @@ the debug port. The Nucleo-F446RE is still supported and is
   through them ends in "matching nothing permits". Any privilege work
   should assume the PMP code is wrong until the privileged tests say
   otherwise -- and they will not run until the suite is *named* correctly.
+- **A block backend may retire more than its budget, and one caller's
+  arithmetic could not survive that.** The host runner sized each slice as
+  `max_insn - total`; the JIT overshoots because it can only stop between
+  blocks, so `total` passed the cap, the unsigned subtraction went below
+  zero, and the loop never ended -- the guest ran on correctly while the
+  cap silently stopped existing. Reachable only by the two riscv-tests
+  that *depend* on the cap to terminate, and invisible for the life of the
+  project because the interpreter lands on it exactly. Compare
+  `total >= max_insn`, never a budget that has to reach zero.
 - **The x86-64 JIT is for coverage, and its stats line is what proves it.**
   A backend that declines everything and falls back passes every test while
   proving nothing, so the host runner prints `xlat/entries/interp`. First

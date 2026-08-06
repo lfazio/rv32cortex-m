@@ -492,14 +492,30 @@ int main(int argc, char **argv)
     uint64_t total = 0;
     for (;;) {
         uint32_t budget = RV_DEFAULT_BUDGET;
-        if (max_insn != 0 && (uint64_t)budget > max_insn - total) {
-            budget = (uint32_t)(max_insn - total);
-        }
-        if (budget == 0u) {
-            if (!quiet) {
-                fprintf(stderr, "rv32: instruction limit reached\n");
+
+        /*
+         * `total >= max_insn` rather than a budget that reaches zero.
+         *
+         * A backend may retire *more* than the budget it was given: the JIT
+         * executes whole translated blocks and can only stop between them,
+         * so the last one overshoots. `max_insn - total` is then an
+         * unsigned subtraction below zero, which is a very large number, so
+         * the comparison below leaves the budget at its default and this
+         * loop never ends -- the guest keeps running correctly and the cap
+         * silently stops existing. The interpreter retires one instruction
+         * at a time and lands exactly on the cap, which is why this was
+         * invisible until there was a second backend.
+         */
+        if (max_insn != 0) {
+            if (total >= max_insn) {
+                if (!quiet) {
+                    fprintf(stderr, "rv32: instruction limit reached\n");
+                }
+                break;
             }
-            break;
+            if ((uint64_t)budget > max_insn - total) {
+                budget = (uint32_t)(max_insn - total);
+            }
         }
 
         uint32_t did = 0;
