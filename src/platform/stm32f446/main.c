@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * main.c - RV32 emulator firmware for the Nucleo-F446RE.
+ * main.c - Emulator firmware for the Nucleo-F446RE.
  *
  * Bring-up is done entirely with ST's own driver pack: the CMSIS device
  * headers for register definitions, ST's startup file and
@@ -11,17 +11,25 @@
  * What this file adds is the glue: a guest address space built out of ARM
  * memory and ARM peripherals, and a run loop that hands control back often
  * enough for the ARM side to keep servicing its own interrupts.
+ *
+ * Which guest ISA runs on it is not this file's business. It opens a core
+ * through emu_cpu_ops_t and drives that; the interrupt controller, the
+ * timer and the state dump all come from the frontend. The only part below
+ * that names an architecture is the JIT statistics block, and that is
+ * because the Thumb-2 JIT is one particular frontend's backend.
  */
 
 #include "stm32f4xx_hal.h"
 #include "board.h"
 
-#include "rv32/rv_backend.h"
-#include "rv32/rv_dev.h"
-#include "rv32/rv_aplic.h"
-#include "rv32/rv_hart.h"
-#include "rv32/rv_jit.h"
-#include "rv32/rv_memmap.h"
+#include "emu/emu_cpu.h"
+#include "emu/emu_dev.h"
+#include "emu/emu_memmap.h"
+
+#if EMU_FRONTEND_RV32
+#  include "rv32/rv_backend.h"  /* which backend came up */
+#  include "rv32/rv_jit.h"      /* JIT statistics, reported below */
+#endif
 
 #include <string.h>
 
@@ -45,33 +53,21 @@ extern uint8_t __guest_ram_end[];
 #define GUEST_RAM_BASE_PTR  (__guest_ram_start)
 #define GUEST_RAM_SIZE      ((uint32_t)(__guest_ram_end - __guest_ram_start))
 
-/* CLINT mtime runs at 1 MHz, derived from the DWT cycle counter. */
-#define RV_CLINT_HZ         1000000u
+/* Guest time runs at 1 MHz, derived from the DWT cycle counter. */
+#define EMU_TIMER_HZ        1000000u
 
 /* Instructions executed between returns to the ARM side. */
-#ifndef RV_RUN_SLICE
-#define RV_RUN_SLICE        4096u
+#ifndef EMU_RUN_SLICE
+#define EMU_RUN_SLICE        4096u
 #endif
 
 /* ------------------------------------------------------------------ */
 /* State                                                               */
 /* ------------------------------------------------------------------ */
 
-#if RV_ENABLE_JIT
-/*
- * Code cache for translated blocks. Ordinary .bss: the ARMv7-M default
- * memory map makes SRAM executable, so no MPU work is needed. This comes
- * out of what the guest would otherwise get, which is the trade the JIT
- * asks for.
- */
-static uint8_t g_jit_code[RV_JIT_CODE_SIZE] __attribute__((aligned(8)));
-#endif
-
-static rv_bus_t    g_bus;
-static rv_hart_t   g_hart;
-static rv_clint_t  g_clint;
-static rv_aplic_t  g_aplic;
-static rv_uart_t   g_uart;
+static emu_bus_t  g_bus;
+static emu_core_t g_core;
+static emu_uart_t g_uart;
 
 /* ------------------------------------------------------------------ */
 /* Console                                                             */
@@ -147,42 +143,40 @@ static int guest_uart_rx(void *ctx)
 /*
  * The same newlib-style calls the host runner implements, so a guest built
  * once behaves identically in both places. Anything else falls through to
- * a normal M-mode trap, leaving guests with their own handler unaffected.
+ * the architectural trap, leaving guests with their own handler unaffected.
  *
- *   a7 = 64  write(fd, buf, len)
- *   a7 = 93  exit(code)
+ *   nr = 64  write(fd, buf, len)
+ *   nr = 93  exit(code)
+ *
+ * The frontend has already unpacked its own calling convention into
+ * emu_syscall_t, so nothing here knows which registers those arrived in.
  */
-#define REG_A0  10
-#define REG_A1  11
-#define REG_A2  12
-#define REG_A7  17
-
 static uint32_t g_exit_code;
 static bool     g_exited;
 
-static bool guest_ecall(rv_hart_t *h, void *user)
+static bool guest_syscall(emu_cpu_t *cpu, emu_syscall_t *sc, void *user)
 {
     (void)user;
 
-    switch (h->x[REG_A7]) {
+    switch (sc->nr) {
     case 64: {
-        const uint32_t buf = h->x[REG_A1];
-        const uint32_t len = h->x[REG_A2];
+        const uint32_t buf = sc->arg[1];
+        const uint32_t len = sc->arg[2];
         for (uint32_t i = 0; i < len; i++) {
             uint32_t byte;
-            if (rv_bus_read(h->bus, buf + i, 1u, &byte) != RV_EXC_NONE) {
+            if (emu_bus_read(&g_bus, buf + i, 1u, &byte) != EMU_FAULT_NONE) {
                 break;
             }
             guest_uart_tx(NULL, (uint8_t)byte);
         }
-        h->x[REG_A0] = len;
+        sc->ret = len;
         return true;
     }
 
     case 93:
-        g_exit_code = h->x[REG_A0];
+        g_exit_code = sc->arg[0];
         g_exited = true;
-        h->state = RV_STATE_HALTED;
+        g_core.ops->halt(cpu);
         return true;
 
     default:
@@ -205,19 +199,19 @@ static bool guest_ecall(rv_hart_t *h, void *user)
  * these become real cache operations on the lines backing the guest block.
  */
 static void arm_cache_maint(void *ctx, void *host, uint32_t len,
-                            rv_cbo_op_t op)
+                            emu_cache_op_t op)
 {
     (void)ctx;
 
 #if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)
     switch (op) {
-    case RV_CBO_CLEAN:
+    case EMU_CACHE_CLEAN:
         SCB_CleanDCache_by_Addr((uint32_t *)host, (int32_t)len);
         break;
-    case RV_CBO_INVAL:
+    case EMU_CACHE_INVAL:
         SCB_InvalidateDCache_by_Addr((uint32_t *)host, (int32_t)len);
         break;
-    case RV_CBO_FLUSH:
+    case EMU_CACHE_FLUSH:
         SCB_CleanInvalidateDCache_by_Addr((uint32_t *)host, (int32_t)len);
         break;
     }
@@ -229,7 +223,7 @@ static void arm_cache_maint(void *ctx, void *host, uint32_t len,
 #endif
 }
 
-static const rv_cache_ops_t g_cache_ops = {
+static const emu_cache_ops_t g_cache_ops = {
     .maint = arm_cache_maint,
     .ctx = NULL,
 };
@@ -266,18 +260,18 @@ static const struct {
     uint8_t     perm;
 } g_periph_map[] = {
     /* APB1 up to PWR: timers, RTC, WWDG, SPI2/3, USART2/3, UART4/5, I2C */
-    { "apb1",       0x40000000u, 0x00007000u, RV_PERM_RW },
-    { "pwr",        0x40007000u, 0x00000400u, RV_PERM_R  },
+    { "apb1",       0x40000000u, 0x00007000u, EMU_PERM_RW },
+    { "pwr",        0x40007000u, 0x00000400u, EMU_PERM_R  },
     /* Rest of APB1, all of APB2, GPIO and CRC */
-    { "apb1b+apb2", 0x40007400u, 0x0001C400u, RV_PERM_RW },
+    { "apb1b+apb2", 0x40007400u, 0x0001C400u, EMU_PERM_RW },
     /* RCC clock tree: CR, PLLCFGR, CFGR, CIR */
-    { "rcc-clock",  0x40023800u, 0x00000010u, RV_PERM_R  },
+    { "rcc-clock",  0x40023800u, 0x00000010u, EMU_PERM_R  },
     /* RCC resets and peripheral clock enables: the guest's to drive */
-    { "rcc-periph", 0x40023810u, 0x000003F0u, RV_PERM_RW },
+    { "rcc-periph", 0x40023810u, 0x000003F0u, EMU_PERM_RW },
     /* Flash interface: ACR, keys, control, option bytes */
-    { "flash-ctl",  0x40023C00u, 0x00000400u, RV_PERM_R  },
+    { "flash-ctl",  0x40023C00u, 0x00000400u, EMU_PERM_R  },
     /* BKPSRAM, DMA1/2, USB OTG HS, and AHB2 up to 0x5FFFFFFF */
-    { "ahb1b+ahb2", 0x40024000u, 0x1FFDC000u, RV_PERM_RW },
+    { "ahb1b+ahb2", 0x40024000u, 0x1FFDC000u, EMU_PERM_RW },
 };
 
 /* ------------------------------------------------------------------ */
@@ -285,7 +279,7 @@ static const struct {
 /* ------------------------------------------------------------------ */
 
 /*
- * Bridging the NVIC to the APLIC.
+ * Bridging the NVIC to the guest's interrupt controller.
  *
  * An interrupt is the one thing the passthrough window cannot carry. A
  * guest driver reaches a peripheral by using its address, but when that
@@ -299,17 +293,17 @@ static const struct {
  * interrupt entry forever without the guest ever making progress. So the
  * line is masked on entry and stays masked until the guest clears the
  * APLIC pending bit, which is its way of saying the device has been dealt
- * with -- see aplic_unmask_line, reached through the APLIC's eoi hook.
+ * with -- see irq_unmask_line, reached through the frontend's unmask hook.
  *
  * Adding a peripheral is one table entry and one handler; the table is the
  * policy, the same way g_periph_map is for addresses.
  */
 /*
- * An APLIC source number *is* the NVIC line number, so there is no mapping
- * table -- and, more to the point, none in the guest either. A driver that
- * would call HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn) writes that same 54 to the
- * APLIC's setienum, and the two numbering spaces never have to be
- * reconciled. It is the reason RV_APLIC_SOURCES is 128 rather than 32.
+ * A source number *is* the NVIC line number, so there is no mapping table
+ * -- and, more to the point, none in the guest either. A driver that would
+ * call HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn) writes that same 54 to its own
+ * controller's enable register, and the two numbering spaces never have to
+ * be reconciled. It is the reason RV_APLIC_SOURCES is 128 rather than 32.
  */
 static const IRQn_Type g_bridged[] = {
     TIM6_DAC_IRQn,
@@ -325,13 +319,13 @@ static bool irq_is_bridged(uint32_t source)
     return false;
 }
 
-static void aplic_line_entry(IRQn_Type irqn)
+static void irq_line_entry(IRQn_Type irqn)
 {
     NVIC_DisableIRQ(irqn);
-    rv_aplic_raise(&g_aplic, (uint32_t)irqn);
+    emu_core_set_irq(&g_core, (uint32_t)irqn, true);
 }
 
-static void aplic_unmask_line(void *ctx, uint32_t source)
+static void irq_unmask_line(void *ctx, uint32_t source)
 {
     (void)ctx;
     if (irq_is_bridged(source)) {
@@ -354,14 +348,14 @@ static void bridged_irqs_init(void)
 
 void TIM6_DAC_IRQHandler(void)
 {
-    aplic_line_entry(TIM6_DAC_IRQn);
+    irq_line_entry(TIM6_DAC_IRQn);
 }
 
 static bool build_address_space(void)
 {
-    rv_bus_init(&g_bus);
+    emu_bus_init(&g_bus);
 
-    if (!rv_bus_add_ram(&g_bus, "ram", RV_GUEST_RAM_BASE,
+    if (!emu_bus_add_ram(&g_bus, "ram", EMU_GUEST_RAM_BASE,
                         GUEST_RAM_BASE_PTR, GUEST_RAM_SIZE)) {
         return false;
     }
@@ -370,41 +364,28 @@ static bool build_address_space(void)
      * The guest image stays in ARM flash and is exposed read-only, so a
      * guest linked for execute-in-place costs no RAM at all.
      */
-    if (!rv_bus_add_rom(&g_bus, "rom", RV_GUEST_ROM_BASE,
+    if (!emu_bus_add_rom(&g_bus, "rom", EMU_GUEST_ROM_BASE,
                         rv_guest_image, rv_guest_image_size)) {
         return false;
     }
 
-    if (!rv_bus_add_mmio(&g_bus, "aplic", RV_GUEST_APLIC_BASE,
-                         RV_APLIC_SIZE, &rv_aplic_ops, &g_aplic)) {
-        return false;
-    }
     /*
-     * ACLINT rather than the legacy CLINT window: two devices at the
-     * offsets the old layout implied, so guests written for either work.
+     * The interrupt controller and the timer are not placed here: they
+     * belong to the guest architecture rather than to this board, so the
+     * frontend maps them itself through add_devices below.
      */
-    if (!rv_bus_add_mmio(&g_bus, "aclint-mswi", RV_GUEST_ACLINT_MSWI_BASE,
-                         RV_ACLINT_MSWI_SIZE, &rv_aclint_mswi_ops,
-                         &g_clint)) {
-        return false;
-    }
-    if (!rv_bus_add_mmio(&g_bus, "aclint-mtimer", RV_GUEST_ACLINT_MTIMER_BASE,
-                         RV_ACLINT_MTIMER_SIZE, &rv_aclint_mtimer_ops,
-                         &g_clint)) {
-        return false;
-    }
-    if (!rv_bus_add_mmio(&g_bus, "uart0", RV_GUEST_UART_BASE,
-                         RV_UART_SIZE, &rv_uart_ops, &g_uart)) {
+    if (!emu_bus_add_mmio(&g_bus, "uart0", EMU_GUEST_UART_BASE,
+                         EMU_UART_SIZE, &emu_uart_ops, &g_uart)) {
         return false;
     }
 
     for (unsigned i = 0; i < sizeof(g_periph_map) / sizeof(g_periph_map[0]); i++) {
         /* Identity map: host base == guest base. */
-        if (!rv_bus_add_passthru(&g_bus, g_periph_map[i].name,
+        if (!emu_bus_add_passthru(&g_bus, g_periph_map[i].name,
                                  g_periph_map[i].base,
                                  g_periph_map[i].size,
                                  (uintptr_t)g_periph_map[i].base,
-                                 g_periph_map[i].perm, RV_WANY)) {
+                                 g_periph_map[i].perm, EMU_WANY)) {
             return false;
         }
     }
@@ -415,61 +396,23 @@ static bool build_address_space(void)
 /* Diagnostics                                                         */
 /* ------------------------------------------------------------------ */
 
-static const char *cause_name(uint32_t mcause)
+/* emu_print_fn onto the console, for the frontend's own state dump. */
+static void console_out(void *ctx, const char *s)
 {
-    if (mcause & RV_CAUSE_INTERRUPT) {
-        return "interrupt";
-    }
-    switch (mcause) {
-    case RV_EXC_INSN_MISALIGNED:    return "instruction address misaligned";
-    case RV_EXC_INSN_ACCESS_FAULT:  return "instruction access fault";
-    case RV_EXC_ILLEGAL_INSN:       return "illegal instruction";
-    case RV_EXC_BREAKPOINT:         return "breakpoint";
-    case RV_EXC_LOAD_MISALIGNED:    return "load address misaligned";
-    case RV_EXC_LOAD_ACCESS_FAULT:  return "load access fault";
-    case RV_EXC_STORE_MISALIGNED:   return "store address misaligned";
-    case RV_EXC_STORE_ACCESS_FAULT: return "store access fault";
-    case RV_EXC_ECALL_M:            return "environment call";
-    default:                        return "unknown";
-    }
+    (void)ctx;
+    console_puts(s);
 }
 
+/*
+ * Decoding the trap cause and naming the registers is the frontend's job:
+ * only it knows what its status registers are and which of them matter
+ * after a fault. This used to be a copy of that knowledge here, kept in
+ * step with the core's by hand and with the host runner's by hand again.
+ */
 static void report_state(void)
 {
-    console_puts("\n-- guest state --\n  pc     ");
-    console_puthex(g_hart.pc);
-
-    /*
-     * mcause is only meaningful once something has trapped. Decoding it
-     * unconditionally reports "instruction address misaligned" for a clean
-     * run, because that cause happens to be code 0.
-     */
-#if RV_ENABLE_STATS
-    console_puts("\n  traps  ");
-    console_putu(g_hart.trap_count);
-    if (g_hart.trap_count == 0u) {
-        console_puts("\n  sp     ");
-        console_puthex(g_hart.x[2]);
-        console_puts("  ra    ");
-        console_puthex(g_hart.x[1]);
-        console_putc('\n');
-        return;
-    }
-#endif
-
-    console_puts("\n  mcause ");
-    console_puthex(g_hart.mcause);
-    console_puts("  (");
-    console_puts(cause_name(g_hart.mcause));
-    console_puts(")\n  mepc   ");
-    console_puthex(g_hart.mepc);
-    console_puts("  mtval ");
-    console_puthex(g_hart.mtval);
-    console_puts("\n  sp     ");
-    console_puthex(g_hart.x[2]);
-    console_puts("  ra    ");
-    console_puthex(g_hart.x[1]);
-    console_putc('\n');
+    console_puts("\n-- guest state --");
+    g_core.ops->dump(g_core.cpu, console_out, NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -488,10 +431,8 @@ int main(void)
      */
     {
         extern int coremark_native_main(void);
-        console_puts("\n\nrv32cortex-m: NATIVE CoreMark on ");
-        console_puts(board_name());
-        console_puts(" @ ");
-        console_putu(board_clock_hz() / 1000000u);
+        console_puts("\n\nrv32cortex-m: NATIVE CoreMark on Cortex-M4 @ ");
+        console_putu(SystemCoreClock / 1000000u);
         console_puts(" MHz\n\n");
         const uint32_t c0 = board_cycles();
         (void)coremark_native_main();
@@ -501,32 +442,18 @@ int main(void)
         for (;;) { __WFI(); }
     }
 #endif
-    /* Built from the configured extensions rather than hardcoded, so the
-     * banner cannot drift from what the core actually implements. */
-    console_puts("\n\nrv32cortex-m: RV32I"
-#if RV_EXT_M
-                 "M"
-#endif
-#if RV_EXT_A
-                 "A"
-#endif
-#if RV_EXT_F
-                 "F"
-#endif
-#if RV_EXT_C
-                 "C"
-#endif
-/* B is exactly Zba+Zbb+Zbs, and is what misa reports; Zbc is separate. */
-#if RV_EXT_ZBA && RV_EXT_ZBB && RV_EXT_ZBS
-                 "B"
-#endif
-#if RV_EXT_ZBC
-                 "_zbc"
-#endif
-                 " on ");
-    console_puts(board_name());
-    console_puts(" @ ");
-    console_putu(board_clock_hz() / 1000000u);
+    /*
+     * The frontend names itself, and builds its ISA string from the
+     * extensions actually compiled in, so the banner cannot drift from what
+     * the core implements -- which it could when this file spelled the
+     * string out itself.
+     */
+    const emu_cpu_ops_t *const ops = emu_frontend_default();
+
+    console_puts("\n\nrv32cortex-m: ");
+    console_puts(ops->desc);
+    console_puts(" on Cortex-M4 @ ");
+    console_putu(SystemCoreClock / 1000000u);
     console_puts(" MHz\n");
 
     if (!build_address_space()) {
@@ -534,28 +461,33 @@ int main(void)
         fatal_halt();
     }
 
-    rv_hart_init(&g_hart, &g_bus, 0u);
-    rv_clint_init(&g_clint, &g_hart);
-    rv_aplic_init(&g_aplic, &g_hart);
-    rv_aplic_set_eoi(&g_aplic, aplic_unmask_line, NULL);
-    bridged_irqs_init();
-    rv_uart_init(&g_uart, guest_uart_tx, guest_uart_rx, NULL);
-    g_hart.ecall = guest_ecall;
-    g_hart.cache = &g_cache_ops;
-
-#if RV_ENABLE_JIT
-    rv_jit_set_code_buffer(g_jit_code, sizeof(g_jit_code));
-    rv_backend = &rv_backend_jit;
-    if (rv_backend->init != NULL && !rv_backend->init(&g_hart)) {
-        console_puts("jit init failed; falling back to the interpreter\n");
-        rv_backend = &rv_backend_interp;
+    if (!emu_core_open(&g_core, ops, &g_bus, 0u)) {
+        console_puts("fatal: frontend has no core 0\n");
+        fatal_halt();
     }
-#endif
+    /*
+     * The frontend's own devices: the shared ones and this core's. The
+     * firmware is single-core -- 64 KiB of local RAM per G4MH PE does not
+     * fit in 128 KiB of SRAM -- so there is one bus and one of each.
+     */
+    if ((ops->add_shared_devices != NULL &&
+         !ops->add_shared_devices(&g_bus)) ||
+        (ops->add_core_devices != NULL &&
+         !ops->add_core_devices(g_core.cpu, &g_bus, 0u))) {
+        console_puts("fatal: could not map the guest platform devices\n");
+        fatal_halt();
+    }
+
+    ops->set_unmask_hook(g_core.cpu, irq_unmask_line, NULL);
+    bridged_irqs_init();
+    emu_uart_init(&g_uart, guest_uart_tx, guest_uart_rx, NULL);
+    ops->set_syscall(g_core.cpu, guest_syscall, NULL);
+    ops->set_cache(g_core.cpu, &g_cache_ops);
 
     /*
      * The image is linked to run from guest RAM, so copy it out of flash.
      * Guests linked for the ROM window can skip this and reset straight to
-     * RV_GUEST_ROM_BASE.
+     * EMU_GUEST_ROM_BASE.
      */
     if (rv_guest_image_size > GUEST_RAM_SIZE) {
         console_puts("fatal: guest image larger than guest RAM\n");
@@ -563,39 +495,47 @@ int main(void)
     }
     memcpy(GUEST_RAM_BASE_PTR, rv_guest_image, rv_guest_image_size);
 
+    emu_core_reset(&g_core, EMU_GUEST_RESET_PC);
+    emu_core_boot(&g_core, EMU_GUEST_RAM_BASE, GUEST_RAM_SIZE);
+
+    emu_cpu_status_t st;
+    emu_core_status(&g_core, &st);
+
     console_puts("guest  ");
     console_putu(rv_guest_image_size);
     console_puts(" bytes at ");
-    console_puthex(RV_GUEST_RESET_PC);
+    console_puthex(EMU_GUEST_RESET_PC);
     console_puts("\nram    ");
     console_putu(GUEST_RAM_SIZE / 1024u);
     console_puts(" KiB (");
     console_putu(GUEST_RAM_SIZE);
     console_puts(" bytes)\nbackend ");
-    console_puts(rv_backend->name);
+    console_puts(st.backend);
     console_puts("\n\n");
 
-    rv_hart_reset(&g_hart, RV_GUEST_RESET_PC);
-    rv_hart_boot(&g_hart, RV_GUEST_RAM_BASE, GUEST_RAM_SIZE);
-
-    const uint32_t cycles_per_tick = SystemCoreClock / RV_CLINT_HZ;
+    const uint32_t cycles_per_tick = SystemCoreClock / EMU_TIMER_HZ;
     const uint32_t start_cycles = board_cycles();
     uint64_t retired_total = 0;
 
     for (;;) {
         uint32_t retired = 0;
-        const rv_run_reason_t why = rv_run(&g_hart, RV_RUN_SLICE, &retired);
+        const emu_run_reason_t why = emu_core_run(&g_core, EMU_RUN_SLICE,
+                                                  &retired);
         retired_total += retired;
 
         /* Guest time tracks real time through the DWT cycle counter. */
-        rv_clint_set_time(&g_clint,
-                          (uint64_t)(board_cycles() - start_cycles) / cycles_per_tick);
+        ops->set_time(g_core.cpu,
+                      (uint64_t)(board_cycles() - start_cycles) / cycles_per_tick);
 
-        if (why == RV_RUN_HALTED) {
+        if (why == EMU_RUN_HALTED) {
             break;
         }
-        if (why == RV_RUN_WFI && g_hart.mie == 0u) {
-            console_puts("\nguest parked in WFI with no interrupts enabled\n");
+        if (why == EMU_RUN_WFI) {
+            emu_core_status(&g_core, &st);
+            if (st.wakeable) {
+                continue;
+            }
+            console_puts("\nguest parked with no interrupts enabled\n");
             break;
         }
     }
@@ -608,7 +548,7 @@ int main(void)
     console_putu(elapsed);
     console_puts(" cycles\n  ratio    ");
     if (retired_total != 0u) {
-        /* Host ARM cycles per emulated RISC-V instruction, x100 so the
+        /* Host ARM cycles per emulated guest instruction, x100 so the
          * fractional part survives integer division. */
         const uint32_t x100 = (uint32_t)((uint64_t)elapsed * 100u / retired_total);
         console_putu(x100 / 100u);
@@ -622,7 +562,14 @@ int main(void)
         console_puts(" KIPS\n");
     }
 
-#if RV_ENABLE_JIT
+/*
+ * JIT statistics. The one place in this file that names a frontend, and
+ * unavoidably so: the Thumb-2 JIT is the rv32 frontend's second backend,
+ * and what it counts -- translations, evictions, which encodings fell back
+ * to the interpreter -- has no meaning for any other. A frontend without a
+ * JIT simply does not compile this block in.
+ */
+#if EMU_FRONTEND_RV32 && RV_ENABLE_JIT
     if (rv_backend == &rv_backend_jit) {
         rv_jit_stats_t js;
         rv_jit_get_stats(&js);
@@ -646,6 +593,10 @@ int main(void)
          * is smaller than expected: it names exactly which encodings are
          * worth teaching the translator next.
          */
+        console_puts("\n  elided   ld ");
+        console_putu(js.ld_elided);
+        console_puts("  st ");
+        console_putu(js.st_elided);
         console_puts("\n  interp   ");
         console_putu(js.interp_fallbacks);
         console_puts(" instructions fell back\n  helpers  muldiv ");

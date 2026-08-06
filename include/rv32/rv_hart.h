@@ -12,35 +12,26 @@
 
 #include "rv_types.h"
 #include "rv_config.h"
-#include "rv_bus.h"
-#include "rv_cache.h"
+#include "emu/emu_bus.h"
+#include "emu/emu_cache.h"
+#include "emu/emu_cpu.h"
 #include "rv_csr.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* Execution state. */
-typedef enum {
-    RV_STATE_RUNNING = 0,
-    RV_STATE_WFI,        /* parked in WFI, waiting for an interrupt   */
-    RV_STATE_HALTED,     /* stopped by the debugger or a fatal fault  */
-} rv_state_t;
-
-/* Reason rv_backend_t::run returned. */
-typedef enum {
-    RV_RUN_BUDGET = 0,   /* instruction budget exhausted, call again  */
-    RV_RUN_WFI,          /* hart entered WFI                          */
-    RV_RUN_HALTED,       /* hart halted                               */
-    RV_RUN_BREAKPOINT,   /* EBREAK with debug attached                */
-} rv_run_reason_t;
-
+/*
+ * The RISC-V frontend's core state -- what emu_cpu_t is a pointer to when
+ * rv32_frontend is the active frontend. It is reached through the ops
+ * table by the platforms and cast back to this by the backends.
+ */
 typedef struct rv_hart {
     /* --- hot state: keep first --- */
     uint32_t x[32];              /* x0 is hardwired zero, written then ignored */
     uint32_t pc;
 
-    struct rv_bus *bus;
+    struct emu_bus *bus;
 
     /* --- machine trap setup --- */
     uint32_t mstatus;
@@ -165,7 +156,7 @@ typedef struct rv_hart {
      * which case the CBO instructions retire without doing anything, which
      * the spec permits).
      */
-    const rv_cache_ops_t *cache;
+    const emu_cache_ops_t *cache;
 #endif
 
 #if RV_LAZY_IRQ_CHECK
@@ -200,16 +191,16 @@ typedef struct rv_hart {
 
     uint32_t hartid;
     uint8_t  priv;               /* always RV_PRIV_M on this implementation */
-    uint8_t  state;              /* rv_state_t */
+    uint8_t  state;              /* emu_state_t */
 
-#if RV_ENABLE_STATS
+#if EMU_ENABLE_STATS
     uint32_t trap_count;
     uint32_t insn_retired_lo;    /* cheap 32-bit mirror for the monitor */
 #endif
 
-#if RV_ENABLE_TRACE
-    void (*trace)(struct rv_hart *h, uint32_t pc, uint32_t insn, void *user);
-    void  *trace_user;
+#if EMU_ENABLE_TRACE
+    emu_trace_fn trace;
+    void        *trace_user;
 #endif
 
 #if RV_ENABLE_ECALL_HOOK
@@ -219,9 +210,14 @@ typedef struct rv_hart {
      * memory-mapped devices. Return true to consume the ECALL (execution
      * resumes after it); return false to take the normal M-mode trap.
      * When NULL, ECALL always traps, which is the architectural behaviour.
+     *
+     * The handler sees an emu_syscall_t rather than the hart, so the same
+     * newlib write/exit implementation serves any frontend: unpacking the
+     * RISC-V convention -- number in a7, arguments in a0-a3, result to a0
+     * -- happens here, at the one place that knows it.
      */
-    bool (*ecall)(struct rv_hart *h, void *user);
-    void  *ecall_user;
+    emu_syscall_fn ecall;
+    void          *ecall_user;
 #endif
 
     void *user;                  /* opaque platform pointer */
@@ -232,7 +228,7 @@ typedef struct rv_hart {
 /* ------------------------------------------------------------------ */
 
 /* Zero the hart, attach the bus, and apply reset values. */
-void rv_hart_init(rv_hart_t *h, rv_bus_t *bus, uint32_t hartid);
+void rv_hart_init(rv_hart_t *h, emu_bus_t *bus, uint32_t hartid);
 
 /* Reset architectural state and jump to `reset_pc`. */
 void rv_hart_reset(rv_hart_t *h, uint32_t reset_pc);
@@ -284,7 +280,7 @@ rv_exc_t rv_hart_pending_irq(const rv_hart_t *h);
  * Waking without a deliverable interrupt is harmless and intended:
  * execution simply resumes at the instruction after the WFI.
  */
-static RV_ALWAYS_INLINE bool rv_hart_wfi_wake(const rv_hart_t *h)
+static EMU_ALWAYS_INLINE bool rv_hart_wfi_wake(const rv_hart_t *h)
 {
     return (h->mip & h->mie) != 0u;
 }
@@ -305,7 +301,7 @@ void rv_trig_refresh(rv_hart_t *h);
 void rv_trig_write_tdata1(rv_hart_t *h, uint32_t val);
 
 /* True if an armed trigger matches. Only consulted when trig_active. */
-bool rv_trig_check(const rv_hart_t *h, uint32_t addr, rv_access_t acc);
+bool rv_trig_check(const rv_hart_t *h, uint32_t addr, emu_access_t acc);
 #endif
 
 /*
@@ -323,7 +319,7 @@ bool rv_trig_check(const rv_hart_t *h, uint32_t addr, rv_access_t acc);
  * M, so it cannot outlive the mode that armed it.
  */
 /* Recompute h->fetch_guard. Called by rv_trig_refresh and rv_pmp_refresh. */
-static RV_ALWAYS_INLINE void rv_hart_refresh_fetch_guard(rv_hart_t *h)
+static EMU_ALWAYS_INLINE void rv_hart_refresh_fetch_guard(rv_hart_t *h)
 {
     bool g = false;
 #if RV_EXT_SDTRIG
@@ -338,7 +334,7 @@ static RV_ALWAYS_INLINE void rv_hart_refresh_fetch_guard(rv_hart_t *h)
     h->fetch_guard = g;
 }
 
-static RV_ALWAYS_INLINE uint32_t rv_hart_data_priv(const rv_hart_t *h)
+static EMU_ALWAYS_INLINE uint32_t rv_hart_data_priv(const rv_hart_t *h)
 {
 #if RV_EXT_U
     if ((h->mstatus & MSTATUS_MPRV) != 0u) {
@@ -365,7 +361,7 @@ void rv_mmu_flush(rv_hart_t *h);
  * Only called when vm_active; a hart with satp in Bare mode, or running in
  * M-mode, never reaches it.
  */
-rv_exc_t rv_mmu_translate(rv_hart_t *h, uint32_t va, rv_access_t acc,
+rv_exc_t rv_mmu_translate(rv_hart_t *h, uint32_t va, emu_access_t acc,
                           uint32_t *pa);
 #endif
 
@@ -383,7 +379,7 @@ void rv_pmp_refresh(rv_hart_t *h);
  * is what keeps PMP off the hot path for guests that never lock an entry.
  */
 bool rv_pmp_check(const rv_hart_t *h, uint32_t addr, uint32_t size,
-                  rv_access_t acc);
+                  emu_access_t acc);
 
 /*
  * When exactly one PMP entry is enabled, report its bounds and return true.

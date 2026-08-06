@@ -4,7 +4,6 @@
 
 add_executable(rv32-host
     main.c
-    rv_elf.c
 )
 
 target_link_libraries(rv32-host PRIVATE rv32core)

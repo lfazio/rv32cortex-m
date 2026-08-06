@@ -1,9 +1,51 @@
 # rv32cortex-m — working notes
 
-RV32 emulator for ARM Cortex-M hosts. The guest drives the host's real
-peripherals through an identity-mapped passthrough window, so **peripheral
-drivers live in the guest, not in the emulator**. Keep it that way: adding a
-GPIO or UART driver to `src/platform/` is almost always the wrong fix.
+A retargetable 32-bit ISA emulator for ARM Cortex-M hosts. The guest drives
+the host's real peripherals through an identity-mapped passthrough window, so
+**peripheral drivers live in the guest, not in the emulator**. Keep it that
+way: adding a GPIO or UART driver to `src/platform/` is almost always the
+wrong fix.
+
+## Layout
+
+Detailed notes live under `docs/`, split by platform and by
+platform/frontend pair — memory maps, peripheral policy, what has been
+measured, and **to do / investigate / discarded** for each:
+[`docs/Architecture.md`](docs/Architecture.md),
+[`docs/host/`](docs/host/README.md),
+[`docs/stm32f446/`](docs/stm32f446/README.md), and
+`docs/<platform>/<frontend>/README.md`.
+
+Three axes, independent of each other:
+
+| axis | what it decides | selected by |
+|---|---|---|
+| platform | where it runs | `RV32_PLATFORM=host\|stm32f446` |
+| frontend | what it emulates | `EMU_FRONTEND_RV32`, `EMU_FRONTEND_G4MH` |
+| backend | how it executes | `RV32_JIT=ON\|OFF`, per frontend |
+
+```
+include/emu/   src/emu/          ISA-agnostic runtime: bus, regions,
+                                 passthrough, NS16550 console, ELF loader,
+                                 cache ops, the frontend registry
+include/rv32/  src/frontend/rv32/  RISC-V RV32: hart, CSRs, decoder,
+                                 interpreter, Thumb-2 JIT, CLINT, APLIC
+include/g4mh/  src/frontend/g4mh/  Renesas RH850 G4MH: core, decoder,
+                                 interpreter, INTC
+               src/platform/     host runner and STM32F446 firmware
+```
+
+**`include/emu/emu_cpu.h` is the contract**, and the note at the top of it is
+the thing to read before adding a frontend or a member. The rule it lives by:
+`run` executes a whole budget behind one indirect call and every other hook is
+setup or fires on a trap. Nothing in that table may end up on a
+per-instruction path — a single extra *direct* branch on the fetch path
+measured 9.3% on CoreMark.
+
+The two frontends are symmetric. `rv32_frontend.c` and `g4mh_frontend.c` are
+the same file with different contents, which is the intended shape: if a third
+one needs something neither has, it probably belongs in `emu_cpu_ops_t` rather
+than in a platform `#ifdef`.
 
 ## Build and test
 
@@ -11,6 +53,9 @@ GPIO or UART driver to `src/platform/` is almost always the wrong fix.
 # host: development and both test suites
 cmake -B build/host -DRV32_PLATFORM=host -DCMAKE_BUILD_TYPE=Release
 cmake --build build/host && ctest --test-dir build/host -L fast
+
+# both frontends, so the host runner can pick with --frontend
+cmake -B build/both -DRV32_PLATFORM=host -DEMU_FRONTEND_G4MH=ON
 
 # firmware
 cmake -B build/f746 -DRV32_PLATFORM=stm32f746 \
@@ -24,6 +69,10 @@ cmake -B build/stm32f446 -DRV32_PLATFORM=stm32f446 \
       -DCMAKE_BUILD_TYPE=Release -DRV32_GUEST=isatest
 cmake --build build/stm32f446 --target flash
 ```
+
+`rv32-host` picks a frontend from `--frontend`, else from the image's ELF
+`e_machine`, else the first compiled in. A flat binary says nothing about its
+architecture, so it gets the default.
 
 Useful options: `-DRV32_JIT=OFF` (interpreter, for isolating JIT bugs),
 `-DRV32_JIT_CODE_BYTES=2048` (forces compaction — a good stress test),
@@ -46,8 +95,6 @@ failure looks like an emulator bug until you disassemble the test.
 Berkeley suite catches will sit unnoticed if only arch-test is run -- which is
 exactly what happened to `rv32mi/csr` when F was added.
 
-```sh
-```
 
 There are two JIT backends, selected by host architecture in `rv_config.h`:
 Thumb-2 for ARMv7E-M and **x86-64 for the host**. The x86-64 one exists for
@@ -242,6 +289,24 @@ what changes between the parts.
   failed. Name the file and the target.
 - **Do not conflate "nothing translatable here" with "cache full".** Sharing a
   recovery path made every interpreted `div` flush the code cache.
+- **The JIT was only ever kept off the x86 host by nobody selecting it.**
+  `RV_ENABLE_JIT` defaults to a `__thumb2__` test, but CMake defined it
+  unconditionally from `RV32_JIT`, so the host build compiled a Thumb-2
+  emitter and the *only* thing preventing a jump into it was that
+  `src/platform/host/main.c` happened never to set `rv_backend`. Moving
+  backend selection into the frontend — where it belongs, because it is a
+  property of the frontend and not of a platform's `main()` — turned that
+  latent trap into an immediate segfault on the first guest instruction.
+  `rv_config.h` now reconciles "asked for" with "possible" and forces 0 off
+  ARM. A capability that depends on nobody exercising it is not a
+  capability that is off.
+- **A halt can arrive from outside the execute switch.** The syscall hook
+  calls `ops->halt` to implement `exit()`, so the run loop has to test
+  `EMU_STATE_HALTED` at the top and not only where the halt instruction is
+  decoded. The G4MH interpreter did the latter, so an `exit()` was followed
+  by whatever instruction came next — which in the test happened to be a
+  `HALT`, so the core stopped anyway and returned the *wrong reason*.
+  Nothing computed a wrong answer; the run reason was simply a lie.
 - **ACT's `--extensions` selects test suites by *directory name*, not by
   required extension.** `generate_test_dict` globs `tests/*/<name>/*.S`, so
   `U` matches nothing and silently builds nothing -- which is why declaring
@@ -428,6 +493,41 @@ what changes between the parts.
   expansion. Supporting Zcb in the *emulator* is a small win (38.0 vs 39.2
   cyc/insn); it is the *guest* march that costs. Toggle `RV32_EXT_ZCB` against
   a fixed guest binary to separate the two.
+- **Instruction fusion is the wrong target; the register-file round trip
+  is the right one.** Measured with `-DRV32_PAIR_STATS=ON`, which
+  histograms adjacent *executed* instruction pairs on the interpreter:
+
+  | guest | pairs | dependent | of which dead | addr-gen -> mem |
+  |---|---|---|---|---|
+  | CoreMark | 443k | 28.3% | 5.5% | 2.9% |
+  | bench | 1.12M | 24.5% | 10.4% | 0.3% |
+  | mmiobench | 1.21M | 33.3% | 0.1% | 0.0% |
+  | isatest | 7.0k | 50.2% | 17.5% | 1.1% |
+
+  The textbook RISC-V fusions are **not there**: `lui`+`addi` is 0.2% of
+  CoreMark pairs and `auipc`+`addi` is 0.00%, because the guest is built
+  `-O2` for a small target where constants fit the 12-bit immediate and
+  globals go through gp. Address-generation feeding a load or store --
+  the other classic, and the one Thumb-2's `LDR Rt,[Rn,Rm,LSL #n]` would
+  serve -- is 0.0-2.9%. Neither justifies lookahead machinery in the
+  translator.
+
+  What *is* large is that a quarter to a third of adjacent pairs are data
+  dependent, and with the register file in memory each one emits
+  `STR Rx,[r4,#n]` followed immediately by `LDR Rx,[r4,#n]` of the same
+  slot. Dropping the reload saves one instruction; when the intermediate
+  is dead in the block, dropping the store too saves two. At ~4.5 host
+  instructions per guest instruction that is **5-7% of executed host
+  instructions and a similar share of code size** -- and code size is the
+  dominant term, so it counts twice.
+
+  This is a peephole with a scratch-register tracking window, not fusion.
+  It is also *not* the register cache below: that pre-loaded at block
+  entry and wrote through, paying a setup load and three callee-saved
+  registers per PUSH/POP. This pays nothing -- it declines to emit a load
+  whose value is already in the register. The window has to reset at every
+  helper call (r0-r3 clobbered) and at every block boundary, and blocks
+  average 4.12 guest instructions, so the figures above are a ceiling.
 - **A guest-register cache in r8-r10 was tried and is 15.5% slower.** Reads per
   block said it should win; it did not, because a cached read is `MOV` where an
   uncached one is `LDR` -- one instruction either way -- while write-through
@@ -446,6 +546,14 @@ what changes between the parts.
   the load. Adding anything to the fetch or access path is paid by every
   instruction whether the feature is used or not, so measure the interpreter
   after doing so, not only the JIT.
+- **`emu_fault_t` and `rv_exc_t` are both `uint32_t`, and the compiler will
+  not tell you when you mix them.** Splitting the bus out of the RISC-V
+  frontend changed its success value from `RV_EXC_NONE` (0xFFFFFFFF) to
+  `EMU_FAULT_NONE` (0), and every unconverted `!= RV_EXC_NONE` then read
+  *every successful load* as a fault returning cause 0, i.e. instruction
+  address misaligned. The guest ran 200k instructions and printed nothing.
+  Grep for the call, not for the constant: `emu_bus_read|emu_bus_write|
+  emu_bus_fetch16` has fifteen call sites and enumerating them is the check.
 - **Measure; do not reason about performance.** Interpreter-in-SRAM was
   *slower*, lazy-IRQ was neutral, and the `clmul` fix was 1.3% when the real
   cost was 4.12-instruction blocks. Layout noise is ±3%, so ignore differences
@@ -463,8 +571,128 @@ what changes between the parts.
 
 ## Conventions
 
-`src/core/` is portable C11 with no platform dependencies and must stay that
-way — it builds for ARMv6-M through ARMv8.1-M and for the host. Shared
-semantics (`rv_hart_amo`, `rv_hart_cbo`) live in the core so the interpreter and
-JIT cannot drift apart. New ISA work goes in **both** backends plus
-`tests/arch-test/` config, or is declared unsupported.
+`src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must
+stay that way — it builds for ARMv6-M through ARMv8.1-M and for the host. It
+knows about regions, permissions and access widths; it does not know what an
+architecture calls the fault that results. Accesses report an `emu_fault_t` and
+the frontend maps it (`rv_exc_from_fault`, `g4mh_exc_from_fault`).
+
+`src/frontend/<isa>/` owns one instruction set. Shared semantics within a
+frontend (`rv_hart_amo`, `rv_hart_cbo`) live beside the state so that
+frontend's interpreter and JIT cannot drift apart. New RV32 ISA work goes in
+**both** RV32 backends plus `tests/arch-test/` config, or is declared
+unsupported.
+
+### Adding a frontend
+
+1. `include/<isa>/` — public headers, `<isa>_` prefixed
+2. `src/frontend/<isa>/` — state, decoder, interpreter, its own devices
+3. one `emu_cpu_ops_t`, declared and listed in `src/emu/emu_cpu.c`
+4. `option(EMU_FRONTEND_<ISA> ...)` and a `target_sources` block in
+   `CMakeLists.txt`
+5. tests in `tests/unit/`, guarded by `EMU_FRONTEND_<ISA>`
+
+Nothing in `src/emu/` or `src/platform/` should need editing beyond step 3.
+That is the property to check when the contract changes: build the firmware
+with `-DEMU_FRONTEND_RV32=OFF -DEMU_FRONTEND_G4MH=ON` and see that it links.
+
+### G4MH scope
+
+**Implemented.** Formats I and II (the 16-bit reg-reg and imm5 ALU),
+III (`Bcond disp9`), IV (`SLD`/`SST` .B/.H/.W through EP), V (`JR`/`JARL
+disp22`), VI (the imm16 ALU group), VII (`LD`/`ST` .B/.H/.W `disp16`),
+`MOV imm32`, and the Format X system group: `LDSR`, `STSR`, `TRAP`, `RETI`,
+`HALT`, `DI`/`EI`, the register-form shifts, `MUL`/`MULU`, `DIV`/`DIVU`,
+`SETF`. Plus both exception levels with their own save registers, the
+PSW/system-register file, and an interrupt controller with a time base.
+
+Everything else raises `G4MH_EXC_RIE`, which is the correct report for an
+unimplemented encoding rather than a silent wrong answer.
+
+**Not implemented, roughly in the order a real guest would miss them:**
+
+| gap | why it matters |
+|---|---|
+| `PREPARE` / `DISPOSE` | every non-leaf function a compiler emits uses them for its frame |
+| `LD.BU` / `LD.HU`, `SLD.BU` / `SLD.HU` | unsigned loads; only the sign-extending forms exist |
+| `CALLT` / `CTRET` | `CTBP`/`CTPC`/`CTPSW` are storage with no instructions behind them |
+| `CMOV`, `ADF`/`SBF`, `SASF` | the branchless idioms a compiler prefers |
+| `BSW`/`BSH`/`HSW`/`HSH`, `SCH*` | byte swaps and bit search |
+| Format VIII `SET1`/`CLR1`/`NOT1`/`TST1` | bit manipulation on memory; opcode 0x3E |
+| `CAXI`, `LDL.W`/`STC.W` | the atomics — nothing at all today |
+| 48-bit `JMP`/`JR`/`JARL disp32`, disp23 loads and stores | long-range code and data |
+| `MAC`/`MACU`, the imm9 `MUL`/`DIV` forms, 3-operand `DIVH` | |
+| `SYNCE`/`SYNCM`/`SYNCP`/`SYNCI`, `CACHE`, `PREF`, `SNOOZE` | |
+| the FPU | `FPSR`/`FPEPC`/`FPST`/`FPCC`/`FPCFG`/`FPEC` exist as storage; no FP instruction is decoded. `G4MH_EXT_FPU` is the switch that would turn it on |
+
+**Architectural features not modelled:**
+
+- **The MPU.** `MPLA`/`MPUA`/`MPAT`/`MPM` and the protection checks behind
+  them — the analogue of RISC-V PMP. `MIP` and `MDP` are raised today only
+  by a bus fault, never by a protection region.
+- **User mode.** `PSW.UM` is defined and nothing enforces it: `LDSR`,
+  `STSR`, `DI`, `EI`, `HALT` and `RETI` do not check privilege. Note what
+  the RISC-V side of this repo learned the hard way — U-mode turned three
+  latent M-mode PMP bugs into failures at once. Expect the same here.
+- **Coprocessor gating.** `PSW.CU0-2` and `G4MH_EXC_UCPOP` are defined and
+  never consulted.
+- **Interrupt priority.** The INTC has a 4-bit priority per channel but does
+  not maintain `ISPR` or honour `PMR`, so nesting is not modelled. `INTBP`
+  and the table-reference entry method are absent; entry uses the single
+  direct vector only.
+- **Register banks and hardware context save**, `GMCFG`, the guest modes.
+- **Debug level.** No `DBPC`/`DBPSW`, `DBTRAP`/`DBRET` — the analogue of
+  Sdtrig.
+- **No JIT.** G4MH runs on the interpreter; a Thumb-2 translator for it
+  would be a second `emu_backend_t` beside `g4mh_backend_interp`.
+
+**Simplifications to be aware of before trusting a result:**
+
+- The INTC is now the real thing: INTC1 (core-local, channels 0-31) at
+  `0xFFFC_0000` SELF and `0xFFFC_4000` PE0, INTC2 (global, channels 32 up)
+  at `0xFFF8_0000`, with the EICn bit layout from the U2B manual Section
+  6.3. Modelled on the **U2B6**, which has three PEs -- the manual's base
+  table runs to PE5 because the larger parts have six. The `OSTM` at
+  `0xFFEC_0000` is still a stand-in rather than the real register set.
+  What is *not* modelled: `EEIC`, table-reference delivery, and `EIBD`
+  is stored but does not route.
+- Exception vectors use the compact offsets in `handler_address()`; a real
+  part's table is larger and `RBASE`/`EBASE` flag bits are masked off rather
+  than honoured.
+- Misaligned data accesses raise `MAE`. Most real G4MH parts permit them.
+- `PID`, `HTCFG0` and `MCFG0` read as zero rather than identifying a part.
+
+**The encodings are now checked against the manual, and the first pass was
+wrong in six places.** `docs/renesas/rh850g4mh-users-manual-software.pdf`
+(R01US0209EJ0220) is the authority; it settled that
+
+- `LDSR` and `STSR` use their two register fields in *opposite* senses, so
+  implementing one by analogy with the other gets it backwards;
+- `JR`/`JARL disp22` carries its *high* displacement bits in the first
+  halfword, the reverse of the RISC-V habit;
+- G4MH has no `RETI` at all -- V850's single return was split into
+  `EIRET`, `FERET` and `CTRET`, which name their level in the opcode
+  rather than inferring it from PSW;
+- sub-opcode 0x160 is shared by `DI`, `EI`, `PUSHSP`, `POPSP` and `CLL`,
+  told apart by the whole reg2 field and not by its top bit;
+- `HALT` and `SNOOZE` share 0x120;
+- **reg2 == 0 is an opcode extension throughout.** `CALLT` hides in the
+  `MOV imm5` slot, `DISPOSE` in `MOVHI`/`SATSUBI`, `MOV imm32` in `MOVEA`,
+  `JMP disp32` in `MULHI`, `JR disp32` in `MULH imm5`, `PREPARE` in `JR`.
+  Decoding on the opcode alone made six unimplemented instructions retire
+  silently as writes into r0 instead of raising RIE -- which is far worse
+  than not implementing them, because the guest gets a wrong answer rather
+  than a clean exception. Every such slot now tests reg2.
+
+The lesson generalises: **an ISA that reuses a register field as an opcode
+extension will not tell you when you ignore it.** Before adding an
+encoding, grep the manual for every instruction sharing its opcode, not
+just the one being added.
+
+**There is no reference model and no toolchain.** RV32 has riscv-arch-test,
+the Berkeley suite and Sail to disagree with; G4MH has none of that here, and
+no `rh850-elf-gcc` to build a guest with. Its tests are hand-assembled
+halfword arrays in `tests/unit/test_g4mh.c`, deliberately not sharing an
+encoder with the interpreter — a shared one would pass while both were wrong
+the same way. Treat any G4MH result as verified only as far as those tests
+reach.

@@ -39,7 +39,8 @@
 #define RV32_RV_APLIC_H
 
 #include "rv_types.h"
-#include "rv_bus.h"
+#include "emu/emu_bus.h"
+#include "emu/emu_cpu.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -99,7 +100,9 @@ struct rv_hart;
  * it has serviced the device. On a platform bridging real interrupt lines
  * this is where the line is unmasked again; see rv_aplic_raise.
  */
-typedef void (*rv_aplic_eoi_fn)(void *ctx, uint32_t source);
+/* Same shape as emu_unmask_fn, and assigned from it: the platform's
+ * unmask hook arrives through emu_cpu_ops_t::set_unmask_hook. */
+typedef emu_unmask_fn rv_aplic_eoi_fn;
 
 typedef struct rv_aplic {
     uint32_t domaincfg;
@@ -116,7 +119,7 @@ typedef struct rv_aplic {
     void           *eoi_ctx;
 } rv_aplic_t;
 
-extern const rv_dev_ops_t rv_aplic_ops;
+extern const emu_dev_ops_t rv_aplic_ops;
 
 void rv_aplic_init(rv_aplic_t *a, struct rv_hart *hart);
 

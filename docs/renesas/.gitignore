@@ -1,0 +1,8 @@
+# The U2B hardware manual is 181 MB -- it is 10,221 pages and ships every
+# peripheral chapter. Committing it would put a permanent, unshrinkable
+# blob in the history for a file that is one download away, so it stays on
+# disk and out of git. The other three are in line with docs/arm and
+# docs/st and are tracked.
+#
+#   https://www.renesas.com/en/document/mah/rh850u2b-hardware-users-manual-rev-130-r01uh0923ej0130
+r01uh0923ej0130-rh850u2b-hardware-manual.pdf

@@ -2,10 +2,18 @@
 
 add_executable(rv32-unit
     test_main.c
-    test_decode.c
     test_bus.c
     test_fpu.c
 )
+
+# Frontend tests follow the frontends: a build without one must not try to
+# link tests for it.
+if(EMU_FRONTEND_RV32)
+    target_sources(rv32-unit PRIVATE test_decode.c)
+endif()
+if(EMU_FRONTEND_G4MH)
+    target_sources(rv32-unit PRIVATE test_g4mh.c)
+endif()
 
 target_link_libraries(rv32-unit PRIVATE rv32core)
 target_include_directories(rv32-unit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -15,7 +23,7 @@ add_test(NAME unit COMMAND rv32-unit)
 set_tests_properties(unit PROPERTIES LABELS fast)
 
 # The guest ISA self-test, run through the host runner. This is the check
-# that actually exercises the interpreter end to end.
+# that actually exercises the RV32 interpreter end to end.
 if(TARGET guest-isatest)
     add_test(NAME guest-isatest
              COMMAND rv32-host --quiet --load 0x80000000

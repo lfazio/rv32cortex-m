@@ -1,16 +1,15 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * rv_types.h - Base types, exception codes and bit helpers.
+ * rv_types.h - RISC-V trap causes and privilege levels.
  *
- * Everything here is host-independent: the core compiles unchanged for
- * ARMv6-M, ARMv7E-M, ARMv8.1-M and for a native host build.
+ * The ISA-agnostic vocabulary -- integer types, bit helpers, bus fault
+ * kinds, run states -- lives in emu/emu_types.h. This header holds only
+ * what is specific to the RISC-V frontend.
  */
 #ifndef RV32_RV_TYPES_H
 #define RV32_RV_TYPES_H
 
-#include <stdint.h>
-#include <stddef.h>
-#include <stdbool.h>
+#include "emu/emu_types.h"
 
 #include "rv_config.h"   /* RV_EXT_U, for RV_PRIV_LEAST below */
 
@@ -42,6 +41,26 @@ typedef uint32_t rv_exc_t;
 #define RV_EXC_LOAD_PAGE_FAULT      13u
 #define RV_EXC_STORE_PAGE_FAULT     15u
 
+/*
+ * Map a bus fault onto the RISC-V cause that reports it.
+ *
+ * The bus deals in regions, permissions and access widths, and says which
+ * *kind* of access it refused; naming the resulting trap is the frontend's
+ * job, and this is where the RISC-V frontend does it. Only ever reached on
+ * a fault -- callers test against EMU_FAULT_NONE first and translate
+ * second -- so the table lookup stays off the hot path.
+ */
+static EMU_ALWAYS_INLINE rv_exc_t rv_exc_from_fault(emu_fault_t f)
+{
+    static const uint8_t cause[] = {
+        [EMU_FAULT_NONE]  = 0u,   /* never read; the test below shorts it */
+        [EMU_FAULT_FETCH] = RV_EXC_INSN_ACCESS_FAULT,
+        [EMU_FAULT_LOAD]  = RV_EXC_LOAD_ACCESS_FAULT,
+        [EMU_FAULT_STORE] = RV_EXC_STORE_ACCESS_FAULT,
+    };
+    return (f == EMU_FAULT_NONE) ? RV_EXC_NONE : cause[f];
+}
+
 /* Interrupt cause codes (mcause with the MSB set). */
 #define RV_INT_S_SOFT               1u
 #define RV_INT_S_TIMER              5u
@@ -68,40 +87,6 @@ typedef uint32_t rv_exc_t;
 #  define RV_PRIV_LEAST             RV_PRIV_U
 #else
 #  define RV_PRIV_LEAST             RV_PRIV_M
-#endif
-
-/* ------------------------------------------------------------------ */
-/* Small helpers                                                       */
-/* ------------------------------------------------------------------ */
-
-/* Sign-extend the low `bits` bits of v. */
-static inline int32_t rv_sext(uint32_t v, unsigned bits)
-{
-    const unsigned sh = 32u - bits;
-    return (int32_t)(v << sh) >> sh;
-}
-
-static inline uint32_t rv_bit(uint32_t v, unsigned n)
-{
-    return (v >> n) & 1u;
-}
-
-/* Extract bits [hi:lo] of v (inclusive). */
-static inline uint32_t rv_bits(uint32_t v, unsigned hi, unsigned lo)
-{
-    return (v >> lo) & (0xFFFFFFFFu >> (31u - (hi - lo)));
-}
-
-#if defined(__GNUC__)
-#  define RV_LIKELY(x)    __builtin_expect(!!(x), 1)
-#  define RV_UNLIKELY(x)  __builtin_expect(!!(x), 0)
-#  define RV_HOT          __attribute__((hot))
-#  define RV_ALWAYS_INLINE inline __attribute__((always_inline))
-#else
-#  define RV_LIKELY(x)    (x)
-#  define RV_UNLIKELY(x)  (x)
-#  define RV_HOT
-#  define RV_ALWAYS_INLINE inline
 #endif
 
 #endif /* RV32_RV_TYPES_H */

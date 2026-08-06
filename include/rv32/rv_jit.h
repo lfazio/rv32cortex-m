@@ -36,7 +36,7 @@
 
 #include "rv_types.h"
 #include "rv_config.h"
-#include "rv_backend.h"
+#include "emu/emu_backend.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -92,6 +92,15 @@ typedef struct rv_jit_stats {
     /* Block entries. Divided into instructions retired this gives the
      * average block length, which is what per-block overhead is paid on. */
     uint32_t block_entries;
+    /*
+     * Guest-register loads not emitted because the value was already in
+     * R1 from the previous instruction's store, and stores not emitted
+     * because the next instruction overwrote the register without being
+     * able to trap first. Two host instructions and four bytes of code
+     * cache between them, per pair. See RV32_PAIR_STATS.
+     */
+    uint32_t ld_elided;
+    uint32_t st_elided;
     uint32_t pt_hits;        /* passthrough accesses via the helper  */
     uint32_t pt_armed;       /* inlined peripheral window emitted?   */
     /*
@@ -108,7 +117,7 @@ typedef struct rv_jit_stats {
 
 void rv_jit_get_stats(rv_jit_stats_t *out);
 
-extern const rv_backend_t rv_backend_jit;
+extern const emu_backend_t rv_backend_jit;
 
 #endif /* RV_ENABLE_JIT */
 

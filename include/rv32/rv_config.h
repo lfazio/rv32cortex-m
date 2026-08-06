@@ -1,6 +1,12 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * rv_config.h - Compile-time configuration for the RV32 core.
+ * rv_config.h - Compile-time configuration of the RISC-V frontend.
+ *
+ * Everything here describes the guest architecture: which extensions are
+ * implemented, how the privileged features behave, and how the RV32
+ * backends are built. Knobs that belong to the emulator rather than to the
+ * ISA -- the bus region table, the run budget, the diagnostics -- live in
+ * emu/emu_config.h and are shared with every other frontend.
  *
  * Every knob may be overridden from the build system (-DRV_xxx=...). The
  * defaults target a Cortex-M4/M7 class device with a few tens of KiB to
@@ -8,6 +14,8 @@
  */
 #ifndef RV32_RV_CONFIG_H
 #define RV32_RV_CONFIG_H
+
+#include "emu/emu_config.h"
 
 /* ------------------------------------------------------------------ */
 /* ISA selection                                                       */
@@ -192,17 +200,8 @@
 #endif
 
 /* ------------------------------------------------------------------ */
-/* Bus configuration                                                   */
+/* Memory access                                                       */
 /* ------------------------------------------------------------------ */
-
-/*
- * Maximum number of regions in a bus region table. Passthrough platforms
- * need more than they first appear to: protecting individual peripheral
- * registers means splitting a window into several entries.
- */
-#ifndef RV_MAX_REGIONS
-#  define RV_MAX_REGIONS 16
-#endif
 
 /*
  * Misaligned load/store support. The RISC-V spec permits an implementation
@@ -344,6 +343,52 @@
 #endif
 
 /*
+ * Elide the register-file round trip between dependent instructions.
+ *
+ * The register file lives in memory, so an instruction ends by storing its
+ * result and the next begins by loading its operand; when they are the
+ * same register the load reads back what the store just wrote. Measured
+ * with RV32_PAIR_STATS, that is 24-33% of adjacent executed pairs.
+ *
+ * Two eliminations, both translate-time:
+ *   - the reload, when R1 still holds the value (always safe);
+ *   - the store itself, when the next instruction overwrites the register
+ *     and cannot trap before doing so (so nothing could observe it).
+ *
+ * **Both default off, because measured they do not pay.** On the F446 with
+ * `bench` and a 48 KB code cache -- the regime with no compaction, so the
+ * emitted code is what is being timed:
+ *
+ *              cycles/insn   KIPS   code bytes
+ *   off           18.32      9824      48028
+ *   on            18.29      9837      47408
+ *
+ * 0.16% apart, which is inside the +/-3% layout noise, for 1.3% less code.
+ * At the 12 KB default it is far worse -- 112.70 with the load elision and
+ * 127.16 with both, against 104.01 -- because that configuration
+ * re-translates 4671 times with 855 compactions, and the bookkeeping added
+ * to the emitters is paid on every one of them.
+ *
+ * The instruction count really does fall (10,708 loads and 7,714 stores
+ * removed in the 12 KB run) and it buys nothing, which is the same lesson
+ * the r8-r10 register cache taught: on an in-order M4 with the code cache
+ * in SRAM, a guest instruction already costs ~18 host cycles and removing
+ * one host instruction from a subset of them is not where the time goes.
+ *
+ * Left in, off, because the code-size win is real and the translation-time
+ * cost is an implementation artefact rather than something fundamental --
+ * jit_r1_forget() writes four globals from twenty emitters. Anyone
+ * revisiting this should fix that first and re-measure at 12 KB, which is
+ * the only configuration where 1.3% less code could matter.
+ */
+#ifndef RV_JIT_ELIDE_LD
+#  define RV_JIT_ELIDE_LD 0
+#endif
+#ifndef RV_JIT_ELIDE_ST
+#  define RV_JIT_ELIDE_ST 0
+#endif
+
+/*
  * Passthrough accesses that must go through the helper before the inlined
  * path is emitted. Low enough that a driver converts during its own setup,
  * high enough that a guest poking one register at boot and then computing
@@ -354,9 +399,30 @@
 #endif
 
 /*
- * Which JIT, if any, the host can run. Exactly one backend defines
- * rv_backend_jit, so the choice is made once here rather than in the
- * build system, where a mismatch would surface as a duplicate symbol.
+ * Build the Thumb-2 JIT.
+ *
+ * The host has to *be* Thumb-2, because the backend emits ARM machine code
+ * into a buffer and calls it. On any other host the JIT is not merely
+ * useless, it is fatal: selecting it jumps into a buffer of Thumb
+ * encodings. So the build option asks for the JIT and this reconciles
+ * "asked for" with "possible" -- the x86 host build ends up at 0 however
+ * -DRV32_JIT is set.
+ *
+ * Getting this wrong used to be invisible, because the only thing stopping
+ * it was that the host platform happened never to select the JIT backend.
+ * The frontend now picks the fastest backend it was built with, so the
+ * check has to be here, where the answer is a property of the host rather
+ * than of a platform's main().
+ *
+ * There are now two backends, and a host that has neither still gets
+ * RV_ENABLE_JIT 0 -- which is what keeps a Thumb-2 emitter from being
+ * compiled for a machine that cannot run it.
+ */
+/*
+ * Exactly one backend defines rv_backend_jit, so the host also selects
+ * *which*. Doing it here rather than in the build system means a mismatch
+ * is a missing symbol at the point of use rather than a duplicate one at
+ * link time.
  */
 #if defined(__ARM_ARCH) && (__ARM_ARCH >= 7) && defined(__thumb2__)
 #  define RV_JIT_THUMB2 1
@@ -364,20 +430,13 @@
 #  define RV_JIT_X86_64 1
 #endif
 
-#ifndef RV_ENABLE_JIT
-#  if defined(RV_JIT_THUMB2) || defined(RV_JIT_X86_64)
+#if defined(RV_JIT_THUMB2) || defined(RV_JIT_X86_64)
+#  ifndef RV_ENABLE_JIT
 #    define RV_ENABLE_JIT 1
-#  else
-#    define RV_ENABLE_JIT 0
 #  endif
-#endif
-
-/*
- * How many instructions rv_backend_t::run executes before returning to the
- * host so it can service ARM-side work (timers, USB, RTOS ticks).
- */
-#ifndef RV_DEFAULT_BUDGET
-#  define RV_DEFAULT_BUDGET 4096u
+#else
+#  undef RV_ENABLE_JIT
+#  define RV_ENABLE_JIT 0
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -387,16 +446,6 @@
 /* Build the disassembler (costs ~3 KiB of flash; useful for tracing). */
 #ifndef RV_ENABLE_DISASM
 #  define RV_ENABLE_DISASM 1
-#endif
-
-/* Per-instruction trace hook. Slow; enable only when chasing a bug. */
-#ifndef RV_ENABLE_TRACE
-#  define RV_ENABLE_TRACE 0
-#endif
-
-/* Count executed instructions / traps into the hart for `stats`. */
-#ifndef RV_ENABLE_STATS
-#  define RV_ENABLE_STATS 1
 #endif
 
 /* ------------------------------------------------------------------ */

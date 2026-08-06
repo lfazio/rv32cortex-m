@@ -1,25 +1,22 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * rv_backend.h - Execution engine abstraction.
+ * rv_backend.h - The RISC-V frontend's execution engines.
  *
- * The core (state, bus, CSRs, traps) knows nothing about how instructions
- * get executed. Today there is one backend, a threaded interpreter. The
- * interface exists so a Thumb-2 JIT can be added later as a drop-in
- * alternative without touching the core:
+ * Two implementations of emu_backend_t, both executing RV32 for the same
+ * rv_hart_t: a threaded interpreter that is always available, and a
+ * Thumb-2 JIT that is built only on an ARM host. The JIT is a fast path
+ * over the interpreter rather than a replacement -- it declines whatever
+ * it cannot translate and the interpreter runs it -- so correctness never
+ * depends on translation coverage.
  *
- *   - `run` is budgeted rather than free-running, so a JIT can execute a
- *     whole translated block and report how many instructions it retired.
- *   - `invalidate` tells a JIT that guest memory changed underneath it
- *     (self-modifying code, a fresh image load, a debugger write). The
- *     interpreter ignores it.
- *   - `reset` lets a backend drop translated state on hart reset.
- *
- * A JIT backend would additionally need cache maintenance on the ARM side
- * (DSB/ISB plus D-cache clean + I-cache invalidate on M7); that belongs in
- * the backend, not here.
+ * The generic interface is in emu/emu_backend.h; it takes an emu_cpu_t
+ * because a platform can hold any frontend's core. Both backends here cast
+ * it straight back to rv_hart_t on entry, once per budget.
  */
 #ifndef RV32_RV_BACKEND_H
 #define RV32_RV_BACKEND_H
+
+#include "emu/emu_backend.h"
 
 #include "rv_types.h"
 #include "rv_hart.h"
@@ -28,51 +25,31 @@
 extern "C" {
 #endif
 
-typedef struct rv_backend {
-    const char *name;
-
-    /* Optional one-time setup. Returns false on failure. May be NULL. */
-    bool (*init)(rv_hart_t *h);
-
-    /* Drop any cached translation state. May be NULL. */
-    void (*reset)(rv_hart_t *h);
-
-    /*
-     * Execute at most `budget` instructions. Returns the reason for
-     * stopping and stores the number of instructions actually retired
-     * through *retired (may be NULL).
-     */
-    rv_run_reason_t (*run)(rv_hart_t *h, uint32_t budget, uint32_t *retired);
-
-    /* Guest memory [addr, addr+len) changed. May be NULL. */
-    void (*invalidate)(rv_hart_t *h, uint32_t addr, uint32_t len);
-} rv_backend_t;
-
 /* The threaded interpreter. Always available. */
-extern const rv_backend_t rv_backend_interp;
+extern const emu_backend_t rv_backend_interp;
 
 /*
- * The backend the platform selected. Defined once by the platform so the
- * rest of the firmware can call rv_run() without caring which it is.
+ * The backend the platform selected. Defined once by the frontend so the
+ * rest of the code can call rv_run() without caring which it is.
  */
-extern const rv_backend_t *rv_backend;
+extern const emu_backend_t *rv_backend;
 
 /* Convenience wrappers around the active backend. */
-static inline rv_run_reason_t rv_run(rv_hart_t *h, uint32_t budget,
-                                     uint32_t *retired)
+static inline emu_run_reason_t rv_run(rv_hart_t *h, uint32_t budget,
+                                      uint32_t *retired)
 {
-    return rv_backend->run(h, budget, retired);
+    return rv_backend->run((emu_cpu_t *)h, budget, retired);
 }
 
 static inline void rv_invalidate(rv_hart_t *h, uint32_t addr, uint32_t len)
 {
     if (rv_backend->invalidate) {
-        rv_backend->invalidate(h, addr, len);
+        rv_backend->invalidate((emu_cpu_t *)h, addr, len);
     }
 }
 
 /* Execute exactly one instruction. Used by tests and the debug monitor. */
-rv_run_reason_t rv_step(rv_hart_t *h);
+emu_run_reason_t rv_step(rv_hart_t *h);
 
 #ifdef __cplusplus
 }

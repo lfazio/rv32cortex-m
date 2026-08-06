@@ -23,9 +23,16 @@ void check_eq(const char *file, int line, const char *expr,
 
 int main(void)
 {
+#if EMU_FRONTEND_RV32
     test_decode();
+#endif
     test_bus();
+#if EMU_FRONTEND_RV32
     test_fpu();
+#endif
+#if EMU_FRONTEND_G4MH
+    test_g4mh();
+#endif
 
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

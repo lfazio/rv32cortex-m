@@ -50,12 +50,12 @@ static uint32_t r_type(uint32_t op, uint32_t rd, uint32_t f3, uint32_t rs1,
 #define F_THREE  0x40400000u
 
 static rv_hart_t g_hart;
-static rv_bus_t  g_bus;
+static emu_bus_t g_bus;
 
 static void fp_reset(void)
 {
     memset(&g_hart, 0, sizeof(g_hart));
-    rv_bus_init(&g_bus);
+    emu_bus_init(&g_bus);
     rv_hart_init(&g_hart, &g_bus, 0u);
     rv_hart_reset(&g_hart, 0x80000000u);
     /* The FPU must be on, or every one of these is an illegal instruction. */

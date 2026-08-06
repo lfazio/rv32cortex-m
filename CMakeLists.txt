@@ -1,14 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# rv32cortex-m - a RISC-V RV32 emulator for ARM Cortex-M hosts.
+# rv32cortex-m - a retargetable 32-bit ISA emulator for ARM Cortex-M hosts.
 #
-# Two build configurations share one core:
+# Three axes, independent of each other:
 #
-#   host        native binary for development and the ISA test suite
-#   stm32f446   firmware for the Nucleo-F446RE, built with the ST driver pack
+#   platform    where it runs        RV32_PLATFORM=host|stm32f446
+#   frontend    what it emulates     EMU_FRONTEND_RV32, EMU_FRONTEND_G4MH
+#   backend     how it executes      RV32_JIT=ON|OFF, per frontend
 #
-# Select with -DRV32_PLATFORM=... ; the ARM build additionally needs the
-# cross toolchain file:
+# The ISA-agnostic runtime (src/emu) owns the bus, the passthrough window,
+# the console and the ELF loader; each frontend (src/frontend/<isa>) owns an
+# instruction set and meets the runtime at emu_cpu_ops_t. See
+# include/emu/emu_cpu.h for what adding a frontend involves.
 #
 #   cmake -B build/host -DRV32_PLATFORM=host
 #   cmake -B build/stm32f446 -DRV32_PLATFORM=stm32f446 \
@@ -18,7 +21,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(rv32cortex-m
     VERSION 1.0.0
-    DESCRIPTION "RV32 emulator for ARM Cortex-M"
+    DESCRIPTION "Retargetable 32-bit ISA emulator for ARM Cortex-M"
     LANGUAGES C ASM)
 
 set(CMAKE_C_STANDARD 11)
@@ -35,7 +38,36 @@ set(RV32_PLATFORM "host" CACHE STRING "Target platform (host|stm32f446|stm32f746
 set_property(CACHE RV32_PLATFORM PROPERTY STRINGS host stm32f446 stm32f746)
 
 # ---------------------------------------------------------------------
-# ISA configuration
+# Frontends
+# ---------------------------------------------------------------------
+#
+# Which guest architectures to build in. More than one may be selected; the
+# host runner picks between them with --frontend or from the image's ELF
+# header, and the first one listed here is the default.
+#
+# A frontend costs flash only when it is on, so the firmware normally
+# builds exactly one.
+
+option(EMU_FRONTEND_RV32 "RISC-V RV32 frontend" ON)
+option(EMU_FRONTEND_G4MH "Renesas RH850 G4MH frontend" OFF)
+
+if(NOT EMU_FRONTEND_RV32 AND NOT EMU_FRONTEND_G4MH)
+    message(FATAL_ERROR "at least one EMU_FRONTEND_* must be enabled")
+endif()
+
+# ---------------------------------------------------------------------
+# Runtime configuration (frontend-independent)
+# ---------------------------------------------------------------------
+
+# Regions in the bus table. Passthrough platforms need more than they first
+# appear to: protecting individual peripheral registers splits a window.
+set(EMU_MAX_REGIONS "16" CACHE STRING "Bus region table size")
+
+option(EMU_ENABLE_TRACE "Per-instruction trace hook (slow)" OFF)
+option(EMU_ENABLE_STATS "Collect run statistics" ON)
+
+# ---------------------------------------------------------------------
+# RV32 frontend configuration
 # ---------------------------------------------------------------------
 
 # Guest RAM size. Shared between the guest link script and the firmware's
@@ -82,12 +114,20 @@ option(RV32_JIT "Thumb-2 JIT backend" ON)
 # Chain loop back edges inside translated code: 35% on bench, 7% on CoreMark.
 option(RV32_JIT_LOOP_CHAIN "Chain loop back edges in the JIT" ON)
 option(RV32_JIT_INLINE_PERIPH "Inline the peripheral window in the JIT" ON)
+# Both measured neutral at 48 KB and a large regression at 12 KB; see
+# the note in include/rv32/rv_config.h before turning either on.
+option(RV32_JIT_ELIDE_LD "Elide the reload of a value already in R1" OFF)
+option(RV32_JIT_ELIDE_ST "Elide a store the next instruction makes dead" OFF)
 set(RV32_JIT_LOOP_CAP "128" CACHE STRING
     "Guest instructions a chained loop runs before returning to the dispatcher")
 
 # Histogram how often a block reads sp/ra/a0/a1, to decide whether a
 # per-block register cache could pay. Measurement scaffolding, off by default.
 option(RV32_JIT_HOT_REG_STATS "Count hot-register reads per block" OFF)
+
+# Histogram adjacent executed instruction pairs, to decide which are worth
+# fusing in the translator. Measurement scaffolding, off by default.
+option(RV32_PAIR_STATS "Count adjacent executed instruction pairs" OFF)
 
 # Use Berkeley SoftFloat for the F extension instead of the host FPU.
 #
@@ -108,66 +148,125 @@ option(RV32_EXT_F "Single-precision floating point" ON)
 option(RV32_EXT_M "Integer multiply/divide" ON)
 option(RV32_EXT_A "Atomics" ON)
 option(RV32_EXT_C "Compressed instructions" ON)
-option(RV32_ENABLE_DISASM "Build the disassembler" ON)
-option(RV32_ENABLE_TRACE "Per-instruction trace hook (slow)" OFF)
-option(RV32_ENABLE_STATS "Collect run statistics" ON)
+option(RV32_ENABLE_DISASM "Build the RV32 disassembler" ON)
 
 # ---------------------------------------------------------------------
-# Core library: portable C11, no platform dependencies
+# G4MH frontend configuration
 # ---------------------------------------------------------------------
+
+option(G4MH_ENABLE_DISASM "Build the G4MH disassembler" ON)
+
+# Processing elements to model. The RH850/U2B6 has three; the default is 1
+# because the constraint is memory -- 64 KiB of local RAM per PE does not
+# fit on an F446 -- so multicore is a host-platform feature.
+# See docs/host/g4mh/multicore.md.
+set(G4MH_PE_COUNT "1" CACHE STRING "G4MH processing elements (1..3)")
+
+# ---------------------------------------------------------------------
+# Runtime library: portable C11, no platform and no ISA dependencies
+# ---------------------------------------------------------------------
+#
+# The target keeps the name rv32core so existing build directories and
+# scripts do not have to change. What is in it is the ISA-agnostic runtime
+# plus whichever frontends were selected above.
 
 add_library(rv32core STATIC
-    src/core/rv_bus.c
-    src/core/rv_csr.c
-    src/core/rv_decode.c
-    src/core/rv_disasm.c
-    src/core/rv_fpu.c
-    src/core/rv_hart.c
-    src/core/rv_interp.c
-    src/core/rv_pmp.c
-    src/core/rv_mmu.c
-    src/core/rv_trig.c
-    src/devices/rv_aplic.c
-    src/devices/rv_clint.c
-    src/devices/rv_uart.c
-    # Compiles to nothing unless RV_ENABLE_JIT is set, which needs a
-    # Thumb-2 host; the file guards itself so it can stay in the list.
-    src/backend/rv_jit_thumb2.c
-    src/backend/rv_jit_x86_64.c
+    src/emu/emu_bus.c
+    src/emu/emu_cpu.c
+    src/emu/emu_elf.c
+    src/emu/emu_uart.c
 )
 
 target_include_directories(rv32core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 
 target_compile_definitions(rv32core PUBLIC
-    RV_EXT_F=$<BOOL:${RV32_EXT_F}>
-    RV_EXT_ZCB=$<BOOL:${RV32_EXT_ZCB}>
-    RV_EXT_PMP=$<BOOL:${RV32_EXT_PMP}>
-    RV_EXT_SDTRIG=$<BOOL:${RV32_EXT_SDTRIG}>
-    RV_FPU_SOFTFLOAT=$<BOOL:${RV32_FPU_SOFTFLOAT}>
-    RV_EXT_M=$<BOOL:${RV32_EXT_M}>
-    RV_EXT_A=$<BOOL:${RV32_EXT_A}>
-    RV_EXT_C=$<BOOL:${RV32_EXT_C}>
-    RV_ENABLE_DISASM=$<BOOL:${RV32_ENABLE_DISASM}>
-    RV_ENABLE_TRACE=$<BOOL:${RV32_ENABLE_TRACE}>
-    RV_ENABLE_STATS=$<BOOL:${RV32_ENABLE_STATS}>
-    RV_INTERP_RAMFUNC=$<BOOL:${RV32_INTERP_IN_RAM}>
-    RV_LAZY_IRQ_CHECK=$<BOOL:${RV32_LAZY_IRQ}>
-    RV_JIT_CODE_SIZE=${RV32_JIT_CODE_BYTES}u
-    RV_ENABLE_JIT=$<BOOL:${RV32_JIT}>
-    RV_JIT_LOOP_CHAIN=$<BOOL:${RV32_JIT_LOOP_CHAIN}>
-    RV_JIT_INLINE_PERIPH=$<BOOL:${RV32_JIT_INLINE_PERIPH}>
-    RV_JIT_LOOP_CAP=${RV32_JIT_LOOP_CAP}u
-    RV_JIT_HOT_REG_STATS=$<BOOL:${RV32_JIT_HOT_REG_STATS}>
+    EMU_FRONTEND_RV32=$<BOOL:${EMU_FRONTEND_RV32}>
+    EMU_FRONTEND_G4MH=$<BOOL:${EMU_FRONTEND_G4MH}>
+    EMU_MAX_REGIONS=${EMU_MAX_REGIONS}
+    EMU_ENABLE_TRACE=$<BOOL:${EMU_ENABLE_TRACE}>
+    EMU_ENABLE_STATS=$<BOOL:${EMU_ENABLE_STATS}>
 )
+
+# ---------------------------------------------------------------------
+# Frontend: RISC-V RV32
+# ---------------------------------------------------------------------
+
+if(EMU_FRONTEND_RV32)
+    target_sources(rv32core PRIVATE
+        src/frontend/rv32/rv32_frontend.c
+        src/frontend/rv32/rv_aplic.c
+        src/frontend/rv32/rv_clint.c
+        src/frontend/rv32/rv_csr.c
+        src/frontend/rv32/rv_decode.c
+        src/frontend/rv32/rv_disasm.c
+        src/frontend/rv32/rv_fpu.c
+        src/frontend/rv32/rv_hart.c
+        src/frontend/rv32/rv_interp.c
+        src/frontend/rv32/rv_pmp.c
+        src/frontend/rv32/rv_mmu.c
+        src/frontend/rv32/rv_trig.c
+        # Both guard themselves on the host they emit for, so both can stay
+        # in the list and exactly one of them compiles to anything.
+        src/frontend/rv32/rv_jit_thumb2.c
+        src/frontend/rv32/rv_jit_x86_64.c
+    )
+
+    target_compile_definitions(rv32core PUBLIC
+        RV_EXT_F=$<BOOL:${RV32_EXT_F}>
+        RV_EXT_ZCB=$<BOOL:${RV32_EXT_ZCB}>
+        RV_EXT_PMP=$<BOOL:${RV32_EXT_PMP}>
+        RV_EXT_SDTRIG=$<BOOL:${RV32_EXT_SDTRIG}>
+        RV_FPU_SOFTFLOAT=$<BOOL:${RV32_FPU_SOFTFLOAT}>
+        RV_EXT_M=$<BOOL:${RV32_EXT_M}>
+        RV_EXT_A=$<BOOL:${RV32_EXT_A}>
+        RV_EXT_C=$<BOOL:${RV32_EXT_C}>
+        RV_ENABLE_DISASM=$<BOOL:${RV32_ENABLE_DISASM}>
+        RV_INTERP_RAMFUNC=$<BOOL:${RV32_INTERP_IN_RAM}>
+        RV_LAZY_IRQ_CHECK=$<BOOL:${RV32_LAZY_IRQ}>
+        RV_JIT_CODE_SIZE=${RV32_JIT_CODE_BYTES}u
+        RV_ENABLE_JIT=$<BOOL:${RV32_JIT}>
+        RV_JIT_LOOP_CHAIN=$<BOOL:${RV32_JIT_LOOP_CHAIN}>
+        RV_JIT_INLINE_PERIPH=$<BOOL:${RV32_JIT_INLINE_PERIPH}>
+        RV_JIT_ELIDE_LD=$<BOOL:${RV32_JIT_ELIDE_LD}>
+        RV_JIT_ELIDE_ST=$<BOOL:${RV32_JIT_ELIDE_ST}>
+        RV_JIT_LOOP_CAP=${RV32_JIT_LOOP_CAP}u
+        RV_JIT_HOT_REG_STATS=$<BOOL:${RV32_JIT_HOT_REG_STATS}>
+        RV_PAIR_STATS=$<BOOL:${RV32_PAIR_STATS}>
+    )
+
+    if(RV32_PAIR_STATS)
+        target_sources(rv32core PRIVATE src/frontend/rv32/rv_pairstats.c)
+    endif()
+endif()
+
+# ---------------------------------------------------------------------
+# Frontend: Renesas RH850 G4MH
+# ---------------------------------------------------------------------
+
+if(EMU_FRONTEND_G4MH)
+    target_sources(rv32core PRIVATE
+        src/frontend/g4mh/g4mh_cpu.c
+        src/frontend/g4mh/g4mh_decode.c
+        src/frontend/g4mh/g4mh_disasm.c
+        src/frontend/g4mh/g4mh_frontend.c
+        src/frontend/g4mh/g4mh_intc.c
+        src/frontend/g4mh/g4mh_interp.c
+    )
+
+    target_compile_definitions(rv32core PUBLIC
+        G4MH_ENABLE_DISASM=$<BOOL:${G4MH_ENABLE_DISASM}>
+        G4MH_PE_COUNT=${G4MH_PE_COUNT}u
+    )
+endif()
 
 # <fenv.h> is the FPU control/status interface the F extension uses; on both
 # glibc and newlib its implementation lives in libm.
-if(RV32_EXT_F AND NOT RV32_FPU_SOFTFLOAT)
+if(EMU_FRONTEND_RV32 AND RV32_EXT_F AND NOT RV32_FPU_SOFTFLOAT)
     target_link_libraries(rv32core PUBLIC m)
 endif()
 
-if(RV32_EXT_F AND RV32_FPU_SOFTFLOAT)
+if(EMU_FRONTEND_RV32 AND RV32_EXT_F AND RV32_FPU_SOFTFLOAT)
     if(NOT EXISTS "${SOFTFLOAT_DIR}/source/include/softfloat.h")
         find_package(Git QUIET)
         if(GIT_FOUND)
@@ -216,7 +315,7 @@ if(RV32_EXT_F AND RV32_FPU_SOFTFLOAT)
 
     target_sources(rv32core PRIVATE ${_sf_src})
     target_include_directories(rv32core PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/core/softfloat"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/frontend/rv32/softfloat"
         "${SOFTFLOAT_DIR}/source/include"
         "${SOFTFLOAT_DIR}/source/RISCV")
     # Third-party code, not warning-clean under our flags.
@@ -273,27 +372,37 @@ endif()
 
 # Built up as a plain string: message() does not evaluate generator
 # expressions, so $<BOOL:...> would be printed verbatim.
-set(_isa "RV32I")
-foreach(_ext M A F C B)
-    if(RV32_EXT_${_ext})
-        string(APPEND _isa "${_ext}")
+set(_frontends "")
+if(EMU_FRONTEND_RV32)
+    set(_isa "RV32I")
+    foreach(_ext M A F C B)
+        if(RV32_EXT_${_ext})
+            string(APPEND _isa "${_ext}")
+        endif()
+    endforeach()
+    # B is the union of Zba, Zbb and Zbs rather than an option of its own,
+    # and misa advertises it on exactly that basis, so the banner has to
+    # agree.
+    if(NOT RV32_EXT_B AND RV32_EXT_ZBA AND RV32_EXT_ZBB AND RV32_EXT_ZBS)
+        string(APPEND _isa "B")
     endif()
-endforeach()
-# B is the union of Zba, Zbb and Zbs rather than an option of its own, and
-# misa advertises it on exactly that basis, so the banner has to agree.
-if(NOT RV32_EXT_B AND RV32_EXT_ZBA AND RV32_EXT_ZBB AND RV32_EXT_ZBS)
-    string(APPEND _isa "B")
+    if(RV32_EXT_U)
+        string(APPEND _isa "U")
+    endif()
+    if(RV32_EXT_S)
+        string(APPEND _isa "S")
+    endif()
+    list(APPEND _frontends "rv32 (${_isa}_zicsr_zicntr_zifencei)")
 endif()
-if(RV32_EXT_U)
-    string(APPEND _isa "U")
-endif()
-if(RV32_EXT_S)
-    string(APPEND _isa "S")
+if(EMU_FRONTEND_G4MH)
+    list(APPEND _frontends "g4mh (RH850 G4MH, ${G4MH_PE_COUNT} PE)")
 endif()
 
 message(STATUS "")
 message(STATUS "rv32cortex-m ${PROJECT_VERSION}")
 message(STATUS "  platform    ${RV32_PLATFORM}")
 message(STATUS "  build type  ${CMAKE_BUILD_TYPE}")
-message(STATUS "  ISA         ${_isa}_zicsr_zicntr_zifencei")
+foreach(_f IN LISTS _frontends)
+    message(STATUS "  frontend    ${_f}")
+endforeach()
 message(STATUS "")

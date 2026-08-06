@@ -111,23 +111,51 @@ firmware and defeat the design.
 │  bus         region table, permissions, width checks,     │
 │              passthrough translation, fast-path caches    │
 ├──────────────────────────────────────────────────────────┤
-│  backend     rv_backend_t ──▶ interpreter | Thumb-2 JIT   │
+│  frontend    emu_cpu_ops_t ──▶ rv32 | g4mh                │
+├──────────────────────────────────────────────────────────┤
+│  backend     emu_backend_t ──▶ interpreter | Thumb-2 JIT  │
 ├──────────────────────────────────────────────────────────┤
 │  core        hart state · RVC expansion · CSRs · traps    │
 └──────────────────────────────────────────────────────────┘
 ```
 
-`src/core/` is portable C11 with no platform dependencies — it compiles
-unchanged for ARMv6-M, ARMv7E-M, ARMv8.1-M and for a native host build.
+`src/emu/` is portable C11 with no platform *and no ISA* dependencies — it
+compiles unchanged for ARMv6-M, ARMv7E-M, ARMv8.1-M and for a native host
+build. Each guest architecture lives in `src/frontend/<isa>/` and meets it at
+one table.
+
+### Frontends
+
+A frontend supplies the semantics of an instruction set; the runtime supplies
+everything around it — the bus and its region table, passthrough onto real
+peripherals, the console, the ELF loader, cache maintenance, and both
+platforms. The two meet at
+[`emu_cpu_ops_t`](include/emu/emu_cpu.h): lifecycle, a budgeted `run`, the
+architecture's own interrupt controller and timer, and enough introspection
+for a state dump and a trace.
+
+There is deliberately **no per-instruction entry point**. `run` executes a
+whole budget behind one indirect call and every other hook is setup or fires
+on a trap, because an indirect call anywhere on the fetch or execute path
+would cost more than the abstraction saves.
+
+| frontend | what it is | status |
+|---|---|---|
+| `rv32` | RISC-V RV32IMAFC + Zb\*, Zicbo\*, Sdtrig, PMP, U-mode | interpreter and Thumb-2 JIT; passes both official suites |
+| `g4mh` | Renesas RH850 G4MH integer core | interpreter; formats I–VII and the system group, both exception levels, INTC |
+
+Select with `-DEMU_FRONTEND_RV32=ON/OFF` and `-DEMU_FRONTEND_G4MH=ON/OFF`.
+More than one may be built in; the host runner then picks with `--frontend`,
+or from the image's ELF `e_machine`.
 
 ### Backends
 
-The core never calls the interpreter directly; it goes through
-[`rv_backend_t`](include/rv32/rv_backend.h). `run` is budgeted rather than
+A frontend never calls its interpreter directly; it goes through
+[`emu_backend_t`](include/emu/emu_backend.h). `run` is budgeted rather than
 free-running so a JIT can execute a whole translated block and report what it
 retired, and `invalidate` lets `FENCE.I` and image loads discard translations.
 
-**Thumb-2 JIT** ([`src/backend/rv_jit_thumb2.c`](src/backend/rv_jit_thumb2.c)).
+**Thumb-2 JIT** ([`src/frontend/rv32/rv_jit_thumb2.c`](src/frontend/rv32/rv_jit_thumb2.c)).
 RV32 basic blocks are translated into Thumb-2 held in a RAM code cache,
 eliminating the per-instruction costs the interpreter cannot avoid: the bus call
 to fetch, RVC expansion, the dispatch switch, the pc write and the counter
@@ -470,7 +498,7 @@ Current state, all re-run on the tree as it stands:
 | CoreMark | `crcfinal 0xca90` on all three backends | hardware |
 
 **What these suites do not cover: the JIT.** Both run the host interpreter, so
-nothing in `src/backend/rv_jit_thumb2.c` is exercised by either — it only
+nothing in `src/frontend/rv32/rv_jit_thumb2.c` is exercised by either — it only
 compiles for ARM. Everything the translator emits is validated by `isatest`
 and `mmiobench` on the board, and by CoreMark's CRC agreeing across native
 ARM, interpreter and JIT.
@@ -1024,18 +1052,42 @@ For a different ARM core, retarget with
 
 ---
 
+## Documentation
+
+The per-platform and per-frontend detail — memory maps, peripheral policy,
+what has been measured, and what is to do, worth investigating or already
+discarded — lives under `docs/`:
+
+| | |
+|---|---|
+| [`docs/Architecture.md`](docs/Architecture.md) | the three axes, the frontend contract, how to add one |
+| [`docs/host/`](docs/host/README.md) | native runner: guest map, frontend selection, what it cannot test |
+| [`docs/host/rv32/`](docs/host/rv32/README.md) | conformance: both official suites, interpreter cost |
+| [`docs/host/g4mh/`](docs/host/g4mh/README.md) | the G4MH frontend, its INTC, and its gaps |
+| [`docs/stm32f446/`](docs/stm32f446/README.md) | the board: passthrough policy, NVIC bridge, cache |
+| [`docs/stm32f446/rv32/`](docs/stm32f446/rv32/README.md) | the Thumb-2 JIT, its hazards and its tuning |
+| [`docs/stm32f446/g4mh/`](docs/stm32f446/g4mh/README.md) | links, never run |
+
+Vendor reference PDFs are in `docs/arm/`, `docs/riscv/`, `docs/st/` and
+`docs/renesas/`.
+
 ## Repository layout
 
 ```
-include/rv32/     public headers — the core's entire API
-src/core/         portable interpreter: hart, bus, decode, CSRs, traps
-src/backend/      Thumb-2 JIT: emitter, translator, code cache
-src/devices/      virtual CLINT and console UART
+include/emu/      the frontend contract, and the ISA-agnostic runtime's API
+include/rv32/     RISC-V frontend headers
+include/g4mh/     RH850 G4MH frontend headers
+src/emu/          bus, passthrough, NS16550 console, ELF loader, registry
+src/frontend/
+  rv32/           hart, decode, CSRs, traps, interpreter, Thumb-2 JIT,
+                  CLINT, APLIC
+  g4mh/           core, decode, interpreter, INTC
 src/platform/
-  host/           native runner, ELF loader (host-only; never built into firmware)
+  host/           native runner (frontend-neutral)
   stm32f446/      Nucleo-F446RE firmware, ST HAL integration, linker script
 tests/
-  unit/           host unit tests: RVC expansion, bus permissions
+  unit/           host unit tests: RVC expansion, bus permissions,
+                  G4MH decode and the frontend contract
   guest/          RISC-V programs that run inside the emulator
   arch-test/      DUT description for the official suite
 scripts/          validation runners
@@ -1070,7 +1122,7 @@ Reference material, classified by vendor under `docs/`:
 
 Not collected: the RISC-V **Privileged** ISA specification, which the trap,
 CSR, PMP and Sdtrig work was written against from the online version. Worth
-adding, since it is the reference for most of `src/core/`.
+adding, since it is the reference for most of `src/frontend/rv32/`.
 
 ---
 
