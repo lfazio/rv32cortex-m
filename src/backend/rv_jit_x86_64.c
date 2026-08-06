@@ -23,6 +23,14 @@
  *     the Thumb-2 modified-immediate encoder and nothing has to be
  *     materialised through a constant pool.
  *
+ * KNOWN DEFECT: rv32mi/scall and rv32ui/ma_data do not complete under this
+ * backend -- see the README section of the same name. Both reach the
+ * correct place with the correct result and then fail to make progress at
+ * a rate anything like the interpreter's, and it has not been root-caused.
+ * The architecture suite passes 274/274 here, so this is not a general
+ * correctness problem, but it is unexplained and riscv-tests is
+ * interpreter-only until it is understood.
+ *
  * What is translated is the integer core: LUI, AUIPC, the OP-IMM and OP
  * groups, and loads and stores through a helper. Everything else ends the
  * block and is executed by the interpreter, which is the same policy the
@@ -932,7 +940,20 @@ static rv_run_reason_t jit_run(rv_hart_t *h, uint32_t budget, uint32_t *retired)
 
         const uint32_t n = ((block_fn_t)(void *)b->code)(h);
         g_stats.block_entries++;
-        done += n;
+
+        /*
+         * A block that trapped on its first instruction retires nothing --
+         * the early exit is taken before the retire counter is bumped --
+         * but it has still made progress: the trap moved pc into a handler.
+         * Charging the budget nothing for that spins this loop forever
+         * while the guest runs on happily underneath, which is a hang that
+         * --max-insn cannot break because that is checked by the caller.
+         *
+         * The budget is charged; the architectural counters below are not,
+         * because no instruction retired and minstret must not say one did.
+         */
+        done += (n != 0u) ? n : 1u;
+
 
 #if RV_EXT_ZICNTR
         if (RV_LIKELY((h->mcountinhibit & 0x1u) == 0u)) {
