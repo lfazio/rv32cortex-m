@@ -54,6 +54,7 @@ static uint32_t slot(uint16_t n)
  * needs somewhere the call cannot reach.
  */
 static uint16_t g_ntemps;
+static uint32_t g_stats_elided;
 
 #define SCRATCH_ADDR ((uint16_t)(g_ntemps))
 #define SCRATCH_VAL  ((uint16_t)(g_ntemps + 1u))
@@ -67,17 +68,57 @@ static void ld_slot(int reg, uint16_t n)
     emu_jit_emit32(slot(n));
 }
 
+/*
+ * What T0 still holds from the previous instruction, if anything.
+ *
+ * With every value in a frame slot, a dependent pair emits a store and
+ * then an immediate reload of the same slot -- and a quarter to a third
+ * of adjacent instruction pairs in this project's guests are dependent.
+ * This declines to emit that reload when the value is already in the
+ * register.
+ *
+ * It is not a register allocator and does not pretend to be one. The
+ * store still happens, so every slot stays valid and no liveness
+ * analysis is needed; only the load is saved. What it costs is nothing:
+ * there is no setup instruction and no extra register held across a
+ * call, which is what sank the guest-register cache this project tried
+ * on ARM and measured 15.5% slower.
+ *
+ * The window is one instruction and closes at the first emission of the
+ * next, because after that T0's contents are whatever that instruction
+ * put there. Anything reached by a branch, and anything after a call,
+ * starts with nothing held -- both fall out of clearing at the top of
+ * every instruction and only re-establishing it at a final store.
+ */
+static uint16_t g_t0_holds;    /* set by a store, read by the next load */
+static uint16_t g_t0_avail;    /* what was held when this insn started  */
+static bool     g_t0_first;    /* still before this insn's first load?  */
+
 static void st_slot(int reg, uint16_t n)
 {
     emu_jit_emit8(0x89);
     emu_jit_emit8((uint8_t)(0x84u | ((unsigned)reg << 3)));
     emu_jit_emit8(0x24);
     emu_jit_emit32(slot(n));
+
+    if (reg == T0) {
+        g_t0_holds = n;
+    } else if (n == g_t0_holds) {
+        /* The slot was rewritten from elsewhere; T0 is stale for it. */
+        g_t0_holds = EMU_IR_NO_TEMP;
+    }
 }
 
 /* Load an operand, tolerating EMU_IR_NO_TEMP so callers need not check. */
 static void ld_operand(int reg, uint16_t n)
 {
+    if (reg == T0 && g_t0_first) {
+        g_t0_first = false;
+        if (n != EMU_IR_NO_TEMP && n == g_t0_avail) {
+            g_stats_elided++;
+            return;                 /* already there */
+        }
+    }
     if (n == EMU_IR_NO_TEMP) {
         x86_mov_imm32(reg, 0u);
         return;
@@ -247,6 +288,14 @@ static void emit_mem_call(const void *fn, uint32_t spec)
 
 static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 {
+    /*
+     * Open the window on what the previous instruction left in T0, and
+     * close the record of it: only a store below re-establishes it.
+     */
+    g_t0_avail = g_t0_holds;
+    g_t0_holds = EMU_IR_NO_TEMP;
+    g_t0_first = true;
+
     switch ((emu_ir_op_t)in->op) {
     case EMU_IR_NOP:
         break;
@@ -754,6 +803,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      * eventually reaches that uses an aligned SSE store.
      */
     g_ntemps = (uint16_t)b->next_temp;
+    g_t0_holds = EMU_IR_NO_TEMP;
     const uint32_t frame = (((b->next_temp + 2u) * 4u) + 15u) & ~15u;
 
     g_nexits = 0u;
