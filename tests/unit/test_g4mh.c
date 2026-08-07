@@ -826,6 +826,16 @@ static void test_ir_backend_is_used(void)
         W0(OP_MOVEA, 20, 20), 0x0100u,
         W0(OP_ST_HW, 20, 11), 0x0001u,   /* st.w r11, 0[r20] */
         W0(OP_LD_HW, 20, 21), 0x0001u,   /* ld.w 0[r20], r21 */
+        /*
+         * A Format VIII bit op and a Format IV short store, both of
+         * which used to end the block. Included here rather than tested
+         * only for their values, because a lowering that declines them
+         * still leaves every value correct -- the interpreter runs them
+         * -- and only the fallback count says which happened.
+         */
+        BITOP8(BOP_SET1, 2, 20), 0x0000u,      /* set1 2, 0[r20] */
+        F1(OP_MOV, 20, 30),                    /* ep = r20       */
+        (uint16_t)((21u << 11) | (0x07u << 7) | 4u),  /* sst.b r21, 4[ep] */
         0x07E0u, SUB_HALT,
     };
 
@@ -846,7 +856,8 @@ static void test_ir_backend_is_used(void)
     CHECK_EQ(reg(11), 4u);
     /* And the round trip through guest memory. */
     CHECK_EQ(reg(21), 4u);
-    CHECK_EQ(ram32(0x100u), 4u);
+    /* set1 2 turned 0x04 into 0x04|0x04 = 0x04; sst.b wrote r21 at +4. */
+    CHECK_EQ((uint32_t)g_ram[0x104], 4u);
 
     /*
      * If this is zero the whole block fell back and every check above is
@@ -859,8 +870,21 @@ static void test_ir_backend_is_used(void)
      * encoding, which the frontend's lowering declines by form. Eight
      * 16-bit instructions ahead of it must all have been translated.
      */
+    /*
+     * An *exact* count, not a bound.
+     *
+     * A loose bound does not discriminate: a declined instruction ends
+     * the block, the interpreter runs one instruction, and a fresh block
+     * starts after it -- so three declines cost three fallbacks, and
+     * `<= 2` quietly allowed most of this program to be interpreted.
+     * Disabling whole instruction groups changed nothing and the test
+     * still passed, which is the failure this project keeps rediscovering
+     * in its own coverage checks.
+     *
+     * Only the 32-bit HALT should reach the interpreter.
+     */
     const uint32_t fell_back = after.interp_fallbacks - before.interp_fallbacks;
-    CHECK(fell_back <= 2u);
+    CHECK_EQ(fell_back, 1u);
 }
 
 static void test_system_registers(void)

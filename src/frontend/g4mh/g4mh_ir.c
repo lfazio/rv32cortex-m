@@ -173,6 +173,28 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
         return true;
     }
 
+    /*
+     * Format VIII: the bit-manipulation group on memory. The operation
+     * selector is bits[15:14] -- the *top* of the field every other
+     * 32-bit format uses for reg2 -- with the 3-bit bit number below it,
+     * so reading a register out of [15:11] here gets nonsense.
+     */
+    if (op == 0x3Eu) {
+        static const uint8_t k_bitop[4] = {
+            EMU_IR_BITOP_SET, EMU_IR_BITOP_INV,
+            EMU_IR_BITOP_CLR, EMU_IR_BITOP_TST
+        };
+        const uint32_t sel = (w0 >> 14) & 3u;
+        const uint32_t bit = (w0 >> 11) & 7u;
+
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP,
+                          EMU_IR_NO_TEMP, pc, 0u);
+        emu_ir_bitop(b, (emu_ir_op_t)k_bitop[sel], emu_ir_get(b, r1),
+                     emu_ir_const(b, bit),
+                     (uint32_t)emu_sext(w1, 16), 1u);
+        return true;
+    }
+
     if (op < 0x38u || op > 0x3Bu) {
         return false;
     }
@@ -209,11 +231,53 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
  * Lower one 16-bit instruction. Returns false for anything not modelled,
  * which ends the block -- the caller has emitted nothing for it.
  */
-static bool lower_one(emu_ir_block_t *b, uint16_t w0)
+static bool lower_one(emu_ir_block_t *b, uint16_t w0, uint32_t pc)
 {
     const uint32_t r1 = g4mh_reg1(w0);
     const uint32_t r2 = g4mh_reg2(w0);
     const uint32_t op = g4mh_op6(w0);
+
+    /*
+     * Format IV: the short load and store forms, addressed off EP.
+     *
+     * These overlay the 6-bit opcode space with a 4-bit one, so they are
+     * decoded on bits[10:7] before the wider switch below gets a chance
+     * -- 0x06..0x09 as a 6-bit opcode is SATSUBR and friends, and
+     * reaching them by the wrong field would translate the wrong
+     * instruction rather than declining.
+     *
+     * The displacement is unsigned and pre-scaled by the access width:
+     * a halfword form spends the bit the alignment leaves free, exactly
+     * as the disp16 forms do. It is *not* sign-extended.
+     */
+    switch (g4mh_op4(w0)) {
+    case 0x06:                                  /* SLD.B disp7      */
+    case 0x07:                                  /* SST.B disp7      */
+    case 0x08:                                  /* SLD.H disp8      */
+    case 0x09: {                                /* SST.H disp8      */
+        const uint32_t op4 = g4mh_op4(w0);
+        const bool byte = (op4 < 0x08u);
+        const uint32_t size = byte ? 1u : 2u;
+        const uint32_t disp = byte ? (w0 & 0x7Fu) : ((w0 & 0x7Fu) << 1);
+
+        /* pc first: a data abort records it. */
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP,
+                          EMU_IR_NO_TEMP, pc, 0u);
+        const uint16_t ep = emu_ir_get(b, G4MH_REG_EP);
+
+        if ((op4 & 1u) == 0u) {                 /* the loads sign-extend */
+            emu_ir_put(b, r2, emu_ir_emit(b, EMU_IR_LOAD,
+                                          EMU_IR_MEM_AUX(size, 1u), ep,
+                                          EMU_IR_NO_TEMP, disp, 0u));
+        } else {
+            (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(size, 0u),
+                              ep, emu_ir_get(b, r2), disp, 0u);
+        }
+        return true;
+    }
+    default:
+        break;
+    }
 
     switch (op) {
     case 0x00:                                  /* MOV reg1, reg2   */
@@ -350,7 +414,7 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
         bool ok;
 
         if (g4mh_is_16bit(w0)) {
-            ok = lower_one(b, w0);
+            ok = lower_one(b, w0, cur);
         } else {
             uint16_t w1;
 
