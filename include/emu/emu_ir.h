@@ -476,6 +476,48 @@ typedef struct emu_ir_target {
  */
 bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t);
 
+/* ------------------------------------------------------------------ */
+/* What a host's jit.c needs from a frontend                           */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Everything that differs between one frontend/host pair and another,
+ * gathered so the pair itself does not need a file.
+ *
+ * Before this, each pair had its own translator: the same three-line
+ * pipeline, the same block cache adapters, and a handful of genuinely
+ * frontend-specific callbacks, copied per pair. Three frontends and
+ * three hosts is nine copies of that. What is left below is the handful
+ * -- everything a host cannot know and the IR does not carry -- and one
+ * jit.c per host consumes it.
+ */
+typedef struct emu_ir_frontend {
+    const char *name;
+
+    /* Guest instructions to IR; see the per-frontend header. */
+    uint32_t (*translate)(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b);
+
+    /* Where this guest keeps its registers, flags, pc and memory. */
+    const emu_ir_target_t *target;
+
+    /*
+     * The parts of emu_jit_ops_t only the frontend can answer. They are
+     * held here rather than built by each pair, which is what stops the
+     * dispatch loop's contract from being restated once per pair -- and
+     * that contract is where this project has found most of its bugs.
+     */
+    void (*bind)(emu_cpu_t *cpu, emu_jit_hot_t *out);
+    const emu_backend_t *interp;
+    bool (*is_idle)(emu_cpu_t *cpu);
+    bool (*wake)(emu_cpu_t *cpu);
+    bool (*take_irq)(emu_cpu_t *cpu);
+    void (*count)(emu_cpu_t *cpu, uint32_t n);
+    void (*after_interp)(emu_cpu_t *cpu);
+
+    /* Code cache to ask the framework for. */
+    uint32_t code_bytes;
+} emu_ir_frontend_t;
+
 /*
  * Execute an optimised block directly, without emitting anything.
  *

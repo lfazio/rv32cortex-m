@@ -31,6 +31,7 @@
 #include "rv32/rv_hart.h"
 #include "rv32/rv_decode.h"
 #include "rv32/rv_ir.h"
+#include "rv32/rv_jit.h"
 
 #include <stddef.h>
 
@@ -39,6 +40,16 @@
  * between blocks, so this bounds interrupt latency as much as code size.
  */
 #define RV_IR_MAX_BLOCK_INSNS 64u
+
+/*
+ * Code cache on a host. Generous where the framework's microcontroller
+ * default is not: on a target those bytes are the guest's, but here
+ * constant retranslation is what would mask a translator bug behind a
+ * fresh translation -- at 12 KB CoreMark flushed nineteen times a run.
+ */
+#define RV_JIT_HOST_CODE_BYTES (4u * 1024u * 1024u)
+
+extern const emu_backend_t rv_backend_interp;
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -447,3 +458,87 @@ uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
     b->guest_insns = count;
     return count;
 }
+
+/* ------------------------------------------------------------------ */
+/* What the host's jit.c needs from this frontend                      */
+/* ------------------------------------------------------------------ */
+
+static void rv_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
+{
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+
+    out->pc = &h->pc;
+    out->state = &h->state;
+    out->blocked = &h->fetch_guard;
+#if RV_LAZY_IRQ_CHECK
+    out->irq_pending = &h->irq_dirty;
+#endif
+}
+
+static bool rv_jit_is_idle(emu_cpu_t *cpu)
+{
+    return ((rv_hart_t *)cpu)->state == EMU_STATE_WFI;
+}
+
+static bool rv_jit_wake(emu_cpu_t *cpu)
+{
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+
+    if (!rv_hart_wfi_wake(h)) {
+        return false;
+    }
+    h->state = EMU_STATE_RUNNING;
+#if RV_LAZY_IRQ_CHECK
+    h->irq_dirty = true;
+#endif
+    return true;
+}
+
+static bool rv_jit_take_irq(emu_cpu_t *cpu)
+{
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+
+#if RV_LAZY_IRQ_CHECK
+    if (!h->irq_dirty) {
+        return false;
+    }
+    h->irq_dirty = false;
+#endif
+    const rv_exc_t irq = rv_hart_pending_irq(h);
+    if (irq == RV_EXC_NONE) {
+        return false;
+    }
+    rv_hart_trap(h, RV_CAUSE_INTERRUPT | irq, 0u);
+    return true;
+}
+
+static void rv_jit_count(emu_cpu_t *cpu, uint32_t n)
+{
+#if RV_EXT_ZICNTR
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+
+    if ((h->mcountinhibit & 0x1u) == 0u) {
+        h->mcycle += n;
+    }
+    if ((h->mcountinhibit & 0x4u) == 0u) {
+        h->minstret += n;
+    }
+#else
+    (void)cpu;
+    (void)n;
+#endif
+}
+
+const emu_ir_frontend_t rv_ir_frontend = {
+    .name         = "rv32",
+    .translate    = rv_ir_translate,
+    .target       = &rv_ir_target,
+    .bind         = rv_jit_bind,
+    .interp       = &rv_backend_interp,
+    .is_idle      = rv_jit_is_idle,
+    .wake         = rv_jit_wake,
+    .take_irq     = rv_jit_take_irq,
+    .count        = rv_jit_count,
+    .after_interp = NULL,
+    .code_bytes   = RV_JIT_HOST_CODE_BYTES,
+};

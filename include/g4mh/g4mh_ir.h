@@ -27,6 +27,9 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b);
 /* Where this guest's state lives, for emu_ir_lower and emu_ir_interp. */
 extern const emu_ir_target_t g4mh_ir_target;
 
+/* Everything a host's jit.c needs from this frontend. */
+extern const emu_ir_frontend_t g4mh_ir_frontend;
+
 #ifdef __cplusplus
 }
 #endif

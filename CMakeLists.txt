@@ -215,7 +215,7 @@ if(EMU_FRONTEND_RV32)
         # in the list and exactly one of them compiles to anything.
         src/frontend/rv32/rv_ir.c
         src/backend/thumb2/jit_rv32.c
-        src/backend/x86_64/jit_rv32.c
+        src/backend/x86_64/jit.c
     )
 
     target_compile_definitions(rv32core PUBLIC
@@ -258,7 +258,6 @@ if(EMU_FRONTEND_G4MH)
         src/frontend/g4mh/g4mh_frontend.c
         src/frontend/g4mh/g4mh_intc.c
         src/frontend/g4mh/g4mh_ir.c
-        src/backend/x86_64/jit_g4mh.c
         src/frontend/g4mh/g4mh_interp.c
     )
 

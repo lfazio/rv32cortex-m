@@ -36,6 +36,7 @@
 #include "g4mh/g4mh_decode.h"
 
 #include "emu/emu_ir.h"
+#include "g4mh/g4mh_intc.h"
 
 #include <stddef.h>
 
@@ -45,6 +46,14 @@
  * an interrupt-latency bound as much as a code-size one.
  */
 #define G4MH_IR_MAX_BLOCK_INSNS 64u
+
+/*
+ * Code cache on a host. Generous where the framework's microcontroller
+ * default is not: on a target those bytes are the guest's, but here
+ * constant retranslation is what would mask a translator bug behind a
+ * fresh translation.
+ */
+#define G4MH_JIT_CODE_BYTES (4u * 1024u * 1024u)
 
 /* Flags each group defines; see the note above. */
 #define F_ARITH (EMU_IR_F_Z | EMU_IR_F_S | EMU_IR_F_V | EMU_IR_F_C)
@@ -382,3 +391,89 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
     b->guest_insns = count;
     return count;
 }
+
+/* ------------------------------------------------------------------ */
+/* What the host's jit.c needs from this frontend                      */
+/* ------------------------------------------------------------------ */
+
+static bool g4mh_jit_is_idle(emu_cpu_t *cpu)
+{
+    return ((g4mh_cpu_t *)cpu)->state == EMU_STATE_WFI;
+}
+
+/*
+ * Waking is the interpreter's business: a parked G4MH core restarts only
+ * when a channel is pending, and deciding that means walking the INTC.
+ * Returning false here leaves the framework to report WFI, and the
+ * interrupt path below is what actually restarts it.
+ */
+static bool g4mh_jit_wake(emu_cpu_t *cpu)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
+
+    if (g4mh_cpu_pending_irq(c) < 0) {
+        return false;
+    }
+    c->state = EMU_STATE_RUNNING;
+    c->irq_dirty = true;
+    return true;
+}
+
+static bool g4mh_jit_take_irq(emu_cpu_t *cpu)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
+
+    if (!c->irq_dirty) {
+        return false;
+    }
+    /* Cleared before the evaluation, not after; see the interpreter. */
+    c->irq_dirty = false;
+
+    const int ch = g4mh_cpu_pending_irq(c);
+    if (ch < 0) {
+        return false;
+    }
+    c->state = EMU_STATE_RUNNING;
+    g4mh_intc_ack(c->intc, (uint32_t)ch);
+    g4mh_cpu_exception(c, G4MH_EXC_EIINT_BASE + (uint32_t)ch, c->pc);
+    return true;
+}
+
+static void g4mh_jit_count(emu_cpu_t *cpu, uint32_t n)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
+
+    c->cycles += n;
+    c->retired += n;
+}
+
+extern const emu_backend_t g4mh_backend_interp;
+
+/*
+ * generation stays NULL: nothing is baked into a block. Every instruction
+ * translated here reads only its own operands, and anything that could
+ * change the meaning of a later one -- a system register write, a mode
+ * change -- is not translated at all. The day one is, it needs a
+ * generation.
+ */
+static void g4mh_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
+
+    out->pc = &c->pc;
+    out->state = &c->state;
+}
+
+const emu_ir_frontend_t g4mh_ir_frontend = {
+    .name         = "g4mh",
+    .translate    = g4mh_ir_translate,
+    .target       = &g4mh_ir_target,
+    .bind         = g4mh_jit_bind,
+    .interp       = &g4mh_backend_interp,
+    .is_idle      = g4mh_jit_is_idle,
+    .wake         = g4mh_jit_wake,
+    .take_irq     = g4mh_jit_take_irq,
+    .count        = g4mh_jit_count,
+    .after_interp = NULL,
+    .code_bytes   = G4MH_JIT_CODE_BYTES,
+};

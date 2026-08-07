@@ -29,6 +29,9 @@ uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b);
  */
 extern const emu_ir_target_t rv_ir_target;
 
+/* Everything a host's jit.c needs from this frontend. */
+extern const emu_ir_frontend_t rv_ir_frontend;
+
 #ifdef __cplusplus
 }
 #endif
