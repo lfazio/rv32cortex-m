@@ -206,6 +206,44 @@ static void test_dead_put_removed(void)
 }
 
 /*
+ * ...and neither may a *faulting* memory operation be stepped over.
+ *
+ * A store to a register followed by a second store to the same register
+ * looks like a dead first store -- unless what sits between them can
+ * trap, because then the second never runs and the first is the value
+ * the trap handler reads.
+ *
+ * riscv-tests' rv32mi/ma_addr is exactly this shape:
+ *
+ *     addi t1, s0, 1     ; t1 = the address about to fault
+ *     lh   t1, 1(s0)     ; traps; never writes t1
+ *
+ * and its handler compares mtval against t1. Deleting the first store
+ * left t1 stale and failed one sub-test, while the other 76 riscv-tests,
+ * the architecture suite, isatest and every unit test here passed.
+ */
+static void test_put_kept_across_faulting_load(void)
+{
+    emu_ir_reset(&g_b);
+
+    const uint16_t base = emu_ir_get(&g_b, 1u);
+    const uint16_t addr = emu_ir_alu(&g_b, EMU_IR_ADD, base,
+                                     emu_ir_const(&g_b, 1u));
+    emu_ir_put(&g_b, 6u, addr);                  /* must survive */
+
+    /* The load writes the same guest register, and can fault. */
+    emu_ir_put(&g_b, 6u, emu_ir_emit(&g_b, EMU_IR_LOAD,
+                                     EMU_IR_MEM_AUX(2u, 1u), base,
+                                     EMU_IR_NO_TEMP, 1u, 0u));
+
+    emu_ir_opt_stats_t st;
+    emu_ir_optimise(&g_b, EMU_IR_F_ALL, &st);
+
+    CHECK_EQ(st.puts_removed, 0u);
+    CHECK_EQ(count_op(EMU_IR_PUT), 2u);
+}
+
+/*
  * ...but a helper call in between can read the register file, so the
  * first store has to stay.
  *
@@ -811,6 +849,7 @@ void test_ir(void)
     test_redundant_get_elided();
     test_dead_put_removed();
     test_put_kept_across_helper();
+    test_put_kept_across_faulting_load();
     test_get_not_elided_across_helper();
     test_dead_values();
     test_flagless_frontend();

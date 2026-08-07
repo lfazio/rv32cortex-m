@@ -56,55 +56,38 @@ extern const emu_backend_t rv_backend_interp;
 /* ------------------------------------------------------------------ */
 
 /*
- * One load or store, performed exactly as the interpreter would.
+ * The generic accessors the shared lowering calls.
  *
- * Returns non-zero if the access trapped, in which case the trap has
- * already been entered and the block must stop -- which is what
- * EMU_IR_HELPER_TRAP arranges. Getting that distinction wrong is
- * invisible until a guest actually faults.
+ * The guest pc already points at the faulting instruction when either is
+ * reached -- the frontend emits EMU_IR_SETPC ahead of every memory
+ * operation -- so rv_hart_trap records the right address.
  */
-static uint32_t rv_ir_helper_mem(rv_hart_t *h, uint32_t insn, uint32_t pc)
+static uint32_t rv_ir_load(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
+                           uint32_t *out)
 {
-    const uint32_t op = insn & 0x7Fu;
-    const uint32_t f3 = rv_funct3(insn);
-    const uint32_t rs1 = rv_rs1(insn);
-    rv_exc_t exc;
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+    const rv_exc_t exc = rv_hart_load(h, addr, EMU_IR_MEM_SIZE(spec),
+                                      (spec & EMU_IR_MEM_SIGNED) != 0u, out);
 
-    if (op == 0x03u) {                          /* LOAD */
-        const uint32_t addr = h->x[rs1] + (uint32_t)rv_imm_i(insn);
-        const uint32_t size = 1u << (f3 & 3u);
-        const bool sext = (f3 & 4u) == 0u;
-        uint32_t v = 0u;
-
-        exc = rv_hart_load(h, addr, size, sext, &v);
-        if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
-            h->pc = pc;
-            rv_hart_trap(h, exc, addr);
-            return 1u;
-        }
-        h->x[rv_rd(insn)] = v;
-        h->x[0] = 0u;
-        return 0u;
-    }
-
-    /* STORE */
-    const uint32_t addr = h->x[rs1] + (uint32_t)rv_imm_s(insn);
-    const uint32_t size = 1u << (f3 & 3u);
-
-    exc = rv_hart_store(h, addr, size, h->x[rv_rs2(insn)]);
     if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
-        h->pc = pc;
         rv_hart_trap(h, exc, addr);
         return 1u;
     }
     return 0u;
 }
 
-enum { RV_IR_HELPER_MEM = 0 };
+static uint32_t rv_ir_store(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
+                            uint32_t val)
+{
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+    const rv_exc_t exc = rv_hart_store(h, addr, EMU_IR_MEM_SIZE(spec), val);
 
-static const void *const k_helpers[] = {
-    [RV_IR_HELPER_MEM] = (const void *)rv_ir_helper_mem,
-};
+    if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
+        rv_hart_trap(h, exc, addr);
+        return 1u;
+    }
+    return 0u;
+}
 
 /* ------------------------------------------------------------------ */
 /* The target descriptor                                               */
@@ -134,23 +117,15 @@ const emu_ir_target_t rv_ir_target = {
     .flag_bit     = { 0u, 0u, 0u, 0u },
     .reg_is_zero  = rv_reg_zero,
     .pc_offset    = (uint32_t)offsetof(rv_hart_t, pc),
-    .helpers      = k_helpers,
-    .helper_count = (uint32_t)(sizeof(k_helpers) / sizeof(k_helpers[0])),
+    .helpers      = NULL,
+    .helper_count = 0u,
+    .load         = rv_ir_load,
+    .store        = rv_ir_store,
 };
 
 /* ------------------------------------------------------------------ */
 /* Translation                                                         */
 /* ------------------------------------------------------------------ */
-
-/* A helper call taking (hart, insn, pc), the shape every helper uses. */
-static void emit_helper(emu_ir_block_t *b, uint32_t which, uint32_t insn,
-                        uint32_t pc)
-{
-    const uint16_t a = emu_ir_const(b, insn);
-    const uint16_t c = emu_ir_const(b, pc);
-
-    (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP, 0u, a, c, which, 0u);
-}
 
 /*
  * Lower one instruction. Returns false for anything not modelled, which
@@ -293,10 +268,31 @@ static bool lower_one(emu_ir_block_t *b, uint32_t insn, uint32_t pc,
         }
     }
 
-    case 0x03u:                                 /* LOAD  */
-    case 0x23u:                                 /* STORE */
-        emit_helper(b, RV_IR_HELPER_MEM, insn, pc);
+    case 0x03u: {                               /* LOAD */
+        /* pc first: a fault records it. */
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP,
+                          EMU_IR_NO_TEMP, pc, 0u);
+        const uint16_t base = emu_ir_get(b, rs1);
+        const uint8_t spec = EMU_IR_MEM_AUX(1u << (f3 & 3u),
+                                            (f3 & 4u) == 0u);
+
+        emu_ir_put(b, rd, emu_ir_emit(b, EMU_IR_LOAD, spec, base,
+                                      EMU_IR_NO_TEMP,
+                                      (uint32_t)rv_imm_i(insn), 0u));
         return true;
+    }
+
+    case 0x23u: {                               /* STORE */
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP,
+                          EMU_IR_NO_TEMP, pc, 0u);
+        const uint16_t base = emu_ir_get(b, rs1);
+        const uint16_t val = emu_ir_get(b, rs2);
+        const uint8_t spec = EMU_IR_MEM_AUX(1u << (f3 & 3u), 0u);
+
+        (void)emu_ir_emit(b, EMU_IR_STORE, spec, base, val,
+                          (uint32_t)rv_imm_s(insn), 0u);
+        return true;
+    }
 
     case 0x63u: {                               /* BRANCH */
         static const uint8_t k_cond[8] = {

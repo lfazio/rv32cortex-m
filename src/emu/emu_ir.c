@@ -145,6 +145,17 @@ static uint8_t op_reads_flags(const emu_ir_insn_t *in)
          * read, so it wants its own change and its own test.
          */
         return EMU_IR_F_ALL;
+    /*
+     * A faulting access hands control to a trap handler, which can read
+     * anything -- so a flag defined before one is live for the same
+     * reason a guest register written before one is.
+     */
+    case EMU_IR_LOAD:
+    case EMU_IR_STORE:
+    case EMU_IR_BITOP_SET:
+    case EMU_IR_BITOP_CLR:
+    case EMU_IR_BITOP_INV:
+    case EMU_IR_BITOP_TST:
     case EMU_IR_HELPER:
     case EMU_IR_HELPER_TRAP:
         return EMU_IR_F_ALL;
@@ -320,11 +331,35 @@ static void pass_dead_puts(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
             }
             break;
 
+        /*
+         * Anything that can leave the block early is an observation
+         * point: everything written before it is visible to whatever
+         * runs next.
+         *
+         * The memory operations belong here and it is not obvious. A
+         * store to a register followed by a *second* store to the same
+         * register looks like a dead first store -- unless the
+         * instruction between them can fault, because then the second
+         * never runs and the first is the value the trap handler sees.
+         *
+         *     addi t1, s0, 1     ; t1 = the address about to fault
+         *     lh   t1, 1(s0)     ; traps; never writes t1
+         *
+         * riscv-tests' ma_addr does exactly this and then has its
+         * handler compare mtval against t1. Deleting the first store
+         * left t1 stale, the comparison failed, and every other test in
+         * the suite still passed.
+         */
+        case EMU_IR_LOAD:
+        case EMU_IR_STORE:
+        case EMU_IR_BITOP_SET:
+        case EMU_IR_BITOP_CLR:
+        case EMU_IR_BITOP_INV:
+        case EMU_IR_BITOP_TST:
         case EMU_IR_HELPER:
         case EMU_IR_HELPER_TRAP:
         case EMU_IR_EXIT:
         case EMU_IR_EXIT_IF:
-            /* Everything written before this point is observable. */
             memset(seen, 0, sizeof(seen));
             break;
 
