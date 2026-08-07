@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * src/backend/x86_64/jit.c - The x86-64 JIT, for any frontend.
+ * emu_ir_jit.c - The IR-driven JIT, for any frontend on any host.
  *
  * One JIT per host, which is what the IR was built to make possible.
  * Before it there was one translator per frontend/host *pair* -- three
@@ -25,7 +25,6 @@
  */
 
 #include "emu/emu_ir.h"
-#include "emu/emu_x86_64.h"
 
 #include <string.h>
 
@@ -40,7 +39,51 @@
  * cannot re-enter it because helpers run inside an *already translated*
  * block.
  */
+/* The host this was built for, so the banner does not have to lie. */
+#if defined(EMU_JIT_THUMB2)
+#  define EMU_IR_JIT_NAME "jit-ir-thumb2"
+#else
+#  define EMU_IR_JIT_NAME "jit-ir-x86-64"
+#endif
+
 static emu_ir_block_t g_ir;
+
+/*
+ * A code buffer for hosts that cannot map one.
+ *
+ * emu_jit_init allocates only where there is an mmap to allocate with;
+ * on a microcontroller the platform supplies the memory, and if nobody
+ * does, the framework runs everything on the interpreter and says so
+ * only through the backend name. That is exactly what happened the first
+ * time this file replaced the hand-written Thumb-2 translator: the board
+ * printed "backend interp" and every test still passed.
+ *
+ * The size is the guest's RAM, so it is the microcontroller figure and
+ * not the host one. RV32_JIT_CODE_BYTES dominates JIT performance on
+ * this target -- see CLAUDE.md -- and the default is deliberately small.
+ */
+#if !defined(EMU_JIT_MMAP) || !EMU_JIT_MMAP
+#  ifndef EMU_IR_JIT_STATIC_BYTES
+#    define EMU_IR_JIT_STATIC_BYTES 12288u
+#  endif
+static uint8_t g_static_code[EMU_IR_JIT_STATIC_BYTES]
+    __attribute__((aligned(8)));
+#endif
+
+/*
+ * Offer the static buffer, where there is one. False means this host can
+ * neither map memory nor was given any, and the framework will run the
+ * interpreter -- which is correct, and slow, and worth noticing.
+ */
+static bool emu_ir_jit_static_buffer(void)
+{
+#if !defined(EMU_JIT_MMAP) || !EMU_JIT_MMAP
+    emu_jit_set_buffer(g_static_code, (uint32_t)sizeof(g_static_code));
+    return emu_jit_init((uint32_t)sizeof(g_static_code));
+#else
+    return false;
+#endif
+}
 
 /*
  * Translate at `pc` for `fe`.
@@ -64,11 +107,9 @@ static uint32_t ir_translate(emu_cpu_t *cpu, uint32_t pc,
 
     emu_ir_optimise(&g_ir, EMU_IR_F_ALL, NULL);
 
-    x86_prologue();
     if (!emu_ir_lower(&g_ir, fe->target)) {
         return 0u;
     }
-    x86_epilogue();
     return n;
 }
 
@@ -113,7 +154,7 @@ static void prefix##_count(emu_cpu_t *cpu, uint32_t n)                  \
 }                                                                       \
                                                                         \
 static const emu_jit_ops_t prefix##_jit_ops = {                         \
-    .name        = "jit-x86-64",                                        \
+    .name        = EMU_IR_JIT_NAME,                                     \
     .bind        = prefix##_bind,                                       \
     .translate   = prefix##_translate,                                  \
     /*                                                                  \
@@ -145,7 +186,10 @@ static bool prefix##_init(emu_cpu_t *cpu)                               \
      */                                                                 \
     prefix##_ops_live = prefix##_jit_ops;                               \
     prefix##_ops_live.interp = (fe).interp;                             \
-    return emu_jit_init((fe).code_bytes);                               \
+    if (emu_jit_init((fe).code_bytes)) {                                \
+        return true;                                                    \
+    }                                                                   \
+    return emu_ir_jit_static_buffer();                                  \
 }                                                                       \
                                                                         \
 static void prefix##_reset(emu_cpu_t *cpu)                              \
@@ -171,7 +215,7 @@ static emu_run_reason_t prefix##_run(emu_cpu_t *cpu, uint32_t budget,   \
 }                                                                       \
                                                                         \
 const emu_backend_t sym = {                                             \
-    .name       = "jit-x86-64",                                         \
+    .name       = EMU_IR_JIT_NAME,                                      \
     .init       = prefix##_init,                                        \
     .reset      = prefix##_reset,                                       \
     .run        = prefix##_run,                                         \

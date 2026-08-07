@@ -175,7 +175,7 @@ add_library(rv32core STATIC
     src/emu/emu_jit.c
     src/emu/emu_ir.c
     src/backend/x86_64/encode.c
-    src/backend/x86_64/interp.c
+    src/backend/common/interp.c
     src/backend/x86_64/ir_lower.c
     src/emu/emu_cpu.c
     src/emu/emu_elf.c
@@ -215,7 +215,9 @@ if(EMU_FRONTEND_RV32)
         # in the list and exactly one of them compiles to anything.
         src/frontend/rv32/rv_ir.c
         src/backend/thumb2/jit_rv32.c
-        src/backend/x86_64/jit.c
+        src/backend/thumb2/encode.c
+        src/backend/thumb2/ir_lower.c
+        src/emu/emu_ir_jit.c
     )
 
     target_compile_definitions(rv32core PUBLIC

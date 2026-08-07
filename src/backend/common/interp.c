@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * src/backend/x86_64/interp.c - Executing IR directly on this host.
+ * src/backend/common/interp.c - Executing IR directly, on any host.
  *
  * The other half of a backend. `jit.c` compiles a block to machine code;
  * this runs the same block without emitting anything, and the two are
@@ -23,19 +23,23 @@
  *     lzcnt-decodes-as-bsr bug would have been caught without a
  *     hand-written expectation.
  *
- * It lives under the host directory because that is where a backend's
- * two execution strategies belong, and because a host may eventually
- * want to specialise it. Nothing in it is x86-specific *yet* -- and that
- * is worth saying plainly rather than leaving to be discovered, because
- * the day a second host copies it, the copy is the moment to ask whether
- * it should have been shared instead.
+ * Shared rather than one copy per host directory.
+ *
+ * It started under src/backend/x86_64/ with a note saying nothing in it
+ * was x86-specific yet, and that the day a second host copied it would
+ * be the moment to ask whether it should be shared. Thumb-2 is that
+ * second host, and the answer was yes: this evaluates the IR in C, and
+ * C is the same on both. A host that ever does want to specialise it can
+ * take its own copy then, with a reason.
+ *
+ * src/backend/common/ is where that lands: a backend concern rather than
+ * an emu one, but not owned by any single host.
  */
 
 #include "emu/emu_ir.h"
 
 #include <string.h>
 
-#if defined(EMU_JIT_X86_64)
 
 /* Where guest register `n` lives inside the frontend's state. */
 static uint32_t *reg_ptr(emu_cpu_t *cpu, const emu_ir_target_t *t, uint32_t n)
@@ -330,4 +334,3 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
     return true;
 }
 
-#endif /* EMU_JIT_X86_64 */

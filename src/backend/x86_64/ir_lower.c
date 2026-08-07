@@ -733,6 +733,13 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
 
     g_nexits = 0u;
 
+    /*
+     * The block prologue belongs here rather than in the caller, so that
+     * jit.c names no host at all. It was the last thing in the pipeline
+     * that did.
+     */
+    x86_prologue();
+
     if (frame != 0u) {
         emu_jit_emit8(0x48); emu_jit_emit8(0x81);
         emu_jit_emit8(0xEC); emu_jit_emit32(frame);       /* sub rsp, imm32 */
@@ -764,6 +771,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         emu_jit_emit8(0x48); emu_jit_emit8(0x81);
         emu_jit_emit8(0xC4); emu_jit_emit32(frame);       /* add rsp, imm32 */
     }
+    x86_epilogue();
     return !emu_jit_overflowed();
 }
 

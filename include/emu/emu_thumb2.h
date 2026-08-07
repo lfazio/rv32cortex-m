@@ -1,0 +1,99 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/*
+ * emu_thumb2.h - Thumb-2 instruction encoding, for any frontend.
+ *
+ * The counterpart of emu_x86_64.h: how to spell an instruction on an
+ * ARMv7E-M host. Nothing here knows what is being translated.
+ *
+ * Where a 16-bit form exists it is deliberately *not* used. The register
+ * numbers a lowering hands these are frequently above r7, and this
+ * project has already been bitten by a 16-bit data-processing encoding
+ * silently assembling as a different instruction when given a high
+ * register -- nothing faulted, and a loop cap simply stopped applying.
+ *
+ * Encodings are from ARM DDI 0403E (docs/arm/).
+ */
+#ifndef EMU_THUMB2_H
+#define EMU_THUMB2_H
+
+#include "emu_jit.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Registers the block frame reserves; see src/backend/thumb2/ir_lower.c. */
+#define T2_R0    0u
+#define T2_R1    1u
+#define T2_R2    2u
+#define T2_R3    3u
+#define T2_CPU   4u
+#define T2_CNT   5u
+#define T2_SP   13u
+#define T2_R12  12u
+
+/* Shift types, for the register and immediate forms below. */
+#define T2_LSL 0u
+#define T2_LSR 1u
+#define T2_ASR 2u
+#define T2_ROR 3u
+
+void t2_emit16(uint16_t h);
+void t2_emit32(uint16_t hw1, uint16_t hw2);
+
+void t2_movw(uint32_t rd, uint16_t imm);
+void t2_movt(uint32_t rd, uint16_t imm);
+void t2_imm32(uint32_t rd, uint32_t v);
+void t2_mov(uint32_t rd, uint32_t rm);
+
+void t2_ldr_imm(uint32_t rt, uint32_t rn, uint32_t off);
+void t2_str_imm(uint32_t rt, uint32_t rn, uint32_t off);
+
+void t2_add(uint32_t rd, uint32_t rn, uint32_t rm);
+void t2_sub(uint32_t rd, uint32_t rn, uint32_t rm);
+void t2_and(uint32_t rd, uint32_t rn, uint32_t rm);
+void t2_orr(uint32_t rd, uint32_t rn, uint32_t rm);
+void t2_eor(uint32_t rd, uint32_t rn, uint32_t rm);
+void t2_cmp(uint32_t rn, uint32_t rm);
+void t2_mvn(uint32_t rd, uint32_t rm);
+void t2_neg(uint32_t rd, uint32_t rn);
+
+void t2_shift_reg(uint32_t kind, uint32_t rd, uint32_t rn, uint32_t rm);
+void t2_shift_imm(uint32_t type, uint32_t rd, uint32_t rm, uint32_t amount);
+
+void t2_rev(uint32_t rd, uint32_t rm);
+void t2_rev16(uint32_t rd, uint32_t rm);
+void t2_rbit(uint32_t rd, uint32_t rm);
+void t2_clz(uint32_t rd, uint32_t rm);
+
+void t2_sxtb(uint32_t rd, uint32_t rm);
+void t2_sxth(uint32_t rd, uint32_t rm);
+void t2_uxtb(uint32_t rd, uint32_t rm);
+void t2_uxth(uint32_t rd, uint32_t rm);
+
+/*
+ * Forward branches, with the displacement filled in later. Pair each
+ * with t2_patch_branch once the target is known.
+ */
+uint8_t *t2_b_forward(void);
+uint8_t *t2_bcond_forward(uint32_t cond);
+void     t2_patch_branch(uint8_t *at, const uint8_t *target, bool conditional);
+
+/*
+ * Call an absolute address. BLX takes its target in a register, so the
+ * address is materialised into r12 -- the one scratch register AAPCS
+ * lets a callee clobber and that is not an argument.
+ */
+void t2_call(const void *fn);
+
+/* An IR condition as the cond field of a Thumb-2 conditional branch. */
+uint32_t t2_cond(uint8_t c);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* EMU_THUMB2_H */

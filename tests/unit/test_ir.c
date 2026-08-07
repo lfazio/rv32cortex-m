@@ -475,10 +475,13 @@ static bool lower_and_run(fake_cpu_t *cpu)
 
     emu_ir_optimise(&g_b, EMU_IR_F_ALL, NULL);
 
+    /*
+     * No prologue or epilogue here: emu_ir_lower emits the whole block
+     * including its frame, which is what lets emu_ir_jit.c name no host.
+     * Emitting them here as well pushed twice and popped once.
+     */
     emu_jit_emit_begin(exec, IR_TEST_CODE_BYTES);
-    x86_prologue();
     const bool ok = emu_ir_lower(&g_b, &g_fake_target);
-    x86_epilogue();
     if (!ok || emu_jit_overflowed()) {
         return false;
     }
