@@ -337,8 +337,18 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             [EMU_IR_XOR - EMU_IR_ADD] = X86_XOR,
         };
         ld_operand(T0, in->a);
-        ld_operand(T1, in->b);
-        x86_alu_rr(k_alu[in->op - (uint8_t)EMU_IR_ADD], T0, T1);
+        /*
+         * The right operand is read out of its frame slot rather than
+         * loaded first -- one instruction instead of two. TEST is not in
+         * this table, so the direction bit trick below always applies.
+         */
+        if (in->b != EMU_IR_NO_TEMP) {
+            x86_alu_slot(k_alu[in->op - (uint8_t)EMU_IR_ADD], T0,
+                         slot(in->b));
+        } else {
+            ld_operand(T1, in->b);
+            x86_alu_rr(k_alu[in->op - (uint8_t)EMU_IR_ADD], T0, T1);
+        }
         st_slot(T0, in->dst);
         break;
     }

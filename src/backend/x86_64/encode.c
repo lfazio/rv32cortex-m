@@ -89,6 +89,31 @@ void x86_mov_imm64(int dst, uint64_t imm)
     emu_jit_emit64(imm);
 }
 
+/*
+ * dst <op>= [rsp + disp] -- an ALU instruction reading its right operand
+ * straight out of a frame slot.
+ *
+ * Every IR value lives in a slot, so the alternative is a `mov` into a
+ * scratch register followed by the operation: two instructions and four
+ * more bytes on *every* binary op with two temps. On the target that
+ * shares its code cache with the guest, that is the difference between
+ * a working set that fits and one that compacts.
+ *
+ * The op constants name the `r/m32, r32` direction, where the
+ * destination is the memory side. Setting bit 1 selects the `r32, r/m32`
+ * form, which is the one that reads memory and writes the register --
+ * so `add` 0x01 becomes 0x03, `sub` 0x29 becomes 0x2B, and so on
+ * uniformly.
+ */
+void x86_alu_slot(uint8_t op, int dst, uint32_t disp)
+{
+    emit_rex(0u, (unsigned)dst, 0u);
+    emu_jit_emit8((uint8_t)(op | 0x02u));
+    emu_jit_emit8((uint8_t)(0x84u | (((unsigned)dst & 7u) << 3)));
+    emu_jit_emit8(0x24);                       /* SIB: [rsp] */
+    emu_jit_emit32(disp);
+}
+
 void x86_alu_rr(uint8_t op, int dst, int src)
 {
     emit_rex(0u, (unsigned)src, (unsigned)dst);

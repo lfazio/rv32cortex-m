@@ -99,6 +99,8 @@ void x86_mov_imm32(int dst, uint32_t imm);
 void x86_mov_imm64(int dst, uint64_t imm);  /* helper addresses only */
 
 void x86_alu_rr(uint8_t op, int dst, int src);
+/* dst <op>= [rsp + disp]; see the note in encode.c on the direction bit. */
+void x86_alu_slot(uint8_t op, int dst, uint32_t disp);
 void x86_add_imm8(int dst, int8_t imm);
 void x86_and_imm8(int dst, int8_t imm);
 
