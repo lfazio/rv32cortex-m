@@ -144,9 +144,16 @@ void t2_shift_imm(uint32_t type, uint32_t rd, uint32_t rm,
 {
     const uint32_t n = amount & 31u;
 
+    /*
+     * The amount is split imm3:imm2 -- imm3 is the *high* three bits at
+     * 14:12 and imm2 the low two at 7:6. Splitting it the other way
+     * round encodes a different amount entirely and never faults: a
+     * shift by 31 came out as a shift by 0, and only the guest's own
+     * slli/srli/srai self-tests noticed.
+     */
     t2_emit32(0xEA4Fu,
-           (uint16_t)(((n & 7u) << 6) | ((n >> 3) << 12) | (type << 4) |
-                      (rd << 8) | rm));
+              (uint16_t)(((n >> 2) << 12) | (rd << 8) | ((n & 3u) << 6) |
+                         (type << 4) | rm));
 }
 #define T2_LSL 0u
 #define T2_LSR 1u
@@ -225,5 +232,59 @@ void t2_call(const void *fn)
     t2_emit16((uint16_t)(0x4780u | (T2_R12 << 3)));      /* BLX r12 */
 }
 
+
+/*
+ * Forward branches, with the displacement filled in by t2_patch_branch
+ * once the target is known.
+ */
+uint8_t *t2_b_forward(void)
+{
+    uint8_t *const at = emu_jit_here();
+
+    t2_emit32(0xF000u, 0xB800u);            /* B.W  <label>  (T4) */
+    return at;
+}
+
+uint8_t *t2_bcond_forward(uint32_t cond)
+{
+    uint8_t *const at = emu_jit_here();
+
+    t2_emit32((uint16_t)(0xF000u | (cond << 6)), 0x8000u);  /* B<c>.W (T3) */
+    return at;
+}
+
+/*
+ * Guarded on overflow because `at` may be past the end of a buffer that
+ * stopped accepting emissions -- the block is discarded either way, and
+ * writing through the pointer would corrupt whatever follows.
+ */
+void t2_patch_branch(uint8_t *at, const uint8_t *target, bool conditional)
+{
+    if (at == NULL || emu_jit_overflowed()) {
+        return;
+    }
+
+    uint16_t *const hw = (uint16_t *)(void *)at;
+    /* A branch reads pc as its own address plus 4. */
+    const uint32_t imm = (uint32_t)(int32_t)(target - (at + 4)) >> 1;
+
+    if (conditional) {
+        const uint32_t s = (imm >> 19) & 1u;
+
+        hw[0] = (uint16_t)((hw[0] & 0xFBC0u) | (s << 10) |
+                           ((imm >> 11) & 0x3Fu));
+        hw[1] = (uint16_t)(0x8000u | (((imm >> 18) & 1u) << 11) |
+                           (((imm >> 17) & 1u) << 13) | (imm & 0x7FFu));
+    } else {
+        /* T4: J1 and J2 are stored inverted against S. */
+        const uint32_t s = (imm >> 23) & 1u;
+        const uint32_t j1 = (~((imm >> 22) ^ s)) & 1u;
+        const uint32_t j2 = (~((imm >> 21) ^ s)) & 1u;
+
+        hw[0] = (uint16_t)(0xF000u | (s << 10) | ((imm >> 11) & 0x3FFu));
+        hw[1] = (uint16_t)(0x9000u | (j1 << 13) | (j2 << 11) |
+                           (imm & 0x7FFu));
+    }
+}
 
 #endif /* EMU_JIT_THUMB2 */

@@ -28,7 +28,7 @@
 
 #include <string.h>
 
-#if defined(EMU_JIT_X86_64)
+#if defined(EMU_JIT_X86_64) || defined(EMU_IR_JIT_ON_THUMB2)
 
 /*
  * One block of IR, reused across translations.
@@ -320,4 +320,4 @@ void rv_jit_flush(void)
 EMU_IR_DEFINE_X86_BACKEND(g4mh_backend_jit, g4mh_ir_frontend, g4mh);
 #endif
 
-#endif /* EMU_JIT_X86_64 */
+#endif /* EMU_JIT_X86_64 || EMU_IR_JIT_ON_THUMB2 */

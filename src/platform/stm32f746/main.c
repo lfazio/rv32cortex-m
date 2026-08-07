@@ -123,6 +123,38 @@ static void console_putu(uint32_t v)
     }
 }
 
+#ifdef EMU_JIT_DIFF
+/*
+ * A block whose compiled code disagreed with the IR interpreter.
+ *
+ * `off` is a byte offset into the guest state, so the register file
+ * starts at zero and the number is the register times four. Only the
+ * first few are printed: everything after the first divergence is
+ * downstream of the same bug, and a UART at 921600 is not a debugger.
+ */
+void emu_jit_diff_report(uint32_t pc, uint32_t off, uint32_t want,
+                         uint32_t got);
+void emu_jit_diff_report(uint32_t pc, uint32_t off, uint32_t want,
+                         uint32_t got)
+{
+    static unsigned reported;
+
+    if (reported++ >= 12u) {
+        return;
+    }
+    console_puts("jit-diff pc ");
+    console_puthex(pc);
+    console_puts(" +");
+    console_putu(off);
+    console_puts(" want ");
+    console_puthex(want);
+    console_puts(" got ");
+    console_puthex(got);
+    console_puts("\n");
+}
+#endif
+
+
 /* Transport hooks for the guest's virtual UART. */
 static void guest_uart_tx(void *ctx, uint8_t c)
 {

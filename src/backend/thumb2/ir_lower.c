@@ -74,7 +74,16 @@ void ld_operand(uint32_t rt, uint16_t n)
  * adjustment.
  */
 #define IR_MAX_EXITS 64u
-static uint8_t *g_exits[IR_MAX_EXITS];
+typedef struct { uint8_t *at; bool conditional; } ir_exit_t;
+
+/*
+ * The kind is recorded, not recovered from the emitted halfword.
+ * Reading it back means deciding conditional-versus-unconditional
+ * from an encoding already written, and a misread patches a B<c>.W
+ * with B.W's field layout -- landing somewhere plausible instead of
+ * somewhere right.
+ */
+static ir_exit_t g_exits[IR_MAX_EXITS];
 static uint32_t g_nexits;
 
 
@@ -121,10 +130,12 @@ static void patch_branch(uint8_t *at, const uint8_t *target, bool conditional)
     }
 }
 
-static void note_exit(uint8_t *at)
+static void note_exit(uint8_t *at, bool conditional)
 {
     if (g_nexits < IR_MAX_EXITS) {
-        g_exits[g_nexits++] = at;
+        g_exits[g_nexits].at = at;
+        g_exits[g_nexits].conditional = conditional;
+        g_nexits++;
     }
 }
 
@@ -132,8 +143,54 @@ static void note_exit(uint8_t *at)
 /* Lowering                                                            */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Bisection gate.
+ *
+ * This host has no suite: the only way to find out which emitted
+ * encoding is wrong is to allow one group at a time and flash. Level 0
+ * emits nothing but the block frame and the pc and retire bookkeeping,
+ * so the guest computes garbage but must still *run* -- if it faults
+ * there, the frame is wrong and no instruction encoding is implicated.
+ */
+#ifndef T2_BISECT
+#  define T2_BISECT 99
+#endif
+
+static bool bisect_allows(uint8_t op)
+{
+    switch ((emu_ir_op_t)op) {
+    case EMU_IR_NOP: case EMU_IR_RETIRE: case EMU_IR_SETPC:
+        return T2_BISECT >= 0;
+    case EMU_IR_GET: case EMU_IR_PUT: case EMU_IR_CONST: case EMU_IR_MOV:
+        return T2_BISECT >= 1;
+    case EMU_IR_ADD: case EMU_IR_SUB: case EMU_IR_AND:
+    case EMU_IR_OR:  case EMU_IR_XOR: case EMU_IR_NOT: case EMU_IR_NEG:
+        return T2_BISECT >= 2;
+    case EMU_IR_SHL: case EMU_IR_SHR: case EMU_IR_SAR:
+    case EMU_IR_SHLI: case EMU_IR_SHRI: case EMU_IR_SARI:
+        return T2_BISECT >= 3;
+    case EMU_IR_BSWAP32: case EMU_IR_BSWAP16: case EMU_IR_HSWAP:
+    case EMU_IR_CLZ: case EMU_IR_CTZ:
+    case EMU_IR_SEXT8: case EMU_IR_SEXT16:
+    case EMU_IR_ZEXT8: case EMU_IR_ZEXT16:
+        return T2_BISECT >= 4;
+    case EMU_IR_SETCC:
+        return T2_BISECT >= 5;
+    case EMU_IR_EXIT: case EMU_IR_EXIT_IF:
+        return T2_BISECT >= 6;
+    case EMU_IR_LOAD: case EMU_IR_STORE:
+        return T2_BISECT >= 7;
+    default:
+        return false;
+    }
+}
+
 static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 {
+    if (!bisect_allows(in->op)) {
+        return false;
+    }
+
     switch ((emu_ir_op_t)in->op) {
     case EMU_IR_NOP:
     case EMU_IR_RETIRE:
@@ -313,7 +370,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             t2_imm32(T2_R0, in->imm);
         }
         t2_str_imm(T2_R0, T2_CPU, t->pc_offset);
-        note_exit(t2_b_forward());
+        note_exit(t2_b_forward(), false);
         break;
 
     case EMU_IR_EXIT_IF: {
@@ -325,7 +382,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             t2_bcond_forward(t2_cond(in->aux) ^ 1u);
         t2_imm32(T2_R0, in->imm);
         t2_str_imm(T2_R0, T2_CPU, t->pc_offset);
-        note_exit(t2_b_forward());
+        note_exit(t2_b_forward(), false);
         patch_branch(skip, emu_jit_here(), true);
         break;
     }
@@ -341,14 +398,26 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         }
         t2_mov(T2_R0, T2_CPU);
         t2_imm32(T2_R2, in->aux);
-        /* ADD.W r3, sp, #slot -- the out-pointer. */
-        t2_emit32(0xF10Du, (uint16_t)((T2_R3 << 8) | 0u));
-        t2_imm32(T2_R3, slot(in->dst));
-        t2_add(T2_R3, T2_R3, 13u);
+        /*
+         * ADDW r3, sp, #slot -- the out-pointer, as the immediate form.
+         *
+         * Not "materialise the offset, then ADD.W r3, r3, sp": SP as the
+         * register operand of a 32-bit data-processing instruction is
+         * UNPREDICTABLE on ARMv7-M, and unpredictable on this part meant
+         * it quietly did something that was not an add. The preceding
+         * ADD.W with a zero immediate was dead alongside it.
+         */
+        {
+            const uint32_t off = slot(in->dst);
+
+            t2_emit32((uint16_t)(0xF20Du | (((off >> 11) & 1u) << 10)),
+                      (uint16_t)((((off >> 8) & 7u) << 12) |
+                                 (T2_R3 << 8) | (off & 0xFFu)));
+        }
         t2_call((const void *)t->load);
         t2_imm32(T2_R1, 0u);
         t2_cmp(T2_R0, T2_R1);
-        note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)));
+        note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
         break;
 
     case EMU_IR_STORE:
@@ -366,7 +435,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         t2_call((const void *)t->store);
         t2_imm32(T2_R1, 0u);
         t2_cmp(T2_R0, T2_R1);
-        note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)));
+        note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
         break;
 
     /*
@@ -443,8 +512,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      * return instead would leave sp low and pop the wrong words.
      */
     for (uint32_t i = 0; i < g_nexits; i++) {
-        patch_branch(g_exits[i], emu_jit_here(),
-                     /* conditional */ (g_exits[i][1] & 0x80u) == 0u);
+        patch_branch(g_exits[i].at, emu_jit_here(),
+                     g_exits[i].conditional);
     }
 
     if (frame != 0u) {

@@ -109,6 +109,8 @@ set(RV32_JIT_CODE_BYTES "12288" CACHE STRING "JIT code cache size in bytes")
 # Build and use the Thumb-2 JIT. Turning this off is how the same guest
 # image is measured on the interpreter, which is also how a suspected JIT
 # miscompile gets isolated from a core bug.
+option(RV32_JIT_IR
+    "Thumb-2: build the JIT from the IR instead of the hand-written translator" OFF)
 option(RV32_JIT_DIFF
     "Check every translated block against the IR interpreter" OFF)
 option(RV32_JIT "Thumb-2 JIT backend" ON)
@@ -216,7 +218,7 @@ if(EMU_FRONTEND_RV32)
         # Both guard themselves on the host they emit for, so both can stay
         # in the list and exactly one of them compiles to anything.
         src/frontend/rv32/rv_ir.c
-        src/backend/thumb2/jit_rv32.c
+        $<$<NOT:$<BOOL:${RV32_JIT_IR}>>:${CMAKE_SOURCE_DIR}/src/backend/thumb2/jit_rv32.c>
         src/backend/thumb2/encode.c
         src/backend/thumb2/ir_lower.c
         src/emu/emu_ir_jit.c
@@ -236,6 +238,7 @@ if(EMU_FRONTEND_RV32)
         RV_LAZY_IRQ_CHECK=$<BOOL:${RV32_LAZY_IRQ}>
         RV_JIT_CODE_SIZE=${RV32_JIT_CODE_BYTES}u
         RV_ENABLE_JIT=$<BOOL:${RV32_JIT}>
+        $<$<BOOL:${RV32_JIT_IR}>:EMU_IR_JIT_ON_THUMB2>
         $<$<BOOL:${RV32_JIT_DIFF}>:EMU_JIT_DIFF>
         RV_JIT_LOOP_CHAIN=$<BOOL:${RV32_JIT_LOOP_CHAIN}>
         RV_JIT_INLINE_PERIPH=$<BOOL:${RV32_JIT_INLINE_PERIPH}>
