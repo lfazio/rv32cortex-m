@@ -611,6 +611,16 @@ int main(void)
         console_putu(js.pt_hits);
         console_puts(" armed ");
         console_putu(js.pt_armed);
+        console_puts("\n  declined ");
+        console_putu(js.declined);
+        console_puts(" overflow ");
+        console_putu(js.overflowed);
+#ifdef EMU_JIT_PROFILE
+        console_puts("\n  cyc xlat ");
+        console_putu(js.cyc_translate);
+        console_puts(" compact ");
+        console_putu(js.cyc_compact);
+#endif
         console_puts("\n  blk entr ");
         console_putu(js.block_entries);
         /*

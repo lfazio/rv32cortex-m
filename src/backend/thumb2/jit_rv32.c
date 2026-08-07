@@ -15,6 +15,7 @@
  */
 
 #include "rv32/rv_jit.h"
+#include "emu/emu_jit.h"
 
 #if RV_ENABLE_JIT && defined(RV_JIT_THUMB2)
 
@@ -101,56 +102,36 @@ _Static_assert(offsetof(rv_hart_t, f) + 31u * 4u < 4096u,
 /* Code cache                                                          */
 /* ------------------------------------------------------------------ */
 
-typedef struct {
-    uint32_t  guest_pc;
-    uint16_t *code;        /* first halfword of the translated block  */
-    uint16_t  code_len;    /* bytes, needed to relocate during compaction */
-    uint16_t  insns;       /* guest instructions the block retires    */
-    uint16_t  hits;        /* executions since the last ageing pass   */
-    int16_t   next;        /* hash chain, -1 terminates               */
-} jit_block_t;
+/*
+ * The code cache. The block table, the hash, compaction and the dispatch
+ * loop are the framework's now (src/emu/emu_jit.c); what is left here is
+ * the buffer itself, because where it lives is a platform question. On
+ * Cortex-M it is ordinary SRAM taken from what the guest would otherwise
+ * get -- the single largest influence on JIT performance, see
+ * RV_JIT_CODE_SIZE and the measurements in CLAUDE.md -- and a platform
+ * that wants it somewhere specific (a TCM, or CCM SRAM) overrides it with
+ * rv_jit_set_code_buffer before init. 8-byte aligned because translated
+ * code is entered as a function pointer and literal pools are loaded by
+ * LDR.
+ */
+static uint8_t g_code_default[RV_JIT_CODE_SIZE] __attribute__((aligned(8)));
 
 /*
- * Hit counts are bucketed rather than compared directly, so choosing what
- * to retain is a histogram walk instead of a sort.
+ * Counters the framework does not keep, because they are about *this*
+ * translator: which helper calls it emitted, how often the peephole
+ * elided a register load or store, and the register-read histogram that
+ * settled the guest-register-cache question. The rest of rv_jit_stats_t
+ * is filled from emu_jit_get_stats in rv_jit_get_stats below.
  */
-#define HIT_BINS 16u
-
-static uint32_t hit_bin(uint32_t hits)
-{
-    return (hits >= HIT_BINS) ? (HIT_BINS - 1u) : hits;
-}
-
-/*
- * Space kept free so a compaction leaves room to translate. A block is at
- * most RV_JIT_MAX_BLOCK_INSNS instructions and the largest translation is
- * well under 48 bytes per instruction, but the emitter bounds-checks every
- * write anyway, so this only avoids wasted work.
- */
-#define JIT_HEADROOM 512u
-
-/*
- * The code cache. Owned here rather than passed in by the platform, so
- * bringing the frontend up needs no knowledge of which backend it selected
- * -- rv32_frontend.c calls the backend's init and nothing else. A platform
- * that wants the cache somewhere specific (a TCM, or CCM SRAM) still
- * overrides it with rv_jit_set_code_buffer before init.
- *
- * Its size is the single largest influence on JIT performance and it is
- * taken from what the guest would otherwise get; see RV_JIT_CODE_SIZE and
- * the measurements in CLAUDE.md. 8-byte aligned because translated code is
- * entered as a function pointer and literal pools are loaded by LDR.
- */
-static uint8_t      g_code_default[RV_JIT_CODE_SIZE]
-                        __attribute__((aligned(8)));
-static uint8_t     *g_code = g_code_default;
-static uint32_t     g_code_size = RV_JIT_CODE_SIZE;
-static uint32_t     g_code_used;
-static jit_block_t  g_blocks[RV_JIT_MAX_BLOCKS];
-static uint32_t     g_block_count;
-static int16_t      g_hash[RV_JIT_HASH_SIZE];
-static bool         g_hash_ready;
 static rv_jit_stats_t g_stats;
+
+/*
+ * Bumped whenever something a block baked in has moved. The framework
+ * compares it on every dispatch and flushes when it changes, so this is
+ * the only way this backend ever discards translations for staleness --
+ * one flush path rather than two that have to agree.
+ */
+static uint32_t g_generation;
 
 /*
  * Guest RAM for the block being translated, and whether r5/r6/r7 have been
@@ -397,69 +378,6 @@ static uint32_t g_pt_hits;
 #endif /* RV_JIT_INLINE_PERIPH */
 
 /* Emission cursor, valid only while translating. */
-static uint16_t *g_emit;
-static uint16_t *g_emit_end;
-static bool      g_emit_overflow;
-
-static uint32_t pc_hash(uint32_t pc)
-{
-    /* pc is at least 2-byte aligned, so the low bit carries nothing. */
-    return (pc >> 1) & (RV_JIT_HASH_SIZE - 1u);
-}
-
-void rv_jit_set_code_buffer(void *buf, uint32_t size)
-{
-    g_code = (uint8_t *)buf;
-    g_code_size = size;
-    rv_jit_flush();
-}
-
-void rv_jit_flush(void)
-{
-    g_regions_scanned = false;
-    g_code_used = 0u;
-    g_block_count = 0u;
-    for (uint32_t i = 0; i < RV_JIT_HASH_SIZE; i++) {
-        g_hash[i] = -1;
-    }
-    g_hash_ready = true;
-    g_stats.flushes++;
-}
-
-void rv_jit_get_stats(rv_jit_stats_t *out)
-{
-    *out = g_stats;
-    out->blocks = g_block_count;
-    out->code_used = g_code_used;
-    out->code_size = g_code_size;
-}
-
-static jit_block_t *lookup(uint32_t pc)
-{
-    for (int16_t i = g_hash[pc_hash(pc)]; i >= 0; i = g_blocks[i].next) {
-        if (g_blocks[i].guest_pc == pc) {
-            /* Saturating: what matters is the ordering, not the magnitude. */
-            if (g_blocks[i].hits != 0xFFFFu) {
-                g_blocks[i].hits++;
-            }
-            return &g_blocks[i];
-        }
-    }
-    return NULL;
-}
-
-static void rebuild_hash(void)
-{
-    for (uint32_t i = 0; i < RV_JIT_HASH_SIZE; i++) {
-        g_hash[i] = -1;
-    }
-    for (uint32_t i = 0; i < g_block_count; i++) {
-        const uint32_t hidx = pc_hash(g_blocks[i].guest_pc);
-        g_blocks[i].next = g_hash[hidx];
-        g_hash[hidx] = (int16_t)i;
-    }
-}
-
 /*
  * Make the code just written visible to the instruction side.
  *
@@ -507,91 +425,24 @@ static void sync_icache(const void *addr, uint32_t len)
 #endif
 }
 
-/*
- * Reclaim space by discarding the least-used blocks and sliding the rest
- * down, instead of throwing the whole cache away.
- *
- * This is only possible because translated blocks are position
- * independent: every guest pc and helper address is materialised as an
- * absolute constant with MOVW/MOVT, and the sole pc-relative branch is the
- * CBZ that skips a block's own early-exit. So a block can simply be moved.
- *
- * Retention is by hit count, with a budget so compaction leaves room to
- * translate afterwards, and an ageing pass so a block that was hot long
- * ago cannot hold its place forever.
- */
-static void compact(void)
-{
-    uint32_t bytes[HIT_BINS];
-    memset(bytes, 0, sizeof(bytes));
-
-    for (uint32_t i = 0; i < g_block_count; i++) {
-        bytes[hit_bin(g_blocks[i].hits)] += g_blocks[i].code_len;
-    }
-
-    /* Walk from hottest to coldest, taking bins while they fit. */
-    const uint32_t budget = g_code_size - (g_code_size / 4u) - JIT_HEADROOM;
-    uint32_t acc = 0u;
-    uint32_t threshold = HIT_BINS;      /* nothing retained by default */
-    for (int32_t b = (int32_t)HIT_BINS - 1; b >= 0; b--) {
-        if (acc + bytes[b] > budget) {
-            break;
-        }
-        acc += bytes[b];
-        threshold = (uint32_t)b;
-    }
-
-    /*
-     * Never retain blocks that have run only once: they are as likely to
-     * be first-execution noise as working set, and keeping them is what
-     * fills the cache in the first place.
-     */
-    if (threshold < 2u) {
-        threshold = 2u;
-    }
-
-    uint8_t *dst = g_code;
-    uint32_t kept = 0u;
-
-    /* Blocks are appended by a bump allocator, so this array is already in
-     * increasing code-address order and dst never overtakes the source. */
-    for (uint32_t i = 0; i < g_block_count; i++) {
-        jit_block_t b = g_blocks[i];
-        if (hit_bin(b.hits) < threshold) {
-            g_stats.evictions++;
-            continue;
-        }
-        dst = (uint8_t *)(((uintptr_t)dst + 3u) & ~(uintptr_t)3u);
-        if (dst != (uint8_t *)b.code) {
-            memmove(dst, b.code, b.code_len);
-        }
-        b.code = (uint16_t *)(void *)dst;
-        b.hits >>= 1;                   /* age */
-        dst += b.code_len;
-        g_blocks[kept++] = b;
-    }
-
-    g_block_count = kept;
-    g_code_used = (uint32_t)(dst - g_code);
-    rebuild_hash();
-    /* Compaction moved every surviving block, so the whole live range of
-     * the buffer is freshly written. */
-    sync_icache(g_code, g_code_used);
-    g_stats.compactions++;
-}
-
 /* ------------------------------------------------------------------ */
 /* Emitters                                                            */
 /* ------------------------------------------------------------------ */
 
 static void emit16(uint16_t hw)
 {
-    if (EMU_UNLIKELY(g_emit >= g_emit_end)) {
-        g_emit_overflow = true;
-        return;
-    }
-    *g_emit++ = hw;
+    emu_jit_emit16(hw);
 }
+
+/*
+ * The emit cursor, as this file has always spelled it.
+ *
+ * The framework owns the buffer now, so this is a view rather than a
+ * variable: reads go to emu_jit_here(), and the three places that *move*
+ * it -- undoing a store, rewinding a declined instruction -- call
+ * emu_jit_rewind instead.
+ */
+#define g_emit ((uint16_t *)(void *)emu_jit_here())
 
 /* Thumb-2 32-bit instructions are stored as two halfwords, high first. */
 static void emit32(uint16_t hw1, uint16_t hw2)
@@ -756,7 +607,8 @@ static bool kill_dead_store(uint32_t insn)
         return false;
     }
 
-    g_emit--;                 /* take the store back */
+    /* Take the store back. */
+    emu_jit_rewind((uint8_t *)(void *)g_emit - 2);
     g_st_pos = NULL;
     g_st_greg = -1;
     g_stats.st_elided++;
@@ -1084,8 +936,14 @@ static uint16_t *emit_b_fwd(void)
 
 static void patch_fwd(uint16_t *at, bool conditional)
 {
-    if (at == NULL || at >= g_emit_end) {
-        return;                     /* the block overflowed and is discarded */
+    if (at == NULL || emu_jit_overflowed()) {
+        /*
+         * The block overflowed and will be discarded. The slot may be past
+         * the end of the buffer -- emu_jit_here() stops advancing once
+         * emitting has stopped -- so patching it would write over whatever
+         * follows.
+         */
+        return;
     }
     /* Thumb branch displacements are relative to PC, which reads as the
      * instruction address plus 4. */
@@ -3090,26 +2948,9 @@ static void count_hot_reads(uint32_t insn, uint32_t *per_block)
 }
 #endif
 
-/* True when the block table or the code buffer has no room for a block. */
-static bool space_low(void)
+
+static uint32_t translate_once(rv_hart_t *h, uint32_t pc)
 {
-    return g_block_count >= RV_JIT_MAX_BLOCKS ||
-           g_code_used + JIT_HEADROOM >= g_code_size;
-}
-
-static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
-{
-    if (space_low()) {
-        return NULL;
-    }
-
-    /* 4-byte align so the block entry is well-formed. */
-    g_code_used = (g_code_used + 3u) & ~3u;
-    g_emit = (uint16_t *)(void *)(g_code + g_code_used);
-    g_emit_end = (uint16_t *)(void *)(g_code + g_code_size);
-    g_emit_overflow = false;
-
-    uint16_t *const start = g_emit;
 
     /*
      * Describe the inlinable regions to the block. The region table is
@@ -3166,7 +3007,7 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
     bool ended = false;
     uint32_t hot[4] = { 0u, 0u, 0u, 0u };
 
-    while (count < RV_JIT_MAX_BLOCK_INSNS && !g_emit_overflow) {
+    while (count < RV_JIT_MAX_BLOCK_INSNS && !emu_jit_overflowed()) {
         /*
          * Fetch through the bus so permissions are honoured. A fetch fault
          * during translation simply ends the block; the interpreter will
@@ -3292,7 +3133,7 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
             if (killed) {
                 before[-1] = saved_st;
             }
-            g_emit = before;
+            emu_jit_rewind((uint8_t *)(void *)before);
             jit_r1_forget();
             break;
         }
@@ -3305,8 +3146,8 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
         cur = (r == 2) ? redirect : (cur + len);
     }
 
-    if (g_emit_overflow || count == 0u) {
-        return NULL;
+    if (emu_jit_overflowed() || count == 0u) {
+        return 0u;
     }
 
     /* A block that ran out of translatable instructions falls through: set
@@ -3316,101 +3157,31 @@ static jit_block_t *translate_once(rv_hart_t *h, uint32_t pc)
         emit_epilogue(count);
     }
 
-    if (g_emit_overflow) {
-        return NULL;
+    if (emu_jit_overflowed()) {
+        return 0u;
     }
 
-    jit_block_t *b = &g_blocks[g_block_count];
-    b->guest_pc = pc;
-    b->code = start;
-    b->code_len = (uint16_t)((uint8_t *)g_emit - (uint8_t *)start);
-    b->insns = (uint16_t)count;
-    b->hits = 1u;
-
-    const uint32_t hidx = pc_hash(pc);
-    b->next = g_hash[hidx];
-    g_hash[hidx] = (int16_t)g_block_count;
-    g_block_count++;
-    g_code_used = (uint32_t)((uint8_t *)g_emit - g_code);
-    g_stats.translations++;
-
+    /*
+     * Registering the block, sizing it and making it fetchable are the
+     * framework's now. What is left here is the part only this backend
+     * knows: how many guest instructions the block retires, and the
+     * per-block read counts the hot-register experiment measures.
+     */
     for (uint32_t i = 0; i < 4u; i++) {
         if (hot[i] != 0u) {
             g_stats.hot_reads[i] += hot[i];
             g_stats.hot_blocks[i]++;
         }
     }
-
-    /* The code was written as data; make it fetchable. */
-    sync_icache(b->code, b->code_len);
-
-    return b;
+    return count;
 }
 
-/*
- * Translate, reclaiming space if the caches are full.
- *
- * Without this, a guest whose working set outgrows the cache would fall
- * back to the interpreter permanently the first time it filled: nothing
- * ever freed anything, so every later lookup missed and every later
- * translation was refused. Compaction keeps the hot blocks and only
- * full-flushes when even that cannot make room.
- */
-static jit_block_t *translate(rv_hart_t *h, uint32_t pc)
-{
-    if (!space_low()) {
-        jit_block_t *b = translate_once(h, pc);
-        if (b != NULL) {
-            return b;
-        }
-        /*
-         * Failing with space available means this pc simply starts with an
-         * instruction the translator does not handle. That is the normal,
-         * frequent case -- every interpreted DIV lands here -- and it must
-         * not be confused with the cache being full. Reclaiming here would
-         * compact, and often flush, the entire cache once per interpreted
-         * instruction, which is exactly the pathology that made a
-         * div-heavy loop translate the same blocks tens of thousands of
-         * times.
-         */
-        if (!g_emit_overflow) {
-            return NULL;
-        }
-    }
-
-    /* Genuinely out of room. Keep the hot blocks, drop the rest. */
-    compact();
-    if (!space_low()) {
-        jit_block_t *b = translate_once(h, pc);
-        if (b != NULL) {
-            return b;
-        }
-        if (!g_emit_overflow) {
-            return NULL;
-        }
-    }
-
-    /* Compaction could not free enough: start over. */
-    rv_jit_flush();
-    return translate_once(h, pc);
-}
 
 /* ------------------------------------------------------------------ */
 /* Backend                                                             */
 /* ------------------------------------------------------------------ */
 
-typedef uint32_t (*block_fn_t)(rv_hart_t *h);
-
-static bool jit_init(rv_hart_t *h)
-{
-    (void)h;
-    if (!g_hash_ready) {
-        rv_jit_flush();
-    }
-    return true;
-}
-
-static void jit_reset(rv_hart_t *h)
+static void jit_reset_state(rv_hart_t *h)
 {
 #if RV_EXT_PMP
     jit_pmp_snapshot(h, &g_pmp_seen);
@@ -3424,17 +3195,6 @@ static void jit_reset(rv_hart_t *h)
 #if !RV_EXT_PMP && !RV_EXT_F
     (void)h;
 #endif
-    rv_jit_flush();
-}
-
-static void jit_invalidate(rv_hart_t *h, uint32_t addr, uint32_t len)
-{
-    (void)h;
-    (void)addr;
-    (void)len;
-    /* Whole-cache flush: translations are cheap to rebuild and tracking
-     * which blocks covered a given range would cost more than it saves. */
-    rv_jit_flush();
 }
 
 #if RV_EXT_F
@@ -3478,7 +3238,7 @@ static void jit_note_frm(const rv_hart_t *h)
         if (g_fp_translated) {
             g_fp_translated = false;
             g_frm_specialised = false;
-            rv_jit_flush();
+            g_generation++;
         }
     }
 
@@ -3488,10 +3248,15 @@ static void jit_note_frm(const rv_hart_t *h)
     g_frm_seen = frm;
     if (g_frm_specialised) {
         g_frm_specialised = false;
-        rv_jit_flush();
+        g_generation++;
     }
 }
 #endif /* RV_EXT_F */
+
+
+/* ------------------------------------------------------------------ */
+/* The frontend's half of the framework                                */
+/* ------------------------------------------------------------------ */
 
 /*
  * Everything the translator reads from mutable hart state, checked in the
@@ -3500,8 +3265,12 @@ static void jit_note_frm(const rv_hart_t *h)
  * frm, mstatus.FS and the PMP configuration all move only through a CSR
  * write, and the translator declines SYSTEM, so every such write runs here
  * on the interpreter fallback. Keeping the checks here rather than in the
- * dispatch loop means a guest that uses none of these pays nothing:
+ * dispatch loop means a guest that uses none of them pays nothing:
  * CoreMark enters blocks 2.9 million times a run.
+ *
+ * It bumps a counter rather than flushing. The framework compares that
+ * counter and does the flush, so there is one flush path rather than two
+ * that must agree.
  */
 static void jit_note_csr(rv_hart_t *h)
 {
@@ -3514,156 +3283,212 @@ static void jit_note_csr(rv_hart_t *h)
     jit_pmp_snapshot(h, &now);
     if (EMU_UNLIKELY(jit_pmp_differs(&now, &g_pmp_seen))) {
         g_pmp_seen = now;
-        rv_jit_flush();
+        g_generation++;
     }
 #else
     (void)h;
 #endif
 }
 
-static emu_run_reason_t jit_run(rv_hart_t *h, uint32_t budget, uint32_t *retired)
+
+/* ------------------------------------------------------------------ */
+
+static uint32_t thumb2_translate(emu_cpu_t *cpu, uint32_t pc)
 {
-    uint32_t done = 0;
-    emu_run_reason_t reason = EMU_RUN_BUDGET;
-
-    if (EMU_UNLIKELY(g_code == NULL)) {
-        /* No code buffer configured: behave exactly like the interpreter. */
-        return rv_backend_interp.run((emu_cpu_t *)h, budget, retired);
-    }
-
-    if (EMU_UNLIKELY(h->state == EMU_STATE_WFI)) {
-        if (!rv_hart_wfi_wake(h)) {
-            if (retired != NULL) {
-                *retired = 0u;
-            }
-            return EMU_RUN_WFI;
-        }
-        h->state = EMU_STATE_RUNNING;
-#if RV_LAZY_IRQ_CHECK
-        h->irq_dirty = true;
-#endif
-    }
-
-    while (done < budget) {
-        if (EMU_UNLIKELY(h->state != EMU_STATE_RUNNING)) {
-            reason = (h->state == EMU_STATE_HALTED) ? EMU_RUN_HALTED : EMU_RUN_WFI;
-            break;
-        }
-
-#if RV_EXT_SDTRIG
-        /*
-         * An armed trigger needs a check before every fetch, which a
-         * translated block cannot express, and its load and store checks
-         * live in rv_hart_load/store which the inlined path bypasses. So
-         * while any trigger is armed the interpreter runs everything.
-         *
-         * No flush is needed either way, which is worth stating because the
-         * first version did one and paid for it. Blocks are only ever
-         * translated while unarmed and only ever executed while unarmed, so
-         * a cached block cannot have been built under the wrong assumption.
-         * That first version also stored a "seen" flag unconditionally on
-         * every dispatch, which cost 16% on CoreMark for a guest that never
-         * arms a trigger at all.
-         */
-        if (EMU_UNLIKELY(h->trig_active)) {
-            uint32_t n = 0;
-            const emu_run_reason_t r = rv_backend_interp.run((emu_cpu_t *)h, 1u, &n);
-            done += n;
-            g_stats.interp_fallbacks += n;
-            jit_note_csr(h);
-            if (r == EMU_RUN_HALTED || r == EMU_RUN_WFI) {
-                reason = r;
-                break;
-            }
-            continue;
-        }
-#endif
-
-        /* Interrupts are delivered between blocks, which bounds latency by
-         * the block length rather than by a chain of them. */
-#if RV_LAZY_IRQ_CHECK
-        if (EMU_UNLIKELY(h->irq_dirty))
-#endif
-        {
-#if RV_LAZY_IRQ_CHECK
-            h->irq_dirty = false;
-#endif
-            const rv_exc_t irq = rv_hart_pending_irq(h);
-            if (EMU_UNLIKELY(irq != RV_EXC_NONE)) {
-                rv_hart_trap(h, RV_CAUSE_INTERRUPT | irq, 0u);
-                done++;
-                continue;
-            }
-        }
-
-        jit_block_t *b = lookup(h->pc);
-        if (b == NULL) {
-            b = translate(h, h->pc);
-            if (b == NULL) {
-                /*
-                 * Nothing translatable here. Run a single instruction on
-                 * the interpreter and try again; that covers SYSTEM, AMO,
-                 * the M helpers and every encoding the translator skips.
-                 */
-                uint32_t n = 0;
-                const emu_run_reason_t r = rv_backend_interp.run((emu_cpu_t *)h, 1u, &n);
-                done += n;
-                g_stats.interp_fallbacks += n;
-                jit_note_csr(h);
-                if (r == EMU_RUN_HALTED || r == EMU_RUN_WFI) {
-                    reason = r;
-                    break;
-                }
-                continue;
-            }
-        }
-
-        /* Thumb bit set so BLX enters in Thumb state. */
-        const block_fn_t fn =
-            (block_fn_t)(uintptr_t)((uint32_t)(uintptr_t)b->code | 1u);
-        const uint32_t n = fn(h);
-        g_stats.block_entries++;
-        done += n;
-
-#if RV_EXT_ZICNTR
-        if (EMU_LIKELY((h->mcountinhibit & 0x1u) == 0u)) {
-            h->mcycle += n;
-        }
-        if (EMU_LIKELY((h->mcountinhibit & 0x4u) == 0u)) {
-            h->minstret += n;
-        }
-#endif
-    }
-
-#if EMU_ENABLE_STATS
-    h->insn_retired_lo += done;
-#endif
-    if (retired != NULL) {
-        *retired = done;
-    }
-    return reason;
+    return translate_once((rv_hart_t *)cpu, pc);
 }
 
-/* Adapters onto emu_backend_t; see the note in rv_interp.c. */
+/*
+ * What the translator baked in, as one value.
+ *
+ * A counter rather than a re-derivation, because the framework reads this
+ * on every dispatch and CoreMark enters blocks 2.9 million times a run.
+ * The expensive part -- comparing the PMP configuration, frm and FS
+ * off-ness -- happens in after_interp below, which is the only place any
+ * of them can move: all three change through a CSR write, and the
+ * translator declines SYSTEM.
+ */
+/*
+ * Where the dispatch loop should look for each of them.
+ *
+ * `blocked` is trig_active alone, not h->fetch_guard. fetch_guard is the
+ * one branch the *interpreter* needs and folds in PMP and paging as well;
+ * this translator handles both rather than avoiding them -- it checks
+ * fetch permission per halfword while translating, walks the page tables
+ * as the interpreter does, and jit_pmp_snapshot bakes the PMP
+ * configuration, satp and vm_gen into g_generation so a block is
+ * discarded the moment any of it moves. Blocking on fetch_guard costs
+ * correctness nothing and coverage everything: the self-test arms PMP
+ * early, so it sent the rest of the run to the interpreter -- 14660
+ * instructions fell back where 341 was right, and every test still
+ * passed.
+ *
+ * A trigger is different in kind. It needs a comparison per fetch that
+ * emitted code does not perform and no snapshot can stand in for.
+ */
+static void thumb2_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
+{
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+
+    out->pc = &h->pc;
+    out->state = &h->state;
+    out->generation = &g_generation;
+#if RV_EXT_SDTRIG
+    out->blocked = &h->trig_active;
+#endif
+#if RV_LAZY_IRQ_CHECK
+    out->irq_pending = &h->irq_dirty;
+#endif
+}
+
+static void thumb2_after_interp(emu_cpu_t *cpu)
+{
+    jit_note_csr((rv_hart_t *)cpu);
+}
+
+static bool thumb2_is_idle(emu_cpu_t *cpu)
+{
+    return ((rv_hart_t *)cpu)->state == EMU_STATE_WFI;
+}
+
+static bool thumb2_wake(emu_cpu_t *cpu)
+{
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+
+    if (!rv_hart_wfi_wake(h)) {
+        return false;
+    }
+    h->state = EMU_STATE_RUNNING;
+#if RV_LAZY_IRQ_CHECK
+    h->irq_dirty = true;
+#endif
+    return true;
+}
+
+static bool thumb2_take_irq(emu_cpu_t *cpu)
+{
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+
+#if RV_LAZY_IRQ_CHECK
+    if (!h->irq_dirty) {
+        return false;
+    }
+    h->irq_dirty = false;
+#endif
+    const rv_exc_t irq = rv_hart_pending_irq(h);
+    if (irq == RV_EXC_NONE) {
+        return false;
+    }
+    rv_hart_trap(h, RV_CAUSE_INTERRUPT | irq, 0u);
+    return true;
+}
+
+static void thumb2_count(emu_cpu_t *cpu, uint32_t n)
+{
+#if RV_EXT_ZICNTR
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+
+    if (EMU_LIKELY((h->mcountinhibit & 0x1u) == 0u)) {
+        h->mcycle += n;
+    }
+    if (EMU_LIKELY((h->mcountinhibit & 0x4u) == 0u)) {
+        h->minstret += n;
+    }
+#else
+    (void)cpu;
+    (void)n;
+#endif
+}
+
+static const emu_jit_ops_t g_jit_ops = {
+    .name        = "jit-thumb2",
+    .bind        = thumb2_bind,
+    .translate   = thumb2_translate,
+    .after_interp = thumb2_after_interp,
+    .interp      = &rv_backend_interp,
+    .is_idle     = thumb2_is_idle,
+    .wake        = thumb2_wake,
+    .take_irq    = thumb2_take_irq,
+    .count       = thumb2_count,
+    /*
+     * Relocatable: every guest pc and helper address is materialised as an
+     * absolute constant with MOVW/MOVT, and the only pc-relative branches
+     * are within the block, so both ends move together. That is what lets
+     * the framework compact rather than flush -- which matters here more
+     * than anywhere, because this cache is 12 KB and a full flush throws
+     * away the working set.
+     */
+    .relocatable = true,
+    .sync        = sync_icache,
+};
+
 static bool jit_init_cpu(emu_cpu_t *cpu)
 {
-    return jit_init((rv_hart_t *)cpu);
+    (void)cpu;
+    /*
+     * emu_jit_init only allocates when nothing has been handed in, and
+     * on this host it cannot allocate at all -- so the default buffer is
+     * offered here rather than at the first translation. A platform that
+     * called rv_jit_set_code_buffer first keeps its own.
+     */
+    if (!emu_jit_init(RV_JIT_CODE_SIZE)) {
+        emu_jit_set_buffer(g_code_default, RV_JIT_CODE_SIZE);
+        return emu_jit_init(RV_JIT_CODE_SIZE);
+    }
+    return true;
 }
 
 static void jit_reset_cpu(emu_cpu_t *cpu)
 {
-    jit_reset((rv_hart_t *)cpu);
+    jit_reset_state((rv_hart_t *)cpu);
+    emu_jit_flush();
 }
 
 static emu_run_reason_t jit_run_cpu(emu_cpu_t *cpu, uint32_t budget,
                                     uint32_t *retired)
 {
-    return jit_run((rv_hart_t *)cpu, budget, retired);
+    return emu_jit_run(cpu, budget, retired, &g_jit_ops);
 }
 
 static void jit_invalidate_cpu(emu_cpu_t *cpu, uint32_t addr, uint32_t len)
 {
-    jit_invalidate((rv_hart_t *)cpu, addr, len);
+    (void)cpu;
+    (void)addr;
+    (void)len;
+    emu_jit_flush();
+}
+
+void rv_jit_set_code_buffer(void *buf, uint32_t size)
+{
+    emu_jit_set_buffer(buf, size);
+}
+
+void rv_jit_flush(void)
+{
+    emu_jit_flush();
+}
+
+void rv_jit_get_stats(rv_jit_stats_t *out)
+{
+    emu_jit_stats_t st;
+
+    emu_jit_get_stats(&st);
+    *out = g_stats;
+    out->blocks = st.blocks;
+    out->translations = st.translations;
+    out->block_entries = st.block_entries;
+    out->interp_fallbacks = st.interp_fallbacks;
+    out->flushes = st.flushes;
+    out->compactions = st.compactions;
+    out->evictions = st.evictions;
+    out->code_used = st.code_used;
+    out->code_size = st.code_size;
+    out->declined = st.declined;
+    out->overflowed = st.overflowed;
+#ifdef EMU_JIT_PROFILE
+    out->cyc_translate = st.cyc_translate;
+    out->cyc_compact = st.cyc_compact;
+#endif
 }
 
 const emu_backend_t rv_backend_jit = {

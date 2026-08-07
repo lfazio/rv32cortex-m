@@ -398,6 +398,54 @@ what changes between the parts.
   made CoreMark flush 19 times per run, and constant retranslation is
   exactly what would mask a translator bug behind a fresh translation. The
   x86-64 backend sets its own sizes.
+- **Porting the Thumb-2 backend onto the shared framework cost 4x, in four
+  separate ways, and every suite passed throughout.** CoreMark went 79,502
+  ticks to 321,035 while `isatest` stayed 296/296 and riscv-tests 77/77.
+  What the *stats line* said, in order of size:
+  - **`interp 14660` against 341.** `may_run` was copied from the x86-64
+    backend, which declines under PMP and paging because it implements
+    neither. Thumb-2 implements both -- it checks fetch permission per
+    halfword while translating, walks the page tables, and snapshots the
+    PMP configuration, `satp` and `vm_gen` -- so it must gate on
+    `trig_active` alone. Gating on `fetch_guard` costs correctness nothing
+    and coverage everything: `isatest` arms PMP early, so the whole rest
+    of the run interpreted.
+  - **`overflow 957`, and translation was 65% of all host cycles.** The
+    framework returned NULL for a block that overran the buffer, exactly
+    as it does for one the translator declined -- so the interpreter ran
+    one instruction and the same oversized block was translated and thrown
+    away again, 957 times. The existing lesson below is the same defect
+    mirrored: **"declined", "overflowed" and "cache full" are three
+    outcomes and collapsing any two of them is pathological.** They are
+    now counted, not reasoned about.
+  - **A direct-mapped hash hides blocks rather than costing a probe.** The
+    table is far larger than the live set, which makes one entry per
+    bucket look adequate; a collision instead makes the loser unreachable
+    while it still holds its code and its slot, so two hot blocks
+    retranslate each other every time round the loop. 1977 translations
+    against 1465. Keep the chain.
+  - **+129 cycles per dispatch for six indirect calls.** `pc`, `state`,
+    `generation` and `may_run` as `emu_jit_ops_t` callbacks read better
+    and cost 4.99M of the 7.03M host cycles the framework added: the loop
+    runs once per block entry, and an M7 cannot predict an indirect call.
+    They are pointers in `emu_jit_hot_t` now, bound once per
+    `emu_jit_run`, which is four loads. This is not the layout guess the
+    `pc` callback was written to avoid -- the frontend states where each
+    value lives, once, in `bind`.
+
+  Result 95,107 ticks, ~16-20% above the pre-framework backend, which is
+  the price of the shared dispatch loop and is real. Inlining the emitters
+  was **neutral** (LTO already did it); do not re-try it.
+- **A host calling convention belongs in the framework, not the
+  frontend.** Cortex-M selects instruction set with the low bit of a
+  branch target, so a block address needs bit 0 set before it is called.
+  The framework knows the host; the frontend knows the guest. Getting it
+  wrong faults on the first block entry rather than computing anything
+  wrong -- the banner printed and nothing else.
+- **Framework table sizes have to follow the target.** 8192 blocks and an
+  8192-entry hash cost a host nothing and are 192 KB of `.bss` on a part
+  with 320 KB, where those bytes are the guest's. Keyed on
+  `EMU_JIT_THUMB2` now: 256/256/12 KB there, the host figures otherwise.
 - **System V wants rsp 16-byte aligned at a `call`.** Entry leaves it 8
   past, two pushes bring it back to 8, so the block prologue needs one more
   8. Getting it wrong does not fault in the emitted code -- it faults

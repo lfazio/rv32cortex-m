@@ -143,6 +143,143 @@ static EMU_ALWAYS_INLINE uint32_t do_satsub(g4mh_cpu_t *c, uint32_t a,
     return res;
 }
 
+/* ------------------------------------------------------------------ */
+/* Data manipulation                                                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The swap group -- BSW, BSH, HSW, HSH -- all write reg3 and all set the
+ * same four flags, but each on a *different* width of the result, which is
+ * the whole point of them: they exist so an endian conversion can test in
+ * one instruction whether the converted value contains a zero element.
+ *
+ *   BSW  a zero byte anywhere in the word     Z on the word
+ *   BSH  a zero byte in the lower halfword    Z on the lower halfword
+ *   HSW  a zero halfword anywhere in the word Z on the word
+ *   HSH  the lower halfword is zero           Z on the lower halfword
+ *
+ * S is the word MSB throughout and OV is always 0. Getting the width wrong
+ * gives the right register result with the wrong flags, which no test that
+ * only checks reg3 would notice -- so the tests check PSW.
+ */
+static EMU_ALWAYS_INLINE void set_swap_flags(g4mh_cpu_t *c, uint32_t res,
+                                             bool cy, bool zero)
+{
+    uint32_t psw = c->psw & ~G4MH_PSW_FLAGS;
+
+    if (cy) {
+        psw |= G4MH_PSW_CY;
+    }
+    if (zero) {
+        psw |= G4MH_PSW_Z;
+    }
+    if ((res & 0x80000000u) != 0u) {
+        psw |= G4MH_PSW_S;
+    }
+    c->psw = psw;
+}
+
+/* True if any byte of `v` is zero, without a loop or a branch. */
+static EMU_ALWAYS_INLINE bool has_zero_byte(uint32_t v)
+{
+    return ((v - 0x01010101u) & ~v & 0x80808080u) != 0u;
+}
+
+/*
+ * Bit search: SCH0L/SCH1L scan from the MSB, SCH0R/SCH1R from the LSB.
+ *
+ * The result is a *one-based* distance to the first matching bit, counted
+ * from the end the search started at, and 0 when there is no match -- so
+ * "found at the first bit examined" is 1, not 0, and the not-found case is
+ * distinguishable from it. Z reports not-found. CY reports that the match
+ * was at the far end, i.e. that the search examined all 32 bits, which is
+ * how the manual's "if the bit found is the LSB" (searching from the MSB)
+ * and "is the MSB" (searching from the LSB) both read.
+ *
+ * S is defined as 0 here, not as the result's MSB: the result never
+ * exceeds 32.
+ */
+static EMU_ALWAYS_INLINE void do_sch(g4mh_cpu_t *c, uint32_t rd, uint32_t v,
+                                     bool want_one, bool from_msb)
+{
+    /* Searching for a zero is searching for a one in the complement. */
+    uint32_t bits = want_one ? v : ~v;
+    uint32_t n = 0u;
+
+    if (bits != 0u) {
+        n = from_msb ? (uint32_t)__builtin_clz(bits) + 1u
+                     : (uint32_t)__builtin_ctz(bits) + 1u;
+    }
+
+    uint32_t psw = c->psw & ~G4MH_PSW_FLAGS;
+    if (n == 0u) {
+        psw |= G4MH_PSW_Z;
+    } else if (n == 32u) {
+        psw |= G4MH_PSW_CY;
+    }
+    c->psw = psw;
+    wr(c, rd, n);
+}
+
+/* ------------------------------------------------------------------ */
+/* Bit manipulation on memory                                          */
+/* ------------------------------------------------------------------ */
+
+enum { BITOP_SET, BITOP_NOT, BITOP_CLR, BITOP_TST };
+
+/*
+ * SET1 / NOT1 / CLR1 / TST1, which differ only in what they write back.
+ *
+ * Shared between the two encodings -- Format VIII takes the bit number
+ * from the opcode and the address from a disp16, Format IX takes both
+ * from registers -- because the semantics below are the whole
+ * instruction and having them in one place is what keeps the two forms
+ * from drifting.
+ *
+ * Three things here are easy to get wrong and none of them shows up as a
+ * wrong register value:
+ *
+ *   - Z is the *old* value of the bit, complemented, and is set before
+ *     the modification. Computing it from the result makes SET1 always
+ *     clear Z and CLR1 always set it.
+ *   - only Z moves. CY, OV and S keep whatever the previous instruction
+ *     left, which is unlike almost everything else in this file.
+ *   - the access is a byte, and it is a read-modify-write even for NOT1.
+ *     TST1 alone does not store, which also means it alone cannot raise
+ *     a store-side fault.
+ */
+static g4mh_exc_t do_bitop(g4mh_cpu_t *c, unsigned op, uint32_t adr,
+                           uint32_t bit)
+{
+    const uint32_t mask = 1u << (bit & 7u);
+    uint32_t token;
+
+    g4mh_exc_t e = g4mh_load(c, adr, 1u, false, &token);
+    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+        return e;
+    }
+
+    if ((token & mask) != 0u) {
+        c->psw &= ~G4MH_PSW_Z;
+    } else {
+        c->psw |= G4MH_PSW_Z;
+    }
+
+    if (op == BITOP_TST) {
+        return G4MH_EXC_NONE;
+    }
+
+    uint32_t out = token;
+    if (op == BITOP_SET) {
+        out |= mask;
+    } else if (op == BITOP_CLR) {
+        out &= ~mask;
+    } else {
+        out ^= mask;
+    }
+    return g4mh_store(c, adr, 1u, out);
+}
+
 /*
  * Shifts. A shift of zero leaves the operand alone and clears CY, which is
  * why the count is tested rather than fed straight to the C operator --
@@ -727,6 +864,103 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 wr(c, r2, g4mh_sr_read(c, sel, r1));
                 break;
 
+            /*
+             * The register forms of the bit-manipulation group. The bit
+             * number comes from the *value* in reg2 rather than from the
+             * opcode, and the address from reg1 with no displacement.
+             *
+             * Their sub-opcode order is not the same as the Format VIII
+             * operation-selector order above (there SET, NOT, CLR, TST;
+             * here SET, NOT, CLR, TST at 0x0E0, 0x0E2, 0x0E4, 0x0E6), so
+             * the two tables are written out separately rather than
+             * derived from one another.
+             */
+            case 0x0E0:                             /* SET1 reg2, [reg1] */
+            case 0x0E2:                             /* NOT1 reg2, [reg1] */
+            case 0x0E4:                             /* CLR1 reg2, [reg1] */
+            case 0x0E6: {                           /* TST1 reg2, [reg1] */
+                static const uint8_t k_regbitop[4] = {
+                    BITOP_SET, BITOP_NOT, BITOP_CLR, BITOP_TST
+                };
+                const g4mh_exc_t e =
+                    do_bitop(c, k_regbitop[(sub - 0x0E0u) >> 1],
+                             c->r[r1], c->r[r2]);
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                break;
+            }
+
+            /*
+             * The swap and bit-search group, sub-opcodes 0x340-0x366.
+             *
+             * These read reg2 from the *first* halfword and write reg3
+             * from the second, so the source is `r2` and the destination
+             * is `sel`. reg1 is a fixed zero in every one of them; a
+             * non-zero there is not this instruction, and the project's
+             * rule is that an encoding we do not know raises RIE rather
+             * than doing something plausible.
+             */
+            case 0x340: {                           /* BSW reg2, reg3   */
+                const uint32_t v = c->r[r2];
+                if (r1 != 0u) { EXC(G4MH_EXC_RIE); }
+                const uint32_t res = __builtin_bswap32(v);
+                set_swap_flags(c, res, has_zero_byte(res), res == 0u);
+                wr(c, sel, res);
+                break;
+            }
+            case 0x342: {                           /* BSH reg2, reg3   */
+                const uint32_t v = c->r[r2];
+                if (r1 != 0u) { EXC(G4MH_EXC_RIE); }
+                /* Byte swap within each halfword, halfwords left alone. */
+                const uint32_t res = ((v & 0x00FF00FFu) << 8) |
+                                     ((v & 0xFF00FF00u) >> 8);
+                const bool cy = ((res & 0x00FFu) == 0u) ||
+                                ((res & 0xFF00u) == 0u);
+                set_swap_flags(c, res, cy, (res & 0xFFFFu) == 0u);
+                wr(c, sel, res);
+                break;
+            }
+            case 0x344: {                           /* HSW reg2, reg3   */
+                const uint32_t v = c->r[r2];
+                if (r1 != 0u) { EXC(G4MH_EXC_RIE); }
+                const uint32_t res = (v << 16) | (v >> 16);
+                const bool cy = ((res & 0xFFFFu) == 0u) ||
+                                ((res >> 16) == 0u);
+                set_swap_flags(c, res, cy, res == 0u);
+                wr(c, sel, res);
+                break;
+            }
+            case 0x346: {                           /* HSH reg2, reg3   */
+                const uint32_t res = c->r[r2];
+                if (r1 != 0u) { EXC(G4MH_EXC_RIE); }
+                /*
+                 * A move, not a swap -- the value is unchanged and only
+                 * the flags are the point. CY and Z are both the lower
+                 * halfword being zero, which is what makes HSH the
+                 * halfword counterpart of the tests above.
+                 */
+                const bool lo_zero = (res & 0xFFFFu) == 0u;
+                set_swap_flags(c, res, lo_zero, lo_zero);
+                wr(c, sel, res);
+                break;
+            }
+
+            case 0x360:                             /* SCH0R reg2, reg3 */
+                if (r1 != 0u) { EXC(G4MH_EXC_RIE); }
+                do_sch(c, sel, c->r[r2], false, false);
+                break;
+            case 0x362:                             /* SCH1R reg2, reg3 */
+                if (r1 != 0u) { EXC(G4MH_EXC_RIE); }
+                do_sch(c, sel, c->r[r2], true, false);
+                break;
+            case 0x364:                             /* SCH0L reg2, reg3 */
+                if (r1 != 0u) { EXC(G4MH_EXC_RIE); }
+                do_sch(c, sel, c->r[r2], false, true);
+                break;
+            case 0x366:                             /* SCH1L reg2, reg3 */
+                if (r1 != 0u) { EXC(G4MH_EXC_RIE); }
+                do_sch(c, sel, c->r[r2], true, true);
+                break;
+
             case 0x080:                             /* SHR reg1, reg2   */
                 wr(c, r2, do_shr(c, c->r[r2], c->r[r1]));
                 break;
@@ -1037,13 +1271,33 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
             goto retired_insn;
         }
 
-        /* ------------------------------------------------------------
-         * Everything not named above: the bit-manipulation group
-         * (Format VIII), the FP instructions, and the 48-bit forms other
-         * than MOV imm32. See the scope note in g4mh_cpu.h.
-         * ---------------------------------------------------------- */
-        case 0x3E:
-            EXC(G4MH_EXC_RIE);
+        /*
+         * Format VIII: the bit-manipulation group on memory.
+         *
+         *   ooBBB111110RRRRR  dddddddddddddddd
+         *
+         * where oo picks the operation and BBB is the bit number. The
+         * operation selector is bits[15:14] -- the *top* of the field
+         * that every other 32-bit format uses for reg2 -- so this whole
+         * opcode is one where reading a register number out of bits
+         * [15:11] gets nonsense.
+         *
+         * All four are byte-sized read-modify-writes at a sign-extended
+         * disp16 from reg1, all four set Z from the bit *before* the
+         * change and touch no other flag, and TST1 alone does not write
+         * back.
+         */
+        case 0x3E: {
+            static const uint8_t k_bitop[4] = {
+                BITOP_SET, BITOP_NOT, BITOP_CLR, BITOP_TST
+            };
+            const uint32_t op  = (w0 >> 14) & 0x3u;
+            const uint32_t bit = (w0 >> 11) & 0x7u;
+            const uint32_t adr = c->r[r1] + (uint32_t)(int32_t)(int16_t)w1;
+            const g4mh_exc_t e = do_bitop(c, k_bitop[op], adr, bit);
+            if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+            break;
+        }
         }
 
         pc = next;

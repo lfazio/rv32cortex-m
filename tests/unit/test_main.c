@@ -27,6 +27,7 @@ int main(void)
     test_decode();
 #endif
     test_bus();
+    test_ir();
 #if EMU_FRONTEND_RV32
     test_fpu();
 #endif

@@ -1,0 +1,14 @@
+# The Power ISA 3.1C specification is 375 MB and the e200z759 core
+# reference manual 7.6 MB. Same argument as docs/renesas: both are vendor
+# downloads one link away rather than anything this repo produces, and a
+# blob that size is permanent and unshrinkable once it is in the history.
+# The e200z7 core reference manual beside them is small and is tracked, in
+# line with docs/arm and docs/st.
+#
+#   https://openpowerfoundation.org/specifications/isa/
+#
+# The names below are the files as they actually land from those links.
+# Check that with `git status` after adding one: the entry that matches
+# nothing is the failure mode this file already has a scar from.
+OPF_PowerISA_v3.1c.pdf
+e200z759CRM.pdf

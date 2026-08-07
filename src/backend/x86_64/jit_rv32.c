@@ -38,6 +38,7 @@
 
 #include "rv32/rv_backend.h"
 #include "rv32/rv_decode.h"
+#include "rv32/rv_ir.h"
 #include "rv32/rv_hart.h"
 
 #include <stddef.h>
@@ -471,85 +472,37 @@ static xlat_t translate_one(uint32_t insn, uint32_t pc, uint32_t len,
  * framework's now -- this file kept only the parts that know about RISC-V.
  */
 
+/*
+ * Guest -> IR -> optimise -> host.
+ *
+ * The per-opcode switch that used to be here moved to the frontend
+ * (src/frontend/rv32/rv_ir.c, which names no host); the emitting moved
+ * to ir_lower.c, which names no guest. What is left is the same glue
+ * jit_g4mh.c has, which is the point -- the two become one jit.c for
+ * this host.
+ *
+ * live_out is EMU_IR_F_ALL, but for this guest it is moot: RISC-V has no
+ * condition flags, the frontend emits no EMU_IR_SETF, and the dead-flag
+ * pass therefore finds nothing and costs nothing.
+ */
+static emu_ir_block_t g_ir;
+
 static uint32_t rv_jit_translate(emu_cpu_t *cpu, uint32_t pc)
 {
-    rv_hart_t *const h = (rv_hart_t *)cpu;
-    uint8_t *exits[RV_JIT_MAX_BLOCK_INSNS];
-    unsigned nexits = 0u;
-    uint32_t cur = pc;
-    uint32_t count = 0u;
+    const uint32_t n = rv_ir_translate(cpu, pc, &g_ir);
 
-    x86_prologue();
-
-    while (count < RV_JIT_MAX_BLOCK_INSNS && !emu_jit_overflowed()) {
-        uint16_t lo;
-        if (emu_bus_fetch16(h->bus, cur, &lo) != EMU_FAULT_NONE) {
-            break;
-        }
-
-        uint32_t insn;
-        uint32_t len;
-
-        if (rv_is_32bit(lo)) {
-            uint16_t hi;
-            if (emu_bus_fetch16(h->bus, cur + 2u, &hi) != EMU_FAULT_NONE) {
-                break;
-            }
-            insn = (uint32_t)lo | ((uint32_t)hi << 16);
-            len = 4u;
-        } else {
-#if RV_EXT_C
-            /*
-             * Expanded and translated as its 32-bit equivalent, which is
-             * what the interpreter does. Skipping compressed encodings
-             * instead left 92% of a C-compiled guest interpreted --
-             * measured, on the self-test.
-             */
-            insn = rv_decode_expand_c(lo);
-            len = 2u;
-            if (insn == 0u) {
-                break;
-            }
-#else
-            break;
-#endif
-        }
-
-        uint8_t *const before = emu_jit_here();
-        const xlat_t r = translate_one(insn, cur, len, exits, &nexits);
-        if (r == XLAT_NO) {
-            /*
-             * Abandon whatever it emitted before deciding. It is not true
-             * that a translator knows in advance -- the OP-IMM path loads
-             * its operand and only then reaches a funct7 it does not
-             * handle -- and leaving that behind does not fault, it makes
-             * the block quietly do something else.
-             */
-            emu_jit_rewind(before);
-            break;
-        }
-
-        x86_count_one();
-        cur += len;
-        count++;
-
-        if (r == XLAT_END) {
-            break;                        /* it wrote pc itself */
-        }
-        x86_mov_imm32(X86_EAX, cur);
-        x86_st_cpu(X86_EAX, HART_PC_OFF);
-    }
-
-    if (count == 0u) {
+    if (n == 0u) {
         return 0u;
     }
 
-    uint8_t *const exit_at = emu_jit_here();
-    x86_epilogue();
-    for (unsigned i = 0; i < nexits; i++) {
-        x86_patch_rel32(exits[i], exit_at);
+    emu_ir_optimise(&g_ir, EMU_IR_F_ALL, NULL);
+
+    x86_prologue();
+    if (!emu_ir_lower(&g_ir, &rv_ir_target)) {
+        return 0u;
     }
-    return count;
+    x86_epilogue();
+    return n;
 }
 
 /*
@@ -558,10 +511,21 @@ static uint32_t rv_jit_translate(emu_cpu_t *cpu, uint32_t pc)
  * reproducing each of their rules in emitted code, and the ARM backend's
  * history is that every one of those was got wrong at least once. This
  * backend exists to find bugs, not to add a second copy of them.
+ *
+ * That is why `blocked` below is the whole fetch_guard, where the Thumb-2
+ * backend uses trig_active alone: this translator declines what that one
+ * bakes in and flushes for.
  */
-static bool rv_jit_may_run(emu_cpu_t *cpu)
+static void rv_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
 {
-    return !((rv_hart_t *)cpu)->fetch_guard;
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+
+    out->pc = &h->pc;
+    out->state = &h->state;
+    out->blocked = &h->fetch_guard;
+#if RV_LAZY_IRQ_CHECK
+    out->irq_pending = &h->irq_dirty;
+#endif
 }
 
 static bool rv_jit_is_idle(emu_cpu_t *cpu)
@@ -618,21 +582,23 @@ static void rv_jit_count(emu_cpu_t *cpu, uint32_t n)
 #endif
 }
 
-static uint8_t rv_jit_state(emu_cpu_t *cpu) { return ((rv_hart_t *)cpu)->state; }
-static uint32_t rv_jit_pc(emu_cpu_t *cpu)   { return ((rv_hart_t *)cpu)->pc; }
-
 static const emu_jit_ops_t g_jit_ops = {
     .name       = "jit-x86-64",
+    .bind       = rv_jit_bind,
     .translate  = rv_jit_translate,
-    .may_run    = rv_jit_may_run,
-    .generation = NULL,   /* see the note below */
+    /*
+     * Relocatable: every branch inside a block is a rel32 whose ends move
+     * together, and every address that is not -- helpers, guest pc -- is
+     * an absolute immediate. x86 needs no sync, its caches being coherent
+     * with instruction fetch.
+     */
+    .relocatable = true,
+    .sync       = NULL,
     .interp     = &rv_backend_interp,
     .is_idle    = rv_jit_is_idle,
     .wake       = rv_jit_wake,
     .take_irq   = rv_jit_take_irq,
     .count      = rv_jit_count,
-    .state      = rv_jit_state,
-    .pc         = rv_jit_pc,
 };
 
 /*

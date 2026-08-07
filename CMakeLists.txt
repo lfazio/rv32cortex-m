@@ -173,7 +173,10 @@ set(G4MH_PE_COUNT "1" CACHE STRING "G4MH processing elements (1..3)")
 add_library(rv32core STATIC
     src/emu/emu_bus.c
     src/emu/emu_jit.c
-    src/emu/emu_x86_64.c
+    src/emu/emu_ir.c
+    src/backend/x86_64/encode.c
+    src/backend/x86_64/interp.c
+    src/backend/x86_64/ir_lower.c
     src/emu/emu_cpu.c
     src/emu/emu_elf.c
     src/emu/emu_uart.c
@@ -210,8 +213,9 @@ if(EMU_FRONTEND_RV32)
         src/frontend/rv32/rv_trig.c
         # Both guard themselves on the host they emit for, so both can stay
         # in the list and exactly one of them compiles to anything.
-        src/frontend/rv32/rv_jit_thumb2.c
-        src/frontend/rv32/rv_jit_x86_64.c
+        src/frontend/rv32/rv_ir.c
+        src/backend/thumb2/jit_rv32.c
+        src/backend/x86_64/jit_rv32.c
     )
 
     target_compile_definitions(rv32core PUBLIC
@@ -253,7 +257,8 @@ if(EMU_FRONTEND_G4MH)
         src/frontend/g4mh/g4mh_disasm.c
         src/frontend/g4mh/g4mh_frontend.c
         src/frontend/g4mh/g4mh_intc.c
-        src/frontend/g4mh/g4mh_jit_x86_64.c
+        src/frontend/g4mh/g4mh_ir.c
+        src/backend/x86_64/jit_g4mh.c
         src/frontend/g4mh/g4mh_interp.c
     )
 

@@ -20,6 +20,7 @@ void check_eq(const char *file, int line, const char *expr,
 void test_decode(void);
 #endif
 void test_bus(void);
+void test_ir(void);
 #if EMU_FRONTEND_RV32
 void test_fpu(void);
 #endif

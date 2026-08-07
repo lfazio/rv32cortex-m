@@ -30,6 +30,7 @@
 #include "g4mh/g4mh_decode.h"
 #include "g4mh/g4mh_config.h"
 #include "g4mh/g4mh_types.h"
+#include "emu/emu_jit.h"
 
 #include <string.h>
 
@@ -62,6 +63,8 @@
 #define OP_MOVHI    0x32u
 #define OP_ORI      0x34u
 #define OP_LD_HW    0x39u
+#define OP_LD_B     0x38u
+#define OP_ST_B     0x3Au
 #define OP_ST_HW    0x3Bu
 #define OP_JARL     0x3Cu
 #define OP_SYSTEM   0x3Fu
@@ -77,6 +80,32 @@
 #define SUB_DIEI    0x0160u
 #define SUB_MUL     0x0220u
 #define SUB_DIV     0x02C0u
+/* Swap and bit-search group; reg1 is a fixed zero in all of them. */
+#define SUB_BSW     0x0340u
+#define SUB_BSH     0x0342u
+#define SUB_HSW     0x0344u
+#define SUB_HSH     0x0346u
+#define SUB_SCH0R   0x0360u
+#define SUB_SCH1R   0x0362u
+#define SUB_SCH0L   0x0364u
+#define SUB_SCH1L   0x0366u
+/* Bit manipulation, register form: bit number from the value in reg2. */
+#define SUB_SET1    0x00E0u
+#define SUB_NOT1    0x00E2u
+#define SUB_CLR1    0x00E4u
+#define SUB_TST1    0x00E6u
+
+/*
+ * Format VIII: the operation selector sits in bits[15:14] -- the top of
+ * the field every other 32-bit format uses for reg2 -- with the 3-bit
+ * bit number below it and reg1 at the bottom.
+ */
+#define BOP_SET1    0u
+#define BOP_NOT1    1u
+#define BOP_CLR1    2u
+#define BOP_TST1    3u
+#define BITOP8(sel, bit, r1) \
+    (uint16_t)(((sel) << 14) | ((bit) << 11) | (0x3Eu << 5) | (r1))
 
 /* ------------------------------------------------------------------ */
 /* Instruction length                                                  */
@@ -424,6 +453,402 @@ static void test_muldiv(void)
     CHECK_EQ(reg(15), 3u);            /* remainder */
 }
 
+/*
+ * The swap group, checked on both the register result and PSW.
+ *
+ * The flags are the reason these instructions exist -- they let an endian
+ * conversion test in one instruction whether the converted value contains
+ * a zero element -- and each of the four computes them over a *different*
+ * width. A test that only checked reg3 would pass against an
+ * implementation that got all four flag widths wrong, so every case reads
+ * PSW back with STSR.
+ *
+ * 0x00FF0000 is chosen because it distinguishes all four: it has zero
+ * bytes and a zero halfword, and the results differ in whether the zero
+ * lands in the part each instruction looks at.
+ */
+static void test_swap(void)
+{
+    /*
+     *   mov   0x00FF0000, r10      ; via movhi
+     *   bsw   r10, r11             ; r11 = 0x0000FF00
+     *   stsr  PSW, r12
+     *   hsw   r10, r13             ; r13 = 0x000000FF
+     *   stsr  PSW, r14
+     *   halt
+     */
+    const uint16_t prog[] = {
+        W0(OP_MOVHI, 0, 10), 0x00FFu,                    /* movhi 0x00FF,r0,r10 */
+        W0(OP_SYSTEM, 0, 10), (uint16_t)((11u << 11) | SUB_BSW),
+        W0(OP_SYSTEM, 5, 12), (uint16_t)((0u << 11) | SUB_STSR),
+        W0(OP_SYSTEM, 0, 10), (uint16_t)((13u << 11) | SUB_HSW),
+        W0(OP_SYSTEM, 5, 14), (uint16_t)((0u << 11) | SUB_STSR),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(10), 0x00FF0000u);
+    CHECK_EQ(reg(11), 0x0000FF00u);   /* BSW: whole-word byte reverse   */
+    CHECK_EQ(reg(13), 0x000000FFu);   /* HSW: halfword exchange         */
+
+    /*
+     * BSW result 0x0000FF00 has zero bytes, is non-zero as a word and has
+     * a clear MSB: CY set, Z clear, S clear, OV clear.
+     */
+    CHECK_EQ(reg(12) & G4MH_PSW_FLAGS, G4MH_PSW_CY);
+    /*
+     * HSW result 0x000000FF contains a zero halfword (the upper one), so
+     * CY is set; the word is non-zero so Z is clear.
+     */
+    CHECK_EQ(reg(14) & G4MH_PSW_FLAGS, G4MH_PSW_CY);
+}
+
+/*
+ * BSH and HSH, whose flags are computed on the *lower halfword* where
+ * BSW's and HSW's are on the word. Separated from the test above so that
+ * a single wrong width fails one case rather than all four.
+ */
+static void test_swap_halfword_flags(void)
+{
+    /*
+     *   mov   0x12340000, r10
+     *   bsh   r10, r11        ; r11 = 0x34120000, lower halfword zero
+     *   stsr  PSW, r12
+     *   hsh   r10, r13        ; r13 = 0x12340000, lower halfword zero
+     *   stsr  PSW, r14
+     *   halt
+     */
+    const uint16_t prog[] = {
+        W0(OP_MOVHI, 0, 10), 0x1234u,
+        W0(OP_SYSTEM, 0, 10), (uint16_t)((11u << 11) | SUB_BSH),
+        W0(OP_SYSTEM, 5, 12), (uint16_t)((0u << 11) | SUB_STSR),
+        W0(OP_SYSTEM, 0, 10), (uint16_t)((13u << 11) | SUB_HSH),
+        W0(OP_SYSTEM, 5, 14), (uint16_t)((0u << 11) | SUB_STSR),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    /* BSH swaps the bytes inside each halfword and leaves the halfwords. */
+    CHECK_EQ(reg(11), 0x34120000u);
+    /* HSH does not move anything; it is a move that sets flags. */
+    CHECK_EQ(reg(13), 0x12340000u);
+
+    /*
+     * Both results have a zero lower halfword, so for both Z is set (the
+     * *lower halfword* is zero, though the word is not) and CY is set.
+     * This is exactly the case that separates these two from BSW/HSW: on
+     * word-width flags Z would be clear.
+     */
+    CHECK_EQ(reg(12) & G4MH_PSW_FLAGS, G4MH_PSW_CY | G4MH_PSW_Z);
+    CHECK_EQ(reg(14) & G4MH_PSW_FLAGS, G4MH_PSW_CY | G4MH_PSW_Z);
+}
+
+/*
+ * Bit search.
+ *
+ * The result is a one-based distance from the end the search started at,
+ * so the two interesting inputs are the one where the match is at the
+ * first bit examined (result 1) and the one where there is no match at
+ * all (result 0, Z set) -- an off-by-one implementation returning a plain
+ * bit index gets 0 for the first and is then indistinguishable from
+ * not-found.
+ */
+static void test_bit_search(void)
+{
+    /*
+     *   mov   1, r10
+     *   sch1r r10, r11        ; bit 0 set, searching from LSB -> 1
+     *   sch1l r10, r12        ; found at the far end            -> 32, CY
+     *   stsr  PSW, r13
+     *   mov   0, r14
+     *   sch1r r14, r15        ; no bit set -> 0, Z
+     *   stsr  PSW, r16
+     *   halt
+     */
+    const uint16_t prog[] = {
+        F2(OP_MOVI, 1, 10),
+        W0(OP_SYSTEM, 0, 10), (uint16_t)((11u << 11) | SUB_SCH1R),
+        W0(OP_SYSTEM, 0, 10), (uint16_t)((12u << 11) | SUB_SCH1L),
+        W0(OP_SYSTEM, 5, 13), (uint16_t)((0u << 11) | SUB_STSR),
+        F2(OP_MOVI, 0, 14),
+        W0(OP_SYSTEM, 0, 14), (uint16_t)((15u << 11) | SUB_SCH1R),
+        W0(OP_SYSTEM, 5, 16), (uint16_t)((0u << 11) | SUB_STSR),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(11), 1u);    /* first bit examined                   */
+    CHECK_EQ(reg(12), 32u);   /* last bit examined                    */
+    CHECK_EQ(reg(15), 0u);    /* not found                            */
+
+    /* SCH1L found its bit at the far end, so CY; the result is non-zero. */
+    CHECK_EQ(reg(13) & G4MH_PSW_FLAGS, G4MH_PSW_CY);
+    /* Not found sets Z and clears CY. */
+    CHECK_EQ(reg(16) & G4MH_PSW_FLAGS, G4MH_PSW_Z);
+}
+
+/*
+ * SCH0L, which searches for a *zero* -- the complement path.
+ * 0xFFFFFFFE has its only zero at bit 0, so from the MSB that is a full
+ * 32-bit walk, and from the LSB it is the first bit examined.
+ */
+static void test_bit_search_zero(void)
+{
+    /*
+     *   mov   -2, r10          ; 0xFFFFFFFE
+     *   sch0l r10, r11         ; -> 32
+     *   sch0r r10, r12         ; -> 1
+     *   mov   -1, r13          ; 0xFFFFFFFF, no zero anywhere
+     *   sch0l r13, r14         ; -> 0, Z
+     *   halt
+     */
+    const uint16_t prog[] = {
+        F2(OP_MOVI, -2, 10),
+        W0(OP_SYSTEM, 0, 10), (uint16_t)((11u << 11) | SUB_SCH0L),
+        W0(OP_SYSTEM, 0, 10), (uint16_t)((12u << 11) | SUB_SCH0R),
+        F2(OP_MOVI, -1, 13),
+        W0(OP_SYSTEM, 0, 13), (uint16_t)((14u << 11) | SUB_SCH0L),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(11), 32u);
+    CHECK_EQ(reg(12), 1u);
+    CHECK_EQ(reg(14), 0u);
+}
+
+/*
+ * reg1 is a fixed zero in the whole swap/search group, so a non-zero
+ * there is not one of these instructions.
+ *
+ * Worth a test of its own because this is the shape that has already bit
+ * this frontend once: an ISA that reuses a register field as an opcode
+ * extension will not tell you when you ignore it, and the failure is a
+ * silent wrong answer rather than an exception.
+ */
+static void test_swap_reserved_field(void)
+{
+    const uint16_t prog[] = {
+        W0(OP_SYSTEM, 1, 10), (uint16_t)((11u << 11) | SUB_BSW),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+    /* RIE is an FE-level exception, so it lands in FEIC, not in r11. */
+    CHECK_EQ(reg(11), 0u);
+}
+
+/*
+ * SET1 / CLR1 / NOT1 / TST1, both encodings.
+ *
+ * Z is the interesting part: it reports the bit as it was *before* the
+ * instruction changed it. An implementation that computed Z from the
+ * result would give SET1 a permanently clear Z and CLR1 a permanently
+ * set one, and both would still leave the right byte in memory -- so the
+ * test sets a bit that was clear and clears a bit that was set, and
+ * checks Z each time.
+ */
+static void test_bit_manipulation(void)
+{
+    /*
+     *   movhi 0x8000, r0, r10     ; r10 = RAM base + 0x100, clear of the
+     *   movea 0x100, r10, r10     ;   program itself
+     *   mov   1, r11
+     *   st.b  r11, 0[r10]         ; [0x100] = 0x01
+     *   set1  1, 0[r10]           ; bit 1 was 0 -> Z=1, byte becomes 0x03
+     *   stsr  PSW, r12
+     *   clr1  0, 0[r10]           ; bit 0 was 1 -> Z=0, byte becomes 0x02
+     *   stsr  PSW, r13
+     *   halt
+     */
+    const uint16_t prog[] = {
+        W0(OP_MOVHI, 0, 10),  0x8000u,
+        W0(OP_MOVEA, 10, 10), 0x0100u,
+        F2(OP_MOVI, 1, 11),
+        W0(OP_ST_B, 10, 11), 0x0000u,          /* st.b r11, 0[r10] */
+        BITOP8(BOP_SET1, 1, 10), 0x0000u,      /* set1 1, 0[r10]   */
+        W0(OP_SYSTEM, 5, 12), (uint16_t)((0u << 11) | SUB_STSR),
+        BITOP8(BOP_CLR1, 0, 10), 0x0000u,      /* clr1 0, 0[r10]   */
+        W0(OP_SYSTEM, 5, 13), (uint16_t)((0u << 11) | SUB_STSR),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    /* 0x01, set bit 1 -> 0x03, clear bit 0 -> 0x02. */
+    CHECK_EQ((uint32_t)g_ram[0x100], 0x02u);
+    CHECK((reg(12) & G4MH_PSW_Z) != 0u);   /* bit 1 had been 0 */
+    CHECK((reg(13) & G4MH_PSW_Z) == 0u);   /* bit 0 had been 1 */
+}
+
+/*
+ * TST1 must not write, and the register form must take its bit number
+ * from the value in reg2 rather than from the opcode.
+ */
+static void test_bit_manipulation_reg(void)
+{
+    /*
+     *   movhi 0x8000, r0, r10
+     *   movea 0x100, r10, r10
+     *   movea 0x80, r0, r11    ; imm5 only reaches -16..15, so movea
+     *   st.b  r11, 0[r10]      ; [0x100] = 0x80
+     *   mov   0, r12
+     *   tst1  r12, [r10]       ; bit 0 is 0 -> Z=1, memory unchanged
+     *   ld.b  0[r10], r16      ; read it back to prove nothing was written
+     *   stsr  PSW, r13
+     *   mov   3, r14
+     *   not1  r14, [r10]       ; bit 3 was 0 -> Z=1, byte becomes 0x88
+     *   stsr  PSW, r15
+     *   halt
+     */
+    const uint16_t prog[] = {
+        W0(OP_MOVHI, 0, 10),  0x8000u,
+        W0(OP_MOVEA, 10, 10), 0x0100u,
+        W0(OP_MOVEA, 0, 11), 0x0080u,          /* movea 0x80, r0, r11 */
+        W0(OP_ST_B, 10, 11), 0x0000u,
+        F2(OP_MOVI, 0, 12),
+        W0(OP_SYSTEM, 10, 12), SUB_TST1,
+        W0(OP_LD_B, 10, 16), 0x0000u,
+        W0(OP_SYSTEM, 5, 13), (uint16_t)((0u << 11) | SUB_STSR),
+        F2(OP_MOVI, 3, 14),
+        W0(OP_SYSTEM, 10, 14), SUB_NOT1,
+        W0(OP_SYSTEM, 5, 15), (uint16_t)((0u << 11) | SUB_STSR),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    /*
+     * r16 is the byte as TST1 left it. Tested on a *clear* bit and read
+     * back immediately, because the first version of this test used a
+     * bit that was already set: a TST1 that wrongly wrote back would
+     * have stored the value unchanged and the test would have passed
+     * either way. Proven by making TST1 store and watching this fail.
+     */
+    CHECK_EQ(reg(16), 0xFFFFFF80u);   /* LD.B sign-extends */
+    /* NOT1 toggled bit 3. */
+    CHECK_EQ((uint32_t)g_ram[0x100], 0x88u);
+    CHECK((reg(13) & G4MH_PSW_Z) != 0u);   /* bit 0 was 0 */
+    CHECK((reg(15) & G4MH_PSW_Z) != 0u);   /* bit 3 was 0 */
+}
+
+/*
+ * The IR path, and proof that it is the one being used.
+ *
+ * The G4MH JIT now goes guest -> IR -> optimise -> x86-64, and on this
+ * host it is the default backend, so every test above already runs
+ * through it. That is exactly the situation this project has been caught
+ * by before: a backend that declines everything and falls back to the
+ * interpreter passes every test while proving nothing about the
+ * translator. The first x86-64 run interpreted 92% of the RV32 self-test
+ * and looked perfectly healthy.
+ *
+ * So this checks the *ratio*, not just the answer. The program is
+ * nothing but instructions the IR lowering covers, so translation must
+ * happen and the fallback count must stay near zero.
+ */
+static void test_ir_backend_is_used(void)
+{
+    /*
+     *   mov   9, r10
+     *   mov   4, r11
+     *   add   r11, r10      ; 13
+     *   sub   r11, r10      ; 9
+     *   or    r11, r10      ; 13
+     *   and   r11, r10      ; 4
+     *   xor   r11, r10      ; 0
+     *   cmp   r11, r10
+     *   halt
+     */
+    const uint16_t prog[] = {
+        F2(OP_MOVI, 9, 10),
+        F2(OP_MOVI, 4, 11),
+        F1(OP_ADD, 11, 10),
+        F1(OP_SUB, 11, 10),
+        F1(OP_OR,  11, 10),
+        F1(OP_AND, 11, 10),
+        F1(0x09u,  11, 10),          /* XOR */
+        F1(OP_CMP, 11, 10),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_jit_stats_t before, after;
+    emu_jit_get_stats(&before);
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+    emu_jit_get_stats(&after);
+
+    /* The arithmetic itself, which the IR lowering produced. */
+    CHECK_EQ(reg(10), 0u);
+    CHECK_EQ(reg(11), 4u);
+
+    /*
+     * If this is zero the whole block fell back and every check above is
+     * testing the interpreter.
+     */
+    CHECK(after.translations > before.translations);
+
+    /*
+     * Only the HALT should reach the interpreter: it is a 32-bit
+     * encoding, which the frontend's lowering declines by form. Eight
+     * 16-bit instructions ahead of it must all have been translated.
+     */
+    const uint32_t fell_back = after.interp_fallbacks - before.interp_fallbacks;
+    CHECK(fell_back <= 2u);
+}
+
 static void test_system_registers(void)
 {
     /*
@@ -464,16 +889,22 @@ static void test_reserved_instruction(void)
 {
     /*
      * An encoding the interpreter does not implement must raise RIE and
-     * land in the handler, not silently retire. 0x3E is the Format VIII
-     * bit-manipulation group.
+     * land in the handler, not silently retire.
+     *
+     * This used to use opcode 0x3E, which was then the whole
+     * unimplemented Format VIII group; 0x3E is now the bit-manipulation
+     * instructions, so it points at an unassigned sub-opcode of the
+     * system group instead. That is the maintenance cost of this test:
+     * it has to name something genuinely absent, and implementing an
+     * instruction can take its example away.
      *
      * RBASE defaults to the reset pc, so the RIE handler is at
      * reset + 0x60; a HALT is planted there to prove control arrived.
      */
     uint16_t prog[0x40];
     memset(prog, 0, sizeof(prog));
-    prog[0] = W0(0x3Eu, 0, 0);
-    prog[1] = 0x0000u;
+    prog[0] = W0(OP_SYSTEM, 0, 0);
+    prog[1] = 0x07FEu;              /* no such sub-opcode */
     /* 0x60 bytes in, which is index 0x30 in halfwords. */
     prog[0x30] = 0x07E0u;
     prog[0x31] = SUB_HALT;
@@ -937,6 +1368,14 @@ void test_g4mh(void)
     test_load_store();
     test_mov_imm32();
     test_muldiv();
+    test_swap();
+    test_swap_halfword_flags();
+    test_bit_search();
+    test_bit_search_zero();
+    test_swap_reserved_field();
+    test_bit_manipulation();
+    test_bit_manipulation_reg();
+    test_ir_backend_is_used();
     test_system_registers();
     test_reserved_instruction();
     test_trap_and_syscall();

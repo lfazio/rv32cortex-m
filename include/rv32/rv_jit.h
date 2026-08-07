@@ -113,6 +113,13 @@ typedef struct rv_jit_stats {
      */
     uint32_t hot_reads[4];
     uint32_t hot_blocks[4];
+    /* See emu_jit_stats_t: declined and overflowed must stay apart. */
+    uint32_t declined;
+    uint32_t overflowed;
+#ifdef EMU_JIT_PROFILE
+    uint32_t cyc_translate;
+    uint32_t cyc_compact;
+#endif
 } rv_jit_stats_t;
 
 void rv_jit_get_stats(rv_jit_stats_t *out);

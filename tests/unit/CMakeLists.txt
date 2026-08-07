@@ -3,6 +3,7 @@
 add_executable(rv32-unit
     test_main.c
     test_bus.c
+    test_ir.c
     test_fpu.c
 )
 
