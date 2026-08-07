@@ -116,6 +116,25 @@ static void apply_flags(emu_cpu_t *cpu, const emu_ir_target_t *t,
     *fw = w;
 }
 
+/* Compare two values, for the operand-comparing conditions. */
+static bool eval_value_cond(uint32_t a, uint32_t b, uint8_t cond)
+{
+    switch ((emu_ir_cond_t)cond) {
+    case EMU_IR_C_EQ:  return a == b;
+    case EMU_IR_C_NE:  return a != b;
+    case EMU_IR_C_LT:  return (int32_t)a <  (int32_t)b;
+    case EMU_IR_C_GE:  return (int32_t)a >= (int32_t)b;
+    case EMU_IR_C_LTU: return a <  b;
+    case EMU_IR_C_GEU: return a >= b;
+    case EMU_IR_C_LE:  return (int32_t)a <= (int32_t)b;
+    case EMU_IR_C_GT:  return (int32_t)a >  (int32_t)b;
+    case EMU_IR_C_LEU: return a <= b;
+    case EMU_IR_C_GTU: return a >  b;
+    case EMU_IR_C_ALWAYS:
+    default:           return true;
+    }
+}
+
 static bool eval_cond(emu_cpu_t *cpu, const emu_ir_target_t *t, uint8_t cond)
 {
     const uint32_t w = *word_at(cpu, t->flags_offset);
@@ -231,6 +250,10 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
             apply_flags(cpu, t, in, tmp);
             continue;
 
+        case EMU_IR_SETCC:
+            r = eval_value_cond(a, bv, in->aux) ? 1u : 0u;
+            break;
+
         case EMU_IR_GETCOND:
             r = eval_cond(cpu, t, in->aux) ? 1u : 0u;
             break;
@@ -250,9 +273,24 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
             return true;
 
         case EMU_IR_EXIT_IF:
-            if (eval_cond(cpu, t, in->aux)) {
-                *word_at(cpu, t->pc_offset) =
-                    (in->a != EMU_IR_NO_TEMP) ? a : in->imm;
+            /*
+             * Compares its two operands directly; it does not consult
+             * the guest's flags.
+             *
+             * This is the shape a flagless guest needs -- a RISC-V
+             * branch has no flags to read -- and it is what every
+             * lowering emits: a compare of a against b, then a
+             * conditional exit to `imm`. An earlier version of this
+             * evaluated the *flag* condition instead and took the pc
+             * from `a`, which for RV32 read four flag bits that are all
+             * defined as absent and then jumped to whatever operand
+             * happened to be in `a`.
+             *
+             * Nothing caught it, because nothing ran the two against
+             * each other until the differential harness did.
+             */
+            if (eval_value_cond(a, bv, in->aux)) {
+                *word_at(cpu, t->pc_offset) = in->imm;
                 return true;
             }
             continue;

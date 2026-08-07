@@ -491,6 +491,74 @@ static block_fn_t block_entry(const uint8_t *code)
 #endif
 }
 
+#ifdef EMU_JIT_DIFF
+/*
+ * Run a block, and where the frontend offers a reference, run that too
+ * and compare.
+ *
+ * The reference goes first and its result is set aside, then the guest
+ * state is put back and the compiled code runs on the same input. That
+ * ordering matters: it is the compiled code's state the caller must be
+ * left with, because the reference is the thing under suspicion of being
+ * right, not the thing being executed.
+ */
+#ifndef EMU_JIT_DIFF_MAX
+#  define EMU_JIT_DIFF_MAX 1024u
+#endif
+
+static uint8_t g_diff_before[EMU_JIT_DIFF_MAX];
+static uint8_t g_diff_want[EMU_JIT_DIFF_MAX];
+
+/* Reported by the platform; see the host runner. */
+void emu_jit_diff_report(uint32_t pc, uint32_t off, uint32_t want,
+                         uint32_t got);
+
+static uint32_t run_block_checked(emu_cpu_t *cpu, const jit_block_t *b,
+                                  const emu_jit_ops_t *ops, bool fresh)
+{
+    /*
+     * Only a block that was *just* translated can be checked.
+     *
+     * The reference runs the frontend's IR buffer, and that buffer holds
+     * the last block translated -- not the last block entered. Blocks
+     * are entered far more often than they are translated (104,686
+     * against 356 on CoreMark), so checking on every entry compares a
+     * block against a different block's IR and reports a stream of
+     * mismatches that are all the harness's own fault.
+     */
+    if (!fresh || ops->diff_ref == NULL || ops->state_bytes == 0u ||
+        ops->state_bytes > EMU_JIT_DIFF_MAX) {
+        return block_entry(b->code)(cpu);
+    }
+
+    const uint32_t pc = b->guest_pc;
+
+    memcpy(g_diff_before, cpu, ops->state_bytes);
+    if (!ops->diff_ref(cpu)) {
+        /* Declined -- restore and run normally, comparing nothing. */
+        memcpy(cpu, g_diff_before, ops->state_bytes);
+        return block_entry(b->code)(cpu);
+    }
+    memcpy(g_diff_want, cpu, ops->state_bytes);
+    memcpy(cpu, g_diff_before, ops->state_bytes);
+
+    const uint32_t n = block_entry(b->code)(cpu);
+
+    const uint8_t *const got = (const uint8_t *)cpu;
+    for (uint32_t off = 0; off + 4u <= ops->state_bytes; off += 4u) {
+        uint32_t a, e;
+
+        memcpy(&a, got + off, 4u);
+        memcpy(&e, g_diff_want + off, 4u);
+        if (a != e) {
+            emu_jit_diff_report(pc, off, e, a);
+            break;                    /* the first divergence is the one */
+        }
+    }
+    return n;
+}
+#endif /* EMU_JIT_DIFF */
+
 static emu_run_reason_t run_interp_one(emu_cpu_t *cpu,
                                        const emu_jit_ops_t *ops,
                                        uint32_t *done)
@@ -579,8 +647,11 @@ emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
         const uint32_t pc = *hot.pc;
         jit_block_t *b = lookup(pc);
 
+        bool fresh = false;
+
         if (b == NULL) {
             b = translate(cpu, pc, ops);
+            fresh = (b != NULL);
             if (b == NULL) {
                 const emu_run_reason_t r = run_interp_one(cpu, ops, &done);
                 if (r == EMU_RUN_HALTED || r == EMU_RUN_WFI) {
@@ -591,7 +662,11 @@ emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
             }
         }
 
+#ifdef EMU_JIT_DIFF
+        const uint32_t n = run_block_checked(cpu, b, ops, fresh);
+#else
         const uint32_t n = block_entry(b->code)(cpu);
+#endif
         g_stats.block_entries++;
 
         /*

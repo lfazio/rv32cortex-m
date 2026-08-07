@@ -210,6 +210,26 @@ typedef struct emu_jit_ops {
     void (*sync)(const void *addr, uint32_t len);
 
     /*
+     * Differential checking, for a host whose emitted code cannot be
+     * tested any other way.
+     *
+     * Run the block that is about to execute on an independent
+     * reference -- the IR interpreter -- and compare the guest state it
+     * produces against the compiled code's. Both come from the *same*
+     * IR, so a disagreement is a lowering bug and nothing else.
+     *
+     * Returns false to decline this block, which the framework takes as
+     * "run it normally, do not compare". A block that writes guest
+     * memory or calls a helper must decline: the reference and the
+     * compiled code would each perform those effects, and a store
+     * cannot be undone by restoring registers.
+     *
+     * state_bytes is how much of emu_cpu_t to snapshot and compare.
+     */
+    bool (*diff_ref)(emu_cpu_t *cpu);
+    uint32_t state_bytes;
+
+    /*
      * True if a translated block may be *moved*.
      *
      * Compaction slides survivors down to reclaim space, which is only

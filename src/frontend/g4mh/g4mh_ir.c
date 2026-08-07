@@ -476,4 +476,6 @@ const emu_ir_frontend_t g4mh_ir_frontend = {
     .count        = g4mh_jit_count,
     .after_interp = NULL,
     .code_bytes   = G4MH_JIT_CODE_BYTES,
+    /* r[0..31], pc and psw. */
+    .diff_state_bytes = (uint32_t)offsetof(g4mh_cpu_t, psw) + 4u,
 };

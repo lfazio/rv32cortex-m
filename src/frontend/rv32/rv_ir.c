@@ -542,4 +542,6 @@ const emu_ir_frontend_t rv_ir_frontend = {
     .count        = rv_jit_count,
     .after_interp = NULL,
     .code_bytes   = RV_JIT_HOST_CODE_BYTES,
+    /* x[0..31] and pc; everything past it is bus pointers and counters. */
+    .diff_state_bytes = (uint32_t)offsetof(rv_hart_t, pc) + 4u,
 };

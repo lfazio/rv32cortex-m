@@ -516,6 +516,14 @@ typedef struct emu_ir_frontend {
 
     /* Code cache to ask the framework for. */
     uint32_t code_bytes;
+
+    /*
+     * How much of this guest's state a differential check compares --
+     * enough to cover the register file, pc and flags, and no more. Not
+     * the whole struct: that carries bus pointers, cycle counters and
+     * scratch that the two paths are not required to agree on.
+     */
+    uint32_t diff_state_bytes;
 } emu_ir_frontend_t;
 
 /*

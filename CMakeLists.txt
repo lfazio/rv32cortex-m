@@ -109,6 +109,8 @@ set(RV32_JIT_CODE_BYTES "12288" CACHE STRING "JIT code cache size in bytes")
 # Build and use the Thumb-2 JIT. Turning this off is how the same guest
 # image is measured on the interpreter, which is also how a suspected JIT
 # miscompile gets isolated from a core bug.
+option(RV32_JIT_DIFF
+    "Check every translated block against the IR interpreter" OFF)
 option(RV32_JIT "Thumb-2 JIT backend" ON)
 
 # Chain loop back edges inside translated code: 35% on bench, 7% on CoreMark.
@@ -234,6 +236,7 @@ if(EMU_FRONTEND_RV32)
         RV_LAZY_IRQ_CHECK=$<BOOL:${RV32_LAZY_IRQ}>
         RV_JIT_CODE_SIZE=${RV32_JIT_CODE_BYTES}u
         RV_ENABLE_JIT=$<BOOL:${RV32_JIT}>
+        $<$<BOOL:${RV32_JIT_DIFF}>:EMU_JIT_DIFF>
         RV_JIT_LOOP_CHAIN=$<BOOL:${RV32_JIT_LOOP_CHAIN}>
         RV_JIT_INLINE_PERIPH=$<BOOL:${RV32_JIT_INLINE_PERIPH}>
         RV_JIT_ELIDE_LD=$<BOOL:${RV32_JIT_ELIDE_LD}>

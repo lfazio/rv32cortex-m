@@ -113,12 +113,65 @@ static uint32_t ir_translate(emu_cpu_t *cpu, uint32_t pc,
     return n;
 }
 
+#ifdef EMU_JIT_DIFF
+/*
+ * Run the block just translated on the IR interpreter.
+ *
+ * The IR is still in g_ir, because the framework only calls this for a
+ * block it has just translated -- see run_block_checked. That is what
+ * makes the reference and the compiled code the same program by
+ * construction, and a disagreement therefore a lowering bug rather than
+ * two decoders differing. Checking on every block *entry* instead would
+ * compare against whatever was translated most recently.
+ *
+ * Declines any block that writes memory or calls a helper. Both the
+ * reference and the compiled code would perform those effects, and
+ * restoring registers does not undo a store -- least of all to a
+ * peripheral.
+ */
+static bool ir_diff_ref(emu_cpu_t *cpu, const emu_ir_frontend_t *fe)
+{
+    for (uint32_t i = 0; i < g_ir.count; i++) {
+        if (g_ir.insn[i].dead) {
+            continue;
+        }
+        switch ((emu_ir_op_t)g_ir.insn[i].op) {
+        case EMU_IR_STORE:
+        case EMU_IR_HELPER:
+        case EMU_IR_HELPER_TRAP:
+        case EMU_IR_BITOP_SET:
+        case EMU_IR_BITOP_CLR:
+        case EMU_IR_BITOP_INV:
+        case EMU_IR_BITOP_TST:
+            return false;
+        default:
+            break;
+        }
+    }
+    return emu_ir_interp(&g_ir, cpu, fe->target);
+}
+#endif
+
 /*
  * Instantiate a backend for one frontend.
  *
  * `sym` is the emu_backend_t the frontend registry names; `fe` is the
  * emu_ir_frontend_t it is built from.
  */
+#ifdef EMU_JIT_DIFF
+#  define EMU_IR_DIFF_HOOK(fe, prefix)                                  \
+static bool prefix##_diff_ref(emu_cpu_t *cpu)                           \
+{                                                                       \
+    return ir_diff_ref(cpu, &(fe));                                     \
+}
+#  define EMU_IR_DIFF_FIELDS(prefix)                                    \
+    .diff_ref    = prefix##_diff_ref,                                   \
+    .state_bytes = 0u,   /* filled in init, from the frontend */
+#else
+#  define EMU_IR_DIFF_HOOK(fe, prefix)
+#  define EMU_IR_DIFF_FIELDS(prefix)
+#endif
+
 #define EMU_IR_DEFINE_X86_BACKEND(sym, fe, prefix)                      \
                                                                         \
 static uint32_t prefix##_translate(emu_cpu_t *cpu, uint32_t pc)         \
@@ -153,8 +206,11 @@ static void prefix##_count(emu_cpu_t *cpu, uint32_t n)                  \
     }                                                                   \
 }                                                                       \
                                                                         \
+EMU_IR_DIFF_HOOK(fe, prefix)                                            \
+                                                                        \
 static const emu_jit_ops_t prefix##_jit_ops = {                         \
     .name        = EMU_IR_JIT_NAME,                                     \
+    EMU_IR_DIFF_FIELDS(prefix)                                          \
     .bind        = prefix##_bind,                                       \
     .translate   = prefix##_translate,                                  \
     /*                                                                  \
@@ -186,6 +242,7 @@ static bool prefix##_init(emu_cpu_t *cpu)                               \
      */                                                                 \
     prefix##_ops_live = prefix##_jit_ops;                               \
     prefix##_ops_live.interp = (fe).interp;                             \
+    prefix##_ops_live.state_bytes = (fe).diff_state_bytes;              \
     if (emu_jit_init((fe).code_bytes)) {                                \
         return true;                                                    \
     }                                                                   \

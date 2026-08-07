@@ -302,6 +302,28 @@ static bool parse_u32(const char *s, uint32_t *out)
     return true;
 }
 
+#ifdef EMU_JIT_DIFF
+/*
+ * A block whose compiled code disagreed with the IR interpreter.
+ *
+ * `off` is a byte offset into the guest state, so for both frontends the
+ * register file starts at zero and the number is the register times
+ * four. The first divergence is the useful one -- everything after it is
+ * downstream of the same bug.
+ */
+void emu_jit_diff_report(uint32_t pc, uint32_t off, uint32_t want,
+                         uint32_t got)
+{
+    static unsigned reported;
+
+    if (reported++ < 20u) {
+        fprintf(stderr,
+                "jit-diff: block pc=%08x state+%u want=%08x got=%08x\n",
+                pc, off, want, got);
+    }
+}
+#endif
+
 int main(int argc, char **argv)
 {
     const char *path = NULL;
