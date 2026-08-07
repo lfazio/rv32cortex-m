@@ -81,6 +81,7 @@ uint16_t emu_ir_emit(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux,
      * a wrong branch several instructions later.
      */
     in->live = defs;
+    in->uses = 0u;
     in->dead = false;
     in->dst = op_writes(op) ? emu_ir_temp(b) : EMU_IR_NO_TEMP;
     return in->dst;
@@ -429,6 +430,51 @@ static void pass_dead_values(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
 }
 
 /* ------------------------------------------------------------------ */
+/* Pass: how many readers each value has                               */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Counted last, after every pass that deletes code, so a value is not
+ * credited with readers that are themselves about to go.
+ *
+ * Sound without any dominance reasoning for the same reason the rest of
+ * this file is: a temp is written exactly once by construction and a
+ * block has one entry.
+ */
+static void pass_count_uses(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
+{
+    static uint8_t uses[EMU_IR_MAX_TEMPS];
+
+    memset(uses, 0, sizeof(uses));
+
+    for (uint32_t i = 0; i < b->count; i++) {
+        const emu_ir_insn_t *const in = &b->insn[i];
+
+        if (in->dead) {
+            continue;
+        }
+        if (in->a != EMU_IR_NO_TEMP && in->a < EMU_IR_MAX_TEMPS &&
+            uses[in->a] != 255u) {
+            uses[in->a]++;
+        }
+        if (in->b != EMU_IR_NO_TEMP && in->b < EMU_IR_MAX_TEMPS &&
+            uses[in->b] != 255u) {
+            uses[in->b]++;
+        }
+    }
+
+    for (uint32_t i = 0; i < b->count; i++) {
+        emu_ir_insn_t *const in = &b->insn[i];
+
+        in->uses = (!in->dead && in->dst != EMU_IR_NO_TEMP &&
+                    in->dst < EMU_IR_MAX_TEMPS) ? uses[in->dst] : 0u;
+        if (in->uses == 1u) {
+            st->single_use++;
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
 
 void emu_ir_optimise(emu_ir_block_t *b, uint8_t live_out,
                      emu_ir_opt_stats_t *stats)
@@ -454,4 +500,5 @@ void emu_ir_optimise(emu_ir_block_t *b, uint8_t live_out,
     pass_reg_traffic(b, stats);
     pass_dead_puts(b, stats);
     pass_dead_values(b, stats);
+    pass_count_uses(b, stats);
 }

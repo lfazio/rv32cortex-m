@@ -338,6 +338,63 @@ static void test_flagless_frontend(void)
 }
 
 /*
+ * Reader counts, which a backend needs before it can fuse.
+ *
+ * The property that matters is that the count is taken *after*
+ * everything that deletes code: a value whose only reader was itself
+ * removed must come out at zero, not one. A fusion trusting a stale
+ * count would fold a value into an instruction and leave the original
+ * emitted too -- computing it twice, which is worse than not fusing.
+ */
+static void test_use_counts(void)
+{
+    emu_ir_reset(&g_b);
+
+    const uint16_t a = emu_ir_get(&g_b, 1u);
+    /* One reader: the shift below. */
+    const uint16_t sh = emu_ir_emit(&g_b, EMU_IR_SHLI, 0u, a,
+                                    EMU_IR_NO_TEMP, 4u, 0u);
+    emu_ir_put(&g_b, 2u, emu_ir_alu(&g_b, EMU_IR_ADD, a, sh));
+
+    /* Two readers. */
+    const uint16_t t = emu_ir_get(&g_b, 3u);
+    emu_ir_put(&g_b, 4u, emu_ir_alu(&g_b, EMU_IR_XOR, t, t));
+
+    /*
+     * A value with one live reader and one dead one. This is the case
+     * that discriminates: counted before the deletions it has two
+     * readers, after them one -- and a fusion that trusted the former
+     * would decline to fold something it safely could, or worse, fold
+     * something it could not.
+     */
+    const uint16_t shared = emu_ir_alu(&g_b, EMU_IR_ADD, a, a);
+    emu_ir_put(&g_b, 5u, shared);                     /* live reader */
+    (void)emu_ir_alu(&g_b, EMU_IR_SUB, shared, a);    /* dead reader */
+
+    emu_ir_opt_stats_t st;
+    emu_ir_optimise(&g_b, EMU_IR_F_ALL, &st);
+
+    uint32_t sh_uses = 0u, t_uses = 0u, shared_uses = 0u;
+
+    for (uint32_t i = 0; i < g_b.count; i++) {
+        const emu_ir_insn_t *const in = &g_b.insn[i];
+
+        if (in->dead) {
+            continue;
+        }
+        if (in->dst == sh) { sh_uses = in->uses; }
+        if (in->dst == t)  { t_uses = in->uses; }
+        if (in->dst == shared) { shared_uses = in->uses; }
+    }
+
+    CHECK_EQ(sh_uses, 1u);      /* exactly the fusion candidate */
+    CHECK_EQ(t_uses, 2u);       /* read twice by one instruction */
+    /* One live reader, not two: the dead one must not be counted. */
+    CHECK_EQ(shared_uses, 1u);
+    CHECK(st.single_use > 0u);
+}
+
+/*
  * Overflowing the block must be reported and must leave the passes
  * alone: a partially built block is not a correct one, and optimising it
  * would produce something that looked runnable.
@@ -913,6 +970,7 @@ void test_ir(void)
     test_get_not_elided_across_helper();
     test_dead_values();
     test_flagless_frontend();
+    test_use_counts();
     test_overflow_not_optimised();
 #if defined(EMU_JIT_X86_64)
     test_lower_add();

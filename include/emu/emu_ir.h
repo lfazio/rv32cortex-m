@@ -341,6 +341,21 @@ typedef struct emu_ir_insn {
     uint8_t  defs;
     uint8_t  live;
 
+    /*
+     * How many surviving instructions read this one's result, saturating
+     * at 255. Filled in by the optimiser, after everything that deletes
+     * code has run, so it counts real readers rather than ones about to
+     * disappear.
+     *
+     * A backend needs this to fuse safely. Folding a shift into the
+     * operand of the instruction that consumes it only pays if the shift
+     * itself is then not emitted, and dropping it is sound exactly when
+     * nothing else reads it -- `uses == 1`. Without the count a fusion
+     * computes the value twice, which is larger and slower than not
+     * fusing at all.
+     */
+    uint8_t  uses;
+
     /* Set by the optimiser; the backend skips these. */
     bool     dead;
 } emu_ir_insn_t;
@@ -391,6 +406,7 @@ void emu_ir_bitop(emu_ir_block_t *b, emu_ir_op_t op, uint16_t addr,
 /* ------------------------------------------------------------------ */
 
 typedef struct emu_ir_opt_stats {
+    uint32_t single_use;      /* values with exactly one reader        */
     uint32_t flags_removed;   /* dead EMU_IR_SETF deleted              */
     uint32_t gets_removed;    /* guest register reloads elided         */
     uint32_t puts_removed;    /* guest register stores made redundant  */
