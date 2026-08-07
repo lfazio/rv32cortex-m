@@ -51,14 +51,53 @@ void ld_slot(uint32_t rt, uint16_t n)
     t2_ldr_imm(rt, 13u, slot(n));         /* [sp, #off] */
 }
 
+/*
+ * What r0 still holds from the previous instruction, if anything.
+ *
+ * A dependent pair otherwise emits a store and then an immediate reload
+ * of the same slot, and a quarter to a third of adjacent instruction
+ * pairs in this project's guests are dependent. This declines the
+ * reload when the value is already there.
+ *
+ * Not a register allocator: the store still happens, so every slot stays
+ * valid and no liveness analysis is needed. It costs nothing -- no setup
+ * instruction, no extra register held across a call -- unlike the
+ * guest-register cache tried on this host before, which measured 15.5%
+ * slower.
+ *
+ * It matters more here than on x86-64. This is the host where code size
+ * sets performance: the cache is 12 KB, CoreMark's translated working
+ * set does not fit, and bytes removed are compactions avoided.
+ *
+ * The window is one instruction wide and closes at the first load of the
+ * next. Anything reached by a branch, and anything after a call, starts
+ * holding nothing -- which falls out of clearing at the top of every
+ * instruction and only re-establishing it at a final store.
+ */
+static uint16_t g_r0_holds;
+static uint16_t g_r0_avail;
+static bool     g_r0_first;
+
 void st_slot(uint32_t rt, uint16_t n)
 {
     t2_str_imm(rt, 13u, slot(n));
+
+    if (rt == T2_R0) {
+        g_r0_holds = n;
+    } else if (n == g_r0_holds) {
+        g_r0_holds = EMU_IR_NO_TEMP;
+    }
 }
 
 /* Load an operand, tolerating EMU_IR_NO_TEMP so callers need not check. */
 void ld_operand(uint32_t rt, uint16_t n)
 {
+    if (rt == T2_R0 && g_r0_first) {
+        g_r0_first = false;
+        if (n != EMU_IR_NO_TEMP && n == g_r0_avail) {
+            return;                 /* already there */
+        }
+    }
     if (n == EMU_IR_NO_TEMP) {
         t2_imm32(rt, 0u);
         return;
@@ -189,6 +228,10 @@ static bool bisect_allows(uint8_t op)
 
 static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 {
+    g_r0_avail = g_r0_holds;
+    g_r0_holds = EMU_IR_NO_TEMP;
+    g_r0_first = true;
+
     if (!bisect_allows(in->op)) {
         return false;
     }
@@ -498,6 +541,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     }
 
     g_ntemps = (uint16_t)b->next_temp;
+    g_r0_holds = EMU_IR_NO_TEMP;
     g_nexits = 0u;
 
     /*
