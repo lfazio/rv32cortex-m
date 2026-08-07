@@ -226,8 +226,31 @@ static bool lower_one(emu_ir_block_t *b, uint32_t insn, uint32_t pc,
 
     case 0x33u: {                               /* OP */
         const uint32_t f7 = insn >> 25;
+
+        if (f7 == 1u) {                         /* M extension */
+            /*
+             * The multiplies only. Divide and remainder stay on the
+             * interpreter: they need the guest's divide-by-zero and
+             * overflow results, which RISC-V defines and x86 traps on,
+             * so open-coding them means reproducing two special cases
+             * per host rather than one helper.
+             *
+             * MULHSU is skipped for the same reason -- it is the one
+             * form with no single host instruction behind it.
+             */
+            static const uint8_t k_mul[4] = {
+                EMU_IR_MUL, EMU_IR_MULHS, 0u, EMU_IR_MULHU
+            };
+            if (f3 == 2u || f3 > 3u) {
+                return false;
+            }
+            emu_ir_put(b, rd, emu_ir_alu(b, (emu_ir_op_t)k_mul[f3],
+                                         emu_ir_get(b, rs1),
+                                         emu_ir_get(b, rs2)));
+            return true;
+        }
         if (f7 != 0u && f7 != 0x20u) {
-            return false;                       /* M, Zba/Zbb/Zbs, Zacas */
+            return false;                       /* Zba/Zbb/Zbs, Zacas */
         }
         const uint16_t x = emu_ir_get(b, rs1);
         const uint16_t y = emu_ir_get(b, rs2);

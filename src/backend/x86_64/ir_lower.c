@@ -704,8 +704,33 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
      * something needs it enough to justify a CPUID check or the SWAR
      * sequence.
      */
+    case EMU_IR_MUL:
+    case EMU_IR_MULHS:
+    case EMU_IR_MULHU: {
+        /*
+         * The one-operand form: it multiplies eax by the operand and
+         * writes the full 64-bit product to edx:eax, which is what the
+         * high-half opcodes need. The two-operand imul gives only the
+         * low half.
+         *
+         * Signedness matters only for the high half -- the low 32 bits
+         * of a product are the same either way -- so MUL uses the signed
+         * form and takes eax.
+         */
+        ld_operand(T0, in->a);
+        ld_operand(T1, in->b);
+        emu_jit_emit8(0xF7);
+        emu_jit_emit8((uint8_t)((in->op == (uint8_t)EMU_IR_MULHU)
+                                ? 0xE1u    /* mul  ecx */
+                                : 0xE9u)); /* imul ecx */
+        if (in->op != (uint8_t)EMU_IR_MUL) {
+            x86_mov_rr(T0, T2);            /* the high half */
+        }
+        st_slot(T0, in->dst);
+        break;
+    }
+
     case EMU_IR_POPCNT:
-    case EMU_IR_MUL: case EMU_IR_MULHS: case EMU_IR_MULHU:
     case EMU_IR_ROTL: case EMU_IR_ROTLI:
     case EMU_IR_ADDI: case EMU_IR_ANDI:
     case EMU_IR_ORI:  case EMU_IR_XORI:
