@@ -9,6 +9,32 @@
 
 #if defined(__x86_64__)
 
+/*
+ * REX, emitted only when it is needed.
+ *
+ * 0100WRXB: W widens the operation to 64 bits, R extends the ModRM reg
+ * field and B the rm field. Omitting it when no bit is set matters --
+ * a redundant 0x40 is legal but costs a byte on every instruction, and
+ * on the target that shares a code cache with the guest, bytes are the
+ * currency.
+ *
+ * One trap this opens: with a REX prefix present, encodings 4..7 of a
+ * *byte* operand mean SPL/BPL/SIL/DIL rather than AH/CH/DH/BH. Nothing
+ * here takes a byte operand above al, so the question does not arise --
+ * but it is the reason the byte helpers below are written in terms of
+ * eax specifically rather than a parameter.
+ */
+static void emit_rex(unsigned w, unsigned reg, unsigned rm)
+{
+    const unsigned bits = (w != 0u ? 8u : 0u) |
+                          (((unsigned)reg >> 3) & 1u) << 2 |
+                          (((unsigned)rm >> 3) & 1u);
+
+    if (bits != 0u) {
+        emu_jit_emit8((uint8_t)(0x40u | bits));
+    }
+}
+
 /* ModRM for [rbx + disp32].
  *
  * disp32 uniformly rather than the shorter disp8 form: a guest register
@@ -16,55 +42,63 @@
  * encoding for both is worth three bytes a reference. */
 static void modrm_cpu(int reg, uint32_t disp)
 {
-    emu_jit_emit8((uint8_t)(0x80u | ((unsigned)reg << 3) | X86_CPU));
+    emu_jit_emit8((uint8_t)(0x80u | (((unsigned)reg & 7u) << 3) |
+                            (X86_CPU & 7u)));
     emu_jit_emit32(disp);
 }
 
 /* mod=11: register-direct. */
 static void modrm_rr(int reg, int rm)
 {
-    emu_jit_emit8((uint8_t)(0xC0u | ((unsigned)reg << 3) | (unsigned)rm));
+    emu_jit_emit8((uint8_t)(0xC0u | (((unsigned)reg & 7u) << 3) |
+                            ((unsigned)rm & 7u)));
 }
 
 void x86_ld_cpu(int dst, uint32_t disp)
 {
+    emit_rex(0u, (unsigned)dst, X86_CPU);
     emu_jit_emit8(0x8B);
     modrm_cpu(dst, disp);
 }
 
 void x86_st_cpu(int src, uint32_t disp)
 {
+    emit_rex(0u, (unsigned)src, X86_CPU);
     emu_jit_emit8(0x89);
     modrm_cpu(src, disp);
 }
 
 void x86_mov_rr(int dst, int src)
 {
+    emit_rex(0u, (unsigned)src, (unsigned)dst);
     emu_jit_emit8(0x89);
     modrm_rr(src, dst);
 }
 
 void x86_mov_imm32(int dst, uint32_t imm)
 {
-    emu_jit_emit8((uint8_t)(0xB8u + dst));
+    emit_rex(0u, 0u, (unsigned)dst);
+    emu_jit_emit8((uint8_t)(0xB8u + ((unsigned)dst & 7u)));
     emu_jit_emit32(imm);
 }
 
 void x86_mov_imm64(int dst, uint64_t imm)
 {
-    emu_jit_emit8(0x48);                      /* REX.W */
-    emu_jit_emit8((uint8_t)(0xB8u + dst));
+    emit_rex(1u, 0u, (unsigned)dst);          /* REX.W, and .B if needed */
+    emu_jit_emit8((uint8_t)(0xB8u + ((unsigned)dst & 7u)));
     emu_jit_emit64(imm);
 }
 
 void x86_alu_rr(uint8_t op, int dst, int src)
 {
+    emit_rex(0u, (unsigned)src, (unsigned)dst);
     emu_jit_emit8(op);
     modrm_rr(src, dst);
 }
 
 void x86_add_imm8(int dst, int8_t imm)
 {
+    emit_rex(0u, 0u, (unsigned)dst);
     emu_jit_emit8(0x83);
     modrm_rr(0, dst);
     emu_jit_emit8((uint8_t)imm);
@@ -72,6 +106,7 @@ void x86_add_imm8(int dst, int8_t imm)
 
 void x86_and_imm8(int dst, int8_t imm)
 {
+    emit_rex(0u, 0u, (unsigned)dst);
     emu_jit_emit8(0x83);
     modrm_rr(4, dst);
     emu_jit_emit8((uint8_t)imm);
@@ -79,14 +114,16 @@ void x86_and_imm8(int dst, int8_t imm)
 
 void x86_shift_cl(int dst, unsigned ext)
 {
+    emit_rex(0u, 0u, (unsigned)dst);
     emu_jit_emit8(0xD3);
-    emu_jit_emit8((uint8_t)(0xC0u | (ext << 3) | (unsigned)dst));
+    emu_jit_emit8((uint8_t)(0xC0u | (ext << 3) | ((unsigned)dst & 7u)));
 }
 
 void x86_shift_imm(int dst, unsigned ext, uint32_t amount)
 {
+    emit_rex(0u, 0u, (unsigned)dst);
     emu_jit_emit8(0xC1);
-    emu_jit_emit8((uint8_t)(0xC0u | (ext << 3) | (unsigned)dst));
+    emu_jit_emit8((uint8_t)(0xC0u | (ext << 3) | ((unsigned)dst & 7u)));
     emu_jit_emit8((uint8_t)(amount & 31u));
 }
 
@@ -102,6 +139,7 @@ void x86_setcc_eax(uint8_t cc)
 
 static void ext_rr(uint8_t op2, int dst, int src)
 {
+    emit_rex(0u, (unsigned)dst, (unsigned)src);
     emu_jit_emit8(0x0F);
     emu_jit_emit8(op2);
     modrm_rr(dst, src);

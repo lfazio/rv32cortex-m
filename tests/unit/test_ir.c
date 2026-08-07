@@ -842,6 +842,63 @@ static void test_lower_bitop_tst(void)
     CHECK((cpu.flags & FAKE_F_Z) != 0u);   /* bit 0 was clear */
 }
 
+/*
+ * The extended registers, executed.
+ *
+ * REX support is otherwise dead code: no lowering uses r8-r15 yet, so
+ * every suite passes whether the prefix is right or absent. A wrong or
+ * missing REX does not fault -- it names a *different* register, which
+ * is the quietest possible failure.
+ *
+ * r8-r11 are caller-saved in System V, so this needs no save/restore
+ * beyond rbx, which carries the cpu pointer.
+ */
+static void test_encode_rex(void)
+{
+    static uint8_t *exec;
+
+    if (exec == NULL) {
+        void *const m = mmap(NULL, IR_TEST_CODE_BYTES,
+                             PROT_READ | PROT_WRITE | PROT_EXEC,
+                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (m == MAP_FAILED) {
+            CHECK(false);
+            return;
+        }
+        exec = (uint8_t *)m;
+    }
+
+    emu_jit_emit_begin(exec, IR_TEST_CODE_BYTES);
+    emu_jit_emit8(0x53);                          /* push rbx      */
+    emu_jit_emit8(0x48); emu_jit_emit8(0x89);
+    emu_jit_emit8(0xFB);                          /* mov rbx, rdi  */
+
+    x86_mov_imm32(X86_R8, 0x00001000u);
+    x86_mov_imm32(X86_R9, 0x00000234u);
+    x86_alu_rr(X86_ADD, X86_R8, X86_R9);          /* r8 = 0x1234   */
+    x86_st_cpu(X86_R8, (uint32_t)offsetof(fake_cpu_t, r) + 3u * 4u);
+
+    x86_ld_cpu(X86_R10, (uint32_t)offsetof(fake_cpu_t, r) + 1u * 4u);
+    x86_shift_imm(X86_R10, X86_SHL, 4u);
+    x86_mov_rr(X86_R11, X86_R10);
+    x86_st_cpu(X86_R11, (uint32_t)offsetof(fake_cpu_t, r) + 4u * 4u);
+
+    emu_jit_emit8(0x5B);                          /* pop rbx       */
+    emu_jit_emit8(0xC3);                          /* ret           */
+    if (emu_jit_overflowed()) {
+        CHECK(false);
+        return;
+    }
+
+    fake_cpu_t cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[1] = 0x0000000Fu;
+    ((void (*)(void *))(void *)exec)(&cpu);
+
+    CHECK_EQ(cpu.r[3], 0x00001234u);   /* imm, add, store via r8/r9 */
+    CHECK_EQ(cpu.r[4], 0x000000F0u);   /* load, shift, mov via r10/r11 */
+}
+
 /* ------------------------------------------------------------------ */
 
 void test_ir(void)
@@ -864,6 +921,7 @@ void test_ir(void)
     test_lower_bit_counts();
     test_lower_flags();
     test_interp_matches_jit();
+    test_encode_rex();
     test_lower_memory();
     test_lower_memory_trap();
     test_lower_bitop_memory();

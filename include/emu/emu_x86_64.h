@@ -8,9 +8,11 @@
  * it -- they emit the same `mov`, `add` and `jcc`, and only differ in
  * which guest register those refer to.
  *
- * Encodings follow Intel SDM Vol 2A/2B (docs/x86_64/). Only the low eight
- * registers are used, so no instruction here needs a REX.R or REX.B bit
- * and every ModRM byte is one byte.
+ * Encodings follow Intel SDM Vol 2A/2B (docs/x86_64/). All sixteen
+ * registers are encodable: the emitters add a REX prefix when, and only
+ * when, one is needed. A redundant 0x40 is legal but costs a byte on
+ * every instruction, and on the target that shares its code cache with
+ * the guest, bytes are the currency.
  *
  * The System V ABI is the other thing this file owns, because getting it
  * wrong does not fault in the emitted code -- it faults much later inside
@@ -30,7 +32,15 @@ extern "C" {
 
 enum {
     X86_EAX = 0, X86_ECX = 1, X86_EDX = 2, X86_EBX = 3,
-    X86_ESP = 4, X86_EBP = 5, X86_ESI = 6, X86_EDI = 7
+    X86_ESP = 4, X86_EBP = 5, X86_ESI = 6, X86_EDI = 7,
+    /*
+     * The extended registers. Reaching these costs a REX prefix, which
+     * the encoders emit only when one is actually required -- but they
+     * are the only registers a future allocator can use here, since rbx,
+     * rbp and rsp are all spoken for.
+     */
+    X86_R8  = 8, X86_R9  = 9, X86_R10 = 10, X86_R11 = 11,
+    X86_R12 = 12, X86_R13 = 13, X86_R14 = 14, X86_R15 = 15
 };
 
 /*
