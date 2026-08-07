@@ -355,6 +355,52 @@ static uint32_t fake_reg_offset(uint32_t n)
 
 static bool fake_reg_is_zero(uint32_t n) { return n == 0u; }
 
+/*
+ * A tiny guest memory, so the memory operations can be lowered and run
+ * rather than declined. Deliberately not the real bus: what is under
+ * test is the lowering's call sequence and its trap path, not any
+ * frontend's address map.
+ */
+static uint8_t g_mem[256];
+
+static uint32_t fake_load(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
+                          uint32_t *out)
+{
+    (void)cpu;
+    const uint32_t size = EMU_IR_MEM_SIZE(spec);
+
+    if (addr + size > sizeof(g_mem)) {
+        return 1u;                       /* "trapped" */
+    }
+    uint32_t v = 0u;
+    for (uint32_t i = 0; i < size; i++) {
+        v |= (uint32_t)g_mem[addr + i] << (8u * i);
+    }
+    if ((spec & EMU_IR_MEM_SIGNED) != 0u && size < 4u) {
+        const uint32_t sign = 1u << (size * 8u - 1u);
+        if ((v & sign) != 0u) {
+            v |= ~((sign << 1u) - 1u);
+        }
+    }
+    *out = v;
+    return 0u;
+}
+
+static uint32_t fake_store(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
+                           uint32_t val)
+{
+    (void)cpu;
+    const uint32_t size = EMU_IR_MEM_SIZE(spec);
+
+    if (addr + size > sizeof(g_mem)) {
+        return 1u;
+    }
+    for (uint32_t i = 0; i < size; i++) {
+        g_mem[addr + i] = (uint8_t)(val >> (8u * i));
+    }
+    return 0u;
+}
+
 static const emu_ir_target_t g_fake_target = {
     .reg_offset   = fake_reg_offset,
     .flags_offset = (uint32_t)offsetof(fake_cpu_t, flags),
@@ -363,6 +409,8 @@ static const emu_ir_target_t g_fake_target = {
     .pc_offset    = (uint32_t)offsetof(fake_cpu_t, pc),
     .helpers      = NULL,
     .helper_count = 0u,
+    .load         = fake_load,
+    .store        = fake_store,
 };
 
 #define IR_TEST_CODE_BYTES 8192u
@@ -628,6 +676,131 @@ static void test_interp_matches_jit(void)
     }
 }
 
+/*
+ * Loads, stores and the memory bit ops, lowered and executed, and then
+ * run again through the IR interpreter for comparison.
+ *
+ * These were the four the lowering used to decline, and declining is
+ * exactly the failure that hides: a frontend emitting them silently
+ * loses its whole block to the interpreter while every suite stays
+ * green.
+ */
+static void test_lower_memory(void)
+{
+    memset(g_mem, 0, sizeof(g_mem));
+    g_mem[0x40] = 0x12u;
+
+    emu_ir_reset(&g_b);
+    const uint16_t base = emu_ir_get(&g_b, 1u);
+    /* r2 = load.b [r1 + 0x40], sign-extended */
+    emu_ir_put(&g_b, 2u, emu_ir_emit(&g_b, EMU_IR_LOAD,
+                                     EMU_IR_MEM_AUX(1u, 1u), base,
+                                     EMU_IR_NO_TEMP, 0x40u, 0u));
+    /* store.w r3 -> [r1 + 0x10] */
+    (void)emu_ir_emit(&g_b, EMU_IR_STORE, EMU_IR_MEM_AUX(4u, 0u), base,
+                      emu_ir_get(&g_b, 3u), 0x10u, 0u);
+
+    fake_cpu_t cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[1] = 0u;
+    cpu.r[3] = 0xDEADBEEFu;
+
+    if (!lower_and_run(&cpu)) {
+        CHECK(false);
+        return;
+    }
+    CHECK_EQ(cpu.r[2], 0x12u);
+    CHECK_EQ((uint32_t)g_mem[0x10], 0xEFu);
+    CHECK_EQ((uint32_t)g_mem[0x13], 0xDEu);
+}
+
+/*
+ * A load whose address the target refuses. The block must stop there --
+ * the instructions after it belong to whatever the trap preempted, and
+ * running them is not a wrong value but a wrong program.
+ */
+static void test_lower_memory_trap(void)
+{
+    memset(g_mem, 0, sizeof(g_mem));
+
+    emu_ir_reset(&g_b);
+    const uint16_t base = emu_ir_get(&g_b, 1u);
+    emu_ir_put(&g_b, 2u, emu_ir_emit(&g_b, EMU_IR_LOAD,
+                                     EMU_IR_MEM_AUX(4u, 0u), base,
+                                     EMU_IR_NO_TEMP, 0u, 0u));
+    /* Must not run. */
+    emu_ir_put(&g_b, 4u, emu_ir_const(&g_b, 0xABCDu));
+
+    fake_cpu_t cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[1] = 0x1000u;                 /* out of range -> refused */
+
+    if (!lower_and_run(&cpu)) {
+        CHECK(false);
+        return;
+    }
+    CHECK_EQ(cpu.r[4], 0u);
+}
+
+/*
+ * The bit ops on memory, both encodings' worth of behaviour: Z reports
+ * the bit before the change, TST does not write back, and the bits of
+ * the flag word outside Z are left alone.
+ */
+static void test_lower_bitop_memory(void)
+{
+    memset(g_mem, 0, sizeof(g_mem));
+    g_mem[0x20] = 0x01u;
+
+    emu_ir_reset(&g_b);
+    const uint16_t base = emu_ir_get(&g_b, 1u);
+    const uint16_t bit1 = emu_ir_const(&g_b, 1u);
+
+    emu_ir_bitop(&g_b, EMU_IR_BITOP_SET, base, bit1, 0x20u, 0u);
+    emu_ir_put(&g_b, 5u, emu_ir_emit(&g_b, EMU_IR_GETCOND, EMU_IR_C_EQ,
+                                     EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 0u, 0u));
+
+    fake_cpu_t cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[1] = 0u;
+    cpu.flags = 0x80000000u | FAKE_F_C;
+
+    if (!lower_and_run(&cpu)) {
+        CHECK(false);
+        return;
+    }
+    /* bit 1 was 0 -> set, and Z reports that it had been clear. */
+    CHECK_EQ((uint32_t)g_mem[0x20], 0x03u);
+    CHECK_EQ(cpu.r[5], 1u);
+    /* Only Z moved. */
+    CHECK_EQ(cpu.flags & FAKE_F_C, FAKE_F_C);
+    CHECK_EQ(cpu.flags & 0x80000000u, 0x80000000u);
+}
+
+/* TST must not write, checked on a clear bit so a stray write shows. */
+static void test_lower_bitop_tst(void)
+{
+    memset(g_mem, 0, sizeof(g_mem));
+    g_mem[0x20] = 0x80u;
+
+    emu_ir_reset(&g_b);
+    const uint16_t base = emu_ir_get(&g_b, 1u);
+
+    emu_ir_bitop(&g_b, EMU_IR_BITOP_TST, base, emu_ir_const(&g_b, 0u),
+                 0x20u, 0u);
+
+    fake_cpu_t cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[1] = 0u;
+
+    if (!lower_and_run(&cpu)) {
+        CHECK(false);
+        return;
+    }
+    CHECK_EQ((uint32_t)g_mem[0x20], 0x80u);
+    CHECK((cpu.flags & FAKE_F_Z) != 0u);   /* bit 0 was clear */
+}
+
 /* ------------------------------------------------------------------ */
 
 void test_ir(void)
@@ -649,5 +822,9 @@ void test_ir(void)
     test_lower_bit_counts();
     test_lower_flags();
     test_interp_matches_jit();
+    test_lower_memory();
+    test_lower_memory_trap();
+    test_lower_bitop_memory();
+    test_lower_bitop_tst();
 #endif
 }

@@ -815,6 +815,17 @@ static void test_ir_backend_is_used(void)
         F1(OP_AND, 11, 10),
         F1(0x09u,  11, 10),          /* XOR */
         F1(OP_CMP, 11, 10),
+        /*
+         * A store and a load through the generic memory ops. Included
+         * here rather than in a test of their own because what is under
+         * test is the *ratio*: these used to end the block and send the
+         * rest of it to the interpreter, and nothing about the values
+         * would have shown that.
+         */
+        W0(OP_MOVHI, 0, 20),  0x8000u,
+        W0(OP_MOVEA, 20, 20), 0x0100u,
+        W0(OP_ST_HW, 20, 11), 0x0001u,   /* st.w r11, 0[r20] */
+        W0(OP_LD_HW, 20, 21), 0x0001u,   /* ld.w 0[r20], r21 */
         0x07E0u, SUB_HALT,
     };
 
@@ -833,6 +844,9 @@ static void test_ir_backend_is_used(void)
     /* The arithmetic itself, which the IR lowering produced. */
     CHECK_EQ(reg(10), 0u);
     CHECK_EQ(reg(11), 4u);
+    /* And the round trip through guest memory. */
+    CHECK_EQ(reg(21), 4u);
+    CHECK_EQ(ram32(0x100u), 4u);
 
     /*
      * If this is zero the whole block fell back and every check above is

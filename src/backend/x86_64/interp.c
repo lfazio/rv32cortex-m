@@ -253,18 +253,72 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
             }
             continue;
 
-        /*
-         * Memory and helpers need the frontend's bus access, which
-         * emu_ir_target_t does not carry yet. Refusing is honest;
-         * guessing an address space is not.
-         */
         case EMU_IR_LOAD:
+            if (t->load == NULL) {
+                return false;
+            }
+            if (t->load(cpu, a + in->imm, in->aux, &r) != 0u) {
+                return true;          /* trapped; pc is in the handler */
+            }
+            break;
+
         case EMU_IR_STORE:
-        case EMU_IR_HELPER:
+            if (t->store == NULL) {
+                return false;
+            }
+            if (t->store(cpu, a + in->imm, in->aux, bv) != 0u) {
+                return true;
+            }
+            continue;
+
+        /*
+         * One access as far as the guest is concerned: read the byte,
+         * report the bit as it was in Z, write back unless this is the
+         * test-only form. Z alone moves.
+         */
         case EMU_IR_BITOP_SET:
         case EMU_IR_BITOP_CLR:
         case EMU_IR_BITOP_INV:
-        case EMU_IR_BITOP_TST:
+        case EMU_IR_BITOP_TST: {
+            if (t->load == NULL || t->store == NULL) {
+                return false;
+            }
+            const uint32_t adr = a + in->imm;
+            const uint32_t mask = 1u << (bv & 7u);
+            const uint32_t spec = EMU_IR_MEM_AUX(1u, 0u);
+            uint32_t token = 0u;
+
+            if (t->load(cpu, adr, spec, &token) != 0u) {
+                return true;
+            }
+
+            uint32_t *const fw = word_at(cpu, t->flags_offset);
+            if ((token & mask) != 0u) {
+                *fw &= ~t->flag_bit[0];
+            } else {
+                *fw |= t->flag_bit[0];
+            }
+
+            if (in->op == (uint8_t)EMU_IR_BITOP_TST) {
+                continue;
+            }
+            uint32_t out = token;
+            if (in->op == (uint8_t)EMU_IR_BITOP_SET)      { out |= mask; }
+            else if (in->op == (uint8_t)EMU_IR_BITOP_CLR) { out &= ~mask; }
+            else                                          { out ^= mask; }
+            if (t->store(cpu, adr, spec, out) != 0u) {
+                return true;
+            }
+            continue;
+        }
+
+        /*
+         * A helper still needs the frontend's own signature, which
+         * emu_ir_target_t exposes only as opaque pointers. Refusing is
+         * honest; guessing a signature is not.
+         */
+        case EMU_IR_HELPER:
+        case EMU_IR_HELPER_TRAP:
         default:
             return false;
         }

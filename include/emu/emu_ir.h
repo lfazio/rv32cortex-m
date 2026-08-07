@@ -442,6 +442,31 @@ typedef struct emu_ir_target {
     /* Helpers, indexed by the `imm` of EMU_IR_HELPER. */
     const void *const *helpers;
     uint32_t           helper_count;
+
+    /*
+     * Guest memory. A guest address is not a host address -- it goes
+     * through a bus with regions, permissions and passthrough windows --
+     * so a backend cannot emit a plain load. These are what let
+     * EMU_IR_LOAD, EMU_IR_STORE and the EMU_IR_BITOP_* class be lowered
+     * generically rather than each frontend routing them to a helper of
+     * its own shape.
+     *
+     * `spec` is EMU_IR_MEM_AUX: size in bytes plus a sign-extend flag.
+     * Both return non-zero if the access trapped, in which case the trap
+     * has already been entered and the block must stop. Both go to the
+     * same load and store the interpreter uses, so everything those do
+     * beyond the access itself -- reservations, PMP, translation -- is
+     * had for free.
+     *
+     * The guest pc must already point at the faulting instruction when
+     * either is called, because that is what the trap records. Frontends
+     * emit EMU_IR_SETPC before a memory operation for exactly that
+     * reason, rather than only after each instruction.
+     */
+    uint32_t (*load)(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
+                     uint32_t *out);
+    uint32_t (*store)(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
+                      uint32_t val);
 } emu_ir_target_t;
 
 /*

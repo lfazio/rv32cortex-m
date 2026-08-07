@@ -48,6 +48,16 @@ static uint32_t slot(uint16_t n)
     return (uint32_t)n * 4u;
 }
 
+/*
+ * Two slots past the block's temps, for the memory operations: a call
+ * clobbers every scratch register, so an address that has to survive one
+ * needs somewhere the call cannot reach.
+ */
+static uint16_t g_ntemps;
+
+#define SCRATCH_ADDR ((uint16_t)(g_ntemps))
+#define SCRATCH_VAL  ((uint16_t)(g_ntemps + 1u))
+
 /* mov reg, [rsp + disp] and its inverse, with the SIB byte rsp needs. */
 static void ld_slot(int reg, uint16_t n)
 {
@@ -199,6 +209,40 @@ static void note_exit(uint8_t *slot)
     if (g_nexits < IR_MAX_EXITS) {
         g_exits[g_nexits++] = slot;
     }
+}
+
+/* lea rcx, [rsp + disp] -- the out-pointer a load writes through. */
+static void lea_rcx_slot(uint16_t n)
+{
+    emu_jit_emit8(0x48); emu_jit_emit8(0x8D);
+    emu_jit_emit8(0x8C); emu_jit_emit8(0x24);
+    emu_jit_emit32(slot(n));
+}
+
+/* Address of a memory operation: operand `a` plus the displacement. */
+static void emit_addr(const emu_ir_insn_t *in, int dst)
+{
+    ld_operand(dst, in->a);
+    if (in->imm != 0u) {
+        x86_mov_imm32(X86_EDX, in->imm);
+        x86_alu_rr(X86_ADD, dst, X86_EDX);
+    }
+}
+
+/*
+ * Call the target's load or store and leave the block if it trapped.
+ * System V: (cpu, addr, spec, out-or-value); esi already holds the
+ * address and ecx the fourth argument.
+ */
+static void emit_mem_call(const void *fn, uint32_t spec)
+{
+    emu_jit_emit8(0x48); emu_jit_emit8(0x89);
+    emu_jit_emit8(0xDF);                      /* mov rdi, rbx (the cpu) */
+    x86_mov_imm32(X86_EDX, spec);
+    x86_mov_imm64(X86_EAX, (uint64_t)(uintptr_t)fn);
+    x86_call_rax();
+    x86_alu_rr(X86_TEST, X86_EAX, X86_EAX);
+    note_exit(x86_jcc32(X86_CC_NE));
 }
 
 static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
@@ -537,10 +581,122 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
      * a guest address is not a host address. x86 could otherwise do each
      * of these in a single bts/btr/btc with a memory operand.
      */
+    case EMU_IR_LOAD:
+        if (t->load == NULL) {
+            return false;
+        }
+        emit_addr(in, X86_ESI);
+        lea_rcx_slot(in->dst);           /* the result lands in its slot */
+        emit_mem_call((const void *)t->load, in->aux);
+        break;
+
+    case EMU_IR_STORE:
+        if (t->store == NULL) {
+            return false;
+        }
+        emit_addr(in, X86_ESI);
+        ld_operand(X86_ECX, in->b);      /* the value */
+        emit_mem_call((const void *)t->store, in->aux);
+        break;
+
+    /*
+     * The memory bit ops: one IR instruction, three host steps. Read the
+     * byte, report the bit *as it was* in Z, write back unless this is
+     * the test-only form.
+     *
+     * The address is spilled because the load call clobbers every
+     * scratch register. Z alone moves -- CY, OV and S keep whatever the
+     * previous instruction left, which is unlike almost everything else
+     * a guest does -- so the flag word is read-modify-written rather
+     * than rebuilt.
+     */
     case EMU_IR_BITOP_SET:
     case EMU_IR_BITOP_CLR:
     case EMU_IR_BITOP_INV:
-    case EMU_IR_BITOP_TST:
+    case EMU_IR_BITOP_TST: {
+        if (t->load == NULL || t->store == NULL || t->flag_bit[0] == 0u) {
+            return false;
+        }
+        const uint32_t spec = EMU_IR_MEM_AUX(1u, 0u);
+
+        emit_addr(in, X86_ESI);
+        st_slot(X86_ESI, SCRATCH_ADDR);
+        lea_rcx_slot(SCRATCH_VAL);
+        emit_mem_call((const void *)t->load, spec);
+
+        /* edx = 1 << (bit & 7) */
+        ld_operand(T1, in->b);
+        x86_and_imm8(T1, 7);
+        x86_mov_imm32(T2, 1u);
+        emu_jit_emit8(0xD3); emu_jit_emit8(0xE2);      /* shl edx, cl */
+
+        ld_slot(T0, SCRATCH_VAL);
+        x86_alu_rr(X86_TEST, T0, T2);
+        /*
+         * setz, not setnz: Z reports the bit having been *clear*.
+         * Computing it from the result instead would make SET1 always
+         * clear Z and CLR1 always set it, with the right byte in memory
+         * either way.
+         */
+        emu_jit_emit8(0x0F); emu_jit_emit8(0x94);
+        emu_jit_emit8(0xC1);                           /* setz cl */
+        x86_movzx8(T1, T1);
+        x86_shift_imm(T1, X86_SHL, (uint32_t)__builtin_ctz(t->flag_bit[0]));
+
+        x86_ld_cpu(X86_ESI, t->flags_offset);
+        x86_mov_imm32(X86_EDI, ~t->flag_bit[0]);
+        x86_alu_rr(X86_AND, X86_ESI, X86_EDI);
+        x86_alu_rr(X86_OR, X86_ESI, T1);
+        x86_st_cpu(X86_ESI, t->flags_offset);
+
+        if (in->op == (uint8_t)EMU_IR_BITOP_TST) {
+            break;                        /* no write-back, no store fault */
+        }
+
+        ld_slot(T0, SCRATCH_VAL);
+        if (in->op == (uint8_t)EMU_IR_BITOP_SET) {
+            x86_alu_rr(X86_OR, T0, T2);
+        } else if (in->op == (uint8_t)EMU_IR_BITOP_INV) {
+            x86_alu_rr(X86_XOR, T0, T2);
+        } else {
+            emu_jit_emit8(0xF7); emu_jit_emit8(0xD2);  /* not edx */
+            x86_alu_rr(X86_AND, T0, T2);
+        }
+        x86_mov_rr(X86_ECX, T0);
+        ld_slot(X86_ESI, SCRATCH_ADDR);
+        emit_mem_call((const void *)t->store, spec);
+        break;
+    }
+
+    case EMU_IR_SELECT: {
+        /*
+         * Reads the guest's flags, so they have to be brought back into
+         * the host's. Only Z is reconstructed: a guest without flags has
+         * none to consult and should use EMU_IR_SETCC instead, which is
+         * what the flagless frontend does.
+         */
+        if (in->aux == (uint8_t)EMU_IR_C_ALWAYS) {
+            ld_operand(T0, in->a);
+            st_slot(T0, in->dst);
+            break;
+        }
+        if (t->flag_bit[0] == 0u ||
+            (in->aux != (uint8_t)EMU_IR_C_EQ &&
+             in->aux != (uint8_t)EMU_IR_C_NE)) {
+            return false;
+        }
+        ld_operand(T0, in->b);            /* the false value */
+        ld_operand(T1, in->a);            /* the true value  */
+        x86_ld_cpu(T2, t->flags_offset);
+        x86_mov_imm32(X86_ESI, t->flag_bit[0]);
+        x86_alu_rr(X86_TEST, T2, X86_ESI);
+        emu_jit_emit8(0x0F);
+        emu_jit_emit8(in->aux == (uint8_t)EMU_IR_C_EQ ? 0x45u : 0x44u);
+        emu_jit_emit8(0xC1);              /* cmovnz/cmovz eax, ecx */
+        st_slot(T0, in->dst);
+        break;
+    }
+
     /*
      * popcnt is SSE4.2 and, unlike lzcnt, has no benign degradation:
      * without the feature `F3 0F B8` is a different encoding, not a
@@ -549,9 +705,6 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
      * sequence.
      */
     case EMU_IR_POPCNT:
-    case EMU_IR_LOAD:
-    case EMU_IR_STORE:
-    case EMU_IR_SELECT:
     case EMU_IR_MUL: case EMU_IR_MULHS: case EMU_IR_MULHU:
     case EMU_IR_ROTL: case EMU_IR_ROTLI:
     case EMU_IR_ADDI: case EMU_IR_ANDI:
@@ -575,7 +728,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      * emitted code, it faults inside whatever libc routine a helper
      * eventually reaches that uses an aligned SSE store.
      */
-    const uint32_t frame = ((b->next_temp * 4u) + 15u) & ~15u;
+    g_ntemps = (uint16_t)b->next_temp;
+    const uint32_t frame = (((b->next_temp + 2u) * 4u) + 15u) & ~15u;
 
     g_nexits = 0u;
 

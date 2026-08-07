@@ -51,6 +51,46 @@
 #define F_LOGIC (EMU_IR_F_Z | EMU_IR_F_S | EMU_IR_F_V)
 
 /* ------------------------------------------------------------------ */
+/* Memory                                                              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The generic accessors the shared lowering calls, going to the same
+ * g4mh_load/g4mh_store the interpreter uses so alignment checks and the
+ * bus policy are had for free.
+ *
+ * g4mh_cpu_exception takes the return address, and for a data abort that
+ * is the faulting instruction itself. pc already holds it: the frontend
+ * emits EMU_IR_SETPC before every memory operation for exactly this.
+ */
+static uint32_t g4mh_ir_load(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
+                             uint32_t *out)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
+    const g4mh_exc_t e = g4mh_load(c, addr, EMU_IR_MEM_SIZE(spec),
+                                   (spec & EMU_IR_MEM_SIGNED) != 0u, out);
+
+    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+        g4mh_cpu_exception(c, e, c->pc);
+        return 1u;
+    }
+    return 0u;
+}
+
+static uint32_t g4mh_ir_store(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
+                              uint32_t val)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
+    const g4mh_exc_t e = g4mh_store(c, addr, EMU_IR_MEM_SIZE(spec), val);
+
+    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+        g4mh_cpu_exception(c, e, c->pc);
+        return 1u;
+    }
+    return 0u;
+}
+
+/* ------------------------------------------------------------------ */
 /* The target descriptor                                               */
 /* ------------------------------------------------------------------ */
 
@@ -78,11 +118,83 @@ const emu_ir_target_t g4mh_ir_target = {
     .pc_offset    = (uint32_t)offsetof(g4mh_cpu_t, pc),
     .helpers      = NULL,
     .helper_count = 0u,
+    .load         = g4mh_ir_load,
+    .store        = g4mh_ir_store,
 };
 
 /* ------------------------------------------------------------------ */
 /* Translation                                                         */
 /* ------------------------------------------------------------------ */
+
+/*
+ * Lower one 32-bit instruction, given both halfwords.
+ *
+ * Only the disp16 load and store group so far. The width of the halfword
+ * and word forms is carried in *bit 0 of the displacement* rather than
+ * in the opcode -- a halfword access is 2-byte aligned and a word access
+ * 4-byte, so that bit is free and the encoding spends it -- which means
+ * the displacement has to be masked before it is used, and a lowering
+ * that forgot would be off by one on every odd-looking displacement.
+ */
+static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
+                        uint32_t pc)
+{
+    const uint32_t r1 = g4mh_reg1(w0);
+    const uint32_t r2 = g4mh_reg2(w0);
+    const uint32_t op = g4mh_op6(w0);
+
+    /*
+     * Address formation. Both share their slot with a 48-bit encoding
+     * selected by reg2 == 0 -- MOVEA with MOV imm32, MOVHI with DISPOSE
+     * -- and this frontend has already been caught once by an ISA that
+     * reuses a register field as an opcode extension: decoding on the
+     * opcode alone retired six unimplemented instructions as writes into
+     * r0. Neither touches the flags.
+     */
+    if (op == 0x31u || op == 0x32u) {
+        if (r2 == 0u) {
+            return false;
+        }
+        const uint32_t imm = (op == 0x31u)
+                                 ? (uint32_t)emu_sext(w1, 16)
+                                 : ((uint32_t)w1 << 16);
+
+        emu_ir_put(b, r2, emu_ir_alu(b, EMU_IR_ADD, emu_ir_get(b, r1),
+                                     emu_ir_const(b, imm)));
+        return true;
+    }
+
+    if (op < 0x38u || op > 0x3Bu) {
+        return false;
+    }
+
+    /*
+     * pc first: a data abort records it, and the store that normally
+     * follows an instruction has not run yet.
+     */
+    (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                      pc, 0u);
+
+    const bool byte = (op == 0x38u) || (op == 0x3Au);
+    const uint32_t size = byte ? 1u : ((w1 & 1u) ? 4u : 2u);
+    const uint32_t disp = byte ? (uint32_t)emu_sext(w1, 16)
+                               : (uint32_t)emu_sext(w1 & 0xFFFEu, 16);
+    const uint16_t base = emu_ir_get(b, r1);
+
+    if (op <= 0x39u) {                              /* LD.B / LD.H / LD.W */
+        /* Byte and halfword loads sign-extend; the word form has
+         * nothing to extend. */
+        const uint8_t spec = EMU_IR_MEM_AUX(size, size != 4u);
+
+        emu_ir_put(b, r2, emu_ir_emit(b, EMU_IR_LOAD, spec, base,
+                                      EMU_IR_NO_TEMP, disp, 0u));
+        return true;
+    }
+
+    (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(size, 0u), base,
+                      emu_ir_get(b, r2), disp, 0u);
+    return true;
+}
 
 /*
  * Lower one 16-bit instruction. Returns false for anything not modelled,
@@ -218,17 +330,33 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
             break;
         }
         /*
-         * 32-bit and longer encodings are left alone. Their first
-         * halfword is distinguishable, and lowering one by accident as a
-         * 16-bit instruction would be silent -- so the test is on the
-         * form, not on whether the opcode happens to be recognised.
+         * Longer encodings than 32 bits are still left alone: their
+         * first halfword is distinguishable, and lowering one by
+         * accident as a shorter instruction would be silent, so the test
+         * is on the form rather than on whether the opcode is
+         * recognised.
          */
-        if (!g4mh_is_16bit(w0)) {
-            break;
+        const uint32_t mark = b->count;
+        uint32_t len = 2u;
+        bool ok;
+
+        if (g4mh_is_16bit(w0)) {
+            ok = lower_one(b, w0);
+        } else {
+            uint16_t w1;
+
+            if (g4mh_insn_len(w0) != 4u ||
+                emu_bus_fetch16(c->bus, cur + 2u, &w1) != EMU_FAULT_NONE) {
+                break;
+            }
+            if (g4mh_insn_is_48(w0, w1)) {
+                break;
+            }
+            len = 4u;
+            ok = lower_one32(b, w0, w1, cur);
         }
 
-        const uint32_t mark = b->count;
-        if (!lower_one(b, w0)) {
+        if (!ok) {
             /*
              * Discard whatever the attempt emitted. A lowering can emit
              * part of an instruction before reaching the operand that
@@ -240,7 +368,7 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
             break;
         }
 
-        cur += 2u;
+        cur += len;
         count++;
         (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP,
                           EMU_IR_NO_TEMP, 0u, 0u);
