@@ -287,4 +287,23 @@ void t2_patch_branch(uint8_t *at, const uint8_t *target, bool conditional)
     }
 }
 
+/* MUL.W rd, rn, rm -- the low 32 bits of the product. */
+void t2_mul(uint32_t rd, uint32_t rn, uint32_t rm)
+{
+    t2_emit32((uint16_t)(0xFB00u | rn), (uint16_t)(0xF000u | (rd << 8) | rm));
+}
+
+/*
+ * SMULL / UMULL rdlo, rdhi, rn, rm -- the full 64-bit product.
+ *
+ * The high-half opcodes need this; MUL.W gives only the low 32 bits.
+ * rdlo and rdhi must differ, which is the caller's business.
+ */
+void t2_mull(bool sign, uint32_t rdlo, uint32_t rdhi, uint32_t rn,
+             uint32_t rm)
+{
+    t2_emit32((uint16_t)((sign ? 0xFB80u : 0xFBA0u) | rn),
+              (uint16_t)((rdlo << 12) | (rdhi << 8) | rm));
+}
+
 #endif /* EMU_JIT_THUMB2 */

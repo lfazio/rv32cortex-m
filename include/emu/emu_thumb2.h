@@ -64,6 +64,10 @@ void t2_neg(uint32_t rd, uint32_t rn);
 void t2_shift_reg(uint32_t kind, uint32_t rd, uint32_t rn, uint32_t rm);
 void t2_shift_imm(uint32_t type, uint32_t rd, uint32_t rm, uint32_t amount);
 
+void t2_mul(uint32_t rd, uint32_t rn, uint32_t rm);
+void t2_mull(bool sign, uint32_t rdlo, uint32_t rdhi, uint32_t rn,
+             uint32_t rm);
+
 void t2_rev(uint32_t rd, uint32_t rm);
 void t2_rev16(uint32_t rd, uint32_t rm);
 void t2_rbit(uint32_t rd, uint32_t rm);

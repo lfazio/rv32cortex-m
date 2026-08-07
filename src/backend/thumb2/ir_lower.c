@@ -178,6 +178,8 @@ static bool bisect_allows(uint8_t op)
         return T2_BISECT >= 5;
     case EMU_IR_EXIT: case EMU_IR_EXIT_IF:
         return T2_BISECT >= 6;
+    case EMU_IR_MUL: case EMU_IR_MULHS: case EMU_IR_MULHU:
+        return T2_BISECT >= 7;
     case EMU_IR_LOAD: case EMU_IR_STORE:
         return T2_BISECT >= 7;
     default:
@@ -387,6 +389,27 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         break;
     }
 
+    case EMU_IR_MUL:
+        ld_operand(T2_R0, in->a);
+        ld_operand(T2_R1, in->b);
+        t2_mul(T2_R0, T2_R0, T2_R1);
+        st_slot(T2_R0, in->dst);
+        break;
+
+    case EMU_IR_MULHS:
+    case EMU_IR_MULHU:
+        /*
+         * SMULL/UMULL write both halves and their two destinations must
+         * differ, so the low half lands in a register that is then
+         * discarded. Only the high half is wanted.
+         */
+        ld_operand(T2_R2, in->a);
+        ld_operand(T2_R3, in->b);
+        t2_mull(in->op == (uint8_t)EMU_IR_MULHS, T2_R1, T2_R0,
+                T2_R2, T2_R3);
+        st_slot(T2_R0, in->dst);
+        break;
+
     case EMU_IR_LOAD:
         if (t->load == NULL) {
             return false;
@@ -457,7 +480,6 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_HELPER:
     case EMU_IR_HELPER_TRAP:
     case EMU_IR_POPCNT:
-    case EMU_IR_MUL: case EMU_IR_MULHS: case EMU_IR_MULHU:
     case EMU_IR_ROTL: case EMU_IR_ROTLI:
     case EMU_IR_ADDI: case EMU_IR_ANDI:
     case EMU_IR_ORI:  case EMU_IR_XORI:
