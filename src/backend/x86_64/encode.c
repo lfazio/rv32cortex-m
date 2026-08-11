@@ -149,6 +149,21 @@ void x86_alu_rr(uint8_t op, int dst, int src)
     modrm_rr(src, dst);
 }
 
+/* The F7 group: /2 not, /3 neg, /4 mul, /5 imul. */
+void x86_unary(unsigned ext, int reg)
+{
+    emit_rex(0u, 0u, (unsigned)reg);
+    emu_jit_emit8(0xF7);
+    modrm_rr((int)ext, reg);
+}
+
+void x86_bswap(int reg)
+{
+    emit_rex(0u, 0u, (unsigned)reg);
+    emu_jit_emit8(0x0F);
+    emu_jit_emit8((uint8_t)(0xC8u + ((unsigned)reg & 7u)));
+}
+
 void x86_add_imm8(int dst, int8_t imm)
 {
     emit_rex(0u, 0u, (unsigned)dst);

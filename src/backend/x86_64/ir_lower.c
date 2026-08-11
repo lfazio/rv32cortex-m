@@ -79,7 +79,7 @@ static uint32_t g_stats_elided;
  */
 static uint16_t g_dead_store;
 
-/* Ops whose first act is ld_operand(T0, in->a), so the elision applies. */
+/* Ops whose first operand load is `a`, so the elision reaches it. */
 static bool reads_a_in_t0(uint8_t op)
 {
     switch ((emu_ir_op_t)op) {
@@ -197,19 +197,47 @@ static void st_slot(int reg, uint16_t n)
     }
 }
 
+/*
+ * Where to compute a result: its own register when it has one, else the
+ * scratch. The st_slot that follows becomes a no-op in the first case,
+ * which is the whole saving -- three bytes an instruction, against the
+ * five that reaching the register rather than the slot already saved.
+ *
+ * Only for lowerings whose emitters take a register. Several here are
+ * written in terms of eax specifically -- the setcc and movzx pair, the
+ * bit-search sequence, the one-operand multiply -- and stay that way.
+ */
+static int dst_reg(uint16_t n)
+{
+    const int p = phys(n);
+
+    return (p >= 0) ? p : T0;
+}
+
 /* Load an operand, tolerating EMU_IR_NO_TEMP so callers need not check. */
 static void ld_operand(int reg, uint16_t n)
 {
     /*
      * The elision is consulted before the allocation, because a value
      * that is both in a register and still in T0 is cheaper taken from
-     * T0 -- no instruction at all against a three-byte mov.
+     * T0 -- nothing at all, or a three-byte mov, against a slot load.
+     *
+     * It fires only on an instruction's *first* operand load, whatever
+     * register that goes to. The restriction is what makes delivering
+     * into a register other than T0 safe: several lowerings write T0
+     * partway through -- emit_mem_call materialises the callee there --
+     * so a window still open at the second load would hand over a
+     * function pointer. Being first means nothing in this instruction
+     * has run yet.
      */
-    if (reg == T0 && g_t0_first) {
+    if (g_t0_first) {
         g_t0_first = false;
         if (n != EMU_IR_NO_TEMP && n == g_t0_avail) {
             g_stats_elided++;
-            return;                 /* already there */
+            if (reg != T0) {
+                x86_mov_rr(reg, T0);
+            }
+            return;
         }
     }
 
@@ -402,14 +430,17 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_NOP:
         break;
 
-    case EMU_IR_GET:
+    case EMU_IR_GET: {
+        const int rd = dst_reg(in->dst);
+
         if (t->reg_is_zero != NULL && t->reg_is_zero(in->imm)) {
-            x86_mov_imm32(T0, 0u);
+            x86_mov_imm32(rd, 0u);
         } else {
-            x86_ld_cpu(T0, t->reg_offset(in->imm));
+            x86_ld_cpu(rd, t->reg_offset(in->imm));
         }
-        st_slot(T0, in->dst);
+        st_slot(rd, in->dst);
         break;
+    }
 
     case EMU_IR_PUT:
         if (t->reg_is_zero != NULL && t->reg_is_zero(in->imm)) {
@@ -419,15 +450,21 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         x86_st_cpu(T0, t->reg_offset(in->imm));
         break;
 
-    case EMU_IR_CONST:
-        x86_mov_imm32(T0, in->imm);
-        st_slot(T0, in->dst);
-        break;
+    case EMU_IR_CONST: {
+        const int rd = dst_reg(in->dst);
 
-    case EMU_IR_MOV:
-        ld_operand(T0, in->a);
-        st_slot(T0, in->dst);
+        x86_mov_imm32(rd, in->imm);
+        st_slot(rd, in->dst);
         break;
+    }
+
+    case EMU_IR_MOV: {
+        const int rd = dst_reg(in->dst);
+
+        ld_operand(rd, in->a);
+        st_slot(rd, in->dst);
+        break;
+    }
 
     case EMU_IR_ADD: case EMU_IR_SUB: case EMU_IR_AND:
     case EMU_IR_OR:  case EMU_IR_XOR: {
@@ -440,8 +477,19 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         };
         const uint8_t alu = k_alu[in->op - (uint8_t)EMU_IR_ADD];
         const int pb = phys(in->b);
+        const int rd = dst_reg(in->dst);
 
-        ld_operand(T0, in->a);
+        /*
+         * x86 is two-address, so the destination has to be loaded with
+         * the left operand first -- which makes computing in place worth
+         * one mov rather than the three instructions it saves on the
+         * three-address host.
+         *
+         * `rd` cannot collide with `pb`: b is read here, so the
+         * allocator's strictly-before expiry cannot have handed its
+         * register to this instruction's destination.
+         */
+        ld_operand(rd, in->a);
         /*
          * The right operand is taken where it already is -- its register
          * if it has one, otherwise straight out of its frame slot rather
@@ -450,14 +498,14 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
          * encoding relies on always applies.
          */
         if (pb >= 0) {
-            x86_alu_rr(alu, T0, pb);
+            x86_alu_rr(alu, rd, pb);
         } else if (in->b != EMU_IR_NO_TEMP) {
-            x86_alu_slot(alu, T0, slot(in->b));
+            x86_alu_slot(alu, rd, slot(in->b));
         } else {
             ld_operand(T1, in->b);
-            x86_alu_rr(alu, T0, T1);
+            x86_alu_rr(alu, rd, T1);
         }
-        st_slot(T0, in->dst);
+        st_slot(rd, in->dst);
         break;
     }
 
@@ -467,10 +515,12 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             [EMU_IR_SHR - EMU_IR_SHL] = X86_SHR,
             [EMU_IR_SAR - EMU_IR_SHL] = X86_SAR,
         };
-        ld_operand(T0, in->a);
+        const int rd = dst_reg(in->dst);
+
+        ld_operand(rd, in->a);
         ld_operand(T1, in->b);      /* count must be in cl */
-        x86_shift_cl(T0, k_sh[in->op - (uint8_t)EMU_IR_SHL]);
-        st_slot(T0, in->dst);
+        x86_shift_cl(rd, k_sh[in->op - (uint8_t)EMU_IR_SHL]);
+        st_slot(rd, in->dst);
         break;
     }
 
@@ -480,25 +530,23 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             [EMU_IR_SHRI - EMU_IR_SHLI] = X86_SHR,
             [EMU_IR_SARI - EMU_IR_SHLI] = X86_SAR,
         };
-        ld_operand(T0, in->a);
-        x86_shift_imm(T0, k_sh[in->op - (uint8_t)EMU_IR_SHLI], in->imm);
-        st_slot(T0, in->dst);
+        const int rd = dst_reg(in->dst);
+
+        ld_operand(rd, in->a);
+        x86_shift_imm(rd, k_sh[in->op - (uint8_t)EMU_IR_SHLI], in->imm);
+        st_slot(rd, in->dst);
         break;
     }
 
     case EMU_IR_NOT:
-        ld_operand(T0, in->a);
-        emu_jit_emit8(0xF7);
-        emu_jit_emit8(0xD0);                       /* not eax */
-        st_slot(T0, in->dst);
-        break;
+    case EMU_IR_NEG: {
+        const int rd = dst_reg(in->dst);
 
-    case EMU_IR_NEG:
-        ld_operand(T0, in->a);
-        emu_jit_emit8(0xF7);
-        emu_jit_emit8(0xD8);                       /* neg eax */
-        st_slot(T0, in->dst);
+        ld_operand(rd, in->a);
+        x86_unary((in->op == (uint8_t)EMU_IR_NOT) ? X86_NOT : X86_NEG, rd);
+        st_slot(rd, in->dst);
         break;
+    }
 
     /*
      * The bit and byte group, which is why these are IR operations
@@ -506,12 +554,14 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
      * instruction here, and would be four to six emitted bytes of shift
      * and mask if the IR had made the frontend spell it out.
      */
-    case EMU_IR_BSWAP32:
-        ld_operand(T0, in->a);
-        emu_jit_emit8(0x0F);
-        emu_jit_emit8(0xC8);                       /* bswap eax */
-        st_slot(T0, in->dst);
+    case EMU_IR_BSWAP32: {
+        const int rd = dst_reg(in->dst);
+
+        ld_operand(rd, in->a);
+        x86_bswap(rd);
+        st_slot(rd, in->dst);
         break;
+    }
 
     case EMU_IR_BSWAP16:
         /* Swap bytes within each halfword: rotate each 16-bit half by 8. */
@@ -525,12 +575,14 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         st_slot(T0, in->dst);
         break;
 
-    case EMU_IR_HSWAP:
-        ld_operand(T0, in->a);
-        emu_jit_emit8(0xC1); emu_jit_emit8(0xC8);
-        emu_jit_emit8(0x10);                       /* ror eax, 16 */
-        st_slot(T0, in->dst);
+    case EMU_IR_HSWAP: {
+        const int rd = dst_reg(in->dst);
+
+        ld_operand(rd, in->a);
+        x86_shift_imm(rd, X86_ROR, 16u);
+        st_slot(rd, in->dst);
         break;
+    }
 
     case EMU_IR_CLZ:
     case EMU_IR_CTZ:
@@ -597,14 +649,25 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         break;
     }
 
-    case EMU_IR_SEXT8:  ld_operand(T0, in->a); x86_movsx8(T0, T0);
-                        st_slot(T0, in->dst); break;
-    case EMU_IR_SEXT16: ld_operand(T0, in->a); x86_movsx16(T0, T0);
-                        st_slot(T0, in->dst); break;
-    case EMU_IR_ZEXT8:  ld_operand(T0, in->a); x86_movzx8(T0, T0);
-                        st_slot(T0, in->dst); break;
-    case EMU_IR_ZEXT16: ld_operand(T0, in->a); x86_movzx16(T0, T0);
-                        st_slot(T0, in->dst); break;
+    /*
+     * The source stays eax: with a REX prefix present, byte-operand
+     * encodings 4..7 mean SPL/BPL/SIL/DIL rather than AH/CH/DH/BH, and
+     * al is encoding 0 under any prefix. Only the destination varies.
+     */
+    case EMU_IR_SEXT8: case EMU_IR_SEXT16:
+    case EMU_IR_ZEXT8: case EMU_IR_ZEXT16: {
+        const int rd = dst_reg(in->dst);
+
+        ld_operand(T0, in->a);
+        switch ((emu_ir_op_t)in->op) {
+        case EMU_IR_SEXT8:  x86_movsx8(rd, T0);  break;
+        case EMU_IR_SEXT16: x86_movsx16(rd, T0); break;
+        case EMU_IR_ZEXT8:  x86_movzx8(rd, T0);  break;
+        default:            x86_movzx16(rd, T0); break;
+        }
+        st_slot(rd, in->dst);
+        break;
+    }
 
     case EMU_IR_SETF:
         emit_setf(in, t);

@@ -105,6 +105,13 @@ void x86_alu_slot(uint8_t op, int dst, uint32_t disp);
 /* The temp frame: mov reg, [rsp + disp32] and back. */
 void x86_ld_rsp(int reg, uint32_t disp);
 void x86_st_rsp(int reg, uint32_t disp);
+
+/* The F7 group -- /2 not, /3 neg -- and bswap, for any register. */
+void x86_unary(unsigned ext, int reg);
+void x86_bswap(int reg);
+#define X86_NOT 2u
+#define X86_NEG 3u
+#define X86_ROR 1u
 void x86_add_imm8(int dst, int8_t imm);
 void x86_and_imm8(int dst, int8_t imm);
 
