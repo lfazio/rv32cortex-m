@@ -607,6 +607,50 @@ what changes between the parts.
   without any pattern matching, for 6.1% of emitted code size on x86-64
   and 771,100 from 963,899 ticks on ARM. The textbook fusions are not
   there: `lui`+`addi` 0.2%, `auipc`+`addi` 0.00%.
+- **The board's tick counter is exactly deterministic, and the ±10% I
+  blamed on it was build-to-build code layout.** The same CoreMark binary
+  reflashed and rerun three times gave 847,616 ticks every time, to the
+  digit, with identical translation and compaction counts. So the earlier
+  reading of 771,100 against 849,822 was not noise: those were different
+  emulator binaries, and one of them -- the reverted shifted-operand
+  fusion -- emitted *byte-identical* guest translations. The only thing
+  left that can move a byte-identical translation by 10% is where the
+  emulator's own hot loop lands in flash. Read that as **layout is worth
+  up to 10% on this part, not the ±3% recorded above**, and as: never
+  attribute a difference to noise without rerunning the same binary,
+  which costs one reflash.
+- **A register allocator buys nothing on a host where a move and a memory
+  access are the same size, unless the value is used *in place*.** The
+  first Thumb-2 version routed allocated temps through `ld_operand` and
+  `st_slot` exactly as x86-64 does, and measured **worse**: 6040
+  translations against 5943, 894 compactions against 828, and 410 buffer
+  overflows where there had been 309. On x86-64 that substitution turns
+  an eight-byte `[rsp + disp32]` into a three-byte `mov` and is most of
+  the win; on Thumb-2 `LDR.W` and `MOV.W` are four bytes each and it is
+  pure cost -- a wider PUSH, the load detour a helper's out-pointer
+  needs, and nothing on the other side. Computing into the allocated
+  register instead is what pays, and pays far more than on x86-64,
+  because Thumb-2 is three-address: an ADD with both operands and its
+  destination allocated is **one** instruction where the frame needs
+  four. Same allocator, same block, 4596 translations and 522
+  compactions, 788,181 ticks. The mistake was assuming a win transfers
+  between hosts because the analysis does.
+- **Four registers is most of what there is to get, and the fourth is
+  nearly free to give up.** Sweeping the x86-64 allocator over CoreMark:
+  0 registers 173,828 bytes of emitted code, 1 → 167,492, 2 → 164,120,
+  3 → 162,836, 4 → 161,932. The first register is 3.6% and the fourth is
+  0.6%. Live sets in these blocks are small, which is what 4.12 guest
+  instructions a block should predict -- so do not go looking for more
+  registers before looking for longer blocks.
+- **A hand-encoded ModRM will not tell you the register did not fit.**
+  `ld_slot`/`st_slot` built the byte as `0x84 | (reg << 3)` for the
+  three scratch registers they were written for. Handed r12 the fourth
+  bit fell off the top of the three-bit field and `mov r12d, [rsp+n]`
+  assembled as `mov esp, [rsp+n]` -- the block loaded a guest value into
+  its own stack pointer and did not fault until the return. The same
+  shape as the 16-bit Thumb-2 `CMP` that became a different instruction.
+  Encoders that take a register parameter belong in `encode.c`, where
+  the REX/high-register logic is written once.
 - **A guest-register cache in r8-r10 was tried and is 15.5% slower.** Reads per
   block said it should win; it did not, because a cached read is `MOV` where an
   uncached one is `LDR` -- one instruction either way -- while write-through
@@ -635,8 +679,9 @@ what changes between the parts.
   emu_bus_fetch16` has fifteen call sites and enumerating them is the check.
 - **Measure; do not reason about performance.** Interpreter-in-SRAM was
   *slower*, lazy-IRQ was neutral, and the `clmul` fix was 1.3% when the real
-  cost was 4.12-instruction blocks. Layout noise is ±3%, so ignore differences
-  below that.
+  cost was 4.12-instruction blocks. Layout noise is ±3% on the host; on the
+  board it has been measured at 10%, and the counter itself is exact -- see
+  the entry above before calling a difference noise.
 - Guest images link `-nostdlib`; there is no libc. The **core** must not call
   libm either, which is why `fsqrt` is Newton-Raphson rather than `sqrt()`.
 - **The FPU uses `float` only.** `double` on an M4F is libgcc soft-float: 17 KiB

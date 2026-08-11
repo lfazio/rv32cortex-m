@@ -13,18 +13,19 @@
  *   sp   the temp frame; every IR value has exactly one home in it
  *   r0-r3, r12   scratch, and the AAPCS argument registers
  *
- * Temps live in the frame rather than in registers, as on x86-64 and for
- * the same reason: a register allocator is the largest and most
- * error-prone part of a backend, and this host has no way to test one
- * except by flashing a board. Everything live being in memory also means
- * a helper call clobbers nothing.
+ * Every temp has a home in the frame, and r6-r11 -- everything AAPCS
+ * makes callee-saved that is not already spoken for -- are handed out on
+ * top of that by emu_ir_regalloc. A temp with a register never touches
+ * its slot; a temp without one behaves exactly as everything did before
+ * there was an allocator.
  *
- * That cost is real and is larger here than on x86-64, because this is
- * the host where code size sets performance: the code cache is 12 KB and
- * CoreMark's translated working set is around 48 KB. Do not expect this
- * to beat the hand-written translator beside it until values stay in
- * registers. What it buys today is that the Thumb-2 backend stops being
- * a second implementation of semantics the IR already owns.
+ * Six registers where x86-64 has four, and they cost less to save: a
+ * whole list goes in one PUSH, so the second and later ones are free
+ * where on x86-64 each is its own instruction. That does not mean six
+ * are worth having. On x86-64 the same allocator measured 3.6% of
+ * CoreMark's emitted code for the first register and 0.6% for the
+ * fourth, which says the live sets in these blocks are small -- as they
+ * would be at 4.12 guest instructions a block.
  *
  * Encodings are from ARM DDI 0403E (docs/arm/). Where a 16-bit form
  * exists it is *not* used: the register numbers here are frequently
@@ -45,6 +46,33 @@ static uint16_t g_ntemps;
 #define SCRATCH_VAL  ((uint16_t)(g_ntemps + 1u))
 
 static uint32_t slot(uint16_t n) { return (uint32_t)n * 4u; }
+
+/*
+ * Where the allocator put each temp, and how many registers that took.
+ *
+ * A temp with a register never touches its frame slot: the slot still
+ * exists and is simply unused, which is what stops the two homes from
+ * ever disagreeing. Reaching one is a MOV.W against an LDR.W -- four
+ * bytes either way here, unlike x86-64 -- so what this saves on this
+ * host is the *pair*, the store and the reload, not the width of one
+ * access.
+ */
+static uint8_t  g_reg[EMU_IR_MAX_TEMPS];
+static uint32_t g_nsaved;
+
+/*
+ * The register holding temp `n`, or -1 for one that lives in the frame.
+ * The bound is not paranoia: SCRATCH_ADDR and SCRATCH_VAL are slots past
+ * the end of the block's temps, so they index past what the allocator
+ * filled in and must always answer "in the frame".
+ */
+static int phys(uint16_t n)
+{
+    if (n >= g_ntemps || n >= EMU_IR_MAX_TEMPS) {
+        return -1;
+    }
+    return (g_reg[n] == EMU_IR_NO_REG) ? -1 : (int)t2_alloc_regs[g_reg[n]];
+}
 
 void ld_slot(uint32_t rt, uint16_t n)
 {
@@ -111,6 +139,25 @@ static bool     g_r0_first;
 
 void st_slot(uint32_t rt, uint16_t n)
 {
+    const int p = phys(n);
+
+    if (p >= 0) {
+        /*
+         * The register is this temp's home, so the write happens even
+         * where a dead-store test would skip it -- a later instruction
+         * reads the register, not the slot. In practice the two never
+         * collide, because the allocator declines exactly the temps the
+         * dead-store rule claims; the ordering here is what makes that a
+         * coincidence rather than a dependency.
+         */
+        if (p != (int)rt) {
+            t2_mov((uint32_t)p, rt);
+        }
+        if (rt == T2_R0) {
+            g_r0_holds = n;
+        }
+        return;
+    }
     if (rt == T2_R0 && n == g_dead_store) {
         g_r0_holds = n;             /* nothing reads the slot */
         return;
@@ -124,14 +171,51 @@ void st_slot(uint32_t rt, uint16_t n)
     }
 }
 
+/*
+ * Where to read an operand from, and where to write a result.
+ *
+ * These are what make allocation worth anything on this host. Replacing
+ * a frame access with a register move saves nothing here -- LDR.W and
+ * MOV.W are four bytes each, unlike x86-64 where the same substitution
+ * is eight bytes against three -- and the first version of this backend
+ * did exactly that and measured *worse*: 6040 translations against 5943
+ * and 410 buffer overflows, from the wider PUSH and the load detour with
+ * nothing on the other side of the ledger.
+ *
+ * What pays is using the register in place. Thumb-2 is three-address, so
+ * an ADD whose two operands and destination are all allocated is one
+ * instruction where the frame needs four -- two loads, the add and a
+ * store, sixteen bytes down to four.
+ *
+ * use_reg emits the load only when the temp has no register; def_reg
+ * names where to compute, and the st_slot that follows becomes a no-op
+ * when that was the temp's own register.
+ */
+static uint32_t use_reg(uint16_t n, uint32_t scratch);
+static uint32_t def_reg(uint16_t n, uint32_t scratch);
+
 /* Load an operand, tolerating EMU_IR_NO_TEMP so callers need not check. */
 void ld_operand(uint32_t rt, uint16_t n)
 {
+    /*
+     * The elision is consulted before the allocation, because a value
+     * both in a register and still in r0 is cheaper taken from r0 -- no
+     * instruction at all against a MOV.W.
+     */
     if (rt == T2_R0 && g_r0_first) {
         g_r0_first = false;
         if (n != EMU_IR_NO_TEMP && n == g_r0_avail) {
             return;                 /* already there */
         }
+    }
+
+    const int p = phys(n);
+
+    if (p >= 0) {
+        if (p != (int)rt) {
+            t2_mov(rt, (uint32_t)p);
+        }
+        return;
     }
     if (n == EMU_IR_NO_TEMP) {
         t2_imm32(rt, 0u);
@@ -140,6 +224,24 @@ void ld_operand(uint32_t rt, uint16_t n)
     ld_slot(rt, n);
 }
 
+
+static uint32_t use_reg(uint16_t n, uint32_t scratch)
+{
+    const int p = phys(n);
+
+    if (p >= 0) {
+        return (uint32_t)p;
+    }
+    ld_operand(scratch, n);
+    return scratch;
+}
+
+static uint32_t def_reg(uint16_t n, uint32_t scratch)
+{
+    const int p = phys(n);
+
+    return (p >= 0) ? (uint32_t)p : scratch;
+}
 
 /*
  * Sites to be patched to the block epilogue. Every early exit -- a
@@ -280,134 +382,146 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         }
         break;
 
-    case EMU_IR_GET:
+    case EMU_IR_GET: {
+        const uint32_t rd = def_reg(in->dst, T2_R0);
+
         if (t->reg_is_zero != NULL && t->reg_is_zero(in->imm)) {
-            t2_imm32(T2_R0, 0u);
+            t2_imm32(rd, 0u);
         } else {
-            t2_ldr_imm(T2_R0, T2_CPU, t->reg_offset(in->imm));
+            t2_ldr_imm(rd, T2_CPU, t->reg_offset(in->imm));
         }
-        st_slot(T2_R0, in->dst);
+        st_slot(rd, in->dst);
         break;
+    }
 
     case EMU_IR_PUT:
         if (t->reg_is_zero != NULL && t->reg_is_zero(in->imm)) {
             break;
         }
-        ld_operand(T2_R0, in->a);
-        t2_str_imm(T2_R0, T2_CPU, t->reg_offset(in->imm));
+        t2_str_imm(use_reg(in->a, T2_R0), T2_CPU, t->reg_offset(in->imm));
         break;
 
-    case EMU_IR_CONST:
-        t2_imm32(T2_R0, in->imm);
-        st_slot(T2_R0, in->dst);
-        break;
+    case EMU_IR_CONST: {
+        const uint32_t rd = def_reg(in->dst, T2_R0);
 
-    case EMU_IR_MOV:
-        ld_operand(T2_R0, in->a);
-        st_slot(T2_R0, in->dst);
+        t2_imm32(rd, in->imm);
+        st_slot(rd, in->dst);
         break;
+    }
+
+    case EMU_IR_MOV: {
+        const uint32_t ra = use_reg(in->a, T2_R0);
+        const uint32_t rd = def_reg(in->dst, T2_R0);
+
+        if (rd != ra) {
+            t2_mov(rd, ra);
+        }
+        st_slot(rd, in->dst);
+        break;
+    }
 
     case EMU_IR_ADD: case EMU_IR_SUB: case EMU_IR_AND:
-    case EMU_IR_OR:  case EMU_IR_XOR:
-        ld_operand(T2_R0, in->a);
-        ld_operand(T2_R1, in->b);
-        switch ((emu_ir_op_t)in->op) {
-        case EMU_IR_ADD: t2_add(T2_R0, T2_R0, T2_R1); break;
-        case EMU_IR_SUB: t2_sub(T2_R0, T2_R0, T2_R1); break;
-        case EMU_IR_AND: t2_and(T2_R0, T2_R0, T2_R1); break;
-        case EMU_IR_OR:  t2_orr(T2_R0, T2_R0, T2_R1); break;
-        default:         t2_eor(T2_R0, T2_R0, T2_R1); break;
-        }
-        st_slot(T2_R0, in->dst);
-        break;
+    case EMU_IR_OR:  case EMU_IR_XOR: {
+        const uint32_t ra = use_reg(in->a, T2_R0);
+        const uint32_t rb = use_reg(in->b, T2_R1);
+        const uint32_t rd = def_reg(in->dst, T2_R0);
 
-    case EMU_IR_SHL: case EMU_IR_SHR: case EMU_IR_SAR:
-        ld_operand(T2_R0, in->a);
-        ld_operand(T2_R1, in->b);
+        switch ((emu_ir_op_t)in->op) {
+        case EMU_IR_ADD: t2_add(rd, ra, rb); break;
+        case EMU_IR_SUB: t2_sub(rd, ra, rb); break;
+        case EMU_IR_AND: t2_and(rd, ra, rb); break;
+        case EMU_IR_OR:  t2_orr(rd, ra, rb); break;
+        default:         t2_eor(rd, ra, rb); break;
+        }
+        st_slot(rd, in->dst);
+        break;
+    }
+
+    case EMU_IR_SHL: case EMU_IR_SHR: case EMU_IR_SAR: {
+        const uint32_t ra = use_reg(in->a, T2_R0);
+        const uint32_t rb = use_reg(in->b, T2_R1);
+        const uint32_t rd = def_reg(in->dst, T2_R0);
+
         /*
          * ARM shifts use the low *byte* of the count and saturate past
          * 31, where both guests define only the low five bits and expect
          * a shift of 32 to be a shift of 0. Masking is therefore not
          * optional.
+         *
+         * The mask lands in r2 rather than back in `rb`: with allocation
+         * `rb` may be the count's own register, and narrowing it in
+         * place would corrupt a value later instructions still read.
          */
         t2_imm32(T2_R2, 31u);
-        t2_and(T2_R1, T2_R1, T2_R2);
+        t2_and(T2_R2, rb, T2_R2);
         t2_shift_reg((in->op == (uint8_t)EMU_IR_SHL) ? T2_LSL
                        : (in->op == (uint8_t)EMU_IR_SHR) ? T2_LSR : T2_ASR,
-                       T2_R0, T2_R0, T2_R1);
-        st_slot(T2_R0, in->dst);
+                       rd, ra, T2_R2);
+        st_slot(rd, in->dst);
         break;
+    }
 
-    case EMU_IR_SHLI: case EMU_IR_SHRI: case EMU_IR_SARI:
-        ld_operand(T2_R0, in->a);
+    case EMU_IR_SHLI: case EMU_IR_SHRI: case EMU_IR_SARI: {
+        const uint32_t ra = use_reg(in->a, T2_R0);
+        const uint32_t rd = def_reg(in->dst, T2_R0);
+
         t2_shift_imm((in->op == (uint8_t)EMU_IR_SHLI) ? T2_LSL
                        : (in->op == (uint8_t)EMU_IR_SHRI) ? T2_LSR : T2_ASR,
-                       T2_R0, T2_R0, in->imm);
-        st_slot(T2_R0, in->dst);
+                       rd, ra, in->imm);
+        st_slot(rd, in->dst);
         break;
+    }
 
-    case EMU_IR_NOT:
-        ld_operand(T2_R0, in->a);
-        t2_mvn(T2_R0, T2_R0);
-        st_slot(T2_R0, in->dst);
-        break;
+    case EMU_IR_NOT: {
+        const uint32_t ra = use_reg(in->a, T2_R0);
+        const uint32_t rd = def_reg(in->dst, T2_R0);
 
-    case EMU_IR_NEG:
-        ld_operand(T2_R0, in->a);
-        t2_neg(T2_R0, T2_R0);
-        st_slot(T2_R0, in->dst);
+        t2_mvn(rd, ra);
+        st_slot(rd, in->dst);
         break;
+    }
+
+    case EMU_IR_NEG: {
+        const uint32_t ra = use_reg(in->a, T2_R0);
+        const uint32_t rd = def_reg(in->dst, T2_R0);
+
+        t2_neg(rd, ra);
+        st_slot(rd, in->dst);
+        break;
+    }
 
     /*
      * The bit and byte group, one host instruction each -- which is the
      * whole reason these are IR operations rather than shift-and-mask
      * sequences the backend would have to pattern-match back.
      */
-    case EMU_IR_BSWAP32:
-        ld_operand(T2_R0, in->a);
-        t2_rev(T2_R0, T2_R0);
-        st_slot(T2_R0, in->dst);
-        break;
+    case EMU_IR_BSWAP32: case EMU_IR_BSWAP16: case EMU_IR_HSWAP:
+    case EMU_IR_CLZ: case EMU_IR_CTZ:
+    case EMU_IR_SEXT8: case EMU_IR_SEXT16:
+    case EMU_IR_ZEXT8: case EMU_IR_ZEXT16: {
+        const uint32_t ra = use_reg(in->a, T2_R0);
+        const uint32_t rd = def_reg(in->dst, T2_R0);
 
-    case EMU_IR_BSWAP16:
-        ld_operand(T2_R0, in->a);
-        t2_rev16(T2_R0, T2_R0);
-        st_slot(T2_R0, in->dst);
-        break;
-
-    case EMU_IR_HSWAP:
-        ld_operand(T2_R0, in->a);
-        t2_shift_imm(T2_ROR, T2_R0, T2_R0, 16u);
-        st_slot(T2_R0, in->dst);
-        break;
-
-    case EMU_IR_CLZ:
-        ld_operand(T2_R0, in->a);
-        t2_clz(T2_R0, T2_R0);
-        st_slot(T2_R0, in->dst);
-        break;
-
-    case EMU_IR_CTZ:
+        switch ((emu_ir_op_t)in->op) {
+        case EMU_IR_BSWAP32: t2_rev(rd, ra); break;
+        case EMU_IR_BSWAP16: t2_rev16(rd, ra); break;
+        case EMU_IR_HSWAP:   t2_shift_imm(T2_ROR, rd, ra, 16u); break;
+        case EMU_IR_CLZ:     t2_clz(rd, ra); break;
         /*
          * RBIT then CLZ. Both are defined for a zero input -- CLZ of
          * zero is 32, which is what the IR specifies -- so unlike the
          * x86 lowering this needs no fixup for the case a bit search is
          * most often handed.
          */
-        ld_operand(T2_R0, in->a);
-        t2_rbit(T2_R0, T2_R0);
-        t2_clz(T2_R0, T2_R0);
-        st_slot(T2_R0, in->dst);
+        case EMU_IR_CTZ:     t2_rbit(rd, ra); t2_clz(rd, rd); break;
+        case EMU_IR_SEXT8:   t2_sxtb(rd, ra); break;
+        case EMU_IR_SEXT16:  t2_sxth(rd, ra); break;
+        case EMU_IR_ZEXT8:   t2_uxtb(rd, ra); break;
+        default:             t2_uxth(rd, ra); break;
+        }
+        st_slot(rd, in->dst);
         break;
-
-    case EMU_IR_SEXT8:  ld_operand(T2_R0, in->a); t2_sxtb(T2_R0, T2_R0);
-                        st_slot(T2_R0, in->dst); break;
-    case EMU_IR_SEXT16: ld_operand(T2_R0, in->a); t2_sxth(T2_R0, T2_R0);
-                        st_slot(T2_R0, in->dst); break;
-    case EMU_IR_ZEXT8:  ld_operand(T2_R0, in->a); t2_uxtb(T2_R0, T2_R0);
-                        st_slot(T2_R0, in->dst); break;
-    case EMU_IR_ZEXT16: ld_operand(T2_R0, in->a); t2_uxth(T2_R0, T2_R0);
-                        st_slot(T2_R0, in->dst); break;
+    }
 
     case EMU_IR_SETCC: {
         /*
@@ -419,44 +533,46 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
          * and the IT destroys the comparison, which is a mistake this
          * project has made and recorded.
          */
+        const uint32_t rd = def_reg(in->dst, T2_R0);
+
         if (in->aux == (uint8_t)EMU_IR_C_ALWAYS) {
-            t2_imm32(T2_R0, 1u);
-            st_slot(T2_R0, in->dst);
+            t2_imm32(rd, 1u);
+            st_slot(rd, in->dst);
             break;
         }
-        ld_operand(T2_R1, in->a);
-        ld_operand(T2_R2, in->b);
-        t2_imm32(T2_R0, 0u);
-        t2_cmp(T2_R1, T2_R2);
+
+        const uint32_t ra = use_reg(in->a, T2_R1);
+        const uint32_t rb = use_reg(in->b, T2_R2);
+
+        t2_imm32(rd, 0u);
+        t2_cmp(ra, rb);
         t2_emit16((uint16_t)(0xBF00u | (t2_cond(in->aux) << 4) | 0x8u)); /* IT */
-        t2_imm32(T2_R0, 1u);
-        st_slot(T2_R0, in->dst);
+        t2_imm32(rd, 1u);
+        st_slot(rd, in->dst);
         break;
     }
 
     case EMU_IR_SETPC:
-        if (in->a != EMU_IR_NO_TEMP) {
-            ld_operand(T2_R0, in->a);
-        } else {
-            t2_imm32(T2_R0, in->imm);
-        }
-        t2_str_imm(T2_R0, T2_CPU, t->pc_offset);
-        break;
+    case EMU_IR_EXIT: {
+        uint32_t rp = T2_R0;
 
-    case EMU_IR_EXIT:
         if (in->a != EMU_IR_NO_TEMP) {
-            ld_operand(T2_R0, in->a);
+            rp = use_reg(in->a, T2_R0);
         } else {
             t2_imm32(T2_R0, in->imm);
         }
-        t2_str_imm(T2_R0, T2_CPU, t->pc_offset);
-        note_exit(t2_b_forward(), false);
+        t2_str_imm(rp, T2_CPU, t->pc_offset);
+        if (in->op == (uint8_t)EMU_IR_EXIT) {
+            note_exit(t2_b_forward(), false);
+        }
         break;
+    }
 
     case EMU_IR_EXIT_IF: {
-        ld_operand(T2_R0, in->a);
-        ld_operand(T2_R1, in->b);
-        t2_cmp(T2_R0, T2_R1);
+        const uint32_t ra = use_reg(in->a, T2_R0);
+        const uint32_t rb = use_reg(in->b, T2_R1);
+
+        t2_cmp(ra, rb);
         /* Branch *over* the exit on the inverse condition. */
         uint8_t *const skip =
             t2_bcond_forward(t2_cond(in->aux) ^ 1u);
@@ -467,35 +583,62 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         break;
     }
 
-    case EMU_IR_MUL:
-        ld_operand(T2_R0, in->a);
-        ld_operand(T2_R1, in->b);
-        t2_mul(T2_R0, T2_R0, T2_R1);
-        st_slot(T2_R0, in->dst);
+    case EMU_IR_MUL: {
+        const uint32_t ra = use_reg(in->a, T2_R0);
+        const uint32_t rb = use_reg(in->b, T2_R1);
+        const uint32_t rd = def_reg(in->dst, T2_R0);
+
+        t2_mul(rd, ra, rb);
+        st_slot(rd, in->dst);
         break;
+    }
 
     case EMU_IR_MULHS:
-    case EMU_IR_MULHU:
+    case EMU_IR_MULHU: {
         /*
          * SMULL/UMULL write both halves and their two destinations must
          * differ, so the low half lands in a register that is then
          * discarded. Only the high half is wanted.
+         *
+         * r1 takes the discard because the high half is either an
+         * allocated register -- r6 and above -- or r0, so the two can
+         * never name the same register whatever the allocator did.
          */
-        ld_operand(T2_R2, in->a);
-        ld_operand(T2_R3, in->b);
-        t2_mull(in->op == (uint8_t)EMU_IR_MULHS, T2_R1, T2_R0,
-                T2_R2, T2_R3);
-        st_slot(T2_R0, in->dst);
-        break;
+        const uint32_t ra = use_reg(in->a, T2_R2);
+        const uint32_t rb = use_reg(in->b, T2_R3);
+        const uint32_t rd = def_reg(in->dst, T2_R0);
 
-    case EMU_IR_LOAD:
+        t2_mull(in->op == (uint8_t)EMU_IR_MULHS, T2_R1, rd, ra, rb);
+        st_slot(rd, in->dst);
+        break;
+    }
+
+    case EMU_IR_LOAD: {
         if (t->load == NULL) {
             return false;
         }
-        ld_operand(T2_R1, in->a);
+        /*
+         * The helper writes through a pointer, and a register has no
+         * address -- so an allocated destination lands in the scratch
+         * slot and is fetched from there. That is the one place
+         * allocation can lose: a load result read once pays an extra
+         * LDR.W here to save a MOV.W at the use. Left to the allocator's
+         * own rule rather than special-cased, because a load result read
+         * twice already wins.
+         */
+        const int pd = phys(in->dst);
+        const uint32_t ra = use_reg(in->a, T2_R1);
+
+        /*
+         * The address has to end up in r1, and `ra` may be an allocated
+         * register a later instruction still reads -- so the sum is
+         * built into r1 rather than back into `ra`.
+         */
         if (in->imm != 0u) {
             t2_imm32(T2_R2, in->imm);
-            t2_add(T2_R1, T2_R1, T2_R2);
+            t2_add(T2_R1, ra, T2_R2);
+        } else if (ra != T2_R1) {
+            t2_mov(T2_R1, ra);
         }
         t2_mov(T2_R0, T2_CPU);
         t2_imm32(T2_R2, in->aux);
@@ -509,7 +652,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
          * ADD.W with a zero immediate was dead alongside it.
          */
         {
-            const uint32_t off = slot(in->dst);
+            const uint32_t off = slot((pd >= 0) ? SCRATCH_VAL : in->dst);
 
             t2_emit32((uint16_t)(0xF20Du | (((off >> 11) & 1u) << 10)),
                       (uint16_t)((((off >> 8) & 7u) << 12) |
@@ -519,18 +662,30 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         t2_imm32(T2_R1, 0u);
         t2_cmp(T2_R0, T2_R1);
         note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
+        if (pd >= 0) {
+            ld_slot((uint32_t)pd, SCRATCH_VAL);
+        }
         break;
+    }
 
-    case EMU_IR_STORE:
+    case EMU_IR_STORE: {
         if (t->store == NULL) {
             return false;
         }
-        ld_operand(T2_R1, in->a);
+        const uint32_t ra = use_reg(in->a, T2_R1);
+
         if (in->imm != 0u) {
             t2_imm32(T2_R2, in->imm);
-            t2_add(T2_R1, T2_R1, T2_R2);
+            t2_add(T2_R1, ra, T2_R2);
+        } else if (ra != T2_R1) {
+            t2_mov(T2_R1, ra);
         }
-        ld_operand(T2_R3, in->b);
+
+        const uint32_t rv = use_reg(in->b, T2_R3);
+
+        if (rv != T2_R3) {
+            t2_mov(T2_R3, rv);
+        }
         t2_mov(T2_R0, T2_CPU);
         t2_imm32(T2_R2, in->aux);
         t2_call((const void *)t->store);
@@ -538,6 +693,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         t2_cmp(T2_R0, T2_R1);
         note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
         break;
+    }
 
     /*
      * Not lowered yet. Each is real work rather than an oversight:
@@ -580,14 +736,31 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_dead_store = EMU_IR_NO_TEMP;
     g_nexits = 0u;
 
-    /*
-     * The frame, 8-byte aligned because AAPCS requires sp to be so at a
-     * public interface and a helper call is one.
-     */
-    const uint32_t frame = (((b->next_temp + 2u) * 4u) + 7u) & ~7u;
+    g_nsaved = emu_ir_regalloc(b, T2_ALLOC_REGS, g_reg);
 
-    /* PUSH {r4, r5, lr} */
-    t2_emit16(0xB530u);
+    uint32_t list = (1u << T2_CPU) | (1u << T2_CNT);
+
+    for (uint32_t i = 0; i < g_nsaved; i++) {
+        list |= 1u << t2_alloc_regs[i];
+    }
+
+    /*
+     * The frame, padded so that sp is 8-byte aligned at a helper call.
+     *
+     * AAPCS requires that at a public interface and a helper is one.
+     * What decides it is the *total* below the caller's sp, which is the
+     * saved registers plus the frame -- and three saved registers is 12
+     * bytes, so before there was anything to allocate this was already
+     * four out. That was benign here only because nothing a helper
+     * reaches uses LDRD or a double.
+     */
+    uint32_t frame = (((b->next_temp + 2u) * 4u) + 7u) & ~7u;
+
+    if ((((g_nsaved + 3u) * 4u) + frame) % 8u != 0u) {
+        frame += 4u;
+    }
+
+    t2_push(list | T2_LIST_LR);
     t2_mov(T2_CPU, T2_R0);
     t2_imm32(T2_CNT, 0u);
     if (frame != 0u) {
@@ -636,7 +809,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         t2_emit32(0xEB0Du, (uint16_t)((13u << 8) | T2_R12));   /* ADD.W sp, sp */
     }
     t2_mov(T2_R0, T2_CNT);
-    t2_emit16(0xBD30u);                                     /* POP {r4,r5,pc} */
+    t2_pop(list | T2_LIST_PC);
 
     return !emu_jit_overflowed();
 }

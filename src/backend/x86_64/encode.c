@@ -114,6 +114,34 @@ void x86_alu_slot(uint8_t op, int dst, uint32_t disp)
     emu_jit_emit32(disp);
 }
 
+/*
+ * mov reg, [rsp + disp32] and its inverse -- the temp frame.
+ *
+ * rsp as a base needs the SIB byte, and a register above r7 needs REX.B,
+ * which is why these are here rather than open-coded at the call site:
+ * they were, and `mov r12d, [rsp+n]` came out as `mov esp, [rsp+n]`. The
+ * ModRM reg field is three bits, so the fourth silently went nowhere and
+ * the block wrote its stack pointer with a guest value. It did not fault
+ * until the return.
+ */
+void x86_ld_rsp(int reg, uint32_t disp)
+{
+    emit_rex(0u, (unsigned)reg, 0u);
+    emu_jit_emit8(0x8B);
+    emu_jit_emit8((uint8_t)(0x84u | (((unsigned)reg & 7u) << 3)));
+    emu_jit_emit8(0x24);
+    emu_jit_emit32(disp);
+}
+
+void x86_st_rsp(int reg, uint32_t disp)
+{
+    emit_rex(0u, (unsigned)reg, 0u);
+    emu_jit_emit8(0x89);
+    emu_jit_emit8((uint8_t)(0x84u | (((unsigned)reg & 7u) << 3)));
+    emu_jit_emit8(0x24);
+    emu_jit_emit32(disp);
+}
+
 void x86_alu_rr(uint8_t op, int dst, int src)
 {
     emit_rex(0u, (unsigned)src, (unsigned)dst);
@@ -214,7 +242,49 @@ void x86_call_rax(void)
     emu_jit_emit8(0xD0);
 }
 
-void x86_prologue(void)
+/*
+ * The registers a block may hand to the allocator.
+ *
+ * All four are callee-saved in System V, which is the property that
+ * matters: a value in one of them survives a helper call with nothing
+ * emitted around it. rbx and rbp are the other two and are already the
+ * cpu pointer and the retired count, and rsp is the frame -- so this is
+ * the whole of what is available, and why the allocator had to wait for
+ * REX support before it could exist at all.
+ */
+const int x86_alloc_regs[X86_ALLOC_REGS] = {
+    X86_R12, X86_R13, X86_R14, X86_R15
+};
+
+/* push/pop of a 64-bit register; the operand size is already 64. */
+static void x86_push(int reg)
+{
+    if (reg >= 8) {
+        emu_jit_emit8(0x41);                              /* REX.B        */
+    }
+    emu_jit_emit8((uint8_t)(0x50u + ((unsigned)reg & 7u)));
+}
+
+static void x86_pop(int reg)
+{
+    if (reg >= 8) {
+        emu_jit_emit8(0x41);
+    }
+    emu_jit_emit8((uint8_t)(0x58u + ((unsigned)reg & 7u)));
+}
+
+/*
+ * `nsaved` of x86_alloc_regs are pushed, lowest index first, and popped
+ * in the mirror order.
+ *
+ * They land *after* the sub rsp, 8, which matters for alignment: an odd
+ * number of them moves rsp 8 out of step with what a call needs, and it
+ * is the frame reservation in emu_ir_lower that compensates. Splitting
+ * that reasoning across two files is unfortunate; putting the pushes
+ * before the pad instead would mean this function had to know the frame
+ * size, which is worse.
+ */
+void x86_prologue(uint32_t nsaved)
 {
     emu_jit_emit8(0x53);                                  /* push rbx     */
     emu_jit_emit8(0x55);                                  /* push rbp     */
@@ -223,10 +293,18 @@ void x86_prologue(void)
     emu_jit_emit8(0x48); emu_jit_emit8(0x89);
     emu_jit_emit8(0xFB);                                  /* mov rbx, rdi */
     emu_jit_emit8(0x31); emu_jit_emit8(0xED);             /* xor ebp, ebp */
+
+    for (uint32_t i = 0; i < nsaved && i < X86_ALLOC_REGS; i++) {
+        x86_push(x86_alloc_regs[i]);
+    }
 }
 
-void x86_epilogue(void)
+void x86_epilogue(uint32_t nsaved)
 {
+    for (uint32_t i = (nsaved < X86_ALLOC_REGS) ? nsaved : X86_ALLOC_REGS;
+         i-- > 0;) {
+        x86_pop(x86_alloc_regs[i]);
+    }
     emu_jit_emit8(0x89); emu_jit_emit8(0xE8);             /* mov eax, ebp */
     emu_jit_emit8(0x48); emu_jit_emit8(0x83);
     emu_jit_emit8(0xC4); emu_jit_emit8(0x08);             /* add rsp, 8   */

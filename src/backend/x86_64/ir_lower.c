@@ -8,23 +8,26 @@
  * specific arrives through emu_ir_target_t, filled in once by the
  * frontend.
  *
- * Temporaries live in a stack frame rather than in host registers.
+ * Every temp has a home in a stack frame, and the four callee-saved
+ * registers System V leaves free are handed out on top of that by
+ * emu_ir_regalloc. A temp with a register never touches its slot; a temp
+ * without one behaves exactly as everything did before there was an
+ * allocator, which is what keeps the two homes from ever disagreeing.
  *
- * That is a deliberate first step and it is not free -- it is a store and
- * a reload per value where the hand-written translators keep operands in
- * registers -- but it is the ordering this project's own measurements
- * argue for. A register allocator is the single largest piece of work in
- * a backend and the easiest to get subtly wrong, and until the IR path is
- * running real guests there is nothing to measure it against. The frame
- * is also what makes the lowering obviously correct: every value has
- * exactly one home, so there is no state to get wrong between
- * instructions.
+ * Four is not many, and the frame is the reason that is survivable: a
+ * value that misses out is still correct and merely costs eight bytes an
+ * access instead of three. Three mechanisms now sit on top of each other
+ * and their domains are deliberately disjoint --
  *
- * What that means in practice: do not compare this against the direct
- * translators on speed yet. The IR pays for itself first in what the
- * optimiser removes -- dead flags on a flag machine, the guest-register
- * round trip -- and a register allocator is the next change, not a
- * missing part of this one.
+ *   allocation   a value read more than once, or read far from its
+ *                definition, lives in a register for its whole range
+ *   reload       a value still in T0 from the previous instruction is
+ *   elision      not reloaded at all, register or not
+ *   dead store   a value whose single reader is the next instruction is
+ *                never written anywhere
+ *
+ * -- and the allocator declines precisely the temps the dead-store rule
+ * claims, so the two cannot both fire on one value.
  */
 
 #include "emu/emu_ir.h"
@@ -100,13 +103,35 @@ static bool reads_a_in_t0(uint8_t op)
 #define SCRATCH_ADDR ((uint16_t)(g_ntemps))
 #define SCRATCH_VAL  ((uint16_t)(g_ntemps + 1u))
 
-/* mov reg, [rsp + disp] and its inverse, with the SIB byte rsp needs. */
+/*
+ * Where the allocator put each temp, and how many registers that took.
+ *
+ * A temp with a register never touches its frame slot at all: the slot
+ * still exists and is simply unused, which is what keeps the two homes
+ * from ever disagreeing. Reaching one costs three bytes against the
+ * eight a `[rsp + disp32]` access needs, and on this backend code size
+ * is what the IR path has been losing on.
+ */
+static uint8_t  g_reg[EMU_IR_MAX_TEMPS];
+static uint32_t g_nsaved;
+
+/*
+ * The physical register holding temp `n`, or -1 for one that lives in
+ * the frame. The bound is not paranoia: SCRATCH_ADDR and SCRATCH_VAL are
+ * slots past the end of the block's temps, so they index past what the
+ * allocator filled in and must always answer "in the frame".
+ */
+static int phys(uint16_t n)
+{
+    if (n >= g_ntemps || n >= EMU_IR_MAX_TEMPS) {
+        return -1;
+    }
+    return (g_reg[n] == EMU_IR_NO_REG) ? -1 : x86_alloc_regs[g_reg[n]];
+}
+
 static void ld_slot(int reg, uint16_t n)
 {
-    emu_jit_emit8(0x8B);
-    emu_jit_emit8((uint8_t)(0x84u | ((unsigned)reg << 3)));  /* mod=10 rm=100 */
-    emu_jit_emit8(0x24);                                     /* SIB: [rsp]   */
-    emu_jit_emit32(slot(n));
+    x86_ld_rsp(reg, slot(n));
 }
 
 /*
@@ -137,16 +162,32 @@ static bool     g_t0_first;    /* still before this insn's first load?  */
 
 static void st_slot(int reg, uint16_t n)
 {
+    const int p = phys(n);
+
+    if (p >= 0) {
+        /*
+         * The register is this temp's home, so the write has to happen
+         * even when a dead-store test would otherwise skip it -- a later
+         * instruction reads the register, not the slot. In practice the
+         * two never collide, because the allocator declines exactly the
+         * temps the dead-store rule claims; the ordering here is what
+         * makes that a coincidence rather than a dependency.
+         */
+        if (p != reg) {
+            x86_mov_rr(p, reg);
+        }
+        if (reg == T0) {
+            g_t0_holds = n;
+        }
+        return;
+    }
     if (reg == T0 && n == g_dead_store) {
         /* Nothing will read the slot; the value stays in T0. */
         g_t0_holds = n;
         g_stats_elided++;
         return;
     }
-    emu_jit_emit8(0x89);
-    emu_jit_emit8((uint8_t)(0x84u | ((unsigned)reg << 3)));
-    emu_jit_emit8(0x24);
-    emu_jit_emit32(slot(n));
+    x86_st_rsp(reg, slot(n));
 
     if (reg == T0) {
         g_t0_holds = n;
@@ -159,12 +200,26 @@ static void st_slot(int reg, uint16_t n)
 /* Load an operand, tolerating EMU_IR_NO_TEMP so callers need not check. */
 static void ld_operand(int reg, uint16_t n)
 {
+    /*
+     * The elision is consulted before the allocation, because a value
+     * that is both in a register and still in T0 is cheaper taken from
+     * T0 -- no instruction at all against a three-byte mov.
+     */
     if (reg == T0 && g_t0_first) {
         g_t0_first = false;
         if (n != EMU_IR_NO_TEMP && n == g_t0_avail) {
             g_stats_elided++;
             return;                 /* already there */
         }
+    }
+
+    const int p = phys(n);
+
+    if (p >= 0) {
+        if (p != reg) {
+            x86_mov_rr(reg, p);
+        }
+        return;
     }
     if (n == EMU_IR_NO_TEMP) {
         x86_mov_imm32(reg, 0u);
@@ -383,18 +438,24 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             [EMU_IR_OR  - EMU_IR_ADD] = X86_OR,
             [EMU_IR_XOR - EMU_IR_ADD] = X86_XOR,
         };
+        const uint8_t alu = k_alu[in->op - (uint8_t)EMU_IR_ADD];
+        const int pb = phys(in->b);
+
         ld_operand(T0, in->a);
         /*
-         * The right operand is read out of its frame slot rather than
-         * loaded first -- one instruction instead of two. TEST is not in
-         * this table, so the direction bit trick below always applies.
+         * The right operand is taken where it already is -- its register
+         * if it has one, otherwise straight out of its frame slot rather
+         * than loaded first. Either way one instruction instead of two.
+         * TEST is not in this table, so the direction-bit form the slot
+         * encoding relies on always applies.
          */
-        if (in->b != EMU_IR_NO_TEMP) {
-            x86_alu_slot(k_alu[in->op - (uint8_t)EMU_IR_ADD], T0,
-                         slot(in->b));
+        if (pb >= 0) {
+            x86_alu_rr(alu, T0, pb);
+        } else if (in->b != EMU_IR_NO_TEMP) {
+            x86_alu_slot(alu, T0, slot(in->b));
         } else {
             ld_operand(T1, in->b);
-            x86_alu_rr(k_alu[in->op - (uint8_t)EMU_IR_ADD], T0, T1);
+            x86_alu_rr(alu, T0, T1);
         }
         st_slot(T0, in->dst);
         break;
@@ -687,14 +748,30 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
      * a guest address is not a host address. x86 could otherwise do each
      * of these in a single bts/btr/btc with a memory operand.
      */
-    case EMU_IR_LOAD:
+    case EMU_IR_LOAD: {
         if (t->load == NULL) {
             return false;
         }
+        const int pd = phys(in->dst);
+
         emit_addr(in, X86_ESI);
-        lea_rcx_slot(in->dst);           /* the result lands in its slot */
+        /*
+         * The helper writes through a pointer, and a register has no
+         * address -- so an allocated destination lands in the scratch
+         * slot and is fetched from there. That costs a load the frame
+         * home would not have paid, which is the one place allocation
+         * can lose: a value read once, three bytes saved at the use
+         * against eight spent here. It is left to the allocator's own
+         * rule rather than special-cased, because a load result read
+         * twice already wins.
+         */
+        lea_rcx_slot((pd >= 0) ? SCRATCH_VAL : in->dst);
         emit_mem_call((const void *)t->load, in->aux);
+        if (pd >= 0) {
+            ld_slot(pd, SCRATCH_VAL);
+        }
         break;
+    }
 
     case EMU_IR_STORE:
         if (t->store == NULL) {
@@ -862,7 +939,24 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_ntemps = (uint16_t)b->next_temp;
     g_t0_holds = EMU_IR_NO_TEMP;
     g_dead_store = EMU_IR_NO_TEMP;
-    const uint32_t frame = (((b->next_temp + 2u) * 4u) + 15u) & ~15u;
+
+    g_nsaved = emu_ir_regalloc(b, X86_ALLOC_REGS, g_reg);
+
+    /*
+     * The frame, with the pad an odd number of saved registers needs.
+     *
+     * x86_prologue pushes them after its own alignment adjustment, so
+     * each one moves rsp by 8 and an odd count leaves it 8 out of step
+     * with what System V wants at a call. Getting this wrong does not
+     * fault in the emitted code -- it faults inside whatever libc
+     * routine a helper eventually reaches that uses an aligned SSE
+     * store, which is a long way from the cause.
+     */
+    uint32_t frame = (((b->next_temp + 2u) * 4u) + 15u) & ~15u;
+
+    if ((g_nsaved & 1u) != 0u) {
+        frame += 8u;
+    }
 
     g_nexits = 0u;
 
@@ -871,7 +965,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      * jit.c names no host at all. It was the last thing in the pipeline
      * that did.
      */
-    x86_prologue();
+    x86_prologue(g_nsaved);
 
     if (frame != 0u) {
         emu_jit_emit8(0x48); emu_jit_emit8(0x81);
@@ -922,7 +1016,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         emu_jit_emit8(0x48); emu_jit_emit8(0x81);
         emu_jit_emit8(0xC4); emu_jit_emit32(frame);       /* add rsp, imm32 */
     }
-    x86_epilogue();
+    x86_epilogue(g_nsaved);
     return !emu_jit_overflowed();
 }
 

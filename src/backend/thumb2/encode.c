@@ -287,6 +287,46 @@ void t2_patch_branch(uint8_t *at, const uint8_t *target, bool conditional)
     }
 }
 
+/*
+ * The registers a block may hand to the allocator.
+ *
+ * r4 and r5 are the cpu pointer and the retired count, r0-r3 and r12 are
+ * scratch and the AAPCS argument registers, and sp is the frame -- so
+ * these six are the whole of what is callee-saved and free. Low ones
+ * first, because a list confined to r0-r7 fits the 16-bit PUSH.
+ */
+const uint32_t t2_alloc_regs[T2_ALLOC_REGS] = { 6u, 7u, 8u, 9u, 10u, 11u };
+
+/*
+ * PUSH and POP of an explicit register list, taking the 16-bit form when
+ * the list fits it.
+ *
+ * The 16-bit encodings reach r0-r7 plus LR (or PC), which covers the
+ * common case here -- three fixed registers and at most two allocated --
+ * and saves four bytes a block on the host where bytes are the currency.
+ * Anything higher needs the 32-bit form, and handing a high register to
+ * the narrow one would not fault: it would push a different register.
+ */
+void t2_push(uint32_t list)
+{
+    if ((list & ~0x40FFu) == 0u) {
+        t2_emit16((uint16_t)(0xB400u | ((list >> 6) & 0x100u) |
+                             (list & 0xFFu)));
+        return;
+    }
+    t2_emit32(0xE92Du, (uint16_t)(list & 0x5FFFu));
+}
+
+void t2_pop(uint32_t list)
+{
+    if ((list & ~0x80FFu) == 0u) {
+        t2_emit16((uint16_t)(0xBC00u | ((list >> 7) & 0x100u) |
+                             (list & 0xFFu)));
+        return;
+    }
+    t2_emit32(0xE8BDu, (uint16_t)(list & 0xDFFFu));
+}
+
 /* MUL.W rd, rn, rm -- the low 32 bits of the product. */
 void t2_mul(uint32_t rd, uint32_t rn, uint32_t rm)
 {

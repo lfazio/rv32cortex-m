@@ -96,6 +96,23 @@ void t2_call(const void *fn);
 /* An IR condition as the cond field of a Thumb-2 conditional branch. */
 uint32_t t2_cond(uint8_t c);
 
+/*
+ * The registers the allocator may use, in the order it takes them: all
+ * callee-saved under AAPCS, so a value in one survives a helper call
+ * with nothing emitted around it.
+ */
+#define T2_ALLOC_REGS 6u
+extern const uint32_t t2_alloc_regs[T2_ALLOC_REGS];
+
+/*
+ * PUSH and POP of a register list. LR is bit 14 and PC bit 15; the
+ * 16-bit encoding is taken whenever the list fits it.
+ */
+#define T2_LIST_LR (1u << 14)
+#define T2_LIST_PC (1u << 15)
+void t2_push(uint32_t list);
+void t2_pop(uint32_t list);
+
 #ifdef __cplusplus
 }
 #endif

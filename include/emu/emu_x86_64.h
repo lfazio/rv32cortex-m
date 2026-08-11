@@ -101,6 +101,10 @@ void x86_mov_imm64(int dst, uint64_t imm);  /* helper addresses only */
 void x86_alu_rr(uint8_t op, int dst, int src);
 /* dst <op>= [rsp + disp]; see the note in encode.c on the direction bit. */
 void x86_alu_slot(uint8_t op, int dst, uint32_t disp);
+
+/* The temp frame: mov reg, [rsp + disp32] and back. */
+void x86_ld_rsp(int reg, uint32_t disp);
+void x86_st_rsp(int reg, uint32_t disp);
 void x86_add_imm8(int dst, int8_t imm);
 void x86_and_imm8(int dst, int8_t imm);
 
@@ -143,9 +147,21 @@ void x86_call_rax(void);
  * The stack adjustment is not padding: System V wants rsp 16-byte aligned
  * at a call, entry leaves it 8 past, and two pushes bring it back to 8, so
  * one more 8 is needed before any helper call can be made.
+ *
+ * `nsaved` names how many of x86_alloc_regs the block uses; they are
+ * pushed after that adjustment, so an odd count moves rsp back out of
+ * step and the caller's frame reservation has to make it up.
  */
-void x86_prologue(void);
-void x86_epilogue(void);
+void x86_prologue(uint32_t nsaved);
+void x86_epilogue(uint32_t nsaved);
+
+/*
+ * The registers the allocator may use, in the order it takes them: all
+ * callee-saved, so a value in one survives a helper call with nothing
+ * emitted around it.
+ */
+#define X86_ALLOC_REGS 4u
+extern const int x86_alloc_regs[X86_ALLOC_REGS];
 
 /* Add one to the retired count. */
 void x86_count_one(void);

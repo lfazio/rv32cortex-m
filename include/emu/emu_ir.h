@@ -493,6 +493,58 @@ typedef struct emu_ir_target {
 bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t);
 
 /* ------------------------------------------------------------------ */
+/* Register allocation                                                 */
+/* ------------------------------------------------------------------ */
+
+/* This temp did not get a register and lives in its frame slot. */
+#define EMU_IR_NO_REG      0xFFu
+
+/* As many host registers as any backend here offers the allocator. */
+#define EMU_IR_MAX_HOST_REGS 8u
+
+/*
+ * Assign temps to host registers, linear scan over live intervals.
+ *
+ * Host-independent because the only thing it needs from the host is how
+ * many registers there are: which ones they are, and what it costs to
+ * reach them, is the backend's business. `assign[t]` comes back as an
+ * index below `nregs`, or EMU_IR_NO_REG for a temp that stays in the
+ * frame. The return value is how many registers were touched, and the
+ * set is always 0..n-1 -- the scan takes the lowest free index, so a
+ * backend can save exactly that many and no more.
+ *
+ * Linear scan is not a compromise here, it is the shape of the problem.
+ * A temp is written once by construction and a block has one entry and
+ * no joins, so a live range is a single interval [def, last use] and the
+ * intervals arrive already sorted by start point. Graph colouring would
+ * build an interference graph that is by construction an interval graph
+ * and colour it optimally -- for the same answer, at translation time,
+ * which is already 48-54% of host cycles at the code-cache size a
+ * microcontroller gets.
+ *
+ * Two rules deserve stating because they are where this could go wrong:
+ *
+ *   - a register is reused only once its previous occupant's last use is
+ *     *strictly* before the new definition. Sharing on the boundary
+ *     instruction would be sound only if every lowering read its
+ *     operands before writing its destination, which is true today and
+ *     is not a property the IR guarantees.
+ *   - the registers a backend offers must be callee-saved on its host.
+ *     Every value being in the frame is what made a helper call clobber
+ *     nothing, and allocation gives that up; the alternative -- spilling
+ *     around calls -- would cost more than it saves in blocks that
+ *     average four guest instructions.
+ *
+ * Temps whose single reader is the very next live instruction are
+ * deliberately left unallocated: the backends' reload elision already
+ * hands those over in the scratch register for nothing, and spending one
+ * of four registers on a value that lives for one instruction is exactly
+ * the wrong trade.
+ */
+uint32_t emu_ir_regalloc(const emu_ir_block_t *b, uint32_t nregs,
+                         uint8_t *assign);
+
+/* ------------------------------------------------------------------ */
 /* What a host's jit.c needs from a frontend                           */
 /* ------------------------------------------------------------------ */
 

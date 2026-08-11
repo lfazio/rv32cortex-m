@@ -475,6 +475,138 @@ static void pass_count_uses(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
 }
 
 /* ------------------------------------------------------------------ */
+/* Register allocation                                                 */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Live intervals, indexed by temp. Static rather than automatic because
+ * on the microcontroller these are 1 KB and the translator runs on the
+ * guest's stack; the pass is not reentrant, which is true of every pass
+ * here and of the block buffer they all walk.
+ */
+static uint16_t g_def[EMU_IR_MAX_TEMPS];
+static uint16_t g_last[EMU_IR_MAX_TEMPS];
+
+#define IR_NO_POS 0xFFFFu
+
+uint32_t emu_ir_regalloc(const emu_ir_block_t *b, uint32_t nregs,
+                         uint8_t *assign)
+{
+    uint16_t inreg[EMU_IR_MAX_HOST_REGS];
+    const uint32_t nt = (b->next_temp < EMU_IR_MAX_TEMPS) ? b->next_temp
+                                                          : EMU_IR_MAX_TEMPS;
+    uint32_t used = 0u;
+
+    for (uint32_t i = 0; i < nt; i++) {
+        assign[i] = EMU_IR_NO_REG;
+        g_def[i] = IR_NO_POS;
+        g_last[i] = 0u;
+    }
+    if (nregs == 0u || nregs > EMU_IR_MAX_HOST_REGS || b->overflow) {
+        return 0u;
+    }
+    for (uint32_t r = 0; r < nregs; r++) {
+        inreg[r] = EMU_IR_NO_TEMP;
+    }
+
+    /*
+     * One walk for both ends of every interval. `a` and `b` are
+     * EMU_IR_NO_TEMP when absent, which is 0xFFFF and so above `nt` --
+     * the bound doubles as the absent test.
+     */
+    for (uint32_t i = 0; i < b->count; i++) {
+        const emu_ir_insn_t *const in = &b->insn[i];
+
+        if (in->dead) {
+            continue;
+        }
+        if ((uint32_t)in->a < nt) {
+            g_last[in->a] = (uint16_t)i;
+        }
+        if ((uint32_t)in->b < nt) {
+            g_last[in->b] = (uint16_t)i;
+        }
+        if ((uint32_t)in->dst < nt) {
+            g_def[in->dst] = (uint16_t)i;
+        }
+    }
+
+    /*
+     * Temps are numbered in emission order, so walking them in order is
+     * walking the intervals by start point -- which is what linear scan
+     * needs and what would otherwise be a sort.
+     */
+    for (uint32_t tmp = 0; tmp < nt; tmp++) {
+        const uint32_t d = g_def[tmp];
+
+        if (d == IR_NO_POS || (uint32_t)g_last[tmp] <= d) {
+            continue;               /* never defined, or never read */
+        }
+
+        /*
+         * Leave the one-instruction values to the reload elision. It
+         * carries them in the scratch register for no instruction at
+         * all, where a register here would cost one of very few.
+         */
+        if (b->insn[d].uses == 1u) {
+            uint32_t j = d + 1u;
+
+            while (j < b->count && b->insn[j].dead) {
+                j++;
+            }
+            if (j == (uint32_t)g_last[tmp]) {
+                continue;
+            }
+        }
+
+        for (uint32_t r = 0; r < nregs; r++) {
+            if (inreg[r] != EMU_IR_NO_TEMP &&
+                (uint32_t)g_last[inreg[r]] < d) {
+                inreg[r] = EMU_IR_NO_TEMP;
+            }
+        }
+
+        uint32_t pick = nregs;
+        for (uint32_t r = 0; r < nregs; r++) {
+            if (inreg[r] == EMU_IR_NO_TEMP) {
+                pick = r;
+                break;
+            }
+        }
+
+        if (pick == nregs) {
+            /*
+             * All busy. Evict whichever interval runs furthest past this
+             * one -- and if that is this one, it simply does not get a
+             * register. Eviction is total: the temp goes back to its
+             * frame slot for its whole life, which is sound only because
+             * nothing has been emitted yet.
+             */
+            uint32_t worst = 0u;
+
+            for (uint32_t r = 1u; r < nregs; r++) {
+                if (g_last[inreg[r]] > g_last[inreg[worst]]) {
+                    worst = r;
+                }
+            }
+            if (g_last[inreg[worst]] <= g_last[tmp]) {
+                continue;
+            }
+            assign[inreg[worst]] = EMU_IR_NO_REG;
+            pick = worst;
+        }
+
+        inreg[pick] = (uint16_t)tmp;
+        assign[tmp] = (uint8_t)pick;
+        if (pick + 1u > used) {
+            used = pick + 1u;
+        }
+    }
+
+    return used;
+}
+
+/* ------------------------------------------------------------------ */
 
 void emu_ir_optimise(emu_ir_block_t *b, uint8_t live_out,
                      emu_ir_opt_stats_t *stats)
