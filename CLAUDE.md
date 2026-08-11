@@ -576,6 +576,37 @@ what changes between the parts.
   whose value is already in the register. The window has to reset at every
   helper call (r0-r3 clobbered) and at every block boundary, and blocks
   average 4.12 guest instructions, so the figures above are a ceiling.
+- **The ARM shifted-operand fusion was built, measured and reverted.**
+  Every 32-bit data-processing instruction on ARM carries a shift on its
+  second operand, so folding a shift into the ALU op that consumes it is
+  one instruction instead of two -- and it fires on nothing. Measured
+  with `-DRV32_PAIR_STATS=ON` on CoreMark *after* building it:
+
+  | pair | share |
+  |---|---|
+  | `srai`+`andi` | 1.32% -- and `andi` is an immediate form, so the shift feeds operand *a*, which ARM cannot fold |
+  | `srai`+`srai` | 1.32% |
+  | `add`+`srai` | 1.32% -- the shift is the consumer, not the producer |
+
+  A single-use immediate shift feeding the *second* operand of a
+  register-register ALU instruction is essentially absent. The fusion
+  was correct on hardware (296/296) and changed the translation and
+  compaction counts not at all -- byte-identical, because it never
+  fired -- while CoreMark went 771,100 to 849,822 ticks, a 10%
+  regression still unexplained. Reverted.
+
+  The mistake was extrapolating from "ARM has a shifted operand" to
+  "there will be shifts to fold". The histogram was already in the tree
+  and answers it in one run. **Run the pair stats before writing the
+  encoder, not after.**
+- **What the pair histogram actually says about CoreMark** (518,206
+  instructions, 440,934 adjacent pairs): **29.6% are data dependent**, of
+  which 5.7% have a dead intermediate, and address-generation feeding a
+  memory access is 2.9%. That 29.6% is the number worth attacking, and
+  it is what the reload elision and the x86 memory operand take -- both
+  without any pattern matching, for 6.1% of emitted code size on x86-64
+  and 771,100 from 963,899 ticks on ARM. The textbook fusions are not
+  there: `lui`+`addi` 0.2%, `auipc`+`addi` 0.00%.
 - **A guest-register cache in r8-r10 was tried and is 15.5% slower.** Reads per
   block said it should win; it did not, because a cached read is `MOV` where an
   uncached one is `LDR` -- one instruction either way -- while write-through
