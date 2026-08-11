@@ -74,12 +74,47 @@ void ld_slot(uint32_t rt, uint16_t n)
  * holding nothing -- which falls out of clearing at the top of every
  * instruction and only re-establishing it at a final store.
  */
+/*
+ * A store that need not be emitted: the value has exactly one reader,
+ * that reader is the next live instruction, and it takes its left
+ * operand from r0 -- which the reload elision hands over directly. Both
+ * halves matter; `uses == 1` alone would allow a reader further down
+ * the block with r0 clobbered in between.
+ */
+static uint16_t g_dead_store;
+
+/* Ops whose first act is ld_operand(r0, in->a), so the elision applies. */
+static bool reads_a_in_r0(uint8_t op)
+{
+    switch ((emu_ir_op_t)op) {
+    case EMU_IR_MOV:
+    case EMU_IR_ADD: case EMU_IR_SUB: case EMU_IR_AND:
+    case EMU_IR_OR:  case EMU_IR_XOR:
+    case EMU_IR_SHL: case EMU_IR_SHR: case EMU_IR_SAR:
+    case EMU_IR_SHLI: case EMU_IR_SHRI: case EMU_IR_SARI:
+    case EMU_IR_NOT: case EMU_IR_NEG:
+    case EMU_IR_BSWAP32: case EMU_IR_BSWAP16: case EMU_IR_HSWAP:
+    case EMU_IR_CLZ: case EMU_IR_CTZ:
+    case EMU_IR_SEXT8: case EMU_IR_SEXT16:
+    case EMU_IR_ZEXT8: case EMU_IR_ZEXT16:
+    case EMU_IR_PUT:
+    case EMU_IR_SETPC: case EMU_IR_EXIT:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static uint16_t g_r0_holds;
 static uint16_t g_r0_avail;
 static bool     g_r0_first;
 
 void st_slot(uint32_t rt, uint16_t n)
 {
+    if (rt == T2_R0 && n == g_dead_store) {
+        g_r0_holds = n;             /* nothing reads the slot */
+        return;
+    }
     t2_str_imm(rt, 13u, slot(n));
 
     if (rt == T2_R0) {
@@ -542,6 +577,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
 
     g_ntemps = (uint16_t)b->next_temp;
     g_r0_holds = EMU_IR_NO_TEMP;
+    g_dead_store = EMU_IR_NO_TEMP;
     g_nexits = 0u;
 
     /*
@@ -564,6 +600,19 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         if (b->insn[i].dead) {
             continue;
         }
+        g_dead_store = EMU_IR_NO_TEMP;
+        if (b->insn[i].dst != EMU_IR_NO_TEMP && b->insn[i].uses == 1u) {
+            uint32_t j = i + 1u;
+
+            while (j < b->count && b->insn[j].dead) {
+                j++;
+            }
+            if (j < b->count && b->insn[j].a == b->insn[i].dst &&
+                reads_a_in_r0(b->insn[j].op)) {
+                g_dead_store = b->insn[i].dst;
+            }
+        }
+
         if (!lower_one(&b->insn[i], t)) {
             return false;
         }

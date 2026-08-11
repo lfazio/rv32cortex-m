@@ -56,6 +56,47 @@ static uint32_t slot(uint16_t n)
 static uint16_t g_ntemps;
 static uint32_t g_stats_elided;
 
+/*
+ * A store that need not be emitted.
+ *
+ * The frame round trip is a store *and* a load. The reload elision above
+ * takes the load; this takes the store, in the one case where it is
+ * provably never read: the value has exactly one reader, that reader is
+ * the very next instruction, and that instruction takes its left operand
+ * from T0 -- which the elision will hand over directly.
+ *
+ * Both halves of the condition are needed. `uses == 1` alone is not
+ * enough, because the single reader might be further down the block with
+ * other instructions clobbering T0 in between; "the next instruction"
+ * alone is not enough, because a second reader later would find an
+ * empty slot.
+ *
+ * uses is counted after every pass that deletes code, so a reader that
+ * is itself about to be swept does not keep a store alive.
+ */
+static uint16_t g_dead_store;
+
+/* Ops whose first act is ld_operand(T0, in->a), so the elision applies. */
+static bool reads_a_in_t0(uint8_t op)
+{
+    switch ((emu_ir_op_t)op) {
+    case EMU_IR_MOV:
+    case EMU_IR_ADD: case EMU_IR_SUB: case EMU_IR_AND:
+    case EMU_IR_OR:  case EMU_IR_XOR:
+    case EMU_IR_SHL: case EMU_IR_SHR: case EMU_IR_SAR:
+    case EMU_IR_SHLI: case EMU_IR_SHRI: case EMU_IR_SARI:
+    case EMU_IR_NOT: case EMU_IR_NEG:
+    case EMU_IR_BSWAP32: case EMU_IR_BSWAP16: case EMU_IR_HSWAP:
+    case EMU_IR_CLZ: case EMU_IR_CTZ:
+    case EMU_IR_SEXT8: case EMU_IR_SEXT16:
+    case EMU_IR_ZEXT8: case EMU_IR_ZEXT16:
+    case EMU_IR_PUT:
+        return true;
+    default:
+        return false;
+    }
+}
+
 #define SCRATCH_ADDR ((uint16_t)(g_ntemps))
 #define SCRATCH_VAL  ((uint16_t)(g_ntemps + 1u))
 
@@ -96,6 +137,12 @@ static bool     g_t0_first;    /* still before this insn's first load?  */
 
 static void st_slot(int reg, uint16_t n)
 {
+    if (reg == T0 && n == g_dead_store) {
+        /* Nothing will read the slot; the value stays in T0. */
+        g_t0_holds = n;
+        g_stats_elided++;
+        return;
+    }
     emu_jit_emit8(0x89);
     emu_jit_emit8((uint8_t)(0x84u | ((unsigned)reg << 3)));
     emu_jit_emit8(0x24);
@@ -814,6 +861,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      */
     g_ntemps = (uint16_t)b->next_temp;
     g_t0_holds = EMU_IR_NO_TEMP;
+    g_dead_store = EMU_IR_NO_TEMP;
     const uint32_t frame = (((b->next_temp + 2u) * 4u) + 15u) & ~15u;
 
     g_nexits = 0u;
@@ -834,6 +882,24 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         if (b->insn[i].dead) {
             continue;
         }
+        /*
+         * Decide before lowering whether this instruction's store can be
+         * skipped: its value must have exactly one reader, and that
+         * reader must be the next live instruction taking it in T0.
+         */
+        g_dead_store = EMU_IR_NO_TEMP;
+        if (b->insn[i].dst != EMU_IR_NO_TEMP && b->insn[i].uses == 1u) {
+            uint32_t j = i + 1u;
+
+            while (j < b->count && b->insn[j].dead) {
+                j++;
+            }
+            if (j < b->count && b->insn[j].a == b->insn[i].dst &&
+                reads_a_in_t0(b->insn[j].op)) {
+                g_dead_store = b->insn[i].dst;
+            }
+        }
+
         if (!lower_one(&b->insn[i], t)) {
             return false;
         }
