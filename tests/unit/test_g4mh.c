@@ -146,15 +146,26 @@ static void test_length(void)
     /* JR / JARL disp32 (0x17) and JMP disp32 (0x37), both reg2 == 0. */
     CHECK(g4mh_insn_is_48(W0(0x17u, 9, 0), 0x0000u));
     CHECK(!g4mh_insn_is_48(W0(0x17u, 9, 1), 0x0000u));
-    CHECK(g4mh_insn_is_48(W0(0x37u, 9, 0), 0x0000u));
+    CHECK(g4mh_insn_is_48(W0(0x37u, 9, 0), 0x0000u));   /* JMP disp32 */
+    CHECK(!g4mh_insn_is_48(W0(0x37u, 9, 0), 0x0001u));  /* LOOP       */
 
     /*
      * The 0x3C/0x3D slot holds JR disp22 (32-bit), PREPARE and the disp23
      * loads (48-bit), and only bit 0 of the second halfword separates
      * them -- JR's displacement is even.
      */
-    CHECK(!g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x0100u));  /* JR    */
-    CHECK(g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x0101u));   /* disp23 */
+    CHECK(!g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x0100u));  /* JR     */
+    /*
+     * The rest of this slot is not one thing. 0x0101 is PREPARE's short
+     * form and is *four* bytes -- this check used to assert six, on the
+     * reasoning that bit 0 of the second halfword separated JR from
+     * everything else. It separates JR from everything else; it does not
+     * separate the everything else, and PREPARE is in there.
+     */
+    CHECK(!g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x0821u));  /* PREPARE     */
+    CHECK(!g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x0823u));  /* ..., sp     */
+    CHECK(g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x082Bu));   /* ..., imm16  */
+    CHECK(g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x0105u));   /* disp23 load */
 }
 
 /* ------------------------------------------------------------------ */
@@ -1396,6 +1407,290 @@ static void test_mc_reservation(void)
 #endif /* G4MH_PE_COUNT > 1 */
 
 /* ------------------------------------------------------------------ */
+/* The instructions a compiler emits that were missing                 */
+/* ------------------------------------------------------------------ */
+
+/* MOV imm32 -- three halfwords -- as the way to build a full address. */
+#define MOVI32(r)      W0(OP_MOVEA, (r), 0)
+#define LO(v)          (uint16_t)((v) & 0xFFFFu)
+#define HI(v)          (uint16_t)((v) >> 16)
+
+#define PREPARE_W0(imm5, l0) \
+    (uint16_t)(0x0780u | (((imm5) & 0x1Fu) << 1) | ((l0) & 1u))
+#define DISPOSE_W0(imm5, l0) \
+    (uint16_t)(0x0640u | (((imm5) & 0x1Fu) << 1) | ((l0) & 1u))
+
+/*
+ * PREPARE and DISPOSE, on the three registers that make the list12 table
+ * discriminating rather than decorative.
+ *
+ * r20 is bit 27, r31 is bit 21 and r30 is bit *0* -- of the first
+ * halfword, four bits away from the other eleven and out of order with
+ * them. Any implementation that derived the bit from the register number
+ * would pass a test using r24-r27 and fail this one. Testing that the
+ * two instructions round-trip is also not enough on its own, since a
+ * matching pair of wrong orders round-trips perfectly; the stored words
+ * are checked in memory as well.
+ */
+static void test_prepare_dispose(void)
+{
+    const uint32_t sp0 = EMU_GUEST_RAM_BASE + 0x400u;
+    const uint16_t prog[] = {
+        MOVI32(3),  LO(sp0), HI(sp0),
+        MOVI32(20), 0x1111u, 0x1111u,
+        MOVI32(30), 0x2222u, 0x2222u,
+        MOVI32(31), 0x3333u, 0x3333u,
+        /* prepare {r20, r30, r31}, 2 */
+        PREPARE_W0(2u, 1u), (uint16_t)((1u << 11) | (1u << 5) | 0x01u),
+        F2(OP_MOVI, 0, 20),
+        F2(OP_MOVI, 0, 30),
+        F2(OP_MOVI, 0, 31),
+        /* dispose 2, {r20, r30, r31} */
+        DISPOSE_W0(2u, 1u), (uint16_t)((1u << 11) | (1u << 5)),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(20), 0x11111111u);
+    CHECK_EQ(reg(30), 0x22222222u);
+    CHECK_EQ(reg(31), 0x33333333u);
+    CHECK_EQ(reg(3), sp0);              /* the frame is given back      */
+
+    /* Ascending register order, descending addresses: r20 highest. */
+    CHECK_EQ(ram32(0x400u - 4u), 0x11111111u);
+    CHECK_EQ(ram32(0x400u - 8u), 0x22222222u);
+    CHECK_EQ(ram32(0x400u - 12u), 0x33333333u);
+    CHECK_EQ(why, EMU_RUN_WFI);
+}
+
+/*
+ * The unsigned loads, each against a value whose top bit is set -- which
+ * is the only input that tells them from the sign-extending forms that
+ * were already there. A test using 0x01 would pass either way.
+ */
+static void test_unsigned_loads(void)
+{
+    const uint32_t base = EMU_GUEST_RAM_BASE + 0x200u;
+    const uint16_t prog[] = {
+        MOVI32(11), LO(base), HI(base),
+        MOVI32(12), 0x80FFu, 0x0000u,
+        W0(OP_ST_B, 11, 12), 0x0000u,          /* st.b  r12, 0[r11]     */
+        W0(OP_ST_HW, 11, 12), 0x0002u,         /* st.h  r12, 2[r11]     */
+        /* ld.bu 0[r11], r13 -- disp bit 0 rides in the opcode          */
+        (uint16_t)((13u << 11) | (0x3Cu << 5) | 11u), 0x0001u,
+        W0(OP_LD_B, 11, 14), 0x0000u,          /* ld.b -- the control   */
+        /* ld.hu 2[r11], r15 */
+        (uint16_t)((15u << 11) | (0x3Fu << 5) | 11u), 0x0003u,
+        F1(OP_MOV, 11, 30),                    /* ep = base             */
+        (uint16_t)((16u << 11) | 0x60u | 0u),  /* sld.bu 0, r16         */
+        (uint16_t)((17u << 11) | 0x70u | 1u),  /* sld.hu 2, r17         */
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(13), 0x000000FFu);     /* LD.BU  zero-extends          */
+    CHECK_EQ(reg(14), 0xFFFFFFFFu);     /* LD.B   still sign-extends    */
+    CHECK_EQ(reg(15), 0x000080FFu);     /* LD.HU                        */
+    CHECK_EQ(reg(16), 0x000000FFu);     /* SLD.BU                       */
+    CHECK_EQ(reg(17), 0x000080FFu);     /* SLD.HU                       */
+    CHECK_EQ(why, EMU_RUN_WFI);
+}
+
+/*
+ * The branchless group. Each is checked with its condition both true and
+ * false, because every one of them has a well-defined "else" that a
+ * naive implementation drops -- CMOV would leave the destination alone,
+ * ADF would add nothing, SASF would not shift.
+ */
+static void test_conditional_ops(void)
+{
+    /* cccc: 0x2 is Z (equal), 0xA is its complement. */
+    const uint16_t prog[] = {
+        F2(OP_MOVI, 5, 10),
+        F2(OP_MOVI, 5, 11),
+        F1(OP_CMP, 10, 11),                    /* Z = 1                 */
+        F2(OP_MOVI, 7, 12),
+        F2(OP_MOVI, 9, 13),
+        /* cmov z, r12, r13, r14   -> 7  (taken)                        */
+        (uint16_t)((13u << 11) | (0x3Fu << 5) | 12u),
+        (uint16_t)((14u << 11) | 0x320u | (0x2u << 1)),
+        /* cmov nz, r12, r13, r15  -> 9  (not taken)                    */
+        (uint16_t)((13u << 11) | (0x3Fu << 5) | 12u),
+        (uint16_t)((15u << 11) | 0x320u | (0xAu << 1)),
+        /* adf z,  r12, r13, r16   -> 7 + 9 + 1 = 17                    */
+        (uint16_t)((13u << 11) | (0x3Fu << 5) | 12u),
+        (uint16_t)((16u << 11) | 0x3A0u | (0x2u << 1)),
+        /* the flags moved, so re-establish Z before the next two       */
+        F1(OP_CMP, 10, 11),
+        /* sbf z,  r12, r13, r17   -> 9 - 7 - 1 = 1                     */
+        (uint16_t)((13u << 11) | (0x3Fu << 5) | 12u),
+        (uint16_t)((17u << 11) | 0x380u | (0x2u << 1)),
+        F1(OP_CMP, 10, 11),
+        F2(OP_MOVI, 5, 18),
+        /* sasf z, r18             -> (5 << 1) | 1 = 11                 */
+        (uint16_t)((18u << 11) | (0x3Fu << 5) | 0x2u), 0x0200u,
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(14), 7u);
+    CHECK_EQ(reg(15), 9u);
+    CHECK_EQ(reg(16), 17u);
+    CHECK_EQ(reg(17), 1u);
+    CHECK_EQ(reg(18), 11u);
+    CHECK_EQ(why, EMU_RUN_WFI);
+}
+
+/*
+ * MAC, BINS and ROTL.
+ *
+ * MAC's operands are chosen so the product overflows 32 bits and the
+ * accumulator is non-zero: a version that ignored the accumulate, or one
+ * that kept only the low word, gives a different answer for both halves.
+ * BINS uses a field that straddles bit 16, which is what the three
+ * sub-opcodes exist to distinguish. ROTL is checked for the carry it
+ * defines, including the rotate-by-zero case the manual calls out.
+ */
+static void test_mac_bins_rotl(void)
+{
+    const uint16_t prog[] = {
+        MOVI32(10), 0x0000u, 0x0001u,          /* r10 = 0x00010000      */
+        MOVI32(11), 0x0000u, 0x0002u,          /* r11 = 0x00020000      */
+        MOVI32(20), 0x0007u, 0x0000u,          /* r20 = 7  (acc low)    */
+        MOVI32(21), 0x0000u, 0x0000u,          /* r21 = 0  (acc high)   */
+        /* mac r10, r11, r20, r22: r23||r22 = r11*r10 + r21||r20        */
+        (uint16_t)((11u << 11) | (0x3Fu << 5) | 10u),
+        (uint16_t)(((20u >> 1) << 12) | 0x3C0u | ((22u >> 1) << 1)),
+        MOVI32(12), 0xFFFFu, 0xFFFFu,
+        MOVI32(13), 0x0000u, 0x0000u,
+        /* bins r12, 15, 17, r13: lsb 15, msb 17 -> three bits at 15    */
+        (uint16_t)((13u << 11) | (0x3Fu << 5) | 12u),
+        (uint16_t)((1u << 12) | (1u << 11) | 0x0B0u | (7u << 1)),
+        MOVI32(14), 0x0001u, 0x8000u,          /* r14 = 0x80000001      */
+        /* rotl 1, r14, r15 -> 0x00000003, CY from bit 0 of the result  */
+        (uint16_t)((14u << 11) | (0x3Fu << 5) | 1u),
+        (uint16_t)((15u << 11) | 0x0C4u),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    /* 0x20000 * 0x10000 = 0x2_0000_0000, plus 7. */
+    CHECK_EQ(reg(22), 0x00000007u);
+    CHECK_EQ(reg(23), 0x00000002u);
+    /* msb 17, lsb 15: bits 17..15 of r13 become the low three of r12. */
+    CHECK_EQ(reg(13), 0x00038000u);
+    CHECK_EQ(reg(15), 0x00000003u);
+    CHECK_EQ(why, EMU_RUN_WFI);
+}
+
+/*
+ * LOOP, which is the only backward branch in the architecture whose
+ * displacement is unsigned and *subtracted*. Reading it as a signed
+ * forward displacement, which is what every other branch here does,
+ * jumps into the middle of the program instead of round the loop.
+ */
+static void test_loop(void)
+{
+    const uint16_t prog[] = {
+        F2(OP_MOVI, 3, 10),                    /* counter               */
+        F2(OP_MOVI, 0, 11),                    /* accumulator           */
+        F2(OP_ADDI5, 5, 11),                   /* loop body: r11 += 5   */
+        /* loop r10, 2  -- back to the add, two bytes above             */
+        (uint16_t)((0u << 11) | (0x37u << 5) | 10u), (uint16_t)(2u | 1u),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(10), 0u);
+    CHECK_EQ(reg(11), 15u);             /* three passes, not one        */
+    CHECK_EQ(why, EMU_RUN_WFI);
+}
+
+/*
+ * CALLT: an indirect call through a table of *halfword* offsets from
+ * CTBP. Three things can be wrong without faulting -- the entry width,
+ * the zero-extension, and which register the return address lands in --
+ * so the target reads CTPC back and the caller checks where it came
+ * from as well as that it arrived.
+ *
+ * Vector 33 is deliberate. Its bit 5 is the low bit of the opcode, which
+ * puts this encoding in the SATADD imm5 slot rather than the MOV one;
+ * that half used to retire as a saturating add into r0, making the call
+ * silently not happen.
+ */
+static void test_callt(void)
+{
+    const uint32_t ctbp = EMU_GUEST_RAM_BASE;
+    uint16_t prog[64];
+    unsigned k = 0;
+
+    prog[k++] = MOVI32(10); prog[k++] = LO(ctbp); prog[k++] = HI(ctbp);
+    prog[k++] = W0(OP_SYSTEM, 10, G4MH_SR_CTBP); prog[k++] = SUB_LDSR;
+    prog[k++] = (uint16_t)(0x0200u | 33u);      /* callt 33, at byte 10 */
+    prog[k++] = F2(OP_MOVI, 1, 12);             /* never reached        */
+    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+
+    /* The vector table is the program image: entry 33 is halfword 33. */
+    while (k < 33u) {
+        prog[k++] = 0u;
+    }
+    prog[k++] = 80u;                            /* -> byte 80, hw 40    */
+    while (k < 40u) {
+        prog[k++] = 0u;
+    }
+    prog[k++] = W0(OP_SYSTEM, G4MH_SR_CTPC, 13); prog[k++] = SUB_STSR;
+    prog[k++] = F2(OP_MOVI, 9, 11);
+    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, k, 64u, &why, &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(11), 9u);                      /* the target ran       */
+    CHECK_EQ(reg(12), 0u);                      /* and the caller did not */
+    CHECK_EQ(reg(13), EMU_GUEST_RAM_BASE + 12u);/* CTPC is the next insn */
+    CHECK_EQ(why, EMU_RUN_WFI);
+}
+
+/* ------------------------------------------------------------------ */
 
 void test_g4mh(void)
 {
@@ -1405,6 +1700,12 @@ void test_g4mh(void)
     test_flags_and_branch();
     test_load_store();
     test_mov_imm32();
+    test_prepare_dispose();
+    test_unsigned_loads();
+    test_conditional_ops();
+    test_mac_bins_rotl();
+    test_loop();
+    test_callt();
     test_muldiv();
     test_swap();
     test_swap_halfword_flags();

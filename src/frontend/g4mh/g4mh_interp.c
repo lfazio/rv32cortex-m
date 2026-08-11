@@ -332,6 +332,80 @@ static EMU_ALWAYS_INLINE uint32_t do_sar(g4mh_cpu_t *c, uint32_t v, uint32_t n)
 }
 
 /* ------------------------------------------------------------------ */
+/* list12, for PREPARE and DISPOSE                                     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Which bit of the 32-bit instruction word names each of r20-r31.
+ *
+ * The architecture packs twelve register bits into space an encoding had
+ * left over, so the mapping is neither monotonic nor contiguous: eleven
+ * are bits 31 down to 21 in an order that puts r24-r27 ahead of r20-r23,
+ * and r30 is bit 0 of the *first* halfword, four bits away from the
+ * rest. No arithmetic produces this, which is why it is a table -- and
+ * why deriving it from the register number, the obvious thing to try,
+ * silently saves the wrong registers.
+ */
+static const uint8_t k_list12_bit[12] = {
+    27u, 26u, 25u, 24u,      /* r20 r21 r22 r23 */
+    31u, 30u, 29u, 28u,      /* r24 r25 r26 r27 */
+    23u, 22u,  0u, 21u       /* r28 r29 r30 r31 */
+};
+
+static EMU_ALWAYS_INLINE bool list12_has(uint32_t list, unsigned reg)
+{
+    return (list & (1u << k_list12_bit[reg - 20u])) != 0u;
+}
+
+/*
+ * PREPARE's register save. Ascending register order, each one four bytes
+ * below the last, so r20 lands highest and r31 lowest -- and DISPOSE
+ * therefore walks *descending* to undo it. The manual states the two
+ * orders in separate places and they are not the same; reading one and
+ * assuming the other restores every register into its neighbour, which
+ * is a wrong answer rather than a fault.
+ */
+static g4mh_exc_t do_prepare_save(g4mh_cpu_t *c, uint32_t list,
+                                  uint32_t *sp_out)
+{
+    uint32_t tmp = c->r[3];
+
+    for (unsigned reg = 20u; reg <= 31u; reg++) {
+        if (!list12_has(list, reg)) {
+            continue;
+        }
+        tmp -= 4u;
+        const g4mh_exc_t e = g4mh_store(c, tmp & ~3u, 4u, c->r[reg]);
+        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+            return e;
+        }
+    }
+    *sp_out = tmp;
+    return G4MH_EXC_NONE;
+}
+
+static g4mh_exc_t do_dispose_load(g4mh_cpu_t *c, uint32_t list, uint32_t imm5,
+                                  uint32_t *sp_out)
+{
+    uint32_t tmp = c->r[3] + (imm5 << 2);
+
+    for (unsigned reg = 32u; reg-- > 20u;) {
+        if (!list12_has(list, reg)) {
+            continue;
+        }
+        uint32_t v;
+        const g4mh_exc_t e = g4mh_load(c, tmp & ~3u, 4u, false, &v);
+        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+            return e;
+        }
+        c->r[reg] = v;
+        tmp += 4u;
+    }
+    *sp_out = tmp;
+    return G4MH_EXC_NONE;
+}
+
+/* ------------------------------------------------------------------ */
 /* Run loop                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -524,15 +598,34 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
             }
             break;
 
-        case 0x03:                                  /* JMP [reg1]       */
+        case 0x03: {                                /* JMP / SLD.BU/.HU */
             if (r2 != 0u) {
-                EXC(G4MH_EXC_RIE);   /* SLD.BU and friends: not implemented */
+                /*
+                 * The unsigned short loads. Their opcode is seven bits
+                 * where this switch dispatches on six, so bit 4 -- which
+                 * for JMP is part of reg1 -- picks the width, and only
+                 * reg2 separates the two groups at all.
+                 *
+                 * The sign-extending SLD.B/.H are a different opcode
+                 * entirely, in the Format IV overlay at 0x18..0x2F.
+                 * These are not a variant of those.
+                 */
+                uint32_t v;
+                const bool half = (w0 & 0x10u) != 0u;
+                const uint32_t disp = half ? ((uint32_t)(w0 & 0xFu) << 1)
+                                           : (uint32_t)(w0 & 0xFu);
+                const g4mh_exc_t e = g4mh_load(c, c->r[30] + disp,
+                                               half ? 2u : 1u, false, &v);
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                wr(c, r2, v);
+                break;
             }
             /* Bit 0 of the target is ignored: instructions are halfword
              * aligned and the architecture defines the low bit as zero
              * rather than as a mode bit. */
             pc = c->r[r1] & ~1u;
             goto retired_insn;
+        }
 
         case 0x04:                                  /* SATSUBR / ZXB    */
             if (r2 == 0u) {
@@ -608,17 +701,39 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
             break;
 
         /* ---------------- Format II: imm5-reg, 16-bit -------------- */
-        case 0x10:                                  /* MOV imm5 / CALLT */
+        /*
+         * CALLT straddles both of the next two slots, because its imm6
+         * is one bit wider than the field this switch dispatches on: the
+         * opcode's low bit is imm6[5]. So it hides in MOV imm5 for a low
+         * vector and in SATADD imm5 for a high one, and only reg2 == 0
+         * tells it from either.
+         *
+         * SATADD did not test reg2 at all, so half of every CALLT
+         * retired as a saturating add into r0 -- discarded, with the
+         * call never made. That is the failure this architecture keeps
+         * offering: a register field reused as an opcode extension does
+         * not announce itself.
+         */
+        case 0x10:                                  /* MOV imm5 / CALLT  */
+        case 0x11:                                  /* SATADD imm5/CALLT */
             if (r2 == 0u) {
-                /* CALLT imm6 shares this slot. Not implemented -- and it
-                 * must not fall through to "MOV into r0", which would
-                 * retire silently instead of calling. */
-                EXC(G4MH_EXC_RIE);
+                const uint32_t ctbp = c->sr[0][G4MH_SR_CTBP];
+                uint32_t ent;
+                const g4mh_exc_t e =
+                    g4mh_load(c, ctbp + ((uint32_t)(w0 & 0x3Fu) << 1), 2u,
+                              false, &ent);
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                /* CTPSW keeps PSW's low five bits, not the whole word. */
+                c->sr[0][G4MH_SR_CTPC]  = next;
+                c->sr[0][G4MH_SR_CTPSW] = c->psw & 0x1Fu;
+                pc = ctbp + ent;
+                goto retired_insn;
             }
-            wr(c, r2, (uint32_t)g4mh_imm5(w0));
-            break;
-        case 0x11:                                  /* SATADD imm5      */
-            wr(c, r2, do_satadd(c, c->r[r2], (uint32_t)g4mh_imm5(w0)));
+            if (op == 0x10u) {
+                wr(c, r2, (uint32_t)g4mh_imm5(w0));
+            } else {
+                wr(c, r2, do_satadd(c, c->r[r2], (uint32_t)g4mh_imm5(w0)));
+            }
             break;
         case 0x12:                                  /* ADD imm5         */
             wr(c, r2, do_add(c, c->r[r2], (uint32_t)g4mh_imm5(w0)));
@@ -637,10 +752,23 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
         case 0x16:                                  /* SHL imm5         */
             wr(c, r2, do_shl(c, c->r[r2], w0 & 0x1Fu));
             break;
-        case 0x17: {                                /* MULH imm5        */
+        case 0x17: {                                /* MULH imm5 / JR   */
             if (r2 == 0u) {
-                /* JR / JARL disp32, a 48-bit form. Not implemented. */
-                EXC(G4MH_EXC_RIE);
+                /*
+                 * JR and JARL disp32, one encoding: reg1 names the link
+                 * register and zero makes it JR, exactly as reg2 does
+                 * for the disp22 pair, so the write happens either way
+                 * and lands in r0 when it is not wanted.
+                 *
+                 * Unlike disp22 the displacement's high half is in the
+                 * *third* halfword. The 48-bit forms append their extra
+                 * word; disp22 put its high bits first. Assuming one
+                 * layout from the other gives plausible small jumps and
+                 * garbage for everything else.
+                 */
+                wr(c, r1, next);
+                pc = pc + ((w2 << 16) | (w1 & 0xFFFEu));
+                goto retired_insn;
             }
             const int32_t a = emu_sext(c->r[r2] & 0xFFFFu, 16);
             wr(c, r2, (uint32_t)(a * g4mh_imm5(w0)));
@@ -752,11 +880,32 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
         case 0x32:                                  /* MOVHI / DISPOSE  */
         case 0x33:                                  /* SATSUBI / DISPOSE*/
             if (r2 == 0u) {
-                /* DISPOSE straddles both slots with reg2 == 0. Not
-                 * implemented, and it must not fall through to a write
-                 * into r0 -- a silently skipped stack-frame pop is far
-                 * worse than a clean exception. */
-                EXC(G4MH_EXC_RIE);
+                /*
+                 * DISPOSE straddles both slots for the same reason
+                 * CALLT straddles two: its imm5 is five bits where this
+                 * switch dispatches on six, so the opcode's low bit is
+                 * imm5[4].
+                 *
+                 * reg1 doubles as the return target. Zero means "just
+                 * pop"; anything else means pop and jump, which is how a
+                 * leaf epilogue and a tail return share one encoding.
+                 * The pc write has to come *after* the loads, because
+                 * one of them may restore the register it reads.
+                 */
+                const uint32_t list = ((uint32_t)w1 << 16) | w0;
+                const uint32_t imm5 = (w0 >> 1) & 0x1Fu;
+                const uint32_t rt = w1 & 0x1Fu;
+                uint32_t sp;
+                const g4mh_exc_t e = do_dispose_load(c, list, imm5, &sp);
+
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                const uint32_t target = c->r[rt] & ~1u;
+                c->r[3] = sp;
+                if (rt != 0u) {
+                    pc = target;
+                    goto retired_insn;
+                }
+                break;
             }
             if (op == 0x32u) {
                 wr(c, r2, c->r[r1] + (w1 << 16));
@@ -784,10 +933,34 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
             wr(c, r2, v);
             break;
         }
-        case 0x37: {                                /* MULHI imm16      */
+        case 0x37: {                                /* MULHI / JMP/LOOP */
             if (r2 == 0u) {
-                /* JMP disp32[reg1], a 48-bit form. Not implemented. */
-                EXC(G4MH_EXC_RIE);
+                /*
+                 * Two instructions of different *lengths* share this
+                 * slot, separated only by bit 0 of the second halfword:
+                 * clear is the 48-bit JMP disp32[reg1], set is the
+                 * 32-bit LOOP. g4mh_insn_is_48 makes the same test, and
+                 * the two have to agree or the pc moves by the wrong
+                 * amount.
+                 */
+                if ((w1 & 1u) != 0u) {
+                    /*
+                     * LOOP: decrement and branch *backwards* if the
+                     * result is non-zero. The displacement is unsigned
+                     * and subtracted -- there is no forward form -- and
+                     * the flags are the ones an ADD of -1 would leave,
+                     * which is what lets a loop test them afterwards.
+                     */
+                    const uint32_t v = do_add(c, c->r[r1], 0xFFFFFFFFu);
+                    wr(c, r1, v);
+                    if (v != 0u) {
+                        pc = pc - (uint32_t)(w1 & 0xFFFEu);
+                        goto retired_insn;
+                    }
+                    break;
+                }
+                pc = (c->r[r1] + ((w2 << 16) | (w1 & 0xFFFEu))) & ~1u;
+                goto retired_insn;
             }
             const int32_t a = emu_sext(c->r[r1] & 0xFFFFu, 16);
             wr(c, r2, (uint32_t)(a * emu_sext(w1, 16)));
@@ -835,6 +1008,21 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
 
         /* ---------------- Format X: the system group --------------- */
         case 0x3F: {
+            /*
+             * LD.HU comes first because it is not a sub-opcode at all:
+             * its second halfword is a displacement, and the only thing
+             * separating it from the whole Format X/XI group is bit 0.
+             * Every sub-opcode below is even, so the test is exact.
+             */
+            if ((w1 & 1u) != 0u) {                  /* LD.HU disp16     */
+                uint32_t v;
+                const uint32_t adr = c->r[r1] +
+                                     (uint32_t)emu_sext(w1 & 0xFFFEu, 16);
+                const g4mh_exc_t e = g4mh_load(c, adr, 2u, false, &v);
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                wr(c, r2, v);
+                break;
+            }
             const uint32_t sub = w1 & 0x7FFu;
             const uint32_t sel = (w1 >> 11) & 0x1Fu;
 
@@ -875,6 +1063,40 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
              * the two tables are written out separately rather than
              * derived from one another.
              */
+            /*
+             * SASF shifts a condition in at the bottom, one bit per
+             * execution -- the idiom for accumulating a bitmask of test
+             * results without branching. It reads the flags and defines
+             * none, which is what makes a run of them composable.
+             */
+            case 0x200:                             /* SASF cccc, reg2  */
+                wr(c, r2, (c->r[r2] << 1) |
+                          (g4mh_cond(r1, c->psw) ? 1u : 0u));
+                break;
+
+            case 0x0C4:                             /* ROTL imm5, r2,r3 */
+            case 0x0C6: {                           /* ROTL reg1, r2,r3 */
+                /*
+                 * CY comes from bit 0 of the *result*, including for a
+                 * rotate of zero -- so it is the bit that was rotated
+                 * round, and a zero count still redefines it rather than
+                 * leaving it alone.
+                 */
+                const uint32_t n = ((sub == 0x0C4u) ? (w0 & 0x1Fu)
+                                                    : c->r[r1]) & 0x1Fu;
+                const uint32_t v = c->r[r2];
+                const uint32_t res = (n == 0u) ? v
+                                               : ((v << n) | (v >> (32u - n)));
+                uint32_t psw = c->psw & ~G4MH_PSW_FLAGS;
+
+                if ((res & 1u) != 0u)          { psw |= G4MH_PSW_CY; }
+                if (res == 0u)                 { psw |= G4MH_PSW_Z;  }
+                if ((res & 0x80000000u) != 0u) { psw |= G4MH_PSW_S;  }
+                c->psw = psw;
+                wr(c, sel, res);
+                break;
+            }
+
             case 0x0E0:                             /* SET1 reg2, [reg1] */
             case 0x0E2:                             /* NOT1 reg2, [reg1] */
             case 0x0E4:                             /* CLR1 reg2, [reg1] */
@@ -1162,7 +1384,61 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     }
                     g4mh_ll_drop(c);
                     break;
-                default:                            /* PUSHSP / POPSP   */
+                /*
+                 * PUSHSP and POPSP move a *range* of registers, rh
+                 * through rt, rather than a list -- so unlike PREPARE
+                 * there is no table, and unlike PREPARE they leave sp
+                 * where the transfer ended with no frame adjustment.
+                 * A range with rh > rt transfers nothing at all; that is
+                 * defined behaviour and not an error.
+                 */
+                case 0x08u: {                       /* PUSHSP rh-rt     */
+                    uint32_t tmp = c->r[3];
+
+                    for (uint32_t cur = r1; cur <= sel; cur++) {
+                        tmp -= 4u;
+                        const g4mh_exc_t e =
+                            g4mh_store(c, tmp & ~3u, 4u, c->r[cur]);
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                    }
+                    c->r[3] = tmp;
+                    break;
+                }
+
+                case 0x0Cu: {                       /* POPSP rh-rt      */
+                    uint32_t tmp = c->r[3];
+
+                    if (r1 <= sel) {
+                        for (uint32_t cur = sel + 1u; cur-- > r1;) {
+                            uint32_t v;
+                            const g4mh_exc_t e =
+                                g4mh_load(c, tmp & ~3u, 4u, false, &v);
+                            if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                            c->r[cur] = v;
+                            tmp += 4u;
+                        }
+                    }
+                    c->r[0] = 0u;
+                    c->r[3] = tmp;
+                    break;
+                }
+
+                case 0x18u:                         /* JARL [reg1],reg3 */
+                    /*
+                     * The register-indirect call. Written before the
+                     * jump because reg1 and reg3 may name the same
+                     * register -- the same hazard RISC-V's `jalr ra, ra`
+                     * has, and the reason the target is read first.
+                     */
+                    {
+                        const uint32_t target = c->r[r1] & ~1u;
+                        wr(c, sel, next);
+                        c->sr[0][G4MH_SR_PSW] = c->psw;
+                        pc = target;
+                    }
+                    goto retired_insn;
+
+                default:
                     EXC(G4MH_EXC_RIE);
                 }
                 c->sr[0][G4MH_SR_PSW] = c->psw;
@@ -1175,6 +1451,138 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                  * so the sub-opcode has to be matched on the low bits
                  * alone rather than on the whole word.
                  */
+                /*
+                 * The groups that carry an operand in their low bits, so
+                 * that no exact case above can match them: a condition
+                 * for CMOV, SBF and ADF, a register for MAC, and the
+                 * bit positions for BINS. Each is matched on the width
+                 * of field it actually leaves fixed -- 0x7E0 where four
+                 * condition bits vary, 0x7F0 where three do -- because a
+                 * mask that is one bit too wide swallows a neighbour.
+                 * BINS at 0x090 is exactly that case: 0x7E0 would fold
+                 * it into SHR at 0x080.
+                 */
+                switch (sub & 0x7E0u) {
+                case 0x300:                         /* CMOV imm5        */
+                case 0x320:                         /* CMOV reg1        */
+                    wr(c, sel, g4mh_cond((sub >> 1) & 0xFu, c->psw)
+                                 ? ((sub & 0x20u) != 0u
+                                        ? c->r[r1]
+                                        : (uint32_t)g4mh_imm5(w0))
+                                 : c->r[r2]);
+                    goto sub_done;
+
+                case 0x380: {                       /* SBF cccc         */
+                    /*
+                     * reg2 - reg1 - cond, with a borrow the ordinary
+                     * subtract helper cannot express, so the flags are
+                     * computed here. CY is a borrow on RH850, and the
+                     * overflow test is the two-operand one, which stays
+                     * correct with a borrow in.
+                     */
+                    const uint32_t a = c->r[r1];
+                    const uint32_t b = c->r[r2];
+                    const uint32_t k =
+                        g4mh_cond((sub >> 1) & 0xFu, c->psw) ? 1u : 0u;
+                    const uint32_t res = b - a - k;
+                    uint32_t psw = c->psw & ~G4MH_PSW_FLAGS;
+
+                    if ((uint64_t)b < (uint64_t)a + k) { psw |= G4MH_PSW_CY; }
+                    if (res == 0u)                 { psw |= G4MH_PSW_Z; }
+                    if ((res & 0x80000000u) != 0u) { psw |= G4MH_PSW_S; }
+                    if (((a ^ b) & (b ^ res) & 0x80000000u) != 0u) {
+                        psw |= G4MH_PSW_OV;
+                    }
+                    c->psw = psw;
+                    wr(c, sel, res);
+                    goto sub_done;
+                }
+
+                case 0x3A0: {                       /* ADF cccc         */
+                    const uint32_t a = c->r[r1];
+                    const uint32_t b = c->r[r2];
+                    const uint32_t k =
+                        g4mh_cond((sub >> 1) & 0xFu, c->psw) ? 1u : 0u;
+                    const uint64_t wide = (uint64_t)a + b + k;
+                    const uint32_t res = (uint32_t)wide;
+                    uint32_t psw = c->psw & ~G4MH_PSW_FLAGS;
+
+                    if ((wide >> 32) != 0u)        { psw |= G4MH_PSW_CY; }
+                    if (res == 0u)                 { psw |= G4MH_PSW_Z; }
+                    if ((res & 0x80000000u) != 0u) { psw |= G4MH_PSW_S; }
+                    if ((~(a ^ b) & (a ^ res) & 0x80000000u) != 0u) {
+                        psw |= G4MH_PSW_OV;
+                    }
+                    c->psw = psw;
+                    wr(c, sel, res);
+                    goto sub_done;
+                }
+
+                case 0x3C0:                         /* MAC  reg1,r2,r3,r4 */
+                case 0x3E0: {                       /* MACU               */
+                    /*
+                     * A 64-bit accumulate across a register pair. Both
+                     * pairs are named by four bits and are therefore
+                     * always even -- reg3 in the top of the second
+                     * halfword, reg4 in the same bits the conditions use
+                     * elsewhere -- so the odd half is reg+1 and never
+                     * needs encoding.
+                     */
+                    const uint32_t r3 = sel & ~1u;
+                    const uint32_t r4 = ((sub >> 1) & 0xFu) << 1;
+                    const uint64_t acc = ((uint64_t)c->r[r3 + 1u] << 32) |
+                                         c->r[r3];
+                    uint64_t res;
+
+                    if ((sub & 0x20u) == 0u) {      /* MAC: signed      */
+                        res = (uint64_t)(((int64_t)(int32_t)c->r[r2] *
+                                          (int64_t)(int32_t)c->r[r1]) +
+                                         (int64_t)acc);
+                    } else {                        /* MACU: unsigned   */
+                        res = (uint64_t)c->r[r2] * (uint64_t)c->r[r1] + acc;
+                    }
+                    wr(c, r4, (uint32_t)res);
+                    wr(c, r4 + 1u, (uint32_t)(res >> 32));
+                    goto sub_done;
+                }
+
+                default:
+                    break;
+                }
+
+                switch (sub & 0x7F0u) {
+                case 0x090:                         /* BINS msb>=16 lsb>=16 */
+                case 0x0B0:                         /* BINS msb>=16 lsb<16  */
+                case 0x0D0: {                       /* BINS msb<16  lsb<16  */
+                    /*
+                     * Insert reg1's low bits into reg2 at [msb:lsb].
+                     * Only the low four bits of each position are
+                     * encoded; bit 4 of each comes from *which* of the
+                     * three sub-opcodes this is, which is the whole
+                     * reason there are three.
+                     */
+                    const uint32_t msb = ((w1 >> 12) & 0xFu) |
+                                         ((sub & 0x7F0u) != 0x0D0u ? 16u : 0u);
+                    const uint32_t lsb = (((w1 >> 8) & 0x8u) |
+                                          ((w1 >> 1) & 0x7u)) |
+                                         ((sub & 0x7F0u) == 0x090u ? 16u : 0u);
+                    if (msb < lsb) {
+                        EXC(G4MH_EXC_RIE);
+                    }
+                    const uint32_t width = msb - lsb + 1u;
+                    const uint32_t mask = (width >= 32u)
+                                            ? 0xFFFFFFFFu
+                                            : (((1u << width) - 1u) << lsb);
+                    const uint32_t res = (c->r[r2] & ~mask) |
+                                         ((c->r[r1] << lsb) & mask);
+                    set_logic(c, res);
+                    wr(c, r2, res);
+                    goto sub_done;
+                }
+                default:
+                    break;
+                }
+
                 switch (sub & 0x7FDu) {
                 case 0x220: {                       /* MUL / MULU       */
                     const uint32_t r3 = sel;
@@ -1230,18 +1638,81 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 }
                 break;
             }
+        sub_done:
             break;
         }
 
         /* ---------------- Format V: JR / JARL disp22 --------------- */
         case 0x3C:
         case 0x3D: {
-            if (r2 == 0u && (w1 & 1u) != 0u) {
+            if ((w1 & 1u) != 0u) {
                 /*
-                 * PREPARE, and the 48-bit disp23 loads and stores. Both
-                 * live in this slot with reg2 == 0 and are told from JR by
-                 * bit 0 of the second halfword. Not implemented.
+                 * Bit 0 of the second halfword separates JR/JARL disp22
+                 * -- whose displacement is even, so the bit is free --
+                 * from everything else in this slot. What is left is
+                 * told apart by reg2 and then by the low bits of the
+                 * second halfword, in the same order g4mh_insn_is_48
+                 * uses. The two must agree: it decides the length and
+                 * this decides the meaning.
                  */
+                if (r2 != 0u) {                     /* LD.BU disp16     */
+                    /*
+                     * The one load whose displacement is not naturally
+                     * aligned, so its bit 0 has nowhere to live in the
+                     * second halfword and is carried in the *opcode*
+                     * instead -- which is why 0x3C and 0x3D are one
+                     * instruction here and two everywhere else.
+                     */
+                    const uint32_t disp = (uint32_t)(w1 & 0xFFFEu) |
+                                          (op & 1u);
+                    uint32_t v;
+                    const g4mh_exc_t e =
+                        g4mh_load(c, c->r[r1] + (uint32_t)emu_sext(disp, 16),
+                                  1u, false, &v);
+                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                    wr(c, r2, v);
+                    break;
+                }
+
+                if ((w1 & 0x1Fu) == 0x01u || (w1 & 0x07u) == 0x03u) {
+                    /*
+                     * PREPARE: save the list, then cut the frame. The
+                     * order matters -- the saved words go below the old
+                     * sp and the frame below those -- and so does doing
+                     * the sp write only after every store has succeeded,
+                     * because an MDP fault partway through must leave sp
+                     * and ep at their old values for the handler.
+                     */
+                    const uint32_t list = ((uint32_t)w1 << 16) | w0;
+                    const uint32_t imm5 = (w0 >> 1) & 0x1Fu;
+                    const uint32_t ff = (w1 >> 3) & 3u;
+                    uint32_t sp;
+
+                    if ((w1 & 0x07u) == 0x03u && ff == 3u) {
+                        /*
+                         * The imm32 form is 64 bits wide, which is past
+                         * what the length decoder reports. Declining is
+                         * correct rather than merely safe: the pc never
+                         * moves by a wrong amount.
+                         */
+                        EXC(G4MH_EXC_RIE);
+                    }
+
+                    const g4mh_exc_t e = do_prepare_save(c, list, &sp);
+                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                    sp -= imm5 << 2;
+                    c->r[3] = sp;
+
+                    if ((w1 & 0x07u) == 0x03u) {
+                        /* ff names what reaches ep, and 00 is the new sp. */
+                        c->r[30] = (ff == 0u) ? sp
+                                 : (ff == 1u) ? (uint32_t)emu_sext(w2, 16)
+                                              : (w2 << 16);
+                    }
+                    break;
+                }
+
+                /* The 48-bit disp23 loads and stores. Not implemented. */
                 EXC(G4MH_EXC_RIE);
             }
             /*

@@ -724,11 +724,17 @@ with `-DEMU_FRONTEND_RV32=OFF -DEMU_FRONTEND_G4MH=ON` and see that it links.
 
 **Implemented.** Formats I and II (the 16-bit reg-reg and imm5 ALU),
 III (`Bcond disp9`), IV (`SLD`/`SST` .B/.H/.W through EP), V (`JR`/`JARL
-disp22`), VI (the imm16 ALU group), VII (`LD`/`ST` .B/.H/.W `disp16`),
-`MOV imm32`, and the Format X system group: `LDSR`, `STSR`, `TRAP`, `RETI`,
-`HALT`, `DI`/`EI`, the register-form shifts, `MUL`/`MULU`, `DIV`/`DIVU`,
-`SETF`. Plus both exception levels with their own save registers, the
-PSW/system-register file, and an interrupt controller with a time base.
+disp22` and `disp32`), VI (the imm16 ALU group), VII (`LD`/`ST` .B/.H/.W
+`disp16`), VIII (the memory bit ops), `MOV imm32`, and the Format X
+system group: `LDSR`, `STSR`, `TRAP`, `EIRET`/`FERET`/`CTRET`, `HALT`,
+`DI`/`EI`, `CLL`, the register-form shifts, `MUL`/`MULU`, `DIV`/`DIVU`,
+`SETF`, `CAXI`, `LDL.W`/`STC.W`, the swap and bit-search group.
+
+Plus the set a compiler actually emits, added later: `PREPARE`/`DISPOSE`
+with the full list12, `CALLT`, the unsigned loads `LD.BU`/`LD.HU` and
+`SLD.BU`/`SLD.HU`, the branchless `CMOV`/`ADF`/`SBF`/`SASF`, `MAC`/`MACU`,
+`BINS`, `ROTL`, `LOOP`, `PUSHSP`/`POPSP`, `JARL [reg1], reg3`, and
+`JMP disp32`.
 
 Everything else raises `G4MH_EXC_RIE`, which is the correct report for an
 unimplemented encoding rather than a silent wrong answer.
@@ -737,17 +743,15 @@ unimplemented encoding rather than a silent wrong answer.
 
 | gap | why it matters |
 |---|---|
-| `PREPARE` / `DISPOSE` | every non-leaf function a compiler emits uses them for its frame |
-| `LD.BU` / `LD.HU`, `SLD.BU` / `SLD.HU` | unsigned loads; only the sign-extending forms exist |
-| `CALLT` / `CTRET` | `CTBP`/`CTPC`/`CTPSW` are storage with no instructions behind them |
-| `CMOV`, `ADF`/`SBF`, `SASF` | the branchless idioms a compiler prefers |
-| `BSW`/`BSH`/`HSW`/`HSH`, `SCH*` | byte swaps and bit search |
-| Format VIII `SET1`/`CLR1`/`NOT1`/`TST1` | bit manipulation on memory; opcode 0x3E |
-| `CAXI`, `LDL.W`/`STC.W` | the atomics — nothing at all today |
-| 48-bit `JMP`/`JR`/`JARL disp32`, disp23 loads and stores | long-range code and data |
-| `MAC`/`MACU`, the imm9 `MUL`/`DIV` forms, 3-operand `DIVH` | |
-| `SYNCE`/`SYNCM`/`SYNCP`/`SYNCI`, `CACHE`, `PREF`, `SNOOZE` | |
 | the FPU | `FPSR`/`FPEPC`/`FPST`/`FPCC`/`FPCFG`/`FPEC` exist as storage; no FP instruction is decoded. `G4MH_EXT_FPU` is the switch that would turn it on |
+| the disp23 loads and stores | the 48-bit long-displacement forms; they share the `0x3C`/`0x3D` slot with `LD.BU` and PREPARE and are declined there |
+| `CLIP.B`/`.BU`/`.H`/`.HU` | saturating narrowing |
+| `LD.DW` / `ST.DW`, `LDL.BU`/`LDL.HU`, `STC.B`/`STC.H` | the doubleword and narrow atomic accesses |
+| `LDM.MP` / `STM.MP`, `RESBANK` | bank and context-block transfers |
+| `DIVHU`, `DIVQ`/`DIVQU`, 3-operand `DIVH`, the imm9 `MUL`/`DIV` forms | |
+| `FETRAP`, `SYSCALL` | further trap flavours; `TRAP` is there |
+| `PREPARE list12, imm5, imm32` | the only 64-bit encoding in the ISA, and past what the length decoder reports — see below |
+| `CACHE`, `PREF` | `SYNCE`/`SYNCM`/`SYNCP`/`SYNCI` and `SNOOZE` are decoded and are no-ops here |
 
 **Architectural features not modelled:**
 
@@ -812,6 +816,30 @@ The lesson generalises: **an ISA that reuses a register field as an opcode
 extension will not tell you when you ignore it.** Before adding an
 encoding, grep the manual for every instruction sharing its opcode, not
 just the one being added.
+
+**And it happened again, twice, in the same shape.** Adding the compiler
+set found both:
+
+- `SATADD imm5` never tested reg2, so half of every `CALLT` -- the half
+  with bit 5 of the vector set, because the opcode's low bit *is*
+  imm6[5] -- retired as a saturating add into r0. Discarded, call never
+  made, nothing to show for it. Its neighbour `MOV imm5` had the check.
+  One slot of a straddling pair being guarded is not the pair being
+  guarded.
+- **A shared opcode can hold two instructions of different lengths, and
+  that is worse than two of the same length.** `g4mh_insn_is_48` answered
+  "48-bit" for the whole of `0x37` with reg2 == 0 and for the whole of
+  `0x3C`/`0x3D` with bit 0 of the second halfword set. `LOOP` is 32-bit
+  and lives in the first; `PREPARE`'s short form is 32-bit and lives in
+  the second, alongside 48-bit disp23 loads *and* a 64-bit `PREPARE`. A
+  wrong length is not a wrong answer, it is a desynchronised instruction
+  stream -- every instruction after it is garbage. The length decoder and
+  the execute switch have to make the *same* test, and the only way to
+  know is to enumerate everything in the slot including its width.
+
+Both were invisible while the instructions raised RIE, which is the
+argument for implementing a slot completely rather than one encoding of
+it at a time.
 
 **There is no reference model and no toolchain.** RV32 has riscv-arch-test,
 the Berkeley suite and Sail to disagree with; G4MH has none of that here, and

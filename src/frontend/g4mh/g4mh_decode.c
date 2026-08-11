@@ -23,19 +23,50 @@ bool g4mh_insn_is_48(uint16_t w0, uint16_t w1)
     switch (g4mh_op6(w0)) {
     case 0x17u:   /* JR / JARL disp32   -- shares the MULH imm5 slot   */
     case 0x31u:   /* MOV imm32, reg1    -- shares the MOVEA slot       */
-    case 0x37u:   /* JMP disp32[reg1]   -- shares the MULHI slot       */
         return true;
+
+    case 0x37u:
+        /*
+         * JMP disp32[reg1] shares the MULHI slot, and so does LOOP --
+         * which is 32-bit where JMP is 48. Bit 0 of the second halfword
+         * separates them, exactly as it does at 0x3C: LOOP's
+         * displacement is even, so the bit is free to mark it.
+         */
+        return (w1 & 1u) == 0u;
 
     case 0x3Cu:
     case 0x3Du:
         /*
          * This slot holds three different things with reg2 == 0: the
          * 32-bit JR/JARL disp22, the 48-bit disp23 loads and stores, and
-         * PREPARE. JR's second halfword has bit 0 clear because its
-         * displacement is even; the others set it. So bit 0 is the
-         * discriminator, and it is the only one available.
+         * PREPARE -- which is 32, 48 *or 64* bits depending on what it
+         * loads into ep.
+         *
+         * Bit 0 of the second halfword separates JR from the rest, and
+         * is the only discriminator available for that. It is not enough
+         * on its own: PREPARE's short form sets it too and is four bytes
+         * long, so answering "48-bit" for it would advance the pc by two
+         * bytes too many and desynchronise everything after.
          */
-        return (w1 & 1u) != 0u;
+        if ((w1 & 1u) == 0u) {
+            return false;                    /* JR / JARL disp22    */
+        }
+        if ((w1 & 0x1Fu) == 0x01u) {
+            return false;                    /* PREPARE list12,imm5 */
+        }
+        if ((w1 & 0x07u) == 0x03u) {
+            /*
+             * PREPARE list12, imm5, sp/imm. ff names what reaches ep:
+             * sp costs no extra halfword, imm16 costs one, and imm32
+             * costs two -- a 64-bit encoding, which is past what this
+             * decoder reports. It is called 48 here and the interpreter
+             * raises RIE rather than retiring it, so the pc never moves
+             * by a wrong amount; widening the contract is the fix if a
+             * compiler is ever seen emitting it.
+             */
+            return ((w1 >> 3) & 3u) != 0u;
+        }
+        return true;                         /* the disp23 group    */
 
     default:
         return false;
