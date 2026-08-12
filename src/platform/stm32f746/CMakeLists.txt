@@ -123,7 +123,12 @@ if(EMU_NET)
         "${CMAKE_SOURCE_DIR}/src/net/net.c"
         "${CMAKE_SOURCE_DIR}/src/net/net_sio.c"
         "${CMAKE_SOURCE_DIR}/src/net/net_telnet.c"
-        "${CMAKE_SOURCE_DIR}/src/net/net_tftp.c")
+        "${CMAKE_SOURCE_DIR}/src/net/net_tftp.c"
+        "${CMAKE_SOURCE_DIR}/src/net/net_gdb.c"
+        # The protocol and the frontend's register map. Both are
+        # portable C and neither knows about lwIP.
+        "${CMAKE_SOURCE_DIR}/src/emu/emu_gdb.c"
+        "${CMAKE_SOURCE_DIR}/src/frontend/rv32/rv_gdb.c")
 
     # The port sources are built into the firmware, not into lwip: they
     # reach the board through board.h, which lives in this directory, and

@@ -119,4 +119,29 @@ bool emu_net_telnet_init(void);
 void emu_net_telnet_poll(void);
 bool emu_net_tftp_init(void);
 
+/* ------------------------------------------------------------------ */
+/* gdb                                                                 */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The stub debugs the *guest*. A probe on SWD shows Cortex-M state,
+ * which is the right tool for a firmware bug and useless for a guest
+ * one; this attaches gdb to the emulated program instead.
+ *
+ * Declared with forward types so a platform that compiles no network
+ * still sees a consistent header. The protocol is ISA-agnostic and
+ * lives in src/emu/emu_gdb.c; the register map comes from the frontend.
+ */
+struct emu_core;
+struct emu_gdb_target;
+
+bool emu_net_gdb_init(struct emu_core *core,
+                      const struct emu_gdb_target *target);
+
+/* True while a debugger is connected, in which case the run loop must
+ * go through emu_net_gdb_run() so breakpoints and stepping work. */
+bool emu_net_gdb_attached(void);
+
+uint32_t emu_net_gdb_run(uint32_t budget, uint32_t *retired);
+
 #endif /* EMU_NET_H */

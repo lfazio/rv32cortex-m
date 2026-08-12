@@ -921,6 +921,27 @@ Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
   in shape to the baked-in one. Two of the guests in the tree have an
   empty `.rw`, so the obvious thing to test an upload with cannot see
   this: use `hello`, whose four bytes of `.data` are the whole test.
+- **The gdb stub debugs the guest, and its split is the same one the
+  tree already uses.** `src/emu/emu_gdb.c` is the RSP protocol with no
+  ISA in it; a frontend supplies one `emu_gdb_target_t` saying how many
+  registers gdb expects, in what order, and which is the pc. That order
+  is not a choice -- gdb's `g` packet is a fixed per-architecture
+  concatenation (rv32: x0..x31 then pc, 32-bit, **little-endian by
+  byte**) and it does not ask. Getting it wrong yields an `info
+  registers` that is plausible and entirely wrong, so check it against
+  the board's own state dump rather than against itself.
+
+  Three things in RSP that fail by hanging rather than erroring: the
+  checksum is a modulo-256 sum of the body and gdb silently retries a
+  bad one; `c` and `s` must **not** be answered until the guest actually
+  stops, or gdb believes it halted where it already was; and Ctrl-C
+  arrives as a bare 0x03 *outside* any packet, so a stub that only looks
+  for `$` makes ^C do nothing at all.
+
+  Breakpoints are a pc list, not a patched trap instruction. Patching is
+  what real silicon needs and is wrong here twice over: the read-only
+  half of a guest image is served from the board's flash, and a patched
+  instruction is invisible to the JIT until the block is retranslated.
 - **Measure; do not reason about performance.** Interpreter-in-SRAM was
   *slower*, lazy-IRQ was neutral, and the `clmul` fix was 1.3% when the real
   cost was 4.12-instruction blocks. Layout noise is ±3% on the host; on the

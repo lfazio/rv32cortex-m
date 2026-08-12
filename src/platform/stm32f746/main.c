@@ -27,6 +27,7 @@
 
 #if EMU_NET
 #  include "emu_net.h"
+#  include "emu/emu_gdb.h"
 #endif
 
 #include <string.h>
@@ -898,6 +899,29 @@ int main(void)
     ops->set_syscall(g_core.cpu, guest_syscall, NULL);
     ops->set_cache(g_core.cpu, &g_cache_ops);
 
+#if EMU_NET
+    /*
+     * The gdb stub, once there is a core for it to describe. Started
+     * after the guest exists and before it runs, so a debugger that
+     * connects immediately finds the guest at its reset vector rather
+     * than somewhere arbitrary.
+     *
+     * Failure is not fatal: a board that cannot serve gdb is still a
+     * board that runs guests, and saying so beats halting.
+     */
+    {
+        extern const emu_gdb_target_t *rv32_gdb_target(void);
+
+        if (!emu_net_gdb_init(&g_core, rv32_gdb_target())) {
+            console_puts("gdb    stub failed to start\n");
+        } else {
+            console_puts("gdb    target remote ");
+            console_puts(emu_net_addr_str());
+            console_puts(":1234\n");
+        }
+    }
+#endif
+
     /*
      * Now that there is a core to hang them off, put the frontend's own
      * devices on the bus and start. start_guest() does both, because a
@@ -938,8 +962,26 @@ restart:
 
     for (;;) {
         uint32_t retired = 0;
-        const emu_run_reason_t why = emu_core_run(&g_core, EMU_RUN_SLICE,
-                                                  &retired);
+        emu_run_reason_t why;
+
+#if EMU_NET
+        /*
+         * With a debugger attached the stub owns run control: it honours
+         * breakpoints and single-step, and while the guest is stopped it
+         * retires nothing and this loop just services the network.
+         *
+         * Tested once per slice, not once per instruction. Nothing on
+         * the execute path changes, so a guest nobody is debugging pays
+         * for this exactly what it pays for emu_net_poll() -- one
+         * predictable branch every 4096 instructions.
+         */
+        if (emu_net_gdb_attached()) {
+            why = (emu_run_reason_t)emu_net_gdb_run(EMU_RUN_SLICE, &retired);
+        } else
+#endif
+        {
+            why = emu_core_run(&g_core, EMU_RUN_SLICE, &retired);
+        }
         retired_total += retired;
 
 #if EMU_NET
