@@ -935,6 +935,25 @@ Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
   `ALIGN` is now *inside* the section, and the build really does compare
   `cat ro rw` against the binary. **A comment asserting an invariant is
   where to look first when something downstream is three bytes wrong.**
+- **A recovery path wired to one of two symmetric cases recovers from
+  the one that does not happen.** The flash arena filling up is the
+  *expected* failure -- there is no length in a TFTP request, so running
+  out is how the end is discovered -- and the recovery is to erase and
+  let the client retry. It was wired for the `rom` half only. The client
+  sends rom then ram, so the transfer that runs off the end is almost
+  always the **second**: the rom half still fits at the address
+  `begin()` handed out. Every retry then re-sent a rom half that fitted
+  and a ram half that did not, failing identically for ever, and the
+  board needed a power cycle to take another image. It presents as a
+  dead server rather than a full one -- three retries, three identical
+  `error writing file`. Surfaced only by running the suite far enough to
+  fill the arena, about twenty tests.
+
+  Its neighbour is still open and has the same shape: lwIP's TFTP
+  server keeps **one** session and never reclaims it, so a client killed
+  mid-transfer wedges every later upload behind "Only one connection at
+  a time is supported" until reset. The shim's 8-second backoff assumes
+  the session ages out. It does not.
 - **A reload that only the run loop can see never happens.** `g_reload`
   was checked between guest slices, which is exactly when a harness is
   *not* uploading: it runs a test, waits for it to halt and report, then
