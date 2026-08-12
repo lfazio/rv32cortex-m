@@ -322,6 +322,43 @@ static void note_exit(uint8_t *at, bool conditional)
 /* ------------------------------------------------------------------ */
 
 /*
+ * Hand the flags FPSCR has accumulated to the frontend, and optionally
+ * clear them so what follows starts from nothing.
+ *
+ * ARM orders them IOC,DZC,OFC,UFC,IXC from bit 0 and the IR
+ * NX,UF,OF,DZ,NV -- an exact five-bit reversal, so RBIT of the masked
+ * word followed by LSR #27 is the whole conversion. That it is a
+ * reversal rather than a permutation is luck worth stating: on x86-64
+ * the same mapping needs a lookup table.
+ *
+ * Called at the block exit, and again *before every helper call* in a
+ * block that also computes floats natively. That second use is not
+ * belt-and-braces. A helper reaches rv_hart_fp, which reads and clears
+ * the host's exception state through <fenv.h> to derive its own -- so a
+ * block that raised inexact in an emitted VADD and then called a helper
+ * for an FMIN would have the inexact wiped before the exit ever saw it.
+ * Harvesting first means the helper starts from a clean slate and
+ * cannot destroy anything.
+ */
+static void emit_fp_harvest(const emu_ir_target_t *t, bool reclear)
+{
+    t2_vmrs(T2_R0);
+    t2_imm32(T2_R1, 0x1Fu);
+    t2_and(T2_R0, T2_R0, T2_R1);
+    t2_rbit(T2_R0, T2_R0);
+    t2_shift_imm(T2_LSR, T2_R1, T2_R0, 27u);
+    t2_mov(T2_R0, T2_CPU);
+    t2_call((const void *)t->fp_flags);
+
+    if (reclear) {
+        t2_vmrs(T2_R0);
+        t2_imm32(T2_R1, ~0x1Fu);
+        t2_and(T2_R0, T2_R0, T2_R1);
+        t2_vmsr(T2_R0);
+    }
+}
+
+/*
  * Bisection gate.
  *
  * This host has no suite: the only way to find out which emitted
@@ -359,7 +396,12 @@ static bool bisect_allows(uint8_t op)
     case EMU_IR_MUL: case EMU_IR_MULHS: case EMU_IR_MULHU:
         return T2_BISECT >= 7;
     case EMU_IR_LOAD: case EMU_IR_STORE:
+    case EMU_IR_HELPER: case EMU_IR_HELPER_TRAP:
         return T2_BISECT >= 7;
+    case EMU_IR_FGET: case EMU_IR_FPUT: case EMU_IR_FSGNJ:
+    case EMU_IR_FADD: case EMU_IR_FSUB:
+    case EMU_IR_FMUL: case EMU_IR_FDIV: case EMU_IR_FSQRT:
+        return T2_BISECT >= 8;
     default:
         return false;
     }
@@ -824,6 +866,57 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
      * which the framework treats exactly as a declined translation --
      * so this is a coverage cost, not a correctness one.
      */
+    case EMU_IR_HELPER:
+    case EMU_IR_HELPER_TRAP: {
+        /*
+         * The escape hatch, and the thing that makes emu_ir_can_lower
+         * mean anything here. Without it every operation this backend
+         * honestly declines cost the whole block instead of a call, and
+         * the capability query was inert -- which is exactly how it
+         * shipped, and presented as a board run whose counters were
+         * identical to the previous one to the digit.
+         *
+         * AAPCS: r0 the cpu, r1 and r2 the arguments. r4-r11 are
+         * callee-saved, so allocated temps survive with nothing emitted
+         * around them, which is the whole reason the allocator was
+         * given those registers.
+         */
+        if (t->helpers == NULL || in->imm >= t->helper_count) {
+            return false;
+        }
+        if (g_has_fp) {
+            emit_fp_harvest(t, true);
+        }
+
+        const uint32_t ra = use_reg(in->a, T2_R1);
+
+        if (ra != T2_R1) {
+            t2_mov(T2_R1, ra);
+        }
+
+        const uint32_t rb = use_reg(in->b, T2_R2);
+
+        if (rb != T2_R2) {
+            t2_mov(T2_R2, rb);
+        }
+        t2_mov(T2_R0, T2_CPU);
+        t2_call(t->helpers[in->imm]);
+
+        if (in->op == (uint8_t)EMU_IR_HELPER_TRAP) {
+            /*
+             * Non-zero means it entered a trap: pc is already in the
+             * handler and the rest of the block must not run.
+             */
+            t2_imm32(T2_R1, 0u);
+            t2_cmp(T2_R0, T2_R1);
+            note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
+        }
+        if (in->dst != EMU_IR_NO_TEMP) {
+            st_slot(T2_R0, in->dst);
+        }
+        break;
+    }
+
     case EMU_IR_FMIN: case EMU_IR_FMAX: case EMU_IR_FCMP:
     case EMU_IR_FCVT_TO_I: case EMU_IR_FCVT_FROM_I: case EMU_IR_FCLASS:
     case EMU_IR_SETF:
@@ -833,8 +926,6 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_BITOP_CLR:
     case EMU_IR_BITOP_INV:
     case EMU_IR_BITOP_TST:
-    case EMU_IR_HELPER:
-    case EMU_IR_HELPER_TRAP:
     case EMU_IR_POPCNT:
     case EMU_IR_ROTL: case EMU_IR_ROTLI:
     case EMU_IR_ADDI: case EMU_IR_ANDI:
@@ -977,23 +1068,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     }
 
     if (g_has_fp) {
-        /*
-         * One accumulation of the block's flags, on the single path
-         * every exit takes.
-         *
-         * ARM orders them IOC,DZC,OFC,UFC,IXC from bit 0 and the IR
-         * NX,UF,OF,DZ,NV -- an exact five-bit reversal, so RBIT of the
-         * masked word followed by LSR #27 is the whole conversion. That
-         * it is a reversal rather than a permutation is luck, and worth
-         * saying: on x86-64 the same mapping needs a lookup table.
-         */
-        t2_vmrs(T2_R0);
-        t2_imm32(T2_R1, 0x1Fu);
-        t2_and(T2_R0, T2_R0, T2_R1);
-        t2_rbit(T2_R0, T2_R0);
-        t2_shift_imm(T2_LSR, T2_R1, T2_R0, 27u);
-        t2_mov(T2_R0, T2_CPU);
-        t2_call((const void *)t->fp_flags);
+        emit_fp_harvest(t, false);
         ld_slot(T2_R0, SCRATCH_FPSCR);
         t2_vmsr(T2_R0);
     }
