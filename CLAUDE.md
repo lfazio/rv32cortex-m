@@ -935,6 +935,23 @@ Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
   `ALIGN` is now *inside* the section, and the build really does compare
   `cat ro rw` against the binary. **A comment asserting an invariant is
   where to look first when something downstream is three bytes wrong.**
+- **`imm5 == 0` does not mean "no shift", and only `LSL` reads it that
+  way.** ARM spends the otherwise-useless encoding on the amount `imm5`
+  cannot hold: `LSR #0` **is** `LSR #32`, `ASR #0` is `ASR #32`, and
+  `ROR #0` is `RRX`. So a shift by zero -- which RISC-V spells
+  `srli`/`srai rd, rs, 0` and means as a move -- assembled as a shift
+  by 32 and gave zero or a sign extension. Rewriting the type to `LSL`
+  is the fix; *skipping* the emit is not, because `rd` and `rm` differ
+  and the move still has to happen.
+
+  Invisible to x86-64, whose `shr r32, 0` is a genuine no-op, and so to
+  both host suites. The board found it: `I-srli-00` and `I-srai-00`
+  shift by zero 17 and 16 times, and were the only two failures in
+  39. This is the **second** defect in the same twelve-line function --
+  the comment beside it records an imm3:imm2 split that came out as a
+  shift by zero. An encoder whose wrong answers are other valid
+  instructions needs its *boundary* values tested, not its typical
+  ones; both bugs are at an end of the range.
 - **A recovery path wired to one of two symmetric cases recovers from
   the one that does not happen.** The flash arena filling up is the
   *expected* failure -- there is no length in a TFTP request, so running
