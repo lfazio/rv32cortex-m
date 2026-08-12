@@ -1,0 +1,358 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""
+rv32-board - run one guest on the Nucleo, as if it were rv32-host.
+
+This is the shim that lets the existing suites run on hardware without
+knowing they are:
+
+    RV32_HOST=scripts/rv32-board ./scripts/run-riscv-tests.sh
+    RV32_HOST=scripts/rv32-board ./scripts/run-arch-test.sh --jobs 1
+
+Both scripts invoke the runner as `<runner> [options] <image>` and read
+its exit status, so that is exactly what this presents. The options are
+accepted and mostly ignored: --ram and --max-insn are properties of the
+firmware, fixed when it was flashed, and silently accepting them is
+right because the alternative is every caller special-casing the board.
+
+How a run happens:
+
+  1. the image is split into a read-only prefix and a writable tail
+  2. both halves are pushed over TFTP, `rom` then `ram`
+  3. the console is read over telnet until the board's terminator line
+  4. everything the guest printed goes to stdout, and the guest's exit
+     status becomes this process's
+
+The board is one piece of hardware, so runs are serialised with a lock
+file. run-arch-test.sh defaults --jobs to nproc, and without the lock
+eight workers would interleave uploads into one flash arena and read
+each other's output.
+
+Requires the SLIP link to be up (scripts/slip-tun.py).
+"""
+
+import argparse
+import fcntl
+import os
+import re
+import socket
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+
+BOARD = os.environ.get("EMU_NET_ADDR", "192.168.7.2")
+TFTP_PORT = 69
+TELNET_PORT = 23
+LOCK = os.environ.get("EMU_BOARD_LOCK", "/tmp/rv32-board.lock")
+
+# The board prints this last, for every run. It is the only thing that
+# says a run is over: there is no process to exit.
+RESULT_RE = re.compile(
+    r"emu-result exit=(\d+) exited=(\d+) capped=(\d+) retired=(\d+)")
+
+
+# ------------------------------------------------------------------
+# Splitting the image
+# ------------------------------------------------------------------
+
+def objcopy():
+    for name in ("riscv64-unknown-elf-objcopy", "riscv32-unknown-elf-objcopy",
+                 "riscv64-elf-objcopy"):
+        p = subprocess.run(["which", name], capture_output=True)
+        if p.returncode == 0:
+            return name
+    return None
+
+
+def read_sections(path):
+    """(name, addr, size, is_progbits) for allocated sections, via readelf."""
+    tool = (objcopy() or "riscv64-unknown-elf-objcopy").replace(
+        "objcopy", "readelf")
+    out = subprocess.run([tool, "-S", "-W", path],
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        return []
+    secs = []
+    for line in out.stdout.splitlines():
+        m = re.match(r"\s*\[\s*\d+\]\s+(\S+)\s+(\S+)\s+([0-9a-f]+)\s+"
+                     r"([0-9a-f]+)\s+([0-9a-f]+)", line)
+        if not m:
+            continue
+        name, typ, addr, off, size = m.groups()
+        secs.append((name, typ, int(addr, 16), int(size, 16)))
+    return secs
+
+
+def split_image(path, tmpdir):
+    """
+    Produce (ro_bytes, rw_bytes).
+
+    The board serves the read-only prefix straight out of its flash and
+    copies only the tail into guest RAM. That is not an optimisation
+    here, it is what makes the big tests fit at all: the largest
+    architecture tests need ~345 KiB and the board has 276, of which the
+    prefix is ~140.
+
+    The split point is where .data starts. It cannot be "the end of the
+    last read-only section", because the arch-test link script puts
+    .text.rvmodel *after* .data -- the halves are not sorted by
+    permission, and everything from .data on has to be writable whatever
+    it holds.
+
+    A flat binary carries no section table and so no split point. It
+    gets an empty read-only half and is copied whole into RAM, which is
+    what the host runner's --load does and is fine: those images are
+    kilobytes.
+    """
+    with open(path, "rb") as f:
+        magic = f.read(4)
+
+    if magic != b"\x7fELF":
+        with open(path, "rb") as f:
+            return b"", f.read()
+
+    oc = objcopy()
+    if oc is None:
+        sys.exit("rv32-board: no riscv objcopy found; cannot split an ELF")
+
+    flat = os.path.join(tmpdir, "image.bin")
+    subprocess.run([oc, "-O", "binary", path, flat], check=True)
+    with open(flat, "rb") as f:
+        blob = f.read()
+
+    secs = read_sections(path)
+
+    # Allocated sections only. Debug sections are PROGBITS too and sit at
+    # address 0, so including them puts `base` at 0 rather than at the
+    # load address -- and the split point then lands past the end of the
+    # image and is quietly discarded, which presents as a board that
+    # copies the whole image into RAM and runs out of room on exactly the
+    # tests the split exists for.
+    progbits = [s for s in secs
+                if s[1] == "PROGBITS" and s[3] > 0 and s[2] != 0]
+    if not progbits:
+        return b"", blob
+
+    base = min(s[2] for s in progbits)
+    data = [s for s in secs
+            if s[0] in (".data", ".sdata") and s[3] > 0 and s[2] != 0]
+    if not data:
+        # Nothing writable with initialised contents: all of it is the
+        # read-only half, and the guest's .bss lives in RAM above it.
+        return blob, b""
+
+    split = min(s[2] for s in data) - base
+    if split < 0 or split > len(blob):
+        return b"", blob
+    return blob[:split], blob[split:]
+
+
+# ------------------------------------------------------------------
+# TFTP
+# ------------------------------------------------------------------
+
+def tftp_put(name, payload, timeout=20.0):
+    """
+    Minimal RFC 1350 write, in octet mode.
+
+    Written out rather than shelling to curl or tftp: this is the inner
+    loop of a 274-test suite, and the failure mode that matters -- a
+    block going unacknowledged -- has to be retried here rather than
+    reported as a dead board.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(2.0)
+    try:
+        req = b"\x00\x02" + name.encode() + b"\x00" + b"octet" + b"\x00"
+        peer = (BOARD, TFTP_PORT)
+        deadline = time.time() + timeout
+
+        # WRQ, retried until the server answers with ACK 0.
+        tid = None
+        for _ in range(5):
+            s.sendto(req, peer)
+            try:
+                pkt, addr = s.recvfrom(1024)
+            except socket.timeout:
+                continue
+            if len(pkt) >= 4 and pkt[1] == 5:
+                raise RuntimeError("tftp error: %s" % pkt[4:].split(b"\x00")[0].decode())
+            if len(pkt) >= 4 and pkt[1] == 4 and struct.unpack(">H", pkt[2:4])[0] == 0:
+                tid = addr
+                break
+        if tid is None:
+            raise RuntimeError("tftp: no response to WRQ for %s" % name)
+
+        block = 1
+        off = 0
+        while True:
+            chunk = payload[off:off + 512]
+            pkt = b"\x00\x03" + struct.pack(">H", block & 0xFFFF) + chunk
+            acked = False
+            for _ in range(5):
+                s.sendto(pkt, tid)
+                try:
+                    resp, _ = s.recvfrom(1024)
+                except socket.timeout:
+                    if time.time() > deadline:
+                        raise RuntimeError("tftp: timed out sending %s" % name)
+                    continue
+                if len(resp) >= 4 and resp[1] == 5:
+                    raise RuntimeError(
+                        "tftp error: %s" % resp[4:].split(b"\x00")[0].decode())
+                if len(resp) >= 4 and resp[1] == 4 and \
+                        struct.unpack(">H", resp[2:4])[0] == (block & 0xFFFF):
+                    acked = True
+                    break
+            if not acked:
+                raise RuntimeError("tftp: block %d unacknowledged" % block)
+
+            off += len(chunk)
+            block += 1
+            # A short block ends the transfer -- including a zero-length
+            # one, which is how an empty half is sent and is a legal
+            # transfer rather than a no-op to be skipped.
+            if len(chunk) < 512:
+                return
+    finally:
+        s.close()
+
+
+# ------------------------------------------------------------------
+# Console
+# ------------------------------------------------------------------
+
+def strip_iac(buf):
+    out, i = bytearray(), 0
+    while i < len(buf):
+        if buf[i] == 255 and i + 2 < len(buf):
+            i += 3
+            continue
+        out.append(buf[i])
+        i += 1
+    return bytes(out)
+
+
+def run_on_board(ro, rw, timeout):
+    """Upload, then read the console until the board says the run ended."""
+    sock = socket.create_connection((BOARD, TELNET_PORT), timeout=10)
+    sock.settimeout(1.0)
+    try:
+        # Drain whatever the previous run left buffered, so the result
+        # line matched below is this run's and not the last one's.
+        try:
+            while True:
+                if not sock.recv(65536):
+                    break
+        except socket.timeout:
+            pass
+
+        # Retry once, because the *expected* failure here is the flash
+        # arena filling up. There is no length in a TFTP request, so the
+        # board discovers the end by running into it: the write fails,
+        # it erases, and the next attempt succeeds. That is by design --
+        # reserving a worst case up front would cost most of the packing
+        # -- so one transfer in every dozen or so is meant to fail, and a
+        # harness that treats it as an error reports a broken board once
+        # per erase cycle.
+        for attempt in (1, 2):
+            try:
+                tftp_put("rom", ro)
+                tftp_put("ram", rw)
+                break
+            except RuntimeError:
+                if attempt == 2:
+                    raise
+                time.sleep(1.0)
+
+        buf = b""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                d = sock.recv(65536)
+                if not d:
+                    break
+                buf += d
+            except socket.timeout:
+                continue
+            m = RESULT_RE.search(strip_iac(buf).decode("ascii", "replace"))
+            if m:
+                text = strip_iac(buf).decode("ascii", "replace")
+                return text, m
+        return strip_iac(buf).decode("ascii", "replace"), None
+    finally:
+        sock.close()
+
+
+def main():
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--jit", action="store_true")
+    ap.add_argument("--ram")
+    ap.add_argument("--max-insn")
+    ap.add_argument("--load")
+    ap.add_argument("--frontend")
+    ap.add_argument("--trace-count")
+    ap.add_argument("--timeout", type=float,
+                    default=float(os.environ.get("EMU_BOARD_TIMEOUT", "90")))
+    ap.add_argument("--no-split", action="store_true",
+                    help="send the whole image as the writable half, so the "
+                         "board serves none of it from flash. Costs RAM and "
+                         "so fails on the largest tests, but it is the A/B "
+                         "that separates a bad image from a bad ROM mapping.")
+    ap.add_argument("image")
+    args, _unknown = ap.parse_known_args()
+
+    if not os.path.exists(args.image):
+        sys.exit("rv32-board: no such image: %s" % args.image)
+
+    # One board, one run at a time.
+    lock = open(LOCK, "w")
+    fcntl.flock(lock, fcntl.LOCK_EX)
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            ro, rw = split_image(args.image, tmp)
+        if args.no_split:
+            ro, rw = b"", ro + rw
+
+        try:
+            text, m = run_on_board(ro, rw, args.timeout)
+        except (OSError, RuntimeError) as e:
+            print("rv32-board: %s" % e, file=sys.stderr)
+            return 125
+
+        if not args.quiet:
+            sys.stdout.write(text)
+        else:
+            # Even --quiet has to pass the guest's own output through:
+            # the architecture tests self-report with an RVCP-SUMMARY
+            # line and the harness greps stdout for it.
+            for line in text.splitlines():
+                if "RVCP" in line or "SUMMARY" in line:
+                    print(line)
+
+        if m is None:
+            print("rv32-board: no result line within %.0fs" % args.timeout,
+                  file=sys.stderr)
+            return 124
+
+        code, exited, capped, _retired = (int(x) for x in m.groups())
+        if capped:
+            print("rv32-board: instruction cap reached", file=sys.stderr)
+            return 124
+        if not exited:
+            # Halted without calling exit(). The host runner treats that
+            # as a completed run with status 0, so match it rather than
+            # inventing a failure the suites would not have seen.
+            return 0
+        return code & 0xFF
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

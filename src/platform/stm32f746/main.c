@@ -605,6 +605,15 @@ static bool start_guest(void)
     memcpy(GUEST_RAM_BASE_PTR, g_img + g_img_ro, rw);
     memset(GUEST_RAM_BASE_PTR + rw, 0, GUEST_RAM_SIZE - rw);
 
+    /*
+     * The previous guest's exit status is not this one's. Left alone, a
+     * guest that halts without calling exit() reports whatever the last
+     * one returned -- which for a harness running a suite means every
+     * test after the first passing one looks like it passed.
+     */
+    g_exit_code = 0u;
+    g_exited = false;
+
     emu_core_reset(&g_core, EMU_GUEST_RESET_PC);
     emu_core_boot(&g_core, EMU_GUEST_RAM_BASE, GUEST_RAM_SIZE);
     return true;
@@ -651,6 +660,7 @@ static bool start_guest(void)
  */
 static uint32_t g_up_addr;      /* where the rom half is being written  */
 static uint32_t g_up_ro;        /* bytes of the rom half received       */
+static bool     g_up_have_ro;   /* ... and that one arrived, even if empty */
 static uint32_t g_up_rw;        /* bytes of the ram half received       */
 static bool     g_reload;
 
@@ -659,14 +669,21 @@ bool emu_net_image_begin(emu_net_image_t which)
     if (which == EMU_NET_IMAGE_ROM) {
         g_up_addr = board_flash_arena_begin();
         g_up_ro = 0u;
+        g_up_have_ro = false;
         return g_up_addr != 0u;
     }
     /*
      * The ram half is appended to the rom half, so it needs one to have
      * arrived. Refusing here is what stops a lone `ram` upload from
      * committing whatever the arena happened to hold.
+     *
+     * Tracked as a flag rather than by g_up_ro being non-zero, because
+     * an empty rom half is legitimate: an image whose layout has no
+     * read-only prefix -- a flat binary, where nothing says where .data
+     * begins -- is uploaded as zero bytes of rom and all of it as ram.
+     * Testing the length would refuse exactly that case.
      */
-    if (g_up_addr == 0u || g_up_ro == 0u) {
+    if (g_up_addr == 0u || !g_up_have_ro) {
         return false;
     }
     g_up_rw = 0u;
@@ -725,6 +742,7 @@ void emu_net_image_end(emu_net_image_t which, uint32_t len, bool ok)
          * restart the guest against the previous image's .data.
          */
         g_up_ro = len;
+        g_up_have_ro = true;
         return;
     }
 
@@ -1110,6 +1128,31 @@ restart:
     console_putu(board_console_rx_overruns());
     console_putc('\n');
 #endif
+
+    /*
+     * The machine-readable terminator, and deliberately the last thing
+     * printed for a run.
+     *
+     * A harness needs two things this report otherwise does not give it:
+     * where the output for this guest *ends* -- there is no process to
+     * exit, so nothing else says so -- and the guest's exit status,
+     * which both test suites judge on and which was being captured and
+     * then thrown away. run-riscv-tests.sh reads the runner's exit code
+     * as (testnum << 1) | 1, so losing it means every result is "it ran".
+     *
+     * `exited` distinguishes a guest that called exit() from one that
+     * halted or was capped, because exit=0 means nothing if the guest
+     * never reached the syscall.
+     */
+    console_puts("\nemu-result exit=");
+    console_putu(g_exit_code);
+    console_puts(" exited=");
+    console_putu(g_exited ? 1u : 0u);
+    console_puts(" capped=");
+    console_putu(capped ? 1u : 0u);
+    console_puts(" retired=");
+    console_putu((uint32_t)retired_total);
+    console_putc('\n');
 
     for (;;) {
 #if EMU_NET
