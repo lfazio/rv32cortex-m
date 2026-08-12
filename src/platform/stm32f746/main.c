@@ -101,11 +101,38 @@ static emu_uart_t g_uart;
 /* Console                                                             */
 /* ------------------------------------------------------------------ */
 
-/* Nothing this early can be reported; halt so a debugger sees where. */
+/*
+ * Stop, having said why.
+ *
+ * The obvious implementation -- mask interrupts and spin -- is right up
+ * until emu_net_init() succeeds, and after it is the worst thing this
+ * file can do. By then the console is a ring buffer drained by telnet,
+ * so masking interrupts means the message explaining the failure is
+ * written to memory nobody will ever read: the board answers no ping, no
+ * telnet and no TFTP, and presents as a dead link rather than as a
+ * firmware that knows exactly what went wrong and cannot say so.
+ *
+ * That is not hypothetical. A startup ordering bug two functions below
+ * halted here with "could not build the guest address space" sitting in
+ * the ring, and the symptom was a silent SLIP link -- an hour spent on
+ * the network for a fault that had already diagnosed itself.
+ *
+ * So with the stack up, keep servicing it forever instead. Nothing else
+ * runs, which is the point of a halt; a client can still connect and
+ * collect the reason.
+ */
 static void fatal_halt(void)
 {
+#if EMU_NET
+    if (emu_net_active()) {
+        for (;;) {
+            emu_net_poll();
+        }
+    }
+#endif
     __disable_irq();
     for (;;) {
+        /* No console to report on: halt so a debugger sees where. */
     }
 }
 
@@ -547,6 +574,25 @@ static bool start_guest(void)
     }
 
     /*
+     * The frontend's devices go back on every time, because
+     * build_address_space() begins with emu_bus_init() and that clears
+     * the region table -- so a rebuild that did not re-add them would
+     * take the CLINT and the APLIC away from a guest that had them a
+     * moment earlier. Registering them in main() alone was correct only
+     * while the bus was built exactly once.
+     */
+    if (g_core.cpu != NULL) {
+        const emu_cpu_ops_t *ops = g_core.ops;
+
+        if ((ops->add_shared_devices != NULL &&
+             !ops->add_shared_devices(&g_bus)) ||
+            (ops->add_core_devices != NULL &&
+             !ops->add_core_devices(g_core.cpu, &g_bus, 0u))) {
+            return false;
+        }
+    }
+
+    /*
      * Only the writable tail. The read-only half is already reachable as
      * a bus region pointing into flash, and copying it would put it in
      * RAM twice -- which is the whole cost the split removes.
@@ -738,6 +784,16 @@ int main(void)
     }
 #endif
 
+    /*
+     * Which image is running, before anything asks. build_address_space()
+     * reads these rather than the .incbin symbols -- that is what lets an
+     * upload replace the image at run time -- so leaving them until after
+     * the bus is built publishes a zero-length ROM region, which the bus
+     * rejects, and the firmware halts before it has run an instruction.
+     */
+    g_img_size = rv_guest_image_size;
+    g_img_ro   = rv_guest_ro_size;
+
     if (!build_address_space()) {
         console_puts("fatal: could not build the guest address space\n");
         fatal_halt();
@@ -747,17 +803,6 @@ int main(void)
         console_puts("fatal: frontend has no core 0\n");
         fatal_halt();
     }
-    /*
-     * The frontend's own devices: the shared ones and this core's. The
-     * firmware is single-core, so there is one bus and one of each.
-     */
-    if ((ops->add_shared_devices != NULL &&
-         !ops->add_shared_devices(&g_bus)) ||
-        (ops->add_core_devices != NULL &&
-         !ops->add_core_devices(g_core.cpu, &g_bus, 0u))) {
-        console_puts("fatal: could not map the guest platform devices\n");
-        fatal_halt();
-    }
 
     ops->set_unmask_hook(g_core.cpu, irq_unmask_line, NULL);
     bridged_irqs_init();
@@ -765,11 +810,13 @@ int main(void)
     ops->set_syscall(g_core.cpu, guest_syscall, NULL);
     ops->set_cache(g_core.cpu, &g_cache_ops);
 
-    g_img_size = rv_guest_image_size;
-    g_img_ro   = rv_guest_ro_size;
-
+    /*
+     * Now that there is a core to hang them off, put the frontend's own
+     * devices on the bus and start. start_guest() does both, because a
+     * reload has to do both -- see the note on it.
+     */
     if (!start_guest()) {
-        console_puts("fatal: guest image larger than guest RAM\n");
+        console_puts("fatal: could not start the guest\n");
         fatal_halt();
     }
 

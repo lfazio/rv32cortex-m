@@ -832,6 +832,53 @@ Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
   `ICR`, F4 reads `SR` then `DR`) and leaving `ORE` latched stops
   reception *permanently* rather than dropping one byte. Measured
   working: `rx drops 0` across a full `isatest` run.
+- **The host end of the wire has two settings that fail silently, and
+  both cost a day.** `slattach -s 921600` does not work: net-tools maps
+  `-s` through a fixed table of `Bxxx` constants that stops short of it,
+  and rather than falling back it fails the open outright -- `tty_open:
+  cannot set 921600 bps!` -- so no interface is created. That one at
+  least says so. The other does not: **slattach clears `CSIZE` without
+  setting it**, so the line comes up at **cs5**, and five data bits
+  against the board's eight means every frame misassembles and SLIP
+  discards all of it. `stty raw` does not touch `CSIZE` either, so the
+  obvious thing to try changes nothing.
+
+  What makes it expensive is that the board looks broken and every check
+  on the board passes. Pins, AF7, `RCC` enables, `BRR`, the PLL, even a
+  breakpoint on `board_console_putc` showing it called with a real
+  character -- all correct, while the host reads a dozen bytes of
+  garbage. Two things nearly sent it further wrong: `TC` and `TXE` are
+  **set out of reset**, so they never prove a transmission; and a byte
+  count that does not change with the sampling rate is *not* a baud
+  mismatch, which is what a mismatch would look like. `scripts/slip-up.sh`
+  sets the line with `stty` before and after slattach and prints what it
+  ended up with, because a mis-framed line is otherwise silent.
+- **A firmware that has given its console away cannot report its own
+  failure, so `fatal_halt` must not mask interrupts.** `emu_net_init()`
+  hands the UART to SLIP, after which everything printed goes to a ring
+  drained by telnet. Halting with `__disable_irq()` therefore writes the
+  reason into memory nobody can reach: the board answers no ping, no
+  telnet and no TFTP, and presents as a dead link. It halted with "could
+  not build the guest address space" sitting in the ring, and the hour
+  that followed went on the network. With the stack up, spin on
+  `emu_net_poll()` instead -- nothing else runs, which is the point, and
+  a client can still connect and collect the reason. This is the cost
+  `emu_net.h` warns about, made concrete.
+- **`build_address_space()` reads `g_img_*`, and main() was setting them
+  afterwards.** That is what a run-time-replaceable image costs: the
+  function used to read the `.incbin` symbols and so was correct wherever
+  it was called from, and now it depends on two variables assigned
+  thirty lines later. With them zero the ROM region is zero-length,
+  `emu_bus_add` rejects anything under 4 bytes, and the firmware halts
+  before its first guest instruction. Moving a value from link time to
+  run time moves every reader of it into an ordering that nothing checks.
+- **Rebuilding the bus drops the frontend's devices.** `start_guest()`
+  begins with `emu_bus_init()`, which clears the region table, so a
+  reload that did not re-add the CLINT and the APLIC would take them
+  away from a guest that had them a moment earlier. Registering them in
+  `main()` was correct only while the bus was built exactly once -- the
+  same shape as the two above: code that was right when something
+  happened once, left alone when it started happening twice.
 - **Measure; do not reason about performance.** Interpreter-in-SRAM was
   *slower*, lazy-IRQ was neutral, and the `clmul` fix was 1.3% when the real
   cost was 4.12-instruction blocks. Layout noise is ±3% on the host; on the
