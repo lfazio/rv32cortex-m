@@ -74,7 +74,7 @@ stty -F "$DEV" "$BAUD" cs8 -parenb -cstopb clocal -crtscts raw -echo
 # -L is what makes this work on a USB virtual COM port: it sets CLOCAL, so
 # the line is not waiting for a carrier that a VCP never asserts. Without
 # it slattach blocks in open() and nothing happens at all.
-/usr/sbin/slattach -L -p slip "$DEV" &
+/usr/sbin/slattach -L -p slip -s"$BAUD" "$DEV" &
 SLPID=$!
 
 # slattach creates the interface asynchronously, and names it itself, so
