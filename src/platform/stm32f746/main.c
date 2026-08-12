@@ -779,6 +779,10 @@ void emu_net_image_end(emu_net_image_t which, uint32_t len, bool ok)
  * here; the guest's view is what gdb's ELF says and the arena is an
  * implementation detail of where it lands.
  */
+static uint8_t  g_gf_carry[4];
+static uint32_t g_gf_carry_len;
+static uint32_t g_gf_carry_off;     /* guest offset of g_gf_carry[0] */
+
 static bool gdb_flash_erase(uint32_t addr, uint32_t len)
 {
     (void)len;
@@ -795,20 +799,94 @@ static bool gdb_flash_erase(uint32_t addr, uint32_t len)
         g_up_addr = board_flash_arena_begin();
         g_up_ro = 0u;
         g_up_have_ro = false;
+        g_gf_carry_len = 0u;
     }
     return g_up_addr != 0u;
 }
 
+/*
+ * gdb does not send word-aligned chunks, and board_flash_write requires
+ * them.
+ *
+ * Its contract in board.h is "sequential and word aligned in length
+ * except for the last", which the TFTP path satisfies for free -- 512
+ * byte blocks. gdb sends whatever fits its packet: ~975 bytes per write
+ * here. Each such chunk had its tail padded to a word with 0xFF and the
+ * next one then began at a non-aligned flash address, so `load` reported
+ * success, the image landed corrupted, and the guest ran away without
+ * reaching the first breakpoint. The transfer looks perfect from both
+ * ends; only the guest disagrees.
+ *
+ * So carry the 1-3 byte remainder into the next call and hand the flash
+ * only whole words. The carry is flushed when a write arrives that is
+ * not contiguous with it -- gdb moves between sections, and the gap
+ * between .text.rvtest and .data is exactly that case -- and again at
+ * vFlashDone for the final partial word.
+ */
+static bool gf_flush(void)
+{
+    bool ok = true;
+
+    if (g_gf_carry_len != 0u) {
+        /* board_flash_write pads a short tail with 0xFF, which is the
+         * erased state, so a final partial word is safe here. */
+        ok = board_flash_write(g_up_addr + g_gf_carry_off,
+                               g_gf_carry, g_gf_carry_len);
+        g_gf_carry_len = 0u;
+    }
+    return ok;
+}
+
 static bool gdb_flash_write(uint32_t addr, const void *data, uint32_t len)
 {
+    const uint8_t *const src = (const uint8_t *)data;
     const uint32_t off = addr - EMU_GUEST_RAM_BASE;
+    uint32_t pos = 0u;
 
     if (g_up_addr == 0u || addr < EMU_GUEST_RAM_BASE) {
         return false;
     }
-    if (!board_flash_write(g_up_addr + off, data, len)) {
-        return false;
+
+    /* A jump to a new section abandons whatever partial word was held
+     * for the old one; it belongs at its own address, not this one. */
+    if (g_gf_carry_len != 0u &&
+        (g_gf_carry_off + g_gf_carry_len) != off) {
+        if (!gf_flush()) {
+            return false;
+        }
     }
+
+    if (g_gf_carry_len != 0u) {
+        while (g_gf_carry_len < 4u && pos < len) {
+            g_gf_carry[g_gf_carry_len++] = src[pos++];
+        }
+        if (g_gf_carry_len < 4u) {
+            return true;                /* still short of a word */
+        }
+        if (!board_flash_write(g_up_addr + g_gf_carry_off, g_gf_carry, 4u)) {
+            return false;
+        }
+        g_gf_carry_len = 0u;
+    }
+
+    {
+        const uint32_t rest = len - pos;
+        const uint32_t whole = rest & ~3u;
+        const uint32_t tail = rest - whole;
+
+        if (whole != 0u &&
+            !board_flash_write(g_up_addr + off + pos, &src[pos], whole)) {
+            return false;
+        }
+        if (tail != 0u) {
+            for (uint32_t i = 0; i < tail; i++) {
+                g_gf_carry[i] = src[pos + whole + i];
+            }
+            g_gf_carry_len = tail;
+            g_gf_carry_off = off + pos + whole;
+        }
+    }
+
     if (off + len > g_up_ro) {
         g_up_ro = off + len;    /* highest byte seen: the image's length */
     }
@@ -819,6 +897,9 @@ static bool gdb_flash_write(uint32_t addr, const void *data, uint32_t len)
 static bool gdb_flash_done(void)
 {
     if (g_up_addr == 0u || !g_up_have_ro) {
+        return false;
+    }
+    if (!gf_flush()) {          /* the last partial word */
         return false;
     }
     /*
