@@ -51,20 +51,20 @@ than in a platform `#ifdef`.
 
 ```sh
 # host: development and both test suites
-cmake -B build/host -DRV32_PLATFORM=host -DCMAKE_BUILD_TYPE=Release
+cmake -B build/host -DEMU_PLATFORM=host -DCMAKE_BUILD_TYPE=Release
 cmake --build build/host && ctest --test-dir build/host -L fast
 
 # both frontends, so the host runner can pick with --frontend
-cmake -B build/both -DRV32_PLATFORM=host -DEMU_FRONTEND_G4MH=ON
+cmake -B build/both -DEMU_PLATFORM=host -DEMU_FRONTEND_G4MH=ON
 
 # firmware
-cmake -B build/f746 -DRV32_PLATFORM=stm32f746 \
+cmake -B build/f746 -DEMU_PLATFORM=stm32f746 \
       -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
       -DCMAKE_BUILD_TYPE=Release -DRV32_GUEST=isatest
 cmake --build build/f746 --target flash
 
 # the older board; EMU_PLATFORM picks the CPU, FPU and vendor pack
-cmake -B build/stm32f446 -DRV32_PLATFORM=stm32f446 \
+cmake -B build/stm32f446 -DEMU_PLATFORM=stm32f446 \
       -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
       -DCMAKE_BUILD_TYPE=Release -DRV32_GUEST=isatest
 cmake --build build/stm32f446 --target flash
@@ -74,16 +74,16 @@ cmake --build build/stm32f446 --target flash
 `e_machine`, else the first compiled in. A flat binary says nothing about its
 architecture, so it gets the default.
 
-Useful options: `-DRV32_JIT=OFF` (interpreter, for isolating JIT bugs),
-`-DRV32_JIT_CODE_BYTES=2048` (forces compaction — a good stress test),
-`-DRV32_NATIVE_COREMARK=ON` (native ARM baseline instead of the emulator),
+Useful options: `-DEMU_JIT=OFF` (interpreter, for isolating JIT bugs),
+`-DEMU_JIT_CODE_BYTES=2048` (forces compaction — a good stress test),
+`-DEMU_NATIVE_COREMARK=ON` (native ARM baseline instead of the emulator),
 `-DRV_GUEST_MARCH=...` (guest ISA; a **cache variable**, so pass it explicitly
 when changing it), `-DRV32_GUEST=isatest|hello|bench|stm32drv|coremark`.
 
 ## Validation — run before claiming anything works
 
 ```sh
-./scripts/run-arch-test.sh      # official riscv-arch-test: 274/274 with -DRV32_FPU_SOFTFLOAT=ON, 222/274 without (every failure is F)
+./scripts/run-arch-test.sh      # official riscv-arch-test: 274/274 with -DEMU_FPU_SOFTFLOAT=ON, 222/274 without (every failure is F)
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77
 ```
 
@@ -114,9 +114,10 @@ reservation break.
 
 Hardware: Nucleo-**F746ZG** (Cortex-M7, 216 MHz) on ST-LINK, console
 `/dev/ttyACM1` at **921600** 8N1 -- a Nucleo-144 puts the VCP on USART3
-(PD8/PD9), not USART2. `probe-rs download --chip STM32F746ZGTx <elf>` then
-`probe-rs reset`; add `--connect-under-reset` when running firmware holds
-the debug port. The Nucleo-F446RE is still supported and is
+(PD8/PD9), not USART2. The `flash` targets pass `--connect-under-reset`
+always, because this firmware never idles and a plain attach races it --
+see the entry below on what a *failed* flash costs. The
+Nucleo-F446RE is still supported and is
 `--chip STM32F446RETx` on `/dev/ttyACM0`. With both boards plugged in
 `probe-rs` needs `--probe <serial>` to pick one.
 
@@ -124,6 +125,35 @@ Board bring-up -- clock tree, console instance and pins, cycle counter,
 caches -- lives in each platform's `board.c` behind `board.h`, not in
 `main.c`. Diffing the two `board.c` files is the shortest statement of
 what changes between the parts.
+
+### Network transport (`-DEMU_NET=ON`, F746 only so far)
+
+lwIP over **SLIP on the console UART**, so the board takes a guest image
+and reports results without reflashing -- which is what makes running
+274 architecture tests on hardware practical. There is no second wire:
+SLIP reuses the ST-LINK's virtual COM port rather than bringing up the
+on-board LAN8742A, which would mean an ETH driver, DMA descriptors
+maintained by hand on a part with caches, and PHY bring-up.
+
+```sh
+cmake -B build/f746net -DEMU_PLATFORM=stm32f746 \
+      -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
+      -DCMAKE_BUILD_TYPE=Release -DEMU_NET=ON
+cmake --build build/f746net --target flash
+sudo ./scripts/slip-up.sh          # *after* the board prints "net SLIP on this port"
+ping 192.168.7.2 && telnet 192.168.7.2
+```
+
+**The UART stops being a console.** `emu_net_init()` is a one-way
+handover; after it the serial line carries nothing but IP and the
+console is telnet. Everything printed before a client connects is held
+in a 4 KiB ring and delivered on connect, which is why the banner
+survives. Build with `EMU_NET=OFF` to get the serial console back.
+
+Costs, measured on hardware: guest RAM **294 KiB to 276**, against the
+worst architecture test's 222. `rx drops 0` across a full `isatest` run.
+
+Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
 
 ## Things that have bitten, and will again
 
@@ -137,7 +167,7 @@ what changes between the parts.
   Ending a block for an untranslatable instruction fragments hot code. Route it
   through a helper call instead — `jit_helper_alu` exists for exactly this.
 - **With the JIT on, FP arithmetic goes to VFP and never reaches SoftFloat.**
-  To validate the SoftFloat path on hardware, build `-DRV32_JIT=OFF`. Running
+  To validate the SoftFloat path on hardware, build `-DEMU_JIT=OFF`. Running
   `isatest` both ways is a differential check between two genuinely different
   FP implementations, and is worth doing after any change to either.
 - **`MOVS` on a low register writes N and Z.** Zeroing a result register
@@ -330,7 +360,7 @@ what changes between the parts.
   refresh functions, the only writers of the flags it combines) brought
   that to **2.7%**, at the noise floor. The second halfword needs its own
   check only when `pc & 2`, because every PMP bound is 4-byte aligned.
-  Measured on the interpreter (`-DRV32_JIT=OFF`), which is where a fetch
+  Measured on the interpreter (`-DEMU_JIT=OFF`), which is where a fetch
   cost lands -- the JIT pays it once per *translation*.
 - **An A/B that only half-reverts the fix reads as a passing test.** The
   translator checks fetch permission at two sites, one per halfword.
@@ -542,7 +572,7 @@ what changes between the parts.
   cyc/insn); it is the *guest* march that costs. Toggle `RV32_EXT_ZCB` against
   a fixed guest binary to separate the two.
 - **Instruction fusion is the wrong target; the register-file round trip
-  is the right one.** Measured with `-DRV32_PAIR_STATS=ON`, which
+  is the right one.** Measured with `-DEMU_PAIR_STATS=ON`, which
   histograms adjacent *executed* instruction pairs on the interpreter:
 
   | guest | pairs | dependent | of which dead | addr-gen -> mem |
@@ -580,7 +610,7 @@ what changes between the parts.
   Every 32-bit data-processing instruction on ARM carries a shift on its
   second operand, so folding a shift into the ALU op that consumes it is
   one instruction instead of two -- and it fires on nothing. Measured
-  with `-DRV32_PAIR_STATS=ON` on CoreMark *after* building it:
+  with `-DEMU_PAIR_STATS=ON` on CoreMark *after* building it:
 
   | pair | share |
   |---|---|
@@ -754,6 +784,54 @@ what changes between the parts.
   address misaligned. The guest ran 200k instructions and printed nothing.
   Grep for the call, not for the constant: `emu_bus_read|emu_bus_write|
   emu_bus_fetch16` has fifteen call sites and enumerating them is the check.
+- **A failed flash leaves the previous firmware running, which is worse
+  than a failed build.** `probe-rs` could not attach -- "Connecting to
+  the chip was unsuccessful / Timeout occurred during operation" -- and
+  the next test then exercised the *old* image while looking like it
+  exercised the new one. The board reports a plausible result, so the
+  conclusion is "the change does not work" about a change that was never
+  loaded. This firmware never idles: it runs a guest flat out and parks
+  in `__WFI` with interrupts arriving, so the debug port is contended
+  from reset onwards and a plain attach races it.
+  `--connect-under-reset` costs nothing on an idle board and is the
+  default in both `flash` targets now. Two full debugging rounds went
+  into the network stack before anyone read the flash log.
+- **`if(TARGET ...)` only sees targets already defined.** The firmware
+  asked `if(TARGET guest-${RV32_GUEST})` from a directory added *before*
+  `tests/guest`, so the answer was always no and every configure warned
+  that the link would fail. It never did -- `guest_image.S` carries an
+  `OBJECT_DEPENDS` on the staged files, which is the dependency that
+  matters. A warning that is always wrong is worse than none: it is the
+  one that teaches you to skip reading them, and it was still being
+  printed while a real problem was being hunted.
+- **lwIP ships a `CMakeLists.txt`, unlike the Cube packs, and its
+  `Filelists.cmake` opens with `include_guard(GLOBAL)`.** So
+  `FetchContent_MakeAvailable` configures it as a subdirectory, that
+  include runs first, and the project's own `include()` of the same file
+  silently does nothing -- every `lwip*_SRCS` comes out empty and the
+  library is built from whatever was named explicitly. Here that was one
+  file, and it presented as a hundred undefined references to functions
+  whose sources were plainly sitting in `_deps`. `SOURCE_SUBDIR` naming
+  a directory that does not exist is the documented "populate, do not
+  configure".
+- **Text and SLIP cannot share a wire, so the handover has to be
+  one-way and announced.** `emu_net_init()` gives the UART to the IP
+  stack and never takes it back; the last two lines it prints are
+  whether the stack started and what address to telnet to. Framing
+  around the text instead would make a corrupted stream
+  indistinguishable from a working one, and the failure that produces --
+  a board that never answers a ping -- says nothing about why. The cost
+  is real and worth stating: after the handover the firmware has **no
+  channel to report its own failure on**, so anything that breaks the
+  stack breaks the only way of hearing about it.
+- **At 921600 the UART must be interrupt-driven or the protocol cannot
+  work at all.** A byte lands every 10.8 us, this family's USART holds
+  exactly one, and the run loop reaches the port once per guest slice --
+  thousands of instructions apart. Polling loses most of every frame.
+  The two families differ in how an overrun is dismissed (F7 writes
+  `ICR`, F4 reads `SR` then `DR`) and leaving `ORE` latched stops
+  reception *permanently* rather than dropping one byte. Measured
+  working: `rx drops 0` across a full `isatest` run.
 - **Measure; do not reason about performance.** Interpreter-in-SRAM was
   *slower*, lazy-IRQ was neutral, and the `clmul` fix was 1.3% when the real
   cost was 4.12-instruction blocks. Layout noise is ±3% on the host; on the

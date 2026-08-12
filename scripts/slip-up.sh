@@ -19,7 +19,7 @@
 
 set -e
 
-DEV=${1:-/dev/ttyACM1}
+DEV=${1:-/dev/ttyACM0}
 BAUD=${2:-921600}
 
 BOARD=${EMU_NET_ADDR:-192.168.7.2}
