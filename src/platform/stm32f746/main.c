@@ -1228,6 +1228,29 @@ restart:
         if (take_uploaded_image()) {
             goto restart;
         }
+
+        /*
+         * Run control still works after the guest has finished.
+         *
+         * Without this the park loop services the network and nothing
+         * else, so a debugger attaching to a completed run can read
+         * registers and memory and then hangs the moment it resumes:
+         * `continue` is accepted, nothing executes, and gdb waits
+         * forever. That is the normal way to arrive here -- push an
+         * image, watch it fail, attach to find out why -- and being
+         * able to rewind the pc and re-run under a breakpoint is most
+         * of what that is for.
+         *
+         * __WFI is skipped while a debugger is driving, because the
+         * thing that would wake it is the guest's own interrupt and
+         * there may not be one.
+         */
+        if (emu_net_gdb_attached()) {
+            uint32_t n = 0;
+
+            (void)emu_net_gdb_run(EMU_RUN_SLICE, &n);
+            continue;
+        }
 #endif
         __WFI();
     }

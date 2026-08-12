@@ -405,6 +405,58 @@ static void cmd_mem_write(emu_gdb_t *g, const uint8_t *p, uint32_t len)
     send_ok(g);
 }
 
+/*
+ * X addr,len:<raw bytes> -- the binary form of M, and what `load` uses.
+ *
+ * This is the packet that makes the stub able to receive a program:
+ * `load` in gdb pushes every PT_LOAD segment through X, so with it there
+ * is no need for a separate transport at all -- no TFTP, no shim, no
+ * flash arena -- for anything small enough to sit in guest RAM.
+ *
+ * The payload is raw, not hex, so it is half the bytes on the wire and
+ * needs the 0x7d unescaping the receive path already does. Note what
+ * that implies for the checksum, which cost a real bug: it covers the
+ * packet *as transmitted*, so it must be accumulated before unescaping.
+ *
+ * A zero length is not a no-op to be skipped -- gdb sends `X addr,0:` to
+ * probe whether the packet is supported at all, and answering anything
+ * but OK makes it fall back to M for the whole session.
+ */
+static void cmd_mem_write_bin(emu_gdb_t *g, const uint8_t *p, uint32_t len)
+{
+    uint32_t addr = 0, n = 0;
+    uint32_t used = hex_to_u32(p, len, &addr);
+
+    if (used >= len || p[used] != ',') {
+        send_err(g, 1);
+        return;
+    }
+    used += 1u;
+    used += hex_to_u32(&p[used], len - used, &n);
+    if (used >= len || p[used] != ':') {
+        send_err(g, 1);
+        return;
+    }
+    used += 1u;
+
+    if (n > (len - used)) {
+        send_err(g, 1);
+        return;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        if (emu_bus_write(g->core->bus, addr + i, 1u,
+                          (uint32_t)p[used + i]) != EMU_FAULT_NONE) {
+            send_err(g, 14);
+            return;
+        }
+    }
+    if (n != 0u && g->core->ops->invalidate != NULL) {
+        /* Almost always code: `load` is the main caller. */
+        g->core->ops->invalidate(g->core->cpu, addr, n);
+    }
+    send_ok(g);
+}
+
 static void cmd_breakpoint(emu_gdb_t *g, const uint8_t *p, uint32_t len,
                            bool insert)
 {
@@ -606,6 +658,10 @@ static void dispatch(emu_gdb_t *g, const uint8_t *p, uint32_t len)
         cmd_mem_write(g, &p[1], len - 1u);
         break;
 
+    case 'X':
+        cmd_mem_write_bin(g, &p[1], len - 1u);
+        break;
+
     case 'Z':
         cmd_breakpoint(g, &p[1], len - 1u, true);
         break;
@@ -717,6 +773,7 @@ void emu_gdb_rx(emu_gdb_t *g, const uint8_t *data, uint32_t len)
             if (c == '$') {
                 g->rx_len = 0;
                 g->sum_len = 0;
+                g->raw_sum = 0;
                 g->escaped = false;
                 g->state = EMU_GDB_BODY;
             } else if (c == 0x03) {
@@ -742,6 +799,15 @@ void emu_gdb_rx(emu_gdb_t *g, const uint8_t *data, uint32_t len)
                 g->state = EMU_GDB_SUM;
             } else if (g->rx_len < sizeof(g->rx)) {
                 /*
+                 * The checksum covers the packet *as transmitted*, so it
+                 * has to be accumulated here, before unescaping. Summing
+                 * the decoded buffer instead agrees with gdb for every
+                 * packet that contains no 0x7d -- which is every packet
+                 * except the binary ones, so it works perfectly until
+                 * the first X packet and then rejects it forever.
+                 */
+                g->raw_sum = (uint8_t)(g->raw_sum + c);
+                /*
                  * 0x7d escapes the next byte with bit 5 flipped. gdb
                  * uses it for '$', '#', '*' and 0x7d inside binary
                  * payloads (X packets), and not decoding it corrupts
@@ -761,11 +827,7 @@ void emu_gdb_rx(emu_gdb_t *g, const uint8_t *data, uint32_t len)
         case EMU_GDB_SUM:
             g->sum[g->sum_len++] = c;
             if (g->sum_len == 2u) {
-                uint8_t want = 0;
-
-                for (uint32_t k = 0; k < g->rx_len; k++) {
-                    want = (uint8_t)(want + g->rx[k]);
-                }
+                const uint8_t want = g->raw_sum;
                 {
                     const int hi = hex_val(g->sum[0]);
                     const int lo = hex_val(g->sum[1]);

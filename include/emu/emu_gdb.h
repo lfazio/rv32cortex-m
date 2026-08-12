@@ -131,6 +131,7 @@ typedef struct {
     uint32_t rx_len;
     uint8_t  sum[2];
     uint8_t  sum_len;
+    uint8_t  raw_sum;   /* over the bytes as sent, before unescaping */
     enum { EMU_GDB_WAIT, EMU_GDB_BODY, EMU_GDB_SUM } state;
     bool     escaped;
 
