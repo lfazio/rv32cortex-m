@@ -54,6 +54,24 @@ SECTIONS
    */
   . = ALIGN(0x1000);
   .rodata . : { *(.rodata) *(.rodata.*) *(.srodata) *(.srodata.*) } > ram
+
+  /*
+   * Where the read-only half ends, so the STM32 build can serve
+   * everything below it out of the part's flash instead of copying it
+   * into guest RAM -- see tests/guest/guest.ld.in, which carries the
+   * same symbol for the ordinary guests.
+   *
+   * Here, and *only* after .rodata. It has to mark a contiguous
+   * read-only prefix, and in this layout .data sits between .rodata and
+   * .bss -- so putting it any later hands the guest's own signature
+   * area to a ROM region and its first write faults. Placing it after
+   * .data measured a beautiful result, 274 of 274 tests needing 22 KiB
+   * of RAM, by classifying 341 KiB of writable memory as read-only.
+   * A measurement that good is the first thing to distrust.
+   */
+  . = ALIGN(4);
+  __guest_ro_end = .;
+
   .data   . : { *(.data) *(.data.*) *(.sdata) *(.sdata.*) } > ram
 
   . = ALIGN(16);
