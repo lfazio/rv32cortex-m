@@ -183,6 +183,33 @@ SECTIONS
         . = ALIGN(4);
         _sbss = .;
         __bss_start__ = _sbss;
+
+        /*
+         * Data that must be in DTCM, placed first so that it is -- rather
+         * than merely likely to be.
+         *
+         * DTCM is the first 64 KiB of the RAM region, single cycle and
+         * never behind the D-cache, and until now everything relied on
+         * that: whatever the linker happened to emit first got it. That
+         * worked while .bss was small and stopped being a safe assumption
+         * when lwIP added ~18 KiB to it -- .bss is now around 39 KiB of
+         * the 64, and nothing would report the day the hart struct or the
+         * JIT code cache slid past the boundary into SRAM1. It would just
+         * get slower, which is the hardest kind of regression to attribute.
+         *
+         * Inside .bss rather than in a section of its own so that ST's
+         * startup zeroes it along with everything else. A separate NOLOAD
+         * region would need its own clearing loop, and the failure mode of
+         * forgetting one is uninitialised state that is usually zero
+         * anyway.
+         */
+        . = ALIGN(8);
+        __dtcm_start = .;
+        *(.dtcm)
+        *(.dtcm*)
+        . = ALIGN(8);
+        __dtcm_end = .;
+
         *(.bss)
         *(.bss*)
         *(COMMON)
@@ -190,6 +217,15 @@ SECTIONS
         _ebss = .;
         __bss_end__ = _ebss;
     } > RAM
+
+    /*
+     * The boundary that was previously only a comment. Overflowing DTCM
+     * is not an error at link time by default -- the RAM region is all
+     * 320 KiB and the excess simply lands in SRAM1 -- so without this the
+     * only symptom is that something hot quietly stopped being fast.
+     */
+    ASSERT(__dtcm_end <= ORIGIN(RAM) + 64K,
+           ".dtcm overflows the 64 KiB DTCM: move something out")
 
     /*
      * Guest RAM: every byte between the end of the firmware's own .bss and
