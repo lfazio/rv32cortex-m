@@ -14,6 +14,8 @@
 
 #include "stm32f4xx_hal.h"
 
+#include <stdbool.h>
+
 static UART_HandleTypeDef g_console;
 
 static void Error_Handler(void)
@@ -130,14 +132,85 @@ void board_console_putc(uint8_t c)
     HAL_UART_Transmit(&g_console, &c, 1u, 100u);
 }
 
+/* ------------------------------------------------------------------ */
+/* Interrupt-driven receive                                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * See the F746's copy for why this is necessary rather than an
+ * optimisation: the USART holds one byte and the run loop reaches it
+ * once per guest slice, so any framed protocol on this wire needs the
+ * bytes taken by an interrupt.
+ *
+ * The F4 differences are all in the register names. Status and the
+ * error flags share SR, and SR is cleared by reading it and then DR --
+ * there is no ICR to write, so the read below is what dismisses an
+ * overrun. Missing that leaves ORE latched and RXNE never sets again.
+ */
+#define RX_RING_SIZE 2048u
+#define RX_RING_MASK (RX_RING_SIZE - 1u)
+
+static uint8_t  g_rx_ring[RX_RING_SIZE];
+static volatile uint32_t g_rx_head;
+static uint32_t g_rx_tail;
+static volatile uint32_t g_rx_overrun;
+static bool     g_rx_irq;
+
+/* USART2 on a Nucleo-64, which is board.c's fact to own -- see the F746. */
+void USART2_IRQHandler(void)
+{
+    USART_TypeDef *const u = g_console.Instance;
+    const uint32_t sr = u->SR;
+
+    if ((sr & (USART_SR_RXNE | USART_SR_ORE)) != 0u) {
+        const uint8_t c = (uint8_t)(u->DR & 0xFFu);   /* also clears ORE */
+
+        if ((sr & USART_SR_ORE) != 0u) {
+            g_rx_overrun++;
+        }
+        if ((sr & USART_SR_RXNE) != 0u) {
+            if ((g_rx_head - g_rx_tail) < RX_RING_SIZE) {
+                g_rx_ring[g_rx_head & RX_RING_MASK] = c;
+                g_rx_head++;
+            } else {
+                g_rx_overrun++;
+            }
+        }
+    }
+}
+
+void board_console_rx_irq_enable(void)
+{
+    if (g_rx_irq) {
+        return;
+    }
+    g_rx_irq = true;
+
+    HAL_NVIC_SetPriority(USART2_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(USART2_IRQn);
+    __HAL_UART_ENABLE_IT(&g_console, UART_IT_RXNE);
+}
+
 int board_console_getc(void)
 {
+    if (g_rx_irq) {
+        if (g_rx_head == g_rx_tail) {
+            return -1;
+        }
+        return (int)g_rx_ring[g_rx_tail++ & RX_RING_MASK];
+    }
+
     /* DR, one register for both directions -- the F7 splits it into
      * RDR and TDR. */
     if (__HAL_UART_GET_FLAG(&g_console, UART_FLAG_RXNE)) {
         return (int)(g_console.Instance->DR & 0xFFu);
     }
     return -1;
+}
+
+uint32_t board_console_rx_overruns(void)
+{
+    return g_rx_overrun;
 }
 
 /* ------------------------------------------------------------------ */

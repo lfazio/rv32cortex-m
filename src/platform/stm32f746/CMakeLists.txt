@@ -102,6 +102,50 @@ add_executable(rv32-stm32f746
 
 target_link_libraries(rv32-stm32f746 PRIVATE rv32core stm32cube)
 
+# ---------------------------------------------------------------------
+# Network transport
+# ---------------------------------------------------------------------
+#
+# Off by default, because it costs guest RAM. The link script gives the
+# guest whatever SRAM is left after the firmware's .bss, so lwIP's pools
+# come straight out of the largest architecture test's headroom -- read
+# the `ram` line in the boot banner after turning it on.
+#
+# What it buys is not having to reflash between tests: with it on, the
+# board takes a guest image over TFTP and reports over telnet, which is
+# the difference between minutes and seconds per test across 274 of them.
+option(EMU_NET "SLIP/TFTP/telnet transport over the console UART" OFF)
+
+if(EMU_NET)
+    include(${CMAKE_SOURCE_DIR}/cmake/lwip.cmake)
+
+    target_sources(rv32-stm32f746 PRIVATE
+        "${CMAKE_SOURCE_DIR}/src/net/net.c"
+        "${CMAKE_SOURCE_DIR}/src/net/net_sio.c"
+        "${CMAKE_SOURCE_DIR}/src/net/net_telnet.c")
+
+    # The port sources are built into the firmware, not into lwip: they
+    # reach the board through board.h, which lives in this directory, and
+    # that is the whole of their platform dependency -- which is what
+    # lets the same stack build for either Nucleo. lwip itself never
+    # includes board.h.
+    #
+    # Linking lwip PUBLIC-exports src/net (for lwipopts.h and arch/cc.h)
+    # and lwIP's own headers onto the firmware, so nothing else needs
+    # naming here.
+    target_link_libraries(rv32-stm32f746 PRIVATE lwip)
+
+    set(EMU_NET_ADDR "192.168.7.2"   CACHE STRING "Board IP address")
+    set(EMU_NET_PEER "192.168.7.1"   CACHE STRING "Host IP address")
+    set(EMU_NET_MASK "255.255.255.0" CACHE STRING "Netmask")
+
+    target_compile_definitions(rv32-stm32f746 PRIVATE
+        EMU_NET=1
+        EMU_NET_ADDR="${EMU_NET_ADDR}"
+        EMU_NET_PEER="${EMU_NET_PEER}"
+        EMU_NET_MASK="${EMU_NET_MASK}")
+endif()
+
 # guest_image.S pulls the binary in with .incbin.
 set_source_files_properties(guest_image.S PROPERTIES
     COMPILE_DEFINITIONS "RV32_GUEST_IMAGE_RO=${guest_bin}.ro;RV32_GUEST_IMAGE_RW=${guest_bin}.rw"

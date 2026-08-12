@@ -36,6 +36,26 @@ void board_console_putc(uint8_t c);
 int board_console_getc(void);
 
 /*
+ * Move reception into an interrupt that fills a ring, which
+ * board_console_getc() then drains. Idempotent, and one way: nothing
+ * turns it back off.
+ *
+ * This is not an optimisation. Polling the receive register is fine for a
+ * human at a terminal and cannot work for a protocol -- the USART holds
+ * one byte and the caller reaches it once per guest slice -- so anything
+ * that has to receive a framed stream must call this first.
+ */
+void board_console_rx_irq_enable(void);
+
+/*
+ * Bytes lost since reception began, whether to a full ring or to the
+ * USART's own overrun. Nonzero means the wire outran the run loop, which
+ * is a fact about the guest's slice length rather than about the link,
+ * and is worth reporting before blaming the other end.
+ */
+uint32_t board_console_rx_overruns(void);
+
+/*
  * A free-running cycle counter at the core clock. This is the emulator's
  * only time base: guest mtime is derived from it, so a counter that does
  * not run stops every guest timer interrupt.

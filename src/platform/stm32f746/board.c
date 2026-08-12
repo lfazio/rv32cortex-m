@@ -14,6 +14,8 @@
 
 #include "stm32f7xx_hal.h"
 
+#include <stdbool.h>
+
 static UART_HandleTypeDef g_console;
 
 static void Error_Handler(void)
@@ -148,8 +150,106 @@ void board_console_putc(uint8_t c)
     HAL_UART_Transmit(&g_console, &c, 1u, 100u);
 }
 
+/* ------------------------------------------------------------------ */
+/* Interrupt-driven receive                                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Polling RDR is adequate for a human typing at a guest and hopeless for
+ * a protocol. At 921600 baud a byte lands every 10.8 us and this family's
+ * USART holds exactly one -- there is no receive FIFO -- so the next
+ * arrival overruns it. The caller reaches board_console_getc() once per
+ * guest slice, thousands of instructions apart, which is orders of
+ * magnitude too slow: SLIP would lose most of every frame and present as
+ * a link that passes nothing.
+ *
+ * So reception moves into an interrupt that does nothing but store a
+ * byte, and the ring is what the run loop drains at its own pace. 2 KiB
+ * covers 22 ms of wire at this rate, against a slice of a few hundred
+ * microseconds.
+ */
+#define RX_RING_SIZE 2048u
+#define RX_RING_MASK (RX_RING_SIZE - 1u)
+
+static uint8_t  g_rx_ring[RX_RING_SIZE];
+static volatile uint32_t g_rx_head;     /* written by the ISR only  */
+static uint32_t g_rx_tail;              /* written by the loop only */
+static volatile uint32_t g_rx_overrun;
+static bool     g_rx_irq;
+
+/*
+ * The console USART's interrupt, and the reason it lives here rather
+ * than in stm32f7xx_it.c with the other handlers: which USART the
+ * ST-LINK's virtual COM port is wired to is precisely the fact board.c
+ * exists to own. Naming USART3 in the interrupt file would put half that
+ * knowledge in a file that is otherwise identical between the two
+ * boards.
+ */
+void USART3_IRQHandler(void)
+{
+    USART_TypeDef *const u = g_console.Instance;
+    const uint32_t isr = u->ISR;
+
+    if ((isr & USART_ISR_RXNE) != 0u) {
+        const uint8_t c = (uint8_t)(u->RDR & 0xFFu);
+
+        /*
+         * Single producer, single consumer, and the indices are word
+         * sized and free running -- so the ISR and the loop each write
+         * one of them and read the other, with no update that could be
+         * seen half done. That is what makes this safe without disabling
+         * interrupts around it.
+         */
+        if ((g_rx_head - g_rx_tail) < RX_RING_SIZE) {
+            g_rx_ring[g_rx_head & RX_RING_MASK] = c;
+            g_rx_head++;
+        } else {
+            g_rx_overrun++;
+        }
+    }
+
+    /*
+     * An overrun latches ORE and, until it is cleared, RXNE never sets
+     * again -- so a single lost byte would silently stop reception for
+     * good. The same is true of the framing and noise flags at this baud
+     * rate. Clearing them costs one write and turns a dead link into a
+     * dropped packet the protocol above can retransmit.
+     */
+    if ((isr & (USART_ISR_ORE | USART_ISR_FE | USART_ISR_NE | USART_ISR_PE))
+        != 0u) {
+        u->ICR = USART_ICR_ORECF | USART_ICR_FECF | USART_ICR_NCF |
+                 USART_ICR_PECF;
+        g_rx_overrun++;
+    }
+}
+
+void board_console_rx_irq_enable(void)
+{
+    if (g_rx_irq) {
+        return;
+    }
+    g_rx_irq = true;
+
+    /*
+     * Above the HAL's SysTick (which sits at the lowest urgency by
+     * default) so a byte is never delayed by a tick, and below nothing
+     * else -- this firmware runs the guest in thread mode and has only
+     * the bridged guest interrupts besides.
+     */
+    HAL_NVIC_SetPriority(USART3_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(USART3_IRQn);
+    __HAL_UART_ENABLE_IT(&g_console, UART_IT_RXNE);
+}
+
 int board_console_getc(void)
 {
+    if (g_rx_irq) {
+        if (g_rx_head == g_rx_tail) {
+            return -1;
+        }
+        return (int)g_rx_ring[g_rx_tail++ & RX_RING_MASK];
+    }
+
     /*
      * RDR, not DR: this family splits the F4's single data register into
      * separate receive and transmit halves, so the F4 spelling does not
@@ -160,6 +260,11 @@ int board_console_getc(void)
         return (int)(g_console.Instance->RDR & 0xFFu);
     }
     return -1;
+}
+
+uint32_t board_console_rx_overruns(void)
+{
+    return g_rx_overrun;
 }
 
 /* ------------------------------------------------------------------ */

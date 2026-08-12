@@ -25,6 +25,10 @@
 #  include "rv32/rv_jit.h"      /* JIT statistics, reported below */
 #endif
 
+#if EMU_NET
+#  include "emu_net.h"
+#endif
+
 #include <string.h>
 
 /* The guest binary, embedded by guest_image.S. */
@@ -105,9 +109,36 @@ static void fatal_halt(void)
     }
 }
 
+/*
+ * One console, two possible sinks. Before emu_net_init() succeeds it is
+ * the UART; after, the UART carries SLIP and cannot carry text as well,
+ * so everything goes to the telnet buffer instead.
+ *
+ * The branch is a load and a test per character, which is nothing: the
+ * console is written by human-readable output and by the guest's virtual
+ * UART, neither of which is on any measured hot path. The same is not
+ * true of the run loop, which is why emu_net_poll() below is the thing
+ * that had to be thought about.
+ */
 void rv_console_putc(uint8_t c)
 {
+#if EMU_NET
+    if (emu_net_active()) {
+        emu_net_console_putc(c);
+        return;
+    }
+#endif
     board_console_putc(c);
+}
+
+static int console_getc(void)
+{
+#if EMU_NET
+    if (emu_net_active()) {
+        return emu_net_console_getc();
+    }
+#endif
+    return board_console_getc();
 }
 
 #define console_putc rv_console_putc
@@ -189,7 +220,7 @@ static void guest_uart_tx(void *ctx, uint8_t c)
 static int guest_uart_rx(void *ctx)
 {
     (void)ctx;
-    return board_console_getc();
+    return console_getc();
 }
 
 /* ------------------------------------------------------------------ */
@@ -544,6 +575,28 @@ int main(void)
     console_putu(SystemCoreClock / 1000000u);
     console_puts(" MHz\n");
 
+#if EMU_NET
+    /*
+     * The handover happens here, before the rest of the banner, so that
+     * everything describing what is about to run -- guest size, guest
+     * RAM, which backend came up -- reaches a telnet client rather than
+     * a serial port nobody is watching. It is buffered until one
+     * connects, which is what net_telnet.c's output ring is for.
+     *
+     * The two lines below are the last thing the UART ever carries as
+     * text, and they are deliberately the two that matter when nothing
+     * works: whether the stack started at all, and what address to
+     * connect to. After this, silence on the serial port is expected and
+     * silence on the network is the fault.
+     */
+    console_puts("net    SLIP on this port; telnet ");
+    console_puts(emu_net_addr_str());
+    console_puts(" 23\n");
+    if (!emu_net_init()) {
+        console_puts("net    failed to start; staying on the serial console\n");
+    }
+#endif
+
     if (!build_address_space()) {
         console_puts("fatal: could not build the guest address space\n");
         fatal_halt();
@@ -616,6 +669,23 @@ int main(void)
         const emu_run_reason_t why = emu_core_run(&g_core, EMU_RUN_SLICE,
                                                   &retired);
         retired_total += retired;
+
+#if EMU_NET
+        /*
+         * The stack advances only when called, so this is its entire
+         * schedule. Once per slice is 4096 guest instructions, a few
+         * hundred microseconds -- finer than any timer lwIP keeps and
+         * far finer than the receive ring can fill, so nothing here
+         * needs its own interrupt beyond the one taking bytes off the
+         * wire.
+         *
+         * It is also the reason this port does not want an RTOS. A
+         * scheduler would preempt on its tick, which is coarser than
+         * this loop already is, and would buy nothing in exchange for
+         * two stacks and lwIP's threaded API.
+         */
+        emu_net_poll();
+#endif
 
         /*
          * Compared against the running total rather than a budget
@@ -762,7 +832,34 @@ int main(void)
 
     report_state();
 
+#if EMU_NET
+    /*
+     * Bytes the wire delivered and nothing collected. Reported next to
+     * the guest's own numbers because it is the one failure that makes
+     * *those* numbers untrustworthy without looking wrong: a dropped
+     * byte is a dropped SLIP frame, which is a retransmission at best
+     * and a truncated image at worst.
+     */
+    console_puts("\n-- net --\n  rx drops ");
+    console_putu(board_console_rx_overruns());
+    console_putc('\n');
+#endif
+
     for (;;) {
+#if EMU_NET
+        /*
+         * Everything above is still sitting in the output ring: the run
+         * loop stopped, and with it the only thing that was delivering.
+         * Parking in __WFI without draining first would lose the entire
+         * report -- which is the part a harness came for.
+         *
+         * __WFI is still right rather than a busy loop. The UART receive
+         * interrupt is what wakes it, and that fires on the first byte
+         * of anything the host sends, including the ACK for what is
+         * being flushed here.
+         */
+        emu_net_poll();
+#endif
         __WFI();
     }
 }
