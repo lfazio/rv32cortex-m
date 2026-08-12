@@ -480,6 +480,53 @@ const char *board_name(void) { return "Cortex-M7"; }
 
 uint32_t board_clock_hz(void) { return SystemCoreClock; }
 
+/* ------------------------------------------------------------------ */
+/* Link activity                                                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * LD1 and LD2 on the Nucleo-144 (UM1974, Table 6). LD3 is left alone:
+ * it is the one a fault handler would want, and an indicator that is
+ * also used for traffic says nothing when it matters.
+ *
+ * Not driven through the HAL. board_led_toggle is called once per SLIP
+ * frame from the run loop, which is also the guest's dispatch path, and
+ * HAL_GPIO_TogglePin is a function call with a handle dereference where
+ * this is a single store to a bit-set/reset register. It is the same
+ * reason the console is a register write.
+ */
+#define LED_PORT    GPIOB
+#define LED_RX_PIN  GPIO_PIN_0      /* LD1, green */
+#define LED_TX_PIN  GPIO_PIN_7      /* LD2, blue  */
+
+static void led_init(void)
+{
+    GPIO_InitTypeDef gpio = { 0 };
+
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+
+    gpio.Pin = LED_RX_PIN | LED_TX_PIN;
+    gpio.Mode = GPIO_MODE_OUTPUT_PP;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(LED_PORT, &gpio);
+
+    LED_PORT->BSRR = (uint32_t)(LED_RX_PIN | LED_TX_PIN) << 16;
+}
+
+void board_led_toggle(board_led_t led)
+{
+    const uint32_t pin = (led == BOARD_LED_RX) ? LED_RX_PIN : LED_TX_PIN;
+
+    /*
+     * BSRR rather than a read-modify-write of ODR: the toggle is one
+     * store and cannot race the other LED's toggle, which matters
+     * because rx and tx are updated from the same loop but would not
+     * have to be.
+     */
+    LED_PORT->BSRR = (LED_PORT->ODR & pin) ? (pin << 16) : pin;
+}
+
 void board_init(void)
 {
     /*
@@ -508,4 +555,5 @@ void board_init(void)
     clock_init();
     console_init();
     dwt_init();
+    led_init();
 }

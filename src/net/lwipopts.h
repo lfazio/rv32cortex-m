@@ -72,6 +72,28 @@
 #define MEMP_NUM_TCP_PCB_LISTEN     2
 #define MEMP_NUM_TCP_SEG            8
 
+/*
+ * One timeout slot for the TFTP server, on top of what the stack itself
+ * needs.
+ *
+ * The default is LWIP_NUM_SYS_TIMEOUT_INTERNAL, which counts exactly the
+ * timers lwIP's own modules register and nothing an application adds.
+ * Starting the TFTP server therefore overflows it, and the failure is
+ * loud but arrives long after the cause -- the server comes up fine,
+ * announces itself, and then the *first transfer* dies with
+ *
+ *   sys_timeout: timeout != NULL, pool MEMP_SYS_TIMEOUT is empty
+ *
+ * which is a message about memory pools appearing while debugging a file
+ * transfer. Anything else registering a timeout needs another slot here.
+ *
+ * Written in terms of a macro that is not defined yet: lwipopts.h is
+ * included from the top of opt.h, and this is not expanded until
+ * memp_std.h uses it, by which time it is. That is the documented idiom
+ * rather than an accident.
+ */
+#define MEMP_NUM_SYS_TIMEOUT        (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 1)
+
 /* ------------------------------------------------------------------ */
 /* Protocols                                                           */
 /* ------------------------------------------------------------------ */

@@ -34,6 +34,21 @@ SECTIONS
     {
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
+        /*
+         * Inside the section, not after it. The ALIGN(4) below sets
+         * __guest_ro_end correctly but sits *between* output sections,
+         * so it only moves the location counter -- the .rodata section's
+         * own extent is unchanged, and `objcopy -j .text -j .rodata`
+         * emits bytes up to the end of its contents. The two halves then
+         * do not reconstruct the image: hello came out 393 + 4 against a
+         * 400-byte binary, losing the three padding bytes, so .data was
+         * placed three bytes below where the guest reads it.
+         *
+         * It bites only when .rodata happens to end unaligned, which is
+         * why it went unnoticed -- coremark and isatest are aligned by
+         * luck and are byte-exact, hello and cmsistest are not.
+         */
+        . = ALIGN(4);
     } > RAM
 
     /*

@@ -879,6 +879,48 @@ Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
   `main()` was correct only while the bus was built exactly once -- the
   same shape as the two above: code that was right when something
   happened once, left alone when it started happening twice.
+- **The guest image split was lossy for half the guests, and the comment
+  claiming otherwise was load-bearing.** `guest_image.S` states that the
+  `.ro` and `.rw` halves concatenate to the unsplit `.bin` "which the
+  build checks". The build checked nothing, and it was false for two of
+  four guests: `hello` came out 393 + 4 against a 400-byte binary. The
+  `. = ALIGN(4)` that sets `__guest_ro_end` sits *between* output
+  sections, so it moves the location counter without padding `.rodata`
+  itself, and `objcopy -j .text -j .rodata` emits the section's own
+  extent. The three lost bytes put `.data` below where the guest reads
+  it -- and the guest runs anyway, on zeros, which is why nothing
+  noticed. It bites only when `.rodata` happens to end unaligned:
+  `coremark` and `isatest` are aligned by luck and were byte-exact. The
+  `ALIGN` is now *inside* the section, and the build really does compare
+  `cat ro rw` against the binary. **A comment asserting an invariant is
+  where to look first when something downstream is three bytes wrong.**
+- **A reload that only the run loop can see never happens.** `g_reload`
+  was checked between guest slices, which is exactly when a harness is
+  *not* uploading: it runs a test, waits for it to halt and report, then
+  pushes the next one. By then the run loop has exited and the firmware
+  is parked in `__WFI`. Both transfers completed, the server said so,
+  and nothing happened -- the most convincing kind of failure, because
+  every visible signal is success. The park loop takes an image too now,
+  and both paths go through one `take_uploaded_image()`.
+- **An application timeout needs a slot lwIP does not reserve.**
+  `MEMP_NUM_SYS_TIMEOUT` defaults to `LWIP_NUM_SYS_TIMEOUT_INTERNAL`,
+  which counts the stack's own timers and nothing an application
+  registers, so starting the TFTP server overflows it. The failure
+  arrives long after the cause: the server comes up, announces itself,
+  and the *first transfer* dies with `sys_timeout: timeout != NULL, pool
+  MEMP_SYS_TIMEOUT is empty` -- a message about memory pools, while
+  debugging a file transfer. Write it as
+  `(LWIP_NUM_SYS_TIMEOUT_INTERNAL + 1)`; the macro is undefined at that
+  point in `lwipopts.h` and expands later, which is the documented idiom
+  rather than an accident.
+- **The uploaded `.data` was being zeroed by the reload that installed
+  it.** The writable half went straight into guest RAM, and
+  `start_guest()` clears RAM beyond the image -- deliberately, so one
+  test cannot pass on state another wrote. Both halves go to the flash
+  arena now, back to back, which also makes an uploaded image identical
+  in shape to the baked-in one. Two of the guests in the tree have an
+  empty `.rw`, so the obvious thing to test an upload with cannot see
+  this: use `hello`, whose four bytes of `.data` are the whole test.
 - **Measure; do not reason about performance.** Interpreter-in-SRAM was
   *slower*, lazy-IRQ was neutral, and the `clmul` fix was 1.3% when the real
   cost was 4.12-instruction blocks. Layout noise is ±3% on the host; on the

@@ -622,7 +622,35 @@ static bool start_guest(void)
  * the restart does have to be explicit, because the bus regions and the
  * reset vector were built from the old image.
  */
+/*
+ * Both halves land in the flash arena, back to back, and the guest is
+ * restarted only when the second arrives.
+ *
+ * The writable half cannot go straight into guest RAM, which is the
+ * obvious thing and is wrong: start_guest() clears RAM beyond the image
+ * -- deliberately, so that one test cannot pass on state another wrote
+ * -- and it is start_guest() that the upload calls. The .data written
+ * during the transfer was being zeroed by the reload it triggered.
+ * Nothing would have reported it: the check is "did the guest run", and
+ * it does, with every initialised variable set to zero. Two of the three
+ * guests in the tree have an empty .rw, so the obvious thing to test it
+ * with cannot see it either.
+ *
+ * Keeping both halves in flash also makes the arrangement identical to
+ * the baked-in image -- one blob, split at g_img_ro -- so start_guest()
+ * needs no case for where the image came from, and a reset re-runs the
+ * uploaded guest rather than reverting to the built-in one.
+ *
+ * Hence the contract: upload `rom`, then `ram`. The ram half is the
+ * commit point, because it is the one that completes an image; a guest
+ * with no .data uploads an empty one to say so. Committing on the rom
+ * half instead would restart the guest with the *previous* image's
+ * .data, print a whole run's worth of output from it, and only then be
+ * corrected -- and a harness reading the console cannot tell that first
+ * summary from the real one.
+ */
 static uint32_t g_up_addr;      /* where the rom half is being written  */
+static uint32_t g_up_ro;        /* bytes of the rom half received       */
 static uint32_t g_up_rw;        /* bytes of the ram half received       */
 static bool     g_reload;
 
@@ -630,7 +658,16 @@ bool emu_net_image_begin(emu_net_image_t which)
 {
     if (which == EMU_NET_IMAGE_ROM) {
         g_up_addr = board_flash_arena_begin();
+        g_up_ro = 0u;
         return g_up_addr != 0u;
+    }
+    /*
+     * The ram half is appended to the rom half, so it needs one to have
+     * arrived. Refusing here is what stops a lone `ram` upload from
+     * committing whatever the arena happened to hold.
+     */
+    if (g_up_addr == 0u || g_up_ro == 0u) {
+        return false;
     }
     g_up_rw = 0u;
     return true;
@@ -644,16 +681,17 @@ bool emu_net_image_data(emu_net_image_t which, const void *data,
     }
 
     /*
-     * The writable half goes straight into guest RAM. Bounds-checked
-     * rather than trusted: a TFTP client is the other end of a wire and
-     * an oversized image would otherwise walk off the end of the buffer
-     * into the stack.
+     * Appended after the rom half, so that the two are contiguous and
+     * g_img_ro splits them exactly as it does for the baked-in image.
+     *
+     * Bounds-checked against guest RAM rather than trusted, even though
+     * it is landing in flash: this is what will be copied into RAM at
+     * every reset, and a TFTP client is the other end of a wire.
      */
     if ((off + len) > GUEST_RAM_SIZE) {
         return false;
     }
-    memcpy(GUEST_RAM_BASE_PTR + off, data, len);
-    return true;
+    return board_flash_write(g_up_addr + g_up_ro + off, data, len);
 }
 
 void emu_net_image_end(emu_net_image_t which, uint32_t len, bool ok)
@@ -672,29 +710,61 @@ void emu_net_image_end(emu_net_image_t which, uint32_t len, bool ok)
          */
         if (which == EMU_NET_IMAGE_ROM) {
             (void)board_flash_arena_reset();
+            g_up_addr = 0u;
+            g_up_ro = 0u;
         }
         console_puts("\nemu: upload failed\n");
         return;
     }
 
     if (which == EMU_NET_IMAGE_ROM) {
-        board_flash_arena_commit(len);
-        g_img = (const uint8_t *)g_up_addr;
-        g_img_ro = len;
-    } else {
-        g_up_rw = len;
+        /*
+         * Recorded, not committed. The image is not complete until the
+         * ram half arrives, and committing here would both publish a
+         * ROM window over flash the ram half is about to occupy and
+         * restart the guest against the previous image's .data.
+         */
+        g_up_ro = len;
+        return;
     }
 
-    /*
-     * g_img_size spans only what is contiguous with g_img. For the
-     * baked-in image that is both halves; for an uploaded one the
-     * writable half is in RAM and the read-only half in flash, so it is
-     * the read-only half alone. Getting this wrong publishes a ROM
-     * window over whatever flash follows the image.
-     */
-    g_img_size = g_img_ro + ((g_img == rv_guest_image) ? g_up_rw : 0u);
+    g_up_rw = len;
+    board_flash_arena_commit(g_up_ro + g_up_rw);
+
+    g_img      = (const uint8_t *)g_up_addr;
+    g_img_ro   = g_up_ro;
+    g_img_size = g_up_ro + g_up_rw;
 
     g_reload = true;
+}
+
+/*
+ * Take a freshly uploaded image, if one is waiting. True when the guest
+ * was restarted from it.
+ *
+ * One function because there are two places that must do this and they
+ * are easy to let drift: between guest slices, and after a guest has
+ * halted. The second is the one that matters for a test harness and was
+ * the one missing.
+ */
+static bool take_uploaded_image(void)
+{
+    if (!g_reload) {
+        return false;
+    }
+    g_reload = false;
+
+    if (!start_guest()) {
+        console_puts("emu: uploaded image does not fit guest RAM\n");
+        return false;
+    }
+
+    console_puts("\nemu: running uploaded image, ");
+    console_putu(g_img_ro);
+    console_puts(" ro + ");
+    console_putu(g_up_rw);
+    console_puts(" rw bytes\n");
+    return true;
 }
 #endif
 
@@ -820,6 +890,13 @@ int main(void)
         fatal_halt();
     }
 
+    /*
+     * Everything from here down is one run of one guest, and an uploaded
+     * image comes back to it. The banner is inside the loop deliberately:
+     * it names the image's size, which is the first thing that differs
+     * after a reload and the first thing a harness wants to see.
+     */
+restart:
     console_puts("guest  ");
     console_putu(g_img_size);
     console_puts(" bytes at ");
@@ -864,26 +941,15 @@ int main(void)
         emu_net_poll();
 
         /*
-         * A new image landed while the guest was between slices. Restart
-         * from it, and restart the accounting with it -- a run whose
-         * instruction count carried over from the previous guest would
-         * hit the cap early and report "did not terminate" about a guest
-         * that had barely started.
+         * A new image landed while the guest was between slices. Going
+         * back to `restart` rather than continuing here restarts the
+         * accounting with it, which matters: a run whose instruction
+         * count carried over from the previous guest would hit the cap
+         * early and report "did not terminate" about a guest that had
+         * barely started.
          */
-        if (g_reload) {
-            g_reload = false;
-            if (!start_guest()) {
-                console_puts("emu: uploaded image does not fit guest RAM\n");
-            } else {
-                console_puts("\nemu: running uploaded image, ");
-                console_putu(g_img_ro);
-                console_puts(" ro + ");
-                console_putu(g_up_rw);
-                console_puts(" rw bytes\n");
-            }
-            retired_total = 0;
-            capped = false;
-            continue;
+        if (take_uploaded_image()) {
+            goto restart;
         }
 #endif
 
@@ -1059,6 +1125,24 @@ int main(void)
          * being flushed here.
          */
         emu_net_poll();
+
+        /*
+         * An image may arrive after the guest has finished, and that is
+         * the *normal* case rather than an edge one: a harness runs a
+         * test, waits for it to halt and report, then pushes the next.
+         * The reload check inside the run loop above never sees those,
+         * because that loop exited when the guest halted -- so an upload
+         * completed successfully, said so, and nothing happened.
+         *
+         * Jumping back to the top of the run is what makes the board a
+         * server for the whole suite instead of a one-shot. `goto`
+         * rather than wrapping the run in a function: everything it
+         * needs is already local to main(), and a loop around all of it
+         * would indent the entire body to say the same thing.
+         */
+        if (take_uploaded_image()) {
+            goto restart;
+        }
 #endif
         __WFI();
     }

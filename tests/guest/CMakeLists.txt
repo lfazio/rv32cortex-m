@@ -111,7 +111,17 @@ function(add_guest_image name)
                 -j .text -j .rodata "${elf}" "${bin}.ro"
         COMMAND ${RISCV_OBJCOPY} -O binary
                 -j .data "${elf}" "${bin}.rw"
-        DEPENDS "${elf}"
+        # And prove it, because the paragraph above was wrong for two of
+        # the four guests and nothing said so. The invariant is what lets
+        # guest_image.S embed the halves consecutively and hand out one
+        # base pointer, and what lets an uploaded image be reassembled in
+        # flash the same way -- when it does not hold, .data is placed
+        # below where the guest reads it and the guest runs anyway, on
+        # zeros.
+        COMMAND ${CMAKE_COMMAND} -E cat "${bin}.ro" "${bin}.rw" > "${bin}.cat"
+        COMMAND ${CMAKE_COMMAND} -E compare_files "${bin}.cat" "${bin}"
+        COMMAND ${CMAKE_COMMAND} -E rm -f "${bin}.cat"
+        DEPENDS "${elf}" "${bin}"
         COMMENT "Splitting guest image ${name} at __guest_ro_end"
         VERBATIM)
 

@@ -122,4 +122,30 @@ bool board_flash_arena_reset(void);
  */
 bool board_flash_write(uint32_t addr, const void *data, uint32_t len);
 
+/* ------------------------------------------------------------------ */
+/* Link activity                                                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The board's user LEDs, as link-activity indicators.
+ *
+ * Worth having because the SLIP link has no other outward sign of life.
+ * Once the UART carries IP the board is silent by design, so "nothing is
+ * happening" and "the wire is dead" look identical from the desk -- and
+ * this session lost a day to exactly that: a link that was mis-framed at
+ * the host end, with a board that was transmitting perfectly and no way
+ * to see it without a debug probe.
+ *
+ * Green for received frames, blue for transmitted. Toggled rather than
+ * pulsed, because a pulse needs a timer to end it and a toggle needs
+ * nothing: at these rates it reads as a flicker under traffic and a
+ * steady state when idle, which is the whole question being asked.
+ */
+typedef enum {
+    BOARD_LED_RX,           /* LD1, green,  PB0  */
+    BOARD_LED_TX            /* LD2, blue,   PB7  */
+} board_led_t;
+
+void board_led_toggle(board_led_t led);
+
 #endif /* RV32_BOARD_H */
