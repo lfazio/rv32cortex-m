@@ -109,8 +109,15 @@ set(EMU_JIT_CODE_BYTES "12288" CACHE STRING "JIT code cache size in bytes")
 # Build and use the Thumb-2 JIT. Turning this off is how the same guest
 # image is measured on the interpreter, which is also how a suspected JIT
 # miscompile gets isolated from a core bug.
-option(EMU_JIT_IR
-    "Thumb-2: build the JIT from the IR instead of the hand-written translator" OFF)
+# The Thumb-2 JIT is built from the IR, and only from the IR: the
+# hand-written translator it used to share this slot with has been
+# removed. It failed the architecture suite -- I-nop-00, 2374
+# instructions, passes on the interpreter and on the IR path and ran away
+# emitting garbage under the hand-written one -- and maintaining two
+# translators for one host is how a fix lands in the one nobody is
+# running. The option is kept as a no-op so an old build directory with
+# it cached still configures.
+set(EMU_JIT_IR ON CACHE INTERNAL "Thumb-2 JIT is IR-based (no longer optional)" FORCE)
 option(EMU_JIT_DIFF
     "Check every translated block against the IR interpreter" OFF)
 option(EMU_JIT "Thumb-2 JIT backend" ON)
@@ -218,7 +225,6 @@ if(EMU_FRONTEND_RV32)
         # Both guard themselves on the host they emit for, so both can stay
         # in the list and exactly one of them compiles to anything.
         src/frontend/rv32/rv_ir.c
-        $<$<NOT:$<BOOL:${EMU_JIT_IR}>>:${CMAKE_SOURCE_DIR}/src/backend/thumb2/jit_rv32.c>
         src/backend/thumb2/encode.c
         src/backend/thumb2/ir_lower.c
         src/emu/emu_ir_jit.c
@@ -250,7 +256,7 @@ if(EMU_FRONTEND_RV32)
         RV_LAZY_IRQ_CHECK=$<BOOL:${RV32_LAZY_IRQ}>
         RV_JIT_CODE_SIZE=${EMU_JIT_CODE_BYTES}u
         RV_ENABLE_JIT=$<BOOL:${EMU_JIT}>
-        $<$<BOOL:${EMU_JIT_IR}>:EMU_IR_JIT_ON_THUMB2>
+        EMU_IR_JIT_ON_THUMB2
         $<$<BOOL:${EMU_JIT_DIFF}>:EMU_JIT_DIFF>
         RV_JIT_LOOP_CHAIN=$<BOOL:${EMU_JIT_LOOP_CHAIN}>
         RV_JIT_INLINE_PERIPH=$<BOOL:${EMU_JIT_INLINE_PERIPH}>
