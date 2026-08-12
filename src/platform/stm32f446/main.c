@@ -36,6 +36,7 @@
 /* The guest binary, embedded by guest_image.S. */
 extern const uint8_t rv_guest_image[];
 extern const uint32_t rv_guest_image_size;
+extern const uint32_t rv_guest_ro_size;
 
 /* ------------------------------------------------------------------ */
 /* Configuration                                                       */
@@ -355,7 +356,31 @@ static bool build_address_space(void)
 {
     emu_bus_init(&g_bus);
 
-    if (!emu_bus_add_ram(&g_bus, "ram", EMU_GUEST_RAM_BASE,
+    /*
+     * The guest's read-only half is served straight out of the part's
+     * flash, where guest_image.S already put it, and RAM starts above
+     * it. The guest's own layout does not change at all -- it is still
+     * linked contiguously from EMU_GUEST_RAM_BASE and still resets to
+     * offset 0 -- only which backing store answers the low addresses.
+     *
+     * The saving is real: the SRAM buffer now covers guest addresses
+     * [ro, ro + GUEST_RAM_SIZE) instead of [0, GUEST_RAM_SIZE), so the
+     * guest gains rv_guest_ro_size of address space for nothing. On the
+     * largest architecture tests that is 140 KiB of the 345 they need.
+     *
+     * Both regions are registered even when rv_guest_ro_size is zero or
+     * the whole image, because emu_bus rejects a zero-length region and
+     * a guest with no .data is the common case here -- two of the three
+     * in the tree have one.
+     */
+    const uint32_t guest_ro = rv_guest_ro_size;
+
+    if (guest_ro != 0u &&
+        !emu_bus_add_rom(&g_bus, "guest-ro", EMU_GUEST_RAM_BASE,
+                         rv_guest_image, guest_ro)) {
+        return false;
+    }
+    if (!emu_bus_add_ram(&g_bus, "ram", EMU_GUEST_RAM_BASE + guest_ro,
                         GUEST_RAM_BASE_PTR, GUEST_RAM_SIZE)) {
         return false;
     }
@@ -489,11 +514,17 @@ int main(void)
      * Guests linked for the ROM window can skip this and reset straight to
      * EMU_GUEST_ROM_BASE.
      */
-    if (rv_guest_image_size > GUEST_RAM_SIZE) {
+    /*
+     * Only the writable tail. The read-only half is already reachable
+     * as a bus region pointing into flash, and copying it would put it
+     * in RAM twice -- which is the whole cost this removes.
+     */
+    if (rv_guest_image_size - rv_guest_ro_size > GUEST_RAM_SIZE) {
         console_puts("fatal: guest image larger than guest RAM\n");
         fatal_halt();
     }
-    memcpy(GUEST_RAM_BASE_PTR, rv_guest_image, rv_guest_image_size);
+    memcpy(GUEST_RAM_BASE_PTR, rv_guest_image + rv_guest_ro_size,
+           rv_guest_image_size - rv_guest_ro_size);
 
     emu_core_reset(&g_core, EMU_GUEST_RESET_PC);
     emu_core_boot(&g_core, EMU_GUEST_RAM_BASE, GUEST_RAM_SIZE);
