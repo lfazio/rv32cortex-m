@@ -268,6 +268,30 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
 #define CTR_CYCLE   1u
 #define CTR_INSTRET 2u
 
+        /*
+         * x0 is hardwired zero, and this is where that is guaranteed.
+         *
+         * wr() clears it after every register write, which keeps it
+         * canonical for as long as the interpreter is the only thing
+         * running. It is not: a JIT block may leave the slot dirty, and
+         * it costs nothing to notice because the translated code never
+         * *reads* it -- EMU_IR_GET of x0 emits an immediate zero rather
+         * than a load, and EMU_IR_PUT to x0 is declined. So a block can
+         * scribble on x[0] and run perfectly, and the damage appears
+         * only once control falls back here and an interpreted
+         * instruction reads x0 as a source.
+         *
+         * That is exactly how it presented: I-add-00 failed on its first
+         * check, on `add x28, x0, x29`, with the result too large by the
+         * garbage sitting in the slot. Clearing after the write is one
+         * instruction too late for the instruction that reads it first.
+         *
+         * One unconditional store per instruction, for the same reason
+         * wr() makes the same trade: a branch here would be
+         * mispredictable and this is not.
+         */
+        h->x[0] = 0u;
+
         /* One test covers both halt and WFI; neither can continue here. */
         if (EMU_UNLIKELY(h->state != EMU_STATE_RUNNING)) {
             reason = (h->state == EMU_STATE_HALTED) ? EMU_RUN_HALTED : EMU_RUN_WFI;
