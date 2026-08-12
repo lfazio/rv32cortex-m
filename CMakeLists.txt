@@ -224,6 +224,18 @@ if(EMU_FRONTEND_RV32)
         src/emu/emu_ir_jit.c
     )
 
+    # The fused multiply-adds recover their rounding error with
+    # 2Product/2Sum, which is only exact if `a * b - p` is evaluated as
+    # written. GCC's default -ffp-contract=fast fuses exactly that into a
+    # single VFMA wherever the host has one, so the error term computes as
+    # zero and the FMA rounds twice instead of once. It is silent: the
+    # answer is merely a little wrong, and only on the host with hardware
+    # FMA -- which is why the same guest binary gave one answer on x86-64
+    # and another on the Cortex-M7, in the one kernel that emitted an
+    # FMADD. Confirmed by finding eleven VFMA/VFNMS in rv_hart_fp.
+    set_source_files_properties(src/frontend/rv32/rv_fpu.c
+        PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+
     target_compile_definitions(rv32core PUBLIC
         RV_EXT_F=$<BOOL:${RV32_EXT_F}>
         RV_EXT_ZCB=$<BOOL:${RV32_EXT_ZCB}>

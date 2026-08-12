@@ -120,6 +120,11 @@ add_guest_image(cmsistest
 # Compute-bound workload for throughput measurement.
 add_guest_image(bench    SOURCES start.S bench.c)
 
+# Floating point, and deliberately no PMP: isatest arms one early, after
+# which fetch_guard sends everything to the interpreter and no FP change
+# can be measured on the JIT at all. See CLAUDE.md.
+add_guest_image(fptest   SOURCES start.S fptest.c)
+
 # Driver-shaped workload for the passthrough window. Unlike bench, this one
 # only measures anything on the STM32: the host runner backs the peripheral
 # window with plain memory, so both halves of each comparison take the same

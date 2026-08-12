@@ -99,6 +99,55 @@ static uint32_t fp_op_x(uint32_t f7, uint32_t rm, uint32_t rs2,
 }
 
 /*
+ * The fused multiply-add must round *once*.
+ *
+ * rv_hart_fp recovers the product's rounding error with 2Product/2Sum,
+ * which is exact only if `a * b - p` is evaluated as written -- and
+ * GCC's default -ffp-contract=fast fuses exactly that into a single
+ * hardware FMA wherever one exists, so the error term computes as zero
+ * and the result rounds twice. It is silent, it is only wrong on hosts
+ * that *have* an FMA, and it shipped: eleven VFMA/VFNMS in rv_hart_fp
+ * on the Cortex-M7 made the same guest binary give a different answer
+ * there than on x86-64.
+ *
+ * The input below separates the two outright rather than by a last bit.
+ * a = 1 + 2^-12, so a*a = 1 + 2^-11 + 2^-24 -- exactly halfway between
+ * two floats, and ties-to-even rounds it down to p = 1 + 2^-11. Then
+ * FMADD.S(a, a, -p) is the *unrounded* product minus p, which is
+ * 2^-24; an implementation that rounds first computes p - p and gets
+ * zero. One answer is zero and the other is not, so no tolerance is
+ * involved and no host's last-bit behaviour can mask it.
+ *
+ * Honest limitation: this has *not* been shown to fail against the
+ * compiler-induced form of the bug. Rebuilding rv_fpu.c with
+ * -ffp-contract=fast -mfma was tried, and gcc emitted no FMA on x86-64
+ * anyway, so the assertion was never challenged -- the A/B was
+ * inconclusive rather than passing. What caught the real defect was
+ * tests/guest/fptest.c on hardware, where the same guest binary gave
+ * two different answers. Treat this as a guard on the semantics, and
+ * the guest as the thing that would notice a regression.
+ */
+static void test_fma_rounds_once(void)
+{
+    const uint32_t a = 0x3F800800u;      /* 1 + 2^-12                */
+    const uint32_t p = 0x3F801000u;      /* 1 + 2^-11, the rounded product */
+    uint32_t tval = 0u;
+
+    fp_reset();
+    g_hart.f[1] = a;
+    g_hart.f[2] = a;
+    g_hart.f[3] = p ^ 0x80000000u;       /* -p                       */
+
+    /* FMADD.S f0, f1, f2, f3 -- opcode 0x43, rs3 in bits 31:27. */
+    const uint32_t insn = 0x43u | (0u << 7) | (0u << 12) | (1u << 15) |
+                          (2u << 20) | (3u << 27);
+
+    CHECK_EQ(rv_hart_fp(&g_hart, insn, &tval), RV_EXC_NONE);
+    CHECK_EQ(g_hart.f[0], 0x33800000u);  /* 2^-24, not zero          */
+    CHECK(g_hart.f[0] != 0u);
+}
+
+/*
  * The generation key the IR JIT flushes on.
  *
  * Two failure modes, opposite in direction and both recorded in this
@@ -331,6 +380,7 @@ void test_fpu(void)
                             &tval),
                  RV_EXC_ILLEGAL_INSN);
     }
+    test_fma_rounds_once();
     test_jit_generation_key();
 }
 
