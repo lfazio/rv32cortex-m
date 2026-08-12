@@ -122,7 +122,8 @@ if(EMU_NET)
     target_sources(rv32-stm32f746 PRIVATE
         "${CMAKE_SOURCE_DIR}/src/net/net.c"
         "${CMAKE_SOURCE_DIR}/src/net/net_sio.c"
-        "${CMAKE_SOURCE_DIR}/src/net/net_telnet.c")
+        "${CMAKE_SOURCE_DIR}/src/net/net_telnet.c"
+        "${CMAKE_SOURCE_DIR}/src/net/net_tftp.c")
 
     # The port sources are built into the firmware, not into lwip: they
     # reach the board through board.h, which lives in this directory, and

@@ -163,6 +163,9 @@ bool emu_net_init(void)
     if (!emu_net_telnet_init()) {
         return false;
     }
+    if (!emu_net_tftp_init()) {
+        return false;
+    }
 
     /*
      * Last, and only once everything above has succeeded: from here the

@@ -451,6 +451,20 @@ void TIM6_DAC_IRQHandler(void)
     irq_line_entry(TIM6_DAC_IRQn);
 }
 
+/*
+ * Where the guest image currently lives. Initialised to the copy
+ * guest_image.S baked into the firmware, and repointed at the flash
+ * arena when one arrives over TFTP.
+ *
+ * These exist because build_address_space() used to read the .incbin
+ * symbols directly, which made "which image is running" a link-time
+ * fact. An upload has to be able to change it at run time.
+ */
+static const uint8_t *g_img      = rv_guest_image;
+static uint32_t       g_img_size;
+static uint32_t       g_img_ro;
+static bool start_guest(void);
+
 static bool build_address_space(void)
 {
     emu_bus_init(&g_bus);
@@ -472,11 +486,11 @@ static bool build_address_space(void)
      * a guest with no .data is the common case here -- two of the three
      * in the tree have one.
      */
-    const uint32_t guest_ro = rv_guest_ro_size;
+    const uint32_t guest_ro = g_img_ro;
 
     if (guest_ro != 0u &&
         !emu_bus_add_rom(&g_bus, "guest-ro", EMU_GUEST_RAM_BASE,
-                         rv_guest_image, guest_ro)) {
+                         g_img, guest_ro)) {
         return false;
     }
     if (!emu_bus_add_ram(&g_bus, "ram", EMU_GUEST_RAM_BASE + guest_ro,
@@ -489,7 +503,7 @@ static bool build_address_space(void)
      * guest linked for execute-in-place costs no RAM at all.
      */
     if (!emu_bus_add_rom(&g_bus, "rom", EMU_GUEST_ROM_BASE,
-                        rv_guest_image, rv_guest_image_size)) {
+                        g_img, g_img_size)) {
         return false;
     }
 
@@ -510,6 +524,133 @@ static bool build_address_space(void)
     }
     return true;
 }
+
+/*
+ * Everything that has to be redone when the guest image changes:
+ * rebuild the bus from the image's two halves, put the writable half
+ * where the guest expects it, and reset the core.
+ *
+ * Split out of main() because an upload has to repeat it. The address
+ * space is torn down and rebuilt rather than patched, because the
+ * read-only region's base and length both move when a different image
+ * arrives and emu_bus has no way to resize a region in place.
+ */
+static bool start_guest(void)
+{
+    const uint32_t rw = g_img_size - g_img_ro;
+
+    if (rw > GUEST_RAM_SIZE) {
+        return false;
+    }
+    if (!build_address_space()) {
+        return false;
+    }
+
+    /*
+     * Only the writable tail. The read-only half is already reachable as
+     * a bus region pointing into flash, and copying it would put it in
+     * RAM twice -- which is the whole cost the split removes.
+     *
+     * The rest of guest RAM is cleared. Left alone it would still hold
+     * the previous guest's .bss and stack, which is how one architecture
+     * test comes to pass on state another test wrote -- the failure mode
+     * that makes a suite's results depend on the order it ran in.
+     */
+    memcpy(GUEST_RAM_BASE_PTR, g_img + g_img_ro, rw);
+    memset(GUEST_RAM_BASE_PTR + rw, 0, GUEST_RAM_SIZE - rw);
+
+    emu_core_reset(&g_core, EMU_GUEST_RESET_PC);
+    emu_core_boot(&g_core, EMU_GUEST_RAM_BASE, GUEST_RAM_SIZE);
+    return true;
+}
+
+#if EMU_NET
+/* ------------------------------------------------------------------ */
+/* Images arriving over TFTP                                           */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The emulator is already suspended whenever these run: they are reached
+ * from emu_net_poll(), which the run loop calls between guest slices, so
+ * no guest instruction is in flight. Nothing has to be stopped -- but
+ * the restart does have to be explicit, because the bus regions and the
+ * reset vector were built from the old image.
+ */
+static uint32_t g_up_addr;      /* where the rom half is being written  */
+static uint32_t g_up_rw;        /* bytes of the ram half received       */
+static bool     g_reload;
+
+bool emu_net_image_begin(emu_net_image_t which)
+{
+    if (which == EMU_NET_IMAGE_ROM) {
+        g_up_addr = board_flash_arena_begin();
+        return g_up_addr != 0u;
+    }
+    g_up_rw = 0u;
+    return true;
+}
+
+bool emu_net_image_data(emu_net_image_t which, const void *data,
+                        uint32_t len, uint32_t off)
+{
+    if (which == EMU_NET_IMAGE_ROM) {
+        return board_flash_write(g_up_addr + off, data, len);
+    }
+
+    /*
+     * The writable half goes straight into guest RAM. Bounds-checked
+     * rather than trusted: a TFTP client is the other end of a wire and
+     * an oversized image would otherwise walk off the end of the buffer
+     * into the stack.
+     */
+    if ((off + len) > GUEST_RAM_SIZE) {
+        return false;
+    }
+    memcpy(GUEST_RAM_BASE_PTR + off, data, len);
+    return true;
+}
+
+void emu_net_image_end(emu_net_image_t which, uint32_t len, bool ok)
+{
+    if (!ok) {
+        /*
+         * Nothing is committed, so a failed upload leaves the board
+         * exactly as it was and the previous guest is still the one
+         * that would run. The flash written so far is simply not
+         * claimed; the next begin() hands out the same address again.
+         *
+         * The arena filling up is the expected failure, not an
+         * exceptional one -- there is no length in a TFTP request, so
+         * running out is how the end is discovered. Erasing here means
+         * the client's retry succeeds rather than failing identically.
+         */
+        if (which == EMU_NET_IMAGE_ROM) {
+            (void)board_flash_arena_reset();
+        }
+        console_puts("\nemu: upload failed\n");
+        return;
+    }
+
+    if (which == EMU_NET_IMAGE_ROM) {
+        board_flash_arena_commit(len);
+        g_img = (const uint8_t *)g_up_addr;
+        g_img_ro = len;
+    } else {
+        g_up_rw = len;
+    }
+
+    /*
+     * g_img_size spans only what is contiguous with g_img. For the
+     * baked-in image that is both halves; for an uploaded one the
+     * writable half is in RAM and the read-only half in flash, so it is
+     * the read-only half alone. Getting this wrong publishes a ROM
+     * window over whatever flash follows the image.
+     */
+    g_img_size = g_img_ro + ((g_img == rv_guest_image) ? g_up_rw : 0u);
+
+    g_reload = true;
+}
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Diagnostics                                                         */
@@ -624,25 +765,16 @@ int main(void)
     ops->set_syscall(g_core.cpu, guest_syscall, NULL);
     ops->set_cache(g_core.cpu, &g_cache_ops);
 
-    /*
-     * The image is linked to run from guest RAM, so copy it out of flash.
-     * Guests linked for the ROM window can skip this and reset straight to
-     * EMU_GUEST_ROM_BASE.
-     */
-    /*
-     * Only the writable tail. The read-only half is already reachable
-     * as a bus region pointing into flash, and copying it would put it
-     * in RAM twice -- which is the whole cost this removes.
-     */
-    if (rv_guest_image_size - rv_guest_ro_size > GUEST_RAM_SIZE) {
+    g_img_size = rv_guest_image_size;
+    g_img_ro   = rv_guest_ro_size;
+
+    if (!start_guest()) {
         console_puts("fatal: guest image larger than guest RAM\n");
         fatal_halt();
     }
-    memcpy(GUEST_RAM_BASE_PTR, rv_guest_image + rv_guest_ro_size,
-           rv_guest_image_size - rv_guest_ro_size);
 
     console_puts("guest  ");
-    console_putu(rv_guest_image_size);
+    console_putu(g_img_size);
     console_puts(" bytes at ");
     console_puthex(EMU_GUEST_RESET_PC);
     console_puts("\nram    ");
@@ -650,8 +782,6 @@ int main(void)
     console_puts(" KiB (");
     console_putu(GUEST_RAM_SIZE);
     console_puts(" bytes)\nbackend ");
-    emu_core_reset(&g_core, EMU_GUEST_RESET_PC);
-    emu_core_boot(&g_core, EMU_GUEST_RAM_BASE, GUEST_RAM_SIZE);
 
     emu_cpu_status_t st;
     emu_core_status(&g_core, &st);
@@ -685,6 +815,29 @@ int main(void)
          * two stacks and lwIP's threaded API.
          */
         emu_net_poll();
+
+        /*
+         * A new image landed while the guest was between slices. Restart
+         * from it, and restart the accounting with it -- a run whose
+         * instruction count carried over from the previous guest would
+         * hit the cap early and report "did not terminate" about a guest
+         * that had barely started.
+         */
+        if (g_reload) {
+            g_reload = false;
+            if (!start_guest()) {
+                console_puts("emu: uploaded image does not fit guest RAM\n");
+            } else {
+                console_puts("\nemu: running uploaded image, ");
+                console_putu(g_img_ro);
+                console_puts(" ro + ");
+                console_putu(g_up_rw);
+                console_puts(" rw bytes\n");
+            }
+            retired_total = 0;
+            capped = false;
+            continue;
+        }
 #endif
 
         /*

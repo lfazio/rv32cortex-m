@@ -70,10 +70,53 @@ int  emu_net_console_getc(void);
 const char *emu_net_addr_str(void);
 
 /* ------------------------------------------------------------------ */
+/* Guest images over TFTP                                              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The two halves a guest image is built as, and the two names the TFTP
+ * server answers to. Uploading either suspends the emulator, lands the
+ * image and restarts it.
+ *
+ * TFTP rather than something better-suited, and the reason is not
+ * inertia. Programming a block of flash takes milliseconds during which
+ * the bank is busy; board_flash_write runs from ITCM and survives that,
+ * but the UART receive interrupt handler does not -- it is in flash and
+ * cannot be fetched. Any protocol that streams ahead would have the host
+ * transmitting into exactly that window. TFTP acknowledges one block
+ * before the next is sent, so nothing is ever in flight while flash is
+ * being written. Moving to raw TCP would mean relocating the vector
+ * table and the ISR into ITCM to regain a property this gets for free.
+ *
+ * The cost is that TFTP carries no length (lwIP implements no tsize
+ * option), so a transfer that overruns the flash arena fails and the
+ * caller erases and retries -- one wasted upload per erase cycle.
+ */
+typedef enum {
+    EMU_NET_IMAGE_ROM,      /* .text and .rodata, into the flash arena */
+    EMU_NET_IMAGE_RAM       /* .data, straight into guest RAM          */
+} emu_net_image_t;
+
+/*
+ * Implemented by the platform, called by the TFTP server.
+ *
+ * begin() stops the guest and says where the image will land; data()
+ * takes one chunk at byte offset `off`, always in order; end() either
+ * commits and restarts, or discards. A discarded upload must leave the
+ * board exactly as it was, because the usual cause is a harness dying
+ * mid-transfer and the next thing it does is retry.
+ */
+bool emu_net_image_begin(emu_net_image_t which);
+bool emu_net_image_data(emu_net_image_t which, const void *data,
+                        uint32_t len, uint32_t off);
+void emu_net_image_end(emu_net_image_t which, uint32_t len, bool ok);
+
+/* ------------------------------------------------------------------ */
 /* Internal to src/net/                                                */
 /* ------------------------------------------------------------------ */
 
 bool emu_net_telnet_init(void);
 void emu_net_telnet_poll(void);
+bool emu_net_tftp_init(void);
 
 #endif /* EMU_NET_H */

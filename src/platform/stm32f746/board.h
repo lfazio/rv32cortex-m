@@ -89,11 +89,29 @@ uint32_t board_flash_arena_base(void);
 uint32_t board_flash_arena_size(void);
 
 /*
- * Reserve `len` bytes and return where they will live, erasing the arena
- * first if the request does not fit in what is left. Returns 0 when the
- * arena cannot hold `len` at all.
+ * Where the next image will be programmed, erasing first if the arena
+ * has never been erased since reset. Returns 0 on failure.
+ *
+ * There is no length here because TFTP does not carry one: a transfer
+ * ends when a short block arrives, so the size is only known once the
+ * whole image has been written. Reserving a worst case up front would
+ * cost most of the packing this arena exists for -- 256 KiB reserved out
+ * of 768 is three images per erase, against the fifteen or so that
+ * packing tightly gives.
+ *
+ * So writes run until they hit the end and *fail*, and the caller erases
+ * and retries. One transfer is wasted per erase cycle, which is a far
+ * better trade than fifteen times the flash wear.
  */
-uint32_t board_flash_arena_alloc(uint32_t len);
+uint32_t board_flash_arena_begin(void);
+
+/* Accept `len` bytes at the address begin() returned, so the next image
+ * starts after them. Not called when a transfer fails, which is what
+ * makes a failed upload leave no trace. */
+void board_flash_arena_commit(uint32_t len);
+
+/* Erase unconditionally and restart from the base. */
+bool board_flash_arena_reset(void);
 
 /*
  * Program into the arena. `addr` must be within a range returned by

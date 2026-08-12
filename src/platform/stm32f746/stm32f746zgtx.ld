@@ -62,6 +62,42 @@ SECTIONS
         . = ALIGN(4);
     } > FLASH
 
+    /*
+     * Code that must survive a busy flash bank. Loaded from flash and
+     * copied to ITCM by board_init() -- ST's startup copies .data and
+     * knows nothing about this, so anything placed here is unreachable
+     * until that copy has run.
+     *
+     * The section is emitted unconditionally, so __itcm_start and
+     * __itcm_end are equal when nothing uses it and the copy is a no-op.
+     */
+    .itcm :
+    {
+        . = ALIGN(8);
+        __itcm_start = .;
+        *(.itcm)
+        *(.itcm*)
+
+        /*
+         * The HAL's flash driver, whole. Marking only our own routines
+         * .itcm was not enough and looked like it was: board_flash_write
+         * lands in ITCM and then calls HAL_FLASH_Program, which polls the
+         * busy bit from flash -- so the poll loop is fetched from the
+         * bank it is waiting on. It still works, because the core stalls
+         * and resumes rather than faulting, which is exactly why the gap
+         * survived a size check. It just gives back everything ITCM was
+         * for.
+         *
+         * Named by object file because these are vendor sources and not
+         * ours to annotate.
+         */
+        *libstm32cube.a:stm32f7xx_hal_flash.c.obj(.text .text.*)
+        *libstm32cube.a:stm32f7xx_hal_flash_ex.c.obj(.text .text.*)
+        . = ALIGN(8);
+        __itcm_end = .;
+    } > ITCM AT> FLASH
+    __itcm_load = LOADADDR(.itcm);
+
     .text :
     {
         . = ALIGN(4);
@@ -133,25 +169,6 @@ SECTIONS
     /* Initialised data: stored in flash, copied to RAM by the startup code. */
     _sidata = LOADADDR(.data);
 
-    /*
-     * Code that must survive a busy flash bank. Loaded from flash and
-     * copied to ITCM by board_init() -- ST's startup copies .data and
-     * knows nothing about this, so anything placed here is unreachable
-     * until that copy has run.
-     *
-     * The section is emitted unconditionally, so __itcm_start and
-     * __itcm_end are equal when nothing uses it and the copy is a no-op.
-     */
-    .itcm :
-    {
-        . = ALIGN(8);
-        __itcm_start = .;
-        *(.itcm)
-        *(.itcm*)
-        . = ALIGN(8);
-        __itcm_end = .;
-    } > ITCM AT> FLASH
-    __itcm_load = LOADADDR(.itcm);
 
     .data :
     {

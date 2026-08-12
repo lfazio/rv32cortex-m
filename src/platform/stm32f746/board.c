@@ -350,41 +350,53 @@ static bool arena_erase(void)
     return true;
 }
 
-uint32_t board_flash_arena_alloc(uint32_t len)
+static bool arena_ensure_erased(void)
 {
-    if (len > ARENA_SIZE) {
+    if (g_arena_erased) {
+        return true;
+    }
+
+    HAL_FLASH_Unlock();
+    const bool ok = arena_erase();
+    HAL_FLASH_Lock();
+
+    if (!ok) {
+        return false;
+    }
+    /*
+     * Erasing changed what flash holds behind the caches' backs, and the
+     * D-cache may still be holding the old contents from a readback.
+     * Invalidating is the same rule the JIT lives by after emitting code.
+     */
+    SCB_CleanInvalidateDCache();
+    SCB_InvalidateICache();
+
+    g_arena_used = 0u;
+    g_arena_erased = true;
+    return true;
+}
+
+uint32_t board_flash_arena_begin(void)
+{
+    if (!arena_ensure_erased()) {
         return 0u;
     }
-
-    /* Word-align each image so the next one can be programmed as words. */
-    const uint32_t need = (len + 3u) & ~3u;
-
-    if (!g_arena_erased || (g_arena_used + need) > ARENA_SIZE) {
-        HAL_FLASH_Unlock();
-        const bool ok = arena_erase();
-        HAL_FLASH_Lock();
-
-        if (!ok) {
-            return 0u;
-        }
-        /*
-         * Erasing changed what flash holds behind the caches' backs, and
-         * both of them may still be holding the old contents of the
-         * arena -- the D-cache from a readback, the I-cache never,
-         * because nothing executes there. Invalidating is not optional
-         * on this part: it is the same rule the JIT lives by.
-         */
-        SCB_CleanInvalidateDCache();
-        SCB_InvalidateICache();
-
-        g_arena_used = 0u;
-        g_arena_erased = true;
+    if (g_arena_used >= ARENA_SIZE) {
+        return 0u;
     }
+    return ARENA_BASE + g_arena_used;
+}
 
-    const uint32_t at = ARENA_BASE + g_arena_used;
+void board_flash_arena_commit(uint32_t len)
+{
+    /* Word-align so the next image can be programmed as whole words. */
+    g_arena_used += (len + 3u) & ~3u;
+}
 
-    g_arena_used += need;
-    return at;
+bool board_flash_arena_reset(void)
+{
+    g_arena_erased = false;
+    return arena_ensure_erased();
 }
 
 __attribute__((section(".itcm"), noinline))
