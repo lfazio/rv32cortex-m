@@ -32,12 +32,14 @@ set(guest_bin "${CMAKE_CURRENT_BINARY_DIR}/guest_image.bin")
 # the staged copy untouched, and produced firmware still carrying the
 # previous guest. Nothing failed, which is what made it dangerous.
 add_custom_command(
-    OUTPUT "${guest_bin}"
-    COMMAND ${CMAKE_COMMAND} -E copy "${guest_src}" "${guest_bin}"
-    DEPENDS "${guest_src}" guest-${RV32_GUEST}
-    COMMENT "Staging guest image ${RV32_GUEST}.bin"
+    OUTPUT "${guest_bin}.ro" "${guest_bin}.rw"
+    COMMAND ${CMAKE_COMMAND} -E copy "${guest_src}.ro" "${guest_bin}.ro"
+    COMMAND ${CMAKE_COMMAND} -E copy "${guest_src}.rw" "${guest_bin}.rw"
+    DEPENDS "${guest_src}.ro" "${guest_src}.rw" guest-${RV32_GUEST}
+    COMMENT "Staging guest image ${RV32_GUEST}.bin (split)"
     VERBATIM)
-add_custom_target(guest-image-staged DEPENDS "${guest_bin}")
+add_custom_target(guest-image-staged
+    DEPENDS "${guest_bin}.ro" "${guest_bin}.rw")
 
 # ---------------------------------------------------------------------
 # Vendor sources
@@ -102,8 +104,8 @@ target_link_libraries(rv32-stm32f746 PRIVATE rv32core stm32cube)
 
 # guest_image.S pulls the binary in with .incbin.
 set_source_files_properties(guest_image.S PROPERTIES
-    COMPILE_DEFINITIONS "RV32_GUEST_IMAGE=${guest_bin}"
-    OBJECT_DEPENDS "${guest_bin}")
+    COMPILE_DEFINITIONS "RV32_GUEST_IMAGE_RO=${guest_bin}.ro;RV32_GUEST_IMAGE_RW=${guest_bin}.rw"
+    OBJECT_DEPENDS "${guest_bin}.ro;${guest_bin}.rw")
 
 if(TARGET guest-${RV32_GUEST})
     add_dependencies(rv32-stm32f746 guest-image-staged)
