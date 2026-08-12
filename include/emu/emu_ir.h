@@ -40,9 +40,12 @@
  *
  * Deliberate limits
  * -----------------
- * Everything is a 32-bit integer. Both current guests are 32-bit, the
- * third is too, and a type lattice that nothing needs is a cost paid on
- * every translation. Floating point stays on the helper path.
+ * Every value is 32 bits. Both current guests are 32-bit and the third
+ * is too, and a type lattice that nothing needs is a cost paid on every
+ * translation -- so a float is its IEEE-754 bit pattern in an ordinary
+ * temp, and the *operation* says how to read it. That is what lets the
+ * optimiser, the register allocator and the dead-store rule apply to
+ * floating-point values without knowing they are floats.
  *
  * There is no allocation. Blocks are fixed-size arrays sized for the
  * target, because on a microcontroller these bytes are the guest's.
@@ -239,6 +242,62 @@ typedef enum emu_ir_op {
     EMU_IR_SELECT,
 
     /*
+     * Floating point, single precision.
+     *
+     * The register file is separate from the integer one on both guests
+     * that have floats, so it gets its own accessors rather than an
+     * offset trick -- and everything between them is an ordinary temp,
+     * which is what makes FMV.X.W an FGET and a PUT with nothing in the
+     * middle.
+     *
+     * `aux` carries the rounding mode (EMU_IR_FRM_*) on every operation
+     * whose result depends on one, resolved by the *frontend* at
+     * translation: a guest's "dynamic" mode is a register read, and
+     * baking it in is what lets a backend with no equivalent for a
+     * particular mode decline that block instead of quietly rounding
+     * differently. This project has made that mistake once already, on
+     * ARM, where the old run-time table mapped RISC-V's ties-away to
+     * ties-even and no test noticed.
+     *
+     * A block that contains any of these accumulates the host's sticky
+     * exception flags and hands them to the frontend once, at the block
+     * epilogue -- see emu_ir_target_t.fp_flags. Per-operation would be
+     * correct and is what the flags mean, but every path out of a block
+     * already passes through the epilogue, so once is enough and the
+     * difference is invisible to a guest that can only read them with a
+     * CSR instruction no backend translates.
+     */
+    EMU_IR_FGET,           /* dst = freg[imm]                          */
+    EMU_IR_FPUT,           /* freg[imm] = a                            */
+
+    EMU_IR_FADD, EMU_IR_FSUB, EMU_IR_FMUL, EMU_IR_FDIV,
+    EMU_IR_FSQRT,          /* dst = sqrt(a)                            */
+
+    /*
+     * Minimum and maximum, which are *not* a compare and a select: both
+     * guests define the result for a NaN operand as the other operand,
+     * where every host's instruction of that name returns its second.
+     */
+    EMU_IR_FMIN, EMU_IR_FMAX,
+
+    /* Sign injection; `aux` is EMU_IR_FSGNJ_*. Pure bit manipulation. */
+    EMU_IR_FSGNJ,
+
+    /*
+     * dst = (a `aux` b) ? 1 : 0 with `aux` an EMU_IR_C_EQ/LT/LE, and
+     * unordered always false. Separate from EMU_IR_SETCC because the
+     * unordered case has no integer analogue.
+     */
+    EMU_IR_FCMP,
+
+    /* Conversions. `aux` is a rounding mode plus EMU_IR_F_UNSIGNED. */
+    EMU_IR_FCVT_TO_I,
+    EMU_IR_FCVT_FROM_I,
+
+    /* The ten-bit classification both guests spell the same way. */
+    EMU_IR_FCLASS,
+
+    /*
      * Anything the IR does not model: a call to a frontend helper with
      * the cpu pointer and up to three arguments. The escape hatch that
      * keeps a block whole -- this project has measured that declining an
@@ -317,6 +376,42 @@ typedef enum emu_ir_cond {
     EMU_IR_C_LEU, EMU_IR_C_GTU,
     EMU_IR_C_ALWAYS
 } emu_ir_cond_t;
+
+/*
+ * Rounding modes, in the `aux` of every FP operation that has one. The
+ * numbering is RISC-V's because it is the guest that has to name them;
+ * a host without an equivalent for one declines the operation.
+ */
+#define EMU_IR_FRM_RNE  0u     /* to nearest, ties to even             */
+#define EMU_IR_FRM_RTZ  1u     /* toward zero                          */
+#define EMU_IR_FRM_RDN  2u     /* toward -inf                          */
+#define EMU_IR_FRM_RUP  3u     /* toward +inf                          */
+#define EMU_IR_FRM_RMM  4u     /* to nearest, ties away -- x86 and ARM
+                                * have no mode for this               */
+#define EMU_IR_FRM(aux)     ((aux) & 7u)
+
+/* Conversion is to or from an unsigned integer. */
+#define EMU_IR_F_UNSIGNED   (1u << 3)
+
+/* EMU_IR_FSGNJ variants, in `aux`. */
+#define EMU_IR_FSGNJ_J   0u    /* take b's sign            */
+#define EMU_IR_FSGNJ_N   1u    /* take b's sign, negated   */
+#define EMU_IR_FSGNJ_X   2u    /* xor the two signs        */
+
+/*
+ * The host's sticky exception flags, as emu_ir_target_t.fp_flags
+ * receives them. Architecture-neutral, because x86 and ARM order their
+ * own differently from each other and from both guests -- and this
+ * project has already spent a debugging session on exactly that: ARM is
+ * IOC,DZC,OFC,UFC,IXC from bit 0 and RISC-V is NX,UF,OF,DZ,NV, so a
+ * backend that passed its own encoding through would be right on one
+ * host and wrong on the other.
+ */
+#define EMU_IR_FE_INEXACT   (1u << 0)
+#define EMU_IR_FE_UNDERFLOW (1u << 1)
+#define EMU_IR_FE_OVERFLOW  (1u << 2)
+#define EMU_IR_FE_DIVBYZERO (1u << 3)
+#define EMU_IR_FE_INVALID   (1u << 4)
 
 /* Access widths for LOAD and STORE, in `aux`. */
 #define EMU_IR_MEM_SIZE(aux)   ((aux) & 7u)
@@ -483,6 +578,24 @@ typedef struct emu_ir_target {
                      uint32_t *out);
     uint32_t (*store)(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
                       uint32_t val);
+
+    /*
+     * Floating point. NULL where the guest has none, which is what a
+     * backend tests before lowering any of the FP class -- the same way
+     * a NULL `load` makes it decline memory.
+     *
+     * `freg_offset` locates the FP register file inside emu_cpu_t.
+     * `fp_flags` accumulates one block's worth of host sticky flags,
+     * given in EMU_IR_FE_* terms, into wherever the guest keeps them;
+     * it is called once per block that used any FP operation, on the
+     * single path every exit takes.
+     *
+     * `fp_dirty` is the hook for guests that track extension state --
+     * RISC-V's mstatus.FS -- and is called from the same place. A
+     * frontend without one leaves it NULL.
+     */
+    uint32_t (*freg_offset)(uint32_t n);
+    void     (*fp_flags)(emu_cpu_t *cpu, uint32_t flags);
 } emu_ir_target_t;
 
 /*

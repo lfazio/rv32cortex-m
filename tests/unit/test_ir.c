@@ -436,6 +436,8 @@ typedef struct {
     uint32_t r[16];
     uint32_t flags;
     uint32_t pc;
+    uint32_t f[16];        /* the FP register file */
+    uint32_t fe;           /* accumulated EMU_IR_FE_* flags */
 } fake_cpu_t;
 
 #define FAKE_F_Z (1u << 0)
@@ -449,6 +451,16 @@ static uint32_t fake_reg_offset(uint32_t n)
 }
 
 static bool fake_reg_is_zero(uint32_t n) { return n == 0u; }
+
+static uint32_t fake_freg_offset(uint32_t n)
+{
+    return (uint32_t)offsetof(fake_cpu_t, f) + n * 4u;
+}
+
+static void fake_fp_flags(emu_cpu_t *cpu, uint32_t flags)
+{
+    ((fake_cpu_t *)(void *)cpu)->fe |= flags;
+}
 
 /*
  * A tiny guest memory, so the memory operations can be lowered and run
@@ -506,6 +518,8 @@ static const emu_ir_target_t g_fake_target = {
     .helper_count = 0u,
     .load         = fake_load,
     .store        = fake_store,
+    .freg_offset  = fake_freg_offset,
+    .fp_flags     = fake_fp_flags,
 };
 
 #define IR_TEST_CODE_BYTES 8192u
@@ -958,6 +972,131 @@ static void test_encode_rex(void)
 
 /* ------------------------------------------------------------------ */
 
+/*
+ * The floating-point semantics that are *not* what a host instruction of
+ * the same name does.
+ *
+ * Every case here is one where the obvious lowering is wrong:
+ *
+ *   FMIN/FMAX  both guests return the other operand for a NaN; every
+ *              host minss/maxss returns its second operand regardless,
+ *              so "emit minss" is wrong for exactly the input a test
+ *              using ordinary numbers never supplies
+ *   FCMP       unordered is false for all three comparisons, including
+ *              the one spelled "not equal" -- so it cannot be an
+ *              inverted equality
+ *   FCVT       NaN gives the target's *maximum*, where x86 and ARM both
+ *              give zero, and out-of-range saturates rather than wraps
+ *   FSGNJ      operates on bits, so it has to work on a NaN
+ *
+ * A test built from finite, ordered, in-range values passes against an
+ * implementation that gets all four wrong.
+ */
+#define F_NAN   0x7FC00000u
+#define F_SNAN  0x7F800001u
+#define F_ONE   0x3F800000u
+#define F_TWO   0x40000000u
+#define F_NEG1  0xBF800000u
+#define F_PZERO 0x00000000u
+#define F_NZERO 0x80000000u
+#define F_PINF  0x7F800000u
+
+static uint32_t fp_eval(emu_ir_op_t op, uint8_t aux, uint32_t x, uint32_t y)
+{
+    fake_cpu_t cpu;
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.f[1] = x;
+    cpu.f[2] = y;
+
+    emu_ir_reset(&g_b);
+    {
+        const uint16_t a = emu_ir_emit(&g_b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                                       EMU_IR_NO_TEMP, 1u, 0u);
+        const uint16_t b = emu_ir_emit(&g_b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                                       EMU_IR_NO_TEMP, 2u, 0u);
+        const uint16_t r = emu_ir_emit(&g_b, op, aux, a, b, 0u, 0u);
+
+        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, 0u, r, EMU_IR_NO_TEMP, 3u, 0u);
+    }
+    emu_ir_optimise(&g_b, EMU_IR_F_ALL, NULL);
+
+    if (!emu_ir_interp(&g_b, (emu_cpu_t *)(void *)&cpu, &g_fake_target)) {
+        return 0xDEADBEEFu;
+    }
+    return cpu.f[3];
+}
+
+static void test_fp_semantics(void)
+{
+    /* Arithmetic, to establish the plumbing works at all. */
+    CHECK_EQ(fp_eval(EMU_IR_FADD, 0u, F_ONE, F_ONE), F_TWO);
+    CHECK_EQ(fp_eval(EMU_IR_FMUL, 0u, F_TWO, F_TWO), 0x40800000u);  /* 4 */
+    CHECK_EQ(fp_eval(EMU_IR_FDIV, 0u, F_TWO, F_ONE), F_TWO);
+
+    /* A NaN operand gives the *other* one; two NaNs give the canonical. */
+    CHECK_EQ(fp_eval(EMU_IR_FMIN, 0u, F_NAN, F_ONE), F_ONE);
+    CHECK_EQ(fp_eval(EMU_IR_FMIN, 0u, F_ONE, F_NAN), F_ONE);
+    CHECK_EQ(fp_eval(EMU_IR_FMAX, 0u, F_NAN, F_ONE), F_ONE);
+    CHECK_EQ(fp_eval(EMU_IR_FMAX, 0u, F_NAN, F_NAN), F_NAN);
+    /* Signed zeros compare equal, and min must still prefer the negative. */
+    CHECK_EQ(fp_eval(EMU_IR_FMIN, 0u, F_PZERO, F_NZERO), F_NZERO);
+    CHECK_EQ(fp_eval(EMU_IR_FMAX, 0u, F_PZERO, F_NZERO), F_PZERO);
+
+    /* Unordered is false for every comparison, "not equal" included. */
+    CHECK_EQ(fp_eval(EMU_IR_FCMP, EMU_IR_C_EQ, F_NAN, F_NAN), 0u);
+    CHECK_EQ(fp_eval(EMU_IR_FCMP, EMU_IR_C_LT, F_NAN, F_ONE), 0u);
+    CHECK_EQ(fp_eval(EMU_IR_FCMP, EMU_IR_C_LE, F_ONE, F_NAN), 0u);
+    CHECK_EQ(fp_eval(EMU_IR_FCMP, EMU_IR_C_EQ, F_ONE, F_ONE), 1u);
+    CHECK_EQ(fp_eval(EMU_IR_FCMP, EMU_IR_C_LT, F_NEG1, F_ONE), 1u);
+    CHECK_EQ(fp_eval(EMU_IR_FCMP, EMU_IR_C_LE, F_ONE, F_ONE), 1u);
+
+    /* Sign injection is bit manipulation, so a NaN goes through it. */
+    CHECK_EQ(fp_eval(EMU_IR_FSGNJ, EMU_IR_FSGNJ_J, F_ONE, F_NEG1), F_NEG1);
+    CHECK_EQ(fp_eval(EMU_IR_FSGNJ, EMU_IR_FSGNJ_N, F_ONE, F_NEG1), F_ONE);
+    CHECK_EQ(fp_eval(EMU_IR_FSGNJ, EMU_IR_FSGNJ_X, F_NEG1, F_NEG1), F_ONE);
+    CHECK_EQ(fp_eval(EMU_IR_FSGNJ, EMU_IR_FSGNJ_J, F_NAN, F_NEG1),
+             F_NAN | 0x80000000u);
+
+    /* NaN converts to the maximum, not to zero; range saturates. */
+    CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ, F_NAN, 0u),
+             0x7FFFFFFFu);
+    CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I,
+                     EMU_IR_FRM_RTZ | EMU_IR_F_UNSIGNED, F_NAN, 0u),
+             0xFFFFFFFFu);
+    CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ, F_PINF, 0u),
+             0x7FFFFFFFu);
+    CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I,
+                     EMU_IR_FRM_RTZ | EMU_IR_F_UNSIGNED, F_NEG1, 0u), 0u);
+
+    /* Rounding: 2.5 and 3.5 are the pair that separates the modes. */
+    const uint32_t f2h = 0x40200000u;      /* 2.5 */
+    const uint32_t f3h = 0x40600000u;      /* 3.5 */
+    CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RNE, f2h, 0u), 2u);
+    CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RNE, f3h, 0u), 4u);
+    CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RMM, f2h, 0u), 3u);
+    CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ, f2h, 0u), 2u);
+    CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RUP, f2h, 0u), 3u);
+    CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RDN, f2h, 0u), 2u);
+
+    CHECK_EQ(fp_eval(EMU_IR_FCVT_FROM_I, 0u, 0xFFFFFFFFu, 0u), F_NEG1);
+    CHECK_EQ(fp_eval(EMU_IR_FCVT_FROM_I, EMU_IR_F_UNSIGNED, 1u, 0u), F_ONE);
+
+    /* The classification bits. */
+    CHECK_EQ(fp_eval(EMU_IR_FCLASS, 0u, F_PINF, 0u), 1u << 7);
+    CHECK_EQ(fp_eval(EMU_IR_FCLASS, 0u, F_PINF | 0x80000000u, 0u), 1u << 0);
+    CHECK_EQ(fp_eval(EMU_IR_FCLASS, 0u, F_PZERO, 0u), 1u << 4);
+    CHECK_EQ(fp_eval(EMU_IR_FCLASS, 0u, F_NZERO, 0u), 1u << 3);
+    CHECK_EQ(fp_eval(EMU_IR_FCLASS, 0u, F_ONE, 0u), 1u << 6);
+    CHECK_EQ(fp_eval(EMU_IR_FCLASS, 0u, F_NEG1, 0u), 1u << 1);
+    CHECK_EQ(fp_eval(EMU_IR_FCLASS, 0u, F_NAN, 0u), 1u << 9);   /* quiet   */
+    CHECK_EQ(fp_eval(EMU_IR_FCLASS, 0u, F_SNAN, 0u), 1u << 8);  /* signal  */
+    CHECK_EQ(fp_eval(EMU_IR_FCLASS, 0u, 1u, 0u), 1u << 5);      /* subnorm */
+
+    /* The reference declines square root rather than approximating it. */
+    CHECK_EQ(fp_eval(EMU_IR_FSQRT, 0u, F_ONE, 0u), 0xDEADBEEFu);
+}
+
 void test_ir(void)
 {
     test_dead_flags_removed();
@@ -972,6 +1111,7 @@ void test_ir(void)
     test_flagless_frontend();
     test_use_counts();
     test_overflow_not_optimised();
+    test_fp_semantics();
 #if defined(EMU_JIT_X86_64)
     test_lower_add();
     test_lower_zero_register();

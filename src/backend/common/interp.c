@@ -159,6 +159,90 @@ static bool eval_cond(emu_cpu_t *cpu, const emu_ir_target_t *t, uint8_t cond)
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* Floating point                                                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Bits to float and back. Through a union rather than a cast, because a
+ * pointer cast between the two is a strict-aliasing violation that gcc
+ * acts on at -O2: it is entitled to keep the old value in a register and
+ * does.
+ */
+static EMU_ALWAYS_INLINE float b2f(uint32_t v)
+{
+    union { uint32_t u; float f; } c;
+    c.u = v;
+    return c.f;
+}
+
+static EMU_ALWAYS_INLINE uint32_t f2b(float v)
+{
+    union { uint32_t u; float f; } c;
+    c.f = v;
+    return c.u;
+}
+
+/*
+ * NaN without <math.h>: the core may not call libm, which is the same
+ * rule that made the RISC-V frontend's fsqrt a Newton-Raphson rather
+ * than a call to sqrt(). A NaN is the only value not equal to itself.
+ */
+static EMU_ALWAYS_INLINE bool ir_isnan(float v) { return v != v; }
+
+/* Round to an integral float under an EMU_IR_FRM_* mode. */
+static float ir_round(float v, uint8_t aux)
+{
+    const float t = (float)(int64_t)v;      /* toward zero */
+
+    switch (EMU_IR_FRM(aux)) {
+    case EMU_IR_FRM_RTZ:
+        return t;
+    case EMU_IR_FRM_RDN:
+        return (v < 0.0f && t != v) ? t - 1.0f : t;
+    case EMU_IR_FRM_RUP:
+        return (v > 0.0f && t != v) ? t + 1.0f : t;
+    case EMU_IR_FRM_RMM: {
+        const float d = v - t;
+        if (d >= 0.5f)  { return t + 1.0f; }
+        if (d <= -0.5f) { return t - 1.0f; }
+        return t;
+    }
+    case EMU_IR_FRM_RNE:
+    default: {
+        const float d = v - t;
+        if (d > 0.5f)  { return t + 1.0f; }
+        if (d < -0.5f) { return t - 1.0f; }
+        if (d == 0.5f  || d == -0.5f) {
+            /* Ties to even: keep t if it already is. */
+            const float h = t * 0.5f;
+            if (h != (float)(int64_t)h) {
+                return (d > 0.0f) ? t + 1.0f : t - 1.0f;
+            }
+        }
+        return t;
+    }
+    }
+}
+
+/* The ten-bit classification, which both guests spell identically. */
+static uint32_t ir_fclass(uint32_t bits)
+{
+    const uint32_t exp  = (bits >> 23) & 0xFFu;
+    const uint32_t frac = bits & 0x7FFFFFu;
+    const bool neg = (bits & 0x80000000u) != 0u;
+
+    if (exp == 0xFFu) {
+        if (frac == 0u)                 { return neg ? (1u << 0) : (1u << 7); }
+        return (frac & 0x400000u) ? (1u << 9) : (1u << 8);
+    }
+    if (exp == 0u) {
+        if (frac == 0u)                 { return neg ? (1u << 3) : (1u << 4); }
+        return neg ? (1u << 2) : (1u << 5);
+    }
+    return neg ? (1u << 1) : (1u << 6);
+}
+
 bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
                    const emu_ir_target_t *t)
 {
@@ -240,6 +324,118 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
         case EMU_IR_BSET:    r = a | (1u << (bv & 31u)); break;
         case EMU_IR_BCLR:    r = a & ~(1u << (bv & 31u)); break;
         case EMU_IR_BINV:    r = a ^ (1u << (bv & 31u)); break;
+
+        /* ---- floating point ---------------------------------- */
+        /*
+         * Computed in `float`, deliberately. The host's own single
+         * precision is the reference the compiled code will use, so
+         * doing it in double here and rounding once at the end would
+         * make the differential harness compare two different
+         * computations and call the difference a lowering bug.
+         */
+        case EMU_IR_FGET:
+            if (t->freg_offset == NULL) { return false; }
+            r = *(const uint32_t *)((const uint8_t *)cpu +
+                                    t->freg_offset(in->imm));
+            break;
+
+        case EMU_IR_FPUT:
+            if (t->freg_offset == NULL) { return false; }
+            *(uint32_t *)((uint8_t *)cpu + t->freg_offset(in->imm)) = a;
+            continue;
+
+        case EMU_IR_FADD:  r = f2b(b2f(a) + b2f(bv)); break;
+        case EMU_IR_FSUB:  r = f2b(b2f(a) - b2f(bv)); break;
+        case EMU_IR_FMUL:  r = f2b(b2f(a) * b2f(bv)); break;
+        case EMU_IR_FDIV:  r = f2b(b2f(a) / b2f(bv)); break;
+        /*
+         * Square root is declined here, not approximated.
+         *
+         * This file is the reference the differential harness compares
+         * compiled code against, and it may not call libm -- the same
+         * rule that made the RISC-V frontend's fsqrt a Newton-Raphson.
+         * An approximation would disagree with a host `sqrtss`, which is
+         * correctly rounded, in the last bit for some inputs, and the
+         * harness would report a lowering bug that was really an error
+         * in the thing doing the checking. A backend may still lower it
+         * natively; blocks containing one simply go unchecked, exactly
+         * as blocks containing a store already do.
+         */
+        case EMU_IR_FSQRT: return false;
+
+        /*
+         * A NaN operand gives the *other* operand, which is what both
+         * guests define and what no host instruction of this name does.
+         * Two NaNs give the canonical one.
+         */
+        case EMU_IR_FMIN:
+        case EMU_IR_FMAX: {
+            const float x = b2f(a), y = b2f(bv);
+            const bool xn = ir_isnan(x), yn = ir_isnan(y);
+
+            if (xn && yn)      { r = 0x7FC00000u; }
+            else if (xn)       { r = bv; }
+            else if (yn)       { r = a; }
+            else if (x == y)   { r = (in->op == (uint8_t)EMU_IR_FMIN)
+                                       ? (a | bv) : (a & bv); }
+            else if (in->op == (uint8_t)EMU_IR_FMIN) { r = (x < y) ? a : bv; }
+            else                                     { r = (x > y) ? a : bv; }
+            break;
+        }
+
+        case EMU_IR_FSGNJ: {
+            const uint32_t sign = (in->aux == EMU_IR_FSGNJ_N)
+                                    ? (~bv & 0x80000000u)
+                                : (in->aux == EMU_IR_FSGNJ_X)
+                                    ? ((a ^ bv) & 0x80000000u)
+                                    : (bv & 0x80000000u);
+            r = (a & 0x7FFFFFFFu) | sign;
+            break;
+        }
+
+        /* Unordered is false for all three, which is why EQ is not SETCC. */
+        case EMU_IR_FCMP: {
+            const float x = b2f(a), y = b2f(bv);
+
+            r = (ir_isnan(x) || ir_isnan(y)) ? 0u
+              : (in->aux == (uint8_t)EMU_IR_C_EQ) ? (x == y)
+              : (in->aux == (uint8_t)EMU_IR_C_LT) ? (x <  y)
+                                                  : (x <= y);
+            break;
+        }
+
+        case EMU_IR_FCVT_TO_I: {
+            /*
+             * Saturation and the NaN result are the guest's rule, not
+             * the host's -- C leaves an out-of-range conversion
+             * undefined, so the bounds are tested before converting
+             * rather than after.
+             */
+            const float x = b2f(a);
+            const bool uns = (in->aux & EMU_IR_F_UNSIGNED) != 0u;
+
+            if (ir_isnan(x)) {
+                r = uns ? 0xFFFFFFFFu : 0x7FFFFFFFu;
+            } else if (uns) {
+                r = (x <= 0.0f) ? 0u
+                  : (x >= 4294967296.0f) ? 0xFFFFFFFFu
+                                         : (uint32_t)ir_round(x, in->aux);
+            } else {
+                r = (x <= -2147483648.0f) ? 0x80000000u
+                  : (x >=  2147483648.0f) ? 0x7FFFFFFFu
+                                          : (uint32_t)(int32_t)
+                                                ir_round(x, in->aux);
+            }
+            break;
+        }
+
+        case EMU_IR_FCVT_FROM_I:
+            r = ((in->aux & EMU_IR_F_UNSIGNED) != 0u)
+                    ? f2b((float)a)
+                    : f2b((float)(int32_t)a);
+            break;
+
+        case EMU_IR_FCLASS: r = ir_fclass(a); break;
 
         case EMU_IR_SEXT8:   r = (uint32_t)(int32_t)(int8_t)a; break;
         case EMU_IR_SEXT16:  r = (uint32_t)(int32_t)(int16_t)a; break;

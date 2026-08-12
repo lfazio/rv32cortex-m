@@ -41,6 +41,7 @@ static bool op_writes(emu_ir_op_t op)
 {
     switch (op) {
     case EMU_IR_PUT:
+    case EMU_IR_FPUT:
     case EMU_IR_STORE:
     case EMU_IR_SETF:
     case EMU_IR_RETIRE:
