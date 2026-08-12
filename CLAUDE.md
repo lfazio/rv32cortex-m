@@ -83,8 +83,8 @@ when changing it), `-DRV32_GUEST=isatest|hello|bench|stm32drv|coremark`.
 ## Validation — run before claiming anything works
 
 ```sh
-./scripts/run-arch-test.sh      # official riscv-arch-test: 274/274 with -DEMU_FPU_SOFTFLOAT=ON, 222/274 without (every failure is F)
-./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77
+./scripts/run-arch-test.sh      # official riscv-arch-test, interpreter and --jit alike
+./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77 both ways
 ```
 
 Keep the suites' `-march` in step with what `misa` advertises: `rv32mi/csr`
@@ -166,10 +166,32 @@ Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
 - **In the JIT, what you decline costs more than what you translate badly.**
   Ending a block for an untranslatable instruction fragments hot code. Route it
   through a helper call instead — `jit_helper_alu` exists for exactly this.
-- **With the JIT on, FP arithmetic goes to VFP and never reaches SoftFloat.**
-  To validate the SoftFloat path on hardware, build `-DEMU_JIT=OFF`. Running
-  `isatest` both ways is a differential check between two genuinely different
-  FP implementations, and is worth doing after any change to either.
+- **There is one FP implementation, and both backends reach it.**
+  SoftFloat is the FP unit -- not an option, and a missing checkout is a
+  configure error rather than a fallback. Everything that rounds,
+  classifies or reports a flag goes to `rv_hart_fp`, from the
+  interpreter and from the JIT alike; only `FMV.X.W`/`FMV.W.X` are
+  lowered, because they move bits and cannot round.
+
+  This replaced an arrangement where the JIT emitted host FP
+  instructions, which was a *second* implementation of semantics the
+  core already owns, and the two disagreed exactly where the
+  architecture is fussiest -- NaN propagation, subnormals, and which of
+  fflags an operation may raise. rv32i/F: interpreter 78/78, JIT 55/78,
+  same binary. Routing the arithmetic to the helper made it 78/78 both
+  ways, and the JIT is still ahead of the interpreter on FP work
+  (fptest x5: 38ms against 54ms) because the block stays whole and only
+  the arithmetic becomes a call. To make it faster, bring operations
+  back one at a time, each measured against the F suite -- not the whole
+  table on the argument that the host has an FPU.
+
+  **The option that hid this named a variable that does not exist.**
+  These notes said `-DEMU_FPU_SOFTFLOAT=ON` against a real
+  `RV32_FPU_SOFTFLOAT`, defaulting to OFF. So every default build had an
+  FP unit failing two thirds of the F suite, and the documented way to
+  check that theory changed nothing and reported nothing -- which reads
+  as "SoftFloat makes no difference" rather than as a typo. A build flag
+  quoted in prose is not a tested thing; paste it from `CMakeLists.txt`.
 - **`MOVS` on a low register writes N and Z.** Zeroing a result register
   between `VMRS APSR_nzcv` and the `IT` that tests it destroys the comparison:
   Z ends up set and N clear, so `EQ` is always true, `MI` always false and `LS`
@@ -952,6 +974,38 @@ Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
   shift by zero. An encoder whose wrong answers are other valid
   instructions needs its *boundary* values tested, not its typical
   ones; both bugs are at an end of the range.
+- **`__WFI` stops the clock lwIP tells the time by.** `sys_now()` comes
+  from `board_cycles()`, which is DWT CYCCNT -- a counter of *processor*
+  cycles. The park loop waited in `__WFI`, which gates the processor
+  clock, so the stack's notion of time nearly stopped: measured across
+  29 seconds of wall time parked, lwIP's clock advanced **1.74 seconds,
+  about 6% of real time**.
+
+  Every timeout in the stack is slowed by that factor. It became fatal
+  in TFTP, whose 10-second session timeout then needs ~3 minutes of wall
+  time -- so a client killed mid-transfer wedged every later upload
+  behind "Only one connection at a time" until the board was reset,
+  which is how it presented and cost a whole debugging pass. A TCP
+  retransmission or an ARP entry ageing out is equally late and would
+  present as a mysteriously sluggish link rather than as a stopped
+  clock. The park loop no longer sleeps while the stack is up; a
+  free-running TIM would be the better answer if it ever needs to again,
+  because a peripheral keeps its clock through Sleep where CYCCNT does
+  not.
+
+  Two things about finding it are worth keeping. **`sys_timeout()`
+  asserts and then returns**, so a timer that fails to register is
+  simply absent -- which is indistinguishable from one that is armed and
+  never due, and sent the first diagnosis at `MEMP_NUM_SYS_TIMEOUT`
+  (raised to +4 anyway, since running that pool to the edge is what
+  makes a leak fatal). And **a watchdog gated on the wrong observable is
+  a watchdog that never fires**: the first version keyed on this file's
+  own `g_busy`, but lwIP refuses a request inside `tftp_recv()` before
+  `ctx->open()` is ever reached, so whether the server is stuck is not
+  something those callbacks can see. It sat silent through a board
+  refusing every upload. Trigger on idleness, which is observable, and
+  rebuild unconditionally -- an idle server costs a `udp_remove` and a
+  `udp_new`, so it is cheaper to rebuild than to know whether you had to.
 - **A recovery path wired to one of two symmetric cases recovers from
   the one that does not happen.** The flash arena filling up is the
   *expected* failure -- there is no length in a TFTP request, so running
