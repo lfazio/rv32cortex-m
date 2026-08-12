@@ -487,13 +487,81 @@ uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
 /* What the host's jit.c needs from this frontend                      */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Everything a translated block is specialised on, as one word.
+ *
+ * The framework compares this on each block entry and flushes the cache
+ * when it moves, so it has to change whenever anything baked in at
+ * translation does -- and must *not* change for anything else, because
+ * every spurious change throws away the whole cache.
+ *
+ * Three things go in, and each is here for a recorded reason:
+ *
+ *   frm    the IR resolves a "dynamic" rounding mode at translation, on
+ *          purpose, so that a backend without an encoding for one --
+ *          neither x86 nor ARM has ties-away -- can decline the block
+ *          rather than round differently. That specialisation is only
+ *          sound if changing frm invalidates it.
+ *   FS     an FP instruction is legal only while the unit is on. A
+ *          translate-time check is half a guard: a block built while FS
+ *          was on keeps executing after the guest turns the FPU off, and
+ *          three instructions that must raise illegal-instruction run
+ *          silently. That has happened here before.
+ *   vm_gen mappings change under blocks keyed on virtual addresses.
+ *          Not strictly needed while the IR path declines to run at all
+ *          under paging, but free, and the alternative is remembering to
+ *          add it at the moment that stops being true.
+ *
+ * FS is reduced to *off or not*, not carried as the two-bit field. An FP
+ * operation moves it Initial or Clean to Dirty as a side effect, so
+ * keeping the field would flush the cache on the first float of every
+ * block -- which is a correctness-preserving way to have no JIT at all.
+ */
+static uint32_t rv_ir_gen_key(const rv_hart_t *h)
+{
+#if RV_EXT_F
+    const uint32_t fs_off = ((h->mstatus & MSTATUS_FS_MASK) == 0u)
+                                ? 1u : 0u;
+    const uint32_t frm = (h->fcsr >> 5) & 7u;
+
+    return (h->vm_gen << 8) | (fs_off << 4) | frm;
+#else
+    return h->vm_gen;
+#endif
+}
+
+/*
+ * Re-derived here rather than in `generation` itself, which is read on
+ * every block entry -- CoreMark enters blocks 2.9 million times a run.
+ *
+ * Once per interpreted instruction is enough, and is exactly the right
+ * place: frm and mstatus.FS move only through a CSR write, a SYSTEM
+ * instruction this translator declines, so every such write lands on the
+ * interpreter fallback. Nothing else alters either -- a trap does not
+ * touch FS, and mret restores privilege rather than extension state.
+ */
+static void rv_jit_after_interp(emu_cpu_t *cpu)
+{
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+
+    h->jit_gen = rv_ir_gen_key(h);
+}
+
 static void rv_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
 {
     rv_hart_t *const h = (rv_hart_t *)cpu;
 
+    /*
+     * Seeded here as well as maintained by after_interp, so the very
+     * first block entry compares against the state it was translated
+     * under rather than against zero.
+     */
+    h->jit_gen = rv_ir_gen_key(h);
+
     out->pc = &h->pc;
     out->state = &h->state;
     out->blocked = &h->fetch_guard;
+    out->generation = &h->jit_gen;
 #if RV_LAZY_IRQ_CHECK
     out->irq_pending = &h->irq_dirty;
 #endif
@@ -563,7 +631,7 @@ const emu_ir_frontend_t rv_ir_frontend = {
     .wake         = rv_jit_wake,
     .take_irq     = rv_jit_take_irq,
     .count        = rv_jit_count,
-    .after_interp = NULL,
+    .after_interp = rv_jit_after_interp,
     .code_bytes   = RV_JIT_HOST_CODE_BYTES,
     /* x[0..31] and pc; everything past it is bus pointers and counters. */
     .diff_state_bytes = (uint32_t)offsetof(rv_hart_t, pc) + 4u,

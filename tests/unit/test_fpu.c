@@ -23,6 +23,7 @@
 
 #include "rv32/rv_hart.h"
 #include "rv32/rv_csr.h"
+#include "rv32/rv_ir.h"
 
 #include <string.h>
 
@@ -95,6 +96,84 @@ static uint32_t fp_op_x(uint32_t f7, uint32_t rm, uint32_t rs2,
         *flags = g_hart.fcsr & 0x1Fu;
     }
     return g_hart.x[3];
+}
+
+/*
+ * The generation key the IR JIT flushes on.
+ *
+ * Two failure modes, opposite in direction and both recorded in this
+ * tree, so both are checked:
+ *
+ *   too coarse  keeping the whole two-bit FS field means an FP
+ *               operation moving it Clean to Dirty -- which every FP
+ *               operation does, as a side effect -- flushes the code
+ *               cache. That is a correctness-preserving way to have no
+ *               JIT at all, and no test of *correctness* would notice.
+ *   too narrow  missing frm, or missing FS turning off, leaves blocks
+ *               running that were specialised on state the guest has
+ *               since changed. That one is a wrong answer: three
+ *               instructions that must raise illegal-instruction run
+ *               silently.
+ *
+ * The key is read through the frontend's own after_interp hook rather
+ * than by calling the static that computes it, so what is under test is
+ * the thing the framework actually consults.
+ */
+static uint32_t gen_key(void)
+{
+    rv_ir_frontend.after_interp((emu_cpu_t *)&g_hart);
+    return g_hart.jit_gen;
+}
+
+static void test_jit_generation_key(void)
+{
+    fp_reset();
+    g_hart.mstatus = (g_hart.mstatus & ~MSTATUS_FS_MASK) |
+                     (2u << MSTATUS_FS_SHIFT);        /* Clean */
+    g_hart.fcsr = 0u;                                 /* frm = RNE */
+
+    const uint32_t base = gen_key();
+
+    /* Dirty is still "on", so the key must not move. */
+    g_hart.mstatus = (g_hart.mstatus & ~MSTATUS_FS_MASK) |
+                     (3u << MSTATUS_FS_SHIFT);        /* Dirty */
+    CHECK_EQ(gen_key(), base);
+
+    /* Initial is also on. */
+    g_hart.mstatus = (g_hart.mstatus & ~MSTATUS_FS_MASK) |
+                     (1u << MSTATUS_FS_SHIFT);
+    CHECK_EQ(gen_key(), base);
+
+    /* Off is not, and a block built while it was on must be discarded. */
+    g_hart.mstatus &= ~MSTATUS_FS_MASK;
+    CHECK(gen_key() != base);
+
+    /* Back on, and every rounding mode is its own specialisation. */
+    g_hart.mstatus |= (2u << MSTATUS_FS_SHIFT);
+    CHECK_EQ(gen_key(), base);
+
+    uint32_t seen[8];
+    for (uint32_t rm = 0u; rm < 5u; rm++) {
+        g_hart.fcsr = rm << 5;
+        seen[rm] = gen_key();
+        for (uint32_t j = 0u; j < rm; j++) {
+            CHECK(seen[rm] != seen[j]);
+        }
+    }
+
+    /*
+     * The accrued exception flags share fcsr with frm and are written
+     * by every operation that raises one. They are not specialised on,
+     * so they must not flush.
+     */
+    g_hart.fcsr = 0u;
+    const uint32_t clean = gen_key();
+    g_hart.fcsr = 0x1Fu;                              /* all fflags set */
+    CHECK_EQ(gen_key(), clean);
+
+    /* A mapping change invalidates blocks keyed on virtual addresses. */
+    g_hart.vm_gen++;
+    CHECK(gen_key() != clean);
 }
 
 void test_fpu(void)
@@ -252,6 +331,7 @@ void test_fpu(void)
                             &tval),
                  RV_EXC_ILLEGAL_INSN);
     }
+    test_jit_generation_key();
 }
 
 #else  /* !RV_EXT_F */

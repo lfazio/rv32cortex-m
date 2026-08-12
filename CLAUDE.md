@@ -669,13 +669,23 @@ what changes between the parts.
   guest turns the FPU off, so instructions that must raise
   illegal-instruction run silently.
 
-  So the frontend cannot emit EMU_IR_F* until the IR path grows the
-  same specialise-and-flush machinery `jit_rv32.c` has. That is a
-  counter bumped where FS and frm can move -- a CSR write, which is a
-  SYSTEM instruction the translator declines, so the interpreter
-  fallback is the single place it can happen -- plumbed through `bind`.
-  Do not shortcut it by checking FS at translation only. That is the
-  bug, not the fix.
+  It now has one: `rv_ir_gen_key` folds frm, FS off-ness and `vm_gen`
+  into a word that `after_interp` refreshes and `bind` points
+  `generation` at. Re-derived on the interpreter fallback rather than in
+  `generation` itself, because that is read on every block entry and
+  CoreMark enters blocks 2.9M times a run.
+
+  **The key can be wrong in two opposite directions and only one of them
+  is a wrong answer.** Too narrow -- missing frm, say -- leaves blocks
+  running that were specialised on state the guest has changed. Too
+  coarse is the subtler one: keeping the whole two-bit FS field rather
+  than its off-ness means every FP operation, which moves FS from Clean
+  to Dirty as a side effect, flushes the code cache. That is a
+  correctness-preserving way to have no JIT, and no test of correctness
+  would notice. `test_jit_generation_key` checks both, and both were
+  confirmed by breaking them: 10 failures narrow, 2 failures coarse.
+  Accrued fflags share fcsr with frm and must *not* flush; that is
+  checked too.
 - **A guest-register cache in r8-r10 was tried and is 15.5% slower.** Reads per
   block said it should win; it did not, because a cached read is `MOV` where an
   uncached one is `LDR` -- one instruction either way -- while write-through

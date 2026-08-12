@@ -108,6 +108,16 @@ typedef struct rv_hart {
     uint32_t vm_gen;
 
     /*
+     * What the IR JIT's blocks are specialised on, as one word: the
+     * rounding mode, whether the FP unit is on, and vm_gen. Maintained
+     * on the interpreter fallback -- see rv_ir.c -- because everything
+     * in it moves only through a CSR write, and read by the framework on
+     * every block entry, which is why it is a cached value rather than
+     * something re-derived.
+     */
+    uint32_t jit_gen;
+
+    /*
      * Direct-mapped TLB. Tagged with the full VPN, so no flush is needed
      * on an ASID change that does not alter the mapping -- but satp writes
      * and SFENCE.VMA flush it wholesale, which is the conservative reading
