@@ -686,6 +686,26 @@ what changes between the parts.
   confirmed by breaking them: 10 failures narrow, 2 failures coarse.
   Accrued fflags share fcsr with frm and must *not* flush; that is
   checked too.
+- **A capability query is worth nothing to a backend that cannot emit the
+  fallback.** `emu_ir_can_lower` exists so a frontend can turn an
+  operation a host lacks into a helper call rather than a declined
+  block. The Thumb-2 IR backend answers it honestly -- it declines
+  FMIN/FMAX, the comparisons, the conversions -- and then declines
+  `EMU_IR_HELPER_TRAP` as well, so every one of those answers costs the
+  whole block anyway. The mechanism is a no-op there.
+
+  It presented as a *perfect* null result: flashing the board after
+  wiring the frontend to emit floating point gave `xlat 170` and
+  `interp 14700`, identical to the previous run to the digit, with the
+  test still passing 296/296. Identical numbers are not "no regression",
+  they are "the code never ran" -- and on the host the same commit moved
+  an F architecture test from 452 interpreted to 275. Two hosts
+  disagreeing that completely is the tell.
+
+  Lowering `EMU_IR_HELPER` and `EMU_IR_HELPER_TRAP` on Thumb-2 is the
+  fix and is not hard: r0 the cpu, r1 and r2 the arguments, `t2_call`,
+  then compare and take the existing conditional exit -- the same shape
+  as the LOAD and STORE calls already beside it.
 - **A guest-register cache in r8-r10 was tried and is 15.5% slower.** Reads per
   block said it should win; it did not, because a cached read is `MOV` where an
   uncached one is `LDR` -- one instruction either way -- while write-through
