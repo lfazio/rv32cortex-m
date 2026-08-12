@@ -145,6 +145,27 @@ void t2_shift_imm(uint32_t type, uint32_t rd, uint32_t rm,
     const uint32_t n = amount & 31u;
 
     /*
+     * imm5 == 0 does not mean "no shift" for every type, and only LSL
+     * reads it that way. ARM spends the otherwise-useless encoding on
+     * the amount imm5 cannot hold: LSR #0 *is* LSR #32, ASR #0 is
+     * ASR #32, and ROR #0 is RRX. So a shift by zero -- which RISC-V
+     * spells `srli`/`srai rd, rs, 0` and means as a move -- assembled
+     * as a shift by 32 and produced zero or a sign extension.
+     *
+     * Rewriting the type to LSL is what makes a zero shift a move for
+     * all four. Do not "fix" this by skipping the emit instead: rd and
+     * rm differ, so the move has to happen.
+     *
+     * Invisible to the x86-64 backend, whose `shr r32, 0` is a genuine
+     * no-op, and to every host suite for the same reason. The board
+     * found it: I-srli-00 and I-srai-00, which shift by zero 17 and 16
+     * times.
+     */
+    if (n == 0u) {
+        type = T2_LSL;
+    }
+
+    /*
      * The amount is split imm3:imm2 -- imm3 is the *high* three bits at
      * 14:12 and imm2 the low two at 7:6. Splitting it the other way
      * round encodes a different amount entirely and never faults: a
