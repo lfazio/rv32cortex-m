@@ -725,12 +725,23 @@ void emu_net_image_end(emu_net_image_t which, uint32_t len, bool ok)
          * exceptional one -- there is no length in a TFTP request, so
          * running out is how the end is discovered. Erasing here means
          * the client's retry succeeds rather than failing identically.
+         *
+         * Both halves, and the ram half is the one that matters. The
+         * client sends rom then ram, so the transfer that runs off the
+         * end of the arena is almost always the *second* one: the rom
+         * half still fits at the address begin() handed out. Erasing on
+         * the rom half alone therefore recovered from the case that
+         * rarely happens and not from the one that does -- every retry
+         * re-sent a rom half that fitted and a ram half that did not,
+         * failing identically for ever. The board needed a power cycle
+         * to take another image, which reads as a dead server rather
+         * than a full one.
          */
-        if (which == EMU_NET_IMAGE_ROM) {
-            (void)board_flash_arena_reset();
-            g_up_addr = 0u;
-            g_up_ro = 0u;
-        }
+        (void)board_flash_arena_reset();
+        g_up_addr = 0u;
+        g_up_ro = 0u;
+        g_up_rw = 0u;
+        g_up_have_ro = false;
         console_puts("\nemu: upload failed\n");
         return;
     }
