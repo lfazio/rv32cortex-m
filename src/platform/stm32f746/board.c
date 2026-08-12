@@ -15,6 +15,7 @@
 #include "stm32f7xx_hal.h"
 
 #include <stdbool.h>
+#include <string.h>
 
 static UART_HandleTypeDef g_console;
 
@@ -268,6 +269,169 @@ uint32_t board_console_rx_overruns(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* ITCM                                                                */
+/* ------------------------------------------------------------------ */
+
+extern uint8_t __itcm_start[];
+extern uint8_t __itcm_end[];
+extern uint8_t __itcm_load[];
+
+/*
+ * ST's startup copies .data and knows nothing about .itcm, so anything
+ * placed there is unreachable until this has run. It is the first thing
+ * board_init does after the caches, which is what makes "nothing may be
+ * called from ITCM before board_init" the whole of the rule.
+ *
+ * No cache maintenance is needed on the destination -- a TCM is never
+ * cached, which is precisely why code there is immune to the flash bank
+ * being busy. The barriers order the writes against the first fetch.
+ */
+static void itcm_init(void)
+{
+    const uint32_t len = (uint32_t)(__itcm_end - __itcm_start);
+
+    if (len != 0u) {
+        memcpy(__itcm_start, __itcm_load, len);
+        __DSB();
+        __ISB();
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* The guest-image arena in flash                                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Sectors 5, 6 and 7: 256 KiB each at 0x08040000, and the firmware is
+ * 124 KiB, which fits inside sectors 0 to 3. Sector 4 is left as a gap
+ * rather than used, so that growing the firmware past 128 KiB does not
+ * silently start overwriting the arena -- it runs out of room and the
+ * link fails instead.
+ */
+#define ARENA_BASE    0x08040000u
+#define ARENA_SIZE    (768u * 1024u)
+#define ARENA_SECTOR0 FLASH_SECTOR_5
+#define ARENA_SECTORS 3u
+
+static uint32_t g_arena_used;
+static bool     g_arena_erased;
+
+uint32_t board_flash_arena_base(void) { return ARENA_BASE; }
+uint32_t board_flash_arena_size(void) { return ARENA_SIZE; }
+
+/*
+ * In ITCM, and this is the whole reason ITCM is declared. A sector erase
+ * takes seconds on this part and stalls every fetch from the flash bank
+ * while it runs, so a routine polling for completion from flash would be
+ * polling instructions it cannot fetch. The core does not fault -- it
+ * stops, and comes back when the bank does, which looks like a very slow
+ * board rather than a design error.
+ */
+__attribute__((section(".itcm"), noinline))
+static bool arena_erase(void)
+{
+    FLASH_EraseInitTypeDef e = { 0 };
+    uint32_t bad = 0;
+
+    e.TypeErase = FLASH_TYPEERASE_SECTORS;
+    e.Sector = ARENA_SECTOR0;
+    e.NbSectors = ARENA_SECTORS;
+    /*
+     * VOLTAGE_RANGE_3 is 2.7-3.6 V, which is what a Nucleo runs at, and
+     * it selects x32 parallelism. Declaring a lower range would still
+     * work and would take substantially longer; declaring a higher one
+     * than the board supplies can leave the erase incomplete.
+     */
+    e.VoltageRange = FLASH_VOLTAGE_RANGE_3;
+
+    if (HAL_FLASHEx_Erase(&e, &bad) != HAL_OK) {
+        return false;
+    }
+    return true;
+}
+
+uint32_t board_flash_arena_alloc(uint32_t len)
+{
+    if (len > ARENA_SIZE) {
+        return 0u;
+    }
+
+    /* Word-align each image so the next one can be programmed as words. */
+    const uint32_t need = (len + 3u) & ~3u;
+
+    if (!g_arena_erased || (g_arena_used + need) > ARENA_SIZE) {
+        HAL_FLASH_Unlock();
+        const bool ok = arena_erase();
+        HAL_FLASH_Lock();
+
+        if (!ok) {
+            return 0u;
+        }
+        /*
+         * Erasing changed what flash holds behind the caches' backs, and
+         * both of them may still be holding the old contents of the
+         * arena -- the D-cache from a readback, the I-cache never,
+         * because nothing executes there. Invalidating is not optional
+         * on this part: it is the same rule the JIT lives by.
+         */
+        SCB_CleanInvalidateDCache();
+        SCB_InvalidateICache();
+
+        g_arena_used = 0u;
+        g_arena_erased = true;
+    }
+
+    const uint32_t at = ARENA_BASE + g_arena_used;
+
+    g_arena_used += need;
+    return at;
+}
+
+__attribute__((section(".itcm"), noinline))
+bool board_flash_write(uint32_t addr, const void *data, uint32_t len)
+{
+    const uint8_t *src = (const uint8_t *)data;
+    bool ok = true;
+
+    if (addr < ARENA_BASE || (addr + len) > (ARENA_BASE + ARENA_SIZE)) {
+        return false;
+    }
+
+    HAL_FLASH_Unlock();
+
+    while (len != 0u && ok) {
+        /*
+         * Word at a time, and the tail padded with ones rather than
+         * zeroes: an erased cell is 1, and programming can only clear
+         * bits, so padding with zeroes would make the remainder of the
+         * word unprogrammable if it were ever written again.
+         */
+        uint32_t w = 0xFFFFFFFFu;
+        const uint32_t n = (len < 4u) ? len : 4u;
+
+        memcpy(&w, src, n);
+        ok = HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, addr, w) == HAL_OK;
+
+        addr += 4u;
+        src += n;
+        len -= n;
+    }
+
+    HAL_FLASH_Lock();
+
+    /*
+     * The guest is about to be fetched from here, and on a part with
+     * caches that means the same clean-and-invalidate the JIT needs
+     * after emitting code. Skipping it does not fail visibly -- it runs
+     * the *previous* image, which passes or fails on its own merits and
+     * says nothing about the one just uploaded.
+     */
+    SCB_CleanInvalidateDCache();
+    SCB_InvalidateICache();
+    return ok;
+}
+
+/* ------------------------------------------------------------------ */
 /* Cycle counter                                                       */
 /* ------------------------------------------------------------------ */
 
@@ -325,6 +489,8 @@ void board_init(void)
      */
     SCB_EnableICache();
     SCB_EnableDCache();
+
+    itcm_init();
 
     HAL_Init();
     clock_init();

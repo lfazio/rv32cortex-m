@@ -23,13 +23,22 @@ ENTRY(Reset_Handler)
  * hardest -- the hart struct, the JIT code cache -- lands there simply by
  * being linked early, and guest RAM gets the rest.
  *
- * ITCM at 0x00000000 is deliberately not declared. It is reachable only
- * over the separate ITCM bus and cannot be initialised from a plain LMA
- * copy in this script, so claiming it here would produce a region nothing
- * could safely be placed in.
+ * ITCM at 0x00000000 is 16 KiB that costs the guest nothing, because it
+ * is outside the 320 KiB the RAM region above carves up. It does need an
+ * explicit copy -- ST's startup only knows about .data -- which board.c
+ * does before anything in it can be called.
+ *
+ * What it is for is narrow and specific: code that must keep running
+ * while the flash bank is busy. A sector erase stalls every fetch from
+ * flash for seconds, so the routine driving the erase cannot itself live
+ * there, and neither can any interrupt handler expected to fire during
+ * it. The existing .ramfunc mechanism would work equally well for that
+ * -- DTCM is not behind the flash interface either -- but every byte it
+ * uses is a byte taken from the guest, and ITCM's are free.
  */
 MEMORY
 {
+    ITCM  (rx)  : ORIGIN = 0x00000000, LENGTH = 16K
     FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 1024K
     RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 320K
 }
@@ -123,6 +132,26 @@ SECTIONS
 
     /* Initialised data: stored in flash, copied to RAM by the startup code. */
     _sidata = LOADADDR(.data);
+
+    /*
+     * Code that must survive a busy flash bank. Loaded from flash and
+     * copied to ITCM by board_init() -- ST's startup copies .data and
+     * knows nothing about this, so anything placed here is unreachable
+     * until that copy has run.
+     *
+     * The section is emitted unconditionally, so __itcm_start and
+     * __itcm_end are equal when nothing uses it and the copy is a no-op.
+     */
+    .itcm :
+    {
+        . = ALIGN(8);
+        __itcm_start = .;
+        *(.itcm)
+        *(.itcm*)
+        . = ALIGN(8);
+        __itcm_end = .;
+    } > ITCM AT> FLASH
+    __itcm_load = LOADADDR(.itcm);
 
     .data :
     {
