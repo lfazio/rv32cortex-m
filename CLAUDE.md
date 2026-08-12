@@ -761,6 +761,38 @@ what changes between the parts.
   the entry above before calling a difference noise.
 - Guest images link `-nostdlib`; there is no libc. The **core** must not call
   libm either, which is why `fsqrt` is Newton-Raphson rather than `sqrt()`.
+- **`-ffp-contract=fast` silently breaks the fused multiply-add's own
+  error term, and only on hosts that have an FMA.** `rv_hart_fp`
+  recovers a product's rounding error with 2Product/2Sum so an FMA
+  rounds once, and that is exact only if `a * b - p` is evaluated as
+  written. GCC's default fuses precisely that expression into a single
+  instruction wherever one exists, so the error computes as zero and the
+  result rounds twice. The linked F746 firmware had **eleven**
+  `VFMA`/`VFNMS` inside `rv_hart_fp`; x86-64 has no FMA in this build and
+  was correct, which is why no host suite ever saw it. Fixed with
+  `set_source_files_properties(... -ffp-contract=off)` on `rv_fpu.c`.
+
+  The lesson generalises past this file: **any algorithm that depends on
+  an intermediate being exactly the rounded value needs contraction
+  off**, and nothing warns you. It is not a wrong answer you can grep
+  for — it is a last-bit difference that only appears on one of the two
+  machines you build for.
+
+  Two things about finding it are worth keeping. It was invisible to
+  every unit test and both suites, and was caught only by
+  `tests/guest/fptest.c` running the *same guest binary* on the host and
+  the board and disagreeing — a differential check across
+  implementations, not against an expectation. And `fptest` reports a
+  checksum **per kernel** rather than one total, which is what turned
+  "the two disagree" into "the disagreement is in the one kernel that
+  compiles to an `fmadd.s`" in a single board run instead of five
+  bisecting reflashes.
+
+  The unit test added alongside (`test_fma_rounds_once`) pins the
+  semantics but has **not** been shown to catch this: rebuilding
+  `rv_fpu.c` with `-ffp-contract=fast -mfma` emitted no FMA on x86-64
+  anyway, so the A/B was inconclusive rather than passing. `fptest` on
+  hardware is the thing that would notice a regression.
 - **The FPU uses `float` only.** `double` on an M4F is libgcc soft-float: 17 KiB
   of firmware to emulate a single-precision FPU on a part that has one. Flags
   and rounding come from `<fenv.h>` (in libm on both glibc and newlib); the
