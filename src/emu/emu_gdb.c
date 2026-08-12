@@ -224,6 +224,24 @@ static void break_del(emu_gdb_t *g, uint32_t addr)
     }
 }
 
+/*
+ * Could a breakpoint be inside the block starting here? Far wider than
+ * any block this emits, on purpose: over-stepping is cheap, missing a
+ * breakpoint is the bug this replaced.
+ */
+#define EMU_GDB_BREAK_WINDOW 4096u
+
+static bool break_near(const emu_gdb_t *g, uint32_t pc)
+{
+    for (unsigned i = 0; i < EMU_GDB_MAX_BREAK; i++) {
+        if (g->brk[i].used && g->brk[i].addr >= pc &&
+            (g->brk[i].addr - pc) < EMU_GDB_BREAK_WINDOW) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool break_any(const emu_gdb_t *g)
 {
     for (unsigned i = 0; i < EMU_GDB_MAX_BREAK; i++) {
@@ -1014,8 +1032,41 @@ emu_run_reason_t emu_gdb_run(emu_gdb_t *g, uint32_t budget,
      * anyway.
      */
     while (*retired < budget) {
+        const uint32_t pc = g->target->pc_get(g->core->cpu);
+        emu_run_reason_t why;
         uint32_t n = 0;
-        const emu_run_reason_t why = ops->run(g->core->cpu, 1u, &n);
+
+        /*
+         * Step only where a breakpoint could be, and run blocks
+         * everywhere else.
+         *
+         * Checking the pc at block boundaries alone -- which is what
+         * this did -- never fires for a breakpoint in the middle of a
+         * block, and mid-block is where breakpoints normally are. The
+         * block runs straight over it and the pc afterwards is the next
+         * block's, which matches nothing. It does not misreport, it
+         * silently never stops, and the comment claiming it would be
+         * caught "at the next block entry" was describing an intention
+         * rather than the code.
+         *
+         * So: if any breakpoint lies within a block's reach of here,
+         * step this instruction; otherwise run a whole block. The window
+         * is deliberately far larger than any block this translator
+         * emits (blocks average about four instructions), because being
+         * conservative costs a few interpreted instructions near a
+         * breakpoint and being wrong costs the breakpoint.
+         *
+         * The JIT still executes everything that is not immediately
+         * before a breakpoint, which is the property that matters: a
+         * miscompile is reproduced right up to the instruction being
+         * examined.
+         */
+        if (break_near(g, pc)) {
+            why = ops->step(g->core->cpu);
+            n = 1u;
+        } else {
+            why = ops->run(g->core->cpu, 1u, &n);
+        }
 
         *retired += n;
 
