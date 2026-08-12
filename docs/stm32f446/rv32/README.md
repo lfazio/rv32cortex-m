@@ -89,9 +89,9 @@ between two genuinely different FP implementations.
 
 | knob | finding |
 |---|---|
-| `RV32_JIT_CODE_BYTES` | dominates everything; see the platform page |
+| `EMU_JIT_CODE_BYTES` | dominates everything; see the platform page |
 | `RV_JIT_LOOP_CAP` | 128 is the knee. 64/128/256: CoreMark 31.39/31.16/31.25 (noise), bench 18.88/18.39/18.13, mmiobench 24.40/23.46/22.99. Each doubling returns half the previous and doubles worst-case latency (~11/22/44 µs). Do not tune on CoreMark alone. |
-| `RV32_JIT_INLINE_PERIPH` | 2.2–3.1× to drivers, −53% to compute if always on; armed after 64 passthrough accesses instead |
+| `EMU_JIT_INLINE_PERIPH` | 2.2–3.1× to drivers, −53% to compute if always on; armed after 64 passthrough accesses instead |
 
 ## To do
 
@@ -122,8 +122,8 @@ between two genuinely different FP implementations.
   it should win. It did not: a cached read is `MOV` where an uncached one
   is `LDR` — one instruction either way — while write-through adds an
   instruction per write and three more registers hit every PUSH/POP.
-- **Eliding the register-file round trip** (`RV32_JIT_ELIDE_LD`,
-  `RV32_JIT_ELIDE_ST`, both default **off**, code retained). 24–33% of
+- **Eliding the register-file round trip** (`EMU_JIT_ELIDE_LD`,
+  `EMU_JIT_ELIDE_ST`, both default **off**, code retained). 24–33% of
   adjacent executed pairs are data dependent (measured with
   `RV32_PAIR_STATS`), and each emits `STR` then an immediate `LDR` of the
   same slot. Removing them works and is correct — 243/243 on hardware,

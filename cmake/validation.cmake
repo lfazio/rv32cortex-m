@@ -12,7 +12,7 @@
 # hundred test images. They are on-demand targets, and `ctest` keeps the
 # fast checks separate from them via labels.
 
-if(NOT RV32_PLATFORM STREQUAL "host")
+if(NOT EMU_PLATFORM STREQUAL "host")
     return()
 endif()
 

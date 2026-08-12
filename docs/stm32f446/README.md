@@ -91,7 +91,7 @@ real operations on the lines backing the guest block.
 
 ## Measured, and settled
 
-- **`RV32_JIT_CODE_BYTES` dominates JIT performance, and the 12 KB default
+- **`EMU_JIT_CODE_BYTES` dominates JIT performance, and the 12 KB default
   is worse than no JIT at all.** CoreMark's translated working set is
   ~48 KB. 12 KB: 10,850,998 ticks (8533 compactions, 94240 evictions);
   24 KB: 9,329,706; 32 KB: 8,525,192; 48 KB: 6,463,217 (904); 64 KB:

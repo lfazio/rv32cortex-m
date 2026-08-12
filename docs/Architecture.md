@@ -5,7 +5,7 @@ independent of each other:
 
 | axis | what it decides | selected by | values |
 |---|---|---|---|
-| **platform** | where the emulator runs | `RV32_PLATFORM` | `host`, `stm32f446` |
+| **platform** | where the emulator runs | `EMU_PLATFORM` | `host`, `stm32f446` |
 | **frontend** | what it emulates | `EMU_FRONTEND_*` | `rv32`, `g4mh` |
 | **backend** | how it executes | per frontend | interpreter, Thumb-2 JIT |
 

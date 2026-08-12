@@ -37,7 +37,7 @@ if(TARGET guest-isatest)
     # this project has found needed a board, a flash cycle and a UART, and
     # three of them were live for months first. On a host with a JIT
     # backend, translated code is covered by `ctest -L fast`.
-    if(RV32_JIT)
+    if(EMU_JIT)
         add_test(NAME guest-isatest-jit
                  COMMAND rv32-host --jit --quiet --load 0x80000000
                          "${CMAKE_BINARY_DIR}/guest/isatest.bin")

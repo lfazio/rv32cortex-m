@@ -3,7 +3,7 @@
  * guest.ld - Link script for RV32 guest images.
  *
  * Generated from guest.ld.in: LENGTH is substituted from
- * RV32_GUEST_RAM_KIB so it always matches the RAM the emulator actually
+ * EMU_GUEST_RAM_KIB so it always matches the RAM the emulator actually
  * maps at RV_GUEST_RAM_BASE. Getting this wrong is not a link error --
  * _stack_top simply ends up past the end of guest RAM, and the guest takes
  * a store access fault on its first push, before it has installed a trap
@@ -19,7 +19,7 @@ ENTRY(_start)
 
 MEMORY
 {
-    RAM (rwx) : ORIGIN = 0x80000000, LENGTH = @RV32_GUEST_RAM_KIB@K
+    RAM (rwx) : ORIGIN = 0x80000000, LENGTH = @EMU_GUEST_RAM_KIB@K
 }
 
 SECTIONS

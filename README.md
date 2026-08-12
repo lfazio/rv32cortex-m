@@ -441,8 +441,8 @@ The options that change what gets built:
 
 | Option | Default | Effect |
 |---|---|---|
-| `RV32_JIT` | `ON` | Thumb-2 JIT. `OFF` is smaller, and is how a suspected JIT bug is isolated. |
-| `RV32_JIT_CODE_BYTES` | `12288` | Code cache. A small value forces compaction and is a useful stress test. |
+| `EMU_JIT` | `ON` | Thumb-2 JIT. `OFF` is smaller, and is how a suspected JIT bug is isolated. |
+| `EMU_JIT_CODE_BYTES` | `12288` | Code cache. A small value forces compaction and is a useful stress test. |
 | `RV32_FPU_SOFTFLOAT` | `OFF` | Berkeley SoftFloat instead of the host FPU: conformant, ~5 KB larger. |
 | `RV32_NATIVE_COREMARK` | `OFF` | Run CoreMark natively on the ARM instead of the emulator, for the baseline. |
 | `RV32_EXT_PMP` / `RV32_EXT_SDTRIG` | `ON` | Each costs a little even unused; `OFF` removes it. |
@@ -703,7 +703,7 @@ byte what it was. None of those fixes costs a guest that does not use the
 feature anything, which the flush count confirms: CoreMark reports one flush
 for a whole run.
 
-**The JIT's speed is set by `RV32_JIT_CODE_BYTES` more than by anything in the
+**The JIT's speed is set by `EMU_JIT_CODE_BYTES` more than by anything in the
 translator**, and the default is not the configuration to quote. CoreMark's
 translated working set is about 48 KB; below that the cache thrashes, and the
 compaction counts show it directly — 231 compactions at 64 KB, 904 at 48 KB,
@@ -729,7 +729,7 @@ runs twice with identical machine code, once against the peripheral window and
 once against guest RAM; the RAM form is the control, so dividing removes the
 loop overhead and leaves the access path.
 
-Nanoseconds per access on the F446, `RV32_JIT_INLINE_PERIPH` off and on:
+Nanoseconds per access on the F446, `EMU_JIT_INLINE_PERIPH` off and on:
 
 | kernel | helper | inlined | speedup | vs its RAM control |
 |---|---|---|---|---|

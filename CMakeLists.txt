@@ -4,9 +4,9 @@
 #
 # Three axes, independent of each other:
 #
-#   platform    where it runs        RV32_PLATFORM=host|stm32f446
+#   platform    where it runs        EMU_PLATFORM=host|stm32f446
 #   frontend    what it emulates     EMU_FRONTEND_RV32, EMU_FRONTEND_G4MH
-#   backend     how it executes      RV32_JIT=ON|OFF, per frontend
+#   backend     how it executes      EMU_JIT=ON|OFF, per frontend
 #
 # The ISA-agnostic runtime (src/emu) owns the bus, the passthrough window,
 # the console and the ELF loader; each frontend (src/frontend/<isa>) owns an
@@ -34,8 +34,8 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
 endif()
 
-set(RV32_PLATFORM "host" CACHE STRING "Target platform (host|stm32f446|stm32f746)")
-set_property(CACHE RV32_PLATFORM PROPERTY STRINGS host stm32f446 stm32f746)
+set(EMU_PLATFORM "host" CACHE STRING "Target platform (host|stm32f446|stm32f746)")
+set_property(CACHE EMU_PLATFORM PROPERTY STRINGS host stm32f446 stm32f746)
 
 # ---------------------------------------------------------------------
 # Frontends
@@ -72,7 +72,7 @@ option(EMU_ENABLE_STATS "Collect run statistics" ON)
 
 # Guest RAM size. Shared between the guest link script and the firmware's
 # static carve-out so the two can never disagree; see tests/guest/guest.ld.in.
-set(RV32_GUEST_RAM_KIB "48" CACHE STRING "Guest RAM size in KiB")
+set(EMU_GUEST_RAM_KIB "48" CACHE STRING "Guest RAM size in KiB")
 
 # Link-time optimisation. The interpreter calls into rv_hart and rv_bus on
 # every emulated instruction; without cross-TU inlining those stay real
@@ -104,30 +104,30 @@ option(RV32_LAZY_IRQ "Lazy interrupt-delivery evaluation" ON)
 
 # Bytes of RAM for the JIT code cache, taken from what the guest would get.
 # Setting this very small is also how the compaction path gets exercised.
-set(RV32_JIT_CODE_BYTES "12288" CACHE STRING "JIT code cache size in bytes")
+set(EMU_JIT_CODE_BYTES "12288" CACHE STRING "JIT code cache size in bytes")
 
 # Build and use the Thumb-2 JIT. Turning this off is how the same guest
 # image is measured on the interpreter, which is also how a suspected JIT
 # miscompile gets isolated from a core bug.
-option(RV32_JIT_IR
+option(EMU_JIT_IR
     "Thumb-2: build the JIT from the IR instead of the hand-written translator" OFF)
-option(RV32_JIT_DIFF
+option(EMU_JIT_DIFF
     "Check every translated block against the IR interpreter" OFF)
-option(RV32_JIT "Thumb-2 JIT backend" ON)
+option(EMU_JIT "Thumb-2 JIT backend" ON)
 
 # Chain loop back edges inside translated code: 35% on bench, 7% on CoreMark.
-option(RV32_JIT_LOOP_CHAIN "Chain loop back edges in the JIT" ON)
-option(RV32_JIT_INLINE_PERIPH "Inline the peripheral window in the JIT" ON)
+option(EMU_JIT_LOOP_CHAIN "Chain loop back edges in the JIT" ON)
+option(EMU_JIT_INLINE_PERIPH "Inline the peripheral window in the JIT" ON)
 # Both measured neutral at 48 KB and a large regression at 12 KB; see
 # the note in include/rv32/rv_config.h before turning either on.
-option(RV32_JIT_ELIDE_LD "Elide the reload of a value already in R1" OFF)
-option(RV32_JIT_ELIDE_ST "Elide a store the next instruction makes dead" OFF)
-set(RV32_JIT_LOOP_CAP "128" CACHE STRING
+option(EMU_JIT_ELIDE_LD "Elide the reload of a value already in R1" OFF)
+option(EMU_JIT_ELIDE_ST "Elide a store the next instruction makes dead" OFF)
+set(EMU_JIT_LOOP_CAP "128" CACHE STRING
     "Guest instructions a chained loop runs before returning to the dispatcher")
 
 # Histogram how often a block reads sp/ra/a0/a1, to decide whether a
 # per-block register cache could pay. Measurement scaffolding, off by default.
-option(RV32_JIT_HOT_REG_STATS "Count hot-register reads per block" OFF)
+option(EMU_JIT_HOT_REG_STATS "Count hot-register reads per block" OFF)
 
 # Histogram adjacent executed instruction pairs, to decide which are worth
 # fusing in the translator. Measurement scaffolding, off by default.
@@ -218,7 +218,7 @@ if(EMU_FRONTEND_RV32)
         # Both guard themselves on the host they emit for, so both can stay
         # in the list and exactly one of them compiles to anything.
         src/frontend/rv32/rv_ir.c
-        $<$<NOT:$<BOOL:${RV32_JIT_IR}>>:${CMAKE_SOURCE_DIR}/src/backend/thumb2/jit_rv32.c>
+        $<$<NOT:$<BOOL:${EMU_JIT_IR}>>:${CMAKE_SOURCE_DIR}/src/backend/thumb2/jit_rv32.c>
         src/backend/thumb2/encode.c
         src/backend/thumb2/ir_lower.c
         src/emu/emu_ir_jit.c
@@ -248,16 +248,16 @@ if(EMU_FRONTEND_RV32)
         RV_ENABLE_DISASM=$<BOOL:${RV32_ENABLE_DISASM}>
         RV_INTERP_RAMFUNC=$<BOOL:${RV32_INTERP_IN_RAM}>
         RV_LAZY_IRQ_CHECK=$<BOOL:${RV32_LAZY_IRQ}>
-        RV_JIT_CODE_SIZE=${RV32_JIT_CODE_BYTES}u
-        RV_ENABLE_JIT=$<BOOL:${RV32_JIT}>
-        $<$<BOOL:${RV32_JIT_IR}>:EMU_IR_JIT_ON_THUMB2>
-        $<$<BOOL:${RV32_JIT_DIFF}>:EMU_JIT_DIFF>
-        RV_JIT_LOOP_CHAIN=$<BOOL:${RV32_JIT_LOOP_CHAIN}>
-        RV_JIT_INLINE_PERIPH=$<BOOL:${RV32_JIT_INLINE_PERIPH}>
-        RV_JIT_ELIDE_LD=$<BOOL:${RV32_JIT_ELIDE_LD}>
-        RV_JIT_ELIDE_ST=$<BOOL:${RV32_JIT_ELIDE_ST}>
-        RV_JIT_LOOP_CAP=${RV32_JIT_LOOP_CAP}u
-        RV_JIT_HOT_REG_STATS=$<BOOL:${RV32_JIT_HOT_REG_STATS}>
+        RV_JIT_CODE_SIZE=${EMU_JIT_CODE_BYTES}u
+        RV_ENABLE_JIT=$<BOOL:${EMU_JIT}>
+        $<$<BOOL:${EMU_JIT_IR}>:EMU_IR_JIT_ON_THUMB2>
+        $<$<BOOL:${EMU_JIT_DIFF}>:EMU_JIT_DIFF>
+        RV_JIT_LOOP_CHAIN=$<BOOL:${EMU_JIT_LOOP_CHAIN}>
+        RV_JIT_INLINE_PERIPH=$<BOOL:${EMU_JIT_INLINE_PERIPH}>
+        RV_JIT_ELIDE_LD=$<BOOL:${EMU_JIT_ELIDE_LD}>
+        RV_JIT_ELIDE_ST=$<BOOL:${EMU_JIT_ELIDE_ST}>
+        RV_JIT_LOOP_CAP=${EMU_JIT_LOOP_CAP}u
+        RV_JIT_HOT_REG_STATS=$<BOOL:${EMU_JIT_HOT_REG_STATS}>
         RV_PAIR_STATS=$<BOOL:${RV32_PAIR_STATS}>
     )
 
@@ -362,17 +362,17 @@ endif()
 # Platform
 # ---------------------------------------------------------------------
 
-if(RV32_PLATFORM STREQUAL "host")
+if(EMU_PLATFORM STREQUAL "host")
     add_subdirectory(src/platform/host)
-elseif(RV32_PLATFORM STREQUAL "stm32f446" OR RV32_PLATFORM STREQUAL "stm32f746")
+elseif(EMU_PLATFORM STREQUAL "stm32f446" OR EMU_PLATFORM STREQUAL "stm32f746")
     if(NOT CMAKE_CROSSCOMPILING)
         message(FATAL_ERROR
-            "RV32_PLATFORM=${RV32_PLATFORM} needs the cross toolchain:\n"
+            "EMU_PLATFORM=${EMU_PLATFORM} needs the cross toolchain:\n"
             "  -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake")
     endif()
-    add_subdirectory(src/platform/${RV32_PLATFORM})
+    add_subdirectory(src/platform/${EMU_PLATFORM})
 else()
-    message(FATAL_ERROR "unknown RV32_PLATFORM '${RV32_PLATFORM}'")
+    message(FATAL_ERROR "unknown EMU_PLATFORM '${EMU_PLATFORM}'")
 endif()
 
 # ---------------------------------------------------------------------
@@ -385,7 +385,7 @@ add_subdirectory(tests/guest)
 # Tests
 # ---------------------------------------------------------------------
 
-if(RV32_PLATFORM STREQUAL "host")
+if(EMU_PLATFORM STREQUAL "host")
     include(CTest)
     if(BUILD_TESTING)
         add_subdirectory(tests/unit)
@@ -427,7 +427,7 @@ endif()
 
 message(STATUS "")
 message(STATUS "rv32cortex-m ${PROJECT_VERSION}")
-message(STATUS "  platform    ${RV32_PLATFORM}")
+message(STATUS "  platform    ${EMU_PLATFORM}")
 message(STATUS "  build type  ${CMAKE_BUILD_TYPE}")
 foreach(_f IN LISTS _frontends)
     message(STATUS "  frontend    ${_f}")

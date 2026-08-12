@@ -20,9 +20,9 @@ Three axes, independent of each other:
 
 | axis | what it decides | selected by |
 |---|---|---|
-| platform | where it runs | `RV32_PLATFORM=host\|stm32f446` |
+| platform | where it runs | `EMU_PLATFORM=host\|stm32f446` |
 | frontend | what it emulates | `EMU_FRONTEND_RV32`, `EMU_FRONTEND_G4MH` |
-| backend | how it executes | `RV32_JIT=ON\|OFF`, per frontend |
+| backend | how it executes | `EMU_JIT=ON\|OFF`, per frontend |
 
 ```
 include/emu/   src/emu/          ISA-agnostic runtime: bus, regions,
@@ -63,7 +63,7 @@ cmake -B build/f746 -DRV32_PLATFORM=stm32f746 \
       -DCMAKE_BUILD_TYPE=Release -DRV32_GUEST=isatest
 cmake --build build/f746 --target flash
 
-# the older board; RV32_PLATFORM picks the CPU, FPU and vendor pack
+# the older board; EMU_PLATFORM picks the CPU, FPU and vendor pack
 cmake -B build/stm32f446 -DRV32_PLATFORM=stm32f446 \
       -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
       -DCMAKE_BUILD_TYPE=Release -DRV32_GUEST=isatest
@@ -229,7 +229,7 @@ what changes between the parts.
   whole difficulty is one input, test *that* input. Proving the new path even
   runs is separate again: force it back to the helper and diff the
   `interp ... fell back` counter (112 against 134 here).
-- **`RV32_JIT_CODE_BYTES` dominates JIT performance, and the 12 KB default is
+- **`EMU_JIT_CODE_BYTES` dominates JIT performance, and the 12 KB default is
   worse than no JIT at all.** CoreMark's translated working set is ~48 KB.
   Measured: 12 KB 10,850,998 ticks (8533 compactions, 94240 evictions), 24 KB
   9,329,706, 32 KB 8,525,192, 48 KB 6,463,217 (904), 64 KB 5,148,168 (231).
@@ -240,7 +240,7 @@ what changes between the parts.
   inherited from an old build directory while the declared default was 12 KB;
   `rm -rf build/` and the numbers changed by 68% with no code change. Before
   quoting a measurement, check `CMakeCache.txt` for what actually built it --
-  `RV32_JIT_CODE_BYTES`, `RV_GUEST_MARCH` and `COREMARK_ITERATIONS` are all
+  `EMU_JIT_CODE_BYTES`, `RV_GUEST_MARCH` and `COREMARK_ITERATIONS` are all
   cache variables and all change the result.
 - **`RV_JIT_LOOP_CAP` is an interrupt-latency knob, and CoreMark cannot see
   it.** Measured at 64/128/256: CoreMark 31.39/31.16/31.25 (noise -- its loops
@@ -291,7 +291,7 @@ what changes between the parts.
   recovery path made every interpreted `div` flush the code cache.
 - **The JIT was only ever kept off the x86 host by nobody selecting it.**
   `RV_ENABLE_JIT` defaults to a `__thumb2__` test, but CMake defined it
-  unconditionally from `RV32_JIT`, so the host build compiled a Thumb-2
+  unconditionally from `EMU_JIT`, so the host build compiled a Thumb-2
   emitter and the *only* thing preventing a jump into it was that
   `src/platform/host/main.c` happened never to set `rv_backend`. Moving
   backend selection into the frontend — where it belongs, because it is a

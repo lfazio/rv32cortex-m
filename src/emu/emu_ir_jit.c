@@ -59,7 +59,7 @@ static emu_ir_block_t g_ir;
  * printed "backend interp" and every test still passed.
  *
  * The size is the guest's RAM, so it is the microcontroller figure and
- * not the host one. RV32_JIT_CODE_BYTES dominates JIT performance on
+ * not the host one. EMU_JIT_CODE_BYTES dominates JIT performance on
  * this target -- see CLAUDE.md -- and the default is deliberately small.
  */
 #if !defined(EMU_JIT_MMAP) || !EMU_JIT_MMAP
