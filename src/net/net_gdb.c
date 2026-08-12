@@ -139,7 +139,8 @@ static err_t gdb_accept(void *arg, struct tcp_pcb *pcb, err_t err)
 
 /* ------------------------------------------------------------------ */
 
-bool emu_net_gdb_init(emu_core_t *core, const emu_gdb_target_t *target)
+bool emu_net_gdb_init(emu_core_t *core, const emu_gdb_target_t *target,
+                      const emu_gdb_flash_ops_t *flash)
 {
     struct tcp_pcb *pcb;
 
@@ -148,6 +149,7 @@ bool emu_net_gdb_init(emu_core_t *core, const emu_gdb_target_t *target)
     }
 
     emu_gdb_init(&g_gdb, core, target, gdb_tx, NULL);
+    emu_gdb_set_flash(&g_gdb, flash);
 
     pcb = tcp_new();
     if (pcb == NULL) {

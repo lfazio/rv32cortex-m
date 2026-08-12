@@ -543,10 +543,19 @@ static void cmd_query(emu_gdb_t *g, const uint8_t *p, uint32_t len)
             const char *ext = ";qXfer:features:read+";
             while (*ext != '\0') { b[n++] = *ext++; }
         }
+        if (g->target->memory_map != NULL && g->flash != NULL) {
+            /* Both, or neither: a map naming a flash region makes gdb
+             * send vFlash*, and answering those without an
+             * implementation loses the image silently. */
+            const char *ext = ";qXfer:memory-map:read+";
+            while (*ext != '\0') { b[n++] = *ext++; }
+        }
         send_packet(g, b, (uint32_t)n);
         return;
     }
-    if (starts_with(p, len, "qXfer:features:read:")) {
+    if (starts_with(p, len, "qXfer:memory-map:read:") ||
+        starts_with(p, len, "qXfer:features:read:")) {
+        const bool is_map = starts_with(p, len, "qXfer:memory-map:read:");
         /*
          * Chunked, because it has to be: the description is ~1.6 KB
          * against a 1 KB packet. Serving it in one piece and letting
@@ -559,7 +568,8 @@ static void cmd_query(emu_gdb_t *g, const uint8_t *p, uint32_t len)
          * plus a chunk when more follows and 'l' plus the last one, and
          * gdb keeps asking until it sees 'l'.
          */
-        const char *xml = g->target->target_xml;
+        const char *xml = is_map ? g->target->memory_map
+                                 : g->target->target_xml;
         char b[EMU_GDB_MAX_PACKET];
         uint32_t off = 0, want = 0, total = 0, n = 0;
         uint32_t i = 0;
@@ -722,7 +732,60 @@ static void dispatch(emu_gdb_t *g, const uint8_t *p, uint32_t len)
          * Supporting the two actions that mean anything on a
          * single-core target costs a dozen lines.
          */
-        if (starts_with(p, len, "vCont?")) {
+        if (starts_with(p, len, "vFlashErase:")) {
+            uint32_t addr = 0, n = 0;
+            uint32_t i = 12;
+
+            i += hex_to_u32(&p[i], len - i, &addr);
+            if (i < len && p[i] == ',') {
+                (void)hex_to_u32(&p[i + 1u], len - i - 1u, &n);
+            }
+            if (g->flash == NULL || !g->flash->erase(addr, n)) {
+                send_err(g, 1);
+            } else {
+                g->flash_touched = true;
+                send_ok(g);
+            }
+        } else if (starts_with(p, len, "vFlashWrite:")) {
+            uint32_t addr = 0;
+            uint32_t i = 12;
+
+            i += hex_to_u32(&p[i], len - i, &addr);
+            if (i >= len || p[i] != ':') {
+                send_err(g, 1);
+            } else {
+                i += 1u;        /* payload is raw, already unescaped */
+                if (g->flash == NULL ||
+                    !g->flash->write(addr, &p[i], len - i)) {
+                    send_err(g, 1);
+                } else {
+                    g->flash_touched = true;
+                    send_ok(g);
+                }
+            }
+        } else if (starts_with(p, len, "vFlashDone")) {
+            /*
+             * Commit. gdb sends this once, after the last write, and it
+             * is the only point at which the image is known to be
+             * complete -- erase and write arrive in as many pieces as
+             * gdb feels like.
+             */
+            if (g->flash == NULL || !g->flash_touched) {
+                send_ok(g);
+            } else {
+                const bool ok = g->flash->done();
+
+                /* Once. Calling it in both arms of a ternary commits
+                 * the image twice, which for an arena that advances on
+                 * commit means the second one lands somewhere new. */
+                g->flash_touched = false;
+                if (ok) {
+                    send_ok(g);
+                } else {
+                    send_err(g, 1);
+                }
+            }
+        } else if (starts_with(p, len, "vCont?")) {
             send_str(g, "vCont;c;C;s;S");
         } else if (starts_with(p, len, "vCont")) {
             bool step = false;
@@ -864,6 +927,11 @@ void emu_gdb_init(emu_gdb_t *g, emu_core_t *core,
     g->ack_mode = true;
     g->state = EMU_GDB_WAIT;
     g->halted = false;
+}
+
+void emu_gdb_set_flash(emu_gdb_t *g, const emu_gdb_flash_ops_t *ops)
+{
+    g->flash = ops;
 }
 
 void emu_gdb_attach(emu_gdb_t *g)

@@ -99,7 +99,44 @@ typedef struct emu_gdb_target {
      * you have to remember how to use.
      */
     const char *target_xml;
+
+    /*
+     * The guest's memory map, served through qXfer:memory-map:read.
+     * Naming a region as flash is what makes gdb use vFlash* for it.
+     */
+    const char *memory_map;
 } emu_gdb_target_t;
+
+/* ------------------------------------------------------------------ */
+/* Programming the guest image                                         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * gdb's `load` on a target with flash uses vFlashErase / vFlashWrite /
+ * vFlashDone rather than plain memory writes, which is what this is for:
+ * it puts a guest image where the read-only half actually lives instead
+ * of only where RAM is, so `load` replaces the TFTP path rather than
+ * being a smaller version of it.
+ *
+ * gdb only sends these if a memory map says a region is flash, so a
+ * platform offering them must offer `memory_map` too; without it every
+ * write goes through X and lands in RAM.
+ *
+ * The board's implementation must reach flash through the routine that
+ * runs from ITCM. Programming stalls instruction fetch from the bank
+ * being written, so a writer executing out of that same bank is the one
+ * hazard here, and it is already solved for the TFTP path -- see
+ * board_flash_write.
+ *
+ * done() is where the image is committed and the guest restarted:
+ * erase/write can arrive in any number of pieces and only gdb knows when
+ * the last one has.
+ */
+typedef struct emu_gdb_flash_ops {
+    bool (*erase)(uint32_t addr, uint32_t len);
+    bool (*write)(uint32_t addr, const void *data, uint32_t len);
+    bool (*done)(void);
+} emu_gdb_flash_ops_t;
 
 /* ------------------------------------------------------------------ */
 /* The stub                                                            */
@@ -140,6 +177,9 @@ typedef struct {
     bool stepping;                      /* one instruction, then stop   */
     bool ack_mode;                      /* +/- acknowledgement in use   */
 
+    const emu_gdb_flash_ops_t *flash;
+    bool flash_touched;                 /* an erase or write has arrived */
+
     emu_gdb_break_t brk[EMU_GDB_MAX_BREAK];
 } emu_gdb_t;
 
@@ -154,6 +194,9 @@ void emu_gdb_init(emu_gdb_t *g, emu_core_t *core,
 
 /* A client connected or went away. Disconnecting resumes the guest --
  * leaving it stopped would need the next person to know why. */
+/* Optional: lets `load` program the guest's flash. */
+void emu_gdb_set_flash(emu_gdb_t *g, const emu_gdb_flash_ops_t *ops);
+
 void emu_gdb_attach(emu_gdb_t *g);
 void emu_gdb_detach(emu_gdb_t *g);
 

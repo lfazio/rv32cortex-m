@@ -134,9 +134,11 @@ bool emu_net_tftp_init(void);
  */
 struct emu_core;
 struct emu_gdb_target;
+struct emu_gdb_flash_ops;
 
 bool emu_net_gdb_init(struct emu_core *core,
-                      const struct emu_gdb_target *target);
+                      const struct emu_gdb_target *target,
+                      const struct emu_gdb_flash_ops *flash);
 
 /* True while a debugger is connected, in which case the run loop must
  * go through emu_net_gdb_run() so breakpoints and stepping work. */

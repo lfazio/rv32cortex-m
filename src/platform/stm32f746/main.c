@@ -757,6 +757,89 @@ void emu_net_image_end(emu_net_image_t which, uint32_t len, bool ok)
     g_reload = true;
 }
 
+/* ------------------------------------------------------------------ */
+/* Images arriving through gdb's `load`                                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The same arena the TFTP path uses, driven by vFlashErase /
+ * vFlashWrite / vFlashDone instead.
+ *
+ * Worth having because it collapses the whole upload dance into one
+ * command: `load` in gdb puts the image where the read-only half
+ * actually lives and leaves the debugger attached and in control, which
+ * is exactly the position from which a guest bug is worth looking at.
+ *
+ * board_flash_write is what makes it safe. Programming stalls fetch from
+ * the bank being written, and that routine runs from ITCM together with
+ * the HAL flash driver -- the property the TFTP path already depends on,
+ * reused rather than rediscovered.
+ *
+ * gdb addresses these in *guest* space, so the arena offset is applied
+ * here; the guest's view is what gdb's ELF says and the arena is an
+ * implementation detail of where it lands.
+ */
+static bool gdb_flash_erase(uint32_t addr, uint32_t len)
+{
+    (void)len;
+
+    /*
+     * gdb erases before writing, and it is the first erase that decides
+     * where this image starts. Later ones inside the same load are
+     * already covered: the arena is handed out erased.
+     */
+    if (addr < EMU_GUEST_RAM_BASE) {
+        return false;
+    }
+    if (g_up_addr == 0u) {
+        g_up_addr = board_flash_arena_begin();
+        g_up_ro = 0u;
+        g_up_have_ro = false;
+    }
+    return g_up_addr != 0u;
+}
+
+static bool gdb_flash_write(uint32_t addr, const void *data, uint32_t len)
+{
+    const uint32_t off = addr - EMU_GUEST_RAM_BASE;
+
+    if (g_up_addr == 0u || addr < EMU_GUEST_RAM_BASE) {
+        return false;
+    }
+    if (!board_flash_write(g_up_addr + off, data, len)) {
+        return false;
+    }
+    if (off + len > g_up_ro) {
+        g_up_ro = off + len;    /* highest byte seen: the image's length */
+    }
+    g_up_have_ro = true;
+    return true;
+}
+
+static bool gdb_flash_done(void)
+{
+    if (g_up_addr == 0u || !g_up_have_ro) {
+        return false;
+    }
+    /*
+     * Committed as an all-read-only image: gdb wrote every loadable
+     * segment, so there is no separate writable half to append, and
+     * start_guest() clears the RAM above it.
+     */
+    board_flash_arena_commit(g_up_ro);
+    g_img      = (const uint8_t *)g_up_addr;
+    g_img_ro   = g_up_ro;
+    g_img_size = g_up_ro;
+    g_up_rw    = 0u;
+    g_up_addr  = 0u;
+    g_reload   = true;
+    return true;
+}
+
+static const emu_gdb_flash_ops_t k_gdb_flash = {
+    gdb_flash_erase, gdb_flash_write, gdb_flash_done,
+};
+
 /*
  * Take a freshly uploaded image, if one is waiting. True when the guest
  * was restarted from it.
@@ -912,7 +995,7 @@ int main(void)
     {
         extern const emu_gdb_target_t *rv32_gdb_target(void);
 
-        if (!emu_net_gdb_init(&g_core, rv32_gdb_target())) {
+        if (!emu_net_gdb_init(&g_core, rv32_gdb_target(), &k_gdb_flash)) {
             console_puts("gdb    stub failed to start\n");
         } else {
             console_puts("gdb    target remote ");
