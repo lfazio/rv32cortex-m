@@ -542,102 +542,49 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
             return false;
         }
         const uint32_t f7 = insn >> 25;
-        const uint32_t frm = (f3 == 7u)
-                                 ? ((((rv_hart_t *)cpu)->fcsr >> 5) & 7u)
-                                 : f3;
-        emu_ir_op_t irop = EMU_IR_NOP;
-        uint8_t aux = (uint8_t)frm;
-        bool two = true;                        /* reads rs1 and rs2 */
 
-        switch (f7) {
-        case 0x00u: irop = EMU_IR_FADD; break;
-        case 0x04u: irop = EMU_IR_FSUB; break;
-        case 0x08u: irop = EMU_IR_FMUL; break;
-        case 0x0Cu: irop = EMU_IR_FDIV; break;
-        case 0x2Cu: irop = EMU_IR_FSQRT; two = false; break;
-        case 0x10u:                             /* FSGNJ[N|X].S */
-            if (f3 > 2u) { return rv_ir_fp_fallback(b, pc, insn); }
-            irop = EMU_IR_FSGNJ; aux = (uint8_t)f3;
-            break;
-        case 0x14u:                             /* FMIN/FMAX.S  */
-            if (f3 > 1u) { return rv_ir_fp_fallback(b, pc, insn); }
-            irop = (f3 == 0u) ? EMU_IR_FMIN : EMU_IR_FMAX; aux = 0u;
-            break;
-        case 0x50u:                             /* FEQ/FLT/FLE.S */
-            if (f3 > 2u) { return rv_ir_fp_fallback(b, pc, insn); }
-            irop = EMU_IR_FCMP;
-            aux = (f3 == 2u) ? (uint8_t)EMU_IR_C_EQ
-                : (f3 == 1u) ? (uint8_t)EMU_IR_C_LT
-                             : (uint8_t)EMU_IR_C_LE;
-            break;
-        case 0x60u:                             /* FCVT.W[U].S  */
-            if (rs2 > 1u) { return rv_ir_fp_fallback(b, pc, insn); }
-            irop = EMU_IR_FCVT_TO_I; two = false;
-            aux = (uint8_t)(frm | (rs2 ? EMU_IR_F_UNSIGNED : 0u));
-            break;
-        case 0x68u:                             /* FCVT.S.W[U]  */
-            if (rs2 > 1u) { return rv_ir_fp_fallback(b, pc, insn); }
-            irop = EMU_IR_FCVT_FROM_I; two = false;
-            aux = (uint8_t)(frm | (rs2 ? EMU_IR_F_UNSIGNED : 0u));
-            break;
-        case 0x70u:                             /* FMV.X.W / FCLASS.S */
-            if (rs2 != 0u) { return rv_ir_fp_fallback(b, pc, insn); }
-            if (f3 == 0u) {
-                /* A bit move between the files: no operation at all. */
-                emu_ir_put(b, rd,
-                           emu_ir_emit(b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
-                                       EMU_IR_NO_TEMP, rs1, 0u));
-                return true;
-            }
-            if (f3 != 1u) { return rv_ir_fp_fallback(b, pc, insn); }
-            irop = EMU_IR_FCLASS; two = false; aux = 0u;
-            break;
-        case 0x78u:                             /* FMV.W.X */
-            if (rs2 != 0u || f3 != 0u) {
-                return rv_ir_fp_fallback(b, pc, insn);
-            }
+        /*
+         * Everything that rounds, classifies or reports a flag goes to
+         * rv_hart_fp, which is Berkeley SoftFloat.
+         *
+         * SoftFloat *is* the FP unit here -- see the note in
+         * CMakeLists.txt -- so lowering an FP operation to the host's
+         * own instructions makes a second implementation of semantics
+         * the core already owns. The two then disagree exactly where the
+         * architecture is fussiest: NaN propagation, subnormals, and
+         * which of fflags an operation may raise. Measured on the
+         * official suite, rv32i/F: the interpreter passes 78/78 on
+         * SoftFloat, and the same binary with --jit lowering natively
+         * passed 55/78. Twenty-three tests, every one of them the host
+         * FPU being asked to be a RISC-V FPU.
+         *
+         * This is the rule the fused multiply-adds above already follow,
+         * and the one CLAUDE.md states for FMIN/FMAX and FCLASS on
+         * Thumb-2: a helper call is a translation, declining is not, and
+         * open-coding is a second copy of the semantics. The block stays
+         * whole either way -- only the arithmetic moves.
+         *
+         * What is left here is what cannot round. FMV.X.W and FMV.W.X
+         * move bits between the register files and involve no
+         * arithmetic at all, so they stay lowered; FP loads and stores
+         * are memory and are lowered in their own cases above.
+         *
+         * To make this faster, bring operations back one at a time, each
+         * measured against the F suite -- not the whole table on the
+         * argument that the host has an FPU.
+         */
+        if (f7 == 0x70u && f3 == 0u && rs2 == 0u) {     /* FMV.X.W */
+            emu_ir_put(b, rd,
+                       emu_ir_emit(b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                                   EMU_IR_NO_TEMP, rs1, 0u));
+            return true;
+        }
+        if (f7 == 0x78u && f3 == 0u && rs2 == 0u) {     /* FMV.W.X */
             (void)emu_ir_emit(b, EMU_IR_FPUT, 0u, emu_ir_get(b, rs1),
                               EMU_IR_NO_TEMP, rd, 0u);
             return true;
-        default:
-            return rv_ir_fp_fallback(b, pc, insn);
         }
-
-        /*
-         * The capability question, asked before anything is emitted.
-         * A host that cannot spell this operation -- or cannot spell
-         * this rounding mode for it -- gets a helper call rather than a
-         * declined block, which this project has measured as the
-         * cheaper of the two by a wide margin.
-         */
-        if (!emu_ir_can_lower(irop, aux)) {
-            return rv_ir_fp_fallback(b, pc, insn);
-        }
-
-        const uint16_t a = emu_ir_emit(b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
-                                       EMU_IR_NO_TEMP, rs1, 0u);
-        const uint16_t c = two
-            ? emu_ir_emit(b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
-                          EMU_IR_NO_TEMP, rs2, 0u)
-            : EMU_IR_NO_TEMP;
-        uint16_t r;
-
-        if (irop == EMU_IR_FCVT_FROM_I) {
-            /* Its operand is an integer register, not an FP one. */
-            r = emu_ir_emit(b, irop, aux, emu_ir_get(b, rs1),
-                            EMU_IR_NO_TEMP, 0u, 0u);
-        } else {
-            r = emu_ir_emit(b, irop, aux, a, c, 0u, 0u);
-        }
-
-        /* Three of these write the *integer* file, the rest the FP one. */
-        if (irop == EMU_IR_FCMP || irop == EMU_IR_FCVT_TO_I ||
-            irop == EMU_IR_FCLASS) {
-            emu_ir_put(b, rd, r);
-        } else {
-            (void)emu_ir_emit(b, EMU_IR_FPUT, 0u, r, EMU_IR_NO_TEMP, rd, 0u);
-        }
-        return true;
+        return rv_ir_fp_fallback(b, pc, insn);
     }
 #endif /* RV_EXT_F */
 

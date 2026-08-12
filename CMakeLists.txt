@@ -140,16 +140,23 @@ option(EMU_JIT_HOT_REG_STATS "Count hot-register reads per block" OFF)
 # fusing in the translator. Measurement scaffolding, off by default.
 option(RV32_PAIR_STATS "Count adjacent executed instruction pairs" OFF)
 
-# Use Berkeley SoftFloat for the F extension instead of the host FPU.
+# Berkeley SoftFloat is the F extension's arithmetic. Not an option.
 #
-# The host-FPU path via <fenv.h> is smaller and faster but passes 165 of the
-# 217 official F tests: the flags it can report are the ones the hardware
-# happens to raise, which differ from RISC-V's rules on the fused
-# multiply-adds and around subnormals. SoftFloat is the implementation the
-# RISC-V FP spec was written against -- its rounding modes and exception
-# flags are numerically identical to frm and fflags, and it ships a RISCV
-# specialization with the right canonical-NaN behaviour.
-option(RV32_FPU_SOFTFLOAT "Use Berkeley SoftFloat for F" OFF)
+# It is the implementation the RISC-V FP spec was written against: its
+# rounding modes and exception flags are numerically identical to frm and
+# fflags, and it ships a RISCV specialization with the right canonical-NaN
+# behaviour. The host-FPU path via <fenv.h> is smaller and faster and gets
+# the wrong answer -- the flags it can report are the ones the hardware
+# happens to raise, which are not RISC-V's rules on the fused
+# multiply-adds or around subnormals.
+#
+# Measured on the official suite, interpreter, rv32i/F: SoftFloat 78/78,
+# host FPU 26/78. That is not a tuning knob, so it is not offered as one.
+# It was an option defaulting to OFF, which meant every default build had
+# an FP unit that failed two thirds of the architecture tests -- and the
+# documented way to turn it on named a variable that does not exist
+# (EMU_FPU_SOFTFLOAT, against the real RV32_FPU_SOFTFLOAT), so setting it
+# changed nothing and said nothing.
 set(SOFTFLOAT_DIR "${CMAKE_BINARY_DIR}/softfloat" CACHE PATH "Berkeley SoftFloat source")
 
 option(RV32_EXT_SDTRIG "Sdtrig debug triggers" ON)
@@ -249,7 +256,7 @@ if(EMU_FRONTEND_RV32)
         RV_EXT_ZCB=$<BOOL:${RV32_EXT_ZCB}>
         RV_EXT_PMP=$<BOOL:${RV32_EXT_PMP}>
         RV_EXT_SDTRIG=$<BOOL:${RV32_EXT_SDTRIG}>
-        RV_FPU_SOFTFLOAT=$<BOOL:${RV32_FPU_SOFTFLOAT}>
+        RV_FPU_SOFTFLOAT=1
         RV_EXT_M=$<BOOL:${RV32_EXT_M}>
         RV_EXT_A=$<BOOL:${RV32_EXT_A}>
         RV_EXT_C=$<BOOL:${RV32_EXT_C}>
@@ -295,13 +302,7 @@ if(EMU_FRONTEND_G4MH)
     )
 endif()
 
-# <fenv.h> is the FPU control/status interface the F extension uses; on both
-# glibc and newlib its implementation lives in libm.
-if(EMU_FRONTEND_RV32 AND RV32_EXT_F AND NOT RV32_FPU_SOFTFLOAT)
-    target_link_libraries(rv32core PUBLIC m)
-endif()
-
-if(EMU_FRONTEND_RV32 AND RV32_EXT_F AND RV32_FPU_SOFTFLOAT)
+if(EMU_FRONTEND_RV32 AND RV32_EXT_F)
     if(NOT EXISTS "${SOFTFLOAT_DIR}/source/include/softfloat.h")
         find_package(Git QUIET)
         if(GIT_FOUND)
@@ -310,6 +311,18 @@ if(EMU_FRONTEND_RV32 AND RV32_EXT_F AND RV32_FPU_SOFTFLOAT)
                 https://github.com/ucb-bar/berkeley-softfloat-3.git
                 "${SOFTFLOAT_DIR}")
         endif()
+    endif()
+    # Fail here rather than later. SoftFloat *is* the FP unit now, so a
+    # missing checkout is a broken build and not a reason to quietly fall
+    # back to something that fails two thirds of the F suite. Point
+    # SOFTFLOAT_DIR at a checkout when building offline.
+    if(NOT EXISTS "${SOFTFLOAT_DIR}/source/include/softfloat.h")
+        message(FATAL_ERROR
+            "Berkeley SoftFloat not found in ${SOFTFLOAT_DIR} and could not "
+            "be fetched. It is required for RV32_EXT_F. Either clone "
+            "https://github.com/ucb-bar/berkeley-softfloat-3.git there, "
+            "point -DSOFTFLOAT_DIR=<path> at a checkout, or build with "
+            "-DRV32_EXT_F=OFF.")
     endif()
 
     # Only the single-precision entry points and the primitives they need.
