@@ -21,6 +21,14 @@
 
 #include <string.h>
 
+/*
+ * Forward declaration. The pass tests below run emu_ir_optimise, which
+ * takes the target so the register-traffic pass can see which guest
+ * register is hardwired to zero. Defined with the rest of the fake
+ * machine further down.
+ */
+static const emu_ir_target_t g_fake_target;
+
 static emu_ir_block_t g_b;
 
 /* Instructions the backend would actually emit. */
@@ -72,7 +80,7 @@ static void test_dead_flags_removed(void)
     emu_ir_put(&g_b, 3u, s2);
 
     emu_ir_opt_stats_t st;
-    emu_ir_optimise(&g_b, EMU_IR_F_ALL, &st);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
 
     CHECK_EQ(st.flags_removed, 1u);
     CHECK_EQ(count_op(EMU_IR_SETF), 1u);
@@ -108,7 +116,7 @@ static void test_flags_kept_when_read(void)
     emu_ir_put(&g_b, 3u, s2);
 
     emu_ir_opt_stats_t st;
-    emu_ir_optimise(&g_b, EMU_IR_F_ALL, &st);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
 
     CHECK_EQ(st.flags_removed, 0u);
     CHECK_EQ(count_op(EMU_IR_SETF), 2u);
@@ -133,7 +141,7 @@ static void test_flags_live_out(void)
     emu_ir_put(&g_b, 2u, s);
 
     emu_ir_opt_stats_t st;
-    emu_ir_optimise(&g_b, EMU_IR_F_ALL, &st);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
     CHECK_EQ(st.flags_removed, 0u);
 
     /* Same block, but the frontend proved no later reader exists. */
@@ -144,7 +152,7 @@ static void test_flags_live_out(void)
                       EMU_IR_F_ALL);
     emu_ir_put(&g_b, 2u, s2);
 
-    emu_ir_optimise(&g_b, 0u, &st);
+    emu_ir_optimise(&g_b, &g_fake_target, 0u, &st);
     CHECK_EQ(st.flags_removed, 1u);
 }
 
@@ -172,7 +180,7 @@ static void test_redundant_get_elided(void)
     emu_ir_put(&g_b, 4u, s2);
 
     emu_ir_opt_stats_t st;
-    emu_ir_optimise(&g_b, EMU_IR_F_ALL, &st);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
 
     CHECK_EQ(st.gets_removed, 1u);
     /* Two real loads remain: r1 and r2. */
@@ -199,7 +207,7 @@ static void test_dead_put_removed(void)
     emu_ir_put(&g_b, 5u, y);
 
     emu_ir_opt_stats_t st;
-    emu_ir_optimise(&g_b, EMU_IR_F_ALL, &st);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
 
     CHECK_EQ(st.puts_removed, 1u);
     CHECK_EQ(count_op(EMU_IR_PUT), 1u);
@@ -237,7 +245,7 @@ static void test_put_kept_across_faulting_load(void)
                                      EMU_IR_NO_TEMP, 1u, 0u));
 
     emu_ir_opt_stats_t st;
-    emu_ir_optimise(&g_b, EMU_IR_F_ALL, &st);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
 
     CHECK_EQ(st.puts_removed, 0u);
     CHECK_EQ(count_op(EMU_IR_PUT), 2u);
@@ -263,7 +271,7 @@ static void test_put_kept_across_helper(void)
     emu_ir_put(&g_b, 5u, y);
 
     emu_ir_opt_stats_t st;
-    emu_ir_optimise(&g_b, EMU_IR_F_ALL, &st);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
 
     CHECK_EQ(st.puts_removed, 0u);
     CHECK_EQ(count_op(EMU_IR_PUT), 2u);
@@ -284,7 +292,7 @@ static void test_get_not_elided_across_helper(void)
     emu_ir_put(&g_b, 4u, reread);
 
     emu_ir_opt_stats_t st;
-    emu_ir_optimise(&g_b, EMU_IR_F_ALL, &st);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
 
     CHECK_EQ(st.gets_removed, 0u);
     CHECK_EQ(count_op(EMU_IR_GET), 2u);
@@ -305,7 +313,7 @@ static void test_dead_values(void)
     emu_ir_put(&g_b, 2u, keep);
 
     emu_ir_opt_stats_t st;
-    emu_ir_optimise(&g_b, EMU_IR_F_ALL, &st);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
 
     CHECK_EQ(st.dead_removed, 1u);
     CHECK_EQ(count_op(EMU_IR_ADD), 0u);
@@ -330,7 +338,7 @@ static void test_flagless_frontend(void)
     emu_ir_put(&g_b, 4u, reread);
 
     emu_ir_opt_stats_t st;
-    emu_ir_optimise(&g_b, EMU_IR_F_ALL, &st);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
 
     CHECK_EQ(st.flags_removed, 0u);
     CHECK_EQ(st.gets_removed, 1u);
@@ -372,7 +380,7 @@ static void test_use_counts(void)
     (void)emu_ir_alu(&g_b, EMU_IR_SUB, shared, a);    /* dead reader */
 
     emu_ir_opt_stats_t st;
-    emu_ir_optimise(&g_b, EMU_IR_F_ALL, &st);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
 
     uint32_t sh_uses = 0u, t_uses = 0u, shared_uses = 0u;
 
@@ -408,7 +416,7 @@ static void test_overflow_not_optimised(void)
     CHECK(g_b.overflow);
 
     emu_ir_opt_stats_t st;
-    emu_ir_optimise(&g_b, EMU_IR_F_ALL, &st);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
     CHECK_EQ(st.dead_removed, 0u);
 }
 
@@ -544,7 +552,7 @@ static bool lower_and_run(fake_cpu_t *cpu)
         exec = (uint8_t *)p;
     }
 
-    emu_ir_optimise(&g_b, EMU_IR_F_ALL, NULL);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, NULL);
 
     /*
      * No prologue or epilogue here: emu_ir_lower emits the whole block
@@ -605,6 +613,78 @@ static void test_lower_zero_register(void)
     }
     CHECK_EQ(cpu.r[4], 0x1234u);
     CHECK_EQ(cpu.r[0], 0xDEADBEEFu);  /* the write went nowhere */
+}
+
+/*
+ * The same register, written *before* it is read.
+ *
+ * The test above reads r0 and then writes it, and passed for the whole
+ * life of a bug that made 36 of 39 architecture tests fail: the
+ * register-traffic pass recorded the discarded write and rewrote the
+ * next read into a MOV of the value written, so a guest saw its own
+ * discarded result where the architecture guarantees zero. Every
+ * lowering handles the hardwired register correctly -- but the pass runs
+ * first and rewrites the IR, so all three faithfully compiled the wrong
+ * thing.
+ *
+ * The order is the entire test. Writing r0 is not a corner case: every
+ * discarded result and every canonical NOP is one.
+ *
+ * It is invisible to the differential checker by construction, because
+ * the reference interpreter runs the same optimised IR and agrees.
+ */
+static void test_zero_register_write_then_read(void)
+{
+    emu_ir_reset(&g_b);
+
+    /* Something the guest computed and threw away, as `add r0, ...`. */
+    const uint16_t junk = emu_ir_const(&g_b, 0xA5A5A5A5u);
+    emu_ir_put(&g_b, 0u, junk);
+
+    /* ...and then a genuine read of the zero register. */
+    const uint16_t z = emu_ir_get(&g_b, 0u);
+    const uint16_t v = emu_ir_get(&g_b, 2u);
+    emu_ir_put(&g_b, 3u, emu_ir_alu(&g_b, EMU_IR_ADD, z, v));
+
+    fake_cpu_t cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[0] = 0xDEADBEEFu;
+    cpu.r[2] = 7u;
+
+    if (!lower_and_run(&cpu)) {
+        CHECK(false);
+        return;
+    }
+    CHECK_EQ(cpu.r[3], 7u);           /* 0 + 7, not junk + 7 */
+    CHECK_EQ(cpu.r[0], 0xDEADBEEFu);
+}
+
+/*
+ * And the same thing one level down, on the IR the pass leaves behind:
+ * the read must not have become a MOV of the discarded value.
+ *
+ * Checked separately from the result above because the two fail for
+ * different reasons -- this one says the pass declined to track the
+ * register, the one above says the whole pipeline agrees on zero.
+ */
+static void test_zero_register_not_forwarded(void)
+{
+    emu_ir_reset(&g_b);
+
+    emu_ir_put(&g_b, 0u, emu_ir_const(&g_b, 0xA5A5A5A5u));
+    const uint16_t z = emu_ir_get(&g_b, 0u);
+    emu_ir_put(&g_b, 3u, emu_ir_alu(&g_b, EMU_IR_ADD, z,
+                                    emu_ir_get(&g_b, 2u)));
+
+    emu_ir_opt_stats_t st;
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
+
+    /*
+     * Nothing was elided: the only candidate was the hardwired register,
+     * and r2 is read once. A pass that forwarded r0 would report 1 here
+     * and leave a MOV behind for the lowering to compile.
+     */
+    CHECK_EQ(st.gets_removed, 0u);
 }
 
 /*
@@ -728,7 +808,7 @@ static void diff_one(uint32_t seed_r1, uint32_t seed_r2)
     b = a;
 
     /* The block is optimised in place, so interpret first. */
-    emu_ir_optimise(&g_b, EMU_IR_F_ALL, NULL);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, NULL);
     if (!emu_ir_interp(&g_b, (emu_cpu_t *)&a, &g_fake_target)) {
         CHECK(false);
         return;
@@ -1019,7 +1099,7 @@ static uint32_t fp_eval(emu_ir_op_t op, uint8_t aux, uint32_t x, uint32_t y)
 
         (void)emu_ir_emit(&g_b, EMU_IR_FPUT, 0u, r, EMU_IR_NO_TEMP, 3u, 0u);
     }
-    emu_ir_optimise(&g_b, EMU_IR_F_ALL, NULL);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, NULL);
 
     if (!emu_ir_interp(&g_b, (emu_cpu_t *)(void *)&cpu, &g_fake_target)) {
         return 0xDEADBEEFu;
@@ -1292,6 +1372,8 @@ void test_ir(void)
 #if defined(EMU_JIT_X86_64)
     test_lower_add();
     test_lower_zero_register();
+    test_zero_register_write_then_read();
+    test_zero_register_not_forwarded();
     test_lower_bit_ops();
     test_lower_bit_counts();
     test_lower_flags();

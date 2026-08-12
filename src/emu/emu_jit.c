@@ -536,9 +536,11 @@ static uint32_t run_block_checked(emu_cpu_t *cpu, const jit_block_t *b,
     memcpy(g_diff_before, cpu, ops->state_bytes);
     if (!ops->diff_ref(cpu)) {
         /* Declined -- restore and run normally, comparing nothing. */
+        g_stats.diff_declined++;
         memcpy(cpu, g_diff_before, ops->state_bytes);
         return block_entry(b->code)(cpu);
     }
+    g_stats.diff_checked++;
     memcpy(g_diff_want, cpu, ops->state_bytes);
     memcpy(cpu, g_diff_before, ops->state_bytes);
 

@@ -220,10 +220,39 @@ static void pass_dead_flags(emu_ir_block_t *b, uint8_t live_out,
  * block. Being wrong here is a stale value read as a guest register,
  * which is a wrong answer rather than a crash, so the invalidation is
  * deliberately blunt.
+ *
+ * A hardwired-zero register is not tracked at all, and that is the whole
+ * reason this pass needs the target.
+ *
+ * Every lowering already discards a PUT to x0 and answers a GET of it
+ * with a constant, so the *emitted* code is right whatever this table
+ * says. The trap is that this pass runs first and rewrites the IR: a PUT
+ * to x0 recorded `cur[0] = temp`, and the next GET of x0 then became a
+ * MOV of that temp -- a real value, in place of the zero every lowering
+ * would have produced. The reference interpreter runs the same optimised
+ * IR, so it agreed with the compiled code exactly, and the differential
+ * checker reported nothing while 36 of 39 architecture tests failed.
+ * x0 is written constantly: every discarded result and every canonical
+ * NOP is a PUT to it.
+ *
+ * A pass that rewrites the IR must therefore honour the same guest
+ * invariants the lowerings do. Being right in all three backends does
+ * not help when the thing that is wrong runs before them.
  */
 #define IR_MAX_GUEST_REGS 64u
 
-static void pass_reg_traffic(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
+/*
+ * Whether a guest register reads as zero and discards writes. NULL target
+ * means none does -- the passes stay usable by a unit test that builds a
+ * block without one.
+ */
+static bool reg_is_zero(const emu_ir_target_t *t, uint32_t n)
+{
+    return t != NULL && t->reg_is_zero != NULL && t->reg_is_zero(n);
+}
+
+static void pass_reg_traffic(emu_ir_block_t *b, const emu_ir_target_t *t,
+                             emu_ir_opt_stats_t *st)
 {
     uint16_t cur[IR_MAX_GUEST_REGS];
     static uint16_t copy[EMU_IR_MAX_TEMPS];
@@ -262,7 +291,7 @@ static void pass_reg_traffic(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
 
         switch ((emu_ir_op_t)in->op) {
         case EMU_IR_GET:
-            if (in->imm < IR_MAX_GUEST_REGS) {
+            if (in->imm < IR_MAX_GUEST_REGS && !reg_is_zero(t, in->imm)) {
                 if (cur[in->imm] != EMU_IR_NO_TEMP) {
                     /* Already in a temp: reuse it instead of reloading. */
                     in->op = (uint8_t)EMU_IR_MOV;
@@ -275,7 +304,7 @@ static void pass_reg_traffic(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
             break;
 
         case EMU_IR_PUT:
-            if (in->imm < IR_MAX_GUEST_REGS) {
+            if (in->imm < IR_MAX_GUEST_REGS && !reg_is_zero(t, in->imm)) {
                 cur[in->imm] = in->a;
             }
             break;
@@ -609,8 +638,8 @@ uint32_t emu_ir_regalloc(const emu_ir_block_t *b, uint32_t nregs,
 
 /* ------------------------------------------------------------------ */
 
-void emu_ir_optimise(emu_ir_block_t *b, uint8_t live_out,
-                     emu_ir_opt_stats_t *stats)
+void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
+                     uint8_t live_out, emu_ir_opt_stats_t *stats)
 {
     emu_ir_opt_stats_t local;
 
@@ -630,7 +659,7 @@ void emu_ir_optimise(emu_ir_block_t *b, uint8_t live_out,
      * orphaned.
      */
     pass_dead_flags(b, live_out, stats);
-    pass_reg_traffic(b, stats);
+    pass_reg_traffic(b, t, stats);
     pass_dead_puts(b, stats);
     pass_dead_values(b, stats);
     pass_count_uses(b, stats);

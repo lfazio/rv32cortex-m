@@ -85,6 +85,18 @@ typedef struct emu_jit_stats {
      */
     uint32_t declined;
     uint32_t overflowed;
+#ifdef EMU_JIT_DIFF
+    /*
+     * How much of the differential check actually ran. Without these,
+     * "the compiled code agreed with the IR" and "the reference declined
+     * every block" are the same silence -- and the reference declines any
+     * block holding a store, which is most of an architecture test. A
+     * checker that never fires reads as a clean bill of health, which is
+     * the failure mode this whole file is annotated against.
+     */
+    uint32_t diff_checked;      /* blocks run against the reference    */
+    uint32_t diff_declined;     /* blocks the reference would not run  */
+#endif
 #ifdef EMU_JIT_PROFILE
     /* Define EMU_JIT_PROFILE to split host cycles by phase. Needs a cycle
      * counter, so it is off by default and ARM-only for now. */

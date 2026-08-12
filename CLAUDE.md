@@ -681,6 +681,47 @@ Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
   shape as the 16-bit Thumb-2 `CMP` that became a different instruction.
   Encoders that take a register parameter belong in `encode.c`, where
   the REX/high-register logic is written once.
+- **An IR pass that rewrites the IR must honour every guest invariant
+  the lowerings do, and being right in all three backends does not help
+  when the thing that is wrong runs before them.**
+  `pass_reg_traffic` forwards a guest register's value from the temp
+  that last wrote it, so a `GET` becomes a `MOV` instead of a reload.
+  It tracked **x0**. Every lowering -- the IR interpreter, x86-64 and
+  Thumb-2 -- consults `reg_is_zero` and correctly discards a write to
+  x0 and answers a read with a constant; the pass never saw the target
+  at all, so it recorded the discarded write and rewrote the next read
+  into a `MOV` of it. All three then faithfully compiled a guest
+  reading its own thrown-away result where the architecture guarantees
+  zero. Writing x0 is not a corner case: every discarded result and
+  every canonical NOP is one. **36 of 39 `I` tests and 3 of 8 `M`.**
+
+  Three things about finding it are worth keeping.
+
+  **The differential checker cannot see it, by construction.**
+  `ir_diff_ref` runs `emu_ir_interp` on the *optimised* IR, so
+  reference and compiled code were wrong identically and agreed
+  perfectly. A checker that compares two consumers of a bad input
+  validates the consumers, not the input -- and its silence read
+  exactly like a clean bill of health. It also declines any block
+  holding a store, which is most of an architecture test, so "declined
+  everything" and "agreed with everything" were the same silence.
+  `diff_checked`/`diff_declined` are in the stats line now: the first
+  run said 53 checked, 27 declined, and that number is what turned the
+  silence into evidence.
+
+  **`test_lower_zero_register` existed, covered x0, and passed
+  throughout.** It does `GET r0` and *then* `PUT r0`; the bug needs the
+  other order. One weak test is worse than none, again -- and here the
+  distance between the passing test and the failing case was the order
+  of two lines. `test_zero_register_write_then_read` is the same test
+  with the writes first, and it was confirmed by reverting the fix.
+
+  **Bisecting the passes found it in four runs; reading them did not.**
+  `EMU_IR_PASSES` as a temporary bitmask over the four passes said
+  `pass_reg_traffic` alone reproduced it and the other three were
+  clean. Before that, two plausible readings of the code -- a missing
+  invalidation on LOAD/STORE, and the allocator claiming x0 -- were
+  both wrong. The optimiser is four passes and an A/B is one rebuild.
 - **The IR path has no `generation`, and floating point is the first
   thing that would need one.** `rv_jit_bind` fills in `pc`, `state` and
   `blocked` and leaves `generation` unset, which is correct today for a

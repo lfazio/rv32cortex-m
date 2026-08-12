@@ -509,6 +509,9 @@ typedef struct emu_ir_opt_stats {
     uint32_t dead_removed;    /* values nothing consumed               */
 } emu_ir_opt_stats_t;
 
+/* Defined under Lowering below; the passes read one field of it. */
+typedef struct emu_ir_target emu_ir_target_t;
+
 /*
  * Run every pass over the block. Host-independent by construction: a
  * pass that needed to know the host would belong in the backend.
@@ -518,9 +521,17 @@ typedef struct emu_ir_opt_stats {
  * examined by the next block or by an interrupt handler is live, and
  * getting this wrong deletes a flag definition a later block depends on,
  * which no test that runs one block at a time would catch.
+ *
+ * `t` is the *guest* description, not the host's: the passes need it for
+ * one thing only, which is which guest registers are hardwired to zero.
+ * That is a property of the architecture rather than of the machine the
+ * block is being compiled for, so taking it here does not make the
+ * passes host-dependent. It may be NULL, meaning no register is
+ * hardwired -- but see the note on pass_reg_traffic before passing NULL
+ * for an architecture that has one.
  */
-void emu_ir_optimise(emu_ir_block_t *b, uint8_t live_out,
-                     emu_ir_opt_stats_t *stats);
+void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
+                     uint8_t live_out, emu_ir_opt_stats_t *stats);
 
 /* ------------------------------------------------------------------ */
 /* Lowering                                                            */

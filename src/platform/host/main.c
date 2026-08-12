@@ -758,6 +758,11 @@ int main(int argc, char **argv)
                         st.blocks, st.translations, st.block_entries,
                         st.interp_fallbacks, st.code_used, st.code_size,
                         st.flushes);
+#ifdef EMU_JIT_DIFF
+                fprintf(stderr,
+                        "emu: jit-diff checked %u  declined %u\n",
+                        st.diff_checked, st.diff_declined);
+#endif
             }
         }
     }

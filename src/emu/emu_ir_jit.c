@@ -105,7 +105,7 @@ static uint32_t ir_translate(emu_cpu_t *cpu, uint32_t pc,
         return 0u;
     }
 
-    emu_ir_optimise(&g_ir, EMU_IR_F_ALL, NULL);
+    emu_ir_optimise(&g_ir, fe->target, EMU_IR_F_ALL, NULL);
 
     if (!emu_ir_lower(&g_ir, fe->target)) {
         return 0u;
