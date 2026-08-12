@@ -651,6 +651,31 @@ what changes between the parts.
   shape as the 16-bit Thumb-2 `CMP` that became a different instruction.
   Encoders that take a register parameter belong in `encode.c`, where
   the REX/high-register logic is written once.
+- **The IR path has no `generation`, and floating point is the first
+  thing that would need one.** `rv_jit_bind` fills in `pc`, `state` and
+  `blocked` and leaves `generation` unset, which is correct today for a
+  reason worth stating: the only mutable hart state the IR translator
+  reads is what `fetch_guard` already covers, and it *declines to run at
+  all* when PMP, paging or Sdtrig are armed rather than tracking them.
+  Nothing it emits is specialised on anything.
+
+  Emitting the FP class breaks that. A block is specialised on `frm` --
+  the IR resolves "dynamic" at translation, deliberately, so a backend
+  can decline a mode it lacks -- and a block containing an FP load or an
+  OP-FP is only legal while `mstatus.FS` is on. Both are exactly the
+  shape already recorded above for the hand-written backend: **a
+  translate-time legality check is only half a guard; the block outlives
+  it**, and a block built while FS was on keeps executing after the
+  guest turns the FPU off, so instructions that must raise
+  illegal-instruction run silently.
+
+  So the frontend cannot emit EMU_IR_F* until the IR path grows the
+  same specialise-and-flush machinery `jit_rv32.c` has. That is a
+  counter bumped where FS and frm can move -- a CSR write, which is a
+  SYSTEM instruction the translator declines, so the interpreter
+  fallback is the single place it can happen -- plumbed through `bind`.
+  Do not shortcut it by checking FS at translation only. That is the
+  bug, not the fix.
 - **A guest-register cache in r8-r10 was tried and is 15.5% slower.** Reads per
   block said it should win; it did not, because a cached read is `MOV` where an
   uncached one is `LDR` -- one instruction either way -- while write-through
