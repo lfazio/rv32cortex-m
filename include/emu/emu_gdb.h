@@ -89,6 +89,16 @@ typedef struct emu_gdb_target {
 
     /* Name for qXfer / the log; not required to be a gdb arch string. */
     const char *arch;
+
+    /*
+     * gdb's target description, served through
+     * qXfer:features:read:target.xml. Optional, and worth supplying:
+     * without it gdb cannot know what it is talking to and every session
+     * has to begin with `set architecture riscv:rv32` or an ELF, which
+     * is the difference between the stub being usable and being a thing
+     * you have to remember how to use.
+     */
+    const char *target_xml;
 } emu_gdb_target_t;
 
 /* ------------------------------------------------------------------ */

@@ -476,7 +476,81 @@ static void cmd_query(emu_gdb_t *g, const uint8_t *p, uint32_t len)
             b[n++] = hex_digit((sz >> 4) & 0xFu);
             b[n++] = hex_digit(sz & 0xFu);
         }
+        /*
+         * swbreak+ tells gdb the stop reply will say when a breakpoint
+         * was the reason, which is how it distinguishes its own
+         * breakpoint from a trap the program took. Without it gdb has to
+         * guess by comparing the pc against its breakpoint list, and
+         * guesses wrong when both happen at once.
+         */
+        {
+            const char *ext = ";swbreak+;hwbreak+";
+            while (*ext != '\0') { b[n++] = *ext++; }
+        }
+        if (g->target->target_xml != NULL) {
+            const char *ext = ";qXfer:features:read+";
+            while (*ext != '\0') { b[n++] = *ext++; }
+        }
         send_packet(g, b, (uint32_t)n);
+        return;
+    }
+    if (starts_with(p, len, "qXfer:features:read:")) {
+        /*
+         * Chunked, because it has to be: the description is ~1.6 KB
+         * against a 1 KB packet. Serving it in one piece and letting
+         * send_packet truncate does not fail loudly -- gdb reports
+         * "Received too much data from the target" and the session dies
+         * before it starts, which says nothing about the real cause
+         * being a reply one and a half times the size it promised.
+         *
+         * The request ends ":OFFSET,LENGTH" in hex. The reply is 'm'
+         * plus a chunk when more follows and 'l' plus the last one, and
+         * gdb keeps asking until it sees 'l'.
+         */
+        const char *xml = g->target->target_xml;
+        char b[EMU_GDB_MAX_PACKET];
+        uint32_t off = 0, want = 0, total = 0, n = 0;
+        uint32_t i = 0;
+
+        if (xml == NULL) {
+            send_empty(g);
+            return;
+        }
+        while (xml[total] != '\0') {
+            total++;
+        }
+
+        /* Skip to the last ':' -- the annex name may contain none, but
+         * the offset always follows one. */
+        for (uint32_t k = 0; k < len; k++) {
+            if (p[k] == ':') {
+                i = k + 1u;
+            }
+        }
+        i += hex_to_u32(&p[i], len - i, &off);
+        if (i < len && p[i] == ',') {
+            (void)hex_to_u32(&p[i + 1u], len - i - 1u, &want);
+        }
+
+        if (off >= total) {
+            send_str(g, "l");           /* nothing left: end of object */
+            return;
+        }
+        /* Leave room for the prefix, and never exceed what gdb asked
+         * for or what it said it could take. */
+        if (want == 0u || want > sizeof(b) - 2u) {
+            want = (uint32_t)sizeof(b) - 2u;
+        }
+        if (want > total - off) {
+            want = total - off;
+            b[n++] = 'l';
+        } else {
+            b[n++] = (off + want >= total) ? 'l' : 'm';
+        }
+        for (uint32_t k = 0; k < want; k++) {
+            b[n++] = xml[off + k];
+        }
+        send_packet(g, b, n);
         return;
     }
     if (starts_with(p, len, "qAttached")) {
@@ -581,6 +655,36 @@ static void dispatch(emu_gdb_t *g, const uint8_t *p, uint32_t len)
 
     case 'q':
         cmd_query(g, p, len);
+        break;
+
+    case 'v':
+        /*
+         * vCont is how modern gdb resumes. Answering vCont? with an
+         * empty packet makes it fall back to `c`/`s`, which works -- but
+         * only because gdb still implements the fallback, and it stops
+         * being able to express "step this thread, continue that one".
+         * Supporting the two actions that mean anything on a
+         * single-core target costs a dozen lines.
+         */
+        if (starts_with(p, len, "vCont?")) {
+            send_str(g, "vCont;c;C;s;S");
+        } else if (starts_with(p, len, "vCont")) {
+            bool step = false;
+
+            /* The action is the character after the first ';'. Thread
+             * ids are ignored: there is one. */
+            for (uint32_t i = 5; i < len; i++) {
+                if (p[i] == ';') {
+                    step = (i + 1u < len) &&
+                           (p[i + 1u] == 's' || p[i + 1u] == 'S');
+                    break;
+                }
+            }
+            g->stepping = step;
+            g->halted = false;
+        } else {
+            send_empty(g);
+        }
         break;
 
     case 'H':       /* thread selection; one thread, so always fine */
@@ -749,21 +853,41 @@ emu_run_reason_t emu_gdb_run(emu_gdb_t *g, uint32_t budget,
         return why;
     }
 
-    /*
-     * With breakpoints set the guest is stepped, because a block backend
-     * stops only between blocks and would run straight past one inside
-     * a block. That is slow -- and it is slow exactly while a person is
-     * sitting at a prompt having asked for it, which is the one time
-     * throughput does not matter. With no breakpoints set, full speed.
-     */
     if (!break_any(g)) {
         return ops->run(g->core->cpu, budget, retired);
     }
 
-    for (uint32_t i = 0; i < budget; i++) {
-        const emu_run_reason_t why = ops->step(g->core->cpu);
+    /*
+     * Breakpoints, without giving up the backend under test.
+     *
+     * The obvious implementation steps every instruction through
+     * ops->step so a breakpoint anywhere is caught exactly. That is what
+     * this did, and it is worse than slow -- ops->step is the
+     * *interpreter*, so planting a breakpoint silently replaced the
+     * thing being debugged. Chasing a JIT miscompile that way shows the
+     * interpreter's correct answer at every stop and the bug never
+     * appears: the debugger disproves the bug by existing.
+     *
+     * So run the real backend, one block at a time, and check the pc at
+     * each block boundary. A budget of 1 is how you ask for a single
+     * block: a block backend may retire more than its budget because it
+     * can only stop between blocks, which is normally a hazard and is
+     * exactly the lever here.
+     *
+     * The cost is honest and worth stating: a breakpoint is recognised
+     * at *block granularity* while the JIT is live, so one in the middle
+     * of a translated block is reported at the next block entry rather
+     * than before the instruction. `stepi` is still exact, because a
+     * single step has to go through the interpreter whatever the
+     * backend. For finding out what a block computed -- which is what a
+     * JIT bug needs -- stopping just after it is the useful place
+     * anyway.
+     */
+    while (*retired < budget) {
+        uint32_t n = 0;
+        const emu_run_reason_t why = ops->run(g->core->cpu, 1u, &n);
 
-        (*retired)++;
+        *retired += n;
 
         if (why != EMU_RUN_BUDGET) {
             return why;
@@ -772,6 +896,11 @@ emu_run_reason_t emu_gdb_run(emu_gdb_t *g, uint32_t budget,
             g->halted = true;
             send_stop(g, 5);            /* SIGTRAP */
             return EMU_RUN_BUDGET;
+        }
+        if (n == 0u) {
+            /* No forward progress -- nothing ran and nothing will.
+             * Returning stops this being a loop that never ends. */
+            break;
         }
     }
     return EMU_RUN_BUDGET;
