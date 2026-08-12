@@ -200,6 +200,60 @@ void t2_uxth(uint32_t rd, uint32_t rm)
 }
 
 /* ------------------------------------------------------------------ */
+/* VFP, single precision                                               */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Only S0-S2 are used, so the D/N/M bits below are always the low bit of
+ * the register number and the V fields the rest. Spelling that out
+ * rather than hiding it: every VFP encoding splits a register across two
+ * non-adjacent fields, and putting both halves in the wrong place is the
+ * failure this file has already had once with a Thumb-2 shift amount --
+ * it assembles, and it names a different register.
+ */
+#define VFP_VD(n)   (((n) >> 1) & 0xFu)
+#define VFP_D(n)    ((n) & 1u)
+
+/* VMOV Sn, Rt (op 0) and VMOV Rt, Sn (op 1). */
+void t2_vmov_core(uint32_t sn, uint32_t rt, bool to_core)
+{
+    t2_emit32((uint16_t)(0xEE00u | (to_core ? 0x10u : 0u) | VFP_VD(sn)),
+              (uint16_t)((rt << 12) | 0x0A10u | (VFP_D(sn) << 7)));
+}
+
+/*
+ * The three-register arithmetic group: VADD, VSUB, VMUL, VDIV .F32.
+ * `hi` selects the opcode block and `sub` the bit 6 that separates VADD
+ * from VSUB inside it.
+ */
+void t2_vfp3(uint16_t hi, bool sub, uint32_t sd, uint32_t sn, uint32_t sm)
+{
+    t2_emit32((uint16_t)(hi | (VFP_D(sn) << 7) | VFP_VD(sn)),
+              (uint16_t)((VFP_VD(sd) << 12) | 0x0A00u | (VFP_D(sd) << 6) |
+                         (sub ? 0x40u : 0u) | (VFP_D(sm) << 5) | VFP_VD(sm)));
+}
+
+void t2_vsqrt(uint32_t sd, uint32_t sm)
+{
+    t2_emit32((uint16_t)(0xEEB1u | (VFP_D(sd) << 6)),
+              (uint16_t)((VFP_VD(sd) << 12) | 0x0AC0u |
+                         (VFP_D(sm) << 5) | VFP_VD(sm)));
+}
+
+/* VMRS Rt, FPSCR and VMSR FPSCR, Rt. */
+void t2_vmrs(uint32_t rt)
+{
+    t2_emit32(0xEEF1u, (uint16_t)((rt << 12) | 0x0A10u));
+}
+
+void t2_vmsr(uint32_t rt)
+{
+    t2_emit32(0xEEE1u, (uint16_t)((rt << 12) | 0x0A10u));
+}
+
+/* RBIT Rd, Rm -- reverses all 32 bits; see the flag note in ir_lower.c. */
+
+/* ------------------------------------------------------------------ */
 /* Control flow                                                        */
 /* ------------------------------------------------------------------ */
 

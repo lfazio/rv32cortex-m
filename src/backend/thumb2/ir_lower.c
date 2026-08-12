@@ -44,6 +44,8 @@ static uint16_t g_ntemps;
 
 #define SCRATCH_ADDR ((uint16_t)(g_ntemps))
 #define SCRATCH_VAL  ((uint16_t)(g_ntemps + 1u))
+/* One more for the caller's FPSCR, which this block borrows. */
+#define SCRATCH_FPSCR ((uint16_t)(g_ntemps + 2u))
 
 static uint32_t slot(uint16_t n) { return (uint32_t)n * 4u; }
 
@@ -364,32 +366,48 @@ static bool bisect_allows(uint8_t op)
 }
 
 /*
- * This backend lowers no floating point yet.
+ * What this backend will emit for the floating-point class.
  *
- * Not because ARMv7E-M lacks it -- the hand-written translator beside
- * this one goes straight to VFP, and has the FPSCR.DN and flag-order
- * rules already worked out. It is that the IR path has no way to test a
- * lowering here except by flashing a board, and the x86-64 one is where
- * the semantics get settled first. Answering false costs a helper call
- * per FP instruction and keeps the block whole, which is the trade this
- * project has measured in favour of.
+ * The arithmetic goes to VFP under an FPSCR this block sets, which fixes
+ * rounding at nearest -- so any other mode is declined rather than
+ * silently rounded differently. ARM has no ties-away mode at all, which
+ * is the case the hand-written translator beside this one also declines,
+ * and the reason `aux` is part of the question.
+ *
+ * FGET, FPUT and FSGNJ never reach the FP unit: a value is its bit
+ * pattern, so moving one is a load and a store and sign injection is
+ * three integer instructions. They are answered true unconditionally
+ * and cost nothing even on a part without a VFP.
+ *
+ * Comparison, conversion, FMIN/FMAX and FCLASS are declined for now.
+ * The first two need fixups this host has its own shape for -- ARM
+ * float-to-int gives 0 for a NaN where the guests want the maximum, and
+ * VCMPE has to be told apart from VCMP by which NaN raises invalid --
+ * and none of it can be tested except by flashing a board.
  */
 bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
 {
-    (void)aux;
     switch (op) {
-    case EMU_IR_FGET: case EMU_IR_FPUT:
+    case EMU_IR_FGET: case EMU_IR_FPUT: case EMU_IR_FSGNJ:
+        return true;
+
     case EMU_IR_FADD: case EMU_IR_FSUB:
     case EMU_IR_FMUL: case EMU_IR_FDIV:
-    case EMU_IR_FSQRT: case EMU_IR_FMIN: case EMU_IR_FMAX:
-    case EMU_IR_FSGNJ: case EMU_IR_FCMP:
+    case EMU_IR_FSQRT:
+        return EMU_IR_FRM(aux) == EMU_IR_FRM_RNE;
+
+    case EMU_IR_FMIN: case EMU_IR_FMAX: case EMU_IR_FCMP:
     case EMU_IR_FCVT_TO_I: case EMU_IR_FCVT_FROM_I:
     case EMU_IR_FCLASS:
         return false;
+
     default:
         return true;
     }
 }
+
+/* Does this block touch the FP unit, and so need FPSCR framed? */
+static bool g_has_fp;
 
 static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 {
@@ -580,6 +598,80 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         break;
     }
 
+    /* ---- floating point ----------------------------------------- */
+    case EMU_IR_FGET: {
+        if (t->freg_offset == NULL) { return false; }
+        const uint32_t rd = def_reg(in->dst, T2_R0);
+
+        t2_ldr_imm(rd, T2_CPU, t->freg_offset(in->imm));
+        st_slot(rd, in->dst);
+        break;
+    }
+
+    case EMU_IR_FPUT:
+        if (t->freg_offset == NULL) { return false; }
+        t2_str_imm(use_reg(in->a, T2_R0), T2_CPU, t->freg_offset(in->imm));
+        break;
+
+    case EMU_IR_FSGNJ: {
+        /*
+         * Integer work, so it never reaches the FP unit -- which is also
+         * why it is exact for a NaN operand, where anything routed
+         * through a VFP register risks the default-NaN rule quietening
+         * one.
+         */
+        const uint32_t ra = use_reg(in->a, T2_R0);
+        const uint32_t rb = use_reg(in->b, T2_R1);
+        const uint32_t rd = def_reg(in->dst, T2_R0);
+
+        t2_imm32(T2_R2, 0x80000000u);
+        if (in->aux == EMU_IR_FSGNJ_X) {
+            t2_eor(T2_R3, ra, rb);
+            t2_and(T2_R3, T2_R3, T2_R2);
+        } else {
+            t2_and(T2_R3, rb, T2_R2);
+            if (in->aux == EMU_IR_FSGNJ_N) {
+                t2_eor(T2_R3, T2_R3, T2_R2);
+            }
+        }
+        t2_imm32(T2_R2, 0x7FFFFFFFu);
+        t2_and(T2_R2, ra, T2_R2);
+        t2_orr(rd, T2_R2, T2_R3);
+        st_slot(rd, in->dst);
+        break;
+    }
+
+    case EMU_IR_FADD: case EMU_IR_FSUB:
+    case EMU_IR_FMUL: case EMU_IR_FDIV: {
+        if (!emu_ir_can_lower((emu_ir_op_t)in->op, in->aux)) { return false; }
+        const uint32_t ra = use_reg(in->a, T2_R0);
+        const uint32_t rb = use_reg(in->b, T2_R1);
+        const uint32_t rd = def_reg(in->dst, T2_R0);
+        const bool sub = in->op == (uint8_t)EMU_IR_FSUB;
+        const uint16_t hi = (in->op == (uint8_t)EMU_IR_FMUL) ? T2_VMUL
+                          : (in->op == (uint8_t)EMU_IR_FDIV) ? T2_VDIV
+                                                             : T2_VADD;
+
+        t2_vmov_core(T2_S0, ra, false);
+        t2_vmov_core(T2_S1, rb, false);
+        t2_vfp3(hi, sub, T2_S0, T2_S0, T2_S1);
+        t2_vmov_core(T2_S0, rd, true);
+        st_slot(rd, in->dst);
+        break;
+    }
+
+    case EMU_IR_FSQRT: {
+        if (!emu_ir_can_lower((emu_ir_op_t)in->op, in->aux)) { return false; }
+        const uint32_t ra = use_reg(in->a, T2_R0);
+        const uint32_t rd = def_reg(in->dst, T2_R0);
+
+        t2_vmov_core(T2_S0, ra, false);
+        t2_vsqrt(T2_S0, T2_S0);
+        t2_vmov_core(T2_S0, rd, true);
+        st_slot(rd, in->dst);
+        break;
+    }
+
     case EMU_IR_SETPC:
     case EMU_IR_EXIT: {
         uint32_t rp = T2_R0;
@@ -732,6 +824,8 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
      * which the framework treats exactly as a declined translation --
      * so this is a coverage cost, not a correctness one.
      */
+    case EMU_IR_FMIN: case EMU_IR_FMAX: case EMU_IR_FCMP:
+    case EMU_IR_FCVT_TO_I: case EMU_IR_FCVT_FROM_I: case EMU_IR_FCLASS:
     case EMU_IR_SETF:
     case EMU_IR_GETCOND:
     case EMU_IR_SELECT:
@@ -766,6 +860,24 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
 
     g_nsaved = emu_ir_regalloc(b, T2_ALLOC_REGS, g_reg);
 
+    /*
+     * Asked once. Everything FPSCR costs -- saving it, setting the rules
+     * this backend's answers depend on, reading the flags back and
+     * handing them to the frontend -- is paid per block, and must not be
+     * paid by blocks that never look at a float.
+     */
+    g_has_fp = false;
+    for (uint32_t i = 0; i < b->count && !g_has_fp; i++) {
+        if (!b->insn[i].dead &&
+            b->insn[i].op >= (uint8_t)EMU_IR_FADD &&
+            b->insn[i].op <= (uint8_t)EMU_IR_FCLASS) {
+            g_has_fp = true;
+        }
+    }
+    if (g_has_fp && (t->fp_flags == NULL || t->freg_offset == NULL)) {
+        return false;
+    }
+
     uint32_t list = (1u << T2_CPU) | (1u << T2_CNT);
 
     for (uint32_t i = 0; i < g_nsaved; i++) {
@@ -782,7 +894,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      * four out. That was benign here only because nothing a helper
      * reaches uses LDRD or a double.
      */
-    uint32_t frame = (((b->next_temp + 2u) * 4u) + 7u) & ~7u;
+    uint32_t frame = (((b->next_temp + 4u) * 4u) + 7u) & ~7u;
 
     if ((((g_nsaved + 3u) * 4u) + frame) % 8u != 0u) {
         frame += 4u;
@@ -795,6 +907,38 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         /* SUB.W sp, sp, #frame */
         t2_imm32(T2_R12, frame);
         t2_emit32(0xEBADu, (uint16_t)((13u << 8) | T2_R12));
+    }
+
+    if (g_has_fp) {
+        /*
+         * Borrow FPSCR for the length of the block.
+         *
+         * Three things are set, and each is a rule the guests state and
+         * ARM does not default to:
+         *
+         *   DN  set. ARM's default NaN is what RISC-V calls the
+         *       canonical NaN, and without it a NaN operand propagates
+         *       instead of being replaced.
+         *   FZ  clear. Both guests define subnormals as ordinary values;
+         *       flush-to-zero would quietly turn the smallest results
+         *       into zero and raise the wrong flag doing it.
+         *   RMode nearest. emu_ir_can_lower promises this backend emits
+         *       arithmetic only for round-to-nearest, and that is a
+         *       promise only if the block sets it rather than inheriting
+         *       whatever ran before.
+         *
+         * The sticky flags are cleared for the same reason the x86-64
+         * backend clears MXCSR's: a guest that clears its own and then
+         * runs an operation raising none would otherwise still see the
+         * host's leftovers, and nothing else ever clears them.
+         */
+        t2_vmrs(T2_R0);
+        st_slot(T2_R0, SCRATCH_FPSCR);
+        t2_imm32(T2_R1, 0x02000000u);          /* DN */
+        t2_orr(T2_R0, T2_R0, T2_R1);
+        t2_imm32(T2_R1, ~0x01C0001Fu);         /* FZ, RMode, IOC..IXC */
+        t2_and(T2_R0, T2_R0, T2_R1);
+        t2_vmsr(T2_R0);
     }
 
     for (uint32_t i = 0; i < b->count; i++) {
@@ -830,6 +974,28 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     for (uint32_t i = 0; i < g_nexits; i++) {
         patch_branch(g_exits[i].at, emu_jit_here(),
                      g_exits[i].conditional);
+    }
+
+    if (g_has_fp) {
+        /*
+         * One accumulation of the block's flags, on the single path
+         * every exit takes.
+         *
+         * ARM orders them IOC,DZC,OFC,UFC,IXC from bit 0 and the IR
+         * NX,UF,OF,DZ,NV -- an exact five-bit reversal, so RBIT of the
+         * masked word followed by LSR #27 is the whole conversion. That
+         * it is a reversal rather than a permutation is luck, and worth
+         * saying: on x86-64 the same mapping needs a lookup table.
+         */
+        t2_vmrs(T2_R0);
+        t2_imm32(T2_R1, 0x1Fu);
+        t2_and(T2_R0, T2_R0, T2_R1);
+        t2_rbit(T2_R0, T2_R0);
+        t2_shift_imm(T2_LSR, T2_R1, T2_R0, 27u);
+        t2_mov(T2_R0, T2_CPU);
+        t2_call((const void *)t->fp_flags);
+        ld_slot(T2_R0, SCRATCH_FPSCR);
+        t2_vmsr(T2_R0);
     }
 
     if (frame != 0u) {

@@ -93,6 +93,27 @@ void     t2_patch_branch(uint8_t *at, const uint8_t *target, bool conditional);
  */
 void t2_call(const void *fn);
 
+/*
+ * VFP, single precision. S0-S2 only: a floating-point value lives in an
+ * integer temp as its bit pattern and enters the FP unit solely to be
+ * operated on, which is what keeps the register allocator out of it.
+ */
+#define T2_S0 0u
+#define T2_S1 1u
+#define T2_S2 2u
+
+/* First-halfword bases for the three-register group. */
+#define T2_VADD 0xEE30u        /* with `sub` false */
+#define T2_VSUB 0xEE30u        /* with `sub` true  */
+#define T2_VMUL 0xEE20u
+#define T2_VDIV 0xEE80u
+
+void t2_vmov_core(uint32_t sn, uint32_t rt, bool to_core);
+void t2_vfp3(uint16_t hi, bool sub, uint32_t sd, uint32_t sn, uint32_t sm);
+void t2_vsqrt(uint32_t sd, uint32_t sm);
+void t2_vmrs(uint32_t rt);
+void t2_vmsr(uint32_t rt);
+
 /* An IR condition as the cond field of a Thumb-2 conditional branch. */
 uint32_t t2_cond(uint8_t c);
 
