@@ -36,6 +36,30 @@ SECTIONS
         *(.srodata .srodata.*)
     } > RAM
 
+    /*
+     * Where the read-only half ends.
+     *
+     * On the STM32 the guest image is already resident in the part's
+     * flash -- guest_image.S embeds it in the firmware -- and the boot
+     * path then memcpy's the whole thing into guest RAM. Everything up
+     * to here is read-only and does not need that copy: it can be served
+     * straight out of flash as a ROM bus region, leaving RAM for the
+     * half that is actually written. On the biggest architecture tests
+     * that is 140 KiB of the 345 they need.
+     *
+     * The split has to be *exact*. In the flat binary .data follows
+     * immediately with no marker, so a boundary that is off by any
+     * amount either serves initialised data from flash -- where the
+     * guest's first write to it faults -- or leaves the tail of .rodata
+     * uncopied and reading as zero. Hence a linker symbol rather than an
+     * offset computed anywhere else.
+     *
+     * ALIGN(4) before it, because a ROM region's end and the RAM
+     * region's base are the same address and both want to be aligned.
+     */
+    . = ALIGN(4);
+    __guest_ro_end = .;
+
     .data : ALIGN(4)
     {
         *(.data .data.*)
