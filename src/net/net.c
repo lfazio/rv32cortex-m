@@ -201,5 +201,6 @@ void emu_net_poll(void)
     if (now != last_ms) {
         last_ms = now;
         sys_check_timeouts();
+        emu_net_tftp_poll();
     }
 }

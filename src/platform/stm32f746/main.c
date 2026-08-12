@@ -1343,6 +1343,14 @@ restart:
      */
     console_puts("\n-- net --\n  rx drops ");
     console_putu(board_console_rx_overruns());
+    /*
+     * How often the TFTP server had to be rebuilt under it. Nonzero is
+     * normal -- the watchdog re-arms while the link is quiet -- but it
+     * climbing during a suite run means transfers are being abandoned,
+     * which is worth seeing rather than inferring from a slow harness.
+     */
+    console_puts("  tftp reclaims ");
+    console_putu(emu_net_tftp_reclaims());
     console_putc('\n');
 #endif
 
@@ -1424,6 +1432,43 @@ restart:
             uint32_t n = 0;
 
             (void)emu_net_gdb_run(EMU_RUN_SLICE, &n);
+            continue;
+        }
+
+        /*
+         * Do not sleep while the stack is up, and the reason is the
+         * clock rather than latency.
+         *
+         * lwIP's time base is sys_now(), which is derived from
+         * board_cycles() -- DWT CYCCNT, a counter of *processor* cycles.
+         * __WFI stops the processor clock, so CYCCNT stops with it and
+         * the stack's notion of time stops advancing. Measured here:
+         * over 29 seconds of wall time parked in this loop, lwIP's clock
+         * advanced 1.74 seconds, about 6% of real time.
+         *
+         * Every timeout in the stack is frozen by that, not just one.
+         * The visible symptom was TFTP: a client killed mid-transfer
+         * leaves a session open, and the 10-second timeout that would
+         * reclaim it needs ~3 minutes of wall time to expire, so in
+         * practice the board refused every later upload until it was
+         * reset. Anything else time-based -- a TCP retransmission, an
+         * ARP entry ageing out -- is slowed by the same factor, and
+         * would present as a link that is mysteriously sluggish rather
+         * than as a stopped clock.
+         *
+         * Nothing here is a power-sensitive workload: this loop is a
+         * bench board waiting to be handed the next test image. Polling
+         * costs nothing that matters and keeps the clock honest. The
+         * board still sleeps when the network is *not* up, which is the
+         * plain serial-console case where nothing depends on lwIP's
+         * timers at all.
+         *
+         * Fixing it in the time base instead would mean a free-running
+         * peripheral timer -- a TIM keeps its clock through Sleep where
+         * CYCCNT does not -- which is the better answer if this loop
+         * ever needs to sleep again.
+         */
+        if (emu_net_active()) {
             continue;
         }
 #endif

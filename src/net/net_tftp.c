@@ -35,10 +35,22 @@
 
 #include "emu_net.h"
 
+#include "lwip/apps/tftp_common.h"
 #include "lwip/apps/tftp_server.h"
 #include "lwip/pbuf.h"
+#include "lwip/sys.h"
 
 #include <string.h>
+
+/*
+ * How long a session may sit with no packet before it is torn down.
+ *
+ * lwIP has its own timeout for this and it does not fire here -- see
+ * emu_net_tftp_poll(). Eight seconds is longer than any gap a working
+ * client leaves between blocks on this link and short enough that a
+ * suite runner's own retry outlives it.
+ */
+#define EMU_TFTP_IDLE_MS 8000u
 
 /*
  * One transfer at a time. TFTP has no notion of concurrent access to the
@@ -49,6 +61,15 @@ static emu_net_image_t g_target;
 static uint32_t        g_written;
 static bool            g_busy;
 static bool            g_failed;
+
+/* When this session last saw a packet, for the watchdog below. */
+static uint32_t        g_last_ms;
+
+/* Whether tftp_init_server() has succeeded; tftp_cleanup() asserts on it. */
+static bool            g_up;
+
+/* How many times the watchdog below has rebuilt the server. */
+static uint32_t        g_reclaims;
 
 /* A distinct non-NULL handle per file, so close() knows which ended. */
 static uint8_t g_handle_rom;
@@ -92,6 +113,7 @@ static void *tftp_open(const char *fname, const char *mode, u8_t write)
     g_written = 0u;
     g_busy = true;
     g_failed = false;
+    g_last_ms = sys_now();
 
     return (which == EMU_NET_IMAGE_ROM) ? (void *)&g_handle_rom
                                         : (void *)&g_handle_ram;
@@ -104,6 +126,7 @@ static int tftp_write(void *handle, struct pbuf *p)
     if (!g_busy) {
         return -1;
     }
+    g_last_ms = sys_now();
 
     /*
      * A pbuf may be chained, and the pieces have to be handed over in
@@ -171,7 +194,88 @@ static const struct tftp_context k_ctx = {
     tftp_error,
 };
 
+/*
+ * Reclaim a TFTP session whose client stopped talking.
+ *
+ * lwIP has exactly this timeout already and it does not fire here. Its
+ * timer is armed with sys_timeout() from the request handler, and
+ * sys_timeout() fails silently when MEMP_NUM_SYS_TIMEOUT is exhausted --
+ * so the one path that would ever close an abandoned session is also the
+ * path that stops working once a slot leaks. Measured on the board: a
+ * client killed after one data block left the session refusing every
+ * later request past 42 seconds, against a 10-second timeout, and only a
+ * reset cleared it.
+ *
+ * The trigger is idleness alone, and deliberately *not* this file's own
+ * g_busy. The wedge has more than one shape -- lwIP refuses a request
+ * from tftp_recv() before ctx->open() is ever reached, so whether the
+ * server is stuck is not something these callbacks can observe, and a
+ * watchdog gated on g_busy sat silent through a board that was refusing
+ * every upload. What can be observed is that nothing has arrived for a
+ * while, and that is enough, because tearing an *idle* server down and
+ * rebuilding it costs a udp_remove and a udp_new and changes nothing.
+ * So it is done on idleness whether or not anything looks wrong.
+ *
+ * That is blunt on purpose: it depends on none of lwIP's private state,
+ * on which of close_handle()'s callers ran, or on the timer pool having
+ * had a slot. It also frees the leaked slot, via close_handle()'s
+ * sys_untimeout().
+ *
+ * Once per idle period, not once per poll -- g_quiet says the reclaim
+ * for this silence has already happened, and any real traffic clears it.
+ *
+ * Nothing is lost. A transfer idle this long has a client that has gone
+ * away, and no upload commits until its second half lands, so abandoning
+ * one leaves the board exactly as it was -- which is what
+ * emu_net_image_end() is careful about.
+ *
+ * Called from emu_net_poll(), so it needs no timer of its own.
+ */
+void emu_net_tftp_poll(void)
+{
+    if (!g_up) {
+        return;                 /* server never started */
+    }
+    if ((sys_now() - g_last_ms) < EMU_TFTP_IDLE_MS) {
+        return;
+    }
+
+    /*
+     * Re-arm rather than latch. An earlier version fired once per silence
+     * and stayed quiet until real traffic cleared the flag -- which meant
+     * the single firing happened seconds after boot, before anything had
+     * gone wrong, and the wedge that arrived later was never revisited.
+     * Repeating is the whole value: whatever state the server reaches,
+     * it is at most EMU_TFTP_IDLE_MS from being rebuilt.
+     */
+    g_last_ms = sys_now();
+    g_reclaims++;
+
+    if (g_busy) {
+        for (const char *m = "\nemu: tftp session abandoned; reclaiming\n";
+             *m != '\0'; m++) {
+            emu_net_console_putc((uint8_t)*m);
+        }
+    }
+
+    /*
+     * Order matters. tftp_cleanup() calls close_handle(), which calls
+     * tftp_close() above, and that needs g_busy still set to abandon the
+     * part-written image properly -- so clear nothing before it.
+     */
+    tftp_cleanup();
+    g_busy = false;
+    (void)tftp_init_server(&k_ctx);
+}
+
+uint32_t emu_net_tftp_reclaims(void)
+{
+    return g_reclaims;
+}
+
 bool emu_net_tftp_init(void)
 {
-    return tftp_init_server(&k_ctx) == ERR_OK;
+    g_up = (tftp_init_server(&k_ctx) == ERR_OK);
+    g_last_ms = sys_now();
+    return g_up;
 }

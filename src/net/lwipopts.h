@@ -91,8 +91,19 @@
  * included from the top of opt.h, and this is not expanded until
  * memp_std.h uses it, by which time it is. That is the documented idiom
  * rather than an accident.
+ *
+ * Four rather than one, and the headroom is deliberate. sys_timeout()
+ * does not fail loudly enough to be worth running to the edge of: when
+ * the pool is empty it asserts and then *returns*, leaving the caller's
+ * timer simply not registered. For the TFTP server that timer is the
+ * only thing that would ever close an abandoned session, so a single
+ * leaked slot turns "a client was killed" into "no upload works again
+ * until reset" -- which is what happened, and which took a board reset
+ * per occurrence to clear. emu_net_tftp_poll() is the actual recovery;
+ * this is so the situation is rarer to begin with. Each slot costs about
+ * a dozen bytes.
  */
-#define MEMP_NUM_SYS_TIMEOUT        (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 1)
+#define MEMP_NUM_SYS_TIMEOUT        (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 4)
 
 /* ------------------------------------------------------------------ */
 /* Protocols                                                           */

@@ -119,6 +119,17 @@ bool emu_net_telnet_init(void);
 void emu_net_telnet_poll(void);
 bool emu_net_tftp_init(void);
 
+/*
+ * Tear down a TFTP session whose client stopped talking. lwIP's own
+ * timeout for this does not fire -- see the note on the definition --
+ * and without it one killed client wedges every later upload until the
+ * board is reset.
+ */
+void emu_net_tftp_poll(void);
+
+/* How many times emu_net_tftp_poll() has rebuilt the server. */
+uint32_t emu_net_tftp_reclaims(void);
+
 /* ------------------------------------------------------------------ */
 /* gdb                                                                 */
 /* ------------------------------------------------------------------ */
