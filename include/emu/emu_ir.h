@@ -605,6 +605,27 @@ typedef struct emu_ir_target {
  */
 bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t);
 
+/*
+ * Can this backend lower this operation, with this `aux`?
+ *
+ * The frontend asks *before* emitting, so that an operation only some
+ * hosts have becomes a helper call rather than a declined block. Without
+ * it a frontend has two bad choices: emit the op and lose the whole
+ * block wherever it is unsupported, or never emit it and lose the
+ * lowering wherever it exists -- and this project has already measured
+ * that ending a block costs more than translating one instruction badly.
+ *
+ * `aux` is part of the question, not decoration. A host may have an
+ * instruction for an operation and no encoding for one of its rounding
+ * modes: x86 and ARM both lack RISC-V's ties-away, and a backend that
+ * answered on the opcode alone would be asked to emit it anyway.
+ *
+ * Answering `true` is a promise. emu_ir_lower returning false for an
+ * operation this said it could do discards a block the frontend built on
+ * the strength of the answer.
+ */
+bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux);
+
 /* ------------------------------------------------------------------ */
 /* Register allocation                                                 */
 /* ------------------------------------------------------------------ */

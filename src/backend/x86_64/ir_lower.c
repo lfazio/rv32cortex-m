@@ -102,6 +102,44 @@ static bool reads_a_in_t0(uint8_t op)
 
 #define SCRATCH_ADDR ((uint16_t)(g_ntemps))
 #define SCRATCH_VAL  ((uint16_t)(g_ntemps + 1u))
+/* Two more for MXCSR: the caller's, and the one this block runs under. */
+#define SCRATCH_MXOLD ((uint16_t)(g_ntemps + 2u))
+#define SCRATCH_MXCUR ((uint16_t)(g_ntemps + 3u))
+
+/*
+ * MXCSR's sticky exception bits, mapped to EMU_IR_FE_*.
+ *
+ * A table because the two orders share no shift: x86 is
+ * IE,DE,ZE,OE,UE,PE from bit 0 and the IR is NX,UF,OF,DZ,NV, so the
+ * permutation is 0->4, 2->3, 3->2, 4->1, 5->0. Emitting that inline is
+ * about twenty instructions on a path taken once per block; a lookup is
+ * five. DE, the denormal flag, has no counterpart and is dropped -- both
+ * guests define subnormals as ordinary values.
+ *
+ * Filled once rather than written out, because sixty-four hand-computed
+ * constants is exactly the sort of table that is wrong in one entry.
+ */
+static uint8_t g_fe_map[64];
+static bool    g_fe_map_ready;
+static bool    g_has_fp;
+
+static void fe_map_init(void)
+{
+    if (g_fe_map_ready) {
+        return;
+    }
+    for (unsigned i = 0; i < 64u; i++) {
+        uint8_t v = 0u;
+
+        if ((i & (1u << 0)) != 0u) { v |= EMU_IR_FE_INVALID; }
+        if ((i & (1u << 2)) != 0u) { v |= EMU_IR_FE_DIVBYZERO; }
+        if ((i & (1u << 3)) != 0u) { v |= EMU_IR_FE_OVERFLOW; }
+        if ((i & (1u << 4)) != 0u) { v |= EMU_IR_FE_UNDERFLOW; }
+        if ((i & (1u << 5)) != 0u) { v |= EMU_IR_FE_INEXACT; }
+        g_fe_map[i] = v;
+    }
+    g_fe_map_ready = true;
+}
 
 /*
  * Where the allocator put each temp, and how many registers that took.
@@ -416,6 +454,50 @@ static void emit_mem_call(const void *fn, uint32_t spec)
     note_exit(x86_jcc32(X86_CC_NE));
 }
 
+/*
+ * What this backend will emit for the floating-point class.
+ *
+ * The rounding mode is half the question. Arithmetic runs under the
+ * MXCSR this block sets, which is round-to-nearest -- so any other mode
+ * would need the control word changed around the operation and is
+ * declined instead. Conversion to an integer has two encodings, a
+ * truncating one that ignores MXCSR and one that obeys it, which covers
+ * RTZ and RNE and nothing else.
+ *
+ * FMIN, FMAX and FCLASS are declined for a different reason: minss and
+ * maxss return their *second* operand for a NaN where both guests return
+ * the other operand, and getting that right is fifteen instructions each
+ * against a helper call. The unsigned conversions are declined because
+ * x86-64 without AVX-512 has no unsigned form at all and the workaround
+ * is a range test and a bias.
+ */
+bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
+{
+    switch (op) {
+    case EMU_IR_FGET: case EMU_IR_FPUT:
+    case EMU_IR_FSGNJ: case EMU_IR_FCMP:
+        return true;
+
+    case EMU_IR_FADD: case EMU_IR_FSUB:
+    case EMU_IR_FMUL: case EMU_IR_FDIV:
+    case EMU_IR_FSQRT:
+        return EMU_IR_FRM(aux) == EMU_IR_FRM_RNE;
+
+    case EMU_IR_FCVT_FROM_I:
+        return (aux & EMU_IR_F_UNSIGNED) == 0u &&
+               EMU_IR_FRM(aux) == EMU_IR_FRM_RNE;
+
+    case EMU_IR_FCVT_TO_I:
+        return (aux & EMU_IR_F_UNSIGNED) == 0u &&
+               (EMU_IR_FRM(aux) == EMU_IR_FRM_RTZ ||
+                EMU_IR_FRM(aux) == EMU_IR_FRM_RNE);
+
+    case EMU_IR_FMIN: case EMU_IR_FMAX: case EMU_IR_FCLASS:
+    default:
+        return false;
+    }
+}
+
 static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 {
     /*
@@ -666,6 +748,148 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         default:            x86_movzx16(rd, T0); break;
         }
         st_slot(rd, in->dst);
+        break;
+    }
+
+    /* ---- floating point ----------------------------------------- */
+    case EMU_IR_FGET: {
+        if (t->freg_offset == NULL) { return false; }
+        const int rd = dst_reg(in->dst);
+
+        x86_ld_cpu(rd, t->freg_offset(in->imm));
+        st_slot(rd, in->dst);
+        break;
+    }
+
+    case EMU_IR_FPUT:
+        if (t->freg_offset == NULL) { return false; }
+        ld_operand(T0, in->a);
+        x86_st_cpu(T0, t->freg_offset(in->imm));
+        break;
+
+    case EMU_IR_FADD: case EMU_IR_FSUB:
+    case EMU_IR_FMUL: case EMU_IR_FDIV: {
+        static const uint8_t k_ss[] = {
+            [EMU_IR_FADD - EMU_IR_FADD] = X86_ADDSS,
+            [EMU_IR_FSUB - EMU_IR_FADD] = X86_SUBSS,
+            [EMU_IR_FMUL - EMU_IR_FADD] = X86_MULSS,
+            [EMU_IR_FDIV - EMU_IR_FADD] = X86_DIVSS,
+        };
+        if (!emu_ir_can_lower((emu_ir_op_t)in->op, in->aux)) { return false; }
+        ld_operand(T0, in->a);
+        ld_operand(T1, in->b);
+        x86_movd_to_xmm(X86_XMM0, T0);
+        x86_movd_to_xmm(X86_XMM1, T1);
+        x86_ss_op(k_ss[in->op - (uint8_t)EMU_IR_FADD], X86_XMM0, X86_XMM1);
+        x86_movd_from_xmm(T0, X86_XMM0);
+        st_slot(T0, in->dst);
+        break;
+    }
+
+    case EMU_IR_FSQRT:
+        if (!emu_ir_can_lower((emu_ir_op_t)in->op, in->aux)) { return false; }
+        ld_operand(T0, in->a);
+        x86_movd_to_xmm(X86_XMM0, T0);
+        x86_ss_op(X86_SQRTSS, X86_XMM0, X86_XMM0);
+        x86_movd_from_xmm(T0, X86_XMM0);
+        st_slot(T0, in->dst);
+        break;
+
+    case EMU_IR_FSGNJ:
+        /*
+         * Bit manipulation, so it never reaches the FP unit -- which is
+         * also why it is exact for a NaN operand, where anything routed
+         * through xmm would risk quietening one.
+         */
+        ld_operand(T0, in->a);
+        ld_operand(T1, in->b);
+        if (in->aux == EMU_IR_FSGNJ_X) {
+            x86_alu_rr(X86_XOR, T1, T0);
+        }
+        x86_mov_imm32(T2, 0x80000000u);
+        x86_alu_rr(X86_AND, T1, T2);
+        if (in->aux == EMU_IR_FSGNJ_N) {
+            x86_alu_rr(X86_XOR, T1, T2);
+        }
+        x86_mov_imm32(T2, 0x7FFFFFFFu);
+        x86_alu_rr(X86_AND, T0, T2);
+        x86_alu_rr(X86_OR, T0, T1);
+        st_slot(T0, in->dst);
+        break;
+
+    case EMU_IR_FCMP:
+        /*
+         * Unordered is false for all three, which the operand order
+         * does most of the work for: `ucomiss b, a` sets CF and ZF for
+         * unordered, and `seta`/`setae` both want CF clear.
+         *
+         * Equality cannot be had that way -- unordered sets ZF, so
+         * `sete` alone is true for a NaN -- so it takes the parity flag
+         * as well. That is the case a test using ordinary numbers never
+         * reaches.
+         */
+        ld_operand(T0, in->a);
+        ld_operand(T1, in->b);
+        x86_movd_to_xmm(X86_XMM0, T0);
+        x86_movd_to_xmm(X86_XMM1, T1);
+        if (in->aux == (uint8_t)EMU_IR_C_EQ) {
+            x86_ucomiss(X86_XMM0, X86_XMM1);
+            emu_jit_emit8(0x0F); emu_jit_emit8(0x9B);
+            emu_jit_emit8(0xC0);                       /* setnp al  */
+            emu_jit_emit8(0x0F); emu_jit_emit8(0x94);
+            emu_jit_emit8(0xC1);                       /* sete  cl  */
+            emu_jit_emit8(0x20); emu_jit_emit8(0xC8);  /* and al,cl */
+            x86_movzx8(T0, T0);
+        } else {
+            x86_ucomiss(X86_XMM1, X86_XMM0);
+            x86_setcc_eax((in->aux == (uint8_t)EMU_IR_C_LT) ? X86_CC_A
+                                                            : X86_CC_AE);
+        }
+        st_slot(T0, in->dst);
+        break;
+
+    case EMU_IR_FCVT_FROM_I:
+        if (!emu_ir_can_lower((emu_ir_op_t)in->op, in->aux)) { return false; }
+        ld_operand(T0, in->a);
+        x86_cvt_from_i(X86_XMM0, T0);
+        x86_movd_from_xmm(T0, X86_XMM0);
+        st_slot(T0, in->dst);
+        break;
+
+    case EMU_IR_FCVT_TO_I: {
+        if (!emu_ir_can_lower((emu_ir_op_t)in->op, in->aux)) { return false; }
+        /*
+         * x86 reports every input it cannot represent -- NaN, either
+         * infinity, out of range -- as the single value 0x80000000, the
+         * "integer indefinite". The guests distinguish three outcomes
+         * there: a NaN gives the *maximum*, a large positive gives the
+         * maximum, and a large negative gives the minimum, which is the
+         * one case x86 already has right.
+         *
+         * So the fixup is only on that one value, and it is the input
+         * that decides. Testing the result and then re-examining the
+         * operand is the only way round: nothing in the flags survives
+         * the conversion to say which case it was.
+         */
+        ld_operand(T0, in->a);
+        x86_movd_to_xmm(X86_XMM0, T0);
+        x86_mov_rr(T2, T0);                    /* keep the bit pattern */
+        x86_cvt_to_i(T0, X86_XMM0,
+                     EMU_IR_FRM(in->aux) == EMU_IR_FRM_RTZ);
+        x86_mov_imm32(T1, 0x80000000u);
+        x86_alu_rr(X86_CMP, T0, T1);
+        uint8_t *const ok = x86_jcc32(X86_CC_NE);
+
+        /* Indefinite. A NaN, or a positive out of range, gives INT_MAX. */
+        x86_ucomiss(X86_XMM0, X86_XMM0);
+        uint8_t *const nan = x86_jcc32(0x8Au);  /* jp */
+        x86_alu_rr(X86_TEST, T2, T1);          /* sign bit of the input */
+        uint8_t *const neg = x86_jcc32(X86_CC_NE);
+        x86_patch_rel32(nan, emu_jit_here());
+        x86_mov_imm32(T0, 0x7FFFFFFFu);
+        x86_patch_rel32(neg, emu_jit_here());
+        x86_patch_rel32(ok, emu_jit_here());
+        st_slot(T0, in->dst);
         break;
     }
 
@@ -976,6 +1200,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         break;
     }
 
+    case EMU_IR_FMIN: case EMU_IR_FMAX: case EMU_IR_FCLASS:
     case EMU_IR_POPCNT:
     case EMU_IR_ROTL: case EMU_IR_ROTLI:
     case EMU_IR_ADDI: case EMU_IR_ANDI:
@@ -1006,6 +1231,27 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_nsaved = emu_ir_regalloc(b, X86_ALLOC_REGS, g_reg);
 
     /*
+     * Does this block touch the FP unit? Asked once, because everything
+     * MXCSR costs -- saving it, clearing the sticky bits, reading them
+     * back and handing them to the frontend -- is paid per block and
+     * must not be paid by the blocks that never look at a float.
+     */
+    g_has_fp = false;
+    for (uint32_t i = 0; i < b->count && !g_has_fp; i++) {
+        if (!b->insn[i].dead &&
+            b->insn[i].op >= (uint8_t)EMU_IR_FADD &&
+            b->insn[i].op <= (uint8_t)EMU_IR_FCLASS) {
+            g_has_fp = true;
+        }
+    }
+    if (g_has_fp && (t->fp_flags == NULL || t->freg_offset == NULL)) {
+        return false;
+    }
+    if (g_has_fp) {
+        fe_map_init();
+    }
+
+    /*
      * The frame, with the pad an odd number of saved registers needs.
      *
      * x86_prologue pushes them after its own alignment adjustment, so
@@ -1015,7 +1261,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      * routine a helper eventually reaches that uses an aligned SSE
      * store, which is a long way from the cause.
      */
-    uint32_t frame = (((b->next_temp + 2u) * 4u) + 15u) & ~15u;
+    uint32_t frame = (((b->next_temp + 4u) * 4u) + 15u) & ~15u;
 
     if ((g_nsaved & 1u) != 0u) {
         frame += 8u;
@@ -1033,6 +1279,31 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     if (frame != 0u) {
         emu_jit_emit8(0x48); emu_jit_emit8(0x81);
         emu_jit_emit8(0xEC); emu_jit_emit32(frame);       /* sub rsp, imm32 */
+    }
+
+    if (g_has_fp) {
+        /*
+         * Take ownership of MXCSR for the length of the block: keep the
+         * caller's, and run under one with the sticky flags clear and
+         * rounding fixed at nearest.
+         *
+         * Clearing matters and is not obvious. The guest's flags are
+         * sticky too, so re-reporting one is idempotent -- but a guest
+         * that *clears* its flags and then runs an operation raising
+         * none would still see the host's leftovers, and there is no
+         * other point at which they get cleared.
+         *
+         * Fixing the rounding rather than inheriting it is what makes
+         * emu_ir_can_lower's answer true: it says this backend emits
+         * arithmetic only for round-to-nearest, and that is only a
+         * promise if the block sets it rather than hoping.
+         */
+        x86_stmxcsr(slot(SCRATCH_MXOLD));
+        ld_slot(T0, SCRATCH_MXOLD);
+        x86_mov_imm32(T1, ~0x603Fu);        /* sticky bits and RC */
+        x86_alu_rr(X86_AND, T0, T1);
+        x86_st_rsp(T0, slot(SCRATCH_MXCUR));
+        x86_ldmxcsr(slot(SCRATCH_MXCUR));
     }
 
     for (uint32_t i = 0; i < b->count; i++) {
@@ -1073,6 +1344,28 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      */
     for (uint32_t i = 0; i < g_nexits; i++) {
         x86_patch_rel32(g_exits[i], emu_jit_here());
+    }
+
+    if (g_has_fp) {
+        /*
+         * One accumulation of the block's flags, on the single path
+         * every exit takes -- which is why the early exits are patched
+         * to land above this rather than at the return.
+         *
+         * ebp holds the retired count and is callee-saved, so it
+         * survives the call; eax is loaded from it afterwards by
+         * x86_epilogue.
+         */
+        x86_stmxcsr(slot(SCRATCH_MXCUR));
+        ld_slot(T0, SCRATCH_MXCUR);
+        x86_and_imm8(T0, 0x3F);
+        x86_mov_imm64(X86_ECX, (uint64_t)(uintptr_t)g_fe_map);
+        x86_movzx8_idx(X86_ESI, X86_ECX, T0);
+        emu_jit_emit8(0x48); emu_jit_emit8(0x89);
+        emu_jit_emit8(0xDF);                       /* mov rdi, rbx */
+        x86_mov_imm64(X86_EAX, (uint64_t)(uintptr_t)t->fp_flags);
+        x86_call_rax();
+        x86_ldmxcsr(slot(SCRATCH_MXOLD));
     }
 
     if (frame != 0u) {

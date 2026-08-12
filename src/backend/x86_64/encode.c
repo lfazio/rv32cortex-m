@@ -299,6 +299,85 @@ static void x86_pop(int reg)
  * before the pad instead would mean this function had to know the frame
  * size, which is worse.
  */
+/* ------------------------------------------------------------------ */
+/* SSE, for the floating-point class                                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Only xmm0 and xmm1 are used, so the SSE half never needs REX -- but
+ * the *other* operand of a movd is a general register and may be r12 or
+ * above, which does. The 0x66/0xF3 mandatory prefix comes before REX,
+ * which is the one ordering rule these encodings can get wrong without
+ * assembling into nothing: 66 REX 0F is a movd, REX 66 0F is a REX
+ * prefix followed by an instruction that ignores it.
+ */
+static void sse_rr(uint8_t pfx, uint8_t op2, unsigned reg, unsigned rm)
+{
+    if (pfx != 0u) {
+        emu_jit_emit8(pfx);
+    }
+    emit_rex(0u, reg, rm);
+    emu_jit_emit8(0x0F);
+    emu_jit_emit8(op2);
+    emu_jit_emit8((uint8_t)(0xC0u | ((reg & 7u) << 3) | (rm & 7u)));
+}
+
+void x86_movd_to_xmm(int xmm, int gpr)
+{
+    sse_rr(0x66u, 0x6Eu, (unsigned)xmm, (unsigned)gpr);
+}
+
+void x86_movd_from_xmm(int gpr, int xmm)
+{
+    sse_rr(0x66u, 0x7Eu, (unsigned)xmm, (unsigned)gpr);
+}
+
+/* The scalar-single arithmetic group: F3 0F xx, xmm to xmm. */
+void x86_ss_op(uint8_t op2, int dst, int src)
+{
+    sse_rr(0xF3u, op2, (unsigned)dst, (unsigned)src);
+}
+
+/* ucomiss: no prefix, and it sets ZF/PF/CF rather than a result. */
+void x86_ucomiss(int a, int b)
+{
+    sse_rr(0u, 0x2Eu, (unsigned)a, (unsigned)b);
+}
+
+void x86_cvt_to_i(int gpr, int xmm, bool truncate)
+{
+    sse_rr(0xF3u, truncate ? 0x2Cu : 0x2Du, (unsigned)gpr, (unsigned)xmm);
+}
+
+void x86_cvt_from_i(int xmm, int gpr)
+{
+    sse_rr(0xF3u, 0x2Au, (unsigned)xmm, (unsigned)gpr);
+}
+
+/* stmxcsr / ldmxcsr [rsp + disp32] -- 0F AE /3 and /2. */
+static void mxcsr_rsp(unsigned ext, uint32_t disp)
+{
+    emu_jit_emit8(0x0F);
+    emu_jit_emit8(0xAE);
+    emu_jit_emit8((uint8_t)(0x84u | (ext << 3)));
+    emu_jit_emit8(0x24);
+    emu_jit_emit32(disp);
+}
+
+void x86_stmxcsr(uint32_t disp) { mxcsr_rsp(3u, disp); }
+void x86_ldmxcsr(uint32_t disp) { mxcsr_rsp(2u, disp); }
+
+/* movzx r32, byte [base + index] -- the flag-map lookup. */
+void x86_movzx8_idx(int dst, int base, int index)
+{
+    emit_rex(0u, (unsigned)dst, (unsigned)base);
+    emu_jit_emit8(0x0F);
+    emu_jit_emit8(0xB6);
+    emu_jit_emit8((uint8_t)(((unsigned)dst & 7u) << 3 | 0x04u));
+    emu_jit_emit8((uint8_t)((((unsigned)index & 7u) << 3) |
+                            ((unsigned)base & 7u)));
+}
+
 void x86_prologue(uint32_t nsaved)
 {
     emu_jit_emit8(0x53);                                  /* push rbx     */

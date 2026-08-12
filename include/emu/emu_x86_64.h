@@ -24,6 +24,7 @@
 
 #include "emu_jit.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -105,6 +106,31 @@ void x86_alu_slot(uint8_t op, int dst, uint32_t disp);
 /* The temp frame: mov reg, [rsp + disp32] and back. */
 void x86_ld_rsp(int reg, uint32_t disp);
 void x86_st_rsp(int reg, uint32_t disp);
+
+/*
+ * SSE, for the floating-point class. Scalar single only, and only
+ * xmm0/xmm1 -- an FP value lives in an integer temp as its bit pattern
+ * and comes into a register solely to be operated on.
+ */
+#define X86_XMM0 0
+#define X86_XMM1 1
+
+/* F3 0F xx opcodes for the scalar-single group. */
+#define X86_ADDSS  0x58u
+#define X86_MULSS  0x59u
+#define X86_SUBSS  0x5Cu
+#define X86_DIVSS  0x5Eu
+#define X86_SQRTSS 0x51u
+
+void x86_movd_to_xmm(int xmm, int gpr);
+void x86_movd_from_xmm(int gpr, int xmm);
+void x86_ss_op(uint8_t op2, int dst, int src);
+void x86_ucomiss(int a, int b);
+void x86_cvt_to_i(int gpr, int xmm, bool truncate);
+void x86_cvt_from_i(int xmm, int gpr);
+void x86_stmxcsr(uint32_t disp);
+void x86_ldmxcsr(uint32_t disp);
+void x86_movzx8_idx(int dst, int base, int index);
 
 /* The F7 group -- /2 not, /3 neg -- and bswap, for any register. */
 void x86_unary(unsigned ext, int reg);

@@ -363,6 +363,34 @@ static bool bisect_allows(uint8_t op)
     }
 }
 
+/*
+ * This backend lowers no floating point yet.
+ *
+ * Not because ARMv7E-M lacks it -- the hand-written translator beside
+ * this one goes straight to VFP, and has the FPSCR.DN and flag-order
+ * rules already worked out. It is that the IR path has no way to test a
+ * lowering here except by flashing a board, and the x86-64 one is where
+ * the semantics get settled first. Answering false costs a helper call
+ * per FP instruction and keeps the block whole, which is the trade this
+ * project has measured in favour of.
+ */
+bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
+{
+    (void)aux;
+    switch (op) {
+    case EMU_IR_FGET: case EMU_IR_FPUT:
+    case EMU_IR_FADD: case EMU_IR_FSUB:
+    case EMU_IR_FMUL: case EMU_IR_FDIV:
+    case EMU_IR_FSQRT: case EMU_IR_FMIN: case EMU_IR_FMAX:
+    case EMU_IR_FSGNJ: case EMU_IR_FCMP:
+    case EMU_IR_FCVT_TO_I: case EMU_IR_FCVT_FROM_I:
+    case EMU_IR_FCLASS:
+        return false;
+    default:
+        return true;
+    }
+}
+
 static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 {
     g_r0_avail = g_r0_holds;

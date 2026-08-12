@@ -1097,6 +1097,183 @@ static void test_fp_semantics(void)
     CHECK_EQ(fp_eval(EMU_IR_FSQRT, 0u, F_ONE, 0u), 0xDEADBEEFu);
 }
 
+#if defined(EMU_JIT_X86_64)
+/*
+ * The same FP cases as the reference, but *executed* -- the emitted SSE
+ * is run and its answer compared against the semantics, which is the
+ * only thing that catches a wrong ModRM or a mandatory prefix in the
+ * wrong order relative to REX.
+ *
+ * Only the operations emu_ir_can_lower claims are checked here. The rest
+ * are the frontend's problem, and asking for one would discard the block
+ * rather than fail an assertion, which reads as a passing test.
+ */
+static uint32_t fp_run(emu_ir_op_t op, uint8_t aux, uint32_t x, uint32_t y)
+{
+    fake_cpu_t cpu;
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.f[1] = x;
+    cpu.f[2] = y;
+
+    emu_ir_reset(&g_b);
+    {
+        const uint16_t a = emu_ir_emit(&g_b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                                       EMU_IR_NO_TEMP, 1u, 0u);
+        const uint16_t b = emu_ir_emit(&g_b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                                       EMU_IR_NO_TEMP, 2u, 0u);
+        const uint16_t r = emu_ir_emit(&g_b, op, aux, a, b, 0u, 0u);
+
+        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, 0u, r, EMU_IR_NO_TEMP, 3u, 0u);
+    }
+    if (!lower_and_run(&cpu)) {
+        return 0xDEADBEEFu;
+    }
+    return cpu.f[3];
+}
+
+static void test_lower_fp(void)
+{
+    CHECK_EQ(fp_run(EMU_IR_FADD, 0u, F_ONE, F_ONE), F_TWO);
+    CHECK_EQ(fp_run(EMU_IR_FSUB, 0u, F_TWO, F_ONE), F_ONE);
+    CHECK_EQ(fp_run(EMU_IR_FMUL, 0u, F_TWO, F_TWO), 0x40800000u);
+    CHECK_EQ(fp_run(EMU_IR_FDIV, 0u, F_TWO, F_ONE), F_TWO);
+    CHECK_EQ(fp_run(EMU_IR_FSQRT, 0u, 0x40800000u, 0u), F_TWO);  /* 4 -> 2 */
+
+    /* Bit manipulation, so a NaN must pass through unquietened. */
+    CHECK_EQ(fp_run(EMU_IR_FSGNJ, EMU_IR_FSGNJ_J, F_ONE, F_NEG1), F_NEG1);
+    CHECK_EQ(fp_run(EMU_IR_FSGNJ, EMU_IR_FSGNJ_N, F_ONE, F_NEG1), F_ONE);
+    CHECK_EQ(fp_run(EMU_IR_FSGNJ, EMU_IR_FSGNJ_X, F_NEG1, F_NEG1), F_ONE);
+    CHECK_EQ(fp_run(EMU_IR_FSGNJ, EMU_IR_FSGNJ_J, F_NAN, F_NEG1),
+             F_NAN | 0x80000000u);
+
+    /*
+     * Unordered is false for all three. Equality is the one that cannot
+     * come from the operand-order trick, because a NaN sets ZF -- so
+     * `sete` alone answers true, and only the parity flag says otherwise.
+     */
+    CHECK_EQ(fp_run(EMU_IR_FCMP, EMU_IR_C_EQ, F_ONE, F_ONE), 1u);
+    CHECK_EQ(fp_run(EMU_IR_FCMP, EMU_IR_C_EQ, F_ONE, F_TWO), 0u);
+    CHECK_EQ(fp_run(EMU_IR_FCMP, EMU_IR_C_EQ, F_NAN, F_NAN), 0u);
+    CHECK_EQ(fp_run(EMU_IR_FCMP, EMU_IR_C_EQ, F_NAN, F_ONE), 0u);
+    CHECK_EQ(fp_run(EMU_IR_FCMP, EMU_IR_C_LT, F_NEG1, F_ONE), 1u);
+    CHECK_EQ(fp_run(EMU_IR_FCMP, EMU_IR_C_LT, F_ONE, F_NEG1), 0u);
+    CHECK_EQ(fp_run(EMU_IR_FCMP, EMU_IR_C_LT, F_NAN, F_ONE), 0u);
+    CHECK_EQ(fp_run(EMU_IR_FCMP, EMU_IR_C_LE, F_ONE, F_ONE), 1u);
+    CHECK_EQ(fp_run(EMU_IR_FCMP, EMU_IR_C_LE, F_ONE, F_NAN), 0u);
+
+    /*
+     * The conversion fixup. x86 reports NaN, both infinities and every
+     * out-of-range value as the one "integer indefinite" 0x80000000, and
+     * the guests want the maximum for all of those except a large
+     * negative -- so all four inputs below have to be separated by
+     * re-examining the operand, and a lowering that trusted the
+     * conversion gives 0x80000000 for three of them.
+     */
+    CHECK_EQ(fp_run(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ, F_NAN, 0u),
+             0x7FFFFFFFu);
+    CHECK_EQ(fp_run(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ, F_PINF, 0u),
+             0x7FFFFFFFu);
+    CHECK_EQ(fp_run(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ,
+                    F_PINF | 0x80000000u, 0u), 0x80000000u);
+    CHECK_EQ(fp_run(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ, 0x40200000u, 0u), 2u);
+    CHECK_EQ(fp_run(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ, 0xC0200000u, 0u),
+             0xFFFFFFFEu);                              /* -2.5 -> -2 */
+    /* The MXCSR the block sets is round-to-nearest, ties to even. */
+    CHECK_EQ(fp_run(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RNE, 0x40200000u, 0u), 2u);
+    CHECK_EQ(fp_run(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RNE, 0x40600000u, 0u), 4u);
+
+    CHECK_EQ(fp_run(EMU_IR_FCVT_FROM_I, 0u, 0xFFFFFFFFu, 0u), F_NEG1);
+    CHECK_EQ(fp_run(EMU_IR_FCVT_FROM_I, 0u, 2u, 0u), F_TWO);
+
+    /* What this backend declines, it must decline consistently. */
+    CHECK(!emu_ir_can_lower(EMU_IR_FMIN, 0u));
+    CHECK(!emu_ir_can_lower(EMU_IR_FCLASS, 0u));
+    CHECK(!emu_ir_can_lower(EMU_IR_FADD, EMU_IR_FRM_RMM));
+    CHECK(!emu_ir_can_lower(EMU_IR_FCVT_TO_I,
+                            EMU_IR_FRM_RTZ | EMU_IR_F_UNSIGNED));
+    CHECK(emu_ir_can_lower(EMU_IR_FADD, EMU_IR_FRM_RNE));
+}
+
+/*
+ * The flags a block accumulated reach the frontend once, at the exit --
+ * and the sticky bits are *cleared* on entry, which is the half that a
+ * test running one block cannot see. Two blocks are run: the first
+ * raises inexact, the second raises nothing, and the second must report
+ * nothing.
+ */
+static void test_lower_fp_flags(void)
+{
+    fake_cpu_t cpu;
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.f[1] = F_ONE;
+    cpu.f[2] = 0x40400000u;                 /* 3.0; 1/3 is inexact */
+
+    emu_ir_reset(&g_b);
+    {
+        const uint16_t a = emu_ir_emit(&g_b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                                       EMU_IR_NO_TEMP, 1u, 0u);
+        const uint16_t b = emu_ir_emit(&g_b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                                       EMU_IR_NO_TEMP, 2u, 0u);
+        const uint16_t r = emu_ir_emit(&g_b, EMU_IR_FDIV, 0u, a, b, 0u, 0u);
+
+        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, 0u, r, EMU_IR_NO_TEMP, 3u, 0u);
+    }
+    if (!lower_and_run(&cpu)) {
+        CHECK(false);
+        return;
+    }
+    CHECK((cpu.fe & EMU_IR_FE_INEXACT) != 0u);
+    CHECK((cpu.fe & EMU_IR_FE_INVALID) == 0u);
+
+    /* Divide by zero, in its own block, reports itself. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.f[1] = F_ONE;
+    cpu.f[2] = 0u;
+    emu_ir_reset(&g_b);
+    {
+        const uint16_t a = emu_ir_emit(&g_b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                                       EMU_IR_NO_TEMP, 1u, 0u);
+        const uint16_t b = emu_ir_emit(&g_b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                                       EMU_IR_NO_TEMP, 2u, 0u);
+        const uint16_t r = emu_ir_emit(&g_b, EMU_IR_FDIV, 0u, a, b, 0u, 0u);
+
+        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, 0u, r, EMU_IR_NO_TEMP, 3u, 0u);
+    }
+    if (!lower_and_run(&cpu)) {
+        CHECK(false);
+        return;
+    }
+    CHECK((cpu.fe & EMU_IR_FE_DIVBYZERO) != 0u);
+
+    /*
+     * And a block that raises nothing reports nothing, which only holds
+     * because the prologue clears MXCSR's sticky bits. Without that it
+     * would inherit whatever the two blocks above left.
+     */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.f[1] = F_ONE;
+    cpu.f[2] = F_ONE;
+    emu_ir_reset(&g_b);
+    {
+        const uint16_t a = emu_ir_emit(&g_b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                                       EMU_IR_NO_TEMP, 1u, 0u);
+        const uint16_t b = emu_ir_emit(&g_b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                                       EMU_IR_NO_TEMP, 2u, 0u);
+        const uint16_t r = emu_ir_emit(&g_b, EMU_IR_FADD, 0u, a, b, 0u, 0u);
+
+        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, 0u, r, EMU_IR_NO_TEMP, 3u, 0u);
+    }
+    if (!lower_and_run(&cpu)) {
+        CHECK(false);
+        return;
+    }
+    CHECK_EQ(cpu.f[3], F_TWO);
+    CHECK_EQ(cpu.fe, 0u);
+}
+#endif /* EMU_JIT_X86_64 */
+
 void test_ir(void)
 {
     test_dead_flags_removed();
@@ -1120,6 +1297,8 @@ void test_ir(void)
     test_lower_flags();
     test_interp_matches_jit();
     test_encode_rex();
+    test_lower_fp();
+    test_lower_fp_flags();
     test_lower_memory();
     test_lower_memory_trap();
     test_lower_bitop_memory();
