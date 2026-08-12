@@ -19,6 +19,7 @@
  */
 
 #include "emu/emu_cpu.h"
+#include "emu/emu_gdb.h"
 #include "emu/emu_dev.h"
 #include "emu/emu_elf.h"
 #include "emu/emu_memmap.h"
@@ -283,6 +284,7 @@ static void usage(void)
         "                       1 is instruction-interleaved lockstep\n"
 #if EMU_FRONTEND_RV32
         "  --jit                use the JIT backend instead of the interpreter\n"
+        "  --gdb [port]         serve a gdb stub on localhost (default 1234)\n"
 #endif
         "  --quiet              suppress the exit summary\n"
         "  --dump               dump register state on exit\n",
@@ -324,6 +326,13 @@ void emu_jit_diff_report(uint32_t pc, uint32_t off, uint32_t want,
 }
 #endif
 
+bool host_gdb_start(emu_core_t *core, const emu_gdb_target_t *target, int port);
+void host_gdb_wait(void);
+void host_gdb_poll(void);
+bool host_gdb_attached(void);
+uint32_t host_gdb_run(uint32_t budget, uint32_t *retired);
+const emu_gdb_target_t *rv32_gdb_target(void);
+
 int main(int argc, char **argv)
 {
     const char *path = NULL;
@@ -333,6 +342,7 @@ int main(int argc, char **argv)
     bool have_entry = false;
     uint32_t ram_size = DEFAULT_RAM_SIZE;
     uint64_t max_insn = 0;
+    int gdb_port = 0;
     /* Instructions per timer tick. 1 keeps guest time in step with the
      * cycle counter, which is what the reference model assumes. */
     uint32_t timer_div = 1;
@@ -378,6 +388,18 @@ int main(int argc, char **argv)
                 continue;
             }
 #if EMU_FRONTEND_RV32
+            if (strcmp(a, "--gdb") == 0) {
+                /* Port only; the stub listens on loopback. Waits for a
+                 * client before the first instruction, because the whole
+                 * guest is over in milliseconds otherwise. */
+                gdb_port = 1234;
+                if (i + 1 < argc && argv[i + 1][0] != '-') {
+                    uint32_t v;
+                    if (!parse_u32(argv[++i], &v)) { usage(); return 2; }
+                    gdb_port = (int)v;
+                }
+                continue;
+            }
             if (strcmp(a, "--jit") == 0) {
 #if RV_ENABLE_JIT
                 /*
@@ -612,6 +634,14 @@ int main(int argc, char **argv)
      * that has no reference model to check against.
      */
     uint64_t total = 0;
+    if (gdb_port != 0) {
+        if (!host_gdb_start(&g_core, rv32_gdb_target(), gdb_port)) {
+            fprintf(stderr, "gdb: could not listen on port %d\n", gdb_port);
+            return 2;
+        }
+        host_gdb_wait();        /* the guest is milliseconds long */
+    }
+
     for (;;) {
         uint32_t q = quantum;
 
@@ -641,7 +671,25 @@ int main(int argc, char **argv)
         }
 
         bool all_idle = false;
-        const uint32_t did = emu_system_step(&g_sys, q, &all_idle);
+        uint32_t did;
+
+        if (gdb_port != 0) {
+            /*
+             * With a debugger attached the stub owns run control. Polled
+             * once per slice, exactly as the firmware does it, so a run
+             * with no --gdb pays one predictable branch.
+             */
+            host_gdb_poll();
+            if (host_gdb_attached()) {
+                uint32_t n = 0;
+                (void)host_gdb_run(q, &n);
+                did = n;
+            } else {
+                did = emu_system_step(&g_sys, q, &all_idle);
+            }
+        } else {
+            did = emu_system_step(&g_sys, q, &all_idle);
+        }
         total += did;
 
         /*

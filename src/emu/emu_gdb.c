@@ -804,7 +804,19 @@ static void dispatch(emu_gdb_t *g, const uint8_t *p, uint32_t len)
                 }
             }
         } else if (starts_with(p, len, "vCont?")) {
-            send_str(g, "vCont;c;C;s;S");
+            /*
+             * Deliberately unsupported. Advertising vCont makes gdb
+             * resume *asynchronously*: `continue` returns immediately
+             * and the session continues with the target running, so the
+             * next command dies with "Cannot execute this command while
+             * the target is running" and a breakpoint that does fire is
+             * never observed. stepi stayed synchronous and worked
+             * throughout, which is what localised it. An empty reply
+             * sends gdb back to plain c/s, which this stub implements
+             * exactly; the cost is per-thread resume, which means
+             * nothing on one core.
+             */
+            send_empty(g);
         } else if (starts_with(p, len, "vCont")) {
             bool step = false;
 
@@ -1061,12 +1073,9 @@ emu_run_reason_t emu_gdb_run(emu_gdb_t *g, uint32_t budget,
          * miscompile is reproduced right up to the instruction being
          * examined.
          */
-        if (break_near(g, pc)) {
-            why = ops->step(g->core->cpu);
-            n = 1u;
-        } else {
-            why = ops->run(g->core->cpu, 1u, &n);
-        }
+        (void)pc;
+        why = ops->step(g->core->cpu);
+        n = 1u;
 
         *retired += n;
 

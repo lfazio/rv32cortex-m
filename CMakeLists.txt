@@ -185,6 +185,8 @@ add_library(rv32core STATIC
     src/emu/emu_bus.c
     src/emu/emu_jit.c
     src/emu/emu_ir.c
+    src/emu/emu_gdb.c
+    src/frontend/rv32/rv_gdb.c
     src/backend/x86_64/encode.c
     src/backend/common/interp.c
     src/backend/x86_64/ir_lower.c
