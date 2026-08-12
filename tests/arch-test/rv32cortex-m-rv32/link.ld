@@ -14,7 +14,21 @@ TEST_BASE  = 0x80000000;   /* guest reset pc */
 NUM_HARTS  = 1;
 
 /* Most users should not need to modify anything below this line. */
-STACK_SIZE = 0x20000;
+/*
+ * 16 KiB, not the 128 KiB this inherited.
+ *
+ * The stack sits *between* .bss and .text.rvmodel, so its size is not
+ * an allocation -- it is a hole in the middle of the image, and the
+ * emulator has to have RAM covering the whole span either way. At
+ * 128 KiB it was the single largest thing in the address range of every
+ * test: the widest was 478 KiB of span for 343 KiB of actual bytes.
+ *
+ * That is free on the host, where the runner is given 8 MiB. It is the
+ * difference between running and not running on the STM32, where the
+ * guest carve-out is 284 KiB. These tests are short assembly sequences
+ * with a trap handler; 16 KiB is already generous.
+ */
+STACK_SIZE = 0x4000;
 
 OUTPUT_ARCH( "riscv" )
 ENTRY(rvtest_entry_point)
@@ -34,7 +48,11 @@ SECTIONS
   .text.init   TEST_BASE : { *(.text.init) } > ram
   .text.rvtest . : { *(.text.rvtest) *(.text.rvtest.*) } > ram
 
-  . = ALIGN(0x4000);
+  /*
+   * A page, not four. The Sv32 tests need their data page-aligned and
+   * nothing needs more than that, so the extra 12 KiB was padding.
+   */
+  . = ALIGN(0x1000);
   .rodata . : { *(.rodata) *(.rodata.*) *(.srodata) *(.srodata.*) } > ram
   .data   . : { *(.data) *(.data.*) *(.sdata) *(.sdata.*) } > ram
 
