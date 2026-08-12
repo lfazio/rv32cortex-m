@@ -181,9 +181,9 @@ endif()
 # ---------------------------------------------------------------------
 
 add_custom_target(flash
-    COMMAND probe-rs download --chip STM32F446RETx
+    COMMAND probe-rs download --chip STM32F446RETx --connect-under-reset
             $<TARGET_FILE:rv32-stm32f446>
-    COMMAND probe-rs reset --chip STM32F446RETx
+    COMMAND probe-rs reset --chip STM32F446RETx --connect-under-reset
     DEPENDS rv32-stm32f446
     USES_TERMINAL
     COMMENT "Flashing the Nucleo-F446RE over ST-LINK")

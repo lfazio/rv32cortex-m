@@ -359,6 +359,22 @@ if(RV32_LTO AND CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo|MinSizeRel")
 endif()
 
 # ---------------------------------------------------------------------
+# Guest images (built with the RISC-V toolchain, on any host)
+# ---------------------------------------------------------------------
+#
+# Before the platform, not after. The firmware embeds one of these and
+# asks `if(TARGET guest-${RV32_GUEST})` to find out whether it exists --
+# and if(TARGET) only sees targets already defined, so with this
+# directory added afterwards the answer was always no. The firmware
+# linked correctly anyway, because guest_image.S carries an OBJECT_DEPENDS
+# on the staged files, and the only visible effect was a configure-time
+# warning saying the link would fail when it would not.
+#
+# A warning that is always wrong is worse than none: it is the one that
+# teaches you to skip reading them.
+add_subdirectory(tests/guest)
+
+# ---------------------------------------------------------------------
 # Platform
 # ---------------------------------------------------------------------
 
@@ -374,12 +390,6 @@ elseif(EMU_PLATFORM STREQUAL "stm32f446" OR EMU_PLATFORM STREQUAL "stm32f746")
 else()
     message(FATAL_ERROR "unknown EMU_PLATFORM '${EMU_PLATFORM}'")
 endif()
-
-# ---------------------------------------------------------------------
-# Guest images (built with the RISC-V toolchain, on any host)
-# ---------------------------------------------------------------------
-
-add_subdirectory(tests/guest)
 
 # ---------------------------------------------------------------------
 # Tests

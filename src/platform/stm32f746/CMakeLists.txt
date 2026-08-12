@@ -236,10 +236,22 @@ endif()
 # Flash and debug
 # ---------------------------------------------------------------------
 
+# --connect-under-reset is not optional here, and the reason is this
+# firmware in particular: it never idles. It runs a guest flat out and
+# then parks in __WFI with interrupts arriving, so the debug port is
+# contended from reset onwards and a plain attach times out --
+#
+#   Error: Connecting to the chip was unsuccessful.
+#   Caused by: Timeout occurred during operation.
+#
+# which reads like a broken probe or a dead board rather than "the part
+# is busy". Holding reset while the probe attaches removes the race
+# entirely. It costs nothing when the board is idle, so it is the
+# default rather than a flag to remember after the failure.
 add_custom_target(flash
-    COMMAND probe-rs download --chip STM32F746ZGTx
+    COMMAND probe-rs download --chip STM32F746ZGTx --connect-under-reset
             $<TARGET_FILE:rv32-stm32f746>
-    COMMAND probe-rs reset --chip STM32F746ZGTx
+    COMMAND probe-rs reset --chip STM32F746ZGTx --connect-under-reset
     DEPENDS rv32-stm32f746
     USES_TERMINAL
     COMMENT "Flashing the Nucleo-F746ZG over ST-LINK")
