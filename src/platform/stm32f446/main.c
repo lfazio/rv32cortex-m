@@ -58,6 +58,26 @@ extern uint8_t __guest_ram_end[];
 #define EMU_TIMER_HZ        1000000u
 
 /* Instructions executed between returns to the ARM side. */
+/*
+ * A cap on how long a guest may run before the firmware gives up.
+ *
+ * The host runner has --max-insn and two of the Berkeley tests depend on
+ * it to terminate at all -- they are *meant* to run away, and the cap is
+ * what turns that into a reported failure. The board had no equivalent,
+ * so the same guest hangs it: no output, no prompt, and the only way out
+ * is a reset, which is indistinguishable from a firmware crash. That is
+ * the difference between a suite that reports 273 passed and 1 failed
+ * and one that stops after test 47 and needs a human.
+ *
+ * Zero disables it, which is what an interactive session or a benchmark
+ * wants. The default is generous: CoreMark retires about 1.3 million
+ * instructions a run and the architecture tests far fewer, so anything
+ * reaching this is not making progress.
+ */
+#ifndef EMU_MAX_INSN
+#define EMU_MAX_INSN         100000000u
+#endif
+
 #ifndef EMU_RUN_SLICE
 #define EMU_RUN_SLICE        4096u
 #endif
@@ -548,11 +568,28 @@ int main(void)
     const uint32_t start_cycles = board_cycles();
     uint64_t retired_total = 0;
 
+    bool capped = false;
+
     for (;;) {
         uint32_t retired = 0;
         const emu_run_reason_t why = emu_core_run(&g_core, EMU_RUN_SLICE,
                                                   &retired);
         retired_total += retired;
+
+        /*
+         * Compared against the running total rather than a budget
+         * counted down to zero. A block backend may retire more than
+         * the slice it was given -- it can only stop between blocks --
+         * so a remaining-budget subtraction goes below zero and wraps,
+         * and the cap silently stops existing. That exact bug shipped in
+         * the host runner and was invisible for the life of the project,
+         * because the interpreter happens to land on the boundary
+         * exactly.
+         */
+        if (EMU_MAX_INSN != 0u && retired_total >= (uint64_t)EMU_MAX_INSN) {
+            capped = true;
+            break;
+        }
 
         /* Guest time tracks real time through the DWT cycle counter. */
         ops->set_time(g_core.cpu,
@@ -572,6 +609,15 @@ int main(void)
     }
 
     const uint32_t elapsed = board_cycles() - start_cycles;
+
+    if (capped) {
+        /*
+         * Named on its own line and before the statistics, so a harness
+         * reading the console can tell "did not terminate" from "ran and
+         * failed" without parsing the numbers.
+         */
+        console_puts("\nemu: instruction cap reached, guest did not halt\n");
+    }
 
     console_puts("\n-- done --\n  retired  ");
     console_putu((uint32_t)retired_total);
