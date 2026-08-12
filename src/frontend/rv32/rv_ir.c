@@ -109,6 +109,64 @@ static bool rv_reg_zero(uint32_t n)
     return n == 0u;
 }
 
+#if RV_EXT_F
+static uint32_t rv_freg_offset(uint32_t n)
+{
+    return (uint32_t)offsetof(rv_hart_t, f) + n * 4u;
+}
+
+/*
+ * One block's worth of floating-point side effects.
+ *
+ * The IR hands over its own neutral flag encoding, which is deliberately
+ * RISC-V's fflags order -- so the accumulate is a mask and an OR, and
+ * the two backends that had to reorder theirs did it once each rather
+ * than the frontend doing it per host.
+ *
+ * FS is set to Dirty here too, which is the other thing an FP operation
+ * owes the guest: a context switch reads FS to decide whether the
+ * register file needs saving, and a block that computed floats without
+ * marking them dirty loses them. Dirty is *not* part of the generation
+ * key -- the key tracks off-ness -- which is what stops this write from
+ * flushing the code cache every time a block uses a float.
+ */
+static void rv_ir_fp_flags(emu_cpu_t *cpu, uint32_t flags)
+{
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+
+    h->fcsr |= flags & 0x1Fu;
+    h->mstatus |= MSTATUS_FS_MASK;
+}
+
+/*
+ * The escape hatch, for everything a backend declined: FMIN/FMAX, the
+ * classifications, the conversions a host has no encoding for, the fused
+ * multiply-adds, and any rounding mode this host cannot spell.
+ *
+ * It is the same rv_hart_fp the interpreter uses, so nothing about
+ * rounding, NaN handling or the flag rules exists twice -- which is what
+ * makes routing to it cheaper than getting a second implementation
+ * subtly wrong. Non-zero means it entered a trap and the block must
+ * stop; the pc it records was written by the SETPC the caller emits.
+ */
+static uint32_t rv_ir_fp_helper(emu_cpu_t *cpu, uint32_t insn, uint32_t unused)
+{
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+    uint32_t tval = 0u;
+    const rv_exc_t e = rv_hart_fp(h, insn, &tval);
+
+    (void)unused;
+    if (e == RV_EXC_NONE) {
+        return 0u;
+    }
+    rv_hart_trap(h, e, tval);
+    return 1u;
+}
+
+static const void *const rv_ir_helpers[] = { (const void *)rv_ir_fp_helper };
+#define RV_IR_HELPER_FP 0u
+#endif /* RV_EXT_F */
+
 const emu_ir_target_t rv_ir_target = {
     .reg_offset   = rv_reg_offset,
     /*
@@ -122,8 +180,15 @@ const emu_ir_target_t rv_ir_target = {
     .flag_bit     = { 0u, 0u, 0u, 0u },
     .reg_is_zero  = rv_reg_zero,
     .pc_offset    = (uint32_t)offsetof(rv_hart_t, pc),
+#if RV_EXT_F
+    .helpers      = rv_ir_helpers,
+    .helper_count = 1u,
+    .freg_offset  = rv_freg_offset,
+    .fp_flags     = rv_ir_fp_flags,
+#else
     .helpers      = NULL,
     .helper_count = 0u,
+#endif
     .load         = rv_ir_load,
     .store        = rv_ir_store,
 };
@@ -132,6 +197,28 @@ const emu_ir_target_t rv_ir_target = {
 /* Translation                                                         */
 /* ------------------------------------------------------------------ */
 
+#if RV_EXT_F
+/* Is the FP unit off? Every FP instruction is illegal while it is. */
+static bool h_fs_off(const emu_cpu_t *cpu)
+{
+    return (((const rv_hart_t *)cpu)->mstatus & MSTATUS_FS_MASK) == 0u;
+}
+
+/*
+ * Route one FP instruction to rv_hart_fp. HELPER_TRAP rather than
+ * HELPER: the helper can enter a trap, and then pc already points at
+ * the handler and the rest of the block must not run.
+ */
+static bool rv_ir_fp_fallback(emu_ir_block_t *b, uint32_t pc, uint32_t insn)
+{
+    (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                      pc, 0u);
+    (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP, 0u, emu_ir_const(b, insn),
+                      EMU_IR_NO_TEMP, RV_IR_HELPER_FP, 0u);
+    return true;
+}
+#endif
+
 /*
  * Lower one instruction. Returns false for anything not modelled, which
  * ends the block with nothing emitted for it.
@@ -139,9 +226,20 @@ const emu_ir_target_t rv_ir_target = {
  * `ends_block` is set when the instruction wrote pc itself, so the
  * caller stops rather than continuing at pc + 4.
  */
-static bool lower_one(emu_ir_block_t *b, uint32_t insn, uint32_t pc,
-                      uint32_t len, bool *ends_block, bool *counted)
+/*
+ * `cpu` is read only for the state the block is *specialised* on -- the
+ * rounding mode and whether the FP unit is on -- and both are carried in
+ * rv_ir_gen_key, so a block outliving either gets flushed. Reading
+ * anything else here would be a staleness bug; that is the rule, and
+ * this file has one place it applies.
+ */
+static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
+                      uint32_t pc, uint32_t len, bool *ends_block,
+                      bool *counted)
 {
+#if !RV_EXT_F
+    (void)cpu;
+#endif
     const uint32_t op = insn & 0x7Fu;
     const uint32_t rd = rv_rd(insn);
     const uint32_t rs1 = rv_rs1(insn);
@@ -386,6 +484,163 @@ static bool lower_one(emu_ir_block_t *b, uint32_t insn, uint32_t pc,
         return true;
     }
 
+#if RV_EXT_F
+    /*
+     * The floating-point group.
+     *
+     * Everything here is gated on mstatus.FS being on *at translation*,
+     * and that is only half a guard on its own -- a block outlives the
+     * check. The other half is rv_ir_gen_key, which carries FS
+     * off-ness, so the cache is flushed if the guest turns the unit off
+     * under a block that assumed it was on.
+     *
+     * The rounding mode is resolved here rather than left dynamic, for
+     * the reason the IR states: a host without an encoding for one --
+     * neither x86-64 nor ARM has ties-away -- must be able to decline,
+     * and it cannot decline something it only discovers at run time.
+     * frm is in the generation key for the same reason FS is.
+     */
+    case 0x07u:                                 /* LOAD-FP  */
+    case 0x27u: {                               /* STORE-FP */
+        if (f3 != 2u || (h_fs_off(cpu))) {
+            return false;                       /* not FLW/FSW, or FS off */
+        }
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP,
+                          EMU_IR_NO_TEMP, pc, 0u);
+        const uint16_t base = emu_ir_get(b, rs1);
+
+        if (op == 0x07u) {
+            const uint16_t v = emu_ir_emit(b, EMU_IR_LOAD,
+                                           EMU_IR_MEM_AUX(4u, 0u), base,
+                                           EMU_IR_NO_TEMP,
+                                           (uint32_t)rv_imm_i(insn), 0u);
+            (void)emu_ir_emit(b, EMU_IR_FPUT, 0u, v, EMU_IR_NO_TEMP, rd, 0u);
+        } else {
+            const uint16_t v = emu_ir_emit(b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                                           EMU_IR_NO_TEMP, rs2, 0u);
+            (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(4u, 0u),
+                              base, v, (uint32_t)rv_imm_s(insn), 0u);
+        }
+        return true;
+    }
+
+    case 0x43u: case 0x47u: case 0x4Bu: case 0x4Fu:
+        /*
+         * The fused multiply-adds, which the IR does not model: it has
+         * two operand fields and a third would hide from the use
+         * counter and the register allocator. They go to the helper,
+         * which keeps the block whole and gets the single rounding
+         * right by reusing the code that already does it.
+         */
+        if (h_fs_off(cpu)) {
+            return false;
+        }
+        return rv_ir_fp_fallback(b, pc, insn);
+
+    case 0x53u: {                               /* OP-FP */
+        if (h_fs_off(cpu)) {
+            return false;
+        }
+        const uint32_t f7 = insn >> 25;
+        const uint32_t frm = (f3 == 7u)
+                                 ? ((((rv_hart_t *)cpu)->fcsr >> 5) & 7u)
+                                 : f3;
+        emu_ir_op_t irop = EMU_IR_NOP;
+        uint8_t aux = (uint8_t)frm;
+        bool two = true;                        /* reads rs1 and rs2 */
+
+        switch (f7) {
+        case 0x00u: irop = EMU_IR_FADD; break;
+        case 0x04u: irop = EMU_IR_FSUB; break;
+        case 0x08u: irop = EMU_IR_FMUL; break;
+        case 0x0Cu: irop = EMU_IR_FDIV; break;
+        case 0x2Cu: irop = EMU_IR_FSQRT; two = false; break;
+        case 0x10u:                             /* FSGNJ[N|X].S */
+            if (f3 > 2u) { return rv_ir_fp_fallback(b, pc, insn); }
+            irop = EMU_IR_FSGNJ; aux = (uint8_t)f3;
+            break;
+        case 0x14u:                             /* FMIN/FMAX.S  */
+            if (f3 > 1u) { return rv_ir_fp_fallback(b, pc, insn); }
+            irop = (f3 == 0u) ? EMU_IR_FMIN : EMU_IR_FMAX; aux = 0u;
+            break;
+        case 0x50u:                             /* FEQ/FLT/FLE.S */
+            if (f3 > 2u) { return rv_ir_fp_fallback(b, pc, insn); }
+            irop = EMU_IR_FCMP;
+            aux = (f3 == 2u) ? (uint8_t)EMU_IR_C_EQ
+                : (f3 == 1u) ? (uint8_t)EMU_IR_C_LT
+                             : (uint8_t)EMU_IR_C_LE;
+            break;
+        case 0x60u:                             /* FCVT.W[U].S  */
+            if (rs2 > 1u) { return rv_ir_fp_fallback(b, pc, insn); }
+            irop = EMU_IR_FCVT_TO_I; two = false;
+            aux = (uint8_t)(frm | (rs2 ? EMU_IR_F_UNSIGNED : 0u));
+            break;
+        case 0x68u:                             /* FCVT.S.W[U]  */
+            if (rs2 > 1u) { return rv_ir_fp_fallback(b, pc, insn); }
+            irop = EMU_IR_FCVT_FROM_I; two = false;
+            aux = (uint8_t)(frm | (rs2 ? EMU_IR_F_UNSIGNED : 0u));
+            break;
+        case 0x70u:                             /* FMV.X.W / FCLASS.S */
+            if (rs2 != 0u) { return rv_ir_fp_fallback(b, pc, insn); }
+            if (f3 == 0u) {
+                /* A bit move between the files: no operation at all. */
+                emu_ir_put(b, rd,
+                           emu_ir_emit(b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                                       EMU_IR_NO_TEMP, rs1, 0u));
+                return true;
+            }
+            if (f3 != 1u) { return rv_ir_fp_fallback(b, pc, insn); }
+            irop = EMU_IR_FCLASS; two = false; aux = 0u;
+            break;
+        case 0x78u:                             /* FMV.W.X */
+            if (rs2 != 0u || f3 != 0u) {
+                return rv_ir_fp_fallback(b, pc, insn);
+            }
+            (void)emu_ir_emit(b, EMU_IR_FPUT, 0u, emu_ir_get(b, rs1),
+                              EMU_IR_NO_TEMP, rd, 0u);
+            return true;
+        default:
+            return rv_ir_fp_fallback(b, pc, insn);
+        }
+
+        /*
+         * The capability question, asked before anything is emitted.
+         * A host that cannot spell this operation -- or cannot spell
+         * this rounding mode for it -- gets a helper call rather than a
+         * declined block, which this project has measured as the
+         * cheaper of the two by a wide margin.
+         */
+        if (!emu_ir_can_lower(irop, aux)) {
+            return rv_ir_fp_fallback(b, pc, insn);
+        }
+
+        const uint16_t a = emu_ir_emit(b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                                       EMU_IR_NO_TEMP, rs1, 0u);
+        const uint16_t c = two
+            ? emu_ir_emit(b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                          EMU_IR_NO_TEMP, rs2, 0u)
+            : EMU_IR_NO_TEMP;
+        uint16_t r;
+
+        if (irop == EMU_IR_FCVT_FROM_I) {
+            /* Its operand is an integer register, not an FP one. */
+            r = emu_ir_emit(b, irop, aux, emu_ir_get(b, rs1),
+                            EMU_IR_NO_TEMP, 0u, 0u);
+        } else {
+            r = emu_ir_emit(b, irop, aux, a, c, 0u, 0u);
+        }
+
+        /* Three of these write the *integer* file, the rest the FP one. */
+        if (irop == EMU_IR_FCMP || irop == EMU_IR_FCVT_TO_I ||
+            irop == EMU_IR_FCLASS) {
+            emu_ir_put(b, rd, r);
+        } else {
+            (void)emu_ir_emit(b, EMU_IR_FPUT, 0u, r, EMU_IR_NO_TEMP, rd, 0u);
+        }
+        return true;
+    }
+#endif /* RV_EXT_F */
+
     default:
         return false;
     }
@@ -440,7 +695,7 @@ uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
         bool ends = false;
         bool counted = false;
 
-        if (!lower_one(b, insn, cur, len, &ends, &counted)) {
+        if (!lower_one(cpu, b, insn, cur, len, &ends, &counted)) {
             /*
              * Discard whatever the attempt emitted: a lowering can emit
              * operands before reaching the funct7 that tells it to
