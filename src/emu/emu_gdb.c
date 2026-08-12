@@ -1013,8 +1013,23 @@ emu_run_reason_t emu_gdb_run(emu_gdb_t *g, uint32_t budget,
         return why;
     }
 
+    /*
+     * A run that ends for the guest's own reasons -- it halted, or went
+     * to WFI -- is still a stop, and gdb is blocked waiting to be told.
+     * Returning quietly leaves the session hung forever with no
+     * indication that anything happened, which is exactly what it looked
+     * like: attach to a guest that has finished, continue, and gdb never
+     * comes back. The board showed this first and the host reproduces it
+     * in two seconds.
+     */
     if (!break_any(g)) {
-        return ops->run(g->core->cpu, budget, retired);
+        const emu_run_reason_t why = ops->run(g->core->cpu, budget, retired);
+
+        if (why != EMU_RUN_BUDGET) {
+            g->halted = true;
+            send_stop(g, 5);            /* SIGTRAP: the target stopped */
+        }
+        return why;
     }
 
     /*
@@ -1080,6 +1095,11 @@ emu_run_reason_t emu_gdb_run(emu_gdb_t *g, uint32_t budget,
         *retired += n;
 
         if (why != EMU_RUN_BUDGET) {
+            /* Same as above: tell gdb, or it waits for a reply that is
+             * never coming. Checked before the breakpoint test because
+             * the guest has already stopped either way. */
+            g->halted = true;
+            send_stop(g, 5);
             return why;
         }
         if (break_find(g, g->target->pc_get(g->core->cpu)) != NULL) {
