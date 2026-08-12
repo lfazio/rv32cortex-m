@@ -686,6 +686,28 @@ what changes between the parts.
   confirmed by breaking them: 10 failures narrow, 2 failures coarse.
   Accrued fflags share fcsr with frm and must *not* flush; that is
   checked too.
+- **`isatest` cannot measure JIT coverage, because it arms PMP early.**
+  Confirmed on the board, same firmware, one guest apart: `isatest`
+  interprets 14,700 of 45,399 instructions (32%), `bench` interprets
+  40,521 of 1,274,518 (**3.2%**). `rv_jit_bind` points the framework's
+  `blocked` at `h->fetch_guard`, so once a PMP entry is locked
+  everything downstream goes to the interpreter whatever the backend
+  could have lowered.
+
+  That is why three consecutive changes here -- floating-point emission,
+  then Thumb-2 helper calls -- each produced a board run whose counters
+  were *identical to the digit* to the run before. The changes were
+  fine; the guest could not see them. Use `bench` or `coremark` to
+  measure translation on this host, and read `isatest` only as a
+  correctness check.
+
+  Which leaves a real question, not yet answered: whether the IR path
+  should gate on `fetch_guard` at all. It was inherited from the x86-64
+  backend, which declines PMP and paging because it implements neither
+  -- but the IR path's memory operations go through `rv_ir_load` and
+  `rv_ir_store`, the same checked accessors the interpreter uses, so PMP
+  is enforced either way. Fetch permission is the part that would still
+  need doing. Do not just relax it.
 - **A capability query is worth nothing to a backend that cannot emit the
   fallback.** `emu_ir_can_lower` exists so a frontend can turn an
   operation a host lacks into a helper call rather than a declined
