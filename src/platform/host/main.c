@@ -31,6 +31,20 @@
 #  include "rv32/rv_jit.h"
 #endif
 
+#if EMU_FRONTEND_G4MH
+/* Likewise, so that --jit and its absence both mean something here. */
+#  include "g4mh/g4mh_cpu.h"
+#endif
+
+/*
+ * Whether *any* compiled-in frontend can translate on this host. --jit is
+ * accepted exactly when this holds; an undefined RV_ENABLE_JIT or
+ * G4MH_HAVE_JIT evaluates to 0 here, which is what makes the frontend
+ * guards on either side of the && necessary.
+ */
+#define EMU_HOST_HAVE_JIT \
+    ((EMU_FRONTEND_RV32 && RV_ENABLE_JIT) || (EMU_FRONTEND_G4MH && G4MH_HAVE_JIT))
+
 #if RV_PAIR_STATS
 #  include "rv32/rv_pairstats.h"
 #endif
@@ -400,22 +414,28 @@ int main(int argc, char **argv)
                 }
                 continue;
             }
+#endif
+            /*
+             * Not inside the RV32 block: both frontends have an x86-64
+             * backend, and while this option was guarded on RV32 a
+             * G4MH-only build rejected it outright -- so the only reachable
+             * backend was whichever one the frontend happened to prefer.
+             */
             if (strcmp(a, "--jit") == 0) {
-#if RV_ENABLE_JIT
+#if EMU_HOST_HAVE_JIT
                 /*
-                 * The whole reason the x86-64 backend exists: with this,
+                 * The whole reason the x86-64 backends exist: with this,
                  * the architecture suite and riscv-tests run against
                  * *translated* code -- coverage the Thumb-2 backend can
                  * only get by flashing a board.
                  */
                 want_jit = true;
 #else
-                fprintf(stderr, "rv32: no JIT backend for this host\n");
+                fprintf(stderr, "emu: no JIT backend for this host\n");
                 return 2;
 #endif
                 continue;
             }
-#endif
 #if EMU_ENABLE_TRACE
             if (strcmp(a, "--trace-skip") == 0) {
                 uint32_t v; if (!parse_u32(argv[++i], &v)) { usage(); return 2; }
@@ -567,7 +587,27 @@ int main(int argc, char **argv)
         free(image);
         return 1;
     }
-#else
+#endif
+
+#if EMU_FRONTEND_G4MH && G4MH_HAVE_JIT
+    /*
+     * The same for G4MH, and for a sharper reason: this frontend has no
+     * reference model, so the interpreter is the only statement of what an
+     * answer should be. A run that silently translated cannot be diffed
+     * against one that did not -- and while --jit reached only RV32, the
+     * G4MH interpreter was unreachable from the host at all.
+     */
+    if (strcmp(ops->name, "g4mh") == 0) {
+        g4mh_backend = want_jit ? &g4mh_backend_jit : &g4mh_backend_interp;
+        if (g4mh_backend->init != NULL && !g4mh_backend->init(g_core.cpu)) {
+            fprintf(stderr, "emu: backend init failed\n");
+            free(image);
+            return 1;
+        }
+    }
+#endif
+
+#if !EMU_HOST_HAVE_JIT
     (void)want_jit;
 #endif
 

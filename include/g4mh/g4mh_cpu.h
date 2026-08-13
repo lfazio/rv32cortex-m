@@ -28,6 +28,11 @@
 #include "emu/emu_bus.h"
 #include "emu/emu_cache.h"
 #include "emu/emu_cpu.h"
+/* For EMU_JIT_X86_64, which decides whether there is a JIT to declare.
+ * Included here rather than left to the includer: a translation unit that
+ * got this header first would silently see G4MH_HAVE_JIT as 0 and declare
+ * no backend, which is a link error at best and a wrong default at worst. */
+#include "emu/emu_jit.h"
 
 #include "g4mh_types.h"
 
@@ -237,11 +242,23 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
 /* ------------------------------------------------------------------ */
 
 /*
- * The threaded interpreter. G4MH has no JIT yet; when one is written it
- * becomes a second emu_backend_t here and g4mh_frontend.c selects between
- * them the way rv32_frontend.c does.
+ * The threaded interpreter, and the IR JIT where the host has a backend
+ * for it. g4mh_frontend.c prefers the JIT, which is right for firmware:
+ * there it is a speed choice and the backend falls back per instruction.
+ *
+ * On a host it is a *coverage* choice and the caller must be able to say
+ * which it wants -- see the same note in rv32_frontend.c. It matters more
+ * here than there: G4MH has no reference model, so the interpreter is the
+ * only thing that defines what an answer should be, and a run that
+ * silently translated cannot be compared against one that did not.
  */
 extern const emu_backend_t g4mh_backend_interp;
+#if defined(RV_JIT_X86_64) || defined(EMU_JIT_X86_64)
+#  define G4MH_HAVE_JIT 1
+extern const emu_backend_t g4mh_backend_jit;
+#else
+#  define G4MH_HAVE_JIT 0
+#endif
 extern const emu_backend_t *g4mh_backend;
 
 emu_run_reason_t g4mh_step(g4mh_cpu_t *c);

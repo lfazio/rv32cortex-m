@@ -66,7 +66,7 @@ static void g4mh_ops_init(emu_cpu_t *cpu, emu_bus_t *bus, uint32_t coreid)
      * broken by another core's store. */
     g4mh_ll_register(c);
 
-#if defined(RV_JIT_X86_64) || defined(EMU_JIT_X86_64)
+#if G4MH_HAVE_JIT
     /*
      * Prefer the JIT where it exists. It translates what it can and hands
      * everything else to the interpreter per instruction, so this is a
@@ -74,7 +74,6 @@ static void g4mh_ops_init(emu_cpu_t *cpu, emu_bus_t *bus, uint32_t coreid)
      * platform, which states which backend it wants rather than
      * inheriting this, because for it the difference *is* coverage.
      */
-    extern const emu_backend_t g4mh_backend_jit;
     g4mh_backend = &g4mh_backend_jit;
 #endif
     if (g4mh_backend->init != NULL && !g4mh_backend->init(cpu)) {

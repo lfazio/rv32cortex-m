@@ -4,13 +4,14 @@ add_executable(rv32-unit
     test_main.c
     test_bus.c
     test_ir.c
-    test_fpu.c
 )
 
 # Frontend tests follow the frontends: a build without one must not try to
-# link tests for it.
+# link tests for it. test_fpu.c is here rather than above because it drives
+# rv_hart_fp directly -- the FP unit is shared, but the only way in is
+# through an RV32 hart.
 if(EMU_FRONTEND_RV32)
-    target_sources(rv32-unit PRIVATE test_decode.c)
+    target_sources(rv32-unit PRIVATE test_decode.c test_fpu.c)
 endif()
 if(EMU_FRONTEND_G4MH)
     target_sources(rv32-unit PRIVATE test_g4mh.c)

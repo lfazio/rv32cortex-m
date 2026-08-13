@@ -204,9 +204,19 @@ add_library(rv32core STATIC
     src/emu/emu_ir.c
     src/emu/emu_gdb.c
     src/frontend/rv32/rv_gdb.c
+    # The IR JIT framework and its two host backends. Every one of these
+    # guards itself on the host it emits for, so all of them can stay in
+    # the list and exactly one backend compiles to anything. They belong
+    # here rather than under a frontend: emu_ir_jit.c defines *both*
+    # frontends' backends from one macro, so putting it under
+    # EMU_FRONTEND_RV32 left g4mh_backend_jit undefined in a G4MH-only
+    # tree -- which the G4MH frontend then referenced unconditionally.
     src/backend/x86_64/encode.c
     src/backend/common/interp.c
     src/backend/x86_64/ir_lower.c
+    src/backend/thumb2/encode.c
+    src/backend/thumb2/ir_lower.c
+    src/emu/emu_ir_jit.c
     src/emu/emu_cpu.c
     src/emu/emu_elf.c
     src/emu/emu_uart.c
@@ -241,12 +251,7 @@ if(EMU_FRONTEND_RV32)
         src/frontend/rv32/rv_pmp.c
         src/frontend/rv32/rv_mmu.c
         src/frontend/rv32/rv_trig.c
-        # Both guard themselves on the host they emit for, so both can stay
-        # in the list and exactly one of them compiles to anything.
         src/frontend/rv32/rv_ir.c
-        src/backend/thumb2/encode.c
-        src/backend/thumb2/ir_lower.c
-        src/emu/emu_ir_jit.c
     )
 
     # The fused multiply-adds recover their rounding error with
