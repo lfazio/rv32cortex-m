@@ -1073,6 +1073,86 @@ Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
   what real silicon needs and is wrong here twice over: the read-only
   half of a guest image is served from the board's flash, and a patched
   instruction is invisible to the JIT until the block is retranslated.
+- **"Unimplemented raises RIE, which is a clean report rather than a
+  silent wrong answer" was false for the whole life of the G4MH
+  frontend.** A trap only reports if something catches it. A flat test
+  guest has no vector table, so `G4MH_EXC_RIE` sends the pc to
+  `RBASE + 0x60` -- which in a flat image is an ordinary instruction
+  *inside the same function*, about twenty bytes further on. Execution
+  carries on with the unimplemented instruction skipped and nothing
+  written anywhere. That is precisely the silent wrong answer the design
+  was meant to rule out, and it is worse than a hang because the guest
+  keeps producing plausible output.
+
+  It presented as arithmetic: `puthex` printed `1c 05 02 ff fc f9 f6 f3`
+  where `31 32 33 34 61 62 63 64` was wanted -- an arithmetic sequence
+  stepping by -3, which reads as a broken expression rather than a
+  missing instruction. Three sessions went on bisecting the *expression*
+  with single-purpose guests, ruling out the variable shift, the
+  conditional select and the subtract direction, all of which were
+  correct. What found it in one run was `-DEMU_ENABLE_TRACE=ON`: the pc
+  jumped 0x52 to 0x60 without `retired` advancing, and an instruction
+  that changes the pc without retiring is a trap, not an instruction.
+
+  **Read the pc deltas in a trace, not the disassembly.** The
+  disassembler prints `.short` for anything it does not know, which looks
+  like a disassembler gap and not a decoder gap -- and it is
+  independently behind the interpreter, so it also prints confident
+  nonsense (`movhi` for a perfectly well executed `DISPOSE`). The trace
+  is trustworthy about *addresses* and unreliable about names.
+- **The forms a compiler emits are not the forms a manual chapter is
+  organised around, and the hand-written tests all used the other one.**
+  `SHR reg1, reg2` was implemented and `SHR reg1, reg2, reg3` was not;
+  CC-RH emits the three-operand form for every `v >> n`. Likewise `DIV`
+  was there and `DIVQ` -- which is *the same instruction* with a shorter
+  cycle count, and is what CC-RH emits for `a / b` -- was not. Both slots
+  differ from the implemented one by a single sub-opcode bit, which is
+  exactly how they were missed: 0x080 against 0x082, 0x2C0 against 0x2FC.
+
+  The general rule this repo already knows, in a new place: **an ISA that
+  varies one bit of a sub-opcode to mean "and also write reg3" will not
+  tell you when you implement one half of the pair.** Enumerate the slot.
+  `scripts/g4mh-check-encodings.sh` answers it in one run and is how all
+  six constants here were obtained -- including the confirmation that
+  `CMOV`'s condition really is `(sub >> 1) & 0xF`, which only `cond=15`
+  (sub 0x33E) can settle, because every smaller condition is consistent
+  with the three-bit reading too.
+- **A guest that runs is worth more than a suite that passes, when the
+  suite shares an author with the thing it tests.** G4MH's unit tests are
+  hand-assembled halfword arrays, deliberately not sharing an encoder
+  with the interpreter -- and they still could not find any of this,
+  because they exercise the encodings someone thought to write. One
+  compiled 90-line C guest found three defects in a row: the three-operand
+  shifts, then `DIVQ`, then `DIVH`. Run `docs/renesas`' CC-RH over
+  something real before believing a coverage claim.
+- **The G4MH interpreter was unreachable from the host, so "the JIT
+  agrees with the interpreter" had never been checked.** `--jit` was
+  parsed inside `#if EMU_FRONTEND_RV32`, and `g4mh_ops_init` assigned the
+  JIT unconditionally, so a G4MH-only build *rejected the option* and ran
+  translated whatever was asked. Both backends now come from the host's
+  choice, as RV32's already did. This matters more for G4MH than for
+  RV32, which has three reference models to disagree with: here the
+  interpreter is the only statement of what an answer should be, and a
+  run that silently translated cannot be diffed against one that did not.
+  The first thing the fix bought was evidence, and it was the useful
+  kind -- both backends produced the *same* wrong bytes, which is what
+  said the defect was in shared semantics and not in the translator.
+- **`emu_ir_jit.c` defines both frontends' backends from one macro, and
+  it lived in the RV32-only source block.** So a G4MH-only tree left
+  `g4mh_backend_jit` undefined against a frontend that referenced it
+  unconditionally -- a link error, which is the good outcome. It is in
+  the shared block now with the two host emitters, all of which guard
+  themselves on the host they emit for. The rule: **a file whose contents
+  are selected by host belongs beside the other files selected by host,
+  not under whichever frontend happened to need it first.**
+- **A capability macro that depends on include order is worse than no
+  macro.** `G4MH_HAVE_JIT` was defined in `g4mh_cpu.h` from
+  `EMU_JIT_X86_64`, which `emu/emu_jit.h` defines -- and
+  `g4mh_frontend.c` included `emu_jit.h` on the line *after* `g4mh_cpu.h`.
+  So the header saw the macro undefined, declared no backend, and the
+  frontend quietly ran interpreted while every build succeeded. Two unit
+  tests caught it only because they assert the translation counter moves.
+  A header that tests a capability must include whatever defines it.
 - **Measure; do not reason about performance.** Interpreter-in-SRAM was
   *slower*, lazy-IRQ was neutral, and the `clmul` fix was 1.3% when the real
   cost was 4.12-instruction blocks. Layout noise is ±3% on the host; on the
@@ -1148,6 +1228,17 @@ Nothing in `src/emu/` or `src/platform/` should need editing beyond step 3.
 That is the property to check when the contract changes: build the firmware
 with `-DEMU_FRONTEND_RV32=OFF -DEMU_FRONTEND_G4MH=ON` and see that it links.
 
+**That check does not currently pass, and has never passed** -- see task
+#31. `g4mh_frontend.c` models the U2B6's whole memory map as `.bss`
+(3 MiB of flash, 384 KiB of CRAM, 64 KiB of LRAM per PE = 3.44 MiB), so
+the F746 link fails with `cannot move location counter backwards` on a
+part with 320 KiB. The *host* configurations are all fine and are what
+the unit tests and guests run on. Until #31 is resolved, use
+`-DEMU_FRONTEND_RV32=OFF -DEMU_FRONTEND_G4MH=ON` on the **host** as the
+contract check; it does catch the interesting class of error (it is what
+caught `emu_ir_jit.c` sitting in the RV32-only source block), just not
+the target-sizing one.
+
 ### G4MH scope
 
 **Implemented.** Formats I and II (the 16-bit reg-reg and imm5 ALU),
@@ -1164,19 +1255,28 @@ with the full list12, `CALLT`, the unsigned loads `LD.BU`/`LD.HU` and
 `BINS`, `ROTL`, `LOOP`, `PUSHSP`/`POPSP`, `JARL [reg1], reg3`, and
 `JMP disp32`.
 
-Everything else raises `G4MH_EXC_RIE`, which is the correct report for an
-unimplemented encoding rather than a silent wrong answer.
+And the set a *compiled* guest needs, which is a different set again --
+found by running one rather than by reading the manual: the three-operand
+register shifts `SHR`/`SAR`/`SHL reg1, reg2, reg3`, the high-speed divides
+`DIVQ`/`DIVQU`, the halfword divides `DIVH reg1, reg2, reg3` and `DIVHU`,
+and the imm9 multiplies `MUL`/`MULU imm9, reg2, reg3`. Single-precision
+floating point is implemented on SoftFloat behind `G4MH_EXT_FPU`.
+
+Everything else raises `G4MH_EXC_RIE` -- which is the correct report for
+an unimplemented encoding **only if something catches it**. See the entry
+below on what RIE actually does in a flat guest, because for the whole
+life of this frontend it did not report anything at all.
 
 **Not implemented, roughly in the order a real guest would miss them:**
 
 | gap | why it matters |
 |---|---|
-| the FPU | `FPSR`/`FPEPC`/`FPST`/`FPCC`/`FPCFG`/`FPEC` exist as storage; no FP instruction is decoded. `G4MH_EXT_FPU` is the switch that would turn it on |
+| double precision, and the `.L`/`.UL` conversions | single precision is there; `G4MH_EXT_FPU` gates the lot |
 | the disp23 loads and stores | the 48-bit long-displacement forms; they share the `0x3C`/`0x3D` slot with `LD.BU` and PREPARE and are declined there |
 | `CLIP.B`/`.BU`/`.H`/`.HU` | saturating narrowing |
 | `LD.DW` / `ST.DW`, `LDL.BU`/`LDL.HU`, `STC.B`/`STC.H` | the doubleword and narrow atomic accesses |
 | `LDM.MP` / `STM.MP`, `RESBANK` | bank and context-block transfers |
-| `DIVHU`, `DIVQ`/`DIVQU`, 3-operand `DIVH`, the imm9 `MUL`/`DIV` forms | |
+| `DIVQ`/`DIVQU` with `reg2 == reg3` | the manual leaves the flags undefined there; this treats it as the ordinary case |
 | `FETRAP`, `SYSCALL` | further trap flavours; `TRAP` is there |
 | `PREPARE list12, imm5, imm32` | the only 64-bit encoding in the ISA, and past what the length decoder reports — see below |
 | `CACHE`, `PREF` | `SYNCE`/`SYNCM`/`SYNCP`/`SYNCI` and `SNOOZE` are decoded and are no-ops here |

@@ -80,6 +80,25 @@
 #define SUB_DIEI    0x0160u
 #define SUB_MUL     0x0220u
 #define SUB_DIV     0x02C0u
+/*
+ * The three-operand register shifts, the high-speed divides, the halfword
+ * divides and the imm9 multiplies. Every one of these is what CC-RH emits
+ * for ordinary C -- `v >> n` is SHR reg1,reg2,reg3 and `a / b` is DIVQ --
+ * and none of them was decoded, so a compiled guest raised RIE on its
+ * first shift. The constants come from scripts/g4mh-check-encodings.sh,
+ * not from reading the manual's diagrams.
+ */
+#define SUB_SHR3    0x0082u
+#define SUB_SAR3    0x00A2u
+#define SUB_SHL3    0x00C2u
+#define SUB_DIVQ    0x02FCu
+#define SUB_DIVQU   0x02FEu
+#define SUB_DIVH    0x0280u
+#define SUB_DIVHU   0x0282u
+/* imm9 splits: bits[8:5] into sub bits[5:2], bits[4:0] into the reg1 field. */
+#define SUB_MULI(i) (uint16_t)(0x0240u | ((((i) >> 5) & 0xFu) << 2))
+#define SUB_MULUI(i) (uint16_t)(0x0242u | ((((i) >> 5) & 0xFu) << 2))
+#define MULI_R1(i)  (uint16_t)((i) & 0x1Fu)
 /* Swap and bit-search group; reg1 is a fixed zero in all of them. */
 #define SUB_BSW     0x0340u
 #define SUB_BSH     0x0342u
@@ -462,6 +481,182 @@ static void test_muldiv(void)
     CHECK_EQ(reg(12), 0xFFFFFFFFu);   /* sign extension of the product */
     CHECK_EQ(reg(13), 2u);            /* quotient  */
     CHECK_EQ(reg(15), 3u);            /* remainder */
+}
+
+/*
+ * The three-operand register shifts.
+ *
+ * These are the forms a compiler emits and none of them was decoded, so
+ * every `v >> n` in a CC-RH guest raised RIE. That did not present as a
+ * clean exception: a flat guest has no vector table, so the RIE handler
+ * address (RBASE + 0x60) landed on an ordinary instruction further down
+ * the same function and execution carried on with the shift skipped.
+ *
+ * The destination is deliberately a *different* register from both
+ * sources, because the two-operand form writes reg2 and would pass a test
+ * that used reg3 == reg2.
+ */
+static void test_shift_three_operand(void)
+{
+    /*
+     *   mov  -16, r10          ; 0xFFFFFFF0
+     *   mov  2, r11
+     *   shr  r11, r10, r12     ; r12 = 0x3FFFFFFC, r10 unchanged
+     *   sar  r11, r10, r13     ; r13 = 0xFFFFFFFC
+     *   shl  r11, r10, r14     ; r14 = 0xFFFFFFC0
+     *   halt
+     */
+    const uint16_t prog[] = {
+        F2(OP_MOVI, -16, 10),
+        F2(OP_MOVI, 2, 11),
+        W0(OP_SYSTEM, 11, 10), (uint16_t)((12u << 11) | SUB_SHR3),
+        W0(OP_SYSTEM, 11, 10), (uint16_t)((13u << 11) | SUB_SAR3),
+        W0(OP_SYSTEM, 11, 10), (uint16_t)((14u << 11) | SUB_SHL3),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(12), 0x3FFFFFFCu);   /* logical: zeroes shifted in  */
+    CHECK_EQ(reg(13), 0xFFFFFFFCu);   /* arithmetic: sign preserved  */
+    CHECK_EQ(reg(14), 0xFFFFFFC0u);
+    /* reg2 is a source here, not the destination: it must not be written. */
+    CHECK_EQ(reg(10), 0xFFFFFFF0u);
+    CHECK_EQ(why, EMU_RUN_WFI);
+}
+
+/*
+ * DIVQ and DIVH, the divides a compiler actually emits.
+ *
+ * DIVQ is DIV with a shorter cycle count and nothing else, so the check
+ * that matters is that it reaches the same code. DIVH is the one with its
+ * own rule: only the *lower halfword* of reg1 is the divisor, so a divisor
+ * whose low half is zero divides by zero however large the register is --
+ * which is the case worth pinning, since a wrong implementation that used
+ * all 32 bits would agree with a correct one on every small operand.
+ */
+static void test_divq_divh(void)
+{
+    /*
+     *   mov   13, r10
+     *   mov   5, r11
+     *   divq  r11, r10, r12     ; r10 = 2, r12 = 3
+     *   mov   -9, r13
+     *   mov   2, r14
+     *   divh  r14, r13, r15     ; r13 = -4, r15 = -1
+     *   halt
+     */
+    const uint16_t prog[] = {
+        F2(OP_MOVI, 13, 10),
+        F2(OP_MOVI, 5, 11),
+        W0(OP_SYSTEM, 11, 10), (uint16_t)((12u << 11) | SUB_DIVQ),
+        F2(OP_MOVI, -9, 13),
+        F2(OP_MOVI, 2, 14),
+        W0(OP_SYSTEM, 14, 13), (uint16_t)((15u << 11) | SUB_DIVH),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(10), 2u);
+    CHECK_EQ(reg(12), 3u);
+    CHECK_EQ(reg(13), (uint32_t)(-4));   /* C truncates toward zero */
+    CHECK_EQ(reg(15), (uint32_t)(-1));
+    CHECK_EQ(why, EMU_RUN_WFI);
+}
+
+/*
+ * DIVH's divisor is the low halfword, and DIVHU zero-extends it where
+ * DIVH sign-extends. Both are checked with a divisor whose *upper* half is
+ * non-zero, so an implementation using the whole register gets a visibly
+ * different answer rather than the same one.
+ */
+static void test_divh_halfword_only(void)
+{
+    /*
+     *   mov    0x00010000, r10   ; low halfword zero -> divide by zero
+     *   mov    100, r11
+     *   divh   r10, r11, r12     ; OV set, r11 untouched
+     *   mov    0xDEAD0002, r13   ; low halfword 2
+     *   mov    100, r14
+     *   divhu  r13, r14, r15     ; r14 = 50, not 0
+     *   halt
+     */
+    const uint16_t prog[] = {
+        W0(OP_MOVEA, 10, 0), 0x0000u, 0x0001u,   /* mov 0x00010000, r10 */
+        W0(OP_MOVEA, 11, 0), 0x0064u, 0x0000u,   /* mov 100, r11        */
+        W0(OP_SYSTEM, 10, 11), (uint16_t)((12u << 11) | SUB_DIVH),
+        W0(OP_MOVEA, 13, 0), 0x0002u, 0xDEADu,   /* mov 0xDEAD0002, r13 */
+        W0(OP_MOVEA, 14, 0), 0x0064u, 0x0000u,   /* mov 100, r14        */
+        W0(OP_SYSTEM, 13, 14), (uint16_t)((15u << 11) | SUB_DIVHU),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    /* Divide by zero leaves the dividend alone and sets OV. */
+    CHECK_EQ(reg(11), 100u);
+    CHECK_EQ(reg(14), 50u);           /* 100 / 2, not 100 / 0xDEAD0002 */
+    CHECK_EQ(reg(15), 0u);            /* remainder */
+    CHECK_EQ(why, EMU_RUN_WFI);
+}
+
+/*
+ * The imm9 multiplies, whose immediate is split across two fields. The
+ * sign is what the split gets wrong: -1 is 0x1FF, so every bit of both
+ * halves is set, and a zero-extending implementation returns 511 times
+ * the operand instead of minus it.
+ */
+static void test_mul_imm9(void)
+{
+    /*
+     *   mov  7, r10
+     *   mul  -1, r10, r11      ; r10 = -7,  r11 = -1 (sign extension)
+     *   mov  7, r12
+     *   mulu -1, r12, r13      ; r12 = 7 * 511 = 3577, r13 = 0
+     *   halt
+     */
+    const uint16_t prog[] = {
+        F2(OP_MOVI, 7, 10),
+        W0(OP_SYSTEM, MULI_R1(0x1FFu), 10),
+            (uint16_t)((11u << 11) | SUB_MULI(0x1FFu)),
+        F2(OP_MOVI, 7, 12),
+        W0(OP_SYSTEM, MULI_R1(0x1FFu), 12),
+            (uint16_t)((13u << 11) | SUB_MULUI(0x1FFu)),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(10), (uint32_t)(-7));
+    CHECK_EQ(reg(11), 0xFFFFFFFFu);
+    CHECK_EQ(reg(12), 7u * 511u);
+    CHECK_EQ(reg(13), 0u);
+    CHECK_EQ(why, EMU_RUN_WFI);
 }
 
 /*
@@ -2110,6 +2305,10 @@ void test_g4mh(void)
     test_loop();
     test_callt();
     test_muldiv();
+    test_shift_three_operand();
+    test_divq_divh();
+    test_divh_halfword_only();
+    test_mul_imm9();
     test_swap();
     test_swap_halfword_flags();
     test_bit_search();

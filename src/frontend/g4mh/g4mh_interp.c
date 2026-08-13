@@ -1208,14 +1208,38 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 do_sch(c, sel, c->r[r2], true, true);
                 break;
 
+            /*
+             * The register-form shifts come in two shapes, and the
+             * three-operand one is what a compiler actually emits: CC-RH
+             * turns `v >> n` into `shr reg1, reg2, reg3` every time. Only
+             * the two-operand forms were decoded, so every one of those
+             * raised RIE -- and because a flat guest has no vector table,
+             * the RIE handler address (RBASE + 0x60) landed on an ordinary
+             * instruction further down the same loop. Execution carried on
+             * with the shift skipped and no diagnostic, which presented as
+             * an arithmetic answer that was merely wrong.
+             *
+             * The three-operand encoding is the two-operand one with bit 1
+             * of the sub-opcode set, and reg3 in bits[31:27] -- the same
+             * bit that separates ROTL's two forms at 0x0C4/0x0C6 below.
+             */
             case 0x080:                             /* SHR reg1, reg2   */
                 wr(c, r2, do_shr(c, c->r[r2], c->r[r1]));
+                break;
+            case 0x082:                             /* SHR r1, r2, r3   */
+                wr(c, sel, do_shr(c, c->r[r2], c->r[r1]));
                 break;
             case 0x0A0:                             /* SAR reg1, reg2   */
                 wr(c, r2, do_sar(c, c->r[r2], c->r[r1]));
                 break;
+            case 0x0A2:                             /* SAR r1, r2, r3   */
+                wr(c, sel, do_sar(c, c->r[r2], c->r[r1]));
+                break;
             case 0x0C0:                             /* SHL reg1, reg2   */
                 wr(c, r2, do_shl(c, c->r[r2], c->r[r1]));
+                break;
+            case 0x0C2:                             /* SHL r1, r2, r3   */
+                wr(c, sel, do_shl(c, c->r[r2], c->r[r1]));
                 break;
 
             case 0x0EE: {                           /* CAXI [reg1],r2,r3 */
@@ -1625,7 +1649,18 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     break;
                 }
 
-                case 0x2C0: {                       /* DIV / DIVU       */
+                /*
+                 * DIVQ and DIVQU are DIV and DIVU. The manual's only
+                 * difference is the cycle count -- "the minimum number of
+                 * steps required is determined from the values in reg1 and
+                 * reg2" -- and an emulator has no steps to save. They get
+                 * the same label rather than a copy of the body, because a
+                 * second copy is a second thing to get the INT32_MIN / -1
+                 * overflow rule wrong in. CC-RH emits DIVQ for ordinary C
+                 * integer division, so this is the form a real guest hits.
+                 */
+                case 0x2C0:                         /* DIV / DIVU       */
+                case 0x2FC: {                       /* DIVQ / DIVQU     */
                     const uint32_t r3 = sel;
                     const uint32_t d = c->r[r1];
                     if (d == 0u) {
@@ -1658,7 +1693,72 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     break;
                 }
 
+                case 0x280: {                       /* DIVH / DIVHU     */
+                    /*
+                     * Only the *lower halfword* of reg1 is the divisor --
+                     * sign-extended for DIVH, zero-extended for DIVHU --
+                     * so a 32-bit divisor whose low half is zero divides
+                     * by zero however large it is. The three-operand form
+                     * stores the remainder in reg3; the two-operand one is
+                     * Format I at op 0x02 and has no remainder.
+                     */
+                    const uint32_t r3 = sel;
+                    const bool sgn = (sub & 0x2u) == 0u;
+                    const uint32_t lo = c->r[r1] & 0xFFFFu;
+                    const uint32_t d = sgn ? (uint32_t)(int32_t)(int16_t)lo
+                                           : lo;
+                    if (d == 0u) {
+                        c->psw |= G4MH_PSW_OV;
+                        break;
+                    }
+                    uint32_t q;
+                    uint32_t rem;
+                    if (sgn) {
+                        const int32_t a = (int32_t)c->r[r2];
+                        const int32_t b = (int32_t)d;
+                        if (a == INT32_MIN && b == -1) {
+                            c->psw |= G4MH_PSW_OV;
+                            break;
+                        }
+                        q = (uint32_t)(a / b);
+                        rem = (uint32_t)(a % b);
+                    } else {
+                        q = c->r[r2] / d;
+                        rem = c->r[r2] % d;
+                    }
+                    set_zs(c, q);
+                    c->psw &= ~G4MH_PSW_OV;
+                    wr(c, r2, q);
+                    wr(c, r3, rem);
+                    break;
+                }
+
                 default:
+                    /*
+                     * The imm9 multiplies are last because their immediate
+                     * is *split across the sub-opcode*: bits[8:5] sit in
+                     * sub bits[5:2] and bits[4:0] in the reg1 field, so no
+                     * exact case can match them and the mask has to be
+                     * 0x7C0 rather than the 0x7FD used above. That mask
+                     * would also swallow DIV and DIVQ, which is why this
+                     * runs only after they have had their exact cases.
+                     */
+                    if ((sub & 0x7C0u) == 0x240u) {  /* MUL/MULU imm9   */
+                        const uint32_t r3 = sel;
+                        const uint32_t imm9 = (((sub >> 2) & 0xFu) << 5) | r1;
+                        if ((sub & 0x2u) == 0u) {   /* MUL: sign-extend */
+                            const int64_t p = (int64_t)(int32_t)c->r[r2] *
+                                              (int64_t)emu_sext(imm9, 9);
+                            wr(c, r2, (uint32_t)p);
+                            wr(c, r3, (uint32_t)((uint64_t)p >> 32));
+                        } else {                    /* MULU: zero-extend */
+                            const uint64_t p = (uint64_t)c->r[r2] *
+                                               (uint64_t)imm9;
+                            wr(c, r2, (uint32_t)p);
+                            wr(c, r3, (uint32_t)(p >> 32));
+                        }
+                        break;
+                    }
                     EXC(G4MH_EXC_RIE);
                 }
                 break;
