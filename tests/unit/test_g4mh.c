@@ -1960,9 +1960,16 @@ static void test_fp_compare_and_move(void)
     uint32_t retired = 0;
     if (!load_and_run(prog, k, 128u, &why, &retired)) { CHECK(false); return; }
 
-    /* CMOVF.S: reg3 <- cc ? reg2 : reg1 */
-    CHECK_EQ(reg(12), F_1_0);                   /* cc clear -> reg1     */
-    CHECK_EQ(reg(13), F_2_0);                   /* cc set   -> reg2     */
+    /*
+     * CMOVF.S is reg3 <- cc ? reg1 : reg2. This test asserted the other
+     * direction and passed against an inverted implementation, because
+     * it only ever checked which of two registers came out -- and with
+     * both the comparison and the select mirrored, the two errors
+     * cancelled. The direction is pinned to CC-RH's own codegen now; see
+     * the note in g4mh_fpu.c.
+     */
+    CHECK_EQ(reg(12), F_2_0);                   /* cc clear -> reg2     */
+    CHECK_EQ(reg(13), F_1_0);                   /* cc set   -> reg1     */
 }
 
 /*

@@ -545,9 +545,28 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
             const bool taken =
                 ((fpsr_get(c) >> (G4MH_FPSR_CC_SHIFT + fcbit)) & 1u) != 0u;
 
-            /* No arithmetic, so no flags and no flushing: a bit move. */
+            /*
+             * reg3 <- CC ? reg1 : reg2, and that direction is the whole
+             * content of the instruction.
+             *
+             * It shipped inverted. Settled against CC-RH, which is
+             * unambiguous because it emits the pair together:
+             *
+             *   p = 1.0f at sp+4, q = 2.0f at sp+0
+             *   ld.w 4[r3], r2 ; ld.w 0[r3], r5
+             *   cmpf.s 0x4, r2, r5      ; reg2=r2=p, reg1=r5=q
+             *   movea 22, r0, r2 ; mov 11, r5
+             *   cmovf.s 0, r5, r2, r10  ; reg1=r5=11, reg2=r2=22
+             *
+             * for `return (p < q) ? 11 : 22;`. fcond 4 is OLT and the
+             * relation is reg2 < reg1, so 1.0 < 2.0 sets CC0 -- and the
+             * answer the compiler wants for a set CC0 is 11, which is
+             * reg1. Taking reg2 instead returned 22 for `1.0 < 2.0`.
+             *
+             * No arithmetic, so no flags and no flushing: a bit move.
+             */
             if (reg3 != 0u) {
-                c->r[reg3] = taken ? b : a;
+                c->r[reg3] = taken ? a : b;
             }
             return G4MH_EXC_NONE;
         }
