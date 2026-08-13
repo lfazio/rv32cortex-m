@@ -1943,11 +1943,16 @@ static void test_fp_compare_and_move(void)
      * fcond 4 is OLT, and the relation is `reg2 < reg1` -- the same
      * operand order as every other FP instruction here. So reg1=r10
      * (1.0), reg2=r11 (2.0) asks "is 2.0 < 1.0", which is false.
+     *
+     * fcond goes in the *reg3* field and fcbit in the sub-opcode's low
+     * bits, which is the opposite of what this test first assumed. Both
+     * orders pass a test that only ever uses fcbit 0, so the encoding
+     * below is taken from what the vendor assembler emits.
      */
-    prog[k++] = FP0(10, 11); prog[k++] = FP1(0, FSUB_CMP | (4u << 1));
+    prog[k++] = FP0(10, 11); prog[k++] = FP1(4, FSUB_CMP | (0u << 1));
     prog[k++] = FP0(10, 11); prog[k++] = FP1(12, FSUB_CMOV | (0u << 1));
     /* Swap the operands: "is 1.0 < 2.0" is true, into the same CC bit. */
-    prog[k++] = FP0(11, 10); prog[k++] = FP1(0, FSUB_CMP | (4u << 1));
+    prog[k++] = FP0(11, 10); prog[k++] = FP1(4, FSUB_CMP | (0u << 1));
     prog[k++] = FP0(10, 11); prog[k++] = FP1(13, FSUB_CMOV | (0u << 1));
     prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
 

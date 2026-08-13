@@ -1269,10 +1269,39 @@ Both were invisible while the instructions raised RIE, which is the
 argument for implementing a slot completely rather than one encoding of
 it at a time.
 
-**There is no reference model and no toolchain.** RV32 has riscv-arch-test,
-the Berkeley suite and Sail to disagree with; G4MH has none of that here, and
-no `rh850-elf-gcc` to build a guest with. Its tests are hand-assembled
+**There is no reference model, but there is now a toolchain.** RV32 has
+riscv-arch-test, the Berkeley suite and Sail to disagree with; G4MH still has
+nothing that will tell you an *answer* is wrong. Its tests are hand-assembled
 halfword arrays in `tests/unit/test_g4mh.c`, deliberately not sharing an
 encoder with the interpreter — a shared one would pass while both were wrong
-the same way. Treat any G4MH result as verified only as far as those tests
-reach.
+the same way. Treat any G4MH *semantic* result as verified only as far as
+those tests reach.
+
+**Encodings are a different matter, and are now checkable.** Renesas CC-RH
+builds in the `ccrh:latest` image (`docs/renesas/Dockerfile`), and its
+assembler is a second, independent encoder —
+`scripts/g4mh-check-encodings.sh` assembles a set of instructions and prints
+the fields this frontend decodes them into. **Run it before hand-writing an
+opcode constant.**
+
+It found a real bug on its first run. `CMPF.S` carries its condition in the
+**reg3 field** and its target CC bit in the sub-opcode's low bits; this
+frontend had the two the other way round, inferred from a manual diagram
+that draws the field as `0FFFF` and names neither part:
+
+```
+cmpf.s 0x4, r6, r7, 3   E7372624   sub=0x426  reg3=4
+cmpf.s 0xC, r6, r7, 5   E7372A64   sub=0x42A  reg3=12
+```
+
+The second settles it — `0xC` does not fit in three bits. Every
+hand-written test passed either way, because they all used fcbit 0, where
+the two readings coincide. `CMOVF.S` and `TRFSR` are genuinely the other
+way round (fcbit in the sub-opcode, reg3 the destination), which is what
+made the wrong reading look plausible.
+
+The compiler is also worth using for what it *chooses*: `-Xcpu=g4mh
+-Xfloat=fpu` on `a < b` emits `cmpf.s` / `trfsr` / `setf`, which is the
+combination a guest will actually contain, and confirms the operand order
+`reg2 < reg1` that the manual states and that is easy to implement
+backwards.

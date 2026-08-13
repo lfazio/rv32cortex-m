@@ -503,32 +503,36 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
         /* CMPF.S and CMOVF.S carry a condition in bits 3..1 of `sub`. */
         if ((sub & 0x7F1u) == 0x420u) {         /* CMPF.S               */
             /*
-             * fcond[2:0] is the `fff` field of the sub-opcode. fcond[3]
-             * -- the "raise invalid when unordered" half of Table 2.10 --
-             * is taken from bit 3 of the reg3 field, which is the only
-             * spare bit in the encoding: reg3 carries fcbit, and fcbit
-             * names one of eight CC bits and so needs three.
+             * fcond is the *reg3 field*; fcbit is the `fff` bits of the
+             * sub-opcode. That is the opposite of the obvious reading --
+             * reg3 is the destination in every other instruction here,
+             * and CMPF has no destination register -- and this file
+             * shipped it the wrong way round.
              *
-             * **That bit position is inferred, not read off the manual.**
-             * The [Opcode] diagram draws the field as `0FFFF` without
-             * naming its parts. Getting it wrong changes only whether a
-             * *quiet* NaN comparison raises invalid -- the relation and
-             * the CC bit written are unaffected -- so it fails safe, but
-             * it is unverified and is the first thing to check if a guest
-             * disagrees about fflags after a comparison.
+             * Settled against the vendor assembler rather than the
+             * manual, whose [Opcode] diagram draws the field as `0FFFF`
+             * and names neither part:
+             *
+             *   cmpf.s 0x4, r6, r7, 3   E7372624  sub=0x426 reg3=4
+             *   cmpf.s 0xC, r6, r7, 5   E7372A64  sub=0x42A reg3=12
+             *
+             * The second is what makes it certain: 0xC needs four bits,
+             * so fcond cannot be the three-bit `fff`, and fcbit tracks
+             * `fff` across both. It also answers the question the
+             * previous comment here left open -- fcond[3], the
+             * raise-invalid-when-unordered bit, is simply bit 3 of the
+             * same field.
+             *
+             * CMOVF.S and TRFSR are *not* like this: there fcbit is
+             * `fff` and reg3 is the destination, which is why they were
+             * already right and only this one was wrong.
              */
-            const uint32_t cond = ((sub >> 1) & 7u) | ((reg3 & 8u) ? 8u : 0u);
-            const uint32_t fcbit = reg3 & 7u;
+            const uint32_t cond = reg3 & 0xFu;
+            const uint32_t fcbit = (sub >> 1) & 7u;
             bool invalid = false;
             const bool r = f_compare(cond, a, b, &invalid);
             uint32_t fpsr = fpsr_get(c);
 
-            /*
-             * The result goes to one of the eight CC bits, named by the
-             * low three bits of reg3 -- not to a general register. That
-             * is what makes CMPF and CMOVF a pair rather than a compare
-             * and a branch.
-             */
             fpsr &= ~(1u << (G4MH_FPSR_CC_SHIFT + fcbit));
             fpsr |= (r ? 1u : 0u) << (G4MH_FPSR_CC_SHIFT + fcbit);
             fpsr_set(c, fpsr);
