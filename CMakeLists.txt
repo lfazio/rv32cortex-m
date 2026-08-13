@@ -172,6 +172,16 @@ option(RV32_ENABLE_DISASM "Build the RV32 disassembler" ON)
 # G4MH frontend configuration
 # ---------------------------------------------------------------------
 
+# The G4MH FPU is an option on real parts, and single precision only here.
+#
+# On by default because the arithmetic is Berkeley SoftFloat, which the
+# tree builds anyway for the RISC-V frontend, so the marginal cost is the
+# decode and the semantics rather than a library. Turning it off puts the
+# whole encoding range back on RIE, which is what a part without the
+# option does -- see src/frontend/g4mh/g4mh_fpu.c for what "single
+# precision only" excludes.
+option(G4MH_EXT_FPU "G4MH single-precision FPU" ON)
+
 option(G4MH_ENABLE_DISASM "Build the G4MH disassembler" ON)
 
 # Processing elements to model. The RH850/U2B6 has three; the default is 1
@@ -294,15 +304,17 @@ if(EMU_FRONTEND_G4MH)
         src/frontend/g4mh/g4mh_intc.c
         src/frontend/g4mh/g4mh_ir.c
         src/frontend/g4mh/g4mh_interp.c
+        src/frontend/g4mh/g4mh_fpu.c
     )
 
     target_compile_definitions(rv32core PUBLIC
         G4MH_ENABLE_DISASM=$<BOOL:${G4MH_ENABLE_DISASM}>
         G4MH_PE_COUNT=${G4MH_PE_COUNT}u
+        G4MH_EXT_FPU=$<BOOL:${G4MH_EXT_FPU}>
     )
 endif()
 
-if(EMU_FRONTEND_RV32 AND RV32_EXT_F)
+if((EMU_FRONTEND_RV32 AND RV32_EXT_F) OR (EMU_FRONTEND_G4MH AND G4MH_EXT_FPU))
     if(NOT EXISTS "${SOFTFLOAT_DIR}/source/include/softfloat.h")
         find_package(Git QUIET)
         if(GIT_FOUND)

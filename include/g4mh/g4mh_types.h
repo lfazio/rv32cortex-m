@@ -143,6 +143,74 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
 #define G4MH_SR_ICSR        12u
 #define G4MH_SR_INTCFG      13u
 
+/*
+ * The FPU system registers, selID 0. Numbering from the U2B hardware
+ * manual Table 3.50 -- the *software* manual describes the instructions
+ * and never says where these live, which is why the reference here is a
+ * different document from the one the encodings came from.
+ *
+ * FPST, FPCC and FPCFG are windows onto FPSR rather than storage: each
+ * reflects a subset of its bits, so a write through one has to land in
+ * FPSR or the two disagree. g4mh_sr_read/write route them.
+ */
+#define G4MH_SR_FPSR        6u
+#define G4MH_SR_FPEPC       7u
+#define G4MH_SR_FPST        8u
+#define G4MH_SR_FPCC        9u
+#define G4MH_SR_FPCFG       10u
+
+/*
+ * FPSR, from the same table.
+ *
+ *   31..24  CC[7:0]  comparison results, written only by CMPF and LDSR
+ *   23      FN       flush-to-nearest
+ *   22      IF       an input operand was flushed (sticky)
+ *   21      reserved, reads 1
+ *   19..18  RM       rounding mode, 00 RN / 01 RZ / 10 RP / 11 RM
+ *   17      FS       flush subnormals; 1 out of reset
+ *   15..10  XC       cause bits      E V Z O U I
+ *    9..5   XE       enable bits       V Z O U I
+ *    4..0   XP       preservation      V Z O U I
+ *
+ * The three exception groups are *not* the same width: the cause group
+ * has an E (unimplemented operation) bit that the enable and
+ * preservation groups do not, so they are six and five bits and the
+ * shifts below differ by one. Deriving one from the other by shifting a
+ * single five-bit mask puts every cause bit one place out.
+ */
+#define G4MH_FPSR_CC_SHIFT  24u
+#define G4MH_FPSR_CC_MASK   0xFF000000u
+#define G4MH_FPSR_FN        (1u << 23)
+#define G4MH_FPSR_IF        (1u << 22)
+#define G4MH_FPSR_RSV1      (1u << 21)
+#define G4MH_FPSR_RM_SHIFT  18u
+#define G4MH_FPSR_RM_MASK   (3u << 18)
+#define G4MH_FPSR_FS        (1u << 17)
+#define G4MH_FPSR_XC_SHIFT  10u
+#define G4MH_FPSR_XC_MASK   (0x3Fu << 10)
+#define G4MH_FPSR_XE_SHIFT  5u
+#define G4MH_FPSR_XE_MASK   (0x1Fu << 5)
+#define G4MH_FPSR_XP_SHIFT  0u
+#define G4MH_FPSR_XP_MASK   0x1Fu
+
+/*
+ * The five exception bits, in the order the XE and XP groups use them:
+ * bit 0 inexact, 1 underflow, 2 overflow, 3 divide-by-zero, 4 invalid.
+ * The cause group adds E above them, at bit 5 of the group.
+ */
+#define G4MH_FPX_I          (1u << 0)    /* inexact                     */
+#define G4MH_FPX_U          (1u << 1)    /* underflow                   */
+#define G4MH_FPX_O          (1u << 2)    /* overflow                    */
+#define G4MH_FPX_Z          (1u << 3)    /* divide by zero              */
+#define G4MH_FPX_V          (1u << 4)    /* invalid operation           */
+#define G4MH_FPX_E          (1u << 5)    /* unimplemented; cause only   */
+
+/* Rounding modes, as FPSR.RM encodes them. */
+#define G4MH_RM_RN          0u
+#define G4MH_RM_RZ          1u
+#define G4MH_RM_RP          2u
+#define G4MH_RM_RM          3u
+
 /* Number of selID banks this implementation decodes. */
 #define G4MH_SR_BANKS       3u
 #define G4MH_SR_PER_BANK    32u

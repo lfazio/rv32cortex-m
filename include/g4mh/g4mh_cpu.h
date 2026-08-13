@@ -214,6 +214,25 @@ void     g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg,
                        uint32_t val);
 
 /* ------------------------------------------------------------------ */
+/* Floating point                                                      */
+/* ------------------------------------------------------------------ */
+
+#if G4MH_EXT_FPU
+/*
+ * Execute one floating-point instruction. `sub` is instruction bits
+ * 26..16, which is what the interpreter's Format X switch already keys
+ * on, and reg3 is the field the manual calls reg3 (instruction bits
+ * 31..27).
+ *
+ * Single precision only -- see the note at the top of g4mh_fpu.c for
+ * exactly what is and is not implemented, and why the double-precision
+ * and 64-bit-integer encodings still raise RIE.
+ */
+g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
+                         uint32_t reg2, uint32_t reg3);
+#endif
+
+/* ------------------------------------------------------------------ */
 /* Backends                                                            */
 /* ------------------------------------------------------------------ */
 

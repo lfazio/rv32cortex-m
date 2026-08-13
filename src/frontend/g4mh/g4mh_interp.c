@@ -1026,6 +1026,31 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
             const uint32_t sub = w1 & 0x7FFu;
             const uint32_t sel = (w1 >> 11) & 0x1Fu;
 
+            /*
+             * The floating-point group, taken whole before the integer
+             * switch rather than as cases inside it.
+             *
+             * Every FP sub-opcode is >= 0x400 and every integer one is
+             * below it, so one comparison separates them exactly -- and
+             * that is a checked fact, not a convenient assumption: the
+             * integer cases in the switch below run from 0x000 to 0x3E0.
+             * Splitting the group here keeps the FP encodings decoded in
+             * *one* place, which is the rule this frontend already learned
+             * the hard way for the Zbb/Zbc-style shared slots.
+             *
+             * Below is where G4MH_EXT_FPU being off lands: the whole range
+             * falls through to RIE, exactly as it did before the FPU
+             * existed.
+             */
+#if G4MH_EXT_FPU
+            if (sub >= 0x400u) {
+                const g4mh_exc_t e = g4mh_fpu_exec(c, sub, r1, r2, sel);
+
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                break;
+            }
+#endif
+
             switch (sub) {
             case 0x000:                             /* SETF cccc, reg2  */
                 wr(c, r2, g4mh_cond(r1, c->psw) ? 1u : 0u);

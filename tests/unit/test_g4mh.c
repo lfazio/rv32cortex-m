@@ -953,7 +953,19 @@ static void test_reserved_instruction(void)
     uint16_t prog[0x40];
     memset(prog, 0, sizeof(prog));
     prog[0] = W0(OP_SYSTEM, 0, 0);
-    prog[1] = 0x07FEu;              /* no such sub-opcode */
+    /*
+     * Must be *below* 0x400: everything from there up is the
+     * floating-point group, and with PSW.CU0 clear -- which is how the
+     * core comes out of reset -- an FP encoding is a coprocessor-unusable
+     * exception rather than a reserved-instruction one. This test used
+     * 0x7FE and started failing the day the FPU landed, which is exactly
+     * the maintenance cost its own comment predicts.
+     *
+     * It also has to miss the masked switch: sub-opcodes 0x300-0x3FF are
+     * matched as `sub & 0x7E0`, so anything in that range is some CMOV,
+     * SBF, ADF or MAC and retires quietly.
+     */
+    prog[1] = 0x01A0u;              /* no such sub-opcode */
     /* 0x60 bytes in, which is index 0x30 in halfwords. */
     prog[0x30] = 0x07E0u;
     prog[0x31] = SUB_HALT;
@@ -1691,6 +1703,385 @@ static void test_callt(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Floating point                                                      */
+/* ------------------------------------------------------------------ */
+
+#if G4MH_EXT_FPU
+
+/*
+ * Format F:I, as the manual draws it.
+ *
+ *   first  halfword: reg2[15:11] opcode[10:5]=0x3F reg1[4:0]
+ *   second halfword: reg3[15:11] sub[10:0]
+ *
+ * sub is instruction bits 26..16, which is the same field the integer
+ * Format X group is keyed on -- floating point simply lives above 0x400
+ * in it.
+ */
+#define FP0(r1, r2)      W0(OP_SYSTEM, (r1), (r2))
+#define FP1(r3, sub)     (uint16_t)(((r3) << 11) | (sub))
+
+#define FSUB_ABSNEG   0x448u
+#define FSUB_SQRT     0x44Eu
+#define FSUB_ADD      0x460u
+#define FSUB_SUB      0x462u
+#define FSUB_MUL      0x464u
+#define FSUB_MAX      0x468u
+#define FSUB_MIN      0x46Au
+#define FSUB_DIV      0x46Eu
+#define FSUB_CVT_TOI  0x440u
+#define FSUB_CVT_FROMI 0x442u
+#define FSUB_FMA      0x4E0u
+#define FSUB_CMP      0x420u
+#define FSUB_CMOV     0x400u
+
+/* Bit patterns, so the expected values are exact rather than rounded. */
+#define F_1_0    0x3F800000u
+#define F_2_0    0x40000000u
+#define F_3_0    0x40400000u
+#define F_4_0    0x40800000u
+#define F_6_0    0x40C00000u
+#define F_0_5    0x3F000000u
+#define F_M2_0   0xC0000000u
+#define F_QNAN   0x7FC00000u
+#define F_SNAN   0x7F800001u
+
+/*
+ * Load a 32-bit constant into a register, enable the FPU in PSW.CU0, and
+ * leave the program ready for one FP instruction.
+ *
+ * CU0 has to be set explicitly: out of reset it is clear, and every FP
+ * instruction then raises a coprocessor-unusable exception rather than
+ * executing -- which is correct, and would make every test below pass
+ * for the wrong reason if it were not turned on. test_fp_disabled checks
+ * that path on its own.
+ */
+static unsigned fp_prologue(uint16_t *prog, unsigned k)
+{
+    /* PSW.CU0 = 1 << 16 */
+    prog[k++] = MOVI32(20); prog[k++] = LO(G4MH_PSW_CU0); prog[k++] = HI(G4MH_PSW_CU0);
+    prog[k++] = FP0(20, G4MH_SR_PSW); prog[k++] = SUB_LDSR;
+    return k;
+}
+
+static unsigned fp_ldi(uint16_t *prog, unsigned k, unsigned r, uint32_t v)
+{
+    prog[k++] = MOVI32(r); prog[k++] = LO(v); prog[k++] = HI(v);
+    return k;
+}
+
+/* 2.0 + 1.0 = 3.0, and reg3 <- reg2 OP reg1 rather than the other way. */
+static void test_fp_arith(void)
+{
+    uint16_t prog[64];
+    unsigned k = 0;
+
+    k = fp_prologue(prog, k);
+    k = fp_ldi(prog, k, 10, F_1_0);             /* reg1 */
+    k = fp_ldi(prog, k, 11, F_2_0);             /* reg2 */
+
+    prog[k++] = FP0(10, 11); prog[k++] = FP1(12, FSUB_ADD);   /* 2+1 */
+    prog[k++] = FP0(10, 11); prog[k++] = FP1(13, FSUB_SUB);   /* 2-1 */
+    prog[k++] = FP0(10, 11); prog[k++] = FP1(14, FSUB_MUL);   /* 2*1 */
+    prog[k++] = FP0(11, 11); prog[k++] = FP1(15, FSUB_MUL);   /* 2*2 */
+    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, k, 128u, &why, &retired)) { CHECK(false); return; }
+
+    CHECK_EQ(reg(12), F_3_0);
+    /*
+     * Subtract is the one that discriminates operand order: with the
+     * operands the other way round this is -1.0, which is a different
+     * bit pattern and not merely a different sign of zero.
+     */
+    CHECK_EQ(reg(13), F_1_0);
+    CHECK_EQ(reg(14), F_2_0);
+    CHECK_EQ(reg(15), F_4_0);
+}
+
+/* Divide, square root, and the reciprocals that share sub 0x44E. */
+static void test_fp_div_sqrt(void)
+{
+    uint16_t prog[64];
+    unsigned k = 0;
+
+    k = fp_prologue(prog, k);
+    k = fp_ldi(prog, k, 10, F_2_0);
+    k = fp_ldi(prog, k, 11, F_6_0);
+    k = fp_ldi(prog, k, 12, F_4_0);
+
+    prog[k++] = FP0(10, 11); prog[k++] = FP1(13, FSUB_DIV);   /* 6/2   */
+    /*
+     * reg1 is an opcode extension here, not a source: 0 is SQRTF.S,
+     * 1 RECIPF.S, 2 RSQRTF.S. The operand is reg2 in all three.
+     */
+    prog[k++] = FP0(0, 12);  prog[k++] = FP1(14, FSUB_SQRT);  /* sqrt 4 */
+    prog[k++] = FP0(1, 10);  prog[k++] = FP1(15, FSUB_SQRT);  /* 1/2    */
+    prog[k++] = FP0(2, 12);  prog[k++] = FP1(16, FSUB_SQRT);  /* 1/sqrt4*/
+    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, k, 128u, &why, &retired)) { CHECK(false); return; }
+
+    CHECK_EQ(reg(13), F_3_0);
+    CHECK_EQ(reg(14), F_2_0);
+    CHECK_EQ(reg(15), F_0_5);
+    CHECK_EQ(reg(16), F_0_5);
+}
+
+/*
+ * ABSF.S and NEGF.S share sub 0x448 and are told apart by reg1 alone.
+ *
+ * Worth its own test because that is the encoding shape this frontend has
+ * been bitten by repeatedly: a register field carrying an opcode. Decoding
+ * on the sub-opcode alone would make NEGF.S an ABSF.S and lose the sign,
+ * which on a positive input is invisible -- hence the negative one.
+ */
+static void test_fp_abs_neg(void)
+{
+    uint16_t prog[64];
+    unsigned k = 0;
+
+    k = fp_prologue(prog, k);
+    k = fp_ldi(prog, k, 10, F_M2_0);
+
+    prog[k++] = FP0(0, 10); prog[k++] = FP1(11, FSUB_ABSNEG);  /* ABSF  */
+    prog[k++] = FP0(1, 10); prog[k++] = FP1(12, FSUB_ABSNEG);  /* NEGF  */
+    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, k, 128u, &why, &retired)) { CHECK(false); return; }
+
+    CHECK_EQ(reg(11), F_2_0);                   /* |-2.0| = +2.0        */
+    CHECK_EQ(reg(12), F_2_0);                   /* -(-2.0) = +2.0       */
+}
+
+/* MAXF/MINF, on the inputs where "the larger one" is not the answer. */
+static void test_fp_minmax(void)
+{
+    uint16_t prog[64];
+    unsigned k = 0;
+
+    k = fp_prologue(prog, k);
+    k = fp_ldi(prog, k, 10, F_1_0);
+    k = fp_ldi(prog, k, 11, F_QNAN);
+    k = fp_ldi(prog, k, 12, F_M2_0);
+
+    /* A quiet NaN operand gives the *other* operand, not a NaN. */
+    prog[k++] = FP0(10, 11); prog[k++] = FP1(13, FSUB_MAX);
+    prog[k++] = FP0(10, 11); prog[k++] = FP1(14, FSUB_MIN);
+    /* And a plain ordered pair, where sign matters. */
+    prog[k++] = FP0(10, 12); prog[k++] = FP1(15, FSUB_MAX);
+    prog[k++] = FP0(10, 12); prog[k++] = FP1(16, FSUB_MIN);
+    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, k, 128u, &why, &retired)) { CHECK(false); return; }
+
+    CHECK_EQ(reg(13), F_1_0);
+    CHECK_EQ(reg(14), F_1_0);
+    CHECK_EQ(reg(15), F_1_0);
+    CHECK_EQ(reg(16), F_M2_0);
+}
+
+/* Conversions both ways, including the rounding the opcode names. */
+static void test_fp_convert(void)
+{
+    uint16_t prog[64];
+    unsigned k = 0;
+    /* 2.5, which every rounding mode answers differently. */
+    const uint32_t f_2_5 = 0x40200000u;
+
+    k = fp_prologue(prog, k);
+    k = fp_ldi(prog, k, 10, f_2_5);
+    k = fp_ldi(prog, k, 11, 7u);                /* integer 7            */
+
+    /* reg1 selects rounding: 0 round, 1 trunc, 2 ceil, 3 floor. */
+    prog[k++] = FP0(0, 10); prog[k++] = FP1(12, FSUB_CVT_TOI); /* ROUNDF */
+    prog[k++] = FP0(1, 10); prog[k++] = FP1(13, FSUB_CVT_TOI); /* TRNCF  */
+    prog[k++] = FP0(2, 10); prog[k++] = FP1(14, FSUB_CVT_TOI); /* CEILF  */
+    prog[k++] = FP0(3, 10); prog[k++] = FP1(15, FSUB_CVT_TOI); /* FLOORF */
+    prog[k++] = FP0(0, 11); prog[k++] = FP1(16, FSUB_CVT_FROMI);/* WS    */
+    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, k, 128u, &why, &retired)) { CHECK(false); return; }
+
+    /*
+     * 2.5 is the input that separates the four, which is the whole
+     * reason it is the one used: round-to-nearest-even gives 2, not 3.
+     */
+    CHECK_EQ(reg(12), 2u);
+    CHECK_EQ(reg(13), 2u);
+    CHECK_EQ(reg(14), 3u);
+    CHECK_EQ(reg(15), 2u);
+    CHECK_EQ(reg(16), 0x40E00000u);             /* 7.0                  */
+}
+
+/*
+ * CMPF.S writes a CC bit in FPSR, and CMOVF.S reads it back. They are a
+ * pair, so testing them together is what proves the bit number in reg3
+ * is the same one on both sides -- a compare that wrote CC0 and a move
+ * that read CC1 would each look right alone.
+ */
+static void test_fp_compare_and_move(void)
+{
+    uint16_t prog[80];
+    unsigned k = 0;
+
+    k = fp_prologue(prog, k);
+    k = fp_ldi(prog, k, 10, F_1_0);
+    k = fp_ldi(prog, k, 11, F_2_0);
+
+    /*
+     * fcond 4 is OLT, and the relation is `reg2 < reg1` -- the same
+     * operand order as every other FP instruction here. So reg1=r10
+     * (1.0), reg2=r11 (2.0) asks "is 2.0 < 1.0", which is false.
+     */
+    prog[k++] = FP0(10, 11); prog[k++] = FP1(0, FSUB_CMP | (4u << 1));
+    prog[k++] = FP0(10, 11); prog[k++] = FP1(12, FSUB_CMOV | (0u << 1));
+    /* Swap the operands: "is 1.0 < 2.0" is true, into the same CC bit. */
+    prog[k++] = FP0(11, 10); prog[k++] = FP1(0, FSUB_CMP | (4u << 1));
+    prog[k++] = FP0(10, 11); prog[k++] = FP1(13, FSUB_CMOV | (0u << 1));
+    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, k, 128u, &why, &retired)) { CHECK(false); return; }
+
+    /* CMOVF.S: reg3 <- cc ? reg2 : reg1 */
+    CHECK_EQ(reg(12), F_1_0);                   /* cc clear -> reg1     */
+    CHECK_EQ(reg(13), F_2_0);                   /* cc set   -> reg2     */
+}
+
+/*
+ * An FP instruction with PSW.CU0 clear is a coprocessor-unusable
+ * exception, not a reserved instruction and not a silent execution.
+ *
+ * This is the state the core comes out of reset in, so without this test
+ * every other one above could be passing because the prologue happens to
+ * work rather than because the arithmetic does.
+ */
+static void test_fp_disabled(void)
+{
+    /* UCPOP vectors to RBASE + 0x80; a HALT there proves control arrived. */
+    uint16_t prog[0x60];
+    unsigned k = 0;
+
+    memset(prog, 0, sizeof(prog));
+    k = fp_ldi(prog, k, 10, F_1_0);
+    prog[k++] = FP0(10, 10); prog[k++] = FP1(11, FSUB_ADD);
+    prog[0x40] = 0x07E0u; prog[0x41] = SUB_HALT;   /* 0x80 bytes in */
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) { CHECK(false); return; }
+
+    emu_cpu_status_t st;
+    emu_core_status(&g_core, &st);
+
+    CHECK_EQ(why, EMU_RUN_WFI);
+    CHECK(st.traps >= 1u);
+    CHECK_EQ(reg(11), 0u);                      /* destination untouched */
+    /* RBASE + 0x80, plus the 4 bytes of the HALT that stopped us. */
+    CHECK_EQ(st.pc, EMU_GUEST_RAM_BASE + 0x84u);
+}
+
+/*
+ * Double precision is not implemented, and says so.
+ *
+ * The point is that it raises RIE rather than being decoded as some
+ * single-precision neighbour: ADDF.D is sub 0x470 against ADDF.S's
+ * 0x460, one bit apart, and a mask that was one bit too loose would
+ * execute it as a single-precision add on the wrong register pair and
+ * return a plausible number.
+ */
+static void test_fp_double_declined(void)
+{
+    /* RIE vectors to RBASE + 0x60. */
+    uint16_t prog[0x60];
+    unsigned k = 0;
+
+    memset(prog, 0, sizeof(prog));
+    k = fp_prologue(prog, k);
+    k = fp_ldi(prog, k, 10, F_1_0);
+    prog[k++] = FP0(10, 10); prog[k++] = FP1(12, 0x470u);   /* ADDF.D  */
+    prog[0x30] = 0x07E0u; prog[0x31] = SUB_HALT;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) { CHECK(false); return; }
+
+    emu_cpu_status_t st;
+    emu_core_status(&g_core, &st);
+
+    CHECK_EQ(why, EMU_RUN_WFI);
+    CHECK(st.traps >= 1u);
+    CHECK_EQ(reg(12), 0u);                      /* not executed as .S    */
+    CHECK_EQ(st.pc, EMU_GUEST_RAM_BASE + 0x64u);
+}
+
+/*
+ * The fused multiply-add rounds once.
+ *
+ * a*b + c where the product is not representable: 1.0 + 2^-24 squared
+ * has a rounding error that a separate multiply and add would discard
+ * before the add sees it. Checked the same way rv_fpu's FMA is -- the
+ * value differs from the unfused sequence by one ulp, and nothing else
+ * about the instruction distinguishes the two.
+ */
+static void test_fp_fma_rounds_once(void)
+{
+    uint16_t prog[64];
+    unsigned k = 0;
+    /*
+     * The inputs are the whole test.
+     *
+     * (1+u) * (1-u/2) - 1, with u one ulp of 1.0. Rounded once the answer
+     * is 0x337FFFFE; a multiply that rounds and *then* adds gives exactly
+     * **zero**, because the product rounds to 1.0 and the subtraction
+     * cancels. So a two-rounding implementation is not one ulp out here,
+     * it loses the result entirely -- which is what makes this a test
+     * rather than a restatement.
+     *
+     * The first version of this test used (1+u)^2 - 1 and asserted a
+     * value that was simply wrong. Worse, the two implementations agree
+     * on that input: it would have passed against an unfused multiply-add
+     * and proved nothing. Found by computing both forms for a few hundred
+     * operand pairs and keeping one where they differ.
+     */
+    const uint32_t f_a = 0x3F800001u;           /* 1 + u                */
+    const uint32_t f_b = 0x3F7FFFFFu;           /* 1 - u/2              */
+    const uint32_t f_c = 0xBF800000u;           /* -1.0                 */
+
+    k = fp_prologue(prog, k);
+    k = fp_ldi(prog, k, 10, f_a);
+    k = fp_ldi(prog, k, 11, f_b);
+    k = fp_ldi(prog, k, 12, f_c);               /* the accumulator      */
+
+    /* FMAF.S: reg3 <- reg3 + reg2*reg1, so reg3 is read as well. */
+    prog[k++] = FP0(10, 11); prog[k++] = FP1(12, FSUB_FMA);
+    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, k, 128u, &why, &retired)) { CHECK(false); return; }
+
+    CHECK_EQ(reg(12), 0x337FFFFEu);
+    CHECK(reg(12) != 0u);                       /* the unfused answer   */
+}
+
+#endif /* G4MH_EXT_FPU */
+
+/* ------------------------------------------------------------------ */
 
 void test_g4mh(void)
 {
@@ -1721,6 +2112,17 @@ void test_g4mh(void)
     test_contract();
     test_mc_caxi();
     test_mc_reservation_succeeds();
+#if G4MH_EXT_FPU
+    test_fp_arith();
+    test_fp_div_sqrt();
+    test_fp_abs_neg();
+    test_fp_minmax();
+    test_fp_convert();
+    test_fp_compare_and_move();
+    test_fp_disabled();
+    test_fp_double_declined();
+    test_fp_fma_rounds_once();
+#endif
 #if G4MH_PE_COUNT > 1
     test_mc_dispatch();
     test_mc_quantum_invariance();
