@@ -820,6 +820,89 @@ static void diff_one(uint32_t seed_r1, uint32_t seed_r2)
     CHECK_EQ(memcmp(&a, &b, sizeof(a)), 0);
 }
 
+/*
+ * Every flag at once, on an operation that sets more than one of them.
+ *
+ * test_lower_flags above expects S, V and C to be *clear* and so cannot
+ * see a flag word that comes out empty. It passed for the whole life of a
+ * bug that made the x86-64 emitter produce exactly that: it emitted one
+ * `setcc` per guest flag and folded each into an accumulator with `shl`
+ * and `or`, both of which write ZF, SF, CF and OF -- so only the first
+ * flag in the loop saw the operation's real flags and the rest read the
+ * previous `or`'s.
+ *
+ * 0 - 8 is the discriminating input: Z clear, S *set*, V clear, C *set*.
+ * Under the bug S and C came out clear, which made a G4MH `blt` fall
+ * through and a `for (i = 0; i < 8; i++)` loop run zero times.
+ *
+ * Checked through lower_and_run rather than by inspecting the emitted
+ * bytes, because what is being asserted is agreement with the IR
+ * interpreter, which computes the same four flags from the same operands.
+ */
+static void test_lower_flags_all_four(void)
+{
+    emu_ir_reset(&g_b);
+
+    const uint16_t a = emu_ir_get(&g_b, 1u);
+    const uint16_t b = emu_ir_get(&g_b, 2u);
+
+    (void)emu_ir_emit(&g_b, EMU_IR_SETF, EMU_IR_FS_SUB, a, b, 0u,
+                      EMU_IR_F_ALL);
+    emu_ir_put(&g_b, 3u, emu_ir_alu(&g_b, EMU_IR_SUB, a, b));
+
+    fake_cpu_t cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[1] = 0u;
+    cpu.r[2] = 8u;
+    cpu.flags = 0x80000000u;            /* must survive the update */
+
+    if (!lower_and_run(&cpu)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(cpu.r[3], (uint32_t)-8);
+    CHECK((cpu.flags & FAKE_F_Z) == 0u);        /* 0 - 8 != 0        */
+    CHECK((cpu.flags & FAKE_F_S) != 0u);        /* the result is < 0 */
+    CHECK((cpu.flags & FAKE_F_V) == 0u);        /* no signed overflow*/
+    CHECK((cpu.flags & FAKE_F_C) != 0u);        /* borrow            */
+    CHECK_EQ(cpu.flags & 0x80000000u, 0x80000000u);
+}
+
+/*
+ * The sign flag is the sign of the *result*, not "signed less than".
+ *
+ * They differ exactly when the subtraction overflows, which is why this
+ * needs its own case: 0x80000000 - 1 is a positive result (0x7FFFFFFF)
+ * with V set, so S must be *clear* while `setl` -- SF != OF -- would say
+ * set. The IR interpreter computes `d & 0x80000000` and is the reference.
+ */
+static void test_lower_flags_sign_not_less_than(void)
+{
+    emu_ir_reset(&g_b);
+
+    const uint16_t a = emu_ir_get(&g_b, 1u);
+    const uint16_t b = emu_ir_get(&g_b, 2u);
+
+    (void)emu_ir_emit(&g_b, EMU_IR_SETF, EMU_IR_FS_SUB, a, b, 0u,
+                      EMU_IR_F_ALL);
+    emu_ir_put(&g_b, 3u, emu_ir_alu(&g_b, EMU_IR_SUB, a, b));
+
+    fake_cpu_t cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[1] = 0x80000000u;
+    cpu.r[2] = 1u;
+
+    if (!lower_and_run(&cpu)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(cpu.r[3], 0x7FFFFFFFu);
+    CHECK((cpu.flags & FAKE_F_S) == 0u);        /* result is positive */
+    CHECK((cpu.flags & FAKE_F_V) != 0u);        /* and it overflowed  */
+}
+
 static void test_interp_matches_jit(void)
 {
     static const uint32_t k_seeds[][2] = {
@@ -1377,6 +1460,8 @@ void test_ir(void)
     test_lower_bit_ops();
     test_lower_bit_counts();
     test_lower_flags();
+    test_lower_flags_all_four();
+    test_lower_flags_sign_not_less_than();
     test_interp_matches_jit();
     test_encode_rex();
     test_lower_fp();

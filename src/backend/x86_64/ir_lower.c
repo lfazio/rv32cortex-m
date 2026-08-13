@@ -352,11 +352,44 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
      * privilege state in the same register, and clobbering those would
      * be a control-flow bug rather than a wrong arithmetic result.
      */
-    static const uint8_t k_cc[4] = {
-        X86_CC_E,    /* Z */
-        X86_CC_L,    /* S: sign, taken as "less than zero"  */
-        0u,          /* V: overflow, handled below          */
-        X86_CC_B     /* C: carry/borrow                     */
+    /*
+     * Capture the x86 flags *once*, before anything else runs.
+     *
+     * This used to emit one `setcc` per guest flag, folding each into an
+     * accumulator with `shl` and `or` -- and both of those write ZF, SF,
+     * CF and OF. So only the first flag in the loop ever saw the
+     * operation's real flags; every later one read the previous `or`'s.
+     * A G4MH `cmp 8, r2` with r2 == 0 came out with S and CY clear, which
+     * made `blt` fall through and a `for (i = 0; i < 8; i++)` loop
+     * execute zero times. The old comment claimed the opposite -- that
+     * the sequence "still sees the x86 flags the operation above left" --
+     * which is exactly the kind of claim to distrust when the code below
+     * it is a loop.
+     *
+     * `seto` first because it does not disturb the flags `lahf` then
+     * reads. Afterwards eax holds OF in bit 0 and SF/ZF/CF in AH, so
+     * every guest flag is a shift and a mask away and nothing downstream
+     * needs the real flags again.
+     */
+    emu_jit_emit8(0x0F);                        /* seto %al             */
+    emu_jit_emit8(0x90);
+    emu_jit_emit8(0xC0);
+    emu_jit_emit8(0x9F);                        /* lahf                 */
+    x86_mov_rr(T1, T0);                         /* keep the snapshot    */
+
+    /*
+     * Where each guest flag sits in the snapshot. AH lands in bits 15:8,
+     * so ZF (AH bit 6) is bit 14 and SF (AH bit 7) is bit 15.
+     *
+     * S is the sign of the *result*, which is SF -- not `setl`, which is
+     * SF != OF and so disagrees on exactly the overflowing cases. The IR
+     * interpreter computes `d & 0x80000000`, and it is the reference.
+     */
+    static const uint8_t k_src_bit[4] = {
+        14u,    /* Z <- ZF */
+        15u,    /* S <- SF */
+        0u,     /* V <- OF, from the seto above */
+        8u      /* C <- CF */
     };
 
     uint32_t clear = 0u;
@@ -366,29 +399,27 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         }
     }
 
-    /*
-     * edx accumulates the new flag bits. Built before the flag word is
-     * touched so that the setcc sequence still sees the x86 flags the
-     * operation above left.
-     */
-    x86_mov_imm32(T2, 0u);
+    x86_mov_imm32(T2, 0u);                      /* the accumulator      */
     for (unsigned f = 0; f < 4u; f++) {
         if ((live & (1u << f)) == 0u || t->flag_bit[f] == 0u) {
             continue;
         }
-        /*
-         * setcc into al, then fold. Overflow has no jcc alias in the
-         * table above because its condition code is 0x80, which is not
-         * one of the named ones.
-         */
-        emu_jit_emit8(0x0F);
-        emu_jit_emit8((f == 2u) ? 0x90u : X86_SET(k_cc[f]));  /* seto/setcc al */
-        emu_jit_emit8(0xC0);
-        x86_movzx8(T0, T0);
-        x86_shift_imm(T0, X86_SHL, (uint32_t)__builtin_ctz(t->flag_bit[f]));
+        x86_mov_rr(T0, T1);
+        if (k_src_bit[f] != 0u) {
+            x86_shift_imm(T0, X86_SHR, k_src_bit[f]);
+        }
+        x86_and_imm8(T0, 1);
+        x86_shift_imm(T0, X86_SHL,
+                      (uint32_t)__builtin_ctz(t->flag_bit[f]));
         x86_alu_rr(X86_OR, T2, T0);
     }
 
+    /*
+     * Read-modify-write, because a guest's flag word holds more than
+     * these four bits -- G4MH's PSW carries the interrupt-disable and
+     * privilege state in the same register, and clobbering those would be
+     * a control-flow bug rather than a wrong arithmetic result.
+     */
     x86_ld_cpu(T1, t->flags_offset);
     x86_mov_imm32(T0, ~clear);
     x86_alu_rr(X86_AND, T1, T0);
