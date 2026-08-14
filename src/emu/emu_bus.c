@@ -155,6 +155,32 @@ bool emu_bus_add_passthru(emu_bus_t *bus, const char *name,
 /* Data access                                                         */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Declare the guest big-endian.
+ *
+ * Set once, by the frontend, before anything runs. It is a property of
+ * the guest architecture, not of a region or a platform.
+ */
+void emu_bus_set_big_endian(emu_bus_t *bus, bool on)
+{
+#if EMU_BUS_ANY_BE
+    bus->big_endian = on;
+#else
+    /*
+     * No big-endian frontend in this build, so there is no flag and
+     * nothing to do. This is not a silent failure waiting to happen:
+     * EMU_BUS_ANY_BE is derived from the same EMU_FRONTEND_PPC that
+     * compiles the only caller that would pass true, so `on` is
+     * structurally false here. If a second big-endian frontend is ever
+     * added, it goes in that derivation too -- and forgetting would show
+     * up immediately as a guest whose every word is byte-reversed.
+     */
+    (void)bus;
+    (void)on;
+#endif
+    emu_bus_flush(bus);
+}
+
 void emu_bus_flush(emu_bus_t *bus)
 {
     bus->fetch_span = 0u;
@@ -200,6 +226,12 @@ emu_fault_t emu_bus_read_slow(emu_bus_t *bus, uint32_t addr, uint32_t size,
         case 2:  *out = *(const uint16_t *)(const void *)p; break;
         default: *out = *(const uint32_t *)(const void *)p; break;
         }
+        /*
+         * RAM and ROM compose bytes, so they are the byte-order case. The
+         * PASSTHRU and MMIO arms below deliberately do not: see the note
+         * by EMU_BUS_ORDER in emu_bus.h.
+         */
+        *out = EMU_BUS_ORDER(bus, *out, size);
         /* Only RAM is safe to cache: see arm_data_cache. */
         if (r->kind == EMU_MEM_RAM && r->perm == EMU_PERM_RWX) {
             arm_data_cache(bus, r);
@@ -238,6 +270,8 @@ emu_fault_t emu_bus_write_slow(emu_bus_t *bus, uint32_t addr, uint32_t size,
     switch (r->kind) {
     case EMU_MEM_RAM: {
         uint8_t *p = (uint8_t *)r->host + off;
+        /* RAM composes bytes; PASSTHRU and MMIO below take a value. */
+        val = EMU_BUS_ORDER(bus, val, size);
         switch (size) {
         case 1:  *p = (uint8_t)val; break;
         case 2:  *(uint16_t *)(void *)p = (uint16_t)val; break;
@@ -282,6 +316,7 @@ emu_fault_t emu_bus_fetch16_slow(emu_bus_t *bus, uint32_t addr, uint16_t *out)
     case EMU_MEM_RAM:
     case EMU_MEM_ROM:
         *out = *(const uint16_t *)(const void *)((const uint8_t *)r->host + off);
+        *out = (uint16_t)EMU_BUS_ORDER(bus, *out, 2u);
         /*
          * span is size-1, not size: a 16-bit fetch at the final byte of the
          * region would read one byte past its end.

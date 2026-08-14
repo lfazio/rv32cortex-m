@@ -112,3 +112,37 @@ writing the sizes down. A frontend that allocates its own memory map
 works on a host and cannot be ported, and nothing will tell you until
 someone tries the firmware build — which is why
 `-DEMU_FRONTEND_RV32=OFF -DEMU_FRONTEND_G4MH=ON` is the contract check.
+
+---
+
+## Byte order
+
+Both existing frontends are little-endian and every host is
+little-endian, so the bus composed bytes in host order and was never
+wrong. A big-endian guest (PowerPC e200z7, task #36) makes that a real
+question, and the answer is a split rather than a switch:
+
+| region kind | swapped? | why |
+|---|---|---|
+| RAM, ROM | **yes** | the guest's image is in the guest's byte order, and these compose bytes into a value |
+| MMIO | no | a device callback hands back a *value*; no bytes were composed |
+| PASSTHRU | no | a real peripheral register holds a value, read natively |
+| instruction fetch | **yes** | instructions are in the image like anything else |
+
+Getting the split wrong is silent either way. Swap the whole bus and
+every timer and UART register reads byte-reversed; swap nothing and a
+big-endian guest's own data is garbage. `test_bus_big_endian` checks both
+directions, and both were confirmed by breaking them — 6 failures for no
+swap, 1 for swapping MMIO too.
+
+`emu_bus_set_big_endian()` is how a frontend declares it, once, at init.
+It is a property of the guest architecture, not of a region or a
+platform.
+
+**It costs a little-endian build nothing**, which matters because
+CLAUDE.md's standing rule is that anything on the access path is paid by
+every guest whether it uses the feature or not. `EMU_BUS_ANY_BE` is
+derived from the frontends selected, so the test compiles away entirely.
+Verified by inspection rather than asserted: `emu_bus.c` compiled with
+`-DEMU_FRONTEND_PPC=0` contains **zero** byte-swap instructions, and two
+with it set.

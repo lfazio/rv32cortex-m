@@ -50,9 +50,23 @@ set_property(CACHE EMU_PLATFORM PROPERTY STRINGS host stm32f446 stm32f746)
 
 option(EMU_FRONTEND_RV32 "RISC-V RV32 frontend" ON)
 option(EMU_FRONTEND_G4MH "Renesas RH850 G4MH frontend" OFF)
+# NXP PowerPC e200z7 (Power ISA 2.06 embedded, VLE). **Big-endian**, the
+# first of those in this tree: see the note by EMU_BUS_ORDER in emu_bus.h
+# for what that costs and, more importantly, for which region kinds it
+# does *not* apply to.
+#
+# NOT YET A FRONTEND. Turning this on today enables the runtime's
+# byte-order support and nothing else -- there is no ppc decoder or
+# interpreter to select, and the registry lists none. It exists now
+# because the byte-order work is shared-runtime work that had to land
+# first and be testable on its own. See task #36 for the sequence.
+option(EMU_FRONTEND_PPC "PowerPC e200z7: byte-order support only so far" OFF)
 
 if(NOT EMU_FRONTEND_RV32 AND NOT EMU_FRONTEND_G4MH)
-    message(FATAL_ERROR "at least one EMU_FRONTEND_* must be enabled")
+    # EMU_FRONTEND_PPC deliberately does not count yet: it enables the
+    # runtime's byte-order support and supplies no emu_cpu_ops_t, so a
+    # build with only it selected would link a runner with nothing to run.
+    message(FATAL_ERROR "at least one of EMU_FRONTEND_RV32/EMU_FRONTEND_G4MH must be enabled")
 endif()
 
 # ---------------------------------------------------------------------
@@ -255,6 +269,7 @@ target_include_directories(emucore PUBLIC
 target_compile_definitions(emucore PUBLIC
     EMU_FRONTEND_RV32=$<BOOL:${EMU_FRONTEND_RV32}>
     EMU_FRONTEND_G4MH=$<BOOL:${EMU_FRONTEND_G4MH}>
+    EMU_FRONTEND_PPC=$<BOOL:${EMU_FRONTEND_PPC}>
     EMU_MAX_REGIONS=${EMU_MAX_REGIONS}
     EMU_ENABLE_TRACE=$<BOOL:${EMU_ENABLE_TRACE}>
     EMU_ENABLE_STATS=$<BOOL:${EMU_ENABLE_STATS}>

@@ -51,6 +51,57 @@ typedef enum {
     EMU_MEM_PASSTHRU,
 } emu_region_kind_t;
 
+/* ------------------------------------------------------------------ */
+/* Guest byte order                                                    */
+/* ------------------------------------------------------------------ */
+/*
+ * Byte order is a property of how bytes *in memory* compose into a
+ * value, and that is the whole of what it changes here:
+ *
+ *   RAM, ROM        the guest's image is in the guest's byte order, so a
+ *                   big-endian guest on a little-endian host needs the
+ *                   bytes reversed. This is the only case.
+ *   MMIO            a device callback hands back a *value*. No bytes are
+ *                   composed, so there is nothing to reverse -- swapping
+ *                   here would corrupt every register access.
+ *   PASSTHRU        a real peripheral register holds a value and the
+ *                   emulator reads it natively. Same argument.
+ *
+ * Getting that split wrong is not a subtle wrong answer: swap the whole
+ * bus and every timer and UART register reads byte-reversed, while
+ * swapping nothing makes a big-endian guest's own data garbage.
+ *
+ * The host is assumed little-endian, which every host this runs on is --
+ * x86-64, and Cortex-M in its normal LE configuration.
+ *
+ * Cost: none unless a big-endian frontend is compiled in. CLAUDE.md is
+ * emphatic that anything on the access path is paid by every guest
+ * whether it uses the feature or not, so the test compiles away entirely
+ * for a build with no big-endian frontend, and is one predictable branch
+ * on a flag otherwise.
+ */
+#if EMU_FRONTEND_PPC
+#  define EMU_BUS_ANY_BE 1
+#else
+#  define EMU_BUS_ANY_BE 0
+#endif
+
+static EMU_ALWAYS_INLINE uint32_t emu_bswap(uint32_t v, uint32_t size)
+{
+    switch (size) {
+    case 1:  return v;
+    case 2:  return (uint32_t)(uint16_t)(((v & 0xFFu) << 8) | ((v >> 8) & 0xFFu));
+    default: return __builtin_bswap32(v);
+    }
+}
+
+#if EMU_BUS_ANY_BE
+#  define EMU_BUS_ORDER(bus, v, size) \
+      (((bus)->big_endian) ? emu_bswap((v), (size)) : (v))
+#else
+#  define EMU_BUS_ORDER(bus, v, size) (v)
+#endif
+
 /* Access permissions. */
 #define EMU_PERM_R   0x1u
 #define EMU_PERM_W   0x2u
@@ -134,7 +185,27 @@ typedef struct emu_bus {
 #if EMU_ENABLE_STATS
     uint32_t    fault_count;
 #endif
+
+#if EMU_BUS_ANY_BE
+    /*
+     * Guest byte order, set once by the frontend at init. Not per region:
+     * it describes the *guest*, and a guest does not change its mind. The
+     * region kind is what decides whether it applies -- see the note by
+     * EMU_BUS_ORDER above.
+     */
+    bool        big_endian;
+#endif
 } emu_bus_t;
+
+/*
+ * Declare the guest big-endian. Called by a frontend's init, before any
+ * access; emu_bus_init() leaves it little-endian.
+ *
+ * A function rather than a field write so that a little-endian-only build
+ * -- where the field does not exist -- still compiles anything that calls
+ * it, which is what keeps the frontends symmetric.
+ */
+void emu_bus_set_big_endian(emu_bus_t *bus, bool on);
 
 /* Drop the fast-path caches. Cheap; call whenever the map may have moved. */
 void emu_bus_flush(emu_bus_t *bus);
@@ -205,6 +276,9 @@ static EMU_ALWAYS_INLINE emu_fault_t emu_bus_read(emu_bus_t *bus, uint32_t addr,
         case 2:  *out = *(const uint16_t *)(const void *)p; break;
         default: *out = *(const uint32_t *)(const void *)p; break;
         }
+        /* The fast-path cache is only ever filled from RAM, so this is
+         * unconditionally the byte-composing case. */
+        *out = EMU_BUS_ORDER(bus, *out, size);
         return EMU_FAULT_NONE;
     }
     return emu_bus_read_slow(bus, addr, size, out);
@@ -223,6 +297,8 @@ static EMU_ALWAYS_INLINE emu_fault_t emu_bus_write(emu_bus_t *bus, uint32_t addr
     const uint32_t off = addr - bus->data_base;
     if (EMU_LIKELY(off < bus->data_span && (bus->data_span - off) >= size)) {
         uint8_t *p = bus->data_host + off;
+        /* Same argument as the load: this cache only ever holds RAM. */
+        val = EMU_BUS_ORDER(bus, val, size);
         switch (size) {
         case 1:  *p = (uint8_t)val; break;
         case 2:  *(uint16_t *)(void *)p = (uint16_t)val; break;
@@ -240,6 +316,10 @@ static EMU_ALWAYS_INLINE emu_fault_t emu_bus_fetch16(emu_bus_t *bus, uint32_t ad
     const uint32_t off = addr - bus->fetch_base;
     if (EMU_LIKELY(off < bus->fetch_span)) {
         *out = *(const uint16_t *)(const void *)(bus->fetch_host + off);
+        /* Instructions are in the guest's byte order like anything else
+         * in its image. A VLE parcel read little-endian on a big-endian
+         * guest decodes as a different instruction, not as an error. */
+        *out = (uint16_t)EMU_BUS_ORDER(bus, *out, 2u);
         return EMU_FAULT_NONE;
     }
     return emu_bus_fetch16_slow(bus, addr, out);
