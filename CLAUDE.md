@@ -46,116 +46,70 @@ The two frontends are symmetric. `rv32_frontend.c` and `g4mh_frontend.c` are
 the same file with different contents, which is the intended shape: if a third
 one needs something neither has, it probably belongs in `emu_cpu_ops_t` rather
 than in a platform `#ifdef`.
+## Build, run, validate
 
-## Build and test
+All of it -- every configuration, every option, the console settings, the
+network build -- is in [README.md](README.md) and under
+[docs/](docs/Architecture.md). Do not duplicate it here; a recipe in two
+places is a recipe that disagrees with itself, which is how this file
+came to document an `RV32_PLATFORM` option that has never existed.
 
-```sh
-# host: development and both test suites
-cmake -B build/host -DEMU_PLATFORM=host -DCMAKE_BUILD_TYPE=Release
-cmake --build build/host && ctest --test-dir build/host -L fast
-
-# both frontends, so the host runner can pick with --frontend
-cmake -B build/both -DEMU_PLATFORM=host -DEMU_FRONTEND_G4MH=ON
-
-# firmware
-cmake -B build/f746 -DEMU_PLATFORM=stm32f746 \
-      -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
-      -DCMAKE_BUILD_TYPE=Release -DRV32_GUEST=isatest
-cmake --build build/f746 --target flash
-
-# the older board; EMU_PLATFORM picks the CPU, FPU and vendor pack
-cmake -B build/stm32f446 -DEMU_PLATFORM=stm32f446 \
-      -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
-      -DCMAKE_BUILD_TYPE=Release -DRV32_GUEST=isatest
-cmake --build build/stm32f446 --target flash
-```
-
-`rv32-host` picks a frontend from `--frontend`, else from the image's ELF
-`e_machine`, else the first compiled in. A flat binary says nothing about its
-architecture, so it gets the default.
-
-Useful options: `-DEMU_JIT=OFF` (interpreter, for isolating JIT bugs),
-`-DEMU_JIT_CODE_BYTES=2048` (forces compaction — a good stress test),
-`-DRV32_NATIVE_COREMARK=ON` (native ARM baseline instead of the emulator),
-`-DRV_GUEST_MARCH=...` (guest ISA; a **cache variable**, so pass it explicitly
-when changing it), `-DRV32_GUEST=isatest|hello|bench|stm32drv|coremark`.
-
-## Validation — run before claiming anything works
+What belongs here is only what the recipes do not say:
 
 ```sh
-./scripts/run-arch-test.sh      # official riscv-arch-test, interpreter and --jit alike
+./scripts/run-arch-test.sh      # 274/274, interpreter and --jit alike
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77 both ways
+./scripts/report-figures.sh     # figures, with the cache vars that set them
+./scripts/check-doc-flags.sh    # every -D flag in the docs exists
 ```
 
-Keep the suites' `-march` in step with what `misa` advertises: `rv32mi/csr`
-deliberately fails when built without F and run on a core reporting F, and that
-failure looks like an emulator bug until you disassemble the test.
+**Run both suites.** They cover different things, and a regression that
+only the Berkeley suite catches will sit unnoticed if only arch-test is
+run -- which is exactly what happened to `rv32mi/csr` when F was added.
+Keep their `-march` in step with what `misa` advertises: `rv32mi/csr`
+deliberately fails when built without F and run on a core reporting F,
+and that failure looks like an emulator bug until you disassemble the
+test.
 
-**Run both.** They cover different things, and a regression that only the
-Berkeley suite catches will sit unnoticed if only arch-test is run -- which is
-exactly what happened to `rv32mi/csr` when F was added.
+**The Thumb-2 backend cannot be exercised by any host suite.** Validate
+it by flashing `isatest` and reading the UART. This has caught real JIT
+bugs that both x86 suites passed. Hardware is a Nucleo-F746ZG on
+`/dev/ttyACM1` at 921600; `--connect-under-reset` is the default in both
+`flash` targets because this firmware never idles and a plain attach
+races it.
 
-
-There are two JIT backends, selected by host architecture in `rv_config.h`:
-Thumb-2 for ARMv7E-M and **x86-64 for the host**. The x86-64 one exists for
-coverage, not speed — with `--jit` the architecture suite and riscv-tests
-run against *translated* code, and `ctest -L fast` includes
-`guest-isatest-jit`:
-
-```sh
-./build/host/rv32-host --jit --quiet --load 0x80000000 build/host/guest/isatest.bin
-RV32_HOST=<wrapper adding --jit> ./scripts/run-riscv-tests.sh
-```
-
-The **Thumb-2** backend still cannot be exercised by any host suite.
-Validate it by flashing `isatest` and reading the UART — **this has caught
-real JIT bugs**, including an inlined store that skipped the LR/SC
-reservation break.
-
-Hardware: Nucleo-**F746ZG** (Cortex-M7, 216 MHz) on ST-LINK, console
-`/dev/ttyACM1` at **921600** 8N1 -- a Nucleo-144 puts the VCP on USART3
-(PD8/PD9), not USART2. The `flash` targets pass `--connect-under-reset`
-always, because this firmware never idles and a plain attach races it --
-see the entry below on what a *failed* flash costs. The
-Nucleo-F446RE is still supported and is
-`--chip STM32F446RETx` on `/dev/ttyACM0`. With both boards plugged in
-`probe-rs` needs `--probe <serial>` to pick one.
-
-Board bring-up -- clock tree, console instance and pins, cycle counter,
-caches -- lives in each platform's `board.c` behind `board.h`, not in
-`main.c`. Diffing the two `board.c` files is the shortest statement of
-what changes between the parts.
-
-### Network transport (`-DEMU_NET=ON`, F746 only so far)
-
-lwIP over **SLIP on the console UART**, so the board takes a guest image
-and reports results without reflashing -- which is what makes running
-274 architecture tests on hardware practical. There is no second wire:
-SLIP reuses the ST-LINK's virtual COM port rather than bringing up the
-on-board LAN8742A, which would mean an ETH driver, DMA descriptors
-maintained by hand on a part with caches, and PHY bring-up.
-
-```sh
-cmake -B build/f746net -DEMU_PLATFORM=stm32f746 \
-      -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
-      -DCMAKE_BUILD_TYPE=Release -DEMU_NET=ON
-cmake --build build/f746net --target flash
-sudo ./scripts/slip-up.sh          # *after* the board prints "net SLIP on this port"
-ping 192.168.7.2 && telnet 192.168.7.2
-```
-
-**The UART stops being a console.** `emu_net_init()` is a one-way
-handover; after it the serial line carries nothing but IP and the
-console is telnet. Everything printed before a client connects is held
-in a 4 KiB ring and delivered on connect, which is why the banner
-survives. Build with `EMU_NET=OFF` to get the serial console back.
-
-Costs, measured on hardware: guest RAM **294 KiB to 276**, against the
-worst architecture test's 222. `rx drops 0` across a full `isatest` run.
-
-Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
+**`isatest` cannot measure JIT coverage** -- it arms PMP early, so
+everything downstream interprets. Use `bench` or `coremark` for that, and
+read `isatest` only as a correctness check.
 
 ## Things that have bitten, and will again
+
+One entry per defect, in the order they were found. Reference material --
+what is implemented, what the figures are, how a block is specialised --
+lives in [docs/](docs/Architecture.md); what is here is only what was
+*learned the hard way*, with the number or symbol that proves it.
+
+If you read nothing else, read these six. Each has cost more than one
+session, and every one of them recurred:
+
+1. **A trap only reports if something catches it.** Unimplemented
+   encodings raise an exception, which in a flat guest with no vector
+   table lands on ordinary code twenty bytes further on and carries on
+   silently. "Raises an exception rather than a silent wrong answer" is a
+   claim about the *guest*, not the emulator.
+2. **One weak test is worse than none.** Five of them, listed below,
+   passed against the bug they covered.
+3. **Identical counters mean the code never ran**, not that nothing
+   regressed. A perfect null result is the loudest signal here.
+4. **Every translate-time read of mutable hart state is a staleness bug
+   until proven otherwise** -- and too coarse a flush is as wrong as too
+   narrow, and quieter.
+5. **Measure; do not reason.** Interpreter-in-SRAM, the register cache
+   and the shifted-operand fusion were all built on sound arguments and
+   all measured worse.
+6. **A flag or invariant quoted in prose is not a tested thing.** Two
+   documented build options named variables that did not exist;
+   `scripts/check-doc-flags.sh` exists because of it.
 
 - **Extensions sharing an opcode slot must be decoded in one place.** Zbb's
   `min`/`max` and Zbc's `clmul` share funct7 0x05; a separate `else if` later in
@@ -225,51 +179,58 @@ Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
   running below M: privilege only *drops* through `MRET`, a SYSTEM
   instruction the translator declines, so it lands on the interpreter
   fallback where the snapshot is checked.
-- **Every translate-time read of mutable hart state is a staleness bug until
-  proven otherwise.** The full list, swept:
+- **Every translate-time read of mutable hart state is a staleness bug
+  until proven otherwise.** One rule, five separate defects, and the
+  reference sweep now lives in
+  [`docs/jit/staleness.md`](docs/jit/staleness.md). What to carry in your
+  head:
 
   | read at translation | outcome |
   |---|---|
-  | `fcsr` frm, for `rm=dyn` | was wrong for RMM -- fixed |
-  | `mstatus.FS` (`h_fs_off`) | unchecked for OP-FP, and stale for loads/stores -- fixed |
+  | `fcsr` frm, for `rm=dyn` | wrong for RMM -- fixed |
+  | `mstatus.FS` (`h_fs_off`) | unchecked for OP-FP, stale for loads/stores -- fixed |
   | `pmp_active` + `rv_pmp_simple` bounds | **permission bypass** -- fixed |
-  | bus regions (RAM and passthrough windows) | safe: written only at init |
-  | `g_pt_armed` | safe: flushes on change |
-  | guest instruction bytes | safe: `FENCE.I` calls `rv_invalidate` |
+  | `satp` / page mappings | needs `vm_gen`; satp alone would miss an edited PTE |
+  | bus regions, `g_pt_armed`, guest bytes | safe: fixed at init, or they flush |
 
-  All three defects were invisible to both host suites, because neither runs
-  the JIT. All three needed a hardware test with the fix reverted to prove.
-- **Watching a flag is not watching the configuration.** The PMP flush
-  compared `pmp_active`, but what a block bakes in is the *bounds*
-  `rv_pmp_simple` reported. Locking a second entry leaves the flag true while
-  the one-entry assumption it encodes stops holding, so a store to the new
-  region took the inlined path and wrote memory PMP had been told to deny.
-  Snapshot what was baked, not what enabled it.
-- **frm, `mstatus.FS` and PMP all change only through a CSR write**, and the
-  translator declines `SYSTEM`, so `jit_note_csr` on the interpreter fallback
-  is the single place any of them can move. Do not put these in the dispatch
-  loop: CoreMark enters blocks 2.9M times a run. Moving the PMP check off the
-  dispatch path measured neutral, so the branch was predicting well -- the
-  reason to do it is that the fallback is where the check is *correct*.
-- **A translate-time legality check is only half a guard; the block outlives
-  it.** `mstatus.FS` was consulted when translating FP loads and stores (and
-  not at all for OP-FP or the FMAs), on the reasoning that refusing to
-  translate while FS is Off was enough. It is not: a block built while FS was
-  on stays cached and keeps executing after the guest turns the FPU off, so
-  three instructions that must raise illegal-instruction ran silently. Fixed
-  the same way as `frm` -- specialise, and flush on the interpreter fallback
-  where FS can change. Track FS *off-ness*, not the two-bit field, or
-  `emit_fp_dirty` moving Initial/Clean to Dirty flushes the cache on every FP
-  operation. The same question applies to anything else decided at
-  translation from mutable hart state.
-- **JIT blocks are specialised on `frm`; changing it flushes.** `dyn` is
-  resolved at translation, not at run time, which is what lets `RMM` be
-  declined to the helper -- ARM has no ties-away mode, and the old run-time
-  table silently mapped it to `RN`. The flush is safe to hang off the
-  interpreter fallback alone: `frm` moves only on a CSR write, and the
-  translator declines `SYSTEM`, so every write lands there. Do not move that
-  check into the dispatch loop; CoreMark enters blocks 2.9M times a run.
-  `g_frm_specialised` skips the flush entirely for guests with no `dyn` FP.
+  Four things generalise from the five:
+
+  - **A translate-time legality check is only half a guard; the block
+    outlives it.** `mstatus.FS` was consulted when translating FP loads
+    and stores on the reasoning that refusing to translate while FS is
+    Off was enough. It is not: a block built while FS was on keeps
+    executing after the guest turns the FPU off, so three instructions
+    that must raise illegal-instruction ran silently.
+  - **Watching a flag is not watching the configuration.** The PMP flush
+    compared `pmp_active`, but what a block bakes in is the *bounds*
+    `rv_pmp_simple` reported. Locking a second entry leaves the flag true
+    while the one-entry assumption it encodes stops holding. Snapshot
+    what was baked, not what enabled it. Same shape as watching `satp`
+    instead of the mappings.
+  - **Too coarse is as wrong as too narrow, and quieter.** Keeping the
+    whole two-bit FS field rather than its off-ness means every FP
+    operation -- which moves FS Clean to Dirty as a side effect --
+    flushes the code cache. That is a correctness-preserving way to have
+    no JIT, and no test of correctness would notice. `test_jit_generation_key`
+    checks both directions; both were confirmed by breaking them (10
+    failures narrow, 2 coarse).
+  - **Re-derive on the interpreter fallback, never per dispatch.** frm,
+    `mstatus.FS` and PMP all move only through a CSR write, and the
+    translator declines `SYSTEM`, so the fallback is the single place any
+    of them can change -- and it is where the check is *correct*.
+    CoreMark enters blocks 2.9M times a run. Moving the PMP check off the
+    dispatch path measured neutral, so the branch was predicting well;
+    correctness was the reason, not speed.
+
+  All of the first three were invisible to both host suites, because
+  neither ran the JIT, and each needed a hardware test with the fix
+  reverted to prove.
+
+  `frm` deserves its own note: `dyn` is resolved at translation, not at
+  run time, which is what lets `RMM` be declined to the helper -- ARM has
+  no ties-away mode, and the old run-time table silently mapped it to
+  `RN`. `g_frm_specialised` skips the flush entirely for guests with no
+  `dyn` FP.
 - **ARM and RISC-V float-to-int agree except on NaN.** Both saturate
   out-of-range to the target's limit, both raise invalid doing so, and
   neither adds inexact. Only NaN differs: ARM gives 0, RISC-V gives the
@@ -277,17 +238,46 @@ Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
   NaN, so `IT VS` / `MOV` patches it in seven instructions. Use `VCVTR`, not
   `VCVT` -- the latter forces round-toward-zero regardless of FPSCR.
 - **One weak test is worse than none, because it reads as coverage.**
-  `isatest` had a single `FCVT.W.S` check, `10.0` with `rtz`, which passes
-  whether or not the NaN fixup exists at all. When adding a translation whose
-  whole difficulty is one input, test *that* input. Proving the new path even
-  runs is separate again: force it back to the helper and diff the
-  `interp ... fell back` counter (112 against 134 here).
-- **`EMU_JIT_CODE_BYTES` dominates JIT performance, and the 12 KB default is
-  worse than no JIT at all.** CoreMark's translated working set is ~48 KB.
-  Measured: 12 KB 10,850,998 ticks (8533 compactions, 94240 evictions), 24 KB
-  9,329,706, 32 KB 8,525,192, 48 KB 6,463,217 (904), 64 KB 5,148,168 (231).
-  The interpreter is 10,691,637 -- so at the default the JIT *loses*. Guest RAM
-  pays one for one: 122 KiB with no JIT, 106 at 12 KB, 70 at 48 KB, 54 at 64 KB.
+  This is the most-repeated mistake in this file. Every one of these
+  existed, named the right thing, and passed against the bug it nominally
+  covered:
+
+  | test | why it passed anyway |
+  |---|---|
+  | `isatest`'s single `FCVT.W.S`, `10.0` with `rtz` | passes whether or not the NaN fixup exists, and NaN is the *whole* difficulty |
+  | `test_lower_zero_register` | does `GET r0` then `PUT r0`; the bug needs the other order. Two lines apart |
+  | `test_lower_flags` | only ever expected S/V/C **clear**, so a flag emitter that clobbered them looked right |
+  | the `CMOVF.S` test | mirrored the compare and the select, so an inverted implementation cancelled out |
+  | the G4MH FP encodings | all used fcbit 0, the one value where the right and wrong field splits coincide |
+
+  Three rules fall out.
+
+  **When the whole difficulty of a change is one input, test that
+  input.** Not a representative one -- the awkward one. NaN for a
+  conversion, `cond=15` for a four-bit field, `-1` for a split immediate,
+  `0` and `32` for a shift amount.
+
+  **Never assert a value the implementation computed.** That is how the
+  `CMOVF` test came to encode the bug as the expectation.
+
+  **Proving the new path even *runs* is a separate question.** Force it
+  back to the old behaviour and diff a counter: `interp ... fell back`
+  (112 against 134), `diff_checked` (53 checked, 27 declined),
+  translations, ticks. Identical counters mean the code never ran, not
+  that nothing regressed -- and a *perfect* null result across a change
+  that should have moved something is the loudest signal in this file.
+
+  The corresponding discipline for a fix: **confirm it by reverting it**
+  with the new test in place, and check the failure names the mechanism.
+  An A/B that only half-reverts reads as a passing test -- disabling one
+  of the translator's two fetch-permission sites still gave a clean
+  243/243, because the instruction was 32-bit and the second site caught
+  it.
+- **`EMU_JIT_CODE_BYTES` dominates JIT performance, and at the 12 KB
+  default the JIT *loses to the interpreter*.** CoreMark's translated
+  working set is ~48 KB; the interpreter is 10,691,637 ticks and the JIT
+  at 12 KB is 10,850,998. Guest RAM pays one for one. Full sweep in
+  [`docs/jit/tuning.md`](docs/jit/tuning.md).
 - **CMake cache variables silently outlive the tree you set them in.** Every
   performance figure in this repo had been measured with a 48 KB code cache
   inherited from an old build directory while the declared default was 12 KB;
@@ -295,14 +285,12 @@ Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
   quoting a measurement, check `CMakeCache.txt` for what actually built it --
   `EMU_JIT_CODE_BYTES`, `RV_GUEST_MARCH` and `COREMARK_ITERATIONS` are all
   cache variables and all change the result.
-- **`RV_JIT_LOOP_CAP` is an interrupt-latency knob, and CoreMark cannot see
-  it.** Measured at 64/128/256: CoreMark 31.39/31.16/31.25 (noise -- its loops
-  end on unchainable branches, so the cap is not what exits them), `bench`
-  18.88/18.39/18.13, `mmiobench` 24.40/23.46/22.99 with block entries halving
-  exactly per doubling and its tightest kernels gaining 18% at 256. Each
-  doubling returns half the previous one and doubles worst-case latency
-  (~11/22/44 us), so 128 is the knee and the default. Do not tune this on
-  CoreMark alone.
+- **`RV_JIT_LOOP_CAP` is an interrupt-latency knob, and CoreMark cannot
+  see it** -- its loops end on unchainable branches, so the cap is not
+  what exits them. `mmiobench` sees it clearly. Each doubling returns
+  half the previous one and doubles worst-case latency, so 128 is the
+  knee. **Do not tune a knob on a workload that cannot observe it**;
+  figures in [`docs/jit/tuning.md`](docs/jit/tuning.md).
 - **A register that does not fit a Thumb-2 encoding assembles as a different
   instruction, not an error.** The 16-bit `CMP`/data-processing form encodes
   r0-r7; `emit_dp_reg(DP_CMP, R8, R1)` set a bit belonging to `rm` and became
@@ -340,8 +328,19 @@ Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
   and never again: editing a guest source rebuilt the `.bin`, left the staged
   copy alone, and produced firmware carrying the *previous* guest. Nothing
   failed. Name the file and the target.
-- **Do not conflate "nothing translatable here" with "cache full".** Sharing a
-  recovery path made every interpreted `div` flush the code cache.
+- **"Declined", "overflowed" and "cache full" are three outcomes, and
+  collapsing any two of them is pathological.** Both halves of this were
+  found separately, years apart, in the same shape:
+  - sharing a recovery path between "nothing translatable here" and
+    "cache full" made every interpreted `div` flush the code cache;
+  - returning NULL for a block that *overran the buffer*, exactly as for
+    one the translator declined, made the interpreter run one instruction
+    and the same oversized block be translated and thrown away again --
+    957 times in one CoreMark run, with translation reaching 65% of all
+    host cycles.
+
+  They are counted now, not reasoned about. `overflow` and `declined` are
+  in the stats line.
 - **The JIT was only ever kept off the x86 host by nobody selecting it.**
   `RV_ENABLE_JIT` defaults to a `__thumb2__` test, but CMake defined it
   unconditionally from `EMU_JIT`, so the host build compiled a Thumb-2
@@ -385,13 +384,13 @@ Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
   check only when `pc & 2`, because every PMP bound is 4-byte aligned.
   Measured on the interpreter (`-DEMU_JIT=OFF`), which is where a fetch
   cost lands -- the JIT pays it once per *translation*.
-- **An A/B that only half-reverts the fix reads as a passing test.** The
-  translator checks fetch permission at two sites, one per halfword.
-  Disabling the first alone still gave a clean 243/243, because the
-  instruction was 32-bit and the second site caught it -- which looked
-  exactly like "the test does not exercise this path". Disable every site,
-  and confirm the failure names the mechanism: `pmpx-exec-noeffect` got
-  `0xBAD`, i.e. the store really had run inside a no-execute region.
+- **Disable every site, and confirm the failure names the mechanism.**
+  The half-revert case from the weak-test entry above, concretely: the
+  translator checks fetch permission at two sites, one per halfword, and
+  disabling the first alone gave a clean 243/243 because the instruction
+  was 32-bit and the second site caught it. With both disabled,
+  `pmpx-exec-noeffect` returned `0xBAD` -- the store really had run
+  inside a no-execute region, which is the mechanism, not just a failure.
 - **Execute permission was never checked at all.** `RV_ACC_FETCH` existed
   and was passed only to Sdtrig; no caller ever handed it to
   `rv_pmp_check`. Grep for the enumerator, not for the feature. The check
@@ -464,13 +463,7 @@ Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
     and coverage everything: `isatest` arms PMP early, so the whole rest
     of the run interpreted.
   - **`overflow 957`, and translation was 65% of all host cycles.** The
-    framework returned NULL for a block that overran the buffer, exactly
-    as it does for one the translator declined -- so the interpreter ran
-    one instruction and the same oversized block was translated and thrown
-    away again, 957 times. The existing lesson below is the same defect
-    mirrored: **"declined", "overflowed" and "cache full" are three
-    outcomes and collapsing any two of them is pathological.** They are
-    now counted, not reasoned about.
+    three-outcomes entry above, found again from the other end.
   - **A direct-mapped hash hides blocks rather than costing a probe.** The
     table is far larger than the live set, which makes one entry per
     bucket look adequate; a collision instead makes the loser unreachable
@@ -1239,175 +1232,28 @@ the unit tests and guests run on. Until #31 is resolved, use
 contract check; it does catch the interesting class of error (it is what
 caught `emu_ir_jit.c` sitting in the RV32-only source block), just not
 the target-sizing one.
-
 ### G4MH scope
 
-**Implemented.** Formats I and II (the 16-bit reg-reg and imm5 ALU),
-III (`Bcond disp9`), IV (`SLD`/`SST` .B/.H/.W through EP), V (`JR`/`JARL
-disp22` and `disp32`), VI (the imm16 ALU group), VII (`LD`/`ST` .B/.H/.W
-`disp16`), VIII (the memory bit ops), `MOV imm32`, and the Format X
-system group: `LDSR`, `STSR`, `TRAP`, `EIRET`/`FERET`/`CTRET`, `HALT`,
-`DI`/`EI`, `CLL`, the register-form shifts, `MUL`/`MULU`, `DIV`/`DIVU`,
-`SETF`, `CAXI`, `LDL.W`/`STC.W`, the swap and bit-search group.
+Moved to [`docs/frontend/g4mh.md`](docs/frontend/g4mh.md) -- what is
+implemented, what is not, and what is *simplified* is project status
+rather than a lesson, and it was 170 lines of this file.
 
-Plus the set a compiler actually emits, added later: `PREPARE`/`DISPOSE`
-with the full list12, `CALLT`, the unsigned loads `LD.BU`/`LD.HU` and
-`SLD.BU`/`SLD.HU`, the branchless `CMOV`/`ADF`/`SBF`/`SASF`, `MAC`/`MACU`,
-`BINS`, `ROTL`, `LOOP`, `PUSHSP`/`POPSP`, `JARL [reg1], reg3`, and
-`JMP disp32`.
+The two things from it that belong here, because they are how the
+mistakes get made rather than what the mistakes were:
 
-And the set a *compiled* guest needs, which is a different set again --
-found by running one rather than by reading the manual: the three-operand
-register shifts `SHR`/`SAR`/`SHL reg1, reg2, reg3`, the high-speed divides
-`DIVQ`/`DIVQU`, the halfword divides `DIVH reg1, reg2, reg3` and `DIVHU`,
-and the imm9 multiplies `MUL`/`MULU imm9, reg2, reg3`. Single-precision
-floating point is implemented on SoftFloat behind `G4MH_EXT_FPU`.
-
-Then the slots that had to be *enumerated* rather than extended:
-`CLIP.B`/`.BU`/`.H`/`.HU`, the narrow atomics `LDL.BU`/`LDL.HU` and
-`STC.B`/`STC.H`, `FETRAP`, `SYSCALL`, and `CACHE`/`PREF` as no-ops.
-`RESBANK` is decoded and reports RIE, because register banks are not
-modelled and running it as `DI` -- which is what decoding on reg2 alone
-did -- is worse than saying so.
-
-Everything else raises `G4MH_EXC_RIE` -- which is the correct report for
-an unimplemented encoding **only if something catches it**. See the entry
-below on what RIE actually does in a flat guest, because for the whole
-life of this frontend it did not report anything at all.
-
-**Not implemented, roughly in the order a real guest would miss them:**
-
-| gap | why it matters |
-|---|---|
-| double precision, and the `.L`/`.UL` conversions | single precision is there; `G4MH_EXT_FPU` gates the lot |
-| the disp23 loads and stores | the 48-bit long-displacement forms; they share the `0x3C`/`0x3D` slot with `LD.BU` and PREPARE and are declined there |
-| `LD.DW` / `ST.DW` | the doubleword accesses. CC-RH's assembler does not accept the mnemonics, so their encodings have not been checked against a second encoder and they are *not* guessed at |
-| `LDM.MP` / `STM.MP`, `RESBANK` | bank and context-block transfers. `RESBANK` is decoded and reports RIE rather than being mistaken for `DI` |
-| `DIVQ`/`DIVQU` with `reg2 == reg3` | the manual leaves the flags undefined there; this treats it as the ordinary case |
-| `PREPARE list12, imm5, imm32` | the only 64-bit encoding in the ISA, and past what the length decoder reports — see below |
-| `CACHE`, `PREF` | `SYNCE`/`SYNCM`/`SYNCP`/`SYNCI` and `SNOOZE` are decoded and are no-ops here |
-
-**Architectural features not modelled:**
-
-- **The MPU.** `MPLA`/`MPUA`/`MPAT`/`MPM` and the protection checks behind
-  them — the analogue of RISC-V PMP. `MIP` and `MDP` are raised today only
-  by a bus fault, never by a protection region.
-- **User mode.** `PSW.UM` is defined and nothing enforces it: `LDSR`,
-  `STSR`, `DI`, `EI`, `HALT` and `RETI` do not check privilege. Note what
-  the RISC-V side of this repo learned the hard way — U-mode turned three
-  latent M-mode PMP bugs into failures at once. Expect the same here.
-- **Coprocessor gating.** `PSW.CU0-2` and `G4MH_EXC_UCPOP` are defined and
-  never consulted.
-- **Interrupt priority.** The INTC has a 4-bit priority per channel but does
-  not maintain `ISPR` or honour `PMR`, so nesting is not modelled. `INTBP`
-  and the table-reference entry method are absent; entry uses the single
-  direct vector only.
-- **Register banks and hardware context save**, `GMCFG`, the guest modes.
-- **Debug level.** No `DBPC`/`DBPSW`, `DBTRAP`/`DBRET` — the analogue of
-  Sdtrig.
-- **No JIT.** G4MH runs on the interpreter; a Thumb-2 translator for it
-  would be a second `emu_backend_t` beside `g4mh_backend_interp`.
-
-**Simplifications to be aware of before trusting a result:**
-
-- The INTC is now the real thing: INTC1 (core-local, channels 0-31) at
-  `0xFFFC_0000` SELF and `0xFFFC_4000` PE0, INTC2 (global, channels 32 up)
-  at `0xFFF8_0000`, with the EICn bit layout from the U2B manual Section
-  6.3. Modelled on the **U2B6**, which has three PEs -- the manual's base
-  table runs to PE5 because the larger parts have six. The `OSTM` at
-  `0xFFEC_0000` is still a stand-in rather than the real register set.
-  What is *not* modelled: `EEIC`, table-reference delivery, and `EIBD`
-  is stored but does not route.
-- Exception vectors use the compact offsets in `handler_address()`; a real
-  part's table is larger and `RBASE`/`EBASE` flag bits are masked off rather
-  than honoured.
-- Misaligned data accesses raise `MAE`. Most real G4MH parts permit them.
-- `PID`, `HTCFG0` and `MCFG0` read as zero rather than identifying a part.
-
-**The encodings are now checked against the manual, and the first pass was
-wrong in six places.** `docs/renesas/rh850g4mh-users-manual-software.pdf`
-(R01US0209EJ0220) is the authority; it settled that
-
-- `LDSR` and `STSR` use their two register fields in *opposite* senses, so
-  implementing one by analogy with the other gets it backwards;
-- `JR`/`JARL disp22` carries its *high* displacement bits in the first
-  halfword, the reverse of the RISC-V habit;
-- G4MH has no `RETI` at all -- V850's single return was split into
-  `EIRET`, `FERET` and `CTRET`, which name their level in the opcode
-  rather than inferring it from PSW;
-- sub-opcode 0x160 is shared by `DI`, `EI`, `PUSHSP`, `POPSP` and `CLL`,
-  told apart by the whole reg2 field and not by its top bit;
-- `HALT` and `SNOOZE` share 0x120;
-- **reg2 == 0 is an opcode extension throughout.** `CALLT` hides in the
-  `MOV imm5` slot, `DISPOSE` in `MOVHI`/`SATSUBI`, `MOV imm32` in `MOVEA`,
-  `JMP disp32` in `MULHI`, `JR disp32` in `MULH imm5`, `PREPARE` in `JR`.
-  Decoding on the opcode alone made six unimplemented instructions retire
-  silently as writes into r0 instead of raising RIE -- which is far worse
-  than not implementing them, because the guest gets a wrong answer rather
-  than a clean exception. Every such slot now tests reg2.
-
-The lesson generalises: **an ISA that reuses a register field as an opcode
-extension will not tell you when you ignore it.** Before adding an
-encoding, grep the manual for every instruction sharing its opcode, not
-just the one being added.
-
-**And it happened again, twice, in the same shape.** Adding the compiler
-set found both:
-
-- `SATADD imm5` never tested reg2, so half of every `CALLT` -- the half
-  with bit 5 of the vector set, because the opcode's low bit *is*
-  imm6[5] -- retired as a saturating add into r0. Discarded, call never
-  made, nothing to show for it. Its neighbour `MOV imm5` had the check.
-  One slot of a straddling pair being guarded is not the pair being
-  guarded.
-- **A shared opcode can hold two instructions of different lengths, and
-  that is worse than two of the same length.** `g4mh_insn_is_48` answered
-  "48-bit" for the whole of `0x37` with reg2 == 0 and for the whole of
-  `0x3C`/`0x3D` with bit 0 of the second halfword set. `LOOP` is 32-bit
-  and lives in the first; `PREPARE`'s short form is 32-bit and lives in
-  the second, alongside 48-bit disp23 loads *and* a 64-bit `PREPARE`. A
-  wrong length is not a wrong answer, it is a desynchronised instruction
-  stream -- every instruction after it is garbage. The length decoder and
-  the execute switch have to make the *same* test, and the only way to
-  know is to enumerate everything in the slot including its width.
-
-Both were invisible while the instructions raised RIE, which is the
-argument for implementing a slot completely rather than one encoding of
-it at a time.
-
-**There is no reference model, but there is now a toolchain.** RV32 has
-riscv-arch-test, the Berkeley suite and Sail to disagree with; G4MH still has
-nothing that will tell you an *answer* is wrong. Its tests are hand-assembled
-halfword arrays in `tests/unit/test_g4mh.c`, deliberately not sharing an
-encoder with the interpreter — a shared one would pass while both were wrong
-the same way. Treat any G4MH *semantic* result as verified only as far as
-those tests reach.
-
-**Encodings are a different matter, and are now checkable.** Renesas CC-RH
-builds in the `ccrh:latest` image (`docs/renesas/Dockerfile`), and its
-assembler is a second, independent encoder —
-`scripts/g4mh-check-encodings.sh` assembles a set of instructions and prints
-the fields this frontend decodes them into. **Run it before hand-writing an
-opcode constant.**
-
-It found a real bug on its first run. `CMPF.S` carries its condition in the
-**reg3 field** and its target CC bit in the sub-opcode's low bits; this
-frontend had the two the other way round, inferred from a manual diagram
-that draws the field as `0FFFF` and names neither part:
-
-```
-cmpf.s 0x4, r6, r7, 3   E7372624   sub=0x426  reg3=4
-cmpf.s 0xC, r6, r7, 5   E7372A64   sub=0x42A  reg3=12
-```
-
-The second settles it — `0xC` does not fit in three bits. Every
-hand-written test passed either way, because they all used fcbit 0, where
-the two readings coincide. `CMOVF.S` and `TRFSR` are genuinely the other
-way round (fcbit in the sub-opcode, reg3 the destination), which is what
-made the wrong reading look plausible.
-
-The compiler is also worth using for what it *chooses*: `-Xcpu=g4mh
--Xfloat=fpu` on `a < b` emits `cmpf.s` / `trfsr` / `setf`, which is the
-combination a guest will actually contain, and confirms the operand order
-`reg2 < reg1` that the manual states and that is easy to implement
-backwards.
+- **An ISA that reuses a register field as an opcode extension will not
+  tell you when you ignore it.** `reg2 == 0` is an opcode extension
+  throughout G4MH: `CALLT` hides in the `MOV imm5` slot, `DISPOSE` in
+  `MOVHI`/`SATSUBI`, `MOV imm32` in `MOVEA`, `JMP disp32` in `MULHI`,
+  `JR disp32` in `MULH imm5`, `PREPARE` in `JR`. Decoding on the opcode
+  alone made six unimplemented instructions retire silently as writes
+  into r0. Before adding an encoding, grep the manual for every
+  instruction sharing its opcode -- **and its width**: a shared opcode
+  can hold instructions of different lengths, and a wrong length is not a
+  wrong answer, it is a desynchronised instruction stream.
+- **There is a second encoder, and it is the only thing that can say a
+  hand-written opcode constant is wrong.** `scripts/g4mh-check-encodings.sh`
+  assembles with Renesas CC-RH and prints the fields this frontend
+  decodes them into. Run it *before* writing a constant. It found
+  `CMPF.S`'s field split on its first run, and every constant added
+  since came from it.

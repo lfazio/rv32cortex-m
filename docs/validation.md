@@ -138,7 +138,7 @@ into each test, which then reports `RVCP-SUMMARY: TEST PASSED/FAILED` and sets
 its exit status.
 
 Our device description lives in
-[`tests/arch-test/`](tests/arch-test/rv32cortex-m-rv32) — a UDB
+[`tests/arch-test/`](../tests/arch-test/rv32cortex-m-rv32) — a UDB
 configuration, a Sail model configuration, the `RVMODEL_*` macros and a linker
 script — and is version controlled with the emulator rather than inside a
 third-party clone. `scripts/run-arch-test.sh` fetches the suite, the Sail model
@@ -215,7 +215,7 @@ not implemented at all — so the framework's prolog took an
 illegal-instruction trap the reference did not, and every later signature
 disagreed about the privilege it was in.
 
-The RVC expansion table in [`tests/unit/test_decode.c`](tests/unit/test_decode.c)
+The RVC expansion table in [`tests/unit/test_decode.c`](../tests/unit/test_decode.c)
 is assembler-derived, not hand-computed: each entry was produced by assembling
 the compressed form and its 32-bit equivalent and reading both back with
 `objdump`.

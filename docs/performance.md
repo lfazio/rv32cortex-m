@@ -28,7 +28,7 @@ Two standing cautions:
 
 Measured on the Nucleo-F446RE (Cortex-M4F @ 180 MHz, code in flash with 5 wait
 states and the ART accelerator enabled), using
-[`tests/guest/bench.c`](tests/guest/bench.c) — a compute-bound workload with no
+[`tests/guest/bench.c`](../tests/guest/bench.c) — a compute-bound workload with no
 I/O between the start and end markers.
 
 ## CoreMark: native vs interpreted vs JIT
