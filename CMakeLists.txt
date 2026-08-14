@@ -227,7 +227,6 @@ add_library(rv32core STATIC
     src/emu/emu_jit.c
     src/emu/emu_ir.c
     src/emu/emu_gdb.c
-    src/frontend/rv32/rv_gdb.c
     # The IR JIT framework and its two host backends. Every one of these
     # guards itself on the host it emits for, so all of them can stay in
     # the list and exactly one backend compiles to anything. They belong
@@ -275,6 +274,7 @@ if(EMU_FRONTEND_RV32)
         src/frontend/rv32/rv_pmp.c
         src/frontend/rv32/rv_mmu.c
         src/frontend/rv32/rv_trig.c
+        src/frontend/rv32/rv_gdb.c
         src/frontend/rv32/rv_ir.c
     )
 
@@ -330,6 +330,7 @@ if(EMU_FRONTEND_G4MH)
         src/frontend/g4mh/g4mh_decode.c
         src/frontend/g4mh/g4mh_disasm.c
         src/frontend/g4mh/g4mh_frontend.c
+        src/frontend/g4mh/g4mh_gdb.c
         src/frontend/g4mh/g4mh_intc.c
         src/frontend/g4mh/g4mh_ir.c
         src/frontend/g4mh/g4mh_interp.c

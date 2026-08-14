@@ -345,7 +345,35 @@ void host_gdb_wait(void);
 void host_gdb_poll(void);
 bool host_gdb_attached(void);
 uint32_t host_gdb_run(uint32_t budget, uint32_t *retired);
+#if EMU_FRONTEND_RV32
 const emu_gdb_target_t *rv32_gdb_target(void);
+#endif
+#if EMU_FRONTEND_G4MH
+const emu_gdb_target_t *g4mh_gdb_target(void);
+#endif
+
+/*
+ * Which target description the stub serves. gdb's `g` packet is a fixed
+ * per-architecture concatenation and gdb does not ask, so this has to
+ * follow the frontend actually running -- handing it the RV32 layout for
+ * a G4MH guest yields an `info registers` that is entirely wrong and
+ * entirely plausible.
+ */
+static const emu_gdb_target_t *gdb_target_for(const emu_cpu_ops_t *ops)
+{
+#if EMU_FRONTEND_G4MH
+    if (strcmp(ops->name, "g4mh") == 0) {
+        return g4mh_gdb_target();
+    }
+#endif
+#if EMU_FRONTEND_RV32
+    if (strcmp(ops->name, "rv32") == 0) {
+        return rv32_gdb_target();
+    }
+#endif
+    (void)ops;
+    return NULL;
+}
 
 int main(int argc, char **argv)
 {
@@ -675,7 +703,14 @@ int main(int argc, char **argv)
      */
     uint64_t total = 0;
     if (gdb_port != 0) {
-        if (!host_gdb_start(&g_core, rv32_gdb_target(), gdb_port)) {
+        const emu_gdb_target_t *gt = gdb_target_for(ops);
+
+        if (gt == NULL) {
+            fprintf(stderr, "emu: no gdb target for frontend %s\n", ops->name);
+            free(image);
+            return 1;
+        }
+        if (!host_gdb_start(&g_core, gt, gdb_port)) {
             fprintf(stderr, "gdb: could not listen on port %d\n", gdb_port);
             return 2;
         }

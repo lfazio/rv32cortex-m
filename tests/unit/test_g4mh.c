@@ -31,6 +31,7 @@
 #include "g4mh/g4mh_config.h"
 #include "g4mh/g4mh_types.h"
 #include "g4mh/g4mh_cpu.h"
+#include "emu/emu_gdb.h"
 #include "emu/emu_jit.h"
 
 #include <string.h>
@@ -707,6 +708,94 @@ static void test_mul_imm9(void)
  * implementation that narrowed first and clamped after would give 255 and
  * -1 the other way round, and every small positive input agrees.
  */
+/*
+ * The gdb `g` packet layout.
+ *
+ * gdb's rh850 numbering is the contract and gdb does *not* ask: its v850
+ * backend rejects target-supplied registers outright ("Target-supplied
+ * registers are not supported by the current architecture"), so the
+ * target.xml this frontend serves documents the layout and cannot
+ * enforce it. Nothing but this test holds the two together.
+ *
+ * The numbering was taken from gdb itself, not inferred:
+ *
+ *     gdb-multiarch -batch -ex 'set architecture v850:rh850' \
+ *                          -ex 'maint print registers'
+ *
+ * Getting it wrong does not error. It produces an `info registers` full
+ * of plausible values that are all one slot out, which is much harder to
+ * spot -- the same failure rv_gdb.c warns about.
+ */
+const emu_gdb_target_t *g4mh_gdb_target(void);
+
+static void test_gdb_layout(void)
+{
+    const emu_gdb_target_t *t = g4mh_gdb_target();
+
+    CHECK(t != NULL);
+    if (t == NULL) {
+        return;
+    }
+
+    /* 32 GPRs + 32 system registers + pc + fp, four bytes each. */
+    CHECK_EQ(t->nregs, 66u);
+    CHECK_EQ(t->reg_bytes, 4u);
+
+    /* Run something short so the registers hold values worth reading. */
+    const uint16_t prog[] = {
+        F2(OP_MOVI, 9, 6),                      /* mov 9, r6            */
+        F2(OP_MOVI, -4, 29),                    /* mov -4, r29 (the fp) */
+        0x07E0u, SUB_HALT,
+    };
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    /* 0..31 are the general registers, in the frontend's own order. */
+    CHECK_EQ(t->reg_get(g_core.cpu, 6u), 9u);
+    CHECK_EQ(t->reg_get(g_core.cpu, 29u), (uint32_t)(-4));
+
+    /*
+     * 32..63 are the selID 0 bank, which maps straight across: gdb's
+     * "psw" is register 37 and this frontend keeps PSW at index 5.
+     */
+    CHECK_EQ(t->reg_get(g_core.cpu, 32u + G4MH_SR_PSW), psw());
+    CHECK_EQ(t->reg_get(g_core.cpu, 32u + G4MH_SR_EIPC),
+             sreg(0, G4MH_SR_EIPC));
+
+    /* 64 is the pc, and it is what pc_get reports. */
+    CHECK_EQ(t->reg_get(g_core.cpu, 64u), t->pc_get(g_core.cpu));
+
+    /*
+     * 65 is gdb's `fp`, which the architecture does not have -- it is
+     * the EABI's frame pointer, r29. A read that returned zero would
+     * look plausible and be wrong, so this is checked against a value
+     * the program actually put there.
+     */
+    CHECK_EQ(t->reg_get(g_core.cpu, 65u), (uint32_t)(-4));
+
+    /* Writes have to land in the same places. Notably r0 stays zero and
+     * a PSW write must reach the shadowed copy, not only the bank. */
+    t->reg_set(g_core.cpu, 0u, 0xDEADBEEFu);
+    CHECK_EQ(t->reg_get(g_core.cpu, 0u), 0u);
+
+    t->reg_set(g_core.cpu, 65u, 0x1234u);       /* fp -> r29 */
+    CHECK_EQ(t->reg_get(g_core.cpu, 29u), 0x1234u);
+
+    t->reg_set(g_core.cpu, 32u + G4MH_SR_PSW, G4MH_PSW_Z);
+    CHECK_EQ(psw(), G4MH_PSW_Z);
+
+    /* A description is served, and it names the architecture gdb needs
+     * in order to pick its rh850 backend without being told. */
+    CHECK(t->target_xml != NULL);
+    CHECK(strstr(t->target_xml, "v850:rh850") != NULL);
+    CHECK(t->memory_map != NULL);
+}
+
 static void test_clip(void)
 {
     /*
@@ -2513,6 +2602,7 @@ void test_g4mh(void)
     test_divh_halfword_only();
     test_mul_imm9();
     test_clip();
+    test_gdb_layout();
     test_fetrap();
     test_resbank_is_not_di();
     test_narrow_atomics();
