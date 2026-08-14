@@ -218,11 +218,15 @@ set(G4MH_LRAM_KIB "64"  CACHE STRING "G4MH local RAM per PE backed, KiB")
 # Runtime library: portable C11, no platform and no ISA dependencies
 # ---------------------------------------------------------------------
 #
-# The target keeps the name rv32core so existing build directories and
-# scripts do not have to change. What is in it is the ISA-agnostic runtime
-# plus whichever frontends were selected above.
+# Named emucore, not rv32core: it holds the ISA-agnostic runtime plus
+# whichever frontends were selected above, and has held two of them since
+# G4MH landed. The old name was kept for a while so existing build
+# directories would not have to change, which is exactly the kind of
+# convenience that leaves a library called after one of the things inside
+# it. (The *project* is still rv32cortex-m; renaming that would move the
+# repository.)
 
-add_library(rv32core STATIC
+add_library(emucore STATIC
     src/emu/emu_bus.c
     src/emu/emu_jit.c
     src/emu/emu_ir.c
@@ -245,10 +249,10 @@ add_library(rv32core STATIC
     src/emu/emu_uart.c
 )
 
-target_include_directories(rv32core PUBLIC
+target_include_directories(emucore PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 
-target_compile_definitions(rv32core PUBLIC
+target_compile_definitions(emucore PUBLIC
     EMU_FRONTEND_RV32=$<BOOL:${EMU_FRONTEND_RV32}>
     EMU_FRONTEND_G4MH=$<BOOL:${EMU_FRONTEND_G4MH}>
     EMU_MAX_REGIONS=${EMU_MAX_REGIONS}
@@ -261,7 +265,7 @@ target_compile_definitions(rv32core PUBLIC
 # ---------------------------------------------------------------------
 
 if(EMU_FRONTEND_RV32)
-    target_sources(rv32core PRIVATE
+    target_sources(emucore PRIVATE
         src/frontend/rv32/rv32_frontend.c
         src/frontend/rv32/rv_aplic.c
         src/frontend/rv32/rv_clint.c
@@ -290,7 +294,7 @@ if(EMU_FRONTEND_RV32)
     set_source_files_properties(src/frontend/rv32/rv_fpu.c
         PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 
-    target_compile_definitions(rv32core PUBLIC
+    target_compile_definitions(emucore PUBLIC
         RV_EXT_F=$<BOOL:${RV32_EXT_F}>
         RV_EXT_ZCB=$<BOOL:${RV32_EXT_ZCB}>
         RV_EXT_PMP=$<BOOL:${RV32_EXT_PMP}>
@@ -316,7 +320,7 @@ if(EMU_FRONTEND_RV32)
     )
 
     if(RV32_PAIR_STATS)
-        target_sources(rv32core PRIVATE src/frontend/rv32/rv_pairstats.c)
+        target_sources(emucore PRIVATE src/frontend/rv32/rv_pairstats.c)
     endif()
 endif()
 
@@ -325,7 +329,7 @@ endif()
 # ---------------------------------------------------------------------
 
 if(EMU_FRONTEND_G4MH)
-    target_sources(rv32core PRIVATE
+    target_sources(emucore PRIVATE
         src/frontend/g4mh/g4mh_cpu.c
         src/frontend/g4mh/g4mh_decode.c
         src/frontend/g4mh/g4mh_disasm.c
@@ -337,7 +341,7 @@ if(EMU_FRONTEND_G4MH)
         src/frontend/g4mh/g4mh_fpu.c
     )
 
-    target_compile_definitions(rv32core PUBLIC
+    target_compile_definitions(emucore PUBLIC
         G4MH_ENABLE_DISASM=$<BOOL:${G4MH_ENABLE_DISASM}>
         G4MH_PE_COUNT=${G4MH_PE_COUNT}u
         G4MH_EXT_FPU=$<BOOL:${G4MH_EXT_FPU}>
@@ -406,8 +410,8 @@ if((EMU_FRONTEND_RV32 AND RV32_EXT_F) OR (EMU_FRONTEND_G4MH AND G4MH_EXT_FPU))
     endforeach()
     list(REMOVE_DUPLICATES _sf_src)
 
-    target_sources(rv32core PRIVATE ${_sf_src})
-    target_include_directories(rv32core PRIVATE
+    target_sources(emucore PRIVATE ${_sf_src})
+    target_include_directories(emucore PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src/frontend/rv32/softfloat"
         "${SOFTFLOAT_DIR}/source/include"
         "${SOFTFLOAT_DIR}/source/RISCV")
@@ -415,13 +419,13 @@ if((EMU_FRONTEND_RV32 AND RV32_EXT_F) OR (EMU_FRONTEND_G4MH AND G4MH_EXT_FPU))
     set_source_files_properties(${_sf_src} PROPERTIES COMPILE_OPTIONS "-w")
 endif()
 
-target_compile_options(rv32core PRIVATE
+target_compile_options(emucore PRIVATE
     -Wall -Wextra -Wshadow -Wundef
     $<$<CONFIG:Release,RelWithDebInfo,MinSizeRel>:-fomit-frame-pointer>
 )
 
 if(RV32_LTO AND CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo|MinSizeRel")
-    set_property(TARGET rv32core PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    set_property(TARGET emucore PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
 # ---------------------------------------------------------------------

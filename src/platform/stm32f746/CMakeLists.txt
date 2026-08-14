@@ -83,7 +83,7 @@ target_compile_definitions(stm32cube PUBLIC
 # JIT's write-then-execute need real maintenance rather than a barrier. The
 # backend cannot infer this: -mcpu=cortex-m4 and -mcpu=cortex-m7 both define
 # __ARM_ARCH_7EM__, so the platform has to say so.
-target_compile_definitions(rv32core PUBLIC RV_ARM_HAS_CACHES=1)
+target_compile_definitions(emucore PUBLIC RV_ARM_HAS_CACHES=1)
 
 # Vendor code is not warning-clean under our flags and is not ours to fix,
 # so it is compiled without the strict set applied to the emulator.
@@ -100,21 +100,34 @@ add_executable(rv32-stm32f746
     guest_image.S
 )
 
-target_link_libraries(rv32-stm32f746 PRIVATE rv32core stm32cube)
+target_link_libraries(rv32-stm32f746 PRIVATE emucore stm32cube)
 
 # ---------------------------------------------------------------------
 # Network transport
 # ---------------------------------------------------------------------
 #
-# Off by default, because it costs guest RAM. The link script gives the
-# guest whatever SRAM is left after the firmware's .bss, so lwIP's pools
-# come straight out of the largest architecture test's headroom -- read
-# the `ram` line in the boot banner after turning it on.
+# **On by default.** What it buys is not having to reflash between tests:
+# the board takes a guest image over TFTP, reports over telnet and serves
+# gdb, which is the difference between minutes and seconds per test across
+# 274 of them. That is the normal way to work with this board, so it is
+# the default rather than the thing to remember.
 #
-# What it buys is not having to reflash between tests: with it on, the
-# board takes a guest image over TFTP and reports over telnet, which is
-# the difference between minutes and seconds per test across 274 of them.
-option(EMU_NET "SLIP/TFTP/telnet transport over the console UART" OFF)
+# Two costs, and the second is the surprising one:
+#
+#   - guest RAM. The link script gives the guest whatever SRAM is left
+#     after the firmware's .bss, so lwIP's pools come out of the largest
+#     architecture test's headroom: 282 KiB to 265 measured on the F746,
+#     against the worst test's 222. Read the `ram` line in the boot banner.
+#
+#   - **the UART stops being a console.** emu_net_init() is a one-way
+#     handover; after it the serial line carries nothing but IP and the
+#     console is telnet. Text and SLIP cannot share a wire, so this
+#     cannot be a fallback -- and a firmware that has given its console
+#     away has no channel to report its own failure on, which is why
+#     fatal_halt must not mask interrupts.
+#
+# Build with -DEMU_NET=OFF to get the serial console back.
+option(EMU_NET "SLIP/TFTP/telnet/gdb transport over the console UART" ON)
 
 if(EMU_NET)
     include(${CMAKE_SOURCE_DIR}/cmake/lwip.cmake)
@@ -124,11 +137,11 @@ if(EMU_NET)
         "${CMAKE_SOURCE_DIR}/src/net/net_sio.c"
         "${CMAKE_SOURCE_DIR}/src/net/net_telnet.c"
         "${CMAKE_SOURCE_DIR}/src/net/net_tftp.c"
-        "${CMAKE_SOURCE_DIR}/src/net/net_gdb.c"
-        # The protocol and the frontend's register map. Both are
-        # portable C and neither knows about lwIP.
-        "${CMAKE_SOURCE_DIR}/src/emu/emu_gdb.c"
-        "${CMAKE_SOURCE_DIR}/src/frontend/rv32/rv_gdb.c")
+        "${CMAKE_SOURCE_DIR}/src/net/net_gdb.c")
+    # emu_gdb.c and the frontends' register maps are already in emucore,
+    # which this links: naming them again here compiled a second copy and
+    # tied the network build to RV32, so a G4MH firmware served the wrong
+    # `g` packet layout.
 
     # The port sources are built into the firmware, not into lwip: they
     # reach the board through board.h, which lives in this directory, and

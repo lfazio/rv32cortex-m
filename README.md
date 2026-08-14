@@ -82,6 +82,17 @@ F446RE.
 picocom -b 921600 /dev/ttyACM1
 ```
 
+On the F746 the network is **on by default**, so that port carries IP
+rather than text once the banner is out: the console becomes telnet, gdb
+listens on 1234 and guest images go up by TFTP, all over SLIP on the same
+wire. See [docs/network.md](docs/network.md); build `-DEMU_NET=OFF` for a
+plain serial console.
+
+```sh
+sudo ./scripts/slip-up.sh        # after the board says "net SLIP on this port"
+telnet 192.168.7.2
+```
+
 The `flash` targets pass `--connect-under-reset` always, because this
 firmware never idles and a plain attach races it. **A failed flash leaves
 the previous firmware running**, which reports a plausible result for a
@@ -98,7 +109,7 @@ board result.
 | `EMU_JIT` | `ON` | The JIT. `OFF` is smaller, and is how a suspected JIT bug is isolated. |
 | `EMU_JIT_CODE_BYTES` | `12288` | Code cache. **The dominant performance term** — see [docs/jit/tuning.md](docs/jit/tuning.md). A small value forces compaction and is a useful stress test. |
 | `EMU_JIT_LOOP_CAP` | `128` | Guest instructions per block entry: an interrupt-latency knob, not a throughput one. |
-| `EMU_NET` | `OFF` | lwIP over SLIP on the console UART (F746). **The UART stops being a console.** |
+| `EMU_NET` | `ON` (F746) | lwIP over SLIP on the console UART: telnet, gdb and TFTP. **The UART stops being a console** -- `OFF` gets it back. |
 | `EMU_ENABLE_TRACE` | `OFF` | Per-instruction trace hook. Slow, and the fastest way to find where execution diverges. |
 | `RV32_EXT_PMP` / `RV32_EXT_SDTRIG` | `ON` | Each costs a little even unused; `OFF` removes it. |
 | `RV32_NATIVE_COREMARK` | `OFF` | Run CoreMark natively on the ARM instead of the emulator, for the baseline. |
@@ -241,6 +252,7 @@ Guest images (`tests/guest/`):
 | [docs/performance.md](docs/performance.md) | the measured figures |
 | [docs/memory.md](docs/memory.md) | ROM, RAM and flash: who backs what, and why the platform does |
 | [docs/gdb.md](docs/gdb.md) | the guest stub and the emulator stub -- two connections, different programs |
+| [docs/network.md](docs/network.md) | the board over IP: telnet, gdb and TFTP, and what the handover costs |
 | [docs/porting.md](docs/porting.md) | porting to another target |
 | [docs/TODO.md](docs/TODO.md) | open work |
 | [docs/host/](docs/host/README.md), [docs/stm32f446/](docs/stm32f446/README.md) | per-platform and per-platform/frontend notes |

@@ -17,7 +17,7 @@ if(EMU_FRONTEND_G4MH)
     target_sources(rv32-unit PRIVATE test_g4mh.c)
 endif()
 
-target_link_libraries(rv32-unit PRIVATE rv32core)
+target_link_libraries(rv32-unit PRIVATE emucore)
 target_include_directories(rv32-unit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(rv32-unit PRIVATE -Wall -Wextra)
 

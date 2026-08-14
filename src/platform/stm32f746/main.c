@@ -1108,9 +1108,22 @@ int main(void)
      * board that runs guests, and saying so beats halting.
      */
     {
+        /*
+         * Which description depends on the frontend built in, not on the
+         * platform: gdb's `g` packet is a fixed per-architecture
+         * concatenation and gdb does not ask, so serving the RV32 layout
+         * for a G4MH guest gives an `info registers` that is entirely
+         * wrong and entirely plausible.
+         */
+#if EMU_FRONTEND_RV32
         extern const emu_gdb_target_t *rv32_gdb_target(void);
+        const emu_gdb_target_t *gt = rv32_gdb_target();
+#else
+        extern const emu_gdb_target_t *g4mh_gdb_target(void);
+        const emu_gdb_target_t *gt = g4mh_gdb_target();
+#endif
 
-        if (!emu_net_gdb_init(&g_core, rv32_gdb_target(), &k_gdb_flash)) {
+        if (!emu_net_gdb_init(&g_core, gt, &k_gdb_flash)) {
             console_puts("gdb    stub failed to start\n");
         } else {
             console_puts("gdb    target remote ");

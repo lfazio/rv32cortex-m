@@ -88,7 +88,7 @@ add_executable(rv32-stm32f446
     guest_image.S
 )
 
-target_link_libraries(rv32-stm32f446 PRIVATE rv32core stm32cube)
+target_link_libraries(rv32-stm32f446 PRIVATE emucore stm32cube)
 
 # guest_image.S pulls the binary in with .incbin.
 set_source_files_properties(guest_image.S PROPERTIES

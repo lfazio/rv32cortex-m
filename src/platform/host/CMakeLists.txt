@@ -5,11 +5,11 @@
 add_executable(rv32-host
     main.c
     # The gdb stub's transport. The protocol and the register map are in
-    # rv32core; only the sockets are platform.
+    # emucore; only the sockets are platform.
     host_gdb.c
 )
 
-target_link_libraries(rv32-host PRIVATE rv32core)
+target_link_libraries(rv32-host PRIVATE emucore)
 
 target_compile_options(rv32-host PRIVATE
     -Wall -Wextra -Wshadow
