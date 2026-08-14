@@ -316,6 +316,48 @@ static EMU_ALWAYS_INLINE uint32_t do_shr(g4mh_cpu_t *c, uint32_t v, uint32_t n)
     return res;
 }
 
+/*
+ * CLIP.B/.BU/.H/.HU -- narrow a word to a byte or halfword, saturating.
+ *
+ * The signed and unsigned forms differ in how they read the *source*, not
+ * only in where they clamp: CLIP.B treats reg1 as signed word data and
+ * clamps to [-128, 127], while CLIP.BU "regards the word data in reg1 as
+ * unsigned" and clamps to [0, 255]. So 0xFFFFFFFF gives -1 through CLIP.B
+ * and 255 through CLIP.BU -- not the same number narrowed two ways.
+ *
+ * S is the result's sign for the signed forms and a hard zero for the
+ * unsigned ones. SAT is sticky: set when OV is, never cleared here, and
+ * only an LDSR to PSW puts it back.
+ */
+static EMU_ALWAYS_INLINE uint32_t do_clip(g4mh_cpu_t *c, uint32_t v,
+                                          bool sgn, unsigned bits)
+{
+    uint32_t res;
+    bool ov;
+
+    if (sgn) {
+        const int32_t lo = -(int32_t)(1u << (bits - 1u));
+        const int32_t hi = (int32_t)((1u << (bits - 1u)) - 1u);
+        const int32_t a = (int32_t)v;
+
+        res = (uint32_t)((a < lo) ? lo : ((a > hi) ? hi : a));
+        ov = (a < lo) || (a > hi);
+    } else {
+        const uint32_t hi = (1u << bits) - 1u;
+
+        res = (v > hi) ? hi : v;
+        ov = v > hi;
+    }
+
+    uint32_t psw = c->psw & ~(G4MH_PSW_Z | G4MH_PSW_S | G4MH_PSW_OV |
+                              G4MH_PSW_CY);
+    if (res == 0u)                       { psw |= G4MH_PSW_Z; }
+    if (sgn && ((int32_t)res < 0))       { psw |= G4MH_PSW_S; }
+    if (ov)                              { psw |= G4MH_PSW_OV | G4MH_PSW_SAT; }
+    c->psw = psw;
+    return res;
+}
+
 static EMU_ALWAYS_INLINE uint32_t do_sar(g4mh_cpu_t *c, uint32_t v, uint32_t n)
 {
     n &= 31u;
@@ -562,6 +604,23 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 /* The architectural RIE encoding: 0x0040, a deliberate
                  * "raise reserved instruction" rather than a hole. */
                 EXC(G4MH_EXC_RIE);
+            }
+            if (r1 == 0u) {
+                /*
+                 * FETRAP vector4, which is 0vvvv00001000000 -- reg1 zero
+                 * and reg2 the vector. It shares this opcode with DIVH,
+                 * whose own encoding forbids r0 in *either* field for
+                 * exactly this reason, and the split was not being made:
+                 * every FETRAP ran as a DIVH by r0, which divides by zero,
+                 * sets OV and retires. No trap, no diagnostic.
+                 *
+                 * FE level, so it saves to FEPC/FEPSW and ignores PSW.ID;
+                 * the return pc is the *next* instruction.
+                 */
+                c->pc = pc;
+                g4mh_cpu_exception(c, G4MH_EXC_FETRAP + r2, next);
+                pc = c->pc;
+                goto retired_insn;
             }
             if (r2 == 0u) {
                 /*
@@ -1057,6 +1116,22 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 break;
 
             /*
+             * The saturating narrowings. reg1 is the source and reg2 the
+             * destination -- the opposite sense to most of this group, and
+             * the second halfword is entirely fixed, so reg3 has to read
+             * as zero or this is some other encoding.
+             */
+            case 0x008:                             /* CLIP.B  r1, r2   */
+            case 0x00A:                             /* CLIP.BU r1, r2   */
+            case 0x00C:                             /* CLIP.H  r1, r2   */
+            case 0x00E:                             /* CLIP.HU r1, r2   */
+                if (sel != 0u) { EXC(G4MH_EXC_RIE); }
+                wr(c, r2, do_clip(c, c->r[r1],
+                                  (sub & 0x2u) == 0u,
+                                  ((sub & 0x4u) != 0u) ? 16u : 8u));
+                break;
+
+            /*
              * LDSR and STSR use the two register fields in opposite
              * senses, which is the thing to get right here:
              *
@@ -1280,30 +1355,53 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 break;
             }
 
-            case 0x378: {                           /* LDL.W [reg1],r3  */
+            /*
+             * The link/conditional-store group is six encodings, not two:
+             * byte at 0x370/0x372, halfword at 0x374/0x376 and word at
+             * 0x378/0x37A. The narrow loads are zero-extending only --
+             * there is no LDL.B or LDL.H -- which is why they are spelled
+             * LDL.BU and LDL.HU and why `false` is right for every one.
+             */
+            case 0x370:                             /* LDL.BU [reg1],r3 */
+            case 0x374:                             /* LDL.HU [reg1],r3 */
+            case 0x378: {                           /* LDL.W  [reg1],r3 */
                 const uint32_t r3 = sel;
                 const uint32_t adr = c->r[r1];
+                const uint32_t w = (sub == 0x370u) ? 1u
+                                 : ((sub == 0x374u) ? 2u : 4u);
                 uint32_t v;
-                const g4mh_exc_t e = g4mh_load(c, adr, 4u, false, &v);
+                const g4mh_exc_t e = g4mh_load(c, adr, w, false, &v);
                 if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
                 wr(c, r3, v);
                 g4mh_ll_take(c, adr);
                 break;
             }
 
+            case 0x372:                             /* STC.B r3,[reg1]  */
+            case 0x376:                             /* STC.H r3,[reg1]  */
             case 0x37A: {                           /* STC.W r3,[reg1]  */
                 /*
                  * The store happens only if this core still holds the
                  * reservation, and reg3 reports which: 1 stored, 0 did
                  * not. Either way the reservation is gone afterwards, so a
-                 * retry loop must re-run its LDL.W.
+                 * retry loop must re-run its LDL.
+                 *
+                 * The reservation granule is a word for all three widths --
+                 * g4mh_ll_take masks the address -- so a byte STC pairs
+                 * with a byte LDL anywhere in the same word. That is
+                 * coarser than a real part need be and is the safe
+                 * direction: it can only make a conditional store fail
+                 * that hardware would have let through, which a retry loop
+                 * already has to cope with.
                  */
                 const uint32_t r3 = sel;
                 const uint32_t adr = c->r[r1];
+                const uint32_t w = (sub == 0x372u) ? 1u
+                                 : ((sub == 0x376u) ? 2u : 4u);
                 const bool held = c->ll_valid && c->ll_addr == (adr & ~3u);
 
                 if (held) {
-                    const g4mh_exc_t e = g4mh_store(c, adr, 4u, c->r[r3]);
+                    const g4mh_exc_t e = g4mh_store(c, adr, w, c->r[r3]);
                     if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
                 }
                 g4mh_ll_drop(c);
@@ -1420,13 +1518,75 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                  * as DI, and CLL (11111) as EI.
                  */
                 switch (r2) {
-                case 0x00u:                         /* DI               */
-                    c->psw |= G4MH_PSW_ID;
+                case 0x00u:
+                    /*
+                     * DI and RESBANK share reg2 == 0 and are told apart by
+                     * reg3 -- 0 and 16. Decoding on reg2 alone ran RESBANK
+                     * as DI: it masked interrupts and returned, having
+                     * restored no bank at all, which is the silent wrong
+                     * answer this slot keeps producing. Register banks are
+                     * not modelled, so RESBANK is reported unimplemented
+                     * rather than approximated.
+                     */
+                    if (sel == 0x10u) {             /* RESBANK          */
+                        EXC(G4MH_EXC_RIE);
+                    }
+                    if (sel != 0u) { EXC(G4MH_EXC_RIE); }
+                    c->psw |= G4MH_PSW_ID;          /* DI               */
                     break;
                 case 0x10u:                         /* EI               */
+                    if (sel != 0u) { EXC(G4MH_EXC_RIE); }
                     c->psw &= ~G4MH_PSW_ID;
                     c->irq_dirty = true;
                     break;
+
+                /*
+                 * CACHE and PREF are hints. This model has no cache to
+                 * manage and no prefetch to start, so they retire without
+                 * effect -- which is what SYNCE/SYNCM/SYNCP/SYNCI already
+                 * do here. Decoding them matters anyway: undecoded they
+                 * raised RIE, and in a flat guest RIE is not a report.
+                 */
+                case 0x1Cu:                         /* CACHE op,[reg1]  */
+                case 0x1Bu:                         /* PREF  op,[reg1]  */
+                    break;
+                case 0x1Au: {                       /* SYSCALL vector8  */
+                    /*
+                     * The only exception here whose handler address is
+                     * *read from memory* rather than computed from RBASE,
+                     * which is why it does not go through
+                     * g4mh_cpu_exception: the table lives at SCBP, the
+                     * entry is a word offset from SCBP, and the result is
+                     * added back to SCBP.
+                     *
+                     * vector8 is split -- the low five bits sit in reg1 and
+                     * the high three in reg3 -- so reading reg1 alone gets
+                     * the first 32 vectors right and every one above wrong.
+                     * A vector past SCCFG.SIZE uses entry zero rather than
+                     * faulting, which is the architecture's way of giving
+                     * an out-of-range call a default handler.
+                     */
+                    const uint32_t vec = ((sel & 0x7u) << 5) | r1;
+                    const uint32_t scbp = c->sr[1][G4MH_SR_SCBP];
+                    const uint32_t size = c->sr[1][G4MH_SR_SCCFG] & 0xFFu;
+                    const uint32_t adr = (vec <= size) ? (scbp + (vec << 2))
+                                                       : scbp;
+                    const uint32_t tmp = c->psw;
+                    uint32_t ent;
+                    const g4mh_exc_t e = g4mh_load(c, adr, 4u, false, &ent);
+
+                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+
+                    c->sr[0][G4MH_SR_EIPC]  = next;
+                    c->sr[0][G4MH_SR_EIPSW] = tmp;
+                    c->sr[0][G4MH_SR_EIIC]  = G4MH_EXC_SYSCALL + vec;
+                    c->psw = (tmp & ~G4MH_PSW_UM) | G4MH_PSW_EP |
+                             G4MH_PSW_ID;
+                    c->sr[0][G4MH_SR_PSW] = c->psw;
+                    pc = scbp + ent;
+                    goto retired_insn;
+                }
+
                 case 0x1Fu:                         /* CLL              */
                     if (sel != 0x1Eu) {
                         EXC(G4MH_EXC_RIE);

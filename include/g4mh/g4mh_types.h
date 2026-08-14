@@ -39,6 +39,15 @@ typedef uint32_t g4mh_exc_t;
 #define G4MH_EXC_TRAP0          0x0040u   /* TRAP 0..15,  +vector         */
 #define G4MH_EXC_TRAP1          0x0050u   /* TRAP 16..31, +vector         */
 #define G4MH_EXC_SYSCALL        0x8000u   /* SYSCALL, +vector             */
+/*
+ * FETRAP 1..15. The architecture leaves the cause code to the part ("see
+ * the hardware manual of the product used"), and this frontend's codes are
+ * internal identifiers anyway -- handler_address maps them to the compact
+ * offsets it uses. 0x0090 is chosen only because it collides with nothing:
+ * the obvious reading of the real table would put FETRAP at 0x0031..0x003F,
+ * on top of MDP.
+ */
+#define G4MH_EXC_FETRAP         0x0090u   /* FETRAP 1..15, +vector        */
 
 /*
  * An EI interrupt's cause is 0x1000 + channel. The frontend's INTC raises

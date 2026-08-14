@@ -101,7 +101,10 @@ bool g4mh_exc_is_fe(g4mh_exc_t cause)
     case G4MH_EXC_UCPOP:
         return true;
     default:
-        return false;
+        /* FETRAP is the one *software-raised* FE-level cause: that is the
+         * whole point of it beside TRAP, which is EI level. */
+        return cause >= G4MH_EXC_FETRAP &&
+               cause < G4MH_EXC_FETRAP + 0x10u;
     }
 }
 
@@ -131,6 +134,9 @@ static uint32_t handler_address(const g4mh_cpu_t *c, g4mh_exc_t cause)
     }
     if (cause >= G4MH_EXC_TRAP1 && cause < G4MH_EXC_TRAP1 + 0x10u) {
         return table + 0x0050u;         /* TRAP 16..31                   */
+    }
+    if (cause >= G4MH_EXC_FETRAP && cause < G4MH_EXC_FETRAP + 0x10u) {
+        return table + 0x0030u;         /* FETRAP 1..15                  */
     }
     switch (cause) {
     case G4MH_EXC_SYSERR: return table + 0x0010u;

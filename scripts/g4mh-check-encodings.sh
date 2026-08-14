@@ -108,7 +108,11 @@ import re, sys
 print("%-26s %-9s %s" % ("source", "bytes", "as this emulator decodes it"))
 print("-" * 78)
 for line in open(sys.argv[1], errors="replace"):
-    m = re.match(r'^[0-9A-F]{8} ([0-9A-F]{8})\s+\d+\s+(.*)$', line.rstrip())
+    # 16-bit instructions list four hex digits, not eight. Matching only
+    # the wide form silently dropped every Format I/II encoding -- so a
+    # 16-bit instruction looked like one the assembler had rejected.
+    m = re.match(r'^[0-9A-F]{8} ([0-9A-F]{4}(?:[0-9A-F]{4})?)\s+\d+\s+(.*)$',
+                 line.rstrip())
     if not m:
         continue
     hexs, src = m.group(1), m.group(2).strip()
@@ -116,9 +120,15 @@ for line in open(sys.argv[1], errors="replace"):
         continue
     b = bytes.fromhex(hexs)
     w0 = b[0] | (b[1] << 8)
+    op6 = (w0 >> 5) & 0x3F
+    if len(b) == 2:
+        print("%-26s %-9s reg1=%-2d reg2=%-2d op=0x%02X  (16-bit)"
+              % (src, hexs, w0 & 0x1F, (w0 >> 11) & 0x1F, op6))
+        continue
     w1 = b[2] | (b[3] << 8)
-    if (w0 >> 5) & 0x3F != 0x3F:
-        print("%-26s %-9s (not the Format X/FP opcode)" % (src, hexs))
+    if op6 != 0x3F:
+        print("%-26s %-9s reg1=%-2d reg2=%-2d op=0x%02X  imm16=0x%04X"
+              % (src, hexs, w0 & 0x1F, (w0 >> 11) & 0x1F, op6, w1))
         continue
     print("%-26s %-9s reg1=%-2d reg2=%-2d sub=0x%03X reg3=%-2d fff=%d"
           % (src, hexs, w0 & 0x1F, (w0 >> 11) & 0x1F,

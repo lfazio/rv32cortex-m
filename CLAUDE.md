@@ -1262,6 +1262,13 @@ register shifts `SHR`/`SAR`/`SHL reg1, reg2, reg3`, the high-speed divides
 and the imm9 multiplies `MUL`/`MULU imm9, reg2, reg3`. Single-precision
 floating point is implemented on SoftFloat behind `G4MH_EXT_FPU`.
 
+Then the slots that had to be *enumerated* rather than extended:
+`CLIP.B`/`.BU`/`.H`/`.HU`, the narrow atomics `LDL.BU`/`LDL.HU` and
+`STC.B`/`STC.H`, `FETRAP`, `SYSCALL`, and `CACHE`/`PREF` as no-ops.
+`RESBANK` is decoded and reports RIE, because register banks are not
+modelled and running it as `DI` -- which is what decoding on reg2 alone
+did -- is worse than saying so.
+
 Everything else raises `G4MH_EXC_RIE` -- which is the correct report for
 an unimplemented encoding **only if something catches it**. See the entry
 below on what RIE actually does in a flat guest, because for the whole
@@ -1273,11 +1280,9 @@ life of this frontend it did not report anything at all.
 |---|---|
 | double precision, and the `.L`/`.UL` conversions | single precision is there; `G4MH_EXT_FPU` gates the lot |
 | the disp23 loads and stores | the 48-bit long-displacement forms; they share the `0x3C`/`0x3D` slot with `LD.BU` and PREPARE and are declined there |
-| `CLIP.B`/`.BU`/`.H`/`.HU` | saturating narrowing |
-| `LD.DW` / `ST.DW`, `LDL.BU`/`LDL.HU`, `STC.B`/`STC.H` | the doubleword and narrow atomic accesses |
-| `LDM.MP` / `STM.MP`, `RESBANK` | bank and context-block transfers |
+| `LD.DW` / `ST.DW` | the doubleword accesses. CC-RH's assembler does not accept the mnemonics, so their encodings have not been checked against a second encoder and they are *not* guessed at |
+| `LDM.MP` / `STM.MP`, `RESBANK` | bank and context-block transfers. `RESBANK` is decoded and reports RIE rather than being mistaken for `DI` |
 | `DIVQ`/`DIVQU` with `reg2 == reg3` | the manual leaves the flags undefined there; this treats it as the ordinary case |
-| `FETRAP`, `SYSCALL` | further trap flavours; `TRAP` is there |
 | `PREPARE list12, imm5, imm32` | the only 64-bit encoding in the ISA, and past what the length decoder reports — see below |
 | `CACHE`, `PREF` | `SYNCE`/`SYNCM`/`SYNCP`/`SYNCI` and `SNOOZE` are decoded and are no-ops here |
 

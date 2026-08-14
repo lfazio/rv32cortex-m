@@ -30,6 +30,7 @@
 #include "g4mh/g4mh_decode.h"
 #include "g4mh/g4mh_config.h"
 #include "g4mh/g4mh_types.h"
+#include "g4mh/g4mh_cpu.h"
 #include "emu/emu_jit.h"
 
 #include <string.h>
@@ -95,6 +96,21 @@
 #define SUB_DIVQU   0x02FEu
 #define SUB_DIVH    0x0280u
 #define SUB_DIVHU   0x0282u
+/*
+ * The saturating narrowings, and the narrow halves of the link/store-
+ * conditional group. reg1 is CLIP's source and reg2 its destination --
+ * the opposite sense to most of this group.
+ */
+#define SUB_CLIPB   0x0008u
+#define SUB_CLIPBU  0x000Au
+#define SUB_CLIPH   0x000Cu
+#define SUB_CLIPHU  0x000Eu
+#define SUB_LDLBU   0x0370u
+#define SUB_STCB    0x0372u
+#define SUB_LDLHU   0x0374u
+#define SUB_STCH    0x0376u
+#define SUB_LDLW    0x0378u
+#define SUB_STCW    0x037Au
 /* imm9 splits: bits[8:5] into sub bits[5:2], bits[4:0] into the reg1 field. */
 #define SUB_MULI(i) (uint16_t)(0x0240u | ((((i) >> 5) & 0xFu) << 2))
 #define SUB_MULUI(i) (uint16_t)(0x0242u | ((((i) >> 5) & 0xFu) << 2))
@@ -227,6 +243,9 @@ static void test_conditions(void)
 /* ------------------------------------------------------------------ */
 
 #define TEST_RAM_SIZE  4096u
+/* Well clear of any program these tests load, so a store cannot land on
+ * the instruction stream and change what runs next. */
+#define TEST_SCRATCH   (EMU_GUEST_RAM_BASE + 0x400u)
 
 static uint8_t   g_ram[TEST_RAM_SIZE];
 static emu_bus_t g_bus;
@@ -292,6 +311,26 @@ static bool load_and_run(const uint16_t *hw, unsigned n, uint32_t budget,
 static uint32_t reg(unsigned r)
 {
     return g_core.ops->reg_read(g_core.cpu, r);
+}
+
+/*
+ * PSW and the system register file.
+ *
+ * `emu_cpu_t *` is a g4mh_cpu_t * in disguise -- the frontend's cpu_of()
+ * is the same cast -- and there is no ops entry for either, because
+ * neither is a general-purpose register and emu_cpu_ops_t deliberately
+ * knows nothing about what an architecture calls its state. Tests that
+ * check a *trap* have no other way in: the whole observable effect of
+ * FETRAP is which save register the return address landed in.
+ */
+static uint32_t psw(void)
+{
+    return ((const g4mh_cpu_t *)(const void *)g_core.cpu)->psw;
+}
+
+static uint32_t sreg(unsigned bank, unsigned idx)
+{
+    return ((const g4mh_cpu_t *)(const void *)g_core.cpu)->sr[bank][idx];
 }
 
 /* A word of guest RAM, little-endian. */
@@ -656,6 +695,170 @@ static void test_mul_imm9(void)
     CHECK_EQ(reg(11), 0xFFFFFFFFu);
     CHECK_EQ(reg(12), 7u * 511u);
     CHECK_EQ(reg(13), 0u);
+    CHECK_EQ(why, EMU_RUN_WFI);
+}
+
+/*
+ * CLIP, on the one input that separates the signed and unsigned forms.
+ *
+ * They differ in how they read the *source*, not only in where they
+ * clamp: 0xFFFFFFFF is -1 to CLIP.B, which is in range and passes
+ * through, and 4294967295 to CLIP.BU, which saturates to 255. An
+ * implementation that narrowed first and clamped after would give 255 and
+ * -1 the other way round, and every small positive input agrees.
+ */
+static void test_clip(void)
+{
+    /*
+     *   mov    -1, r10
+     *   clip.b  r10, r11    ; -1 in range   -> -1, OV clear
+     *   clip.bu r10, r12    ; huge unsigned -> 255, OV set
+     *   mov    200, r13
+     *   clip.b  r13, r14    ; 200 > 127     -> 127, OV set
+     *   clip.hu r13, r15    ; 200 in range  -> 200
+     *   halt
+     */
+    const uint16_t prog[] = {
+        F2(OP_MOVI, -1, 10),
+        W0(OP_SYSTEM, 10, 11), SUB_CLIPB,
+        W0(OP_SYSTEM, 10, 12), SUB_CLIPBU,
+        W0(OP_MOVEA, 13, 0), 0x00C8u, 0x0000u,   /* mov 200, r13 */
+        W0(OP_SYSTEM, 13, 14), SUB_CLIPB,
+        W0(OP_SYSTEM, 13, 15), SUB_CLIPHU,
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(11), 0xFFFFFFFFu);   /* signed: -1 is in range      */
+    CHECK_EQ(reg(12), 255u);          /* unsigned: saturates high    */
+    CHECK_EQ(reg(14), 127u);          /* signed: saturates high      */
+    CHECK_EQ(reg(15), 200u);          /* halfword unsigned: in range */
+    /* The last CLIP did not saturate, but SAT is sticky and two before
+     * it did -- so it must still be set. */
+    CHECK((psw() & G4MH_PSW_SAT) != 0u);
+    CHECK((psw() & G4MH_PSW_OV) == 0u);
+    CHECK_EQ(why, EMU_RUN_WFI);
+}
+
+/*
+ * FETRAP, which shared opcode 0x02 with DIVH and was being decoded as it.
+ *
+ * The tell is that a mis-decoded FETRAP does not fault: DIVH by r0 is a
+ * divide by zero, which on this architecture sets OV and retires. So the
+ * check is not "does it trap" but "did the pc go to the FE-level handler
+ * and did FEPC hold the return address" -- a wrong implementation reaches
+ * the halt with OV set and FEPC untouched.
+ */
+static void test_fetrap(void)
+{
+    /*
+     *   fetrap 3
+     *   halt                ; only reached if the trap did not happen
+     */
+    const uint16_t prog[] = {
+        (uint16_t)((3u << 11) | (0x02u << 5) | 0u),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    /* FE level: the return pc is the next instruction, and it lands in
+     * FEPC rather than EIPC. */
+    CHECK_EQ(sreg(0, G4MH_SR_FEPC), EMU_GUEST_RAM_BASE + 2u);
+    CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_FETRAP + 3u);
+    /* PSW.EP and PSW.NP are set on entry, and PSW.ID with them. */
+    CHECK((psw() & G4MH_PSW_EP) != 0u);
+    CHECK((psw() & G4MH_PSW_ID) != 0u);
+    /* And it is not a divide: OV must be untouched. */
+    CHECK((psw() & G4MH_PSW_OV) == 0u);
+}
+
+/*
+ * RESBANK shares reg2 == 0 with DI and differs only in reg3, so decoding
+ * on reg2 alone ran it as DI -- masking interrupts and restoring nothing.
+ * Register banks are not modelled, so the correct report is RIE; what
+ * this pins is that it is *not* silently DI.
+ */
+static void test_resbank_is_not_di(void)
+{
+    /*
+     *   ei                  ; clear PSW.ID so a stray DI is visible
+     *   resbank             ; must raise RIE, not set ID
+     *   halt
+     */
+    const uint16_t prog[] = {
+        W0(OP_SYSTEM, 0, 0x10u), SUB_DIEI,          /* ei      */
+        W0(OP_SYSTEM, 0, 0x00u), (uint16_t)((16u << 11) | SUB_DIEI),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    /* RIE is FE level, so the cause lands in FEIC. Decoded as DI it would
+     * have set PSW.ID and fallen through to the halt with FEIC zero. */
+    CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_RIE);
+}
+
+/*
+ * The narrow link/store-conditional pairs. LDL.BU and LDL.HU are
+ * zero-extending loads -- there is no signed form -- and STC.B/STC.H
+ * store only while the reservation stands.
+ */
+static void test_narrow_atomics(void)
+{
+    /*
+     *   mov   <ram>, r10
+     *   mov   0xAB, r11
+     *   st.b  r11, 0[r10]
+     *   ldl.bu [r10], r12    ; r12 = 0xAB, reservation taken
+     *   mov   0x5C, r13
+     *   stc.b r13, [r10]     ; succeeds, r13 = 1
+     *   ldl.bu [r10], r14    ; r14 = 0x5C
+     *   halt
+     */
+    const uint16_t prog[] = {
+        W0(OP_MOVEA, 10, 0),
+            (uint16_t)(TEST_SCRATCH & 0xFFFFu),
+            (uint16_t)(TEST_SCRATCH >> 16),
+        W0(OP_MOVEA, 11, 0), 0x00ABu, 0x0000u,
+        W0(OP_ST_B, 10, 11), 0x0000u,
+        W0(OP_SYSTEM, 10, 1), (uint16_t)((12u << 11) | SUB_LDLBU),
+        W0(OP_MOVEA, 13, 0), 0x005Cu, 0x0000u,
+        W0(OP_SYSTEM, 10, 0), (uint16_t)((13u << 11) | SUB_STCB),
+        W0(OP_SYSTEM, 10, 1), (uint16_t)((14u << 11) | SUB_LDLHU),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(12), 0xABu);         /* zero-extended, not sign      */
+    CHECK_EQ(reg(13), 1u);            /* the conditional store stood  */
+    CHECK_EQ(reg(14), 0x005Cu);       /* halfword read of the byte    */
     CHECK_EQ(why, EMU_RUN_WFI);
 }
 
@@ -2309,6 +2512,10 @@ void test_g4mh(void)
     test_divq_divh();
     test_divh_halfword_only();
     test_mul_imm9();
+    test_clip();
+    test_fetrap();
+    test_resbank_is_not_di();
+    test_narrow_atomics();
     test_swap();
     test_swap_halfword_flags();
     test_bit_search();
