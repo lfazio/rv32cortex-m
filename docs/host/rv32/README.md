@@ -18,7 +18,7 @@ ctest --test-dir build/host -L fast
 
 | suite | result |
 |---|---|
-| riscv-arch-test | **230/230** with `-DRV32_FPU_SOFTFLOAT=ON`; **178/230** without, and every one of the 52 failures is F |
+| riscv-arch-test | **274/274**. SoftFloat is mandatory now; when it was optional, turning it off failed 52 tests and every one of them was F |
 | riscv-tests (Berkeley) | **77/77** |
 | ctest `-L fast` | unit tests + the guest self-test through the runner |
 
@@ -67,7 +67,7 @@ that failure looks like an emulator bug until you disassemble the test.
 - **Folding both behind one `h->fetch_guard` took the PMP execute check
   from 9.3% to 2.7%.** Anything on the fetch path is paid per instruction
   by every guest, so give the features one branch, not one each. Measured
-  on `-DRV32_JIT=OFF`, which is where a fetch cost lands.
+  on `-DEMU_JIT=OFF`, which is where a fetch cost lands.
 - **Compressed guest code is slower to interpret, not faster.** Enabling
   Zcb in guest codegen cost ~9% on CoreMark at an identical instruction
   count: the compiler swapped 32-bit encodings for Zcb ones, each of which

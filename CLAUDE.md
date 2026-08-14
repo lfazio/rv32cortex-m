@@ -76,7 +76,7 @@ architecture, so it gets the default.
 
 Useful options: `-DEMU_JIT=OFF` (interpreter, for isolating JIT bugs),
 `-DEMU_JIT_CODE_BYTES=2048` (forces compaction — a good stress test),
-`-DEMU_NATIVE_COREMARK=ON` (native ARM baseline instead of the emulator),
+`-DRV32_NATIVE_COREMARK=ON` (native ARM baseline instead of the emulator),
 `-DRV_GUEST_MARCH=...` (guest ISA; a **cache variable**, so pass it explicitly
 when changing it), `-DRV32_GUEST=isatest|hello|bench|stm32drv|coremark`.
 
@@ -186,8 +186,9 @@ Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
   table on the argument that the host has an FPU.
 
   **The option that hid this named a variable that does not exist.**
-  These notes said `-DEMU_FPU_SOFTFLOAT=ON` against a real
-  `RV32_FPU_SOFTFLOAT`, defaulting to OFF. So every default build had an
+  These notes named the option `EMU_FPU_SOFTFLOAT` against a real
+  `RV32_FPU_SOFTFLOAT`, defaulting to OFF. (Both names are history now:
+  SoftFloat is mandatory and neither option exists.) So every default build had an
   FP unit failing two thirds of the F suite, and the documented way to
   check that theory changed nothing and reported nothing -- which reads
   as "SoftFloat makes no difference" rather than as a typo. A build flag
@@ -594,7 +595,7 @@ Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
   cyc/insn); it is the *guest* march that costs. Toggle `RV32_EXT_ZCB` against
   a fixed guest binary to separate the two.
 - **Instruction fusion is the wrong target; the register-file round trip
-  is the right one.** Measured with `-DEMU_PAIR_STATS=ON`, which
+  is the right one.** Measured with `-DRV32_PAIR_STATS=ON`, which
   histograms adjacent *executed* instruction pairs on the interpreter:
 
   | guest | pairs | dependent | of which dead | addr-gen -> mem |
@@ -632,7 +633,7 @@ Still to do: TFTP with `rom`/`ram` pseudo-files, and the RISCOF shim.
   Every 32-bit data-processing instruction on ARM carries a shift on its
   second operand, so folding a shift into the ALU op that consumes it is
   one instruction instead of two -- and it fires on nothing. Measured
-  with `-DEMU_PAIR_STATS=ON` on CoreMark *after* building it:
+  with `-DRV32_PAIR_STATS=ON` on CoreMark *after* building it:
 
   | pair | share |
   |---|---|

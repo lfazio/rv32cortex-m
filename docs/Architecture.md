@@ -112,7 +112,7 @@ Nothing in `src/emu/` or `src/platform/` should need editing beyond step 3.
 That is the property to check when the contract changes:
 
 ```sh
-cmake -B build/g4mh -DRV32_PLATFORM=stm32f446 \
+cmake -B build/g4mh -DEMU_PLATFORM=stm32f446 \
       -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
       -DEMU_FRONTEND_RV32=OFF -DEMU_FRONTEND_G4MH=ON
 cmake --build build/g4mh
@@ -124,14 +124,14 @@ If that links, the seams hold.
 
 ```sh
 # host: development and both RISC-V test suites
-cmake -B build/host -DRV32_PLATFORM=host -DCMAKE_BUILD_TYPE=Release
+cmake -B build/host -DEMU_PLATFORM=host -DCMAKE_BUILD_TYPE=Release
 cmake --build build/host && ctest --test-dir build/host -L fast
 
 # both frontends, so the runner can pick with --frontend
-cmake -B build/both -DRV32_PLATFORM=host -DEMU_FRONTEND_G4MH=ON
+cmake -B build/both -DEMU_PLATFORM=host -DEMU_FRONTEND_G4MH=ON
 
 # firmware
-cmake -B build/stm32f446 -DRV32_PLATFORM=stm32f446 \
+cmake -B build/stm32f446 -DEMU_PLATFORM=stm32f446 \
       -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
       -DCMAKE_BUILD_TYPE=Release -DRV32_GUEST=isatest
 cmake --build build/stm32f446 --target flash

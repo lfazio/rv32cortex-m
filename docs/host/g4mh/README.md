@@ -4,7 +4,7 @@ The Renesas RH850 G4MH frontend on the native runner, on the interpreter.
 The only pair where G4MH has actually executed anything.
 
 ```sh
-cmake -B build/both -DRV32_PLATFORM=host -DEMU_FRONTEND_G4MH=ON
+cmake -B build/both -DEMU_PLATFORM=host -DEMU_FRONTEND_G4MH=ON
 cmake --build build/both
 ./build/both/tests/unit/rv32-unit     # includes the G4MH tests
 ```

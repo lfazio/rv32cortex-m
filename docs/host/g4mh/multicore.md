@@ -10,7 +10,7 @@ programs that exist are hand-assembled.
 Run it with:
 
 ```sh
-cmake -B build/mc -DRV32_PLATFORM=host -DEMU_FRONTEND_G4MH=ON \
+cmake -B build/mc -DEMU_PLATFORM=host -DEMU_FRONTEND_G4MH=ON \
       -DG4MH_PE_COUNT=3
 cmake --build build/mc && ./build/mc/tests/unit/rv32-unit
 ./build/mc/rv32-host --frontend g4mh --cores 3 --quantum 8 <image>

@@ -6,7 +6,7 @@ frontend seam holds through the platform layer, and the only thing this
 pair has been shown to do.
 
 ```sh
-cmake -B build/g4mh -DRV32_PLATFORM=stm32f446 \
+cmake -B build/g4mh -DEMU_PLATFORM=stm32f446 \
       -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
       -DCMAKE_BUILD_TYPE=Release \
       -DEMU_FRONTEND_RV32=OFF -DEMU_FRONTEND_G4MH=ON

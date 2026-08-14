@@ -45,14 +45,14 @@ The host suites **cannot** exercise any of this. The check is flashing
 `isatest` (243 checks) and reading the UART:
 
 ```sh
-cmake -B build/stm32f446 -DRV32_PLATFORM=stm32f446 \
+cmake -B build/stm32f446 -DEMU_PLATFORM=stm32f446 \
       -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
       -DCMAKE_BUILD_TYPE=Release -DRV32_GUEST=isatest
 cmake --build build/stm32f446 --target flash
 ```
 
 This has caught real bugs, including an inlined store that skipped the
-LR/SC reservation break. Build `-DRV32_JIT=OFF` to run the same guest on
+LR/SC reservation break. Build `-DEMU_JIT=OFF` to run the same guest on
 the interpreter — with the JIT on, FP arithmetic goes to VFP and never
 reaches SoftFloat, so running `isatest` both ways is a differential check
 between two genuinely different FP implementations.
