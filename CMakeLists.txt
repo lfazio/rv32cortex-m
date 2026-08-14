@@ -190,6 +190,30 @@ option(G4MH_ENABLE_DISASM "Build the G4MH disassembler" ON)
 # See docs/host/g4mh/multicore.md.
 set(G4MH_PE_COUNT "1" CACHE STRING "G4MH processing elements (1..3)")
 
+# How much of the U2B6's memory map this build actually backs.
+#
+# The architectural sizes -- 3 MiB of code flash, 384 KiB of cluster RAM,
+# 64 KiB of local RAM per PE -- are 3.44 MiB, which is .bss the frontend
+# allocated unconditionally and which no microcontroller has. Sizing them
+# here is the same tension EMU_JIT_CODE_BYTES has: on a target every byte
+# is a byte the guest does not get.
+#
+# Flash is the one that is not a trade-off. It is where code is *executed
+# from*, so a platform serves the guest image out of its own flash through
+# g4mh_set_flash() and pays nothing -- which is what the RV32 side already
+# does with its ROM region. G4MH_FLASH_KIB only sizes the fallback arena
+# the host runner needs, because its ELF loader writes the image into
+# guest memory; firmware sets it to 0 and the arena does not exist.
+if(EMU_PLATFORM STREQUAL "host")
+    set(_g4mh_flash_kib 256)
+else()
+    set(_g4mh_flash_kib 0)
+endif()
+set(G4MH_FLASH_KIB "${_g4mh_flash_kib}" CACHE STRING
+    "G4MH code-flash arena, KiB (0 = the platform supplies it)")
+set(G4MH_CRAM_KIB "128" CACHE STRING "G4MH cluster RAM backed, KiB")
+set(G4MH_LRAM_KIB "64"  CACHE STRING "G4MH local RAM per PE backed, KiB")
+
 # ---------------------------------------------------------------------
 # Runtime library: portable C11, no platform and no ISA dependencies
 # ---------------------------------------------------------------------
@@ -316,6 +340,9 @@ if(EMU_FRONTEND_G4MH)
         G4MH_ENABLE_DISASM=$<BOOL:${G4MH_ENABLE_DISASM}>
         G4MH_PE_COUNT=${G4MH_PE_COUNT}u
         G4MH_EXT_FPU=$<BOOL:${G4MH_EXT_FPU}>
+        G4MH_FLASH_KIB=${G4MH_FLASH_KIB}u
+        G4MH_CRAM_KIB=${G4MH_CRAM_KIB}u
+        G4MH_LRAM_KIB=${G4MH_LRAM_KIB}u
     )
 endif()
 

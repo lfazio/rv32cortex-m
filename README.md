@@ -172,7 +172,10 @@ gdb-multiarch build/f746/src/platform/stm32f746/rv32-stm32f746.elf \
 ```
 
 That debugs the *emulator*. To debug the **guest**, use the built-in RSP
-stub: `rv32-host --gdb`, then `target remote :1234`.
+stub: `rv32-host --gdb`, then `target remote :1234`. Two connections,
+two different programs -- [docs/gdb.md](docs/gdb.md) has the rest,
+including the three RSP mistakes that fail by hanging rather than
+erroring.
 
 The host `gdb` on Debian is x86-only; use `gdb-multiarch`, or
 `probe-rs gdb`.
@@ -236,6 +239,8 @@ Guest images (`tests/guest/`):
 | [docs/jit/tuning.md](docs/jit/tuning.md) | every knob, what it is worth, what can see it |
 | [docs/validation.md](docs/validation.md) | the suites, and the bugs they caught |
 | [docs/performance.md](docs/performance.md) | the measured figures |
+| [docs/memory.md](docs/memory.md) | ROM, RAM and flash: who backs what, and why the platform does |
+| [docs/gdb.md](docs/gdb.md) | the guest stub and the emulator stub -- two connections, different programs |
 | [docs/porting.md](docs/porting.md) | porting to another target |
 | [docs/TODO.md](docs/TODO.md) | open work |
 | [docs/host/](docs/host/README.md), [docs/stm32f446/](docs/stm32f446/README.md) | per-platform and per-platform/frontend notes |

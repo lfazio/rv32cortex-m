@@ -76,7 +76,17 @@
  * emulator has nothing to put behind yet.
  */
 
-/* Code flash, bank A. Reset fetches from 0 unless RBASE says otherwise. */
+/*
+ * Code flash, bank A. Reset fetches from 0 unless RBASE says otherwise.
+ *
+ * G4MH_FLASH_SIZE is the *part's* size. What this emulator backs is
+ * G4MH_FLASH_KIB, and the two are deliberately different numbers: flash
+ * is where code is executed from, so on a target it is the host's own
+ * flash holding the guest image and costs no RAM at all -- the same
+ * arrangement the RV32 side uses for its ROM region. Backing the
+ * architectural 3 MiB with .bss is what made this frontend unable to
+ * link as firmware at all.
+ */
 #define G4MH_FLASH_BASE         0x00000000u
 #define G4MH_FLASH_SIZE         0x00300000u    /* 3 MiB, the U2B6's bank A */
 
@@ -115,5 +125,43 @@
  */
 #define G4MH_CRAM_BASE          0xFE000000u
 #define G4MH_CRAM_SIZE          0x00060000u    /* 384 KiB */
+
+/* ------------------------------------------------------------------ */
+/* What this build actually backs                                      */
+/* ------------------------------------------------------------------ */
+/*
+ * The sizes above describe the U2B6. The sizes below are what a given
+ * build allocates, and on a microcontroller every byte of them is a byte
+ * the guest does not get -- the same tension EMU_JIT_CODE_BYTES has, and
+ * settled the same way: state it rather than assume it.
+ *
+ * Set from CMake (G4MH_CRAM_KIB, G4MH_LRAM_KIB, G4MH_FLASH_KIB). A flash
+ * size of zero means "the platform supplies it", which is what the
+ * firmware does: it serves the guest image out of the part's own flash,
+ * read-only, for nothing.
+ */
+#ifndef G4MH_CRAM_KIB
+#  define G4MH_CRAM_KIB         128u
+#endif
+#ifndef G4MH_LRAM_KIB
+#  define G4MH_LRAM_KIB         64u
+#endif
+#ifndef G4MH_FLASH_KIB
+#  define G4MH_FLASH_KIB        256u
+#endif
+
+#define G4MH_CRAM_BACKED        (G4MH_CRAM_KIB * 1024u)
+#define G4MH_LRAM_BACKED        (G4MH_LRAM_KIB * 1024u)
+#define G4MH_FLASH_BACKED       (G4MH_FLASH_KIB * 1024u)
+
+#if G4MH_CRAM_BACKED > G4MH_CRAM_SIZE
+#  error "G4MH_CRAM_KIB exceeds the part's cluster RAM"
+#endif
+#if G4MH_LRAM_BACKED > G4MH_LRAM_SIZE
+#  error "G4MH_LRAM_KIB exceeds the part's local RAM"
+#endif
+#if G4MH_FLASH_BACKED > G4MH_FLASH_SIZE
+#  error "G4MH_FLASH_KIB exceeds the part's code flash"
+#endif
 
 #endif /* G4MH_G4MH_MEMMAP_H */

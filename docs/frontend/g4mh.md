@@ -11,8 +11,10 @@ second *encoder* (CC-RH), and a compiled guest — and nothing at all that
 will tell you an **answer** is wrong. Treat any G4MH semantic result as
 verified only as far as `tests/unit/test_g4mh.c` reaches.
 
-Host-only for now: the frontend models the U2B6's whole memory map as
-static arrays (3.44 MiB), so it cannot link as firmware. See task #31.
+Runs on a host and as firmware. What it *backs* of the U2B6's memory map
+is a build setting -- 128 KiB of cluster RAM and 64 KiB of local RAM by
+default, and code flash supplied by the platform rather than allocated.
+See [../memory.md](../memory.md).
 
 
 **Implemented.** Formats I and II (the 16-bit reg-reg and imm5 ALU),

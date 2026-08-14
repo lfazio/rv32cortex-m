@@ -263,6 +263,27 @@ extern const emu_backend_t *g4mh_backend;
 
 emu_run_reason_t g4mh_step(g4mh_cpu_t *c);
 
+/* ------------------------------------------------------------------ */
+/* Code flash                                                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Say where code flash is backed, before bringing a core up.
+ *
+ * Flash is where code is *executed from*, so on a target it is the host
+ * part's own flash holding the guest image: pass that pointer with
+ * `writable` false and the region costs no RAM at all, which is the
+ * arrangement the RV32 side already uses for its ROM region. A guest
+ * write then faults, which is what a real part does and what this
+ * frontend cannot otherwise model without a flash sequencer.
+ *
+ * A platform that does not call this gets a writable arena of
+ * G4MH_FLASH_KIB instead -- the host runner needs one, because its ELF
+ * loader writes the image straight into guest memory. Firmware builds set
+ * G4MH_FLASH_KIB=0 so that arena does not exist.
+ */
+void g4mh_set_flash(const void *base, uint32_t size, bool writable);
+
 #ifdef __cplusplus
 }
 #endif

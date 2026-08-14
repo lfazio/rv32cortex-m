@@ -132,18 +132,42 @@ static emu_run_reason_t g4mh_ops_step(emu_cpu_t *cpu)
  * same address, so all cores see the same global controller.
  */
 /*
- * Backing memory for the map above.
+ * Backing memory for the map above -- and note what is *not* here.
  *
- * Static rather than allocated because the frontend has no teardown hook
- * and the host runs one system per process; 3 MiB of flash plus 384 KiB of
- * cluster RAM plus 64 KiB per PE is a few megabytes of .bss on a machine
- * that has gigabytes. On a target where that mattered this would have to
- * come from the platform, which is why the sizes are named in the header
- * rather than written here.
+ * Code flash is not allocated. It is where code is executed from, so on a
+ * target it is the host part's own flash holding the guest image, exposed
+ * read-only and costing no RAM at all; that is exactly what the RV32 side
+ * does with its ROM region, and `g4mh_set_flash` is how a platform says
+ * so. Backing the architectural 3 MiB with .bss meant this frontend could
+ * not link as firmware: 3 MiB of flash plus 384 KiB of cluster RAM plus
+ * 64 KiB per PE is 3.44 MiB of .bss on a part with 320 KiB of SRAM.
+ *
+ * What is left is sized by G4MH_CRAM_KIB and G4MH_LRAM_KIB, because on a
+ * microcontroller every byte of it is a byte the guest does not get.
  */
-static uint8_t g_flash[G4MH_FLASH_SIZE];
-static uint8_t g_cram[G4MH_CRAM_SIZE];
-static uint8_t g_lram[G4MH_PE_COUNT][G4MH_LRAM_SIZE];
+static uint8_t g_cram[G4MH_CRAM_BACKED];
+static uint8_t g_lram[G4MH_PE_COUNT][G4MH_LRAM_BACKED];
+
+/* Where code flash is backed, if a platform has said. */
+static const void *g_flash_ptr;
+static uint32_t    g_flash_len;
+static bool        g_flash_rw;
+
+#if G4MH_FLASH_BACKED > 0u
+/*
+ * The fallback arena, for a platform that does not supply flash -- the
+ * host runner, whose ELF loader writes the image straight into it, so it
+ * has to be writable. Firmware sets G4MH_FLASH_KIB=0 and this disappears.
+ */
+static uint8_t g_flash_arena[G4MH_FLASH_BACKED];
+#endif
+
+void g4mh_set_flash(const void *base, uint32_t size, bool writable)
+{
+    g_flash_ptr = base;
+    g_flash_len = size;
+    g_flash_rw  = writable;
+}
 
 static bool g4mh_ops_add_shared_devices(emu_bus_t *bus)
 {
@@ -151,17 +175,37 @@ static bool g4mh_ops_add_shared_devices(emu_bus_t *bus)
      * Code flash and cluster RAM are one memory the whole cluster shares,
      * so every core's bus points at the same backing store -- which is
      * what makes a store from one PE visible to the next.
-     *
-     * Flash is added as RAM rather than as a read-only region: there is no
-     * flash controller here, the image is loaded by the ELF loader
-     * writing straight to it, and a guest that writes to its own code is
-     * doing something a real part would refuse. Modelling that refusal
-     * needs the flash sequencer, which is a separate piece of work.
      */
-    return emu_bus_add_ram(bus, "flash", G4MH_FLASH_BASE,
-                           g_flash, G4MH_FLASH_SIZE) &&
-           emu_bus_add_ram(bus, "cram", G4MH_CRAM_BASE,
-                           g_cram, G4MH_CRAM_SIZE) &&
+    const void *fp = g_flash_ptr;
+    uint32_t    fl = g_flash_len;
+    bool        rw = g_flash_rw;
+
+#if G4MH_FLASH_BACKED > 0u
+    if (fp == NULL) {
+        fp = g_flash_arena;
+        fl = (uint32_t)sizeof(g_flash_arena);
+        rw = true;
+    }
+#endif
+
+    /*
+     * Writable flash is a simplification, not a model: there is no flash
+     * sequencer here, and a guest writing its own code is doing something
+     * a real part would refuse. A platform serving the image out of its
+     * own flash passes writable=false and gets the refusal for free.
+     */
+    if (fp != NULL && fl != 0u) {
+        const bool ok = rw
+            ? emu_bus_add_ram(bus, "flash", G4MH_FLASH_BASE,
+                              (void *)(uintptr_t)fp, fl)
+            : emu_bus_add_rom(bus, "flash", G4MH_FLASH_BASE, fp, fl);
+        if (!ok) {
+            return false;
+        }
+    }
+
+    return emu_bus_add_ram(bus, "cram", G4MH_CRAM_BASE,
+                           g_cram, (uint32_t)sizeof(g_cram)) &&
            emu_bus_add_mmio(bus, "intc2", G4MH_INTC2_BASE,
                             G4MH_INTC2_SIZE, &g4mh_intc2_ops, &g_intc[0]) &&
            emu_bus_add_mmio(bus, "ostm0", G4MH_OSTM0_BASE,
@@ -202,14 +246,14 @@ static bool g4mh_ops_add_core_devices(emu_cpu_t *cpu, emu_bus_t *bus,
      * PE0_BASE - n * STRIDE -- see the note in g4mh_memmap.h.
      */
     if (!emu_bus_add_ram(bus, "lram-self", G4MH_LRAM_SELF_BASE,
-                         g_lram[index], G4MH_LRAM_SIZE)) {
+                         g_lram[index], (uint32_t)sizeof(g_lram[0]))) {
         return false;
     }
     for (unsigned pe = 0; pe < G4MH_PE_COUNT; pe++) {
         static const char *const lnm[3] = { "lram-pe0", "lram-pe1",
                                             "lram-pe2" };
         if (!emu_bus_add_ram(bus, lnm[pe], G4MH_LRAM_PE_BASE(pe),
-                             g_lram[pe], G4MH_LRAM_SIZE)) {
+                             g_lram[pe], (uint32_t)sizeof(g_lram[0]))) {
             return false;
         }
     }

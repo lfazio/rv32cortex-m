@@ -1222,16 +1222,17 @@ Nothing in `src/emu/` or `src/platform/` should need editing beyond step 3.
 That is the property to check when the contract changes: build the firmware
 with `-DEMU_FRONTEND_RV32=OFF -DEMU_FRONTEND_G4MH=ON` and see that it links.
 
-**That check does not currently pass, and has never passed** -- see task
-#31. `g4mh_frontend.c` models the U2B6's whole memory map as `.bss`
-(3 MiB of flash, 384 KiB of CRAM, 64 KiB of LRAM per PE = 3.44 MiB), so
-the F746 link fails with `cannot move location counter backwards` on a
-part with 320 KiB. The *host* configurations are all fine and are what
-the unit tests and guests run on. Until #31 is resolved, use
-`-DEMU_FRONTEND_RV32=OFF -DEMU_FRONTEND_G4MH=ON` on the **host** as the
-contract check; it does catch the interesting class of error (it is what
-caught `emu_ir_jit.c` sitting in the RV32-only source block), just not
-the target-sizing one.
+That check passes now, and did not until recently: `g4mh_frontend.c`
+modelled the U2B6's whole memory map as `.bss` -- 3 MiB of code flash,
+384 KiB of cluster RAM, 64 KiB of local RAM per PE -- which is 3.44 MiB
+on a part with 320 KiB, and the link failed with `cannot move location
+counter backwards`. **A frontend that allocates its own memory map works
+on a host and cannot be ported**, and nothing says so until someone
+builds the firmware. Flash especially: it is where code is *executed
+from*, so the platform serves the guest image out of its own flash
+read-only and pays nothing, exactly as the RV32 side already did. See
+[`docs/memory.md`](docs/memory.md).
+
 ### G4MH scope
 
 Moved to [`docs/frontend/g4mh.md`](docs/frontend/g4mh.md) -- what is

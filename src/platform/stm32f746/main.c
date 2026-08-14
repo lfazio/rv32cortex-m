@@ -20,6 +20,11 @@
 #include "emu/emu_dev.h"
 #include "emu/emu_memmap.h"
 
+#if EMU_FRONTEND_G4MH
+/* For g4mh_set_flash(): this platform serves code flash from its own. */
+#  include "g4mh/g4mh_cpu.h"
+#endif
+
 #if EMU_FRONTEND_RV32
 #  include "rv32/rv_backend.h"  /* which backend came up */
 #  include "rv32/rv_jit.h"      /* JIT statistics, reported below */
@@ -584,6 +589,24 @@ static bool start_guest(void)
      */
     if (g_core.cpu != NULL) {
         const emu_cpu_ops_t *ops = g_core.ops;
+
+#if EMU_FRONTEND_G4MH
+        /*
+         * G4MH resets fetching from code flash at address 0, and on this
+         * part code flash is the part's own flash -- the same arrangement
+         * the RV32 path above uses for its ROM region, and for the same
+         * reason: the image is already there, so serving it read-only
+         * costs no SRAM at all. Backing the architectural 3 MiB with .bss
+         * is what stopped this configuration linking.
+         *
+         * Read-only is not a limitation here, it is the model: there is
+         * no flash sequencer, and a guest writing its own code is doing
+         * something a real part refuses. This makes it fault.
+         *
+         * Said before add_shared_devices, which is what reads it.
+         */
+        g4mh_set_flash(g_img, g_img_size, false);
+#endif
 
         if ((ops->add_shared_devices != NULL &&
              !ops->add_shared_devices(&g_bus)) ||
