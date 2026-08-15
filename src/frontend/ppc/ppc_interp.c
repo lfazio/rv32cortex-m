@@ -439,6 +439,39 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 break;
             }
 
+            case 0x1D: {                    /* e_rlwinm / e_rlwimi      */
+                /*
+                 * **Bit 0 is not Rc here.** It picks between rlwimi (0)
+                 * and rlwinm (1), which is the reverse of the intuition
+                 * a Book E reader brings: e_rlwinm r3,r4,5,6,7 assembles
+                 * as ...8F and e_rlwimi as ...8E. Read as a record bit,
+                 * every e_rlwinm becomes an insert -- which merges with
+                 * the old rA instead of replacing it, so the answer is
+                 * only wrong when rA held something.
+                 */
+                const uint32_t rs = ppc_rd(insn);
+                const uint32_t sh = (insn >> 11) & 0x1Fu;
+                const uint32_t mb = (insn >> 6) & 0x1Fu;
+                const uint32_t me = (insn >> 1) & 0x1Fu;
+                const uint32_t rot = (sh == 0u) ? c->r[rs]
+                                   : ((c->r[rs] << sh) | (c->r[rs] >> (32u - sh)));
+                /*
+                 * MB and ME are bit numbers from the *most* significant
+                 * end and the range is inclusive, so mb > me is a
+                 * legitimate wrapped mask rather than an error.
+                 */
+                const uint32_t m = (mb <= me)
+                    ? ((0xFFFFFFFFu >> mb) & (0xFFFFFFFFu << (31u - me)))
+                    : ((0xFFFFFFFFu >> mb) | (0xFFFFFFFFu << (31u - me)));
+
+                if ((insn & 1u) != 0u) {        /* e_rlwinm */
+                    c->r[ra] = rot & m;
+                } else {                        /* e_rlwimi */
+                    c->r[ra] = (rot & m) | (c->r[ra] & ~m);
+                }
+                break;
+            }
+
             case 0x1C:                      /* e_li  (LI20)             */
                 /*
                  * LI20 is split into *three* fields and not in address
@@ -461,7 +494,56 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                                           (insn & 0x7FFu);
                     c->r[rd] = (uint32_t)((int32_t)(li20 << 12) >> 12);
                 } else {
-                    EXC(PPC_IVOR_PROGRAM);
+                    /*
+                     * The I16A and I16L forms, told apart by the XO at
+                     * bits[15:11]. Both split their 16-bit immediate
+                     * across two fields, and *which* two depends on the
+                     * form -- because the field not used for the
+                     * immediate is the register:
+                     *
+                     *   I16L (rD, ui16): rD = [25:21], imm = [20:16]:[10:0]
+                     *   I16A (rA, si16): rA = [20:16], imm = [25:21]:[10:0]
+                     *
+                     * So the same bits are a register in one form and
+                     * the top of an immediate in the other. Confirmed
+                     * with 0x8001, which needs bit 15 of the immediate
+                     * and so cannot be produced by the low field alone.
+                     */
+                    const uint32_t xo = (insn >> 11) & 0x1Fu;
+                    const uint32_t lo = insn & 0x7FFu;
+                    const uint32_t hi_l = (insn >> 16) & 0x1Fu;
+                    const uint32_t hi_a = (insn >> 21) & 0x1Fu;
+                    const uint32_t ui16_l = (hi_l << 11) | lo;
+                    const uint32_t ui16_a = (hi_a << 11) | lo;
+
+                    switch (xo) {
+                    case 0x13u:             /* e_cmp16i   rA, si16      */
+                        cr_compare(c, 0u, c->r[ra],
+                                   (uint32_t)(int32_t)(int16_t)ui16_a, true);
+                        break;
+                    case 0x15u:             /* e_cmpl16i  rA, ui16      */
+                        cr_compare(c, 0u, c->r[ra], ui16_a, false);
+                        break;
+                    case 0x18u:             /* e_or2i     rD, ui16      */
+                        c->r[rd] |= ui16_l;
+                        break;
+                    case 0x19u:             /* e_and2i.   rD, ui16      */
+                        c->r[rd] &= ui16_l;
+                        cr0_from(c, c->r[rd]);
+                        break;
+                    case 0x1Au:             /* e_or2is    rD, ui16      */
+                        c->r[rd] |= ui16_l << 16;
+                        break;
+                    case 0x1Cu:             /* e_lis      rD, ui16      */
+                        c->r[rd] = ui16_l << 16;
+                        break;
+                    case 0x1Du:             /* e_and2is.  rD, ui16      */
+                        c->r[rd] &= ui16_l << 16;
+                        cr0_from(c, c->r[rd]);
+                        break;
+                    default:
+                        EXC(PPC_IVOR_PROGRAM);
+                    }
                 }
                 break;
 

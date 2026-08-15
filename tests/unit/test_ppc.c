@@ -643,6 +643,84 @@ static void test_e_sci8_and_lha(void)
     CHECK_EQ(reg(9), 4096u & 0xFFFFFF00u);
 }
 
+/*
+ * The I16A/I16L group and the rotate-and-mask forms.
+ *
+ * Two field traps, both checked with values that discriminate:
+ *
+ *   - The 16-bit immediate is split across *two* fields, and which two
+ *     depends on the form, because the field not carrying the immediate
+ *     is the register. 0x8001 is used deliberately: it needs bit 15,
+ *     which the low 11-bit field cannot reach, so a single-field reading
+ *     produces 1 rather than 32769.
+ *   - **Bit 0 of e_rlwinm is not Rc.** It selects insert (0) against
+ *     rotate-and-mask (1). Read as a record bit, every e_rlwinm becomes
+ *     an insert -- which merges with the old rA instead of replacing it,
+ *     so the answer is wrong only when rA held something. r9 is loaded
+ *     from a zeroed register and r11 from 0xFFFF0000 for exactly that
+ *     reason: one would pass either way, the pair cannot.
+ */
+static void test_e_i16_and_rotate(void)
+{
+    static const uint16_t prog[] = {
+        0x7070u, 0xE001u,   /* e_lis     r3,0x8001  -- needs bit 15   */
+        0x7062u, 0xC234u,   /* e_or2i    r3,0x1234                    */
+        0x7080u, 0x00FFu,   /* e_li      r4,255                       */
+        0x7080u, 0xC80Fu,   /* e_and2i.  r4,0x000F  -- 15             */
+        0x70A0u, 0x0001u,   /* e_li      r5,1                         */
+        0x70A2u, 0xD234u,   /* e_or2is   r5,0x1234  -- shifted 16     */
+        0x70DFu, 0xE7FFu,   /* e_lis     r6,0xFFFF                    */
+        0x70C0u, 0xE8FFu,   /* e_and2is. r6,0x00FF  -- 0x00FF0000     */
+        0x70E0u, 0x0007u,   /* e_li      r7,7                         */
+        0x73E7u, 0x9FFEu,   /* e_cmp16i  r7,-2      -- 7 > -2 -> GT   */
+        0x7102u, 0x0234u,   /* e_li      r8,0x1234                    */
+        0x7509u, 0x442Fu,   /* e_rlwinm  r9,r8,8,16,23                */
+        0x7141u, 0x070Fu,   /* e_li      r10,0xF0F                    */
+        0x717Fu, 0xE7FFu,   /* e_lis     r11,0xFFFF -- rA is not zero */
+        0x754Bu, 0x2536u,   /* e_rlwimi  r11,r10,4,20,27              */
+        0x719Fu, 0xE7FFu,   /* e_lis     r12,0xFFFF -- non-zero dest   */
+        0x750Cu, 0x442Fu,   /* e_rlwinm  r12,r8,8,16,23                */
+        0x0002u,            /* se_sc                                  */
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run_vle(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                          &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(3), 0x80010000u | 0x1234u);
+    CHECK_EQ(reg(4), 255u & 15u);
+    CHECK_EQ(reg(5), 1u | (0x1234u << 16));
+    CHECK_EQ(reg(6), 0xFFFF0000u & (0x00FFu << 16));
+    /* Signed compare: 7 > -2. An unsigned one would say less-than. */
+    CHECK_EQ((core()->cr >> 28) & 0xFu, (uint32_t)PPC_CR_GT);
+
+    /* rotl(0x1234, 8) = 0x123400; masked to bits 16..23 -> 0x00003400
+     * ... and r9 was zero, so insert and replace agree here. */
+    CHECK_EQ(reg(9), 0x00003400u);
+    /*
+     * ...which is why r11 matters: it holds 0xFFFF0000 and e_rlwimi must
+     * *keep* the bits outside the mask. rotl(0xF0F,4) = 0xF0F0; the mask
+     * for MB=20,ME=27 is 0x00000FF0, so the inserted part is 0xF0F0 &
+     * 0xFF0 = 0x0F0 and the whole of 0xFFFF0000 survives beside it.
+     *
+     * (0xFFFF00F0, not 0xFFFF0000 -- the first version of this line had
+     * the mask arithmetic wrong and the emulator was right.)
+     */
+    CHECK_EQ(reg(11), 0xFFFF00F0u);
+    /*
+     * And this is what actually separates rlwinm from rlwimi. r9 above
+     * could not: it was zero beforehand, so replacing and inserting give
+     * the same answer, and reverting bit 0 to a record bit left the
+     * suite green. r12 holds 0xFFFF0000 first, so rlwinm must *discard*
+     * it and rlwimi would keep it.
+     */
+    CHECK_EQ(reg(12), 0x00003400u);
+}
+
 void test_ppc(void)
 {
     test_vle_length();
@@ -657,4 +735,5 @@ void test_ppc(void)
     test_se_sd4_is_scaled();
     test_e_forms();
     test_e_sci8_and_lha();
+    test_e_i16_and_rotate();
 }
