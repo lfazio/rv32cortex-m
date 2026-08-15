@@ -330,6 +330,195 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
             goto retired_insn;
         }
 
+        /*
+         * VLE's 32-bit e_ forms have their own primary opcodes: e_lwz is
+         * 0x14 where Book E's lwz is 0x20. Only the X-form pool at 0x1F
+         * is shared, so the two switches meet there and nowhere else.
+         */
+        if (c->vle) {
+            const uint32_t rd = ppc_rd(insn);
+            const uint32_t ra = ppc_ra(insn);
+
+            switch (ppc_op6(insn)) {
+            case 0x0C:                      /* e_lbz                    */
+            case 0x0D:                      /* e_stb                    */
+            case 0x0E:                      /* e_lha                    */
+            case 0x14:                      /* e_lwz                    */
+            case 0x15:                      /* e_stw                    */
+            case 0x16:                      /* e_lhz                    */
+            case 0x17: {                    /* e_sth                    */
+                const uint32_t o = ppc_op6(insn);
+                const uint32_t base = (ra == 0u) ? 0u : c->r[ra];
+                const uint32_t ea = base + (uint32_t)ppc_d16(insn);
+                const uint32_t sz = (o == 0x0Cu || o == 0x0Du) ? 1u
+                                  : ((o == 0x14u || o == 0x15u) ? 4u : 2u);
+                const bool store = (o == 0x0Du || o == 0x15u || o == 0x17u);
+
+                if (store) {
+                    const ppc_exc_t e = ppc_store(c, ea, sz, c->r[rd]);
+                    if (EMU_UNLIKELY(e != PPC_EXC_NONE)) { EXC(e); }
+                } else {
+                    uint32_t v;
+                    /* e_lha is the only sign-extending load here. */
+                    const ppc_exc_t e = ppc_load(c, ea, sz,
+                                                 o == 0x0Eu, &v);
+                    if (EMU_UNLIKELY(e != PPC_EXC_NONE)) { EXC(e); }
+                    c->r[rd] = v;
+                }
+                break;
+            }
+
+            case 0x07:                      /* e_add16i rD,rA,simm16    */
+                c->r[rd] = ((ra == 0u) ? 0u : c->r[ra]) +
+                           (uint32_t)ppc_d16(insn);
+                break;
+
+            case 0x06: {                    /* the SCI8 group           */
+                /*
+                 * SCI8 is not a plain immediate. Eleven bits hold a
+                 * *scale* and a fill bit as well as the value: F(1),
+                 * SCL(2), UI8(8), and the byte UI8 lands in is chosen by
+                 * SCL with the other three bytes filled from F. So the
+                 * same UI8 is 100, 25600, or 0xFFFFFF64 depending on
+                 * fields that look like padding.
+                 */
+                const uint32_t xo = (insn >> 11) & 0x1Fu;
+                const uint32_t sci = insn & 0x7FFu;
+                const uint32_t f    = (sci >> 10) & 1u;
+                const uint32_t scl  = (sci >> 8) & 3u;
+                const uint32_t ui8  = sci & 0xFFu;
+                const uint32_t fill = (f != 0u) ? 0xFFFFFFFFu : 0u;
+                const uint32_t sh   = 8u * scl;
+                const uint32_t imm  =
+                    (fill & ~(0xFFu << sh)) | (ui8 << sh);
+
+                switch (xo) {
+                case 0x10u:                 /* e_addi                   */
+                    c->r[rd] = ((ra == 0u) ? 0u : c->r[ra]) + imm;
+                    break;
+                case 0x11u:                 /* e_addi.                  */
+                    c->r[rd] = ((ra == 0u) ? 0u : c->r[ra]) + imm;
+                    cr0_from(c, c->r[rd]);
+                    break;
+                case 0x12u:                 /* e_addic                  */
+                    c->r[rd] = c->r[ra] + imm;
+                    break;
+                case 0x14u:                 /* e_mulli                  */
+                    c->r[rd] = c->r[ra] * imm;
+                    break;
+                case 0x15u:                 /* e_cmpi   -- crD in rd    */
+                    cr_compare(c, (rd >> 2) & 0x7u, c->r[ra], imm, true);
+                    break;
+                case 0x16u:                 /* e_subfic                 */
+                    c->r[rd] = imm - c->r[ra];
+                    break;
+                /*
+                 * The logical forms write rA from rS, the reverse of the
+                 * arithmetic ones above -- same two fields, opposite
+                 * senses, which is the classic PowerPC trap.
+                 */
+                case 0x18u:                 /* e_andi                   */
+                    c->r[ra] = c->r[rd] & imm;
+                    break;
+                case 0x19u:                 /* e_andi.                  */
+                    c->r[ra] = c->r[rd] & imm;
+                    cr0_from(c, c->r[ra]);
+                    break;
+                case 0x1Au:                 /* e_ori                    */
+                    c->r[ra] = c->r[rd] | imm;
+                    break;
+                case 0x1Cu:                 /* e_xori                   */
+                    c->r[ra] = c->r[rd] ^ imm;
+                    break;
+                case 0x1Du:                 /* e_cmpli                  */
+                    cr_compare(c, (rd >> 2) & 0x7u, c->r[ra], imm, false);
+                    break;
+                default:
+                    EXC(PPC_IVOR_PROGRAM);
+                }
+                break;
+            }
+
+            case 0x1C:                      /* e_li  (LI20)             */
+                /*
+                 * LI20 is split into *three* fields and not in address
+                 * order: bits[14:11] are the most significant four,
+                 * bits[20:16] the next five, and bits[10:0] the low
+                 * eleven. Reading it as two fields in the obvious order
+                 * gives e_li rD,4096 the value 65536 -- which is what it
+                 * did here first time round, and which only showed up
+                 * because the test used an address the region did not
+                 * cover and the store faulted.
+                 *
+                 * Bit 15 clear is what makes this e_li at all; set, the
+                 * opcode is a different group (e_lis, e_or2i and
+                 * friends), which is why the test is on that bit rather
+                 * than on an extended opcode field.
+                 */
+                if ((insn & 0x8000u) == 0u) {
+                    const uint32_t li20 = (((insn >> 11) & 0x0Fu) << 16) |
+                                          (((insn >> 16) & 0x1Fu) << 11) |
+                                          (insn & 0x7FFu);
+                    c->r[rd] = (uint32_t)((int32_t)(li20 << 12) >> 12);
+                } else {
+                    EXC(PPC_IVOR_PROGRAM);
+                }
+                break;
+
+            case 0x1E: {                    /* e_b / e_bl / e_bc        */
+                const bool lk = (insn & 1u) != 0u;
+
+                if ((insn & 0x02000000u) != 0u) {
+                    /*
+                     * e_bc. BI32 names a CR bit as field*4 + bit, and
+                     * BO32's low bit says whether to branch when it is
+                     * set or clear -- so e_bne is "branch if EQ clear"
+                     * rather than an encoding of its own.
+                     */
+                    static const uint32_t k_bit[4] = {
+                        PPC_CR_LT, PPC_CR_GT, PPC_CR_EQ, PPC_CR_SO
+                    };
+                    const uint32_t cond = (insn >> 16) & 0x1Fu;
+                    const bool want = ((cond >> 4) & 1u) != 0u;
+                    const uint32_t bi = cond & 0xFu;
+                    const bool got =
+                        (cr_get(c, (bi >> 2) & 0x7u) & k_bit[bi & 3u]) != 0u;
+
+                    if (lk) { c->lr = next; }
+                    if (got == want) {
+                        /* BD15 is bits[15:1], signed; bit 0 is LK. */
+                        const int32_t bd =
+                            (int32_t)(int16_t)(uint16_t)(insn & 0xFFFEu);
+                        pc = pc + (uint32_t)bd;
+                        goto retired_insn;
+                    }
+                } else {
+                    /* e_b: BD24 is bits[24:1], signed. */
+                    int32_t bd = (int32_t)(insn & 0x01FFFFFEu);
+                    if ((bd & 0x01000000) != 0) {
+                        bd |= (int32_t)0xFE000000;
+                    }
+                    if (lk) { c->lr = next; }
+                    pc = pc + (uint32_t)bd;
+                    goto retired_insn;
+                }
+                break;
+            }
+
+            case 0x1F:
+                /* The X-form pool, shared with Book E. Fall through to
+                 * the switch below rather than duplicating it. */
+                goto shared_xform;
+
+            default:
+                EXC(PPC_IVOR_PROGRAM);
+            }
+
+            pc = next;
+            goto retired_insn;
+        }
+
+    shared_xform:
         switch (ppc_op6(insn)) {
         case 0x0E: {                        /* addi / li  (D-form)      */
             /*

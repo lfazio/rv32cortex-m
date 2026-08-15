@@ -524,6 +524,125 @@ static void test_se_sd4_is_scaled(void)
     CHECK_EQ(reg(7), 0u);
 }
 
+/*
+ * The 32-bit e_ forms.
+ *
+ * A real VLE program mixes widths freely, so this one ends on a 16-bit
+ * se_sc after 32-bit instructions -- which also exercises the length
+ * decoder in the direction that matters, since a 32-bit instruction
+ * misread as 16-bit desynchronises everything after it.
+ *
+ * Three things here are not guessable and are checked deliberately:
+ *
+ *   - **SCI8 is not a plain immediate.** Eleven bits hold a fill bit and
+ *     a two-bit *scale* as well as the eight-bit value, and the scale
+ *     picks which byte of the word the value lands in. e_ori r8,r3,7
+ *     with the value in byte 0 is 7; the same UI8 at scale 1 is 1792.
+ *   - **The logical forms reverse the register sense**, writing rA from
+ *     rS where the arithmetic forms write rD from rA.
+ *   - **LI20 is split**, five bits above the displacement and fifteen
+ *     below, with bit 15 clear -- bit 15 set is a different group.
+ */
+static void test_e_forms(void)
+{
+    static const uint16_t prog[] = {
+        0x7060u, 0x03E8u,   /* e_li     r3,1000                       */
+        0x709Fu, 0x7F9Cu,   /* e_li     r4,-100    -- LI20 sign        */
+        0x1CA3u, 0x0018u,   /* e_add16i r5,r3,24   -- 1024            */
+        0x18C3u, 0x800Au,   /* e_addi   r6,r3,10   -- SCI8, 1010      */
+        0x18E4u, 0xB00Au,   /* e_subfic r7,r4,10   -- 10 - (-100)     */
+        0x1868u, 0xD007u,   /* e_ori    r8,r3,7    -- rA<-rS, 1007    */
+        0x1869u, 0xC00Cu,   /* e_andi   r9,r3,12   -- 1000 & 12 = 8   */
+        0x7142u, 0x0000u,   /* e_li     r10,4096   -- the scratch     */
+        0x546Au, 0x0008u,   /* e_stw    r3,8(r10)                     */
+        0x516Au, 0x0008u,   /* e_lwz    r11,8(r10)                    */
+        0x318Au, 0x0008u,   /* e_lbz    r12,8(r10) -- MSB, so 0       */
+        0x5C8Au, 0x0010u,   /* e_sth    r4,16(r10)                    */
+        0x59AAu, 0x0010u,   /* e_lhz    r13,16(r10)                   */
+        0x1803u, 0xA807u,   /* e_cmpi   cr0,r3,7   -- 1000 > 7 -> GT  */
+        0x7A11u, 0x0008u,   /* e_bgt    +8         -- taken           */
+        0x71C0u, 0x0037u,   /* e_li     r14,55     -- skipped         */
+        0x71E0u, 0x0042u,   /* e_li     r15,66                        */
+        0x7800u, 0x0009u,   /* e_bl     +8                            */
+        0x7200u, 0x004Du,   /* e_li     r16,77     -- skipped         */
+        0x0002u,            /* se_sc               -- 16-bit          */
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run_vle(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                          &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(3), 1000u);
+    CHECK_EQ(reg(4), (uint32_t)(-100));   /* LI20 sign-extends       */
+    CHECK_EQ(reg(5), 1024u);
+    CHECK_EQ(reg(6), 1010u);              /* SCI8 scale 0            */
+    CHECK_EQ(reg(7), 110u);               /* subfic is imm - rA      */
+    CHECK_EQ(reg(8), 1000u | 7u);         /* rA written from rS      */
+    CHECK_EQ(reg(9), 1000u & 12u);
+
+    CHECK_EQ(reg(11), 1000u);
+    CHECK_EQ(reg(12), 0u);                /* big-endian: MSB of 1000 */
+    CHECK_EQ(reg(13), 0xFF9Cu);           /* low half of -100        */
+
+    CHECK_EQ(reg(14), 0u);                /* e_bgt was taken         */
+    CHECK_EQ(reg(15), 66u);
+    CHECK_EQ(reg(16), 0u);                /* e_bl skipped it         */
+    CHECK_EQ(reg(0), 0u);
+    /* e_bl links past itself: the bl is at byte 68, so LR is 72. */
+    CHECK_EQ(core()->lr, EMU_GUEST_RAM_BASE + 72u);
+}
+
+/*
+ * SCI8's scale and fill, and e_lha's sign extension.
+ *
+ * Both exist because the e_ test above could not see either. It used
+ * SCI8 only with scale 0 and fill 0 -- where the encoding coincides
+ * exactly with a plain 11-bit immediate -- and never used e_lha at all,
+ * so reverting the scale logic and the sign extension each changed
+ * nothing and the suite still passed.
+ *
+ * That is the third time in this frontend that an A/B found a test which
+ * read as coverage. The pattern is always the same: the case chosen was
+ * the one where the right and wrong readings agree.
+ */
+static void test_e_sci8_and_lha(void)
+{
+    static const uint16_t prog[] = {
+        0x7142u, 0x0000u,   /* e_li   r10,4096                        */
+        0x709Fu, 0x7F9Cu,   /* e_li   r4,-100                         */
+        0x5C8Au, 0x0010u,   /* e_sth  r4,16(r10)  -- 0xFF9C           */
+        0x38AAu, 0x0010u,   /* e_lha  r5,16(r10)  -- sign-extends     */
+        0x58CAu, 0x0010u,   /* e_lhz  r6,16(r10)  -- does not         */
+        0x1947u, 0xD201u,   /* e_ori  r7,r10,0x10000  -- SCL=2        */
+        0x190Au, 0x84FFu,   /* e_addi r8,r10,-1       -- F=1          */
+        0x1949u, 0xC400u,   /* e_andi r9,r10,-256     -- F=1, UI8=0   */
+        0x0002u,            /* se_sc                                  */
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run_vle(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                          &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    /* e_lha and e_lhz differ only in the sign, so both are needed. */
+    CHECK_EQ(reg(5), (uint32_t)(-100));
+    CHECK_EQ(reg(6), 0xFF9Cu);
+
+    /* SCL picks which byte the eight-bit value lands in. */
+    CHECK_EQ(reg(7), 4096u | 0x10000u);
+    /* F fills the other three bytes, so this is an immediate of -1... */
+    CHECK_EQ(reg(8), 4096u - 1u);
+    /* ...and here of 0xFFFFFF00, which a plain read would make 0. */
+    CHECK_EQ(reg(9), 4096u & 0xFFFFFF00u);
+}
+
 void test_ppc(void)
 {
     test_vle_length();
@@ -536,4 +655,6 @@ void test_ppc(void)
     test_se_alu();
     test_se_memory_and_branch();
     test_se_sd4_is_scaled();
+    test_e_forms();
+    test_e_sci8_and_lha();
 }
