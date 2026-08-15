@@ -176,6 +176,13 @@ bool g4mh_exc_is_fe(g4mh_exc_t cause);
  */
 int g4mh_cpu_pending_irq(const g4mh_cpu_t *c);
 
+/*
+ * True if an FE-level interrupt is pending and deliverable. Honours
+ * PSW.NP and *not* PSW.ID, which is the point of the level: a guest that
+ * has masked EI interrupts still takes this one.
+ */
+bool g4mh_cpu_pending_fe(const g4mh_cpu_t *c);
+
 /* ------------------------------------------------------------------ */
 /* Memory (permission-checked, used by the interpreter)                */
 /* ------------------------------------------------------------------ */

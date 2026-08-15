@@ -50,6 +50,16 @@ typedef uint32_t g4mh_exc_t;
 #define G4MH_EXC_FETRAP         0x0090u   /* FETRAP 1..15, +vector        */
 
 /*
+ * FEINT, the FE-level maskable interrupt. The U2B gives it cause codes
+ * 0xF0..0xFF -- one per FEINT channel -- and this frontend has exactly
+ * one source for it, the TPTM's interval interrupt when TPTMSEL routes
+ * it away from EIINT31. So channel 0 is the only code used, and the
+ * range is written down rather than the single value because a second
+ * source is the first thing that would need the rest of it.
+ */
+#define G4MH_EXC_FEINT          0x00F0u   /* FEINT 0..15, +channel        */
+
+/*
  * An EI interrupt's cause is 0x1000 + channel. The frontend's INTC raises
  * these; the platform sees only a channel number.
  */

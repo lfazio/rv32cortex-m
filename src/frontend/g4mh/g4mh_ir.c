@@ -606,7 +606,7 @@ static bool g4mh_jit_wake(emu_cpu_t *cpu)
 {
     g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
 
-    if (g4mh_cpu_pending_irq(c) < 0) {
+    if (!g4mh_cpu_pending_fe(c) && g4mh_cpu_pending_irq(c) < 0) {
         return false;
     }
     c->state = EMU_STATE_RUNNING;
@@ -623,6 +623,23 @@ static bool g4mh_jit_take_irq(emu_cpu_t *cpu)
     }
     /* Cleared before the evaluation, not after; see the interpreter. */
     c->irq_dirty = false;
+
+    /*
+     * FE level first, exactly as the interpreter does it -- and the
+     * duplication is the point rather than an accident: this backend has
+     * its own interrupt path, so anything added to the interpreter's is
+     * simply absent here. That is the shape of the performance-counter
+     * bug (#38) and it recurred immediately: the FEINT delivery was
+     * added to the interpreter alone and the JIT, which is the default
+     * backend, silently never took one. The test caught it only because
+     * it asserts the *cause register* and not merely that a handler ran.
+     */
+    if (g4mh_cpu_pending_fe(c)) {
+        c->state = EMU_STATE_RUNNING;
+        g4mh_intc_ack_fe(c->intc, c->coreid);
+        g4mh_cpu_exception(c, G4MH_EXC_FEINT, c->pc);
+        return true;
+    }
 
     const int ch = g4mh_cpu_pending_irq(c);
     if (ch < 0) {

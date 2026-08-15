@@ -140,23 +140,79 @@ width and was ending a block at every large constant.
 that is not this project's own encoder: CC-RH produces the bytes, the
 emulator runs them, 8 checks and 0 failures on both backends.
 
-**The inter-cluster peripherals are absent, and they are peripherals
-rather than instructions.** The U2B hardware manual (R01UH0923EJ0130) is
-the authority for all three, not the software manual:
+## The inter-CPU peripherals
 
-- **BarrierSync** — the hardware barrier. Worth stating plainly because
-  it is easy to go looking for an `HBARR` *instruction*: there is none.
-  CC-RH V2.08.00 rejects that mnemonic at `-Xcpu=g4mh`, which is its only
-  valid setting, and the hardware manual lists BarrierSync alongside IPIR
-  and the TPTM as modules on the inter-cluster bus. It needs an
-  `emu_dev_ops_t` and a base address, not a decoder case.
-- **TPTM** — the timer, hardware manual section 3.7, with `TPTMSEL` in
-  the INTC at 6.3.15 selecting FE against EI delivery. The `OSTM` in this
-  tree is itself a stand-in rather than the real register set, so the two
-  are one piece of work.
-- **IPIR** — inter-processor interrupts, on the same bus and equally
-  absent. It is what a multi-PE guest would reach for first, and
-  `G4MH_PE_COUNT` already goes to 3.
+BARR, IPIR and TPTM are implemented, from the U2B hardware manual
+(R01UH0923EJ0130) rather than the software manual — section 3.3 groups
+them as one subsystem and they are one piece of work here for the same
+reason: they share a shape.
+
+| | base | what it is |
+|---|---|---|
+| BARR | `0xFFFB_8000` | hardware barrier, 16 channels |
+| IPIR | `0xFFFB_9000` | inter-processor interrupts, 4 channels × 6 PEs |
+| TPTM | `0xFFFB_B000` | per-PE timer set: 2 interval, 1 free-run, 2 up |
+
+**BarrierSync is not an instruction**, and it is worth saying because it
+is easy to go looking for an `HBARR` opcode. There is none: CC-RH
+V2.08.00 rejects the mnemonic at `-Xcpu=g4mh`, which is its only valid
+setting, and the manual lists BARR beside IPIR and the TPTM as modules
+with register maps.
+
+**Each has a *self* region** whose meaning is "the PE doing the access"
+— "when PE1 accesses the IPI0REQS register, PE1 can also access the
+IPI0REQ1 register". That costs almost nothing here because every core
+already has its own bus, so a self region is an ordinary MMIO region
+bound to a per-core port naming the PE, and the access path never learns
+that multicore exists. It is the third use of that arrangement after
+INTC1-self and LRAM-self, and it is what a bus per core buys.
+
+Four rules that are easy to lose, each of which a test pins:
+
+- **A write to `BRnCHKm` sets it whatever the value written**, while
+  `BRnSYNCm` takes the value. Arriving at a barrier is a write, not a 1.
+- **`BRnEN` has two different rules.** A PE that is not enabled may
+  arrive and is ignored; but if the *whole* register is zero, the check
+  bit cannot be set at all. Implementing only the first leaves a stale
+  arrival on an unconfigured channel with nothing able to clear it.
+- **The barrier is a level condition**, so a write to `BRnEN`
+  re-evaluates it. Narrowing participation can complete a barrier.
+- **IPIR's enable gates the transfer, not the request.** A request
+  raised while the receiver has not enabled the sender is remembered in
+  `REQ` and never arrives — not even once the enable is written, which
+  is why the manual's bring-up sequence clears with `FCLR` first. That
+  is the opposite of the barrier's behaviour on its enable, and the two
+  sit ten lines apart in the code.
+
+`TPTMSEL` (manual 6.3.15, at `<INTIF_base> + 0x200` = `0xFF09_0200`)
+routes each PE's interval interrupt to EIINT31 or to FEINT, and **its
+reset value selects FEINT** — so the default path is the FE one. That
+needed an FE-level delivery: `g4mh_cpu_pending_fe` honours PSW.NP and
+deliberately not PSW.ID, which is the whole point of the level.
+
+**Both backends deliver it, and that was not free.** The JIT has its own
+interrupt path, so the FEINT delivery added to the interpreter was
+simply absent there — and the JIT is the default backend, so nothing
+took an FEINT at all. Identical in shape to the performance-counter bug
+(#38), found immediately after it, and caught only because the test
+asserts the *cause register* rather than that a handler ran: the zeros
+between the vectors run through to the same handler whatever exception
+vectored there.
+
+Not modelled, in all three: the guard registers
+(`BRGPROT`/`IPIGPROT`/`TPTGPROT`), address EDC and data ECC, the
+debug-mode counter stop signals, and the TPTM's global up-timer control
+channels (`TPTMGgURUN` and friends — `UTRG` is stored and read back but
+setting `GTRGEN` does not detach a counter from the local run
+registers). The TPTM's up-timer interrupts are raised on channels
+413 and up, which is past `G4MH_INT_CHANNELS` in every configuration
+built here, so they set their `UCSTR` flags and the raise is dropped;
+that is deliberate and a guest polling the flags sees the timer work.
+
+The TPTM runs off the platform's tick rather than a separate `cpu_clk`,
+because the emulator has no separate CPU clock to offer. The dividers
+are relative so they behave; a guest computing an absolute period from a
+datasheet frequency will be wrong by that ratio.
 
 **The performance counters are implemented, and the bank file was widened
 to reach them.** `PMCTRL0-7` and `PMCOUNT0-7` are at selID 14 and

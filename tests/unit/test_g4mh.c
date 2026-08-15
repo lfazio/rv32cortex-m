@@ -31,6 +31,9 @@
 #include "g4mh/g4mh_config.h"
 #include "g4mh/g4mh_types.h"
 #include "g4mh/g4mh_cpu.h"
+#include "g4mh/g4mh_intc.h"
+#include "g4mh/g4mh_intercpu.h"
+#include "g4mh/g4mh_memmap.h"
 #include "emu/emu_gdb.h"
 #include "emu/emu_jit.h"
 
@@ -2405,6 +2408,681 @@ static void test_disp23_reserved_bit(void)
     CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_RIE);
 }
 
+
+/* ------------------------------------------------------------------ */
+/* The inter-CPU peripherals: BARR, IPIR, TPTM                         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * These are driven through the bus rather than through guest code, and
+ * deliberately: a guest program can only ever reach the *self* region,
+ * because that is what "self" means, and the whole difficulty of all
+ * three peripherals is the routing between one PE's registers and
+ * another's. The absolute windows are the only way to be two PEs at
+ * once in a one-PE build.
+ *
+ * One guest-driven test follows them, for the thing this cannot check:
+ * that a guest store actually lands on the device.
+ */
+static bool devbus_up(void)
+{
+    const uint16_t prog[] = { 0x07E0u, SUB_HALT };
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+
+    /* Builds the bus and every device, then halts immediately. */
+    return load_and_run(prog, 2u, 8u, &why, &retired);
+}
+
+static uint32_t devrd(uint32_t addr)
+{
+    uint32_t v = 0xDEADBEEFu;
+    (void)emu_bus_read(&g_bus, addr, 4u, &v);
+    return v;
+}
+
+static void devwr(uint32_t addr, uint32_t v)
+{
+    (void)emu_bus_write(&g_bus, addr, 4u, v);
+}
+
+/*
+ * Advance guest time through the frontend's own hook, which is what the
+ * platform calls. Not a test-only entry point into the timer: the thing
+ * worth checking is that the TPTM is actually wired to that path, and a
+ * direct call would pass with it unwired.
+ */
+static void tick(uint32_t ticks)
+{
+    g_core.ops->advance_time(g_core.cpu, ticks);
+}
+
+#define BARR_INIT(n)        (G4MH_BARR_BASE + 0x000u + 0x10u * (n))
+#define BARR_EN(n)          (G4MH_BARR_BASE + 0x004u + 0x10u * (n))
+#define BARR_CHKS(n)        (G4MH_BARR_BASE + 0x100u + 0x10u * (n))
+#define BARR_SYNCS(n)       (G4MH_BARR_BASE + 0x104u + 0x10u * (n))
+#define BARR_CHK(n, m)      (G4MH_BARR_BASE + 0x800u + 0x10u * (n) + \
+                             0x100u * (m))
+#define BARR_SYNC(n, m)     (G4MH_BARR_BASE + 0x804u + 0x10u * (n) + \
+                             0x100u * (m))
+
+/*
+ * A three-PE barrier on channel 3, arriving one PE at a time.
+ *
+ * The check that matters is the *negative* one after each of the first
+ * two arrivals: a barrier that completed early would be a barrier that
+ * does not synchronise, and every positive assertion here would still
+ * pass. Channel 3 rather than 0 because a decoder that dropped the
+ * 0x10 * n stride would answer every channel from channel 0.
+ */
+static void test_barrier(void)
+{
+    if (!devbus_up()) { CHECK(false); return; }
+
+    devwr(BARR_EN(3), 0x07u);               /* PE0, PE1, PE2 participate */
+
+    CHECK_EQ(devrd(BARR_EN(3)), 0x07u);
+    CHECK_EQ(devrd(BARR_SYNC(3, 0)), 0u);
+
+    devwr(BARR_CHKS(3), 0u);                /* PE0 arrives -- value ignored */
+    CHECK_EQ(devrd(BARR_CHK(3, 0)), 1u);
+    CHECK_EQ(devrd(BARR_SYNC(3, 0)), 0u);   /* not yet */
+
+    devwr(BARR_CHK(3, 1), 1u);              /* PE1 arrives */
+    CHECK_EQ(devrd(BARR_SYNC(3, 0)), 0u);   /* still not */
+
+    devwr(BARR_CHK(3, 2), 1u);              /* PE2 arrives: complete */
+    CHECK_EQ(devrd(BARR_SYNC(3, 0)), 1u);
+    CHECK_EQ(devrd(BARR_SYNC(3, 1)), 1u);
+    CHECK_EQ(devrd(BARR_SYNC(3, 2)), 1u);
+    /* And the check bits are cleared for the next round, by hardware. */
+    CHECK_EQ(devrd(BARR_CHK(3, 0)), 0u);
+    CHECK_EQ(devrd(BARR_CHK(3, 1)), 0u);
+    CHECK_EQ(devrd(BARR_CHK(3, 2)), 0u);
+
+    /* A neighbouring channel saw none of it. */
+    CHECK_EQ(devrd(BARR_SYNC(2, 0)), 0u);
+    CHECK_EQ(devrd(BARR_SYNC(4, 0)), 0u);
+
+    /* SYNC takes the value written, unlike CHK. */
+    devwr(BARR_SYNC(3, 0), 0u);
+    CHECK_EQ(devrd(BARR_SYNC(3, 0)), 0u);
+
+    /* BRnINIT clears both halves of the channel. */
+    devwr(BARR_CHK(3, 1), 1u);
+    devwr(BARR_INIT(3), 1u);
+    CHECK_EQ(devrd(BARR_CHK(3, 1)), 0u);
+    CHECK_EQ(devrd(BARR_SYNC(3, 1)), 0u);
+}
+
+/*
+ * Two rules that a barrier implementation gets wrong quietly.
+ *
+ * "If all bits of the BRnEN register are 0, BRCHK bit cannot be set" --
+ * with no participants there is nothing to complete the barrier, and a
+ * check bit set then would never be cleared except by BRnINIT.
+ *
+ * And a PE that is not enabled neither blocks the barrier nor is
+ * cleared by it: BRnCHKm "can be set even if BRnEN.BRENm is 0, but it
+ * does not affect the barrier-synchronization".
+ */
+static void test_barrier_participation(void)
+{
+    if (!devbus_up()) { CHECK(false); return; }
+
+    /* No participants: the arrival is refused outright. */
+    devwr(BARR_CHK(5, 0), 1u);
+    CHECK_EQ(devrd(BARR_CHK(5, 0)), 0u);
+
+    /* PE0 and PE1 participate; PE2 does not but arrives anyway. */
+    devwr(BARR_EN(5), 0x03u);
+    devwr(BARR_CHK(5, 2), 1u);
+    CHECK_EQ(devrd(BARR_CHK(5, 2)), 1u);
+    CHECK_EQ(devrd(BARR_SYNC(5, 2)), 0u);
+
+    devwr(BARR_CHK(5, 0), 1u);
+    devwr(BARR_CHK(5, 1), 1u);
+
+    /* The two participants synchronised, and PE2 was left alone in both
+     * directions: its SYNC is not set and its CHK is not cleared. */
+    CHECK_EQ(devrd(BARR_SYNC(5, 0)), 1u);
+    CHECK_EQ(devrd(BARR_SYNC(5, 1)), 1u);
+    CHECK_EQ(devrd(BARR_SYNC(5, 2)), 0u);
+    CHECK_EQ(devrd(BARR_CHK(5, 2)), 1u);
+}
+
+/*
+ * A write to BRnEN re-evaluates the barrier.
+ *
+ * "Barrier-synchronization is established at the condition that all the
+ * BRnCHKm.BRCHK bits of participating PEs are set" -- a level condition,
+ * not an event, so anything that changes either side of it has to be
+ * checked. Changing BRnEN changes which bits are consulted.
+ *
+ * **The first version of this test could not tell.** It enabled, then
+ * arrived, then asserted -- and the arrival re-evaluates, so deleting
+ * the evaluation on the enable changed nothing and the test still
+ * passed. The sequence has to end on the *enable* for the enable to be
+ * what is under test: PE0 and PE1 participate, PE0 arrives, and then
+ * PE1 drops out, at which point every remaining participant has
+ * arrived.
+ */
+static void test_barrier_enable_completes(void)
+{
+    if (!devbus_up()) { CHECK(false); return; }
+
+    devwr(BARR_EN(1), 0x03u);               /* PE0 and PE1 participate  */
+    devwr(BARR_CHK(1, 0), 1u);              /* PE0 arrives              */
+    CHECK_EQ(devrd(BARR_SYNC(1, 0)), 0u);   /* waiting for PE1          */
+
+    devwr(BARR_EN(1), 0x01u);               /* PE1 drops out            */
+    CHECK_EQ(devrd(BARR_SYNC(1, 0)), 1u);   /* so PE0 is now everyone   */
+    CHECK_EQ(devrd(BARR_CHK(1, 0)), 0u);    /* and its arrival is spent */
+}
+
+#define IPIR_EN(n, m)       (G4MH_IPIR_BASE + 0x800u + 0x20u * (n) + \
+                             0x100u * (m))
+#define IPIR_FLG(n, m)      (IPIR_EN(n, m) + 0x04u)
+#define IPIR_FCLR(n, m)     (IPIR_EN(n, m) + 0x08u)
+#define IPIR_REQ(n, m)      (IPIR_EN(n, m) + 0x10u)
+#define IPIR_RCLR(n, m)     (IPIR_EN(n, m) + 0x14u)
+#define IPIR_ENS(n)         (G4MH_IPIR_BASE + 0x000u + 0x20u * (n))
+#define IPIR_FLGS(n)        (G4MH_IPIR_BASE + 0x004u + 0x20u * (n))
+#define IPIR_REQS(n)        (G4MH_IPIR_BASE + 0x010u + 0x20u * (n))
+
+/*
+ * PE1 asks PE2 for an interrupt on channel 2.
+ *
+ * Neither PE exists in a one-PE build, which is exactly why they are
+ * the ones used: the register matrix is six by six whatever the part
+ * populates, and routing REQm[x] to FLGx[m] is the entire peripheral.
+ * Using PE0 for both ends would let a decoder that ignored one of the
+ * two indices pass.
+ */
+static void test_ipir_routing(void)
+{
+    if (!devbus_up()) { CHECK(false); return; }
+
+    devwr(IPIR_EN(2, 2), 1u << 1);          /* PE2 accepts from PE1     */
+    devwr(IPIR_REQ(2, 1), 1u << 2);         /* PE1 asks PE2             */
+
+    CHECK_EQ(devrd(IPIR_REQ(2, 1)), 1u << 2);
+    CHECK_EQ(devrd(IPIR_FLG(2, 2)), 1u << 1);   /* PE2 sees *PE1*       */
+    CHECK_EQ(devrd(IPIR_FLG(2, 1)), 0u);        /* and PE1 sees nothing */
+    /* Another channel is untouched: 0x20 * n really is the stride. */
+    CHECK_EQ(devrd(IPIR_FLG(1, 2)), 0u);
+    CHECK_EQ(devrd(IPIR_FLG(3, 2)), 0u);
+
+    /* The receiver dismisses it, which clears the sender's request too. */
+    devwr(IPIR_FCLR(2, 2), 1u << 1);
+    CHECK_EQ(devrd(IPIR_FLG(2, 2)), 0u);
+    CHECK_EQ(devrd(IPIR_REQ(2, 1)), 0u);
+}
+
+/*
+ * The enable gates the *transfer*, not the request -- table 3.152.
+ *
+ * A request raised while the receiver has not enabled the sender is
+ * remembered in REQ and never arrives, not even once the enable is
+ * written. That is the difference from the barrier next door, which
+ * does re-evaluate on its enable, and it is why the manual's
+ * initial-setting sequence clears with FCLR *before* enabling.
+ */
+static void test_ipir_enable_gates_transfer(void)
+{
+    if (!devbus_up()) { CHECK(false); return; }
+
+    devwr(IPIR_REQ(0, 3), 1u << 4);         /* PE3 asks PE4, disabled   */
+    CHECK_EQ(devrd(IPIR_REQ(0, 3)), 1u << 4);   /* remembered           */
+    CHECK_EQ(devrd(IPIR_FLG(0, 4)), 0u);        /* but not delivered    */
+
+    devwr(IPIR_EN(0, 4), 1u << 3);          /* PE4 enables PE3 now      */
+    CHECK_EQ(devrd(IPIR_FLG(0, 4)), 0u);    /* still not delivered      */
+
+    /* The sender withdrawing clears its own request; with the enable
+     * now set it would clear the flag too, and there is none to clear. */
+    devwr(IPIR_RCLR(0, 3), 1u << 4);
+    CHECK_EQ(devrd(IPIR_REQ(0, 3)), 0u);
+
+    /* Writing 0 to REQ is ignored -- it is a set-only register. */
+    devwr(IPIR_REQ(0, 3), 1u << 4);
+    devwr(IPIR_REQ(0, 3), 0u);
+    CHECK_EQ(devrd(IPIR_REQ(0, 3)), 1u << 4);
+    CHECK_EQ(devrd(IPIR_FLG(0, 4)), 1u << 3);   /* enabled now, so it
+                                                 * did arrive           */
+}
+
+/*
+ * The self region routes to the accessing PE's own registers.
+ *
+ * This build has one PE, so self is PE0 -- and that is enough to catch
+ * the mistake worth catching, which is a self region that reads the
+ * wrong PE's registers or none at all. Written through the self alias
+ * and read back through PE0's absolute window, so the two paths have to
+ * agree about which object they are naming.
+ */
+static void test_ipir_self_region(void)
+{
+    if (!devbus_up()) { CHECK(false); return; }
+
+    devwr(IPIR_ENS(1), 0x21u);
+    CHECK_EQ(devrd(IPIR_EN(1, 0)), 0x21u);
+    CHECK_EQ(devrd(IPIR_ENS(1)), 0x21u);
+
+    /* PE0 interrupting itself is legitimate and is the one delivery
+     * path a single-PE build can exercise end to end. */
+    devwr(IPIR_REQS(1), 1u << 0);
+    CHECK_EQ(devrd(IPIR_FLGS(1)), 1u << 0);
+}
+
+#define TPTM_SELF(r)        (G4MH_TPTM_BASE + G4MH_TPTM_SELF + (r))
+
+/*
+ * The interval timer: down-count, underflow, reload.
+ *
+ * The awkward number is the reload period. A counter loaded with N
+ * underflows after N+1 counts, not N, because the underflow is the step
+ * *from* zero rather than the arrival at it -- so this advances by
+ * exactly the count that must not have underflowed yet, then by one
+ * more.
+ */
+static void test_tptm_interval(void)
+{
+    if (!devbus_up()) { CHECK(false); return; }
+
+    devwr(TPTM_SELF(G4MH_TPTM_ILD0), 9u);
+    devwr(TPTM_SELF(G4MH_TPTM_IRUN), 1u);       /* start channel 0      */
+
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_ISTR)), 1u);
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_ICNT0)), 9u);
+
+    tick(9u);
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_ICNT0)), 0u);
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_IUSTR)), 0u);   /* not yet       */
+
+    tick(1u);
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_IUSTR)), 1u);
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_ICNT0)), 9u);   /* reloaded      */
+
+    /* Write 0 to clear; writing 1 is ignored. */
+    devwr(TPTM_SELF(G4MH_TPTM_IUSTR), 1u);
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_IUSTR)), 1u);
+    devwr(TPTM_SELF(G4MH_TPTM_IUSTR), 0u);
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_IUSTR)), 0u);
+
+    /* Channel 1 was never started and did not move. */
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_ICNT1)), 0u);
+
+    devwr(TPTM_SELF(G4MH_TPTM_ISTP), 1u);
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_ISTR)), 0u);
+    tick(100u);
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_ICNT0)), 9u);   /* stopped       */
+}
+
+/*
+ * The divider, and its remainder.
+ *
+ * Guest time arrives in slices of a run budget, not one tick at a time,
+ * so a divider that dropped its remainder at each call would run slow
+ * by a factor of the slice length rather than merely rounding. Advancing
+ * in threes with a divider of 3 -- a period of 4 -- is what makes the
+ * carry visible: neither 3 nor 6 is a multiple of 4, and only the third
+ * call reaches the second count.
+ */
+static void test_tptm_divider_carry(void)
+{
+    if (!devbus_up()) { CHECK(false); return; }
+
+    devwr(TPTM_SELF(G4MH_TPTM_FDIV), 3u);       /* count every 4 ticks  */
+    devwr(TPTM_SELF(G4MH_TPTM_FRUN), 1u);
+
+    tick(3u);
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_FCNT)), 0u);
+    tick(3u);
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_FCNT)), 1u);     /* 6 / 4        */
+    tick(3u);
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_FCNT)), 2u);     /* 9 / 4        */
+    tick(3u);
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_FCNT)), 3u);     /* 12 / 4       */
+}
+
+/*
+ * The up timer's comparison, and why it is not an equality test.
+ *
+ * With a divider or a long slice the counter steps *over* the compare
+ * value: here it goes 0 -> 20 in one call and the compare is 7. An
+ * implementation testing `count == cmp` would never fire, and would
+ * pass any test that advanced one tick at a time.
+ */
+static void test_tptm_up_compare(void)
+{
+    if (!devbus_up()) { CHECK(false); return; }
+
+    devwr(TPTM_SELF(G4MH_TPTM_UCMP0(1)), 7u);
+    devwr(TPTM_SELF(G4MH_TPTM_URUN), 1u);       /* start up timer 0     */
+
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_USTR)), 1u);
+    tick(20u);
+
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_UCNT0)), 20u);
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_UCSTR)), 1u << 1);   /* value 1  */
+
+    /*
+     * Up timer 1's flags live at bits 11:8, not 7:4. Checked by writing
+     * a compare there and confirming the bit that lights: the two halves
+     * of that field are the kind of thing that gets written twice and
+     * disagrees.
+     */
+    devwr(TPTM_SELF(G4MH_TPTM_UCMP1(2)), 5u);
+    devwr(TPTM_SELF(G4MH_TPTM_URUN), 2u);       /* start up timer 1     */
+    tick(6u);
+    CHECK((devrd(TPTM_SELF(G4MH_TPTM_UCSTR)) & (1u << 10)) != 0u);
+
+    /* Write 0 to clear, 1 ignored -- the same rule as IUSTR. */
+    devwr(TPTM_SELF(G4MH_TPTM_UCSTR), 0u);
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_UCSTR)), 0u);
+}
+
+
+/*
+ * The interval timer's interrupt, both ways round.
+ *
+ * Time has to pass *inside* a run for this to be an interrupt rather
+ * than a pending flag, so the guest issues a TRAP and the syscall hook
+ * advances the clock -- which also makes the moment the timer fires a
+ * property of the program rather than of the harness. Everything before
+ * the trap is setup written by the guest through ordinary stores, so
+ * this is also the check that a guest store reaches these devices at
+ * all: every other test here drives them from the bus side.
+ */
+static bool g_tick_hook_seen;
+
+static bool tick_hook(emu_cpu_t *cpu, emu_syscall_t *sc, void *user)
+{
+    (void)cpu; (void)sc; (void)user;
+    g_tick_hook_seen = true;
+    tick(64u);                      /* past the reload, whatever it is */
+    return true;                    /* consumed: no architectural trap */
+}
+
+/*
+ * TPTMSEL = 1: the interval interrupt is EIINT31.
+ *
+ * The handler is the shared EI vector at RBASE + 0x100, which is where
+ * every EI interrupt lands under the reduced vector layout.
+ */
+static void test_tptm_interrupt_ei(void)
+{
+    uint16_t prog[0x120];
+    unsigned k = 0;
+
+    memset(prog, 0, sizeof(prog));
+
+    /* r11 = TPTM base, r12 = INTIF base, r13 = INTC1 self base */
+    prog[k++] = MOVI32(11);
+    prog[k++] = LO(G4MH_TPTM_BASE); prog[k++] = HI(G4MH_TPTM_BASE);
+    prog[k++] = MOVI32(12);
+    prog[k++] = LO(G4MH_INTIF_BASE); prog[k++] = HI(G4MH_INTIF_BASE);
+    prog[k++] = MOVI32(13);
+    prog[k++] = LO(G4MH_INTC1_SELF_BASE); prog[k++] = HI(G4MH_INTC1_SELF_BASE);
+
+    /* TPTMSEL = 1: route PE0's TPTM interrupt to EIINT31. */
+    prog[k++] = F2(OP_MOVI, 1, 10);
+    prog[k++] = W0(OP_ST_HW, 12, 10); prog[k++] = G4MH_INTIF_TPTMSEL | 1u;
+
+    /*
+     * EIC31 = 0: unmasked, highest priority.
+     *
+     * A *halfword* store. EICn is 16 bits at 0x02 * n, so channel 31 is
+     * at 0x3E -- and the ST.W form encodes its width in bit 0 of the
+     * second halfword, so writing `| 1` there makes it a word store to
+     * an address that is not word aligned. That is an MAE, which
+     * vectors to RBASE + 0x60, runs through the zeros to the interrupt
+     * handler and sets r20 exactly as a delivered interrupt would.
+     * Every check but the cause register passed.
+     */
+    prog[k++] = F2(OP_MOVI, 0, 10);
+    prog[k++] = W0(OP_ST_HW, 13, 10); prog[k++] = (31u * 2u);
+
+    /* ILD0 = 3, IIEN = 1, IRUN = 1 */
+    prog[k++] = F2(OP_MOVI, 3, 10);
+    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = G4MH_TPTM_ILD0 | 1u;
+    prog[k++] = F2(OP_MOVI, 1, 10);
+    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = G4MH_TPTM_IIEN | 1u;
+    prog[k++] = F2(OP_MOVI, 1, 10);
+    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = G4MH_TPTM_IRUN | 1u;
+
+    /*
+     * EI: unmask interrupts. **PSW.ID is set out of reset**, so without
+     * this the channel is raised, refused, and the guest runs on to its
+     * halt -- which looks exactly like a timer that never fired.
+     */
+    prog[k++] = W0(OP_SYSTEM, 0, 0x10u); prog[k++] = SUB_DIEI;
+
+    /* Let the clock run: the hook consumes this and advances time. */
+    prog[k++] = W0(OP_SYSTEM, 0, 0);        /* trap 0 */
+    prog[k++] = SUB_TRAP;
+
+    /* If no interrupt arrives, fall through to a halt with r20 clear. */
+    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+
+    /* The EI handler, at RBASE + 0x100. */
+    prog[0x80] = F2(OP_MOVI, 7, 20);        /* r20 = 7: we got here */
+    prog[0x81] = 0x07E0u; prog[0x82] = SUB_HALT;
+
+    g_tick_hook_seen = false;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run_hooked(prog, sizeof(prog) / sizeof(prog[0]), 256u,
+                             &why, &retired, tick_hook)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK(g_tick_hook_seen);
+    CHECK_EQ(reg(20), 7u);                  /* the EI handler ran      */
+    CHECK_EQ(sreg(0, G4MH_SR_EIIC), G4MH_EXC_EIINT_BASE + 31u);
+    /* And the underflow flag is set whether or not IIEN was: it is the
+     * enable that gates the interrupt, not the status. */
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_IUSTR)) & 1u, 1u);
+}
+
+/*
+ * TPTMSEL = 0, which is the *reset* value: the interval interrupt is
+ * FEINT.
+ *
+ * This is the path a guest gets without configuring anything, and it is
+ * the one an implementation is most likely to leave out -- an emulator
+ * with only the EI half works perfectly for a guest that sets the bit
+ * and does nothing at all for one that does not.
+ *
+ * The guest sets PSW.ID first, which is what makes the level matter:
+ * an EI interrupt would be refused outright, and this one is not.
+ */
+static void test_tptm_interrupt_feint(void)
+{
+    uint16_t prog[0x120];
+    unsigned k = 0;
+
+    memset(prog, 0, sizeof(prog));
+
+    prog[k++] = MOVI32(11);
+    prog[k++] = LO(G4MH_TPTM_BASE); prog[k++] = HI(G4MH_TPTM_BASE);
+
+    /*
+     * DI: mask EI interrupts. PSW.ID is already set out of reset, so
+     * this is here to say what the test is about rather than to change
+     * anything -- an FE-level interrupt arrives with it set.
+     *
+     * reg2 picks DI from EI, and reg3 picks RESBANK from DI. Writing
+     * `(16 << 11) | SUB_DIEI` here is RESBANK, which raises RIE, lands
+     * in the zeros and runs on to the handler -- setting r20 exactly as
+     * a delivered FEINT would. There is a test two hundred lines up
+     * whose whole subject is that those two are not the same
+     * instruction, and this still got it wrong.
+     */
+    prog[k++] = W0(OP_SYSTEM, 0, 0x00u); prog[k++] = SUB_DIEI;
+
+    prog[k++] = F2(OP_MOVI, 3, 10);
+    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = G4MH_TPTM_ILD0 | 1u;
+    prog[k++] = F2(OP_MOVI, 1, 10);
+    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = G4MH_TPTM_IIEN | 1u;
+    prog[k++] = F2(OP_MOVI, 1, 10);
+    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = G4MH_TPTM_IRUN | 1u;
+
+    prog[k++] = W0(OP_SYSTEM, 0, 0); prog[k++] = SUB_TRAP;
+    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;      /* not reached     */
+
+    /* The FEINT handler, at RBASE + 0xF0. */
+    prog[0x78] = F2(OP_MOVI, 9, 20);
+    prog[0x79] = 0x07E0u; prog[0x7A] = SUB_HALT;
+
+    g_tick_hook_seen = false;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run_hooked(prog, sizeof(prog) / sizeof(prog[0]), 256u,
+                             &why, &retired, tick_hook)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK(g_tick_hook_seen);
+    CHECK_EQ(reg(20), 9u);                  /* the FE handler ran      */
+    /* FE level, so the cause is in FEIC and not in EIIC. */
+    CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_FEINT);
+    /* PSW.ID was set and did not stop it -- which is the whole point
+     * of the level, and is what an EI-only implementation gets wrong. */
+    CHECK((sreg(0, G4MH_SR_FEPSW) & G4MH_PSW_ID) != 0u);
+}
+
+/*
+ * IIEN gates the interrupt and not the flag.
+ *
+ * "When underflow occurs [...] TPTMnIUSTR.IUSTRm bit is set whether
+ * IIENm bit is set or not. If IIENm bit is set, TPTM_IRQ[n] is
+ * asserted." Two separate things, and an implementation that raises
+ * unconditionally passes every other test here -- the enable is written
+ * in all of them.
+ */
+static void test_tptm_interrupt_masked(void)
+{
+    uint16_t prog[0x120];
+    unsigned k = 0;
+
+    memset(prog, 0, sizeof(prog));
+
+    prog[k++] = MOVI32(11);
+    prog[k++] = LO(G4MH_TPTM_BASE); prog[k++] = HI(G4MH_TPTM_BASE);
+    prog[k++] = MOVI32(12);
+    prog[k++] = LO(G4MH_INTIF_BASE); prog[k++] = HI(G4MH_INTIF_BASE);
+    prog[k++] = MOVI32(13);
+    prog[k++] = LO(G4MH_INTC1_SELF_BASE); prog[k++] = HI(G4MH_INTC1_SELF_BASE);
+
+    /*
+     * EIC31 unmasked and PSW.ID clear, so that IIEN is the *only* thing
+     * left that can suppress the interrupt. Without these two the test
+     * would pass against an implementation that ignored IIEN entirely,
+     * because something else was refusing the channel.
+     */
+    prog[k++] = F2(OP_MOVI, 0, 10);
+    prog[k++] = W0(OP_ST_HW, 13, 10); prog[k++] = (31u * 2u);
+
+    /* TPTMSEL = 1, so a raised interrupt would be EIINT31 -- and EI, so
+     * PSW.ID is not what suppresses it. Only IIEN is left. */
+    prog[k++] = F2(OP_MOVI, 1, 10);
+    prog[k++] = W0(OP_ST_HW, 12, 10); prog[k++] = G4MH_INTIF_TPTMSEL | 1u;
+    prog[k++] = W0(OP_SYSTEM, 0, 0x10u); prog[k++] = SUB_DIEI;
+
+    /* ILD0 = 3 and start, with IIEN left at its reset value of 0. */
+    prog[k++] = F2(OP_MOVI, 3, 10);
+    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = G4MH_TPTM_ILD0 | 1u;
+    prog[k++] = F2(OP_MOVI, 1, 10);
+    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = G4MH_TPTM_IRUN | 1u;
+
+    prog[k++] = W0(OP_SYSTEM, 0, 0); prog[k++] = SUB_TRAP;
+    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;      /* the expected end */
+
+    prog[0x80] = F2(OP_MOVI, 7, 20);                /* EI vector       */
+    prog[0x81] = 0x07E0u; prog[0x82] = SUB_HALT;
+
+    g_tick_hook_seen = false;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run_hooked(prog, sizeof(prog) / sizeof(prog[0]), 256u,
+                             &why, &retired, tick_hook)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK(g_tick_hook_seen);
+    CHECK_EQ(reg(20), 0u);                          /* no handler ran  */
+    CHECK_EQ(sreg(0, G4MH_SR_EIIC), 0u);
+    /* But the underflow happened and is recorded. */
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_IUSTR)) & 1u, 1u);
+
+    /*
+     * And setting IIEN now asserts it immediately -- the manual's own
+     * caution, and the reason the write to IIEN is not just a store.
+     */
+    devwr(TPTM_SELF(G4MH_TPTM_IIEN), 1u);
+    CHECK(g4mh_cpu_pending_irq((const g4mh_cpu_t *)(const void *)g_core.cpu)
+          == 31);
+}
+
+/*
+ * IPIR really reaches the interrupt controller.
+ *
+ * Every other IPIR test here reads the flag registers back, and a
+ * peripheral that maintained them perfectly and raised nothing would
+ * pass all of them. PE0 interrupts itself on channel 1, which in a
+ * one-PE build is the only delivery that has anywhere to go.
+ */
+static void test_ipir_delivers(void)
+{
+    uint16_t prog[0x120];
+    unsigned k = 0;
+
+    memset(prog, 0, sizeof(prog));
+
+    prog[k++] = MOVI32(11);
+    prog[k++] = LO(G4MH_IPIR_BASE); prog[k++] = HI(G4MH_IPIR_BASE);
+    prog[k++] = MOVI32(13);
+    prog[k++] = LO(G4MH_INTC1_SELF_BASE); prog[k++] = HI(G4MH_INTC1_SELF_BASE);
+
+    /* EIC1 = 0: channel 1 unmasked. A halfword store -- see the note
+     * in test_tptm_interrupt_ei about what a word store does here. */
+    prog[k++] = F2(OP_MOVI, 0, 10);
+    prog[k++] = W0(OP_ST_HW, 13, 10); prog[k++] = (1u * 2u);
+
+    /* EI: PSW.ID is set out of reset and would refuse the channel. */
+    prog[k++] = W0(OP_SYSTEM, 0, 0x10u); prog[k++] = SUB_DIEI;
+
+    /* IPI1ENS = 1 (accept from PE0), then IPI1REQS = 1. */
+    prog[k++] = F2(OP_MOVI, 1, 10);
+    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = (0x20u + 0x00u) | 1u;
+    prog[k++] = F2(OP_MOVI, 1, 10);
+    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = (0x20u + 0x10u) | 1u;
+
+    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;      /* not reached     */
+
+    prog[0x80] = F2(OP_MOVI, 5, 20);                /* EI vector       */
+    prog[0x81] = 0x07E0u; prog[0x82] = SUB_HALT;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 256u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(20), 5u);
+    CHECK_EQ(sreg(0, G4MH_SR_EIIC), G4MH_EXC_EIINT_BASE + 1u);
+}
+
 /*
  * The disp23 group through the JIT.
  *
@@ -3082,6 +3760,19 @@ void test_g4mh(void)
     test_disp23_doubleword();
     test_disp23_reserved_bit();
     test_disp23_jit();
+    test_barrier();
+    test_barrier_participation();
+    test_barrier_enable_completes();
+    test_ipir_routing();
+    test_ipir_enable_gates_transfer();
+    test_ipir_self_region();
+    test_tptm_interval();
+    test_tptm_divider_carry();
+    test_tptm_up_compare();
+    test_tptm_interrupt_ei();
+    test_tptm_interrupt_feint();
+    test_tptm_interrupt_masked();
+    test_ipir_delivers();
     test_conditional_ops();
     test_mac_bins_rotl();
     test_loop();

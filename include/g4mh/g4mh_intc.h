@@ -60,6 +60,14 @@ struct g4mh_cpu;
 #define G4MH_INTC2_EIBD         0x2000u   /* + 0x04 * n                 */
 #define G4MH_INTC2_EEIC         0x4000u   /* + 0x04 * n                 */
 
+/*
+ * INTIF, from <INTIF_base> = 0xFF09_0000. A separate block from either
+ * INTC unit, and only one register of it is modelled.
+ */
+#define G4MH_INTIF_BASE         0xFF090000u
+#define G4MH_INTIF_SIZE         0x00000400u
+#define G4MH_INTIF_TPTMSEL      0x0200u
+
 /* The channel at which INTC2 takes over from INTC1. */
 #define G4MH_INTC1_CHANNELS     32u
 
@@ -146,6 +154,31 @@ typedef struct g4mh_intc {
     volatile uint64_t ostm_cnt;
     uint64_t          ostm_cmp;
 
+    /*
+     * TPTMSEL: bit n picks EIINT31 over FEINT for PE n's TPTM interval
+     * interrupt. One register for the whole system, so it lives on the
+     * global instance and is reached through `global` from any core --
+     * the same arrangement as the INTC2 half.
+     *
+     * **Its reset value selects FEINT**, so the default path is the one
+     * that needs an FE-level delivery. A frontend that implemented only
+     * the EI half would work perfectly for a guest that sets the bit and
+     * do nothing at all for one that does not, which is the worse of the
+     * two failures: silence where the guest did the ordinary thing.
+     */
+    uint32_t tptmsel;
+
+    /*
+     * Pending FEINT, one bit per PE. FE-level interrupts ignore PSW.ID
+     * and are refused only by PSW.NP, so they cannot go through the
+     * EIINT machinery -- eic[] is priority and masking that does not
+     * apply. A bitmask rather than a channel because the only FEINT
+     * source here is the TPTM, and inventing FEINTF/FEINTMSK/FEINTC
+     * around one source would be modelling the manual rather than the
+     * part.
+     */
+    volatile uint8_t feint;
+
     struct g4mh_cpu *cpu;
 
     /*
@@ -166,6 +199,7 @@ typedef struct g4mh_intc {
 extern const emu_dev_ops_t g4mh_intc1_ops;
 extern const emu_dev_ops_t g4mh_intc2_ops;
 extern const emu_dev_ops_t g4mh_ostm_ops;
+extern const emu_dev_ops_t g4mh_intif_ops;
 
 /*
  * `global` is the instance holding the INTC2 half -- PE0's. Pass NULL when
@@ -195,6 +229,23 @@ void g4mh_intc_advance(g4mh_intc_t *ic, uint32_t delta);
  * priority and a tie breaks towards the lower channel number.
  */
 int g4mh_intc_pending(const g4mh_intc_t *ic, unsigned pe);
+
+/*
+ * The TPTM's interval interrupt for PE `pe`, routed by TPTMSEL: EIINT31
+ * when its bit is set, FEINT otherwise.
+ *
+ * The routing belongs here rather than in the timer because TPTMSEL is
+ * an interrupt-controller register (manual section 6.3.15) and because
+ * only this side can deliver an FE-level request.
+ */
+void g4mh_intc_raise_tptm(g4mh_intc_t *ic, unsigned pe);
+
+/*
+ * True if an FE-level interrupt is pending for `pe`. Cleared by
+ * g4mh_intc_ack_fe once the core has taken it.
+ */
+bool g4mh_intc_fe_pending(const g4mh_intc_t *ic, unsigned pe);
+void g4mh_intc_ack_fe(g4mh_intc_t *ic, unsigned pe);
 
 /* Acknowledge a channel: clears its request flag. */
 void g4mh_intc_ack(g4mh_intc_t *ic, uint32_t channel);

@@ -509,6 +509,22 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
              * until something else happened to dirty the flag again.
              */
             c->irq_dirty = false;
+
+            /*
+             * FE level first: it outranks every EI interrupt and PSW.ID
+             * does not reach it, so a guest running with interrupts
+             * masked still takes this one. Only the TPTM raises it, and
+             * only when TPTMSEL has not routed it to EIINT31.
+             */
+            if (EMU_UNLIKELY(g4mh_cpu_pending_fe(c))) {
+                c->state = EMU_STATE_RUNNING;
+                c->pc = pc;
+                g4mh_intc_ack_fe(c->intc, c->coreid);
+                g4mh_cpu_exception(c, G4MH_EXC_FEINT, pc);
+                pc = c->pc;
+                continue;
+            }
+
             const int ch = g4mh_cpu_pending_irq(c);
             if (ch >= 0) {
                 c->state = EMU_STATE_RUNNING;

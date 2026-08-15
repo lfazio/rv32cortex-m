@@ -18,6 +18,7 @@
 #include "g4mh/g4mh_decode.h"
 #include "g4mh/g4mh_disasm.h"
 #include "g4mh/g4mh_intc.h"
+#include "g4mh/g4mh_intercpu.h"
 #include "g4mh/g4mh_memmap.h"
 
 #include <string.h>
@@ -39,6 +40,18 @@
  */
 static g4mh_cpu_t  g_cpu[G4MH_PE_COUNT];
 static g4mh_intc_t g_intc[G4MH_PE_COUNT];
+
+/*
+ * The inter-CPU peripherals: one state each for the whole system, and
+ * one port per core naming which PE is looking, because every one of
+ * them has a self region. The ports are what the bus regions bind to.
+ */
+static g4mh_barrier_t g_barr;
+static g4mh_ipir_t    g_ipir;
+static g4mh_tptm_t    g_tptm;
+static g4mh_intercpu_port_t g_barr_port[G4MH_PE_COUNT];
+static g4mh_intercpu_port_t g_ipir_port[G4MH_PE_COUNT];
+static g4mh_intercpu_port_t g_tptm_port[G4MH_PE_COUNT];
 
 static emu_cpu_t *g4mh_instance(unsigned index)
 {
@@ -65,6 +78,21 @@ static void g4mh_ops_init(emu_cpu_t *cpu, emu_bus_t *bus, uint32_t coreid)
     /* Join the cross-core reservation tracker, so this core's LDL.W can be
      * broken by another core's store. */
     g4mh_ll_register(c);
+
+    /*
+     * The inter-CPU peripherals learn where to send an interrupt for
+     * this PE. Initialised on PE0's pass rather than at file scope,
+     * because a reload rebuilds every core and these hold pending state
+     * that must not survive it -- the same reason start_guest() rebuilds
+     * the bus.
+     */
+    if (coreid == 0u) {
+        g4mh_barrier_init(&g_barr);
+        g4mh_ipir_init(&g_ipir);
+        g4mh_tptm_init(&g_tptm);
+    }
+    g4mh_ipir_bind(&g_ipir, coreid, &g_intc[coreid]);
+    g4mh_tptm_bind(&g_tptm, coreid, &g_intc[coreid]);
 
 #if G4MH_HAVE_JIT
     /*
@@ -238,7 +266,13 @@ static bool g4mh_ops_add_shared_devices(emu_bus_t *bus)
            emu_bus_add_mmio(bus, "intc2", G4MH_INTC2_BASE,
                             G4MH_INTC2_SIZE, &g4mh_intc2_ops, &g_intc[0]) &&
            emu_bus_add_mmio(bus, "ostm0", G4MH_OSTM0_BASE,
-                            G4MH_OSTM0_SIZE, &g4mh_ostm_ops, &g_intc[0]);
+                            G4MH_OSTM0_SIZE, &g4mh_ostm_ops, &g_intc[0]) &&
+           /*
+            * INTIF, for TPTMSEL. One register for the whole system, so
+            * it binds to the global INTC instance like INTC2 does.
+            */
+           emu_bus_add_mmio(bus, "intif", G4MH_INTIF_BASE,
+                            G4MH_INTIF_SIZE, &g4mh_intif_ops, &g_intc[0]);
 }
 
 /*
@@ -296,7 +330,31 @@ static bool g4mh_ops_add_core_devices(emu_cpu_t *cpu, emu_bus_t *bus,
             return false;
         }
     }
-    return true;
+
+    /*
+     * BARR, IPIR and TPTM. One region each, per core -- not because the
+     * state is per core (it is not; all three are shared) but because
+     * each has a *self* region whose meaning is "the PE doing the
+     * access". The port carries that PE, so the device never has to ask
+     * who is calling and the access path stays a plain region lookup.
+     *
+     * This is the third use of that arrangement, after INTC1-self and
+     * LRAM-self, and it is the whole reason a bus per core pays for
+     * itself.
+     */
+    g_barr_port[index].state = &g_barr;
+    g_barr_port[index].pe    = index;
+    g_ipir_port[index].state = &g_ipir;
+    g_ipir_port[index].pe    = index;
+    g_tptm_port[index].state = &g_tptm;
+    g_tptm_port[index].pe    = index;
+
+    return emu_bus_add_mmio(bus, "barr", G4MH_BARR_BASE, G4MH_BARR_SIZE,
+                            &g4mh_barrier_ops, &g_barr_port[index]) &&
+           emu_bus_add_mmio(bus, "ipir", G4MH_IPIR_BASE, G4MH_IPIR_SIZE,
+                            &g4mh_ipir_ops, &g_ipir_port[index]) &&
+           emu_bus_add_mmio(bus, "tptm", G4MH_TPTM_BASE, G4MH_TPTM_SIZE,
+                            &g4mh_tptm_ops, &g_tptm_port[index]);
 }
 
 static void g4mh_ops_set_irq(emu_cpu_t *cpu, uint32_t source, bool level)
@@ -323,6 +381,15 @@ static void g4mh_ops_advance_time(emu_cpu_t *cpu, uint32_t ticks)
 {
     (void)cpu;
     g4mh_intc_advance(&g_intc[0], ticks);
+    /*
+     * The TPTM runs off cpu_clk while the OSTM above runs off the
+     * platform's 1 MHz tick, and this call hands the same number to
+     * both. That is the platform's tick rate standing in for the CPU
+     * clock: the emulator has no separate cpu_clk to offer, and the
+     * dividers are relative anyway. A guest computing an absolute
+     * period from a datasheet frequency will be wrong by that ratio.
+     */
+    g4mh_tptm_advance(&g_tptm, ticks);
 }
 
 static void g4mh_ops_set_time(emu_cpu_t *cpu, uint64_t now)

@@ -10,6 +10,10 @@
 
 #include "g4mh/g4mh_intc.h"
 #include "g4mh/g4mh_cpu.h"
+/* For G4MH_TPTM_EI_CHANNEL: TPTMSEL routes the TPTM's interval
+ * interrupt, so this file needs the timer's channel number even though
+ * the timer is next door. */
+#include "g4mh/g4mh_intercpu.h"
 
 #include <string.h>
 
@@ -242,6 +246,64 @@ static emu_fault_t intc2_write(void *ctx, uint32_t off, uint32_t size,
 }
 
 /* ------------------------------------------------------------------ */
+/* INTIF: TPTMSEL, and the FEINT path it selects                       */
+/* ------------------------------------------------------------------ */
+
+void g4mh_intc_raise_tptm(g4mh_intc_t *ic, unsigned pe)
+{
+    const g4mh_intc_t *g = (ic->global != NULL) ? ic->global : ic;
+
+    if (((g->tptmsel >> pe) & 1u) != 0u) {
+        g4mh_intc_raise(ic, G4MH_TPTM_EI_CHANNEL);
+        return;
+    }
+
+    /*
+     * FEINT. Set on the PE's own controller rather than the global one,
+     * because that is where the core looks and it keeps the pending set
+     * per core exactly as eic[] is.
+     */
+    ic->feint = 1u;
+    if (ic->cpu != NULL) {
+        ic->cpu->irq_dirty = true;
+    }
+}
+
+bool g4mh_intc_fe_pending(const g4mh_intc_t *ic, unsigned pe)
+{
+    (void)pe;
+    return ic->feint != 0u;
+}
+
+void g4mh_intc_ack_fe(g4mh_intc_t *ic, unsigned pe)
+{
+    (void)pe;
+    ic->feint = 0u;
+}
+
+static emu_fault_t intif_read(void *ctx, uint32_t off, uint32_t size,
+                              uint32_t *out)
+{
+    const g4mh_intc_t *ic = (const g4mh_intc_t *)ctx;
+    (void)size;
+
+    *out = (off == G4MH_INTIF_TPTMSEL) ? ic->tptmsel : 0u;
+    return EMU_FAULT_NONE;
+}
+
+static emu_fault_t intif_write(void *ctx, uint32_t off, uint32_t size,
+                               uint32_t val)
+{
+    g4mh_intc_t *ic = (g4mh_intc_t *)ctx;
+    (void)size;
+
+    if (off == G4MH_INTIF_TPTMSEL) {
+        ic->tptmsel = val & 0x3Fu;
+    }
+    return EMU_FAULT_NONE;
+}
+
+/* ------------------------------------------------------------------ */
 /* OS timer                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -289,4 +351,7 @@ const emu_dev_ops_t g4mh_intc2_ops = {
 };
 const emu_dev_ops_t g4mh_ostm_ops = {
     .read = ostm_read, .write = ostm_write, .tick = NULL,
+};
+const emu_dev_ops_t g4mh_intif_ops = {
+    .read = intif_read, .write = intif_write, .tick = NULL,
 };

@@ -1139,6 +1139,20 @@ session, and every one of them recurred:
   themselves on the host they emit for. The rule: **a file whose contents
   are selected by host belongs beside the other files selected by host,
   not under whichever frontend happened to need it first.**
+- **The G4MH JIT has its own interrupt path, so anything added to the
+  interpreter's is absent from it.** `g4mh_jit_take_irq` is a separate
+  copy of the run loop's interrupt check. Adding FE-level delivery for
+  the TPTM to the interpreter left the JIT -- which is the *default*
+  backend -- taking none at all. Exactly the performance-counter defect
+  one entry up, found within the same week, and the reason the test
+  caught it is worth more than the fix: it asserts the **cause
+  register**, not that a handler ran. The zeros between a flat guest's
+  vectors run through to whatever comes next, so an unrelated exception
+  lands on the same handler and sets the same register. Three earlier
+  versions of that test passed against three different bugs -- a
+  misaligned word store to a halfword register, `RESBANK` written where
+  `DI` was meant, and PSW.ID masking the channel -- each of which
+  vectored somewhere and fell through to the handler being watched.
 - **A capability macro that depends on include order is worse than no
   macro.** `G4MH_HAVE_JIT` was defined in `g4mh_cpu.h` from
   `EMU_JIT_X86_64`, which `emu/emu_jit.h` defines -- and

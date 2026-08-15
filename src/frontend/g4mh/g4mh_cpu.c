@@ -102,9 +102,13 @@ bool g4mh_exc_is_fe(g4mh_exc_t cause)
         return true;
     default:
         /* FETRAP is the one *software-raised* FE-level cause: that is the
-         * whole point of it beside TRAP, which is EI level. */
-        return cause >= G4MH_EXC_FETRAP &&
-               cause < G4MH_EXC_FETRAP + 0x10u;
+         * whole point of it beside TRAP, which is EI level. FEINT is the
+         * asynchronous one, and is FE level for the reason that makes it
+         * useful -- PSW.ID does not reach it. */
+        return (cause >= G4MH_EXC_FETRAP &&
+                cause < G4MH_EXC_FETRAP + 0x10u) ||
+               (cause >= G4MH_EXC_FEINT &&
+                cause < G4MH_EXC_FEINT + 0x10u);
     }
 }
 
@@ -137,6 +141,9 @@ static uint32_t handler_address(const g4mh_cpu_t *c, g4mh_exc_t cause)
     }
     if (cause >= G4MH_EXC_FETRAP && cause < G4MH_EXC_FETRAP + 0x10u) {
         return table + 0x0030u;         /* FETRAP 1..15                  */
+    }
+    if (cause >= G4MH_EXC_FEINT && cause < G4MH_EXC_FEINT + 0x10u) {
+        return table + 0x00F0u;         /* FEINT 0..15                   */
     }
     switch (cause) {
     case G4MH_EXC_SYSERR: return table + 0x0010u;
@@ -214,6 +221,23 @@ int g4mh_cpu_pending_irq(const g4mh_cpu_t *c)
         return -1;
     }
     return g4mh_intc_pending(c->intc, c->coreid);
+}
+
+bool g4mh_cpu_pending_fe(const g4mh_cpu_t *c)
+{
+    /*
+     * **PSW.ID is not consulted, and that is the whole difference.** An
+     * FE-level interrupt is refused only while PSW.NP is set -- that is,
+     * while an FE handler is already running -- which is what makes it
+     * useful for a timing-protection timer: a guest that has masked EI
+     * interrupts still gets it.
+     *
+     * Checked before the EI path by the run loop, since FE outranks EI.
+     */
+    if ((c->psw & G4MH_PSW_NP) != 0u || c->intc == NULL) {
+        return false;
+    }
+    return g4mh_intc_fe_pending(c->intc, c->coreid);
 }
 
 /* ------------------------------------------------------------------ */

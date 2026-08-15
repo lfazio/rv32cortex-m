@@ -51,6 +51,23 @@
 #define G4MH_OSTM0_BASE         0xFFEC0000u
 #define G4MH_OSTM0_SIZE         0x00000100u
 
+/*
+ * The inter-CPU peripherals, hardware manual table 3.145. All three
+ * carry a self region whose meaning follows the accessing PE, so all
+ * three are registered per core -- see g4mh_intercpu.h.
+ *
+ * The sizes are what the register maps reach, rounded up: BARR's last
+ * register is at 0x800 + 0x10*15 + 0x100*5 + 4, IPIR's at 0x800 +
+ * 0x20*3 + 0x100*5 + 0x14, and TPTM's self block plus six PE blocks is
+ * 0x700.
+ */
+#define G4MH_BARR_BASE          0xFFFB8000u
+#define G4MH_BARR_SIZE          0x00001000u
+#define G4MH_IPIR_BASE          0xFFFB9000u
+#define G4MH_IPIR_SIZE          0x00001000u
+#define G4MH_TPTM_BASE          0xFFFBB000u
+#define G4MH_TPTM_SIZE          0x00001000u
+
 /* ------------------------------------------------------------------ */
 /* Memory                                                              */
 /* ------------------------------------------------------------------ */

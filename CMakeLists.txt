@@ -348,15 +348,18 @@ endif()
 
 if(EMU_FRONTEND_G4MH)
     target_sources(emucore PRIVATE
+        src/frontend/g4mh/g4mh_barrier.c
         src/frontend/g4mh/g4mh_cpu.c
         src/frontend/g4mh/g4mh_decode.c
         src/frontend/g4mh/g4mh_disasm.c
         src/frontend/g4mh/g4mh_frontend.c
         src/frontend/g4mh/g4mh_gdb.c
         src/frontend/g4mh/g4mh_intc.c
+        src/frontend/g4mh/g4mh_ipir.c
         src/frontend/g4mh/g4mh_ir.c
         src/frontend/g4mh/g4mh_interp.c
         src/frontend/g4mh/g4mh_fpu.c
+        src/frontend/g4mh/g4mh_tptm.c
     )
 
     target_compile_definitions(emucore PUBLIC
