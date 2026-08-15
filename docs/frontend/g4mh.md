@@ -85,7 +85,6 @@ life of this frontend it did not report anything at all.
 | `LDM.MP` / `STM.MP`, `RESBANK` | bank and context-block transfers. `RESBANK` is decoded and reports RIE rather than being mistaken for `DI` |
 | `DIVQ`/`DIVQU` with `reg2 == reg3` | the manual leaves the flags undefined there; this treats it as the ordinary case |
 | `PREPARE list12, imm5, imm32` | the only 64-bit encoding in the ISA, and past what the length decoder reports — see below |
-| the performance counters | `PMCTRL0-5` and `PMUMCTRL`. See below: they are not merely unimplemented, they are **unrepresentable** in the current system register file |
 
 **The inter-cluster peripherals are absent, and they are peripherals
 rather than instructions.** The U2B hardware manual (R01UH0923EJ0130) is
@@ -105,14 +104,31 @@ the authority for all three, not the software manual:
   absent. It is what a multi-PE guest would reach for first, and
   `G4MH_PE_COUNT` already goes to 3.
 
-**The performance counters are unrepresentable, not just unimplemented.**
-`PMCTRL0-5` live at selID **14** and `PMUMCTRL` at selID **11**, and this
-frontend's `G4MH_SR_BANKS` is **3** — so selIDs 3 through 15 have nowhere
-to live at all, and `LDSR`/`STSR` to them cannot even be stored. Widening
-the bank array is the prerequisite; after that the shape is the same as
-the existing register handling, except that something has to actually
-*count*, and the interpreter's `retired`/`cycles` are the only honest
-sources here.
+**The performance counters are implemented, and the bank file was widened
+to reach them.** `PMCTRL0-7` and `PMCOUNT0-7` are at selID 14 and
+`PMUMCTRL` at selID 11, so with `G4MH_SR_BANKS` at 3 they were not merely
+unimplemented -- an `LDSR` to them had nowhere to be stored and
+`g4mh_sr_write` dropped it, which reads to a guest exactly like a register
+hardwired to zero. The file is 16 banks now: 2 KiB per PE against 384
+bytes, flat rather than sparse because the alternative is a switch on
+every `LDSR` and `STSR`.
+
+Only two events are sourced -- cycles and instructions retired -- and that
+is deliberate. They are the two an emulator can report honestly; cache
+misses, branch mispredictions and stall cycles have no counterpart here,
+and a guest tuning against a fabricated miss rate would be tuning against
+nothing. Channels selecting them are left alone rather than counting
+something plausible.
+
+Counting is gated on `pm_active`, maintained by `g4mh_sr_write` rather
+than recomputed, so a guest that measures nothing pays one predictable
+branch on the retire path -- the same shape as the RV32 side's
+`fetch_guard`.
+
+**Do not quote a G4MH instruction count yet.** A program whose retire
+count should be five ticks the counter twice, and that is unexplained --
+task #38. The counter mechanism is right; what is in doubt is how many
+instructions this interpreter retires for a given program.
 
 **Architectural features not modelled:**
 
