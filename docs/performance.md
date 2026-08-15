@@ -78,6 +78,44 @@ needs memory or speed, so it is left as a build option rather than decided
 here — but every performance figure below is quoted at **48 KB**, and figures
 from any other size are not comparable.
 
+## Dhrystone, and what it does *not* measure here
+
+netlib's Dhrystone 2.1 runs as a guest image. It answers a different
+question from everything else on this page, and the difference is the
+whole reason to read this section before quoting a figure from it.
+
+The benchmark divides work by *guest* time, and guest time is not the
+same clock on both platforms:
+
+| | what drives mtime | what a DMIPS figure then means |
+|---|---|---|
+| host | one tick per retired guest instruction | the guest binary's work per guest clock at an assumed IPC of 1. **The backend cannot move it** |
+| board | the DWT cycle counter, scaled to 1 MHz | real elapsed time, so it *is* this emulator's throughput |
+
+On the host, then, it compares **frontends** — RV32 against G4MH against
+PowerPC, which is what task #37 wants — and comparing backends with it is
+meaningless by construction. Measured:
+
+| | µs/run | Dhrystones/s | DMIPS/MHz |
+|---|---|---|---|
+| RV32, interpreter | 470.0 | 2127.6 | 1.211 |
+| RV32, JIT | 470.0 | 2127.7 | 1.211 |
+
+at `DHRY_RUNS=20000` and again at 100000, which is the check that the
+clock measures rather than saturates: a five-fold change in run count
+moves the per-run figure not at all.
+
+The two backends agree to the last digit but are not bit-identical, and
+that is expected rather than noise: the run loop advances guest time once
+per round, and the JIT's rounds end on a block boundary rather than
+exactly on the budget, so the tick count at a given guest instruction can
+differ by up to one round.
+
+Dhrystone does not print DMIPS. The column above is Dhrystones/s over
+1757, the VAX 11/780's rate, and neither it nor the µs figure is
+comparable with a published number — this is a guest clock, not a real
+one.
+
 ## Driver performance: the passthrough window
 
 CoreMark and `bench` are deliberately I/O free, so neither says anything about

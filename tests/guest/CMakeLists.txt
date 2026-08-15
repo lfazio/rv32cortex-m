@@ -219,11 +219,12 @@ endif()
 # netlib's Dhrystone 2.1, unmodified except for the run count -- see the
 # note in dhry_portme.c, which supplies the libc it expects.
 #
-# TIME rather than TIMES: times() wants a struct and a tick rate this
-# platform has no equivalent for, while time() is one read of the guest's
-# own mtime. HZ follows the CLINT's rate, so the DMIPS figure is a guest
-# figure -- which is what makes it comparable between frontends and
-# backends, and not comparable with a published one.
+# TIMES, which is Dhrystone's default and is left selected by *not*
+# defining TIME. The other path takes time()'s return value for a count of
+# seconds and never references HZ at all, so a 1 MHz tick read straight out
+# of mtime came back as 470016000 microseconds per run. Under TIMES the
+# tick rate is declared instead, and HZ below is the CLINT's -- 1 MHz on
+# every platform, which is what makes it a constant here.
 set(DHRY_RUNS "20000" CACHE STRING "Dhrystone runs through the benchmark")
 
 if(EXISTS "${guest_dir}/dhrystone/dhry_1.c")
@@ -234,8 +235,10 @@ if(EXISTS "${guest_dir}/dhrystone/dhry_1.c")
             "${guest_dir}/dhrystone/dhry_2.c"
             "${guest_dir}/dhrystone/dhry_portme.c"
         FLAGS
+            # First, so that <sys/times.h> and <sys/types.h> find the
+            # shims in dhrystone/sys/ rather than the toolchain's -- which
+            # is what lets dhry.h keep its unmodified includes.
             -I "${guest_dir}/dhrystone"
-            -DTIME=1
             -DHZ=1000000
             -DDHRY_RUNS=${DHRY_RUNS}
             -DREG=register

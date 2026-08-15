@@ -102,7 +102,8 @@ board result.
 ### Options
 
 `-DRV32_GUEST=` selects the embedded guest image: `isatest`, `hello`,
-`bench`, `stm32drv`, `coremark`, `fptest` or `mmiobench`.
+`bench`, `stm32drv`, `irqtest`, `cmsistest`, `coremark`, `dhrystone`,
+`fptest` or `mmiobench`.
 
 | Option | Default | Effect |
 |---|---|---|
@@ -230,7 +231,12 @@ Guest images (`tests/guest/`):
 | `hello`   | smallest useful guest; confirms the console path |
 | `bench`   | compute-bound workload for throughput measurement |
 | `stm32drv`| GPIO and USART2 drivers written as guest code |
+| `irqtest` | a real peripheral interrupt taken by guest code |
+| `cmsistest`| the same interrupt through the CMSIS-Core shim |
+| `fptest`  | floating point, and deliberately no PMP |
+| `mmiobench`| driver-shaped workload for the passthrough window |
 | `coremark`| CoreMark, fetched from upstream and built for RV32 |
+| `dhrystone`| netlib's Dhrystone 2.1. On the host its clock is derived from the instruction count, so it compares *frontends* and not backends — see [docs/performance.md](docs/performance.md) |
 
 ---
 

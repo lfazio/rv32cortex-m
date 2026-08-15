@@ -17,7 +17,9 @@
  *   malloc    a bump allocator over a static arena. Dhrystone allocates
  *             exactly twice and never frees, so free() is a no-op and
  *             that is not a simplification but the whole requirement.
- *   time      the guest cycle counter, which is what this platform has.
+ *   times     the CLINT's mtime, at 1 MHz. Which clock that *is* differs
+ *             between the host and the board, and it changes what the
+ *             DMIPS figure means -- see the note above the function.
  *
  * **The number of runs is compiled in, not read.** Upstream prompts for
  * it with scanf, and a guest with no console input would block forever
@@ -35,6 +37,9 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <stddef.h>
+
+/* The shim beside this file, not the toolchain's -- see sys/times.h. */
+#include <sys/times.h>
 
 #define UART_THR   (*(volatile uint8_t *)0x10000000u)
 
@@ -177,24 +182,66 @@ void free(void *p)
 }
 
 /*
- * The clock. `TIME` is defined by the build, so dhry_1.c calls time()
- * and divides by HZ; both come from here.
+ * The clock.
  *
- * mtime counts at the platform's timer rate, not the CPU clock, which is
- * why HZ is what it is and why the reported DMIPS is a *guest* figure.
- * What this benchmark is for here is comparing frontends and backends
- * against each other, so the absolute number matters less than that both
- * sides of a comparison use the same clock.
+ * Dhrystone offers two: time(), which must return whole *seconds*, and
+ * times(), which returns ticks at a rate the build declares as HZ. This
+ * guest uses times(), and the reason is resolution. The CLINT runs at
+ * 1 MHz, a run is a few seconds of guest time, and time() would quantise
+ * that to one part in a few -- the first version of this file did exactly
+ * that and reported 470016000 microseconds per run, because with TIME
+ * selected Dhrystone divides by nothing and takes the raw tick count for
+ * a count of seconds. HZ is not even referenced on that path.
+ *
+ * mtime is the same 1 MHz on every platform, which is what makes HZ a
+ * constant here rather than something the build has to discover. What
+ * differs between platforms is what that clock *is*, and it changes what
+ * the resulting figure means:
+ *
+ *   on the board   mtime is derived from the DWT cycle counter, so it is
+ *                  real elapsed time and the DMIPS figure is the emulated
+ *                  system's -- interpreter and JIT differ, and that
+ *                  difference is the emulator's throughput.
+ *
+ *   on the host    guest time advances one tick per retired instruction
+ *                  (see --timer-hz), so a "second" is a million guest
+ *                  instructions. The figure is then a property of the
+ *                  guest binary at an assumed IPC of 1: it says how much
+ *                  work the frontend's compiler gets done per guest
+ *                  clock, and says nothing whatever about how fast this
+ *                  emulator runs. Comparing backends with it is the
+ *                  mistake it invites -- interpreter and JIT agree to the
+ *                  last digit, as they must.
+ *
+ *                  Not *bit*-identical, though, and the reason is worth
+ *                  knowing before reading a difference as a result: the
+ *                  run loop advances guest time once per round rather
+ *                  than per instruction, and the JIT's rounds end on a
+ *                  block boundary rather than exactly on the budget. So
+ *                  the tick count at a given guest instruction can differ
+ *                  by up to one round. Measured across a five-fold change
+ *                  in DHRY_RUNS it moves the last digit of the
+ *                  per-second figure and nothing above it.
+ *
+ * Neither is comparable with a published DMIPS number, and the second is
+ * the one that reads as though it were. Dhrystone does not print DMIPS at
+ * all: that is this figure over 1757, the VAX 11/780's rate.
  */
 #define MTIME_LO   (*(volatile uint32_t *)0x0200BFF8u)
 
-long time(long *t)
+/*
+ * Declared `extern int times ();` by dhry_1.c and not declared at all by
+ * the sys/times.h beside this file -- see the note there for why the
+ * return types are allowed to disagree. Only tms_utime is ever read.
+ */
+long times(struct tms *buf)
 {
     long now = (long)MTIME_LO;
 
-    if (t != NULL) {
-        *t = now;
-    }
+    buf->tms_utime  = now;
+    buf->tms_stime  = 0;
+    buf->tms_cutime = 0;
+    buf->tms_cstime = 0;
     return now;
 }
 
