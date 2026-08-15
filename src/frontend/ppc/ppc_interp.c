@@ -134,12 +134,200 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
         /* --- execute ----------------------------------------------- */
         if (len == 2u) {
             /*
-             * VLE's 16-bit se_ forms. Not implemented; they raise a
-             * program interrupt rather than being skipped, and the
-             * caution at the top of this file explains why that is not
-             * the same as being reported.
+             * VLE's 16-bit se_ forms.
+             *
+             * Every encoding below came from the assembler, and the
+             * grouping follows what the encodings actually do rather
+             * than the manual's form names: the operand layout is not
+             * uniform across them. In particular the two-register forms
+             * put the *source* in bits[7:4] and the destination in
+             * bits[3:0], while the load/store forms put the data
+             * register in bits[7:4] and the *base* in bits[3:0] -- the
+             * same two nibbles, opposite senses.
              */
-            EXC(PPC_IVOR_PROGRAM);
+            const uint16_t w = (uint16_t)(insn >> 16);
+            const uint32_t rx = ppc_se_reg((uint32_t)w & 0xFu);
+            const uint32_t ry = ppc_se_reg(((uint32_t)w >> 4) & 0xFu);
+            const uint32_t hi = (uint32_t)w >> 8;
+
+            if (hi == 0x00u) {
+                /* No operands, or one register in the low nibble. */
+                switch (((uint32_t)w >> 4) & 0xFu) {
+                case 0x0u:
+                    switch ((uint32_t)w & 0xFu) {
+                    case 0x1u: break;               /* se_isync: a no-op  */
+                    case 0x2u:                      /* se_sc              */
+                        goto do_syscall;
+                    case 0x4u:                      /* se_blr             */
+                    case 0x5u:                      /* se_blrl            */
+                        {
+                            const uint32_t tgt = c->lr & ~1u;
+                            if (((uint32_t)w & 1u) != 0u) { c->lr = next; }
+                            pc = tgt;
+                            goto retired_insn;
+                        }
+                    case 0x6u:                      /* se_bctr            */
+                    case 0x7u:                      /* se_bctrl           */
+                        {
+                            const uint32_t tgt = c->ctr & ~1u;
+                            if (((uint32_t)w & 1u) != 0u) { c->lr = next; }
+                            pc = tgt;
+                            goto retired_insn;
+                        }
+                    case 0x8u:                      /* se_rfi             */
+                        c->msr = c->srr1;
+                        pc = c->srr0;
+                        goto retired_insn;
+                    case 0x9u:                      /* se_rfci            */
+                    case 0xAu:                      /* se_rfdi            */
+                        c->msr = c->csrr1;
+                        pc = c->csrr0;
+                        goto retired_insn;
+                    default:                        /* se_illegal, 0x0000 */
+                        EXC(PPC_IVOR_PROGRAM);
+                    }
+                    break;
+                case 0x2u: c->r[rx] = ~c->r[rx]; break;              /* not   */
+                case 0x3u: c->r[rx] = (uint32_t)(-(int32_t)c->r[rx]); break;
+                case 0x8u: c->r[rx] = c->lr;  break;                 /* mflr  */
+                case 0x9u: c->lr    = c->r[rx]; break;               /* mtlr  */
+                case 0xAu: c->r[rx] = c->ctr; break;                 /* mfctr */
+                case 0xBu: c->ctr   = c->r[rx]; break;               /* mtctr */
+                case 0xCu: c->r[rx] = c->r[rx] & 0xFFu; break;       /* extzb */
+                case 0xDu: c->r[rx] = (uint32_t)(int32_t)(int8_t)c->r[rx]; break;
+                case 0xEu: c->r[rx] = c->r[rx] & 0xFFFFu; break;     /* extzh */
+                case 0xFu: c->r[rx] = (uint32_t)(int32_t)(int16_t)c->r[rx]; break;
+                default:   EXC(PPC_IVOR_PROGRAM);
+                }
+            } else if (hi == 0x01u) {               /* se_mr  rX <- rY    */
+                c->r[rx] = c->r[ry];
+            } else if (hi >= 0x04u && hi <= 0x07u) {
+                switch (hi) {
+                case 0x04u: c->r[rx] += c->r[ry]; break;      /* se_add   */
+                case 0x05u: c->r[rx] *= c->r[ry]; break;      /* se_mullw */
+                /*
+                 * se_sub and se_subf are not the same instruction with
+                 * the operands swapped in the encoding -- they are two
+                 * instructions with opposite senses, and both write rX.
+                 */
+                case 0x06u: c->r[rx] -= c->r[ry]; break;      /* rX - rY  */
+                default:    c->r[rx] = c->r[ry] - c->r[rx]; break;
+                }
+            } else if (hi >= 0x0Cu && hi <= 0x0Eu) {
+                /*
+                 * The 16-bit compares always target CR0, and se_cmph
+                 * compares only the low halfwords -- sign-extended, so
+                 * it is not a masked se_cmp.
+                 */
+                if (hi == 0x0Cu) {
+                    cr_compare(c, 0u, c->r[rx], c->r[ry], true);
+                } else if (hi == 0x0Du) {
+                    cr_compare(c, 0u, c->r[rx], c->r[ry], false);
+                } else {
+                    cr_compare(c, 0u,
+                               (uint32_t)(int32_t)(int16_t)c->r[rx],
+                               (uint32_t)(int32_t)(int16_t)c->r[ry], true);
+                }
+            } else if (hi >= 0x40u && hi <= 0x47u) {
+                /* Shift counts are masked to 5 bits; PowerPC's 6-bit
+                 * behaviour is a 64-bit rule and does not apply here. */
+                const uint32_t sh = c->r[ry] & 0x1Fu;
+                switch (hi) {
+                case 0x40u: c->r[rx] >>= sh; break;                  /* srw  */
+                case 0x41u: c->r[rx] =
+                    (uint32_t)((int32_t)c->r[rx] >> sh); break;      /* sraw */
+                case 0x42u: c->r[rx] <<= sh; break;                  /* slw  */
+                case 0x44u: c->r[rx] |= c->r[ry]; break;             /* or   */
+                case 0x45u: c->r[rx] &= ~c->r[ry]; break;            /* andc */
+                case 0x46u: c->r[rx] &= c->r[ry]; break;             /* and  */
+                case 0x47u: c->r[rx] &= c->r[ry];                    /* and. */
+                            cr0_from(c, c->r[rx]); break;
+                default:    EXC(PPC_IVOR_PROGRAM);
+                }
+            } else if ((w >> 11) == 0x09u) {        /* se_li  imm7        */
+                c->r[rx] = ((uint32_t)w >> 4) & 0x7Fu;
+            } else if ((w >> 9) == 0x10u || (w >> 9) == 0x12u) {
+                /*
+                 * OIM5 encodes 1..32 as 0..31, because adding zero is
+                 * not worth an encoding. Reading it straight makes
+                 * `se_addi rX,1` a no-op and `se_addi rX,32` add 31.
+                 */
+                const uint32_t oim = (((uint32_t)w >> 4) & 0x1Fu) + 1u;
+                if ((w >> 9) == 0x10u) { c->r[rx] += oim; }
+                else                   { c->r[rx] -= oim; }
+            } else if ((w >> 9) == 0x15u) {         /* se_cmpi  ui5       */
+                cr_compare(c, 0u, c->r[rx], ((uint32_t)w >> 4) & 0x1Fu, true);
+            } else if ((w >> 9) == 0x16u) {         /* se_bmaski ui5      */
+                const uint32_t n = ((uint32_t)w >> 4) & 0x1Fu;
+                c->r[rx] = (n == 0u) ? 0xFFFFFFFFu : ((1u << n) - 1u);
+            } else if ((w >> 9) == 0x30u) {         /* se_bclri           */
+                c->r[rx] &= ~(1u << (31u - (((uint32_t)w >> 4) & 0x1Fu)));
+            } else if ((w >> 9) == 0x32u) {         /* se_bseti           */
+                c->r[rx] |= 1u << (31u - (((uint32_t)w >> 4) & 0x1Fu));
+            } else if ((w >> 9) == 0x33u) {         /* se_btsti           */
+                const uint32_t b =
+                    c->r[rx] & (1u << (31u - (((uint32_t)w >> 4) & 0x1Fu)));
+                cr_compare(c, 0u, b, 0u, true);
+            } else if ((w >> 9) == 0x34u) {         /* se_srwi            */
+                c->r[rx] >>= ((uint32_t)w >> 4) & 0x1Fu;
+            } else if ((w >> 9) == 0x36u) {         /* se_slwi            */
+                c->r[rx] <<= ((uint32_t)w >> 4) & 0x1Fu;
+            } else if (hi >= 0x80u && hi <= 0xDFu) {
+                /*
+                 * SD4-form. The data register is bits[7:4] and the base
+                 * is bits[3:0] -- the opposite sense to every
+                 * two-register form above, which is the single easiest
+                 * thing to get wrong here.
+                 *
+                 * The displacement is scaled by the access size, so the
+                 * same nibble is 15 bytes or 60 bytes depending on the
+                 * width.
+                 */
+                const uint32_t kind = (uint32_t)w >> 12;
+                const uint32_t sz = (kind == 0x8u || kind == 0x9u) ? 1u
+                                  : ((kind == 0xAu || kind == 0xBu) ? 2u : 4u);
+                const uint32_t ea = c->r[rx] + ppc_se_sd4(w, sz);
+                const bool store = (kind == 0x9u || kind == 0xBu ||
+                                    kind == 0xDu);
+                if (store) {
+                    const ppc_exc_t e = ppc_store(c, ea, sz, c->r[ry]);
+                    if (EMU_UNLIKELY(e != PPC_EXC_NONE)) { EXC(e); }
+                } else {
+                    uint32_t v;
+                    const ppc_exc_t e = ppc_load(c, ea, sz, false, &v);
+                    if (EMU_UNLIKELY(e != PPC_EXC_NONE)) { EXC(e); }
+                    c->r[ry] = v;
+                }
+            } else if (hi >= 0xE0u && hi <= 0xE7u) {
+                /*
+                 * se_bc. The condition is CR0 only: bits[1:0] of the
+                 * opcode pick LT/GT/EQ/SO and bit 2 picks true or false,
+                 * so se_bge is "branch if not LT" rather than an
+                 * encoding of its own.
+                 */
+                static const uint32_t k_bit[4] = {
+                    PPC_CR_LT, PPC_CR_GT, PPC_CR_EQ, PPC_CR_SO
+                };
+                const bool want = (hi & 0x4u) != 0u;
+                const bool got = (cr_get(c, 0u) & k_bit[hi & 0x3u]) != 0u;
+                if (got == want) {
+                    /* BD8 is signed and scaled by two: it counts
+                     * halfwords, because no instruction is odd. */
+                    const int32_t bd = (int32_t)(int8_t)(uint8_t)(w & 0xFFu);
+                    pc = pc + (uint32_t)(bd * 2);
+                    goto retired_insn;
+                }
+            } else if (hi == 0xE8u || hi == 0xE9u) {
+                const int32_t bd = (int32_t)(int8_t)(uint8_t)(w & 0xFFu);
+                if (hi == 0xE9u) { c->lr = next; }   /* se_bl */
+                pc = pc + (uint32_t)(bd * 2);
+                goto retired_insn;
+            } else {
+                EXC(PPC_IVOR_PROGRAM);
+            }
+
+            pc = next;
+            goto retired_insn;
         }
 
         switch (ppc_op6(insn)) {
@@ -360,6 +548,7 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
             break;
 
         case 0x11:                          /* sc -- the system call    */
+        do_syscall:
             /*
              * The platform's syscall hook gets first refusal, so a host
              * harness can offer write/exit the way it does for the other

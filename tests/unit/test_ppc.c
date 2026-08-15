@@ -30,6 +30,9 @@
 #define TEST_RAM_SIZE  4096u
 
 static uint8_t    g_ram[TEST_RAM_SIZE];
+/* Reachable from a 16-bit program: 64 << 6. See load_and_run_vle. */
+#define VLE_SCRATCH   0x1000u
+static uint8_t    g_scratch[256];
 static emu_bus_t  g_bus;
 static emu_core_t g_core;
 
@@ -327,6 +330,200 @@ static void test_unimplemented_reports(void)
     CHECK_EQ(core()->msr & PPC_MSR_EE, 0u);
 }
 
+/* ------------------------------------------------------------------ */
+/* VLE                                                                 */
+/* ------------------------------------------------------------------ */
+
+/* VLE programs are halfwords, so they need their own emitter -- still
+ * big-endian, still most significant byte first. */
+static bool load_and_run_vle(const uint16_t *hw, unsigned n, uint32_t budget,
+                             emu_run_reason_t *why, uint32_t *retired)
+{
+    const emu_cpu_ops_t *ops = emu_frontend_find("ppc");
+    if (ops == NULL) {
+        return false;
+    }
+
+    memset(g_ram, 0, sizeof(g_ram));
+    for (unsigned i = 0; i < n; i++) {
+        g_ram[i * 2u + 0u] = (uint8_t)(hw[i] >> 8);
+        g_ram[i * 2u + 1u] = (uint8_t)(hw[i]);
+    }
+
+    memset(g_scratch, 0, sizeof(g_scratch));
+
+    emu_bus_init(&g_bus);
+    if (!emu_bus_add_ram(&g_bus, "ram", EMU_GUEST_RAM_BASE, g_ram,
+                         TEST_RAM_SIZE)) {
+        return false;
+    }
+    /*
+     * A low scratch region, because the 16-bit forms cannot build a high
+     * address: se_li reaches 0..127 and there is no se_lis. A VLE-only
+     * program addresses memory through a register something else set up
+     * -- in a real guest, the linker's small-data pointer -- so the test
+     * gives it somewhere reachable rather than pretending otherwise.
+     */
+    if (!emu_bus_add_ram(&g_bus, "scratch", VLE_SCRATCH, g_scratch,
+                         sizeof(g_scratch))) {
+        return false;
+    }
+    if (!emu_core_open(&g_core, ops, &g_bus, 0u)) {
+        return false;
+    }
+    emu_core_reset(&g_core, EMU_GUEST_RAM_BASE);
+    emu_core_boot(&g_core, EMU_GUEST_RAM_BASE, TEST_RAM_SIZE);
+    /* VLE and Book E are different encodings of the same bytes, so the
+     * mode has to be stated before the first fetch. */
+    ((ppc_cpu_t *)(void *)g_core.cpu)->vle = true;
+
+    *why = emu_core_run(&g_core, budget, retired);
+    return true;
+}
+
+/*
+ * The se_ arithmetic, and the compressed register field.
+ *
+ * That field is four bits and maps 0-7 to r0-r7 and 8-15 to *r24-r31*,
+ * not r0-r15. The test uses r24 and r25 for exactly that reason: read as
+ * a plain index they become r8 and r9, which are ordinary live registers,
+ * so nothing faults and the wrong ones are written.
+ *
+ * se_sub and se_subf are both here because they are two instructions with
+ * opposite senses rather than one with swapped operands, and both write
+ * rX -- so a test using only one of them passes either way.
+ */
+static void test_se_alu(void)
+{
+    static const uint16_t prog[] = {
+        0x4E43u,   /* se_li   r3,100                                  */
+        0x4874u,   /* se_li   r4,7                                    */
+        0x0135u,   /* se_mr   r5,r3                                   */
+        0x0445u,   /* se_add  r5,r4      -- 107                       */
+        0x0643u,   /* se_sub  r3,r4      -- 100 - 7  = 93             */
+        0x4896u,   /* se_li   r6,9                                    */
+        0x0746u,   /* se_subf r6,r4      -- 7 - 9    = -2             */
+        0x48C7u,   /* se_li   r7,12                                   */
+        0x6827u,   /* se_srwi r7,2       -- 3                         */
+        0x4858u,   /* se_li   r24,5                                   */
+        0x0189u,   /* se_mr   r25,r24                                 */
+        0x21F9u,   /* se_addi r25,32     -- OIM5: 31 encodes 32       */
+        0x0002u,   /* se_sc                                           */
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run_vle(prog, sizeof(prog) / sizeof(prog[0]), 32u, &why,
+                          &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(5), 107u);
+    CHECK_EQ(reg(3), 93u);
+    CHECK_EQ(reg(6), (uint32_t)(-2));     /* subf is rY - rX */
+    CHECK_EQ(reg(7), 3u);
+    CHECK_EQ(reg(24), 5u);                /* field 8  -> r24, not r8  */
+    CHECK_EQ(reg(25), 37u);               /* field 9  -> r25, and +32 */
+    /* r8 and r9 must be untouched, which is what a plain-index read of
+     * the field would have written instead. */
+    CHECK_EQ(reg(8), 0u);
+    CHECK_EQ(reg(9), 0u);
+}
+
+/*
+ * SD4-form loads and stores, and the branches.
+ *
+ * Two traps in one test. The displacement is *scaled by the access size*,
+ * so the same nibble is 3 for a byte and 12 for a word. And the operand
+ * sense is reversed from every two-register form: the data register is
+ * bits[7:4] and the base is bits[3:0], where se_mr has the source in
+ * bits[7:4] and the destination in bits[3:0].
+ */
+static void test_se_memory_and_branch(void)
+{
+    static const uint16_t prog[] = {
+        0x4C04u,   /* se_li   r4,64                                   */
+        0x6C64u,   /* se_slwi r4,6       -- r4 = 0x1000, the scratch  */
+        0x4803u,   /* se_li   r3,0                                    */
+        0xD034u,   /* se_stw  r3,0(r4)   -- zero the word             */
+        0x4DA5u,   /* se_li   r5,90                                   */
+        0x9354u,   /* se_stb  r5,3(r4)   -- the *last* byte, BE       */
+        0x8364u,   /* se_lbz  r6,3(r4)   -- 90                        */
+        0xC074u,   /* se_lwz  r7,0(r4)   -- 90, in the low byte       */
+        0x4858u,   /* se_li   r24,5                                   */
+        0x2A58u,   /* se_cmpi r24,5      -- EQ into CR0               */
+        0xE602u,   /* se_beq  +4         -- taken                     */
+        0x4EF9u,   /* se_li   r25,111    -- skipped                   */
+        0x481Au,   /* se_li   r26,1                                   */
+        0xE902u,   /* se_bl   +4                                      */
+        0x4E3Bu,   /* se_li   r27,99     -- skipped                   */
+        0x008Cu,   /* se_mflr r28                                     */
+        0x0002u,   /* se_sc                                           */
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run_vle(prog, sizeof(prog) / sizeof(prog[0]), 32u, &why,
+                          &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(4), VLE_SCRATCH);
+    CHECK_EQ(reg(6), 90u);
+    /* Big-endian: a byte at offset 3 is the *least* significant of the
+     * word, so the word reads as 90 and not 90 << 24. */
+    CHECK_EQ(reg(7), 90u);
+    CHECK_EQ(g_scratch[3], 90u);
+
+    CHECK_EQ(reg(25), 0u);                /* se_beq was taken         */
+    CHECK_EQ(reg(26), 1u);
+    CHECK_EQ(reg(27), 0u);                /* se_bl skipped it         */
+    /* se_bl links to the instruction after itself. */
+    CHECK_EQ(reg(28), EMU_GUEST_RAM_BASE + 28u);
+}
+
+/*
+ * SD4 is scaled by the *access size*, so the same nibble means a
+ * different byte offset per width.
+ *
+ * This exists because the first version of the test above could not see
+ * it: it used a byte store (scale 1) and a word load at offset 0, and
+ * scaled and unscaled agree on both. Reverting the scaling changed
+ * nothing and the suite still passed -- which is the recurring failure
+ * in this tree, a test that reads as coverage. Here nibble 1 must mean
+ * byte 4 for a word and byte 2 for a halfword.
+ */
+static void test_se_sd4_is_scaled(void)
+{
+    static const uint16_t prog[] = {
+        0x4C04u,   /* se_li   r4,64                                   */
+        0x6C64u,   /* se_slwi r4,6       -- the scratch region        */
+        0x4B73u,   /* se_li   r3,55                                   */
+        0xD134u,   /* se_stw  r3,4(r4)   -- nibble 1, *4 = byte 4     */
+        0xC164u,   /* se_lwz  r6,4(r4)   -- reads it back             */
+        0xA174u,   /* se_lhz  r7,2(r4)   -- nibble 1, *2 = byte 2     */
+        0x0002u,   /* se_sc                                           */
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run_vle(prog, sizeof(prog) / sizeof(prog[0]), 32u, &why,
+                          &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(6), 55u);
+    /* The word really is at byte 4, not byte 1: unscaled it would have
+     * landed straddling bytes 1..4 and the halfword read would differ. */
+    CHECK_EQ(g_scratch[4], 0u);
+    CHECK_EQ(g_scratch[7], 55u);      /* big-endian: LSB last */
+    /* Halfword at byte 2 is the top half of that word, so zero. */
+    CHECK_EQ(reg(7), 0u);
+}
+
 void test_ppc(void)
 {
     test_vle_length();
@@ -336,4 +533,7 @@ void test_ppc(void)
     test_spr_number_is_swapped();
     test_branch();
     test_unimplemented_reports();
+    test_se_alu();
+    test_se_memory_and_branch();
+    test_se_sd4_is_scaled();
 }

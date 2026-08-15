@@ -63,6 +63,33 @@ static EMU_ALWAYS_INLINE unsigned ppc_vle_len(uint16_t w0)
     return (((w0 >> 12) & 0x9u) == 0x1u) ? 4u : 2u;
 }
 
+
+/* ------------------------------------------------------------------ */
+/* VLE 16-bit forms                                                    */
+/* ------------------------------------------------------------------ */
+/*
+ * The compressed register field is four bits and does *not* mean r0-r15.
+ * It maps 0-7 to r0-r7 and 8-15 to r24-r31 -- the two ends of the file,
+ * which is where an EABI keeps its scratch and its callee-saved
+ * registers. Read as a plain index it silently addresses r8-r15, which
+ * are live registers, so nothing faults and the wrong value is used.
+ *
+ * Confirmed against the assembler rather than assumed: `se_mr 3,8`
+ * through `se_mr 3,23` are *rejected* as invalid registers, and
+ * `se_mr r3,r24` encodes as 0x0183.
+ */
+static EMU_ALWAYS_INLINE uint32_t ppc_se_reg(uint32_t f)
+{
+    return (f < 8u) ? f : (f + 16u);
+}
+
+/* SD4-form's displacement is scaled by the access size, so the same
+ * nibble means 15 for a byte and 60 for a word. */
+static EMU_ALWAYS_INLINE uint32_t ppc_se_sd4(uint16_t w, uint32_t size)
+{
+    return ((uint32_t)(w >> 8) & 0xFu) * size;
+}
+
 #ifdef __cplusplus
 }
 #endif
