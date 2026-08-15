@@ -5,6 +5,31 @@ frontend, which exists mainly to keep `emu_cpu_ops_t` honest: if a third
 ISA needs something neither has, it belongs in the contract rather than
 in a platform `#ifdef`.
 
+## Running and debugging one
+
+```sh
+cmake -B build/g4 -DEMU_PLATFORM=host -DEMU_FRONTEND_G4MH=ON
+./build/g4/rv32-host --frontend g4mh --load 0x80000000 tests/guest/g4mh/guest.bin
+./build/g4/rv32-host --frontend g4mh --jit --load 0x80000000 tests/guest/g4mh/guest.bin
+```
+
+`tests/guest/g4mh/` holds a CC-RH-built guest and its listing, so the one
+cross-check this frontend has -- interpreter against JIT -- is
+reproducible from the tree. `scripts/report-figures.sh` runs both and
+prints them side by side.
+
+`--gdb` works: `src/frontend/g4mh/g4mh_gdb.c` supplies the target
+description, and the register layout was taken from gdb rather than
+inferred (`maint print registers` under `set architecture v850:rh850`).
+Two things about it are worth knowing before trusting a session -- gdb
+carries `fp` as a *raw* register that the architecture does not have, so
+it is reported as the EABI's r29; and gdb's v850 backend **rejects**
+target-supplied registers, so its built-in numbering is the contract and
+the served XML documents it without being able to enforce it.
+`test_gdb_layout` is what holds the two together.
+
+---
+
 **There is no reference model.** RV32 has riscv-arch-test, the Berkeley
 suite and Sail to disagree with. G4MH has hand-written unit tests, a
 second *encoder* (CC-RH), and a compiled guest — and nothing at all that
@@ -60,7 +85,6 @@ life of this frontend it did not report anything at all.
 | `LDM.MP` / `STM.MP`, `RESBANK` | bank and context-block transfers. `RESBANK` is decoded and reports RIE rather than being mistaken for `DI` |
 | `DIVQ`/`DIVQU` with `reg2 == reg3` | the manual leaves the flags undefined there; this treats it as the ordinary case |
 | `PREPARE list12, imm5, imm32` | the only 64-bit encoding in the ISA, and past what the length decoder reports — see below |
-| `CACHE`, `PREF` | `SYNCE`/`SYNCM`/`SYNCP`/`SYNCI` and `SNOOZE` are decoded and are no-ops here |
 
 **Architectural features not modelled:**
 
@@ -71,8 +95,10 @@ life of this frontend it did not report anything at all.
   `STSR`, `DI`, `EI`, `HALT` and `RETI` do not check privilege. Note what
   the RISC-V side of this repo learned the hard way — U-mode turned three
   latent M-mode PMP bugs into failures at once. Expect the same here.
-- **Coprocessor gating.** `PSW.CU0-2` and `G4MH_EXC_UCPOP` are defined and
-  never consulted.
+- **Coprocessor gating, beyond CU0.** `PSW.CU0` *is* consulted: the FPU
+  raises `UCPOP` when it is clear, which is what a part without the
+  option does. `CU1` and `CU2` have no unit behind them and are not
+  checked.
 - **Interrupt priority.** The INTC has a 4-bit priority per channel but does
   not maintain `ISPR` or honour `PMR`, so nesting is not modelled. `INTBP`
   and the table-reference entry method are absent; entry uses the single
@@ -80,8 +106,17 @@ life of this frontend it did not report anything at all.
 - **Register banks and hardware context save**, `GMCFG`, the guest modes.
 - **Debug level.** No `DBPC`/`DBPSW`, `DBTRAP`/`DBRET` — the analogue of
   Sdtrig.
-- **No JIT.** G4MH runs on the interpreter; a Thumb-2 translator for it
-  would be a second `emu_backend_t` beside `g4mh_backend_interp`.
+- **No Thumb-2 JIT.** There *is* an x86-64 one:
+  `g4mh_backend_jit` comes from the shared IR framework, and
+  `rv32-host --jit` selects it. A Thumb-2 translator would be a third
+  `emu_backend_t` and is what the firmware would need, since the host
+  backend exists for coverage rather than for speed.
+
+  Run both and diff them. With no reference model, interpreter against
+  JIT on the same guest is the only cross-check this frontend has --
+  which is exactly how the CC-RH guest's `puthex` bug was established as
+  shared semantics rather than a translator fault: both backends produced
+  the *same* wrong bytes.
 
 **Simplifications to be aware of before trusting a result:**
 
