@@ -1,0 +1,64 @@
+Whetstone 1.2, single precision
+==============================
+
+Provenance
+----------
+
+  netlib               http://www.netlib.org/benchmark/whetstonec
+    Rich Painter's 1998 C conversion of the FORTRAN Whetstone,
+    (c) 1998 Painter Engineering, Inc. Its licence requires the
+    comment block to travel with the source; it is at the top of
+    whetstone.c and must stay there.
+
+  kreier/benchmark     whetstone/Arduino/whetstone1.2.ino
+    Gareth Halfacree's Arduino port, based on Thomas Kirchner's,
+    which is where the double -> float change comes from.
+
+The float version is the one vendored here, and deliberately. This
+emulator's FPU is single precision on every target -- the Cortex-M4F and
+M7 have no double unit, and rv_hart_fp implements F and not D -- so the
+double-precision original would have measured libgcc's soft float rather
+than anything this project implements.
+
+Files
+-----
+
+  whetstone.c          the benchmark. The eleven modules are as
+                       vendored; the four changes outside them are
+                       marked WHET_PORT and listed at the top.
+
+  whetstone_portme.c   printf, and the clock. Not part of the
+                       measurement: the clock is read twice, and
+                       printf runs after it stops.
+
+Building and running
+--------------------
+
+  cmake -B build/host -DEMU_PLATFORM=host
+  cmake --build build/host --target guest-whetstone
+  ./build/host/emu-host --load 0x80000000 build/host/guest/whetstone.bin
+
+  -DWHET_LOOPS=n       work per run. 100 by default: 10 million
+                       Whetstone instructions, 86 million guest
+                       instructions, about 2 s on the host
+                       interpreter and 0.4 s on the JIT.
+
+  -DWHET_PRINTOUT=ON   upstream's per-module digest, which is the
+                       correctness check. Off for timing runs, as
+                       upstream's own comment asks.
+
+Reading the result
+------------------
+
+Two cautions, both in docs/performance.md at more length.
+
+The rate is a *guest* figure. On the host, guest time advances one tick
+per retired instruction, so the two backends report the same rate and
+the difference between them is in the host wall clock instead. On the
+board the clock is real, and there the same image does measure this
+emulator.
+
+The rate depends on WHET_LOOPS -- 113.6 KIPS at 10, 116.3 at 100, 125.1
+at 1000 -- because modules 7 and 11 are 99.4% of the instruction count
+and both get cheaper per iteration as their inputs converge. Always
+quote the LOOP count with the number.

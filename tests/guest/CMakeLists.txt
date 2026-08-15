@@ -268,3 +268,62 @@ if(EXISTS "${guest_dir}/dhrystone/dhry_1.c")
             #
         LIBS -lgcc)
 endif()
+
+# ---------------------------------------------------------------------
+# Whetstone
+# ---------------------------------------------------------------------
+
+#
+# The floating-point counterpart to Dhrystone and to CoreMark, both of
+# which are integer. Vendored from kreier/benchmark's single-precision
+# Arduino port -- single precision because that is the FPU this emulator
+# has, on the host and on the M4F/M7 alike; the double-precision original
+# would have measured libgcc's soft float instead.
+#
+# LOOP: upstream defaults to 1000, which is 100 million Whetstone
+# instructions -- 800 million guest instructions, and more than an
+# emulated core wants to run. 100 is a tenth of that: 86 million guest
+# instructions, 2.0 s on the host interpreter and 0.4 s on the JIT.
+#
+# **The rate is not LOOP-invariant, so any figure has to name its LOOP.**
+# Measured here: 113.6 KIPS at 10, 116.3 at 100, 125.1 at 1000. That is
+# not a warm-up artefact. Modules 7 and 11 -- the trigonometric and the
+# sqrt/exp/log one -- are 99.4% of the instruction count between them
+# (confirmed by building with each N zeroed and differencing), and both
+# get cheaper per iteration as their inputs converge: module 11's X rises
+# toward 1.0, where logf's argument reduction has least to do. So a
+# longer run is not simply a more accurate measurement of the same thing.
+set(WHET_LOOPS "100" CACHE STRING "Whetstone LOOP count (100 = 10M Whetstone instructions)")
+
+# Upstream's per-module reports. Off by default because upstream says
+# timing runs want them off, and on because they are the only correctness
+# check this benchmark has: the digest is what gets compared between
+# backends, between frontends and between the host and the board. There
+# is nothing to compare it against in advance -- see the note at the top
+# of whetstone.c about the expected value that is not 1.0.
+option(WHET_PRINTOUT "Whetstone: print each module's result" OFF)
+if(WHET_PRINTOUT)
+    set(_whet_printout -DPRINTOUT=1)
+else()
+    set(_whet_printout "")
+endif()
+
+if(EXISTS "${guest_dir}/whetstone/whetstone.c")
+    add_guest_image(whetstone
+        SOURCES start.S
+        EXTRA_SOURCES
+            "${guest_dir}/whetstone/whetstone.c"
+            "${guest_dir}/whetstone/whetstone_portme.c"
+        FLAGS
+            -DWHET_LOOPS=${WHET_LOOPS}
+            ${_whet_printout}
+            #
+            # Modules 7 and 11 are the transcendental functions, so they
+            # come from newlib rather than from anything written here --
+            # a hand-rolled sinf would be what a third of the benchmark
+            # measured. On this multilib they live in libc.a: libm.a
+            # holds one empty object, which is why -lm is not what the
+            # link names.
+            #
+        LIBS -lc -lgcc)
+endif()

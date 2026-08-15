@@ -173,6 +173,57 @@ else
 fi
 
 # ------------------------------------------------------------------
+# The two standard benchmarks. Their own figures are *guest* figures:
+# guest time here advances one tick per retired instruction, so both
+# report a property of the guest binary and neither can distinguish
+# the backends. What distinguishes the backends is the wall clock
+# above -- so both numbers are printed, and labelled.
+# ------------------------------------------------------------------
+rule
+say "## Dhrystone and Whetstone (guest figures)"
+say ""
+say "  These come from the guest's own clock, which on the host is the"
+say "  retired-instruction count. So they compare frontends and guest"
+say "  code, and the two backends agree by construction -- the wall"
+say "  clock in the section above is what compares backends."
+say ""
+say "  Whetstone's rate depends on its LOOP count and Dhrystone's does"
+say "  not; quote WHET_LOOPS with any Whetstone number."
+say ""
+
+for v in DHRY_RUNS WHET_LOOPS WHET_PRINTOUT; do
+    line=$(grep -E "^$v:" "$BUILD/CMakeCache.txt" 2>/dev/null || true)
+    [ -n "$line" ] && say "  ${line%%:*} = ${line#*=}"
+done
+say ""
+
+bench_line() {
+    _name=$1; _img=$2; _pat=$3; shift 3
+    [ -f "$_img" ] || { say "  $(printf '%-22s' "$_name") (not built)"; return; }
+    _t0=$(date +%s%N)
+    _out=$("$HOST" "$@" --load 0x80000000 "$_img" 2>/dev/null |
+           grep -E "$_pat" | tr -s ' ' | tail -1 || true)
+    _t1=$(date +%s%N)
+    say "  $(printf '%-22s' "$_name") ${_out:-<no result line>}"
+    say "  $(printf '%-22s' '')   host wall $(( (_t1 - _t0) / 1000000 )) ms"
+}
+
+if [ "$QUICK" = 0 ]; then
+    for mode in "" "--jit"; do
+        label=${mode:-interp}
+        bench_line "dhrystone $label" "$BUILD/guest/dhrystone.bin" \
+                   "Dhrystones per Second" $mode
+    done
+    for mode in "" "--jit"; do
+        label=${mode:-interp}
+        bench_line "whetstone $label" "$BUILD/guest/whetstone.bin" \
+                   "Whetstones:" $mode
+    done
+else
+    say "  skipped (--quick)"
+fi
+
+# ------------------------------------------------------------------
 # G4MH. No architecture suite exists, so the compiled guest is the
 # evidence -- and it must agree on both backends.
 # ------------------------------------------------------------------

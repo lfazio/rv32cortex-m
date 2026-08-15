@@ -35,6 +35,18 @@ SECTIONS
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
         /*
+         * Unwind tables, named here so they land inside the read-only
+         * half rather than in an output section of their own. No guest
+         * unwinds, but the toolchain's library objects carry them: the
+         * linker's default placement put .eh_frame between .rodata and
+         * .data, where it is in the flat binary and in *neither* half of
+         * the split -- which the build's cat-and-compare caught the first
+         * time a guest linked against newlib. Discarding them instead
+         * would work equally well for the split and would leave the ELF
+         * unable to unwind under gdb.
+         */
+        *(.eh_frame .eh_frame.*)
+        /*
          * Inside the section, not after it. The ALIGN(4) below sets
          * __guest_ro_end correctly but sits *between* output sections,
          * so it only moves the location counter -- the .rodata section's

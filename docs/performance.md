@@ -116,6 +116,51 @@ Dhrystone does not print DMIPS. The column above is Dhrystones/s over
 comparable with a published number — this is a guest clock, not a real
 one.
 
+## Whetstone, and the same caution one step further
+
+Whetstone runs as a guest image too, and everything said about
+Dhrystone's clock applies unchanged: on the host the rate is
+backend-invariant, and the host wall clock beside it is what measures
+the emulator.
+
+| | KIPS (guest) | host wall |
+|---|---|---|
+| RV32, interpreter | 116.3 | 1903 ms |
+| RV32, JIT | 116.3 | 392 ms |
+
+at `WHET_LOOPS=100`, which is 10 million Whetstone instructions and 86.0
+million guest instructions. **The JIT is 4.9× faster in real time and
+identical in the reported rate** — that pair of numbers is the clearest
+statement on this page of what these two clocks each measure.
+
+Two things about it that Dhrystone does not share.
+
+**The rate depends on the LOOP count, so a figure must name it.** 113.6
+KIPS at `WHET_LOOPS=10`, 116.3 at 100, 125.1 at 1000 — a 10% spread. It
+is not warm-up: modules 7 (trigonometric) and 11 (`sqrt`/`exp`/`log`)
+are **99.4%** of the whole benchmark's instruction count here, measured
+by rebuilding with each module's iteration count zeroed and
+differencing, and both get cheaper per iteration as their inputs
+converge — module 11 drives X toward 1.0, where `logf`'s argument
+reduction has least to do. A longer run is a different measurement, not
+a more precise one.
+
+**So it is mostly a libm benchmark.** That is inherent to Whetstone on a
+machine with no hardware transcendentals, and it does exercise the F
+extension hard, since newlib's `sinf` and `logf` are float arithmetic
+throughout. But it means a cross-frontend comparison — the point of this
+image — compares three libm implementations along with the three
+compilers. Worth stating before RV32, G4MH and PowerPC numbers are put
+in one table.
+
+The correctness check is `-DWHET_PRINTOUT=ON`, which restores upstream's
+per-module digest. At `WHET_LOOPS=10` all ten lines agree to four digits
+across the interpreter, the JIT, and the same source compiled natively
+for x86-64 against glibc. There is nothing to compare the digest with
+*a priori*: module 11's result converges on 1.0 only as LOOP grows
+(0.8347 at 10, 0.9972 at 100, 0.9999 at 1000), so the value that looks
+like the obvious expectation is wrong at every practical setting.
+
 ## Driver performance: the passthrough window
 
 CoreMark and `bench` are deliberately I/O free, so neither says anything about
