@@ -2062,6 +2062,14 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
         done++;
         c->retired++;
         c->cycles++;
+        /*
+         * One predictable branch on a flag, not a loop over eight
+         * channels: this is the retire path, paid by every guest whether
+         * it measures anything or not, and none of them do by default.
+         */
+        if (EMU_UNLIKELY(c->pm_active)) {
+            g4mh_pm_tick(c, 1u);
+        }
         continue;
 
     next_insn:

@@ -169,6 +169,29 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
 #define G4MH_SR_FPCFG       10u
 
 /*
+ * Performance measurement, selID 14 (and PMUMCTRL alone at selID 11).
+ * Eight channels: a control register each and a counter each, with the
+ * counters at SR16 rather than immediately after the controls.
+ */
+#define G4MH_SR_PMCTRL0     0u    /* .. PMCTRL7 at 7,  selID 14        */
+#define G4MH_SR_PMCOUNT0    16u   /* .. PMCOUNT7 at 23, selID 14       */
+#define G4MH_SR_PMUMCTRL    8u    /* selID 11                          */
+#define G4MH_PM_CHANNELS    8u
+#define G4MH_SELID_PMU      11u
+#define G4MH_SELID_PM       14u
+
+/*
+ * PMCTRLn. CND selects what the channel counts; CE enables it. The event
+ * numbering is the part's, and only the two this emulator can source
+ * honestly are implemented -- see g4mh_pm_tick().
+ */
+#define G4MH_PMCTRL_CE      (1u << 0)
+#define G4MH_PMCTRL_CND_SH  1u
+#define G4MH_PMCTRL_CND_MSK 0x7Fu
+#define G4MH_PM_CND_CYCLE   0x00u  /* every clock cycle                 */
+#define G4MH_PM_CND_INSN    0x01u  /* every instruction retired         */
+
+/*
  * FPSR, from the same table.
  *
  *   31..24  CC[7:0]  comparison results, written only by CMPF and LDSR
@@ -221,7 +244,22 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
 #define G4MH_RM_RM          3u
 
 /* Number of selID banks this implementation decodes. */
-#define G4MH_SR_BANKS       3u
+/*
+ * System register banks, by selID.
+ *
+ * Sixteen, not three. The U2B hardware manual puts the performance
+ * counters at selID 14 (PMCTRL0-7, PMCOUNT0-7) and PMUMCTRL at selID 11,
+ * so with three banks those registers were not merely unimplemented --
+ * an LDSR to them had nowhere to be stored and g4mh_sr_write dropped it
+ * silently, which reads to a guest exactly like a register hardwired to
+ * zero.
+ *
+ * The cost is 2 KiB per PE against 384 bytes, and it is flat rather than
+ * sparse on purpose: the alternative is a switch on every LDSR and STSR,
+ * and those are not hot enough to justify one. If this ever needs to
+ * shrink, the sparse selIDs are 3..9 and 12..13.
+ */
+#define G4MH_SR_BANKS       16u
 #define G4MH_SR_PER_BANK    32u
 
 #endif /* G4MH_G4MH_TYPES_H */

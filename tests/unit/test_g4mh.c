@@ -796,6 +796,113 @@ static void test_gdb_layout(void)
     CHECK(t->memory_map != NULL);
 }
 
+/*
+ * The performance counters, and the bank widening they needed.
+ *
+ * PMCTRL0-7 and PMCOUNT0-7 are at selID 14 and PMUMCTRL at selID 11,
+ * and this frontend's system register file had three banks -- so those
+ * registers were not merely unimplemented, they were *unstorable*:
+ * g4mh_sr_write dropped the write and g4mh_sr_read answered zero, which
+ * to a guest is indistinguishable from a register hardwired to zero.
+ *
+ * The selID matters as much as the value. A test that wrote and read one
+ * back through selID 0 would pass with three banks, so this one uses 14
+ * and 11 specifically, and checks a bank *above* the old limit round-trips
+ * at all before checking that counting works.
+ */
+static void test_perf_counters(void)
+{
+    /*
+     *   mov  <ctl>, r10          ; CE set, CND = retired instructions
+     *   ldsr r10, 0, 14          ; PMCTRL0
+     *   mov  1, r11              ; three instructions that should count
+     *   mov  2, r12
+     *   mov  3, r13
+     *   stsr 16, r14, 14         ; PMCOUNT0
+     *   halt
+     */
+    const uint32_t ctl = G4MH_PMCTRL_CE |
+                         (G4MH_PM_CND_INSN << G4MH_PMCTRL_CND_SH);
+    const uint16_t prog[] = {
+        W0(OP_MOVEA, 10, 0), (uint16_t)(ctl & 0xFFFFu),
+                             (uint16_t)(ctl >> 16),
+        /* LDSR: reg1 is the *source* and reg2 the regID -- the opposite
+         * sense to STSR below, which is the reversal this frontend
+         * already records and which I got backwards writing this. */
+        W0(OP_SYSTEM, 10, G4MH_SR_PMCTRL0),
+            (uint16_t)((G4MH_SELID_PM << 11) | SUB_LDSR),
+        F2(OP_MOVI, 1, 11),
+        F2(OP_MOVI, 2, 12),
+        F2(OP_MOVI, 3, 13),
+        W0(OP_SYSTEM, G4MH_SR_PMCOUNT0, 14),
+            (uint16_t)((G4MH_SELID_PM << 11) | SUB_STSR),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    /* The control register survived a round trip through selID 14 -- the
+     * thing three banks could not do at all. */
+    CHECK_EQ(sreg(G4MH_SELID_PM, G4MH_SR_PMCTRL0), ctl);
+
+    /*
+     * The channel counted, and it counted nothing before it was enabled.
+     *
+     * Deliberately *not* an exact figure. How many instructions retire
+     * between the LDSR and the STSR is a property of this interpreter and
+     * of how this program happens to be laid out, and asserting a number
+     * I have not derived would be asserting my own assumption -- which is
+     * how three earlier tests in this tree came to encode a bug as an
+     * expectation. Measured, the run ticks twice where a naive reading of
+     * the program says five; that discrepancy is real and is task #38,
+     * not something to bake in here.
+     *
+     * What is architectural, and is pinned: counting starts at zero, only
+     * runs while enabled, and STSR observes the counter *before* its own
+     * retirement contributes to it.
+     */
+    const uint32_t n = sreg(G4MH_SELID_PM, G4MH_SR_PMCOUNT0);
+    CHECK(n > 0u);
+    CHECK_EQ(reg(14), n - 1u);
+
+    /* A disabled channel must stay put. */
+    CHECK_EQ(sreg(G4MH_SELID_PM, G4MH_SR_PMCOUNT0 + 1u), 0u);
+}
+
+/*
+ * PMUMCTRL lives alone at selID 11, which is a different bank again --
+ * and the one most likely to be forgotten when widening, because every
+ * other performance register is at 14.
+ */
+static void test_perf_umctrl_bank(void)
+{
+    const uint16_t prog[] = {
+        W0(OP_MOVEA, 10, 0), 0xBEEFu, 0xDEADu,
+        W0(OP_SYSTEM, 10, G4MH_SR_PMUMCTRL),
+            (uint16_t)((G4MH_SELID_PMU << 11) | SUB_LDSR),
+        W0(OP_SYSTEM, G4MH_SR_PMUMCTRL, 11),
+            (uint16_t)((G4MH_SELID_PMU << 11) | SUB_STSR),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(11), 0xDEADBEEFu);
+    CHECK_EQ(sreg(G4MH_SELID_PMU, G4MH_SR_PMUMCTRL), 0xDEADBEEFu);
+}
+
 static void test_clip(void)
 {
     /*
@@ -2603,6 +2710,8 @@ void test_g4mh(void)
     test_mul_imm9();
     test_clip();
     test_gdb_layout();
+    test_perf_counters();
+    test_perf_umctrl_bank();
     test_fetrap();
     test_resbank_is_not_di();
     test_narrow_atomics();

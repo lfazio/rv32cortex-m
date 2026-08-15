@@ -337,6 +337,67 @@ g4mh_exc_t g4mh_store(g4mh_cpu_t *c, uint32_t addr, uint32_t size,
 /* System registers                                                    */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Performance measurement                                             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Advance the enabled performance channels.
+ *
+ * Eight channels, each a PMCTRLn saying whether it counts and what, and a
+ * PMCOUNTn holding the total. Only two events are sourced, and that is
+ * deliberate: an emulator can honestly report instructions retired and
+ * its own notion of cycles, and everything else on a real part -- cache
+ * misses, branch mispredictions, stall cycles -- has no counterpart here.
+ * Reporting zero for those is better than reporting a plausible number,
+ * because a guest tuning against a fabricated miss rate would be tuning
+ * against nothing.
+ *
+ * Called once per retired instruction from the interpreter, and only when
+ * `pm_active` says some channel is enabled -- a loop over eight channels
+ * on every instruction is exactly the per-instruction cost the contract
+ * forbids, and the overwhelmingly common case is that none is on.
+ */
+void g4mh_pm_tick(g4mh_cpu_t *c, uint32_t insns)
+{
+    for (unsigned n = 0; n < G4MH_PM_CHANNELS; n++) {
+        const uint32_t ctl = c->sr[G4MH_SELID_PM][G4MH_SR_PMCTRL0 + n];
+
+        if ((ctl & G4MH_PMCTRL_CE) == 0u) {
+            continue;
+        }
+        switch ((ctl >> G4MH_PMCTRL_CND_SH) & G4MH_PMCTRL_CND_MSK) {
+        case G4MH_PM_CND_CYCLE:
+        case G4MH_PM_CND_INSN:
+            /*
+             * One cycle per instruction is what this interpreter's own
+             * `cycles` counter already assumes, so the two events give
+             * the same number here rather than a fabricated difference.
+             */
+            c->sr[G4MH_SELID_PM][G4MH_SR_PMCOUNT0 + n] += insns;
+            break;
+        default:
+            /* An event this emulator cannot source. Left alone. */
+            break;
+        }
+    }
+}
+
+/* True if any channel is enabled. Maintained on write, not recomputed. */
+static void pm_refresh(g4mh_cpu_t *c)
+{
+    bool on = false;
+
+    for (unsigned n = 0; n < G4MH_PM_CHANNELS; n++) {
+        if ((c->sr[G4MH_SELID_PM][G4MH_SR_PMCTRL0 + n] &
+             G4MH_PMCTRL_CE) != 0u) {
+            on = true;
+            break;
+        }
+    }
+    c->pm_active = on;
+}
+
 uint32_t g4mh_sr_read(const g4mh_cpu_t *c, unsigned bank, unsigned reg)
 {
     if (bank >= G4MH_SR_BANKS || reg >= G4MH_SR_PER_BANK) {
@@ -368,4 +429,15 @@ void g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg, uint32_t val)
     }
 
     c->sr[bank][reg] = val;
+
+    /*
+     * Enabling a channel is the only thing that can turn counting on, so
+     * the flag is maintained here rather than tested per instruction.
+     * Same shape as the RV32 side's fetch_guard: the check that costs is
+     * the one on the hot path, so keep it to a single load of a flag
+     * whose writers are few and known.
+     */
+    if (bank == G4MH_SELID_PM && reg < G4MH_PM_CHANNELS) {
+        pm_refresh(c);
+    }
 }

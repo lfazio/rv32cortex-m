@@ -103,6 +103,18 @@ typedef struct g4mh_cpu {
     uint32_t coreid;
     uint8_t  state;              /* emu_state_t */
 
+    /*
+     * True while any performance channel is enabled.
+     *
+     * Kept so the interpreter pays one flag test per instruction rather
+     * than a loop over eight channels -- the same shape as the RISC-V
+     * frontend's fetch_guard, and for the same reason: this is on the
+     * retire path, which every guest pays whether it uses the feature or
+     * not. Maintained by g4mh_sr_write, the only thing that can enable a
+     * channel.
+     */
+    bool     pm_active;
+
 #if EMU_ENABLE_STATS
     uint32_t exc_count;
 #endif
@@ -262,6 +274,9 @@ extern const emu_backend_t g4mh_backend_jit;
 extern const emu_backend_t *g4mh_backend;
 
 emu_run_reason_t g4mh_step(g4mh_cpu_t *c);
+
+/* Advance the enabled performance channels by `insns` events. */
+void g4mh_pm_tick(g4mh_cpu_t *c, uint32_t insns);
 
 /* ------------------------------------------------------------------ */
 /* Code flash                                                          */
