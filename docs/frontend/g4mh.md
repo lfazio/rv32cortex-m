@@ -120,15 +120,25 @@ and a guest tuning against a fabricated miss rate would be tuning against
 nothing. Channels selecting them are left alone rather than counting
 something plausible.
 
-Counting is gated on `pm_active`, maintained by `g4mh_sr_write` rather
-than recomputed, so a guest that measures nothing pays one predictable
-branch on the retire path -- the same shape as the RV32 side's
-`fetch_guard`.
+Counting happens **once per run slice, from the retired delta**, not per
+instruction in the interpreter. That is not a shortcut, it is the fix for
+a real bug: ticking in the interpreter's retire path counts only
+*interpreted* instructions, and under the JIT that is a small and
+arbitrary subset. The same seven-instruction program counted 5
+interpreted and 2 translated -- and 2 is the worse answer, because it is
+plausible. `retired` is maintained by both backends, so the delta is the
+one quantity already correct either way, and taking it in
+`g4mh_ops_run` costs nothing per instruction.
 
-**Do not quote a G4MH instruction count yet.** A program whose retire
-count should be five ticks the counter twice, and that is unexplained --
-task #38. The counter mechanism is right; what is in doubt is how many
-instructions this interpreter retires for a given program.
+The price is granularity: an `STSR` reading `PMCOUNT` inside a slice sees
+the value as of the previous slice boundary, not as of the instruction
+before it. `test_perf_counters` asserts that rather than a precision the
+implementation does not have.
+
+`test_perf_counters_agree` runs the same program on both backends and
+compares. With no reference model, interpreter-against-JIT is the only
+cross-check this frontend has, and it is the only kind of test that could
+have caught the bug above -- no single-backend run can see it.
 
 **Architectural features not modelled:**
 

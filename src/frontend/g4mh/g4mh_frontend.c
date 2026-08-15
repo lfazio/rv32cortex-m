@@ -101,7 +101,36 @@ static void g4mh_ops_boot(emu_cpu_t *cpu, uint32_t ram_base, uint32_t ram_size)
 static emu_run_reason_t g4mh_ops_run(emu_cpu_t *cpu, uint32_t budget,
                                      uint32_t *retired)
 {
-    return g4mh_backend->run(cpu, budget, retired);
+    g4mh_cpu_t *c = cpu_of(cpu);
+
+    /*
+     * The performance counters are advanced here, from the retired
+     * delta, rather than in the interpreter's retire path.
+     *
+     * Ticking per instruction in the interpreter was the obvious place
+     * and was wrong: it counts only *interpreted* instructions, and
+     * under the JIT that is a small and arbitrary subset. Measured on a
+     * seven-instruction program, the interpreter counted 5 and the JIT
+     * counted 2 -- and 2 is the worse answer, because it is plausible.
+     * This is the failure mode this project keeps recording: a side
+     * effect added to the interpreter that the translated path bypasses.
+     *
+     * `retired` is maintained by both backends because the status line
+     * needs it, so the delta is the one quantity that is already correct
+     * either way, and taking it here costs nothing per instruction.
+     *
+     * The price is granularity: the counters advance once per run slice,
+     * so a guest reading PMCOUNT with STSR sees the value as of the last
+     * slice boundary rather than as of the instruction before it. That is
+     * a real limitation and is why nothing here asserts an exact count.
+     */
+    const uint64_t before = c->retired;
+    const emu_run_reason_t why = g4mh_backend->run(cpu, budget, retired);
+
+    if (EMU_UNLIKELY(c->pm_active) && c->retired > before) {
+        g4mh_pm_tick(c, (uint32_t)(c->retired - before));
+    }
+    return why;
 }
 
 static void g4mh_ops_invalidate(emu_cpu_t *cpu, uint32_t addr, uint32_t len)

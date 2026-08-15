@@ -852,24 +852,23 @@ static void test_perf_counters(void)
     CHECK_EQ(sreg(G4MH_SELID_PM, G4MH_SR_PMCTRL0), ctl);
 
     /*
-     * The channel counted, and it counted nothing before it was enabled.
+     * The channel counted everything retired after it was enabled, and
+     * nothing before.
      *
-     * Deliberately *not* an exact figure. How many instructions retire
-     * between the LDSR and the STSR is a property of this interpreter and
-     * of how this program happens to be laid out, and asserting a number
-     * I have not derived would be asserting my own assumption -- which is
-     * how three earlier tests in this tree came to encode a bug as an
-     * expectation. Measured, the run ticks twice where a naive reading of
-     * the program says five; that discrepancy is real and is task #38,
-     * not something to bake in here.
+     * The exact figure is checked because it is now derivable: the
+     * program is LDSR, three MOVs, STSR and HALT, and all six retire
+     * after the channel is on. It was *not* checked at first, and that
+     * was right at the time -- the count was 2 under the JIT and 5 under
+     * the interpreter, and asserting either would have frozen a bug.
      *
-     * What is architectural, and is pinned: counting starts at zero, only
-     * runs while enabled, and STSR observes the counter *before* its own
-     * retirement contributes to it.
+     * `reg(14)` is 0 rather than the count, and that is the documented
+     * granularity: the counters advance once per run slice, so an STSR
+     * inside the slice reads the value as of the previous boundary. A
+     * test that asserted otherwise would be asserting a precision this
+     * does not have.
      */
-    const uint32_t n = sreg(G4MH_SELID_PM, G4MH_SR_PMCOUNT0);
-    CHECK(n > 0u);
-    CHECK_EQ(reg(14), n - 1u);
+    CHECK_EQ(sreg(G4MH_SELID_PM, G4MH_SR_PMCOUNT0), 6u);
+    CHECK_EQ(reg(14), 0u);
 
     /* A disabled channel must stay put. */
     CHECK_EQ(sreg(G4MH_SELID_PM, G4MH_SR_PMCOUNT0 + 1u), 0u);
@@ -901,6 +900,59 @@ static void test_perf_umctrl_bank(void)
 
     CHECK_EQ(reg(11), 0xDEADBEEFu);
     CHECK_EQ(sreg(G4MH_SELID_PMU, G4MH_SR_PMUMCTRL), 0xDEADBEEFu);
+}
+
+/*
+ * The counters must agree between the interpreter and the JIT.
+ *
+ * This is the test that would have caught the bug they shipped with:
+ * ticking per instruction in the interpreter counted only *interpreted*
+ * instructions, so the same program counted 5 interpreted and 2
+ * translated -- and 2 is the worse answer because it is plausible. No
+ * single-backend test can see that; only running both can.
+ *
+ * With no reference model for this frontend, interpreter-against-JIT is
+ * the only cross-check there is, and it is worth spending a test on
+ * anything where the two could diverge.
+ */
+static void test_perf_counters_agree(void)
+{
+    const uint32_t ctl = G4MH_PMCTRL_CE |
+                         (G4MH_PM_CND_INSN << G4MH_PMCTRL_CND_SH);
+    const uint16_t prog[] = {
+        W0(OP_MOVEA, 10, 0), (uint16_t)(ctl & 0xFFFFu),
+                             (uint16_t)(ctl >> 16),
+        W0(OP_SYSTEM, 10, G4MH_SR_PMCTRL0),
+            (uint16_t)((G4MH_SELID_PM << 11) | SUB_LDSR),
+        F2(OP_MOVI, 1, 11),
+        F2(OP_MOVI, 2, 12),
+        F2(OP_MOVI, 3, 13),
+        0x07E0u, SUB_HALT,
+    };
+    const emu_backend_t *saved = g4mh_backend;
+    uint32_t counts[2] = { 0u, 0u };
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        emu_run_reason_t why;
+        uint32_t retired = 0;
+
+        /* Pass 0 takes whatever the frontend picked; pass 1 forces the
+         * interpreter, so a build with no JIT still compares two runs. */
+        if (pass == 1u) {
+            g4mh_backend = &g4mh_backend_interp;
+        }
+        if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                          &retired)) {
+            CHECK(false);
+            g4mh_backend = saved;
+            return;
+        }
+        counts[pass] = sreg(G4MH_SELID_PM, G4MH_SR_PMCOUNT0);
+    }
+    g4mh_backend = saved;
+
+    CHECK(counts[0] > 0u);
+    CHECK_EQ(counts[0], counts[1]);
 }
 
 static void test_clip(void)
@@ -2712,6 +2764,7 @@ void test_g4mh(void)
     test_gdb_layout();
     test_perf_counters();
     test_perf_umctrl_bank();
+    test_perf_counters_agree();
     test_fetrap();
     test_resbank_is_not_di();
     test_narrow_atomics();

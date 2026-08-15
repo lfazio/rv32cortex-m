@@ -2063,13 +2063,12 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
         c->retired++;
         c->cycles++;
         /*
-         * One predictable branch on a flag, not a loop over eight
-         * channels: this is the retire path, paid by every guest whether
-         * it measures anything or not, and none of them do by default.
+         * The performance counters are *not* ticked here. They are ticked
+         * once per run slice by g4mh_ops_run, from the retired delta,
+         * because a tick on this path counts only interpreted
+         * instructions -- and under the JIT that is a small and
+         * arbitrary subset. See the note there.
          */
-        if (EMU_UNLIKELY(c->pm_active)) {
-            g4mh_pm_tick(c, 1u);
-        }
         continue;
 
     next_insn:
