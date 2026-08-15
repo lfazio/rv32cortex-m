@@ -34,6 +34,9 @@ int main(void)
 #if EMU_FRONTEND_G4MH
     test_g4mh();
 #endif
+#if EMU_FRONTEND_PPC
+    test_ppc();
+#endif
 
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

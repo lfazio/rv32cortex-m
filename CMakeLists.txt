@@ -54,19 +54,10 @@ option(EMU_FRONTEND_G4MH "Renesas RH850 G4MH frontend" OFF)
 # first of those in this tree: see the note by EMU_BUS_ORDER in emu_bus.h
 # for what that costs and, more importantly, for which region kinds it
 # does *not* apply to.
-#
-# NOT YET A FRONTEND. Turning this on today enables the runtime's
-# byte-order support and nothing else -- there is no ppc decoder or
-# interpreter to select, and the registry lists none. It exists now
-# because the byte-order work is shared-runtime work that had to land
-# first and be testable on its own. See task #36 for the sequence.
-option(EMU_FRONTEND_PPC "PowerPC e200z7: byte-order support only so far" OFF)
+option(EMU_FRONTEND_PPC "NXP PowerPC e200z7 frontend (VLE, big-endian)" OFF)
 
-if(NOT EMU_FRONTEND_RV32 AND NOT EMU_FRONTEND_G4MH)
-    # EMU_FRONTEND_PPC deliberately does not count yet: it enables the
-    # runtime's byte-order support and supplies no emu_cpu_ops_t, so a
-    # build with only it selected would link a runner with nothing to run.
-    message(FATAL_ERROR "at least one of EMU_FRONTEND_RV32/EMU_FRONTEND_G4MH must be enabled")
+if(NOT EMU_FRONTEND_RV32 AND NOT EMU_FRONTEND_G4MH AND NOT EMU_FRONTEND_PPC)
+    message(FATAL_ERROR "at least one EMU_FRONTEND_* must be enabled")
 endif()
 
 # ---------------------------------------------------------------------
@@ -337,6 +328,18 @@ if(EMU_FRONTEND_RV32)
     if(RV32_PAIR_STATS)
         target_sources(emucore PRIVATE src/frontend/rv32/rv_pairstats.c)
     endif()
+endif()
+
+# ---------------------------------------------------------------------
+# Frontend: NXP PowerPC e200z7
+# ---------------------------------------------------------------------
+
+if(EMU_FRONTEND_PPC)
+    target_sources(emucore PRIVATE
+        src/frontend/ppc/ppc_cpu.c
+        src/frontend/ppc/ppc_frontend.c
+        src/frontend/ppc/ppc_interp.c
+    )
 endif()
 
 # ---------------------------------------------------------------------

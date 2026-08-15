@@ -27,5 +27,8 @@ void test_fpu(void);
 #if EMU_FRONTEND_G4MH
 void test_g4mh(void);
 #endif
+#if EMU_FRONTEND_PPC
+void test_ppc(void);
+#endif
 
 #endif /* RV32_TESTS_H */

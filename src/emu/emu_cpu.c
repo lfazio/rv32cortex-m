@@ -17,6 +17,9 @@ extern const emu_cpu_ops_t rv32_frontend;
 #if EMU_FRONTEND_G4MH
 extern const emu_cpu_ops_t g4mh_frontend;
 #endif
+#if EMU_FRONTEND_PPC
+extern const emu_cpu_ops_t ppc_frontend;
+#endif
 
 /*
  * Order is the default order: emu_frontend_default returns the first, so a
@@ -29,6 +32,9 @@ const emu_cpu_ops_t *const emu_frontends[] = {
 #endif
 #if EMU_FRONTEND_G4MH
     &g4mh_frontend,
+#endif
+#if EMU_FRONTEND_PPC
+    &ppc_frontend,
 #endif
     NULL,
 };
