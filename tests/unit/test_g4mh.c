@@ -2406,6 +2406,96 @@ static void test_disp23_reserved_bit(void)
 }
 
 /*
+ * The disp23 group through the JIT.
+ *
+ * Two questions, and only the second one is hard. The values must match
+ * the interpreter -- but they would match a JIT that declined every one
+ * of these and let the interpreter run them, which is what it did until
+ * the lowering existed. So the fallback count is the test, and it is an
+ * exact number rather than a bound: a decline ends the block, the
+ * interpreter runs one instruction and a fresh block starts, so N
+ * declines cost exactly N fallbacks and `<= k` hides most of them.
+ */
+static void test_disp23_jit(void)
+{
+    const uint32_t cell = EMU_GUEST_RAM_BASE + 0x200u;
+    const uint32_t big  = 0x123456u;
+    const uint32_t base = cell - big;
+
+    /*
+     * Six disp23 instructions and four MOV imm32 -- which is itself a
+     * 48-bit form, and is why this count is what it is. Written
+     * expecting one fallback, it reported five: the constants were
+     * ending a block each and the disp23 lowering underneath them
+     * looked as though it had not fired. Both are lowered now, so the
+     * only fallback left is the 32-bit HALT.
+     */
+    const uint16_t prog[] = {
+        MOVI32(11), LO(base), HI(base),
+        MOVI32(12), 0x5A5Au, 0x0000u,
+        MOVI32(20), 0x1111u, 0x0000u,
+        MOVI32(21), 0x2222u, 0x0000u,
+
+        D23(0x3Cu, 11, 12, big, 0xFu),         /* st.w  r12, big[r11]  */
+        D23(0x3Cu, 11, 13, big, 0x9u),         /* ld.w  big[r11], r13  */
+        D23(0x3Cu, 11, 12, big + 4u, 0xDu),    /* st.b  r12, big+4     */
+        D23(0x3Du, 11, 14, big + 4u, 0x5u),    /* ld.bu big+4, r14     */
+        D23(0x3Du, 11, 20, big + 8u, 0xFu),    /* st.dw r20, big+8     */
+        D23(0x3Du, 11, 22, big + 8u, 0x9u),    /* ld.dw big+8, r22     */
+
+        0x07E0u, SUB_HALT,
+    };
+
+    const emu_backend_t *saved = g4mh_backend;
+    uint32_t vals[2][5];
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        emu_jit_stats_t before, after;
+        emu_run_reason_t why;
+        uint32_t retired = 0;
+
+        /* Pass 0 is whatever the frontend picked -- the JIT where there
+         * is one; pass 1 forces the interpreter, so a build without a
+         * JIT still compares two runs rather than silently one. */
+        if (pass == 1u) {
+            g4mh_backend = &g4mh_backend_interp;
+        }
+        emu_jit_get_stats(&before);
+        if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                          &retired)) {
+            CHECK(false);
+            g4mh_backend = saved;
+            return;
+        }
+        emu_jit_get_stats(&after);
+
+        vals[pass][0] = reg(13);
+        vals[pass][1] = reg(14);
+        vals[pass][2] = reg(22);
+        vals[pass][3] = reg(23);
+        vals[pass][4] = (uint32_t)g_ram[0x204];
+
+        if (pass == 0u && G4MH_HAVE_JIT && saved != &g4mh_backend_interp) {
+            CHECK(after.translations > before.translations);
+            /* Only the 32-bit HALT. Six disp23 instructions ahead of it
+             * were translated, or this is 7. */
+            CHECK_EQ(after.interp_fallbacks - before.interp_fallbacks, 1u);
+        }
+    }
+    g4mh_backend = saved;
+
+    CHECK_EQ(vals[0][0], 0x00005A5Au);      /* ST.W then LD.W          */
+    CHECK_EQ(vals[0][1], 0x0000005Au);      /* ST.B then LD.BU         */
+    CHECK_EQ(vals[0][2], 0x1111u);          /* LD.DW low               */
+    CHECK_EQ(vals[0][3], 0x2222u);          /* LD.DW high              */
+    CHECK_EQ(vals[0][4], 0x5Au);            /* the byte really landed  */
+
+    for (unsigned i = 0; i < 5u; i++) {
+        CHECK_EQ(vals[0][i], vals[1][i]);
+    }
+}
+
+/*
  * The branchless group. Each is checked with its condition both true and
  * false, because every one of them has a well-defined "else" that a
  * naive implementation drops -- CMOV would leave the destination alone,
@@ -2991,6 +3081,7 @@ void test_g4mh(void)
     test_disp23_loads_stores();
     test_disp23_doubleword();
     test_disp23_reserved_bit();
+    test_disp23_jit();
     test_conditional_ops();
     test_mac_bins_rotl();
     test_loop();

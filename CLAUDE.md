@@ -1258,3 +1258,16 @@ mistakes get made rather than what the mistakes were:
   decodes them into. Run it *before* writing a constant. It found
   `CMPF.S`'s field split on its first run, and every constant added
   since came from it.
+- **A tool that silently drops a class of input reads as the input
+  being unsupported -- and that reading gets written down.** The same
+  script has now dropped three classes by parsing its listing too
+  narrowly: 16-bit encodings (it matched only 8 hex digits), then
+  48-bit ones (4 or 8, where those are 12), then anything on a
+  continuation line (it demanded a numeric line-number column, and
+  CC-RH lists the 48-bit forms under `--`). A dropped line and a
+  rejected instruction look identical -- both are absent -- so the
+  second of those became a *documented blocker*: "CC-RH's assembler
+  does not accept `LD.DW`/`ST.DW`, so their encodings are not guessed
+  at". It accepts them, and the encodings were a five-minute check
+  behind a regex. When a tool reports that something is unsupported,
+  confirm it *said so* rather than merely failing to mention it.

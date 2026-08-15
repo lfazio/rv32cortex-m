@@ -80,11 +80,65 @@ life of this frontend it did not report anything at all.
 | gap | why it matters |
 |---|---|
 | double precision, and the `.L`/`.UL` conversions | single precision is there; `G4MH_EXT_FPU` gates the lot |
-| the disp23 loads and stores | the 48-bit long-displacement forms; they share the `0x3C`/`0x3D` slot with `LD.BU` and PREPARE and are declined there |
-| `LD.DW` / `ST.DW` | the doubleword accesses. CC-RH's assembler does not accept the mnemonics, so their encodings have not been checked against a second encoder and they are *not* guessed at |
 | `LDM.MP` / `STM.MP`, `RESBANK` | bank and context-block transfers. `RESBANK` is decoded and reports RIE rather than being mistaken for `DI` |
 | `DIVQ`/`DIVQU` with `reg2 == reg3` | the manual leaves the flags undefined there; this treats it as the ordinary case |
 | `PREPARE list12, imm5, imm32` | the only 64-bit encoding in the ISA, and past what the length decoder reports — see below |
+
+**Format XIV — the disp23 loads and stores, and `LD.DW`/`ST.DW` — are
+implemented, in both backends.** They had been listed here as two
+separate gaps, the second of them blocked on a claim that turned out to
+be about this repository's own tooling rather than about CC-RH:
+
+> `LD.DW` / `ST.DW`: CC-RH's assembler does not accept the mnemonics.
+
+It accepts them. `scripts/g4mh-check-encodings.sh` was matching listing
+lines of 4 or 8 hex digits with a numeric line-number column, and a
+48-bit form is 12 digits on a continuation line marked `--`, so the
+whole width came back empty — which is indistinguishable from an
+assembler refusing the input. That is the third class of encoding this
+script has silently dropped; its comment now enumerates all three.
+
+The field split, which is the part worth writing down, came off the
+bytes rather than off the manual's diagram:
+
+```
+ld.b 0x123456[r6],r7   ->   86 07 65 3D 68 24
+
+w0   00000 11110x RRRRR      reg2 = 0, reg1 = base
+w1   wwwww ddddddd ssss      reg3, disp[6:0], opcode
+w2   DDDDDDDDDDDDDDDD        disp[22:7]
+```
+
+| `ssss` | op6 `0x3C` | op6 `0x3D` |
+|---|---|---|
+| `0x5` | `LD.B` | `LD.BU` |
+| `0x7` | `LD.H` | `LD.HU` |
+| `0x9` | `LD.W` | `LD.DW` |
+| `0xD` | `ST.B` | `ST.H` |
+| `0xF` | `ST.W` | `ST.DW` |
+
+The manual draws the *aligned* forms with a five-bit opcode and six
+displacement bits, because their `disp[0]` is architecturally zero:
+`LD.DW` is `dddddd01001` where `LD.B` is `ddddddd0101`. Read as one
+rule that bit is `disp[0]` for the byte forms and required-zero for the
+rest, and setting it on an aligned form raises RIE — which is the
+architectural report for a reserved encoding, and not the misaligned
+address exception a uniform reading would eventually produce.
+
+`LD.DW` masks `reg3` even, which the manual states and no assembler can
+exercise (CC-RH aligns an odd operand down and warns). It is two word
+accesses rather than one eight-byte one, because the caution under
+`LD.DW` says no MAE occurs when the address is on a *word* boundary —
+and both loads complete before either register is written, so a fault
+on the second leaves the first intact. The JIT does the same, in the
+same order, for the same reason.
+
+`MOV imm32` is lowered by the JIT as well. It is in the same 48-bit
+width and was ending a block at every large constant.
+
+`tests/guest/g4mh/disp23.asm` is the end-to-end check, and the half
+that is not this project's own encoder: CC-RH produces the bytes, the
+emulator runs them, 8 checks and 0 failures on both backends.
 
 **The inter-cluster peripherals are absent, and they are peripherals
 rather than instructions.** The U2B hardware manual (R01UH0923EJ0130) is

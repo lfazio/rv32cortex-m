@@ -228,6 +228,129 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
 }
 
 /*
+ * Lower one 48-bit instruction: MOV imm32, and Format XIV's disp23
+ * loads and stores.
+ *
+ * Those are the ones worth lowering. What is left at this width is
+ * JR/JMP disp32, which ends a block anyway, and PREPARE's wide forms,
+ * which write sp, ep and a register list; both stay on the interpreter.
+ *
+ * Field split and sub-opcode table: see the interpreter, which carries
+ * the note about where they came from. Anything this declines lands
+ * there, which is what makes declining safe rather than merely quiet:
+ * the reserved-bit case must raise RIE, and the one implementation of
+ * that is the one being fallen back to.
+ */
+static bool lower_one48(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
+                        uint16_t w2, uint32_t pc)
+{
+    const uint32_t op  = g4mh_op6(w0);
+    const uint32_t r1  = g4mh_reg1(w0);
+    const uint32_t r3  = (w1 >> 11) & 0x1Fu;
+    const uint32_t sub = w1 & 0x0Fu;
+    const bool     is_b = (sub == 0x5u) || (sub == 0xDu && op == 0x3Cu);
+    const uint32_t d0  = (w1 >> 4) & 1u;
+    uint32_t disp;
+    uint16_t base;
+
+    if (g4mh_reg2(w0) != 0u) {
+        return false;
+    }
+
+    /*
+     * MOV imm32, reg1 -- in the MOVEA slot, told apart by reg2 == 0.
+     *
+     * Worth having on its own account: it is how a G4MH guest loads any
+     * constant wider than 16 bits, so leaving it to the interpreter
+     * ends a block at every address and every large literal. Four of
+     * them in one test program cost four fallbacks and made the disp23
+     * lowering below look as though it had not fired.
+     */
+    if (op == 0x31u) {
+        emu_ir_put(b, r1, emu_ir_const(b, (uint32_t)w1 |
+                                          ((uint32_t)w2 << 16)));
+        return true;
+    }
+
+    if (op != 0x3Cu && op != 0x3Du) {
+        return false;
+    }
+    if (!is_b && d0 != 0u) {
+        return false;                   /* reserved: RIE, on the interp */
+    }
+
+    disp = (uint32_t)emu_sext(((uint32_t)w2 << 7) |
+                              ((uint32_t)(w1 >> 4) & 0x7Fu), 23);
+
+    /* pc first: a data abort records it. Same reason as lower_one32. */
+    (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                      pc, 0u);
+    base = emu_ir_get(b, r1);
+
+    switch ((sub << 1) | (op & 1u)) {
+    case (0x5u << 1) | 0u:              /* LD.B  */
+    case (0x5u << 1) | 1u:              /* LD.BU */
+    case (0x7u << 1) | 0u:              /* LD.H  */
+    case (0x7u << 1) | 1u:              /* LD.HU */
+    case (0x9u << 1) | 0u: {            /* LD.W  */
+        const uint32_t size = (sub == 0x5u) ? 1u : (sub == 0x7u) ? 2u : 4u;
+        /* op6's low bit is the unsigned form for the byte and halfword
+         * loads, and 0x3C/LD.W has nothing to extend. */
+        const bool sx = (size != 4u) && ((op & 1u) == 0u);
+
+        emu_ir_put(b, r3, emu_ir_emit(b, EMU_IR_LOAD,
+                                      EMU_IR_MEM_AUX(size, sx), base,
+                                      EMU_IR_NO_TEMP, disp, 0u));
+        return true;
+    }
+
+    case (0x9u << 1) | 1u: {            /* LD.DW */
+        /*
+         * Both loads, then both writes -- not load/write/load/write.
+         * The interpreter leaves the first register untouched when the
+         * second access faults, and a JIT that wrote as it went would
+         * hand the handler a different register file. Nothing computes
+         * a wrong answer either way, which is what makes it the kind of
+         * divergence that survives.
+         */
+        const uint32_t rd = r3 & ~1u;
+        const uint16_t lo = emu_ir_emit(b, EMU_IR_LOAD,
+                                        EMU_IR_MEM_AUX(4u, 0u), base,
+                                        EMU_IR_NO_TEMP, disp, 0u);
+        const uint16_t hi = emu_ir_emit(b, EMU_IR_LOAD,
+                                        EMU_IR_MEM_AUX(4u, 0u), base,
+                                        EMU_IR_NO_TEMP, disp + 4u, 0u);
+        emu_ir_put(b, rd, lo);
+        emu_ir_put(b, rd + 1u, hi);
+        return true;
+    }
+
+    case (0xDu << 1) | 0u:              /* ST.B */
+    case (0xDu << 1) | 1u:              /* ST.H */
+    case (0xFu << 1) | 0u: {            /* ST.W */
+        const uint32_t size = (sub == 0xDu) ? ((op & 1u) ? 2u : 1u) : 4u;
+
+        (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(size, 0u),
+                          base, emu_ir_get(b, r3), disp, 0u);
+        return true;
+    }
+
+    case (0xFu << 1) | 1u: {            /* ST.DW */
+        const uint32_t rs = r3 & ~1u;
+
+        (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(4u, 0u), base,
+                          emu_ir_get(b, rs), disp, 0u);
+        (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(4u, 0u), base,
+                          emu_ir_get(b, rs + 1u), disp + 4u, 0u);
+        return true;
+    }
+
+    default:
+        return false;
+    }
+}
+
+/*
  * Lower one 16-bit instruction. Returns false for anything not modelled,
  * which ends the block -- the caller has emitted nothing for it.
  */
@@ -403,11 +526,11 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
             break;
         }
         /*
-         * Longer encodings than 32 bits are still left alone: their
-         * first halfword is distinguishable, and lowering one by
-         * accident as a shorter instruction would be silent, so the test
-         * is on the form rather than on whether the opcode is
-         * recognised.
+         * The width is settled before the opcode is, and by the same
+         * two functions the interpreter uses. Lowering a 48-bit form as
+         * a 32-bit one would not compute a wrong answer, it would
+         * desynchronise the instruction stream -- so the test is on the
+         * form, and only then on whether the opcode is recognised.
          */
         const uint32_t mark = b->count;
         uint32_t len = 2u;
@@ -423,10 +546,18 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
                 break;
             }
             if (g4mh_insn_is_48(w0, w1)) {
-                break;
+                uint16_t w2;
+
+                if (emu_bus_fetch16(c->bus, cur + 4u, &w2) !=
+                    EMU_FAULT_NONE) {
+                    break;
+                }
+                len = 6u;
+                ok = lower_one48(b, w0, w1, w2, cur);
+            } else {
+                len = 4u;
+                ok = lower_one32(b, w0, w1, cur);
             }
-            len = 4u;
-            ok = lower_one32(b, w0, w1, cur);
         }
 
         if (!ok) {
