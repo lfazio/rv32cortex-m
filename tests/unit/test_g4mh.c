@@ -202,6 +202,28 @@ static void test_length(void)
     CHECK(!g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x0823u));  /* ..., sp     */
     CHECK(g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x082Bu));   /* ..., imm16  */
     CHECK(g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x0105u));   /* disp23 load */
+
+    /*
+     * Every disp23 sub-opcode, with disp[0] both ways. Six bytes is the
+     * answer for all ten, and the length decoder must not care which:
+     * it runs before anything knows what the instruction is, and a
+     * wrong length is not a wrong answer but a desynchronised stream.
+     *
+     * 0x9 is the one to look at. Its low three bits are 001, one bit
+     * from PREPARE's 011, and with disp[0] set w1 & 0x1F is 0x19 --
+     * near enough to PREPARE's 0x01 that a mask written from memory
+     * gets it wrong. Both are here for that reason.
+     */
+    {
+        static const uint16_t sub[5] = { 0x5u, 0x7u, 0x9u, 0xDu, 0xFu };
+        for (unsigned i = 0; i < 5u; i++) {
+            const uint16_t even = (uint16_t)(0x0100u | sub[i]);
+            const uint16_t odd  = (uint16_t)(0x0110u | sub[i]);
+            CHECK(g4mh_insn_is_48(W0(0x3Cu, 0, 0), even));
+            CHECK(g4mh_insn_is_48(W0(0x3Cu, 0, 0), odd));
+            CHECK(g4mh_insn_is_48(W0(0x3Du, 0, 0), even));
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -2168,6 +2190,221 @@ static void test_unsigned_loads(void)
     CHECK_EQ(why, EMU_RUN_WFI);
 }
 
+/* ------------------------------------------------------------------ */
+/* Format XIV: the 48-bit disp23 loads and stores                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Build one. Every field position here was read off CC-RH rather than
+ * off the manual's diagram -- scripts/g4mh-check-encodings.sh assembles
+ *
+ *   ld.b 0x123456[r6], r7   ->  86 07 65 3D 68 24
+ *
+ * which is w0=0x0786 w1=0x3D65 w2=0x2468, and these macros reproduce it
+ * exactly. That is the check that the split below is not a reading of a
+ * picture: disp[6:0] in w1[10:4] and disp[22:7] in w2, which no amount
+ * of staring at `wwwwwddddddd0101` settles on its own.
+ */
+#define D23_W0(op6, r1)        (uint16_t)(((op6) << 5) | (r1))
+#define D23_W1(r3, disp, sub)  (uint16_t)(((r3) << 11) | \
+                                          (((disp) & 0x7Fu) << 4) | (sub))
+#define D23_W2(disp)           (uint16_t)(((disp) >> 7) & 0xFFFFu)
+
+#define D23(op6, r1, r3, disp, sub) \
+    D23_W0(op6, r1), D23_W1(r3, disp, sub), D23_W2(disp)
+
+/*
+ * The displacement is the whole point of these encodings, so the
+ * displacements here are the awkward ones: a value with bits in all
+ * three fields, the odd one that only the byte forms can express, and
+ * both ends of the signed 23-bit range. A test using 0 or 4 would pass
+ * against a decoder that dropped w2 entirely.
+ */
+static void test_disp23_loads_stores(void)
+{
+    const uint32_t cell = EMU_GUEST_RAM_BASE + 0x200u;
+    const uint32_t big  = 0x123456u;            /* bits in w1 and w2    */
+
+    /* base = cell - disp, so the *sum* lands on the cell either way. */
+    const uint32_t base_big = cell - big;
+    const uint32_t base_neg = cell + 0x400000u; /* disp = -0x400000     */
+
+    const uint16_t prog[] = {
+        MOVI32(11), LO(base_big), HI(base_big),
+        MOVI32(12), LO(base_neg), HI(base_neg),
+        MOVI32(13), 0xBEEFu, 0x0000u,
+
+        /* st.w r13, 0x123456[r11] -- writes the cell through w2        */
+        D23(0x3Cu, 11, 13, big, 0xFu),
+        /* ld.w 0x123456[r11], r14 -- and reads it back                 */
+        D23(0x3Cu, 11, 14, big, 0x9u),
+        /* ld.w -0x400000[r12], r15 -- the most negative displacement   */
+        D23(0x3Cu, 12, 15, 0x400000u, 0x9u),
+
+        /*
+         * disp[0], which for the byte forms is a displacement bit and
+         * everywhere else is part of the opcode.
+         *
+         * Two distinct bytes are planted at cell and cell+1 through the
+         * *disp16* forms, which decode by a different path entirely, and
+         * only the read uses disp23. A disp23 store and a disp23 load
+         * both dropping bit 0 would agree with each other perfectly --
+         * which is how the first version of this test passed against a
+         * decoder that ignored the bit. Mirroring the write and the read
+         * cancels the bug out; this does not.
+         */
+        MOVI32(18), LO(cell), HI(cell),
+        MOVI32(19), 0x00A5u, 0x0000u,
+        W0(OP_ST_B, 18, 19), 0x0000u,          /* st.b r19, 0[r18]      */
+        MOVI32(19), 0x00EFu, 0x0000u,
+        W0(OP_ST_B, 18, 19), 0x0001u,          /* st.b r19, 1[r18]      */
+
+        /* ld.bu 0x123457[r11], r16 -- must see 0xEF, not 0xA5          */
+        D23(0x3Du, 11, 16, big + 1u, 0x5u),
+        /* ld.b  0x123457[r11], r17 -- sign-extends where LD.BU does not */
+        D23(0x3Cu, 11, 17, big + 1u, 0x5u),
+        /* and the even one, to prove the bit is read rather than
+         * always set: 0xA5 is also negative, so LD.B tells them apart
+         * by value and not merely by sign.                             */
+        D23(0x3Du, 11, 24, big, 0x5u),
+
+        /*
+         * The store side, checked the same way round: written with
+         * disp23 at an odd displacement, read back with disp16.
+         */
+        MOVI32(19), 0x005Au, 0x0000u,
+        D23(0x3Cu, 11, 19, big + 3u, 0xDu),    /* st.b r19, big+3[r11]  */
+        /*
+         * ld.bu 3[r18], r25. The disp16 form splits its displacement
+         * too: disp[15:1] in w1[15:1], w1 bit 0 is the marker saying
+         * this is not JR, and disp[0] is the low bit of the *opcode* --
+         * so an odd displacement is 0x3D and an even one 0x3C. Writing
+         * 0x3C here read cell+2 and returned a plausible zero.
+         */
+        (uint16_t)((25u << 11) | (0x3Du << 5) | 18u), 0x0003u,
+
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(why, EMU_RUN_WFI);
+    CHECK_EQ(reg(14), 0x0000BEEFu);     /* ST.W then LD.W, disp23       */
+    CHECK_EQ(reg(15), 0x0000BEEFu);     /* the same cell, reached from
+                                         * the far side                 */
+    /* cell+1 holds 0xEF and cell holds 0xA5. Both are negative as
+     * bytes, so telling them apart is a test of the address and not of
+     * the sign extension -- and the sign extension is checked too, by
+     * LD.BU and LD.B disagreeing on the same byte. */
+    CHECK_EQ(reg(16), 0x000000EFu);     /* LD.BU, disp[0] = 1           */
+    CHECK_EQ(reg(17), 0xFFFFFFEFu);     /* LD.B,  same byte             */
+    CHECK_EQ(reg(24), 0x000000A5u);     /* LD.BU, disp[0] = 0           */
+    CHECK_EQ(reg(25), 0x0000005Au);     /* ST.B at an odd disp23, read
+                                         * back through disp16          */
+}
+
+/*
+ * LD.DW / ST.DW: the register pair, and the rule that makes an odd
+ * register number mean the even one below it.
+ *
+ * "reg3 must be an even-numbered register. If an odd-numbered register
+ * is specified in reg3, bit 0 of the register number is ignored" -- the
+ * manual, and the only statement of it, because CC-RH silently aligns
+ * the operand down and warns, so no assembler can produce the case.
+ */
+static void test_disp23_doubleword(void)
+{
+    const uint32_t cell = EMU_GUEST_RAM_BASE + 0x240u;
+    const uint16_t prog[] = {
+        MOVI32(11), LO(cell), HI(cell),
+        MOVI32(20), 0x1234u, 0x0000u,          /* r20 = low  word      */
+        MOVI32(21), 0x5678u, 0x0000u,          /* r21 = high word      */
+
+        /* st.dw r20, 0[r11] -- writes r20 then r21                     */
+        D23(0x3Du, 11, 20, 0u, 0xFu),
+        /* ld.dw 0[r11], r22 -- reads them into r22 and r23             */
+        D23(0x3Du, 11, 22, 0u, 0x9u),
+        /* ld.dw 0[r11], r25 -- odd, so it must land in r24 and r25     */
+        D23(0x3Du, 11, 25, 0u, 0x9u),
+
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(why, EMU_RUN_WFI);
+    CHECK_EQ(reg(22), 0x1234u);         /* low  half at adr             */
+    CHECK_EQ(reg(23), 0x5678u);         /* high half at adr + 4         */
+    /* The odd operand: r25 named, r24/r25 written. r25 holding the
+     * *high* word is what says the pair was rebased rather than the
+     * request being honoured as-is -- with r25 as the low register the
+     * value there would be 0x1234. */
+    CHECK_EQ(reg(24), 0x1234u);
+    CHECK_EQ(reg(25), 0x5678u);
+}
+
+/*
+ * The aligned forms have no disp[0]: the manual gives them a five-bit
+ * opcode where the byte forms have four and seven displacement bits.
+ * Setting that bit is a reserved encoding, and the report for one is
+ * RIE -- not the misaligned-address exception a decoder reading the bit
+ * as disp[0] would eventually raise. The two only differ here, which is
+ * exactly why it is worth a test.
+ */
+static void test_disp23_reserved_bit(void)
+{
+    uint16_t prog[0x60];
+    unsigned k = 0;
+
+    memset(prog, 0, sizeof(prog));
+    prog[k++] = MOVI32(11);
+    prog[k++] = LO(EMU_GUEST_RAM_BASE + 0x200u);
+    prog[k++] = HI(EMU_GUEST_RAM_BASE + 0x200u);
+    /* ld.w 0[r11], r14 with bit 4 set -- disp 1 would be misaligned. */
+    prog[k++] = D23_W0(0x3Cu, 11);
+    prog[k++] = D23_W1(14, 1u, 0x9u);
+    prog[k++] = D23_W2(1u);
+
+    prog[0x30] = 0x07E0u; prog[0x31] = SUB_HALT;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    emu_cpu_status_t st;
+    emu_core_status(&g_core, &st);
+
+    CHECK_EQ(why, EMU_RUN_WFI);
+    CHECK(st.traps >= 1u);
+    CHECK_EQ(reg(14), 0u);                      /* nothing was loaded   */
+    /*
+     * **The cause, not the fact of a trap.** Reading the bit as disp[0]
+     * gives an odd address for a word load, which raises MAE -- also a
+     * trap, and one that lands on the same halt because the bytes
+     * between the vectors are zeros this guest runs through. So "traps
+     * >= 1" and the final pc are both satisfied by the bug, and the
+     * first version of this test asserted exactly those two things.
+     * RIE against MAE is the whole difference being tested.
+     */
+    CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_RIE);
+}
+
 /*
  * The branchless group. Each is checked with its condition both true and
  * false, because every one of them has a well-defined "else" that a
@@ -2751,6 +2988,9 @@ void test_g4mh(void)
     test_mov_imm32();
     test_prepare_dispose();
     test_unsigned_loads();
+    test_disp23_loads_stores();
+    test_disp23_doubleword();
+    test_disp23_reserved_bit();
     test_conditional_ops();
     test_mac_bins_rotl();
     test_loop();

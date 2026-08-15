@@ -108,10 +108,19 @@ import re, sys
 print("%-26s %-9s %s" % ("source", "bytes", "as this emulator decodes it"))
 print("-" * 78)
 for line in open(sys.argv[1], errors="replace"):
-    # 16-bit instructions list four hex digits, not eight. Matching only
-    # the wide form silently dropped every Format I/II encoding -- so a
-    # 16-bit instruction looked like one the assembler had rejected.
-    m = re.match(r'^[0-9A-F]{8} ([0-9A-F]{4}(?:[0-9A-F]{4})?)\s+\d+\s+(.*)$',
+    # RH850 is 16, 32 or 48 bits, so the listing carries 4, 8 or 12 hex
+    # digits. This has now been wrong twice in the same way: first it
+    # matched only 8 and dropped every Format I/II encoding, then it
+    # matched 4 or 8 and dropped every 48-bit one -- and a dropped line
+    # is indistinguishable from an encoding the assembler rejected,
+    # which is what made the disp23 group look unsupported by CC-RH
+    # when it assembles perfectly well. Match all three widths.
+    #
+    # And the line-number column holds "--" on a continuation line, which
+    # is where CC-RH lists the 48-bit forms -- the source line above it
+    # carries the address and no bytes. Demanding a number there dropped
+    # them just as surely as the width did.
+    m = re.match(r'^[0-9A-F]{8} ([0-9A-F]{4}(?:[0-9A-F]{4}){0,2})\s+(?:\d+|--)\s+(.*)$',
                  line.rstrip())
     if not m:
         continue
@@ -126,6 +135,16 @@ for line in open(sys.argv[1], errors="replace"):
               % (src, hexs, w0 & 0x1F, (w0 >> 11) & 0x1F, op6))
         continue
     w1 = b[2] | (b[3] << 8)
+    if len(b) == 6:
+        # The 48-bit forms. Printed as the three halfwords plus the
+        # disp23 the load/store group splits across w1 and w2 --
+        # disp[22:16] in w1[15:9] hmm, or w0: print the raw fields and
+        # let the reader do the split, because guessing it here is
+        # exactly the mistake this script exists to catch.
+        w2 = b[4] | (b[5] << 8)
+        print("%-26s %-13s reg1=%-2d reg2=%-2d op=0x%02X  w1=0x%04X w2=0x%04X"
+              % (src, hexs, w0 & 0x1F, (w0 >> 11) & 0x1F, op6, w1, w2))
+        continue
     if op6 != 0x3F:
         print("%-26s %-9s reg1=%-2d reg2=%-2d op=0x%02X  imm16=0x%04X"
               % (src, hexs, w0 & 0x1F, (w0 >> 11) & 0x1F, op6, w1))

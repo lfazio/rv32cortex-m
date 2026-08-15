@@ -1997,8 +1997,126 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     break;
                 }
 
-                /* The 48-bit disp23 loads and stores. Not implemented. */
-                EXC(G4MH_EXC_RIE);
+                /*
+                 * Format XIV: the 48-bit disp23 loads and stores.
+                 *
+                 *   w0  00000 1111 0x RRRRR      reg2 = 0, reg1 = base
+                 *   w1  wwwww ddddddd ssss       reg3, disp[6:0], opcode
+                 *   w2  DDDDDDDDDDDDDDDD        disp[22:7]
+                 *
+                 * The manual draws the aligned forms with a *five*-bit
+                 * opcode and six displacement bits, because their disp[0]
+                 * is architecturally zero -- LD.DW is `dddddd01001`
+                 * against LD.B's `ddddddd0101`. Read as one rule, that
+                 * bit is disp[0] for the byte forms and required-zero for
+                 * the rest, which is what the check below says. Both
+                 * readings agree on everything an assembler emits; they
+                 * differ only on reserved encodings, and there RIE is the
+                 * architectural answer rather than the misaligned-address
+                 * exception a uniform reading would produce.
+                 *
+                 * Confirmed against CC-RH, which is the only thing here
+                 * that can say an opcode constant is wrong: the whole
+                 * table below came out of scripts/g4mh-check-encodings.sh
+                 * and not out of the manual's diagrams.
+                 */
+                {
+                    const uint32_t r3   = (w1 >> 11) & 0x1Fu;
+                    const uint32_t sub  = w1 & 0x0Fu;
+                    const bool     is_b = (sub == 0x5u) ||
+                                          (sub == 0xDu && op == 0x3Cu);
+                    const uint32_t d0   = (w1 >> 4) & 1u;
+                    uint32_t disp;
+                    uint32_t addr;
+                    uint32_t v;
+                    g4mh_exc_t e;
+
+                    if (!is_b && d0 != 0u) {
+                        EXC(G4MH_EXC_RIE);      /* opcode bit, not disp */
+                    }
+
+                    disp = (w2 << 7) | ((w1 >> 4) & 0x7Fu);
+                    addr = c->r[r1] + (uint32_t)emu_sext(disp, 23);
+
+                    switch ((sub << 1) | (op & 1u)) {
+                    case (0x5u << 1) | 0u:      /* LD.B  disp23 */
+                        e = g4mh_load(c, addr, 1u, true, &v);
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        wr(c, r3, v);
+                        break;
+                    case (0x5u << 1) | 1u:      /* LD.BU disp23 */
+                        e = g4mh_load(c, addr, 1u, false, &v);
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        wr(c, r3, v);
+                        break;
+                    case (0x7u << 1) | 0u:      /* LD.H  disp23 */
+                        e = g4mh_load(c, addr, 2u, true, &v);
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        wr(c, r3, v);
+                        break;
+                    case (0x7u << 1) | 1u:      /* LD.HU disp23 */
+                        e = g4mh_load(c, addr, 2u, false, &v);
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        wr(c, r3, v);
+                        break;
+                    case (0x9u << 1) | 0u:      /* LD.W  disp23 */
+                        e = g4mh_load(c, addr, 4u, false, &v);
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        wr(c, r3, v);
+                        break;
+                    case (0x9u << 1) | 1u: {    /* LD.DW disp23 */
+                        /*
+                         * "reg3 must be an even-numbered register. If an
+                         * odd-numbered register is specified, bit 0 of
+                         * the register number is ignored" -- so this
+                         * masks rather than raising RIE. CC-RH aligns it
+                         * down with a warning, so the case is unreachable
+                         * from compiled code and the manual is the only
+                         * statement of what it does.
+                         *
+                         * Two word accesses, not one eight-byte one:
+                         * the caution under LD.DW says no MAE occurs when
+                         * the address is on a *word* boundary, so the
+                         * alignment required is 4 and each half checks
+                         * it. Both loads complete before either register
+                         * is written, so a fault on the second leaves the
+                         * first untouched for the handler.
+                         */
+                        const uint32_t rd = r3 & ~1u;
+                        uint32_t lo, hi;
+                        e = g4mh_load(c, addr, 4u, false, &lo);
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        e = g4mh_load(c, addr + 4u, 4u, false, &hi);
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        wr(c, rd, lo);
+                        wr(c, rd + 1u, hi);
+                        break;
+                    }
+                    case (0xDu << 1) | 0u:      /* ST.B  disp23 */
+                        e = g4mh_store(c, addr, 1u, c->r[r3]);
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        break;
+                    case (0xDu << 1) | 1u:      /* ST.H  disp23 */
+                        e = g4mh_store(c, addr, 2u, c->r[r3]);
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        break;
+                    case (0xFu << 1) | 0u:      /* ST.W  disp23 */
+                        e = g4mh_store(c, addr, 4u, c->r[r3]);
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        break;
+                    case (0xFu << 1) | 1u: {    /* ST.DW disp23 */
+                        const uint32_t rs = r3 & ~1u;
+                        e = g4mh_store(c, addr, 4u, c->r[rs]);
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        e = g4mh_store(c, addr + 4u, 4u, c->r[rs + 1u]);
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        break;
+                    }
+                    default:
+                        EXC(G4MH_EXC_RIE);
+                    }
+                    break;
+                }
             }
             /*
              * bits[10:6] are the opcode, so bit 5 -- the low bit of the
