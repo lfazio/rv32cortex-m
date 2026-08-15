@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """
-rv32-board - run one guest on the Nucleo, as if it were rv32-host.
+emu-board - run one guest on the Nucleo, as if it were emu-host.
 
 This is the shim that lets the existing suites run on hardware without
 knowing they are:
 
-    RV32_HOST=scripts/rv32-board ./scripts/run-riscv-tests.sh
-    RV32_HOST=scripts/rv32-board ./scripts/run-arch-test.sh --jobs 1
+    EMU_HOST=scripts/emu-board ./scripts/run-riscv-tests.sh
+    EMU_HOST=scripts/emu-board ./scripts/run-arch-test.sh --jobs 1
 
 Both scripts invoke the runner as `<runner> [options] <image>` and read
 its exit status, so that is exactly what this presents. The options are
@@ -45,7 +45,7 @@ import time
 BOARD = os.environ.get("EMU_NET_ADDR", "192.168.7.2")
 TFTP_PORT = 69
 TELNET_PORT = 23
-LOCK = os.environ.get("EMU_BOARD_LOCK", "/tmp/rv32-board.lock")
+LOCK = os.environ.get("EMU_BOARD_LOCK", "/tmp/emu-board.lock")
 
 # The board prints this last, for every run. It is the only thing that
 # says a run is over: there is no process to exit.
@@ -115,7 +115,7 @@ def split_image(path, tmpdir):
 
     oc = objcopy()
     if oc is None:
-        sys.exit("rv32-board: no riscv objcopy found; cannot split an ELF")
+        sys.exit("emu-board: no riscv objcopy found; cannot split an ELF")
 
     flat = os.path.join(tmpdir, "image.bin")
     subprocess.run([oc, "-O", "binary", path, flat], check=True)
@@ -313,7 +313,7 @@ def main():
     args, _unknown = ap.parse_known_args()
 
     if not os.path.exists(args.image):
-        sys.exit("rv32-board: no such image: %s" % args.image)
+        sys.exit("emu-board: no such image: %s" % args.image)
 
     # One board, one run at a time.
     lock = open(LOCK, "w")
@@ -328,7 +328,7 @@ def main():
         try:
             text, m = run_on_board(ro, rw, args.timeout)
         except (OSError, RuntimeError) as e:
-            print("rv32-board: %s" % e, file=sys.stderr)
+            print("emu-board: %s" % e, file=sys.stderr)
             return 125
 
         if not args.quiet:
@@ -342,13 +342,13 @@ def main():
                     print(line)
 
         if m is None:
-            print("rv32-board: no result line within %.0fs" % args.timeout,
+            print("emu-board: no result line within %.0fs" % args.timeout,
                   file=sys.stderr)
             return 124
 
         code, exited, capped, _retired = (int(x) for x in m.groups())
         if capped:
-            print("rv32-board: instruction cap reached", file=sys.stderr)
+            print("emu-board: instruction cap reached", file=sys.stderr)
             return 124
         if not exited:
             # Halted without calling exit(). The host runner treats that

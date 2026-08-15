@@ -25,14 +25,14 @@ set(_scripts "${CMAKE_SOURCE_DIR}/scripts")
 add_custom_target(arch-test
     COMMAND "${_scripts}/run-arch-test.sh"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    DEPENDS rv32-host
+    DEPENDS emu-host
     USES_TERMINAL
     COMMENT "Running the official RISC-V architecture tests")
 
 add_custom_target(arch-test-quick
     COMMAND "${_scripts}/run-arch-test.sh" --extensions I
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    DEPENDS rv32-host
+    DEPENDS emu-host
     USES_TERMINAL
     COMMENT "Running the official RISC-V architecture tests (base integer)")
 
@@ -43,7 +43,7 @@ add_custom_target(arch-test-quick
 add_custom_target(riscv-tests
     COMMAND "${_scripts}/run-riscv-tests.sh"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    DEPENDS rv32-host
+    DEPENDS emu-host
     USES_TERMINAL
     COMMENT "Running the riscv-tests ISA suite")
 
@@ -55,7 +55,7 @@ add_custom_target(validate
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L fast
     COMMAND "${_scripts}/run-arch-test.sh"
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-    DEPENDS rv32-host rv32-unit
+    DEPENDS emu-host emu-unit
     USES_TERMINAL
     COMMENT "Running unit tests, the guest self-test and the architecture suite")
 

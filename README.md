@@ -148,12 +148,12 @@ cmake -B build/stm32f446 ... -DSTM32CUBE_LOCAL_DIR=/path/to/checkouts
 ## Running
 
 ```sh
-./build/host/rv32-host --load 0x80000000 build/host/guest/isatest.bin
-./build/host/rv32-host --jit --quiet --load 0x80000000 build/host/guest/isatest.bin
-./build/host/rv32-host --frontend g4mh --load 0x80000000 guest.bin
+./build/host/emu-host --load 0x80000000 build/host/guest/isatest.bin
+./build/host/emu-host --jit --quiet --load 0x80000000 build/host/guest/isatest.bin
+./build/host/emu-host --frontend g4mh --load 0x80000000 guest.bin
 ```
 
-`rv32-host` picks a frontend from `--frontend`, else from the image's ELF
+`emu-host` picks a frontend from `--frontend`, else from the image's ELF
 `e_machine`, else the first compiled in. A flat binary says nothing about
 its architecture, so it gets the default. `--jit` selects the translating
 backend for either frontend; without it, the interpreter.
@@ -179,12 +179,12 @@ run — which is exactly what happened to `rv32mi/csr` when F was added.
 
 ```sh
 cmake --build build/f746 --target gdbserver   # OpenOCD on :3333
-gdb-multiarch build/f746/src/platform/stm32f746/rv32-stm32f746.elf \
+gdb-multiarch build/f746/src/platform/stm32f746/emu-stm32f746.elf \
   -ex 'target extended-remote :3333'
 ```
 
 That debugs the *emulator*. To debug the **guest**, use the built-in RSP
-stub: `rv32-host --gdb`, then `target remote :1234`. Two connections,
+stub: `emu-host --gdb`, then `target remote :1234`. Two connections,
 two different programs -- [docs/gdb.md](docs/gdb.md) has the rest,
 including the three RSP mistakes that fail by hanging rather than
 erroring.
@@ -192,7 +192,7 @@ erroring.
 The host `gdb` on Debian is x86-only; use `gdb-multiarch`, or
 `probe-rs gdb`.
 
-- `rv32-host --dump` prints the full guest register file on exit.
+- `emu-host --dump` prints the full guest register file on exit.
 - A `HardFault` on the ARM side usually means the passthrough window let
   a guest access reach an address the ARM bus rejects — the region table
   is where to look. An unimplemented address in that window makes the AHB

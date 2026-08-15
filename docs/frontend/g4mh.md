@@ -9,8 +9,8 @@ in a platform `#ifdef`.
 
 ```sh
 cmake -B build/g4 -DEMU_PLATFORM=host -DEMU_FRONTEND_G4MH=ON
-./build/g4/rv32-host --frontend g4mh --load 0x80000000 tests/guest/g4mh/guest.bin
-./build/g4/rv32-host --frontend g4mh --jit --load 0x80000000 tests/guest/g4mh/guest.bin
+./build/g4/emu-host --frontend g4mh --load 0x80000000 tests/guest/g4mh/guest.bin
+./build/g4/emu-host --frontend g4mh --jit --load 0x80000000 tests/guest/g4mh/guest.bin
 ```
 
 `tests/guest/g4mh/` holds a CC-RH-built guest and its listing, so the one
@@ -162,7 +162,7 @@ have caught the bug above -- no single-backend run can see it.
   Sdtrig.
 - **No Thumb-2 JIT.** There *is* an x86-64 one:
   `g4mh_backend_jit` comes from the shared IR framework, and
-  `rv32-host --jit` selects it. A Thumb-2 translator would be a third
+  `emu-host --jit` selects it. A Thumb-2 translator would be a third
   `emu_backend_t` and is what the firmware would need, since the host
   backend exists for coverage rather than for speed.
 

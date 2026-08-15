@@ -39,7 +39,7 @@ that failure looks like an emulator bug until you disassemble the test.
   which excludes CAS, so Sail *trapped* and the signatures recorded the
   trap. When targeted checks say an instruction is right and the suite
   disagrees, run `sail_riscv_sim --config <sail.json> --trace-instr` on the
-  same ELF and diff against `rv32-host --trace-count N`; a jump to
+  same ELF and diff against `emu-host --trace-count N`; a jump to
   `Mtrampoline` in the reference is the tell.
 - **ACT's `--extensions` selects test suites by *directory name*, not by
   required extension.** `U` matches nothing and silently builds nothing.

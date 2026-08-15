@@ -5,17 +5,17 @@ programs. Getting them confused is the first mistake to avoid.
 
 | you want to debug | connect to | what a breakpoint means |
 |---|---|---|
-| the **guest** | `rv32-host --gdb`, port 1234 | a guest pc |
+| the **guest** | `emu-host --gdb`, port 1234 | a guest pc |
 | the **emulator** | OpenOCD / `probe-rs gdb`, port 3333 | an ARM pc in the firmware |
 
 ```sh
 # the guest
-./build/host/rv32-host --gdb --load 0x80000000 build/host/guest/isatest.bin
+./build/host/emu-host --gdb --load 0x80000000 build/host/guest/isatest.bin
 gdb-multiarch build/host/guest/isatest.elf -ex 'target remote :1234'
 
 # the emulator, on hardware
 cmake --build build/f746 --target gdbserver
-gdb-multiarch build/f746/src/platform/stm32f746/rv32-stm32f746.elf \
+gdb-multiarch build/f746/src/platform/stm32f746/emu-stm32f746.elf \
   -ex 'target extended-remote :3333'
 ```
 
@@ -60,7 +60,7 @@ byte**.
 
 Getting it wrong yields an `info registers` that is plausible and
 entirely wrong — every value present, every value in the wrong place. So
-check it against the board's own state dump or `rv32-host --dump`, not
+check it against the board's own state dump or `emu-host --dump`, not
 against itself.
 
 `target_xml` is optional and worth supplying. Without it gdb cannot know
@@ -103,7 +103,7 @@ path that is already checked, and is correct in both backends.
 `--target gdbserver` starts OpenOCD on :3333. Useful when the *firmware*
 is misbehaving rather than the guest:
 
-- `rv32-host --dump` prints the full guest register file on exit.
+- `emu-host --dump` prints the full guest register file on exit.
 - `-DEMU_ENABLE_TRACE=ON` builds a per-instruction trace hook —
   `--trace-skip N --trace-count M`. Read the **pc deltas**: an
   instruction that changes the pc without retiring is a trap, and that is

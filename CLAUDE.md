@@ -579,7 +579,7 @@ session, and every one of them recurred:
   *trapped* and the signatures recorded the trap. When targeted checks say an
   instruction is right and the suite disagrees, run
   `sail_riscv_sim --config <sail.json> --trace-instr` on the same ELF and diff
-  against `rv32-host --trace-count N`; a jump to `Mtrampoline` in the reference
+  against `emu-host --trace-count N`; a jump to `Mtrampoline` in the reference
   is the tell.
 - **Compressed guest code is slower to interpret, not faster.** Enabling Zcb in
   guest codegen cost ~9% on CoreMark at an identical instruction count: the

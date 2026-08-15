@@ -93,14 +93,14 @@ target_compile_options(stm32cube PRIVATE -Wno-unused-parameter)
 # Firmware
 # ---------------------------------------------------------------------
 
-add_executable(rv32-stm32f746
+add_executable(emu-stm32f746
     main.c
     board.c
     stm32f7xx_it.c
     guest_image.S
 )
 
-target_link_libraries(rv32-stm32f746 PRIVATE emucore stm32cube)
+target_link_libraries(emu-stm32f746 PRIVATE emucore stm32cube)
 
 # ---------------------------------------------------------------------
 # Network transport
@@ -132,7 +132,7 @@ option(EMU_NET "SLIP/TFTP/telnet/gdb transport over the console UART" ON)
 if(EMU_NET)
     include(${CMAKE_SOURCE_DIR}/cmake/lwip.cmake)
 
-    target_sources(rv32-stm32f746 PRIVATE
+    target_sources(emu-stm32f746 PRIVATE
         "${CMAKE_SOURCE_DIR}/src/net/net.c"
         "${CMAKE_SOURCE_DIR}/src/net/net_sio.c"
         "${CMAKE_SOURCE_DIR}/src/net/net_telnet.c"
@@ -152,13 +152,13 @@ if(EMU_NET)
     # Linking lwip PUBLIC-exports src/net (for lwipopts.h and arch/cc.h)
     # and lwIP's own headers onto the firmware, so nothing else needs
     # naming here.
-    target_link_libraries(rv32-stm32f746 PRIVATE lwip)
+    target_link_libraries(emu-stm32f746 PRIVATE lwip)
 
     set(EMU_NET_ADDR "192.168.7.2"   CACHE STRING "Board IP address")
     set(EMU_NET_PEER "192.168.7.1"   CACHE STRING "Host IP address")
     set(EMU_NET_MASK "255.255.255.0" CACHE STRING "Netmask")
 
-    target_compile_definitions(rv32-stm32f746 PRIVATE
+    target_compile_definitions(emu-stm32f746 PRIVATE
         EMU_NET=1
         EMU_NET_ADDR="${EMU_NET_ADDR}"
         EMU_NET_PEER="${EMU_NET_PEER}"
@@ -171,37 +171,37 @@ set_source_files_properties(guest_image.S PROPERTIES
     OBJECT_DEPENDS "${guest_bin}.ro;${guest_bin}.rw")
 
 if(TARGET guest-${RV32_GUEST})
-    add_dependencies(rv32-stm32f746 guest-image-staged)
+    add_dependencies(emu-stm32f746 guest-image-staged)
 else()
     message(WARNING
         "Guest image '${RV32_GUEST}' is not built (no RISC-V toolchain?); "
         "the firmware link will fail until ${guest_bin} exists.")
 endif()
 
-target_compile_options(rv32-stm32f746 PRIVATE -Wall -Wextra)
+target_compile_options(emu-stm32f746 PRIVATE -Wall -Wextra)
 
 # Native CoreMark baseline: the same sources the guest runs, compiled for
 # the ARM host. core_main.c defines main(), so it is renamed at compile
 # time and called from our own main.
 option(RV32_NATIVE_COREMARK "Run CoreMark natively instead of the emulator" OFF)
 if(RV32_NATIVE_COREMARK AND EXISTS "${COREMARK_DIR}/core_main.c")
-    target_sources(rv32-stm32f746 PRIVATE
+    target_sources(emu-stm32f746 PRIVATE
         "${COREMARK_DIR}/core_main.c"
         "${COREMARK_DIR}/core_list_join.c"
         "${COREMARK_DIR}/core_matrix.c"
         "${COREMARK_DIR}/core_state.c"
         "${COREMARK_DIR}/core_util.c"
         coremark_native.c)
-    target_include_directories(rv32-stm32f746 PRIVATE
+    target_include_directories(emu-stm32f746 PRIVATE
         "${COREMARK_DIR}" "${CMAKE_SOURCE_DIR}/tests/guest/coremark")
-    target_compile_definitions(rv32-stm32f746 PRIVATE
+    target_compile_definitions(emu-stm32f746 PRIVATE
         RV32_NATIVE_COREMARK=1 PERFORMANCE_RUN=1
         ITERATIONS=${COREMARK_ITERATIONS})
     # The main= rename must apply to CoreMark's core_main.c alone; applied
     # target-wide it would also rename the firmware's own entry point.
     set_source_files_properties("${COREMARK_DIR}/core_main.c" PROPERTIES
         COMPILE_DEFINITIONS "main=coremark_native_main")
-    target_compile_options(rv32-stm32f746 PRIVATE
+    target_compile_options(emu-stm32f746 PRIVATE
         -Wno-unused-parameter -Wno-sign-compare -Wno-implicit-fallthrough)
 endif()
 
@@ -218,37 +218,37 @@ endif()
 
 # The linker script path is passed unquoted: CMake treats each list item as
 # one argument already, and embedded quotes reach the driver literally.
-target_link_options(rv32-stm32f746 PRIVATE
+target_link_options(emu-stm32f746 PRIVATE
     -T${CMAKE_CURRENT_SOURCE_DIR}/stm32f746zgtx.ld
-    -Wl,-Map=${CMAKE_BINARY_DIR}/rv32-stm32f746.map
+    -Wl,-Map=${CMAKE_BINARY_DIR}/emu-stm32f746.map
     -Wl,--print-memory-usage
 )
 
-set_target_properties(rv32-stm32f746 PROPERTIES
-    OUTPUT_NAME "rv32-stm32f746"
+set_target_properties(emu-stm32f746 PROPERTIES
+    OUTPUT_NAME "emu-stm32f746"
     SUFFIX ".elf"
     LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/stm32f746zgtx.ld")
 
 # LTO across main.c and the core lets the run loop inline the bus fast
 # paths and the interrupt check, which is where the interpreter's time goes.
 if(RV32_LTO AND CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo|MinSizeRel")
-    set_property(TARGET rv32-stm32f746 PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    set_property(TARGET emu-stm32f746 PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
 # ---------------------------------------------------------------------
 # Artefacts
 # ---------------------------------------------------------------------
 
-add_custom_command(TARGET rv32-stm32f746 POST_BUILD
-    COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:rv32-stm32f746>
-            "${CMAKE_BINARY_DIR}/rv32-stm32f746.bin"
-    COMMAND ${CMAKE_OBJCOPY} -O ihex $<TARGET_FILE:rv32-stm32f746>
-            "${CMAKE_BINARY_DIR}/rv32-stm32f746.hex"
+add_custom_command(TARGET emu-stm32f746 POST_BUILD
+    COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:emu-stm32f746>
+            "${CMAKE_BINARY_DIR}/emu-stm32f746.bin"
+    COMMAND ${CMAKE_OBJCOPY} -O ihex $<TARGET_FILE:emu-stm32f746>
+            "${CMAKE_BINARY_DIR}/emu-stm32f746.hex"
     COMMENT "Generating .bin and .hex")
 
 if(CMAKE_SIZE)
-    add_custom_command(TARGET rv32-stm32f746 POST_BUILD
-        COMMAND ${CMAKE_SIZE} $<TARGET_FILE:rv32-stm32f746>)
+    add_custom_command(TARGET emu-stm32f746 POST_BUILD
+        COMMAND ${CMAKE_SIZE} $<TARGET_FILE:emu-stm32f746>)
 endif()
 
 # ---------------------------------------------------------------------
@@ -269,16 +269,16 @@ endif()
 # default rather than a flag to remember after the failure.
 add_custom_target(flash
     COMMAND probe-rs download --chip STM32F746ZGTx --connect-under-reset
-            $<TARGET_FILE:rv32-stm32f746>
+            $<TARGET_FILE:emu-stm32f746>
     COMMAND probe-rs reset --chip STM32F746ZGTx --connect-under-reset
-    DEPENDS rv32-stm32f746
+    DEPENDS emu-stm32f746
     USES_TERMINAL
     COMMENT "Flashing the Nucleo-F746ZG over ST-LINK")
 
 add_custom_target(flash-openocd
     COMMAND openocd -f board/st_nucleo_f7.cfg
-            -c "program $<TARGET_FILE:rv32-stm32f746> verify reset exit"
-    DEPENDS rv32-stm32f746
+            -c "program $<TARGET_FILE:emu-stm32f746> verify reset exit"
+    DEPENDS emu-stm32f746
     USES_TERMINAL
     COMMENT "Flashing with OpenOCD")
 

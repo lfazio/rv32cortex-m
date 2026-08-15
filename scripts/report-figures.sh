@@ -66,8 +66,8 @@ if [ "$CONFIGURE" = 1 ]; then
     cmake --build "$BUILD" -j"$(nproc 2>/dev/null || echo 4)" >/dev/null
 fi
 
-HOST="$BUILD/rv32-host"
-UNIT="$BUILD/tests/unit/rv32-unit"
+HOST="$BUILD/emu-host"
+UNIT="$BUILD/tests/unit/emu-unit"
 [ -x "$HOST" ] || { echo "report-figures: no $HOST" >&2; exit 1; }
 
 # ------------------------------------------------------------------

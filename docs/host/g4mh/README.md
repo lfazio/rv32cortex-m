@@ -6,7 +6,7 @@ The only pair where G4MH has actually executed anything.
 ```sh
 cmake -B build/both -DEMU_PLATFORM=host -DEMU_FRONTEND_G4MH=ON
 cmake --build build/both
-./build/both/tests/unit/rv32-unit     # includes the G4MH tests
+./build/both/tests/unit/emu-unit     # includes the G4MH tests
 ```
 
 Reference: [`docs/renesas/rh850g4mh-users-manual-software.pdf`](../../renesas/)

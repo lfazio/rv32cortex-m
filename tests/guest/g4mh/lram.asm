@@ -23,7 +23,7 @@
 ;     $B/rlink lram.obj -start=.text,.rodata/0 \
 ;             -output=lram.abs -form=absolute -entry=__start'
 ;
-;   ./build/g4mh3/rv32-host --frontend g4mh lram.abs
+;   ./build/g4mh3/emu-host --frontend g4mh lram.abs
 ;
     .section .text, text
     .align 4

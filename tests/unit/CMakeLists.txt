@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-add_executable(rv32-unit
+add_executable(emu-unit
     test_main.c
     test_bus.c
     test_ir.c
@@ -11,27 +11,27 @@ add_executable(rv32-unit
 # rv_hart_fp directly -- the FP unit is shared, but the only way in is
 # through an RV32 hart.
 if(EMU_FRONTEND_RV32)
-    target_sources(rv32-unit PRIVATE test_decode.c test_fpu.c)
+    target_sources(emu-unit PRIVATE test_decode.c test_fpu.c)
 endif()
 if(EMU_FRONTEND_G4MH)
-    target_sources(rv32-unit PRIVATE test_g4mh.c)
+    target_sources(emu-unit PRIVATE test_g4mh.c)
 endif()
 if(EMU_FRONTEND_PPC)
-    target_sources(rv32-unit PRIVATE test_ppc.c)
+    target_sources(emu-unit PRIVATE test_ppc.c)
 endif()
 
-target_link_libraries(rv32-unit PRIVATE emucore)
-target_include_directories(rv32-unit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(rv32-unit PRIVATE -Wall -Wextra)
+target_link_libraries(emu-unit PRIVATE emucore)
+target_include_directories(emu-unit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(emu-unit PRIVATE -Wall -Wextra)
 
-add_test(NAME unit COMMAND rv32-unit)
+add_test(NAME unit COMMAND emu-unit)
 set_tests_properties(unit PROPERTIES LABELS fast)
 
 # The guest ISA self-test, run through the host runner. This is the check
 # that actually exercises the RV32 interpreter end to end.
 if(TARGET guest-isatest)
     add_test(NAME guest-isatest
-             COMMAND rv32-host --quiet --load 0x80000000
+             COMMAND emu-host --quiet --load 0x80000000
                      "${CMAKE_BINARY_DIR}/guest/isatest.bin")
     set_tests_properties(guest-isatest PROPERTIES LABELS fast)
 
@@ -43,7 +43,7 @@ if(TARGET guest-isatest)
     # backend, translated code is covered by `ctest -L fast`.
     if(EMU_JIT)
         add_test(NAME guest-isatest-jit
-                 COMMAND rv32-host --jit --quiet --load 0x80000000
+                 COMMAND emu-host --jit --quiet --load 0x80000000
                          "${CMAKE_BINARY_DIR}/guest/isatest.bin")
         set_tests_properties(guest-isatest-jit PROPERTIES LABELS fast)
     endif()

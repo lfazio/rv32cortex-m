@@ -137,7 +137,7 @@ cmake -B build/stm32f446 -DEMU_PLATFORM=stm32f446 \
 cmake --build build/stm32f446 --target flash
 ```
 
-`rv32-host` picks a frontend from `--frontend`, else from the image's ELF
+`emu-host` picks a frontend from `--frontend`, else from the image's ELF
 `e_machine`, else the first compiled in. A flat binary says nothing about
 its architecture, so it gets the default.
 

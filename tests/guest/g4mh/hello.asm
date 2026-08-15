@@ -16,7 +16,7 @@
 ;     $B/rlink hello.obj -start=.text,.rodata/80000000 \
 ;             -output=hello.abs -form=absolute -entry=__start'
 ;
-;   ./build/g4mh/rv32-host --frontend g4mh hello.abs
+;   ./build/g4mh/emu-host --frontend g4mh hello.abs
 ;
 ; The host's syscall ABI: number in r11, arguments in r6-r9, result in r10,
 ; entered with TRAP. The number is *not* the trap vector -- that field is

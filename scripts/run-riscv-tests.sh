@@ -19,7 +19,7 @@ set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 build="${BUILD_DIR:-$here/build/riscv-tests}"
-runner="${RV32_HOST:-$here/build/host/rv32-host}"
+runner="${EMU_HOST:-$here/build/host/emu-host}"
 tests="${RISCV_TESTS:-$build/src}"
 
 # Must match what misa advertises. rv32mi/csr deliberately fails if it is
