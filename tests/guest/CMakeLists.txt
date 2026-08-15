@@ -60,7 +60,11 @@ configure_file("${guest_dir}/guest.ld.in" "${guest_ld}" @ONLY)
 # Build one guest image, producing both .elf (for debugging) and .bin
 # (what the target actually loads).
 function(add_guest_image name)
-    cmake_parse_arguments(G "" "" "SOURCES;EXTRA_SOURCES;FLAGS" ${ARGN})
+    # LIBS is separate from FLAGS because position matters: a linker
+    # resolves -l against the objects *already* seen, so a library given
+    # with the compile flags -- which come first -- is scanned before
+    # anything needs it and silently contributes nothing.
+    cmake_parse_arguments(G "" "" "SOURCES;EXTRA_SOURCES;FLAGS;LIBS" ${ARGN})
 
     set(elf "${guest_out}/${name}.elf")
     set(bin "${guest_out}/${name}.bin")
@@ -82,6 +86,7 @@ function(add_guest_image name)
                 ${G_FLAGS}
                 -T "${guest_ld}"
                 ${srcs}
+                ${G_LIBS}
                 -o "${elf}"
         DEPENDS ${srcs} ${guest_headers} "${guest_ld}"
         COMMENT "Building guest image ${name}.elf"
@@ -210,6 +215,17 @@ endif()
 # Dhrystone
 # ---------------------------------------------------------------------
 
+#
+# netlib's Dhrystone 2.1, unmodified except for the run count -- see the
+# note in dhry_portme.c, which supplies the libc it expects.
+#
+# TIME rather than TIMES: times() wants a struct and a tick rate this
+# platform has no equivalent for, while time() is one read of the guest's
+# own mtime. HZ follows the CLINT's rate, so the DMIPS figure is a guest
+# figure -- which is what makes it comparable between frontends and
+# backends, and not comparable with a published one.
+set(DHRY_RUNS "20000" CACHE STRING "Dhrystone runs through the benchmark")
+
 if(EXISTS "${guest_dir}/dhrystone/dhry_1.c")
     add_guest_image(dhrystone
         SOURCES start.S
@@ -219,5 +235,33 @@ if(EXISTS "${guest_dir}/dhrystone/dhry_1.c")
             "${guest_dir}/dhrystone/dhry_portme.c"
         FLAGS
             -I "${guest_dir}/dhrystone"
-            -Wno-implicit-fallthrough)
+            -DTIME=1
+            -DHZ=1000000
+            -DDHRY_RUNS=${DHRY_RUNS}
+            -DREG=register
+            #
+            # gnu89, because these sources are 1988 K&R and a modern
+            # default rejects them outright -- old-style definitions,
+            # implicit int, and `extern long time();` with no parameter
+            # list. Modernising them would mean editing the measured
+            # code, which is the one thing a benchmark must not have done
+            # to it, so the standard moves instead of the source.
+            #
+            -std=gnu89
+            -Wno-implicit-fallthrough -Wno-implicit-int
+            -Wno-builtin-declaration-mismatch -Wno-return-type
+            -Wno-implicit-function-declaration
+            #
+            # libgcc, for the soft-float double routines. Dhrystone's
+            # *reporting* arithmetic -- the DMIPS and per-second figures
+            # at the end -- is float, and K&R promotion makes it double,
+            # so it pulls in __muldf3 and friends. This emulator's FPU is
+            # single-precision by design, so those are libgcc's.
+            #
+            # It does not touch the measurement: the timed loop is pure
+            # integer, and this runs once after it. Worth stating,
+            # because "the benchmark links soft-float" reads like it
+            # would.
+            #
+        LIBS -lgcc)
 endif()
