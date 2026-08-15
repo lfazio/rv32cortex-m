@@ -85,6 +85,34 @@ life of this frontend it did not report anything at all.
 | `LDM.MP` / `STM.MP`, `RESBANK` | bank and context-block transfers. `RESBANK` is decoded and reports RIE rather than being mistaken for `DI` |
 | `DIVQ`/`DIVQU` with `reg2 == reg3` | the manual leaves the flags undefined there; this treats it as the ordinary case |
 | `PREPARE list12, imm5, imm32` | the only 64-bit encoding in the ISA, and past what the length decoder reports — see below |
+| the performance counters | `PMCTRL0-5` and `PMUMCTRL`. See below: they are not merely unimplemented, they are **unrepresentable** in the current system register file |
+
+**The inter-cluster peripherals are absent, and they are peripherals
+rather than instructions.** The U2B hardware manual (R01UH0923EJ0130) is
+the authority for all three, not the software manual:
+
+- **BarrierSync** — the hardware barrier. Worth stating plainly because
+  it is easy to go looking for an `HBARR` *instruction*: there is none.
+  CC-RH V2.08.00 rejects that mnemonic at `-Xcpu=g4mh`, which is its only
+  valid setting, and the hardware manual lists BarrierSync alongside IPIR
+  and the TPTM as modules on the inter-cluster bus. It needs an
+  `emu_dev_ops_t` and a base address, not a decoder case.
+- **TPTM** — the timer, hardware manual section 3.7, with `TPTMSEL` in
+  the INTC at 6.3.15 selecting FE against EI delivery. The `OSTM` in this
+  tree is itself a stand-in rather than the real register set, so the two
+  are one piece of work.
+- **IPIR** — inter-processor interrupts, on the same bus and equally
+  absent. It is what a multi-PE guest would reach for first, and
+  `G4MH_PE_COUNT` already goes to 3.
+
+**The performance counters are unrepresentable, not just unimplemented.**
+`PMCTRL0-5` live at selID **14** and `PMUMCTRL` at selID **11**, and this
+frontend's `G4MH_SR_BANKS` is **3** — so selIDs 3 through 15 have nowhere
+to live at all, and `LDSR`/`STSR` to them cannot even be stored. Widening
+the bank array is the prerequisite; after that the shape is the same as
+the existing register handling, except that something has to actually
+*count*, and the interpreter's `retired`/`cycles` are the only honest
+sources here.
 
 **Architectural features not modelled:**
 
