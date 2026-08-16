@@ -183,14 +183,16 @@ session, and every one of them recurred:
   - **flags.** MXCSR framed per block, mapped through a table, handed
     over once at the exit -- which already existed and was correct.
 
-  Whetstone 120ms to 94ms, `fmul.s` alone 15% of it; `fptest` 7ms to
-  5ms; CoreMark and Dhrystone unchanged, which is what says blocks with
+  Whetstone 120ms to 87ms across three steps -- the FP moves 8%,
+  `fmul.s` 15%, `fadd.s` 8.5% -- while CoreMark stays at 8ms and
+  Dhrystone reports 2128.3 to the digit, which is what says blocks with
   no float pay nothing. Policy, the full table and the boxing rules are
   in [`docs/jit/floating-point.md`](docs/jit/floating-point.md). The
   advice above stands unchanged: **one operation at a time, each
-  measured against the F suite.**
+  measured against the F suite.** FSUB.S and FDIV.S are deliberately
+  still on the helper; each is one line and one measurement.
 
-  Three things about doing it are worth keeping.
+  Four things about doing it are worth keeping.
 
   **`xlat` and `interp` cannot see this A/B, because a helper call is a
   translation and so is a native lowering.** Both arms reported
@@ -213,6 +215,15 @@ session, and every one of them recurred:
   when D widened `f` to 64 bits -- invisible for exactly as long as
   nothing emitted an `FGET`, which was the whole of that period. It is
   `sizeof f[0]` now.
+
+  **Under about 10%, best-of-five is not a measurement.** Five samples
+  had Dhrystone -- which contains no floating point at all -- moving
+  77ms to 71ms between two binaries differing only in FP lowering, and
+  that 8% would have been reported as a win. Fifteen samples in three
+  interleaved rounds gives 72-74 for both, and the guest-side figure is
+  2128.3 either way. Interleave the rounds and check a guest that
+  *cannot* be affected; layout noise here is the +/-3% already recorded
+  above.
 - **NaN boxing is per instruction, not a property of the register
   file.** With FLEN 64 a single carries all-ones in its upper half, and
   `EMU_IR_FP_BOX` in `aux` is what lets `FGET`/`FPUT` say so -- without

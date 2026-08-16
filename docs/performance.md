@@ -125,30 +125,42 @@ the emulator.
 
 | | KIPS (guest) | host wall |
 |---|---|---|
-| RV32, interpreter | 937.9 | 254 ms |
-| RV32, JIT | 938.0 | 94 ms |
+| RV32, interpreter | 937.9 | 260 ms |
+| RV32, JIT | 938.0 | 87 ms |
 
-at `WHET_LOOPS=100`, which is 10 million Whetstone instructions and 10.7
-million guest instructions. **The JIT is 2.7× faster in real time and
+at `WHET_LOOPS=100`, which is 10 million Whetstone instructions and
+10,664,956 guest instructions. **The JIT is 3.0× faster in real time and
 identical in the reported rate** — that pair of numbers is the clearest
 statement on this page of what these two clocks each measure.
 
-### What lowering `fmul.s` to the host FPU bought
+The JIT translates essentially all of it: `interp 51234` of 10.66M is
+**0.48%**, which is the ratio to read before believing any figure here.
 
-The JIT figure was 120 ms until the x86-64 backend started emitting
-`MULSS` for `fmul.s` instead of calling SoftFloat. Best of five, same
-tree, one `#if` apart:
+### What lowering the arithmetic to the host FPU bought
 
-| | host wall |
-|---|---|
-| everything on the helper | 120 ms |
-| FLW/FSW/FMV lowered, `fmul.s` on the helper | 110 ms |
-| `fmul.s` lowered as well | 94 ms |
+The JIT figure was 120 ms while every FP instruction went to SoftFloat.
+Best of twelve, three interleaved rounds, same tree, one table entry
+apart:
 
-so **`fmul.s` alone is 15%** of this benchmark and the FP moves are a
-further 8%. `fptest` goes 7 ms to 5 ms. CoreMark and Dhrystone are
-unchanged, which is the check that the MXCSR framing is not being paid
-by blocks with no float in them.
+| | host wall | step |
+|---|---|---|
+| everything on the helper | 120 ms | |
+| FLW/FSW/FMV lowered | 110 ms | −8% |
+| `fmul.s` as well | 94 ms | −15% |
+| `fadd.s` as well | 87 ms | −8.5% |
+
+CoreMark is unchanged at 8 ms and Dhrystone reports 2128.3 to the digit
+either way, which is the check that the MXCSR framing is not being paid
+by blocks with no float in them. `fptest` is too short to resolve —
+7 ms to 5 ms at the `fmul.s` step and flat afterwards, which at that
+size is mostly process startup.
+
+**Best of five was not enough.** A five-sample run had Dhrystone moving
+77 ms to 71 ms across two binaries that differ only in floating point;
+fifteen samples in three interleaved rounds gives 72-74 for both. Layout
+noise on this host is real (CLAUDE.md records ±3%, and 10% on the
+board), so an A/B whose effect is under ~10% needs interleaved rounds,
+not one pass.
 
 The reason this is safe when the earlier attempt at host FP was not is
 in [`docs/jit/floating-point.md`](jit/floating-point.md): add, subtract,
@@ -156,6 +168,36 @@ multiply and divide are the operations IEEE 754 specifies *exactly*, so
 the arithmetic never differed. What differed was the NaN convention and
 the exception flags, and both are now the backend's rather than being
 hoped for.
+
+### Against the same source compiled natively
+
+`whetstone.c` built for x86-64 with `gcc -O2` and glibc's libm, same
+`WHET_LOOPS=100`, timing its own measured region:
+
+| | measured region |
+|---|---|
+| native x86-64 | 0.653 ms |
+| RV32 on the JIT | ~85 ms (87 less 2 ms of emulator startup) |
+| RV32 on the interpreter | ~258 ms |
+
+so **130× native on the JIT and 395× on the interpreter**, and 125 MIPS
+against 41 MIPS in guest instructions retired.
+
+**That 130× is not an emulation-overhead figure, and reading it as one
+would be wrong.** Modules 7 and 11 are 99.4% of the guest instruction
+count and are `sinf`/`logf`/`expf`/`sqrtf`, so the two runs do the same
+*benchmark* work through two different libm implementations on two
+different instruction sets: x86-64 has `sqrtss` as one instruction and a
+vectorising compiler above it, where the guest runs newlib's software
+argument reduction compiled for RV32. The emulator is being asked to
+execute far more instructions for the same result, and 130× is the
+product of that and the per-instruction cost.
+
+The figure that isolates the emulator is the second one: **125 million
+guest instructions a second** on this host, with 99.5% of them
+translated. Comparing that against the interpreter's 41 MIPS is the
+like-for-like measurement; comparing either against native measures the
+ISA and the libm as much as the emulator.
 
 **Those figures are eight times better than the ones first recorded
 here, and the change was one flag.** The guest ABI is `ilp32`, which

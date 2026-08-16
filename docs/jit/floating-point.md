@@ -120,20 +120,39 @@ for one linked against a library that has set FTZ.
 
 ## Measured
 
-Whetstone at `WHET_LOOPS=100`, best of five, same tree:
+Whetstone at `WHET_LOOPS=100`, best of twelve, three interleaved rounds:
 
-| | host wall |
-|---|---|
-| everything on the helper | 120 ms |
-| FLW/FSW/FMV lowered | 110 ms |
-| `fmul.s` lowered as well | 94 ms |
+| | host wall | step |
+|---|---|---|
+| everything on the helper | 120 ms | |
+| FLW/FSW/FMV lowered | 110 ms | −8% |
+| `fmul.s` as well | 94 ms | −15% |
+| `fadd.s` as well | 87 ms | −8.5% |
 
-`fptest` 7 ms to 5 ms. CoreMark and Dhrystone unchanged, which is what
-says the framing is not paid by blocks with no float.
+CoreMark unchanged at 8 ms and Dhrystone reporting 2128.3 either way is
+what says the framing is not paid by blocks with no float. `fptest` is
+too short to resolve.
 
-To bring another operation back, do it **one at a time and measure each
-against the F suite** — not the whole table on the argument that the host
-has an FPU. That argument has been wrong here once already.
+Against the same source compiled natively for x86-64 the JIT is 130×,
+but most of that gap is newlib's software transcendentals against
+glibc's on an ISA that has `sqrtss` — see
+[`../performance.md`](../performance.md) for why that number is not an
+emulation-overhead figure. The one that is: **125 million guest
+instructions a second, 99.5% of them translated.**
+
+**Which of the frontend's instructions are lowered is a two-entry table
+in `rv_ir.c`, and it is meant to stay that way.** FSUB.S is funct7 0x04
+and FDIV.S is 0x0C, and neither is in it. Adding one is a line; adding
+one without measuring is how this got to 55/78 the first time. **One at
+a time, each against the F suite, each timed** — not the whole table on
+the argument that the host has an FPU.
+
+**Under about 10%, an A/B needs interleaved rounds.** Best of five had
+Dhrystone — which contains no floating point at all — moving 77 ms to
+71 ms between two binaries differing only in FP lowering. Fifteen
+samples in three rounds gives 72-74 for both, and the guest-side figure
+is 2128.3 to the digit. Layout noise on this host is real; CLAUDE.md
+records ±3% here and 10% on the board.
 
 ## Two things about validating this
 
@@ -146,9 +165,13 @@ result is the loudest signal in this project, and the first thing to
 check when you get one is whether the *instrument* can represent what you
 are looking for.
 
-**The suite passes either way until the awkward input is in it.** All 378
-architecture tests pass with the canonicalisation removed *and* with it
-present, unless the F suite is in the selection: with it, removing the
-canonicalisation fails five tests and they are exactly the five
-`F-fmul.s`. Dropping the box fails 87. Both were confirmed by reverting,
-which is the only thing that says a test covers what it claims.
+**The suite passes either way until the awkward input is in it.**
+Removing the canonicalisation fails exactly the tests for the operations
+that are lowered and nothing else — five `F-fmul.s` when only `fmul.s`
+was lowered, then ten when `fadd.s` joined it, the five `F-fadd.s` being
+the new ones. That the failure set grows by exactly the operation added
+is worth more than the pass: it says the canonicalisation is reached on
+the new path and not merely present. Dropping the box fails 87.
+
+All of it confirmed by reverting, which is the only thing that says a
+test covers what it claims.

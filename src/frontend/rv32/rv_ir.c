@@ -616,16 +616,17 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
          *
          * To make this faster, bring operations back one at a time, each
          * measured against the F suite -- not the whole table on the
-         * argument that the host has an FPU. FMUL.S is the first, and
-         * the reason it can be is that the objection above was never
-         * about *arithmetic*: add, subtract, multiply and divide are the
-         * four operations IEEE 754 specifies exactly, so a compliant
-         * host computes the same bits SoftFloat does. What differed was
-         * everything around them -- which NaN comes out, and which
-         * fflags get raised -- and both are now the backend's job:
-         * canonicalisation after the operation, MXCSR framed across the
-         * block. The rest of the table stays on the helper because the
-         * rest of the table is where hosts genuinely disagree.
+         * argument that the host has an FPU. FMUL.S was the first and
+         * FADD.S the second, and the reason either can be is that the
+         * objection above was never about *arithmetic*: add, subtract,
+         * multiply and divide are the four operations IEEE 754 specifies
+         * exactly, so a compliant host computes the same bits SoftFloat
+         * does. What differed was everything around them -- which NaN
+         * comes out, and which fflags get raised -- and both are now the
+         * backend's job: canonicalisation after the operation, MXCSR
+         * framed across the block. The rest of the table stays on the
+         * helper because the rest of the table is where hosts genuinely
+         * disagree.
          */
         if (f7 == 0x70u && f3 == 0u && rs2 == 0u) {     /* FMV.X.W */
             /*
@@ -645,7 +646,27 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
                               EMU_IR_NO_TEMP, rd, 0u);
             return true;
         }
-        if (f7 == 0x08u) {                              /* FMUL.S */
+        /*
+         * The single-precision arithmetic that is lowered so far. Bit 2
+         * of funct7 is the operation and bits 1..0 are the format, so
+         * `.D` is the same value with bit 0 set and falls through to the
+         * helper -- there is no host lowering for double here, and the
+         * IR is 32 bits wide besides.
+         *
+         * A table with two entries rather than a switch, because adding
+         * the third and fourth is meant to be one line *and one
+         * measurement*: FSUB.S is 0x04 and FDIV.S is 0x0C, and neither
+         * is here until it has been run against the F suite and timed.
+         */
+        static const struct { uint32_t f7; uint8_t op; } k_fp[] = {
+            { 0x00u, (uint8_t)EMU_IR_FADD },
+            { 0x08u, (uint8_t)EMU_IR_FMUL },
+        };
+
+        for (unsigned i = 0; i < sizeof k_fp / sizeof k_fp[0]; i++) {
+            if (f7 != k_fp[i].f7) {
+                continue;
+            }
             /*
              * "dyn" is resolved here, at translation, which is the
              * deliberate arrangement: it lets a backend decline a mode
@@ -660,20 +681,21 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
             const uint32_t rm = (f3 == 7u) ? RV_IR_FRM(cpu) : f3;
 
             if (rm <= EMU_IR_FRM_RMM &&
-                emu_ir_can_lower(EMU_IR_FMUL, (uint8_t)rm)) {
+                emu_ir_can_lower((emu_ir_op_t)k_fp[i].op, (uint8_t)rm)) {
                 const uint16_t x = emu_ir_emit(b, EMU_IR_FGET, RV_IR_BOX,
                                                EMU_IR_NO_TEMP,
                                                EMU_IR_NO_TEMP, rs1, 0u);
                 const uint16_t y = emu_ir_emit(b, EMU_IR_FGET, RV_IR_BOX,
                                                EMU_IR_NO_TEMP,
                                                EMU_IR_NO_TEMP, rs2, 0u);
-                const uint16_t r = emu_ir_emit(b, EMU_IR_FMUL, (uint8_t)rm,
-                                               x, y, 0u, 0u);
+                const uint16_t r = emu_ir_emit(b, (emu_ir_op_t)k_fp[i].op,
+                                               (uint8_t)rm, x, y, 0u, 0u);
 
                 (void)emu_ir_emit(b, EMU_IR_FPUT, RV_IR_BOX, r,
                                   EMU_IR_NO_TEMP, rd, 0u);
                 return true;
             }
+            break;
         }
         return rv_ir_fp_fallback(b, pc, insn);
     }
