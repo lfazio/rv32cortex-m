@@ -113,6 +113,32 @@ static void ppc_reg_write(emu_cpu_t *cpu, unsigned r, uint32_t v)
     }
 }
 
+/*
+ * Guest time. The time base counts up and the decrementer down, both
+ * from this one call -- the platform's tick is the guest's clock, the
+ * same arrangement the other two frontends use.
+ */
+static void ppc_ops_advance_time(emu_cpu_t *cpu, uint32_t ticks)
+{
+    ppc_cpu_advance(cpu_of(cpu), ticks);
+}
+
+static void ppc_ops_set_time(emu_cpu_t *cpu, uint64_t now)
+{
+    ppc_cpu_set_time(cpu_of(cpu), now);
+}
+
+/*
+ * The external input. `level` false is honoured rather than dropped --
+ * unlike the RV32 side, where the APLIC has no lower operation, this
+ * core has no interrupt controller at all, so the line *is* the state.
+ */
+static void ppc_ops_set_irq(emu_cpu_t *cpu, uint32_t source, bool level)
+{
+    (void)source;
+    ppc_cpu_set_ext(cpu_of(cpu), level);
+}
+
 static void ppc_set_syscall(emu_cpu_t *cpu, emu_syscall_fn fn, void *user)
 {
     ppc_cpu_t *c = cpu_of(cpu);
@@ -152,6 +178,10 @@ const emu_cpu_ops_t ppc_frontend = {
     .reg_name  = ppc_reg_name,
     .reg_read  = ppc_reg_read,
     .reg_write = ppc_reg_write,
+
+    .advance_time = ppc_ops_advance_time,
+    .set_time     = ppc_ops_set_time,
+    .set_irq      = ppc_ops_set_irq,
 
     .set_syscall = ppc_set_syscall,
 #if EMU_ENABLE_TRACE

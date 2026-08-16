@@ -381,6 +381,225 @@ static bool load_and_run_vle(const uint16_t *hw, unsigned n, uint32_t budget,
     return true;
 }
 
+/* ------------------------------------------------------------------ */
+/* Time base, decrementer and interrupt delivery                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * These drive the core through its ops rather than through guest code,
+ * because what is under test is what happens *between* instructions --
+ * the platform advancing time and the run loop deciding to interrupt.
+ * A guest program can only observe the result.
+ */
+static ppc_cpu_t *ppc_core(void)
+{
+    return (ppc_cpu_t *)(void *)g_core.cpu;
+}
+
+/*
+ * The decrementer counts down and raises on the **transition** through
+ * zero, not on the value at it.
+ *
+ * Guest time arrives in slices of a run budget, thousands of ticks at a
+ * time, so a decrementer loaded with 10 is stepped far past zero in one
+ * call. An implementation testing `dec == 0` misses it entirely and one
+ * testing `dec <= ticks` without consuming the remainder raises again
+ * on the next slice. Both are the ordinary case here, which is why the
+ * advances below are deliberately larger than the reload.
+ */
+static void test_decrementer_transition(void)
+{
+    const uint16_t prog[] = { 0x4400u };        /* se_nop-ish filler */
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+
+    if (!load_and_run_vle(prog, 1u, 1u, &why, &retired)) {
+        CHECK(false);
+        return;
+    }
+    {
+        ppc_cpu_t *c = ppc_core();
+
+        c->tsr = 0u;
+        c->tcr = 0u;
+        c->dec = 10u;
+
+        /* Short of the transition: nothing. */
+        ppc_cpu_advance(c, 9u);
+        CHECK_EQ(c->dec, 1u);
+        CHECK_EQ(c->tsr & PPC_TSR_DIS, 0u);
+
+        /* Onto it. */
+        ppc_cpu_advance(c, 1u);
+        CHECK_EQ(c->tsr & PPC_TSR_DIS, PPC_TSR_DIS);
+        /* No auto-reload, so it stops rather than wrapping. */
+        CHECK_EQ(c->dec, 0u);
+
+        /* And a stopped decrementer does not raise again. */
+        c->tsr = 0u;
+        ppc_cpu_advance(c, 1000u);
+        CHECK_EQ(c->tsr & PPC_TSR_DIS, 0u);
+
+        /* Stepped *past* zero in one slice: still exactly one raise. */
+        c->dec = 10u;
+        ppc_cpu_advance(c, 5000u);
+        CHECK_EQ(c->tsr & PPC_TSR_DIS, PPC_TSR_DIS);
+
+        /* The time base counted every one of those ticks. */
+        CHECK_EQ((uint32_t)c->tb, 9u + 1u + 1000u + 5000u);
+    }
+}
+
+/*
+ * Auto-reload, and what a long slice does to it.
+ *
+ * TCR[ARE] makes the decrementer periodic from DECAR. A plain reload
+ * would leave DEC above DECAR when one slice spans several periods --
+ * the counter would come back *later* than its own period, which for a
+ * scheduler tick means time running slow in proportion to the slice.
+ */
+static void test_decrementer_autoreload(void)
+{
+    const uint16_t prog[] = { 0x4400u };
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+
+    if (!load_and_run_vle(prog, 1u, 1u, &why, &retired)) {
+        CHECK(false);
+        return;
+    }
+    {
+        ppc_cpu_t *c = ppc_core();
+
+        c->tsr = 0u;
+        c->tcr = PPC_TCR_ARE;
+        c->decar = 100u;
+        c->dec = 100u;
+
+        ppc_cpu_advance(c, 250u);
+        CHECK_EQ(c->tsr & PPC_TSR_DIS, PPC_TSR_DIS);
+        /* 250 into a period of 100 leaves 50 gone, so 50 to run. */
+        CHECK_EQ(c->dec, 50u);
+        CHECK(c->dec <= c->decar);
+    }
+}
+
+/*
+ * TSR[DIS] is set whether or not TCR[DIE] is, and DIE gates only the
+ * *interrupt*. A guest polling TSR with the interrupt disabled is the
+ * ordinary way to use a timer without a handler, and an implementation
+ * that set the flag only when enabled would break it silently.
+ *
+ * MSR[EE] gates both sources, which is Book E's whole masking at this
+ * level -- there is no per-source enable below it.
+ */
+static void test_timer_interrupt_gating(void)
+{
+    const uint16_t prog[] = { 0x4400u };
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+
+    if (!load_and_run_vle(prog, 1u, 1u, &why, &retired)) {
+        CHECK(false);
+        return;
+    }
+    {
+        ppc_cpu_t *c = ppc_core();
+
+        c->tsr = 0u;
+        c->tcr = 0u;                    /* DIE clear */
+        c->dec = 5u;
+        c->msr |= PPC_MSR_EE;
+
+        ppc_cpu_advance(c, 10u);
+        CHECK_EQ(c->tsr & PPC_TSR_DIS, PPC_TSR_DIS);   /* flag set */
+        CHECK_EQ(ppc_cpu_pending_irq(c), -1);          /* but masked */
+
+        c->tcr = PPC_TCR_DIE;
+        CHECK_EQ(ppc_cpu_pending_irq(c), (int)PPC_IVOR_DECREMENTER);
+
+        /* EE clear refuses it however the timer is set up. */
+        c->msr &= ~(uint32_t)PPC_MSR_EE;
+        CHECK_EQ(ppc_cpu_pending_irq(c), -1);
+
+        /* The external input outranks the tick when both are up. */
+        c->msr |= PPC_MSR_EE;
+        ppc_cpu_set_ext(c, true);
+        CHECK_EQ(ppc_cpu_pending_irq(c), (int)PPC_IVOR_EXTERNAL);
+        ppc_cpu_set_ext(c, false);
+        CHECK_EQ(ppc_cpu_pending_irq(c), (int)PPC_IVOR_DECREMENTER);
+    }
+}
+
+/*
+ * The interrupt is actually *taken*, which every check above stops
+ * short of: they all read ppc_cpu_pending_irq, and a run loop that
+ * never consulted it would pass all of them.
+ *
+ * The handler is at IVPR|IVOR10, and the check that it ran is the
+ * register it writes -- plus SRR0, which is where the interrupted pc
+ * has to be for rfi to return.
+ */
+static void test_decrementer_interrupt_taken(void)
+{
+    /*
+     * se_li r7, 1 ; se_li r7, 2 ; ... filler that runs while time
+     * passes. The handler at +0x40 does se_li r6, 9 and se_illegal to
+     * stop, so r6 says it ran and the stop keeps it from running on.
+     */
+    uint16_t prog[64];
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    unsigned k = 0;
+
+    /*
+     * Filled with se_li r7, 0 throughout, including *after* the
+     * handler. The obvious stop -- se_illegal, an all-zero halfword --
+     * is itself an exception, and it overwrote srr0 with the handler's
+     * own pc: the test then read 0x...42 where the interrupted address
+     * belonged and looked like a bug in the interrupt. Harmless filler
+     * lets the budget end the run instead.
+     *
+     * se_li rX, UI5 is 0x4800 | (UI5 << 4) | rX: the immediate is bits
+     * 8:4 and the register the low nibble.
+     */
+    for (k = 0; k < sizeof(prog) / sizeof(prog[0]); k++) {
+        prog[k] = (uint16_t)(0x4800u | 7u);     /* se_li r7, 0 */
+    }
+    prog[0x20] = (uint16_t)(0x4800u | (9u << 4) | 6u);   /* se_li r6, 9 */
+
+    if (!load_and_run_vle(prog, sizeof(prog) / sizeof(prog[0]), 4u, &why,
+                          &retired)) {
+        CHECK(false);
+        return;
+    }
+    {
+        ppc_cpu_t *c = ppc_core();
+
+        c->ivpr = EMU_GUEST_RAM_BASE & 0xFFFF0000u;
+        c->ivor[PPC_IVOR_DECREMENTER] =
+            (EMU_GUEST_RAM_BASE & 0xFFFFu) + 0x40u;
+        c->msr |= PPC_MSR_EE;
+        c->tcr = PPC_TCR_DIE;
+        c->tsr = 0u;
+        c->dec = 2u;
+        c->pc = EMU_GUEST_RAM_BASE;
+        c->r[6] = 0u;
+
+        ppc_cpu_advance(c, 10u);
+        CHECK(c->irq_dirty);
+
+        why = emu_core_run(&g_core, 16u, &retired);
+
+        CHECK_EQ(c->r[6], 9u);          /* the handler ran            */
+        CHECK_EQ(c->srr0, EMU_GUEST_RAM_BASE);  /* and can return     */
+        CHECK((c->msr & PPC_MSR_EE) == 0u);     /* entry cleared EE   */
+        /* TSR[DIS] survives: it is write-1-to-clear by the handler,
+         * which is how a guest tells "took a tick" from "one pending". */
+        CHECK_EQ(c->tsr & PPC_TSR_DIS, PPC_TSR_DIS);
+    }
+}
+
 /*
  * The se_ arithmetic, and the compressed register field.
  *
@@ -736,4 +955,8 @@ void test_ppc(void)
     test_e_forms();
     test_e_sci8_and_lha();
     test_e_i16_and_rotate();
+    test_decrementer_transition();
+    test_decrementer_autoreload();
+    test_timer_interrupt_gating();
+    test_decrementer_interrupt_taken();
 }

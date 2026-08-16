@@ -58,6 +58,30 @@ typedef struct ppc_cpu {
     uint32_t tsr, tcr;
     uint32_t pir, pvr;
 
+    /*
+     * The time base and the decrementer.
+     *
+     * `tb` is volatile because on a target the platform advances it from
+     * an ARM interrupt handler while the run loop is executing -- the
+     * same reason the G4MH INTC's counter is.
+     *
+     * The decrementer is a *separate* counter and not a view of the time
+     * base: it counts down at the same rate but is reloaded, written and
+     * stopped independently, and modelling it as `some_base - tb` breaks
+     * the moment a guest writes DEC.
+     */
+    volatile uint64_t tb;
+    uint32_t dec;
+    uint32_t decar;
+
+    /*
+     * The external interrupt input, level. Set by the platform through
+     * set_irq and cleared by the guest's interrupt controller -- there
+     * is none here, so it is cleared when the interrupt is taken, which
+     * is what a single edge-triggered source looks like.
+     */
+    volatile bool ext_pending;
+
     /* --- counters --- */
     uint64_t cycles;
     uint64_t retired;
@@ -111,6 +135,34 @@ void ppc_cpu_reset(ppc_cpu_t *c, uint32_t reset_pc);
  * IVORs vectors to address zero rather than to something recognisable.
  */
 void ppc_cpu_exception(ppc_cpu_t *c, ppc_ivor_t which, uint32_t ret_pc);
+
+/* ------------------------------------------------------------------ */
+/* Time base, decrementer and the interrupts they raise                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Advance guest time by `ticks`.
+ *
+ * The time base counts up and the decrementer counts down, both at the
+ * same rate, and DEC's 1 -> 0 transition is what sets TSR[DIS]. "The
+ * transition" and not "the value" is the whole rule: a decrementer
+ * already at zero does not keep raising, and one stepped *past* zero by
+ * a long slice raises exactly once. Guest time arrives here in chunks
+ * of a run budget, so both of those are the ordinary case rather than
+ * corners.
+ */
+void ppc_cpu_advance(ppc_cpu_t *c, uint32_t ticks);
+void ppc_cpu_set_time(ppc_cpu_t *c, uint64_t now);
+
+/* The external input, level. */
+void ppc_cpu_set_ext(ppc_cpu_t *c, bool level);
+
+/*
+ * The interrupt to take, or -1. Honours MSR[EE], which gates both
+ * sources -- Book E has no per-source mask below the enable bit, so a
+ * guest running with EE clear takes neither.
+ */
+int ppc_cpu_pending_irq(const ppc_cpu_t *c);
 
 /* ------------------------------------------------------------------ */
 /* Memory                                                              */

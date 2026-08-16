@@ -99,6 +99,42 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
             break;
         }
 
+        /* --- interrupts -------------------------------------------- */
+        if (EMU_UNLIKELY(c->irq_dirty)) {
+            /*
+             * Cleared before the evaluation, not after: on a target the
+             * platform raises the external input from an ARM handler,
+             * and a set performed while we are deciding would otherwise
+             * be overwritten and lost until something else dirtied the
+             * flag again. Same rule as both other frontends.
+             */
+            c->irq_dirty = false;
+
+            const int which = ppc_cpu_pending_irq(c);
+            if (which >= 0) {
+                c->state = EMU_STATE_RUNNING;
+                /*
+                 * The external input is edge-like here because there is
+                 * no interrupt controller to hold it: taking the
+                 * interrupt consumes it. A part with an INTC would
+                 * instead leave it asserted until the guest wrote that
+                 * controller's acknowledge register.
+                 *
+                 * TSR[DIS] is *not* cleared -- it is write-1-to-clear
+                 * by the handler, which is how a guest distinguishes
+                 * "I took a tick" from "a tick is pending".
+                 */
+                if (which == (int)PPC_IVOR_EXTERNAL) {
+                    c->ext_pending = false;
+                }
+                c->pc = pc;
+                ppc_cpu_exception(c, (ppc_ivor_t)which, pc);
+                pc = c->pc;
+                done++;
+                continue;
+            }
+        }
+
         /* --- fetch ------------------------------------------------- */
         uint16_t w0;
         emu_fault_t f = emu_bus_fetch16(c->bus, pc, &w0);
@@ -757,7 +793,15 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 const uint32_t sprf = (insn >> 11) & 0x3FFu;
                 const uint32_t spr = ((sprf & 0x1Fu) << 5) | ((sprf >> 5) & 0x1Fu);
                 const bool store = ppc_xo10(insn) == 0x1D3u;
-                uint32_t *slot;
+                /*
+                 * NULL for the registers that are not a plain slot --
+                 * TSR is write-1-to-clear and the time base is split
+                 * across two SPR numbers per direction. They do their
+                 * own work in the switch and leave this null, and the
+                 * common transfer below is skipped rather than reading
+                 * an uninitialised pointer.
+                 */
+                uint32_t *slot = NULL;
 
                 switch (spr) {
                 case PPC_SPR_XER:   slot = &c->xer;   break;
@@ -772,6 +816,63 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 case PPC_SPR_IVPR:  slot = &c->ivpr;  break;
                 case PPC_SPR_PIR:   slot = &c->pir;   break;
                 case PPC_SPR_PVR:   slot = &c->pvr;   break;
+                case PPC_SPR_DECAR: slot = &c->decar; break;
+                case PPC_SPR_TCR:   slot = &c->tcr;   break;
+
+                /*
+                 * The four below are not plain slots, so they are
+                 * handled here and not through `slot`. Giving them one
+                 * would make mtspr a store and lose the side effect
+                 * each of them has -- which is the whole content of the
+                 * register.
+                 */
+                case PPC_SPR_TSR:
+                    if (store) {
+                        /* Write-1-to-clear. A guest acknowledging its
+                         * tick writes the bit it saw set, and treating
+                         * that as a plain store would *set* every other
+                         * status bit it happened to read back. */
+                        c->tsr &= ~c->r[ppc_rd(insn)];
+                    } else {
+                        c->r[ppc_rd(insn)] = c->tsr;
+                    }
+                    c->irq_dirty = true;
+                    break;
+
+                case PPC_SPR_DEC:
+                    if (store) {
+                        c->dec = c->r[ppc_rd(insn)];
+                    } else {
+                        c->r[ppc_rd(insn)] = c->dec;
+                    }
+                    break;
+
+                case PPC_SPR_TBL_R:
+                case PPC_SPR_TBU_R:
+                    /* Read-only at these numbers; a write is to 284/285
+                     * and lands in the two cases below. */
+                    if (store) {
+                        EXC(PPC_IVOR_PROGRAM);
+                    }
+                    c->r[ppc_rd(insn)] = (spr == PPC_SPR_TBL_R)
+                                       ? (uint32_t)c->tb
+                                       : (uint32_t)(c->tb >> 32);
+                    break;
+
+                case PPC_SPR_TBL_W:
+                case PPC_SPR_TBU_W:
+                    if (!store) {
+                        EXC(PPC_IVOR_PROGRAM);
+                    }
+                    if (spr == PPC_SPR_TBL_W) {
+                        c->tb = (c->tb & UINT64_C(0xFFFFFFFF00000000)) |
+                                c->r[ppc_rd(insn)];
+                    } else {
+                        c->tb = (c->tb & UINT64_C(0xFFFFFFFF)) |
+                                ((uint64_t)c->r[ppc_rd(insn)] << 32);
+                    }
+                    break;
+
                 default:
                     if (spr >= PPC_SPR_SPRG0 && spr < PPC_SPR_SPRG0 + 8u) {
                         slot = &c->sprg[spr - PPC_SPR_SPRG0];
@@ -787,6 +888,9 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                     break;
                 }
 
+                if (slot == NULL) {
+                    break;                  /* handled in the switch */
+                }
                 if (store) {
                     /* PVR and PIR identify the part and the core; a
                      * write is architecturally ignored rather than

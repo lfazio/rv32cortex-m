@@ -74,6 +74,37 @@ extern "C" {
 #define PPC_SPR_DBCR0       308u
 #define PPC_SPR_TSR         336u
 #define PPC_SPR_TCR         340u
+/*
+ * The timer facility. Book E gives the time base two SPR numbers each,
+ * because reading and writing it are different privileges: 268/269 are
+ * the user-readable TBL/TBU and 284/285 the supervisor-writable ones.
+ * A guest that writes 268 is not writing the time base, it is taking a
+ * program interrupt -- so the two pairs are separate constants and not
+ * one with a comment.
+ */
+#define PPC_SPR_DEC         22u
+#define PPC_SPR_DECAR       54u
+#define PPC_SPR_TBL_R       268u
+#define PPC_SPR_TBU_R       269u
+#define PPC_SPR_TBL_W       284u
+#define PPC_SPR_TBU_W       285u
+
+/*
+ * TSR and TCR, with Book E's bit numbers in the comments and masks in
+ * the code -- the same discipline as MSR above, and for the same
+ * reason: these are numbered from the left, so TSR[DIS] at bit 4 is
+ * mask 1 << 27.
+ */
+#define PPC_TSR_ENW         (1u << 31)   /* bit  0: next watchdog        */
+#define PPC_TSR_WIS         (1u << 30)   /* bit  1: watchdog             */
+#define PPC_TSR_DIS         (1u << 27)   /* bit  4: decrementer          */
+#define PPC_TSR_FIS         (1u << 26)   /* bit  5: fixed interval       */
+
+#define PPC_TCR_WIE         (1u << 27)   /* bit  4: watchdog enable      */
+#define PPC_TCR_DIE         (1u << 26)   /* bit  5: decrementer enable   */
+#define PPC_TCR_FIE         (1u << 23)   /* bit  8: fixed-interval en    */
+#define PPC_TCR_ARE         (1u << 22)   /* bit  9: auto-reload          */
+
 #define PPC_SPR_IVOR0       400u   /* .. IVOR15 at 415                   */
 #define PPC_SPR_SPRG0       272u   /* .. SPRG7                           */
 

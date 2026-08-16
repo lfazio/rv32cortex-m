@@ -96,6 +96,95 @@ void ppc_cpu_exception(ppc_cpu_t *c, ppc_ivor_t which, uint32_t ret_pc)
 }
 
 /* ------------------------------------------------------------------ */
+/* Time base, decrementer and the interrupts they raise                */
+/* ------------------------------------------------------------------ */
+
+void ppc_cpu_set_time(ppc_cpu_t *c, uint64_t now)
+{
+    ppc_cpu_advance(c, (uint32_t)(now - c->tb));
+}
+
+void ppc_cpu_advance(ppc_cpu_t *c, uint32_t ticks)
+{
+    if (ticks == 0u) {
+        return;
+    }
+    c->tb += ticks;
+
+    /*
+     * The decrementer, and the rule that matters is the **transition**
+     * through zero rather than the value at it.
+     *
+     * A slice is thousands of ticks, so a decrementer loaded with ten
+     * is stepped far past zero in one call: testing `dec == 0` would
+     * miss it entirely, and testing `dec <= ticks` without consuming
+     * the remainder would raise again on the next slice. Both are the
+     * ordinary case here, not corners -- guest time never arrives one
+     * tick at a time.
+     */
+    if (c->dec != 0u) {
+        if (c->dec > ticks) {
+            c->dec -= ticks;
+        } else {
+            const uint32_t past = ticks - c->dec;
+
+            c->tsr |= PPC_TSR_DIS;
+            if ((c->tcr & PPC_TCR_ARE) != 0u && c->decar != 0u) {
+                /*
+                 * Auto-reload. The modulo keeps a long slice from
+                 * leaving DEC above DECAR, which a plain reload would:
+                 * the counter is meant to be periodic and one slice may
+                 * span several periods.
+                 */
+                c->dec = c->decar - (past % c->decar);
+            } else {
+                c->dec = 0u;   /* stopped until software reloads it */
+            }
+            c->irq_dirty = true;
+        }
+    }
+}
+
+void ppc_cpu_set_ext(ppc_cpu_t *c, bool level)
+{
+    c->ext_pending = level;
+    if (level) {
+        c->irq_dirty = true;
+    }
+}
+
+int ppc_cpu_pending_irq(const ppc_cpu_t *c)
+{
+    /*
+     * MSR[EE] gates both, which is the whole of Book E's masking at
+     * this level: there is no per-source enable below it, so a guest
+     * running with EE clear takes neither however its timer is set up.
+     */
+    if ((c->msr & PPC_MSR_EE) == 0u) {
+        return -1;
+    }
+    /*
+     * External first. Book E does not order them, and a real part has a
+     * controller deciding; the choice here is that a device asking for
+     * attention outranks a periodic tick, which is what a controller
+     * with default priorities would do.
+     */
+    if (c->ext_pending) {
+        return (int)PPC_IVOR_EXTERNAL;
+    }
+    /*
+     * The decrementer interrupt needs TSR[DIS] *and* TCR[DIE]. DIS is
+     * set by the hardware whether or not DIE is, so a guest polling TSR
+     * with interrupts off still sees the tick -- which is what DIE
+     * gating the interrupt rather than the flag means.
+     */
+    if ((c->tsr & PPC_TSR_DIS) != 0u && (c->tcr & PPC_TCR_DIE) != 0u) {
+        return (int)PPC_IVOR_DECREMENTER;
+    }
+    return -1;
+}
+
+/* ------------------------------------------------------------------ */
 /* Memory                                                              */
 /* ------------------------------------------------------------------ */
 
