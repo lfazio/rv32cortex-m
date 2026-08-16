@@ -654,11 +654,12 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
          * IR is 32 bits wide besides.
          *
          * A table rather than a switch, because each entry was one line
-         * *and one measurement*: the four went in one at a time, each
-         * run against the F suite and timed, in the order that put the
-         * biggest first. FSQRT.S is deliberately absent -- it is the
-         * fifth exact operation and the backend can lower it, but the
-         * frontend has never been shown a guest where it pays.
+         * *and one measurement*: they went in one at a time, each run
+         * against the F suite and timed, in the order that put the
+         * biggest first. FSQRT.S is the fifth and is not in the table
+         * because it is unary -- the loop below reads rs2 as an operand,
+         * and for FSQRT that field is an opcode extension that must be
+         * zero. It is in its own case underneath.
          */
         static const struct { uint32_t f7; uint8_t op; } k_fp[] = {
             { 0x00u, (uint8_t)EMU_IR_FADD },
@@ -700,6 +701,29 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
                 return true;
             }
             break;
+        }
+
+        if (f7 == 0x2Cu && rs2 == 0u) {                 /* FSQRT.S */
+            /*
+             * The fifth exact operation, and the one whose rs2 field is
+             * an opcode extension rather than an operand -- a non-zero
+             * rs2 here is not FSQRT at all and goes to the helper, which
+             * is where illegal-instruction is decided.
+             */
+            const uint32_t rm = (f3 == 7u) ? RV_IR_FRM(cpu) : f3;
+
+            if (rm <= EMU_IR_FRM_RMM &&
+                emu_ir_can_lower(EMU_IR_FSQRT, (uint8_t)rm)) {
+                const uint16_t x = emu_ir_emit(b, EMU_IR_FGET, RV_IR_BOX,
+                                               EMU_IR_NO_TEMP,
+                                               EMU_IR_NO_TEMP, rs1, 0u);
+                const uint16_t r = emu_ir_emit(b, EMU_IR_FSQRT, (uint8_t)rm,
+                                               x, EMU_IR_NO_TEMP, 0u, 0u);
+
+                (void)emu_ir_emit(b, EMU_IR_FPUT, RV_IR_BOX, r,
+                                  EMU_IR_NO_TEMP, rd, 0u);
+                return true;
+            }
         }
         return rv_ir_fp_fallback(b, pc, insn);
     }

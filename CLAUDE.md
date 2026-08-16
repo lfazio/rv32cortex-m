@@ -183,20 +183,32 @@ session, and every one of them recurred:
   - **flags.** MXCSR framed per block, mapped through a table, handed
     over once at the exit -- which already existed and was correct.
 
-  Whetstone 120ms to 74ms across five steps, while CoreMark stays at 8ms
+  Whetstone 120ms to 74ms across six steps, while CoreMark stays at 8ms
   and Dhrystone reports 2128.3 to the digit -- which is what says blocks
   with no float pay nothing. Policy, the full table and the boxing rules
   are in [`docs/jit/floating-point.md`](docs/jit/floating-point.md).
 
   **What each step was worth is its dynamic frequency, and that has to
   be measured too.** Histogramming 500k instructions from the middle of
-  a run gave FP at 14.2%, of which `fmul.s` 4.33%, `fsub.s` 2.32%,
-  `fadd.s` 1.49% and `fdiv.s` **0.15%** -- and the gains came out 15%,
-  12%, 9% and **0%**, in that order. `fdiv.s` is 29x rarer than
-  `fmul.s`; it is kept because it is one line and five arch tests cover
-  it, but no guest here can measure it and quoting a figure for it would
-  be noise with a number on it. Ask the histogram which instruction to
-  do next, exactly as the pair stats answered the fusion question.
+  a run gave FP at 14.2%, and the gains fell out in frequency order:
+
+  | | share of executed | gain |
+  |---|---|---|
+  | `fmul.s` | 4.33% | 15% |
+  | `fsub.s` | 2.32% | 12% |
+  | `fadd.s` | 1.49% | 9% |
+  | `fdiv.s` | 0.15% | **0%** |
+  | `fsqrt.s` | 0.087% | **0%** |
+
+  The last two are below the floor, and by the time `fsqrt.s` was
+  reached that was *predicted from the histogram before it was timed* --
+  which is the useful part. Both are kept: each is one case, each is
+  covered by arch tests that fail without the canonicalisation, and
+  division and square root are the two most expensive SoftFloat
+  operations. But no guest here can measure them and quoting a figure
+  would be noise with a number on it. **Ask the histogram which
+  instruction to do next**, exactly as the pair stats answered the
+  fusion question -- and accept the answer when it says "none".
 
   **Emitted code grew while the clock fell** -- 158,208 bytes to 164,572
   -- because a native FP sequence is longer than a call and the call was

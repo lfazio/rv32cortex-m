@@ -24,12 +24,12 @@ whole and only the arithmetic becomes a call.
 So the default answer to "should this go to the host FPU" is no, and the
 burden of proof is on the exception.
 
-## The exception: the four exact operations
+## The exception: the five exact operations
 
 Add, subtract, multiply, divide and square root are the operations IEEE
 754 specifies **exactly** — one correctly rounded result, no
 implementation freedom. A compliant host computes the same bits SoftFloat
-does, bit for bit, for every finite input.
+does, bit for bit, for every finite input. All five are lowered.
 
 The 23 failures above were therefore never about *arithmetic*. They were
 about everything around it, and there are exactly two things:
@@ -85,7 +85,7 @@ asymmetry is the architecture's:
 | `FSW` | **raw** | — |
 | `FMV.X.W` | **raw** | — |
 | `FMV.W.X` | — | boxed |
-| `fmul.s` | boxed | boxed |
+| the five arithmetic | boxed | boxed |
 
 A store and an `FMV.X.W` move *bits*; putting either through the
 unboxing read would turn an unboxed register into a canonical NaN, and
@@ -132,30 +132,36 @@ sample from the middle of a run, and it is what predicts the fourth:
 | `fadd.s` as well | 85 ms | −9% | 1.49% |
 | `fsub.s` as well | 74 ms | −12% | 2.32% |
 | `fdiv.s` as well | 74 ms | **0%** | 0.15% |
+| `fsqrt.s` as well | 74 ms | **0%** | 0.087% |
 
-FP is 14.2% of that sample. `fdiv.s` is 29× rarer than `fmul.s` and
-does not move the clock at all — it stays lowered because it is one
-line, five architecture tests cover it, and division is the *most*
-expensive SoftFloat operation, but **no guest in this tree can measure
-it** and any figure quoted for it would be noise with a number on it.
+FP is 14.2% of that sample. The last two are below the floor and were
+predicted to be from the histogram *before* being timed, which is the
+more useful result: `fdiv.s` is 29× rarer than `fmul.s`, and `fsqrt.s`
+runs 9,300 times in 10,664,954 — under a millisecond saved against a
+73-78 ms run-to-run spread. Both stay lowered because each is one case,
+each is covered by architecture tests that fail without the
+canonicalisation, and division and square root are the two most
+expensive SoftFloat operations. But **no guest in this tree can measure
+them** and any figure quoted would be noise with a number on it.
 
 CoreMark unchanged at 8 ms and Dhrystone reporting 2128.3 throughout is
 what says the framing is not paid by blocks with no float. `fptest` is
 too short to resolve.
 
-**Emitted code grows while the clock falls** — 158,208 bytes to 164,572
-across the last two steps, because a native FP sequence is longer than a
-call. The call was the expensive part. That is the reverse of the 12 KB
+**Emitted code grows while the clock falls** — 158,208 bytes to 164,676
+across the last three steps, because a native FP sequence is longer than
+a call. The call was the expensive part. That is the reverse of the 12 KB
 Thumb-2 cache's rule, and a reminder that "code size sets performance"
 is a statement about *that* cache, not about JITs.
 
 **Which of the frontend's instructions are lowered is a table in
 `rv_ir.c`, and its shape is the discipline.** Four entries, added one at
 a time, each run against the F suite and timed before the next.
-`FSQRT.S` is deliberately still absent: the backend can lower it, and
-nothing has shown a guest where it pays. **One at a time, each against
-the F suite, each timed** — not the whole table on the argument that the
-host has an FPU.
+`FSQRT.S` is the fifth and sits in its own case beside the table rather
+than in it, because it is unary: the loop reads `rs2` as an operand, and
+for `FSQRT` that field is an opcode extension that must be zero. **One
+at a time, each against the F suite, each timed** — not the whole table
+on the argument that the host has an FPU.
 
 **Under about 10%, an A/B needs interleaved rounds.** Best of five had
 Dhrystone — which contains no floating point at all — moving 77 ms to
@@ -177,12 +183,19 @@ are looking for.
 
 **The suite passes either way until the awkward input is in it.**
 Removing the canonicalisation fails exactly the tests for the operations
-that are lowered and nothing else: five with `fmul.s` alone, ten with
-`fadd.s`, twenty with `fsub.s` and `fdiv.s` — five each of `F-fadd.s`,
-`F-fsub.s`, `F-fmul.s` and `F-fdiv.s`, and nothing outside those four.
-That the failure set grows by *exactly* the operation added is worth
-more than the pass: it says the canonicalisation is reached on the new
-path and not merely present. Dropping the box fails 87.
+that are lowered and nothing else: 5 with `fmul.s` alone, 10 with
+`fadd.s`, 20 with `fsub.s` and `fdiv.s`, 21 with `fsqrt.s`. That the
+failure set grows by *exactly* the operation added is worth more than
+the pass — it says the canonicalisation is reached on the new path and
+not merely present. Dropping the box fails 87.
+
+**`fsqrt.s` adds one and not five, because the suite has one
+`F-fsqrt.s` where the others have five each.** So its awkward input is
+carried by `test_lower_fp_nan_canonical` rather than by the suite, and
+that input is `sqrt(-1)`: x86 answers with the real indefinite
+`0xFFC00000`, which differs from the canonical NaN **in the sign bit
+alone**. Of the five operations it is the one whose wrong answer looks
+most like a right one.
 
 All of it confirmed by reverting, which is the only thing that says a
 test covers what it claims.

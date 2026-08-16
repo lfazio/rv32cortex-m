@@ -150,27 +150,42 @@ apart:
 | `fadd.s` as well | 85 ms | −9% | 1.49% |
 | `fsub.s` as well | 74 ms | −12% | 2.32% |
 | `fdiv.s` as well | 74 ms | **0%** | 0.15% |
+| `fsqrt.s` as well | 74 ms | **0%** | 0.087% |
 
 **The last column is the whole explanation, and it is the one that has
-to be measured rather than assumed.** The fourth column is the
-instruction's share of a 500,003-instruction sample taken from the
-middle of a run (`--trace-skip 3000000 --trace-count 500000` on a
-`-DEMU_ENABLE_TRACE=ON` build, histogrammed by mnemonic). Floating point
-is 14.2% of the sample; `fdiv.s` is 0.15% of it, **29× rarer than
-`fmul.s`**, and no amount of making it faster shows up in a wall clock.
+to be measured rather than assumed.** It is the instruction's share of a
+500,003-instruction sample taken from the middle of a run
+(`--trace-skip 3000000 --trace-count 500000` on a `-DEMU_ENABLE_TRACE=ON`
+build, histogrammed by mnemonic). Floating point is 14.2% of the sample.
 
-`fdiv.s` stays lowered anyway: it is one line, it is covered by five
-architecture tests that fail without the canonicalisation, and division
-is the *most* expensive SoftFloat operation, so a guest that divides
-would see it. But nothing in this project's guest set can measure it,
-and a figure quoted for it here would be noise with a number on it.
+The last two rows are below the floor and were *predicted* to be, which
+is the more useful result. `fdiv.s` is 29× rarer than `fmul.s`;
+`fsqrt.s` is executed 9,300 times in 10,664,954, and at a plausible
+couple of hundred host cycles saved per call that is under a millisecond
+against a run-to-run spread of 73-78 ms. The prediction was made from
+the histogram before the timing was taken, and the timing agreed:
+73 ms against 74 ms, with the spread *within* each binary wider than the
+difference between them.
+
+Both stay lowered: each is one case, each is covered by architecture
+tests that fail without the canonicalisation, and division and square
+root are the two most expensive SoftFloat operations, so a guest that
+leans on either would see it. But nothing in this project's guest set
+can measure them, and a figure quoted here would be noise with a number
+on it.
+
+**`fsqrt.s` also has the thinnest suite coverage of the five** — one
+`F-fsqrt.s` test where the others have five each — so
+`test_lower_fp_nan_canonical` is carrying it, and that is where its
+awkward input lives: `sqrt(-1)` is the one case whose wrong answer
+(x86's `0xFFC00000`) differs from the right one in the sign bit alone.
 
 CoreMark is unchanged at 8 ms and Dhrystone reports 2128.3 to the digit
 throughout, which is the check that the MXCSR framing is not being paid
 by blocks with no float in them. `fptest` is too short to resolve.
 
-**Emitted code grows while the clock falls**: 158,208 bytes to 164,572
-across the last two steps, because a native FP sequence is longer than
+**Emitted code grows while the clock falls**: 158,208 bytes to 164,676
+across the last three steps, because a native FP sequence is longer than
 a call. The call was the expensive part, not the bytes — which is the
 opposite of the rule for the 12 KB Thumb-2 cache, and is why that rule
 is stated as being about *that* cache rather than about JITs.
