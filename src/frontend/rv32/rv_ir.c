@@ -653,14 +653,18 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
          * helper -- there is no host lowering for double here, and the
          * IR is 32 bits wide besides.
          *
-         * A table with two entries rather than a switch, because adding
-         * the third and fourth is meant to be one line *and one
-         * measurement*: FSUB.S is 0x04 and FDIV.S is 0x0C, and neither
-         * is here until it has been run against the F suite and timed.
+         * A table rather than a switch, because each entry was one line
+         * *and one measurement*: the four went in one at a time, each
+         * run against the F suite and timed, in the order that put the
+         * biggest first. FSQRT.S is deliberately absent -- it is the
+         * fifth exact operation and the backend can lower it, but the
+         * frontend has never been shown a guest where it pays.
          */
         static const struct { uint32_t f7; uint8_t op; } k_fp[] = {
             { 0x00u, (uint8_t)EMU_IR_FADD },
+            { 0x04u, (uint8_t)EMU_IR_FSUB },
             { 0x08u, (uint8_t)EMU_IR_FMUL },
+            { 0x0Cu, (uint8_t)EMU_IR_FDIV },
         };
 
         for (unsigned i = 0; i < sizeof k_fp / sizeof k_fp[0]; i++) {

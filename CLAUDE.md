@@ -183,16 +183,27 @@ session, and every one of them recurred:
   - **flags.** MXCSR framed per block, mapped through a table, handed
     over once at the exit -- which already existed and was correct.
 
-  Whetstone 120ms to 87ms across three steps -- the FP moves 8%,
-  `fmul.s` 15%, `fadd.s` 8.5% -- while CoreMark stays at 8ms and
-  Dhrystone reports 2128.3 to the digit, which is what says blocks with
-  no float pay nothing. Policy, the full table and the boxing rules are
-  in [`docs/jit/floating-point.md`](docs/jit/floating-point.md). The
-  advice above stands unchanged: **one operation at a time, each
-  measured against the F suite.** FSUB.S and FDIV.S are deliberately
-  still on the helper; each is one line and one measurement.
+  Whetstone 120ms to 74ms across five steps, while CoreMark stays at 8ms
+  and Dhrystone reports 2128.3 to the digit -- which is what says blocks
+  with no float pay nothing. Policy, the full table and the boxing rules
+  are in [`docs/jit/floating-point.md`](docs/jit/floating-point.md).
 
-  Four things about doing it are worth keeping.
+  **What each step was worth is its dynamic frequency, and that has to
+  be measured too.** Histogramming 500k instructions from the middle of
+  a run gave FP at 14.2%, of which `fmul.s` 4.33%, `fsub.s` 2.32%,
+  `fadd.s` 1.49% and `fdiv.s` **0.15%** -- and the gains came out 15%,
+  12%, 9% and **0%**, in that order. `fdiv.s` is 29x rarer than
+  `fmul.s`; it is kept because it is one line and five arch tests cover
+  it, but no guest here can measure it and quoting a figure for it would
+  be noise with a number on it. Ask the histogram which instruction to
+  do next, exactly as the pair stats answered the fusion question.
+
+  **Emitted code grew while the clock fell** -- 158,208 bytes to 164,572
+  -- because a native FP sequence is longer than a call and the call was
+  the expensive part. "Code size sets performance" is a statement about
+  the 12 KB Thumb-2 cache, not about JITs.
+
+  Five things about doing it are worth keeping.
 
   **`xlat` and `interp` cannot see this A/B, because a helper call is a
   translation and so is a native lowering.** Both arms reported

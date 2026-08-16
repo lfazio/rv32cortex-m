@@ -120,32 +120,42 @@ for one linked against a library that has set FTZ.
 
 ## Measured
 
-Whetstone at `WHET_LOOPS=100`, best of twelve, three interleaved rounds:
+Whetstone at `WHET_LOOPS=100`, best of twelve, three interleaved rounds.
+The last column is the instruction's share of a 500,003-instruction
+sample from the middle of a run, and it is what predicts the fourth:
 
-| | host wall | step |
-|---|---|---|
-| everything on the helper | 120 ms | |
-| FLW/FSW/FMV lowered | 110 ms | −8% |
-| `fmul.s` as well | 94 ms | −15% |
-| `fadd.s` as well | 87 ms | −8.5% |
+| | host wall | step | share of executed |
+|---|---|---|---|
+| everything on the helper | 120 ms | | |
+| FLW/FSW/FMV lowered | 110 ms | −8% | 5.3% |
+| `fmul.s` as well | 94 ms | −15% | 4.33% |
+| `fadd.s` as well | 85 ms | −9% | 1.49% |
+| `fsub.s` as well | 74 ms | −12% | 2.32% |
+| `fdiv.s` as well | 74 ms | **0%** | 0.15% |
 
-CoreMark unchanged at 8 ms and Dhrystone reporting 2128.3 either way is
+FP is 14.2% of that sample. `fdiv.s` is 29× rarer than `fmul.s` and
+does not move the clock at all — it stays lowered because it is one
+line, five architecture tests cover it, and division is the *most*
+expensive SoftFloat operation, but **no guest in this tree can measure
+it** and any figure quoted for it would be noise with a number on it.
+
+CoreMark unchanged at 8 ms and Dhrystone reporting 2128.3 throughout is
 what says the framing is not paid by blocks with no float. `fptest` is
 too short to resolve.
 
-Against the same source compiled natively for x86-64 the JIT is 130×,
-but most of that gap is newlib's software transcendentals against
-glibc's on an ISA that has `sqrtss` — see
-[`../performance.md`](../performance.md) for why that number is not an
-emulation-overhead figure. The one that is: **125 million guest
-instructions a second, 99.5% of them translated.**
+**Emitted code grows while the clock falls** — 158,208 bytes to 164,572
+across the last two steps, because a native FP sequence is longer than a
+call. The call was the expensive part. That is the reverse of the 12 KB
+Thumb-2 cache's rule, and a reminder that "code size sets performance"
+is a statement about *that* cache, not about JITs.
 
-**Which of the frontend's instructions are lowered is a two-entry table
-in `rv_ir.c`, and it is meant to stay that way.** FSUB.S is funct7 0x04
-and FDIV.S is 0x0C, and neither is in it. Adding one is a line; adding
-one without measuring is how this got to 55/78 the first time. **One at
-a time, each against the F suite, each timed** — not the whole table on
-the argument that the host has an FPU.
+**Which of the frontend's instructions are lowered is a table in
+`rv_ir.c`, and its shape is the discipline.** Four entries, added one at
+a time, each run against the F suite and timed before the next.
+`FSQRT.S` is deliberately still absent: the backend can lower it, and
+nothing has shown a guest where it pays. **One at a time, each against
+the F suite, each timed** — not the whole table on the argument that the
+host has an FPU.
 
 **Under about 10%, an A/B needs interleaved rounds.** Best of five had
 Dhrystone — which contains no floating point at all — moving 77 ms to
@@ -167,11 +177,12 @@ are looking for.
 
 **The suite passes either way until the awkward input is in it.**
 Removing the canonicalisation fails exactly the tests for the operations
-that are lowered and nothing else — five `F-fmul.s` when only `fmul.s`
-was lowered, then ten when `fadd.s` joined it, the five `F-fadd.s` being
-the new ones. That the failure set grows by exactly the operation added
-is worth more than the pass: it says the canonicalisation is reached on
-the new path and not merely present. Dropping the box fails 87.
+that are lowered and nothing else: five with `fmul.s` alone, ten with
+`fadd.s`, twenty with `fsub.s` and `fdiv.s` — five each of `F-fadd.s`,
+`F-fsub.s`, `F-fmul.s` and `F-fdiv.s`, and nothing outside those four.
+That the failure set grows by *exactly* the operation added is worth
+more than the pass: it says the canonicalisation is reached on the new
+path and not merely present. Dropping the box fails 87.
 
 All of it confirmed by reverting, which is the only thing that says a
 test covers what it claims.

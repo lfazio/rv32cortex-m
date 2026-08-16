@@ -125,11 +125,11 @@ the emulator.
 
 | | KIPS (guest) | host wall |
 |---|---|---|
-| RV32, interpreter | 937.9 | 260 ms |
-| RV32, JIT | 938.0 | 87 ms |
+| RV32, interpreter | 937.9 | 254 ms |
+| RV32, JIT | 938.0 | 75 ms |
 
 at `WHET_LOOPS=100`, which is 10 million Whetstone instructions and
-10,664,956 guest instructions. **The JIT is 3.0× faster in real time and
+10,664,956 guest instructions. **The JIT is 3.4× faster in real time and
 identical in the reported rate** — that pair of numbers is the clearest
 statement on this page of what these two clocks each measure.
 
@@ -142,18 +142,38 @@ The JIT figure was 120 ms while every FP instruction went to SoftFloat.
 Best of twelve, three interleaved rounds, same tree, one table entry
 apart:
 
-| | host wall | step |
-|---|---|---|
-| everything on the helper | 120 ms | |
-| FLW/FSW/FMV lowered | 110 ms | −8% |
-| `fmul.s` as well | 94 ms | −15% |
-| `fadd.s` as well | 87 ms | −8.5% |
+| | host wall | step | share of executed |
+|---|---|---|---|
+| everything on the helper | 120 ms | | |
+| FLW/FSW/FMV lowered | 110 ms | −8% | 5.3% |
+| `fmul.s` as well | 94 ms | −15% | 4.33% |
+| `fadd.s` as well | 85 ms | −9% | 1.49% |
+| `fsub.s` as well | 74 ms | −12% | 2.32% |
+| `fdiv.s` as well | 74 ms | **0%** | 0.15% |
+
+**The last column is the whole explanation, and it is the one that has
+to be measured rather than assumed.** The fourth column is the
+instruction's share of a 500,003-instruction sample taken from the
+middle of a run (`--trace-skip 3000000 --trace-count 500000` on a
+`-DEMU_ENABLE_TRACE=ON` build, histogrammed by mnemonic). Floating point
+is 14.2% of the sample; `fdiv.s` is 0.15% of it, **29× rarer than
+`fmul.s`**, and no amount of making it faster shows up in a wall clock.
+
+`fdiv.s` stays lowered anyway: it is one line, it is covered by five
+architecture tests that fail without the canonicalisation, and division
+is the *most* expensive SoftFloat operation, so a guest that divides
+would see it. But nothing in this project's guest set can measure it,
+and a figure quoted for it here would be noise with a number on it.
 
 CoreMark is unchanged at 8 ms and Dhrystone reports 2128.3 to the digit
-either way, which is the check that the MXCSR framing is not being paid
-by blocks with no float in them. `fptest` is too short to resolve —
-7 ms to 5 ms at the `fmul.s` step and flat afterwards, which at that
-size is mostly process startup.
+throughout, which is the check that the MXCSR framing is not being paid
+by blocks with no float in them. `fptest` is too short to resolve.
+
+**Emitted code grows while the clock falls**: 158,208 bytes to 164,572
+across the last two steps, because a native FP sequence is longer than
+a call. The call was the expensive part, not the bytes — which is the
+opposite of the rule for the 12 KB Thumb-2 cache, and is why that rule
+is stated as being about *that* cache rather than about JITs.
 
 **Best of five was not enough.** A five-sample run had Dhrystone moving
 77 ms to 71 ms across two binaries that differ only in floating point;
@@ -177,11 +197,11 @@ hoped for.
 | | measured region |
 |---|---|
 | native x86-64 | 0.653 ms |
-| RV32 on the JIT | ~85 ms (87 less 2 ms of emulator startup) |
-| RV32 on the interpreter | ~258 ms |
+| RV32 on the JIT | ~72 ms (74 less 2 ms of emulator startup) |
+| RV32 on the interpreter | ~252 ms |
 
-so **130× native on the JIT and 395× on the interpreter**, and 125 MIPS
-against 41 MIPS in guest instructions retired.
+so **110× native on the JIT and 386× on the interpreter**, and 148 MIPS
+against 42 MIPS in guest instructions retired.
 
 **That 130× is not an emulation-overhead figure, and reading it as one
 would be wrong.** Modules 7 and 11 are 99.4% of the guest instruction
@@ -193,9 +213,9 @@ argument reduction compiled for RV32. The emulator is being asked to
 execute far more instructions for the same result, and 130× is the
 product of that and the per-instruction cost.
 
-The figure that isolates the emulator is the second one: **125 million
+The figure that isolates the emulator is the second one: **148 million
 guest instructions a second** on this host, with 99.5% of them
-translated. Comparing that against the interpreter's 41 MIPS is the
+translated. Comparing that against the interpreter's 42 MIPS is the
 like-for-like measurement; comparing either against native measures the
 ISA and the libm as much as the emulator.
 
