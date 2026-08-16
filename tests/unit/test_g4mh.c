@@ -31,6 +31,7 @@
 #include "g4mh/g4mh_config.h"
 #include "g4mh/g4mh_types.h"
 #include "g4mh/g4mh_cpu.h"
+#include "g4mh/g4mh_disasm.h"
 #include "g4mh/g4mh_intc.h"
 #include "g4mh/g4mh_intercpu.h"
 #include "g4mh/g4mh_memmap.h"
@@ -2409,6 +2410,205 @@ static void test_disp23_reserved_bit(void)
 }
 
 
+/*
+ * The disassembler, which had none.
+ *
+ * CLAUDE.md records that this file "prints confident nonsense" and
+ * names one case; there were more, and every one of them is in a slot
+ * where reg2 == 0 selects a different instruction. `jr` was printed for
+ * the whole 0x3C/0x3D slot -- LD.BU, all three PREPAREs and every
+ * disp23 load and store -- with a target computed from their operands.
+ * A reader chasing that goes looking for a control-flow bug in a load.
+ *
+ * Only the mnemonic and the shape are asserted here, not the whole
+ * string: a disassembler test that pins spelling breaks on every
+ * cosmetic change and gets deleted. What matters is that the reader is
+ * pointed at the right instruction.
+ */
+static void test_disasm_crowded_slots(void)
+{
+    char buf[64];
+
+    /* ld.b 0x123456[r6], r7 -- CC-RH's bytes, from disp23.asm. */
+    g4mh_disasm(buf, sizeof(buf), 0x1000u, 0x0786u | (0x3D65u << 16));
+    CHECK(strncmp(buf, "ld.b ", 5u) == 0);
+
+    /* ld.dw, which is the op6 low bit away from ld.w. */
+    g4mh_disasm(buf, sizeof(buf), 0x1000u, 0x07A6u | (0x4569u << 16));
+    CHECK(strncmp(buf, "ld.dw ", 6u) == 0);
+
+    /* st.w r7, 0x123456[r6] */
+    g4mh_disasm(buf, sizeof(buf), 0x1000u, 0x0786u | (0x3D6Fu << 16));
+    CHECK(strncmp(buf, "st.w ", 5u) == 0);
+
+    /* prepare 0x3, 4 (32-bit) and its imm32 form (64-bit). */
+    g4mh_disasm(buf, sizeof(buf), 0x1000u, 0x0782u | (0x0061u << 16));
+    CHECK(strncmp(buf, "prepare ", 8u) == 0);
+    g4mh_disasm(buf, sizeof(buf), 0x1000u, 0x0782u | (0x007Bu << 16));
+    CHECK(strncmp(buf, "prepare ", 8u) == 0);
+
+    /* ld.bu disp16, which shares the slot and is *not* reg2 == 0. */
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                (uint32_t)((13u << 11) | (0x3Cu << 5) | 11u) | (1u << 16));
+    CHECK(strncmp(buf, "ld.bu ", 6u) == 0);
+
+    /*
+     * And JR still works, with the right split. disp22 puts its *high*
+     * bits in the first halfword: w0[5:0] is disp[21:16] and w1[15:1]
+     * is disp[15:1]. This file had the other order, so it printed a
+     * plausible target for a small forward jump and garbage otherwise
+     * -- which is why the value is checked here and not just the
+     * mnemonic.
+     *
+     * w0 = 0x0780 | 0, w1 = 0x0010 -> disp = 0x10, from pc 0x1000.
+     */
+    g4mh_disasm(buf, sizeof(buf), 0x1000u, 0x0780u | (0x0010u << 16));
+    CHECK(strncmp(buf, "jr 0x00001010", 13u) == 0);
+
+    /* The two other reg2 == 0 slots that printed a multiply. */
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                (uint32_t)(0x17u << 5) | (0x1234u << 16));
+    CHECK(strncmp(buf, "jr ", 3u) == 0);
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                (uint32_t)(0x37u << 5) | (0x1234u << 16));
+    CHECK(strncmp(buf, "jmp ", 4u) == 0);
+
+    /* With reg2 != 0 they are multiplies again. */
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                (uint32_t)((1u << 11) | (0x17u << 5)) | (0x1234u << 16));
+    CHECK(strncmp(buf, "mulh ", 5u) == 0);
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                (uint32_t)((1u << 11) | (0x37u << 5)) | (0x1234u << 16));
+    CHECK(strncmp(buf, "mulhi ", 6u) == 0);
+}
+
+/*
+ * PREPARE list12, imm5, imm32 -- the ISA's only 64-bit encoding.
+ *
+ * The words are CC-RH's, not this project's:
+ *
+ *   prepare 0x3, 4, 0x12345678  ->  82 07 7B 00 78 56 34 12
+ *
+ * which is w0=0x0782 w1=0x007B w2=0x5678 w3=0x1234, so imm32 is
+ * (w3 << 16) | w2. Worth taking from the assembler rather than from the
+ * manual's diagram because the halfword *order* of a 32-bit immediate
+ * split across two of them is exactly the sort of thing a diagram
+ * leaves ambiguous and a hand-written test then enshrines.
+ *
+ * The length is the point, not the value. A 64-bit instruction decoded
+ * as 48 does not compute a wrong answer -- it leaves the pc two bytes
+ * short and every instruction after it is garbage, so the check is that
+ * execution *continues correctly* past it.
+ */
+static void test_prepare_imm32(void)
+{
+    const uint32_t sp0 = EMU_GUEST_RAM_BASE + 0x300u;
+    const uint16_t prog[] = {
+        MOVI32(3), LO(sp0), HI(sp0),           /* sp = a known place    */
+
+        /* prepare 0x3, 4, 0x12345678 */
+        0x0782u, 0x007Bu, 0x5678u, 0x1234u,
+
+        /* If the length was right, this runs next and nothing else. */
+        F2(OP_MOVI, 5, 21),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(why, EMU_RUN_WFI);
+    CHECK_EQ(reg(30), 0x12345678u);     /* ep <- imm32                  */
+    CHECK_EQ(reg(21), 5u);              /* and the pc landed right      */
+
+    /*
+     * Two words pushed for list12 = 0x3, then sp dropped by imm5 * 4.
+     *
+     * imm5 is **1** here, not 4: CC-RH's second operand is a byte count
+     * and the field holds it in words, so `prepare 0x3, 4` encodes 1 --
+     * which is also why `prepare 0xFFF, 31` warns "immediate must be a
+     * multiple of 4" and encodes 7. Reading the operand as the field is
+     * how this test first asserted sp0 - 24 against a correct emulator.
+     */
+    CHECK_EQ(reg(3), sp0 - 8u - 4u);
+}
+
+/*
+ * The other three ff encodings, for the reason the imm32 one is
+ * interesting: they are the neighbours it has to be told apart from,
+ * and two of them are a different *length*.
+ *
+ *   ff = 00  ep <- the new sp      48-bit
+ *   ff = 01  ep <- sext(imm16)     48-bit
+ *   ff = 10  ep <- imm16 << 16     48-bit
+ *   ff = 11  ep <- imm32           64-bit
+ *
+ * Encodings from CC-RH: `prepare 0x3, 4, sp` is 82 07 63 00 and
+ * `prepare 0x3, 4, 0x1234` is 82 07 6B 00 34 12.
+ */
+static void test_prepare_ff_forms(void)
+{
+    const uint32_t sp0 = EMU_GUEST_RAM_BASE + 0x300u;
+
+    /* ff = 01: sign-extended imm16, and a negative one, because that is
+     * the half of "sign-extended" a positive value cannot check. */
+    {
+        const uint16_t prog[] = {
+            MOVI32(3), LO(sp0), HI(sp0),
+            0x0782u, 0x006Bu, 0xFFF0u,          /* prepare .., 0xFFF0   */
+            F2(OP_MOVI, 5, 21),
+            0x07E0u, SUB_HALT,
+        };
+        emu_run_reason_t why;
+        uint32_t retired = 0;
+        if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                          &retired)) { CHECK(false); return; }
+        CHECK_EQ(reg(30), 0xFFFFFFF0u);
+        CHECK_EQ(reg(21), 5u);
+    }
+
+    /* ff = 10: the same immediate shifted up, which is what says the
+     * two are read from the same halfword and treated differently. */
+    {
+        const uint16_t prog[] = {
+            MOVI32(3), LO(sp0), HI(sp0),
+            0x0782u, 0x0073u, 0xFFF0u,
+            F2(OP_MOVI, 5, 21),
+            0x07E0u, SUB_HALT,
+        };
+        emu_run_reason_t why;
+        uint32_t retired = 0;
+        if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                          &retired)) { CHECK(false); return; }
+        CHECK_EQ(reg(30), 0xFFF00000u);
+        CHECK_EQ(reg(21), 5u);
+    }
+
+    /* ff = 00: ep <- the new sp, and this one is 48 bits with no
+     * immediate at all -- so reading a fourth halfword here would eat
+     * the instruction after it. */
+    {
+        const uint16_t prog[] = {
+            MOVI32(3), LO(sp0), HI(sp0),
+            0x0782u, 0x0063u,
+            F2(OP_MOVI, 5, 21),
+            0x07E0u, SUB_HALT,
+        };
+        emu_run_reason_t why;
+        uint32_t retired = 0;
+        if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                          &retired)) { CHECK(false); return; }
+        CHECK_EQ(reg(30), sp0 - 8u - 4u);
+        CHECK_EQ(reg(30), reg(3));
+        CHECK_EQ(reg(21), 5u);
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* The inter-CPU peripherals: BARR, IPIR, TPTM                         */
 /* ------------------------------------------------------------------ */
@@ -3760,6 +3960,9 @@ void test_g4mh(void)
     test_disp23_doubleword();
     test_disp23_reserved_bit();
     test_disp23_jit();
+    test_disasm_crowded_slots();
+    test_prepare_imm32();
+    test_prepare_ff_forms();
     test_barrier();
     test_barrier_participation();
     test_barrier_enable_completes();

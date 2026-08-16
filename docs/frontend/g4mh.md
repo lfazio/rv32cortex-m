@@ -80,9 +80,30 @@ life of this frontend it did not report anything at all.
 | gap | why it matters |
 |---|---|
 | double precision, and the `.L`/`.UL` conversions | single precision is there; `G4MH_EXT_FPU` gates the lot |
-| `LDM.MP` / `STM.MP`, `RESBANK` | bank and context-block transfers. `RESBANK` is decoded and reports RIE rather than being mistaken for `DI` |
+| `LDM.MP` / `STM.MP` | **blocked on the MPU, not on the encodings.** They transfer `MPLA`/`MPUA`/`MPAT` entries, and no access check here consults those registers — so executing them would move guest memory into registers nothing enforces, which is worse than RIE. A guest configuring protection would get silence instead of a report |
+| `RESBANK` | needs the register banks modelled. Decoded and reports RIE rather than being mistaken for `DI` |
 | `DIVQ`/`DIVQU` with `reg2 == reg3` | the manual leaves the flags undefined there; this treats it as the ordinary case |
-| `PREPARE list12, imm5, imm32` | the only 64-bit encoding in the ISA, and past what the length decoder reports — see below |
+
+**`PREPARE list12, imm5, imm32` is implemented** — the ISA's only 64-bit
+encoding, and the last thing the length decoder could not reach.
+`g4mh_insn_is_64` answers whether a *fourth* halfword follows, which
+only `ff = 11` in this one instruction does.
+
+Its encoding came from CC-RH, which had never been asked, because the
+checking script capped its own listing regex at twelve hex digits and
+so dropped every 64-bit line — **the fourth width that script has
+silently swallowed**:
+
+```
+prepare 0x3, 4, 0x12345678  ->  82 07 7B 00 78 56 34 12
+                                w0     w1     w2    w3
+imm32 = (w3 << 16) | w2
+```
+
+One thing to know before writing a test against it: CC-RH's `imm5`
+operand is a **byte** count and the field holds words, so
+`prepare 0x3, 4` encodes 1, and `prepare 0xFFF, 31` warns "immediate
+must be a multiple of 4" and encodes 7.
 
 **Format XIV — the disp23 loads and stores, and `LD.DW`/`ST.DW` — are
 implemented, in both backends.** They had been listed here as two
@@ -139,6 +160,36 @@ width and was ending a block at every large constant.
 `tests/guest/g4mh/disp23.asm` is the end-to-end check, and the half
 that is not this project's own encoder: CC-RH produces the bytes, the
 emulator runs them, 8 checks and 0 failures on both backends.
+
+## The disassembler
+
+`g4mh_disasm` takes 32 bits of encoding, because that is what
+`emu_trace_fn` carries. So a 48- or 64-bit instruction cannot be
+rendered in full, and the bits it cannot see print as an ellipsis —
+`mov 0x....1234`, `ld.b 0x....56[r6], r7`. Widening that is a change to
+the shared `emu_cpu_ops_t` contract and to both other frontends, not a
+table entry here.
+
+What it must not do is *guess*, and it did. CLAUDE.md already records
+this file printing "confident nonsense"; there was more of it, all in
+slots where `reg2 == 0` selects a different instruction:
+
+- **`jr` for the whole `0x3C`/`0x3D` slot** — `LD.BU`, all three
+  `PREPARE`s and every `disp23` load and store, with a target computed
+  from their operands. A reader chasing that goes looking for a
+  control-flow bug in a load.
+- **the `disp22` split in the wrong order.** High bits first:
+  `w0[5:0]` is `disp[21:16]` and `w1[15:1]` is `disp[15:1]`. This file
+  had low bits first, as RISC-V does it — which is the same mistake the
+  interpreter records having made and fixed, left uncorrected here. It
+  gives a plausible target for a small forward jump and garbage for
+  everything else.
+- **`mulh` and `mulhi` for `JR`/`JMP disp32`**, which share those two
+  slots at `reg2 == 0`.
+
+The rule this leaves: **the disassembler has to make the same
+discrimination the interpreter does, in the same order.** It is not a
+lookup table over opcodes, because the ISA is not one.
 
 ## The inter-CPU peripherals
 

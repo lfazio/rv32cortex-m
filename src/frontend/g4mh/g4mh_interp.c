@@ -552,6 +552,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
         unsigned len = g4mh_insn_len(w0);
         uint32_t w1 = 0u;
         uint32_t w2 = 0u;
+        uint32_t w3 = 0u;
         if (len >= 4u) {
             uint16_t h;
             f = emu_bus_fetch16(c->bus, pc + 2u, &h);
@@ -567,6 +568,15 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     EXC(g4mh_exc_from_fault(f));
                 }
                 w2 = h;
+                /* And only PREPARE's imm32 form goes further. */
+                if (EMU_UNLIKELY(g4mh_insn_is_64(w0, w1))) {
+                    len = 8u;
+                    f = emu_bus_fetch16(c->bus, pc + 6u, &h);
+                    if (EMU_UNLIKELY(f != EMU_FAULT_NONE)) {
+                        EXC(g4mh_exc_from_fault(f));
+                    }
+                    w3 = h;
+                }
             }
         }
 
@@ -1989,26 +1999,23 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     const uint32_t ff = (w1 >> 3) & 3u;
                     uint32_t sp;
 
-                    if ((w1 & 0x07u) == 0x03u && ff == 3u) {
-                        /*
-                         * The imm32 form is 64 bits wide, which is past
-                         * what the length decoder reports. Declining is
-                         * correct rather than merely safe: the pc never
-                         * moves by a wrong amount.
-                         */
-                        EXC(G4MH_EXC_RIE);
-                    }
-
                     const g4mh_exc_t e = do_prepare_save(c, list, &sp);
                     if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
                     sp -= imm5 << 2;
                     c->r[3] = sp;
 
                     if ((w1 & 0x07u) == 0x03u) {
-                        /* ff names what reaches ep, and 00 is the new sp. */
+                        /*
+                         * ff names what reaches ep: 00 the new sp, 01 a
+                         * sign-extended imm16, 10 that imm16 shifted up,
+                         * and 11 a full imm32 in the two halfwords after
+                         * w1 -- the ISA's only 64-bit encoding, and the
+                         * one the length decoder now reaches.
+                         */
                         c->r[30] = (ff == 0u) ? sp
                                  : (ff == 1u) ? (uint32_t)emu_sext(w2, 16)
-                                              : (w2 << 16);
+                                 : (ff == 2u) ? (w2 << 16)
+                                              : ((w3 << 16) | w2);
                     }
                     break;
                 }

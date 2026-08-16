@@ -74,7 +74,12 @@ size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint32_t insn)
     case 0x14: n = snprintf(buf, buflen, "shr %u, %s", (unsigned)(w0 & 0x1Fu), b); break;
     case 0x15: n = snprintf(buf, buflen, "sar %u, %s", (unsigned)(w0 & 0x1Fu), b); break;
     case 0x16: n = snprintf(buf, buflen, "shl %u, %s", (unsigned)(w0 & 0x1Fu), b); break;
-    case 0x17: n = snprintf(buf, buflen, "mulh %d, %s", g4mh_imm5(w0), b); break;
+    case 0x17:
+        /* reg2 == 0 is JR/JARL disp32, not a multiply. */
+        n = (r2 == 0u)
+          ? snprintf(buf, buflen, "jr 0x....%04x", (unsigned)w1)
+          : snprintf(buf, buflen, "mulh %d, %s", g4mh_imm5(w0), b);
+        break;
 
     case 0x30: n = snprintf(buf, buflen, "addi %d, %s, %s",
                             (int)emu_sext(w1, 16), a, b); break;
@@ -94,8 +99,20 @@ size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint32_t insn)
                             (unsigned)w1, a, b); break;
     case 0x36: n = snprintf(buf, buflen, "andi 0x%04x, %s, %s",
                             (unsigned)w1, a, b); break;
-    case 0x37: n = snprintf(buf, buflen, "mulhi %d, %s, %s",
-                            (int)emu_sext(w1, 16), a, b); break;
+    case 0x37:
+        /*
+         * reg2 == 0 holds two instructions of *different lengths*: JMP
+         * disp32[reg1] at 48 bits and LOOP at 32, told apart by bit 0
+         * of the second halfword.
+         */
+        n = (r2 != 0u)
+          ? snprintf(buf, buflen, "mulhi %d, %s, %s",
+                     (int)emu_sext(w1, 16), a, b)
+          : ((w1 & 1u) != 0u)
+          ? snprintf(buf, buflen, "loop %s, 0x%08x", a,
+                     pc - (uint32_t)(w1 & 0xFFFEu))
+          : snprintf(buf, buflen, "jmp 0x....%04x[%s]", (unsigned)w1, a);
+        break;
 
     case 0x38: n = snprintf(buf, buflen, "ld.b %d[%s], %s",
                             (int)emu_sext(w1, 16), a, b); break;
@@ -109,13 +126,85 @@ size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint32_t insn)
                             (int)emu_sext(w1 & 0xFFFEu, 16), a); break;
 
     case 0x3C:
-    case 0x3D: {
-        const uint32_t d = (w0 & 0x3Eu) | (w1 << 6);
-        const uint32_t tgt = pc + (uint32_t)emu_sext(d, 22);
-        n = (r2 == 0u) ? snprintf(buf, buflen, "jr 0x%08x", tgt)
-                       : snprintf(buf, buflen, "jarl 0x%08x, %s", tgt, b);
+    case 0x3D:
+        /*
+         * The most crowded slot in the ISA, and this printed `jr` for
+         * all of it. LD.BU, PREPARE at three widths and the whole
+         * disp23 group came out as jumps to an address computed from
+         * their operands -- confident nonsense of exactly the kind this
+         * file's header promises not to produce, and worse than
+         * `.short` because it sends the reader after a control-flow bug
+         * in a load.
+         *
+         * The discrimination is the interpreter's, in the same order.
+         */
+        if ((w1 & 1u) != 0u) {
+            if (r2 != 0u) {
+                /* LD.BU disp16, whose disp[0] rides in the opcode. */
+                const uint32_t disp = (w1 & 0xFFFEu) | (op & 1u);
+                n = snprintf(buf, buflen, "ld.bu %d[%s], %s",
+                             (int)emu_sext(disp, 16), a, b);
+            } else if ((w1 & 0x1Fu) == 0x01u) {
+                n = snprintf(buf, buflen, "prepare 0x%03x, %u",
+                             (unsigned)(w1 >> 5), (unsigned)g4mh_imm5(w0));
+            } else if ((w1 & 0x07u) == 0x03u) {
+                static const char *const ff[4] = {
+                    "sp", "0x....", "0x....0000", "0x........"
+                };
+                n = snprintf(buf, buflen, "prepare 0x%03x, %u, %s",
+                             (unsigned)(w1 >> 5), (unsigned)g4mh_imm5(w0),
+                             ff[(w1 >> 3) & 3u]);
+            } else {
+                /*
+                 * The disp23 group. Only disp[6:0] is inside these two
+                 * halfwords -- disp[22:7] is in the third, which this
+                 * interface does not carry -- so the displacement
+                 * prints with the same ellipsis `mov imm32` uses rather
+                 * than as the seven bits that are visible.
+                 */
+                static const char *const nm[16] = {
+                    NULL, NULL, NULL, NULL, NULL, "ld.b",  NULL, "ld.h",
+                    NULL, "ld.w", NULL, NULL,  NULL, "st.b", NULL, "st.w"
+                };
+                static const char *const nmu[16] = {
+                    NULL, NULL, NULL, NULL, NULL, "ld.bu", NULL, "ld.hu",
+                    NULL, "ld.dw", NULL, NULL, NULL, "st.h", NULL, "st.dw"
+                };
+                const char *const *tab = (op & 1u) ? nmu : nm;
+                const char *mn = tab[w1 & 0xFu];
+
+                if (mn == NULL) {
+                    n = snprintf(buf, buflen, ".short 0x%04x, 0x%04x",
+                                 (unsigned)w0, (unsigned)w1);
+                } else if ((w1 & 0xFu) == 0xDu || (w1 & 0xFu) == 0xFu) {
+                    n = snprintf(buf, buflen, "%s %s, 0x....%02x[%s]", mn,
+                                 g4mh_reg_name((w1 >> 11) & 0x1Fu),
+                                 (unsigned)((w1 >> 4) & 0x7Fu), a);
+                } else {
+                    n = snprintf(buf, buflen, "%s 0x....%02x[%s], %s", mn,
+                                 (unsigned)((w1 >> 4) & 0x7Fu), a,
+                                 g4mh_reg_name((w1 >> 11) & 0x1Fu));
+                }
+            }
+        } else {
+            /*
+             * JR/JARL disp22, and the split is the *high* bits first:
+             * disp[21:16] in w0[5:0] and disp[15:1] in w1[15:1]. This
+             * had the other order -- low bits first, as RISC-V does it
+             * -- which is the same mistake the interpreter records
+             * having made and fixed, left uncorrected here. It gives a
+             * plausible target for small forward jumps and garbage for
+             * everything else.
+             */
+            const uint32_t d = ((uint32_t)(w0 & 0x3Fu) << 16) |
+                               ((uint32_t)w1 & 0xFFFEu);
+            const uint32_t tgt = pc + (uint32_t)emu_sext(d, 22);
+
+            n = (r2 == 0u) ? snprintf(buf, buflen, "jr 0x%08x", tgt)
+                           : snprintf(buf, buflen, "jarl 0x%08x, %s",
+                                      tgt, b);
+        }
         break;
-    }
 
     case 0x3F: {
         const uint32_t sub = w1 & 0x7FFu;

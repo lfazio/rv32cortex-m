@@ -548,6 +548,16 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
             if (g4mh_insn_is_48(w0, w1)) {
                 uint16_t w2;
 
+                /*
+                 * The one 64-bit encoding stays on the interpreter. Not
+                 * because it is hard -- it is a PREPARE, which this
+                 * backend declines at every width -- but because
+                 * lowering it would mean this loop knowing the length in
+                 * two places.
+                 */
+                if (g4mh_insn_is_64(w0, w1)) {
+                    break;
+                }
                 if (emu_bus_fetch16(c->bus, cur + 4u, &w2) !=
                     EMU_FAULT_NONE) {
                     break;

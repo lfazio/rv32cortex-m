@@ -108,19 +108,27 @@ import re, sys
 print("%-26s %-9s %s" % ("source", "bytes", "as this emulator decodes it"))
 print("-" * 78)
 for line in open(sys.argv[1], errors="replace"):
-    # RH850 is 16, 32 or 48 bits, so the listing carries 4, 8 or 12 hex
-    # digits. This has now been wrong twice in the same way: first it
-    # matched only 8 and dropped every Format I/II encoding, then it
-    # matched 4 or 8 and dropped every 48-bit one -- and a dropped line
-    # is indistinguishable from an encoding the assembler rejected,
-    # which is what made the disp23 group look unsupported by CC-RH
-    # when it assembles perfectly well. Match all three widths.
+    # RH850 is 16, 32, 48 or 64 bits, so the listing carries 4, 8, 12 or
+    # 16 hex digits.
+    #
+    # This has now been wrong *four* times in the same way, and each
+    # time the symptom was the same: the encodings simply were not
+    # printed, which is indistinguishable from an assembler that
+    # rejected them. It matched only 8 and dropped every Format I/II
+    # encoding; then 4 or 8, dropping every 48-bit one -- which is how
+    # "CC-RH does not accept LD.DW" got written into the docs as a
+    # blocker; then it demanded a numeric line-number column, dropping
+    # the continuation lines the 48-bit forms are listed on; and then it
+    # capped at 12 digits and dropped PREPARE's 64-bit form.
+    #
+    # If a query comes back empty, suspect this regex before believing
+    # the assembler.
     #
     # And the line-number column holds "--" on a continuation line, which
     # is where CC-RH lists the 48-bit forms -- the source line above it
     # carries the address and no bytes. Demanding a number there dropped
     # them just as surely as the width did.
-    m = re.match(r'^[0-9A-F]{8} ([0-9A-F]{4}(?:[0-9A-F]{4}){0,2})\s+(?:\d+|--)\s+(.*)$',
+    m = re.match(r'^[0-9A-F]{8} ([0-9A-F]{4}(?:[0-9A-F]{4}){0,3})\s+(?:\d+|--)\s+(.*)$',
                  line.rstrip())
     if not m:
         continue
@@ -135,6 +143,12 @@ for line in open(sys.argv[1], errors="replace"):
               % (src, hexs, w0 & 0x1F, (w0 >> 11) & 0x1F, op6))
         continue
     w1 = b[2] | (b[3] << 8)
+    if len(b) == 8:
+        w2 = b[4] | (b[5] << 8)
+        w3 = b[6] | (b[7] << 8)
+        print("%-26s %-17s reg1=%-2d reg2=%-2d op=0x%02X  w1=0x%04X w2=0x%04X w3=0x%04X"
+              % (src, hexs, w0 & 0x1F, (w0 >> 11) & 0x1F, op6, w1, w2, w3))
+        continue
     if len(b) == 6:
         # The 48-bit forms. Printed as the three halfwords plus the
         # disp23 the load/store group splits across w1 and w2 --

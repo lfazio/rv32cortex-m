@@ -58,11 +58,10 @@ bool g4mh_insn_is_48(uint16_t w0, uint16_t w1)
             /*
              * PREPARE list12, imm5, sp/imm. ff names what reaches ep:
              * sp costs no extra halfword, imm16 costs one, and imm32
-             * costs two -- a 64-bit encoding, which is past what this
-             * decoder reports. It is called 48 here and the interpreter
-             * raises RIE rather than retiring it, so the pc never moves
-             * by a wrong amount; widening the contract is the fix if a
-             * compiler is ever seen emitting it.
+             * costs two -- the ISA's only 64-bit encoding, and the one
+             * case where a *third* halfword is not the last. This
+             * function answers "is there a third", which is true for
+             * both; g4mh_insn_is_64 answers whether there is a fourth.
              */
             return ((w1 >> 3) & 3u) != 0u;
         }
@@ -71,6 +70,25 @@ bool g4mh_insn_is_48(uint16_t w0, uint16_t w1)
     default:
         return false;
     }
+}
+
+bool g4mh_insn_is_64(uint16_t w0, uint16_t w1)
+{
+    /*
+     * One encoding in the whole ISA: PREPARE list12, imm5, imm32, where
+     * ff = 11 puts a 32-bit immediate in the two halfwords after w1.
+     * Everything else that reaches six bytes stops there.
+     *
+     * Confirmed against CC-RH, which had never been asked because the
+     * checking script capped its own listing regex at twelve hex digits
+     * and so dropped every 64-bit line:
+     *
+     *   prepare 0x3, 4, 0x12345678  ->  82 07 7B 00 78 56 34 12
+     */
+    return g4mh_reg2(w0) == 0u &&
+           (g4mh_op6(w0) == 0x3Cu || g4mh_op6(w0) == 0x3Du) &&
+           (w1 & 0x07u) == 0x03u &&
+           ((w1 >> 3) & 3u) == 3u;
 }
 
 bool g4mh_cond(uint32_t cond, uint32_t psw)

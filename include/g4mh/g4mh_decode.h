@@ -81,6 +81,14 @@ static EMU_ALWAYS_INLINE int32_t g4mh_imm5(uint32_t w)
 unsigned g4mh_insn_len(uint16_t w);
 bool g4mh_insn_is_48(uint16_t w0, uint16_t w1);
 
+/*
+ * And whether a *fourth* follows, which only PREPARE list12, imm5,
+ * imm32 does -- the ISA's one 64-bit encoding. Asked only after
+ * g4mh_insn_is_48 has said yes, because every 64-bit form is also a
+ * 48-bit one under that function's question ("is there a third").
+ */
+bool g4mh_insn_is_64(uint16_t w0, uint16_t w1);
+
 /* True if the first halfword starts a 16-bit instruction. */
 static EMU_ALWAYS_INLINE bool g4mh_is_16bit(uint16_t w)
 {
