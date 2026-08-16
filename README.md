@@ -8,7 +8,7 @@ Two guest architectures (RISC-V RV32 and Renesas RH850 G4MH), two JIT
 backends (Thumb-2 and x86-64), and two platforms (a native host runner
 and STM32F4/F7 firmware). Validated against the official
 [RISC-V Architecture Test Suite](https://github.com/riscv/riscv-arch-test)
-at **274/274** and the Berkeley `riscv-tests` at **77/77**, on hardware
+at **378/378** and the Berkeley `riscv-tests` at **77/77**, on hardware
 as well as on a host.
 
 ---
@@ -165,7 +165,7 @@ Useful flags: `--dump` (register file on exit), `--max-insn N`,
 ### Validation
 
 ```sh
-./scripts/run-arch-test.sh      # official riscv-arch-test, 274/274
+./scripts/run-arch-test.sh      # official riscv-arch-test, 378/378
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77
 ./scripts/report-figures.sh     # every quoted figure, regenerated
 ./scripts/check-doc-flags.sh    # every build flag named in the docs exists

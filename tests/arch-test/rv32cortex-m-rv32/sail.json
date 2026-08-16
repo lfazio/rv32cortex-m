@@ -108,7 +108,7 @@
       "rv32zdinx_odd_register": "Zdinx_Illegal"
     },
     "mstatus": {
-      // No FPU and no vector unit.
+      // An FPU (F and D), no vector unit.
       "fs_legal_states": "ExtContext_FourState",
       "vs_legal_states": "ExtContext_Off"
     },
@@ -335,7 +335,7 @@
       "supported": true,
       "fflags_dirty_policy": "Fflags_Dirty_Precise"
     },
-    "D": { "supported": false },
+    "D": { "supported": true },
     "V": {
       "support_level": "Disabled",
       "vlen_exp": 7,
@@ -393,7 +393,7 @@
     "Zdinx": { "supported": false },
     "Zca": { "supported": true },
     "Zcf": { "supported": true },
-    "Zcd": { "supported": false },
+    "Zcd": { "supported": true },
     // Zcb is not implemented: those encodings raise illegal instruction.
     "Zcb": { "supported": true },
     "Zcmop": { "supported": false },

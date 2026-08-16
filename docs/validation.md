@@ -37,12 +37,12 @@ Current state, all re-run on the tree as it stands:
 
 | | result | runs on |
 |---|---|---|
-| `riscv-arch-test` | **274 / 274** | host |
-| `riscv-arch-test`, default (host FPU) | 222 / 274 — every failure in `F` | host |
+| `riscv-arch-test` | **378 / 378** | host |
+| `riscv-arch-test`, default (host FPU) | 222 / 274 — every failure in `F`; historical, from before SoftFloat was mandatory | host |
 | `riscv-tests` | **77 / 77** | host |
 | host unit + guest self-tests (`ctest -L fast`) | **3 / 3**, one of them through the JIT | host |
-| `riscv-arch-test`, `--jit` + SoftFloat | **274 / 274** — the whole suite through translated code | host |
-| `riscv-arch-test`, `--jit`, host FPU | 222 / 274 — identical to the interpreter on the same build | host |
+| `riscv-arch-test`, `--jit` + SoftFloat | **378 / 378** — the whole suite through translated code | host |
+| `riscv-arch-test`, `--jit`, host FPU | 222 / 274 — identical to the interpreter on the same build; historical | host |
 | `riscv-tests`, `--jit` | **77 / 77** | host |
 | `isatest`, JIT | **296 / 296** | hardware |
 | `isatest`, `-DEMU_JIT=OFF` | **296 / 296** | hardware |
@@ -129,7 +129,7 @@ Three of the unary ops (`c.sext.b`, `c.zext.h`, `c.sext.h`) expand to Zbb
 instructions, which is why the spec makes Zcb depend on Zbb — without it there
 would be nothing to expand them into.
 
-## Official RISC-V Architecture Test Suite — 274/274 with SoftFloat
+## Official RISC-V Architecture Test Suite — 378/378 with SoftFloat
 
 [`riscv/riscv-arch-test`](https://github.com/riscv/riscv-arch-test), the RVCP
 suite governed by RISC-V International. Modern versions are self-checking: the

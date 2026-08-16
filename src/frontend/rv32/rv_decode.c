@@ -107,6 +107,26 @@ static uint32_t expand_q0(uint16_t c)
         return enc_s(off, c_rs2p(c), c_rdp(c), 2u, OP_STORE);
     }
 
+#if RV_EXT_D
+    /*
+     * Zcd, which C@2.0 requires alongside D exactly as it requires Zcf
+     * alongside F. The offset is a *doubleword* one -- bits [7:6] and
+     * [5:3] of the encoding scale by 8, not by 4 -- which is the only
+     * thing separating these from C.FLW/C.FSW two cases down.
+     */
+    case 1: { /* C.FLD -> fld rd', off(rs1') */
+        uint32_t off = (((uint32_t)c >> 7) & 0x38u)
+                     | (((uint32_t)c << 1) & 0xC0u);
+        return enc_i(off, c_rdp(c), 3u, c_rs2p(c), OP_LOAD_FP);
+    }
+
+    case 5: { /* C.FSD -> fsd rs2', off(rs1') */
+        uint32_t off = (((uint32_t)c >> 7) & 0x38u)
+                     | (((uint32_t)c << 1) & 0xC0u);
+        return enc_s(off, c_rs2p(c), c_rdp(c), 3u, OP_STORE_FP);
+    }
+#endif
+
 #if RV_EXT_F
     case 3: { /* C.FLW -> flw rd', off(rs1')  (Zcf) */
         uint32_t off = (((uint32_t)c >> 7) & 0x38u)
@@ -385,7 +405,27 @@ static uint32_t expand_q2(uint16_t c)
     }
 #endif
 
-    /* 1 and 5 are C.FLDSP/C.FSDSP, which need D. */
+#if RV_EXT_D
+    case 1: { /* C.FLDSP -> fld rd, off(x2)  (Zcd) */
+        /*
+         * A doubleword stack offset: off[5] at bit 12, off[4:3] at
+         * [6:5] and off[8:6] at [4:2]. Three fields rather than
+         * C.FLWSP's three-but-different, and the difference is the
+         * scale -- which is why they are written out instead of shared.
+         */
+        uint32_t off = (((uint32_t)c >> 7) & 0x20u)
+                     | (((uint32_t)c >> 2) & 0x18u)
+                     | (((uint32_t)c << 4) & 0x1C0u);
+        return enc_i(off, 2u, 3u, rd, OP_LOAD_FP);
+    }
+
+    case 5: { /* C.FSDSP -> fsd rs2, off(x2)  (Zcd) */
+        uint32_t off = (((uint32_t)c >> 7) & 0x38u)
+                     | (((uint32_t)c >> 1) & 0x1C0u);
+        return enc_s(off, rs2, 2u, 3u, OP_STORE_FP);
+    }
+#endif
+
     default:
         return ILLEGAL;
     }

@@ -65,6 +65,22 @@
  * With this clear, amocas raises illegal-instruction, which is the correct
  * report for an extension that is not implemented.
  */
+/*
+ * Double precision. FLEN becomes 64 and single-precision values are
+ * NaN-boxed; see the note on rv_hart_t.f.
+ *
+ * The arithmetic is Berkeley SoftFloat, the same as F, and the JIT gets
+ * it for free: both backends route every FP operation to rv_hart_fp
+ * rather than emitting host instructions, for the reason CLAUDE.md
+ * records -- a host FPU asked to be a RISC-V FPU failed 23 of the 78 F
+ * tests.
+ */
+#ifndef RV_EXT_D
+#  define RV_EXT_D 1
+#endif
+#if RV_EXT_D && !RV_EXT_F
+#  error "RV_EXT_D requires RV_EXT_F"
+#endif
 #ifndef RV_EXT_ZACAS
 #  define RV_EXT_ZACAS 1
 #endif

@@ -57,11 +57,21 @@ typedef struct rv_hart {
 
 #if RV_EXT_F
     /*
-     * Single-precision register file. 32 bits per register because D is not
-     * implemented; with D these would be 64-bit and F values NaN-boxed into
-     * the low half.
+     * The floating-point register file, 64 bits wide whether or not D is
+     * built in.
+     *
+     * With D, FLEN is 64 and a single-precision value is **NaN-boxed**:
+     * its upper 32 bits are all ones, and a register holding anything
+     * else reads as the canonical NaN when used as a float. That is not
+     * an addition beside the F operations -- it is a change to every one
+     * of them, which is why the accessors in rv_fpu.c exist and why
+     * nothing outside that file touches this array.
+     *
+     * Without D the upper half is unused. Keeping the array one width
+     * costs 128 bytes on the target and saves a second set of code
+     * paths, which is the trade this project makes elsewhere too.
      */
-    uint32_t f[32];
+    uint64_t f[32];
     uint32_t fcsr;               /* frm in [7:5], fflags in [4:0] */
 #endif
 

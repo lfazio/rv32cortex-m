@@ -505,6 +505,24 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
         if (f3 != 2u || (h_fs_off(cpu))) {
             return false;                       /* not FLW/FSW, or FS off */
         }
+#if RV_EXT_D
+        /*
+         * **With D, FLEN is 64 and a float in an f register must be
+         * NaN-boxed.** EMU_IR_FGET/FPUT move 32 bits, so lowering FLW
+         * here would write an unboxed register and lowering FSW would
+         * read one -- and neither could tell. The whole point of the
+         * boxing is that the *next* reader of that register sees a
+         * canonical NaN, so nothing about this instruction's own result
+         * looks wrong; it fails somewhere else. 93 of 378 tests, and
+         * F-fsub.s among them.
+         *
+         * So they go to the helper with the rest of the FP work, which
+         * is where boxing is implemented once. Same argument as the
+         * comment below about not lowering arithmetic natively: the
+         * side effect a fast path skips is the expensive kind to find.
+         */
+        return rv_ir_fp_fallback(b, pc, insn);
+#else
         (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP,
                           EMU_IR_NO_TEMP, pc, 0u);
         const uint16_t base = emu_ir_get(b, rs1);
@@ -522,6 +540,7 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
                               base, v, (uint32_t)rv_imm_s(insn), 0u);
         }
         return true;
+#endif
     }
 
     case 0x43u: case 0x47u: case 0x4Bu: case 0x4Fu:
@@ -573,6 +592,15 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
          * measured against the F suite -- not the whole table on the
          * argument that the host has an FPU.
          */
+#if RV_EXT_D
+        /*
+         * FMV.X.W and FMV.W.X move bits, which is why they were the two
+         * exceptions to "everything goes to the helper". With FLEN 64
+         * they still move bits -- but FMV.W.X has to *box* what it
+         * writes, and FGET/FPUT cannot. Back to the helper.
+         */
+        return rv_ir_fp_fallback(b, pc, insn);
+#else
         if (f7 == 0x70u && f3 == 0u && rs2 == 0u) {     /* FMV.X.W */
             emu_ir_put(b, rd,
                        emu_ir_emit(b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
@@ -585,6 +613,7 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
             return true;
         }
         return rv_ir_fp_fallback(b, pc, insn);
+#endif
     }
 #endif /* RV_EXT_F */
 

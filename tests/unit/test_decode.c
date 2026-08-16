@@ -53,9 +53,25 @@ void test_decode(void)
     expand_ok(0x5EFCu, 0x07C6A783u);   /* c.lw a5, 124(a3) */
     expand_ok(0xC188u, 0x00A5A023u);   /* c.sw a0, 0(a1)   */
 
-    /* D loads and stores stay illegal: this core implements F, not D. */
+#if RV_EXT_D
+    /*
+     * Zcd: C@2.0 includes the compressed double load/stores when D is
+     * present, exactly as it includes Zcf's when F is.
+     *
+     * The immediate is the thing to test and offset 0 cannot: C.FLD
+     * scales by *eight* where C.FLW scales by four, and the two share
+     * everything else. So the offsets here are chosen to light each
+     * field of the split -- uimm[5:3] alone, then uimm[7:6] as well.
+     */
+    expand_ok(0x2188u, 0x0005B507u);   /* c.fld fa0, 0(a1)   */
+    expand_ok(0x2588u, 0x0085B507u);   /* c.fld fa0, 8(a1)   */
+    expand_ok(0x25E8u, 0x0C85B507u);   /* c.fld fa0, 200(a1) */
+    expand_ok(0xA188u, 0x00A5B027u);   /* c.fsd fa0, 0(a1)   */
+    expand_ok(0xA588u, 0x00A5B427u);   /* c.fsd fa0, 8(a1)   */
+#else
     expand_illegal(0x2188u);   /* c.fld */
     expand_illegal(0xA188u);   /* c.fsd */
+#endif
 #if RV_EXT_F
     /* Zcf: C on RV32F includes the compressed FP load/stores. They expand
      * to FLW/FSW, which share the CL/CS immediate layout with C.LW/C.SW. */

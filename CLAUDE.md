@@ -120,6 +120,25 @@ session, and every one of them recurred:
 - **In the JIT, what you decline costs more than what you translate badly.**
   Ending a block for an untranslatable instruction fragments hot code. Route it
   through a helper call instead — `jit_helper_alu` exists for exactly this.
+- **NaN-boxing is a change to F, not an addition beside it.** Adding D
+  widens the register file to 64 bits, and from that moment a
+  single-precision value has to carry all-ones in its upper half or be
+  read as the canonical NaN. Every F operation is affected, in both
+  directions, and the failures do not point at the instruction that got
+  it wrong: the *next* reader of the register sees a NaN, so
+  `F-fsub.s` fails because something else wrote badly. Two live cases
+  after the obvious ones were converted -- the fused multiply-adds
+  wrote `h->f[rd]` raw, and `FMV.X.W` must move the low half **raw**
+  rather than through the unboxing accessor, because moving bits is
+  the whole instruction. Route every read and write through one pair
+  of accessors; the compiler will not find the ones you miss.
+
+  It also cost the JIT its two exceptions. `FLW`/`FSW` and
+  `FMV.X.W`/`FMV.W.X` were lowered natively through `EMU_IR_FGET`/
+  `FPUT`, which move 32 bits and cannot box -- **93 of 378 tests**.
+  They go to the helper with the rest of the FP work now, which is the
+  same conclusion as the entry below reached for the arithmetic, from
+  the same evidence.
 - **There is one FP implementation, and both backends reach it.**
   SoftFloat is the FP unit -- not an option, and a missing checkout is a
   configure error rather than a fallback. Everything that rounds,

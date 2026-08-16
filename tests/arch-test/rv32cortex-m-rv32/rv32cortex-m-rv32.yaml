@@ -31,6 +31,7 @@ implemented_extensions:
   - { name: Zaamo, version: "= 1.0.0" }
   - { name: Zalrsc, version: "= 1.0.0" }
   - { name: F, version: "= 2.2" }
+  - { name: D, version: "= 2.2" }
   - { name: Zacas, version: "= 1.0.0" }
   - { name: Zba, version: "= 1.0.0" }
   - { name: Zbb, version: "= 1.0.0" }
@@ -40,6 +41,10 @@ implemented_extensions:
   - { name: Zca, version: "= 1.0.0" }
   # C on RV32F is defined to include the compressed FP load/stores.
   - { name: Zcf, version: "= 1.0.0" }
+  # C@2.0 includes the compressed double load/stores when D is present,
+  # the same rule that makes Zcf mandatory alongside F. UDB rejects the
+  # config without it.
+  - { name: Zcd, version: "= 1.0.0" }
   - { name: Zcb, version: "= 1.0.0" }
   - { name: Zicsr, version: "= 2.0" }
   - { name: Zicntr, version: "= 2.0" }
@@ -75,6 +80,7 @@ params:
   MUTABLE_MISA_A: false
   MUTABLE_MISA_C: false
   MUTABLE_MISA_F: false
+  MUTABLE_MISA_D: false
 
   # ---- floating point (F) ----
   # rv_hart_fp sets FS to Dirty on every instruction that writes an f

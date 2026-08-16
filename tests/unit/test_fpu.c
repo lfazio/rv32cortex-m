@@ -67,19 +67,44 @@ static void fp_reset(void)
  * Run one OP-FP instruction on f1 and f2, returning the raw bits of f0 and
  * the flags it raised.
  */
+/*
+ * Put a single-precision value in an f register, and take one out.
+ *
+ * With D built in, FLEN is 64 and a float must be **NaN-boxed** -- upper
+ * 32 bits all ones -- or the FPU reads it as the canonical NaN. These
+ * tests wrote raw 32-bit values straight into g_hart.f[], which was
+ * right when the register file was 32 bits wide and became "every
+ * operand is a NaN" the moment it was not. That is the boxing working;
+ * it is also why boxing is a change to every F operation rather than an
+ * addition beside them.
+ */
+static void fset(unsigned r, uint32_t v)
+{
+#if RV_EXT_D
+    g_hart.f[r] = UINT64_C(0xFFFFFFFF00000000) | v;
+#else
+    g_hart.f[r] = v;
+#endif
+}
+
+static uint32_t fget(unsigned r)
+{
+    return (uint32_t)g_hart.f[r];
+}
+
 static uint32_t fp_op(uint32_t f7, uint32_t rm, uint32_t a, uint32_t b,
                       uint32_t *flags)
 {
     uint32_t tval = 0u;
 
     fp_reset();
-    g_hart.f[1] = a;
-    g_hart.f[2] = b;
+    fset(1, a);
+    fset(2, b);
     (void)rv_hart_fp(&g_hart, r_type(OP_FP, 0u, rm, 1u, 2u, f7), &tval);
     if (flags != NULL) {
         *flags = g_hart.fcsr & 0x1Fu;
     }
-    return g_hart.f[0];
+    return fget(0);
 }
 
 /* Same, but the result is an integer register (comparisons, conversions). */
@@ -89,8 +114,8 @@ static uint32_t fp_op_x(uint32_t f7, uint32_t rm, uint32_t rs2,
     uint32_t tval = 0u;
 
     fp_reset();
-    g_hart.f[1] = a;
-    g_hart.f[2] = b;
+    fset(1, a);
+    fset(2, b);
     (void)rv_hart_fp(&g_hart, r_type(OP_FP, 3u, rm, 1u, rs2, f7), &tval);
     if (flags != NULL) {
         *flags = g_hart.fcsr & 0x1Fu;
@@ -134,17 +159,17 @@ static void test_fma_rounds_once(void)
     uint32_t tval = 0u;
 
     fp_reset();
-    g_hart.f[1] = a;
-    g_hart.f[2] = a;
-    g_hart.f[3] = p ^ 0x80000000u;       /* -p                       */
+    fset(1, a);
+    fset(2, a);
+    fset(3, p ^ 0x80000000u);       /* -p                       */
 
     /* FMADD.S f0, f1, f2, f3 -- opcode 0x43, rs3 in bits 31:27. */
     const uint32_t insn = 0x43u | (0u << 7) | (0u << 12) | (1u << 15) |
                           (2u << 20) | (3u << 27);
 
     CHECK_EQ(rv_hart_fp(&g_hart, insn, &tval), RV_EXC_NONE);
-    CHECK_EQ(g_hart.f[0], 0x33800000u);  /* 2^-24, not zero          */
-    CHECK(g_hart.f[0] != 0u);
+    CHECK_EQ(fget(0), 0x33800000u);  /* 2^-24, not zero          */
+    CHECK(fget(0) != 0u);
 }
 
 /*
@@ -332,13 +357,13 @@ void test_fpu(void)
         g_hart.x[1] = 0xFFFFFFFFu;
         (void)rv_hart_fp(&g_hart, r_type(OP_FP, 0u, FRM_RNE, 1u, 0u, 0x68u),
                          &tval);
-        CHECK_EQ(g_hart.f[0], 0xBF800000u);          /* -1 as signed   */
+        CHECK_EQ(fget(0), 0xBF800000u);          /* -1 as signed   */
 
         fp_reset();
         g_hart.x[1] = 0xFFFFFFFFu;
         (void)rv_hart_fp(&g_hart, r_type(OP_FP, 0u, FRM_RNE, 1u, 1u, 0x68u),
                          &tval);
-        CHECK_EQ(g_hart.f[0], 0x4F800000u);          /* 2^32 unsigned  */
+        CHECK_EQ(fget(0), 0x4F800000u);          /* 2^32 unsigned  */
     }
 
     /* ---- FSQRT, including the invalid case ---- */
@@ -359,15 +384,15 @@ void test_fpu(void)
         const uint32_t one_plus_ulp = 0x3F800001u;
 
         fp_reset();
-        g_hart.f[1] = one_plus_ulp;
-        g_hart.f[2] = one_plus_ulp;
-        g_hart.f[3] = 0xBF800000u;               /* -1 */
+        fset(1, one_plus_ulp);
+        fset(2, one_plus_ulp);
+        fset(3, 0xBF800000u);               /* -1 */
         /* FMADD.S f0, f1, f2, f3 */
         (void)rv_hart_fp(&g_hart,
                          OP_FMADD | (0u << 7) | (FRM_RNE << 12) | (1u << 15) |
                          (2u << 20) | (3u << 27),
                          &tval);
-        CHECK(g_hart.f[0] != 0u);
+        CHECK(fget(0) != 0u);
     }
 
     /* ---- mstatus.FS gates the whole extension ---- */

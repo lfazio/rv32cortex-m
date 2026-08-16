@@ -101,6 +101,106 @@ static uint32_t f_end(float32_t r, uint32_t *flags)
 
 static float32_t f_v(uint32_t bits) { float32_t f; f.v = bits; return f; }
 
+/* ------------------------------------------------------------------ */
+/* The register file, and NaN-boxing                                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * FLEN is 64 whenever D is built in, and then a single-precision value
+ * held in an f register must be **NaN-boxed**: upper 32 bits all ones.
+ * A register holding anything else reads as the canonical NaN when used
+ * as a float -- which is how a program that stored a double and then
+ * read it as a float gets a defined answer instead of half a mantissa.
+ *
+ * Every F operation goes through these two. That is the point: boxing
+ * is not a D feature sitting beside F, it is a change to what F reads
+ * and writes, and routing all of it through one pair is what stops half
+ * the file from being updated.
+ */
+static uint32_t fr32(const rv_hart_t *h, unsigned r)
+{
+#if RV_EXT_D
+    const uint64_t v = h->f[r];
+    return ((v >> 32) == 0xFFFFFFFFu) ? (uint32_t)v : F_CANON_NAN;
+#else
+    return (uint32_t)h->f[r];
+#endif
+}
+
+static void fw32(rv_hart_t *h, unsigned r, uint32_t v)
+{
+#if RV_EXT_D
+    h->f[r] = UINT64_C(0xFFFFFFFF00000000) | v;
+#else
+    h->f[r] = v;
+#endif
+}
+
+#if RV_EXT_D
+
+#define D_CANON_NAN  UINT64_C(0x7FF8000000000000)
+#define D_SIGN(x)    ((x) & UINT64_C(0x8000000000000000))
+#define D_EXP(x)     (((x) >> 52) & 0x7FFu)
+#define D_MANT(x)    ((x) & UINT64_C(0x000FFFFFFFFFFFFF))
+
+static bool d_is_nan(uint64_t x)  { return D_EXP(x) == 0x7FFu && D_MANT(x) != 0u; }
+static bool d_is_snan(uint64_t x)
+{
+    return d_is_nan(x) && (D_MANT(x) & UINT64_C(0x0008000000000000)) == 0u;
+}
+static bool d_is_inf(uint64_t x)  { return D_EXP(x) == 0x7FFu && D_MANT(x) == 0u; }
+static bool d_is_zero(uint64_t x) { return (x & UINT64_C(0x7FFFFFFFFFFFFFFF)) == 0u; }
+
+static float64_t d_v(uint64_t bits) { float64_t f; f.v = bits; return f; }
+
+static uint64_t fr64(const rv_hart_t *h, unsigned r) { return h->f[r]; }
+static void fw64(rv_hart_t *h, unsigned r, uint64_t v) { h->f[r] = v; }
+
+static uint64_t d_end(float64_t r, uint32_t *flags)
+{
+    /* SoftFloat's flag bits and RISC-V's fflags are numerically
+     * identical, which f_end states for floats and this restates
+     * rather than assumes. */
+    *flags |= (uint32_t)softfloat_exceptionFlags;
+    return r.v;
+}
+
+/*
+ * The NaN rule, which is RISC-V's and not IEEE's default: any NaN
+ * operand gives the *canonical* NaN rather than a propagated payload,
+ * and a signalling one also raises invalid. Written out for doubles
+ * rather than shared with the float version, because sharing would mean
+ * passing widths around and the one thing that must not drift between
+ * them is which NaN is canonical.
+ */
+static bool d_nan_result(uint64_t a, uint64_t b, uint64_t *out,
+                         uint32_t *flags)
+{
+    if (d_is_snan(a) || d_is_snan(b)) {
+        *flags |= FFLAG_NV;
+        *out = D_CANON_NAN;
+        return true;
+    }
+    if (d_is_nan(a) || d_is_nan(b)) {
+        *out = D_CANON_NAN;
+        return true;
+    }
+    return false;
+}
+
+static uint32_t d_classify(uint64_t a)
+{
+    const bool neg = D_SIGN(a) != 0u;
+
+    if (d_is_inf(a))  { return neg ? (1u << 0) : (1u << 7); }
+    if (d_is_zero(a)) { return neg ? (1u << 3) : (1u << 4); }
+    if (d_is_nan(a))  { return d_is_snan(a) ? (1u << 8) : (1u << 9); }
+    if (D_EXP(a) == 0u) { return neg ? (1u << 2) : (1u << 5); }
+    return neg ? (1u << 1) : (1u << 6);
+}
+
+#endif /* RV_EXT_D */
+
 /* Propagate NaN operands per the spec: any NaN in, canonical quiet NaN out. */
 static bool f_nan_result(uint32_t a, uint32_t b, uint32_t *out, uint32_t *flags)
 {
@@ -173,6 +273,192 @@ static void f_dirty(rv_hart_t *h)
     h->mstatus |= MSTATUS_FS_MASK;
 }
 
+#if RV_EXT_D
+/*
+ * The D half of OP-FP.
+ *
+ * A separate function rather than more arms in one switch, because the
+ * two share only their shape: every operand, result and NaN constant is
+ * a different width, and interleaving them is how a `.D` case comes to
+ * read a float. The funct5 values are the same in both, which is the
+ * one thing worth relying on -- so the cases below are in the same
+ * order as the single-precision ones and can be read beside them.
+ */
+static rv_exc_t fp_op_d(rv_hart_t *h, uint32_t insn, uint32_t funct5,
+                        uint32_t rd, uint32_t rm, uint32_t rs1,
+                        uint32_t rs2, uint32_t *tval)
+{
+    const uint64_t a = fr64(h, rs1);
+    const uint64_t b = fr64(h, rs2);
+    uint32_t flags = 0u;
+    uint64_t res;
+
+    switch (funct5) {
+    case 0x00u:   /* FADD.D */
+    case 0x01u:   /* FSUB.D */
+    case 0x02u:   /* FMUL.D */
+    case 0x03u: { /* FDIV.D */
+        if (!f_rm_valid(f_rm(h, rm))) {
+            *tval = insn;
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        if (d_nan_result(a, b, &res, &flags)) {
+            break;
+        }
+        f_begin(f_rm(h, rm));
+        float64_t sr;
+        switch (funct5) {
+        case 0x03u: sr = f64_div(d_v(a), d_v(b)); break;
+        case 0x02u: sr = f64_mul(d_v(a), d_v(b)); break;
+        case 0x01u: sr = f64_sub(d_v(a), d_v(b)); break;
+        default:    sr = f64_add(d_v(a), d_v(b)); break;
+        }
+        res = d_end(sr, &flags);
+        break;
+    }
+
+    case 0x0Bu:   /* FSQRT.D */
+        if (rs2 != 0u) {
+            *tval = insn;
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        f_begin(f_rm(h, rm));
+        res = d_end(f64_sqrt(d_v(a)), &flags);
+        break;
+
+    case 0x04u:   /* FSGNJ.D / FSGNJN.D / FSGNJX.D */
+        switch (rm) {
+        case 0: res = (a & UINT64_C(0x7FFFFFFFFFFFFFFF)) | D_SIGN(b); break;
+        case 1: res = (a & UINT64_C(0x7FFFFFFFFFFFFFFF)) |
+                      (D_SIGN(b) ^ UINT64_C(0x8000000000000000)); break;
+        case 2: res = a ^ D_SIGN(b); break;
+        default: *tval = insn; return RV_EXC_ILLEGAL_INSN;
+        }
+        break;
+
+    case 0x05u:   /* FMIN.D / FMAX.D */
+        if (rm > 1u) {
+            *tval = insn;
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        if (d_is_snan(a) || d_is_snan(b)) {
+            flags |= FFLAG_NV;
+        }
+        /* One NaN operand is ignored; two give the canonical NaN. And
+         * -0 is less than +0, which f64_lt treats as equal. */
+        if (d_is_nan(a) && d_is_nan(b)) {
+            res = D_CANON_NAN;
+        } else if (d_is_nan(a)) {
+            res = b;
+        } else if (d_is_nan(b)) {
+            res = a;
+        } else if (d_is_zero(a) && d_is_zero(b)) {
+            const bool want_neg = (rm == 0u);
+            res = ((D_SIGN(a) != 0u) == want_neg) ? a : b;
+        } else {
+            const bool lt = f64_lt(d_v(a), d_v(b));
+            res = ((rm == 0u) == lt) ? a : b;
+        }
+        break;
+
+    case 0x14u: { /* FLE.D / FLT.D / FEQ.D -- result to an X register */
+        uint32_t r;
+
+        if (d_is_nan(a) || d_is_nan(b)) {
+            /* FEQ is quiet: only a signalling NaN raises invalid. */
+            if (rm == 2u) {
+                if (d_is_snan(a) || d_is_snan(b)) { flags |= FFLAG_NV; }
+            } else {
+                flags |= FFLAG_NV;
+            }
+            r = 0u;
+        } else {
+            switch (rm) {
+            case 0: r = f64_le(d_v(a), d_v(b)); break;
+            case 1: r = f64_lt(d_v(a), d_v(b)); break;
+            case 2: r = f64_eq(d_v(a), d_v(b)); break;
+            default: *tval = insn; return RV_EXC_ILLEGAL_INSN;
+            }
+        }
+        h->fcsr |= flags;
+        h->x[rd] = r;
+        h->x[0] = 0u;
+        return RV_EXC_NONE;
+    }
+
+    case 0x18u: { /* FCVT.W.D / FCVT.WU.D -- result to an X register */
+        uint32_t r;
+
+        if (rs2 > 1u) {
+            *tval = insn;
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        softfloat_exceptionFlags = 0u;
+        softfloat_roundingMode = (uint_fast8_t)f_rm(h, rm);
+        r = (rs2 == 0u)
+          ? (uint32_t)f64_to_i32(d_v(a), softfloat_roundingMode, true)
+          : (uint32_t)f64_to_ui32(d_v(a), softfloat_roundingMode, true);
+        flags |= (uint32_t)softfloat_exceptionFlags;
+        h->fcsr |= flags;
+        h->x[rd] = r;
+        h->x[0] = 0u;
+        return RV_EXC_NONE;
+    }
+
+    case 0x1Cu: { /* FCLASS.D -- and there is no FMV.X.D on RV32 */
+        if (rs2 != 0u || rm != 1u) {
+            *tval = insn;
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        h->x[rd] = d_classify(a);
+        h->x[0] = 0u;
+        return RV_EXC_NONE;
+    }
+
+    case 0x1Au:   /* FCVT.D.W / FCVT.D.WU */
+        if (rs2 > 1u) {
+            *tval = insn;
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        /* Exact for every 32-bit integer, so no rounding and no flags --
+         * but f_begin still runs, because SoftFloat reads the mode. */
+        f_begin(f_rm(h, rm));
+        res = d_end((rs2 == 0u) ? i32_to_f64((int32_t)h->x[rs1])
+                                : ui32_to_f64(h->x[rs1]), &flags);
+        break;
+
+    case 0x08u:   /* FCVT.D.S -- widening, in the D group */
+        if (rs2 != 0u) {
+            *tval = insn;
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        {
+            const uint32_t sa = fr32(h, rs1);
+
+            if (f_is_snan(sa)) {
+                flags |= FFLAG_NV;
+                res = D_CANON_NAN;
+            } else if (f_is_nan(sa)) {
+                res = D_CANON_NAN;
+            } else {
+                f_begin(f_rm(h, rm));
+                res = d_end(f32_to_f64(f_v(sa)), &flags);
+            }
+        }
+        break;
+
+    default:
+        *tval = insn;
+        return RV_EXC_ILLEGAL_INSN;
+    }
+
+    fw64(h, rd, res);
+    h->fcsr |= flags;
+    f_dirty(h);
+    return RV_EXC_NONE;
+}
+#endif /* RV_EXT_D */
+
 rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
 {
     const uint32_t opcode = insn & 0x7Fu;
@@ -196,19 +482,43 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
 
     /* --- loads and stores ------------------------------------------- */
     if (opcode == OP_LOAD_FP || opcode == OP_STORE_FP) {
-        if (rm != 2u) {
+        /* funct3 is the width: 2 is .w and 3 is .d. */
+        const bool wide = (rm == 3u);
+
+        if (rm != 2u && !(RV_EXT_D && wide)) {
             *tval = insn;
-            return RV_EXC_ILLEGAL_INSN;   /* only .w exists without D */
+            return RV_EXC_ILLEGAL_INSN;
         }
         if (opcode == OP_LOAD_FP) {
             const uint32_t addr = h->x[rs1] + (uint32_t)((int32_t)insn >> 20);
             uint32_t v;
-            const rv_exc_t exc = rv_hart_load(h, addr, 4u, false, &v);
+            rv_exc_t exc = rv_hart_load(h, addr, 4u, false, &v);
+
             if (exc != RV_EXC_NONE) {
                 *tval = addr;
                 return exc;
             }
-            h->f[rd] = v;
+#if RV_EXT_D
+            if (wide) {
+                /*
+                 * FLD is eight bytes and the bus is 32 bits wide, so it
+                 * is two accesses -- and both complete before the
+                 * register is written, so a fault on the second leaves
+                 * it as the handler expects. Same shape as G4MH's
+                 * LD.DW.
+                 */
+                uint32_t hi;
+                exc = rv_hart_load(h, addr + 4u, 4u, false, &hi);
+                if (exc != RV_EXC_NONE) {
+                    *tval = addr + 4u;
+                    return exc;
+                }
+                fw64(h, rd, (uint64_t)v | ((uint64_t)hi << 32));
+                f_dirty(h);
+                return RV_EXC_NONE;
+            }
+#endif
+            fw32(h, rd, v);
             f_dirty(h);
             return RV_EXC_NONE;
         }
@@ -216,7 +526,28 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
             const int32_t imm = (int32_t)((insn & 0xFE000000u)) >> 20 |
                                 (int32_t)((insn >> 7) & 0x1Fu);
             const uint32_t addr = h->x[rs1] + (uint32_t)imm;
-            const rv_exc_t exc = rv_hart_store(h, addr, 4u, h->f[rs2]);
+            rv_exc_t exc;
+#if RV_EXT_D
+            if (wide) {
+                const uint64_t v = fr64(h, rs2);
+
+                exc = rv_hart_store(h, addr, 4u, (uint32_t)v);
+                if (exc != RV_EXC_NONE) {
+                    *tval = addr;
+                    return exc;
+                }
+                exc = rv_hart_store(h, addr + 4u, 4u, (uint32_t)(v >> 32));
+                if (exc != RV_EXC_NONE) {
+                    *tval = addr + 4u;
+                    return exc;
+                }
+                return RV_EXC_NONE;
+            }
+#endif
+            /* FSW stores the low half raw -- *not* through fr32, which
+             * would turn an unboxed register into a canonical NaN. The
+             * spec says the bits are stored as they are. */
+            exc = rv_hart_store(h, addr, 4u, (uint32_t)h->f[rs2]);
             if (exc != RV_EXC_NONE) {
                 *tval = addr;
                 return exc;
@@ -228,11 +559,59 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
     /* --- fused multiply-add ------------------------------------------ */
     if (opcode == OP_MADD || opcode == OP_MSUB ||
         opcode == OP_NMSUB || opcode == OP_NMADD) {
-        if ((funct7 & 3u) != 0u) {
+        const uint32_t fmt = funct7 & 3u;
+
+        if (fmt > (RV_EXT_D ? 1u : 0u)) {
             *tval = insn;
-            return RV_EXC_ILLEGAL_INSN;   /* fmt must be S */
+            return RV_EXC_ILLEGAL_INSN;   /* only S, and D when built in */
         }
-        const uint32_t a = h->f[rs1], b = h->f[rs2], c = h->f[rs3];
+#if RV_EXT_D
+        if (fmt == 1u) {
+            const uint64_t a = fr64(h, rs1), b = fr64(h, rs2);
+            const uint64_t c = fr64(h, rs3);
+            uint64_t dres;
+
+            if (!f_rm_valid(f_rm(h, rm))) {
+                *tval = insn;
+                return RV_EXC_ILLEGAL_INSN;
+            }
+            if (d_is_snan(a) || d_is_snan(b) || d_is_snan(c)) {
+                flags |= FFLAG_NV;
+                dres = D_CANON_NAN;
+            } else if (d_is_nan(a) || d_is_nan(b) || d_is_nan(c)) {
+                dres = D_CANON_NAN;
+            } else if ((d_is_zero(a) && d_is_inf(b)) ||
+                       (d_is_inf(a) && d_is_zero(b))) {
+                flags |= FFLAG_NV;            /* 0 * inf is invalid */
+                dres = D_CANON_NAN;
+            } else {
+                /*
+                 * f64_mulAdd rounds once, which is the whole content of
+                 * the instruction -- the same reason the single form
+                 * uses f32_mulAdd rather than a multiply and an add.
+                 *
+                 * The sign flips are applied to the *operands*, not to
+                 * the result: negating afterwards would give the wrong
+                 * answer for a zero result, whose sign the rounding
+                 * decides.
+                 */
+                const uint64_t sa = (opcode == OP_NMSUB ||
+                                     opcode == OP_NMADD)
+                                  ? (a ^ UINT64_C(0x8000000000000000)) : a;
+                const uint64_t sc = (opcode == OP_MSUB ||
+                                     opcode == OP_NMADD)
+                                  ? (c ^ UINT64_C(0x8000000000000000)) : c;
+
+                f_begin(f_rm(h, rm));
+                dres = d_end(f64_mulAdd(d_v(sa), d_v(b), d_v(sc)), &flags);
+            }
+            fw64(h, rd, dres);
+            h->fcsr |= flags;
+            f_dirty(h);
+            return RV_EXC_NONE;
+        }
+#endif
+        const uint32_t a = fr32(h, rs1), b = fr32(h, rs2), c = fr32(h, rs3);
         uint32_t res;
 
         if (f_is_snan(a) || f_is_snan(b) || f_is_snan(c)) {
@@ -258,12 +637,12 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
 
             f_begin(f_rm(h, rm));
             res = f_end(f32_mulAdd(f_v(sa), f_v(b), f_v(sc)), &flags);
-            h->f[rd] = res;
+            fw32(h, rd, res);
             h->fcsr |= flags;
             f_dirty(h);
             return RV_EXC_NONE;
         }
-        h->f[rd] = res;
+        fw32(h, rd, res);
         h->fcsr |= flags;
         f_dirty(h);
         return RV_EXC_NONE;
@@ -275,14 +654,22 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
     }
 
     /* --- OP-FP ------------------------------------------------------- */
-    if ((funct7 & 3u) != 0u) {
+    if ((funct7 & 3u) > (RV_EXT_D ? 1u : 0u)) {
         *tval = insn;
-        return RV_EXC_ILLEGAL_INSN;       /* fmt must be S */
+        return RV_EXC_ILLEGAL_INSN;       /* only S, and D when built in */
     }
 
     const uint32_t funct5 = funct7 >> 2;
-    const uint32_t a = h->f[rs1];
-    const uint32_t b = h->f[rs2];
+
+#if RV_EXT_D
+    if ((funct7 & 3u) == 1u) {
+        const rv_exc_t e = fp_op_d(h, insn, funct5, rd, rm, rs1, rs2, tval);
+        return e;
+    }
+#endif
+
+    const uint32_t a = fr32(h, rs1);
+    const uint32_t b = fr32(h, rs2);
     uint32_t res;
 
     switch (funct5) {
@@ -358,6 +745,35 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
         }
         break;
     }
+
+#if RV_EXT_D
+    case 0x08u:   /* FCVT.S.D -- narrowing, and it lives in the S group */
+        /*
+         * The pair FCVT.S.D / FCVT.D.S is split across the two formats:
+         * the *destination* picks the group and rs2 names the source.
+         * So this one is here and its opposite is in fp_op_d, which
+         * reads backwards until you notice that fmt is the result type
+         * everywhere else too.
+         */
+        if (rs2 != 1u) {
+            *tval = insn;
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        {
+            const uint64_t da = fr64(h, rs1);
+
+            if (d_is_snan(da)) {
+                flags |= FFLAG_NV;
+                res = F_CANON_NAN;
+            } else if (d_is_nan(da)) {
+                res = F_CANON_NAN;
+            } else {
+                f_begin(f_rm(h, rm));
+                res = f_end(f64_to_f32(d_v(da)), &flags);
+            }
+        }
+        break;
+#endif
 
     case 0x04u:   /* FSGNJ.S / FSGNJN.S / FSGNJX.S */
         switch (rm) {
@@ -446,7 +862,14 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
             return RV_EXC_ILLEGAL_INSN;
         }
         if (rm == 0u) {
-            r = a;                        /* raw bits, no interpretation */
+            /*
+             * FMV.X.W moves *bits*, so it takes the low half raw rather
+             * than through fr32 -- which would turn an unboxed register
+             * into the canonical NaN. "No interpretation" is the whole
+             * instruction, and with FLEN 64 that has to be said in code
+             * rather than assumed from the register being 32 bits wide.
+             */
+            r = (uint32_t)h->f[rs1];
         } else if (rm == 1u) {
             r = f_classify(a);
         } else {
@@ -482,7 +905,7 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
         return RV_EXC_ILLEGAL_INSN;
     }
 
-    h->f[rd] = res;
+    fw32(h, rd, res);
     h->fcsr |= flags;
     f_dirty(h);
     return RV_EXC_NONE;

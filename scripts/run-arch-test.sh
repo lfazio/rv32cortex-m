@@ -40,7 +40,7 @@ cfg_src="$here/tests/arch-test/$cfg_name"
 # only the Sv32 ones build -- naming a suite offers it, it does not force
 # it. Svadu is deliberately absent: this core implements Svade, which is
 # the opposite choice about who sets A and D.
-extensions="${ARCH_TEST_EXTENSIONS:-I,M,Zmmul,Zaamo,Zalrsc,Zca,Zicsr,Zicntr,Zifencei,Zicbom,Zicboz,Zbb,Zba,Zbc,Zbs,Zacas,F,Zcb,PMPU,Sv,Svbare,Svade,ExceptionsSv,SvPMP}"
+extensions="${ARCH_TEST_EXTENSIONS:-I,M,Zmmul,Zaamo,Zalrsc,Zca,Zicsr,Zicntr,Zifencei,Zicbom,Zicboz,Zbb,Zba,Zbc,Zbs,Zacas,F,D,Zcb,PMPU,Sv,Svbare,Svade,ExceptionsSv,SvPMP}"
 jobs="$(nproc)"
 verbose=""
 

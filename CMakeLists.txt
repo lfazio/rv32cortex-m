@@ -182,6 +182,10 @@ option(RV32_EXT_ZBB "Zbb basic bit manipulation" ON)
 option(RV32_EXT_ZBC "Zbc carry-less multiply" ON)
 option(RV32_EXT_ZBS "Zbs single-bit operations" ON)
 option(RV32_EXT_F "Single-precision floating point" ON)
+# Double precision. FLEN becomes 64 and single values are NaN-boxed, so
+# this changes what *F* reads and writes as well as adding instructions
+# -- see the note on rv_hart_t.f.
+option(RV32_EXT_D "Double-precision floating point (requires F)" ON)
 option(RV32_EXT_M "Integer multiply/divide" ON)
 option(RV32_EXT_A "Atomics" ON)
 option(RV32_EXT_C "Compressed instructions" ON)
@@ -316,6 +320,7 @@ if(EMU_FRONTEND_RV32)
 
     target_compile_definitions(emucore PUBLIC
         RV_EXT_F=$<BOOL:${RV32_EXT_F}>
+        RV_EXT_D=$<BOOL:${RV32_EXT_D}>
         RV_EXT_ZCB=$<BOOL:${RV32_EXT_ZCB}>
         RV_EXT_ZBA=$<BOOL:${RV32_EXT_ZBA}>
         RV_EXT_ZBB=$<BOOL:${RV32_EXT_ZBB}>
@@ -432,9 +437,7 @@ if((EMU_FRONTEND_RV32 AND RV32_EXT_F) OR (EMU_FRONTEND_G4MH AND G4MH_EXT_FPU))
         softfloat_state softfloat_raiseFlags)
 
     #
-    # Double precision, and only where a frontend implements it. The
-    # RV32 side is F and not D, so on an RV32-only build this list stays
-    # empty and the object set is what it always was.
+    # Double precision, and only where a frontend implements it.
     #
     # Named rather than globbed, for the reason the comment above gives:
     # source/ also holds the f128 and extF80 implementations, which want
@@ -442,9 +445,21 @@ if((EMU_FRONTEND_RV32 AND RV32_EXT_F) OR (EMU_FRONTEND_G4MH AND G4MH_EXT_FPU))
     # The 128-bit primitives below are not f128 -- they are what the
     # f64 path uses for its intermediate products.
     #
+    #
+    # Double precision, wanted by either frontend that has it: RV32's D
+    # and G4MH's .D operations are the same SoftFloat entry points.
+    #
+    set(_need_f64 OFF)
     if(EMU_FRONTEND_G4MH AND G4MH_EXT_FPU)
+        set(_need_f64 ON)
+    endif()
+    if(EMU_FRONTEND_RV32 AND RV32_EXT_F AND RV32_EXT_D)
+        set(_need_f64 ON)
+    endif()
+    if(_need_f64)
         list(APPEND _sf_names
-            f64_add f64_sub f64_mul f64_div f64_sqrt
+            f64_add f64_sub f64_mul f64_div f64_sqrt f64_mulAdd
+            f64_le f64_lt s_mulAddF64
             f64_eq f64_lt_quiet
             f64_to_i32 f64_to_ui32 f64_to_i64 f64_to_ui64
             i32_to_f64 ui32_to_f64 i64_to_f64 ui64_to_f64
@@ -473,7 +488,7 @@ if((EMU_FRONTEND_RV32 AND RV32_EXT_F) OR (EMU_FRONTEND_G4MH AND G4MH_EXT_FPU))
     # opposite SOFTFLOAT_FAST_INT64 setting and do not compile here.
     set(_sf_riscv softfloat_raiseFlags s_f32UIToCommonNaN s_commonNaNToF32UI
                   s_propagateNaNF32UI)
-    if(EMU_FRONTEND_G4MH AND G4MH_EXT_FPU)
+    if(_need_f64)
         list(APPEND _sf_riscv s_f64UIToCommonNaN s_commonNaNToF64UI
                               s_propagateNaNF64UI)
     endif()
@@ -556,7 +571,7 @@ endif()
 set(_frontends "")
 if(EMU_FRONTEND_RV32)
     set(_isa "RV32I")
-    foreach(_ext M A F C B)
+    foreach(_ext M A F D C B)
         if(RV32_EXT_${_ext})
             string(APPEND _isa "${_ext}")
         endif()

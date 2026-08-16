@@ -26,6 +26,9 @@ uint32_t rv_hart_misa(void)
 #if RV_EXT_F
     misa |= MISA_EXT('F');
 #endif
+#if RV_EXT_D
+    misa |= MISA_EXT('D');
+#endif
     /*
      * B is exactly Zba, Zbb and Zbs -- the three the 2024 ratification
      * folded into it. Zbc is deliberately absent from that list: it was
