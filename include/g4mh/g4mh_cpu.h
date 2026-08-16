@@ -13,13 +13,15 @@
  * Scope
  * -----
  *
- * This frontend implements the G4MH integer core: the 16-bit and 32-bit
- * base formats, the exception model at both EI and FE level, the system
- * register file and the interrupt controller. It does *not* implement the
- * FPU, the MPU, or the 48-bit and bit-string instruction groups; those
- * encodings raise a reserved-instruction exception, which is the correct
- * report for something not implemented, and each is a self-contained
- * addition to g4mh_interp.c rather than a change to anything around it.
+ * This frontend implements the G4MH integer core: the 16-bit, 32-bit,
+ * 48-bit and 64-bit base formats, the exception model at both EI and FE
+ * level, the system register file, the interrupt controller and the
+ * inter-CPU peripherals. Floating point is behind G4MH_EXT_FPU, single
+ * and double. It does *not* implement the MPU or the bit-string
+ * instruction group; those encodings raise a reserved-instruction
+ * exception, which is the correct report for something not implemented,
+ * and each is a self-contained addition to g4mh_interp.c rather than a
+ * change to anything around it.
  */
 #ifndef G4MH_G4MH_CPU_H
 #define G4MH_G4MH_CPU_H
@@ -248,9 +250,10 @@ void     g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg,
  * on, and reg3 is the field the manual calls reg3 (instruction bits
  * 31..27).
  *
- * Single precision only -- see the note at the top of g4mh_fpu.c for
- * exactly what is and is not implemented, and why the double-precision
- * and 64-bit-integer encodings still raise RIE.
+ * Single and double precision, the latter in general-register pairs --
+ * see the note at the top of g4mh_fpu.c for exactly what is and is not
+ * implemented, and for why the `.D` sub-opcodes being the `.S` ones
+ * with bit 4 set is not a rule to extrapolate from.
  */
 g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
                          uint32_t reg2, uint32_t reg3);

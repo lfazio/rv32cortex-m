@@ -244,11 +244,21 @@ session, and every one of them recurred:
 
   | test | why it passed anyway |
   |---|---|
+  | every double-precision test, against `SUBF.D` with its operands reversed | `CHECK_EQ` casts to `uint32_t`, and 2.0 against -2.0 differs in the *high* word |
   | `isatest`'s single `FCVT.W.S`, `10.0` with `rtz` | passes whether or not the NaN fixup exists, and NaN is the *whole* difficulty |
   | `test_lower_zero_register` | does `GET r0` then `PUT r0`; the bug needs the other order. Two lines apart |
   | `test_lower_flags` | only ever expected S/V/C **clear**, so a flag emitter that clobbered them looked right |
   | the `CMOVF.S` test | mirrored the compare and the select, so an inverted implementation cancelled out |
   | the G4MH FP encodings | all used fcbit 0, the one value where the right and wrong field splits coincide |
+
+  The last one is the newest and the least obvious, because the test
+  was not weak -- the **harness** was. `CHECK_EQ(got, want)` casts both
+  sides to `uint32_t`, which is written down in the macro and is
+  therefore not a compiler warning. Twelve assertions about doubles and
+  register pairs were comparing low halves, and the A/B that found it
+  was a break I expected to fail and that did not. `CHECK_EQ64` exists
+  now. **When an assertion is about something wider than the harness's
+  native width, check the harness before trusting the green.**
 
   Three rules fall out.
 

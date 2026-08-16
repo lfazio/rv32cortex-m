@@ -3857,39 +3857,282 @@ static void test_fp_disabled(void)
     CHECK_EQ(st.pc, EMU_GUEST_RAM_BASE + 0x84u);
 }
 
+/* ------------------------------------------------------------------ */
+/* Double precision                                                    */
+/* ------------------------------------------------------------------ */
+
 /*
- * Double precision is not implemented, and says so.
- *
- * The point is that it raises RIE rather than being decoded as some
- * single-precision neighbour: ADDF.D is sub 0x470 against ADDF.S's
- * 0x460, one bit apart, and a mask that was one bit too loose would
- * execute it as a single-precision add on the wrong register pair and
- * return a plausible number.
+ * A double lives in a register pair: the **lower** 32 bits in rN and the
+ * higher in rN+1, N even. Same convention as LD.DW.
  */
-static void test_fp_double_declined(void)
+static unsigned fp_ldd(uint16_t *prog, unsigned k, unsigned r, uint64_t v)
 {
-    /* RIE vectors to RBASE + 0x60. */
+    k = fp_ldi(prog, k, r, (uint32_t)v);
+    k = fp_ldi(prog, k, r + 1u, (uint32_t)(v >> 32));
+    return k;
+}
+
+#define D_1_0    UINT64_C(0x3FF0000000000000)
+#define D_2_0    UINT64_C(0x4000000000000000)
+#define D_3_0    UINT64_C(0x4008000000000000)
+#define D_0_5    UINT64_C(0x3FE0000000000000)
+#define D_M2_0   UINT64_C(0xC000000000000000)
+
+/* Read a double back out of the pair the guest left it in. */
+static uint64_t regd(unsigned r)
+{
+    return (uint64_t)reg(r) | ((uint64_t)reg(r + 1u) << 32);
+}
+
+/*
+ * The two-operand group. `reg3 <- reg2 OP reg1`, the same direction as
+ * single precision -- and SUBF is where that matters, because ADDF and
+ * MULF commute and would pass either way round.
+ */
+static void test_fp_double_arith(void)
+{
+    uint16_t prog[80];
+    unsigned k = 0;
+
+    k = fp_prologue(prog, k);
+    k = fp_ldd(prog, k, 10, D_1_0);            /* r10:r11 = 1.0 */
+    k = fp_ldd(prog, k, 12, D_3_0);            /* r12:r13 = 3.0 */
+
+    /* addf.d r10, r12, r14  ->  r14 = 3.0 + 1.0 */
+    prog[k++] = FP0(10, 12); prog[k++] = FP1(14, 0x470u);
+    /* subf.d r10, r12, r16  ->  r16 = 3.0 - 1.0, not 1.0 - 3.0 */
+    prog[k++] = FP0(10, 12); prog[k++] = FP1(16, 0x472u);
+    /* mulf.d r10, r12, r18 */
+    prog[k++] = FP0(10, 12); prog[k++] = FP1(18, 0x474u);
+    /* divf.d r10, r12, r20  ->  3.0 / 1.0 */
+    prog[k++] = FP0(10, 12); prog[k++] = FP1(20, 0x47Eu);
+    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 128u, &why,
+                      &retired)) { CHECK(false); return; }
+
+    CHECK_EQ64(regd(14), UINT64_C(0x4010000000000000));   /* 4.0 */
+    CHECK_EQ64(regd(16), D_2_0);                          /* 2.0 */
+    CHECK_EQ64(regd(18), D_3_0);                          /* 3.0 */
+    CHECK_EQ64(regd(20), D_3_0);                          /* 3.0 */
+}
+
+/*
+ * The pair convention itself, which is the half of double precision
+ * that has nothing to do with arithmetic.
+ *
+ * Two things are checked that an implementation reading only one
+ * register would still pass every arithmetic test with: that the *high*
+ * word is read (a value differing only above bit 32), and that an odd
+ * register number names the even pair below it -- the manual's rule and
+ * what CC-RH does with a warning.
+ */
+static void test_fp_double_pairs(void)
+{
+    uint16_t prog[80];
+    unsigned k = 0;
+
+    k = fp_prologue(prog, k);
+    /*
+     * 2.0 and 2.0000000000000004: identical in their low 32 bits for
+     * the first and differing only in the last mantissa bit, which is
+     * the *low* word. So one of these catches a high-word-only read and
+     * the other a low-word-only read.
+     */
+    k = fp_ldd(prog, k, 10, D_2_0);
+    k = fp_ldd(prog, k, 12, UINT64_C(0x4000000000000002));
+
+    /* subf.d r10, r12, r14 -> the difference is 2 ulp, not zero */
+    prog[k++] = FP0(10, 12); prog[k++] = FP1(14, 0x472u);
+
+    /* absf.d r10, r17 -- an *odd* destination, which must land in
+     * r16:r17 and not in r17:r18. */
+    prog[k++] = FP0(0, 10); prog[k++] = FP1(17, 0x458u);
+    /* negf.d r11, r18 -- an odd *source*, which must read r10:r11. */
+    prog[k++] = FP0(1, 11); prog[k++] = FP1(18, 0x458u);
+
+    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 128u, &why,
+                      &retired)) { CHECK(false); return; }
+
+    /* Non-zero, and small: reading only the high word would give 0. */
+    CHECK(regd(14) != 0u);
+    /*
+     * 0x4000000000000002 is 2.0 * (1 + 2/2^52) = 2 + 2^-50, so the
+     * difference is exactly 2^-50: exponent 1023 - 50 = 0x3CD, mantissa
+     * zero. Derived rather than copied from the run -- the first value
+     * here was 0x3CB, which is what "two ulp" gives if you forget the
+     * exponent is 1 and not 0.
+     */
+    CHECK_EQ64(regd(14), UINT64_C(0x3CD0000000000000));   /* 2^-50 */
+
+    CHECK_EQ64(regd(16), D_2_0);          /* absf.d wrote r16:r17 */
+    CHECK_EQ(reg(18), (uint32_t)D_M2_0);
+    CHECK_EQ64(regd(18), D_M2_0);         /* negf.d read r10:r11  */
+}
+
+/*
+ * The conversions between the two precisions and to and from 32-bit
+ * integers, which share sub-opcode 0x452 with reg1 as the selector.
+ */
+static void test_fp_double_convert(void)
+{
+    uint16_t prog[96];
+    unsigned k = 0;
+
+    k = fp_prologue(prog, k);
+    k = fp_ldi(prog, k, 10, F_3_0);            /* single 3.0        */
+    k = fp_ldd(prog, k, 12, D_2_0);            /* double 2.0        */
+    k = fp_ldi(prog, k, 14, 7u);               /* integer 7         */
+    k = fp_ldi(prog, k, 15, 0xFFFFFFFFu);      /* -1, or 4294967295 */
+
+    /* cvtf.sd r10, r16 -- single 3.0 to double */
+    prog[k++] = FP0(2, 10); prog[k++] = FP1(16, 0x452u);
+    /* cvtf.ds r12, r18 -- double 2.0 back to single */
+    prog[k++] = FP0(3, 12); prog[k++] = FP1(18, 0x452u);
+    /* cvtf.wd r14, r20 -- integer 7 to double */
+    prog[k++] = FP0(0, 14); prog[k++] = FP1(20, 0x452u);
+    /* cvtf.dw r12, r22 -- double 2.0 to integer */
+    prog[k++] = FP0(4, 12); prog[k++] = FP1(22, 0x450u);
+    /* cvtf.uwd r15, r24 -- *unsigned* word to double: 0xFFFFFFFF is
+     * 4294967295 here and -1 through the signed form, which is the one
+     * thing that tells the two apart. */
+    prog[k++] = FP0(0x10u, 15); prog[k++] = FP1(24, 0x452u);
+    /* cvtf.wd r15, r26 -- the signed reading of the same bits */
+    prog[k++] = FP0(0, 15); prog[k++] = FP1(26, 0x452u);
+
+    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 128u, &why,
+                      &retired)) { CHECK(false); return; }
+
+    CHECK_EQ64(regd(16), D_3_0);
+    CHECK_EQ(reg(18), F_2_0);
+    CHECK_EQ64(regd(20), UINT64_C(0x401C000000000000));   /* 7.0  */
+    CHECK_EQ(reg(22), 2u);
+    CHECK_EQ64(regd(24), UINT64_C(0x41EFFFFFFFE00000));   /* 4294967295.0 */
+    CHECK_EQ64(regd(26), UINT64_C(0xBFF0000000000000));   /* -1.0 */
+}
+
+/*
+ * The 64-bit integer conversions -- the .L and .UL forms, whose result
+ * or source is a register pair.
+ *
+ * The value is chosen to need more than 32 bits: 2^40 + 5 is exact in a
+ * double and is truncated to 5 by anything that keeps only the low
+ * word.
+ */
+static void test_fp_long_convert(void)
+{
+    uint16_t prog[96];
+    unsigned k = 0;
+    const uint64_t big = (UINT64_C(1) << 40) + 5u;
+
+    k = fp_prologue(prog, k);
+    k = fp_ldd(prog, k, 10, big);              /* integer, as a pair */
+
+    /* cvtf.ld r10, r12 -- long to double */
+    prog[k++] = FP0(1, 10); prog[k++] = FP1(12, 0x452u);
+    /* cvtf.dl r12, r14 -- and back */
+    prog[k++] = FP0(4, 12); prog[k++] = FP1(14, 0x454u);
+    /* cvtf.ls r10, r16 -- long to *single*, which cannot hold it
+     * exactly, so this also says the rounding happened */
+    prog[k++] = FP0(1, 10); prog[k++] = FP1(16, 0x442u);
+    /* cvtf.sl r16, r18 -- single back to long */
+    prog[k++] = FP0(4, 16); prog[k++] = FP1(18, 0x444u);
+    /* trncf.dl on a value with a fraction: 2.75 truncates to 2 */
+    k = fp_ldd(prog, k, 20, UINT64_C(0x4006000000000000));
+    prog[k++] = FP0(1, 20); prog[k++] = FP1(22, 0x454u);
+
+    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 128u, &why,
+                      &retired)) { CHECK(false); return; }
+
+    CHECK_EQ64(regd(14), big);            /* round trip through a double */
+    /* Through a single it rounds: 2^40 + 5 has 41 significant bits and
+     * a float has 24, so the 5 is lost. That is the point -- a result
+     * of exactly `big` here would mean the single step did nothing. */
+    CHECK_EQ64(regd(18), UINT64_C(1) << 40);
+    CHECK_EQ64(regd(22), 2u);             /* trncf.dl of 2.75 */
+}
+
+/*
+ * CMPF.D and CMOVF.D, at the single forms' sub-opcodes with bit 4 set.
+ *
+ * The relation is `reg2 < reg1`, which is the direction this file has
+ * already had backwards once for CMPF.S -- so it is checked with
+ * operands that are not equal, in both orders.
+ */
+static void test_fp_double_compare(void)
+{
+    uint16_t prog[96];
+    unsigned k = 0;
+
+    k = fp_prologue(prog, k);
+    k = fp_ldd(prog, k, 10, D_1_0);
+    k = fp_ldd(prog, k, 12, D_2_0);
+    k = fp_ldi(prog, k, 20, 0xAAu);
+    k = fp_ldi(prog, k, 21, 0u);
+    k = fp_ldi(prog, k, 22, 0xBBu);
+    k = fp_ldi(prog, k, 23, 0u);
+
+    /* cmpf.d 0x4 (OLT), reg1 = r12 (2.0), reg2 = r10 (1.0), fcbit 0.
+     * 1.0 < 2.0 is true, so CC0 is set. */
+    prog[k++] = FP0(12, 10); prog[k++] = FP1(4, 0x430u);
+    /* cmovf.d fcbit 0: r24:r25 <- CC0 ? r20:r21 : r22:r23 */
+    prog[k++] = FP0(20, 22); prog[k++] = FP1(24, 0x410u);
+
+    /* The other way round: 2.0 < 1.0 is false, into fcbit 1. */
+    prog[k++] = FP0(10, 12); prog[k++] = FP1(4, 0x432u);
+    prog[k++] = FP0(20, 22); prog[k++] = FP1(26, 0x412u);
+
+    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 128u, &why,
+                      &retired)) { CHECK(false); return; }
+
+    CHECK_EQ(reg(24), 0xAAu);           /* CC0 set   -> reg1 */
+    CHECK_EQ(reg(26), 0xBBu);           /* CC1 clear -> reg2 */
+}
+
+/*
+ * What is still declined, and the reason it is worth a test: FMAF has
+ * no double form at all. CC-RH rejects `fmaf.d`, so 0x4F0 is not
+ * "FMAF.D" -- and the .D sub-opcodes being the .S ones with bit 4 set
+ * is a fact about the encodings that exist, not a rule for generating
+ * new ones. An implementation that applied the rule would execute
+ * something.
+ */
+static void test_fp_double_gaps(void)
+{
     uint16_t prog[0x60];
     unsigned k = 0;
 
     memset(prog, 0, sizeof(prog));
     k = fp_prologue(prog, k);
-    k = fp_ldi(prog, k, 10, F_1_0);
-    prog[k++] = FP0(10, 10); prog[k++] = FP1(12, 0x470u);   /* ADDF.D  */
+    k = fp_ldd(prog, k, 10, D_1_0);
+    prog[k++] = FP0(10, 10); prog[k++] = FP1(12, 0x4F0u);   /* not FMAF.D */
     prog[0x30] = 0x07E0u; prog[0x31] = SUB_HALT;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
-    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 128u, &why,
                       &retired)) { CHECK(false); return; }
 
-    emu_cpu_status_t st;
-    emu_core_status(&g_core, &st);
-
-    CHECK_EQ(why, EMU_RUN_WFI);
-    CHECK(st.traps >= 1u);
-    CHECK_EQ(reg(12), 0u);                      /* not executed as .S    */
-    CHECK_EQ(st.pc, EMU_GUEST_RAM_BASE + 0x64u);
+    CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_RIE);
+    CHECK_EQ64(regd(12), 0u);             /* nothing was computed */
 }
 
 /*
@@ -4015,7 +4258,12 @@ void test_g4mh(void)
     test_fp_convert();
     test_fp_compare_and_move();
     test_fp_disabled();
-    test_fp_double_declined();
+    test_fp_double_arith();
+    test_fp_double_pairs();
+    test_fp_double_convert();
+    test_fp_long_convert();
+    test_fp_double_compare();
+    test_fp_double_gaps();
     test_fp_fma_rounds_once();
 #endif
 #if G4MH_PE_COUNT > 1

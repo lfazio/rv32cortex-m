@@ -13,14 +13,26 @@
  * differently: FPSR's rounding-mode encoding, its three exception bit
  * groups, the CC bits, and the sixteen comparison conditions.
  *
- * Scope: **single precision only**. Every `.S` operation in the manual's
- * Section 2.4.4 is here; every `.D` one is not, and neither are the
- * 64-bit-integer (`.L`/`.UL`) conversions, whose results land in a
- * register *pair* and so need a wider destination than a general
- * register. Those encodings keep raising RIE, which is the correct
- * report for something unimplemented and is what makes the gap visible
- * rather than silently wrong. This mirrors the RV32 frontend, which
- * implements F and not D.
+ * Scope: single **and** double precision, and the 64-bit-integer
+ * (`.L`/`.UL`) conversions. Unlike the RV32 frontend, which is F and not
+ * D -- the difference is not a policy, it is that RH850's doubles live
+ * in general-register *pairs* rather than in a separate file, so the
+ * only new machinery is reading and writing two registers instead of
+ * one.
+ *
+ * The `.D` sub-opcodes are the `.S` ones with **bit 4 set**: 0x460
+ * ADDF.S is 0x470 ADDF.D, 0x448 is 0x458, 0x420 CMPF.S is 0x430. That
+ * regularity came off CC-RH and is recorded as a fact about the
+ * encodings that exist, *not* as a rule for generating new ones -- the
+ * fused multiply-adds have no double form at all (CC-RH rejects
+ * `fmaf.d`), so 0x4F0 is not FMAF.D and is not decoded.
+ *
+ * Still declined: the half-precision conversions at reg1 0x02/0x03 of
+ * sub 0x442, whose storage format has no other use here.
+ *
+ * Double precision costs the F746 firmware **9,680 bytes** of SoftFloat
+ * -- 129,560 to 139,240 of text -- which is why the f64 entry points in
+ * CMakeLists.txt are added only when this frontend's FPU is on.
  *
  * There is no reference model for any of this. RV32 has riscv-arch-test
  * and Sail to disagree with; G4MH has hand-written tests and a PDF. Read
@@ -61,6 +73,45 @@ static bool f_is_zero(uint32_t x) { return (x & 0x7FFFFFFFu) == 0u; }
 static bool f_is_neg(uint32_t x)  { return (x & 0x80000000u) != 0u; }
 
 static float32_t f_v(uint32_t bits) { float32_t f; f.v = bits; return f; }
+
+/* ------------------------------------------------------------------ */
+/* Double precision, and the register pairs it lives in                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A double occupies two general registers: the **lower** 32 bits in rN
+ * and the higher in rN+1, with N even. Same convention as LD.DW, and
+ * checked the same way -- CC-RH aligns an odd operand down and warns,
+ * and the manual's opcode diagrams draw the field's low bit as a
+ * hardwired 0 rather than as part of the register number.
+ *
+ * Masking rather than declining, because that is what the architecture
+ * says happens ("bit 0 of the register number is ignored") and because
+ * no assembler can produce the case, so RIE would be a rule invented
+ * here.
+ */
+#define D_QNAN          UINT64_C(0x7FF8000000000000)
+
+#define D_EXP(x)        (((x) >> 52) & 0x7FFu)
+#define D_MANT(x)       ((x) & UINT64_C(0x000FFFFFFFFFFFFF))
+
+static bool d_is_nan(uint64_t x)  { return D_EXP(x) == 0x7FFu && D_MANT(x) != 0u; }
+static bool d_is_snan(uint64_t x)
+{
+    return d_is_nan(x) && (D_MANT(x) & UINT64_C(0x0008000000000000)) == 0u;
+}
+static bool d_is_subnormal(uint64_t x)
+{
+    return D_EXP(x) == 0u && D_MANT(x) != 0u;
+}
+
+static float64_t d_v(uint64_t bits) { float64_t f; f.v = bits; return f; }
+
+static uint64_t d_get(const g4mh_cpu_t *c, uint32_t reg)
+{
+    const uint32_t n = reg & ~1u;
+    return (uint64_t)c->r[n] | ((uint64_t)c->r[n + 1u] << 32);
+}
 
 /* ------------------------------------------------------------------ */
 /* FPSR                                                                */
@@ -197,6 +248,20 @@ static uint32_t f_flush_in(g4mh_cpu_t *c, uint32_t x, bool *flushed)
     return x & 0x80000000u;             /* zero, same sign */
 }
 
+/* The same for a double. Split from the bit helpers above only because
+ * fpsr_get is declared between them. */
+static uint64_t d_flush_in(g4mh_cpu_t *c, uint64_t x, bool *flushed)
+{
+    if (!d_is_subnormal(x)) {
+        return x;
+    }
+    if ((fpsr_get(c) & G4MH_FPSR_FS) == 0u) {
+        return x;                       /* caller raises E */
+    }
+    *flushed = true;
+    return x & UINT64_C(0x8000000000000000);   /* zero, same sign */
+}
+
 /* ------------------------------------------------------------------ */
 /* Comparison                                                          */
 /* ------------------------------------------------------------------ */
@@ -245,6 +310,34 @@ static bool f_compare(uint32_t fcond, uint32_t reg1_v, uint32_t reg2_v,
            (((fcond >> 0) & 1u) && unordered);
 }
 
+/*
+ * The same sixteen conditions on a double. Written out rather than
+ * shared with a width parameter, because sharing would mean passing
+ * both operands as uint64 and reconstructing the float32 case -- and
+ * the one thing that must not drift between the two is the *operand
+ * order*, which is `reg2 < reg1` and which this file has already had
+ * backwards once.
+ */
+static bool d_compare(uint32_t fcond, uint64_t reg1_v, uint64_t reg2_v,
+                      bool *invalid)
+{
+    const bool unordered = d_is_nan(reg1_v) || d_is_nan(reg2_v);
+    bool less = false;
+    bool equal = false;
+
+    *invalid = d_is_snan(reg1_v) || d_is_snan(reg2_v) ||
+               (unordered && (fcond & 8u) != 0u);
+
+    if (!unordered) {
+        less  = f64_lt_quiet(d_v(reg2_v), d_v(reg1_v));
+        equal = f64_eq(d_v(reg2_v), d_v(reg1_v));
+    }
+
+    return (((fcond >> 2) & 1u) && less) ||
+           (((fcond >> 1) & 1u) && equal) ||
+           (((fcond >> 0) & 1u) && unordered);
+}
+
 /* ------------------------------------------------------------------ */
 /* The instruction interface                                           */
 /* ------------------------------------------------------------------ */
@@ -281,6 +374,21 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
     bool wrote_int = false;             /* result is an integer, not a float */
 
     /*
+     * The double-precision operands, and a 64-bit result.
+     *
+     * Read unconditionally beside the 32-bit ones: reg1 is an opcode
+     * extension in several groups, so reading it as a pair is harmless
+     * where it is not an operand, and the alternative is a fetch inside
+     * every double case. `wide` says the destination is a register pair
+     * -- set by the case, honoured once at the tail, so there is exactly
+     * one place a result is written.
+     */
+    uint64_t da = d_get(c, reg1);
+    uint64_t db = d_get(c, reg2);
+    uint64_t res64 = 0u;
+    bool wide = false;
+
+    /*
      * TRFSR shares CMOVF.S's encoding and is told apart by all three
      * register fields being zero -- the same shape as CALLT hiding in
      * MOV imm5. Tested first, because CMOVF.S would otherwise consume it
@@ -299,6 +407,179 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
     }
 
     switch (sub) {
+    /* ------------------------------------------------------------- */
+    /* Double precision: the single-precision sub-opcode with bit 4   */
+    /* set. 0x460 ADDF.S is 0x470 ADDF.D, 0x448 is 0x458, and so on.  */
+    /*                                                                */
+    /* That regularity came off CC-RH rather than off the manual, and */
+    /* is stated here as a *fact about the encodings* and not as a    */
+    /* rule to derive new ones from: the FMA family has no .D form at */
+    /* all -- CC-RH rejects `fmaf.d` -- so 0x4F0 is not FMAF.D and is */
+    /* not decoded.                                                   */
+    /* ------------------------------------------------------------- */
+
+    case 0x458:                                 /* ABSF.D / NEGF.D      */
+        /* No arithmetic, so no flags -- and no flushing either: "a
+         * subnormal input will not be flushed even if FS is 1", which
+         * the manual says of these two specifically. */
+        if (reg1 == 0u) {
+            res64 = db & UINT64_C(0x7FFFFFFFFFFFFFFF);
+        } else if (reg1 == 1u) {
+            res64 = db ^ UINT64_C(0x8000000000000000);
+        } else {
+            return G4MH_EXC_RIE;
+        }
+        wide = true;
+        break;
+
+    case 0x45E: {                               /* SQRTF/RECIPF/RSQRTF.D */
+        db = d_flush_in(c, db, &flushed);
+        if (d_is_subnormal(db)) { return G4MH_EXC_FPP; }
+
+        f_begin(c);
+        switch (reg1) {
+        case 0u:
+            res64 = f64_sqrt(d_v(db)).v;
+            break;
+        case 1u:
+            /* 1/x, and as a division rather than an approximation: the
+             * manual specifies the result exactly, and an approximation
+             * would be a second rounding path for one instruction. */
+            res64 = f64_div(d_v(UINT64_C(0x3FF0000000000000)), d_v(db)).v;
+            break;
+        case 2u:
+            res64 = f64_div(d_v(UINT64_C(0x3FF0000000000000)),
+                            f64_sqrt(d_v(db))).v;
+            break;
+        default:
+            return G4MH_EXC_RIE;
+        }
+        raised = f_flags();
+        wide = true;
+        break;
+    }
+
+    case 0x470:                                 /* ADDF.D reg1,reg2,reg3 */
+    case 0x472:                                 /* SUBF.D               */
+    case 0x474:                                 /* MULF.D               */
+    case 0x47E:                                 /* DIVF.D               */
+    case 0x478:                                 /* MAXF.D               */
+    case 0x47A: {                               /* MINF.D               */
+        da = d_flush_in(c, da, &flushed);
+        db = d_flush_in(c, db, &flushed);
+        if (d_is_subnormal(da) || d_is_subnormal(db)) {
+            return G4MH_EXC_FPP;
+        }
+
+        f_begin(c);
+        switch (sub) {
+        case 0x470: res64 = f64_add(d_v(db), d_v(da)).v; break;
+        case 0x472: res64 = f64_sub(d_v(db), d_v(da)).v; break;
+        case 0x474: res64 = f64_mul(d_v(db), d_v(da)).v; break;
+        case 0x47E: res64 = f64_div(d_v(db), d_v(da)).v; break;
+        default: {
+            /*
+             * MAXF/MINF. IEEE minNum/maxNum: a quiet NaN operand is
+             * *ignored* rather than propagated, and only a signalling
+             * one raises invalid. SoftFloat has no f64_min, so this is
+             * written out -- and written the same way as the single
+             * form beside it, which is the only defence against the two
+             * disagreeing.
+             */
+            const bool want_max = (sub == 0x478);
+            const bool na = d_is_nan(da), nb = d_is_nan(db);
+
+            softfloat_exceptionFlags = 0u;
+            if (d_is_snan(da) || d_is_snan(db)) {
+                softfloat_exceptionFlags |= softfloat_flag_invalid;
+            }
+            if (na && nb) {
+                res64 = D_QNAN;
+            } else if (na) {
+                res64 = db;
+            } else if (nb) {
+                res64 = da;
+            } else {
+                const bool a_lt = f64_lt_quiet(d_v(da), d_v(db));
+                res64 = (a_lt != want_max) ? da : db;
+            }
+            break;
+        }
+        }
+        raised = f_flags();
+        wide = true;
+        break;
+    }
+
+    /* ---- double to integer, one rounding mode per reg1 ---- */
+    case 0x450:                                 /* .DW / .DUW           */
+    case 0x454: {                               /* .DL / .DUL           */
+        const bool is_unsigned = (reg1 & 0x10u) != 0u;
+        const bool to64 = (sub == 0x454u);
+        uint_fast8_t rm;
+
+        switch (reg1 & 0x0Fu) {
+        case 0u: rm = softfloat_round_near_even; break;
+        case 1u: rm = softfloat_round_minMag;    break;
+        case 2u: rm = softfloat_round_max;       break;
+        case 3u: rm = softfloat_round_min;       break;
+        case 4u: rm = sf_round((fpsr_get(c) & G4MH_FPSR_RM_MASK) >>
+                               G4MH_FPSR_RM_SHIFT);
+                 break;
+        default: return G4MH_EXC_RIE;
+        }
+
+        db = d_flush_in(c, db, &flushed);
+        if (d_is_subnormal(db)) { return G4MH_EXC_FPP; }
+
+        softfloat_exceptionFlags = 0u;
+        if (to64) {
+            res64 = is_unsigned ? (uint64_t)f64_to_ui64(d_v(db), rm, true)
+                                : (uint64_t)f64_to_i64(d_v(db), rm, true);
+            wide = true;
+        } else {
+            res = is_unsigned ? (uint32_t)f64_to_ui32(d_v(db), rm, true)
+                              : (uint32_t)f64_to_i32(d_v(db), rm, true);
+        }
+        raised = f_flags();
+        wrote_int = true;
+        break;
+    }
+
+    /*
+     * The conversions whose *destination* is a double, plus the two
+     * that change precision. reg1 is the whole selector, with bit 4 the
+     * unsigned form of an integer source -- the same shape as the
+     * float-to-integer groups.
+     */
+    case 0x452: {
+        f_begin(c);
+        switch (reg1) {
+        case 0x00u: res64 = i32_to_f64((int32_t)b).v;    break;  /* W  */
+        case 0x10u: res64 = ui32_to_f64(b).v;            break;  /* UW */
+        case 0x01u: res64 = i64_to_f64((int64_t)db).v;   break;  /* L  */
+        case 0x11u: res64 = ui64_to_f64(db).v;           break;  /* UL */
+        case 0x02u:                                              /* S  */
+            b = f_flush_in(c, b, &flushed);
+            if (f_is_subnormal(b)) { return G4MH_EXC_FPP; }
+            res64 = f32_to_f64(f_v(b)).v;
+            break;
+        case 0x03u: {                                            /* D->S */
+            /* The one member of this group whose result is 32 bits. */
+            db = d_flush_in(c, db, &flushed);
+            if (d_is_subnormal(db)) { return G4MH_EXC_FPP; }
+            res = f64_to_f32(d_v(db)).v;
+            raised = f_flags();
+            goto narrow_done;
+        }
+        default: return G4MH_EXC_RIE;
+        }
+        raised = f_flags();
+        wide = true;
+    narrow_done:
+        break;
+    }
+
     /* ---- one-operand group, reg1 selects the operation ---- */
     case 0x448:                                 /* ABSF.S / NEGF.S      */
         if (reg1 == 0u) {
@@ -440,14 +721,12 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
         /*
          * reg1 is the opcode extension *and* carries the signedness in
          * bit 4: 0x0n is the signed form and 0x1n the unsigned one, with
-         * n selecting the rounding. 0x444 is the 64-bit (.L) destination
-         * group, which is not implemented -- its result needs a register
-         * pair -- so it declines rather than truncating silently.
+         * n selecting the rounding. 0x440 puts the result in one
+         * register and 0x444 in a pair -- the .L/.UL group -- and the
+         * reg1 encoding is identical across both, and across the
+         * double-source groups at 0x450/0x454.
          */
-        if (sub == 0x444) {
-            return G4MH_EXC_RIE;                /* .L / .UL, see above  */
-        }
-
+        const bool to64 = (sub == 0x444u);
         const bool is_unsigned = (reg1 & 0x10u) != 0u;
         uint_fast8_t rm;
 
@@ -466,10 +745,13 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
         if (f_is_subnormal(b)) { return G4MH_EXC_FPP; }
 
         softfloat_exceptionFlags = 0u;
-        if (is_unsigned) {
-            res = (uint32_t)f32_to_ui32(f_v(b), rm, true);
+        if (to64) {
+            res64 = is_unsigned ? (uint64_t)f32_to_ui64(f_v(b), rm, true)
+                                : (uint64_t)f32_to_i64(f_v(b), rm, true);
+            wide = true;
         } else {
-            res = (uint32_t)f32_to_i32(f_v(b), rm, true);
+            res = is_unsigned ? (uint32_t)f32_to_ui32(f_v(b), rm, true)
+                              : (uint32_t)f32_to_i32(f_v(b), rm, true);
         }
         raised = f_flags();
         wrote_int = true;
@@ -479,20 +761,23 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
     /* ---- integer to float ---- */
     case 0x442: {
         /*
-         * reg1 selects the source width and signedness the same way.
-         * 0x00 word to single, 0x10 unsigned word to single; the 0x01 and
-         * 0x11 forms are the 64-bit sources and are declined with the
-         * rest of the .L group. 0x02/0x03 are the half-precision
-         * conversions, which this frontend does not implement either --
-         * the storage format has no other use here and adding it would
-         * mean a second rounding path for one instruction pair.
+         * reg1 selects the source width and signedness the same way:
+         * 0x00 word, 0x10 unsigned word, 0x01 long, 0x11 unsigned long,
+         * all to single.
          */
         f_begin(c);
-        if (reg1 == 0x00u) {
-            res = i32_to_f32((int32_t)b).v;
-        } else if (reg1 == 0x10u) {
-            res = ui32_to_f32(b).v;
-        } else {
+        switch (reg1) {
+        case 0x00u: res = i32_to_f32((int32_t)b).v;  break;      /* W  */
+        case 0x10u: res = ui32_to_f32(b).v;          break;      /* UW */
+        case 0x01u: res = i64_to_f32((int64_t)db).v; break;      /* L  */
+        case 0x11u: res = ui64_to_f32(db).v;         break;      /* UL */
+        default:
+            /*
+             * 0x02/0x03 are the half-precision conversions, which this
+             * frontend does not implement: the storage format has no
+             * other use here and adding it would mean a second rounding
+             * path for one instruction pair.
+             */
             return G4MH_EXC_RIE;
         }
         raised = f_flags();
@@ -500,6 +785,42 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
     }
 
     default:
+        /*
+         * CMPF.D and CMOVF.D, which sit at the single forms' sub-opcode
+         * with bit 4 set exactly as the arithmetic does: 0x420 -> 0x430
+         * and 0x400 -> 0x410. Placed before the single-precision tests
+         * below because the masks differ only in that bit, and a reader
+         * checking the order should not have to work out which wins.
+         */
+        if ((sub & 0x7F1u) == 0x430u) {         /* CMPF.D               */
+            const uint32_t cond = reg3 & 0xFu;
+            const uint32_t fcbit = (sub >> 1) & 7u;
+            bool invalid = false;
+            const bool r = d_compare(cond, da, db, &invalid);
+            uint32_t fpsr = fpsr_get(c);
+
+            fpsr &= ~(1u << (G4MH_FPSR_CC_SHIFT + fcbit));
+            fpsr |= (r ? 1u : 0u) << (G4MH_FPSR_CC_SHIFT + fcbit);
+            fpsr_set(c, fpsr);
+
+            return f_end(c, invalid ? G4MH_FPX_V : 0u) ? G4MH_EXC_FPP
+                                                       : G4MH_EXC_NONE;
+        }
+        if ((sub & 0x7F1u) == 0x410u) {         /* CMOVF.D              */
+            const uint32_t fcbit = (sub >> 1) & 7u;
+            const bool taken =
+                ((fpsr_get(c) >> (G4MH_FPSR_CC_SHIFT + fcbit)) & 1u) != 0u;
+            const uint64_t v = taken ? da : db;
+            const uint32_t rd = reg3 & ~1u;
+
+            /* A pair move, and no arithmetic: no flags, no flushing. */
+            if (rd != 0u) {
+                c->r[rd] = (uint32_t)v;
+            }
+            c->r[rd + 1u] = (uint32_t)(v >> 32);
+            return G4MH_EXC_NONE;
+        }
+
         /* CMPF.S and CMOVF.S carry a condition in bits 3..1 of `sub`. */
         if ((sub & 0x7F1u) == 0x420u) {         /* CMPF.S               */
             /*
@@ -590,7 +911,20 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
     if (f_end(c, raised)) {
         return G4MH_EXC_FPP;
     }
-    if (reg3 != 0u) {
+    if (wide) {
+        /*
+         * A register pair: the **lower** 32 bits in rN and the higher in
+         * rN+1, N forced even. Writing r0 is discarded as everywhere
+         * else, but rN+1 is still written when N is 0 -- r1 is a real
+         * register and the architecture stores the high half there.
+         */
+        const uint32_t rd = reg3 & ~1u;
+
+        if (rd != 0u) {
+            c->r[rd] = (uint32_t)res64;
+        }
+        c->r[rd + 1u] = (uint32_t)(res64 >> 32);
+    } else if (reg3 != 0u) {
         c->r[reg3] = res;
     }
     (void)wrote_int;

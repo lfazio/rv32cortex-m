@@ -79,7 +79,6 @@ life of this frontend it did not report anything at all.
 
 | gap | why it matters |
 |---|---|
-| double precision, and the `.L`/`.UL` conversions | single precision is there; `G4MH_EXT_FPU` gates the lot |
 | `LDM.MP` / `STM.MP` | **blocked on the MPU, not on the encodings.** They transfer `MPLA`/`MPUA`/`MPAT` entries, and no access check here consults those registers — so executing them would move guest memory into registers nothing enforces, which is worse than RIE. A guest configuring protection would get silence instead of a report |
 | `RESBANK` | needs the register banks modelled. Decoded and reports RIE rather than being mistaken for `DI` |
 | `DIVQ`/`DIVQU` with `reg2 == reg3` | the manual leaves the flags undefined there; this treats it as the ordinary case |
@@ -160,6 +159,50 @@ width and was ending a block at every large constant.
 `tests/guest/g4mh/disp23.asm` is the end-to-end check, and the half
 that is not this project's own encoder: CC-RH produces the bytes, the
 emulator runs them, 8 checks and 0 failures on both backends.
+
+## Floating point
+
+Single **and** double precision, behind `G4MH_EXT_FPU`, on Berkeley
+SoftFloat — the same library the RV32 side uses, for the reason
+CLAUDE.md records: an FP unit built on the host's own instructions is a
+second implementation of semantics that has to be exact, and the two
+disagree exactly where the architecture is fussiest.
+
+That this frontend has D where RV32 has only F is not a policy
+difference. RH850 keeps doubles in general-register **pairs** — low 32
+bits in rN, high in rN+1, N even, the same convention as `LD.DW` — so
+the only new machinery is reading and writing two registers instead of
+one. There is no separate register file to add.
+
+**The `.D` sub-opcodes are the `.S` ones with bit 4 set**: `0x460`
+ADDF.S is `0x470` ADDF.D, `0x448` is `0x458`, `0x420` CMPF.S is
+`0x430`. Off CC-RH, and recorded as a fact about the encodings that
+*exist* rather than as a rule for generating new ones — the fused
+multiply-adds have no double form at all (CC-RH rejects `fmaf.d`), so
+`0x4F0` is not FMAF.D and is not decoded. A test asserts that.
+
+The four float-to-integer groups share one `reg1` encoding: the low
+nibble selects the rounding (0 nearest, 1 truncate, 2 ceil, 3 floor,
+4 whatever FPSR says) and bit 4 selects the unsigned form. Which
+widths are involved comes from the sub-opcode — `0x440` single→word,
+`0x444` single→long, `0x450` double→word, `0x454` double→long.
+
+Still declined: the half-precision conversions at `reg1` `0x02`/`0x03`
+of sub `0x442`, whose storage format has no other use here.
+
+Double precision costs the F746 firmware **9,680 bytes** — 129,560 to
+139,240 of text — which is why CMakeLists.txt adds SoftFloat's f64
+entry points only when this frontend's FPU is on. An RV32-only build
+links none of them.
+
+`tests/guest/g4mh/fpdouble.asm` is the end-to-end check: CC-RH's own
+encodings, 8 checks and 0 failures on both backends.
+
+**`CHECK_EQ` in the unit tests casts to `uint32_t`**, so every
+assertion about a double compared only its low half. Six tests of the
+arithmetic passed with `SUBF.D`'s operands reversed — 2.0 against -2.0
+differ in the sign bit, which is the top of the *high* word. `CHECK_EQ64`
+exists now; use it for anything wider than a register.
 
 ## The disassembler
 

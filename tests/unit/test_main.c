@@ -21,6 +21,18 @@ void check_eq(const char *file, int line, const char *expr,
     }
 }
 
+void check_eq64(const char *file, int line, const char *expr,
+                uint64_t got, uint64_t want)
+{
+    g_checks++;
+    if (got != want) {
+        g_failures++;
+        fprintf(stderr, "%s:%d: %s\n    got  0x%016llx\n    want 0x%016llx\n",
+                file, line, expr, (unsigned long long)got,
+                (unsigned long long)want);
+    }
+}
+
 int main(void)
 {
 #if EMU_FRONTEND_RV32

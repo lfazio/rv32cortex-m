@@ -412,6 +412,36 @@ if((EMU_FRONTEND_RV32 AND RV32_EXT_F) OR (EMU_FRONTEND_G4MH AND G4MH_EXT_FPU))
         s_approxRecip32_1 s_countLeadingZeros64 s_roundToI32 s_roundToUI32
         s_shortShiftRightJam64
         softfloat_state softfloat_raiseFlags)
+
+    #
+    # Double precision, and only where a frontend implements it. The
+    # RV32 side is F and not D, so on an RV32-only build this list stays
+    # empty and the object set is what it always was.
+    #
+    # Named rather than globbed, for the reason the comment above gives:
+    # source/ also holds the f128 and extF80 implementations, which want
+    # the opposite SOFTFLOAT_FAST_INT64 setting and do not compile here.
+    # The 128-bit primitives below are not f128 -- they are what the
+    # f64 path uses for its intermediate products.
+    #
+    if(EMU_FRONTEND_G4MH AND G4MH_EXT_FPU)
+        list(APPEND _sf_names
+            f64_add f64_sub f64_mul f64_div f64_sqrt
+            f64_eq f64_lt_quiet
+            f64_to_i32 f64_to_ui32 f64_to_i64 f64_to_ui64
+            i32_to_f64 ui32_to_f64 i64_to_f64 ui64_to_f64
+            f32_to_f64 f64_to_f32
+            f32_to_i64 f32_to_ui64 i64_to_f32 ui64_to_f32
+            s_addMagsF64 s_subMagsF64
+            s_normSubnormalF64Sig s_roundPackToF64 s_normRoundPackToF64
+            s_roundToI64 s_roundToUI64
+            s_shiftRightJam64Extra s_shortShiftRightJam64Extra
+            s_add128 s_sub128 s_mul64To128 s_shortShiftLeft128
+            s_shiftRightJam128 s_shortShiftRightJam128
+            s_shiftRightJam128Extra s_shortShiftRightJam128Extra
+            s_le128 s_lt128)
+    endif()
+
     set(_sf_src "")
     foreach(_n IN LISTS _sf_names)
         foreach(_d "source" "source/RISCV")
@@ -423,8 +453,13 @@ if((EMU_FRONTEND_RV32 AND RV32_EXT_F) OR (EMU_FRONTEND_G4MH AND G4MH_EXT_FPU))
     # Only the f32 parts of the RISCV specialization. Globbing the whole
     # directory drags in the f128M and extF80 variants, which need the
     # opposite SOFTFLOAT_FAST_INT64 setting and do not compile here.
-    foreach(_n softfloat_raiseFlags s_f32UIToCommonNaN s_commonNaNToF32UI
-               s_propagateNaNF32UI)
+    set(_sf_riscv softfloat_raiseFlags s_f32UIToCommonNaN s_commonNaNToF32UI
+                  s_propagateNaNF32UI)
+    if(EMU_FRONTEND_G4MH AND G4MH_EXT_FPU)
+        list(APPEND _sf_riscv s_f64UIToCommonNaN s_commonNaNToF64UI
+                              s_propagateNaNF64UI)
+    endif()
+    foreach(_n IN LISTS _sf_riscv)
         if(EXISTS "${SOFTFLOAT_DIR}/source/RISCV/${_n}.c")
             list(APPEND _sf_src "${SOFTFLOAT_DIR}/source/RISCV/${_n}.c")
         endif()
