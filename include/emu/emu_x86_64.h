@@ -79,6 +79,9 @@ enum {
 #define X86_CC_G   0x8Fu
 #define X86_CC_BE  0x86u
 #define X86_CC_A   0x87u
+/* Parity, which after a ucomiss is set exactly for an unordered compare. */
+#define X86_CC_P   0x8Au
+#define X86_CC_NP  0x8Bu
 /*
  * setcc from the matching jcc: `jcc rel32` is 0F 80+cc and `setcc r/m8` is
  * 0F 90+cc, so the conversion *adds* 0x10. Subtracting instead turns setl

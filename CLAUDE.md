@@ -133,18 +133,21 @@ session, and every one of them recurred:
   the whole instruction. Route every read and write through one pair
   of accessors; the compiler will not find the ones you miss.
 
-  It also cost the JIT its two exceptions. `FLW`/`FSW` and
+  It also cost the JIT its two exceptions for a while. `FLW`/`FSW` and
   `FMV.X.W`/`FMV.W.X` were lowered natively through `EMU_IR_FGET`/
   `FPUT`, which move 32 bits and cannot box -- **93 of 378 tests**.
-  They go to the helper with the rest of the FP work now, which is the
+  They went to the helper with the rest of the FP work, which was the
   same conclusion as the entry below reached for the arithmetic, from
-  the same evidence.
+  the same evidence. They are lowered again now that `EMU_IR_FP_BOX`
+  gives the IR a way to *say* which of them boxes; see the boxing entry
+  two below, and note that the answer is not the same for all four.
 - **There is one FP implementation, and both backends reach it.**
   SoftFloat is the FP unit -- not an option, and a missing checkout is a
   configure error rather than a fallback. Everything that rounds,
   classifies or reports a flag goes to `rv_hart_fp`, from the
-  interpreter and from the JIT alike; only `FMV.X.W`/`FMV.W.X` are
-  lowered, because they move bits and cannot round.
+  interpreter and from the JIT alike -- with one bounded exception, the
+  IEEE-exact arithmetic, which is the entry after next and had to earn
+  it.
 
   This replaced an arrangement where the JIT emitted host FP
   instructions, which was a *second* implementation of semantics the
@@ -166,6 +169,60 @@ session, and every one of them recurred:
   check that theory changed nothing and reported nothing -- which reads
   as "SoftFloat makes no difference" rather than as a typo. A build flag
   quoted in prose is not a tested thing; paste it from `CMakeLists.txt`.
+- **The 23 failures above were never about arithmetic, and finding that
+  out is what let `fmul.s` come back.** Add, subtract, multiply, divide
+  and square root are the operations IEEE 754 specifies *exactly*, so a
+  compliant host computes the same bits SoftFloat does. What differed
+  was the two things *around* the operation, and each is a few
+  instructions once it is written down rather than assumed:
+
+  - **NaN.** RISC-V has one NaN and x86 has payloads. Every arithmetic
+    result needs `ucomiss r,r` and a not-taken branch to `0x7FC00000`.
+    Use the *unordered* compare: COMISS raises invalid for a quiet NaN
+    and would manufacture a flag the operation did not raise.
+  - **flags.** MXCSR framed per block, mapped through a table, handed
+    over once at the exit -- which already existed and was correct.
+
+  Whetstone 120ms to 94ms, `fmul.s` alone 15% of it; `fptest` 7ms to
+  5ms; CoreMark and Dhrystone unchanged, which is what says blocks with
+  no float pay nothing. Policy, the full table and the boxing rules are
+  in [`docs/jit/floating-point.md`](docs/jit/floating-point.md). The
+  advice above stands unchanged: **one operation at a time, each
+  measured against the F suite.**
+
+  Three things about doing it are worth keeping.
+
+  **`xlat` and `interp` cannot see this A/B, because a helper call is a
+  translation and so is a native lowering.** Both arms reported
+  `xlat 4229 interp 2558` to the digit -- which by this file's own rule
+  reads as "the code never ran", and it took a counter in the emission
+  path to say 210 `fmul.s` were being lowered. The rule needs its
+  corollary: before believing a null result, check that the
+  **instrument can represent the difference**. Same shape as the
+  disassembler that reported zero FP instructions in a hard-float build.
+
+  **A block that sets a mode must state it, not derive it.** The MXCSR
+  the block runs under was built by masking the *caller's*, which got
+  the sticky bits and the rounding right and left FTZ and DAZ to
+  whatever the process happened to be running under. That is `0x1F80`
+  for a plain C program and is not for one linked against a library
+  that sets FTZ. It is a constant now.
+
+  **A stride that is right by not being used is not right.**
+  `rv_freg_offset` returned `offsetof(f) + n * 4` and stayed that way
+  when D widened `f` to 64 bits -- invisible for exactly as long as
+  nothing emitted an `FGET`, which was the whole of that period. It is
+  `sizeof f[0]` now.
+- **NaN boxing is per instruction, not a property of the register
+  file.** With FLEN 64 a single carries all-ones in its upper half, and
+  `EMU_IR_FP_BOX` in `aux` is what lets `FGET`/`FPUT` say so -- without
+  it they move 32 bits and every FP load, store and move has to go to
+  the helper. The asymmetry is the architecture's and is easy to get
+  backwards: `FLW` and `FMV.W.X` **write** boxed, `FSW` and `FMV.X.W`
+  **read raw**, because a store moves bits and putting it through the
+  unboxing read would write a canonical NaN to memory. Dropping the box
+  is 87 of 378 architecture tests; the earlier attempt that had no way
+  to express it was 93.
 - **`MOVS` on a low register writes N and Z.** Zeroing a result register
   between `VMRS APSR_nzcv` and the `IT` that tests it destroys the comparison:
   Z ends up set and N clear, so `EQ` is always true, `MI` always false and `LS`

@@ -451,6 +451,18 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
 /* Does this block touch the FP unit, and so need FPSCR framed? */
 static bool g_has_fp;
 
+/*
+ * Did this block write an FP register without doing any arithmetic?
+ *
+ * fp_flags carries two things and only one of them is flags: it also
+ * marks the frontend's extension state dirty, which is what tells a
+ * context switch the FP file needs saving. A block that only moves
+ * floats about -- an FLW, an FMV.W.X -- owes the guest that mark and
+ * needs nothing of FPSCR, so folding it into g_has_fp would pay the
+ * framing for nothing. Set by FPUT, because reading dirties nothing.
+ */
+static bool g_fp_written;
+
 static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 {
     g_r0_avail = g_r0_holds;
@@ -646,6 +658,31 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         const uint32_t rd = def_reg(in->dst, T2_R0);
 
         t2_ldr_imm(rd, T2_CPU, t->freg_offset(in->imm));
+        if ((in->aux & EMU_IR_FP_BOX) != 0u) {
+            /*
+             * An unboxed register is not a single-precision value and
+             * reads as the canonical NaN.
+             *
+             * The constant is materialised *before* the IT and moved
+             * inside it, which is not a stylistic choice: t2_imm32 emits
+             * MOVW and then MOVT for anything with a high half, so
+             * putting it in the block would leave the MOVT outside a
+             * one-instruction IT -- unconditional, and executed for
+             * every boxed value. That is this file's own recorded trap,
+             * an encoder whose wrong answer is another valid
+             * instruction. MOV.W is one, and r2/r3 are scratch here
+             * whatever the allocator did with rd, which is r0 or r6-r11.
+             *
+             * MOVW/MOVT do not write the flags, so the CMP survives to
+             * the IT that consumes it -- the other trap in this file.
+             */
+            t2_ldr_imm(T2_R3, T2_CPU, t->freg_offset(in->imm) + 4u);
+            t2_imm32(T2_R2, 0xFFFFFFFFu);
+            t2_cmp(T2_R3, T2_R2);
+            t2_imm32(T2_R2, 0x7FC00000u);
+            t2_emit16(0xBF18u);                        /* IT NE */
+            t2_mov(rd, T2_R2);
+        }
         st_slot(rd, in->dst);
         break;
     }
@@ -653,6 +690,11 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_FPUT:
         if (t->freg_offset == NULL) { return false; }
         t2_str_imm(use_reg(in->a, T2_R0), T2_CPU, t->freg_offset(in->imm));
+        if ((in->aux & EMU_IR_FP_BOX) != 0u) {
+            t2_imm32(T2_R1, 0xFFFFFFFFu);
+            t2_str_imm(T2_R1, T2_CPU, t->freg_offset(in->imm) + 4u);
+        }
+        g_fp_written = true;
         break;
 
     case EMU_IR_FSGNJ: {
@@ -958,6 +1000,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      * paid by blocks that never look at a float.
      */
     g_has_fp = false;
+    g_fp_written = false;
     for (uint32_t i = 0; i < b->count && !g_has_fp; i++) {
         if (!b->insn[i].dead &&
             b->insn[i].op >= (uint8_t)EMU_IR_FADD &&
@@ -1071,6 +1114,14 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         emit_fp_harvest(t, false);
         ld_slot(T2_R0, SCRATCH_FPSCR);
         t2_vmsr(T2_R0);
+    } else if (g_fp_written && t->fp_flags != NULL) {
+        /*
+         * No arithmetic, so no flags -- but the write still has to be
+         * declared. Zero says exactly that, and fp_flags does the rest.
+         */
+        t2_mov(T2_R0, T2_CPU);
+        t2_imm32(T2_R1, 0u);
+        t2_call((const void *)t->fp_flags);
     }
 
     if (frame != 0u) {

@@ -125,13 +125,37 @@ the emulator.
 
 | | KIPS (guest) | host wall |
 |---|---|---|
-| RV32, interpreter | 937.9 | 264 ms |
-| RV32, JIT | 938.0 | 125 ms |
+| RV32, interpreter | 937.9 | 254 ms |
+| RV32, JIT | 938.0 | 94 ms |
 
 at `WHET_LOOPS=100`, which is 10 million Whetstone instructions and 10.7
-million guest instructions. **The JIT is 2.1× faster in real time and
+million guest instructions. **The JIT is 2.7× faster in real time and
 identical in the reported rate** — that pair of numbers is the clearest
 statement on this page of what these two clocks each measure.
+
+### What lowering `fmul.s` to the host FPU bought
+
+The JIT figure was 120 ms until the x86-64 backend started emitting
+`MULSS` for `fmul.s` instead of calling SoftFloat. Best of five, same
+tree, one `#if` apart:
+
+| | host wall |
+|---|---|
+| everything on the helper | 120 ms |
+| FLW/FSW/FMV lowered, `fmul.s` on the helper | 110 ms |
+| `fmul.s` lowered as well | 94 ms |
+
+so **`fmul.s` alone is 15%** of this benchmark and the FP moves are a
+further 8%. `fptest` goes 7 ms to 5 ms. CoreMark and Dhrystone are
+unchanged, which is the check that the MXCSR framing is not being paid
+by blocks with no float in them.
+
+The reason this is safe when the earlier attempt at host FP was not is
+in [`docs/jit/floating-point.md`](jit/floating-point.md): add, subtract,
+multiply and divide are the operations IEEE 754 specifies *exactly*, so
+the arithmetic never differed. What differed was the NaN convention and
+the exception flags, and both are now the backend's rather than being
+hoped for.
 
 **Those figures are eight times better than the ones first recorded
 here, and the change was one flag.** The guest ABI is `ilp32`, which

@@ -399,6 +399,26 @@ typedef enum emu_ir_cond {
 #define EMU_IR_FSGNJ_X   2u    /* xor the two signs        */
 
 /*
+ * EMU_IR_FGET/FPUT: the 32 bits named are a single-precision value in a
+ * register file wider than 32 bits, and carry a box.
+ *
+ * The rule is RISC-V's NaN boxing, and it exists because adding D widens
+ * the register file without widening what a single-precision instruction
+ * writes. A single stored into a 64-bit register must carry all-ones in
+ * its upper half; a single *read* from one whose upper half is anything
+ * else is not a single at all and reads as the canonical NaN.
+ *
+ * It is in `aux` rather than implied by the register width because the
+ * frontend is the only thing that knows which of its FP instructions are
+ * single-precision -- and because the same file, built without D, has a
+ * 32-bit register file where the box does not exist and the plain form
+ * is what is wanted. A backend that ignores this flag moves the low half
+ * and is wrong in the direction that does not show up here: the failure
+ * lands on the *next* reader of the register, not on this instruction.
+ */
+#define EMU_IR_FP_BOX    (1u << 4)
+
+/*
  * The host's sticky exception flags, as emu_ir_target_t.fp_flags
  * receives them. Architecture-neutral, because x86 and ARM order their
  * own differently from each other and from both guests -- and this

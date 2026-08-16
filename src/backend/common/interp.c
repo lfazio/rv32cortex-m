@@ -333,16 +333,35 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
          * make the differential harness compare two different
          * computations and call the difference a lowering bug.
          */
-        case EMU_IR_FGET:
+        /*
+         * EMU_IR_FP_BOX is the NaN box, and the halves are addressed
+         * separately rather than as a uint64_t: freg_offset names the
+         * low half wherever the frontend put it, and the register file
+         * is not guaranteed to be 8-aligned inside emu_cpu_t.
+         */
+        case EMU_IR_FGET: {
             if (t->freg_offset == NULL) { return false; }
-            r = *(const uint32_t *)((const uint8_t *)cpu +
-                                    t->freg_offset(in->imm));
-            break;
+            const uint8_t *const p = (const uint8_t *)cpu +
+                                     t->freg_offset(in->imm);
 
-        case EMU_IR_FPUT:
+            r = *(const uint32_t *)p;
+            if ((in->aux & EMU_IR_FP_BOX) != 0u &&
+                *(const uint32_t *)(p + 4) != 0xFFFFFFFFu) {
+                r = 0x7FC00000u;
+            }
+            break;
+        }
+
+        case EMU_IR_FPUT: {
             if (t->freg_offset == NULL) { return false; }
-            *(uint32_t *)((uint8_t *)cpu + t->freg_offset(in->imm)) = a;
+            uint8_t *const p = (uint8_t *)cpu + t->freg_offset(in->imm);
+
+            *(uint32_t *)p = a;
+            if ((in->aux & EMU_IR_FP_BOX) != 0u) {
+                *(uint32_t *)(p + 4) = 0xFFFFFFFFu;
+            }
             continue;
+        }
 
         case EMU_IR_FADD:  r = f2b(b2f(a) + b2f(bv)); break;
         case EMU_IR_FSUB:  r = f2b(b2f(a) - b2f(bv)); break;

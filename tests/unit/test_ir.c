@@ -444,9 +444,19 @@ typedef struct {
     uint32_t r[16];
     uint32_t flags;
     uint32_t pc;
-    uint32_t f[16];        /* the FP register file */
+    /*
+     * The FP register file, 64 bits wide -- as RV32's is once D widens
+     * FLEN, and which is the only width at which EMU_IR_FP_BOX means
+     * anything. A test whose file was 32 bits could set the flag and
+     * observe nothing, which is the shape of a test that passes against
+     * the bug it covers.
+     */
+    uint64_t f[16];
     uint32_t fe;           /* accumulated EMU_IR_FE_* flags */
 } fake_cpu_t;
+
+/* All-ones in the upper half: what a single-precision value carries. */
+#define F_BOXED(v)  (UINT64_C(0xFFFFFFFF00000000) | (v))
 
 #define FAKE_F_Z (1u << 0)
 #define FAKE_F_S (1u << 1)
@@ -462,7 +472,7 @@ static bool fake_reg_is_zero(uint32_t n) { return n == 0u; }
 
 static uint32_t fake_freg_offset(uint32_t n)
 {
-    return (uint32_t)offsetof(fake_cpu_t, f) + n * 4u;
+    return (uint32_t)(offsetof(fake_cpu_t, f) + n * sizeof(uint64_t));
 }
 
 static void fake_fp_flags(emu_cpu_t *cpu, uint32_t flags)
@@ -1187,7 +1197,48 @@ static uint32_t fp_eval(emu_ir_op_t op, uint8_t aux, uint32_t x, uint32_t y)
     if (!emu_ir_interp(&g_b, (emu_cpu_t *)(void *)&cpu, &g_fake_target)) {
         return 0xDEADBEEFu;
     }
-    return cpu.f[3];
+    return (uint32_t)cpu.f[3];
+}
+
+/*
+ * The box, through the reference interpreter rather than through emitted
+ * code.
+ *
+ * It matters that this is checked separately. ir_diff_ref compares the
+ * compiled block against emu_ir_interp on the *same* IR, so a box the
+ * reference also ignored would agree with a backend that ignored it --
+ * two consumers of the same misreading, agreeing perfectly. That is the
+ * shape of the pass_reg_traffic defect this project already has written
+ * down: a checker that compares two consumers validates the consumers,
+ * not the input.
+ */
+static void test_fp_box_reference(void)
+{
+    fake_cpu_t cpu;
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.f[1] = UINT64_C(0x3FF0000000000000);      /* unboxed */
+    cpu.f[2] = F_BOXED(F_TWO);
+
+    emu_ir_reset(&g_b);
+    {
+        const uint16_t a = emu_ir_emit(&g_b, EMU_IR_FGET, EMU_IR_FP_BOX,
+                                       EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 1u, 0u);
+        const uint16_t b = emu_ir_emit(&g_b, EMU_IR_FGET, EMU_IR_FP_BOX,
+                                       EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 2u, 0u);
+
+        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, EMU_IR_FP_BOX, a,
+                          EMU_IR_NO_TEMP, 3u, 0u);
+        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, EMU_IR_FP_BOX, b,
+                          EMU_IR_NO_TEMP, 4u, 0u);
+    }
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, NULL);
+    if (!emu_ir_interp(&g_b, (emu_cpu_t *)(void *)&cpu, &g_fake_target)) {
+        CHECK(false);
+        return;
+    }
+    CHECK_EQ64(cpu.f[3], F_BOXED(F_NAN));
+    CHECK_EQ64(cpu.f[4], F_BOXED(F_TWO));
 }
 
 static void test_fp_semantics(void)
@@ -1292,7 +1343,135 @@ static uint32_t fp_run(emu_ir_op_t op, uint8_t aux, uint32_t x, uint32_t y)
     if (!lower_and_run(&cpu)) {
         return 0xDEADBEEFu;
     }
-    return cpu.f[3];
+    return (uint32_t)cpu.f[3];
+}
+
+/*
+ * The NaN convention, which is the whole of what separates a host FPU
+ * from a guest one for the four exact operations.
+ *
+ * RISC-V has no NaN payloads: every operation producing a NaN produces
+ * 0x7FC00000. x86 propagates an operand's payload and *quietens* a
+ * signalling operand rather than replacing it, so each of these is a
+ * different wrong answer without the canonicalisation -- and each was a
+ * failure in the F suite with it removed.
+ *
+ * The awkward inputs are the point. An operand NaN with a payload, a
+ * signalling NaN, and the invalid operations that manufacture one from
+ * finite inputs: a test using ordinary numbers reaches none of them and
+ * passes against every version of this.
+ */
+static void test_lower_fp_nan_canonical(void)
+{
+    /* A quiet NaN with a payload, which x86 would propagate verbatim. */
+    const uint32_t payload = 0x7FC0BEEFu;
+    /* A signalling NaN, which x86 quietens by setting bit 22 and keeps. */
+    const uint32_t snan = 0x7F800001u;
+
+    CHECK_EQ(fp_run(EMU_IR_FADD, 0u, payload, F_ONE), F_NAN);
+    CHECK_EQ(fp_run(EMU_IR_FADD, 0u, F_ONE, payload), F_NAN);
+    CHECK_EQ(fp_run(EMU_IR_FSUB, 0u, payload, F_ONE), F_NAN);
+    CHECK_EQ(fp_run(EMU_IR_FMUL, 0u, payload, F_ONE), F_NAN);
+    CHECK_EQ(fp_run(EMU_IR_FDIV, 0u, payload, F_ONE), F_NAN);
+    CHECK_EQ(fp_run(EMU_IR_FSQRT, 0u, payload, 0u), F_NAN);
+
+    CHECK_EQ(fp_run(EMU_IR_FADD, 0u, snan, F_ONE), F_NAN);
+    CHECK_EQ(fp_run(EMU_IR_FMUL, 0u, snan, F_ONE), F_NAN);
+
+    /* Invalid operations, where the NaN is made rather than propagated. */
+    CHECK_EQ(fp_run(EMU_IR_FSUB, 0u, F_PINF, F_PINF), F_NAN);
+    CHECK_EQ(fp_run(EMU_IR_FMUL, 0u, 0u, F_PINF), F_NAN);
+    CHECK_EQ(fp_run(EMU_IR_FDIV, 0u, 0u, 0u), F_NAN);
+    /*
+     * The square root of a negative. x86's answer is the *real
+     * indefinite* 0xFFC00000, which differs from what the guests want in
+     * the sign bit alone -- one bit, and the only operation here where
+     * the wrong answer is still a canonical-looking NaN.
+     */
+    CHECK_EQ(fp_run(EMU_IR_FSQRT, 0u, F_NEG1, 0u), F_NAN);
+
+    /* And an ordinary result is not disturbed by the check. */
+    CHECK_EQ(fp_run(EMU_IR_FADD, 0u, F_ONE, F_ONE), F_TWO);
+}
+
+/*
+ * NaN boxing, EMU_IR_FP_BOX.
+ *
+ * Only meaningful because fake_cpu_t's file is 64 bits wide. The awkward
+ * input is a register whose upper half is *not* all ones: reading it as
+ * a single must give the canonical NaN rather than the bits that are
+ * there, and nothing about the instruction doing the read looks wrong if
+ * it does not -- the failure lands on whatever consumes the value.
+ */
+static void test_lower_fp_box(void)
+{
+    fake_cpu_t cpu;
+
+    /* A boxed register reads as its low half. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.f[1] = F_BOXED(F_TWO);
+    emu_ir_reset(&g_b);
+    {
+        const uint16_t a = emu_ir_emit(&g_b, EMU_IR_FGET, EMU_IR_FP_BOX,
+                                       EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 1u, 0u);
+        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, EMU_IR_FP_BOX, a,
+                          EMU_IR_NO_TEMP, 3u, 0u);
+    }
+    if (!lower_and_run(&cpu)) { CHECK(false); return; }
+    /* The write boxes too, so the whole 64 bits are checked. */
+    CHECK_EQ64(cpu.f[3], F_BOXED(F_TWO));
+
+    /* An unboxed one reads as the canonical NaN, whatever it holds. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.f[1] = UINT64_C(0x3FF0000000000000);      /* 1.0 as a double */
+    emu_ir_reset(&g_b);
+    {
+        const uint16_t a = emu_ir_emit(&g_b, EMU_IR_FGET, EMU_IR_FP_BOX,
+                                       EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 1u, 0u);
+        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, EMU_IR_FP_BOX, a,
+                          EMU_IR_NO_TEMP, 3u, 0u);
+    }
+    if (!lower_and_run(&cpu)) { CHECK(false); return; }
+    CHECK_EQ64(cpu.f[3], F_BOXED(F_NAN));
+
+    /*
+     * Without the flag the same register reads raw, which is what FSW
+     * and FMV.X.W need and is the reason this is per-instruction rather
+     * than a property of the register file.
+     */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.f[1] = UINT64_C(0x3FF0000000000000);
+    emu_ir_reset(&g_b);
+    {
+        const uint16_t a = emu_ir_emit(&g_b, EMU_IR_FGET, 0u,
+                                       EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 1u, 0u);
+        emu_ir_put(&g_b, 3u, a);
+    }
+    if (!lower_and_run(&cpu)) { CHECK(false); return; }
+    CHECK_EQ(cpu.r[3], 0u);                       /* the low half, raw */
+
+    /*
+     * An unboxed *operand* reaching the arithmetic gives a canonical NaN
+     * result, which is the case that made 87 of 378 architecture tests
+     * fail when the box was dropped. Two boxed operands multiply
+     * normally; one unboxed poisons the result.
+     */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.f[1] = F_BOXED(F_TWO);
+    cpu.f[2] = (uint64_t)F_TWO;                   /* no box */
+    emu_ir_reset(&g_b);
+    {
+        const uint16_t a = emu_ir_emit(&g_b, EMU_IR_FGET, EMU_IR_FP_BOX,
+                                       EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 1u, 0u);
+        const uint16_t b = emu_ir_emit(&g_b, EMU_IR_FGET, EMU_IR_FP_BOX,
+                                       EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 2u, 0u);
+        const uint16_t r = emu_ir_emit(&g_b, EMU_IR_FMUL, 0u, a, b, 0u, 0u);
+
+        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, EMU_IR_FP_BOX, r,
+                          EMU_IR_NO_TEMP, 3u, 0u);
+    }
+    if (!lower_and_run(&cpu)) { CHECK(false); return; }
+    CHECK_EQ64(cpu.f[3], F_BOXED(F_NAN));
 }
 
 static void test_lower_fp(void)
@@ -1452,6 +1631,7 @@ void test_ir(void)
     test_use_counts();
     test_overflow_not_optimised();
     test_fp_semantics();
+    test_fp_box_reference();
 #if defined(EMU_JIT_X86_64)
     test_lower_add();
     test_lower_zero_register();
@@ -1465,6 +1645,8 @@ void test_ir(void)
     test_interp_matches_jit();
     test_encode_rex();
     test_lower_fp();
+    test_lower_fp_nan_canonical();
+    test_lower_fp_box();
     test_lower_fp_flags();
     test_lower_memory();
     test_lower_memory_trap();

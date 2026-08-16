@@ -123,6 +123,20 @@ static uint8_t g_fe_map[64];
 static bool    g_fe_map_ready;
 static bool    g_has_fp;
 
+/*
+ * Did this block write an FP register without doing any arithmetic?
+ *
+ * fp_flags carries two things, and only one of them is flags: it also
+ * marks the frontend's extension state dirty, which is what tells a
+ * context switch the FP file needs saving. A block that only moves
+ * floats about -- an FLW, an FMV.W.X -- owes the guest that mark and
+ * needs none of MXCSR, so it cannot be folded into g_has_fp without
+ * paying the framing for nothing.
+ *
+ * Set by FPUT rather than by FGET: reading a register dirties nothing.
+ */
+static bool    g_fp_written;
+
 static void fe_map_init(void)
 {
     if (g_fe_map_ready) {
@@ -139,6 +153,38 @@ static void fe_map_init(void)
         g_fe_map[i] = v;
     }
     g_fe_map_ready = true;
+}
+
+/*
+ * Replace a NaN result with the canonical one, in `reg`, given the same
+ * value still in `xmm`.
+ *
+ * Both guests have exactly one NaN: an operation that produces one
+ * produces 0x7FC00000, whatever the operands were. x86 has the other
+ * convention -- it propagates an operand's payload, and *quietens* a
+ * signalling operand rather than replacing it -- so every arithmetic
+ * result has to be checked. SQRTSS is the case that makes it concrete:
+ * the square root of a negative gives the real indefinite 0xFFC00000,
+ * which differs from what RISC-V wants in the sign bit alone.
+ *
+ * `ucomiss r, r` is the test, and it is the *unordered* compare on
+ * purpose: COMISS raises invalid for a quiet NaN and would manufacture a
+ * flag the operation did not raise, where UCOMISS raises it only for a
+ * signalling one -- which x86 arithmetic never produces. So this reads
+ * the result without disturbing the flags the block is accumulating.
+ *
+ * A branch rather than the branchless CMPUNORDSS/blend because the taken
+ * side is three instructions the common case never executes, against a
+ * blend paid by every FP instruction in the block; code size is what
+ * sets performance here.
+ */
+static void canonicalise_nan(int reg, int xmm)
+{
+    x86_ucomiss(xmm, xmm);
+    uint8_t *const ok = x86_jcc32(X86_CC_NP);
+
+    x86_mov_imm32(reg, 0x7FC00000u);
+    x86_patch_rel32(ok, emu_jit_here());
 }
 
 /*
@@ -788,6 +834,20 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         const int rd = dst_reg(in->dst);
 
         x86_ld_cpu(rd, t->freg_offset(in->imm));
+        if ((in->aux & EMU_IR_FP_BOX) != 0u) {
+            /*
+             * An unboxed register is not a single-precision value and
+             * reads as the canonical NaN. rd is either T0 or one of
+             * r12-r15, so T1 and T2 are free here whichever it is.
+             */
+            x86_ld_cpu(T1, t->freg_offset(in->imm) + 4u);
+            x86_mov_imm32(T2, 0xFFFFFFFFu);
+            x86_alu_rr(X86_CMP, T1, T2);
+            uint8_t *const boxed = x86_jcc32(X86_CC_E);
+
+            x86_mov_imm32(rd, 0x7FC00000u);
+            x86_patch_rel32(boxed, emu_jit_here());
+        }
         st_slot(rd, in->dst);
         break;
     }
@@ -796,6 +856,11 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         if (t->freg_offset == NULL) { return false; }
         ld_operand(T0, in->a);
         x86_st_cpu(T0, t->freg_offset(in->imm));
+        if ((in->aux & EMU_IR_FP_BOX) != 0u) {
+            x86_mov_imm32(T1, 0xFFFFFFFFu);
+            x86_st_cpu(T1, t->freg_offset(in->imm) + 4u);
+        }
+        g_fp_written = true;
         break;
 
     case EMU_IR_FADD: case EMU_IR_FSUB:
@@ -813,6 +878,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         x86_movd_to_xmm(X86_XMM1, T1);
         x86_ss_op(k_ss[in->op - (uint8_t)EMU_IR_FADD], X86_XMM0, X86_XMM1);
         x86_movd_from_xmm(T0, X86_XMM0);
+        canonicalise_nan(T0, X86_XMM0);
         st_slot(T0, in->dst);
         break;
     }
@@ -823,6 +889,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         x86_movd_to_xmm(X86_XMM0, T0);
         x86_ss_op(X86_SQRTSS, X86_XMM0, X86_XMM0);
         x86_movd_from_xmm(T0, X86_XMM0);
+        canonicalise_nan(T0, X86_XMM0);
         st_slot(T0, in->dst);
         break;
 
@@ -1268,6 +1335,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      * must not be paid by the blocks that never look at a float.
      */
     g_has_fp = false;
+    g_fp_written = false;
     for (uint32_t i = 0; i < b->count && !g_has_fp; i++) {
         if (!b->insn[i].dead &&
             b->insn[i].op >= (uint8_t)EMU_IR_FADD &&
@@ -1315,24 +1383,31 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     if (g_has_fp) {
         /*
          * Take ownership of MXCSR for the length of the block: keep the
-         * caller's, and run under one with the sticky flags clear and
-         * rounding fixed at nearest.
+         * caller's, and run under one this backend *states* rather than
+         * derives. 0x1F80 is every field the guests have a rule about:
          *
-         * Clearing matters and is not obvious. The guest's flags are
-         * sticky too, so re-reporting one is idempotent -- but a guest
-         * that *clears* its flags and then runs an operation raising
-         * none would still see the host's leftovers, and there is no
-         * other point at which they get cleared.
+         *   sticky bits clear. The guest's flags are sticky too, so
+         *       re-reporting one is idempotent -- but a guest that
+         *       clears its own and then runs an operation raising none
+         *       would still see the host's leftovers, and there is no
+         *       other point at which they get cleared.
+         *   RC nearest. emu_ir_can_lower promises this backend emits
+         *       arithmetic only for round-to-nearest, and that is a
+         *       promise only if the block sets it rather than hoping.
+         *   FTZ and DAZ clear. Both guests define subnormals as ordinary
+         *       values, exactly as the Thumb-2 backend's FZ note says;
+         *       flushing would turn the smallest results into zero and
+         *       raise the wrong flag doing it.
+         *   the masks set, so nothing emitted here can trap.
          *
-         * Fixing the rounding rather than inheriting it is what makes
-         * emu_ir_can_lower's answer true: it says this backend emits
-         * arithmetic only for round-to-nearest, and that is only a
-         * promise if the block sets it rather than hoping.
+         * Deriving it from the caller's got the first two right and left
+         * the other two to whatever the process happened to be running
+         * under -- which is 0x1F80 for a plain C program and is not for
+         * one linked against a library that has set FTZ. A default that
+         * holds only while nobody exercises it is not a default.
          */
         x86_stmxcsr(slot(SCRATCH_MXOLD));
-        ld_slot(T0, SCRATCH_MXOLD);
-        x86_mov_imm32(T1, ~0x603Fu);        /* sticky bits and RC */
-        x86_alu_rr(X86_AND, T0, T1);
+        x86_mov_imm32(T0, 0x1F80u);
         x86_st_rsp(T0, slot(SCRATCH_MXCUR));
         x86_ldmxcsr(slot(SCRATCH_MXCUR));
     }
@@ -1397,6 +1472,16 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         x86_mov_imm64(X86_EAX, (uint64_t)(uintptr_t)t->fp_flags);
         x86_call_rax();
         x86_ldmxcsr(slot(SCRATCH_MXOLD));
+    } else if (g_fp_written && t->fp_flags != NULL) {
+        /*
+         * No arithmetic, so no flags -- but the write still has to be
+         * declared. Zero says exactly that, and fp_flags does the rest.
+         */
+        x86_mov_imm32(X86_ESI, 0u);
+        emu_jit_emit8(0x48); emu_jit_emit8(0x89);
+        emu_jit_emit8(0xDF);                       /* mov rdi, rbx */
+        x86_mov_imm64(X86_EAX, (uint64_t)(uintptr_t)t->fp_flags);
+        x86_call_rax();
     }
 
     if (frame != 0u) {

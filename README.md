@@ -255,6 +255,7 @@ Guest images (`tests/guest/`):
 | [docs/jit/README.md](docs/jit/README.md) | the IR pipeline, block model, FP policy |
 | [docs/jit/staleness.md](docs/jit/staleness.md) | what a translated block bakes in |
 | [docs/jit/tuning.md](docs/jit/tuning.md) | every knob, what it is worth, what can see it |
+| [docs/jit/floating-point.md](docs/jit/floating-point.md) | host FPU or SoftFloat, and the NaN and flag rules that decide |
 | [docs/validation.md](docs/validation.md) | the suites, and the bugs they caught |
 | [docs/performance.md](docs/performance.md) | the measured figures |
 | [docs/memory.md](docs/memory.md) | ROM, RAM and flash: who backs what, and why the platform does |

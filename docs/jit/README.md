@@ -1,6 +1,6 @@
 # The JIT
 
-Three documents:
+Four documents:
 
 - this one — the shared framework, the block model, and what the two
   emitters have in common
@@ -9,6 +9,8 @@ Three documents:
   proven otherwise
 - [tuning.md](tuning.md) — the knobs, what each one is worth, and which
   workload can see it
+- [floating-point.md](floating-point.md) — what goes to the host FPU,
+  what goes to SoftFloat, and the NaN and flag rules that decide which
 
 Emitter-specific notes live beside the code they describe:
 [backend/thumb2.md](../backend/thumb2.md) and

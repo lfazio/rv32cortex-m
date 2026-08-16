@@ -112,8 +112,32 @@ static bool rv_reg_zero(uint32_t n)
 #if RV_EXT_F
 static uint32_t rv_freg_offset(uint32_t n)
 {
-    return (uint32_t)offsetof(rv_hart_t, f) + n * 4u;
+    /*
+     * sizeof rather than 4, because FLEN follows D: the file is 32 bits
+     * wide without it and 64 with. It was written as 4 and stayed that
+     * way when D widened the file, which was invisible only because
+     * nothing emitted an FGET or an FPUT from that moment on -- every FP
+     * instruction went to the helper. A stride that is right by not
+     * being used is not right.
+     */
+    return (uint32_t)(offsetof(rv_hart_t, f) +
+                      n * sizeof(((rv_hart_t *)0)->f[0]));
 }
+
+/*
+ * The box, on the FGET and FPUT of a *single-precision* value.
+ *
+ * Zero without D, where FLEN is 32 and there is no upper half to fill.
+ * Not every FP move wants it even with D -- FSW and FMV.X.W move bits
+ * and take the low half raw -- so it is applied per instruction rather
+ * than folded into rv_freg_offset. See rv_fpu.c, which makes the same
+ * distinction in the same four places through fr32/fw32.
+ */
+#if RV_EXT_D
+#  define RV_IR_BOX  EMU_IR_FP_BOX
+#else
+#  define RV_IR_BOX  0u
+#endif
 
 /*
  * One block's worth of floating-point side effects.
@@ -203,6 +227,9 @@ static bool h_fs_off(const emu_cpu_t *cpu)
 {
     return (((const rv_hart_t *)cpu)->mstatus & MSTATUS_FS_MASK) == 0u;
 }
+
+/* fcsr's frm, for resolving a "dynamic" rounding mode at translation. */
+#define RV_IR_FRM(cpu)  ((((const rv_hart_t *)(cpu))->fcsr >> 5) & 7u)
 
 /*
  * Route one FP instruction to rv_hart_fp. HELPER_TRAP rather than
@@ -505,24 +532,23 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
         if (f3 != 2u || (h_fs_off(cpu))) {
             return false;                       /* not FLW/FSW, or FS off */
         }
-#if RV_EXT_D
         /*
-         * **With D, FLEN is 64 and a float in an f register must be
-         * NaN-boxed.** EMU_IR_FGET/FPUT move 32 bits, so lowering FLW
-         * here would write an unboxed register and lowering FSW would
-         * read one -- and neither could tell. The whole point of the
-         * boxing is that the *next* reader of that register sees a
-         * canonical NaN, so nothing about this instruction's own result
-         * looks wrong; it fails somewhere else. 93 of 378 tests, and
-         * F-fsub.s among them.
+         * **With D, FLEN is 64 and a float in an f register carries a
+         * box.** These were sent to the helper for a while because
+         * EMU_IR_FGET/FPUT moved 32 bits and could not say so: lowering
+         * FLW wrote an unboxed register and lowering FSW read one, and
+         * neither could tell. The whole point of the boxing is that the
+         * *next* reader of that register sees a canonical NaN, so
+         * nothing about the instruction's own result looks wrong; it
+         * fails somewhere else. 93 of 378 tests, and F-fsub.s among
+         * them.
          *
-         * So they go to the helper with the rest of the FP work, which
-         * is where boxing is implemented once. Same argument as the
-         * comment below about not lowering arithmetic natively: the
-         * side effect a fast path skips is the expensive kind to find.
+         * EMU_IR_FP_BOX is what lets them come back. Note the asymmetry,
+         * which is the architecture's and not an oversight: FLW *writes*
+         * a single and boxes it, FSW stores the low half **raw**. A
+         * store is bits, and putting it through the unboxing read would
+         * turn an unboxed register into a canonical NaN in memory.
          */
-        return rv_ir_fp_fallback(b, pc, insn);
-#else
         (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP,
                           EMU_IR_NO_TEMP, pc, 0u);
         const uint16_t base = emu_ir_get(b, rs1);
@@ -532,7 +558,8 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
                                            EMU_IR_MEM_AUX(4u, 0u), base,
                                            EMU_IR_NO_TEMP,
                                            (uint32_t)rv_imm_i(insn), 0u);
-            (void)emu_ir_emit(b, EMU_IR_FPUT, 0u, v, EMU_IR_NO_TEMP, rd, 0u);
+            (void)emu_ir_emit(b, EMU_IR_FPUT, RV_IR_BOX, v, EMU_IR_NO_TEMP,
+                              rd, 0u);
         } else {
             const uint16_t v = emu_ir_emit(b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
                                            EMU_IR_NO_TEMP, rs2, 0u);
@@ -540,7 +567,6 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
                               base, v, (uint32_t)rv_imm_s(insn), 0u);
         }
         return true;
-#endif
     }
 
     case 0x43u: case 0x47u: case 0x4Bu: case 0x4Fu:
@@ -590,30 +616,66 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
          *
          * To make this faster, bring operations back one at a time, each
          * measured against the F suite -- not the whole table on the
-         * argument that the host has an FPU.
+         * argument that the host has an FPU. FMUL.S is the first, and
+         * the reason it can be is that the objection above was never
+         * about *arithmetic*: add, subtract, multiply and divide are the
+         * four operations IEEE 754 specifies exactly, so a compliant
+         * host computes the same bits SoftFloat does. What differed was
+         * everything around them -- which NaN comes out, and which
+         * fflags get raised -- and both are now the backend's job:
+         * canonicalisation after the operation, MXCSR framed across the
+         * block. The rest of the table stays on the helper because the
+         * rest of the table is where hosts genuinely disagree.
          */
-#if RV_EXT_D
-        /*
-         * FMV.X.W and FMV.W.X move bits, which is why they were the two
-         * exceptions to "everything goes to the helper". With FLEN 64
-         * they still move bits -- but FMV.W.X has to *box* what it
-         * writes, and FGET/FPUT cannot. Back to the helper.
-         */
-        return rv_ir_fp_fallback(b, pc, insn);
-#else
         if (f7 == 0x70u && f3 == 0u && rs2 == 0u) {     /* FMV.X.W */
+            /*
+             * No box on the read. FMV.X.W moves bits, and putting it
+             * through the unboxing form would turn an unboxed register
+             * into the canonical NaN -- "no interpretation" is the whole
+             * instruction. rv_fpu.c says the same thing beside its own
+             * copy of this.
+             */
             emu_ir_put(b, rd,
                        emu_ir_emit(b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
                                    EMU_IR_NO_TEMP, rs1, 0u));
             return true;
         }
         if (f7 == 0x78u && f3 == 0u && rs2 == 0u) {     /* FMV.W.X */
-            (void)emu_ir_emit(b, EMU_IR_FPUT, 0u, emu_ir_get(b, rs1),
+            (void)emu_ir_emit(b, EMU_IR_FPUT, RV_IR_BOX, emu_ir_get(b, rs1),
                               EMU_IR_NO_TEMP, rd, 0u);
             return true;
         }
+        if (f7 == 0x08u) {                              /* FMUL.S */
+            /*
+             * "dyn" is resolved here, at translation, which is the
+             * deliberate arrangement: it lets a backend decline a mode
+             * it has no encoding for -- RMM, which neither host has --
+             * instead of silently rounding some other way. frm is in
+             * rv_ir_gen_key, so a block specialised on it is flushed if
+             * the guest changes it. Modes 5 and 6 are reserved and 7 is
+             * only meaningful in the instruction, so anything that is
+             * not one of the five real ones falls through to the helper,
+             * which is where illegal-instruction is decided.
+             */
+            const uint32_t rm = (f3 == 7u) ? RV_IR_FRM(cpu) : f3;
+
+            if (rm <= EMU_IR_FRM_RMM &&
+                emu_ir_can_lower(EMU_IR_FMUL, (uint8_t)rm)) {
+                const uint16_t x = emu_ir_emit(b, EMU_IR_FGET, RV_IR_BOX,
+                                               EMU_IR_NO_TEMP,
+                                               EMU_IR_NO_TEMP, rs1, 0u);
+                const uint16_t y = emu_ir_emit(b, EMU_IR_FGET, RV_IR_BOX,
+                                               EMU_IR_NO_TEMP,
+                                               EMU_IR_NO_TEMP, rs2, 0u);
+                const uint16_t r = emu_ir_emit(b, EMU_IR_FMUL, (uint8_t)rm,
+                                               x, y, 0u, 0u);
+
+                (void)emu_ir_emit(b, EMU_IR_FPUT, RV_IR_BOX, r,
+                                  EMU_IR_NO_TEMP, rd, 0u);
+                return true;
+            }
+        }
         return rv_ir_fp_fallback(b, pc, insn);
-#endif
     }
 #endif /* RV_EXT_F */
 
