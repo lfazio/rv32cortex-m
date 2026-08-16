@@ -167,6 +167,20 @@ set(SOFTFLOAT_DIR "${CMAKE_BINARY_DIR}/softfloat" CACHE PATH "Berkeley SoftFloat
 option(RV32_EXT_SDTRIG "Sdtrig debug triggers" ON)
 option(RV32_EXT_PMP "Physical memory protection" ON)
 option(RV32_EXT_ZCB "Zcb compressed instructions" ON)
+#
+# The bit-manipulation set. Declared here and not only in rv_config.h,
+# because two places were reading them and only one of them existed:
+# rv32_frontend.c builds RV32_ISA_STRING from the C macros and got
+# "RV32IMAFCB_zbc" right, while the configure summary below tested CMake
+# variables of the same name that nothing declared -- so it printed
+# "RV32IMAFC" and understated the core it had just built. misa says B.
+#
+# B is the union of Zba, Zbb and Zbs, which is what the 2024 ratification
+# folded into it; Zbc was moved out before ratification and is separate.
+option(RV32_EXT_ZBA "Zba address generation" ON)
+option(RV32_EXT_ZBB "Zbb basic bit manipulation" ON)
+option(RV32_EXT_ZBC "Zbc carry-less multiply" ON)
+option(RV32_EXT_ZBS "Zbs single-bit operations" ON)
 option(RV32_EXT_F "Single-precision floating point" ON)
 option(RV32_EXT_M "Integer multiply/divide" ON)
 option(RV32_EXT_A "Atomics" ON)
@@ -303,6 +317,10 @@ if(EMU_FRONTEND_RV32)
     target_compile_definitions(emucore PUBLIC
         RV_EXT_F=$<BOOL:${RV32_EXT_F}>
         RV_EXT_ZCB=$<BOOL:${RV32_EXT_ZCB}>
+        RV_EXT_ZBA=$<BOOL:${RV32_EXT_ZBA}>
+        RV_EXT_ZBB=$<BOOL:${RV32_EXT_ZBB}>
+        RV_EXT_ZBC=$<BOOL:${RV32_EXT_ZBC}>
+        RV_EXT_ZBS=$<BOOL:${RV32_EXT_ZBS}>
         RV_EXT_PMP=$<BOOL:${RV32_EXT_PMP}>
         RV_EXT_SDTRIG=$<BOOL:${RV32_EXT_SDTRIG}>
         RV_FPU_SOFTFLOAT=1
@@ -545,9 +563,14 @@ if(EMU_FRONTEND_RV32)
     endforeach()
     # B is the union of Zba, Zbb and Zbs rather than an option of its own,
     # and misa advertises it on exactly that basis, so the banner has to
-    # agree.
-    if(NOT RV32_EXT_B AND RV32_EXT_ZBA AND RV32_EXT_ZBB AND RV32_EXT_ZBS)
+    # agree. It did not: RV32_EXT_ZBA and friends were read here and
+    # declared nowhere, so the condition was always false and this line
+    # was dead.
+    if(RV32_EXT_ZBA AND RV32_EXT_ZBB AND RV32_EXT_ZBS)
         string(APPEND _isa "B")
+    endif()
+    if(RV32_EXT_ZBC)
+        string(APPEND _isa "_zbc")
     endif()
     if(RV32_EXT_U)
         string(APPEND _isa "U")
