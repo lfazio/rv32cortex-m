@@ -318,6 +318,25 @@ if(EXISTS "${guest_dir}/whetstone/whetstone.c")
             -DWHET_LOOPS=${WHET_LOOPS}
             ${_whet_printout}
             #
+            # **The hard-float ABI, and without it this benchmark does
+            # not measure the FPU at all.**
+            #
+            # RV_GUEST_MABI is ilp32 for the reason stated at the top of
+            # this file -- images built with and without F stay
+            # interchangeable. But the ABI also picks the multilib, and
+            # rv32imac/ilp32's libm is compiled *soft-float*: every
+            # sinf, logf and float multiply in Whetstone becomes
+            # __mulsf3 and friends. Sampling 200,002 instructions from
+            # the middle of a run found **zero** FP instructions.
+            #
+            # So the FP benchmark was measuring libgcc's integer soft
+            # float. ilp32f selects rv32imafc/ilp32f, whose libm uses
+            # the F extension, which is what makes the number mean
+            # something -- and it is why this is the one image that
+            # overrides the shared ABI.
+            #
+            -mabi=ilp32f
+            #
             # Modules 7 and 11 are the transcendental functions, so they
             # come from newlib rather than from anything written here --
             # a hand-rolled sinf would be what a third of the benchmark

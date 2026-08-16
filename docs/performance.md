@@ -125,13 +125,22 @@ the emulator.
 
 | | KIPS (guest) | host wall |
 |---|---|---|
-| RV32, interpreter | 116.3 | 1903 ms |
-| RV32, JIT | 116.3 | 392 ms |
+| RV32, interpreter | 937.9 | 264 ms |
+| RV32, JIT | 938.0 | 125 ms |
 
-at `WHET_LOOPS=100`, which is 10 million Whetstone instructions and 86.0
-million guest instructions. **The JIT is 4.9× faster in real time and
+at `WHET_LOOPS=100`, which is 10 million Whetstone instructions and 10.7
+million guest instructions. **The JIT is 2.1× faster in real time and
 identical in the reported rate** — that pair of numbers is the clearest
 statement on this page of what these two clocks each measure.
+
+**Those figures are eight times better than the ones first recorded
+here, and the change was one flag.** The guest ABI is `ilp32`, which
+also selects the multilib, and `rv32imac/ilp32`'s libm is compiled
+*soft-float*: every `sinf` and every float multiply in the benchmark
+was `__mulsf3`. The FP benchmark was measuring libgcc's integer soft
+float. This image now overrides the shared ABI with `-mabi=ilp32f`,
+which selects `rv32imafc/ilp32f` and its hard-float libm: 86.0 million
+guest instructions became 10.7 million, and 116.3 KIPS became 937.9.
 
 Two things about it that Dhrystone does not share.
 

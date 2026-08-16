@@ -1190,6 +1190,24 @@ session, and every one of them recurred:
   frontend quietly ran interpreted while every build succeeded. Two unit
   tests caught it only because they assert the translation counter moves.
   A header that tests a capability must include whatever defines it.
+- **A measurement is only as good as the instrument, and this tree's
+  disassembler has no FP.** Asked whether host-FP lowering in the JIT
+  was worth building, the honest first step was to measure how much FP
+  a guest actually executes -- so a trace of Whetstone was histogrammed
+  by mnemonic. It reported **zero** floating-point instructions, which
+  reads as "there is nothing to accelerate, do not build it".
+  `rv_disasm` simply does not decode OP-FP: every one of them printed
+  as `illegal`. In the hard-float build that was **30,000 of 50,000
+  sampled, 60%**. The instrument said zero and the answer was most of
+  the window.
+
+  Two rules. **Check that the histogram's buckets can represent the
+  thing you are looking for** -- a category that is structurally
+  unreachable reads exactly like a category that is empty. And the
+  disassembler is *not* a decoder: this file already records it
+  printing confident nonsense for G4MH, and here the same gap turned
+  into a performance conclusion that would have closed the question
+  the wrong way.
 - **Measure; do not reason about performance.** Interpreter-in-SRAM was
   *slower*, lazy-IRQ was neutral, and the `clmul` fix was 1.3% when the real
   cost was 4.12-instruction blocks. Layout noise is ±3% on the host; on the

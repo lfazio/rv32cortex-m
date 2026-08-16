@@ -39,9 +39,9 @@ Building and running
   ./build/host/emu-host --load 0x80000000 build/host/guest/whetstone.bin
 
   -DWHET_LOOPS=n       work per run. 100 by default: 10 million
-                       Whetstone instructions, 86 million guest
-                       instructions, about 2 s on the host
-                       interpreter and 0.4 s on the JIT.
+                       Whetstone instructions, 10.7 million guest
+                       instructions, about 0.26 s on the host
+                       interpreter and 0.13 s on the JIT.
 
   -DWHET_PRINTOUT=ON   upstream's per-module digest, which is the
                        correctness check. Off for timing runs, as
@@ -58,7 +58,11 @@ the difference between them is in the host wall clock instead. On the
 board the clock is real, and there the same image does measure this
 emulator.
 
-The rate depends on WHET_LOOPS -- 113.6 KIPS at 10, 116.3 at 100, 125.1
-at 1000 -- because modules 7 and 11 are 99.4% of the instruction count
-and both get cheaper per iteration as their inputs converge. Always
-quote the LOOP count with the number.
+The rate depends on WHET_LOOPS, because modules 7 and 11 are the bulk
+of the instruction count and both get cheaper per iteration as their
+inputs converge. Always quote the LOOP count with the number.
+
+This image is built `-mabi=ilp32f`, overriding the shared guest ABI.
+Without it the multilib's libm is soft-float and the benchmark measures
+libgcc rather than the FPU -- 86.0 million guest instructions instead
+of 10.7, and 116.3 KIPS instead of 937.9.
