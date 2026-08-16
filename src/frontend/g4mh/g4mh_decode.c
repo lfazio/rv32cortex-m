@@ -7,7 +7,28 @@
 
 unsigned g4mh_insn_len(uint16_t w)
 {
-    return (g4mh_op6(w) < 0x30u) ? 2u : 4u;
+    /*
+     * op6 below 0x30 is 16 bits -- **except one slot**, and the
+     * exception is not decoration.
+     *
+     * `JARL disp32, reg1` is 00000 010111 RRRRR: reg2 zero, op6 0x17,
+     * reg1 the link register, and reg1 zero makes it `JR disp32`. It
+     * shares MULH imm5's opcode and is 48 bits wide. Answering 2 here
+     * means the second stage never runs, so g4mh_insn_is_48 -- which
+     * has handled 0x17 since it was written -- was never asked, w1 and
+     * w2 read as zero, and the interpreter's perfectly good
+     * implementation jumped to pc + 0. An infinite loop, not a wrong
+     * answer.
+     *
+     * This function sees only the first halfword, which is enough:
+     * reg2 is in it.
+     */
+    const uint32_t op = g4mh_op6(w);
+
+    if (op == 0x17u && g4mh_reg2(w) == 0u) {
+        return 4u;                       /* JR / JARL disp32: really 6 */
+    }
+    return (op < 0x30u) ? 2u : 4u;
 }
 
 bool g4mh_insn_is_48(uint16_t w0, uint16_t w1)

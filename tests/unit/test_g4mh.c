@@ -218,6 +218,36 @@ static void test_length(void)
      * near enough to PREPARE's 0x01 that a mask written from memory
      * gets it wrong. Both are here for that reason.
      */
+    /*
+     * g4mh_is_16bit and g4mh_insn_len must agree on every first
+     * halfword. They are two spellings of one question, and they came
+     * apart: `JR/JARL disp32` is 48 bits in an opcode slot below 0x30,
+     * so the shorthand `op6 < 0x30` is wrong for it while insn_len is
+     * right.
+     *
+     * Asserted as a property over the whole space rather than at the
+     * one encoding, because what makes it a defect is the *duplication*
+     * -- and because today nothing downstream can see the divergence:
+     * the JIT's translator declines op6 0x17 for other reasons, so a
+     * wrong answer here changes no result. A capability that depends on
+     * nobody exercising it is exactly what this project keeps finding.
+     */
+    for (uint32_t w = 0; w <= 0xFFFFu; w++) {
+        if (g4mh_is_16bit((uint16_t)w) !=
+            (g4mh_insn_len((uint16_t)w) == 2u)) {
+            CHECK(false);
+            break;
+        }
+    }
+    CHECK(true);
+
+    /* And the one encoding the two used to disagree about. */
+    CHECK_EQ(g4mh_insn_len(0x02E0u), 4u);       /* jr  disp32 */
+    CHECK_EQ(g4mh_insn_len(0x02E0u | 19u), 4u); /* jarl disp32, r19 */
+    CHECK(g4mh_insn_is_48(0x02E0u, 0x0008u));
+    /* MULH imm5 with a real reg2 stays 16 bits. */
+    CHECK_EQ(g4mh_insn_len((uint16_t)((10u << 11) | (0x17u << 5) | 4u)), 2u);
+
     {
         static const uint16_t sub[5] = { 0x5u, 0x7u, 0x9u, 0xDu, 0xFu };
         for (unsigned i = 0; i < 5u; i++) {
@@ -2429,27 +2459,46 @@ static void test_disasm_crowded_slots(void)
 {
     char buf[64];
 
-    /* ld.b 0x123456[r6], r7 -- CC-RH's bytes, from disp23.asm. */
-    g4mh_disasm(buf, sizeof(buf), 0x1000u, 0x0786u | (0x3D65u << 16));
-    CHECK(strncmp(buf, "ld.b ", 5u) == 0);
+    /* ld.b 0x123456[r6], r7 -- CC-RH's bytes, from disp23.asm. The whole
+     * displacement prints now, which is what the wider encoding bought. */
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                0x0786u | (0x3D65ull << 16) | (0x2468ull << 32), 6u);
+    CHECK(strncmp(buf, "ld.b 1193046[r6], r7", 20u) == 0);
 
     /* ld.dw, which is the op6 low bit away from ld.w. */
-    g4mh_disasm(buf, sizeof(buf), 0x1000u, 0x07A6u | (0x4569u << 16));
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                0x07A6u | (0x4569ull << 16) | (0x2468ull << 32), 6u);
     CHECK(strncmp(buf, "ld.dw ", 6u) == 0);
 
     /* st.w r7, 0x123456[r6] */
-    g4mh_disasm(buf, sizeof(buf), 0x1000u, 0x0786u | (0x3D6Fu << 16));
-    CHECK(strncmp(buf, "st.w ", 5u) == 0);
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                0x0786u | (0x3D6Full << 16) | (0x2468ull << 32), 6u);
+    CHECK(strncmp(buf, "st.w r7, 1193046[r6]", 20u) == 0);
 
-    /* prepare 0x3, 4 (32-bit) and its imm32 form (64-bit). */
-    g4mh_disasm(buf, sizeof(buf), 0x1000u, 0x0782u | (0x0061u << 16));
+    /* A negative disp23, which is the sign extension. */
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                0x0786u | (0x3809ull << 16) | (0x8000ull << 32), 6u);
+    CHECK(strncmp(buf, "ld.w -4194304[r6], r7", 21u) == 0);
+
+    /* prepare 0x3, 4 (32-bit) and its imm32 form (64-bit), which is the
+     * only encoding in the ISA whose fourth halfword matters. */
+    g4mh_disasm(buf, sizeof(buf), 0x1000u, 0x0782u | (0x0061ull << 16), 4u);
     CHECK(strncmp(buf, "prepare ", 8u) == 0);
-    g4mh_disasm(buf, sizeof(buf), 0x1000u, 0x0782u | (0x007Bu << 16));
-    CHECK(strncmp(buf, "prepare ", 8u) == 0);
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                0x0782u | (0x007Bull << 16) | (0x5678ull << 32) |
+                (0x1234ull << 48), 8u);
+    CHECK(strncmp(buf, "prepare 0x003, 1, 0x12345678", 28u) == 0);
+
+    /* mov imm32, which used to print half its constant. */
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                (uint64_t)W0(OP_MOVEA, 11, 0) | (0x5678ull << 16) |
+                (0x1234ull << 32), 6u);
+    CHECK(strncmp(buf, "mov 0x12345678, r11", 19u) == 0);
 
     /* ld.bu disp16, which shares the slot and is *not* reg2 == 0. */
     g4mh_disasm(buf, sizeof(buf), 0x1000u,
-                (uint32_t)((13u << 11) | (0x3Cu << 5) | 11u) | (1u << 16));
+                (uint64_t)((13u << 11) | (0x3Cu << 5) | 11u) | (1ull << 16),
+                4u);
     CHECK(strncmp(buf, "ld.bu ", 6u) == 0);
 
     /*
@@ -2459,27 +2508,130 @@ static void test_disasm_crowded_slots(void)
      * plausible target for a small forward jump and garbage otherwise
      * -- which is why the value is checked here and not just the
      * mnemonic.
-     *
-     * w0 = 0x0780 | 0, w1 = 0x0010 -> disp = 0x10, from pc 0x1000.
      */
-    g4mh_disasm(buf, sizeof(buf), 0x1000u, 0x0780u | (0x0010u << 16));
+    g4mh_disasm(buf, sizeof(buf), 0x1000u, 0x0780u | (0x0010ull << 16), 4u);
     CHECK(strncmp(buf, "jr 0x00001010", 13u) == 0);
 
     /* The two other reg2 == 0 slots that printed a multiply. */
     g4mh_disasm(buf, sizeof(buf), 0x1000u,
-                (uint32_t)(0x17u << 5) | (0x1234u << 16));
+                (uint64_t)(0x17u << 5) | (0x1234ull << 16) | (0ull << 32), 6u);
     CHECK(strncmp(buf, "jr ", 3u) == 0);
     g4mh_disasm(buf, sizeof(buf), 0x1000u,
-                (uint32_t)(0x37u << 5) | (0x1234u << 16));
+                (uint64_t)(0x37u << 5) | (0x1234ull << 16) | (0ull << 32), 6u);
     CHECK(strncmp(buf, "jmp ", 4u) == 0);
 
-    /* With reg2 != 0 they are multiplies again. */
+    /* With reg2 != 0 they are multiplies again, and 32-bit. */
+    /* MULH imm5 is *16* bits: passing 4 here is a length disagreement,
+     * which is what the test below is about. */
     g4mh_disasm(buf, sizeof(buf), 0x1000u,
-                (uint32_t)((1u << 11) | (0x17u << 5)) | (0x1234u << 16));
+                (uint64_t)((1u << 11) | (0x17u << 5)), 2u);
     CHECK(strncmp(buf, "mulh ", 5u) == 0);
     g4mh_disasm(buf, sizeof(buf), 0x1000u,
-                (uint32_t)((1u << 11) | (0x37u << 5)) | (0x1234u << 16));
+                (uint64_t)((1u << 11) | (0x37u << 5)) | (0x1234ull << 16), 4u);
     CHECK(strncmp(buf, "mulhi ", 6u) == 0);
+}
+
+/*
+ * JR and JARL disp32: the 48-bit forms hiding in a 16-bit opcode slot.
+ *
+ * `JARL disp32, reg1` is 00000 010111 RRRRR -- reg2 zero, op6 0x17,
+ * reg1 the link register -- so it lives in MULH imm5's slot, told apart
+ * by reg2 alone. The interpreter has always known that and has a full
+ * implementation of both.
+ *
+ * **It could never run.** g4mh_insn_len answers from the first halfword
+ * and says 2 bytes for every op6 below 0x30, so the second stage that
+ * would have called g4mh_insn_is_48 -- which does handle 0x17 -- was
+ * never reached. The instruction decoded as 16 bits, w1 and w2 read as
+ * zero, and the jump went to pc + 0: an infinite loop, not a wrong
+ * answer. That is why the run below is given a budget and why the
+ * retired count is what proves the fix.
+ *
+ * A shared opcode holding instructions of *different widths* is the
+ * defect this frontend records for 0x37 and 0x3C, and this is the same
+ * one in the one slot where the length decoder's first stage cannot see
+ * past its own rule of thumb.
+ */
+static void test_jr_disp32(void)
+{
+    /* jr +8, then a marker that must be skipped, then the target. */
+    const uint16_t prog[] = {
+        0x02E0u, 0x0008u, 0x0000u,      /* jr 0x00000008              */
+        F2(OP_MOVI, 9, 21),             /* skipped: r21 must stay 0   */
+        F2(OP_MOVI, 5, 20),             /* +8: the target             */
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) { CHECK(false); return; }
+
+    CHECK_EQ(why, EMU_RUN_WFI);
+    CHECK_EQ(reg(20), 5u);              /* the target ran             */
+    CHECK_EQ(reg(21), 0u);              /* and the marker did not     */
+    /* Three instructions, not a budget's worth of jumping to itself. */
+    CHECK_EQ(retired, 3u);
+
+    /* jarl +6, reg1 = r19: the link register gets pc + 6. */
+    {
+        const uint16_t prog2[] = {
+            (uint16_t)(0x02E0u | 19u), 0x0008u, 0x0000u,
+            F2(OP_MOVI, 9, 21),         /* skipped                    */
+            F2(OP_MOVI, 5, 20),
+            0x07E0u, SUB_HALT,
+        };
+        if (!load_and_run(prog2, sizeof(prog2) / sizeof(prog2[0]), 64u,
+                          &why, &retired)) { CHECK(false); return; }
+        CHECK_EQ(reg(19), EMU_GUEST_RAM_BASE + 6u);
+        CHECK_EQ(reg(20), 5u);
+        CHECK_EQ(reg(21), 0u);
+    }
+
+    /* And MULH imm5 with a real reg2 is still a multiply, 16 bits
+     * wide -- the neighbour that must not have been widened with it. */
+    {
+        const uint16_t prog3[] = {
+            MOVI32(10), 3u, 0u,
+            (uint16_t)((10u << 11) | (0x17u << 5) | 4u),  /* mulh 4, r10 */
+            F2(OP_MOVI, 5, 20),
+            0x07E0u, SUB_HALT,
+        };
+        if (!load_and_run(prog3, sizeof(prog3) / sizeof(prog3[0]), 64u,
+                          &why, &retired)) { CHECK(false); return; }
+        CHECK_EQ(reg(10), 12u);
+        CHECK_EQ(reg(20), 5u);          /* the next instruction ran   */
+    }
+}
+
+/*
+ * The length the caller passes against the length the encoding implies.
+ *
+ * On this ISA they are derivable from each other, so `len` is a second
+ * opinion rather than new information -- and a disagreement means the
+ * caller and the decoder have diverged, which is the defect this
+ * frontend keeps recording. It prints `.short` with both numbers
+ * instead of a mnemonic that would look authoritative.
+ */
+static void test_disasm_length_disagreement(void)
+{
+    char buf[64];
+
+    /* A 48-bit disp23 load, claimed to be four bytes. */
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                0x0786u | (0x3D65ull << 16) | (0x2468ull << 32), 4u);
+    CHECK(strncmp(buf, ".short ", 7u) == 0);
+
+    /* And a 16-bit MULH claimed to be four -- the neighbour of the
+     * 48-bit JR that shares its opcode. */
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                (uint64_t)((1u << 11) | (0x17u << 5)) | (0x1234ull << 16), 4u);
+    CHECK(strncmp(buf, ".short ", 7u) == 0);
+
+    /* The agreeing case still disassembles. */
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                0x0786u | (0x3D65ull << 16) | (0x2468ull << 32), 6u);
+    CHECK(strncmp(buf, "ld.b ", 5u) == 0);
 }
 
 /*
@@ -4204,6 +4356,8 @@ void test_g4mh(void)
     test_disp23_reserved_bit();
     test_disp23_jit();
     test_disasm_crowded_slots();
+    test_disasm_length_disagreement();
+    test_jr_disp32();
     test_prepare_imm32();
     test_prepare_ff_forms();
     test_barrier();

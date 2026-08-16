@@ -173,7 +173,8 @@ static bool host_syscall(emu_cpu_t *cpu, emu_syscall_t *sc, void *user)
 static uint64_t g_trace_skip;
 static uint64_t g_trace_count = 64;
 
-static void host_trace(emu_cpu_t *cpu, uint32_t pc, uint32_t insn, void *user)
+static void host_trace(emu_cpu_t *cpu, uint32_t pc, uint64_t insn,
+                       unsigned len, void *user)
 {
     (void)user;
     emu_cpu_status_t st;
@@ -187,10 +188,18 @@ static void host_trace(emu_cpu_t *cpu, uint32_t pc, uint32_t insn, void *user)
     char buf[64];
     buf[0] = '\0';
     if (g_core.ops->disasm != NULL) {
-        g_core.ops->disasm(buf, sizeof(buf), pc, insn);
+        g_core.ops->disasm(buf, sizeof(buf), pc, insn, len);
     }
-    fprintf(stderr, "%8llu %08x  %08x  %-28s",
-            (unsigned long long)st.retired, pc, insn, buf);
+    /*
+     * The encoding, only as wide as it is. Printing a fixed eight digits
+     * pads a 16-bit instruction with four zeros that look like part of
+     * it -- which on an ISA where a shared opcode holds two widths is
+     * exactly the thing the reader is trying to tell apart.
+     */
+    fprintf(stderr, "%8llu %08x  %0*llx%*s  %-28s",
+            (unsigned long long)st.retired, pc,
+            (int)(len * 2u), (unsigned long long)insn,
+            (int)(16u - len * 2u), "", buf);
 
     for (unsigned r = 1; r < 8u && r < g_core.ops->nregs; r++) {
         fprintf(stderr, " %s=%08x", g_core.ops->reg_name(r),

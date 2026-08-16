@@ -168,10 +168,15 @@ static const char *const csr_mn[8] = {
     NULL, "csrrw", "csrrs", "csrrc", NULL, "csrrwi", "csrrsi", "csrrci"
 };
 
-size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint32_t insn)
+size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
+                 unsigned len)
 {
     out_t o = { buf, (buflen == 0u) ? 0u : buflen - 1u, 0u };
+    /* RV32 is 2 or 4 bytes and the caller has already expanded RVC, so
+     * the length says nothing the encoding does not. */
+    const uint32_t insn = (uint32_t)insn64;
 
+    (void)len;
     if (buflen == 0u) {
         return 0u;
     }
@@ -352,10 +357,12 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint32_t insn)
 
 #else /* !RV_ENABLE_DISASM */
 
-size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint32_t insn)
+size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn,
+                 unsigned len)
 {
     (void)pc;
     (void)insn;
+    (void)len;
     if (buflen != 0u) {
         buf[0] = '\0';
     }

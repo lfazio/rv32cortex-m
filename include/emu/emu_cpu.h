@@ -104,10 +104,24 @@ typedef struct emu_syscall {
  */
 typedef bool (*emu_syscall_fn)(emu_cpu_t *cpu, emu_syscall_t *sc, void *user);
 
-/* Per-instruction trace. Only called when the frontend is built with
- * EMU_ENABLE_TRACE, which is off by default because it is slow. */
-typedef void (*emu_trace_fn)(emu_cpu_t *cpu, uint32_t pc, uint32_t insn,
-                             void *user);
+/*
+ * Per-instruction trace. Only called when the frontend is built with
+ * EMU_ENABLE_TRACE, which is off by default because it is slow.
+ *
+ * `insn` is the whole encoding, first halfword in the low bits, and
+ * `len` is how many bytes of it are meaningful. Both are needed: RH850
+ * runs from 2 to 8 bytes and nothing about the value says where it
+ * stops -- a 32-bit form whose second halfword is zero is
+ * indistinguishable from a 16-bit one otherwise.
+ *
+ * **64 bits is enough for every ISA in this tree and is not a general
+ * answer.** RH850's widest encoding is 8 bytes, PowerPC VLE's is 4 and
+ * RV32's is 4. A frontend needing more would have to pass a pointer,
+ * and that is the point at which this becomes the fetch callback it is
+ * deliberately not -- see the note on `disasm` below.
+ */
+typedef void (*emu_trace_fn)(emu_cpu_t *cpu, uint32_t pc, uint64_t insn,
+                             unsigned len, void *user);
 
 /*
  * The guest enabled an interrupt source, so the host may need to unmask
@@ -281,11 +295,26 @@ typedef struct emu_cpu_ops {
     void (*dump)(const emu_cpu_t *cpu, emu_print_fn out, void *ctx);
 
     /*
-     * Disassemble one instruction. `insn` is the encoding as fetched.
-     * Returns characters written, excluding the NUL. NULL when the
-     * frontend was built without its disassembler.
+     * Disassemble one instruction. `insn` is the encoding as fetched and
+     * `len` its width in bytes. Returns characters written, excluding
+     * the NUL. NULL when the frontend was built without its
+     * disassembler.
+     *
+     * **The encoding is passed by value, not fetched.** The alternative
+     * -- handing the disassembler the cpu so it can read as far as it
+     * likes -- is more general and is wrong here for two reasons. It can
+     * disagree with what actually executed, because a guest may have
+     * rewritten those bytes since; and it can fault, which turns a
+     * diagnostic into a second failure at exactly the moment something
+     * is already going wrong. The caller has the bytes already: the
+     * trace hook is the only user, and it fetched them to execute them.
+     *
+     * A monitor that wanted "disassemble N instructions at X" would need
+     * the fetch, and would also need to decide what to do about both of
+     * those. It does not exist, so this does not either.
      */
-    size_t (*disasm)(char *buf, size_t buflen, uint32_t pc, uint32_t insn);
+    size_t (*disasm)(char *buf, size_t buflen, uint32_t pc, uint64_t insn,
+                     unsigned len);
 } emu_cpu_ops_t;
 
 /* ------------------------------------------------------------------ */

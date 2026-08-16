@@ -454,7 +454,7 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
 
 #if EMU_ENABLE_TRACE
         if (h->trace != NULL) {
-            h->trace((emu_cpu_t *)h, pc, insn, h->trace_user);
+            h->trace((emu_cpu_t *)h, pc, insn, len, h->trace_user);
         }
 #endif
 

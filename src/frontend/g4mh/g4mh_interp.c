@@ -585,7 +585,9 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
 #if EMU_ENABLE_TRACE
         if (c->trace != NULL) {
             c->trace((emu_cpu_t *)c, pc,
-                     (uint32_t)w0 | (w1 << 16), c->trace_user);
+                     (uint64_t)w0 | ((uint64_t)w1 << 16) |
+                     ((uint64_t)w2 << 32) | ((uint64_t)w3 << 48),
+                     len, c->trace_user);
         }
 #endif
 

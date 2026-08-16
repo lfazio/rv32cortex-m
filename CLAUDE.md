@@ -1266,6 +1266,26 @@ rather than a lesson, and it was 170 lines of this file.
 The two things from it that belong here, because they are how the
 mistakes get made rather than what the mistakes were:
 
+- **A length decoder that answers from a rule of thumb will not tell
+  you about the slot the rule is wrong for.** `g4mh_insn_len` said "op6
+  below 0x30 is 16 bits", which is true of every G4MH encoding except
+  `JR`/`JARL disp32` -- 48 bits at op6 0x17, sharing MULH imm5's slot.
+  So the second stage never ran, `g4mh_insn_is_48` was never asked
+  about the case it had always handled, the two halfwords past the
+  first read as zero, and the jump went to `pc + 0`. **An infinite
+  loop, not a wrong answer**, in a fully-written implementation that
+  had never once executed. The comment naming the slot was accurate;
+  the code it described was unreachable.
+
+  Two things generalise. **When a decoder is staged, the first stage's
+  shortcut is where the exceptions hide** -- it is the one that answers
+  before it has the bits that would tell it otherwise. And the same
+  rule was spelled a second time in `g4mh_is_16bit`, which is how they
+  came apart; it defers now, and a property test asserts the two agree
+  across all 65536 first halfwords. That test exists because nothing
+  downstream can see the divergence today -- the JIT declines that
+  opcode for other reasons -- and a capability that depends on nobody
+  exercising it is not a capability.
 - **An ISA that reuses a register field as an opcode extension will not
   tell you when you ignore it.** `reg2 == 0` is an opcode extension
   throughout G4MH: `CALLT` hides in the `MOV imm5` slot, `DISPOSE` in

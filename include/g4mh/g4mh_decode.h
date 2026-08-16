@@ -90,9 +90,16 @@ bool g4mh_insn_is_48(uint16_t w0, uint16_t w1);
 bool g4mh_insn_is_64(uint16_t w0, uint16_t w1);
 
 /* True if the first halfword starts a 16-bit instruction. */
+/*
+ * Deferring to g4mh_insn_len rather than repeating its rule, because
+ * repeating it is how the two came apart: `JR/JARL disp32` is 48 bits
+ * in a slot whose op6 is below 0x30, so the shorthand is wrong for it
+ * and this predicate would have told the JIT's translator to lower a
+ * 48-bit jump as a 16-bit multiply. One rule, one place.
+ */
 static EMU_ALWAYS_INLINE bool g4mh_is_16bit(uint16_t w)
 {
-    return g4mh_op6(w) < 0x30u;
+    return g4mh_insn_len(w) == 2u;
 }
 
 /* ------------------------------------------------------------------ */

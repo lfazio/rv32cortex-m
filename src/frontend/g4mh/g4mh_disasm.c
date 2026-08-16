@@ -16,10 +16,46 @@
 
 #include <stdio.h>
 
-size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint32_t insn)
+size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn,
+                   unsigned len)
 {
-    const uint32_t w0 = insn & 0xFFFFu;
-    const uint32_t w1 = insn >> 16;
+    const uint32_t w0 = (uint32_t)(insn & 0xFFFFu);
+    const uint32_t w1 = (uint32_t)((insn >> 16) & 0xFFFFu);
+    /*
+     * The halfwords past the second, and the reason this function grew a
+     * `len`. Zero when the instruction is narrower, which is safe to
+     * read but is not the same as *knowing* it is narrower -- so the
+     * cases that print them test `len` and not the value.
+     */
+    const uint32_t w2 = (uint32_t)((insn >> 32) & 0xFFFFu);
+    const uint32_t w3 = (uint32_t)((insn >> 48) & 0xFFFFu);
+    const uint32_t d23 = (w2 << 7) | ((w1 >> 4) & 0x7Fu);
+    /*
+     * PREPARE's stack adjustment sits at bits 5:1 and is unsigned --
+     * *not* Format II's g4mh_imm5, which is bits 4:0 sign-extended.
+     * Using that one here printed 2 where the field held 1.
+     */
+    const unsigned prep_imm5 = (unsigned)((w0 >> 1) & 0x1Fu);
+
+    /*
+     * What the *encoding* says the length is, against what the caller
+     * says. For RH850 the two must agree: both come from
+     * g4mh_insn_len/is_48/is_64, and the caller ran them to fetch the
+     * instruction in the first place.
+     *
+     * So `len` is not information this function lacks -- it is a second
+     * opinion, and a disagreement means the caller and the decoder have
+     * diverged. That is the defect this frontend keeps recording ("the
+     * length decoder and the execute switch have to make the *same*
+     * test"), and a wrong length is not a wrong answer but a
+     * desynchronised stream. Reporting it as `.short` costs one compare
+     * on a path that is already doing formatted output, and turns an
+     * invisible divergence into a visible one.
+     */
+    const unsigned want = (g4mh_insn_len((uint16_t)w0) == 2u) ? 2u
+                        : !g4mh_insn_is_48((uint16_t)w0, (uint16_t)w1) ? 4u
+                        : g4mh_insn_is_64((uint16_t)w0, (uint16_t)w1) ? 8u
+                                                                      : 6u;
     const uint32_t r1 = g4mh_reg1(w0);
     const uint32_t r2 = g4mh_reg2(w0);
     const uint32_t op = g4mh_op6(w0);
@@ -29,6 +65,12 @@ size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint32_t insn)
 
     if (buflen == 0u) {
         return 0u;
+    }
+
+    if (len != want) {
+        n = snprintf(buf, buflen, ".short 0x%04x  ; len %u, want %u",
+                     (unsigned)w0, len, want);
+        goto done;
     }
 
     switch (op) {
@@ -77,7 +119,8 @@ size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint32_t insn)
     case 0x17:
         /* reg2 == 0 is JR/JARL disp32, not a multiply. */
         n = (r2 == 0u)
-          ? snprintf(buf, buflen, "jr 0x....%04x", (unsigned)w1)
+          ? snprintf(buf, buflen, "jr 0x%08x",
+                     pc + (((w2 << 16) | (w1 & 0xFFFEu))))
           : snprintf(buf, buflen, "mulh %d, %s", g4mh_imm5(w0), b);
         break;
 
@@ -85,7 +128,8 @@ size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint32_t insn)
                             (int)emu_sext(w1, 16), a, b); break;
     case 0x31:
         n = (r2 == 0u)
-          ? snprintf(buf, buflen, "mov 0x....%04x, %s", (unsigned)w1, a)
+          ? snprintf(buf, buflen, "mov 0x%04x%04x, %s",
+                     (unsigned)w2, (unsigned)w1, a)
           : snprintf(buf, buflen, "movea %d, %s, %s",
                      (int)emu_sext(w1, 16), a, b);
         break;
@@ -111,7 +155,8 @@ size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint32_t insn)
           : ((w1 & 1u) != 0u)
           ? snprintf(buf, buflen, "loop %s, 0x%08x", a,
                      pc - (uint32_t)(w1 & 0xFFFEu))
-          : snprintf(buf, buflen, "jmp 0x....%04x[%s]", (unsigned)w1, a);
+          : snprintf(buf, buflen, "jmp 0x%08x[%s]",
+                     (unsigned)((w2 << 16) | (w1 & 0xFFFEu)), a);
         break;
 
     case 0x38: n = snprintf(buf, buflen, "ld.b %d[%s], %s",
@@ -146,21 +191,35 @@ size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint32_t insn)
                              (int)emu_sext(disp, 16), a, b);
             } else if ((w1 & 0x1Fu) == 0x01u) {
                 n = snprintf(buf, buflen, "prepare 0x%03x, %u",
-                             (unsigned)(w1 >> 5), (unsigned)g4mh_imm5(w0));
+                             (unsigned)(w1 >> 5), prep_imm5);
             } else if ((w1 & 0x07u) == 0x03u) {
-                static const char *const ff[4] = {
-                    "sp", "0x....", "0x....0000", "0x........"
-                };
+                /*
+                 * ff names what reaches ep, and it also names the
+                 * *width*: sp costs no halfword, imm16 one, imm32 two.
+                 * The 64-bit case is the only one in the ISA and is why
+                 * w3 exists.
+                 */
+                const uint32_t ff = (w1 >> 3) & 3u;
+                char ep[16];
+
+                switch (ff) {
+                case 0u: snprintf(ep, sizeof(ep), "sp"); break;
+                case 1u: snprintf(ep, sizeof(ep), "0x%08x",
+                                  (unsigned)(uint32_t)emu_sext(w2, 16));
+                         break;
+                case 2u: snprintf(ep, sizeof(ep), "0x%04x0000",
+                                  (unsigned)w2); break;
+                default: snprintf(ep, sizeof(ep), "0x%04x%04x",
+                                  (unsigned)w3, (unsigned)w2); break;
+                }
                 n = snprintf(buf, buflen, "prepare 0x%03x, %u, %s",
-                             (unsigned)(w1 >> 5), (unsigned)g4mh_imm5(w0),
-                             ff[(w1 >> 3) & 3u]);
+                             (unsigned)(w1 >> 5), prep_imm5, ep);
             } else {
                 /*
-                 * The disp23 group. Only disp[6:0] is inside these two
-                 * halfwords -- disp[22:7] is in the third, which this
-                 * interface does not carry -- so the displacement
-                 * prints with the same ellipsis `mov imm32` uses rather
-                 * than as the seven bits that are visible.
+                 * The disp23 group. disp[6:0] is in w1 and disp[22:7]
+                 * in w2, so the whole displacement is printable now
+                 * that the third halfword arrives -- this used to show
+                 * seven bits behind an ellipsis.
                  */
                 static const char *const nm[16] = {
                     NULL, NULL, NULL, NULL, NULL, "ld.b",  NULL, "ld.h",
@@ -173,16 +232,18 @@ size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint32_t insn)
                 const char *const *tab = (op & 1u) ? nmu : nm;
                 const char *mn = tab[w1 & 0xFu];
 
+                const int32_t disp = (int32_t)emu_sext(d23, 23);
+
                 if (mn == NULL) {
                     n = snprintf(buf, buflen, ".short 0x%04x, 0x%04x",
                                  (unsigned)w0, (unsigned)w1);
                 } else if ((w1 & 0xFu) == 0xDu || (w1 & 0xFu) == 0xFu) {
-                    n = snprintf(buf, buflen, "%s %s, 0x....%02x[%s]", mn,
+                    n = snprintf(buf, buflen, "%s %s, %d[%s]", mn,
                                  g4mh_reg_name((w1 >> 11) & 0x1Fu),
-                                 (unsigned)((w1 >> 4) & 0x7Fu), a);
+                                 disp, a);
                 } else {
-                    n = snprintf(buf, buflen, "%s 0x....%02x[%s], %s", mn,
-                                 (unsigned)((w1 >> 4) & 0x7Fu), a,
+                    n = snprintf(buf, buflen, "%s %d[%s], %s", mn,
+                                 disp, a,
                                  g4mh_reg_name((w1 >> 11) & 0x1Fu));
                 }
             }

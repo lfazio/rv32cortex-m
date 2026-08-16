@@ -206,12 +206,26 @@ exists now; use it for anything wider than a register.
 
 ## The disassembler
 
-`g4mh_disasm` takes 32 bits of encoding, because that is what
-`emu_trace_fn` carries. So a 48- or 64-bit instruction cannot be
-rendered in full, and the bits it cannot see print as an ellipsis —
-`mov 0x....1234`, `ld.b 0x....56[r6], r7`. Widening that is a change to
-the shared `emu_cpu_ops_t` contract and to both other frontends, not a
-table entry here.
+`g4mh_disasm` takes the whole encoding — up to 64 bits — and its width
+in bytes, so every form renders in full. That needed widening
+`emu_cpu_ops_t.disasm` and `emu_trace_fn` together, which is why it was
+a separate piece of work: it is the shared contract and all three
+frontends.
+
+**The encoding is passed by value, not fetched.** Handing the
+disassembler the cpu so it can read as far as it likes is more general
+and is wrong here twice over: it can disagree with what actually ran,
+because the guest may have rewritten those bytes since, and it can
+fault — turning a diagnostic into a second failure at the moment
+something is already going wrong. The caller has the bytes; it fetched
+them to execute them.
+
+`len` is *derivable* from the value on this ISA, so it is not
+information the function lacks. It is a **second opinion**: the caller
+ran `g4mh_insn_len`/`is_48`/`is_64` to fetch the instruction, and a
+disagreement means the caller and the decoder have diverged. That
+prints `.short` with both numbers rather than an authoritative-looking
+mnemonic.
 
 What it must not do is *guess*, and it did. CLAUDE.md already records
 this file printing "confident nonsense"; there was more of it, all in
@@ -233,6 +247,30 @@ slots where `reg2 == 0` selects a different instruction:
 The rule this leaves: **the disassembler has to make the same
 discrimination the interpreter does, in the same order.** It is not a
 lookup table over opcodes, because the ISA is not one.
+
+### `JR`/`JARL disp32` could never execute
+
+Found by poking op6 `0x17` while testing the above, and it is the
+worst class of defect this frontend records.
+
+`JARL disp32, reg1` is `00000 010111 RRRRR` — reg2 zero, op6 `0x17`,
+reg1 the link register, and reg1 zero makes it `JR`. It shares MULH
+imm5's opcode and is **48 bits wide**. The interpreter has always known
+that and carries a full implementation of both.
+
+`g4mh_insn_len` answers from the first halfword and said 2 bytes for
+every op6 below `0x30`. So the second stage never ran, `g4mh_insn_is_48`
+— which has handled `0x17` since it was written — was never asked, `w1`
+and `w2` read as zero, and the jump went to `pc + 0`. **An infinite
+loop, not a wrong answer.** The comment naming the slot was accurate and
+load-bearing and the code it described was unreachable.
+
+`g4mh_is_16bit` had the same rule spelled a second way and is now one
+line calling `g4mh_insn_len`. A property test asserts they agree across
+all 65536 first halfwords — because what makes this a defect is the
+duplication, and because nothing downstream can currently see the
+divergence: the JIT's translator declines `0x17` for other reasons, so
+a wrong answer there changes no result today.
 
 ## The inter-CPU peripherals
 

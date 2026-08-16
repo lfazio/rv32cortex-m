@@ -127,7 +127,7 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
 
 #if EMU_ENABLE_TRACE
         if (c->trace != NULL) {
-            c->trace((emu_cpu_t *)c, pc, insn, c->trace_user);
+            c->trace((emu_cpu_t *)c, pc, insn, len, c->trace_user);
         }
 #endif
 
