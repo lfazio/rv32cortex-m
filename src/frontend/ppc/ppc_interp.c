@@ -75,6 +75,20 @@ static EMU_ALWAYS_INLINE void cr0_from(ppc_cpu_t *c, uint32_t res)
     cr_compare(c, 0u, res, 0u, true);
 }
 
+/*
+ * XER[CA], the carry.
+ *
+ * Written by the carrying arithmetic and by the arithmetic right
+ * shifts, and by nothing else -- which is why it had no setter until
+ * those existed. It is *not* touched by plain `add` or `subf`: the
+ * carrying forms are separate instructions precisely so that the common
+ * ones need not maintain it.
+ */
+static EMU_ALWAYS_INLINE void xer_set_ca(ppc_cpu_t *c, bool ca)
+{
+    c->xer = ca ? (c->xer | PPC_XER_CA) : (c->xer & ~PPC_XER_CA);
+}
+
 /* ------------------------------------------------------------------ */
 /* Run loop                                                            */
 /* ------------------------------------------------------------------ */
@@ -282,15 +296,24 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 }
             } else if ((w >> 11) == 0x09u) {        /* se_li  imm7        */
                 c->r[rx] = ((uint32_t)w >> 4) & 0x7Fu;
-            } else if ((w >> 9) == 0x10u || (w >> 9) == 0x12u) {
+            } else if ((w >> 9) == 0x10u || (w >> 9) == 0x11u ||
+                       (w >> 9) == 0x12u) {
                 /*
                  * OIM5 encodes 1..32 as 0..31, because adding zero is
                  * not worth an encoding. Reading it straight makes
                  * `se_addi rX,1` a no-op and `se_addi rX,32` add 31.
+                 *
+                 * se_cmpli shares that encoding and sat *between* the
+                 * two that were implemented -- 0x10 and 0x12 were here
+                 * and 0x11 was not, which is this file's second instance
+                 * of the same miss and the reason the whole slot was
+                 * enumerated against the assembler rather than extended
+                 * one instruction at a time.
                  */
                 const uint32_t oim = (((uint32_t)w >> 4) & 0x1Fu) + 1u;
-                if ((w >> 9) == 0x10u) { c->r[rx] += oim; }
-                else                   { c->r[rx] -= oim; }
+                if ((w >> 9) == 0x10u)      { c->r[rx] += oim; }
+                else if ((w >> 9) == 0x12u) { c->r[rx] -= oim; }
+                else { cr_compare(c, 0u, c->r[rx], oim, false); }
             } else if ((w >> 9) == 0x15u) {         /* se_cmpi  ui5       */
                 cr_compare(c, 0u, c->r[rx], ((uint32_t)w >> 4) & 0x1Fu, true);
             } else if ((w >> 9) == 0x16u) {         /* se_bmaski ui5      */
@@ -298,6 +321,8 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 c->r[rx] = (n == 0u) ? 0xFFFFFFFFu : ((1u << n) - 1u);
             } else if ((w >> 9) == 0x30u) {         /* se_bclri           */
                 c->r[rx] &= ~(1u << (31u - (((uint32_t)w >> 4) & 0x1Fu)));
+            } else if ((w >> 9) == 0x31u) {         /* se_bgeni           */
+                c->r[rx] = 1u << (31u - (((uint32_t)w >> 4) & 0x1Fu));
             } else if ((w >> 9) == 0x32u) {         /* se_bseti           */
                 c->r[rx] |= 1u << (31u - (((uint32_t)w >> 4) & 0x1Fu));
             } else if ((w >> 9) == 0x33u) {         /* se_btsti           */
@@ -306,6 +331,22 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 cr_compare(c, 0u, b, 0u, true);
             } else if ((w >> 9) == 0x34u) {         /* se_srwi            */
                 c->r[rx] >>= ((uint32_t)w >> 4) & 0x1Fu;
+            } else if ((w >> 9) == 0x35u) {         /* se_srawi           */
+                /*
+                 * Arithmetic, so the sign is replicated -- and it sat
+                 * between se_srwi and se_slwi, both of which were
+                 * implemented. A logical shift where an arithmetic one
+                 * belongs is not a trap, it is a wrong answer for
+                 * exactly the negative inputs a test of 0x5A5A never
+                 * reaches.
+                 *
+                 * XER[CA] is not updated, which matches the 32-bit
+                 * `sraw` beside it; carry is not modelled anywhere in
+                 * this frontend yet, and doing it here alone would make
+                 * the two disagree.
+                 */
+                c->r[rx] = (uint32_t)((int32_t)c->r[rx] >>
+                                      (((uint32_t)w >> 4) & 0x1Fu));
             } else if ((w >> 9) == 0x36u) {         /* se_slwi            */
                 c->r[rx] <<= ((uint32_t)w >> 4) & 0x1Fu;
             } else if (hi >= 0x80u && hi <= 0xDFu) {
@@ -552,13 +593,58 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                     const uint32_t ui16_l = (hi_l << 11) | lo;
                     const uint32_t ui16_a = (hi_a << 11) | lo;
 
+                    /*
+                     * The whole slot, enumerated from the assembler
+                     * rather than from a diagram -- `e_add2i.` is XO
+                     * 0x11 and not the 0x10 the group's start suggests,
+                     * so a guessed base would have shifted every entry
+                     * by one. Seven of these twelve were implemented and
+                     * five were not, and the five were invisible because
+                     * the unit tests only ever used the seven. This is
+                     * the enumerate-the-slot rule from CLAUDE.md, in a
+                     * new place.
+                     */
                     switch (xo) {
+                    case 0x11u:             /* e_add2i.   rA, si16      */
+                        /* Always records, hence the dot in the name. */
+                        c->r[ra] += (uint32_t)(int32_t)(int16_t)ui16_a;
+                        cr0_from(c, c->r[ra]);
+                        break;
+                    case 0x12u:             /* e_add2is   rA, si16      */
+                        /*
+                         * Adds to the *upper* half and does not record.
+                         * The field is signed, so a decoder that
+                         * zero-extends is right for every positive
+                         * addend -- which is why the guest checks -1.
+                         */
+                        c->r[ra] += (uint32_t)((int32_t)(int16_t)ui16_a << 16);
+                        break;
                     case 0x13u:             /* e_cmp16i   rA, si16      */
                         cr_compare(c, 0u, c->r[ra],
                                    (uint32_t)(int32_t)(int16_t)ui16_a, true);
                         break;
+                    case 0x14u:             /* e_mull2i   rA, si16      */
+                        c->r[ra] = (uint32_t)((int32_t)c->r[ra] *
+                                              (int32_t)(int16_t)ui16_a);
+                        break;
                     case 0x15u:             /* e_cmpl16i  rA, ui16      */
                         cr_compare(c, 0u, c->r[ra], ui16_a, false);
+                        break;
+                    case 0x16u:             /* e_cmph16i  rA, si16      */
+                        /*
+                         * Compares the *low halfword* of rA, not the
+                         * word -- which is the whole difference from
+                         * e_cmp16i and is invisible to any operand whose
+                         * upper half is a sign extension of its lower.
+                         * 0x00018000 against -32768 separates the two
+                         * readings; the guest uses exactly that.
+                         */
+                        cr_compare(c, 0u,
+                                   (uint32_t)(int32_t)(int16_t)c->r[ra],
+                                   (uint32_t)(int32_t)(int16_t)ui16_a, true);
+                        break;
+                    case 0x17u:             /* e_cmphl16i rA, ui16      */
+                        cr_compare(c, 0u, c->r[ra] & 0xFFFFu, ui16_a, false);
                         break;
                     case 0x18u:             /* e_or2i     rD, ui16      */
                         c->r[rd] |= ui16_l;
@@ -589,21 +675,49 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 if ((insn & 0x02000000u) != 0u) {
                     /*
                      * e_bc. BI32 names a CR bit as field*4 + bit, and
-                     * BO32's low bit says whether to branch when it is
-                     * set or clear -- so e_bne is "branch if EQ clear"
-                     * rather than an encoding of its own.
+                     * **BO32 is two bits, not one**:
+                     *
+                     *   0  branch if CR[BI32] is clear
+                     *   1  branch if CR[BI32] is set
+                     *   2  decrement CTR, branch if CTR != 0   (e_bdnz)
+                     *   3  decrement CTR, branch if CTR == 0   (e_bdz)
+                     *
+                     * Only the low bit was read here, which made the two
+                     * counter forms alias the two condition forms:
+                     * `e_bdnz` and `e_bge` both came out as BO32 bit 0
+                     * clear with BI32 0, so a counted loop executed as
+                     * "branch while CR0[LT] is clear" -- always true, so
+                     * it never terminated. Not a declined encoding and
+                     * not a trap: a silent wrong answer, found by the
+                     * first guest that wrote a loop.
                      */
                     static const uint32_t k_bit[4] = {
                         PPC_CR_LT, PPC_CR_GT, PPC_CR_EQ, PPC_CR_SO
                     };
-                    const uint32_t cond = (insn >> 16) & 0x1Fu;
-                    const bool want = ((cond >> 4) & 1u) != 0u;
-                    const uint32_t bi = cond & 0xFu;
-                    const bool got =
-                        (cr_get(c, (bi >> 2) & 0x7u) & k_bit[bi & 3u]) != 0u;
+                    const uint32_t bo = (insn >> 20) & 0x3u;
+                    const uint32_t bi = (insn >> 16) & 0xFu;
+                    bool take;
+
+                    if ((bo & 2u) != 0u) {
+                        /*
+                         * The decrement happens whether or not the
+                         * branch is taken, and it is CTR *after* the
+                         * decrement that decides -- so a CTR of 3 runs
+                         * the body three times. Testing before
+                         * decrementing runs it four.
+                         */
+                        c->ctr--;
+                        take = ((bo & 1u) == 0u) ? (c->ctr != 0u)
+                                                 : (c->ctr == 0u);
+                    } else {
+                        const bool got =
+                            (cr_get(c, (bi >> 2) & 0x7u) & k_bit[bi & 3u])
+                            != 0u;
+                        take = (got == ((bo & 1u) != 0u));
+                    }
 
                     if (lk) { c->lr = next; }
-                    if (got == want) {
+                    if (take) {
                         /* BD15 is bits[15:1], signed; bit 0 is LK. */
                         const int32_t bd =
                             (int32_t)(int16_t)(uint16_t)(insn & 0xFFFEu);
@@ -745,6 +859,121 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 if (ppc_rc(insn)) { cr0_from(c, v); }
                 break;
             }
+            case 0x068: {                   /* neg                      */
+                const uint32_t v = (uint32_t)0u - c->r[ppc_ra(insn)];
+                c->r[ppc_rd(insn)] = v;
+                if (ppc_rc(insn)) { cr0_from(c, v); }
+                break;
+            }
+
+            /*
+             * The carrying forms. XER[CA] existed and nothing had ever
+             * written it, so these were left out rather than
+             * implemented without it -- which would have been the worse
+             * choice: a right sum with a wrong carry is silent, and the
+             * next `adde` is where it shows.
+             *
+             * The carry is computed on the *unsigned* result, and for
+             * the extended forms the incoming CA is part of the sum, so
+             * a 64-bit intermediate is the honest way to get the
+             * carry-out of a three-term add.
+             */
+            case 0x00A: {                   /* addc                     */
+                const uint64_t s = (uint64_t)c->r[ppc_ra(insn)] +
+                                   (uint64_t)c->r[ppc_rb(insn)];
+                c->r[ppc_rd(insn)] = (uint32_t)s;
+                xer_set_ca(c, (s >> 32) != 0u);
+                if (ppc_rc(insn)) { cr0_from(c, (uint32_t)s); }
+                break;
+            }
+            case 0x08A: {                   /* adde                     */
+                const uint64_t s = (uint64_t)c->r[ppc_ra(insn)] +
+                                   (uint64_t)c->r[ppc_rb(insn)] +
+                                   (uint64_t)((c->xer & PPC_XER_CA) ? 1u : 0u);
+                c->r[ppc_rd(insn)] = (uint32_t)s;
+                xer_set_ca(c, (s >> 32) != 0u);
+                if (ppc_rc(insn)) { cr0_from(c, (uint32_t)s); }
+                break;
+            }
+            case 0x008: {                   /* subfc                    */
+                /*
+                 * Subtract is defined as ~rA + rB + 1, and the carry is
+                 * that addition's carry-out -- which is the *opposite*
+                 * sense to a borrow. Writing it as a comparison instead
+                 * gets the boundary case rA == rB wrong.
+                 */
+                const uint64_t s = (uint64_t)(uint32_t)~c->r[ppc_ra(insn)] +
+                                   (uint64_t)c->r[ppc_rb(insn)] + 1u;
+                c->r[ppc_rd(insn)] = (uint32_t)s;
+                xer_set_ca(c, (s >> 32) != 0u);
+                if (ppc_rc(insn)) { cr0_from(c, (uint32_t)s); }
+                break;
+            }
+            case 0x088: {                   /* subfe                    */
+                const uint64_t s = (uint64_t)(uint32_t)~c->r[ppc_ra(insn)] +
+                                   (uint64_t)c->r[ppc_rb(insn)] +
+                                   (uint64_t)((c->xer & PPC_XER_CA) ? 1u : 0u);
+                c->r[ppc_rd(insn)] = (uint32_t)s;
+                xer_set_ca(c, (s >> 32) != 0u);
+                if (ppc_rc(insn)) { cr0_from(c, (uint32_t)s); }
+                break;
+            }
+
+            /*
+             * Multiply and divide. The whole family was absent, which
+             * the first guest to compute anything found immediately --
+             * a compiler emits mullw for `a * b` and there is no way to
+             * avoid it.
+             */
+            case 0x0EB: {                   /* mullw                    */
+                const uint32_t v = (uint32_t)((int32_t)c->r[ppc_ra(insn)] *
+                                              (int32_t)c->r[ppc_rb(insn)]);
+                c->r[ppc_rd(insn)] = v;
+                if (ppc_rc(insn)) { cr0_from(c, v); }
+                break;
+            }
+            case 0x04B: {                   /* mulhw                    */
+                const int64_t p = (int64_t)(int32_t)c->r[ppc_ra(insn)] *
+                                  (int64_t)(int32_t)c->r[ppc_rb(insn)];
+                const uint32_t v = (uint32_t)((uint64_t)p >> 32);
+                c->r[ppc_rd(insn)] = v;
+                if (ppc_rc(insn)) { cr0_from(c, v); }
+                break;
+            }
+            case 0x00B: {                   /* mulhwu                   */
+                const uint64_t p = (uint64_t)c->r[ppc_ra(insn)] *
+                                   (uint64_t)c->r[ppc_rb(insn)];
+                const uint32_t v = (uint32_t)(p >> 32);
+                c->r[ppc_rd(insn)] = v;
+                if (ppc_rc(insn)) { cr0_from(c, v); }
+                break;
+            }
+            case 0x1EB: {                   /* divw                     */
+                const int32_t a = (int32_t)c->r[ppc_ra(insn)];
+                const int32_t b = (int32_t)c->r[ppc_rb(insn)];
+                /*
+                 * Division by zero and INT_MIN / -1 are both
+                 * *undefined* results architecturally rather than
+                 * traps, so the rd write is boundedly undefined -- but
+                 * they must not be executed in C, where either is
+                 * undefined behaviour and INT_MIN / -1 raises SIGFPE on
+                 * x86. Zero is as good a value as any and is what the
+                 * hardware is documented to leave.
+                 */
+                const uint32_t v = (b == 0 || (a == INT32_MIN && b == -1))
+                                   ? 0u : (uint32_t)(a / b);
+                c->r[ppc_rd(insn)] = v;
+                if (ppc_rc(insn)) { cr0_from(c, v); }
+                break;
+            }
+            case 0x1CB: {                   /* divwu                    */
+                const uint32_t a = c->r[ppc_ra(insn)];
+                const uint32_t b = c->r[ppc_rb(insn)];
+                const uint32_t v = (b == 0u) ? 0u : (a / b);
+                c->r[ppc_rd(insn)] = v;
+                if (ppc_rc(insn)) { cr0_from(c, v); }
+                break;
+            }
             /*
              * The logical group writes rA from rS, which is the reverse
              * of the arithmetic group's rD from rA. rD and rS are the
@@ -768,6 +997,137 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 const uint32_t v = c->r[ppc_rd(insn)] ^ c->r[ppc_rb(insn)];
                 c->r[ppc_ra(insn)] = v;
                 if (ppc_rc(insn)) { cr0_from(c, v); }
+                break;
+            }
+            case 0x03C: {                   /* andc                     */
+                const uint32_t v = c->r[ppc_rd(insn)] & ~c->r[ppc_rb(insn)];
+                c->r[ppc_ra(insn)] = v;
+                if (ppc_rc(insn)) { cr0_from(c, v); }
+                break;
+            }
+            case 0x19C: {                   /* orc                      */
+                const uint32_t v = c->r[ppc_rd(insn)] | ~c->r[ppc_rb(insn)];
+                c->r[ppc_ra(insn)] = v;
+                if (ppc_rc(insn)) { cr0_from(c, v); }
+                break;
+            }
+            case 0x1DC: {                   /* nand                     */
+                const uint32_t v = ~(c->r[ppc_rd(insn)] & c->r[ppc_rb(insn)]);
+                c->r[ppc_ra(insn)] = v;
+                if (ppc_rc(insn)) { cr0_from(c, v); }
+                break;
+            }
+            case 0x07C: {                   /* nor  (and thus `not`)    */
+                const uint32_t v = ~(c->r[ppc_rd(insn)] | c->r[ppc_rb(insn)]);
+                c->r[ppc_ra(insn)] = v;
+                if (ppc_rc(insn)) { cr0_from(c, v); }
+                break;
+            }
+            case 0x11C: {                   /* eqv                      */
+                const uint32_t v = ~(c->r[ppc_rd(insn)] ^ c->r[ppc_rb(insn)]);
+                c->r[ppc_ra(insn)] = v;
+                if (ppc_rc(insn)) { cr0_from(c, v); }
+                break;
+            }
+
+            /*
+             * The register shifts. PowerPC's shift amount is **six**
+             * bits, not five: a count of 32..63 shifts the value out
+             * entirely and yields zero, where masking to five bits
+             * would make `slw` by 32 a no-op. That is the whole
+             * difference from the se_ forms above, whose count is an
+             * immediate that cannot exceed 31.
+             */
+            case 0x018: {                   /* slw                      */
+                const uint32_t n = c->r[ppc_rb(insn)] & 0x3Fu;
+                const uint32_t v = (n >= 32u) ? 0u : (c->r[ppc_rd(insn)] << n);
+                c->r[ppc_ra(insn)] = v;
+                if (ppc_rc(insn)) { cr0_from(c, v); }
+                break;
+            }
+            case 0x218: {                   /* srw                      */
+                const uint32_t n = c->r[ppc_rb(insn)] & 0x3Fu;
+                const uint32_t v = (n >= 32u) ? 0u : (c->r[ppc_rd(insn)] >> n);
+                c->r[ppc_ra(insn)] = v;
+                if (ppc_rc(insn)) { cr0_from(c, v); }
+                break;
+            }
+            case 0x318: {                   /* sraw                     */
+                /*
+                 * The arithmetic shift saturates at 31 rather than
+                 * yielding zero -- the sign fills the register -- and
+                 * it is the one shift that writes XER[CA]: set when the
+                 * operand was negative and any one bit was shifted out.
+                 */
+                const uint32_t n = c->r[ppc_rb(insn)] & 0x3Fu;
+                const int32_t a = (int32_t)c->r[ppc_rd(insn)];
+                const uint32_t sh = (n >= 32u) ? 31u : n;
+                const uint32_t v = (uint32_t)(a >> sh);
+
+                xer_set_ca(c, a < 0 &&
+                              (c->r[ppc_rd(insn)] & ((1u << sh) - 1u)) != 0u);
+                c->r[ppc_ra(insn)] = v;
+                if (ppc_rc(insn)) { cr0_from(c, v); }
+                break;
+            }
+            case 0x338: {                   /* srawi                    */
+                const uint32_t sh = (insn >> 11) & 0x1Fu;
+                const int32_t a = (int32_t)c->r[ppc_rd(insn)];
+                const uint32_t v = (uint32_t)(a >> sh);
+
+                xer_set_ca(c, a < 0 &&
+                              (c->r[ppc_rd(insn)] & ((1u << sh) - 1u)) != 0u);
+                c->r[ppc_ra(insn)] = v;
+                if (ppc_rc(insn)) { cr0_from(c, v); }
+                break;
+            }
+
+            case 0x3BA: {                   /* extsb                    */
+                const uint32_t v = (uint32_t)(int32_t)(int8_t)
+                                   c->r[ppc_rd(insn)];
+                c->r[ppc_ra(insn)] = v;
+                if (ppc_rc(insn)) { cr0_from(c, v); }
+                break;
+            }
+            case 0x39A: {                   /* extsh                    */
+                const uint32_t v = (uint32_t)(int32_t)(int16_t)
+                                   c->r[ppc_rd(insn)];
+                c->r[ppc_ra(insn)] = v;
+                if (ppc_rc(insn)) { cr0_from(c, v); }
+                break;
+            }
+            case 0x01A: {                   /* cntlzw                   */
+                uint32_t x = c->r[ppc_rd(insn)];
+                uint32_t n = 0u;
+
+                /* 32 for a zero input, which the loop gives for free. */
+                while (n < 32u && (x & 0x80000000u) == 0u) {
+                    x <<= 1;
+                    n++;
+                }
+                c->r[ppc_ra(insn)] = n;
+                if (ppc_rc(insn)) { cr0_from(c, n); }
+                break;
+            }
+
+            case 0x090: {                   /* mtcrf                    */
+                /*
+                 * FXM is a byte-wide field mask, one bit per CR field,
+                 * most significant first -- so bit 7 of FXM is CR0.
+                 * Reading it the other way round writes CR7 where CR0
+                 * belongs, which is the same left-to-right numbering
+                 * trap the compares have.
+                 */
+                const uint32_t fxm = (insn >> 12) & 0xFFu;
+                const uint32_t s = c->r[ppc_rd(insn)];
+                uint32_t mask = 0u;
+
+                for (unsigned fld = 0; fld < 8u; fld++) {
+                    if ((fxm & (0x80u >> fld)) != 0u) {
+                        mask |= 0xFu << (4u * (7u - fld));
+                    }
+                }
+                c->cr = (c->cr & ~mask) | (s & mask);
                 break;
             }
 

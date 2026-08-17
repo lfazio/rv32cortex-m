@@ -250,6 +250,7 @@ Guest images (`tests/guest/`):
 | [docs/Architecture.md](docs/Architecture.md) | the three axes and the frontend contract |
 | [docs/frontend/rv32.md](docs/frontend/rv32.md) | RV32 scope, memory map, floating point |
 | [docs/frontend/g4mh.md](docs/frontend/g4mh.md) | G4MH scope, and what is *not* verified |
+| [docs/frontend/ppc.md](docs/frontend/ppc.md) | e200z7 scope, its guest, and what the first running program found |
 | [docs/backend/thumb2.md](docs/backend/thumb2.md) | the ARMv7E-M emitter |
 | [docs/backend/x86_64.md](docs/backend/x86_64.md) | the x86-64 emitter, which exists for coverage |
 | [docs/jit/README.md](docs/jit/README.md) | the IR pipeline, block model, FP policy |

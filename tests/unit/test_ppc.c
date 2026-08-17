@@ -68,6 +68,18 @@ static bool load_and_run(const uint32_t *w, unsigned n, uint32_t budget,
     }
     emu_core_reset(&g_core, EMU_GUEST_RAM_BASE);
     emu_core_boot(&g_core, EMU_GUEST_RAM_BASE, TEST_RAM_SIZE);
+    /*
+     * Classic Book E, stated rather than inherited.
+     *
+     * This used to rely on the core's default, which was Book E while
+     * the VLE harness below set its mode explicitly -- an asymmetry that
+     * made these programs depend on a value no guest could change and
+     * that turned out to be the wrong default for a real e200z7. The
+     * mode is now VLE by default and *both* harnesses say what they
+     * decode, which is what they should always have done: these arrays
+     * are 32-bit Book E words and are not VLE.
+     */
+    ((ppc_cpu_t *)(void *)g_core.cpu)->vle = false;
 
     *why = emu_core_run(&g_core, budget, retired);
     return true;

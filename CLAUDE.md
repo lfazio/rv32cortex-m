@@ -1231,6 +1231,45 @@ session, and every one of them recurred:
   `CMOV`'s condition really is `(sub >> 1) & 0xF`, which only `cond=15`
   (sub 0x33E) can settle, because every smaller condition is consistent
   with the three-bit reading too.
+- **The e200z7 frontend proved the rule above a second time, and the
+  count is now G4MH 3, PowerPC 4.** It had 353 passing unit checks and
+  had **never executed a program**; one 300-line assembly guest
+  (`tests/guest/ppc/isatest.S`) found four defects in an afternoon.
+  Full write-up in [`docs/frontend/ppc.md`](docs/frontend/ppc.md); what
+  generalises:
+
+  - **A mode flag whose only writer is a unit test is not a mode flag.**
+    `vle` defaulted to Book E and the sole assignment in the tree was a
+    unit test reaching into the struct, so the whole 16-bit half of the
+    interpreter was unreachable by any guest. Every `se_` test passed.
+    Grep for the *writers* of a mode, not for its readers.
+  - **Enumerate the slot, against the assembler** -- the same rule G4MH
+    taught, and both holes here sat *between* implemented neighbours:
+    `se_cmpli` between `se_addi` and `se_subi`, `se_bgeni` between
+    `se_bclri` and `se_bseti`, `se_srawi` between `se_srwi` and
+    `se_slwi`. And `e_add2i.` is XO 0x11, not the 0x10 the group's start
+    suggests, so a guessed base shifts every entry by one.
+  - **A two-bit field read as one bit aliases half the instructions onto
+    the other half.** `e_bc`'s BO32 selects true/false/`bdnz`/`bdz`;
+    only its low bit was read, so `e_bdnz` decoded as `e_bge` and a
+    counted loop never terminated. Silent wrong answer, not a trap.
+  - **Give the guest a vector table on day one.** All four defects
+    presented as "runs to the instruction cap with no output", because
+    with IVPR and the IVORs zero a trap vectors to address 0 -- the
+    guest's own entry point. Each needed a trace build and a manual
+    bisection. The guest now prints `TRAP at pc=...` and exits 99, which
+    `objdump` turns into an instruction in one step. **This is the third
+    time this file has recorded that lesson; write the handler first.**
+  - **A test declared is not a test that can run.** `ctest` in a
+    PowerPC-only tree queued three RISC-V tests, because they were gated
+    on the guest *image* existing rather than on the RV32 frontend being
+    compiled in -- the images build whenever the RISC-V toolchain is
+    present, independent of the frontend. Found only by running `ctest`
+    in a configuration nobody had run it in.
+  - **An expectation written from the shape of a number will disagree
+    with a correct implementation.** `0xFFFFFF9C / 7` is `0x24924916`;
+    the test said `0x24924924`, a plausible repeating pattern, and was
+    the last of 29 checks to fail once the emulator was right.
 - **A guest that runs is worth more than a suite that passes, when the
   suite shares an author with the thing it tests.** G4MH's unit tests are
   hand-assembled halfword arrays, deliberately not sharing an encoder

@@ -19,6 +19,15 @@ void ppc_cpu_init(ppc_cpu_t *c, struct emu_bus *bus, uint32_t coreid)
     c->pvr = PPC_PVR_E200Z7;
 
     /*
+     * VLE, which is what this core executes -- see the note beside the
+     * field. Set here rather than left to the memset's zero, because
+     * zero meant "classic Book E" and no guest had any way to change it:
+     * the only writer in the tree was a unit test assigning the struct
+     * member directly.
+     */
+    c->vle = true;
+
+    /*
      * The guest is big-endian and the bus is what has to know. Declared
      * once, here, before anything runs: it is a property of the guest
      * architecture, not of a region or a platform.

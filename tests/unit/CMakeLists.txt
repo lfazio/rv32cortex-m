@@ -29,7 +29,15 @@ set_tests_properties(unit PROPERTIES LABELS fast)
 
 # The guest ISA self-test, run through the host runner. This is the check
 # that actually exercises the RV32 interpreter end to end.
-if(TARGET guest-isatest)
+#
+# `TARGET guest-isatest` alone is not the right condition and used to be:
+# the guest images are built whenever the RISC-V toolchain is present,
+# which is independent of which frontends were compiled in. So a
+# PowerPC-only build declared this test, handed an RV32 image to an
+# emulator that decodes VLE, and -- with no instruction cap -- ran until
+# something killed it. The image existing and the emulator being able to
+# run it are two different questions.
+if(TARGET guest-isatest AND EMU_FRONTEND_RV32)
     add_test(NAME guest-isatest
              COMMAND emu-host --quiet --load 0x80000000
                      "${CMAKE_BINARY_DIR}/guest/isatest.bin")
@@ -47,4 +55,20 @@ if(TARGET guest-isatest)
                          "${CMAKE_BINARY_DIR}/guest/isatest.bin")
         set_tests_properties(guest-isatest-jit PROPERTIES LABELS fast)
     endif()
+endif()
+
+# The e200z7 guest, which is the only thing that runs this frontend as a
+# program rather than as hand-assembled arrays.
+#
+# The exit status is the number of failed checks, and 99 means the guest
+# took an unexpected trap -- so a decode gap fails this test by name
+# rather than by running to the instruction cap. That distinction is the
+# whole reason the guest carries a vector table; without one an
+# unimplemented encoding vectors to address 0, restarts the program, and
+# presents as a hang that no exit status can describe.
+if(TARGET guest-ppc-isatest)
+    add_test(NAME guest-ppc-isatest
+             COMMAND emu-host --quiet --load 0x80000000 --max-insn 200000
+                     "${CMAKE_BINARY_DIR}/tests/guest/ppc/isatest.bin")
+    set_tests_properties(guest-ppc-isatest PROPERTIES LABELS fast)
 endif()

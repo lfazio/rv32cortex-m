@@ -533,6 +533,13 @@ endif()
 # teaches you to skip reading them.
 add_subdirectory(tests/guest)
 
+# The e200z7 guest, which needs a different toolchain and so has its own
+# file -- tests/guest/CMakeLists.txt returns early without the RISC-V one
+# and would skip this for an unrelated reason.
+if(EMU_FRONTEND_PPC)
+    add_subdirectory(tests/guest/ppc)
+endif()
+
 # ---------------------------------------------------------------------
 # Platform
 # ---------------------------------------------------------------------

@@ -66,7 +66,14 @@ add_custom_target(validate
 # Registered so `ctest -L conformance` can drive the suites too, with a
 # generous timeout: a cold run clones the suite and fetches the model.
 
-if(BUILD_TESTING)
+#
+# Gated on the RV32 frontend, not just on BUILD_TESTING: the suite is
+# RISC-V and a build without that frontend cannot run it. It was
+# unconditional, so `ctest` in a PowerPC-only tree queued the RISC-V
+# architecture suite against an emulator that does not decode RISC-V --
+# the same shape as the guest tests below, and found the same way, by
+# running ctest in a configuration nobody had run it in.
+if(BUILD_TESTING AND EMU_FRONTEND_RV32)
     add_test(NAME arch-test-I
              COMMAND "${_scripts}/run-arch-test.sh" --extensions I
              WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")

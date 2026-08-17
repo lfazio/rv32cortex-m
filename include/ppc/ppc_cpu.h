@@ -100,9 +100,22 @@ typedef struct ppc_cpu {
      * so this will become a property of the translation once there is a
      * TLB. Until then it is a core-wide mode.
      *
-     * False -- classic Book E, fixed 32-bit -- is the default because it
-     * is what this interpreter actually decodes and what
-     * powerpc-linux-gnu-as emits without -mvle.
+     * **True is the default, and it has to be.** It was false, on the
+     * reasoning that Book E is what powerpc-linux-gnu-as emits without
+     * -mvle -- but nothing in the tree ever set it except
+     * tests/unit/test_ppc.c reaching into this struct, so the entire
+     * 16-bit half of the interpreter was unreachable by any real guest.
+     * Every se_ test passed and none of them could have run outside a
+     * unit test. That is the shape this project already has written
+     * down: a capability nobody can exercise is not a capability.
+     *
+     * VLE is also simply what this core runs. The e200z7 in an MPC57xx
+     * executes VLE, the scope note in ppc_types.h says "Book E *with*
+     * VLE", and every guest here is built -mvle.
+     *
+     * A real e200 chooses per page from the TLB entry's VLE attribute,
+     * so this becomes a property of the translation once there is a TLB.
+     * Until then it is core-wide, and core-wide *on*.
      */
     bool        vle;
 
