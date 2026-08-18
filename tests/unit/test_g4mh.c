@@ -4341,8 +4341,213 @@ static void test_fp_fma_rounds_once(void)
 
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* INTC1 / INTC2 registers                                             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * These drive the device ops directly rather than through a guest
+ * program, because what is under test is the *register model* -- which
+ * bits alias which -- and a guest program can only reach it through
+ * stores whose width and alignment become part of what is being tested.
+ * The tests that already exist here for the TPTM go the other way and
+ * should: they are about delivery.
+ *
+ * Everything asserted below is from the RH850/U2B hardware manual
+ * R01UH0923EJ0130 tables 6.15 (EICn), 6.16 (IMRm) and 6.20 (EEICn).
+ */
+
+static g4mh_intc_t g_tic;
+static g4mh_cpu_t  g_tic_cpu;
+
+static void tic_reset(void)
+{
+    memset(&g_tic_cpu, 0, sizeof(g_tic_cpu));
+    g4mh_intc_init(&g_tic, &g_tic_cpu, NULL);
+}
+
+static uint32_t tic1_rd(uint32_t off)
+{
+    uint32_t v = 0u;
+    (void)g4mh_intc1_ops.read(&g_tic, off, 4u, &v);
+    return v;
+}
+
+static void tic1_wr(uint32_t off, uint32_t v)
+{
+    (void)g4mh_intc1_ops.write(&g_tic, off, 4u, v);
+}
+
+static uint32_t tic2_rd(uint32_t off)
+{
+    uint32_t v = 0u;
+    (void)g4mh_intc2_ops.read(&g_tic, off, 4u, &v);
+    return v;
+}
+
+static void tic2_wr(uint32_t off, uint32_t v)
+{
+    (void)g4mh_intc2_ops.write(&g_tic, off, 4u, v);
+}
+
+/*
+ * **IMRm is the EIMK bits, not a register beside them.** The manual says
+ * a write to either is reflected in the other, and holding them
+ * separately is what let the mask be stored and then ignored: IMR reset
+ * to 0 against an architectural FFFF_FFFFH, and nothing consulted it
+ * when choosing a channel.
+ *
+ * Both directions are checked, because one of them alone passes against
+ * an implementation that keeps two copies and updates one from the
+ * other.
+ */
+static void test_intc_imr_aliases_eimk(void)
+{
+    tic_reset();
+
+    /* Reset is every channel masked. */
+    CHECK_EQ(tic1_rd(G4MH_INTC1_IMR0), G4MH_IMR_RESET);
+    CHECK_EQ(tic1_rd(0u * 2u) & G4MH_EIC_EIMK, (uint32_t)G4MH_EIC_EIMK);
+
+    /* EICn -> IMRm: unmask channel 5 through EIC5. */
+    tic1_wr(5u * 2u, G4MH_EIC_RESET & ~(uint32_t)G4MH_EIC_EIMK);
+    CHECK_EQ(tic1_rd(G4MH_INTC1_IMR0) & (1u << 5), 0u);
+    /* and nothing else moved */
+    CHECK_EQ(tic1_rd(G4MH_INTC1_IMR0) | (1u << 5), G4MH_IMR_RESET);
+
+    /* IMRm -> EICn: unmask channel 9 through IMR0. */
+    tic1_wr(G4MH_INTC1_IMR0, G4MH_IMR_RESET & ~(1u << 9));
+    CHECK_EQ(tic1_rd(9u * 2u) & G4MH_EIC_EIMK, 0u);
+    /* writing IMR0 re-masked 5, which is what "reflected" means */
+    CHECK_EQ(tic1_rd(5u * 2u) & G4MH_EIC_EIMK, (uint32_t)G4MH_EIC_EIMK);
+}
+
+/*
+ * The functional consequence, which is the reason the aliasing matters:
+ * a channel masked through IMRm must not be delivered. This is the check
+ * that fails against the old code no matter how IMR was stored, because
+ * the chooser never looked at it.
+ */
+static void test_intc_imr_masks_delivery(void)
+{
+    tic_reset();
+
+    g4mh_intc_raise(&g_tic, 7u);
+    CHECK_EQ((uint32_t)(g4mh_intc_pending(&g_tic, 0u) + 1), 0u); /* -1 */
+
+    /* Unmask only through IMR0 -- never touching EIC7. */
+    tic1_wr(G4MH_INTC1_IMR0, G4MH_IMR_RESET & ~(1u << 7));
+    CHECK_EQ((uint32_t)g4mh_intc_pending(&g_tic, 0u), 7u);
+
+    /* Re-mask through IMR0 and it must go away again. */
+    tic1_wr(G4MH_INTC1_IMR0, G4MH_IMR_RESET);
+    CHECK_EQ((uint32_t)(g4mh_intc_pending(&g_tic, 0u) + 1), 0u);
+}
+
+/*
+ * EEICn is the same word with six priority bits where EICn shows four.
+ *
+ * The awkward case is a priority that needs EIP[5:4]: 16 and 0 are
+ * indistinguishable through the EICn window, so an implementation that
+ * compares only the low nibble ranks them equal and picks the lower
+ * channel number instead of the higher priority.
+ */
+static void test_intc_eeic_six_bit_priority(void)
+{
+    tic_reset();
+
+    /* Channel 3 at priority 16, channel 8 at priority 0, both unmasked. */
+    tic1_wr(G4MH_INTC1_EEIC + 3u * 4u, 16u);
+    tic1_wr(G4MH_INTC1_EEIC + 8u * 4u, 0u);
+    g4mh_intc_raise(&g_tic, 3u);
+    g4mh_intc_raise(&g_tic, 8u);
+
+    /* 0 beats 16. Comparing four bits makes them tie and picks 3. */
+    CHECK_EQ((uint32_t)g4mh_intc_pending(&g_tic, 0u), 8u);
+
+    /* Through the narrow window both look like priority 0. */
+    CHECK_EQ(tic1_rd(3u * 2u) & G4MH_EIC_EIP_MASK, 0u);
+    CHECK_EQ(tic1_rd(8u * 2u) & G4MH_EIC_EIP_MASK, 0u);
+    /* but the wide one still says 16 */
+    CHECK_EQ(tic1_rd(G4MH_INTC1_EEIC + 3u * 4u) & G4MH_EEIC_EIP_MASK, 16u);
+
+    /*
+     * A 16-bit write must leave EIP[5:4] alone: it cannot express them,
+     * and clearing them would promote this channel from 16 to 0.
+     */
+    tic1_wr(3u * 2u, G4MH_EIC_EITB | 0x2u);
+    CHECK_EQ(tic1_rd(G4MH_INTC1_EEIC + 3u * 4u) & G4MH_EEIC_EIP_MASK,
+             16u + 2u);
+}
+
+/*
+ * EICT is read-only in both windows -- it describes how the source is
+ * wired, not a preference -- and EIOV records an edge that arrived while
+ * one was already pending. Neither was implemented: EICT was taken from
+ * whatever software wrote, and EIOV was never set at all, so an overrun
+ * was indistinguishable from a single interrupt.
+ */
+static void test_intc_eict_readonly_and_eiov(void)
+{
+    tic_reset();
+
+    /* Try to make channel 2 level-detected. The bit must not move. */
+    tic1_wr(2u * 2u, G4MH_EIC_EICT);
+    CHECK_EQ(tic1_rd(2u * 2u) & G4MH_EIC_EICT, 0u);
+    tic1_wr(G4MH_INTC1_EEIC + 2u * 4u, G4MH_EEIC_EICT);
+    CHECK_EQ(tic1_rd(G4MH_INTC1_EEIC + 2u * 4u) & G4MH_EEIC_EICT, 0u);
+
+    /* First edge sets EIRF and leaves EIOV clear. */
+    tic_reset();
+    g4mh_intc_raise(&g_tic, 2u);
+    CHECK_EQ(tic1_rd(2u * 2u) & G4MH_EIC_EIRF, (uint32_t)G4MH_EIC_EIRF);
+    CHECK_EQ(tic1_rd(2u * 2u) & G4MH_EIC_EIOV, 0u);
+
+    /* A second one while the first is pending sets EIOV. */
+    g4mh_intc_raise(&g_tic, 2u);
+    CHECK_EQ(tic1_rd(2u * 2u) & G4MH_EIC_EIOV, (uint32_t)G4MH_EIC_EIOV);
+
+    /* Acknowledging clears EIRF -- edge detection -- but not EIOV, which
+     * is the guest's to clear once it has seen it. */
+    g4mh_intc_ack(&g_tic, 2u);
+    CHECK_EQ(tic1_rd(2u * 2u) & G4MH_EIC_EIRF, 0u);
+    CHECK_EQ(tic1_rd(2u * 2u) & G4MH_EIC_EIOV, (uint32_t)G4MH_EIC_EIOV);
+}
+
+/*
+ * IMRn lives at <INTC2_base> + 1000H + 04H * n for n = 1..31, so the
+ * register at offset 0x1000 is IMR0's slot -- which belongs to INTC1 and
+ * is not mapped in INTC2. Biasing the index instead aliases every
+ * register onto its neighbour, which is a mistake this file exists to
+ * catch and which was made and caught while writing it.
+ */
+static void test_intc_imr_addressing(void)
+{
+    tic_reset();
+
+    /* IMR1 covers channels 32..63; unmask channel 32 through it. */
+    tic2_wr(G4MH_INTC2_IMR + 1u * 4u, G4MH_IMR_RESET & ~1u);
+    CHECK_EQ(tic2_rd(32u * 2u) & G4MH_EIC_EIMK, 0u);
+    /* channel 64, which IMR2 covers, must be untouched */
+    CHECK_EQ(tic2_rd(64u * 2u) & G4MH_EIC_EIMK, (uint32_t)G4MH_EIC_EIMK);
+
+    /* IMR0's slot is not INTC2's: writing it must change nothing. */
+    tic2_wr(G4MH_INTC2_IMR, 0u);
+    CHECK_EQ(tic1_rd(G4MH_INTC1_IMR0), G4MH_IMR_RESET);
+    CHECK_EQ(tic2_rd(G4MH_INTC2_IMR), 0u);
+
+    /* And IMR2 reaches channel 64. */
+    tic2_wr(G4MH_INTC2_IMR + 2u * 4u, G4MH_IMR_RESET & ~1u);
+    CHECK_EQ(tic2_rd(64u * 2u) & G4MH_EIC_EIMK, 0u);
+}
+
 void test_g4mh(void)
 {
+    test_intc_imr_aliases_eimk();
+    test_intc_imr_masks_delivery();
+    test_intc_eeic_six_bit_priority();
+    test_intc_eict_readonly_and_eiov();
+    test_intc_imr_addressing();
     test_length();
     test_conditions();
     test_alu();

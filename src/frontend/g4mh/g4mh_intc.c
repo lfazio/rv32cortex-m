@@ -17,6 +17,80 @@
 
 #include <string.h>
 
+/* ------------------------------------------------------------------ */
+/* The three windows onto one channel word                             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * EICn is the 16-bit window. Its priority field is EIP[3:0], so a
+ * channel configured through EEICn in 64-priority mode reads back here
+ * with its top two priority bits invisible -- which is the
+ * architecture's arrangement and the reason the manual says the two
+ * "must be used exclusively".
+ */
+static uint16_t chan_to_eic(uint32_t c)
+{
+    uint16_t v = (uint16_t)(c & G4MH_EIC_EIP_MASK);
+
+    if ((c & G4MH_EEIC_EICT) != 0u) { v |= G4MH_EIC_EICT; }
+    if ((c & G4MH_EEIC_EIRF) != 0u) { v |= G4MH_EIC_EIRF; }
+    if ((c & G4MH_EEIC_EIMK) != 0u) { v |= G4MH_EIC_EIMK; }
+    if ((c & G4MH_EEIC_EITB) != 0u) { v |= G4MH_EIC_EITB; }
+    if ((c & G4MH_EEIC_EIOV) != 0u) { v |= G4MH_EIC_EIOV; }
+    return v;
+}
+
+/*
+ * Merge a write through one of the windows into the channel word.
+ *
+ * Two bits are not the software's to set and are carried over from the
+ * current value:
+ *
+ *   EICT  read-only in both windows. It says how the *source* is wired,
+ *         not how software would like it to behave.
+ *   EIRF  read-only while EICT is set: in level detection the flag
+ *         follows the line, and "this bit cannot be set or cleared by
+ *         the software" (table 6.15). In edge detection it is R/W, so a
+ *         guest can both clear a stale request and inject one.
+ *
+ * `eip_keep` carries EIP[5:4] through a 16-bit write, which cannot
+ * express them. Clearing them instead would silently promote a
+ * 64-priority channel by up to 48 levels on any write to EICn.
+ */
+static uint32_t chan_merge(uint32_t cur, uint32_t val, bool eip_keep)
+{
+    const uint32_t ro = G4MH_EEIC_EICT |
+                        (((cur & G4MH_EEIC_EICT) != 0u) ? G4MH_EEIC_EIRF : 0u);
+    uint32_t out = (val & ~ro) | (cur & ro);
+
+    if (eip_keep) {
+        out = (out & ~G4MH_EEIC_EIP_MASK) | (cur & 0x30u) | (val & 0x0Fu);
+    }
+    return out;
+}
+
+static uint32_t eic_to_chan(uint32_t cur, uint16_t v)
+{
+    uint32_t n = (uint32_t)(v & G4MH_EIC_EIP_MASK);
+
+    if ((v & G4MH_EIC_EICT) != 0u) { n |= G4MH_EEIC_EICT; }
+    if ((v & G4MH_EIC_EIRF) != 0u) { n |= G4MH_EEIC_EIRF; }
+    if ((v & G4MH_EIC_EIMK) != 0u) { n |= G4MH_EEIC_EIMK; }
+    if ((v & G4MH_EIC_EITB) != 0u) { n |= G4MH_EEIC_EITB; }
+    if ((v & G4MH_EIC_EIOV) != 0u) { n |= G4MH_EEIC_EIOV; }
+    return chan_merge(cur, n, true);
+}
+
+/* EEICn's reserved bits read back zero, so only the defined ones pass. */
+static uint32_t eeic_to_chan(uint32_t cur, uint32_t v)
+{
+    const uint32_t defined = G4MH_EEIC_EICT | G4MH_EEIC_EIRF |
+                             G4MH_EEIC_EIMK | G4MH_EEIC_EITB |
+                             G4MH_EEIC_EIOV | G4MH_EEIC_EIP_MASK;
+
+    return chan_merge(cur, v & defined, false);
+}
+
 void g4mh_intc_init(g4mh_intc_t *ic, g4mh_cpu_t *cpu, g4mh_intc_t *global)
 {
     memset(ic, 0, sizeof(*ic));
@@ -24,9 +98,13 @@ void g4mh_intc_init(g4mh_intc_t *ic, g4mh_cpu_t *cpu, g4mh_intc_t *global)
     ic->global = (global != NULL) ? global : ic;
     ic->ostm_cmp = UINT64_MAX;   /* no compare match until software sets one */
 
-    /* Masked, lowest priority, edge detection -- the reset value. */
+    /*
+     * Masked, lowest priority, edge detection. This is also IMRm's
+     * FFFF_FFFFH reset, because IMRm *is* these EIMK bits -- there is no
+     * second array to initialise, which is the point of holding it once.
+     */
     for (unsigned i = 0; i < G4MH_INT_CHANNELS; i++) {
-        ic->eic[i] = G4MH_EIC_RESET;
+        ic->chan[i] = G4MH_EEIC_RESET;
     }
 
     cpu->intc = ic;
@@ -44,7 +122,23 @@ void g4mh_intc_raise(g4mh_intc_t *ic, uint32_t channel)
     if (channel >= G4MH_INT_CHANNELS) {
         return;
     }
-    ic->eic[channel] |= G4MH_EIC_EIRF;
+    /*
+     * A second edge arriving while the first is still pending sets
+     * EIOVn -- "EIINTn rose in edge-detection mode when EICn.EIRF = 1"
+     * (table 6.15). The flag is how a guest learns it lost a request,
+     * and nothing set it before: an overrun was indistinguishable from
+     * a single interrupt, which is the failure a driver written against
+     * this bit exists to catch.
+     *
+     * Only in edge detection. With EICT set the flag tracks the line and
+     * there is no second edge to overflow.
+     */
+    if ((ic->chan[channel] & G4MH_EEIC_EICT) == 0u &&
+        (ic->chan[channel] & G4MH_EEIC_EIRF) != 0u) {
+        ic->chan[channel] |= G4MH_EEIC_EIOV;
+    }
+
+    ic->chan[channel] |= G4MH_EEIC_EIRF;
     if (ic->cpu != NULL) {
         ic->cpu->irq_dirty = true;
     }
@@ -52,15 +146,26 @@ void g4mh_intc_raise(g4mh_intc_t *ic, uint32_t channel)
 
 void g4mh_intc_ack(g4mh_intc_t *ic, uint32_t channel)
 {
-    if (channel < G4MH_INT_CHANNELS) {
-        ic->eic[channel] &= (uint16_t)~G4MH_EIC_EIRF;
+    if (channel >= G4MH_INT_CHANNELS) {
+        return;
+    }
+    /*
+     * "This flag is automatically cleared to 0 when an interrupt request
+     * from its own channel is acknowledged by the CPU core" -- and only
+     * in edge detection. A level-detected channel keeps EIRF until the
+     * source drops the line, which is what makes it re-request if the
+     * handler returns without servicing the device.
+     */
+    if ((ic->chan[channel] & G4MH_EEIC_EICT) == 0u) {
+        ic->chan[channel] &= ~G4MH_EEIC_EIRF;
     }
 }
 
 int g4mh_intc_pending(const g4mh_intc_t *ic, unsigned pe)
 {
     int best = -1;
-    unsigned best_pri = 16u;
+    /* 64 levels, so no real priority can tie with "nothing found". */
+    unsigned best_pri = 64u;
 
     for (unsigned i = 0; i < G4MH_INT_CHANNELS; i++) {
         /*
@@ -76,13 +181,21 @@ int g4mh_intc_pending(const g4mh_intc_t *ic, unsigned pe)
             continue;
         }
 
-        const uint16_t e = src->eic[i];
-        if ((e & G4MH_EIC_EIRF) == 0u || (e & G4MH_EIC_EIMK) != 0u) {
+        const uint32_t e = src->chan[i];
+        if ((e & G4MH_EEIC_EIRF) == 0u || (e & G4MH_EEIC_EIMK) != 0u) {
             continue;
         }
-        /* EIP 0 is the highest priority, so smaller wins; strictly less,
-         * so a tie keeps the lower channel number. */
-        const unsigned pri = e & G4MH_EIC_EIP_MASK;
+        /*
+         * EIP 0 is the highest priority, so smaller wins, and the
+         * comparison is strictly less so a tie keeps the lower channel
+         * number -- "the channel with the lowest number is given
+         * priority over other channels" (6.4.6).
+         *
+         * Six bits, not four: a channel configured through EEICn in
+         * 64-priority mode carries EIP[5:4], and comparing only the low
+         * nibble would rank priority 16 equal with priority 0.
+         */
+        const unsigned pri = e & G4MH_EEIC_EIP_MASK;
         if (pri < best_pri) {
             best_pri = pri;
             best = (int)i;
@@ -110,30 +223,90 @@ void g4mh_intc_advance(g4mh_intc_t *ic, uint32_t delta)
 /* ------------------------------------------------------------------ */
 
 /*
- * A write to EICn. EIRF is set by hardware and cleared by software, so a
- * write can only clear it -- the guest's bit is ANDed with what is
- * actually pending rather than taken as written.
+ * Install a new channel word, whichever window produced it, and do the
+ * one thing that has to happen on an unmask.
+ *
+ * Unmasking is the guest saying it has dealt with the device, so this is
+ * where the host line goes back on. Nothing on the host side can service
+ * the peripheral -- only the guest's driver knows how -- so a
+ * level-triggered source left unmasked would re-enter the host handler
+ * forever without the guest ever running.
+ *
+ * It is one function because there are three ways in -- EICn, EEICn and
+ * IMRm -- and the unmask handshake is owed by all three. It used to hang
+ * off the EICn path alone, so a guest that unmasked through IMRm got no
+ * callback and its host line stayed off.
  */
-static void eic_write(g4mh_intc_t *ic, unsigned ch, uint16_t val)
+static void chan_store(g4mh_intc_t *ic, unsigned ch, uint32_t val)
 {
-    const bool was_masked = (ic->eic[ch] & G4MH_EIC_EIMK) != 0u;
+    const bool was_masked = (ic->chan[ch] & G4MH_EEIC_EIMK) != 0u;
 
-    const uint16_t rf = (uint16_t)(ic->eic[ch] & val & G4MH_EIC_EIRF);
-    ic->eic[ch] = (uint16_t)((val & (uint16_t)~G4MH_EIC_EIRF) | rf);
+    ic->chan[ch] = val;
 
-    /*
-     * Unmasking is the guest saying it has dealt with the device, so this
-     * is where the host line goes back on. Nothing on the host side can
-     * service the peripheral -- only the guest's driver knows how -- so a
-     * level-triggered source left unmasked would re-enter the host handler
-     * forever without the guest ever running.
-     */
-    if (was_masked && (ic->eic[ch] & G4MH_EIC_EIMK) == 0u &&
-        ic->unmask != NULL) {
+    if (was_masked && (val & G4MH_EEIC_EIMK) == 0u && ic->unmask != NULL) {
         ic->unmask(ic->unmask_ctx, ch);
     }
     if (ic->cpu != NULL) {
         ic->cpu->irq_dirty = true;
+    }
+}
+
+static void eic_write(g4mh_intc_t *ic, unsigned ch, uint16_t val)
+{
+    chan_store(ic, ch, eic_to_chan(ic->chan[ch], val));
+}
+
+static void eeic_write(g4mh_intc_t *ic, unsigned ch, uint32_t val)
+{
+    chan_store(ic, ch, eeic_to_chan(ic->chan[ch], val));
+}
+
+/* ------------------------------------------------------------------ */
+/* IMRm: the EIMK bits of 32 channels, gathered                        */
+/* ------------------------------------------------------------------ */
+
+/*
+ * IMRm covers channels 32*m .. 32*m+31, so IMR0 is INTC1's own channels
+ * and IMR1..31 are INTC2's. `ic` is therefore already the right unit --
+ * the caller picks it the same way the EICn windows do.
+ */
+static uint32_t imr_read(const g4mh_intc_t *ic, unsigned m)
+{
+    uint32_t v = 0u;
+
+    for (unsigned b = 0; b < 32u; b++) {
+        const unsigned ch = m * 32u + b;
+
+        /*
+         * A channel this build does not have reads as masked. That is
+         * the reset value and the safe direction: an absent channel
+         * cannot be pending, so reporting it unmasked would only invite
+         * a guest to believe it had enabled something.
+         */
+        if (ch >= G4MH_INT_CHANNELS ||
+            (ic->chan[ch] & G4MH_EEIC_EIMK) != 0u) {
+            v |= 1u << b;
+        }
+    }
+    return v;
+}
+
+static void imr_write(g4mh_intc_t *ic, unsigned m, uint32_t val)
+{
+    for (unsigned b = 0; b < 32u; b++) {
+        const unsigned ch = m * 32u + b;
+
+        if (ch >= G4MH_INT_CHANNELS) {
+            continue;
+        }
+        const uint32_t cur = ic->chan[ch];
+        const uint32_t want = ((val >> b) & 1u) != 0u
+                              ? (cur | G4MH_EEIC_EIMK)
+                              : (cur & ~G4MH_EEIC_EIMK);
+
+        if (want != cur) {
+            chan_store(ic, ch, want);
+        }
     }
 }
 
@@ -148,12 +321,15 @@ static emu_fault_t intc1_read(void *ctx, uint32_t off, uint32_t size,
     (void)size;
 
     if (off < G4MH_INTC1_CHANNELS * 2u) {
-        *out = ic->eic[off / 2u];
+        *out = chan_to_eic(ic->chan[off / 2u]);
     } else if (off == G4MH_INTC1_IMR0) {
-        *out = ic->imr[0];
+        *out = imr_read(ic, 0u);
     } else if (off >= G4MH_INTC1_EIBD &&
                off < G4MH_INTC1_EIBD + G4MH_INTC1_CHANNELS * 4u) {
         *out = ic->eibd[(off - G4MH_INTC1_EIBD) / 4u];
+    } else if (off >= G4MH_INTC1_EEIC &&
+               off < G4MH_INTC1_EEIC + G4MH_INTC1_CHANNELS * 4u) {
+        *out = ic->chan[(off - G4MH_INTC1_EEIC) / 4u];
     } else if (off == G4MH_INTC1_FIBD) {
         *out = ic->fibd;
     } else if (off == G4MH_INTC1_EIBG) {
@@ -163,8 +339,8 @@ static emu_fault_t intc1_read(void *ctx, uint32_t off, uint32_t size,
     } else if (off == G4MH_INTC1_IHVCFG) {
         *out = ic->ihvcfg;
     } else {
-        /* EEIC and the reserved holes read as zero rather than faulting,
-         * which is what a reserved register does. */
+        /* The reserved holes read as zero rather than faulting, which is
+         * what a reserved register does. */
         *out = 0u;
     }
     return EMU_FAULT_NONE;
@@ -179,10 +355,13 @@ static emu_fault_t intc1_write(void *ctx, uint32_t off, uint32_t size,
     if (off < G4MH_INTC1_CHANNELS * 2u) {
         eic_write(ic, off / 2u, (uint16_t)val);
     } else if (off == G4MH_INTC1_IMR0) {
-        ic->imr[0] = val;
+        imr_write(ic, 0u, val);
     } else if (off >= G4MH_INTC1_EIBD &&
                off < G4MH_INTC1_EIBD + G4MH_INTC1_CHANNELS * 4u) {
         ic->eibd[(off - G4MH_INTC1_EIBD) / 4u] = val;
+    } else if (off >= G4MH_INTC1_EEIC &&
+               off < G4MH_INTC1_EEIC + G4MH_INTC1_CHANNELS * 4u) {
+        eeic_write(ic, (off - G4MH_INTC1_EEIC) / 4u, val);
     } else if (off == G4MH_INTC1_FIBD) {
         ic->fibd = val;
     } else if (off == G4MH_INTC1_EIBG) {
@@ -212,13 +391,26 @@ static emu_fault_t intc2_read(void *ctx, uint32_t off, uint32_t size,
     (void)size;
 
     if (off < G4MH_INT_CHANNELS * 2u) {
-        *out = (off < G4MH_INTC1_CHANNELS * 2u) ? 0u : ic->eic[off / 2u];
+        *out = (off < G4MH_INTC1_CHANNELS * 2u)
+               ? 0u : chan_to_eic(ic->chan[off / 2u]);
     } else if (off >= G4MH_INTC2_IMR && off < G4MH_INTC2_IMR + 32u * 4u) {
-        *out = ic->imr[(off - G4MH_INTC2_IMR) / 4u];
+        /*
+         * The address is <INTC2_base> + 1000H + 04H * n for n = 1..31,
+         * so n comes straight from the offset -- and offset 0x1000 is
+         * IMR0's slot, which belongs to INTC1 and is not mapped here.
+         * Biasing the index by one instead would alias every register
+         * onto its neighbour and put IMR31 out of range.
+         */
+        const unsigned m = (off - G4MH_INTC2_IMR) / 4u;
+        *out = (m == 0u) ? 0u : imr_read(ic, m);
     } else if (off >= G4MH_INTC2_EIBD &&
                off < G4MH_INTC2_EIBD + G4MH_INT_CHANNELS * 4u) {
         const unsigned n = (off - G4MH_INTC2_EIBD) / 4u;
         *out = (n < G4MH_INTC1_CHANNELS) ? 0u : ic->eibd[n];
+    } else if (off >= G4MH_INTC2_EEIC &&
+               off < G4MH_INTC2_EEIC + G4MH_INT_CHANNELS * 4u) {
+        const unsigned n = (off - G4MH_INTC2_EEIC) / 4u;
+        *out = (n < G4MH_INTC1_CHANNELS) ? 0u : ic->chan[n];
     } else {
         *out = 0u;
     }
@@ -234,12 +426,21 @@ static emu_fault_t intc2_write(void *ctx, uint32_t off, uint32_t size,
     if (off >= G4MH_INTC1_CHANNELS * 2u && off < G4MH_INT_CHANNELS * 2u) {
         eic_write(ic, off / 2u, (uint16_t)val);
     } else if (off >= G4MH_INTC2_IMR && off < G4MH_INTC2_IMR + 32u * 4u) {
-        ic->imr[(off - G4MH_INTC2_IMR) / 4u] = val;
+        const unsigned m = (off - G4MH_INTC2_IMR) / 4u;
+        if (m != 0u) {
+            imr_write(ic, m, val);
+        }
     } else if (off >= G4MH_INTC2_EIBD &&
                off < G4MH_INTC2_EIBD + G4MH_INT_CHANNELS * 4u) {
         const unsigned n = (off - G4MH_INTC2_EIBD) / 4u;
         if (n >= G4MH_INTC1_CHANNELS) {
             ic->eibd[n] = val;
+        }
+    } else if (off >= G4MH_INTC2_EEIC &&
+               off < G4MH_INTC2_EEIC + G4MH_INT_CHANNELS * 4u) {
+        const unsigned n = (off - G4MH_INTC2_EEIC) / 4u;
+        if (n >= G4MH_INTC1_CHANNELS) {
+            eeic_write(ic, n, val);
         }
     }
     return EMU_FAULT_NONE;

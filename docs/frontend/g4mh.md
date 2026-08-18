@@ -517,3 +517,51 @@ The compiler is also worth using for what it *chooses*: `-Xcpu=g4mh
 combination a guest will actually contain, and confirms the operand order
 `reg2 < reg1` that the manual states and that is easy to implement
 backwards.
+
+## INTC1 / INTC2
+
+Implemented from the RH850/U2B hardware manual R01UH0923EJ0130, tables
+6.15 (EICn), 6.16 (IMRm), 6.20 (EEICn) and section 6.4.6 (priority).
+
+**EICn, EEICn and IMRm are three windows onto one per-channel word, not
+three registers**, and the manual says so:
+
+- "All bits except EIP[5:4] of EEICn are shared with EICn."
+- IMRm registers "are an aggregation of the EIMK bits from the EIC
+  registers. Setting of the EIMK bit in the EIC register is reflected in
+  this register. Also the setting of a bit in this register is reflected
+  in the EIMK bit of the corresponding EIC register."
+
+They were three separate stores here, and they disagreed in the
+direction that matters: `imr[]` was written by the guest, **never
+consulted when choosing a channel**, and reset to zero against an
+architectural `FFFF_FFFFH`. A guest that masked a channel through IMRm
+was not masked at all, and one that unmasked through IMRm never got the
+host-line callback. The state is now held once, in EEICn's layout
+because it is the superset, and the other two are computed.
+
+What that fixed, each confirmed by reverting it:
+
+| | was | is |
+|---|---|---|
+| IMRm | a dead array, reset 0 | the EIMK bits, reset FFFF_FFFFH |
+| priority | 4 bits compared | 6 (EEICn.EIP[5:0]); 16 no longer ties with 0 |
+| EEICn | read as zero | the canonical word |
+| EICn 16-bit write | cleared EIP[5:4] | preserves them |
+| EICT | writable | read-only, as the table says |
+| EIOV | never set | set when an edge arrives with EIRF already 1 |
+| EIRF on acknowledge | always cleared | cleared only in edge detection |
+| IMRn address | — | `+1000H + 04H*n` for n=1..31; 0x1000 is IMR0's slot and belongs to INTC1 |
+
+**Still open, and deliberately so.** The controller now selects the
+right channel, but the *core* does not compare its priority against
+anything: `ISPR` and `INTCFG` exist as system-register numbers and
+nothing reads them, so an interrupt is delivered whenever PSW.ID and
+PSW.NP allow rather than only when it outranks what is in service.
+Nesting is therefore unmodelled. That is a CPU-side gap rather than a
+controller one, and it wants its own change.
+
+Level detection is implemented as a rule -- EIRF read-only, no
+acknowledge clear -- but no modelled source sets EICT, so the path is
+unreachable today. It is written down rather than left out so that a
+level-sensitive device has somewhere to land.

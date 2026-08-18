@@ -1312,6 +1312,35 @@ session, and every one of them recurred:
   misaligned word store to a halfword register, `RESBANK` written where
   `DI` was meant, and PSW.ID masking the channel -- each of which
   vectored somewhere and fell through to the handler being watched.
+- **When a manual says two registers are views of one thing, hold one
+  thing.** G4MH's INTC kept `eic[]` and `imr[]` as separate arrays, and
+  the manual is explicit that IMRm "is an aggregation of the EIMK bits
+  from the EIC registers" and that a write to either is reflected in the
+  other. Two stores of one architectural bit went the way they always
+  do: `imr[]` was written by the guest, **never read when choosing a
+  channel**, and reset to 0 against an architectural FFFF_FFFFH -- so
+  masking through IMRm did nothing and unmasking through it skipped the
+  host-line callback. Same for EEICn, which is EICn with six priority
+  bits instead of four and was returning zero.
+
+  The tell was there to be read: a register the code *stores* and never
+  *consults* is either dead or a bug, and grepping for the reads of
+  `imr[]` finds nothing. **Grep for the readers of every field you
+  store.**
+
+  It also cost a real defect at the boundary: IMRn is at
+  `+1000H + 04H*n` for n = 1..31, so offset 0x1000 is IMR0's slot and
+  belongs to INTC1 -- biasing the index to make 0x1000 mean IMR1 aliases
+  every register onto its neighbour. Written, caught by re-reading the
+  address line, and now covered.
+- **`git checkout -- <file>` discards uncommitted work, and there is no
+  undo.** Used it to unwind a one-line A/B and lost an entire
+  uncommitted rewrite of `g4mh_intc.c`; the build then reported success
+  because the *test binary* was stale from the A/B build, so the failure
+  looked like the fix not working rather than the source being gone.
+  **Copy the file to the scratchpad before an A/B and restore from
+  that**, and never point `git checkout` at a file with uncommitted work
+  in it.
 - **A capability macro that depends on include order is worse than no
   macro.** `G4MH_HAVE_JIT` was defined in `g4mh_cpu.h` from
   `EMU_JIT_X86_64`, which `emu/emu_jit.h` defines -- and

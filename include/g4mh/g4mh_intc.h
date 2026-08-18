@@ -81,23 +81,61 @@ struct g4mh_cpu;
 #define G4MH_EIBD_GPID_SHIFT    8u
 
 /* ------------------------------------------------------------------ */
-/* EICn bits                                                           */
+/* Channel state: one set of bits, three windows onto it                */
 /* ------------------------------------------------------------------ */
 
 /*
- * Reset is 0x008F: masked, lowest priority, edge detection. So a channel
- * delivers nothing until software has both lowered EIMK and set a
- * priority, which is why nothing is delivered before a guest configures
- * its controller.
+ * **EICn, EEICn and IMRm are not three registers. They are three views
+ * of one per-channel state**, and the manual says so in as many words:
+ *
+ *   "All bits except EIP[5:4] of EEICn are shared with EICn."   (6.3.7)
+ *   "[IMR registers] are an aggregation of the EIMK bits from the EIC
+ *    registers. Setting of the EIMK bit in the EIC register is reflected
+ *    in this register. Also the setting of a bit in this register is
+ *    reflected in the EIMK bit of the corresponding EIC register."
+ *                                                               (6.3.3)
+ *
+ * Holding them as separate arrays -- which this file used to do -- lets
+ * them disagree, and they disagreed in the direction that matters:
+ * IMR was stored, never consulted when choosing a channel, and reset to
+ * "everything unmasked" against an architectural reset of FFFFFFFFH.
+ * A guest that masked a channel through IMR was not masked at all.
+ *
+ * So the canonical form below is **EEICn's layout**, because it is the
+ * superset: 6 priority bits where EICn shows 4. EICn is the same word
+ * seen through a narrower window, and writing it leaves EIP[5:4] alone
+ * rather than clearing the two bits it cannot express.
+ *
+ * Layout and reset values: RH850/U2B hardware manual R01UH0923EJ0130,
+ * tables 6.15 (EICn), 6.16 (IMRm) and 6.20 (EEICn).
  */
-#define G4MH_EIC_EIP_MASK       0x000Fu   /* priority; 0 highest, 15 lowest */
-#define G4MH_EIC_EIOV           0x0020u   /* overflow                    */
-#define G4MH_EIC_EITB           0x0040u   /* table reference enable      */
-#define G4MH_EIC_EIMK           0x0080u   /* masked                      */
-#define G4MH_EIC_EIRF           0x1000u   /* request pending             */
-#define G4MH_EIC_EICT           0x8000u   /* level detection (else edge) */
+
+/* The canonical word, in EEICn's layout. */
+#define G4MH_EEIC_EICT          (1u << 31)  /* level detection; READ ONLY */
+#define G4MH_EEIC_EIRF          (1u << 28)  /* request pending           */
+#define G4MH_EEIC_EIMK          (1u << 23)  /* masked                    */
+#define G4MH_EEIC_EITB          (1u << 22)  /* table reference method    */
+#define G4MH_EEIC_EIOV          (1u << 15)  /* overflow                  */
+#define G4MH_EEIC_EIP_MASK      0x0000003Fu /* 0 highest, 63 lowest      */
+
+/* Masked, lowest priority, edge detection -- 0080_000FH. */
+#define G4MH_EEIC_RESET         0x0080000Fu
+
+/*
+ * EICn's window. Bit 4 and bits 14:13 and 11:8 are reserved and read
+ * back their reset value, which is zero for all of them.
+ */
+#define G4MH_EIC_EIP_MASK       0x000Fu   /* EIP[3:0] only               */
+#define G4MH_EIC_EIOV           0x0020u
+#define G4MH_EIC_EITB           0x0040u
+#define G4MH_EIC_EIMK           0x0080u
+#define G4MH_EIC_EIRF           0x1000u
+#define G4MH_EIC_EICT           0x8000u
 
 #define G4MH_EIC_RESET          0x008Fu
+
+/* IMRm resets to every channel masked, which is EIMK's reset repeated. */
+#define G4MH_IMR_RESET          0xFFFFFFFFu
 
 /* ------------------------------------------------------------------ */
 /* OS timer                                                            */
@@ -137,11 +175,15 @@ typedef struct g4mh_intc {
      * One entry per channel, spanning both units: 0..31 are answered by
      * INTC1 and the rest by INTC2, but they are the same array because
      * that is what the register layout says they are.
+     *
+     * In EEICn's layout -- the superset -- so EICn and IMRm are computed
+     * views rather than stored copies. There is no imr[] array any more
+     * and there must not be one: two stores of the same architectural
+     * bit is exactly how the mask came to be ignored.
      */
-    uint16_t eic[G4MH_INT_CHANNELS];
+    uint32_t chan[G4MH_INT_CHANNELS];
     uint32_t eibd[G4MH_INT_CHANNELS];   /* bind: which PE/VM takes it   */
 
-    uint32_t imr[32];                   /* IMR0 in INTC1, IMR1.. in INTC2 */
     uint32_t fibd;
     uint32_t eibg;
     uint32_t fibg;

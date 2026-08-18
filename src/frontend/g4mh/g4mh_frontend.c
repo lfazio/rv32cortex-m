@@ -455,7 +455,7 @@ static void g4mh_ops_status(const emu_cpu_t *cpu, emu_cpu_status_t *out)
      */
     out->wakeable = false;
     for (unsigned i = 0; i < G4MH_INT_CHANNELS; i++) {
-        if ((g_intc[c->coreid].eic[i] & G4MH_EIC_EIMK) == 0u) {
+        if ((g_intc[c->coreid].chan[i] & G4MH_EEIC_EIMK) == 0u) {
             out->wakeable = true;
             break;
         }
