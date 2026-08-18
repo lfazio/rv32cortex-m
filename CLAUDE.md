@@ -1298,6 +1298,21 @@ session, and every one of them recurred:
   themselves on the host they emit for. The rule: **a file whose contents
   are selected by host belongs beside the other files selected by host,
   not under whichever frontend happened to need it first.**
+- **A threshold field that counts what is *allowed* is off by one from
+  one that counts what is masked, and both readings look right.** G4MH's
+  `PLMR.PLM` and `PSW.EIMASK` are the number of acceptable priorities:
+  `p < value`, so `PLM = 1` accepts priority 0 alone and `PLM = 0`
+  accepts nothing. Reading them as "mask `p <= value`" -- which the
+  prose "masks the interrupt whose priority is lower than or equal to
+  the set value" invites -- is wrong at every level and admits priority
+  63, which the architecture never acknowledges. The manual's own value
+  table is the thing to read, not its sentence.
+
+  The same change had to be made in **two** places, because this
+  frontend keeps a separate copy of the run loop's interrupt check for
+  the JIT. That is now the second time (FE delivery was the first), so
+  the entry below is not a one-off: **grep for the other copy before
+  believing an interrupt change is done.**
 - **The G4MH JIT has its own interrupt path, so anything added to the
   interpreter's is absent from it.** `g4mh_jit_take_irq` is a separate
   copy of the run loop's interrupt check. Adding FE-level delivery for

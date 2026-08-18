@@ -273,6 +273,19 @@ void g4mh_intc_advance(g4mh_intc_t *ic, uint32_t delta);
 int g4mh_intc_pending(const g4mh_intc_t *ic, unsigned pe);
 
 /*
+ * The same search, also reporting the winner's EIP.
+ *
+ * The core needs the priority to apply its ceiling (ISPR, PSW.EIMASK,
+ * PLMR), and only the controller knows it -- the channel number says
+ * nothing about priority. Checking the *best* candidate alone is
+ * sufficient and not a shortcut: every other pending channel has a
+ * numerically larger EIP, so a ceiling that refuses the best refuses all
+ * of them.
+ */
+int g4mh_intc_pending_pri(const g4mh_intc_t *ic, unsigned pe,
+                          unsigned *priority);
+
+/*
  * The TPTM's interval interrupt for PE `pe`, routed by TPTMSEL: EIINT31
  * when its bit is set, FEINT otherwise.
  *

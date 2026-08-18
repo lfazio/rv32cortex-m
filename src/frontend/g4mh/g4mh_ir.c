@@ -651,13 +651,24 @@ static bool g4mh_jit_take_irq(emu_cpu_t *cpu)
         return true;
     }
 
-    const int ch = g4mh_cpu_pending_irq(c);
+    /*
+     * The priority ceiling is raised here as well as in the interpreter,
+     * and this is the second time that has had to be said: this file is
+     * a *separate copy* of the run loop's interrupt check, so anything
+     * added there is absent here until someone adds it. FE-level
+     * delivery was the first (see the note above); the ISPR ceiling is
+     * the second. Both were found by a test asserting a register rather
+     * than that a handler ran.
+     */
+    unsigned ipri = 64u;
+    const int ch = g4mh_cpu_pending_irq_pri(c, &ipri);
     if (ch < 0) {
         return false;
     }
     c->state = EMU_STATE_RUNNING;
     g4mh_intc_ack(c->intc, (uint32_t)ch);
     g4mh_cpu_exception(c, G4MH_EXC_EIINT_BASE + (uint32_t)ch, c->pc);
+    g4mh_cpu_ack_priority(c, ipri);
     return true;
 }
 

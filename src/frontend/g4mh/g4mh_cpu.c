@@ -89,6 +89,17 @@ void g4mh_cpu_reset(g4mh_cpu_t *c, uint32_t reset_pc)
      */
     c->sr[2][G4MH_SR_HTCFG0] = c->coreid;
 
+    /*
+     * The priority ceiling comes up permissive-but-bounded: PLMR resets
+     * to 16, so priorities 0..15 are acceptable and 16..63 are not, and
+     * INTCFG to ULNR = 0xF with EPL and ISPC clear. Leaving PLMR at zero
+     * -- which memset would -- masks *every* priority, and a guest that
+     * never writes it would take no interrupt at all while every EIC
+     * register said it should.
+     */
+    c->sr[G4MH_SELID_INT][G4MH_SR_PLMR]   = G4MH_PLMR_RESET;
+    c->sr[G4MH_SELID_INT][G4MH_SR_INTCFG] = G4MH_INTCFG_RESET;
+
     g4mh_ll_drop(c);
     c->cycles = 0u;
     c->retired = 0u;
@@ -238,7 +249,59 @@ void g4mh_cpu_exception(g4mh_cpu_t *c, g4mh_exc_t cause, uint32_t ret_pc)
 #endif
 }
 
+/*
+ * The priority ceiling: may an EI interrupt of priority `pri` be
+ * acknowledged?
+ *
+ * Figure 3.17 of the U2B manual is the shape of it -- ISPR *or*
+ * PSW.EIMASK, chosen by INTCFG.EPL, and then PLMR, with a mask from
+ * either one refusing. Both threshold fields count acceptable levels
+ * rather than masked ones, so the test is `pri < value`; reading them
+ * the other way is off by one everywhere and admits priority 63, which
+ * the architecture never acknowledges.
+ */
+static bool int_ceiling_admits(const g4mh_cpu_t *c, unsigned pri)
+{
+    const uint32_t cfg  = c->sr[G4MH_SELID_INT][G4MH_SR_INTCFG];
+    const uint32_t plm  = c->sr[G4MH_SELID_INT][G4MH_SR_PLMR] &
+                          G4MH_PLMR_PLM_MASK;
+
+    /* PLMR applies in both modes. */
+    if (pri >= plm) {
+        return false;
+    }
+
+    if ((cfg & G4MH_INTCFG_EPL) != 0u) {
+        /* 64-priority mode: ISPR is disabled and EIMASK is the ceiling. */
+        const uint32_t eimask =
+            (c->psw & G4MH_PSW_EIMASK_MASK) >> G4MH_PSW_EIMASK_SHIFT;
+        return pri < eimask;
+    }
+
+    /*
+     * 16-priority mode. "While a bit in this register is set to 1, same
+     * or lower priority interrupts are masked" -- so any ISP bit at a
+     * level numerically <= pri refuses.
+     *
+     * A priority of 16 or above is refused by *any* set bit (note 5 to
+     * table 3.44), which falls out of the same mask once every bit below
+     * 16 is considered: the mask below is all sixteen when pri >= 15.
+     */
+    const uint32_t ispr = c->sr[G4MH_SELID_INT][G4MH_SR_ISPR] & 0xFFFFu;
+    const unsigned n = (pri < G4MH_ISPR_LEVELS) ? (pri + 1u)
+                                                : G4MH_ISPR_LEVELS;
+    const uint32_t blocking = (n >= 32u) ? 0xFFFFFFFFu : ((1u << n) - 1u);
+
+    return (ispr & blocking) == 0u;
+}
+
 int g4mh_cpu_pending_irq(const g4mh_cpu_t *c)
+{
+    unsigned ignored;
+    return g4mh_cpu_pending_irq_pri(c, &ignored);
+}
+
+int g4mh_cpu_pending_irq_pri(const g4mh_cpu_t *c, unsigned *priority)
 {
     /*
      * PSW.ID masks EI interrupts and PSW.NP masks them during an FE
@@ -251,7 +314,94 @@ int g4mh_cpu_pending_irq(const g4mh_cpu_t *c)
     if (c->intc == NULL) {
         return -1;
     }
-    return g4mh_intc_pending(c->intc, c->coreid);
+
+    /*
+     * The controller picks the highest-priority unmasked channel; the
+     * ceiling then decides whether the *core* will take it. Asking about
+     * the best candidate alone is sufficient rather than a shortcut:
+     * every other pending channel has a numerically larger EIP, so a
+     * ceiling that refuses this one refuses those too.
+     */
+    unsigned pri = 64u;
+    const int ch = g4mh_intc_pending_pri(c->intc, c->coreid, &pri);
+
+    if (ch < 0 || !int_ceiling_admits(c, pri)) {
+        return -1;
+    }
+    *priority = pri;
+    return ch;
+}
+
+/*
+ * Take an interrupt of priority `pri`: raise the ceiling so that nothing
+ * of the same or lower priority preempts the handler.
+ *
+ * Called from the run loop after g4mh_cpu_exception, because the ceiling
+ * update is part of *acknowledging* rather than of vectoring -- an
+ * exception is not an interrupt and must not touch it.
+ */
+void g4mh_cpu_ack_priority(g4mh_cpu_t *c, unsigned pri)
+{
+    const uint32_t cfg = c->sr[G4MH_SELID_INT][G4MH_SR_INTCFG];
+
+    if ((cfg & G4MH_INTCFG_EPL) != 0u) {
+        /*
+         * 64-priority mode. "When the CPU acknowledges an interrupt, its
+         * interrupt priority is stored" -- and since EIMASK admits
+         * `p < EIMASK`, storing the priority itself is what blocks the
+         * same level as well as lower ones. EIPSW already holds the old
+         * PSW, so EIRET restores the previous ceiling for free.
+         */
+        c->psw = (c->psw & ~G4MH_PSW_EIMASK_MASK) |
+                 ((pri & 0x3Fu) << G4MH_PSW_EIMASK_SHIFT);
+        c->sr[0][G4MH_SR_PSW] = c->psw;
+        return;
+    }
+
+    /*
+     * 16-priority mode, and only when INTCFG.ISPC leaves the automatic
+     * update on -- with ISPC set the guest is doing its own ceiling
+     * through PLMR and ISPR becomes its to write.
+     *
+     * "If the priority of the acknowledged interrupt is 16 to 63,
+     * neither bit of the ISP is set to 1." Those interrupts are still
+     * acknowledged; they simply record nothing, which is why a later one
+     * at the same level is not blocked by this one.
+     */
+    if ((cfg & G4MH_INTCFG_ISPC) == 0u && pri < G4MH_ISPR_LEVELS) {
+        c->sr[G4MH_SELID_INT][G4MH_SR_ISPR] |= 1u << pri;
+    }
+}
+
+/*
+ * EIRET: drop the ceiling this handler raised.
+ *
+ * "If PSW.EP is 0 when the EIRET instruction is executed, the bit with
+ * the highest priority among the ISP15 to ISP0 bits that are set is
+ * cleared" -- the *highest*, not one remembered from entry. That is what
+ * makes nesting work without the hardware storing a stack: the bits are
+ * the stack.
+ *
+ * EIMASK needs nothing here; EIRET restores the whole PSW from EIPSW and
+ * the field comes back with it.
+ */
+void g4mh_cpu_eiret_priority(g4mh_cpu_t *c)
+{
+    const uint32_t cfg = c->sr[G4MH_SELID_INT][G4MH_SR_INTCFG];
+
+    if ((cfg & (G4MH_INTCFG_EPL | G4MH_INTCFG_ISPC)) != 0u) {
+        return;
+    }
+    if ((c->psw & G4MH_PSW_EP) != 0u) {
+        return;                 /* returning from an exception, not an int */
+    }
+
+    uint32_t ispr = c->sr[G4MH_SELID_INT][G4MH_SR_ISPR] & 0xFFFFu;
+    if (ispr == 0u) {
+        return;
+    }
+    /* The lowest set bit is the highest priority. */
+    c->sr[G4MH_SELID_INT][G4MH_SR_ISPR] = ispr & (ispr - 1u);
 }
 
 bool g4mh_cpu_pending_fe(const g4mh_cpu_t *c)

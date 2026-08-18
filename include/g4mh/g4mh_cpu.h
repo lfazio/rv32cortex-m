@@ -209,6 +209,19 @@ bool g4mh_exc_is_fe(g4mh_exc_t cause);
 int g4mh_cpu_pending_irq(const g4mh_cpu_t *c);
 
 /*
+ * Raise and lower the EI priority ceiling, which is what makes nested
+ * interrupts work: ISPR in 16-priority mode, PSW.EIMASK in 64-priority
+ * mode, both gated by INTCFG.
+ *
+ * `ack` is called when an interrupt is *acknowledged* and not when an
+ * exception vectors -- an exception is not an interrupt and must leave
+ * the ceiling alone -- and `eiret` when EIRET returns from one.
+ */
+int  g4mh_cpu_pending_irq_pri(const g4mh_cpu_t *c, unsigned *priority);
+void g4mh_cpu_ack_priority(g4mh_cpu_t *c, unsigned pri);
+void g4mh_cpu_eiret_priority(g4mh_cpu_t *c);
+
+/*
  * True if an FE-level interrupt is pending and deliverable. Honours
  * PSW.NP and *not* PSW.ID, which is the point of the level: a guest that
  * has masked EI interrupts still takes this one.

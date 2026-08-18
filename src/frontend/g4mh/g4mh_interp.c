@@ -525,13 +525,22 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 continue;
             }
 
-            const int ch = g4mh_cpu_pending_irq(c);
+            unsigned ipri = 64u;
+            const int ch = g4mh_cpu_pending_irq_pri(c, &ipri);
             if (ch >= 0) {
                 c->state = EMU_STATE_RUNNING;
                 c->pc = pc;
                 g4mh_intc_ack(c->intc, (uint32_t)ch);
                 g4mh_cpu_exception(c,
                                    G4MH_EXC_EIINT_BASE + (uint32_t)ch, pc);
+                /*
+                 * *After* the exception, because it reads the PSW that
+                 * entry has already updated and writes the ceiling the
+                 * handler runs under. Doing it first would have EIPSW
+                 * save the raised ceiling and EIRET restore it, so the
+                 * ceiling would never come down.
+                 */
+                g4mh_cpu_ack_priority(c, ipri);
                 pc = c->pc;
                 continue;
             }
@@ -1551,6 +1560,14 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 goto retired_insn;
 
             case 0x148:                             /* EIRET            */
+                /*
+                 * The ceiling comes down *before* the PSW is restored,
+                 * because the ISPR rule is conditional on PSW.EP as it
+                 * stands during EIRET -- "if PSW.EP is 0 when the EIRET
+                 * instruction is executed" -- which is the handler's EP,
+                 * not the one being returned to.
+                 */
+                g4mh_cpu_eiret_priority(c);
                 pc = c->sr[0][G4MH_SR_EIPC];
                 g4mh_sr_write(c, 0u, G4MH_SR_PSW, c->sr[0][G4MH_SR_EIPSW]);
                 goto retired_insn;

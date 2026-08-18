@@ -4886,8 +4886,239 @@ static void test_mpu_window(void)
 }
 #endif /* G4MH_EXT_MPU */
 
+/* ------------------------------------------------------------------ */
+/* Interrupt priority ceiling: ISPR, PSW.EIMASK, PLMR                  */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Driven through g4mh_cpu_pending_irq_pri / ack / eiret rather than
+ * through a guest, because what is under test is the *decision* and a
+ * guest program can only observe it as "a handler ran". The counts and
+ * thresholds are from U2B tables 3.44 (ISPR), 3.49 (PLMR) and 3.52
+ * (PSW.EIMASK), with the combining rule from figure 3.17.
+ */
+
+/* Give channel `ch` priority `pri`, unmasked, and raise it. */
+static void ceil_arm(unsigned ch, unsigned pri)
+{
+    (void)g4mh_intc1_ops.write(&g_tic, G4MH_INTC1_EEIC + ch * 4u, 4u, pri);
+    g4mh_intc_raise(&g_tic, ch);
+}
+
+static void ceil_reset(void)
+{
+    tic_reset();
+    g_tic_cpu.psw = 0u;                 /* PSW.ID clear: interrupts on */
+    g_tic_cpu.sr[0][G4MH_SR_PSW] = 0u;
+    g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_PLMR]   = G4MH_PLMR_RESET;
+    g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_INTCFG] = G4MH_INTCFG_RESET;
+    g_tic_cpu.intc = &g_tic;
+}
+
+/*
+ * The whole point of the ceiling: while a handler is in service, an
+ * interrupt of the *same or lower* priority must not preempt it, and a
+ * higher-priority one must. Without ISPR every pending channel is
+ * delivered the moment PSW.ID allows, so a handler is re-entered by its
+ * own source and a priority scheme means nothing.
+ */
+static void test_int_ceiling_ispr(void)
+{
+    unsigned pri = 99u;
+
+    ceil_reset();
+
+    /* Priority 5 arrives and is accepted. */
+    ceil_arm(3u, 5u);
+    CHECK_EQ((uint32_t)g4mh_cpu_pending_irq_pri(&g_tic_cpu, &pri), 3u);
+    CHECK_EQ(pri, 5u);
+    g4mh_cpu_ack_priority(&g_tic_cpu, 5u);
+    CHECK_EQ(g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_ISPR], 1u << 5);
+    g4mh_intc_ack(&g_tic, 3u);
+
+    /* Same priority: refused. */
+    ceil_arm(4u, 5u);
+    CHECK_EQ((uint32_t)(g4mh_cpu_pending_irq_pri(&g_tic_cpu, &pri) + 1), 0u);
+
+    /* Lower priority (numerically larger): refused. */
+    g4mh_intc_ack(&g_tic, 4u);
+    ceil_arm(5u, 9u);
+    CHECK_EQ((uint32_t)(g4mh_cpu_pending_irq_pri(&g_tic_cpu, &pri) + 1), 0u);
+
+    /* Higher priority: accepted, and nests. */
+    ceil_arm(6u, 2u);
+    CHECK_EQ((uint32_t)g4mh_cpu_pending_irq_pri(&g_tic_cpu, &pri), 6u);
+    CHECK_EQ(pri, 2u);
+    g4mh_cpu_ack_priority(&g_tic_cpu, 2u);
+    /*
+     * The *channel* has to be acknowledged too, and forgetting it is
+     * what the first draft of this test did: EIRET then dropped the
+     * ceiling but channel 6 was still requesting, so the next query
+     * returned 6 again rather than the priority-9 channel underneath.
+     * Two separate acknowledgements, because they are two separate
+     * things -- the controller's request flag and the core's ceiling.
+     */
+    g4mh_intc_ack(&g_tic, 6u);
+    CHECK_EQ(g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_ISPR],
+             (1u << 5) | (1u << 2));
+
+    /*
+     * EIRET clears the *highest* priority in service -- the lowest set
+     * bit -- which is what lets the bits be the nesting stack. Clearing
+     * the most recently set bit would be the same thing here only
+     * because they nested in order.
+     */
+    g4mh_cpu_eiret_priority(&g_tic_cpu);
+    CHECK_EQ(g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_ISPR], 1u << 5);
+    /* Priority 9 is still refused: the outer handler is still in service. */
+    CHECK_EQ((uint32_t)(g4mh_cpu_pending_irq_pri(&g_tic_cpu, &pri) + 1), 0u);
+
+    g4mh_cpu_eiret_priority(&g_tic_cpu);
+    CHECK_EQ(g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_ISPR], 0u);
+    /* Now it is taken. */
+    CHECK_EQ((uint32_t)g4mh_cpu_pending_irq_pri(&g_tic_cpu, &pri), 5u);
+
+    /* EIRET with nothing in service must not underflow. */
+    g4mh_cpu_eiret_priority(&g_tic_cpu);
+    CHECK_EQ(g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_ISPR], 0u);
+}
+
+/*
+ * PLMR applies in both modes and is the software ceiling. Its field
+ * counts *acceptable* levels, so PLM = n admits priorities 0..n-1 --
+ * which is why its reset of 16 admits exactly the sixteen ISPR can
+ * represent, and why priority 63 is never acknowledged.
+ */
+static void test_int_ceiling_plmr(void)
+{
+    unsigned pri = 99u;
+
+    ceil_reset();
+    ceil_arm(3u, 4u);
+
+    /* Default PLM = 16 admits priority 4. */
+    CHECK_EQ((uint32_t)g4mh_cpu_pending_irq_pri(&g_tic_cpu, &pri), 3u);
+
+    /* PLM = 4 admits 0..3, so 4 is refused -- the off-by-one case. */
+    g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_PLMR] = 4u;
+    CHECK_EQ((uint32_t)(g4mh_cpu_pending_irq_pri(&g_tic_cpu, &pri) + 1), 0u);
+
+    /* PLM = 5 admits it. */
+    g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_PLMR] = 5u;
+    CHECK_EQ((uint32_t)g4mh_cpu_pending_irq_pri(&g_tic_cpu, &pri), 3u);
+
+    /* PLM = 0 admits nothing at all. */
+    g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_PLMR] = 0u;
+    CHECK_EQ((uint32_t)(g4mh_cpu_pending_irq_pri(&g_tic_cpu, &pri) + 1), 0u);
+
+    /* Priority 63 is refused even at the maximum PLM. */
+    ceil_reset();
+    g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_PLMR] = 63u;
+    ceil_arm(3u, 63u);
+    CHECK_EQ((uint32_t)(g4mh_cpu_pending_irq_pri(&g_tic_cpu, &pri) + 1), 0u);
+    /* 62 is the lowest that can be. */
+    ceil_reset();
+    g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_PLMR] = 63u;
+    ceil_arm(3u, 62u);
+    CHECK_EQ((uint32_t)g4mh_cpu_pending_irq_pri(&g_tic_cpu, &pri), 3u);
+}
+
+/*
+ * 64-priority mode: INTCFG.EPL swaps ISPR out for PSW.EIMASK, and
+ * acknowledging stores the priority there. ISPR must then do nothing at
+ * all -- "the function of the ISPR register is disabled".
+ */
+static void test_int_ceiling_eimask(void)
+{
+    unsigned pri = 99u;
+
+    ceil_reset();
+    g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_INTCFG] =
+        G4MH_INTCFG_RESET | G4MH_INTCFG_EPL;
+    g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_PLMR] = 63u;   /* PLMR out of the way */
+
+    /* EIMASK resets to 0, which admits nothing. */
+    ceil_arm(3u, 10u);
+    CHECK_EQ((uint32_t)(g4mh_cpu_pending_irq_pri(&g_tic_cpu, &pri) + 1), 0u);
+
+    /* EIMASK = 11 admits 0..10. */
+    g_tic_cpu.psw = 11u << G4MH_PSW_EIMASK_SHIFT;
+    CHECK_EQ((uint32_t)g4mh_cpu_pending_irq_pri(&g_tic_cpu, &pri), 3u);
+    /* EIMASK = 10 does not. */
+    g_tic_cpu.psw = 10u << G4MH_PSW_EIMASK_SHIFT;
+    CHECK_EQ((uint32_t)(g4mh_cpu_pending_irq_pri(&g_tic_cpu, &pri) + 1), 0u);
+
+    /* Acknowledging stores the priority, which blocks the same level. */
+    g_tic_cpu.psw = 11u << G4MH_PSW_EIMASK_SHIFT;
+    g4mh_cpu_ack_priority(&g_tic_cpu, 10u);
+    CHECK_EQ((g_tic_cpu.psw & G4MH_PSW_EIMASK_MASK) >>
+             G4MH_PSW_EIMASK_SHIFT, 10u);
+    CHECK_EQ((uint32_t)(g4mh_cpu_pending_irq_pri(&g_tic_cpu, &pri) + 1), 0u);
+
+    /* And ISPR was not touched, because EPL disables it. */
+    CHECK_EQ(g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_ISPR], 0u);
+
+    /* A 6-bit priority beyond what ISPR could hold still works here. */
+    ceil_reset();
+    g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_INTCFG] =
+        G4MH_INTCFG_RESET | G4MH_INTCFG_EPL;
+    g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_PLMR] = 63u;
+    g_tic_cpu.psw = 40u << G4MH_PSW_EIMASK_SHIFT;
+    ceil_arm(3u, 33u);
+    CHECK_EQ((uint32_t)g4mh_cpu_pending_irq_pri(&g_tic_cpu, &pri), 3u);
+    CHECK_EQ(pri, 33u);
+}
+
+/*
+ * Two edges of the 16-priority mode that a straightforward reading gets
+ * wrong: a priority of 16 or above sets no ISPR bit when acknowledged,
+ * and is refused while *any* bit is set; and INTCFG.ISPC turns the
+ * automatic update off so software can run its own ceiling.
+ */
+static void test_int_ceiling_edges(void)
+{
+    unsigned pri = 99u;
+
+    /* Priority >= 16 records nothing. */
+    ceil_reset();
+    g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_PLMR] = 63u;
+    g4mh_cpu_ack_priority(&g_tic_cpu, 20u);
+    CHECK_EQ(g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_ISPR], 0u);
+
+    /* But any bit set refuses it. */
+    g4mh_cpu_ack_priority(&g_tic_cpu, 15u);
+    CHECK_EQ(g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_ISPR], 1u << 15);
+    ceil_arm(3u, 20u);
+    CHECK_EQ((uint32_t)(g4mh_cpu_pending_irq_pri(&g_tic_cpu, &pri) + 1), 0u);
+
+    /* ISPC = 1: acknowledging records nothing and EIRET clears nothing. */
+    ceil_reset();
+    g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_INTCFG] =
+        G4MH_INTCFG_RESET | G4MH_INTCFG_ISPC;
+    g4mh_cpu_ack_priority(&g_tic_cpu, 4u);
+    CHECK_EQ(g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_ISPR], 0u);
+    /* Software's own value survives EIRET. */
+    g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_ISPR] = 1u << 7;
+    g4mh_cpu_eiret_priority(&g_tic_cpu);
+    CHECK_EQ(g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_ISPR], 1u << 7);
+
+    /*
+     * EIRET returning from an *exception* (PSW.EP set) leaves the
+     * ceiling alone -- an exception never raised it.
+     */
+    ceil_reset();
+    g4mh_cpu_ack_priority(&g_tic_cpu, 6u);
+    g_tic_cpu.psw |= G4MH_PSW_EP;
+    g4mh_cpu_eiret_priority(&g_tic_cpu);
+    CHECK_EQ(g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_ISPR], 1u << 6);
+}
+
 void test_g4mh(void)
 {
+    test_int_ceiling_ispr();
+    test_int_ceiling_plmr();
+    test_int_ceiling_eimask();
+    test_int_ceiling_edges();
 #if G4MH_EXT_MPU
     test_mpu_modes_and_enable();
     test_mpu_permission_matrix();

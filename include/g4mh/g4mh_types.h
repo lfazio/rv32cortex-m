@@ -103,6 +103,14 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
 #define G4MH_PSW_CU2        (1u << 18)
 #define G4MH_PSW_UM         (1u << 30)   /* user mode                    */
 
+/*
+ * PSW.EIMASK, bits 25:20 -- the priority ceiling in 64-priority mode.
+ * Present in EIPSW and FEPSW at the same position, which is what makes
+ * EIRET restore it for free: the whole PSW comes back.
+ */
+#define G4MH_PSW_EIMASK_SHIFT 20u
+#define G4MH_PSW_EIMASK_MASK  (0x3Fu << G4MH_PSW_EIMASK_SHIFT)
+
 /* The condition-code bits, as a group: what an arithmetic result sets. */
 #define G4MH_PSW_FLAGS      (G4MH_PSW_Z | G4MH_PSW_S | G4MH_PSW_OV | \
                              G4MH_PSW_CY)
@@ -158,9 +166,36 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
 #define G4MH_SR_ASID        7u
 #define G4MH_SR_MEI         8u
 #define G4MH_SR_ISPR        10u
-#define G4MH_SR_PMR         11u
+#define G4MH_SR_PMR         11u   /* the manual calls this IMSR         */
 #define G4MH_SR_ICSR        12u
 #define G4MH_SR_INTCFG      13u
+#define G4MH_SR_PLMR        14u
+
+/* The bank all five of the above live in. */
+#define G4MH_SELID_INT      2u
+
+/*
+ * Interrupt priority ceiling. Three registers decide whether an EI
+ * interrupt of priority p is acknowledged, and the manual's own figure
+ * 3.17 is the shape: ISPR *or* PSW.EIMASK -- selected by INTCFG.EPL --
+ * and then PLMR, with a mask from either one refusing.
+ *
+ * The two threshold fields count the same way and it is not the obvious
+ * way: the value is the number of priorities that *are* acceptable, so
+ * an interrupt is taken when `p < value`. PLM = 1 accepts priority 0
+ * alone and PLM = 0 accepts nothing (U2B manual table 3.49; EIMASK is
+ * table 3.52 and identical). Reading either as "mask p <= value" is off
+ * by one at every level and lets priority 63 in, which the architecture
+ * never acknowledges.
+ */
+#define G4MH_ISPR_LEVELS    16u   /* ISP15..ISP0; 16..63 set no bit     */
+
+#define G4MH_INTCFG_ISPC    (1u << 0)   /* stop auto-updating ISPR      */
+#define G4MH_INTCFG_EPL     (1u << 1)   /* 64 priorities, via EIMASK    */
+#define G4MH_INTCFG_RESET   0x000F0000u /* ULNR = 0xF                   */
+
+#define G4MH_PLMR_PLM_MASK  0x3Fu
+#define G4MH_PLMR_RESET     0x00000010u /* 16: priorities 0..15 pass    */
 
 /*
  * The FPU system registers, selID 0. Numbering from the U2B hardware

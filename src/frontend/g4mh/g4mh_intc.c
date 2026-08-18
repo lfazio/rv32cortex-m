@@ -163,6 +163,12 @@ void g4mh_intc_ack(g4mh_intc_t *ic, uint32_t channel)
 
 int g4mh_intc_pending(const g4mh_intc_t *ic, unsigned pe)
 {
+    return g4mh_intc_pending_pri(ic, pe, NULL);
+}
+
+int g4mh_intc_pending_pri(const g4mh_intc_t *ic, unsigned pe,
+                          unsigned *priority)
+{
     int best = -1;
     /* 64 levels, so no real priority can tie with "nothing found". */
     unsigned best_pri = 64u;
@@ -200,6 +206,9 @@ int g4mh_intc_pending(const g4mh_intc_t *ic, unsigned pe)
             best_pri = pri;
             best = (int)i;
         }
+    }
+    if (priority != NULL) {
+        *priority = best_pri;
     }
     return best;
 }

@@ -553,13 +553,47 @@ What that fixed, each confirmed by reverting it:
 | EIRF on acknowledge | always cleared | cleared only in edge detection |
 | IMRn address | — | `+1000H + 04H*n` for n=1..31; 0x1000 is IMR0's slot and belongs to INTC1 |
 
-**Still open, and deliberately so.** The controller now selects the
-right channel, but the *core* does not compare its priority against
-anything: `ISPR` and `INTCFG` exist as system-register numbers and
-nothing reads them, so an interrupt is delivered whenever PSW.ID and
-PSW.NP allow rather than only when it outranks what is in service.
-Nesting is therefore unmodelled. That is a CPU-side gap rather than a
-controller one, and it wants its own change.
+### The priority ceiling
+
+The controller picks the highest-priority unmasked channel; the **core**
+then decides whether to take it. U2B figure 3.17 is the shape: `ISPR`
+*or* `PSW.EIMASK`, selected by `INTCFG.EPL`, and then `PLMR`, with a
+mask from either refusing.
+
+| | | |
+|---|---|---|
+| `PLMR.PLM` | both modes | admits `p < PLM`; resets to 16 |
+| `ISPR` | `EPL = 0` | bit per level, set on acknowledge; any bit at a level ≤ `p` refuses |
+| `PSW.EIMASK` | `EPL = 1` | admits `p < EIMASK`; acknowledge stores `p` |
+
+**Both threshold fields count acceptable levels, not masked ones**, so
+the test is `p < value` and not `p <= value`. Reading them the other way
+is off by one at every level and admits priority 63, which the
+architecture never acknowledges — `PLM = 1` accepts priority 0 alone and
+`PLM = 0` accepts nothing (tables 3.49 and 3.52).
+
+`EIRET` clears **the highest-priority bit set in ISPR** — the lowest bit
+number — not one remembered from entry. That is what makes the bits the
+nesting stack without the hardware storing one. It is conditional on
+`PSW.EP` being clear *as EIRET executes*, which is the handler's EP
+rather than the one being returned to, so the clear happens before the
+PSW is restored.
+
+Two edges that a straightforward reading gets wrong, both tested:
+a priority of 16 or above **sets no ISPR bit** when acknowledged (note 4
+to table 3.44) yet is refused while *any* bit is set (note 5); and
+`INTCFG.ISPC` turns the automatic update off entirely, making ISPR
+writable so software can run its own ceiling through PLMR.
+
+`PLMR` resets to 16 and `INTCFG` to `000F0000H`. Leaving PLMR at zero —
+which a `memset` would — masks every priority, so a guest that never
+writes it would take no interrupt at all while every EIC register said
+it should.
+
+The ceiling is raised in **two** places, because this frontend keeps a
+separate copy of the run loop's interrupt check for the JIT: the
+interpreter's path and `g4mh_jit_take_irq`. That file has now needed the
+same addition twice — FE-level delivery first, the ceiling second.
 
 Level detection is implemented as a rule -- EIRF read-only, no
 acknowledge clear -- but no modelled source sets EICT, so the path is
