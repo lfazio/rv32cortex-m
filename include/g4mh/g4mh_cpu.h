@@ -15,13 +15,16 @@
  *
  * This frontend implements the G4MH integer core: the 16-bit, 32-bit,
  * 48-bit and 64-bit base formats, the exception model at both EI and FE
- * level, the system register file, the interrupt controller and the
- * inter-CPU peripherals. Floating point is behind G4MH_EXT_FPU, single
- * and double. It does *not* implement the MPU or the bit-string
- * instruction group; those encodings raise a reserved-instruction
- * exception, which is the correct report for something not implemented,
- * and each is a self-contained addition to g4mh_interp.c rather than a
- * change to anything around it.
+ * level, the system register file, the interrupt controller, the
+ * inter-CPU peripherals and the memory protection unit. Floating point
+ * is behind G4MH_EXT_FPU, single and double; the MPU is behind
+ * G4MH_EXT_MPU and on by default, because unlike the FPU it is not an
+ * option a real part omits.
+ *
+ * It does *not* implement the bit-string instruction group; those
+ * encodings raise a reserved-instruction exception, which is the correct
+ * report for something not implemented, and it is a self-contained
+ * addition to g4mh_interp.c rather than a change to anything around it.
  */
 #ifndef G4MH_G4MH_CPU_H
 #define G4MH_G4MH_CPU_H
@@ -36,6 +39,7 @@
  * no backend, which is a link error at best and a wrong default at worst. */
 #include "emu/emu_jit.h"
 
+#include "g4mh_mpu.h"
 #include "g4mh_types.h"
 
 #ifdef __cplusplus
@@ -116,6 +120,32 @@ typedef struct g4mh_cpu {
      * channel.
      */
     bool     pm_active;
+
+#if G4MH_EXT_MPU
+    /*
+     * True while MPM.MPE is set.
+     *
+     * This is the *only* thing the fetch and access paths test, and it
+     * must stay that way: the RISC-V side measured 9.3% of CoreMark on
+     * an unguarded second condition in the fetch sequence, and folded
+     * two flags into one `fetch_guard` to get it back. If the MPU ever
+     * grows a second gate, fold it in here rather than testing it
+     * beside this. Maintained by g4mh_sr_write, the only writer of MPM.
+     */
+    bool     mpu_active;
+
+    /*
+     * The SPID this core presents to the MPU's SPID group.
+     *
+     * A real part takes it from the bus master ID, which for a PE is its
+     * own; a single-PE model would be entitled to hardwire 0, but the
+     * multicore build gives each PE a distinct one so that MPIDn
+     * actually discriminates. Set at init from the core id.
+     */
+    uint32_t spid;
+
+    struct g4mh_mpu *mpu;
+#endif
 
 #if EMU_ENABLE_STATS
     uint32_t exc_count;

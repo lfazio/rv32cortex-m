@@ -13,11 +13,28 @@
 /* Lifecycle                                                           */
 /* ------------------------------------------------------------------ */
 
+#if G4MH_EXT_MPU
+/*
+ * One MPU per core. Not shared: MPM, MPIDX and the entries are all
+ * per-PE state on a real part, and sharing them would make one core's
+ * MPIDX select which entry another core's LDSR wrote.
+ */
+static g4mh_mpu_t g_mpu[G4MH_PE_COUNT];
+#endif
+
 void g4mh_cpu_init(g4mh_cpu_t *c, emu_bus_t *bus, uint32_t coreid)
 {
     memset(c, 0, sizeof(*c));
     c->bus = bus;
     c->coreid = coreid;
+#if G4MH_EXT_MPU
+    c->mpu = &g_mpu[coreid < G4MH_PE_COUNT ? coreid : 0u];
+    /*
+     * SPID from the core id, so MPIDn discriminates between PEs rather
+     * than every core presenting 0 and the SPID group being a no-op.
+     */
+    c->spid = coreid & G4MH_MPID_SPID_MASK;
+#endif
     g4mh_cpu_reset(c, 0u);
 }
 
@@ -35,6 +52,20 @@ void g4mh_cpu_reset(g4mh_cpu_t *c, uint32_t reset_pc)
      */
     c->psw = G4MH_PSW_ID;
     c->sr[0][G4MH_SR_PSW] = c->psw;
+
+#if G4MH_EXT_MPU
+    /*
+     * MPM resets to zero, so protection is off and every entry disabled.
+     * Reset here as well as at init because a warm reset must not leave
+     * a previous guest's areas in force -- the flag and the entries have
+     * to move together or a reset would disable checking while leaving
+     * the entries that a later MPM write would suddenly apply.
+     */
+    if (c->mpu != NULL) {
+        g4mh_mpu_reset(c->mpu);
+    }
+    c->mpu_active = false;
+#endif
 
     /*
      * RBASE is where the reset vector and the exception handlers live.
@@ -316,6 +347,21 @@ g4mh_exc_t g4mh_load(g4mh_cpu_t *c, uint32_t addr, uint32_t size,
         c->sr[2][G4MH_SR_MEA] = addr;
         return G4MH_EXC_MAE;
     }
+#if G4MH_EXT_MPU
+    /*
+     * One predicted branch for a guest that never enables the MPU. The
+     * check is *after* the alignment test on purpose: MAE and MDP are
+     * both FE-level and a misaligned access to a protected area has to
+     * report one of them, and the architecture detects the misalignment
+     * as part of forming the access.
+     */
+    if (EMU_UNLIKELY(c->mpu_active) &&
+        !g4mh_mpu_permits(c->mpu, addr, size, G4MH_MPU_READ,
+                          (c->psw & G4MH_PSW_UM) != 0u, c->spid)) {
+        c->sr[2][G4MH_SR_MEA] = addr;
+        return G4MH_EXC_MDP;
+    }
+#endif
 
     uint32_t v;
     const emu_fault_t f = emu_bus_read(c->bus, addr, size, &v);
@@ -338,6 +384,20 @@ g4mh_exc_t g4mh_store(g4mh_cpu_t *c, uint32_t addr, uint32_t size,
         c->sr[2][G4MH_SR_MEA] = addr;
         return G4MH_EXC_MAE;
     }
+#if G4MH_EXT_MPU
+    /*
+     * Refused before the bus sees it: "the result of the access which is
+     * judged as prohibited is not reflected in memory or I/O devices".
+     * Checking after the write and rolling back would be visible to a
+     * peripheral, which is the whole reason the order matters.
+     */
+    if (EMU_UNLIKELY(c->mpu_active) &&
+        !g4mh_mpu_permits(c->mpu, addr, size, G4MH_MPU_WRITE,
+                          (c->psw & G4MH_PSW_UM) != 0u, c->spid)) {
+        c->sr[2][G4MH_SR_MEA] = addr;
+        return G4MH_EXC_MDP;
+    }
+#endif
 
     const emu_fault_t f = emu_bus_write(c->bus, addr, size, val);
     if (EMU_UNLIKELY(f != EMU_FAULT_NONE)) {
@@ -430,6 +490,15 @@ uint32_t g4mh_sr_read(const g4mh_cpu_t *c, unsigned bank, unsigned reg)
     if (bank == 0u && reg == G4MH_SR_PSW) {
         return c->psw;
     }
+#if G4MH_EXT_MPU
+    {
+        uint32_t v;
+        if (bank == G4MH_SR_SEL_MPU && c->mpu != NULL &&
+            g4mh_mpu_sr_read(c->mpu, reg, &v)) {
+            return v;
+        }
+    }
+#endif
     return c->sr[bank][reg];
 }
 
@@ -451,6 +520,28 @@ void g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg, uint32_t val)
         c->irq_dirty = true;
         return;
     }
+
+#if G4MH_EXT_MPU
+    /*
+     * The MPU's registers are a window onto an entry array, so they
+     * cannot live in sr[][]: MPLA, MPUA and MPAT each name one slot but
+     * refer to whichever of 32 entries MPIDX selects. The unit answers
+     * for its own selID and reports whether it did, which keeps the list
+     * of what it owns in one file.
+     *
+     * The generic store below still runs for a register it declines, so
+     * an unimplemented selID-5 number behaves exactly as before.
+     */
+    if (bank == G4MH_SR_SEL_MPU && c->mpu != NULL &&
+        g4mh_mpu_sr_write(c->mpu, reg, val)) {
+        /*
+         * MPM is the only writer of the flag the fetch and access paths
+         * test, and this is the only path to MPM.
+         */
+        c->mpu_active = g4mh_mpu_is_active(c->mpu);
+        return;
+    }
+#endif
 
     c->sr[bank][reg] = val;
 

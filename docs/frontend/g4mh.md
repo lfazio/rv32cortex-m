@@ -565,3 +565,86 @@ Level detection is implemented as a rule -- EIRF read-only, no
 acknowledge clear -- but no modelled source sets EICT, so the path is
 unreachable today. It is written down rather than left out so that a
 level-sensitive device has somewhere to land.
+
+## MPU
+
+Implemented from R01UH0923EJ0130 section 3 "CPU System" -- tables 3.65
+(MPM), 3.66 (MPCFG), 3.74-3.77 (MPLA/MPUA/MPAT/MPIDn) and the rules in
+3.2.5.1(4) and (5). The virtualization manual R01UH0865EJ0140 gives the
+same register map in its table 3.12 and defers every bit layout to the
+above, which is why it alone is not enough to build from.
+
+Thirty-two entries, each three registers reached through a **window**:
+`MPIDX` selects the entry and `MPLA`/`MPUA`/`MPAT` refer to whichever one
+that is. Same shape as the INTC's `EICn`/`EEICn`/`IMRm`, and held the
+same way -- the entry array is the state, the system registers are a
+view of one element.
+
+An access must satisfy **two independent gates**, and this is the part a
+mode-only model gets wrong:
+
+| gate | what it is |
+|---|---|
+| mode | `SR`/`SW`/`SX` in supervisor, `UR`/`UW`/`UX` in user |
+| SPID | `RMPIDn`/`WMPIDn` indexed by which `MPIDn` holds the accessing SPID, or bypassed by `RG`/`WG` |
+
+Both must allow. Treating them as alternatives opens every area to every
+master the moment `SW` is set -- the A/B for that is 8 failures.
+`RMPIDn` covers *execution and reading together*, so there is no
+`XMPIDn`; the mode group still keeps them apart, and an area that is
+readable and not executable refuses a fetch.
+
+Other rules worth stating because each has a test that fails without it:
+
+- **`MPM.SVP` clear means "enable all accesses in SV mode"** -- all,
+  fetch included, with no entry configured. A supervisor guest that never
+  sets `SVP` runs unprotected however its entries look, which is the
+  reset arrangement.
+- **`MPUA` is inclusive and its low two bits read as 1**, and the *whole
+  span* of an access must be inside. An access straddling the top is a
+  violation even though its first byte is not.
+- **Overlapping areas: permitted by any one of them is permitted.**
+  Stopping at the first match would make entry order significant, which
+  it is not.
+- **Matching nothing denies.** The opposite of RISC-V PMP's M-mode rule,
+  and worth stating because this project carries that habit: a guest that
+  sets `MPM.MPE` with no entry covering its own code stops immediately.
+
+Violations raise `MIP` on a fetch and `MDP` on an operand access, with
+the address in `MEA` -- both already existed.
+
+### What it costs when off
+
+One predicted branch on the fetch path and one per data access, testing
+`mpu_active`, which is false until a guest sets `MPM.MPE`. Nothing else
+may join it: the RISC-V side measured **9.3% of CoreMark** on an
+unguarded second condition in the fetch sequence and had to fold two
+flags into one `fetch_guard` to get it back.
+
+The fetch check covers the first halfword only. Every MPU bound is
+4-byte aligned (`MPLA` and `MPUA` keep bits 31:2), so an instruction
+cannot straddle a boundary that its first halfword is on the right side
+of. If an area ever becomes finer than 4 bytes this needs the per-halfword
+treatment the RISC-V fetch guard already has.
+
+`-DG4MH_EXT_MPU=0` compiles it out; `-DG4MH_MPU_ENTRIES=n` shrinks the
+entry file. Both are C macros with defaults in `g4mh_config.h`, not CMake
+options.
+
+**The out-of-range `MPIDX` guard is unreachable at 32 entries** --
+`MPIDX` is five bits and every value is then a valid entry -- so it is
+tested in a `-DG4MH_MPU_ENTRIES=8` build, where removing it costs 2
+failures. The first version of that test asserted nothing at all, being
+`#if`-ed out in the default configuration, and the second checked the
+wrong neighbour: with the guard removed `mpla[N]` runs off the end and
+lands on `mpua[0]`, which the test never read. It now snapshots every
+entry and requires that none moved.
+
+### Not implemented
+
+The setting-check function (`MCA`/`MCS`/`MCC`/`MCR`/`MCI`) is stored and
+readable but performs no check -- a guest can write the command and will
+read back whatever it wrote rather than a result. `MPBK` reads 0 (one
+bank, which is what `MPCFG.NBK` reports). The host/guest entry split
+(`MPCFG.HBE`) is not enforced, because there is no hypervisor mode here
+to enforce it against.

@@ -4541,8 +4541,298 @@ static void test_intc_imr_addressing(void)
     CHECK_EQ(tic2_rd(64u * 2u) & G4MH_EIC_EIMK, 0u);
 }
 
+/* ------------------------------------------------------------------ */
+/* MPU                                                                 */
+/* ------------------------------------------------------------------ */
+
+#if G4MH_EXT_MPU
+
+/*
+ * Driven through g4mh_mpu_permits directly. The alternative -- a guest
+ * program that faults -- tests the *plumbing* and is worth having, but
+ * it cannot enumerate the permission matrix, and the matrix is where an
+ * MPU is wrong: two independent gates (the mode group and the SPID
+ * group) that both have to allow, plus an enable bit, plus SVP.
+ *
+ * Bit positions from R01UH0923EJ0130 table 3.76.
+ */
+
+static g4mh_mpu_t g_tm;
+
+/* Configure entry `e` to cover [lo,hi] with attributes `at`. */
+static void mpu_entry(unsigned e, uint32_t lo, uint32_t hi, uint32_t at)
+{
+    g_tm.mpidx = e;
+    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPLA, lo);
+    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPUA, hi);
+    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPAT, at);
+}
+
+static void test_mpu_modes_and_enable(void)
+{
+    g4mh_mpu_reset(&g_tm);
+    CHECK(!g4mh_mpu_is_active(&g_tm));
+
+    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPM, G4MH_MPM_MPE);
+    CHECK(g4mh_mpu_is_active(&g_tm));
+
+    /*
+     * Supervisor with SVP clear is "enable all accesses in SV mode" --
+     * *all*, fetch included, and with no entry configured. A model that
+     * only bypassed the data path would refuse to fetch its own code the
+     * moment a guest set MPE, which is the reset arrangement and would
+     * make the MPU unusable rather than merely wrong.
+     */
+    CHECK(g4mh_mpu_permits(&g_tm, 0x1000u, 4u, G4MH_MPU_READ, false, 0u));
+    CHECK(g4mh_mpu_permits(&g_tm, 0x1000u, 2u, G4MH_MPU_FETCH, false, 0u));
+    CHECK(g4mh_mpu_permits(&g_tm, 0x1000u, 4u, G4MH_MPU_WRITE, false, 0u));
+
+    /* User mode is checked even with SVP clear, and matches nothing. */
+    CHECK(!g4mh_mpu_permits(&g_tm, 0x1000u, 4u, G4MH_MPU_READ, true, 0u));
+
+    /* With SVP set, supervisor is checked too. */
+    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPM,
+                            G4MH_MPM_MPE | G4MH_MPM_SVP);
+    CHECK(!g4mh_mpu_permits(&g_tm, 0x1000u, 4u, G4MH_MPU_READ, false, 0u));
+
+    /* An area with E clear is not consulted, however permissive. */
+    mpu_entry(0u, 0x1000u, 0x1FFFu,
+              G4MH_MPAT_SR | G4MH_MPAT_RG);          /* no E */
+    CHECK(!g4mh_mpu_permits(&g_tm, 0x1000u, 4u, G4MH_MPU_READ, false, 0u));
+    mpu_entry(0u, 0x1000u, 0x1FFFu,
+              G4MH_MPAT_E | G4MH_MPAT_SR | G4MH_MPAT_RG);
+    CHECK(g4mh_mpu_permits(&g_tm, 0x1000u, 4u, G4MH_MPU_READ, false, 0u));
+}
+
+/*
+ * The permission matrix. Read, write and execute are separate bits per
+ * mode, and the awkward pair is read-vs-execute: RMPIDn covers both in
+ * the SPID group, so a model that reused it for the mode group as well
+ * would let a readable area be executed.
+ */
+static void test_mpu_permission_matrix(void)
+{
+    g4mh_mpu_reset(&g_tm);
+    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPM,
+                            G4MH_MPM_MPE | G4MH_MPM_SVP);
+
+    /* Readable, not executable, not writable -- supervisor. */
+    mpu_entry(0u, 0x2000u, 0x2FFFu,
+              G4MH_MPAT_E | G4MH_MPAT_SR | G4MH_MPAT_RG | G4MH_MPAT_WG);
+    CHECK(g4mh_mpu_permits(&g_tm, 0x2000u, 4u, G4MH_MPU_READ, false, 0u));
+    CHECK(!g4mh_mpu_permits(&g_tm, 0x2000u, 2u, G4MH_MPU_FETCH, false, 0u));
+    CHECK(!g4mh_mpu_permits(&g_tm, 0x2000u, 4u, G4MH_MPU_WRITE, false, 0u));
+
+    /* Executable but not readable is a real combination and distinct. */
+    mpu_entry(0u, 0x2000u, 0x2FFFu,
+              G4MH_MPAT_E | G4MH_MPAT_SX | G4MH_MPAT_RG | G4MH_MPAT_WG);
+    CHECK(!g4mh_mpu_permits(&g_tm, 0x2000u, 4u, G4MH_MPU_READ, false, 0u));
+    CHECK(g4mh_mpu_permits(&g_tm, 0x2000u, 2u, G4MH_MPU_FETCH, false, 0u));
+
+    /* The user bits are separate from the supervisor ones. */
+    mpu_entry(0u, 0x2000u, 0x2FFFu,
+              G4MH_MPAT_E | G4MH_MPAT_SR | G4MH_MPAT_RG | G4MH_MPAT_WG);
+    CHECK(!g4mh_mpu_permits(&g_tm, 0x2000u, 4u, G4MH_MPU_READ, true, 0u));
+    mpu_entry(0u, 0x2000u, 0x2FFFu,
+              G4MH_MPAT_E | G4MH_MPAT_UR | G4MH_MPAT_RG | G4MH_MPAT_WG);
+    CHECK(g4mh_mpu_permits(&g_tm, 0x2000u, 4u, G4MH_MPU_READ, true, 0u));
+    CHECK(!g4mh_mpu_permits(&g_tm, 0x2000u, 4u, G4MH_MPU_READ, false, 0u));
+}
+
+/*
+ * Bounds. MPUA is inclusive and its low two bits read as 1, and the
+ * *whole span* of an access must be inside -- an access straddling the
+ * top is a violation even though its first byte is not.
+ */
+static void test_mpu_bounds(void)
+{
+    g4mh_mpu_reset(&g_tm);
+    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPM,
+                            G4MH_MPM_MPE | G4MH_MPM_SVP);
+    mpu_entry(0u, 0x3000u, 0x3FFCu,
+              G4MH_MPAT_E | G4MH_MPAT_SR | G4MH_MPAT_SW |
+              G4MH_MPAT_RG | G4MH_MPAT_WG);
+
+    /* Both ends are included. */
+    CHECK(g4mh_mpu_permits(&g_tm, 0x3000u, 4u, G4MH_MPU_READ, false, 0u));
+    CHECK(g4mh_mpu_permits(&g_tm, 0x3FFCu, 4u, G4MH_MPU_READ, false, 0u));
+
+    /* One byte before and one word after are outside. */
+    CHECK(!g4mh_mpu_permits(&g_tm, 0x2FFFu, 1u, G4MH_MPU_READ, false, 0u));
+    CHECK(!g4mh_mpu_permits(&g_tm, 0x4000u, 4u, G4MH_MPU_READ, false, 0u));
+
+    /*
+     * Straddling the top. The first byte is inside, so a check that
+     * looked only at the start address would permit it.
+     */
+    CHECK(!g4mh_mpu_permits(&g_tm, 0x3FFEu, 4u, G4MH_MPU_READ, false, 0u));
+
+    /*
+     * Overlapping areas: permitted by *any* is permitted. A search that
+     * stopped at the first matching entry would make the order
+     * significant, and here entry 0 refuses what entry 1 allows.
+     */
+    mpu_entry(0u, 0x5000u, 0x5FFFu, G4MH_MPAT_E | G4MH_MPAT_RG |
+                                    G4MH_MPAT_WG);   /* no permissions */
+    mpu_entry(1u, 0x5000u, 0x5FFFu, G4MH_MPAT_E | G4MH_MPAT_SR |
+                                    G4MH_MPAT_RG | G4MH_MPAT_WG);
+    CHECK(g4mh_mpu_permits(&g_tm, 0x5000u, 4u, G4MH_MPU_READ, false, 0u));
+}
+
+/*
+ * The SPID group, which is the gate a mode-only model has no idea
+ * exists. RG/WG bypass it; without them the accessing SPID must appear
+ * in one of the eight MPIDn slots whose matching RMPIDn/WMPIDn bit is
+ * set.
+ */
+static void test_mpu_spid_group(void)
+{
+    g4mh_mpu_reset(&g_tm);
+    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPM,
+                            G4MH_MPM_MPE | G4MH_MPM_SVP);
+
+    /* SPID 3 in slot 2, and only slot 2 permitted to read. */
+    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPID0 + 2u, 3u);
+    mpu_entry(0u, 0x6000u, 0x6FFFu,
+              G4MH_MPAT_E | G4MH_MPAT_SR | G4MH_MPAT_SW |
+              (1u << (G4MH_MPAT_RMPID_SHIFT + 2u)));
+
+    CHECK(g4mh_mpu_permits(&g_tm, 0x6000u, 4u, G4MH_MPU_READ, false, 3u));
+    /* Same area, same mode bits, different master: refused. */
+    CHECK(!g4mh_mpu_permits(&g_tm, 0x6000u, 4u, G4MH_MPU_READ, false, 4u));
+
+    /*
+     * SW is set but no WMPIDn is, so writing is refused for every SPID.
+     * A model that treated the two groups as alternatives -- permit on
+     * either -- would allow this.
+     */
+    CHECK(!g4mh_mpu_permits(&g_tm, 0x6000u, 4u, G4MH_MPU_WRITE, false, 3u));
+
+    /* WG bypasses the SPID group entirely. */
+    mpu_entry(0u, 0x6000u, 0x6FFFu,
+              G4MH_MPAT_E | G4MH_MPAT_SR | G4MH_MPAT_SW |
+              (1u << (G4MH_MPAT_RMPID_SHIFT + 2u)) | G4MH_MPAT_WG);
+    CHECK(g4mh_mpu_permits(&g_tm, 0x6000u, 4u, G4MH_MPU_WRITE, false, 9u));
+
+    /* RMPIDn covers execution as well as reading. */
+    mpu_entry(0u, 0x6000u, 0x6FFFu,
+              G4MH_MPAT_E | G4MH_MPAT_SX |
+              (1u << (G4MH_MPAT_RMPID_SHIFT + 2u)));
+    CHECK(g4mh_mpu_permits(&g_tm, 0x6000u, 2u, G4MH_MPU_FETCH, false, 3u));
+    CHECK(!g4mh_mpu_permits(&g_tm, 0x6000u, 2u, G4MH_MPU_FETCH, false, 4u));
+}
+
+/*
+ * The MPIDX window: MPLA/MPUA/MPAT refer to whichever entry MPIDX
+ * selects, and an out-of-range index is "handled as an undefined
+ * register" -- reads zero, writes dropped. Wrapping onto entry 0 instead
+ * would corrupt a configured area from a typo.
+ */
+static void test_mpu_window(void)
+{
+    uint32_t v;
+
+    g4mh_mpu_reset(&g_tm);
+
+    mpu_entry(5u, 0x7000u, 0x7FFFu, G4MH_MPAT_E | G4MH_MPAT_SR);
+    mpu_entry(6u, 0x8000u, 0x8FFFu, G4MH_MPAT_E | G4MH_MPAT_SW);
+
+    g_tm.mpidx = 5u;
+    CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &v)); CHECK_EQ(v, 0x7000u);
+    CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPAT, &v));
+    CHECK_EQ(v, (uint32_t)(G4MH_MPAT_E | G4MH_MPAT_SR));
+    g_tm.mpidx = 6u;
+    CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &v)); CHECK_EQ(v, 0x8000u);
+
+    /*
+     * Out of range: reads zero, writes go nowhere, and above all they do
+     * not wrap onto entry 0 and corrupt a configured area.
+     *
+     * **Reachable only when the build has fewer than 32 entries.** MPIDX
+     * is five bits and is masked to them on write, so at the default of
+     * 32 every index is valid and the guard in entry_index() cannot be
+     * taken -- an A/B that removes it changes nothing, which is exactly
+     * what happened when this test was first written with the check
+     * compiled out and silently asserting nothing.
+     *
+     * So the assertion is made where it means something, and the
+     * *reason* it is absent otherwise is asserted instead. Building with
+     * -DG4MH_MPU_ENTRIES=8 is what exercises the other side; it is not
+     * the default because the part has 32.
+     */
+#if G4MH_MPU_ENTRIES < 32u
+    {
+        /*
+         * Snapshot every entry, write through an out-of-range index,
+         * and require that *nothing* moved.
+         *
+         * Checking one neighbour is not enough and the first version of
+         * this did exactly that: with the guard removed, MPLA at index N
+         * runs off the end of mpla[] and lands on mpua[0], so a test
+         * that read back MPLA of a configured entry saw the right value
+         * and passed. Comparing the whole array is what makes the
+         * assertion about "does not corrupt an entry" rather than about
+         * one entry that happens not to be the one hit.
+         */
+        uint32_t la[G4MH_MPU_ENTRIES], ua[G4MH_MPU_ENTRIES];
+        uint32_t at[G4MH_MPU_ENTRIES];
+
+        for (unsigned e = 0; e < G4MH_MPU_ENTRIES; e++) {
+            g_tm.mpidx = e;
+            (void)g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &la[e]);
+            (void)g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPUA, &ua[e]);
+            (void)g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPAT, &at[e]);
+        }
+
+        g_tm.mpidx = G4MH_MPU_ENTRIES;      /* the first invalid index */
+        CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &v)); CHECK_EQ(v, 0u);
+        (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPLA, 0xDEADBE00u);
+        (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPUA, 0xDEADBE00u);
+        (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPAT, 0xFFFFFFFFu);
+
+        for (unsigned e = 0; e < G4MH_MPU_ENTRIES; e++) {
+            uint32_t x;
+            g_tm.mpidx = e;
+            (void)g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &x); CHECK_EQ(x, la[e]);
+            (void)g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPUA, &x); CHECK_EQ(x, ua[e]);
+            (void)g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPAT, &x); CHECK_EQ(x, at[e]);
+        }
+    }
+#else
+    /* Every five-bit index is a valid entry, which is why there is
+     * nothing to test above. */
+    CHECK_EQ((uint32_t)G4MH_MPU_ENTRIES, 32u);
+    g_tm.mpidx = 31u;
+    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPLA, 0xABCD0000u);
+    CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &v)); CHECK_EQ(v, 0xABCD0000u);
+    g_tm.mpidx = 5u;
+    CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &v)); CHECK_EQ(v, 0x7000u);
+#endif
+
+    /* MPCFG reports the geometry and is read-only. */
+    CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPCFG, &v));
+    CHECK_EQ(v & 0x1Fu, G4MH_MPU_ENTRIES - 1u);
+    CHECK_EQ((v >> 16) & 0xFu, G4MH_MPCFG_ARCH);
+    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPCFG, 0u);
+    CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPCFG, &v));
+    CHECK_EQ(v & 0x1Fu, G4MH_MPU_ENTRIES - 1u);
+
+    /* The address registers drop bits 1:0, which read back zero. */
+    g_tm.mpidx = 5u;
+    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPLA, 0x9003u);
+    CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &v)); CHECK_EQ(v, 0x9000u);
+}
+#endif /* G4MH_EXT_MPU */
+
 void test_g4mh(void)
 {
+#if G4MH_EXT_MPU
+    test_mpu_modes_and_enable();
+    test_mpu_permission_matrix();
+    test_mpu_bounds();
+    test_mpu_spid_group();
+    test_mpu_window();
+#endif
     test_intc_imr_aliases_eimk();
     test_intc_imr_masks_delivery();
     test_intc_eeic_six_bit_priority();

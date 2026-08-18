@@ -205,6 +205,17 @@ option(RV32_ENABLE_DISASM "Build the RV32 disassembler" ON)
 # precision only" excludes.
 option(G4MH_EXT_FPU "G4MH single-precision FPU" ON)
 
+# The memory protection unit. On by default, unlike the FPU: a real G4MH
+# reports 32 entries in MPCFG and does not omit it, and a guest that never
+# sets MPM.MPE pays one predicted branch per fetch and per data access.
+option(G4MH_EXT_MPU "G4MH memory protection unit" ON)
+
+# MPU entries. 32 is what MPCFG.NMPUE reports and the register is
+# read-only, so a smaller value makes the emulator disagree with itself
+# unless it is what the part has -- it exists for a build where those
+# 96 words are the guest's.
+set(G4MH_MPU_ENTRIES "32" CACHE STRING "G4MH MPU entries (1..32)")
+
 option(G4MH_ENABLE_DISASM "Build the G4MH disassembler" ON)
 
 # Processing elements to model. The RH850/U2B6 has three; the default is 1
@@ -378,6 +389,7 @@ if(EMU_FRONTEND_G4MH)
         src/frontend/g4mh/g4mh_frontend.c
         src/frontend/g4mh/g4mh_gdb.c
         src/frontend/g4mh/g4mh_intc.c
+        src/frontend/g4mh/g4mh_mpu.c
         src/frontend/g4mh/g4mh_ipir.c
         src/frontend/g4mh/g4mh_ir.c
         src/frontend/g4mh/g4mh_interp.c
@@ -389,6 +401,8 @@ if(EMU_FRONTEND_G4MH)
         G4MH_ENABLE_DISASM=$<BOOL:${G4MH_ENABLE_DISASM}>
         G4MH_PE_COUNT=${G4MH_PE_COUNT}u
         G4MH_EXT_FPU=$<BOOL:${G4MH_EXT_FPU}>
+        G4MH_EXT_MPU=$<BOOL:${G4MH_EXT_MPU}>
+        G4MH_MPU_ENTRIES=${G4MH_MPU_ENTRIES}u
         G4MH_FLASH_KIB=${G4MH_FLASH_KIB}u
         G4MH_CRAM_KIB=${G4MH_CRAM_KIB}u
         G4MH_LRAM_KIB=${G4MH_LRAM_KIB}u

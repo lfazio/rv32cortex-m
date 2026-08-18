@@ -51,6 +51,36 @@
 #  define G4MH_EXT_FPU 0
 #endif
 
+/*
+ * The memory protection unit.
+ *
+ * On by default, because unlike the FPU it is not an option a real part
+ * omits -- MPCFG reports 32 entries on this core -- and because it costs
+ * a guest that never enables it a single predicted branch: MPM.MPE is
+ * zero out of reset, and `mpu_active` is what the fetch and access paths
+ * test. That is the arrangement CLAUDE.md insists on after the RISC-V
+ * side measured 9.3% of CoreMark on an *unguarded* second test in the
+ * fetch sequence.
+ *
+ * Compiled out entirely it is 32 * 3 words of state and two branches, so
+ * the option exists for a build where those words are the guest's.
+ */
+#ifndef G4MH_EXT_MPU
+#  define G4MH_EXT_MPU 1
+#endif
+
+/*
+ * MPU entries. 32 is what MPCFG.NMPUE reports on this core (a value of
+ * 31, being "entries minus one"), and the register is read-only, so this
+ * is not a knob a guest can disagree with -- change both or neither.
+ */
+#ifndef G4MH_MPU_ENTRIES
+#  define G4MH_MPU_ENTRIES 32u
+#endif
+#if G4MH_MPU_ENTRIES < 1u || G4MH_MPU_ENTRIES > 32u
+#  error "G4MH_MPU_ENTRIES must be 1..32; MPCFG.NMPUE is five bits"
+#endif
+
 /* Build the disassembler (useful for tracing; costs flash). */
 #ifndef G4MH_ENABLE_DISASM
 #  define G4MH_ENABLE_DISASM 1

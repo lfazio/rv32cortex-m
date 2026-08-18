@@ -543,6 +543,29 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
         }
 
         /* --- fetch ------------------------------------------------- */
+#if G4MH_EXT_MPU
+        /*
+         * Execute permission, and the one branch every guest pays.
+         *
+         * Checked on the *first halfword only*, deliberately. An
+         * instruction here is 2 to 8 bytes and could in principle
+         * straddle an area boundary, but every MPU bound is 4-byte
+         * aligned (MPLA and MPUA keep bits 31:2) and the areas that
+         * matter are pages -- so the straddle case is a 4-byte-aligned
+         * boundary inside an instruction, which cannot happen for a
+         * halfword-aligned pc without the first halfword already being
+         * on the far side. The RISC-V side checks per halfword because
+         * its PMP grew a case where that was not true; if a G4MH area
+         * ever becomes finer than 4 bytes, this needs the same
+         * treatment.
+         */
+        if (EMU_UNLIKELY(c->mpu_active) &&
+            !g4mh_mpu_permits(c->mpu, pc, 2u, G4MH_MPU_FETCH,
+                              (c->psw & G4MH_PSW_UM) != 0u, c->spid)) {
+            c->sr[2][G4MH_SR_MEA] = pc;
+            EXC(G4MH_EXC_MIP);
+        }
+#endif
         uint16_t w0;
         emu_fault_t f = emu_bus_fetch16(c->bus, pc, &w0);
         if (EMU_UNLIKELY(f != EMU_FAULT_NONE)) {

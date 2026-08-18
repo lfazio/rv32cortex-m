@@ -1312,6 +1312,27 @@ session, and every one of them recurred:
   misaligned word store to a halfword register, `RESBANK` written where
   `DI` was meant, and PSW.ID masking the channel -- each of which
   vectored somewhere and fell through to the handler being watched.
+- **A test guarded by `#if` on a build constant can assert nothing, and
+  the run still says it passed.** The MPU's out-of-range MPIDX guard is
+  unreachable at 32 entries -- the field is five bits, so every value is
+  a valid entry -- and the first test for it was wrapped in
+  `#if G4MH_MPU_ENTRIES <= 31`, which is *false* at the default. It
+  compiled to nothing. The A/B that should have caught it reported
+  **0 failures**, which is the same signal as "the fix does not matter"
+  and had to be chased.
+
+  The second version ran, in a `-DG4MH_MPU_ENTRIES=8` build, and still
+  passed with the guard removed -- because it checked one neighbour and
+  the corruption landed on another: `mpla[N]` off the end of its array
+  lands on `mpua[0]`, and the test read back `mpla[5]`. **When asserting
+  that something does not corrupt state, snapshot all of it**, not the
+  one field the bug seemed likely to hit. Third version: 2 failures.
+
+  Two rules. **A conditional test is a test you have to prove compiles
+  in some configuration you actually run**, and if that configuration is
+  not the default, run it. And an A/B returning 0 failures means the
+  test did not execute at least as often as it means the code was
+  already right.
 - **When a manual says two registers are views of one thing, hold one
   thing.** G4MH's INTC kept `eic[]` and `imr[]` as separate arrays, and
   the manual is explicit that IMRm "is an aggregation of the EIMK bits
