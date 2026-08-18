@@ -83,6 +83,11 @@ void emu_bus_init(emu_bus_t *bus)
     memset(bus, 0, sizeof(*bus));
 }
 
+unsigned emu_bus_region_count(const emu_bus_t *bus)
+{
+    return (unsigned)bus->count;
+}
+
 bool emu_bus_add(emu_bus_t *bus, const emu_region_t *r)
 {
     if (bus->count >= EMU_MAX_REGIONS || r->size < 4u) {

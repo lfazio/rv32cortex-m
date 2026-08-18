@@ -601,6 +601,24 @@ int main(int argc, char **argv)
     if (!emu_system_open(&g_sys, ops, g_bus, ncores)) {
         fprintf(stderr, "emu: could not bring up %u %s core%s\n",
                 ncores, ops->name, (ncores == 1u) ? "" : "s");
+        /*
+         * Almost always the region table, and the message above says
+         * "cores" -- which sent a whole debugging session after the
+         * scheduler. Every device a frontend adds costs a region *per
+         * bus*, so the count grows with the core count: G4MH at three PEs
+         * needs about 20 against a default of 16, and the only symptom
+         * was this line.
+         *
+         * Printed unconditionally rather than only when the table is
+         * full, because emu_system_open reports one boolean and the
+         * platform cannot tell which of its callees failed. Saying what
+         * to check is cheap; guessing wrong is what cost the time.
+         */
+        fprintf(stderr,
+                "emu:   %u of %u bus regions used on core 0 -- if that is "
+                "the limit, rebuild with -DEMU_MAX_REGIONS=%u\n",
+                emu_bus_region_count(&g_bus[0]), (unsigned)EMU_MAX_REGIONS,
+                (unsigned)EMU_MAX_REGIONS + 8u);
         free(image);
         return 1;
     }

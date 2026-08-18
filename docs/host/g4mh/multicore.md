@@ -123,9 +123,21 @@ cores sharing one bus would thrash each other's caches on every switch.
 With (a) that problem never exists.
 
 Construction is a shared region list plus a per-core overlay, not three
-hand-written maps. Watch `EMU_MAX_REGIONS`: per core that is ram, rom,
-periph, uart, intc1-self, intc1-pe0..2, intc2, ostm, lram-self, lram-pe0..2
-— about 14 against a limit of 16. Raise it to 24.
+hand-written maps.
+
+**`EMU_MAX_REGIONS` now follows the PE count, because leaving it as a
+constant somebody had to remember did not work.** Per core the map is
+ram, rom, periph, uart, intc1-self, intc1-pe0..n-1, intc2, intif, ostm,
+barrier, ipir, tptm, lram-self and lram-pe0..n-1 — past 16 at two PEs and
+about 20 at three. This paragraph used to say "raise it to 24" and
+nothing did, so `-DG4MH_PE_COUNT=3` failed at start-up with
+
+    emu: could not bring up 3 g4mh cores
+
+which is a message about cores for a full region table, and it sent the
+first investigation at the scheduler. The default is `16 + 4 * PE_COUNT`
+now (16, 24, 28), and the host runner prints the region count beside that
+failure so the next one names itself.
 
 ### 2. Contract changes
 
@@ -254,3 +266,56 @@ Three constraints that cost nothing now and are expensive to retrofit:
 - **Timing.** Round-robin gives no relationship between a core's progress
   and wall-clock or cycle counts. Anything timing-dependent in the guest is
   not being modelled.
+
+---
+
+## Status
+
+Multicore works on the host and is exercised at 1, 2 and 3 PEs:
+
+| PEs | regions | unit checks | `tests/guest/g4mh/guest.bin` |
+|---|---|---|---|
+| 1 | 16 | 713 | PASS |
+| 2 | 24 | 729 | PASS ×2 |
+| 3 | 28 | 733 | PASS ×3 |
+
+**The default is still 1**, and the reason is the board rather than the
+model: a 3-PE build at the full RAM sizes does not link for the F746 --
+
+    cannot move location counter backwards (from 20057fc0 to 2004f000)
+
+because three PEs is 192 KiB of local RAM alone against 320 KB total. It
+*does* fit with the backing stores reduced:
+
+```sh
+cmake -B build/f746g4x3 -DEMU_PLATFORM=stm32f746 \
+      -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
+      -DEMU_FRONTEND_RV32=OFF -DEMU_FRONTEND_G4MH=ON \
+      -DG4MH_PE_COUNT=3 -DG4MH_LRAM_KIB=16 -DG4MH_CRAM_KIB=32
+```
+
+which is 120,544 bytes of flash and fills RAM exactly. So multicore on
+hardware is a question of how much local RAM a guest needs, not of
+whether the model supports it.
+
+### What the first multicore run found
+
+The `#if G4MH_PE_COUNT > 1` tests had **never executed**, the default
+being 1 — the same shape as the VLE flag on the PowerPC side and the IMR
+register in the INTC.
+
+- The region table, above.
+- `g4mh_ll_register` *appended* to its table and was called from
+  `g4mh_ops_init`, so every `emu_system_open` re-registered. The table
+  filled with whatever came first — usually core 0 several times over,
+  since most tests open one core — and once it was full every later
+  registration was dropped. Indexed by core id now, which is what a
+  function called once per core per open has to be.
+- `test_mc_reservation` was **timing-dependent and failed against a
+  correct implementation**. It assumed core 0's `SNOOZE` would let core 1
+  store *between* the `LDL.W` and the `STC.W`; at a four-instruction
+  quantum core 1 reached its store first, so the reservation was taken
+  after the interfering store and `STC.W` correctly succeeded. The guest
+  now synchronises with two flags and the test runs at quanta 1, 4 and 64
+  — which is the invariance property `test_mc_quantum_invariance` asserts
+  for everything else and that this test was quietly violating.

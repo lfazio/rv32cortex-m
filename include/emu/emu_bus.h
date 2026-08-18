@@ -220,6 +220,13 @@ void emu_bus_init(emu_bus_t *bus);
  */
 bool emu_bus_add(emu_bus_t *bus, const emu_region_t *r);
 
+/*
+ * How many regions this bus holds. For diagnostics only: a platform that
+ * failed to build its map wants to say whether the table was the reason,
+ * and emu_bus_add returns a bare bool.
+ */
+unsigned emu_bus_region_count(const emu_bus_t *bus);
+
 /* Convenience constructors. */
 bool emu_bus_add_ram(emu_bus_t *bus, const char *name,
                     uint32_t base, void *buf, uint32_t size);

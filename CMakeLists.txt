@@ -66,7 +66,7 @@ endif()
 
 # Regions in the bus table. Passthrough platforms need more than they first
 # appear to: protecting individual peripheral registers splits a window.
-set(EMU_MAX_REGIONS "16" CACHE STRING "Bus region table size")
+
 
 option(EMU_ENABLE_TRACE "Per-instruction trace hook (slow)" OFF)
 option(EMU_ENABLE_STATS "Collect run statistics" ON)
@@ -223,6 +223,26 @@ option(G4MH_ENABLE_DISASM "Build the G4MH disassembler" ON)
 # fit on an F446 -- so multicore is a host-platform feature.
 # See docs/host/g4mh/multicore.md.
 set(G4MH_PE_COUNT "1" CACHE STRING "G4MH processing elements (1..3)")
+
+# Regions in the bus table, per core.
+#
+# 16 was enough for one core and is *not* enough for a multicore G4MH: each
+# bus carries ram, rom, periph, uart, intc1-self, intc1-pe0..n-1, intc2,
+# intif, ostm, barrier, ipir, tptm, lram-self and lram-pe0..n-1, which
+# passes 16 at two PEs and 20 at three. docs/host/g4mh/multicore.md said
+# "raise it to 24" when the design was written and nobody did, so
+# -DG4MH_PE_COUNT=3 failed at start-up with "could not bring up 3 g4mh
+# cores" -- a message about cores, for a full region table.
+#
+# The default therefore follows the PE count rather than being a constant
+# somebody has to remember to change with it. Still a cache variable, so a
+# firmware build that knows its map can set it lower and get the RAM back.
+if(EMU_FRONTEND_G4MH AND G4MH_PE_COUNT GREATER 1)
+    math(EXPR _regions_default "16 + 4 * ${G4MH_PE_COUNT}")
+else()
+    set(_regions_default 16)
+endif()
+set(EMU_MAX_REGIONS "${_regions_default}" CACHE STRING "Bus region table size")
 
 # How much of the U2B6's memory map this build actually backs.
 #

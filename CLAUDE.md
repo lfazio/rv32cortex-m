@@ -1312,6 +1312,31 @@ session, and every one of them recurred:
   misaligned word store to a halfword register, `RESBANK` written where
   `DI` was meant, and PSW.ID masking the channel -- each of which
   vectored somewhere and fell through to the handler being watched.
+- **A test that is timing-dependent will eventually fail against a
+  correct implementation, and be believed.** G4MH's cross-core
+  reservation test assumed core 0's `SNOOZE` handed the quantum over in
+  time for core 1's store to land *between* the `LDL.W` and the `STC.W`.
+  At a four-instruction quantum core 1 got to its store first, so the
+  reservation was taken afterwards and `STC.W` correctly succeeded --
+  and the test reported the emulator broken. Two flags in the guest make
+  the order explicit, and it now runs at quanta 1, 4 and 64. **If a
+  multicore test does not pass at every quantum, it is testing the
+  scheduler.**
+- **`#if PE_COUNT > 1` tests had never run**, the default being 1 --
+  which is now the fourth instance in this file of a capability nobody
+  exercised (VLE mode, the IMR register, the RISC-V JIT off ARM, this).
+  The first run of them found three defects. **When a feature is behind
+  a count or a flag, build the other value in CI or accept that it does
+  not work.**
+- **A design note saying "raise it to 24" is not a raise.**
+  `docs/host/g4mh/multicore.md` had said exactly that about
+  `EMU_MAX_REGIONS` since the multicore design was written; nothing did
+  it, so `-DG4MH_PE_COUNT=3` failed at start-up with *"could not bring up
+  3 g4mh cores"* -- a message about cores, for a full region table, which
+  sent the investigation at the scheduler. The default is computed from
+  the PE count now and the runner prints the region count beside the
+  failure. Prose that tells a future maintainer to change a constant is a
+  constant that will not be changed.
 - **A test guarded by `#if` on a build constant can assert nothing, and
   the run still says it passed.** The MPU's out-of-range MPIDX guard is
   unreachable at 32 entries -- the field is five bits, so every value is

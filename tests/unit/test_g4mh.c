@@ -2050,6 +2050,20 @@ static void test_mc_quantum_invariance(void)
  * store from another core does not break the reservation, every lock in
  * the guest silently becomes a no-op.
  *
+ * **The interleaving is made explicit rather than assumed.** The first
+ * version relied on core 0's SNOOZE yielding at the right moment and on
+ * the two cores reaching their stores in a particular round; they do
+ * not. With a four-instruction quantum core 1 reached its store *before*
+ * core 0 executed LDL.W, so the reservation was taken after the
+ * interfering store, STC.W legitimately succeeded, and the test failed
+ * against a correct implementation.
+ *
+ * The order is now enforced by the guest: core 1 spins until core 0
+ * publishes a flag, which it does only after LDL.W. That makes the test
+ * about the reservation rather than about the scheduler, and it passes at
+ * any quantum -- which is the property test_mc_quantum_invariance asserts
+ * for the whole model and which this test was quietly violating.
+ *
  *   stsr  htcfg0, r10
  *   cmp   0, r10
  *   bne   core_other
@@ -2081,36 +2095,84 @@ static void test_mc_reservation(void)
     /* bne to the "other core" path; filled in once its offset is known. */
     const unsigned bne_at = k++;
 
-    /* --- core 0 --- */
+    /*
+     * --- core 0 ---
+     * ldl.w, then publish a flag at 0x308 so core 1 knows the
+     * reservation exists, then snooze until core 1 has stored.
+     */
     prog[k++] = W0(OP_MOVHI, 0, 11);  prog[k++] = 0x8000u;
     prog[k++] = W0(OP_MOVEA, 11, 11); prog[k++] = 0x0300u;
     prog[k++] = W0(OP_SYSTEM, 11, 0); prog[k++] = (uint16_t)((12u << 11) | SUB_LDLW);
-    prog[k++] = 0x0FE0u;              prog[k++] = SUB_HALT;   /* snooze */
+    /* flag = 1: the reservation is taken. */
+    prog[k++] = F2(OP_MOVI, 1, 15);
+    prog[k++] = W0(OP_ST_HW, 11, 15); prog[k++] = 0x0009u;   /* st.w 8[r11] */
+    /*
+     * Wait for core 1's acknowledgement at 0x30C rather than snoozing a
+     * fixed number of times: a count would be another timing assumption,
+     * which is the defect this test had.
+     */
+    const unsigned wait0 = k;
+    prog[k++] = W0(OP_LD_HW, 11, 16); prog[k++] = 0x000Du;   /* ld.w 12[r11] */
+    prog[k++] = F2(OP_CMPI5, 0, 16);
+    prog[k++] = BCOND(0x2u, 0u);      /* be -> snooze+loop; patched below */
+    const unsigned be0 = k - 1u;
     prog[k++] = F2(OP_MOVI, 7, 13);
     prog[k++] = W0(OP_SYSTEM, 11, 0); prog[k++] = (uint16_t)((13u << 11) | SUB_STCW);
     prog[k++] = W0(OP_ST_HW, 11, 13); prog[k++] = 0x0005u;    /* st.w 4[r11] */
     prog[k++] = 0x07E0u;              prog[k++] = SUB_HALT;
 
-    /* --- other cores --- */
+    /* The snooze-and-retry the wait loop branches to. */
+    const unsigned spin0 = k;
+    prog[k++] = 0x0FE0u;              prog[k++] = SUB_HALT;   /* snooze */
+    prog[k++] = BCOND(0xEu, 0u);      /* br back to wait0; patched below */
+    const unsigned br0 = k - 1u;
+
+    /*
+     * --- other cores ---
+     * Spin until core 0's flag appears, then store, then acknowledge.
+     */
     const unsigned other = k;
     prog[k++] = W0(OP_MOVHI, 0, 11);  prog[k++] = 0x8000u;
     prog[k++] = W0(OP_MOVEA, 11, 11); prog[k++] = 0x0300u;
+    const unsigned wait1 = k;
+    prog[k++] = W0(OP_LD_HW, 11, 17); prog[k++] = 0x0009u;   /* ld.w 8[r11] */
+    prog[k++] = F2(OP_CMPI5, 0, 17);
+    prog[k++] = BCOND(0x2u, 0u);      /* be -> snooze+loop; patched below */
+    const unsigned be1 = k - 1u;
     prog[k++] = F2(OP_MOVI, 9, 14);
-    prog[k++] = W0(OP_ST_HW, 11, 14); prog[k++] = 0x0001u;
+    prog[k++] = W0(OP_ST_HW, 11, 14); prog[k++] = 0x0001u;   /* the breaking store */
+    prog[k++] = F2(OP_MOVI, 1, 18);
+    prog[k++] = W0(OP_ST_HW, 11, 18); prog[k++] = 0x000Du;   /* ack at 12[r11] */
     prog[k++] = 0x07E0u;              prog[k++] = SUB_HALT;
 
-    /* Bcond displacement is from the branch itself, in bytes. */
+    const unsigned spin1 = k;
+    prog[k++] = 0x0FE0u;              prog[k++] = SUB_HALT;   /* snooze */
+    prog[k++] = BCOND(0xEu, 0u);      /* br back to wait1; patched below */
+    const unsigned br1 = k - 1u;
+
+    /* Bcond displacements are from the branch itself, in bytes. */
     prog[bne_at] = BCOND(0xAu, (other - bne_at) * 2u);
+    prog[be0]    = BCOND(0x2u, (spin0 - be0) * 2u);
+    prog[br0]    = BCOND(0xEu, (uint16_t)((wait0 - br0) * 2u));
+    prog[be1]    = BCOND(0x2u, (spin1 - be1) * 2u);
+    prog[br1]    = BCOND(0xEu, (uint16_t)((wait1 - br1) * 2u));
 
-    if (!run_system(prog, k, 4u, 256u, NULL)) {
-        CHECK(false);
-        return;
+    /*
+     * Three quanta, because the whole point is that the answer must not
+     * depend on the interleaving. The old version passed at none of them.
+     */
+    static const uint32_t quanta[] = { 1u, 4u, 64u };
+
+    for (unsigned q = 0; q < sizeof quanta / sizeof quanta[0]; q++) {
+        if (!run_system(prog, k, quanta[q], 4096u, NULL)) {
+            CHECK(false);
+            return;
+        }
+        /* Core 1 got there: the word holds its value, not core 0's 7. */
+        CHECK_EQ(ram32(0x300u), 9u);
+        /* And core 0's store-conditional reported failure. */
+        CHECK_EQ(ram32(0x304u), 0u);
     }
-
-    /* Core 1 got there: the word holds its value, not core 0's 7. */
-    CHECK_EQ(ram32(0x300u), 9u);
-    /* And core 0's store-conditional reported failure. */
-    CHECK_EQ(ram32(0x304u), 0u);
 }
 
 /*

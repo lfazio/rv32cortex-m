@@ -294,8 +294,27 @@ static unsigned g_ll_held;
 
 void g4mh_ll_register(g4mh_cpu_t *c)
 {
-    if (g_core_count < G4MH_PE_COUNT) {
-        g_cores[g_core_count++] = c;
+    /*
+     * Indexed by core id, not appended.
+     *
+     * Appending is only correct if this is called exactly once per core
+     * for the life of the program, and it is not: every emu_system_open
+     * re-inits every core, and a reload does it again. The table filled
+     * with whatever registered first -- including the same core several
+     * times over, since most callers open core 0 alone -- and once
+     * g_core_count reached G4MH_PE_COUNT every later registration was
+     * silently dropped. A core that registered after that point was
+     * invisible to g4mh_ll_break, so a store from it broke nobody's
+     * reservation and every LL/SC in the guest quietly succeeded.
+     *
+     * By index it is idempotent, which is what a function called once
+     * per core per open has to be.
+     */
+    if (c->coreid < G4MH_PE_COUNT) {
+        g_cores[c->coreid] = c;
+        if (c->coreid >= g_core_count) {
+            g_core_count = c->coreid + 1u;
+        }
     }
 }
 
