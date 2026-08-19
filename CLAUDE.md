@@ -1251,9 +1251,13 @@ session, and every one of them recurred:
   `start_guest()` clears RAM beyond the image -- deliberately, so one
   test cannot pass on state another wrote. Both halves go to the flash
   arena now, back to back, which also makes an uploaded image identical
-  in shape to the baked-in one. Two of the guests in the tree have an
+  in shape to the baked-in one. Most of the guests in the tree have an
   empty `.rw`, so the obvious thing to test an upload with cannot see
-  this: use `hello`, whose four bytes of `.data` are the whole test.
+  this. **`coremark` is currently the only one that can** -- 24 bytes --
+  and `hello`, which this entry used to name for its four bytes of
+  `.data`, has none any more. Check `wc -c` on the `.rw` half before
+  trusting an upload test; a guest with an empty one exercises the rom
+  path twice and the bug not at all.
 - **The gdb stub debugs the guest, and its split is the same one the
   tree already uses.** `src/emu/emu_gdb.c` is the RSP protocol with no
   ISA in it; a frontend supplies one `emu_gdb_target_t` saying how many
