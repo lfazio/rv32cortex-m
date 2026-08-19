@@ -663,6 +663,37 @@ session, and every one of them recurred:
   It also caught `MCOUNTENABLE_EN` still declared all-false from when
   `mcounteren` was hardwired zero for want of a lower privilege level --
   true when written, and not since U-mode.
+- **A prose description of a mechanism is not the mechanism, and a flag
+  nothing reads is the marker of a missing one.** The Thumb-2 JIT writes
+  instructions as data and branches to them, which on an M7 needs a
+  clean-to-PoU and an I-cache invalidate by address. `emu_jit_ops_t.sync`
+  exists for exactly that and the framework calls it after every
+  translation -- and the IR backend set it to **NULL for both hosts**,
+  carrying a comment that justified it for x86-64, whose caches *are*
+  coherent with instruction fetch. True where it was written, false where
+  the macro was later shared with Thumb-2. Fifth thing the framework port
+  dropped.
+
+  Two documents described the maintenance as though it were there, and
+  `RV_ARM_HAS_CACHES` was still defined by the F746's CMakeLists and
+  defaulted in `rv_config.h` -- **read by nothing**, because the
+  hand-written translator that read it had been deleted. Grep for the
+  *readers* of a flag; this file already says that about struct fields
+  and it is the same rule.
+
+  It never failed a test, and could not have: the stale I-line only
+  exists once the code buffer is **reused**, so a short run is healthy by
+  construction. 296/296 on hardware proved nothing about it.
+
+  The fix splits along the line the deleted flag's own comment named: the
+  barriers are a property of the *host* and live in `t2_sync_code`, while
+  whether there are caches to maintain is a property of the **platform**
+  -- `-mcpu=cortex-m4` and `-mcpu=cortex-m7` both define
+  `__ARM_ARCH_7EM__`, so nothing in the compiler flags can decide it.
+  `board_sync_icache` is weak and a no-op; the F746 overrides it. Check
+  the *disassembly* of both images, not the source: the F746 emits
+  DCCMVAU then ICIMVAU looping by the 32-byte line, and the F446 emits
+  `dsb; isb; bx lr` with the weak default vanished.
 - **Porting to a Cortex-M7 is mostly about the two things the M4 does not
   have: caches and a DWT lock.** The JIT writes instructions as data and
   branches to them, which needs a real clean-to-PoU and I-cache invalidate
