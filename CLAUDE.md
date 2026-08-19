@@ -681,13 +681,26 @@ session, and every one of them recurred:
   *readers* of a flag; this file already says that about struct fields
   and it is the same rule.
 
-  **It has not been shown to fail, and I claimed it would.** The A/B is
-  the point of this entry: CoreMark on the F746 with `.sync` back at
-  `NULL` -- 4801 translations, 4793 evictions, 552 compactions, so the
-  12 KB buffer recycled about six hundred times -- came out *identical*
-  to the fixed build, same four CRCs, same 518,206 retired, no trap. The
-  maintenance is kept because the architecture requires it and it costs
-  nothing measurable, **not** because a failure was reproduced.
+  **It has not been shown to fail, and I claimed it would.** CoreMark on
+  the F746 with `.sync` back at `NULL`, at a length CoreMark calls valid
+  -- 25 iterations, 12 seconds, **55,452 translations into 12 KB with
+  55,441 evictions**, 1.18M block entries -- came out *identical* to the
+  fixed build: same `crcfinal 0xa69a`, same "Correct operation
+  validated", same 6,270,382 retired, no trap. The maintenance is kept
+  because the architecture requires it and costs nothing measurable,
+  **not** because a failure was reproduced.
+
+  And the first attempt at that A/B was worthless and was quoted anyway.
+  It ran the default 2 iterations, which CoreMark rejects outright --
+  *"Must execute for at least 10 secs for a valid result"* -- and printed
+  "Errors detected", which reads as a miscompile and is not: the x86-64
+  host prints it too on the same ELF, because it is the iteration count
+  and not the answer. `time_in_secs` returned 0 for the same reason,
+  976,788 ticks over `EE_TICKS_PER_SEC` 1e6 truncating to zero. **A
+  benchmark that declares its own result invalid is not evidence in
+  either direction**; read the run before drawing from it. Raising
+  `COREMARK_ITERATIONS` to 25 is what made it a measurement -- and, being
+  twelve times longer, a far better test of the thing being A/B'd.
 
   Why it does not fire is unestablished; the plausible reason is that a
   12 KB buffer against a 16 KB I-cache loses the stale lines to ordinary

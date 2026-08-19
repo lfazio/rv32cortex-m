@@ -99,13 +99,25 @@ read by nothing. A prose description of a mechanism is not the
 mechanism; grep for the readers.
 
 **It has not been shown to fail without the maintenance, and that was
-checked.** CoreMark on the F746 with `.sync` back at `NULL`: 4801
-translations into a 12 KB buffer, 4793 evictions, 552 compactions — the
-buffer recycled some six hundred times — and the run came out *identical*
-to the fixed one, same CRCs, same 518,206 retired, no trap. So the change
-is kept because the architecture requires it (a write to instruction
-memory needs a clean to PoU and an I-invalidate before the write can be
-executed), **not** because a failure was observed here.
+checked twice.** CoreMark on the F746 with `.sync` back at `NULL`, at a
+run length CoreMark itself calls valid — 25 iterations, 12 seconds,
+6,270,382 guest instructions, **55,452 translations into a 12 KB buffer
+with 55,441 evictions and 6,568 compactions**, 1.18M block entries —
+came out *identical* to the fixed build: same `crcfinal 0xa69a`, the same
+"Correct operation validated", the same retired count, no trap.
+
+So the change is kept because the architecture requires it (a write to
+instruction memory needs a clean to PoU and an I-invalidate before the
+write can be executed), **not** because a failure was observed here.
+
+The first attempt at this A/B used the default 2 iterations, which
+CoreMark rejects — "Must execute for at least 10 secs for a valid
+result", and `time_in_secs` returned 0 because 976,788 ticks at
+`EE_TICKS_PER_SEC` 1e6 is 0.98 rounded down. It also reported "Errors
+detected", which reads as a miscompile and is not: the x86-64 host prints
+the same thing on the same ELF. **A benchmark that declares its own run
+invalid is not evidence in either direction**, and it was quoted as
+evidence before it was read.
 
 Why it does not fire is not established. The plausible reason is that a
 12 KB buffer against a 16 KB I-cache leaves the stale lines evicted by
