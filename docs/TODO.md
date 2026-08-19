@@ -14,27 +14,39 @@ measured at.
 - [ ] Architecture a serial protocol over TCP similar to PCIe so a PC host running the emualtor can access the rh850u2b6's peripherals. This is a big task, but it would be a good demonstration of the emulator's capabilities. First over serial, then maybe over USB or rela ethernet device. This is a big task, but it would be a good demonstration of the emulator's capabilities.
 - [ ] Implement an emulated GTM device for the stm32f746zg to demonstrate the emulator's capabilities.
 - [ ] Finish the ppc emualtor with dual core support and implement a simple driver for the e200z7. This is a big task, but it would be a good demonstration of the emulator's capabilities.
-- [ ] **Port to the Nucleo-N667X0 (STM32N6).** A third platform, and the
-      first one that is not ARMv7E-M: the N6 is **Cortex-M55**, i.e.
-      Armv8.1-M with Helium. What that changes, in the order it will
-      bite:
-      - `EMU_HOST_JIT_THUMB2` currently tests
-        `__ARM_ARCH >= 7 && __thumb2__`, which an M55 satisfies — so the
-        existing emitter will be *selected* and every encoding it emits
-        is still valid. The port is therefore expected to run before it
-        is tuned, and the risk is that this hides the work rather than
-        that it fails loudly.
-      - Caches again, and differently: the M55 has L1 I- and D-cache
-        like the M7, so `board_sync_icache` needs the same override —
-        that hook now exists and is weak, so forgetting it is silent.
-        See the entry in CLAUDE.md; this is exactly the shape that has
-        already cost one session.
-      - `src/emu/` claims to build for ARMv6-M through ARMv8.1-M. The N6
-        is the first thing that would *check* that claim.
-      - Helium (MVE) is the interesting part and is **not** the port:
-        it is a second, wider emitter, and the pair-statistics histogram
-        should say whether anything in a guest can use it before a line
-        of it is written. Run `-DRV32_PAIR_STATS=ON` first.
+- [ ] **Port to the Nucleo-N657X0-Q (STM32N6, board MB1940).** A third
+      platform, and the first that is neither ARMv7E-M nor flash-based.
+      Facts established from RM0486, PM0273 and UM3417 in `docs/st/stm32n6/`:
+
+      - **Cortex-M55**, Armv8.1-M with Helium. `EMU_HOST_JIT_THUMB2` tests
+        `__ARM_ARCH >= 7 && __thumb2__`, which an M55 satisfies, so the
+        existing emitter is *selected* and every encoding it emits stays
+        valid. The port is expected to run before it is tuned, and the
+        risk is that this hides the remaining work rather than failing
+        loudly.
+      - **No internal user flash.** The MCU is an STM32N657X0H3Q and the
+        board carries a 512-Mbit external Octo-SPI flash; it boots from
+        there or from the boot ROM. Everything this project does with
+        internal flash has no equivalent: the guest image embedded in the
+        firmware image and served as a ROM region, and the TFTP upload
+        arena in sectors 5-7.
+      - **~4.2 MB of AXISRAM**, which is what makes that easy rather than
+        hard: put the guest image, guest RAM and the JIT buffer all in
+        RAM. The F746's reason for the `.ro`/`.rw` placement split -- 140
+        KiB of 345 saved by serving read-only guest bytes from flash --
+        does not apply, so the N6 can map the whole image writable and
+        skip it. The split is only an optimisation now that the guest
+        initialises its own `.data`.
+      - Caches again: the M55 has L1 I- and D-cache like the M7, so
+        `board_sync_icache` needs the same override. That hook is weak,
+        so forgetting it is silent.
+      - `src/emu/` claims to build for ARMv6-M through ARMv8.1-M. This is
+        the first thing that would *check* that claim.
+      - Helium (MVE) is **not** the port: it is a second, wider emitter.
+        Run `-DRV32_PAIR_STATS=ON` first and let the histogram say whether
+        any guest can use it, the way the pair stats answered the fusion
+        question and the FP histogram answered the lowering one.
+
       Add a `f746`-style row to `scripts/build-matrix.sh` with the port,
       not after it.
 
