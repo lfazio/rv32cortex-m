@@ -71,6 +71,7 @@ f746-rv32-nojit|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF -DE
 f746-g4|stm32f746|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON|the contract check: G4MH-only must link
 f746-g4-x3|stm32f746|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DG4MH_PE_COUNT=3 -DG4MH_CRAM_KIB=64 -DG4MH_LRAM_KIB=16|3 PEs of .bss on a 320 KB part -- see the sizing note
 f746-nonet|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=OFF|**the other value**: serial console, no lwIP
+f746-slip|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON -DEMU_NET_LINK=slip|**the other link**: SLIP, now that PPP is the default
 f446-rv32|stm32f446|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF|the M4: no caches, no DWT lock
 '
 

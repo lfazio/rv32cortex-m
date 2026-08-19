@@ -194,6 +194,72 @@
 #define LWIP_STATS                  0
 #define LWIP_STATS_DISPLAY          0
 
+/* ------------------------------------------------------------------ */
+/* PPP over serial                                                     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The link layer, chosen by EMU_NET_LINK. Everything below is off unless
+ * PPP is the one selected, so a SLIP build is byte-identical to what it
+ * was.
+ *
+ * **Turn off far more than is turned on.** lwIP's PPP carries the whole
+ * of the protocol family -- CHAP, MS-CHAP, EAP, MPPE, CCP, VJ header
+ * compression, IPv6CP, dial-up scripting -- and every one of those is
+ * RAM this part spends on the guest, which is already at 99.99% of the
+ * 320 KiB. What is left is the minimum that brings a link up: LCP to
+ * agree the line works, IPCP to agree the addresses, and nothing else.
+ *
+ * VJ compression is the one worth naming, because leaving it on is
+ * tempting at 921600: it costs 16 TCP state slots in .bss and buys
+ * nothing here, since the traffic is telnet keystrokes and TFTP blocks
+ * rather than long-lived bulk streams with compressible headers.
+ */
+#ifndef EMU_NET_LINK_PPP
+#define EMU_NET_LINK_PPP            0
+#endif
+
+#if EMU_NET_LINK_PPP
+
+#define PPP_SUPPORT                 1
+#define PPPOS_SUPPORT               1
+#define PPP_IPV4_SUPPORT            1
+#define PPP_IPV6_SUPPORT            0
+
+/* No authentication: the peer is a cable, not a network. */
+#define PAP_SUPPORT                 0
+#define CHAP_SUPPORT                0
+#define MSCHAP_SUPPORT              0
+#define EAP_SUPPORT                 0
+#define MPPE_SUPPORT                0
+#define CCP_SUPPORT                 0
+#define VJ_SUPPORT                  0
+
+/* No modem to dial and no session to negotiate over Ethernet. */
+#define PPPOE_SUPPORT               0
+#define PPPOL2TP_SUPPORT            0
+#define PPP_NOTIFY_PHASE            1     /* the status callback needs it */
+
+/*
+ * One interface, and no more: PPP_NUM_TIMEOUTS_PER_PCB is multiplied by
+ * this to size the timer pool, and the default of 0 would compile the
+ * timers out from under LCP.
+ */
+#define MEMP_NUM_PPP_PCB            1
+#define MEMP_NUM_PPPOS_INTERFACES   1
+
+/*
+ * lwIP registers PPP's timeouts through the same pool the TFTP server
+ * uses, and running that pool to the edge is what makes a leak fatal --
+ * this port already learned that when starting TFTP overflowed a pool
+ * sized only for lwIP's own timers.
+ */
+#undef  MEMP_NUM_SYS_TIMEOUT
+#define MEMP_NUM_SYS_TIMEOUT \
+    (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 4 + PPP_NUM_TIMEOUTS_PER_PCB)
+
+#endif /* EMU_NET_LINK_PPP */
+
 /*
  * Checked at compile time rather than trusted: this port supplies no
  * sys_arch.c, so anything that pulled in the threading API would fail to

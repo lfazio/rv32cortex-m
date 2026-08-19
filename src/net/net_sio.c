@@ -69,7 +69,17 @@ sio_fd_t sio_open(u8_t devnum)
  * Hence the flag: toggle on the END that closes a frame with something
  * in it, and ignore the one that opens it.
  */
-#define SLIP_END 0xC0u
+/*
+ * The byte that ends a frame, for the activity LED only. SLIP's is 0xC0
+ * and PPP's is 0x7E -- counting the wrong one does not break the link,
+ * it makes the LED count nothing, which is the kind of wrong that gets
+ * believed.
+ */
+#if EMU_NET_LINK_PPP
+#define LINK_FRAME_END 0x7Eu
+#else
+#define LINK_FRAME_END 0xC0u
+#endif
 
 void sio_send(u8_t c, sio_fd_t fd)
 {
@@ -77,7 +87,7 @@ void sio_send(u8_t c, sio_fd_t fd)
 
     LWIP_UNUSED_ARG(fd);
 
-    if (c != SLIP_END) {
+    if (c != LINK_FRAME_END) {
         pending = true;
     } else if (pending) {
         pending = false;
@@ -100,7 +110,7 @@ u32_t sio_tryread(sio_fd_t fd, u8_t *data, u32_t len)
         if (c < 0) {
             break;
         }
-        if ((u8_t)c != SLIP_END) {
+        if ((u8_t)c != LINK_FRAME_END) {
             pending = true;
         } else if (pending) {
             pending = false;

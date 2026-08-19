@@ -16,7 +16,13 @@
 #include "lwip/ip_addr.h"
 #include "lwip/netif.h"
 #include "lwip/timeouts.h"
+#if EMU_NET_LINK_PPP
+#include "lwip/sio.h"
+#include "netif/ppp/pppos.h"
+#include "netif/ppp/ppp.h"
+#else
 #include "netif/slipif.h"
+#endif
 
 #include "board.h"
 
@@ -41,6 +47,58 @@
 #endif
 
 static struct netif g_slip;
+static bool g_link_up;
+
+#if EMU_NET_LINK_PPP
+static ppp_pcb *g_ppp;
+static sio_fd_t g_sio;
+
+/*
+ * PPP hands bytes back rather than taking the sio interface: pppos_output
+ * is a callback, so the stack never learns what a UART is. Returning
+ * short would make pppos drop the frame, and board_console_putc blocks
+ * until the byte is gone, so the whole buffer always goes.
+ */
+static u32_t ppp_output(ppp_pcb *pcb, const void *data, u32_t len, void *ctx)
+{
+    const uint8_t *const p = (const uint8_t *)data;
+
+    (void)pcb;
+    (void)ctx;
+    for (u32_t i = 0; i < len; i++) {
+        sio_send(p[i], g_sio);
+    }
+    return len;
+}
+
+/*
+ * Phase changes, and the reason this is not optional.
+ *
+ * A SLIP link has no state: the addresses are compiled in on both ends
+ * and frames either arrive or do not. PPP negotiates, so the interface
+ * is *not usable* until IPCP has finished, and lwIP will accept and
+ * silently drop everything queued before that. Bringing telnet and TFTP
+ * up on this callback rather than at init is what makes the difference
+ * between "the link came up" and "the link exists".
+ *
+ * PPPERR_NONE means connected. Anything else has torn the session down,
+ * and ppp_connect re-arms it -- a serial line has no carrier, so nothing
+ * else will ever try again.
+ */
+static void ppp_status(ppp_pcb *pcb, int err, void *ctx)
+{
+    (void)pcb;
+    (void)ctx;
+
+    if (err == PPPERR_NONE) {
+        g_link_up = true;
+        return;
+    }
+    g_link_up = false;
+    /* 0 = connect immediately; there is no modem to wait for. */
+    ppp_connect(g_ppp, 0);
+}
+#endif /* EMU_NET_LINK_PPP */
 static bool         g_active;
 
 /* ------------------------------------------------------------------ */
@@ -76,6 +134,26 @@ u32_t sys_now(void)
     g_cycle_rem = delta % per_ms;
     return g_ms;
 }
+
+#if EMU_NET_LINK_PPP
+/*
+ * PPP's magic-number generator wants a free-running tick, and NO_SYS
+ * ports do not get one for free -- lwIP declares sys_jiffies() and
+ * supplies it only with an OS.
+ *
+ * It is *not* sys_now(): that one advances the millisecond counter as a
+ * side effect of being called, which is fine for a timer wheel polled
+ * once per guest slice and wrong for something magic.c may call twice in
+ * a row. This reads the cycle counter and nothing else, which is also
+ * the stronger source -- magic numbers exist to make a replayed frame
+ * from a previous session detectable, and a millisecond count that
+ * starts at zero every reset cannot do that.
+ */
+u32_t sys_jiffies(void)
+{
+    return (u32_t)board_cycles();
+}
+#endif
 
 uint32_t emu_net_rand(void)
 {
@@ -146,6 +224,46 @@ bool emu_net_init(void)
      * but netif_input is the documented entry point and is what keeps
      * the loopback and IPv6 paths correct if either is ever turned on.
      */
+#if EMU_NET_LINK_PPP
+    /*
+     * PPP owns the netif, so the addresses are *not* set here: IPCP
+     * negotiates them and writes them in when it completes. What the
+     * compiled-in values become is the address this end asks for, which
+     * ppp_set_ipcp_ourip states below -- so the two ends still agree
+     * without the host having to be told, which is the point of PPP over
+     * SLIP.
+     */
+    /*
+     * pppos_create does not open the serial device -- output is the
+     * callback above and input is pushed in -- so the receive interrupt
+     * has to be armed here. slipif_init did it for the SLIP build.
+     */
+    g_sio = sio_open(0u);
+    if (g_sio == NULL) {
+        return false;
+    }
+
+    g_ppp = pppos_create(&g_slip, ppp_output, ppp_status, NULL);
+    if (g_ppp == NULL) {
+        return false;
+    }
+
+    ppp_set_ipcp_ouraddr(g_ppp, &addr);
+    ppp_set_ipcp_hisaddr(g_ppp, &peer);
+    (void)mask;                 /* a point-to-point link has no netmask */
+
+    /*
+     * Take the default route and *keep* it: without this the peer's
+     * route replaces ours when IPCP completes, which is right for a
+     * dial-up client and wrong for a board whose only link this is.
+     */
+    ppp_set_default(g_ppp);
+    /* No ppp_set_usepeerdns: it is behind LWIP_DNS, which is off. */
+
+    if (ppp_connect(g_ppp, 0) != ERR_OK) {
+        return false;
+    }
+#else
     if (netif_add(&g_slip, &addr, &mask, &peer,
                   (void *)0, slipif_init, netif_input) == NULL) {
         return false;
@@ -159,6 +277,8 @@ bool emu_net_init(void)
      * everything queued for output.
      */
     netif_set_link_up(&g_slip);
+    g_link_up = true;
+#endif
 
     if (!emu_net_telnet_init()) {
         return false;
@@ -186,7 +306,23 @@ void emu_net_poll(void)
      * it is 2 KiB deep and the wire fills it in 22 ms -- so it happens
      * every call.
      */
+#if EMU_NET_LINK_PPP
+    /*
+     * pppos has no poll of its own: it is fed. Draining the ring here is
+     * the same requirement SLIP had -- 2 KiB deep, filled by the wire in
+     * 22 ms -- and pppos_input does the unframing and the FCS.
+     */
+    {
+        u8_t buf[128];
+        u32_t n;
+
+        while ((n = sio_tryread(g_sio, buf, (u32_t)sizeof(buf))) != 0u) {
+            pppos_input(g_ppp, buf, (int)n);
+        }
+    }
+#else
     slipif_poll(&g_slip);
+#endif
     emu_net_telnet_poll();
 
     /*

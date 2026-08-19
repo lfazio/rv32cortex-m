@@ -126,11 +126,32 @@ target_link_libraries(emu-stm32f746 PRIVATE emucore stm32cube)
 #     fatal_halt must not mask interrupts.
 #
 # Build with -DEMU_NET=OFF to get the serial console back.
-option(EMU_NET "SLIP/TFTP/telnet/gdb transport over the console UART" ON)
+option(EMU_NET "IP/TFTP/telnet/gdb transport over the console UART" ON)
+
+#
+# Which link layer carries it.
+#
+# **PPP is the default and SLIP is kept buildable**, because the two
+# differ in what the *host* end needs rather than in what the board does:
+# SLIP is a framing rule and scripts/slip-tun.py implements it in thirty
+# lines over a TUN device, needing no privilege after a one-time setup;
+# PPP is a negotiation (LCP, then IPCP) and the host end is pppd, which
+# wants root every session. That was the exact thing slip-tun.py was
+# written to escape, so the choice is a real one and not a migration.
+#
+# What PPP buys is that both ends *agree* -- addresses are negotiated
+# rather than compiled in on one side and configured on the other, a
+# dropped link is detected instead of silently swallowing frames, and
+# any host with pppd can talk to the board without a bespoke script.
+#
+set(EMU_NET_LINK "ppp" CACHE STRING "Serial link layer: ppp or slip")
+set_property(CACHE EMU_NET_LINK PROPERTY STRINGS ppp slip)
 
 if(EMU_NET)
     include(${CMAKE_SOURCE_DIR}/cmake/lwip.cmake)
 
+    # EMU_NET_LINK_PPP comes from the lwip target, PUBLIC, so that the
+    # stack and this firmware cannot disagree about the framing.
     target_sources(emu-stm32f746 PRIVATE
         "${CMAKE_SOURCE_DIR}/src/net/net.c"
         "${CMAKE_SOURCE_DIR}/src/net/net_sio.c"
