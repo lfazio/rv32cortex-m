@@ -47,6 +47,36 @@ measured at.
         any guest can use it, the way the pair stats answered the fusion
         question and the FP histogram answered the lowering one.
 
+      **From STM32CubeN6 v1.4.0** (`github.com/STMicroelectronics/STM32CubeN6`,
+      689 MB shallow; the modular repos are `cmsis-device-n6` and
+      `stm32n6xx-hal-driver` -- note **hyphens**, where F4/F7 use
+      underscores, so `_cube_declare` needs adjusting). ST's own Nucleo
+      linker scripts settle the memory map:
+
+      | image | region | address |
+      |---|---|---|
+      | FSBL (boot-ROM loaded) | AXISRAM2 | `0x34180400`, 511K |
+      | XIP application | ROM (external OSPI) | `0x70100400`, 511K |
+      | XIP application | RAM (AXISRAM) | `0x34000000`, 2048K |
+
+      The `+0x400` on every ORIGIN is the header the boot ROM requires --
+      not slack, and getting it wrong means the ROM refuses the image
+      rather than the image misbehaving.
+
+      So there are two shapes to choose between, and the choice is the
+      first design decision of the port, not a detail: an **FSBL in
+      AXISRAM** (boot ROM loads it from OSPI at reset -- simplest, 511K,
+      no XIP driver) or an **XIP application** in memory-mapped external
+      flash with 2 MB of RAM beside it. The FSBL shape is the closer
+      analogue of what the F746 does and is where to start; the guest
+      image, guest RAM and JIT buffer all live in AXISRAM either way,
+      which is what makes the `.ro`/`.rw` placement split unnecessary
+      here.
+
+      Reference projects to read before writing anything:
+      `Projects/NUCLEO-N657X0-Q/Templates/Template_FSBL_XIP/` for the
+      boot flow and `Examples/UART/` for the console.
+
       Add a `f746`-style row to `scripts/build-matrix.sh` with the port,
       not after it.
 
