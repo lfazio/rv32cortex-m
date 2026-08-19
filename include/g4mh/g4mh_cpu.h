@@ -328,46 +328,12 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
 /* ------------------------------------------------------------------ */
 
 /*
- * The threaded interpreter, and the IR JIT where the host has a backend
- * for it. g4mh_frontend.c prefers the JIT, which is right for firmware:
- * there it is a speed choice and the backend falls back per instruction.
- *
- * On a host it is a *coverage* choice and the caller must be able to say
- * which it wants -- see the same note in rv32_frontend.c. It matters more
- * here than there: G4MH has no reference model, so the interpreter is the
- * only thing that defines what an answer should be, and a run that
- * silently translated cannot be compared against one that did not.
+ * The backends, g4mh_run, g4mh_invalidate and g4mh_step live in
+ * g4mh_backend.h -- the counterpart of rv32/rv_backend.h. They were here,
+ * which made this file about architectural state *and* about execution
+ * engines, and left the two frontends asymmetric in a way that is exactly
+ * where they drift apart.
  */
-extern const emu_backend_t g4mh_backend_interp;
-#if EMU_HAVE_JIT
-extern const emu_backend_t g4mh_backend_jit;
-#endif
-extern const emu_backend_t *g4mh_backend;
-
-/*
- * Discard translations covering [addr, addr+len).
- *
- * This is what SYNCI and the CACHE instruction mean to a translating
- * backend, and the *only* thing they mean to this model: there is no
- * cache here to invalidate, but there is a cache of translated blocks,
- * and a guest that writes instructions and then synchronises is telling
- * us that cache is stale. Without it the JIT keeps running the code the
- * guest replaced -- proven, not assumed, by
- * test_synci_discards_translations, which the interpreter passes and the
- * JIT failed.
- *
- * The RV32 side has drawn the same line since it was written: FENCE is a
- * no-op here because a single-threaded execution model already gives the
- * guest a total order, while FENCE.I is not, because it is about code.
- */
-static inline void g4mh_invalidate(g4mh_cpu_t *c, uint32_t addr, uint32_t len)
-{
-    if (g4mh_backend->invalidate != NULL) {
-        g4mh_backend->invalidate((emu_cpu_t *)c, addr, len);
-    }
-}
-
-emu_run_reason_t g4mh_step(g4mh_cpu_t *c);
 
 /* Advance the enabled performance channels by `insns` events. */
 void g4mh_pm_tick(g4mh_cpu_t *c, uint32_t insns);

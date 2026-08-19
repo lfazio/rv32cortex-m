@@ -28,6 +28,7 @@
  */
 
 #include "g4mh/g4mh_cpu.h"
+#include "g4mh/g4mh_backend.h"
 #include "g4mh/g4mh_decode.h"
 #include "g4mh/g4mh_intc.h"
 

@@ -34,6 +34,7 @@
 #if EMU_GUEST_ARCH_G4MH
 /* Likewise, so that --jit and its absence both mean something here. */
 #  include "g4mh/g4mh_cpu.h"
+#  include "g4mh/g4mh_backend.h"
 #endif
 
 /*

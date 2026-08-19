@@ -31,6 +31,7 @@
 #include "g4mh/g4mh_config.h"
 #include "g4mh/g4mh_types.h"
 #include "g4mh/g4mh_cpu.h"
+#include "g4mh/g4mh_backend.h"
 #include "g4mh/g4mh_disasm.h"
 #include "g4mh/g4mh_boot.h"
 #include "g4mh/g4mh_intc.h"
