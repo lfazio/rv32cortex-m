@@ -60,13 +60,35 @@ set(CMAKE_C_FLAGS_INIT   "${_arch} -Os -ffunction-sections -fdata-sections")
 set(CMAKE_CXX_FLAGS_INIT "${_arch} -Os -ffunction-sections -fdata-sections")
 set(CMAKE_ASM_FLAGS_INIT "${_arch}")
 
-# No --specs=nano.specs/nosys.specs here on purpose: those ship with ARM's
-# and ST's toolchain distributions but not with Debian's arm-none-eabi
-# packaging, and requiring them makes the build non-portable. This firmware
-# calls nothing that needs a syscall backend -- the only libc symbols it
-# pulls in are __libc_init_array (from ST's startup) plus memcpy/memset --
-# so the default link works everywhere.
-set(CMAKE_EXE_LINKER_FLAGS_INIT "${_arch} -Wl,--gc-sections")
+#
+# picolibc, and what that costs.
+#
+# Not nano.specs/nosys.specs: those ship with ARM's and ST's toolchain
+# distributions and *not* with Debian's arm-none-eabi packaging, which is
+# why this file avoided specs files entirely for a long time. picolibc
+# has the mirror-image property -- Debian packages it as
+# picolibc-arm-none-eabi, other distributions may not -- so this trades
+# one dependency for another rather than removing one, and that is worth
+# knowing before it is discovered at someone else's build.
+#
+# What it buys is `printf`. The firmware's diagnostics were built from
+# hand-rolled console_puts/console_putu/console_puthex, 130 call sites in
+# the F746 runner alone, which is why adding one field to a stats line
+# cost three calls.
+#
+# **It is bigger, not smaller**, contrary to the usual reason for
+# reaching for picolibc: 140,188 bytes of text against 146,956, measured
+# before anything called printf, so that 6.7 KB is its crt0 and library
+# glue. That is affordable on a 1 MB part and is a real cost on a smaller
+# one.
+#
+# It does *not* change how the firmware boots. picolibc's specs sets the
+# ELF entry point to its own crt0, and the ELF entry is not how a
+# Cortex-M starts: the core reads the initial SP and PC out of the vector
+# table, which still points at ST's Reset_Handler. Both images have
+# byte-identical reset vectors -- SP 0x20050000, PC 0x08012C01 -- and
+# that was checked rather than assumed.
+set(CMAKE_EXE_LINKER_FLAGS_INIT "${_arch} -Wl,--gc-sections --specs=picolibc.specs")
 
 # Only look for target artefacts in the sysroot, but keep host programs
 # (the RISC-V compiler that builds guest images) findable.

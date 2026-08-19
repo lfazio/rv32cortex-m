@@ -287,10 +287,30 @@ endif()
 # is busy". Holding reset while the probe attaches removes the race
 # entirely. It costs nothing when the board is idle, so it is the
 # default rather than a flag to remember after the failure.
+#
+# **Name the probe when there is more than one.** probe-rs refuses to
+# guess and exits non-zero listing what it found, which the build then
+# reports as a make error several lines below the useful part -- and a
+# failed flash leaves the *previous* firmware running, so the next test
+# exercises the old image while looking like it exercised the new one.
+#
+# EMU_PROBE takes what `probe-rs list` prints in its VID:PID:serial
+# column. Empty is right for a single-probe machine and stays the
+# default, because requiring it there would be a flag to remember for no
+# reason.
+#
+set(EMU_PROBE "" CACHE STRING "probe-rs --probe selector (VID:PID:serial)")
+if(EMU_PROBE)
+    set(_probe_arg --probe ${EMU_PROBE})
+else()
+    set(_probe_arg)
+endif()
+
 add_custom_target(flash
     COMMAND probe-rs download --chip STM32F746ZGTx --connect-under-reset
-            $<TARGET_FILE:emu-stm32f746>
+            ${_probe_arg} $<TARGET_FILE:emu-stm32f746>
     COMMAND probe-rs reset --chip STM32F746ZGTx --connect-under-reset
+            ${_probe_arg}
     DEPENDS emu-stm32f746
     USES_TERMINAL
     COMMENT "Flashing the Nucleo-F746ZG over ST-LINK")
