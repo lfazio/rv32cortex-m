@@ -118,14 +118,6 @@ void emu_console_putc(uint8_t c)
 
 
 /* Transport hooks for the guest's virtual UART. */
-static void guest_uart_tx(void *ctx, uint8_t c)
-{
-    (void)ctx;
-    if (c == '\n') {
-        console_putc('\r');
-    }
-    console_putc(c);
-}
 
 static int guest_uart_rx(void *ctx)
 {
@@ -148,38 +140,13 @@ static int guest_uart_rx(void *ctx)
  * The frontend has already unpacked its own calling convention into
  * emu_syscall_t, so nothing here knows which registers those arrived in.
  */
-static uint32_t g_exit_code;
-static bool     g_exited;
+static emu_guest_exit_t g_exit;
 
-static bool guest_syscall(emu_cpu_t *cpu, emu_syscall_t *sc, void *user)
-{
-    (void)user;
+/* What emu_emu_guest_syscall needs from this board. */
+static emu_syscall_ctx_t g_sc_ctx = {
+    .bus = &g_bus, .core = &g_core, .exit = &g_exit,
+};
 
-    switch (sc->nr) {
-    case 64: {
-        const uint32_t buf = sc->arg[1];
-        const uint32_t len = sc->arg[2];
-        for (uint32_t i = 0; i < len; i++) {
-            uint32_t byte;
-            if (emu_bus_read(&g_bus, buf + i, 1u, &byte) != EMU_FAULT_NONE) {
-                break;
-            }
-            guest_uart_tx(NULL, (uint8_t)byte);
-        }
-        sc->ret = len;
-        return true;
-    }
-
-    case 93:
-        g_exit_code = sc->arg[0];
-        g_exited = true;
-        g_core.ops->halt(cpu);
-        return true;
-
-    default:
-        return false;
-    }
-}
 
 /* ------------------------------------------------------------------ */
 /* Cache maintenance                                                   */
@@ -455,8 +422,8 @@ int main(void)
 
     ops->set_unmask_hook(g_core.cpu, irq_unmask_line, NULL);
     bridged_irqs_init();
-    emu_uart_init(&g_uart, guest_uart_tx, guest_uart_rx, NULL);
-    ops->set_syscall(g_core.cpu, guest_syscall, NULL);
+    emu_uart_init(&g_uart, emu_console_uart_tx, guest_uart_rx, NULL);
+    ops->set_syscall(g_core.cpu, emu_guest_syscall, &g_sc_ctx);
     ops->set_cache(g_core.cpu, &emu_arm_cache_ops);
 
     /*

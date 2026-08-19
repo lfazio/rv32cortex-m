@@ -99,7 +99,8 @@ add_executable(emu-stm32f746
     guest_image.S
 
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_console.c"
-    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_arm_cache.c")
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_arm_cache.c"
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_syscall.c")
 
 # The shared runner pieces -- see src/platform/common/emu_console.h.
 target_include_directories(emu-stm32f746 PRIVATE

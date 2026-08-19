@@ -24,6 +24,8 @@
 
 #include "emu/emu_cpu.h"
 
+#include <stdbool.h>
+
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -68,6 +70,34 @@ void emu_console_puthex(uint32_t v);
  * again.
  */
 void emu_report_state(emu_cpu_t *cpu, const emu_cpu_ops_t *ops);
+
+/* A byte of guest output: LF becomes CRLF, as for emu_console_puts. */
+void emu_console_putb(uint8_t c);
+
+/* The same, shaped for emu_uart_init's transmit callback. */
+void emu_console_uart_tx(void *ctx, uint8_t c);
+
+/*
+ * What the shared syscall handler needs from the board.
+ *
+ * The bus to read a guest buffer through, the core to halt, and where to
+ * record the exit status -- the platform owns all three and passes this
+ * as the `user` pointer emu_syscall_fn already carries.
+ */
+typedef struct emu_guest_exit {
+    uint32_t code;
+    bool     exited;
+} emu_guest_exit_t;
+
+typedef struct emu_syscall_ctx {
+    struct emu_bus   *bus;
+    struct emu_core  *core;
+    emu_guest_exit_t *exit;
+} emu_syscall_ctx_t;
+
+/* newlib's write(64) and exit(93); anything else is declined so the
+ * frontend takes its architectural trap. */
+bool emu_guest_syscall(emu_cpu_t *cpu, emu_syscall_t *sc, void *user);
 
 /*
  * Guest cache maintenance onto this part's, in emu_arm_cache.c. Handed

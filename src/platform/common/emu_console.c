@@ -64,6 +64,26 @@ void emu_console_putu(uint32_t v)
     }
 }
 
+void emu_console_putb(uint8_t c)
+{
+    if (c == '\n') {
+        emu_console_putc('\r');
+    }
+    emu_console_putc(c);
+}
+
+/*
+ * The emulated NS16550's transmit side. Same byte, wrapped for the
+ * callback signature emu_uart_init wants -- the guest's console and the
+ * firmware's are one wire, which is what makes a guest's output and a
+ * panic message interleave in the order they happened.
+ */
+void emu_console_uart_tx(void *ctx, uint8_t c)
+{
+    (void)ctx;
+    emu_console_putb(c);
+}
+
 /* emu_print_fn onto the console, for the frontend's own state dump. */
 static void console_out(void *ctx, const char *s)
 {
