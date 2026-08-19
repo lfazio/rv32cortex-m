@@ -122,10 +122,24 @@ measured at.
       | `stm32n6xx_hal_conf.h` | from the family's own template, **never a renamed F7 one** -- the F4/F7 accelerator-name divergence is already recorded |
       | `stm32n6xx_it.c`, `coremark_native.c` | small |
 
-      **`main.c` being 57 KB and per-platform is the thing to look at
-      first.** The F446 and F746 already share its shape; a third copy
-      would make three places to fix a run-loop bug. Whether it can be
-      shared is a better first question than how to clock the N6.
+      **Share `main.c` before writing a third one.** Measured rather
+      than assumed: F446 724 lines, F746 1546, host 897. The F746's
+      extra thousand is almost entirely the network and upload
+      machinery -- `emu_net_image_begin/data/end`, `gdb_flash_*`,
+      `start_guest`, `take_uploaded_image`, `console_getc` -- which is
+      already behind `#if EMU_NET`. The F446 is close to a *subset*, not
+      a variant.
+
+      So the split is: one shared runner (banner, console, stats, guest
+      state dump, run loop, the JIT diff report) plus a per-platform
+      part that is genuinely about the part. The N6 needs neither the
+      flash arena nor `gdb_flash_*`, since it has no internal flash, so
+      it would take the shared half and almost nothing else.
+
+      Do this *before* the N6, not after: the same duplication has
+      already cost this project three separate fixes to `g4mh_ir.c`'s
+      copy of the interrupt check, and a third `main.c` would be the
+      same shape with a thousand lines in it.
 
       Add a `f746`-style row to `scripts/build-matrix.sh` with the port,
       not after it.
