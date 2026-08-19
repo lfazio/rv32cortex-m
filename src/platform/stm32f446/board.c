@@ -256,3 +256,34 @@ void board_init(void)
     console_init();
     dwt_init();
 }
+
+/* ------------------------------------------------------------------ */
+/* Link activity LED                                                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * LD2, the Nucleo-F446RE's only user LED, on PA5. Both directions share
+ * it -- see the note in board.h.
+ */
+#define LED_PORT   GPIOA
+#define LED_PIN    GPIO_PIN_5
+
+void board_led_toggle(board_led_t led)
+{
+    static bool inited;
+
+    (void)led;
+
+    if (!inited) {
+        GPIO_InitTypeDef gpio = { 0 };
+
+        __HAL_RCC_GPIOA_CLK_ENABLE();
+        gpio.Pin = LED_PIN;
+        gpio.Mode = GPIO_MODE_OUTPUT_PP;
+        gpio.Pull = GPIO_NOPULL;
+        gpio.Speed = GPIO_SPEED_FREQ_LOW;
+        HAL_GPIO_Init(LED_PORT, &gpio);
+        inited = true;
+    }
+    HAL_GPIO_TogglePin(LED_PORT, LED_PIN);
+}

@@ -73,6 +73,7 @@ f746-g4-x3|stm32f746|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DG4MH_P
 f746-nonet|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=OFF|**the other value**: serial console, no lwIP
 f746-slip|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON -DEMU_NET_LINK=slip|**the other link**: SLIP, now that PPP is the default
 f446-rv32|stm32f446|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF|the M4: no caches, no DWT lock
+f446-net|stm32f446|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON|**the other value here**: the M4 with PPP, which it had no option for until the wiring moved to cmake/emu_net.cmake
 '
 
 if [ "${1:-}" = "--list" ]; then

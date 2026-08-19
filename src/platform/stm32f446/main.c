@@ -23,6 +23,10 @@
 #include "board.h"
 #include "emu_console.h"
 
+#if EMU_NET
+#  include "emu_net.h"
+#endif
+
 #include "emu/emu_cpu.h"
 #include "emu/emu_dev.h"
 #include "emu/emu_memmap.h"
@@ -105,8 +109,53 @@ static void fatal_halt(void)
 
 void emu_console_putc(uint8_t c)
 {
+#if EMU_NET
+    /*
+     * One console, two sinks. Before emu_net_init() succeeds the byte
+     * goes to the UART; after it, the UART carries IP and the console is
+     * a ring a telnet client drains. The handover is one-way.
+     */
+    if (emu_net_active()) {
+        emu_net_console_putc(c);
+        return;
+    }
+#endif
     board_console_putc(c);
 }
+
+#if EMU_NET
+/*
+ * Uploads are declined on this board.
+ *
+ * The stack's TFTP server needs somewhere to put an image, and on the
+ * F746 that is a flash arena in sectors 5-7 with an erase-and-retry
+ * recovery. This part has flash and no arena carved out of it, so the
+ * honest answer is a refusal the client can see -- an "access violation"
+ * at the far end -- rather than a partial write into whatever follows
+ * the firmware.
+ *
+ * Everything else the stack offers works: ping, the telnet console, and
+ * the gdb stub. Implementing the arena here is a self-contained addition
+ * and the reason these are functions rather than an #if.
+ */
+bool emu_net_image_begin(emu_net_image_t which)
+{
+    (void)which;
+    return false;
+}
+
+bool emu_net_image_data(emu_net_image_t which, const void *data,
+                        uint32_t len, uint32_t off)
+{
+    (void)which; (void)data; (void)len; (void)off;
+    return false;
+}
+
+void emu_net_image_end(emu_net_image_t which, uint32_t len, bool ok)
+{
+    (void)which; (void)len; (void)ok;
+}
+#endif
 
 #define console_putc   emu_console_putc
 #define console_puts   emu_console_puts
@@ -459,7 +508,22 @@ int main(void)
     console_putu(GUEST_RAM_SIZE);
     console_puts(" bytes)\nbackend ");
     console_puts(st.backend);
-    console_puts("\n\n");
+    console_puts("\n");
+
+#if EMU_NET
+    /*
+     * The handover, and the last two lines the UART ever carries as
+     * text: whether the stack started, and where to connect. After this
+     * silence on the serial port is expected and silence on the network
+     * is the fault.
+     */
+    console_printf("net    %s on this port; telnet %s 23\n",
+                   EMU_NET_LINK_PPP ? "PPP" : "SLIP", emu_net_addr_str());
+    if (!emu_net_init()) {
+        console_puts("net    failed to start; staying on the serial console\n");
+    }
+#endif
+    console_puts("\n");
 
     const uint32_t cycles_per_tick = SystemCoreClock / EMU_TIMER_HZ;
     const uint32_t start_cycles = board_cycles();
@@ -472,6 +536,15 @@ int main(void)
         const emu_run_reason_t why = emu_core_run(&g_core, EMU_RUN_SLICE,
                                                   &retired);
         retired_total += retired;
+
+#if EMU_NET
+        /*
+         * The stack advances only when called, so this is its entire
+         * schedule -- once per guest slice, which is finer than any
+         * timeout lwIP keeps.
+         */
+        emu_net_poll();
+#endif
 
         /*
          * Compared against the running total rather than a budget

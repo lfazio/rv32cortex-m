@@ -136,61 +136,10 @@ target_link_libraries(emu-stm32f746 PRIVATE emucore stm32cube)
 # Build with -DEMU_NET=OFF to get the serial console back.
 option(EMU_NET "IP/TFTP/telnet/gdb transport over the console UART" ON)
 
-#
-# Which link layer carries it.
-#
-# **PPP is the default and SLIP is kept buildable**, because the two
-# differ in what the *host* end needs rather than in what the board does:
-# SLIP is a framing rule and scripts/slip-tun.py implements it in thirty
-# lines over a TUN device, needing no privilege after a one-time setup;
-# PPP is a negotiation (LCP, then IPCP) and the host end is pppd, which
-# wants root every session. That was the exact thing slip-tun.py was
-# written to escape, so the choice is a real one and not a migration.
-#
-# What PPP buys is that both ends *agree* -- addresses are negotiated
-# rather than compiled in on one side and configured on the other, a
-# dropped link is detected instead of silently swallowing frames, and
-# any host with pppd can talk to the board without a bespoke script.
-#
-set(EMU_NET_LINK "ppp" CACHE STRING "Serial link layer: ppp or slip")
-set_property(CACHE EMU_NET_LINK PROPERTY STRINGS ppp slip)
 
 if(EMU_NET)
-    include(${CMAKE_SOURCE_DIR}/cmake/lwip.cmake)
-
-    # EMU_NET_LINK_PPP comes from the lwip target, PUBLIC, so that the
-    # stack and this firmware cannot disagree about the framing.
-    target_sources(emu-stm32f746 PRIVATE
-        "${CMAKE_SOURCE_DIR}/src/net/net.c"
-        "${CMAKE_SOURCE_DIR}/src/net/net_sio.c"
-        "${CMAKE_SOURCE_DIR}/src/net/net_telnet.c"
-        "${CMAKE_SOURCE_DIR}/src/net/net_tftp.c"
-        "${CMAKE_SOURCE_DIR}/src/net/net_gdb.c")
-    # emu_gdb.c and the frontends' register maps are already in emucore,
-    # which this links: naming them again here compiled a second copy and
-    # tied the network build to RV32, so a G4MH firmware served the wrong
-    # `g` packet layout.
-
-    # The port sources are built into the firmware, not into lwip: they
-    # reach the board through board.h, which lives in this directory, and
-    # that is the whole of their platform dependency -- which is what
-    # lets the same stack build for either Nucleo. lwip itself never
-    # includes board.h.
-    #
-    # Linking lwip PUBLIC-exports src/net (for lwipopts.h and arch/cc.h)
-    # and lwIP's own headers onto the firmware, so nothing else needs
-    # naming here.
-    target_link_libraries(emu-stm32f746 PRIVATE lwip)
-
-    set(EMU_NET_ADDR "192.168.7.2"   CACHE STRING "Board IP address")
-    set(EMU_NET_PEER "192.168.7.1"   CACHE STRING "Host IP address")
-    set(EMU_NET_MASK "255.255.255.0" CACHE STRING "Netmask")
-
-    target_compile_definitions(emu-stm32f746 PRIVATE
-        EMU_NET=1
-        EMU_NET_ADDR="${EMU_NET_ADDR}"
-        EMU_NET_PEER="${EMU_NET_PEER}"
-        EMU_NET_MASK="${EMU_NET_MASK}")
+    include(${CMAKE_SOURCE_DIR}/cmake/emu_net.cmake)
+    emu_net_attach(emu-stm32f746)
 endif()
 
 # guest_image.S pulls the binary in with .incbin.

@@ -209,3 +209,24 @@ add_custom_target(gdbserver
     COMMAND openocd -f board/st_nucleo_f4.cfg
     USES_TERMINAL
     COMMENT "Starting OpenOCD GDB server on port 3333")
+
+# ---------------------------------------------------------------------
+# Network transport
+# ---------------------------------------------------------------------
+#
+# Nothing about the stack is F7-specific -- it reaches the board through
+# board.h and this part supplies every entry point it needs, including
+# the interrupt-driven receive the wire requires. It was simply never
+# offered here, because the option lived inside the other platform's
+# CMakeLists rather than in cmake/emu_net.cmake.
+#
+# **Off by default on this board**, unlike the F746. emu_net_init() is a
+# one-way handover of the console, and this part is the one used for
+# bring-up where a serial console is worth more than a network; a board
+# whose console is worth giving away should say so itself.
+option(EMU_NET "IP/TFTP/telnet/gdb transport over the console UART" OFF)
+
+if(EMU_NET)
+    include(${CMAKE_SOURCE_DIR}/cmake/emu_net.cmake)
+    emu_net_attach(emu-stm32f446)
+endif()

@@ -62,4 +62,25 @@ uint32_t board_console_rx_overruns(void);
  */
 uint32_t board_cycles(void);
 
+/*
+ * Link activity, for the network transport.
+ *
+ * **This board has one user LED where the F746ZG has three**, so the two
+ * events share it: LD2 on PA5 toggles for a received frame and for a
+ * transmitted one alike. That loses the direction, and keeps the
+ * question the LED is actually asked -- is anything moving on the wire
+ * -- which is what makes a silent link distinguishable from a dead one
+ * without a debug probe.
+ *
+ * The enumerators exist on both boards so the stack needs no #if. A
+ * platform with no LED at all would implement the toggle as nothing,
+ * which is a worse diagnostic and still not a build problem.
+ */
+typedef enum {
+    BOARD_LED_RX,
+    BOARD_LED_TX
+} board_led_t;
+
+void board_led_toggle(board_led_t led);
+
 #endif /* RV32_BOARD_H */
