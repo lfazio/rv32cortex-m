@@ -13,6 +13,10 @@ as well as on a host.
 
 ---
 
+**Every build gate, and which combinations are checked, is in [BUILD.md](BUILD.md)** — with `scripts/build-matrix.sh` to build
+all of them. Two configurations had stopped compiling before it
+existed.
+
 ## The idea
 
 The emulator turns an ARM Cortex-M part into a RISC-V machine. The
@@ -43,7 +47,7 @@ Three axes, independent of each other:
 | axis | what it decides | selected by |
 |---|---|---|
 | platform | where it runs | `EMU_PLATFORM=host\|stm32f446\|stm32f746` |
-| frontend | what it emulates | `EMU_FRONTEND_RV32`, `EMU_FRONTEND_G4MH` |
+| frontend | what it emulates | `EMU_GUEST_ARCH_RV32`, `EMU_GUEST_ARCH_G4MH` |
 | backend | how it executes | `EMU_JIT=ON\|OFF`, `--jit` on the host runner |
 
 ---
@@ -58,7 +62,7 @@ cmake --build build/host
 ctest --test-dir build/host -L fast
 ```
 
-Add `-DEMU_FRONTEND_G4MH=ON` to compile both frontends, so the runner can
+Add `-DEMU_GUEST_ARCH_G4MH=ON` to compile both frontends, so the runner can
 pick one with `--frontend`.
 
 ### Firmware — Nucleo-F746ZG

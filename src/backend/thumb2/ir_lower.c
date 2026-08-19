@@ -37,7 +37,7 @@
 #include "emu/emu_ir.h"
 #include "emu/emu_thumb2.h"
 
-#if defined(EMU_JIT_THUMB2)
+#if defined(EMU_HOST_JIT_THUMB2)
 
 
 static uint16_t g_ntemps;
@@ -1134,4 +1134,4 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     return !emu_jit_overflowed();
 }
 
-#endif /* EMU_JIT_THUMB2 */
+#endif /* EMU_HOST_JIT_THUMB2 */

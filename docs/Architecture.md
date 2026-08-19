@@ -6,7 +6,7 @@ independent of each other:
 | axis | what it decides | selected by | values |
 |---|---|---|---|
 | **platform** | where the emulator runs | `EMU_PLATFORM` | `host`, `stm32f446` |
-| **frontend** | what it emulates | `EMU_FRONTEND_*` | `rv32`, `g4mh` |
+| **frontend** | what it emulates | `EMU_GUEST_ARCH_*` | `rv32`, `g4mh` |
 | **backend** | how it executes | per frontend | interpreter, Thumb-2 JIT |
 
 Any platform can host any frontend, and each frontend brings its own
@@ -103,9 +103,9 @@ the hot path tests against zero.
 1. `include/<isa>/` — public headers, `<isa>_` prefixed
 2. `src/frontend/<isa>/` — state, decoder, interpreter, its own devices
 3. one `emu_cpu_ops_t`, declared and listed in `src/emu/emu_cpu.c`
-4. `option(EMU_FRONTEND_<ISA> ...)` and a `target_sources` block in
+4. `option(EMU_GUEST_ARCH_<ISA> ...)` and a `target_sources` block in
    `CMakeLists.txt`
-5. tests in `tests/unit/`, guarded by `EMU_FRONTEND_<ISA>`
+5. tests in `tests/unit/`, guarded by `EMU_GUEST_ARCH_<ISA>`
 6. notes in `docs/host/<isa>/` and `docs/stm32f446/<isa>/`
 
 Nothing in `src/emu/` or `src/platform/` should need editing beyond step 3.
@@ -114,7 +114,7 @@ That is the property to check when the contract changes:
 ```sh
 cmake -B build/g4mh -DEMU_PLATFORM=stm32f446 \
       -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
-      -DEMU_FRONTEND_RV32=OFF -DEMU_FRONTEND_G4MH=ON
+      -DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON
 cmake --build build/g4mh
 ```
 
@@ -128,7 +128,7 @@ cmake -B build/host -DEMU_PLATFORM=host -DCMAKE_BUILD_TYPE=Release
 cmake --build build/host && ctest --test-dir build/host -L fast
 
 # both frontends, so the runner can pick with --frontend
-cmake -B build/both -DEMU_PLATFORM=host -DEMU_FRONTEND_G4MH=ON
+cmake -B build/both -DEMU_PLATFORM=host -DEMU_GUEST_ARCH_G4MH=ON
 
 # firmware
 cmake -B build/stm32f446 -DEMU_PLATFORM=stm32f446 \

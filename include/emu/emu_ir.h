@@ -77,7 +77,7 @@ extern "C" {
  * kept small enough on a target that the buffer is not the reason the
  * guest runs out of RAM.
  */
-#if defined(EMU_JIT_THUMB2)
+#if defined(EMU_HOST_JIT_THUMB2)
 #  define EMU_IR_MAX_INSNS  512u
 #  define EMU_IR_MAX_TEMPS  256u
 #else

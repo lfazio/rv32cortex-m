@@ -35,18 +35,18 @@ void check_eq64(const char *file, int line, const char *expr,
 
 int main(void)
 {
-#if EMU_FRONTEND_RV32
+#if EMU_GUEST_ARCH_RV32
     test_decode();
 #endif
     test_bus();
     test_ir();
-#if EMU_FRONTEND_RV32
+#if EMU_GUEST_ARCH_RV32
     test_fpu();
 #endif
-#if EMU_FRONTEND_G4MH
+#if EMU_GUEST_ARCH_G4MH
     test_g4mh();
 #endif
-#if EMU_FRONTEND_PPC
+#if EMU_GUEST_ARCH_PPC
     test_ppc();
 #endif
 

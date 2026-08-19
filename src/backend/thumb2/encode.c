@@ -6,7 +6,7 @@
 #include "emu/emu_thumb2.h"
 #include "emu/emu_ir.h"
 
-#if defined(EMU_JIT_THUMB2)
+#if defined(EMU_HOST_JIT_THUMB2)
 
 void t2_emit16(uint16_t h) { emu_jit_emit16(h); }
 
@@ -421,4 +421,4 @@ void t2_mull(bool sign, uint32_t rdlo, uint32_t rdhi, uint32_t rn,
               (uint16_t)((rdlo << 12) | (rdhi << 8) | rm));
 }
 
-#endif /* EMU_JIT_THUMB2 */
+#endif /* EMU_HOST_JIT_THUMB2 */

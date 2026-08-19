@@ -33,7 +33,7 @@
 #include "emu/emu_ir.h"
 #include "emu/emu_x86_64.h"
 
-#if defined(EMU_JIT_X86_64)
+#if defined(EMU_HOST_JIT_X86_64)
 
 /*
  * Scratch registers. rbx and rbp are taken by the framework (cpu pointer
@@ -1492,4 +1492,4 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     return !emu_jit_overflowed();
 }
 
-#endif /* EMU_JIT_X86_64 */
+#endif /* EMU_HOST_JIT_X86_64 */

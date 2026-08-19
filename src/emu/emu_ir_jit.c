@@ -28,7 +28,7 @@
 
 #include <string.h>
 
-#if defined(EMU_JIT_X86_64) || defined(EMU_IR_JIT_ON_THUMB2)
+#if EMU_HAVE_JIT
 
 /*
  * One block of IR, reused across translations.
@@ -40,7 +40,7 @@
  * block.
  */
 /* The host this was built for, so the banner does not have to lie. */
-#if defined(EMU_JIT_THUMB2)
+#if defined(EMU_HOST_JIT_THUMB2)
 #  define EMU_IR_JIT_NAME "jit-ir-thumb2"
 #else
 #  define EMU_IR_JIT_NAME "jit-ir-x86-64"
@@ -279,7 +279,7 @@ const emu_backend_t sym = {                                             \
     .invalidate = prefix##_invalidate,                                  \
 }
 
-#if EMU_FRONTEND_RV32
+#if EMU_GUEST_ARCH_RV32
 #include "rv32/rv_ir.h"
 #include "rv32/rv_jit.h"
 EMU_IR_DEFINE_X86_BACKEND(rv_backend_jit, rv_ir_frontend, rv);
@@ -313,11 +313,11 @@ void rv_jit_flush(void)
 {
     emu_jit_flush();
 }
-#endif /* EMU_FRONTEND_RV32 */
+#endif /* EMU_GUEST_ARCH_RV32 */
 
-#if EMU_FRONTEND_G4MH
+#if EMU_GUEST_ARCH_G4MH
 #include "g4mh/g4mh_ir.h"
 EMU_IR_DEFINE_X86_BACKEND(g4mh_backend_jit, g4mh_ir_frontend, g4mh);
 #endif
 
-#endif /* EMU_JIT_X86_64 || EMU_IR_JIT_ON_THUMB2 */
+#endif /* EMU_HAVE_JIT */

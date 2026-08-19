@@ -80,7 +80,7 @@ typedef enum {
  * for a build with no big-endian frontend, and is one predictable branch
  * on a flag otherwise.
  */
-#if EMU_FRONTEND_PPC
+#if EMU_GUEST_ARCH_PPC
 #  define EMU_BUS_ANY_BE 1
 #else
 #  define EMU_BUS_ANY_BE 0

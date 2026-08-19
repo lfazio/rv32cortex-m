@@ -28,20 +28,58 @@
 #include "emu_cpu.h"
 
 /*
- * Which host this build can emit for.
+ * Which host this build can emit for, and whether it was asked to.
  *
- * In the emu layer rather than in a frontend's config, because a JIT is
- * now a property of the pair: the same x86-64 emitter serves RV32 and
- * G4MH. Deriving it from rv32/rv_config.h -- which is where it used to
- * live -- meant a frontend that did not include that header compiled its
- * whole JIT away and silently ran interpreted, which is exactly what
- * happened to the first G4MH build.
+ * In the emu layer rather than in a frontend's config, because a JIT is a
+ * property of the pair: the same x86-64 emitter serves RV32 and G4MH.
+ * Deriving it from rv32/rv_config.h -- where it used to live -- meant a
+ * frontend that did not include that header compiled its whole JIT away
+ * and silently ran interpreted, which is what happened to the first G4MH
+ * build.
+ *
+ * **Two questions, and this is the one place that answers both.** What
+ * the host can emit for is a property of the compiler; whether a JIT was
+ * wanted is a build option. Deriving these from the host alone -- which
+ * is what they used to do -- meant `-DEMU_JIT=OFF` still compiled the
+ * JIT sources, and on *both* hosts they then referred to types that the
+ * same option removes. Two configurations did not build and nothing
+ * said so, because nobody built them; `scripts/build-matrix.sh` exists
+ * because of it and found the second one within a minute of the first.
+ *
+ * EMU_JIT_REQUESTED comes from CMake. Defaulting it to 1 keeps a
+ * hand-driven compile of a single file working, which several of this
+ * project's own A/B checks do.
  */
-#if defined(__x86_64__) && defined(__linux__)
-#  define EMU_JIT_X86_64 1
+#ifndef EMU_JIT_REQUESTED
+#  define EMU_JIT_REQUESTED 1
 #endif
-#if defined(__ARM_ARCH) && (__ARM_ARCH >= 7) && defined(__thumb2__)
-#  define EMU_JIT_THUMB2 1
+
+#if EMU_JIT_REQUESTED
+#  if defined(__x86_64__) && defined(__linux__)
+#    define EMU_HOST_JIT_X86_64 1
+#  endif
+#  if defined(__ARM_ARCH) && (__ARM_ARCH >= 7) && defined(__thumb2__)
+#    define EMU_HOST_JIT_THUMB2 1
+#  endif
+#endif
+
+/*
+ * **Is there a JIT?** The one derived answer, so nothing has to spell out
+ * the disjunction again and get it subtly different.
+ *
+ * There used to be four more names for these two questions --
+ * `RV_JIT_X86_64`, `RV_JIT_THUMB2`, `EMU_IR_JIT_ON_THUMB2` and
+ * `G4MH_HAVE_JIT` -- each defined in a different header from a slightly
+ * different premise, and they disagreed: two of them were keyed on the
+ * host alone, so `-DEMU_JIT=OFF` left them true and the build referred to
+ * a backend nothing compiled. Two configurations did not build. See
+ * BUILD.md for the whole gate table and scripts/build-matrix.sh for the
+ * thing that now notices.
+ */
+#if defined(EMU_HOST_JIT_X86_64) || defined(EMU_HOST_JIT_THUMB2)
+#  define EMU_HAVE_JIT 1
+#else
+#  define EMU_HAVE_JIT 0
 #endif
 
 #include <stdbool.h>

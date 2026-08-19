@@ -174,7 +174,7 @@ void emu_bus_set_big_endian(emu_bus_t *bus, bool on)
     /*
      * No big-endian frontend in this build, so there is no flag and
      * nothing to do. This is not a silent failure waiting to happen:
-     * EMU_BUS_ANY_BE is derived from the same EMU_FRONTEND_PPC that
+     * EMU_BUS_ANY_BE is derived from the same EMU_GUEST_ARCH_PPC that
      * compiles the only caller that would pass true, so `on` is
      * structurally false here. If a second big-endian frontend is ever
      * added, it goes in that derivation too -- and forgetting would show

@@ -424,12 +424,20 @@ static void test_overflow_not_optimised(void)
 /* Lowering, executed                                                  */
 /* ------------------------------------------------------------------ */
 
-#if defined(EMU_JIT_X86_64)
-
-#include "emu/emu_x86_64.h"
-
+/*
+ * The stand-in guest below is **not** x86-specific and must not be
+ * guarded as if it were. It was, and that is what stopped `-DEMU_JIT=OFF`
+ * building at all: `test_fp_semantics` and `test_fp_box_reference` test
+ * the IR *interpreter*, are called unconditionally from main(), and need
+ * this type -- so a build with no JIT lost the type and kept the callers.
+ * Only the lowering tests below need the guard.
+ */
 #include <stddef.h>
-#include <sys/mman.h>
+
+
+
+
+
 
 /*
  * A stand-in guest, laid out the way a real frontend's state is: a
@@ -539,6 +547,10 @@ static const emu_ir_target_t g_fake_target = {
     .freg_offset  = fake_freg_offset,
     .fp_flags     = fake_fp_flags,
 };
+
+#if defined(EMU_HOST_JIT_X86_64)
+#include "emu/emu_x86_64.h"
+#include <sys/mman.h>
 
 #define IR_TEST_CODE_BYTES 8192u
 
@@ -794,7 +806,7 @@ static void test_lower_flags(void)
     CHECK_EQ(cpu.flags & 0x80000000u, 0x80000000u);
 }
 
-#endif /* EMU_JIT_X86_64 */
+#endif /* EMU_HOST_JIT_X86_64 */
 
 /*
  * The backend's two execution strategies, run against each other.
@@ -807,6 +819,7 @@ static void test_lower_flags(void)
  * This is the check that would have caught lzcnt-decodes-as-bsr without
  * anyone having worked out by hand what CLZ(0x00100000) should be.
  */
+#if defined(EMU_HOST_JIT_X86_64)
 static void diff_one(uint32_t seed_r1, uint32_t seed_r2)
 {
     fake_cpu_t a, b;
@@ -829,6 +842,7 @@ static void diff_one(uint32_t seed_r1, uint32_t seed_r2)
     }
     CHECK_EQ(memcmp(&a, &b, sizeof(a)), 0);
 }
+#endif /* EMU_HOST_JIT_X86_64 -- needs the lowering */
 
 /*
  * Every flag at once, on an operation that sets more than one of them.
@@ -849,6 +863,7 @@ static void diff_one(uint32_t seed_r1, uint32_t seed_r2)
  * bytes, because what is being asserted is agreement with the IR
  * interpreter, which computes the same four flags from the same operands.
  */
+#if defined(EMU_HOST_JIT_X86_64)
 static void test_lower_flags_all_four(void)
 {
     emu_ir_reset(&g_b);
@@ -878,6 +893,7 @@ static void test_lower_flags_all_four(void)
     CHECK((cpu.flags & FAKE_F_C) != 0u);        /* borrow            */
     CHECK_EQ(cpu.flags & 0x80000000u, 0x80000000u);
 }
+#endif /* EMU_HOST_JIT_X86_64 -- needs the lowering */
 
 /*
  * The sign flag is the sign of the *result*, not "signed less than".
@@ -887,6 +903,7 @@ static void test_lower_flags_all_four(void)
  * with V set, so S must be *clear* while `setl` -- SF != OF -- would say
  * set. The IR interpreter computes `d & 0x80000000` and is the reference.
  */
+#if defined(EMU_HOST_JIT_X86_64)
 static void test_lower_flags_sign_not_less_than(void)
 {
     emu_ir_reset(&g_b);
@@ -912,7 +929,9 @@ static void test_lower_flags_sign_not_less_than(void)
     CHECK((cpu.flags & FAKE_F_S) == 0u);        /* result is positive */
     CHECK((cpu.flags & FAKE_F_V) != 0u);        /* and it overflowed  */
 }
+#endif /* EMU_HOST_JIT_X86_64 -- needs the lowering */
 
+#if defined(EMU_HOST_JIT_X86_64)
 static void test_interp_matches_jit(void)
 {
     static const uint32_t k_seeds[][2] = {
@@ -960,6 +979,7 @@ static void test_interp_matches_jit(void)
         diff_one(k_seeds[i][0], k_seeds[i][1]);
     }
 }
+#endif /* EMU_HOST_JIT_X86_64 -- needs the lowering */
 
 /*
  * Loads, stores and the memory bit ops, lowered and executed, and then
@@ -970,6 +990,7 @@ static void test_interp_matches_jit(void)
  * loses its whole block to the interpreter while every suite stays
  * green.
  */
+#if defined(EMU_HOST_JIT_X86_64)
 static void test_lower_memory(void)
 {
     memset(g_mem, 0, sizeof(g_mem));
@@ -998,12 +1019,14 @@ static void test_lower_memory(void)
     CHECK_EQ((uint32_t)g_mem[0x10], 0xEFu);
     CHECK_EQ((uint32_t)g_mem[0x13], 0xDEu);
 }
+#endif /* EMU_HOST_JIT_X86_64 -- needs the lowering */
 
 /*
  * A load whose address the target refuses. The block must stop there --
  * the instructions after it belong to whatever the trap preempted, and
  * running them is not a wrong value but a wrong program.
  */
+#if defined(EMU_HOST_JIT_X86_64)
 static void test_lower_memory_trap(void)
 {
     memset(g_mem, 0, sizeof(g_mem));
@@ -1026,12 +1049,14 @@ static void test_lower_memory_trap(void)
     }
     CHECK_EQ(cpu.r[4], 0u);
 }
+#endif /* EMU_HOST_JIT_X86_64 -- needs the lowering */
 
 /*
  * The bit ops on memory, both encodings' worth of behaviour: Z reports
  * the bit before the change, TST does not write back, and the bits of
  * the flag word outside Z are left alone.
  */
+#if defined(EMU_HOST_JIT_X86_64)
 static void test_lower_bitop_memory(void)
 {
     memset(g_mem, 0, sizeof(g_mem));
@@ -1061,8 +1086,10 @@ static void test_lower_bitop_memory(void)
     CHECK_EQ(cpu.flags & FAKE_F_C, FAKE_F_C);
     CHECK_EQ(cpu.flags & 0x80000000u, 0x80000000u);
 }
+#endif /* EMU_HOST_JIT_X86_64 -- needs the lowering */
 
 /* TST must not write, checked on a clear bit so a stray write shows. */
+#if defined(EMU_HOST_JIT_X86_64)
 static void test_lower_bitop_tst(void)
 {
     memset(g_mem, 0, sizeof(g_mem));
@@ -1085,6 +1112,7 @@ static void test_lower_bitop_tst(void)
     CHECK_EQ((uint32_t)g_mem[0x20], 0x80u);
     CHECK((cpu.flags & FAKE_F_Z) != 0u);   /* bit 0 was clear */
 }
+#endif /* EMU_HOST_JIT_X86_64 -- needs the lowering */
 
 /*
  * The extended registers, executed.
@@ -1097,6 +1125,7 @@ static void test_lower_bitop_tst(void)
  * r8-r11 are caller-saved in System V, so this needs no save/restore
  * beyond rbx, which carries the cpu pointer.
  */
+#if defined(EMU_HOST_JIT_X86_64)
 static void test_encode_rex(void)
 {
     static uint8_t *exec;
@@ -1142,6 +1171,7 @@ static void test_encode_rex(void)
     CHECK_EQ(cpu.r[3], 0x00001234u);   /* imm, add, store via r8/r9 */
     CHECK_EQ(cpu.r[4], 0x000000F0u);   /* load, shift, mov via r10/r11 */
 }
+#endif /* EMU_HOST_JIT_X86_64 -- needs the lowering */
 
 /* ------------------------------------------------------------------ */
 
@@ -1311,7 +1341,7 @@ static void test_fp_semantics(void)
     CHECK_EQ(fp_eval(EMU_IR_FSQRT, 0u, F_ONE, 0u), 0xDEADBEEFu);
 }
 
-#if defined(EMU_JIT_X86_64)
+#if defined(EMU_HOST_JIT_X86_64)
 /*
  * The same FP cases as the reference, but *executed* -- the emitted SSE
  * is run and its answer compared against the semantics, which is the
@@ -1614,7 +1644,7 @@ static void test_lower_fp_flags(void)
     CHECK_EQ(cpu.f[3], F_TWO);
     CHECK_EQ(cpu.fe, 0u);
 }
-#endif /* EMU_JIT_X86_64 */
+#endif /* EMU_HOST_JIT_X86_64 */
 
 void test_ir(void)
 {
@@ -1632,7 +1662,7 @@ void test_ir(void)
     test_overflow_not_optimised();
     test_fp_semantics();
     test_fp_box_reference();
-#if defined(EMU_JIT_X86_64)
+#if defined(EMU_HOST_JIT_X86_64)
     test_lower_add();
     test_lower_zero_register();
     test_zero_register_write_then_read();

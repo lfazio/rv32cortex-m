@@ -8,7 +8,7 @@ in a platform `#ifdef`.
 ## Running and debugging one
 
 ```sh
-cmake -B build/g4 -DEMU_PLATFORM=host -DEMU_FRONTEND_G4MH=ON
+cmake -B build/g4 -DEMU_PLATFORM=host -DEMU_GUEST_ARCH_G4MH=ON
 ./build/g4/emu-host --frontend g4mh --load 0x80000000 tests/guest/g4mh/guest.bin
 ./build/g4/emu-host --frontend g4mh --jit --load 0x80000000 tests/guest/g4mh/guest.bin
 ```

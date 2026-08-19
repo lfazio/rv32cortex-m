@@ -98,7 +98,7 @@ Firmware builds set `G4MH_FLASH_KIB=0`, so the arena does not exist at
 all — `#if G4MH_FLASH_BACKED > 0u` compiles it out rather than allocating
 zero bytes and hoping.
 
-Measured, F746, `-DEMU_FRONTEND_RV32=OFF -DEMU_FRONTEND_G4MH=ON`:
+Measured, F746, `-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON`:
 
 | | `.bss` | links |
 |---|---|---|
@@ -111,7 +111,7 @@ When adding a frontend, ask what its regions are *backed by* before
 writing the sizes down. A frontend that allocates its own memory map
 works on a host and cannot be ported, and nothing will tell you until
 someone tries the firmware build — which is why
-`-DEMU_FRONTEND_RV32=OFF -DEMU_FRONTEND_G4MH=ON` is the contract check.
+`-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON` is the contract check.
 
 ---
 
@@ -144,5 +144,5 @@ CLAUDE.md's standing rule is that anything on the access path is paid by
 every guest whether it uses the feature or not. `EMU_BUS_ANY_BE` is
 derived from the frontends selected, so the test compiles away entirely.
 Verified by inspection rather than asserted: `emu_bus.c` compiled with
-`-DEMU_FRONTEND_PPC=0` contains **zero** byte-swap instructions, and two
+`-DEMU_GUEST_ARCH_PPC=0` contains **zero** byte-swap instructions, and two
 with it set.

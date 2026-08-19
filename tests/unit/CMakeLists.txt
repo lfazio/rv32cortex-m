@@ -10,13 +10,13 @@ add_executable(emu-unit
 # link tests for it. test_fpu.c is here rather than above because it drives
 # rv_hart_fp directly -- the FP unit is shared, but the only way in is
 # through an RV32 hart.
-if(EMU_FRONTEND_RV32)
+if(EMU_GUEST_ARCH_RV32)
     target_sources(emu-unit PRIVATE test_decode.c test_fpu.c)
 endif()
-if(EMU_FRONTEND_G4MH)
+if(EMU_GUEST_ARCH_G4MH)
     target_sources(emu-unit PRIVATE test_g4mh.c)
 endif()
-if(EMU_FRONTEND_PPC)
+if(EMU_GUEST_ARCH_PPC)
     target_sources(emu-unit PRIVATE test_ppc.c)
 endif()
 
@@ -37,7 +37,7 @@ set_tests_properties(unit PROPERTIES LABELS fast)
 # emulator that decodes VLE, and -- with no instruction cap -- ran until
 # something killed it. The image existing and the emulator being able to
 # run it are two different questions.
-if(TARGET guest-isatest AND EMU_FRONTEND_RV32)
+if(TARGET guest-isatest AND EMU_GUEST_ARCH_RV32)
     add_test(NAME guest-isatest
              COMMAND emu-host --quiet --load 0x80000000
                      "${CMAKE_BINARY_DIR}/guest/isatest.bin")

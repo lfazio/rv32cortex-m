@@ -62,7 +62,7 @@ say ""
 if [ "$CONFIGURE" = 1 ]; then
     say "configuring $BUILD ..."
     cmake -B "$BUILD" -S "$ROOT" -DEMU_PLATFORM=host \
-          -DEMU_FRONTEND_G4MH=ON -DCMAKE_BUILD_TYPE=Release >/dev/null
+          -DEMU_GUEST_ARCH_G4MH=ON -DCMAKE_BUILD_TYPE=Release >/dev/null
     cmake --build "$BUILD" -j"$(nproc 2>/dev/null || echo 4)" >/dev/null
 fi
 

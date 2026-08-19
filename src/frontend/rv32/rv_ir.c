@@ -47,7 +47,7 @@
  * constant retranslation is what would mask a translator bug behind a
  * fresh translation -- at 12 KB CoreMark flushed nineteen times a run.
  */
-#if defined(EMU_JIT_THUMB2)
+#if defined(EMU_HOST_JIT_THUMB2)
 /* On a target these bytes are the guest's; see CLAUDE.md. */
 #  define RV_JIT_HOST_CODE_BYTES RV_JIT_CODE_SIZE
 #else

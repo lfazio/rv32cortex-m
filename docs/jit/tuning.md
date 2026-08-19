@@ -74,7 +74,7 @@ loops that crossed the line.
 ## Framework table sizes
 
 `EMU_JIT_MAX_BLOCKS` and `EMU_JIT_HASH_SIZE` follow the target, keyed on
-`EMU_JIT_THUMB2`: 256/256/12 KB there, host figures otherwise. 8192
+`EMU_HOST_JIT_THUMB2`: 256/256/12 KB there, host figures otherwise. 8192
 blocks and an 8192-entry hash cost a host nothing and are 192 KB of
 `.bss` on a part with 320 KB.
 

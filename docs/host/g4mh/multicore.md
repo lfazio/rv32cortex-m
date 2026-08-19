@@ -10,7 +10,7 @@ programs that exist are hand-assembled.
 Run it with:
 
 ```sh
-cmake -B build/mc -DEMU_PLATFORM=host -DEMU_FRONTEND_G4MH=ON \
+cmake -B build/mc -DEMU_PLATFORM=host -DEMU_GUEST_ARCH_G4MH=ON \
       -DG4MH_PE_COUNT=3
 cmake --build build/mc && ./build/mc/tests/unit/emu-unit
 ./build/mc/emu-host --frontend g4mh --cores 3 --quantum 8 <image>
@@ -290,7 +290,7 @@ because three PEs is 192 KiB of local RAM alone against 320 KB total. It
 ```sh
 cmake -B build/f746g4x3 -DEMU_PLATFORM=stm32f746 \
       -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
-      -DEMU_FRONTEND_RV32=OFF -DEMU_FRONTEND_G4MH=ON \
+      -DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON \
       -DG4MH_PE_COUNT=3 -DG4MH_LRAM_KIB=16 -DG4MH_CRAM_KIB=32
 ```
 

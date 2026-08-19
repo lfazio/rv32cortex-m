@@ -26,7 +26,7 @@
 #include "emu/emu_dev.h"
 #include "emu/emu_memmap.h"
 
-#if EMU_FRONTEND_RV32
+#if EMU_GUEST_ARCH_RV32
 #  include "rv32/rv_backend.h"  /* which backend came up */
 #  include "rv32/rv_jit.h"      /* JIT statistics, reported below */
 #endif
@@ -646,7 +646,7 @@ int main(void)
  * to the interpreter -- has no meaning for any other. A frontend without a
  * JIT simply does not compile this block in.
  */
-#if EMU_FRONTEND_RV32 && RV_ENABLE_JIT
+#if EMU_GUEST_ARCH_RV32 && RV_ENABLE_JIT
     if (rv_backend == &rv_backend_jit) {
         rv_jit_stats_t js;
         rv_jit_get_stats(&js);

@@ -9,7 +9,7 @@ pair has been shown to do.
 cmake -B build/g4mh -DEMU_PLATFORM=stm32f446 \
       -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
       -DCMAKE_BUILD_TYPE=Release \
-      -DEMU_FRONTEND_RV32=OFF -DEMU_FRONTEND_G4MH=ON
+      -DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON
 cmake --build build/g4mh
 ```
 

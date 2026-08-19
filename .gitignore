@@ -32,3 +32,6 @@ cmake_install.cmake
 *.swp
 *~
 .claude/worktrees/
+
+# build-matrix.sh writes one log per configuration beside its build dir.
+build/mx-*.log

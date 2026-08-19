@@ -5,7 +5,7 @@
 # Three axes, independent of each other:
 #
 #   platform    where it runs        EMU_PLATFORM=host|stm32f446
-#   frontend    what it emulates     EMU_FRONTEND_RV32, EMU_FRONTEND_G4MH
+#   frontend    what it emulates     EMU_GUEST_ARCH_RV32, EMU_GUEST_ARCH_G4MH
 #   backend     how it executes      EMU_JIT=ON|OFF, per frontend
 #
 # The ISA-agnostic runtime (src/emu) owns the bus, the passthrough window,
@@ -48,15 +48,15 @@ set_property(CACHE EMU_PLATFORM PROPERTY STRINGS host stm32f446 stm32f746)
 # A frontend costs flash only when it is on, so the firmware normally
 # builds exactly one.
 
-option(EMU_FRONTEND_RV32 "RISC-V RV32 frontend" ON)
-option(EMU_FRONTEND_G4MH "Renesas RH850 G4MH frontend" OFF)
+option(EMU_GUEST_ARCH_RV32 "RISC-V RV32 frontend" ON)
+option(EMU_GUEST_ARCH_G4MH "Renesas RH850 G4MH frontend" OFF)
 # NXP PowerPC e200z7 (Power ISA 2.06 embedded, VLE). **Big-endian**, the
 # first of those in this tree: see the note by EMU_BUS_ORDER in emu_bus.h
 # for what that costs and, more importantly, for which region kinds it
 # does *not* apply to.
-option(EMU_FRONTEND_PPC "NXP PowerPC e200z7 frontend (VLE, big-endian)" OFF)
+option(EMU_GUEST_ARCH_PPC "NXP PowerPC e200z7 frontend (VLE, big-endian)" OFF)
 
-if(NOT EMU_FRONTEND_RV32 AND NOT EMU_FRONTEND_G4MH AND NOT EMU_FRONTEND_PPC)
+if(NOT EMU_GUEST_ARCH_RV32 AND NOT EMU_GUEST_ARCH_G4MH AND NOT EMU_GUEST_ARCH_PPC)
     message(FATAL_ERROR "at least one EMU_FRONTEND_* must be enabled")
 endif()
 
@@ -237,7 +237,7 @@ set(G4MH_PE_COUNT "1" CACHE STRING "G4MH processing elements (1..3)")
 # The default therefore follows the PE count rather than being a constant
 # somebody has to remember to change with it. Still a cache variable, so a
 # firmware build that knows its map can set it lower and get the RAM back.
-if(EMU_FRONTEND_G4MH AND G4MH_PE_COUNT GREATER 1)
+if(EMU_GUEST_ARCH_G4MH AND G4MH_PE_COUNT GREATER 1)
     math(EXPR _regions_default "16 + 4 * ${G4MH_PE_COUNT}")
 else()
     set(_regions_default 16)
@@ -290,7 +290,7 @@ add_library(emucore STATIC
     # the list and exactly one backend compiles to anything. They belong
     # here rather than under a frontend: emu_ir_jit.c defines *both*
     # frontends' backends from one macro, so putting it under
-    # EMU_FRONTEND_RV32 left g4mh_backend_jit undefined in a G4MH-only
+    # EMU_GUEST_ARCH_RV32 left g4mh_backend_jit undefined in a G4MH-only
     # tree -- which the G4MH frontend then referenced unconditionally.
     src/backend/x86_64/encode.c
     src/backend/common/interp.c
@@ -307,19 +307,28 @@ target_include_directories(emucore PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 
 target_compile_definitions(emucore PUBLIC
-    EMU_FRONTEND_RV32=$<BOOL:${EMU_FRONTEND_RV32}>
-    EMU_FRONTEND_G4MH=$<BOOL:${EMU_FRONTEND_G4MH}>
-    EMU_FRONTEND_PPC=$<BOOL:${EMU_FRONTEND_PPC}>
+    EMU_GUEST_ARCH_RV32=$<BOOL:${EMU_GUEST_ARCH_RV32}>
+    EMU_GUEST_ARCH_G4MH=$<BOOL:${EMU_GUEST_ARCH_G4MH}>
+    EMU_GUEST_ARCH_PPC=$<BOOL:${EMU_GUEST_ARCH_PPC}>
     EMU_MAX_REGIONS=${EMU_MAX_REGIONS}
     EMU_ENABLE_TRACE=$<BOOL:${EMU_ENABLE_TRACE}>
     EMU_ENABLE_STATS=$<BOOL:${EMU_ENABLE_STATS}>
+    #
+    # Whether a JIT was *asked for*. emu_jit.h reconciles this with what
+    # the host can actually emit; before it existed, EMU_HOST_JIT_X86_64 and
+    # EMU_HOST_JIT_THUMB2 were derived from the host alone, so -DEMU_JIT=OFF
+    # still compiled the JIT sources -- and on both hosts that meant
+    # referring to types the same option had removed. Two whole
+    # configurations did not build and nothing said so.
+    #
+    EMU_JIT_REQUESTED=$<BOOL:${EMU_JIT}>
 )
 
 # ---------------------------------------------------------------------
 # Frontend: RISC-V RV32
 # ---------------------------------------------------------------------
 
-if(EMU_FRONTEND_RV32)
+if(EMU_GUEST_ARCH_RV32)
     target_sources(emucore PRIVATE
         src/frontend/rv32/rv32_frontend.c
         src/frontend/rv32/rv_aplic.c
@@ -334,8 +343,16 @@ if(EMU_FRONTEND_RV32)
         src/frontend/rv32/rv_mmu.c
         src/frontend/rv32/rv_trig.c
         src/frontend/rv32/rv_gdb.c
-        src/frontend/rv32/rv_ir.c
     )
+    #
+    # The IR translator is JIT-only: it calls emu_ir_can_lower, which the
+    # backend lowering files define, and with EMU_JIT=OFF none of those
+    # compile to anything. Listing it unconditionally left an undefined
+    # reference in a configuration nobody built.
+    #
+    if(EMU_JIT)
+        target_sources(emucore PRIVATE src/frontend/rv32/rv_ir.c)
+    endif()
 
     # The fused multiply-adds recover their rounding error with
     # 2Product/2Sum, which is only exact if `a * b - p` is evaluated as
@@ -368,7 +385,6 @@ if(EMU_FRONTEND_RV32)
         RV_LAZY_IRQ_CHECK=$<BOOL:${RV32_LAZY_IRQ}>
         RV_JIT_CODE_SIZE=${EMU_JIT_CODE_BYTES}u
         RV_ENABLE_JIT=$<BOOL:${EMU_JIT}>
-        EMU_IR_JIT_ON_THUMB2
         $<$<BOOL:${EMU_JIT_DIFF}>:EMU_JIT_DIFF>
         RV_JIT_LOOP_CHAIN=$<BOOL:${EMU_JIT_LOOP_CHAIN}>
         RV_JIT_INLINE_PERIPH=$<BOOL:${EMU_JIT_INLINE_PERIPH}>
@@ -388,7 +404,7 @@ endif()
 # Frontend: NXP PowerPC e200z7
 # ---------------------------------------------------------------------
 
-if(EMU_FRONTEND_PPC)
+if(EMU_GUEST_ARCH_PPC)
     target_sources(emucore PRIVATE
         src/frontend/ppc/ppc_cpu.c
         src/frontend/ppc/ppc_frontend.c
@@ -400,7 +416,7 @@ endif()
 # Frontend: Renesas RH850 G4MH
 # ---------------------------------------------------------------------
 
-if(EMU_FRONTEND_G4MH)
+if(EMU_GUEST_ARCH_G4MH)
     target_sources(emucore PRIVATE
         src/frontend/g4mh/g4mh_barrier.c
         src/frontend/g4mh/g4mh_cpu.c
@@ -412,11 +428,14 @@ if(EMU_FRONTEND_G4MH)
         src/frontend/g4mh/g4mh_intc.c
         src/frontend/g4mh/g4mh_mpu.c
         src/frontend/g4mh/g4mh_ipir.c
-        src/frontend/g4mh/g4mh_ir.c
         src/frontend/g4mh/g4mh_interp.c
         src/frontend/g4mh/g4mh_fpu.c
         src/frontend/g4mh/g4mh_tptm.c
     )
+    # JIT-only, as for RV32 above.
+    if(EMU_JIT)
+        target_sources(emucore PRIVATE src/frontend/g4mh/g4mh_ir.c)
+    endif()
 
     target_compile_definitions(emucore PUBLIC
         G4MH_ENABLE_DISASM=$<BOOL:${G4MH_ENABLE_DISASM}>
@@ -430,7 +449,7 @@ if(EMU_FRONTEND_G4MH)
     )
 endif()
 
-if((EMU_FRONTEND_RV32 AND RV32_EXT_F) OR (EMU_FRONTEND_G4MH AND G4MH_EXT_FPU))
+if((EMU_GUEST_ARCH_RV32 AND RV32_EXT_F) OR (EMU_GUEST_ARCH_G4MH AND G4MH_EXT_FPU))
     if(NOT EXISTS "${SOFTFLOAT_DIR}/source/include/softfloat.h")
         find_package(Git QUIET)
         if(GIT_FOUND)
@@ -485,10 +504,10 @@ if((EMU_FRONTEND_RV32 AND RV32_EXT_F) OR (EMU_FRONTEND_G4MH AND G4MH_EXT_FPU))
     # and G4MH's .D operations are the same SoftFloat entry points.
     #
     set(_need_f64 OFF)
-    if(EMU_FRONTEND_G4MH AND G4MH_EXT_FPU)
+    if(EMU_GUEST_ARCH_G4MH AND G4MH_EXT_FPU)
         set(_need_f64 ON)
     endif()
-    if(EMU_FRONTEND_RV32 AND RV32_EXT_F AND RV32_EXT_D)
+    if(EMU_GUEST_ARCH_RV32 AND RV32_EXT_F AND RV32_EXT_D)
         set(_need_f64 ON)
     endif()
     if(_need_f64)
@@ -571,7 +590,7 @@ add_subdirectory(tests/guest)
 # The e200z7 guest, which needs a different toolchain and so has its own
 # file -- tests/guest/CMakeLists.txt returns early without the RISC-V one
 # and would skip this for an unrelated reason.
-if(EMU_FRONTEND_PPC)
+if(EMU_GUEST_ARCH_PPC)
     add_subdirectory(tests/guest/ppc)
 endif()
 
@@ -611,7 +630,7 @@ endif()
 # Built up as a plain string: message() does not evaluate generator
 # expressions, so $<BOOL:...> would be printed verbatim.
 set(_frontends "")
-if(EMU_FRONTEND_RV32)
+if(EMU_GUEST_ARCH_RV32)
     set(_isa "RV32I")
     foreach(_ext M A F D C B)
         if(RV32_EXT_${_ext})
@@ -637,7 +656,7 @@ if(EMU_FRONTEND_RV32)
     endif()
     list(APPEND _frontends "rv32 (${_isa}_zicsr_zicntr_zifencei)")
 endif()
-if(EMU_FRONTEND_G4MH)
+if(EMU_GUEST_ARCH_G4MH)
     list(APPEND _frontends "g4mh (RH850 G4MH, ${G4MH_PE_COUNT} PE)")
 endif()
 

@@ -33,9 +33,9 @@
 #include "emu/emu_bus.h"
 #include "emu/emu_cache.h"
 #include "emu/emu_cpu.h"
-/* For EMU_JIT_X86_64, which decides whether there is a JIT to declare.
+/* For EMU_HOST_JIT_X86_64, which decides whether there is a JIT to declare.
  * Included here rather than left to the includer: a translation unit that
- * got this header first would silently see G4MH_HAVE_JIT as 0 and declare
+ * got this header first would silently see EMU_HAVE_JIT as 0 and declare
  * no backend, which is a link error at best and a wrong default at worst. */
 #include "emu/emu_jit.h"
 
@@ -339,11 +339,8 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
  * silently translated cannot be compared against one that did not.
  */
 extern const emu_backend_t g4mh_backend_interp;
-#if defined(RV_JIT_X86_64) || defined(EMU_JIT_X86_64)
-#  define G4MH_HAVE_JIT 1
+#if EMU_HAVE_JIT
 extern const emu_backend_t g4mh_backend_jit;
-#else
-#  define G4MH_HAVE_JIT 0
 #endif
 extern const emu_backend_t *g4mh_backend;
 

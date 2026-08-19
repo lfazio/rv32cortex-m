@@ -38,7 +38,7 @@
  * run, and constant retranslation is exactly what hides a translator bug
  * behind a fresh translation.
  */
-#if defined(EMU_JIT_THUMB2)
+#if defined(EMU_HOST_JIT_THUMB2)
 /*
  * Microcontroller sizes. These tables are .bss, and on a target every byte
  * of them is a byte the guest does not get: at the host figures below they
@@ -484,7 +484,7 @@ typedef uint32_t (*block_fn_t)(emu_cpu_t *);
  */
 static block_fn_t block_entry(const uint8_t *code)
 {
-#if defined(EMU_JIT_THUMB2)
+#if defined(EMU_HOST_JIT_THUMB2)
     return (block_fn_t)(uintptr_t)((uintptr_t)code | 1u);
 #else
     return (block_fn_t)(uintptr_t)code;

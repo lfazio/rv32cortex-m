@@ -21,7 +21,7 @@ Three axes, independent of each other:
 | axis | what it decides | selected by |
 |---|---|---|
 | platform | where it runs | `EMU_PLATFORM=host\|stm32f446` |
-| frontend | what it emulates | `EMU_FRONTEND_RV32`, `EMU_FRONTEND_G4MH` |
+| frontend | what it emulates | `EMU_GUEST_ARCH_RV32`, `EMU_GUEST_ARCH_G4MH` |
 | backend | how it executes | `EMU_JIT=ON\|OFF`, per frontend |
 
 ```
@@ -611,7 +611,7 @@ session, and every one of them recurred:
 - **Framework table sizes have to follow the target.** 8192 blocks and an
   8192-entry hash cost a host nothing and are 192 KB of `.bss` on a part
   with 320 KB, where those bytes are the guest's. Keyed on
-  `EMU_JIT_THUMB2` now: 256/256/12 KB there, the host figures otherwise.
+  `EMU_HOST_JIT_THUMB2` now: 256/256/12 KB there, the host figures otherwise.
 - **System V wants rsp 16-byte aligned at a `call`.** Entry leaves it 8
   past, two pushes bring it back to 8, so the block prologue needs one more
   8. Getting it wrong does not fault in the emitted code -- it faults
@@ -1351,7 +1351,7 @@ session, and every one of them recurred:
   something real before believing a coverage claim.
 - **The G4MH interpreter was unreachable from the host, so "the JIT
   agrees with the interpreter" had never been checked.** `--jit` was
-  parsed inside `#if EMU_FRONTEND_RV32`, and `g4mh_ops_init` assigned the
+  parsed inside `#if EMU_GUEST_ARCH_RV32`, and `g4mh_ops_init` assigned the
   JIT unconditionally, so a G4MH-only build *rejected the option* and ran
   translated whatever was asked. Both backends now come from the host's
   choice, as RV32's already did. This matters more for G4MH than for
@@ -1475,7 +1475,7 @@ session, and every one of them recurred:
   in it.
 - **A capability macro that depends on include order is worse than no
   macro.** `G4MH_HAVE_JIT` was defined in `g4mh_cpu.h` from
-  `EMU_JIT_X86_64`, which `emu/emu_jit.h` defines -- and
+  `EMU_HOST_JIT_X86_64`, which `emu/emu_jit.h` defines -- and
   `g4mh_frontend.c` included `emu_jit.h` on the line *after* `g4mh_cpu.h`.
   So the header saw the macro undefined, declared no backend, and the
   frontend quietly ran interpreted while every build succeeded. Two unit
@@ -1566,13 +1566,13 @@ unsupported.
 1. `include/<isa>/` — public headers, `<isa>_` prefixed
 2. `src/frontend/<isa>/` — state, decoder, interpreter, its own devices
 3. one `emu_cpu_ops_t`, declared and listed in `src/emu/emu_cpu.c`
-4. `option(EMU_FRONTEND_<ISA> ...)` and a `target_sources` block in
+4. `option(EMU_GUEST_ARCH_<ISA> ...)` and a `target_sources` block in
    `CMakeLists.txt`
-5. tests in `tests/unit/`, guarded by `EMU_FRONTEND_<ISA>`
+5. tests in `tests/unit/`, guarded by `EMU_GUEST_ARCH_<ISA>`
 
 Nothing in `src/emu/` or `src/platform/` should need editing beyond step 3.
 That is the property to check when the contract changes: build the firmware
-with `-DEMU_FRONTEND_RV32=OFF -DEMU_FRONTEND_G4MH=ON` and see that it links.
+with `-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON` and see that it links.
 
 That check passes now, and did not until recently: `g4mh_frontend.c`
 modelled the U2B6's whole memory map as `.bss` -- 3 MiB of code flash,

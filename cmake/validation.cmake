@@ -73,7 +73,7 @@ add_custom_target(validate
 # architecture suite against an emulator that does not decode RISC-V --
 # the same shape as the guest tests below, and found the same way, by
 # running ctest in a configuration nobody had run it in.
-if(BUILD_TESTING AND EMU_FRONTEND_RV32)
+if(BUILD_TESTING AND EMU_GUEST_ARCH_RV32)
     add_test(NAME arch-test-I
              COMMAND "${_scripts}/run-arch-test.sh" --extensions I
              WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")

@@ -5,7 +5,7 @@ family, and this project's first big-endian guest.
 
 ```sh
 cmake -B build/ppc -DEMU_PLATFORM=host \
-      -DEMU_FRONTEND_RV32=OFF -DEMU_FRONTEND_PPC=ON
+      -DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_PPC=ON
 cmake --build build/ppc
 ./build/ppc/emu-host --load 0x80000000 \
     build/ppc/tests/guest/ppc/isatest.bin

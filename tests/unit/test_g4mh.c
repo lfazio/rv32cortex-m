@@ -2048,6 +2048,7 @@ static void test_bit_manipulation_reg(void)
  * nothing but instructions the IR lowering covers, so translation must
  * happen and the fallback count must stay near zero.
  */
+#if EMU_HAVE_JIT
 static void test_ir_backend_is_used(void)
 {
     /*
@@ -2141,6 +2142,7 @@ static void test_ir_backend_is_used(void)
     const uint32_t fell_back = after.interp_fallbacks - before.interp_fallbacks;
     CHECK_EQ(fell_back, 1u);
 }
+#endif /* EMU_HAVE_JIT -- asserts a translation happened */
 
 static void test_system_registers(void)
 {
@@ -4124,7 +4126,7 @@ static void test_disp23_jit(void)
         vals[pass][3] = reg(23);
         vals[pass][4] = (uint32_t)g_ram[0x204];
 
-        if (pass == 0u && G4MH_HAVE_JIT && saved != &g4mh_backend_interp) {
+        if (pass == 0u && EMU_HAVE_JIT && saved != &g4mh_backend_interp) {
             CHECK(after.translations > before.translations);
             /* Only the 32-bit HALT. Six disp23 instructions ahead of it
              * were translated, or this is 7. */
@@ -5750,7 +5752,9 @@ void test_g4mh(void)
     test_swap_reserved_field();
     test_bit_manipulation();
     test_bit_manipulation_reg();
+#if EMU_HAVE_JIT
     test_ir_backend_is_used();
+#endif
     test_system_registers();
     test_reserved_instruction();
     test_trap_and_syscall();

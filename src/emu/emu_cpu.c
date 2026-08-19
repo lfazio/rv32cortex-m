@@ -11,13 +11,13 @@
 
 #include <string.h>
 
-#if EMU_FRONTEND_RV32
+#if EMU_GUEST_ARCH_RV32
 extern const emu_cpu_ops_t rv32_frontend;
 #endif
-#if EMU_FRONTEND_G4MH
+#if EMU_GUEST_ARCH_G4MH
 extern const emu_cpu_ops_t g4mh_frontend;
 #endif
-#if EMU_FRONTEND_PPC
+#if EMU_GUEST_ARCH_PPC
 extern const emu_cpu_ops_t ppc_frontend;
 #endif
 
@@ -27,13 +27,13 @@ extern const emu_cpu_ops_t ppc_frontend;
  * listed first.
  */
 const emu_cpu_ops_t *const emu_frontends[] = {
-#if EMU_FRONTEND_RV32
+#if EMU_GUEST_ARCH_RV32
     &rv32_frontend,
 #endif
-#if EMU_FRONTEND_G4MH
+#if EMU_GUEST_ARCH_G4MH
     &g4mh_frontend,
 #endif
-#if EMU_FRONTEND_PPC
+#if EMU_GUEST_ARCH_PPC
     &ppc_frontend,
 #endif
     NULL,

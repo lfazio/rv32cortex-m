@@ -20,12 +20,12 @@
 #include "emu/emu_dev.h"
 #include "emu/emu_memmap.h"
 
-#if EMU_FRONTEND_G4MH
+#if EMU_GUEST_ARCH_G4MH
 /* For g4mh_set_flash(): this platform serves code flash from its own. */
 #  include "g4mh/g4mh_cpu.h"
 #endif
 
-#if EMU_FRONTEND_RV32
+#if EMU_GUEST_ARCH_RV32
 #  include "rv32/rv_backend.h"  /* which backend came up */
 #  include "rv32/rv_jit.h"      /* JIT statistics, reported below */
 #endif
@@ -590,7 +590,7 @@ static bool start_guest(void)
     if (g_core.cpu != NULL) {
         const emu_cpu_ops_t *ops = g_core.ops;
 
-#if EMU_FRONTEND_G4MH
+#if EMU_GUEST_ARCH_G4MH
         /*
          * G4MH resets fetching from code flash at address 0, and on this
          * part code flash is the part's own flash -- the same arrangement
@@ -1115,7 +1115,7 @@ int main(void)
          * for a G4MH guest gives an `info registers` that is entirely
          * wrong and entirely plausible.
          */
-#if EMU_FRONTEND_RV32
+#if EMU_GUEST_ARCH_RV32
         extern const emu_gdb_target_t *rv32_gdb_target(void);
         const emu_gdb_target_t *gt = rv32_gdb_target();
 #else
@@ -1291,7 +1291,7 @@ restart:
  * JIT statistics: the one place in this file that names a frontend, and
  * unavoidably so -- the Thumb-2 JIT is the rv32 frontend's second backend.
  */
-#if EMU_FRONTEND_RV32 && RV_ENABLE_JIT
+#if EMU_GUEST_ARCH_RV32 && RV_ENABLE_JIT
     if (rv_backend == &rv_backend_jit) {
         rv_jit_stats_t js;
         rv_jit_get_stats(&js);

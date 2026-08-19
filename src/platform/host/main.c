@@ -25,13 +25,13 @@
 #include "emu/emu_memmap.h"
 #include "emu/emu_jit.h"
 
-#if EMU_FRONTEND_RV32
+#if EMU_GUEST_ARCH_RV32
 /* --jit selects the backend, and the summary reports what it did. */
 #  include "rv32/rv_backend.h"
 #  include "rv32/rv_jit.h"
 #endif
 
-#if EMU_FRONTEND_G4MH
+#if EMU_GUEST_ARCH_G4MH
 /* Likewise, so that --jit and its absence both mean something here. */
 #  include "g4mh/g4mh_cpu.h"
 #endif
@@ -39,11 +39,11 @@
 /*
  * Whether *any* compiled-in frontend can translate on this host. --jit is
  * accepted exactly when this holds; an undefined RV_ENABLE_JIT or
- * G4MH_HAVE_JIT evaluates to 0 here, which is what makes the frontend
+ * EMU_HAVE_JIT evaluates to 0 here, which is what makes the frontend
  * guards on either side of the && necessary.
  */
 #define EMU_HOST_HAVE_JIT \
-    ((EMU_FRONTEND_RV32 && RV_ENABLE_JIT) || (EMU_FRONTEND_G4MH && G4MH_HAVE_JIT))
+    ((EMU_GUEST_ARCH_RV32 && RV_ENABLE_JIT) || (EMU_GUEST_ARCH_G4MH && EMU_HAVE_JIT))
 
 #if RV_PAIR_STATS
 #  include "rv32/rv_pairstats.h"
@@ -305,7 +305,7 @@ static void usage(void)
         "  --cores N            cores to run (default: the frontend's count)\n"
         "  --quantum N          instructions per core per round (default %u).\n"
         "                       1 is instruction-interleaved lockstep\n"
-#if EMU_FRONTEND_RV32
+#if EMU_GUEST_ARCH_RV32
         "  --jit                use the JIT backend instead of the interpreter\n"
         "  --gdb [port]         serve a gdb stub on localhost (default 1234)\n"
 #endif
@@ -354,10 +354,10 @@ void host_gdb_wait(void);
 void host_gdb_poll(void);
 bool host_gdb_attached(void);
 uint32_t host_gdb_run(uint32_t budget, uint32_t *retired);
-#if EMU_FRONTEND_RV32
+#if EMU_GUEST_ARCH_RV32
 const emu_gdb_target_t *rv32_gdb_target(void);
 #endif
-#if EMU_FRONTEND_G4MH
+#if EMU_GUEST_ARCH_G4MH
 const emu_gdb_target_t *g4mh_gdb_target(void);
 #endif
 
@@ -370,12 +370,12 @@ const emu_gdb_target_t *g4mh_gdb_target(void);
  */
 static const emu_gdb_target_t *gdb_target_for(const emu_cpu_ops_t *ops)
 {
-#if EMU_FRONTEND_G4MH
+#if EMU_GUEST_ARCH_G4MH
     if (strcmp(ops->name, "g4mh") == 0) {
         return g4mh_gdb_target();
     }
 #endif
-#if EMU_FRONTEND_RV32
+#if EMU_GUEST_ARCH_RV32
     if (strcmp(ops->name, "rv32") == 0) {
         return rv32_gdb_target();
     }
@@ -438,7 +438,7 @@ int main(int argc, char **argv)
                 max_insn = v;
                 continue;
             }
-#if EMU_FRONTEND_RV32
+#if EMU_GUEST_ARCH_RV32
             if (strcmp(a, "--gdb") == 0) {
                 /* Port only; the stub listens on loopback. Waits for a
                  * client before the first instruction, because the whole
@@ -624,7 +624,7 @@ int main(int argc, char **argv)
     }
 
 
-#if EMU_FRONTEND_RV32 && RV_ENABLE_JIT
+#if EMU_GUEST_ARCH_RV32 && RV_ENABLE_JIT
     /*
      * The frontend prefers the JIT wherever it is compiled in, which is
      * right for firmware: there it is a speed choice, and the backend
@@ -644,7 +644,7 @@ int main(int argc, char **argv)
     }
 #endif
 
-#if EMU_FRONTEND_G4MH && G4MH_HAVE_JIT
+#if EMU_GUEST_ARCH_G4MH && EMU_HAVE_JIT
     /*
      * The same for G4MH, and for a sharper reason: this frontend has no
      * reference model, so the interpreter is the only statement of what an
@@ -653,7 +653,14 @@ int main(int argc, char **argv)
      * G4MH interpreter was unreachable from the host at all.
      */
     if (strcmp(ops->name, "g4mh") == 0) {
+#if EMU_HAVE_JIT
         g4mh_backend = want_jit ? &g4mh_backend_jit : &g4mh_backend_interp;
+#else
+        /* No JIT compiled in: --jit is accepted and ignored rather than
+         * refused, so a script that passes it still runs. */
+        (void)want_jit;
+        g4mh_backend = &g4mh_backend_interp;
+#endif
         if (g4mh_backend->init != NULL && !g4mh_backend->init(g_core.cpu)) {
             fprintf(stderr, "emu: backend init failed\n");
             free(image);

@@ -440,20 +440,21 @@
  * is a missing symbol at the point of use rather than a duplicate one at
  * link time.
  */
-#if defined(__ARM_ARCH) && (__ARM_ARCH >= 7) && defined(__thumb2__)
-#  define RV_JIT_THUMB2 1
-#elif defined(__x86_64__) && defined(__linux__)
-#  define RV_JIT_X86_64 1
-#endif
+/*
+ * Is there a JIT for this build?
+ *
+ * One question, one answer, computed in emu_jit.h from the host it can
+ * emit for and whether one was asked for. This used to be four macros in
+ * three headers -- RV_JIT_X86_64, RV_JIT_THUMB2, EMU_HOST_JIT_X86_64 and
+ * EMU_HOST_JIT_THUMB2 -- with the RV_ pair keyed on the host *alone*, so a
+ * -DEMU_JIT=OFF build still declared a backend nothing compiled and the
+ * link failed. The name survives because it reads correctly at its
+ * nineteen use sites; the duplicate definition does not. See BUILD.md.
+ */
+#include "emu/emu_jit.h"
 
-#if defined(RV_JIT_THUMB2) || defined(RV_JIT_X86_64)
-#  ifndef RV_ENABLE_JIT
-#    define RV_ENABLE_JIT 1
-#  endif
-#else
-#  undef RV_ENABLE_JIT
-#  define RV_ENABLE_JIT 0
-#endif
+#undef RV_ENABLE_JIT
+#define RV_ENABLE_JIT EMU_HAVE_JIT
 
 /* ------------------------------------------------------------------ */
 /* Debug / diagnostics                                                 */
