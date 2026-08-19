@@ -1177,6 +1177,37 @@ session, and every one of them recurred:
   refusing every upload. Trigger on idleness, which is observable, and
   rebuild unconditionally -- an idle server costs a `udp_remove` and a
   `udp_new`, so it is cheaper to rebuild than to know whether you had to.
+- **Flash programming has an alignment rule, and pbuf shape was hiding
+  it.** Every TFTP upload to the F746 failed the moment the link became
+  PPP, with `Error code 2: error writing file` at the client and
+  `upload failed` on the board -- which is also what a *full arena*
+  looks like, and that has its own recovery, so the obvious reading was
+  the wrong one.
+
+  One diagnostic settled it: `addr=0x080401de len=34 halerr=0x00000004`.
+  PGPERR is a programming *parallelism* error, and the address is not
+  word-aligned -- `FLASH_TYPEPROGRAM_WORD` requires 4-byte alignment on
+  this part and programs nothing otherwise. 478 + 34 = 512, so a
+  512-byte TFTP block was arriving as a **pbuf chain** and the write
+  callback fired once per segment.
+
+  **The bug was always there; SLIP's frames just happened to arrive
+  whole.** A word-at-a-time loop starting from whatever address a
+  network callback hands over is correct only by luck of segmentation,
+  and changing the link layer changed the luck. Bytes until aligned,
+  words while there are four, bytes for the tail -- byte programming is
+  valid at any address and each byte is its own location, so a later
+  call finishing a word this one started still programs erased cells.
+
+  Two things generalise. **"Upload failed" naming no mechanism is why
+  this looked like the arena**: the failure report now carries the
+  address and the HAL error, because a refused program and a full arena
+  need opposite responses -- retry never fixes the first. And **a
+  transport change can surface a latent bug in code that does not
+  mention the transport**; the flash path had not been touched, and
+  `.itcm` was byte-identical between the two builds, which is evidence
+  that the *change* was innocent and none at all that the *code* was.
+
 - **A recovery path wired to one of two symmetric cases recovers from
   the one that does not happen.** The flash arena filling up is the
   *expected* failure -- there is no length in a TFTP request, so running

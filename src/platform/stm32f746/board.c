@@ -403,6 +403,19 @@ bool board_flash_arena_reset(void)
     return arena_ensure_erased();
 }
 
+/*
+ * What the last flash operation made of itself, for the upload report.
+ *
+ * Kept because "upload failed" alone cannot distinguish a full arena
+ * from a refused program, and the difference decides whether a retry
+ * will work. It is what identified PGPERR (0x04) at an unaligned
+ * address as the cause of every TFTP upload failing under PPP; without
+ * it the symptom was indistinguishable from the arena being full, which
+ * is the *expected* failure and has its own recovery.
+ */
+static uint32_t g_flash_err;
+uint32_t board_flash_last_error(void) { return g_flash_err; }
+
 __attribute__((section(".itcm"), noinline))
 bool board_flash_write(uint32_t addr, const void *data, uint32_t len)
 {
@@ -410,29 +423,56 @@ bool board_flash_write(uint32_t addr, const void *data, uint32_t len)
     bool ok = true;
 
     if (addr < ARENA_BASE || (addr + len) > (ARENA_BASE + ARENA_SIZE)) {
+        g_flash_err = 0xB0000000u | (addr >> 8);   /* bounds, not HAL */
         return false;
     }
 
     HAL_FLASH_Unlock();
 
+    /*
+     * **The address is not necessarily word-aligned, and assuming it was
+     * is a PGPERR.**
+     *
+     * FLASH_TYPEPROGRAM_WORD requires a 4-byte aligned address on this
+     * part; given anything else the peripheral raises PGPERR (0x04) and
+     * programs nothing. The caller hands over whatever a TFTP data
+     * callback was given, and lwIP delivers a 512-byte block as a *pbuf
+     * chain* whenever the link's segmentation splits it -- one call of
+     * 478 bytes then one of 34, at offsets 478 and 512.
+     *
+     * That never happened over SLIP, whose frames arrived whole, so the
+     * word-at-a-time loop was correct by luck of pbuf shape rather than
+     * by construction. Switching the link to PPP changed the shape and
+     * every upload failed at offset 478.
+     *
+     * So: bytes until the address is aligned, words while there are four
+     * to write, bytes for the tail. Byte programming is valid at any
+     * address, and each byte is its own location -- so a later call
+     * finishing a word this one started programs cells that are still
+     * erased, which is the one thing flash requires.
+     */
     while (len != 0u && ok) {
-        /*
-         * Word at a time, and the tail padded with ones rather than
-         * zeroes: an erased cell is 1, and programming can only clear
-         * bits, so padding with zeroes would make the remainder of the
-         * word unprogrammable if it were ever written again.
-         */
-        uint32_t w = 0xFFFFFFFFu;
-        const uint32_t n = (len < 4u) ? len : 4u;
+        if (((addr & 3u) != 0u) || (len < 4u)) {
+            ok = HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, addr,
+                                   (uint64_t)*src) == HAL_OK;
+            addr += 1u;
+            src += 1u;
+            len -= 1u;
+        } else {
+            uint32_t w;
 
-        memcpy(&w, src, n);
-        ok = HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, addr, w) == HAL_OK;
-
-        addr += 4u;
-        src += n;
-        len -= n;
+            memcpy(&w, src, 4u);
+            ok = HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, addr,
+                                   (uint64_t)w) == HAL_OK;
+            addr += 4u;
+            src += 4u;
+            len -= 4u;
+        }
     }
 
+    if (!ok) {
+        g_flash_err = HAL_FLASH_GetError();
+    }
     HAL_FLASH_Lock();
 
     /*

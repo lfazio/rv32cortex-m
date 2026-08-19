@@ -121,6 +121,10 @@ bool board_flash_arena_reset(void);
  * Runs from ITCM, so it keeps executing while the bank is busy.
  */
 bool board_flash_write(uint32_t addr, const void *data, uint32_t len);
+/* The HAL's error code from the last board_flash_write, for the
+ * upload failure report -- a refused program and a full arena are
+ * different problems with different recoveries. */
+uint32_t board_flash_last_error(void);
 
 /* ------------------------------------------------------------------ */
 /* Link activity                                                       */

@@ -718,7 +718,25 @@ bool emu_net_image_data(emu_net_image_t which, const void *data,
                         uint32_t len, uint32_t off)
 {
     if (which == EMU_NET_IMAGE_ROM) {
-        return board_flash_write(g_up_addr + off, data, len);
+        const bool ok = board_flash_write(g_up_addr + off, data, len);
+
+        /*
+         * Say which step refused and what the HAL made of it. TFTP's
+         * "error writing file" reaches the client with no detail, and
+         * on this side "upload failed" alone cannot distinguish a full
+         * arena -- the expected failure, which erasing recovers -- from
+         * a program the peripheral rejected, which retrying never will.
+         */
+        if (!ok) {
+            console_puts("\nemu: rom write failed addr=");
+            console_puthex(g_up_addr + off);
+            console_puts(" len=");
+            console_putu(len);
+            console_puts(" halerr=");
+            console_puthex(board_flash_last_error());
+            console_puts("\n");
+        }
+        return ok;
     }
 
     /*
