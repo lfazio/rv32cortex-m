@@ -286,6 +286,28 @@ int g4mh_intc_pending_pri(const g4mh_intc_t *ic, unsigned pe,
                           unsigned *priority);
 
 /*
+ * Is `channel` set to the table reference method (EEICn.EITB)?
+ *
+ * The core asks this when vectoring, because which of the two handler
+ * address methods applies is a property of the *channel* and not of the
+ * core -- and the answer lives in the one word this controller keeps per
+ * channel, which EICn, EEICn and IMRm are three views of.
+ *
+ * Out of range reads false, so a core that somehow names a channel this
+ * controller does not have takes the direct vector rather than reading a
+ * table entry that is not there.
+ */
+bool g4mh_intc_chan_is_table(const g4mh_intc_t *ic, uint32_t channel);
+
+/*
+ * `channel`'s configured priority (EIP), which the core needs to pick a
+ * direct vector offset. False and untouched if the channel is out of
+ * range -- distinct from priority 0, which is the *highest*.
+ */
+bool g4mh_intc_chan_priority(const g4mh_intc_t *ic, uint32_t channel,
+                             unsigned *priority);
+
+/*
  * The TPTM's interval interrupt for PE `pe`, routed by TPTMSEL: EIINT31
  * when its bit is set, FEINT otherwise.
  *

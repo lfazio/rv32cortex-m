@@ -167,6 +167,25 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
 #define G4MH_SR_RBASE       2u
 #define G4MH_SR_EBASE       3u
 #define G4MH_SR_INTBP       4u
+
+/*
+ * RBASE and EBASE carry two flags in the bits the 512-byte alignment
+ * leaves free (R01UH0923EJ0130 tables 3.26 and 3.27). Whichever register
+ * PSW.EBV selects is the one whose flags apply.
+ *
+ *   RINT  collapse every user interrupt onto offset 0x100, instead of
+ *         spacing them 0x10 apart by *priority*
+ *   DV    force the direct vector method even for channels the interrupt
+ *         controller has set to table reference
+ *
+ * The offset is by priority and never by channel: per-channel granularity
+ * exists only through the table reference method, which is an indirection
+ * rather than a landing pad. Reading `RINT` as "one vector per channel
+ * versus one for all" is the easy mistake and gets 2048 vectors where the
+ * architecture has 16.
+ */
+#define G4MH_BASE_RINT      (1u << 0)
+#define G4MH_BASE_DV        (1u << 1)
 #define G4MH_SR_MCTL        5u
 #define G4MH_SR_PID         6u
 #define G4MH_SR_SCCFG       11u

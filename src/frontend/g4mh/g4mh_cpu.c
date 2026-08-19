@@ -167,9 +167,28 @@ bool g4mh_exc_is_fe(g4mh_exc_t cause)
  * RBASE normally, EBASE when PSW.EBV is set -- which is the mechanism a
  * system uses to move its vector table after boot without relocating the
  * reset vector. The offset within the table is 0x10 per exception class
- * for the synchronous causes and a single entry for all EI interrupts,
- * which is the "reduced" vector layout G4MH uses when INTCFG selects it.
+ * for the synchronous causes.
  */
+
+/*
+ * The direct vector offset for a user interrupt.
+ *
+ * **By priority, never by channel.** RBASE.RINT collapses all of them
+ * onto 0x100; otherwise they are spaced 0x10 apart by priority, and
+ * priorities at or above 16 share priority 15's slot (R01UH0923EJ0130
+ * table 3.106, note 2). So this axis gives at most sixteen landing pads
+ * however many channels exist -- per-channel granularity is what the
+ * table reference method is for, and it is an indirection rather than
+ * more vectors.
+ */
+static uint32_t direct_vector_offset(uint32_t base, unsigned priority)
+{
+    if ((base & G4MH_BASE_RINT) != 0u) {
+        return 0x0100u;
+    }
+    return 0x0100u + (uint32_t)(priority < 16u ? priority : 15u) * 0x10u;
+}
+
 static uint32_t handler_address(const g4mh_cpu_t *c, g4mh_exc_t cause)
 {
     const uint32_t base = (c->psw & G4MH_PSW_EBV)
@@ -180,7 +199,20 @@ static uint32_t handler_address(const g4mh_cpu_t *c, g4mh_exc_t cause)
     const uint32_t table = base & ~0x1FFu;
 
     if (cause >= G4MH_EXC_EIINT_BASE && cause < G4MH_EXC_SYSCALL) {
-        return table + 0x0100u;         /* all EI interrupts             */
+        /*
+         * Only reached for the direct vector method -- the table
+         * reference case is resolved in g4mh_cpu_exception, because it
+         * reads memory and can fault, which a pure address computation
+         * cannot express. Priority is re-derived rather than passed:
+         * this is off the delivery path's hot loop and the alternative
+         * is a parameter every other caller would have to invent.
+         */
+        unsigned pri = 15u;
+        if (c->intc != NULL) {
+            const uint32_t ch = cause - G4MH_EXC_EIINT_BASE;
+            (void)g4mh_intc_chan_priority(c->intc, ch, &pri);
+        }
+        return table + direct_vector_offset(base, pri);
     }
     if (cause >= G4MH_EXC_TRAP0 && cause < G4MH_EXC_TRAP0 + 0x10u) {
         return table + 0x0040u;         /* TRAP 0..15                    */
@@ -207,7 +239,58 @@ static uint32_t handler_address(const g4mh_cpu_t *c, g4mh_exc_t cause)
     }
 }
 
-void g4mh_cpu_exception(g4mh_cpu_t *c, g4mh_exc_t cause, uint32_t ret_pc)
+bool g4mh_cpu_irq_vector(g4mh_cpu_t *c, uint32_t channel, uint32_t *out)
+{
+    const uint32_t base = (c->psw & G4MH_PSW_EBV)
+                        ? c->sr[1][G4MH_SR_EBASE]
+                        : c->sr[1][G4MH_SR_RBASE];
+
+    /*
+     * Three things have to agree before the table is read: the channel
+     * must ask for it, and the base register in force must not have DV
+     * set, which overrides the controller (R01UH0923EJ0130, figure 3.22
+     * step <1>). Getting the override backwards would make DV *select*
+     * the table rather than refuse it.
+     */
+    if ((base & G4MH_BASE_DV) != 0u ||
+        !g4mh_intc_chan_is_table(c->intc, channel)) {
+        unsigned pri = 15u;
+        (void)g4mh_intc_chan_priority(c->intc, channel, &pri);
+        *out = (base & ~0x1FFu) + direct_vector_offset(base, pri);
+        return true;
+    }
+
+    /*
+     * "Exception handler address read position = INTBP + channel number
+     * x 4 bytes", and the word read from there *is* the handler address
+     * -- not a base to add to. INTBP's low nine bits are always zero.
+     */
+    const uint32_t at = (c->sr[1][G4MH_SR_INTBP] & ~0x1FFu) + channel * 4u;
+    uint32_t v;
+
+    if (g4mh_load(c, at, 4u, false, &v) != G4MH_EXC_NONE) {
+        /*
+         * MDP while reading the table. The manual is specific: acceptance
+         * is cancelled, no response goes to the controller, and the
+         * request stays pending to be taken again after the handler
+         * returns. That is why the caller acknowledges the channel only
+         * once this has succeeded -- moving the ack earlier would drop
+         * the interrupt on a fault that is meant to be retried.
+         */
+        return false;
+    }
+    *out = v;
+    return true;
+}
+
+/*
+ * `handler` is passed in rather than derived because the table reference
+ * method resolves it with a memory read that can fault -- so the caller
+ * has to have done it, and been able to give up, before any of the entry
+ * state below is written. Everything else calls the wrapper.
+ */
+static void exception_to(g4mh_cpu_t *c, g4mh_exc_t cause, uint32_t ret_pc,
+                         uint32_t handler)
 {
     const bool fe = g4mh_exc_is_fe(cause);
 
@@ -241,7 +324,7 @@ void g4mh_cpu_exception(g4mh_cpu_t *c, g4mh_exc_t cause, uint32_t ret_pc)
     }
 
     c->sr[0][G4MH_SR_PSW] = c->psw;
-    c->pc = handler_address(c, cause);
+    c->pc = handler;
     c->irq_dirty = true;
 
     /*
@@ -255,6 +338,22 @@ void g4mh_cpu_exception(g4mh_cpu_t *c, g4mh_exc_t cause, uint32_t ret_pc)
 #if EMU_ENABLE_STATS
     c->exc_count++;
 #endif
+}
+
+/*
+ * The ordinary entry point: derive the handler and go. Every cause but a
+ * table-reference interrupt resolves without touching memory, so nothing
+ * here can fail.
+ */
+void g4mh_cpu_exception(g4mh_cpu_t *c, g4mh_exc_t cause, uint32_t ret_pc)
+{
+    exception_to(c, cause, ret_pc, handler_address(c, cause));
+}
+
+void g4mh_cpu_exception_at(g4mh_cpu_t *c, g4mh_exc_t cause, uint32_t ret_pc,
+                           uint32_t handler)
+{
+    exception_to(c, cause, ret_pc, handler);
 }
 
 /*

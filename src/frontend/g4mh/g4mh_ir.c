@@ -666,8 +666,21 @@ static bool g4mh_jit_take_irq(emu_cpu_t *cpu)
         return false;
     }
     c->state = EMU_STATE_RUNNING;
+
+    /*
+     * Vector first, acknowledge second -- the third thing this separate
+     * copy has needed. A table-reference channel resolves its handler by
+     * reading memory, which can take an MDP, and the architecture then
+     * cancels acceptance and leaves the request pending; acknowledging
+     * before the read would discard an interrupt meant to be retried.
+     */
+    uint32_t vec;
+    if (!g4mh_cpu_irq_vector(c, (uint32_t)ch, &vec)) {
+        g4mh_cpu_exception(c, G4MH_EXC_MDP, c->pc);
+        return true;
+    }
     g4mh_intc_ack(c->intc, (uint32_t)ch);
-    g4mh_cpu_exception(c, G4MH_EXC_EIINT_BASE + (uint32_t)ch, c->pc);
+    g4mh_cpu_exception_at(c, G4MH_EXC_EIINT_BASE + (uint32_t)ch, c->pc, vec);
     g4mh_cpu_ack_priority(c, ipri);
     return true;
 }

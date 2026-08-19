@@ -528,11 +528,27 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
             unsigned ipri = 64u;
             const int ch = g4mh_cpu_pending_irq_pri(c, &ipri);
             if (ch >= 0) {
+                uint32_t vec;
+
                 c->state = EMU_STATE_RUNNING;
                 c->pc = pc;
+
+                /*
+                 * Resolve the vector *before* acknowledging. A table
+                 * reference reads it out of memory and can take an MDP,
+                 * and the architecture then cancels acceptance and leaves
+                 * the request pending -- which an ack would have thrown
+                 * away.
+                 */
+                if (!g4mh_cpu_irq_vector(c, (uint32_t)ch, &vec)) {
+                    g4mh_cpu_exception(c, G4MH_EXC_MDP, pc);
+                    pc = c->pc;
+                    continue;
+                }
                 g4mh_intc_ack(c->intc, (uint32_t)ch);
-                g4mh_cpu_exception(c,
-                                   G4MH_EXC_EIINT_BASE + (uint32_t)ch, pc);
+                g4mh_cpu_exception_at(c,
+                                      G4MH_EXC_EIINT_BASE + (uint32_t)ch,
+                                      pc, vec);
                 /*
                  * *After* the exception, because it reads the PSW that
                  * entry has already updated and writes the ceiling the

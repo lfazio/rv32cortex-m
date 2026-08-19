@@ -1419,6 +1419,127 @@ static void test_ldm_mp_is_privileged(void)
 #endif /* G4MH_EXT_MPU */
 
 /*
+ * How a user interrupt finds its handler: the two methods, and the two
+ * ways of overriding them.
+ *
+ * This had one method and it was the wrong one -- every EIINT vectored to
+ * `base + 0x100`, which is what RBASE.RINT *selects* rather than what the
+ * architecture does by default. So a guest that set per-priority vectors
+ * had them all collapse onto the first, silently, and INTBP was a
+ * register the frontend could name and never read.
+ *
+ * The two axes are easy to conflate and mean different things:
+ *
+ *   - **direct vector** puts the handler at `base + 0x100 + priority*0x10`
+ *     -- by *priority*, so at most sixteen landing pads however many
+ *     channels exist. RINT collapses them all to 0x100.
+ *   - **table reference** reads the handler address out of memory at
+ *     `INTBP + channel*4` -- by *channel*, and an indirection rather than
+ *     a landing pad. It is the only way to get per-channel granularity.
+ *
+ * Driven through g4mh_cpu_irq_vector rather than by running a guest,
+ * because what is under test is the address *chosen*: a guest can only
+ * observe "some handler ran", which is what let the single wrong vector
+ * survive.
+ *
+ * The real core is used rather than the bare g_tic_cpu the ceiling tests
+ * use, because a table reference reads memory and that one has no bus --
+ * which is exactly why the fault case at the end can be provoked by
+ * pointing INTBP somewhere unmapped.
+ */
+static void test_irq_vector_methods(void)
+{
+    const uint16_t prog[] = { 0x07E0u, SUB_HALT };
+    const uint32_t chan = 6u;
+    const uint32_t pri  = 3u;
+    const uint32_t base = EMU_GUEST_RAM_BASE + 0x1000u;
+    uint32_t vec = 0u;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 8u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+    if (c->intc == NULL) {
+        CHECK(false);
+        return;
+    }
+
+    /* Priority `pri`, direct vector: RINT and DV both clear. */
+    (void)g4mh_intc1_ops.write(c->intc, G4MH_INTC1_EEIC + chan * 4u, 4u, pri);
+    c->sr[1][G4MH_SR_RBASE] = base;
+    c->psw &= ~(uint32_t)G4MH_PSW_EBV;
+
+    CHECK(g4mh_cpu_irq_vector(c, chan, &vec));
+    CHECK_EQ(vec, base + 0x100u + pri * 0x10u);
+
+    /*
+     * Priority 20 shares priority 15's slot -- "interrupts of priority 16
+     * or above use the same offset as priority 15". A test using only
+     * small priorities passes against an implementation with no cap.
+     */
+    (void)g4mh_intc1_ops.write(c->intc, G4MH_INTC1_EEIC + chan * 4u, 4u, 20u);
+    CHECK(g4mh_cpu_irq_vector(c, chan, &vec));
+    CHECK_EQ(vec, base + 0x100u + 15u * 0x10u);
+
+    /* RINT collapses every priority onto 0x100. */
+    (void)g4mh_intc1_ops.write(c->intc, G4MH_INTC1_EEIC + chan * 4u, 4u, pri);
+    c->sr[1][G4MH_SR_RBASE] = base | G4MH_BASE_RINT;
+    CHECK(g4mh_cpu_irq_vector(c, chan, &vec));
+    CHECK_EQ(vec, base + 0x100u);
+
+    /*
+     * Table reference. INTBP's low nine bits are always zero, so the
+     * table is 512-aligned; the word at INTBP + channel*4 *is* the
+     * handler address rather than an offset to add.
+     */
+    const uint32_t tbl = EMU_GUEST_RAM_BASE + 0x800u;
+    const uint32_t handler = 0xABCD1234u;
+    const uint32_t off = (tbl - EMU_GUEST_RAM_BASE) + chan * 4u;
+
+    g_ram[off]      = (uint8_t)(handler & 0xFFu);
+    g_ram[off + 1u] = (uint8_t)((handler >> 8) & 0xFFu);
+    g_ram[off + 2u] = (uint8_t)((handler >> 16) & 0xFFu);
+    g_ram[off + 3u] = (uint8_t)(handler >> 24);
+
+    c->sr[1][G4MH_SR_INTBP] = tbl;
+    c->sr[1][G4MH_SR_RBASE] = base;             /* RINT and DV clear */
+    (void)g4mh_intc1_ops.write(c->intc, G4MH_INTC1_EEIC + chan * 4u, 4u,
+                               pri | G4MH_EEIC_EITB);
+
+    CHECK(g4mh_cpu_irq_vector(c, chan, &vec));
+    CHECK_EQ(vec, handler);
+
+    /*
+     * DV overrides the controller: the channel still asks for the table
+     * and must get the direct vector anyway. Getting this backwards --
+     * DV *selecting* the table -- would pass every check above.
+     */
+    c->sr[1][G4MH_SR_RBASE] = base | G4MH_BASE_DV;
+    CHECK(g4mh_cpu_irq_vector(c, chan, &vec));
+    CHECK_EQ(vec, base + 0x100u + pri * 0x10u);
+
+    /*
+     * A table read that faults reports rather than vectoring somewhere.
+     * The caller must not acknowledge the channel in that case, which is
+     * why this returns a bool at all.
+     */
+    c->sr[1][G4MH_SR_RBASE] = base;
+    c->sr[1][G4MH_SR_INTBP] = 0xE0000000u;      /* nothing mapped here */
+    CHECK(!g4mh_cpu_irq_vector(c, chan, &vec));
+
+    /* A channel not set to table reference never reads memory, so an
+     * unmapped INTBP cannot affect it. */
+    (void)g4mh_intc1_ops.write(c->intc, G4MH_INTC1_EEIC + chan * 4u, 4u, pri);
+    CHECK(g4mh_cpu_irq_vector(c, chan, &vec));
+    CHECK_EQ(vec, base + 0x100u + pri * 0x10u);
+}
+
+/*
  * The swap group, checked on both the register result and PSW.
  *
  * The flags are the reason these instructions exist -- they let an endian
@@ -5446,6 +5567,7 @@ void test_g4mh(void)
     test_resbank_is_not_di();
     test_narrow_atomics();
     test_pointer_update_addressing();
+    test_irq_vector_methods();
 #if G4MH_EXT_MPU
     test_ldm_stm_mp();
     test_ldm_mp_is_privileged();

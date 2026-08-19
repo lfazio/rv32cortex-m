@@ -181,6 +181,42 @@ width and was ending a block at every large constant.
 that is not this project's own encoder: CC-RH produces the bytes, the
 emulator runs them, 8 checks and 0 failures on both backends.
 
+## Where an interrupt handler lives
+
+Two methods, two overrides, and they answer different questions — the
+frontend had one of the four and it was the wrong default.
+
+| | address | indexed by |
+|---|---|---|
+| direct vector | `base + 0x100 + min(priority,15) * 0x10` | **priority** |
+| direct vector, `RBASE.RINT`/`EBASE.RINT` set | `base + 0x100` | nothing — one vector for all |
+| table reference, per-channel `EIC.EITB` | **the word read from** `INTBP + channel * 4` | **channel** |
+| `RBASE.DV`/`EBASE.DV` set | forces direct vector, whatever the channel asks | — |
+
+`base` is RBASE, or EBASE when `PSW.EBV` is set; both carry `DV` at bit 1
+and `RINT` at bit 0, in the space the 512-byte alignment leaves free.
+
+**Per-channel granularity exists only through the table**, and it is an
+indirection rather than more landing pads: the offset selects a table
+entry *holding* an address. The direct method is by priority and caps at
+15, so priorities 16 and above share priority 15's slot however many
+channels are configured. Reading `RINT` as "one vector per channel versus
+one for all" is the easy mistake and produces 2048 vectors where the
+architecture has 16.
+
+This frontend vectored every EIINT to `base + 0x100` — which is what
+`RINT` *selects*, not what the architecture does by default. So a guest
+setting per-priority handlers had them all collapse onto the first,
+silently, and `INTBP` was a register it could name and never read.
+
+**A table read can fault, which is why `g4mh_cpu_irq_vector` returns a
+bool.** The manual is specific: an MDP there cancels acceptance, sends no
+response to the controller, and leaves the request pending to be taken
+again after the protection handler returns. That forced the acknowledge
+to move *after* the vector is resolved in both delivery paths — and there
+are two, the interpreter's and `g4mh_ir.c`'s separate copy, which is the
+third time that copy has needed the same change made twice.
+
 ## The instruction list
 
 **Every G4MH instruction CC-RH can assemble, executed.**

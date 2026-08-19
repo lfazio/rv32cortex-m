@@ -166,6 +166,24 @@ int g4mh_intc_pending(const g4mh_intc_t *ic, unsigned pe)
     return g4mh_intc_pending_pri(ic, pe, NULL);
 }
 
+bool g4mh_intc_chan_is_table(const g4mh_intc_t *ic, uint32_t channel)
+{
+    if (ic == NULL || channel >= (uint32_t)G4MH_INT_CHANNELS) {
+        return false;
+    }
+    return (ic->chan[channel] & G4MH_EEIC_EITB) != 0u;
+}
+
+bool g4mh_intc_chan_priority(const g4mh_intc_t *ic, uint32_t channel,
+                             unsigned *priority)
+{
+    if (ic == NULL || channel >= (uint32_t)G4MH_INT_CHANNELS) {
+        return false;
+    }
+    *priority = (unsigned)(ic->chan[channel] & G4MH_EEIC_EIP_MASK);
+    return true;
+}
+
 int g4mh_intc_pending_pri(const g4mh_intc_t *ic, unsigned pe,
                           unsigned *priority)
 {

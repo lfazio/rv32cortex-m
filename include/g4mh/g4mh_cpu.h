@@ -199,6 +199,27 @@ void g4mh_cpu_boot(g4mh_cpu_t *c, uint32_t ram_base, uint32_t ram_size);
  */
 void g4mh_cpu_exception(g4mh_cpu_t *c, g4mh_exc_t cause, uint32_t ret_pc);
 
+/*
+ * Enter `cause` at an address the caller has already resolved. Only the
+ * interrupt delivery path needs this, and only because the table
+ * reference method reads the vector out of memory -- see
+ * g4mh_cpu_irq_vector.
+ */
+void g4mh_cpu_exception_at(g4mh_cpu_t *c, g4mh_exc_t cause, uint32_t ret_pc,
+                           uint32_t handler);
+
+/*
+ * The handler address for user interrupt `channel`, by whichever of the
+ * two methods applies: direct vector (base + an offset chosen by
+ * *priority*), or table reference (the word at INTBP + channel * 4).
+ *
+ * Returns false if the table read faulted, in which case nothing has been
+ * modified and the caller must **not** acknowledge the channel: the
+ * architecture cancels acceptance and leaves the request pending so it is
+ * taken again once the protection exception has been handled.
+ */
+bool g4mh_cpu_irq_vector(g4mh_cpu_t *c, uint32_t channel, uint32_t *out);
+
 /* True if `cause` is taken at FE level rather than EI. */
 bool g4mh_exc_is_fe(g4mh_exc_t cause);
 
