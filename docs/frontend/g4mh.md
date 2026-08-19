@@ -181,6 +181,64 @@ width and was ending a block at every large constant.
 that is not this project's own encoder: CC-RH produces the bytes, the
 emulator runs them, 8 checks and 0 failures on both backends.
 
+## The vector table
+
+Every CC-RH-built guest carries one, built by
+`scripts/g4mh-build-guest.sh` and linked first, because **a trap only
+reports if something catches it**. RBASE resets to the load address, so
+without a table a reserved instruction goes to load+0x60, which in a flat
+image is ordinary code twenty bytes further on: execution carries on with
+the faulting instruction skipped and nothing written anywhere. That has
+cost this project three multi-session hunts across two frontends.
+
+The layout is R01UH0923EJ0130 table 3.106, cross-checked against the
+vector table in Renesas' own Y-ASK-RH850U2B board package — which is the
+only reference implementation of it available, and which is *proprietary*
+(“no other uses are authorized”), so it was read for facts and nothing
+was copied.
+
+| offset | | offset | |
+|---|---|---|---|
+| 0x000 | RESET | 0x090 | **MIP / MDP** |
+| 0x010 | SYSERR | 0x0A0 | PIE |
+| 0x020 | reserved | 0x0B0 | reserved (debug) |
+| 0x030 | FETRAP | 0x0C0 | **MAE** |
+| 0x040 | TRAP 0-15 | 0x0D0 | reserved |
+| 0x050 | TRAP 16-31 | 0x0E0 | FENMI |
+| 0x060 | RIE | 0x0F0 | FEINT |
+| 0x070 | FPE / FXE | 0x100 + p*0x10 | EIINT, priority p |
+| 0x080 | UCPOP | | |
+
+**Three of these were wrong in the emulator** and nothing had ever
+noticed, because there was no guest with a table to notice with:
+
+| | was | is |
+|---|---|---|
+| MIP / MDP | 0x030 — FETRAP's slot | 0x090 |
+| MAE | 0x060 — RIE's slot | 0x0C0 |
+| unknown cause | 0x090 — MIP/MDP's slot | 0x010 |
+
+A wrong offset that lands on *another exception's* handler is the worst
+shape this takes: the handler exists, so the guest runs it and carries on
+reporting the wrong cause rather than failing where the mistake is.
+SYSCALL never asks — it vectors through SCBP in the interpreter.
+
+`test_exception_vector_offsets` pins all twelve.
+
+Two details worth keeping from the Renesas table. It puts a `SYNCI`
+after the reset branch, citing technical update TN-RH8-B0183B/E — without
+it the lockstep checker core reads an uninitialised register. It is a
+no-op here and is kept so the table is the shape a real guest has.
+And **each slot records which slot it is** in r19 before branching: that
+costs 4 bytes of a 16-byte entry and is the only reason the report can
+tell a mis-mapped exception from a correctly mapped one. Without it every
+FE cause reaches the same handler and prints identically, so the A/B that
+proves the offsets — reverting MDP to 0x030 and watching `#00000090`
+become `#00000030` — would have shown nothing at all.
+
+The handler prints `!TRAP <cause> @<pc> #<slot>` and halts. Halting is
+the point; carrying on is what made these invisible.
+
 ## Where an interrupt handler lives
 
 Two methods, two overrides, and they answer different questions — the

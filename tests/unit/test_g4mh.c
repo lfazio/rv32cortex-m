@@ -1540,6 +1540,65 @@ static void test_irq_vector_methods(void)
 }
 
 /*
+ * Every synchronous exception's handler offset, against U2B table 3.106.
+ *
+ * Three of these were wrong and none of them failed anything: MIP and MDP
+ * vectored to 0x30 (FETRAP's slot) and MAE to 0x60 (RIE's). A wrong
+ * offset that lands on *another exception's* handler is the worst shape
+ * this can take -- the handler exists, so a guest runs it and carries on
+ * reporting the wrong cause, rather than failing where the mistake is.
+ *
+ * They were found by reading Renesas' own board package, which is the
+ * only reference implementation of this table available, and confirmed
+ * against the manual. Nothing in this project could have noticed
+ * otherwise: the guests had no vector table at all until now, and with
+ * one, every FE cause reaches the same reporting code unless the table
+ * records which slot it was entered from.
+ */
+static void test_exception_vector_offsets(void)
+{
+    static const struct { g4mh_exc_t cause; uint32_t off; } k[] = {
+        { G4MH_EXC_SYSERR,       0x010u },
+        { G4MH_EXC_FETRAP + 1u,  0x030u },
+        { G4MH_EXC_TRAP0,        0x040u },
+        { G4MH_EXC_TRAP1,        0x050u },
+        { G4MH_EXC_RIE,          0x060u },
+        { G4MH_EXC_FPP,          0x070u },   /* FPE/FXE                  */
+        { G4MH_EXC_UCPOP,        0x080u },
+        { G4MH_EXC_MIP,          0x090u },   /* was 0x030                */
+        { G4MH_EXC_MDP,          0x090u },   /* was 0x030                */
+        { G4MH_EXC_PIE,          0x0A0u },
+        { G4MH_EXC_MAE,          0x0C0u },   /* was 0x060                */
+        { G4MH_EXC_FEINT,        0x0F0u },
+    };
+    const uint32_t base = 0x80000000u;
+
+    for (unsigned i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
+        g4mh_cpu_t c;
+
+        memset(&c, 0, sizeof(c));
+        c.sr[1][G4MH_SR_RBASE] = base;
+        c.sr[1][G4MH_SR_EBASE] = base;
+
+        g4mh_cpu_exception(&c, k[i].cause, 0x1000u);
+        CHECK_EQ(c.pc, base + k[i].off);
+    }
+
+    /*
+     * EBASE replaces RBASE when PSW.EBV is set -- checked once, because
+     * the selection is shared by every cause above and a per-cause check
+     * would only be testing the same line twelve more times.
+     */
+    g4mh_cpu_t c;
+    memset(&c, 0, sizeof(c));
+    c.sr[1][G4MH_SR_RBASE] = base;
+    c.sr[1][G4MH_SR_EBASE] = 0x90000000u;
+    c.psw = G4MH_PSW_EBV;
+    g4mh_cpu_exception(&c, G4MH_EXC_RIE, 0x1000u);
+    CHECK_EQ(c.pc, 0x90000000u + 0x060u);
+}
+
+/*
  * The swap group, checked on both the register result and PSW.
  *
  * The flags are the reason these instructions exist -- they let an endian
@@ -5568,6 +5627,7 @@ void test_g4mh(void)
     test_narrow_atomics();
     test_pointer_update_addressing();
     test_irq_vector_methods();
+    test_exception_vector_offsets();
 #if G4MH_EXT_MPU
     test_ldm_stm_mp();
     test_ldm_mp_is_privileged();

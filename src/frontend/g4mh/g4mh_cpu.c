@@ -226,16 +226,38 @@ static uint32_t handler_address(const g4mh_cpu_t *c, g4mh_exc_t cause)
     if (cause >= G4MH_EXC_FEINT && cause < G4MH_EXC_FEINT + 0x10u) {
         return table + 0x00F0u;         /* FEINT 0..15                   */
     }
+    /*
+     * R01UH0923EJ0130 table 3.106, and confirmed against the vector table
+     * in Renesas' own board package, which is the thing a real guest is
+     * built around. Three of these were wrong and each sent an exception
+     * to a *different exception's* handler rather than nowhere:
+     *
+     *   MIP/MDP  0x30 -> 0x90    was landing on FETRAP
+     *   MAE      0x60 -> 0xC0    was landing on RIE
+     *
+     * That is the worst shape a vector bug takes: the handler exists, so
+     * something runs and the guest carries on reporting the wrong cause,
+     * rather than failing where the mistake is. 0x20, 0xB0 and 0xD0 are
+     * reserved, 0xE0 is FENMI, which this frontend does not raise.
+     */
     switch (cause) {
     case G4MH_EXC_SYSERR: return table + 0x0010u;
-    case G4MH_EXC_MIP:    return table + 0x0030u;
-    case G4MH_EXC_MDP:    return table + 0x0030u;
     case G4MH_EXC_RIE:    return table + 0x0060u;
-    case G4MH_EXC_MAE:    return table + 0x0060u;
-    case G4MH_EXC_FPP:    return table + 0x0070u;
+    case G4MH_EXC_FPP:    return table + 0x0070u;   /* FPE/FXE           */
     case G4MH_EXC_UCPOP:  return table + 0x0080u;
+    case G4MH_EXC_MIP:    return table + 0x0090u;
+    case G4MH_EXC_MDP:    return table + 0x0090u;
     case G4MH_EXC_PIE:    return table + 0x00A0u;
-    default:              return table + 0x0090u;   /* SYSCALL and rest  */
+    case G4MH_EXC_MAE:    return table + 0x00C0u;
+    default:
+        /*
+         * Nothing else reaches here: SYSCALL vectors through SCBP in the
+         * interpreter and never asks. An unknown cause is a system error,
+         * which is at least a slot a guest is expected to have populated
+         * -- 0x90 used to be the fallback, which quietly made every
+         * unknown cause look like a protection violation.
+         */
+        return table + 0x0010u;
     }
 }
 
