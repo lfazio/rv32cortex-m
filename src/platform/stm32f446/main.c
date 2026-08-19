@@ -374,6 +374,8 @@ uint32_t emu_board_ram_size = 0u;
  * the windows differ per part, and so does which of them a guest may
  * write.
  */
+void emu_board_image_published(void) { }
+
 bool emu_board_add_regions(emu_bus_t *bus)
 {
     for (unsigned i = 0; i < sizeof(g_periph_map) / sizeof(g_periph_map[0]);
@@ -433,15 +435,6 @@ int main(void)
                    ops->desc, emu_board_core_name,
                    (unsigned)(SystemCoreClock / 1000000u));
 
-    emu_board_img_size = emu_guest_image_size;
-    emu_board_img_ro   = emu_guest_ro_size;
-    emu_board_ram      = GUEST_RAM_BASE_PTR;
-    emu_board_ram_size = GUEST_RAM_SIZE;
-
-    if (!emu_build_address_space(&g_bus, &g_uart)) {
-        console_puts("fatal: could not build the guest address space\n");
-        fatal_halt();
-    }
 
     if (!emu_core_open(&g_core, ops, &g_bus, 0u)) {
         console_puts("fatal: frontend has no core 0\n");
@@ -452,19 +445,23 @@ int main(void)
      * firmware is single-core -- 64 KiB of local RAM per G4MH PE does not
      * fit in 128 KiB of SRAM -- so there is one bus and one of each.
      */
-    if ((ops->add_shared_devices != NULL &&
-         !ops->add_shared_devices(&g_bus)) ||
-        (ops->add_core_devices != NULL &&
-         !ops->add_core_devices(g_core.cpu, &g_bus, 0u))) {
-        console_puts("fatal: could not map the guest platform devices\n");
-        fatal_halt();
-    }
 
     ops->set_unmask_hook(g_core.cpu, emu_board_irq_unmask, NULL);
     emu_board_irqs_init();
     emu_uart_init(&g_uart, emu_console_uart_tx, guest_uart_rx, NULL);
     ops->set_syscall(g_core.cpu, emu_guest_syscall, &g_sc_ctx);
     ops->set_cache(g_core.cpu, &emu_arm_cache_ops);
+
+    emu_board_img      = emu_guest_image;
+    emu_board_img_size = emu_guest_image_size;
+    emu_board_img_ro   = emu_guest_ro_size;
+    emu_board_ram      = GUEST_RAM_BASE_PTR;
+    emu_board_ram_size = GUEST_RAM_SIZE;
+
+    if (!emu_start_guest(&g_core, &g_bus, &g_uart, &g_exit)) {
+        console_puts("fatal: could not bring the guest up\n");
+        fatal_halt();
+    }
 
     /*
      * The image is linked to run from guest RAM, so copy it out of flash.
@@ -476,10 +473,6 @@ int main(void)
      * as a bus region pointing into flash, and copying it would put it
      * in RAM twice -- which is the whole cost this removes.
      */
-    if (emu_guest_image_size - emu_guest_ro_size > GUEST_RAM_SIZE) {
-        console_puts("fatal: guest image larger than guest RAM\n");
-        fatal_halt();
-    }
     /*
      * **Zeroed, not installed.** The guest copies its own .data now --
      * start.S does it from __data_lma, in the read-only image window --
@@ -492,10 +485,7 @@ int main(void)
      * it one test's leftovers become the next test's initial state, and
      * a suite's results start depending on the order it ran in.
      */
-    memset(GUEST_RAM_BASE_PTR, 0, GUEST_RAM_SIZE);
 
-    emu_core_reset(&g_core, EMU_GUEST_RESET_PC);
-    emu_core_boot(&g_core, EMU_GUEST_RAM_BASE, GUEST_RAM_SIZE);
 
     emu_cpu_status_t st;
     emu_core_status(&g_core, &st);

@@ -492,11 +492,6 @@ static void publish_image(void)
     emu_board_ram_size = GUEST_RAM_SIZE;
 }
 
-static bool build_address_space(void)
-{
-    publish_image();
-    return emu_build_address_space(&g_bus, &g_uart);
-}
 
 /*
  * Everything that has to be redone when the guest image changes:
@@ -508,94 +503,19 @@ static bool build_address_space(void)
  * read-only region's base and length both move when a different image
  * arrives and emu_bus has no way to resize a region in place.
  */
+void emu_board_image_published(void)
+{
+#if EMU_GUEST_ARCH_G4MH
+    /* This frontend executes from code flash, so it has to be told where
+     * the image now is; the RV32 side reads it through the bus. */
+    g4mh_set_flash(emu_board_img, emu_board_img_size, false);
+#endif
+}
+
 static bool start_guest(void)
 {
-    /*
-     * The writable half still has to *fit*, even though nothing copies
-     * it any more: the guest's .data VMA starts at the base of guest RAM
-     * and its copy loop walks to __data_end, so an image whose writable
-     * part exceeds the RAM would have the guest store past the end.
-     */
-    if ((g_img_size - g_img_ro) > GUEST_RAM_SIZE) {
-        return false;
-    }
-    if (!build_address_space()) {
-        return false;
-    }
-
-    /*
-     * The frontend's devices go back on every time, because
-     * build_address_space() begins with emu_bus_init() and that clears
-     * the region table -- so a rebuild that did not re-add them would
-     * take the CLINT and the APLIC away from a guest that had them a
-     * moment earlier. Registering them in main() alone was correct only
-     * while the bus was built exactly once.
-     */
-    if (g_core.cpu != NULL) {
-        const emu_cpu_ops_t *ops = g_core.ops;
-
-#if EMU_GUEST_ARCH_G4MH
-        /*
-         * G4MH resets fetching from code flash at address 0, and on this
-         * part code flash is the part's own flash -- the same arrangement
-         * the RV32 path above uses for its ROM region, and for the same
-         * reason: the image is already there, so serving it read-only
-         * costs no SRAM at all. Backing the architectural 3 MiB with .bss
-         * is what stopped this configuration linking.
-         *
-         * Read-only is not a limitation here, it is the model: there is
-         * no flash sequencer, and a guest writing its own code is doing
-         * something a real part refuses. This makes it fault.
-         *
-         * Said before add_shared_devices, which is what reads it.
-         */
-        g4mh_set_flash(g_img, g_img_size, false);
-#endif
-
-        if ((ops->add_shared_devices != NULL &&
-             !ops->add_shared_devices(&g_bus)) ||
-            (ops->add_core_devices != NULL &&
-             !ops->add_core_devices(g_core.cpu, &g_bus, 0u))) {
-            return false;
-        }
-    }
-
-    /*
-     * Only the writable tail. The read-only half is already reachable as
-     * a bus region pointing into flash, and copying it would put it in
-     * RAM twice -- which is the whole cost the split removes.
-     *
-     * The rest of guest RAM is cleared. Left alone it would still hold
-     * the previous guest's .bss and stack, which is how one architecture
-     * test comes to pass on state another test wrote -- the failure mode
-     * that makes a suite's results depend on the order it ran in.
-     */
-    /*
-     * **All of it zeroed, and none of it installed.** The guest copies
-     * its own .data now -- start.S does it from __data_lma, which is in
-     * the read-only image window -- so the firmware's job here is only
-     * to hand over memory in a known state.
-     *
-     * It used to memcpy the writable half of a pre-split image to the
-     * base of guest RAM. That put the guest's initialisation in the
-     * loader, which meant a guest could not be loaded as one blob and
-     * run, and it is what forced the .ro/.rw split -- a split that had
-     * already lost three bytes wherever .rodata ended unaligned.
-     */
-    memset(GUEST_RAM_BASE_PTR, 0, GUEST_RAM_SIZE);
-
-    /*
-     * The previous guest's exit status is not this one's. Left alone, a
-     * guest that halts without calling exit() reports whatever the last
-     * one returned -- which for a harness running a suite means every
-     * test after the first passing one looks like it passed.
-     */
-    g_exit.code = 0u;
-    g_exit.exited = false;
-
-    emu_core_reset(&g_core, EMU_GUEST_RESET_PC);
-    emu_core_boot(&g_core, EMU_GUEST_RAM_BASE, GUEST_RAM_SIZE);
-    return true;
+    publish_image();
+    return emu_start_guest(&g_core, &g_bus, &g_uart, &g_exit);
 }
 
 #if EMU_NET
@@ -944,16 +864,24 @@ static bool take_uploaded_image(void)
     }
     g_reload = false;
 
+    /*
+     * The bus only, at this point: emu_core_open() needs one to open
+     * onto, and the devices, reset and boot come later through
+     * start_guest() -- which needs the core to exist.
+     */
+    /*
+     * The whole bring-up, not just the bus: a new image needs the
+     * frontend's devices re-added, RAM cleared and the core reset, and
+     * skipping that leaves the previous guest's core state in place --
+     * which presents as the new guest retiring zero instructions.
+     */
     if (!start_guest()) {
         console_puts("emu: uploaded image does not fit guest RAM\n");
         return false;
     }
 
-    console_puts("\nemu: running uploaded image, ");
-    console_putu(g_img_ro);
-    console_puts(" ro + ");
-    console_putu(g_up_rw);
-    console_puts(" rw bytes\n");
+    console_printf("\nemu: running uploaded image, %u ro + %u rw bytes\n",
+                   (unsigned)g_img_ro, (unsigned)g_up_rw);
     return true;
 }
 #endif
@@ -1033,7 +961,13 @@ int main(void)
     g_img_size = emu_guest_image_size;
     g_img_ro   = emu_guest_ro_size;
 
-    if (!build_address_space()) {
+    /*
+     * The bus only here: emu_core_open() needs one to open onto, and the
+     * devices, reset and boot come later through start_guest(), which
+     * needs the core to exist.
+     */
+    publish_image();
+    if (!emu_build_address_space(&g_bus, &g_uart)) {
         console_puts("fatal: could not build the guest address space\n");
         fatal_halt();
     }

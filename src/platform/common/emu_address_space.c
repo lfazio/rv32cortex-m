@@ -37,6 +37,8 @@
 #include "emu/emu_memmap.h"
 #include "emu/emu_dev.h"
 
+#include <string.h>
+
 bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
 {
     emu_bus_init(bus);
@@ -80,4 +82,58 @@ bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
      * *architecture* rather than to a board, so the frontend maps them.
      */
     return emu_board_add_regions(bus);
+}
+
+/*
+ * Bring a guest up: address space, the frontend's own devices, cleared
+ * RAM and state, reset and boot.
+ *
+ * Split out because an upload has to repeat all of it. The bus is rebuilt
+ * rather than patched, because the read-only region's base *and* length
+ * both move when a different image arrives and emu_bus cannot resize a
+ * region in place -- and that is why the frontend's devices go back on
+ * every time: emu_bus_init clears the table, so a rebuild that skipped
+ * them would take the interrupt controller away from a guest that had it
+ * a moment earlier.
+ *
+ * The guest RAM is zeroed rather than left: without that, one test's
+ * leftovers become the next test's initial state and a suite's results
+ * start depending on the order it ran in. The exit status is cleared for
+ * the same reason -- a guest that halts without calling exit() otherwise
+ * reports whatever the last one returned, so every test after the first
+ * passing one looks like it passed.
+ */
+bool emu_start_guest(emu_core_t *core, emu_bus_t *bus, emu_uart_t *uart,
+                     emu_guest_exit_t *exit_state)
+{
+    if ((emu_board_img_size - emu_board_img_ro) > emu_board_ram_size) {
+        return false;
+    }
+    if (!emu_build_address_space(bus, uart)) {
+        return false;
+    }
+
+    if (core->cpu != NULL) {
+        const emu_cpu_ops_t *const ops = core->ops;
+
+        emu_board_image_published();
+
+        if ((ops->add_shared_devices != NULL &&
+             !ops->add_shared_devices(bus)) ||
+            (ops->add_core_devices != NULL &&
+             !ops->add_core_devices(core->cpu, bus, 0u))) {
+            return false;
+        }
+    }
+
+    memset(emu_board_ram, 0, emu_board_ram_size);
+
+    if (exit_state != NULL) {
+        exit_state->code = 0u;
+        exit_state->exited = false;
+    }
+
+    emu_core_reset(core, EMU_GUEST_RESET_PC);
+    emu_core_boot(core, EMU_GUEST_RAM_BASE, emu_board_ram_size);
+    return true;
 }
