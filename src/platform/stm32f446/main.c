@@ -278,7 +278,7 @@ static const struct {
  * interrupt entry forever without the guest ever making progress. So the
  * line is masked on entry and stays masked until the guest clears the
  * APLIC pending bit, which is its way of saying the device has been dealt
- * with -- see irq_unmask_line, reached through the frontend's unmask hook.
+ * with -- see emu_board_irq_unmask, reached through the frontend's unmask hook.
  *
  * Adding a peripheral is one table entry and one handler; the table is the
  * policy, the same way g_periph_map is for addresses.
@@ -310,7 +310,7 @@ static void irq_line_entry(IRQn_Type irqn)
     emu_core_set_irq(&g_core, (uint32_t)irqn, true);
 }
 
-static void irq_unmask_line(void *ctx, uint32_t source)
+void emu_board_irq_unmask(void *ctx, uint32_t source)
 {
     (void)ctx;
     if (irq_is_bridged(source)) {
@@ -324,7 +324,7 @@ static void irq_unmask_line(void *ctx, uint32_t source)
  * these handlers do almost nothing, and the emulator has no other interrupt
  * to rank them against.
  */
-static void bridged_irqs_init(void)
+void emu_board_irqs_init(void)
 {
     for (unsigned i = 0; i < sizeof(g_bridged) / sizeof(g_bridged[0]); i++) {
         NVIC_EnableIRQ(g_bridged[i]);
@@ -449,8 +449,8 @@ int main(void)
         fatal_halt();
     }
 
-    ops->set_unmask_hook(g_core.cpu, irq_unmask_line, NULL);
-    bridged_irqs_init();
+    ops->set_unmask_hook(g_core.cpu, emu_board_irq_unmask, NULL);
+    emu_board_irqs_init();
     emu_uart_init(&g_uart, emu_console_uart_tx, guest_uart_rx, NULL);
     ops->set_syscall(g_core.cpu, emu_guest_syscall, &g_sc_ctx);
     ops->set_cache(g_core.cpu, &emu_arm_cache_ops);
