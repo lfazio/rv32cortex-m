@@ -122,6 +122,25 @@ measured at.
       | `stm32n6xx_hal_conf.h` | from the family's own template, **never a renamed F7 one** -- the F4/F7 accelerator-name divergence is already recorded |
       | `stm32n6xx_it.c`, `coremark_native.c` | small |
 
+      **The interface is defined; the move is what remains.**
+      `src/platform/common/emu_board.h` states what only a board can
+      answer -- its core name for the banner, the guest image and RAM
+      extents, its passthrough regions, its bridged interrupt lines, and
+      its clock. Everything else in a runner is the same sequence on
+      every part.
+
+      Already shared and verified on hardware: the console and state dump
+      (`emu_console.c`), guest cache maintenance (`emu_arm_cache.c`), the
+      syscall services (`emu_syscall.c`), the run summary and framework
+      JIT statistics (`emu_stats.c`), and the network wiring
+      (`cmake/emu_net.cmake`). F446 724 -> 617 lines, F746 1546 -> 1438.
+
+      What is left is the sequence itself: `build_address_space`, the
+      IRQ bridging, the banner and the run loop. They differ between the
+      two boards *only* in the four things emu_board.h names -- checked,
+      not assumed: `build_address_space` diffs to the image variables and
+      the peripheral table and nothing else.
+
       **Share `main.c` before writing a third one.** Measured rather
       than assumed: F446 724 lines, F746 1546, host 897. The F746's
       extra thousand is almost entirely the network and upload
