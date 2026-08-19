@@ -22,8 +22,8 @@
     .balign 4
 
 /*
- * The two halves, embedded consecutively, so rv_guest_image still names
- * the whole image and rv_guest_ro_size says where it splits.
+ * The two halves, embedded consecutively, so emu_guest_image still names
+ * the whole image and emu_guest_ro_size says where it splits.
  *
  * No .balign between them, deliberately. The guest link script aligns
  * __guest_ro_end to 4 so the read-only half is already a multiple of
@@ -33,22 +33,22 @@
  * Concatenated they are byte-identical to the unsplit .bin, which the
  * build checks.
  */
-    .globl rv_guest_image
-    .type rv_guest_image, %object
-rv_guest_image:
+    .globl emu_guest_image
+    .type emu_guest_image, %object
+emu_guest_image:
     .incbin STR(RV32_GUEST_IMAGE_RO)
-rv_guest_ro_end:
+emu_guest_ro_end:
     .incbin STR(RV32_GUEST_IMAGE_RW)
     .balign 4
-rv_guest_image_end:
-    .size rv_guest_image, rv_guest_image_end - rv_guest_image
+emu_guest_image_end:
+    .size emu_guest_image, emu_guest_image_end - emu_guest_image
 
-    .globl rv_guest_image_size
-    .type rv_guest_image_size, %object
+    .globl emu_guest_image_size
+    .type emu_guest_image_size, %object
     .balign 4
-rv_guest_image_size:
-    .word rv_guest_image_end - rv_guest_image
-    .size rv_guest_image_size, 4
+emu_guest_image_size:
+    .word emu_guest_image_end - emu_guest_image
+    .size emu_guest_image_size, 4
 
 /*
  * How much of it is read-only, and so can be executed straight out of
@@ -56,9 +56,9 @@ rv_guest_image_size:
  * -- two of the three guests here have one -- and then the whole image
  * is read-only.
  */
-    .globl rv_guest_ro_size
-    .type rv_guest_ro_size, %object
+    .globl emu_guest_ro_size
+    .type emu_guest_ro_size, %object
     .balign 4
-rv_guest_ro_size:
-    .word rv_guest_ro_end - rv_guest_image
-    .size rv_guest_ro_size, 4
+emu_guest_ro_size:
+    .word emu_guest_ro_end - emu_guest_image
+    .size emu_guest_ro_size, 4

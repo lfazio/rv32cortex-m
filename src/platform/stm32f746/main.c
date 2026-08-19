@@ -41,9 +41,9 @@
 #include <stdio.h>
 
 /* The guest binary, embedded by guest_image.S. */
-extern const uint8_t rv_guest_image[];
-extern const uint32_t rv_guest_image_size;
-extern const uint32_t rv_guest_ro_size;
+extern const uint8_t emu_guest_image[];
+extern const uint32_t emu_guest_image_size;
+extern const uint32_t emu_guest_ro_size;
 
 /* ------------------------------------------------------------------ */
 /* Configuration                                                       */
@@ -486,7 +486,7 @@ void TIM6_DAC_IRQHandler(void)
  * symbols directly, which made "which image is running" a link-time
  * fact. An upload has to be able to change it at run time.
  */
-static const uint8_t *g_img      = rv_guest_image;
+static const uint8_t *g_img      = emu_guest_image;
 static uint32_t       g_img_size;
 static uint32_t       g_img_ro;
 static bool start_guest(void);
@@ -504,10 +504,10 @@ static bool build_address_space(void)
      *
      * The saving is real: the SRAM buffer now covers guest addresses
      * [ro, ro + GUEST_RAM_SIZE) instead of [0, GUEST_RAM_SIZE), so the
-     * guest gains rv_guest_ro_size of address space for nothing. On the
+     * guest gains emu_guest_ro_size of address space for nothing. On the
      * largest architecture tests that is 140 KiB of the 345 they need.
      *
-     * Both regions are registered even when rv_guest_ro_size is zero or
+     * Both regions are registered even when emu_guest_ro_size is zero or
      * the whole image, because emu_bus rejects a zero-length region and
      * a guest with no .data is the common case here -- two of the three
      * in the tree have one.
@@ -1087,8 +1087,8 @@ int main(void)
      * the bus is built publishes a zero-length ROM region, which the bus
      * rejects, and the firmware halts before it has run an instruction.
      */
-    g_img_size = rv_guest_image_size;
-    g_img_ro   = rv_guest_ro_size;
+    g_img_size = emu_guest_image_size;
+    g_img_ro   = emu_guest_ro_size;
 
     if (!build_address_space()) {
         console_puts("fatal: could not build the guest address space\n");

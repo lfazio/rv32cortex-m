@@ -35,9 +35,9 @@
 #include <string.h>
 
 /* The guest binary, embedded by guest_image.S. */
-extern const uint8_t rv_guest_image[];
-extern const uint32_t rv_guest_image_size;
-extern const uint32_t rv_guest_ro_size;
+extern const uint8_t emu_guest_image[];
+extern const uint32_t emu_guest_image_size;
+extern const uint32_t emu_guest_ro_size;
 
 /* ------------------------------------------------------------------ */
 /* Configuration                                                       */
@@ -361,19 +361,19 @@ static bool build_address_space(void)
      *
      * The saving is real: the SRAM buffer now covers guest addresses
      * [ro, ro + GUEST_RAM_SIZE) instead of [0, GUEST_RAM_SIZE), so the
-     * guest gains rv_guest_ro_size of address space for nothing. On the
+     * guest gains emu_guest_ro_size of address space for nothing. On the
      * largest architecture tests that is 140 KiB of the 345 they need.
      *
-     * Both regions are registered even when rv_guest_ro_size is zero or
+     * Both regions are registered even when emu_guest_ro_size is zero or
      * the whole image, because emu_bus rejects a zero-length region and
      * a guest with no .data is the common case here -- two of the three
      * in the tree have one.
      */
-    const uint32_t guest_ro = rv_guest_ro_size;
+    const uint32_t guest_ro = emu_guest_ro_size;
 
     if (guest_ro != 0u &&
         !emu_bus_add_rom(&g_bus, "guest-ro", EMU_GUEST_RAM_BASE,
-                         rv_guest_image, guest_ro)) {
+                         emu_guest_image, guest_ro)) {
         return false;
     }
     if (!emu_bus_add_ram(&g_bus, "ram", EMU_GUEST_RAM_BASE + guest_ro,
@@ -386,7 +386,7 @@ static bool build_address_space(void)
      * guest linked for execute-in-place costs no RAM at all.
      */
     if (!emu_bus_add_rom(&g_bus, "rom", EMU_GUEST_ROM_BASE,
-                        rv_guest_image, rv_guest_image_size)) {
+                        emu_guest_image, emu_guest_image_size)) {
         return false;
     }
 
@@ -498,12 +498,12 @@ int main(void)
      * as a bus region pointing into flash, and copying it would put it
      * in RAM twice -- which is the whole cost this removes.
      */
-    if (rv_guest_image_size - rv_guest_ro_size > GUEST_RAM_SIZE) {
+    if (emu_guest_image_size - emu_guest_ro_size > GUEST_RAM_SIZE) {
         console_puts("fatal: guest image larger than guest RAM\n");
         fatal_halt();
     }
-    memcpy(GUEST_RAM_BASE_PTR, rv_guest_image + rv_guest_ro_size,
-           rv_guest_image_size - rv_guest_ro_size);
+    memcpy(GUEST_RAM_BASE_PTR, emu_guest_image + emu_guest_ro_size,
+           emu_guest_image_size - emu_guest_ro_size);
 
     emu_core_reset(&g_core, EMU_GUEST_RESET_PC);
     emu_core_boot(&g_core, EMU_GUEST_RAM_BASE, GUEST_RAM_SIZE);
@@ -512,7 +512,7 @@ int main(void)
     emu_core_status(&g_core, &st);
 
     console_puts("guest  ");
-    console_putu(rv_guest_image_size);
+    console_putu(emu_guest_image_size);
     console_puts(" bytes at ");
     console_puthex(EMU_GUEST_RESET_PC);
     console_puts("\nram    ");

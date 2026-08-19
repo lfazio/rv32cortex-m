@@ -108,7 +108,7 @@ function(add_guest_image name)
     #
     # A split rather than extracting the symbol with `nm`: the sizes then
     # come from the assembler's own end-minus-start, exactly as
-    # rv_guest_image_size already does, and there is no third place for
+    # emu_guest_image_size already does, and there is no third place for
     # the boundary to be computed differently.
     add_custom_command(
         OUTPUT "${bin}.ro" "${bin}.rw"
