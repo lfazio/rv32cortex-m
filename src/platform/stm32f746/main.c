@@ -1239,75 +1239,61 @@ restart:
     if (rv_backend == &rv_backend_jit) {
         rv_jit_stats_t js;
         rv_jit_get_stats(&js);
-        console_puts("\n-- jit --\n  blocks   ");
-        console_putu(js.blocks);
-        console_puts("\n  code     ");
-        console_putu(js.code_used);
-        console_putc('/');
-        console_putu(js.code_size);
-        console_puts(" bytes\n  blks/xlat ");
-        console_putu(js.translations);
-        console_puts("\n  compact  ");
-        console_putu(js.compactions);
-        console_puts(" (");
-        console_putu(js.evictions);
-        console_puts(" evicted)\n  flushes  ");
-        console_putu(js.flushes);
+        console_printf(
+            "\n-- jit --\n"
+            "  blocks   %u\n"
+            "  code     %u/%u bytes\n"
+            "  blks/xlat %u\n"
+            "  compact  %u (%u evicted)\n"
+            "  flushes  %u\n",
+            (unsigned)js.blocks, (unsigned)js.code_used, (unsigned)js.code_size,
+            (unsigned)js.translations, (unsigned)js.compactions,
+            (unsigned)js.evictions, (unsigned)js.flushes);
+
         /*
          * Instructions the translator declined and the interpreter ran.
          * A high share here is the first place to look when the speedup
          * is smaller than expected: it names exactly which encodings are
          * worth teaching the translator next.
          */
-        console_puts("\n  interp   ");
-        console_putu(js.interp_fallbacks);
-        console_puts(" instructions fell back\n  helpers  muldiv ");
-        console_putu(js.alu_calls_muldiv);
-        console_puts("  clmul ");
-        console_putu(js.alu_calls_clmul);
-        console_puts("  bit ");
-        console_putu(js.alu_calls_bit);
-        console_puts("\n  pt hits  ");
-        console_putu(js.pt_hits);
-        console_puts(" armed ");
-        console_putu(js.pt_armed);
-        console_puts("\n  declined ");
-        console_putu(js.declined);
-        console_puts(" overflow ");
-        console_putu(js.overflowed);
+        console_printf(
+            "  interp   %u instructions fell back\n"
+            "  helpers  muldiv %u  clmul %u  bit %u\n"
+            "  pt hits  %u armed %u\n"
+            "  declined %u overflow %u\n",
+            (unsigned)js.interp_fallbacks,
+            (unsigned)js.alu_calls_muldiv, (unsigned)js.alu_calls_clmul,
+            (unsigned)js.alu_calls_bit,
+            (unsigned)js.pt_hits, (unsigned)js.pt_armed,
+            (unsigned)js.declined, (unsigned)js.overflowed);
 #ifdef EMU_JIT_PROFILE
-        console_puts("\n  cyc xlat ");
-        console_putu(js.cyc_translate);
-        console_puts(" compact ");
-        console_putu(js.cyc_compact);
+        console_printf("  cyc xlat %u compact %u\n",
+                       (unsigned)js.cyc_translate, (unsigned)js.cyc_compact);
 #endif
-        console_puts("\n  blk entr ");
-        console_putu(js.block_entries);
+        console_printf("  blk entr %u\n  reads/blk", (unsigned)js.block_entries);
+
         /*
          * Reads per block that uses the register, x100. Below 100 a cache
          * cannot pay: the block would spend a load to save fewer than one.
          */
         {
             static const char *const nm[4] = { "sp", "ra", "a0", "a1" };
-            console_puts("\n  reads/blk");
+
             for (unsigned i = 0; i < 4u; i++) {
-                console_putc(' ');
-                console_puts(nm[i]);
-                console_putc('=');
                 if (js.hot_blocks[i] != 0u) {
-                    const uint32_t x100 = js.hot_reads[i] * 100u / js.hot_blocks[i];
-                    console_putu(x100 / 100u);
-                    console_putc('.');
-                    console_putu((x100 % 100u) / 10u);
-                    console_putu(x100 % 10u);
+                    const uint32_t x100 =
+                        js.hot_reads[i] * 100u / js.hot_blocks[i];
+                    console_printf(" %s=%u.%02u in %u", nm[i],
+                                   (unsigned)(x100 / 100u),
+                                   (unsigned)(x100 % 100u),
+                                   (unsigned)js.hot_blocks[i]);
                 } else {
-                    console_puts("-");
+                    console_printf(" %s=- in %u", nm[i],
+                                   (unsigned)js.hot_blocks[i]);
                 }
-                console_puts(" in ");
-                console_putu(js.hot_blocks[i]);
             }
         }
-        console_putc('\n');
+        console_printf("\n");
     }
 #endif
 
