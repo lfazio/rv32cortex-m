@@ -36,6 +36,8 @@
 #endif
 
 #include <string.h>
+#include <stdarg.h>
+#include <stdio.h>
 
 /* The guest binary, embedded by guest_image.S. */
 extern const uint8_t rv_guest_image[];
@@ -184,6 +186,31 @@ static void console_puts(const char *s)
         }
         console_putc((uint8_t)*s++);
     }
+}
+
+/*
+ * printf onto the console.
+ *
+ * The firmware's diagnostics were assembled from console_puts /
+ * console_putu / console_puthex -- 130 call sites -- so a stats line
+ * cost one call per field and per literal, and the ratio below had to
+ * be printed by hand as three because there is no float.
+ *
+ * vsnprintf into a buffer rather than wiring picolibc's stdout: stdout
+ * would need a FDEV stream and gives nothing extra here, and a fixed
+ * buffer makes the worst case obvious. Truncation is silent, which is
+ * the right trade for a diagnostic -- a stats line that loses its tail
+ * is better than one that cannot be printed.
+ */
+static void console_printf(const char *fmt, ...)
+{
+    char buf[192];
+    va_list ap;
+
+    va_start(ap, fmt);
+    (void)vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    console_puts(buf);
 }
 
 static void console_puthex(uint32_t v)
@@ -1300,20 +1327,17 @@ restart:
         console_puts("\nemu: instruction cap reached, guest did not halt\n");
     }
 
-    console_puts("\n-- done --\n  retired  ");
-    console_putu((uint32_t)retired_total);
-    console_puts(" instructions\n  host     ");
-    console_putu(elapsed);
-    console_puts(" cycles\n  ratio    ");
+    console_printf("\n-- done --\n  retired  %u instructions\n  host     %u cycles\n",
+                   (unsigned)retired_total, (unsigned)elapsed);
     if (retired_total != 0u) {
         /* Host ARM cycles per emulated guest instruction, x100 so the
-         * fractional part survives integer division. */
+         * fractional part survives integer division -- picolibc is built
+         * without float formatting, which is the right choice on a part
+         * whose FPU is single precision and whose guest owns it. */
         const uint32_t x100 = (uint32_t)((uint64_t)elapsed * 100u / retired_total);
-        console_putu(x100 / 100u);
-        console_putc('.');
-        console_putu((x100 % 100u) / 10u);
-        console_putu(x100 % 10u);
-        console_puts(" host cycles per guest instruction\n  speed    ");
+        console_printf("  ratio    %u.%02u host cycles per guest instruction\n"
+                       "  speed    ",
+                       (unsigned)(x100 / 100u), (unsigned)(x100 % 100u));
         const uint32_t kips =
             (uint32_t)((uint64_t)retired_total * (SystemCoreClock / 1000u) / elapsed);
         console_putu(kips);
