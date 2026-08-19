@@ -32,6 +32,16 @@
  * to match what the host end is configured with, which is what
  * scripts/slip-up.sh passes to slattach.
  *
+ * **The two link layers use the same addresses, so only one may be
+ * configured on the host at a time.** rvslip0 (slip-tun.py's persistent
+ * TUN) and ppp0 both come up as 192.168.7.1 peer 192.168.7.2, and the
+ * kernel routes to whichever was created first -- so a leftover rvslip0,
+ * *down and carrierless*, silently wins and PPP negotiates perfectly
+ * while carrying nothing. `ip route get 192.168.7.2` names the winner
+ * and `ip -s link show ppp0` shows TX not moving, which is what
+ * distinguishes this from a board fault. `sudo ip link set rvslip0 down`
+ * is the fix.
+ *
  * 192.168.7.0/24 rather than the more usual 192.168.1.0/24 because the
  * host almost certainly has that one already, and a route collision
  * presents as traffic silently going out of the wrong interface.
