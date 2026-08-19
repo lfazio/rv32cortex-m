@@ -21,6 +21,7 @@
 
 #include "stm32f4xx_hal.h"
 #include "board.h"
+#include "emu_board.h"
 #include "emu_console.h"
 
 #if EMU_NET
@@ -335,65 +336,39 @@ void TIM6_DAC_IRQHandler(void)
     irq_line_entry(TIM6_DAC_IRQn);
 }
 
-static bool build_address_space(void)
+/* ------------------------------------------------------------------ */
+/* What this board owes the shared runner (see emu_board.h)            */
+/* ------------------------------------------------------------------ */
+
+const char *const emu_board_core_name = "Cortex-M4";
+
+/*
+ * Fixed: this part takes no uploads, so the image is the linked-in one
+ * and these never move. A board that can be reloaded assigns them.
+ */
+const uint8_t *emu_board_img      = emu_guest_image;
+uint32_t       emu_board_img_size = 0u;   /* set in main, see below */
+uint32_t       emu_board_img_ro   = 0u;
+
+uint8_t *emu_board_ram      = NULL;   /* both set in main, see below */
+uint32_t emu_board_ram_size = 0u;
+
+/*
+ * The passthrough windows. Identity-mapped, so a guest driver writing
+ * what its datasheet says reaches the real peripheral -- which is the
+ * point of this emulator and the reason this table cannot be shared:
+ * the windows differ per part, and so does which of them a guest may
+ * write.
+ */
+bool emu_board_add_regions(emu_bus_t *bus)
 {
-    emu_bus_init(&g_bus);
-
-    /*
-     * The guest's read-only half is served straight out of the part's
-     * flash, where guest_image.S already put it, and RAM starts above
-     * it. The guest's own layout does not change at all -- it is still
-     * linked contiguously from EMU_GUEST_RAM_BASE and still resets to
-     * offset 0 -- only which backing store answers the low addresses.
-     *
-     * The saving is real: the SRAM buffer now covers guest addresses
-     * [ro, ro + GUEST_RAM_SIZE) instead of [0, GUEST_RAM_SIZE), so the
-     * guest gains emu_guest_ro_size of address space for nothing. On the
-     * largest architecture tests that is 140 KiB of the 345 they need.
-     *
-     * Both regions are registered even when emu_guest_ro_size is zero or
-     * the whole image, because emu_bus rejects a zero-length region and
-     * a guest with no .data is the common case here -- two of the three
-     * in the tree have one.
-     */
-    const uint32_t guest_ro = emu_guest_ro_size;
-
-    if (guest_ro != 0u &&
-        !emu_bus_add_rom(&g_bus, "guest-ro", EMU_GUEST_RAM_BASE,
-                         emu_guest_image, guest_ro)) {
-        return false;
-    }
-    if (!emu_bus_add_ram(&g_bus, "ram", EMU_GUEST_RAM_BASE + guest_ro,
-                        GUEST_RAM_BASE_PTR, GUEST_RAM_SIZE)) {
-        return false;
-    }
-
-    /*
-     * The guest image stays in ARM flash and is exposed read-only, so a
-     * guest linked for execute-in-place costs no RAM at all.
-     */
-    if (!emu_bus_add_rom(&g_bus, "rom", EMU_GUEST_ROM_BASE,
-                        emu_guest_image, emu_guest_image_size)) {
-        return false;
-    }
-
-    /*
-     * The interrupt controller and the timer are not placed here: they
-     * belong to the guest architecture rather than to this board, so the
-     * frontend maps them itself through add_devices below.
-     */
-    if (!emu_bus_add_mmio(&g_bus, "uart0", EMU_GUEST_UART_BASE,
-                         EMU_UART_SIZE, &emu_uart_ops, &g_uart)) {
-        return false;
-    }
-
-    for (unsigned i = 0; i < sizeof(g_periph_map) / sizeof(g_periph_map[0]); i++) {
-        /* Identity map: host base == guest base. */
-        if (!emu_bus_add_passthru(&g_bus, g_periph_map[i].name,
-                                 g_periph_map[i].base,
-                                 g_periph_map[i].size,
-                                 (uintptr_t)g_periph_map[i].base,
-                                 g_periph_map[i].perm, EMU_WANY)) {
+    for (unsigned i = 0; i < sizeof(g_periph_map) / sizeof(g_periph_map[0]);
+         i++) {
+        if (!emu_bus_add_passthru(bus, g_periph_map[i].name,
+                                  g_periph_map[i].base,
+                                  g_periph_map[i].size,
+                                  (uintptr_t)g_periph_map[i].base,
+                                  g_periph_map[i].perm, EMU_WANY)) {
             return false;
         }
     }
@@ -447,7 +422,12 @@ int main(void)
     console_putu(SystemCoreClock / 1000000u);
     console_puts(" MHz\n");
 
-    if (!build_address_space()) {
+    emu_board_img_size = emu_guest_image_size;
+    emu_board_img_ro   = emu_guest_ro_size;
+    emu_board_ram      = GUEST_RAM_BASE_PTR;
+    emu_board_ram_size = GUEST_RAM_SIZE;
+
+    if (!emu_build_address_space(&g_bus, &g_uart)) {
         console_puts("fatal: could not build the guest address space\n");
         fatal_halt();
     }

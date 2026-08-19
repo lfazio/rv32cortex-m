@@ -65,9 +65,17 @@ extern const uint8_t *emu_board_img;
 extern uint32_t       emu_board_img_size;
 extern uint32_t       emu_board_img_ro;
 
-/* Where the guest's RAM is and how much of it there is. */
-extern uint8_t *const emu_board_ram;
-extern const uint32_t emu_board_ram_size;
+/*
+ * Where the guest's RAM is and how much of it there is.
+ *
+ * Variables, not constants, and not only for symmetry with the image
+ * extents: on a board that carves guest RAM out of whatever the link
+ * left over, the size is a *difference of two linker symbols*, which C
+ * will not accept in a static initialiser however constant it is at run
+ * time. The board assigns both before building the address space.
+ */
+extern uint8_t *emu_board_ram;
+extern uint32_t emu_board_ram_size;
 
 /* ------------------------------------------------------------------ */
 /* Hooks                                                               */
@@ -94,6 +102,16 @@ bool emu_board_add_regions(emu_bus_t *bus);
  */
 void emu_board_irqs_init(void);
 void emu_board_irq_unmask(void *ctx, uint32_t source);
+
+/*
+ * Build the guest's address space: the four shared regions, then this
+ * board's own through emu_board_add_regions. In emu_address_space.c.
+ *
+ * The bus is re-initialised, so the frontend's devices have to be added
+ * again afterwards by the caller.
+ */
+struct emu_uart;
+bool emu_build_address_space(emu_bus_t *bus, struct emu_uart *uart);
 
 /*
  * Guest time, in the units the frontend's timer expects. Per-board
