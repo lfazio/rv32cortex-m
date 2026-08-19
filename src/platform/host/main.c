@@ -37,13 +37,16 @@
 #endif
 
 /*
- * Whether *any* compiled-in frontend can translate on this host. --jit is
- * accepted exactly when this holds; an undefined RV_ENABLE_JIT or
- * EMU_HAVE_JIT evaluates to 0 here, which is what makes the frontend
- * guards on either side of the && necessary.
+ * Whether `--jit` means anything in this build: a JIT exists *and* some
+ * frontend that can use it is compiled in.
+ *
+ * This used to spell the first half twice, once per frontend, because the
+ * two frontends had different names for it -- RV_ENABLE_JIT and
+ * G4MH_HAVE_JIT. With one name the whole condition collapses, which is
+ * the clearest evidence that the second name was never carrying meaning.
  */
-#define EMU_HOST_HAVE_JIT \
-    ((EMU_GUEST_ARCH_RV32 && RV_ENABLE_JIT) || (EMU_GUEST_ARCH_G4MH && EMU_HAVE_JIT))
+#define EMU_JIT_SELECTABLE \
+    (EMU_HAVE_JIT && (EMU_GUEST_ARCH_RV32 || EMU_GUEST_ARCH_G4MH))
 
 #if RV_PAIR_STATS
 #  include "rv32/rv_pairstats.h"
@@ -459,7 +462,7 @@ int main(int argc, char **argv)
              * backend was whichever one the frontend happened to prefer.
              */
             if (strcmp(a, "--jit") == 0) {
-#if EMU_HOST_HAVE_JIT
+#if EMU_JIT_SELECTABLE
                 /*
                  * The whole reason the x86-64 backends exist: with this,
                  * the architecture suite and riscv-tests run against
@@ -624,7 +627,7 @@ int main(int argc, char **argv)
     }
 
 
-#if EMU_GUEST_ARCH_RV32 && RV_ENABLE_JIT
+#if EMU_GUEST_ARCH_RV32 && EMU_HAVE_JIT
     /*
      * The frontend prefers the JIT wherever it is compiled in, which is
      * right for firmware: there it is a speed choice, and the backend
@@ -669,7 +672,7 @@ int main(int argc, char **argv)
     }
 #endif
 
-#if !EMU_HOST_HAVE_JIT
+#if !EMU_JIT_SELECTABLE
     (void)want_jit;
 #endif
 

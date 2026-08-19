@@ -53,7 +53,7 @@ keeps working.
 
 ## What the host cannot test
 
-**The JIT.** `RV_ENABLE_JIT` is forced to 0 off an ARMv7-M Thumb-2 host,
+**The JIT.** `EMU_HAVE_JIT` is 0 off a host this build can emit for,
 because the backend emits ARM machine code and calls it — on x86 that is
 not merely useless but fatal. Every JIT change has to be validated by
 flashing. See [`docs/stm32f446/rv32/README.md`](../stm32f446/rv32/README.md).

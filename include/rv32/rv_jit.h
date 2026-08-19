@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#if RV_ENABLE_JIT
+#if EMU_HAVE_JIT
 
 /* Bytes of RAM for translated code. */
 #ifndef RV_JIT_CODE_SIZE
@@ -126,7 +126,7 @@ void rv_jit_get_stats(rv_jit_stats_t *out);
 
 extern const emu_backend_t rv_backend_jit;
 
-#endif /* RV_ENABLE_JIT */
+#endif /* EMU_HAVE_JIT */
 
 #ifdef __cplusplus
 }

@@ -47,14 +47,13 @@ This is the part that went wrong, so it is written out in full. There are
 | `EMU_HOST_JIT_X86_64` | `emu_jit.h`, from the compiler **and** the request | this build can emit x86-64 |
 | `EMU_HOST_JIT_THUMB2` | `emu_jit.h`, likewise | this build can emit Thumb-2 |
 | `EMU_HAVE_JIT` | `emu_jit.h` | **is there a JIT** — the one thing to test |
-| `RV_ENABLE_JIT` | `rv_config.h` | `EMU_HAVE_JIT`, kept for its nineteen RV32 use sites |
 
 **Test `EMU_HAVE_JIT`.** The host macros exist to select *which* emitter
 compiles; nothing else should be spelling out the disjunction.
 
-There used to be four more names — `RV_JIT_X86_64`, `RV_JIT_THUMB2`,
-`EMU_IR_JIT_ON_THUMB2` and `G4MH_HAVE_JIT` — each defined in a different
-header from a slightly different premise. Two of them were keyed on the
+There used to be five more names — `RV_ENABLE_JIT`, `RV_JIT_X86_64`,
+`RV_JIT_THUMB2`, `EMU_IR_JIT_ON_THUMB2` and `G4MH_HAVE_JIT` — each defined
+in a different header from a slightly different premise. Two of them were keyed on the
 *host alone*, ignoring the request, so `-DEMU_JIT=OFF` still declared a
 backend that nothing compiled. `f746-rv32-nojit` and `host-nojit` both
 failed to build, for months, because nobody built them.

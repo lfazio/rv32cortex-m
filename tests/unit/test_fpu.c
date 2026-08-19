@@ -193,7 +193,7 @@ static void test_fma_rounds_once(void)
  * than by calling the static that computes it, so what is under test is
  * the thing the framework actually consults.
  */
-#if RV_ENABLE_JIT
+#if EMU_HAVE_JIT
 static uint32_t gen_key(void)
 {
     rv_ir_frontend.after_interp((emu_cpu_t *)&g_hart);
@@ -250,7 +250,7 @@ static void test_jit_generation_key(void)
     g_hart.vm_gen++;
     CHECK(gen_key() != clean);
 }
-#endif /* RV_ENABLE_JIT -- rv_ir_frontend only exists with one */
+#endif /* EMU_HAVE_JIT -- rv_ir_frontend only exists with one */
 
 void test_fpu(void)
 {
@@ -408,7 +408,7 @@ void test_fpu(void)
                  RV_EXC_ILLEGAL_INSN);
     }
     test_fma_rounds_once();
-#if RV_ENABLE_JIT
+#if EMU_HAVE_JIT
     test_jit_generation_key();
 #endif
 }

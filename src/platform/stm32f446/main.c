@@ -646,7 +646,7 @@ int main(void)
  * to the interpreter -- has no meaning for any other. A frontend without a
  * JIT simply does not compile this block in.
  */
-#if EMU_GUEST_ARCH_RV32 && RV_ENABLE_JIT
+#if EMU_GUEST_ARCH_RV32 && EMU_HAVE_JIT
     if (rv_backend == &rv_backend_jit) {
         rv_jit_stats_t js;
         rv_jit_get_stats(&js);

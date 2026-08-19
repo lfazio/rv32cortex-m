@@ -415,46 +415,23 @@
 #endif
 
 /*
- * Build the Thumb-2 JIT.
+ * Whether there is a JIT is `EMU_HAVE_JIT`, in emu/emu_jit.h. There is no
+ * RV32 spelling of it, deliberately.
  *
- * The host has to *be* Thumb-2, because the backend emits ARM machine code
- * into a buffer and calls it. On any other host the JIT is not merely
- * useless, it is fatal: selecting it jumps into a buffer of Thumb
- * encodings. So the build option asks for the JIT and this reconciles
- * "asked for" with "possible" -- the x86 host build ends up at 0 however
- * -DRV32_JIT is set.
+ * There were three: `RV_ENABLE_JIT` came from CMake, and
+ * `RV_JIT_X86_64`/`RV_JIT_THUMB2` were derived here from the *host alone*
+ * -- so `-DEMU_JIT=OFF` still declared a backend that nothing compiled and
+ * the link failed. Reconciling "asked for" with "possible" has to happen
+ * in exactly one place, and that place is not per frontend: the same
+ * x86-64 emitter serves RV32 and G4MH, so the question was never an RV32
+ * question. See BUILD.md for the whole table.
  *
- * Getting this wrong used to be invisible, because the only thing stopping
- * it was that the host platform happened never to select the JIT backend.
- * The frontend now picks the fastest backend it was built with, so the
- * check has to be here, where the answer is a property of the host rather
- * than of a platform's main().
- *
- * There are now two backends, and a host that has neither still gets
- * RV_ENABLE_JIT 0 -- which is what keeps a Thumb-2 emitter from being
- * compiled for a machine that cannot run it.
- */
-/*
- * Exactly one backend defines rv_backend_jit, so the host also selects
- * *which*. Doing it here rather than in the build system means a mismatch
- * is a missing symbol at the point of use rather than a duplicate one at
- * link time.
- */
-/*
- * Is there a JIT for this build?
- *
- * One question, one answer, computed in emu_jit.h from the host it can
- * emit for and whether one was asked for. This used to be four macros in
- * three headers -- RV_JIT_X86_64, RV_JIT_THUMB2, EMU_HOST_JIT_X86_64 and
- * EMU_HOST_JIT_THUMB2 -- with the RV_ pair keyed on the host *alone*, so a
- * -DEMU_JIT=OFF build still declared a backend nothing compiled and the
- * link failed. The name survives because it reads correctly at its
- * nineteen use sites; the duplicate definition does not. See BUILD.md.
+ * Getting it wrong used to be invisible for a reason worth keeping: the
+ * only thing stopping a Thumb-2 emitter being selected on x86 was that the
+ * host platform happened never to select it. A capability that depends on
+ * nobody exercising it is not a capability that is off.
  */
 #include "emu/emu_jit.h"
-
-#undef RV_ENABLE_JIT
-#define RV_ENABLE_JIT EMU_HAVE_JIT
 
 /* ------------------------------------------------------------------ */
 /* Debug / diagnostics                                                 */

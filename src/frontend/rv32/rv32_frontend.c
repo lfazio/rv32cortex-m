@@ -110,7 +110,7 @@ static void rv32_init(emu_cpu_t *cpu, emu_bus_t *bus, uint32_t coreid)
     rv_clint_init(&g_clint, h);
     rv_aplic_init(&g_aplic, h);
 
-#if RV_ENABLE_JIT
+#if EMU_HAVE_JIT
     /*
      * Prefer the JIT when it is compiled in. It declines what it cannot
      * translate and falls back to the interpreter per instruction, so this

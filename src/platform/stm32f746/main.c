@@ -90,7 +90,7 @@ extern uint8_t __guest_ram_end[];
 /* State                                                               */
 /* ------------------------------------------------------------------ */
 
-#if RV_ENABLE_JIT
+#if EMU_HAVE_JIT
 /*
  * Code cache for translated blocks. Ordinary .bss: the ARMv7-M default
  * memory map makes SRAM executable, so no MPU work is needed. This comes
@@ -1291,7 +1291,7 @@ restart:
  * JIT statistics: the one place in this file that names a frontend, and
  * unavoidably so -- the Thumb-2 JIT is the rv32 frontend's second backend.
  */
-#if EMU_GUEST_ARCH_RV32 && RV_ENABLE_JIT
+#if EMU_GUEST_ARCH_RV32 && EMU_HAVE_JIT
     if (rv_backend == &rv_backend_jit) {
         rv_jit_stats_t js;
         rv_jit_get_stats(&js);
