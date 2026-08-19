@@ -87,6 +87,27 @@ measured at.
       point at the CMSIS device's system file the way the F4/F7
       platforms do.
 
+      **CubeN6 ships ThreadX and NetX Duo, not FreeRTOS and lwIP** --
+      its `Middlewares/ST` holds threadx, netxduo, filex, levelx, usbx
+      and no lwIP at all. That does *not* constrain this port, and the
+      reason is worth stating so nobody ports the network stack to NetX
+      Duo for no reason:
+
+      - No RTOS is needed or wanted. The stack runs `NO_SYS = 1` --
+        lwIP is a library the run loop calls, and `lwipopts.h` has a
+        compile-time `#error` if that is ever overridden, because this
+        port supplies no `sys_arch`. FreeRTOS's absence changes nothing
+        because it was never used.
+      - lwIP does not come from the family pack. `cmake/lwip.cmake`
+        fetches `STMicroelectronics/stm32_mw_lwip`, which is
+        family-independent -- the same repository already serves both
+        the F4 and the F7 platforms and never mentions
+        `STM32CUBE_FAMILY`.
+
+      So the N6 keeps lwIP, PPP, TFTP and telnet unchanged. NetX Duo
+      would only be worth reaching for if ST's stack were wanted on its
+      own merits, which is a different question from this port.
+
       Add a `f746`-style row to `scripts/build-matrix.sh` with the port,
       not after it.
 
