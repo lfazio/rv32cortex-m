@@ -653,19 +653,31 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
              *   reg1 = 0        NOP
              *   reg1 = 28..31   SYNCI, SYNCE, SYNCM, SYNCP
              *
-             * The barriers are no-ops in this model and would be even
-             * without this case, since they decode as a discarded move.
-             * They are named anyway: a barrier that silently means nothing
-             * because of an encoding accident is not the same as one that
-             * means nothing because the execution model gives the guest a
-             * total order, and only the second stays true if this ever
-             * grows threads. See docs/host/g4mh/multicore.md.
+             * **SYNCI is not a barrier and the other three are.** SYNCE,
+             * SYNCM and SYNCP order memory and exceptions, and there is
+             * nothing here for them to order: every guest core runs on
+             * the one host thread, cooperatively, so the guest already
+             * has a total order and a host DMB or MFENCE would buy
+             * exactly nothing. They stay no-ops, and only stop being
+             * no-ops if this ever grows threads -- see
+             * docs/host/g4mh/multicore.md.
+             *
+             * SYNCI is about *code*. It says the guest has written
+             * instructions, which to a translating backend means its
+             * blocks are stale -- the same distinction RV32 draws
+             * between FENCE and FENCE.I, and the reason its MISC-MEM
+             * case treats one as free and the other as an invalidation.
+             * Without this the JIT kept running the code the guest had
+             * replaced, while the interpreter did not.
              */
             if (r2 == 0u) {
                 if (r1 != 0u && (r1 < 28u)) {
                     EXC(G4MH_EXC_RIE);
                 }
-                break;      /* NOP, or a barrier with nothing to order */
+                if (r1 == 28u) {                /* SYNCI */
+                    g4mh_invalidate(c, 0u, 0xFFFFFFFFu);
+                }
+                break;
             }
             wr(c, r2, c->r[r1]);
             break;
@@ -1757,13 +1769,31 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     break;
 
                 /*
-                 * CACHE and PREF are hints. This model has no cache to
-                 * manage and no prefetch to start, so they retire without
-                 * effect -- which is what SYNCE/SYNCM/SYNCP/SYNCI already
-                 * do here. Decoding them matters anyway: undecoded they
-                 * raised RIE, and in a flat guest RIE is not a report.
+                 * **Every G4MH cache operation is the instruction
+                 * cache.** Table 2.7 lists CHBII, CIBII, CFALI, CISTI and
+                 * CILDI and nothing else -- there is no data-cache
+                 * operation in the instruction at all, which is why this
+                 * does not go anywhere near `emu_cache_ops_t`. That
+                 * abstraction exists for RV32's `cbo.*`, which is about
+                 * D-cache coherency with a real DMA engine and needs the
+                 * guest address translated to the host line backing it.
+                 * Doing the same here would maintain a host I-cache for
+                 * bytes the host is not executing.
+                 *
+                 * What a guest means by invalidating its instruction
+                 * cache is that it has written code, so the translated
+                 * blocks are stale -- the same thing SYNCI means, and
+                 * handled the same way. Flushing everything rather than
+                 * the named line is deliberate: these are rare, and the
+                 * two index-addressed forms name a cache index rather
+                 * than an address, so there is no range to be narrow
+                 * about.
+                 *
+                 * PREF stays a hint with nothing to do.
                  */
                 case 0x1Cu:                         /* CACHE op,[reg1]  */
+                    g4mh_invalidate(c, 0u, 0xFFFFFFFFu);
+                    break;
                 case 0x1Bu:                         /* PREF  op,[reg1]  */
                     break;
                 case 0x1Au: {                       /* SYSCALL vector8  */

@@ -347,6 +347,29 @@ extern const emu_backend_t g4mh_backend_jit;
 #endif
 extern const emu_backend_t *g4mh_backend;
 
+/*
+ * Discard translations covering [addr, addr+len).
+ *
+ * This is what SYNCI and the CACHE instruction mean to a translating
+ * backend, and the *only* thing they mean to this model: there is no
+ * cache here to invalidate, but there is a cache of translated blocks,
+ * and a guest that writes instructions and then synchronises is telling
+ * us that cache is stale. Without it the JIT keeps running the code the
+ * guest replaced -- proven, not assumed, by
+ * test_synci_discards_translations, which the interpreter passes and the
+ * JIT failed.
+ *
+ * The RV32 side has drawn the same line since it was written: FENCE is a
+ * no-op here because a single-threaded execution model already gives the
+ * guest a total order, while FENCE.I is not, because it is about code.
+ */
+static inline void g4mh_invalidate(g4mh_cpu_t *c, uint32_t addr, uint32_t len)
+{
+    if (g4mh_backend->invalidate != NULL) {
+        g4mh_backend->invalidate((emu_cpu_t *)c, addr, len);
+    }
+}
+
 emu_run_reason_t g4mh_step(g4mh_cpu_t *c);
 
 /* Advance the enabled performance channels by `insns` events. */

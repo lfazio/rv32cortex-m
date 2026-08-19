@@ -239,6 +239,52 @@ become `#00000030` — would have shown nothing at all.
 The handler prints `!TRAP <cause> @<pc> #<slot>` and halts. Halting is
 the point; carrying on is what made these invisible.
 
+## SYNC*, CACHE, and what they are worth on a host
+
+The question worth asking is whether these lower to host instructions.
+For three of the four, the answer is a firm no, and the reason is the
+execution model rather than the cost.
+
+| guest | plausible host lowering | what it is actually worth |
+|---|---|---|
+| `SYNCE`, `SYNCM`, `SYNCP` | `DMB`/`DSB` on ARM, `MFENCE` on x86 | **nothing.** Every guest core runs on the *one* host thread, cooperatively, switched at a quantum boundary. The guest already has a total order over its own accesses, so there is no reordering for a fence to prevent |
+| `SYNCI` | `ISB`, or an I-cache invalidate | **not an instruction at all** — it means the guest wrote code, so the *translated blocks* are stale |
+| `CACHE` | `SCB_InvalidateICache_by_Addr` on the host address | same as `SYNCI`; see below |
+| `PREF` | `PLD` | a hint with nothing to prefetch |
+
+The barriers only stop being free if this ever runs guest cores on real
+host threads. Until then, emitting one would be pure cost — and this is
+the same conclusion the RV32 side reached and wrote down years earlier:
+its MISC-MEM case says plain `FENCE` is architecturally a no-op *here*,
+while `FENCE.I` "still matters, because a JIT backend must discard
+translations for code the guest just wrote".
+
+**G4MH had neither, and the JIT was running stale code.** Not
+theoretically: `test_synci_discards_translations` patches one halfword of
+itself and branches back through it, and the interpreter reported the new
+value while the JIT reported the old one. `SYNCI` and `CACHE` now call
+`g4mh_invalidate`.
+
+Two details that decide the shape of the fix:
+
+**Every G4MH cache operation is the instruction cache.** Table 2.7 is
+CHBII, CIBII, CFALI, CISTI, CILDI — there is no data-cache operation in
+the instruction at all. So this does *not* go through `emu_cache_ops_t`,
+which exists for RV32's `cbo.*`: those are about D-cache coherency with a
+real DMA engine, and they translate the guest address to the host line
+backing it so a guest driver's clean reaches the memory an external
+master reads. Doing that here would maintain a host I-cache for bytes the
+host is not executing. The host I-cache that *does* matter is the one
+holding the JIT's own emitted code, and the backend already handles that
+when it writes a block.
+
+**The flush is whole-cache, deliberately.** Two of the five operations
+name a cache *index* rather than an address, so there is no range to be
+narrow about; and these instructions are rare enough that the usual
+warning — that too coarse an invalidation is a correctness-preserving way
+to have no JIT — does not bite. `FENCE.I` on the RV32 side makes the same
+choice for the same reason.
+
 ## Where an interrupt handler lives
 
 Two methods, two overrides, and they answer different questions — the

@@ -335,6 +335,12 @@ static uint32_t emit(uint32_t off, const uint16_t *hw, unsigned n)
  * Driven entirely through emu_cpu_ops_t, in the order a platform uses:
  * open, add the architecture's devices, reset, boot, run.
  */
+/*
+ * When non-NULL, the backend to install *after* the frontend's init has
+ * chosen one. See the note in load_and_run_hooked.
+ */
+static const emu_backend_t *g_force_backend;
+
 static bool load_and_run_hooked(const uint16_t *hw, unsigned n,
                                 uint32_t budget, emu_run_reason_t *why,
                                 uint32_t *retired, emu_syscall_fn hook)
@@ -363,6 +369,22 @@ static bool load_and_run_hooked(const uint16_t *hw, unsigned n,
         return false;
     }
     ops->set_syscall(g_core.cpu, hook, NULL);
+
+    /*
+     * **Force the backend here, not before the call.** `emu_core_open`
+     * runs the frontend's init, which assigns `g4mh_backend` itself, so
+     * a test that set the interpreter beforehand had it silently
+     * replaced by the JIT and compared the JIT against itself. Two tests
+     * in this file were doing exactly that -- one of them the
+     * performance-counter check whose whole point is that the two
+     * backends agree.
+     *
+     * Safe only because `g4mh_backend_interp.init` is NULL; a backend
+     * needing setup would have to be selected before open instead.
+     */
+    if (g_force_backend != NULL) {
+        g4mh_backend = g_force_backend;
+    }
 
     emu_core_reset(&g_core, EMU_GUEST_RAM_BASE);
     emu_core_boot(&g_core, EMU_GUEST_RAM_BASE, TEST_RAM_SIZE);
@@ -1596,6 +1618,94 @@ static void test_exception_vector_offsets(void)
     c.psw = G4MH_PSW_EBV;
     g4mh_cpu_exception(&c, G4MH_EXC_RIE, 0x1000u);
     CHECK_EQ(c.pc, 0x90000000u + 0x060u);
+}
+
+/*
+ * SYNCI and CACHE mean "I have written instructions", and a JIT that
+ * ignores them runs the code the guest replaced.
+ *
+ * The guest patches one halfword of itself and branches back through it.
+ * On the interpreter that is free -- every fetch reads guest memory. On a
+ * translating backend the block was compiled from the *old* bytes and is
+ * reused unless something discards it, so the two backends disagree, and
+ * that disagreement is the test: this frontend has no reference model, so
+ * interpreter-against-JIT is the only statement of correctness available.
+ *
+ * The RV32 side has drawn this distinction since it was written -- its
+ * MISC-MEM case says FENCE is architecturally a no-op here while FENCE.I
+ * "still matters, because a JIT backend must discard translations for
+ * code the guest just wrote". G4MH had neither: SYNCI and all five CACHE
+ * operations were no-ops, and CACHE on this architecture is *only* ever
+ * the instruction cache -- CHBII, CIBII, CFALI, CISTI, CILDI, with no
+ * data-cache operation in the table at all.
+ */
+static void test_synci_discards_translations(void)
+{
+    /*
+     * Every encoding below came from CC-RH and was *linked*, not
+     * hand-computed: an unlinked listing prints both branch
+     * displacements as zero, and a wrong displacement here silently
+     * changes which instruction runs, which is the one thing this test
+     * must not do.
+     *
+     *  again:                       ; == the reset pc, deliberately
+     *      mov  1, r11              ; patched to `mov 2, r11`
+     *      cmp  0, r12              ; r12 is 0 out of reset
+     *      bne  done
+     *      mov  1, r12
+     *      mov  0x80000000, r13     ; &again
+     *      movea 0x5A02, zero, r14  ; the replacement halfword
+     *      st.h r14, 0[r13]
+     *      synci
+     *      br   again
+     *  done:
+     *      halt
+     */
+    const uint16_t prog[] = {
+        0x5A01u,                     /* again: mov 1, r11  <- patched  */
+        0x6260u,                     /* cmp 0, r12                     */
+        0x0DAAu,                     /* bne done                       */
+        0x6201u,                     /* mov 1, r12                     */
+        0x6E40u, 0x8000u,            /* mov 0x80000000, r13  (&again)  */
+        0x7620u, 0x5A02u,            /* movea `mov 2,r11`, zero, r14   */
+        0x776Du, 0x0000u,            /* st.h r14, 0[r13]               */
+        0x001Cu,                     /* synci                          */
+        0xF5D5u,                     /* br again                       */
+        0x07E0u, SUB_HALT,           /* done: halt                     */
+    };
+
+    const emu_backend_t *saved = g4mh_backend;
+    uint32_t got[2] = { 0u, 0u };
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        emu_run_reason_t why;
+        uint32_t retired = 0;
+
+        /* Pass 0 is whatever the frontend selected -- the JIT where there
+         * is one; pass 1 forces the interpreter, which is the only
+         * statement of correct behaviour this frontend has. */
+        g_force_backend = (pass == 1u) ? &g4mh_backend_interp : NULL;
+        if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 256u, &why,
+                          &retired)) {
+            CHECK(false);
+            g_force_backend = NULL;
+            g4mh_backend = saved;
+            return;
+        }
+        got[pass] = reg(11);
+    }
+    g_force_backend = NULL;
+    g4mh_backend = saved;
+
+    /*
+     * The interpreter re-fetches from guest memory every time, so it can
+     * only report 2. A translating backend reports 1 unless SYNCI
+     * discarded the block built from the old bytes -- so the equality is
+     * the whole test, and asserting the interpreter's value separately is
+     * what stops "both agree" passing when both are wrong.
+     */
+    CHECK_EQ(got[1], 2u);
+    CHECK_EQ(got[0], got[1]);
 }
 
 /*
@@ -5628,6 +5738,7 @@ void test_g4mh(void)
     test_pointer_update_addressing();
     test_irq_vector_methods();
     test_exception_vector_offsets();
+    test_synci_discards_translations();
 #if G4MH_EXT_MPU
     test_ldm_stm_mp();
     test_ldm_mp_is_privileged();
