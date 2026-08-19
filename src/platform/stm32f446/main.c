@@ -195,35 +195,6 @@ static bool guest_syscall(emu_cpu_t *cpu, emu_syscall_t *sc, void *user)
  * platform file does the right thing when built for a Cortex-M7, where
  * these become real cache operations on the lines backing the guest block.
  */
-static void arm_cache_maint(void *ctx, void *host, uint32_t len,
-                            emu_cache_op_t op)
-{
-    (void)ctx;
-
-#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)
-    switch (op) {
-    case EMU_CACHE_CLEAN:
-        SCB_CleanDCache_by_Addr((uint32_t *)host, (int32_t)len);
-        break;
-    case EMU_CACHE_INVAL:
-        SCB_InvalidateDCache_by_Addr((uint32_t *)host, (int32_t)len);
-        break;
-    case EMU_CACHE_FLUSH:
-        SCB_CleanInvalidateDCache_by_Addr((uint32_t *)host, (int32_t)len);
-        break;
-    }
-#else
-    (void)host;
-    (void)len;
-    (void)op;
-    /* No data cache on this part: nothing to maintain. */
-#endif
-}
-
-static const emu_cache_ops_t g_cache_ops = {
-    .maint = arm_cache_maint,
-    .ctx = NULL,
-};
 
 /* ------------------------------------------------------------------ */
 /* Guest address space                                                 */
@@ -486,7 +457,7 @@ int main(void)
     bridged_irqs_init();
     emu_uart_init(&g_uart, guest_uart_tx, guest_uart_rx, NULL);
     ops->set_syscall(g_core.cpu, guest_syscall, NULL);
-    ops->set_cache(g_core.cpu, &g_cache_ops);
+    ops->set_cache(g_core.cpu, &emu_arm_cache_ops);
 
     /*
      * The image is linked to run from guest RAM, so copy it out of flash.

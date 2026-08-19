@@ -69,6 +69,13 @@ void emu_console_puthex(uint32_t v);
  */
 void emu_report_state(emu_cpu_t *cpu, const emu_cpu_ops_t *ops);
 
+/*
+ * Guest cache maintenance onto this part's, in emu_arm_cache.c. Handed
+ * to the core so a guest's cache-block operations reach the ARM lines
+ * that actually back the guest block.
+ */
+extern const struct emu_cache_ops emu_arm_cache_ops;
+
 #ifdef __cplusplus
 }
 #endif
