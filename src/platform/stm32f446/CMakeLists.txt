@@ -88,6 +88,12 @@ add_executable(emu-stm32f446
     guest_image.S
 )
 
+# The shared runner pieces -- see src/platform/common/emu_console.h.
+target_sources(emu-stm32f446 PRIVATE
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_console.c")
+target_include_directories(emu-stm32f446 PRIVATE
+    "${CMAKE_SOURCE_DIR}/src/platform/common")
+
 target_link_libraries(emu-stm32f446 PRIVATE emucore stm32cube)
 
 # guest_image.S pulls the binary in with .incbin.

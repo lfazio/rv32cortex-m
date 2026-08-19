@@ -21,6 +21,7 @@
 
 #include "stm32f4xx_hal.h"
 #include "board.h"
+#include "emu_console.h"
 
 #include "emu/emu_cpu.h"
 #include "emu/emu_dev.h"
@@ -102,44 +103,19 @@ static void fatal_halt(void)
     }
 }
 
-void rv_console_putc(uint8_t c)
+void emu_console_putc(uint8_t c)
 {
     board_console_putc(c);
 }
 
-#define console_putc rv_console_putc
+#define console_putc   emu_console_putc
+#define console_puts   emu_console_puts
+#define console_printf emu_console_printf
+#define console_putu   emu_console_putu
+#define console_puthex emu_console_puthex
 
-static void console_puts(const char *s)
-{
-    while (*s != '\0') {
-        if (*s == '\n') {
-            console_putc('\r');   /* terminals expect CRLF */
-        }
-        console_putc((uint8_t)*s++);
-    }
-}
 
-static void console_puthex(uint32_t v)
-{
-    static const char hex[] = "0123456789abcdef";
-    console_puts("0x");
-    for (int i = 28; i >= 0; i -= 4) {
-        console_putc((uint8_t)hex[(v >> i) & 0xFu]);
-    }
-}
 
-static void console_putu(uint32_t v)
-{
-    char tmp[10];
-    unsigned n = 0;
-    do {
-        tmp[n++] = (char)('0' + (v % 10u));
-        v /= 10u;
-    } while (v != 0u);
-    while (n != 0u) {
-        console_putc((uint8_t)tmp[--n]);
-    }
-}
 
 /* Transport hooks for the guest's virtual UART. */
 static void guest_uart_tx(void *ctx, uint8_t c)
@@ -441,24 +417,7 @@ static bool build_address_space(void)
 /* Diagnostics                                                         */
 /* ------------------------------------------------------------------ */
 
-/* emu_print_fn onto the console, for the frontend's own state dump. */
-static void console_out(void *ctx, const char *s)
-{
-    (void)ctx;
-    console_puts(s);
-}
 
-/*
- * Decoding the trap cause and naming the registers is the frontend's job:
- * only it knows what its status registers are and which of them matter
- * after a fault. This used to be a copy of that knowledge here, kept in
- * step with the core's by hand and with the host runner's by hand again.
- */
-static void report_state(void)
-{
-    console_puts("\n-- guest state --");
-    g_core.ops->dump(g_core.cpu, console_out, NULL);
-}
 
 /* ------------------------------------------------------------------ */
 /* Entry                                                               */
@@ -716,7 +675,7 @@ int main(void)
     }
 #endif
 
-    report_state();
+    emu_report_state(g_core.cpu, g_core.ops);
 
     for (;;) {
         __WFI();

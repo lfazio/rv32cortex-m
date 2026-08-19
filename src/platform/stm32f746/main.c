@@ -15,6 +15,7 @@
 
 #include "stm32f7xx_hal.h"
 #include "board.h"
+#include "emu_console.h"
 
 #include "emu/emu_cpu.h"
 #include "emu/emu_dev.h"
@@ -155,7 +156,7 @@ static void fatal_halt(void)
  * true of the run loop, which is why emu_net_poll() below is the thing
  * that had to be thought about.
  */
-void rv_console_putc(uint8_t c)
+void emu_console_putc(uint8_t c)
 {
 #if EMU_NET
     if (emu_net_active()) {
@@ -176,17 +177,12 @@ static int console_getc(void)
     return board_console_getc();
 }
 
-#define console_putc rv_console_putc
+#define console_putc   emu_console_putc
+#define console_puts   emu_console_puts
+#define console_printf emu_console_printf
+#define console_putu   emu_console_putu
+#define console_puthex emu_console_puthex
 
-static void console_puts(const char *s)
-{
-    while (*s != '\0') {
-        if (*s == '\n') {
-            console_putc('\r');   /* terminals expect CRLF */
-        }
-        console_putc((uint8_t)*s++);
-    }
-}
 
 /*
  * printf onto the console.
@@ -202,38 +198,8 @@ static void console_puts(const char *s)
  * the right trade for a diagnostic -- a stats line that loses its tail
  * is better than one that cannot be printed.
  */
-static void console_printf(const char *fmt, ...)
-{
-    char buf[192];
-    va_list ap;
 
-    va_start(ap, fmt);
-    (void)vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    console_puts(buf);
-}
 
-static void console_puthex(uint32_t v)
-{
-    static const char hex[] = "0123456789abcdef";
-    console_puts("0x");
-    for (int i = 28; i >= 0; i -= 4) {
-        console_putc((uint8_t)hex[(v >> i) & 0xFu]);
-    }
-}
-
-static void console_putu(uint32_t v)
-{
-    char tmp[10];
-    unsigned n = 0;
-    do {
-        tmp[n++] = (char)('0' + (v % 10u));
-        v /= 10u;
-    } while (v != 0u);
-    while (n != 0u) {
-        console_putc((uint8_t)tmp[--n]);
-    }
-}
 
 #ifdef EMU_JIT_DIFF
 /*
@@ -1049,24 +1015,7 @@ static bool take_uploaded_image(void)
 /* Diagnostics                                                         */
 /* ------------------------------------------------------------------ */
 
-/* emu_print_fn onto the console, for the frontend's own state dump. */
-static void console_out(void *ctx, const char *s)
-{
-    (void)ctx;
-    console_puts(s);
-}
 
-/*
- * Decoding the trap cause and naming the registers is the frontend's job:
- * only it knows what its status registers are and which of them matter
- * after a fault. This used to be a copy of that knowledge here, kept in
- * step with the core's by hand and with the other platform's by hand again.
- */
-static void report_state(void)
-{
-    console_puts("\n-- guest state --");
-    g_core.ops->dump(g_core.cpu, console_out, NULL);
-}
 
 /* ------------------------------------------------------------------ */
 /* Entry                                                               */
@@ -1424,7 +1373,7 @@ restart:
     }
 #endif
 
-    report_state();
+    emu_report_state(g_core.cpu, g_core.ops);
 
 #if EMU_NET
     /*

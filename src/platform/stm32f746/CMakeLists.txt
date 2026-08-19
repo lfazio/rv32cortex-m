@@ -97,7 +97,12 @@ add_executable(emu-stm32f746
     board.c
     stm32f7xx_it.c
     guest_image.S
-)
+
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_console.c")
+
+# The shared runner pieces -- see src/platform/common/emu_console.h.
+target_include_directories(emu-stm32f746 PRIVATE
+    "${CMAKE_SOURCE_DIR}/src/platform/common")
 
 target_link_libraries(emu-stm32f746 PRIVATE emucore stm32cube)
 
