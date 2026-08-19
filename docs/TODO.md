@@ -77,6 +77,16 @@ measured at.
       `Projects/NUCLEO-N657X0-Q/Templates/Template_FSBL_XIP/` for the
       boot flow and `Examples/UART/` for the console.
 
+      The FSBL's own `main()` is short and its order is the thing to
+      copy: `SCB_EnableICache()` then `SCB_EnableDCache()` **first**,
+      before `HAL_Init()` and `SystemClock_Config()` -- the same
+      caches-before-anything-is-written rule the F746 platform already
+      follows, and the reason `board_sync_icache` must be overridden
+      here too. Note it ships a *separate* `system_stm32n6xx_fsbl.c`
+      rather than reusing the application one, so the CMake cannot just
+      point at the CMSIS device's system file the way the F4/F7
+      platforms do.
+
       Add a `f746`-style row to `scripts/build-matrix.sh` with the port,
       not after it.
 
