@@ -411,14 +411,13 @@ int main(void)
      */
     {
         extern int coremark_native_main(void);
-        console_puts("\n\nrv32cortex-m: NATIVE CoreMark on Cortex-M4 @ ");
-        console_putu(SystemCoreClock / 1000000u);
-        console_puts(" MHz\n\n");
+        console_printf("\n\nrv32cortex-m: NATIVE CoreMark on %s @ %u MHz\n\n",
+                       emu_board_core_name,
+                       (unsigned)(SystemCoreClock / 1000000u));
         const uint32_t c0 = board_cycles();
         (void)coremark_native_main();
-        console_puts("\n-- native --\n  host     ");
-        console_putu(board_cycles() - c0);
-        console_puts(" cycles\n");
+        console_printf("\n-- native --\n  host     %u cycles\n",
+                       (unsigned)(board_cycles() - c0));
         for (;;) { __WFI(); }
     }
 #endif
@@ -430,11 +429,9 @@ int main(void)
      */
     const emu_cpu_ops_t *const ops = emu_frontend_default();
 
-    console_puts("\n\nrv32cortex-m: ");
-    console_puts(ops->desc);
-    console_puts(" on Cortex-M4 @ ");
-    console_putu(SystemCoreClock / 1000000u);
-    console_puts(" MHz\n");
+    console_printf("\n\nrv32cortex-m: %s on %s @ %u MHz\n",
+                   ops->desc, emu_board_core_name,
+                   (unsigned)(SystemCoreClock / 1000000u));
 
     emu_board_img_size = emu_guest_image_size;
     emu_board_img_ro   = emu_guest_ro_size;
@@ -503,17 +500,12 @@ int main(void)
     emu_cpu_status_t st;
     emu_core_status(&g_core, &st);
 
-    console_puts("guest  ");
-    console_putu(emu_guest_image_size);
-    console_puts(" bytes at ");
-    console_puthex(EMU_GUEST_RESET_PC);
-    console_puts("\nram    ");
-    console_putu(GUEST_RAM_SIZE / 1024u);
-    console_puts(" KiB (");
-    console_putu(GUEST_RAM_SIZE);
-    console_puts(" bytes)\nbackend ");
-    console_puts(st.backend);
-    console_puts("\n");
+    console_printf("guest  %u bytes at 0x%08x\n"
+                   "ram    %u KiB (%u bytes)\nbackend ",
+                   (unsigned)emu_guest_image_size, (unsigned)EMU_GUEST_RESET_PC,
+                   (unsigned)(GUEST_RAM_SIZE / 1024u),
+                   (unsigned)GUEST_RAM_SIZE);
+    console_printf("%s\n", st.backend);
 
 #if EMU_NET
     /*

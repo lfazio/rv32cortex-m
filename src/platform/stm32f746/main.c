@@ -980,14 +980,13 @@ int main(void)
      */
     {
         extern int coremark_native_main(void);
-        console_puts("\n\nrv32cortex-m: NATIVE CoreMark on Cortex-M7 @ ");
-        console_putu(SystemCoreClock / 1000000u);
-        console_puts(" MHz\n\n");
+        console_printf("\n\nrv32cortex-m: NATIVE CoreMark on %s @ %u MHz\n\n",
+                       emu_board_core_name,
+                       (unsigned)(SystemCoreClock / 1000000u));
         const uint32_t c0 = board_cycles();
         (void)coremark_native_main();
-        console_puts("\n-- native --\n  host     ");
-        console_putu(board_cycles() - c0);
-        console_puts(" cycles\n");
+        console_printf("\n-- native --\n  host     %u cycles\n",
+                       (unsigned)(board_cycles() - c0));
         for (;;) { __WFI(); }
     }
 #endif
@@ -999,11 +998,9 @@ int main(void)
      */
     const emu_cpu_ops_t *const ops = emu_frontend_default();
 
-    console_puts("\n\nrv32cortex-m: ");
-    console_puts(ops->desc);
-    console_puts(" on Cortex-M7 @ ");
-    console_putu(SystemCoreClock / 1000000u);
-    console_puts(" MHz\n");
+    console_printf("\n\nrv32cortex-m: %s on %s @ %u MHz\n",
+                   ops->desc, emu_board_core_name,
+                   (unsigned)(SystemCoreClock / 1000000u));
 
 #if EMU_NET
     /*
@@ -1019,9 +1016,8 @@ int main(void)
      * connect to. After this, silence on the serial port is expected and
      * silence on the network is the fault.
      */
-    console_puts("net    SLIP on this port; telnet ");
-    console_puts(emu_net_addr_str());
-    console_puts(" 23\n");
+    console_printf("net    %s on this port; telnet %s 23\n",
+                   EMU_NET_LINK_PPP ? "PPP" : "SLIP", emu_net_addr_str());
     if (!emu_net_init()) {
         console_puts("net    failed to start; staying on the serial console\n");
     }
@@ -1106,20 +1102,15 @@ int main(void)
      * after a reload and the first thing a harness wants to see.
      */
 restart:
-    console_puts("guest  ");
-    console_putu(g_img_size);
-    console_puts(" bytes at ");
-    console_puthex(EMU_GUEST_RESET_PC);
-    console_puts("\nram    ");
-    console_putu(GUEST_RAM_SIZE / 1024u);
-    console_puts(" KiB (");
-    console_putu(GUEST_RAM_SIZE);
-    console_puts(" bytes)\nbackend ");
+    console_printf("guest  %u bytes at 0x%08x\n"
+                   "ram    %u KiB (%u bytes)\nbackend ",
+                   (unsigned)g_img_size, (unsigned)EMU_GUEST_RESET_PC,
+                   (unsigned)(GUEST_RAM_SIZE / 1024u),
+                   (unsigned)GUEST_RAM_SIZE);
 
     emu_cpu_status_t st;
     emu_core_status(&g_core, &st);
-    console_puts(st.backend);
-    console_puts("\n\n");
+    console_printf("%s\n\n", st.backend);
 
     g_cycles_per_tick = SystemCoreClock / EMU_TIMER_HZ;
     const uint32_t start_cycles = board_cycles();
