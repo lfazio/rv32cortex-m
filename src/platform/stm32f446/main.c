@@ -489,8 +489,19 @@ int main(void)
         console_puts("fatal: guest image larger than guest RAM\n");
         fatal_halt();
     }
-    memcpy(GUEST_RAM_BASE_PTR, emu_guest_image + emu_guest_ro_size,
-           emu_guest_image_size - emu_guest_ro_size);
+    /*
+     * **Zeroed, not installed.** The guest copies its own .data now --
+     * start.S does it from __data_lma, in the read-only image window --
+     * so all this owes is memory in a known state. This still memcpy'd
+     * the writable half in after the F746 stopped, which was harmless
+     * (the guest overwrote it with the same bytes) and exactly the kind
+     * of divergence a shared runner is meant to make impossible.
+     *
+     * Zeroing the whole of it matters for a different reason: without
+     * it one test's leftovers become the next test's initial state, and
+     * a suite's results start depending on the order it ran in.
+     */
+    memset(GUEST_RAM_BASE_PTR, 0, GUEST_RAM_SIZE);
 
     emu_core_reset(&g_core, EMU_GUEST_RESET_PC);
     emu_core_boot(&g_core, EMU_GUEST_RAM_BASE, GUEST_RAM_SIZE);
