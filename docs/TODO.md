@@ -108,6 +108,25 @@ measured at.
       would only be worth reaching for if ST's stack were wanted on its
       own merits, which is a different question from this port.
 
+      What the platform is, concretely -- the F746's nine files, and
+      which of them are the work:
+
+      | file | N6 effort |
+      |---|---|
+      | `CMakeLists.txt` (309 lines) | mostly transcribable; set `STM32CUBE_FAMILY n6`, and see the note about it having to precede the `include()` |
+      | `<part>.ld` (284 lines) | **new**: AXISRAM at `0x34180400`, the `+0x400` boot header, no flash regions, no arena |
+      | `board.c` (21 KB) | **the real work**: clocks, UART, LED, DWT, `board_sync_icache` |
+      | `board.h` | interface is already fixed by the other platforms |
+      | `main.c` (57 KB) | should be *shared*, not copied -- it is the same runner |
+      | `guest_image.S` | image lives in RAM here; likely simpler |
+      | `stm32n6xx_hal_conf.h` | from the family's own template, **never a renamed F7 one** -- the F4/F7 accelerator-name divergence is already recorded |
+      | `stm32n6xx_it.c`, `coremark_native.c` | small |
+
+      **`main.c` being 57 KB and per-platform is the thing to look at
+      first.** The F446 and F746 already share its shape; a third copy
+      would make three places to fix a run-loop bug. Whether it can be
+      shared is a better first question than how to clock the N6.
+
       Add a `f746`-style row to `scripts/build-matrix.sh` with the port,
       not after it.
 
