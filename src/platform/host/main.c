@@ -583,8 +583,22 @@ int main(int argc, char **argv)
      */
     for (unsigned i = 0; i < ncores; i++) {
         emu_bus_init(&g_bus[i]);
+        /*
+         * The image, read-only, where the guest's .data initialiser
+         * lives -- __data_lma points into this window and start.S copies
+         * from it.
+         *
+         * The firmware has had this window since it existed, because a
+         * guest linked for execute-in-place reads its constants there.
+         * The host never needed it while the emulator installed .data
+         * for the guest, and adding it is what makes the same image run
+         * unchanged on both: without it the guest faults in its own
+         * first loop, before anything it could report with.
+         */
         if (!emu_bus_add_ram(&g_bus[i], "ram", EMU_GUEST_RAM_BASE,
                              g_ram, ram_size) ||
+            !emu_bus_add_rom(&g_bus[i], "rom", EMU_GUEST_ROM_BASE,
+                             image, (uint32_t)len) ||
             !emu_bus_add_ram(&g_bus[i], "periph-sim", EMU_GUEST_PERIPH_BASE,
                              g_periph, PERIPH_SIM_SIZE) ||
             !emu_bus_add_mmio(&g_bus[i], "uart0", EMU_GUEST_UART_BASE,

@@ -1113,6 +1113,42 @@ session, and every one of them recurred:
   `main()` was correct only while the bus was built exactly once -- the
   same shape as the two above: code that was right when something
   happened once, left alone when it started happening twice.
+- **A guest that cannot initialise itself is a core image, not a guest.**
+  `.data` used to be installed by the *firmware*: the image was split at
+  `__guest_ro_end` and `start_guest()` memcpy'd the writable half into
+  the base of guest RAM before entry. It worked, and it put the guest's
+  initialisation in the loader -- so an image could not be loaded as one
+  blob and run, and the split it forced is the subject of the entry
+  below, which cost three bytes wherever `.rodata` ended unaligned.
+
+  `start.S` copies it now, from `__data_lma` to `__data_start`, the way
+  any crt0 does. That needed a real LMA: the link script has a ROM region
+  at `EMU_GUEST_ROM_BASE` and every output section is `AT> ROM`, so the
+  load addresses accumulate there while the run addresses stay in RAM,
+  and `objcopy -O binary` -- which lays out by LMA -- produces the same
+  blob it always did.
+
+  **The host had to grow the ROM window for this, and that is the
+  portability point.** The firmware has mapped the whole image read-only
+  at 0x2000_0000 since it existed, because a guest linked for
+  execute-in-place reads its constants there; the host never needed it
+  while the emulator installed `.data`. Without it a guest now faults in
+  its own first loop, before it has anything to report with.
+
+  **The host cannot prove this works, by construction.** It loads the
+  whole blob into RAM, so `.data` is already at its run address and the
+  copy is redundant -- a broken loop passes. The F746 is the test,
+  because there the firmware zeroes guest RAM and nothing else: CoreMark
+  came back with the same `crcfinal 0x72be` and `retired` moved 518,206
+  to 518,250, the +44 being the copy. Zeroed `.data` would have changed
+  the CRC.
+
+  The `.ro`/`.rw` split still exists and its *purpose has narrowed*: it
+  is now only a placement optimisation, telling the firmware where to
+  stop serving flash and start serving SRAM, worth 140 KiB of 345 on the
+  largest architecture tests. Nothing depends on it for correctness any
+  more.
+
 - **The guest image split was lossy for half the guests, and the comment
   claiming otherwise was load-bearing.** `guest_image.S` states that the
   `.ro` and `.rw` halves concatenate to the unsplit `.bin` "which the

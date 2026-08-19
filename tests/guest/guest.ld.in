@@ -17,8 +17,23 @@
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
 
+/*
+ * Two regions, because a guest that initialises its own .data needs the
+ * *load* address of that data to be somewhere it can read.
+ *
+ * ROM is the whole image, mapped read-only at EMU_GUEST_ROM_BASE by
+ * every platform. RAM is where the guest actually runs. .text and
+ * .rodata have their VMA in RAM -- the emulator serves those addresses
+ * out of host flash where it can -- while every load address accumulates
+ * in ROM, so the flat binary objcopy produces is byte-for-byte the blob
+ * it always was.
+ *
+ * ROM's length only has to be large enough not to overflow at link time;
+ * nothing is placed by it.
+ */
 MEMORY
 {
+    ROM (rx)  : ORIGIN = 0x20000000, LENGTH = 16M
     RAM (rwx) : ORIGIN = 0x80000000, LENGTH = @EMU_GUEST_RAM_KIB@K
 }
 
@@ -28,7 +43,7 @@ SECTIONS
     {
         KEEP(*(.text.init))     /* _start must be first: entry is at +0 */
         *(.text .text.*)
-    } > RAM
+    } > RAM AT> ROM
 
     .rodata : ALIGN(4)
     {
@@ -61,7 +76,7 @@ SECTIONS
          * luck and are byte-exact, hello and cmsistest are not.
          */
         . = ALIGN(4);
-    } > RAM
+    } > RAM AT> ROM
 
     /*
      * Where the read-only half ends.
@@ -89,6 +104,7 @@ SECTIONS
 
     .data : ALIGN(4)
     {
+        __data_start = .;
         *(.data .data.*)
         /*
          * __global_pointer$ addresses the middle of the small-data area so
@@ -97,7 +113,26 @@ SECTIONS
         . = ALIGN(8);
         PROVIDE(__global_pointer$ = . + 0x800);
         *(.sdata .sdata.*)
-    } > RAM
+        . = ALIGN(4);
+        __data_end = .;
+    } > RAM AT> ROM
+
+    /*
+     * Where .data's initialiser lives, and where it has to end up.
+     *
+     * **The guest copies this itself.** It used to be the emulator's
+     * job: the image was split at __guest_ro_end into a read-only half
+     * and a writable one, and the firmware memcpy'd the second into the
+     * base of guest RAM before entry. That worked and was the wrong
+     * place for it -- a guest that cannot initialise itself is not a
+     * guest, it is a core image, and the split it forced has already
+     * cost one silent bug (three bytes lost wherever .rodata ended
+     * unaligned, putting .data below where the guest read it).
+     *
+     * LOADADDR is in ROM, VMA is in RAM, and start.S copies between
+     * them the way any embedded crt0 does.
+     */
+    __data_lma = LOADADDR(.data);
 
     .bss (NOLOAD) : ALIGN(4)
     {

@@ -570,9 +570,13 @@ static bool build_address_space(void)
  */
 static bool start_guest(void)
 {
-    const uint32_t rw = g_img_size - g_img_ro;
-
-    if (rw > GUEST_RAM_SIZE) {
+    /*
+     * The writable half still has to *fit*, even though nothing copies
+     * it any more: the guest's .data VMA starts at the base of guest RAM
+     * and its copy loop walks to __data_end, so an image whose writable
+     * part exceeds the RAM would have the guest store past the end.
+     */
+    if ((g_img_size - g_img_ro) > GUEST_RAM_SIZE) {
         return false;
     }
     if (!build_address_space()) {
@@ -626,8 +630,19 @@ static bool start_guest(void)
      * test comes to pass on state another test wrote -- the failure mode
      * that makes a suite's results depend on the order it ran in.
      */
-    memcpy(GUEST_RAM_BASE_PTR, g_img + g_img_ro, rw);
-    memset(GUEST_RAM_BASE_PTR + rw, 0, GUEST_RAM_SIZE - rw);
+    /*
+     * **All of it zeroed, and none of it installed.** The guest copies
+     * its own .data now -- start.S does it from __data_lma, which is in
+     * the read-only image window -- so the firmware's job here is only
+     * to hand over memory in a known state.
+     *
+     * It used to memcpy the writable half of a pre-split image to the
+     * base of guest RAM. That put the guest's initialisation in the
+     * loader, which meant a guest could not be loaded as one blob and
+     * run, and it is what forced the .ro/.rw split -- a split that had
+     * already lost three bytes wherever .rodata ended unaligned.
+     */
+    memset(GUEST_RAM_BASE_PTR, 0, GUEST_RAM_SIZE);
 
     /*
      * The previous guest's exit status is not this one's. Left alone, a
