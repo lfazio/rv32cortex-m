@@ -45,6 +45,19 @@ typedef enum {
     EMU_STATE_RUNNING = 0,
     EMU_STATE_WFI,       /* parked waiting for an interrupt            */
     EMU_STATE_HALTED,    /* stopped by the debugger or a fatal fault   */
+    /*
+     * Held at reset, never yet started.
+     *
+     * Distinct from HALTED because the two differ in what may revive
+     * them: a halted core is done, and one held at reset is waiting for
+     * a *sibling* to release it -- the RH850's BOOTCTRL, where only PE0
+     * runs at reset release and asserts a bit per PE to start the
+     * others. Overloading HALTED would work today and would make "the
+     * debugger stopped this core" and "this core has not booted"
+     * indistinguishable in the status line, which is the first thing
+     * anyone looks at when a multicore guest prints nothing.
+     */
+    EMU_STATE_HELD,
 } emu_state_t;
 
 /* Reason a backend's run function returned. */

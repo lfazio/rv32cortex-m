@@ -17,6 +17,7 @@
 #include "emu/emu_jit.h"
 #include "g4mh/g4mh_decode.h"
 #include "g4mh/g4mh_disasm.h"
+#include "g4mh/g4mh_boot.h"
 #include "g4mh/g4mh_intc.h"
 #include "g4mh/g4mh_intercpu.h"
 #include "g4mh/g4mh_memmap.h"
@@ -47,6 +48,7 @@ static g4mh_intc_t g_intc[G4MH_PE_COUNT];
  * them has a self region. The ports are what the bus regions bind to.
  */
 static g4mh_barrier_t g_barr;
+static g4mh_boot_t    g_boot;
 static g4mh_ipir_t    g_ipir;
 static g4mh_tptm_t    g_tptm;
 static g4mh_intercpu_port_t g_barr_port[G4MH_PE_COUNT];
@@ -90,7 +92,15 @@ static void g4mh_ops_init(emu_cpu_t *cpu, emu_bus_t *bus, uint32_t coreid)
         g4mh_barrier_init(&g_barr);
         g4mh_ipir_init(&g_ipir);
         g4mh_tptm_init(&g_tptm);
+        g4mh_boot_init(&g_boot);
     }
+    /*
+     * BOOTCTRL needs every core, because PE0 writing it is what takes
+     * PE1 and PE2 out of EMU_STATE_HELD. Attached per core as they are
+     * created rather than looked up later, so the table cannot be half
+     * filled when the first write arrives.
+     */
+    g4mh_boot_attach(&g_boot, coreid, c);
     g4mh_ipir_bind(&g_ipir, coreid, &g_intc[coreid]);
     g4mh_tptm_bind(&g_tptm, coreid, &g_intc[coreid]);
 
@@ -272,7 +282,14 @@ static bool g4mh_ops_add_shared_devices(emu_bus_t *bus)
             * it binds to the global INTC instance like INTC2 does.
             */
            emu_bus_add_mmio(bus, "intif", G4MH_INTIF_BASE,
-                            G4MH_INTIF_SIZE, &g4mh_intif_ops, &g_intc[0]);
+                            G4MH_INTIF_SIZE, &g4mh_intif_ops, &g_intc[0]) &&
+           /*
+            * BOOTCTRL: which PEs are running. Shared rather than per
+            * core, because it is one register describing the whole
+            * system and PE0 writes it to start the others.
+            */
+           emu_bus_add_mmio(bus, "bootctrl", G4MH_BOOTCTRL_BASE,
+                            G4MH_BOOTCTRL_SIZE, &g4mh_boot_ops, &g_boot);
 }
 
 /*

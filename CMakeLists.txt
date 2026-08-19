@@ -408,6 +408,7 @@ if(EMU_FRONTEND_G4MH)
         src/frontend/g4mh/g4mh_disasm.c
         src/frontend/g4mh/g4mh_frontend.c
         src/frontend/g4mh/g4mh_gdb.c
+        src/frontend/g4mh/g4mh_boot.c
         src/frontend/g4mh/g4mh_intc.c
         src/frontend/g4mh/g4mh_mpu.c
         src/frontend/g4mh/g4mh_ipir.c

@@ -156,6 +156,16 @@ uint32_t emu_system_step(emu_system_t *sys, uint32_t quantum, bool *all_idle)
         if (st.state == EMU_STATE_HALTED) {
             continue;                 /* done for good */
         }
+        /*
+         * Held at reset. Skipped like a halted core but *not* counted as
+         * live: a core waiting to be released cannot release itself, so
+         * if every other core has finished, the system is idle and the
+         * run must end rather than spinning over cores that will never
+         * start.
+         */
+        if (st.state == EMU_STATE_HELD) {
+            continue;
+        }
         if (st.state == EMU_STATE_WFI && !st.wakeable) {
             continue;                 /* parked, and nothing can wake it */
         }

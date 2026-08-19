@@ -1420,26 +1420,57 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
              * byte at 0x370/0x372, halfword at 0x374/0x376 and word at
              * 0x378/0x37A. The narrow loads are zero-extending only --
              * there is no LDL.B or LDL.H -- which is why they are spelled
-             * LDL.BU and LDL.HU and why `false` is right for every one.
+             * LDL.BU and LDL.HU.
+             *
+             * **reg2 is an opcode extension in this slot, not a register**,
+             * and ignoring it cost the whole post-increment addressing mode.
+             * The same six sub-opcodes also encode LD/ST with a pointer
+             * update, which is what CC-RH emits for every walk over an
+             * array: reg2 0-1 is the link form, 2-3 post-increment, 4-5
+             * post-decrement, and the low bit picks zero- over
+             * sign-extension for the narrow widths (the link loads are
+             * zero-extending, so they are the odd member at reg2 1).
+             *
+             * Decoding on `sub` alone made `ld.w [r20]+, r6` execute as
+             * LDL.W: it loaded the right word and never advanced the
+             * pointer, so a loop re-read element 0 for ever and *nothing
+             * faulted*. `barrier3` printed `PE0=7 PE1=7 PE2=7` where the
+             * slots really held 7, 107 and 207 -- three cores that had all
+             * run correctly, reported through one pointer that never moved.
              */
-            case 0x370:                             /* LDL.BU [reg1],r3 */
-            case 0x374:                             /* LDL.HU [reg1],r3 */
-            case 0x378: {                           /* LDL.W  [reg1],r3 */
+            case 0x370:            /* LDL.BU / LD.B,LD.BU  [reg1]+ [reg1]- */
+            case 0x374:            /* LDL.HU / LD.H,LD.HU  [reg1]+ [reg1]- */
+            case 0x378: {          /* LDL.W  / LD.W        [reg1]+ [reg1]- */
                 const uint32_t r3 = sel;
                 const uint32_t adr = c->r[r1];
                 const uint32_t w = (sub == 0x370u) ? 1u
                                  : ((sub == 0x374u) ? 2u : 4u);
+                const uint32_t mode = r2 >> 1;  /* 0 link, 1 post+, 2 post- */
                 uint32_t v;
-                const g4mh_exc_t e = g4mh_load(c, adr, w, false, &v);
+
+                if (EMU_UNLIKELY(mode > 2u)) { EXC(G4MH_EXC_RIE); }
+
+                /* Sign-extend only the narrow non-link loads with bit 0
+                 * clear; a word load extends nothing either way. */
+                const bool sx = (mode != 0u) && ((r2 & 1u) == 0u);
+                const g4mh_exc_t e = g4mh_load(c, adr, w, sx, &v);
                 if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
                 wr(c, r3, v);
-                g4mh_ll_take(c, adr);
+
+                if (mode == 0u) {
+                    g4mh_ll_take(c, adr);
+                } else {
+                    /* The manual updates reg1 *after* writing reg3, so
+                     * `ld.w [r6]+, r6` keeps the advanced pointer rather
+                     * than the loaded word. Order matters here. */
+                    wr(c, r1, (mode == 1u) ? adr + w : adr - w);
+                }
                 break;
             }
 
-            case 0x372:                             /* STC.B r3,[reg1]  */
-            case 0x376:                             /* STC.H r3,[reg1]  */
-            case 0x37A: {                           /* STC.W r3,[reg1]  */
+            case 0x372:            /* STC.B / ST.B r3,[reg1]+ [reg1]-     */
+            case 0x376:            /* STC.H / ST.H r3,[reg1]+ [reg1]-     */
+            case 0x37A: {          /* STC.W / ST.W r3,[reg1]+ [reg1]-     */
                 /*
                  * The store happens only if this core still holds the
                  * reservation, and reg3 reports which: 1 stored, 0 did
@@ -1458,6 +1489,23 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 const uint32_t adr = c->r[r1];
                 const uint32_t w = (sub == 0x372u) ? 1u
                                  : ((sub == 0x376u) ? 2u : 4u);
+                const uint32_t mode = r2 >> 1;  /* 0 STC, 1 post+, 2 post- */
+
+                if (EMU_UNLIKELY(mode > 2u)) { EXC(G4MH_EXC_RIE); }
+
+                if (mode != 0u) {
+                    /*
+                     * Plain store with a pointer update -- no reservation
+                     * is consulted and none is dropped. reg3 is read
+                     * before reg1 moves, so `st.w r6, [r6]+` stores the
+                     * old pointer, which is what the manual specifies.
+                     */
+                    const g4mh_exc_t e = g4mh_store(c, adr, w, c->r[r3]);
+                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                    wr(c, r1, (mode == 1u) ? adr + w : adr - w);
+                    break;
+                }
+
                 const bool held = c->ll_valid && c->ll_addr == (adr & ~3u);
 
                 if (held) {

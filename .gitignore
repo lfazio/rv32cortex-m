@@ -19,6 +19,13 @@ cmake_install.cmake
 *.obj
 *.a
 
+# ...except the G4MH guests, which are *sources* as far as a checkout is
+# concerned: CC-RH is the only compiler that emits G4MH and it is a
+# licensed toolchain behind a docker image, so nobody who clones this can
+# rebuild them. scripts/g4mh-build-guest.sh already documented them as
+# committed; the blanket *.bin rule above meant they never were.
+!tests/guest/g4mh/*.bin
+
 # Editors
 .vscode/
 .idea/

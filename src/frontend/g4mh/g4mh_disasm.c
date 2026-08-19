@@ -295,6 +295,43 @@ size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn,
         case 0x140: n = snprintf(buf, buflen, "reti"); break;
         case 0x160: n = snprintf(buf, buflen,
                                  (w0 & 0x8000u) ? "ei" : "di"); break;
+        /*
+         * The link/pointer-update slot. reg2 is an opcode extension here
+         * (0-1 link, 2-3 post-increment, 4-5 post-decrement, low bit
+         * zero-extends), so these six sub-opcodes cover eighteen
+         * mnemonics. Printing them as `.short` is how a loop that never
+         * advanced its pointer read as a disassembler gap for a whole
+         * debugging session -- the trace showed `.short 0x17e6, 0x037a`
+         * where `st.w r0, [r6]+` would have named the bug.
+         */
+        case 0x370: case 0x372: case 0x374:
+        case 0x376: case 0x378: case 0x37A: {
+            const uint32_t mode = r2 >> 1;
+            const bool store = (sub & 2u) != 0u;
+            const char *const sz = (sub < 0x374u) ? "b"
+                                 : ((sub < 0x378u) ? "h" : "w");
+            const char *const u =
+                (sub >= 0x378u || store || (r2 & 1u) == 0u) ? "" : "u";
+            const char *const rn = g4mh_reg_name(sel);
+
+            if (mode == 0u) {
+                n = store ? snprintf(buf, buflen, "stc.%s %s, [%s]",
+                                     sz, rn, a)
+                          : snprintf(buf, buflen, "ldl.%s%s [%s], %s",
+                                     sz, (sub >= 0x378u) ? "" : "u", a, rn);
+            } else if (mode <= 2u) {
+                const char step = (mode == 1u) ? '+' : '-';
+                n = store ? snprintf(buf, buflen, "st.%s %s, [%s]%c",
+                                     sz, rn, a, step)
+                          : snprintf(buf, buflen, "ld.%s%s [%s]%c, %s",
+                                     sz, u, a, step, rn);
+            } else {
+                n = snprintf(buf, buflen, ".short 0x%04x, 0x%04x",
+                             (unsigned)w0, (unsigned)w1);
+            }
+            break;
+        }
+
         default:
             switch (sub & 0x7FDu) {
             case 0x220:

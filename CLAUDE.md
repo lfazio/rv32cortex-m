@@ -1553,6 +1553,30 @@ mistakes get made rather than what the mistakes were:
   instruction sharing its opcode -- **and its width**: a shared opcode
   can hold instructions of different lengths, and a wrong length is not a
   wrong answer, it is a desynchronised instruction stream.
+
+  **It happened a third time, and this one degraded rather than
+  failed.** The same field distinguishes the link forms from the ones
+  that update a pointer: sub-opcodes 0x370-0x37A are LDL/STC at
+  `reg2` 0-1, `[reg1]+` at 2-3 and `[reg1]-` at 4-5, with the low bit
+  choosing zero- over sign-extension. Matching on `sub` alone ran every
+  `ld.w [rN]+, rM` as `LDL.W`: it loaded the correct word, took a
+  reservation nobody asked for, and **never advanced the pointer**. No
+  trap, no wrong arithmetic -- a loop over an array just re-read element
+  0 for ever. CC-RH emits it for every such loop, so this was reachable
+  by the first compiled guest that walked memory, and `barrier3`
+  reported three cores' results as `PE0=7 PE1=7 PE2=7` when the slots
+  really held 7, 107 and 207. **Three cores that had all run correctly,
+  reported through one pointer that never moved.**
+
+  Two things about finding it. The trace said `.short 0x17e6, 0x037a`,
+  which reads as a disassembler gap and hid the store for a whole
+  session -- the disassembler is not a decoder, again, and it now knows
+  the slot. And the wrong suspect looked far better than the right one:
+  the visible symptom was `pe * 100` coming out 0, so `MULHI` was
+  blamed, checked against CC-RH, and found correct. What settled it was
+  reading the *post*-state in the trace rather than the disassembly --
+  `tp` went 7 to 0x64 across the multiply, so the multiply was right and
+  the value was being lost afterwards.
 - **There is a second encoder, and it is the only thing that can say a
   hand-written opcode constant is wrong.** `scripts/g4mh-check-encodings.sh`
   assembles with Renesas CC-RH and prints the fields this frontend

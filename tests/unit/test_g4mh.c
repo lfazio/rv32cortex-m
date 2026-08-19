@@ -32,6 +32,7 @@
 #include "g4mh/g4mh_types.h"
 #include "g4mh/g4mh_cpu.h"
 #include "g4mh/g4mh_disasm.h"
+#include "g4mh/g4mh_boot.h"
 #include "g4mh/g4mh_intc.h"
 #include "g4mh/g4mh_intercpu.h"
 #include "g4mh/g4mh_memmap.h"
@@ -116,6 +117,17 @@
 #define SUB_STCH    0x0376u
 #define SUB_LDLW    0x0378u
 #define SUB_STCW    0x037Au
+/*
+ * The reg2 field of the six sub-opcodes above is an opcode extension, not
+ * a register: it selects between the link forms and the LD/ST forms that
+ * update the pointer. These are the values that go in W0's r2 slot.
+ */
+#define EXT_LINK    0u          /* LDL.W, STC.B/H/W                     */
+#define EXT_LINKU   1u          /* LDL.BU, LDL.HU                       */
+#define EXT_POSTI   2u          /* [reg1]+, sign-extending              */
+#define EXT_POSTIU  3u          /* [reg1]+, zero-extending              */
+#define EXT_POSTD   4u          /* [reg1]-, sign-extending              */
+#define EXT_POSTDU  5u          /* [reg1]-, zero-extending              */
 /* imm9 splits: bits[8:5] into sub bits[5:2], bits[4:0] into the reg1 field. */
 #define SUB_MULI(i) (uint16_t)(0x0240u | ((((i) >> 5) & 0xFu) << 2))
 #define SUB_MULUI(i) (uint16_t)(0x0242u | ((((i) >> 5) & 0xFu) << 2))
@@ -1167,6 +1179,114 @@ static void test_narrow_atomics(void)
 }
 
 /*
+ * LD/ST with a pointer update -- the other half of the 0x370-0x37A slot.
+ *
+ * These share their six sub-opcodes with LDL/STC and are told apart by
+ * reg2, which is an opcode extension here rather than a register. The
+ * interpreter matched on the sub-opcode alone, so every one of them ran
+ * as the link form: the access itself was correct and the pointer never
+ * moved. Nothing faulted and nothing computed a wrong value -- a loop
+ * simply re-read element 0 for ever, which is why `barrier3` reported
+ * three cores' results as `7 7 7` when the memory held 7, 107 and 207.
+ *
+ * What this checks, and why each part is here:
+ *
+ *   - **The pointer, not just the loaded value.** Reading the right word
+ *     is what the buggy version already did; `mov r10, rN` after each
+ *     access is the part that would have failed.
+ *   - **A byte with bit 7 set.** 0x80 is the input that separates LD.B
+ *     from LD.BU, and the extension bit that picks between them is the
+ *     same field being tested. A test using 0x5A would pass against an
+ *     implementation that ignored it.
+ *   - **Post-decrement as well as post-increment**, since they differ by
+ *     one bit of the same field.
+ *   - **The store half read back through LDL.BU**, not through the loads
+ *     above. Verifying a post-increment store with a post-increment load
+ *     would let a symmetric error cancel, which is exactly how the CMOVF
+ *     test came to pass against an inverted implementation.
+ */
+static void test_pointer_update_addressing(void)
+{
+    /*
+     *   mov    <scratch>, r10
+     *   mov    0x80, r11
+     *   st.b   r11, 0[r10]          ; [s+0] = 0x80, top bit set
+     *   mov    0x7F, r11
+     *   st.b   r11, 1[r10]          ; [s+1] = 0x7F
+     *
+     *   ld.b   [r10]+, r12          ; r12 = 0xFFFFFF80, r10 = s+1
+     *   ld.bu  [r10]+, r13          ; r13 = 0x0000007F, r10 = s+2
+     *   mov    r10, r14             ; r14 = s+2
+     *   ld.bu  [r10]-, r15          ; r10 = s+1
+     *   mov    r10, r16             ; r16 = s+1
+     *
+     *   mov    <scratch>+8, r17
+     *   mov    0x5A, r18
+     *   st.b   r18, [r17]+          ; [s+8] = 0x5A, r17 = s+9
+     *   mov    0xA5, r18
+     *   st.b   r18, [r17]+          ; [s+9] = 0xA5, r17 = s+10
+     *   mov    r17, r19             ; r19 = s+10
+     *   mov    <scratch>+8, r20
+     *   ldl.bu [r20], r21           ; r21 = 0x5A   (independent read-back)
+     *   mov    <scratch>+9, r20
+     *   ldl.bu [r20], r22           ; r22 = 0xA5
+     *   halt
+     */
+    const uint16_t prog[] = {
+        W0(OP_MOVEA, 10, 0),
+            (uint16_t)(TEST_SCRATCH & 0xFFFFu),
+            (uint16_t)(TEST_SCRATCH >> 16),
+        W0(OP_MOVEA, 11, 0), 0x0080u, 0x0000u,
+        W0(OP_ST_B, 10, 11), 0x0000u,
+        W0(OP_MOVEA, 11, 0), 0x007Fu, 0x0000u,
+        W0(OP_ST_B, 10, 11), 0x0001u,
+
+        W0(OP_SYSTEM, 10, EXT_POSTI),  (uint16_t)((12u << 11) | SUB_LDLBU),
+        W0(OP_SYSTEM, 10, EXT_POSTIU), (uint16_t)((13u << 11) | SUB_LDLBU),
+        W0(0x00u, 10, 14),
+        W0(OP_SYSTEM, 10, EXT_POSTDU), (uint16_t)((15u << 11) | SUB_LDLBU),
+        W0(0x00u, 10, 16),
+
+        W0(OP_MOVEA, 17, 0),
+            (uint16_t)((TEST_SCRATCH + 8u) & 0xFFFFu),
+            (uint16_t)((TEST_SCRATCH + 8u) >> 16),
+        W0(OP_MOVEA, 18, 0), 0x005Au, 0x0000u,
+        W0(OP_SYSTEM, 17, EXT_POSTI),  (uint16_t)((18u << 11) | SUB_STCB),
+        W0(OP_MOVEA, 18, 0), 0x00A5u, 0x0000u,
+        W0(OP_SYSTEM, 17, EXT_POSTI),  (uint16_t)((18u << 11) | SUB_STCB),
+        W0(0x00u, 17, 19),
+
+        W0(OP_MOVEA, 20, 0),
+            (uint16_t)((TEST_SCRATCH + 8u) & 0xFFFFu),
+            (uint16_t)((TEST_SCRATCH + 8u) >> 16),
+        W0(OP_SYSTEM, 20, EXT_LINKU),  (uint16_t)((21u << 11) | SUB_LDLBU),
+        W0(OP_MOVEA, 20, 0),
+            (uint16_t)((TEST_SCRATCH + 9u) & 0xFFFFu),
+            (uint16_t)((TEST_SCRATCH + 9u) >> 16),
+        W0(OP_SYSTEM, 20, EXT_LINKU),  (uint16_t)((22u << 11) | SUB_LDLBU),
+
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(reg(12), 0xFFFFFF80u);            /* LD.B  sign-extends   */
+    CHECK_EQ(reg(13), 0x0000007Fu);            /* LD.BU zero-extends   */
+    CHECK_EQ(reg(14), TEST_SCRATCH + 2u);      /* two increments        */
+    CHECK_EQ(reg(16), TEST_SCRATCH + 1u);      /* one decrement         */
+    CHECK_EQ(reg(19), TEST_SCRATCH + 10u);     /* two store increments  */
+    CHECK_EQ(reg(21), 0x5Au);                  /* first byte landed     */
+    CHECK_EQ(reg(22), 0xA5u);                  /* second byte landed    */
+    CHECK_EQ(why, EMU_RUN_WFI);
+}
+
+/*
  * The swap group, checked on both the register result and PSW.
  *
  * The flags are the reason these instructions exist -- they let an endian
@@ -1947,6 +2067,21 @@ static bool run_system(const uint16_t *hw, unsigned n, uint32_t quantum,
 
     emu_system_reset(&g_sys, EMU_GUEST_RAM_BASE);
     emu_system_boot(&g_sys, EMU_GUEST_RAM_BASE, TEST_RAM_SIZE);
+
+    /*
+     * Release the secondary PEs, which is what a bootloader does.
+     *
+     * Only PE0 runs at reset release on this part (BOOTCTRL, U2B
+     * 11.4.79); the others sit in EMU_STATE_HELD until something asserts
+     * their bit. These programs are about barriers and reservations
+     * rather than about start-up, so the harness plays the role PE0's
+     * firmware would -- but it has to play it, and when BOOTCTRL was
+     * added every one of these tests failed with the secondaries never
+     * running, which is the correct new behaviour reported as eleven
+     * broken tests.
+     */
+    (void)emu_bus_write(&g_sysbus[0], G4MH_BOOTCTRL_BASE, 4u,
+                        (1u << G4MH_PE_COUNT) - 1u);
 
     uint64_t total = 0;
     for (unsigned r = 0; r < rounds; r++) {
@@ -5178,6 +5313,7 @@ void test_g4mh(void)
     test_fetrap();
     test_resbank_is_not_di();
     test_narrow_atomics();
+    test_pointer_update_addressing();
     test_swap();
     test_swap_halfword_flags();
     test_bit_search();
