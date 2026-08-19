@@ -141,6 +141,33 @@ measured at.
       copy of the interrupt check, and a third `main.c` would be the
       same shape with a thousand lines in it.
 
+      Two things to do *while* moving the code, because both are far
+      cheaper during an extraction than as a later sweep:
+
+      **Rename `rv_*` to `emu_*` where the name is not about RISC-V.**
+      The platform code mixes two kinds, and only one should move:
+
+      | name | uses | verdict |
+      |---|---|---|
+      | `rv_guest_image`, `rv_guest_image_size`, `rv_guest_ro_size` | 24 | **rename** -- these describe *a guest image*, and a G4MH or PowerPC guest uses the identical symbols today |
+      | `rv_console_putc` | 4 | **rename** -- a console has no ISA |
+      | `rv_backend`, `rv_backend_jit`, `rv_backend_interp` | 12 | keep: genuinely the RV32 frontend's |
+      | `rv_jit_stats_t`, `rv_jit_get_stats`, `rv_pair_report` | 6 | keep: RV32 statistics |
+
+      The first two groups are what make a shared runner still say
+      "RISC-V" while serving three frontends -- exactly the mismatch
+      `EMU_GUEST_ARCH_*` was renamed to remove.
+
+      **Use picolibc's `printf` instead of the hand-rolled console
+      helpers.** `console_puts`/`console_putu`/`console_puthex` appear
+      **130 times** in the F746 runner alone, and every stats line is
+      built by hand from them -- which is why adding one field means
+      three calls and why the guest-state dump is the length it is. The
+      toolchain file deliberately avoids `nano.specs`; picolibc is the
+      small-footprint replacement that gives real formatting. Do it in
+      the shared runner only, and keep the guests `-nostdlib` -- they
+      have no libc and must not gain one.
+
       Add a `f746`-style row to `scripts/build-matrix.sh` with the port,
       not after it.
 
