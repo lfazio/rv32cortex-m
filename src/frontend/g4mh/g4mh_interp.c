@@ -1527,6 +1527,90 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 break;
             }
 
+#if G4MH_EXT_MPU
+            /*
+             * LDM.MP / STM.MP -- block transfer of MPU entries.
+             *
+             * `reg2` is `eh` and `reg3` is `et`: the first and last entry
+             * to move, inclusive, walked in ascending order "regardless of
+             * the value of MPIDX". So this is the one path that touches
+             * the entry array *without* going through the MPIDX window,
+             * which is exactly why it belongs here rather than in
+             * g4mh_mpu_sr_write -- that function's whole job is the window.
+             *
+             * Three words per entry, MPLA then MPUA then MPAT, and the
+             * address advances by 4 across the whole run rather than
+             * restarting per entry. reg1 keeps its original value: the
+             * manual says so explicitly, and it is the sort of thing that
+             * would otherwise be inferred from the loop variable.
+             *
+             * These were listed as blocked on the MPU, and correctly:
+             * moving protection state into and out of registers that
+             * nothing consults would be worse than reporting RIE. The MPU
+             * enforces now, so they can.
+             *
+             * Not confirmed against CC-RH. The manual marks them G4MH2-only
+             * (PID[31:24] = 07) and CC-RH V2.08 has no -Xcpu=g4mh2, so it
+             * rejects both mnemonics under every syntax tried -- these two
+             * encodings are the only ones in this frontend taken from the
+             * manual's opcode diagram alone. R01US0209EJ0220 gives
+             * `rrrrr111111RRRRR wwwww00101100110` for LDM.MP and ...100 for
+             * STM.MP, i.e. sub 0x166 and 0x164.
+             */
+            case 0x164:                             /* STM.MP eh-et,[r1] */
+            case 0x166: {                           /* LDM.MP [r1],eh-et */
+                const bool load = (sub == 0x166u);
+                const uint32_t eh = r2;
+                const uint32_t et = sel;
+
+                /*
+                 * SV-privileged: "a PIE exception will occur if it is
+                 * executed when PSW.UM is set". This is the first place in
+                 * the frontend that enforces a privilege level at all.
+                 */
+                if (EMU_UNLIKELY((c->psw & G4MH_PSW_UM) != 0u)) {
+                    EXC(G4MH_EXC_PIE);
+                }
+
+                /* eh > et transfers nothing -- the manual's `if (eh <= et)`
+                 * has an empty else, so it is a defined no-op and not a
+                 * fault. */
+                if (c->mpu != NULL && eh <= et &&
+                    et < (uint32_t)G4MH_MPU_ENTRIES) {
+                    uint32_t adr = c->r[r1] & ~3u;
+
+                    for (uint32_t cur = eh; cur <= et; cur++) {
+                        uint32_t *const ent[3] = {
+                            &c->mpu->mpla[cur], &c->mpu->mpua[cur],
+                            &c->mpu->mpat[cur],
+                        };
+                        for (unsigned k = 0; k < 3u; k++) {
+                            g4mh_exc_t e;
+                            if (load) {
+                                uint32_t v;
+                                e = g4mh_load(c, adr, 4u, false, &v);
+                                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                                    EXC(e);
+                                }
+                                *ent[k] = v;
+                            } else {
+                                e = g4mh_store(c, adr, 4u, *ent[k]);
+                                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                                    EXC(e);
+                                }
+                            }
+                            adr += 4u;
+                        }
+                    }
+                    /* Nothing to refresh: `mpu_active` is MPM.MPE alone,
+                     * and the check reads the entries directly. If that
+                     * ever caches anything derived from them, this is the
+                     * third writer that has to invalidate it. */
+                }
+                break;
+            }
+#endif /* G4MH_EXT_MPU */
+
             case 0x100: {                           /* TRAP vector5     */
                 /*
                  * The platform's syscall hook gets first refusal, so the

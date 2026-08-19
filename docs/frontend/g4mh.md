@@ -79,9 +79,30 @@ life of this frontend it did not report anything at all.
 
 | gap | why it matters |
 |---|---|
-| `LDM.MP` / `STM.MP` | **blocked on the MPU, not on the encodings.** They transfer `MPLA`/`MPUA`/`MPAT` entries, and no access check here consults those registers — so executing them would move guest memory into registers nothing enforces, which is worse than RIE. A guest configuring protection would get silence instead of a report |
+| the `.S4` SIMD group and `LDV`/`STV`/`MOVV`/`SHFLV`/`TRFSRV` | 59 encodings taking `wreg` operands — a second register file, i.e. a coprocessor rather than a handful of instructions. Out of scope rather than missing |
+| `LDSR` / `STSR` privilege | both are SV-privileged and nothing checks `PSW.UM` before either. `G4MH_EXC_PIE` exists now, and only `LDM.MP`/`STM.MP` raise it |
 | `RESBANK` | needs the register banks modelled. Decoded and reports RIE rather than being mistaken for `DI` |
 | `DIVQ`/`DIVQU` with `reg2 == reg3` | the manual leaves the flags undefined there; this treats it as the ordinary case |
+
+**`LDM.MP` and `STM.MP` are implemented**, and were the last two
+encodings this frontend declined. They had been listed here as blocked on
+the MPU, correctly: they move `MPLA`/`MPUA`/`MPAT` entries, and until an
+access check consulted those registers, executing them would have moved
+guest memory into state nothing enforced — which is worse than RIE
+because it looks like it worked. The MPU enforces now, so they can.
+
+`reg2` is `eh` and `reg3` is `et`, walked ascending "regardless of the
+value of MPIDX" — so this is the one path that reaches the entry array
+without the window, three words per entry, MPLA then MPUA then MPAT, with
+the address running on across entries rather than restarting. `reg1`
+keeps its value, which the manual states outright and which would
+otherwise be inferred from the loop.
+
+They are also the frontend's **first privilege check**: SV-privileged, so
+`PSW.UM` set raises PIE. That cause code (`A0H`, FE level) is the only one
+here taken from the U2B hardware manual rather than the G4MH software
+manual, because the software manual describes the instructions that raise
+it without ever naming the code.
 
 **`PREPARE list12, imm5, imm32` is implemented** — the ISA's only 64-bit
 encoding, and the last thing the length decoder could not reach.
@@ -159,6 +180,306 @@ width and was ending a block at every large constant.
 `tests/guest/g4mh/disp23.asm` is the end-to-end check, and the half
 that is not this project's own encoder: CC-RH produces the bytes, the
 emulator runs them, 8 checks and 0 failures on both backends.
+
+## The instruction list
+
+**Every G4MH instruction CC-RH can assemble, executed.**
+`scripts/g4mh-instruction-coverage.sh` regenerates the table below: it
+assembles `scripts/g4mh-all-instructions.asm` with CC-RH, runs each
+encoding on its own image, and reads FEIC. RIE is 0x60, so a run either
+retires the instruction or says `reserved instruction` about it.
+
+The source list was derived from the manual rather than written by hand
+-- appendix A of R01US0209EJ0220 pairs every mnemonic with its operand
+forms, and those pairs were substituted with concrete registers. That is
+the point: a hand-written list covers the encodings someone thought of,
+which is the failure this frontend has already had three times.
+
+**Two cheaper instruments were tried first and both lied**, in the same
+direction and for the same reason -- they cannot represent the thing
+being asked about, so a structurally unreachable answer read exactly like
+an empty one:
+
+| instrument | what it claimed | why |
+|---|---|---|
+| diff the manual against the disassembler | ~190 missing | it knows 74 mnemonics against the interpreter's far larger set |
+| grep the frontend for mnemonics | the whole float-to-integer family missing | CEILF/FLOORF/ROUNDF/TRNCF share one encoding whose rounding comes from a nibble, so none of those names appears in the source |
+
+And the third instrument lied too, until it was A/B'd: the first run of
+the script itself reported **237 of 237 implemented, 0 RIE**, because
+`--dump` writes to stderr and it was reading stdout. A perfect score is
+the loudest signal in this project, so the fix was to break `BSW` on
+purpose and check the report moved -- it did not, which is what found it.
+It reports 1 RIE now with that break in place. **Do not trust a coverage
+number that has never been shown to be able to fall.**
+
+### What is not in the list, and why
+
+| absent | reason |
+|---|---|
+| `LDM.MP`, `STM.MP` | implemented, but **CC-RH V2.08 cannot assemble them** -- the manual marks them G4MH2-only (PID[31:24] = 07) and there is no `-Xcpu=g4mh2`. Their encodings are the only two here taken from the manual's opcode diagram alone, so they are covered by unit tests instead |
+| `PUSHSP`, `POPSP` | implemented; CC-RH rejects both under every syntax tried, same class of gap |
+| `RESBANK` | the one RIE below, and deliberate: register banks are not modelled, and running it as `DI` -- which decoding on reg2 alone did -- is worse than reporting it |
+| the `.S4` SIMD group, `LDV`/`STV`/`MOVV`/`SHFLV`/`TRFSRV` | they take `wreg` operands, a second register file this frontend does not model. 59 encodings, deliberately out of scope rather than missing |
+| `LDSR`/`STSR` privilege | both are SV-privileged and this frontend does not check them. `G4MH_EXC_PIE` exists now and only LDM.MP/STM.MP raise it -- a real gap, not a decision |
+
+```
+instruction                   encoding          status
+--------------------------------------------------------
+ld.b 0x10[r6],r8              06471000          ok
+ld.b 0x1000[r6],r10           06570010          ok
+ld.b [r6]+,r10                E6177053          ok
+ld.b [r6]-,r10                E6277053          ok
+ld.bu 0x10[r6],r8             86471100          ok
+ld.bu 0x1000[r6],r10          86570110          ok
+ld.bu [r6]+,r10               E61F7053          ok
+ld.bu [r6]-,r10               E62F7053          ok
+ld.dw 0x1000[r6],r10          A60709502000      ok
+ld.h 0x10[r6],r8              26471000          ok
+ld.h 0x1000[r6],r10           26570010          ok
+ld.h [r6]+,r10                E6177453          ok
+ld.h [r6]-,r10                E6277453          ok
+ld.hu 0x10[r6],r8             E6471100          ok
+ld.hu 0x1000[r6],r10          E6570110          ok
+ld.hu [r6]+,r10               E61F7453          ok
+ld.hu [r6]-,r10               E62F7453          ok
+ld.w 0x10[r6],r8              26471100          ok
+ld.w 0x1000[r6],r10           26570110          ok
+ld.w [r6]+,r10                E6177853          ok
+ld.w [r6]-,r10                E6277853          ok
+sld.b 0x8[ep],r8              0843              ok
+sld.bu 0x4[ep],r8             6440              ok
+sld.h 0x8[ep],r8              0444              ok
+sld.hu 0x4[ep],r8             7240              ok
+sld.w 0x8[ep],r8              0445              ok
+st.b r8,0x10[r6]              46471000          ok
+st.b r10,0x1000[r6]           46570010          ok
+st.b r10,[r6]+                E6177253          ok
+st.b r10,[r6]-                E6277253          ok
+st.dw r10,0x1000[r6]          A6070F502000      ok
+st.h r8,0x10[r6]              66471000          ok
+st.h r10,0x1000[r6]           66570010          ok
+st.h r10,[r6]+                E6177653          ok
+st.h r10,[r6]-                E6277653          ok
+st.w r8,0x10[r6]              66471100          ok
+st.w r10,0x1000[r6]           66570110          ok
+st.w r10,[r6]+                E6177A53          ok
+st.w r10,[r6]-                E6277A53          ok
+sst.b r8,0x8[ep]              8843              ok
+sst.h r8,0x8[ep]              8444              ok
+sst.w r8,0x8[ep]              0545              ok
+set1 3,0x10[r6]               C61F1000          ok
+set1 r8,[r6]                  E647E000          ok
+tst1 3,0x10[r6]               C6DF1000          ok
+tst1 r8,[r6]                  E647E600          ok
+caxi [r6],r8,r10              E647EE50          ok
+ldl.bu [r6],r10               E60F7053          ok
+ldl.hu [r6],r10               E60F7453          ok
+ldl.w [r6],r10                E6077853          ok
+prepare 0x3,4                 82076100          ok
+prepare 0x3,4,sp              82076300          ok
+prepare     0x3,0x4,0x10      82076B001000      ok
+prepare     0x3,0x4,0x100000  820773001000      ok
+prepare     0x3,0x4,0x10000   820773000100      ok
+stc.b r10,[r6]                E6077253          ok
+stc.h r10,[r6]                E6077653          ok
+stc.w r10,[r6]                E6077A53          ok
+mul r6,r8,r10                 E6472052          ok
+mul 8,r8,r10                  E8474052          ok
+mulh r6,r8                    E640              ok
+mulh 4,r8                     E442              ok
+mulhi 0x10,r6,r8              E6461000          ok
+mulu r6,r8,r10                E6472252          ok
+mulu 8,r8,r10                 E8474252          ok
+mac r6,r8,r10,r12             E647CC53          ok
+macu r6,r8,r10,r12            E647EC53          ok
+add r6,r8                     C641              ok
+add 4,r8                      4442              ok
+addi 0x10,r6,r8               06461000          ok
+cmp r6,r8                     E641              ok
+cmp 4,r8                      6442              ok
+mov r6,r8                     0640              ok
+mov 4,r8                      0442              ok
+movhi       0x1,zero,r6       40360100          ok
+movea 0x10,r6,r8              26461000          ok
+movhi 0x10,r6,r8              46461000          ok
+sub r6,r8                     A641              ok
+subr r6,r8                    8641              ok
+adf 0x1,r6,r8,r10             E647A253          ok
+sbf 0x1,r6,r8,r10             E6478253          ok
+satadd r6,r8                  C640              ok
+satadd 4,r8                   2442              ok
+satadd r6,r8,r10              E647BA53          ok
+satsub r6,r8                  A640              ok
+satsub r6,r8,r10              E6479A53          ok
+satsubi 0x10,r6,r8            66461000          ok
+satsubr r6,r8                 8640              ok
+and r6,r8                     4641              ok
+andi 0x10,r6,r8               C6461000          ok
+not r6,r8                     2640              ok
+or r6,r8                      0641              ok
+ori 0x10,r6,r8                86461000          ok
+tst r6,r8                     6641              ok
+xor r6,r8                     2641              ok
+xori 0x10,r6,r8               A6461000          ok
+bsh r8,r10                    E0474253          ok
+bsw r8,r10                    E0474053          ok
+clip.b r6,r8                  E6470800          ok
+clip.bu r6,r8                 E6470A00          ok
+clip.h r6,r8                  E6470C00          ok
+clip.hu r6,r8                 E6470E00          ok
+cmov 0x1,r6,r8,r10            E6472253          ok
+cmov 0x1,4,r8,r10             E4470253          ok
+hsh r8,r10                    E0474653          ok
+hsw r8,r10                    E0474453          ok
+rotl 4,r8,r10                 E447C450          ok
+rotl r6,r8,r10                E647C650          ok
+sar r6,r8                     E647A000          ok
+sar 4,r8                      A442              ok
+sar r6,r8,r10                 E647A250          ok
+sasf 0x1,r8                   E1470002          ok
+setf 0x1,r8                   E1470000          ok
+shl r6,r8                     E647C000          ok
+shl 4,r8                      C442              ok
+shl r6,r8,r10                 E647C250          ok
+shr r6,r8                     E6478000          ok
+shr 4,r8                      8442              ok
+shr r6,r8,r10                 E6478250          ok
+sxb r6                        A600              ok
+sxh r6                        E600              ok
+zxb r6                        8600              ok
+zxh r6                        C600              ok
+sch0l r8,r10                  E0476453          ok
+sch0r r8,r10                  E0476053          ok
+sch1l r8,r10                  E0476653          ok
+sch1r r8,r10                  E0476253          ok
+div r6,r8,r10                 E647C052          ok
+divh r6,r8                    4640              ok
+divh r6,r8,r10                E6478052          ok
+divhu r6,r8,r10               E6478252          ok
+jarl _lbl,r6                  80370000          ok
+jarl [r6],r10                 E6C76051          ok
+jmp [r6]                      6600              ok
+jmp 0x10[r6]                  E60610000000      ok
+ctret                         E0074401          ok
+eiret                         E0074801          ok
+feret                         E0074A01          ok
+trap 1                        E1070001          ok
+switch r6                     4600              ok
+syscall 1                     E1D76001          ok
+di                            E0076001          ok
+ei                            E0876001          ok
+halt                          E0072001          ok
+ldsr r8,0,0                   E8072000          ok
+nop                           0000              ok
+snooze                        E00F2001          ok
+stsr 0,r8,0                   E0474000          ok
+synce                         1D00              ok
+synci                         1C00              ok
+syncm                         1E00              ok
+syncp                         1F00              ok
+cache 0x0, [r6]               E6E76001          ok
+pref 0x0, [r6]                E6DF6001          ok
+absf.s r8,r10                 E0474854          ok
+addf.s r6,r8,r10              E6476054          ok
+ceilf.sl r8,r10               E2474454          ok
+ceilf.sul r8,r10              F2474454          ok
+ceilf.suw r8,r10              F2474054          ok
+ceilf.sw r8,r10               E2474054          ok
+cmovf.s 0,r6,r8,r10           E6470054          ok
+cmpf.s 0x1,r6,r8,0            E837200C          ok
+cvtf.hs r8,r10                E2474254          ok
+cvtf.ls r8,r10                E1474254          ok
+cvtf.sh r8,r10                E3474254          ok
+cvtf.sl r8,r10                E4474454          ok
+cvtf.sul r8,r10               F4474454          ok
+cvtf.suw r8,r10               F4474054          ok
+cvtf.sw r8,r10                E4474054          ok
+cvtf.uls r8,r10               F1474254          ok
+cvtf.uws r8,r10               F0474254          ok
+cvtf.ws r8,r10                E0474254          ok
+divf.s r6,r8,r10              E6476E54          ok
+floorf.sl r8,r10              E3474454          ok
+floorf.sul r8,r10             F3474454          ok
+floorf.suw r8,r10             F3474054          ok
+floorf.sw r8,r10              E3474054          ok
+fmaf.s r6,r8,r10              E647E054          ok
+fmsf.s r6,r8,r10              E647E254          ok
+fnmaf.s r6,r8,r10             E647E454          ok
+fnmsf.s r6,r8,r10             E647E654          ok
+maxf.s r6,r8,r10              E6476854          ok
+minf.s r6,r8,r10              E6476A54          ok
+mulf.s r6,r8,r10              E6476454          ok
+negf.s r8,r10                 E1474854          ok
+recipf.s r8,r10               E1474E54          ok
+roundf.sl r8,r10              E0474454          ok
+roundf.sul r8,r10             F0474454          ok
+roundf.suw r8,r10             F0474054          ok
+roundf.sw r8,r10              E0474054          ok
+rsqrtf.s r8,r10               E2474E54          ok
+sqrtf.s r8,r10                E0474E54          ok
+subf.s r6,r8,r10              E6476254          ok
+trfsr 0                       E0070004          ok
+trncf.sl r8,r10               E1474454          ok
+trncf.sul r8,r10              F1474454          ok
+trncf.suw r8,r10              F1474054          ok
+trncf.sw r8,r10               E1474054          ok
+absf.d r8,r10                 E0475854          ok
+addf.d r6,r8,r10              E6477054          ok
+ceilf.dl r8,r10               E2475454          ok
+ceilf.dul r8,r10              F2475454          ok
+ceilf.duw r8,r10              F2475054          ok
+ceilf.dw r8,r10               E2475054          ok
+cmovf.d 0,r6,r8,r10           E6471054          ok
+cmpf.d 0x1,r6,r8,0            E837300C          ok
+cvtf.dl r8,r10                E4475454          ok
+cvtf.ds r8,r10                E3475254          ok
+cvtf.dul r8,r10               F4475454          ok
+cvtf.duw r8,r10               F4475054          ok
+cvtf.dw r8,r10                E4475054          ok
+cvtf.ld r8,r10                E1475254          ok
+cvtf.sd r8,r10                E2475254          ok
+cvtf.uld r8,r10               F1475254          ok
+cvtf.uwd r8,r10               F0475254          ok
+cvtf.wd r8,r10                E0475254          ok
+divf.d r6,r8,r10              E6477E54          ok
+floorf.dl r8,r10              E3475454          ok
+floorf.dul r8,r10             F3475454          ok
+floorf.duw r8,r10             F3475054          ok
+floorf.dw r8,r10              E3475054          ok
+maxf.d r6,r8,r10              E6477854          ok
+minf.d r6,r8,r10              E6477A54          ok
+mulf.d r6,r8,r10              E6477454          ok
+negf.d r8,r10                 E1475854          ok
+recipf.d r8,r10               E1475E54          ok
+roundf.dl r8,r10              E0475454          ok
+roundf.dul r8,r10             F0475454          ok
+roundf.duw r8,r10             F0475054          ok
+roundf.dw r8,r10              E0475054          ok
+rsqrtf.d r8,r10               E2475E54          ok
+sqrtf.d r8,r10                E0475E54          ok
+subf.d r6,r8,r10              E6477254          ok
+trncf.dl r8,r10               E1475454          ok
+trncf.dul r8,r10              F1475454          ok
+trncf.duw r8,r10              F1475054          ok
+trncf.dw r8,r10               E1475054          ok
+bins r6, 4, 8, r8             E647D8B0          ok
+callt 5                       0502              ok
+clr1 3, 0x10[r6]              C69F1000          ok
+clr1 r8, [r6]                 E647E400          ok
+not1 3, 0x10[r6]              C65F1000          ok
+not1 r8, [r6]                 E647E200          ok
+dispose 4, 0x3                42066000          ok
+dispose 4, 0x3, [r31]         42067F00          ok
+divq r6, r8, r10              E647FC52          ok
+divqu r6, r8, r10             E647FE52          ok
+divu r6, r8, r10              E647C252          ok
+fetrap 1                      4008              ok
+resbank                       E0076081          RIE
+jr 0x10                       80071000          ok
+
+251 instructions: 250 executed, 1 raised RIE
+```
 
 ## Floating point
 

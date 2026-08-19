@@ -1286,6 +1286,138 @@ static void test_pointer_update_addressing(void)
     CHECK_EQ(why, EMU_RUN_WFI);
 }
 
+#if G4MH_EXT_MPU
+/*
+ * LDM.MP and STM.MP -- block transfer of MPU entries.
+ *
+ * These were the last two encodings this frontend declined, and they were
+ * declined for a reason rather than an oversight: until the MPU existed,
+ * executing them would have moved protection state into and out of
+ * registers that no access check consulted. That is worse than RIE,
+ * because it looks like it worked.
+ *
+ * The round trip is the test. LDM.MP fills entries 2 and 3 from memory
+ * the program itself wrote, STM.MP writes them back to a *different*
+ * address, and the two regions are compared -- so a transfer that dropped
+ * a word, or wrote the three registers in the wrong order, or restarted
+ * the address per entry, moves the copy relative to the original.
+ *
+ * Reading back only through the MPIDX window would not do: LDM.MP is the
+ * one path that reaches the entry array without the window, so the window
+ * is the wrong instrument for asking whether it worked. Both are checked.
+ *
+ * The neighbours are asserted too. `mpla[N]` off the end of its array
+ * lands on `mpua[0]`, which is how an earlier MPU test passed against a
+ * real out-of-range write -- so entries 1 and 4 are snapshotted, not
+ * assumed.
+ */
+static void test_ldm_stm_mp(void)
+{
+    /* ST.W's disp16 carries a format bit in its low position, so the
+     * displacement is even and bit 0 is set. */
+#define STW(base, src, disp) \
+    W0(0x3Bu, (base), (src)), (uint16_t)(((disp) & 0xFFFEu) | 1u)
+#define WORD(v) (uint16_t)((v) & 0xFFFFu), (uint16_t)((v) >> 16)
+
+    const uint32_t dst = TEST_SCRATCH + 64u;
+    const uint16_t prog[] = {
+        W0(OP_MOVEA, 6, 0), WORD(TEST_SCRATCH),
+
+        /* entry 2, then entry 3: MPLA, MPUA, MPAT in that order */
+        W0(OP_MOVEA, 7, 0), WORD(0x11110000u), STW(6, 7, 0),
+        W0(OP_MOVEA, 7, 0), WORD(0x1111FFFFu), STW(6, 7, 4),
+        W0(OP_MOVEA, 7, 0), WORD(0x00000007u), STW(6, 7, 8),
+        W0(OP_MOVEA, 7, 0), WORD(0x22220000u), STW(6, 7, 12),
+        W0(OP_MOVEA, 7, 0), WORD(0x2222FFFFu), STW(6, 7, 16),
+        W0(OP_MOVEA, 7, 0), WORD(0x00000005u), STW(6, 7, 20),
+
+        /* ldm.mp [r6], 2-3  */
+        W0(OP_SYSTEM, 6, 2), (uint16_t)((3u << 11) | 0x166u),
+        /* stm.mp 2-3, [r8]  */
+        W0(OP_MOVEA, 8, 0), WORD(dst),
+        W0(OP_SYSTEM, 8, 2), (uint16_t)((3u << 11) | 0x164u),
+
+        0x07E0u, SUB_HALT,
+    };
+#undef STW
+#undef WORD
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 128u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    const g4mh_mpu_t *const m =
+        ((const g4mh_cpu_t *)(const void *)g_core.cpu)->mpu;
+    if (m == NULL) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(why, EMU_RUN_WFI);
+
+    /* The entries themselves, reached directly rather than through MPIDX. */
+    CHECK_EQ(m->mpla[2], 0x11110000u);
+    CHECK_EQ(m->mpua[2], 0x1111FFFFu);
+    CHECK_EQ(m->mpat[2], 0x00000007u);
+    CHECK_EQ(m->mpla[3], 0x22220000u);
+    CHECK_EQ(m->mpua[3], 0x2222FFFFu);
+    CHECK_EQ(m->mpat[3], 0x00000005u);
+
+    /* Neighbours untouched -- eh..et is inclusive and must not overrun. */
+    CHECK_EQ(m->mpla[1], 0u);
+    CHECK_EQ(m->mpua[1], 0u);
+    CHECK_EQ(m->mpat[1], 0u);
+    CHECK_EQ(m->mpla[4], 0u);
+    CHECK_EQ(m->mpua[4], 0u);
+    CHECK_EQ(m->mpat[4], 0u);
+
+    /* The round trip: six words, same order, at the new address. */
+    for (unsigned k = 0; k < 6u; k++) {
+        CHECK_EQ(ram32((TEST_SCRATCH - EMU_GUEST_RAM_BASE) + 64u + k * 4u),
+                 ram32((TEST_SCRATCH - EMU_GUEST_RAM_BASE) + k * 4u));
+    }
+
+    /* "The general-purpose register reg1 retains the original value." */
+    CHECK_EQ(reg(6), TEST_SCRATCH);
+    CHECK_EQ(reg(8), dst);
+}
+
+/*
+ * LDM.MP is SV-privileged, and this is the first privilege check the
+ * frontend has. Asserting the *cause* rather than that something
+ * happened: a flat guest's vector table is zeros, so an unrelated
+ * exception lands on the same place and looks identical -- which is how
+ * three earlier versions of the INTC test passed against three different
+ * bugs.
+ */
+static void test_ldm_mp_is_privileged(void)
+{
+    const uint16_t prog[] = {
+        /* mov <UM>, r10 ; ldsr r10, PSW  -- LDSR takes reg1 as the source */
+        W0(OP_MOVEA, 10, 0),
+            (uint16_t)(G4MH_PSW_UM & 0xFFFFu),
+            (uint16_t)(G4MH_PSW_UM >> 16),
+        W0(OP_SYSTEM, 10, G4MH_SR_PSW), (uint16_t)((0u << 11) | SUB_LDSR),
+        W0(OP_SYSTEM, 6, 2), (uint16_t)((3u << 11) | 0x166u),
+        0x07E0u, SUB_HALT,
+    };
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
+
+    CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_PIE);
+}
+#endif /* G4MH_EXT_MPU */
+
 /*
  * The swap group, checked on both the register result and PSW.
  *
@@ -5314,6 +5446,10 @@ void test_g4mh(void)
     test_resbank_is_not_di();
     test_narrow_atomics();
     test_pointer_update_addressing();
+#if G4MH_EXT_MPU
+    test_ldm_stm_mp();
+    test_ldm_mp_is_privileged();
+#endif
     test_swap();
     test_swap_halfword_flags();
     test_bit_search();

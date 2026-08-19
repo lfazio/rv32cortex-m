@@ -304,6 +304,15 @@ size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn,
          * debugging session -- the trace showed `.short 0x17e6, 0x037a`
          * where `st.w r0, [r6]+` would have named the bug.
          */
+        case 0x164:
+            n = snprintf(buf, buflen, "stm.mp %u-%u, [%s]",
+                         (unsigned)r2, (unsigned)sel, a);
+            break;
+        case 0x166:
+            n = snprintf(buf, buflen, "ldm.mp [%s], %u-%u",
+                         a, (unsigned)r2, (unsigned)sel);
+            break;
+
         case 0x370: case 0x372: case 0x374:
         case 0x376: case 0x378: case 0x37A: {
             const uint32_t mode = r2 >> 1;

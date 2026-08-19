@@ -34,6 +34,18 @@ typedef uint32_t g4mh_exc_t;
 #define G4MH_EXC_MAE            0x0062u   /* misaligned access            */
 #define G4MH_EXC_FPP            0x0071u   /* FP operation                 */
 #define G4MH_EXC_UCPOP          0x0080u   /* coprocessor unusable         */
+/*
+ * Privileged instruction. R01UH0923EJ0130 table 3.103 "Exception Cause
+ * List" gives A0H, FE level, resumable -- and it is the only cause here
+ * that came from the U2B hardware manual rather than the G4MH software
+ * one, because the software manual describes the *instructions* that
+ * raise it without ever naming the code.
+ *
+ * Only LDM.MP and STM.MP raise it today. LDSR and STSR are SV-privileged
+ * too and this frontend does not check them, which is a real gap rather
+ * than a decision -- see docs/frontend/g4mh.md.
+ */
+#define G4MH_EXC_PIE            0x00A0u   /* privileged instruction       */
 
 /* EI level: taken to EIPC/EIPSW/EIIC, maskable by PSW.ID. */
 #define G4MH_EXC_TRAP0          0x0040u   /* TRAP 0..15,  +vector         */

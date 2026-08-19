@@ -147,6 +147,7 @@ bool g4mh_exc_is_fe(g4mh_exc_t cause)
     case G4MH_EXC_MAE:
     case G4MH_EXC_FPP:
     case G4MH_EXC_UCPOP:
+    case G4MH_EXC_PIE:
         return true;
     default:
         /* FETRAP is the one *software-raised* FE-level cause: that is the
@@ -201,6 +202,7 @@ static uint32_t handler_address(const g4mh_cpu_t *c, g4mh_exc_t cause)
     case G4MH_EXC_MAE:    return table + 0x0060u;
     case G4MH_EXC_FPP:    return table + 0x0070u;
     case G4MH_EXC_UCPOP:  return table + 0x0080u;
+    case G4MH_EXC_PIE:    return table + 0x00A0u;
     default:              return table + 0x0090u;   /* SYSCALL and rest  */
     }
 }
