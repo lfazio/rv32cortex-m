@@ -134,6 +134,39 @@ extern const uint32_t t2_alloc_regs[T2_ALLOC_REGS];
 void t2_push(uint32_t list);
 void t2_pop(uint32_t list);
 
+/*
+ * Make freshly emitted code fetchable.
+ *
+ * The JIT writes instructions as *data* and then branches to them, which
+ * on this host is not free the way it is on x86: the bytes go out through
+ * the D-cache while the instruction side fetches through its own, and
+ * without maintenance the core executes whatever was at those addresses
+ * before. That is not a wrong answer, it is arbitrary code -- and it
+ * fires on *reuse* of the buffer rather than on first write, so a short
+ * run looks perfectly healthy.
+ *
+ * The framework calls this through `emu_jit_ops_t.sync` after every
+ * translation and after a flush. It was `NULL` for both hosts, carrying a
+ * comment that justified it for x86 -- whose caches are coherent with
+ * instruction fetch -- from before the macro was shared with Thumb-2.
+ *
+ * The cache half is a *platform* property, not a host one: a Cortex-M4
+ * has no caches and a Cortex-M7 has both, and nothing in the compiler
+ * flags tells them apart. So the barriers are here and the maintenance
+ * comes from `board_sync_icache`, which the M7 platform overrides.
+ */
+void t2_sync_code(const void *addr, uint32_t len);
+
+/*
+ * Clean `len` bytes at `addr` out of the D-cache to the point of
+ * unification and invalidate the matching instruction lines.
+ *
+ * Weak, and a no-op by default: correct on any part without caches, which
+ * is every ARMv7-M this project targets except the F746. Overriding it is
+ * how a cached part opts in.
+ */
+void board_sync_icache(const void *addr, uint32_t len);
+
 #ifdef __cplusplus
 }
 #endif

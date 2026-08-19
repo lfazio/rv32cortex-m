@@ -41,9 +41,13 @@
  */
 /* The host this was built for, so the banner does not have to lie. */
 #if defined(EMU_HOST_JIT_THUMB2)
+#  include "emu/emu_thumb2.h"   /* for t2_sync_code, below */
+#  define EMU_IR_JIT_SYNC t2_sync_code
 #  define EMU_IR_JIT_NAME "jit-ir-thumb2"
 #else
 #  define EMU_IR_JIT_NAME "jit-ir-x86-64"
+   /* x86 needs none: its caches are coherent with instruction fetch. */
+#  define EMU_IR_JIT_SYNC NULL
 #endif
 
 static emu_ir_block_t g_ir;
@@ -216,11 +220,19 @@ static const emu_jit_ops_t prefix##_jit_ops = {                         \
     /*                                                                  \
      * Relocatable: every branch inside a block is a rel32 whose ends    \
      * move together, and every address that is not -- helpers, guest    \
-     * pc -- is an absolute immediate. x86 needs no sync, its caches     \
-     * being coherent with instruction fetch.                           \
+     * pc -- is an absolute immediate.                                   \
      */                                                                 \
     .relocatable = true,                                                \
-    .sync        = NULL,                                                \
+    /*                                                                  \
+     * **Per host, and it was not.** This said `NULL` for both, with a   \
+     * comment justifying it for x86 -- whose caches are coherent with   \
+     * instruction fetch, so nothing is needed there and that half is    \
+     * still right. Thumb-2 inherited it when the macro was shared, and  \
+     * on a Cortex-M7 that means branching into bytes the instruction    \
+     * side has never seen. Not a wrong answer: arbitrary code, and only \
+     * once the buffer is *reused*, so a short run looks healthy.        \
+     */                                                                 \
+    .sync        = EMU_IR_JIT_SYNC,                                     \
     .interp      = NULL,   /* filled below; see the note there */       \
     .is_idle     = prefix##_is_idle,                                    \
     .wake        = prefix##_wake,                                       \

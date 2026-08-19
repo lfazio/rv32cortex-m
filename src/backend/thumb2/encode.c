@@ -421,4 +421,35 @@ void t2_mull(bool sign, uint32_t rdlo, uint32_t rdhi, uint32_t rn,
               (uint16_t)((rdlo << 12) | (rdhi << 8) | rm));
 }
 
+/* ------------------------------------------------------------------ */
+/* Making emitted code fetchable                                        */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The default: no caches, so ordering is the whole problem and the
+ * barriers below are the whole answer. A part with caches overrides this
+ * -- see the note in emu_thumb2.h for why the split is platform and not
+ * host.
+ */
+__attribute__((weak)) void board_sync_icache(const void *addr, uint32_t len)
+{
+    (void)addr;
+    (void)len;
+}
+
+void t2_sync_code(const void *addr, uint32_t len)
+{
+    board_sync_icache(addr, len);
+
+    /*
+     * DSB before ISB, and both after the maintenance: the DSB makes the
+     * writes (and any cache operations above) complete, the ISB flushes
+     * the pipeline so nothing already fetched from these addresses is
+     * executed. On a part without caches this pair alone is sufficient
+     * and is what the M4 relies on.
+     */
+    __asm__ volatile("dsb 0xF" ::: "memory");
+    __asm__ volatile("isb 0xF" ::: "memory");
+}
+
 #endif /* EMU_HOST_JIT_THUMB2 */

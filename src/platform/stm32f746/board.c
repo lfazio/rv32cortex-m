@@ -12,6 +12,10 @@
 
 #include "board.h"
 
+/* For board_sync_icache's declaration: overriding a weak symbol without
+ * seeing its prototype is how the signatures come apart. */
+#include "emu/emu_thumb2.h"
+
 #include "stm32f7xx_hal.h"
 
 #include <stdbool.h>
@@ -527,6 +531,32 @@ void board_led_toggle(board_led_t led)
     LED_PORT->BSRR = (LED_PORT->ODR & pin) ? (pin << 16) : pin;
 }
 
+/*
+ * The M7 half of t2_sync_code: the JIT's code buffer is ordinary .bss, so
+ * a translated block is written through the D-cache and then branched to
+ * through the instruction side.
+ *
+ * Both caches are enabled below, and this was **missing entirely** -- the
+ * IR backend inherited `.sync = NULL` from the x86 host, whose caches are
+ * coherent with instruction fetch. The failure it produces is not a wrong
+ * answer, it is executing whatever occupied those addresses before, and
+ * it needs the buffer to be *reused* before it can fire, so a short run
+ * looks healthy. See emu_thumb2.h.
+ *
+ * Clean to the point of unification, then invalidate the instruction
+ * lines: the data has to reach a level the I-side can see before the
+ * stale I-lines are dropped, or the invalidate races the clean.
+ */
+void board_sync_icache(const void *addr, uint32_t len)
+{
+#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)
+    SCB_CleanDCache_by_Addr((uint32_t *)(uintptr_t)addr, (int32_t)len);
+#endif
+#if defined(__ICACHE_PRESENT) && (__ICACHE_PRESENT == 1U)
+    SCB_InvalidateICache_by_Addr((void *)(uintptr_t)addr, (int32_t)len);
+#endif
+}
+
 void board_init(void)
 {
     /*
@@ -537,8 +567,8 @@ void board_init(void)
      * uncached fetch costs seven cycles, so leaving the I-cache off would
      * make this part slower than the 180 MHz M4 it replaces. The D-cache
      * is what makes the JIT's code buffer need real maintenance -- see
-     * sync_icache in the backend, and RV_ARM_HAS_CACHES, which this
-     * platform defines.
+     * board_sync_icache just above, which t2_sync_code calls after every
+     * translation.
      *
      * There is no DMA in this firmware, so the usual coherency hazard of
      * enabling the D-cache does not arise. A guest driving DMA through the

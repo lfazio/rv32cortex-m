@@ -78,9 +78,29 @@ The JIT writes instructions as data and branches to them. On a Cortex-M7
 that needs a real clean-to-PoU and I-cache invalidate by address, not the
 DSB/ISB that sufficed with no caches — getting it wrong executes
 arbitrary bytes rather than producing a wrong answer.
-`RV_ARM_HAS_CACHES` is set by the **platform**, because nothing in the
-compiler flags distinguishes the parts: `-mcpu=cortex-m4` and
-`-mcpu=cortex-m7` both define `__ARM_ARCH_7EM__`.
+
+The framework calls `emu_jit_ops_t.sync` after every translation and
+after a flush; on this host that is `t2_sync_code`, which issues the
+barriers itself and delegates the maintenance to `board_sync_icache`.
+That split is deliberate: the barriers are a property of the *host*, and
+whether there are caches to maintain is a property of the **platform** —
+nothing in the compiler flags distinguishes the parts, since
+`-mcpu=cortex-m4` and `-mcpu=cortex-m7` both define `__ARM_ARCH_7EM__`.
+So `board_sync_icache` is weak and a no-op, and the F746 overrides it.
+
+**It was missing entirely, and this section described it anyway.** When
+the hand-written translator was replaced by the IR backend, the new one
+inherited `.sync = NULL` from a macro shared with x86-64 — whose caches
+*are* coherent with instruction fetch, so the comment justifying it was
+true where it was written and false where it was copied. The flag this
+section used to name, `RV_ARM_HAS_CACHES`, outlived the code that read
+it: still defined by the platform, still defaulted in `rv_config.h`,
+read by nothing. A prose description of a mechanism is not the
+mechanism; grep for the readers.
+
+The failure it produces needs the code buffer to be **reused** before it
+can fire — a fresh address has no stale I-line — so a short run looks
+perfectly healthy, which is why no test caught it.
 
 ## What `may_run` may gate on
 

@@ -247,7 +247,8 @@ void board_init(void)
 {
     /*
      * No caches to enable: this part has only the ART flash accelerator,
-     * which is transparent. That is why RV_ARM_HAS_CACHES is left off here
+     * which is transparent. That is why board_sync_icache is left at its
+     * weak default here
      * and the JIT's instruction-cache maintenance compiles out.
      */
     HAL_Init();

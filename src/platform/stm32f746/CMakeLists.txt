@@ -83,7 +83,6 @@ target_compile_definitions(stm32cube PUBLIC
 # JIT's write-then-execute need real maintenance rather than a barrier. The
 # backend cannot infer this: -mcpu=cortex-m4 and -mcpu=cortex-m7 both define
 # __ARM_ARCH_7EM__, so the platform has to say so.
-target_compile_definitions(emucore PUBLIC RV_ARM_HAS_CACHES=1)
 
 # Vendor code is not warning-clean under our flags and is not ours to fix,
 # so it is compiled without the strict set applied to the emulator.

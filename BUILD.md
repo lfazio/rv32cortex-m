@@ -124,8 +124,14 @@ CMake's error for its absence names the option rather than the cause — so
 a first configure without it leaves a *poisoned* build directory that
 keeps failing after the option is added. Delete the directory.
 
-`RV_ARM_HAS_CACHES` is set by the platform and cannot be derived: both
-`-mcpu=cortex-m4` and `-mcpu=cortex-m7` define `__ARM_ARCH_7EM__`.
+Whether the part has caches cannot be derived — both `-mcpu=cortex-m4`
+and `-mcpu=cortex-m7` define `__ARM_ARCH_7EM__` — so it is not a flag at
+all: `board_sync_icache` is weak and a no-op, and the F746 overrides it
+with the real clean-to-PoU and I-cache invalidate. There *was* a flag,
+`RV_ARM_HAS_CACHES`, and it outlived the code it gated: the hand-written
+Thumb-2 backend that read it was removed, its replacement shipped with no
+cache maintenance at all, and the flag stayed defined and unread. Grep
+for the readers of a flag, not for the flag.
 
 ## Shared
 
