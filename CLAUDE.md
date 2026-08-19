@@ -1303,6 +1303,44 @@ session, and every one of them recurred:
     with a correct implementation.** `0xFFFFFF9C / 7` is `0x24924916`;
     the test said `0x24924924`, a plausible repeating pattern, and was
     the last of 29 checks to fail once the emulator was right.
+- **A barrier is worth nothing to an emulator that has no concurrency;
+  an instruction-sync is worth correctness.** Asked whether G4MH's
+  `SYNC*` should lower to host barriers, the split is three-to-one and it
+  is about the execution model, not about cost. `SYNCE`/`SYNCM`/`SYNCP`
+  order memory and exceptions, and every guest core here runs on the
+  *one* host thread switched at a quantum -- the guest already has a
+  total order over its own accesses, so a `DMB` or an `MFENCE` prevents
+  no reordering that can happen. They stay no-ops until this grows
+  threads.
+
+  `SYNCI` is not a barrier. It says the guest wrote instructions, so a
+  translating backend's blocks are stale, and **the host equivalent is
+  not an instruction at all** -- it is discarding translations. RV32 has
+  said exactly this since it was written (`FENCE` free, `FENCE.I` an
+  invalidation); G4MH had neither and its JIT ran code the guest had
+  replaced.
+
+  **Every G4MH `CACHE` operation is the instruction cache** -- table 2.7
+  is CHBII, CIBII, CFALI, CISTI, CILDI and nothing else -- so it means
+  the same thing. It deliberately does *not* go through
+  `emu_cache_ops_t`: that is for RV32's `cbo.*`, which is D-cache
+  coherency with a real DMA engine and translates the guest address to
+  the host line backing it. Maintaining a host I-cache for bytes the
+  host is not executing would be a plausible-looking no-op.
+
+  The two things that cost the time were both about the test, not the
+  fix. **The obvious self-modifying-code test proved nothing twice.**
+  It first patched an instruction at entry+2, which was never a *block
+  start*, so the second entry compiled the already-patched bytes and
+  both backends agreed. Then it forced the interpreter by assigning
+  `g4mh_backend` before `load_and_run` -- and `emu_core_open` runs the
+  frontend's init, which assigns the backend itself, so both passes ran
+  the JIT and the test compared it against itself. A one-line probe
+  printing `backend->name` and the translation count is what turned
+  "passes" into "never ran". **When a test compares two backends, print
+  which two it actually used.** The performance-counter test in the same
+  file had the identical defect.
+
 - **A guest that runs is worth more than a suite that passes, when the
   suite shares an author with the thing it tests.** G4MH's unit tests are
   hand-assembled halfword arrays, deliberately not sharing an encoder
