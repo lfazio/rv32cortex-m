@@ -22,6 +22,7 @@
 #include "stm32f4xx_hal.h"
 #include "board.h"
 #include "emu_board.h"
+#include "emu_run.h"
 #include "emu_console.h"
 
 #if EMU_NET
@@ -340,6 +341,19 @@ void TIM6_DAC_IRQHandler(void)
 /* What this board owes the shared runner (see emu_board.h)            */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Guest time, from the cycle counter. The divisor is fixed at start-up
+ * because SystemCoreClock is, and the epoch is the first slice rather
+ * than reset so a guest's clock starts near zero.
+ */
+static uint32_t g_cycles_per_tick;
+static uint32_t g_start_cycles;
+
+uint64_t emu_board_time_now(void)
+{
+    return (uint64_t)(board_cycles() - g_start_cycles) / g_cycles_per_tick;
+}
+
 const char *const emu_board_core_name = "Cortex-M4";
 
 /*
@@ -516,57 +530,25 @@ int main(void)
 #endif
     console_puts("\n");
 
-    const uint32_t cycles_per_tick = SystemCoreClock / EMU_TIMER_HZ;
+    g_cycles_per_tick = SystemCoreClock / EMU_TIMER_HZ;
     const uint32_t start_cycles = board_cycles();
+
+    g_start_cycles = start_cycles;
     uint64_t retired_total = 0;
 
     bool capped = false;
 
-    for (;;) {
-        uint32_t retired = 0;
-        const emu_run_reason_t why = emu_core_run(&g_core, EMU_RUN_SLICE,
-                                                  &retired);
-        retired_total += retired;
+    {
+        const emu_run_env_t env = {
+            .slice       = EMU_RUN_SLICE,
+            .max_insn    = EMU_MAX_INSN,
+            /* This board takes no uploads; see emu_net_image_begin. */
+            .take_upload = NULL,
+        };
+        const emu_run_outcome_t out =
+            emu_run_guest(&g_core, ops, &env, &retired_total);
 
-#if EMU_NET
-        /*
-         * The stack advances only when called, so this is its entire
-         * schedule -- once per guest slice, which is finer than any
-         * timeout lwIP keeps.
-         */
-        emu_net_poll();
-#endif
-
-        /*
-         * Compared against the running total rather than a budget
-         * counted down to zero. A block backend may retire more than
-         * the slice it was given -- it can only stop between blocks --
-         * so a remaining-budget subtraction goes below zero and wraps,
-         * and the cap silently stops existing. That exact bug shipped in
-         * the host runner and was invisible for the life of the project,
-         * because the interpreter happens to land on the boundary
-         * exactly.
-         */
-        if (EMU_MAX_INSN != 0u && retired_total >= (uint64_t)EMU_MAX_INSN) {
-            capped = true;
-            break;
-        }
-
-        /* Guest time tracks real time through the DWT cycle counter. */
-        ops->set_time(g_core.cpu,
-                      (uint64_t)(board_cycles() - start_cycles) / cycles_per_tick);
-
-        if (why == EMU_RUN_HALTED) {
-            break;
-        }
-        if (why == EMU_RUN_WFI) {
-            emu_core_status(&g_core, &st);
-            if (st.wakeable) {
-                continue;
-            }
-            console_puts("\nguest parked with no interrupts enabled\n");
-            break;
-        }
+        capped = (out == EMU_RUN_OUTCOME_CAPPED);
     }
 
     const uint32_t elapsed = board_cycles() - start_cycles;

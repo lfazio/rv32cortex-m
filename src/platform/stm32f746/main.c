@@ -16,6 +16,7 @@
 #include "stm32f7xx_hal.h"
 #include "board.h"
 #include "emu_board.h"
+#include "emu_run.h"
 #include "emu_console.h"
 
 #include "emu/emu_cpu.h"
@@ -433,6 +434,19 @@ static bool start_guest(void);
 /* ------------------------------------------------------------------ */
 /* What this board owes the shared runner (see emu_board.h)            */
 /* ------------------------------------------------------------------ */
+
+/*
+ * Guest time, from the cycle counter. The divisor is fixed at start-up
+ * because SystemCoreClock is, and the epoch is the first slice rather
+ * than reset so a guest's clock starts near zero.
+ */
+static uint32_t g_cycles_per_tick;
+static uint32_t g_start_cycles;
+
+uint64_t emu_board_time_now(void)
+{
+    return (uint64_t)(board_cycles() - g_start_cycles) / g_cycles_per_tick;
+}
 
 const char *const emu_board_core_name = "Cortex-M7";
 
@@ -1107,95 +1121,31 @@ restart:
     console_puts(st.backend);
     console_puts("\n\n");
 
-    const uint32_t cycles_per_tick = SystemCoreClock / EMU_TIMER_HZ;
+    g_cycles_per_tick = SystemCoreClock / EMU_TIMER_HZ;
     const uint32_t start_cycles = board_cycles();
+
+    g_start_cycles = start_cycles;
     uint64_t retired_total = 0;
 
     bool capped = false;
 
-    for (;;) {
-        uint32_t retired = 0;
-        emu_run_reason_t why;
-
+    {
+        const emu_run_env_t env = {
+            .slice       = EMU_RUN_SLICE,
+            .max_insn    = EMU_MAX_INSN,
 #if EMU_NET
-        /*
-         * With a debugger attached the stub owns run control: it honours
-         * breakpoints and single-step, and while the guest is stopped it
-         * retires nothing and this loop just services the network.
-         *
-         * Tested once per slice, not once per instruction. Nothing on
-         * the execute path changes, so a guest nobody is debugging pays
-         * for this exactly what it pays for emu_net_poll() -- one
-         * predictable branch every 4096 instructions.
-         */
-        if (emu_net_gdb_attached()) {
-            why = (emu_run_reason_t)emu_net_gdb_run(EMU_RUN_SLICE, &retired);
-        } else
+            .take_upload = take_uploaded_image,
+#else
+            .take_upload = NULL,
 #endif
-        {
-            why = emu_core_run(&g_core, EMU_RUN_SLICE, &retired);
-        }
-        retired_total += retired;
+        };
+        const emu_run_outcome_t out =
+            emu_run_guest(&g_core, ops, &env, &retired_total);
 
-#if EMU_NET
-        /*
-         * The stack advances only when called, so this is its entire
-         * schedule. Once per slice is 4096 guest instructions, a few
-         * hundred microseconds -- finer than any timer lwIP keeps and
-         * far finer than the receive ring can fill, so nothing here
-         * needs its own interrupt beyond the one taking bytes off the
-         * wire.
-         *
-         * It is also the reason this port does not want an RTOS. A
-         * scheduler would preempt on its tick, which is coarser than
-         * this loop already is, and would buy nothing in exchange for
-         * two stacks and lwIP's threaded API.
-         */
-        emu_net_poll();
-
-        /*
-         * A new image landed while the guest was between slices. Going
-         * back to `restart` rather than continuing here restarts the
-         * accounting with it, which matters: a run whose instruction
-         * count carried over from the previous guest would hit the cap
-         * early and report "did not terminate" about a guest that had
-         * barely started.
-         */
-        if (take_uploaded_image()) {
+        if (out == EMU_RUN_OUTCOME_RELOAD) {
             goto restart;
         }
-#endif
-
-        /*
-         * Compared against the running total rather than a budget
-         * counted down to zero. A block backend may retire more than
-         * the slice it was given -- it can only stop between blocks --
-         * so a remaining-budget subtraction goes below zero and wraps,
-         * and the cap silently stops existing. That exact bug shipped in
-         * the host runner and was invisible for the life of the project,
-         * because the interpreter happens to land on the boundary
-         * exactly.
-         */
-        if (EMU_MAX_INSN != 0u && retired_total >= (uint64_t)EMU_MAX_INSN) {
-            capped = true;
-            break;
-        }
-
-        /* Guest time tracks real time through the DWT cycle counter. */
-        ops->set_time(g_core.cpu,
-                      (uint64_t)(board_cycles() - start_cycles) / cycles_per_tick);
-
-        if (why == EMU_RUN_HALTED) {
-            break;
-        }
-        if (why == EMU_RUN_WFI) {
-            emu_core_status(&g_core, &st);
-            if (st.wakeable) {
-                continue;
-            }
-            console_puts("\nguest parked with no interrupts enabled\n");
-            break;
-        }
+        capped = (out == EMU_RUN_OUTCOME_CAPPED);
     }
 
     const uint32_t elapsed = board_cycles() - start_cycles;
