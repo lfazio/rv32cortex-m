@@ -681,9 +681,22 @@ session, and every one of them recurred:
   *readers* of a flag; this file already says that about struct fields
   and it is the same rule.
 
-  It never failed a test, and could not have: the stale I-line only
-  exists once the code buffer is **reused**, so a short run is healthy by
-  construction. 296/296 on hardware proved nothing about it.
+  **It has not been shown to fail, and I claimed it would.** The A/B is
+  the point of this entry: CoreMark on the F746 with `.sync` back at
+  `NULL` -- 4801 translations, 4793 evictions, 552 compactions, so the
+  12 KB buffer recycled about six hundred times -- came out *identical*
+  to the fixed build, same four CRCs, same 518,206 retired, no trap. The
+  maintenance is kept because the architecture requires it and it costs
+  nothing measurable, **not** because a failure was reproduced.
+
+  Why it does not fire is unestablished; the plausible reason is that a
+  12 KB buffer against a 16 KB I-cache loses the stale lines to ordinary
+  pressure before the address is re-entered, which is a property of two
+  sizes rather than a guarantee. The lesson is the one this file already
+  states in the other direction: **an A/B that shows nothing is a result
+  about the workload, not a verdict on the change** -- and a fix whose
+  justification is architectural should say so instead of asserting a
+  failure nobody has seen. The first version of this entry asserted one.
 
   The fix splits along the line the deleted flag's own comment named: the
   barriers are a property of the *host* and live in `t2_sync_code`, while

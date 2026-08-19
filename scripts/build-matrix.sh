@@ -32,6 +32,12 @@
 # guest memory map is a build setting for exactly this reason; see
 # docs/memory.md.
 #
+# **A row that repeats a default tests nothing.** `f746-net` passed
+# `-DEMU_NET=ON`, which is already the F746's default -- so it built the
+# same configuration as `f746-rv32` while `EMU_NET=OFF` went untested,
+# which is the exact failure this script exists to catch, in this script.
+# Where an option has a default, the row states the *other* value.
+#
 # Each row is a *reason*, not a permutation. The axes multiply out to
 # far more than this, and building all of them would take long enough
 # that it would stop being run -- which is the failure mode this is
@@ -60,11 +66,11 @@ host-g4-x3|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DG4MH_PE_COU
 host-g4-mpu8|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DG4MH_MPU_ENTRIES=8|the MPU out-of-range guard is unreachable at 32
 host-ppc|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_PPC=ON|big-endian frontend, alone
 host-trace|host|-DEMU_GUEST_ARCH_G4MH=ON -DEMU_ENABLE_TRACE=ON -DEMU_JIT=OFF|the trace build, which is how pc deltas get read
-f746-rv32|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF|the shipping firmware: Thumb-2 emitter
+f746-rv32|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF|the shipping firmware: Thumb-2 emitter, lwIP/SLIP/TFTP (EMU_NET defaults ON)
 f746-rv32-nojit|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF -DEMU_JIT=OFF|**the one that was broken**
 f746-g4|stm32f746|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON|the contract check: G4MH-only must link
 f746-g4-x3|stm32f746|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DG4MH_PE_COUNT=3 -DG4MH_CRAM_KIB=64 -DG4MH_LRAM_KIB=16|3 PEs of .bss on a 320 KB part -- see the sizing note
-f746-net|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON|lwIP, SLIP, TFTP
+f746-nonet|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=OFF|**the other value**: serial console, no lwIP
 f446-rv32|stm32f446|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF|the M4: no caches, no DWT lock
 '
 

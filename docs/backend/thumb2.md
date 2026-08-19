@@ -98,9 +98,22 @@ it: still defined by the platform, still defaulted in `rv_config.h`,
 read by nothing. A prose description of a mechanism is not the
 mechanism; grep for the readers.
 
-The failure it produces needs the code buffer to be **reused** before it
-can fire — a fresh address has no stale I-line — so a short run looks
-perfectly healthy, which is why no test caught it.
+**It has not been shown to fail without the maintenance, and that was
+checked.** CoreMark on the F746 with `.sync` back at `NULL`: 4801
+translations into a 12 KB buffer, 4793 evictions, 552 compactions — the
+buffer recycled some six hundred times — and the run came out *identical*
+to the fixed one, same CRCs, same 518,206 retired, no trap. So the change
+is kept because the architecture requires it (a write to instruction
+memory needs a clean to PoU and an I-invalidate before the write can be
+executed), **not** because a failure was observed here.
+
+Why it does not fire is not established. The plausible reason is that a
+12 KB buffer against a 16 KB I-cache leaves the stale lines evicted by
+ordinary pressure before the address is re-entered — which would make it
+a property of these two sizes and not a guarantee. Anything that shrinks
+the I-cache's share, or grows `EMU_JIT_CODE_BYTES`, changes that
+arithmetic. Do not read "the A/B showed nothing" as "the maintenance is
+unnecessary"; read it as "this workload cannot see it".
 
 ## What `may_run` may gate on
 
