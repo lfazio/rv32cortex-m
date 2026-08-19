@@ -1260,6 +1260,39 @@ session, and every one of them recurred:
     bisection. The guest now prints `TRAP at pc=...` and exits 99, which
     `objdump` turns into an instruction in one step. **This is the third
     time this file has recorded that lesson; write the handler first.**
+
+    **Fourth time, on G4MH, and the table is worth more than the
+    report.** Every CC-RH-built guest now carries a 512-byte vector
+    table, and writing it immediately found *three wrong vectors in the
+    emulator*: MIP/MDP at 0x30 where FETRAP lives, MAE at 0x60 where RIE
+    lives, and the unknown-cause fallback at 0x90 where MIP/MDP lives.
+    Each sent an exception to **another exception's handler** rather
+    than to nowhere, which is the worst shape available -- the handler
+    exists, so the guest runs it and carries on reporting the wrong
+    cause instead of failing where the mistake is. Nothing in the tree
+    could have seen it, because no guest had a table to see it with.
+
+    Two things generalise past the vectors.
+
+    **Read the vendor's own startup before writing your own.** The
+    layout came from the U2B manual's table 3.106 *cross-checked against
+    the vector table in Renesas' Y-ASK-RH850U2B board package*, and the
+    cross-check is what caught the three. The package also documents a
+    `SYNCI` after the reset branch (technical update TN-RH8-B0183B/E:
+    without it the lockstep checker core reads an uninitialised
+    register) -- a fact no manual chapter would have offered. It is
+    proprietary ("no other uses are authorized"), so read it for facts
+    and copy nothing.
+
+    **A vector table is an instrument, and the obvious version cannot
+    measure anything.** Every FE cause reaches the same reporting code,
+    so a vector sent to the *wrong* slot prints identically to one sent
+    to the right slot: the first version would have passed against all
+    three bugs. Each slot now records **which slot it is** in r19 before
+    branching, at a cost of 4 of its 16 bytes, and only then does
+    reverting MDP visibly turn `#00000090` into `#00000030`. Same rule
+    as the FP histogram and the coverage script -- check that the
+    instrument can represent the difference before believing it.
   - **A test declared is not a test that can run.** `ctest` in a
     PowerPC-only tree queued three RISC-V tests, because they were gated
     on the guest *image* existing rather than on the RV32 frontend being
