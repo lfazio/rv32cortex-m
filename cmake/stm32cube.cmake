@@ -29,6 +29,8 @@ set(STM32CUBE_DEVICE_F4_TAG    "v2.6.11"         CACHE STRING "CMSIS device F4 t
 set(STM32CUBE_HAL_F4_TAG       "v1.8.5"          CACHE STRING "STM32F4 HAL tag")
 set(STM32CUBE_DEVICE_F7_TAG    "v1.2.9"          CACHE STRING "CMSIS device F7 tag")
 set(STM32CUBE_HAL_F7_TAG       "v1.3.2"          CACHE STRING "STM32F7 HAL tag")
+set(STM32CUBE_DEVICE_N6_TAG    "v1.4.0"          CACHE STRING "CMSIS device N6 tag")
+set(STM32CUBE_HAL_N6_TAG       "v1.4.0"          CACHE STRING "STM32N6 HAL tag")
 set(STM32CUBE_LOCAL_DIR        ""                CACHE PATH   "Offline Cube checkouts")
 
 function(_cube_declare name repo tag)
@@ -46,12 +48,32 @@ endfunction()
 
 string(TOUPPER "${STM32CUBE_FAMILY}" _fam_up)
 
+#
+# **ST does not name these consistently across families.** F4 and F7 use
+# underscores -- cmsis_device_f7, stm32f7xx_hal_driver -- and N6 uses
+# hyphens: cmsis-device-n6, stm32n6xx-hal-driver. Building the repository
+# name by substituting the family into one pattern therefore asks GitHub
+# for something that does not exist, and GitHub answers a 404 by
+# prompting for credentials, so the failure reads as "could not read
+# Username for 'https://github.com'" rather than as a wrong name.
+#
+# The *target* names stay underscored either way, because they are ours
+# and the rest of this file indexes by them.
+#
+if(STM32CUBE_FAMILY STREQUAL "n6")
+    set(_cube_dev_repo "cmsis-device-n6")
+    set(_cube_hal_repo "stm32n6xx-hal-driver")
+else()
+    set(_cube_dev_repo "cmsis_device_${STM32CUBE_FAMILY}")
+    set(_cube_hal_repo "stm32${STM32CUBE_FAMILY}xx_hal_driver")
+endif()
+
 _cube_declare(cmsis_core "cmsis_core" "${STM32CUBE_CMSIS_CORE_TAG}")
 _cube_declare("cmsis_device_${STM32CUBE_FAMILY}"
-              "cmsis_device_${STM32CUBE_FAMILY}"
+              "${_cube_dev_repo}"
               "${STM32CUBE_DEVICE_${_fam_up}_TAG}")
 _cube_declare("stm32${STM32CUBE_FAMILY}xx_hal_driver"
-              "stm32${STM32CUBE_FAMILY}xx_hal_driver"
+              "${_cube_hal_repo}"
               "${STM32CUBE_HAL_${_fam_up}_TAG}")
 
 # Populate only; none of these ship a usable CMakeLists, so the targets are
