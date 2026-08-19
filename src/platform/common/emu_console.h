@@ -100,6 +100,15 @@ typedef struct emu_syscall_ctx {
 bool emu_guest_syscall(emu_cpu_t *cpu, emu_syscall_t *sc, void *user);
 
 /*
+ * The run summary and the framework's JIT statistics, in emu_stats.c.
+ * Both are frontend- and platform-independent; emu_print_jit_stats
+ * returns false when this build has no JIT, so a caller can skip its own
+ * frontend-specific additions.
+ */
+void emu_print_run_summary(uint64_t retired, uint32_t host_cycles);
+bool emu_print_jit_stats(void);
+
+/*
  * Guest cache maintenance onto this part's, in emu_arm_cache.c. Handed
  * to the core so a guest's cache-block operations reach the ARM lines
  * that actually back the guest block.

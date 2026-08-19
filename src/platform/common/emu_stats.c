@@ -1,0 +1,90 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/*
+ * emu_stats.c - the run summary and the JIT statistics, shared.
+ *
+ * **Neither of these is a frontend's or a platform's.** The counters
+ * come from the dispatch loop in src/emu/emu_jit.c, which every frontend
+ * and every host share, so a copy of the printing in each platform was
+ * two copies of one thing -- and the F746's was guarded on the RV32
+ * frontend, so a G4MH firmware ran a Thumb-2 JIT and reported nothing
+ * about it. That is the frontend with no reference model, where "is
+ * translation being exercised at all" is the number that matters most.
+ *
+ * What stays with the platform is the *frontend-specific* half: the
+ * RV32 backend's helper-call counts, its passthrough arming, and its
+ * hot-register histogram have no framework equivalent, because no other
+ * backend has them.
+ */
+
+#include "emu_console.h"
+
+#include "emu/emu_jit.h"
+
+void emu_print_run_summary(uint64_t retired, uint32_t host_cycles)
+{
+    emu_console_printf("\n-- done --\n  retired  %u instructions\n"
+                       "  host     %u cycles\n",
+                       (unsigned)retired, (unsigned)host_cycles);
+
+    if (retired == 0u) {
+        return;
+    }
+
+    /*
+     * Host cycles per emulated guest instruction, x100 so the fractional
+     * part survives integer division -- picolibc is built without float
+     * formatting, which is right on a part whose FPU is single precision
+     * and whose guest owns it.
+     */
+    const uint32_t x100 =
+        (uint32_t)((uint64_t)host_cycles * 100u / retired);
+
+    emu_console_printf("  ratio    %u.%02u host cycles per guest instruction\n",
+                       (unsigned)(x100 / 100u), (unsigned)(x100 % 100u));
+}
+
+bool emu_print_jit_stats(void)
+{
+    emu_jit_stats_t js;
+
+    emu_jit_get_stats(&js);
+
+    /*
+     * `code_size` is the test for "there is a JIT here": the framework
+     * only has a buffer once a backend initialised one, and it is zero
+     * on an interpreter build -- so this needs to name no backend.
+     */
+    if (js.code_size == 0u) {
+        return false;
+    }
+
+    emu_console_printf(
+        "\n-- jit --\n"
+        "  blocks   %u\n"
+        "  code     %u/%u bytes\n"
+        "  blks/xlat %u\n"
+        "  compact  %u (%u evicted)\n"
+        "  flushes  %u\n",
+        (unsigned)js.blocks, (unsigned)js.code_used, (unsigned)js.code_size,
+        (unsigned)js.translations, (unsigned)js.compactions,
+        (unsigned)js.evictions, (unsigned)js.flushes);
+
+    /*
+     * Read this before believing a passing test. A backend that declines
+     * everything and falls back passes every suite while proving nothing
+     * about the translator -- `interp` against the retired count is what
+     * says whether translation is being exercised.
+     *
+     * declined and overflowed stay apart: "nothing translatable here" and
+     * "the buffer filled" are different outcomes needing different
+     * recoveries, and conflating them once cost 65% of all host cycles
+     * with every test still passing.
+     */
+    emu_console_printf(
+        "  interp   %u instructions fell back\n"
+        "  declined %u overflow %u\n"
+        "  blk entr %u\n",
+        (unsigned)js.interp_fallbacks, (unsigned)js.declined,
+        (unsigned)js.overflowed, (unsigned)js.block_entries);
+    return true;
+}

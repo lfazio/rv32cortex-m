@@ -1214,86 +1214,81 @@ restart:
         console_puts("\nemu: instruction cap reached, guest did not halt\n");
     }
 
-    console_printf("\n-- done --\n  retired  %u instructions\n  host     %u cycles\n",
-                   (unsigned)retired_total, (unsigned)elapsed);
+    emu_print_run_summary(retired_total, elapsed);
     if (retired_total != 0u) {
-        /* Host ARM cycles per emulated guest instruction, x100 so the
-         * fractional part survives integer division -- picolibc is built
-         * without float formatting, which is the right choice on a part
-         * whose FPU is single precision and whose guest owns it. */
-        const uint32_t x100 = (uint32_t)((uint64_t)elapsed * 100u / retired_total);
-        console_printf("  ratio    %u.%02u host cycles per guest instruction\n"
-                       "  speed    ",
-                       (unsigned)(x100 / 100u), (unsigned)(x100 % 100u));
+        /* KIPS needs the core clock, which is the platform's to know. */
         const uint32_t kips =
             (uint32_t)((uint64_t)retired_total * (SystemCoreClock / 1000u) / elapsed);
-        console_putu(kips);
-        console_puts(" KIPS\n");
+        console_printf("  speed    %u KIPS\n", (unsigned)kips);
     }
 
 /*
- * JIT statistics: the one place in this file that names a frontend, and
- * unavoidably so -- the Thumb-2 JIT is the rv32 frontend's second backend.
+ * JIT statistics.
+ *
+ * **These are the framework's, not a frontend's**, and this used to say
+ * the opposite -- "the one place in this file that names a frontend, and
+ * unavoidably so". It was avoidable: `emu_jit_get_stats` reports blocks,
+ * translations, entries, fallbacks, flushes, compactions, evictions,
+ * code use and the declined/overflow split for *any* frontend on *any*
+ * host, because the dispatch loop that maintains them is shared. Reading
+ * them through rv_jit_get_stats meant a G4MH firmware -- which has a
+ * Thumb-2 JIT and uses it -- printed no statistics at all, so the one
+ * number that says whether translation is being exercised was missing
+ * from exactly the frontend with no reference model to fall back on.
+ *
+ * `code_size` is the test for "there is a JIT here": the framework only
+ * has a buffer once a backend initialised one, and it is zero on an
+ * interpreter build without needing to name a backend.
  */
-#if EMU_GUEST_ARCH_RV32 && EMU_HAVE_JIT
-    if (rv_backend == &rv_backend_jit) {
-        rv_jit_stats_t js;
-        rv_jit_get_stats(&js);
-        console_printf(
-            "\n-- jit --\n"
-            "  blocks   %u\n"
-            "  code     %u/%u bytes\n"
-            "  blks/xlat %u\n"
-            "  compact  %u (%u evicted)\n"
-            "  flushes  %u\n",
-            (unsigned)js.blocks, (unsigned)js.code_used, (unsigned)js.code_size,
-            (unsigned)js.translations, (unsigned)js.compactions,
-            (unsigned)js.evictions, (unsigned)js.flushes);
+#if EMU_HAVE_JIT
+    (void)emu_print_jit_stats();
+#endif
 
-        /*
-         * Instructions the translator declined and the interpreter ran.
-         * A high share here is the first place to look when the speedup
-         * is smaller than expected: it names exactly which encodings are
-         * worth teaching the translator next.
-         */
+#if EMU_GUEST_ARCH_RV32 && EMU_HAVE_JIT
+    /*
+     * The rest are the RV32 backend's own counters and have no framework
+     * equivalent: which helper calls it emitted, whether the passthrough
+     * window was armed, and how often a block reads the registers a
+     * per-block cache would hold.
+     */
+    if (rv_backend == &rv_backend_jit) {
+        rv_jit_stats_t rs;
+
+        rv_jit_get_stats(&rs);
         console_printf(
-            "  interp   %u instructions fell back\n"
             "  helpers  muldiv %u  clmul %u  bit %u\n"
-            "  pt hits  %u armed %u\n"
-            "  declined %u overflow %u\n",
-            (unsigned)js.interp_fallbacks,
-            (unsigned)js.alu_calls_muldiv, (unsigned)js.alu_calls_clmul,
-            (unsigned)js.alu_calls_bit,
-            (unsigned)js.pt_hits, (unsigned)js.pt_armed,
-            (unsigned)js.declined, (unsigned)js.overflowed);
+            "  pt hits  %u armed %u\n",
+            (unsigned)rs.alu_calls_muldiv, (unsigned)rs.alu_calls_clmul,
+            (unsigned)rs.alu_calls_bit,
+            (unsigned)rs.pt_hits, (unsigned)rs.pt_armed);
 #ifdef EMU_JIT_PROFILE
         console_printf("  cyc xlat %u compact %u\n",
-                       (unsigned)js.cyc_translate, (unsigned)js.cyc_compact);
+                       (unsigned)rs.cyc_translate, (unsigned)rs.cyc_compact);
 #endif
-        console_printf("  blk entr %u\n  reads/blk", (unsigned)js.block_entries);
-
         /*
-         * Reads per block that uses the register, x100. Below 100 a cache
-         * cannot pay: the block would spend a load to save fewer than one.
+         * Reads per block that uses the register, x100. Below 100 a
+         * cache cannot pay: the block would spend a load to save fewer
+         * than one.
          */
         {
             static const char *const nm[4] = { "sp", "ra", "a0", "a1" };
 
+            console_printf("  reads/blk");
             for (unsigned i = 0; i < 4u; i++) {
-                if (js.hot_blocks[i] != 0u) {
+                if (rs.hot_blocks[i] != 0u) {
                     const uint32_t x100 =
-                        js.hot_reads[i] * 100u / js.hot_blocks[i];
+                        rs.hot_reads[i] * 100u / rs.hot_blocks[i];
                     console_printf(" %s=%u.%02u in %u", nm[i],
                                    (unsigned)(x100 / 100u),
                                    (unsigned)(x100 % 100u),
-                                   (unsigned)js.hot_blocks[i]);
+                                   (unsigned)rs.hot_blocks[i]);
                 } else {
                     console_printf(" %s=- in %u", nm[i],
-                                   (unsigned)js.hot_blocks[i]);
+                                   (unsigned)rs.hot_blocks[i]);
                 }
             }
+            console_printf("\n");
         }
-        console_printf("\n");
     }
 #endif
 
