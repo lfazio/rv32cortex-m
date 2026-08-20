@@ -114,7 +114,15 @@ bool emu_start_guest(emu_core_t *core, emu_bus_t *bus, emu_uart_t *uart,
     if (core->cpu != NULL) {
         const emu_cpu_ops_t *const ops = core->ops;
 
-        emu_board_image_published();
+        /*
+         * Hand the image to the frontend before its devices go on, for
+         * one that maps it at an architectural address of its own --
+         * G4MH's code flash at zero. RV32 leaves the hook NULL, because
+         * the region added above is already where its guests link.
+         */
+        if (ops->set_image != NULL) {
+            ops->set_image(emu_board_img, emu_board_img_size);
+        }
 
         if ((ops->add_shared_devices != NULL &&
              !ops->add_shared_devices(bus)) ||

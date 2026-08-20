@@ -33,11 +33,6 @@
 #include "emu/emu_dev.h"
 #include "emu/emu_memmap.h"
 
-#if EMU_GUEST_ARCH_RV32
-#  include "rv32/rv_backend.h"  /* which backend came up */
-#  include "rv32/rv_jit.h"      /* JIT statistics, reported below */
-#endif
-
 #include <string.h>
 
 /* The guest binary, embedded by guest_image.S. */
@@ -373,8 +368,6 @@ uint32_t emu_board_ram_size = 0u;
  * the windows differ per part, and so does which of them a guest may
  * write.
  */
-void emu_board_image_published(void) { }
-
 bool emu_board_add_regions(emu_bus_t *bus)
 {
     for (unsigned i = 0; i < sizeof(g_periph_map) / sizeof(g_periph_map[0]);
@@ -404,7 +397,7 @@ int main(void)
 {
     board_init();
 
-#if RV32_NATIVE_COREMARK
+#ifdef RV32_NATIVE_COREMARK
     /*
      * Native baseline: the same CoreMark sources compiled for Cortex-M4
      * and run directly, with no emulation, so the interpreter and JIT
@@ -551,11 +544,15 @@ int main(void)
         console_printf("  speed    %u KIPS\n", (unsigned)kips);
     }
 
-#if EMU_HAVE_JIT
-    if (emu_print_jit_stats()) {
-        emu_print_backend_stats();
-    }
-#endif
+    /*
+     * No #if. emu_print_jit_stats answers "is there a JIT here" from the
+     * framework's own code_size, so the caller needs no capability macro
+     * -- and the one that was here read EMU_HAVE_JIT without including
+     * what defines it, which #if treats as 0 without a word. The whole
+     * block silently stopped printing the moment an unrelated include was
+     * removed.
+     */
+    (void)emu_print_jit_stats();
 
     emu_report_state(g_core.cpu, g_core.ops);
 

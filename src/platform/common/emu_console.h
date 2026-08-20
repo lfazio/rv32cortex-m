@@ -109,12 +109,6 @@ bool emu_guest_syscall(emu_cpu_t *cpu, emu_syscall_t *sc, void *user);
 void emu_print_run_summary(uint64_t retired, uint32_t host_cycles);
 bool emu_print_jit_stats(void);
 
-/*
- * The counters the *frontend's* backend keeps and the framework does
- * not. Empty when there are none, so a caller needs no #if -- which is
- * what stopped this being two copies guarded two different ways.
- */
-void emu_print_backend_stats(void);
 
 /*
  * Guest cache maintenance onto this part's, in emu_arm_cache.c. Handed

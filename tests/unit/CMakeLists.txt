@@ -22,7 +22,13 @@ endif()
 
 target_link_libraries(emu-unit PRIVATE emucore)
 target_include_directories(emu-unit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(emu-unit PRIVATE -Wall -Wextra)
+# -Wundef with the rest, and it earns its place here rather than being
+# tidiness: it is the warning that catches a capability macro read
+# without including what defines it, which #if silently treats as 0.
+# emucore has had it for a while; the platform targets did not, and the
+# JIT statistics block in main.c stopped printing entirely the moment an
+# unrelated include was removed. Nothing failed and no test could see it.
+target_compile_options(emu-unit PRIVATE -Wall -Wextra -Wundef)
 
 add_test(NAME unit COMMAND emu-unit)
 set_tests_properties(unit PROPERTIES LABELS fast)

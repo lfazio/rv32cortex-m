@@ -11,6 +11,7 @@
  */
 
 #include "emu/emu_cpu.h"
+#include "emu/emu_gdb.h"
 #include "emu/emu_memmap.h"
 
 #include "g4mh/g4mh_cpu.h"
@@ -133,6 +134,8 @@ static void g4mh_ops_boot(emu_cpu_t *cpu, uint32_t ram_base, uint32_t ram_size)
     g4mh_cpu_boot(cpu_of(cpu), ram_base, ram_size);
 }
 
+const emu_gdb_target_t *g4mh_gdb_target(void);
+
 /* ------------------------------------------------------------------ */
 /* Execution                                                           */
 /* ------------------------------------------------------------------ */
@@ -235,6 +238,19 @@ void g4mh_set_flash(const void *base, uint32_t size, bool writable)
     g_flash_ptr = base;
     g_flash_len = size;
     g_flash_rw  = writable;
+}
+
+/*
+ * The emu_cpu_ops_t hook: a guest image published by the runner is this
+ * architecture's code flash, read-only because it is the host part's own
+ * flash and a guest has no flash sequencer to write it with.
+ *
+ * Separate from g4mh_set_flash because that one still has to exist for
+ * the host runner's writable arena, which its ELF loader writes into.
+ */
+static void g4mh_ops_set_image(const void *base, uint32_t size)
+{
+    g4mh_set_flash(base, size, false);
 }
 
 static bool g4mh_ops_add_shared_devices(emu_bus_t *bus)
@@ -613,6 +629,8 @@ const emu_cpu_ops_t g4mh_frontend = {
 
     .ncores          = G4MH_PE_COUNT,
     .add_shared_devices = g4mh_ops_add_shared_devices,
+    .set_image          = g4mh_ops_set_image,
+    .gdb_target         = g4mh_gdb_target,
     .add_core_devices   = g4mh_ops_add_core_devices,
     .set_irq         = g4mh_ops_set_irq,
     .set_unmask_hook = g4mh_ops_set_unmask_hook,

@@ -293,33 +293,7 @@ const emu_backend_t sym = {                                             \
 
 #if EMU_GUEST_ARCH_RV32
 #include "rv32/rv_ir.h"
-#include "rv32/rv_jit.h"
 EMU_IR_DEFINE_X86_BACKEND(rv_backend_jit, rv_ir_frontend, rv);
-
-/*
- * The statistics the host runner prints. Mostly the framework's, plus
- * the two that say *why* a translation produced nothing -- read those
- * before believing a passing test, because a backend that declines
- * everything and falls back passes every suite while proving nothing.
- */
-void rv_jit_get_stats(rv_jit_stats_t *out)
-{
-    emu_jit_stats_t st;
-
-    emu_jit_get_stats(&st);
-    memset(out, 0, sizeof(*out));
-    out->blocks = st.blocks;
-    out->translations = st.translations;
-    out->block_entries = st.block_entries;
-    out->interp_fallbacks = st.interp_fallbacks;
-    out->flushes = st.flushes;
-    out->compactions = st.compactions;
-    out->evictions = st.evictions;
-    out->declined = st.declined;
-    out->overflowed = st.overflowed;
-    out->code_used = st.code_used;
-    out->code_size = st.code_size;
-}
 
 void rv_jit_flush(void)
 {

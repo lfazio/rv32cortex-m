@@ -79,8 +79,7 @@ typedef struct emu_cpu emu_cpu_t;
 /* Callbacks the platform installs                                     */
 /* ------------------------------------------------------------------ */
 
-/* Emit a string. The target has no stdio, so this is the whole interface. */
-typedef void (*emu_print_fn)(void *ctx, const char *s);
+/* emu_print_fn is in emu_types.h -- backends report through one too. */
 
 /*
  * A guest system call, in ABI-neutral form.
@@ -242,6 +241,39 @@ typedef struct emu_cpu_ops {
      */
     bool (*add_shared_devices)(emu_bus_t *bus);
     bool (*add_core_devices)(emu_cpu_t *cpu, emu_bus_t *bus, unsigned index);
+
+    /*
+     * Where the guest image is, for a frontend that has to map it itself.
+     *
+     * The runner maps every image read-only at EMU_GUEST_ROM_BASE, which
+     * is all a portable guest needs and all RV32 uses -- so RV32 leaves
+     * this NULL. G4MH cannot: RH850 code flash is architecturally at
+     * zero, an address the shared map knows nothing about, and the
+     * frontend serves it out of the host's own flash rather than backing
+     * 3 MiB with .bss it has no room for.
+     *
+     * Called before add_shared_devices on every build of the address
+     * space, so an uploaded image reaches the frontend the same way the
+     * linked-in one did. This used to be a platform hook with an
+     * `#if EMU_GUEST_ARCH_G4MH` in it -- a frontend's knowledge sitting
+     * in a board's file, which is the shape this contract exists to
+     * prevent.
+     */
+    void (*set_image)(const void *base, uint32_t size);
+
+    /*
+     * How gdb should see this architecture's registers, or NULL for a
+     * frontend with no stub.
+     *
+     * A function rather than a pointer so a frontend keeps its target
+     * description private, and on the ops table rather than selected by
+     * the platform because gdb's `g` packet is a **fixed per-architecture
+     * concatenation** that gdb never asks about: serving the RV32 layout
+     * for a G4MH guest gives an `info registers` that is entirely wrong
+     * and entirely plausible. The board that opens the stub has no
+     * business choosing which.
+     */
+    const struct emu_gdb_target *(*gdb_target)(void);
 
     /*
      * Raise or lower an external interrupt line, from a host ISR.

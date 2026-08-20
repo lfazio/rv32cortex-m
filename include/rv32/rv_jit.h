@@ -74,55 +74,29 @@ void rv_jit_set_code_buffer(void *buf, uint32_t size);
 /* Discard every translation. Cheap; called on reset and on invalidate. */
 void rv_jit_flush(void);
 
-/* Statistics, for reporting how well translation is going. */
-typedef struct rv_jit_stats {
-    uint32_t blocks;         /* blocks currently translated         */
-    uint32_t code_used;      /* bytes of code cache in use          */
-    uint32_t code_size;      /* bytes available                     */
-    uint32_t flushes;        /* whole-cache resets                  */
-    uint32_t compactions;    /* reclaims that kept the hot blocks   */
-    uint32_t evictions;      /* blocks discarded by compaction      */
-    uint32_t translations;   /* blocks translated since reset       */
-    uint32_t interp_fallbacks; /* instructions run by the interpreter */
-    /* Helper calls emitted for operations with no short Thumb-2 form,
-     * split so a hot one can be identified rather than guessed at. */
-    uint32_t alu_calls_muldiv;
-    uint32_t alu_calls_clmul;
-    uint32_t alu_calls_bit;
-    /* Block entries. Divided into instructions retired this gives the
-     * average block length, which is what per-block overhead is paid on. */
-    uint32_t block_entries;
-    /*
-     * Guest-register loads not emitted because the value was already in
-     * R1 from the previous instruction's store, and stores not emitted
-     * because the next instruction overwrote the register without being
-     * able to trap first. Two host instructions and four bytes of code
-     * cache between them, per pair. See RV32_PAIR_STATS.
-     */
-    uint32_t ld_elided;
-    uint32_t st_elided;
-    uint32_t pt_hits;        /* passthrough accesses via the helper  */
-    uint32_t pt_armed;       /* inlined peripheral window emitted?   */
-    /*
-     * Reads of the registers a per-block cache would hold, in translation
-     * order: sp(x2), ra(x1), a0(x10), a1(x11). `hot_reads` totals the reads
-     * and `hot_blocks` counts the blocks that read each at least once, so
-     * hot_reads/hot_blocks is the average reads per block that uses it --
-     * which is the number that decides whether caching it can pay for the
-     * load that sets it up.
-     */
-    uint32_t hot_reads[4];
-    uint32_t hot_blocks[4];
-    /* See emu_jit_stats_t: declined and overflowed must stay apart. */
-    uint32_t declined;
-    uint32_t overflowed;
-#ifdef EMU_JIT_PROFILE
-    uint32_t cyc_translate;
-    uint32_t cyc_compact;
-#endif
-} rv_jit_stats_t;
+/*
+ * The RV32 JIT's own statistics used to live here, duplicating the
+ * framework's and adding nine counters of its own -- helper calls by
+ * class, elided loads and stores, passthrough arming, and reads per block
+ * of the four registers a per-block cache would hold.
+ *
+ * **Every one of those nine had zero writers.** They belonged to the
+ * hand-written Thumb-2 backend and were left behind when the shared IR
+ * framework replaced it: rv_jit_get_stats memset the struct and filled
+ * only the fields emu_jit_get_stats already reports, so the firmware
+ * printed `helpers muldiv 0 clmul 0 bit 0`, `pt hits 0 armed 0` and
+ * `reads/blk sp=- in 0` on every run, for ever. Nine numbers that could
+ * not be anything but zero, in a report whose entire purpose is to say
+ * whether translation happened -- which is this tree's own rule about
+ * checking that an instrument can represent the difference, printed
+ * every run and read by nobody.
+ *
+ * emu_jit_stats_t is the whole of it now. A backend that grows counters
+ * of its own should add them there if the dispatch loop can maintain
+ * them, and otherwise earn a hook by having something to put in it.
+ */
 
-void rv_jit_get_stats(rv_jit_stats_t *out);
+
 
 extern const emu_backend_t rv_backend_jit;
 

@@ -23,16 +23,6 @@
 #include "emu/emu_dev.h"
 #include "emu/emu_memmap.h"
 
-#if EMU_GUEST_ARCH_G4MH
-/* For g4mh_set_flash(): this platform serves code flash from its own. */
-#  include "g4mh/g4mh_cpu.h"
-#endif
-
-#if EMU_GUEST_ARCH_RV32
-#  include "rv32/rv_backend.h"  /* which backend came up */
-#  include "rv32/rv_jit.h"      /* JIT statistics, reported below */
-#endif
-
 #if EMU_NET
 #  include "emu_net.h"
 #  include "emu/emu_gdb.h"
@@ -93,15 +83,6 @@ extern uint8_t __guest_ram_end[];
 /* ------------------------------------------------------------------ */
 /* State                                                               */
 /* ------------------------------------------------------------------ */
-
-#if EMU_HAVE_JIT
-/*
- * Code cache for translated blocks. Ordinary .bss: the ARMv7-M default
- * memory map makes SRAM executable, so no MPU work is needed. This comes
- * out of what the guest would otherwise get, which is the trade the JIT
- * asks for.
- */
-#endif
 
 static emu_bus_t  g_bus;
 static emu_core_t g_core;
@@ -480,14 +461,6 @@ static void publish_image(void)
  * read-only region's base and length both move when a different image
  * arrives and emu_bus has no way to resize a region in place.
  */
-void emu_board_image_published(void)
-{
-#if EMU_GUEST_ARCH_G4MH
-    /* This frontend executes from code flash, so it has to be told where
-     * the image now is; the RV32 side reads it through the bus. */
-    g4mh_set_flash(emu_board_img, emu_board_img_size, false);
-#endif
-}
 
 static bool start_guest(void)
 {
@@ -787,7 +760,7 @@ int main(void)
 {
     board_init();
 
-#if RV32_NATIVE_COREMARK
+#ifdef RV32_NATIVE_COREMARK
     /*
      * Native baseline: the same CoreMark sources compiled for Cortex-M7
      * and run directly, with no emulation, so the interpreter and JIT
@@ -881,21 +854,17 @@ int main(void)
      */
     {
         /*
-         * Which description depends on the frontend built in, not on the
-         * platform: gdb's `g` packet is a fixed per-architecture
-         * concatenation and gdb does not ask, so serving the RV32 layout
-         * for a G4MH guest gives an `info registers` that is entirely
-         * wrong and entirely plausible.
+         * The frontend states its own register layout -- see
+         * emu_cpu_ops_t.gdb_target. This used to be an
+         * #if EMU_GUEST_ARCH_RV32 here, which put a decision gdb makes
+         * per architecture in a file that is per board.
          */
-#if EMU_GUEST_ARCH_RV32
-        extern const emu_gdb_target_t *rv32_gdb_target(void);
-        const emu_gdb_target_t *gt = rv32_gdb_target();
-#else
-        extern const emu_gdb_target_t *g4mh_gdb_target(void);
-        const emu_gdb_target_t *gt = g4mh_gdb_target();
-#endif
+        const emu_gdb_target_t *const gt = ops->gdb_target != NULL
+                                         ? ops->gdb_target() : NULL;
 
-        if (!emu_net_gdb_init(&g_core, gt, &k_gdb_flash)) {
+        if (gt == NULL) {
+            console_printf("gdb    frontend has no target description\n");
+        } else if (!emu_net_gdb_init(&g_core, gt, &k_gdb_flash)) {
             console_printf("gdb    stub failed to start\n");
         } else {
             console_printf("gdb    target remote %s:1234\n",
@@ -990,11 +959,15 @@ restart:
      * translation is being exercised was missing from exactly the
      * frontend with no reference model to fall back on.
      */
-#if EMU_HAVE_JIT
-    if (emu_print_jit_stats()) {
-        emu_print_backend_stats();
-    }
-#endif
+    /*
+     * No #if. emu_print_jit_stats answers "is there a JIT here" from the
+     * framework's own code_size, so the caller needs no capability macro
+     * -- and the one that was here read EMU_HAVE_JIT without including
+     * what defines it, which #if treats as 0 without a word. The whole
+     * block silently stopped printing the moment an unrelated include was
+     * removed.
+     */
+    (void)emu_print_jit_stats();
 
     emu_report_state(g_core.cpu, g_core.ops);
 

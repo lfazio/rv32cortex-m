@@ -113,14 +113,6 @@ struct emu_uart;
 bool emu_build_address_space(emu_bus_t *bus, struct emu_uart *uart);
 
 /*
- * Called once the image extents are in force and before the frontend's
- * devices are added, for a board that must tell something else where the
- * image now is -- G4MH serves code flash out of it. Most boards need
- * nothing here.
- */
-void emu_board_image_published(void);
-
-/*
  * Bring a guest up: address space, the frontend's devices, cleared RAM
  * and exit state, reset and boot. In emu_address_space.c. An upload
  * repeats all of it, which is why it is one function.

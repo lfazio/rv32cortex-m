@@ -57,6 +57,7 @@ typedef struct emu_backend {
 
     /* Guest memory [addr, addr+len) changed. May be NULL. */
     void (*invalidate)(struct emu_cpu *cpu, uint32_t addr, uint32_t len);
+
 } emu_backend_t;
 
 #ifdef __cplusplus

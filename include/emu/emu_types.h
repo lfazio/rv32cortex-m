@@ -101,6 +101,13 @@ static inline uint32_t emu_bits(uint32_t v, unsigned hi, unsigned lo)
     return (v >> lo) & (0xFFFFFFFFu >> (31u - (hi - lo)));
 }
 
+/*
+ * Emit a string. The target has no stdio, so this is the whole interface.
+ * Here rather than in emu_cpu.h because a backend reports its statistics
+ * through one too, and emu_backend.h must not depend on the CPU contract.
+ */
+typedef void (*emu_print_fn)(void *ctx, const char *s);
+
 #if defined(__GNUC__)
 #  define EMU_LIKELY(x)    __builtin_expect(!!(x), 1)
 #  define EMU_UNLIKELY(x)  __builtin_expect(!!(x), 0)

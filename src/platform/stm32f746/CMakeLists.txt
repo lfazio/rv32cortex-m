@@ -155,7 +155,13 @@ else()
         "the firmware link will fail until ${guest_bin} exists.")
 endif()
 
-target_compile_options(emu-stm32f746 PRIVATE -Wall -Wextra)
+# -Wundef with the rest, and it earns its place here rather than being
+# tidiness: it is the warning that catches a capability macro read
+# without including what defines it, which #if silently treats as 0.
+# emucore has had it for a while; the platform targets did not, and the
+# JIT statistics block in main.c stopped printing entirely the moment an
+# unrelated include was removed. Nothing failed and no test could see it.
+target_compile_options(emu-stm32f746 PRIVATE -Wall -Wextra -Wundef)
 
 # Native CoreMark baseline: the same sources the guest runs, compiled for
 # the ARM host. core_main.c defines main(), so it is renamed at compile

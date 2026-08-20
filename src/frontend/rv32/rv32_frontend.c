@@ -13,6 +13,7 @@
  */
 
 #include "emu/emu_cpu.h"
+#include "emu/emu_gdb.h"
 #include "emu/emu_memmap.h"
 
 #include "rv32/rv_aplic.h"
@@ -138,6 +139,8 @@ static void rv32_boot(emu_cpu_t *cpu, uint32_t ram_base, uint32_t ram_size)
 {
     rv_hart_boot(hart_of(cpu), ram_base, ram_size);
 }
+
+const emu_gdb_target_t *rv32_gdb_target(void);
 
 /* ------------------------------------------------------------------ */
 /* Execution                                                           */
@@ -450,6 +453,7 @@ const emu_cpu_ops_t rv32_frontend = {
 
     .ncores          = 1u,
     .add_shared_devices = rv32_add_shared_devices,
+    .gdb_target         = rv32_gdb_target,
     .add_core_devices   = rv32_add_core_devices,
     .set_irq         = rv32_set_irq,
     .set_unmask_hook = rv32_set_unmask_hook,
