@@ -29,7 +29,7 @@
 #endif
 
 #if EMU_GUEST_ARCH_RV32
-#  include "rv32/rv_backend.h"  /*  backend came up */
+#  include "rv32/rv_backend.h"  /* which backend came up */
 #  include "rv32/rv_jit.h"      /* JIT statistics, reported below */
 #endif
 
@@ -74,11 +74,11 @@ extern uint8_t __guest_ram_end[];
  * it to terminate at all -- they are *meant* to run away, and the cap is
  * what turns that into a reported failure. The board had no equivalent,
  * so the same guest hangs it: no output, no prompt, and the only way out
- * is a reset,  is indistinguishable from a firmware crash. That is
+ * is a reset, which is indistinguishable from a firmware crash. That is
  * the difference between a suite that reports 273 passed and 1 failed
  * and one that stops after test 47 and needs a human.
  *
- * Zero disables it,  is what an interactive session or a benchmark
+ * Zero disables it, which is what an interactive session or a benchmark
  * wants. The default is generous: CoreMark retires about 1.3 million
  * instructions a run and the architecture tests far fewer, so anything
  * reaching this is not making progress.
@@ -99,7 +99,7 @@ extern uint8_t __guest_ram_end[];
 /*
  * Code cache for translated blocks. Ordinary .bss: the ARMv7-M default
  * memory map makes SRAM executable, so no MPU work is needed. This comes
- * out of what the guest would otherwise get,  is the trade the JIT
+ * out of what the guest would otherwise get, which is the trade the JIT
  * asks for.
  */
 #endif
@@ -129,7 +129,7 @@ static emu_uart_t g_uart;
  * the network for a fault that had already diagnosed itself.
  *
  * So with the stack up, keep servicing it forever instead. Nothing else
- * runs,  is the point of a halt; a client can still connect and
+ * runs, which is the point of a halt; a client can still connect and
  * collect the reason.
  */
 static void fatal_halt(void)
@@ -152,10 +152,10 @@ static void fatal_halt(void)
  * the UART; after, the UART carries SLIP and cannot carry text as well,
  * so everything goes to the telnet buffer instead.
  *
- * The branch is a load and a test per character,  is nothing: the
+ * The branch is a load and a test per character, which is nothing: the
  * console is written by human-readable output and by the guest's virtual
- * UART, neither of  is on any measured hot path. The same is not
- * true of the run loop,  is why emu_net_poll() below is the thing
+ * UART, neither of which is on any measured hot path. The same is not
+ * true of the run loop, which is why emu_net_poll() below is the thing
  * that had to be thought about.
  */
 void emu_console_putc(uint8_t c)
@@ -179,27 +179,14 @@ static int console_getc(void)
     return board_console_getc();
 }
 
-#define console_putc   emu_console_putc
+/*
+ * Short names for this file. There is no console_putu or console_puthex
+ * any more: every diagnostic goes through printf, which is what removed
+ * ~130 call sites and the hand-assembled fixed-point ratios that came
+ * with them.
+ */
 #define console_puts   emu_console_puts
 #define console_printf emu_console_printf
-#define console_putu   emu_console_putu
-#define console_puthex emu_console_puthex
-
-
-/*
- * printf onto the console.
- *
- * The firmware's diagnostics were assembled from console_puts /
- * console_putu / console_puthex -- 130 call sites -- so a stats line
- * cost one call per field and per literal, and the ratio below had to
- * be printed by hand as three because there is no float.
- *
- * vsnprintf into a buffer rather than wiring picolibc's stdout: stdout
- * would need a FDEV stream and gives nothing extra here, and a fixed
- * buffer makes the worst case obvious. Truncation is silent,  is
- * the right trade for a diagnostic -- a stats line that loses its tail
- * is better than one that cannot be printed.
- */
 
 
 
@@ -222,15 +209,9 @@ void emu_jit_diff_report(uint32_t pc, uint32_t off, uint32_t want,
     if (reported++ >= 12u) {
         return;
     }
-    console_puts("jit-diff pc ");
-    console_puthex(pc);
-    console_puts(" +");
-    console_putu(off);
-    console_puts(" want ");
-    console_puthex(want);
-    console_puts(" got ");
-    console_puthex(got);
-    console_puts("\n");
+    console_printf("jit-diff pc 0x%08x +%u want 0x%08x got 0x%08x\n",
+                   (unsigned)pc, (unsigned)off, (unsigned)want,
+                   (unsigned)got);
 }
 #endif
 
@@ -277,7 +258,7 @@ static emu_syscall_ctx_t g_sc_ctx = {
  * where every one of these was a no-op the spec explicitly permits -- these
  * are real operations on the lines backing the guest's block. A guest that
  * hands a buffer to DMA and skips the cbo is now wrong in a way it was not
- * on the M4,  is the honest consequence of the part having a cache
+ * on the M4, which is the honest consequence of the part having a cache
  * rather than something the emulator should paper over.
  */
 
@@ -316,7 +297,7 @@ static emu_syscall_ctx_t g_sc_ctx = {
  *
  * The console moved to USART3 for this board, and USART3 at 0x40004800 is
  * inside the guest's read-write span -- exactly as USART2 was on the F446.
- * A guest that reprograms it silences the console,  is the same
+ * A guest that reprograms it silences the console, which is the same
  * bargain as everywhere else here: the guest owns the peripherals.
  */
 static const struct {
@@ -358,7 +339,7 @@ static const struct {
  * re-asserts the moment the handler exits, and the emulator would spin in
  * interrupt entry forever without the guest ever making progress. So the
  * line is masked on entry and stays masked until the guest clears the
- * APLIC pending bit,  is its way of saying the device has been dealt
+ * APLIC pending bit, which is its way of saying the device has been dealt
  * with -- see emu_board_irq_unmask, reached through the APLIC's eoi hook.
  *
  * Adding a peripheral is one table entry and one handler; the table is the
@@ -423,7 +404,7 @@ void TIM6_DAC_IRQHandler(void)
  * arena when one arrives over TFTP.
  *
  * These exist because build_address_space() used to read the .incbin
- * symbols directly,  made " image is running" a link-time
+ * symbols directly, which made "which image is running" a link-time
  * fact. An upload has to be able to change it at run time.
  */
 static const uint8_t *g_img      = emu_guest_image;
@@ -522,7 +503,7 @@ static bool start_guest(void)
 
 /*
  * The emulator is already suspended whenever these run: they are reached
- * from emu_net_poll(),  the run loop calls between guest slices, so
+ * from emu_net_poll(), which the run loop calls between guest slices, so
  * no guest instruction is in flight. Nothing has to be stopped -- but
  * the restart does have to be explicit, because the bus regions and the
  * reset vector were built from the old image.
@@ -531,7 +512,7 @@ static bool start_guest(void)
  * Both halves land in the flash arena, back to back, and the guest is
  * restarted only when the second arrives.
  *
- * The writable half cannot go straight into guest RAM,  is the
+ * The writable half cannot go straight into guest RAM, which is the
  * obvious thing and is wrong: start_guest() clears RAM beyond the image
  * -- deliberately, so that one test cannot pass on state another wrote
  * -- and it is start_guest() that the upload calls. The .data written
@@ -579,7 +560,7 @@ void emu_net_image_end(uint32_t len, bool ok)
          */
         (void)board_flash_arena_reset();
         g_up_addr = 0u;
-        console_puts("\nemu: upload failed\n");
+        console_printf("\nemu: upload failed\n");
         return;
     }
 
@@ -648,7 +629,7 @@ static bool gdb_flash_erase(uint32_t addr, uint32_t len)
  * them.
  *
  * Its contract in board.h is "sequential and word aligned in length
- * except for the last",  the TFTP path satisfies for free -- 512
+ * except for the last", which the TFTP path satisfies for free -- 512
  * byte blocks. gdb sends whatever fits its packet: ~975 bytes per write
  * here. Each such chunk had its tail padded to a word with 0xFF and the
  * next one then began at a non-aligned flash address, so `load` reported
@@ -667,7 +648,7 @@ static bool gf_flush(void)
     bool ok = true;
 
     if (g_gf_carry_len != 0u) {
-        /* board_flash_write pads a short tail with 0xFF,  is the
+        /* board_flash_write pads a short tail with 0xFF, which is the
          * erased state, so a final partial word is safe here. */
         ok = board_flash_write(g_up_addr + g_gf_carry_off,
                                g_gf_carry, g_gf_carry_len);
@@ -774,7 +755,7 @@ static bool take_uploaded_image(void)
     /*
      * The bus only, at this point: emu_core_open() needs one to open
      * onto, and the devices, reset and boot come later through
-     * start_guest() --  needs the core to exist.
+     * start_guest() -- which needs the core to exist.
      */
     /*
      * The whole bring-up, not just the bus: a new image needs the
@@ -783,7 +764,7 @@ static bool take_uploaded_image(void)
      *  presents as the new guest retiring zero instructions.
      */
     if (!start_guest()) {
-        console_puts("emu: uploaded image does not fit guest RAM\n");
+        console_printf("emu: uploaded image does not fit guest RAM\n");
         return false;
     }
 
@@ -828,7 +809,7 @@ int main(void)
     /*
      * The frontend names itself, and builds its ISA string from the
      * extensions actually compiled in, so the banner cannot drift from what
-     * the core implements --  it could when this file spelled the
+     * the core implements -- which it could when this file spelled the
      * string out itself.
      */
     const emu_cpu_ops_t *const ops = emu_frontend_default();
@@ -841,9 +822,9 @@ int main(void)
     /*
      * The handover happens here, before the rest of the banner, so that
      * everything describing what is about to run -- guest size, guest
-     * RAM,  backend came up -- reaches a telnet client rather than
+     * RAM, which backend came up -- reaches a telnet client rather than
      * a serial port nobody is watching. It is buffered until one
-     * connects,  is what net_telnet.c's output ring is for.
+     * connects, which is what net_telnet.c's output ring is for.
      *
      * The two lines below are the last thing the UART ever carries as
      * text, and they are deliberately the two that matter when nothing
@@ -854,7 +835,7 @@ int main(void)
     console_printf("net    %s on this port; telnet %s 23\n",
                    EMU_NET_LINK_PPP ? "PPP" : "SLIP", emu_net_addr_str());
     if (!emu_net_init()) {
-        console_puts("net    failed to start; staying on the serial console\n");
+        console_printf("net    failed to start; staying on the serial console\n");
     }
 #endif
 
@@ -862,7 +843,7 @@ int main(void)
      * Which image is running, before anything asks. build_address_space()
      * reads these rather than the .incbin symbols -- that is what lets an
      * upload replace the image at run time -- so leaving them until after
-     * the bus is built publishes a zero-length ROM region,  the bus
+     * the bus is built publishes a zero-length ROM region, which the bus
      * rejects, and the firmware halts before it has run an instruction.
      */
     g_img_size = emu_guest_image_size;
@@ -874,12 +855,12 @@ int main(void)
      */
     publish_image();
     if (!emu_build_address_space(&g_bus, &g_uart)) {
-        console_puts("fatal: could not build the guest address space\n");
+        console_printf("fatal: could not build the guest address space\n");
         fatal_halt();
     }
 
     if (!emu_core_open(&g_core, ops, &g_bus, 0u)) {
-        console_puts("fatal: frontend has no core 0\n");
+        console_printf("fatal: frontend has no core 0\n");
         fatal_halt();
     }
 
@@ -916,11 +897,10 @@ int main(void)
 #endif
 
         if (!emu_net_gdb_init(&g_core, gt, &k_gdb_flash)) {
-            console_puts("gdb    stub failed to start\n");
+            console_printf("gdb    stub failed to start\n");
         } else {
-            console_puts("gdb    target remote ");
-            console_puts(emu_net_addr_str());
-            console_puts(":1234\n");
+            console_printf("gdb    target remote %s:1234\n",
+                           emu_net_addr_str());
         }
     }
 #endif
@@ -931,14 +911,14 @@ int main(void)
      * reload has to do both -- see the note on it.
      */
     if (!start_guest()) {
-        console_puts("fatal: could not start the guest\n");
+        console_printf("fatal: could not start the guest\n");
         fatal_halt();
     }
 
     /*
      * Everything from here down is one run of one guest, and an uploaded
      * image comes back to it. The banner is inside the loop deliberately:
-     * it names the image's size,  is the first thing that differs
+     * it names the image's size, which is the first thing that differs
      * after a reload and the first thing a harness wants to see.
      */
 restart:
@@ -987,84 +967,33 @@ restart:
          * reading the console can tell "did not terminate" from "ran and
          * failed" without parsing the numbers.
          */
-        console_puts("\nemu: instruction cap reached, guest did not halt\n");
+        console_printf("\nemu: instruction cap reached, guest did not halt\n");
     }
 
     emu_print_run_summary(retired_total, elapsed);
     if (retired_total != 0u) {
-        /* KIPS needs the core clock,  is the platform's to know. */
+        /* KIPS needs the core clock, which is the platform's to know. */
         const uint32_t kips =
             (uint32_t)((uint64_t)retired_total * (SystemCoreClock / 1000u) / elapsed);
         console_printf("  speed    %u KIPS\n", (unsigned)kips);
     }
 
-/*
- * JIT statistics.
- *
- * **These are the framework's, not a frontend's**, and this used to say
- * the opposite -- "the one place in this file that names a frontend, and
- * unavoidably so". It was avoidable: `emu_jit_get_stats` reports blocks,
- * translations, entries, fallbacks, flushes, compactions, evictions,
- * code use and the declined/overflow split for *any* frontend on *any*
- * host, because the dispatch loop that maintains them is shared. Reading
- * them through rv_jit_get_stats meant a G4MH firmware --  has a
- * Thumb-2 JIT and uses it -- printed no statistics at all, so the one
- * number that says whether translation is being exercised was missing
- * from exactly the frontend with no reference model to fall back on.
- *
- * `code_size` is the test for "there is a JIT here": the framework only
- * has a buffer once a backend initialised one, and it is zero on an
- * interpreter build without needing to name a backend.
- */
-#if EMU_HAVE_JIT
-    (void)emu_print_jit_stats();
-#endif
-
-#if EMU_GUEST_ARCH_RV32 && EMU_HAVE_JIT
     /*
-     * The rest are the RV32 backend's own counters and have no framework
-     * equivalent:  helper calls it emitted, whether the passthrough
-     * window was armed, and how often a block reads the registers a
-     * per-block cache would hold.
+     * **These are the framework's, not a frontend's**, and this used to
+     * say the opposite -- "the one place in this file that names a
+     * frontend, and unavoidably so". It was avoidable: emu_jit_get_stats
+     * reports blocks, translations, entries, fallbacks, flushes,
+     * compactions, evictions, code use and the declined/overflow split
+     * for *any* frontend on *any* host, because the dispatch loop that
+     * maintains them is shared. Reading them through rv_jit_get_stats
+     * meant a G4MH firmware -- which has a Thumb-2 JIT and uses it --
+     * printed no statistics at all, so the one number that says whether
+     * translation is being exercised was missing from exactly the
+     * frontend with no reference model to fall back on.
      */
-    if (rv_backend == &rv_backend_jit) {
-        rv_jit_stats_t rs;
-
-        rv_jit_get_stats(&rs);
-        console_printf(
-            "  helpers  muldiv %u  clmul %u  bit %u\n"
-            "  pt hits  %u armed %u\n",
-            (unsigned)rs.alu_calls_muldiv, (unsigned)rs.alu_calls_clmul,
-            (unsigned)rs.alu_calls_bit,
-            (unsigned)rs.pt_hits, (unsigned)rs.pt_armed);
-#ifdef EMU_JIT_PROFILE
-        console_printf("  cyc xlat %u compact %u\n",
-                       (unsigned)rs.cyc_translate, (unsigned)rs.cyc_compact);
-#endif
-        /*
-         * Reads per block that uses the register, x100. Below 100 a
-         * cache cannot pay: the block would spend a load to save fewer
-         * than one.
-         */
-        {
-            static const char *const nm[4] = { "sp", "ra", "a0", "a1" };
-
-            console_printf("  reads/blk");
-            for (unsigned i = 0; i < 4u; i++) {
-                if (rs.hot_blocks[i] != 0u) {
-                    const uint32_t x100 =
-                        rs.hot_reads[i] * 100u / rs.hot_blocks[i];
-                    console_printf(" %s=%u.%02u in %u", nm[i],
-                                   (unsigned)(x100 / 100u),
-                                   (unsigned)(x100 % 100u),
-                                   (unsigned)rs.hot_blocks[i]);
-                } else {
-                    console_printf(" %s=- in %u", nm[i],
-                                   (unsigned)rs.hot_blocks[i]);
-                }
-            }
-            console_printf("\n");
-        }
+#if EMU_HAVE_JIT
+    if (emu_print_jit_stats()) {
+        emu_print_backend_stats();
     }
 #endif
 
@@ -1075,20 +1004,19 @@ restart:
      * Bytes the wire delivered and nothing collected. Reported next to
      * the guest's own numbers because it is the one failure that makes
      * *those* numbers untrustworthy without looking wrong: a dropped
-     * byte is a dropped SLIP frame,  is a retransmission at best
+     * byte is a dropped SLIP frame, which is a retransmission at best
      * and a truncated image at worst.
      */
-    console_puts("\n-- net --\n  rx drops ");
-    console_putu(board_console_rx_overruns());
+    console_printf("\n-- net --\n  rx drops %u",
+                   (unsigned)board_console_rx_overruns());
     /*
      * How often the TFTP server had to be rebuilt under it. Nonzero is
      * normal -- the watchdog re-arms while the link is quiet -- but it
      * climbing during a suite run means transfers are being abandoned,
      *  is worth seeing rather than inferring from a slow harness.
      */
-    console_puts("  tftp reclaims ");
-    console_putu(emu_net_tftp_reclaims());
-    console_putc('\n');
+    console_printf("  tftp reclaims %u\n",
+                   (unsigned)emu_net_tftp_reclaims());
 #endif
 
     /*
@@ -1106,15 +1034,9 @@ restart:
      * halted or was capped, because exit=0 means nothing if the guest
      * never reached the syscall.
      */
-    console_puts("\nemu-result exit=");
-    console_putu(g_exit.code);
-    console_puts(" exited=");
-    console_putu(g_exit.exited ? 1u : 0u);
-    console_puts(" capped=");
-    console_putu(capped ? 1u : 0u);
-    console_puts(" retired=");
-    console_putu((uint32_t)retired_total);
-    console_putc('\n');
+    console_printf("\nemu-result exit=%u exited=%u capped=%u retired=%u\n",
+                   (unsigned)g_exit.code, (unsigned)(g_exit.exited ? 1u : 0u),
+                   (unsigned)(capped ? 1u : 0u), (unsigned)retired_total);
 
     for (;;) {
 #if EMU_NET
@@ -1122,7 +1044,7 @@ restart:
          * Everything above is still sitting in the output ring: the run
          * loop stopped, and with it the only thing that was delivering.
          * Parking in __WFI without draining first would lose the entire
-         * report --  is the part a harness came for.
+         * report -- which is the part a harness came for.
          *
          * __WFI is still right rather than a busy loop. The UART receive
          * interrupt is what wakes it, and that fires on the first byte
@@ -1176,7 +1098,7 @@ restart:
          * Do not sleep while the stack is up, and the reason is the
          * clock rather than latency.
          *
-         * lwIP's time base is sys_now(),  is derived from
+         * lwIP's time base is sys_now(), which is derived from
          * board_cycles() -- DWT CYCCNT, a counter of *processor* cycles.
          * __WFI stops the processor clock, so CYCCNT stops with it and
          * the stack's notion of time stops advancing. Measured here:
@@ -1196,13 +1118,13 @@ restart:
          * Nothing here is a power-sensitive workload: this loop is a
          * bench board waiting to be handed the next test image. Polling
          * costs nothing that matters and keeps the clock honest. The
-         * board still sleeps when the network is *not* up,  is the
+         * board still sleeps when the network is *not* up, which is the
          * plain serial-console case where nothing depends on lwIP's
          * timers at all.
          *
          * Fixing it in the time base instead would mean a free-running
          * peripheral timer -- a TIM keeps its clock through Sleep where
-         * CYCCNT does not --  is the better answer if this loop
+         * CYCCNT does not -- which is the better answer if this loop
          * ever needs to sleep again.
          */
         if (emu_net_active()) {

@@ -249,7 +249,7 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
  * Eight channels: a control register each and a counter each, with the
  * counters at SR16 rather than immediately after the controls.
  */
-#define G4MH_SR_PMCTRL0     0u    /* .. PMCTRL7 at 7,  selID 14        */
+#define G4MH_SR_PMCTRL0     0u    /* .. PMCTRL7 at 7, selID 14         */
 #define G4MH_SR_PMCOUNT0    16u   /* .. PMCOUNT7 at 23, selID 14       */
 #define G4MH_SR_PMUMCTRL    8u    /* selID 11                          */
 #define G4MH_PM_CHANNELS    8u

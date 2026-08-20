@@ -157,11 +157,14 @@ void emu_net_image_end(uint32_t len, bool ok)
 }
 #endif
 
-#define console_putc   emu_console_putc
+/*
+ * Short names for this file. There is no console_putu or console_puthex
+ * any more: every diagnostic goes through printf, which is what removed
+ * ~130 call sites and the hand-assembled fixed-point ratios that came
+ * with them.
+ */
 #define console_puts   emu_console_puts
 #define console_printf emu_console_printf
-#define console_putu   emu_console_putu
-#define console_puthex emu_console_puthex
 
 
 
@@ -434,7 +437,7 @@ int main(void)
 
 
     if (!emu_core_open(&g_core, ops, &g_bus, 0u)) {
-        console_puts("fatal: frontend has no core 0\n");
+        console_printf("fatal: frontend has no core 0\n");
         fatal_halt();
     }
     /*
@@ -455,7 +458,7 @@ int main(void)
     emu_board_ram_size = GUEST_RAM_SIZE;
 
     if (!emu_start_guest(&g_core, &g_bus, &g_uart, &g_exit)) {
-        console_puts("fatal: could not bring the guest up\n");
+        console_printf("fatal: could not bring the guest up\n");
         fatal_halt();
     }
 
@@ -503,10 +506,10 @@ int main(void)
     console_printf("net    %s on this port; telnet %s 23\n",
                    EMU_NET_LINK_PPP ? "PPP" : "SLIP", emu_net_addr_str());
     if (!emu_net_init()) {
-        console_puts("net    failed to start; staying on the serial console\n");
+        console_printf("net    failed to start; staying on the serial console\n");
     }
 #endif
-    console_puts("\n");
+    console_printf("\n");
 
     g_cycles_per_tick = SystemCoreClock / EMU_TIMER_HZ;
     const uint32_t start_cycles = board_cycles();
@@ -537,103 +540,21 @@ int main(void)
          * reading the console can tell "did not terminate" from "ran and
          * failed" without parsing the numbers.
          */
-        console_puts("\nemu: instruction cap reached, guest did not halt\n");
+        console_printf("\nemu: instruction cap reached, guest did not halt\n");
     }
 
-    console_puts("\n-- done --\n  retired  ");
-    console_putu((uint32_t)retired_total);
-    console_puts(" instructions\n  host     ");
-    console_putu(elapsed);
-    console_puts(" cycles\n  ratio    ");
+    emu_print_run_summary(retired_total, elapsed);
     if (retired_total != 0u) {
-        /* Host ARM cycles per emulated guest instruction, x100 so the
-         * fractional part survives integer division. */
-        const uint32_t x100 = (uint32_t)((uint64_t)elapsed * 100u / retired_total);
-        console_putu(x100 / 100u);
-        console_putc('.');
-        console_putu((x100 % 100u) / 10u);
-        console_putu(x100 % 10u);
-        console_puts(" host cycles per guest instruction\n  speed    ");
+        /* KIPS needs the core clock, which is the platform's to know. */
         const uint32_t kips =
             (uint32_t)((uint64_t)retired_total * (SystemCoreClock / 1000u) / elapsed);
-        console_putu(kips);
-        console_puts(" KIPS\n");
+
+        console_printf("  speed    %u KIPS\n", (unsigned)kips);
     }
 
-/*
- * JIT statistics. The one place in this file that names a frontend, and
- * unavoidably so: the Thumb-2 JIT is the rv32 frontend's second backend,
- * and what it counts -- translations, evictions, which encodings fell back
- * to the interpreter -- has no meaning for any other. A frontend without a
- * JIT simply does not compile this block in.
- */
-#if EMU_GUEST_ARCH_RV32 && EMU_HAVE_JIT
-    if (rv_backend == &rv_backend_jit) {
-        rv_jit_stats_t js;
-        rv_jit_get_stats(&js);
-        console_puts("\n-- jit --\n  blocks   ");
-        console_putu(js.blocks);
-        console_puts("\n  code     ");
-        console_putu(js.code_used);
-        console_putc('/');
-        console_putu(js.code_size);
-        console_puts(" bytes\n  blks/xlat ");
-        console_putu(js.translations);
-        console_puts("\n  compact  ");
-        console_putu(js.compactions);
-        console_puts(" (");
-        console_putu(js.evictions);
-        console_puts(" evicted)\n  flushes  ");
-        console_putu(js.flushes);
-        /*
-         * Instructions the translator declined and the interpreter ran.
-         * A high share here is the first place to look when the speedup
-         * is smaller than expected: it names exactly which encodings are
-         * worth teaching the translator next.
-         */
-        console_puts("\n  elided   ld ");
-        console_putu(js.ld_elided);
-        console_puts("  st ");
-        console_putu(js.st_elided);
-        console_puts("\n  interp   ");
-        console_putu(js.interp_fallbacks);
-        console_puts(" instructions fell back\n  helpers  muldiv ");
-        console_putu(js.alu_calls_muldiv);
-        console_puts("  clmul ");
-        console_putu(js.alu_calls_clmul);
-        console_puts("  bit ");
-        console_putu(js.alu_calls_bit);
-        console_puts("\n  pt hits  ");
-        console_putu(js.pt_hits);
-        console_puts(" armed ");
-        console_putu(js.pt_armed);
-        console_puts("\n  blk entr ");
-        console_putu(js.block_entries);
-        /*
-         * Reads per block that uses the register, x100. Below 100 a cache
-         * cannot pay: the block would spend a load to save fewer than one.
-         */
-        {
-            static const char *const nm[4] = { "sp", "ra", "a0", "a1" };
-            console_puts("\n  reads/blk");
-            for (unsigned i = 0; i < 4u; i++) {
-                console_putc(' ');
-                console_puts(nm[i]);
-                console_putc('=');
-                if (js.hot_blocks[i] != 0u) {
-                    const uint32_t x100 = js.hot_reads[i] * 100u / js.hot_blocks[i];
-                    console_putu(x100 / 100u);
-                    console_putc('.');
-                    console_putu((x100 % 100u) / 10u);
-                    console_putu(x100 % 10u);
-                } else {
-                    console_puts("-");
-                }
-                console_puts(" in ");
-                console_putu(js.hot_blocks[i]);
-            }
-        }
-        console_putc('\n');
+#if EMU_HAVE_JIT
+    if (emu_print_jit_stats()) {
+        emu_print_backend_stats();
     }
 #endif
 

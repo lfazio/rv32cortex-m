@@ -8,6 +8,12 @@
  * the same in the F446 and F746 runners, and a third platform would have
  * made three copies of a thing with no board in it.
  *
+ * `putu` and `puthex` are gone rather than shared. They existed because
+ * there was no printf, so a stats line cost one call per field and per
+ * literal, and every fixed-point ratio was hand-assembled into three --
+ * `x100 / 100`, a literal '.', then the tens and units of `x100 % 100`.
+ * That was correct, and `%u.%02u` says it once.
+ *
  * The split is where the board actually enters: `emu_console_putc` is
  * supplied by the platform, because only it knows whether the byte goes
  * to a UART or -- once the network stack has taken the wire -- to a ring
@@ -56,11 +62,6 @@ void emu_console_puts(const char *s);
 void emu_console_printf(const char *fmt, ...)
     __attribute__((format(printf, 1, 2)));
 
-/* Unsigned decimal and 0x-prefixed hex, for the few places a bare number
- * is clearer than a format string. */
-void emu_console_putu(uint32_t v);
-void emu_console_puthex(uint32_t v);
-
 /*
  * Dump the guest's architectural state through the frontend.
  *
@@ -107,6 +108,13 @@ bool emu_guest_syscall(emu_cpu_t *cpu, emu_syscall_t *sc, void *user);
  */
 void emu_print_run_summary(uint64_t retired, uint32_t host_cycles);
 bool emu_print_jit_stats(void);
+
+/*
+ * The counters the *frontend's* backend keeps and the framework does
+ * not. Empty when there are none, so a caller needs no #if -- which is
+ * what stopped this being two copies guarded two different ways.
+ */
+void emu_print_backend_stats(void);
 
 /*
  * Guest cache maintenance onto this part's, in emu_arm_cache.c. Handed

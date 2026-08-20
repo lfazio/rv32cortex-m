@@ -36,34 +36,6 @@ void emu_console_printf(const char *fmt, ...)
     emu_console_puts(buf);
 }
 
-void emu_console_puthex(uint32_t v)
-{
-    static const char hex[] = "0123456789abcdef";
-
-    emu_console_puts("0x");
-    for (int i = 28; i >= 0; i -= 4) {
-        emu_console_putc((uint8_t)hex[(v >> i) & 0xFu]);
-    }
-}
-
-void emu_console_putu(uint32_t v)
-{
-    char tmp[10];
-    int n = 0;
-
-    if (v == 0u) {
-        emu_console_putc('0');
-        return;
-    }
-    while (v != 0u && n < (int)sizeof(tmp)) {
-        tmp[n++] = (char)('0' + (v % 10u));
-        v /= 10u;
-    }
-    while (n-- > 0) {
-        emu_console_putc((uint8_t)tmp[n]);
-    }
-}
-
 void emu_console_putb(uint8_t c)
 {
     if (c == '\n') {
