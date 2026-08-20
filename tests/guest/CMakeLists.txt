@@ -99,39 +99,7 @@ function(add_guest_image name)
         COMMENT "Building guest image ${name}.bin"
         VERBATIM)
 
-    # The same image split at __guest_ro_end, so the firmware can serve
-    # the read-only half straight out of the part's flash instead of
-    # copying it into guest RAM. Concatenated the two are byte-identical
-    # to ${bin} -- the link script aligns the boundary to 4, so nothing
-    # is padded between them -- which is what lets guest_image.S embed
-    # them consecutively and still hand out one base pointer.
-    #
-    # A split rather than extracting the symbol with `nm`: the sizes then
-    # come from the assembler's own end-minus-start, exactly as
-    # emu_guest_image_size already does, and there is no third place for
-    # the boundary to be computed differently.
-    add_custom_command(
-        OUTPUT "${bin}.ro" "${bin}.rw"
-        COMMAND ${RISCV_OBJCOPY} -O binary
-                -j .text -j .rodata "${elf}" "${bin}.ro"
-        COMMAND ${RISCV_OBJCOPY} -O binary
-                -j .data "${elf}" "${bin}.rw"
-        # And prove it, because the paragraph above was wrong for two of
-        # the four guests and nothing said so. The invariant is what lets
-        # guest_image.S embed the halves consecutively and hand out one
-        # base pointer, and what lets an uploaded image be reassembled in
-        # flash the same way -- when it does not hold, .data is placed
-        # below where the guest reads it and the guest runs anyway, on
-        # zeros.
-        COMMAND ${CMAKE_COMMAND} -E cat "${bin}.ro" "${bin}.rw" > "${bin}.cat"
-        COMMAND ${CMAKE_COMMAND} -E compare_files "${bin}.cat" "${bin}"
-        COMMAND ${CMAKE_COMMAND} -E rm -f "${bin}.cat"
-        DEPENDS "${elf}" "${bin}"
-        COMMENT "Splitting guest image ${name} at __guest_ro_end"
-        VERBATIM)
-
-    add_custom_target(guest-${name} ALL
-        DEPENDS "${bin}" "${bin}.ro" "${bin}.rw")
+    add_custom_target(guest-${name} ALL DEPENDS "${bin}")
 endfunction()
 
 add_guest_image(isatest  SOURCES start.S isatest.c)

@@ -45,7 +45,6 @@
 /* The guest binary, embedded by guest_image.S. */
 extern const uint8_t emu_guest_image[];
 extern const uint32_t emu_guest_image_size;
-extern const uint32_t emu_guest_ro_size;
 
 /* ------------------------------------------------------------------ */
 /* Configuration                                                       */

@@ -193,6 +193,52 @@ static void test_fma_rounds_once(void)
  * than by calling the static that computes it, so what is under test is
  * the thing the framework actually consults.
  */
+/*
+ * Reset must leave fetch_guard consistent with the flags it summarises.
+ *
+ * It is derived state, and its invariant is that only
+ * rv_hart_refresh_fetch_guard writes it -- while rv_hart_reset clears
+ * pmp_active, trig_active and vm_active by hand. Miss the recompute and
+ * the guard keeps the *previous* guest's value, which costs no
+ * correctness (the slow path finds every flag false and permits) and
+ * costs the JIT everything, because rv_jit_bind points the framework's
+ * `blocked` at this word. A board reloading a guest after one that armed
+ * PMP then interprets the new guest in full, for ever.
+ *
+ * Asserted against the flags rather than against `false`, so this still
+ * says something in a build with none of the three extensions.
+ */
+static void test_reset_clears_fetch_guard(void)
+{
+    fp_reset();
+
+    /* Arm it the way a guest does, through the refresh that owns it. */
+#if RV_EXT_PMP
+    g_hart.pmp_active = true;
+#endif
+#if RV_EXT_SDTRIG
+    g_hart.trig_active = true;
+#endif
+    rv_hart_refresh_fetch_guard(&g_hart);
+#if RV_EXT_PMP || RV_EXT_SDTRIG
+    CHECK(g_hart.fetch_guard);
+#endif
+
+    rv_hart_reset(&g_hart, 0x80000000u);
+
+    bool want = false;
+#if RV_EXT_SDTRIG
+    want = want || g_hart.trig_active;
+#endif
+#if RV_EXT_PMP
+    want = want || g_hart.pmp_active;
+#endif
+#if RV_EXT_SV32
+    want = want || g_hart.vm_active;
+#endif
+    CHECK_EQ(g_hart.fetch_guard ? 1u : 0u, want ? 1u : 0u);
+}
+
 #if EMU_HAVE_JIT
 static uint32_t gen_key(void)
 {
@@ -408,6 +454,7 @@ void test_fpu(void)
                  RV_EXC_ILLEGAL_INSN);
     }
     test_fma_rounds_once();
+    test_reset_clears_fetch_guard();
 #if EMU_HAVE_JIT
     test_jit_generation_key();
 #endif

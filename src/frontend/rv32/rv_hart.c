@@ -137,6 +137,26 @@ void rv_hart_reset(rv_hart_t *h, uint32_t reset_pc)
     h->priv = RV_PRIV_M;
     h->state = EMU_STATE_RUNNING;
 
+    /*
+     * Last, and after every flag it summarises.
+     *
+     * fetch_guard is derived state -- the OR of trig_active, pmp_active
+     * and vm_active -- and its invariant is that only
+     * rv_hart_refresh_fetch_guard writes it. This function clears all
+     * three by hand, so without this line the guard keeps whatever value
+     * the *previous* guest left it with.
+     *
+     * That is not a wrong answer in this direction: the interpreter takes
+     * its slow fetch path, finds all three flags false and permits. It is
+     * the JIT that pays, because rv_jit_bind points the framework's
+     * `blocked` at this word -- so a board that reloads a guest after one
+     * that armed PMP runs the new guest **entirely interpreted**, for
+     * ever. Measured on hardware before the fix: uploading `hello` after
+     * `isatest` moved `interp` by exactly its 618 retired instructions
+     * while `blks/xlat` and `blk entr` did not move at all.
+     */
+    rv_hart_refresh_fetch_guard(h);
+
 #if RV_LAZY_IRQ_CHECK
     /* Force one evaluation after reset rather than assuming the state. */
     h->irq_dirty = true;

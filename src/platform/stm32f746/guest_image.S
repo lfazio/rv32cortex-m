@@ -1,17 +1,35 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * guest_image.S - Embed the RISC-V guest binary into ARM flash.
+ * guest_image.S - embed the guest binary in the host part's flash.
  *
- * .incbin places the raw bytes directly in .rodata with no size overhead:
- * no ELF headers, no generated C array (which would cost roughly 6x the
- * image size in source and slow the build), and no runtime parser. The
- * emulator points a bus region straight at these symbols.
+ * .incbin places the raw bytes in .rodata with no size overhead: no ELF
+ * headers, no generated C array (roughly 6x the image size in source, and
+ * slow to compile), and no run-time parser. The emulator points a bus
+ * region straight at these symbols, so the guest's .text and .rodata are
+ * executed out of the host's flash and cost the guest no RAM.
  *
- * RV32_GUEST_IMAGE is set by the build to the path of a flat .bin.
+ * **One image, embedded whole.** It used to be two -- the same binary
+ * split at __guest_ro_end and embedded consecutively -- because the guest
+ * was linked entirely in RAM and the firmware needed to know how much of
+ * it was read-only in order to serve that much from flash. The guest
+ * links .text and .rodata into flash and .data into RAM now, and copies
+ * .data itself at start-up, so there is no boundary for anything here to
+ * carry.
+ *
+ * That split was worth removing rather than merely unnecessary. The
+ * halves had to concatenate back to the unsplit binary exactly, an
+ * invariant this file asserted in a comment and the build did not check;
+ * it was false for two of the four guests, because the `. = ALIGN(4)`
+ * that set the boundary sat *between* output sections and so moved the
+ * location counter without padding .rodata. Three bytes went missing,
+ * .data landed below where the guest read it, and the guest ran anyway,
+ * on zeros.
+ *
+ * EMU_GUEST_IMAGE is set by the build to the path of a flat .bin.
  */
 
-#if !defined(RV32_GUEST_IMAGE_RO) || !defined(RV32_GUEST_IMAGE_RW)
-#error "RV32_GUEST_IMAGE_RO and _RW must be defined (paths to the halves)"
+#if !defined(EMU_GUEST_IMAGE)
+#error "EMU_GUEST_IMAGE must be defined (path to the guest .bin)"
 #endif
 
 /* .incbin needs a string literal, so the macro value is stringified. */
@@ -21,24 +39,10 @@
     .section .rodata.guest, "a"
     .balign 4
 
-/*
- * The two halves, embedded consecutively, so emu_guest_image still names
- * the whole image and emu_guest_ro_size says where it splits.
- *
- * No .balign between them, deliberately. The guest link script aligns
- * __guest_ro_end to 4 so the read-only half is already a multiple of
- * four bytes; an alignment directive here would be a no-op in that case
- * and a silent corruption if it ever stopped being true, because it
- * would insert padding the guest's addresses do not account for.
- * Concatenated they are byte-identical to the unsplit .bin, which the
- * build checks.
- */
     .globl emu_guest_image
     .type emu_guest_image, %object
 emu_guest_image:
-    .incbin STR(RV32_GUEST_IMAGE_RO)
-emu_guest_ro_end:
-    .incbin STR(RV32_GUEST_IMAGE_RW)
+    .incbin STR(EMU_GUEST_IMAGE)
     .balign 4
 emu_guest_image_end:
     .size emu_guest_image, emu_guest_image_end - emu_guest_image
@@ -49,16 +53,3 @@ emu_guest_image_end:
 emu_guest_image_size:
     .word emu_guest_image_end - emu_guest_image
     .size emu_guest_image_size, 4
-
-/*
- * How much of it is read-only, and so can be executed straight out of
- * flash rather than copied into guest RAM. Zero-length .data is normal
- * -- two of the three guests here have one -- and then the whole image
- * is read-only.
- */
-    .globl emu_guest_ro_size
-    .type emu_guest_ro_size, %object
-    .balign 4
-emu_guest_ro_size:
-    .word emu_guest_ro_end - emu_guest_image
-    .size emu_guest_ro_size, 4

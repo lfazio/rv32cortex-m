@@ -9,28 +9,15 @@
  * a store access fault on its first push, before it has installed a trap
  * handler that could report it.
  *
- * Everything lands in one contiguous RAM region starting at the guest
- * reset address, so the resulting flat binary can be loaded at 0x80000000
- * and entered at offset 0.
+ * The layout is a microcontroller's: .text and .rodata in flash, .data
+ * and .bss in RAM, and .data's initialiser at a load address in flash for
+ * start.S to copy across. The flat binary objcopy produces is therefore
+ * mapped at EMU_GUEST_ROM_BASE and entered at offset 0.
  */
 
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
 
-/*
- * Two regions, because a guest that initialises its own .data needs the
- * *load* address of that data to be somewhere it can read.
- *
- * ROM is the whole image, mapped read-only at EMU_GUEST_ROM_BASE by
- * every platform. RAM is where the guest actually runs. .text and
- * .rodata have their VMA in RAM -- the emulator serves those addresses
- * out of host flash where it can -- while every load address accumulates
- * in ROM, so the flat binary objcopy produces is byte-for-byte the blob
- * it always was.
- *
- * ROM's length only has to be large enough not to overflow at link time;
- * nothing is placed by it.
- */
 /*
  * Two regions, laid out the way a microcontroller is: code and constants
  * execute from flash, writable data lives in RAM, and `.data`'s
@@ -80,45 +67,19 @@ SECTIONS
          */
         *(.eh_frame .eh_frame.*)
         /*
-         * Inside the section, not after it. The ALIGN(4) below sets
-         * __guest_ro_end correctly but sits *between* output sections,
-         * so it only moves the location counter -- the .rodata section's
-         * own extent is unchanged, and `objcopy -j .text -j .rodata`
-         * emits bytes up to the end of its contents. The two halves then
-         * do not reconstruct the image: hello came out 393 + 4 against a
-         * 400-byte binary, losing the three padding bytes, so .data was
-         * placed three bytes below where the guest reads it.
+         * Inside the section, not after it, so that .rodata's own extent
+         * is padded and .data's load address starts aligned.
          *
-         * It bites only when .rodata happens to end unaligned, which is
-         * why it went unnoticed -- coremark and isatest are aligned by
-         * luck and are byte-exact, hello and cmsistest are not.
+         * An ALIGN *between* output sections looks equivalent and is
+         * not: it moves the location counter while leaving the section's
+         * extent unchanged, so `objcopy -j .text -j .rodata` emits bytes
+         * only up to the end of its contents. That is what made the old
+         * two-piece image lossy -- hello came out 393 + 4 against a
+         * 400-byte binary, and the three missing bytes put .data below
+         * where the guest read it. The guest ran anyway, on zeros.
          */
         . = ALIGN(4);
     } > FLASH
-
-    /*
-     * Where the read-only half ends.
-     *
-     * On the STM32 the guest image is already resident in the part's
-     * flash -- guest_image.S embeds it in the firmware -- and the boot
-     * path then memcpy's the whole thing into guest RAM. Everything up
-     * to here is read-only and does not need that copy: it can be served
-     * straight out of flash as a ROM bus region, leaving RAM for the
-     * half that is actually written. On the biggest architecture tests
-     * that is 140 KiB of the 345 they need.
-     *
-     * The split has to be *exact*. In the flat binary .data follows
-     * immediately with no marker, so a boundary that is off by any
-     * amount either serves initialised data from flash -- where the
-     * guest's first write to it faults -- or leaves the tail of .rodata
-     * uncopied and reading as zero. Hence a linker symbol rather than an
-     * offset computed anywhere else.
-     *
-     * ALIGN(4) before it, because a ROM region's end and the RAM
-     * region's base are the same address and both want to be aligned.
-     */
-    . = ALIGN(4);
-    __guest_ro_end = .;
 
     .data : ALIGN(4)
     {
