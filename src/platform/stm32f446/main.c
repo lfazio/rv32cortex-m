@@ -362,7 +362,6 @@ const char *const emu_board_core_name = "Cortex-M4";
  */
 const uint8_t *emu_board_img      = emu_guest_image;
 uint32_t       emu_board_img_size = 0u;   /* set in main, see below */
-uint32_t       emu_board_img_ro   = 0u;
 
 uint8_t *emu_board_ram      = NULL;   /* both set in main, see below */
 uint32_t emu_board_ram_size = 0u;
@@ -454,7 +453,6 @@ int main(void)
 
     emu_board_img      = emu_guest_image;
     emu_board_img_size = emu_guest_image_size;
-    emu_board_img_ro   = emu_guest_ro_size;
     emu_board_ram      = GUEST_RAM_BASE_PTR;
     emu_board_ram_size = GUEST_RAM_SIZE;
 

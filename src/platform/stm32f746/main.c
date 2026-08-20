@@ -457,7 +457,6 @@ const char *const emu_board_core_name = "Cortex-M7";
  */
 const uint8_t *emu_board_img      = NULL;
 uint32_t       emu_board_img_size = 0u;
-uint32_t       emu_board_img_ro   = 0u;
 
 uint8_t *emu_board_ram      = NULL;
 uint32_t emu_board_ram_size = 0u;
@@ -487,7 +486,6 @@ static void publish_image(void)
 {
     emu_board_img      = g_img;
     emu_board_img_size = g_img_size;
-    emu_board_img_ro   = g_img_ro;
     emu_board_ram      = GUEST_RAM_BASE_PTR;
     emu_board_ram_size = GUEST_RAM_SIZE;
 }

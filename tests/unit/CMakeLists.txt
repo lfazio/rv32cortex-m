@@ -39,7 +39,7 @@ set_tests_properties(unit PROPERTIES LABELS fast)
 # run it are two different questions.
 if(TARGET guest-isatest AND EMU_GUEST_ARCH_RV32)
     add_test(NAME guest-isatest
-             COMMAND emu-host --quiet --load 0x80000000
+             COMMAND emu-host --quiet
                      "${CMAKE_BINARY_DIR}/guest/isatest.bin")
     set_tests_properties(guest-isatest PROPERTIES LABELS fast)
 
@@ -51,7 +51,7 @@ if(TARGET guest-isatest AND EMU_GUEST_ARCH_RV32)
     # backend, translated code is covered by `ctest -L fast`.
     if(EMU_JIT)
         add_test(NAME guest-isatest-jit
-                 COMMAND emu-host --jit --quiet --load 0x80000000
+                 COMMAND emu-host --jit --quiet
                          "${CMAKE_BINARY_DIR}/guest/isatest.bin")
         set_tests_properties(guest-isatest-jit PROPERTIES LABELS fast)
     endif()
@@ -68,7 +68,7 @@ endif()
 # presents as a hang that no exit status can describe.
 if(TARGET guest-ppc-isatest)
     add_test(NAME guest-ppc-isatest
-             COMMAND emu-host --quiet --load 0x80000000 --max-insn 200000
+             COMMAND emu-host --quiet --max-insn 200000
                      "${CMAKE_BINARY_DIR}/tests/guest/ppc/isatest.bin")
     set_tests_properties(guest-ppc-isatest PROPERTIES LABELS fast)
 endif()

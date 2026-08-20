@@ -10,7 +10,7 @@ programs. Getting them confused is the first mistake to avoid.
 
 ```sh
 # the guest
-./build/host/emu-host --gdb --load 0x80000000 build/host/guest/isatest.bin
+./build/host/emu-host --gdb build/host/guest/isatest.bin
 gdb-multiarch build/host/guest/isatest.elf -ex 'target remote :1234'
 
 # the emulator, on hardware

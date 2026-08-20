@@ -43,31 +43,32 @@ bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
 {
     emu_bus_init(bus);
 
-    const uint32_t ro = emu_board_img_ro;
-
     /*
-     * Both regions are added even when `ro` is zero or the whole image,
-     * because emu_bus rejects a zero-length region -- and a guest with no
-     * .data is the common case here, not an edge one.
+     * The image, read-only, as the guest's flash. Its .text and .rodata
+     * are *linked* here and execute in place, so however large they are
+     * they cost the guest no RAM -- which is what lets an architecture
+     * test needing 345 KiB run on a part with 264 KiB of it. The .data
+     * initialiser is in here too, and start.S copies it across.
      */
-    if (ro != 0u &&
-        !emu_bus_add_rom(bus, "guest-ro", EMU_GUEST_RAM_BASE,
-                         emu_board_img, ro)) {
-        return false;
-    }
-    if (!emu_bus_add_ram(bus, "ram", EMU_GUEST_RAM_BASE + ro,
-                         emu_board_ram, emu_board_ram_size)) {
-        return false;
-    }
-
-    /*
-     * The whole image, read-only. A guest linked for execute-in-place
-     * reads its constants here, and every guest reads its .data
-     * initialiser here -- which is why the host runner had to grow this
-     * window too when the guest stopped being handed an initialised RAM.
-     */
-    if (!emu_bus_add_rom(bus, "rom", EMU_GUEST_ROM_BASE,
+    if (!emu_bus_add_rom(bus, "flash", EMU_GUEST_ROM_BASE,
                          emu_board_img, emu_board_img_size)) {
+        return false;
+    }
+
+    /*
+     * Guest RAM, whole and starting at its base.
+     *
+     * This used to be two regions with a *boundary* between them: the
+     * image was linked entirely in RAM, so the platform served the
+     * read-only part from flash up to __guest_ro_end and RAM after it,
+     * and an upload had to arrive in two pieces for the board to learn
+     * where that was. With the run addresses in separate regions there
+     * is nothing to infer -- flash is flash and RAM is RAM -- and the
+     * split, the two-piece upload and the exactness they depended on are
+     * all gone.
+     */
+    if (!emu_bus_add_ram(bus, "ram", EMU_GUEST_RAM_BASE,
+                         emu_board_ram, emu_board_ram_size)) {
         return false;
     }
 
@@ -106,9 +107,6 @@ bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
 bool emu_start_guest(emu_core_t *core, emu_bus_t *bus, emu_uart_t *uart,
                      emu_guest_exit_t *exit_state)
 {
-    if ((emu_board_img_size - emu_board_img_ro) > emu_board_ram_size) {
-        return false;
-    }
     if (!emu_build_address_space(bus, uart)) {
         return false;
     }

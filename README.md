@@ -152,9 +152,9 @@ cmake -B build/stm32f446 ... -DSTM32CUBE_LOCAL_DIR=/path/to/checkouts
 ## Running
 
 ```sh
-./build/host/emu-host --load 0x80000000 build/host/guest/isatest.bin
-./build/host/emu-host --jit --quiet --load 0x80000000 build/host/guest/isatest.bin
-./build/host/emu-host --frontend g4mh --load 0x80000000 guest.bin
+./build/host/emu-host build/host/guest/isatest.bin
+./build/host/emu-host --jit --quiet build/host/guest/isatest.bin
+./build/host/emu-host --frontend g4mh guest.bin
 ```
 
 `emu-host` picks a frontend from `--frontend`, else from the image's ELF

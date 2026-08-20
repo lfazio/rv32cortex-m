@@ -56,15 +56,13 @@ extern const char *const emu_board_core_name;
  * them again. The runner reads them and does not care which -- which is
  * what lets the address space be rebuilt identically in both cases.
  *
- * `ro` is where the read-only half ends. It is a *placement* figure, not
- * a correctness one: the guest initialises its own .data now, so this
- * only tells the board where to stop serving flash and start serving
- * RAM. On a part with enough RAM to map the whole image writable, it may
- * be zero.
+ * There is no read-only *boundary* any more. The guest links .text and
+ * .rodata into flash and .data into RAM, so the platform serves one
+ * region as each and never has to know where one ends -- which is what
+ * removed the two-piece upload.
  */
 extern const uint8_t *emu_board_img;
 extern uint32_t       emu_board_img_size;
-extern uint32_t       emu_board_img_ro;
 
 /*
  * Where the guest's RAM is and how much of it there is.

@@ -31,10 +31,28 @@ ENTRY(_start)
  * ROM's length only has to be large enough not to overflow at link time;
  * nothing is placed by it.
  */
+/*
+ * Two regions, laid out the way a microcontroller is: code and constants
+ * execute from flash, writable data lives in RAM, and `.data`'s
+ * initialiser sits in flash to be copied at start-up.
+ *
+ * FLASH is the image, mapped read-only by every platform at
+ * EMU_GUEST_ROM_BASE and served straight out of the host's own flash
+ * where there is one -- so it costs the guest no RAM at all, however
+ * large it is. That is what lets an architecture test needing 345 KiB
+ * run on a part with 264 KiB of guest RAM.
+ *
+ * **The emulator does not need to know where the boundary is.** It used
+ * to: the image was split at __guest_ro_end and the two halves uploaded
+ * separately, which is how the board learned where to stop serving flash
+ * and start serving RAM. With the run addresses in separate regions
+ * there is nothing to infer -- flash is flash and RAM is RAM -- and an
+ * upload is one blob.
+ */
 MEMORY
 {
-    ROM (rx)  : ORIGIN = 0x20000000, LENGTH = 16M
-    RAM (rwx) : ORIGIN = 0x80000000, LENGTH = @EMU_GUEST_RAM_KIB@K
+    FLASH (rx)  : ORIGIN = 0x20000000, LENGTH = 16M
+    RAM   (rwx) : ORIGIN = 0x80000000, LENGTH = @EMU_GUEST_RAM_KIB@K
 }
 
 SECTIONS
@@ -43,7 +61,7 @@ SECTIONS
     {
         KEEP(*(.text.init))     /* _start must be first: entry is at +0 */
         *(.text .text.*)
-    } > RAM AT> ROM
+    } > FLASH
 
     .rodata : ALIGN(4)
     {
@@ -76,7 +94,7 @@ SECTIONS
          * luck and are byte-exact, hello and cmsistest are not.
          */
         . = ALIGN(4);
-    } > RAM AT> ROM
+    } > FLASH
 
     /*
      * Where the read-only half ends.
@@ -115,7 +133,7 @@ SECTIONS
         *(.sdata .sdata.*)
         . = ALIGN(4);
         __data_end = .;
-    } > RAM AT> ROM
+    } > RAM AT> FLASH
 
     /*
      * Where .data's initialiser lives, and where it has to end up.

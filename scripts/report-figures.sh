@@ -137,7 +137,7 @@ jit_line() {
 }
 
 for g in isatest bench mmiobench; do
-    jit_line "$g" "$BUILD/guest/$g.bin" --load 0x80000000
+    jit_line "$g" "$BUILD/guest/$g.bin"
 done
 
 # ------------------------------------------------------------------
@@ -159,14 +159,14 @@ time_guest() {
 
 for mode in "" "--jit"; do
     label=${mode:-interp}
-    time_guest "bench $label" "$BUILD/guest/bench.bin" $mode --load 0x80000000
+    time_guest "bench $label" "$BUILD/guest/bench.bin" $mode
 done
 
 if [ "$QUICK" = 0 ] && [ -f "$BUILD/guest/coremark.bin" ]; then
     for mode in "" "--jit"; do
         label=${mode:-interp}
         time_guest "coremark $label" "$BUILD/guest/coremark.bin" $mode \
-                   --load 0x80000000
+                  
     done
 else
     say "  coremark               skipped (--quick)"
@@ -201,7 +201,7 @@ bench_line() {
     _name=$1; _img=$2; _pat=$3; shift 3
     [ -f "$_img" ] || { say "  $(printf '%-22s' "$_name") (not built)"; return; }
     _t0=$(date +%s%N)
-    _out=$("$HOST" "$@" --load 0x80000000 "$_img" 2>/dev/null |
+    _out=$("$HOST" "$@" "$_img" 2>/dev/null |
            grep -E "$_pat" | tr -s ' ' | tail -1 || true)
     _t1=$(date +%s%N)
     say "  $(printf '%-22s' "$_name") ${_out:-<no result line>}"
@@ -234,7 +234,7 @@ G4="$ROOT/tests/guest/g4mh/guest.bin"
 if [ -f "$G4" ]; then
     for mode in "" "--jit"; do
         label=${mode:-interp}
-        out=$("$HOST" --frontend g4mh $mode --load 0x80000000 "$G4" \
+        out=$("$HOST" --frontend g4mh $mode "$G4" \
               2>/dev/null | tr -cd '[:print:]\n' | tail -3 | tr '\n' ' ')
         say "  $(printf '%-8s' "$label") $out"
     done

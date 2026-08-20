@@ -90,7 +90,7 @@ for suite in $suites; do
 
         total=$((total + 1))
         # The image is linked to run at 0x80000000 with the entry at +0.
-        result="$("$runner" --quiet --max-insn 2000000 --load 0x80000000 "$bin" 2>&1)"
+        result="$("$runner" --quiet --max-insn 2000000 "$bin" 2>&1)"
         rc=$?
 
         if [[ $rc -eq 0 ]]; then

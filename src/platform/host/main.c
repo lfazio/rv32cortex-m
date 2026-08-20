@@ -392,7 +392,7 @@ int main(int argc, char **argv)
 {
     const char *path = NULL;
     const char *frontend_name = NULL;
-    uint32_t load_addr = EMU_GUEST_RAM_BASE;
+    uint32_t load_addr = EMU_GUEST_ROM_BASE;
     uint32_t entry = 0;
     bool have_entry = false;
     uint32_t ram_size = DEFAULT_RAM_SIZE;
@@ -561,7 +561,6 @@ int main(int argc, char **argv)
     g_periph = calloc(PERIPH_SIM_SIZE, 1u);
     if (g_ram == NULL || g_periph == NULL) {
         fprintf(stderr, "emu: cannot allocate guest memory\n");
-        free(image);
         return 1;
     }
 
@@ -573,7 +572,6 @@ int main(int argc, char **argv)
     if (ncores > EMU_MAX_CORES) {
         fprintf(stderr, "emu: %u cores exceeds EMU_MAX_CORES (%u)\n",
                 ncores, (unsigned)EMU_MAX_CORES);
-        free(image);
         return 1;
     }
 
@@ -605,7 +603,6 @@ int main(int argc, char **argv)
             !emu_bus_add_mmio(&g_bus[i], "uart0", EMU_GUEST_UART_BASE,
                               EMU_UART_SIZE, &emu_uart_ops, &uart)) {
             fprintf(stderr, "emu: failed to build the guest memory map\n");
-            free(image);
             return 1;
         }
     }
@@ -637,7 +634,6 @@ int main(int argc, char **argv)
                 "the limit, rebuild with -DEMU_MAX_REGIONS=%u\n",
                 emu_bus_region_count(&g_bus[0]), (unsigned)EMU_MAX_REGIONS,
                 (unsigned)EMU_MAX_REGIONS + 8u);
-        free(image);
         return 1;
     }
 
@@ -657,7 +653,6 @@ int main(int argc, char **argv)
     rv_backend = want_jit ? &rv_backend_jit : &rv_backend_interp;
     if (rv_backend->init != NULL && !rv_backend->init(g_core.cpu)) {
         fprintf(stderr, "emu: backend init failed\n");
-        free(image);
         return 1;
     }
 #endif
@@ -681,7 +676,6 @@ int main(int argc, char **argv)
 #endif
         if (g4mh_backend->init != NULL && !g4mh_backend->init(g_core.cpu)) {
             fprintf(stderr, "emu: backend init failed\n");
-            free(image);
             return 1;
         }
     }
@@ -712,26 +706,44 @@ int main(int argc, char **argv)
                                        &elf_entry, NULL);
         if (err != NULL) {
             fprintf(stderr, "emu: %s: %s\n", path, err);
-            free(image);
             return 1;
         }
         if (!have_entry) {
             entry = elf_entry;
             have_entry = true;
         }
-    } else {
+    } else if (load_addr != EMU_GUEST_ROM_BASE) {
+        /*
+         * A flat binary somewhere other than flash: written into the bus
+         * as before. At the default address there is nothing to write --
+         * see below.
+         */
         if (!emu_bus_load(g_core.bus, load_addr, image, (uint32_t)len)) {
             fprintf(stderr,
                     "emu: %s: %zu bytes do not fit at 0x%08x\n",
                     path, len, load_addr);
-            free(image);
             return 1;
         }
         if (!have_entry) {
             entry = load_addr;
         }
+    } else if (!have_entry) {
+        /*
+         * The common case, and nothing to do: the flash window *is* this
+         * buffer, added read-only when the bus was built, so the image is
+         * already where the guest will fetch it from.
+         */
+        entry = load_addr;
     }
-    free(image);
+
+    /*
+     * `image` is deliberately not freed: the flash region points into it
+     * for the lifetime of the run, and an ELF's segments were copied out
+     * of it but the window still refers to it. Freeing it here left the
+     * guest executing out of a freed buffer -- which read correctly,
+     * because nothing had reused the allocation yet, and is exactly the
+     * kind of bug that surfaces later under a different allocator.
+     */
 
     emu_system_reset(&g_sys, entry);
     /*
@@ -759,7 +771,6 @@ int main(int argc, char **argv)
 
         if (gt == NULL) {
             fprintf(stderr, "emu: no gdb target for frontend %s\n", ops->name);
-            free(image);
             return 1;
         }
         if (!host_gdb_start(&g_core, gt, gdb_port)) {

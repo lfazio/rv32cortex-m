@@ -6,9 +6,9 @@
  * simulator and the STM32 firmware.
  *
  *   0x1000_0000  UART0          virtual   NS16550 console
- *   0x2000_0000  ROM            guest image, execute-only from host flash
+ *   0x2000_0000  FLASH          guest .text/.rodata, run from host flash
  *   0x4000_0000  PERIPH         passthru  1:1 onto the ARM peripheral space
- *   0x8000_0000  RAM            guest RAM carved out of ARM SRAM
+ *   0x8000_0000  RAM            guest .data/.bss/stack, from ARM SRAM
  *
  * Each frontend adds the interrupt controller and timer its architecture
  * defines, in its own memmap header: rv32/rv_memmap.h places the RISC-V
@@ -33,7 +33,21 @@
 #define EMU_GUEST_RAM_BASE      0x80000000u
 
 /* Where a guest starts executing unless the platform says otherwise. */
-#define EMU_GUEST_RESET_PC      EMU_GUEST_RAM_BASE
+/*
+ * Reset into flash, not RAM.
+ *
+ * A guest's .text and .rodata are linked at EMU_GUEST_ROM_BASE and served
+ * read-only from wherever the image already lives -- host flash on the
+ * firmware -- so they cost the guest no RAM. Only .data, .bss and the
+ * stack are in RAM, and start.S copies .data across at start-up from a
+ * load address in flash.
+ *
+ * This used to reset into RAM with the whole image linked there, which
+ * meant the platform had to know where the read-only part ended in order
+ * to serve that much from flash and the rest from RAM. Nothing needs that
+ * boundary now: flash is flash and RAM is RAM.
+ */
+#define EMU_GUEST_RESET_PC      EMU_GUEST_ROM_BASE
 
 /*
  * An interrupt controller source number is the host's interrupt number: on

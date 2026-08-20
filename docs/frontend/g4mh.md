@@ -9,8 +9,8 @@ in a platform `#ifdef`.
 
 ```sh
 cmake -B build/g4 -DEMU_PLATFORM=host -DEMU_GUEST_ARCH_G4MH=ON
-./build/g4/emu-host --frontend g4mh --load 0x80000000 tests/guest/g4mh/guest.bin
-./build/g4/emu-host --frontend g4mh --jit --load 0x80000000 tests/guest/g4mh/guest.bin
+./build/g4/emu-host --frontend g4mh tests/guest/g4mh/guest.bin
+./build/g4/emu-host --frontend g4mh --jit tests/guest/g4mh/guest.bin
 ```
 
 `tests/guest/g4mh/` holds a CC-RH-built guest and its listing, so the one
