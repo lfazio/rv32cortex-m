@@ -92,10 +92,6 @@ const char *emu_net_addr_str(void);
  * option), so a transfer that overruns the flash arena fails and the
  * caller erases and retries -- one wasted upload per erase cycle.
  */
-typedef enum {
-    EMU_NET_IMAGE_ROM,      /* .text and .rodata, into the flash arena */
-    EMU_NET_IMAGE_RAM       /* .data, straight into guest RAM          */
-} emu_net_image_t;
 
 /*
  * Implemented by the platform, called by the TFTP server.
@@ -106,10 +102,10 @@ typedef enum {
  * board exactly as it was, because the usual cause is a harness dying
  * mid-transfer and the next thing it does is retry.
  */
-bool emu_net_image_begin(emu_net_image_t which);
-bool emu_net_image_data(emu_net_image_t which, const void *data,
+bool emu_net_image_begin(void);
+bool emu_net_image_data(const void *data,
                         uint32_t len, uint32_t off);
-void emu_net_image_end(emu_net_image_t which, uint32_t len, bool ok);
+void emu_net_image_end(uint32_t len, bool ok);
 
 /* ------------------------------------------------------------------ */
 /* Internal to src/net/                                                */

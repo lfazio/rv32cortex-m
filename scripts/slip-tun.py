@@ -224,7 +224,7 @@ def main():
     print("%s <-> %s at %d 8N1" % (args.iface, args.device, args.baud))
     print("  ping %s" % args.board)
     print("  telnet %s" % args.board)
-    print("  tftp put <image> rom|ram")
+    print("  tftp put <image>")
 
     rx = bytearray()
     escaped = False

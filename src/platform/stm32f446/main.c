@@ -140,22 +140,20 @@ void emu_console_putc(uint8_t c)
  * the gdb stub. Implementing the arena here is a self-contained addition
  * and the reason these are functions rather than an #if.
  */
-bool emu_net_image_begin(emu_net_image_t which)
+bool emu_net_image_begin(void)
 {
-    (void)which;
     return false;
 }
 
-bool emu_net_image_data(emu_net_image_t which, const void *data,
-                        uint32_t len, uint32_t off)
+bool emu_net_image_data(const void *data, uint32_t len, uint32_t off)
 {
-    (void)which; (void)data; (void)len; (void)off;
+    (void)data; (void)len; (void)off;
     return false;
 }
 
-void emu_net_image_end(emu_net_image_t which, uint32_t len, bool ok)
+void emu_net_image_end(uint32_t len, bool ok)
 {
-    (void)which; (void)len; (void)ok;
+    (void)len; (void)ok;
 }
 #endif
 

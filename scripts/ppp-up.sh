@@ -73,7 +73,7 @@ fi
 echo "ppp0 <-> $DEV at $BAUD 8N1"
 echo "  ping $BOARD_IP"
 echo "  telnet $BOARD_IP"
-echo "  tftp put <image> rom|ram"
+echo "  tftp put <image>"
 echo
 
 #

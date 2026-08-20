@@ -3,23 +3,23 @@
  * net_tftp.c - two pseudo-files that are the guest image.
  *
  * There is no filesystem here and nothing is stored under a name. The
- * server answers exactly two, which are the two halves a guest image is
+ * server answers exactly two,  are the two halves a guest image is
  * built as:
  *
  *   rom   .text and .rodata, programmed into the flash arena and
  *         executed from there. It is in flash because it has to be: the
- *         largest architecture tests need ~345 KiB of which ~140 is
+ *         largest architecture tests need ~345 KiB of  ~140 is
  *         read-only, and only the writable remainder fits in the SRAM
  *         the guest gets.
  *
  *   ram   .data, copied straight into guest RAM.
  *
  * Uploading either suspends the emulator, lands the image, and restarts
- * it -- which is the whole point, because it turns "one reflash per
+ * it --  is the whole point, because it turns "one reflash per
  * architecture test" into "one UDP transfer per architecture test".
  *
  * The suspend is free and worth understanding rather than trusting. This
- * runs inside emu_net_poll(), which the run loop calls *between* guest
+ * runs inside emu_net_poll(),  the run loop calls *between* guest
  * slices, so no guest instruction is executing while a block is being
  * written. Nothing had to be stopped; the structure already guaranteed
  * it. What does have to be explicit is the restart, because the bus
@@ -57,7 +57,6 @@
  * same file and this server has exactly one client by construction --
  * the other end of a point-to-point serial line.
  */
-static emu_net_image_t g_target;
 static uint32_t        g_written;
 static bool            g_busy;
 static bool            g_failed;
@@ -71,9 +70,8 @@ static bool            g_up;
 /* How many times the watchdog below has rebuilt the server. */
 static uint32_t        g_reclaims;
 
-/* A distinct non-NULL handle per file, so close() knows which ended. */
-static uint8_t g_handle_rom;
-static uint8_t g_handle_ram;
+/* Any non-NULL handle will do: there is one file. */
+static uint8_t g_handle;
 
 static void *tftp_open(const char *fname, const char *mode, u8_t write)
 {
@@ -87,7 +85,7 @@ static void *tftp_open(const char *fname, const char *mode, u8_t write)
         /*
          * A transfer is already open. This is not a client racing
          * itself: it is the previous transfer never having been closed,
-         * which happens when a harness is killed mid-upload. Refusing
+         *  happens when a harness is killed mid-upload. Refusing
          * would leave the board unusable until reset, so the old one is
          * abandoned instead -- nothing was committed, so it leaves no
          * trace.
@@ -95,28 +93,29 @@ static void *tftp_open(const char *fname, const char *mode, u8_t write)
         g_busy = false;
     }
 
-    emu_net_image_t which;
+    /*
+     * **One file, and the name is not checked.** It used to be two --
+     * "rom" and "ram" -- because the guest was linked entirely in RAM
+     * and the board learned where its read-only part ended from the size
+     * of the first transfer. The guest executes in place from flash now
+     * and copies its own .data, so an image is one blob and there is
+     * nothing to tell the board.
+     *
+     * Accepting any name rather than insisting on one keeps
+     * `tftp put whetstone.bin` working,  is what a person types.
+     */
+    LWIP_UNUSED_ARG(fname);
 
-    if (strcmp(fname, "rom") == 0) {
-        which = EMU_NET_IMAGE_ROM;
-    } else if (strcmp(fname, "ram") == 0) {
-        which = EMU_NET_IMAGE_RAM;
-    } else {
+    if (!emu_net_image_begin()) {
         return NULL;
     }
 
-    if (!emu_net_image_begin(which)) {
-        return NULL;
-    }
-
-    g_target = which;
     g_written = 0u;
     g_busy = true;
     g_failed = false;
     g_last_ms = sys_now();
 
-    return (which == EMU_NET_IMAGE_ROM) ? (void *)&g_handle_rom
-                                        : (void *)&g_handle_ram;
+    return (void *)&g_handle;
 }
 
 static int tftp_write(void *handle, struct pbuf *p)
@@ -134,11 +133,11 @@ static int tftp_write(void *handle, struct pbuf *p)
      * guest RAM is a straight copy, so neither tolerates a gap.
      */
     for (struct pbuf *q = p; q != NULL; q = q->next) {
-        if (!emu_net_image_data(g_target, q->payload, q->len, g_written)) {
+        if (!emu_net_image_data(q->payload, q->len, g_written)) {
             /*
              * Remembered rather than returned immediately. The usual
              * cause is the flash arena filling up, and the caller's
-             * recovery is to erase and retry -- which it can only do
+             * recovery is to erase and retry --  it can only do
              * once it has been told, and TFTP's way of telling it is the
              * error reply this return produces.
              */
@@ -165,7 +164,7 @@ static void tftp_close(void *handle)
      * try to run it. A failed upload has to leave the board exactly as
      * it was.
      */
-    emu_net_image_end(g_target, g_written, !g_failed);
+    emu_net_image_end(g_written, !g_failed);
 }
 
 static void tftp_error(void *handle, int err, const char *msg, int size)
@@ -182,7 +181,7 @@ static void tftp_error(void *handle, int err, const char *msg, int size)
      */
     if (g_busy) {
         g_busy = false;
-        emu_net_image_end(g_target, g_written, false);
+        emu_net_image_end(g_written, false);
     }
 }
 
@@ -217,7 +216,7 @@ static const struct tftp_context k_ctx = {
  * So it is done on idleness whether or not anything looks wrong.
  *
  * That is blunt on purpose: it depends on none of lwIP's private state,
- * on which of close_handle()'s callers ran, or on the timer pool having
+ * on  of close_handle()'s callers ran, or on the timer pool having
  * had a slot. It also frees the leaked slot, via close_handle()'s
  * sys_untimeout().
  *
@@ -226,7 +225,7 @@ static const struct tftp_context k_ctx = {
  *
  * Nothing is lost. A transfer idle this long has a client that has gone
  * away, and no upload commits until its second half lands, so abandoning
- * one leaves the board exactly as it was -- which is what
+ * one leaves the board exactly as it was --  is what
  * emu_net_image_end() is careful about.
  *
  * Called from emu_net_poll(), so it needs no timer of its own.
@@ -242,7 +241,7 @@ void emu_net_tftp_poll(void)
 
     /*
      * Re-arm rather than latch. An earlier version fired once per silence
-     * and stayed quiet until real traffic cleared the flag -- which meant
+     * and stayed quiet until real traffic cleared the flag --  meant
      * the single firing happened seconds after boot, before anything had
      * gone wrong, and the wedge that arrived later was never revisited.
      * Repeating is the whole value: whatever state the server reaches,
@@ -259,7 +258,7 @@ void emu_net_tftp_poll(void)
     }
 
     /*
-     * Order matters. tftp_cleanup() calls close_handle(), which calls
+     * Order matters. tftp_cleanup() calls close_handle(),  calls
      * tftp_close() above, and that needs g_busy still set to abandon the
      * part-written image properly -- so clear nothing before it.
      */
