@@ -405,6 +405,35 @@ session, and every one of them recurred:
   quoting a measurement, check `CMakeCache.txt` for what actually built it --
   `EMU_JIT_CODE_BYTES`, `RV_GUEST_MARCH` and `COREMARK_ITERATIONS` are all
   cache variables and all change the result.
+
+  **The same trap without CMake: a stale *binary* at the path a script
+  defaults to.** `scripts/run-riscv-tests.sh` falls back to
+  `build/host/emu-host`, which no other workflow rebuilds, so a whole
+  session's "77/77" was measured against a three-day-old binary while the
+  tree it was supposedly testing scored 73/77. Nothing was wrong with the
+  script and nothing warned. **`ls -la` the runner before believing a
+  suite result**, or rebuild it in the same command; and when a
+  before/after comparison uses two build directories, check that the
+  "before" one is the commit you think it is -- a `git worktree` at a
+  named commit is the only version of that comparison that cannot lie.
+- **A test whose pass condition is "nothing failed" also passes when
+  nothing ran.** The PowerPC guest's exit status is its count of failed
+  checks, so zero is both outcomes. When the execute-in-place change moved
+  the default load address out from under it, the guest stopped after 212
+  instructions, printed none of its output, and the test passed for three
+  commits. It requires `PPC-ISATEST-END` now -- the line the guest prints
+  when it reaches the end -- which makes *running* a precondition of
+  passing, and reverting the fix turns a silent pass into "Required
+  regular expression not found".
+
+  Two rules. **Assert something only a completed run can produce**, not
+  the absence of a failure: `PASS_REGULAR_EXPRESSION` on a terminator
+  costs one line. And **changing a default changes every caller that
+  relied on it** -- the flag removal was correct for `tests/guest`, which
+  really did become execute-in-place, and wrong for the two suites whose
+  images are still linked to run from RAM *and write to their own image*.
+  Ask which callers were depending on the old value, not whether the new
+  one is better.
 - **`RV_JIT_LOOP_CAP` is an interrupt-latency knob, and CoreMark cannot
   see it** -- its loops end on unchainable branches, so the cap is not
   what exits them. `mmiobench` sees it clearly. Each doubling returns
@@ -504,6 +533,28 @@ session, and every one of them recurred:
   check only when `pc & 2`, because every PMP bound is 4-byte aligned.
   Measured on the interpreter (`-DEMU_JIT=OFF`), which is where a fetch
   cost lands -- the JIT pays it once per *translation*.
+
+  **And folding them created derived state, which `rv_hart_reset` then
+  cleared the inputs of without recomputing.** The invariant is that
+  only `rv_hart_refresh_fetch_guard` writes the word; reset sets
+  `pmp_active`, `trig_active` and `vm_active` to false *by hand*, so the
+  guard kept the previous guest's value. Harmless in that direction --
+  the interpreter takes the slow path, finds every flag false and
+  permits -- and fatal to the JIT, because `rv_jit_bind` points the
+  framework's `blocked` at exactly this word. Every guest uploaded after
+  one that armed PMP therefore ran **entirely interpreted, for ever**:
+  `hello` after `isatest` moved `interp` by 618, its whole retired
+  count, with `blks/xlat` and `blk entr` unmoved. Fixed, it is 22 blocks
+  and 30. **When a value summarises others, the code that clears the
+  others by hand is where it goes stale** -- same shape as `mstatus.SD`
+  two entries down, which is computed on read for this reason.
+- **A no-op A/B reports zero failures, which reads exactly like a fix
+  that was not needed.** Reverting the guard recompute above appeared to
+  change nothing; the replacement string assumed the call sat before the
+  closing brace and matched nothing at all. An A/B script must **assert
+  its own match count** before rebuilding. This file already says a
+  perfect null result is its loudest signal; the corollary is that the
+  first thing to suspect on seeing one is the instrument.
 - **Disable every site, and confirm the failure names the mechanism.**
   The half-revert case from the weak-test entry above, concretely: the
   translator checks fetch permission at two sites, one per halfword, and
@@ -1164,6 +1215,17 @@ session, and every one of them recurred:
   `ALIGN` is now *inside* the section, and the build really does compare
   `cat ro rw` against the binary. **A comment asserting an invariant is
   where to look first when something downstream is three bytes wrong.**
+
+  **The split itself is gone now, and that is the better fix.** It
+  existed because the guest was linked entirely in RAM, so the firmware
+  had to be told how much of the image was read-only in order to serve
+  that much from flash. Linking `.text`/`.rodata` at
+  `EMU_GUEST_ROM_BASE` and letting the guest's own `start.S` copy
+  `.data` from `__data_lma` removes the question: flash is flash, RAM is
+  RAM, an upload is one file and the exactness invariant has nothing
+  left to be wrong about. **A fragile invariant is a prompt to ask why
+  anything depends on it** -- this one had already survived being
+  documented, being found false, and being given a build-time check.
 - **`imm5 == 0` does not mean "no shift", and only `LSL` reads it that
   way.** ARM spends the otherwise-useless encoding on the amount `imm5`
   cannot hold: `LSR #0` **is** `LSR #32`, `ASR #0` is `ASR #32`, and

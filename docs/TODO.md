@@ -7,9 +7,19 @@ measured at.
 
 ## Roadmap
 
-- [ ] Unify the main runner for all platforms, so the F746 and N6 can share `main.c` with the host. This is a big task, but it would be a good demonstration of the emulator's capabilities.
+- [x] Unify the main runner for all platforms. `src/platform/common/emu_main.c`
+      is the whole firmware runner and both boards share it; what is left per
+      board is `platform.c` (~190 lines): guest RAM extents, the peripheral
+      policy table, the NVIC bridge. The N6 needs one of those and nothing else.
 - [ ] Add usage of LWIP's PPP stack to the host runner, so the host can run the same code as the F746.
-- [ ] Unify host main and the stm32F{4,7} main, so the host can run the same code as the F746. This is a big task, but it would be a good demonstration of the emulator's capabilities.
+- [~] Unify host main and the firmware main. The *execution* half is done --
+      `emu_run_system` in `src/platform/common/emu_run.c` is one loop for both,
+      parameterised by four hooks. The halves that remain apart are honestly
+      different and should stay so unless something forces the issue: the host
+      parses argv, reads files, sniffs ELF headers and returns an exit status;
+      the board takes an image over TFTP or gdb and parks. Merging those would
+      mean an #if per platform inside one main(), which is the arrangement all
+      of this work was undoing.
 - [ ] Add FreeRTOS support to the host emualtor, lwip in one task emulator in another one (it will allow to instanciate later a tinyusb network device over USB). https://github.com/STMicroelectronics/x-cube-freertos/tree/main (https://github.com/hathach/tinyusb)
 - [ ] **Linux** - Prepare a Linux guest rv32g with mmu and run it on the emulator (x86_64 only). This is a big task, but it would be a good demonstration of the emulator's capabilities. Implement minimal virtio devices to get a shell and run some benchmarks. This is a big task, but it would be a good demonstration of the emulator's capabilities.
 - [ ] Run doom in Linux so it can be used as a benchmark for the emulator. This is a big task, but it would be a good demonstration of the emulator's capabilities implement a sdl backend for the emulator to run doom in Linux. This is a big task, but it would be a good demonstration of the emulator's capabilities.
