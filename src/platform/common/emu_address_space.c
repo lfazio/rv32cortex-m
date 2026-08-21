@@ -90,12 +90,16 @@ bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
  * RAM and state, reset and boot.
  *
  * Split out because an upload has to repeat all of it. The bus is rebuilt
- * rather than patched, because the read-only region's base *and* length
- * both move when a different image arrives and emu_bus cannot resize a
- * region in place -- and that is why the frontend's devices go back on
- * every time: emu_bus_init clears the table, so a rebuild that skipped
- * them would take the interrupt controller away from a guest that had it
- * a moment earlier.
+ * rather than patched, because the image region's base *and* length both
+ * move when a different image arrives and emu_bus cannot resize a region
+ * in place -- and that is why the frontend's devices go back on every
+ * time: emu_bus_init clears the table, so a rebuild that skipped them
+ * would take the interrupt controller away from a guest that had it a
+ * moment earlier.
+ *
+ * The cores are *not* re-opened. They already exist, hold state the
+ * frontend allocated, and are what the gdb stub is pointed at; a reload
+ * replaces the guest, not the machine.
  *
  * The guest RAM is zeroed rather than left: without that, one test's
  * leftovers become the next test's initial state and a suite's results
@@ -104,21 +108,24 @@ bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
  * reports whatever the last one returned, so every test after the first
  * passing one looks like it passed.
  */
-bool emu_start_guest(emu_core_t *core, emu_bus_t *bus, emu_uart_t *uart,
+bool emu_start_guest(emu_system_t *sys, emu_bus_t *buses, emu_uart_t *uart,
                      emu_guest_exit_t *exit_state)
 {
-    if (!emu_build_address_space(bus, uart)) {
-        return false;
-    }
+    const emu_cpu_ops_t *const ops = sys->ops;
 
-    if (core->cpu != NULL) {
-        const emu_cpu_ops_t *const ops = core->ops;
+    for (unsigned i = 0; i < sys->ncores; i++) {
+        emu_bus_t *const bus = &buses[i];
+
+        if (!emu_build_address_space(bus, uart)) {
+            return false;
+        }
 
         /*
          * Hand the image to the frontend before its devices go on, for
          * one that maps it at an architectural address of its own --
          * G4MH's code flash at zero. RV32 leaves the hook NULL, because
-         * the region added above is already where its guests link.
+         * the region emu_build_address_space added is already where its
+         * guests link.
          */
         if (ops->set_image != NULL) {
             ops->set_image(emu_board_img, emu_board_img_size);
@@ -127,7 +134,7 @@ bool emu_start_guest(emu_core_t *core, emu_bus_t *bus, emu_uart_t *uart,
         if ((ops->add_shared_devices != NULL &&
              !ops->add_shared_devices(bus)) ||
             (ops->add_core_devices != NULL &&
-             !ops->add_core_devices(core->cpu, bus, 0u))) {
+             !ops->add_core_devices(sys->core[i].cpu, bus, i))) {
             return false;
         }
     }
@@ -139,7 +146,7 @@ bool emu_start_guest(emu_core_t *core, emu_bus_t *bus, emu_uart_t *uart,
         exit_state->exited = false;
     }
 
-    emu_core_reset(core, EMU_GUEST_RESET_PC);
-    emu_core_boot(core, EMU_GUEST_RAM_BASE, emu_board_ram_size);
+    emu_system_reset(sys, EMU_GUEST_RESET_PC);
+    emu_system_boot(sys, EMU_GUEST_RAM_BASE, emu_board_ram_size);
     return true;
 }

@@ -85,13 +85,25 @@ extern const uint32_t emu_guest_image_size;
 /* State                                                               */
 /* ------------------------------------------------------------------ */
 
-static emu_bus_t  g_bus;
-static emu_core_t g_core;
+/*
+ * One core, and the array is sized for it.
+ *
+ * The runner drives an emu_system_t because the host schedules several
+ * and the loop is shared, but a board is a system of one on purpose: a
+ * second core needs a second bus and, for G4MH, 64 KiB of its own local
+ * RAM, and this part has 320 KiB in total. emu_system_open is therefore
+ * told 1 rather than asked -- passing 0 would take the frontend's answer,
+ * which for -DG4MH_PE_COUNT=3 is three cores that do not fit.
+ */
+#define EMU_BOARD_CORES 1u
+
+static emu_bus_t  g_buses[EMU_BOARD_CORES];
+static emu_system_t g_sys;
 static emu_uart_t g_uart;
 static emu_guest_exit_t g_exit;
 
 static emu_syscall_ctx_t g_sc_ctx = {
-    .bus = &g_bus, .core = &g_core, .exit = &g_exit,
+    .bus = &g_buses[0], .core = &g_sys.core[0], .exit = &g_exit,
 };
 
 /*
@@ -215,7 +227,7 @@ void emu_jit_diff_report(uint32_t pc, uint32_t off, uint32_t want,
  */
 void emu_raise_irq(uint32_t source, bool level)
 {
-    emu_core_set_irq(&g_core, source, level);
+    emu_core_set_irq(&g_sys.core[0], source, level);
 }
 
 /* ------------------------------------------------------------------ */
@@ -235,6 +247,26 @@ uint64_t emu_board_time_now(void)
     return (uint64_t)(board_cycles() - g_start_cycles) / g_cycles_per_tick;
 }
 
+/*
+ * The run loop's clock hook. A board reads a *real* cycle counter, not
+ * the retired count: its guest drives real peripherals, so a timer
+ * interrupt has to bear some relation to the wall clock. The host runner
+ * answers the opposite way, and both are right for what they are.
+ */
+static void advance_guest_time(uint64_t retired_total, uint32_t did)
+{
+    (void)retired_total;
+    (void)did;
+    g_sys.ops->set_time(g_sys.core[0].cpu, emu_board_time_now());
+}
+
+#if EMU_NET
+static void run_poll(void)
+{
+    emu_net_poll();
+}
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Starting a guest                                                    */
 /* ------------------------------------------------------------------ */
@@ -243,7 +275,7 @@ static bool start_guest(void)
 {
     emu_board_img      = g_img;
     emu_board_img_size = g_img_size;
-    return emu_start_guest(&g_core, &g_bus, &g_uart, &g_exit);
+    return emu_start_guest(&g_sys, g_buses, &g_uart, &g_exit);
 }
 
 #if EMU_NET
@@ -581,21 +613,23 @@ int main(void)
      * onto, and the devices, reset and boot come later through
      * start_guest(), which needs the core to exist.
      */
-    if (!emu_build_address_space(&g_bus, &g_uart)) {
+    if (!emu_build_address_space(&g_buses[0], &g_uart)) {
         console_printf("fatal: could not build the guest address space\n");
         fatal_halt();
     }
 
-    if (!emu_core_open(&g_core, ops, &g_bus, 0u)) {
-        console_printf("fatal: frontend has no core 0\n");
+    if (!emu_system_open(&g_sys, ops, g_buses, EMU_BOARD_CORES)) {
+        console_printf("fatal: could not bring up the guest core\n");
         fatal_halt();
     }
 
-    ops->set_unmask_hook(g_core.cpu, emu_board_irq_unmask, NULL);
+    emu_cpu_t *const cpu = g_sys.core[0].cpu;
+
+    ops->set_unmask_hook(cpu, emu_board_irq_unmask, NULL);
     emu_board_irqs_init();
     emu_uart_init(&g_uart, emu_console_uart_tx, guest_uart_rx, NULL);
-    ops->set_syscall(g_core.cpu, emu_guest_syscall, &g_sc_ctx);
-    ops->set_cache(g_core.cpu, &emu_arm_cache_ops);
+    ops->set_syscall(cpu, emu_guest_syscall, &g_sc_ctx);
+    ops->set_cache(cpu, &emu_arm_cache_ops);
 
 #if EMU_NET
     /*
@@ -619,7 +653,7 @@ int main(void)
 
         if (gt == NULL) {
             console_printf("gdb    frontend has no target description\n");
-        } else if (!emu_net_gdb_init(&g_core, gt, &k_gdb_flash)) {
+        } else if (!emu_net_gdb_init(&g_sys.core[0], gt, &k_gdb_flash)) {
             console_printf("gdb    stub failed to start\n");
         } else {
             console_printf("gdb    target remote %s:1234\n",
@@ -649,7 +683,7 @@ restart:
     {
         emu_cpu_status_t st;
 
-        emu_core_status(&g_core, &st);
+        emu_core_status(&g_sys.core[0], &st);
         console_printf("backend %s\n\n", st.backend);
     }
 
@@ -663,16 +697,18 @@ restart:
 
     {
         const emu_run_env_t env = {
-            .slice       = EMU_RUN_SLICE,
-            .max_insn    = EMU_MAX_INSN,
+            .slice        = EMU_RUN_SLICE,
+            .max_insn     = EMU_MAX_INSN,
+            .advance_time = advance_guest_time,
 #if EMU_NET
-            .take_upload = take_uploaded_image,
-#else
-            .take_upload = NULL,
+            .poll         = run_poll,
+            .gdb_attached = emu_net_gdb_attached,
+            .gdb_run      = emu_net_gdb_run,
+            .take_upload  = take_uploaded_image,
 #endif
         };
         const emu_run_outcome_t out =
-            emu_run_guest(&g_core, ops, &env, &retired_total);
+            emu_run_system(&g_sys, &env, &retired_total);
 
         if (out == EMU_RUN_OUTCOME_RELOAD) {
             goto restart;
@@ -711,7 +747,7 @@ restart:
      */
     (void)emu_print_jit_stats();
 
-    emu_report_state(g_core.cpu, g_core.ops);
+    emu_report_state(g_sys.core[0].cpu, g_sys.core[0].ops);
 
 #if EMU_NET
     /*

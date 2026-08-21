@@ -89,8 +89,19 @@ for suite in $suites; do
         "$OBJCOPY" -O binary "$elf" "$bin" || continue
 
         total=$((total + 1))
-        # The image is linked to run at 0x80000000 with the entry at +0.
-        result="$("$runner" --quiet --max-insn 2000000 "$bin" 2>&1)"
+        # These images are linked to run at 0x80000000 -- guest RAM -- with
+        # the entry at +0, and they *write to their own image*: the trap
+        # handlers save registers into .data, which sits in the same blob.
+        #
+        # So they have to be loaded into RAM, and --load says so. The flag
+        # was dropped when tests/guest/ moved to execute-in-place, because
+        # for *those* guests 0x80000000 became the wrong address -- but it
+        # is still the right one here, and the four tests that noticed are
+        # the four that take a trap: breakpoint, scall, sh-misaligned and
+        # sw-misaligned all faulted on the write instead, reporting a store
+        # access fault where the test expected its own cause. The other 73
+        # never write to their image and passed throughout.
+        result="$("$runner" --quiet --load 0x80000000 --max-insn 2000000 "$bin" 2>&1)"
         rc=$?
 
         if [[ $rc -eq 0 ]]; then

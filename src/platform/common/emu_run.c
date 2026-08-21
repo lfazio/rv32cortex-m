@@ -1,12 +1,10 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * emu_run.c - the guest execution loop, shared.
+ * emu_run.c - the guest execution loop, shared by the firmware and the
+ * host runner.
  *
  * Run the guest in slices, advance its clock, service whatever the
- * platform has running beside it, and say why it stopped. Both firmware
- * runners had this and the F446's was a subset of the F746's -- the
- * difference being a gdb stub that runs the guest itself and an image
- * that may arrive mid-run.
+ * platform has running beside it, and say why it stopped.
  *
  * Why slices at all: the emulator has other work -- an IP stack that
  * advances only when called, a debugger that may want to interrupt -- and
@@ -20,49 +18,46 @@
  * correctly while the cap silently stops existing. That was reachable
  * only by the two riscv-tests that depend on the cap to terminate, and
  * was invisible for the life of the project because the interpreter lands
- * on it exactly.
+ * on it exactly. It is written once here now, rather than twice.
  */
 
-#include "emu_board.h"
-#include "emu_console.h"
 #include "emu_run.h"
 
-#if EMU_NET
-#  include "emu_net.h"
-#endif
-
-emu_run_outcome_t emu_run_guest(emu_core_t *core, const emu_cpu_ops_t *ops,
-                                const emu_run_env_t *env,
-                                uint64_t *retired_total)
+emu_run_outcome_t emu_run_system(emu_system_t *sys, const emu_run_env_t *env,
+                                 uint64_t *retired_total)
 {
-    emu_cpu_status_t st;
-
     for (;;) {
-        uint32_t retired = 0;
-        emu_run_reason_t why;
+        uint32_t did = 0u;
+        uint32_t slice = env->slice;
+        bool     all_idle = false;
 
-#if EMU_NET
         /*
-         * With a debugger attached the *stub* drives the guest: it owns
-         * stepping and breakpoints, and running the core here as well
-         * would execute instructions the debugger believes are still
-         * ahead of it.
+         * Clamp the slice to what is left of the cap, so a run stops near
+         * it rather than a whole slice past. It is a bound on overshoot,
+         * not the termination test -- that is the `>=` below, and
+         * confusing the two is the defect this file's header records.
          */
-        if (emu_net_gdb_attached()) {
-            why = (emu_run_reason_t)emu_net_gdb_run(env->slice, &retired);
-        } else
-#endif
-        {
-            why = emu_core_run(core, env->slice, &retired);
+        if (env->max_insn != 0u) {
+            const uint64_t left = (uint64_t)env->max_insn - *retired_total;
+
+            if ((uint64_t)slice > left) {
+                slice = (uint32_t)left;
+            }
         }
-        *retired_total += retired;
 
-#if EMU_NET
-        /*
-         * The stack advances only when called, so this is its entire
-         * schedule -- once per slice, finer than any timeout lwIP keeps.
-         */
-        emu_net_poll();
+        if (env->gdb_attached != NULL && env->gdb_attached()) {
+            uint32_t n = 0u;
+
+            (void)env->gdb_run(slice, &n);
+            did = n;
+        } else {
+            did = emu_system_step(sys, slice, &all_idle);
+        }
+        *retired_total += did;
+
+        if (env->poll != NULL) {
+            env->poll();
+        }
 
         /*
          * An image can arrive at any point, and the caller has to rebuild
@@ -74,30 +69,25 @@ emu_run_outcome_t emu_run_guest(emu_core_t *core, const emu_cpu_ops_t *ops,
         if (env->take_upload != NULL && env->take_upload()) {
             return EMU_RUN_OUTCOME_RELOAD;
         }
-#endif
 
         if (env->max_insn != 0u &&
             *retired_total >= (uint64_t)env->max_insn) {
             return EMU_RUN_OUTCOME_CAPPED;
         }
 
-        ops->set_time(core->cpu, emu_board_time_now());
 
-        if (why == EMU_RUN_HALTED) {
-            return EMU_RUN_OUTCOME_HALTED;
+        if (env->advance_time != NULL) {
+            env->advance_time(*retired_total, did);
         }
-        if (why == EMU_RUN_WFI) {
-            /*
-             * A guest in WFI is waiting for an interrupt. If anything can
-             * still deliver one, keep going and let it arrive; if nothing
-             * can, the guest is parked for ever and saying so is more
-             * useful than spinning.
-             */
-            emu_core_status(core, &st);
-            if (st.wakeable) {
-                continue;
-            }
-            emu_console_puts("\nguest parked with no interrupts enabled\n");
+
+        /*
+         * Idle is the end of the run, and it covers both ways a guest can
+         * be finished: halted, or parked in WFI with nothing left that
+         * could deliver an interrupt. emu_system_step decides it per core
+         * and reports the conjunction, so a multicore guest ends when the
+         * last live core does rather than when the first stops.
+         */
+        if (all_idle) {
             return EMU_RUN_OUTCOME_HALTED;
         }
     }

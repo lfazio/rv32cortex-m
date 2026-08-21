@@ -19,6 +19,7 @@
  */
 
 #include "emu/emu_cpu.h"
+#include "emu_run.h"
 #include "emu/emu_gdb.h"
 #include "emu/emu_dev.h"
 #include "emu/emu_elf.h"
@@ -300,7 +301,8 @@ static void usage(void)
     fprintf(stderr,
         "\n"
         "  --load ADDR          load address for a flat binary\n"
-        "                       (default 0x%08x)\n"
+        "                       (default 0x%08x, the flash window; a binary\n"
+        "                        linked to run from RAM wants 0x%08x)\n"
         "  --entry ADDR         reset pc (default: load address, or the\n"
         "                       ELF entry point)\n"
         "  --ram BYTES          guest RAM size (default %u)\n"
@@ -315,7 +317,7 @@ static void usage(void)
 #endif
         "  --quiet              suppress the exit summary\n"
         "  --dump               dump register state on exit\n",
-        EMU_GUEST_RAM_BASE, DEFAULT_RAM_SIZE,
+        EMU_GUEST_ROM_BASE, EMU_GUEST_RAM_BASE, DEFAULT_RAM_SIZE,
         (unsigned)EMU_DEFAULT_BUDGET);
 }
 
@@ -358,34 +360,25 @@ void host_gdb_wait(void);
 void host_gdb_poll(void);
 bool host_gdb_attached(void);
 uint32_t host_gdb_run(uint32_t budget, uint32_t *retired);
-#if EMU_GUEST_ARCH_RV32
-const emu_gdb_target_t *rv32_gdb_target(void);
-#endif
-#if EMU_GUEST_ARCH_G4MH
-const emu_gdb_target_t *g4mh_gdb_target(void);
-#endif
-
 /*
- * Which target description the stub serves. gdb's `g` packet is a fixed
- * per-architecture concatenation and gdb does not ask, so this has to
- * follow the frontend actually running -- handing it the RV32 layout for
- * a G4MH guest yields an `info registers` that is entirely wrong and
- * entirely plausible.
+ * Guest time advances with instructions retired: there is no wall clock
+ * worth tracking here, and a deterministic time base is what makes two
+ * runs of the same guest comparable -- which is the whole point of the
+ * architecture suite. One tick per instruction matches the rate the cycle
+ * counter advances at, which is what its Sail config declares.
+ *
+ * Once per round, not once per core, or it would run N times fast. The
+ * firmware answers this hook from a real cycle counter instead, because
+ * its guest drives real peripherals.
  */
-static const emu_gdb_target_t *gdb_target_for(const emu_cpu_ops_t *ops)
+static uint32_t g_timer_div = 1u;
+
+static void advance_guest_time(uint64_t retired_total, uint32_t did)
 {
-#if EMU_GUEST_ARCH_G4MH
-    if (strcmp(ops->name, "g4mh") == 0) {
-        return g4mh_gdb_target();
+    (void)retired_total;
+    if (g_timer_div != 0u && g_sys.ops->advance_time != NULL) {
+        g_sys.ops->advance_time(g_sys.core[0].cpu, did / g_timer_div);
     }
-#endif
-#if EMU_GUEST_ARCH_RV32
-    if (strcmp(ops->name, "rv32") == 0) {
-        return rv32_gdb_target();
-    }
-#endif
-    (void)ops;
-    return NULL;
 }
 
 int main(int argc, char **argv)
@@ -400,7 +393,6 @@ int main(int argc, char **argv)
     int gdb_port = 0;
     /* Instructions per timer tick. 1 keeps guest time in step with the
      * cycle counter, which is what the reference model assumes. */
-    uint32_t timer_div = 1;
     unsigned ncores = 0;                    /* 0 = ask the frontend */
     uint32_t quantum = EMU_DEFAULT_BUDGET;
     bool quiet = false;
@@ -488,7 +480,7 @@ int main(int argc, char **argv)
             }
 #endif
             if (strcmp(a, "--timer-hz") == 0) {
-                if (!parse_u32(argv[++i], &timer_div)) { usage(); return 2; }
+                if (!parse_u32(argv[++i], &g_timer_div)) { usage(); return 2; }
                 continue;
             }
             if (strcmp(a, "--cores") == 0) {
@@ -767,7 +759,10 @@ int main(int argc, char **argv)
      */
     uint64_t total = 0;
     if (gdb_port != 0) {
-        const emu_gdb_target_t *gt = gdb_target_for(ops);
+        /* The frontend states its own layout -- see
+         * emu_cpu_ops_t.gdb_target. */
+        const emu_gdb_target_t *gt =
+            ops->gdb_target != NULL ? ops->gdb_target() : NULL;
 
         if (gt == NULL) {
             fprintf(stderr, "emu: no gdb target for frontend %s\n", ops->name);
@@ -780,74 +775,26 @@ int main(int argc, char **argv)
         host_gdb_wait();        /* the guest is milliseconds long */
     }
 
-    for (;;) {
-        uint32_t q = quantum;
-
+    {
         /*
-         * `total >= max_insn` rather than a budget that reaches zero.
-         *
-         * A backend may retire *more* than the budget it was given: the
-         * JIT executes whole translated blocks and can only stop between
-         * them, so the last one overshoots. `max_insn - total` is then an
-         * unsigned subtraction below zero, which is a very large number,
-         * so the comparison below leaves the quantum at its default and
-         * this loop never ends -- the guest keeps running correctly and
-         * the cap silently stops existing. The interpreter retires one
-         * instruction at a time and lands exactly on the cap, which is why
-         * this was invisible until there was a second backend.
+         * The same loop the firmware runs -- see
+         * src/platform/common/emu_run.c. What differs between a CLI and a
+         * board is four hooks, and this is three of them; the fourth,
+         * take_upload, is a board that can be handed a new image over the
+         * wire and has no equivalent here.
          */
-        if (max_insn != 0) {
-            if (total >= max_insn) {
-                if (!quiet) {
-                    fprintf(stderr, "emu: instruction limit reached\n");
-                }
-                break;
-            }
-            if ((uint64_t)q > max_insn - total) {
-                q = (uint32_t)(max_insn - total);
-            }
-        }
+        const emu_run_env_t env = {
+            .slice        = quantum,
+            .max_insn     = (uint32_t)max_insn,
+            .advance_time = advance_guest_time,
+            .poll         = (gdb_port != 0) ? host_gdb_poll : NULL,
+            .gdb_attached = (gdb_port != 0) ? host_gdb_attached : NULL,
+            .gdb_run      = (gdb_port != 0) ? host_gdb_run : NULL,
+        };
 
-        bool all_idle = false;
-        uint32_t did;
-
-        if (gdb_port != 0) {
-            /*
-             * With a debugger attached the stub owns run control. Polled
-             * once per slice, exactly as the firmware does it, so a run
-             * with no --gdb pays one predictable branch.
-             */
-            host_gdb_poll();
-            if (host_gdb_attached()) {
-                uint32_t n = 0;
-                (void)host_gdb_run(q, &n);
-                did = n;
-            } else {
-                did = emu_system_step(&g_sys, q, &all_idle);
-            }
-        } else {
-            did = emu_system_step(&g_sys, q, &all_idle);
-        }
-        total += did;
-
-        /*
-         * Guest time advances with executed instructions: there is no wall
-         * clock to track here, and a deterministic time base makes runs
-         * reproducible. One tick per instruction matches the rate the
-         * cycle counter advances at, which is what the architecture
-         * suite's Sail config declares.
-         *
-         * Once per round, not once per core, or it would run N times fast.
-         */
-        if (timer_div != 0u && ops->advance_time != NULL) {
-            ops->advance_time(g_core.cpu, did / timer_div);
-        }
-
-        if (all_idle) {
-            if (!quiet && did == 0u) {
-                fprintf(stderr, "emu: all cores idle\n");
-            }
-            break;
+        if (emu_run_system(&g_sys, &env, &total) == EMU_RUN_OUTCOME_CAPPED &&
+            !quiet) {
+            fprintf(stderr, "emu: instruction limit reached\n");
         }
     }
 

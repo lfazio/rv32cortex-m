@@ -44,10 +44,16 @@ set_tests_properties(unit PROPERTIES LABELS fast)
 # something killed it. The image existing and the emulator being able to
 # run it are two different questions.
 if(TARGET guest-isatest AND EMU_GUEST_ARCH_RV32)
+    #
+    # The PASS line, not just the exit status. The status is the failure
+    # count, so zero is also what a guest that ran *nothing* returns --
+    # which is not hypothetical: the PowerPC case below passed for three
+    # commits while its guest stopped after 212 instructions.
     add_test(NAME guest-isatest
-             COMMAND emu-host --quiet
-                     "${CMAKE_BINARY_DIR}/guest/isatest.bin")
-    set_tests_properties(guest-isatest PROPERTIES LABELS fast)
+             COMMAND emu-host "${CMAKE_BINARY_DIR}/guest/isatest.bin")
+    set_tests_properties(guest-isatest PROPERTIES
+        LABELS fast
+        PASS_REGULAR_EXPRESSION "PASS")
 
     # The same self-test through the JIT.
     #
@@ -57,9 +63,11 @@ if(TARGET guest-isatest AND EMU_GUEST_ARCH_RV32)
     # backend, translated code is covered by `ctest -L fast`.
     if(EMU_JIT)
         add_test(NAME guest-isatest-jit
-                 COMMAND emu-host --jit --quiet
+                 COMMAND emu-host --jit
                          "${CMAKE_BINARY_DIR}/guest/isatest.bin")
-        set_tests_properties(guest-isatest-jit PROPERTIES LABELS fast)
+        set_tests_properties(guest-isatest-jit PROPERTIES
+            LABELS fast
+            PASS_REGULAR_EXPRESSION "PASS")
     endif()
 endif()
 
@@ -72,9 +80,24 @@ endif()
 # whole reason the guest carries a vector table; without one an
 # unimplemented encoding vectors to address 0, restarts the program, and
 # presents as a hang that no exit status can describe.
-if(TARGET guest-ppc-isatest)
+#
+# Gated on the frontend, not only on the image, for the reason spelled out
+# above -- and --load because this guest is *not* execute-in-place: its
+# link script puts it at 0x80000000 and it writes to its own image, so the
+# runner's default flash window would map it read-only.
+#
+# PASS_REGULAR_EXPRESSION and not the exit status alone. The status is the
+# number of failed checks, so zero means "nothing failed" -- which is also
+# what "nothing ran" looks like, and that is exactly what happened when the
+# load address moved: the guest stopped after 212 instructions, printed no
+# marker, and the test passed for three commits. Requiring the line the
+# guest prints when it reaches the end makes running a precondition of
+# passing.
+if(TARGET guest-ppc-isatest AND EMU_GUEST_ARCH_PPC)
     add_test(NAME guest-ppc-isatest
-             COMMAND emu-host --quiet --max-insn 200000
+             COMMAND emu-host --load 0x80000000 --max-insn 200000
                      "${CMAKE_BINARY_DIR}/tests/guest/ppc/isatest.bin")
-    set_tests_properties(guest-ppc-isatest PROPERTIES LABELS fast)
+    set_tests_properties(guest-ppc-isatest PROPERTIES
+        LABELS fast
+        PASS_REGULAR_EXPRESSION "PPC-ISATEST-END")
 endif()
