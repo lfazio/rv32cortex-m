@@ -80,7 +80,7 @@ target_compile_options(stm32cube PRIVATE -Wno-unused-parameter)
 # ---------------------------------------------------------------------
 
 add_executable(emu-stm32f446
-    main.c
+    platform.c
     board.c
     stm32f4xx_it.c
     guest_image.S
@@ -88,6 +88,7 @@ add_executable(emu-stm32f446
 
 # The shared runner pieces -- see src/platform/common/emu_console.h.
 target_sources(emu-stm32f446 PRIVATE
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_main.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_console.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_arm_cache.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_syscall.c"
@@ -116,15 +117,15 @@ endif()
 # tidiness: it is the warning that catches a capability macro read
 # without including what defines it, which #if silently treats as 0.
 # emucore has had it for a while; the platform targets did not, and the
-# JIT statistics block in main.c stopped printing entirely the moment an
+# JIT statistics block in emu_main.c stopped printing entirely the moment an
 # unrelated include was removed. Nothing failed and no test could see it.
 target_compile_options(emu-stm32f446 PRIVATE -Wall -Wextra -Wundef)
 
 # Native CoreMark baseline: the same sources the guest runs, compiled for
 # the ARM host. core_main.c defines main(), so it is renamed at compile
 # time and called from our own main.
-option(RV32_NATIVE_COREMARK "Run CoreMark natively instead of the emulator" OFF)
-if(RV32_NATIVE_COREMARK AND EXISTS "${COREMARK_DIR}/core_main.c")
+option(EMU_NATIVE_COREMARK "Run CoreMark natively instead of the emulator" OFF)
+if(EMU_NATIVE_COREMARK AND EXISTS "${COREMARK_DIR}/core_main.c")
     target_sources(emu-stm32f446 PRIVATE
         "${COREMARK_DIR}/core_main.c"
         "${COREMARK_DIR}/core_list_join.c"
@@ -135,7 +136,7 @@ if(RV32_NATIVE_COREMARK AND EXISTS "${COREMARK_DIR}/core_main.c")
     target_include_directories(emu-stm32f446 PRIVATE
         "${COREMARK_DIR}" "${CMAKE_SOURCE_DIR}/tests/guest/coremark")
     target_compile_definitions(emu-stm32f446 PRIVATE
-        RV32_NATIVE_COREMARK=1 PERFORMANCE_RUN=1
+        EMU_NATIVE_COREMARK=1 PERFORMANCE_RUN=1
         ITERATIONS=${COREMARK_ITERATIONS})
     # The main= rename must apply to CoreMark's core_main.c alone; applied
     # target-wide it would also rename the firmware's own entry point.
@@ -146,7 +147,7 @@ if(RV32_NATIVE_COREMARK AND EXISTS "${COREMARK_DIR}/core_main.c")
 endif()
 
 # Guest RAM size is not a compile definition: the link script computes it
-# from what is left over, and main.c reads it from __guest_ram_start/end.
+# from what is left over, and platform.c reads it from __guest_ram_start/end.
 
 # ---------------------------------------------------------------------
 # Link
@@ -169,7 +170,7 @@ set_target_properties(emu-stm32f446 PROPERTIES
     SUFFIX ".elf"
     LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/stm32f446retx.ld")
 
-# LTO across main.c and the core lets the run loop inline the bus fast
+# LTO across emu_main.c and the core lets the run loop inline the bus fast
 # paths and the interrupt check, which is where the interpreter's time goes.
 if(RV32_LTO AND CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo|MinSizeRel")
     set_property(TARGET emu-stm32f446 PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)

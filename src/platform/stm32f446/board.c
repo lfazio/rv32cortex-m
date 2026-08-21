@@ -287,3 +287,44 @@ void board_led_toggle(board_led_t led)
     }
     HAL_GPIO_TogglePin(LED_PORT, LED_PIN);
 }
+
+void board_idle(void)
+{
+    __WFI();
+}
+
+void board_fatal_halt(void)
+{
+    __disable_irq();
+    for (;;) {
+        /* No console to report on: halt so a debugger sees where. */
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* The guest-image arena: this board has none                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Uploading a guest needs somewhere to put it that survives the reload,
+ * and this part's flash is not it: the firmware occupies the low sectors
+ * and the rest is 128 KiB sectors, so an erase would have to take the
+ * whole of the remainder at once. Everything else the network offers
+ * works here -- ping, the telnet console, the gdb stub.
+ *
+ * A zero size is the whole of how a board declines. The runner tests it
+ * at run time and the compiler folds the branch, so this costs nothing
+ * and needs no #if anywhere.
+ */
+uint32_t board_flash_arena_base(void)  { return 0u; }
+uint32_t board_flash_arena_size(void)  { return 0u; }
+uint32_t board_flash_arena_begin(void) { return 0u; }
+void     board_flash_arena_commit(uint32_t len) { (void)len; }
+bool     board_flash_arena_reset(void) { return false; }
+uint32_t board_flash_last_error(void)  { return 0u; }
+
+bool board_flash_write(uint32_t addr, const void *data, uint32_t len)
+{
+    (void)addr; (void)data; (void)len;
+    return false;
+}

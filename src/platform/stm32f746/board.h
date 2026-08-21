@@ -63,68 +63,21 @@ uint32_t board_console_rx_overruns(void);
  */
 uint32_t board_cycles(void);
 
-/* ------------------------------------------------------------------ */
-/* The guest-image arena in flash                                      */
-/* ------------------------------------------------------------------ */
-
 /*
- * Spare flash a guest image can be programmed into at run time, so a new
- * image can be uploaded without reflashing the firmware.
+ * Park until an interrupt, and stop for good.
  *
- * Why flash and not RAM: the largest architecture tests need ~345 KiB,
- * of which ~140 is read-only. Only the writable remainder has to be in
- * SRAM, and that is what makes them fit in the 276 KiB the guest gets.
- * Staging the read-only half in RAM instead would put it back over the
- * limit -- the flash backing is load-bearing, not an optimisation.
- *
- * The arena is append-only and erased only when the next image will not
- * fit. A sector erase on this part stalls every flash fetch for seconds
- * and costs one of ten thousand cycles; doing it per upload would mean
- * 274 erases per suite run, which is about thirty runs before the sector
- * wears out. Packing images end to end makes that roughly fifteen times
- * better, and the erase becomes rare enough that its stall stops
- * mattering.
+ * Here rather than __WFI() in the runner so that emu_main.c needs no
+ * CMSIS header, and because the right way to wait is a property of the
+ * part: on a core with no sleep instruction, or one where sleeping
+ * gates a clock something else depends on, this is where that is
+ * decided.
  */
-uint32_t board_flash_arena_base(void);
-uint32_t board_flash_arena_size(void);
+void board_idle(void);
+void board_fatal_halt(void);
 
-/*
- * Where the next image will be programmed, erasing first if the arena
- * has never been erased since reset. Returns 0 on failure.
- *
- * There is no length here because TFTP does not carry one: a transfer
- * ends when a short block arrives, so the size is only known once the
- * whole image has been written. Reserving a worst case up front would
- * cost most of the packing this arena exists for -- 256 KiB reserved out
- * of 768 is three images per erase, against the fifteen or so that
- * packing tightly gives.
- *
- * So writes run until they hit the end and *fail*, and the caller erases
- * and retries. One transfer is wasted per erase cycle, which is a far
- * better trade than fifteen times the flash wear.
- */
-uint32_t board_flash_arena_begin(void);
 
-/* Accept `len` bytes at the address begin() returned, so the next image
- * starts after them. Not called when a transfer fails, which is what
- * makes a failed upload leave no trace. */
-void board_flash_arena_commit(uint32_t len);
-
-/* Erase unconditionally and restart from the base. */
-bool board_flash_arena_reset(void);
-
-/*
- * Program into the arena. `addr` must be within a range returned by
- * board_flash_arena_alloc, and writes must be sequential and word
- * aligned in length except for the last.
- *
- * Runs from ITCM, so it keeps executing while the bank is busy.
- */
-bool board_flash_write(uint32_t addr, const void *data, uint32_t len);
-/* The HAL's error code from the last board_flash_write, for the
- * upload failure report -- a refused program and a full arena are
- * different problems with different recoveries. */
-uint32_t board_flash_last_error(void);
+/* The guest-image arena is declared in emu_board.h -- it is part of
+ * what a board owes the shared runner, not of this board's own API. */
 
 /* ------------------------------------------------------------------ */
 /* Link activity                                                       */

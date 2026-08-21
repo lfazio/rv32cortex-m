@@ -627,3 +627,16 @@ void board_init(void)
     dwt_init();
     led_init();
 }
+
+void board_idle(void)
+{
+    __WFI();
+}
+
+void board_fatal_halt(void)
+{
+    __disable_irq();
+    for (;;) {
+        /* No console to report on: halt so a debugger sees where. */
+    }
+}

@@ -103,6 +103,16 @@ void emu_board_irqs_init(void);
 void emu_board_irq_unmask(void *ctx, uint32_t source);
 
 /*
+ * Report a real interrupt line to the guest, from the board's ISR.
+ *
+ * The other direction of the pair above, and supplied by the runner
+ * because the core is the runner's. A board's handler masks the line at
+ * the NVIC and calls this; the guest's driver runs later and clears the
+ * pending bit, which is what reaches emu_board_irq_unmask.
+ */
+void emu_raise_irq(uint32_t source, bool level);
+
+/*
  * Build the guest's address space: the four shared regions, then this
  * board's own through emu_board_add_regions. In emu_address_space.c.
  *
@@ -126,6 +136,74 @@ bool emu_start_guest(emu_core_t *core, emu_bus_t *bus, struct emu_uart *uart,
  * because it comes from a cycle counter whose rate is the part's.
  */
 uint64_t emu_board_time_now(void);
+
+/*
+ * The board's own start-up, after board_init() and before anything uses
+ * the guest's memory. Where emu_board_ram and emu_board_ram_size are set,
+ * because on both existing boards they are a difference of two linker
+ * symbols and only the board's own file can name them.
+ */
+void emu_board_init(void);
+
+/* ------------------------------------------------------------------ */
+/* The guest-image arena in flash -- optional                           */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Spare storage a guest image can be programmed into at run time, so a
+ * new guest arrives over TFTP or through gdb's `load` instead of over
+ * SWD.
+ *
+ * **A board without one returns 0 from board_flash_arena_size(), and
+ * that is the whole of how it declines.** It used to be an #if plus
+ * three stub callbacks per board; a run-time size is better here for the
+ * reason emu_print_jit_stats takes the same shape -- the capability
+ * macro that gated the old arrangement was read in a file that did not
+ * include what defined it, which #if quietly treats as 0. A constant
+ * zero folds the branch away for a board that has no arena, so the cost
+ * is nothing and the failure mode is a wrong answer rather than silence.
+ *
+ * The arena is append-only and erased only when the next image will not
+ * fit. A sector erase stalls flash fetch for seconds and costs one of
+ * ten thousand cycles, so erasing per upload would be 274 erases per
+ * suite run -- about thirty runs before the sector wears out. Packing
+ * images end to end is roughly fifteen times better.
+ */
+uint32_t board_flash_arena_base(void);
+uint32_t board_flash_arena_size(void);
+
+/*
+ * Where the next image will be programmed, erasing first if the arena
+ * has never been erased since reset. Returns 0 on failure.
+ *
+ * No length, because TFTP does not carry one: a transfer ends when a
+ * short block arrives, so the size is known only once the whole image is
+ * written. So writes run until they hit the end and *fail*, and the
+ * caller erases and retries -- one wasted transfer per erase cycle
+ * against fifteen times the flash wear.
+ */
+uint32_t board_flash_arena_begin(void);
+
+/* Accept `len` bytes at the address begin() returned, so the next image
+ * starts after them. Not called when a transfer fails, which is what
+ * makes a failed upload leave no trace. */
+void board_flash_arena_commit(uint32_t len);
+
+/* Erase unconditionally and restart from the base. */
+bool board_flash_arena_reset(void);
+
+/*
+ * Program into the arena. Writes must be sequential and word aligned in
+ * length except for the last -- which the TFTP path satisfies for free
+ * with its 512-byte blocks and gdb does not, so the runner carries the
+ * 1-3 byte remainder between calls.
+ */
+bool board_flash_write(uint32_t addr, const void *data, uint32_t len);
+
+/* The HAL's error code from the last board_flash_write: a refused
+ * program and a full arena are different problems with different
+ * recoveries. */
+uint32_t board_flash_last_error(void);
 
 #ifdef __cplusplus
 }

@@ -7,11 +7,19 @@ measured at.
 
 ## Roadmap
 
+- [ ] Unify the main runner for all platforms, so the F746 and N6 can share `main.c` with the host. This is a big task, but it would be a good demonstration of the emulator's capabilities.
+- [ ] Add usage of LWIP's PPP stack to the host runner, so the host can run the same code as the F746.
+- [ ] Unify host main and the stm32F{4,7} main, so the host can run the same code as the F746. This is a big task, but it would be a good demonstration of the emulator's capabilities.
+- [ ] Add FreeRTOS support to the host emualtor, lwip in one task emulator in another one (it will allow to instanciate later a tinyusb network device over USB). https://github.com/STMicroelectronics/x-cube-freertos/tree/main (https://github.com/hathach/tinyusb)
 - [ ] **Linux** - Prepare a Linux guest rv32g with mmu and run it on the emulator (x86_64 only). This is a big task, but it would be a good demonstration of the emulator's capabilities. Implement minimal virtio devices to get a shell and run some benchmarks. This is a big task, but it would be a good demonstration of the emulator's capabilities.
-- [ ] **JIT** - Autovectorisation of the IR pipeline. This is a big task, but it would be a good demonstration of the emulator's capabilities.
 - [ ] Run doom in Linux so it can be used as a benchmark for the emulator. This is a big task, but it would be a good demonstration of the emulator's capabilities implement a sdl backend for the emulator to run doom in Linux. This is a big task, but it would be a good demonstration of the emulator's capabilities.
+- [ ] **JIT** - Autovectorisation of the IR pipeline. This is a big task, but it would be a good demonstration of the emulator's capabilities.
 - [ ] Add simple drivers for the rh850u2b6.
-- [ ] Architecture a serial protocol over TCP similar to PCIe so a PC host running the emualtor can access the rh850u2b6's peripherals. This is a big task, but it would be a good demonstration of the emulator's capabilities. First over serial, then maybe over USB or rela ethernet device. This is a big task, but it would be a good demonstration of the emulator's capabilities.
+  - [ ] kcrc
+  - [ ] ltsc
+  - [ ] ostm
+  - [ ] wdtb
+- [ ] Architecture a serial protocol over UDP/TCP similar to PCIe so a PC host running the emualtor can access the rh850u2b6's peripherals. This is a big task, but it would be a good demonstration of the emulator's capabilities. First over serial, then maybe over USB or rela ethernet device. This is a big task, but it would be a good demonstration of the emulator's capabilities.
 - [ ] Implement an emulated GTM device for the stm32f746zg to demonstrate the emulator's capabilities.
 - [ ] Finish the ppc emualtor with dual core support and implement a simple driver for the e200z7. This is a big task, but it would be a good demonstration of the emulator's capabilities.
 - [ ] **Port to the Nucleo-N657X0-Q (STM32N6, board MB1940).** A third

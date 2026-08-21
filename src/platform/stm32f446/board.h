@@ -63,6 +63,19 @@ uint32_t board_console_rx_overruns(void);
 uint32_t board_cycles(void);
 
 /*
+ * Park until an interrupt, and stop for good.
+ *
+ * Here rather than __WFI() in the runner so that emu_main.c needs no
+ * CMSIS header, and because the right way to wait is a property of the
+ * part: on a core with no sleep instruction, or one where sleeping
+ * gates a clock something else depends on, this is where that is
+ * decided.
+ */
+void board_idle(void);
+void board_fatal_halt(void);
+
+
+/*
  * Link activity, for the network transport.
  *
  * **This board has one user LED where the F746ZG has three**, so the two
