@@ -75,9 +75,32 @@ static uint32_t rd32(const uint8_t *p)
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
-const char *emu_elf_load(emu_bus_t *bus, const void *image, size_t len,
-                         uint16_t machine, uint16_t alt_machine,
-                         uint32_t *entry, uint16_t *out_machine)
+bool emu_elf_is_elf(const void *image, size_t len)
+{
+    const uint8_t *const b = (const uint8_t *)image;
+
+    return len >= 4u && b[0] == 0x7Fu && b[1] == 'E' &&
+           b[2] == 'L' && b[3] == 'F';
+}
+
+uint16_t emu_elf_machine(const void *image, size_t len)
+{
+    const uint8_t *const b = (const uint8_t *)image;
+
+    return (len >= 20u) ? rd16(b + 18) : 0u;
+}
+
+/*
+ * Both entry points, differing only in what they do with a segment.
+ *
+ * `ram_size` of zero means "copy everything", which is emu_elf_load;
+ * otherwise a segment inside guest RAM is copied and everything else is
+ * mapped read-only out of the image where it already lies.
+ */
+static const char *elf_walk(emu_bus_t *bus, const void *image, size_t len,
+                            uint16_t machine, uint16_t alt_machine,
+                            uint32_t ram_base, uint32_t ram_size,
+                            uint32_t *entry, uint16_t *out_machine)
 {
     const uint8_t *img = (const uint8_t *)image;
 
@@ -135,6 +158,7 @@ const char *emu_elf_load(emu_bus_t *bus, const void *image, size_t len,
         }
 
         const uint32_t p_offset = rd32(ph + 4);
+        const uint32_t p_vaddr  = rd32(ph + 8);
         const uint32_t p_paddr  = rd32(ph + 12);
         const uint32_t p_filesz = rd32(ph + 16);
         const uint32_t p_memsz  = rd32(ph + 20);
@@ -150,6 +174,64 @@ const char *emu_elf_load(emu_bus_t *bus, const void *image, size_t len,
          * Load at the physical address: these are bare-metal images with
          * no MMU, and p_paddr is what a loader is supposed to honour.
          */
+        const bool in_ram = ram_size != 0u &&
+                            p_paddr >= ram_base &&
+                            (uint64_t)p_paddr + p_memsz <=
+                                (uint64_t)ram_base + ram_size;
+
+        if (ram_size != 0u && !in_ram) {
+            /*
+             * Mapped, not copied. This is a guest's .text and .rodata on
+             * a board: they are already in flash where the upload put
+             * them, they are the largest part of the image, and copying
+             * them into guest RAM is what used to make the biggest
+             * architecture tests not fit at all.
+             */
+            if (p_filesz != 0u &&
+                !emu_bus_add_rom(bus, "elf", p_paddr, img + p_offset,
+                                 p_filesz)) {
+                return "no room to map a segment";
+            }
+
+            /*
+             * The .bss tail belongs at the *run* address, not the load
+             * one. In an execute-in-place image those differ -- p_paddr
+             * is where .data's initialiser sits in flash and p_vaddr is
+             * where it runs -- so zeroing at p_paddr would write into
+             * flash, and refusing the segment would reject every guest
+             * with a .bss. Which is to say: coremark, whose second
+             * segment is 28 bytes of .data and 2 KiB of .bss.
+             *
+             * The guest's own start.S zeroes this too. Doing it here as
+             * well costs nothing and means an image whose crt0 does not
+             * still gets what the ELF promises.
+             */
+            if (p_memsz > p_filesz) {
+                const uint32_t bss = p_vaddr + p_filesz;
+                uint32_t rem = p_memsz - p_filesz;
+
+                if (bss < ram_base ||
+                    (uint64_t)bss + rem > (uint64_t)ram_base + ram_size) {
+                    return "segment .bss lands outside guest RAM";
+                }
+                static const uint8_t zeros[256] = { 0 };
+                uint32_t addr = bss;
+
+                while (rem != 0u) {
+                    const uint32_t n = (rem > sizeof(zeros))
+                                     ? (uint32_t)sizeof(zeros) : rem;
+
+                    if (!emu_bus_load(bus, addr, zeros, n)) {
+                        return "bss does not fit in guest memory";
+                    }
+                    addr += n;
+                    rem -= n;
+                }
+            }
+            loaded++;
+            continue;
+        }
+
         if (p_filesz != 0u) {
             if (!emu_bus_load(bus, p_paddr, img + p_offset, p_filesz)) {
                 return "segment does not fit in guest memory";
@@ -182,4 +264,24 @@ const char *emu_elf_load(emu_bus_t *bus, const void *image, size_t len,
         *entry = e_entry;
     }
     return NULL;
+}
+
+const char *emu_elf_load(emu_bus_t *bus, const void *image, size_t len,
+                         uint16_t machine, uint16_t alt_machine,
+                         uint32_t *entry, uint16_t *out_machine)
+{
+    return elf_walk(bus, image, len, machine, alt_machine, 0u, 0u,
+                    entry, out_machine);
+}
+
+const char *emu_elf_map(emu_bus_t *bus, const void *image, size_t len,
+                        uint16_t machine, uint16_t alt_machine,
+                        uint32_t ram_base, uint32_t ram_size,
+                        uint32_t *entry, uint16_t *out_machine)
+{
+    if (ram_size == 0u) {
+        return "emu_elf_map needs a guest RAM window";
+    }
+    return elf_walk(bus, image, len, machine, alt_machine, ram_base,
+                    ram_size, entry, out_machine);
 }

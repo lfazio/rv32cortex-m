@@ -36,39 +36,72 @@
 
 #include "emu/emu_memmap.h"
 #include "emu/emu_dev.h"
+#include "emu/emu_elf.h"
 
 #include <string.h>
+
+/*
+ * Where the guest starts. EMU_GUEST_RESET_PC for a flat binary, and the
+ * ELF's own e_entry for an ELF -- set while the address space is built,
+ * because that is where the program headers are read.
+ */
+static uint32_t g_entry = EMU_GUEST_RESET_PC;
+
+uint32_t emu_guest_entry(void)
+{
+    return g_entry;
+}
 
 bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
 {
     emu_bus_init(bus);
 
     /*
-     * The image, read-only, as the guest's flash. Its .text and .rodata
-     * are *linked* here and execute in place, so however large they are
-     * they cost the guest no RAM -- which is what lets an architecture
-     * test needing 345 KiB run on a part with 264 KiB of it. The .data
-     * initialiser is in here too, and start.S copies it across.
+     * Guest RAM first, because an ELF's segments are placed against it:
+     * emu_elf_map has to be able to ask whether a segment lands inside
+     * this window, and it can only copy one that does.
      */
-    if (!emu_bus_add_rom(bus, "flash", EMU_GUEST_ROM_BASE,
-                         emu_board_img, emu_board_img_size)) {
+    if (!emu_bus_add_ram(bus, "ram", EMU_GUEST_RAM_BASE,
+                         emu_board_ram, emu_board_ram_size)) {
         return false;
     }
 
     /*
-     * Guest RAM, whole and starting at its base.
+     * The image.
      *
-     * This used to be two regions with a *boundary* between them: the
-     * image was linked entirely in RAM, so the platform served the
-     * read-only part from flash up to __guest_ro_end and RAM after it,
-     * and an upload had to arrive in two pieces for the board to learn
-     * where that was. With the run addresses in separate regions there
-     * is nothing to infer -- flash is flash and RAM is RAM -- and the
-     * split, the two-piece upload and the exactness they depended on are
-     * all gone.
+     * A flat binary is mapped whole, read-only, at EMU_GUEST_ROM_BASE:
+     * its .text and .rodata are *linked* there and execute in place, so
+     * however large they are they cost the guest no RAM -- which is what
+     * lets an architecture test needing 345 KiB run on a part with 243
+     * KiB of it. The .data initialiser is in there too, and the guest's
+     * own start.S copies it across.
+     *
+     * An **ELF** is placed by its program headers instead, which is the
+     * same arrangement arrived at from the other end: segments outside
+     * guest RAM are mapped read-only straight out of the image, and only
+     * what lands in RAM is copied. Nothing has to agree about a link
+     * address in advance, so the file a person builds and debugs is the
+     * file the board runs.
+     *
+     * The entry point comes from the ELF too, which is why g_entry
+     * exists -- a flat binary starts at EMU_GUEST_RESET_PC and an ELF
+     * starts wherever it says.
      */
-    if (!emu_bus_add_ram(bus, "ram", EMU_GUEST_RAM_BASE,
-                         emu_board_ram, emu_board_ram_size)) {
+    g_entry = EMU_GUEST_RESET_PC;
+
+    if (emu_elf_is_elf(emu_board_img, emu_board_img_size)) {
+        const char *const err =
+            emu_elf_map(bus, emu_board_img, emu_board_img_size,
+                        EMU_ELF_ANY_MACHINE, 0u,
+                        EMU_GUEST_RAM_BASE, emu_board_ram_size,
+                        &g_entry, NULL);
+
+        if (err != NULL) {
+            emu_console_printf("elf: %s\n", err);
+            return false;
+        }
+    } else if (!emu_bus_add_rom(bus, "flash", EMU_GUEST_ROM_BASE,
+                                emu_board_img, emu_board_img_size)) {
         return false;
     }
 
@@ -146,7 +179,7 @@ bool emu_start_guest(emu_system_t *sys, emu_bus_t *buses, emu_uart_t *uart,
         exit_state->exited = false;
     }
 
-    emu_system_reset(sys, EMU_GUEST_RESET_PC);
+    emu_system_reset(sys, g_entry);
     emu_system_boot(sys, EMU_GUEST_RAM_BASE, emu_board_ram_size);
     return true;
 }

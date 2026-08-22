@@ -323,16 +323,6 @@ static uint8_t *read_file(const char *path, size_t *out_len)
     return buf;
 }
 
-static bool looks_like_elf(const uint8_t *b, size_t n)
-{
-    return n >= 4u && b[0] == 0x7F && b[1] == 'E' && b[2] == 'L' && b[3] == 'F';
-}
-
-/* e_machine of a little-endian ELF32, or 0 if the header is too short. */
-static uint16_t elf_machine(const uint8_t *b, size_t n)
-{
-    return (n >= 20u) ? (uint16_t)(b[18] | ((uint16_t)b[19] << 8)) : 0u;
-}
 
 /* ------------------------------------------------------------------ */
 /* Diagnostics                                                         */
@@ -823,8 +813,8 @@ int main(int argc, char **argv)
             free(image);
             return 2;
         }
-    } else if (looks_like_elf(image, len)) {
-        const uint16_t m = elf_machine(image, len);
+    } else if (emu_elf_is_elf(image, len)) {
+        const uint16_t m = emu_elf_machine(image, len);
         ops = emu_frontend_for_elf(m);
         if (ops == NULL) {
             host_diagf("emu: no frontend for ELF machine %u; this build has: ", m);
@@ -978,7 +968,7 @@ int main(int argc, char **argv)
     }
 
     /* --- load -------------------------------------------------------- */
-    if (looks_like_elf(image, len)) {
+    if (emu_elf_is_elf(image, len)) {
         uint32_t elf_entry = 0;
         const char *err = emu_elf_load(g_core.bus, image, len,
                                        ops->elf_machine, ops->elf_machine_alt,

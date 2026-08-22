@@ -122,6 +122,10 @@ void emu_raise_irq(uint32_t source, bool level);
 struct emu_uart;
 bool emu_build_address_space(emu_bus_t *bus, struct emu_uart *uart);
 
+/* Where the guest will start: EMU_GUEST_RESET_PC for a flat binary, an
+ * ELF's own e_entry for an ELF. Valid once the address space is built. */
+uint32_t emu_guest_entry(void);
+
 /*
  * Bring a guest up: address space, the frontend's devices, cleared RAM
  * and exit state, reset and boot. In emu_address_space.c. An upload

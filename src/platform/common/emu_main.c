@@ -36,6 +36,7 @@
 #include "emu/emu_cpu.h"
 #include "emu/emu_dev.h"
 #include "emu/emu_jit.h"
+#include "emu/emu_elf.h"
 #include "emu/emu_memmap.h"
 
 #if EMU_NET
@@ -650,9 +651,10 @@ int main(void)
      * after a reload and the first thing a harness wants to see.
      */
 restart:
-    console_printf("guest  %u bytes at 0x%08x\n"
+    console_printf("guest  %u bytes at 0x%08x%s\n"
                    "ram    %u KiB (%u bytes)\n",
-                   (unsigned)g_img_size, (unsigned)EMU_GUEST_RESET_PC,
+                   (unsigned)g_img_size, (unsigned)emu_guest_entry(),
+                   emu_elf_is_elf(g_img, g_img_size) ? " (elf)" : "",
                    (unsigned)(emu_board_ram_size / 1024u),
                    (unsigned)emu_board_ram_size);
 
