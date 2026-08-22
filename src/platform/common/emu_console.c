@@ -56,15 +56,3 @@ void emu_console_uart_tx(void *ctx, uint8_t c)
     emu_console_putb(c);
 }
 
-/* emu_print_fn onto the console, for the frontend's own state dump. */
-static void console_out(void *ctx, const char *s)
-{
-    (void)ctx;
-    emu_console_puts(s);
-}
-
-void emu_report_state(emu_cpu_t *cpu, const emu_cpu_ops_t *ops)
-{
-    emu_console_puts("\n-- guest state --");
-    ops->dump(cpu, console_out, NULL);
-}

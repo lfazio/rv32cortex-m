@@ -22,13 +22,19 @@
 
 void emu_print_run_summary(uint64_t retired, uint32_t host_cycles)
 {
-    emu_console_printf("\n-- done --\n  retired  %u instructions\n"
-                       "  host     %u cycles\n",
-                       (unsigned)retired, (unsigned)host_cycles);
+    emu_console_printf("\n-- done --\n  retired  %u instructions\n",
+                       (unsigned)retired);
 
-    if (retired == 0u) {
+    /*
+     * A host with no cycle counter worth quoting passes 0, and gets
+     * neither line rather than "0 cycles" and a ratio of 0.00 -- a
+     * number that looks measured and is not.
+     */
+    if (host_cycles == 0u || retired == 0u) {
         return;
     }
+
+    emu_console_printf("  host     %u cycles\n", (unsigned)host_cycles);
 
     /*
      * Host cycles per emulated guest instruction, x100 so the fractional
@@ -54,7 +60,14 @@ bool emu_print_jit_stats(void)
      * only has a buffer once a backend initialised one, and it is zero
      * on an interpreter build -- so this needs to name no backend.
      */
-    if (js.code_size == 0u) {
+    /*
+     * Nothing translated and no block entered: either there is no JIT
+     * here or it was never asked to do anything, and a block of zeros
+     * says neither. code_size alone is not the test -- a backend
+     * allocates its buffer at init, so an interpreter run reports a
+     * cache size and nothing in it.
+     */
+    if (js.translations == 0u && js.block_entries == 0u) {
         return false;
     }
 

@@ -35,3 +35,6 @@ cmake_install.cmake
 
 # build-matrix.sh writes one log per configuration beside its build dir.
 build/mx-*.log
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/

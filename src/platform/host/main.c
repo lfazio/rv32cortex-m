@@ -21,6 +21,7 @@
 #include "emu/emu_cpu.h"
 #include "emu_console.h"   /* the shared syscall handler and its context */
 #include "emu_run.h"
+#include "emu_session.h"
 
 #if EMU_NET
 #  include "board.h"
@@ -439,6 +440,17 @@ void emu_net_image_end(uint32_t len, bool ok)
     g_up_cap = 0u;
 }
 #endif /* EMU_NET */
+
+/* Where emu_session reports a failure: the same sink as everything else
+ * this runner says about itself. */
+static void session_fail(const char *msg, const char *detail)
+{
+    if (detail != NULL) {
+        host_diagf("emu: %s: %s\n", msg, detail);
+    } else {
+        host_diagf("emu: %s\n", msg);
+    }
+}
 
 static void err_puts(void *ctx, const char *s)
 {
@@ -866,44 +878,56 @@ int main(int argc, char **argv)
      * to. They are part of its architecture rather than of this platform,
      * and only it knows where in the guest map they go.
      */
-    if (!emu_system_open(&g_sys, ops, g_bus, ncores)) {
-        host_diagf("emu: could not bring up %u %s core%s\n",
-                ncores, ops->name, (ncores == 1u) ? "" : "s");
-        /*
-         * Almost always the region table, and the message above says
-         * "cores" -- which sent a whole debugging session after the
-         * scheduler. Every device a frontend adds costs a region *per
-         * bus*, so the count grows with the core count: G4MH at three PEs
-         * needs about 20 against a default of 16, and the only symptom
-         * was this line.
-         *
-         * Printed unconditionally rather than only when the table is
-         * full, because emu_system_open reports one boolean and the
-         * platform cannot tell which of its callees failed. Saying what
-         * to check is cheap; guessing wrong is what cost the time.
-         */
-        host_diagf("emu:   %u of %u bus regions used on core 0 -- if that is "
-                "the limit, rebuild with -DEMU_MAX_REGIONS=%u\n",
-                emu_bus_region_count(&g_bus[0]), (unsigned)EMU_MAX_REGIONS,
-                (unsigned)EMU_MAX_REGIONS + 8u);
-        return 1;
-    }
-
-
     /*
-     * Which backend, stated rather than inherited -- see
-     * emu_cpu_ops_t.select_backend for why the runner decides and why
-     * this is a hook instead of a block per frontend.
+     * The bring-up, shared with the firmware -- see emu_session.h. What
+     * was here was the same sequence: open the cores, choose the backend,
+     * install the hooks, place the image, reset and boot.
      */
-    if (ops->select_backend != NULL &&
-        !ops->select_backend(g_core.cpu, want_jit)) {
-        host_diagf("emu: backend init failed\n");
+    g_sc_ctx.exit = &g_exit;
+
+    emu_session_cfg_t cfg = {
+        .ops         = ops,
+        .buses       = g_bus,
+        .ncores      = ncores,
+        .uart        = &uart,
+        .uart_tx     = host_tx,
+        .uart_rx     = host_rx,
+        .image       = image,
+        .image_size  = (uint32_t)len,
+        .load_addr   = load_addr,
+        .entry       = have_entry ? entry : 0u,
+        .ram_base    = EMU_GUEST_RAM_BASE,
+        .ram_size    = ram_size,
+        /*
+         * NULL: this runner calloc'd guest RAM and an ELF's segments were
+         * already written into it by the loader above. Zeroing here would
+         * erase them.
+         */
+        .ram_host    = NULL,
+        .syscall_fn  = emu_guest_syscall,
+        .syscall_ctx = &g_sc_ctx,
+#if EMU_ENABLE_TRACE
+        .trace_fn    = host_trace,
+#endif
+        .want_jit    = want_jit,
+        .fail        = session_fail,
+    };
+
+    if (!emu_session_start(&g_sys, &cfg)) {
+        /*
+         * Say what a full region table looks like, because the message
+         * otherwise names cores and the cause is the bus. A platform
+         * cannot tell which of its callees failed.
+         */
+        host_diagf("emu:   %u of %u bus regions used on core 0 -- if that "
+                   "is the limit, rebuild with -DEMU_MAX_REGIONS=%u\n",
+                   emu_bus_region_count(&g_bus[0]), (unsigned)EMU_MAX_REGIONS,
+                   (unsigned)EMU_MAX_REGIONS + 8u);
         return 1;
     }
 
-#if !EMU_JIT_SELECTABLE
-    (void)want_jit;
-#endif
+    g_sc_ctx.bus  = g_core.bus;
+    g_sc_ctx.core = &g_core;
 
 #if EMU_NET
     /*
@@ -940,87 +964,6 @@ int main(int argc, char **argv)
     }
 #endif
 
-    g_sc_ctx.bus  = g_core.bus;
-    g_sc_ctx.core = &g_core;
-    g_sc_ctx.exit = &g_exit;
-
-#if EMU_NET
-    /* What a reload has to redo, recorded once here. */
-    g_ops       = ops;
-    g_uart_p    = &uart;
-    g_ram_bytes = ram_size;
-    g_img_len   = (uint32_t)len;
-    g_img_buf   = NULL;         /* the initial image is main()'s to own */
-#endif
-
-    emu_uart_init(&uart, host_tx, host_rx, NULL);
-    /* Every core gets the hooks: any of them may make a system call. */
-    for (unsigned i = 0; i < g_sys.ncores; i++) {
-        if (ops->set_syscall != NULL) {
-            ops->set_syscall(g_sys.core[i].cpu, emu_guest_syscall,
-                             &g_sc_ctx);
-        }
-#if EMU_ENABLE_TRACE
-        if (ops->set_trace != NULL) {
-            ops->set_trace(g_sys.core[i].cpu, host_trace, NULL);
-        }
-#endif
-    }
-
-    /* --- load -------------------------------------------------------- */
-    if (emu_elf_is_elf(image, len)) {
-        uint32_t elf_entry = 0;
-        const char *err = emu_elf_load(g_core.bus, image, len,
-                                       ops->elf_machine, ops->elf_machine_alt,
-                                       &elf_entry, NULL);
-        if (err != NULL) {
-            host_diagf("emu: %s: %s\n", path, err);
-            return 1;
-        }
-        if (!have_entry) {
-            entry = elf_entry;
-            have_entry = true;
-        }
-    } else if (load_addr != EMU_GUEST_ROM_BASE) {
-        /*
-         * A flat binary somewhere other than flash: written into the bus
-         * as before. At the default address there is nothing to write --
-         * see below.
-         */
-        if (!emu_bus_load(g_core.bus, load_addr, image, (uint32_t)len)) {
-            host_diagf("emu: %s: %zu bytes do not fit at 0x%08x\n",
-                    path, len, load_addr);
-            return 1;
-        }
-        if (!have_entry) {
-            entry = load_addr;
-        }
-    } else if (!have_entry) {
-        /*
-         * The common case, and nothing to do: the flash window *is* this
-         * buffer, added read-only when the bus was built, so the image is
-         * already where the guest will fetch it from.
-         */
-        entry = load_addr;
-    }
-
-    /*
-     * `image` is deliberately not freed: the flash region points into it
-     * for the lifetime of the run, and an ELF's segments were copied out
-     * of it but the window still refers to it. Freeing it here left the
-     * guest executing out of a freed buffer -- which read correctly,
-     * because nothing had reused the allocation yet, and is exactly the
-     * kind of bug that surfaces later under a different allocator.
-     */
-
-    emu_system_reset(&g_sys, entry);
-    /*
-     * Hand the guest a stack and its RAM size. The architecture suite's
-     * images set up their own stack from their link script and ignore
-     * this, which is exactly the fallback the protocol allows for.
-     */
-    emu_system_boot(&g_sys, EMU_GUEST_RAM_BASE, ram_size);
-    emu_system_invalidate(&g_sys, 0u, 0xFFFFFFFFu);
 
     /* --- run --------------------------------------------------------- */
     /*
@@ -1034,6 +977,7 @@ int main(int argc, char **argv)
      * that has no reference model to check against.
      */
     uint64_t total = 0;
+    bool     capped = false;
     if (gdb_port != 0) {
         /* The frontend states its own layout -- see
          * emu_cpu_ops_t.gdb_target. */
@@ -1088,6 +1032,8 @@ restart:
 
         const emu_run_outcome_t out = emu_run_system(&g_sys, &env, &total);
 
+        capped = (out == EMU_RUN_OUTCOME_CAPPED);
+
 #if EMU_NET
         /*
          * An uploaded image restarts the run rather than ending it, which
@@ -1098,9 +1044,8 @@ restart:
             goto restart;
         }
 #endif
-        if (out == EMU_RUN_OUTCOME_CAPPED && !quiet) {
-            host_diagf("emu: instruction limit reached\n");
-        }
+        /* Reported by emu_session_report below, in the words the board
+         * uses, rather than here in different ones. */
     }
 
 #if EMU_PAIR_STATS
@@ -1114,66 +1059,15 @@ restart:
             g_sys.ops->dump(g_sys.core[i].cpu, err_puts, NULL);
         }
     }
+
+    /*
+     * The same report the board prints, in the same order and the same
+     * words -- which is what makes a figure measured here and one
+     * measured on hardware directly comparable, and is why this is not
+     * two formats saying the same numbers.
+     */
     if (!quiet) {
-        host_diagf("emu: %llu instructions retired\n",
-                (unsigned long long)total);
-        if (g_sys.ncores > 1u) {
-            /* Per-core counts, because that is what a determinism check
-             * compares between two runs. */
-            for (unsigned i = 0; i < g_sys.ncores; i++) {
-                emu_cpu_status_t st;
-                emu_core_status(&g_sys.core[i], &st);
-                host_diagf("emu:   core %u: %llu\n", i,
-                        (unsigned long long)st.retired);
-            }
-        }
-        /*
-         * Printed whenever anything was translated, for any frontend --
-         * the framework owns these now, so there is one place to read them
-         * from rather than one per backend.
-         *
-         * `interp` against the retired count is what matters when reading
-         * a suite result: a backend that translated nothing and fell back
-         * for everything passes every test while proving nothing about the
-         * translator, which has already happened here once.
-         */
-        {
-            emu_jit_stats_t st;
-
-            emu_jit_get_stats(&st);
-            if (st.translations != 0u || st.block_entries != 0u) {
-                host_diagf("emu: jit blocks %u  xlat %u  entries %u  interp %u  "
-                        "code %u/%u  flushes %u\n"
-                        "emu: jit declined %u  overflow %u\n",
-                        st.blocks, st.translations, st.block_entries,
-                        st.interp_fallbacks, st.code_used, st.code_size,
-                        st.flushes, st.declined, st.overflowed);
-
-                /*
-                 * What the IR optimiser did, which nothing could observe
-                 * until it was reported: a pass that never fires and a
-                 * pass that does not pay look identical from the outside,
-                 * and this tree's own rule is that identical counters
-                 * mean the code never ran.
-                 */
-                emu_ir_opt_stats_t o;
-
-                emu_ir_opt_totals(&o);
-                host_diagf("emu: ir  optimised %u blocks\n"
-                           "emu: ir  gets-elided %u  puts-dropped %u  "
-                           "flags-dropped %u  dead %u\n"
-                           "emu: ir  const->imm %u  addr-fold %u  "
-                           "identities %u\n",
-                           o.blocks,
-                           o.gets_removed, o.puts_removed, o.flags_removed,
-                           o.dead_removed, o.folded, o.addr_folded,
-                           o.identities);
-#ifdef EMU_JIT_DIFF
-                host_diagf("emu: jit-diff checked %u  declined %u\n",
-                        st.diff_checked, st.diff_declined);
-#endif
-            }
-        }
+        emu_session_report(&g_sys, total, 0u, capped);
     }
 
 #if EMU_NET

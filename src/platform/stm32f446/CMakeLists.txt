@@ -95,6 +95,7 @@ target_sources(emu-stm32f446 PRIVATE
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_stats.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_diag.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_address_space.c"
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_session.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_run.c")
 target_include_directories(emu-stm32f446 PRIVATE
     "${CMAKE_SOURCE_DIR}/src/platform/common")

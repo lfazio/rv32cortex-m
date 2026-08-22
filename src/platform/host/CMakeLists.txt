@@ -24,6 +24,16 @@ add_executable(emu-host
     # four hooks, not a loop each.
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_run.c"
 
+    # Bringing a guest up and reporting what it did -- the middle of both
+    # runners, which was the same code twice. See emu_session.h.
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_session.c"
+
+    # The run summary and the framework's JIT counters, which the shared
+    # report prints. emu_console.c is deliberately *not* here: this runner
+    # has two sinks where a board has one, so it supplies the console
+    # primitives itself -- see emu_console_puts below.
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_stats.c"
+
     # The newlib write(64)/exit(93) pair, also shared. This file had its
     # own copy of the same ABI until it did not need to.
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_syscall.c"

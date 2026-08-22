@@ -32,6 +32,7 @@
 #include "emu_board.h"
 #include "emu_console.h"
 #include "emu_run.h"
+#include "emu_session.h"
 
 #include "emu/emu_cpu.h"
 #include "emu/emu_dev.h"
@@ -118,6 +119,30 @@ static emu_syscall_ctx_t g_sc_ctx = {
  */
 static const uint8_t *g_img = emu_guest_image;
 static uint32_t       g_img_size;
+
+/*
+ * What this board hands the shared session. Rebuilt on a reload, because
+ * two of its fields are the image and that is the whole point of one.
+ */
+static emu_session_cfg_t g_cfg;
+
+static void session_fail(const char *msg, const char *detail)
+{
+    if (detail != NULL) {
+        emu_console_printf("fatal: %s: %s\n", msg, detail);
+    } else {
+        emu_console_printf("fatal: %s\n", msg);
+    }
+}
+
+static void cfg_refresh(void)
+{
+    g_cfg.image       = g_img;
+    g_cfg.image_size  = g_img_size;
+    g_cfg.ram_base    = EMU_GUEST_RAM_BASE;
+    g_cfg.ram_size    = emu_board_ram_size;
+    g_cfg.ram_host    = emu_board_ram;
+}
 
 /* ------------------------------------------------------------------ */
 /* Console                                                             */
@@ -252,7 +277,8 @@ static bool start_guest(void)
 {
     emu_board_img      = g_img;
     emu_board_img_size = g_img_size;
-    return emu_start_guest(&g_sys, g_buses, &g_uart, &g_exit);
+    cfg_refresh();
+    return emu_start_guest(&g_sys, &g_cfg, &g_uart, &g_exit);
 }
 
 #if EMU_NET
@@ -590,23 +616,33 @@ int main(void)
      * onto, and the devices, reset and boot come later through
      * start_guest(), which needs the core to exist.
      */
-    if (!emu_build_address_space(&g_buses[0], &g_uart)) {
-        console_printf("fatal: could not build the guest address space\n");
+    for (unsigned i = 0; i < EMU_BOARD_CORES; i++) {
+        if (!emu_build_address_space(&g_buses[i], &g_uart)) {
+            console_printf("fatal: could not build the guest address "
+                           "space\n");
+            fatal_halt();
+        }
+    }
+
+    cfg_refresh();
+    g_cfg.ops         = ops;
+    g_cfg.buses       = g_buses;
+    g_cfg.ncores      = EMU_BOARD_CORES;
+    g_cfg.uart        = &g_uart;
+    g_cfg.uart_tx     = emu_console_uart_tx;
+    g_cfg.uart_rx     = guest_uart_rx;
+    g_cfg.syscall_fn  = emu_guest_syscall;
+    g_cfg.syscall_ctx = &g_sc_ctx;
+    g_cfg.cache_ops   = &emu_arm_cache_ops;
+    g_cfg.unmask_fn   = emu_board_irq_unmask;
+    g_cfg.want_jit    = true;   /* a board wants speed; a host chooses */
+    g_cfg.fail        = session_fail;
+
+    if (!emu_session_start(&g_sys, &g_cfg)) {
         fatal_halt();
     }
 
-    if (!emu_system_open(&g_sys, ops, g_buses, EMU_BOARD_CORES)) {
-        console_printf("fatal: could not bring up the guest core\n");
-        fatal_halt();
-    }
-
-    emu_cpu_t *const cpu = g_sys.core[0].cpu;
-
-    ops->set_unmask_hook(cpu, emu_board_irq_unmask, NULL);
     emu_board_irqs_init();
-    emu_uart_init(&g_uart, emu_console_uart_tx, guest_uart_rx, NULL);
-    ops->set_syscall(cpu, emu_guest_syscall, &g_sc_ctx);
-    ops->set_cache(cpu, &emu_arm_cache_ops);
 
 #if EMU_NET
     /*
@@ -639,10 +675,12 @@ int main(void)
     }
 #endif
 
-    if (!start_guest()) {
-        console_printf("fatal: could not start the guest\n");
-        fatal_halt();
-    }
+    /*
+     * No second bring-up here: emu_session_start above already placed the
+     * image, reset and booted. This used to call start_guest() a second
+     * time, which worked because doing it twice is idempotent -- and is
+     * the kind of thing that stops being idempotent quietly.
+     */
 
     /*
      * Everything from here down is one run of one guest, and an uploaded
@@ -651,9 +689,19 @@ int main(void)
      * after a reload and the first thing a harness wants to see.
      */
 restart:
+    /*
+     * The pc the guest will start from, read back rather than assumed: a
+     * flat binary starts at EMU_GUEST_RESET_PC and an ELF starts wherever
+     * e_entry says, and printing the constant either way would be a lie
+     * exactly when it matters.
+     */
+    emu_cpu_status_t st0;
+
+    emu_core_status(&g_sys.core[0], &st0);
+
     console_printf("guest  %u bytes at 0x%08x%s\n"
                    "ram    %u KiB (%u bytes)\n",
-                   (unsigned)g_img_size, (unsigned)emu_guest_entry(),
+                   (unsigned)g_img_size, (unsigned)st0.pc,
                    emu_elf_is_elf(g_img, g_img_size) ? " (elf)" : "",
                    (unsigned)(emu_board_ram_size / 1024u),
                    (unsigned)emu_board_ram_size);
@@ -696,17 +744,8 @@ restart:
 
     const uint32_t elapsed = board_cycles() - start_cycles;
 
-    if (capped) {
-        /*
-         * Named on its own line and before the statistics, so a harness
-         * reading the console can tell "did not terminate" from "ran and
-         * failed" without parsing the numbers.
-         */
-        console_printf("\nemu: instruction cap reached, guest did not "
-                       "halt\n");
-    }
+    emu_session_report(&g_sys, retired_total, elapsed, capped);
 
-    emu_print_run_summary(retired_total, elapsed);
     if (retired_total != 0u && elapsed != 0u) {
         /* KIPS needs the core clock, which is the board's to know. */
         const uint32_t kips = (uint32_t)((uint64_t)retired_total *
@@ -714,18 +753,6 @@ restart:
 
         console_printf("  speed    %u KIPS\n", (unsigned)kips);
     }
-
-    /*
-     * No #if. emu_print_jit_stats answers "is there a JIT here" from the
-     * framework's own code_size, so the caller needs no capability macro
-     * -- and the one that was here read EMU_HAVE_JIT without including
-     * what defines it, which #if treats as 0 without a word. The whole
-     * block silently stopped printing the moment an unrelated include was
-     * removed.
-     */
-    (void)emu_print_jit_stats();
-
-    emu_report_state(g_sys.core[0].cpu, g_sys.core[0].ops);
 
 #if EMU_NET
     /*

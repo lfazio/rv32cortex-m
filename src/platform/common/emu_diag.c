@@ -18,6 +18,7 @@
 
 #include "emu_console.h"
 
+
 #ifdef EMU_JIT_DIFF
 /*
  * A block whose compiled code disagreed with the IR interpreter.
@@ -43,3 +44,16 @@ void emu_jit_diff_report(uint32_t pc, uint32_t off, uint32_t want,
                        (unsigned)got);
 }
 #endif
+
+/* emu_print_fn onto the console, for the frontend's own state dump. */
+static void console_out(void *ctx, const char *s)
+{
+    (void)ctx;
+    emu_console_puts(s);
+}
+
+void emu_report_state(emu_cpu_t *cpu, const emu_cpu_ops_t *ops)
+{
+    emu_console_puts("\n-- guest state --");
+    ops->dump(cpu, console_out, NULL);
+}

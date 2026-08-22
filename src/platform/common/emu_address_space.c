@@ -33,6 +33,7 @@
 
 #include "emu_board.h"
 #include "emu_console.h"
+#include "emu_session.h"
 
 #include "emu/emu_memmap.h"
 #include "emu/emu_dev.h"
@@ -45,13 +46,6 @@
  * ELF's own e_entry for an ELF -- set while the address space is built,
  * because that is where the program headers are read.
  */
-static uint32_t g_entry = EMU_GUEST_RESET_PC;
-
-uint32_t emu_guest_entry(void)
-{
-    return g_entry;
-}
-
 bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
 {
     emu_bus_init(bus);
@@ -87,21 +81,15 @@ bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
      * exists -- a flat binary starts at EMU_GUEST_RESET_PC and an ELF
      * starts wherever it says.
      */
-    g_entry = EMU_GUEST_RESET_PC;
-
-    if (emu_elf_is_elf(emu_board_img, emu_board_img_size)) {
-        const char *const err =
-            emu_elf_map(bus, emu_board_img, emu_board_img_size,
-                        EMU_ELF_ANY_MACHINE, 0u,
-                        EMU_GUEST_RAM_BASE, emu_board_ram_size,
-                        &g_entry, NULL);
-
-        if (err != NULL) {
-            emu_console_printf("elf: %s\n", err);
-            return false;
-        }
-    } else if (!emu_bus_add_rom(bus, "flash", EMU_GUEST_ROM_BASE,
-                                emu_board_img, emu_board_img_size)) {
+    /*
+     * A flat image is mapped whole and read-only here; an **ELF** is not,
+     * because emu_session places it by its program headers and those may
+     * put segments anywhere. Adding a window at EMU_GUEST_ROM_BASE for an
+     * ELF would overlap the segments it is about to map.
+     */
+    if (!emu_elf_is_elf(emu_board_img, emu_board_img_size) &&
+        !emu_bus_add_rom(bus, "flash", EMU_GUEST_ROM_BASE,
+                         emu_board_img, emu_board_img_size)) {
         return false;
     }
 
@@ -119,67 +107,29 @@ bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
 }
 
 /*
- * Bring a guest up: address space, the frontend's own devices, cleared
- * RAM and state, reset and boot.
+ * Bring a guest up: every core's address space, then the shared session,
+ * which places the image and resets.
  *
- * Split out because an upload has to repeat all of it. The bus is rebuilt
- * rather than patched, because the image region's base *and* length both
- * move when a different image arrives and emu_bus cannot resize a region
- * in place -- and that is why the frontend's devices go back on every
- * time: emu_bus_init clears the table, so a rebuild that skipped them
- * would take the interrupt controller away from a guest that had it a
- * moment earlier.
- *
- * The cores are *not* re-opened. They already exist, hold state the
- * frontend allocated, and are what the gdb stub is pointed at; a reload
- * replaces the guest, not the machine.
- *
- * The guest RAM is zeroed rather than left: without that, one test's
+ * The guest RAM is zeroed rather than left: without that one test's
  * leftovers become the next test's initial state and a suite's results
  * start depending on the order it ran in. The exit status is cleared for
  * the same reason -- a guest that halts without calling exit() otherwise
  * reports whatever the last one returned, so every test after the first
  * passing one looks like it passed.
  */
-bool emu_start_guest(emu_system_t *sys, emu_bus_t *buses, emu_uart_t *uart,
-                     emu_guest_exit_t *exit_state)
+bool emu_start_guest(emu_system_t *sys, const struct emu_session_cfg *cfg,
+                     emu_uart_t *uart, emu_guest_exit_t *exit_state)
 {
-    const emu_cpu_ops_t *const ops = sys->ops;
-
     for (unsigned i = 0; i < sys->ncores; i++) {
-        emu_bus_t *const bus = &buses[i];
-
-        if (!emu_build_address_space(bus, uart)) {
-            return false;
-        }
-
-        /*
-         * Hand the image to the frontend before its devices go on, for
-         * one that maps it at an architectural address of its own --
-         * G4MH's code flash at zero. RV32 leaves the hook NULL, because
-         * the region emu_build_address_space added is already where its
-         * guests link.
-         */
-        if (ops->set_image != NULL) {
-            ops->set_image(emu_board_img, emu_board_img_size);
-        }
-
-        if ((ops->add_shared_devices != NULL &&
-             !ops->add_shared_devices(bus)) ||
-            (ops->add_core_devices != NULL &&
-             !ops->add_core_devices(sys->core[i].cpu, bus, i))) {
+        if (!emu_build_address_space(&cfg->buses[i], uart)) {
             return false;
         }
     }
-
-    memset(emu_board_ram, 0, emu_board_ram_size);
 
     if (exit_state != NULL) {
         exit_state->code = 0u;
         exit_state->exited = false;
     }
 
-    emu_system_reset(sys, g_entry);
-    emu_system_boot(sys, EMU_GUEST_RAM_BASE, emu_board_ram_size);
-    return true;
+    return emu_session_reload(sys, cfg);
 }

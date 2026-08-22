@@ -1,0 +1,288 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/*
+ * emu_session.c - see emu_session.h for why the middle of the two runners
+ * is one file and their two ends are not.
+ */
+
+#include "emu_session.h"
+#include "emu_console.h"
+
+#include "emu/emu_elf.h"
+#include "emu/emu_ir.h"
+#include "emu/emu_jit.h"
+#include "emu/emu_memmap.h"
+
+#if EMU_PAIR_STATS
+#  include "emu/emu_pairstats.h"
+#endif
+
+#include <string.h>
+
+static void fail(const emu_session_cfg_t *cfg, const char *msg,
+                 const char *detail)
+{
+    if (cfg->fail != NULL) {
+        cfg->fail(msg, detail);
+    }
+}
+
+/*
+ * Place the image, and say where the guest starts.
+ *
+ * Three cases, and the third is the one that reads as doing nothing:
+ *
+ *   ELF            placed by its program headers, entry from e_entry.
+ *                  emu_elf_map rather than emu_elf_load when the caller
+ *                  gave a RAM window, so a board maps its flash-resident
+ *                  text instead of copying 345 KiB into 243 KiB.
+ *
+ *   flat, moved    written into the bus. A guest linked to run from RAM
+ *                  needs this, and riscv-tests are exactly that -- they
+ *                  also write to their own image, which the read-only
+ *                  window would fault.
+ *
+ *   flat, in place nothing to do: the window at EMU_GUEST_ROM_BASE *is*
+ *                  this buffer, so the bytes are already where the guest
+ *                  will fetch them.
+ */
+static bool place_image(emu_system_t *sys, const emu_session_cfg_t *cfg,
+                        uint32_t *entry_out)
+{
+    const uint32_t load = (cfg->load_addr != 0u) ? cfg->load_addr
+                                                 : EMU_GUEST_ROM_BASE;
+    uint32_t entry = cfg->entry;
+    emu_bus_t *const bus = sys->core[0].bus;
+
+    if (emu_elf_is_elf(cfg->image, cfg->image_size)) {
+        uint32_t e = 0u;
+        const char *err;
+
+        if (cfg->ram_size != 0u && load == EMU_GUEST_ROM_BASE) {
+            err = emu_elf_map(bus, cfg->image, cfg->image_size,
+                              cfg->ops->elf_machine, cfg->ops->elf_machine_alt,
+                              cfg->ram_base, cfg->ram_size, &e, NULL);
+        } else {
+            err = emu_elf_load(bus, cfg->image, cfg->image_size,
+                               cfg->ops->elf_machine, cfg->ops->elf_machine_alt,
+                               &e, NULL);
+        }
+        if (err != NULL) {
+            fail(cfg, "elf", err);
+            return false;
+        }
+        if (entry == 0u) {
+            entry = e;
+        }
+    } else if (load != EMU_GUEST_ROM_BASE) {
+        if (!emu_bus_load(bus, load, cfg->image, cfg->image_size)) {
+            fail(cfg, "image does not fit at the load address", NULL);
+            return false;
+        }
+        if (entry == 0u) {
+            entry = load;
+        }
+    } else if (entry == 0u) {
+        entry = load;
+    }
+
+    *entry_out = entry;
+    return true;
+}
+
+/*
+ * The frontend's own devices, onto every core's bus.
+ *
+ * Not emu_system_open, which also *opens* the cores: a reload replaces
+ * the guest and not the machine, and re-opening would take the cores out
+ * from under the gdb stub that is pointed at them.
+ */
+static bool add_devices(emu_system_t *sys, const emu_session_cfg_t *cfg)
+{
+    const emu_cpu_ops_t *const ops = sys->ops;
+
+    for (unsigned i = 0; i < sys->ncores; i++) {
+        emu_bus_t *const bus = &cfg->buses[i];
+
+        if (ops->set_image != NULL) {
+            ops->set_image(cfg->image, cfg->image_size);
+        }
+        if ((ops->add_shared_devices != NULL &&
+             !ops->add_shared_devices(bus)) ||
+            (ops->add_core_devices != NULL &&
+             !ops->add_core_devices(sys->core[i].cpu, bus, i))) {
+            fail(cfg, "the frontend's devices do not fit on the bus", NULL);
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
+ * Clear RAM, place the image, reset and boot: the half of a reload that
+ * a first start also does.
+ *
+ * Split from add_devices because emu_system_open *already* adds them --
+ * calling both is how this first went wrong, and it presents as "the
+ * frontend's devices do not fit on the bus" with seven of sixteen regions
+ * used, which reads as a size problem and is a duplicate one.
+ */
+static bool finish(emu_system_t *sys, const emu_session_cfg_t *cfg)
+{
+    uint32_t entry = 0u;
+
+    /* Before the image, because an ELF's segments and its .bss land in
+     * here and zeroing afterwards would erase them. */
+    if (cfg->ram_host != NULL && cfg->ram_size != 0u) {
+        memset(cfg->ram_host, 0, cfg->ram_size);
+    }
+
+    if (!place_image(sys, cfg, &entry)) {
+        return false;
+    }
+
+    /*
+     * Cleared *before* the image is placed would be wrong -- an ELF's
+     * segments land in it -- so this is here, between the two.
+     */
+    emu_system_reset(sys, entry);
+    emu_system_boot(sys, cfg->ram_base, cfg->ram_size);
+
+    /*
+     * Every translation is stale: a new image at the same guest
+     * addresses is precisely the case a JIT cannot detect for itself.
+     * Reset already flushes on both backends, and this covers a frontend
+     * whose reset does not.
+     */
+    emu_system_invalidate(sys, 0u, 0xFFFFFFFFu);
+    return true;
+}
+
+/*
+ * A reload rebuilds the buses, so the frontend's devices have to go back
+ * on -- emu_bus_init cleared the table. The cores are *not* re-opened:
+ * the guest changes, the machine does not, and re-opening would take them
+ * out from under the gdb stub that is pointed at them.
+ */
+bool emu_session_reload(emu_system_t *sys, const emu_session_cfg_t *cfg)
+{
+    return add_devices(sys, cfg) && finish(sys, cfg);
+}
+
+bool emu_session_start(emu_system_t *sys, const emu_session_cfg_t *cfg)
+{
+    const emu_cpu_ops_t *const ops =
+        (cfg->ops != NULL) ? cfg->ops : emu_frontend_default();
+
+    if (cfg->uart != NULL && cfg->uart_tx != NULL) {
+        emu_uart_init(cfg->uart, cfg->uart_tx, cfg->uart_rx, NULL);
+    }
+
+    if (!emu_system_open(sys, ops, cfg->buses, cfg->ncores)) {
+        fail(cfg, "could not bring the cores up", NULL);
+        return false;
+    }
+
+    /*
+     * Which backend, before anything runs. A frontend prefers its JIT
+     * wherever one is compiled in, which is right for firmware and wrong
+     * for a runner that has to be able to say "the suite passes
+     * interpreted" and "the suite passes translated" as separate claims.
+     */
+    if (ops->select_backend != NULL &&
+        !ops->select_backend(sys->core[0].cpu, cfg->want_jit)) {
+        fail(cfg, "backend init failed", NULL);
+        return false;
+    }
+
+    for (unsigned i = 0; i < sys->ncores; i++) {
+        emu_cpu_t *const cpu = sys->core[i].cpu;
+
+        if (ops->set_syscall != NULL && cfg->syscall_fn != NULL) {
+            ops->set_syscall(cpu, cfg->syscall_fn, cfg->syscall_ctx);
+        }
+        if (ops->set_cache != NULL && cfg->cache_ops != NULL) {
+            ops->set_cache(cpu, cfg->cache_ops);
+        }
+        if (ops->set_unmask_hook != NULL && cfg->unmask_fn != NULL) {
+            ops->set_unmask_hook(cpu, cfg->unmask_fn, cfg->unmask_ctx);
+        }
+#if EMU_ENABLE_TRACE
+        if (ops->set_trace != NULL && cfg->trace_fn != NULL) {
+            ops->set_trace(cpu, cfg->trace_fn, NULL);
+        }
+#else
+        (void)cfg->trace_fn;
+#endif
+    }
+
+    /* No add_devices: emu_system_open did it. */
+    return finish(sys, cfg);
+}
+
+/* ------------------------------------------------------------------ */
+/* Reporting                                                           */
+/* ------------------------------------------------------------------ */
+
+void emu_session_report(emu_system_t *sys, uint64_t retired,
+                        uint32_t host_cycles, bool capped)
+{
+    if (capped) {
+        /*
+         * On its own line and before the numbers, so a harness reading
+         * the console can tell "did not terminate" from "ran and failed"
+         * without parsing them.
+         */
+        emu_console_printf("\nemu: instruction cap reached, guest did not "
+                           "halt\n");
+    }
+
+    emu_print_run_summary(retired, host_cycles);
+
+    if (sys->ncores > 1u) {
+        /* Per core, because that is what a determinism check compares
+         * between two runs of a multicore guest. */
+        for (unsigned i = 0; i < sys->ncores; i++) {
+            emu_cpu_status_t st;
+
+            emu_core_status(&sys->core[i], &st);
+            emu_console_printf("  core %u  %u retired\n", i,
+                               (unsigned)st.retired);
+        }
+    }
+
+    /*
+     * No #if on a JIT macro. emu_print_jit_stats answers "is there one
+     * here" from the framework's own code_size, which is the only fact
+     * that decides it -- and the capability macro that used to guard this
+     * was read in a file that did not include what defines it, so the
+     * whole block silently stopped printing.
+     */
+    (void)emu_print_jit_stats();
+
+    /*
+     * What the IR optimiser did. Reported because a pass that never fires
+     * and a pass that does not pay are indistinguishable otherwise: these
+     * counters had no reader at all until a fusion pass needed proving,
+     * and it was a 17% regression twice before it was a 17% win.
+     */
+    {
+        emu_ir_opt_stats_t o;
+
+        emu_ir_opt_totals(&o);
+        if (o.blocks != 0u) {
+            emu_console_printf(
+                "\n-- ir --\n"
+                "  blocks   %u optimised\n"
+                "  elided   gets %u  puts %u  flags %u  dead %u\n"
+                "  fused    const->imm %u  addr %u  identities %u\n",
+                (unsigned)o.blocks, (unsigned)o.gets_removed,
+                (unsigned)o.puts_removed, (unsigned)o.flags_removed,
+                (unsigned)o.dead_removed, (unsigned)o.folded,
+                (unsigned)o.addr_folded, (unsigned)o.identities);
+        }
+    }
+
+#if EMU_PAIR_STATS
+    emu_pair_report(40u);
+#endif
+}

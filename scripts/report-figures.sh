@@ -152,7 +152,7 @@ time_guest() {
     [ -f "$_img" ] || { say "  $(printf '%-22s' "$_name") (not built)"; return; }
     _t0=$(date +%s%N)
     _r=$("$HOST" "$@" "$_img" 2>&1 >/dev/null |
-         sed -n 's/^emu: \([0-9]*\) instructions retired/\1/p' || true)
+         sed -n 's/^  retired  \([0-9]*\) instructions/\1/p' || true)
     _t1=$(date +%s%N)
     say "  $(printf '%-22s' "$_name") $(( (_t1 - _t0) / 1000000 )) ms  ${_r:-?} insns"
 }
