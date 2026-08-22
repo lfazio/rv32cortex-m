@@ -525,9 +525,23 @@ typedef struct emu_ir_opt_stats {
     uint32_t flags_removed;   /* dead EMU_IR_SETF deleted              */
     uint32_t gets_removed;    /* guest register reloads elided         */
     uint32_t puts_removed;    /* guest register stores made redundant  */
-    uint32_t folded;          /* constant-folded instructions          */
+    uint32_t folded;          /* constants absorbed into an immediate  */
+    uint32_t addr_folded;     /* displacements folded into a LOAD/STORE */
+    uint32_t identities;      /* no-op arithmetic turned into a move    */
     uint32_t dead_removed;    /* values nothing consumed               */
+    uint32_t blocks;          /* times emu_ir_optimise ran             */
 } emu_ir_opt_stats_t;
+
+/*
+ * Everything emu_ir_optimise has done since the process started.
+ *
+ * The per-block stats were written into a caller's struct and the only
+ * caller passed NULL, so nothing could observe them -- which for an
+ * optimiser means no way to tell a pass that is not paying from a pass
+ * that never runs. This tree's own rule: identical counters mean the
+ * code never ran, and a counter with no reader cannot even be identical.
+ */
+void emu_ir_opt_totals(emu_ir_opt_stats_t *out);
 
 /* Defined under Lowering below; the passes read one field of it. */
 typedef struct emu_ir_target emu_ir_target_t;

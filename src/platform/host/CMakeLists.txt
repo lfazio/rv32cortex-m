@@ -23,6 +23,14 @@ add_executable(emu-host
     # src/platform/common/emu_run.c. What a CLI and a board differ in is
     # four hooks, not a loop each.
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_run.c"
+
+    # The newlib write(64)/exit(93) pair, also shared. This file had its
+    # own copy of the same ABI until it did not need to.
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_syscall.c"
+
+    # The one jit-diff reporter, so a divergence reported from here and
+    # from a board are the same text.
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_diag.c"
 )
 
 target_include_directories(emu-host PRIVATE

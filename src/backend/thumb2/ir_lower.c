@@ -121,6 +121,8 @@ static bool reads_a_in_r0(uint8_t op)
     case EMU_IR_ADD: case EMU_IR_SUB: case EMU_IR_AND:
     case EMU_IR_OR:  case EMU_IR_XOR:
     case EMU_IR_SHL: case EMU_IR_SHR: case EMU_IR_SAR:
+    case EMU_IR_ADDI: case EMU_IR_ANDI:
+    case EMU_IR_ORI:  case EMU_IR_XORI:
     case EMU_IR_SHLI: case EMU_IR_SHRI: case EMU_IR_SARI:
     case EMU_IR_NOT: case EMU_IR_NEG:
     case EMU_IR_BSWAP32: case EMU_IR_BSWAP16: case EMU_IR_HSWAP:
@@ -380,6 +382,18 @@ static bool bisect_allows(uint8_t op)
         return T2_BISECT >= 1;
     case EMU_IR_ADD: case EMU_IR_SUB: case EMU_IR_AND:
     case EMU_IR_OR:  case EMU_IR_XOR: case EMU_IR_NOT: case EMU_IR_NEG:
+    /*
+     * The immediate forms sit with their register counterparts, which is
+     * where they belong and is also the bug this table is prone to:
+     * `default: return false` means an operation nobody adds here is
+     * silently declined, and a declined operation costs the whole block.
+     * Adding the ADDI class to lower_one and forgetting this took the
+     * F746 from 171 translated blocks and 14,693 interpreted
+     * instructions to 144 and **37,634** -- and isatest still passed,
+     * because declining is correct.
+     */
+    case EMU_IR_ADDI: case EMU_IR_ANDI:
+    case EMU_IR_ORI:  case EMU_IR_XORI:
         return T2_BISECT >= 2;
     case EMU_IR_SHL: case EMU_IR_SHR: case EMU_IR_SAR:
     case EMU_IR_SHLI: case EMU_IR_SHRI: case EMU_IR_SARI:
@@ -441,6 +455,24 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
     case EMU_IR_FMIN: case EMU_IR_FMAX: case EMU_IR_FCMP:
     case EMU_IR_FCVT_TO_I: case EMU_IR_FCVT_FROM_I:
     case EMU_IR_FCLASS:
+        return false;
+
+    /*
+     * The integer operations lower_one also declines.
+     *
+     * emu_ir.h calls answering true a promise, and this was breaking it:
+     * `default: return true` covered ROTL, ROTLI and the four value bit
+     * operations, every one of which lower_one refuses -- so a caller
+     * that believed the answer built a block and lost it at emission,
+     * having already paid for the translation and the optimisation.
+     *
+     * It cost nothing while only frontends asked, because the frontends
+     * ask about the FP class and nothing else. It stopped being free the
+     * moment an IR pass started asking, which is what surfaced it.
+     */
+    case EMU_IR_ROTL: case EMU_IR_ROTLI:
+    case EMU_IR_BEXT: case EMU_IR_BSET:
+    case EMU_IR_BCLR: case EMU_IR_BINV:
         return false;
 
     default:
@@ -557,6 +589,59 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         t2_shift_reg((in->op == (uint8_t)EMU_IR_SHL) ? T2_LSL
                        : (in->op == (uint8_t)EMU_IR_SHR) ? T2_LSR : T2_ASR,
                        rd, ra, T2_R2);
+        st_slot(rd, in->dst);
+        break;
+    }
+
+    /*
+     * The immediate ALU forms, which pass_fuse produces from a constant
+     * feeding a register operation.
+     *
+     * Three encodings and a fallback, because ARM's are not one thing:
+     * ADDW/SUBW take a plain 0..4095 and reach every small displacement;
+     * the T3 forms take a *modified* immediate, which reaches 0x00FF00FF
+     * and not 4000; and a constant in neither is materialised and used
+     * from a register -- which is exactly what the un-fused code did, so
+     * the worst case is no worse than not folding.
+     *
+     * That fallback is why can_lower may answer yes without being told
+     * the value. Answering per-value is not possible through that
+     * interface, and promising something the emitter cannot do discards
+     * the whole block.
+     */
+    case EMU_IR_ADDI: case EMU_IR_ANDI:
+    case EMU_IR_ORI:  case EMU_IR_XORI: {
+        const uint32_t ra = use_reg(in->a, T2_R0);
+        const uint32_t rd = def_reg(in->dst, T2_R0);
+        const uint32_t v = in->imm;
+        uint16_t i12;
+
+        if (in->op == (uint8_t)EMU_IR_ADDI && v <= 0xFFFu) {
+            t2_addw(rd, ra, (uint16_t)v);
+        } else if (in->op == (uint8_t)EMU_IR_ADDI &&
+                   (uint32_t)(-(int32_t)v) <= 0xFFFu) {
+            /* A negative addend is a subtraction, and SUBW reaches the
+             * same 4096 downwards that ADDW reaches upwards. */
+            t2_subw(rd, ra, (uint16_t)(-(int32_t)v));
+        } else if (t2_expand_imm(v, &i12)) {
+            switch ((emu_ir_op_t)in->op) {
+            case EMU_IR_ADDI: t2_add_imm(rd, ra, i12); break;
+            case EMU_IR_ANDI: t2_and_imm(rd, ra, i12); break;
+            case EMU_IR_ORI:  t2_orr_imm(rd, ra, i12); break;
+            default:          t2_eor_imm(rd, ra, i12); break;
+            }
+        } else {
+            /* No immediate form: materialise and use the register one. */
+            const uint32_t rt = (rd == T2_R1) ? T2_R2 : T2_R1;
+
+            t2_imm32(rt, v);
+            switch ((emu_ir_op_t)in->op) {
+            case EMU_IR_ADDI: t2_add(rd, ra, rt); break;
+            case EMU_IR_ANDI: t2_and(rd, ra, rt); break;
+            case EMU_IR_ORI:  t2_orr(rd, ra, rt); break;
+            default:          t2_eor(rd, ra, rt); break;
+            }
+        }
         st_slot(rd, in->dst);
         break;
     }
@@ -970,8 +1055,6 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_BITOP_TST:
     case EMU_IR_POPCNT:
     case EMU_IR_ROTL: case EMU_IR_ROTLI:
-    case EMU_IR_ADDI: case EMU_IR_ANDI:
-    case EMU_IR_ORI:  case EMU_IR_XORI:
     case EMU_IR_BEXT: case EMU_IR_BSET:
     case EMU_IR_BCLR: case EMU_IR_BINV:
     default:

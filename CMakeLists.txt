@@ -109,7 +109,27 @@ option(RV32_LAZY_IRQ "Lazy interrupt-delivery evaluation" ON)
 
 # Bytes of RAM for the JIT code cache, taken from what the guest would get.
 # Setting this very small is also how the compaction path gets exercised.
-set(EMU_JIT_CODE_BYTES "12288" CACHE STRING "JIT code cache size in bytes")
+#
+# **32 KB, measured, not guessed.** `bench` on the F746, one flash apart:
+#
+#            12 KB          32 KB
+#   cycles   1,185,619,446  181,029,971     6.55x
+#   ratio    930.24         142.03
+#   xlat     10,192         850
+#   evicted  10,188         821
+#
+# At 12 KB every translation evicted another -- the working set is 26,828
+# bytes and the cache could not hold a fifth of it, so the board spent its
+# time retranslating. It costs the guest 20 KiB of the F746's 264, which
+# is the trade this knob has always been, and it is worth it by a factor
+# of six.
+#
+# It also did nothing at all until this release: the value reached only
+# the hand-written translator's RV_JIT_CODE_SIZE, and the IR backend that
+# replaced it sized its static buffer from EMU_IR_JIT_STATIC_BYTES, which
+# nothing set. -DEMU_JIT_CODE_BYTES=32768 reported `code 1728/12288` and
+# figures identical to the digit.
+set(EMU_JIT_CODE_BYTES "32768" CACHE STRING "JIT code cache size in bytes")
 
 # Build and use the Thumb-2 JIT. Turning this off is how the same guest
 # image is measured on the interpreter, which is also how a suspected JIT
@@ -321,6 +341,16 @@ target_compile_definitions(emucore PUBLIC
     EMU_ENABLE_TRACE=$<BOOL:${EMU_ENABLE_TRACE}>
     EMU_ENABLE_STATS=$<BOOL:${EMU_ENABLE_STATS}>
     EMU_PAIR_STATS=$<BOOL:${EMU_PAIR_STATS}>
+    #
+    # The IR backend's static code cache.
+    #
+    # This was missing, and EMU_JIT_CODE_BYTES -- which BUILD.md and
+    # CLAUDE.md both describe as dominating JIT performance on the board
+    # -- reached only the hand-written translator's RV_JIT_CODE_SIZE.
+    # Since the IR backend replaced it, setting the option changed
+    # nothing: -DEMU_JIT_CODE_BYTES=32768 still reported `code 1728/12288`
+    # and produced figures identical to the digit.
+    EMU_IR_JIT_STATIC_BYTES=${EMU_JIT_CODE_BYTES}u
     #
     # Whether a JIT was *asked for*. emu_jit.h reconciles this with what
     # the host can actually emit; before it existed, EMU_HOST_JIT_X86_64 and

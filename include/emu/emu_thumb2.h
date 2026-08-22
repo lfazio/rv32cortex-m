@@ -64,6 +64,29 @@ void t2_neg(uint32_t rd, uint32_t rn);
 void t2_shift_reg(uint32_t kind, uint32_t rd, uint32_t rn, uint32_t rm);
 void t2_shift_imm(uint32_t type, uint32_t rd, uint32_t rm, uint32_t amount);
 
+/*
+ * ARM's modified immediate: a byte, rotated, or a repeating pattern.
+ * False for a constant with no such form, which the caller answers by
+ * materialising it and using the register form -- exactly what it would
+ * have done had the constant never been folded in.
+ */
+bool t2_expand_imm(uint32_t v, uint16_t *out);
+
+/* T3 data processing, taking the imm12 t2_expand_imm produced. */
+void t2_add_imm(uint32_t rd, uint32_t rn, uint16_t imm12);
+void t2_sub_imm(uint32_t rd, uint32_t rn, uint16_t imm12);
+void t2_and_imm(uint32_t rd, uint32_t rn, uint16_t imm12);
+void t2_orr_imm(uint32_t rd, uint32_t rn, uint16_t imm12);
+void t2_eor_imm(uint32_t rd, uint32_t rn, uint16_t imm12);
+
+/*
+ * ADDW/SUBW: a plain unsigned 0..4095, no rotation. Not the same
+ * immediate as the T3 forms -- it reaches 4000 and cannot reach
+ * 0x00FF0000, and they are the other way round.
+ */
+void t2_addw(uint32_t rd, uint32_t rn, uint16_t imm12);
+void t2_subw(uint32_t rd, uint32_t rn, uint16_t imm12);
+
 void t2_mul(uint32_t rd, uint32_t rn, uint32_t rm);
 void t2_mull(bool sign, uint32_t rdlo, uint32_t rdhi, uint32_t rn,
              uint32_t rm);

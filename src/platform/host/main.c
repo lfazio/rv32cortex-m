@@ -19,6 +19,7 @@
  */
 
 #include "emu/emu_cpu.h"
+#include "emu_console.h"   /* the shared syscall handler and its context */
 #include "emu_run.h"
 
 #if EMU_NET
@@ -30,6 +31,7 @@
 #include "emu/emu_elf.h"
 #include "emu/emu_memmap.h"
 #include "emu/emu_jit.h"
+#include "emu/emu_ir.h"
 
 /*
  * No frontend headers here, and that is the property to keep.
@@ -137,6 +139,19 @@ static void host_tx(void *ctx, uint8_t c)
     fflush(stdout);
 }
 
+/*
+ * A byte of *guest* output, for the shared syscall handler.
+ *
+ * Deliberately not the firmware's emu_console_putb, which expands LF to
+ * CRLF: that is a property of a terminal on a serial line, not of a
+ * console. Doing it here would put a \r into every line of every guest's
+ * output on stdout, which two test suites compare and one figure script
+ * parses.
+ *
+ * The same byte as host_tx, which is the guest's virtual UART -- one
+ * console, so a guest that writes through the UART and one that writes
+ * through the syscall interleave in the order they happened.
+ */
 static int host_rx(void *ctx)
 {
     (void)ctx;
@@ -201,50 +216,24 @@ static void host_diagf(const char *fmt, ...)
 /* ------------------------------------------------------------------ */
 
 /*
- * A tiny subset of the newlib syscall ABI, which is what a bare-metal
- * cross-gcc's crt0 and the standard test harnesses emit:
- *
- *   nr = 64  write(fd, buf, len)
- *   nr = 93  exit(code)
- *
- * Anything else falls through to the architectural trap, so guest software
- * with its own handler keeps working.
- *
- * The frontend unpacks its own calling convention into emu_syscall_t --
- * a7 and a0-a3 on RISC-V -- so this handler is written once and serves any
- * of them.
+ * The guest's exit status. `exited` distinguishes a guest that called
+ * exit() from one that halted or hit the cap, because a code of 0 means
+ * nothing if the syscall was never reached.
  */
-static int g_exit_code = -1;
+static emu_guest_exit_t g_exit;
 
-static bool host_syscall(emu_cpu_t *cpu, emu_syscall_t *sc, void *user)
-{
-    (void)user;
-
-    switch (sc->nr) {
-    case 64: {   /* write(fd, buf, len) */
-        const uint32_t buf = sc->arg[1];
-        const uint32_t len = sc->arg[2];
-        for (uint32_t i = 0; i < len; i++) {
-            uint32_t byte;
-            if (emu_bus_read(g_core.bus, buf + i, 1u, &byte) != EMU_FAULT_NONE) {
-                break;
-            }
-            fputc((int)byte, stdout);
-        }
-        fflush(stdout);
-        sc->ret = len;
-        return true;
-    }
-
-    case 93:     /* exit(code) */
-        g_exit_code = (int)sc->arg[0];
-        g_core.ops->halt(cpu);
-        return true;
-
-    default:
-        return false;
-    }
-}
+/*
+ * The syscall handler is emu_guest_syscall, shared with the firmware.
+ *
+ * This file used to carry its own -- the same newlib write(64)/exit(93)
+ * pair, differing only in how it reached the bus. Two implementations of
+ * one ABI, and the drift had already started: the shared one reads the
+ * buffer a byte at a time *through the bus* so a buffer spanning two
+ * regions works and a bad pointer faults rather than reaching into host
+ * memory, and this copy did the same thing without the reasoning and
+ * would not have kept doing it.
+ */
+static emu_syscall_ctx_t g_sc_ctx;
 
 #if EMU_ENABLE_TRACE
 /*
@@ -350,6 +339,39 @@ static uint16_t elf_machine(const uint8_t *b, size_t n)
 /* ------------------------------------------------------------------ */
 
 /* emu_print_fn onto stderr, for the frontend's own state dump. */
+void emu_console_putb(uint8_t c);
+void emu_console_putb(uint8_t c)
+{
+    host_tx(NULL, c);
+}
+
+/*
+ * The diagnostic sink the shared files print through.
+ *
+ * Two functions rather than linking emu_console.c, because the host has
+ * two sinks where a board has one: guest output goes to stdout (above)
+ * and diagnostics go to stderr and the telnet ring (below). A board gives
+ * its only wire away and has no such choice to make.
+ */
+void emu_console_puts(const char *s);
+void emu_console_puts(const char *s)
+{
+    host_diag(s);
+}
+
+void emu_console_printf(const char *fmt, ...);
+void emu_console_printf(const char *fmt, ...)
+{
+    char buf[512];
+    va_list ap;
+
+    va_start(ap, fmt);
+    (void)vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    host_diag(buf);
+}
+
+
 #if EMU_NET
 /* ------------------------------------------------------------------ */
 /* Images arriving over TFTP                                           */
@@ -490,26 +512,6 @@ static bool parse_u32(const char *s, uint32_t *out)
     return true;
 }
 
-#ifdef EMU_JIT_DIFF
-/*
- * A block whose compiled code disagreed with the IR interpreter.
- *
- * `off` is a byte offset into the guest state, so for both frontends the
- * register file starts at zero and the number is the register times
- * four. The first divergence is the useful one -- everything after it is
- * downstream of the same bug.
- */
-void emu_jit_diff_report(uint32_t pc, uint32_t off, uint32_t want,
-                         uint32_t got)
-{
-    static unsigned reported;
-
-    if (reported++ < 20u) {
-        host_diagf("jit-diff: block pc=%08x state+%u want=%08x got=%08x\n",
-                pc, off, want, got);
-    }
-}
-#endif
 
 bool host_gdb_start(emu_core_t *core, const emu_gdb_target_t *target, int port);
 void host_gdb_wait(void);
@@ -948,6 +950,10 @@ int main(int argc, char **argv)
     }
 #endif
 
+    g_sc_ctx.bus  = g_core.bus;
+    g_sc_ctx.core = &g_core;
+    g_sc_ctx.exit = &g_exit;
+
 #if EMU_NET
     /* What a reload has to redo, recorded once here. */
     g_ops       = ops;
@@ -961,7 +967,8 @@ int main(int argc, char **argv)
     /* Every core gets the hooks: any of them may make a system call. */
     for (unsigned i = 0; i < g_sys.ncores; i++) {
         if (ops->set_syscall != NULL) {
-            ops->set_syscall(g_sys.core[i].cpu, host_syscall, NULL);
+            ops->set_syscall(g_sys.core[i].cpu, emu_guest_syscall,
+                             &g_sc_ctx);
         }
 #if EMU_ENABLE_TRACE
         if (ops->set_trace != NULL) {
@@ -1146,10 +1153,31 @@ restart:
             emu_jit_get_stats(&st);
             if (st.translations != 0u || st.block_entries != 0u) {
                 host_diagf("emu: jit blocks %u  xlat %u  entries %u  interp %u  "
-                        "code %u/%u  flushes %u\n",
+                        "code %u/%u  flushes %u\n"
+                        "emu: jit declined %u  overflow %u\n",
                         st.blocks, st.translations, st.block_entries,
                         st.interp_fallbacks, st.code_used, st.code_size,
-                        st.flushes);
+                        st.flushes, st.declined, st.overflowed);
+
+                /*
+                 * What the IR optimiser did, which nothing could observe
+                 * until it was reported: a pass that never fires and a
+                 * pass that does not pay look identical from the outside,
+                 * and this tree's own rule is that identical counters
+                 * mean the code never ran.
+                 */
+                emu_ir_opt_stats_t o;
+
+                emu_ir_opt_totals(&o);
+                host_diagf("emu: ir  optimised %u blocks\n"
+                           "emu: ir  gets-elided %u  puts-dropped %u  "
+                           "flags-dropped %u  dead %u\n"
+                           "emu: ir  const->imm %u  addr-fold %u  "
+                           "identities %u\n",
+                           o.blocks,
+                           o.gets_removed, o.puts_removed, o.flags_removed,
+                           o.dead_removed, o.folded, o.addr_folded,
+                           o.identities);
 #ifdef EMU_JIT_DIFF
                 host_diagf("emu: jit-diff checked %u  declined %u\n",
                         st.diff_checked, st.diff_declined);
@@ -1201,5 +1229,5 @@ restart:
     }
 #endif
 
-    return (g_exit_code >= 0) ? g_exit_code : 0;
+    return g_exit.exited ? (int)g_exit.code : 0;
 }

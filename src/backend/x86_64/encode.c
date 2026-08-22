@@ -180,6 +180,22 @@ void x86_and_imm8(int dst, int8_t imm)
     emu_jit_emit8((uint8_t)imm);
 }
 
+void x86_alu_imm32(unsigned ext, int dst, uint32_t imm)
+{
+    const int32_t sx = (int32_t)imm;
+
+    emit_rex(0u, 0u, (unsigned)dst);
+    if (sx >= -128 && sx <= 127) {
+        emu_jit_emit8(0x83);            /* ALU r/m32, imm8 sign-extended */
+        modrm_rr((int)ext, dst);
+        emu_jit_emit8((uint8_t)(int8_t)sx);
+        return;
+    }
+    emu_jit_emit8(0x81);                /* ALU r/m32, imm32 */
+    modrm_rr((int)ext, dst);
+    emu_jit_emit32(imm);
+}
+
 void x86_shift_cl(int dst, unsigned ext)
 {
     emit_rex(0u, 0u, (unsigned)dst);

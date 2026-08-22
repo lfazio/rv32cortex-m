@@ -108,6 +108,117 @@ void t2_eor(uint32_t rd, uint32_t rn, uint32_t rm)
     t2_dp3(0xEA80u, rd, rn, rm);
 }
 
+/*
+ * ARM's "modified immediate": a byte, rotated, or one of three repeating
+ * patterns. Returns false for a constant that has no such form.
+ *
+ * Worth writing out rather than approximating, because a wrong answer
+ * here does not fail to assemble -- it assembles as a *different
+ * constant*, which is the same class of defect as the 16-bit CMP that
+ * became `CMP r0, r1` and cost this project an interrupt-latency bound.
+ * The four cases are the architecture's, in its order:
+ *
+ *   0000_0000 0000_0000 0000_0000 XYXY_XYXY   imm12 = 0000 XY
+ *   0000_0000 XYXY_XYXY 0000_0000 XYXY_XYXY   imm12 = 0001 XY
+ *   XYXY_XYXY 0000_0000 XYXY_XYXY 0000_0000   imm12 = 0010 XY
+ *   XYXY_XYXY XYXY_XYXY XYXY_XYXY XYXY_XYXY   imm12 = 0011 XY
+ *
+ * and otherwise an 8-bit value with its top bit set, rotated right by
+ * 8..31 -- so the test is that rotating *left* by that amount lands the
+ * whole value inside 0x80..0xFF.
+ */
+bool t2_expand_imm(uint32_t v, uint16_t *out)
+{
+    const uint32_t b  = v & 0xFFu;
+    const uint32_t hb = (v >> 8) & 0xFFu;
+
+    if (v < 0x100u) {
+        *out = (uint16_t)v;
+        return true;
+    }
+    if (b != 0u && v == ((b << 16) | b)) {
+        *out = (uint16_t)(0x100u | b);
+        return true;
+    }
+    if (hb != 0u && v == ((hb << 24) | (hb << 8))) {
+        *out = (uint16_t)(0x200u | hb);
+        return true;
+    }
+    if (b != 0u && v == (b * 0x01010101u)) {
+        *out = (uint16_t)(0x300u | b);
+        return true;
+    }
+    for (uint32_t rot = 8u; rot < 32u; rot++) {
+        const uint32_t r = (v << rot) | (v >> (32u - rot));
+
+        if (r >= 0x80u && r <= 0xFFu) {
+            *out = (uint16_t)((rot << 7) | (r & 0x7Fu));
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The T3 modified-immediate data-processing form: rd = rn <op> #imm. */
+static void t2_dp_imm(uint16_t hw1_base, uint32_t rd, uint32_t rn,
+                      uint16_t imm12)
+{
+    const uint32_t i    = (imm12 >> 11) & 1u;
+    const uint32_t imm3 = (imm12 >> 8) & 7u;
+    const uint32_t imm8 = imm12 & 0xFFu;
+
+    t2_emit32((uint16_t)(hw1_base | (i << 10) | rn),
+              (uint16_t)((imm3 << 12) | (rd << 8) | imm8));
+}
+
+void t2_add_imm(uint32_t rd, uint32_t rn, uint16_t imm12)
+{
+    t2_dp_imm(0xF100u, rd, rn, imm12);
+}
+void t2_sub_imm(uint32_t rd, uint32_t rn, uint16_t imm12)
+{
+    t2_dp_imm(0xF1A0u, rd, rn, imm12);
+}
+void t2_and_imm(uint32_t rd, uint32_t rn, uint16_t imm12)
+{
+    t2_dp_imm(0xF000u, rd, rn, imm12);
+}
+void t2_orr_imm(uint32_t rd, uint32_t rn, uint16_t imm12)
+{
+    t2_dp_imm(0xF040u, rd, rn, imm12);
+}
+void t2_eor_imm(uint32_t rd, uint32_t rn, uint16_t imm12)
+{
+    t2_dp_imm(0xF080u, rd, rn, imm12);
+}
+
+/*
+ * ADDW/SUBW: a plain unsigned 12-bit immediate with no rotation, which
+ * reaches every value 0..4095 and so covers most of what a guest adds --
+ * displacements, small constants, frame offsets. Separate from the T3
+ * forms above because it is a different encoding, not a different
+ * immediate: T3 can express 0x00FF0000 and cannot express 4000.
+ */
+void t2_addw(uint32_t rd, uint32_t rn, uint16_t imm12)
+{
+    const uint32_t i    = (imm12 >> 11) & 1u;
+    const uint32_t imm3 = (imm12 >> 8) & 7u;
+    const uint32_t imm8 = imm12 & 0xFFu;
+
+    t2_emit32((uint16_t)(0xF200u | (i << 10) | rn),
+              (uint16_t)((imm3 << 12) | (rd << 8) | imm8));
+}
+
+void t2_subw(uint32_t rd, uint32_t rn, uint16_t imm12)
+{
+    const uint32_t i    = (imm12 >> 11) & 1u;
+    const uint32_t imm3 = (imm12 >> 8) & 7u;
+    const uint32_t imm8 = imm12 & 0xFFu;
+
+    t2_emit32((uint16_t)(0xF2A0u | (i << 10) | rn),
+              (uint16_t)((imm3 << 12) | (rd << 8) | imm8));
+}
+
 /* CMP.W rn, rm -- sets the flags and discards the result. */
 void t2_cmp(uint32_t rn, uint32_t rm)
 {

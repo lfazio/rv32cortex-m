@@ -63,6 +63,19 @@ enum {
 #define X86_CMP 0x39u
 #define X86_TEST 0x85u
 
+/*
+ * The same operations as a /digit for the 0x81 group -- ALU r/m32,
+ * imm32. A different encoding space from the byte above, which is why
+ * these are separate constants rather than a shift of those: 0x81 /0 is
+ * ADD and 0x01 is also ADD, and nothing in the numbers says so.
+ */
+#define X86_X_ADD 0u
+#define X86_X_OR  1u
+#define X86_X_AND 4u
+#define X86_X_SUB 5u
+#define X86_X_XOR 6u
+#define X86_X_CMP 7u
+
 /* Shift extensions for the /n field: 4 shl, 5 shr, 7 sar. */
 #define X86_SHL 4u
 #define X86_SHR 5u
@@ -143,6 +156,15 @@ void x86_bswap(int reg);
 #define X86_ROR 1u
 void x86_add_imm8(int dst, int8_t imm);
 void x86_and_imm8(int dst, int8_t imm);
+
+/*
+ * ALU with a full 32-bit immediate: `ext` is an X86_X_* /digit.
+ *
+ * Uses the sign-extended imm8 form when the value fits, which is three
+ * bytes rather than six and is most of them -- guest constants cluster
+ * hard around small displacements and masks.
+ */
+void x86_alu_imm32(unsigned ext, int dst, uint32_t imm);
 
 void x86_shift_cl(int dst, unsigned ext);
 void x86_shift_imm(int dst, unsigned ext, uint32_t amount);

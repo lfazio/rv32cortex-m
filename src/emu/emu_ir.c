@@ -12,6 +12,7 @@
  */
 
 #include "emu/emu_ir.h"
+#include "emu/emu_jit.h"   /* EMU_HAVE_JIT */
 
 #include <string.h>
 
@@ -471,6 +472,249 @@ static void pass_dead_values(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
  * this file is: a temp is written exactly once by construction and a
  * block has one entry.
  */
+/* ------------------------------------------------------------------ */
+/* Fusion                                                             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Three rewrites, all of which turn two IR instructions into one.
+ *
+ * **Here rather than in a backend**, and that is the point rather than a
+ * convenience. A frontend decodes and emits IR; passes over that IR fuse
+ * and eliminate; backends lower what survives. Written here each of these
+ * serves x86-64 and Thumb-2 at once and matches on operations rather than
+ * on encodings the IR has already abstracted away. The one fusion this
+ * project built the other way -- ARM's shifted second operand, as a
+ * backend peephole -- was correct on hardware, fired on *nothing*, and
+ * cost 10%.
+ *
+ * What the histogram says to attack, in order:
+ *
+ *   const -> immediate   a materialised constant feeding an ALU
+ *                        operation, which every frontend emits because
+ *                        the IR's register forms are the general case
+ *   addr fold            an ADDI feeding a LOAD or STORE, which already
+ *                        carries a displacement of its own
+ *   identity             arithmetic that computes its own input
+ *
+ * Every one is guarded on `uses == 1`. Folding a value that something
+ * else still reads computes it twice, which is larger and slower than not
+ * folding at all -- the rule emu_ir.h states for the backends' own
+ * fusion, and it applies identically here.
+ */
+
+/* The immediate form of a register-register operation, or NOP if it has
+ * none. NOP rather than a bool so the table is the answer. */
+static uint8_t imm_form_of(uint8_t op)
+{
+    switch ((emu_ir_op_t)op) {
+    case EMU_IR_ADD:  return (uint8_t)EMU_IR_ADDI;
+    case EMU_IR_AND:  return (uint8_t)EMU_IR_ANDI;
+    case EMU_IR_OR:   return (uint8_t)EMU_IR_ORI;
+    case EMU_IR_XOR:  return (uint8_t)EMU_IR_XORI;
+    case EMU_IR_SHL:  return (uint8_t)EMU_IR_SHLI;
+    case EMU_IR_SHR:  return (uint8_t)EMU_IR_SHRI;
+    case EMU_IR_SAR:  return (uint8_t)EMU_IR_SARI;
+    case EMU_IR_ROTL: return (uint8_t)EMU_IR_ROTLI;
+    default:          return (uint8_t)EMU_IR_NOP;
+    }
+}
+
+/* Whether the constant may come from either operand. A shift's amount is
+ * its right operand and nothing else; getting this wrong would compute
+ * `k >> x` for `x >> k`. */
+static bool op_commutes(uint8_t op)
+{
+    switch ((emu_ir_op_t)op) {
+    case EMU_IR_ADD: case EMU_IR_AND:
+    case EMU_IR_OR:  case EMU_IR_XOR:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/*
+ * Whether the backend can lower this, when there is a backend.
+ *
+ * emu_ir_can_lower is defined by whichever host emitter is compiled in,
+ * so an interpreter-only build has none and referencing it fails to
+ * link. Without a backend nothing lowers this IR at all -- emu_ir_interp
+ * implements every immediate form -- so the fold is unconditionally
+ * safe there.
+ */
+static bool backend_can_lower(uint8_t op, uint8_t aux)
+{
+#if EMU_HAVE_JIT
+    return emu_ir_can_lower((emu_ir_op_t)op, aux);
+#else
+    (void)op;
+    (void)aux;
+    return true;
+#endif
+}
+
+/* A shift amount only folds when it is one the immediate form can mean.
+ * Guests mask this -- RISC-V takes rs2 modulo 32 -- and an immediate of
+ * 33 would be masked by one backend and not another. */
+static bool shift_imm_ok(uint8_t op, uint32_t imm)
+{
+    switch ((emu_ir_op_t)op) {
+    case EMU_IR_SHLI: case EMU_IR_SHRI:
+    case EMU_IR_SARI: case EMU_IR_ROTLI:
+        return imm < 32u;
+    default:
+        return true;
+    }
+}
+
+static void pass_fuse(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
+{
+    static uint8_t  uses[EMU_IR_MAX_TEMPS];
+    static uint16_t def[EMU_IR_MAX_TEMPS];
+
+    memset(uses, 0, sizeof(uses));
+    for (uint32_t i = 0; i < EMU_IR_MAX_TEMPS; i++) {
+        def[i] = (uint16_t)EMU_IR_NO_TEMP;
+    }
+
+    /*
+     * Use counts and definition sites, over the *live* instructions. A
+     * temp is written once by construction, so `def` is unambiguous --
+     * the same property the register allocator relies on.
+     */
+    for (uint32_t i = 0; i < b->count; i++) {
+        const emu_ir_insn_t *const in = &b->insn[i];
+
+        if (in->dead) {
+            continue;
+        }
+        if (in->a != EMU_IR_NO_TEMP && in->a < EMU_IR_MAX_TEMPS &&
+            uses[in->a] != 255u) {
+            uses[in->a]++;
+        }
+        if (in->b != EMU_IR_NO_TEMP && in->b < EMU_IR_MAX_TEMPS &&
+            uses[in->b] != 255u) {
+            uses[in->b]++;
+        }
+        if (in->dst != EMU_IR_NO_TEMP && in->dst < EMU_IR_MAX_TEMPS) {
+            def[in->dst] = (uint16_t)i;
+        }
+    }
+
+    for (uint32_t i = 0; i < b->count; i++) {
+        emu_ir_insn_t *const in = &b->insn[i];
+
+        if (in->dead) {
+            continue;
+        }
+
+        /* --- a constant operand becomes an immediate ---------------- */
+        const uint8_t iform = imm_form_of(in->op);
+
+        if (iform != (uint8_t)EMU_IR_NOP) {
+            uint16_t src = (uint16_t)EMU_IR_NO_TEMP;
+            bool from_a = false;
+
+            if (in->b != EMU_IR_NO_TEMP && in->b < EMU_IR_MAX_TEMPS &&
+                uses[in->b] == 1u &&
+                def[in->b] != (uint16_t)EMU_IR_NO_TEMP &&
+                b->insn[def[in->b]].op == (uint8_t)EMU_IR_CONST) {
+                src = in->b;
+            } else if (op_commutes(in->op) &&
+                       in->a != EMU_IR_NO_TEMP && in->a < EMU_IR_MAX_TEMPS &&
+                       uses[in->a] == 1u &&
+                       def[in->a] != (uint16_t)EMU_IR_NO_TEMP &&
+                       b->insn[def[in->a]].op == (uint8_t)EMU_IR_CONST) {
+                src = in->a;
+                from_a = true;
+            }
+
+            if (src != (uint16_t)EMU_IR_NO_TEMP) {
+                const uint32_t k = b->insn[def[src]].imm;
+
+                /*
+                 * **Ask before rewriting.** An immediate form only helps
+                 * if the backend has one, and turning a lowerable
+                 * register operation into an unlowerable immediate one
+                 * loses the whole block to the interpreter.
+                 *
+                 * That is not hypothetical: the first version of this
+                 * pass had no guard, and on CoreMark it took the x86-64
+                 * backend from 350 blocks and 23,133 interpreted
+                 * instructions to 208 blocks and **423,764** -- 82% of
+                 * the run, because neither backend lowers ADDI or ANDI.
+                 * Every test still passed, because declining is
+                 * correct: it is a correctness-preserving way to have no
+                 * JIT, and no test of correctness can see it.
+                 *
+                 * emu_ir_can_lower is exactly this question and already
+                 * existed for the frontends to ask before emitting.
+                 */
+                if (shift_imm_ok(iform, k) &&
+                    backend_can_lower(iform, in->aux)) {
+                    if (from_a) {
+                        in->a = in->b;      /* the surviving operand */
+                    }
+                    in->op = iform;
+                    in->b = (uint16_t)EMU_IR_NO_TEMP;
+                    in->imm = k;
+                    b->insn[def[src]].dead = true;
+                    uses[src] = 0u;
+                    st->folded++;
+                }
+            }
+        }
+
+        /* --- an ADDI feeding an access becomes its displacement ----- */
+        if ((in->op == (uint8_t)EMU_IR_LOAD ||
+             in->op == (uint8_t)EMU_IR_STORE) &&
+            in->a != EMU_IR_NO_TEMP && in->a < EMU_IR_MAX_TEMPS &&
+            uses[in->a] == 1u &&
+            def[in->a] != (uint16_t)EMU_IR_NO_TEMP) {
+            emu_ir_insn_t *const src = &b->insn[def[in->a]];
+
+            if (!src->dead && src->op == (uint8_t)EMU_IR_ADDI &&
+                src->a != EMU_IR_NO_TEMP) {
+                /*
+                 * Wrapping is the guest's own address arithmetic, so the
+                 * sum needs no range check: a displacement that overflows
+                 * 32 bits wraps in exactly the same place either way.
+                 */
+                in->imm += src->imm;
+                in->a = src->a;
+                src->dead = true;
+                uses[in->a] = (uses[in->a] == 255u) ? 255u : uses[in->a];
+                st->addr_folded++;
+            }
+        }
+
+        /* --- arithmetic that computes its own input ----------------- */
+        switch ((emu_ir_op_t)in->op) {
+        case EMU_IR_ADDI: case EMU_IR_ORI: case EMU_IR_XORI:
+        case EMU_IR_SHLI: case EMU_IR_SHRI:
+        case EMU_IR_SARI: case EMU_IR_ROTLI:
+            if (in->imm == 0u && in->a != EMU_IR_NO_TEMP) {
+                in->op = (uint8_t)EMU_IR_MOV;
+                st->identities++;
+            }
+            break;
+        case EMU_IR_ANDI:
+            if (in->imm == 0xFFFFFFFFu && in->a != EMU_IR_NO_TEMP) {
+                in->op = (uint8_t)EMU_IR_MOV;
+                st->identities++;
+            } else if (in->imm == 0u) {
+                in->op = (uint8_t)EMU_IR_CONST;
+                in->a = (uint16_t)EMU_IR_NO_TEMP;
+                st->identities++;
+            }
+            break;
+        default:
+            break;
+        }
+    }
+}
+
 static void pass_count_uses(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
 {
     static uint8_t uses[EMU_IR_MAX_TEMPS];
@@ -638,6 +882,13 @@ uint32_t emu_ir_regalloc(const emu_ir_block_t *b, uint32_t nregs,
 
 /* ------------------------------------------------------------------ */
 
+static emu_ir_opt_stats_t g_opt_totals;
+
+void emu_ir_opt_totals(emu_ir_opt_stats_t *out)
+{
+    *out = g_opt_totals;
+}
+
 void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
                      uint8_t live_out, emu_ir_opt_stats_t *stats)
 {
@@ -660,7 +911,23 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
      */
     pass_dead_flags(b, live_out, stats);
     pass_reg_traffic(b, t, stats);
+    /*
+     * After reg_traffic, which rewrites GETs into MOVs and so exposes
+     * operands this can reach; before the two sweeps, which are what
+     * remove the CONSTs and ADDIs it orphans.
+     */
+    pass_fuse(b, stats);
     pass_dead_puts(b, stats);
     pass_dead_values(b, stats);
     pass_count_uses(b, stats);
+
+    g_opt_totals.blocks++;
+    g_opt_totals.single_use    += stats->single_use;
+    g_opt_totals.flags_removed += stats->flags_removed;
+    g_opt_totals.gets_removed  += stats->gets_removed;
+    g_opt_totals.puts_removed  += stats->puts_removed;
+    g_opt_totals.folded        += stats->folded;
+    g_opt_totals.addr_folded   += stats->addr_folded;
+    g_opt_totals.identities    += stats->identities;
+    g_opt_totals.dead_removed  += stats->dead_removed;
 }

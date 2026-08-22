@@ -101,6 +101,7 @@ add_executable(emu-stm32f746
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_arm_cache.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_syscall.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_stats.c"
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_diag.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_address_space.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_run.c")
 

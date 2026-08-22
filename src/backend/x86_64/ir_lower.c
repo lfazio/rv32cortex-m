@@ -88,6 +88,8 @@ static bool reads_a_in_t0(uint8_t op)
     case EMU_IR_OR:  case EMU_IR_XOR:
     case EMU_IR_SHL: case EMU_IR_SHR: case EMU_IR_SAR:
     case EMU_IR_SHLI: case EMU_IR_SHRI: case EMU_IR_SARI:
+    case EMU_IR_ADDI: case EMU_IR_ANDI:
+    case EMU_IR_ORI:  case EMU_IR_XORI:
     case EMU_IR_NOT: case EMU_IR_NEG:
     case EMU_IR_BSWAP32: case EMU_IR_BSWAP16: case EMU_IR_HSWAP:
     case EMU_IR_CLZ: case EMU_IR_CTZ:
@@ -551,6 +553,24 @@ static void emit_mem_call(const void *fn, uint32_t spec)
 bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
 {
     switch (op) {
+    /*
+     * The immediate ALU forms, which pass_fuse asks about before
+     * rewriting a register operation into one. Answering the FP class
+     * alone was right while only frontends asked -- they ask about what
+     * a host may lack -- and became a *wrong* answer the moment an IR
+     * pass started asking, because `default: return false` says "this
+     * host cannot" for every operation nobody has thought to list.
+     *
+     * A false negative here costs a fusion. A false positive costs the
+     * block: emu_ir.h calls answering true a promise, and lowering
+     * returning false for something this said it could do discards work
+     * already done.
+     */
+    case EMU_IR_ADDI: case EMU_IR_ANDI:
+    case EMU_IR_ORI:  case EMU_IR_XORI:
+    case EMU_IR_SHLI: case EMU_IR_SHRI: case EMU_IR_SARI:
+        return true;
+
     case EMU_IR_FGET: case EMU_IR_FPUT:
     case EMU_IR_FSGNJ: case EMU_IR_FCMP:
         return true;
@@ -679,6 +699,34 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         ld_operand(rd, in->a);
         ld_operand(T1, in->b);      /* count must be in cl */
         x86_shift_cl(rd, k_sh[in->op - (uint8_t)EMU_IR_SHL]);
+        st_slot(rd, in->dst);
+        break;
+    }
+
+    /*
+     * The immediate ALU forms. x86 has them directly -- `add r32, imm32`
+     * -- so the alternative the IR would otherwise force is materialising
+     * the constant into a temp and doing a register add: one more
+     * instruction, one more frame slot, and a register the allocator
+     * could have spent on something live.
+     *
+     * Absent until pass_fuse had somewhere to put its output. The IR has
+     * carried these opcodes since it existed and the IR interpreter has
+     * always run them; no backend lowered them, so nothing ever emitted
+     * one.
+     */
+    case EMU_IR_ADDI: case EMU_IR_ANDI:
+    case EMU_IR_ORI:  case EMU_IR_XORI: {
+        static const uint8_t k_x[] = {
+            [EMU_IR_ADDI - EMU_IR_ADDI] = X86_X_ADD,
+            [EMU_IR_ANDI - EMU_IR_ADDI] = X86_X_AND,
+            [EMU_IR_ORI  - EMU_IR_ADDI] = X86_X_OR,
+            [EMU_IR_XORI - EMU_IR_ADDI] = X86_X_XOR,
+        };
+        const int rd = dst_reg(in->dst);
+
+        ld_operand(rd, in->a);
+        x86_alu_imm32(k_x[in->op - (uint8_t)EMU_IR_ADDI], rd, in->imm);
         st_slot(rd, in->dst);
         break;
     }
@@ -1301,8 +1349,6 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_FMIN: case EMU_IR_FMAX: case EMU_IR_FCLASS:
     case EMU_IR_POPCNT:
     case EMU_IR_ROTL: case EMU_IR_ROTLI:
-    case EMU_IR_ADDI: case EMU_IR_ANDI:
-    case EMU_IR_ORI:  case EMU_IR_XORI:
     default:
         return false;
     }
