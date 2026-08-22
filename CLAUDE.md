@@ -1663,6 +1663,51 @@ session, and every one of them recurred:
   **Copy the file to the scratchpad before an A/B and restore from
   that**, and never point `git checkout` at a file with uncommitted work
   in it.
+- **A `default:` that declines is a list a new operation falls off,
+  silently.** Adding the immediate ALU forms to the IR meant touching
+  three such lists per backend -- `lower_one`'s switch, `emu_ir_can_lower`
+  and Thumb-2's `bisect_allows` -- and missing any one of them costs the
+  whole block, because a declined operation is not translated badly, it
+  is not translated at all. Missing `bisect_allows` alone took the F746
+  from 171 blocks and 14,693 interpreted instructions to 144 and
+  **37,634**; missing the lowering on x86-64 took CoreMark from 350
+  blocks and 23,133 to 208 and **423,764**, 82% of the run. Every test
+  passed each time, because declining is *correct*: it is a
+  correctness-preserving way to have no JIT, and no test of correctness
+  can see it.
+
+  The two backends also answered `emu_ir_can_lower` opposite ways --
+  x86-64 `default: false`, Thumb-2 `default: true` -- and emu_ir.h calls
+  answering true a promise. Thumb-2 was promising ROTL, ROTLI and the
+  four value bit operations, all of which its `lower_one` refuses. It
+  cost nothing while only frontends asked, because they ask about the FP
+  class; it stopped being free the moment an IR pass started asking.
+
+  **What caught all of it was reporting the counters.**
+  `emu_ir_opt_stats_t` had no reader at all -- the one caller passed NULL
+  -- so a pass that never fires and a pass that does not pay were
+  indistinguishable. Before adding an optimisation, make its effect
+  observable; the fix is `emu_ir_opt_totals`.
+- **`EMU_JIT_CODE_BYTES` reached only the translator that no longer
+  exists.** It fed `RV_JIT_CODE_SIZE`, and the IR backend that replaced
+  the hand-written one sizes its static buffer from
+  `EMU_IR_JIT_STATIC_BYTES`, which nothing set. So the knob this file
+  describes as dominating JIT performance did **nothing** for years of
+  commits: `-DEMU_JIT_CODE_BYTES=32768` reported `code 1728/12288` and
+  figures identical to the digit, which is the null result this file
+  says to distrust. Wired up, `bench` on the F746 went 1,185,619,446
+  host cycles to 181,029,971 -- **6.55x** -- because at 12 KB every
+  translation evicted another and the working set is 26,828 bytes. The
+  default is 32 KB now. **When a subsystem is replaced, grep for the
+  readers of the options that configured the old one.**
+- **A `memset` that is one line in a function that moves does not move
+  with it.** Unifying the two runners' bring-up left guest RAM unzeroed
+  on the board, and the guest did not fail -- it produced *nothing*, on a
+  board whose console had already been handed to PPP, so there was not
+  even a message to read. The same restructuring dropped `emu_uart_init`
+  the same way, and that one failed two ctest cases with no output at
+  all. Both are part of bringing a guest up, so both live in
+  `emu_session_start` now where a caller cannot forget them.
 - **A capability macro that depends on include order is worse than no
   macro.** `G4MH_HAVE_JIT` was defined in `g4mh_cpu.h` from
   `EMU_HOST_JIT_X86_64`, which `emu/emu_jit.h` defines -- and

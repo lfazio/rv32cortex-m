@@ -7,15 +7,20 @@ measured at.
 
 ## Roadmap
 
-- [ ] Add usage of LWIP's PPP stack to the host runner, so the host can run the same code as the F746.
-- [~] Unify host main and the firmware main. The *execution* half is done --
-      `emu_run_system` in `src/platform/common/emu_run.c` is one loop for both,
-      parameterised by four hooks. The halves that remain apart are honestly
-      different and should stay so unless something forces the issue: the host
-      parses argv, reads files, sniffs ELF headers and returns an exit status;
-      the board takes an image over TFTP or gdb and parks. Merging those would
-      mean an #if per platform inside one main(), which is the arrangement all
-      of this work was undoing.
+- [x] LWIP's PPP stack in the host runner. `--ppp` opens a pty, `pppd`
+      attaches to it exactly as it attaches to /dev/ttyACM0, and the same
+      lwIP, telnet, TFTP and gdb stub the board runs become debuggable
+      with the tools a development machine already has. See
+      `scripts/ppp-host.sh`; the default subnet is 192.168.8.x so it can
+      be up alongside a board on 192.168.7.x.
+- [x] Unify host main and the firmware main. Done as far as it should go.
+      `emu_session.c` is the whole middle -- open the cores, choose the
+      backend, install the hooks, place the image, reset, boot, report --
+      and `emu_run.c` is the loop. What stays per-platform is acquisition
+      (argv and a file against an incbin and TFTP) and termination (an exit
+      status a suite reads against a park loop serving a link). Those are
+      genuinely different and merging them would put an `#if` per platform
+      inside one `main()`, which is the arrangement all of this undid.
 - [ ] Add FreeRTOS support to the host emualtor, lwip in one task emulator in another one (it will allow to instanciate later a tinyusb network device over USB). https://github.com/STMicroelectronics/x-cube-freertos/tree/main (https://github.com/hathach/tinyusb)
 - [ ] **Linux** - Prepare a Linux guest rv32g with mmu and run it on the emulator (x86_64 only). This is a big task, but it would be a good demonstration of the emulator's capabilities. Implement minimal virtio devices to get a shell and run some benchmarks. This is a big task, but it would be a good demonstration of the emulator's capabilities.
 - [ ] Run doom in Linux so it can be used as a benchmark for the emulator. This is a big task, but it would be a good demonstration of the emulator's capabilities implement a sdl backend for the emulator to run doom in Linux. This is a big task, but it would be a good demonstration of the emulator's capabilities.
