@@ -142,6 +142,23 @@ static void rv32_boot(emu_cpu_t *cpu, uint32_t ram_base, uint32_t ram_size)
 
 const emu_gdb_target_t *rv32_gdb_target(void);
 
+/*
+ * Which backend runs, chosen by the runner rather than defaulted.
+ * See emu_cpu_ops_t.select_backend.
+ */
+static bool rv32_select_backend(emu_cpu_t *cpu, bool want_jit)
+{
+#if EMU_HAVE_JIT
+    rv_backend = want_jit ? &rv_backend_jit : &rv_backend_interp;
+#else
+    /* No JIT compiled in: --jit is accepted and ignored rather than
+     * refused, so a script that passes it still runs. */
+    (void)want_jit;
+    rv_backend = &rv_backend_interp;
+#endif
+    return rv_backend->init == NULL || rv_backend->init(cpu);
+}
+
 /* ------------------------------------------------------------------ */
 /* Execution                                                           */
 /* ------------------------------------------------------------------ */
@@ -454,6 +471,7 @@ const emu_cpu_ops_t rv32_frontend = {
     .ncores          = 1u,
     .add_shared_devices = rv32_add_shared_devices,
     .gdb_target         = rv32_gdb_target,
+    .select_backend     = rv32_select_backend,
     .add_core_devices   = rv32_add_core_devices,
     .set_irq         = rv32_set_irq,
     .set_unmask_hook = rv32_set_unmask_hook,

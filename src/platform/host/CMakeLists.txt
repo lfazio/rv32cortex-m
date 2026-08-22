@@ -2,6 +2,17 @@
 #
 # Host runner: the same core the firmware runs, on a development machine.
 
+#
+# The IP stack on the host, over a pty.
+#
+# Off by default, unlike the F746 where it is on: a board's console is a
+# wire it can give away, and a runner's is a terminal a person is reading.
+# What this buys is that the same lwIP, the same PPPoS, the same telnet
+# and TFTP servers become debuggable with the tools a development machine
+# already has -- every network defect this project has had needed a board,
+# a flash cycle and a UART to find.
+option(EMU_NET "IP/TFTP/telnet/gdb transport over a pty" OFF)
+
 add_executable(emu-host
     main.c
     # The gdb stub's transport. The protocol and the register map are in
@@ -18,6 +29,23 @@ target_include_directories(emu-host PRIVATE
     "${CMAKE_SOURCE_DIR}/src/platform/common")
 
 target_link_libraries(emu-host PRIVATE emucore)
+
+#
+# EMU_NET is defined either way, never left undefined. `#if` on a macro
+# that does not exist is 0 without a word, which is how the JIT statistics
+# block silently stopped printing -- and -Wundef only catches it because
+# the macro is expected to exist. Defining it 0 here is what makes that
+# warning meaningful rather than noise.
+if(EMU_NET)
+    # board.c is the pty, the clock and two counters: everything src/net/
+    # asks of a platform. See src/platform/host/board.h.
+    target_sources(emu-host PRIVATE board.c)
+    target_include_directories(emu-host PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    include(${CMAKE_SOURCE_DIR}/cmake/emu_net.cmake)
+    emu_net_attach(emu-host)
+else()
+    target_compile_definitions(emu-host PRIVATE EMU_NET=0)
+endif()
 
 target_compile_options(emu-host PRIVATE
     -Wall -Wextra -Wshadow -Wundef

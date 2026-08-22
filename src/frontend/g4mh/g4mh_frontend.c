@@ -136,6 +136,24 @@ static void g4mh_ops_boot(emu_cpu_t *cpu, uint32_t ram_base, uint32_t ram_size)
 
 const emu_gdb_target_t *g4mh_gdb_target(void);
 
+/*
+ * As RV32's, and for a sharper reason: this frontend has no reference
+ * model, so the interpreter is the only statement of what an answer
+ * should be. A run that silently translated cannot be diffed against one
+ * that did not -- and for a while --jit reached only RV32, which left the
+ * G4MH interpreter unreachable from the host altogether.
+ */
+static bool g4mh_select_backend(emu_cpu_t *cpu, bool want_jit)
+{
+#if EMU_HAVE_JIT
+    g4mh_backend = want_jit ? &g4mh_backend_jit : &g4mh_backend_interp;
+#else
+    (void)want_jit;
+    g4mh_backend = &g4mh_backend_interp;
+#endif
+    return g4mh_backend->init == NULL || g4mh_backend->init(cpu);
+}
+
 /* ------------------------------------------------------------------ */
 /* Execution                                                           */
 /* ------------------------------------------------------------------ */
@@ -631,6 +649,7 @@ const emu_cpu_ops_t g4mh_frontend = {
     .add_shared_devices = g4mh_ops_add_shared_devices,
     .set_image          = g4mh_ops_set_image,
     .gdb_target         = g4mh_gdb_target,
+    .select_backend     = g4mh_select_backend,
     .add_core_devices   = g4mh_ops_add_core_devices,
     .set_irq         = g4mh_ops_set_irq,
     .set_unmask_hook = g4mh_ops_set_unmask_hook,

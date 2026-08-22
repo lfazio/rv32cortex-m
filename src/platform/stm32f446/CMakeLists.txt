@@ -233,7 +233,15 @@ add_custom_target(gdbserver
 # whose console is worth giving away should say so itself.
 option(EMU_NET "IP/TFTP/telnet/gdb transport over the console UART" OFF)
 
+#
+# EMU_NET is defined either way, never left undefined. `#if` on a macro
+# that does not exist is 0 without a word, which is how the JIT statistics
+# block silently stopped printing -- and -Wundef only catches it because
+# the macro is expected to exist. Defining it 0 here is what makes that
+# warning meaningful rather than noise.
 if(EMU_NET)
     include(${CMAKE_SOURCE_DIR}/cmake/emu_net.cmake)
     emu_net_attach(emu-stm32f446)
+else()
+    target_compile_definitions(emu-stm32f446 PRIVATE EMU_NET=0)
 endif()

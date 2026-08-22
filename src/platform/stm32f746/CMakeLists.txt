@@ -138,9 +138,17 @@ target_link_libraries(emu-stm32f746 PRIVATE emucore stm32cube)
 option(EMU_NET "IP/TFTP/telnet/gdb transport over the console UART" ON)
 
 
+#
+# EMU_NET is defined either way, never left undefined. `#if` on a macro
+# that does not exist is 0 without a word, which is how the JIT statistics
+# block silently stopped printing -- and -Wundef only catches it because
+# the macro is expected to exist. Defining it 0 here is what makes that
+# warning meaningful rather than noise.
 if(EMU_NET)
     include(${CMAKE_SOURCE_DIR}/cmake/emu_net.cmake)
     emu_net_attach(emu-stm32f746)
+else()
+    target_compile_definitions(emu-stm32f746 PRIVATE EMU_NET=0)
 endif()
 
 # guest_image.S pulls the binary in with .incbin.

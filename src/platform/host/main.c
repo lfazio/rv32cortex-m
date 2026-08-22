@@ -20,44 +20,57 @@
 
 #include "emu/emu_cpu.h"
 #include "emu_run.h"
+
+#if EMU_NET
+#  include "board.h"
+#  include "emu_net.h"
+#endif
 #include "emu/emu_gdb.h"
 #include "emu/emu_dev.h"
 #include "emu/emu_elf.h"
 #include "emu/emu_memmap.h"
 #include "emu/emu_jit.h"
 
-#if EMU_GUEST_ARCH_RV32
-/* --jit selects the backend, and the summary reports what it did. */
-#  include "rv32/rv_backend.h"
-#  include "rv32/rv_jit.h"
-#endif
-
-#if EMU_GUEST_ARCH_G4MH
-/* Likewise, so that --jit and its absence both mean something here. */
-#  include "g4mh/g4mh_cpu.h"
-#  include "g4mh/g4mh_backend.h"
-#endif
+/*
+ * No frontend headers here, and that is the property to keep.
+ *
+ * This file used to include both frontends' backend headers so that
+ * --jit could assign rv_backend or g4mh_backend directly, guarded by
+ * EMU_GUEST_ARCH_*. Every one of those guards was a defect waiting: --jit
+ * was parsed inside the RV32 block, so a G4MH-only build rejected it and
+ * ran translated whatever was asked; --gdb was still inside it after
+ * --jit was moved out, so a G4MH-only build rejected *that* while its
+ * register description sat unreachable; and the RV32 assignment ran
+ * unconditionally, calling rv_backend->init with a G4MH core pointer in a
+ * build with both.
+ *
+ * ops->select_backend and ops->gdb_target replace all of it. The runner
+ * now knows what a frontend *is*, not which ones exist.
+ */
 
 /*
- * Whether `--jit` means anything in this build: a JIT exists *and* some
- * frontend that can use it is compiled in.
+ * Whether `--jit` means anything in this build.
  *
- * This used to spell the first half twice, once per frontend, because the
- * two frontends had different names for it -- RV_ENABLE_JIT and
- * G4MH_HAVE_JIT. With one name the whole condition collapses, which is
- * the clearest evidence that the second name was never carrying meaning.
+ * The host half of the question, and now the only half: whether the
+ * *frontend* has a second backend is `ops->select_backend != NULL`, which
+ * is a property of the frontend answered at run time rather than a macro
+ * naming the frontends that exist. This used to be
+ * `EMU_HAVE_JIT && (EMU_GUEST_ARCH_RV32 || EMU_GUEST_ARCH_G4MH)` -- a
+ * list that a third frontend would have had to be added to, and that
+ * nothing would have failed for omitting.
  */
-#define EMU_JIT_SELECTABLE \
-    (EMU_HAVE_JIT && (EMU_GUEST_ARCH_RV32 || EMU_GUEST_ARCH_G4MH))
+#define EMU_JIT_SELECTABLE EMU_HAVE_JIT
 
 #if RV_PAIR_STATS
 #  include "rv32/rv_pairstats.h"
 #endif
 
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* ------------------------------------------------------------------ */
 /* Guest memory                                                        */
@@ -106,6 +119,19 @@ static emu_bus_t    g_bus[EMU_MAX_CORES];
 static void host_tx(void *ctx, uint8_t c)
 {
     (void)ctx;
+#if EMU_NET
+    /*
+     * Once the link is up the guest's console is a telnet connection,
+     * which is the board's arrangement and the point of running this
+     * here. The *runner's* own diagnostics still go to stderr, because a
+     * host has a terminal as well as a wire and giving one up buys
+     * nothing -- see the note in board.h.
+     */
+    if (emu_net_active()) {
+        emu_net_console_putc(c);
+        return;
+    }
+#endif
     fputc(c, stdout);
     /* Unbuffered so output survives a guest that faults straight after. */
     fflush(stdout);
@@ -114,7 +140,60 @@ static void host_tx(void *ctx, uint8_t c)
 static int host_rx(void *ctx)
 {
     (void)ctx;
+#if EMU_NET
+    if (emu_net_active()) {
+        return emu_net_console_getc();
+    }
+#endif
     return -1;   /* no interactive input in the batch runner */
+}
+
+/*
+ * The runner's own output: the trace, the register dump, the summary.
+ *
+ * To stderr, and *also* to the telnet ring when the link is up. Both,
+ * not either: the terminal is where a person watching this process
+ * expects to see it, and a telnet session that carries the guest's
+ * output but not the trace beside it is the wrong half -- reading a
+ * trace against the output it produced is the whole point of having one.
+ *
+ * The board cannot do this. It has one wire and gives it away, so its
+ * diagnostics go to the ring or nowhere. A host has both, so it uses
+ * both.
+ */
+static void host_diag(const char *s)
+{
+    fputs(s, stderr);
+#if EMU_NET
+    if (emu_net_active()) {
+        for (const char *p = s; *p != '\0'; p++) {
+            emu_net_console_putc((uint8_t)*p);
+        }
+    }
+#endif
+}
+
+static void host_diagf(const char *fmt, ...)
+    __attribute__((format(printf, 1, 2)));
+
+static void host_diagf(const char *fmt, ...)
+{
+    /*
+     * 512, and the one caller that does not fit goes to stderr directly.
+     *
+     * Truncation here is silent, which is the right trade for a stats
+     * line and the wrong one for a document: converting usage() to this
+     * cut it off mid-option list, and the only symptom was that --jit and
+     * --gdb stopped being advertised -- which reads exactly like the
+     * build-time gate that had just been removed from them.
+     */
+    char buf[512];
+    va_list ap;
+
+    va_start(ap, fmt);
+    (void)vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    host_diag(buf);
 }
 
 /* ------------------------------------------------------------------ */
@@ -201,16 +280,16 @@ static void host_trace(emu_cpu_t *cpu, uint32_t pc, uint64_t insn,
      * it -- which on an ISA where a shared opcode holds two widths is
      * exactly the thing the reader is trying to tell apart.
      */
-    fprintf(stderr, "%8llu %08x  %0*llx%*s  %-28s",
-            (unsigned long long)st.retired, pc,
-            (int)(len * 2u), (unsigned long long)insn,
-            (int)(16u - len * 2u), "", buf);
+    host_diagf("%8llu %08x  %0*llx%*s  %-28s",
+               (unsigned long long)st.retired, pc,
+               (int)(len * 2u), (unsigned long long)insn,
+               (int)(16u - len * 2u), "", buf);
 
     for (unsigned r = 1; r < 8u && r < g_core.ops->nregs; r++) {
-        fprintf(stderr, " %s=%08x", g_core.ops->reg_name(r),
-                g_core.ops->reg_read(cpu, r));
+        host_diagf(" %s=%08x", g_core.ops->reg_name(r),
+                   g_core.ops->reg_read(cpu, r));
     }
-    fputc('\n', stderr);
+    host_diag("\n");
 }
 #endif
 
@@ -222,17 +301,17 @@ static uint8_t *read_file(const char *path, size_t *out_len)
 {
     FILE *f = fopen(path, "rb");
     if (f == NULL) {
-        fprintf(stderr, "emu: %s: %s\n", path, strerror(errno));
+        host_diagf("emu: %s: %s\n", path, strerror(errno));
         return NULL;
     }
     if (fseek(f, 0, SEEK_END) != 0) {
-        fprintf(stderr, "emu: %s: not seekable\n", path);
+        host_diagf("emu: %s: not seekable\n", path);
         fclose(f);
         return NULL;
     }
     const long n = ftell(f);
     if (n < 0) {
-        fprintf(stderr, "emu: %s: %s\n", path, strerror(errno));
+        host_diagf("emu: %s: %s\n", path, strerror(errno));
         fclose(f);
         return NULL;
     }
@@ -241,11 +320,11 @@ static uint8_t *read_file(const char *path, size_t *out_len)
     uint8_t *buf = malloc((size_t)n ? (size_t)n : 1u);
     if (buf == NULL) {
         fclose(f);
-        fprintf(stderr, "emu: out of memory\n");
+        host_diagf("emu: out of memory\n");
         return NULL;
     }
     if (fread(buf, 1u, (size_t)n, f) != (size_t)n) {
-        fprintf(stderr, "emu: %s: short read\n", path);
+        host_diagf("emu: %s: short read\n", path);
         free(buf);
         fclose(f);
         return NULL;
@@ -271,10 +350,88 @@ static uint16_t elf_machine(const uint8_t *b, size_t n)
 /* ------------------------------------------------------------------ */
 
 /* emu_print_fn onto stderr, for the frontend's own state dump. */
+#if EMU_NET
+/* ------------------------------------------------------------------ */
+/* Images arriving over TFTP                                           */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The board programs an uploaded image into a flash arena; here it is a
+ * buffer, which is the whole difference. Everything above it -- the TFTP
+ * server, the one-file contract, the commit-on-success rule -- is the
+ * same code.
+ *
+ * The buffer grows as blocks arrive because TFTP carries no length: a
+ * transfer ends when a short block does, so the size is known only at the
+ * end. The board discovers the same thing by running out of arena.
+ */
+static uint8_t *g_up;
+static uint32_t g_up_len;
+static uint32_t g_up_cap;
+
+static uint8_t *g_pending;      /* a complete image waiting to be run */
+static uint32_t g_pending_len;
+
+bool emu_net_image_begin(void)
+{
+    free(g_up);
+    g_up = NULL;
+    g_up_len = 0u;
+    g_up_cap = 0u;
+    return true;
+}
+
+bool emu_net_image_data(const void *data, uint32_t len, uint32_t off)
+{
+    if (off != g_up_len) {
+        return false;           /* TFTP is sequential; a gap is a bug */
+    }
+    if (off + len > g_up_cap) {
+        const uint32_t want = (g_up_cap == 0u) ? 65536u : g_up_cap * 2u;
+        const uint32_t cap = (want > off + len) ? want : off + len;
+        uint8_t *const p = realloc(g_up, cap);
+
+        if (p == NULL) {
+            return false;
+        }
+        g_up = p;
+        g_up_cap = cap;
+    }
+    memcpy(g_up + off, data, len);
+    g_up_len = off + len;
+    return true;
+}
+
+void emu_net_image_end(uint32_t len, bool ok)
+{
+    if (!ok) {
+        free(g_up);
+        g_up = NULL;
+        g_up_len = 0u;
+        g_up_cap = 0u;
+        host_diagf("emu: upload failed\n");
+        return;
+    }
+
+    /*
+     * Handed over rather than installed. The bus regions and the reset
+     * vector are built from the current image, and rebuilding them from
+     * inside a TFTP callback would pull the ground out from under the
+     * guest whose slice is being serviced.
+     */
+    free(g_pending);
+    g_pending = g_up;
+    g_pending_len = len;
+    g_up = NULL;
+    g_up_len = 0u;
+    g_up_cap = 0u;
+}
+#endif /* EMU_NET */
+
 static void err_puts(void *ctx, const char *s)
 {
     (void)ctx;
-    fputs(s, stderr);
+    host_diag(s);
 }
 
 static void list_frontends(FILE *f)
@@ -311,10 +468,10 @@ static void usage(void)
         "  --cores N            cores to run (default: the frontend's count)\n"
         "  --quantum N          instructions per core per round (default %u).\n"
         "                       1 is instruction-interleaved lockstep\n"
-#if EMU_GUEST_ARCH_RV32
+#if EMU_JIT_SELECTABLE
         "  --jit                use the JIT backend instead of the interpreter\n"
-        "  --gdb [port]         serve a gdb stub on localhost (default 1234)\n"
 #endif
+        "  --gdb [port]         serve a gdb stub on localhost (default 1234)\n"
         "  --quiet              suppress the exit summary\n"
         "  --dump               dump register state on exit\n",
         EMU_GUEST_ROM_BASE, EMU_GUEST_RAM_BASE, DEFAULT_RAM_SIZE,
@@ -348,8 +505,7 @@ void emu_jit_diff_report(uint32_t pc, uint32_t off, uint32_t want,
     static unsigned reported;
 
     if (reported++ < 20u) {
-        fprintf(stderr,
-                "jit-diff: block pc=%08x state+%u want=%08x got=%08x\n",
+        host_diagf("jit-diff: block pc=%08x state+%u want=%08x got=%08x\n",
                 pc, off, want, got);
     }
 }
@@ -381,6 +537,111 @@ static void advance_guest_time(uint64_t retired_total, uint32_t did)
     }
 }
 
+static bool build_buses(unsigned ncores, const uint8_t *img, uint32_t img_len,
+                        uint32_t ram_bytes, emu_uart_t *uart);
+
+#if EMU_NET
+/*
+ * State the reload needs. The firmware keeps the same three and calls
+ * them the same thing; here they are file-scope because main() is where
+ * they are set up and the hook is called from the run loop.
+ */
+static const emu_cpu_ops_t *g_ops;
+static emu_uart_t          *g_uart_p;
+static uint32_t             g_ram_bytes;
+static uint32_t             g_img_len;
+static uint8_t             *g_img_buf;
+
+static void net_poll_hook(void)
+{
+    emu_net_poll();
+}
+
+/*
+ * Take a freshly uploaded image, if one is waiting.
+ *
+ * The same shape as the firmware's: rebuild the address space, put the
+ * frontend's devices back, clear RAM, reset. Skipping any of it leaves
+ * the previous guest's state in place, which presents as the new guest
+ * retiring nothing.
+ */
+static bool take_uploaded_image(void)
+{
+    if (g_pending == NULL) {
+        return false;
+    }
+
+    uint8_t *const img = g_pending;
+    const uint32_t n = g_pending_len;
+
+    g_pending = NULL;
+
+    if (!build_buses(g_sys.ncores, img, n, g_ram_bytes, g_uart_p)) {
+        free(img);
+        return false;
+    }
+    for (unsigned i = 0; i < g_sys.ncores; i++) {
+        if ((g_ops->add_shared_devices != NULL &&
+             !g_ops->add_shared_devices(&g_bus[i])) ||
+            (g_ops->add_core_devices != NULL &&
+             !g_ops->add_core_devices(g_sys.core[i].cpu, &g_bus[i], i))) {
+            free(img);
+            return false;
+        }
+    }
+
+    memset(g_ram, 0, g_ram_bytes);
+    free(g_img_buf);
+    g_img_buf = img;
+    g_img_len = n;
+
+    emu_system_reset(&g_sys, EMU_GUEST_RESET_PC);
+    emu_system_boot(&g_sys, EMU_GUEST_RAM_BASE, g_ram_bytes);
+
+    host_diagf("emu: running uploaded image, %u bytes\n", (unsigned)n);
+    return true;
+}
+#endif /* EMU_NET */
+
+/*
+ * The guest's address space, for every core.
+ *
+ * emu_bus_init clears the region table, so everything goes back on --
+ * including, on a reload, the frontend's own devices, which the caller
+ * re-adds afterwards exactly as the firmware's emu_start_guest does.
+ */
+static bool build_buses(unsigned ncores, const uint8_t *img, uint32_t img_len,
+                        uint32_t ram_bytes, emu_uart_t *uart)
+{
+    for (unsigned i = 0; i < ncores; i++) {
+        emu_bus_init(&g_bus[i]);
+        /*
+         * The image, read-only, where the guest's .data initialiser
+         * lives -- __data_lma points into this window and start.S copies
+         * from it.
+         *
+         * The firmware has had this window since it existed, because a
+         * guest linked for execute-in-place reads its constants there.
+         * The host never needed it while the emulator installed .data
+         * for the guest, and adding it is what makes the same image run
+         * unchanged on both: without it the guest faults in its own
+         * first loop, before anything it could report with.
+         */
+        if (!emu_bus_add_ram(&g_bus[i], "ram", EMU_GUEST_RAM_BASE,
+                             g_ram, ram_bytes) ||
+            !emu_bus_add_rom(&g_bus[i], "rom", EMU_GUEST_ROM_BASE,
+                             img, img_len) ||
+            !emu_bus_add_ram(&g_bus[i], "periph-sim", EMU_GUEST_PERIPH_BASE,
+                             g_periph, PERIPH_SIM_SIZE) ||
+            !emu_bus_add_mmio(&g_bus[i], "uart0", EMU_GUEST_UART_BASE,
+                              EMU_UART_SIZE, &emu_uart_ops, uart)) {
+            host_diagf("emu: failed to build the guest memory map\n");
+            return false;
+        }
+    }
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     const char *path = NULL;
@@ -391,6 +652,10 @@ int main(int argc, char **argv)
     uint32_t ram_size = DEFAULT_RAM_SIZE;
     uint64_t max_insn = 0;
     int gdb_port = 0;
+#if EMU_NET
+    bool        ppp = false;
+    const char *ppp_dev = NULL;
+#endif
     /* Instructions per timer tick. 1 keeps guest time in step with the
      * cycle counter, which is what the reference model assumes. */
     unsigned ncores = 0;                    /* 0 = ask the frontend */
@@ -434,7 +699,32 @@ int main(int argc, char **argv)
                 max_insn = v;
                 continue;
             }
-#if EMU_GUEST_ARCH_RV32
+#if EMU_NET
+            if (strcmp(a, "--ppp") == 0) {
+                /*
+                 * The same IP stack the board runs, over a pty instead of
+                 * a UART. An optional argument names an existing device
+                 * for a caller that has already arranged one end.
+                 */
+                ppp = true;
+                if (i + 1 < argc && argv[i + 1][0] != '-') {
+                    ppp_dev = argv[++i];
+                }
+                continue;
+            }
+#endif
+            /*
+             * Not inside an RV32 block, for the same reason --jit is not:
+             * the stub is in emucore, the register layout comes from
+             * ops->gdb_target, and every frontend that has one gets it.
+             * Guarded on RV32 this option was *rejected outright* by a
+             * G4MH-only build, whose gdb target description existed and
+             * was unreachable -- the identical defect --jit had, in the
+             * same file, left behind when that one was fixed.
+             *
+             * A frontend with no description is caught where the stub is
+             * started, by name, rather than by the option not existing.
+             */
             if (strcmp(a, "--gdb") == 0) {
                 /* Port only; the stub listens on loopback. Waits for a
                  * client before the first instruction, because the whole
@@ -447,7 +737,6 @@ int main(int argc, char **argv)
                 }
                 continue;
             }
-#endif
             /*
              * Not inside the RV32 block: both frontends have an x86-64
              * backend, and while this option was guarded on RV32 a
@@ -464,7 +753,7 @@ int main(int argc, char **argv)
                  */
                 want_jit = true;
 #else
-                fprintf(stderr, "emu: no JIT backend for this host\n");
+                host_diagf("emu: no JIT backend for this host\n");
                 return 2;
 #endif
                 continue;
@@ -498,12 +787,12 @@ int main(int argc, char **argv)
         }
 
         if (a[0] == '-') {
-            fprintf(stderr, "emu: unknown option %s\n", a);
+            host_diagf("emu: unknown option %s\n", a);
             usage();
             return 2;
         }
         if (path != NULL) {
-            fprintf(stderr, "emu: more than one image given\n");
+            host_diagf("emu: more than one image given\n");
             return 2;
         }
         path = a;
@@ -525,7 +814,7 @@ int main(int argc, char **argv)
     if (frontend_name != NULL) {
         ops = emu_frontend_find(frontend_name);
         if (ops == NULL) {
-            fprintf(stderr, "emu: no frontend '%s'; this build has: ",
+            host_diagf("emu: no frontend '%s'; this build has: ",
                     frontend_name);
             list_frontends(stderr);
             fputc('\n', stderr);
@@ -536,8 +825,7 @@ int main(int argc, char **argv)
         const uint16_t m = elf_machine(image, len);
         ops = emu_frontend_for_elf(m);
         if (ops == NULL) {
-            fprintf(stderr,
-                    "emu: no frontend for ELF machine %u; this build has: ", m);
+            host_diagf("emu: no frontend for ELF machine %u; this build has: ", m);
             list_frontends(stderr);
             fputc('\n', stderr);
             free(image);
@@ -552,7 +840,7 @@ int main(int argc, char **argv)
     g_ram = calloc(ram_size, 1u);
     g_periph = calloc(PERIPH_SIM_SIZE, 1u);
     if (g_ram == NULL || g_periph == NULL) {
-        fprintf(stderr, "emu: cannot allocate guest memory\n");
+        host_diagf("emu: cannot allocate guest memory\n");
         return 1;
     }
 
@@ -562,7 +850,7 @@ int main(int argc, char **argv)
         ncores = (ops->ncores != 0u) ? ops->ncores : 1u;
     }
     if (ncores > EMU_MAX_CORES) {
-        fprintf(stderr, "emu: %u cores exceeds EMU_MAX_CORES (%u)\n",
+        host_diagf("emu: %u cores exceeds EMU_MAX_CORES (%u)\n",
                 ncores, (unsigned)EMU_MAX_CORES);
         return 1;
     }
@@ -571,32 +859,13 @@ int main(int argc, char **argv)
      * The shared regions go into every core's bus, pointing at the same
      * backing memory -- so RAM really is shared, and only the frontend's
      * core-relative windows differ between them.
+     *
+     * A function rather than inline, because an image arriving over TFTP
+     * has to repeat all of it: the image region's base and length both
+     * move and emu_bus cannot resize a region in place.
      */
-    for (unsigned i = 0; i < ncores; i++) {
-        emu_bus_init(&g_bus[i]);
-        /*
-         * The image, read-only, where the guest's .data initialiser
-         * lives -- __data_lma points into this window and start.S copies
-         * from it.
-         *
-         * The firmware has had this window since it existed, because a
-         * guest linked for execute-in-place reads its constants there.
-         * The host never needed it while the emulator installed .data
-         * for the guest, and adding it is what makes the same image run
-         * unchanged on both: without it the guest faults in its own
-         * first loop, before anything it could report with.
-         */
-        if (!emu_bus_add_ram(&g_bus[i], "ram", EMU_GUEST_RAM_BASE,
-                             g_ram, ram_size) ||
-            !emu_bus_add_rom(&g_bus[i], "rom", EMU_GUEST_ROM_BASE,
-                             image, (uint32_t)len) ||
-            !emu_bus_add_ram(&g_bus[i], "periph-sim", EMU_GUEST_PERIPH_BASE,
-                             g_periph, PERIPH_SIM_SIZE) ||
-            !emu_bus_add_mmio(&g_bus[i], "uart0", EMU_GUEST_UART_BASE,
-                              EMU_UART_SIZE, &emu_uart_ops, &uart)) {
-            fprintf(stderr, "emu: failed to build the guest memory map\n");
-            return 1;
-        }
+    if (!build_buses(ncores, image, (uint32_t)len, ram_size, &uart)) {
+        return 1;
     }
 
     /*
@@ -606,7 +875,7 @@ int main(int argc, char **argv)
      * and only it knows where in the guest map they go.
      */
     if (!emu_system_open(&g_sys, ops, g_bus, ncores)) {
-        fprintf(stderr, "emu: could not bring up %u %s core%s\n",
+        host_diagf("emu: could not bring up %u %s core%s\n",
                 ncores, ops->name, (ncores == 1u) ? "" : "s");
         /*
          * Almost always the region table, and the message above says
@@ -621,8 +890,7 @@ int main(int argc, char **argv)
          * platform cannot tell which of its callees failed. Saying what
          * to check is cheap; guessing wrong is what cost the time.
          */
-        fprintf(stderr,
-                "emu:   %u of %u bus regions used on core 0 -- if that is "
+        host_diagf("emu:   %u of %u bus regions used on core 0 -- if that is "
                 "the limit, rebuild with -DEMU_MAX_REGIONS=%u\n",
                 emu_bus_region_count(&g_bus[0]), (unsigned)EMU_MAX_REGIONS,
                 (unsigned)EMU_MAX_REGIONS + 8u);
@@ -630,51 +898,63 @@ int main(int argc, char **argv)
     }
 
 
-#if EMU_GUEST_ARCH_RV32 && EMU_HAVE_JIT
     /*
-     * The frontend prefers the JIT wherever it is compiled in, which is
-     * right for firmware: there it is a speed choice, and the backend
-     * falls back per instruction for anything it cannot translate.
-     *
-     * On the host it is a *coverage* choice, and the two must be runnable
-     * against each other -- the architecture suite passing interpreted and
-     * passing through translated code are different claims, and the README
-     * distinguishes them. So the host states which it wants rather than
-     * inheriting a default that could move under it.
+     * Which backend, stated rather than inherited -- see
+     * emu_cpu_ops_t.select_backend for why the runner decides and why
+     * this is a hook instead of a block per frontend.
      */
-    rv_backend = want_jit ? &rv_backend_jit : &rv_backend_interp;
-    if (rv_backend->init != NULL && !rv_backend->init(g_core.cpu)) {
-        fprintf(stderr, "emu: backend init failed\n");
+    if (ops->select_backend != NULL &&
+        !ops->select_backend(g_core.cpu, want_jit)) {
+        host_diagf("emu: backend init failed\n");
         return 1;
     }
+
+#if !EMU_JIT_SELECTABLE
+    (void)want_jit;
 #endif
 
-#if EMU_GUEST_ARCH_G4MH && EMU_HAVE_JIT
+#if EMU_NET
     /*
-     * The same for G4MH, and for a sharper reason: this frontend has no
-     * reference model, so the interpreter is the only statement of what an
-     * answer should be. A run that silently translated cannot be diffed
-     * against one that did not -- and while --jit reached only RV32, the
-     * G4MH interpreter was unreachable from the host at all.
+     * The link, before the guest runs and after the cores exist -- the
+     * gdb stub needs one to describe.
+     *
+     * Not fatal if it fails. A runner that cannot get a pty is still a
+     * runner, and saying so beats refusing to run the guest; this is the
+     * same judgement the firmware makes, for the same reason.
      */
-    if (strcmp(ops->name, "g4mh") == 0) {
-#if EMU_HAVE_JIT
-        g4mh_backend = want_jit ? &g4mh_backend_jit : &g4mh_backend_interp;
-#else
-        /* No JIT compiled in: --jit is accepted and ignored rather than
-         * refused, so a script that passes it still runs. */
-        (void)want_jit;
-        g4mh_backend = &g4mh_backend_interp;
-#endif
-        if (g4mh_backend->init != NULL && !g4mh_backend->init(g_core.cpu)) {
-            fprintf(stderr, "emu: backend init failed\n");
-            return 1;
+    if (ppp) {
+        char slave[64] = "";
+
+        if (!board_console_open(ppp_dev, slave, sizeof(slave))) {
+            host_diagf("emu: --ppp: no serial device; continuing "
+                            "without a network\n");
+        } else if (!emu_net_init()) {
+            host_diagf("emu: --ppp: the IP stack would not start\n");
+        } else {
+            const emu_gdb_target_t *const gt =
+                ops->gdb_target != NULL ? ops->gdb_target() : NULL;
+
+            fprintf(stderr,
+                    "emu: ppp on %s (%s <-> %s)\n"
+                    "emu:   scripts/ppp-host.sh %s\n"
+                    "emu:   then: telnet %s 23   |   tftp %s\n",
+                    slave, EMU_NET_PEER, EMU_NET_ADDR, slave,
+                    EMU_NET_ADDR, EMU_NET_ADDR);
+            if (gt != NULL && emu_net_gdb_init(&g_core, gt, NULL)) {
+                host_diagf("emu:   gdb: target remote %s:1234\n",
+                        EMU_NET_ADDR);
+            }
         }
     }
 #endif
 
-#if !EMU_JIT_SELECTABLE
-    (void)want_jit;
+#if EMU_NET
+    /* What a reload has to redo, recorded once here. */
+    g_ops       = ops;
+    g_uart_p    = &uart;
+    g_ram_bytes = ram_size;
+    g_img_len   = (uint32_t)len;
+    g_img_buf   = NULL;         /* the initial image is main()'s to own */
 #endif
 
     emu_uart_init(&uart, host_tx, host_rx, NULL);
@@ -697,7 +977,7 @@ int main(int argc, char **argv)
                                        ops->elf_machine, ops->elf_machine_alt,
                                        &elf_entry, NULL);
         if (err != NULL) {
-            fprintf(stderr, "emu: %s: %s\n", path, err);
+            host_diagf("emu: %s: %s\n", path, err);
             return 1;
         }
         if (!have_entry) {
@@ -711,8 +991,7 @@ int main(int argc, char **argv)
          * see below.
          */
         if (!emu_bus_load(g_core.bus, load_addr, image, (uint32_t)len)) {
-            fprintf(stderr,
-                    "emu: %s: %zu bytes do not fit at 0x%08x\n",
+            host_diagf("emu: %s: %zu bytes do not fit at 0x%08x\n",
                     path, len, load_addr);
             return 1;
         }
@@ -765,16 +1044,19 @@ int main(int argc, char **argv)
             ops->gdb_target != NULL ? ops->gdb_target() : NULL;
 
         if (gt == NULL) {
-            fprintf(stderr, "emu: no gdb target for frontend %s\n", ops->name);
+            host_diagf("emu: no gdb target for frontend %s\n", ops->name);
             return 1;
         }
         if (!host_gdb_start(&g_core, gt, gdb_port)) {
-            fprintf(stderr, "gdb: could not listen on port %d\n", gdb_port);
+            host_diagf("gdb: could not listen on port %d\n", gdb_port);
             return 2;
         }
         host_gdb_wait();        /* the guest is milliseconds long */
     }
 
+#if EMU_NET
+restart:
+#endif
     {
         /*
          * The same loop the firmware runs -- see
@@ -783,7 +1065,7 @@ int main(int argc, char **argv)
          * take_upload, is a board that can be handed a new image over the
          * wire and has no equivalent here.
          */
-        const emu_run_env_t env = {
+        emu_run_env_t env = {
             .slice        = quantum,
             .max_insn     = (uint32_t)max_insn,
             .advance_time = advance_guest_time,
@@ -792,9 +1074,35 @@ int main(int argc, char **argv)
             .gdb_run      = (gdb_port != 0) ? host_gdb_run : NULL,
         };
 
-        if (emu_run_system(&g_sys, &env, &total) == EMU_RUN_OUTCOME_CAPPED &&
-            !quiet) {
-            fprintf(stderr, "emu: instruction limit reached\n");
+#if EMU_NET
+        /*
+         * With the link up the stack needs servicing every slice, and it
+         * also owns run control through its own gdb stub -- a different
+         * transport from --gdb, which is the loopback-socket one. Both
+         * cannot drive the guest, so the link wins when it is up.
+         */
+        if (emu_net_active()) {
+            env.poll         = net_poll_hook;
+            env.gdb_attached = emu_net_gdb_attached;
+            env.gdb_run      = emu_net_gdb_run;
+            env.take_upload  = take_uploaded_image;
+        }
+#endif
+
+        const emu_run_outcome_t out = emu_run_system(&g_sys, &env, &total);
+
+#if EMU_NET
+        /*
+         * An uploaded image restarts the run rather than ending it, which
+         * is what makes one process serve a whole suite -- the same reason
+         * the firmware's banner sits inside its restart loop.
+         */
+        if (out == EMU_RUN_OUTCOME_RELOAD) {
+            goto restart;
+        }
+#endif
+        if (out == EMU_RUN_OUTCOME_CAPPED && !quiet) {
+            host_diagf("emu: instruction limit reached\n");
         }
     }
 
@@ -804,13 +1112,13 @@ int main(int argc, char **argv)
     if (dump) {
         for (unsigned i = 0; i < g_sys.ncores; i++) {
             if (g_sys.ncores > 1u) {
-                fprintf(stderr, "\n--- core %u ---", i);
+                host_diagf("\n--- core %u ---", i);
             }
             g_sys.ops->dump(g_sys.core[i].cpu, err_puts, NULL);
         }
     }
     if (!quiet) {
-        fprintf(stderr, "emu: %llu instructions retired\n",
+        host_diagf("emu: %llu instructions retired\n",
                 (unsigned long long)total);
         if (g_sys.ncores > 1u) {
             /* Per-core counts, because that is what a determinism check
@@ -818,7 +1126,7 @@ int main(int argc, char **argv)
             for (unsigned i = 0; i < g_sys.ncores; i++) {
                 emu_cpu_status_t st;
                 emu_core_status(&g_sys.core[i], &st);
-                fprintf(stderr, "emu:   core %u: %llu\n", i,
+                host_diagf("emu:   core %u: %llu\n", i,
                         (unsigned long long)st.retired);
             }
         }
@@ -837,20 +1145,61 @@ int main(int argc, char **argv)
 
             emu_jit_get_stats(&st);
             if (st.translations != 0u || st.block_entries != 0u) {
-                fprintf(stderr,
-                        "emu: jit blocks %u  xlat %u  entries %u  interp %u  "
+                host_diagf("emu: jit blocks %u  xlat %u  entries %u  interp %u  "
                         "code %u/%u  flushes %u\n",
                         st.blocks, st.translations, st.block_entries,
                         st.interp_fallbacks, st.code_used, st.code_size,
                         st.flushes);
 #ifdef EMU_JIT_DIFF
-                fprintf(stderr,
-                        "emu: jit-diff checked %u  declined %u\n",
+                host_diagf("emu: jit-diff checked %u  declined %u\n",
                         st.diff_checked, st.diff_declined);
 #endif
             }
         }
     }
+
+#if EMU_NET
+    /*
+     * With a link up, do not exit: serve it.
+     *
+     * This is the board's park loop, and it is what makes --ppp useful
+     * rather than a demonstration. A guest is over in milliseconds; the
+     * report is sitting in the telnet ring with nobody connected, and the
+     * next image has not been uploaded yet. The board stays up because it
+     * has nowhere to go, and here it is a deliberate choice with the same
+     * consequence: a harness can push image after image at one process.
+     *
+     * ^C is the way out, which is why there is no clever exit condition.
+     * Anything cleverer would have to guess whether a client that has not
+     * connected yet is coming.
+     */
+    if (emu_net_active()) {
+        fprintf(stderr, "emu: guest finished; serving the link (^C to quit)\n");
+        for (;;) {
+            emu_net_poll();
+
+            if (take_uploaded_image()) {
+                goto restart;
+            }
+            if (emu_net_gdb_attached()) {
+                uint32_t n = 0;
+
+                (void)emu_net_gdb_run(quantum, &n);
+                continue;
+            }
+            /*
+             * A millisecond. The board spins because it has nothing else
+             * to do with the cycles; a process on a shared machine does,
+             * and lwIP's finest timeout is coarser than this by orders of
+             * magnitude. Sleeping any longer would slow the stack's clock
+             * the way __WFI did on the board.
+             */
+            struct timespec ts = { 0, 1000000L };
+
+            (void)nanosleep(&ts, NULL);
+        }
+    }
+#endif
 
     return (g_exit_code >= 0) ? g_exit_code : 0;
 }

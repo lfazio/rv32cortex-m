@@ -276,6 +276,27 @@ typedef struct emu_cpu_ops {
     const struct emu_gdb_target *(*gdb_target)(void);
 
     /*
+     * Choose this frontend's execution backend, and initialise it.
+     *
+     * A frontend prefers its JIT wherever one is compiled in, which is
+     * right for firmware -- there it is a speed choice and the backend
+     * falls back per instruction for whatever it cannot translate. On a
+     * host it is a *coverage* choice: "the suite passes interpreted" and
+     * "the suite passes through translated code" are different claims,
+     * and a runner that inherited a default could not make either
+     * honestly. So the runner states which it wants.
+     *
+     * Here rather than in the runner because the alternative was a block
+     * per frontend guarded on EMU_GUEST_ARCH_*, and those blocks do not
+     * stay right: the RV32 one ran unconditionally, so a build with both
+     * frontends running a G4MH guest called rv_backend->init with a G4MH
+     * core pointer. Harmless only because that init ignores it.
+     *
+     * NULL for a frontend with one backend. False if init failed.
+     */
+    bool (*select_backend)(emu_cpu_t *cpu, bool want_jit);
+
+    /*
      * Raise or lower an external interrupt line, from a host ISR.
      *
      * System-wide rather than per core: an interrupt arrives at a
