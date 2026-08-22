@@ -125,7 +125,7 @@ between two genuinely different FP implementations.
 - **Eliding the register-file round trip** (`EMU_JIT_ELIDE_LD`,
   `EMU_JIT_ELIDE_ST`, both default **off**, code retained). 24–33% of
   adjacent executed pairs are data dependent (measured with
-  `RV32_PAIR_STATS`), and each emits `STR` then an immediate `LDR` of the
+  `EMU_PAIR_STATS`), and each emits `STR` then an immediate `LDR` of the
   same slot. Removing them works and is correct — 243/243 on hardware,
   10,708 loads and 7,714 stores removed on `bench` — and buys nothing:
 

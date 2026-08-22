@@ -79,7 +79,7 @@ The reference frontend: three external models disagree with it
 | `RV32_ENABLE_DISASM` | | the disassembler is **not** a decoder; it lags |
 | `RV32_INTERP_IN_RAM` | OFF | measured *slower* on the F446 |
 | `RV32_LAZY_IRQ` | ON | |
-| `RV32_PAIR_STATS` | OFF | measurement scaffolding: adjacent executed pairs |
+| `EMU_PAIR_STATS` | OFF | measurement scaffolding: adjacent executed pairs, any frontend |
 
 ### G4MH — `EMU_GUEST_ARCH_G4MH`
 

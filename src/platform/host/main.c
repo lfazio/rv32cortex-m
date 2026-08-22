@@ -61,8 +61,8 @@
  */
 #define EMU_JIT_SELECTABLE EMU_HAVE_JIT
 
-#if RV_PAIR_STATS
-#  include "rv32/rv_pairstats.h"
+#if EMU_PAIR_STATS
+#  include "emu/emu_pairstats.h"
 #endif
 
 #include <errno.h>
@@ -1106,8 +1106,8 @@ restart:
         }
     }
 
-#if RV_PAIR_STATS
-    rv_pair_report(40u);
+#if EMU_PAIR_STATS
+    emu_pair_report(40u);
 #endif
     if (dump) {
         for (unsigned i = 0; i < g_sys.ncores; i++) {

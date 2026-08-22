@@ -86,7 +86,7 @@ blocks and an 8192-entry hash cost a host nothing and are 192 KB of
   (296/296), byte-identical translations *because it never fired*, and a
   10% CoreMark regression that remains unexplained. Reverted. The mistake
   was extrapolating from "ARM has a shifted operand" to "there will be
-  shifts to fold". `-DRV32_PAIR_STATS=ON` answers that in one run —
+  shifts to fold". `-DEMU_PAIR_STATS=ON` answers that in one run —
   **run the pair stats before writing the encoder, not after.**
 - **Interpreter-in-SRAM**: slower.
 - **Lazy IRQ**: neutral.

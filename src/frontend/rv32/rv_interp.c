@@ -23,7 +23,7 @@
 #include "rv32/rv_decode.h"
 #include "rv32/rv_hart.h"
 
-#if RV_PAIR_STATS
+#if EMU_PAIR_STATS
 #  include "rv32/rv_pairstats.h"
 #endif
 
@@ -458,14 +458,14 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
         }
 #endif
 
-#if RV_PAIR_STATS
+#if EMU_PAIR_STATS
         /*
          * Measurement scaffolding, like RV_JIT_HOT_REG_STATS: histogram
          * adjacent executed instruction pairs, to decide whether fusing
          * any of them in the translator could pay. Off by default; it
          * costs a table update per instruction.
          */
-        rv_pair_note(pc, insn, len);
+        emu_pair_note(&rv_pair_ops, pc, insn, len);
 #endif
 
         next = pc + len;

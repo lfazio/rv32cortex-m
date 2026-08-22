@@ -30,6 +30,9 @@
 #include "g4mh/g4mh_cpu.h"
 #include "g4mh/g4mh_backend.h"
 #include "g4mh/g4mh_decode.h"
+#if EMU_PAIR_STATS
+#  include "g4mh/g4mh_pairstats.h"
+#endif
 #include "g4mh/g4mh_intc.h"
 
 /* ------------------------------------------------------------------ */
@@ -630,6 +633,13 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
         }
 
         const uint32_t next = pc + len;
+
+#if EMU_PAIR_STATS
+        emu_pair_note(&g4mh_pair_ops, pc,
+                      (uint64_t)w0 | ((uint64_t)w1 << 16) |
+                      ((uint64_t)w2 << 32) | ((uint64_t)w3 << 48),
+                      len);
+#endif
 
 #if EMU_ENABLE_TRACE
         if (c->trace != NULL) {

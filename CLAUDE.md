@@ -816,7 +816,7 @@ session, and every one of them recurred:
   cyc/insn); it is the *guest* march that costs. Toggle `RV32_EXT_ZCB` against
   a fixed guest binary to separate the two.
 - **Instruction fusion is the wrong target; the register-file round trip
-  is the right one.** Measured with `-DRV32_PAIR_STATS=ON`, which
+  is the right one.** Measured with `-DEMU_PAIR_STATS=ON`, which
   histograms adjacent *executed* instruction pairs on the interpreter:
 
   | guest | pairs | dependent | of which dead | addr-gen -> mem |
@@ -854,7 +854,7 @@ session, and every one of them recurred:
   Every 32-bit data-processing instruction on ARM carries a shift on its
   second operand, so folding a shift into the ALU op that consumes it is
   one instruction instead of two -- and it fires on nothing. Measured
-  with `-DRV32_PAIR_STATS=ON` on CoreMark *after* building it:
+  with `-DEMU_PAIR_STATS=ON` on CoreMark *after* building it:
 
   | pair | share |
   |---|---|

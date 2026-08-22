@@ -1,35 +1,26 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * rv_pairstats.h - Adjacent-instruction-pair histogram.
+ * rv_pairstats.h - RV32's half of the pair histogram.
  *
- * Measurement scaffolding for deciding whether the translator should fuse
- * guest instruction pairs into fewer Thumb-2 instructions. Answers the
- * only question that matters first: which pairs actually *execute*, as
- * opposed to which ones look fusible in a listing.
- *
- * Counted on the interpreter because that is what runs on the host, where
- * CoreMark can be run in a second rather than flashed. A pair is only
- * counted when the two instructions are consecutive in the executed
- * stream *and* contiguous in memory -- a branch between them means the
- * translator would never see them as a pair either.
+ * The histogram is in emu/emu_pairstats.h and is frontend-agnostic; this
+ * is only the table telling it how to read a RISC-V encoding. A second
+ * frontend wanting the same measurement writes the equivalent forty lines
+ * and gets everything else for free -- which is the whole reason the
+ * split exists, because the frontends *without* a reference model are the
+ * ones where "what does this guest actually execute" is hardest to answer
+ * any other way.
  */
 #ifndef RV32_RV_PAIRSTATS_H
 #define RV32_RV_PAIRSTATS_H
 
-#include "rv_types.h"
+#include "emu/emu_pairstats.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#if RV_PAIR_STATS
-
-/* Record one executed instruction. */
-void rv_pair_note(uint32_t pc, uint32_t insn, unsigned len);
-
-/* Print the histogram, most frequent first, to stderr. */
-void rv_pair_report(unsigned top_n);
-
+#if EMU_PAIR_STATS
+extern const emu_pair_ops_t rv_pair_ops;
 #endif
 
 #ifdef __cplusplus

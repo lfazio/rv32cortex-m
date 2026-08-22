@@ -345,7 +345,7 @@
  * The register file lives in memory, so an instruction ends by storing its
  * result and the next begins by loading its operand; when they are the
  * same register the load reads back what the store just wrote. Measured
- * with RV32_PAIR_STATS, that is 24-33% of adjacent executed pairs.
+ * with EMU_PAIR_STATS, that is 24-33% of adjacent executed pairs.
  *
  * Two eliminations, both translate-time:
  *   - the reload, when R1 still holds the value (always safe);

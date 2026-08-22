@@ -143,7 +143,13 @@ option(EMU_JIT_HOT_REG_STATS "Count hot-register reads per block" OFF)
 
 # Histogram adjacent executed instruction pairs, to decide which are worth
 # fusing in the translator. Measurement scaffolding, off by default.
-option(RV32_PAIR_STATS "Count adjacent executed instruction pairs" OFF)
+#
+# Not RV32_: the histogram is in src/emu/ and knows nothing about an
+# instruction set -- a frontend supplies seven small functions and gets it.
+# The two frontends without a reference model are exactly the ones where
+# "what does this guest actually execute" is hardest to answer any other
+# way, so tying this to one of them was backwards.
+option(EMU_PAIR_STATS "Count adjacent executed instruction pairs" OFF)
 
 # Berkeley SoftFloat is the F extension's arithmetic. Not an option.
 #
@@ -285,6 +291,7 @@ add_library(emucore STATIC
     src/emu/emu_jit.c
     src/emu/emu_ir.c
     src/emu/emu_gdb.c
+    src/emu/emu_pairstats.c
     # The IR JIT framework and its two host backends. Every one of these
     # guards itself on the host it emits for, so all of them can stay in
     # the list and exactly one backend compiles to anything. They belong
@@ -313,6 +320,7 @@ target_compile_definitions(emucore PUBLIC
     EMU_MAX_REGIONS=${EMU_MAX_REGIONS}
     EMU_ENABLE_TRACE=$<BOOL:${EMU_ENABLE_TRACE}>
     EMU_ENABLE_STATS=$<BOOL:${EMU_ENABLE_STATS}>
+    EMU_PAIR_STATS=$<BOOL:${EMU_PAIR_STATS}>
     #
     # Whether a JIT was *asked for*. emu_jit.h reconciles this with what
     # the host can actually emit; before it existed, EMU_HOST_JIT_X86_64 and
@@ -391,10 +399,9 @@ if(EMU_GUEST_ARCH_RV32)
         RV_JIT_ELIDE_ST=$<BOOL:${EMU_JIT_ELIDE_ST}>
         RV_JIT_LOOP_CAP=${EMU_JIT_LOOP_CAP}u
         RV_JIT_HOT_REG_STATS=$<BOOL:${EMU_JIT_HOT_REG_STATS}>
-        RV_PAIR_STATS=$<BOOL:${RV32_PAIR_STATS}>
     )
 
-    if(RV32_PAIR_STATS)
+    if(EMU_PAIR_STATS)
         target_sources(emucore PRIVATE src/frontend/rv32/rv_pairstats.c)
     endif()
 endif()
@@ -417,6 +424,7 @@ endif()
 
 if(EMU_GUEST_ARCH_G4MH)
     target_sources(emucore PRIVATE
+        $<$<BOOL:${EMU_PAIR_STATS}>:src/frontend/g4mh/g4mh_pairstats.c>
         src/frontend/g4mh/g4mh_barrier.c
         src/frontend/g4mh/g4mh_cpu.c
         src/frontend/g4mh/g4mh_decode.c

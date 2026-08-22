@@ -7,10 +7,6 @@ measured at.
 
 ## Roadmap
 
-- [x] Unify the main runner for all platforms. `src/platform/common/emu_main.c`
-      is the whole firmware runner and both boards share it; what is left per
-      board is `platform.c` (~190 lines): guest RAM extents, the peripheral
-      policy table, the NVIC bridge. The N6 needs one of those and nothing else.
 - [ ] Add usage of LWIP's PPP stack to the host runner, so the host can run the same code as the F746.
 - [~] Unify host main and the firmware main. The *execution* half is done --
       `emu_run_system` in `src/platform/common/emu_run.c` is one loop for both,
@@ -61,7 +57,7 @@ measured at.
       - `src/emu/` claims to build for ARMv6-M through ARMv8.1-M. This is
         the first thing that would *check* that claim.
       - Helium (MVE) is **not** the port: it is a second, wider emitter.
-        Run `-DRV32_PAIR_STATS=ON` first and let the histogram say whether
+        Run `-DEMU_PAIR_STATS=ON` first and let the histogram say whether
         any guest can use it, the way the pair stats answered the fusion
         question and the FP histogram answered the lowering one.
 
