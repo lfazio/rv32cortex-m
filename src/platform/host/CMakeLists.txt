@@ -14,7 +14,15 @@
 option(EMU_NET "IP/TFTP/telnet/gdb transport over a pty" OFF)
 
 add_executable(emu-host
-    main.c
+    # This platform's two ends: its "hardware" (a heap, stdout, a pty)
+    # and how a run starts and stops here. The sequence between them is
+    # src/platform/common/emu_main.c, the same one the boards run.
+    runner.c
+
+    # The command line and the file it names: 188 of main()'s 477 lines,
+    # and the half emu_session.h calls acquisition -- the one thing a
+    # runner and a board genuinely cannot share.
+    host_args.c
     # The gdb stub's transport. The protocol and the register map are in
     # emucore; only the sockets are platform.
     host_gdb.c
@@ -33,6 +41,12 @@ add_executable(emu-host
     # has two sinks where a board has one, so it supplies the console
     # primitives itself -- see emu_console_puts below.
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_stats.c"
+
+    # The guest's address space, which is the same four regions on every
+    # platform plus whatever that platform adds -- see emu_board.h. This
+    # file had its own copy under the name build_buses.
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_address_space.c"
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_main.c"
 
     # The newlib write(64)/exit(93) pair, also shared. This file had its
     # own copy of the same ABI until it did not need to.

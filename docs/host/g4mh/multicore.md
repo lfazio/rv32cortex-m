@@ -13,7 +13,8 @@ Run it with:
 cmake -B build/mc -DEMU_PLATFORM=host -DEMU_GUEST_ARCH_G4MH=ON \
       -DG4MH_PE_COUNT=3
 cmake --build build/mc && ./build/mc/tests/unit/emu-unit
-./build/mc/emu-host --frontend g4mh --cores 3 --quantum 8 <image>
+cmake -B build/mc -DEMU_GUEST_ARCH_G4MH=ON -DG4MH_PE_COUNT=3
+./build/mc/emu-host --frontend g4mh --quantum 8 <image>
 ```
 
 The design below is what was built, kept as written because the reasoning
@@ -211,7 +212,7 @@ test now asserts the core count.
 
 **Phase 2 — three cores, round-robin. ✅ done.**
 `instance(0..2)`, per-PE INTC1 with the SELF alias resolving per core,
-`emu_system_step` as the scheduler, `--cores` and `--quantum` on the host
+`emu_system_step` as the scheduler, `G4MH_PE_COUNT` and `--quantum`
 runner.
 *Validated:* `test_mc_dispatch` — each core reads its PE number from
 `HTCFG0`, writes a distinguishable value to its own slot and halts, and all

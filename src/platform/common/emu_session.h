@@ -88,7 +88,6 @@ typedef struct emu_session_cfg {
     /* Installed on every core: any of them may make a system call. */
     emu_syscall_fn syscall_fn;
     void          *syscall_ctx;
-    emu_trace_fn   trace_fn;
     const struct emu_cache_ops *cache_ops;
     emu_unmask_fn  unmask_fn;
     void          *unmask_ctx;

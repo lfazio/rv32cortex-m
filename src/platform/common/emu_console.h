@@ -47,6 +47,14 @@ extern "C" {
  */
 void emu_console_putc(uint8_t c);
 
+/*
+ * A byte of guest input, or -1 when none has arrived. Supplied by the
+ * platform for the same reason as putc: it is a UART on a board, stdin or
+ * a telnet connection on a host, and the guest's virtual UART reads
+ * whichever this is.
+ */
+int emu_console_getchar(void);
+
 /* A string, with LF expanded to CRLF because terminals expect it. */
 void emu_console_puts(const char *s);
 
@@ -72,8 +80,23 @@ void emu_console_printf(const char *fmt, ...)
  */
 void emu_report_state(emu_cpu_t *cpu, const emu_cpu_ops_t *ops);
 
+/* Every core's, headed by index when there is more than one. */
+void emu_report_states(emu_system_t *sys);
+
+#if EMU_ENABLE_TRACE
+/*
+ * The instruction trace, installed by emu_session_start on every core.
+ * `skip` and `count` bound it: a full trace of a million instructions is
+ * not readable and not what anyone wants -- the question is always what
+ * happened around some point.
+ */
+void emu_trace_configure(uint64_t skip, uint64_t count);
+void emu_trace_insn(emu_cpu_t *cpu, uint32_t pc, uint64_t insn,
+                    unsigned len, void *user);
+#endif
+
 /* A byte of guest output: LF becomes CRLF, as for emu_console_puts. */
-void emu_console_putb(uint8_t c);
+void emu_console_putchar(uint8_t c);
 
 /* The same, shaped for emu_uart_init's transmit callback. */
 void emu_console_uart_tx(void *ctx, uint8_t c);
@@ -110,12 +133,7 @@ void emu_print_run_summary(uint64_t retired, uint32_t host_cycles);
 bool emu_print_jit_stats(void);
 
 
-/*
- * Guest cache maintenance onto this part's, in emu_arm_cache.c. Handed
- * to the core so a guest's cache-block operations reach the ARM lines
- * that actually back the guest block.
- */
-extern const struct emu_cache_ops emu_arm_cache_ops;
+
 
 #ifdef __cplusplus
 }

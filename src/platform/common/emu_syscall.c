@@ -47,7 +47,7 @@ bool emu_guest_syscall(emu_cpu_t *cpu, emu_syscall_t *sc, void *user)
             if (emu_bus_read(ctx->bus, buf + i, 1u, &byte) != EMU_FAULT_NONE) {
                 break;
             }
-            emu_console_putb((uint8_t)byte);
+            emu_console_putchar((uint8_t)byte);
         }
         sc->ret = len;
         return true;

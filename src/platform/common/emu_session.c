@@ -207,11 +207,15 @@ bool emu_session_start(emu_system_t *sys, const emu_session_cfg_t *cfg)
             ops->set_unmask_hook(cpu, cfg->unmask_fn, cfg->unmask_ctx);
         }
 #if EMU_ENABLE_TRACE
-        if (ops->set_trace != NULL && cfg->trace_fn != NULL) {
-            ops->set_trace(cpu, cfg->trace_fn, NULL);
+        /*
+         * Always, in a build that has tracing -- not "if the platform
+         * passed one". A trace is the same question on every platform and
+         * the board simply did not have one, which is backwards: it is
+         * where a guest is hardest to observe.
+         */
+        if (ops->set_trace != NULL) {
+            ops->set_trace(cpu, emu_trace_insn, (void *)(uintptr_t)ops);
         }
-#else
-        (void)cfg->trace_fn;
 #endif
     }
 

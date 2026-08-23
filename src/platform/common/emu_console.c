@@ -36,7 +36,7 @@ void emu_console_printf(const char *fmt, ...)
     emu_console_puts(buf);
 }
 
-void emu_console_putb(uint8_t c)
+void emu_console_putchar(uint8_t c)
 {
     if (c == '\n') {
         emu_console_putc('\r');
@@ -53,6 +53,6 @@ void emu_console_putb(uint8_t c)
 void emu_console_uart_tx(void *ctx, uint8_t c)
 {
     (void)ctx;
-    emu_console_putb(c);
+    emu_console_putchar(c);
 }
 

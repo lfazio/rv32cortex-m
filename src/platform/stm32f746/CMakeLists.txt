@@ -97,8 +97,9 @@ add_executable(emu-stm32f746
     guest_image.S
 
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_main.c"
+    "${CMAKE_SOURCE_DIR}/src/platform/stm32/runner.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_console.c"
-    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_arm_cache.c"
+    "${CMAKE_SOURCE_DIR}/src/platform/stm32/cache.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_syscall.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_stats.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_diag.c"

@@ -1,17 +1,25 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * emu_arm_cache.c - guest cache maintenance onto ARMv7-M's, shared.
+ * cache.c - guest cache maintenance onto this part's, for the STM32s.
  *
  * This is what makes a guest's cache-block operations mean something:
  * RISC-V's `cbo.clean`/`inval`/`flush` and their equivalents are handed
  * the *host* address backing the guest block, so a guest driver cleaning
  * a DMA buffer cleans the very ARM cache lines that hold it.
  *
- * Identical on every ARM platform here and duplicated in two of them,
- * because the only thing that varies is whether the part has a D-cache
- * at all -- and CMSIS already answers that with __DCACHE_PRESENT, which
- * the device header defines. A Cortex-M4 compiles this to nothing; a
- * Cortex-M7 or M55 gets the real maintenance.
+ * **Not common, and it never was.** This lived in src/platform/common/
+ * under the name emu_arm_cache.c, which made "shared between platforms"
+ * and "shared between two ARM parts" the same thing. They are not: a host
+ * has no guest-visible cache to maintain and answers these by doing
+ * nothing, and a third architecture would have neither this code nor a
+ * reason to compile it out. What is shared is the *question*, and that is
+ * emu_cache_ops_t in the frontend contract.
+ *
+ * Identical between the F446 and the F746, which is what this directory
+ * is for. The only thing that varies is whether the part has a D-cache,
+ * and CMSIS already answers that with __DCACHE_PRESENT from the device
+ * header: a Cortex-M4 compiles this to nothing and a Cortex-M7 gets the
+ * real maintenance.
  *
  * Note what is *not* here: the JIT's own emitted code needs a clean to
  * the point of unification and an I-cache invalidate, which is a
@@ -25,7 +33,7 @@
 
 #include "board.h"
 
-static void arm_cache_maint(void *ctx, void *host, uint32_t len,
+static void board_cache_maint(void *ctx, void *host, uint32_t len,
                             emu_cache_op_t op)
 {
     (void)ctx;
@@ -50,7 +58,7 @@ static void arm_cache_maint(void *ctx, void *host, uint32_t len,
 #endif
 }
 
-const emu_cache_ops_t emu_arm_cache_ops = {
-    .maint = arm_cache_maint,
+const emu_cache_ops_t board_cache_ops = {
+    .maint = board_cache_maint,
     .ctx = NULL,
 };

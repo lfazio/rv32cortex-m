@@ -121,7 +121,7 @@ for src, code in rows:
     buf = bytearray(HALT * 64)
     buf[0:len(code)] = code
     open(img, 'wb').write(bytes(buf))
-    r = subprocess.run([emu, '--quiet', '--frontend', 'g4mh', '--cores', '1',
+    r = subprocess.run([emu, '--quiet', '--frontend', 'g4mh',
                         '--load', '0x80000000', '--max-insn', '64', '--dump', img],
                        capture_output=True, text=True, timeout=60)
     # --dump goes to stderr. Reading stdout alone made every instruction
