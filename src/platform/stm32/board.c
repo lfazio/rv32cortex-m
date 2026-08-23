@@ -24,6 +24,7 @@
 #include "emu_run.h"
 #include "emu_debug.h"
 #include "emu_image.h"
+#include "emu_args.h"
 #include "emu_session.h"
 #include "emu/emu_cpu.h"
 #include "emu/emu_dev.h"
@@ -192,43 +193,69 @@ static void advance_guest_time(uint64_t retired_total, uint32_t did)
  * defined by what is soldered to it, which is the whole difference this
  * hook exists to hold.
  */
-/*
- * Stop, having said why.
- *
- * The obvious implementation -- mask interrupts and spin -- is right up
- * until emu_net_init() succeeds, and after it is the worst thing this
- * file can do. By then the console is a ring buffer drained by telnet, so
- * masking interrupts writes the message explaining the failure into
- * memory nobody will ever read: the board answers no ping, no telnet and
- * no TFTP, and presents as a dead link rather than as a firmware that
- * knows exactly what went wrong and cannot say so.
- *
- * That is not hypothetical. A start-up ordering bug halted here with
- * "could not build the guest address space" sitting in the ring, and the
- * symptom was a silent link -- an hour spent on the network for a fault
- * that had already diagnosed itself.
- *
- * So with the stack up, keep servicing it forever instead. Nothing else
- * runs, which is the point of a halt; a client can still connect and
- * collect the reason.
- */
-void board_fatal(int *status)
-{
-    (void)status;
 
-    if (emu_board_link_up()) {
-        for (;;) {
-            emu_board_poll();
-        }
-    }
-    board_fatal_halt();
+/*
+ * This board's command line, which it would have been given if it had
+ * one.
+ *
+ * Every entry here used to be a struct field assigned by hand below, in
+ * parallel with a parser that understood the same setting by name --
+ * `--jit` and `cfg->want_jit`, `--quantum` and `env->slice`. Writing it
+ * as argv is what collapses the two, and it has a second effect worth
+ * more than the deduplication: this board's policy is now readable as the
+ * command line it corresponds to, so "what does the firmware run with"
+ * and "what would I type" have one answer.
+ *
+ * Static, because emu_main keeps the pointer. argv[0] is skipped as a
+ * program name and so must be there.
+ *
+ * No image is named: this board's is linked in with .incbin, which is why
+ * the shared parser cannot require one.
+ */
+char *const *board_argv(int *argc)
+{
+    /*
+     * **Formatted, not stringified**, and that is not a style choice.
+     *
+     * The obvious `#x` produces the *token*, and these constants carry a
+     * `u` suffix -- so `--quantum 4096u` reached a parser whose parse_u32
+     * insists on `*end == '\0'` and rejected it. The board would have
+     * printed the usage text over its console and never started a guest.
+     * Confirmed on the host, where the same argument gives usage and exit
+     * 2, because a board cannot be asked without flashing it.
+     *
+     * snprintf is also immune to the form a -D takes: -DEMU_RUN_SLICE=4096
+     * and =4096u come out the same here, where stringifying would put the
+     * caller's typing straight into an argv.
+     */
+    static char slice[16];
+    static char maxi[24];
+
+    (void)snprintf(slice, sizeof(slice), "%u", (unsigned)EMU_RUN_SLICE);
+    (void)snprintf(maxi,  sizeof(maxi),  "%u", (unsigned)EMU_MAX_INSN);
+
+    static char *av[] = {
+        "emu",
+        "--jit",                        /* a board wants speed; a runner
+                                         * chooses, because there it is a
+                                         * coverage question */
+        "--dump",                       /* the register state on exit is
+                                         * most of what a person reading a
+                                         * telnet session came for */
+        "--quantum",  NULL,
+        "--max-insn", NULL,
+    };
+
+    av[4] = slice;
+    av[6] = maxi;
+
+    *argc = (int)(sizeof(av) / sizeof(av[0]));
+    return av;
 }
 
-bool board_startup(int argc, char **argv, int *status,
+bool board_startup(const emu_args_t *args, int *status,
                        emu_session_cfg_t *cfg, emu_run_env_t *env)
 {
-    (void)argc;
-    (void)argv;
     (void)status;
 
     board_init();
@@ -277,13 +304,9 @@ bool board_startup(int argc, char **argv, int *status,
     cfg->unmask_fn = board_irq_unmask;
     /* A board wants speed; a runner chooses, because there it is a
      * coverage question rather than a performance one. */
-    cfg->want_jit  = true;
     /* No command line to ask on, and the state after a guest stops is
      * most of what a person reading a telnet session came for. */
-    cfg->dump_state = true;
 
-    env->slice        = EMU_RUN_SLICE;
-    env->max_insn     = EMU_MAX_INSN;
     env->advance_time = advance_guest_time;
     env->take_upload  = emu_image_take_pending;
     return true;

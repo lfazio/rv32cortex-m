@@ -211,10 +211,32 @@ uint64_t board_time_now(void);
  * On return, board_img/_size and board_ram/_size must be set.
  * False means stop, with *status as the exit code.
  */
+/*
+ * This platform's equivalent command line, or NULL to use the real one.
+ *
+ * **A board has no argv and still has options.** It wants the JIT, a
+ * particular quantum, an instruction cap and a register dump on exit --
+ * exactly the things the runner's command line names -- and it used to
+ * set the corresponding struct fields by hand in board_startup, in
+ * parallel with a parser that understood the same settings by name. Two
+ * ways to say one thing, and only one of them was documented by a
+ * --help.
+ *
+ * So a board hands over the argv it *would* have been given, and one
+ * parser reads both. What that buys beyond the deduplication is that a
+ * board's policy is now legible as a command line, and that anything
+ * added to the parser reaches the boards without a second edit.
+ *
+ * The array must outlive the call; a static is the obvious thing. argv[0]
+ * is skipped as a program name, so it must be present.
+ */
+char *const *board_argv(int *argc);
+
 struct emu_session_cfg;
 struct emu_run_env;
 struct emu_guest_exit;
-bool board_startup(int argc, char **argv, int *status,
+struct emu_args;
+bool board_startup(const struct emu_args *args, int *status,
                    struct emu_session_cfg *cfg, struct emu_run_env *env);
 
 /*
@@ -230,15 +252,17 @@ bool board_after_run(const struct emu_guest_exit *exit, bool capped,
                      int *status);
 
 /*
- * The runner cannot continue, and has already said why.
+ * The platform's last word, once the runner cannot continue.
  *
- * A host returns and lets the shell see a status. A board has nowhere to
- * return *to* -- and by this point it may have given its console to the
- * network, so the reason is in a ring only a telnet client can drain.
- * Halting with interrupts masked writes it into memory nobody can reach:
- * the board answers no ping, no telnet and no TFTP, and presents as a
- * dead link rather than as a firmware that knows what went wrong. So it
- * keeps servicing the stack instead, for ever.
+ * A host returns and lets the shell see a status; a board has nowhere to
+ * return *to* and halts. That is all this is -- one part-specific fact.
+ *
+ * **The interesting half is not here.** If the link is up, the reason is
+ * in a ring only a telnet client can drain, so halting writes the
+ * diagnosis into memory nobody can reach and the board presents as a dead
+ * link. Serving the stack instead is reasoning about the *link* rather
+ * than the silicon, so it lives in emu_board_fatal(), which every caller
+ * goes through and which reaches this afterwards.
  *
  * Never returns on a board.
  */

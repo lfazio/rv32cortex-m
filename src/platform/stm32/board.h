@@ -53,7 +53,9 @@ void board_init(void);
  * decided.
  */
 void board_idle(void);
-void board_fatal_halt(void);
+
+/* board_fatal is board_api.h's -- every platform has one, and on these
+ * parts it is the per-part halt that the shared board.c used to wrap. */
 
 
 /* ------------------------------------------------------------------ */

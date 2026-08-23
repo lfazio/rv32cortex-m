@@ -23,7 +23,6 @@ add_executable(emu-host
     # The command line and the file it names: 188 of main()'s 477 lines,
     # and the half emu_session.h calls acquisition -- the one thing a
     # runner and a board genuinely cannot share.
-    host_args.c
     # The gdb stub's transport. The protocol and the register map are in
     # emucore; only the sockets are platform.
     host_gdb.c
@@ -35,6 +34,7 @@ add_executable(emu-host
 
     # Bringing a guest up and reporting what it did -- the middle of both
     # runners, which was the same code twice. See emu_session.h.
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_args.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_image.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_session.c"
 

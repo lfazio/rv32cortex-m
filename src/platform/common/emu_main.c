@@ -27,6 +27,7 @@
 #include "emu_board.h"
 #include "emu_console.h"
 #include "emu_debug.h"
+#include "emu_args.h"
 #include "emu_run.h"
 #include "emu_session.h"
 
@@ -172,7 +173,56 @@ int main(int argc, char **argv)
 
     native_coremark_baseline();
 
-    if (!board_startup(argc, argv, &status, &g_cfg, &env)) {
+    /*
+     * One parser, two sources of argv.
+     *
+     * A runner gets the real one; a board hands over the command line it
+     * *would* have been given -- see board_argv. Before this the boards
+     * set the equivalent struct fields by hand, in parallel with a parser
+     * that understood the same settings by name, so a new option reached
+     * one and not the other.
+     */
+    int          eargc = argc;
+    char *const *eargv = argv;
+    int          bargc = 0;
+    char *const *bargv = board_argv(&bargc);
+
+    if (bargv != NULL) {
+        eargc = bargc;
+        eargv = bargv;
+    }
+
+    emu_args_t args;
+
+    if (!emu_args_parse(eargc, (char **)eargv, &args, &status)) {
+        return status;
+    }
+
+    /*
+     * Here rather than in a board: --trace-skip and --trace-count are
+     * options like any other, and the trace they configure is
+     * emu_diag.c's, which every platform links. It was called from
+     * host/board.c, so a board could not be traced by asking for it.
+     */
+#if EMU_ENABLE_TRACE
+    emu_trace_configure(args.trace_skip, args.trace_count);
+#endif
+
+    /*
+     * What the command line means, applied once.
+     *
+     * Both boards assigned these four out of their own copy of the same
+     * settings -- `cfg->want_jit = true` beside a `--jit` the parser also
+     * understood. A platform can still override afterwards; nothing here
+     * is a decision, only the translation from an option's name to the
+     * field it sets.
+     */
+    g_cfg.want_jit   = args.want_jit;
+    g_cfg.dump_state = args.dump;
+    env.slice        = args.quantum;
+    env.max_insn     = (uint32_t)args.max_insn;
+
+    if (!board_startup(&args, &status, &g_cfg, &env)) {
         return status;
     }
 
@@ -185,13 +235,13 @@ int main(int argc, char **argv)
         if (!emu_build_address_space(&g_buses[i], &g_uart)) {
             emu_console_printf("fatal: could not build the guest address "
                                "space\n");
-            board_fatal(&status);
+            emu_board_fatal(&status);
             return status;
         }
     }
 
     if (!emu_session_start(&g_sys, &g_cfg)) {
-        board_fatal(&status);
+        emu_board_fatal(&status);
         return status;
     }
 

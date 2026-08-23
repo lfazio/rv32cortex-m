@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * host_args.h - the command line, and reading the image it names.
+ * emu_args.h - the command line, and reading the image it names.
  *
  * Split out because it is 188 of main()'s 477 lines and none of it is
  * about running a guest. It is also exactly the half emu_session.h says
@@ -9,17 +9,16 @@
  * and how to place it. Neither shape helps the other, and this is the
  * whole of the difference.
  */
-#ifndef EMU_HOST_ARGS_H
-#define EMU_HOST_ARGS_H
+#ifndef EMU_EMU_ARGS_H
+#define EMU_EMU_ARGS_H
 
 #include "emu/emu_memmap.h"
 
 #include <stdbool.h>
-#include <stdio.h>
 #include <stddef.h>
 #include <stdint.h>
 
-typedef struct host_args {
+typedef struct emu_args {
     const char *path;            /* the image to run                    */
     const char *frontend;        /* NULL: from the ELF, else the first  */
 
@@ -50,29 +49,23 @@ typedef struct host_args {
 
     uint64_t trace_skip;
     uint64_t trace_count;
-} host_args_t;
+} emu_args_t;
 
 /*
  * Parse argv. False means the runner should exit with *status* -- 0 for
  * a request that was answered, 2 for a usage error, and the caller does
  * not need to know which was which.
  */
-bool host_args_parse(int argc, char **argv, host_args_t *out, int *status);
+bool emu_args_parse(int argc, char **argv, emu_args_t *out, int *status);
 
-/*
- * The whole file, into a malloc'd buffer. NULL on failure, having said
- * why.
- *
- * The caller does *not* free it: the flash window points into it for the
- * lifetime of the run, and even an ELF's segments -- which are copied
- * out -- leave the window referring to it. Freeing left the guest
- * executing out of a freed buffer, which read correctly because nothing
- * had reused the allocation yet.
- */
-uint8_t *host_read_file(const char *path, size_t *out_len);
+/* The --help text. Public because "an image is required" is enforced by
+ * the host rather than by the parser -- see the note at the end of
+ * emu_args_parse -- and that check wants the same output. */
+void emu_args_usage(void);
+
 
 /* The frontends this build has, comma separated, for a message that has
  * to say what was possible as well as what was asked for. */
-void host_list_frontends(FILE *f);
+void emu_args_list_frontends(void);
 
-#endif /* EMU_HOST_ARGS_H */
+#endif /* EMU_EMU_ARGS_H */

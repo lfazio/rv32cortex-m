@@ -33,7 +33,7 @@
 #include "emu_console.h"   /* the shared syscall handler and its context */
 #include "emu_run.h"
 #include "emu_board.h"
-#include "host_args.h"
+#include "emu_args.h"
 #include "emu_session.h"
 #include "emu/emu_gdb.h"
 #include "emu/emu_dev.h"
@@ -129,6 +129,44 @@ bool board_console_open(const char *dev, char *slave_out, unsigned n)
  * not have it, because the only reader was in stm32/board.c.
  */
 const char *const board_core_name = "x86-64";
+
+uint8_t *host_read_file(const char *path, size_t *out_len)
+{
+    FILE *f = fopen(path, "rb");
+    if (f == NULL) {
+        emu_console_printf("emu: %s: %s\n", path, strerror(errno));
+        return NULL;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) {
+        emu_console_printf("emu: %s: not seekable\n", path);
+        fclose(f);
+        return NULL;
+    }
+    const long n = ftell(f);
+    if (n < 0) {
+        emu_console_printf("emu: %s: %s\n", path, strerror(errno));
+        fclose(f);
+        return NULL;
+    }
+    rewind(f);
+
+    uint8_t *buf = malloc((size_t)n ? (size_t)n : 1u);
+    if (buf == NULL) {
+        fclose(f);
+        emu_console_printf("emu: out of memory\n");
+        return NULL;
+    }
+    if (fread(buf, 1u, (size_t)n, f) != (size_t)n) {
+        emu_console_printf("emu: %s: short read\n", path);
+        free(buf);
+        fclose(f);
+        return NULL;
+    }
+    fclose(f);
+    *out_len = (size_t)n;
+    return buf;
+}
+
 
 /*
  * **Not the core name**, despite what board_api.h's comment for it used
@@ -659,16 +697,32 @@ uint32_t       board_ram_size = 0u;
  * image linked in; this brings up a heap and a pty and is told where to
  * find one. Everything after is the same sequence, in emu_main.c.
  */
-static host_args_t g_opt;
+static emu_args_t g_opt;
 
-bool board_startup(int argc, char **argv, int *status,
+/*
+ * The real command line, which is what a hosted platform has.
+ * emu_main.c parses it and hands the result back through board_startup.
+ */
+char *const *board_argv(int *argc)
+{
+    (void)argc;
+    return NULL;
+}
+
+bool board_startup(const emu_args_t *args, int *status,
                        emu_session_cfg_t *cfg, emu_run_env_t *env)
 {
+    g_opt = *args;
 
-    /* Instructions per timer tick. 1 keeps guest time in step with the
-     * cycle counter, which is what the reference model assumes. */
-
-    if (!host_args_parse(argc, argv, &g_opt, status)) {
+    /*
+     * **Where "an image is required" is enforced**, rather than in the
+     * parser: a board's image is linked in and its equivalent command
+     * line names none, so a shared parser cannot insist. This is the one
+     * caller that cannot proceed without a path.
+     */
+    if (g_opt.path == NULL) {
+        emu_args_usage();
+        *status = 2;
         return false;
     }
 
@@ -686,7 +740,7 @@ bool board_startup(int argc, char **argv, int *status,
         if (ops == NULL) {
             emu_console_printf("emu: no frontend '%s'; this build has: ",
                     g_opt.frontend);
-            host_list_frontends(stderr);
+            emu_args_list_frontends();
             fputc('\n', stderr);
             free(image);
             *status = 2;
@@ -697,7 +751,7 @@ bool board_startup(int argc, char **argv, int *status,
         ops = emu_frontend_for_elf(m);
         if (ops == NULL) {
             emu_console_printf("emu: no frontend for ELF machine %u; this build has: ", m);
-            host_list_frontends(stderr);
+            emu_args_list_frontends();
             fputc('\n', stderr);
             free(image);
             *status = 2;
@@ -731,9 +785,7 @@ bool board_startup(int argc, char **argv, int *status,
     cfg->ops       = ops;
     cfg->load_addr = g_opt.load_addr;
     cfg->entry     = g_opt.entry;
-    cfg->want_jit  = g_opt.want_jit;
     /* 378 architecture tests do not each want a register dump. */
-    cfg->dump_state = g_opt.dump;
     board_gdb_configure(g_opt.gdb_port);
     /*
      * NULL: this runner calloc'd guest RAM and an ELF's segments are
@@ -741,8 +793,6 @@ bool board_startup(int argc, char **argv, int *status,
      */
     cfg->ram_host  = NULL;
 
-    env->slice    = g_opt.quantum;
-    env->max_insn = (uint32_t)g_opt.max_insn;
     env->advance_time = advance_guest_time;
     /*
      * The link, before the guest runs and after the cores exist -- the

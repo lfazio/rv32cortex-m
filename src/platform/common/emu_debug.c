@@ -68,6 +68,36 @@ bool emu_board_link_start(void)
     return false;
 }
 
+/*
+ * The runner cannot continue, and has already said why.
+ *
+ * What to do about it splits in two, and only the second half is the
+ * platform's. **If the link is up, the reason is in a ring nobody can
+ * reach** -- the console was handed to the IP stack, so halting here
+ * writes the diagnosis into memory and presents as a dead link: no ping,
+ * no telnet, no TFTP. That is not hypothetical; a start-up ordering bug
+ * halted with "could not build the guest address space" sitting in the
+ * ring, and an hour went on the network for a fault that had already
+ * diagnosed itself.
+ *
+ * So with the stack up, keep servicing it for ever. Nothing else runs,
+ * which is the point of a halt, and a client can still connect and
+ * collect the reason. That reasoning is about the *link*, not about the
+ * silicon, so it is here; what a platform is left with is its last word
+ * -- a shell to return a status to, or nowhere to go.
+ */
+void emu_board_fatal(int *status)
+{
+    *status = 1;
+
+    if (emu_board_link_up()) {
+        for (;;) {
+            emu_board_poll();
+        }
+    }
+    board_fatal(status);
+}
+
 void emu_debug_start(emu_system_t *sys, const emu_cpu_ops_t *ops)
 {
     if (!net_serving() && !board_gdb_wanted()) {

@@ -38,6 +38,20 @@
 
 #include "board_api.h"
 
+#include <stddef.h>
+
+/*
+ * The whole file, into a malloc'd buffer. NULL on failure, having said
+ * why.
+ *
+ * The caller does *not* free it: the flash window points into it for the
+ * lifetime of the run, and even an ELF's segments -- which are copied
+ * out -- leave the window referring to it. Freeing left the guest
+ * executing out of a freed buffer, which read correctly because nothing
+ * had reused the allocation yet.
+ */
+uint8_t *host_read_file(const char *path, size_t *out_len);
+
 /*
  * Open the pty and put it in raw mode. `slave_out`/`n` receive the name
  * to hand to pppd. False if no pty could be had, which is not fatal to

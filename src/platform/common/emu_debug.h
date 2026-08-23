@@ -80,6 +80,13 @@ void emu_board_poll(void);
  * has a network is not a fact about the silicon.
  */
 bool emu_board_link_start(void);
+
+/*
+ * Stop, having already said why. Serves the link for ever if one is up,
+ * because that is where the reason went; otherwise the platform's own
+ * last word. Never returns on a board.
+ */
+void emu_board_fatal(int *status);
 bool emu_board_link_up(void);
 
 /*

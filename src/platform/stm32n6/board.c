@@ -337,8 +337,10 @@ void board_idle(void)
     __WFI();
 }
 
-void board_fatal_halt(void)
+void board_fatal(int *status)
 {
+    (void)status;
+
     __disable_irq();
     for (;;) {
     }

@@ -1,16 +1,15 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * host_args.c - see host_args.h. The command line, and the file it names.
+ * host_args.c - see emu_args.h. The command line, and the file it names.
  */
 
-#include "host_args.h"
+#include "emu_args.h"
 #include "emu_console.h"
 
 #include "emu/emu_cpu.h"
 #include "emu/emu_jit.h"
 
 #include <errno.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -39,24 +38,24 @@ static bool parse_u32(const char *s, uint32_t *out)
     return true;
 }
 
-void host_list_frontends(FILE *f)
+void emu_args_list_frontends(void)
 {
     for (const emu_cpu_ops_t *const *p = emu_frontends; *p != NULL; p++) {
-        fprintf(f, "%s%s", (p == emu_frontends) ? "" : ", ", (*p)->name);
+        emu_console_printf("%s%s", (p == emu_frontends) ? "" : ", ", (*p)->name);
     }
 }
 
-static void usage(void)
+void emu_args_usage(void)
 {
-    fprintf(stderr,
-        "usage: emu-host [options] <image>\n"
+    emu_console_printf(
+        "usage: emu [options] <image>\n"
         "\n"
         "  <image>              flat binary (preferred) or static ELF32\n"
         "\n"
         "  --frontend NAME      guest ISA (default: from the ELF header,\n"
         "                       else the first compiled in). This build has: ");
-    host_list_frontends(stderr);
-    fprintf(stderr,
+    emu_args_list_frontends();
+    emu_console_printf(
         "\n"
         "  --load ADDR          load address for a flat binary\n"
         "                       (default 0x%08x, the flash window; a binary\n"
@@ -78,44 +77,8 @@ static void usage(void)
         (unsigned)EMU_DEFAULT_BUDGET);
 }
 
-uint8_t *host_read_file(const char *path, size_t *out_len)
-{
-    FILE *f = fopen(path, "rb");
-    if (f == NULL) {
-        emu_console_printf("emu: %s: %s\n", path, strerror(errno));
-        return NULL;
-    }
-    if (fseek(f, 0, SEEK_END) != 0) {
-        emu_console_printf("emu: %s: not seekable\n", path);
-        fclose(f);
-        return NULL;
-    }
-    const long n = ftell(f);
-    if (n < 0) {
-        emu_console_printf("emu: %s: %s\n", path, strerror(errno));
-        fclose(f);
-        return NULL;
-    }
-    rewind(f);
 
-    uint8_t *buf = malloc((size_t)n ? (size_t)n : 1u);
-    if (buf == NULL) {
-        fclose(f);
-        emu_console_printf("emu: out of memory\n");
-        return NULL;
-    }
-    if (fread(buf, 1u, (size_t)n, f) != (size_t)n) {
-        emu_console_printf("emu: %s: short read\n", path);
-        free(buf);
-        fclose(f);
-        return NULL;
-    }
-    fclose(f);
-    *out_len = (size_t)n;
-    return buf;
-}
-
-bool host_args_parse(int argc, char **argv, host_args_t *opt, int *status)
+bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
 {
     *status = 0;
     memset(opt, 0, sizeof(*opt));
@@ -129,7 +92,7 @@ bool host_args_parse(int argc, char **argv, host_args_t *opt, int *status)
         const char *a = argv[i];
 
         if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
-            usage();
+            emu_args_usage();
             return false;
         }
         if (strcmp(a, "--quiet") == 0) { opt->quiet = true; continue; }
@@ -141,20 +104,20 @@ bool host_args_parse(int argc, char **argv, host_args_t *opt, int *status)
                 continue;
             }
             if (strcmp(a, "--load") == 0) {
-                if (!parse_u32(argv[++i], &opt->load_addr)) { usage(); *status = 2; return false; }
+                if (!parse_u32(argv[++i], &opt->load_addr)) { emu_args_usage(); *status = 2; return false; }
                 continue;
             }
             if (strcmp(a, "--entry") == 0) {
-                if (!parse_u32(argv[++i], &opt->entry)) { usage(); *status = 2; return false; }
+                if (!parse_u32(argv[++i], &opt->entry)) { emu_args_usage(); *status = 2; return false; }
                 continue;
             }
             if (strcmp(a, "--ram") == 0) {
-                if (!parse_u32(argv[++i], &opt->ram_size)) { usage(); *status = 2; return false; }
+                if (!parse_u32(argv[++i], &opt->ram_size)) { emu_args_usage(); *status = 2; return false; }
                 continue;
             }
             if (strcmp(a, "--max-insn") == 0) {
                 uint32_t v;
-                if (!parse_u32(argv[++i], &v)) { usage(); *status = 2; return false; }
+                if (!parse_u32(argv[++i], &v)) { emu_args_usage(); *status = 2; return false; }
                 opt->max_insn = v;
                 continue;
             }
@@ -191,7 +154,7 @@ bool host_args_parse(int argc, char **argv, host_args_t *opt, int *status)
                 opt->gdb_port = 1234;
                 if (i + 1 < argc && argv[i + 1][0] != '-') {
                     uint32_t v;
-                    if (!parse_u32(argv[++i], &v)) { usage(); *status = 2; return false; }
+                    if (!parse_u32(argv[++i], &v)) { emu_args_usage(); *status = 2; return false; }
                     opt->gdb_port = (int)v;
                 }
                 continue;
@@ -220,21 +183,21 @@ bool host_args_parse(int argc, char **argv, host_args_t *opt, int *status)
             }
 #if EMU_ENABLE_TRACE
             if (strcmp(a, "--trace-skip") == 0) {
-                uint32_t v; if (!parse_u32(argv[++i], &v)) { usage(); *status = 2; return false; }
+                uint32_t v; if (!parse_u32(argv[++i], &v)) { emu_args_usage(); *status = 2; return false; }
                 opt->trace_skip = v; continue;
             }
             if (strcmp(a, "--trace-count") == 0) {
-                uint32_t v; if (!parse_u32(argv[++i], &v)) { usage(); *status = 2; return false; }
+                uint32_t v; if (!parse_u32(argv[++i], &v)) { emu_args_usage(); *status = 2; return false; }
                 opt->trace_count = v; continue;
             }
 #endif
             if (strcmp(a, "--timer-hz") == 0) {
-                if (!parse_u32(argv[++i], &opt->timer_div)) { usage(); *status = 2; return false; }
+                if (!parse_u32(argv[++i], &opt->timer_div)) { emu_args_usage(); *status = 2; return false; }
                 continue;
             }
             if (strcmp(a, "--quantum") == 0) {
                 if (!parse_u32(argv[++i], &opt->quantum) || opt->quantum == 0u) {
-                    usage(); *status = 2; return false;
+                    emu_args_usage(); *status = 2; return false;
                 }
                 continue;
             }
@@ -242,7 +205,7 @@ bool host_args_parse(int argc, char **argv, host_args_t *opt, int *status)
 
         if (a[0] == '-') {
             emu_console_printf("emu: unknown option %s\n", a);
-            usage();
+            emu_args_usage();
             *status = 2;
             return false;
         }
@@ -254,10 +217,12 @@ bool host_args_parse(int argc, char **argv, host_args_t *opt, int *status)
         opt->path = a;
     }
 
-    if (opt->path == NULL) {
-        usage();
-        *status = 2;
-        return false;
-    }
+    /*
+     * **No "an image is required" check here**, though the host needs
+     * one. A board's image is linked in, so its equivalent command line
+     * names none, and a parser shared with it cannot insist. The host
+     * enforces it where it reads the file -- the one caller that cannot
+     * proceed without a path.
+     */
     return true;
 }
