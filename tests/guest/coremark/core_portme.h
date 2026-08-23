@@ -25,13 +25,29 @@
 #define MEM_LOCATION     "STATIC"
 
 /* ---- data types ---- */
+#include <stdint.h>
+
 typedef signed short   ee_s16;
 typedef unsigned short ee_u16;
 typedef signed int     ee_s32;
 typedef float          ee_f32;
 typedef unsigned char  ee_u8;
 typedef unsigned int   ee_u32;
-typedef ee_u32         ee_ptr_int;
+/*
+ * **Pointer-sized, not ee_u32**, and the difference only shows on a
+ * 64-bit machine.
+ *
+ * align_mem() below rounds a pointer up through this type, so declaring
+ * it `unsigned int` truncates every address to 32 bits. That is invisible
+ * for the guest -- which is 32-bit, where uintptr_t *is* ee_u32 -- and
+ * fatal for EMU_NATIVE_COREMARK on the host: the aligned block came back
+ * as 0x55589c3c from a real 0x555555589c3a and CoreMark segfaulted on its
+ * first matrix write, having printed its banner and nothing else.
+ *
+ * uintptr_t is the same width as before on the guest, so this changes no
+ * emulated figure.
+ */
+typedef uintptr_t      ee_ptr_int;
 typedef unsigned int   ee_size_t;
 
 #define NULL ((void *)0)

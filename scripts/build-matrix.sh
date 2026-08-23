@@ -107,6 +107,8 @@ f446-rv32|stm32f446|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF|the M4: n
 f446-net|stm32f446|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON|**the other value here**: the M4 with PPP, which it had no option for until the wiring moved to cmake/emu_net.cmake
 n6-rv32|stm32n6|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF|the Armv8.1-M port: cortex-m55, -mcmse, no internal flash, 1471 KiB of guest RAM
 n6-g4|stm32n6|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON|the contract check on the newest platform: a frontend swap must need nothing from src/platform/
+host-coremark|host|-DEMU_NATIVE_COREMARK=ON|**the native baseline**, which called a console symbol renamed away years ago and so had not linked since; nothing built it, so nothing said so
+f746-coremark|stm32f746|-DEMU_NATIVE_COREMARK=ON -DEMU_NET=OFF|the same option on the board it was written for
 '
 
 if [ "$filter" = "--list" ]; then

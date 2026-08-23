@@ -40,8 +40,21 @@ function(emu_coremark_native_attach tgt)
     target_include_directories(${tgt} PRIVATE
         "${COREMARK_DIR}" "${CMAKE_SOURCE_DIR}/tests/guest/coremark")
 
+    #
+    # **MAIN_HAS_NOARGC is load-bearing, not tidiness.** Without it
+    # CoreMark's main is `main(int argc, char *argv[])`, and emu_main
+    # calls it as `coremark_native_main(void)` -- so argc and argv are
+    # whatever happened to be in the argument registers. CoreMark passes
+    # them to portable_init and to get_seed_args, and the run produced its
+    # banner and then *nothing at all*: no results, no error, exit.
+    #
+    # With it, main takes no arguments and the seeds come from the
+    # volatile globals coremark_native.c defines, which is the
+    # configuration this port has always meant.
+    #
     target_compile_definitions(${tgt} PRIVATE
         EMU_NATIVE_COREMARK=1 PERFORMANCE_RUN=1
+        MAIN_HAS_NOARGC=1
         ITERATIONS=${COREMARK_ITERATIONS})
 
     #

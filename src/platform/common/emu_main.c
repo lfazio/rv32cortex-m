@@ -127,11 +127,18 @@ emu_system_t *emu_main_system(void) { return &g_sys; }
  * promises all three. It sat in stm32/board.c behind `#ifdef`, so the
  * host could build the option and silently never run it.
  *
- * It never returns: it is a measurement, not a mode, and there is no
- * meaningful thing to do afterwards. Falling through to the emulator
- * would report the guest's figures under a banner that says "native".
+ * True when it ran, and the caller then returns rather than falling
+ * through: this is a measurement, not a mode, and continuing would report
+ * the guest's figures under a banner that says "native".
+ *
+ * **Returning, not spinning.** The first version ended in `for (;;)`,
+ * which is what a board wants and made every host run look like a hang --
+ * CoreMark printed its whole result and the process then spun until the
+ * timeout killed it, so three separate runs were read as "too slow" when
+ * they had already finished. A board returning from main lands in the
+ * startup's own loop, which is the same outcome by the normal route.
  */
-static void native_coremark_baseline(void)
+static bool native_coremark_baseline(void)
 {
 #ifdef EMU_NATIVE_COREMARK
     extern int coremark_native_main(void);
@@ -146,8 +153,9 @@ static void native_coremark_baseline(void)
 
     emu_console_printf("\n-- native --\n  host     %u cycles\n",
                        (unsigned)(board_cycles() - c0));
-    for (;;) {
-    }
+    return true;
+#else
+    return false;
 #endif
 }
 
@@ -171,7 +179,9 @@ int main(int argc, char **argv)
     g_cfg.syscall_ctx = &g_sc_ctx;
     g_cfg.fail        = session_fail;
 
-    native_coremark_baseline();
+    if (native_coremark_baseline()) {
+        return 0;
+    }
 
     /*
      * One parser, two sources of argv.
