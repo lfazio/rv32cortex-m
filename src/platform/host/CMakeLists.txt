@@ -35,6 +35,7 @@ add_executable(emu-host
 
     # Bringing a guest up and reporting what it did -- the middle of both
     # runners, which was the same code twice. See emu_session.h.
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_image.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_session.c"
 
     # The run summary and the framework's JIT counters, which the shared

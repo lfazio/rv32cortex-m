@@ -139,6 +139,7 @@ add_executable(emu-stm32n6
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_stats.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_diag.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_address_space.c"
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_image.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_session.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_run.c")
 

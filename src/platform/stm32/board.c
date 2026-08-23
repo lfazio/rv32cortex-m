@@ -23,6 +23,7 @@
 #include "emu_board.h"
 #include "emu_run.h"
 #include "emu_debug.h"
+#include "emu_image.h"
 #include "emu_session.h"
 #include "emu/emu_cpu.h"
 #include "emu/emu_dev.h"
@@ -34,13 +35,6 @@
 #if EMU_NET
 #  include "emu_net.h"
 #endif
-
-/*
- * gdb's `load` writes through the same flash arena TFTP uploads land in.
- * Defined in runner.c beside the rest of the upload path, because the two
- * share the arena cursor: one image store, reached two ways.
- */
-extern const emu_gdb_flash_ops_t emu_stm32_gdb_flash;
 
 /*
  * A board always wants a stub: it costs a listening socket on a link that
@@ -57,8 +51,8 @@ bool board_gdb_start(emu_core_t *core, const emu_gdb_target_t *target,
 {
 #if EMU_NET
     /* gdb's `load` writes through the same flash arena TFTP uses. */
-    *flash = &emu_stm32_gdb_flash;
-    return emu_net_gdb_init(core, target, &emu_stm32_gdb_flash);
+    *flash = &emu_image_gdb_flash;
+    return emu_net_gdb_init(core, target, &emu_image_gdb_flash);
 #else
     (void)core; (void)target; (void)flash;
     return false;
@@ -169,17 +163,6 @@ extern const uint32_t emu_guest_image_size;
 
 
 
-/*
- * Where the guest image currently lives. The one guest_image.S baked into
- * the firmware, until an upload repoints it at the flash arena.
- *
- * A variable rather than the .incbin symbols directly, which is what
- * makes "which image is running" a run-time fact instead of a link-time
- * one. Everything downstream reads board_img, so the two cases are
- * the same case.
- */
-static const uint8_t *g_img = emu_guest_image;
-static uint32_t       g_img_size;
 
 
 
@@ -238,262 +221,6 @@ static void advance_guest_time(uint64_t retired_total, uint32_t did)
 /* ------------------------------------------------------------------ */
 
 
-#if EMU_NET
-/* ------------------------------------------------------------------ */
-/* Images arriving over TFTP                                           */
-/* ------------------------------------------------------------------ */
-
-/*
- * The emulator is already suspended whenever these run: they are reached
- * from emu_net_poll(), which the run loop calls between guest slices, so
- * no guest instruction is in flight. Nothing has to be stopped -- but the
- * restart does have to be explicit, because the bus regions and the reset
- * vector were built from the old image.
- *
- * One file, whole, into the arena. It used to be two -- "rom" then "ram"
- * -- because the guest was linked entirely in RAM and the board learned
- * where its read-only part ended from the size of the first transfer. The
- * guest executes in place from flash now and copies its own .data, so
- * there is no boundary and no ordering contract.
- */
-static uint32_t g_up_addr;
-static bool     g_reload;
-
-bool emu_net_image_begin(void)
-{
-    if (board_flash_arena_size() == 0u) {
-        return false;           /* this board takes no uploads */
-    }
-    g_up_addr = board_flash_arena_begin();
-    return g_up_addr != 0u;
-}
-
-bool emu_net_image_data(const void *data, uint32_t len, uint32_t off)
-{
-    if (g_up_addr == 0u) {
-        return false;
-    }
-    return board_flash_write(g_up_addr + off, data, len);
-}
-
-void emu_net_image_end(uint32_t len, bool ok)
-{
-    if (g_up_addr == 0u) {
-        return;
-    }
-    if (!ok) {
-        /*
-         * The arena filling up is the *expected* failure, not an
-         * exceptional one: TFTP carries no length, so running out is how
-         * the end is discovered. Erasing here is what makes the client's
-         * retry succeed rather than fail identically for ever.
-         */
-        (void)board_flash_arena_reset();
-        g_up_addr = 0u;
-        emu_console_printf("\nemu: upload failed\n");
-        return;
-    }
-
-    board_flash_arena_commit(len);
-    g_img      = (const uint8_t *)g_up_addr;
-    g_img_size = len;
-    g_up_addr  = 0u;
-
-    /*
-     * Flagged, not acted on. The address space has to be rebuilt around
-     * the new image and the core reset, and neither can happen from
-     * inside a TFTP callback -- which runs from emu_net_poll(), called
-     * between guest slices, with the current guest's regions live.
-     */
-    g_reload = true;
-}
-
-/* ------------------------------------------------------------------ */
-/* Images arriving through gdb's `load`                                */
-/* ------------------------------------------------------------------ */
-
-/*
- * The same arena, driven by vFlashErase / vFlashWrite / vFlashDone.
- *
- * Worth having because it collapses the whole upload dance into one
- * command: `load` puts the image where it actually lives and leaves the
- * debugger attached and in control, which is exactly the position from
- * which a guest bug is worth looking at.
- *
- * gdb addresses these in *guest* space, so the arena offset is applied
- * here; the guest's view is what its ELF says and the arena is an
- * implementation detail of where that lands.
- */
-static uint8_t  g_gf_carry[4];
-static uint32_t g_gf_carry_len;
-static uint32_t g_gf_carry_off;   /* guest offset of g_gf_carry[0] */
-static uint32_t g_gf_len;         /* highest byte gdb has written  */
-
-static bool gdb_flash_erase(uint32_t addr, uint32_t len)
-{
-    (void)len;
-
-    if (board_flash_arena_size() == 0u || addr < EMU_GUEST_ROM_BASE) {
-        return false;
-    }
-    /*
-     * gdb erases before writing, and it is the first erase that decides
-     * where this image starts. Later ones inside the same load are
-     * already covered: the arena is handed out erased.
-     */
-    if (g_up_addr == 0u) {
-        g_up_addr = board_flash_arena_begin();
-        g_gf_carry_len = 0u;
-    }
-    return g_up_addr != 0u;
-}
-
-/*
- * gdb does not send word-aligned chunks, and board_flash_write requires
- * them.
- *
- * Its contract is "sequential and word aligned in length except for the
- * last", which the TFTP path satisfies for free -- 512-byte blocks. gdb
- * sends whatever fits its packet, ~975 bytes. Each chunk had its tail
- * padded to a word with 0xFF and the next then began at a non-aligned
- * flash address, so `load` reported success, the image landed corrupted,
- * and the guest ran away without reaching the first breakpoint. The
- * transfer looks perfect from both ends; only the guest disagrees.
- *
- * So carry the 1-3 byte remainder into the next call and hand the flash
- * only whole words. The carry is flushed when a write arrives that is not
- * contiguous with it -- gdb moves between sections, and the gap between
- * .text and .data is exactly that -- and again at vFlashDone.
- */
-static bool gf_flush(void)
-{
-    bool ok = true;
-
-    if (g_gf_carry_len != 0u) {
-        /* board_flash_write pads a short tail with 0xFF, which is the
-         * erased state, so a final partial word is safe here. */
-        ok = board_flash_write(g_up_addr + g_gf_carry_off,
-                               g_gf_carry, g_gf_carry_len);
-        g_gf_carry_len = 0u;
-    }
-    return ok;
-}
-
-static bool gdb_flash_write(uint32_t addr, const void *data, uint32_t len)
-{
-    const uint8_t *const src = (const uint8_t *)data;
-    const uint32_t off = addr - EMU_GUEST_ROM_BASE;
-    uint32_t pos = 0u;
-
-    if (g_up_addr == 0u || addr < EMU_GUEST_ROM_BASE) {
-        return false;
-    }
-
-    /* A jump to a new section abandons whatever partial word was held for
-     * the old one; it belongs at its own address, not this one. */
-    if (g_gf_carry_len != 0u && (g_gf_carry_off + g_gf_carry_len) != off) {
-        if (!gf_flush()) {
-            return false;
-        }
-    }
-
-    if (g_gf_carry_len != 0u) {
-        while (g_gf_carry_len < 4u && pos < len) {
-            g_gf_carry[g_gf_carry_len++] = src[pos++];
-        }
-        if (g_gf_carry_len < 4u) {
-            return true;                /* still short of a word */
-        }
-        if (!board_flash_write(g_up_addr + g_gf_carry_off, g_gf_carry, 4u)) {
-            return false;
-        }
-        g_gf_carry_len = 0u;
-    }
-
-    {
-        const uint32_t rest  = len - pos;
-        const uint32_t whole = rest & ~3u;
-        const uint32_t tail  = rest - whole;
-
-        if (whole != 0u &&
-            !board_flash_write(g_up_addr + off + pos, &src[pos], whole)) {
-            return false;
-        }
-        if (tail != 0u) {
-            for (uint32_t i = 0; i < tail; i++) {
-                g_gf_carry[i] = src[pos + whole + i];
-            }
-            g_gf_carry_len = tail;
-            g_gf_carry_off = off + pos + whole;
-        }
-    }
-
-    /* The highest byte seen is the image's length: gdb writes segments in
-     * whatever order it likes and never says how much there is. */
-    if (off + len > g_gf_len) {
-        g_gf_len = off + len;
-    }
-    return true;
-}
-
-static bool gdb_flash_done(void)
-{
-    if (g_up_addr == 0u || g_gf_len == 0u) {
-        return false;
-    }
-    if (!gf_flush()) {              /* the last partial word */
-        return false;
-    }
-    board_flash_arena_commit(g_gf_len);
-    g_img      = (const uint8_t *)g_up_addr;
-    g_img_size = g_gf_len;
-    g_gf_len   = 0u;
-    g_up_addr  = 0u;
-    g_reload   = true;
-    return true;
-}
-
-const emu_gdb_flash_ops_t emu_stm32_gdb_flash = {
-    gdb_flash_erase, gdb_flash_write, gdb_flash_done,
-};
-
-/*
- * Take a freshly uploaded image, if one is waiting. True when the guest
- * was restarted from it.
- *
- * One function because there are two callers that must not drift: between
- * guest slices, and after a guest has halted. The second is the one that
- * matters for a test harness and was the one missing -- a harness runs a
- * test, waits for it to halt, then pushes the next, by which time the run
- * loop has exited. Both transfers completed, the server said so, and
- * nothing happened.
- */
-static bool take_uploaded_image(void)
-{
-    if (!g_reload) {
-        return false;
-    }
-    g_reload = false;
-
-    /*
-     * The whole bring-up, not just the bus: a new image needs the
-     * frontend's devices re-added, RAM cleared and the core reset.
-     * Skipping that leaves the previous guest's core state in place,
-     * which presents as the new guest retiring zero instructions.
-     */
-    board_img      = g_img;
-    board_img_size = g_img_size;
-
-    if (!emu_main_reload()) {
-        emu_console_printf("emu: uploaded image does not fit guest RAM\n");
-        return false;
-    }
-
-    emu_console_printf("\nemu: running uploaded image, %u bytes\n",
-                   (unsigned)g_img_size);
-    return true;
-}
-#endif /* EMU_NET */
 
 /* ------------------------------------------------------------------ */
 /* Entry                                                               */
@@ -604,9 +331,7 @@ bool board_startup(int argc, char **argv, int *status,
     }
 #endif
 
-    g_img_size         = emu_guest_image_size;
-    board_img      = g_img;
-    board_img_size = g_img_size;
+    emu_image_set(emu_guest_image, emu_guest_image_size);
 
     /*
      * The guest's clock: cycles per tick, and the epoch.
@@ -638,7 +363,7 @@ bool board_startup(int argc, char **argv, int *status,
     env->max_insn     = EMU_MAX_INSN;
     env->advance_time = advance_guest_time;
 #if EMU_NET
-    env->take_upload  = take_uploaded_image;
+    env->take_upload  = emu_image_take_pending;
 #endif
     return true;
 }
@@ -695,7 +420,7 @@ bool board_after_run(const emu_guest_exit_t *exit, bool capped,
          * that loop exited when the guest halted -- so an upload
          * completed successfully, said so, and nothing happened.
          */
-        if (take_uploaded_image()) {
+        if (emu_image_take_pending()) {
             return true;
         }
 

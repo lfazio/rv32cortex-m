@@ -19,6 +19,7 @@
 #include "board.h"
 #include "board_api.h"
 #include "emu_debug.h"
+#include "emu_image.h"
 
 #if EMU_NET
 #  include "emu_net.h"
@@ -499,83 +500,115 @@ void board_irq_unmask(void *ctx, uint32_t source)
 
 
 
-#if EMU_NET
 /* ------------------------------------------------------------------ */
-/* Images arriving over TFTP                                           */
+/* The guest-image arena, in RAM                                       */
 /* ------------------------------------------------------------------ */
 
 /*
- * The board programs an uploaded image into a flash arena; here it is a
- * buffer, which is the whole difference. Everything above it -- the TFTP
- * server, the one-file contract, the commit-on-success rule -- is the
- * same code.
+ * The same contract the boards satisfy with a flash sector, satisfied
+ * here with a buffer -- which is the whole difference, and the point.
  *
- * The buffer grows as blocks arrive because TFTP carries no length: a
- * transfer ends when a short block does, so the size is known only at the
- * end. The board discovers the same thing by running out of arena.
+ * Everything built on it is one implementation rather than two: the TFTP
+ * server's begin/data/end, gdb's vFlashErase/vFlashWrite/vFlashDone, the
+ * commit-on-success rule, and the erase-and-retry that makes a client's
+ * retry work when the arena fills. Before this the host had its own
+ * realloc-as-you-go copy of the first of those and none of the rest, so
+ * `load` over the runner's gdb stub did nothing and the upload paths
+ * could -- and did -- diverge.
+ *
+ * **Fixed size, deliberately, and it is the fidelity that matters.**
+ * Growing on demand would be the natural thing for a host and would
+ * remove the one behaviour worth reproducing: TFTP carries no length, so
+ * running out of arena is *how the end of a transfer is discovered*, and
+ * the recovery is to erase and let the client retry. A host that never
+ * runs out cannot exercise that path, and CLAUDE.md records what happens
+ * when it is wrong -- the recovery was wired to one of two symmetric
+ * cases for a long time, and the board needed a power cycle to take
+ * another image. 512 KiB is comfortably more than any guest here and
+ * small enough that a suite run reaches the end of it.
+ *
+ * Erase writes 0xFF rather than freeing, because that is what a NOR
+ * sector does and because a guest image read out of a partly-written
+ * arena should look the same on both.
  */
-static uint8_t *g_up;
-static uint32_t g_up_len;
-static uint32_t g_up_cap;
+#define HOST_ARENA_BYTES (512u * 1024u)
 
-static uint8_t *g_pending;      /* a complete image waiting to be run */
-static uint32_t g_pending_len;
+static uint8_t *g_arena;        /* lazily allocated: most runs never upload */
+static uint32_t g_arena_used;
+static bool     g_arena_erased;
 
-bool emu_net_image_begin(void)
+static bool arena_alloc(void)
 {
-    free(g_up);
-    g_up = NULL;
-    g_up_len = 0u;
-    g_up_cap = 0u;
-    return true;
-}
-
-bool emu_net_image_data(const void *data, uint32_t len, uint32_t off)
-{
-    if (off != g_up_len) {
-        return false;           /* TFTP is sequential; a gap is a bug */
-    }
-    if (off + len > g_up_cap) {
-        const uint32_t want = (g_up_cap == 0u) ? 65536u : g_up_cap * 2u;
-        const uint32_t cap = (want > off + len) ? want : off + len;
-        uint8_t *const p = realloc(g_up, cap);
-
-        if (p == NULL) {
+    if (g_arena == NULL) {
+        g_arena = malloc(HOST_ARENA_BYTES);
+        if (g_arena == NULL) {
             return false;
         }
-        g_up = p;
-        g_up_cap = cap;
+        g_arena_erased = false;
     }
-    memcpy(g_up + off, data, len);
-    g_up_len = off + len;
     return true;
 }
 
-void emu_net_image_end(uint32_t len, bool ok)
+uintptr_t board_flash_arena_base(void)
 {
-    if (!ok) {
-        free(g_up);
-        g_up = NULL;
-        g_up_len = 0u;
-        g_up_cap = 0u;
-        emu_console_printf("emu: upload failed\n");
-        return;
+    return arena_alloc() ? (uintptr_t)g_arena : 0u;
+}
+
+uint32_t board_flash_arena_size(void)
+{
+    return HOST_ARENA_BYTES;
+}
+
+bool board_flash_arena_reset(void)
+{
+    if (!arena_alloc()) {
+        return false;
+    }
+    memset(g_arena, 0xFF, HOST_ARENA_BYTES);
+    g_arena_used   = 0u;
+    g_arena_erased = true;
+    return true;
+}
+
+uintptr_t board_flash_arena_begin(void)
+{
+    if (!arena_alloc()) {
+        return 0u;
+    }
+    if (!g_arena_erased && !board_flash_arena_reset()) {
+        return 0u;
+    }
+    return (uintptr_t)(g_arena + g_arena_used);
+}
+
+void board_flash_arena_commit(uint32_t len)
+{
+    /* Word-align the next image, as a flash arena's programming
+     * granularity does for free. */
+    g_arena_used += (len + 3u) & ~3u;
+}
+
+bool board_flash_write(uintptr_t addr, const void *data, uint32_t len)
+{
+    if (g_arena == NULL) {
+        return false;
     }
 
-    /*
-     * Handed over rather than installed. The bus regions and the reset
-     * vector are built from the current image, and rebuilding them from
-     * inside a TFTP callback would pull the ground out from under the
-     * guest whose slice is being serviced.
-     */
-    free(g_pending);
-    g_pending = g_up;
-    g_pending_len = len;
-    g_up = NULL;
-    g_up_len = 0u;
-    g_up_cap = 0u;
+    const uintptr_t base = (uintptr_t)g_arena;
+
+    if (addr < base || addr - base > HOST_ARENA_BYTES ||
+        (addr - base) + len > HOST_ARENA_BYTES) {
+        return false;           /* full: how a transfer's end is found */
+    }
+    memcpy(g_arena + (addr - base), data, len);
+    return true;
 }
-#endif /* EMU_NET */
+
+uint32_t board_flash_last_error(void)
+{
+    return 0u;                  /* no programming hardware to complain */
+}
+
 
 /* Where emu_session reports a failure: the same sink as everything else
  * this runner says about itself. */
@@ -613,60 +646,6 @@ static void advance_guest_time(uint64_t retired_total, uint32_t did)
 }
 
 
-#if EMU_NET
-/*
- * A complete image waiting to be run, and the one currently running.
- *
- * The rest of what a reload needs -- the ops, the UART, the RAM extents
- * -- is the runner's now and reached through emu_main_reload(), which is
- * what stopped this file and the board's from each having their own idea
- * of how much of the bring-up an upload repeats.
- */
-static uint8_t *g_pending;
-static uint32_t g_pending_len;
-static uint8_t *g_img_buf;
-
-/*
- * Take a freshly uploaded image, if one is waiting.
- *
- * The same shape as the firmware's: rebuild the address space, put the
- * frontend's devices back, clear RAM, reset. Skipping any of it leaves
- * the previous guest's state in place, which presents as the new guest
- * retiring nothing.
- */
-static bool take_uploaded_image(void)
-{
-    if (g_pending == NULL) {
-        return false;
-    }
-
-    uint8_t *const img = g_pending;
-    const uint32_t n = g_pending_len;
-
-    g_pending = NULL;
-    board_img      = img;
-    board_img_size = n;
-
-    /*
-     * The whole bring-up, through the shared path: rebuild every bus, put
-     * the frontend's devices back, clear RAM, reset. This file had its own
-     * copy of that sequence and the board had another, which is exactly
-     * how one of them came to skip the devices and leave the new guest
-     * retiring nothing.
-     */
-    if (!emu_main_reload()) {
-        free(img);
-        return false;
-    }
-
-    free(g_img_buf);
-    g_img_buf = img;
-
-    emu_console_printf("\nemu: running uploaded image, %u bytes\n",
-                       (unsigned)n);
-    return true;
-}
-#endif /* EMU_NET */
 
 /*
  * What this platform adds to a guest's address space beyond the four
@@ -773,8 +752,7 @@ bool board_startup(int argc, char **argv, int *status,
 
     board_ram      = g_ram;
     board_ram_size = g_opt.ram_size;
-    board_img      = image;
-    board_img_size = (uint32_t)len;
+    emu_image_set(image, (uint32_t)len);
 
     /*
      * What only this platform decides. The runner already filled in the
@@ -830,7 +808,7 @@ bool board_startup(int argc, char **argv, int *status,
     /* --- run --------------------------------------------------------- */
 #if EMU_NET
     if (emu_net_active()) {
-        env->take_upload = take_uploaded_image;
+        env->take_upload = emu_image_take_pending;
     }
 #endif
     /*
@@ -917,7 +895,7 @@ bool board_after_run(const emu_guest_exit_t *exit, bool capped,
         for (;;) {
             emu_net_poll();
 
-            if (take_uploaded_image()) {
+            if (emu_image_take_pending()) {
                 return true;            /* run the new image */
             }
             if (emu_net_gdb_attached()) {

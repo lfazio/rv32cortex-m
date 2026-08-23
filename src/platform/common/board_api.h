@@ -342,6 +342,78 @@ uint32_t board_gdb_run(uint32_t budget, uint32_t *retired);
 void board_gdb_poll(void);
 
 /* ------------------------------------------------------------------ */
+/* board_flash_ -- the guest-image arena, optional                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Spare storage a guest image can be programmed into at run time, so a
+ * new guest arrives over TFTP or through gdb's `load` instead of over
+ * SWD.
+ *
+ * **"Flash" is what it is on the boards, not what it has to be.** The
+ * host backs the same calls with a malloc'd buffer, which is why the
+ * addresses here are `uintptr_t` and not `uint32_t`: an address on a
+ * 64-bit host does not fit in the width an MCU's flash map needs, and the
+ * cast that would have made it fit is the kind that truncates in one
+ * build and not the other. On an MCU uintptr_t *is* 32 bits, so nothing
+ * changes there.
+ *
+ * What that buys is that everything above this line -- the TFTP server,
+ * gdb's vFlashWrite, the commit-on-success rule, the erase-and-retry when
+ * the arena fills -- is one implementation rather than one per platform.
+ *
+ * **A board without one returns 0 from board_flash_arena_size(), and
+ * that is the whole of how it declines.** It used to be an #if plus
+ * three stub callbacks per board; a run-time size is better here for the
+ * reason emu_print_jit_stats takes the same shape -- the capability
+ * macro that gated the old arrangement was read in a file that did not
+ * include what defined it, which #if quietly treats as 0. A constant
+ * zero folds the branch away for a board that has no arena, so the cost
+ * is nothing and the failure mode is a wrong answer rather than silence.
+ *
+ * The arena is append-only and erased only when the next image will not
+ * fit. A sector erase stalls flash fetch for seconds and costs one of
+ * ten thousand cycles, so erasing per upload would be 274 erases per
+ * suite run -- about thirty runs before the sector wears out. Packing
+ * images end to end is roughly fifteen times better.
+ */
+uintptr_t board_flash_arena_base(void);
+uint32_t board_flash_arena_size(void);
+
+/*
+ * Where the next image will be programmed, erasing first if the arena
+ * has never been erased since reset. Returns 0 on failure.
+ *
+ * No length, because TFTP does not carry one: a transfer ends when a
+ * short block arrives, so the size is known only once the whole image is
+ * written. So writes run until they hit the end and *fail*, and the
+ * caller erases and retries -- one wasted transfer per erase cycle
+ * against fifteen times the flash wear.
+ */
+uintptr_t board_flash_arena_begin(void);
+
+/* Accept `len` bytes at the address begin() returned, so the next image
+ * starts after them. Not called when a transfer fails, which is what
+ * makes a failed upload leave no trace. */
+void board_flash_arena_commit(uint32_t len);
+
+/* Erase unconditionally and restart from the base. */
+bool board_flash_arena_reset(void);
+
+/*
+ * Program into the arena. Writes must be sequential and word aligned in
+ * length except for the last -- which the TFTP path satisfies for free
+ * with its 512-byte blocks and gdb does not, so the runner carries the
+ * 1-3 byte remainder between calls.
+ */
+bool board_flash_write(uintptr_t addr, const void *data, uint32_t len);
+
+/* The HAL's error code from the last board_flash_write: a refused
+ * program and a full arena are different problems with different
+ * recoveries. */
+uint32_t board_flash_last_error(void);
+
+/* ------------------------------------------------------------------ */
 /* board_sync_ -- making written bytes fetchable                       */
 /* ------------------------------------------------------------------ */
 

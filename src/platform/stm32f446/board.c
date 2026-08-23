@@ -319,14 +319,14 @@ void board_fatal_halt(void)
  * at run time and the compiler folds the branch, so this costs nothing
  * and needs no #if anywhere.
  */
-uint32_t board_flash_arena_base(void)  { return 0u; }
+uintptr_t board_flash_arena_base(void)  { return 0u; }
 uint32_t board_flash_arena_size(void)  { return 0u; }
-uint32_t board_flash_arena_begin(void) { return 0u; }
+uintptr_t board_flash_arena_begin(void) { return 0u; }
 void     board_flash_arena_commit(uint32_t len) { (void)len; }
 bool     board_flash_arena_reset(void) { return false; }
 uint32_t board_flash_last_error(void)  { return 0u; }
 
-bool board_flash_write(uint32_t addr, const void *data, uint32_t len)
+bool board_flash_write(uintptr_t addr, const void *data, uint32_t len)
 {
     (void)addr; (void)data; (void)len;
     return false;

@@ -320,7 +320,7 @@ static void itcm_init(void)
 static uint32_t g_arena_used;
 static bool     g_arena_erased;
 
-uint32_t board_flash_arena_base(void) { return ARENA_BASE; }
+uintptr_t board_flash_arena_base(void) { return ARENA_BASE; }
 uint32_t board_flash_arena_size(void) { return ARENA_SIZE; }
 
 /*
@@ -380,7 +380,7 @@ static bool arena_ensure_erased(void)
     return true;
 }
 
-uint32_t board_flash_arena_begin(void)
+uintptr_t board_flash_arena_begin(void)
 {
     if (!arena_ensure_erased()) {
         return 0u;
@@ -417,7 +417,7 @@ static uint32_t g_flash_err;
 uint32_t board_flash_last_error(void) { return g_flash_err; }
 
 __attribute__((section(".itcm"), noinline))
-bool board_flash_write(uint32_t addr, const void *data, uint32_t len)
+bool board_flash_write(uintptr_t addr, const void *data, uint32_t len)
 {
     const uint8_t *src = (const uint8_t *)data;
     bool ok = true;
