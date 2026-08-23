@@ -31,9 +31,6 @@
 #include "emu/emu_memmap.h"
 #include <string.h>
 
-/* Guest cache maintenance onto this part's; in cache.c beside this. */
-extern const emu_cache_ops_t board_cache_ops;
-
 #if EMU_NET
 #  include "emu_net.h"
 #endif
@@ -178,7 +175,7 @@ extern const uint32_t emu_guest_image_size;
  *
  * A variable rather than the .incbin symbols directly, which is what
  * makes "which image is running" a run-time fact instead of a link-time
- * one. Everything downstream reads emu_board_img, so the two cases are
+ * one. Everything downstream reads board_img, so the two cases are
  * the same case.
  */
 static const uint8_t *g_img = emu_guest_image;
@@ -484,8 +481,8 @@ static bool take_uploaded_image(void)
      * Skipping that leaves the previous guest's core state in place,
      * which presents as the new guest retiring zero instructions.
      */
-    emu_board_img      = g_img;
-    emu_board_img_size = g_img_size;
+    board_img      = g_img;
+    board_img_size = g_img_size;
 
     if (!emu_main_reload()) {
         emu_console_printf("emu: uploaded image does not fit guest RAM\n");
@@ -556,7 +553,7 @@ bool board_startup(int argc, char **argv, int *status,
     (void)status;
 
     board_init();
-    emu_board_init();
+    board_ram_init();
 
 #ifdef EMU_NATIVE_COREMARK
     /*
@@ -568,7 +565,7 @@ bool board_startup(int argc, char **argv, int *status,
         extern int coremark_native_main(void);
 
         emu_console_printf("\n\nemu: NATIVE CoreMark on %s @ %u MHz\n\n",
-                           emu_board_core_name,
+                           board_core_name,
                            (unsigned)(board_clock_hz() / 1000000u));
         const uint32_t c0 = board_cycles();
         (void)coremark_native_main();
@@ -589,7 +586,7 @@ bool board_startup(int argc, char **argv, int *status,
     const emu_cpu_ops_t *const ops = emu_frontend_default();
 
     emu_console_printf("\n\nemu: %s on %s @ %u MHz\n",
-                       ops->desc, emu_board_core_name,
+                       ops->desc, board_core_name,
                        (unsigned)(board_clock_hz() / 1000000u));
 
 #if EMU_NET
@@ -608,8 +605,8 @@ bool board_startup(int argc, char **argv, int *status,
 #endif
 
     g_img_size         = emu_guest_image_size;
-    emu_board_img      = g_img;
-    emu_board_img_size = g_img_size;
+    board_img      = g_img;
+    board_img_size = g_img_size;
 
     /*
      * The guest's clock: cycles per tick, and the epoch.
@@ -629,7 +626,7 @@ bool board_startup(int argc, char **argv, int *status,
 
     cfg->ops       = ops;
     cfg->cache_ops = &board_cache_ops;
-    cfg->unmask_fn = emu_board_irq_unmask;
+    cfg->unmask_fn = board_irq_unmask;
     /* A board wants speed; a runner chooses, because there it is a
      * coverage question rather than a performance one. */
     cfg->want_jit  = true;

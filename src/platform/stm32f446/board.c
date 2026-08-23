@@ -247,9 +247,12 @@ void board_init(void)
 {
     /*
      * No caches to enable: this part has only the ART flash accelerator,
-     * which is transparent. That is why board_sync_icache is left at its
-     * weak default here
-     * and the JIT's instruction-cache maintenance compiles out.
+     * which is transparent. board_sync_icache is defined for every STM32
+     * in src/platform/stm32/cache.c and compiles to an empty function
+     * here, because CMSIS's __DCACHE_PRESENT says so -- not because this
+     * board declines to define it. The difference matters: a platform
+     * that leaves the symbol out is a link error, which is what the M55
+     * port wanted and did not get while the definition was weak.
      */
     HAL_Init();
     clock_init();

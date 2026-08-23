@@ -34,83 +34,6 @@
 extern "C" {
 #endif
 
-/* ------------------------------------------------------------------ */
-/* Identity                                                            */
-/* ------------------------------------------------------------------ */
-
-/*
- * The core this firmware runs on, for the banner: "Cortex-M4",
- * "Cortex-M7", "Cortex-M55". A string rather than a macro because the
- * runner prints it and nothing branches on it -- the moment something
- * does, that belongs in one of the hooks below instead.
- */
-extern const char *const emu_board_core_name;
-
-/* ------------------------------------------------------------------ */
-/* The guest image                                                     */
-/* ------------------------------------------------------------------ */
-
-/*
- * The image in force, as variables rather than constants.
- *
- * A board that can take an upload moves these when one arrives; a board
- * that cannot points them at the linked-in image once and never touches
- * them again. The runner reads them and does not care which -- which is
- * what lets the address space be rebuilt identically in both cases.
- *
- * There is no read-only *boundary* any more. The guest links .text and
- * .rodata into flash and .data into RAM, so the platform serves one
- * region as each and never has to know where one ends -- which is what
- * removed the two-piece upload.
- */
-extern const uint8_t *emu_board_img;
-extern uint32_t       emu_board_img_size;
-
-/*
- * Where the guest's RAM is and how much of it there is.
- *
- * Variables, not constants, and not only for symmetry with the image
- * extents: on a board that carves guest RAM out of whatever the link
- * left over, the size is a *difference of two linker symbols*, which C
- * will not accept in a static initialiser however constant it is at run
- * time. The board assigns both before building the address space.
- */
-extern uint8_t *emu_board_ram;
-extern uint32_t emu_board_ram_size;
-
-/* ------------------------------------------------------------------ */
-/* Hooks                                                               */
-/* ------------------------------------------------------------------ */
-
-/*
- * Add this board's own regions to the bus, after the runner has added
- * the guest image and RAM and before the frontend adds its devices.
- *
- * This is where the passthrough windows go -- the identity-mapped
- * peripheral space that lets a guest driver reach real hardware, which is
- * the entire point of this emulator and is necessarily per-part: the
- * windows differ, and so does which of them a guest may write.
- */
-bool emu_board_add_regions(emu_bus_t *bus);
-
-/*
- * Route a real interrupt line to the guest.
- *
- * `unmask` is handed to the frontend, which calls it when the guest
- * enables a source; `init` enables at the NVIC whatever lines this board
- * bridges. Both are per-board because the set of bridged lines is, and
- * because IRQn_Type is a device enumeration.
- */
-/*
- * Guest cache maintenance onto this platform's, or NULL where there is
- * none to do. Handed to the core so a guest's cache-block operations
- * reach the lines that actually back the guest block -- which on a host
- * is nothing, because the guest's memory is a malloc'd buffer the host's
- * own cache is already coherent with.
- */
-
-void emu_board_irqs_init(void);
-void emu_board_irq_unmask(void *ctx, uint32_t source);
 
 /*
  * Report a real interrupt line to the guest, from the board's ISR.
@@ -118,13 +41,13 @@ void emu_board_irq_unmask(void *ctx, uint32_t source);
  * The other direction of the pair above, and supplied by the runner
  * because the core is the runner's. A board's handler masks the line at
  * the NVIC and calls this; the guest's driver runs later and clears the
- * pending bit, which is what reaches emu_board_irq_unmask.
+ * pending bit, which is what reaches board_irq_unmask.
  */
 void emu_raise_irq(uint32_t source, bool level);
 
 /*
  * Build the guest's address space: the four shared regions, then this
- * board's own through emu_board_add_regions. In emu_address_space.c.
+ * board's own through board_add_regions. In emu_address_space.c.
  *
  * The bus is re-initialised, so the frontend's devices have to be added
  * again afterwards by the caller.
@@ -157,13 +80,6 @@ bool emu_main_reload(void);
 emu_system_t *emu_main_system(void);
 
 
-/*
- * The board's own start-up, after board_init() and before anything uses
- * the guest's memory. Where emu_board_ram and emu_board_ram_size are set,
- * because on both existing boards they are a difference of two linker
- * symbols and only the board's own file can name them.
- */
-void emu_board_init(void);
 
 /* ------------------------------------------------------------------ */
 /* The two ends of a run                                               */
@@ -189,7 +105,7 @@ void emu_board_init(void);
  * in what it owns (the buses, the UART, the syscall handler) before
  * calling this; the platform fills in the rest.
  *
- * On return, emu_board_img/_size and emu_board_ram/_size must be set.
+ * On return, board_img/_size and board_ram/_size must be set.
  * False means stop, with *status as the process's exit code where there
  * is a process to exit.
  */

@@ -176,19 +176,13 @@ void t2_pop(uint32_t list);
  * The cache half is a *platform* property, not a host one: a Cortex-M4
  * has no caches and a Cortex-M7 has both, and nothing in the compiler
  * flags tells them apart. So the barriers are here and the maintenance
- * comes from `board_sync_icache`, which the M7 platform overrides.
+ * comes from `board_sync_icache` -- declared in
+ * src/platform/common/board_api.h with the rest of the board contract,
+ * because it is a `board_*` function and this is not the board layer.
+ * emucore cannot include that header (src/emu/ knows no platform), so
+ * encode.c states the prototype where it calls it and says so.
  */
 void t2_sync_code(const void *addr, uint32_t len);
-
-/*
- * Clean `len` bytes at `addr` out of the D-cache to the point of
- * unification and invalidate the matching instruction lines.
- *
- * Weak, and a no-op by default: correct on any part without caches, which
- * is every ARMv7-M this project targets except the F746. Overriding it is
- * how a cached part opts in.
- */
-void board_sync_icache(const void *addr, uint32_t len);
 
 #ifdef __cplusplus
 }

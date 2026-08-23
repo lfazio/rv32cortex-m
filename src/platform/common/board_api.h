@@ -5,18 +5,29 @@
  * Two namespaces live in src/platform/ and they are layers rather than a
  * mixture:
  *
- *   emu_board_*   what the runner calls. The same on every platform, and
- *                 the only thing emu_main.c knows about. In emu_board.h.
  *   board_*       what a platform provides. *This* file -- and it is
  *                 mostly common, which is the point: every platform has a
  *                 console, a clock and a name, so saying so three times
  *                 was three chances to say it differently.
+ *   emu_*         what the common layer provides *to* a platform, in
+ *                 emu_board.h: emu_raise_irq, emu_build_address_space,
+ *                 emu_start_guest.
  *
- * The direction is one way. An emu_board_* function is implemented in
- * terms of board_* calls, normalising whatever a part does into what the
- * contract promises: board_perf_cycles() is board_cycles() on a part
- * with a cycle counter and 0 on one without, and the runner never learns
- * which it got.
+ * The direction is one way, and the prefix is how you can tell which way
+ * you are looking.
+ *
+ * **It did not used to be.** `emu_board_*` named both halves: the runner
+ * called emu_board_add_regions and emu_board_irqs_init, but every
+ * platform *defined* them, so a name that was supposed to mean "the
+ * runner's side" appeared as a definition in board.c. That is why a
+ * reader of host/board.c found `emu_` all through a file that is
+ * supposed to be the bottom of the stack. They are board_add_regions,
+ * board_irqs_init, board_irq_unmask, board_core_name, board_img and
+ * board_ram now, declared here with the rest of what a platform owes.
+ *
+ * What normalising still means: board_perf_cycles() is board_cycles() on
+ * a part with a cycle counter and 0 on one without, and the runner never
+ * learns which it got.
  *
  * A platform includes this from its own board.h and adds whatever else it
  * has -- the STM32s' flash arena, the host's pty. Those are genuinely
@@ -39,6 +50,7 @@
  * a platform serves *this* emulator's debugger, not a debugger in
  * general.
  */
+#include "emu/emu_bus.h"
 #include "emu/emu_cpu.h"
 #include "emu/emu_gdb.h"
 
@@ -48,6 +60,76 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* ------------------------------------------------------------------ */
+/* board_ -- identity, image and RAM the platform supplies             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The core this firmware runs on, for the banner: "Cortex-M4",
+ * "Cortex-M7", "Cortex-M55". A string rather than a macro because the
+ * runner prints it and nothing branches on it -- the moment something
+ * does, that belongs in one of the hooks below instead.
+ */
+extern const char *const board_core_name;
+
+/* ------------------------------------------------------------------ */
+/* The guest image                                                     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The image in force, as variables rather than constants.
+ *
+ * A board that can take an upload moves these when one arrives; a board
+ * that cannot points them at the linked-in image once and never touches
+ * them again. The runner reads them and does not care which -- which is
+ * what lets the address space be rebuilt identically in both cases.
+ *
+ * There is no read-only *boundary* any more. The guest links .text and
+ * .rodata into flash and .data into RAM, so the platform serves one
+ * region as each and never has to know where one ends -- which is what
+ * removed the two-piece upload.
+ */
+extern const uint8_t *board_img;
+extern uint32_t       board_img_size;
+
+/*
+ * Where the guest's RAM is and how much of it there is.
+ *
+ * Variables, not constants, and not only for symmetry with the image
+ * extents: on a board that carves guest RAM out of whatever the link
+ * left over, the size is a *difference of two linker symbols*, which C
+ * will not accept in a static initialiser however constant it is at run
+ * time. The board assigns both before building the address space.
+ */
+extern uint8_t *board_ram;
+extern uint32_t board_ram_size;
+
+/* ------------------------------------------------------------------ */
+/* board_ -- the bus and the interrupt bridge                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Add this board's own regions to the bus, after the runner has added
+ * the guest image and RAM and before the frontend adds its devices.
+ *
+ * This is where the passthrough windows go -- the identity-mapped
+ * peripheral space that lets a guest driver reach real hardware, which is
+ * the entire point of this emulator and is necessarily per-part: the
+ * windows differ, and so does which of them a guest may write.
+ */
+bool board_add_regions(emu_bus_t *bus);
+
+/*
+ * Route a real interrupt line to the guest.
+ *
+ * `unmask` is handed to the frontend, which calls it when the guest
+ * enables a source; `init` enables at the NVIC whatever lines this board
+ * bridges. Both are per-board because the set of bridged lines is, and
+ * because IRQn_Type is a device enumeration.
+ */
+void board_irqs_init(void);
+void board_irq_unmask(void *ctx, uint32_t source);
 
 /* ------------------------------------------------------------------ */
 /* board_ -- identity and lifecycle                                    */
@@ -126,7 +208,7 @@ uint64_t board_time_now(void);
  * structs rather than a hook each: what a platform decides about a run is
  * already what emu_session_cfg_t and emu_run_env_t describe.
  *
- * On return, emu_board_img/_size and emu_board_ram/_size must be set.
+ * On return, board_img/_size and board_ram/_size must be set.
  * False means stop, with *status as the exit code.
  */
 struct emu_session_cfg;
@@ -258,6 +340,38 @@ uint32_t board_gdb_run(uint32_t budget, uint32_t *retired);
 
 /* Service the transport between slices, where it needs it. */
 void board_gdb_poll(void);
+
+/* ------------------------------------------------------------------ */
+/* board_sync_ -- making written bytes fetchable                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Clean `len` bytes at `addr` out of the D-cache to the point of
+ * unification and invalidate the matching instruction lines.
+ *
+ * The JIT writes instructions as *data* and then branches to them. On a
+ * part with split caches the write sits in the D-cache while the
+ * instruction side fetches through its own, and without this the core
+ * executes whatever was at those addresses before -- not a wrong answer
+ * but arbitrary code, and it fires on *reuse* of the code buffer rather
+ * than on first write, so a short run looks perfectly healthy.
+ *
+ * **Why this is a board_ function and not part of the backend.** The
+ * barriers are a property of the host instruction set and live in
+ * `t2_sync_code`; whether there are caches to maintain is a property of
+ * the *part*, and nothing in the compiler flags decides it --
+ * -mcpu=cortex-m4 and -mcpu=cortex-m7 both define __ARM_ARCH_7EM__. So
+ * the backend calls and the board answers.
+ *
+ * A board with nothing to maintain defines this empty, the same way it
+ * declines everything else here. It used to be *weak* in the backend
+ * instead, which looks equivalent and is not: a new platform then got
+ * silent no-op cache maintenance by default. The Cortex-M55 port was
+ * written that way and linked without a word, on a part with both caches
+ * enabled. Requiring the definition turns that into a link error naming
+ * the symbol.
+ */
+void board_sync_icache(const void *addr, uint32_t len);
 
 
 #ifdef __cplusplus

@@ -16,7 +16,7 @@
 #include "emu/emu_cpu.h"
 #include "emu/emu_memmap.h"
 
-const char *const emu_board_core_name = "Cortex-M7";
+const char *const board_core_name = "Cortex-M7";
 
 /*
  * Guest RAM is not a fixed-size array: the link script places it between
@@ -32,21 +32,21 @@ extern uint8_t __guest_ram_end[];
  * arriving over TFTP or through gdb's `load` repoints them and the
  * address space is rebuilt around the new numbers.
  */
-const uint8_t *emu_board_img      = NULL;
-uint32_t       emu_board_img_size = 0u;
+const uint8_t *board_img      = NULL;
+uint32_t       board_img_size = 0u;
 
-uint8_t *emu_board_ram      = NULL;
-uint32_t emu_board_ram_size = 0u;
+uint8_t *board_ram      = NULL;
+uint32_t board_ram_size = 0u;
 
 /*
  * A difference of two linker symbols, which C will not accept in a static
  * initialiser however constant it is at run time -- which is why the
  * runner reads variables here rather than a macro.
  */
-void emu_board_init(void)
+void board_ram_init(void)
 {
-    emu_board_ram      = __guest_ram_start;
-    emu_board_ram_size = (uint32_t)(__guest_ram_end - __guest_ram_start);
+    board_ram      = __guest_ram_start;
+    board_ram_size = (uint32_t)(__guest_ram_end - __guest_ram_start);
 }
 
 /*
@@ -119,7 +119,7 @@ static const struct {
  * interrupt entry forever without the guest ever making progress. So the
  * line is masked on entry and stays masked until the guest clears the
  * APLIC pending bit, which is its way of saying the device has been dealt
- * with -- see emu_board_irq_unmask, reached through the APLIC's eoi hook.
+ * with -- see board_irq_unmask, reached through the APLIC's eoi hook.
  *
  * Adding a peripheral is one table entry and one handler; the table is the
  * policy, the same way g_periph_map is for addresses.
@@ -151,7 +151,7 @@ static void irq_line_entry(IRQn_Type irqn)
     emu_raise_irq((uint32_t)irqn, true);
 }
 
-void emu_board_irq_unmask(void *ctx, uint32_t source)
+void board_irq_unmask(void *ctx, uint32_t source)
 {
     (void)ctx;
     if (irq_is_bridged(source)) {
@@ -165,7 +165,7 @@ void emu_board_irq_unmask(void *ctx, uint32_t source)
  * these handlers do almost nothing, and the emulator has no other interrupt
  * to rank them against.
  */
-void emu_board_irqs_init(void)
+void board_irqs_init(void)
 {
     for (unsigned i = 0; i < sizeof(g_bridged) / sizeof(g_bridged[0]); i++) {
         NVIC_EnableIRQ(g_bridged[i]);
@@ -181,7 +181,7 @@ void TIM6_DAC_IRQHandler(void)
  * what its datasheet says reaches the real peripheral -- the point of
  * this emulator, and necessarily per-part.
  */
-bool emu_board_add_regions(emu_bus_t *bus)
+bool board_add_regions(emu_bus_t *bus)
 {
     for (unsigned i = 0; i < sizeof(g_periph_map) / sizeof(g_periph_map[0]);
          i++) {

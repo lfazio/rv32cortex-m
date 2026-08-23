@@ -56,7 +56,7 @@ bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
      * this window, and it can only copy one that does.
      */
     if (!emu_bus_add_ram(bus, "ram", EMU_GUEST_RAM_BASE,
-                         emu_board_ram, emu_board_ram_size)) {
+                         board_ram, board_ram_size)) {
         return false;
     }
 
@@ -87,9 +87,9 @@ bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
      * put segments anywhere. Adding a window at EMU_GUEST_ROM_BASE for an
      * ELF would overlap the segments it is about to map.
      */
-    if (!emu_elf_is_elf(emu_board_img, emu_board_img_size) &&
+    if (!emu_elf_is_elf(board_img, board_img_size) &&
         !emu_bus_add_rom(bus, "flash", EMU_GUEST_ROM_BASE,
-                         emu_board_img, emu_board_img_size)) {
+                         board_img, board_img_size)) {
         return false;
     }
 
@@ -103,7 +103,7 @@ bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
      * that: the interrupt controller and the timer belong to the guest
      * *architecture* rather than to a board, so the frontend maps them.
      */
-    return emu_board_add_regions(bus);
+    return board_add_regions(bus);
 }
 
 /*

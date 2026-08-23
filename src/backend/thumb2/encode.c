@@ -537,16 +537,26 @@ void t2_mull(bool sign, uint32_t rdlo, uint32_t rdhi, uint32_t rn,
 /* ------------------------------------------------------------------ */
 
 /*
- * The default: no caches, so ordering is the whole problem and the
- * barriers below are the whole answer. A part with caches overrides this
- * -- see the note in emu_thumb2.h for why the split is platform and not
- * host.
+ * The platform's half, and the *only* `board_*` symbol emucore names.
+ *
+ * The contract and the documentation are in
+ * src/platform/common/board_api.h; the prototype is repeated here because
+ * src/emu/ is portable C11 with no platform dependency and so cannot
+ * include that header. Two prototypes for one function is a drift risk,
+ * and it is bounded: the signature is two arguments and a void return,
+ * and a mismatch is a compile error at the definition site rather than
+ * anything silent.
+ *
+ * **It is not weak any more, and that is the point of the move.** A weak
+ * no-op here meant a new platform got cache maintenance that silently did
+ * nothing -- which on a part with caches is not a wrong answer but
+ * arbitrary code, on reuse of the buffer rather than on first write. The
+ * Cortex-M55 port was written with no override and linked perfectly.
+ * Every board defines this now, answering with nothing where there is
+ * nothing to do, which is how board_api.h says a platform declines
+ * everything else.
  */
-__attribute__((weak)) void board_sync_icache(const void *addr, uint32_t len)
-{
-    (void)addr;
-    (void)len;
-}
+void board_sync_icache(const void *addr, uint32_t len);
 
 void t2_sync_code(const void *addr, uint32_t len)
 {

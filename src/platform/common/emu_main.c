@@ -87,11 +87,11 @@ static void session_fail(const char *msg, const char *detail)
  * at start-up. */
 static void cfg_refresh(void)
 {
-    g_cfg.image      = emu_board_img;
-    g_cfg.image_size = emu_board_img_size;
+    g_cfg.image      = board_img;
+    g_cfg.image_size = board_img_size;
     g_cfg.ram_base   = EMU_GUEST_RAM_BASE;
-    g_cfg.ram_size   = emu_board_ram_size;
-    g_cfg.ram_host   = emu_board_ram;
+    g_cfg.ram_size   = board_ram_size;
+    g_cfg.ram_host   = board_ram;
 }
 
 /*
@@ -159,7 +159,7 @@ int main(int argc, char **argv)
         return status;
     }
 
-    emu_board_irqs_init();
+    board_irqs_init();
     emu_debug_start(&g_sys, g_cfg.ops);
 
     /*
@@ -179,9 +179,9 @@ int main(int argc, char **argv)
         emu_core_status(&g_sys.core[0], &st);
         emu_console_printf("guest  %u bytes at 0x%08x\n"
                            "ram    %u KiB (%u bytes)\nbackend %s\n\n",
-                           (unsigned)emu_board_img_size, (unsigned)st.pc,
-                           (unsigned)(emu_board_ram_size / 1024u),
-                           (unsigned)emu_board_ram_size, st.backend);
+                           (unsigned)board_img_size, (unsigned)st.pc,
+                           (unsigned)(board_ram_size / 1024u),
+                           (unsigned)board_ram_size, st.backend);
 
         const uint32_t t0 = board_perf_cycles();
         uint64_t retired = 0;

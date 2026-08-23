@@ -132,6 +132,28 @@ const char *board_name(void)
 }
 
 /*
+ * Nothing to do, and the reason is specific rather than "a host does not
+ * need this".
+ *
+ * x86-64 keeps its instruction cache coherent with data writes in
+ * hardware, so a block written into the JIT's buffer is fetchable
+ * immediately -- which is exactly the assumption that was wrong once the
+ * same `.sync` macro started serving Thumb-2 as well, and it is written
+ * here so the next reader knows which half of that sentence is doing the
+ * work.
+ *
+ * This is where a real implementation would go if the runner were ever
+ * built for an ARM host, and it would look like
+ * src/platform/stm32/cache.c's. Defined rather than left out because the
+ * contract asks every board for it -- see board_api.h.
+ */
+void board_sync_icache(const void *addr, uint32_t len)
+{
+    (void)addr;
+    (void)len;
+}
+
+/*
  * The console wire.
  *
  * Two devices on this platform where a board has one: stdout, and the pty
@@ -420,9 +442,9 @@ static uint8_t *g_periph;
  * a board's do, and answering them with nothing is how a platform says
  * it has none.
  */
-void emu_board_irqs_init(void) { }
+void board_irqs_init(void) { }
 
-void emu_board_irq_unmask(void *ctx, uint32_t source)
+void board_irq_unmask(void *ctx, uint32_t source)
 {
     (void)ctx;
     (void)source;
@@ -622,8 +644,8 @@ static bool take_uploaded_image(void)
     const uint32_t n = g_pending_len;
 
     g_pending = NULL;
-    emu_board_img      = img;
-    emu_board_img_size = n;
+    board_img      = img;
+    board_img_size = n;
 
     /*
      * The whole bring-up, through the shared path: rebuild every bus, put
@@ -657,7 +679,7 @@ static bool take_uploaded_image(void)
  * hardware itself.
  */
 
-bool emu_board_add_regions(emu_bus_t *bus)
+bool board_add_regions(emu_bus_t *bus)
 {
     return emu_bus_add_ram(bus, "periph-sim", EMU_GUEST_PERIPH_BASE,
                            g_periph, PERIPH_SIM_SIZE);
@@ -668,10 +690,10 @@ bool emu_board_add_regions(emu_bus_t *bus)
  * the same reason as on a board: an image arriving over TFTP replaces
  * them and the address space is rebuilt around the new numbers.
  */
-const uint8_t *emu_board_img      = NULL;
-uint32_t       emu_board_img_size = 0u;
-uint8_t       *emu_board_ram      = NULL;
-uint32_t       emu_board_ram_size = 0u;
+const uint8_t *board_img      = NULL;
+uint32_t       board_img_size = 0u;
+uint8_t       *board_ram      = NULL;
+uint32_t       board_ram_size = 0u;
 
 
 
@@ -749,10 +771,10 @@ bool board_startup(int argc, char **argv, int *status,
         return false;
     }
 
-    emu_board_ram      = g_ram;
-    emu_board_ram_size = g_opt.ram_size;
-    emu_board_img      = image;
-    emu_board_img_size = (uint32_t)len;
+    board_ram      = g_ram;
+    board_ram_size = g_opt.ram_size;
+    board_img      = image;
+    board_img_size = (uint32_t)len;
 
     /*
      * What only this platform decides. The runner already filled in the

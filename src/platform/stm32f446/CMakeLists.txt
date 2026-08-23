@@ -100,9 +100,11 @@ target_sources(emu-stm32f446 PRIVATE
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_session.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_run.c")
 target_include_directories(emu-stm32f446 PRIVATE
-    # This directory too: the shared console reaches the wire through
-    # board.h, which is per-platform and lives here.
+    # This directory too: the part's own hal_conf.h lives here. board.h
+    # is one directory up, shared by all three STM32 platforms -- the
+    # shared console reaches the wire through it.
     "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/src/platform/stm32"
     "${CMAKE_SOURCE_DIR}/src/platform/common")
 
 target_link_libraries(emu-stm32f446 PRIVATE emucore stm32cube)
@@ -134,28 +136,11 @@ target_compile_definitions(emu-stm32f446 PRIVATE EMU_CONSOLE_CRLF=1)
 target_compile_options(emu-stm32f446 PRIVATE -Wall -Wextra -Wundef)
 
 # Native CoreMark baseline: the same sources the guest runs, compiled for
-# the ARM host. core_main.c defines main(), so it is renamed at compile
-# time and called from our own main.
+# the ARM host, so the emulated figure has something to be read against.
 option(EMU_NATIVE_COREMARK "Run CoreMark natively instead of the emulator" OFF)
-if(EMU_NATIVE_COREMARK AND EXISTS "${COREMARK_DIR}/core_main.c")
-    target_sources(emu-stm32f446 PRIVATE
-        "${COREMARK_DIR}/core_main.c"
-        "${COREMARK_DIR}/core_list_join.c"
-        "${COREMARK_DIR}/core_matrix.c"
-        "${COREMARK_DIR}/core_state.c"
-        "${COREMARK_DIR}/core_util.c"
-        coremark_native.c)
-    target_include_directories(emu-stm32f446 PRIVATE
-        "${COREMARK_DIR}" "${CMAKE_SOURCE_DIR}/tests/guest/coremark")
-    target_compile_definitions(emu-stm32f446 PRIVATE
-        EMU_NATIVE_COREMARK=1 PERFORMANCE_RUN=1
-        ITERATIONS=${COREMARK_ITERATIONS})
-    # The main= rename must apply to CoreMark's core_main.c alone; applied
-    # target-wide it would also rename the firmware's own entry point.
-    set_source_files_properties("${COREMARK_DIR}/core_main.c" PROPERTIES
-        COMPILE_DEFINITIONS "main=coremark_native_main")
-    target_compile_options(emu-stm32f446 PRIVATE
-        -Wno-unused-parameter -Wno-sign-compare -Wno-implicit-fallthrough)
+if(EMU_NATIVE_COREMARK)
+    include(${CMAKE_SOURCE_DIR}/cmake/coremark_native.cmake)
+    emu_coremark_native_attach(emu-stm32f446)
 endif()
 
 # Guest RAM size is not a compile definition: the link script computes it
