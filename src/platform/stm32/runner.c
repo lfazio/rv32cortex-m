@@ -119,40 +119,6 @@ static uint32_t       g_img_size;
 
 /* ------------------------------------------------------------------ */
 /* Console                                                             */
-/* ------------------------------------------------------------------ */
-
-
-/*
- * One console, two possible sinks. Before emu_net_init() succeeds it is
- * the UART; after, the UART carries SLIP or PPP and cannot carry text as
- * well, so everything goes to the telnet buffer instead.
- *
- * The branch is a load and a test per character, which is nothing: the
- * console is written by human-readable output and by the guest's virtual
- * UART, neither of which is on any measured hot path. The same is not
- * true of the run loop, which is why emu_net_poll() below is the thing
- * that had to be thought about.
- */
-void emu_console_putc(uint8_t c)
-{
-#if EMU_NET
-    if (emu_net_active()) {
-        emu_net_console_putc(c);
-        return;
-    }
-#endif
-    board_console_putc(c);
-}
-
-int emu_console_getchar(void)
-{
-#if EMU_NET
-    if (emu_net_active()) {
-        return emu_net_console_getc();
-    }
-#endif
-    return board_console_getc();
-}
 
 #define console_printf emu_console_printf
 
@@ -539,7 +505,7 @@ bool emu_board_startup(int argc, char **argv, int *status,
     {
         extern int coremark_native_main(void);
 
-        emu_console_printf("\n\nrv32cortex-m: NATIVE CoreMark on %s @ %u MHz\n\n",
+        emu_console_printf("\n\nemu: NATIVE CoreMark on %s @ %u MHz\n\n",
                            emu_board_core_name,
                            (unsigned)(board_clock_hz() / 1000000u));
         const uint32_t c0 = board_cycles();
@@ -560,7 +526,7 @@ bool emu_board_startup(int argc, char **argv, int *status,
      */
     const emu_cpu_ops_t *const ops = emu_frontend_default();
 
-    emu_console_printf("\n\nrv32cortex-m: %s on %s @ %u MHz\n",
+    emu_console_printf("\n\nemu: %s on %s @ %u MHz\n",
                        ops->desc, emu_board_core_name,
                        (unsigned)(board_clock_hz() / 1000000u));
 
@@ -605,6 +571,9 @@ bool emu_board_startup(int argc, char **argv, int *status,
     /* A board wants speed; a runner chooses, because there it is a
      * coverage question rather than a performance one. */
     cfg->want_jit  = true;
+    /* No command line to ask on, and the state after a guest stops is
+     * most of what a person reading a telnet session came for. */
+    cfg->dump_state = true;
 
     env->slice        = EMU_RUN_SLICE;
     env->max_insn     = EMU_MAX_INSN;
@@ -652,36 +621,6 @@ uint32_t emu_board_host_cycles(void)
     return board_cycles();
 }
 
-void emu_board_report_extra(uint64_t retired, uint32_t elapsed)
-{
-    if (retired != 0u && elapsed != 0u) {
-        /* KIPS needs the core clock, which is the board's to know. */
-        const uint32_t kips = (uint32_t)((uint64_t)retired *
-                                         (board_clock_hz() / 1000u) / elapsed);
-
-        emu_console_printf("  speed    %u KIPS\n", (unsigned)kips);
-    }
-
-    /*
-     * Always, on a board: there is no --dump here because there is no
-     * command line, and the state after a guest stops is most of what a
-     * person reading a telnet session came for.
-     */
-    emu_report_states(emu_main_system());
-
-#if EMU_NET
-    /*
-     * Bytes the wire delivered and nothing collected, next to the guest's
-     * own numbers because it is the one failure that makes *those*
-     * untrustworthy without looking wrong: a dropped byte is a dropped
-     * frame, which is a retransmission at best and a truncated image at
-     * worst.
-     */
-    emu_console_printf("\n-- net --\n  rx drops %u  tftp reclaims %u\n",
-                       (unsigned)board_console_rx_overruns(),
-                       (unsigned)emu_net_tftp_reclaims());
-#endif
-}
 
 /*
  * A board has nowhere to exit to, so it parks serving its link -- and an

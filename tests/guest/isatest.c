@@ -2049,7 +2049,7 @@ static void test_aplic(void)
 
 int main(void)
 {
-    puts_("rv32cortex-m ISA self-test\n");
+    puts_("emu ISA self-test\n");
 
     install_trap_handler();
 

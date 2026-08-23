@@ -7,6 +7,12 @@
 #include "emu_session.h"
 #include "emu_console.h"
 
+#include "board.h"
+
+#if EMU_NET
+#  include "emu_net.h"
+#endif
+
 #include "emu/emu_elf.h"
 #include "emu/emu_ir.h"
 #include "emu/emu_jit.h"
@@ -228,7 +234,7 @@ bool emu_session_start(emu_system_t *sys, const emu_session_cfg_t *cfg)
 /* ------------------------------------------------------------------ */
 
 void emu_session_report(emu_system_t *sys, uint64_t retired,
-                        uint32_t host_cycles, bool capped)
+                        uint32_t host_cycles, bool capped, bool dump_state)
 {
     if (capped) {
         /*
@@ -288,5 +294,45 @@ void emu_session_report(emu_system_t *sys, uint64_t retired,
 
 #if EMU_PAIR_STATS
     emu_pair_report(40u);
+#endif
+
+    /*
+     * Instructions per second, from the part's own clock.
+     *
+     * Not a platform's job: it is retired against elapsed against
+     * board_clock_hz(), and every platform has all three. A runner
+     * reports 0 host cycles and gets no line, which is the same rule that
+     * suppresses the ratio.
+     */
+    if (retired != 0u && host_cycles != 0u && board_clock_hz() != 0u) {
+        const uint32_t kips = (uint32_t)((uint64_t)retired *
+                                         (board_clock_hz() / 1000u) /
+                                         host_cycles);
+
+        emu_console_printf("  speed    %u KIPS\n", (unsigned)kips);
+    }
+
+    if (dump_state) {
+        emu_report_states(sys);
+    }
+
+#if EMU_NET
+    /*
+     * Only when there is a link. A build that *can* do networking is not
+     * a run that did: a host without --ppp would otherwise report "rx
+     * drops 0  tftp reclaims 0" about a wire it never opened, which is a
+     * measurement of nothing wearing the shape of one.
+     *
+     * Bytes the wire delivered and nothing collected, next to the guest's
+     * own numbers because it is the one failure that makes *those*
+     * untrustworthy without looking wrong: a dropped byte is a dropped
+     * frame, which is a retransmission at best and a truncated image at
+     * worst.
+     */
+    if (emu_net_active()) {
+        emu_console_printf("\n-- net --\n  rx drops %u  tftp reclaims %u\n",
+                           (unsigned)board_console_rx_overruns(),
+                           (unsigned)emu_net_tftp_reclaims());
+    }
 #endif
 }

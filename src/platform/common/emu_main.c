@@ -198,8 +198,8 @@ int main(int argc, char **argv)
 
         const uint32_t elapsed = emu_board_host_cycles() - t0;
 
-        emu_session_report(&g_sys, retired, elapsed, capped);
-        emu_board_report_extra(retired, elapsed);
+        emu_session_report(&g_sys, retired, elapsed, capped,
+                           g_cfg.dump_state);
 
         /*
          * The machine-readable terminator, and deliberately the last

@@ -99,6 +99,9 @@ target_sources(emu-stm32f446 PRIVATE
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_session.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_run.c")
 target_include_directories(emu-stm32f446 PRIVATE
+    # This directory too: the shared console reaches the wire through
+    # board.h, which is per-platform and lives here.
+    "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_SOURCE_DIR}/src/platform/common")
 
 target_link_libraries(emu-stm32f446 PRIVATE emucore stm32cube)
@@ -122,6 +125,11 @@ endif()
 # emucore has had it for a while; the platform targets did not, and the
 # JIT statistics block in emu_main.c stopped printing entirely the moment an
 # unrelated include was removed. Nothing failed and no test could see it.
+# A terminal on a serial line expects CRLF; a host's stdout does not, and
+# putting \r into guest output there would break the two suites that
+# compare it. See emu_console_putchar.
+target_compile_definitions(emu-stm32f446 PRIVATE EMU_CONSOLE_CRLF=1)
+
 target_compile_options(emu-stm32f446 PRIVATE -Wall -Wextra -Wundef)
 
 # Native CoreMark baseline: the same sources the guest runs, compiled for

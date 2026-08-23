@@ -19,6 +19,12 @@ add_executable(emu-host
     # src/platform/common/emu_main.c, the same one the boards run.
     runner.c
 
+    # board.c is this platform's "hardware": the console wire, the clock,
+    # two counters. Unconditional, because the shared console reaches the
+    # wire through board_console_putc whether or not there is a network --
+    # having it under if(EMU_NET) broke every host build without one.
+    board.c
+
     # The command line and the file it names: 188 of main()'s 477 lines,
     # and the half emu_session.h calls acquisition -- the one thing a
     # runner and a board genuinely cannot share.
@@ -47,6 +53,7 @@ add_executable(emu-host
     # file had its own copy under the name build_buses.
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_address_space.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_main.c"
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_console.c"
 
     # The newlib write(64)/exit(93) pair, also shared. This file had its
     # own copy of the same ABI until it did not need to.
@@ -60,6 +67,11 @@ add_executable(emu-host
 target_include_directories(emu-host PRIVATE
     "${CMAKE_SOURCE_DIR}/src/platform/common")
 
+# This directory unconditionally: the shared console reaches the wire
+# through board.h, and it did this only under if(EMU_NET) -- so every
+# host build *without* a network stopped finding it.
+target_include_directories(emu-host PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
 target_link_libraries(emu-host PRIVATE emucore)
 
 #
@@ -69,15 +81,13 @@ target_link_libraries(emu-host PRIVATE emucore)
 # the macro is expected to exist. Defining it 0 here is what makes that
 # warning meaningful rather than noise.
 if(EMU_NET)
-    # board.c is the pty, the clock and two counters: everything src/net/
-    # asks of a platform. See src/platform/host/board.h.
-    target_sources(emu-host PRIVATE board.c)
-    target_include_directories(emu-host PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     include(${CMAKE_SOURCE_DIR}/cmake/emu_net.cmake)
     emu_net_attach(emu-host)
 else()
     target_compile_definitions(emu-host PRIVATE EMU_NET=0)
 endif()
+
+target_compile_definitions(emu-host PRIVATE EMU_CONSOLE_CRLF=0)
 
 target_compile_options(emu-host PRIVATE
     -Wall -Wextra -Wshadow -Wundef

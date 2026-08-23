@@ -96,6 +96,16 @@ typedef struct emu_session_cfg {
     bool want_jit;
 
     /*
+     * Whether the report ends with the guest's registers.
+     *
+     * A board always does: there is no command line to ask on, and the
+     * state after a guest stops is most of what a person reading a telnet
+     * session came for. A runner does it under --dump, because 378
+     * architecture tests do not each want a register dump.
+     */
+    bool dump_state;
+
+    /*
      * Where a failure is reported. The platforms disagree about the sink
      * -- stderr and a telnet ring against a UART -- so they pass the
      * function rather than this file choosing one.
@@ -131,11 +141,13 @@ bool emu_session_reload(emu_system_t *sys, const emu_session_cfg_t *cfg);
  * Everything else -- the framework's JIT statistics, the IR optimiser's,
  * the pair histogram -- is the same question wherever it is asked.
  *
- * The guest's *state* is not here: a board dumps it always and a runner
- * only on --dump, so emu_report_state stays the caller's to make.
+ * Everything is here, including the guest's state and the link's
+ * counters: they are the same question on every platform, and the one
+ * thing that differed -- whether to dump at all -- is a bool rather than
+ * a hook each platform implemented differently.
  */
 void emu_session_report(emu_system_t *sys, uint64_t retired,
-                        uint32_t host_cycles, bool capped);
+                        uint32_t host_cycles, bool capped, bool dump_state);
 
 #ifdef __cplusplus
 }

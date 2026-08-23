@@ -117,28 +117,6 @@ static uint8_t *g_periph;
 
 /* ------------------------------------------------------------------ */
 /* Console transport                                                   */
-/* ------------------------------------------------------------------ */
-
-static void host_tx(void *ctx, uint8_t c)
-{
-    (void)ctx;
-#if EMU_NET
-    /*
-     * Once the link is up the guest's console is a telnet connection,
-     * which is the board's arrangement and the point of running this
-     * here. The *runner's* own diagnostics still go to stderr, because a
-     * host has a terminal as well as a wire and giving one up buys
-     * nothing -- see the note in board.h.
-     */
-    if (emu_net_active()) {
-        emu_net_console_putc(c);
-        return;
-    }
-#endif
-    fputc(c, stdout);
-    /* Unbuffered so output survives a guest that faults straight after. */
-    fflush(stdout);
-}
 
 /*
  * A byte of *guest* output, for the shared syscall handler.
@@ -153,21 +131,6 @@ static void host_tx(void *ctx, uint8_t c)
  * console, so a guest that writes through the UART and one that writes
  * through the syscall interleave in the order they happened.
  */
-/*
- * A byte of guest input. stdin is not read: this is a batch runner and a
- * guest blocking on input it will never get is a hang, not a prompt. With
- * a link up it comes from the telnet connection, which is the one case
- * where someone is actually typing.
- */
-int emu_console_getchar(void)
-{
-#if EMU_NET
-    if (emu_net_active()) {
-        return emu_net_console_getc();
-    }
-#endif
-    return -1;
-}
 
 /*
  * No real interrupt lines to bridge: a host has no peripherals, so
@@ -184,50 +147,7 @@ void emu_board_irq_unmask(void *ctx, uint32_t source)
 }
 
 
-/*
- * The runner's own output: the trace, the register dump, the summary.
- *
- * To stderr, and *also* to the telnet ring when the link is up. Both,
- * not either: the terminal is where a person watching this process
- * expects to see it, and a telnet session that carries the guest's
- * output but not the trace beside it is the wrong half -- reading a
- * trace against the output it produced is the whole point of having one.
- *
- * The board cannot do this. It has one wire and gives it away, so its
- * diagnostics go to the ring or nowhere. A host has both, so it uses
- * both.
- */
-void emu_console_puts(const char *s)
-{
-    fputs(s, stderr);
-#if EMU_NET
-    if (emu_net_active()) {
-        for (const char *p = s; *p != '\0'; p++) {
-            emu_net_console_putc((uint8_t)*p);
-        }
-    }
-#endif
-}
 
-void emu_console_printf(const char *fmt, ...)
-{
-    /*
-     * 512, and the one caller that does not fit goes to stderr directly.
-     *
-     * Truncation here is silent, which is the right trade for a stats
-     * line and the wrong one for a document: converting usage() to this
-     * cut it off mid-option list, and the only symptom was that --jit and
-     * --gdb stopped being advertised -- which reads exactly like the
-     * build-time gate that had just been removed from them.
-     */
-    char buf[512];
-    va_list ap;
-
-    va_start(ap, fmt);
-    (void)vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    emu_console_puts(buf);
-}
 
 /* ------------------------------------------------------------------ */
 /* System-call services                                                */
@@ -263,11 +183,6 @@ void emu_console_printf(const char *fmt, ...)
 /* ------------------------------------------------------------------ */
 
 /* emu_print_fn onto stderr, for the frontend's own state dump. */
-void emu_console_putchar(uint8_t c);
-void emu_console_putchar(uint8_t c)
-{
-    host_tx(NULL, c);
-}
 
 /*
  * The diagnostic sink the shared files print through.
@@ -411,11 +326,6 @@ static void advance_guest_time(uint64_t retired_total, uint32_t did)
 static uint8_t *g_pending;
 static uint32_t g_pending_len;
 static uint8_t *g_img_buf;
-
-static void net_poll_hook(void)
-{
-    emu_net_poll();
-}
 
 /*
  * Take a freshly uploaded image, if one is waiting.
@@ -577,6 +487,8 @@ bool emu_board_startup(int argc, char **argv, int *status,
     cfg->load_addr = g_opt.load_addr;
     cfg->entry     = g_opt.entry;
     cfg->want_jit  = g_opt.want_jit;
+    /* 378 architecture tests do not each want a register dump. */
+    cfg->dump_state = g_opt.dump;
     /*
      * NULL: this runner calloc'd guest RAM and an ELF's segments are
      * written into it by the loader. Zeroing it again would erase them.
@@ -625,7 +537,7 @@ bool emu_board_startup(int argc, char **argv, int *status,
     /* --- run --------------------------------------------------------- */
     #if EMU_NET
     if (emu_net_active()) {
-        env->poll         = net_poll_hook;
+        env->poll         = emu_net_poll;
         env->gdb_attached = emu_net_gdb_attached;
         env->gdb_run      = emu_net_gdb_run;
         env->take_upload  = take_uploaded_image;
@@ -686,11 +598,6 @@ uint32_t emu_board_host_cycles(void)
     return 0u;
 }
 
-void emu_board_report_extra(uint64_t retired, uint32_t host_cycles)
-{
-    (void)retired;
-    (void)host_cycles;
-}
 
 /*
  * A runner exits; a board parks. With --ppp it does both: the link is
@@ -703,9 +610,6 @@ bool emu_board_after_run(const emu_guest_exit_t *exit, bool capped,
 {
     (void)capped;
 
-    if (g_opt.dump) {
-        emu_report_states(emu_main_system());
-    }
 #if EMU_NET
     /*
      * With a link up, do not exit: serve it.

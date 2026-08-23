@@ -5,16 +5,56 @@
 
 #include "emu_console.h"
 
+#include "board.h"
+
+#if EMU_NET
+#  include "emu_net.h"
+#endif
+
 #include <stdarg.h>
 #include <stdio.h>
+
+/*
+ * One byte out, and one in. **The only place that knows where the
+ * console is.**
+ *
+ * Two things decide that and both belong here rather than in a platform:
+ * the board supplies the wire through board_console_putc, and EMU_NET
+ * decides whether the wire is still a console at all. After
+ * emu_net_init() succeeds the UART carries IP and everything printed
+ * goes to a ring a telnet client drains -- which is the same rule on
+ * every platform, and was written out twice because it lived in each
+ * runner.
+ *
+ * The branch is a load and a test per character, which is nothing: the
+ * console is written by human-readable output and by the guest's virtual
+ * UART, neither of which is on any measured hot path.
+ */
+void emu_console_putc(uint8_t c)
+{
+#if EMU_NET
+    if (emu_net_active()) {
+        emu_net_console_putc(c);
+        return;
+    }
+#endif
+    board_console_putc(c);
+}
+
+int emu_console_getchar(void)
+{
+#if EMU_NET
+    if (emu_net_active()) {
+        return emu_net_console_getc();
+    }
+#endif
+    return board_console_getc();
+}
 
 void emu_console_puts(const char *s)
 {
     while (*s != '\0') {
-        if (*s == '\n') {
-            emu_console_putc('\r');   /* terminals expect CRLF */
-        }
-        emu_console_putc((uint8_t)*s++);
+        emu_console_putchar((uint8_t)*s++);
     }
 }
 
@@ -36,11 +76,22 @@ void emu_console_printf(const char *fmt, ...)
     emu_console_puts(buf);
 }
 
+/*
+ * A byte of *guest* output.
+ *
+ * The LF-to-CRLF expansion is a property of a terminal on a serial line,
+ * not of a console, so a platform asks for it: EMU_CONSOLE_CRLF. Doing it
+ * unconditionally would put a \r into every line of every guest's output
+ * on a host's stdout, which two test suites compare and one figure script
+ * parses.
+ */
 void emu_console_putchar(uint8_t c)
 {
+#if EMU_CONSOLE_CRLF
     if (c == '\n') {
         emu_console_putc('\r');
     }
+#endif
     emu_console_putc(c);
 }
 

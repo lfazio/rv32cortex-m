@@ -112,9 +112,24 @@ const char *board_name(void)
     return g_name;
 }
 
+/*
+ * The console wire.
+ *
+ * Two devices on this platform where a board has one: stdout, and the pty
+ * that carries PPP once --ppp has opened it. net_sio.c moves link bytes
+ * through here, so with a pty open this *is* the link -- and the
+ * console's own output goes to the telnet ring instead, exactly as it
+ * does on a board after the handover. Without one, stdout.
+ *
+ * Falling through to stdout rather than returning matters: a board with
+ * no UART yet drops the byte, and a runner that dropped its output would
+ * simply print nothing and look like a hang.
+ */
 void board_console_putc(uint8_t c)
 {
     if (g_fd < 0) {
+        fputc((int)c, stdout);
+        fflush(stdout);         /* survive a guest that faults next */
         return;
     }
 
@@ -138,6 +153,10 @@ void board_console_putc(uint8_t c)
     }
 }
 
+/*
+ * A byte in, from the link. Never stdin: this is a batch runner and a
+ * guest blocking on input it will never get is a hang, not a prompt.
+ */
 int board_console_getc(void)
 {
     uint8_t c;
