@@ -28,7 +28,15 @@ set(RV32_ARM_TOOLCHAIN_PREFIX "arm-none-eabi-" CACHE STRING "Cross toolchain pre
 # this wrong is not a build error: -mcpu=cortex-m4 code runs on a Cortex-M7
 # and simply never uses its caches or its wider pipeline, so the port would
 # look like it worked and quietly leave most of the part behind.
-if(EMU_PLATFORM STREQUAL "stm32f746")
+if(EMU_PLATFORM STREQUAL "stm32n6")
+    # Armv8.1-M with Helium. The FPU *is* double precision here, unlike
+    # both F-series parts -- and -mfpu is not how an M55 is told so:
+    # cortex-m55 implies its own FP and MVE configuration, and passing
+    # -mfpu alongside it is rejected outright rather than ignored. So the
+    # FPU string is deliberately empty and the float ABI is still hard.
+    set(_def_cpu "cortex-m55")
+    set(_def_fpu "")
+elseif(EMU_PLATFORM STREQUAL "stm32f746")
     set(_def_cpu "cortex-m7")
     # The F7 FPU is single precision only, like the M4's -- fpv5-d16 would
     # emit double-precision instructions this part does not have.
@@ -50,10 +58,20 @@ find_program(CMAKE_OBJDUMP      ${RV32_ARM_TOOLCHAIN_PREFIX}objdump)
 find_program(CMAKE_SIZE         ${RV32_ARM_TOOLCHAIN_PREFIX}size)
 
 set(_arch "-mcpu=${RV32_ARM_CPU} -mthumb")
+#
+# Three cases, not two. "No -mfpu" and "no FPU" used to be the same
+# branch, which is right for a cortex-m0plus and wrong for a cortex-m55:
+# the M55 has a double-precision FPU that -mcpu already selects, and
+# naming an -mfpu alongside it is an error rather than a redundancy. So
+# an empty RV32_ARM_FPU with a hard float ABI means "the CPU decides",
+# and soft-float is what an explicitly soft ABI asks for.
+#
 if(RV32_ARM_FPU)
     string(APPEND _arch " -mfpu=${RV32_ARM_FPU} -mfloat-abi=${RV32_ARM_FLOAT_ABI}")
-else()
+elseif(RV32_ARM_FLOAT_ABI STREQUAL "soft")
     string(APPEND _arch " -mfloat-abi=soft")
+else()
+    string(APPEND _arch " -mfloat-abi=${RV32_ARM_FLOAT_ABI}")
 endif()
 
 set(CMAKE_C_FLAGS_INIT   "${_arch} -Os -ffunction-sections -fdata-sections")

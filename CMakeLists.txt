@@ -4,7 +4,7 @@
 #
 # Three axes, independent of each other:
 #
-#   platform    where it runs        EMU_PLATFORM=host|stm32f446
+#   platform    where it runs        EMU_PLATFORM=host|stm32f446|stm32f746|stm32n6
 #   frontend    what it emulates     EMU_GUEST_ARCH_RV32, EMU_GUEST_ARCH_G4MH
 #   backend     how it executes      EMU_JIT=ON|OFF, per frontend
 #
@@ -34,8 +34,10 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
 endif()
 
-set(EMU_PLATFORM "host" CACHE STRING "Target platform (host|stm32f446|stm32f746)")
-set_property(CACHE EMU_PLATFORM PROPERTY STRINGS host stm32f446 stm32f746)
+set(EMU_PLATFORM "host" CACHE STRING
+    "Target platform (host|stm32f446|stm32f746|stm32n6)")
+set_property(CACHE EMU_PLATFORM PROPERTY STRINGS
+    host stm32f446 stm32f746 stm32n6)
 
 # ---------------------------------------------------------------------
 # Frontends
@@ -265,6 +267,18 @@ set(G4MH_PE_COUNT "1" CACHE STRING "G4MH processing elements (1..3)")
 # firmware build that knows its map can set it lower and get the RAM back.
 if(EMU_GUEST_ARCH_G4MH AND G4MH_PE_COUNT GREATER 1)
     math(EXPR _regions_default "16 + 4 * ${G4MH_PE_COUNT}")
+elseif(EMU_PLATFORM STREQUAL "stm32n6")
+    # The N6's peripheral policy is fifteen entries where the F4 and F7
+    # need seven, and that is the part being different rather than the
+    # table being fussy: its RCC mirrors the clock-enable registers at
+    # two further aliases, and it has three things -- the isolation
+    # units, the fuses, the debug port -- that can brick the board or
+    # lock the firmware out of its own console. Each carve-out splits a
+    # span in two. Fifteen plus RV32's five is 20, so 16 would fail at
+    # start-up with "could not bring up 1 rv32 core" -- a message about
+    # cores, for a full region table, which is exactly how the G4MH case
+    # above presented.
+    set(_regions_default 24)
 else()
     set(_regions_default 16)
 endif()
@@ -637,7 +651,7 @@ endif()
 
 if(EMU_PLATFORM STREQUAL "host")
     add_subdirectory(src/platform/host)
-elseif(EMU_PLATFORM STREQUAL "stm32f446" OR EMU_PLATFORM STREQUAL "stm32f746")
+elseif(EMU_PLATFORM MATCHES "^stm32(f446|f746|n6)$")
     if(NOT CMAKE_CROSSCOMPILING)
         message(FATAL_ERROR
             "EMU_PLATFORM=${EMU_PLATFORM} needs the cross toolchain:\n"
