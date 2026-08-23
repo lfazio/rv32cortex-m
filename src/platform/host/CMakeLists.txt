@@ -14,11 +14,6 @@
 option(EMU_NET "IP/TFTP/telnet/gdb transport over a pty" OFF)
 
 add_executable(emu-host
-    # This platform's two ends: its "hardware" (a heap, stdout, a pty)
-    # and how a run starts and stops here. The sequence between them is
-    # src/platform/common/emu_main.c, the same one the boards run.
-    runner.c
-
     # board.c is this platform's "hardware": the console wire, the clock,
     # two counters. Unconditional, because the shared console reaches the
     # wire through board_console_putc whether or not there is a network --

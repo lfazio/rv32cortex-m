@@ -53,4 +53,32 @@ bool board_console_open(const char *dev, char *slave_out, unsigned n);
 
 uint32_t board_led_count(board_led_t led);
 
+/* ------------------------------------------------------------------ */
+/* This platform's own extras                                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The loopback gdb stub, in host_gdb.c. board_gdb_* is the contract and
+ * these are what it is built from here -- the second transport, --ppp,
+ * being the same one the boards serve.
+ */
+struct emu_core;
+struct emu_gdb_target;
+bool     host_gdb_start(struct emu_core *core,
+                        const struct emu_gdb_target *target, int port);
+void     host_gdb_wait(void);
+void     host_gdb_poll(void);
+bool     host_gdb_attached(void);
+uint32_t host_gdb_run(uint32_t budget, uint32_t *retired);
+
+/*
+ * Which port the loopback stub listens on, from --gdb; 0 for none.
+ *
+ * *Given* to the board rather than read out of the runner. board.c
+ * reaching into a runner static would be the two namespaces crossing in
+ * the direction this arrangement exists to prevent -- the runner calls
+ * the contract, so anything the contract needs it hands over.
+ */
+void board_gdb_configure(int port);
+
 #endif /* EMU_HOST_BOARD_H */

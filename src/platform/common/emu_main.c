@@ -7,7 +7,7 @@
  * when the guest stops. Everything between -- build the address space,
  * open the cores, run in slices, report -- is one sequence and is here.
  *
- * The two ends are emu_board_startup() and emu_board_after_run(), and
+ * The two ends are board_startup() and board_after_run(), and
  * naming them that way is what makes a host a *board*: it brings its own
  * "hardware" up (malloc'd RAM, a pty, stdout), obtains an image (argv and
  * a file rather than an incbin), and at the end returns an exit status
@@ -125,7 +125,7 @@ int main(int argc, char **argv)
      * What the runner owns, before the platform is asked: the buses it
      * allocated, the UART it will pump, the syscall handler both
      * platforms share. The platform fills in the rest -- which backend,
-     * where the image goes, what to poll -- in emu_board_startup.
+     * where the image goes, what to poll -- in board_startup.
      */
     g_cfg.buses       = g_buses;
     g_cfg.ncores      = 0u;             /* the frontend's count */
@@ -136,7 +136,7 @@ int main(int argc, char **argv)
     g_cfg.syscall_ctx = &g_sc_ctx;
     g_cfg.fail        = session_fail;
 
-    if (!emu_board_startup(argc, argv, &status, &g_cfg, &env)) {
+    if (!board_startup(argc, argv, &status, &g_cfg, &env)) {
         return status;
     }
 
@@ -149,13 +149,13 @@ int main(int argc, char **argv)
         if (!emu_build_address_space(&g_buses[i], &g_uart)) {
             emu_console_printf("fatal: could not build the guest address "
                                "space\n");
-            emu_board_fatal(&status);
+            board_fatal(&status);
             return status;
         }
     }
 
     if (!emu_session_start(&g_sys, &g_cfg)) {
-        emu_board_fatal(&status);
+        board_fatal(&status);
         return status;
     }
 
@@ -183,7 +183,7 @@ int main(int argc, char **argv)
                            (unsigned)(emu_board_ram_size / 1024u),
                            (unsigned)emu_board_ram_size, st.backend);
 
-        const uint32_t t0 = emu_board_host_cycles();
+        const uint32_t t0 = board_perf_cycles();
         uint64_t retired = 0;
         bool     capped = false;
 
@@ -197,7 +197,7 @@ int main(int argc, char **argv)
             capped = (out == EMU_RUN_OUTCOME_CAPPED);
         }
 
-        const uint32_t elapsed = emu_board_host_cycles() - t0;
+        const uint32_t elapsed = board_perf_cycles() - t0;
 
         emu_session_report(&g_sys, retired, elapsed, capped,
                            g_cfg.dump_state);
@@ -220,7 +220,7 @@ int main(int argc, char **argv)
                            (unsigned)(g_exit.exited ? 1u : 0u),
                            (unsigned)(capped ? 1u : 0u), (unsigned)retired);
 
-        if (!emu_board_after_run(&g_exit, capped, &status)) {
+        if (!board_after_run(&g_exit, capped, &status)) {
             return status;
         }
     }

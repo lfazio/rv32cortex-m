@@ -1,56 +1,124 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * runner.c - the STM32 half of the runner, shared by the F446 and F746.
+ * board.c - the STM32s' half of the board contract, shared by both parts.
  *
- * Bring the part up, build a guest address space out of its memory and
- * its peripherals, open a core, hand it the console and the cache ops,
- * run it in slices, report. **None of that is about a part**, and what is
- * about a part is in emu_board.h and is short.
+ * board_api.h says what a platform provides; this provides the parts that
+ * are the same on the F446 and the F746, which is everything reached
+ * through the network: the IP stack is polled the same way and the gdb
+ * stub is served over it the same way. What differs between the two
+ * parts -- the UART, the clocks, the caches, the flash -- is in each
+ * part's own board.c beside it.
  *
- * This was two files of 645 and 1108 lines running the same sequence.
- * They agreed because someone kept them agreeing: the F446 still carried
- * its own copy of the run summary and the JIT statistics long after the
- * shared ones existed, and its guest-RAM handling still memcpy'd a
- * writable half in after the F746 had stopped -- harmless, because the
- * guest overwrote it with the same bytes, and exactly the kind of
- * divergence a shared runner makes impossible rather than unlikely.
- *
- * The division is *not* "what differs between the F446 and the F746",
- * which would bake two boards into an interface meant for three. It is
- * "what only a board can answer", and the two capabilities that vary are
- * asked at run time rather than compiled around:
- *
- *   the network      EMU_NET, a build option rather than a board fact
- *   the flash arena  board_flash_arena_size() == 0 means "no uploads"
- *
- * The second used to be an #if plus three stub callbacks per board. A
- * board with no arena returns a constant zero, the compiler folds every
- * branch on it, and the runner needs no case for which board it is on.
+ * **Here rather than in runner.c**, which is where these were. A runner
+ * implementing board_* is the two namespaces mixed again: the runner is
+ * the thing that *calls* the contract, and a file that both calls it and
+ * fulfils it gives a reader no way to tell which half they are reading.
  */
 
 #include "board.h"
-#include "emu_board.h"
+#include "board_api.h"
 #include "emu_console.h"
+
+#include <stdio.h>
+#include "emu_board.h"
 #include "emu_run.h"
 #include "emu_debug.h"
 #include "emu_session.h"
-
-extern const emu_cache_ops_t board_cache_ops;
-
 #include "emu/emu_cpu.h"
 #include "emu/emu_dev.h"
 #include "emu/emu_jit.h"
 #include "emu/emu_elf.h"
 #include "emu/emu_memmap.h"
+#include <string.h>
+
+/* Guest cache maintenance onto this part's; in cache.c beside this. */
+extern const emu_cache_ops_t board_cache_ops;
 
 #if EMU_NET
 #  include "emu_net.h"
-#  include "emu/emu_gdb.h"
 #endif
 
-#include <stdio.h>
-#include <string.h>
+/*
+ * gdb's `load` writes through the same flash arena TFTP uploads land in.
+ * Defined in runner.c beside the rest of the upload path, because the two
+ * share the arena cursor: one image store, reached two ways.
+ */
+extern const emu_gdb_flash_ops_t emu_stm32_gdb_flash;
 
+/*
+ * A board always wants a stub: it costs a listening socket on a link that
+ * is already up, and the usual way to arrive at a guest bug here is to
+ * watch it fail over telnet and then attach.
+ */
+bool board_gdb_wanted(void)
+{
+    return EMU_NET != 0;
+}
+
+bool board_gdb_start(emu_core_t *core, const emu_gdb_target_t *target,
+                     const emu_gdb_flash_ops_t **flash)
+{
+#if EMU_NET
+    /* gdb's `load` writes through the same flash arena TFTP uses. */
+    *flash = &emu_stm32_gdb_flash;
+    return emu_net_gdb_init(core, target, &emu_stm32_gdb_flash);
+#else
+    (void)core; (void)target; (void)flash;
+    return false;
+#endif
+}
+
+const char *board_gdb_where(void)
+{
+#if EMU_NET
+    static char buf[32];
+
+    (void)snprintf(buf, sizeof(buf), "%s:1234", emu_net_addr_str());
+    return buf;
+#else
+    return "(no link)";
+#endif
+}
+
+/*
+ * A board does not wait. Its guest is still running and its link may not
+ * be negotiated yet, so blocking here would stop the run for a debugger
+ * that may never come -- which is the opposite of the runner's problem,
+ * where the guest is over before anyone can attach.
+ */
+void board_gdb_wait(void) { }
+
+void board_gdb_poll(void) { }
+
+bool board_gdb_attached(void)
+{
+#if EMU_NET
+    return emu_net_gdb_attached();
+#else
+    return false;
+#endif
+}
+
+uint32_t board_gdb_run(uint32_t budget, uint32_t *retired)
+{
+    (void)budget; (void)retired;
+    return 0u;
+}
+
+/*
+ * The stack advances only when called, so this is its entire schedule --
+ * once per slice, finer than any timeout lwIP keeps.
+ */
+void board_poll(void)
+{
+#if EMU_NET
+    emu_net_poll();
+#endif
+}
+
+/* ------------------------------------------------------------------ */
+/* The image store, the clocks, and the two ends of a run             */
+/* ------------------------------------------------------------------ */
 /* The guest binary, embedded by guest_image.S. */
 extern const uint8_t  emu_guest_image[];
 extern const uint32_t emu_guest_image_size;
@@ -148,7 +216,7 @@ void emu_raise_irq(uint32_t source, bool level)
 static uint32_t g_cycles_per_tick;
 static uint32_t g_start_cycles;
 
-uint64_t emu_board_time_now(void)
+uint64_t board_time_now(void)
 {
     return (uint64_t)(board_cycles() - g_start_cycles) / g_cycles_per_tick;
 }
@@ -165,7 +233,7 @@ static void advance_guest_time(uint64_t retired_total, uint32_t did)
     (void)did;
     emu_system_t *const sys = emu_main_system();
 
-    sys->ops->set_time(sys->core[0].cpu, emu_board_time_now());
+    sys->ops->set_time(sys->core[0].cpu, board_time_now());
 }
 
 /* ------------------------------------------------------------------ */
@@ -388,7 +456,7 @@ static bool gdb_flash_done(void)
     return true;
 }
 
-static const emu_gdb_flash_ops_t k_gdb_flash = {
+const emu_gdb_flash_ops_t emu_stm32_gdb_flash = {
     gdb_flash_erase, gdb_flash_write, gdb_flash_done,
 };
 
@@ -467,7 +535,7 @@ static bool take_uploaded_image(void)
  * runs, which is the point of a halt; a client can still connect and
  * collect the reason.
  */
-void emu_board_fatal(int *status)
+void board_fatal(int *status)
 {
     (void)status;
 #if EMU_NET
@@ -480,7 +548,7 @@ void emu_board_fatal(int *status)
     board_fatal_halt();
 }
 
-bool emu_board_startup(int argc, char **argv, int *status,
+bool board_startup(int argc, char **argv, int *status,
                        emu_session_cfg_t *cfg, emu_run_env_t *env)
 {
     (void)argc;
@@ -546,7 +614,7 @@ bool emu_board_startup(int argc, char **argv, int *status,
     /*
      * The guest's clock: cycles per tick, and the epoch.
      *
-     * Set here because emu_board_time_now divides by the first, and the
+     * Set here because board_time_now divides by the first, and the
      * old main() assigned both just before the run. Splitting that main
      * into a runner and this file left the assignment behind, and the
      * board stopped *dead* at the first call -- the banner printed and
@@ -582,81 +650,18 @@ bool emu_board_startup(int argc, char **argv, int *status,
 /* The gdb transport -- see emu_debug.h                                */
 /* ------------------------------------------------------------------ */
 
-/*
- * A board always wants a stub: it costs a listening socket on a link that
- * is already up, and the usual way to arrive at a guest bug here is to
- * watch it fail over telnet and then attach.
- */
-bool board_gdb_wanted(void)
-{
-    return EMU_NET != 0;
-}
 
-bool board_gdb_start(emu_core_t *core, const emu_gdb_target_t *target,
-                     const emu_gdb_flash_ops_t **flash)
-{
-#if EMU_NET
-    /* gdb's `load` writes through the same flash arena TFTP uses. */
-    *flash = &k_gdb_flash;
-    return emu_net_gdb_init(core, target, &k_gdb_flash);
-#else
-    (void)core; (void)target; (void)flash;
-    return false;
-#endif
-}
 
-const char *board_gdb_where(void)
-{
-#if EMU_NET
-    static char buf[32];
 
-    (void)snprintf(buf, sizeof(buf), "%s:1234", emu_net_addr_str());
-    return buf;
-#else
-    return "(no link)";
-#endif
-}
 
-/*
- * A board does not wait. Its guest is still running and its link may not
- * be negotiated yet, so blocking here would stop the run for a debugger
- * that may never come -- which is the opposite of the runner's problem,
- * where the guest is over before anyone can attach.
- */
-void board_gdb_wait(void) { }
 
-void board_gdb_poll(void) { }
 
-bool board_gdb_attached(void)
-{
-#if EMU_NET
-    return emu_net_gdb_attached();
-#else
-    return false;
-#endif
-}
 
-uint32_t board_gdb_run(uint32_t budget, uint32_t *retired)
-{
-    (void)budget; (void)retired;
-    return 0u;
-}
-
-/*
- * The stack advances only when called, so this is its entire schedule --
- * once per slice, finer than any timeout lwIP keeps.
- */
-void board_poll(void)
-{
-#if EMU_NET
-    emu_net_poll();
-#endif
-}
 
 /* Host cycles for the performance figure, which on this part is the DWT
  * counter the guest's clock is also derived from -- see
- * emu_board_time_now for the division that separates them. */
-uint32_t emu_board_host_cycles(void)
+ * board_time_now for the division that separates them. */
+uint32_t board_perf_cycles(void)
 {
     return board_cycles();
 }
@@ -668,7 +673,7 @@ uint32_t emu_board_host_cycles(void)
  * pushes the next. The reload check inside the run loop never sees those,
  * because that loop exited when the guest halted.
  */
-bool emu_board_after_run(const emu_guest_exit_t *exit, bool capped,
+bool board_after_run(const emu_guest_exit_t *exit, bool capped,
                          int *status)
 {
     (void)exit;

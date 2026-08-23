@@ -98,7 +98,7 @@ add_executable(emu-stm32f746
 
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_main.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_debug.c"
-    "${CMAKE_SOURCE_DIR}/src/platform/stm32/runner.c"
+    "${CMAKE_SOURCE_DIR}/src/platform/stm32/board.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_console.c"
     "${CMAKE_SOURCE_DIR}/src/platform/stm32/cache.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_syscall.c"

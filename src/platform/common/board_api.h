@@ -14,7 +14,7 @@
  *
  * The direction is one way. An emu_board_* function is implemented in
  * terms of board_* calls, normalising whatever a part does into what the
- * contract promises: emu_board_host_cycles() is board_cycles() on a part
+ * contract promises: board_perf_cycles() is board_cycles() on a part
  * with a cycle counter and 0 on one without, and the runner never learns
  * which it got.
  *
@@ -83,6 +83,84 @@ uint32_t board_cycles(void);
  * they are two questions.
  */
 void board_poll(void);
+
+/*
+ * Host cycles for the *performance* figure, which is **not**
+ * board_cycles().
+ *
+ * Two clocks, and collapsing them into one name produces a wrong number
+ * that looks measured. board_cycles() must be real time because lwIP's
+ * sys_now() divides it; this one is whatever the part executes at. A host
+ * reporting the first as the second gave "ratio 2.01 host cycles per
+ * guest instruction" for a board that really spends 429.
+ *
+ * A platform with no meaningful answer returns 0, and the ratio is
+ * suppressed rather than computed from a clock that means something else.
+ */
+uint32_t board_perf_cycles(void);
+
+/*
+ * Guest time, in the units the frontend's timer expects.
+ *
+ * board_cycles() divided by a rate the platform knows -- the
+ * normalisation this layer exists to do.
+ */
+uint64_t board_time_now(void);
+
+/* ------------------------------------------------------------------ */
+/* The two ends of a run                                               */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Everything before a guest can be brought up: bring the part up, obtain
+ * an image, say hello -- and state how this platform wants the run done.
+ *
+ * *Acquisition*, the first of the two halves emu_session.h says a
+ * platform cannot share. A board brings up its clocks and peripherals and
+ * has its image linked in; a runner parses argv and reads the file it
+ * names. argc/argv are what a hosted platform gets and a bare-metal one
+ * ignores.
+ *
+ * The runner fills in what it owns -- the buses, the UART, the syscall
+ * handler -- before calling this, and the platform fills in the rest. Two
+ * structs rather than a hook each: what a platform decides about a run is
+ * already what emu_session_cfg_t and emu_run_env_t describe.
+ *
+ * On return, emu_board_img/_size and emu_board_ram/_size must be set.
+ * False means stop, with *status as the exit code.
+ */
+struct emu_session_cfg;
+struct emu_run_env;
+struct emu_guest_exit;
+bool board_startup(int argc, char **argv, int *status,
+                   struct emu_session_cfg *cfg, struct emu_run_env *env);
+
+/*
+ * The run is over. *Termination*, the second half: a runner returns an
+ * exit status a suite reads, and a board has nowhere to go and parks
+ * serving its link.
+ *
+ * True means run again -- an image arrived while parked, which is the
+ * normal way a board is used by a harness, because a harness uploads
+ * *between* runs when the run loop has already exited.
+ */
+bool board_after_run(const struct emu_guest_exit *exit, bool capped,
+                     int *status);
+
+/*
+ * The runner cannot continue, and has already said why.
+ *
+ * A host returns and lets the shell see a status. A board has nowhere to
+ * return *to* -- and by this point it may have given its console to the
+ * network, so the reason is in a ring only a telnet client can drain.
+ * Halting with interrupts masked writes it into memory nobody can reach:
+ * the board answers no ping, no telnet and no TFTP, and presents as a
+ * dead link rather than as a firmware that knows what went wrong. So it
+ * keeps servicing the stack instead, for ever.
+ *
+ * Never returns on a board.
+ */
+void board_fatal(int *status);
 
 /* ------------------------------------------------------------------ */
 /* board_console_ -- one byte out, one byte in                         */

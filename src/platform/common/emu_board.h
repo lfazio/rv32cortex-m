@@ -144,19 +144,6 @@ bool emu_start_guest(emu_system_t *sys, const struct emu_session_cfg *cfg,
                      struct emu_uart *uart,
                      struct emu_guest_exit *exit_state);
 
-/*
- * Host cycles, for the performance figure -- *not* guest time.
- *
- * These are two different clocks and conflating them is a number that
- * looks measured and is not: emu_board_time_now runs at the rate the
- * guest's timer expects (1 MHz here) and this one at whatever the part
- * executes at, so reporting the first as the second gave "ratio 2.01
- * host cycles per guest instruction" for a board that really spends 429.
- *
- * A platform with no cycle counter worth quoting returns 0, which
- * suppresses the ratio rather than printing a meaningless one.
- */
-uint32_t emu_board_host_cycles(void);
 
 /*
  * Rebuild the address space around a new image and restart. What a
@@ -169,11 +156,6 @@ bool emu_main_reload(void);
  * interrupt bridge do. */
 emu_system_t *emu_main_system(void);
 
-/*
- * Guest time, in the units the frontend's timer expects. Per-board
- * because it comes from a cycle counter whose rate is the part's.
- */
-uint64_t emu_board_time_now(void);
 
 /*
  * The board's own start-up, after board_init() and before anything uses
@@ -213,42 +195,13 @@ void emu_board_init(void);
  */
 struct emu_session_cfg;
 struct emu_run_env;
-bool emu_board_startup(int argc, char **argv, int *status,
-                       struct emu_session_cfg *cfg, struct emu_run_env *env);
 
 /* The gdb stub is emu_debug.h: a platform supplies board_gdb_*, and
  * emu_debug_start does the rest. */
 
 
 
-/*
- * The runner cannot continue, and has already said why.
- *
- * A host returns and lets the shell see a status. A board has nowhere to
- * return *to* -- and, worse, by this point it may have given its console
- * to the network, so the message explaining the failure is sitting in a
- * ring that only a telnet client can drain. Halting with interrupts
- * masked writes that reason into memory nobody can reach: the board
- * answers no ping, no telnet and no TFTP, and presents as a dead link
- * rather than as a firmware that knows exactly what went wrong. So it
- * keeps servicing the stack instead, for ever.
- *
- * Never returns on a board. On a host it returns and the runner exits.
- */
-void emu_board_fatal(int *status);
 
-/*
- * The run is over. *Termination*, the second half a platform cannot
- * share: a runner returns an exit status a suite reads, and a board has
- * nowhere to go and parks serving its link.
- *
- * True means run again -- an image arrived while parked, which is the
- * normal way a board is used by a harness, because a harness uploads
- * *between* runs when the run loop has already exited. False means stop,
- * with *status as the exit code.
- */
-bool emu_board_after_run(const struct emu_guest_exit *exit, bool capped,
-                         int *status);
 
 /*
  * **Two namespaces, and they are layers rather than a mixture.**
