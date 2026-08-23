@@ -401,15 +401,16 @@ static void advance_guest_time(uint64_t retired_total, uint32_t did)
 
 #if EMU_NET
 /*
- * State the reload needs. The firmware keeps the same three and calls
- * them the same thing; here they are file-scope because main() is where
- * they are set up and the hook is called from the run loop.
+ * A complete image waiting to be run, and the one currently running.
+ *
+ * The rest of what a reload needs -- the ops, the UART, the RAM extents
+ * -- is the runner's now and reached through emu_main_reload(), which is
+ * what stopped this file and the board's from each having their own idea
+ * of how much of the bring-up an upload repeats.
  */
-static const emu_cpu_ops_t *g_ops;
-static emu_uart_t          *g_uart_p;
-static uint32_t             g_ram_bytes;
-static uint32_t             g_img_len;
-static uint8_t             *g_img_buf;
+static uint8_t *g_pending;
+static uint32_t g_pending_len;
+static uint8_t *g_img_buf;
 
 static void net_poll_hook(void)
 {
@@ -598,21 +599,21 @@ bool emu_board_startup(int argc, char **argv, int *status,
         char slave[64] = "";
 
         if (!board_console_open(g_opt.ppp_dev, slave, sizeof(slave))) {
-            emu_console_printf("emu: --g_opt.ppp: no serial device; continuing "
+            emu_console_printf("emu: --ppp: no serial device; continuing "
                             "without a network\n");
         } else if (!emu_net_init()) {
-            emu_console_printf("emu: --g_opt.ppp: the IP stack would not start\n");
+            emu_console_printf("emu: --ppp: the IP stack would not start\n");
         } else {
             const emu_gdb_target_t *const gt =
                 ops->gdb_target != NULL ? ops->gdb_target() : NULL;
 
             fprintf(stderr,
-                    "emu: g_opt.ppp on %s (%s <-> %s)\n"
-                    "emu:   scripts/g_opt.ppp-host.sh %s\n"
+                    "emu: ppp on %s (%s <-> %s)\n"
+                    "emu:   scripts/ppp-host.sh %s\n"
                     "emu:   then: telnet %s 23   |   tftp %s\n",
                     slave, EMU_NET_PEER, EMU_NET_ADDR, slave,
                     EMU_NET_ADDR, EMU_NET_ADDR);
-            if (gt != NULL && emu_net_gdb_init(&g_core, gt, NULL)) {
+            if (gt != NULL && emu_net_gdb_init(&emu_main_system()->core[0], gt, NULL)) {
                 emu_console_printf("emu:   gdb: target remote %s:1234\n",
                         EMU_NET_ADDR);
             }
