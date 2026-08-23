@@ -32,6 +32,8 @@
 #include "emu/emu_cpu.h"
 #include "emu/emu_gdb.h"
 
+#include "board_api.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -39,60 +41,7 @@
 extern "C" {
 #endif
 
-/* ------------------------------------------------------------------ */
-/* What a platform supplies                                            */
-/* ------------------------------------------------------------------ */
-
-/*
- * Whether this run wants a stub at all.
- *
- * A board always does -- it costs a listening socket on a link that is
- * already up, and the usual way to arrive at a guest bug there is to
- * watch it fail and then attach. A runner does it under --gdb, because
- * waiting for a debugger that is not coming is indistinguishable from a
- * hang.
- */
-bool board_gdb_wanted(void);
-
-/*
- * Start listening. False if the transport would not come up, having said
- * nothing -- emu_debug_start reports it, so that the message is the same
- * on every platform.
- *
- * `flash` is how gdb's `load` reaches an image store, or NULL where there
- * is none to write.
- */
-bool board_gdb_start(emu_core_t *core, const emu_gdb_target_t *target,
-                     const emu_gdb_flash_ops_t **flash);
-
-/*
- * Where to connect, for the line this prints. A host says
- * "localhost:1234" and a board says its address; both are the thing a
- * person pastes after `target remote`.
- */
-const char *board_gdb_where(void);
-
-/*
- * Wait for a client before the guest runs, where that is wanted.
- *
- * A runner's guest is over in milliseconds, so a debugger that connects
- * "immediately" arrives after the run: without this, `--gdb` attaches to
- * a finished guest. A board's guest is still going, and its link may not
- * even be negotiated yet, so it does not wait.
- */
-void board_gdb_wait(void);
-
-/*
- * Run control, handed to the run loop. With a debugger attached the
- * *stub* drives the guest -- it owns stepping and breakpoints, and
- * running the cores as well would execute instructions the debugger
- * believes are still ahead of it.
- */
-bool     board_gdb_attached(void);
-uint32_t board_gdb_run(uint32_t budget, uint32_t *retired);
-
-/* Service the transport between slices, where it needs it. */
-void board_gdb_poll(void);
+/* The transport is board_gdb_* in board_api.h. */
 
 /* ------------------------------------------------------------------ */
 /* What the runner calls                                               */

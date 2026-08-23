@@ -25,6 +25,8 @@
 #include "emu/emu_cpu.h"
 #include "emu/emu_types.h"
 
+#include "board_api.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -106,14 +108,6 @@ bool emu_board_add_regions(emu_bus_t *bus);
  * is nothing, because the guest's memory is a malloc'd buffer the host's
  * own cache is already coherent with.
  */
-/*
- * The platform's own work, once per slice.
- *
- * An IP stack advances only when called, so this is its entire schedule --
- * once per slice is finer than any timeout lwIP keeps. A platform with
- * nothing beside the guest defines it empty.
- */
-void board_poll(void);
 
 void emu_board_irqs_init(void);
 void emu_board_irq_unmask(void *ctx, uint32_t source);

@@ -1,0 +1,189 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/*
+ * board_api.h - the `board_*` contract, stated once.
+ *
+ * Two namespaces live in src/platform/ and they are layers rather than a
+ * mixture:
+ *
+ *   emu_board_*   what the runner calls. The same on every platform, and
+ *                 the only thing emu_main.c knows about. In emu_board.h.
+ *   board_*       what a platform provides. *This* file -- and it is
+ *                 mostly common, which is the point: every platform has a
+ *                 console, a clock and a name, so saying so three times
+ *                 was three chances to say it differently.
+ *
+ * The direction is one way. An emu_board_* function is implemented in
+ * terms of board_* calls, normalising whatever a part does into what the
+ * contract promises: emu_board_host_cycles() is board_cycles() on a part
+ * with a cycle counter and 0 on one without, and the runner never learns
+ * which it got.
+ *
+ * A platform includes this from its own board.h and adds whatever else it
+ * has -- the STM32s' flash arena, the host's pty. Those are genuinely
+ * per-part and stay per-part.
+ *
+ * **How a platform declines something.** Not by leaving a function out,
+ * which is a link error naming a symbol rather than a capability. Either
+ * it answers with nothing -- board_poll() empty, board_gdb_poll() empty
+ * -- or it answers zero where a size is asked for, which the caller tests
+ * at run time and the compiler folds away. board_flash_arena_size()
+ * returning 0 is how a board says it takes no uploads, and it costs a
+ * board that has one nothing.
+ */
+#ifndef EMU_PLATFORM_BOARD_API_H
+#define EMU_PLATFORM_BOARD_API_H
+
+/*
+ * The gdb transport below names a core and a target description, so this
+ * header depends on the emulator's types -- which is the right direction:
+ * a platform serves *this* emulator's debugger, not a debugger in
+ * general.
+ */
+#include "emu/emu_cpu.h"
+#include "emu/emu_gdb.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ------------------------------------------------------------------ */
+/* board_ -- identity and lifecycle                                    */
+/* ------------------------------------------------------------------ */
+
+/* This part, for the banner: "Cortex-M7", "x86-64". */
+const char *board_name(void);
+
+/*
+ * The core clock, in Hz. Two callers with different needs: the run
+ * summary divides retired instructions by it for KIPS, and lwIP's
+ * sys_now() divides board_cycles() by it for milliseconds. A platform
+ * whose "cycles" are microseconds says 1000000 and both come out right.
+ */
+uint32_t board_clock_hz(void);
+
+/*
+ * A free-running counter at board_clock_hz().
+ *
+ * **Real time, and it has to be.** This is lwIP's time base: a version
+ * that returned a constant would freeze every timeout in the stack --
+ * TFTP sessions never reclaimed, retransmissions never fired. That is the
+ * __WFI defect CLAUDE.md records on the board, where the clock ran at 6%
+ * of real time, in its absolute form.
+ */
+uint32_t board_cycles(void);
+
+/*
+ * The platform's own work between guest slices, or nothing.
+ *
+ * An IP stack advances only when called, so this is its entire schedule.
+ * The debugger is *not* here: that is emu_debug_poll, one layer up, and
+ * they are two questions.
+ */
+void board_poll(void);
+
+/* ------------------------------------------------------------------ */
+/* board_console_ -- one byte out, one byte in                         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The console wire, and on a platform with a network it is also the link:
+ * src/net's sio layer moves PPP and SLIP bytes through these. That is why
+ * emu_console.c decides *whether* the wire is still a console -- after the
+ * handover it is not -- and these two only move the byte.
+ */
+void board_console_putc(uint8_t c);
+int  board_console_getc(void);
+
+/*
+ * Arm receive interrupts, where reception needs them.
+ *
+ * A USART with one byte of holding register and a run loop that reaches
+ * it once per guest slice drops most of every frame at 921600 baud; a
+ * kernel-buffered device has nothing to arm and defines this empty.
+ */
+void board_console_rx_irq_enable(void);
+
+/* Bytes the link delivered and nothing collected. Reported beside the
+ * guest's own numbers, because a dropped byte is a dropped frame. */
+uint32_t board_console_rx_overruns(void);
+
+/* ------------------------------------------------------------------ */
+/* board_led_ -- activity, where there is somewhere to show it          */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    BOARD_LED_RX,
+    BOARD_LED_TX
+} board_led_t;
+
+/*
+ * Per *frame*, not per byte: at 921600 a byte is 10.8 us, so a per-byte
+ * toggle is a 45 kHz square wave and the LED reads as half-brightness
+ * whatever the traffic.
+ */
+void board_led_toggle(board_led_t led);
+
+/* ------------------------------------------------------------------ */
+/* board_gdb_ -- the transport a debugger is served over               */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Whether this run wants a stub at all.
+ *
+ * A board always does -- it costs a listening socket on a link that is
+ * already up, and the usual way to arrive at a guest bug there is to
+ * watch it fail and then attach. A runner does it under --gdb, because
+ * waiting for a debugger that is not coming is indistinguishable from a
+ * hang.
+ */
+bool board_gdb_wanted(void);
+
+/*
+ * Start listening. False if the transport would not come up, having said
+ * nothing -- emu_debug_start reports it, so that the message is the same
+ * on every platform.
+ *
+ * `flash` is how gdb's `load` reaches an image store, or NULL where there
+ * is none to write.
+ */
+bool board_gdb_start(emu_core_t *core, const emu_gdb_target_t *target,
+                     const emu_gdb_flash_ops_t **flash);
+
+/*
+ * Where to connect, for the line this prints. A host says
+ * "localhost:1234" and a board says its address; both are the thing a
+ * person pastes after `target remote`.
+ */
+const char *board_gdb_where(void);
+
+/*
+ * Wait for a client before the guest runs, where that is wanted.
+ *
+ * A runner's guest is over in milliseconds, so a debugger that connects
+ * "immediately" arrives after the run: without this, `--gdb` attaches to
+ * a finished guest. A board's guest is still going, and its link may not
+ * even be negotiated yet, so it does not wait.
+ */
+void board_gdb_wait(void);
+
+/*
+ * Run control, handed to the run loop. With a debugger attached the
+ * *stub* drives the guest -- it owns stepping and breakpoints, and
+ * running the cores as well would execute instructions the debugger
+ * believes are still ahead of it.
+ */
+bool     board_gdb_attached(void);
+uint32_t board_gdb_run(uint32_t budget, uint32_t *retired);
+
+/* Service the transport between slices, where it needs it. */
+void board_gdb_poll(void);
+
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* EMU_PLATFORM_BOARD_API_H */

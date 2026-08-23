@@ -36,6 +36,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "board_api.h"
+
 /*
  * Open the pty and put it in raw mode. `slave_out`/`n` receive the name
  * to hand to pppd. False if no pty could be had, which is not fatal to
@@ -46,65 +48,9 @@
  */
 bool board_console_open(const char *dev, char *slave_out, unsigned n);
 
-/* The device the stack is talking over, for diagnostics. Empty when the
- * console has not been opened. */
-const char *board_name(void);
 
-/*
- * One byte out, one byte in or -1 if nothing has arrived.
- *
- * Non-blocking on purpose: sio_tryread's contract is "whatever is here
- * now", and the run loop reaches it between guest slices. A blocking
- * read would stop the guest whenever the link went quiet, which is most
- * of the time.
- */
-void board_console_putc(uint8_t c);
-int  board_console_getc(void);
 
-/*
- * A no-op here. The board needs it because its USART holds exactly one
- * byte and the run loop cannot get back in time at 921600 baud; a pty
- * has a kernel buffer, so there is nothing to arm.
- */
-void board_console_rx_irq_enable(void);
 
-/* Bytes the link dropped. Always zero here, and kept so the stack's own
- * reporting compiles unchanged -- a pty does not overrun. */
-uint32_t board_console_rx_overruns(void);
-
-/*
- * Microsecond-resolution monotonic time, scaled to look like a cycle
- * counter at board_clock_hz(). sys_now() divides one by the other, so
- * only their ratio matters -- but it has to *advance in real time*,
- * because every lwIP timeout is measured against it. Deriving it from
- * instructions retired, as the guest's own clock is, would make the
- * stack's notion of a second depend on how fast the emulator happened to
- * be running.
- */
-/*
- * **Real time, and it has to be.** This is lwIP's clock: sys_now()
- * divides it by board_clock_hz(), so a version that returned a constant
- * would freeze every timeout in the stack -- TFTP sessions never
- * reclaimed, retransmissions never fired, ARP entries never aged. That is
- * the __WFI defect CLAUDE.md records on the board, where the clock ran at
- * 6% of real time, in its absolute form.
- *
- * What a *host* has no meaningful answer for is the performance ratio, and
- * that is a different question with a different function:
- * emu_board_host_cycles() returns 0 there and the ratio is suppressed
- * rather than computed from a clock that means something else.
- */
-uint32_t board_cycles(void);
-uint32_t board_clock_hz(void);
-
-typedef enum {
-    BOARD_LED_RX,
-    BOARD_LED_TX
-} board_led_t;
-
-/* Counted rather than lit: on a board these say at a glance whether
- * frames are moving, and the same question is worth answering here. */
-void     board_led_toggle(board_led_t led);
 uint32_t board_led_count(board_led_t led);
 
 #endif /* EMU_HOST_BOARD_H */
