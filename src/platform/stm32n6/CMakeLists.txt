@@ -261,32 +261,35 @@ endif()
 # Flash
 # ---------------------------------------------------------------------
 #
-# **Not probe-rs, and not a plain download.** Two facts about this part
-# make the F4/F7 recipe inapplicable:
+# probe-rs, as for the other two boards, and the chip name is `STM32N657`
+# -- not the full part number the F4/F7 targets use, because that is what
+# `probe-rs chip list` prints for this family.
 #
-#   - probe-rs has no STM32N6 target as of 0.24, and the symptom is not a
-#     "chip not supported" message. The debug access port is gated behind
-#     the boot mode, so an attach on a board in its default boot position
-#     reports "No access ports found" -- which reads as a broken probe.
+# **An earlier version of this file said probe-rs had no STM32N6 support
+# and shelled out to STM32_Programmer_CLI instead.** That was read off a
+# stale note about 0.24 and never checked: 0.32 lists five STM32N6
+# targets. The symptom it was written to explain -- "No access ports
+# found" -- is a *boot mode* problem, not a tooling one: this part gates
+# the debug access port behind the boot configuration, so a board in its
+# default position refuses an attach whatever is asking.
 #
-#   - there is no internal flash to download *to*. The image goes into the
-#     external XSPI flash with a signed header the boot ROM understands,
-#     which is what STM32CubeProgrammer's -el external loader does.
+# So if this fails to attach, the boot switches are the thing to look at
+# before the tool. --connect-under-reset is the default here for the same
+# reason it is on the F746: this firmware never idles, so a plain attach
+# races a running guest.
 #
-# So this target shells out to STM32_Programmer_CLI, and the board has to
-# be in development boot mode (BOOT1 high) for it to attach at all.
-# EMU_CUBEPROG points at the binary; the default is where the CubeProgrammer
-# installer puts it.
-set(EMU_CUBEPROG "STM32_Programmer_CLI"
-    CACHE STRING "STM32CubeProgrammer CLI, for flashing the N6")
-set(EMU_N6_EXTLOADER "" CACHE STRING
-    "External loader .stldr for the N6's XSPI flash")
+set(EMU_PROBE "" CACHE STRING "probe-rs --probe selector (VID:PID:serial)")
+if(EMU_PROBE)
+    set(_probe_arg --probe ${EMU_PROBE})
+else()
+    set(_probe_arg)
+endif()
 
 add_custom_target(flash
-    COMMAND ${CMAKE_COMMAND} -E echo
-            "Board must be in development boot mode (BOOT1 high)."
-    COMMAND ${EMU_CUBEPROG} -c port=SWD mode=HOTPLUG
-            -w $<TARGET_FILE:emu-stm32n6> -hardRst
+    COMMAND probe-rs download --chip STM32N657 --connect-under-reset
+            ${_probe_arg} $<TARGET_FILE:emu-stm32n6>
+    COMMAND probe-rs reset --chip STM32N657 --connect-under-reset
+            ${_probe_arg}
     DEPENDS emu-stm32n6
     USES_TERMINAL
-    COMMENT "Loading the Nucleo-N657X0-Q over ST-LINK")
+    COMMENT "Flashing the Nucleo-N657X0-Q over ST-LINK")
