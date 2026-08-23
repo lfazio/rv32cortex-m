@@ -22,6 +22,8 @@
  */
 
 #include "emu_run.h"
+#include "emu_debug.h"
+#include "emu_board.h"
 
 emu_run_outcome_t emu_run_system(emu_system_t *sys, const emu_run_env_t *env,
                                  uint64_t *retired_total)
@@ -45,19 +47,16 @@ emu_run_outcome_t emu_run_system(emu_system_t *sys, const emu_run_env_t *env,
             }
         }
 
-        if (env->gdb_attached != NULL && env->gdb_attached()) {
-            uint32_t n = 0u;
-
-            (void)env->gdb_run(slice, &n);
-            did = n;
-        } else {
-            did = emu_system_step(sys, slice, &all_idle);
-        }
+        (void)emu_debug_run(sys, slice, &did, &all_idle);
         *retired_total += did;
 
-        if (env->poll != NULL) {
-            env->poll();
-        }
+        /*
+         * The platform's own work, then the debugger's. Two calls
+         * because they are two questions: an IP stack that must be
+         * pumped, and a stub that may have a client waiting.
+         */
+        board_poll();
+        emu_debug_poll();
 
         /*
          * An image can arrive at any point, and the caller has to rebuild

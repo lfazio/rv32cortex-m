@@ -107,8 +107,12 @@ bool host_gdb_start(emu_core_t *core, const emu_gdb_target_t *target,
     set_nonblock(g_listen);
     g_ready = true;
 
-    fprintf(stderr, "gdb: waiting on localhost:%d "
-                    "(target remote :%d)\n", port, port);
+    /*
+     * No banner here. emu_debug_start prints where to connect, in the
+     * words every platform uses -- this said it too, so a --gdb run
+     * announced the same port twice in two formats.
+     */
+    (void)port;
     return true;
 }
 

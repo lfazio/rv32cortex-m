@@ -26,6 +26,7 @@
 
 #include "emu_board.h"
 #include "emu_console.h"
+#include "emu_debug.h"
 #include "emu_run.h"
 #include "emu_session.h"
 
@@ -159,7 +160,7 @@ int main(int argc, char **argv)
     }
 
     emu_board_irqs_init();
-    emu_board_debug_start(&g_sys, g_cfg.ops);
+    emu_debug_start(&g_sys, g_cfg.ops);
 
     /*
      * One run of one guest, and an uploaded image comes back to it. The

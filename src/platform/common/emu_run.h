@@ -37,20 +37,14 @@ typedef struct emu_run_env {
     uint32_t max_insn;   /* 0 = no cap */
 
     /*
-     * The platform's own work, once per slice. An IP stack advances only
-     * when called, so this is its entire schedule -- finer than any
-     * timeout lwIP keeps. NULL when there is nothing beside the guest.
+     * What used to be here: `poll`, `gdb_attached` and `gdb_run`.
+     *
+     * They existed because the two platforms named the same three things
+     * differently -- emu_net_gdb_run against host_gdb_run -- so the loop
+     * could not call either by name. They answer to board_poll() and
+     * board_gdb_* now, and a hook whose only purpose was to paper over a
+     * naming difference is a hook that should not exist.
      */
-    void (*poll)(void);
-
-    /*
-     * Run control while a debugger is attached. With one, the *stub*
-     * drives the guest: it owns stepping and breakpoints, and running the
-     * cores here as well would execute instructions the debugger believes
-     * are still ahead of it. Both NULL in a build with no stub.
-     */
-    bool     (*gdb_attached)(void);
-    uint32_t (*gdb_run)(uint32_t budget, uint32_t *retired);
 
     /*
      * Advance the guest's clock, given what the round retired.

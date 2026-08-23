@@ -106,6 +106,15 @@ bool emu_board_add_regions(emu_bus_t *bus);
  * is nothing, because the guest's memory is a malloc'd buffer the host's
  * own cache is already coherent with.
  */
+/*
+ * The platform's own work, once per slice.
+ *
+ * An IP stack advances only when called, so this is its entire schedule --
+ * once per slice is finer than any timeout lwIP keeps. A platform with
+ * nothing beside the guest defines it empty.
+ */
+void board_poll(void);
+
 void emu_board_irqs_init(void);
 void emu_board_irq_unmask(void *ctx, uint32_t source);
 
@@ -213,12 +222,9 @@ struct emu_run_env;
 bool emu_board_startup(int argc, char **argv, int *status,
                        struct emu_session_cfg *cfg, struct emu_run_env *env);
 
-/*
- * Start a debugger, if this platform serves one. Called once the cores
- * exist and before the guest runs, so a debugger that connects
- * immediately finds it at its reset vector.
- */
-void emu_board_debug_start(emu_system_t *sys, const emu_cpu_ops_t *ops);
+/* The gdb stub is emu_debug.h: a platform supplies board_gdb_*, and
+ * emu_debug_start does the rest. */
+
 
 
 /*

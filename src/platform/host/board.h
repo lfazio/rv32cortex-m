@@ -81,6 +81,19 @@ uint32_t board_console_rx_overruns(void);
  * stack's notion of a second depend on how fast the emulator happened to
  * be running.
  */
+/*
+ * **Real time, and it has to be.** This is lwIP's clock: sys_now()
+ * divides it by board_clock_hz(), so a version that returned a constant
+ * would freeze every timeout in the stack -- TFTP sessions never
+ * reclaimed, retransmissions never fired, ARP entries never aged. That is
+ * the __WFI defect CLAUDE.md records on the board, where the clock ran at
+ * 6% of real time, in its absolute form.
+ *
+ * What a *host* has no meaningful answer for is the performance ratio, and
+ * that is a different question with a different function:
+ * emu_board_host_cycles() returns 0 there and the ratio is suppressed
+ * rather than computed from a clock that means something else.
+ */
 uint32_t board_cycles(void);
 uint32_t board_clock_hz(void);
 

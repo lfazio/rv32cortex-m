@@ -32,6 +32,7 @@
 #include "emu_board.h"
 #include "emu_console.h"
 #include "emu_run.h"
+#include "emu_debug.h"
 #include "emu_session.h"
 
 extern const emu_cache_ops_t board_cache_ops;
@@ -166,13 +167,6 @@ static void advance_guest_time(uint64_t retired_total, uint32_t did)
 
     sys->ops->set_time(sys->core[0].cpu, emu_board_time_now());
 }
-
-#if EMU_NET
-static void run_poll(void)
-{
-    emu_net_poll();
-}
-#endif
 
 /* ------------------------------------------------------------------ */
 /* Starting a guest                                                    */
@@ -579,48 +573,93 @@ bool emu_board_startup(int argc, char **argv, int *status,
     env->max_insn     = EMU_MAX_INSN;
     env->advance_time = advance_guest_time;
 #if EMU_NET
-    env->poll         = run_poll;
-    env->gdb_attached = emu_net_gdb_attached;
-    env->gdb_run      = emu_net_gdb_run;
     env->take_upload  = take_uploaded_image;
 #endif
     return true;
 }
 
-void emu_board_debug_start(emu_system_t *sys, const emu_cpu_ops_t *ops)
+/* ------------------------------------------------------------------ */
+/* The gdb transport -- see emu_debug.h                                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A board always wants a stub: it costs a listening socket on a link that
+ * is already up, and the usual way to arrive at a guest bug here is to
+ * watch it fail over telnet and then attach.
+ */
+bool board_gdb_wanted(void)
+{
+    return EMU_NET != 0;
+}
+
+bool board_gdb_start(emu_core_t *core, const emu_gdb_target_t *target,
+                     const emu_gdb_flash_ops_t **flash)
 {
 #if EMU_NET
-    /*
-     * Failure is not fatal: a board that cannot serve gdb is still a
-     * board that runs guests, and saying so beats halting.
-     *
-     * The frontend states its own register layout -- gdb's `g` packet is
-     * a fixed per-architecture concatenation it never asks about, so
-     * serving the wrong one gives an `info registers` that is entirely
-     * wrong and entirely plausible.
-     */
-    const emu_gdb_target_t *const gt =
-        ops->gdb_target != NULL ? ops->gdb_target() : NULL;
-
-    if (gt == NULL) {
-        emu_console_printf("gdb    frontend has no target description\n");
-    } else if (!emu_net_gdb_init(&sys->core[0], gt, &k_gdb_flash)) {
-        emu_console_printf("gdb    stub failed to start\n");
-    } else {
-        emu_console_printf("gdb    target remote %s:1234\n",
-                           emu_net_addr_str());
-    }
+    /* gdb's `load` writes through the same flash arena TFTP uses. */
+    *flash = &k_gdb_flash;
+    return emu_net_gdb_init(core, target, &k_gdb_flash);
 #else
-    (void)sys;
-    (void)ops;
+    (void)core; (void)target; (void)flash;
+    return false;
 #endif
 }
 
+const char *board_gdb_where(void)
+{
+#if EMU_NET
+    static char buf[32];
+
+    (void)snprintf(buf, sizeof(buf), "%s:1234", emu_net_addr_str());
+    return buf;
+#else
+    return "(no link)";
+#endif
+}
+
+/*
+ * A board does not wait. Its guest is still running and its link may not
+ * be negotiated yet, so blocking here would stop the run for a debugger
+ * that may never come -- which is the opposite of the runner's problem,
+ * where the guest is over before anyone can attach.
+ */
+void board_gdb_wait(void) { }
+
+void board_gdb_poll(void) { }
+
+bool board_gdb_attached(void)
+{
+#if EMU_NET
+    return emu_net_gdb_attached();
+#else
+    return false;
+#endif
+}
+
+uint32_t board_gdb_run(uint32_t budget, uint32_t *retired)
+{
+    (void)budget; (void)retired;
+    return 0u;
+}
+
+/*
+ * The stack advances only when called, so this is its entire schedule --
+ * once per slice, finer than any timeout lwIP keeps.
+ */
+void board_poll(void)
+{
+#if EMU_NET
+    emu_net_poll();
+#endif
+}
+
+/* Host cycles for the performance figure, which on this part is the DWT
+ * counter the guest's clock is also derived from -- see
+ * emu_board_time_now for the division that separates them. */
 uint32_t emu_board_host_cycles(void)
 {
     return board_cycles();
 }
-
 
 /*
  * A board has nowhere to exit to, so it parks serving its link -- and an

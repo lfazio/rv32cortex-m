@@ -23,6 +23,7 @@
 #include "emu_run.h"
 #include "emu_board.h"
 #include "host_args.h"
+#include "emu_debug.h"
 #include "emu_session.h"
 
 #if EMU_NET
@@ -516,66 +517,138 @@ bool emu_board_startup(int argc, char **argv, int *status,
         } else if (!emu_net_init()) {
             emu_console_printf("emu: --ppp: the IP stack would not start\n");
         } else {
-            const emu_gdb_target_t *const gt =
-                ops->gdb_target != NULL ? ops->gdb_target() : NULL;
-
             fprintf(stderr,
                     "emu: ppp on %s (%s <-> %s)\n"
                     "emu:   scripts/ppp-host.sh %s\n"
                     "emu:   then: telnet %s 23   |   tftp %s\n",
                     slave, EMU_NET_PEER, EMU_NET_ADDR, slave,
                     EMU_NET_ADDR, EMU_NET_ADDR);
-            if (gt != NULL && emu_net_gdb_init(&emu_main_system()->core[0], gt, NULL)) {
-                emu_console_printf("emu:   gdb: target remote %s:1234\n",
-                        EMU_NET_ADDR);
-            }
         }
     }
 #endif
 
 
     /* --- run --------------------------------------------------------- */
-    #if EMU_NET
+#if EMU_NET
     if (emu_net_active()) {
-        env->poll         = emu_net_poll;
-        env->gdb_attached = emu_net_gdb_attached;
-        env->gdb_run      = emu_net_gdb_run;
-        env->take_upload  = take_uploaded_image;
+        env->take_upload = take_uploaded_image;
     }
 #endif
+    /*
+     * Run control comes from board_gdb_*, which picks the transport --
+     * this platform has two and a board has one. Set unconditionally
+     * because they answer false when no stub is listening, which is one
+     * predictable branch per slice against a NULL check that had to be
+     * kept in step with three other places.
+     */
 #if EMU_ENABLE_TRACE
     emu_trace_configure(g_opt.trace_skip, g_opt.trace_count);
 #endif
     return true;
 }
 
-void emu_board_debug_start(emu_system_t *sys, const emu_cpu_ops_t *ops)
+/* ------------------------------------------------------------------ */
+/* The gdb transport -- see emu_debug.h                                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Under --gdb only. A runner's guest is over in milliseconds, so a stub
+ * nobody asked for would be a socket nobody connects to; a board's is
+ * always worth having because its guest is still going.
+ */
+bool board_gdb_wanted(void)
 {
-    if (g_opt.gdb_port != 0) {
-        /* The frontend states its own layout -- see
-         * emu_cpu_ops_t.gdb_target. */
-        const emu_gdb_target_t *gt =
-            ops->gdb_target != NULL ? ops->gdb_target() : NULL;
-
-        if (gt == NULL) {
-            /*
-             * Not fatal, and it used to be. A runner that cannot serve
-             * gdb is still a runner, and the board reached that
-             * conclusion first -- saying so beats refusing to run the
-             * guest the user actually asked for.
-             */
-            emu_console_printf("gdb: no target description for frontend "
-                               "%s\n", ops->name);
-            return;
-        }
-        if (!host_gdb_start(&sys->core[0], gt, g_opt.gdb_port)) {
-            emu_console_printf("gdb: could not listen on port %d\n",
-                               g_opt.gdb_port);
-            return;
-        }
-        host_gdb_wait();        /* the guest is milliseconds long */
+    /*
+     * Either transport counts. --gdb is a loopback socket; --ppp brings
+     * up the same stub the board serves, over the link, and a person who
+     * asked for a network debugging session asked for the stub with it.
+     */
+#if EMU_NET
+    if (emu_net_active()) {
+        return true;
     }
+#endif
+    return g_opt.gdb_port != 0;
+}
 
+bool board_gdb_start(emu_core_t *core, const emu_gdb_target_t *target,
+                     const emu_gdb_flash_ops_t **flash)
+{
+    /*
+     * No flash ops either way: this platform's image is a malloc'd buffer
+     * the ELF loader writes into directly, so gdb's `load` has nothing to
+     * program. A board's writes to its arena.
+     */
+    *flash = NULL;
+
+#if EMU_NET
+    if (emu_net_active()) {
+        return emu_net_gdb_init(core, target, NULL);
+    }
+#endif
+    return host_gdb_start(core, target, g_opt.gdb_port);
+}
+
+const char *board_gdb_where(void)
+{
+    static char buf[32];
+
+#if EMU_NET
+    if (emu_net_active()) {
+        (void)snprintf(buf, sizeof(buf), "%s:1234", EMU_NET_ADDR);
+        return buf;
+    }
+#endif
+    (void)snprintf(buf, sizeof(buf), "localhost:%d", g_opt.gdb_port);
+    return buf;
+}
+
+/*
+ * Wait, and this is the platform that must.
+ *
+ * The whole guest is over in milliseconds, so a debugger that connects
+ * "immediately" still arrives after the run finished: without this,
+ * --gdb attaches to a guest that has already stopped and every breakpoint
+ * is behind it.
+ */
+void board_gdb_wait(void)
+{
+#if EMU_NET
+    /*
+     * Not over the link: there the guest is served for as long as the
+     * process runs, so there is no race to lose, and blocking would stop
+     * the run before the person has even brought pppd up.
+     */
+    if (emu_net_active()) {
+        return;
+    }
+#endif
+    host_gdb_wait();
+}
+
+void board_gdb_poll(void)
+{
+#if EMU_NET
+    if (emu_net_active()) {
+        return;                 /* emu_net_poll covers it */
+    }
+#endif
+    host_gdb_poll();
+}
+
+bool board_gdb_attached(void)
+{
+#if EMU_NET
+    if (emu_net_active()) {
+        return emu_net_gdb_attached();
+    }
+#endif
+    return g_opt.gdb_port != 0 && host_gdb_attached();
+}
+
+uint32_t board_gdb_run(uint32_t budget, uint32_t *retired)
+{
+    return host_gdb_run(budget, retired);
 }
 
 /*
@@ -593,11 +666,32 @@ void emu_board_fatal(int *status)
     *status = 1;
 }
 
+/*
+ * This platform's own work between slices: the IP stack, when there is
+ * one. The debugger is emu_debug_poll's, which reaches board_gdb_poll
+ * below -- two questions, two calls.
+ */
+void board_poll(void)
+{
+#if EMU_NET
+    if (emu_net_active()) {
+        emu_net_poll();
+    }
+#endif
+}
+
+/*
+ * No cycle counter worth quoting for the *ratio*.
+ *
+ * Returning 0 suppresses it rather than deriving one from a clock that
+ * means something else -- board_cycles() here is wall time for lwIP, and
+ * reporting that as "host cycles per guest instruction" gave 2.01 for a
+ * board that spends 429.
+ */
 uint32_t emu_board_host_cycles(void)
 {
     return 0u;
 }
-
 
 /*
  * A runner exits; a board parks. With --ppp it does both: the link is

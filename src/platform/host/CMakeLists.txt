@@ -53,6 +53,7 @@ add_executable(emu-host
     # file had its own copy under the name build_buses.
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_address_space.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_main.c"
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_debug.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_console.c"
 
     # The newlib write(64)/exit(93) pair, also shared. This file had its
