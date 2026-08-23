@@ -9,6 +9,13 @@
 #   scripts/build-matrix.sh f746         # only the firmware ones
 #   scripts/build-matrix.sh --list       # print the table and stop
 #   scripts/build-matrix.sh --test       # also run ctest where there is one
+#   scripts/build-matrix.sh --board      # ...and drive the board's link
+#
+# `--board` needs an F746 attached with scripts/ppp-up.sh already running,
+# because bringing PPP up needs root and a check that asks for a password
+# does not get run. Without it the f746-net row builds like any other --
+# which is what it did for months while the whole EMU_NET path was
+# broken.
 #
 # Why this exists
 # ---------------
@@ -48,9 +55,31 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
-filter=${1:-all}
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+filter=all
 run_tests=0
-[ "$filter" = "--test" ] && { run_tests=1; filter=all; }
+run_board=0
+
+#
+# A real loop, and it **rejects what it does not know**.
+#
+# This was `filter=${1:-all}` plus a test for "--test", so any second
+# argument was silently ignored: `--test --board` ran the tests, skipped
+# the board entirely, and printed `f746-net  ok` -- a row reporting
+# success for work it had not done, which is the exact failure that row
+# was added to prevent. An option a script quietly drops is worse than one
+# it does not have.
+#
+while [ $# -gt 0 ]; do
+    case "$1" in
+    --test)  run_tests=1; shift ;;
+    --board) run_board=1; shift ;;
+    --list)  filter=--list; shift ;;
+    -h|--help) sed -n '3,14p' "$0"; exit 0 ;;
+    -*) echo "build-matrix: unknown option: $1" >&2; exit 2 ;;
+    *)  filter=$1; shift ;;
+    esac
+done
 
 #
 # name | platform | cmake options | what only this one covers
@@ -72,12 +101,13 @@ f746-rv32-nojit|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF -DE
 f746-g4|stm32f746|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON|the contract check: G4MH-only must link
 f746-g4-x3|stm32f746|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DG4MH_PE_COUNT=3 -DG4MH_CRAM_KIB=64 -DG4MH_LRAM_KIB=16|3 PEs of .bss on a 320 KB part -- see the sizing note
 f746-nonet|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=OFF|**the other value**: serial console, no lwIP
+f746-net|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON|**the link, exercised** with --board: ping, telnet, upload, and the new guest running. Building EMU_NET proves nothing -- see scripts/check-board-net.sh
 f746-slip|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON -DEMU_NET_LINK=slip|**the other link**: SLIP, now that PPP is the default
 f446-rv32|stm32f446|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF|the M4: no caches, no DWT lock
 f446-net|stm32f446|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON|**the other value here**: the M4 with PPP, which it had no option for until the wiring moved to cmake/emu_net.cmake
 '
 
-if [ "${1:-}" = "--list" ]; then
+if [ "$filter" = "--list" ]; then
     printf '%-18s %-12s %s\n' NAME PLATFORM COVERS
     echo "$matrix" | while IFS='|' read -r name plat opts why; do
         [ -n "$name" ] || continue
@@ -131,6 +161,18 @@ echo "$matrix" | while IFS='|' read -r name plat opts why; do
         echo "BUILD FAILED      (see $dir.log)"
         grep -m3 -E ' error|undefined reference|overflowed' "$dir.log" | sed 's/^/    /'
         echo "$name build" >>"$failures"
+        continue
+    fi
+
+    if [ "$run_board" -eq 1 ] && [ "$name" = f746-net ]; then
+        if EMU_BOARD_BUILD="$dir" "$ROOT/scripts/check-board-net.sh" \
+                >>"$dir.log" 2>&1; then
+            echo "ok (link exercised)"
+        else
+            echo "LINK FAILED       (see $dir.log)"
+            grep -m4 -E 'FAIL --' "$dir.log" | sed 's/^/    /'
+            echo "$name link" >>"$failures"
+        fi
         continue
     fi
 

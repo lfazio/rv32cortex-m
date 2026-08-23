@@ -88,6 +88,18 @@ echo
 # nodetach     stay in the foreground so Ctrl-C ends the session and the
 #              negotiation is visible.
 #
+# persist + holdoff
+#              **survive a reflash.** Without these pppd gives up the
+#              moment LCP stops answering, which is every time the board
+#              is reprogrammed -- so a test that flashes and then uses the
+#              link needs a human and a password in the middle of it, and
+#              a board test that needs a human does not get run. With
+#              them pppd redials, and the link comes back a second or two
+#              after the board reboots.
+#
+#              maxfail 0 because the default is ten and a long debugging
+#              session reflashes more often than that.
 exec pppd "$DEV" "$BAUD" \
     noauth nodetach local nocrtscts nodefaultroute \
+    persist holdoff 1 maxfail 0 \
     "${HOST_IP}:${BOARD_IP}"
