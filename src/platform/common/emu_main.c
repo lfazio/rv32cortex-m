@@ -116,6 +116,40 @@ bool emu_main_reload(void)
 
 emu_system_t *emu_main_system(void) { return &g_sys; }
 
+/*
+ * The native baseline: the same CoreMark sources compiled for the host
+ * this emulator runs on, run directly, so the interpreter and JIT figures
+ * have something absolute to be read against.
+ *
+ * Here rather than in a board, because nothing about it is per-part -- it
+ * needs a core name, a clock and a cycle counter, and board_api.h
+ * promises all three. It sat in stm32/board.c behind `#ifdef`, so the
+ * host could build the option and silently never run it.
+ *
+ * It never returns: it is a measurement, not a mode, and there is no
+ * meaningful thing to do afterwards. Falling through to the emulator
+ * would report the guest's figures under a banner that says "native".
+ */
+static void native_coremark_baseline(void)
+{
+#ifdef EMU_NATIVE_COREMARK
+    extern int coremark_native_main(void);
+
+    emu_console_printf("\n\nemu: NATIVE CoreMark on %s @ %u MHz\n\n",
+                       board_core_name,
+                       (unsigned)(board_clock_hz() / 1000000u));
+
+    const uint32_t c0 = board_cycles();
+
+    (void)coremark_native_main();
+
+    emu_console_printf("\n-- native --\n  host     %u cycles\n",
+                       (unsigned)(board_cycles() - c0));
+    for (;;) {
+    }
+#endif
+}
+
 int main(int argc, char **argv)
 {
     int           status = 0;
@@ -135,6 +169,8 @@ int main(int argc, char **argv)
     g_cfg.syscall_fn  = emu_guest_syscall;
     g_cfg.syscall_ctx = &g_sc_ctx;
     g_cfg.fail        = session_fail;
+
+    native_coremark_baseline();
 
     if (!board_startup(argc, argv, &status, &g_cfg, &env)) {
         return status;

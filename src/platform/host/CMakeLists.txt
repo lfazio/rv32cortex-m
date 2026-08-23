@@ -90,6 +90,21 @@ target_compile_options(emu-host PRIVATE
     -Wall -Wextra -Wshadow -Wundef
 )
 
+# Native CoreMark baseline: the same sources the guest runs, compiled for
+# this machine.
+#
+# **The host had no such block at all** while the option existed and the
+# two boards used it, so -DEMU_NATIVE_COREMARK=ON here quietly built the
+# ordinary runner. That is not just tidiness: the baseline is what turns
+# the emulator's figures into a ratio, and being unable to produce one on
+# the machine where the x86-64 backend runs made the whole option
+# board-only for no stated reason.
+option(EMU_NATIVE_COREMARK "Run CoreMark natively instead of the emulator" OFF)
+if(EMU_NATIVE_COREMARK)
+    include(${CMAKE_SOURCE_DIR}/cmake/coremark_native.cmake)
+    emu_coremark_native_attach(emu-host)
+endif()
+
 # The test scripts look for the binary at a stable path.
 set_target_properties(emu-host PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")

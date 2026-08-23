@@ -21,10 +21,6 @@
 #include "emu_debug.h"
 #include "emu_image.h"
 
-#if EMU_NET
-#  include "emu_net.h"
-#endif
-
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -127,6 +123,20 @@ bool board_console_open(const char *dev, char *slave_out, unsigned n)
     return true;
 }
 
+/*
+ * The core this runs on, for the banner -- the counterpart of the boards'
+ * "Cortex-M7". board_api.h asks every platform for it and this one did
+ * not have it, because the only reader was in stm32/board.c.
+ */
+const char *const board_core_name = "x86-64";
+
+/*
+ * **Not the core name**, despite what board_api.h's comment for it used
+ * to say. On this platform it is the wire: the pty the link runs over, or
+ * the device --ppp was pointed at, which is what a person needs printed
+ * in order to attach pppd to it. The boards have one name for both
+ * because their wire is not something you choose.
+ */
 const char *board_name(void)
 {
     return g_name;
@@ -273,18 +283,15 @@ void board_gdb_configure(int port)
 bool board_gdb_wanted(void)
 {
     /*
-     * Either transport counts. --gdb is a loopback socket; --ppp brings
-     * up the same stub the board serves, over the link, and a person who
-     * asked for a network debugging session asked for the stub with it.
+     * This platform's *own* transport, which is the loopback socket
+     * behind --gdb. Serving the stub over --ppp is the network transport
+     * and belongs to emu_debug.c, which takes precedence when the link is
+     * up -- a person who asked for a network debugging session asked for
+     * the stub with it, and a socket beside it would be a second way in
+     * to one stub.
      */
-#if EMU_NET
-    if (emu_net_active()) {
-        return true;
-    }
-#endif
     return g_gdb_port != 0;
 }
-
 bool board_gdb_start(emu_core_t *core, const emu_gdb_target_t *target,
                      const emu_gdb_flash_ops_t **flash)
 {
@@ -295,11 +302,6 @@ bool board_gdb_start(emu_core_t *core, const emu_gdb_target_t *target,
      */
     *flash = NULL;
 
-#if EMU_NET
-    if (emu_net_active()) {
-        return emu_net_gdb_init(core, target, NULL);
-    }
-#endif
     return host_gdb_start(core, target, g_gdb_port);
 }
 
@@ -307,12 +309,6 @@ const char *board_gdb_where(void)
 {
     static char buf[32];
 
-#if EMU_NET
-    if (emu_net_active()) {
-        (void)snprintf(buf, sizeof(buf), "%s:1234", EMU_NET_ADDR);
-        return buf;
-    }
-#endif
     (void)snprintf(buf, sizeof(buf), "localhost:%d", g_gdb_port);
     return buf;
 }
@@ -327,36 +323,16 @@ const char *board_gdb_where(void)
  */
 void board_gdb_wait(void)
 {
-#if EMU_NET
-    /*
-     * Not over the link: there the guest is served for as long as the
-     * process runs, so there is no race to lose, and blocking would stop
-     * the run before the person has even brought pppd up.
-     */
-    if (emu_net_active()) {
-        return;
-    }
-#endif
     host_gdb_wait();
 }
 
 void board_gdb_poll(void)
 {
-#if EMU_NET
-    if (emu_net_active()) {
-        return;                 /* emu_net_poll covers it */
-    }
-#endif
     host_gdb_poll();
 }
 
 bool board_gdb_attached(void)
 {
-#if EMU_NET
-    if (emu_net_active()) {
-        return emu_net_gdb_attached();
-    }
-#endif
     return g_gdb_port != 0 && host_gdb_attached();
 }
 
@@ -366,18 +342,12 @@ uint32_t board_gdb_run(uint32_t budget, uint32_t *retired)
 }
 
 /*
- * This platform's own work between slices: the IP stack, when there is
- * one. The debugger is emu_debug_poll's, which reaches board_gdb_poll
- * below -- two questions, two calls.
+ * Nothing of this platform's own between slices. Driving the IP stack is
+ * emu_board_poll's, on every platform that has one -- it was here and in
+ * the board's copy behind an #if, which made a build option look like a
+ * property of the machine.
  */
-void board_poll(void)
-{
-#if EMU_NET
-    if (emu_net_active()) {
-        emu_net_poll();
-    }
-#endif
-}
+void board_poll(void) { }
 
 /* ------------------------------------------------------------------ */
 /* The image store, the clocks, and the two ends of a run             */
@@ -695,8 +665,6 @@ bool board_startup(int argc, char **argv, int *status,
                        emu_session_cfg_t *cfg, emu_run_env_t *env)
 {
 
-#if EMU_NET
-#endif
     /* Instructions per timer tick. 1 keeps guest time in step with the
      * cycle counter, which is what the reference model assumes. */
 
@@ -776,41 +744,32 @@ bool board_startup(int argc, char **argv, int *status,
     env->slice    = g_opt.quantum;
     env->max_insn = (uint32_t)g_opt.max_insn;
     env->advance_time = advance_guest_time;
-#if EMU_NET
     /*
      * The link, before the guest runs and after the cores exist -- the
      * gdb stub needs one to describe.
      *
-     * Not fatal if it fails. A runner that cannot get a pty is still a
-     * runner, and saying so beats refusing to run the guest; this is the
-     * same judgement the firmware makes, for the same reason.
+     * The pty is this platform's; the handover is not, so it goes through
+     * emu_board_link_start() exactly as the boards' does. Not fatal if it
+     * fails: a runner that cannot get one is still a runner, and saying
+     * so beats refusing to run the guest.
      */
     if (g_opt.ppp) {
         char slave[64] = "";
 
         if (!board_console_open(g_opt.ppp_dev, slave, sizeof(slave))) {
             emu_console_printf("emu: --ppp: no serial device; continuing "
-                            "without a network\n");
-        } else if (!emu_net_init()) {
-            emu_console_printf("emu: --ppp: the IP stack would not start\n");
-        } else {
+                               "without a network\n");
+        } else if (emu_board_link_start()) {
             fprintf(stderr,
-                    "emu: ppp on %s (%s <-> %s)\n"
-                    "emu:   scripts/ppp-host.sh %s\n"
-                    "emu:   then: telnet %s 23   |   tftp %s\n",
-                    slave, EMU_NET_PEER, EMU_NET_ADDR, slave,
-                    EMU_NET_ADDR, EMU_NET_ADDR);
+                    "emu: ppp on %s\n"
+                    "emu:   scripts/ppp-host.sh %s\n",
+                    slave, slave);
         }
     }
-#endif
 
 
     /* --- run --------------------------------------------------------- */
-#if EMU_NET
-    if (emu_net_active()) {
-        env->take_upload = emu_image_take_pending;
-    }
-#endif
+    env->take_upload = emu_image_take_pending;
     /*
      * Run control comes from board_gdb_*, which picks the transport --
      * this platform has two and a board has one. Set unconditionally
@@ -875,11 +834,10 @@ bool board_after_run(const emu_guest_exit_t *exit, bool capped,
 {
     (void)capped;
 
-#if EMU_NET
     /*
      * With a link up, do not exit: serve it.
      *
-     * This is the board's park loop, and it is what makes --opt.ppp useful
+     * This is the board's park loop, and it is what makes --ppp useful
      * rather than a demonstration. A guest is over in milliseconds; the
      * report is sitting in the telnet ring with nobody connected, and the
      * next image has not been uploaded yet. The board stays up because it
@@ -890,20 +848,18 @@ bool board_after_run(const emu_guest_exit_t *exit, bool capped,
      * Anything cleverer would have to guess whether a client that has not
      * connected yet is coming.
      */
-    if (emu_net_active()) {
+    if (emu_board_link_up()) {
         fprintf(stderr, "emu: guest finished; serving the link (^C to quit)\n");
         for (;;) {
-            emu_net_poll();
+            emu_board_poll();
 
             if (emu_image_take_pending()) {
                 return true;            /* run the new image */
             }
-            if (emu_net_gdb_attached()) {
-                uint32_t n = 0;
-
-                (void)emu_net_gdb_run(g_opt.quantum, &n);
+            if (emu_debug_parked_step(g_opt.quantum)) {
                 continue;
             }
+
             /*
              * A millisecond. The board spins because it has nothing else
              * to do with the cycles; a process on a shared machine does,
@@ -916,7 +872,6 @@ bool board_after_run(const emu_guest_exit_t *exit, bool capped,
             (void)nanosleep(&ts, NULL);
         }
     }
-#endif
 
     *status = exit->exited ? (int)exit->code : 0;
     return false;

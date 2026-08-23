@@ -55,7 +55,7 @@ emu_run_outcome_t emu_run_system(emu_system_t *sys, const emu_run_env_t *env,
          * because they are two questions: an IP stack that must be
          * pumped, and a stub that may have a client waiting.
          */
-        board_poll();
+        emu_board_poll();
         emu_debug_poll();
 
         /*

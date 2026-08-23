@@ -56,6 +56,41 @@ extern "C" {
 void emu_debug_start(emu_system_t *sys, const emu_cpu_ops_t *ops);
 
 /*
+ * The platform's own work between guest slices, and the IP stack's.
+ *
+ * board_poll() is what a platform has of its own; driving lwIP is not
+ * that -- it is the same call on every platform that has EMU_NET, and it
+ * was written into two board_poll()s behind an #if. The run loop calls
+ * this instead.
+ */
+void emu_board_poll(void);
+
+/*
+ * The console-to-network handover, and whether it happened.
+ *
+ * `emu_board_link_start` prints the last two lines the UART ever carries
+ * as text -- whether the stack came up and what address to connect to --
+ * and then hands the wire to the IP stack. Text and SLIP cannot share a
+ * wire, so it is one-way and announced; after it, silence on the serial
+ * port is expected and silence on the network is the fault.
+ *
+ * `emu_board_link_up` is what a board asks before deciding it still has
+ * somewhere to report a failure. Both are constant-false with EMU_NET
+ * off, so a board needs no #if -- which is the point: whether this build
+ * has a network is not a fact about the silicon.
+ */
+bool emu_board_link_start(void);
+bool emu_board_link_up(void);
+
+/*
+ * Run control while the guest is parked -- after it has halted, rather
+ * than between slices. True when a debugger drove it. See the note on the
+ * definition for why a park loop that omits this makes gdb hang on
+ * `continue`.
+ */
+bool emu_debug_parked_step(uint32_t budget);
+
+/*
  * Service the stub between slices.
  *
  * Reached through this rather than by the run loop calling board_gdb_poll

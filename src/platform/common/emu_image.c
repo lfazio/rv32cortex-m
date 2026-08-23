@@ -56,7 +56,14 @@ void emu_image_set(const uint8_t *img, uint32_t len)
     board_img_size = len;
 }
 
-#if EMU_NET
+/*
+ * The store, gdb's `load` and the restart are unconditional; only the
+ * three entry points src/net/ calls are not, because without EMU_NET
+ * there is no TFTP server to call them and the symbols would be
+ * unreferenced. Everything else is reached by a platform whether or not
+ * it has a link -- which is what lets a board.c stop mentioning the
+ * option at all.
+ */
 /* ------------------------------------------------------------------ */
 /* Images arriving over TFTP                                           */
 /* ------------------------------------------------------------------ */
@@ -77,6 +84,7 @@ void emu_image_set(const uint8_t *img, uint32_t len)
 static uint32_t g_up_addr;
 static bool     g_reload;
 
+#if EMU_NET
 bool emu_net_image_begin(void)
 {
     if (board_flash_arena_size() == 0u) {
@@ -125,6 +133,7 @@ void emu_net_image_end(uint32_t len, bool ok)
      */
     g_reload = true;
 }
+#endif /* EMU_NET */
 
 /* ------------------------------------------------------------------ */
 /* Images arriving through gdb's `load`                                */
@@ -311,4 +320,4 @@ bool emu_image_take_pending(void)
                    (unsigned)g_cur_size);
     return true;
 }
-#endif /* EMU_NET */
+

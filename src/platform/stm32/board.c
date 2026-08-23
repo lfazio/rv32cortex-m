@@ -32,63 +32,34 @@
 #include "emu/emu_memmap.h"
 #include <string.h>
 
-#if EMU_NET
-#  include "emu_net.h"
-#endif
-
 /*
- * A board always wants a stub: it costs a listening socket on a link that
- * is already up, and the usual way to arrive at a guest bug here is to
- * watch it fail over telnet and then attach.
+ * **A board has no gdb transport of its own**, and that is not the same
+ * as having no debugger.
+ *
+ * It serves gdb over the IP stack, which is emu_debug.c's now: the same
+ * emu_net_gdb_init on every platform that has a link, behind a build
+ * option rather than a fact about the part. All seven of these used to be
+ * that transport spelled out here behind `#if EMU_NET`, in the file whose
+ * whole job is what changes when the silicon does.
+ *
+ * So they answer with nothing, the way board_api.h says a platform
+ * declines anything else. A board that grew a second debug port -- a
+ * real one on a spare UART, say -- would fill them in, and the network
+ * would still take precedence while the link is up.
  */
-bool board_gdb_wanted(void)
-{
-    return EMU_NET != 0;
-}
+bool board_gdb_wanted(void) { return false; }
 
 bool board_gdb_start(emu_core_t *core, const emu_gdb_target_t *target,
                      const emu_gdb_flash_ops_t **flash)
 {
-#if EMU_NET
-    /* gdb's `load` writes through the same flash arena TFTP uses. */
-    *flash = &emu_image_gdb_flash;
-    return emu_net_gdb_init(core, target, &emu_image_gdb_flash);
-#else
     (void)core; (void)target; (void)flash;
     return false;
-#endif
 }
 
-const char *board_gdb_where(void)
-{
-#if EMU_NET
-    static char buf[32];
-
-    (void)snprintf(buf, sizeof(buf), "%s:1234", emu_net_addr_str());
-    return buf;
-#else
-    return "(no link)";
-#endif
-}
-
-/*
- * A board does not wait. Its guest is still running and its link may not
- * be negotiated yet, so blocking here would stop the run for a debugger
- * that may never come -- which is the opposite of the runner's problem,
- * where the guest is over before anyone can attach.
- */
-void board_gdb_wait(void) { }
-
-void board_gdb_poll(void) { }
-
-bool board_gdb_attached(void)
-{
-#if EMU_NET
-    return emu_net_gdb_attached();
-#else
-    return false;
-#endif
-}
+const char *board_gdb_where(void)   { return "(no local transport)"; }
+void        board_gdb_wait(void)    { }
+void        board_gdb_poll(void)    { }
+bool        board_gdb_attached(void) { return false; }
 
 uint32_t board_gdb_run(uint32_t budget, uint32_t *retired)
 {
@@ -97,15 +68,10 @@ uint32_t board_gdb_run(uint32_t budget, uint32_t *retired)
 }
 
 /*
- * The stack advances only when called, so this is its entire schedule --
- * once per slice, finer than any timeout lwIP keeps.
+ * Nothing of the board's own between slices. The IP stack is polled by
+ * emu_board_poll, which every platform shares.
  */
-void board_poll(void)
-{
-#if EMU_NET
-    emu_net_poll();
-#endif
-}
+void board_poll(void) { }
 
 /* ------------------------------------------------------------------ */
 /* The image store, the clocks, and the two ends of a run             */
@@ -160,19 +126,6 @@ extern const uint32_t emu_guest_image_size;
  * which for -DG4MH_PE_COUNT=3 is three cores that do not fit.
  */
 #define EMU_BOARD_CORES 1u
-
-
-
-
-
-
-/* ------------------------------------------------------------------ */
-/* Console                                                             */
-
-#define console_printf emu_console_printf
-
-/* Transport hook for the guest's virtual UART. */
-
 
 /*
  * A board's ISR has masked the line and is handing it over. The core is
@@ -262,13 +215,12 @@ static void advance_guest_time(uint64_t retired_total, uint32_t did)
 void board_fatal(int *status)
 {
     (void)status;
-#if EMU_NET
-    if (emu_net_active()) {
+
+    if (emu_board_link_up()) {
         for (;;) {
-            emu_net_poll();
+            emu_board_poll();
         }
     }
-#endif
     board_fatal_halt();
 }
 
@@ -282,27 +234,6 @@ bool board_startup(int argc, char **argv, int *status,
     board_init();
     board_ram_init();
 
-#ifdef EMU_NATIVE_COREMARK
-    /*
-     * Native baseline: the same CoreMark sources compiled for this core
-     * and run directly, with no emulation, so the interpreter and JIT
-     * numbers can be put against something absolute.
-     */
-    {
-        extern int coremark_native_main(void);
-
-        emu_console_printf("\n\nemu: NATIVE CoreMark on %s @ %u MHz\n\n",
-                           board_core_name,
-                           (unsigned)(board_clock_hz() / 1000000u));
-        const uint32_t c0 = board_cycles();
-        (void)coremark_native_main();
-        emu_console_printf("\n-- native --\n  host     %u cycles\n",
-                           (unsigned)(board_cycles() - c0));
-        for (;;) {
-            board_idle();
-        }
-    }
-#endif
 
     /*
      * The frontend names itself and builds its ISA string from the
@@ -316,20 +247,12 @@ bool board_startup(int argc, char **argv, int *status,
                        ops->desc, board_core_name,
                        (unsigned)(board_clock_hz() / 1000000u));
 
-#if EMU_NET
     /*
-     * The handover, and the last two lines the UART ever carries as text:
-     * whether the stack started, and what address to connect to. After
-     * this, silence on the serial port is expected and silence on the
-     * network is the fault.
+     * The handover: after this the UART is the link and the console is
+     * telnet. What it prints and whether it succeeds is the same on every
+     * platform, so it is emu_debug.c's -- see emu_board_link_start.
      */
-    emu_console_printf("net    %s on this port; telnet %s 23\n",
-                       EMU_NET_LINK_PPP ? "PPP" : "SLIP", emu_net_addr_str());
-    if (!emu_net_init()) {
-        emu_console_printf("net    failed to start; staying on the serial "
-                           "console\n");
-    }
-#endif
+    (void)emu_board_link_start();
 
     emu_image_set(emu_guest_image, emu_guest_image_size);
 
@@ -362,9 +285,7 @@ bool board_startup(int argc, char **argv, int *status,
     env->slice        = EMU_RUN_SLICE;
     env->max_insn     = EMU_MAX_INSN;
     env->advance_time = advance_guest_time;
-#if EMU_NET
     env->take_upload  = emu_image_take_pending;
-#endif
     return true;
 }
 
@@ -403,14 +324,13 @@ bool board_after_run(const emu_guest_exit_t *exit, bool capped,
     (void)status;
 
     for (;;) {
-#if EMU_NET
         /*
          * Everything above is still sitting in the output ring: the run
          * loop stopped, and with it the only thing that was delivering.
          * Parking without draining first would lose the entire report,
          * which is the part a harness came for.
          */
-        emu_net_poll();
+        emu_board_poll();
 
         /*
          * An image may arrive after the guest has finished, and that is
@@ -424,22 +344,8 @@ bool board_after_run(const emu_guest_exit_t *exit, bool capped,
             return true;
         }
 
-        /*
-         * Run control still works after the guest has finished.
-         *
-         * Without this the park loop services the network and nothing
-         * else, so a debugger attaching to a completed run can read
-         * registers and memory and then hangs the moment it resumes:
-         * `continue` is accepted, nothing executes, and gdb waits for
-         * ever. That is the normal way to arrive here -- push an image,
-         * watch it fail, attach to find out why -- and being able to
-         * rewind the pc and re-run under a breakpoint is most of what
-         * that is for.
-         */
-        if (emu_net_gdb_attached()) {
-            uint32_t n = 0;
-
-            (void)emu_net_gdb_run(EMU_RUN_SLICE, &n);
+        /* Run control still works after the guest has finished. */
+        if (emu_debug_parked_step(EMU_RUN_SLICE)) {
             continue;
         }
 
@@ -473,11 +379,17 @@ bool board_after_run(const emu_guest_exit_t *exit, bool capped,
          * cycle counter does not -- which is the better answer if this
          * loop ever needs to sleep again.
          */
-        if (emu_net_active()) {
+        if (emu_board_link_up()) {
             continue;
         }
-#endif
-        board_idle();
+
+        /*
+         * Once, not twice. There were two of these in a row -- so the
+         * board woke on an interrupt and immediately slept again,
+         * doubling the latency of noticing anything. Inert while the link
+         * is up, because that path continues above and never reaches
+         * here.
+         */
         board_idle();
     }
 }

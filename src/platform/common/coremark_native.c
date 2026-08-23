@@ -2,23 +2,32 @@
 /*
  * coremark_native.c - CoreMark port for the ARM host itself.
  *
- * Runs the *same* CoreMark sources the guest runs, compiled for Cortex-M4
- * and executed directly. That is what turns the emulator's numbers into a
- * meaningful figure: interpreter and JIT can only be compared to each
- * other until there is a native baseline for the same workload on the same
- * silicon.
+ * Runs the *same* CoreMark sources the guest runs, compiled for the host
+ * this emulator runs on and executed directly. That is what turns the
+ * emulator's numbers into a meaningful figure: interpreter and JIT can
+ * only be compared to each other until there is a native baseline for the
+ * same workload on the same silicon.
+ *
+ * **Portable, now that it is in common/.** It read DWT->CYCCNT and
+ * SystemCoreClock and called rv_console_putc -- a device header in a
+ * shared file, and a console symbol renamed away long enough ago that
+ * nothing in the tree still defines it. It compiled anyway, because it
+ * declared that prototype itself, and failed only at link -- which no
+ * build did, since no matrix row turns this option on. board_api.h
+ * already promises all three things by other names.
  *
  * CoreMark's core_main.c defines main(), so it is compiled with
  * -Dmain=coremark_native_main and called from the firmware's own main.
  *
- * Timing uses the DWT cycle counter scaled to 1 MHz, matching the tick
+ * Timing uses board_cycles() scaled to 1 MHz, matching the tick
  * rate the guest sees from the emulated CLINT, so "Total ticks" means the
  * same thing in both.
  */
 
 #include "coremark.h"
 
-#include "stm32f7xx_hal.h"
+#include "board_api.h"
+#include "emu_console.h"
 
 #if VALIDATION_RUN
 volatile ee_s32 seed1_volatile = 0x3415;
@@ -35,14 +44,13 @@ volatile ee_s32 seed5_volatile = 0;
 
 ee_u32 default_num_contexts = 1;
 
-/* Provided by main.c. */
-void rv_console_putc(uint8_t c);
-
 static CORETIMETYPE start_time_val, stop_time_val;
 
 static CORETIMETYPE now_us(void)
 {
-    return (CORETIMETYPE)(DWT->CYCCNT / (SystemCoreClock / 1000000u));
+    const uint32_t per_us = board_clock_hz() / 1000000u;
+
+    return (CORETIMETYPE)(board_cycles() / ((per_us != 0u) ? per_us : 1u));
 }
 
 void start_time(void) { start_time_val = now_us(); }
@@ -69,7 +77,7 @@ void portable_fini(core_portable *p) { p->portable_id = 0; }
 
 void uart_send_char(char c)
 {
-    rv_console_putc((uint8_t)c);
+    emu_console_putc((uint8_t)c);
 }
 
 /* ------------------------------------------------------------------ */
