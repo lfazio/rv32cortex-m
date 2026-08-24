@@ -91,8 +91,8 @@ void emu_report_states(emu_system_t *sys);
  * happened around some point.
  */
 void emu_trace_configure(uint64_t skip, uint64_t count);
-void emu_trace_insn(emu_cpu_t *cpu, uint32_t pc, uint64_t insn,
-                    unsigned len, void *user);
+void emu_trace_insn(emu_cpu_t *cpu, uint32_t pc, uint64_t insn, unsigned len,
+                    void *user);
 #endif
 
 /* A byte of guest output: LF becomes CRLF, as for emu_console_puts. */
@@ -110,12 +110,12 @@ void emu_console_uart_tx(void *ctx, uint8_t c);
  */
 typedef struct emu_guest_exit {
     uint32_t code;
-    bool     exited;
+    bool exited;
 } emu_guest_exit_t;
 
 typedef struct emu_syscall_ctx {
-    struct emu_bus   *bus;
-    struct emu_core  *core;
+    struct emu_bus *bus;
+    struct emu_core *core;
     emu_guest_exit_t *exit;
 } emu_syscall_ctx_t;
 
@@ -131,9 +131,6 @@ bool emu_guest_syscall(emu_cpu_t *cpu, emu_syscall_t *sc, void *user);
  */
 void emu_print_run_summary(uint64_t retired, uint32_t host_cycles);
 bool emu_print_jit_stats(void);
-
-
-
 
 #ifdef __cplusplus
 }

@@ -40,7 +40,7 @@
 #include <time.h>
 #include <unistd.h>
 
-static int  g_fd = -1;
+static int g_fd = -1;
 static char g_name[64];
 
 /*
@@ -215,7 +215,7 @@ void board_console_putc(uint8_t c)
 {
     if (g_fd < 0) {
         fputc((int)c, stdout);
-        fflush(stdout);         /* survive a guest that faults next */
+        fflush(stdout); /* survive a guest that faults next */
         return;
     }
 
@@ -235,7 +235,7 @@ void board_console_putc(uint8_t c)
         if (w < 0 && (errno == EAGAIN || errno == EINTR)) {
             continue;
         }
-        return;                 /* the other end is gone */
+        return; /* the other end is gone */
     }
 }
 
@@ -381,7 +381,7 @@ uint32_t board_gdb_run(uint32_t budget, uint32_t *retired)
  * the board's copy behind an #if, which made a build option look like a
  * property of the machine.
  */
-void board_poll(void) { }
+void board_poll(void) {}
 
 /* ------------------------------------------------------------------ */
 /* The image store, the clocks, and the two ends of a run             */
@@ -390,7 +390,7 @@ void board_poll(void) { }
 /* Guest memory                                                        */
 /* ------------------------------------------------------------------ */
 
-#define DEFAULT_RAM_SIZE  (1u << 20)   /* 1 MiB */
+#define DEFAULT_RAM_SIZE (1u << 20) /* 1 MiB */
 
 /*
  * The host has no ARM peripherals to pass through to, so the peripheral
@@ -403,7 +403,7 @@ void board_poll(void) { }
  * of RCC faults on the first store every real guest driver makes -- which
  * is exactly what a 64 KiB window did.
  */
-#define PERIPH_SIM_SIZE   0x24000u
+#define PERIPH_SIM_SIZE 0x24000u
 
 static uint8_t *g_ram;
 static uint8_t *g_periph;
@@ -446,7 +446,7 @@ static uint8_t *g_periph;
  * a board's do, and answering them with nothing is how a platform says
  * it has none.
  */
-void board_irqs_init(void) { }
+void board_irqs_init(void) {}
 
 void board_irq_unmask(void *ctx, uint32_t source)
 {
@@ -487,9 +487,9 @@ void board_irq_unmask(void *ctx, uint32_t source)
  */
 #define HOST_ARENA_BYTES (512u * 1024u)
 
-static uint8_t *g_arena;        /* lazily allocated: most runs never upload */
+static uint8_t *g_arena; /* lazily allocated: most runs never upload */
 static uint32_t g_arena_used;
-static bool     g_arena_erased;
+static bool g_arena_erased;
 
 static bool arena_alloc(void)
 {
@@ -519,7 +519,7 @@ bool board_flash_arena_reset(void)
         return false;
     }
     memset(g_arena, 0xFF, HOST_ARENA_BYTES);
-    g_arena_used   = 0u;
+    g_arena_used = 0u;
     g_arena_erased = true;
     return true;
 }
@@ -552,7 +552,7 @@ bool board_flash_write(uintptr_t addr, const void *data, uint32_t len)
 
     if (addr < base || addr - base > HOST_ARENA_BYTES ||
         (addr - base) + len > HOST_ARENA_BYTES) {
-        return false;           /* full: how a transfer's end is found */
+        return false; /* full: how a transfer's end is found */
     }
     memcpy(g_arena + (addr - base), data, len);
     return true;
@@ -560,7 +560,7 @@ bool board_flash_write(uintptr_t addr, const void *data, uint32_t len)
 
 uint32_t board_flash_last_error(void)
 {
-    return 0u;                  /* no programming hardware to complain */
+    return 0u; /* no programming hardware to complain */
 }
 
 /* ------------------------------------------------------------------ */
@@ -630,10 +630,10 @@ const board_region_t *board_regions(unsigned *count)
  * the same reason as on a board: an image arriving over TFTP replaces
  * them and the address space is rebuilt around the new numbers.
  */
-const uint8_t *board_img      = NULL;
-uint32_t       board_img_size = 0u;
-uint8_t       *board_ram      = NULL;
-uint32_t       board_ram_size = 0u;
+const uint8_t *board_img = NULL;
+uint32_t board_img_size = 0u;
+uint8_t *board_ram = NULL;
+uint32_t board_ram_size = 0u;
 
 /* ------------------------------------------------------------------ */
 /* The two ends of a run -- see emu_board.h                            */
@@ -693,7 +693,7 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
         return false;
     }
 
-    g_ram    = calloc(g_opt.ram_size, 1u);
+    g_ram = calloc(g_opt.ram_size, 1u);
     g_periph = calloc(PERIPH_SIM_SIZE, 1u);
     if (g_ram == NULL || g_periph == NULL) {
         emu_console_printf("emu: cannot allocate guest memory\n");
@@ -701,15 +701,15 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
         return false;
     }
 
-    board_ram      = g_ram;
+    board_ram = g_ram;
     board_ram_size = g_opt.ram_size;
 
     /* Found, not installed -- emu_main calls emu_image_set. */
-    cfg->image      = image;
+    cfg->image = image;
     cfg->image_size = (uint32_t)len;
 
     board_gdb_configure(g_opt.gdb_port);
-    cfg->ram_host     = NULL;
+    cfg->ram_host = NULL;
     env->advance_time = advance_guest_time;
 
     /*
@@ -767,7 +767,10 @@ uint32_t board_perf_cycles(void)
  * The loop is emu_board_after_run's; this is the one bit the two
  * platforms disagreed about.
  */
-bool board_parks_after_run(void) { return false; }
+bool board_parks_after_run(void)
+{
+    return false;
+}
 
 /*
  * A millisecond, inside the park loop.
@@ -779,7 +782,7 @@ bool board_parks_after_run(void) { return false; }
  */
 void board_idle(void)
 {
-    struct timespec ts = { 0, 1000000L };
+    struct timespec ts = {0, 1000000L};
 
     (void)nanosleep(&ts, NULL);
 }

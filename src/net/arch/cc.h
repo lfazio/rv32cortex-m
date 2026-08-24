@@ -30,7 +30,7 @@
 #define LITTLE_ENDIAN 1234
 #endif
 #ifndef BIG_ENDIAN
-#define BIG_ENDIAN    4321
+#define BIG_ENDIAN 4321
 #endif
 #ifndef BYTE_ORDER
 #define BYTE_ORDER LITTLE_ENDIAN
@@ -51,7 +51,9 @@ typedef int sys_prot_t;
  * lwipopts.h. Defining this as a no-op rather than leaving it to lwIP's
  * default is what keeps the default (printf) from being reached.
  */
-#define LWIP_PLATFORM_DIAG(x) do { } while (0)
+#define LWIP_PLATFORM_DIAG(x)                                                  \
+    do {                                                                       \
+    } while (0)
 
 /*
  * An assertion failure inside the stack is a bug in the port, not a

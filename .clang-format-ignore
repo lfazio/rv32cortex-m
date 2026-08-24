@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Vendor-derived files, left exactly as the vendor wrote them.
+#
+# Not laziness: each of these is *read as a diff against its upstream
+# template*, and that is the only way to see what was changed and why.
+# stm32n6xx_hal_conf.h says so in its own header -- "so that a diff
+# against stm32n6xx_hal_conf_template.h shows exactly what was chosen" --
+# and reformatting it makes every line differ, which turns a two-line
+# review into an unreadable one. The same goes for CoreMark's portme
+# files, which are its porting interface rather than ours.
+#
+# The rule: if a file's value is that it can be compared with something
+# outside this tree, it does not get formatted to this tree's style.
+
+src/platform/*/stm32*_hal_conf.h
+src/platform/*/stm32*_it.c
+tests/guest/coremark/core_portme.c
+tests/guest/coremark/core_portme.h

@@ -24,13 +24,13 @@
 #ifndef EMU_MEMMAP_H
 #define EMU_MEMMAP_H
 
-#define EMU_GUEST_UART_BASE     0x10000000u
-#define EMU_GUEST_ROM_BASE      0x20000000u
+#define EMU_GUEST_UART_BASE 0x10000000u
+#define EMU_GUEST_ROM_BASE 0x20000000u
 
-#define EMU_GUEST_PERIPH_BASE   0x40000000u
-#define EMU_GUEST_PERIPH_SIZE   0x20000000u
+#define EMU_GUEST_PERIPH_BASE 0x40000000u
+#define EMU_GUEST_PERIPH_SIZE 0x20000000u
 
-#define EMU_GUEST_RAM_BASE      0x80000000u
+#define EMU_GUEST_RAM_BASE 0x80000000u
 
 /* Where a guest starts executing unless the platform says otherwise. */
 /*
@@ -47,7 +47,7 @@
  * to serve that much from flash and the rest from RAM. Nothing needs that
  * boundary now: flash is flash and RAM is RAM.
  */
-#define EMU_GUEST_RESET_PC      EMU_GUEST_ROM_BASE
+#define EMU_GUEST_RESET_PC EMU_GUEST_ROM_BASE
 
 /*
  * An interrupt controller source number is the host's interrupt number: on
@@ -55,6 +55,6 @@
  * the same 54 that TIM6_DAC_IRQn has on the ARM side, and no translation
  * table exists on either side of the bridge.
  */
-#define EMU_IRQ_TIM6_DAC        54u
+#define EMU_IRQ_TIM6_DAC 54u
 
 #endif /* EMU_MEMMAP_H */

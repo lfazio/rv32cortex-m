@@ -50,13 +50,13 @@
  * them are not a meaningful share of guest RAM. gdb is told this via
  * PacketSize in the qSupported reply, so it will not send more.
  */
-#define EMU_GDB_MAX_PACKET   1024u
+#define EMU_GDB_MAX_PACKET 1024u
 #endif
 
 #ifndef EMU_GDB_MAX_BREAK
 /* Software breakpoints. gdb reports "Too many" past this rather than
  * silently losing one. */
-#define EMU_GDB_MAX_BREAK    16u
+#define EMU_GDB_MAX_BREAK 16u
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -71,14 +71,14 @@ typedef struct emu_gdb_target {
      * the `g` packet in registers.
      */
     unsigned nregs;
-    unsigned reg_bytes;                 /* per register; 4 on both targets */
+    unsigned reg_bytes; /* per register; 4 on both targets */
 
     uint32_t (*reg_get)(const emu_cpu_t *cpu, unsigned gdb_regno);
-    void     (*reg_set)(emu_cpu_t *cpu, unsigned gdb_regno, uint32_t v);
+    void (*reg_set)(emu_cpu_t *cpu, unsigned gdb_regno, uint32_t v);
 
     /* Where execution is, for breakpoint matching and the stop reply. */
     uint32_t (*pc_get)(const emu_cpu_t *cpu);
-    void     (*pc_set)(emu_cpu_t *cpu, uint32_t pc);
+    void (*pc_set)(emu_cpu_t *cpu, uint32_t pc);
 
     /*
      * Reported to gdb in the initial stop reply. 5 is SIGTRAP, which is
@@ -146,8 +146,8 @@ typedef void (*emu_gdb_tx_fn)(void *ctx, const uint8_t *data, uint32_t len);
 
 typedef struct {
     uint32_t addr;
-    uint32_t len;                       /* kind, as gdb sends it */
-    bool     used;
+    uint32_t len; /* kind, as gdb sends it */
+    bool used;
 } emu_gdb_break_t;
 
 typedef struct {
@@ -157,28 +157,28 @@ typedef struct {
      * through emu_core_t, which carries the ops, the cpu and the bus
      * together.
      */
-    emu_core_t               *core;
-    const emu_gdb_target_t   *target;
+    emu_core_t *core;
+    const emu_gdb_target_t *target;
 
     emu_gdb_tx_fn tx;
-    void         *tx_ctx;
+    void *tx_ctx;
 
     /* Receive framing: everything between '$' and '#', plus the sum. */
-    uint8_t  rx[EMU_GDB_MAX_PACKET];
+    uint8_t rx[EMU_GDB_MAX_PACKET];
     uint32_t rx_len;
-    uint8_t  sum[2];
-    uint8_t  sum_len;
-    uint8_t  raw_sum;   /* over the bytes as sent, before unescaping */
+    uint8_t sum[2];
+    uint8_t sum_len;
+    uint8_t raw_sum; /* over the bytes as sent, before unescaping */
     enum { EMU_GDB_WAIT, EMU_GDB_BODY, EMU_GDB_SUM } state;
-    bool     escaped;
+    bool escaped;
 
-    bool attached;                      /* a client is connected        */
-    bool halted;                        /* guest is stopped for gdb     */
-    bool stepping;                      /* one instruction, then stop   */
-    bool ack_mode;                      /* +/- acknowledgement in use   */
+    bool attached; /* a client is connected        */
+    bool halted; /* guest is stopped for gdb     */
+    bool stepping; /* one instruction, then stop   */
+    bool ack_mode; /* +/- acknowledgement in use   */
 
     const emu_gdb_flash_ops_t *flash;
-    bool flash_touched;                 /* an erase or write has arrived */
+    bool flash_touched; /* an erase or write has arrived */
 
     emu_gdb_break_t brk[EMU_GDB_MAX_BREAK];
 } emu_gdb_t;
@@ -189,8 +189,8 @@ typedef struct {
  * hung, and this one is always compiled in.
  */
 void emu_gdb_init(emu_gdb_t *g, emu_core_t *core,
-                  const emu_gdb_target_t *target,
-                  emu_gdb_tx_fn tx, void *tx_ctx);
+                  const emu_gdb_target_t *target, emu_gdb_tx_fn tx,
+                  void *tx_ctx);
 
 /* A client connected or went away. Disconnecting resumes the guest --
  * leaving it stopped would need the next person to know why. */
@@ -220,7 +220,6 @@ bool emu_gdb_attached(const emu_gdb_t *g);
  * this in place of ops->run when a client is attached; when none is,
  * skip it entirely and run normally.
  */
-emu_run_reason_t emu_gdb_run(emu_gdb_t *g, uint32_t budget,
-                             uint32_t *retired);
+emu_run_reason_t emu_gdb_run(emu_gdb_t *g, uint32_t budget, uint32_t *retired);
 
 #endif /* EMU_GDB_H */

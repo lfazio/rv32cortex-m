@@ -40,7 +40,6 @@
 
 #include <string.h>
 
-
 /* Where guest register `n` lives inside the frontend's state. */
 static uint32_t *reg_ptr(emu_cpu_t *cpu, const emu_ir_target_t *t, uint32_t n)
 {
@@ -88,7 +87,7 @@ static void apply_flags(emu_cpu_t *cpu, const emu_ir_target_t *t,
         const uint32_t d = res - rhs;
         z = (d == 0u);
         s = (d & 0x80000000u) != 0u;
-        c = (res < rhs);          /* borrow */
+        c = (res < rhs); /* borrow */
         v = (((res ^ rhs) & (res ^ d) & 0x80000000u) != 0u);
         break;
     }
@@ -100,7 +99,7 @@ static void apply_flags(emu_cpu_t *cpu, const emu_ir_target_t *t,
         break;
     }
 
-    const bool val[4] = { z, s, v, c };
+    const bool val[4] = {z, s, v, c};
     uint32_t *const fw = word_at(cpu, t->flags_offset);
     uint32_t w = *fw;
 
@@ -120,18 +119,29 @@ static void apply_flags(emu_cpu_t *cpu, const emu_ir_target_t *t,
 static bool eval_value_cond(uint32_t a, uint32_t b, uint8_t cond)
 {
     switch ((emu_ir_cond_t)cond) {
-    case EMU_IR_C_EQ:  return a == b;
-    case EMU_IR_C_NE:  return a != b;
-    case EMU_IR_C_LT:  return (int32_t)a <  (int32_t)b;
-    case EMU_IR_C_GE:  return (int32_t)a >= (int32_t)b;
-    case EMU_IR_C_LTU: return a <  b;
-    case EMU_IR_C_GEU: return a >= b;
-    case EMU_IR_C_LE:  return (int32_t)a <= (int32_t)b;
-    case EMU_IR_C_GT:  return (int32_t)a >  (int32_t)b;
-    case EMU_IR_C_LEU: return a <= b;
-    case EMU_IR_C_GTU: return a >  b;
+    case EMU_IR_C_EQ:
+        return a == b;
+    case EMU_IR_C_NE:
+        return a != b;
+    case EMU_IR_C_LT:
+        return (int32_t)a < (int32_t)b;
+    case EMU_IR_C_GE:
+        return (int32_t)a >= (int32_t)b;
+    case EMU_IR_C_LTU:
+        return a < b;
+    case EMU_IR_C_GEU:
+        return a >= b;
+    case EMU_IR_C_LE:
+        return (int32_t)a <= (int32_t)b;
+    case EMU_IR_C_GT:
+        return (int32_t)a > (int32_t)b;
+    case EMU_IR_C_LEU:
+        return a <= b;
+    case EMU_IR_C_GTU:
+        return a > b;
     case EMU_IR_C_ALWAYS:
-    default:           return true;
+    default:
+        return true;
     }
 }
 
@@ -144,18 +154,29 @@ static bool eval_cond(emu_cpu_t *cpu, const emu_ir_target_t *t, uint8_t cond)
     const bool c = (t->flag_bit[3] != 0u) && ((w & t->flag_bit[3]) != 0u);
 
     switch ((emu_ir_cond_t)cond) {
-    case EMU_IR_C_EQ:     return z;
-    case EMU_IR_C_NE:     return !z;
-    case EMU_IR_C_LT:     return s != v;
-    case EMU_IR_C_GE:     return s == v;
-    case EMU_IR_C_LTU:    return c;
-    case EMU_IR_C_GEU:    return !c;
-    case EMU_IR_C_LE:     return z || (s != v);
-    case EMU_IR_C_GT:     return !z && (s == v);
-    case EMU_IR_C_LEU:    return c || z;
-    case EMU_IR_C_GTU:    return !c && !z;
+    case EMU_IR_C_EQ:
+        return z;
+    case EMU_IR_C_NE:
+        return !z;
+    case EMU_IR_C_LT:
+        return s != v;
+    case EMU_IR_C_GE:
+        return s == v;
+    case EMU_IR_C_LTU:
+        return c;
+    case EMU_IR_C_GEU:
+        return !c;
+    case EMU_IR_C_LE:
+        return z || (s != v);
+    case EMU_IR_C_GT:
+        return !z && (s == v);
+    case EMU_IR_C_LEU:
+        return c || z;
+    case EMU_IR_C_GTU:
+        return !c && !z;
     case EMU_IR_C_ALWAYS:
-    default:              return true;
+    default:
+        return true;
     }
 }
 
@@ -171,14 +192,20 @@ static bool eval_cond(emu_cpu_t *cpu, const emu_ir_target_t *t, uint8_t cond)
  */
 static EMU_ALWAYS_INLINE float b2f(uint32_t v)
 {
-    union { uint32_t u; float f; } c;
+    union {
+        uint32_t u;
+        float f;
+    } c;
     c.u = v;
     return c.f;
 }
 
 static EMU_ALWAYS_INLINE uint32_t f2b(float v)
 {
-    union { uint32_t u; float f; } c;
+    union {
+        uint32_t u;
+        float f;
+    } c;
     c.f = v;
     return c.u;
 }
@@ -188,12 +215,15 @@ static EMU_ALWAYS_INLINE uint32_t f2b(float v)
  * rule that made the RISC-V frontend's fsqrt a Newton-Raphson rather
  * than a call to sqrt(). A NaN is the only value not equal to itself.
  */
-static EMU_ALWAYS_INLINE bool ir_isnan(float v) { return v != v; }
+static EMU_ALWAYS_INLINE bool ir_isnan(float v)
+{
+    return v != v;
+}
 
 /* Round to an integral float under an EMU_IR_FRM_* mode. */
 static float ir_round(float v, uint8_t aux)
 {
-    const float t = (float)(int64_t)v;      /* toward zero */
+    const float t = (float)(int64_t)v; /* toward zero */
 
     switch (EMU_IR_FRM(aux)) {
     case EMU_IR_FRM_RTZ:
@@ -204,16 +234,24 @@ static float ir_round(float v, uint8_t aux)
         return (v > 0.0f && t != v) ? t + 1.0f : t;
     case EMU_IR_FRM_RMM: {
         const float d = v - t;
-        if (d >= 0.5f)  { return t + 1.0f; }
-        if (d <= -0.5f) { return t - 1.0f; }
+        if (d >= 0.5f) {
+            return t + 1.0f;
+        }
+        if (d <= -0.5f) {
+            return t - 1.0f;
+        }
         return t;
     }
     case EMU_IR_FRM_RNE:
     default: {
         const float d = v - t;
-        if (d > 0.5f)  { return t + 1.0f; }
-        if (d < -0.5f) { return t - 1.0f; }
-        if (d == 0.5f  || d == -0.5f) {
+        if (d > 0.5f) {
+            return t + 1.0f;
+        }
+        if (d < -0.5f) {
+            return t - 1.0f;
+        }
+        if (d == 0.5f || d == -0.5f) {
             /* Ties to even: keep t if it already is. */
             const float h = t * 0.5f;
             if (h != (float)(int64_t)h) {
@@ -228,16 +266,20 @@ static float ir_round(float v, uint8_t aux)
 /* The ten-bit classification, which both guests spell identically. */
 static uint32_t ir_fclass(uint32_t bits)
 {
-    const uint32_t exp  = (bits >> 23) & 0xFFu;
+    const uint32_t exp = (bits >> 23) & 0xFFu;
     const uint32_t frac = bits & 0x7FFFFFu;
     const bool neg = (bits & 0x80000000u) != 0u;
 
     if (exp == 0xFFu) {
-        if (frac == 0u)                 { return neg ? (1u << 0) : (1u << 7); }
+        if (frac == 0u) {
+            return neg ? (1u << 0) : (1u << 7);
+        }
         return (frac & 0x400000u) ? (1u << 9) : (1u << 8);
     }
     if (exp == 0u) {
-        if (frac == 0u)                 { return neg ? (1u << 3) : (1u << 4); }
+        if (frac == 0u) {
+            return neg ? (1u << 3) : (1u << 4);
+        }
         return neg ? (1u << 2) : (1u << 5);
     }
     return neg ? (1u << 1) : (1u << 6);
@@ -264,11 +306,13 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
 
         switch ((emu_ir_op_t)in->op) {
         case EMU_IR_NOP:
-        case EMU_IR_RETIRE:  continue;
+        case EMU_IR_RETIRE:
+            continue;
 
         case EMU_IR_GET:
             r = (t->reg_is_zero != NULL && t->reg_is_zero(in->imm))
-                    ? 0u : *reg_ptr(cpu, t, in->imm);
+                    ? 0u
+                    : *reg_ptr(cpu, t, in->imm);
             break;
 
         case EMU_IR_PUT:
@@ -277,33 +321,65 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
             }
             continue;
 
-        case EMU_IR_CONST:   r = in->imm; break;
-        case EMU_IR_MOV:     r = a; break;
+        case EMU_IR_CONST:
+            r = in->imm;
+            break;
+        case EMU_IR_MOV:
+            r = a;
+            break;
 
-        case EMU_IR_ADD:     r = a + bv; break;
-        case EMU_IR_SUB:     r = a - bv; break;
-        case EMU_IR_AND:     r = a & bv; break;
-        case EMU_IR_OR:      r = a | bv; break;
-        case EMU_IR_XOR:     r = a ^ bv; break;
+        case EMU_IR_ADD:
+            r = a + bv;
+            break;
+        case EMU_IR_SUB:
+            r = a - bv;
+            break;
+        case EMU_IR_AND:
+            r = a & bv;
+            break;
+        case EMU_IR_OR:
+            r = a | bv;
+            break;
+        case EMU_IR_XOR:
+            r = a ^ bv;
+            break;
 
         /* The architectures agree that only the low five bits count. */
-        case EMU_IR_SHL:     r = a << (bv & 31u); break;
-        case EMU_IR_SHR:     r = a >> (bv & 31u); break;
-        case EMU_IR_SAR:     r = (uint32_t)((int32_t)a >> (bv & 31u)); break;
-        case EMU_IR_SHLI:    r = a << (in->imm & 31u); break;
-        case EMU_IR_SHRI:    r = a >> (in->imm & 31u); break;
+        case EMU_IR_SHL:
+            r = a << (bv & 31u);
+            break;
+        case EMU_IR_SHR:
+            r = a >> (bv & 31u);
+            break;
+        case EMU_IR_SAR:
+            r = (uint32_t)((int32_t)a >> (bv & 31u));
+            break;
+        case EMU_IR_SHLI:
+            r = a << (in->imm & 31u);
+            break;
+        case EMU_IR_SHRI:
+            r = a >> (in->imm & 31u);
+            break;
         case EMU_IR_SARI:
             r = (uint32_t)((int32_t)a >> (in->imm & 31u));
             break;
 
-        case EMU_IR_NEG:     r = (uint32_t)(-(int32_t)a); break;
-        case EMU_IR_NOT:     r = ~a; break;
+        case EMU_IR_NEG:
+            r = (uint32_t)(-(int32_t)a);
+            break;
+        case EMU_IR_NOT:
+            r = ~a;
+            break;
 
-        case EMU_IR_BSWAP32: r = __builtin_bswap32(a); break;
+        case EMU_IR_BSWAP32:
+            r = __builtin_bswap32(a);
+            break;
         case EMU_IR_BSWAP16:
             r = ((a & 0x00FF00FFu) << 8) | ((a & 0xFF00FF00u) >> 8);
             break;
-        case EMU_IR_HSWAP:   r = (a << 16) | (a >> 16); break;
+        case EMU_IR_HSWAP:
+            r = (a << 16) | (a >> 16);
+            break;
 
         /*
          * Defined for a zero input, which is the whole reason the IR
@@ -320,10 +396,18 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
             r = (uint32_t)__builtin_popcount(a);
             break;
 
-        case EMU_IR_BEXT:    r = (a >> (bv & 31u)) & 1u; break;
-        case EMU_IR_BSET:    r = a | (1u << (bv & 31u)); break;
-        case EMU_IR_BCLR:    r = a & ~(1u << (bv & 31u)); break;
-        case EMU_IR_BINV:    r = a ^ (1u << (bv & 31u)); break;
+        case EMU_IR_BEXT:
+            r = (a >> (bv & 31u)) & 1u;
+            break;
+        case EMU_IR_BSET:
+            r = a | (1u << (bv & 31u));
+            break;
+        case EMU_IR_BCLR:
+            r = a & ~(1u << (bv & 31u));
+            break;
+        case EMU_IR_BINV:
+            r = a ^ (1u << (bv & 31u));
+            break;
 
         /* ---- floating point ---------------------------------- */
         /*
@@ -340,9 +424,11 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
          * is not guaranteed to be 8-aligned inside emu_cpu_t.
          */
         case EMU_IR_FGET: {
-            if (t->freg_offset == NULL) { return false; }
-            const uint8_t *const p = (const uint8_t *)cpu +
-                                     t->freg_offset(in->imm);
+            if (t->freg_offset == NULL) {
+                return false;
+            }
+            const uint8_t *const p =
+                (const uint8_t *)cpu + t->freg_offset(in->imm);
 
             r = *(const uint32_t *)p;
             if ((in->aux & EMU_IR_FP_BOX) != 0u &&
@@ -353,7 +439,9 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
         }
 
         case EMU_IR_FPUT: {
-            if (t->freg_offset == NULL) { return false; }
+            if (t->freg_offset == NULL) {
+                return false;
+            }
             uint8_t *const p = (uint8_t *)cpu + t->freg_offset(in->imm);
 
             *(uint32_t *)p = a;
@@ -363,10 +451,18 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
             continue;
         }
 
-        case EMU_IR_FADD:  r = f2b(b2f(a) + b2f(bv)); break;
-        case EMU_IR_FSUB:  r = f2b(b2f(a) - b2f(bv)); break;
-        case EMU_IR_FMUL:  r = f2b(b2f(a) * b2f(bv)); break;
-        case EMU_IR_FDIV:  r = f2b(b2f(a) / b2f(bv)); break;
+        case EMU_IR_FADD:
+            r = f2b(b2f(a) + b2f(bv));
+            break;
+        case EMU_IR_FSUB:
+            r = f2b(b2f(a) - b2f(bv));
+            break;
+        case EMU_IR_FMUL:
+            r = f2b(b2f(a) * b2f(bv));
+            break;
+        case EMU_IR_FDIV:
+            r = f2b(b2f(a) / b2f(bv));
+            break;
         /*
          * Square root is declined here, not approximated.
          *
@@ -380,7 +476,8 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
          * natively; blocks containing one simply go unchecked, exactly
          * as blocks containing a store already do.
          */
-        case EMU_IR_FSQRT: return false;
+        case EMU_IR_FSQRT:
+            return false;
 
         /*
          * A NaN operand gives the *other* operand, which is what both
@@ -392,22 +489,27 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
             const float x = b2f(a), y = b2f(bv);
             const bool xn = ir_isnan(x), yn = ir_isnan(y);
 
-            if (xn && yn)      { r = 0x7FC00000u; }
-            else if (xn)       { r = bv; }
-            else if (yn)       { r = a; }
-            else if (x == y)   { r = (in->op == (uint8_t)EMU_IR_FMIN)
-                                       ? (a | bv) : (a & bv); }
-            else if (in->op == (uint8_t)EMU_IR_FMIN) { r = (x < y) ? a : bv; }
-            else                                     { r = (x > y) ? a : bv; }
+            if (xn && yn) {
+                r = 0x7FC00000u;
+            } else if (xn) {
+                r = bv;
+            } else if (yn) {
+                r = a;
+            } else if (x == y) {
+                r = (in->op == (uint8_t)EMU_IR_FMIN) ? (a | bv) : (a & bv);
+            } else if (in->op == (uint8_t)EMU_IR_FMIN) {
+                r = (x < y) ? a : bv;
+            } else {
+                r = (x > y) ? a : bv;
+            }
             break;
         }
 
         case EMU_IR_FSGNJ: {
-            const uint32_t sign = (in->aux == EMU_IR_FSGNJ_N)
-                                    ? (~bv & 0x80000000u)
-                                : (in->aux == EMU_IR_FSGNJ_X)
-                                    ? ((a ^ bv) & 0x80000000u)
-                                    : (bv & 0x80000000u);
+            const uint32_t sign =
+                (in->aux == EMU_IR_FSGNJ_N)   ? (~bv & 0x80000000u)
+                : (in->aux == EMU_IR_FSGNJ_X) ? ((a ^ bv) & 0x80000000u)
+                                              : (bv & 0x80000000u);
             r = (a & 0x7FFFFFFFu) | sign;
             break;
         }
@@ -416,10 +518,10 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
         case EMU_IR_FCMP: {
             const float x = b2f(a), y = b2f(bv);
 
-            r = (ir_isnan(x) || ir_isnan(y)) ? 0u
-              : (in->aux == (uint8_t)EMU_IR_C_EQ) ? (x == y)
-              : (in->aux == (uint8_t)EMU_IR_C_LT) ? (x <  y)
-                                                  : (x <= y);
+            r = (ir_isnan(x) || ir_isnan(y))        ? 0u
+                : (in->aux == (uint8_t)EMU_IR_C_EQ) ? (x == y)
+                : (in->aux == (uint8_t)EMU_IR_C_LT) ? (x < y)
+                                                    : (x <= y);
             break;
         }
 
@@ -436,30 +538,39 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
             if (ir_isnan(x)) {
                 r = uns ? 0xFFFFFFFFu : 0x7FFFFFFFu;
             } else if (uns) {
-                r = (x <= 0.0f) ? 0u
-                  : (x >= 4294967296.0f) ? 0xFFFFFFFFu
-                                         : (uint32_t)ir_round(x, in->aux);
+                r = (x <= 0.0f)            ? 0u
+                    : (x >= 4294967296.0f) ? 0xFFFFFFFFu
+                                           : (uint32_t)ir_round(x, in->aux);
             } else {
                 r = (x <= -2147483648.0f) ? 0x80000000u
-                  : (x >=  2147483648.0f) ? 0x7FFFFFFFu
-                                          : (uint32_t)(int32_t)
-                                                ir_round(x, in->aux);
+                    : (x >= 2147483648.0f)
+                        ? 0x7FFFFFFFu
+                        : (uint32_t)(int32_t)ir_round(x, in->aux);
             }
             break;
         }
 
         case EMU_IR_FCVT_FROM_I:
-            r = ((in->aux & EMU_IR_F_UNSIGNED) != 0u)
-                    ? f2b((float)a)
-                    : f2b((float)(int32_t)a);
+            r = ((in->aux & EMU_IR_F_UNSIGNED) != 0u) ? f2b((float)a)
+                                                      : f2b((float)(int32_t)a);
             break;
 
-        case EMU_IR_FCLASS: r = ir_fclass(a); break;
+        case EMU_IR_FCLASS:
+            r = ir_fclass(a);
+            break;
 
-        case EMU_IR_SEXT8:   r = (uint32_t)(int32_t)(int8_t)a; break;
-        case EMU_IR_SEXT16:  r = (uint32_t)(int32_t)(int16_t)a; break;
-        case EMU_IR_ZEXT8:   r = a & 0xFFu; break;
-        case EMU_IR_ZEXT16:  r = a & 0xFFFFu; break;
+        case EMU_IR_SEXT8:
+            r = (uint32_t)(int32_t)(int8_t)a;
+            break;
+        case EMU_IR_SEXT16:
+            r = (uint32_t)(int32_t)(int16_t)a;
+            break;
+        case EMU_IR_ZEXT8:
+            r = a & 0xFFu;
+            break;
+        case EMU_IR_ZEXT16:
+            r = a & 0xFFFFu;
+            break;
 
         case EMU_IR_SETF:
             apply_flags(cpu, t, in, tmp);
@@ -515,7 +626,7 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
                 return false;
             }
             if (t->load(cpu, a + in->imm, in->aux, &r) != 0u) {
-                return true;          /* trapped; pc is in the handler */
+                return true; /* trapped; pc is in the handler */
             }
             break;
 
@@ -560,9 +671,13 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
                 continue;
             }
             uint32_t out = token;
-            if (in->op == (uint8_t)EMU_IR_BITOP_SET)      { out |= mask; }
-            else if (in->op == (uint8_t)EMU_IR_BITOP_CLR) { out &= ~mask; }
-            else                                          { out ^= mask; }
+            if (in->op == (uint8_t)EMU_IR_BITOP_SET) {
+                out |= mask;
+            } else if (in->op == (uint8_t)EMU_IR_BITOP_CLR) {
+                out &= ~mask;
+            } else {
+                out ^= mask;
+            }
             if (t->store(cpu, adr, spec, out) != 0u) {
                 return true;
             }
@@ -586,4 +701,3 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
     }
     return true;
 }
-

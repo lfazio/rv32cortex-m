@@ -51,11 +51,11 @@
 static struct tcp_pcb *g_listen;
 static struct tcp_pcb *g_conn;
 
-static uint8_t  g_tx[TX_SIZE];
-static uint32_t g_tx_head, g_tx_tail;   /* free-running; count = head - tail */
+static uint8_t g_tx[TX_SIZE];
+static uint32_t g_tx_head, g_tx_tail; /* free-running; count = head - tail */
 static uint32_t g_tx_dropped;
 
-static uint8_t  g_rx[RX_SIZE];
+static uint8_t g_rx[RX_SIZE];
 static uint32_t g_rx_head, g_rx_tail;
 
 /*
@@ -65,13 +65,13 @@ static uint32_t g_rx_head, g_rx_tail;
 enum { IAC_NONE = 0, IAC_CMD, IAC_OPT };
 static uint8_t g_iac_state;
 
-#define TELNET_IAC  255u
-#define TELNET_SB   250u
-#define TELNET_SE   240u
+#define TELNET_IAC 255u
+#define TELNET_SB 250u
+#define TELNET_SE 240u
 #define TELNET_WILL 251u
 #define TELNET_DONT 254u
 #define TELNET_OPT_ECHO 1u
-#define TELNET_OPT_SGA  3u
+#define TELNET_OPT_SGA 3u
 
 /* ------------------------------------------------------------------ */
 /* The console side                                                    */

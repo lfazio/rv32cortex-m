@@ -18,9 +18,9 @@ DWT_Type_shadow cmsis_rv32_dwt;
  * startup code run unmodified.
  */
 #ifdef CORE_CM4_H_SHIM
-SCB_Type_shim     cmsis_rv32_scb;
+SCB_Type_shim cmsis_rv32_scb;
 SysTick_Type_shim cmsis_rv32_systick;
-MPU_Type_shim     cmsis_rv32_mpu;
+MPU_Type_shim cmsis_rv32_mpu;
 #endif
 
 uint32_t SystemCoreClock = 180000000u;
@@ -39,7 +39,7 @@ uint32_t cmsis_rv32_cycles(void)
     return c;
 }
 
-__attribute__((weak)) void SysTick_Handler(void) { }
+__attribute__((weak)) void SysTick_Handler(void) {}
 
 void NVIC_SetHandler(IRQn_Type irqn, void (*handler)(void))
 {
@@ -123,8 +123,8 @@ uint32_t SysTick_Config(uint32_t ticks)
  * whose source is still asserted and earn a second interrupt for every real
  * one.
  */
-__attribute__((interrupt("machine"), aligned(4), used))
-static void cmsis_rv32_trap(void)
+__attribute__((interrupt("machine"), aligned(4), used)) static void
+cmsis_rv32_trap(void)
 {
     const uint32_t cause = CMSIS_RV32_CSRR("mcause");
 
@@ -136,12 +136,12 @@ static void cmsis_rv32_trap(void)
     }
 
     switch (cause & 0xFFu) {
-    case 7u:                            /* machine timer */
+    case 7u: /* machine timer */
         systick_rearm();
         SysTick_Handler();
         break;
 
-    case 11u: {                         /* machine external */
+    case 11u: { /* machine external */
         const uint32_t source = APLIC_TOPI_ >> 16;
         if (source != 0u && source < CMSIS_RV32_SOURCES &&
             g_handlers[source] != 0) {

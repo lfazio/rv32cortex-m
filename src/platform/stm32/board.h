@@ -43,11 +43,6 @@
  */
 void board_hw_init(void);
 
-
-
-
-
-
 /*
  * Park until an interrupt, and stop for good.
  *
@@ -75,11 +70,9 @@ void board_wfi(void);
 /* board_fatal is board_api.h's -- every platform has one, and on these
  * parts it is the per-part halt that the shared board.c used to wrap. */
 
-
 /* ------------------------------------------------------------------ */
 /* Link activity                                                       */
 /* ------------------------------------------------------------------ */
-
 
 /*
  * Set board_ram / board_ram_size from the link script's symbols, before
@@ -128,6 +121,5 @@ void board_ram_init(void);
  * avoiding.
  */
 extern const emu_cache_ops_t board_cache_ops;
-
 
 #endif /* BOARD_H_ */

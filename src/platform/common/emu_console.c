@@ -8,7 +8,7 @@
 #include "board.h"
 
 #if EMU_NET
-#  include "emu_net.h"
+#include "emu_net.h"
 #endif
 
 #include <stdarg.h>
@@ -106,4 +106,3 @@ void emu_console_uart_tx(void *ctx, uint8_t c)
     (void)ctx;
     emu_console_putchar(c);
 }
-

@@ -116,20 +116,20 @@ static bool g4mh_reg_zero(uint32_t n)
 }
 
 const emu_ir_target_t g4mh_ir_target = {
-    .reg_offset   = g4mh_reg_offset,
+    .reg_offset = g4mh_reg_offset,
     .flags_offset = (uint32_t)offsetof(g4mh_cpu_t, psw),
     /*
      * The IR's neutral flags mapped onto PSW. Order is Z, S, V, C, which
      * is the order of EMU_IR_F_* and *not* the order of the bits in PSW
      * -- the array is indexed by the IR's bit position, not the guest's.
      */
-    .flag_bit     = { G4MH_PSW_Z, G4MH_PSW_S, G4MH_PSW_OV, G4MH_PSW_CY },
-    .reg_is_zero  = g4mh_reg_zero,
-    .pc_offset    = (uint32_t)offsetof(g4mh_cpu_t, pc),
-    .helpers      = NULL,
+    .flag_bit = {G4MH_PSW_Z, G4MH_PSW_S, G4MH_PSW_OV, G4MH_PSW_CY},
+    .reg_is_zero = g4mh_reg_zero,
+    .pc_offset = (uint32_t)offsetof(g4mh_cpu_t, pc),
+    .helpers = NULL,
     .helper_count = 0u,
-    .load         = g4mh_ir_load,
-    .store        = g4mh_ir_store,
+    .load = g4mh_ir_load,
+    .store = g4mh_ir_store,
 };
 
 /* ------------------------------------------------------------------ */
@@ -165,12 +165,12 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
         if (r2 == 0u) {
             return false;
         }
-        const uint32_t imm = (op == 0x31u)
-                                 ? (uint32_t)emu_sext(w1, 16)
-                                 : ((uint32_t)w1 << 16);
+        const uint32_t imm =
+            (op == 0x31u) ? (uint32_t)emu_sext(w1, 16) : ((uint32_t)w1 << 16);
 
-        emu_ir_put(b, r2, emu_ir_alu(b, EMU_IR_ADD, emu_ir_get(b, r1),
-                                     emu_ir_const(b, imm)));
+        emu_ir_put(
+            b, r2,
+            emu_ir_alu(b, EMU_IR_ADD, emu_ir_get(b, r1), emu_ir_const(b, imm)));
         return true;
     }
 
@@ -181,18 +181,15 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
      * so reading a register out of [15:11] here gets nonsense.
      */
     if (op == 0x3Eu) {
-        static const uint8_t k_bitop[4] = {
-            EMU_IR_BITOP_SET, EMU_IR_BITOP_INV,
-            EMU_IR_BITOP_CLR, EMU_IR_BITOP_TST
-        };
+        static const uint8_t k_bitop[4] = {EMU_IR_BITOP_SET, EMU_IR_BITOP_INV,
+                                           EMU_IR_BITOP_CLR, EMU_IR_BITOP_TST};
         const uint32_t sel = (w0 >> 14) & 3u;
         const uint32_t bit = (w0 >> 11) & 7u;
 
-        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP,
-                          EMU_IR_NO_TEMP, pc, 0u);
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          pc, 0u);
         emu_ir_bitop(b, (emu_ir_op_t)k_bitop[sel], emu_ir_get(b, r1),
-                     emu_ir_const(b, bit),
-                     (uint32_t)emu_sext(w1, 16), 1u);
+                     emu_ir_const(b, bit), (uint32_t)emu_sext(w1, 16), 1u);
         return true;
     }
 
@@ -204,8 +201,8 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
      * pc first: a data abort records it, and the store that normally
      * follows an instruction has not run yet.
      */
-    (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
-                      pc, 0u);
+    (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, pc,
+                      0u);
 
     const bool byte = (op == 0x38u) || (op == 0x3Au);
     const uint32_t size = byte ? 1u : ((w1 & 1u) ? 4u : 2u);
@@ -213,13 +210,14 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
                                : (uint32_t)emu_sext(w1 & 0xFFFEu, 16);
     const uint16_t base = emu_ir_get(b, r1);
 
-    if (op <= 0x39u) {                              /* LD.B / LD.H / LD.W */
+    if (op <= 0x39u) { /* LD.B / LD.H / LD.W */
         /* Byte and halfword loads sign-extend; the word form has
          * nothing to extend. */
         const uint8_t spec = EMU_IR_MEM_AUX(size, size != 4u);
 
-        emu_ir_put(b, r2, emu_ir_emit(b, EMU_IR_LOAD, spec, base,
-                                      EMU_IR_NO_TEMP, disp, 0u));
+        emu_ir_put(
+            b, r2,
+            emu_ir_emit(b, EMU_IR_LOAD, spec, base, EMU_IR_NO_TEMP, disp, 0u));
         return true;
     }
 
@@ -245,12 +243,12 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
 static bool lower_one48(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
                         uint16_t w2, uint32_t pc)
 {
-    const uint32_t op  = g4mh_op6(w0);
-    const uint32_t r1  = g4mh_reg1(w0);
-    const uint32_t r3  = (w1 >> 11) & 0x1Fu;
+    const uint32_t op = g4mh_op6(w0);
+    const uint32_t r1 = g4mh_reg1(w0);
+    const uint32_t r3 = (w1 >> 11) & 0x1Fu;
     const uint32_t sub = w1 & 0x0Fu;
-    const bool     is_b = (sub == 0x5u) || (sub == 0xDu && op == 0x3Cu);
-    const uint32_t d0  = (w1 >> 4) & 1u;
+    const bool is_b = (sub == 0x5u) || (sub == 0xDu && op == 0x3Cu);
+    const uint32_t d0 = (w1 >> 4) & 1u;
     uint32_t disp;
     uint16_t base;
 
@@ -268,8 +266,7 @@ static bool lower_one48(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
      * lowering below look as though it had not fired.
      */
     if (op == 0x31u) {
-        emu_ir_put(b, r1, emu_ir_const(b, (uint32_t)w1 |
-                                          ((uint32_t)w2 << 16)));
+        emu_ir_put(b, r1, emu_ir_const(b, (uint32_t)w1 | ((uint32_t)w2 << 16)));
         return true;
     }
 
@@ -277,35 +274,35 @@ static bool lower_one48(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
         return false;
     }
     if (!is_b && d0 != 0u) {
-        return false;                   /* reserved: RIE, on the interp */
+        return false; /* reserved: RIE, on the interp */
     }
 
-    disp = (uint32_t)emu_sext(((uint32_t)w2 << 7) |
-                              ((uint32_t)(w1 >> 4) & 0x7Fu), 23);
+    disp = (uint32_t)emu_sext(
+        ((uint32_t)w2 << 7) | ((uint32_t)(w1 >> 4) & 0x7Fu), 23);
 
     /* pc first: a data abort records it. Same reason as lower_one32. */
-    (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
-                      pc, 0u);
+    (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, pc,
+                      0u);
     base = emu_ir_get(b, r1);
 
     switch ((sub << 1) | (op & 1u)) {
-    case (0x5u << 1) | 0u:              /* LD.B  */
-    case (0x5u << 1) | 1u:              /* LD.BU */
-    case (0x7u << 1) | 0u:              /* LD.H  */
-    case (0x7u << 1) | 1u:              /* LD.HU */
-    case (0x9u << 1) | 0u: {            /* LD.W  */
+    case (0x5u << 1) | 0u: /* LD.B  */
+    case (0x5u << 1) | 1u: /* LD.BU */
+    case (0x7u << 1) | 0u: /* LD.H  */
+    case (0x7u << 1) | 1u: /* LD.HU */
+    case (0x9u << 1) | 0u: { /* LD.W  */
         const uint32_t size = (sub == 0x5u) ? 1u : (sub == 0x7u) ? 2u : 4u;
         /* op6's low bit is the unsigned form for the byte and halfword
          * loads, and 0x3C/LD.W has nothing to extend. */
         const bool sx = (size != 4u) && ((op & 1u) == 0u);
 
-        emu_ir_put(b, r3, emu_ir_emit(b, EMU_IR_LOAD,
-                                      EMU_IR_MEM_AUX(size, sx), base,
-                                      EMU_IR_NO_TEMP, disp, 0u));
+        emu_ir_put(b, r3,
+                   emu_ir_emit(b, EMU_IR_LOAD, EMU_IR_MEM_AUX(size, sx), base,
+                               EMU_IR_NO_TEMP, disp, 0u));
         return true;
     }
 
-    case (0x9u << 1) | 1u: {            /* LD.DW */
+    case (0x9u << 1) | 1u: { /* LD.DW */
         /*
          * Both loads, then both writes -- not load/write/load/write.
          * The interpreter leaves the first register untouched when the
@@ -315,28 +312,26 @@ static bool lower_one48(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
          * divergence that survives.
          */
         const uint32_t rd = r3 & ~1u;
-        const uint16_t lo = emu_ir_emit(b, EMU_IR_LOAD,
-                                        EMU_IR_MEM_AUX(4u, 0u), base,
-                                        EMU_IR_NO_TEMP, disp, 0u);
-        const uint16_t hi = emu_ir_emit(b, EMU_IR_LOAD,
-                                        EMU_IR_MEM_AUX(4u, 0u), base,
-                                        EMU_IR_NO_TEMP, disp + 4u, 0u);
+        const uint16_t lo = emu_ir_emit(b, EMU_IR_LOAD, EMU_IR_MEM_AUX(4u, 0u),
+                                        base, EMU_IR_NO_TEMP, disp, 0u);
+        const uint16_t hi = emu_ir_emit(b, EMU_IR_LOAD, EMU_IR_MEM_AUX(4u, 0u),
+                                        base, EMU_IR_NO_TEMP, disp + 4u, 0u);
         emu_ir_put(b, rd, lo);
         emu_ir_put(b, rd + 1u, hi);
         return true;
     }
 
-    case (0xDu << 1) | 0u:              /* ST.B */
-    case (0xDu << 1) | 1u:              /* ST.H */
-    case (0xFu << 1) | 0u: {            /* ST.W */
+    case (0xDu << 1) | 0u: /* ST.B */
+    case (0xDu << 1) | 1u: /* ST.H */
+    case (0xFu << 1) | 0u: { /* ST.W */
         const uint32_t size = (sub == 0xDu) ? ((op & 1u) ? 2u : 1u) : 4u;
 
-        (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(size, 0u),
-                          base, emu_ir_get(b, r3), disp, 0u);
+        (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(size, 0u), base,
+                          emu_ir_get(b, r3), disp, 0u);
         return true;
     }
 
-    case (0xFu << 1) | 1u: {            /* ST.DW */
+    case (0xFu << 1) | 1u: { /* ST.DW */
         const uint32_t rs = r3 & ~1u;
 
         (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(4u, 0u), base,
@@ -375,27 +370,27 @@ static bool lower_one(emu_ir_block_t *b, uint16_t w0, uint32_t pc)
      * as the disp16 forms do. It is *not* sign-extended.
      */
     switch (g4mh_op4(w0)) {
-    case 0x06:                                  /* SLD.B disp7      */
-    case 0x07:                                  /* SST.B disp7      */
-    case 0x08:                                  /* SLD.H disp8      */
-    case 0x09: {                                /* SST.H disp8      */
+    case 0x06: /* SLD.B disp7      */
+    case 0x07: /* SST.B disp7      */
+    case 0x08: /* SLD.H disp8      */
+    case 0x09: { /* SST.H disp8      */
         const uint32_t op4 = g4mh_op4(w0);
         const bool byte = (op4 < 0x08u);
         const uint32_t size = byte ? 1u : 2u;
         const uint32_t disp = byte ? (w0 & 0x7Fu) : ((w0 & 0x7Fu) << 1);
 
         /* pc first: a data abort records it. */
-        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP,
-                          EMU_IR_NO_TEMP, pc, 0u);
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          pc, 0u);
         const uint16_t ep = emu_ir_get(b, G4MH_REG_EP);
 
-        if ((op4 & 1u) == 0u) {                 /* the loads sign-extend */
-            emu_ir_put(b, r2, emu_ir_emit(b, EMU_IR_LOAD,
-                                          EMU_IR_MEM_AUX(size, 1u), ep,
-                                          EMU_IR_NO_TEMP, disp, 0u));
+        if ((op4 & 1u) == 0u) { /* the loads sign-extend */
+            emu_ir_put(b, r2,
+                       emu_ir_emit(b, EMU_IR_LOAD, EMU_IR_MEM_AUX(size, 1u), ep,
+                                   EMU_IR_NO_TEMP, disp, 0u));
         } else {
-            (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(size, 0u),
-                              ep, emu_ir_get(b, r2), disp, 0u);
+            (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(size, 0u), ep,
+                              emu_ir_get(b, r2), disp, 0u);
         }
         return true;
     }
@@ -404,7 +399,7 @@ static bool lower_one(emu_ir_block_t *b, uint16_t w0, uint32_t pc)
     }
 
     switch (op) {
-    case 0x00:                                  /* MOV reg1, reg2   */
+    case 0x00: /* MOV reg1, reg2   */
         /*
          * reg2 == 0 is NOP and reg1 == 0 shares the slot with other
          * encodings. Declining both is what the direct translator did
@@ -418,36 +413,34 @@ static bool lower_one(emu_ir_block_t *b, uint16_t w0, uint32_t pc)
         emu_ir_put(b, r2, emu_ir_get(b, r1));
         return true;
 
-    case 0x08:                                  /* OR  reg1, reg2   */
-    case 0x09:                                  /* XOR reg1, reg2   */
-    case 0x0A: {                                /* AND reg1, reg2   */
-        static const uint8_t k_alu[3] = {
-            EMU_IR_OR, EMU_IR_XOR, EMU_IR_AND
-        };
+    case 0x08: /* OR  reg1, reg2   */
+    case 0x09: /* XOR reg1, reg2   */
+    case 0x0A: { /* AND reg1, reg2   */
+        static const uint8_t k_alu[3] = {EMU_IR_OR, EMU_IR_XOR, EMU_IR_AND};
         const uint16_t x = emu_ir_get(b, r2);
         const uint16_t y = emu_ir_get(b, r1);
         const uint16_t s = emu_ir_alu(b, (emu_ir_op_t)k_alu[op - 0x08u], x, y);
 
         emu_ir_put(b, r2, s);
-        (void)emu_ir_emit(b, EMU_IR_SETF, EMU_IR_FS_LOGIC, s,
-                          EMU_IR_NO_TEMP, 0u, F_LOGIC);
+        (void)emu_ir_emit(b, EMU_IR_SETF, EMU_IR_FS_LOGIC, s, EMU_IR_NO_TEMP,
+                          0u, F_LOGIC);
         return true;
     }
 
-    case 0x0B: {                                /* TST reg1, reg2   */
+    case 0x0B: { /* TST reg1, reg2   */
         const uint16_t x = emu_ir_get(b, r2);
         const uint16_t y = emu_ir_get(b, r1);
         const uint16_t s = emu_ir_alu(b, EMU_IR_AND, x, y);
 
         /* No register write: the AND exists only for its flags. The
          * dead-value pass keeps it because the SETF reads it. */
-        (void)emu_ir_emit(b, EMU_IR_SETF, EMU_IR_FS_LOGIC, s,
-                          EMU_IR_NO_TEMP, 0u, F_LOGIC);
+        (void)emu_ir_emit(b, EMU_IR_SETF, EMU_IR_FS_LOGIC, s, EMU_IR_NO_TEMP,
+                          0u, F_LOGIC);
         return true;
     }
 
-    case 0x0D:                                  /* SUB reg1, reg2   */
-    case 0x0E: {                                /* ADD reg1, reg2   */
+    case 0x0D: /* SUB reg1, reg2   */
+    case 0x0E: { /* ADD reg1, reg2   */
         const bool sub = (op == 0x0Du);
         const uint16_t x = emu_ir_get(b, r2);
         const uint16_t y = emu_ir_get(b, r1);
@@ -460,13 +453,12 @@ static bool lower_one(emu_ir_block_t *b, uint16_t w0, uint32_t pc)
          * the left operand and `b` the right, which is the order
          * EMU_IR_FS_SUB subtracts in.
          */
-        (void)emu_ir_emit(b, EMU_IR_SETF,
-                          sub ? EMU_IR_FS_SUB : EMU_IR_FS_ADD, x, y, 0u,
-                          F_ARITH);
+        (void)emu_ir_emit(b, EMU_IR_SETF, sub ? EMU_IR_FS_SUB : EMU_IR_FS_ADD,
+                          x, y, 0u, F_ARITH);
         return true;
     }
 
-    case 0x0F: {                                /* CMP reg1, reg2   */
+    case 0x0F: { /* CMP reg1, reg2   */
         const uint16_t x = emu_ir_get(b, r2);
         const uint16_t y = emu_ir_get(b, r1);
 
@@ -474,14 +466,14 @@ static bool lower_one(emu_ir_block_t *b, uint16_t w0, uint32_t pc)
         return true;
     }
 
-    case 0x10:                                  /* MOV imm5, reg2   */
+    case 0x10: /* MOV imm5, reg2   */
         if (r2 == 0u) {
-            return false;                       /* CALLT shares the slot */
+            return false; /* CALLT shares the slot */
         }
         emu_ir_put(b, r2, emu_ir_const(b, (uint32_t)g4mh_imm5(w0)));
         return true;
 
-    case 0x12: {                                /* ADD imm5, reg2   */
+    case 0x12: { /* ADD imm5, reg2   */
         const uint16_t x = emu_ir_get(b, r2);
         const uint16_t y = emu_ir_const(b, (uint32_t)g4mh_imm5(w0));
         const uint16_t s = emu_ir_alu(b, EMU_IR_ADD, x, y);
@@ -491,7 +483,7 @@ static bool lower_one(emu_ir_block_t *b, uint16_t w0, uint32_t pc)
         return true;
     }
 
-    case 0x13: {                                /* CMP imm5, reg2   */
+    case 0x13: { /* CMP imm5, reg2   */
         const uint16_t x = emu_ir_get(b, r2);
         const uint16_t y = emu_ir_const(b, (uint32_t)g4mh_imm5(w0));
 
@@ -559,8 +551,7 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
                 if (g4mh_insn_is_64(w0, w1)) {
                     break;
                 }
-                if (emu_bus_fetch16(c->bus, cur + 4u, &w2) !=
-                    EMU_FAULT_NONE) {
+                if (emu_bus_fetch16(c->bus, cur + 4u, &w2) != EMU_FAULT_NONE) {
                     break;
                 }
                 len = 6u;
@@ -585,10 +576,10 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
 
         cur += len;
         count++;
-        (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP,
-                          EMU_IR_NO_TEMP, 0u, 0u);
-        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP,
-                          EMU_IR_NO_TEMP, cur, 0u);
+        (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          0u, 0u);
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          cur, 0u);
     }
 
     if (b->overflow) {
@@ -712,17 +703,17 @@ static void g4mh_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
 }
 
 const emu_ir_frontend_t g4mh_ir_frontend = {
-    .name         = "g4mh",
-    .translate    = g4mh_ir_translate,
-    .target       = &g4mh_ir_target,
-    .bind         = g4mh_jit_bind,
-    .interp       = &g4mh_backend_interp,
-    .is_idle      = g4mh_jit_is_idle,
-    .wake         = g4mh_jit_wake,
-    .take_irq     = g4mh_jit_take_irq,
-    .count        = g4mh_jit_count,
+    .name = "g4mh",
+    .translate = g4mh_ir_translate,
+    .target = &g4mh_ir_target,
+    .bind = g4mh_jit_bind,
+    .interp = &g4mh_backend_interp,
+    .is_idle = g4mh_jit_is_idle,
+    .wake = g4mh_jit_wake,
+    .take_irq = g4mh_jit_take_irq,
+    .count = g4mh_jit_count,
     .after_interp = NULL,
-    .code_bytes   = G4MH_JIT_CODE_BYTES,
+    .code_bytes = G4MH_JIT_CODE_BYTES,
     /* r[0..31], pc and psw. */
     .diff_state_bytes = (uint32_t)offsetof(g4mh_cpu_t, psw) + 4u,
 };

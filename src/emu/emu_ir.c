@@ -12,7 +12,7 @@
  */
 
 #include "emu/emu_ir.h"
-#include "emu/emu_jit.h"   /* EMU_HAVE_JIT */
+#include "emu/emu_jit.h" /* EMU_HAVE_JIT */
 
 #include <string.h>
 
@@ -61,8 +61,8 @@ static bool op_writes(emu_ir_op_t op)
     }
 }
 
-uint16_t emu_ir_emit(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux,
-                     uint16_t a, uint16_t bb, uint32_t imm, uint8_t defs)
+uint16_t emu_ir_emit(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux, uint16_t a,
+                     uint16_t bb, uint32_t imm, uint8_t defs)
 {
     if (b->count >= EMU_IR_MAX_INSNS) {
         b->overflow = true;
@@ -102,12 +102,11 @@ void emu_ir_put(emu_ir_block_t *b, uint32_t guest_reg, uint16_t val)
 
 uint16_t emu_ir_const(emu_ir_block_t *b, uint32_t v)
 {
-    return emu_ir_emit(b, EMU_IR_CONST, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
-                       v, 0u);
+    return emu_ir_emit(b, EMU_IR_CONST, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, v,
+                       0u);
 }
 
-uint16_t emu_ir_alu(emu_ir_block_t *b, emu_ir_op_t op, uint16_t a,
-                    uint16_t bb)
+uint16_t emu_ir_alu(emu_ir_block_t *b, emu_ir_op_t op, uint16_t a, uint16_t bb)
 {
     return emu_ir_emit(b, op, 0u, a, bb, 0u, 0u);
 }
@@ -431,18 +430,17 @@ static void pass_dead_values(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
          * judged them by their flag alone would delete a SET1 whose Z
          * nobody read, which is a silent wrong answer in guest memory.
          */
-        const bool has_effect =
-            (in->op == (uint8_t)EMU_IR_PUT) ||
-            (in->op == (uint8_t)EMU_IR_STORE) ||
-            (in->op == (uint8_t)EMU_IR_SETF) ||
-            (in->op == (uint8_t)EMU_IR_HELPER) ||
-            (in->op == (uint8_t)EMU_IR_HELPER_TRAP) ||
-            (in->op == (uint8_t)EMU_IR_RETIRE) ||
-            (in->op == (uint8_t)EMU_IR_SETPC) ||
-            (in->op == (uint8_t)EMU_IR_EXIT) ||
-            (in->op == (uint8_t)EMU_IR_EXIT_IF) ||
-            (in->op >= (uint8_t)EMU_IR_BITOP_SET &&
-             in->op <= (uint8_t)EMU_IR_BITOP_TST);
+        const bool has_effect = (in->op == (uint8_t)EMU_IR_PUT) ||
+                                (in->op == (uint8_t)EMU_IR_STORE) ||
+                                (in->op == (uint8_t)EMU_IR_SETF) ||
+                                (in->op == (uint8_t)EMU_IR_HELPER) ||
+                                (in->op == (uint8_t)EMU_IR_HELPER_TRAP) ||
+                                (in->op == (uint8_t)EMU_IR_RETIRE) ||
+                                (in->op == (uint8_t)EMU_IR_SETPC) ||
+                                (in->op == (uint8_t)EMU_IR_EXIT) ||
+                                (in->op == (uint8_t)EMU_IR_EXIT_IF) ||
+                                (in->op >= (uint8_t)EMU_IR_BITOP_SET &&
+                                 in->op <= (uint8_t)EMU_IR_BITOP_TST);
 
         if (!has_effect && in->dst != EMU_IR_NO_TEMP &&
             in->dst < EMU_IR_MAX_TEMPS && !used[in->dst]) {
@@ -508,15 +506,24 @@ static void pass_dead_values(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
 static uint8_t imm_form_of(uint8_t op)
 {
     switch ((emu_ir_op_t)op) {
-    case EMU_IR_ADD:  return (uint8_t)EMU_IR_ADDI;
-    case EMU_IR_AND:  return (uint8_t)EMU_IR_ANDI;
-    case EMU_IR_OR:   return (uint8_t)EMU_IR_ORI;
-    case EMU_IR_XOR:  return (uint8_t)EMU_IR_XORI;
-    case EMU_IR_SHL:  return (uint8_t)EMU_IR_SHLI;
-    case EMU_IR_SHR:  return (uint8_t)EMU_IR_SHRI;
-    case EMU_IR_SAR:  return (uint8_t)EMU_IR_SARI;
-    case EMU_IR_ROTL: return (uint8_t)EMU_IR_ROTLI;
-    default:          return (uint8_t)EMU_IR_NOP;
+    case EMU_IR_ADD:
+        return (uint8_t)EMU_IR_ADDI;
+    case EMU_IR_AND:
+        return (uint8_t)EMU_IR_ANDI;
+    case EMU_IR_OR:
+        return (uint8_t)EMU_IR_ORI;
+    case EMU_IR_XOR:
+        return (uint8_t)EMU_IR_XORI;
+    case EMU_IR_SHL:
+        return (uint8_t)EMU_IR_SHLI;
+    case EMU_IR_SHR:
+        return (uint8_t)EMU_IR_SHRI;
+    case EMU_IR_SAR:
+        return (uint8_t)EMU_IR_SARI;
+    case EMU_IR_ROTL:
+        return (uint8_t)EMU_IR_ROTLI;
+    default:
+        return (uint8_t)EMU_IR_NOP;
     }
 }
 
@@ -526,8 +533,10 @@ static uint8_t imm_form_of(uint8_t op)
 static bool op_commutes(uint8_t op)
 {
     switch ((emu_ir_op_t)op) {
-    case EMU_IR_ADD: case EMU_IR_AND:
-    case EMU_IR_OR:  case EMU_IR_XOR:
+    case EMU_IR_ADD:
+    case EMU_IR_AND:
+    case EMU_IR_OR:
+    case EMU_IR_XOR:
         return true;
     default:
         return false;
@@ -560,8 +569,10 @@ static bool backend_can_lower(uint8_t op, uint8_t aux)
 static bool shift_imm_ok(uint8_t op, uint32_t imm)
 {
     switch ((emu_ir_op_t)op) {
-    case EMU_IR_SHLI: case EMU_IR_SHRI:
-    case EMU_IR_SARI: case EMU_IR_ROTLI:
+    case EMU_IR_SHLI:
+    case EMU_IR_SHRI:
+    case EMU_IR_SARI:
+    case EMU_IR_ROTLI:
         return imm < 32u;
     default:
         return true;
@@ -570,7 +581,7 @@ static bool shift_imm_ok(uint8_t op, uint32_t imm)
 
 static void pass_fuse(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
 {
-    static uint8_t  uses[EMU_IR_MAX_TEMPS];
+    static uint8_t uses[EMU_IR_MAX_TEMPS];
     static uint16_t def[EMU_IR_MAX_TEMPS];
 
     memset(uses, 0, sizeof(uses));
@@ -617,13 +628,11 @@ static void pass_fuse(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
             bool from_a = false;
 
             if (in->b != EMU_IR_NO_TEMP && in->b < EMU_IR_MAX_TEMPS &&
-                uses[in->b] == 1u &&
-                def[in->b] != (uint16_t)EMU_IR_NO_TEMP &&
+                uses[in->b] == 1u && def[in->b] != (uint16_t)EMU_IR_NO_TEMP &&
                 b->insn[def[in->b]].op == (uint8_t)EMU_IR_CONST) {
                 src = in->b;
-            } else if (op_commutes(in->op) &&
-                       in->a != EMU_IR_NO_TEMP && in->a < EMU_IR_MAX_TEMPS &&
-                       uses[in->a] == 1u &&
+            } else if (op_commutes(in->op) && in->a != EMU_IR_NO_TEMP &&
+                       in->a < EMU_IR_MAX_TEMPS && uses[in->a] == 1u &&
                        def[in->a] != (uint16_t)EMU_IR_NO_TEMP &&
                        b->insn[def[in->a]].op == (uint8_t)EMU_IR_CONST) {
                 src = in->a;
@@ -654,7 +663,7 @@ static void pass_fuse(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
                 if (shift_imm_ok(iform, k) &&
                     backend_can_lower(iform, in->aux)) {
                     if (from_a) {
-                        in->a = in->b;      /* the surviving operand */
+                        in->a = in->b; /* the surviving operand */
                     }
                     in->op = iform;
                     in->b = (uint16_t)EMU_IR_NO_TEMP;
@@ -670,8 +679,7 @@ static void pass_fuse(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
         if ((in->op == (uint8_t)EMU_IR_LOAD ||
              in->op == (uint8_t)EMU_IR_STORE) &&
             in->a != EMU_IR_NO_TEMP && in->a < EMU_IR_MAX_TEMPS &&
-            uses[in->a] == 1u &&
-            def[in->a] != (uint16_t)EMU_IR_NO_TEMP) {
+            uses[in->a] == 1u && def[in->a] != (uint16_t)EMU_IR_NO_TEMP) {
             emu_ir_insn_t *const src = &b->insn[def[in->a]];
 
             if (!src->dead && src->op == (uint8_t)EMU_IR_ADDI &&
@@ -691,9 +699,13 @@ static void pass_fuse(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
 
         /* --- arithmetic that computes its own input ----------------- */
         switch ((emu_ir_op_t)in->op) {
-        case EMU_IR_ADDI: case EMU_IR_ORI: case EMU_IR_XORI:
-        case EMU_IR_SHLI: case EMU_IR_SHRI:
-        case EMU_IR_SARI: case EMU_IR_ROTLI:
+        case EMU_IR_ADDI:
+        case EMU_IR_ORI:
+        case EMU_IR_XORI:
+        case EMU_IR_SHLI:
+        case EMU_IR_SHRI:
+        case EMU_IR_SARI:
+        case EMU_IR_ROTLI:
             if (in->imm == 0u && in->a != EMU_IR_NO_TEMP) {
                 in->op = (uint8_t)EMU_IR_MOV;
                 st->identities++;
@@ -741,7 +753,9 @@ static void pass_count_uses(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
         emu_ir_insn_t *const in = &b->insn[i];
 
         in->uses = (!in->dead && in->dst != EMU_IR_NO_TEMP &&
-                    in->dst < EMU_IR_MAX_TEMPS) ? uses[in->dst] : 0u;
+                    in->dst < EMU_IR_MAX_TEMPS)
+                       ? uses[in->dst]
+                       : 0u;
         if (in->uses == 1u) {
             st->single_use++;
         }
@@ -767,8 +781,8 @@ uint32_t emu_ir_regalloc(const emu_ir_block_t *b, uint32_t nregs,
                          uint8_t *assign)
 {
     uint16_t inreg[EMU_IR_MAX_HOST_REGS];
-    const uint32_t nt = (b->next_temp < EMU_IR_MAX_TEMPS) ? b->next_temp
-                                                          : EMU_IR_MAX_TEMPS;
+    const uint32_t nt =
+        (b->next_temp < EMU_IR_MAX_TEMPS) ? b->next_temp : EMU_IR_MAX_TEMPS;
     uint32_t used = 0u;
 
     for (uint32_t i = 0; i < nt; i++) {
@@ -814,7 +828,7 @@ uint32_t emu_ir_regalloc(const emu_ir_block_t *b, uint32_t nregs,
         const uint32_t d = g_def[tmp];
 
         if (d == IR_NO_POS || (uint32_t)g_last[tmp] <= d) {
-            continue;               /* never defined, or never read */
+            continue; /* never defined, or never read */
         }
 
         /*
@@ -834,8 +848,7 @@ uint32_t emu_ir_regalloc(const emu_ir_block_t *b, uint32_t nregs,
         }
 
         for (uint32_t r = 0; r < nregs; r++) {
-            if (inreg[r] != EMU_IR_NO_TEMP &&
-                (uint32_t)g_last[inreg[r]] < d) {
+            if (inreg[r] != EMU_IR_NO_TEMP && (uint32_t)g_last[inreg[r]] < d) {
                 inreg[r] = EMU_IR_NO_TEMP;
             }
         }
@@ -922,12 +935,12 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
     pass_count_uses(b, stats);
 
     g_opt_totals.blocks++;
-    g_opt_totals.single_use    += stats->single_use;
+    g_opt_totals.single_use += stats->single_use;
     g_opt_totals.flags_removed += stats->flags_removed;
-    g_opt_totals.gets_removed  += stats->gets_removed;
-    g_opt_totals.puts_removed  += stats->puts_removed;
-    g_opt_totals.folded        += stats->folded;
-    g_opt_totals.addr_folded   += stats->addr_folded;
-    g_opt_totals.identities    += stats->identities;
-    g_opt_totals.dead_removed  += stats->dead_removed;
+    g_opt_totals.gets_removed += stats->gets_removed;
+    g_opt_totals.puts_removed += stats->puts_removed;
+    g_opt_totals.folded += stats->folded;
+    g_opt_totals.addr_folded += stats->addr_folded;
+    g_opt_totals.identities += stats->identities;
+    g_opt_totals.dead_removed += stats->dead_removed;
 }

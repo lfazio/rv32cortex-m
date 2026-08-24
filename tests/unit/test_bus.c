@@ -15,7 +15,6 @@ static uint8_t ram_buf[256];
 static uint8_t rom_buf[256];
 static uint32_t passthru_target[16];
 
-
 /*
  * Guest byte order.
  *
@@ -38,7 +37,9 @@ static uint32_t passthru_target[16];
 static emu_fault_t be_dev_read(void *ctx, uint32_t off, uint32_t size,
                                uint32_t *out)
 {
-    (void)ctx; (void)off; (void)size;
+    (void)ctx;
+    (void)off;
+    (void)size;
     *out = 0x11223344u;
     return EMU_FAULT_NONE;
 }
@@ -48,12 +49,14 @@ static uint32_t g_be_dev_wrote;
 static emu_fault_t be_dev_write(void *ctx, uint32_t off, uint32_t size,
                                 uint32_t val)
 {
-    (void)ctx; (void)off; (void)size;
+    (void)ctx;
+    (void)off;
+    (void)size;
     g_be_dev_wrote = val;
     return EMU_FAULT_NONE;
 }
 
-static const emu_dev_ops_t k_be_dev = { be_dev_read, be_dev_write, NULL };
+static const emu_dev_ops_t k_be_dev = {be_dev_read, be_dev_write, NULL};
 
 static void test_bus_big_endian(void)
 {
@@ -65,8 +68,8 @@ static void test_bus_big_endian(void)
     emu_bus_init(&bus);
     CHECK(emu_bus_add_ram(&bus, "ram", 0x80000000u, ram, sizeof(ram)));
     CHECK(emu_bus_add_mmio(&bus, "dev", 0x10000000u, 0x100u, &k_be_dev, NULL));
-    CHECK(emu_bus_add_passthru(&bus, "pt", 0x40000000u, 4u,
-                               (uintptr_t)&periph, EMU_PERM_RW, EMU_WANY));
+    CHECK(emu_bus_add_passthru(&bus, "pt", 0x40000000u, 4u, (uintptr_t)&periph,
+                               EMU_PERM_RW, EMU_WANY));
 
     /* Little-endian first, so the comparison below means something. */
     CHECK_EQ(emu_bus_write(&bus, 0x80000000u, 4u, 0x11223344u), EMU_FAULT_NONE);
@@ -77,10 +80,10 @@ static void test_bus_big_endian(void)
 
     /* --- RAM: bytes compose in the guest's order --- */
     CHECK_EQ(emu_bus_write(&bus, 0x80000000u, 4u, 0x11223344u), EMU_FAULT_NONE);
-    CHECK_EQ(ram[0], 0x11u);            /* most significant byte first */
+    CHECK_EQ(ram[0], 0x11u); /* most significant byte first */
     CHECK_EQ(ram[3], 0x44u);
     CHECK_EQ(emu_bus_read(&bus, 0x80000000u, 4u, &v), EMU_FAULT_NONE);
-    CHECK_EQ(v, 0x11223344u);           /* and reads back as written   */
+    CHECK_EQ(v, 0x11223344u); /* and reads back as written   */
 
     /* Halfwords too, and bytes are unaffected by definition. */
     CHECK_EQ(emu_bus_write(&bus, 0x80000008u, 2u, 0xABCDu), EMU_FAULT_NONE);
@@ -104,7 +107,8 @@ static void test_bus_big_endian(void)
     CHECK_EQ(periph, 0xCAFEF00Du);
 
     /* --- instruction fetch follows the image, so it reverses --- */
-    ram[16] = 0x7Cu; ram[17] = 0x08u;
+    ram[16] = 0x7Cu;
+    ram[17] = 0x08u;
     uint16_t parcel = 0u;
     CHECK(emu_bus_add_rom(&bus, "rom", 0x20000000u, ram, sizeof(ram)));
     CHECK_EQ(emu_bus_fetch16(&bus, 0x20000010u, &parcel), EMU_FAULT_NONE);
@@ -160,10 +164,9 @@ void test_bus(void)
     /* --- passthrough --- */
     emu_bus_t pt;
     emu_bus_init(&pt);
-    CHECK(emu_bus_add_passthru(&pt, "periph", 0x40000000u,
-                              sizeof(passthru_target),
-                              (uintptr_t)passthru_target,
-                              EMU_PERM_RW, EMU_WANY));
+    CHECK(emu_bus_add_passthru(
+        &pt, "periph", 0x40000000u, sizeof(passthru_target),
+        (uintptr_t)passthru_target, EMU_PERM_RW, EMU_WANY));
 
     passthru_target[0] = 0x12345678u;
     CHECK_EQ(emu_bus_read(&pt, 0x40000000u, 4u, &v), EMU_FAULT_NONE);
@@ -173,36 +176,33 @@ void test_bus(void)
     CHECK_EQ(passthru_target[1], 0xCAFEBABEu);
 
     /* Execution out of a peripheral window is never legitimate. */
-    CHECK_EQ(emu_bus_fetch16(&pt, 0x40000000u, &parcel),
-             EMU_FAULT_FETCH);
+    CHECK_EQ(emu_bus_fetch16(&pt, 0x40000000u, &parcel), EMU_FAULT_FETCH);
 
     /* --- per-region width restriction --- */
     emu_bus_t wb;
     emu_bus_init(&wb);
     /* A 32-bit-only peripheral: byte and halfword accesses must fault. */
-    CHECK(emu_bus_add_passthru(&wb, "w32only", 0x40000000u,
-                              sizeof(passthru_target),
-                              (uintptr_t)passthru_target,
-                              EMU_PERM_RW, EMU_W32));
+    CHECK(emu_bus_add_passthru(
+        &wb, "w32only", 0x40000000u, sizeof(passthru_target),
+        (uintptr_t)passthru_target, EMU_PERM_RW, EMU_W32));
     CHECK_EQ(emu_bus_read(&wb, 0x40000000u, 4u, &v), EMU_FAULT_NONE);
     CHECK_EQ(emu_bus_read(&wb, 0x40000000u, 1u, &v), EMU_FAULT_LOAD);
     CHECK_EQ(emu_bus_read(&wb, 0x40000000u, 2u, &v), EMU_FAULT_LOAD);
-    CHECK_EQ(emu_bus_write(&wb, 0x40000000u, 1u, 0u),
-             EMU_FAULT_STORE);
+    CHECK_EQ(emu_bus_write(&wb, 0x40000000u, 1u, 0u), EMU_FAULT_STORE);
 
     /* --- read-only passthrough (e.g. a peripheral the guest may observe
            but must not reconfigure) --- */
     emu_bus_t ro;
     emu_bus_init(&ro);
     CHECK(emu_bus_add_passthru(&ro, "ro", 0x40000000u, sizeof(passthru_target),
-                              (uintptr_t)passthru_target,
-                              EMU_PERM_R, EMU_WANY));
+                               (uintptr_t)passthru_target, EMU_PERM_R,
+                               EMU_WANY));
     CHECK_EQ(emu_bus_read(&ro, 0x40000000u, 4u, &v), EMU_FAULT_NONE);
     CHECK_EQ(emu_bus_write(&ro, 0x40000000u, 4u, 0u), EMU_FAULT_STORE);
 
     /* --- bulk load/dump --- */
-    static const uint8_t pattern[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
-    uint8_t back[8] = { 0 };
+    static const uint8_t pattern[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    uint8_t back[8] = {0};
     CHECK(emu_bus_load(&bus, 0x80000010u, pattern, sizeof(pattern)));
     CHECK(emu_bus_dump(&bus, 0x80000010u, back, sizeof(back)));
     for (unsigned i = 0; i < sizeof(pattern); i++) {

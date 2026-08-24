@@ -34,7 +34,6 @@
 extern "C" {
 #endif
 
-
 /*
  * Report a real interrupt line to the guest, from the board's ISR.
  *
@@ -55,7 +54,6 @@ void emu_raise_irq(uint32_t source, bool level);
 struct emu_uart;
 bool emu_build_address_space(emu_bus_t *bus, struct emu_uart *uart);
 
-
 /*
  * Bring a guest up: address space, the frontend's devices, cleared RAM
  * and exit state, reset and boot. In emu_address_space.c. An upload
@@ -64,9 +62,7 @@ bool emu_build_address_space(emu_bus_t *bus, struct emu_uart *uart);
 struct emu_guest_exit;
 struct emu_session_cfg;
 bool emu_start_guest(emu_system_t *sys, const struct emu_session_cfg *cfg,
-                     struct emu_uart *uart,
-                     struct emu_guest_exit *exit_state);
-
+                     struct emu_uart *uart, struct emu_guest_exit *exit_state);
 
 /*
  * Rebuild the address space around a new image and restart. In emu_main.c,
@@ -78,10 +74,6 @@ bool emu_start_guest(emu_system_t *sys, const struct emu_session_cfg *cfg,
  * *upward* through; nothing does that any more.
  */
 bool emu_main_reload(void);
-
-
-
-
 
 /* ------------------------------------------------------------------ */
 /* The two ends of a run                                               */
@@ -117,10 +109,6 @@ struct emu_run_env;
 /* The gdb stub is emu_debug.h: a platform supplies board_gdb_*, and
  * emu_debug_start does the rest. */
 
-
-
-
-
 /*
  * **Two namespaces, and they are layers rather than a mixture.**
  *
@@ -138,7 +126,6 @@ struct emu_run_env;
  * part happens to have" the same list, and a third platform then has to
  * read both to find out which half it owes.
  */
-
 
 #ifdef __cplusplus
 }

@@ -21,12 +21,12 @@
 #include "ppc/ppc_decode.h"
 
 /* Raise `e` and restart the dispatch loop. */
-#define EXC(e)                                                          \
-    do {                                                                \
-        c->pc = pc;                                                     \
-        ppc_cpu_exception(c, (ppc_ivor_t)(e), pc);                      \
-        pc = c->pc;                                                     \
-        goto next_insn;                                                 \
+#define EXC(e)                                                                 \
+    do {                                                                       \
+        c->pc = pc;                                                            \
+        ppc_cpu_exception(c, (ppc_ivor_t)(e), pc);                             \
+        pc = c->pc;                                                            \
+        goto next_insn;                                                        \
     } while (0)
 
 /* ------------------------------------------------------------------ */
@@ -58,8 +58,9 @@ static EMU_ALWAYS_INLINE void cr_compare(ppc_cpu_t *c, uint32_t field,
     uint32_t v;
 
     if (sgn) {
-        v = ((int32_t)a < (int32_t)b) ? PPC_CR_LT
-          : (((int32_t)a > (int32_t)b) ? PPC_CR_GT : PPC_CR_EQ);
+        v = ((int32_t)a < (int32_t)b)
+                ? PPC_CR_LT
+                : (((int32_t)a > (int32_t)b) ? PPC_CR_GT : PPC_CR_EQ);
     } else {
         v = (a < b) ? PPC_CR_LT : ((a > b) ? PPC_CR_GT : PPC_CR_EQ);
     }
@@ -205,63 +206,97 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 switch (((uint32_t)w >> 4) & 0xFu) {
                 case 0x0u:
                     switch ((uint32_t)w & 0xFu) {
-                    case 0x1u: break;               /* se_isync: a no-op  */
-                    case 0x2u:                      /* se_sc              */
+                    case 0x1u:
+                        break; /* se_isync: a no-op  */
+                    case 0x2u: /* se_sc              */
                         goto do_syscall;
-                    case 0x4u:                      /* se_blr             */
-                    case 0x5u:                      /* se_blrl            */
-                        {
-                            const uint32_t tgt = c->lr & ~1u;
-                            if (((uint32_t)w & 1u) != 0u) { c->lr = next; }
-                            pc = tgt;
-                            goto retired_insn;
+                    case 0x4u: /* se_blr             */
+                    case 0x5u: /* se_blrl            */
+                    {
+                        const uint32_t tgt = c->lr & ~1u;
+                        if (((uint32_t)w & 1u) != 0u) {
+                            c->lr = next;
                         }
-                    case 0x6u:                      /* se_bctr            */
-                    case 0x7u:                      /* se_bctrl           */
-                        {
-                            const uint32_t tgt = c->ctr & ~1u;
-                            if (((uint32_t)w & 1u) != 0u) { c->lr = next; }
-                            pc = tgt;
-                            goto retired_insn;
+                        pc = tgt;
+                        goto retired_insn;
+                    }
+                    case 0x6u: /* se_bctr            */
+                    case 0x7u: /* se_bctrl           */
+                    {
+                        const uint32_t tgt = c->ctr & ~1u;
+                        if (((uint32_t)w & 1u) != 0u) {
+                            c->lr = next;
                         }
-                    case 0x8u:                      /* se_rfi             */
+                        pc = tgt;
+                        goto retired_insn;
+                    }
+                    case 0x8u: /* se_rfi             */
                         c->msr = c->srr1;
                         pc = c->srr0;
                         goto retired_insn;
-                    case 0x9u:                      /* se_rfci            */
-                    case 0xAu:                      /* se_rfdi            */
+                    case 0x9u: /* se_rfci            */
+                    case 0xAu: /* se_rfdi            */
                         c->msr = c->csrr1;
                         pc = c->csrr0;
                         goto retired_insn;
-                    default:                        /* se_illegal, 0x0000 */
+                    default: /* se_illegal, 0x0000 */
                         EXC(PPC_IVOR_PROGRAM);
                     }
                     break;
-                case 0x2u: c->r[rx] = ~c->r[rx]; break;              /* not   */
-                case 0x3u: c->r[rx] = (uint32_t)(-(int32_t)c->r[rx]); break;
-                case 0x8u: c->r[rx] = c->lr;  break;                 /* mflr  */
-                case 0x9u: c->lr    = c->r[rx]; break;               /* mtlr  */
-                case 0xAu: c->r[rx] = c->ctr; break;                 /* mfctr */
-                case 0xBu: c->ctr   = c->r[rx]; break;               /* mtctr */
-                case 0xCu: c->r[rx] = c->r[rx] & 0xFFu; break;       /* extzb */
-                case 0xDu: c->r[rx] = (uint32_t)(int32_t)(int8_t)c->r[rx]; break;
-                case 0xEu: c->r[rx] = c->r[rx] & 0xFFFFu; break;     /* extzh */
-                case 0xFu: c->r[rx] = (uint32_t)(int32_t)(int16_t)c->r[rx]; break;
-                default:   EXC(PPC_IVOR_PROGRAM);
+                case 0x2u:
+                    c->r[rx] = ~c->r[rx];
+                    break; /* not   */
+                case 0x3u:
+                    c->r[rx] = (uint32_t)(-(int32_t)c->r[rx]);
+                    break;
+                case 0x8u:
+                    c->r[rx] = c->lr;
+                    break; /* mflr  */
+                case 0x9u:
+                    c->lr = c->r[rx];
+                    break; /* mtlr  */
+                case 0xAu:
+                    c->r[rx] = c->ctr;
+                    break; /* mfctr */
+                case 0xBu:
+                    c->ctr = c->r[rx];
+                    break; /* mtctr */
+                case 0xCu:
+                    c->r[rx] = c->r[rx] & 0xFFu;
+                    break; /* extzb */
+                case 0xDu:
+                    c->r[rx] = (uint32_t)(int32_t)(int8_t)c->r[rx];
+                    break;
+                case 0xEu:
+                    c->r[rx] = c->r[rx] & 0xFFFFu;
+                    break; /* extzh */
+                case 0xFu:
+                    c->r[rx] = (uint32_t)(int32_t)(int16_t)c->r[rx];
+                    break;
+                default:
+                    EXC(PPC_IVOR_PROGRAM);
                 }
-            } else if (hi == 0x01u) {               /* se_mr  rX <- rY    */
+            } else if (hi == 0x01u) { /* se_mr  rX <- rY    */
                 c->r[rx] = c->r[ry];
             } else if (hi >= 0x04u && hi <= 0x07u) {
                 switch (hi) {
-                case 0x04u: c->r[rx] += c->r[ry]; break;      /* se_add   */
-                case 0x05u: c->r[rx] *= c->r[ry]; break;      /* se_mullw */
+                case 0x04u:
+                    c->r[rx] += c->r[ry];
+                    break; /* se_add   */
+                case 0x05u:
+                    c->r[rx] *= c->r[ry];
+                    break; /* se_mullw */
                 /*
                  * se_sub and se_subf are not the same instruction with
                  * the operands swapped in the encoding -- they are two
                  * instructions with opposite senses, and both write rX.
                  */
-                case 0x06u: c->r[rx] -= c->r[ry]; break;      /* rX - rY  */
-                default:    c->r[rx] = c->r[ry] - c->r[rx]; break;
+                case 0x06u:
+                    c->r[rx] -= c->r[ry];
+                    break; /* rX - rY  */
+                default:
+                    c->r[rx] = c->r[ry] - c->r[rx];
+                    break;
                 }
             } else if (hi >= 0x0Cu && hi <= 0x0Eu) {
                 /*
@@ -274,8 +309,7 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 } else if (hi == 0x0Du) {
                     cr_compare(c, 0u, c->r[rx], c->r[ry], false);
                 } else {
-                    cr_compare(c, 0u,
-                               (uint32_t)(int32_t)(int16_t)c->r[rx],
+                    cr_compare(c, 0u, (uint32_t)(int32_t)(int16_t)c->r[rx],
                                (uint32_t)(int32_t)(int16_t)c->r[ry], true);
                 }
             } else if (hi >= 0x40u && hi <= 0x47u) {
@@ -283,18 +317,32 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                  * behaviour is a 64-bit rule and does not apply here. */
                 const uint32_t sh = c->r[ry] & 0x1Fu;
                 switch (hi) {
-                case 0x40u: c->r[rx] >>= sh; break;                  /* srw  */
-                case 0x41u: c->r[rx] =
-                    (uint32_t)((int32_t)c->r[rx] >> sh); break;      /* sraw */
-                case 0x42u: c->r[rx] <<= sh; break;                  /* slw  */
-                case 0x44u: c->r[rx] |= c->r[ry]; break;             /* or   */
-                case 0x45u: c->r[rx] &= ~c->r[ry]; break;            /* andc */
-                case 0x46u: c->r[rx] &= c->r[ry]; break;             /* and  */
-                case 0x47u: c->r[rx] &= c->r[ry];                    /* and. */
-                            cr0_from(c, c->r[rx]); break;
-                default:    EXC(PPC_IVOR_PROGRAM);
+                case 0x40u:
+                    c->r[rx] >>= sh;
+                    break; /* srw  */
+                case 0x41u:
+                    c->r[rx] = (uint32_t)((int32_t)c->r[rx] >> sh);
+                    break; /* sraw */
+                case 0x42u:
+                    c->r[rx] <<= sh;
+                    break; /* slw  */
+                case 0x44u:
+                    c->r[rx] |= c->r[ry];
+                    break; /* or   */
+                case 0x45u:
+                    c->r[rx] &= ~c->r[ry];
+                    break; /* andc */
+                case 0x46u:
+                    c->r[rx] &= c->r[ry];
+                    break; /* and  */
+                case 0x47u:
+                    c->r[rx] &= c->r[ry]; /* and. */
+                    cr0_from(c, c->r[rx]);
+                    break;
+                default:
+                    EXC(PPC_IVOR_PROGRAM);
                 }
-            } else if ((w >> 11) == 0x09u) {        /* se_li  imm7        */
+            } else if ((w >> 11) == 0x09u) { /* se_li  imm7        */
                 c->r[rx] = ((uint32_t)w >> 4) & 0x7Fu;
             } else if ((w >> 9) == 0x10u || (w >> 9) == 0x11u ||
                        (w >> 9) == 0x12u) {
@@ -311,27 +359,31 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                  * one instruction at a time.
                  */
                 const uint32_t oim = (((uint32_t)w >> 4) & 0x1Fu) + 1u;
-                if ((w >> 9) == 0x10u)      { c->r[rx] += oim; }
-                else if ((w >> 9) == 0x12u) { c->r[rx] -= oim; }
-                else { cr_compare(c, 0u, c->r[rx], oim, false); }
-            } else if ((w >> 9) == 0x15u) {         /* se_cmpi  ui5       */
+                if ((w >> 9) == 0x10u) {
+                    c->r[rx] += oim;
+                } else if ((w >> 9) == 0x12u) {
+                    c->r[rx] -= oim;
+                } else {
+                    cr_compare(c, 0u, c->r[rx], oim, false);
+                }
+            } else if ((w >> 9) == 0x15u) { /* se_cmpi  ui5       */
                 cr_compare(c, 0u, c->r[rx], ((uint32_t)w >> 4) & 0x1Fu, true);
-            } else if ((w >> 9) == 0x16u) {         /* se_bmaski ui5      */
+            } else if ((w >> 9) == 0x16u) { /* se_bmaski ui5      */
                 const uint32_t n = ((uint32_t)w >> 4) & 0x1Fu;
                 c->r[rx] = (n == 0u) ? 0xFFFFFFFFu : ((1u << n) - 1u);
-            } else if ((w >> 9) == 0x30u) {         /* se_bclri           */
+            } else if ((w >> 9) == 0x30u) { /* se_bclri           */
                 c->r[rx] &= ~(1u << (31u - (((uint32_t)w >> 4) & 0x1Fu)));
-            } else if ((w >> 9) == 0x31u) {         /* se_bgeni           */
+            } else if ((w >> 9) == 0x31u) { /* se_bgeni           */
                 c->r[rx] = 1u << (31u - (((uint32_t)w >> 4) & 0x1Fu));
-            } else if ((w >> 9) == 0x32u) {         /* se_bseti           */
+            } else if ((w >> 9) == 0x32u) { /* se_bseti           */
                 c->r[rx] |= 1u << (31u - (((uint32_t)w >> 4) & 0x1Fu));
-            } else if ((w >> 9) == 0x33u) {         /* se_btsti           */
+            } else if ((w >> 9) == 0x33u) { /* se_btsti           */
                 const uint32_t b =
                     c->r[rx] & (1u << (31u - (((uint32_t)w >> 4) & 0x1Fu)));
                 cr_compare(c, 0u, b, 0u, true);
-            } else if ((w >> 9) == 0x34u) {         /* se_srwi            */
+            } else if ((w >> 9) == 0x34u) { /* se_srwi            */
                 c->r[rx] >>= ((uint32_t)w >> 4) & 0x1Fu;
-            } else if ((w >> 9) == 0x35u) {         /* se_srawi           */
+            } else if ((w >> 9) == 0x35u) { /* se_srawi           */
                 /*
                  * Arithmetic, so the sign is replicated -- and it sat
                  * between se_srwi and se_slwi, both of which were
@@ -347,7 +399,7 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                  */
                 c->r[rx] = (uint32_t)((int32_t)c->r[rx] >>
                                       (((uint32_t)w >> 4) & 0x1Fu));
-            } else if ((w >> 9) == 0x36u) {         /* se_slwi            */
+            } else if ((w >> 9) == 0x36u) { /* se_slwi            */
                 c->r[rx] <<= ((uint32_t)w >> 4) & 0x1Fu;
             } else if (hi >= 0x80u && hi <= 0xDFu) {
                 /*
@@ -361,18 +413,24 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                  * width.
                  */
                 const uint32_t kind = (uint32_t)w >> 12;
-                const uint32_t sz = (kind == 0x8u || kind == 0x9u) ? 1u
-                                  : ((kind == 0xAu || kind == 0xBu) ? 2u : 4u);
+                const uint32_t sz =
+                    (kind == 0x8u || kind == 0x9u)
+                        ? 1u
+                        : ((kind == 0xAu || kind == 0xBu) ? 2u : 4u);
                 const uint32_t ea = c->r[rx] + ppc_se_sd4(w, sz);
-                const bool store = (kind == 0x9u || kind == 0xBu ||
-                                    kind == 0xDu);
+                const bool store =
+                    (kind == 0x9u || kind == 0xBu || kind == 0xDu);
                 if (store) {
                     const ppc_exc_t e = ppc_store(c, ea, sz, c->r[ry]);
-                    if (EMU_UNLIKELY(e != PPC_EXC_NONE)) { EXC(e); }
+                    if (EMU_UNLIKELY(e != PPC_EXC_NONE)) {
+                        EXC(e);
+                    }
                 } else {
                     uint32_t v;
                     const ppc_exc_t e = ppc_load(c, ea, sz, false, &v);
-                    if (EMU_UNLIKELY(e != PPC_EXC_NONE)) { EXC(e); }
+                    if (EMU_UNLIKELY(e != PPC_EXC_NONE)) {
+                        EXC(e);
+                    }
                     c->r[ry] = v;
                 }
             } else if (hi >= 0xE0u && hi <= 0xE7u) {
@@ -382,9 +440,8 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                  * so se_bge is "branch if not LT" rather than an
                  * encoding of its own.
                  */
-                static const uint32_t k_bit[4] = {
-                    PPC_CR_LT, PPC_CR_GT, PPC_CR_EQ, PPC_CR_SO
-                };
+                static const uint32_t k_bit[4] = {PPC_CR_LT, PPC_CR_GT,
+                                                  PPC_CR_EQ, PPC_CR_SO};
                 const bool want = (hi & 0x4u) != 0u;
                 const bool got = (cr_get(c, 0u) & k_bit[hi & 0x3u]) != 0u;
                 if (got == want) {
@@ -396,7 +453,9 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 }
             } else if (hi == 0xE8u || hi == 0xE9u) {
                 const int32_t bd = (int32_t)(int8_t)(uint8_t)(w & 0xFFu);
-                if (hi == 0xE9u) { c->lr = next; }   /* se_bl */
+                if (hi == 0xE9u) {
+                    c->lr = next;
+                } /* se_bl */
                 pc = pc + (uint32_t)(bd * 2);
                 goto retired_insn;
             } else {
@@ -417,40 +476,45 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
             const uint32_t ra = ppc_ra(insn);
 
             switch (ppc_op6(insn)) {
-            case 0x0C:                      /* e_lbz                    */
-            case 0x0D:                      /* e_stb                    */
-            case 0x0E:                      /* e_lha                    */
-            case 0x14:                      /* e_lwz                    */
-            case 0x15:                      /* e_stw                    */
-            case 0x16:                      /* e_lhz                    */
-            case 0x17: {                    /* e_sth                    */
+            case 0x0C: /* e_lbz                    */
+            case 0x0D: /* e_stb                    */
+            case 0x0E: /* e_lha                    */
+            case 0x14: /* e_lwz                    */
+            case 0x15: /* e_stw                    */
+            case 0x16: /* e_lhz                    */
+            case 0x17: { /* e_sth                    */
                 const uint32_t o = ppc_op6(insn);
                 const uint32_t base = (ra == 0u) ? 0u : c->r[ra];
                 const uint32_t ea = base + (uint32_t)ppc_d16(insn);
-                const uint32_t sz = (o == 0x0Cu || o == 0x0Du) ? 1u
-                                  : ((o == 0x14u || o == 0x15u) ? 4u : 2u);
+                const uint32_t sz =
+                    (o == 0x0Cu || o == 0x0Du)
+                        ? 1u
+                        : ((o == 0x14u || o == 0x15u) ? 4u : 2u);
                 const bool store = (o == 0x0Du || o == 0x15u || o == 0x17u);
 
                 if (store) {
                     const ppc_exc_t e = ppc_store(c, ea, sz, c->r[rd]);
-                    if (EMU_UNLIKELY(e != PPC_EXC_NONE)) { EXC(e); }
+                    if (EMU_UNLIKELY(e != PPC_EXC_NONE)) {
+                        EXC(e);
+                    }
                 } else {
                     uint32_t v;
                     /* e_lha is the only sign-extending load here. */
-                    const ppc_exc_t e = ppc_load(c, ea, sz,
-                                                 o == 0x0Eu, &v);
-                    if (EMU_UNLIKELY(e != PPC_EXC_NONE)) { EXC(e); }
+                    const ppc_exc_t e = ppc_load(c, ea, sz, o == 0x0Eu, &v);
+                    if (EMU_UNLIKELY(e != PPC_EXC_NONE)) {
+                        EXC(e);
+                    }
                     c->r[rd] = v;
                 }
                 break;
             }
 
-            case 0x07:                      /* e_add16i rD,rA,simm16    */
-                c->r[rd] = ((ra == 0u) ? 0u : c->r[ra]) +
-                           (uint32_t)ppc_d16(insn);
+            case 0x07: /* e_add16i rD,rA,simm16    */
+                c->r[rd] =
+                    ((ra == 0u) ? 0u : c->r[ra]) + (uint32_t)ppc_d16(insn);
                 break;
 
-            case 0x06: {                    /* the SCI8 group           */
+            case 0x06: { /* the SCI8 group           */
                 /*
                  * SCI8 is not a plain immediate. Eleven bits hold a
                  * *scale* and a fill bit as well as the value: F(1),
@@ -461,32 +525,31 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                  */
                 const uint32_t xo = (insn >> 11) & 0x1Fu;
                 const uint32_t sci = insn & 0x7FFu;
-                const uint32_t f    = (sci >> 10) & 1u;
-                const uint32_t scl  = (sci >> 8) & 3u;
-                const uint32_t ui8  = sci & 0xFFu;
+                const uint32_t f = (sci >> 10) & 1u;
+                const uint32_t scl = (sci >> 8) & 3u;
+                const uint32_t ui8 = sci & 0xFFu;
                 const uint32_t fill = (f != 0u) ? 0xFFFFFFFFu : 0u;
-                const uint32_t sh   = 8u * scl;
-                const uint32_t imm  =
-                    (fill & ~(0xFFu << sh)) | (ui8 << sh);
+                const uint32_t sh = 8u * scl;
+                const uint32_t imm = (fill & ~(0xFFu << sh)) | (ui8 << sh);
 
                 switch (xo) {
-                case 0x10u:                 /* e_addi                   */
+                case 0x10u: /* e_addi                   */
                     c->r[rd] = ((ra == 0u) ? 0u : c->r[ra]) + imm;
                     break;
-                case 0x11u:                 /* e_addi.                  */
+                case 0x11u: /* e_addi.                  */
                     c->r[rd] = ((ra == 0u) ? 0u : c->r[ra]) + imm;
                     cr0_from(c, c->r[rd]);
                     break;
-                case 0x12u:                 /* e_addic                  */
+                case 0x12u: /* e_addic                  */
                     c->r[rd] = c->r[ra] + imm;
                     break;
-                case 0x14u:                 /* e_mulli                  */
+                case 0x14u: /* e_mulli                  */
                     c->r[rd] = c->r[ra] * imm;
                     break;
-                case 0x15u:                 /* e_cmpi   -- crD in rd    */
+                case 0x15u: /* e_cmpi   -- crD in rd    */
                     cr_compare(c, (rd >> 2) & 0x7u, c->r[ra], imm, true);
                     break;
-                case 0x16u:                 /* e_subfic                 */
+                case 0x16u: /* e_subfic                 */
                     c->r[rd] = imm - c->r[ra];
                     break;
                 /*
@@ -494,20 +557,20 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                  * arithmetic ones above -- same two fields, opposite
                  * senses, which is the classic PowerPC trap.
                  */
-                case 0x18u:                 /* e_andi                   */
+                case 0x18u: /* e_andi                   */
                     c->r[ra] = c->r[rd] & imm;
                     break;
-                case 0x19u:                 /* e_andi.                  */
+                case 0x19u: /* e_andi.                  */
                     c->r[ra] = c->r[rd] & imm;
                     cr0_from(c, c->r[ra]);
                     break;
-                case 0x1Au:                 /* e_ori                    */
+                case 0x1Au: /* e_ori                    */
                     c->r[ra] = c->r[rd] | imm;
                     break;
-                case 0x1Cu:                 /* e_xori                   */
+                case 0x1Cu: /* e_xori                   */
                     c->r[ra] = c->r[rd] ^ imm;
                     break;
-                case 0x1Du:                 /* e_cmpli                  */
+                case 0x1Du: /* e_cmpli                  */
                     cr_compare(c, (rd >> 2) & 0x7u, c->r[ra], imm, false);
                     break;
                 default:
@@ -516,7 +579,7 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 break;
             }
 
-            case 0x1D: {                    /* e_rlwinm / e_rlwimi      */
+            case 0x1D: { /* e_rlwinm / e_rlwimi      */
                 /*
                  * **Bit 0 is not Rc here.** It picks between rlwimi (0)
                  * and rlwinm (1), which is the reverse of the intuition
@@ -530,26 +593,28 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 const uint32_t sh = (insn >> 11) & 0x1Fu;
                 const uint32_t mb = (insn >> 6) & 0x1Fu;
                 const uint32_t me = (insn >> 1) & 0x1Fu;
-                const uint32_t rot = (sh == 0u) ? c->r[rs]
-                                   : ((c->r[rs] << sh) | (c->r[rs] >> (32u - sh)));
+                const uint32_t rot =
+                    (sh == 0u) ? c->r[rs]
+                               : ((c->r[rs] << sh) | (c->r[rs] >> (32u - sh)));
                 /*
                  * MB and ME are bit numbers from the *most* significant
                  * end and the range is inclusive, so mb > me is a
                  * legitimate wrapped mask rather than an error.
                  */
-                const uint32_t m = (mb <= me)
-                    ? ((0xFFFFFFFFu >> mb) & (0xFFFFFFFFu << (31u - me)))
-                    : ((0xFFFFFFFFu >> mb) | (0xFFFFFFFFu << (31u - me)));
+                const uint32_t m =
+                    (mb <= me)
+                        ? ((0xFFFFFFFFu >> mb) & (0xFFFFFFFFu << (31u - me)))
+                        : ((0xFFFFFFFFu >> mb) | (0xFFFFFFFFu << (31u - me)));
 
-                if ((insn & 1u) != 0u) {        /* e_rlwinm */
+                if ((insn & 1u) != 0u) { /* e_rlwinm */
                     c->r[ra] = rot & m;
-                } else {                        /* e_rlwimi */
+                } else { /* e_rlwimi */
                     c->r[ra] = (rot & m) | (c->r[ra] & ~m);
                 }
                 break;
             }
 
-            case 0x1C:                      /* e_li  (LI20)             */
+            case 0x1C: /* e_li  (LI20)             */
                 /*
                  * LI20 is split into *three* fields and not in address
                  * order: bits[14:11] are the most significant four,
@@ -605,12 +670,12 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                      * new place.
                      */
                     switch (xo) {
-                    case 0x11u:             /* e_add2i.   rA, si16      */
+                    case 0x11u: /* e_add2i.   rA, si16      */
                         /* Always records, hence the dot in the name. */
                         c->r[ra] += (uint32_t)(int32_t)(int16_t)ui16_a;
                         cr0_from(c, c->r[ra]);
                         break;
-                    case 0x12u:             /* e_add2is   rA, si16      */
+                    case 0x12u: /* e_add2is   rA, si16      */
                         /*
                          * Adds to the *upper* half and does not record.
                          * The field is signed, so a decoder that
@@ -619,18 +684,18 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                          */
                         c->r[ra] += (uint32_t)((int32_t)(int16_t)ui16_a << 16);
                         break;
-                    case 0x13u:             /* e_cmp16i   rA, si16      */
+                    case 0x13u: /* e_cmp16i   rA, si16      */
                         cr_compare(c, 0u, c->r[ra],
                                    (uint32_t)(int32_t)(int16_t)ui16_a, true);
                         break;
-                    case 0x14u:             /* e_mull2i   rA, si16      */
+                    case 0x14u: /* e_mull2i   rA, si16      */
                         c->r[ra] = (uint32_t)((int32_t)c->r[ra] *
                                               (int32_t)(int16_t)ui16_a);
                         break;
-                    case 0x15u:             /* e_cmpl16i  rA, ui16      */
+                    case 0x15u: /* e_cmpl16i  rA, ui16      */
                         cr_compare(c, 0u, c->r[ra], ui16_a, false);
                         break;
-                    case 0x16u:             /* e_cmph16i  rA, si16      */
+                    case 0x16u: /* e_cmph16i  rA, si16      */
                         /*
                          * Compares the *low halfword* of rA, not the
                          * word -- which is the whole difference from
@@ -639,27 +704,26 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                          * 0x00018000 against -32768 separates the two
                          * readings; the guest uses exactly that.
                          */
-                        cr_compare(c, 0u,
-                                   (uint32_t)(int32_t)(int16_t)c->r[ra],
+                        cr_compare(c, 0u, (uint32_t)(int32_t)(int16_t)c->r[ra],
                                    (uint32_t)(int32_t)(int16_t)ui16_a, true);
                         break;
-                    case 0x17u:             /* e_cmphl16i rA, ui16      */
+                    case 0x17u: /* e_cmphl16i rA, ui16      */
                         cr_compare(c, 0u, c->r[ra] & 0xFFFFu, ui16_a, false);
                         break;
-                    case 0x18u:             /* e_or2i     rD, ui16      */
+                    case 0x18u: /* e_or2i     rD, ui16      */
                         c->r[rd] |= ui16_l;
                         break;
-                    case 0x19u:             /* e_and2i.   rD, ui16      */
+                    case 0x19u: /* e_and2i.   rD, ui16      */
                         c->r[rd] &= ui16_l;
                         cr0_from(c, c->r[rd]);
                         break;
-                    case 0x1Au:             /* e_or2is    rD, ui16      */
+                    case 0x1Au: /* e_or2is    rD, ui16      */
                         c->r[rd] |= ui16_l << 16;
                         break;
-                    case 0x1Cu:             /* e_lis      rD, ui16      */
+                    case 0x1Cu: /* e_lis      rD, ui16      */
                         c->r[rd] = ui16_l << 16;
                         break;
-                    case 0x1Du:             /* e_and2is.  rD, ui16      */
+                    case 0x1Du: /* e_and2is.  rD, ui16      */
                         c->r[rd] &= ui16_l << 16;
                         cr0_from(c, c->r[rd]);
                         break;
@@ -669,7 +733,7 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 }
                 break;
 
-            case 0x1E: {                    /* e_b / e_bl / e_bc        */
+            case 0x1E: { /* e_b / e_bl / e_bc        */
                 const bool lk = (insn & 1u) != 0u;
 
                 if ((insn & 0x02000000u) != 0u) {
@@ -691,9 +755,8 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                      * not a trap: a silent wrong answer, found by the
                      * first guest that wrote a loop.
                      */
-                    static const uint32_t k_bit[4] = {
-                        PPC_CR_LT, PPC_CR_GT, PPC_CR_EQ, PPC_CR_SO
-                    };
+                    static const uint32_t k_bit[4] = {PPC_CR_LT, PPC_CR_GT,
+                                                      PPC_CR_EQ, PPC_CR_SO};
                     const uint32_t bo = (insn >> 20) & 0x3u;
                     const uint32_t bi = (insn >> 16) & 0xFu;
                     bool take;
@@ -707,16 +770,17 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                          * decrementing runs it four.
                          */
                         c->ctr--;
-                        take = ((bo & 1u) == 0u) ? (c->ctr != 0u)
-                                                 : (c->ctr == 0u);
+                        take =
+                            ((bo & 1u) == 0u) ? (c->ctr != 0u) : (c->ctr == 0u);
                     } else {
-                        const bool got =
-                            (cr_get(c, (bi >> 2) & 0x7u) & k_bit[bi & 3u])
-                            != 0u;
+                        const bool got = (cr_get(c, (bi >> 2) & 0x7u) &
+                                          k_bit[bi & 3u]) != 0u;
                         take = (got == ((bo & 1u) != 0u));
                     }
 
-                    if (lk) { c->lr = next; }
+                    if (lk) {
+                        c->lr = next;
+                    }
                     if (take) {
                         /* BD15 is bits[15:1], signed; bit 0 is LK. */
                         const int32_t bd =
@@ -730,7 +794,9 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                     if ((bd & 0x01000000) != 0) {
                         bd |= (int32_t)0xFE000000;
                     }
-                    if (lk) { c->lr = next; }
+                    if (lk) {
+                        c->lr = next;
+                    }
                     pc = pc + (uint32_t)bd;
                     goto retired_insn;
                 }
@@ -752,7 +818,7 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
 
     shared_xform:
         switch (ppc_op6(insn)) {
-        case 0x0E: {                        /* addi / li  (D-form)      */
+        case 0x0E: { /* addi / li  (D-form)      */
             /*
              * rA == 0 means the *literal* zero, not r0. That is
              * PowerPC's one pervasive irregularity and the reason `li`
@@ -765,68 +831,74 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
             break;
         }
 
-        case 0x0F: {                        /* addis / lis              */
+        case 0x0F: { /* addis / lis              */
             const uint32_t a = (ppc_ra(insn) == 0u) ? 0u : c->r[ppc_ra(insn)];
             c->r[ppc_rd(insn)] = a + ((insn & 0xFFFFu) << 16);
             break;
         }
 
-        case 0x20:                          /* lwz                      */
-        case 0x22:                          /* lbz                      */
-        case 0x28: {                        /* lhz                      */
+        case 0x20: /* lwz                      */
+        case 0x22: /* lbz                      */
+        case 0x28: { /* lhz                      */
             const uint32_t a = (ppc_ra(insn) == 0u) ? 0u : c->r[ppc_ra(insn)];
             const uint32_t ea = a + (uint32_t)ppc_d16(insn);
-            const uint32_t sz = (ppc_op6(insn) == 0x20u) ? 4u
-                              : ((ppc_op6(insn) == 0x22u) ? 1u : 2u);
+            const uint32_t sz = (ppc_op6(insn) == 0x20u)
+                                    ? 4u
+                                    : ((ppc_op6(insn) == 0x22u) ? 1u : 2u);
             uint32_t v;
             const ppc_exc_t e = ppc_load(c, ea, sz, false, &v);
-            if (EMU_UNLIKELY(e != PPC_EXC_NONE)) { EXC(e); }
+            if (EMU_UNLIKELY(e != PPC_EXC_NONE)) {
+                EXC(e);
+            }
             c->r[ppc_rd(insn)] = v;
             break;
         }
 
-        case 0x24:                          /* stw                      */
-        case 0x26:                          /* stb                      */
-        case 0x2C: {                        /* sth                      */
+        case 0x24: /* stw                      */
+        case 0x26: /* stb                      */
+        case 0x2C: { /* sth                      */
             const uint32_t a = (ppc_ra(insn) == 0u) ? 0u : c->r[ppc_ra(insn)];
             const uint32_t ea = a + (uint32_t)ppc_d16(insn);
-            const uint32_t sz = (ppc_op6(insn) == 0x24u) ? 4u
-                              : ((ppc_op6(insn) == 0x26u) ? 1u : 2u);
+            const uint32_t sz = (ppc_op6(insn) == 0x24u)
+                                    ? 4u
+                                    : ((ppc_op6(insn) == 0x26u) ? 1u : 2u);
             const ppc_exc_t e = ppc_store(c, ea, sz, c->r[ppc_rd(insn)]);
-            if (EMU_UNLIKELY(e != PPC_EXC_NONE)) { EXC(e); }
+            if (EMU_UNLIKELY(e != PPC_EXC_NONE)) {
+                EXC(e);
+            }
             break;
         }
 
-        case 0x18: {                        /* ori  (and thus nop)      */
+        case 0x18: { /* ori  (and thus nop)      */
             c->r[ppc_ra(insn)] = c->r[ppc_rd(insn)] | (insn & 0xFFFFu);
             break;
         }
-        case 0x19: {                        /* oris                     */
+        case 0x19: { /* oris                     */
             c->r[ppc_ra(insn)] = c->r[ppc_rd(insn)] | ((insn & 0xFFFFu) << 16);
             break;
         }
-        case 0x1A: {                        /* xori                     */
+        case 0x1A: { /* xori                     */
             c->r[ppc_ra(insn)] = c->r[ppc_rd(insn)] ^ (insn & 0xFFFFu);
             break;
         }
-        case 0x1C: {                        /* andi.  -- always sets CR0 */
+        case 0x1C: { /* andi.  -- always sets CR0 */
             const uint32_t v = c->r[ppc_rd(insn)] & (insn & 0xFFFFu);
             c->r[ppc_ra(insn)] = v;
             cr0_from(c, v);
             break;
         }
 
-        case 0x0B:                          /* cmpi                     */
-            cr_compare(c, (insn >> 23) & 0x7u,
-                       c->r[ppc_ra(insn)], (uint32_t)ppc_d16(insn), true);
+        case 0x0B: /* cmpi                     */
+            cr_compare(c, (insn >> 23) & 0x7u, c->r[ppc_ra(insn)],
+                       (uint32_t)ppc_d16(insn), true);
             break;
 
-        case 0x0A:                          /* cmpli                    */
-            cr_compare(c, (insn >> 23) & 0x7u,
-                       c->r[ppc_ra(insn)], insn & 0xFFFFu, false);
+        case 0x0A: /* cmpli                    */
+            cr_compare(c, (insn >> 23) & 0x7u, c->r[ppc_ra(insn)],
+                       insn & 0xFFFFu, false);
             break;
 
-        case 0x12: {                        /* b / bl / ba / bla        */
+        case 0x12: { /* b / bl / ba / bla        */
             /*
              * LI is a signed 26-bit *byte* displacement whose low two
              * bits are architecturally zero, so the field is bits 6:29
@@ -835,34 +907,40 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
              */
             int32_t li = (int32_t)(insn & 0x03FFFFFCu);
             if ((li & 0x02000000) != 0) {
-                li |= (int32_t)0xFC000000;  /* sign-extend from bit 25 */
+                li |= (int32_t)0xFC000000; /* sign-extend from bit 25 */
             }
             const bool aa = (insn & 2u) != 0u;
-            if ((insn & 1u) != 0u) {        /* LK */
+            if ((insn & 1u) != 0u) { /* LK */
                 c->lr = next;
             }
             pc = aa ? (uint32_t)li : (pc + (uint32_t)li);
             goto retired_insn;
         }
 
-        case 0x1F:                          /* the X-form pool          */
+        case 0x1F: /* the X-form pool          */
             switch (ppc_xo10(insn)) {
-            case 0x10A: {                   /* add                      */
+            case 0x10A: { /* add                      */
                 const uint32_t v = c->r[ppc_ra(insn)] + c->r[ppc_rb(insn)];
                 c->r[ppc_rd(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
-            case 0x028: {                   /* subf                     */
+            case 0x028: { /* subf                     */
                 const uint32_t v = c->r[ppc_rb(insn)] - c->r[ppc_ra(insn)];
                 c->r[ppc_rd(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
-            case 0x068: {                   /* neg                      */
+            case 0x068: { /* neg                      */
                 const uint32_t v = (uint32_t)0u - c->r[ppc_ra(insn)];
                 c->r[ppc_rd(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
 
@@ -878,24 +956,28 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
              * a 64-bit intermediate is the honest way to get the
              * carry-out of a three-term add.
              */
-            case 0x00A: {                   /* addc                     */
-                const uint64_t s = (uint64_t)c->r[ppc_ra(insn)] +
-                                   (uint64_t)c->r[ppc_rb(insn)];
+            case 0x00A: { /* addc                     */
+                const uint64_t s =
+                    (uint64_t)c->r[ppc_ra(insn)] + (uint64_t)c->r[ppc_rb(insn)];
                 c->r[ppc_rd(insn)] = (uint32_t)s;
                 xer_set_ca(c, (s >> 32) != 0u);
-                if (ppc_rc(insn)) { cr0_from(c, (uint32_t)s); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, (uint32_t)s);
+                }
                 break;
             }
-            case 0x08A: {                   /* adde                     */
+            case 0x08A: { /* adde                     */
                 const uint64_t s = (uint64_t)c->r[ppc_ra(insn)] +
                                    (uint64_t)c->r[ppc_rb(insn)] +
                                    (uint64_t)((c->xer & PPC_XER_CA) ? 1u : 0u);
                 c->r[ppc_rd(insn)] = (uint32_t)s;
                 xer_set_ca(c, (s >> 32) != 0u);
-                if (ppc_rc(insn)) { cr0_from(c, (uint32_t)s); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, (uint32_t)s);
+                }
                 break;
             }
-            case 0x008: {                   /* subfc                    */
+            case 0x008: { /* subfc                    */
                 /*
                  * Subtract is defined as ~rA + rB + 1, and the carry is
                  * that addition's carry-out -- which is the *opposite*
@@ -906,16 +988,20 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                                    (uint64_t)c->r[ppc_rb(insn)] + 1u;
                 c->r[ppc_rd(insn)] = (uint32_t)s;
                 xer_set_ca(c, (s >> 32) != 0u);
-                if (ppc_rc(insn)) { cr0_from(c, (uint32_t)s); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, (uint32_t)s);
+                }
                 break;
             }
-            case 0x088: {                   /* subfe                    */
+            case 0x088: { /* subfe                    */
                 const uint64_t s = (uint64_t)(uint32_t)~c->r[ppc_ra(insn)] +
                                    (uint64_t)c->r[ppc_rb(insn)] +
                                    (uint64_t)((c->xer & PPC_XER_CA) ? 1u : 0u);
                 c->r[ppc_rd(insn)] = (uint32_t)s;
                 xer_set_ca(c, (s >> 32) != 0u);
-                if (ppc_rc(insn)) { cr0_from(c, (uint32_t)s); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, (uint32_t)s);
+                }
                 break;
             }
 
@@ -925,30 +1011,36 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
              * a compiler emits mullw for `a * b` and there is no way to
              * avoid it.
              */
-            case 0x0EB: {                   /* mullw                    */
+            case 0x0EB: { /* mullw                    */
                 const uint32_t v = (uint32_t)((int32_t)c->r[ppc_ra(insn)] *
                                               (int32_t)c->r[ppc_rb(insn)]);
                 c->r[ppc_rd(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
-            case 0x04B: {                   /* mulhw                    */
+            case 0x04B: { /* mulhw                    */
                 const int64_t p = (int64_t)(int32_t)c->r[ppc_ra(insn)] *
                                   (int64_t)(int32_t)c->r[ppc_rb(insn)];
                 const uint32_t v = (uint32_t)((uint64_t)p >> 32);
                 c->r[ppc_rd(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
-            case 0x00B: {                   /* mulhwu                   */
-                const uint64_t p = (uint64_t)c->r[ppc_ra(insn)] *
-                                   (uint64_t)c->r[ppc_rb(insn)];
+            case 0x00B: { /* mulhwu                   */
+                const uint64_t p =
+                    (uint64_t)c->r[ppc_ra(insn)] * (uint64_t)c->r[ppc_rb(insn)];
                 const uint32_t v = (uint32_t)(p >> 32);
                 c->r[ppc_rd(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
-            case 0x1EB: {                   /* divw                     */
+            case 0x1EB: { /* divw                     */
                 const int32_t a = (int32_t)c->r[ppc_ra(insn)];
                 const int32_t b = (int32_t)c->r[ppc_rb(insn)];
                 /*
@@ -961,17 +1053,22 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                  * hardware is documented to leave.
                  */
                 const uint32_t v = (b == 0 || (a == INT32_MIN && b == -1))
-                                   ? 0u : (uint32_t)(a / b);
+                                       ? 0u
+                                       : (uint32_t)(a / b);
                 c->r[ppc_rd(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
-            case 0x1CB: {                   /* divwu                    */
+            case 0x1CB: { /* divwu                    */
                 const uint32_t a = c->r[ppc_ra(insn)];
                 const uint32_t b = c->r[ppc_rb(insn)];
                 const uint32_t v = (b == 0u) ? 0u : (a / b);
                 c->r[ppc_rd(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
             /*
@@ -981,52 +1078,68 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
              * destination here would write the wrong register with the
              * right value.
              */
-            case 0x1BC: {                   /* or  (and thus mr)        */
+            case 0x1BC: { /* or  (and thus mr)        */
                 const uint32_t v = c->r[ppc_rd(insn)] | c->r[ppc_rb(insn)];
                 c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
-            case 0x01C: {                   /* and                      */
+            case 0x01C: { /* and                      */
                 const uint32_t v = c->r[ppc_rd(insn)] & c->r[ppc_rb(insn)];
                 c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
-            case 0x13C: {                   /* xor                      */
+            case 0x13C: { /* xor                      */
                 const uint32_t v = c->r[ppc_rd(insn)] ^ c->r[ppc_rb(insn)];
                 c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
-            case 0x03C: {                   /* andc                     */
+            case 0x03C: { /* andc                     */
                 const uint32_t v = c->r[ppc_rd(insn)] & ~c->r[ppc_rb(insn)];
                 c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
-            case 0x19C: {                   /* orc                      */
+            case 0x19C: { /* orc                      */
                 const uint32_t v = c->r[ppc_rd(insn)] | ~c->r[ppc_rb(insn)];
                 c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
-            case 0x1DC: {                   /* nand                     */
+            case 0x1DC: { /* nand                     */
                 const uint32_t v = ~(c->r[ppc_rd(insn)] & c->r[ppc_rb(insn)]);
                 c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
-            case 0x07C: {                   /* nor  (and thus `not`)    */
+            case 0x07C: { /* nor  (and thus `not`)    */
                 const uint32_t v = ~(c->r[ppc_rd(insn)] | c->r[ppc_rb(insn)]);
                 c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
-            case 0x11C: {                   /* eqv                      */
+            case 0x11C: { /* eqv                      */
                 const uint32_t v = ~(c->r[ppc_rd(insn)] ^ c->r[ppc_rb(insn)]);
                 c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
 
@@ -1038,21 +1151,25 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
              * difference from the se_ forms above, whose count is an
              * immediate that cannot exceed 31.
              */
-            case 0x018: {                   /* slw                      */
+            case 0x018: { /* slw                      */
                 const uint32_t n = c->r[ppc_rb(insn)] & 0x3Fu;
                 const uint32_t v = (n >= 32u) ? 0u : (c->r[ppc_rd(insn)] << n);
                 c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
-            case 0x218: {                   /* srw                      */
+            case 0x218: { /* srw                      */
                 const uint32_t n = c->r[ppc_rb(insn)] & 0x3Fu;
                 const uint32_t v = (n >= 32u) ? 0u : (c->r[ppc_rd(insn)] >> n);
                 c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
-            case 0x318: {                   /* sraw                     */
+            case 0x318: { /* sraw                     */
                 /*
                  * The arithmetic shift saturates at 31 rather than
                  * yielding zero -- the sign fills the register -- and
@@ -1064,39 +1181,47 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 const uint32_t sh = (n >= 32u) ? 31u : n;
                 const uint32_t v = (uint32_t)(a >> sh);
 
-                xer_set_ca(c, a < 0 &&
-                              (c->r[ppc_rd(insn)] & ((1u << sh) - 1u)) != 0u);
+                xer_set_ca(
+                    c, a < 0 && (c->r[ppc_rd(insn)] & ((1u << sh) - 1u)) != 0u);
                 c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
-            case 0x338: {                   /* srawi                    */
+            case 0x338: { /* srawi                    */
                 const uint32_t sh = (insn >> 11) & 0x1Fu;
                 const int32_t a = (int32_t)c->r[ppc_rd(insn)];
                 const uint32_t v = (uint32_t)(a >> sh);
 
-                xer_set_ca(c, a < 0 &&
-                              (c->r[ppc_rd(insn)] & ((1u << sh) - 1u)) != 0u);
+                xer_set_ca(
+                    c, a < 0 && (c->r[ppc_rd(insn)] & ((1u << sh) - 1u)) != 0u);
                 c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
 
-            case 0x3BA: {                   /* extsb                    */
-                const uint32_t v = (uint32_t)(int32_t)(int8_t)
-                                   c->r[ppc_rd(insn)];
+            case 0x3BA: { /* extsb                    */
+                const uint32_t v =
+                    (uint32_t)(int32_t)(int8_t)c->r[ppc_rd(insn)];
                 c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
-            case 0x39A: {                   /* extsh                    */
-                const uint32_t v = (uint32_t)(int32_t)(int16_t)
-                                   c->r[ppc_rd(insn)];
+            case 0x39A: { /* extsh                    */
+                const uint32_t v =
+                    (uint32_t)(int32_t)(int16_t)c->r[ppc_rd(insn)];
                 c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) { cr0_from(c, v); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, v);
+                }
                 break;
             }
-            case 0x01A: {                   /* cntlzw                   */
+            case 0x01A: { /* cntlzw                   */
                 uint32_t x = c->r[ppc_rd(insn)];
                 uint32_t n = 0u;
 
@@ -1106,11 +1231,13 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                     n++;
                 }
                 c->r[ppc_ra(insn)] = n;
-                if (ppc_rc(insn)) { cr0_from(c, n); }
+                if (ppc_rc(insn)) {
+                    cr0_from(c, n);
+                }
                 break;
             }
 
-            case 0x090: {                   /* mtcrf                    */
+            case 0x090: { /* mtcrf                    */
                 /*
                  * FXM is a byte-wide field mask, one bit per CR field,
                  * most significant first -- so bit 7 of FXM is CR0.
@@ -1131,17 +1258,17 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 break;
             }
 
-            case 0x000:                     /* cmp                      */
-                cr_compare(c, (insn >> 23) & 0x7u,
-                           c->r[ppc_ra(insn)], c->r[ppc_rb(insn)], true);
+            case 0x000: /* cmp                      */
+                cr_compare(c, (insn >> 23) & 0x7u, c->r[ppc_ra(insn)],
+                           c->r[ppc_rb(insn)], true);
                 break;
-            case 0x020:                     /* cmpl                     */
-                cr_compare(c, (insn >> 23) & 0x7u,
-                           c->r[ppc_ra(insn)], c->r[ppc_rb(insn)], false);
+            case 0x020: /* cmpl                     */
+                cr_compare(c, (insn >> 23) & 0x7u, c->r[ppc_ra(insn)],
+                           c->r[ppc_rb(insn)], false);
                 break;
 
-            case 0x153:                     /* mfspr                    */
-            case 0x1D3: {                   /* mtspr                    */
+            case 0x153: /* mfspr                    */
+            case 0x1D3: { /* mtspr                    */
                 /*
                  * The SPR number is *split and swapped*: bits 11:15 are
                  * the low five bits and 16:20 the high five, so the
@@ -1151,7 +1278,8 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                  * different register.
                  */
                 const uint32_t sprf = (insn >> 11) & 0x3FFu;
-                const uint32_t spr = ((sprf & 0x1Fu) << 5) | ((sprf >> 5) & 0x1Fu);
+                const uint32_t spr =
+                    ((sprf & 0x1Fu) << 5) | ((sprf >> 5) & 0x1Fu);
                 const bool store = ppc_xo10(insn) == 0x1D3u;
                 /*
                  * NULL for the registers that are not a plain slot --
@@ -1164,20 +1292,48 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 uint32_t *slot = NULL;
 
                 switch (spr) {
-                case PPC_SPR_XER:   slot = &c->xer;   break;
-                case PPC_SPR_LR:    slot = &c->lr;    break;
-                case PPC_SPR_CTR:   slot = &c->ctr;   break;
-                case PPC_SPR_SRR0:  slot = &c->srr0;  break;
-                case PPC_SPR_SRR1:  slot = &c->srr1;  break;
-                case PPC_SPR_CSRR0: slot = &c->csrr0; break;
-                case PPC_SPR_CSRR1: slot = &c->csrr1; break;
-                case PPC_SPR_DEAR:  slot = &c->dear;  break;
-                case PPC_SPR_ESR:   slot = &c->esr;   break;
-                case PPC_SPR_IVPR:  slot = &c->ivpr;  break;
-                case PPC_SPR_PIR:   slot = &c->pir;   break;
-                case PPC_SPR_PVR:   slot = &c->pvr;   break;
-                case PPC_SPR_DECAR: slot = &c->decar; break;
-                case PPC_SPR_TCR:   slot = &c->tcr;   break;
+                case PPC_SPR_XER:
+                    slot = &c->xer;
+                    break;
+                case PPC_SPR_LR:
+                    slot = &c->lr;
+                    break;
+                case PPC_SPR_CTR:
+                    slot = &c->ctr;
+                    break;
+                case PPC_SPR_SRR0:
+                    slot = &c->srr0;
+                    break;
+                case PPC_SPR_SRR1:
+                    slot = &c->srr1;
+                    break;
+                case PPC_SPR_CSRR0:
+                    slot = &c->csrr0;
+                    break;
+                case PPC_SPR_CSRR1:
+                    slot = &c->csrr1;
+                    break;
+                case PPC_SPR_DEAR:
+                    slot = &c->dear;
+                    break;
+                case PPC_SPR_ESR:
+                    slot = &c->esr;
+                    break;
+                case PPC_SPR_IVPR:
+                    slot = &c->ivpr;
+                    break;
+                case PPC_SPR_PIR:
+                    slot = &c->pir;
+                    break;
+                case PPC_SPR_PVR:
+                    slot = &c->pvr;
+                    break;
+                case PPC_SPR_DECAR:
+                    slot = &c->decar;
+                    break;
+                case PPC_SPR_TCR:
+                    slot = &c->tcr;
+                    break;
 
                 /*
                  * The four below are not plain slots, so they are
@@ -1215,8 +1371,8 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                         EXC(PPC_IVOR_PROGRAM);
                     }
                     c->r[ppc_rd(insn)] = (spr == PPC_SPR_TBL_R)
-                                       ? (uint32_t)c->tb
-                                       : (uint32_t)(c->tb >> 32);
+                                             ? (uint32_t)c->tb
+                                             : (uint32_t)(c->tb >> 32);
                     break;
 
                 case PPC_SPR_TBL_W:
@@ -1249,7 +1405,7 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 }
 
                 if (slot == NULL) {
-                    break;                  /* handled in the switch */
+                    break; /* handled in the switch */
                 }
                 if (store) {
                     /* PVR and PIR identify the part and the core; a
@@ -1265,15 +1421,15 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 break;
             }
 
-            case 0x053:                     /* mfmsr                    */
+            case 0x053: /* mfmsr                    */
                 c->r[ppc_rd(insn)] = c->msr;
                 break;
-            case 0x092:                     /* mtmsr                    */
+            case 0x092: /* mtmsr                    */
                 c->msr = c->r[ppc_rd(insn)];
                 c->irq_dirty = true;
                 break;
 
-            case 0x013:                     /* mfcr                     */
+            case 0x013: /* mfcr                     */
                 c->r[ppc_rd(insn)] = c->cr;
                 break;
 
@@ -1282,7 +1438,7 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
             }
             break;
 
-        case 0x11:                          /* sc -- the system call    */
+        case 0x11: /* sc -- the system call    */
         do_syscall:
             /*
              * The platform's syscall hook gets first refusal, so a host
@@ -1299,8 +1455,8 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                  * itself says nothing about where anything lives.
                  */
                 emu_syscall_t sc = {
-                    .nr  = c->r[0],
-                    .arg = { c->r[3], c->r[4], c->r[5], c->r[6] },
+                    .nr = c->r[0],
+                    .arg = {c->r[3], c->r[4], c->r[5], c->r[6]},
                     .ret = 0u,
                 };
 
@@ -1358,7 +1514,7 @@ emu_run_reason_t ppc_step(ppc_cpu_t *c)
 
 const emu_backend_t ppc_backend_interp = {
     .name = "interp",
-    .run  = ppc_run,
+    .run = ppc_run,
 };
 
 const emu_backend_t *ppc_backend = &ppc_backend_interp;

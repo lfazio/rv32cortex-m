@@ -31,7 +31,7 @@ emu_run_outcome_t emu_run_system(emu_system_t *sys, const emu_run_env_t *env,
     for (;;) {
         uint32_t did = 0u;
         uint32_t slice = env->slice;
-        bool     all_idle = false;
+        bool all_idle = false;
 
         /*
          * Clamp the slice to what is left of the cap, so a run stops near
@@ -69,11 +69,9 @@ emu_run_outcome_t emu_run_system(emu_system_t *sys, const emu_run_env_t *env,
             return EMU_RUN_OUTCOME_RELOAD;
         }
 
-        if (env->max_insn != 0u &&
-            *retired_total >= (uint64_t)env->max_insn) {
+        if (env->max_insn != 0u && *retired_total >= (uint64_t)env->max_insn) {
             return EMU_RUN_OUTCOME_CAPPED;
         }
-
 
         if (env->advance_time != NULL) {
             env->advance_time(sys, *retired_total, did);

@@ -66,8 +66,7 @@ static void ipir_deliver(g4mh_ipir_t *p, unsigned n, unsigned x)
  * REQm[x] <- 1. Sets the request unconditionally and the flag only if
  * the receiver has enabled this sender.
  */
-static void ipir_request(g4mh_ipir_t *p, unsigned n, unsigned m,
-                         unsigned x)
+static void ipir_request(g4mh_ipir_t *p, unsigned n, unsigned m, unsigned x)
 {
     p->req[n][m] |= (uint8_t)(1u << x);
     if (x < G4MH_INTERCPU_PES && ((p->en[n][x] >> m) & 1u) != 0u) {
@@ -77,8 +76,7 @@ static void ipir_request(g4mh_ipir_t *p, unsigned n, unsigned m,
 }
 
 /* FCLRm[x] <- 1: the *receiver* m dismissing sender x. */
-static void ipir_flag_clear(g4mh_ipir_t *p, unsigned n, unsigned m,
-                            unsigned x)
+static void ipir_flag_clear(g4mh_ipir_t *p, unsigned n, unsigned m, unsigned x)
 {
     p->flg[n][m] &= (uint8_t)~(1u << x);
     if (x < G4MH_INTERCPU_PES) {
@@ -87,8 +85,7 @@ static void ipir_flag_clear(g4mh_ipir_t *p, unsigned n, unsigned m,
 }
 
 /* RCLRm[x] <- 1: the *sender* m withdrawing its request to x. */
-static void ipir_req_clear(g4mh_ipir_t *p, unsigned n, unsigned m,
-                           unsigned x)
+static void ipir_req_clear(g4mh_ipir_t *p, unsigned n, unsigned m, unsigned x)
 {
     p->req[n][m] &= (uint8_t)~(1u << x);
     if (x < G4MH_INTERCPU_PES && ((p->en[n][x] >> m) & 1u) != 0u) {
@@ -103,7 +100,7 @@ static void ipir_req_clear(g4mh_ipir_t *p, unsigned n, unsigned m,
 static bool ipir_decode(uint32_t off, unsigned self_pe, unsigned *chan,
                         unsigned *pe, unsigned *reg)
 {
-    if (off < 0x800u) {                     /* the self region          */
+    if (off < 0x800u) { /* the self region          */
         const uint32_t n = off / 0x20u;
         const uint32_t r = off % 0x20u;
 
@@ -111,37 +108,59 @@ static bool ipir_decode(uint32_t off, unsigned self_pe, unsigned *chan,
             return false;
         }
         switch (r) {
-        case G4MH_IPIR_ENS:   *reg = G4MH_IPIR_EN;   break;
-        case G4MH_IPIR_FLGS:  *reg = G4MH_IPIR_FLG;  break;
-        case G4MH_IPIR_FCLRS: *reg = G4MH_IPIR_FCLR; break;
-        case G4MH_IPIR_REQS:  *reg = G4MH_IPIR_REQ;  break;
-        case G4MH_IPIR_RCLRS: *reg = G4MH_IPIR_RCLR; break;
-        default: return false;
+        case G4MH_IPIR_ENS:
+            *reg = G4MH_IPIR_EN;
+            break;
+        case G4MH_IPIR_FLGS:
+            *reg = G4MH_IPIR_FLG;
+            break;
+        case G4MH_IPIR_FCLRS:
+            *reg = G4MH_IPIR_FCLR;
+            break;
+        case G4MH_IPIR_REQS:
+            *reg = G4MH_IPIR_REQ;
+            break;
+        case G4MH_IPIR_RCLRS:
+            *reg = G4MH_IPIR_RCLR;
+            break;
+        default:
+            return false;
         }
         *chan = (unsigned)n;
-        *pe   = self_pe;
+        *pe = self_pe;
         return true;
     }
 
     {
         const uint32_t rel = off - 0x800u;
-        const uint32_t m   = rel / 0x100u;
-        const uint32_t n   = (rel % 0x100u) / 0x20u;
-        const uint32_t r   = rel % 0x20u;
+        const uint32_t m = rel / 0x100u;
+        const uint32_t n = (rel % 0x100u) / 0x20u;
+        const uint32_t r = rel % 0x20u;
 
         if (m >= G4MH_INTERCPU_PES || n >= G4MH_IPIR_CHANNELS) {
             return false;
         }
         switch (r) {
-        case G4MH_IPIR_EN & 0x1Fu:   *reg = G4MH_IPIR_EN;   break;
-        case G4MH_IPIR_FLG & 0x1Fu:  *reg = G4MH_IPIR_FLG;  break;
-        case G4MH_IPIR_FCLR & 0x1Fu: *reg = G4MH_IPIR_FCLR; break;
-        case G4MH_IPIR_REQ & 0x1Fu:  *reg = G4MH_IPIR_REQ;  break;
-        case G4MH_IPIR_RCLR & 0x1Fu: *reg = G4MH_IPIR_RCLR; break;
-        default: return false;
+        case G4MH_IPIR_EN & 0x1Fu:
+            *reg = G4MH_IPIR_EN;
+            break;
+        case G4MH_IPIR_FLG & 0x1Fu:
+            *reg = G4MH_IPIR_FLG;
+            break;
+        case G4MH_IPIR_FCLR & 0x1Fu:
+            *reg = G4MH_IPIR_FCLR;
+            break;
+        case G4MH_IPIR_REQ & 0x1Fu:
+            *reg = G4MH_IPIR_REQ;
+            break;
+        case G4MH_IPIR_RCLR & 0x1Fu:
+            *reg = G4MH_IPIR_RCLR;
+            break;
+        default:
+            return false;
         }
         *chan = (unsigned)n;
-        *pe   = (unsigned)m;
+        *pe = (unsigned)m;
         return true;
     }
 }
@@ -164,10 +183,17 @@ static emu_fault_t ipir_read(void *ctx, uint32_t off, uint32_t size,
     }
 
     switch (reg) {
-    case G4MH_IPIR_EN:  *out = ip->en[n][pe];  break;
-    case G4MH_IPIR_FLG: *out = ip->flg[n][pe]; break;
-    case G4MH_IPIR_REQ: *out = ip->req[n][pe]; break;
-    default:            break;      /* FCLR and RCLR are write-only */
+    case G4MH_IPIR_EN:
+        *out = ip->en[n][pe];
+        break;
+    case G4MH_IPIR_FLG:
+        *out = ip->flg[n][pe];
+        break;
+    case G4MH_IPIR_REQ:
+        *out = ip->req[n][pe];
+        break;
+    default:
+        break; /* FCLR and RCLR are write-only */
     }
     return EMU_FAULT_NONE;
 }
@@ -221,12 +247,12 @@ static emu_fault_t ipir_write(void *ctx, uint32_t off, uint32_t size,
         break;
 
     default:
-        break;                      /* FLG is read-only */
+        break; /* FLG is read-only */
     }
     return EMU_FAULT_NONE;
 }
 
 const emu_dev_ops_t g4mh_ipir_ops = {
-    .read  = ipir_read,
+    .read = ipir_read,
     .write = ipir_write,
 };

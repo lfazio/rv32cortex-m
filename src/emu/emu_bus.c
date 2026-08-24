@@ -53,7 +53,7 @@ static EMU_ALWAYS_INLINE uint32_t width_bit(uint32_t size)
  * untouched on failure.
  */
 static emu_region_t *check(emu_bus_t *bus, uint32_t addr, uint32_t size,
-                          uint32_t perm, uint32_t *off)
+                           uint32_t perm, uint32_t *off)
 {
     emu_region_t *r = emu_bus_find(bus, addr);
     if (EMU_UNLIKELY(r == NULL)) {
@@ -62,7 +62,7 @@ static emu_region_t *check(emu_bus_t *bus, uint32_t addr, uint32_t size,
     const uint32_t o = addr - r->base;
     /* r->size >= 4 is enforced by emu_bus_add, so this cannot underflow. */
     if (EMU_UNLIKELY(o > r->size - size)) {
-        return NULL;    /* access straddles the end of the region */
+        return NULL; /* access straddles the end of the region */
     }
     if (EMU_UNLIKELY((r->perm & perm) == 0u)) {
         return NULL;
@@ -108,50 +108,80 @@ bool emu_bus_add(emu_bus_t *bus, const emu_region_t *r)
     return true;
 }
 
-bool emu_bus_add_ram(emu_bus_t *bus, const char *name,
-                    uint32_t base, void *buf, uint32_t size)
+bool emu_bus_add_ram(emu_bus_t *bus, const char *name, uint32_t base, void *buf,
+                     uint32_t size)
 {
     const emu_region_t r = {
-        .base = base, .size = size, .host = buf, .host_base = 0,
-        .ops = NULL, .ctx = NULL, .name = name,
-        .kind = EMU_MEM_RAM, .perm = EMU_PERM_RWX, .widths = EMU_WANY, .flags = 0,
+        .base = base,
+        .size = size,
+        .host = buf,
+        .host_base = 0,
+        .ops = NULL,
+        .ctx = NULL,
+        .name = name,
+        .kind = EMU_MEM_RAM,
+        .perm = EMU_PERM_RWX,
+        .widths = EMU_WANY,
+        .flags = 0,
     };
     return emu_bus_add(bus, &r);
 }
 
-bool emu_bus_add_rom(emu_bus_t *bus, const char *name,
-                    uint32_t base, const void *buf, uint32_t size)
+bool emu_bus_add_rom(emu_bus_t *bus, const char *name, uint32_t base,
+                     const void *buf, uint32_t size)
 {
     const emu_region_t r = {
-        .base = base, .size = size,
+        .base = base,
+        .size = size,
         /* The cast drops const; the ROM kind is what actually blocks writes. */
-        .host = (void *)(uintptr_t)buf, .host_base = 0,
-        .ops = NULL, .ctx = NULL, .name = name,
-        .kind = EMU_MEM_ROM, .perm = EMU_PERM_RX, .widths = EMU_WANY, .flags = 0,
+        .host = (void *)(uintptr_t)buf,
+        .host_base = 0,
+        .ops = NULL,
+        .ctx = NULL,
+        .name = name,
+        .kind = EMU_MEM_ROM,
+        .perm = EMU_PERM_RX,
+        .widths = EMU_WANY,
+        .flags = 0,
     };
     return emu_bus_add(bus, &r);
 }
 
-bool emu_bus_add_mmio(emu_bus_t *bus, const char *name,
-                     uint32_t base, uint32_t size,
-                     const emu_dev_ops_t *ops, void *ctx)
+bool emu_bus_add_mmio(emu_bus_t *bus, const char *name, uint32_t base,
+                      uint32_t size, const emu_dev_ops_t *ops, void *ctx)
 {
     const emu_region_t r = {
-        .base = base, .size = size, .host = NULL, .host_base = 0,
-        .ops = ops, .ctx = ctx, .name = name,
-        .kind = EMU_MEM_MMIO, .perm = EMU_PERM_RW, .widths = EMU_WANY, .flags = 0,
+        .base = base,
+        .size = size,
+        .host = NULL,
+        .host_base = 0,
+        .ops = ops,
+        .ctx = ctx,
+        .name = name,
+        .kind = EMU_MEM_MMIO,
+        .perm = EMU_PERM_RW,
+        .widths = EMU_WANY,
+        .flags = 0,
     };
     return emu_bus_add(bus, &r);
 }
 
-bool emu_bus_add_passthru(emu_bus_t *bus, const char *name,
-                         uint32_t base, uint32_t size, uintptr_t host_base,
-                         uint8_t perm, uint8_t widths)
+bool emu_bus_add_passthru(emu_bus_t *bus, const char *name, uint32_t base,
+                          uint32_t size, uintptr_t host_base, uint8_t perm,
+                          uint8_t widths)
 {
     const emu_region_t r = {
-        .base = base, .size = size, .host = NULL, .host_base = host_base,
-        .ops = NULL, .ctx = NULL, .name = name,
-        .kind = EMU_MEM_PASSTHRU, .perm = perm, .widths = widths, .flags = 0,
+        .base = base,
+        .size = size,
+        .host = NULL,
+        .host_base = host_base,
+        .ops = NULL,
+        .ctx = NULL,
+        .name = name,
+        .kind = EMU_MEM_PASSTHRU,
+        .perm = perm,
+        .widths = widths,
+        .flags = 0,
     };
     return emu_bus_add(bus, &r);
 }
@@ -210,7 +240,7 @@ static void arm_data_cache(emu_bus_t *bus, const emu_region_t *r)
 }
 
 emu_fault_t emu_bus_read_slow(emu_bus_t *bus, uint32_t addr, uint32_t size,
-                          uint32_t *out)
+                              uint32_t *out)
 {
     uint32_t off;
     emu_region_t *r = check(bus, addr, size, EMU_PERM_R, &off);
@@ -227,9 +257,15 @@ emu_fault_t emu_bus_read_slow(emu_bus_t *bus, uint32_t addr, uint32_t size,
         const uint8_t *p = (const uint8_t *)r->host + off;
         /* Callers guarantee natural alignment, so these loads are aligned. */
         switch (size) {
-        case 1:  *out = *p; break;
-        case 2:  *out = *(const uint16_t *)(const void *)p; break;
-        default: *out = *(const uint32_t *)(const void *)p; break;
+        case 1:
+            *out = *p;
+            break;
+        case 2:
+            *out = *(const uint16_t *)(const void *)p;
+            break;
+        default:
+            *out = *(const uint32_t *)(const void *)p;
+            break;
         }
         /*
          * RAM and ROM compose bytes, so they are the byte-order case. The
@@ -248,20 +284,26 @@ emu_fault_t emu_bus_read_slow(emu_bus_t *bus, uint32_t addr, uint32_t size,
         volatile const uint8_t *p =
             (volatile const uint8_t *)(r->host_base + off);
         switch (size) {
-        case 1:  *out = *p; break;
-        case 2:  *out = *(volatile const uint16_t *)(volatile const void *)p; break;
-        default: *out = *(volatile const uint32_t *)(volatile const void *)p; break;
+        case 1:
+            *out = *p;
+            break;
+        case 2:
+            *out = *(volatile const uint16_t *)(volatile const void *)p;
+            break;
+        default:
+            *out = *(volatile const uint32_t *)(volatile const void *)p;
+            break;
         }
         return EMU_FAULT_NONE;
     }
 
-    default:  /* EMU_MEM_MMIO */
+    default: /* EMU_MEM_MMIO */
         return r->ops->read(r->ctx, off, size, out);
     }
 }
 
 emu_fault_t emu_bus_write_slow(emu_bus_t *bus, uint32_t addr, uint32_t size,
-                           uint32_t val)
+                               uint32_t val)
 {
     uint32_t off;
     emu_region_t *r = check(bus, addr, size, EMU_PERM_W, &off);
@@ -278,9 +320,15 @@ emu_fault_t emu_bus_write_slow(emu_bus_t *bus, uint32_t addr, uint32_t size,
         /* RAM composes bytes; PASSTHRU and MMIO below take a value. */
         val = EMU_BUS_ORDER(bus, val, size);
         switch (size) {
-        case 1:  *p = (uint8_t)val; break;
-        case 2:  *(uint16_t *)(void *)p = (uint16_t)val; break;
-        default: *(uint32_t *)(void *)p = val; break;
+        case 1:
+            *p = (uint8_t)val;
+            break;
+        case 2:
+            *(uint16_t *)(void *)p = (uint16_t)val;
+            break;
+        default:
+            *(uint32_t *)(void *)p = val;
+            break;
         }
         if (r->perm == EMU_PERM_RWX) {
             arm_data_cache(bus, r);
@@ -291,9 +339,15 @@ emu_fault_t emu_bus_write_slow(emu_bus_t *bus, uint32_t addr, uint32_t size,
     case EMU_MEM_PASSTHRU: {
         volatile uint8_t *p = (volatile uint8_t *)(r->host_base + off);
         switch (size) {
-        case 1:  *p = (uint8_t)val; break;
-        case 2:  *(volatile uint16_t *)(volatile void *)p = (uint16_t)val; break;
-        default: *(volatile uint32_t *)(volatile void *)p = val; break;
+        case 1:
+            *p = (uint8_t)val;
+            break;
+        case 2:
+            *(volatile uint16_t *)(volatile void *)p = (uint16_t)val;
+            break;
+        default:
+            *(volatile uint32_t *)(volatile void *)p = val;
+            break;
         }
         return EMU_FAULT_NONE;
     }
@@ -301,7 +355,7 @@ emu_fault_t emu_bus_write_slow(emu_bus_t *bus, uint32_t addr, uint32_t size,
     case EMU_MEM_MMIO:
         return r->ops->write(r->ctx, off, size, val);
 
-    default:  /* EMU_MEM_ROM: perm check above should have caught this */
+    default: /* EMU_MEM_ROM: perm check above should have caught this */
         return EMU_FAULT_STORE;
     }
 }
@@ -320,7 +374,8 @@ emu_fault_t emu_bus_fetch16_slow(emu_bus_t *bus, uint32_t addr, uint16_t *out)
     switch (r->kind) {
     case EMU_MEM_RAM:
     case EMU_MEM_ROM:
-        *out = *(const uint16_t *)(const void *)((const uint8_t *)r->host + off);
+        *out =
+            *(const uint16_t *)(const void *)((const uint8_t *)r->host + off);
         *out = (uint16_t)EMU_BUS_ORDER(bus, *out, 2u);
         /*
          * span is size-1, not size: a 16-bit fetch at the final byte of the
@@ -332,8 +387,9 @@ emu_fault_t emu_bus_fetch16_slow(emu_bus_t *bus, uint32_t addr, uint16_t *out)
         return EMU_FAULT_NONE;
 
     case EMU_MEM_PASSTHRU:
-        *out = *(volatile const uint16_t *)(volatile const void *)
-               (r->host_base + off);
+        *out =
+            *(volatile const uint16_t *)(volatile const void *)(r->host_base +
+                                                                off);
         return EMU_FAULT_NONE;
 
     default:

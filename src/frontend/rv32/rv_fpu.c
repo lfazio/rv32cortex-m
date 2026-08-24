@@ -45,16 +45,28 @@
 /* ------------------------------------------------------------------ */
 
 /* The canonical quiet NaN the spec requires every NaN-producing op to give. */
-#define F_CANON_NAN  0x7FC00000u
+#define F_CANON_NAN 0x7FC00000u
 
-#define F_SIGN(x)    ((x) & 0x80000000u)
-#define F_EXP(x)     (((x) >> 23) & 0xFFu)
-#define F_MANT(x)    ((x) & 0x007FFFFFu)
+#define F_SIGN(x) ((x) & 0x80000000u)
+#define F_EXP(x) (((x) >> 23) & 0xFFu)
+#define F_MANT(x) ((x) & 0x007FFFFFu)
 
-static bool f_is_nan(uint32_t x)  { return F_EXP(x) == 0xFFu && F_MANT(x) != 0u; }
-static bool f_is_snan(uint32_t x) { return f_is_nan(x) && (F_MANT(x) & 0x400000u) == 0u; }
-static bool f_is_inf(uint32_t x)  { return F_EXP(x) == 0xFFu && F_MANT(x) == 0u; }
-static bool f_is_zero(uint32_t x) { return (x & 0x7FFFFFFFu) == 0u; }
+static bool f_is_nan(uint32_t x)
+{
+    return F_EXP(x) == 0xFFu && F_MANT(x) != 0u;
+}
+static bool f_is_snan(uint32_t x)
+{
+    return f_is_nan(x) && (F_MANT(x) & 0x400000u) == 0u;
+}
+static bool f_is_inf(uint32_t x)
+{
+    return F_EXP(x) == 0xFFu && F_MANT(x) == 0u;
+}
+static bool f_is_zero(uint32_t x)
+{
+    return (x & 0x7FFFFFFFu) == 0u;
+}
 
 static float f_bits_to_float(uint32_t b)
 {
@@ -80,7 +92,10 @@ static uint32_t f_rm(const rv_hart_t *h, uint32_t rm)
     return (rm == FRM_DYN) ? ((h->fcsr >> 5) & 0x7u) : rm;
 }
 
-static bool f_rm_valid(uint32_t rm) { return rm <= FRM_RMM; }
+static bool f_rm_valid(uint32_t rm)
+{
+    return rm <= FRM_RMM;
+}
 
 /*
  * Arm the host FPU for one operation. RMM has no C equivalent and is set up
@@ -89,17 +104,22 @@ static bool f_rm_valid(uint32_t rm) { return rm <= FRM_RMM; }
  */
 static void f_begin(uint32_t rm)
 {
-    softfloat_roundingMode = (uint_fast8_t)rm;   /* identical encodings */
+    softfloat_roundingMode = (uint_fast8_t)rm; /* identical encodings */
     softfloat_exceptionFlags = 0u;
 }
 
 static uint32_t f_end(float32_t r, uint32_t *flags)
 {
-    *flags |= (uint32_t)softfloat_exceptionFlags;   /* identical bit values */
+    *flags |= (uint32_t)softfloat_exceptionFlags; /* identical bit values */
     return r.v;
 }
 
-static float32_t f_v(uint32_t bits) { float32_t f; f.v = bits; return f; }
+static float32_t f_v(uint32_t bits)
+{
+    float32_t f;
+    f.v = bits;
+    return f;
+}
 
 /* ------------------------------------------------------------------ */
 /* The register file, and NaN-boxing                                   */
@@ -138,23 +158,43 @@ static void fw32(rv_hart_t *h, unsigned r, uint32_t v)
 
 #if RV_EXT_D
 
-#define D_CANON_NAN  UINT64_C(0x7FF8000000000000)
-#define D_SIGN(x)    ((x) & UINT64_C(0x8000000000000000))
-#define D_EXP(x)     (((x) >> 52) & 0x7FFu)
-#define D_MANT(x)    ((x) & UINT64_C(0x000FFFFFFFFFFFFF))
+#define D_CANON_NAN UINT64_C(0x7FF8000000000000)
+#define D_SIGN(x) ((x) & UINT64_C(0x8000000000000000))
+#define D_EXP(x) (((x) >> 52) & 0x7FFu)
+#define D_MANT(x) ((x) & UINT64_C(0x000FFFFFFFFFFFFF))
 
-static bool d_is_nan(uint64_t x)  { return D_EXP(x) == 0x7FFu && D_MANT(x) != 0u; }
+static bool d_is_nan(uint64_t x)
+{
+    return D_EXP(x) == 0x7FFu && D_MANT(x) != 0u;
+}
 static bool d_is_snan(uint64_t x)
 {
     return d_is_nan(x) && (D_MANT(x) & UINT64_C(0x0008000000000000)) == 0u;
 }
-static bool d_is_inf(uint64_t x)  { return D_EXP(x) == 0x7FFu && D_MANT(x) == 0u; }
-static bool d_is_zero(uint64_t x) { return (x & UINT64_C(0x7FFFFFFFFFFFFFFF)) == 0u; }
+static bool d_is_inf(uint64_t x)
+{
+    return D_EXP(x) == 0x7FFu && D_MANT(x) == 0u;
+}
+static bool d_is_zero(uint64_t x)
+{
+    return (x & UINT64_C(0x7FFFFFFFFFFFFFFF)) == 0u;
+}
 
-static float64_t d_v(uint64_t bits) { float64_t f; f.v = bits; return f; }
+static float64_t d_v(uint64_t bits)
+{
+    float64_t f;
+    f.v = bits;
+    return f;
+}
 
-static uint64_t fr64(const rv_hart_t *h, unsigned r) { return h->f[r]; }
-static void fw64(rv_hart_t *h, unsigned r, uint64_t v) { h->f[r] = v; }
+static uint64_t fr64(const rv_hart_t *h, unsigned r)
+{
+    return h->f[r];
+}
+static void fw64(rv_hart_t *h, unsigned r, uint64_t v)
+{
+    h->f[r] = v;
+}
 
 static uint64_t d_end(float64_t r, uint32_t *flags)
 {
@@ -173,8 +213,7 @@ static uint64_t d_end(float64_t r, uint32_t *flags)
  * passing widths around and the one thing that must not drift between
  * them is which NaN is canonical.
  */
-static bool d_nan_result(uint64_t a, uint64_t b, uint64_t *out,
-                         uint32_t *flags)
+static bool d_nan_result(uint64_t a, uint64_t b, uint64_t *out, uint32_t *flags)
 {
     if (d_is_snan(a) || d_is_snan(b)) {
         *flags |= FFLAG_NV;
@@ -192,10 +231,18 @@ static uint32_t d_classify(uint64_t a)
 {
     const bool neg = D_SIGN(a) != 0u;
 
-    if (d_is_inf(a))  { return neg ? (1u << 0) : (1u << 7); }
-    if (d_is_zero(a)) { return neg ? (1u << 3) : (1u << 4); }
-    if (d_is_nan(a))  { return d_is_snan(a) ? (1u << 8) : (1u << 9); }
-    if (D_EXP(a) == 0u) { return neg ? (1u << 2) : (1u << 5); }
+    if (d_is_inf(a)) {
+        return neg ? (1u << 0) : (1u << 7);
+    }
+    if (d_is_zero(a)) {
+        return neg ? (1u << 3) : (1u << 4);
+    }
+    if (d_is_nan(a)) {
+        return d_is_snan(a) ? (1u << 8) : (1u << 9);
+    }
+    if (D_EXP(a) == 0u) {
+        return neg ? (1u << 2) : (1u << 5);
+    }
     return neg ? (1u << 1) : (1u << 6);
 }
 
@@ -229,7 +276,7 @@ static uint32_t f_to_int(uint32_t a, bool is_signed, uint32_t rm,
 
     if (f_is_nan(a)) {
         *flags |= FFLAG_NV;
-        return lim_max;          /* NaN converts to the maximum, not the min */
+        return lim_max; /* NaN converts to the maximum, not the min */
     }
 
     /*
@@ -238,9 +285,9 @@ static uint32_t f_to_int(uint32_t a, bool is_signed, uint32_t rm,
      * rather than the minimum. `exact` asks it to raise inexact.
      */
     softfloat_exceptionFlags = 0u;
-    const uint32_t sres = is_signed
-        ? (uint32_t)f32_to_i32(f_v(a), (uint_fast8_t)rm, true)
-        : (uint32_t)f32_to_ui32(f_v(a), (uint_fast8_t)rm, true);
+    const uint32_t sres =
+        is_signed ? (uint32_t)f32_to_i32(f_v(a), (uint_fast8_t)rm, true)
+                  : (uint32_t)f32_to_ui32(f_v(a), (uint_fast8_t)rm, true);
     *flags |= (uint32_t)softfloat_exceptionFlags;
     return sres;
 }
@@ -253,11 +300,19 @@ static uint32_t f_classify(uint32_t a)
 {
     const bool neg = F_SIGN(a) != 0u;
 
-    if (f_is_inf(a))  { return neg ? (1u << 0) : (1u << 7); }
-    if (f_is_nan(a))  { return f_is_snan(a) ? (1u << 8) : (1u << 9); }
-    if (f_is_zero(a)) { return neg ? (1u << 3) : (1u << 4); }
-    if (F_EXP(a) == 0u) { return neg ? (1u << 2) : (1u << 5); }  /* subnormal */
-    return neg ? (1u << 1) : (1u << 6);                          /* normal   */
+    if (f_is_inf(a)) {
+        return neg ? (1u << 0) : (1u << 7);
+    }
+    if (f_is_nan(a)) {
+        return f_is_snan(a) ? (1u << 8) : (1u << 9);
+    }
+    if (f_is_zero(a)) {
+        return neg ? (1u << 3) : (1u << 4);
+    }
+    if (F_EXP(a) == 0u) {
+        return neg ? (1u << 2) : (1u << 5);
+    } /* subnormal */
+    return neg ? (1u << 1) : (1u << 6); /* normal   */
 }
 
 /* ------------------------------------------------------------------ */
@@ -285,8 +340,8 @@ static void f_dirty(rv_hart_t *h)
  * order as the single-precision ones and can be read beside them.
  */
 static rv_exc_t fp_op_d(rv_hart_t *h, uint32_t insn, uint32_t funct5,
-                        uint32_t rd, uint32_t rm, uint32_t rs1,
-                        uint32_t rs2, uint32_t *tval)
+                        uint32_t rd, uint32_t rm, uint32_t rs1, uint32_t rs2,
+                        uint32_t *tval)
 {
     const uint64_t a = fr64(h, rs1);
     const uint64_t b = fr64(h, rs2);
@@ -294,9 +349,9 @@ static rv_exc_t fp_op_d(rv_hart_t *h, uint32_t insn, uint32_t funct5,
     uint64_t res;
 
     switch (funct5) {
-    case 0x00u:   /* FADD.D */
-    case 0x01u:   /* FSUB.D */
-    case 0x02u:   /* FMUL.D */
+    case 0x00u: /* FADD.D */
+    case 0x01u: /* FSUB.D */
+    case 0x02u: /* FMUL.D */
     case 0x03u: { /* FDIV.D */
         if (!f_rm_valid(f_rm(h, rm))) {
             *tval = insn;
@@ -308,16 +363,24 @@ static rv_exc_t fp_op_d(rv_hart_t *h, uint32_t insn, uint32_t funct5,
         f_begin(f_rm(h, rm));
         float64_t sr;
         switch (funct5) {
-        case 0x03u: sr = f64_div(d_v(a), d_v(b)); break;
-        case 0x02u: sr = f64_mul(d_v(a), d_v(b)); break;
-        case 0x01u: sr = f64_sub(d_v(a), d_v(b)); break;
-        default:    sr = f64_add(d_v(a), d_v(b)); break;
+        case 0x03u:
+            sr = f64_div(d_v(a), d_v(b));
+            break;
+        case 0x02u:
+            sr = f64_mul(d_v(a), d_v(b));
+            break;
+        case 0x01u:
+            sr = f64_sub(d_v(a), d_v(b));
+            break;
+        default:
+            sr = f64_add(d_v(a), d_v(b));
+            break;
         }
         res = d_end(sr, &flags);
         break;
     }
 
-    case 0x0Bu:   /* FSQRT.D */
+    case 0x0Bu: /* FSQRT.D */
         if (rs2 != 0u) {
             *tval = insn;
             return RV_EXC_ILLEGAL_INSN;
@@ -326,17 +389,25 @@ static rv_exc_t fp_op_d(rv_hart_t *h, uint32_t insn, uint32_t funct5,
         res = d_end(f64_sqrt(d_v(a)), &flags);
         break;
 
-    case 0x04u:   /* FSGNJ.D / FSGNJN.D / FSGNJX.D */
+    case 0x04u: /* FSGNJ.D / FSGNJN.D / FSGNJX.D */
         switch (rm) {
-        case 0: res = (a & UINT64_C(0x7FFFFFFFFFFFFFFF)) | D_SIGN(b); break;
-        case 1: res = (a & UINT64_C(0x7FFFFFFFFFFFFFFF)) |
-                      (D_SIGN(b) ^ UINT64_C(0x8000000000000000)); break;
-        case 2: res = a ^ D_SIGN(b); break;
-        default: *tval = insn; return RV_EXC_ILLEGAL_INSN;
+        case 0:
+            res = (a & UINT64_C(0x7FFFFFFFFFFFFFFF)) | D_SIGN(b);
+            break;
+        case 1:
+            res = (a & UINT64_C(0x7FFFFFFFFFFFFFFF)) |
+                  (D_SIGN(b) ^ UINT64_C(0x8000000000000000));
+            break;
+        case 2:
+            res = a ^ D_SIGN(b);
+            break;
+        default:
+            *tval = insn;
+            return RV_EXC_ILLEGAL_INSN;
         }
         break;
 
-    case 0x05u:   /* FMIN.D / FMAX.D */
+    case 0x05u: /* FMIN.D / FMAX.D */
         if (rm > 1u) {
             *tval = insn;
             return RV_EXC_ILLEGAL_INSN;
@@ -367,17 +438,27 @@ static rv_exc_t fp_op_d(rv_hart_t *h, uint32_t insn, uint32_t funct5,
         if (d_is_nan(a) || d_is_nan(b)) {
             /* FEQ is quiet: only a signalling NaN raises invalid. */
             if (rm == 2u) {
-                if (d_is_snan(a) || d_is_snan(b)) { flags |= FFLAG_NV; }
+                if (d_is_snan(a) || d_is_snan(b)) {
+                    flags |= FFLAG_NV;
+                }
             } else {
                 flags |= FFLAG_NV;
             }
             r = 0u;
         } else {
             switch (rm) {
-            case 0: r = f64_le(d_v(a), d_v(b)); break;
-            case 1: r = f64_lt(d_v(a), d_v(b)); break;
-            case 2: r = f64_eq(d_v(a), d_v(b)); break;
-            default: *tval = insn; return RV_EXC_ILLEGAL_INSN;
+            case 0:
+                r = f64_le(d_v(a), d_v(b));
+                break;
+            case 1:
+                r = f64_lt(d_v(a), d_v(b));
+                break;
+            case 2:
+                r = f64_eq(d_v(a), d_v(b));
+                break;
+            default:
+                *tval = insn;
+                return RV_EXC_ILLEGAL_INSN;
             }
         }
         h->fcsr |= flags;
@@ -396,8 +477,8 @@ static rv_exc_t fp_op_d(rv_hart_t *h, uint32_t insn, uint32_t funct5,
         softfloat_exceptionFlags = 0u;
         softfloat_roundingMode = (uint_fast8_t)f_rm(h, rm);
         r = (rs2 == 0u)
-          ? (uint32_t)f64_to_i32(d_v(a), softfloat_roundingMode, true)
-          : (uint32_t)f64_to_ui32(d_v(a), softfloat_roundingMode, true);
+                ? (uint32_t)f64_to_i32(d_v(a), softfloat_roundingMode, true)
+                : (uint32_t)f64_to_ui32(d_v(a), softfloat_roundingMode, true);
         flags |= (uint32_t)softfloat_exceptionFlags;
         h->fcsr |= flags;
         h->x[rd] = r;
@@ -415,7 +496,7 @@ static rv_exc_t fp_op_d(rv_hart_t *h, uint32_t insn, uint32_t funct5,
         return RV_EXC_NONE;
     }
 
-    case 0x1Au:   /* FCVT.D.W / FCVT.D.WU */
+    case 0x1Au: /* FCVT.D.W / FCVT.D.WU */
         if (rs2 > 1u) {
             *tval = insn;
             return RV_EXC_ILLEGAL_INSN;
@@ -424,10 +505,11 @@ static rv_exc_t fp_op_d(rv_hart_t *h, uint32_t insn, uint32_t funct5,
          * but f_begin still runs, because SoftFloat reads the mode. */
         f_begin(f_rm(h, rm));
         res = d_end((rs2 == 0u) ? i32_to_f64((int32_t)h->x[rs1])
-                                : ui32_to_f64(h->x[rs1]), &flags);
+                                : ui32_to_f64(h->x[rs1]),
+                    &flags);
         break;
 
-    case 0x08u:   /* FCVT.D.S -- widening, in the D group */
+    case 0x08u: /* FCVT.D.S -- widening, in the D group */
         if (rs2 != 0u) {
             *tval = insn;
             return RV_EXC_ILLEGAL_INSN;
@@ -462,8 +544,8 @@ static rv_exc_t fp_op_d(rv_hart_t *h, uint32_t insn, uint32_t funct5,
 rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
 {
     const uint32_t opcode = insn & 0x7Fu;
-    const uint32_t rd  = (insn >> 7) & 0x1Fu;
-    const uint32_t rm  = (insn >> 12) & 0x7u;
+    const uint32_t rd = (insn >> 7) & 0x1Fu;
+    const uint32_t rm = (insn >> 12) & 0x7u;
     const uint32_t rs1 = (insn >> 15) & 0x1Fu;
     const uint32_t rs2 = (insn >> 20) & 0x1Fu;
     const uint32_t rs3 = (insn >> 27) & 0x1Fu;
@@ -557,13 +639,13 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
     }
 
     /* --- fused multiply-add ------------------------------------------ */
-    if (opcode == OP_MADD || opcode == OP_MSUB ||
-        opcode == OP_NMSUB || opcode == OP_NMADD) {
+    if (opcode == OP_MADD || opcode == OP_MSUB || opcode == OP_NMSUB ||
+        opcode == OP_NMADD) {
         const uint32_t fmt = funct7 & 3u;
 
         if (fmt > (RV_EXT_D ? 1u : 0u)) {
             *tval = insn;
-            return RV_EXC_ILLEGAL_INSN;   /* only S, and D when built in */
+            return RV_EXC_ILLEGAL_INSN; /* only S, and D when built in */
         }
 #if RV_EXT_D
         if (fmt == 1u) {
@@ -582,7 +664,7 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
                 dres = D_CANON_NAN;
             } else if ((d_is_zero(a) && d_is_inf(b)) ||
                        (d_is_inf(a) && d_is_zero(b))) {
-                flags |= FFLAG_NV;            /* 0 * inf is invalid */
+                flags |= FFLAG_NV; /* 0 * inf is invalid */
                 dres = D_CANON_NAN;
             } else {
                 /*
@@ -595,12 +677,12 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
                  * answer for a zero result, whose sign the rounding
                  * decides.
                  */
-                const uint64_t sa = (opcode == OP_NMSUB ||
-                                     opcode == OP_NMADD)
-                                  ? (a ^ UINT64_C(0x8000000000000000)) : a;
-                const uint64_t sc = (opcode == OP_MSUB ||
-                                     opcode == OP_NMADD)
-                                  ? (c ^ UINT64_C(0x8000000000000000)) : c;
+                const uint64_t sa = (opcode == OP_NMSUB || opcode == OP_NMADD)
+                                        ? (a ^ UINT64_C(0x8000000000000000))
+                                        : a;
+                const uint64_t sc = (opcode == OP_MSUB || opcode == OP_NMADD)
+                                        ? (c ^ UINT64_C(0x8000000000000000))
+                                        : c;
 
                 f_begin(f_rm(h, rm));
                 dres = d_end(f64_mulAdd(d_v(sa), d_v(b), d_v(sc)), &flags);
@@ -621,7 +703,7 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
             res = F_CANON_NAN;
         } else if ((f_is_zero(a) && f_is_inf(b)) ||
                    (f_is_inf(a) && f_is_zero(b))) {
-            flags |= FFLAG_NV;            /* 0 * inf is invalid */
+            flags |= FFLAG_NV; /* 0 * inf is invalid */
             res = F_CANON_NAN;
         } else {
             /*
@@ -632,8 +714,12 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
              * subtracting ones.
              */
             uint32_t sa = a, sc = c;
-            if (opcode == OP_NMSUB || opcode == OP_NMADD) { sa ^= 0x80000000u; }
-            if (opcode == OP_MSUB  || opcode == OP_NMADD) { sc ^= 0x80000000u; }
+            if (opcode == OP_NMSUB || opcode == OP_NMADD) {
+                sa ^= 0x80000000u;
+            }
+            if (opcode == OP_MSUB || opcode == OP_NMADD) {
+                sc ^= 0x80000000u;
+            }
 
             f_begin(f_rm(h, rm));
             res = f_end(f32_mulAdd(f_v(sa), f_v(b), f_v(sc)), &flags);
@@ -656,7 +742,7 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
     /* --- OP-FP ------------------------------------------------------- */
     if ((funct7 & 3u) > (RV_EXT_D ? 1u : 0u)) {
         *tval = insn;
-        return RV_EXC_ILLEGAL_INSN;       /* only S, and D when built in */
+        return RV_EXC_ILLEGAL_INSN; /* only S, and D when built in */
     }
 
     const uint32_t funct5 = funct7 >> 2;
@@ -673,9 +759,9 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
     uint32_t res;
 
     switch (funct5) {
-    case 0x00u:   /* FADD.S */
-    case 0x01u:   /* FSUB.S */
-    case 0x02u:   /* FMUL.S */
+    case 0x00u: /* FADD.S */
+    case 0x01u: /* FSUB.S */
+    case 0x02u: /* FMUL.S */
     case 0x03u: { /* FDIV.S */
         if (!f_rm_valid(f_rm(h, rm))) {
             *tval = insn;
@@ -687,10 +773,18 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
         f_begin(f_rm(h, rm));
         float32_t sr;
         switch (funct5) {
-        case 0x03u: sr = f32_div(f_v(a), f_v(b)); break;
-        case 0x02u: sr = f32_mul(f_v(a), f_v(b)); break;
-        case 0x01u: sr = f32_sub(f_v(a), f_v(b)); break;
-        default:    sr = f32_add(f_v(a), f_v(b)); break;
+        case 0x03u:
+            sr = f32_div(f_v(a), f_v(b));
+            break;
+        case 0x02u:
+            sr = f32_mul(f_v(a), f_v(b));
+            break;
+        case 0x01u:
+            sr = f32_sub(f_v(a), f_v(b));
+            break;
+        default:
+            sr = f32_add(f_v(a), f_v(b));
+            break;
         }
         res = f_end(sr, &flags);
         break;
@@ -701,16 +795,16 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
         res = f_end(f32_sqrt(f_v(a)), &flags);
         break;
     }
-    case 0xFFu: {   /* unreachable; keeps the host-FPU arm below intact */
+    case 0xFFu: { /* unreachable; keeps the host-FPU arm below intact */
         if (f_is_snan(a)) {
             flags |= FFLAG_NV;
             res = F_CANON_NAN;
         } else if (f_is_nan(a)) {
             res = F_CANON_NAN;
         } else if (f_is_zero(a)) {
-            res = a;                      /* sqrt(+-0) = +-0 */
+            res = a; /* sqrt(+-0) = +-0 */
         } else if (F_SIGN(a) != 0u) {
-            flags |= FFLAG_NV;            /* sqrt of a negative */
+            flags |= FFLAG_NV; /* sqrt of a negative */
             res = F_CANON_NAN;
         } else if (f_is_inf(a)) {
             res = a;
@@ -729,7 +823,7 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
             if (F_EXP(a) == 0u) {
                 norm = f_float_to_bits(f_bits_to_float(a) *
                                        79228162514264337593543950336.0f);
-                unscale = 1.0f / 281474976710656.0f;   /* 2^-48 */
+                unscale = 1.0f / 281474976710656.0f; /* 2^-48 */
             }
 
             const float v = f_bits_to_float(norm);
@@ -740,14 +834,15 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
                 g = 0.5f * (g + v / g);
             }
 
-            (void)g; (void)unscale;
-            res = F_CANON_NAN;      /* unreachable: handled by f32_sqrt above */
+            (void)g;
+            (void)unscale;
+            res = F_CANON_NAN; /* unreachable: handled by f32_sqrt above */
         }
         break;
     }
 
 #if RV_EXT_D
-    case 0x08u:   /* FCVT.S.D -- narrowing, and it lives in the S group */
+    case 0x08u: /* FCVT.S.D -- narrowing, and it lives in the S group */
         /*
          * The pair FCVT.S.D / FCVT.D.S is split across the two formats:
          * the *destination* picks the group and rs2 names the source.
@@ -775,12 +870,20 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
         break;
 #endif
 
-    case 0x04u:   /* FSGNJ.S / FSGNJN.S / FSGNJX.S */
+    case 0x04u: /* FSGNJ.S / FSGNJN.S / FSGNJX.S */
         switch (rm) {
-        case 0: res = (a & 0x7FFFFFFFu) | F_SIGN(b); break;
-        case 1: res = (a & 0x7FFFFFFFu) | (F_SIGN(b) ^ 0x80000000u); break;
-        case 2: res = a ^ F_SIGN(b); break;
-        default: *tval = insn; return RV_EXC_ILLEGAL_INSN;
+        case 0:
+            res = (a & 0x7FFFFFFFu) | F_SIGN(b);
+            break;
+        case 1:
+            res = (a & 0x7FFFFFFFu) | (F_SIGN(b) ^ 0x80000000u);
+            break;
+        case 2:
+            res = a ^ F_SIGN(b);
+            break;
+        default:
+            *tval = insn;
+            return RV_EXC_ILLEGAL_INSN;
         }
         break;
 
@@ -831,10 +934,18 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
             const float x = f_bits_to_float(a);
             const float y = f_bits_to_float(b);
             switch (rm) {
-            case 0: r = (x <= y); break;   /* FLE */
-            case 1: r = (x <  y); break;   /* FLT */
-            case 2: r = (x == y); break;   /* FEQ */
-            default: *tval = insn; return RV_EXC_ILLEGAL_INSN;
+            case 0:
+                r = (x <= y);
+                break; /* FLE */
+            case 1:
+                r = (x < y);
+                break; /* FLT */
+            case 2:
+                r = (x == y);
+                break; /* FEQ */
+            default:
+                *tval = insn;
+                return RV_EXC_ILLEGAL_INSN;
             }
         }
         h->fcsr |= flags;
@@ -888,11 +999,12 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
         }
         f_begin(f_rm(h, rm));
         res = f_end((rs2 == 0u) ? i32_to_f32((int32_t)h->x[rs1])
-                                : ui32_to_f32(h->x[rs1]), &flags);
+                                : ui32_to_f32(h->x[rs1]),
+                    &flags);
         break;
     }
 
-    case 0x1Eu:   /* FMV.W.X */
+    case 0x1Eu: /* FMV.W.X */
         if (rs2 != 0u || rm != 0u) {
             *tval = insn;
             return RV_EXC_ILLEGAL_INSN;

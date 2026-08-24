@@ -26,11 +26,12 @@
 
 #define UART_THR (*(volatile uint8_t *)0x10000000u)
 
-#define csr_read(name) ({                               \
-    uint32_t v_;                                        \
-    __asm__ volatile ("csrr %0, " name : "=r"(v_));     \
-    v_;                                                 \
-})
+#define csr_read(name)                                                         \
+    ({                                                                         \
+        uint32_t v_;                                                           \
+        __asm__ volatile("csrr %0, " name : "=r"(v_));                         \
+        v_;                                                                    \
+    })
 
 static void puts_(const char *s)
 {

@@ -37,19 +37,19 @@
  * knowing its own number -- the same idea as the RISC-V CLINT being
  * hart-local. Single-core here, so SELF and PE0 are the same registers.
  */
-#define G4MH_INTC1_SELF_BASE    0xFFFC0000u
-#define G4MH_INTC1_PE0_BASE     0xFFFC4000u
-#define G4MH_INTC1_PE_STRIDE    0x00004000u
+#define G4MH_INTC1_SELF_BASE 0xFFFC0000u
+#define G4MH_INTC1_PE0_BASE 0xFFFC4000u
+#define G4MH_INTC1_PE_STRIDE 0x00004000u
 /* PE0..PE2 on the U2B6; the U2B10 and above go to PE5. */
-#define G4MH_INTC1_PE_COUNT     3u
-#define G4MH_INTC1_SIZE         0x00000400u
+#define G4MH_INTC1_PE_COUNT 3u
+#define G4MH_INTC1_SIZE 0x00000400u
 
-#define G4MH_INTC2_BASE         0xFFF80000u
-#define G4MH_INTC2_SIZE         0x00008000u
+#define G4MH_INTC2_BASE 0xFFF80000u
+#define G4MH_INTC2_SIZE 0x00008000u
 
 /* OS timer. Minimal model; see g4mh_intc.h. */
-#define G4MH_OSTM0_BASE         0xFFEC0000u
-#define G4MH_OSTM0_SIZE         0x00000100u
+#define G4MH_OSTM0_BASE 0xFFEC0000u
+#define G4MH_OSTM0_SIZE 0x00000100u
 
 /*
  * The inter-CPU peripherals, hardware manual table 3.145. All three
@@ -61,12 +61,12 @@
  * 0x20*3 + 0x100*5 + 0x14, and TPTM's self block plus six PE blocks is
  * 0x700.
  */
-#define G4MH_BARR_BASE          0xFFFB8000u
-#define G4MH_BARR_SIZE          0x00001000u
-#define G4MH_IPIR_BASE          0xFFFB9000u
-#define G4MH_IPIR_SIZE          0x00001000u
-#define G4MH_TPTM_BASE          0xFFFBB000u
-#define G4MH_TPTM_SIZE          0x00001000u
+#define G4MH_BARR_BASE 0xFFFB8000u
+#define G4MH_BARR_SIZE 0x00001000u
+#define G4MH_IPIR_BASE 0xFFFB9000u
+#define G4MH_IPIR_SIZE 0x00001000u
+#define G4MH_TPTM_BASE 0xFFFBB000u
+#define G4MH_TPTM_SIZE 0x00001000u
 
 /* ------------------------------------------------------------------ */
 /* Memory                                                              */
@@ -104,13 +104,13 @@
  * architectural 3 MiB with .bss is what made this frontend unable to
  * link as firmware at all.
  */
-#define G4MH_FLASH_BASE         0x00000000u
-#define G4MH_FLASH_SIZE         0x00300000u    /* 3 MiB, the U2B6's bank A */
+#define G4MH_FLASH_BASE 0x00000000u
+#define G4MH_FLASH_SIZE 0x00300000u /* 3 MiB, the U2B6's bank A */
 
 /* Boot cluster. Two banks, for the A/B update scheme. */
-#define G4MH_BOOT_A_BASE        0x08000000u
-#define G4MH_BOOT_B_BASE        0x08300000u
-#define G4MH_BOOT_SIZE          0x00010000u    /* 64 KiB each */
+#define G4MH_BOOT_A_BASE 0x08000000u
+#define G4MH_BOOT_B_BASE 0x08300000u
+#define G4MH_BOOT_SIZE 0x00010000u /* 64 KiB each */
 
 /*
  * Local RAM, and the reason this needs a bus per core.
@@ -125,13 +125,13 @@
  * easy to get backwards, and getting it backwards puts PE1's RAM where
  * nothing is mapped rather than producing a wrong answer.
  */
-#define G4MH_LRAM_SELF_BASE     0xFDE00000u
-#define G4MH_LRAM_PE0_BASE      0xFDC00000u
-#define G4MH_LRAM_PE_STRIDE     0x00200000u
-#define G4MH_LRAM_SIZE          0x00010000u    /* 64 KiB per PE */
+#define G4MH_LRAM_SELF_BASE 0xFDE00000u
+#define G4MH_LRAM_PE0_BASE 0xFDC00000u
+#define G4MH_LRAM_PE_STRIDE 0x00200000u
+#define G4MH_LRAM_SIZE 0x00010000u /* 64 KiB per PE */
 
 /* PE n's local RAM, seen from any core. */
-#define G4MH_LRAM_PE_BASE(n) \
+#define G4MH_LRAM_PE_BASE(n)                                                   \
     (G4MH_LRAM_PE0_BASE - (uint32_t)(n) * G4MH_LRAM_PE_STRIDE)
 
 /*
@@ -140,8 +140,8 @@
  * area at 0xFE058000; retention is a power-domain property with nothing to
  * model here, so it is one region.
  */
-#define G4MH_CRAM_BASE          0xFE000000u
-#define G4MH_CRAM_SIZE          0x00060000u    /* 384 KiB */
+#define G4MH_CRAM_BASE 0xFE000000u
+#define G4MH_CRAM_SIZE 0x00060000u /* 384 KiB */
 
 /* ------------------------------------------------------------------ */
 /* What this build actually backs                                      */
@@ -158,27 +158,27 @@
  * read-only, for nothing.
  */
 #ifndef G4MH_CRAM_KIB
-#  define G4MH_CRAM_KIB         128u
+#define G4MH_CRAM_KIB 128u
 #endif
 #ifndef G4MH_LRAM_KIB
-#  define G4MH_LRAM_KIB         64u
+#define G4MH_LRAM_KIB 64u
 #endif
 #ifndef G4MH_FLASH_KIB
-#  define G4MH_FLASH_KIB        256u
+#define G4MH_FLASH_KIB 256u
 #endif
 
-#define G4MH_CRAM_BACKED        (G4MH_CRAM_KIB * 1024u)
-#define G4MH_LRAM_BACKED        (G4MH_LRAM_KIB * 1024u)
-#define G4MH_FLASH_BACKED       (G4MH_FLASH_KIB * 1024u)
+#define G4MH_CRAM_BACKED (G4MH_CRAM_KIB * 1024u)
+#define G4MH_LRAM_BACKED (G4MH_LRAM_KIB * 1024u)
+#define G4MH_FLASH_BACKED (G4MH_FLASH_KIB * 1024u)
 
 #if G4MH_CRAM_BACKED > G4MH_CRAM_SIZE
-#  error "G4MH_CRAM_KIB exceeds the part's cluster RAM"
+#error "G4MH_CRAM_KIB exceeds the part's cluster RAM"
 #endif
 #if G4MH_LRAM_BACKED > G4MH_LRAM_SIZE
-#  error "G4MH_LRAM_KIB exceeds the part's local RAM"
+#error "G4MH_LRAM_KIB exceeds the part's local RAM"
 #endif
 #if G4MH_FLASH_BACKED > G4MH_FLASH_SIZE
-#  error "G4MH_FLASH_KIB exceeds the part's code flash"
+#error "G4MH_FLASH_KIB exceeds the part's code flash"
 #endif
 
 #endif /* G4MH_G4MH_MEMMAP_H */

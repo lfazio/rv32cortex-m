@@ -81,40 +81,43 @@ typedef enum {
  * on a flag otherwise.
  */
 #if EMU_GUEST_ARCH_PPC
-#  define EMU_BUS_ANY_BE 1
+#define EMU_BUS_ANY_BE 1
 #else
-#  define EMU_BUS_ANY_BE 0
+#define EMU_BUS_ANY_BE 0
 #endif
 
 static EMU_ALWAYS_INLINE uint32_t emu_bswap(uint32_t v, uint32_t size)
 {
     switch (size) {
-    case 1:  return v;
-    case 2:  return (uint32_t)(uint16_t)(((v & 0xFFu) << 8) | ((v >> 8) & 0xFFu));
-    default: return __builtin_bswap32(v);
+    case 1:
+        return v;
+    case 2:
+        return (uint32_t)(uint16_t)(((v & 0xFFu) << 8) | ((v >> 8) & 0xFFu));
+    default:
+        return __builtin_bswap32(v);
     }
 }
 
 #if EMU_BUS_ANY_BE
-#  define EMU_BUS_ORDER(bus, v, size) \
-      (((bus)->big_endian) ? emu_bswap((v), (size)) : (v))
+#define EMU_BUS_ORDER(bus, v, size)                                            \
+    (((bus)->big_endian) ? emu_bswap((v), (size)) : (v))
 #else
-#  define EMU_BUS_ORDER(bus, v, size) (v)
+#define EMU_BUS_ORDER(bus, v, size) (v)
 #endif
 
 /* Access permissions. */
-#define EMU_PERM_R   0x1u
-#define EMU_PERM_W   0x2u
-#define EMU_PERM_X   0x4u
-#define EMU_PERM_RW  (EMU_PERM_R | EMU_PERM_W)
-#define EMU_PERM_RX  (EMU_PERM_R | EMU_PERM_X)
+#define EMU_PERM_R 0x1u
+#define EMU_PERM_W 0x2u
+#define EMU_PERM_X 0x4u
+#define EMU_PERM_RW (EMU_PERM_R | EMU_PERM_W)
+#define EMU_PERM_RX (EMU_PERM_R | EMU_PERM_X)
 #define EMU_PERM_RWX (EMU_PERM_R | EMU_PERM_W | EMU_PERM_X)
 
 /* Permitted access widths. Some ARM peripherals fault on the wrong width. */
-#define EMU_W8       0x1u
-#define EMU_W16      0x2u
-#define EMU_W32      0x4u
-#define EMU_WANY     (EMU_W8 | EMU_W16 | EMU_W32)
+#define EMU_W8 0x1u
+#define EMU_W16 0x2u
+#define EMU_W32 0x4u
+#define EMU_WANY (EMU_W8 | EMU_W16 | EMU_W32)
 
 /*
  * Access kind, for the frontend's own protection checks (RISC-V PMP and
@@ -132,21 +135,21 @@ typedef struct emu_dev_ops {
     emu_fault_t (*read)(void *ctx, uint32_t off, uint32_t size, uint32_t *out);
     emu_fault_t (*write)(void *ctx, uint32_t off, uint32_t size, uint32_t val);
     /* Optional: advance device time / raise interrupts. May be NULL. */
-    void        (*tick)(void *ctx, struct emu_cpu *cpu);
+    void (*tick)(void *ctx, struct emu_cpu *cpu);
 } emu_dev_ops_t;
 
 typedef struct emu_region {
-    uint32_t    base;      /* guest base address                        */
-    uint32_t    size;      /* bytes; 0 disables the entry               */
-    void       *host;      /* RAM/ROM: backing buffer                   */
-    uintptr_t   host_base; /* PASSTHRU: host address of guest `base`    */
-    const emu_dev_ops_t *ops;   /* MMIO only                             */
-    void       *ctx;           /* MMIO only                             */
+    uint32_t base; /* guest base address                        */
+    uint32_t size; /* bytes; 0 disables the entry               */
+    void *host; /* RAM/ROM: backing buffer                   */
+    uintptr_t host_base; /* PASSTHRU: host address of guest `base`    */
+    const emu_dev_ops_t *ops; /* MMIO only                             */
+    void *ctx; /* MMIO only                             */
     const char *name;
-    uint8_t     kind;      /* emu_region_kind_t                          */
-    uint8_t     perm;      /* EMU_PERM_*                                 */
-    uint8_t     widths;    /* EMU_W*                                     */
-    uint8_t     flags;
+    uint8_t kind; /* emu_region_kind_t                          */
+    uint8_t perm; /* EMU_PERM_*                                 */
+    uint8_t widths; /* EMU_W*                                     */
+    uint8_t flags;
 } emu_region_t;
 
 /* ------------------------------------------------------------------ */
@@ -171,19 +174,19 @@ typedef struct emu_bus {
      * (adding a region, loading an image, a debugger write) calls
      * emu_bus_flush().
      */
-    uint32_t       fetch_base;
-    uint32_t       fetch_span;   /* bytes where a 16-bit fetch fits entirely */
+    uint32_t fetch_base;
+    uint32_t fetch_span; /* bytes where a 16-bit fetch fits entirely */
     const uint8_t *fetch_host;
 
-    uint32_t       data_base;
-    uint32_t       data_span;    /* region size; callers guarantee alignment */
-    uint8_t       *data_host;
+    uint32_t data_base;
+    uint32_t data_span; /* region size; callers guarantee alignment */
+    uint8_t *data_host;
 
     emu_region_t regions[EMU_MAX_REGIONS];
-    uint32_t    count;
-    uint32_t    last;      /* index of the last region that matched */
+    uint32_t count;
+    uint32_t last; /* index of the last region that matched */
 #if EMU_ENABLE_STATS
-    uint32_t    fault_count;
+    uint32_t fault_count;
 #endif
 
 #if EMU_BUS_ANY_BE
@@ -193,7 +196,7 @@ typedef struct emu_bus {
      * region kind is what decides whether it applies -- see the note by
      * EMU_BUS_ORDER above.
      */
-    bool        big_endian;
+    bool big_endian;
 #endif
 } emu_bus_t;
 
@@ -228,21 +231,20 @@ bool emu_bus_add(emu_bus_t *bus, const emu_region_t *r);
 unsigned emu_bus_region_count(const emu_bus_t *bus);
 
 /* Convenience constructors. */
-bool emu_bus_add_ram(emu_bus_t *bus, const char *name,
-                    uint32_t base, void *buf, uint32_t size);
-bool emu_bus_add_rom(emu_bus_t *bus, const char *name,
-                    uint32_t base, const void *buf, uint32_t size);
-bool emu_bus_add_mmio(emu_bus_t *bus, const char *name,
-                     uint32_t base, uint32_t size,
-                     const emu_dev_ops_t *ops, void *ctx);
+bool emu_bus_add_ram(emu_bus_t *bus, const char *name, uint32_t base, void *buf,
+                     uint32_t size);
+bool emu_bus_add_rom(emu_bus_t *bus, const char *name, uint32_t base,
+                     const void *buf, uint32_t size);
+bool emu_bus_add_mmio(emu_bus_t *bus, const char *name, uint32_t base,
+                      uint32_t size, const emu_dev_ops_t *ops, void *ctx);
 /*
  * host_base is a host address, so it is uintptr_t rather than uint32_t:
  * on the target the two are the same width, but the host build needs the
  * full pointer to reach a simulated peripheral buffer.
  */
-bool emu_bus_add_passthru(emu_bus_t *bus, const char *name,
-                         uint32_t base, uint32_t size, uintptr_t host_base,
-                         uint8_t perm, uint8_t widths);
+bool emu_bus_add_passthru(emu_bus_t *bus, const char *name, uint32_t base,
+                          uint32_t size, uintptr_t host_base, uint8_t perm,
+                          uint8_t widths);
 
 /* Look up the region containing addr, or NULL. Updates the hit cache. */
 emu_region_t *emu_bus_find(emu_bus_t *bus, uint32_t addr);
@@ -252,8 +254,10 @@ emu_region_t *emu_bus_find(emu_bus_t *bus, uint32_t addr);
  * checks, and refill the caches above when the target turns out to be
  * plain memory. Call the inline wrappers below instead.
  */
-emu_fault_t emu_bus_read_slow(emu_bus_t *bus, uint32_t addr, uint32_t size, uint32_t *out);
-emu_fault_t emu_bus_write_slow(emu_bus_t *bus, uint32_t addr, uint32_t size, uint32_t val);
+emu_fault_t emu_bus_read_slow(emu_bus_t *bus, uint32_t addr, uint32_t size,
+                              uint32_t *out);
+emu_fault_t emu_bus_write_slow(emu_bus_t *bus, uint32_t addr, uint32_t size,
+                               uint32_t val);
 emu_fault_t emu_bus_fetch16_slow(emu_bus_t *bus, uint32_t addr, uint16_t *out);
 
 /*
@@ -266,7 +270,7 @@ emu_fault_t emu_bus_fetch16_slow(emu_bus_t *bus, uint32_t addr, uint16_t *out);
  * is the caller's job.
  */
 static EMU_ALWAYS_INLINE emu_fault_t emu_bus_read(emu_bus_t *bus, uint32_t addr,
-                                             uint32_t size, uint32_t *out)
+                                                  uint32_t size, uint32_t *out)
 {
     /*
      * Both halves of the test matter. `off < span` rejects the empty cache
@@ -279,9 +283,15 @@ static EMU_ALWAYS_INLINE emu_fault_t emu_bus_read(emu_bus_t *bus, uint32_t addr,
     if (EMU_LIKELY(off < bus->data_span && (bus->data_span - off) >= size)) {
         const uint8_t *p = bus->data_host + off;
         switch (size) {
-        case 1:  *out = *p; break;
-        case 2:  *out = *(const uint16_t *)(const void *)p; break;
-        default: *out = *(const uint32_t *)(const void *)p; break;
+        case 1:
+            *out = *p;
+            break;
+        case 2:
+            *out = *(const uint16_t *)(const void *)p;
+            break;
+        default:
+            *out = *(const uint32_t *)(const void *)p;
+            break;
         }
         /* The fast-path cache is only ever filled from RAM, so this is
          * unconditionally the byte-composing case. */
@@ -291,8 +301,9 @@ static EMU_ALWAYS_INLINE emu_fault_t emu_bus_read(emu_bus_t *bus, uint32_t addr,
     return emu_bus_read_slow(bus, addr, size, out);
 }
 
-static EMU_ALWAYS_INLINE emu_fault_t emu_bus_write(emu_bus_t *bus, uint32_t addr,
-                                              uint32_t size, uint32_t val)
+static EMU_ALWAYS_INLINE emu_fault_t emu_bus_write(emu_bus_t *bus,
+                                                   uint32_t addr, uint32_t size,
+                                                   uint32_t val)
 {
     /*
      * Both halves of the test matter. `off < span` rejects the empty cache
@@ -307,9 +318,15 @@ static EMU_ALWAYS_INLINE emu_fault_t emu_bus_write(emu_bus_t *bus, uint32_t addr
         /* Same argument as the load: this cache only ever holds RAM. */
         val = EMU_BUS_ORDER(bus, val, size);
         switch (size) {
-        case 1:  *p = (uint8_t)val; break;
-        case 2:  *(uint16_t *)(void *)p = (uint16_t)val; break;
-        default: *(uint32_t *)(void *)p = val; break;
+        case 1:
+            *p = (uint8_t)val;
+            break;
+        case 2:
+            *(uint16_t *)(void *)p = (uint16_t)val;
+            break;
+        default:
+            *(uint32_t *)(void *)p = val;
+            break;
         }
         return EMU_FAULT_NONE;
     }
@@ -317,8 +334,9 @@ static EMU_ALWAYS_INLINE emu_fault_t emu_bus_write(emu_bus_t *bus, uint32_t addr
 }
 
 /* Instruction fetch of a 16-bit parcel. Requires EMU_PERM_X. */
-static EMU_ALWAYS_INLINE emu_fault_t emu_bus_fetch16(emu_bus_t *bus, uint32_t addr,
-                                                uint16_t *out)
+static EMU_ALWAYS_INLINE emu_fault_t emu_bus_fetch16(emu_bus_t *bus,
+                                                     uint32_t addr,
+                                                     uint16_t *out)
 {
     const uint32_t off = addr - bus->fetch_base;
     if (EMU_LIKELY(off < bus->fetch_span)) {

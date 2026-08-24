@@ -25,31 +25,34 @@
 #if RV_EXT_SV32
 
 /* PTE bits. */
-#define PTE_V   0x001u
-#define PTE_R   0x002u
-#define PTE_W   0x004u
-#define PTE_X   0x008u
-#define PTE_U   0x010u
-#define PTE_G   0x020u
-#define PTE_A   0x040u
-#define PTE_D   0x080u
+#define PTE_V 0x001u
+#define PTE_R 0x002u
+#define PTE_W 0x004u
+#define PTE_X 0x008u
+#define PTE_U 0x010u
+#define PTE_G 0x020u
+#define PTE_A 0x040u
+#define PTE_D 0x080u
 
 /*
  * A physical page number, as it fits this core's 32-bit bus: PA[31:12].
  * Both satp and a PTE carry 22 architectural bits, and the top two of
  * those cannot address anything here.
  */
-#define PPN_MASK        0x000FFFFFu
+#define PPN_MASK 0x000FFFFFu
 
-#define PAGE_SHIFT      12u
-#define PAGE_SIZE       (1u << PAGE_SHIFT)
+#define PAGE_SHIFT 12u
+#define PAGE_SIZE (1u << PAGE_SHIFT)
 
 static rv_exc_t fault_for(emu_access_t acc)
 {
     switch (acc) {
-    case EMU_ACC_FETCH: return RV_EXC_INSN_PAGE_FAULT;
-    case EMU_ACC_LOAD:  return RV_EXC_LOAD_PAGE_FAULT;
-    default:           return RV_EXC_STORE_PAGE_FAULT;
+    case EMU_ACC_FETCH:
+        return RV_EXC_INSN_PAGE_FAULT;
+    case EMU_ACC_LOAD:
+        return RV_EXC_LOAD_PAGE_FAULT;
+    default:
+        return RV_EXC_STORE_PAGE_FAULT;
     }
 }
 
@@ -81,9 +84,8 @@ void rv_mmu_refresh(rv_hart_t *h)
      * reason as in rv_pmp_refresh: MPRV can put data accesses in U-mode
      * while instructions are still fetched as M.
      */
-    h->vm_active = paging &&
-                   (h->priv != RV_PRIV_M ||
-                    rv_hart_data_priv(h) != RV_PRIV_M);
+    h->vm_active =
+        paging && (h->priv != RV_PRIV_M || rv_hart_data_priv(h) != RV_PRIV_M);
 
     rv_hart_refresh_fetch_guard(h);
 }
@@ -153,9 +155,12 @@ static bool leaf_permits(const rv_hart_t *h, uint32_t pte, emu_access_t acc,
 static rv_exc_t access_fault_for(emu_access_t acc)
 {
     switch (acc) {
-    case EMU_ACC_FETCH: return RV_EXC_INSN_ACCESS_FAULT;
-    case EMU_ACC_LOAD:  return RV_EXC_LOAD_ACCESS_FAULT;
-    default:           return RV_EXC_STORE_ACCESS_FAULT;
+    case EMU_ACC_FETCH:
+        return RV_EXC_INSN_ACCESS_FAULT;
+    case EMU_ACC_LOAD:
+        return RV_EXC_LOAD_ACCESS_FAULT;
+    default:
+        return RV_EXC_STORE_ACCESS_FAULT;
     }
 }
 
@@ -176,8 +181,7 @@ static rv_exc_t read_pte(rv_hart_t *h, uint32_t pa, emu_access_t acc,
      * PMP applies to the page table itself, and a table placed where PMP
      * denies reads must fault rather than be read anyway.
      */
-    if (EMU_UNLIKELY(h->pmp_active) &&
-        !rv_pmp_check(h, pa, 4u, EMU_ACC_LOAD)) {
+    if (EMU_UNLIKELY(h->pmp_active) && !rv_pmp_check(h, pa, 4u, EMU_ACC_LOAD)) {
         return access_fault_for(acc);
     }
 #endif
@@ -228,8 +232,8 @@ rv_exc_t rv_mmu_translate(rv_hart_t *h, uint32_t va, emu_access_t acc,
     uint32_t table = (h->satp & PPN_MASK) << PAGE_SHIFT;
 
     for (int level = 1; level >= 0; level--) {
-        const uint32_t idx = (va >> (PAGE_SHIFT + 10u * (uint32_t)level))
-                             & 0x3FFu;
+        const uint32_t idx =
+            (va >> (PAGE_SHIFT + 10u * (uint32_t)level)) & 0x3FFu;
         uint32_t pte;
 
         const rv_exc_t exc = read_pte(h, table + idx * 4u, acc, &pte);

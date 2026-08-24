@@ -41,11 +41,12 @@
 
 #define UART_THR (*(volatile uint8_t *)0x10000000u)
 
-#define csr_read(name) ({                               \
-    uint32_t v_;                                        \
-    __asm__ volatile ("csrr %0, " name : "=r"(v_));     \
-    v_;                                                 \
-})
+#define csr_read(name)                                                         \
+    ({                                                                         \
+        uint32_t v_;                                                           \
+        __asm__ volatile("csrr %0, " name : "=r"(v_));                         \
+        v_;                                                                    \
+    })
 
 static void puts_(const char *s)
 {
@@ -81,14 +82,20 @@ static void puthex(uint32_t v)
  */
 static uint32_t bits(float f)
 {
-    union { float f; uint32_t u; } c;
+    union {
+        float f;
+        uint32_t u;
+    } c;
     c.f = f;
     return c.u;
 }
 
 static float unbits(uint32_t u)
 {
-    union { float f; uint32_t u; } c;
+    union {
+        float f;
+        uint32_t u;
+    } c;
     c.u = u;
     return c.f;
 }
@@ -122,7 +129,7 @@ static void arith(unsigned n)
         a = a - (b * 0.25f);
         b = b / 2.0f;
         if (b > 1.0e30f || b < 1.0e-30f) {
-            b = 3.0f;                 /* keep it in range, branchlessly */
+            b = 3.0f; /* keep it in range, branchlessly */
         }
     }
     mix(bits(a));
@@ -138,10 +145,10 @@ static void arith(unsigned n)
 static void sgnj(unsigned n)
 {
     const uint32_t k_in[4] = {
-        0x3F800000u,        /* 1.0    */
-        0xBF800000u,        /* -1.0   */
-        0x7FC00000u,        /* qNaN   */
-        0x80000000u,        /* -0.0   */
+        0x3F800000u, /* 1.0    */
+        0xBF800000u, /* -1.0   */
+        0x7FC00000u, /* qNaN   */
+        0x80000000u, /* -0.0   */
     };
 
     for (unsigned i = 0; i < n; i++) {
@@ -171,9 +178,15 @@ static void cmpsel(unsigned n)
         const float x = (float)(int32_t)(i & 63u) - 32.0f;
         const float y = (float)(int32_t)(i & 15u) - 8.0f;
 
-        if (x < y)        { acc += 1.0f; }
-        if (x <= y)       { acc += 2.0f; }
-        if (x == y)       { acc += 4.0f; }
+        if (x < y) {
+            acc += 1.0f;
+        }
+        if (x <= y) {
+            acc += 2.0f;
+        }
+        if (x == y) {
+            acc += 4.0f;
+        }
         acc = (x > acc) ? acc : (acc * 0.5f);
     }
     mix(bits(acc));
@@ -249,7 +262,7 @@ int main(void)
      * This is the *only* privileged register this guest touches. Adding
      * a PMP entry here would make it as blind as isatest.
      */
-    __asm__ volatile ("csrs mstatus, %0" :: "r"(1u << 13));
+    __asm__ volatile("csrs mstatus, %0" ::"r"(1u << 13));
 
     puts_("FPTEST-START\n");
 
@@ -260,11 +273,16 @@ int main(void)
      * two implementations disagree; it does not say where, and the
      * alternative is one board reflash per kernel to find out.
      */
-    arith(2000u);   report("arith  ");
-    sgnj(200u);     report("sgnj   ");
-    cmpsel(2000u);  report("cmpsel ");
-    convert(2000u); report("convert");
-    mixed(50u);     report("mixed  ");
+    arith(2000u);
+    report("arith  ");
+    sgnj(200u);
+    report("sgnj   ");
+    cmpsel(2000u);
+    report("cmpsel ");
+    convert(2000u);
+    report("convert");
+    mixed(50u);
+    report("mixed  ");
 
     const uint32_t i1 = csr_read("minstret");
 

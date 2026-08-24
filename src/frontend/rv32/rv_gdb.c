@@ -22,8 +22,8 @@
 #include "rv32/rv_hart.h"
 
 /* The pc is register 32, immediately after the 32 GPRs. */
-#define RV_GDB_PC       32u
-#define RV_GDB_NREGS    33u
+#define RV_GDB_PC 32u
+#define RV_GDB_NREGS 33u
 
 static rv_hart_t *hart_of_gdb(const emu_cpu_t *cpu)
 {
@@ -54,7 +54,7 @@ static void rv_gdb_reg_set(emu_cpu_t *cpu, unsigned n, uint32_t v)
 
     if (n < 32u) {
         h->x[n] = v;
-        h->x[0] = 0u;               /* x0 stays hardwired whatever gdb says */
+        h->x[0] = 0u; /* x0 stays hardwired whatever gdb says */
     } else if (n == RV_GDB_PC) {
         h->pc = v;
     }
@@ -146,16 +146,16 @@ static const char k_rv32_memmap[] =
     "</memory-map>";
 
 static const emu_gdb_target_t k_rv32_gdb_target = {
-    .nregs       = RV_GDB_NREGS,
-    .reg_bytes   = 4u,
-    .reg_get     = rv_gdb_reg_get,
-    .reg_set     = rv_gdb_reg_set,
-    .pc_get      = rv_gdb_pc_get,
-    .pc_set      = rv_gdb_pc_set,
-    .stop_signal = 5,               /* SIGTRAP: an attach looks like a trap */
-    .arch        = "riscv:rv32",
-    .target_xml  = k_rv32_xml,
-    .memory_map  = k_rv32_memmap,
+    .nregs = RV_GDB_NREGS,
+    .reg_bytes = 4u,
+    .reg_get = rv_gdb_reg_get,
+    .reg_set = rv_gdb_reg_set,
+    .pc_get = rv_gdb_pc_get,
+    .pc_set = rv_gdb_pc_set,
+    .stop_signal = 5, /* SIGTRAP: an attach looks like a trap */
+    .arch = "riscv:rv32",
+    .target_xml = k_rv32_xml,
+    .memory_map = k_rv32_memmap,
 };
 
 const emu_gdb_target_t *rv32_gdb_target(void);

@@ -34,54 +34,56 @@
 
 #define UART_THR (*(volatile uint8_t *)0x10000000u)
 
-#define csr_read(name) ({                               \
-    uint32_t v_;                                        \
-    __asm__ volatile ("csrr %0, " name : "=r"(v_));     \
-    v_; })
-#define csr_write(name, val) \
-    __asm__ volatile ("csrw " name ", %0" :: "r"((uint32_t)(val)))
-#define csr_set(name, val) \
-    __asm__ volatile ("csrs " name ", %0" :: "r"((uint32_t)(val)))
+#define csr_read(name)                                                         \
+    ({                                                                         \
+        uint32_t v_;                                                           \
+        __asm__ volatile("csrr %0, " name : "=r"(v_));                         \
+        v_;                                                                    \
+    })
+#define csr_write(name, val)                                                   \
+    __asm__ volatile("csrw " name ", %0" ::"r"((uint32_t)(val)))
+#define csr_set(name, val)                                                     \
+    __asm__ volatile("csrs " name ", %0" ::"r"((uint32_t)(val)))
 
 /* ---- APLIC (AIA 20250312), direct delivery ------------------------- */
 
-#define APLIC_BASE          0x0C000000u
-#define APLIC_R(off)        (*(volatile uint32_t *)(APLIC_BASE + (off)))
-#define APLIC_DOMAINCFG     APLIC_R(0x0000u)
-#define APLIC_SOURCECFG(i)  APLIC_R(0x0004u + 4u * ((i) - 1u))
-#define APLIC_SETIENUM      APLIC_R(0x1EDCu)
-#define APLIC_TARGET(i)     APLIC_R(0x3004u + 4u * ((i) - 1u))
-#define APLIC_IDELIVERY     APLIC_R(0x4000u)
-#define APLIC_TOPI          APLIC_R(0x4018u)
-#define APLIC_CLAIMI        APLIC_R(0x401Cu)
+#define APLIC_BASE 0x0C000000u
+#define APLIC_R(off) (*(volatile uint32_t *)(APLIC_BASE + (off)))
+#define APLIC_DOMAINCFG APLIC_R(0x0000u)
+#define APLIC_SOURCECFG(i) APLIC_R(0x0004u + 4u * ((i) - 1u))
+#define APLIC_SETIENUM APLIC_R(0x1EDCu)
+#define APLIC_TARGET(i) APLIC_R(0x3004u + 4u * ((i) - 1u))
+#define APLIC_IDELIVERY APLIC_R(0x4000u)
+#define APLIC_TOPI APLIC_R(0x4018u)
+#define APLIC_CLAIMI APLIC_R(0x401Cu)
 
-#define APLIC_SM_EDGE_RISE  4u
+#define APLIC_SM_EDGE_RISE 4u
 
 /*
  * TIM6_DAC_IRQn. The APLIC source number is the NVIC line number, so this is
  * literally the value ST's headers give the ARM interrupt -- a guest driver
  * ported from CMSIS keeps using the constant it already had.
  */
-#define SRC_TIM6            54u
+#define SRC_TIM6 54u
 
 /* ---- STM32F446 registers, verbatim from RM0390 --------------------- */
 
 #define RCC_APB1ENR (*(volatile uint32_t *)0x40023840u)
-#define RCC_TIM6EN  (1u << 4)
+#define RCC_TIM6EN (1u << 4)
 
-#define TIM6_BASE   0x40001000u
-#define TIM6_CR1    (*(volatile uint32_t *)(TIM6_BASE + 0x00u))
-#define TIM6_DIER   (*(volatile uint32_t *)(TIM6_BASE + 0x0Cu))
-#define TIM6_SR     (*(volatile uint32_t *)(TIM6_BASE + 0x10u))
-#define TIM6_EGR    (*(volatile uint32_t *)(TIM6_BASE + 0x14u))
-#define TIM6_CNT    (*(volatile uint32_t *)(TIM6_BASE + 0x24u))
-#define TIM6_PSC    (*(volatile uint32_t *)(TIM6_BASE + 0x28u))
-#define TIM6_ARR    (*(volatile uint32_t *)(TIM6_BASE + 0x2Cu))
+#define TIM6_BASE 0x40001000u
+#define TIM6_CR1 (*(volatile uint32_t *)(TIM6_BASE + 0x00u))
+#define TIM6_DIER (*(volatile uint32_t *)(TIM6_BASE + 0x0Cu))
+#define TIM6_SR (*(volatile uint32_t *)(TIM6_BASE + 0x10u))
+#define TIM6_EGR (*(volatile uint32_t *)(TIM6_BASE + 0x14u))
+#define TIM6_CNT (*(volatile uint32_t *)(TIM6_BASE + 0x24u))
+#define TIM6_PSC (*(volatile uint32_t *)(TIM6_BASE + 0x28u))
+#define TIM6_ARR (*(volatile uint32_t *)(TIM6_BASE + 0x2Cu))
 
-#define TIM6_CEN    (1u << 0)
-#define TIM6_UIE    (1u << 0)
-#define TIM6_UIF    (1u << 0)
-#define TIM6_UG     (1u << 0)
+#define TIM6_CEN (1u << 0)
+#define TIM6_UIE (1u << 0)
+#define TIM6_UIF (1u << 0)
+#define TIM6_UG (1u << 0)
 
 /* ---- console ------------------------------------------------------- */
 
@@ -138,8 +140,8 @@ static volatile uint32_t g_spurious;
  * is still asserted, and the firmware would take a second, pointless
  * interrupt for every real one.
  */
-__attribute__((interrupt("machine"), aligned(4), used))
-static void trap_handler(void)
+__attribute__((interrupt("machine"), aligned(4), used)) static void
+trap_handler(void)
 {
     const uint32_t cause = csr_read("mcause");
 
@@ -153,13 +155,13 @@ static void trap_handler(void)
     const uint32_t source = topi >> 16;
 
     if (source == SRC_TIM6) {
-        TIM6_SR = 0u;               /* clear UIF, at the peripheral */
+        TIM6_SR = 0u; /* clear UIF, at the peripheral */
         g_irqs++;
     } else {
         g_bad_source = topi;
     }
 
-    (void)APLIC_CLAIMI;             /* clears pending, unmasks the line */
+    (void)APLIC_CLAIMI; /* clears pending, unmasks the line */
 }
 
 int main(void)
@@ -178,8 +180,8 @@ int main(void)
      */
     TIM6_PSC = 8999u;
     TIM6_ARR = 9u;
-    TIM6_EGR = TIM6_UG;             /* load PSC and ARR now */
-    TIM6_SR = 0u;                   /* UG set UIF; do not start pending */
+    TIM6_EGR = TIM6_UG; /* load PSC and ARR now */
+    TIM6_SR = 0u; /* UG set UIF; do not start pending */
 
     /*
      * Is there a timer here at all? On the host runner this window is
@@ -202,11 +204,11 @@ int main(void)
     APLIC_TARGET(SRC_TIM6) = 1u;
     APLIC_SETIENUM = SRC_TIM6;
     APLIC_IDELIVERY = 1u;
-    APLIC_DOMAINCFG = 0x100u;       /* IE */
+    APLIC_DOMAINCFG = 0x100u; /* IE */
 
     TIM6_DIER = TIM6_UIE;
-    csr_set("mie", 1u << 11);       /* MEIE */
-    csr_set("mstatus", 1u << 3);    /* MIE */
+    csr_set("mie", 1u << 11); /* MEIE */
+    csr_set("mstatus", 1u << 3); /* MIE */
 
     /*
      * A hundred of them. One would only prove the line was unmasked at

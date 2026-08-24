@@ -31,79 +31,87 @@
 #include <stdint.h>
 
 #ifndef __IO
-#  define __IO volatile
+#define __IO volatile
 #endif
 #ifndef __I
-#  define __I  volatile const
+#define __I volatile const
 #endif
 #ifndef __O
-#  define __O  volatile
+#define __O volatile
 #endif
 
 #define __STATIC_INLINE static inline
-#define __ASM           __asm__
-#define __INLINE        inline
-#define __WEAK          __attribute__((weak))
+#define __ASM __asm__
+#define __INLINE inline
+#define __WEAK __attribute__((weak))
 
 /* Cortex-M4 has four priority bits; keeping the value keeps HAL's
  * NVIC_EncodePriority arithmetic meaningful. */
 #ifndef __NVIC_PRIO_BITS
-#  define __NVIC_PRIO_BITS 4u
+#define __NVIC_PRIO_BITS 4u
 #endif
 
 /* ------------------------------------------------------------------ */
 /* Devices                                                             */
 /* ------------------------------------------------------------------ */
 
-#define CMSIS_RV32_APLIC_BASE   0x0C000000u
-#define CMSIS_RV32_CLINT_BASE   0x02000000u
+#define CMSIS_RV32_APLIC_BASE 0x0C000000u
+#define CMSIS_RV32_CLINT_BASE 0x02000000u
 
-#define APLIC_(off)         (*(__IO uint32_t *)(CMSIS_RV32_APLIC_BASE + (off)))
-#define APLIC_DOMAINCFG_    APLIC_(0x0000u)
+#define APLIC_(off) (*(__IO uint32_t *)(CMSIS_RV32_APLIC_BASE + (off)))
+#define APLIC_DOMAINCFG_ APLIC_(0x0000u)
 #define APLIC_SOURCECFG_(i) APLIC_(0x0004u + 4u * ((uint32_t)(i) - 1u))
-#define APLIC_SETIPNUM_     APLIC_(0x1CDCu)
-#define APLIC_CLRIPNUM_     APLIC_(0x1DDCu)
-#define APLIC_SETIENUM_     APLIC_(0x1EDCu)
-#define APLIC_CLRIENUM_     APLIC_(0x1FDCu)
-#define APLIC_SETIP_(k)     APLIC_(0x1C00u + 4u * (k))
-#define APLIC_TARGET_(i)    APLIC_(0x3004u + 4u * ((uint32_t)(i) - 1u))
-#define APLIC_IDELIVERY_    APLIC_(0x4000u)
-#define APLIC_TOPI_         APLIC_(0x4018u)
-#define APLIC_CLAIMI_       APLIC_(0x401Cu)
+#define APLIC_SETIPNUM_ APLIC_(0x1CDCu)
+#define APLIC_CLRIPNUM_ APLIC_(0x1DDCu)
+#define APLIC_SETIENUM_ APLIC_(0x1EDCu)
+#define APLIC_CLRIENUM_ APLIC_(0x1FDCu)
+#define APLIC_SETIP_(k) APLIC_(0x1C00u + 4u * (k))
+#define APLIC_TARGET_(i) APLIC_(0x3004u + 4u * ((uint32_t)(i) - 1u))
+#define APLIC_IDELIVERY_ APLIC_(0x4000u)
+#define APLIC_TOPI_ APLIC_(0x4018u)
+#define APLIC_CLAIMI_ APLIC_(0x401Cu)
 
 #define APLIC_SM_EDGE_RISE_ 4u
 
 /* ACLINT MTIMER: mtimecmp at its base, mtime 0x7FF8 beyond it. */
-#define CLINT_MTIMECMP_LO_  (*(__IO uint32_t *)(CMSIS_RV32_CLINT_BASE + 0x4000u))
-#define CLINT_MTIMECMP_HI_  (*(__IO uint32_t *)(CMSIS_RV32_CLINT_BASE + 0x4004u))
-#define CLINT_MTIME_LO_     (*(__IO uint32_t *)(CMSIS_RV32_CLINT_BASE + 0xBFF8u))
-#define CLINT_MTIME_HI_     (*(__IO uint32_t *)(CMSIS_RV32_CLINT_BASE + 0xBFFCu))
+#define CLINT_MTIMECMP_LO_ (*(__IO uint32_t *)(CMSIS_RV32_CLINT_BASE + 0x4000u))
+#define CLINT_MTIMECMP_HI_ (*(__IO uint32_t *)(CMSIS_RV32_CLINT_BASE + 0x4004u))
+#define CLINT_MTIME_LO_ (*(__IO uint32_t *)(CMSIS_RV32_CLINT_BASE + 0xBFF8u))
+#define CLINT_MTIME_HI_ (*(__IO uint32_t *)(CMSIS_RV32_CLINT_BASE + 0xBFFCu))
 
 /* ------------------------------------------------------------------ */
 /* CSR access                                                          */
 /* ------------------------------------------------------------------ */
 
-#define CMSIS_RV32_CSRR(name) ({                        \
-    uint32_t v_;                                        \
-    __asm__ volatile ("csrr %0, " name : "=r"(v_));     \
-    v_; })
-#define CMSIS_RV32_CSRW(name, v) \
-    __asm__ volatile ("csrw " name ", %0" :: "r"((uint32_t)(v)))
-#define CMSIS_RV32_CSRS(name, v) \
-    __asm__ volatile ("csrs " name ", %0" :: "r"((uint32_t)(v)))
-#define CMSIS_RV32_CSRC(name, v) \
-    __asm__ volatile ("csrc " name ", %0" :: "r"((uint32_t)(v)))
+#define CMSIS_RV32_CSRR(name)                                                  \
+    ({                                                                         \
+        uint32_t v_;                                                           \
+        __asm__ volatile("csrr %0, " name : "=r"(v_));                         \
+        v_;                                                                    \
+    })
+#define CMSIS_RV32_CSRW(name, v)                                               \
+    __asm__ volatile("csrw " name ", %0" ::"r"((uint32_t)(v)))
+#define CMSIS_RV32_CSRS(name, v)                                               \
+    __asm__ volatile("csrs " name ", %0" ::"r"((uint32_t)(v)))
+#define CMSIS_RV32_CSRC(name, v)                                               \
+    __asm__ volatile("csrc " name ", %0" ::"r"((uint32_t)(v)))
 
-#define MSTATUS_MIE_    (1u << 3)
-#define MIE_MTIE_       (1u << 7)
-#define MIE_MEIE_       (1u << 11)
+#define MSTATUS_MIE_ (1u << 3)
+#define MIE_MTIE_ (1u << 7)
+#define MIE_MEIE_ (1u << 11)
 
 /* ------------------------------------------------------------------ */
 /* Intrinsics                                                          */
 /* ------------------------------------------------------------------ */
 
-__STATIC_INLINE void __enable_irq(void)  { CMSIS_RV32_CSRS("mstatus", MSTATUS_MIE_); }
-__STATIC_INLINE void __disable_irq(void) { CMSIS_RV32_CSRC("mstatus", MSTATUS_MIE_); }
+__STATIC_INLINE void __enable_irq(void)
+{
+    CMSIS_RV32_CSRS("mstatus", MSTATUS_MIE_);
+}
+__STATIC_INLINE void __disable_irq(void)
+{
+    CMSIS_RV32_CSRC("mstatus", MSTATUS_MIE_);
+}
 
 __STATIC_INLINE uint32_t __get_PRIMASK(void)
 {
@@ -112,7 +120,11 @@ __STATIC_INLINE uint32_t __get_PRIMASK(void)
 
 __STATIC_INLINE void __set_PRIMASK(uint32_t p)
 {
-    if (p != 0u) { __disable_irq(); } else { __enable_irq(); }
+    if (p != 0u) {
+        __disable_irq();
+    } else {
+        __enable_irq();
+    }
 }
 
 /*
@@ -121,13 +133,34 @@ __STATIC_INLINE void __set_PRIMASK(uint32_t p)
  * strictly required on this single-hart in-order core, but a driver that
  * omits them elsewhere is a driver that breaks elsewhere.
  */
-__STATIC_INLINE void __DSB(void) { __asm__ volatile ("fence" ::: "memory"); }
-__STATIC_INLINE void __DMB(void) { __asm__ volatile ("fence" ::: "memory"); }
-__STATIC_INLINE void __ISB(void) { __asm__ volatile ("fence.i" ::: "memory"); }
-__STATIC_INLINE void __NOP(void) { __asm__ volatile ("nop"); }
-__STATIC_INLINE void __WFI(void) { __asm__ volatile ("wfi"); }
-__STATIC_INLINE void __WFE(void) { __asm__ volatile ("nop"); }
-__STATIC_INLINE void __SEV(void) { __asm__ volatile ("nop"); }
+__STATIC_INLINE void __DSB(void)
+{
+    __asm__ volatile("fence" ::: "memory");
+}
+__STATIC_INLINE void __DMB(void)
+{
+    __asm__ volatile("fence" ::: "memory");
+}
+__STATIC_INLINE void __ISB(void)
+{
+    __asm__ volatile("fence.i" ::: "memory");
+}
+__STATIC_INLINE void __NOP(void)
+{
+    __asm__ volatile("nop");
+}
+__STATIC_INLINE void __WFI(void)
+{
+    __asm__ volatile("wfi");
+}
+__STATIC_INLINE void __WFE(void)
+{
+    __asm__ volatile("nop");
+}
+__STATIC_INLINE void __SEV(void)
+{
+    __asm__ volatile("nop");
+}
 
 __STATIC_INLINE uint32_t __CLZ(uint32_t v)
 {
@@ -158,15 +191,17 @@ __STATIC_INLINE uint32_t __RBIT(uint32_t v)
 __STATIC_INLINE uint32_t __LDREXW(volatile uint32_t *addr)
 {
     uint32_t v;
-    __asm__ volatile ("lr.w %0, (%1)" : "=r"(v) : "r"(addr) : "memory");
+    __asm__ volatile("lr.w %0, (%1)" : "=r"(v) : "r"(addr) : "memory");
     return v;
 }
 
 __STATIC_INLINE uint32_t __STREXW(uint32_t value, volatile uint32_t *addr)
 {
     uint32_t fail;
-    __asm__ volatile ("sc.w %0, %2, (%1)"
-                      : "=&r"(fail) : "r"(addr), "r"(value) : "memory");
+    __asm__ volatile("sc.w %0, %2, (%1)"
+                     : "=&r"(fail)
+                     : "r"(addr), "r"(value)
+                     : "memory");
     return fail;
 }
 
@@ -304,8 +339,14 @@ __STATIC_INLINE uint32_t NVIC_GetPendingIRQ(IRQn_Type irqn)
 }
 
 /* Priority grouping is a Cortex-M concept; the APLIC has one flat space. */
-__STATIC_INLINE void NVIC_SetPriorityGrouping(uint32_t g) { (void)g; }
-__STATIC_INLINE uint32_t NVIC_GetPriorityGrouping(void) { return 0u; }
+__STATIC_INLINE void NVIC_SetPriorityGrouping(uint32_t g)
+{
+    (void)g;
+}
+__STATIC_INLINE uint32_t NVIC_GetPriorityGrouping(void)
+{
+    return 0u;
+}
 
 __STATIC_INLINE uint32_t NVIC_EncodePriority(uint32_t group, uint32_t pre,
                                              uint32_t sub)

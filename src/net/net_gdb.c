@@ -32,13 +32,13 @@
 #include "emu/emu_gdb.h"
 
 #ifndef EMU_GDB_PORT
-#define EMU_GDB_PORT   1234
+#define EMU_GDB_PORT 1234
 #endif
 
 static struct tcp_pcb *g_listen;
 static struct tcp_pcb *g_conn;
-static emu_gdb_t       g_gdb;
-static bool            g_ready;
+static emu_gdb_t g_gdb;
+static bool g_ready;
 
 /* ------------------------------------------------------------------ */
 
@@ -80,8 +80,7 @@ static void gdb_close(struct tcp_pcb *pcb)
     (void)tcp_close(pcb);
 }
 
-static err_t gdb_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p,
-                      err_t err)
+static err_t gdb_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
 {
     (void)arg;
 
@@ -119,7 +118,7 @@ static err_t gdb_accept(void *arg, struct tcp_pcb *pcb, err_t err)
         return ERR_VAL;
     }
     if (g_conn != NULL) {
-        (void)tcp_close(pcb);       /* one debugger at a time */
+        (void)tcp_close(pcb); /* one debugger at a time */
         return ERR_OK;
     }
 
@@ -145,7 +144,7 @@ bool emu_net_gdb_init(emu_core_t *core, const emu_gdb_target_t *target,
     struct tcp_pcb *pcb;
 
     if (target == NULL) {
-        return false;           /* frontend offers no gdb description */
+        return false; /* frontend offers no gdb description */
     }
 
     emu_gdb_init(&g_gdb, core, target, gdb_tx, NULL);

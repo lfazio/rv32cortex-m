@@ -11,8 +11,8 @@
 
 #include <stdint.h>
 
-#define UART_THR   (*(volatile uint8_t *)0x10000000u)
-#define MTIME_LO   (*(volatile uint32_t *)0x0200BFF8u)
+#define UART_THR (*(volatile uint8_t *)0x10000000u)
+#define MTIME_LO (*(volatile uint32_t *)0x0200BFF8u)
 
 static void puts_(const char *s)
 {
@@ -48,7 +48,7 @@ static void put_isa(uint32_t misa)
 {
     /* MXL 1/2/3 is 32/64/128 bits -- a *width*, not a digit. Written as
      * one character it printed "RV22". */
-    static const char *const mxl[4] = { "?", "32", "64", "128" };
+    static const char *const mxl[4] = {"?", "32", "64", "128"};
 
     puts_("RV");
     puts_(mxl[(misa >> 30) & 3u]);
@@ -62,7 +62,7 @@ static void put_isa(uint32_t misa)
 int main(void)
 {
     uint32_t misa;
-    __asm__ volatile ("csrr %0, misa" : "=r"(misa));
+    __asm__ volatile("csrr %0, misa" : "=r"(misa));
 
     puts_("hello from ");
     put_isa(misa);
@@ -76,7 +76,7 @@ int main(void)
 
     puts_("\nmhartid ");
     uint32_t id;
-    __asm__ volatile ("csrr %0, mhartid" : "=r"(id));
+    __asm__ volatile("csrr %0, mhartid" : "=r"(id));
     puthex(id);
     UART_THR = '\n';
 

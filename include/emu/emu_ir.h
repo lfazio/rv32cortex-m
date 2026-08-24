@@ -78,11 +78,11 @@ extern "C" {
  * guest runs out of RAM.
  */
 #if defined(EMU_HOST_JIT_THUMB2)
-#  define EMU_IR_MAX_INSNS  512u
-#  define EMU_IR_MAX_TEMPS  256u
+#define EMU_IR_MAX_INSNS 512u
+#define EMU_IR_MAX_TEMPS 256u
 #else
-#  define EMU_IR_MAX_INSNS  2048u
-#  define EMU_IR_MAX_TEMPS  1024u
+#define EMU_IR_MAX_INSNS 2048u
+#define EMU_IR_MAX_TEMPS 1024u
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -101,10 +101,10 @@ extern "C" {
  * counts as a read of everything -- a flag can always be examined by the
  * next block or by an interrupt handler.
  */
-#define EMU_IR_F_Z   (1u << 0)   /* result was zero          */
-#define EMU_IR_F_S   (1u << 1)   /* result was negative      */
-#define EMU_IR_F_V   (1u << 2)   /* signed overflow          */
-#define EMU_IR_F_C   (1u << 3)   /* carry or borrow          */
+#define EMU_IR_F_Z (1u << 0) /* result was zero          */
+#define EMU_IR_F_S (1u << 1) /* result was negative      */
+#define EMU_IR_F_V (1u << 2) /* signed overflow          */
+#define EMU_IR_F_C (1u << 3) /* carry or borrow          */
 #define EMU_IR_F_ALL (EMU_IR_F_Z | EMU_IR_F_S | EMU_IR_F_V | EMU_IR_F_C)
 
 /* ------------------------------------------------------------------ */
@@ -124,20 +124,35 @@ typedef enum emu_ir_op {
     EMU_IR_GET,
     EMU_IR_PUT,
 
-    EMU_IR_CONST,          /* dst = imm                                */
-    EMU_IR_MOV,            /* dst = a                                  */
+    EMU_IR_CONST, /* dst = imm                                */
+    EMU_IR_MOV, /* dst = a                                  */
 
     /* Arithmetic and logic: dst = a op b. */
-    EMU_IR_ADD, EMU_IR_SUB, EMU_IR_AND, EMU_IR_OR, EMU_IR_XOR,
-    EMU_IR_SHL, EMU_IR_SHR, EMU_IR_SAR, EMU_IR_ROTL,
-    EMU_IR_MUL, EMU_IR_MULHS, EMU_IR_MULHU,
+    EMU_IR_ADD,
+    EMU_IR_SUB,
+    EMU_IR_AND,
+    EMU_IR_OR,
+    EMU_IR_XOR,
+    EMU_IR_SHL,
+    EMU_IR_SHR,
+    EMU_IR_SAR,
+    EMU_IR_ROTL,
+    EMU_IR_MUL,
+    EMU_IR_MULHS,
+    EMU_IR_MULHU,
 
     /* Same, with `imm` as the right operand. */
-    EMU_IR_ADDI, EMU_IR_ANDI, EMU_IR_ORI, EMU_IR_XORI,
-    EMU_IR_SHLI, EMU_IR_SHRI, EMU_IR_SARI, EMU_IR_ROTLI,
+    EMU_IR_ADDI,
+    EMU_IR_ANDI,
+    EMU_IR_ORI,
+    EMU_IR_XORI,
+    EMU_IR_SHLI,
+    EMU_IR_SHRI,
+    EMU_IR_SARI,
+    EMU_IR_ROTLI,
 
-    EMU_IR_NEG,            /* dst = -a                                 */
-    EMU_IR_NOT,            /* dst = ~a                                 */
+    EMU_IR_NEG, /* dst = -a                                 */
+    EMU_IR_NOT, /* dst = ~a                                 */
 
     /*
      * Bit and byte manipulation. Present as first-class operations
@@ -146,11 +161,11 @@ typedef enum emu_ir_op {
      * and RBIT -- and recovering them from a shift sequence afterwards
      * is pattern matching that would have to be written per host.
      */
-    EMU_IR_BSWAP32,        /* reverse all four bytes                   */
-    EMU_IR_BSWAP16,        /* reverse bytes within each halfword       */
-    EMU_IR_HSWAP,          /* exchange the two halfwords               */
-    EMU_IR_CLZ,            /* count leading zeros, 32 for a zero input */
-    EMU_IR_CTZ,            /* count trailing zeros, 32 for zero        */
+    EMU_IR_BSWAP32, /* reverse all four bytes                   */
+    EMU_IR_BSWAP16, /* reverse bytes within each halfword       */
+    EMU_IR_HSWAP, /* exchange the two halfwords               */
+    EMU_IR_CLZ, /* count leading zeros, 32 for a zero input */
+    EMU_IR_CTZ, /* count trailing zeros, 32 for zero        */
     EMU_IR_POPCNT,
 
     /*
@@ -158,10 +173,10 @@ typedef enum emu_ir_op {
      * using a value rather than an immediate keeps the register and
      * immediate forms of a guest's bit instructions on one path.
      */
-    EMU_IR_BEXT,           /* dst = (a >> b) & 1                       */
-    EMU_IR_BSET,           /* dst = a | (1 << b)                       */
-    EMU_IR_BCLR,           /* dst = a & ~(1 << b)                      */
-    EMU_IR_BINV,           /* dst = a ^ (1 << b)                       */
+    EMU_IR_BEXT, /* dst = (a >> b) & 1                       */
+    EMU_IR_BSET, /* dst = a | (1 << b)                       */
+    EMU_IR_BCLR, /* dst = a & ~(1 << b)                      */
+    EMU_IR_BINV, /* dst = a ^ (1 << b)                       */
 
     /*
      * Bit operations on *memory*: the read-modify-write class.
@@ -196,7 +211,10 @@ typedef enum emu_ir_op {
     EMU_IR_BITOP_TST,
 
     /* Sign and zero extension from a narrower width. */
-    EMU_IR_SEXT8, EMU_IR_SEXT16, EMU_IR_ZEXT8, EMU_IR_ZEXT16,
+    EMU_IR_SEXT8,
+    EMU_IR_SEXT16,
+    EMU_IR_ZEXT8,
+    EMU_IR_ZEXT16,
 
     /*
      * Memory. `imm` is a byte displacement added to `a`; `b` is the data
@@ -267,18 +285,22 @@ typedef enum emu_ir_op {
      * difference is invisible to a guest that can only read them with a
      * CSR instruction no backend translates.
      */
-    EMU_IR_FGET,           /* dst = freg[imm]                          */
-    EMU_IR_FPUT,           /* freg[imm] = a                            */
+    EMU_IR_FGET, /* dst = freg[imm]                          */
+    EMU_IR_FPUT, /* freg[imm] = a                            */
 
-    EMU_IR_FADD, EMU_IR_FSUB, EMU_IR_FMUL, EMU_IR_FDIV,
-    EMU_IR_FSQRT,          /* dst = sqrt(a)                            */
+    EMU_IR_FADD,
+    EMU_IR_FSUB,
+    EMU_IR_FMUL,
+    EMU_IR_FDIV,
+    EMU_IR_FSQRT, /* dst = sqrt(a)                            */
 
     /*
      * Minimum and maximum, which are *not* a compare and a select: both
      * guests define the result for a NaN operand as the other operand,
      * where every host's instruction of that name returns its second.
      */
-    EMU_IR_FMIN, EMU_IR_FMAX,
+    EMU_IR_FMIN,
+    EMU_IR_FMAX,
 
     /* Sign injection; `aux` is EMU_IR_FSGNJ_*. Pure bit manipulation. */
     EMU_IR_FSGNJ,
@@ -361,19 +383,24 @@ typedef enum emu_ir_op {
 
 /* How EMU_IR_SETF derives the flags it defines. */
 typedef enum emu_ir_flagsrc {
-    EMU_IR_FS_LOGIC = 0,   /* Z and S from the result; V and C cleared */
-    EMU_IR_FS_ADD,         /* full add semantics, needs both operands  */
-    EMU_IR_FS_SUB,         /* full subtract; C is a borrow             */
-    EMU_IR_FS_ZS           /* Z and S only, leaving V and C alone      */
+    EMU_IR_FS_LOGIC = 0, /* Z and S from the result; V and C cleared */
+    EMU_IR_FS_ADD, /* full add semantics, needs both operands  */
+    EMU_IR_FS_SUB, /* full subtract; C is a borrow             */
+    EMU_IR_FS_ZS /* Z and S only, leaving V and C alone      */
 } emu_ir_flagsrc_t;
 
 /* Conditions, for GETCOND, SELECT and EXIT_IF. */
 typedef enum emu_ir_cond {
-    EMU_IR_C_EQ = 0, EMU_IR_C_NE,
-    EMU_IR_C_LT, EMU_IR_C_GE,      /* signed   */
-    EMU_IR_C_LTU, EMU_IR_C_GEU,    /* unsigned */
-    EMU_IR_C_LE, EMU_IR_C_GT,
-    EMU_IR_C_LEU, EMU_IR_C_GTU,
+    EMU_IR_C_EQ = 0,
+    EMU_IR_C_NE,
+    EMU_IR_C_LT,
+    EMU_IR_C_GE, /* signed   */
+    EMU_IR_C_LTU,
+    EMU_IR_C_GEU, /* unsigned */
+    EMU_IR_C_LE,
+    EMU_IR_C_GT,
+    EMU_IR_C_LEU,
+    EMU_IR_C_GTU,
     EMU_IR_C_ALWAYS
 } emu_ir_cond_t;
 
@@ -382,21 +409,22 @@ typedef enum emu_ir_cond {
  * numbering is RISC-V's because it is the guest that has to name them;
  * a host without an equivalent for one declines the operation.
  */
-#define EMU_IR_FRM_RNE  0u     /* to nearest, ties to even             */
-#define EMU_IR_FRM_RTZ  1u     /* toward zero                          */
-#define EMU_IR_FRM_RDN  2u     /* toward -inf                          */
-#define EMU_IR_FRM_RUP  3u     /* toward +inf                          */
-#define EMU_IR_FRM_RMM  4u     /* to nearest, ties away -- x86 and ARM
+#define EMU_IR_FRM_RNE 0u /* to nearest, ties to even             */
+#define EMU_IR_FRM_RTZ 1u /* toward zero                          */
+#define EMU_IR_FRM_RDN 2u /* toward -inf                          */
+#define EMU_IR_FRM_RUP 3u /* toward +inf                          */
+#define EMU_IR_FRM_RMM                                                         \
+    4u /* to nearest, ties away -- x86 and ARM
                                 * have no mode for this               */
-#define EMU_IR_FRM(aux)     ((aux) & 7u)
+#define EMU_IR_FRM(aux) ((aux) & 7u)
 
 /* Conversion is to or from an unsigned integer. */
-#define EMU_IR_F_UNSIGNED   (1u << 3)
+#define EMU_IR_F_UNSIGNED (1u << 3)
 
 /* EMU_IR_FSGNJ variants, in `aux`. */
-#define EMU_IR_FSGNJ_J   0u    /* take b's sign            */
-#define EMU_IR_FSGNJ_N   1u    /* take b's sign, negated   */
-#define EMU_IR_FSGNJ_X   2u    /* xor the two signs        */
+#define EMU_IR_FSGNJ_J 0u /* take b's sign            */
+#define EMU_IR_FSGNJ_N 1u /* take b's sign, negated   */
+#define EMU_IR_FSGNJ_X 2u /* xor the two signs        */
 
 /*
  * EMU_IR_FGET/FPUT: the 32 bits named are a single-precision value in a
@@ -416,7 +444,7 @@ typedef enum emu_ir_cond {
  * and is wrong in the direction that does not show up here: the failure
  * lands on the *next* reader of the register, not on this instruction.
  */
-#define EMU_IR_FP_BOX    (1u << 4)
+#define EMU_IR_FP_BOX (1u << 4)
 
 /*
  * The host's sticky exception flags, as emu_ir_target_t.fp_flags
@@ -427,25 +455,25 @@ typedef enum emu_ir_cond {
  * backend that passed its own encoding through would be right on one
  * host and wrong on the other.
  */
-#define EMU_IR_FE_INEXACT   (1u << 0)
+#define EMU_IR_FE_INEXACT (1u << 0)
 #define EMU_IR_FE_UNDERFLOW (1u << 1)
-#define EMU_IR_FE_OVERFLOW  (1u << 2)
+#define EMU_IR_FE_OVERFLOW (1u << 2)
 #define EMU_IR_FE_DIVBYZERO (1u << 3)
-#define EMU_IR_FE_INVALID   (1u << 4)
+#define EMU_IR_FE_INVALID (1u << 4)
 
 /* Access widths for LOAD and STORE, in `aux`. */
-#define EMU_IR_MEM_SIZE(aux)   ((aux) & 7u)
-#define EMU_IR_MEM_SIGNED      (1u << 3)
+#define EMU_IR_MEM_SIZE(aux) ((aux) & 7u)
+#define EMU_IR_MEM_SIGNED (1u << 3)
 #define EMU_IR_MEM_AUX(sz, sg) (uint8_t)((sz) | ((sg) ? EMU_IR_MEM_SIGNED : 0u))
 
 /* No operand in this slot. */
 #define EMU_IR_NO_TEMP 0xFFFFu
 
 typedef struct emu_ir_insn {
-    uint8_t  op;        /* emu_ir_op_t                                 */
-    uint8_t  aux;       /* op-specific: width, flag source, condition  */
-    uint16_t dst;       /* temp written, or EMU_IR_NO_TEMP             */
-    uint16_t a, b;      /* temps read, or EMU_IR_NO_TEMP               */
+    uint8_t op; /* emu_ir_op_t                                 */
+    uint8_t aux; /* op-specific: width, flag source, condition  */
+    uint16_t dst; /* temp written, or EMU_IR_NO_TEMP             */
+    uint16_t a, b; /* temps read, or EMU_IR_NO_TEMP               */
     uint32_t imm;
 
     /*
@@ -453,8 +481,8 @@ typedef struct emu_ir_insn {
      * the optimiser, not by the frontend -- which of those any later
      * instruction actually reads. A SETF whose `live` is zero is dead.
      */
-    uint8_t  defs;
-    uint8_t  live;
+    uint8_t defs;
+    uint8_t live;
 
     /*
      * How many surviving instructions read this one's result, saturating
@@ -469,29 +497,29 @@ typedef struct emu_ir_insn {
      * computes the value twice, which is larger and slower than not
      * fusing at all.
      */
-    uint8_t  uses;
+    uint8_t uses;
 
     /* Set by the optimiser; the backend skips these. */
-    bool     dead;
+    bool dead;
 } emu_ir_insn_t;
 
 typedef struct emu_ir_block {
     emu_ir_insn_t insn[EMU_IR_MAX_INSNS];
-    uint32_t      count;
-    uint32_t      next_temp;
+    uint32_t count;
+    uint32_t next_temp;
 
     /* Guest instructions folded in so far, for the retired count. */
-    uint32_t      guest_insns;
+    uint32_t guest_insns;
 
     /* Set when the block ran out of room; it is then discarded. */
-    bool          overflow;
+    bool overflow;
 } emu_ir_block_t;
 
 /* ------------------------------------------------------------------ */
 /* Building                                                            */
 /* ------------------------------------------------------------------ */
 
-void     emu_ir_reset(emu_ir_block_t *b);
+void emu_ir_reset(emu_ir_block_t *b);
 uint16_t emu_ir_temp(emu_ir_block_t *b);
 
 /*
@@ -499,15 +527,14 @@ uint16_t emu_ir_temp(emu_ir_block_t *b);
  * EMU_IR_NO_TEMP). `dst` of EMU_IR_NO_TEMP asks for a fresh temp for the
  * ops that produce a value.
  */
-uint16_t emu_ir_emit(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux,
-                     uint16_t a, uint16_t bb, uint32_t imm, uint8_t defs);
+uint16_t emu_ir_emit(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux, uint16_t a,
+                     uint16_t bb, uint32_t imm, uint8_t defs);
 
 /* Shorthands for the shapes that appear most. */
 uint16_t emu_ir_get(emu_ir_block_t *b, uint32_t guest_reg);
-void     emu_ir_put(emu_ir_block_t *b, uint32_t guest_reg, uint16_t val);
+void emu_ir_put(emu_ir_block_t *b, uint32_t guest_reg, uint16_t val);
 uint16_t emu_ir_const(emu_ir_block_t *b, uint32_t v);
-uint16_t emu_ir_alu(emu_ir_block_t *b, emu_ir_op_t op, uint16_t a,
-                    uint16_t bb);
+uint16_t emu_ir_alu(emu_ir_block_t *b, emu_ir_op_t op, uint16_t a, uint16_t bb);
 
 /*
  * A memory bit operation. `op` must be one of the EMU_IR_BITOP_* class.
@@ -521,15 +548,15 @@ void emu_ir_bitop(emu_ir_block_t *b, emu_ir_op_t op, uint16_t addr,
 /* ------------------------------------------------------------------ */
 
 typedef struct emu_ir_opt_stats {
-    uint32_t single_use;      /* values with exactly one reader        */
-    uint32_t flags_removed;   /* dead EMU_IR_SETF deleted              */
-    uint32_t gets_removed;    /* guest register reloads elided         */
-    uint32_t puts_removed;    /* guest register stores made redundant  */
-    uint32_t folded;          /* constants absorbed into an immediate  */
-    uint32_t addr_folded;     /* displacements folded into a LOAD/STORE */
-    uint32_t identities;      /* no-op arithmetic turned into a move    */
-    uint32_t dead_removed;    /* values nothing consumed               */
-    uint32_t blocks;          /* times emu_ir_optimise ran             */
+    uint32_t single_use; /* values with exactly one reader        */
+    uint32_t flags_removed; /* dead EMU_IR_SETF deleted              */
+    uint32_t gets_removed; /* guest register reloads elided         */
+    uint32_t puts_removed; /* guest register stores made redundant  */
+    uint32_t folded; /* constants absorbed into an immediate  */
+    uint32_t addr_folded; /* displacements folded into a LOAD/STORE */
+    uint32_t identities; /* no-op arithmetic turned into a move    */
+    uint32_t dead_removed; /* values nothing consumed               */
+    uint32_t blocks; /* times emu_ir_optimise ran             */
 } emu_ir_opt_stats_t;
 
 /*
@@ -597,7 +624,7 @@ typedef struct emu_ir_target {
 
     /* Helpers, indexed by the `imm` of EMU_IR_HELPER. */
     const void *const *helpers;
-    uint32_t           helper_count;
+    uint32_t helper_count;
 
     /*
      * Guest memory. A guest address is not a host address -- it goes
@@ -640,7 +667,7 @@ typedef struct emu_ir_target {
      * frontend without one leaves it NULL.
      */
     uint32_t (*freg_offset)(uint32_t n);
-    void     (*fp_flags)(emu_cpu_t *cpu, uint32_t flags);
+    void (*fp_flags)(emu_cpu_t *cpu, uint32_t flags);
 } emu_ir_target_t;
 
 /*
@@ -676,7 +703,7 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux);
 /* ------------------------------------------------------------------ */
 
 /* This temp did not get a register and lives in its frame slot. */
-#define EMU_IR_NO_REG      0xFFu
+#define EMU_IR_NO_REG 0xFFu
 
 /* As many host registers as any backend here offers the allocator. */
 #define EMU_IR_MAX_HOST_REGS 8u

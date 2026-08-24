@@ -21,7 +21,7 @@
 #define GUEST_SYS_TIMES_H
 
 struct tms {
-    long tms_utime;             /* the only field Dhrystone reads */
+    long tms_utime; /* the only field Dhrystone reads */
     long tms_stime;
     long tms_cutime;
     long tms_cstime;

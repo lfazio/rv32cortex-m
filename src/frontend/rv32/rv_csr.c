@@ -96,55 +96,113 @@ rv_exc_t rv_csr_read(rv_hart_t *h, uint32_t csr, uint32_t *out)
 
     switch (csr) {
 #if RV_EXT_F
-    case CSR_FFLAGS:        *out = h->fcsr & 0x1Fu; break;
-    case CSR_FRM:           *out = (h->fcsr >> 5) & 0x7u; break;
-    case CSR_FCSR:          *out = h->fcsr & 0xFFu; break;
+    case CSR_FFLAGS:
+        *out = h->fcsr & 0x1Fu;
+        break;
+    case CSR_FRM:
+        *out = (h->fcsr >> 5) & 0x7u;
+        break;
+    case CSR_FCSR:
+        *out = h->fcsr & 0xFFu;
+        break;
 #endif
 
     /* --- machine information --- */
-    case CSR_MVENDORID:     *out = RV_MVENDORID; break;
-    case CSR_MARCHID:       *out = RV_MARCHID;   break;
-    case CSR_MIMPID:        *out = RV_MIMPID;    break;
-    case CSR_MHARTID:       *out = h->hartid;    break;
-    case CSR_MCONFIGPTR:    *out = 0u;           break;
+    case CSR_MVENDORID:
+        *out = RV_MVENDORID;
+        break;
+    case CSR_MARCHID:
+        *out = RV_MARCHID;
+        break;
+    case CSR_MIMPID:
+        *out = RV_MIMPID;
+        break;
+    case CSR_MHARTID:
+        *out = h->hartid;
+        break;
+    case CSR_MCONFIGPTR:
+        *out = 0u;
+        break;
 
     /* --- trap setup --- */
-    case CSR_MSTATUS:       *out = mstatus_read(h);              break;
-    case CSR_MSTATUSH:      *out = 0u;           break;
-    case CSR_MISA:          *out = rv_hart_misa(); break;
-    case CSR_MIE:           *out = h->mie;       break;
-    case CSR_MTVEC:         *out = h->mtvec;     break;
+    case CSR_MSTATUS:
+        *out = mstatus_read(h);
+        break;
+    case CSR_MSTATUSH:
+        *out = 0u;
+        break;
+    case CSR_MISA:
+        *out = rv_hart_misa();
+        break;
+    case CSR_MIE:
+        *out = h->mie;
+        break;
+    case CSR_MTVEC:
+        *out = h->mtvec;
+        break;
 #if RV_EXT_S
-    case CSR_MEDELEG:       *out = h->medeleg;   break;
-    case CSR_MIDELEG:       *out = h->mideleg;   break;
+    case CSR_MEDELEG:
+        *out = h->medeleg;
+        break;
+    case CSR_MIDELEG:
+        *out = h->mideleg;
+        break;
 #else
     /* Nothing to delegate to, so both read as zero (WARL). */
     case CSR_MEDELEG:
-    case CSR_MIDELEG:       *out = 0u;           break;
+    case CSR_MIDELEG:
+        *out = 0u;
+        break;
 #endif
-    case CSR_MCOUNTEREN:    *out = h->mcounteren; break;
-    case CSR_MENVCFG:       *out = h->menvcfg;    break;
+    case CSR_MCOUNTEREN:
+        *out = h->mcounteren;
+        break;
+    case CSR_MENVCFG:
+        *out = h->menvcfg;
+        break;
     /* The high half is entirely fields of extensions this core lacks. */
-    case CSR_MENVCFGH:      *out = 0u;            break;
+    case CSR_MENVCFGH:
+        *out = 0u;
+        break;
 
 #if RV_EXT_S
     /* --- supervisor trap setup --- */
-    case CSR_SSTATUS:       *out = mstatus_read(h) & SSTATUS_RMASK; break;
+    case CSR_SSTATUS:
+        *out = mstatus_read(h) & SSTATUS_RMASK;
+        break;
     /*
      * sie and sip show only the delegated interrupts. An interrupt M-mode
      * has kept is not the supervisor's to see, let alone to mask.
      */
-    case CSR_SIE:           *out = h->mie & h->mideleg;          break;
-    case CSR_SIP:           *out = h->mip & h->mideleg;          break;
-    case CSR_STVEC:         *out = h->stvec;     break;
-    case CSR_SCOUNTEREN:    *out = h->scounteren; break;
-    case CSR_SENVCFG:       *out = h->senvcfg;    break;
+    case CSR_SIE:
+        *out = h->mie & h->mideleg;
+        break;
+    case CSR_SIP:
+        *out = h->mip & h->mideleg;
+        break;
+    case CSR_STVEC:
+        *out = h->stvec;
+        break;
+    case CSR_SCOUNTEREN:
+        *out = h->scounteren;
+        break;
+    case CSR_SENVCFG:
+        *out = h->senvcfg;
+        break;
 
     /* --- supervisor trap handling --- */
-    case CSR_SSCRATCH:      *out = h->sscratch;  break;
-    case CSR_SEPC:          *out = h->sepc;      break;
-    case CSR_SCAUSE:        *out = h->scause;    break;
-    case CSR_STVAL:         *out = h->stval;     break;
+    case CSR_SSCRATCH:
+        *out = h->sscratch;
+        break;
+    case CSR_SEPC:
+        *out = h->sepc;
+        break;
+    case CSR_SCAUSE:
+        *out = h->scause;
+        break;
+    case CSR_STVAL:
+        *out = h->stval;
+        break;
 
     case CSR_SATP:
 #if RV_EXT_SV32
@@ -168,22 +226,36 @@ rv_exc_t rv_csr_read(rv_hart_t *h, uint32_t csr, uint32_t *out)
 #endif
 
     /* --- trap handling --- */
-    case CSR_MSCRATCH:      *out = h->mscratch;  break;
-    case CSR_MEPC:          *out = h->mepc;      break;
-    case CSR_MCAUSE:        *out = h->mcause;    break;
-    case CSR_MTVAL:         *out = h->mtval;     break;
-    case CSR_MIP:           *out = h->mip;       break;
+    case CSR_MSCRATCH:
+        *out = h->mscratch;
+        break;
+    case CSR_MEPC:
+        *out = h->mepc;
+        break;
+    case CSR_MCAUSE:
+        *out = h->mcause;
+        break;
+    case CSR_MTVAL:
+        *out = h->mtval;
+        break;
+    case CSR_MIP:
+        *out = h->mip;
+        break;
 
 #if RV_EXT_SDTRIG
     /* --- debug triggers --- */
-    case CSR_TSELECT: *out = h->tselect; break;
+    case CSR_TSELECT:
+        *out = h->tselect;
+        break;
     case CSR_TDATA1:
         *out = (h->tselect < RV_TRIG_COUNT) ? h->tdata1[h->tselect] : 0u;
         break;
     case CSR_TDATA2:
         *out = (h->tselect < RV_TRIG_COUNT) ? h->tdata2[h->tselect] : 0u;
         break;
-    case CSR_TDATA3: *out = 0u; break;
+    case CSR_TDATA3:
+        *out = 0u;
+        break;
     case CSR_TINFO:
         /* Bit n set means trigger type n is supported; only mcontrol. */
         *out = 1u << 2;
@@ -192,7 +264,9 @@ rv_exc_t rv_csr_read(rv_hart_t *h, uint32_t csr, uint32_t *out)
 
 #if RV_EXT_PMP
     /* --- physical memory protection --- */
-    case CSR_PMPCFG0: case CSR_PMPCFG0 + 1: case CSR_PMPCFG0 + 2:
+    case CSR_PMPCFG0:
+    case CSR_PMPCFG0 + 1:
+    case CSR_PMPCFG0 + 2:
     case CSR_PMPCFG0 + 3:
         *out = h->pmpcfg[csr - CSR_PMPCFG0];
         break;
@@ -204,7 +278,7 @@ rv_exc_t rv_csr_read(rv_hart_t *h, uint32_t csr, uint32_t *out)
         return RV_EXC_ILLEGAL_INSN;
 #endif
 
-    /* --- counters --- */
+        /* --- counters --- */
 #if RV_EXT_ZICNTR
     /*
      * The unprivileged shadows are readable only where mcounteren (for
@@ -212,29 +286,53 @@ rv_exc_t rv_csr_read(rv_hart_t *h, uint32_t csr, uint32_t *out)
      * numbers above have their own privilege from csr_min_priv and are not
      * affected; this is only about cycle/time/instret.
      */
-    case CSR_CYCLE: case CSR_CYCLEH:
-    case CSR_TIME:  case CSR_TIMEH:
-    case CSR_INSTRET: case CSR_INSTRETH:
+    case CSR_CYCLE:
+    case CSR_CYCLEH:
+    case CSR_TIME:
+    case CSR_TIMEH:
+    case CSR_INSTRET:
+    case CSR_INSTRETH:
         if (!counter_enabled(h, csr)) {
             return RV_EXC_ILLEGAL_INSN;
         }
         switch (csr) {
-        case CSR_CYCLE:    *out = (uint32_t)h->mcycle;           break;
-        case CSR_CYCLEH:   *out = (uint32_t)(h->mcycle >> 32);   break;
-        case CSR_INSTRET:  *out = (uint32_t)h->minstret;         break;
-        case CSR_INSTRETH: *out = (uint32_t)(h->minstret >> 32); break;
-        case CSR_TIME:     *out = (uint32_t)read_time(h);        break;
-        default:           *out = (uint32_t)(read_time(h) >> 32); break;
+        case CSR_CYCLE:
+            *out = (uint32_t)h->mcycle;
+            break;
+        case CSR_CYCLEH:
+            *out = (uint32_t)(h->mcycle >> 32);
+            break;
+        case CSR_INSTRET:
+            *out = (uint32_t)h->minstret;
+            break;
+        case CSR_INSTRETH:
+            *out = (uint32_t)(h->minstret >> 32);
+            break;
+        case CSR_TIME:
+            *out = (uint32_t)read_time(h);
+            break;
+        default:
+            *out = (uint32_t)(read_time(h) >> 32);
+            break;
         }
         break;
 
-    case CSR_MCYCLE:        *out = (uint32_t)h->mcycle;          break;
-    case CSR_MCYCLEH:       *out = (uint32_t)(h->mcycle >> 32);  break;
-    case CSR_MINSTRET:      *out = (uint32_t)h->minstret;        break;
-    case CSR_MINSTRETH:     *out = (uint32_t)(h->minstret >> 32); break;
-    case CSR_MCOUNTINHIBIT: *out = h->mcountinhibit;              break;
+    case CSR_MCYCLE:
+        *out = (uint32_t)h->mcycle;
+        break;
+    case CSR_MCYCLEH:
+        *out = (uint32_t)(h->mcycle >> 32);
+        break;
+    case CSR_MINSTRET:
+        *out = (uint32_t)h->minstret;
+        break;
+    case CSR_MINSTRETH:
+        *out = (uint32_t)(h->minstret >> 32);
+        break;
+    case CSR_MCOUNTINHIBIT:
+        *out = h->mcountinhibit;
+        break;
 #endif
-
     }
 
     return RV_EXC_NONE;
@@ -267,7 +365,7 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
         /* WARL: keep the bits we implement, ignore the rest. */
         h->mstatus = (h->mstatus & ~MSTATUS_WMASK) | (val & MSTATUS_WMASK);
 #if RV_LAZY_IRQ_CHECK
-        h->irq_dirty = true;   /* MIE may have been set */
+        h->irq_dirty = true; /* MIE may have been set */
 #endif
 #if RV_EXT_U && RV_EXT_PMP
         /*
@@ -286,7 +384,7 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
         break;
 
     case CSR_MSTATUSH:
-        break;   /* all implemented fields are read-only zero */
+        break; /* all implemented fields are read-only zero */
 
 #if RV_EXT_S
     case CSR_SSTATUS:
@@ -297,7 +395,7 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
          */
         h->mstatus = (h->mstatus & ~SSTATUS_WMASK) | (val & SSTATUS_WMASK);
 #if RV_LAZY_IRQ_CHECK
-        h->irq_dirty = true;   /* SIE may have been set */
+        h->irq_dirty = true; /* SIE may have been set */
 #endif
         break;
 
@@ -315,8 +413,8 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
          * software one; the timer and external bits belong to whatever
          * raises them.
          */
-        h->mip = (h->mip & ~(h->mideleg & MIP_SSIP))
-               | (val & h->mideleg & MIP_SSIP);
+        h->mip =
+            (h->mip & ~(h->mideleg & MIP_SSIP)) | (val & h->mideleg & MIP_SSIP);
 #if RV_LAZY_IRQ_CHECK
         h->irq_dirty = true;
 #endif
@@ -329,12 +427,24 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
         }
         break;
 
-    case CSR_SCOUNTEREN:  h->scounteren = val & 0x7u; break;
-    case CSR_SENVCFG:     h->senvcfg = val & ENVCFG_WMASK; break;
-    case CSR_SSCRATCH:    h->sscratch = val;          break;
-    case CSR_SEPC:        h->sepc = val & ~1u;        break;
-    case CSR_SCAUSE:      h->scause = val;            break;
-    case CSR_STVAL:       h->stval = val;             break;
+    case CSR_SCOUNTEREN:
+        h->scounteren = val & 0x7u;
+        break;
+    case CSR_SENVCFG:
+        h->senvcfg = val & ENVCFG_WMASK;
+        break;
+    case CSR_SSCRATCH:
+        h->sscratch = val;
+        break;
+    case CSR_SEPC:
+        h->sepc = val & ~1u;
+        break;
+    case CSR_SCAUSE:
+        h->scause = val;
+        break;
+    case CSR_STVAL:
+        h->stval = val;
+        break;
 
     case CSR_SATP:
 #if RV_EXT_SV32
@@ -376,10 +486,10 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
         h->menvcfg = val & ENVCFG_WMASK;
         break;
     case CSR_MENVCFGH:
-        break;   /* every field belongs to an absent extension */
+        break; /* every field belongs to an absent extension */
 
     case CSR_MISA:
-        break;   /* the extension set is fixed at build time */
+        break; /* the extension set is fixed at build time */
 
     case CSR_MIE:
         h->mie = val & MIE_WMASK;
@@ -402,7 +512,7 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
 #if !RV_EXT_S
     case CSR_MEDELEG:
     case CSR_MIDELEG:
-        break;   /* nothing to delegate to; hardwired zero */
+        break; /* nothing to delegate to; hardwired zero */
 #endif
 
     case CSR_MSCRATCH:
@@ -457,7 +567,9 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
 #endif
 
 #if RV_EXT_PMP
-    case CSR_PMPCFG0: case CSR_PMPCFG0 + 1: case CSR_PMPCFG0 + 2:
+    case CSR_PMPCFG0:
+    case CSR_PMPCFG0 + 1:
+    case CSR_PMPCFG0 + 2:
     case CSR_PMPCFG0 + 3: {
         /*
          * A locked entry is locked until reset: neither its cfg byte nor
@@ -469,7 +581,7 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
         for (uint32_t b = 0; b < 4u; b++) {
             const uint32_t sh = b * 8u;
             if ((cur >> sh) & 0x80u) {
-                continue;                       /* locked byte */
+                continue; /* locked byte */
             }
             /* A == 2 (NA4) is reserved when the grain exceeds 4 bytes;
              * this implementation supports it, so nothing is masked out
@@ -482,7 +594,6 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
         break;
     }
 #endif
-
 
 #if RV_EXT_ZICNTR
     case CSR_MCYCLE:
@@ -547,64 +658,117 @@ const char *rv_csr_name(uint32_t csr)
 {
     switch (csr) {
 #if RV_EXT_F
-    case CSR_FFLAGS:        return "fflags";
-    case CSR_FRM:           return "frm";
-    case CSR_FCSR:          return "fcsr";
+    case CSR_FFLAGS:
+        return "fflags";
+    case CSR_FRM:
+        return "frm";
+    case CSR_FCSR:
+        return "fcsr";
 #endif
-    case CSR_CYCLE:         return "cycle";
-    case CSR_TIME:          return "time";
-    case CSR_INSTRET:       return "instret";
-    case CSR_CYCLEH:        return "cycleh";
-    case CSR_TIMEH:         return "timeh";
-    case CSR_INSTRETH:      return "instreth";
-    case CSR_MVENDORID:     return "mvendorid";
-    case CSR_MARCHID:       return "marchid";
-    case CSR_MIMPID:        return "mimpid";
-    case CSR_MHARTID:       return "mhartid";
-    case CSR_MCONFIGPTR:    return "mconfigptr";
-    case CSR_MSTATUS:       return "mstatus";
-    case CSR_MISA:          return "misa";
-    case CSR_MEDELEG:       return "medeleg";
-    case CSR_MIDELEG:       return "mideleg";
-    case CSR_MIE:           return "mie";
-    case CSR_MTVEC:         return "mtvec";
-    case CSR_MCOUNTEREN:    return "mcounteren";
-    case CSR_MENVCFG:       return "menvcfg";
-    case CSR_MENVCFGH:      return "menvcfgh";
+    case CSR_CYCLE:
+        return "cycle";
+    case CSR_TIME:
+        return "time";
+    case CSR_INSTRET:
+        return "instret";
+    case CSR_CYCLEH:
+        return "cycleh";
+    case CSR_TIMEH:
+        return "timeh";
+    case CSR_INSTRETH:
+        return "instreth";
+    case CSR_MVENDORID:
+        return "mvendorid";
+    case CSR_MARCHID:
+        return "marchid";
+    case CSR_MIMPID:
+        return "mimpid";
+    case CSR_MHARTID:
+        return "mhartid";
+    case CSR_MCONFIGPTR:
+        return "mconfigptr";
+    case CSR_MSTATUS:
+        return "mstatus";
+    case CSR_MISA:
+        return "misa";
+    case CSR_MEDELEG:
+        return "medeleg";
+    case CSR_MIDELEG:
+        return "mideleg";
+    case CSR_MIE:
+        return "mie";
+    case CSR_MTVEC:
+        return "mtvec";
+    case CSR_MCOUNTEREN:
+        return "mcounteren";
+    case CSR_MENVCFG:
+        return "menvcfg";
+    case CSR_MENVCFGH:
+        return "menvcfgh";
 #if RV_EXT_S
-    case CSR_SSTATUS:       return "sstatus";
-    case CSR_SIE:           return "sie";
-    case CSR_STVEC:         return "stvec";
-    case CSR_SCOUNTEREN:    return "scounteren";
-    case CSR_SENVCFG:       return "senvcfg";
-    case CSR_SSCRATCH:      return "sscratch";
-    case CSR_SEPC:          return "sepc";
-    case CSR_SCAUSE:        return "scause";
-    case CSR_STVAL:         return "stval";
-    case CSR_SIP:           return "sip";
-    case CSR_SATP:          return "satp";
+    case CSR_SSTATUS:
+        return "sstatus";
+    case CSR_SIE:
+        return "sie";
+    case CSR_STVEC:
+        return "stvec";
+    case CSR_SCOUNTEREN:
+        return "scounteren";
+    case CSR_SENVCFG:
+        return "senvcfg";
+    case CSR_SSCRATCH:
+        return "sscratch";
+    case CSR_SEPC:
+        return "sepc";
+    case CSR_SCAUSE:
+        return "scause";
+    case CSR_STVAL:
+        return "stval";
+    case CSR_SIP:
+        return "sip";
+    case CSR_SATP:
+        return "satp";
 #endif
-    case CSR_MSTATUSH:      return "mstatush";
-    case CSR_MSCRATCH:      return "mscratch";
-    case CSR_MEPC:          return "mepc";
-    case CSR_MCAUSE:        return "mcause";
-    case CSR_MTVAL:         return "mtval";
-    case CSR_MIP:           return "mip";
-    case CSR_MCYCLE:        return "mcycle";
-    case CSR_MINSTRET:      return "minstret";
-    case CSR_MCYCLEH:       return "mcycleh";
-    case CSR_MINSTRETH:     return "minstreth";
-    case CSR_MCOUNTINHIBIT: return "mcountinhibit";
+    case CSR_MSTATUSH:
+        return "mstatush";
+    case CSR_MSCRATCH:
+        return "mscratch";
+    case CSR_MEPC:
+        return "mepc";
+    case CSR_MCAUSE:
+        return "mcause";
+    case CSR_MTVAL:
+        return "mtval";
+    case CSR_MIP:
+        return "mip";
+    case CSR_MCYCLE:
+        return "mcycle";
+    case CSR_MINSTRET:
+        return "minstret";
+    case CSR_MCYCLEH:
+        return "mcycleh";
+    case CSR_MINSTRETH:
+        return "minstreth";
+    case CSR_MCOUNTINHIBIT:
+        return "mcountinhibit";
 #if RV_EXT_SDTRIG
-    case CSR_TSELECT:       return "tselect";
-    case CSR_TDATA1:        return "tdata1";
-    case CSR_TDATA2:        return "tdata2";
-    case CSR_TDATA3:        return "tdata3";
-    case CSR_TINFO:         return "tinfo";
+    case CSR_TSELECT:
+        return "tselect";
+    case CSR_TDATA1:
+        return "tdata1";
+    case CSR_TDATA2:
+        return "tdata2";
+    case CSR_TDATA3:
+        return "tdata3";
+    case CSR_TINFO:
+        return "tinfo";
 #endif
 #if RV_EXT_PMP
-    case CSR_PMPCFG0: case CSR_PMPCFG0 + 1: case CSR_PMPCFG0 + 2:
-    case CSR_PMPCFG0 + 3: return "pmpcfg";
+    case CSR_PMPCFG0:
+    case CSR_PMPCFG0 + 1:
+    case CSR_PMPCFG0 + 2:
+    case CSR_PMPCFG0 + 3:
+        return "pmpcfg";
 #endif
     default:
 #if RV_EXT_PMP

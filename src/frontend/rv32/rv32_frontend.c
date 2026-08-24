@@ -36,37 +36,37 @@
  * B is exactly Zba+Zbb+Zbs, which is what misa reports; Zbc is separate.
  */
 #if RV_EXT_M
-#  define RV32_S_M "M"
+#define RV32_S_M "M"
 #else
-#  define RV32_S_M ""
+#define RV32_S_M ""
 #endif
 #if RV_EXT_A
-#  define RV32_S_A "A"
+#define RV32_S_A "A"
 #else
-#  define RV32_S_A ""
+#define RV32_S_A ""
 #endif
 #if RV_EXT_F
-#  define RV32_S_F "F"
+#define RV32_S_F "F"
 #else
-#  define RV32_S_F ""
+#define RV32_S_F ""
 #endif
 #if RV_EXT_C
-#  define RV32_S_C "C"
+#define RV32_S_C "C"
 #else
-#  define RV32_S_C ""
+#define RV32_S_C ""
 #endif
 #if RV_EXT_ZBA && RV_EXT_ZBB && RV_EXT_ZBS
-#  define RV32_S_B "B"
+#define RV32_S_B "B"
 #else
-#  define RV32_S_B ""
+#define RV32_S_B ""
 #endif
 #if RV_EXT_ZBC
-#  define RV32_S_ZBC "_zbc"
+#define RV32_S_ZBC "_zbc"
 #else
-#  define RV32_S_ZBC ""
+#define RV32_S_ZBC ""
 #endif
 
-#define RV32_ISA_STRING \
+#define RV32_ISA_STRING                                                        \
     "RV32I" RV32_S_M RV32_S_A RV32_S_F RV32_S_C RV32_S_B RV32_S_ZBC
 
 /* ------------------------------------------------------------------ */
@@ -83,7 +83,7 @@
  * part of the RISC-V privileged platform, not of the board, and what they
  * do is write this hart's mip.
  */
-static rv_hart_t  g_hart;
+static rv_hart_t g_hart;
 static rv_clint_t g_clint;
 static rv_aplic_t g_aplic;
 
@@ -201,8 +201,8 @@ static emu_run_reason_t rv32_step(emu_cpu_t *cpu)
  */
 static bool rv32_add_shared_devices(emu_bus_t *bus)
 {
-    return emu_bus_add_mmio(bus, "aplic", RV_GUEST_APLIC_BASE,
-                            RV_APLIC_SIZE, &rv_aplic_ops, &g_aplic);
+    return emu_bus_add_mmio(bus, "aplic", RV_GUEST_APLIC_BASE, RV_APLIC_SIZE,
+                            &rv_aplic_ops, &g_aplic);
 }
 
 /*
@@ -214,7 +214,8 @@ static bool rv32_add_shared_devices(emu_bus_t *bus)
 static bool rv32_add_core_devices(emu_cpu_t *cpu, emu_bus_t *bus,
                                   unsigned index)
 {
-    (void)cpu; (void)index;
+    (void)cpu;
+    (void)index;
     return emu_bus_add_mmio(bus, "aclint-mswi", RV_GUEST_ACLINT_MSWI_BASE,
                             RV_ACLINT_MSWI_SIZE, &rv_aclint_mswi_ops,
                             &g_clint) &&
@@ -266,7 +267,9 @@ static void rv32_set_syscall(emu_cpu_t *cpu, emu_syscall_fn fn, void *user)
     h->ecall = fn;
     h->ecall_user = user;
 #else
-    (void)cpu; (void)fn; (void)user;
+    (void)cpu;
+    (void)fn;
+    (void)user;
 #endif
 }
 
@@ -277,7 +280,9 @@ static void rv32_set_trace(emu_cpu_t *cpu, emu_trace_fn fn, void *user)
     h->trace = fn;
     h->trace_user = user;
 #else
-    (void)cpu; (void)fn; (void)user;
+    (void)cpu;
+    (void)fn;
+    (void)user;
 #endif
 }
 
@@ -286,7 +291,8 @@ static void rv32_set_cache(emu_cpu_t *cpu, const emu_cache_ops_t *ops)
 #if RV_EXT_ZICBOM
     hart_of(cpu)->cache = ops;
 #else
-    (void)cpu; (void)ops;
+    (void)cpu;
+    (void)ops;
 #endif
 }
 
@@ -304,13 +310,13 @@ static void rv32_status(const emu_cpu_t *cpu, emu_cpu_status_t *out)
     const rv_hart_t *h = hart_of(cpu);
 
     out->backend = rv_backend->name;
-    out->pc      = h->pc;
+    out->pc = h->pc;
     out->retired = h->minstret;
-    out->state   = (emu_state_t)h->state;
+    out->state = (emu_state_t)h->state;
 #if EMU_ENABLE_STATS
-    out->traps   = h->trap_count;
+    out->traps = h->trap_count;
 #else
-    out->traps   = 0u;
+    out->traps = 0u;
 #endif
     /*
      * Parked in WFI with mie empty means nothing can ever wake this hart:
@@ -331,7 +337,7 @@ static void rv32_reg_write(emu_cpu_t *cpu, unsigned r, uint32_t v)
     if (r < 32u) {
         rv_hart_t *h = hart_of(cpu);
         h->x[r] = v;
-        h->x[0] = 0u;      /* x0 stays hardwired */
+        h->x[0] = 0u; /* x0 stays hardwired */
     }
 }
 
@@ -350,25 +356,41 @@ static const char *cause_name(uint32_t mcause)
 {
     if (mcause & RV_CAUSE_INTERRUPT) {
         switch (mcause & ~RV_CAUSE_INTERRUPT) {
-        case RV_INT_M_SOFT:  return "machine software interrupt";
-        case RV_INT_M_TIMER: return "machine timer interrupt";
-        case RV_INT_M_EXT:   return "machine external interrupt";
-        default:             return "unknown interrupt";
+        case RV_INT_M_SOFT:
+            return "machine software interrupt";
+        case RV_INT_M_TIMER:
+            return "machine timer interrupt";
+        case RV_INT_M_EXT:
+            return "machine external interrupt";
+        default:
+            return "unknown interrupt";
         }
     }
     switch (mcause) {
-    case RV_EXC_INSN_MISALIGNED:    return "instruction address misaligned";
-    case RV_EXC_INSN_ACCESS_FAULT:  return "instruction access fault";
-    case RV_EXC_ILLEGAL_INSN:       return "illegal instruction";
-    case RV_EXC_BREAKPOINT:         return "breakpoint";
-    case RV_EXC_LOAD_MISALIGNED:    return "load address misaligned";
-    case RV_EXC_LOAD_ACCESS_FAULT:  return "load access fault";
-    case RV_EXC_STORE_MISALIGNED:   return "store address misaligned";
-    case RV_EXC_STORE_ACCESS_FAULT: return "store access fault";
-    case RV_EXC_ECALL_U:            return "environment call from U-mode";
-    case RV_EXC_ECALL_S:            return "environment call from S-mode";
-    case RV_EXC_ECALL_M:            return "environment call from M-mode";
-    default:                        return "unknown exception";
+    case RV_EXC_INSN_MISALIGNED:
+        return "instruction address misaligned";
+    case RV_EXC_INSN_ACCESS_FAULT:
+        return "instruction access fault";
+    case RV_EXC_ILLEGAL_INSN:
+        return "illegal instruction";
+    case RV_EXC_BREAKPOINT:
+        return "breakpoint";
+    case RV_EXC_LOAD_MISALIGNED:
+        return "load address misaligned";
+    case RV_EXC_LOAD_ACCESS_FAULT:
+        return "load access fault";
+    case RV_EXC_STORE_MISALIGNED:
+        return "store address misaligned";
+    case RV_EXC_STORE_ACCESS_FAULT:
+        return "store access fault";
+    case RV_EXC_ECALL_U:
+        return "environment call from U-mode";
+    case RV_EXC_ECALL_S:
+        return "environment call from S-mode";
+    case RV_EXC_ECALL_M:
+        return "environment call from M-mode";
+    default:
+        return "unknown exception";
     }
 }
 
@@ -401,28 +423,40 @@ static void rv32_dump(const emu_cpu_t *cpu, emu_print_fn out, void *ctx)
     char hb[9];
     char db[21];
 
-    out(ctx, "\n  pc      ");  out(ctx, hex32(hb, h->pc));
-    out(ctx, "\n  mcause  ");  out(ctx, hex32(hb, h->mcause));
-    out(ctx, "  (");           out(ctx, cause_name(h->mcause));
-    out(ctx, ")\n  mepc    ");  out(ctx, hex32(hb, h->mepc));
-    out(ctx, "   mtval ");     out(ctx, hex32(hb, h->mtval));
-    out(ctx, "\n  mstatus ");  out(ctx, hex32(hb, h->mstatus));
-    out(ctx, "   mtvec ");     out(ctx, hex32(hb, h->mtvec));
+    out(ctx, "\n  pc      ");
+    out(ctx, hex32(hb, h->pc));
+    out(ctx, "\n  mcause  ");
+    out(ctx, hex32(hb, h->mcause));
+    out(ctx, "  (");
+    out(ctx, cause_name(h->mcause));
+    out(ctx, ")\n  mepc    ");
+    out(ctx, hex32(hb, h->mepc));
+    out(ctx, "   mtval ");
+    out(ctx, hex32(hb, h->mtval));
+    out(ctx, "\n  mstatus ");
+    out(ctx, hex32(hb, h->mstatus));
+    out(ctx, "   mtvec ");
+    out(ctx, hex32(hb, h->mtvec));
     out(ctx, "\n  priv    ");
-    out(ctx, (h->priv == RV_PRIV_M) ? "M"
-           : (h->priv == RV_PRIV_S) ? "S" : "U");
+    out(ctx, (h->priv == RV_PRIV_M) ? "M" : (h->priv == RV_PRIV_S) ? "S" : "U");
 #if RV_EXT_S
     /*
      * The S bank as well as the M one. Which of the two holds the live
      * trap state depends on delegation, and reading the wrong one is the
      * standard way to misdiagnose a fault on a core with two levels.
      */
-    out(ctx, "\n  scause  ");  out(ctx, hex32(hb, h->scause));
-    out(ctx, "   sepc  ");     out(ctx, hex32(hb, h->sepc));
-    out(ctx, "  stval ");      out(ctx, hex32(hb, h->stval));
-    out(ctx, "\n  stvec   ");  out(ctx, hex32(hb, h->stvec));
-    out(ctx, "  medeleg ");    out(ctx, hex32(hb, h->medeleg));
-    out(ctx, "  mideleg ");    out(ctx, hex32(hb, h->mideleg));
+    out(ctx, "\n  scause  ");
+    out(ctx, hex32(hb, h->scause));
+    out(ctx, "   sepc  ");
+    out(ctx, hex32(hb, h->sepc));
+    out(ctx, "  stval ");
+    out(ctx, hex32(hb, h->stval));
+    out(ctx, "\n  stvec   ");
+    out(ctx, hex32(hb, h->stvec));
+    out(ctx, "  medeleg ");
+    out(ctx, hex32(hb, h->medeleg));
+    out(ctx, "  mideleg ");
+    out(ctx, hex32(hb, h->mideleg));
 #endif
     out(ctx, "\n");
 
@@ -455,43 +489,43 @@ static void rv32_dump(const emu_cpu_t *cpu, emu_print_fn out, void *ctx)
 /* ------------------------------------------------------------------ */
 
 const emu_cpu_ops_t rv32_frontend = {
-    .name        = "rv32",
-    .desc        = RV32_ISA_STRING,
+    .name = "rv32",
+    .desc = RV32_ISA_STRING,
     .elf_machine = EMU_EM_RISCV,
 
-    .instance    = rv32_instance,
-    .init        = rv32_init,
-    .reset       = rv32_reset,
-    .boot        = rv32_boot,
+    .instance = rv32_instance,
+    .init = rv32_init,
+    .reset = rv32_reset,
+    .boot = rv32_boot,
 
-    .run         = rv32_run,
-    .invalidate  = rv32_invalidate,
-    .step        = rv32_step,
+    .run = rv32_run,
+    .invalidate = rv32_invalidate,
+    .step = rv32_step,
 
-    .ncores          = 1u,
+    .ncores = 1u,
     .add_shared_devices = rv32_add_shared_devices,
-    .gdb_target         = rv32_gdb_target,
-    .select_backend     = rv32_select_backend,
-    .add_core_devices   = rv32_add_core_devices,
-    .set_irq         = rv32_set_irq,
+    .gdb_target = rv32_gdb_target,
+    .select_backend = rv32_select_backend,
+    .add_core_devices = rv32_add_core_devices,
+    .set_irq = rv32_set_irq,
     .set_unmask_hook = rv32_set_unmask_hook,
-    .advance_time    = rv32_advance_time,
-    .set_time        = rv32_set_time,
+    .advance_time = rv32_advance_time,
+    .set_time = rv32_set_time,
 
     .set_syscall = rv32_set_syscall,
-    .set_trace   = rv32_set_trace,
-    .set_cache   = rv32_set_cache,
-    .halt        = rv32_halt,
+    .set_trace = rv32_set_trace,
+    .set_cache = rv32_set_cache,
+    .halt = rv32_halt,
 
-    .status      = rv32_status,
-    .nregs       = 32u,
-    .reg_name    = rv_reg_name,
-    .reg_read    = rv32_reg_read,
-    .reg_write   = rv32_reg_write,
-    .dump        = rv32_dump,
+    .status = rv32_status,
+    .nregs = 32u,
+    .reg_name = rv_reg_name,
+    .reg_read = rv32_reg_read,
+    .reg_write = rv32_reg_write,
+    .dump = rv32_dump,
 #if RV_ENABLE_DISASM
-    .disasm      = rv_disasm,
+    .disasm = rv_disasm,
 #else
-    .disasm      = NULL,
+    .disasm = NULL,
 #endif
 };

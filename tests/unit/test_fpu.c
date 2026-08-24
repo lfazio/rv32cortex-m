@@ -30,7 +30,7 @@
 #if RV_EXT_F
 
 /* Encodings, built rather than hard-coded so the intent stays readable. */
-#define OP_FP    0x53u
+#define OP_FP 0x53u
 #define OP_FMADD 0x43u
 
 static uint32_t r_type(uint32_t op, uint32_t rd, uint32_t f3, uint32_t rs1,
@@ -40,15 +40,15 @@ static uint32_t r_type(uint32_t op, uint32_t rd, uint32_t f3, uint32_t rs1,
 }
 
 /* Bit patterns, so a NaN survives being written down. */
-#define F_QNAN   0x7FC00000u
-#define F_SNAN   0x7F800001u
-#define F_INF    0x7F800000u
-#define F_NINF   0xFF800000u
-#define F_ZERO   0x00000000u
-#define F_NZERO  0x80000000u
-#define F_ONE    0x3F800000u
-#define F_TWO    0x40000000u
-#define F_THREE  0x40400000u
+#define F_QNAN 0x7FC00000u
+#define F_SNAN 0x7F800001u
+#define F_INF 0x7F800000u
+#define F_NINF 0xFF800000u
+#define F_ZERO 0x00000000u
+#define F_NZERO 0x80000000u
+#define F_ONE 0x3F800000u
+#define F_TWO 0x40000000u
+#define F_THREE 0x40400000u
 
 static rv_hart_t g_hart;
 static emu_bus_t g_bus;
@@ -108,8 +108,8 @@ static uint32_t fp_op(uint32_t f7, uint32_t rm, uint32_t a, uint32_t b,
 }
 
 /* Same, but the result is an integer register (comparisons, conversions). */
-static uint32_t fp_op_x(uint32_t f7, uint32_t rm, uint32_t rs2,
-                        uint32_t a, uint32_t b, uint32_t *flags)
+static uint32_t fp_op_x(uint32_t f7, uint32_t rm, uint32_t rs2, uint32_t a,
+                        uint32_t b, uint32_t *flags)
 {
     uint32_t tval = 0u;
 
@@ -154,21 +154,21 @@ static uint32_t fp_op_x(uint32_t f7, uint32_t rm, uint32_t rs2,
  */
 static void test_fma_rounds_once(void)
 {
-    const uint32_t a = 0x3F800800u;      /* 1 + 2^-12                */
-    const uint32_t p = 0x3F801000u;      /* 1 + 2^-11, the rounded product */
+    const uint32_t a = 0x3F800800u; /* 1 + 2^-12                */
+    const uint32_t p = 0x3F801000u; /* 1 + 2^-11, the rounded product */
     uint32_t tval = 0u;
 
     fp_reset();
     fset(1, a);
     fset(2, a);
-    fset(3, p ^ 0x80000000u);       /* -p                       */
+    fset(3, p ^ 0x80000000u); /* -p                       */
 
     /* FMADD.S f0, f1, f2, f3 -- opcode 0x43, rs3 in bits 31:27. */
-    const uint32_t insn = 0x43u | (0u << 7) | (0u << 12) | (1u << 15) |
-                          (2u << 20) | (3u << 27);
+    const uint32_t insn =
+        0x43u | (0u << 7) | (0u << 12) | (1u << 15) | (2u << 20) | (3u << 27);
 
     CHECK_EQ(rv_hart_fp(&g_hart, insn, &tval), RV_EXC_NONE);
-    CHECK_EQ(fget(0), 0x33800000u);  /* 2^-24, not zero          */
+    CHECK_EQ(fget(0), 0x33800000u); /* 2^-24, not zero          */
     CHECK(fget(0) != 0u);
 }
 
@@ -250,19 +250,19 @@ static void test_jit_generation_key(void)
 {
     fp_reset();
     g_hart.mstatus = (g_hart.mstatus & ~MSTATUS_FS_MASK) |
-                     (2u << MSTATUS_FS_SHIFT);        /* Clean */
-    g_hart.fcsr = 0u;                                 /* frm = RNE */
+                     (2u << MSTATUS_FS_SHIFT); /* Clean */
+    g_hart.fcsr = 0u; /* frm = RNE */
 
     const uint32_t base = gen_key();
 
     /* Dirty is still "on", so the key must not move. */
     g_hart.mstatus = (g_hart.mstatus & ~MSTATUS_FS_MASK) |
-                     (3u << MSTATUS_FS_SHIFT);        /* Dirty */
+                     (3u << MSTATUS_FS_SHIFT); /* Dirty */
     CHECK_EQ(gen_key(), base);
 
     /* Initial is also on. */
-    g_hart.mstatus = (g_hart.mstatus & ~MSTATUS_FS_MASK) |
-                     (1u << MSTATUS_FS_SHIFT);
+    g_hart.mstatus =
+        (g_hart.mstatus & ~MSTATUS_FS_MASK) | (1u << MSTATUS_FS_SHIFT);
     CHECK_EQ(gen_key(), base);
 
     /* Off is not, and a block built while it was on must be discarded. */
@@ -289,7 +289,7 @@ static void test_jit_generation_key(void)
      */
     g_hart.fcsr = 0u;
     const uint32_t clean = gen_key();
-    g_hart.fcsr = 0x1Fu;                              /* all fflags set */
+    g_hart.fcsr = 0x1Fu; /* all fflags set */
     CHECK_EQ(gen_key(), clean);
 
     /* A mapping change invalidates blocks keyed on virtual addresses. */
@@ -303,9 +303,10 @@ void test_fpu(void)
     uint32_t flags;
 
     /* ---- arithmetic, to establish the harness is wired up ---- */
-    CHECK_EQ(fp_op(0x00u, FRM_RNE, F_ONE, F_TWO, NULL), F_THREE);   /* add */
-    CHECK_EQ(fp_op(0x04u, FRM_RNE, F_THREE, F_TWO, NULL), F_ONE);   /* sub */
-    CHECK_EQ(fp_op(0x08u, FRM_RNE, F_THREE, F_TWO, NULL), 0x40C00000u); /* mul */
+    CHECK_EQ(fp_op(0x00u, FRM_RNE, F_ONE, F_TWO, NULL), F_THREE); /* add */
+    CHECK_EQ(fp_op(0x04u, FRM_RNE, F_THREE, F_TWO, NULL), F_ONE); /* sub */
+    CHECK_EQ(fp_op(0x08u, FRM_RNE, F_THREE, F_TWO, NULL),
+             0x40C00000u); /* mul */
 
     /* Divide by zero sets DZ and gives a correctly signed infinity, which
      * is not the same as raising invalid. */
@@ -324,9 +325,9 @@ void test_fpu(void)
      * smaller" by comparison alone may return either. The spec does not
      * leave it open: FMIN must give -0 and FMAX +0.
      */
-    CHECK_EQ(fp_op(0x14u, 0u, F_NZERO, F_ZERO, NULL), F_NZERO);  /* fmin */
+    CHECK_EQ(fp_op(0x14u, 0u, F_NZERO, F_ZERO, NULL), F_NZERO); /* fmin */
     CHECK_EQ(fp_op(0x14u, 0u, F_ZERO, F_NZERO, NULL), F_NZERO);
-    CHECK_EQ(fp_op(0x14u, 1u, F_NZERO, F_ZERO, NULL), F_ZERO);   /* fmax */
+    CHECK_EQ(fp_op(0x14u, 1u, F_NZERO, F_ZERO, NULL), F_ZERO); /* fmax */
     CHECK_EQ(fp_op(0x14u, 1u, F_ZERO, F_NZERO, NULL), F_ZERO);
 
     /* A quiet NaN is ignored if the other operand is a number, and that is
@@ -343,28 +344,28 @@ void test_fpu(void)
     CHECK_EQ(flags, FFLAG_NV);
 
     /* ---- FSGNJ family ---- */
-    CHECK_EQ(fp_op(0x10u, 0u, F_ONE, F_NZERO, NULL), 0xBF800000u);  /* fsgnj  */
-    CHECK_EQ(fp_op(0x10u, 1u, F_ONE, F_NZERO, NULL), F_ONE);        /* fsgnjn */
-    CHECK_EQ(fp_op(0x10u, 2u, F_ONE, F_NZERO, NULL), 0xBF800000u);  /* fsgnjx */
+    CHECK_EQ(fp_op(0x10u, 0u, F_ONE, F_NZERO, NULL), 0xBF800000u); /* fsgnj  */
+    CHECK_EQ(fp_op(0x10u, 1u, F_ONE, F_NZERO, NULL), F_ONE); /* fsgnjn */
+    CHECK_EQ(fp_op(0x10u, 2u, F_ONE, F_NZERO, NULL), 0xBF800000u); /* fsgnjx */
 
     /* ---- comparisons ---- */
     /* An ordered comparison against NaN is false *and* invalid; FEQ is the
      * quiet one and raises invalid only for a signalling NaN. */
-    CHECK_EQ(fp_op_x(0x50u, 2u, 2u, F_ONE, F_ONE, NULL), 1u);       /* feq */
+    CHECK_EQ(fp_op_x(0x50u, 2u, 2u, F_ONE, F_ONE, NULL), 1u); /* feq */
     CHECK_EQ(fp_op_x(0x50u, 2u, 2u, F_QNAN, F_ONE, &flags), 0u);
     CHECK_EQ(flags, 0u);
     CHECK_EQ(fp_op_x(0x50u, 2u, 2u, F_SNAN, F_ONE, &flags), 0u);
     CHECK_EQ(flags, FFLAG_NV);
-    CHECK_EQ(fp_op_x(0x50u, 1u, 2u, F_QNAN, F_ONE, &flags), 0u);    /* flt */
+    CHECK_EQ(fp_op_x(0x50u, 1u, 2u, F_QNAN, F_ONE, &flags), 0u); /* flt */
     CHECK_EQ(flags, FFLAG_NV);
 
     /* ---- FCLASS ---- */
-    CHECK_EQ(fp_op_x(0x70u, 1u, 0u, F_NINF,  0u, NULL), 1u << 0);
+    CHECK_EQ(fp_op_x(0x70u, 1u, 0u, F_NINF, 0u, NULL), 1u << 0);
     CHECK_EQ(fp_op_x(0x70u, 1u, 0u, F_NZERO, 0u, NULL), 1u << 3);
-    CHECK_EQ(fp_op_x(0x70u, 1u, 0u, F_ZERO,  0u, NULL), 1u << 4);
-    CHECK_EQ(fp_op_x(0x70u, 1u, 0u, F_INF,   0u, NULL), 1u << 7);
-    CHECK_EQ(fp_op_x(0x70u, 1u, 0u, F_SNAN,  0u, NULL), 1u << 8);
-    CHECK_EQ(fp_op_x(0x70u, 1u, 0u, F_QNAN,  0u, NULL), 1u << 9);
+    CHECK_EQ(fp_op_x(0x70u, 1u, 0u, F_ZERO, 0u, NULL), 1u << 4);
+    CHECK_EQ(fp_op_x(0x70u, 1u, 0u, F_INF, 0u, NULL), 1u << 7);
+    CHECK_EQ(fp_op_x(0x70u, 1u, 0u, F_SNAN, 0u, NULL), 1u << 8);
+    CHECK_EQ(fp_op_x(0x70u, 1u, 0u, F_QNAN, 0u, NULL), 1u << 9);
 
     /*
      * ---- float to integer ----
@@ -405,17 +406,17 @@ void test_fpu(void)
         g_hart.x[1] = 0xFFFFFFFFu;
         (void)rv_hart_fp(&g_hart, r_type(OP_FP, 0u, FRM_RNE, 1u, 0u, 0x68u),
                          &tval);
-        CHECK_EQ(fget(0), 0xBF800000u);          /* -1 as signed   */
+        CHECK_EQ(fget(0), 0xBF800000u); /* -1 as signed   */
 
         fp_reset();
         g_hart.x[1] = 0xFFFFFFFFu;
         (void)rv_hart_fp(&g_hart, r_type(OP_FP, 0u, FRM_RNE, 1u, 1u, 0x68u),
                          &tval);
-        CHECK_EQ(fget(0), 0x4F800000u);          /* 2^32 unsigned  */
+        CHECK_EQ(fget(0), 0x4F800000u); /* 2^32 unsigned  */
     }
 
     /* ---- FSQRT, including the invalid case ---- */
-    CHECK_EQ(fp_op(0x2Cu, FRM_RNE, 0x40800000u, 0u, NULL), F_TWO);  /* sqrt 4 */
+    CHECK_EQ(fp_op(0x2Cu, FRM_RNE, 0x40800000u, 0u, NULL), F_TWO); /* sqrt 4 */
     CHECK_EQ(fp_op(0x2Cu, FRM_RNE, 0xBF800000u, 0u, &flags), F_QNAN);
     CHECK_EQ(flags, FFLAG_NV);
 
@@ -434,11 +435,11 @@ void test_fpu(void)
         fp_reset();
         fset(1, one_plus_ulp);
         fset(2, one_plus_ulp);
-        fset(3, 0xBF800000u);               /* -1 */
+        fset(3, 0xBF800000u); /* -1 */
         /* FMADD.S f0, f1, f2, f3 */
         (void)rv_hart_fp(&g_hart,
                          OP_FMADD | (0u << 7) | (FRM_RNE << 12) | (1u << 15) |
-                         (2u << 20) | (3u << 27),
+                             (2u << 20) | (3u << 27),
                          &tval);
         CHECK(fget(0) != 0u);
     }
@@ -448,7 +449,7 @@ void test_fpu(void)
         uint32_t tval = 0u;
 
         fp_reset();
-        g_hart.mstatus &= ~MSTATUS_FS_MASK;       /* FS = Off */
+        g_hart.mstatus &= ~MSTATUS_FS_MASK; /* FS = Off */
         CHECK_EQ(rv_hart_fp(&g_hart, r_type(OP_FP, 0u, FRM_RNE, 1u, 2u, 0x00u),
                             &tval),
                  RV_EXC_ILLEGAL_INSN);
@@ -460,8 +461,8 @@ void test_fpu(void)
 #endif
 }
 
-#else  /* !RV_EXT_F */
+#else /* !RV_EXT_F */
 
-void test_fpu(void) { }
+void test_fpu(void) {}
 
 #endif

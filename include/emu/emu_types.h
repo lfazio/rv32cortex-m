@@ -32,10 +32,10 @@
  */
 typedef uint32_t emu_fault_t;
 
-#define EMU_FAULT_NONE      0u
-#define EMU_FAULT_FETCH     1u
-#define EMU_FAULT_LOAD      2u
-#define EMU_FAULT_STORE     3u
+#define EMU_FAULT_NONE 0u
+#define EMU_FAULT_FETCH 1u
+#define EMU_FAULT_LOAD 2u
+#define EMU_FAULT_STORE 3u
 
 /* ------------------------------------------------------------------ */
 /* Execution state                                                     */
@@ -43,8 +43,8 @@ typedef uint32_t emu_fault_t;
 
 typedef enum {
     EMU_STATE_RUNNING = 0,
-    EMU_STATE_WFI,       /* parked waiting for an interrupt            */
-    EMU_STATE_HALTED,    /* stopped by the debugger or a fatal fault   */
+    EMU_STATE_WFI, /* parked waiting for an interrupt            */
+    EMU_STATE_HALTED, /* stopped by the debugger or a fatal fault   */
     /*
      * Held at reset, never yet started.
      *
@@ -62,10 +62,10 @@ typedef enum {
 
 /* Reason a backend's run function returned. */
 typedef enum {
-    EMU_RUN_BUDGET = 0,  /* instruction budget exhausted, call again   */
-    EMU_RUN_WFI,         /* core entered its wait-for-interrupt state  */
-    EMU_RUN_HALTED,      /* core halted                                */
-    EMU_RUN_BREAKPOINT,  /* breakpoint with a debugger attached        */
+    EMU_RUN_BUDGET = 0, /* instruction budget exhausted, call again   */
+    EMU_RUN_WFI, /* core entered its wait-for-interrupt state  */
+    EMU_RUN_HALTED, /* core halted                                */
+    EMU_RUN_BREAKPOINT, /* breakpoint with a debugger attached        */
     /*
      * Made no progress waiting on another core: a store-conditional that
      * failed, a compare-and-exchange that compared unequal, an explicit
@@ -109,15 +109,15 @@ static inline uint32_t emu_bits(uint32_t v, unsigned hi, unsigned lo)
 typedef void (*emu_print_fn)(void *ctx, const char *s);
 
 #if defined(__GNUC__)
-#  define EMU_LIKELY(x)    __builtin_expect(!!(x), 1)
-#  define EMU_UNLIKELY(x)  __builtin_expect(!!(x), 0)
-#  define EMU_HOT          __attribute__((hot))
-#  define EMU_ALWAYS_INLINE inline __attribute__((always_inline))
+#define EMU_LIKELY(x) __builtin_expect(!!(x), 1)
+#define EMU_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#define EMU_HOT __attribute__((hot))
+#define EMU_ALWAYS_INLINE inline __attribute__((always_inline))
 #else
-#  define EMU_LIKELY(x)    (x)
-#  define EMU_UNLIKELY(x)  (x)
-#  define EMU_HOT
-#  define EMU_ALWAYS_INLINE inline
+#define EMU_LIKELY(x) (x)
+#define EMU_UNLIKELY(x) (x)
+#define EMU_HOT
+#define EMU_ALWAYS_INLINE inline
 #endif
 
 #endif /* EMU_TYPES_H */

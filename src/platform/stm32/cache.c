@@ -28,11 +28,11 @@
  * bytes the instruction side is about to fetch.
  */
 
-#include "emu_console.h"        /* for the platform's board.h chain */
+#include "emu_console.h" /* for the platform's board.h chain */
 #include "emu/emu_cache.h"
 
 #include "board.h"
-#include "board_cmsis.h"        /* this part's SCB_* and __*CACHE_PRESENT */
+#include "board_cmsis.h" /* this part's SCB_* and __*CACHE_PRESENT */
 
 /*
  * **The guard, not the include, is the fix.**
@@ -52,12 +52,12 @@
  * for being right.
  */
 #if !defined(__CORTEX_M)
-#  error "board_cmsis.h did not bring in a CMSIS core header: the cache \
+#error "board_cmsis.h did not bring in a CMSIS core header: the cache \
 maintenance below would compile to nothing without saying so"
 #endif
 
 static void board_cache_maint(void *ctx, void *host, uint32_t len,
-                            emu_cache_op_t op)
+                              emu_cache_op_t op)
 {
     (void)ctx;
 

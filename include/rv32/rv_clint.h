@@ -28,10 +28,10 @@ struct rv_hart;
  *   +0x4000  mtimecmp   64-bit compare value
  *   +0xBFF8  mtime      64-bit free-running counter
  */
-#define RV_CLINT_SIZE       0xC000u
-#define RV_CLINT_MSIP       0x0000u
-#define RV_CLINT_MTIMECMP   0x4000u
-#define RV_CLINT_MTIME      0xBFF8u
+#define RV_CLINT_SIZE 0xC000u
+#define RV_CLINT_MSIP 0x0000u
+#define RV_CLINT_MTIMECMP 0x4000u
+#define RV_CLINT_MTIME 0xBFF8u
 
 typedef struct rv_clint {
     /*
@@ -39,9 +39,9 @@ typedef struct rv_clint {
      * emulator loop, so it is volatile even though there is only one hart.
      */
     volatile uint64_t mtime;
-    uint64_t          mtimecmp;
-    uint32_t          msip;
-    struct rv_hart   *hart;
+    uint64_t mtimecmp;
+    uint32_t msip;
+    struct rv_hart *hart;
 } rv_clint_t;
 
 extern const emu_dev_ops_t rv_clint_ops;
@@ -52,9 +52,9 @@ extern const emu_dev_ops_t rv_clint_ops;
  * Mapped at RV_GUEST_CLINT_BASE and +0x4000 they occupy exactly the legacy
  * CLINT window, which is why guests written for either layout work.
  */
-#define RV_ACLINT_MSWI_SIZE     0x4000u
-#define RV_ACLINT_MTIMER_SIZE   0x8000u
-#define RV_ACLINT_MTIMER_MTIME  0x7FF8u
+#define RV_ACLINT_MSWI_SIZE 0x4000u
+#define RV_ACLINT_MTIMER_SIZE 0x8000u
+#define RV_ACLINT_MTIMER_MTIME 0x7FF8u
 
 extern const emu_dev_ops_t rv_aclint_mswi_ops;
 extern const emu_dev_ops_t rv_aclint_mtimer_ops;

@@ -50,9 +50,9 @@ static void Error_Handler(void)
  */
 static void clock_init(void)
 {
-    RCC_OscInitTypeDef osc = { 0 };
-    RCC_ClkInitTypeDef clk = { 0 };
-    RCC_PeriphCLKInitTypeDef pclk = { 0 };
+    RCC_OscInitTypeDef osc = {0};
+    RCC_ClkInitTypeDef clk = {0};
+    RCC_PeriphCLKInitTypeDef pclk = {0};
 
     __HAL_RCC_PWR_CLK_ENABLE();
     __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
@@ -79,8 +79,8 @@ static void clock_init(void)
                     RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
     clk.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
     clk.AHBCLKDivider = RCC_SYSCLK_DIV1;
-    clk.APB1CLKDivider = RCC_HCLK_DIV4;    /* 54 MHz, APB1 max  */
-    clk.APB2CLKDivider = RCC_HCLK_DIV2;    /* 108 MHz, APB2 max */
+    clk.APB1CLKDivider = RCC_HCLK_DIV4; /* 54 MHz, APB1 max  */
+    clk.APB2CLKDivider = RCC_HCLK_DIV2; /* 108 MHz, APB2 max */
     /* 7 wait states: 216 MHz at the 2.7-3.6 V range of RM0385 Table 7. */
     if (HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_7) != HAL_OK) {
         Error_Handler();
@@ -130,7 +130,7 @@ static void console_init(void)
 /* Called by HAL_UART_Init. */
 void HAL_UART_MspInit(UART_HandleTypeDef *huart)
 {
-    GPIO_InitTypeDef gpio = { 0 };
+    GPIO_InitTypeDef gpio = {0};
 
     if (huart->Instance != USART3) {
         return;
@@ -176,11 +176,11 @@ void board_console_putc(uint8_t c)
 #define RX_RING_SIZE 2048u
 #define RX_RING_MASK (RX_RING_SIZE - 1u)
 
-static uint8_t  g_rx_ring[RX_RING_SIZE];
-static volatile uint32_t g_rx_head;     /* written by the ISR only  */
-static uint32_t g_rx_tail;              /* written by the loop only */
+static uint8_t g_rx_ring[RX_RING_SIZE];
+static volatile uint32_t g_rx_head; /* written by the ISR only  */
+static uint32_t g_rx_tail; /* written by the loop only */
 static volatile uint32_t g_rx_overrun;
-static bool     g_rx_irq;
+static bool g_rx_irq;
 
 /*
  * The console USART's interrupt, and the reason it lives here rather
@@ -220,10 +220,10 @@ void USART3_IRQHandler(void)
      * rate. Clearing them costs one write and turns a dead link into a
      * dropped packet the protocol above can retransmit.
      */
-    if ((isr & (USART_ISR_ORE | USART_ISR_FE | USART_ISR_NE | USART_ISR_PE))
-        != 0u) {
-        u->ICR = USART_ICR_ORECF | USART_ICR_FECF | USART_ICR_NCF |
-                 USART_ICR_PECF;
+    if ((isr & (USART_ISR_ORE | USART_ISR_FE | USART_ISR_NE | USART_ISR_PE)) !=
+        0u) {
+        u->ICR =
+            USART_ICR_ORECF | USART_ICR_FECF | USART_ICR_NCF | USART_ICR_PECF;
         g_rx_overrun++;
     }
 }
@@ -312,16 +312,22 @@ static void itcm_init(void)
  * silently start overwriting the arena -- it runs out of room and the
  * link fails instead.
  */
-#define ARENA_BASE    0x08040000u
-#define ARENA_SIZE    (768u * 1024u)
+#define ARENA_BASE 0x08040000u
+#define ARENA_SIZE (768u * 1024u)
 #define ARENA_SECTOR0 FLASH_SECTOR_5
 #define ARENA_SECTORS 3u
 
 static uint32_t g_arena_used;
-static bool     g_arena_erased;
+static bool g_arena_erased;
 
-uintptr_t board_flash_arena_base(void) { return ARENA_BASE; }
-uint32_t board_flash_arena_size(void) { return ARENA_SIZE; }
+uintptr_t board_flash_arena_base(void)
+{
+    return ARENA_BASE;
+}
+uint32_t board_flash_arena_size(void)
+{
+    return ARENA_SIZE;
+}
 
 /*
  * In ITCM, and this is the whole reason ITCM is declared. A sector erase
@@ -331,10 +337,9 @@ uint32_t board_flash_arena_size(void) { return ARENA_SIZE; }
  * stops, and comes back when the bank does, which looks like a very slow
  * board rather than a design error.
  */
-__attribute__((section(".itcm"), noinline))
-static bool arena_erase(void)
+__attribute__((section(".itcm"), noinline)) static bool arena_erase(void)
 {
-    FLASH_EraseInitTypeDef e = { 0 };
+    FLASH_EraseInitTypeDef e = {0};
     uint32_t bad = 0;
 
     e.TypeErase = FLASH_TYPEERASE_SECTORS;
@@ -414,16 +419,19 @@ bool board_flash_arena_reset(void)
  * is the *expected* failure and has its own recovery.
  */
 static uint32_t g_flash_err;
-uint32_t board_flash_last_error(void) { return g_flash_err; }
+uint32_t board_flash_last_error(void)
+{
+    return g_flash_err;
+}
 
-__attribute__((section(".itcm"), noinline))
-bool board_flash_write(uintptr_t addr, const void *data, uint32_t len)
+__attribute__((section(".itcm"), noinline)) bool
+board_flash_write(uintptr_t addr, const void *data, uint32_t len)
 {
     const uint8_t *src = (const uint8_t *)data;
     bool ok = true;
 
     if (addr < ARENA_BASE || (addr + len) > (ARENA_BASE + ARENA_SIZE)) {
-        g_flash_err = 0xB0000000u | (addr >> 8);   /* bounds, not HAL */
+        g_flash_err = 0xB0000000u | (addr >> 8); /* bounds, not HAL */
         return false;
     }
 
@@ -462,8 +470,8 @@ bool board_flash_write(uintptr_t addr, const void *data, uint32_t len)
             uint32_t w;
 
             memcpy(&w, src, 4u);
-            ok = HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, addr,
-                                   (uint64_t)w) == HAL_OK;
+            ok = HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, addr, (uint64_t)w) ==
+                 HAL_OK;
             addr += 4u;
             src += 4u;
             len -= 4u;
@@ -520,9 +528,15 @@ uint32_t board_cycles(void)
 
 /* ------------------------------------------------------------------ */
 
-const char *board_name(void) { return "Cortex-M7"; }
+const char *board_name(void)
+{
+    return "Cortex-M7";
+}
 
-uint32_t board_clock_hz(void) { return SystemCoreClock; }
+uint32_t board_clock_hz(void)
+{
+    return SystemCoreClock;
+}
 
 /* ------------------------------------------------------------------ */
 /* Link activity                                                       */
@@ -539,13 +553,13 @@ uint32_t board_clock_hz(void) { return SystemCoreClock; }
  * this is a single store to a bit-set/reset register. It is the same
  * reason the console is a register write.
  */
-#define LED_PORT    GPIOB
-#define LED_RX_PIN  GPIO_PIN_0      /* LD1, green */
-#define LED_TX_PIN  GPIO_PIN_7      /* LD2, blue  */
+#define LED_PORT GPIOB
+#define LED_RX_PIN GPIO_PIN_0 /* LD1, green */
+#define LED_TX_PIN GPIO_PIN_7 /* LD2, blue  */
 
 static void led_init(void)
 {
-    GPIO_InitTypeDef gpio = { 0 };
+    GPIO_InitTypeDef gpio = {0};
 
     __HAL_RCC_GPIOB_CLK_ENABLE();
 

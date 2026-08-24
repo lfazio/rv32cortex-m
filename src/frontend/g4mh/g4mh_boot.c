@@ -94,5 +94,7 @@ static emu_fault_t boot_write(void *ctx, uint32_t off, uint32_t size,
 }
 
 const emu_dev_ops_t g4mh_boot_ops = {
-    .read = boot_read, .write = boot_write, .tick = NULL,
+    .read = boot_read,
+    .write = boot_write,
+    .tick = NULL,
 };

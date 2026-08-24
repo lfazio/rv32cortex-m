@@ -23,13 +23,13 @@
 
 /* RV32I is always present. These select the optional extensions. */
 #ifndef RV_EXT_M
-#  define RV_EXT_M      1   /* integer multiply / divide */
+#define RV_EXT_M 1 /* integer multiply / divide */
 #endif
 #ifndef RV_EXT_A
-#  define RV_EXT_A      1   /* atomics (LR/SC + AMO) */
+#define RV_EXT_A 1 /* atomics (LR/SC + AMO) */
 #endif
 #ifndef RV_EXT_C
-#  define RV_EXT_C      1   /* compressed 16-bit instructions */
+#define RV_EXT_C 1 /* compressed 16-bit instructions */
 #endif
 /*
  * Single-precision floating point. D is deliberately not implemented: the
@@ -37,13 +37,13 @@
  * soft-float on the intended targets.
  */
 #ifndef RV_EXT_F
-#  define RV_EXT_F      1
+#define RV_EXT_F 1
 #endif
 #ifndef RV_EXT_ZICSR
-#  define RV_EXT_ZICSR  1   /* CSR access instructions */
+#define RV_EXT_ZICSR 1 /* CSR access instructions */
 #endif
 #ifndef RV_EXT_ZICNTR
-#  define RV_EXT_ZICNTR 1   /* cycle / time / instret counters */
+#define RV_EXT_ZICNTR 1 /* cycle / time / instret counters */
 #endif
 /*
  * Zacas (amocas). Off: the implementation below is incomplete and does not
@@ -76,28 +76,28 @@
  * tests.
  */
 #ifndef RV_EXT_D
-#  define RV_EXT_D 1
+#define RV_EXT_D 1
 #endif
 #if RV_EXT_D && !RV_EXT_F
-#  error "RV_EXT_D requires RV_EXT_F"
+#error "RV_EXT_D requires RV_EXT_F"
 #endif
 #ifndef RV_EXT_ZACAS
-#  define RV_EXT_ZACAS 1
+#define RV_EXT_ZACAS 1
 #endif
 #ifndef RV_EXT_ZBB
-#  define RV_EXT_ZBB    1  /* basic bit manipulation */
+#define RV_EXT_ZBB 1 /* basic bit manipulation */
 #endif
 #ifndef RV_EXT_ZCB
-#  define RV_EXT_ZCB    1  /* extra compressed loads/stores and ALU ops */
+#define RV_EXT_ZCB 1 /* extra compressed loads/stores and ALU ops */
 #endif
 #ifndef RV_EXT_ZBA
-#  define RV_EXT_ZBA    1  /* address generation: sh1add/sh2add/sh3add */
+#define RV_EXT_ZBA 1 /* address generation: sh1add/sh2add/sh3add */
 #endif
 #ifndef RV_EXT_ZBC
-#  define RV_EXT_ZBC    1  /* carry-less multiply */
+#define RV_EXT_ZBC 1 /* carry-less multiply */
 #endif
 #ifndef RV_EXT_ZBS
-#  define RV_EXT_ZBS    1  /* single-bit: bset/bclr/binv/bext */
+#define RV_EXT_ZBS 1 /* single-bit: bset/bclr/binv/bext */
 #endif
 /*
  * Physical memory protection. Costs nothing until a guest locks an entry:
@@ -113,7 +113,7 @@
  * has no configuration with S and without U.
  */
 #ifndef RV_EXT_U
-#  define RV_EXT_U      1
+#define RV_EXT_U 1
 #endif
 
 /*
@@ -128,10 +128,10 @@
  * bank of CSRs, trap delegation, SRET, and the TVM/TW/TSR traps.
  */
 #ifndef RV_EXT_S
-#  define RV_EXT_S      1
+#define RV_EXT_S 1
 #endif
 #if RV_EXT_S && !RV_EXT_U
-#  error "S-mode requires U-mode"
+#error "S-mode requires U-mode"
 #endif
 
 /*
@@ -143,10 +143,10 @@
  * or in M-mode, the cost is one predictable branch.
  */
 #ifndef RV_EXT_SV32
-#  define RV_EXT_SV32   RV_EXT_S
+#define RV_EXT_SV32 RV_EXT_S
 #endif
 #if RV_EXT_SV32 && !RV_EXT_S
-#  error "Sv32 requires S-mode"
+#error "Sv32 requires S-mode"
 #endif
 
 /*
@@ -160,31 +160,31 @@
 #define RV_PAGE_SIZE 4096u
 
 #ifndef RV_TLB_ENTRIES
-#  define RV_TLB_ENTRIES 32u
+#define RV_TLB_ENTRIES 32u
 #endif
 
 #ifndef RV_EXT_PMP
-#  define RV_EXT_PMP    1
+#define RV_EXT_PMP 1
 #endif
 #ifndef RV_PMP_ENTRIES
-#  define RV_PMP_ENTRIES 16u
+#define RV_PMP_ENTRIES 16u
 #endif
 
 /*
  * Sdtrig debug triggers. Like PMP, free until software arms one.
  */
 #ifndef RV_EXT_SDTRIG
-#  define RV_EXT_SDTRIG 1
+#define RV_EXT_SDTRIG 1
 #endif
 #ifndef RV_TRIG_COUNT
-#  define RV_TRIG_COUNT 2u
+#define RV_TRIG_COUNT 2u
 #endif
 
 #ifndef RV_EXT_ZICBOM
-#  define RV_EXT_ZICBOM 1   /* cbo.clean / cbo.inval / cbo.flush */
+#define RV_EXT_ZICBOM 1 /* cbo.clean / cbo.inval / cbo.flush */
 #endif
 #ifndef RV_EXT_ZICBOZ
-#  define RV_EXT_ZICBOZ 1   /* cbo.zero */
+#define RV_EXT_ZICBOZ 1 /* cbo.zero */
 #endif
 
 /*
@@ -193,7 +193,7 @@
  * Must be a power of two.
  */
 #ifndef RV_CACHE_BLOCK_SIZE
-#  define RV_CACHE_BLOCK_SIZE 32u
+#define RV_CACHE_BLOCK_SIZE 32u
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -207,7 +207,7 @@
  * the memory path branch-free. Set to 1 to emulate them by splitting.
  */
 #ifndef RV_MISALIGNED_OK
-#  define RV_MISALIGNED_OK 0
+#define RV_MISALIGNED_OK 0
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -220,7 +220,7 @@
  * ECALL and nothing elsewhere.
  */
 #ifndef RV_ENABLE_ECALL_HOOK
-#  define RV_ENABLE_ECALL_HOOK 1
+#define RV_ENABLE_ECALL_HOOK 1
 #endif
 
 /*
@@ -234,7 +234,7 @@
  * is off by default and enabled per platform.
  */
 #ifndef RV_INTERP_RAMFUNC
-#  define RV_INTERP_RAMFUNC 0
+#define RV_INTERP_RAMFUNC 0
 #endif
 
 /*
@@ -242,7 +242,7 @@
  * it, rather than on every instruction. See rv_hart_t::irq_dirty.
  */
 #ifndef RV_LAZY_IRQ_CHECK
-#  define RV_LAZY_IRQ_CHECK 1
+#define RV_LAZY_IRQ_CHECK 1
 #endif
 
 /*
@@ -256,7 +256,7 @@
  * than a feature, so it is off unless asked for.
  */
 #ifndef RV_JIT_HOT_REG_STATS
-#  define RV_JIT_HOT_REG_STATS 0
+#define RV_JIT_HOT_REG_STATS 0
 #endif
 
 /*
@@ -279,7 +279,7 @@
  * blocks, so a loop must return to the dispatcher eventually.
  */
 #ifndef RV_JIT_LOOP_CHAIN
-#  define RV_JIT_LOOP_CHAIN 1
+#define RV_JIT_LOOP_CHAIN 1
 #endif
 /*
  * Guest instructions a chained loop runs before returning to the
@@ -308,7 +308,7 @@
  * ISR has a tighter deadline than this.
  */
 #ifndef RV_JIT_LOOP_CAP
-#  define RV_JIT_LOOP_CAP 128u
+#define RV_JIT_LOOP_CAP 128u
 #endif
 
 /*
@@ -333,10 +333,10 @@
  * inlined loads.
  */
 #ifndef RV_JIT_INLINE_PERIPH
-#  define RV_JIT_INLINE_PERIPH 1
+#define RV_JIT_INLINE_PERIPH 1
 #endif
 #ifndef RV_JIT_PT_MAX_HOLES
-#  define RV_JIT_PT_MAX_HOLES 3u
+#define RV_JIT_PT_MAX_HOLES 3u
 #endif
 
 /*
@@ -379,10 +379,10 @@
  * the only configuration where 1.3% less code could matter.
  */
 #ifndef RV_JIT_ELIDE_LD
-#  define RV_JIT_ELIDE_LD 0
+#define RV_JIT_ELIDE_LD 0
 #endif
 #ifndef RV_JIT_ELIDE_ST
-#  define RV_JIT_ELIDE_ST 0
+#define RV_JIT_ELIDE_ST 0
 #endif
 
 /*
@@ -392,7 +392,7 @@
  * for an hour keeps the smaller code.
  */
 #ifndef RV_JIT_PT_ARM_AT
-#  define RV_JIT_PT_ARM_AT 64u
+#define RV_JIT_PT_ARM_AT 64u
 #endif
 
 /*
@@ -420,7 +420,7 @@
 
 /* Build the disassembler (costs ~3 KiB of flash; useful for tracing). */
 #ifndef RV_ENABLE_DISASM
-#  define RV_ENABLE_DISASM 1
+#define RV_ENABLE_DISASM 1
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -428,13 +428,13 @@
 /* ------------------------------------------------------------------ */
 
 #ifndef RV_MVENDORID
-#  define RV_MVENDORID 0u          /* 0 = non-commercial implementation */
+#define RV_MVENDORID 0u /* 0 = non-commercial implementation */
 #endif
 #ifndef RV_MARCHID
-#  define RV_MARCHID   0u
+#define RV_MARCHID 0u
 #endif
 #ifndef RV_MIMPID
-#  define RV_MIMPID    0x00010000u /* rv32cortex-m v1.0 */
+#define RV_MIMPID 0x00010000u /* rv32cortex-m v1.0 */
 #endif
 
 #endif /* RV32_RV_CONFIG_H */

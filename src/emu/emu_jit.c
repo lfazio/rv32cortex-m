@@ -19,10 +19,10 @@
  * than silently taking the wrong branch.
  */
 #if defined(__linux__) && !defined(EMU_JIT_STATIC_BUFFER)
-#  include <sys/mman.h>
-#  define EMU_JIT_MMAP 1
+#include <sys/mman.h>
+#define EMU_JIT_MMAP 1
 #else
-#  define EMU_JIT_MMAP 0
+#define EMU_JIT_MMAP 0
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -46,15 +46,15 @@
  * 256 of each is what the Thumb-2 backend used before the framework
  * existed, and the cache it manages is 12 KB.
  */
-#  ifndef EMU_JIT_MAX_BLOCKS
-#    define EMU_JIT_MAX_BLOCKS 256u
-#  endif
-#  ifndef EMU_JIT_HASH_SIZE
-#    define EMU_JIT_HASH_SIZE  256u
-#  endif
-#  ifndef EMU_JIT_BLOCK_RESERVE
-#    define EMU_JIT_BLOCK_RESERVE 512u
-#  endif
+#ifndef EMU_JIT_MAX_BLOCKS
+#define EMU_JIT_MAX_BLOCKS 256u
+#endif
+#ifndef EMU_JIT_HASH_SIZE
+#define EMU_JIT_HASH_SIZE 256u
+#endif
+#ifndef EMU_JIT_BLOCK_RESERVE
+#define EMU_JIT_BLOCK_RESERVE 512u
+#endif
 #else
 /*
  * Host sizes. There is no tension here -- the tables cost a machine with
@@ -62,24 +62,24 @@
  * flushed nineteen times in a run, and constant retranslation is exactly
  * what hides a translator bug behind a fresh translation.
  */
-#  ifndef EMU_JIT_MAX_BLOCKS
-#    define EMU_JIT_MAX_BLOCKS 8192u
-#  endif
-#  ifndef EMU_JIT_HASH_SIZE
-#    define EMU_JIT_HASH_SIZE  8192u
-#  endif
-#  ifndef EMU_JIT_BLOCK_RESERVE
-#    define EMU_JIT_BLOCK_RESERVE 8192u
-#  endif
+#ifndef EMU_JIT_MAX_BLOCKS
+#define EMU_JIT_MAX_BLOCKS 8192u
+#endif
+#ifndef EMU_JIT_HASH_SIZE
+#define EMU_JIT_HASH_SIZE 8192u
+#endif
+#ifndef EMU_JIT_BLOCK_RESERVE
+#define EMU_JIT_BLOCK_RESERVE 8192u
+#endif
 #endif
 
 typedef struct {
     uint32_t guest_pc;
     uint8_t *code;
-    uint32_t len;        /* bytes, so compaction can move it      */
-    uint32_t insns;      /* guest instructions this block retires */
-    uint32_t hits;       /* entries since the last ageing pass    */
-    int32_t  next;       /* hash chain, -1 terminates             */
+    uint32_t len; /* bytes, so compaction can move it      */
+    uint32_t insns; /* guest instructions this block retires */
+    uint32_t hits; /* entries since the last ageing pass    */
+    int32_t next; /* hash chain, -1 terminates             */
 } jit_block_t;
 
 /*
@@ -93,25 +93,25 @@ static uint32_t hit_bin(uint32_t hits)
     return (hits >= HIT_BINS) ? (HIT_BINS - 1u) : hits;
 }
 
-static uint8_t    *g_code;
-static uint32_t    g_code_size;
-static uint32_t    g_code_used;
-static bool        g_owned;      /* did we map it, or was it handed over? */
+static uint8_t *g_code;
+static uint32_t g_code_size;
+static uint32_t g_code_used;
+static bool g_owned; /* did we map it, or was it handed over? */
 
 static jit_block_t g_blocks[EMU_JIT_MAX_BLOCKS];
-static uint32_t    g_block_count;
-static int32_t     g_hash[EMU_JIT_HASH_SIZE];
+static uint32_t g_block_count;
+static int32_t g_hash[EMU_JIT_HASH_SIZE];
 
 uint8_t *emu_jit_cursor;
 uint8_t *emu_jit_limit;
-bool     emu_jit_overflow;
+bool emu_jit_overflow;
 
-#define g_emit     emu_jit_cursor
+#define g_emit emu_jit_cursor
 #define g_emit_end emu_jit_limit
 #define g_overflow emu_jit_overflow
 
-static uint32_t    g_generation;
-static bool        g_have_generation;
+static uint32_t g_generation;
+static bool g_have_generation;
 
 static emu_jit_stats_t g_stats;
 
@@ -160,7 +160,7 @@ bool emu_jit_init(uint32_t bytes)
 static uint32_t prof_now(void)
 {
 #if defined(__ARM_ARCH_7EM__)
-    return *(volatile uint32_t *)0xE0001004u;   /* DWT CYCCNT */
+    return *(volatile uint32_t *)0xE0001004u; /* DWT CYCCNT */
 #else
     return 0u;
 #endif
@@ -261,7 +261,7 @@ static void compact(const emu_jit_ops_t *ops)
     const uint32_t budget =
         g_code_size - (g_code_size / 4u) - EMU_JIT_BLOCK_RESERVE;
     uint32_t acc = 0u;
-    uint32_t threshold = HIT_BINS;      /* nothing retained by default */
+    uint32_t threshold = HIT_BINS; /* nothing retained by default */
 
     for (int32_t b = (int32_t)HIT_BINS - 1; b >= 0; b--) {
         if (acc + bytes[b] > budget) {
@@ -297,7 +297,7 @@ static void compact(const emu_jit_ops_t *ops)
             memmove(dst, b.code, b.len);
         }
         b.code = dst;
-        b.hits >>= 1;                   /* age */
+        b.hits >>= 1; /* age */
         dst += b.len;
         g_blocks[kept++] = b;
     }
@@ -319,7 +319,6 @@ static void compact(const emu_jit_ops_t *ops)
 /* ------------------------------------------------------------------ */
 /* Emitting                                                            */
 /* ------------------------------------------------------------------ */
-
 
 void emu_jit_emit_begin(void *buf, uint32_t bytes)
 {
@@ -435,7 +434,7 @@ static jit_block_t *translate(emu_cpu_t *cpu, uint32_t pc,
             return b;
         }
         if (!g_overflow) {
-            return NULL;         /* nothing here to translate */
+            return NULL; /* nothing here to translate */
         }
     }
 
@@ -503,7 +502,7 @@ static block_fn_t block_entry(const uint8_t *code)
  * right, not the thing being executed.
  */
 #ifndef EMU_JIT_DIFF_MAX
-#  define EMU_JIT_DIFF_MAX 1024u
+#define EMU_JIT_DIFF_MAX 1024u
 #endif
 
 static uint8_t g_diff_before[EMU_JIT_DIFF_MAX];
@@ -554,15 +553,14 @@ static uint32_t run_block_checked(emu_cpu_t *cpu, const jit_block_t *b,
         memcpy(&e, g_diff_want + off, 4u);
         if (a != e) {
             emu_jit_diff_report(pc, off, e, a);
-            break;                    /* the first divergence is the one */
+            break; /* the first divergence is the one */
         }
     }
     return n;
 }
 #endif /* EMU_JIT_DIFF */
 
-static emu_run_reason_t run_interp_one(emu_cpu_t *cpu,
-                                       const emu_jit_ops_t *ops,
+static emu_run_reason_t run_interp_one(emu_cpu_t *cpu, const emu_jit_ops_t *ops,
                                        uint32_t *done)
 {
     uint32_t n = 0u;
@@ -576,8 +574,8 @@ static emu_run_reason_t run_interp_one(emu_cpu_t *cpu,
     return r;
 }
 
-emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
-                             uint32_t *retired, const emu_jit_ops_t *ops)
+emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget, uint32_t *retired,
+                             const emu_jit_ops_t *ops)
 {
     uint32_t done = 0u;
     emu_run_reason_t reason = EMU_RUN_BUDGET;

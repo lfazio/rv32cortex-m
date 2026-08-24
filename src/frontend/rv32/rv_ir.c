@@ -49,9 +49,9 @@
  */
 #if defined(EMU_HOST_JIT_THUMB2)
 /* On a target these bytes are the guest's; see CLAUDE.md. */
-#  define RV_JIT_HOST_CODE_BYTES RV_JIT_CODE_SIZE
+#define RV_JIT_HOST_CODE_BYTES RV_JIT_CODE_SIZE
 #else
-#  define RV_JIT_HOST_CODE_BYTES (4u * 1024u * 1024u)
+#define RV_JIT_HOST_CODE_BYTES (4u * 1024u * 1024u)
 #endif
 
 extern const emu_backend_t rv_backend_interp;
@@ -134,9 +134,9 @@ static uint32_t rv_freg_offset(uint32_t n)
  * distinction in the same four places through fr32/fw32.
  */
 #if RV_EXT_D
-#  define RV_IR_BOX  EMU_IR_FP_BOX
+#define RV_IR_BOX EMU_IR_FP_BOX
 #else
-#  define RV_IR_BOX  0u
+#define RV_IR_BOX 0u
 #endif
 
 /*
@@ -187,12 +187,12 @@ static uint32_t rv_ir_fp_helper(emu_cpu_t *cpu, uint32_t insn, uint32_t unused)
     return 1u;
 }
 
-static const void *const rv_ir_helpers[] = { (const void *)rv_ir_fp_helper };
+static const void *const rv_ir_helpers[] = {(const void *)rv_ir_fp_helper};
 #define RV_IR_HELPER_FP 0u
 #endif /* RV_EXT_F */
 
 const emu_ir_target_t rv_ir_target = {
-    .reg_offset   = rv_reg_offset,
+    .reg_offset = rv_reg_offset,
     /*
      * No condition flags at all. flags_offset is unused while every
      * flag_bit is zero, and nothing this file emits reads or writes
@@ -201,20 +201,20 @@ const emu_ir_target_t rv_ir_target = {
      * whatever sits at offset zero of the hart.
      */
     .flags_offset = 0u,
-    .flag_bit     = { 0u, 0u, 0u, 0u },
-    .reg_is_zero  = rv_reg_zero,
-    .pc_offset    = (uint32_t)offsetof(rv_hart_t, pc),
+    .flag_bit = {0u, 0u, 0u, 0u},
+    .reg_is_zero = rv_reg_zero,
+    .pc_offset = (uint32_t)offsetof(rv_hart_t, pc),
 #if RV_EXT_F
-    .helpers      = rv_ir_helpers,
+    .helpers = rv_ir_helpers,
     .helper_count = 1u,
-    .freg_offset  = rv_freg_offset,
-    .fp_flags     = rv_ir_fp_flags,
+    .freg_offset = rv_freg_offset,
+    .fp_flags = rv_ir_fp_flags,
 #else
-    .helpers      = NULL,
+    .helpers = NULL,
     .helper_count = 0u,
 #endif
-    .load         = rv_ir_load,
-    .store        = rv_ir_store,
+    .load = rv_ir_load,
+    .store = rv_ir_store,
 };
 
 /* ------------------------------------------------------------------ */
@@ -229,7 +229,7 @@ static bool h_fs_off(const emu_cpu_t *cpu)
 }
 
 /* fcsr's frm, for resolving a "dynamic" rounding mode at translation. */
-#define RV_IR_FRM(cpu)  ((((const rv_hart_t *)(cpu))->fcsr >> 5) & 7u)
+#define RV_IR_FRM(cpu) ((((const rv_hart_t *)(cpu))->fcsr >> 5) & 7u)
 
 /*
  * Route one FP instruction to rv_hart_fp. HELPER_TRAP rather than
@@ -238,8 +238,8 @@ static bool h_fs_off(const emu_cpu_t *cpu)
  */
 static bool rv_ir_fp_fallback(emu_ir_block_t *b, uint32_t pc, uint32_t insn)
 {
-    (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
-                      pc, 0u);
+    (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, pc,
+                      0u);
     (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP, 0u, emu_ir_const(b, insn),
                       EMU_IR_NO_TEMP, RV_IR_HELPER_FP, 0u);
     return true;
@@ -277,43 +277,45 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
     *counted = false;
 
     switch (op) {
-    case 0x37u:                                 /* LUI   */
+    case 0x37u: /* LUI   */
         emu_ir_put(b, rd, emu_ir_const(b, (uint32_t)rv_imm_u(insn)));
         return true;
 
-    case 0x17u:                                 /* AUIPC */
+    case 0x17u: /* AUIPC */
         emu_ir_put(b, rd, emu_ir_const(b, pc + (uint32_t)rv_imm_u(insn)));
         return true;
 
-    case 0x13u: {                               /* OP-IMM */
+    case 0x13u: { /* OP-IMM */
         const uint16_t x = emu_ir_get(b, rs1);
         const uint32_t imm = (uint32_t)rv_imm_i(insn);
         const uint32_t sh = insn >> 25;
 
         switch (f3) {
         case 0u:
-            emu_ir_put(b, rd, emu_ir_alu(b, EMU_IR_ADD, x,
-                                         emu_ir_const(b, imm)));
+            emu_ir_put(b, rd,
+                       emu_ir_alu(b, EMU_IR_ADD, x, emu_ir_const(b, imm)));
             return true;
         case 4u:
-            emu_ir_put(b, rd, emu_ir_alu(b, EMU_IR_XOR, x,
-                                         emu_ir_const(b, imm)));
+            emu_ir_put(b, rd,
+                       emu_ir_alu(b, EMU_IR_XOR, x, emu_ir_const(b, imm)));
             return true;
         case 6u:
-            emu_ir_put(b, rd, emu_ir_alu(b, EMU_IR_OR, x,
-                                         emu_ir_const(b, imm)));
+            emu_ir_put(b, rd,
+                       emu_ir_alu(b, EMU_IR_OR, x, emu_ir_const(b, imm)));
             return true;
         case 7u:
-            emu_ir_put(b, rd, emu_ir_alu(b, EMU_IR_AND, x,
-                                         emu_ir_const(b, imm)));
+            emu_ir_put(b, rd,
+                       emu_ir_alu(b, EMU_IR_AND, x, emu_ir_const(b, imm)));
             return true;
         case 2u:
-            emu_ir_put(b, rd, emu_ir_emit(b, EMU_IR_SETCC, EMU_IR_C_LT, x,
-                                          emu_ir_const(b, imm), 0u, 0u));
+            emu_ir_put(b, rd,
+                       emu_ir_emit(b, EMU_IR_SETCC, EMU_IR_C_LT, x,
+                                   emu_ir_const(b, imm), 0u, 0u));
             return true;
         case 3u:
-            emu_ir_put(b, rd, emu_ir_emit(b, EMU_IR_SETCC, EMU_IR_C_LTU, x,
-                                          emu_ir_const(b, imm), 0u, 0u));
+            emu_ir_put(b, rd,
+                       emu_ir_emit(b, EMU_IR_SETCC, EMU_IR_C_LTU, x,
+                                   emu_ir_const(b, imm), 0u, 0u));
             return true;
         case 1u:
             /*
@@ -326,21 +328,21 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
             if (sh != 0u) {
                 return false;
             }
-            emu_ir_put(b, rd, emu_ir_emit(b, EMU_IR_SHLI, 0u, x,
-                                          EMU_IR_NO_TEMP,
-                                          insn >> 20 & 31u, 0u));
+            emu_ir_put(b, rd,
+                       emu_ir_emit(b, EMU_IR_SHLI, 0u, x, EMU_IR_NO_TEMP,
+                                   insn >> 20 & 31u, 0u));
             return true;
         case 5u:
             if (sh == 0u) {
-                emu_ir_put(b, rd, emu_ir_emit(b, EMU_IR_SHRI, 0u, x,
-                                              EMU_IR_NO_TEMP,
-                                              insn >> 20 & 31u, 0u));
+                emu_ir_put(b, rd,
+                           emu_ir_emit(b, EMU_IR_SHRI, 0u, x, EMU_IR_NO_TEMP,
+                                       insn >> 20 & 31u, 0u));
                 return true;
             }
             if (sh == 0x20u) {
-                emu_ir_put(b, rd, emu_ir_emit(b, EMU_IR_SARI, 0u, x,
-                                              EMU_IR_NO_TEMP,
-                                              insn >> 20 & 31u, 0u));
+                emu_ir_put(b, rd,
+                           emu_ir_emit(b, EMU_IR_SARI, 0u, x, EMU_IR_NO_TEMP,
+                                       insn >> 20 & 31u, 0u));
                 return true;
             }
             return false;
@@ -349,10 +351,10 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
         }
     }
 
-    case 0x33u: {                               /* OP */
+    case 0x33u: { /* OP */
         const uint32_t f7 = insn >> 25;
 
-        if (f7 == 1u) {                         /* M extension */
+        if (f7 == 1u) { /* M extension */
             /*
              * The multiplies only. Divide and remainder stay on the
              * interpreter: they need the guest's divide-by-zero and
@@ -363,19 +365,18 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
              * MULHSU is skipped for the same reason -- it is the one
              * form with no single host instruction behind it.
              */
-            static const uint8_t k_mul[4] = {
-                EMU_IR_MUL, EMU_IR_MULHS, 0u, EMU_IR_MULHU
-            };
+            static const uint8_t k_mul[4] = {EMU_IR_MUL, EMU_IR_MULHS, 0u,
+                                             EMU_IR_MULHU};
             if (f3 == 2u || f3 > 3u) {
                 return false;
             }
-            emu_ir_put(b, rd, emu_ir_alu(b, (emu_ir_op_t)k_mul[f3],
-                                         emu_ir_get(b, rs1),
-                                         emu_ir_get(b, rs2)));
+            emu_ir_put(b, rd,
+                       emu_ir_alu(b, (emu_ir_op_t)k_mul[f3], emu_ir_get(b, rs1),
+                                  emu_ir_get(b, rs2)));
             return true;
         }
         if (f7 != 0u && f7 != 0x20u) {
-            return false;                       /* Zba/Zbb/Zbs, Zacas */
+            return false; /* Zba/Zbb/Zbs, Zacas */
         }
         const uint16_t x = emu_ir_get(b, rs1);
         const uint16_t y = emu_ir_get(b, rs2);
@@ -383,37 +384,50 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
 
         switch (f3) {
         case 0u:
-            emu_ir_put(b, rd, emu_ir_alu(b, alt ? EMU_IR_SUB : EMU_IR_ADD,
-                                         x, y));
+            emu_ir_put(b, rd,
+                       emu_ir_alu(b, alt ? EMU_IR_SUB : EMU_IR_ADD, x, y));
             return true;
         case 1u:
-            if (alt) { return false; }
+            if (alt) {
+                return false;
+            }
             emu_ir_put(b, rd, emu_ir_alu(b, EMU_IR_SHL, x, y));
             return true;
         case 2u:
-            if (alt) { return false; }
-            emu_ir_put(b, rd, emu_ir_emit(b, EMU_IR_SETCC, EMU_IR_C_LT,
-                                          x, y, 0u, 0u));
+            if (alt) {
+                return false;
+            }
+            emu_ir_put(b, rd,
+                       emu_ir_emit(b, EMU_IR_SETCC, EMU_IR_C_LT, x, y, 0u, 0u));
             return true;
         case 3u:
-            if (alt) { return false; }
-            emu_ir_put(b, rd, emu_ir_emit(b, EMU_IR_SETCC, EMU_IR_C_LTU,
-                                          x, y, 0u, 0u));
+            if (alt) {
+                return false;
+            }
+            emu_ir_put(
+                b, rd,
+                emu_ir_emit(b, EMU_IR_SETCC, EMU_IR_C_LTU, x, y, 0u, 0u));
             return true;
         case 4u:
-            if (alt) { return false; }
+            if (alt) {
+                return false;
+            }
             emu_ir_put(b, rd, emu_ir_alu(b, EMU_IR_XOR, x, y));
             return true;
         case 5u:
-            emu_ir_put(b, rd, emu_ir_alu(b, alt ? EMU_IR_SAR : EMU_IR_SHR,
-                                         x, y));
+            emu_ir_put(b, rd,
+                       emu_ir_alu(b, alt ? EMU_IR_SAR : EMU_IR_SHR, x, y));
             return true;
         case 6u:
-            if (alt) { return false; }
+            if (alt) {
+                return false;
+            }
             emu_ir_put(b, rd, emu_ir_alu(b, EMU_IR_OR, x, y));
             return true;
         case 7u:
-            if (alt) { return false; }
+            if (alt) {
+                return false;
+            }
             emu_ir_put(b, rd, emu_ir_alu(b, EMU_IR_AND, x, y));
             return true;
         default:
@@ -421,23 +435,22 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
         }
     }
 
-    case 0x03u: {                               /* LOAD */
+    case 0x03u: { /* LOAD */
         /* pc first: a fault records it. */
-        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP,
-                          EMU_IR_NO_TEMP, pc, 0u);
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          pc, 0u);
         const uint16_t base = emu_ir_get(b, rs1);
-        const uint8_t spec = EMU_IR_MEM_AUX(1u << (f3 & 3u),
-                                            (f3 & 4u) == 0u);
+        const uint8_t spec = EMU_IR_MEM_AUX(1u << (f3 & 3u), (f3 & 4u) == 0u);
 
-        emu_ir_put(b, rd, emu_ir_emit(b, EMU_IR_LOAD, spec, base,
-                                      EMU_IR_NO_TEMP,
-                                      (uint32_t)rv_imm_i(insn), 0u));
+        emu_ir_put(b, rd,
+                   emu_ir_emit(b, EMU_IR_LOAD, spec, base, EMU_IR_NO_TEMP,
+                               (uint32_t)rv_imm_i(insn), 0u));
         return true;
     }
 
-    case 0x23u: {                               /* STORE */
-        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP,
-                          EMU_IR_NO_TEMP, pc, 0u);
+    case 0x23u: { /* STORE */
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          pc, 0u);
         const uint16_t base = emu_ir_get(b, rs1);
         const uint16_t val = emu_ir_get(b, rs2);
         const uint8_t spec = EMU_IR_MEM_AUX(1u << (f3 & 3u), 0u);
@@ -447,13 +460,12 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
         return true;
     }
 
-    case 0x63u: {                               /* BRANCH */
+    case 0x63u: { /* BRANCH */
         static const uint8_t k_cond[8] = {
-            EMU_IR_C_EQ, EMU_IR_C_NE, 0u, 0u,
-            EMU_IR_C_LT, EMU_IR_C_GE, EMU_IR_C_LTU, EMU_IR_C_GEU
-        };
+            EMU_IR_C_EQ, EMU_IR_C_NE, 0u,           0u,
+            EMU_IR_C_LT, EMU_IR_C_GE, EMU_IR_C_LTU, EMU_IR_C_GEU};
         if (f3 == 2u || f3 == 3u) {
-            return false;                       /* reserved */
+            return false; /* reserved */
         }
         const uint16_t x = emu_ir_get(b, rs1);
         const uint16_t y = emu_ir_get(b, rs2);
@@ -464,15 +476,15 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
          * a RETIRE placed after EXIT_IF is skipped on exactly the taken
          * path, which undercounts every loop back edge in the guest.
          */
-        (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP,
-                          EMU_IR_NO_TEMP, 0u, 0u);
+        (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          0u, 0u);
         (void)emu_ir_emit(b, EMU_IR_EXIT_IF, k_cond[f3], x, y,
                           pc + (uint32_t)rv_imm_b(insn), 0u);
         *counted = true;
         return true;
     }
 
-    case 0x6Fu:                                 /* JAL */
+    case 0x6Fu: /* JAL */
         /*
          * The link is the address after *this* instruction, which for an
          * expanded C.JAL is two bytes on, not four. Passed in rather
@@ -480,15 +492,15 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
          * that looks four bytes long.
          */
         emu_ir_put(b, rd, emu_ir_const(b, pc + len));
-        (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP,
-                          EMU_IR_NO_TEMP, 0u, 0u);
-        (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP,
-                          EMU_IR_NO_TEMP, pc + (uint32_t)rv_imm_j(insn), 0u);
+        (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          0u, 0u);
+        (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          pc + (uint32_t)rv_imm_j(insn), 0u);
         *ends_block = true;
         *counted = true;
         return true;
 
-    case 0x67u: {                               /* JALR */
+    case 0x67u: { /* JALR */
         /*
          * The target is computed *before* the link register is written,
          * because `jalr ra, ra` -- an indirect call through a saved
@@ -496,15 +508,14 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
          * jump to the return address it just wrote.
          */
         const uint16_t base = emu_ir_get(b, rs1);
-        const uint16_t sum = emu_ir_alu(b, EMU_IR_ADD, base,
-                                        emu_ir_const(b,
-                                                     (uint32_t)rv_imm_i(insn)));
-        const uint16_t tgt = emu_ir_alu(b, EMU_IR_AND, sum,
-                                        emu_ir_const(b, ~1u));
+        const uint16_t sum = emu_ir_alu(
+            b, EMU_IR_ADD, base, emu_ir_const(b, (uint32_t)rv_imm_i(insn)));
+        const uint16_t tgt =
+            emu_ir_alu(b, EMU_IR_AND, sum, emu_ir_const(b, ~1u));
 
         emu_ir_put(b, rd, emu_ir_const(b, pc + len));
-        (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP,
-                          EMU_IR_NO_TEMP, 0u, 0u);
+        (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          0u, 0u);
         (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, tgt, EMU_IR_NO_TEMP, 0u, 0u);
         *ends_block = true;
         *counted = true;
@@ -527,10 +538,10 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
      * and it cannot decline something it only discovers at run time.
      * frm is in the generation key for the same reason FS is.
      */
-    case 0x07u:                                 /* LOAD-FP  */
-    case 0x27u: {                               /* STORE-FP */
+    case 0x07u: /* LOAD-FP  */
+    case 0x27u: { /* STORE-FP */
         if (f3 != 2u || (h_fs_off(cpu))) {
-            return false;                       /* not FLW/FSW, or FS off */
+            return false; /* not FLW/FSW, or FS off */
         }
         /*
          * **With D, FLEN is 64 and a float in an f register carries a
@@ -549,27 +560,29 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
          * store is bits, and putting it through the unboxing read would
          * turn an unboxed register into a canonical NaN in memory.
          */
-        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP,
-                          EMU_IR_NO_TEMP, pc, 0u);
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          pc, 0u);
         const uint16_t base = emu_ir_get(b, rs1);
 
         if (op == 0x07u) {
-            const uint16_t v = emu_ir_emit(b, EMU_IR_LOAD,
-                                           EMU_IR_MEM_AUX(4u, 0u), base,
-                                           EMU_IR_NO_TEMP,
-                                           (uint32_t)rv_imm_i(insn), 0u);
-            (void)emu_ir_emit(b, EMU_IR_FPUT, RV_IR_BOX, v, EMU_IR_NO_TEMP,
-                              rd, 0u);
+            const uint16_t v =
+                emu_ir_emit(b, EMU_IR_LOAD, EMU_IR_MEM_AUX(4u, 0u), base,
+                            EMU_IR_NO_TEMP, (uint32_t)rv_imm_i(insn), 0u);
+            (void)emu_ir_emit(b, EMU_IR_FPUT, RV_IR_BOX, v, EMU_IR_NO_TEMP, rd,
+                              0u);
         } else {
             const uint16_t v = emu_ir_emit(b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
                                            EMU_IR_NO_TEMP, rs2, 0u);
-            (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(4u, 0u),
-                              base, v, (uint32_t)rv_imm_s(insn), 0u);
+            (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(4u, 0u), base, v,
+                              (uint32_t)rv_imm_s(insn), 0u);
         }
         return true;
     }
 
-    case 0x43u: case 0x47u: case 0x4Bu: case 0x4Fu:
+    case 0x43u:
+    case 0x47u:
+    case 0x4Bu:
+    case 0x4Fu:
         /*
          * The fused multiply-adds, which the IR does not model: it has
          * two operand fields and a third would hide from the use
@@ -582,7 +595,7 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
         }
         return rv_ir_fp_fallback(b, pc, insn);
 
-    case 0x53u: {                               /* OP-FP */
+    case 0x53u: { /* OP-FP */
         if (h_fs_off(cpu)) {
             return false;
         }
@@ -628,7 +641,7 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
          * helper because the rest of the table is where hosts genuinely
          * disagree.
          */
-        if (f7 == 0x70u && f3 == 0u && rs2 == 0u) {     /* FMV.X.W */
+        if (f7 == 0x70u && f3 == 0u && rs2 == 0u) { /* FMV.X.W */
             /*
              * No box on the read. FMV.X.W moves bits, and putting it
              * through the unboxing form would turn an unboxed register
@@ -641,7 +654,7 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
                                    EMU_IR_NO_TEMP, rs1, 0u));
             return true;
         }
-        if (f7 == 0x78u && f3 == 0u && rs2 == 0u) {     /* FMV.W.X */
+        if (f7 == 0x78u && f3 == 0u && rs2 == 0u) { /* FMV.W.X */
             (void)emu_ir_emit(b, EMU_IR_FPUT, RV_IR_BOX, emu_ir_get(b, rs1),
                               EMU_IR_NO_TEMP, rd, 0u);
             return true;
@@ -661,11 +674,14 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
          * and for FSQRT that field is an opcode extension that must be
          * zero. It is in its own case underneath.
          */
-        static const struct { uint32_t f7; uint8_t op; } k_fp[] = {
-            { 0x00u, (uint8_t)EMU_IR_FADD },
-            { 0x04u, (uint8_t)EMU_IR_FSUB },
-            { 0x08u, (uint8_t)EMU_IR_FMUL },
-            { 0x0Cu, (uint8_t)EMU_IR_FDIV },
+        static const struct {
+            uint32_t f7;
+            uint8_t op;
+        } k_fp[] = {
+            {0x00u, (uint8_t)EMU_IR_FADD},
+            {0x04u, (uint8_t)EMU_IR_FSUB},
+            {0x08u, (uint8_t)EMU_IR_FMUL},
+            {0x0Cu, (uint8_t)EMU_IR_FDIV},
         };
 
         for (unsigned i = 0; i < sizeof k_fp / sizeof k_fp[0]; i++) {
@@ -687,23 +703,23 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
 
             if (rm <= EMU_IR_FRM_RMM &&
                 emu_ir_can_lower((emu_ir_op_t)k_fp[i].op, (uint8_t)rm)) {
-                const uint16_t x = emu_ir_emit(b, EMU_IR_FGET, RV_IR_BOX,
-                                               EMU_IR_NO_TEMP,
-                                               EMU_IR_NO_TEMP, rs1, 0u);
-                const uint16_t y = emu_ir_emit(b, EMU_IR_FGET, RV_IR_BOX,
-                                               EMU_IR_NO_TEMP,
-                                               EMU_IR_NO_TEMP, rs2, 0u);
+                const uint16_t x =
+                    emu_ir_emit(b, EMU_IR_FGET, RV_IR_BOX, EMU_IR_NO_TEMP,
+                                EMU_IR_NO_TEMP, rs1, 0u);
+                const uint16_t y =
+                    emu_ir_emit(b, EMU_IR_FGET, RV_IR_BOX, EMU_IR_NO_TEMP,
+                                EMU_IR_NO_TEMP, rs2, 0u);
                 const uint16_t r = emu_ir_emit(b, (emu_ir_op_t)k_fp[i].op,
                                                (uint8_t)rm, x, y, 0u, 0u);
 
-                (void)emu_ir_emit(b, EMU_IR_FPUT, RV_IR_BOX, r,
-                                  EMU_IR_NO_TEMP, rd, 0u);
+                (void)emu_ir_emit(b, EMU_IR_FPUT, RV_IR_BOX, r, EMU_IR_NO_TEMP,
+                                  rd, 0u);
                 return true;
             }
             break;
         }
 
-        if (f7 == 0x2Cu && rs2 == 0u) {                 /* FSQRT.S */
+        if (f7 == 0x2Cu && rs2 == 0u) { /* FSQRT.S */
             /*
              * The fifth exact operation, and the one whose rs2 field is
              * an opcode extension rather than an operand -- a non-zero
@@ -714,14 +730,14 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
 
             if (rm <= EMU_IR_FRM_RMM &&
                 emu_ir_can_lower(EMU_IR_FSQRT, (uint8_t)rm)) {
-                const uint16_t x = emu_ir_emit(b, EMU_IR_FGET, RV_IR_BOX,
-                                               EMU_IR_NO_TEMP,
-                                               EMU_IR_NO_TEMP, rs1, 0u);
-                const uint16_t r = emu_ir_emit(b, EMU_IR_FSQRT, (uint8_t)rm,
-                                               x, EMU_IR_NO_TEMP, 0u, 0u);
+                const uint16_t x =
+                    emu_ir_emit(b, EMU_IR_FGET, RV_IR_BOX, EMU_IR_NO_TEMP,
+                                EMU_IR_NO_TEMP, rs1, 0u);
+                const uint16_t r = emu_ir_emit(b, EMU_IR_FSQRT, (uint8_t)rm, x,
+                                               EMU_IR_NO_TEMP, 0u, 0u);
 
-                (void)emu_ir_emit(b, EMU_IR_FPUT, RV_IR_BOX, r,
-                                  EMU_IR_NO_TEMP, rd, 0u);
+                (void)emu_ir_emit(b, EMU_IR_FPUT, RV_IR_BOX, r, EMU_IR_NO_TEMP,
+                                  rd, 0u);
                 return true;
             }
         }
@@ -815,8 +831,8 @@ uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
              */
             break;
         }
-        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP,
-                          EMU_IR_NO_TEMP, cur, 0u);
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          cur, 0u);
     }
 
     if (b->overflow) {
@@ -863,8 +879,7 @@ uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
 static uint32_t rv_ir_gen_key(const rv_hart_t *h)
 {
 #if RV_EXT_F
-    const uint32_t fs_off = ((h->mstatus & MSTATUS_FS_MASK) == 0u)
-                                ? 1u : 0u;
+    const uint32_t fs_off = ((h->mstatus & MSTATUS_FS_MASK) == 0u) ? 1u : 0u;
     const uint32_t frm = (h->fcsr >> 5) & 7u;
 
     return (h->vm_gen << 8) | (fs_off << 4) | frm;
@@ -965,17 +980,17 @@ static void rv_jit_count(emu_cpu_t *cpu, uint32_t n)
 }
 
 const emu_ir_frontend_t rv_ir_frontend = {
-    .name         = "rv32",
-    .translate    = rv_ir_translate,
-    .target       = &rv_ir_target,
-    .bind         = rv_jit_bind,
-    .interp       = &rv_backend_interp,
-    .is_idle      = rv_jit_is_idle,
-    .wake         = rv_jit_wake,
-    .take_irq     = rv_jit_take_irq,
-    .count        = rv_jit_count,
+    .name = "rv32",
+    .translate = rv_ir_translate,
+    .target = &rv_ir_target,
+    .bind = rv_jit_bind,
+    .interp = &rv_backend_interp,
+    .is_idle = rv_jit_is_idle,
+    .wake = rv_jit_wake,
+    .take_irq = rv_jit_take_irq,
+    .count = rv_jit_count,
     .after_interp = rv_jit_after_interp,
-    .code_bytes   = RV_JIT_HOST_CODE_BYTES,
+    .code_bytes = RV_JIT_HOST_CODE_BYTES,
     /* x[0..31] and pc; everything past it is bus pointers and counters. */
     .diff_state_bytes = (uint32_t)offsetof(rv_hart_t, pc) + 4u,
 };

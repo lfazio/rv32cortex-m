@@ -32,11 +32,21 @@ static uint16_t chan_to_eic(uint32_t c)
 {
     uint16_t v = (uint16_t)(c & G4MH_EIC_EIP_MASK);
 
-    if ((c & G4MH_EEIC_EICT) != 0u) { v |= G4MH_EIC_EICT; }
-    if ((c & G4MH_EEIC_EIRF) != 0u) { v |= G4MH_EIC_EIRF; }
-    if ((c & G4MH_EEIC_EIMK) != 0u) { v |= G4MH_EIC_EIMK; }
-    if ((c & G4MH_EEIC_EITB) != 0u) { v |= G4MH_EIC_EITB; }
-    if ((c & G4MH_EEIC_EIOV) != 0u) { v |= G4MH_EIC_EIOV; }
+    if ((c & G4MH_EEIC_EICT) != 0u) {
+        v |= G4MH_EIC_EICT;
+    }
+    if ((c & G4MH_EEIC_EIRF) != 0u) {
+        v |= G4MH_EIC_EIRF;
+    }
+    if ((c & G4MH_EEIC_EIMK) != 0u) {
+        v |= G4MH_EIC_EIMK;
+    }
+    if ((c & G4MH_EEIC_EITB) != 0u) {
+        v |= G4MH_EIC_EITB;
+    }
+    if ((c & G4MH_EEIC_EIOV) != 0u) {
+        v |= G4MH_EIC_EIOV;
+    }
     return v;
 }
 
@@ -59,8 +69,8 @@ static uint16_t chan_to_eic(uint32_t c)
  */
 static uint32_t chan_merge(uint32_t cur, uint32_t val, bool eip_keep)
 {
-    const uint32_t ro = G4MH_EEIC_EICT |
-                        (((cur & G4MH_EEIC_EICT) != 0u) ? G4MH_EEIC_EIRF : 0u);
+    const uint32_t ro =
+        G4MH_EEIC_EICT | (((cur & G4MH_EEIC_EICT) != 0u) ? G4MH_EEIC_EIRF : 0u);
     uint32_t out = (val & ~ro) | (cur & ro);
 
     if (eip_keep) {
@@ -73,20 +83,30 @@ static uint32_t eic_to_chan(uint32_t cur, uint16_t v)
 {
     uint32_t n = (uint32_t)(v & G4MH_EIC_EIP_MASK);
 
-    if ((v & G4MH_EIC_EICT) != 0u) { n |= G4MH_EEIC_EICT; }
-    if ((v & G4MH_EIC_EIRF) != 0u) { n |= G4MH_EEIC_EIRF; }
-    if ((v & G4MH_EIC_EIMK) != 0u) { n |= G4MH_EEIC_EIMK; }
-    if ((v & G4MH_EIC_EITB) != 0u) { n |= G4MH_EEIC_EITB; }
-    if ((v & G4MH_EIC_EIOV) != 0u) { n |= G4MH_EEIC_EIOV; }
+    if ((v & G4MH_EIC_EICT) != 0u) {
+        n |= G4MH_EEIC_EICT;
+    }
+    if ((v & G4MH_EIC_EIRF) != 0u) {
+        n |= G4MH_EEIC_EIRF;
+    }
+    if ((v & G4MH_EIC_EIMK) != 0u) {
+        n |= G4MH_EEIC_EIMK;
+    }
+    if ((v & G4MH_EIC_EITB) != 0u) {
+        n |= G4MH_EEIC_EITB;
+    }
+    if ((v & G4MH_EIC_EIOV) != 0u) {
+        n |= G4MH_EEIC_EIOV;
+    }
     return chan_merge(cur, n, true);
 }
 
 /* EEICn's reserved bits read back zero, so only the defined ones pass. */
 static uint32_t eeic_to_chan(uint32_t cur, uint32_t v)
 {
-    const uint32_t defined = G4MH_EEIC_EICT | G4MH_EEIC_EIRF |
-                             G4MH_EEIC_EIMK | G4MH_EEIC_EITB |
-                             G4MH_EEIC_EIOV | G4MH_EEIC_EIP_MASK;
+    const uint32_t defined = G4MH_EEIC_EICT | G4MH_EEIC_EIRF | G4MH_EEIC_EIMK |
+                             G4MH_EEIC_EITB | G4MH_EEIC_EIOV |
+                             G4MH_EEIC_EIP_MASK;
 
     return chan_merge(cur, v & defined, false);
 }
@@ -96,7 +116,7 @@ void g4mh_intc_init(g4mh_intc_t *ic, g4mh_cpu_t *cpu, g4mh_intc_t *global)
     memset(ic, 0, sizeof(*ic));
     ic->cpu = cpu;
     ic->global = (global != NULL) ? global : ic;
-    ic->ostm_cmp = UINT64_MAX;   /* no compare match until software sets one */
+    ic->ostm_cmp = UINT64_MAX; /* no compare match until software sets one */
 
     /*
      * Masked, lowest priority, edge detection. This is also IMRm's
@@ -200,8 +220,7 @@ int g4mh_intc_pending_pri(const g4mh_intc_t *ic, unsigned pe,
         const bool local = (i < G4MH_INTC1_CHANNELS);
         const g4mh_intc_t *src = local ? ic : ic->global;
 
-        if (!local &&
-            (src->eibd[i] & G4MH_EIBD_PEID_MASK) != (uint32_t)pe) {
+        if (!local && (src->eibd[i] & G4MH_EIBD_PEID_MASK) != (uint32_t)pe) {
             continue;
         }
 
@@ -310,8 +329,7 @@ static uint32_t imr_read(const g4mh_intc_t *ic, unsigned m)
          * cannot be pending, so reporting it unmasked would only invite
          * a guest to believe it had enabled something.
          */
-        if (ch >= G4MH_INT_CHANNELS ||
-            (ic->chan[ch] & G4MH_EEIC_EIMK) != 0u) {
+        if (ch >= G4MH_INT_CHANNELS || (ic->chan[ch] & G4MH_EEIC_EIMK) != 0u) {
             v |= 1u << b;
         }
     }
@@ -327,9 +345,8 @@ static void imr_write(g4mh_intc_t *ic, unsigned m, uint32_t val)
             continue;
         }
         const uint32_t cur = ic->chan[ch];
-        const uint32_t want = ((val >> b) & 1u) != 0u
-                              ? (cur | G4MH_EEIC_EIMK)
-                              : (cur & ~G4MH_EEIC_EIMK);
+        const uint32_t want = ((val >> b) & 1u) != 0u ? (cur | G4MH_EEIC_EIMK)
+                                                      : (cur & ~G4MH_EEIC_EIMK);
 
         if (want != cur) {
             chan_store(ic, ch, want);
@@ -419,7 +436,8 @@ static emu_fault_t intc2_read(void *ctx, uint32_t off, uint32_t size,
 
     if (off < G4MH_INT_CHANNELS * 2u) {
         *out = (off < G4MH_INTC1_CHANNELS * 2u)
-               ? 0u : chan_to_eic(ic->chan[off / 2u]);
+                   ? 0u
+                   : chan_to_eic(ic->chan[off / 2u]);
     } else if (off >= G4MH_INTC2_IMR && off < G4MH_INTC2_IMR + 32u * 4u) {
         /*
          * The address is <INTC2_base> + 1000H + 04H * n for n = 1..31,
@@ -542,11 +560,21 @@ static emu_fault_t ostm_read(void *ctx, uint32_t off, uint32_t size,
     (void)size;
 
     switch (off) {
-    case G4MH_OSTM_CNT:      *out = (uint32_t)ic->ostm_cnt; break;
-    case G4MH_OSTM_CNT + 4u: *out = (uint32_t)(ic->ostm_cnt >> 32); break;
-    case G4MH_OSTM_CMP:      *out = (uint32_t)ic->ostm_cmp; break;
-    case G4MH_OSTM_CMP + 4u: *out = (uint32_t)(ic->ostm_cmp >> 32); break;
-    default:                 *out = 0u; break;
+    case G4MH_OSTM_CNT:
+        *out = (uint32_t)ic->ostm_cnt;
+        break;
+    case G4MH_OSTM_CNT + 4u:
+        *out = (uint32_t)(ic->ostm_cnt >> 32);
+        break;
+    case G4MH_OSTM_CMP:
+        *out = (uint32_t)ic->ostm_cmp;
+        break;
+    case G4MH_OSTM_CMP + 4u:
+        *out = (uint32_t)(ic->ostm_cmp >> 32);
+        break;
+    default:
+        *out = 0u;
+        break;
     }
     return EMU_FAULT_NONE;
 }
@@ -572,14 +600,22 @@ static emu_fault_t ostm_write(void *ctx, uint32_t off, uint32_t size,
 }
 
 const emu_dev_ops_t g4mh_intc1_ops = {
-    .read = intc1_read, .write = intc1_write, .tick = NULL,
+    .read = intc1_read,
+    .write = intc1_write,
+    .tick = NULL,
 };
 const emu_dev_ops_t g4mh_intc2_ops = {
-    .read = intc2_read, .write = intc2_write, .tick = NULL,
+    .read = intc2_read,
+    .write = intc2_write,
+    .tick = NULL,
 };
 const emu_dev_ops_t g4mh_ostm_ops = {
-    .read = ostm_read, .write = ostm_write, .tick = NULL,
+    .read = ostm_read,
+    .write = ostm_write,
+    .tick = NULL,
 };
 const emu_dev_ops_t g4mh_intif_ops = {
-    .read = intif_read, .write = intif_write, .tick = NULL,
+    .read = intif_read,
+    .write = intif_write,
+    .tick = NULL,
 };

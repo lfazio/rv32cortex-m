@@ -46,11 +46,10 @@ static bool spid_permits(const g4mh_mpu_t *m, uint32_t at, bool write,
                          uint32_t spid)
 {
     if ((at & (write ? G4MH_MPAT_WG : G4MH_MPAT_RG)) != 0u) {
-        return true;                    /* any SPID */
+        return true; /* any SPID */
     }
 
-    const unsigned sh = write ? G4MH_MPAT_WMPID_SHIFT
-                              : G4MH_MPAT_RMPID_SHIFT;
+    const unsigned sh = write ? G4MH_MPAT_WMPID_SHIFT : G4MH_MPAT_RMPID_SHIFT;
     const uint32_t perm = (at >> sh) & 0xFFu;
 
     for (unsigned i = 0; i < 8u; i++) {
@@ -173,15 +172,33 @@ bool g4mh_mpu_sr_read(const g4mh_mpu_t *m, unsigned reg, uint32_t *out)
     unsigned e;
 
     switch (reg) {
-    case G4MH_SR_MPM:    *out = m->mpm;   return true;
-    case G4MH_SR_MPCFG:  *out = G4MH_MPCFG_VALUE; return true;
-    case G4MH_SR_MPIDX:  *out = m->mpidx; return true;
-    case G4MH_SR_MPBK:   *out = 0u;       return true;  /* one bank */
-    case G4MH_SR_MCA:    *out = m->mca;   return true;
-    case G4MH_SR_MCS:    *out = m->mcs;   return true;
-    case G4MH_SR_MCC:    *out = m->mcc;   return true;
-    case G4MH_SR_MCR:    *out = m->mcr;   return true;
-    case G4MH_SR_MCI:    *out = m->mci;   return true;
+    case G4MH_SR_MPM:
+        *out = m->mpm;
+        return true;
+    case G4MH_SR_MPCFG:
+        *out = G4MH_MPCFG_VALUE;
+        return true;
+    case G4MH_SR_MPIDX:
+        *out = m->mpidx;
+        return true;
+    case G4MH_SR_MPBK:
+        *out = 0u;
+        return true; /* one bank */
+    case G4MH_SR_MCA:
+        *out = m->mca;
+        return true;
+    case G4MH_SR_MCS:
+        *out = m->mcs;
+        return true;
+    case G4MH_SR_MCC:
+        *out = m->mcc;
+        return true;
+    case G4MH_SR_MCR:
+        *out = m->mcr;
+        return true;
+    case G4MH_SR_MCI:
+        *out = m->mci;
+        return true;
 
     case G4MH_SR_MPLA:
         *out = entry_index(m, &e) ? m->mpla[e] : 0u;
@@ -213,14 +230,26 @@ bool g4mh_mpu_sr_write(g4mh_mpu_t *m, unsigned reg, uint32_t val)
 
     case G4MH_SR_MPCFG:
     case G4MH_SR_MPBK:
-        return true;                    /* read-only; the write is dropped */
+        return true; /* read-only; the write is dropped */
 
-    case G4MH_SR_MPIDX:  m->mpidx = val & 0x1Fu; return true;
-    case G4MH_SR_MCA:    m->mca = val; return true;
-    case G4MH_SR_MCS:    m->mcs = val; return true;
-    case G4MH_SR_MCC:    m->mcc = val; return true;
-    case G4MH_SR_MCR:    m->mcr = val; return true;
-    case G4MH_SR_MCI:    m->mci = val & G4MH_MPID_SPID_MASK; return true;
+    case G4MH_SR_MPIDX:
+        m->mpidx = val & 0x1Fu;
+        return true;
+    case G4MH_SR_MCA:
+        m->mca = val;
+        return true;
+    case G4MH_SR_MCS:
+        m->mcs = val;
+        return true;
+    case G4MH_SR_MCC:
+        m->mcc = val;
+        return true;
+    case G4MH_SR_MCR:
+        m->mcr = val;
+        return true;
+    case G4MH_SR_MCI:
+        m->mci = val & G4MH_MPID_SPID_MASK;
+        return true;
 
     /*
      * The addresses keep bits 31:2; bits 1:0 are reserved and read back
@@ -228,10 +257,14 @@ bool g4mh_mpu_sr_write(g4mh_mpu_t *m, unsigned reg, uint32_t val)
      * was set from an unaligned pointer refuse its own first word.
      */
     case G4MH_SR_MPLA:
-        if (entry_index(m, &e)) { m->mpla[e] = val & ~3u; }
+        if (entry_index(m, &e)) {
+            m->mpla[e] = val & ~3u;
+        }
         return true;
     case G4MH_SR_MPUA:
-        if (entry_index(m, &e)) { m->mpua[e] = val & ~3u; }
+        if (entry_index(m, &e)) {
+            m->mpua[e] = val & ~3u;
+        }
         return true;
     case G4MH_SR_MPAT:
         if (entry_index(m, &e)) {

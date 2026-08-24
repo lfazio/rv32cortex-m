@@ -24,7 +24,7 @@
 #include "rv32/rv_hart.h"
 
 #if EMU_PAIR_STATS
-#  include "rv32/rv_pairstats.h"
+#include "rv32/rv_pairstats.h"
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -72,10 +72,10 @@ static EMU_ALWAYS_INLINE uint32_t mulh_uu(uint32_t a, uint32_t b)
 static EMU_ALWAYS_INLINE uint32_t div_s(int32_t a, int32_t b)
 {
     if (EMU_UNLIKELY(b == 0)) {
-        return 0xFFFFFFFFu;                 /* -1 */
+        return 0xFFFFFFFFu; /* -1 */
     }
     if (EMU_UNLIKELY(a == INT32_MIN && b == -1)) {
-        return (uint32_t)INT32_MIN;         /* overflow wraps to the dividend */
+        return (uint32_t)INT32_MIN; /* overflow wraps to the dividend */
     }
     return (uint32_t)(a / b);
 }
@@ -192,9 +192,9 @@ static uint32_t zbc_clmulr(uint32_t a, uint32_t b)
 
 /* With C, targets need 2-byte alignment; without it, 4-byte. */
 #if RV_EXT_C
-#  define TARGET_ALIGN_MASK 1u
+#define TARGET_ALIGN_MASK 1u
 #else
-#  define TARGET_ALIGN_MASK 3u
+#define TARGET_ALIGN_MASK 3u
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -207,14 +207,14 @@ static uint32_t zbc_clmulr(uint32_t a, uint32_t b)
  * keeps it from being folded back into a caller that lives in flash.
  */
 #if RV_INTERP_RAMFUNC
-#  define RV_INTERP_SECTION __attribute__((section(".ramfunc"), noinline))
+#define RV_INTERP_SECTION __attribute__((section(".ramfunc"), noinline))
 #else
-#  define RV_INTERP_SECTION
+#define RV_INTERP_SECTION
 #endif
 
 static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
-                                                    uint32_t budget,
-                                                    uint32_t *retired)
+                                                     uint32_t budget,
+                                                     uint32_t *retired)
 {
     uint32_t done = 0;
     emu_run_reason_t reason = EMU_RUN_BUDGET;
@@ -242,17 +242,17 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
         }
         h->state = EMU_STATE_RUNNING;
 #if RV_LAZY_IRQ_CHECK
-        h->irq_dirty = true;   /* let the loop below deliver it */
+        h->irq_dirty = true; /* let the loop below deliver it */
 #endif
     }
 
 /* Enter a trap. mepc must be the faulting instruction, so restore pc. */
-#define TRAP(cause_, tval_)                     \
-    do {                                        \
-        h->pc = pc;                             \
-        rv_hart_trap(h, (cause_), (tval_));     \
-        pc = h->pc;                             \
-        goto retired_insn;                      \
+#define TRAP(cause_, tval_)                                                    \
+    do {                                                                       \
+        h->pc = pc;                                                            \
+        rv_hart_trap(h, (cause_), (tval_));                                    \
+        pc = h->pc;                                                            \
+        goto retired_insn;                                                     \
     } while (0)
 
     while (done < budget) {
@@ -265,7 +265,7 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
          * back as 1.
          */
         uint32_t ctr_written = 0u;
-#define CTR_CYCLE   1u
+#define CTR_CYCLE 1u
 #define CTR_INSTRET 2u
 
         /*
@@ -294,7 +294,8 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
 
         /* One test covers both halt and WFI; neither can continue here. */
         if (EMU_UNLIKELY(h->state != EMU_STATE_RUNNING)) {
-            reason = (h->state == EMU_STATE_HALTED) ? EMU_RUN_HALTED : EMU_RUN_WFI;
+            reason =
+                (h->state == EMU_STATE_HALTED) ? EMU_RUN_HALTED : EMU_RUN_WFI;
             break;
         }
 
@@ -383,8 +384,7 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
 #if RV_EXT_PMP
                 /* PMP describes physical memory, so it sees the translated
                  * address, not the one the guest branched to. */
-                if (h->pmp_active &&
-                    !rv_pmp_check(h, fpc, 2u, EMU_ACC_FETCH)) {
+                if (h->pmp_active && !rv_pmp_check(h, fpc, 2u, EMU_ACC_FETCH)) {
                     TRAP(RV_EXC_INSN_ACCESS_FAULT, pc);
                 }
 #endif
@@ -408,8 +408,8 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                  * second half is reachable at all once the pages stop being
                  * adjacent in physical memory.
                  */
-                if (EMU_UNLIKELY(h->vm_active && (pc & (RV_PAGE_SIZE - 1u))
-                                                 == RV_PAGE_SIZE - 2u)) {
+                if (EMU_UNLIKELY(h->vm_active && (pc & (RV_PAGE_SIZE - 1u)) ==
+                                                     RV_PAGE_SIZE - 2u)) {
                     const rv_exc_t t =
                         rv_mmu_translate(h, pc + 2u, EMU_ACC_FETCH, &fpc2);
                     if (EMU_UNLIKELY(t != RV_EXC_NONE)) {
@@ -516,13 +516,26 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
             bool taken;
 
             switch (rv_funct3(insn)) {
-            case 0: taken = (a == b); break;                       /* BEQ  */
-            case 1: taken = (a != b); break;                       /* BNE  */
-            case 4: taken = ((int32_t)a <  (int32_t)b); break;     /* BLT  */
-            case 5: taken = ((int32_t)a >= (int32_t)b); break;     /* BGE  */
-            case 6: taken = (a <  b); break;                       /* BLTU */
-            case 7: taken = (a >= b); break;                       /* BGEU */
-            default: TRAP(RV_EXC_ILLEGAL_INSN, insn);
+            case 0:
+                taken = (a == b);
+                break; /* BEQ  */
+            case 1:
+                taken = (a != b);
+                break; /* BNE  */
+            case 4:
+                taken = ((int32_t)a < (int32_t)b);
+                break; /* BLT  */
+            case 5:
+                taken = ((int32_t)a >= (int32_t)b);
+                break; /* BGE  */
+            case 6:
+                taken = (a < b);
+                break; /* BLTU */
+            case 7:
+                taken = (a >= b);
+                break; /* BGEU */
+            default:
+                TRAP(RV_EXC_ILLEGAL_INSN, insn);
             }
 
             if (taken) {
@@ -542,12 +555,28 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
             bool sx;
 
             switch (rv_funct3(insn)) {
-            case 0: size = 1u; sx = true;  break;   /* LB  */
-            case 1: size = 2u; sx = true;  break;   /* LH  */
-            case 2: size = 4u; sx = false; break;   /* LW  */
-            case 4: size = 1u; sx = false; break;   /* LBU */
-            case 5: size = 2u; sx = false; break;   /* LHU */
-            default: TRAP(RV_EXC_ILLEGAL_INSN, insn);
+            case 0:
+                size = 1u;
+                sx = true;
+                break; /* LB  */
+            case 1:
+                size = 2u;
+                sx = true;
+                break; /* LH  */
+            case 2:
+                size = 4u;
+                sx = false;
+                break; /* LW  */
+            case 4:
+                size = 1u;
+                sx = false;
+                break; /* LBU */
+            case 5:
+                size = 2u;
+                sx = false;
+                break; /* LHU */
+            default:
+                TRAP(RV_EXC_ILLEGAL_INSN, insn);
             }
 
             const rv_exc_t exc = rv_hart_load(h, addr, size, sx, &v);
@@ -565,10 +594,17 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
             uint32_t size;
 
             switch (rv_funct3(insn)) {
-            case 0: size = 1u; break;   /* SB */
-            case 1: size = 2u; break;   /* SH */
-            case 2: size = 4u; break;   /* SW */
-            default: TRAP(RV_EXC_ILLEGAL_INSN, insn);
+            case 0:
+                size = 1u;
+                break; /* SB */
+            case 1:
+                size = 2u;
+                break; /* SH */
+            case 2:
+                size = 4u;
+                break; /* SW */
+            default:
+                TRAP(RV_EXC_ILLEGAL_INSN, insn);
             }
 
             const rv_exc_t exc = rv_hart_store(h, addr, size, v);
@@ -585,14 +621,26 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
             const uint32_t rd = rv_rd(insn);
 
             switch (rv_funct3(insn)) {
-            case 0: wr(h, rd, a + (uint32_t)imm); break;                  /* ADDI  */
-            case 2: wr(h, rd, (int32_t)a < imm); break;                   /* SLTI  */
-            case 3: wr(h, rd, a < (uint32_t)imm); break;                  /* SLTIU */
-            case 4: wr(h, rd, a ^ (uint32_t)imm); break;                  /* XORI  */
-            case 6: wr(h, rd, a | (uint32_t)imm); break;                  /* ORI   */
-            case 7: wr(h, rd, a & (uint32_t)imm); break;                  /* ANDI  */
+            case 0:
+                wr(h, rd, a + (uint32_t)imm);
+                break; /* ADDI  */
+            case 2:
+                wr(h, rd, (int32_t)a < imm);
+                break; /* SLTI  */
+            case 3:
+                wr(h, rd, a < (uint32_t)imm);
+                break; /* SLTIU */
+            case 4:
+                wr(h, rd, a ^ (uint32_t)imm);
+                break; /* XORI  */
+            case 6:
+                wr(h, rd, a | (uint32_t)imm);
+                break; /* ORI   */
+            case 7:
+                wr(h, rd, a & (uint32_t)imm);
+                break; /* ANDI  */
 
-            case 1: {  /* SLLI, and the Zbb unary ops sharing its slot */
+            case 1: { /* SLLI, and the Zbb unary ops sharing its slot */
                 /*
                  * SLLI is tested first because it is overwhelmingly the
                  * common case: putting the Zbb decode ahead of it made
@@ -607,26 +655,46 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
 #if RV_EXT_ZBB
                 if (f7i == 0x30u) {
                     switch (rv_rs2(insn)) {
-                    case 0: wr(h, rd, zbb_clz(a)); break;             /* clz    */
-                    case 1: wr(h, rd, zbb_ctz(a)); break;             /* ctz    */
-                    case 2: wr(h, rd, (uint32_t)__builtin_popcount(a)); break;
-                    case 4: wr(h, rd, (uint32_t)(int8_t)a); break;    /* sext.b */
-                    case 5: wr(h, rd, (uint32_t)(int16_t)a); break;   /* sext.h */
-                    default: TRAP(RV_EXC_ILLEGAL_INSN, insn);
+                    case 0:
+                        wr(h, rd, zbb_clz(a));
+                        break; /* clz    */
+                    case 1:
+                        wr(h, rd, zbb_ctz(a));
+                        break; /* ctz    */
+                    case 2:
+                        wr(h, rd, (uint32_t)__builtin_popcount(a));
+                        break;
+                    case 4:
+                        wr(h, rd, (uint32_t)(int8_t)a);
+                        break; /* sext.b */
+                    case 5:
+                        wr(h, rd, (uint32_t)(int16_t)a);
+                        break; /* sext.h */
+                    default:
+                        TRAP(RV_EXC_ILLEGAL_INSN, insn);
                     }
                     break;
                 }
 #endif
 #if RV_EXT_ZBS
                 /* Single-bit immediate forms; shamt is the rs2 field. */
-                if (f7i == 0x14u) { wr(h, rd, a | (1u << rv_rs2(insn))); break; }
-                if (f7i == 0x24u) { wr(h, rd, a & ~(1u << rv_rs2(insn))); break; }
-                if (f7i == 0x34u) { wr(h, rd, a ^ (1u << rv_rs2(insn))); break; }
+                if (f7i == 0x14u) {
+                    wr(h, rd, a | (1u << rv_rs2(insn)));
+                    break;
+                }
+                if (f7i == 0x24u) {
+                    wr(h, rd, a & ~(1u << rv_rs2(insn)));
+                    break;
+                }
+                if (f7i == 0x34u) {
+                    wr(h, rd, a ^ (1u << rv_rs2(insn)));
+                    break;
+                }
 #endif
                 TRAP(RV_EXC_ILLEGAL_INSN, insn);
             }
 
-            case 5: {  /* SRLI / SRAI, plus Zbb rori / orc.b / rev8 */
+            case 5: { /* SRLI / SRAI, plus Zbb rori / orc.b / rev8 */
                 const uint32_t f7i = rv_funct7(insn);
                 if (EMU_LIKELY(f7i == 0u)) {
                     wr(h, rd, a >> rv_rs2(insn));
@@ -640,21 +708,21 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                 /* orc.b is imm 0x287 and rev8 is 0x698; neither collides
                  * with the shift funct7 values, so one compare each. */
                 if (f7i == 0x30u) {
-                    wr(h, rd, zbb_ror(a, rv_rs2(insn)));             /* rori  */
+                    wr(h, rd, zbb_ror(a, rv_rs2(insn))); /* rori  */
                     break;
                 }
                 if (f7i == 0x14u && rv_rs2(insn) == 7u) {
-                    wr(h, rd, zbb_orcb(a));                          /* orc.b */
+                    wr(h, rd, zbb_orcb(a)); /* orc.b */
                     break;
                 }
                 if (f7i == 0x34u && rv_rs2(insn) == 24u) {
-                    wr(h, rd, __builtin_bswap32(a));                 /* rev8  */
+                    wr(h, rd, __builtin_bswap32(a)); /* rev8  */
                     break;
                 }
 #endif
 #if RV_EXT_ZBS
                 if (f7i == 0x24u) {
-                    wr(h, rd, (a >> rv_rs2(insn)) & 1u);             /* bexti */
+                    wr(h, rd, (a >> rv_rs2(insn)) & 1u); /* bexti */
                     break;
                 }
 #endif
@@ -677,25 +745,47 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
 
             if (f7 == 0u) {
                 switch (f3) {
-                case 0: wr(h, rd, a + b); break;                        /* ADD  */
-                case 1: wr(h, rd, a << (b & 0x1Fu)); break;             /* SLL  */
-                case 2: wr(h, rd, (int32_t)a < (int32_t)b); break;      /* SLT  */
-                case 3: wr(h, rd, a < b); break;                        /* SLTU */
-                case 4: wr(h, rd, a ^ b); break;                        /* XOR  */
-                case 5: wr(h, rd, a >> (b & 0x1Fu)); break;             /* SRL  */
-                case 6: wr(h, rd, a | b); break;                        /* OR   */
-                default: wr(h, rd, a & b); break;                       /* AND  */
+                case 0:
+                    wr(h, rd, a + b);
+                    break; /* ADD  */
+                case 1:
+                    wr(h, rd, a << (b & 0x1Fu));
+                    break; /* SLL  */
+                case 2:
+                    wr(h, rd, (int32_t)a < (int32_t)b);
+                    break; /* SLT  */
+                case 3:
+                    wr(h, rd, a < b);
+                    break; /* SLTU */
+                case 4:
+                    wr(h, rd, a ^ b);
+                    break; /* XOR  */
+                case 5:
+                    wr(h, rd, a >> (b & 0x1Fu));
+                    break; /* SRL  */
+                case 6:
+                    wr(h, rd, a | b);
+                    break; /* OR   */
+                default:
+                    wr(h, rd, a & b);
+                    break; /* AND  */
                 }
             } else if (f7 == 0x20u) {
                 if (f3 == 0u) {
-                    wr(h, rd, a - b);                                   /* SUB */
+                    wr(h, rd, a - b); /* SUB */
                 } else if (f3 == 5u) {
-                    wr(h, rd, (uint32_t)((int32_t)a >> (b & 0x1Fu)));   /* SRA */
+                    wr(h, rd, (uint32_t)((int32_t)a >> (b & 0x1Fu))); /* SRA */
                 }
 #if RV_EXT_ZBB
-                else if (f3 == 7u) { wr(h, rd, a & ~b); }               /* andn */
-                else if (f3 == 6u) { wr(h, rd, a | ~b); }               /* orn  */
-                else if (f3 == 4u) { wr(h, rd, ~(a ^ b)); }             /* xnor */
+                else if (f3 == 7u) {
+                    wr(h, rd, a & ~b);
+                } /* andn */
+                else if (f3 == 6u) {
+                    wr(h, rd, a | ~b);
+                } /* orn  */
+                else if (f3 == 4u) {
+                    wr(h, rd, ~(a ^ b));
+                } /* xnor */
 #endif
                 else {
                     TRAP(RV_EXC_ILLEGAL_INSN, insn);
@@ -707,25 +797,44 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                  * are decoded together: a separate branch further down the
                  * chain would never be reached. */
                 switch (f3) {
-                case 4: wr(h, rd, ((int32_t)a < (int32_t)b) ? a : b); break; /* min  */
-                case 5: wr(h, rd, (a < b) ? a : b); break;                   /* minu */
-                case 6: wr(h, rd, ((int32_t)a > (int32_t)b) ? a : b); break; /* max  */
-                case 7: wr(h, rd, (a > b) ? a : b); break;                   /* maxu */
+                case 4:
+                    wr(h, rd, ((int32_t)a < (int32_t)b) ? a : b);
+                    break; /* min  */
+                case 5:
+                    wr(h, rd, (a < b) ? a : b);
+                    break; /* minu */
+                case 6:
+                    wr(h, rd, ((int32_t)a > (int32_t)b) ? a : b);
+                    break; /* max  */
+                case 7:
+                    wr(h, rd, (a > b) ? a : b);
+                    break; /* maxu */
 #if RV_EXT_ZBC
-                case 1: wr(h, rd, zbc_clmul(a, b)); break;
-                case 2: wr(h, rd, zbc_clmulr(a, b)); break;
-                case 3: wr(h, rd, zbc_clmulh(a, b)); break;
+                case 1:
+                    wr(h, rd, zbc_clmul(a, b));
+                    break;
+                case 2:
+                    wr(h, rd, zbc_clmulr(a, b));
+                    break;
+                case 3:
+                    wr(h, rd, zbc_clmulh(a, b));
+                    break;
 #endif
-                default: TRAP(RV_EXC_ILLEGAL_INSN, insn);
+                default:
+                    TRAP(RV_EXC_ILLEGAL_INSN, insn);
                 }
-            }
-            else if (f7 == 0x30u) {
-                if (f3 == 1u)      { wr(h, rd, zbb_rol(a, b)); }        /* rol */
-                else if (f3 == 5u) { wr(h, rd, zbb_ror(a, b)); }        /* ror */
-                else               { TRAP(RV_EXC_ILLEGAL_INSN, insn); }
-            }
-            else if (f7 == 0x04u && f3 == 4u && rv_rs2(insn) == 0u) {
-                wr(h, rd, a & 0xFFFFu);                                 /* zext.h */
+            } else if (f7 == 0x30u) {
+                if (f3 == 1u) {
+                    wr(h, rd, zbb_rol(a, b));
+                } /* rol */
+                else if (f3 == 5u) {
+                    wr(h, rd, zbb_ror(a, b));
+                } /* ror */
+                else {
+                    TRAP(RV_EXC_ILLEGAL_INSN, insn);
+                }
+            } else if (f7 == 0x04u && f3 == 4u && rv_rs2(insn) == 0u) {
+                wr(h, rd, a & 0xFFFFu); /* zext.h */
             }
 #endif
 #if RV_EXT_ZBA
@@ -735,22 +844,43 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
             }
 #endif
 #if RV_EXT_ZBS
-            else if (f7 == 0x14u && f3 == 1u) { wr(h, rd, a | (1u << (b & 31u))); }
-            else if (f7 == 0x24u && f3 == 1u) { wr(h, rd, a & ~(1u << (b & 31u))); }
-            else if (f7 == 0x34u && f3 == 1u) { wr(h, rd, a ^ (1u << (b & 31u))); }
-            else if (f7 == 0x24u && f3 == 5u) { wr(h, rd, (a >> (b & 31u)) & 1u); }
+            else if (f7 == 0x14u && f3 == 1u) {
+                wr(h, rd, a | (1u << (b & 31u)));
+            } else if (f7 == 0x24u && f3 == 1u) {
+                wr(h, rd, a & ~(1u << (b & 31u)));
+            } else if (f7 == 0x34u && f3 == 1u) {
+                wr(h, rd, a ^ (1u << (b & 31u)));
+            } else if (f7 == 0x24u && f3 == 5u) {
+                wr(h, rd, (a >> (b & 31u)) & 1u);
+            }
 #endif
 #if RV_EXT_M
             else if (f7 == 1u) {
                 switch (f3) {
-                case 0: wr(h, rd, a * b); break;                        /* MUL    */
-                case 1: wr(h, rd, mulh_ss((int32_t)a, (int32_t)b)); break;  /* MULH   */
-                case 2: wr(h, rd, mulh_su((int32_t)a, b)); break;       /* MULHSU */
-                case 3: wr(h, rd, mulh_uu(a, b)); break;                /* MULHU  */
-                case 4: wr(h, rd, div_s((int32_t)a, (int32_t)b)); break;/* DIV    */
-                case 5: wr(h, rd, div_u(a, b)); break;                  /* DIVU   */
-                case 6: wr(h, rd, rem_s((int32_t)a, (int32_t)b)); break;/* REM    */
-                default: wr(h, rd, rem_u(a, b)); break;                 /* REMU   */
+                case 0:
+                    wr(h, rd, a * b);
+                    break; /* MUL    */
+                case 1:
+                    wr(h, rd, mulh_ss((int32_t)a, (int32_t)b));
+                    break; /* MULH   */
+                case 2:
+                    wr(h, rd, mulh_su((int32_t)a, b));
+                    break; /* MULHSU */
+                case 3:
+                    wr(h, rd, mulh_uu(a, b));
+                    break; /* MULHU  */
+                case 4:
+                    wr(h, rd, div_s((int32_t)a, (int32_t)b));
+                    break; /* DIV    */
+                case 5:
+                    wr(h, rd, div_u(a, b));
+                    break; /* DIVU   */
+                case 6:
+                    wr(h, rd, rem_s((int32_t)a, (int32_t)b));
+                    break; /* REM    */
+                default:
+                    wr(h, rd, rem_u(a, b));
+                    break; /* REMU   */
                 }
             }
 #endif
@@ -788,8 +918,8 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                 }
 
                 uint32_t fault_addr;
-                const rv_exc_t exc = rv_hart_cbo(h, op, h->x[rv_rs1(insn)],
-                                                 &fault_addr);
+                const rv_exc_t exc =
+                    rv_hart_cbo(h, op, h->x[rv_rs1(insn)], &fault_addr);
                 if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
                     TRAP(exc, fault_addr);
                 }
@@ -824,7 +954,7 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
             }
 #endif
             if (EMU_UNLIKELY(rv_funct3(insn) != 2u)) {
-                TRAP(RV_EXC_ILLEGAL_INSN, insn);   /* only 32/64-bit AMOs */
+                TRAP(RV_EXC_ILLEGAL_INSN, insn); /* only 32/64-bit AMOs */
             }
 
             if (EMU_UNLIKELY(!rv_amo_valid(funct5))) {
@@ -836,12 +966,12 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
             }
 
             const uint32_t addr = h->x[rv_rs1(insn)];
-            const rv_exc_t exc = rv_hart_amo(h, funct5, rv_rd(insn), addr,
-                                             h->x[rv_rs2(insn)]);
+            const rv_exc_t exc =
+                rv_hart_amo(h, funct5, rv_rd(insn), addr, h->x[rv_rs2(insn)]);
             if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
                 TRAP(exc, addr);
             }
-            h->x[0] = 0u;   /* rv_hart_amo skips rd==0; keep x0 canonical */
+            h->x[0] = 0u; /* rv_hart_amo skips rd==0; keep x0 canonical */
             break;
         }
 #endif /* RV_EXT_A */
@@ -878,7 +1008,7 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                 }
 
                 switch (insn >> 20) {
-                case 0x000u:                    /* ECALL */
+                case 0x000u: /* ECALL */
 #if RV_ENABLE_ECALL_HOOK
                     if (h->ecall != NULL) {
                         h->pc = pc;
@@ -889,8 +1019,8 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                          * the result.
                          */
                         emu_syscall_t sc = {
-                            .nr  = h->x[17],
-                            .arg = { h->x[10], h->x[11], h->x[12], h->x[13] },
+                            .nr = h->x[17],
+                            .arg = {h->x[10], h->x[11], h->x[12], h->x[13]},
                             .ret = 0u,
                         };
                         if (h->ecall((emu_cpu_t *)h, &sc, h->ecall_user)) {
@@ -902,20 +1032,22 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                     }
 #endif
 #if RV_EXT_S
-                    TRAP((h->priv == RV_PRIV_U) ? RV_EXC_ECALL_U :
-                         (h->priv == RV_PRIV_S) ? RV_EXC_ECALL_S
-                                                : RV_EXC_ECALL_M, 0u);
+                    TRAP((h->priv == RV_PRIV_U)   ? RV_EXC_ECALL_U
+                         : (h->priv == RV_PRIV_S) ? RV_EXC_ECALL_S
+                                                  : RV_EXC_ECALL_M,
+                         0u);
 #elif RV_EXT_U
                     TRAP((h->priv == RV_PRIV_U) ? RV_EXC_ECALL_U
-                                                : RV_EXC_ECALL_M, 0u);
+                                                : RV_EXC_ECALL_M,
+                         0u);
 #else
                     TRAP(RV_EXC_ECALL_M, 0u);
 #endif
 
-                case 0x001u:                    /* EBREAK */
+                case 0x001u: /* EBREAK */
                     TRAP(RV_EXC_BREAKPOINT, pc);
 
-                case 0x302u: {                  /* MRET */
+                case 0x302u: { /* MRET */
                     /*
                      * Pop the interrupt-enable stack. MPP selects the
                      * privilege to return to, and is then reset to the
@@ -923,8 +1055,8 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                      */
                     const uint32_t mpie =
                         (h->mstatus & MSTATUS_MPIE) ? MSTATUS_MIE : 0u;
-                    uint32_t clear = MSTATUS_MIE | MSTATUS_MPIE |
-                                     MSTATUS_MPP_MASK;
+                    uint32_t clear =
+                        MSTATUS_MIE | MSTATUS_MPIE | MSTATUS_MPP_MASK;
 #if RV_EXT_U
                     const uint32_t mpp =
                         (h->mstatus & MSTATUS_MPP_MASK) >> MSTATUS_MPP_SHIFT;
@@ -940,11 +1072,17 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                      */
                     uint32_t back;
                     switch (mpp) {
-                    case RV_PRIV_U: back = RV_PRIV_U; break;
+                    case RV_PRIV_U:
+                        back = RV_PRIV_U;
+                        break;
 #if RV_EXT_S
-                    case RV_PRIV_S: back = RV_PRIV_S; break;
+                    case RV_PRIV_S:
+                        back = RV_PRIV_S;
+                        break;
 #endif
-                    default:        back = RV_PRIV_M; break;
+                    default:
+                        back = RV_PRIV_M;
+                        break;
                     }
                     /*
                      * Returning below M clears MPRV. Without this, M-mode
@@ -958,10 +1096,8 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
 #else
                     const uint32_t back = RV_PRIV_M;
 #endif
-                    h->mstatus = (h->mstatus & ~clear)
-                               | mpie
-                               | MSTATUS_MPIE
-                               | ((uint32_t)RV_PRIV_LEAST << MSTATUS_MPP_SHIFT);
+                    h->mstatus = (h->mstatus & ~clear) | mpie | MSTATUS_MPIE |
+                                 ((uint32_t)RV_PRIV_LEAST << MSTATUS_MPP_SHIFT);
                     h->priv = (uint8_t)back;
 #if RV_EXT_U && RV_EXT_PMP
                     /* See rv_hart_trap: the predicate depends on privilege. */
@@ -979,7 +1115,7 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                 }
 
 #if RV_EXT_S
-                case 0x102u: {                  /* SRET */
+                case 0x102u: { /* SRET */
                     /*
                      * TSR is how M-mode keeps a supervisor from returning
                      * without its knowledge -- the hook a hypervisor needs.
@@ -994,17 +1130,16 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
 
                     const uint32_t spie =
                         (h->mstatus & MSTATUS_SPIE) ? MSTATUS_SIE : 0u;
-                    const uint32_t back = (h->mstatus & MSTATUS_SPP)
-                                        ? RV_PRIV_S : RV_PRIV_U;
+                    const uint32_t back =
+                        (h->mstatus & MSTATUS_SPP) ? RV_PRIV_S : RV_PRIV_U;
                     /*
                      * SPP resets to U, and MPRV always clears: SRET can
                      * only ever land below M, so the borrowed data
                      * privilege can never survive it.
                      */
                     h->mstatus = (h->mstatus & ~(MSTATUS_SIE | MSTATUS_SPIE |
-                                                 MSTATUS_SPP | MSTATUS_MPRV))
-                               | spie
-                               | MSTATUS_SPIE;
+                                                 MSTATUS_SPP | MSTATUS_MPRV)) |
+                                 spie | MSTATUS_SPIE;
                     h->priv = (uint8_t)back;
 #if RV_EXT_PMP
                     rv_pmp_refresh(h);
@@ -1020,7 +1155,7 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                 }
 #endif
 
-                case 0x105u:                    /* WFI */
+                case 0x105u: /* WFI */
                     /*
                      * Implemented as a hint that parks the hart. Retiring
                      * it first means mepc points past the WFI when the
@@ -1034,7 +1169,8 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                      * one on a core where WFI parks until an interrupt
                      * arrives and so has no bound of its own.
                      */
-                    if (h->priv < RV_PRIV_M && (h->mstatus & MSTATUS_TW) != 0u) {
+                    if (h->priv < RV_PRIV_M &&
+                        (h->mstatus & MSTATUS_TW) != 0u) {
                         TRAP(RV_EXC_ILLEGAL_INSN, insn);
                     }
 #endif
@@ -1049,7 +1185,7 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
 
 #if RV_EXT_ZICSR
             if (EMU_UNLIKELY(f3 == 4u)) {
-                TRAP(RV_EXC_ILLEGAL_INSN, insn);   /* not a CSR encoding */
+                TRAP(RV_EXC_ILLEGAL_INSN, insn); /* not a CSR encoding */
             }
             {
                 const uint32_t csr = insn >> 20;
@@ -1057,7 +1193,7 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                 const uint32_t rs1 = rv_rs1(insn);
                 /* The immediate forms take the value from the rs1 field. */
                 const uint32_t src = (f3 & 4u) ? rs1 : h->x[rs1];
-                const bool is_write = (f3 & 3u) == 1u;       /* CSRRW/CSRRWI */
+                const bool is_write = (f3 & 3u) == 1u; /* CSRRW/CSRRWI */
                 uint32_t old = 0u;
 
                 /*
@@ -1081,9 +1217,15 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                 if (do_write) {
                     uint32_t nv;
                     switch (f3 & 3u) {
-                    case 1: nv = src; break;              /* CSRRW  */
-                    case 2: nv = old | src; break;        /* CSRRS  */
-                    default: nv = old & ~src; break;      /* CSRRC  */
+                    case 1:
+                        nv = src;
+                        break; /* CSRRW  */
+                    case 2:
+                        nv = old | src;
+                        break; /* CSRRS  */
+                    default:
+                        nv = old & ~src;
+                        break; /* CSRRC  */
                     }
                     const rv_exc_t exc = rv_csr_write(h, csr, nv);
                     if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
@@ -1120,13 +1262,13 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
          * share the same implementation rather than restate the rounding
          * and flag rules.
          */
-        case 0x07u >> 2:      /* OP-LOAD-FP  */
-        case 0x27u >> 2:      /* OP-STORE-FP */
-        case 0x43u >> 2:      /* FMADD.S     */
-        case 0x47u >> 2:      /* FMSUB.S     */
-        case 0x4Bu >> 2:      /* FNMSUB.S    */
-        case 0x4Fu >> 2:      /* FNMADD.S    */
-        case 0x53u >> 2: {    /* OP-FP       */
+        case 0x07u >> 2: /* OP-LOAD-FP  */
+        case 0x27u >> 2: /* OP-STORE-FP */
+        case 0x43u >> 2: /* FMADD.S     */
+        case 0x47u >> 2: /* FMSUB.S     */
+        case 0x4Bu >> 2: /* FNMSUB.S    */
+        case 0x4Fu >> 2: /* FNMADD.S    */
+        case 0x53u >> 2: { /* OP-FP       */
             uint32_t ftval = insn;
             const rv_exc_t exc = rv_hart_fp(h, insn, &ftval);
             if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
@@ -1145,11 +1287,12 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
     retired_insn:
         done++;
 #if RV_EXT_ZICNTR
-        if (EMU_LIKELY(((h->mcountinhibit & 0x1u) | (ctr_written & CTR_CYCLE)) == 0u)) {
+        if (EMU_LIKELY(((h->mcountinhibit & 0x1u) |
+                        (ctr_written & CTR_CYCLE)) == 0u)) {
             h->mcycle++;
         }
         if (EMU_LIKELY(((h->mcountinhibit & 0x4u) |
-                       ((ctr_written & CTR_INSTRET) >> 1)) == 0u)) {
+                        ((ctr_written & CTR_INSTRET) >> 1)) == 0u)) {
             h->minstret++;
         }
 #endif
@@ -1175,7 +1318,7 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
 
 static void interp_reset(rv_hart_t *h)
 {
-    (void)h;   /* no translation state to discard */
+    (void)h; /* no translation state to discard */
 }
 
 /*
@@ -1196,10 +1339,10 @@ static emu_run_reason_t interp_run_cpu(emu_cpu_t *cpu, uint32_t budget,
 }
 
 const emu_backend_t rv_backend_interp = {
-    .name       = "interp",
-    .init       = NULL,
-    .reset      = interp_reset_cpu,
-    .run        = interp_run_cpu,
+    .name = "interp",
+    .init = NULL,
+    .reset = interp_reset_cpu,
+    .run = interp_run_cpu,
     .invalidate = NULL,
 };
 

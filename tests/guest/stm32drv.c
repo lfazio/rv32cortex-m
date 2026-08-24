@@ -32,36 +32,36 @@
 #define REG(a) (*(volatile uint32_t *)(a))
 
 /* RCC */
-#define RCC_BASE        0x40023800u
-#define RCC_AHB1ENR     REG(RCC_BASE + 0x30u)
-#define RCC_APB1ENR     REG(RCC_BASE + 0x40u)
+#define RCC_BASE 0x40023800u
+#define RCC_AHB1ENR REG(RCC_BASE + 0x30u)
+#define RCC_APB1ENR REG(RCC_BASE + 0x40u)
 #define RCC_AHB1ENR_GPIOAEN (1u << 0)
 #define RCC_APB1ENR_USART2EN (1u << 17)
 
 /* GPIOA */
-#define GPIOA_BASE      0x40020000u
-#define GPIOA_MODER     REG(GPIOA_BASE + 0x00u)
-#define GPIOA_OSPEEDR   REG(GPIOA_BASE + 0x08u)
-#define GPIOA_PUPDR     REG(GPIOA_BASE + 0x0Cu)
-#define GPIOA_IDR       REG(GPIOA_BASE + 0x10u)
-#define GPIOA_BSRR      REG(GPIOA_BASE + 0x18u)
-#define GPIOA_AFRL      REG(GPIOA_BASE + 0x20u)
+#define GPIOA_BASE 0x40020000u
+#define GPIOA_MODER REG(GPIOA_BASE + 0x00u)
+#define GPIOA_OSPEEDR REG(GPIOA_BASE + 0x08u)
+#define GPIOA_PUPDR REG(GPIOA_BASE + 0x0Cu)
+#define GPIOA_IDR REG(GPIOA_BASE + 0x10u)
+#define GPIOA_BSRR REG(GPIOA_BASE + 0x18u)
+#define GPIOA_AFRL REG(GPIOA_BASE + 0x20u)
 
 /* USART2 */
-#define USART2_BASE     0x40004400u
-#define USART2_SR       REG(USART2_BASE + 0x00u)
-#define USART2_DR       REG(USART2_BASE + 0x04u)
-#define USART2_BRR      REG(USART2_BASE + 0x08u)
-#define USART2_CR1      REG(USART2_BASE + 0x0Cu)
+#define USART2_BASE 0x40004400u
+#define USART2_SR REG(USART2_BASE + 0x00u)
+#define USART2_DR REG(USART2_BASE + 0x04u)
+#define USART2_BRR REG(USART2_BASE + 0x08u)
+#define USART2_CR1 REG(USART2_BASE + 0x0Cu)
 
-#define USART_SR_TXE    (1u << 7)
-#define USART_CR1_UE    (1u << 13)
-#define USART_CR1_TE    (1u << 3)
-#define USART_CR1_RE    (1u << 2)
+#define USART_SR_TXE (1u << 7)
+#define USART_CR1_UE (1u << 13)
+#define USART_CR1_TE (1u << 3)
+#define USART_CR1_RE (1u << 2)
 
 /* The emulator's own virtual console, used to narrate what the guest is
  * doing so the two paths can be told apart in the output. */
-#define VIRT_UART_THR   (*(volatile uint8_t *)0x10000000u)
+#define VIRT_UART_THR (*(volatile uint8_t *)0x10000000u)
 
 /* ------------------------------------------------------------------ */
 /* Virtual console (portable across every host)                        */

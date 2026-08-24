@@ -64,7 +64,7 @@ void emu_net_poll(void);
  * boot banner therefore survives, which is what it is for.
  */
 void emu_net_console_putc(uint8_t c);
-int  emu_net_console_getc(void);
+int emu_net_console_getc(void);
 
 /* The board's address, as dotted quad, for the banner. */
 const char *emu_net_addr_str(void);
@@ -103,8 +103,7 @@ const char *emu_net_addr_str(void);
  * mid-transfer and the next thing it does is retry.
  */
 bool emu_net_image_begin(void);
-bool emu_net_image_data(const void *data,
-                        uint32_t len, uint32_t off);
+bool emu_net_image_data(const void *data, uint32_t len, uint32_t off);
 void emu_net_image_end(uint32_t len, bool ok);
 
 /* ------------------------------------------------------------------ */

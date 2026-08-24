@@ -27,7 +27,7 @@
 #define EMU_ELF_H
 
 #include "emu_bus.h"
-#include "emu_cpu.h"   /* EMU_EM_*, declared with the frontends */
+#include "emu_cpu.h" /* EMU_EM_*, declared with the frontends */
 
 #ifdef __cplusplus
 extern "C" {
@@ -66,8 +66,8 @@ const char *emu_elf_load(emu_bus_t *bus, const void *image, size_t len,
  */
 const char *emu_elf_map(emu_bus_t *bus, const void *image, size_t len,
                         uint16_t machine, uint16_t alt_machine,
-                        uint32_t ram_base, uint32_t ram_size,
-                        uint32_t *entry, uint16_t *out_machine);
+                        uint32_t ram_base, uint32_t ram_size, uint32_t *entry,
+                        uint16_t *out_machine);
 
 /* Does this look like an ELF at all? Four bytes of magic; the loader
  * checks the rest. */

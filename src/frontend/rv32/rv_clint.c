@@ -57,7 +57,8 @@ void rv_clint_advance(rv_clint_t *c, uint32_t delta)
  * first. We do not paper over it.
  */
 
-static emu_fault_t clint_read(void *ctx, uint32_t off, uint32_t size, uint32_t *out)
+static emu_fault_t clint_read(void *ctx, uint32_t off, uint32_t size,
+                              uint32_t *out)
 {
     rv_clint_t *c = (rv_clint_t *)ctx;
 
@@ -66,17 +67,30 @@ static emu_fault_t clint_read(void *ctx, uint32_t off, uint32_t size, uint32_t *
     }
 
     switch (off) {
-    case RV_CLINT_MSIP:            *out = c->msip & 1u; break;
-    case RV_CLINT_MTIMECMP:        *out = (uint32_t)c->mtimecmp; break;
-    case RV_CLINT_MTIMECMP + 4u:   *out = (uint32_t)(c->mtimecmp >> 32); break;
-    case RV_CLINT_MTIME:           *out = (uint32_t)c->mtime; break;
-    case RV_CLINT_MTIME + 4u:      *out = (uint32_t)(c->mtime >> 32); break;
-    default:                       *out = 0u; break;   /* reserved: reads as 0 */
+    case RV_CLINT_MSIP:
+        *out = c->msip & 1u;
+        break;
+    case RV_CLINT_MTIMECMP:
+        *out = (uint32_t)c->mtimecmp;
+        break;
+    case RV_CLINT_MTIMECMP + 4u:
+        *out = (uint32_t)(c->mtimecmp >> 32);
+        break;
+    case RV_CLINT_MTIME:
+        *out = (uint32_t)c->mtime;
+        break;
+    case RV_CLINT_MTIME + 4u:
+        *out = (uint32_t)(c->mtime >> 32);
+        break;
+    default:
+        *out = 0u;
+        break; /* reserved: reads as 0 */
     }
     return EMU_FAULT_NONE;
 }
 
-static emu_fault_t clint_write(void *ctx, uint32_t off, uint32_t size, uint32_t val)
+static emu_fault_t clint_write(void *ctx, uint32_t off, uint32_t size,
+                               uint32_t val)
 {
     rv_clint_t *c = (rv_clint_t *)ctx;
 
@@ -117,7 +131,7 @@ static emu_fault_t clint_write(void *ctx, uint32_t off, uint32_t size, uint32_t 
         break;
 
     default:
-        break;   /* reserved: writes ignored */
+        break; /* reserved: writes ignored */
     }
     return EMU_FAULT_NONE;
 }
@@ -139,40 +153,44 @@ static emu_fault_t clint_write(void *ctx, uint32_t off, uint32_t size, uint32_t 
  * expects ACLINT the device boundaries it looks for, and a platform is free
  * to map them somewhere else entirely, which is the part ACLINT adds.
  */
-static emu_fault_t mswi_read(void *ctx, uint32_t off, uint32_t size, uint32_t *out)
+static emu_fault_t mswi_read(void *ctx, uint32_t off, uint32_t size,
+                             uint32_t *out)
 {
     return clint_read(ctx, off, size, out);
 }
 
-static emu_fault_t mswi_write(void *ctx, uint32_t off, uint32_t size, uint32_t val)
+static emu_fault_t mswi_write(void *ctx, uint32_t off, uint32_t size,
+                              uint32_t val)
 {
     return clint_write(ctx, off, size, val);
 }
 
-static emu_fault_t mtimer_read(void *ctx, uint32_t off, uint32_t size, uint32_t *out)
+static emu_fault_t mtimer_read(void *ctx, uint32_t off, uint32_t size,
+                               uint32_t *out)
 {
     return clint_read(ctx, off + RV_CLINT_MTIMECMP, size, out);
 }
 
-static emu_fault_t mtimer_write(void *ctx, uint32_t off, uint32_t size, uint32_t val)
+static emu_fault_t mtimer_write(void *ctx, uint32_t off, uint32_t size,
+                                uint32_t val)
 {
     return clint_write(ctx, off + RV_CLINT_MTIMECMP, size, val);
 }
 
 const emu_dev_ops_t rv_aclint_mswi_ops = {
-    .read  = mswi_read,
+    .read = mswi_read,
     .write = mswi_write,
-    .tick  = NULL,
+    .tick = NULL,
 };
 
 const emu_dev_ops_t rv_aclint_mtimer_ops = {
-    .read  = mtimer_read,
+    .read = mtimer_read,
     .write = mtimer_write,
-    .tick  = NULL,
+    .tick = NULL,
 };
 
 const emu_dev_ops_t rv_clint_ops = {
-    .read  = clint_read,
+    .read = clint_read,
     .write = clint_write,
-    .tick  = NULL,
+    .tick = NULL,
 };

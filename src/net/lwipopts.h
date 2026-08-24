@@ -25,11 +25,11 @@
 #ifndef EMU_LWIPOPTS_H
 #define EMU_LWIPOPTS_H
 
-#define NO_SYS                      1
-#define SYS_LIGHTWEIGHT_PROT        0
-#define LWIP_NETCONN                0
-#define LWIP_SOCKET                 0
-#define LWIP_TIMERS                 1
+#define NO_SYS 1
+#define SYS_LIGHTWEIGHT_PROT 0
+#define LWIP_NETCONN 0
+#define LWIP_SOCKET 0
+#define LWIP_TIMERS 1
 
 /* ------------------------------------------------------------------ */
 /* Memory                                                              */
@@ -39,38 +39,38 @@
  * lwIP's own heap and pools, not libc's: this firmware has no malloc and
  * deliberately links nothing that would bring one in.
  */
-#define MEM_LIBC_MALLOC             0
-#define MEMP_MEM_MALLOC             0
-#define MEM_ALIGNMENT               4
+#define MEM_LIBC_MALLOC 0
+#define MEMP_MEM_MALLOC 0
+#define MEM_ALIGNMENT 4
 
 /*
  * The heap serves outgoing data (PBUF_RAM), so it has to cover the TCP
  * send buffer of every connection that can be open at once plus the UDP
  * datagrams TFTP builds. One telnet client and one TFTP transfer.
  */
-#define MEM_SIZE                    6144
+#define MEM_SIZE 6144
 
 /*
  * The pool serves incoming data. SLIP fills these one byte at a time and
  * chains them, so the buffer size is a granularity rather than a limit:
  * a full-MTU frame takes three. Eight is two such frames in flight.
  */
-#define PBUF_POOL_SIZE              8
-#define PBUF_POOL_BUFSIZE           512
+#define PBUF_POOL_SIZE 8
+#define PBUF_POOL_BUFSIZE 512
 
 /*
  * No link-layer header to leave room for -- SLIP frames its packets with
  * escape bytes rather than prefixing them, so an outgoing pbuf needs no
  * headroom at all. The default 14 is Ethernet's.
  */
-#define PBUF_LINK_HLEN              0
+#define PBUF_LINK_HLEN 0
 #define PBUF_LINK_ENCAPSULATION_HLEN 0
 
-#define MEMP_NUM_PBUF               8
-#define MEMP_NUM_UDP_PCB            4
-#define MEMP_NUM_TCP_PCB            4
-#define MEMP_NUM_TCP_PCB_LISTEN     2
-#define MEMP_NUM_TCP_SEG            8
+#define MEMP_NUM_PBUF 8
+#define MEMP_NUM_UDP_PCB 4
+#define MEMP_NUM_TCP_PCB 4
+#define MEMP_NUM_TCP_PCB_LISTEN 2
+#define MEMP_NUM_TCP_SEG 8
 
 /*
  * One timeout slot for the TFTP server, on top of what the stack itself
@@ -103,33 +103,33 @@
  * this is so the situation is rarer to begin with. Each slot costs about
  * a dozen bytes.
  */
-#define MEMP_NUM_SYS_TIMEOUT        (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 4)
+#define MEMP_NUM_SYS_TIMEOUT (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 4)
 
 /* ------------------------------------------------------------------ */
 /* Protocols                                                           */
 /* ------------------------------------------------------------------ */
 
-#define LWIP_IPV4                   1
-#define LWIP_IPV6                   0
-#define LWIP_UDP                    1
-#define LWIP_TCP                    1
-#define LWIP_ICMP                   1           /* ping is the bring-up test */
-#define LWIP_RAW                    0
-#define LWIP_DHCP                   0
-#define LWIP_AUTOIP                 0
-#define LWIP_IGMP                   0
-#define LWIP_DNS                    0
+#define LWIP_IPV4 1
+#define LWIP_IPV6 0
+#define LWIP_UDP 1
+#define LWIP_TCP 1
+#define LWIP_ICMP 1 /* ping is the bring-up test */
+#define LWIP_RAW 0
+#define LWIP_DHCP 0
+#define LWIP_AUTOIP 0
+#define LWIP_IGMP 0
+#define LWIP_DNS 0
 
 /*
  * Point to point: the peer is whatever is on the other end of the wire,
  * and there is no address to resolve. Turning ARP off also drops the
  * whole Ethernet path, which is most of what LWIP_ETHERNET brings.
  */
-#define LWIP_ARP                    0
-#define LWIP_ETHERNET               0
-#define LWIP_NETIF_HOSTNAME         0
-#define LWIP_NETIF_STATUS_CALLBACK  0
-#define LWIP_NETIF_LINK_CALLBACK    0
+#define LWIP_ARP 0
+#define LWIP_ETHERNET 0
+#define LWIP_NETIF_HOSTNAME 0
+#define LWIP_NETIF_STATUS_CALLBACK 0
+#define LWIP_NETIF_LINK_CALLBACK 0
 
 /*
  * IP fragments would need a reassembly buffer as large as the datagram,
@@ -137,14 +137,14 @@
  * sends anything that needs fragmenting: the largest is a TFTP data
  * packet at 544 bytes, well inside the MTU.
  */
-#define IP_REASSEMBLY               0
-#define IP_FRAG                     0
+#define IP_REASSEMBLY 0
+#define IP_FRAG 0
 
 /* ------------------------------------------------------------------ */
 /* SLIP                                                                */
 /* ------------------------------------------------------------------ */
 
-#define LWIP_HAVE_SLIPIF            1
+#define LWIP_HAVE_SLIPIF 1
 /*
  * Both default to !NO_SYS and would therefore already be 0, but stating
  * them is worth a line: the first says the byte loop is driven by
@@ -152,8 +152,8 @@
  * called from thread context and may not be re-entered from an ISR. The
  * UART interrupt fills a ring in board.c and stops there.
  */
-#define SLIP_USE_RX_THREAD          0
-#define SLIP_RX_FROM_ISR            0
+#define SLIP_USE_RX_THREAD 0
+#define SLIP_RX_FROM_ISR 0
 
 /*
  * The MTU, and with it the size of a fully received frame. 1500 matches
@@ -162,7 +162,7 @@
  * negotiate one -- a mismatch shows up as large transfers failing while
  * ping works.
  */
-#define SLIP_MAX_SIZE               1500
+#define SLIP_MAX_SIZE 1500
 
 /* ------------------------------------------------------------------ */
 /* TCP                                                                 */
@@ -174,12 +174,12 @@
  * all, so there is nothing here to gain from a larger one, and every
  * byte of TCP_SND_BUF comes out of MEM_SIZE above.
  */
-#define TCP_MSS                     536
-#define TCP_SND_BUF                 (2 * TCP_MSS)
-#define TCP_WND                     (2 * TCP_MSS)
-#define TCP_SND_QUEUELEN            ((4 * TCP_SND_BUF) / TCP_MSS)
-#define TCP_LISTEN_BACKLOG          0
-#define LWIP_TCP_SACK_OUT           0
+#define TCP_MSS 536
+#define TCP_SND_BUF (2 * TCP_MSS)
+#define TCP_WND (2 * TCP_MSS)
+#define TCP_SND_QUEUELEN ((4 * TCP_SND_BUF) / TCP_MSS)
+#define TCP_LISTEN_BACKLOG 0
+#define LWIP_TCP_SACK_OUT 0
 
 /* ------------------------------------------------------------------ */
 /* Diagnostics                                                         */
@@ -191,8 +191,8 @@
  * no-op. Turn LWIP_DEBUG on together with a real DIAG when the stack
  * itself is under suspicion, not before.
  */
-#define LWIP_STATS                  0
-#define LWIP_STATS_DISPLAY          0
+#define LWIP_STATS 0
+#define LWIP_STATS_DISPLAY 0
 
 /* ------------------------------------------------------------------ */
 /* PPP over serial                                                     */
@@ -216,37 +216,37 @@
  * rather than long-lived bulk streams with compressible headers.
  */
 #ifndef EMU_NET_LINK_PPP
-#define EMU_NET_LINK_PPP            0
+#define EMU_NET_LINK_PPP 0
 #endif
 
 #if EMU_NET_LINK_PPP
 
-#define PPP_SUPPORT                 1
-#define PPPOS_SUPPORT               1
-#define PPP_IPV4_SUPPORT            1
-#define PPP_IPV6_SUPPORT            0
+#define PPP_SUPPORT 1
+#define PPPOS_SUPPORT 1
+#define PPP_IPV4_SUPPORT 1
+#define PPP_IPV6_SUPPORT 0
 
 /* No authentication: the peer is a cable, not a network. */
-#define PAP_SUPPORT                 0
-#define CHAP_SUPPORT                0
-#define MSCHAP_SUPPORT              0
-#define EAP_SUPPORT                 0
-#define MPPE_SUPPORT                0
-#define CCP_SUPPORT                 0
-#define VJ_SUPPORT                  0
+#define PAP_SUPPORT 0
+#define CHAP_SUPPORT 0
+#define MSCHAP_SUPPORT 0
+#define EAP_SUPPORT 0
+#define MPPE_SUPPORT 0
+#define CCP_SUPPORT 0
+#define VJ_SUPPORT 0
 
 /* No modem to dial and no session to negotiate over Ethernet. */
-#define PPPOE_SUPPORT               0
-#define PPPOL2TP_SUPPORT            0
-#define PPP_NOTIFY_PHASE            1     /* the status callback needs it */
+#define PPPOE_SUPPORT 0
+#define PPPOL2TP_SUPPORT 0
+#define PPP_NOTIFY_PHASE 1 /* the status callback needs it */
 
 /*
  * One interface, and no more: PPP_NUM_TIMEOUTS_PER_PCB is multiplied by
  * this to size the timer pool, and the default of 0 would compile the
  * timers out from under LCP.
  */
-#define MEMP_NUM_PPP_PCB            1
-#define MEMP_NUM_PPPOS_INTERFACES   1
+#define MEMP_NUM_PPP_PCB 1
+#define MEMP_NUM_PPPOS_INTERFACES 1
 
 /*
  * lwIP registers PPP's timeouts through the same pool the TFTP server
@@ -254,8 +254,8 @@
  * this port already learned that when starting TFTP overflowed a pool
  * sized only for lwIP's own timers.
  */
-#undef  MEMP_NUM_SYS_TIMEOUT
-#define MEMP_NUM_SYS_TIMEOUT \
+#undef MEMP_NUM_SYS_TIMEOUT
+#define MEMP_NUM_SYS_TIMEOUT                                                   \
     (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 4 + PPP_NUM_TIMEOUTS_PER_PCB)
 
 #endif /* EMU_NET_LINK_PPP */

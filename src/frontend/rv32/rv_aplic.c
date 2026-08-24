@@ -84,10 +84,9 @@ static uint32_t aplic_topi(const rv_aplic_t *a)
  */
 static void aplic_update(rv_aplic_t *a)
 {
-    const bool deliver =
-        (a->domaincfg & RV_APLIC_DOMAINCFG_IE) != 0u &&
-        a->idelivery != 0u &&
-        (aplic_topi(a) != 0u || a->iforce != 0u);
+    const bool deliver = (a->domaincfg & RV_APLIC_DOMAINCFG_IE) != 0u &&
+                         a->idelivery != 0u &&
+                         (aplic_topi(a) != 0u || a->iforce != 0u);
 
     if (a->hart != NULL) {
         rv_hart_set_irq(a->hart, RV_INT_M_EXT, deliver);
@@ -129,7 +128,7 @@ static void aplic_set_pending(rv_aplic_t *a, uint32_t word, uint32_t mask)
 }
 
 static emu_fault_t aplic_read(void *ctx, uint32_t off, uint32_t size,
-                           uint32_t *out)
+                              uint32_t *out)
 {
     rv_aplic_t *a = (rv_aplic_t *)ctx;
 
@@ -196,10 +195,18 @@ static emu_fault_t aplic_read(void *ctx, uint32_t off, uint32_t size,
 
     if (off >= RV_APLIC_IDC && off < RV_APLIC_IDC + 32u) {
         switch (off - RV_APLIC_IDC) {
-        case RV_APLIC_IDC_IDELIVERY:  *out = a->idelivery; break;
-        case RV_APLIC_IDC_IFORCE:     *out = a->iforce; break;
-        case RV_APLIC_IDC_ITHRESHOLD: *out = a->ithreshold; break;
-        case RV_APLIC_IDC_TOPI:       *out = aplic_topi(a); break;
+        case RV_APLIC_IDC_IDELIVERY:
+            *out = a->idelivery;
+            break;
+        case RV_APLIC_IDC_IFORCE:
+            *out = a->iforce;
+            break;
+        case RV_APLIC_IDC_ITHRESHOLD:
+            *out = a->ithreshold;
+            break;
+        case RV_APLIC_IDC_TOPI:
+            *out = aplic_topi(a);
+            break;
         case RV_APLIC_IDC_CLAIMI: {
             /*
              * claimi reads topi and clears that source's pending bit as a
@@ -218,16 +225,17 @@ static emu_fault_t aplic_read(void *ctx, uint32_t off, uint32_t size,
             aplic_update(a);
             break;
         }
-        default: break;
+        default:
+            break;
         }
         return EMU_FAULT_NONE;
     }
 
-    return EMU_FAULT_NONE;                 /* reserved: read-only zero */
+    return EMU_FAULT_NONE; /* reserved: read-only zero */
 }
 
 static emu_fault_t aplic_write(void *ctx, uint32_t off, uint32_t size,
-                            uint32_t val)
+                               uint32_t val)
 {
     rv_aplic_t *a = (rv_aplic_t *)ctx;
 
@@ -276,25 +284,33 @@ static emu_fault_t aplic_write(void *ctx, uint32_t off, uint32_t size,
 
     if (off >= RV_APLIC_SETIP && off < RV_APLIC_SETIP + 4u * 32u) {
         const uint32_t w = (off - RV_APLIC_SETIP) / 4u;
-        if (w < RV_APLIC_WORDS) { aplic_set_pending(a, w, val); }
+        if (w < RV_APLIC_WORDS) {
+            aplic_set_pending(a, w, val);
+        }
         aplic_update(a);
         return EMU_FAULT_NONE;
     }
     if (off >= RV_APLIC_IN_CLRIP && off < RV_APLIC_IN_CLRIP + 4u * 32u) {
         const uint32_t w = (off - RV_APLIC_IN_CLRIP) / 4u;
-        if (w < RV_APLIC_WORDS) { aplic_clear_pending(a, w, val); }
+        if (w < RV_APLIC_WORDS) {
+            aplic_clear_pending(a, w, val);
+        }
         aplic_update(a);
         return EMU_FAULT_NONE;
     }
     if (off >= RV_APLIC_SETIE && off < RV_APLIC_SETIE + 4u * 32u) {
         const uint32_t w = (off - RV_APLIC_SETIE) / 4u;
-        if (w < RV_APLIC_WORDS) { a->enabled[w] |= (w == 0u) ? (val & ~1u) : val; }
+        if (w < RV_APLIC_WORDS) {
+            a->enabled[w] |= (w == 0u) ? (val & ~1u) : val;
+        }
         aplic_update(a);
         return EMU_FAULT_NONE;
     }
     if (off >= RV_APLIC_CLRIE && off < RV_APLIC_CLRIE + 4u * 32u) {
         const uint32_t w = (off - RV_APLIC_CLRIE) / 4u;
-        if (w < RV_APLIC_WORDS) { a->enabled[w] &= ~val; }
+        if (w < RV_APLIC_WORDS) {
+            a->enabled[w] &= ~val;
+        }
         aplic_update(a);
         return EMU_FAULT_NONE;
     }
@@ -323,10 +339,17 @@ static emu_fault_t aplic_write(void *ctx, uint32_t off, uint32_t size,
     default:
         if (off >= RV_APLIC_IDC && off < RV_APLIC_IDC + 32u) {
             switch (off - RV_APLIC_IDC) {
-            case RV_APLIC_IDC_IDELIVERY:  a->idelivery = val & 1u; break;
-            case RV_APLIC_IDC_IFORCE:     a->iforce = val & 1u; break;
-            case RV_APLIC_IDC_ITHRESHOLD: a->ithreshold = val & 0xFFu; break;
-            default: break;             /* topi and claimi are read-only */
+            case RV_APLIC_IDC_IDELIVERY:
+                a->idelivery = val & 1u;
+                break;
+            case RV_APLIC_IDC_IFORCE:
+                a->iforce = val & 1u;
+                break;
+            case RV_APLIC_IDC_ITHRESHOLD:
+                a->ithreshold = val & 0xFFu;
+                break;
+            default:
+                break; /* topi and claimi are read-only */
             }
         }
         break;
@@ -337,18 +360,18 @@ static emu_fault_t aplic_write(void *ctx, uint32_t off, uint32_t size,
 }
 
 const emu_dev_ops_t rv_aplic_ops = {
-    .read  = aplic_read,
+    .read = aplic_read,
     .write = aplic_write,
-    .tick  = NULL,
+    .tick = NULL,
 };
 
 void rv_aplic_init(rv_aplic_t *a, struct rv_hart *hart)
 {
     for (uint32_t i = 0; i < RV_APLIC_SOURCES; i++) {
         a->sourcecfg[i] = 0u;
-        a->target[i] = 1u;              /* a usable default priority */
+        a->target[i] = 1u; /* a usable default priority */
     }
-    a->domaincfg = 0u;                  /* IE clear at reset (4.5.1) */
+    a->domaincfg = 0u; /* IE clear at reset (4.5.1) */
     for (uint32_t w = 0; w < RV_APLIC_WORDS; w++) {
         a->pending[w] = 0u;
         a->enabled[w] = 0u;

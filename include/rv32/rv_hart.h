@@ -28,7 +28,7 @@ extern "C" {
  */
 typedef struct rv_hart {
     /* --- hot state: keep first --- */
-    uint32_t x[32];              /* x0 is hardwired zero, written then ignored */
+    uint32_t x[32]; /* x0 is hardwired zero, written then ignored */
     uint32_t pc;
 
     struct emu_bus *bus;
@@ -72,7 +72,7 @@ typedef struct rv_hart {
      * paths, which is the trade this project makes elsewhere too.
      */
     uint64_t f[32];
-    uint32_t fcsr;               /* frm in [7:5], fflags in [4:0] */
+    uint32_t fcsr; /* frm in [7:5], fflags in [4:0] */
 #endif
 
     uint32_t mcounteren;
@@ -107,7 +107,7 @@ typedef struct rv_hart {
      * path, which then asks which privilege this particular access uses --
      * MPRV can put those two in different modes.
      */
-    bool     vm_active;
+    bool vm_active;
 
     /*
      * Bumped by every rv_mmu_flush. The JIT keys its blocks on *virtual*
@@ -138,10 +138,10 @@ typedef struct rv_hart {
      * the time of the access, not at the time of the fill.
      */
     struct {
-        uint32_t vpn;      /* virtual page number; entry invalid if !valid */
-        uint32_t ppn;      /* physical base of the page                    */
-        uint8_t  pte;      /* the PTE's V/R/W/X/U/G/A/D bits, verbatim     */
-        bool     valid;
+        uint32_t vpn; /* virtual page number; entry invalid if !valid */
+        uint32_t ppn; /* physical base of the page                    */
+        uint8_t pte; /* the PTE's V/R/W/X/U/G/A/D bits, verbatim     */
+        bool valid;
     } tlb[RV_TLB_ENTRIES];
 #endif
 
@@ -150,7 +150,7 @@ typedef struct rv_hart {
     uint32_t tdata1[RV_TRIG_COUNT];
     uint32_t tdata2[RV_TRIG_COUNT];
     /* True once some trigger is armed; gates the checks out of the hot path. */
-    bool     trig_active;
+    bool trig_active;
 #endif
 
 #if RV_EXT_PMP
@@ -161,13 +161,13 @@ typedef struct rv_hart {
      * deny an M-mode access, so this gates the check out of the hot path
      * for every guest that does not use it.
      */
-    bool     pmp_active;
+    bool pmp_active;
 #endif
 
 #if RV_EXT_A
     /* LR/SC reservation set. One hart, so one reservation. */
     uint32_t resv_addr;
-    bool     resv_valid;
+    bool resv_valid;
 #endif
 
 #if RV_EXT_ZICBOM
@@ -207,20 +207,20 @@ typedef struct rv_hart {
      * writers of the flags it combines; it lives outside both #ifdefs so
      * the fetch path does not need to know which are configured in.
      */
-    bool     fetch_guard;
+    bool fetch_guard;
 
     uint32_t hartid;
-    uint8_t  priv;               /* always RV_PRIV_M on this implementation */
-    uint8_t  state;              /* emu_state_t */
+    uint8_t priv; /* always RV_PRIV_M on this implementation */
+    uint8_t state; /* emu_state_t */
 
 #if EMU_ENABLE_STATS
     uint32_t trap_count;
-    uint32_t insn_retired_lo;    /* cheap 32-bit mirror for the monitor */
+    uint32_t insn_retired_lo; /* cheap 32-bit mirror for the monitor */
 #endif
 
 #if EMU_ENABLE_TRACE
     emu_trace_fn trace;
-    void        *trace_user;
+    void *trace_user;
 #endif
 
 #if RV_ENABLE_ECALL_HOOK
@@ -237,10 +237,10 @@ typedef struct rv_hart {
      * -- happens here, at the one place that knows it.
      */
     emu_syscall_fn ecall;
-    void          *ecall_user;
+    void *ecall_user;
 #endif
 
-    void *user;                  /* opaque platform pointer */
+    void *user; /* opaque platform pointer */
 } rv_hart_t;
 
 /* ------------------------------------------------------------------ */
@@ -314,7 +314,8 @@ void rv_hart_set_irq(rv_hart_t *h, unsigned cause, bool level);
 
 rv_exc_t rv_hart_load(rv_hart_t *h, uint32_t addr, uint32_t size,
                       bool sign_extend, uint32_t *out);
-rv_exc_t rv_hart_store(rv_hart_t *h, uint32_t addr, uint32_t size, uint32_t val);
+rv_exc_t rv_hart_store(rv_hart_t *h, uint32_t addr, uint32_t size,
+                       uint32_t val);
 
 #if RV_EXT_SDTRIG
 void rv_trig_refresh(rv_hart_t *h);
@@ -425,18 +426,18 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval);
 
 #if RV_EXT_A
 /* funct5 field of an AMO encoding (inst[31:27]). */
-#define RV_AMO_ADD   0x00u
-#define RV_AMO_SWAP  0x01u
-#define RV_AMO_LR    0x02u
-#define RV_AMO_SC    0x03u
-#define RV_AMO_XOR   0x04u
-#define RV_AMO_OR    0x08u
-#define RV_AMO_AND   0x0Cu
-#define RV_AMO_MIN   0x10u
-#define RV_AMO_MAX   0x14u
-#define RV_AMO_MINU  0x18u
-#define RV_AMO_MAXU  0x1Cu
-#define RV_AMO_CAS   0x05u   /* Zacas: amocas.w */
+#define RV_AMO_ADD 0x00u
+#define RV_AMO_SWAP 0x01u
+#define RV_AMO_LR 0x02u
+#define RV_AMO_SC 0x03u
+#define RV_AMO_XOR 0x04u
+#define RV_AMO_OR 0x08u
+#define RV_AMO_AND 0x0Cu
+#define RV_AMO_MIN 0x10u
+#define RV_AMO_MAX 0x14u
+#define RV_AMO_MINU 0x18u
+#define RV_AMO_MAXU 0x1Cu
+#define RV_AMO_CAS 0x05u /* Zacas: amocas.w */
 
 /* True if `funct5` names an operation this core implements. */
 bool rv_amo_valid(uint32_t funct5);
@@ -452,8 +453,8 @@ bool rv_amo_valid(uint32_t funct5);
  * divergence there is exactly the kind of bug that only shows up under a
  * specific interleaving. `funct5` must already have passed rv_amo_valid.
  */
-rv_exc_t rv_hart_amo(rv_hart_t *h, uint32_t funct5, uint32_t rd,
-                     uint32_t addr, uint32_t src);
+rv_exc_t rv_hart_amo(rv_hart_t *h, uint32_t funct5, uint32_t rd, uint32_t addr,
+                     uint32_t src);
 
 #if RV_EXT_ZACAS
 /*
@@ -470,10 +471,10 @@ rv_exc_t rv_hart_amocas_d(rv_hart_t *h, uint32_t rd, uint32_t rs2,
 
 #if RV_EXT_ZICBOM || RV_EXT_ZICBOZ
 /* The 12-bit immediate of a CBO encoding selects the operation. */
-#define RV_CBO_OP_INVAL  0u
-#define RV_CBO_OP_CLEAN  1u
-#define RV_CBO_OP_FLUSH  2u
-#define RV_CBO_OP_ZERO   4u
+#define RV_CBO_OP_INVAL 0u
+#define RV_CBO_OP_CLEAN 1u
+#define RV_CBO_OP_FLUSH 2u
+#define RV_CBO_OP_ZERO 4u
 
 bool rv_cbo_valid(uint32_t op);
 

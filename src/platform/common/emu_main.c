@@ -46,15 +46,17 @@
  * cannot afford the tables says so by building a frontend that reports
  * one core.
  */
-static emu_bus_t    g_buses[EMU_MAX_CORES];
+static emu_bus_t g_buses[EMU_MAX_CORES];
 static emu_system_t g_sys;
-static emu_uart_t   g_uart;
+static emu_uart_t g_uart;
 
-static emu_guest_exit_t  g_exit;
+static emu_guest_exit_t g_exit;
 static emu_session_cfg_t g_cfg;
 
 static emu_syscall_ctx_t g_sc_ctx = {
-    .bus = &g_buses[0], .core = &g_sys.core[0], .exit = &g_exit,
+    .bus = &g_buses[0],
+    .core = &g_sys.core[0],
+    .exit = &g_exit,
 };
 
 /*
@@ -90,11 +92,11 @@ static void session_fail(const char *msg, const char *detail)
  * at start-up. */
 static void cfg_refresh(void)
 {
-    g_cfg.image      = board_img;
+    g_cfg.image = board_img;
     g_cfg.image_size = board_img_size;
-    g_cfg.ram_base   = EMU_GUEST_RAM_BASE;
-    g_cfg.ram_size   = board_ram_size;
-    g_cfg.ram_host   = board_ram;
+    g_cfg.ram_base = EMU_GUEST_RAM_BASE;
+    g_cfg.ram_size = board_ram_size;
+    g_cfg.ram_host = board_ram;
 }
 
 /*
@@ -219,8 +221,8 @@ static const emu_cpu_ops_t *pick_frontend(const emu_args_t *args)
 
 int main(int argc, char **argv)
 {
-    int           status = 0;
-    emu_run_env_t env = { 0 };
+    int status = 0;
+    emu_run_env_t env = {0};
 
     /*
      * What the runner owns, before the platform is asked: the buses it
@@ -228,14 +230,14 @@ int main(int argc, char **argv)
      * platforms share. The platform fills in the rest -- which backend,
      * where the image goes, what to poll -- in board_init.
      */
-    g_cfg.buses       = g_buses;
-    g_cfg.ncores      = 0u;             /* the frontend's count */
-    g_cfg.uart        = &g_uart;
-    g_cfg.uart_tx     = guest_tx;
-    g_cfg.uart_rx     = guest_rx;
-    g_cfg.syscall_fn  = emu_guest_syscall;
+    g_cfg.buses = g_buses;
+    g_cfg.ncores = 0u; /* the frontend's count */
+    g_cfg.uart = &g_uart;
+    g_cfg.uart_tx = guest_tx;
+    g_cfg.uart_rx = guest_rx;
+    g_cfg.syscall_fn = emu_guest_syscall;
     g_cfg.syscall_ctx = &g_sc_ctx;
-    g_cfg.fail        = session_fail;
+    g_cfg.fail = session_fail;
 
     if (native_coremark_baseline()) {
         return 0;
@@ -250,9 +252,9 @@ int main(int argc, char **argv)
      * that understood the same settings by name, so a new option reached
      * one and not the other.
      */
-    int          eargc = argc;
+    int eargc = argc;
     char *const *eargv = argv;
-    int          bargc = 0;
+    int bargc = 0;
     char *const *bargv = board_argv(&bargc);
 
     if (bargv != NULL) {
@@ -285,10 +287,10 @@ int main(int argc, char **argv)
      * is a decision, only the translation from an option's name to the
      * field it sets.
      */
-    g_cfg.want_jit   = args.want_jit;
+    g_cfg.want_jit = args.want_jit;
     g_cfg.dump_state = args.dump;
-    env.slice        = args.quantum;
-    env.max_insn     = (uint32_t)args.max_insn;
+    env.slice = args.quantum;
+    env.max_insn = (uint32_t)args.max_insn;
 
     /*
      * Acquisition: bring the part up, obtain an image, set board_ram and
@@ -311,8 +313,8 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    emu_console_printf("\n\nemu: %s on %s @ %u MHz\n",
-                       g_cfg.ops->desc, board_core_name,
+    emu_console_printf("\n\nemu: %s on %s @ %u MHz\n", g_cfg.ops->desc,
+                       board_core_name,
                        (unsigned)(board_clock_hz() / 1000000u));
 
     /*
@@ -321,9 +323,9 @@ int main(int argc, char **argv)
      */
     (void)emu_board_link_start();
 
-    g_cfg.load_addr  = args.load_addr;
-    g_cfg.entry      = args.entry;
-    env.take_upload  = emu_image_take_pending;
+    g_cfg.load_addr = args.load_addr;
+    g_cfg.entry = args.entry;
+    env.take_upload = emu_image_take_pending;
 
     cfg_refresh();
     if (g_cfg.ops == NULL) {
@@ -370,7 +372,7 @@ int main(int argc, char **argv)
 
         const uint32_t t0 = board_perf_cycles();
         uint64_t retired = 0;
-        bool     capped = false;
+        bool capped = false;
 
         {
             const emu_run_outcome_t out =
@@ -384,8 +386,7 @@ int main(int argc, char **argv)
 
         const uint32_t elapsed = board_perf_cycles() - t0;
 
-        emu_session_report(&g_sys, retired, elapsed, capped,
-                           g_cfg.dump_state);
+        emu_session_report(&g_sys, retired, elapsed, capped, g_cfg.dump_state);
 
         /*
          * The machine-readable terminator, and deliberately the last

@@ -34,9 +34,9 @@ extern "C" {
 #endif
 
 typedef enum {
-    EMU_CACHE_INVAL = 0,   /* discard the block, do not write it back */
-    EMU_CACHE_CLEAN,       /* write the block back, keep it valid     */
-    EMU_CACHE_FLUSH,       /* write back and discard                  */
+    EMU_CACHE_INVAL = 0, /* discard the block, do not write it back */
+    EMU_CACHE_CLEAN, /* write the block back, keep it valid     */
+    EMU_CACHE_FLUSH, /* write back and discard                  */
 } emu_cache_op_t;
 
 /*

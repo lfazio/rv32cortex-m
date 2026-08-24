@@ -47,13 +47,13 @@
  * presents as traffic silently going out of the wrong interface.
  */
 #ifndef EMU_NET_ADDR
-#define EMU_NET_ADDR  "192.168.7.2"
+#define EMU_NET_ADDR "192.168.7.2"
 #endif
 #ifndef EMU_NET_PEER
-#define EMU_NET_PEER  "192.168.7.1"
+#define EMU_NET_PEER "192.168.7.1"
 #endif
 #ifndef EMU_NET_MASK
-#define EMU_NET_MASK  "255.255.255.0"
+#define EMU_NET_MASK "255.255.255.0"
 #endif
 
 static struct netif g_slip;
@@ -109,7 +109,7 @@ static void ppp_status(ppp_pcb *pcb, int err, void *ctx)
     ppp_connect(g_ppp, 0);
 }
 #endif /* EMU_NET_LINK_PPP */
-static bool         g_active;
+static bool g_active;
 
 /* ------------------------------------------------------------------ */
 /* The clock lwIP's timers run on                                      */
@@ -260,7 +260,7 @@ bool emu_net_init(void)
 
     ppp_set_ipcp_ouraddr(g_ppp, &addr);
     ppp_set_ipcp_hisaddr(g_ppp, &peer);
-    (void)mask;                 /* a point-to-point link has no netmask */
+    (void)mask; /* a point-to-point link has no netmask */
 
     /*
      * Take the default route and *keep* it: without this the peer's
@@ -274,8 +274,8 @@ bool emu_net_init(void)
         return false;
     }
 #else
-    if (netif_add(&g_slip, &addr, &mask, &peer,
-                  (void *)0, slipif_init, netif_input) == NULL) {
+    if (netif_add(&g_slip, &addr, &mask, &peer, (void *)0, slipif_init,
+                  netif_input) == NULL) {
         return false;
     }
 

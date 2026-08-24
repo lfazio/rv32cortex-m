@@ -19,8 +19,8 @@
 #include <stdint.h>
 
 typedef struct emu_args {
-    const char *path;            /* the image to run                    */
-    const char *frontend;        /* NULL: from the ELF, else the first  */
+    const char *path; /* the image to run                    */
+    const char *frontend; /* NULL: from the ELF, else the first  */
 
     /*
      * Where a flat binary goes, and where the guest starts.
@@ -39,13 +39,13 @@ typedef struct emu_args {
     uint64_t max_insn;
     uint32_t timer_div;
 
-    bool     want_jit;
-    bool     quiet;
-    bool     dump;
+    bool want_jit;
+    bool quiet;
+    bool dump;
 
-    int      gdb_port;           /* 0: no stub                          */
-    bool     ppp;                /* the IP stack, over a pty            */
-    const char *ppp_dev;         /* an existing device instead          */
+    int gdb_port; /* 0: no stub                          */
+    bool ppp; /* the IP stack, over a pty            */
+    const char *ppp_dev; /* an existing device instead          */
 
     uint64_t trace_skip;
     uint64_t trace_count;
@@ -62,7 +62,6 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *out, int *status);
  * the host rather than by the parser -- see the note at the end of
  * emu_args_parse -- and that check wants the same output. */
 void emu_args_usage(void);
-
 
 /* The frontends this build has, comma separated, for a message that has
  * to say what was possible as well as what was asked for. */

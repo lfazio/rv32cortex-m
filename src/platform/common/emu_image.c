@@ -46,13 +46,13 @@
  * Everything downstream reads board_img, so the two cases are one case.
  */
 static const uint8_t *g_cur;
-static uint32_t       g_cur_size;
+static uint32_t g_cur_size;
 
 void emu_image_set(const uint8_t *img, uint32_t len)
 {
-    g_cur      = img;
+    g_cur = img;
     g_cur_size = len;
-    board_img      = img;
+    board_img = img;
     board_img_size = len;
 }
 
@@ -82,13 +82,13 @@ void emu_image_set(const uint8_t *img, uint32_t len)
  * there is no boundary and no ordering contract.
  */
 static uint32_t g_up_addr;
-static bool     g_reload;
+static bool g_reload;
 
 #if EMU_NET
 bool emu_net_image_begin(void)
 {
     if (board_flash_arena_size() == 0u) {
-        return false;           /* this board takes no uploads */
+        return false; /* this board takes no uploads */
     }
     g_up_addr = board_flash_arena_begin();
     return g_up_addr != 0u;
@@ -121,9 +121,9 @@ void emu_net_image_end(uint32_t len, bool ok)
     }
 
     board_flash_arena_commit(len);
-    g_cur      = (const uint8_t *)g_up_addr;
+    g_cur = (const uint8_t *)g_up_addr;
     g_cur_size = len;
-    g_up_addr  = 0u;
+    g_up_addr = 0u;
 
     /*
      * Flagged, not acted on. The address space has to be rebuilt around
@@ -151,10 +151,10 @@ void emu_net_image_end(uint32_t len, bool ok)
  * here; the guest's view is what its ELF says and the arena is an
  * implementation detail of where that lands.
  */
-static uint8_t  g_gf_carry[4];
+static uint8_t g_gf_carry[4];
 static uint32_t g_gf_carry_len;
-static uint32_t g_gf_carry_off;   /* guest offset of g_gf_carry[0] */
-static uint32_t g_gf_len;         /* highest byte gdb has written  */
+static uint32_t g_gf_carry_off; /* guest offset of g_gf_carry[0] */
+static uint32_t g_gf_len; /* highest byte gdb has written  */
 
 static bool gdb_flash_erase(uint32_t addr, uint32_t len)
 {
@@ -199,8 +199,8 @@ static bool gf_flush(void)
     if (g_gf_carry_len != 0u) {
         /* board_flash_write pads a short tail with 0xFF, which is the
          * erased state, so a final partial word is safe here. */
-        ok = board_flash_write(g_up_addr + g_gf_carry_off,
-                               g_gf_carry, g_gf_carry_len);
+        ok = board_flash_write(g_up_addr + g_gf_carry_off, g_gf_carry,
+                               g_gf_carry_len);
         g_gf_carry_len = 0u;
     }
     return ok;
@@ -229,7 +229,7 @@ static bool gdb_flash_write(uint32_t addr, const void *data, uint32_t len)
             g_gf_carry[g_gf_carry_len++] = src[pos++];
         }
         if (g_gf_carry_len < 4u) {
-            return true;                /* still short of a word */
+            return true; /* still short of a word */
         }
         if (!board_flash_write(g_up_addr + g_gf_carry_off, g_gf_carry, 4u)) {
             return false;
@@ -238,9 +238,9 @@ static bool gdb_flash_write(uint32_t addr, const void *data, uint32_t len)
     }
 
     {
-        const uint32_t rest  = len - pos;
+        const uint32_t rest = len - pos;
         const uint32_t whole = rest & ~3u;
-        const uint32_t tail  = rest - whole;
+        const uint32_t tail = rest - whole;
 
         if (whole != 0u &&
             !board_flash_write(g_up_addr + off + pos, &src[pos], whole)) {
@@ -268,20 +268,22 @@ static bool gdb_flash_done(void)
     if (g_up_addr == 0u || g_gf_len == 0u) {
         return false;
     }
-    if (!gf_flush()) {              /* the last partial word */
+    if (!gf_flush()) { /* the last partial word */
         return false;
     }
     board_flash_arena_commit(g_gf_len);
-    g_cur      = (const uint8_t *)g_up_addr;
+    g_cur = (const uint8_t *)g_up_addr;
     g_cur_size = g_gf_len;
-    g_gf_len   = 0u;
-    g_up_addr  = 0u;
-    g_reload   = true;
+    g_gf_len = 0u;
+    g_up_addr = 0u;
+    g_reload = true;
     return true;
 }
 
 const emu_gdb_flash_ops_t emu_image_gdb_flash = {
-    gdb_flash_erase, gdb_flash_write, gdb_flash_done,
+    gdb_flash_erase,
+    gdb_flash_write,
+    gdb_flash_done,
 };
 
 /*
@@ -308,7 +310,7 @@ bool emu_image_take_pending(void)
      * Skipping that leaves the previous guest's core state in place,
      * which presents as the new guest retiring zero instructions.
      */
-    board_img      = g_cur;
+    board_img = g_cur;
     board_img_size = g_cur_size;
 
     if (!emu_main_reload()) {
@@ -317,7 +319,6 @@ bool emu_image_take_pending(void)
     }
 
     emu_console_printf("\nemu: running uploaded image, %u bytes\n",
-                   (unsigned)g_cur_size);
+                       (unsigned)g_cur_size);
     return true;
 }
-

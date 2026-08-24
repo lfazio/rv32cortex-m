@@ -41,7 +41,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 
-#define UART_THR   (*(volatile uint8_t *)0x10000000u)
+#define UART_THR (*(volatile uint8_t *)0x10000000u)
 
 /*
  * mtime, at 1 MHz. On the host it advances one tick per retired guest
@@ -52,7 +52,7 @@
  * the same image measures this emulator's throughput. The full argument
  * is in dhry_portme.c, which has the same split.
  */
-#define MTIME_LO   (*(volatile uint32_t *)0x0200BFF8u)
+#define MTIME_LO (*(volatile uint32_t *)0x0200BFF8u)
 
 unsigned long whet_micros(void)
 {
@@ -121,8 +121,8 @@ static void out_fixed(double v, unsigned prec)
     }
 
     whole = (unsigned long)v;
-    frac  = (unsigned long)((v - (double)whole) * scale + 0.5);
-    if (frac >= (unsigned long)scale) {   /* 9.9996 at prec 3 is 10.000 */
+    frac = (unsigned long)((v - (double)whole) * scale + 0.5);
+    if (frac >= (unsigned long)scale) { /* 9.9996 at prec 3 is 10.000 */
         whole += 1ul;
         frac = 0ul;
     }
@@ -161,8 +161,14 @@ static void out_exp(double v, unsigned prec)
         v = -v;
     }
     if (v != 0.0) {
-        while (v >= 10.0) { v /= 10.0; exp10++; }
-        while (v <  1.0)  { v *= 10.0; exp10--; }
+        while (v >= 10.0) {
+            v /= 10.0;
+            exp10++;
+        }
+        while (v < 1.0) {
+            v *= 10.0;
+            exp10--;
+        }
     }
 
     out_fixed(v, prec);
@@ -204,10 +210,10 @@ int printf(const char *fmt, ...)
         while (*p == '-' || *p == '+' || *p == ' ' || *p == '0') {
             p++;
         }
-        while (*p >= '0' && *p <= '9') {         /* width, discarded */
+        while (*p >= '0' && *p <= '9') { /* width, discarded */
             p++;
         }
-        prec = 6u;                                /* C's default for %f */
+        prec = 6u; /* C's default for %f */
         if (*p == '.') {
             p++;
             prec = 0u;

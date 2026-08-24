@@ -16,17 +16,38 @@ extern "C" {
 #endif
 
 /* Primary opcode: bits 0:5 of a 32-bit instruction. */
-static EMU_ALWAYS_INLINE uint32_t ppc_op6(uint32_t w)  { return (w >> 26) & 0x3Fu; }
+static EMU_ALWAYS_INLINE uint32_t ppc_op6(uint32_t w)
+{
+    return (w >> 26) & 0x3Fu;
+}
 
 /* The three register fields of the classic X/D forms. */
-static EMU_ALWAYS_INLINE uint32_t ppc_rd(uint32_t w)   { return (w >> 21) & 0x1Fu; }
-static EMU_ALWAYS_INLINE uint32_t ppc_ra(uint32_t w)   { return (w >> 16) & 0x1Fu; }
-static EMU_ALWAYS_INLINE uint32_t ppc_rb(uint32_t w)   { return (w >> 11) & 0x1Fu; }
+static EMU_ALWAYS_INLINE uint32_t ppc_rd(uint32_t w)
+{
+    return (w >> 21) & 0x1Fu;
+}
+static EMU_ALWAYS_INLINE uint32_t ppc_ra(uint32_t w)
+{
+    return (w >> 16) & 0x1Fu;
+}
+static EMU_ALWAYS_INLINE uint32_t ppc_rb(uint32_t w)
+{
+    return (w >> 11) & 0x1Fu;
+}
 
 /* Extended opcode, bits 21:30, and the Rc bit that asks for CR0. */
-static EMU_ALWAYS_INLINE uint32_t ppc_xo10(uint32_t w) { return (w >> 1) & 0x3FFu; }
-static EMU_ALWAYS_INLINE bool     ppc_rc(uint32_t w)   { return (w & 1u) != 0u; }
-static EMU_ALWAYS_INLINE bool     ppc_oe(uint32_t w)   { return (w & (1u << 10)) != 0u; }
+static EMU_ALWAYS_INLINE uint32_t ppc_xo10(uint32_t w)
+{
+    return (w >> 1) & 0x3FFu;
+}
+static EMU_ALWAYS_INLINE bool ppc_rc(uint32_t w)
+{
+    return (w & 1u) != 0u;
+}
+static EMU_ALWAYS_INLINE bool ppc_oe(uint32_t w)
+{
+    return (w & (1u << 10)) != 0u;
+}
 
 /* D-form's signed 16-bit displacement. */
 static EMU_ALWAYS_INLINE int32_t ppc_d16(uint32_t w)
@@ -62,7 +83,6 @@ static EMU_ALWAYS_INLINE unsigned ppc_vle_len(uint16_t w0)
 {
     return (((w0 >> 12) & 0x9u) == 0x1u) ? 4u : 2u;
 }
-
 
 /* ------------------------------------------------------------------ */
 /* VLE 16-bit forms                                                    */

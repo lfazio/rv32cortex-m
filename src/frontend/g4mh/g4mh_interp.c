@@ -31,7 +31,7 @@
 #include "g4mh/g4mh_backend.h"
 #include "g4mh/g4mh_decode.h"
 #if EMU_PAIR_STATS
-#  include "g4mh/g4mh_pairstats.h"
+#include "g4mh/g4mh_pairstats.h"
 #endif
 #include "g4mh/g4mh_intc.h"
 
@@ -300,8 +300,7 @@ static EMU_ALWAYS_INLINE uint32_t do_shl(g4mh_cpu_t *c, uint32_t v, uint32_t n)
         res = v << n;
     }
     set_zs(c, res);
-    c->psw = (c->psw & ~(G4MH_PSW_OV | G4MH_PSW_CY)) |
-             (cy ? G4MH_PSW_CY : 0u);
+    c->psw = (c->psw & ~(G4MH_PSW_OV | G4MH_PSW_CY)) | (cy ? G4MH_PSW_CY : 0u);
     return res;
 }
 
@@ -315,8 +314,7 @@ static EMU_ALWAYS_INLINE uint32_t do_shr(g4mh_cpu_t *c, uint32_t v, uint32_t n)
         res = v >> n;
     }
     set_zs(c, res);
-    c->psw = (c->psw & ~(G4MH_PSW_OV | G4MH_PSW_CY)) |
-             (cy ? G4MH_PSW_CY : 0u);
+    c->psw = (c->psw & ~(G4MH_PSW_OV | G4MH_PSW_CY)) | (cy ? G4MH_PSW_CY : 0u);
     return res;
 }
 
@@ -333,8 +331,8 @@ static EMU_ALWAYS_INLINE uint32_t do_shr(g4mh_cpu_t *c, uint32_t v, uint32_t n)
  * unsigned ones. SAT is sticky: set when OV is, never cleared here, and
  * only an LDSR to PSW puts it back.
  */
-static EMU_ALWAYS_INLINE uint32_t do_clip(g4mh_cpu_t *c, uint32_t v,
-                                          bool sgn, unsigned bits)
+static EMU_ALWAYS_INLINE uint32_t do_clip(g4mh_cpu_t *c, uint32_t v, bool sgn,
+                                          unsigned bits)
 {
     uint32_t res;
     bool ov;
@@ -353,11 +351,17 @@ static EMU_ALWAYS_INLINE uint32_t do_clip(g4mh_cpu_t *c, uint32_t v,
         ov = v > hi;
     }
 
-    uint32_t psw = c->psw & ~(G4MH_PSW_Z | G4MH_PSW_S | G4MH_PSW_OV |
-                              G4MH_PSW_CY);
-    if (res == 0u)                       { psw |= G4MH_PSW_Z; }
-    if (sgn && ((int32_t)res < 0))       { psw |= G4MH_PSW_S; }
-    if (ov)                              { psw |= G4MH_PSW_OV | G4MH_PSW_SAT; }
+    uint32_t psw =
+        c->psw & ~(G4MH_PSW_Z | G4MH_PSW_S | G4MH_PSW_OV | G4MH_PSW_CY);
+    if (res == 0u) {
+        psw |= G4MH_PSW_Z;
+    }
+    if (sgn && ((int32_t)res < 0)) {
+        psw |= G4MH_PSW_S;
+    }
+    if (ov) {
+        psw |= G4MH_PSW_OV | G4MH_PSW_SAT;
+    }
     c->psw = psw;
     return res;
 }
@@ -372,8 +376,7 @@ static EMU_ALWAYS_INLINE uint32_t do_sar(g4mh_cpu_t *c, uint32_t v, uint32_t n)
         res = (uint32_t)((int32_t)v >> n);
     }
     set_zs(c, res);
-    c->psw = (c->psw & ~(G4MH_PSW_OV | G4MH_PSW_CY)) |
-             (cy ? G4MH_PSW_CY : 0u);
+    c->psw = (c->psw & ~(G4MH_PSW_OV | G4MH_PSW_CY)) | (cy ? G4MH_PSW_CY : 0u);
     return res;
 }
 
@@ -393,9 +396,9 @@ static EMU_ALWAYS_INLINE uint32_t do_sar(g4mh_cpu_t *c, uint32_t v, uint32_t n)
  * silently saves the wrong registers.
  */
 static const uint8_t k_list12_bit[12] = {
-    27u, 26u, 25u, 24u,      /* r20 r21 r22 r23 */
-    31u, 30u, 29u, 28u,      /* r24 r25 r26 r27 */
-    23u, 22u,  0u, 21u       /* r28 r29 r30 r31 */
+    27u, 26u, 25u, 24u, /* r20 r21 r22 r23 */
+    31u, 30u, 29u, 28u, /* r24 r25 r26 r27 */
+    23u, 22u, 0u,  21u /* r28 r29 r30 r31 */
 };
 
 static EMU_ALWAYS_INLINE bool list12_has(uint32_t list, unsigned reg)
@@ -460,22 +463,22 @@ static g4mh_exc_t do_dispose_load(g4mh_cpu_t *c, uint32_t list, uint32_t imm5,
  * instruction first, because that -- not the next one -- is what
  * EIPC/FEPC must hold for a handler that fixes the fault and returns.
  */
-#define EXC(cause)                                        \
-    do {                                                  \
-        c->pc = pc;                                       \
-        g4mh_cpu_exception(c, (cause), pc);               \
-        pc = c->pc;                                       \
-        goto next_insn;                                   \
+#define EXC(cause)                                                             \
+    do {                                                                       \
+        c->pc = pc;                                                            \
+        g4mh_cpu_exception(c, (cause), pc);                                    \
+        pc = c->pc;                                                            \
+        goto next_insn;                                                        \
     } while (0)
 
 /* An exception whose return address is the *following* instruction:
  * TRAP and SYSCALL, which are meant to resume after the call. */
-#define EXC_AFTER(cause)                                  \
-    do {                                                  \
-        c->pc = pc;                                       \
-        g4mh_cpu_exception(c, (cause), next);             \
-        pc = c->pc;                                       \
-        goto next_insn;                                   \
+#define EXC_AFTER(cause)                                                       \
+    do {                                                                       \
+        c->pc = pc;                                                            \
+        g4mh_cpu_exception(c, (cause), next);                                  \
+        pc = c->pc;                                                            \
+        goto next_insn;                                                        \
     } while (0)
 
 static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
@@ -550,9 +553,8 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     continue;
                 }
                 g4mh_intc_ack(c->intc, (uint32_t)ch);
-                g4mh_cpu_exception_at(c,
-                                      G4MH_EXC_EIINT_BASE + (uint32_t)ch,
-                                      pc, vec);
+                g4mh_cpu_exception_at(c, G4MH_EXC_EIINT_BASE + (uint32_t)ch, pc,
+                                      vec);
                 /*
                  * *After* the exception, because it reads the PSW that
                  * entry has already updated and writes the ceiling the
@@ -637,7 +639,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
 #if EMU_PAIR_STATS
         emu_pair_note(&g4mh_pair_ops, pc,
                       (uint64_t)w0 | ((uint64_t)w1 << 16) |
-                      ((uint64_t)w2 << 32) | ((uint64_t)w3 << 48),
+                          ((uint64_t)w2 << 32) | ((uint64_t)w3 << 48),
                       len);
 #endif
 
@@ -645,7 +647,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
         if (c->trace != NULL) {
             c->trace((emu_cpu_t *)c, pc,
                      (uint64_t)w0 | ((uint64_t)w1 << 16) |
-                     ((uint64_t)w2 << 32) | ((uint64_t)w3 << 48),
+                         ((uint64_t)w2 << 32) | ((uint64_t)w3 << 48),
                      len, c->trace_user);
         }
 #endif
@@ -685,7 +687,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 if (r1 != 0u && (r1 < 28u)) {
                     EXC(G4MH_EXC_RIE);
                 }
-                if (r1 == 28u) {                /* SYNCI */
+                if (r1 == 28u) { /* SYNCI */
                     g4mh_invalidate(c, 0u, 0xFFFFFFFFu);
                 }
                 break;
@@ -693,12 +695,12 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
             wr(c, r2, c->r[r1]);
             break;
 
-        case 0x01:                                  /* NOT              */
+        case 0x01: /* NOT              */
             set_logic(c, ~c->r[r1]);
             wr(c, r2, ~c->r[r1]);
             break;
 
-        case 0x02:                                  /* DIVH / SWITCH / RIE */
+        case 0x02: /* DIVH / SWITCH / RIE */
             if (r2 == 0u && r1 == 0u) {
                 /* The architectural RIE encoding: 0x0040, a deliberate
                  * "raise reserved instruction" rather than a hole. */
@@ -756,7 +758,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
             }
             break;
 
-        case 0x03: {                                /* JMP / SLD.BU/.HU */
+        case 0x03: { /* JMP / SLD.BU/.HU */
             if (r2 != 0u) {
                 /*
                  * The unsigned short loads. Their opcode is seven bits
@@ -770,11 +772,13 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                  */
                 uint32_t v;
                 const bool half = (w0 & 0x10u) != 0u;
-                const uint32_t disp = half ? ((uint32_t)(w0 & 0xFu) << 1)
-                                           : (uint32_t)(w0 & 0xFu);
-                const g4mh_exc_t e = g4mh_load(c, c->r[30] + disp,
-                                               half ? 2u : 1u, false, &v);
-                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                const uint32_t disp =
+                    half ? ((uint32_t)(w0 & 0xFu) << 1) : (uint32_t)(w0 & 0xFu);
+                const g4mh_exc_t e =
+                    g4mh_load(c, c->r[30] + disp, half ? 2u : 1u, false, &v);
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                    EXC(e);
+                }
                 wr(c, r2, v);
                 break;
             }
@@ -785,7 +789,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
             goto retired_insn;
         }
 
-        case 0x04:                                  /* SATSUBR / ZXB    */
+        case 0x04: /* SATSUBR / ZXB    */
             if (r2 == 0u) {
                 wr(c, r1, c->r[r1] & 0xFFu);
             } else {
@@ -795,7 +799,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
             }
             break;
 
-        case 0x05:                                  /* SATSUB / SXB     */
+        case 0x05: /* SATSUB / SXB     */
             if (r2 == 0u) {
                 wr(c, r1, (uint32_t)emu_sext(c->r[r1], 8));
             } else {
@@ -803,7 +807,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
             }
             break;
 
-        case 0x06:                                  /* SATADD / ZXH     */
+        case 0x06: /* SATADD / ZXH     */
             if (r2 == 0u) {
                 wr(c, r1, c->r[r1] & 0xFFFFu);
             } else {
@@ -811,7 +815,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
             }
             break;
 
-        case 0x07:                                  /* MULH / SXH       */
+        case 0x07: /* MULH / SXH       */
             if (r2 == 0u) {
                 wr(c, r1, (uint32_t)emu_sext(c->r[r1], 16));
             } else {
@@ -823,38 +827,38 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
             }
             break;
 
-        case 0x08: {                                /* OR               */
+        case 0x08: { /* OR               */
             const uint32_t v = c->r[r2] | c->r[r1];
             set_logic(c, v);
             wr(c, r2, v);
             break;
         }
-        case 0x09: {                                /* XOR              */
+        case 0x09: { /* XOR              */
             const uint32_t v = c->r[r2] ^ c->r[r1];
             set_logic(c, v);
             wr(c, r2, v);
             break;
         }
-        case 0x0A: {                                /* AND              */
+        case 0x0A: { /* AND              */
             const uint32_t v = c->r[r2] & c->r[r1];
             set_logic(c, v);
             wr(c, r2, v);
             break;
         }
-        case 0x0B:                                  /* TST              */
+        case 0x0B: /* TST              */
             set_logic(c, c->r[r2] & c->r[r1]);
             break;
 
-        case 0x0C:                                  /* SUBR             */
+        case 0x0C: /* SUBR             */
             wr(c, r2, do_sub(c, c->r[r1], c->r[r2]));
             break;
-        case 0x0D:                                  /* SUB              */
+        case 0x0D: /* SUB              */
             wr(c, r2, do_sub(c, c->r[r2], c->r[r1]));
             break;
-        case 0x0E:                                  /* ADD              */
+        case 0x0E: /* ADD              */
             wr(c, r2, do_add(c, c->r[r2], c->r[r1]));
             break;
-        case 0x0F:                                  /* CMP              */
+        case 0x0F: /* CMP              */
             (void)do_sub(c, c->r[r2], c->r[r1]);
             break;
 
@@ -872,17 +876,18 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
          * offering: a register field reused as an opcode extension does
          * not announce itself.
          */
-        case 0x10:                                  /* MOV imm5 / CALLT  */
-        case 0x11:                                  /* SATADD imm5/CALLT */
+        case 0x10: /* MOV imm5 / CALLT  */
+        case 0x11: /* SATADD imm5/CALLT */
             if (r2 == 0u) {
                 const uint32_t ctbp = c->sr[0][G4MH_SR_CTBP];
                 uint32_t ent;
-                const g4mh_exc_t e =
-                    g4mh_load(c, ctbp + ((uint32_t)(w0 & 0x3Fu) << 1), 2u,
-                              false, &ent);
-                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                const g4mh_exc_t e = g4mh_load(
+                    c, ctbp + ((uint32_t)(w0 & 0x3Fu) << 1), 2u, false, &ent);
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                    EXC(e);
+                }
                 /* CTPSW keeps PSW's low five bits, not the whole word. */
-                c->sr[0][G4MH_SR_CTPC]  = next;
+                c->sr[0][G4MH_SR_CTPC] = next;
                 c->sr[0][G4MH_SR_CTPSW] = c->psw & 0x1Fu;
                 pc = ctbp + ent;
                 goto retired_insn;
@@ -893,24 +898,24 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 wr(c, r2, do_satadd(c, c->r[r2], (uint32_t)g4mh_imm5(w0)));
             }
             break;
-        case 0x12:                                  /* ADD imm5         */
+        case 0x12: /* ADD imm5         */
             wr(c, r2, do_add(c, c->r[r2], (uint32_t)g4mh_imm5(w0)));
             break;
-        case 0x13:                                  /* CMP imm5         */
+        case 0x13: /* CMP imm5         */
             (void)do_sub(c, c->r[r2], (uint32_t)g4mh_imm5(w0));
             break;
         /* The shift forms take an unsigned count, not a sign-extended
          * immediate: shifting by "-1" is not a thing the encoding means. */
-        case 0x14:                                  /* SHR imm5         */
+        case 0x14: /* SHR imm5         */
             wr(c, r2, do_shr(c, c->r[r2], w0 & 0x1Fu));
             break;
-        case 0x15:                                  /* SAR imm5         */
+        case 0x15: /* SAR imm5         */
             wr(c, r2, do_sar(c, c->r[r2], w0 & 0x1Fu));
             break;
-        case 0x16:                                  /* SHL imm5         */
+        case 0x16: /* SHL imm5         */
             wr(c, r2, do_shl(c, c->r[r2], w0 & 0x1Fu));
             break;
-        case 0x17: {                                /* MULH imm5 / JR   */
+        case 0x17: { /* MULH imm5 / JR   */
             if (r2 == 0u) {
                 /*
                  * JR and JARL disp32, one encoding: reg1 names the link
@@ -943,7 +948,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
         default: {
             const uint32_t op4 = g4mh_op4(w0);
 
-            if (op4 == 0x0Bu) {                     /* Bcond disp9      */
+            if (op4 == 0x0Bu) { /* Bcond disp9      */
                 /*
                  * disp[8:4] in bits[15:11], disp[3:1] in bits[6:4], and
                  * bit 0 is always zero. Sign-extended from 9 bits and
@@ -971,30 +976,38 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
             g4mh_exc_t e;
 
             switch (op4) {
-            case 0x06:                              /* SLD.B disp7      */
+            case 0x06: /* SLD.B disp7      */
                 addr = c->r[G4MH_REG_EP] + (w0 & 0x7Fu);
                 e = g4mh_load(c, addr, 1u, true, &v);
-                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                    EXC(e);
+                }
                 wr(c, r2, v);
                 break;
 
-            case 0x07:                              /* SST.B disp7      */
+            case 0x07: /* SST.B disp7      */
                 addr = c->r[G4MH_REG_EP] + (w0 & 0x7Fu);
                 e = g4mh_store(c, addr, 1u, c->r[r2]);
-                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                    EXC(e);
+                }
                 break;
 
-            case 0x08:                              /* SLD.H disp8      */
+            case 0x08: /* SLD.H disp8      */
                 addr = c->r[G4MH_REG_EP] + ((w0 & 0x7Fu) << 1);
                 e = g4mh_load(c, addr, 2u, true, &v);
-                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                    EXC(e);
+                }
                 wr(c, r2, v);
                 break;
 
-            case 0x09:                              /* SST.H disp8      */
+            case 0x09: /* SST.H disp8      */
                 addr = c->r[G4MH_REG_EP] + ((w0 & 0x7Fu) << 1);
                 e = g4mh_store(c, addr, 2u, c->r[r2]);
-                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                    EXC(e);
+                }
                 break;
 
             case 0x0A:
@@ -1005,13 +1018,17 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                  * encoding reclaims bit 0 as the direction.
                  */
                 addr = c->r[G4MH_REG_EP] + ((w0 & 0x7Eu) << 1);
-                if ((w0 & 1u) == 0u) {              /* SLD.W            */
+                if ((w0 & 1u) == 0u) { /* SLD.W            */
                     e = g4mh_load(c, addr, 4u, false, &v);
-                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                        EXC(e);
+                    }
                     wr(c, r2, v);
-                } else {                            /* SST.W            */
+                } else { /* SST.W            */
                     e = g4mh_store(c, addr, 4u, c->r[r2]);
-                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                        EXC(e);
+                    }
                 }
                 break;
 
@@ -1022,21 +1039,21 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
         }
 
         /* ---------------- Format VI: imm16 ALU, 32-bit ------------- */
-        case 0x30:                                  /* ADDI imm16       */
+        case 0x30: /* ADDI imm16       */
             wr(c, r2, do_add(c, c->r[r1], (uint32_t)emu_sext(w1, 16)));
             break;
         case 0x31:
-            if (r2 == 0u) {                         /* MOV imm32, reg1  */
+            if (r2 == 0u) { /* MOV imm32, reg1  */
                 /* The only 48-bit form implemented; see g4mh_insn_len. */
                 wr(c, r1, w1 | (w2 << 16));
-            } else {                                /* MOVEA imm16      */
+            } else { /* MOVEA imm16      */
                 /* Address arithmetic: no flags, which is what makes it a
                  * separate instruction from ADDI. */
                 wr(c, r2, c->r[r1] + (uint32_t)emu_sext(w1, 16));
             }
             break;
-        case 0x32:                                  /* MOVHI / DISPOSE  */
-        case 0x33:                                  /* SATSUBI / DISPOSE*/
+        case 0x32: /* MOVHI / DISPOSE  */
+        case 0x33: /* SATSUBI / DISPOSE*/
             if (r2 == 0u) {
                 /*
                  * DISPOSE straddles both slots for the same reason
@@ -1056,7 +1073,9 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 uint32_t sp;
                 const g4mh_exc_t e = do_dispose_load(c, list, imm5, &sp);
 
-                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                    EXC(e);
+                }
                 const uint32_t target = c->r[rt] & ~1u;
                 c->r[3] = sp;
                 if (rt != 0u) {
@@ -1071,7 +1090,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 wr(c, r2, do_satsub(c, c->r[r1], (uint32_t)emu_sext(w1, 16)));
             }
             break;
-        case 0x34: {                                /* ORI imm16        */
+        case 0x34: { /* ORI imm16        */
             /* The logical forms zero-extend, where the arithmetic ones
              * sign-extend. */
             const uint32_t v = c->r[r1] | w1;
@@ -1079,19 +1098,19 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
             wr(c, r2, v);
             break;
         }
-        case 0x35: {                                /* XORI imm16       */
+        case 0x35: { /* XORI imm16       */
             const uint32_t v = c->r[r1] ^ w1;
             set_logic(c, v);
             wr(c, r2, v);
             break;
         }
-        case 0x36: {                                /* ANDI imm16       */
+        case 0x36: { /* ANDI imm16       */
             const uint32_t v = c->r[r1] & w1;
             set_logic(c, v);
             wr(c, r2, v);
             break;
         }
-        case 0x37: {                                /* MULHI / JMP/LOOP */
+        case 0x37: { /* MULHI / JMP/LOOP */
             if (r2 == 0u) {
                 /*
                  * Two instructions of different *lengths* share this
@@ -1126,15 +1145,17 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
         }
 
         /* ---------------- Format VII: LD / ST, 32-bit -------------- */
-        case 0x38: {                                /* LD.B disp16      */
+        case 0x38: { /* LD.B disp16      */
             uint32_t v;
             const uint32_t addr = c->r[r1] + (uint32_t)emu_sext(w1, 16);
             const g4mh_exc_t e = g4mh_load(c, addr, 1u, true, &v);
-            if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+            if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                EXC(e);
+            }
             wr(c, r2, v);
             break;
         }
-        case 0x39: {                                /* LD.H / LD.W      */
+        case 0x39: { /* LD.H / LD.W      */
             /*
              * As with SLD.W: a halfword access is 2-byte aligned and a
              * word access 4-byte, so disp bit 0 is free and the encoding
@@ -1142,25 +1163,31 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
              */
             uint32_t v;
             const uint32_t size = (w1 & 1u) ? 4u : 2u;
-            const uint32_t addr = c->r[r1] +
-                                  (uint32_t)emu_sext(w1 & 0xFFFEu, 16);
+            const uint32_t addr =
+                c->r[r1] + (uint32_t)emu_sext(w1 & 0xFFFEu, 16);
             const g4mh_exc_t e = g4mh_load(c, addr, size, size == 2u, &v);
-            if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+            if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                EXC(e);
+            }
             wr(c, r2, v);
             break;
         }
-        case 0x3A: {                                /* ST.B disp16      */
+        case 0x3A: { /* ST.B disp16      */
             const uint32_t addr = c->r[r1] + (uint32_t)emu_sext(w1, 16);
             const g4mh_exc_t e = g4mh_store(c, addr, 1u, c->r[r2]);
-            if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+            if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                EXC(e);
+            }
             break;
         }
-        case 0x3B: {                                /* ST.H / ST.W      */
+        case 0x3B: { /* ST.H / ST.W      */
             const uint32_t size = (w1 & 1u) ? 4u : 2u;
-            const uint32_t addr = c->r[r1] +
-                                  (uint32_t)emu_sext(w1 & 0xFFFEu, 16);
+            const uint32_t addr =
+                c->r[r1] + (uint32_t)emu_sext(w1 & 0xFFFEu, 16);
             const g4mh_exc_t e = g4mh_store(c, addr, size, c->r[r2]);
-            if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+            if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                EXC(e);
+            }
             break;
         }
 
@@ -1172,12 +1199,14 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
              * separating it from the whole Format X/XI group is bit 0.
              * Every sub-opcode below is even, so the test is exact.
              */
-            if ((w1 & 1u) != 0u) {                  /* LD.HU disp16     */
+            if ((w1 & 1u) != 0u) { /* LD.HU disp16     */
                 uint32_t v;
-                const uint32_t adr = c->r[r1] +
-                                     (uint32_t)emu_sext(w1 & 0xFFFEu, 16);
+                const uint32_t adr =
+                    c->r[r1] + (uint32_t)emu_sext(w1 & 0xFFFEu, 16);
                 const g4mh_exc_t e = g4mh_load(c, adr, 2u, false, &v);
-                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                    EXC(e);
+                }
                 wr(c, r2, v);
                 break;
             }
@@ -1204,13 +1233,15 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
             if (sub >= 0x400u) {
                 const g4mh_exc_t e = g4mh_fpu_exec(c, sub, r1, r2, sel);
 
-                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                    EXC(e);
+                }
                 break;
             }
 #endif
 
             switch (sub) {
-            case 0x000:                             /* SETF cccc, reg2  */
+            case 0x000: /* SETF cccc, reg2  */
                 wr(c, r2, g4mh_cond(r1, c->psw) ? 1u : 0u);
                 break;
 
@@ -1220,14 +1251,16 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
              * the second halfword is entirely fixed, so reg3 has to read
              * as zero or this is some other encoding.
              */
-            case 0x008:                             /* CLIP.B  r1, r2   */
-            case 0x00A:                             /* CLIP.BU r1, r2   */
-            case 0x00C:                             /* CLIP.H  r1, r2   */
-            case 0x00E:                             /* CLIP.HU r1, r2   */
-                if (sel != 0u) { EXC(G4MH_EXC_RIE); }
-                wr(c, r2, do_clip(c, c->r[r1],
-                                  (sub & 0x2u) == 0u,
-                                  ((sub & 0x4u) != 0u) ? 16u : 8u));
+            case 0x008: /* CLIP.B  r1, r2   */
+            case 0x00A: /* CLIP.BU r1, r2   */
+            case 0x00C: /* CLIP.H  r1, r2   */
+            case 0x00E: /* CLIP.HU r1, r2   */
+                if (sel != 0u) {
+                    EXC(G4MH_EXC_RIE);
+                }
+                wr(c, r2,
+                   do_clip(c, c->r[r1], (sub & 0x2u) == 0u,
+                           ((sub & 0x4u) != 0u) ? 16u : 8u));
                 break;
 
             /*
@@ -1243,11 +1276,11 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
              * general register in the other. Implementing LDSR by analogy
              * with STSR gets it backwards, which is what this did.
              */
-            case 0x020:                             /* LDSR reg2, regID */
+            case 0x020: /* LDSR reg2, regID */
                 g4mh_sr_write(c, sel, r2, c->r[r1]);
                 break;
 
-            case 0x040:                             /* STSR regID, reg2 */
+            case 0x040: /* STSR regID, reg2 */
                 wr(c, r2, g4mh_sr_read(c, sel, r1));
                 break;
 
@@ -1268,45 +1301,50 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
              * results without branching. It reads the flags and defines
              * none, which is what makes a run of them composable.
              */
-            case 0x200:                             /* SASF cccc, reg2  */
-                wr(c, r2, (c->r[r2] << 1) |
-                          (g4mh_cond(r1, c->psw) ? 1u : 0u));
+            case 0x200: /* SASF cccc, reg2  */
+                wr(c, r2, (c->r[r2] << 1) | (g4mh_cond(r1, c->psw) ? 1u : 0u));
                 break;
 
-            case 0x0C4:                             /* ROTL imm5, r2,r3 */
-            case 0x0C6: {                           /* ROTL reg1, r2,r3 */
+            case 0x0C4: /* ROTL imm5, r2,r3 */
+            case 0x0C6: { /* ROTL reg1, r2,r3 */
                 /*
                  * CY comes from bit 0 of the *result*, including for a
                  * rotate of zero -- so it is the bit that was rotated
                  * round, and a zero count still redefines it rather than
                  * leaving it alone.
                  */
-                const uint32_t n = ((sub == 0x0C4u) ? (w0 & 0x1Fu)
-                                                    : c->r[r1]) & 0x1Fu;
+                const uint32_t n =
+                    ((sub == 0x0C4u) ? (w0 & 0x1Fu) : c->r[r1]) & 0x1Fu;
                 const uint32_t v = c->r[r2];
-                const uint32_t res = (n == 0u) ? v
-                                               : ((v << n) | (v >> (32u - n)));
+                const uint32_t res =
+                    (n == 0u) ? v : ((v << n) | (v >> (32u - n)));
                 uint32_t psw = c->psw & ~G4MH_PSW_FLAGS;
 
-                if ((res & 1u) != 0u)          { psw |= G4MH_PSW_CY; }
-                if (res == 0u)                 { psw |= G4MH_PSW_Z;  }
-                if ((res & 0x80000000u) != 0u) { psw |= G4MH_PSW_S;  }
+                if ((res & 1u) != 0u) {
+                    psw |= G4MH_PSW_CY;
+                }
+                if (res == 0u) {
+                    psw |= G4MH_PSW_Z;
+                }
+                if ((res & 0x80000000u) != 0u) {
+                    psw |= G4MH_PSW_S;
+                }
                 c->psw = psw;
                 wr(c, sel, res);
                 break;
             }
 
-            case 0x0E0:                             /* SET1 reg2, [reg1] */
-            case 0x0E2:                             /* NOT1 reg2, [reg1] */
-            case 0x0E4:                             /* CLR1 reg2, [reg1] */
-            case 0x0E6: {                           /* TST1 reg2, [reg1] */
-                static const uint8_t k_regbitop[4] = {
-                    BITOP_SET, BITOP_NOT, BITOP_CLR, BITOP_TST
-                };
-                const g4mh_exc_t e =
-                    do_bitop(c, k_regbitop[(sub - 0x0E0u) >> 1],
-                             c->r[r1], c->r[r2]);
-                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+            case 0x0E0: /* SET1 reg2, [reg1] */
+            case 0x0E2: /* NOT1 reg2, [reg1] */
+            case 0x0E4: /* CLR1 reg2, [reg1] */
+            case 0x0E6: { /* TST1 reg2, [reg1] */
+                static const uint8_t k_regbitop[4] = {BITOP_SET, BITOP_NOT,
+                                                      BITOP_CLR, BITOP_TST};
+                const g4mh_exc_t e = do_bitop(
+                    c, k_regbitop[(sub - 0x0E0u) >> 1], c->r[r1], c->r[r2]);
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                    EXC(e);
+                }
                 break;
             }
 
@@ -1320,39 +1358,46 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
              * rule is that an encoding we do not know raises RIE rather
              * than doing something plausible.
              */
-            case 0x340: {                           /* BSW reg2, reg3   */
+            case 0x340: { /* BSW reg2, reg3   */
                 const uint32_t v = c->r[r2];
-                if (r1 != 0u) { EXC(G4MH_EXC_RIE); }
+                if (r1 != 0u) {
+                    EXC(G4MH_EXC_RIE);
+                }
                 const uint32_t res = __builtin_bswap32(v);
                 set_swap_flags(c, res, has_zero_byte(res), res == 0u);
                 wr(c, sel, res);
                 break;
             }
-            case 0x342: {                           /* BSH reg2, reg3   */
+            case 0x342: { /* BSH reg2, reg3   */
                 const uint32_t v = c->r[r2];
-                if (r1 != 0u) { EXC(G4MH_EXC_RIE); }
+                if (r1 != 0u) {
+                    EXC(G4MH_EXC_RIE);
+                }
                 /* Byte swap within each halfword, halfwords left alone. */
-                const uint32_t res = ((v & 0x00FF00FFu) << 8) |
-                                     ((v & 0xFF00FF00u) >> 8);
-                const bool cy = ((res & 0x00FFu) == 0u) ||
-                                ((res & 0xFF00u) == 0u);
+                const uint32_t res =
+                    ((v & 0x00FF00FFu) << 8) | ((v & 0xFF00FF00u) >> 8);
+                const bool cy =
+                    ((res & 0x00FFu) == 0u) || ((res & 0xFF00u) == 0u);
                 set_swap_flags(c, res, cy, (res & 0xFFFFu) == 0u);
                 wr(c, sel, res);
                 break;
             }
-            case 0x344: {                           /* HSW reg2, reg3   */
+            case 0x344: { /* HSW reg2, reg3   */
                 const uint32_t v = c->r[r2];
-                if (r1 != 0u) { EXC(G4MH_EXC_RIE); }
+                if (r1 != 0u) {
+                    EXC(G4MH_EXC_RIE);
+                }
                 const uint32_t res = (v << 16) | (v >> 16);
-                const bool cy = ((res & 0xFFFFu) == 0u) ||
-                                ((res >> 16) == 0u);
+                const bool cy = ((res & 0xFFFFu) == 0u) || ((res >> 16) == 0u);
                 set_swap_flags(c, res, cy, res == 0u);
                 wr(c, sel, res);
                 break;
             }
-            case 0x346: {                           /* HSH reg2, reg3   */
+            case 0x346: { /* HSH reg2, reg3   */
                 const uint32_t res = c->r[r2];
-                if (r1 != 0u) { EXC(G4MH_EXC_RIE); }
+                if (r1 != 0u) {
+                    EXC(G4MH_EXC_RIE);
+                }
                 /*
                  * A move, not a swap -- the value is unchanged and only
                  * the flags are the point. CY and Z are both the lower
@@ -1365,20 +1410,28 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 break;
             }
 
-            case 0x360:                             /* SCH0R reg2, reg3 */
-                if (r1 != 0u) { EXC(G4MH_EXC_RIE); }
+            case 0x360: /* SCH0R reg2, reg3 */
+                if (r1 != 0u) {
+                    EXC(G4MH_EXC_RIE);
+                }
                 do_sch(c, sel, c->r[r2], false, false);
                 break;
-            case 0x362:                             /* SCH1R reg2, reg3 */
-                if (r1 != 0u) { EXC(G4MH_EXC_RIE); }
+            case 0x362: /* SCH1R reg2, reg3 */
+                if (r1 != 0u) {
+                    EXC(G4MH_EXC_RIE);
+                }
                 do_sch(c, sel, c->r[r2], true, false);
                 break;
-            case 0x364:                             /* SCH0L reg2, reg3 */
-                if (r1 != 0u) { EXC(G4MH_EXC_RIE); }
+            case 0x364: /* SCH0L reg2, reg3 */
+                if (r1 != 0u) {
+                    EXC(G4MH_EXC_RIE);
+                }
                 do_sch(c, sel, c->r[r2], false, true);
                 break;
-            case 0x366:                             /* SCH1L reg2, reg3 */
-                if (r1 != 0u) { EXC(G4MH_EXC_RIE); }
+            case 0x366: /* SCH1L reg2, reg3 */
+                if (r1 != 0u) {
+                    EXC(G4MH_EXC_RIE);
+                }
                 do_sch(c, sel, c->r[r2], true, true);
                 break;
 
@@ -1397,26 +1450,26 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
              * of the sub-opcode set, and reg3 in bits[31:27] -- the same
              * bit that separates ROTL's two forms at 0x0C4/0x0C6 below.
              */
-            case 0x080:                             /* SHR reg1, reg2   */
+            case 0x080: /* SHR reg1, reg2   */
                 wr(c, r2, do_shr(c, c->r[r2], c->r[r1]));
                 break;
-            case 0x082:                             /* SHR r1, r2, r3   */
+            case 0x082: /* SHR r1, r2, r3   */
                 wr(c, sel, do_shr(c, c->r[r2], c->r[r1]));
                 break;
-            case 0x0A0:                             /* SAR reg1, reg2   */
+            case 0x0A0: /* SAR reg1, reg2   */
                 wr(c, r2, do_sar(c, c->r[r2], c->r[r1]));
                 break;
-            case 0x0A2:                             /* SAR r1, r2, r3   */
+            case 0x0A2: /* SAR r1, r2, r3   */
                 wr(c, sel, do_sar(c, c->r[r2], c->r[r1]));
                 break;
-            case 0x0C0:                             /* SHL reg1, reg2   */
+            case 0x0C0: /* SHL reg1, reg2   */
                 wr(c, r2, do_shl(c, c->r[r2], c->r[r1]));
                 break;
-            case 0x0C2:                             /* SHL r1, r2, r3   */
+            case 0x0C2: /* SHL r1, r2, r3   */
                 wr(c, sel, do_shl(c, c->r[r2], c->r[r1]));
                 break;
 
-            case 0x0EE: {                           /* CAXI [reg1],r2,r3 */
+            case 0x0EE: { /* CAXI [reg1],r2,r3 */
                 /*
                  * Compare and exchange. Note that it stores in *both*
                  * cases -- on a mismatch it writes the token back -- so it
@@ -1434,11 +1487,15 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 const uint32_t adr = c->r[r1];
                 uint32_t token;
                 g4mh_exc_t e = g4mh_load(c, adr, 4u, false, &token);
-                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                    EXC(e);
+                }
 
                 const bool match = (c->r[r2] == token);
                 e = g4mh_store(c, adr, 4u, match ? c->r[r3] : token);
-                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                    EXC(e);
+                }
                 wr(c, r3, token);
 
                 if (!match) {
@@ -1477,23 +1534,27 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
              * slots really held 7, 107 and 207 -- three cores that had all
              * run correctly, reported through one pointer that never moved.
              */
-            case 0x370:            /* LDL.BU / LD.B,LD.BU  [reg1]+ [reg1]- */
-            case 0x374:            /* LDL.HU / LD.H,LD.HU  [reg1]+ [reg1]- */
-            case 0x378: {          /* LDL.W  / LD.W        [reg1]+ [reg1]- */
+            case 0x370: /* LDL.BU / LD.B,LD.BU  [reg1]+ [reg1]- */
+            case 0x374: /* LDL.HU / LD.H,LD.HU  [reg1]+ [reg1]- */
+            case 0x378: { /* LDL.W  / LD.W        [reg1]+ [reg1]- */
                 const uint32_t r3 = sel;
                 const uint32_t adr = c->r[r1];
-                const uint32_t w = (sub == 0x370u) ? 1u
-                                 : ((sub == 0x374u) ? 2u : 4u);
-                const uint32_t mode = r2 >> 1;  /* 0 link, 1 post+, 2 post- */
+                const uint32_t w =
+                    (sub == 0x370u) ? 1u : ((sub == 0x374u) ? 2u : 4u);
+                const uint32_t mode = r2 >> 1; /* 0 link, 1 post+, 2 post- */
                 uint32_t v;
 
-                if (EMU_UNLIKELY(mode > 2u)) { EXC(G4MH_EXC_RIE); }
+                if (EMU_UNLIKELY(mode > 2u)) {
+                    EXC(G4MH_EXC_RIE);
+                }
 
                 /* Sign-extend only the narrow non-link loads with bit 0
                  * clear; a word load extends nothing either way. */
                 const bool sx = (mode != 0u) && ((r2 & 1u) == 0u);
                 const g4mh_exc_t e = g4mh_load(c, adr, w, sx, &v);
-                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                    EXC(e);
+                }
                 wr(c, r3, v);
 
                 if (mode == 0u) {
@@ -1507,9 +1568,9 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 break;
             }
 
-            case 0x372:            /* STC.B / ST.B r3,[reg1]+ [reg1]-     */
-            case 0x376:            /* STC.H / ST.H r3,[reg1]+ [reg1]-     */
-            case 0x37A: {          /* STC.W / ST.W r3,[reg1]+ [reg1]-     */
+            case 0x372: /* STC.B / ST.B r3,[reg1]+ [reg1]-     */
+            case 0x376: /* STC.H / ST.H r3,[reg1]+ [reg1]-     */
+            case 0x37A: { /* STC.W / ST.W r3,[reg1]+ [reg1]-     */
                 /*
                  * The store happens only if this core still holds the
                  * reservation, and reg3 reports which: 1 stored, 0 did
@@ -1526,11 +1587,13 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                  */
                 const uint32_t r3 = sel;
                 const uint32_t adr = c->r[r1];
-                const uint32_t w = (sub == 0x372u) ? 1u
-                                 : ((sub == 0x376u) ? 2u : 4u);
-                const uint32_t mode = r2 >> 1;  /* 0 STC, 1 post+, 2 post- */
+                const uint32_t w =
+                    (sub == 0x372u) ? 1u : ((sub == 0x376u) ? 2u : 4u);
+                const uint32_t mode = r2 >> 1; /* 0 STC, 1 post+, 2 post- */
 
-                if (EMU_UNLIKELY(mode > 2u)) { EXC(G4MH_EXC_RIE); }
+                if (EMU_UNLIKELY(mode > 2u)) {
+                    EXC(G4MH_EXC_RIE);
+                }
 
                 if (mode != 0u) {
                     /*
@@ -1540,7 +1603,9 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                      * old pointer, which is what the manual specifies.
                      */
                     const g4mh_exc_t e = g4mh_store(c, adr, w, c->r[r3]);
-                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                        EXC(e);
+                    }
                     wr(c, r1, (mode == 1u) ? adr + w : adr - w);
                     break;
                 }
@@ -1549,7 +1614,9 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
 
                 if (held) {
                     const g4mh_exc_t e = g4mh_store(c, adr, w, c->r[r3]);
-                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                        EXC(e);
+                    }
                 }
                 g4mh_ll_drop(c);
                 wr(c, r3, held ? 1u : 0u);
@@ -1596,8 +1663,8 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
              * `rrrrr111111RRRRR wwwww00101100110` for LDM.MP and ...100 for
              * STM.MP, i.e. sub 0x166 and 0x164.
              */
-            case 0x164:                             /* STM.MP eh-et,[r1] */
-            case 0x166: {                           /* LDM.MP [r1],eh-et */
+            case 0x164: /* STM.MP eh-et,[r1] */
+            case 0x166: { /* LDM.MP [r1],eh-et */
                 const bool load = (sub == 0x166u);
                 const uint32_t eh = r2;
                 const uint32_t et = sel;
@@ -1620,7 +1687,8 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
 
                     for (uint32_t cur = eh; cur <= et; cur++) {
                         uint32_t *const ent[3] = {
-                            &c->mpu->mpla[cur], &c->mpu->mpua[cur],
+                            &c->mpu->mpla[cur],
+                            &c->mpu->mpua[cur],
                             &c->mpu->mpat[cur],
                         };
                         for (unsigned k = 0; k < 3u; k++) {
@@ -1650,7 +1718,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
             }
 #endif /* G4MH_EXT_MPU */
 
-            case 0x100: {                           /* TRAP vector5     */
+            case 0x100: { /* TRAP vector5     */
                 /*
                  * The platform's syscall hook gets first refusal, so the
                  * host test harness can offer write/exit the way it does
@@ -1676,8 +1744,8 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 if (c->syscall != NULL) {
                     c->pc = pc;
                     emu_syscall_t sc = {
-                        .nr  = c->r[11],
-                        .arg = { c->r[6], c->r[7], c->r[8], c->r[9] },
+                        .nr = c->r[11],
+                        .arg = {c->r[6], c->r[7], c->r[8], c->r[9]},
                         .ret = 0u,
                     };
                     if (c->syscall((emu_cpu_t *)c, &sc, c->syscall_user)) {
@@ -1686,12 +1754,12 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                         goto retired_insn;
                     }
                 }
-                const uint32_t base = (r1 < 16u) ? G4MH_EXC_TRAP0
-                                                 : G4MH_EXC_TRAP1;
+                const uint32_t base =
+                    (r1 < 16u) ? G4MH_EXC_TRAP0 : G4MH_EXC_TRAP1;
                 EXC_AFTER(base + (r1 & 0xFu));
             }
 
-            case 0x120:                             /* HALT / SNOOZE    */
+            case 0x120: /* HALT / SNOOZE    */
                 if (w0 == 0x0FE0u) {
                     /*
                      * SNOOZE: a hint that this core is waiting on another
@@ -1725,12 +1793,12 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
              * it, which is what this used to do, is wrong even when it
              * happens to pick the same pair.
              */
-            case 0x144:                             /* CTRET            */
+            case 0x144: /* CTRET            */
                 pc = c->sr[0][G4MH_SR_CTPC];
                 g4mh_sr_write(c, 0u, G4MH_SR_PSW, c->sr[0][G4MH_SR_CTPSW]);
                 goto retired_insn;
 
-            case 0x148:                             /* EIRET            */
+            case 0x148: /* EIRET            */
                 /*
                  * The ceiling comes down *before* the PSW is restored,
                  * because the ISPR rule is conditional on PSW.EP as it
@@ -1743,7 +1811,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 g4mh_sr_write(c, 0u, G4MH_SR_PSW, c->sr[0][G4MH_SR_EIPSW]);
                 goto retired_insn;
 
-            case 0x14A:                             /* FERET            */
+            case 0x14A: /* FERET            */
                 pc = c->sr[0][G4MH_SR_FEPC];
                 g4mh_sr_write(c, 0u, G4MH_SR_PSW, c->sr[0][G4MH_SR_FEPSW]);
                 goto retired_insn;
@@ -1767,14 +1835,18 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                      * not modelled, so RESBANK is reported unimplemented
                      * rather than approximated.
                      */
-                    if (sel == 0x10u) {             /* RESBANK          */
+                    if (sel == 0x10u) { /* RESBANK          */
                         EXC(G4MH_EXC_RIE);
                     }
-                    if (sel != 0u) { EXC(G4MH_EXC_RIE); }
-                    c->psw |= G4MH_PSW_ID;          /* DI               */
+                    if (sel != 0u) {
+                        EXC(G4MH_EXC_RIE);
+                    }
+                    c->psw |= G4MH_PSW_ID; /* DI               */
                     break;
-                case 0x10u:                         /* EI               */
-                    if (sel != 0u) { EXC(G4MH_EXC_RIE); }
+                case 0x10u: /* EI               */
+                    if (sel != 0u) {
+                        EXC(G4MH_EXC_RIE);
+                    }
                     c->psw &= ~G4MH_PSW_ID;
                     c->irq_dirty = true;
                     break;
@@ -1802,12 +1874,12 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                  *
                  * PREF stays a hint with nothing to do.
                  */
-                case 0x1Cu:                         /* CACHE op,[reg1]  */
+                case 0x1Cu: /* CACHE op,[reg1]  */
                     g4mh_invalidate(c, 0u, 0xFFFFFFFFu);
                     break;
-                case 0x1Bu:                         /* PREF  op,[reg1]  */
+                case 0x1Bu: /* PREF  op,[reg1]  */
                     break;
-                case 0x1Au: {                       /* SYSCALL vector8  */
+                case 0x1Au: { /* SYSCALL vector8  */
                     /*
                      * The only exception here whose handler address is
                      * *read from memory* rather than computed from RBASE,
@@ -1826,25 +1898,26 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     const uint32_t vec = ((sel & 0x7u) << 5) | r1;
                     const uint32_t scbp = c->sr[1][G4MH_SR_SCBP];
                     const uint32_t size = c->sr[1][G4MH_SR_SCCFG] & 0xFFu;
-                    const uint32_t adr = (vec <= size) ? (scbp + (vec << 2))
-                                                       : scbp;
+                    const uint32_t adr =
+                        (vec <= size) ? (scbp + (vec << 2)) : scbp;
                     const uint32_t tmp = c->psw;
                     uint32_t ent;
                     const g4mh_exc_t e = g4mh_load(c, adr, 4u, false, &ent);
 
-                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                        EXC(e);
+                    }
 
-                    c->sr[0][G4MH_SR_EIPC]  = next;
+                    c->sr[0][G4MH_SR_EIPC] = next;
                     c->sr[0][G4MH_SR_EIPSW] = tmp;
-                    c->sr[0][G4MH_SR_EIIC]  = G4MH_EXC_SYSCALL + vec;
-                    c->psw = (tmp & ~G4MH_PSW_UM) | G4MH_PSW_EP |
-                             G4MH_PSW_ID;
+                    c->sr[0][G4MH_SR_EIIC] = G4MH_EXC_SYSCALL + vec;
+                    c->psw = (tmp & ~G4MH_PSW_UM) | G4MH_PSW_EP | G4MH_PSW_ID;
                     c->sr[0][G4MH_SR_PSW] = c->psw;
                     pc = scbp + ent;
                     goto retired_insn;
                 }
 
-                case 0x1Fu:                         /* CLL              */
+                case 0x1Fu: /* CLL              */
                     if (sel != 0x1Eu) {
                         EXC(G4MH_EXC_RIE);
                     }
@@ -1858,20 +1931,22 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                  * A range with rh > rt transfers nothing at all; that is
                  * defined behaviour and not an error.
                  */
-                case 0x08u: {                       /* PUSHSP rh-rt     */
+                case 0x08u: { /* PUSHSP rh-rt     */
                     uint32_t tmp = c->r[3];
 
                     for (uint32_t cur = r1; cur <= sel; cur++) {
                         tmp -= 4u;
                         const g4mh_exc_t e =
                             g4mh_store(c, tmp & ~3u, 4u, c->r[cur]);
-                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                            EXC(e);
+                        }
                     }
                     c->r[3] = tmp;
                     break;
                 }
 
-                case 0x0Cu: {                       /* POPSP rh-rt      */
+                case 0x0Cu: { /* POPSP rh-rt      */
                     uint32_t tmp = c->r[3];
 
                     if (r1 <= sel) {
@@ -1879,7 +1954,9 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                             uint32_t v;
                             const g4mh_exc_t e =
                                 g4mh_load(c, tmp & ~3u, 4u, false, &v);
-                            if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                            if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                                EXC(e);
+                            }
                             c->r[cur] = v;
                             tmp += 4u;
                         }
@@ -1889,7 +1966,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     break;
                 }
 
-                case 0x18u:                         /* JARL [reg1],reg3 */
+                case 0x18u: /* JARL [reg1],reg3 */
                     /*
                      * The register-indirect call. Written before the
                      * jump because reg1 and reg3 may name the same
@@ -1929,16 +2006,16 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                  * it into SHR at 0x080.
                  */
                 switch (sub & 0x7E0u) {
-                case 0x300:                         /* CMOV imm5        */
-                case 0x320:                         /* CMOV reg1        */
-                    wr(c, sel, g4mh_cond((sub >> 1) & 0xFu, c->psw)
-                                 ? ((sub & 0x20u) != 0u
-                                        ? c->r[r1]
-                                        : (uint32_t)g4mh_imm5(w0))
-                                 : c->r[r2]);
+                case 0x300: /* CMOV imm5        */
+                case 0x320: /* CMOV reg1        */
+                    wr(c, sel,
+                       g4mh_cond((sub >> 1) & 0xFu, c->psw)
+                           ? ((sub & 0x20u) != 0u ? c->r[r1]
+                                                  : (uint32_t)g4mh_imm5(w0))
+                           : c->r[r2]);
                     goto sub_done;
 
-                case 0x380: {                       /* SBF cccc         */
+                case 0x380: { /* SBF cccc         */
                     /*
                      * reg2 - reg1 - cond, with a borrow the ordinary
                      * subtract helper cannot express, so the flags are
@@ -1953,9 +2030,15 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     const uint32_t res = b - a - k;
                     uint32_t psw = c->psw & ~G4MH_PSW_FLAGS;
 
-                    if ((uint64_t)b < (uint64_t)a + k) { psw |= G4MH_PSW_CY; }
-                    if (res == 0u)                 { psw |= G4MH_PSW_Z; }
-                    if ((res & 0x80000000u) != 0u) { psw |= G4MH_PSW_S; }
+                    if ((uint64_t)b < (uint64_t)a + k) {
+                        psw |= G4MH_PSW_CY;
+                    }
+                    if (res == 0u) {
+                        psw |= G4MH_PSW_Z;
+                    }
+                    if ((res & 0x80000000u) != 0u) {
+                        psw |= G4MH_PSW_S;
+                    }
                     if (((a ^ b) & (b ^ res) & 0x80000000u) != 0u) {
                         psw |= G4MH_PSW_OV;
                     }
@@ -1964,7 +2047,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     goto sub_done;
                 }
 
-                case 0x3A0: {                       /* ADF cccc         */
+                case 0x3A0: { /* ADF cccc         */
                     const uint32_t a = c->r[r1];
                     const uint32_t b = c->r[r2];
                     const uint32_t k =
@@ -1973,9 +2056,15 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     const uint32_t res = (uint32_t)wide;
                     uint32_t psw = c->psw & ~G4MH_PSW_FLAGS;
 
-                    if ((wide >> 32) != 0u)        { psw |= G4MH_PSW_CY; }
-                    if (res == 0u)                 { psw |= G4MH_PSW_Z; }
-                    if ((res & 0x80000000u) != 0u) { psw |= G4MH_PSW_S; }
+                    if ((wide >> 32) != 0u) {
+                        psw |= G4MH_PSW_CY;
+                    }
+                    if (res == 0u) {
+                        psw |= G4MH_PSW_Z;
+                    }
+                    if ((res & 0x80000000u) != 0u) {
+                        psw |= G4MH_PSW_S;
+                    }
                     if ((~(a ^ b) & (a ^ res) & 0x80000000u) != 0u) {
                         psw |= G4MH_PSW_OV;
                     }
@@ -1984,8 +2073,8 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     goto sub_done;
                 }
 
-                case 0x3C0:                         /* MAC  reg1,r2,r3,r4 */
-                case 0x3E0: {                       /* MACU               */
+                case 0x3C0: /* MAC  reg1,r2,r3,r4 */
+                case 0x3E0: { /* MACU               */
                     /*
                      * A 64-bit accumulate across a register pair. Both
                      * pairs are named by four bits and are therefore
@@ -1996,15 +2085,15 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                      */
                     const uint32_t r3 = sel & ~1u;
                     const uint32_t r4 = ((sub >> 1) & 0xFu) << 1;
-                    const uint64_t acc = ((uint64_t)c->r[r3 + 1u] << 32) |
-                                         c->r[r3];
+                    const uint64_t acc =
+                        ((uint64_t)c->r[r3 + 1u] << 32) | c->r[r3];
                     uint64_t res;
 
-                    if ((sub & 0x20u) == 0u) {      /* MAC: signed      */
+                    if ((sub & 0x20u) == 0u) { /* MAC: signed      */
                         res = (uint64_t)(((int64_t)(int32_t)c->r[r2] *
                                           (int64_t)(int32_t)c->r[r1]) +
                                          (int64_t)acc);
-                    } else {                        /* MACU: unsigned   */
+                    } else { /* MACU: unsigned   */
                         res = (uint64_t)c->r[r2] * (uint64_t)c->r[r1] + acc;
                     }
                     wr(c, r4, (uint32_t)res);
@@ -2017,9 +2106,9 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 }
 
                 switch (sub & 0x7F0u) {
-                case 0x090:                         /* BINS msb>=16 lsb>=16 */
-                case 0x0B0:                         /* BINS msb>=16 lsb<16  */
-                case 0x0D0: {                       /* BINS msb<16  lsb<16  */
+                case 0x090: /* BINS msb>=16 lsb>=16 */
+                case 0x0B0: /* BINS msb>=16 lsb<16  */
+                case 0x0D0: { /* BINS msb<16  lsb<16  */
                     /*
                      * Insert reg1's low bits into reg2 at [msb:lsb].
                      * Only the low four bits of each position are
@@ -2029,18 +2118,18 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                      */
                     const uint32_t msb = ((w1 >> 12) & 0xFu) |
                                          ((sub & 0x7F0u) != 0x0D0u ? 16u : 0u);
-                    const uint32_t lsb = (((w1 >> 8) & 0x8u) |
-                                          ((w1 >> 1) & 0x7u)) |
-                                         ((sub & 0x7F0u) == 0x090u ? 16u : 0u);
+                    const uint32_t lsb =
+                        (((w1 >> 8) & 0x8u) | ((w1 >> 1) & 0x7u)) |
+                        ((sub & 0x7F0u) == 0x090u ? 16u : 0u);
                     if (msb < lsb) {
                         EXC(G4MH_EXC_RIE);
                     }
                     const uint32_t width = msb - lsb + 1u;
                     const uint32_t mask = (width >= 32u)
-                                            ? 0xFFFFFFFFu
-                                            : (((1u << width) - 1u) << lsb);
-                    const uint32_t res = (c->r[r2] & ~mask) |
-                                         ((c->r[r1] << lsb) & mask);
+                                              ? 0xFFFFFFFFu
+                                              : (((1u << width) - 1u) << lsb);
+                    const uint32_t res =
+                        (c->r[r2] & ~mask) | ((c->r[r1] << lsb) & mask);
                     set_logic(c, res);
                     wr(c, r2, res);
                     goto sub_done;
@@ -2050,16 +2139,16 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 }
 
                 switch (sub & 0x7FDu) {
-                case 0x220: {                       /* MUL / MULU       */
+                case 0x220: { /* MUL / MULU       */
                     const uint32_t r3 = sel;
-                    if ((sub & 0x2u) == 0u) {       /* MUL: signed      */
+                    if ((sub & 0x2u) == 0u) { /* MUL: signed      */
                         const int64_t p = (int64_t)(int32_t)c->r[r2] *
                                           (int64_t)(int32_t)c->r[r1];
                         wr(c, r2, (uint32_t)p);
                         wr(c, r3, (uint32_t)((uint64_t)p >> 32));
-                    } else {                        /* MULU: unsigned   */
-                        const uint64_t p = (uint64_t)c->r[r2] *
-                                           (uint64_t)c->r[r1];
+                    } else { /* MULU: unsigned   */
+                        const uint64_t p =
+                            (uint64_t)c->r[r2] * (uint64_t)c->r[r1];
                         wr(c, r2, (uint32_t)p);
                         wr(c, r3, (uint32_t)(p >> 32));
                     }
@@ -2076,8 +2165,8 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                  * overflow rule wrong in. CC-RH emits DIVQ for ordinary C
                  * integer division, so this is the form a real guest hits.
                  */
-                case 0x2C0:                         /* DIV / DIVU       */
-                case 0x2FC: {                       /* DIVQ / DIVQU     */
+                case 0x2C0: /* DIV / DIVU       */
+                case 0x2FC: { /* DIVQ / DIVQU     */
                     const uint32_t r3 = sel;
                     const uint32_t d = c->r[r1];
                     if (d == 0u) {
@@ -2086,7 +2175,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                         c->psw |= G4MH_PSW_OV;
                         break;
                     }
-                    if ((sub & 0x2u) == 0u) {       /* DIV: signed      */
+                    if ((sub & 0x2u) == 0u) { /* DIV: signed      */
                         const int32_t a = (int32_t)c->r[r2];
                         const int32_t b = (int32_t)d;
                         if (a == INT32_MIN && b == -1) {
@@ -2099,7 +2188,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                         c->psw &= ~G4MH_PSW_OV;
                         wr(c, r2, (uint32_t)q);
                         wr(c, r3, (uint32_t)r);
-                    } else {                        /* DIVU: unsigned   */
+                    } else { /* DIVU: unsigned   */
                         const uint32_t q = c->r[r2] / d;
                         const uint32_t r = c->r[r2] % d;
                         set_zs(c, q);
@@ -2110,7 +2199,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     break;
                 }
 
-                case 0x280: {                       /* DIVH / DIVHU     */
+                case 0x280: { /* DIVH / DIVHU     */
                     /*
                      * Only the *lower halfword* of reg1 is the divisor --
                      * sign-extended for DIVH, zero-extended for DIVHU --
@@ -2122,8 +2211,8 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     const uint32_t r3 = sel;
                     const bool sgn = (sub & 0x2u) == 0u;
                     const uint32_t lo = c->r[r1] & 0xFFFFu;
-                    const uint32_t d = sgn ? (uint32_t)(int32_t)(int16_t)lo
-                                           : lo;
+                    const uint32_t d =
+                        sgn ? (uint32_t)(int32_t)(int16_t)lo : lo;
                     if (d == 0u) {
                         c->psw |= G4MH_PSW_OV;
                         break;
@@ -2160,17 +2249,17 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                      * would also swallow DIV and DIVQ, which is why this
                      * runs only after they have had their exact cases.
                      */
-                    if ((sub & 0x7C0u) == 0x240u) {  /* MUL/MULU imm9   */
+                    if ((sub & 0x7C0u) == 0x240u) { /* MUL/MULU imm9   */
                         const uint32_t r3 = sel;
                         const uint32_t imm9 = (((sub >> 2) & 0xFu) << 5) | r1;
-                        if ((sub & 0x2u) == 0u) {   /* MUL: sign-extend */
+                        if ((sub & 0x2u) == 0u) { /* MUL: sign-extend */
                             const int64_t p = (int64_t)(int32_t)c->r[r2] *
                                               (int64_t)emu_sext(imm9, 9);
                             wr(c, r2, (uint32_t)p);
                             wr(c, r3, (uint32_t)((uint64_t)p >> 32));
-                        } else {                    /* MULU: zero-extend */
-                            const uint64_t p = (uint64_t)c->r[r2] *
-                                               (uint64_t)imm9;
+                        } else { /* MULU: zero-extend */
+                            const uint64_t p =
+                                (uint64_t)c->r[r2] * (uint64_t)imm9;
                             wr(c, r2, (uint32_t)p);
                             wr(c, r3, (uint32_t)(p >> 32));
                         }
@@ -2197,7 +2286,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                  * uses. The two must agree: it decides the length and
                  * this decides the meaning.
                  */
-                if (r2 != 0u) {                     /* LD.BU disp16     */
+                if (r2 != 0u) { /* LD.BU disp16     */
                     /*
                      * The one load whose displacement is not naturally
                      * aligned, so its bit 0 has nowhere to live in the
@@ -2205,13 +2294,14 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                      * instead -- which is why 0x3C and 0x3D are one
                      * instruction here and two everywhere else.
                      */
-                    const uint32_t disp = (uint32_t)(w1 & 0xFFFEu) |
-                                          (op & 1u);
+                    const uint32_t disp = (uint32_t)(w1 & 0xFFFEu) | (op & 1u);
                     uint32_t v;
                     const g4mh_exc_t e =
                         g4mh_load(c, c->r[r1] + (uint32_t)emu_sext(disp, 16),
                                   1u, false, &v);
-                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                        EXC(e);
+                    }
                     wr(c, r2, v);
                     break;
                 }
@@ -2231,7 +2321,9 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     uint32_t sp;
 
                     const g4mh_exc_t e = do_prepare_save(c, list, &sp);
-                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                        EXC(e);
+                    }
                     sp -= imm5 << 2;
                     c->r[3] = sp;
 
@@ -2243,10 +2335,10 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                          * w1 -- the ISA's only 64-bit encoding, and the
                          * one the length decoder now reaches.
                          */
-                        c->r[30] = (ff == 0u) ? sp
-                                 : (ff == 1u) ? (uint32_t)emu_sext(w2, 16)
-                                 : (ff == 2u) ? (w2 << 16)
-                                              : ((w3 << 16) | w2);
+                        c->r[30] = (ff == 0u)   ? sp
+                                   : (ff == 1u) ? (uint32_t)emu_sext(w2, 16)
+                                   : (ff == 2u) ? (w2 << 16)
+                                                : ((w3 << 16) | w2);
                     }
                     break;
                 }
@@ -2275,50 +2367,60 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                  * and not out of the manual's diagrams.
                  */
                 {
-                    const uint32_t r3   = (w1 >> 11) & 0x1Fu;
-                    const uint32_t sub  = w1 & 0x0Fu;
-                    const bool     is_b = (sub == 0x5u) ||
-                                          (sub == 0xDu && op == 0x3Cu);
-                    const uint32_t d0   = (w1 >> 4) & 1u;
+                    const uint32_t r3 = (w1 >> 11) & 0x1Fu;
+                    const uint32_t sub = w1 & 0x0Fu;
+                    const bool is_b =
+                        (sub == 0x5u) || (sub == 0xDu && op == 0x3Cu);
+                    const uint32_t d0 = (w1 >> 4) & 1u;
                     uint32_t disp;
                     uint32_t addr;
                     uint32_t v;
                     g4mh_exc_t e;
 
                     if (!is_b && d0 != 0u) {
-                        EXC(G4MH_EXC_RIE);      /* opcode bit, not disp */
+                        EXC(G4MH_EXC_RIE); /* opcode bit, not disp */
                     }
 
                     disp = (w2 << 7) | ((w1 >> 4) & 0x7Fu);
                     addr = c->r[r1] + (uint32_t)emu_sext(disp, 23);
 
                     switch ((sub << 1) | (op & 1u)) {
-                    case (0x5u << 1) | 0u:      /* LD.B  disp23 */
+                    case (0x5u << 1) | 0u: /* LD.B  disp23 */
                         e = g4mh_load(c, addr, 1u, true, &v);
-                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                            EXC(e);
+                        }
                         wr(c, r3, v);
                         break;
-                    case (0x5u << 1) | 1u:      /* LD.BU disp23 */
+                    case (0x5u << 1) | 1u: /* LD.BU disp23 */
                         e = g4mh_load(c, addr, 1u, false, &v);
-                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                            EXC(e);
+                        }
                         wr(c, r3, v);
                         break;
-                    case (0x7u << 1) | 0u:      /* LD.H  disp23 */
+                    case (0x7u << 1) | 0u: /* LD.H  disp23 */
                         e = g4mh_load(c, addr, 2u, true, &v);
-                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                            EXC(e);
+                        }
                         wr(c, r3, v);
                         break;
-                    case (0x7u << 1) | 1u:      /* LD.HU disp23 */
+                    case (0x7u << 1) | 1u: /* LD.HU disp23 */
                         e = g4mh_load(c, addr, 2u, false, &v);
-                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                            EXC(e);
+                        }
                         wr(c, r3, v);
                         break;
-                    case (0x9u << 1) | 0u:      /* LD.W  disp23 */
+                    case (0x9u << 1) | 0u: /* LD.W  disp23 */
                         e = g4mh_load(c, addr, 4u, false, &v);
-                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                            EXC(e);
+                        }
                         wr(c, r3, v);
                         break;
-                    case (0x9u << 1) | 1u: {    /* LD.DW disp23 */
+                    case (0x9u << 1) | 1u: { /* LD.DW disp23 */
                         /*
                          * "reg3 must be an even-numbered register. If an
                          * odd-numbered register is specified, bit 0 of
@@ -2339,31 +2441,45 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                         const uint32_t rd = r3 & ~1u;
                         uint32_t lo, hi;
                         e = g4mh_load(c, addr, 4u, false, &lo);
-                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                            EXC(e);
+                        }
                         e = g4mh_load(c, addr + 4u, 4u, false, &hi);
-                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                            EXC(e);
+                        }
                         wr(c, rd, lo);
                         wr(c, rd + 1u, hi);
                         break;
                     }
-                    case (0xDu << 1) | 0u:      /* ST.B  disp23 */
+                    case (0xDu << 1) | 0u: /* ST.B  disp23 */
                         e = g4mh_store(c, addr, 1u, c->r[r3]);
-                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                            EXC(e);
+                        }
                         break;
-                    case (0xDu << 1) | 1u:      /* ST.H  disp23 */
+                    case (0xDu << 1) | 1u: /* ST.H  disp23 */
                         e = g4mh_store(c, addr, 2u, c->r[r3]);
-                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                            EXC(e);
+                        }
                         break;
-                    case (0xFu << 1) | 0u:      /* ST.W  disp23 */
+                    case (0xFu << 1) | 0u: /* ST.W  disp23 */
                         e = g4mh_store(c, addr, 4u, c->r[r3]);
-                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                            EXC(e);
+                        }
                         break;
-                    case (0xFu << 1) | 1u: {    /* ST.DW disp23 */
+                    case (0xFu << 1) | 1u: { /* ST.DW disp23 */
                         const uint32_t rs = r3 & ~1u;
                         e = g4mh_store(c, addr, 4u, c->r[rs]);
-                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                            EXC(e);
+                        }
                         e = g4mh_store(c, addr + 4u, 4u, c->r[rs + 1u]);
-                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                            EXC(e);
+                        }
                         break;
                     }
                     default:
@@ -2392,8 +2508,8 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
              * return address is written and discarded, and one encoding
              * serves both.
              */
-            const uint32_t d = ((uint32_t)(w0 & 0x3Fu) << 16) |
-                               ((uint32_t)w1 & 0xFFFEu);
+            const uint32_t d =
+                ((uint32_t)(w0 & 0x3Fu) << 16) | ((uint32_t)w1 & 0xFFFEu);
             wr(c, r2, next);
             pc = pc + (uint32_t)emu_sext(d, 22);
             goto retired_insn;
@@ -2416,14 +2532,15 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
          * back.
          */
         case 0x3E: {
-            static const uint8_t k_bitop[4] = {
-                BITOP_SET, BITOP_NOT, BITOP_CLR, BITOP_TST
-            };
-            const uint32_t op  = (w0 >> 14) & 0x3u;
+            static const uint8_t k_bitop[4] = {BITOP_SET, BITOP_NOT, BITOP_CLR,
+                                               BITOP_TST};
+            const uint32_t op = (w0 >> 14) & 0x3u;
             const uint32_t bit = (w0 >> 11) & 0x7u;
             const uint32_t adr = c->r[r1] + (uint32_t)(int32_t)(int16_t)w1;
             const g4mh_exc_t e = do_bitop(c, k_bitop[op], adr, bit);
-            if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) { EXC(e); }
+            if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                EXC(e);
+            }
             break;
         }
         }
@@ -2466,7 +2583,7 @@ out:
 
 static void interp_reset(g4mh_cpu_t *c)
 {
-    (void)c;   /* no translation state to discard */
+    (void)c; /* no translation state to discard */
 }
 
 /* Adapters onto emu_backend_t; the cast is paid once per budget. */
@@ -2482,10 +2599,10 @@ static emu_run_reason_t interp_run_cpu(emu_cpu_t *cpu, uint32_t budget,
 }
 
 const emu_backend_t g4mh_backend_interp = {
-    .name       = "interp",
-    .init       = NULL,
-    .reset      = interp_reset_cpu,
-    .run        = interp_run_cpu,
+    .name = "interp",
+    .init = NULL,
+    .reset = interp_reset_cpu,
+    .run = interp_run_cpu,
     .invalidate = NULL,
 };
 

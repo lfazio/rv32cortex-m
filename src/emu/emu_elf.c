@@ -24,13 +24,13 @@
 /* ELF32 structures (little-endian, as used by RV32)                   */
 /* ------------------------------------------------------------------ */
 
-#define EI_NIDENT   16
+#define EI_NIDENT 16
 
-#define ET_EXEC     2
-#define PT_LOAD     1
+#define ET_EXEC 2
+#define PT_LOAD 1
 
 typedef struct {
-    uint8_t  e_ident[EI_NIDENT];
+    uint8_t e_ident[EI_NIDENT];
     uint16_t e_type;
     uint16_t e_machine;
     uint32_t e_version;
@@ -71,16 +71,16 @@ static uint16_t rd16(const uint8_t *p)
 
 static uint32_t rd32(const uint8_t *p)
 {
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
-           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
 }
 
 bool emu_elf_is_elf(const void *image, size_t len)
 {
     const uint8_t *const b = (const uint8_t *)image;
 
-    return len >= 4u && b[0] == 0x7Fu && b[1] == 'E' &&
-           b[2] == 'L' && b[3] == 'F';
+    return len >= 4u && b[0] == 0x7Fu && b[1] == 'E' && b[2] == 'L' &&
+           b[3] == 'F';
 }
 
 uint16_t emu_elf_machine(const void *image, size_t len)
@@ -117,12 +117,12 @@ static const char *elf_walk(emu_bus_t *bus, const void *image, size_t len,
         return "not little-endian";
     }
 
-    const uint16_t e_type    = rd16(img + 16);
+    const uint16_t e_type = rd16(img + 16);
     const uint16_t e_machine = rd16(img + 18);
-    const uint32_t e_entry   = rd32(img + 24);
-    const uint32_t e_phoff   = rd32(img + 28);
+    const uint32_t e_entry = rd32(img + 24);
+    const uint32_t e_phoff = rd32(img + 28);
     const uint16_t e_phentsz = rd16(img + 42);
-    const uint16_t e_phnum   = rd16(img + 44);
+    const uint16_t e_phnum = rd16(img + 44);
 
     if (e_type != ET_EXEC) {
         return "not a static executable (ET_EXEC)";
@@ -158,10 +158,10 @@ static const char *elf_walk(emu_bus_t *bus, const void *image, size_t len,
         }
 
         const uint32_t p_offset = rd32(ph + 4);
-        const uint32_t p_vaddr  = rd32(ph + 8);
-        const uint32_t p_paddr  = rd32(ph + 12);
+        const uint32_t p_vaddr = rd32(ph + 8);
+        const uint32_t p_paddr = rd32(ph + 12);
         const uint32_t p_filesz = rd32(ph + 16);
-        const uint32_t p_memsz  = rd32(ph + 20);
+        const uint32_t p_memsz = rd32(ph + 20);
 
         if (p_filesz > p_memsz) {
             return "segment filesz exceeds memsz";
@@ -174,10 +174,9 @@ static const char *elf_walk(emu_bus_t *bus, const void *image, size_t len,
          * Load at the physical address: these are bare-metal images with
          * no MMU, and p_paddr is what a loader is supposed to honour.
          */
-        const bool in_ram = ram_size != 0u &&
-                            p_paddr >= ram_base &&
-                            (uint64_t)p_paddr + p_memsz <=
-                                (uint64_t)ram_base + ram_size;
+        const bool in_ram =
+            ram_size != 0u && p_paddr >= ram_base &&
+            (uint64_t)p_paddr + p_memsz <= (uint64_t)ram_base + ram_size;
 
         if (ram_size != 0u && !in_ram) {
             /*
@@ -187,9 +186,8 @@ static const char *elf_walk(emu_bus_t *bus, const void *image, size_t len,
              * them into guest RAM is what used to make the biggest
              * architecture tests not fit at all.
              */
-            if (p_filesz != 0u &&
-                !emu_bus_add_rom(bus, "elf", p_paddr, img + p_offset,
-                                 p_filesz)) {
+            if (p_filesz != 0u && !emu_bus_add_rom(bus, "elf", p_paddr,
+                                                   img + p_offset, p_filesz)) {
                 return "no room to map a segment";
             }
 
@@ -214,12 +212,12 @@ static const char *elf_walk(emu_bus_t *bus, const void *image, size_t len,
                     (uint64_t)bss + rem > (uint64_t)ram_base + ram_size) {
                     return "segment .bss lands outside guest RAM";
                 }
-                static const uint8_t zeros[256] = { 0 };
+                static const uint8_t zeros[256] = {0};
                 uint32_t addr = bss;
 
                 while (rem != 0u) {
-                    const uint32_t n = (rem > sizeof(zeros))
-                                     ? (uint32_t)sizeof(zeros) : rem;
+                    const uint32_t n =
+                        (rem > sizeof(zeros)) ? (uint32_t)sizeof(zeros) : rem;
 
                     if (!emu_bus_load(bus, addr, zeros, n)) {
                         return "bss does not fit in guest memory";
@@ -240,12 +238,12 @@ static const char *elf_walk(emu_bus_t *bus, const void *image, size_t len,
 
         /* Zero the .bss tail. */
         if (p_memsz > p_filesz) {
-            static const uint8_t zeros[256] = { 0 };
+            static const uint8_t zeros[256] = {0};
             uint32_t addr = p_paddr + p_filesz;
             uint32_t rem = p_memsz - p_filesz;
             while (rem != 0u) {
-                const uint32_t n = (rem > sizeof(zeros)) ? (uint32_t)sizeof(zeros)
-                                                         : rem;
+                const uint32_t n =
+                    (rem > sizeof(zeros)) ? (uint32_t)sizeof(zeros) : rem;
                 if (!emu_bus_load(bus, addr, zeros, n)) {
                     return "bss does not fit in guest memory";
                 }
@@ -270,18 +268,18 @@ const char *emu_elf_load(emu_bus_t *bus, const void *image, size_t len,
                          uint16_t machine, uint16_t alt_machine,
                          uint32_t *entry, uint16_t *out_machine)
 {
-    return elf_walk(bus, image, len, machine, alt_machine, 0u, 0u,
-                    entry, out_machine);
+    return elf_walk(bus, image, len, machine, alt_machine, 0u, 0u, entry,
+                    out_machine);
 }
 
 const char *emu_elf_map(emu_bus_t *bus, const void *image, size_t len,
                         uint16_t machine, uint16_t alt_machine,
-                        uint32_t ram_base, uint32_t ram_size,
-                        uint32_t *entry, uint16_t *out_machine)
+                        uint32_t ram_base, uint32_t ram_size, uint32_t *entry,
+                        uint16_t *out_machine)
 {
     if (ram_size == 0u) {
         return "emu_elf_map needs a guest RAM window";
     }
-    return elf_walk(bus, image, len, machine, alt_machine, ram_base,
-                    ram_size, entry, out_machine);
+    return elf_walk(bus, image, len, machine, alt_machine, ram_base, ram_size,
+                    entry, out_machine);
 }

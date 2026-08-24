@@ -20,10 +20,10 @@ extern "C" {
 
 struct g4mh_cpu;
 
-#define G4MH_BOOTCTRL_BASE      0xFFFB2000u
-#define G4MH_BOOTCTRL_SIZE      0x00000010u
-#define G4MH_BOOTCTRL_OFF       0x0000u
-#define G4MH_BOOTCTRL_BC_MASK   0x3Fu     /* BC5..BC0, one per PE */
+#define G4MH_BOOTCTRL_BASE 0xFFFB2000u
+#define G4MH_BOOTCTRL_SIZE 0x00000010u
+#define G4MH_BOOTCTRL_OFF 0x0000u
+#define G4MH_BOOTCTRL_BC_MASK 0x3Fu /* BC5..BC0, one per PE */
 
 typedef struct g4mh_boot {
     uint32_t bc;

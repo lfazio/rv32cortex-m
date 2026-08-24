@@ -62,17 +62,34 @@
  * does. **Payload propagation is therefore unverified against hardware**;
  * if a guest is ever seen to depend on it, this is the line to revisit.
  */
-#define G4MH_QNAN       0x7FC00000u
+#define G4MH_QNAN 0x7FC00000u
 
-#define F_EXP(x)        (((x) >> 23) & 0xFFu)
-#define F_MANT(x)       ((x) & 0x007FFFFFu)
+#define F_EXP(x) (((x) >> 23) & 0xFFu)
+#define F_MANT(x) ((x) & 0x007FFFFFu)
 
-static bool f_is_nan(uint32_t x)  { return F_EXP(x) == 0xFFu && F_MANT(x) != 0u; }
-static bool f_is_snan(uint32_t x) { return f_is_nan(x) && (F_MANT(x) & 0x00400000u) == 0u; }
-static bool f_is_zero(uint32_t x) { return (x & 0x7FFFFFFFu) == 0u; }
-static bool f_is_neg(uint32_t x)  { return (x & 0x80000000u) != 0u; }
+static bool f_is_nan(uint32_t x)
+{
+    return F_EXP(x) == 0xFFu && F_MANT(x) != 0u;
+}
+static bool f_is_snan(uint32_t x)
+{
+    return f_is_nan(x) && (F_MANT(x) & 0x00400000u) == 0u;
+}
+static bool f_is_zero(uint32_t x)
+{
+    return (x & 0x7FFFFFFFu) == 0u;
+}
+static bool f_is_neg(uint32_t x)
+{
+    return (x & 0x80000000u) != 0u;
+}
 
-static float32_t f_v(uint32_t bits) { float32_t f; f.v = bits; return f; }
+static float32_t f_v(uint32_t bits)
+{
+    float32_t f;
+    f.v = bits;
+    return f;
+}
 
 /* ------------------------------------------------------------------ */
 /* Double precision, and the register pairs it lives in                */
@@ -90,12 +107,15 @@ static float32_t f_v(uint32_t bits) { float32_t f; f.v = bits; return f; }
  * no assembler can produce the case, so RIE would be a rule invented
  * here.
  */
-#define D_QNAN          UINT64_C(0x7FF8000000000000)
+#define D_QNAN UINT64_C(0x7FF8000000000000)
 
-#define D_EXP(x)        (((x) >> 52) & 0x7FFu)
-#define D_MANT(x)       ((x) & UINT64_C(0x000FFFFFFFFFFFFF))
+#define D_EXP(x) (((x) >> 52) & 0x7FFu)
+#define D_MANT(x) ((x) & UINT64_C(0x000FFFFFFFFFFFFF))
 
-static bool d_is_nan(uint64_t x)  { return D_EXP(x) == 0x7FFu && D_MANT(x) != 0u; }
+static bool d_is_nan(uint64_t x)
+{
+    return D_EXP(x) == 0x7FFu && D_MANT(x) != 0u;
+}
 static bool d_is_snan(uint64_t x)
 {
     return d_is_nan(x) && (D_MANT(x) & UINT64_C(0x0008000000000000)) == 0u;
@@ -105,7 +125,12 @@ static bool d_is_subnormal(uint64_t x)
     return D_EXP(x) == 0u && D_MANT(x) != 0u;
 }
 
-static float64_t d_v(uint64_t bits) { float64_t f; f.v = bits; return f; }
+static float64_t d_v(uint64_t bits)
+{
+    float64_t f;
+    f.v = bits;
+    return f;
+}
 
 static uint64_t d_get(const g4mh_cpu_t *c, uint32_t reg)
 {
@@ -140,10 +165,14 @@ static void fpsr_set(g4mh_cpu_t *c, uint32_t v)
 static uint_fast8_t sf_round(uint32_t rm)
 {
     switch (rm & 3u) {
-    case G4MH_RM_RZ: return softfloat_round_minMag;
-    case G4MH_RM_RP: return softfloat_round_max;
-    case G4MH_RM_RM: return softfloat_round_min;
-    default:         return softfloat_round_near_even;
+    case G4MH_RM_RZ:
+        return softfloat_round_minMag;
+    case G4MH_RM_RP:
+        return softfloat_round_max;
+    case G4MH_RM_RM:
+        return softfloat_round_min;
+    default:
+        return softfloat_round_near_even;
     }
 }
 
@@ -169,11 +198,21 @@ static uint32_t f_flags(void)
     const uint_fast8_t f = softfloat_exceptionFlags;
     uint32_t out = 0u;
 
-    if (f & softfloat_flag_inexact)   { out |= G4MH_FPX_I; }
-    if (f & softfloat_flag_underflow) { out |= G4MH_FPX_U; }
-    if (f & softfloat_flag_overflow)  { out |= G4MH_FPX_O; }
-    if (f & softfloat_flag_infinite)  { out |= G4MH_FPX_Z; }
-    if (f & softfloat_flag_invalid)   { out |= G4MH_FPX_V; }
+    if (f & softfloat_flag_inexact) {
+        out |= G4MH_FPX_I;
+    }
+    if (f & softfloat_flag_underflow) {
+        out |= G4MH_FPX_U;
+    }
+    if (f & softfloat_flag_overflow) {
+        out |= G4MH_FPX_O;
+    }
+    if (f & softfloat_flag_infinite) {
+        out |= G4MH_FPX_Z;
+    }
+    if (f & softfloat_flag_invalid) {
+        out |= G4MH_FPX_V;
+    }
     return out;
 }
 
@@ -242,10 +281,10 @@ static uint32_t f_flush_in(g4mh_cpu_t *c, uint32_t x, bool *flushed)
         return x;
     }
     if ((fpsr_get(c) & G4MH_FPSR_FS) == 0u) {
-        return x;                       /* caller raises E */
+        return x; /* caller raises E */
     }
     *flushed = true;
-    return x & 0x80000000u;             /* zero, same sign */
+    return x & 0x80000000u; /* zero, same sign */
 }
 
 /* The same for a double. Split from the bit helpers above only because
@@ -256,10 +295,10 @@ static uint64_t d_flush_in(g4mh_cpu_t *c, uint64_t x, bool *flushed)
         return x;
     }
     if ((fpsr_get(c) & G4MH_FPSR_FS) == 0u) {
-        return x;                       /* caller raises E */
+        return x; /* caller raises E */
     }
     *flushed = true;
-    return x & UINT64_C(0x8000000000000000);   /* zero, same sign */
+    return x & UINT64_C(0x8000000000000000); /* zero, same sign */
 }
 
 /* ------------------------------------------------------------------ */
@@ -301,12 +340,11 @@ static bool f_compare(uint32_t fcond, uint32_t reg1_v, uint32_t reg2_v,
                (unordered && (fcond & 8u) != 0u);
 
     if (!unordered) {
-        less  = f32_lt_quiet(f_v(reg2_v), f_v(reg1_v));
+        less = f32_lt_quiet(f_v(reg2_v), f_v(reg1_v));
         equal = f32_eq(f_v(reg2_v), f_v(reg1_v));
     }
 
-    return (((fcond >> 2) & 1u) && less) ||
-           (((fcond >> 1) & 1u) && equal) ||
+    return (((fcond >> 2) & 1u) && less) || (((fcond >> 1) & 1u) && equal) ||
            (((fcond >> 0) & 1u) && unordered);
 }
 
@@ -329,12 +367,11 @@ static bool d_compare(uint32_t fcond, uint64_t reg1_v, uint64_t reg2_v,
                (unordered && (fcond & 8u) != 0u);
 
     if (!unordered) {
-        less  = f64_lt_quiet(d_v(reg2_v), d_v(reg1_v));
+        less = f64_lt_quiet(d_v(reg2_v), d_v(reg1_v));
         equal = f64_eq(d_v(reg2_v), d_v(reg1_v));
     }
 
-    return (((fcond >> 2) & 1u) && less) ||
-           (((fcond >> 1) & 1u) && equal) ||
+    return (((fcond >> 2) & 1u) && less) || (((fcond >> 1) & 1u) && equal) ||
            (((fcond >> 0) & 1u) && unordered);
 }
 
@@ -371,7 +408,7 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
     uint32_t res;
     uint32_t raised = 0u;
     bool flushed = false;
-    bool wrote_int = false;             /* result is an integer, not a float */
+    bool wrote_int = false; /* result is an integer, not a float */
 
     /*
      * The double-precision operands, and a 64-bit result.
@@ -401,24 +438,24 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
         /* PSW.Z takes the selected CC bit -- the point of the
          * instruction, which is to get a comparison result out of FPSR
          * and into a place the integer conditional branches can see. */
-        c->psw = (c->psw & ~G4MH_PSW_Z) |
-                 (((cc >> sel) & 1u) ? G4MH_PSW_Z : 0u);
+        c->psw =
+            (c->psw & ~G4MH_PSW_Z) | (((cc >> sel) & 1u) ? G4MH_PSW_Z : 0u);
         return G4MH_EXC_NONE;
     }
 
     switch (sub) {
-    /* ------------------------------------------------------------- */
-    /* Double precision: the single-precision sub-opcode with bit 4   */
-    /* set. 0x460 ADDF.S is 0x470 ADDF.D, 0x448 is 0x458, and so on.  */
-    /*                                                                */
-    /* That regularity came off CC-RH rather than off the manual, and */
-    /* is stated here as a *fact about the encodings* and not as a    */
-    /* rule to derive new ones from: the FMA family has no .D form at */
-    /* all -- CC-RH rejects `fmaf.d` -- so 0x4F0 is not FMAF.D and is */
-    /* not decoded.                                                   */
-    /* ------------------------------------------------------------- */
+        /* ------------------------------------------------------------- */
+        /* Double precision: the single-precision sub-opcode with bit 4   */
+        /* set. 0x460 ADDF.S is 0x470 ADDF.D, 0x448 is 0x458, and so on.  */
+        /*                                                                */
+        /* That regularity came off CC-RH rather than off the manual, and */
+        /* is stated here as a *fact about the encodings* and not as a    */
+        /* rule to derive new ones from: the FMA family has no .D form at */
+        /* all -- CC-RH rejects `fmaf.d` -- so 0x4F0 is not FMAF.D and is */
+        /* not decoded.                                                   */
+        /* ------------------------------------------------------------- */
 
-    case 0x458:                                 /* ABSF.D / NEGF.D      */
+    case 0x458: /* ABSF.D / NEGF.D      */
         /* No arithmetic, so no flags -- and no flushing either: "a
          * subnormal input will not be flushed even if FS is 1", which
          * the manual says of these two specifically. */
@@ -432,9 +469,11 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
         wide = true;
         break;
 
-    case 0x45E: {                               /* SQRTF/RECIPF/RSQRTF.D */
+    case 0x45E: { /* SQRTF/RECIPF/RSQRTF.D */
         db = d_flush_in(c, db, &flushed);
-        if (d_is_subnormal(db)) { return G4MH_EXC_FPP; }
+        if (d_is_subnormal(db)) {
+            return G4MH_EXC_FPP;
+        }
 
         f_begin(c);
         switch (reg1) {
@@ -448,8 +487,8 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
             res64 = f64_div(d_v(UINT64_C(0x3FF0000000000000)), d_v(db)).v;
             break;
         case 2u:
-            res64 = f64_div(d_v(UINT64_C(0x3FF0000000000000)),
-                            f64_sqrt(d_v(db))).v;
+            res64 =
+                f64_div(d_v(UINT64_C(0x3FF0000000000000)), f64_sqrt(d_v(db))).v;
             break;
         default:
             return G4MH_EXC_RIE;
@@ -459,12 +498,12 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
         break;
     }
 
-    case 0x470:                                 /* ADDF.D reg1,reg2,reg3 */
-    case 0x472:                                 /* SUBF.D               */
-    case 0x474:                                 /* MULF.D               */
-    case 0x47E:                                 /* DIVF.D               */
-    case 0x478:                                 /* MAXF.D               */
-    case 0x47A: {                               /* MINF.D               */
+    case 0x470: /* ADDF.D reg1,reg2,reg3 */
+    case 0x472: /* SUBF.D               */
+    case 0x474: /* MULF.D               */
+    case 0x47E: /* DIVF.D               */
+    case 0x478: /* MAXF.D               */
+    case 0x47A: { /* MINF.D               */
         da = d_flush_in(c, da, &flushed);
         db = d_flush_in(c, db, &flushed);
         if (d_is_subnormal(da) || d_is_subnormal(db)) {
@@ -473,10 +512,18 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
 
         f_begin(c);
         switch (sub) {
-        case 0x470: res64 = f64_add(d_v(db), d_v(da)).v; break;
-        case 0x472: res64 = f64_sub(d_v(db), d_v(da)).v; break;
-        case 0x474: res64 = f64_mul(d_v(db), d_v(da)).v; break;
-        case 0x47E: res64 = f64_div(d_v(db), d_v(da)).v; break;
+        case 0x470:
+            res64 = f64_add(d_v(db), d_v(da)).v;
+            break;
+        case 0x472:
+            res64 = f64_sub(d_v(db), d_v(da)).v;
+            break;
+        case 0x474:
+            res64 = f64_mul(d_v(db), d_v(da)).v;
+            break;
+        case 0x47E:
+            res64 = f64_div(d_v(db), d_v(da)).v;
+            break;
         default: {
             /*
              * MAXF/MINF. IEEE minNum/maxNum: a quiet NaN operand is
@@ -512,25 +559,37 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
     }
 
     /* ---- double to integer, one rounding mode per reg1 ---- */
-    case 0x450:                                 /* .DW / .DUW           */
-    case 0x454: {                               /* .DL / .DUL           */
+    case 0x450: /* .DW / .DUW           */
+    case 0x454: { /* .DL / .DUL           */
         const bool is_unsigned = (reg1 & 0x10u) != 0u;
         const bool to64 = (sub == 0x454u);
         uint_fast8_t rm;
 
         switch (reg1 & 0x0Fu) {
-        case 0u: rm = softfloat_round_near_even; break;
-        case 1u: rm = softfloat_round_minMag;    break;
-        case 2u: rm = softfloat_round_max;       break;
-        case 3u: rm = softfloat_round_min;       break;
-        case 4u: rm = sf_round((fpsr_get(c) & G4MH_FPSR_RM_MASK) >>
-                               G4MH_FPSR_RM_SHIFT);
-                 break;
-        default: return G4MH_EXC_RIE;
+        case 0u:
+            rm = softfloat_round_near_even;
+            break;
+        case 1u:
+            rm = softfloat_round_minMag;
+            break;
+        case 2u:
+            rm = softfloat_round_max;
+            break;
+        case 3u:
+            rm = softfloat_round_min;
+            break;
+        case 4u:
+            rm = sf_round((fpsr_get(c) & G4MH_FPSR_RM_MASK) >>
+                          G4MH_FPSR_RM_SHIFT);
+            break;
+        default:
+            return G4MH_EXC_RIE;
         }
 
         db = d_flush_in(c, db, &flushed);
-        if (d_is_subnormal(db)) { return G4MH_EXC_FPP; }
+        if (d_is_subnormal(db)) {
+            return G4MH_EXC_FPP;
+        }
 
         softfloat_exceptionFlags = 0u;
         if (to64) {
@@ -555,24 +614,37 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
     case 0x452: {
         f_begin(c);
         switch (reg1) {
-        case 0x00u: res64 = i32_to_f64((int32_t)b).v;    break;  /* W  */
-        case 0x10u: res64 = ui32_to_f64(b).v;            break;  /* UW */
-        case 0x01u: res64 = i64_to_f64((int64_t)db).v;   break;  /* L  */
-        case 0x11u: res64 = ui64_to_f64(db).v;           break;  /* UL */
-        case 0x02u:                                              /* S  */
+        case 0x00u:
+            res64 = i32_to_f64((int32_t)b).v;
+            break; /* W  */
+        case 0x10u:
+            res64 = ui32_to_f64(b).v;
+            break; /* UW */
+        case 0x01u:
+            res64 = i64_to_f64((int64_t)db).v;
+            break; /* L  */
+        case 0x11u:
+            res64 = ui64_to_f64(db).v;
+            break; /* UL */
+        case 0x02u: /* S  */
             b = f_flush_in(c, b, &flushed);
-            if (f_is_subnormal(b)) { return G4MH_EXC_FPP; }
+            if (f_is_subnormal(b)) {
+                return G4MH_EXC_FPP;
+            }
             res64 = f32_to_f64(f_v(b)).v;
             break;
-        case 0x03u: {                                            /* D->S */
+        case 0x03u: { /* D->S */
             /* The one member of this group whose result is 32 bits. */
             db = d_flush_in(c, db, &flushed);
-            if (d_is_subnormal(db)) { return G4MH_EXC_FPP; }
+            if (d_is_subnormal(db)) {
+                return G4MH_EXC_FPP;
+            }
             res = f64_to_f32(d_v(db)).v;
             raised = f_flags();
             goto narrow_done;
         }
-        default: return G4MH_EXC_RIE;
+        default:
+            return G4MH_EXC_RIE;
         }
         raised = f_flags();
         wide = true;
@@ -581,7 +653,7 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
     }
 
     /* ---- one-operand group, reg1 selects the operation ---- */
-    case 0x448:                                 /* ABSF.S / NEGF.S      */
+    case 0x448: /* ABSF.S / NEGF.S      */
         if (reg1 == 0u) {
             res = b & 0x7FFFFFFFu;
         } else if (reg1 == 1u) {
@@ -600,16 +672,18 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
         c->r[reg3] = (reg3 == 0u) ? 0u : res;
         return G4MH_EXC_NONE;
 
-    case 0x44E: {                               /* SQRTF/RECIPF/RSQRTF  */
+    case 0x44E: { /* SQRTF/RECIPF/RSQRTF  */
         b = f_flush_in(c, b, &flushed);
-        if (f_is_subnormal(b)) { return G4MH_EXC_FPP; }
+        if (f_is_subnormal(b)) {
+            return G4MH_EXC_FPP;
+        }
 
         f_begin(c);
-        if (reg1 == 0u) {                       /* SQRTF.S              */
+        if (reg1 == 0u) { /* SQRTF.S              */
             res = f32_sqrt(f_v(b)).v;
-        } else if (reg1 == 1u) {                /* RECIPF.S             */
+        } else if (reg1 == 1u) { /* RECIPF.S             */
             res = f32_div(f_v(0x3F800000u), f_v(b)).v;
-        } else if (reg1 == 2u) {                /* RSQRTF.S             */
+        } else if (reg1 == 2u) { /* RSQRTF.S             */
             res = f32_div(f_v(0x3F800000u), f32_sqrt(f_v(b))).v;
         } else {
             return G4MH_EXC_RIE;
@@ -619,15 +693,17 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
     }
 
     /* ---- two-operand arithmetic ---- */
-    case 0x460:                                 /* ADDF.S reg1,reg2,reg3 */
-    case 0x462:                                 /* SUBF.S               */
-    case 0x464:                                 /* MULF.S               */
-    case 0x46E:                                 /* DIVF.S               */
-    case 0x468:                                 /* MAXF.S               */
-    case 0x46A: {                               /* MINF.S               */
+    case 0x460: /* ADDF.S reg1,reg2,reg3 */
+    case 0x462: /* SUBF.S               */
+    case 0x464: /* MULF.S               */
+    case 0x46E: /* DIVF.S               */
+    case 0x468: /* MAXF.S               */
+    case 0x46A: { /* MINF.S               */
         a = f_flush_in(c, a, &flushed);
         b = f_flush_in(c, b, &flushed);
-        if (f_is_subnormal(a) || f_is_subnormal(b)) { return G4MH_EXC_FPP; }
+        if (f_is_subnormal(a) || f_is_subnormal(b)) {
+            return G4MH_EXC_FPP;
+        }
 
         f_begin(c);
         switch (sub) {
@@ -637,10 +713,18 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
          * multiply and wrong in subtract and divide, which is the usual
          * way an operand-order bug ships.
          */
-        case 0x460: res = f32_add(f_v(b), f_v(a)).v; break;
-        case 0x462: res = f32_sub(f_v(b), f_v(a)).v; break;
-        case 0x464: res = f32_mul(f_v(b), f_v(a)).v; break;
-        case 0x46E: res = f32_div(f_v(b), f_v(a)).v; break;
+        case 0x460:
+            res = f32_add(f_v(b), f_v(a)).v;
+            break;
+        case 0x462:
+            res = f32_sub(f_v(b), f_v(a)).v;
+            break;
+        case 0x464:
+            res = f32_mul(f_v(b), f_v(a)).v;
+            break;
+        case 0x46E:
+            res = f32_div(f_v(b), f_v(a)).v;
+            break;
         default: {
             /*
              * MAXF/MINF. SoftFloat has no f32_max, and the architecture's
@@ -662,8 +746,9 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
                 res = a;
             } else if (f_is_zero(a) && f_is_zero(b)) {
                 const bool neg = f_is_neg(a) && f_is_neg(b);
-                res = want_max ? (neg ? 0x80000000u : 0u)
-                               : ((f_is_neg(a) || f_is_neg(b)) ? 0x80000000u : 0u);
+                res = want_max
+                          ? (neg ? 0x80000000u : 0u)
+                          : ((f_is_neg(a) || f_is_neg(b)) ? 0x80000000u : 0u);
             } else {
                 const bool a_lt = f32_lt_quiet(f_v(a), f_v(b));
                 res = (a_lt == want_max) ? b : a;
@@ -676,10 +761,10 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
     }
 
     /* ---- fused multiply-add family ---- */
-    case 0x4E0:                                 /* FMAF.S   r3 += r2*r1 */
-    case 0x4E2:                                 /* FMSF.S   r3 = r2*r1-r3 */
-    case 0x4E4:                                 /* FNMAF.S  r3 = -(r2*r1+r3) */
-    case 0x4E6: {                               /* FNMSF.S  r3 = -(r2*r1-r3) */
+    case 0x4E0: /* FMAF.S   r3 += r2*r1 */
+    case 0x4E2: /* FMSF.S   r3 = r2*r1-r3 */
+    case 0x4E4: /* FNMAF.S  r3 = -(r2*r1+r3) */
+    case 0x4E6: { /* FNMSF.S  r3 = -(r2*r1-r3) */
         uint32_t acc = c->r[reg3];
 
         a = f_flush_in(c, a, &flushed);
@@ -700,23 +785,31 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
          */
         f_begin(c);
         switch (sub) {
-        case 0x4E0: res = f32_mulAdd(f_v(b), f_v(a), f_v(acc)).v; break;
-        case 0x4E2: res = f32_mulAdd(f_v(b), f_v(a),
-                                     f_v(acc ^ 0x80000000u)).v; break;
-        case 0x4E4: res = f32_mulAdd(f_v(b), f_v(a), f_v(acc)).v;
-                    if (!f_is_nan(res)) { res ^= 0x80000000u; }
-                    break;
-        default:    res = f32_mulAdd(f_v(b), f_v(a),
-                                     f_v(acc ^ 0x80000000u)).v;
-                    if (!f_is_nan(res)) { res ^= 0x80000000u; }
-                    break;
+        case 0x4E0:
+            res = f32_mulAdd(f_v(b), f_v(a), f_v(acc)).v;
+            break;
+        case 0x4E2:
+            res = f32_mulAdd(f_v(b), f_v(a), f_v(acc ^ 0x80000000u)).v;
+            break;
+        case 0x4E4:
+            res = f32_mulAdd(f_v(b), f_v(a), f_v(acc)).v;
+            if (!f_is_nan(res)) {
+                res ^= 0x80000000u;
+            }
+            break;
+        default:
+            res = f32_mulAdd(f_v(b), f_v(a), f_v(acc ^ 0x80000000u)).v;
+            if (!f_is_nan(res)) {
+                res ^= 0x80000000u;
+            }
+            break;
         }
         raised = f_flags();
         break;
     }
 
     /* ---- float to integer, one rounding mode per opcode ---- */
-    case 0x440:                                 /* CVTF/TRNCF/CEILF/... */
+    case 0x440: /* CVTF/TRNCF/CEILF/... */
     case 0x444: {
         /*
          * reg1 is the opcode extension *and* carries the signedness in
@@ -731,18 +824,30 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
         uint_fast8_t rm;
 
         switch (reg1 & 0x0Fu) {
-        case 0u: rm = softfloat_round_near_even; break;  /* ROUNDF.SW  */
-        case 1u: rm = softfloat_round_minMag;    break;  /* TRNCF.SW   */
-        case 2u: rm = softfloat_round_max;       break;  /* CEILF.SW   */
-        case 3u: rm = softfloat_round_min;       break;  /* FLOORF.SW  */
-        case 4u: rm = sf_round((fpsr_get(c) & G4MH_FPSR_RM_MASK) >>
-                               G4MH_FPSR_RM_SHIFT);      /* CVTF.SW    */
-                 break;
-        default: return G4MH_EXC_RIE;
+        case 0u:
+            rm = softfloat_round_near_even;
+            break; /* ROUNDF.SW  */
+        case 1u:
+            rm = softfloat_round_minMag;
+            break; /* TRNCF.SW   */
+        case 2u:
+            rm = softfloat_round_max;
+            break; /* CEILF.SW   */
+        case 3u:
+            rm = softfloat_round_min;
+            break; /* FLOORF.SW  */
+        case 4u:
+            rm = sf_round((fpsr_get(c) & G4MH_FPSR_RM_MASK) >>
+                          G4MH_FPSR_RM_SHIFT); /* CVTF.SW    */
+            break;
+        default:
+            return G4MH_EXC_RIE;
         }
 
         b = f_flush_in(c, b, &flushed);
-        if (f_is_subnormal(b)) { return G4MH_EXC_FPP; }
+        if (f_is_subnormal(b)) {
+            return G4MH_EXC_FPP;
+        }
 
         softfloat_exceptionFlags = 0u;
         if (to64) {
@@ -767,10 +872,18 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
          */
         f_begin(c);
         switch (reg1) {
-        case 0x00u: res = i32_to_f32((int32_t)b).v;  break;      /* W  */
-        case 0x10u: res = ui32_to_f32(b).v;          break;      /* UW */
-        case 0x01u: res = i64_to_f32((int64_t)db).v; break;      /* L  */
-        case 0x11u: res = ui64_to_f32(db).v;         break;      /* UL */
+        case 0x00u:
+            res = i32_to_f32((int32_t)b).v;
+            break; /* W  */
+        case 0x10u:
+            res = ui32_to_f32(b).v;
+            break; /* UW */
+        case 0x01u:
+            res = i64_to_f32((int64_t)db).v;
+            break; /* L  */
+        case 0x11u:
+            res = ui64_to_f32(db).v;
+            break; /* UL */
         default:
             /*
              * 0x02/0x03 are the half-precision conversions, which this
@@ -792,7 +905,7 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
          * below because the masks differ only in that bit, and a reader
          * checking the order should not have to work out which wins.
          */
-        if ((sub & 0x7F1u) == 0x430u) {         /* CMPF.D               */
+        if ((sub & 0x7F1u) == 0x430u) { /* CMPF.D               */
             const uint32_t cond = reg3 & 0xFu;
             const uint32_t fcbit = (sub >> 1) & 7u;
             bool invalid = false;
@@ -806,7 +919,7 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
             return f_end(c, invalid ? G4MH_FPX_V : 0u) ? G4MH_EXC_FPP
                                                        : G4MH_EXC_NONE;
         }
-        if ((sub & 0x7F1u) == 0x410u) {         /* CMOVF.D              */
+        if ((sub & 0x7F1u) == 0x410u) { /* CMOVF.D              */
             const uint32_t fcbit = (sub >> 1) & 7u;
             const bool taken =
                 ((fpsr_get(c) >> (G4MH_FPSR_CC_SHIFT + fcbit)) & 1u) != 0u;
@@ -822,7 +935,7 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
         }
 
         /* CMPF.S and CMOVF.S carry a condition in bits 3..1 of `sub`. */
-        if ((sub & 0x7F1u) == 0x420u) {         /* CMPF.S               */
+        if ((sub & 0x7F1u) == 0x420u) { /* CMPF.S               */
             /*
              * fcond is the *reg3 field*; fcbit is the `fff` bits of the
              * sub-opcode. That is the opposite of the obvious reading --
@@ -861,7 +974,7 @@ g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
             return f_end(c, invalid ? G4MH_FPX_V : 0u) ? G4MH_EXC_FPP
                                                        : G4MH_EXC_NONE;
         }
-        if ((sub & 0x7F1u) == 0x400u) {         /* CMOVF.S              */
+        if ((sub & 0x7F1u) == 0x400u) { /* CMOVF.S              */
             const uint32_t fcbit = (sub >> 1) & 7u;
             const bool taken =
                 ((fpsr_get(c) >> (G4MH_FPSR_CC_SHIFT + fcbit)) & 1u) != 0u;

@@ -39,15 +39,17 @@
 
 #if defined(EMU_HOST_JIT_THUMB2)
 
-
 static uint16_t g_ntemps;
 
 #define SCRATCH_ADDR ((uint16_t)(g_ntemps))
-#define SCRATCH_VAL  ((uint16_t)(g_ntemps + 1u))
+#define SCRATCH_VAL ((uint16_t)(g_ntemps + 1u))
 /* One more for the caller's FPSCR, which this block borrows. */
 #define SCRATCH_FPSCR ((uint16_t)(g_ntemps + 2u))
 
-static uint32_t slot(uint16_t n) { return (uint32_t)n * 4u; }
+static uint32_t slot(uint16_t n)
+{
+    return (uint32_t)n * 4u;
+}
 
 /*
  * Where the allocator put each temp, and how many registers that took.
@@ -59,7 +61,7 @@ static uint32_t slot(uint16_t n) { return (uint32_t)n * 4u; }
  * host is the *pair*, the store and the reload, not the width of one
  * access.
  */
-static uint8_t  g_reg[EMU_IR_MAX_TEMPS];
+static uint8_t g_reg[EMU_IR_MAX_TEMPS];
 static uint32_t g_nsaved;
 
 /*
@@ -78,7 +80,7 @@ static int phys(uint16_t n)
 
 void ld_slot(uint32_t rt, uint16_t n)
 {
-    t2_ldr_imm(rt, 13u, slot(n));         /* [sp, #off] */
+    t2_ldr_imm(rt, 13u, slot(n)); /* [sp, #off] */
 }
 
 /*
@@ -118,19 +120,35 @@ static bool reads_a_in_r0(uint8_t op)
 {
     switch ((emu_ir_op_t)op) {
     case EMU_IR_MOV:
-    case EMU_IR_ADD: case EMU_IR_SUB: case EMU_IR_AND:
-    case EMU_IR_OR:  case EMU_IR_XOR:
-    case EMU_IR_SHL: case EMU_IR_SHR: case EMU_IR_SAR:
-    case EMU_IR_ADDI: case EMU_IR_ANDI:
-    case EMU_IR_ORI:  case EMU_IR_XORI:
-    case EMU_IR_SHLI: case EMU_IR_SHRI: case EMU_IR_SARI:
-    case EMU_IR_NOT: case EMU_IR_NEG:
-    case EMU_IR_BSWAP32: case EMU_IR_BSWAP16: case EMU_IR_HSWAP:
-    case EMU_IR_CLZ: case EMU_IR_CTZ:
-    case EMU_IR_SEXT8: case EMU_IR_SEXT16:
-    case EMU_IR_ZEXT8: case EMU_IR_ZEXT16:
+    case EMU_IR_ADD:
+    case EMU_IR_SUB:
+    case EMU_IR_AND:
+    case EMU_IR_OR:
+    case EMU_IR_XOR:
+    case EMU_IR_SHL:
+    case EMU_IR_SHR:
+    case EMU_IR_SAR:
+    case EMU_IR_ADDI:
+    case EMU_IR_ANDI:
+    case EMU_IR_ORI:
+    case EMU_IR_XORI:
+    case EMU_IR_SHLI:
+    case EMU_IR_SHRI:
+    case EMU_IR_SARI:
+    case EMU_IR_NOT:
+    case EMU_IR_NEG:
+    case EMU_IR_BSWAP32:
+    case EMU_IR_BSWAP16:
+    case EMU_IR_HSWAP:
+    case EMU_IR_CLZ:
+    case EMU_IR_CTZ:
+    case EMU_IR_SEXT8:
+    case EMU_IR_SEXT16:
+    case EMU_IR_ZEXT8:
+    case EMU_IR_ZEXT16:
     case EMU_IR_PUT:
-    case EMU_IR_SETPC: case EMU_IR_EXIT:
+    case EMU_IR_SETPC:
+    case EMU_IR_EXIT:
         return true;
     default:
         return false;
@@ -139,7 +157,7 @@ static bool reads_a_in_r0(uint8_t op)
 
 static uint16_t g_r0_holds;
 static uint16_t g_r0_avail;
-static bool     g_r0_first;
+static bool g_r0_first;
 
 void st_slot(uint32_t rt, uint16_t n)
 {
@@ -163,7 +181,7 @@ void st_slot(uint32_t rt, uint16_t n)
         return;
     }
     if (rt == T2_R0 && n == g_dead_store) {
-        g_r0_holds = n;             /* nothing reads the slot */
+        g_r0_holds = n; /* nothing reads the slot */
         return;
     }
     t2_str_imm(rt, 13u, slot(n));
@@ -209,7 +227,7 @@ void ld_operand(uint32_t rt, uint16_t n)
     if (rt == T2_R0 && g_r0_first) {
         g_r0_first = false;
         if (n != EMU_IR_NO_TEMP && n == g_r0_avail) {
-            return;                 /* already there */
+            return; /* already there */
         }
     }
 
@@ -227,7 +245,6 @@ void ld_operand(uint32_t rt, uint16_t n)
     }
     ld_slot(rt, n);
 }
-
 
 static uint32_t use_reg(uint16_t n, uint32_t scratch)
 {
@@ -254,7 +271,10 @@ static uint32_t def_reg(uint16_t n, uint32_t scratch)
  * adjustment.
  */
 #define IR_MAX_EXITS 64u
-typedef struct { uint8_t *at; bool conditional; } ir_exit_t;
+typedef struct {
+    uint8_t *at;
+    bool conditional;
+} ir_exit_t;
 
 /*
  * The kind is recorded, not recovered from the emitted halfword.
@@ -265,8 +285,6 @@ typedef struct { uint8_t *at; bool conditional; } ir_exit_t;
  */
 static ir_exit_t g_exits[IR_MAX_EXITS];
 static uint32_t g_nexits;
-
-
 
 /*
  * Patch a forward branch emitted above to reach `target`.
@@ -292,10 +310,9 @@ static void patch_branch(uint8_t *at, const uint8_t *target, bool conditional)
         const uint32_t j2 = (imm >> 18) & 1u;
         const uint32_t j1 = (imm >> 17) & 1u;
 
-        hw[0] = (uint16_t)((hw[0] & 0xFBC0u) | (s << 10) |
-                           ((imm >> 11) & 0x3Fu));
-        hw[1] = (uint16_t)(0x8000u | (j1 << 13) | (j2 << 11) |
-                           (imm & 0x7FFu));
+        hw[0] =
+            (uint16_t)((hw[0] & 0xFBC0u) | (s << 10) | ((imm >> 11) & 0x3Fu));
+        hw[1] = (uint16_t)(0x8000u | (j1 << 13) | (j2 << 11) | (imm & 0x7FFu));
     } else {
         /* T4: S | imm10 | J1 | 1 | J2 | imm11, with J = !(I ^ S). */
         const uint32_t s = (imm >> 23) & 1u;
@@ -305,8 +322,7 @@ static void patch_branch(uint8_t *at, const uint8_t *target, bool conditional)
         const uint32_t j2 = (~(i2 ^ s)) & 1u;
 
         hw[0] = (uint16_t)(0xF000u | (s << 10) | ((imm >> 11) & 0x3FFu));
-        hw[1] = (uint16_t)(0x9000u | (j1 << 13) | (j2 << 11) |
-                           (imm & 0x7FFu));
+        hw[1] = (uint16_t)(0x9000u | (j1 << 13) | (j2 << 11) | (imm & 0x7FFu));
     }
 }
 
@@ -370,18 +386,28 @@ static void emit_fp_harvest(const emu_ir_target_t *t, bool reclear)
  * there, the frame is wrong and no instruction encoding is implicated.
  */
 #ifndef T2_BISECT
-#  define T2_BISECT 99
+#define T2_BISECT 99
 #endif
 
 static bool bisect_allows(uint8_t op)
 {
     switch ((emu_ir_op_t)op) {
-    case EMU_IR_NOP: case EMU_IR_RETIRE: case EMU_IR_SETPC:
+    case EMU_IR_NOP:
+    case EMU_IR_RETIRE:
+    case EMU_IR_SETPC:
         return T2_BISECT >= 0;
-    case EMU_IR_GET: case EMU_IR_PUT: case EMU_IR_CONST: case EMU_IR_MOV:
+    case EMU_IR_GET:
+    case EMU_IR_PUT:
+    case EMU_IR_CONST:
+    case EMU_IR_MOV:
         return T2_BISECT >= 1;
-    case EMU_IR_ADD: case EMU_IR_SUB: case EMU_IR_AND:
-    case EMU_IR_OR:  case EMU_IR_XOR: case EMU_IR_NOT: case EMU_IR_NEG:
+    case EMU_IR_ADD:
+    case EMU_IR_SUB:
+    case EMU_IR_AND:
+    case EMU_IR_OR:
+    case EMU_IR_XOR:
+    case EMU_IR_NOT:
+    case EMU_IR_NEG:
     /*
      * The immediate forms sit with their register counterparts, which is
      * where they belong and is also the bug this table is prone to:
@@ -392,29 +418,50 @@ static bool bisect_allows(uint8_t op)
      * instructions to 144 and **37,634** -- and isatest still passed,
      * because declining is correct.
      */
-    case EMU_IR_ADDI: case EMU_IR_ANDI:
-    case EMU_IR_ORI:  case EMU_IR_XORI:
+    case EMU_IR_ADDI:
+    case EMU_IR_ANDI:
+    case EMU_IR_ORI:
+    case EMU_IR_XORI:
         return T2_BISECT >= 2;
-    case EMU_IR_SHL: case EMU_IR_SHR: case EMU_IR_SAR:
-    case EMU_IR_SHLI: case EMU_IR_SHRI: case EMU_IR_SARI:
+    case EMU_IR_SHL:
+    case EMU_IR_SHR:
+    case EMU_IR_SAR:
+    case EMU_IR_SHLI:
+    case EMU_IR_SHRI:
+    case EMU_IR_SARI:
         return T2_BISECT >= 3;
-    case EMU_IR_BSWAP32: case EMU_IR_BSWAP16: case EMU_IR_HSWAP:
-    case EMU_IR_CLZ: case EMU_IR_CTZ:
-    case EMU_IR_SEXT8: case EMU_IR_SEXT16:
-    case EMU_IR_ZEXT8: case EMU_IR_ZEXT16:
+    case EMU_IR_BSWAP32:
+    case EMU_IR_BSWAP16:
+    case EMU_IR_HSWAP:
+    case EMU_IR_CLZ:
+    case EMU_IR_CTZ:
+    case EMU_IR_SEXT8:
+    case EMU_IR_SEXT16:
+    case EMU_IR_ZEXT8:
+    case EMU_IR_ZEXT16:
         return T2_BISECT >= 4;
     case EMU_IR_SETCC:
         return T2_BISECT >= 5;
-    case EMU_IR_EXIT: case EMU_IR_EXIT_IF:
+    case EMU_IR_EXIT:
+    case EMU_IR_EXIT_IF:
         return T2_BISECT >= 6;
-    case EMU_IR_MUL: case EMU_IR_MULHS: case EMU_IR_MULHU:
+    case EMU_IR_MUL:
+    case EMU_IR_MULHS:
+    case EMU_IR_MULHU:
         return T2_BISECT >= 7;
-    case EMU_IR_LOAD: case EMU_IR_STORE:
-    case EMU_IR_HELPER: case EMU_IR_HELPER_TRAP:
+    case EMU_IR_LOAD:
+    case EMU_IR_STORE:
+    case EMU_IR_HELPER:
+    case EMU_IR_HELPER_TRAP:
         return T2_BISECT >= 7;
-    case EMU_IR_FGET: case EMU_IR_FPUT: case EMU_IR_FSGNJ:
-    case EMU_IR_FADD: case EMU_IR_FSUB:
-    case EMU_IR_FMUL: case EMU_IR_FDIV: case EMU_IR_FSQRT:
+    case EMU_IR_FGET:
+    case EMU_IR_FPUT:
+    case EMU_IR_FSGNJ:
+    case EMU_IR_FADD:
+    case EMU_IR_FSUB:
+    case EMU_IR_FMUL:
+    case EMU_IR_FDIV:
+    case EMU_IR_FSQRT:
         return T2_BISECT >= 8;
     default:
         return false;
@@ -444,16 +491,23 @@ static bool bisect_allows(uint8_t op)
 bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
 {
     switch (op) {
-    case EMU_IR_FGET: case EMU_IR_FPUT: case EMU_IR_FSGNJ:
+    case EMU_IR_FGET:
+    case EMU_IR_FPUT:
+    case EMU_IR_FSGNJ:
         return true;
 
-    case EMU_IR_FADD: case EMU_IR_FSUB:
-    case EMU_IR_FMUL: case EMU_IR_FDIV:
+    case EMU_IR_FADD:
+    case EMU_IR_FSUB:
+    case EMU_IR_FMUL:
+    case EMU_IR_FDIV:
     case EMU_IR_FSQRT:
         return EMU_IR_FRM(aux) == EMU_IR_FRM_RNE;
 
-    case EMU_IR_FMIN: case EMU_IR_FMAX: case EMU_IR_FCMP:
-    case EMU_IR_FCVT_TO_I: case EMU_IR_FCVT_FROM_I:
+    case EMU_IR_FMIN:
+    case EMU_IR_FMAX:
+    case EMU_IR_FCMP:
+    case EMU_IR_FCVT_TO_I:
+    case EMU_IR_FCVT_FROM_I:
     case EMU_IR_FCLASS:
         return false;
 
@@ -470,9 +524,12 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
      * ask about the FP class and nothing else. It stopped being free the
      * moment an IR pass started asking, which is what surfaced it.
      */
-    case EMU_IR_ROTL: case EMU_IR_ROTLI:
-    case EMU_IR_BEXT: case EMU_IR_BSET:
-    case EMU_IR_BCLR: case EMU_IR_BINV:
+    case EMU_IR_ROTL:
+    case EMU_IR_ROTLI:
+    case EMU_IR_BEXT:
+    case EMU_IR_BSET:
+    case EMU_IR_BCLR:
+    case EMU_IR_BINV:
         return false;
 
     default:
@@ -510,7 +567,8 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_RETIRE:
         if (in->op == (uint8_t)EMU_IR_RETIRE) {
             /* ADD.W r5, r5, #1 */
-            t2_emit32((uint16_t)(0xF100u | T2_CNT), (uint16_t)((T2_CNT << 8) | 1u));
+            t2_emit32((uint16_t)(0xF100u | T2_CNT),
+                      (uint16_t)((T2_CNT << 8) | 1u));
         }
         break;
 
@@ -552,24 +610,39 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         break;
     }
 
-    case EMU_IR_ADD: case EMU_IR_SUB: case EMU_IR_AND:
-    case EMU_IR_OR:  case EMU_IR_XOR: {
+    case EMU_IR_ADD:
+    case EMU_IR_SUB:
+    case EMU_IR_AND:
+    case EMU_IR_OR:
+    case EMU_IR_XOR: {
         const uint32_t ra = use_reg(in->a, T2_R0);
         const uint32_t rb = use_reg(in->b, T2_R1);
         const uint32_t rd = def_reg(in->dst, T2_R0);
 
         switch ((emu_ir_op_t)in->op) {
-        case EMU_IR_ADD: t2_add(rd, ra, rb); break;
-        case EMU_IR_SUB: t2_sub(rd, ra, rb); break;
-        case EMU_IR_AND: t2_and(rd, ra, rb); break;
-        case EMU_IR_OR:  t2_orr(rd, ra, rb); break;
-        default:         t2_eor(rd, ra, rb); break;
+        case EMU_IR_ADD:
+            t2_add(rd, ra, rb);
+            break;
+        case EMU_IR_SUB:
+            t2_sub(rd, ra, rb);
+            break;
+        case EMU_IR_AND:
+            t2_and(rd, ra, rb);
+            break;
+        case EMU_IR_OR:
+            t2_orr(rd, ra, rb);
+            break;
+        default:
+            t2_eor(rd, ra, rb);
+            break;
         }
         st_slot(rd, in->dst);
         break;
     }
 
-    case EMU_IR_SHL: case EMU_IR_SHR: case EMU_IR_SAR: {
+    case EMU_IR_SHL:
+    case EMU_IR_SHR:
+    case EMU_IR_SAR: {
         const uint32_t ra = use_reg(in->a, T2_R0);
         const uint32_t rb = use_reg(in->b, T2_R1);
         const uint32_t rd = def_reg(in->dst, T2_R0);
@@ -586,9 +659,10 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
          */
         t2_imm32(T2_R2, 31u);
         t2_and(T2_R2, rb, T2_R2);
-        t2_shift_reg((in->op == (uint8_t)EMU_IR_SHL) ? T2_LSL
-                       : (in->op == (uint8_t)EMU_IR_SHR) ? T2_LSR : T2_ASR,
-                       rd, ra, T2_R2);
+        t2_shift_reg((in->op == (uint8_t)EMU_IR_SHL)   ? T2_LSL
+                     : (in->op == (uint8_t)EMU_IR_SHR) ? T2_LSR
+                                                       : T2_ASR,
+                     rd, ra, T2_R2);
         st_slot(rd, in->dst);
         break;
     }
@@ -609,8 +683,10 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
      * interface, and promising something the emitter cannot do discards
      * the whole block.
      */
-    case EMU_IR_ADDI: case EMU_IR_ANDI:
-    case EMU_IR_ORI:  case EMU_IR_XORI: {
+    case EMU_IR_ADDI:
+    case EMU_IR_ANDI:
+    case EMU_IR_ORI:
+    case EMU_IR_XORI: {
         const uint32_t ra = use_reg(in->a, T2_R0);
         const uint32_t rd = def_reg(in->dst, T2_R0);
         const uint32_t v = in->imm;
@@ -625,10 +701,18 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             t2_subw(rd, ra, (uint16_t)(-(int32_t)v));
         } else if (t2_expand_imm(v, &i12)) {
             switch ((emu_ir_op_t)in->op) {
-            case EMU_IR_ADDI: t2_add_imm(rd, ra, i12); break;
-            case EMU_IR_ANDI: t2_and_imm(rd, ra, i12); break;
-            case EMU_IR_ORI:  t2_orr_imm(rd, ra, i12); break;
-            default:          t2_eor_imm(rd, ra, i12); break;
+            case EMU_IR_ADDI:
+                t2_add_imm(rd, ra, i12);
+                break;
+            case EMU_IR_ANDI:
+                t2_and_imm(rd, ra, i12);
+                break;
+            case EMU_IR_ORI:
+                t2_orr_imm(rd, ra, i12);
+                break;
+            default:
+                t2_eor_imm(rd, ra, i12);
+                break;
             }
         } else {
             /* No immediate form: materialise and use the register one. */
@@ -636,23 +720,34 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
             t2_imm32(rt, v);
             switch ((emu_ir_op_t)in->op) {
-            case EMU_IR_ADDI: t2_add(rd, ra, rt); break;
-            case EMU_IR_ANDI: t2_and(rd, ra, rt); break;
-            case EMU_IR_ORI:  t2_orr(rd, ra, rt); break;
-            default:          t2_eor(rd, ra, rt); break;
+            case EMU_IR_ADDI:
+                t2_add(rd, ra, rt);
+                break;
+            case EMU_IR_ANDI:
+                t2_and(rd, ra, rt);
+                break;
+            case EMU_IR_ORI:
+                t2_orr(rd, ra, rt);
+                break;
+            default:
+                t2_eor(rd, ra, rt);
+                break;
             }
         }
         st_slot(rd, in->dst);
         break;
     }
 
-    case EMU_IR_SHLI: case EMU_IR_SHRI: case EMU_IR_SARI: {
+    case EMU_IR_SHLI:
+    case EMU_IR_SHRI:
+    case EMU_IR_SARI: {
         const uint32_t ra = use_reg(in->a, T2_R0);
         const uint32_t rd = def_reg(in->dst, T2_R0);
 
-        t2_shift_imm((in->op == (uint8_t)EMU_IR_SHLI) ? T2_LSL
-                       : (in->op == (uint8_t)EMU_IR_SHRI) ? T2_LSR : T2_ASR,
-                       rd, ra, in->imm);
+        t2_shift_imm((in->op == (uint8_t)EMU_IR_SHLI)   ? T2_LSL
+                     : (in->op == (uint8_t)EMU_IR_SHRI) ? T2_LSR
+                                                        : T2_ASR,
+                     rd, ra, in->imm);
         st_slot(rd, in->dst);
         break;
     }
@@ -680,29 +775,53 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
      * whole reason these are IR operations rather than shift-and-mask
      * sequences the backend would have to pattern-match back.
      */
-    case EMU_IR_BSWAP32: case EMU_IR_BSWAP16: case EMU_IR_HSWAP:
-    case EMU_IR_CLZ: case EMU_IR_CTZ:
-    case EMU_IR_SEXT8: case EMU_IR_SEXT16:
-    case EMU_IR_ZEXT8: case EMU_IR_ZEXT16: {
+    case EMU_IR_BSWAP32:
+    case EMU_IR_BSWAP16:
+    case EMU_IR_HSWAP:
+    case EMU_IR_CLZ:
+    case EMU_IR_CTZ:
+    case EMU_IR_SEXT8:
+    case EMU_IR_SEXT16:
+    case EMU_IR_ZEXT8:
+    case EMU_IR_ZEXT16: {
         const uint32_t ra = use_reg(in->a, T2_R0);
         const uint32_t rd = def_reg(in->dst, T2_R0);
 
         switch ((emu_ir_op_t)in->op) {
-        case EMU_IR_BSWAP32: t2_rev(rd, ra); break;
-        case EMU_IR_BSWAP16: t2_rev16(rd, ra); break;
-        case EMU_IR_HSWAP:   t2_shift_imm(T2_ROR, rd, ra, 16u); break;
-        case EMU_IR_CLZ:     t2_clz(rd, ra); break;
+        case EMU_IR_BSWAP32:
+            t2_rev(rd, ra);
+            break;
+        case EMU_IR_BSWAP16:
+            t2_rev16(rd, ra);
+            break;
+        case EMU_IR_HSWAP:
+            t2_shift_imm(T2_ROR, rd, ra, 16u);
+            break;
+        case EMU_IR_CLZ:
+            t2_clz(rd, ra);
+            break;
         /*
          * RBIT then CLZ. Both are defined for a zero input -- CLZ of
          * zero is 32, which is what the IR specifies -- so unlike the
          * x86 lowering this needs no fixup for the case a bit search is
          * most often handed.
          */
-        case EMU_IR_CTZ:     t2_rbit(rd, ra); t2_clz(rd, rd); break;
-        case EMU_IR_SEXT8:   t2_sxtb(rd, ra); break;
-        case EMU_IR_SEXT16:  t2_sxth(rd, ra); break;
-        case EMU_IR_ZEXT8:   t2_uxtb(rd, ra); break;
-        default:             t2_uxth(rd, ra); break;
+        case EMU_IR_CTZ:
+            t2_rbit(rd, ra);
+            t2_clz(rd, rd);
+            break;
+        case EMU_IR_SEXT8:
+            t2_sxtb(rd, ra);
+            break;
+        case EMU_IR_SEXT16:
+            t2_sxth(rd, ra);
+            break;
+        case EMU_IR_ZEXT8:
+            t2_uxtb(rd, ra);
+            break;
+        default:
+            t2_uxth(rd, ra);
+            break;
         }
         st_slot(rd, in->dst);
         break;
@@ -731,7 +850,8 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
         t2_imm32(rd, 0u);
         t2_cmp(ra, rb);
-        t2_emit16((uint16_t)(0xBF00u | (t2_cond(in->aux) << 4) | 0x8u)); /* IT */
+        t2_emit16(
+            (uint16_t)(0xBF00u | (t2_cond(in->aux) << 4) | 0x8u)); /* IT */
         t2_imm32(rd, 1u);
         st_slot(rd, in->dst);
         break;
@@ -739,7 +859,9 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
     /* ---- floating point ----------------------------------------- */
     case EMU_IR_FGET: {
-        if (t->freg_offset == NULL) { return false; }
+        if (t->freg_offset == NULL) {
+            return false;
+        }
         const uint32_t rd = def_reg(in->dst, T2_R0);
 
         t2_ldr_imm(rd, T2_CPU, t->freg_offset(in->imm));
@@ -765,7 +887,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             t2_imm32(T2_R2, 0xFFFFFFFFu);
             t2_cmp(T2_R3, T2_R2);
             t2_imm32(T2_R2, 0x7FC00000u);
-            t2_emit16(0xBF18u);                        /* IT NE */
+            t2_emit16(0xBF18u); /* IT NE */
             t2_mov(rd, T2_R2);
         }
         st_slot(rd, in->dst);
@@ -773,7 +895,9 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     }
 
     case EMU_IR_FPUT:
-        if (t->freg_offset == NULL) { return false; }
+        if (t->freg_offset == NULL) {
+            return false;
+        }
         t2_str_imm(use_reg(in->a, T2_R0), T2_CPU, t->freg_offset(in->imm));
         if ((in->aux & EMU_IR_FP_BOX) != 0u) {
             t2_imm32(T2_R1, 0xFFFFFFFFu);
@@ -810,16 +934,20 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         break;
     }
 
-    case EMU_IR_FADD: case EMU_IR_FSUB:
-    case EMU_IR_FMUL: case EMU_IR_FDIV: {
-        if (!emu_ir_can_lower((emu_ir_op_t)in->op, in->aux)) { return false; }
+    case EMU_IR_FADD:
+    case EMU_IR_FSUB:
+    case EMU_IR_FMUL:
+    case EMU_IR_FDIV: {
+        if (!emu_ir_can_lower((emu_ir_op_t)in->op, in->aux)) {
+            return false;
+        }
         const uint32_t ra = use_reg(in->a, T2_R0);
         const uint32_t rb = use_reg(in->b, T2_R1);
         const uint32_t rd = def_reg(in->dst, T2_R0);
         const bool sub = in->op == (uint8_t)EMU_IR_FSUB;
-        const uint16_t hi = (in->op == (uint8_t)EMU_IR_FMUL) ? T2_VMUL
-                          : (in->op == (uint8_t)EMU_IR_FDIV) ? T2_VDIV
-                                                             : T2_VADD;
+        const uint16_t hi = (in->op == (uint8_t)EMU_IR_FMUL)   ? T2_VMUL
+                            : (in->op == (uint8_t)EMU_IR_FDIV) ? T2_VDIV
+                                                               : T2_VADD;
 
         t2_vmov_core(T2_S0, ra, false);
         t2_vmov_core(T2_S1, rb, false);
@@ -830,7 +958,9 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     }
 
     case EMU_IR_FSQRT: {
-        if (!emu_ir_can_lower((emu_ir_op_t)in->op, in->aux)) { return false; }
+        if (!emu_ir_can_lower((emu_ir_op_t)in->op, in->aux)) {
+            return false;
+        }
         const uint32_t ra = use_reg(in->a, T2_R0);
         const uint32_t rd = def_reg(in->dst, T2_R0);
 
@@ -863,8 +993,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
         t2_cmp(ra, rb);
         /* Branch *over* the exit on the inverse condition. */
-        uint8_t *const skip =
-            t2_bcond_forward(t2_cond(in->aux) ^ 1u);
+        uint8_t *const skip = t2_bcond_forward(t2_cond(in->aux) ^ 1u);
         t2_imm32(T2_R0, in->imm);
         t2_str_imm(T2_R0, T2_CPU, t->pc_offset);
         note_exit(t2_b_forward(), false);
@@ -944,8 +1073,8 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             const uint32_t off = slot((pd >= 0) ? SCRATCH_VAL : in->dst);
 
             t2_emit32((uint16_t)(0xF20Du | (((off >> 11) & 1u) << 10)),
-                      (uint16_t)((((off >> 8) & 7u) << 12) |
-                                 (T2_R3 << 8) | (off & 0xFFu)));
+                      (uint16_t)((((off >> 8) & 7u) << 12) | (T2_R3 << 8) |
+                                 (off & 0xFFu)));
         }
         t2_call((const void *)t->load);
         t2_imm32(T2_R1, 0u);
@@ -1044,8 +1173,12 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         break;
     }
 
-    case EMU_IR_FMIN: case EMU_IR_FMAX: case EMU_IR_FCMP:
-    case EMU_IR_FCVT_TO_I: case EMU_IR_FCVT_FROM_I: case EMU_IR_FCLASS:
+    case EMU_IR_FMIN:
+    case EMU_IR_FMAX:
+    case EMU_IR_FCMP:
+    case EMU_IR_FCVT_TO_I:
+    case EMU_IR_FCVT_FROM_I:
+    case EMU_IR_FCLASS:
     case EMU_IR_SETF:
     case EMU_IR_GETCOND:
     case EMU_IR_SELECT:
@@ -1054,9 +1187,12 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_BITOP_INV:
     case EMU_IR_BITOP_TST:
     case EMU_IR_POPCNT:
-    case EMU_IR_ROTL: case EMU_IR_ROTLI:
-    case EMU_IR_BEXT: case EMU_IR_BSET:
-    case EMU_IR_BCLR: case EMU_IR_BINV:
+    case EMU_IR_ROTL:
+    case EMU_IR_ROTLI:
+    case EMU_IR_BEXT:
+    case EMU_IR_BSET:
+    case EMU_IR_BCLR:
+    case EMU_IR_BINV:
     default:
         return false;
     }
@@ -1085,8 +1221,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_has_fp = false;
     g_fp_written = false;
     for (uint32_t i = 0; i < b->count && !g_has_fp; i++) {
-        if (!b->insn[i].dead &&
-            b->insn[i].op >= (uint8_t)EMU_IR_FADD &&
+        if (!b->insn[i].dead && b->insn[i].op >= (uint8_t)EMU_IR_FADD &&
             b->insn[i].op <= (uint8_t)EMU_IR_FCLASS) {
             g_has_fp = true;
         }
@@ -1151,9 +1286,9 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
          */
         t2_vmrs(T2_R0);
         st_slot(T2_R0, SCRATCH_FPSCR);
-        t2_imm32(T2_R1, 0x02000000u);          /* DN */
+        t2_imm32(T2_R1, 0x02000000u); /* DN */
         t2_orr(T2_R0, T2_R0, T2_R1);
-        t2_imm32(T2_R1, ~0x01C0001Fu);         /* FZ, RMode, IOC..IXC */
+        t2_imm32(T2_R1, ~0x01C0001Fu); /* FZ, RMode, IOC..IXC */
         t2_and(T2_R0, T2_R0, T2_R1);
         t2_vmsr(T2_R0);
     }
@@ -1189,8 +1324,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      * return instead would leave sp low and pop the wrong words.
      */
     for (uint32_t i = 0; i < g_nexits; i++) {
-        patch_branch(g_exits[i].at, emu_jit_here(),
-                     g_exits[i].conditional);
+        patch_branch(g_exits[i].at, emu_jit_here(), g_exits[i].conditional);
     }
 
     if (g_has_fp) {
@@ -1209,7 +1343,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
 
     if (frame != 0u) {
         t2_imm32(T2_R12, frame);
-        t2_emit32(0xEB0Du, (uint16_t)((13u << 8) | T2_R12));   /* ADD.W sp, sp */
+        t2_emit32(0xEB0Du, (uint16_t)((13u << 8) | T2_R12)); /* ADD.W sp, sp */
     }
     t2_mov(T2_R0, T2_CNT);
     t2_pop(list | T2_LIST_PC);

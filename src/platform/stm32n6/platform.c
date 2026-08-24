@@ -46,10 +46,10 @@ extern uint8_t __guest_ram_end[];
  * arriving over TFTP or through gdb's `load` repoints them and the
  * address space is rebuilt around the new numbers.
  */
-const uint8_t *board_img      = NULL;
-uint32_t       board_img_size = 0u;
+const uint8_t *board_img = NULL;
+uint32_t board_img_size = 0u;
 
-uint8_t *board_ram      = NULL;
+uint8_t *board_ram = NULL;
 uint32_t board_ram_size = 0u;
 
 /*
@@ -59,7 +59,7 @@ uint32_t board_ram_size = 0u;
  */
 void board_ram_init(void)
 {
-    board_ram      = __guest_ram_start;
+    board_ram = __guest_ram_start;
     board_ram_size = (uint32_t)(__guest_ram_end - __guest_ram_start);
 }
 
@@ -125,36 +125,36 @@ void board_ram_init(void)
  */
 static const board_region_t g_periph_map[] = {
     /* APB1, AHB1, APB2, AHB2: timers, SPI, I2C, USART, GPDMA, ADC */
-    { "apb1..ahb2", 0x50000000u, 0x04000000u, EMU_PERM_RW },
+    {"apb1..ahb2", 0x50000000u, 0x04000000u, EMU_PERM_RW},
     /* DAP ROM, DBGMCU, DFT: the debug subsystem */
-    { "debug",      0x54000000u, 0x00003000u, EMU_PERM_R  },
+    {"debug", 0x54000000u, 0x00003000u, EMU_PERM_R},
     /* Rest of APB3 and AHB3 up to the isolation units: RNG, HASH, CRYP,
      * SAES, PKA */
-    { "apb3+ahb3",  0x54003000u, 0x00021000u, EMU_PERM_RW },
+    {"apb3+ahb3", 0x54003000u, 0x00021000u, EMU_PERM_RW},
     /* RIFSC, IAC and RISAF1..23 -- who may reach what, including us */
-    { "isolation",  0x54024000u, 0x00014000u, EMU_PERM_R  },
+    {"isolation", 0x54024000u, 0x00014000u, EMU_PERM_R},
     /* Rest of AHB3 and APB4 up to the fuses */
-    { "ahb3b+apb4", 0x54038000u, 0x01FD1000u, EMU_PERM_RW },
+    {"ahb3b+apb4", 0x54038000u, 0x01FD1000u, EMU_PERM_RW},
     /* One-time-programmable fuses: irreversible */
-    { "bsec",       0x56009000u, 0x00001000u, EMU_PERM_R  },
+    {"bsec", 0x56009000u, 0x00001000u, EMU_PERM_R},
     /* DTS and the AHB4 GPIO ports up to PWR */
-    { "dts+gpio",   0x5600A000u, 0x0001A800u, EMU_PERM_RW },
-    { "pwr",        0x56024800u, 0x00000400u, EMU_PERM_R  },
+    {"dts+gpio", 0x5600A000u, 0x0001A800u, EMU_PERM_RW},
+    {"pwr", 0x56024800u, 0x00000400u, EMU_PERM_R},
     /* CRC and EXTI, up to RCC */
-    { "crc+exti",   0x56024C00u, 0x00003400u, EMU_PERM_RW },
+    {"crc+exti", 0x56024C00u, 0x00003400u, EMU_PERM_RW},
     /* RCC: CR, CFGR, the four PLLs, the twenty IC dividers, CCIPRx */
-    { "rcc-clock",  0x56028000u, 0x00000208u, EMU_PERM_R  },
+    {"rcc-clock", 0x56028000u, 0x00000208u, EMU_PERM_R},
     /* RCC peripheral resets: the guest's to drive */
-    { "rcc-reset",  0x56028208u, 0x00000038u, EMU_PERM_RW },
+    {"rcc-reset", 0x56028208u, 0x00000038u, EMU_PERM_RW},
     /* RCC DIVENR alone: one of these dividers feeds the CPU */
-    { "rcc-diven",  0x56028240u, 0x00000004u, EMU_PERM_R  },
+    {"rcc-diven", 0x56028240u, 0x00000004u, EMU_PERM_R},
     /* RCC peripheral clock enables: the guest's to drive */
-    { "rcc-en",     0x56028244u, 0x0000007Cu, EMU_PERM_RW },
+    {"rcc-en", 0x56028244u, 0x0000007Cu, EMU_PERM_RW},
     /* The set and clear aliases of all of the above, and the security
      * configuration. Read-only, or the carve-outs above are decorative. */
-    { "rcc-alias",  0x560282C0u, 0x00001D40u, EMU_PERM_R  },
+    {"rcc-alias", 0x560282C0u, 0x00001D40u, EMU_PERM_R},
     /* APB5 and AHB5: LTDC, GFXMMU, DCMIPP, SDMMC, XSPI, Ethernet, USB */
-    { "apb5+ahb5",  0x5602A000u, 0x09FD6000u, EMU_PERM_RW },
+    {"apb5+ahb5", 0x5602A000u, 0x09FD6000u, EMU_PERM_RW},
 };
 
 /*

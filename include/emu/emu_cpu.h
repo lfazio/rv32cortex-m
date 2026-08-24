@@ -71,9 +71,9 @@ typedef struct emu_cpu emu_cpu_t;
  * message about the wrong architecture, which is how this was found:
  * ccrh's own linker output would not load.
  */
-#define EMU_EM_V800         36u   /* Renesas CC-RH */
-#define EMU_EM_V850         87u   /* GNU v850      */
-#define EMU_EM_RISCV        243u
+#define EMU_EM_V800 36u /* Renesas CC-RH */
+#define EMU_EM_V850 87u /* GNU v850      */
+#define EMU_EM_RISCV 243u
 
 /* ------------------------------------------------------------------ */
 /* Callbacks the platform installs                                     */
@@ -92,7 +92,7 @@ typedef struct emu_cpu emu_cpu_t;
 typedef struct emu_syscall {
     uint32_t nr;
     uint32_t arg[4];
-    uint32_t ret;        /* handler's return value, written back by the frontend */
+    uint32_t ret; /* handler's return value, written back by the frontend */
 } emu_syscall_t;
 
 /*
@@ -147,16 +147,16 @@ typedef struct emu_cpu_status {
      * a performance number has to be read against.
      */
     const char *backend;
-    uint32_t    pc;
-    uint64_t    retired;      /* instructions retired since reset */
-    uint32_t    traps;        /* 0 unless built with EMU_ENABLE_STATS */
+    uint32_t pc;
+    uint64_t retired; /* instructions retired since reset */
+    uint32_t traps; /* 0 unless built with EMU_ENABLE_STATS */
     emu_state_t state;
     /*
      * False when the core is parked and nothing could ever wake it -- no
      * interrupt source enabled. The host runner uses it to stop rather
      * than spin forever on a guest that fell off the end of main().
      */
-    bool        wakeable;
+    bool wakeable;
 } emu_cpu_status_t;
 
 /* ------------------------------------------------------------------ */
@@ -169,9 +169,9 @@ typedef struct emu_cpu_ops {
     /* Human-readable, for the banner: "RISC-V RV32IMAFC_Zicsr". */
     const char *desc;
     /* ELF e_machine this frontend accepts. 0 accepts anything. */
-    uint16_t    elf_machine;
+    uint16_t elf_machine;
     /* A second e_machine this frontend also answers to, or zero. */
-    uint16_t    elf_machine_alt;
+    uint16_t elf_machine_alt;
 
     /*
      * Cores this frontend models. A platform asks rather than assumes,
@@ -179,7 +179,7 @@ typedef struct emu_cpu_ops {
      * G4MH one is 3 on a host and 1 on the firmware, where 64 KiB of local
      * RAM per core does not fit.
      */
-    unsigned    ncores;
+    unsigned ncores;
 
     /* --- lifecycle ------------------------------------------------- */
 
@@ -210,8 +210,7 @@ typedef struct emu_cpu_ops {
      * frontend selected. The one hot entry point in this table, and the
      * reason everything else in it can afford to be indirect.
      */
-    emu_run_reason_t (*run)(emu_cpu_t *cpu, uint32_t budget,
-                            uint32_t *retired);
+    emu_run_reason_t (*run)(emu_cpu_t *cpu, uint32_t budget, uint32_t *retired);
 
     /* Guest memory changed underneath any translated code. */
     void (*invalidate)(emu_cpu_t *cpu, uint32_t addr, uint32_t len);
@@ -334,10 +333,10 @@ typedef struct emu_cpu_ops {
     void (*status)(const emu_cpu_t *cpu, emu_cpu_status_t *out);
 
     /* General-purpose register file, for the monitor and syscall glue. */
-    unsigned    nregs;
+    unsigned nregs;
     const char *(*reg_name)(unsigned r);
-    uint32_t    (*reg_read)(const emu_cpu_t *cpu, unsigned r);
-    void        (*reg_write)(emu_cpu_t *cpu, unsigned r, uint32_t v);
+    uint32_t (*reg_read)(const emu_cpu_t *cpu, unsigned r);
+    void (*reg_write)(emu_cpu_t *cpu, unsigned r, uint32_t v);
 
     /*
      * Print the architectural state a post-mortem needs: pc, the trap
@@ -401,23 +400,23 @@ const emu_cpu_ops_t *emu_frontend_for_elf(uint16_t machine);
  */
 typedef struct emu_core {
     const emu_cpu_ops_t *ops;
-    emu_cpu_t           *cpu;
-    emu_bus_t           *bus;
+    emu_cpu_t *cpu;
+    emu_bus_t *bus;
 } emu_core_t;
 
 /*
  * Bind `ops` to core `index` on `bus`. False if the frontend has no such
  * core. Does not reset it; call emu_core_reset next.
  */
-bool emu_core_open(emu_core_t *core, const emu_cpu_ops_t *ops,
-                   emu_bus_t *bus, unsigned index);
+bool emu_core_open(emu_core_t *core, const emu_cpu_ops_t *ops, emu_bus_t *bus,
+                   unsigned index);
 
 /* ------------------------------------------------------------------ */
 /* Systems                                                             */
 /* ------------------------------------------------------------------ */
 
 #ifndef EMU_MAX_CORES
-#  define EMU_MAX_CORES 4u
+#define EMU_MAX_CORES 4u
 #endif
 
 /*
@@ -429,8 +428,8 @@ bool emu_core_open(emu_core_t *core, const emu_cpu_ops_t *ops,
  */
 typedef struct emu_system {
     const emu_cpu_ops_t *ops;
-    unsigned    ncores;
-    emu_core_t  core[EMU_MAX_CORES];
+    unsigned ncores;
+    emu_core_t core[EMU_MAX_CORES];
 } emu_system_t;
 
 /*

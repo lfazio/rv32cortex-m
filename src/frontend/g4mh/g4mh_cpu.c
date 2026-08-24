@@ -97,7 +97,7 @@ void g4mh_cpu_reset(g4mh_cpu_t *c, uint32_t reset_pc)
      * never writes it would take no interrupt at all while every EIC
      * register said it should.
      */
-    c->sr[G4MH_SELID_INT][G4MH_SR_PLMR]   = G4MH_PLMR_RESET;
+    c->sr[G4MH_SELID_INT][G4MH_SR_PLMR] = G4MH_PLMR_RESET;
     c->sr[G4MH_SELID_INT][G4MH_SR_INTCFG] = G4MH_INTCFG_RESET;
 
     g4mh_ll_drop(c);
@@ -154,10 +154,8 @@ bool g4mh_exc_is_fe(g4mh_exc_t cause)
          * whole point of it beside TRAP, which is EI level. FEINT is the
          * asynchronous one, and is FE level for the reason that makes it
          * useful -- PSW.ID does not reach it. */
-        return (cause >= G4MH_EXC_FETRAP &&
-                cause < G4MH_EXC_FETRAP + 0x10u) ||
-               (cause >= G4MH_EXC_FEINT &&
-                cause < G4MH_EXC_FEINT + 0x10u);
+        return (cause >= G4MH_EXC_FETRAP && cause < G4MH_EXC_FETRAP + 0x10u) ||
+               (cause >= G4MH_EXC_FEINT && cause < G4MH_EXC_FEINT + 0x10u);
     }
 }
 
@@ -191,9 +189,8 @@ static uint32_t direct_vector_offset(uint32_t base, unsigned priority)
 
 static uint32_t handler_address(const g4mh_cpu_t *c, g4mh_exc_t cause)
 {
-    const uint32_t base = (c->psw & G4MH_PSW_EBV)
-                        ? c->sr[1][G4MH_SR_EBASE]
-                        : c->sr[1][G4MH_SR_RBASE];
+    const uint32_t base = (c->psw & G4MH_PSW_EBV) ? c->sr[1][G4MH_SR_EBASE]
+                                                  : c->sr[1][G4MH_SR_RBASE];
 
     /* RBASE/EBASE carry flags in the low bits; the table is 512-aligned. */
     const uint32_t table = base & ~0x1FFu;
@@ -215,16 +212,16 @@ static uint32_t handler_address(const g4mh_cpu_t *c, g4mh_exc_t cause)
         return table + direct_vector_offset(base, pri);
     }
     if (cause >= G4MH_EXC_TRAP0 && cause < G4MH_EXC_TRAP0 + 0x10u) {
-        return table + 0x0040u;         /* TRAP 0..15                    */
+        return table + 0x0040u; /* TRAP 0..15                    */
     }
     if (cause >= G4MH_EXC_TRAP1 && cause < G4MH_EXC_TRAP1 + 0x10u) {
-        return table + 0x0050u;         /* TRAP 16..31                   */
+        return table + 0x0050u; /* TRAP 16..31                   */
     }
     if (cause >= G4MH_EXC_FETRAP && cause < G4MH_EXC_FETRAP + 0x10u) {
-        return table + 0x0030u;         /* FETRAP 1..15                  */
+        return table + 0x0030u; /* FETRAP 1..15                  */
     }
     if (cause >= G4MH_EXC_FEINT && cause < G4MH_EXC_FEINT + 0x10u) {
-        return table + 0x00F0u;         /* FEINT 0..15                   */
+        return table + 0x00F0u; /* FEINT 0..15                   */
     }
     /*
      * R01UH0923EJ0130 table 3.106, and confirmed against the vector table
@@ -241,14 +238,22 @@ static uint32_t handler_address(const g4mh_cpu_t *c, g4mh_exc_t cause)
      * reserved, 0xE0 is FENMI, which this frontend does not raise.
      */
     switch (cause) {
-    case G4MH_EXC_SYSERR: return table + 0x0010u;
-    case G4MH_EXC_RIE:    return table + 0x0060u;
-    case G4MH_EXC_FPP:    return table + 0x0070u;   /* FPE/FXE           */
-    case G4MH_EXC_UCPOP:  return table + 0x0080u;
-    case G4MH_EXC_MIP:    return table + 0x0090u;
-    case G4MH_EXC_MDP:    return table + 0x0090u;
-    case G4MH_EXC_PIE:    return table + 0x00A0u;
-    case G4MH_EXC_MAE:    return table + 0x00C0u;
+    case G4MH_EXC_SYSERR:
+        return table + 0x0010u;
+    case G4MH_EXC_RIE:
+        return table + 0x0060u;
+    case G4MH_EXC_FPP:
+        return table + 0x0070u; /* FPE/FXE           */
+    case G4MH_EXC_UCPOP:
+        return table + 0x0080u;
+    case G4MH_EXC_MIP:
+        return table + 0x0090u;
+    case G4MH_EXC_MDP:
+        return table + 0x0090u;
+    case G4MH_EXC_PIE:
+        return table + 0x00A0u;
+    case G4MH_EXC_MAE:
+        return table + 0x00C0u;
     default:
         /*
          * Nothing else reaches here: SYSCALL vectors through SCBP in the
@@ -263,9 +268,8 @@ static uint32_t handler_address(const g4mh_cpu_t *c, g4mh_exc_t cause)
 
 bool g4mh_cpu_irq_vector(g4mh_cpu_t *c, uint32_t channel, uint32_t *out)
 {
-    const uint32_t base = (c->psw & G4MH_PSW_EBV)
-                        ? c->sr[1][G4MH_SR_EBASE]
-                        : c->sr[1][G4MH_SR_RBASE];
+    const uint32_t base = (c->psw & G4MH_PSW_EBV) ? c->sr[1][G4MH_SR_EBASE]
+                                                  : c->sr[1][G4MH_SR_RBASE];
 
     /*
      * Three things have to agree before the table is read: the channel
@@ -317,9 +321,9 @@ static void exception_to(g4mh_cpu_t *c, g4mh_exc_t cause, uint32_t ret_pc,
     const bool fe = g4mh_exc_is_fe(cause);
 
     if (fe) {
-        c->sr[0][G4MH_SR_FEPC]  = ret_pc;
+        c->sr[0][G4MH_SR_FEPC] = ret_pc;
         c->sr[0][G4MH_SR_FEPSW] = c->psw;
-        c->sr[0][G4MH_SR_FEIC]  = cause;
+        c->sr[0][G4MH_SR_FEIC] = cause;
         /*
          * NP is what makes an FE exception non-reentrant: with it set, a
          * second FE exception is a system error rather than a silent
@@ -329,9 +333,9 @@ static void exception_to(g4mh_cpu_t *c, g4mh_exc_t cause, uint32_t ret_pc,
          */
         c->psw |= G4MH_PSW_NP | G4MH_PSW_EP | G4MH_PSW_ID;
     } else {
-        c->sr[0][G4MH_SR_EIPC]  = ret_pc;
+        c->sr[0][G4MH_SR_EIPC] = ret_pc;
         c->sr[0][G4MH_SR_EIPSW] = c->psw;
-        c->sr[0][G4MH_SR_EIIC]  = cause;
+        c->sr[0][G4MH_SR_EIIC] = cause;
         c->psw |= G4MH_PSW_ID;
         /*
          * EP distinguishes a synchronous exception from an interrupt at
@@ -391,9 +395,9 @@ void g4mh_cpu_exception_at(g4mh_cpu_t *c, g4mh_exc_t cause, uint32_t ret_pc,
  */
 static bool int_ceiling_admits(const g4mh_cpu_t *c, unsigned pri)
 {
-    const uint32_t cfg  = c->sr[G4MH_SELID_INT][G4MH_SR_INTCFG];
-    const uint32_t plm  = c->sr[G4MH_SELID_INT][G4MH_SR_PLMR] &
-                          G4MH_PLMR_PLM_MASK;
+    const uint32_t cfg = c->sr[G4MH_SELID_INT][G4MH_SR_INTCFG];
+    const uint32_t plm =
+        c->sr[G4MH_SELID_INT][G4MH_SR_PLMR] & G4MH_PLMR_PLM_MASK;
 
     /* PLMR applies in both modes. */
     if (pri >= plm) {
@@ -417,8 +421,7 @@ static bool int_ceiling_admits(const g4mh_cpu_t *c, unsigned pri)
      * 16 is considered: the mask below is all sixteen when pri >= 15.
      */
     const uint32_t ispr = c->sr[G4MH_SELID_INT][G4MH_SR_ISPR] & 0xFFFFu;
-    const unsigned n = (pri < G4MH_ISPR_LEVELS) ? (pri + 1u)
-                                                : G4MH_ISPR_LEVELS;
+    const unsigned n = (pri < G4MH_ISPR_LEVELS) ? (pri + 1u) : G4MH_ISPR_LEVELS;
     const uint32_t blocking = (n >= 32u) ? 0xFFFFFFFFu : ((1u << n) - 1u);
 
     return (ispr & blocking) == 0u;
@@ -522,7 +525,7 @@ void g4mh_cpu_eiret_priority(g4mh_cpu_t *c)
         return;
     }
     if ((c->psw & G4MH_PSW_EP) != 0u) {
-        return;                 /* returning from an exception, not an int */
+        return; /* returning from an exception, not an int */
     }
 
     uint32_t ispr = c->sr[G4MH_SELID_INT][G4MH_SR_ISPR] & 0xFFFFu;
@@ -561,7 +564,7 @@ bool g4mh_cpu_pending_fe(const g4mh_cpu_t *c)
  * a locking exercise and becomes a redesign.
  */
 static g4mh_cpu_t *g_cores[G4MH_PE_COUNT];
-static unsigned    g_core_count;
+static unsigned g_core_count;
 
 /*
  * How many cores currently hold one. Kept as a count rather than derived
@@ -675,8 +678,7 @@ g4mh_exc_t g4mh_load(g4mh_cpu_t *c, uint32_t addr, uint32_t size,
     return G4MH_EXC_NONE;
 }
 
-g4mh_exc_t g4mh_store(g4mh_cpu_t *c, uint32_t addr, uint32_t size,
-                      uint32_t val)
+g4mh_exc_t g4mh_store(g4mh_cpu_t *c, uint32_t addr, uint32_t size, uint32_t val)
 {
     if (EMU_UNLIKELY((addr & (size - 1u)) != 0u)) {
         c->sr[2][G4MH_SR_MEA] = addr;
@@ -771,8 +773,8 @@ static void pm_refresh(g4mh_cpu_t *c)
     bool on = false;
 
     for (unsigned n = 0; n < G4MH_PM_CHANNELS; n++) {
-        if ((c->sr[G4MH_SELID_PM][G4MH_SR_PMCTRL0 + n] &
-             G4MH_PMCTRL_CE) != 0u) {
+        if ((c->sr[G4MH_SELID_PM][G4MH_SR_PMCTRL0 + n] & G4MH_PMCTRL_CE) !=
+            0u) {
             on = true;
             break;
         }
@@ -783,7 +785,7 @@ static void pm_refresh(g4mh_cpu_t *c)
 uint32_t g4mh_sr_read(const g4mh_cpu_t *c, unsigned bank, unsigned reg)
 {
     if (bank >= G4MH_SR_BANKS || reg >= G4MH_SR_PER_BANK) {
-        return 0u;   /* reserved: reads as zero, no exception */
+        return 0u; /* reserved: reads as zero, no exception */
     }
     if (bank == 0u && reg == G4MH_SR_PSW) {
         return c->psw;
@@ -803,7 +805,7 @@ uint32_t g4mh_sr_read(const g4mh_cpu_t *c, unsigned bank, unsigned reg)
 void g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg, uint32_t val)
 {
     if (bank >= G4MH_SR_BANKS || reg >= G4MH_SR_PER_BANK) {
-        return;      /* reserved: writes dropped */
+        return; /* reserved: writes dropped */
     }
 
     if (bank == 0u && reg == G4MH_SR_PSW) {

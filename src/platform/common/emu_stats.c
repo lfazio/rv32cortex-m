@@ -42,8 +42,7 @@ void emu_print_run_summary(uint64_t retired, uint32_t host_cycles)
      * formatting, which is right on a part whose FPU is single precision
      * and whose guest owns it.
      */
-    const uint32_t x100 =
-        (uint32_t)((uint64_t)host_cycles * 100u / retired);
+    const uint32_t x100 = (uint32_t)((uint64_t)host_cycles * 100u / retired);
 
     emu_console_printf("  ratio    %u.%02u host cycles per guest instruction\n",
                        (unsigned)(x100 / 100u), (unsigned)(x100 % 100u));
@@ -71,16 +70,16 @@ bool emu_print_jit_stats(void)
         return false;
     }
 
-    emu_console_printf(
-        "\n-- jit --\n"
-        "  blocks   %u\n"
-        "  code     %u/%u bytes\n"
-        "  blks/xlat %u\n"
-        "  compact  %u (%u evicted)\n"
-        "  flushes  %u\n",
-        (unsigned)js.blocks, (unsigned)js.code_used, (unsigned)js.code_size,
-        (unsigned)js.translations, (unsigned)js.compactions,
-        (unsigned)js.evictions, (unsigned)js.flushes);
+    emu_console_printf("\n-- jit --\n"
+                       "  blocks   %u\n"
+                       "  code     %u/%u bytes\n"
+                       "  blks/xlat %u\n"
+                       "  compact  %u (%u evicted)\n"
+                       "  flushes  %u\n",
+                       (unsigned)js.blocks, (unsigned)js.code_used,
+                       (unsigned)js.code_size, (unsigned)js.translations,
+                       (unsigned)js.compactions, (unsigned)js.evictions,
+                       (unsigned)js.flushes);
 
     /*
      * Read this before believing a passing test. A backend that declines
@@ -93,12 +92,11 @@ bool emu_print_jit_stats(void)
      * recoveries, and conflating them once cost 65% of all host cycles
      * with every test still passing.
      */
-    emu_console_printf(
-        "  interp   %u instructions fell back\n"
-        "  declined %u overflow %u\n"
-        "  blk entr %u\n",
-        (unsigned)js.interp_fallbacks, (unsigned)js.declined,
-        (unsigned)js.overflowed, (unsigned)js.block_entries);
+    emu_console_printf("  interp   %u instructions fell back\n"
+                       "  declined %u overflow %u\n"
+                       "  blk entr %u\n",
+                       (unsigned)js.interp_fallbacks, (unsigned)js.declined,
+                       (unsigned)js.overflowed, (unsigned)js.block_entries);
 
 #ifdef EMU_JIT_PROFILE
     /*
@@ -106,9 +104,8 @@ bool emu_print_jit_stats(void)
      * translation reaching 65% of all host cycles is a defect this tree
      * has actually had, and no frontend could have reported it.
      */
-    emu_console_printf("  cyc xlat %u compact %u\n",
-                       (unsigned)js.cyc_translate, (unsigned)js.cyc_compact);
+    emu_console_printf("  cyc xlat %u compact %u\n", (unsigned)js.cyc_translate,
+                       (unsigned)js.cyc_compact);
 #endif
     return true;
 }
-

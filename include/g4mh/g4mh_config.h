@@ -24,10 +24,10 @@
  * See docs/host/g4mh/multicore.md.
  */
 #ifndef G4MH_PE_COUNT
-#  define G4MH_PE_COUNT 1u
+#define G4MH_PE_COUNT 1u
 #endif
 #if G4MH_PE_COUNT < 1u || G4MH_PE_COUNT > 3u
-#  error "G4MH_PE_COUNT must be 1..3 (the U2B6 has three PEs)"
+#error "G4MH_PE_COUNT must be 1..3 (the U2B6 has three PEs)"
 #endif
 
 /*
@@ -37,7 +37,7 @@
  * any particular RH850 device.
  */
 #ifndef G4MH_INT_CHANNELS
-#  define G4MH_INT_CHANNELS 128u
+#define G4MH_INT_CHANNELS 128u
 #endif
 
 /*
@@ -48,7 +48,7 @@
  * unexplained "always trap".
  */
 #ifndef G4MH_EXT_FPU
-#  define G4MH_EXT_FPU 0
+#define G4MH_EXT_FPU 0
 #endif
 
 /*
@@ -66,7 +66,7 @@
  * the option exists for a build where those words are the guest's.
  */
 #ifndef G4MH_EXT_MPU
-#  define G4MH_EXT_MPU 1
+#define G4MH_EXT_MPU 1
 #endif
 
 /*
@@ -75,15 +75,15 @@
  * is not a knob a guest can disagree with -- change both or neither.
  */
 #ifndef G4MH_MPU_ENTRIES
-#  define G4MH_MPU_ENTRIES 32u
+#define G4MH_MPU_ENTRIES 32u
 #endif
 #if G4MH_MPU_ENTRIES < 1u || G4MH_MPU_ENTRIES > 32u
-#  error "G4MH_MPU_ENTRIES must be 1..32; MPCFG.NMPUE is five bits"
+#error "G4MH_MPU_ENTRIES must be 1..32; MPCFG.NMPUE is five bits"
 #endif
 
 /* Build the disassembler (useful for tracing; costs flash). */
 #ifndef G4MH_ENABLE_DISASM
-#  define G4MH_ENABLE_DISASM 1
+#define G4MH_ENABLE_DISASM 1
 #endif
 
 #endif /* G4MH_G4MH_CONFIG_H */

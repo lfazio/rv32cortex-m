@@ -45,23 +45,35 @@
  * real one on a spare UART, say -- would fill them in, and the network
  * would still take precedence while the link is up.
  */
-bool board_gdb_wanted(void) { return false; }
+bool board_gdb_wanted(void)
+{
+    return false;
+}
 
 bool board_gdb_start(emu_core_t *core, const emu_gdb_target_t *target,
                      const emu_gdb_flash_ops_t **flash)
 {
-    (void)core; (void)target; (void)flash;
+    (void)core;
+    (void)target;
+    (void)flash;
     return false;
 }
 
-const char *board_gdb_where(void)   { return "(no local transport)"; }
-void        board_gdb_wait(void)    { }
-void        board_gdb_poll(void)    { }
-bool        board_gdb_attached(void) { return false; }
+const char *board_gdb_where(void)
+{
+    return "(no local transport)";
+}
+void board_gdb_wait(void) {}
+void board_gdb_poll(void) {}
+bool board_gdb_attached(void)
+{
+    return false;
+}
 
 uint32_t board_gdb_run(uint32_t budget, uint32_t *retired)
 {
-    (void)budget; (void)retired;
+    (void)budget;
+    (void)retired;
     return 0u;
 }
 
@@ -69,13 +81,13 @@ uint32_t board_gdb_run(uint32_t budget, uint32_t *retired)
  * Nothing of the board's own between slices. The IP stack is polled by
  * emu_board_poll, which every platform shares.
  */
-void board_poll(void) { }
+void board_poll(void) {}
 
 /* ------------------------------------------------------------------ */
 /* The image store, the clocks, and the two ends of a run             */
 /* ------------------------------------------------------------------ */
 /* The guest binary, embedded by guest_image.S. */
-extern const uint8_t  emu_guest_image[];
+extern const uint8_t emu_guest_image[];
 extern const uint32_t emu_guest_image_size;
 
 /* ------------------------------------------------------------------ */
@@ -83,7 +95,7 @@ extern const uint32_t emu_guest_image_size;
 /* ------------------------------------------------------------------ */
 
 /* Guest time runs at 1 MHz, derived from the part's cycle counter. */
-#define EMU_TIMER_HZ        1000000u
+#define EMU_TIMER_HZ 1000000u
 
 /*
  * A cap on how long a guest may run before the firmware gives up.
@@ -102,11 +114,11 @@ extern const uint32_t emu_guest_image_size;
  * reaching this is not making progress.
  */
 #ifndef EMU_MAX_INSN
-#  define EMU_MAX_INSN      100000000u
+#define EMU_MAX_INSN 100000000u
 #endif
 
 #ifndef EMU_RUN_SLICE
-#  define EMU_RUN_SLICE     4096u
+#define EMU_RUN_SLICE 4096u
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -208,18 +220,16 @@ char *const *board_argv(int *argc)
     static char maxi[24];
 
     (void)snprintf(slice, sizeof(slice), "%u", (unsigned)EMU_RUN_SLICE);
-    (void)snprintf(maxi,  sizeof(maxi),  "%u", (unsigned)EMU_MAX_INSN);
+    (void)snprintf(maxi, sizeof(maxi), "%u", (unsigned)EMU_MAX_INSN);
 
     static char *av[] = {
-        "emu",
-        "--jit",                        /* a board wants speed; a runner
+        "emu",       "--jit", /* a board wants speed; a runner
                                          * chooses, because there it is a
                                          * coverage question */
-        "--dump",                       /* the register state on exit is
+        "--dump", /* the register state on exit is
                                          * most of what a person reading a
                                          * telnet session came for */
-        "--quantum",  NULL,
-        "--max-insn", NULL,
+        "--quantum", NULL,    "--max-insn", NULL,
     };
 
     av[4] = slice;
@@ -255,7 +265,7 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
      * is in force is a run-time fact that an upload changes too, so one
      * place owns it.
      */
-    cfg->image      = emu_guest_image;
+    cfg->image = emu_guest_image;
     cfg->image_size = emu_guest_image_size;
 
     /*
@@ -264,10 +274,10 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
      * elapsed count wants a base.
      */
     g_cycles_per_tick = board_clock_hz() / EMU_TIMER_HZ;
-    g_start_cycles    = board_cycles();
+    g_start_cycles = board_cycles();
 
-    cfg->cache_ops    = &board_cache_ops;
-    cfg->unmask_fn    = board_irq_unmask;
+    cfg->cache_ops = &board_cache_ops;
+    cfg->unmask_fn = board_irq_unmask;
     env->advance_time = advance_guest_time;
     return true;
 }
@@ -288,7 +298,10 @@ uint32_t board_perf_cycles(void)
  * written out here and in the host's board.c -- the same four steps in
  * the same order, differing only in this answer and in what "wait" means.
  */
-bool board_parks_after_run(void) { return true; }
+bool board_parks_after_run(void)
+{
+    return true;
+}
 
 /*
  * **Never sleep while the stack is up**, and the reason is the clock

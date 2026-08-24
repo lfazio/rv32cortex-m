@@ -26,14 +26,14 @@ extern "C" {
 #endif
 
 /* Registers the block frame reserves; see src/backend/thumb2/ir_lower.c. */
-#define T2_R0    0u
-#define T2_R1    1u
-#define T2_R2    2u
-#define T2_R3    3u
-#define T2_CPU   4u
-#define T2_CNT   5u
-#define T2_SP   13u
-#define T2_R12  12u
+#define T2_R0 0u
+#define T2_R1 1u
+#define T2_R2 2u
+#define T2_R3 3u
+#define T2_CPU 4u
+#define T2_CNT 5u
+#define T2_SP 13u
+#define T2_R12 12u
 
 /* Shift types, for the register and immediate forms below. */
 #define T2_LSL 0u
@@ -88,8 +88,7 @@ void t2_addw(uint32_t rd, uint32_t rn, uint16_t imm12);
 void t2_subw(uint32_t rd, uint32_t rn, uint16_t imm12);
 
 void t2_mul(uint32_t rd, uint32_t rn, uint32_t rm);
-void t2_mull(bool sign, uint32_t rdlo, uint32_t rdhi, uint32_t rn,
-             uint32_t rm);
+void t2_mull(bool sign, uint32_t rdlo, uint32_t rdhi, uint32_t rn, uint32_t rm);
 
 void t2_rev(uint32_t rd, uint32_t rm);
 void t2_rev16(uint32_t rd, uint32_t rm);
@@ -107,7 +106,7 @@ void t2_uxth(uint32_t rd, uint32_t rm);
  */
 uint8_t *t2_b_forward(void);
 uint8_t *t2_bcond_forward(uint32_t cond);
-void     t2_patch_branch(uint8_t *at, const uint8_t *target, bool conditional);
+void t2_patch_branch(uint8_t *at, const uint8_t *target, bool conditional);
 
 /*
  * Call an absolute address. BLX takes its target in a register, so the
@@ -126,8 +125,8 @@ void t2_call(const void *fn);
 #define T2_S2 2u
 
 /* First-halfword bases for the three-register group. */
-#define T2_VADD 0xEE30u        /* with `sub` false */
-#define T2_VSUB 0xEE30u        /* with `sub` true  */
+#define T2_VADD 0xEE30u /* with `sub` false */
+#define T2_VSUB 0xEE30u /* with `sub` true  */
 #define T2_VMUL 0xEE20u
 #define T2_VDIV 0xEE80u
 

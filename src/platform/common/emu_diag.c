@@ -18,7 +18,6 @@
 
 #include "emu_console.h"
 
-
 #ifdef EMU_JIT_DIFF
 /*
  * A block whose compiled code disagreed with the IR interpreter.
@@ -31,8 +30,7 @@
 void emu_jit_diff_report(uint32_t pc, uint32_t off, uint32_t want,
                          uint32_t got);
 
-void emu_jit_diff_report(uint32_t pc, uint32_t off, uint32_t want,
-                         uint32_t got)
+void emu_jit_diff_report(uint32_t pc, uint32_t off, uint32_t want, uint32_t got)
 {
     static unsigned reported;
 
@@ -62,8 +60,7 @@ void emu_report_state(emu_cpu_t *cpu, const emu_cpu_ops_t *ops)
      * moving the dump into the shared runner asked it on the first run.
      */
     if (ops->dump == NULL) {
-        emu_console_printf("\n-- guest state -- (%s has no dump)\n",
-                           ops->name);
+        emu_console_printf("\n-- guest state -- (%s has no dump)\n", ops->name);
         return;
     }
     emu_console_puts("\n-- guest state --");
@@ -119,8 +116,8 @@ void emu_trace_configure(uint64_t skip, uint64_t count)
     g_count = count;
 }
 
-void emu_trace_insn(emu_cpu_t *cpu, uint32_t pc, uint64_t insn,
-                    unsigned len, void *user)
+void emu_trace_insn(emu_cpu_t *cpu, uint32_t pc, uint64_t insn, unsigned len,
+                    void *user)
 {
     const emu_cpu_ops_t *const ops = (const emu_cpu_ops_t *)user;
     emu_cpu_status_t st;
@@ -143,9 +140,8 @@ void emu_trace_insn(emu_cpu_t *cpu, uint32_t pc, uint64_t insn,
      * it -- which on an ISA where a shared opcode holds two widths is
      * exactly the thing the reader is trying to tell apart.
      */
-    emu_console_printf("%8u %08x  %0*llx%*s  %-28s",
-                       (unsigned)st.retired, (unsigned)pc,
-                       (int)(len * 2u), (unsigned long long)insn,
+    emu_console_printf("%8u %08x  %0*llx%*s  %-28s", (unsigned)st.retired,
+                       (unsigned)pc, (int)(len * 2u), (unsigned long long)insn,
                        (int)(16u - len * 2u), "", buf);
 
     for (unsigned r = 1; r < 8u && r < ops->nregs; r++) {

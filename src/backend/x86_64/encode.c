@@ -42,16 +42,16 @@ static void emit_rex(unsigned w, unsigned reg, unsigned rm)
  * encoding for both is worth three bytes a reference. */
 static void modrm_cpu(int reg, uint32_t disp)
 {
-    emu_jit_emit8((uint8_t)(0x80u | (((unsigned)reg & 7u) << 3) |
-                            (X86_CPU & 7u)));
+    emu_jit_emit8(
+        (uint8_t)(0x80u | (((unsigned)reg & 7u) << 3) | (X86_CPU & 7u)));
     emu_jit_emit32(disp);
 }
 
 /* mod=11: register-direct. */
 static void modrm_rr(int reg, int rm)
 {
-    emu_jit_emit8((uint8_t)(0xC0u | (((unsigned)reg & 7u) << 3) |
-                            ((unsigned)rm & 7u)));
+    emu_jit_emit8(
+        (uint8_t)(0xC0u | (((unsigned)reg & 7u) << 3) | ((unsigned)rm & 7u)));
 }
 
 void x86_ld_cpu(int dst, uint32_t disp)
@@ -84,7 +84,7 @@ void x86_mov_imm32(int dst, uint32_t imm)
 
 void x86_mov_imm64(int dst, uint64_t imm)
 {
-    emit_rex(1u, 0u, (unsigned)dst);          /* REX.W, and .B if needed */
+    emit_rex(1u, 0u, (unsigned)dst); /* REX.W, and .B if needed */
     emu_jit_emit8((uint8_t)(0xB8u + ((unsigned)dst & 7u)));
     emu_jit_emit64(imm);
 }
@@ -110,7 +110,7 @@ void x86_alu_slot(uint8_t op, int dst, uint32_t disp)
     emit_rex(0u, (unsigned)dst, 0u);
     emu_jit_emit8((uint8_t)(op | 0x02u));
     emu_jit_emit8((uint8_t)(0x84u | (((unsigned)dst & 7u) << 3)));
-    emu_jit_emit8(0x24);                       /* SIB: [rsp] */
+    emu_jit_emit8(0x24); /* SIB: [rsp] */
     emu_jit_emit32(disp);
 }
 
@@ -186,12 +186,12 @@ void x86_alu_imm32(unsigned ext, int dst, uint32_t imm)
 
     emit_rex(0u, 0u, (unsigned)dst);
     if (sx >= -128 && sx <= 127) {
-        emu_jit_emit8(0x83);            /* ALU r/m32, imm8 sign-extended */
+        emu_jit_emit8(0x83); /* ALU r/m32, imm8 sign-extended */
         modrm_rr((int)ext, dst);
         emu_jit_emit8((uint8_t)(int8_t)sx);
         return;
     }
-    emu_jit_emit8(0x81);                /* ALU r/m32, imm32 */
+    emu_jit_emit8(0x81); /* ALU r/m32, imm32 */
     modrm_rr((int)ext, dst);
     emu_jit_emit32(imm);
 }
@@ -215,10 +215,10 @@ void x86_setcc_eax(uint8_t cc)
 {
     emu_jit_emit8(0x0F);
     emu_jit_emit8(X86_SET(cc));
-    emu_jit_emit8(0xC0);                      /* setcc al       */
+    emu_jit_emit8(0xC0); /* setcc al       */
     emu_jit_emit8(0x0F);
     emu_jit_emit8(0xB6);
-    emu_jit_emit8(0xC0);                      /* movzx eax, al  */
+    emu_jit_emit8(0xC0); /* movzx eax, al  */
 }
 
 static void ext_rr(uint8_t op2, int dst, int src)
@@ -229,10 +229,22 @@ static void ext_rr(uint8_t op2, int dst, int src)
     modrm_rr(dst, src);
 }
 
-void x86_movsx8(int dst, int src)  { ext_rr(0xBE, dst, src); }
-void x86_movsx16(int dst, int src) { ext_rr(0xBF, dst, src); }
-void x86_movzx8(int dst, int src)  { ext_rr(0xB6, dst, src); }
-void x86_movzx16(int dst, int src) { ext_rr(0xB7, dst, src); }
+void x86_movsx8(int dst, int src)
+{
+    ext_rr(0xBE, dst, src);
+}
+void x86_movsx16(int dst, int src)
+{
+    ext_rr(0xBF, dst, src);
+}
+void x86_movzx8(int dst, int src)
+{
+    ext_rr(0xB6, dst, src);
+}
+void x86_movzx16(int dst, int src)
+{
+    ext_rr(0xB7, dst, src);
+}
 
 uint8_t *x86_jcc32(uint8_t cc)
 {
@@ -283,15 +295,13 @@ void x86_call_rax(void)
  * the whole of what is available, and why the allocator had to wait for
  * REX support before it could exist at all.
  */
-const int x86_alloc_regs[X86_ALLOC_REGS] = {
-    X86_R12, X86_R13, X86_R14, X86_R15
-};
+const int x86_alloc_regs[X86_ALLOC_REGS] = {X86_R12, X86_R13, X86_R14, X86_R15};
 
 /* push/pop of a 64-bit register; the operand size is already 64. */
 static void x86_push(int reg)
 {
     if (reg >= 8) {
-        emu_jit_emit8(0x41);                              /* REX.B        */
+        emu_jit_emit8(0x41); /* REX.B        */
     }
     emu_jit_emit8((uint8_t)(0x50u + ((unsigned)reg & 7u)));
 }
@@ -380,8 +390,14 @@ static void mxcsr_rsp(unsigned ext, uint32_t disp)
     emu_jit_emit32(disp);
 }
 
-void x86_stmxcsr(uint32_t disp) { mxcsr_rsp(3u, disp); }
-void x86_ldmxcsr(uint32_t disp) { mxcsr_rsp(2u, disp); }
+void x86_stmxcsr(uint32_t disp)
+{
+    mxcsr_rsp(3u, disp);
+}
+void x86_ldmxcsr(uint32_t disp)
+{
+    mxcsr_rsp(2u, disp);
+}
 
 /* movzx r32, byte [base + index] -- the flag-map lookup. */
 void x86_movzx8_idx(int dst, int base, int index)
@@ -390,19 +406,23 @@ void x86_movzx8_idx(int dst, int base, int index)
     emu_jit_emit8(0x0F);
     emu_jit_emit8(0xB6);
     emu_jit_emit8((uint8_t)(((unsigned)dst & 7u) << 3 | 0x04u));
-    emu_jit_emit8((uint8_t)((((unsigned)index & 7u) << 3) |
-                            ((unsigned)base & 7u)));
+    emu_jit_emit8(
+        (uint8_t)((((unsigned)index & 7u) << 3) | ((unsigned)base & 7u)));
 }
 
 void x86_prologue(uint32_t nsaved)
 {
-    emu_jit_emit8(0x53);                                  /* push rbx     */
-    emu_jit_emit8(0x55);                                  /* push rbp     */
-    emu_jit_emit8(0x48); emu_jit_emit8(0x83);
-    emu_jit_emit8(0xEC); emu_jit_emit8(0x08);             /* sub rsp, 8   */
-    emu_jit_emit8(0x48); emu_jit_emit8(0x89);
-    emu_jit_emit8(0xFB);                                  /* mov rbx, rdi */
-    emu_jit_emit8(0x31); emu_jit_emit8(0xED);             /* xor ebp, ebp */
+    emu_jit_emit8(0x53); /* push rbx     */
+    emu_jit_emit8(0x55); /* push rbp     */
+    emu_jit_emit8(0x48);
+    emu_jit_emit8(0x83);
+    emu_jit_emit8(0xEC);
+    emu_jit_emit8(0x08); /* sub rsp, 8   */
+    emu_jit_emit8(0x48);
+    emu_jit_emit8(0x89);
+    emu_jit_emit8(0xFB); /* mov rbx, rdi */
+    emu_jit_emit8(0x31);
+    emu_jit_emit8(0xED); /* xor ebp, ebp */
 
     for (uint32_t i = 0; i < nsaved && i < X86_ALLOC_REGS; i++) {
         x86_push(x86_alloc_regs[i]);
@@ -415,12 +435,15 @@ void x86_epilogue(uint32_t nsaved)
          i-- > 0;) {
         x86_pop(x86_alloc_regs[i]);
     }
-    emu_jit_emit8(0x89); emu_jit_emit8(0xE8);             /* mov eax, ebp */
-    emu_jit_emit8(0x48); emu_jit_emit8(0x83);
-    emu_jit_emit8(0xC4); emu_jit_emit8(0x08);             /* add rsp, 8   */
-    emu_jit_emit8(0x5D);                                  /* pop rbp      */
-    emu_jit_emit8(0x5B);                                  /* pop rbx      */
-    emu_jit_emit8(0xC3);                                  /* ret          */
+    emu_jit_emit8(0x89);
+    emu_jit_emit8(0xE8); /* mov eax, ebp */
+    emu_jit_emit8(0x48);
+    emu_jit_emit8(0x83);
+    emu_jit_emit8(0xC4);
+    emu_jit_emit8(0x08); /* add rsp, 8   */
+    emu_jit_emit8(0x5D); /* pop rbp      */
+    emu_jit_emit8(0x5B); /* pop rbx      */
+    emu_jit_emit8(0xC3); /* ret          */
 }
 
 void x86_count_one(void)

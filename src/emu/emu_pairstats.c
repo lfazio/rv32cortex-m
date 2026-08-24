@@ -18,10 +18,10 @@
  * bare opcode pairs would count operations that have nothing to do with
  * each other alongside the ones that form an address.
  */
-#define LINK_NONE   0u
-#define LINK_RS1    1u   /* second reads first's rd as rs1  */
-#define LINK_RS2    2u   /* ... as rs2                      */
-#define LINK_DEAD   4u   /* and the second overwrites it    */
+#define LINK_NONE 0u
+#define LINK_RS1 1u /* second reads first's rd as rs1  */
+#define LINK_RS2 2u /* ... as rs2                      */
+#define LINK_DEAD 4u /* and the second overwrites it    */
 
 typedef struct {
     uint32_t k0, k1;
@@ -29,7 +29,7 @@ typedef struct {
     uint64_t count;
 } entry_t;
 
-static entry_t  g_tab[8192];
+static entry_t g_tab[8192];
 static unsigned g_used;
 static uint64_t g_total;
 static uint64_t g_pairs;
@@ -38,7 +38,7 @@ static const emu_pair_ops_t *g_ops;
 
 static uint64_t g_prev_insn;
 static uint32_t g_prev_next_pc;
-static bool     g_have_prev;
+static bool g_have_prev;
 
 void emu_pair_note(const emu_pair_ops_t *ops, uint32_t pc, uint64_t insn,
                    unsigned len)
@@ -108,9 +108,10 @@ void emu_pair_report(unsigned top_n)
 
     qsort(g_tab, g_used, sizeof(g_tab[0]), by_count);
 
-    fprintf(stderr, "\n# executed %llu instructions, %llu adjacent pairs, "
-                    "%u distinct\n", (unsigned long long)g_total,
-                    (unsigned long long)g_pairs, g_used);
+    fprintf(stderr,
+            "\n# executed %llu instructions, %llu adjacent pairs, "
+            "%u distinct\n",
+            (unsigned long long)g_total, (unsigned long long)g_pairs, g_used);
 
     /*
      * The aggregate is what decides whether fusion is worth doing at all.
@@ -139,38 +140,49 @@ void emu_pair_report(unsigned top_n)
         }
     }
 
-    fprintf(stderr, "# dependent pairs      %10llu  %6.2f%%"
-                    "   (each pays a store+load today)\n",
+    fprintf(stderr,
+            "# dependent pairs      %10llu  %6.2f%%"
+            "   (each pays a store+load today)\n",
             (unsigned long long)linked,
             100.0 * (double)linked / (double)g_pairs);
-    fprintf(stderr, "#   of which dead      %10llu  %6.2f%%"
-                    "   (intermediate never read again)\n",
-            (unsigned long long)dead,
-            100.0 * (double)dead / (double)g_pairs);
-    fprintf(stderr, "#   addr-gen -> mem    %10llu  %6.2f%%"
-                    "   (fusible to a scaled-index access)\n\n",
-            (unsigned long long)addr,
-            100.0 * (double)addr / (double)g_pairs);
+    fprintf(stderr,
+            "#   of which dead      %10llu  %6.2f%%"
+            "   (intermediate never read again)\n",
+            (unsigned long long)dead, 100.0 * (double)dead / (double)g_pairs);
+    fprintf(stderr,
+            "#   addr-gen -> mem    %10llu  %6.2f%%"
+            "   (fusible to a scaled-index access)\n\n",
+            (unsigned long long)addr, 100.0 * (double)addr / (double)g_pairs);
 
-    fprintf(stderr, "%-10s %-10s %-7s %12s %7s\n",
-            "first", "second", "link", "count", "share");
+    fprintf(stderr, "%-10s %-10s %-7s %12s %7s\n", "first", "second", "link",
+            "count", "share");
 
     for (unsigned i = 0; i < g_used && i < top_n; i++) {
         char link[8];
         char n0[24], n1[24];
         unsigned n = 0;
 
-        if ((g_tab[i].link & LINK_RS1) != 0u)  { link[n++] = 's'; link[n++] = '1'; }
-        if ((g_tab[i].link & LINK_RS2) != 0u)  { link[n++] = 's'; link[n++] = '2'; }
-        if ((g_tab[i].link & LINK_DEAD) != 0u) { link[n++] = '!'; }
-        if (n == 0u) { link[n++] = '-'; }
+        if ((g_tab[i].link & LINK_RS1) != 0u) {
+            link[n++] = 's';
+            link[n++] = '1';
+        }
+        if ((g_tab[i].link & LINK_RS2) != 0u) {
+            link[n++] = 's';
+            link[n++] = '2';
+        }
+        if ((g_tab[i].link & LINK_DEAD) != 0u) {
+            link[n++] = '!';
+        }
+        if (n == 0u) {
+            link[n++] = '-';
+        }
         link[n] = '\0';
 
         g_ops->kind_name(g_tab[i].k0, n0, sizeof(n0));
         g_ops->kind_name(g_tab[i].k1, n1, sizeof(n1));
 
-        fprintf(stderr, "%-10s %-10s %-7s %12llu %6.2f%%\n",
-                n0, n1, link, (unsigned long long)g_tab[i].count,
+        fprintf(stderr, "%-10s %-10s %-7s %12llu %6.2f%%\n", n0, n1, link,
+                (unsigned long long)g_tab[i].count,
                 100.0 * (double)g_tab[i].count / (double)g_pairs);
     }
 }

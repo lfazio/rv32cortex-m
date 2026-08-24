@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The house style, written down.
+#
+# Derived from what the tree already looked like rather than chosen: the
+# knobs below are the ones that make clang-format agree with the existing
+# code, and each was set by measuring the diff against files nobody had
+# touched. It is not a redesign -- it is the smallest description of what
+# was already being typed by hand.
+#
+# **ReflowComments is off, and that is the important line.** The comments
+# in this tree are its main asset; several of them are the only record of
+# a defect that cost a session to find. Letting a formatter rewrap them
+# would churn exactly the text worth preserving and make every future
+# `git blame` on a comment point here. Checked: comment *text* is
+# byte-identical across the whole tree after formatting.
+#
+# The two alignment options are off for the same reason -- the tree
+# aligns assignments in some places and not others, deliberately, and
+# forcing either answer everywhere is a large diff that says nothing.
+
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 80
+BreakBeforeBraces: Linux
+PointerAlignment: Right
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignTrailingComments: false
+AlignAfterOpenBracket: Align
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+SpaceAfterCStyleCast: false
+ReflowComments: false
+
+# Include order is meaningful here: a platform's own header first, then
+# the shared runner, then emucore, then the system. Sorting would put
+# <errno.h> above "board.h" and lose that.
+SortIncludes: false

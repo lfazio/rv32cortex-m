@@ -57,18 +57,18 @@
  * same file and this server has exactly one client by construction --
  * the other end of a point-to-point serial line.
  */
-static uint32_t        g_written;
-static bool            g_busy;
-static bool            g_failed;
+static uint32_t g_written;
+static bool g_busy;
+static bool g_failed;
 
 /* When this session last saw a packet, for the watchdog below. */
-static uint32_t        g_last_ms;
+static uint32_t g_last_ms;
 
 /* Whether tftp_init_server() has succeeded; tftp_cleanup() asserts on it. */
-static bool            g_up;
+static bool g_up;
 
 /* How many times the watchdog below has rebuilt the server. */
-static uint32_t        g_reclaims;
+static uint32_t g_reclaims;
 
 /* Any non-NULL handle will do: there is one file. */
 static uint8_t g_handle;
@@ -186,11 +186,8 @@ static void tftp_error(void *handle, int err, const char *msg, int size)
 }
 
 static const struct tftp_context k_ctx = {
-    tftp_open,
-    tftp_close,
-    NULL,               /* read: refused at open, never reached */
-    tftp_write,
-    tftp_error,
+    tftp_open,  tftp_close, NULL, /* read: refused at open, never reached */
+    tftp_write, tftp_error,
 };
 
 /*
@@ -233,7 +230,7 @@ static const struct tftp_context k_ctx = {
 void emu_net_tftp_poll(void)
 {
     if (!g_up) {
-        return;                 /* server never started */
+        return; /* server never started */
     }
     if ((sys_now() - g_last_ms) < EMU_TFTP_IDLE_MS) {
         return;

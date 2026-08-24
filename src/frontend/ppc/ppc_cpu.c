@@ -9,7 +9,7 @@
 
 /* e200z7 processor version. Reported by mfspr PVR, which is how a guest
  * identifies its core; zero would be a claim to be nothing in particular. */
-#define PPC_PVR_E200Z7      0x81560000u
+#define PPC_PVR_E200Z7 0x81560000u
 
 void ppc_cpu_init(ppc_cpu_t *c, struct emu_bus *bus, uint32_t coreid)
 {
@@ -79,10 +79,9 @@ void ppc_cpu_exception(ppc_cpu_t *c, ppc_ivor_t which, uint32_t ret_pc)
      * destroy the return state the handler is standing on -- the same
      * argument as G4MH's FE level.
      */
-    const bool crit = (which == PPC_IVOR_CRITICAL ||
-                       which == PPC_IVOR_MACHINE_CHECK ||
-                       which == PPC_IVOR_WATCHDOG ||
-                       which == PPC_IVOR_DEBUG);
+    const bool crit =
+        (which == PPC_IVOR_CRITICAL || which == PPC_IVOR_MACHINE_CHECK ||
+         which == PPC_IVOR_WATCHDOG || which == PPC_IVOR_DEBUG);
 
     if (crit) {
         c->csrr0 = ret_pc;
@@ -147,7 +146,7 @@ void ppc_cpu_advance(ppc_cpu_t *c, uint32_t ticks)
                  */
                 c->dec = c->decar - (past % c->decar);
             } else {
-                c->dec = 0u;   /* stopped until software reloads it */
+                c->dec = 0u; /* stopped until software reloads it */
             }
             c->irq_dirty = true;
         }
@@ -252,7 +251,7 @@ ppc_exc_t ppc_store(ppc_cpu_t *c, uint32_t addr, uint32_t size, uint32_t val)
     const emu_fault_t f = emu_bus_write(c->bus, addr, size, val);
     if (EMU_UNLIKELY(f != EMU_FAULT_NONE)) {
         c->dear = addr;
-        c->esr = 0x00800000u;       /* ESR[ST]: the access was a store */
+        c->esr = 0x00800000u; /* ESR[ST]: the access was a store */
         return exc_from_fault(f, true);
     }
     return PPC_EXC_NONE;

@@ -72,11 +72,11 @@ static void test_dead_flags_removed(void)
 
     const uint16_t s1 = emu_ir_alu(&g_b, EMU_IR_ADD, a, b);
     (void)emu_ir_emit(&g_b, EMU_IR_SETF, EMU_IR_FS_ADD, s1, b, 0u,
-                      EMU_IR_F_ALL);              /* dead */
+                      EMU_IR_F_ALL); /* dead */
 
     const uint16_t s2 = emu_ir_alu(&g_b, EMU_IR_SUB, s1, b);
     (void)emu_ir_emit(&g_b, EMU_IR_SETF, EMU_IR_FS_SUB, s2, b, 0u,
-                      EMU_IR_F_ALL);              /* live: block exit */
+                      EMU_IR_F_ALL); /* live: block exit */
     emu_ir_put(&g_b, 3u, s2);
 
     emu_ir_opt_stats_t st;
@@ -136,8 +136,7 @@ static void test_flags_live_out(void)
     emu_ir_reset(&g_b);
     const uint16_t a = emu_ir_get(&g_b, 1u);
     const uint16_t s = emu_ir_alu(&g_b, EMU_IR_ADD, a, a);
-    (void)emu_ir_emit(&g_b, EMU_IR_SETF, EMU_IR_FS_ADD, s, a, 0u,
-                      EMU_IR_F_ALL);
+    (void)emu_ir_emit(&g_b, EMU_IR_SETF, EMU_IR_FS_ADD, s, a, 0u, EMU_IR_F_ALL);
     emu_ir_put(&g_b, 2u, s);
 
     emu_ir_opt_stats_t st;
@@ -202,7 +201,7 @@ static void test_dead_put_removed(void)
 
     const uint16_t a = emu_ir_get(&g_b, 1u);
     const uint16_t x = emu_ir_alu(&g_b, EMU_IR_ADD, a, a);
-    emu_ir_put(&g_b, 5u, x);          /* dead: overwritten below */
+    emu_ir_put(&g_b, 5u, x); /* dead: overwritten below */
     const uint16_t y = emu_ir_alu(&g_b, EMU_IR_XOR, a, a);
     emu_ir_put(&g_b, 5u, y);
 
@@ -235,14 +234,14 @@ static void test_put_kept_across_faulting_load(void)
     emu_ir_reset(&g_b);
 
     const uint16_t base = emu_ir_get(&g_b, 1u);
-    const uint16_t addr = emu_ir_alu(&g_b, EMU_IR_ADD, base,
-                                     emu_ir_const(&g_b, 1u));
-    emu_ir_put(&g_b, 6u, addr);                  /* must survive */
+    const uint16_t addr =
+        emu_ir_alu(&g_b, EMU_IR_ADD, base, emu_ir_const(&g_b, 1u));
+    emu_ir_put(&g_b, 6u, addr); /* must survive */
 
     /* The load writes the same guest register, and can fault. */
-    emu_ir_put(&g_b, 6u, emu_ir_emit(&g_b, EMU_IR_LOAD,
-                                     EMU_IR_MEM_AUX(2u, 1u), base,
-                                     EMU_IR_NO_TEMP, 1u, 0u));
+    emu_ir_put(&g_b, 6u,
+               emu_ir_emit(&g_b, EMU_IR_LOAD, EMU_IR_MEM_AUX(2u, 1u), base,
+                           EMU_IR_NO_TEMP, 1u, 0u));
 
     emu_ir_opt_stats_t st;
     emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
@@ -308,7 +307,7 @@ static void test_dead_values(void)
     emu_ir_reset(&g_b);
 
     const uint16_t a = emu_ir_get(&g_b, 1u);
-    (void)emu_ir_alu(&g_b, EMU_IR_ADD, a, a);     /* nothing reads it */
+    (void)emu_ir_alu(&g_b, EMU_IR_ADD, a, a); /* nothing reads it */
     const uint16_t keep = emu_ir_alu(&g_b, EMU_IR_XOR, a, a);
     emu_ir_put(&g_b, 2u, keep);
 
@@ -360,8 +359,8 @@ static void test_use_counts(void)
 
     const uint16_t a = emu_ir_get(&g_b, 1u);
     /* One reader: the shift below. */
-    const uint16_t sh = emu_ir_emit(&g_b, EMU_IR_SHLI, 0u, a,
-                                    EMU_IR_NO_TEMP, 4u, 0u);
+    const uint16_t sh =
+        emu_ir_emit(&g_b, EMU_IR_SHLI, 0u, a, EMU_IR_NO_TEMP, 4u, 0u);
     emu_ir_put(&g_b, 2u, emu_ir_alu(&g_b, EMU_IR_ADD, a, sh));
 
     /* Two readers. */
@@ -376,8 +375,8 @@ static void test_use_counts(void)
      * something it could not.
      */
     const uint16_t shared = emu_ir_alu(&g_b, EMU_IR_ADD, a, a);
-    emu_ir_put(&g_b, 5u, shared);                     /* live reader */
-    (void)emu_ir_alu(&g_b, EMU_IR_SUB, shared, a);    /* dead reader */
+    emu_ir_put(&g_b, 5u, shared); /* live reader */
+    (void)emu_ir_alu(&g_b, EMU_IR_SUB, shared, a); /* dead reader */
 
     emu_ir_opt_stats_t st;
     emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
@@ -390,13 +389,19 @@ static void test_use_counts(void)
         if (in->dead) {
             continue;
         }
-        if (in->dst == sh) { sh_uses = in->uses; }
-        if (in->dst == t)  { t_uses = in->uses; }
-        if (in->dst == shared) { shared_uses = in->uses; }
+        if (in->dst == sh) {
+            sh_uses = in->uses;
+        }
+        if (in->dst == t) {
+            t_uses = in->uses;
+        }
+        if (in->dst == shared) {
+            shared_uses = in->uses;
+        }
     }
 
-    CHECK_EQ(sh_uses, 1u);      /* exactly the fusion candidate */
-    CHECK_EQ(t_uses, 2u);       /* read twice by one instruction */
+    CHECK_EQ(sh_uses, 1u); /* exactly the fusion candidate */
+    CHECK_EQ(t_uses, 2u); /* read twice by one instruction */
     /* One live reader, not two: the dead one must not be counted. */
     CHECK_EQ(shared_uses, 1u);
     CHECK(st.single_use > 0u);
@@ -434,11 +439,6 @@ static void test_overflow_not_optimised(void)
  */
 #include <stddef.h>
 
-
-
-
-
-
 /*
  * A stand-in guest, laid out the way a real frontend's state is: a
  * register file, a flag word and a pc, reached by byte offset.
@@ -460,11 +460,11 @@ typedef struct {
      * the bug it covers.
      */
     uint64_t f[16];
-    uint32_t fe;           /* accumulated EMU_IR_FE_* flags */
+    uint32_t fe; /* accumulated EMU_IR_FE_* flags */
 } fake_cpu_t;
 
 /* All-ones in the upper half: what a single-precision value carries. */
-#define F_BOXED(v)  (UINT64_C(0xFFFFFFFF00000000) | (v))
+#define F_BOXED(v) (UINT64_C(0xFFFFFFFF00000000) | (v))
 
 #define FAKE_F_Z (1u << 0)
 #define FAKE_F_S (1u << 1)
@@ -476,7 +476,10 @@ static uint32_t fake_reg_offset(uint32_t n)
     return (uint32_t)offsetof(fake_cpu_t, r) + n * 4u;
 }
 
-static bool fake_reg_is_zero(uint32_t n) { return n == 0u; }
+static bool fake_reg_is_zero(uint32_t n)
+{
+    return n == 0u;
+}
 
 static uint32_t fake_freg_offset(uint32_t n)
 {
@@ -503,7 +506,7 @@ static uint32_t fake_load(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
     const uint32_t size = EMU_IR_MEM_SIZE(spec);
 
     if (addr + size > sizeof(g_mem)) {
-        return 1u;                       /* "trapped" */
+        return 1u; /* "trapped" */
     }
     uint32_t v = 0u;
     for (uint32_t i = 0; i < size; i++) {
@@ -535,17 +538,17 @@ static uint32_t fake_store(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
 }
 
 static const emu_ir_target_t g_fake_target = {
-    .reg_offset   = fake_reg_offset,
+    .reg_offset = fake_reg_offset,
     .flags_offset = (uint32_t)offsetof(fake_cpu_t, flags),
-    .flag_bit     = { FAKE_F_Z, FAKE_F_S, FAKE_F_V, FAKE_F_C },
-    .reg_is_zero  = fake_reg_is_zero,
-    .pc_offset    = (uint32_t)offsetof(fake_cpu_t, pc),
-    .helpers      = NULL,
+    .flag_bit = {FAKE_F_Z, FAKE_F_S, FAKE_F_V, FAKE_F_C},
+    .reg_is_zero = fake_reg_is_zero,
+    .pc_offset = (uint32_t)offsetof(fake_cpu_t, pc),
+    .helpers = NULL,
     .helper_count = 0u,
-    .load         = fake_load,
-    .store        = fake_store,
-    .freg_offset  = fake_freg_offset,
-    .fp_flags     = fake_fp_flags,
+    .load = fake_load,
+    .store = fake_store,
+    .freg_offset = fake_freg_offset,
+    .fp_flags = fake_fp_flags,
 };
 
 #if defined(EMU_HOST_JIT_X86_64)
@@ -565,9 +568,9 @@ static bool lower_and_run(fake_cpu_t *cpu)
     static uint8_t *exec;
 
     if (exec == NULL) {
-        void *const p = mmap(NULL, IR_TEST_CODE_BYTES,
-                             PROT_READ | PROT_WRITE | PROT_EXEC,
-                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        void *const p =
+            mmap(NULL, IR_TEST_CODE_BYTES, PROT_READ | PROT_WRITE | PROT_EXEC,
+                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (p == MAP_FAILED) {
             return false;
         }
@@ -623,18 +626,18 @@ static void test_lower_zero_register(void)
     const uint16_t c = emu_ir_const(&g_b, 0x1234u);
     const uint16_t s = emu_ir_alu(&g_b, EMU_IR_OR, z, c);
     emu_ir_put(&g_b, 4u, s);
-    emu_ir_put(&g_b, 0u, c);          /* discarded */
+    emu_ir_put(&g_b, 0u, c); /* discarded */
 
     fake_cpu_t cpu;
     memset(&cpu, 0, sizeof(cpu));
-    cpu.r[0] = 0xDEADBEEFu;           /* must not be read */
+    cpu.r[0] = 0xDEADBEEFu; /* must not be read */
 
     if (!lower_and_run(&cpu)) {
         CHECK(false);
         return;
     }
     CHECK_EQ(cpu.r[4], 0x1234u);
-    CHECK_EQ(cpu.r[0], 0xDEADBEEFu);  /* the write went nowhere */
+    CHECK_EQ(cpu.r[0], 0xDEADBEEFu); /* the write went nowhere */
 }
 
 /*
@@ -677,7 +680,7 @@ static void test_zero_register_write_then_read(void)
         CHECK(false);
         return;
     }
-    CHECK_EQ(cpu.r[3], 7u);           /* 0 + 7, not junk + 7 */
+    CHECK_EQ(cpu.r[3], 7u); /* 0 + 7, not junk + 7 */
     CHECK_EQ(cpu.r[0], 0xDEADBEEFu);
 }
 
@@ -695,8 +698,7 @@ static void test_zero_register_not_forwarded(void)
 
     emu_ir_put(&g_b, 0u, emu_ir_const(&g_b, 0xA5A5A5A5u));
     const uint16_t z = emu_ir_get(&g_b, 0u);
-    emu_ir_put(&g_b, 3u, emu_ir_alu(&g_b, EMU_IR_ADD, z,
-                                    emu_ir_get(&g_b, 2u)));
+    emu_ir_put(&g_b, 3u, emu_ir_alu(&g_b, EMU_IR_ADD, z, emu_ir_get(&g_b, 2u)));
 
     emu_ir_opt_stats_t st;
     emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
@@ -718,12 +720,14 @@ static void test_lower_bit_ops(void)
 {
     emu_ir_reset(&g_b);
     const uint16_t v = emu_ir_get(&g_b, 1u);
-    emu_ir_put(&g_b, 2u, emu_ir_emit(&g_b, EMU_IR_BSWAP32, 0u, v,
-                                     EMU_IR_NO_TEMP, 0u, 0u));
-    emu_ir_put(&g_b, 3u, emu_ir_emit(&g_b, EMU_IR_HSWAP, 0u, v,
-                                     EMU_IR_NO_TEMP, 0u, 0u));
-    emu_ir_put(&g_b, 4u, emu_ir_emit(&g_b, EMU_IR_BSWAP16, 0u, v,
-                                     EMU_IR_NO_TEMP, 0u, 0u));
+    emu_ir_put(
+        &g_b, 2u,
+        emu_ir_emit(&g_b, EMU_IR_BSWAP32, 0u, v, EMU_IR_NO_TEMP, 0u, 0u));
+    emu_ir_put(&g_b, 3u,
+               emu_ir_emit(&g_b, EMU_IR_HSWAP, 0u, v, EMU_IR_NO_TEMP, 0u, 0u));
+    emu_ir_put(
+        &g_b, 4u,
+        emu_ir_emit(&g_b, EMU_IR_BSWAP16, 0u, v, EMU_IR_NO_TEMP, 0u, 0u));
 
     fake_cpu_t cpu;
     memset(&cpu, 0, sizeof(cpu));
@@ -733,9 +737,9 @@ static void test_lower_bit_ops(void)
         CHECK(false);
         return;
     }
-    CHECK_EQ(cpu.r[2], 0x44332211u);   /* BSWAP32 */
-    CHECK_EQ(cpu.r[3], 0x33441122u);   /* HSWAP   */
-    CHECK_EQ(cpu.r[4], 0x22114433u);   /* BSWAP16 */
+    CHECK_EQ(cpu.r[2], 0x44332211u); /* BSWAP32 */
+    CHECK_EQ(cpu.r[3], 0x33441122u); /* HSWAP   */
+    CHECK_EQ(cpu.r[4], 0x22114433u); /* BSWAP16 */
 }
 
 /*
@@ -749,16 +753,16 @@ static void test_lower_bit_counts(void)
     emu_ir_reset(&g_b);
     const uint16_t v = emu_ir_get(&g_b, 1u);
     const uint16_t z = emu_ir_get(&g_b, 2u);
-    emu_ir_put(&g_b, 3u, emu_ir_emit(&g_b, EMU_IR_CLZ, 0u, v,
-                                     EMU_IR_NO_TEMP, 0u, 0u));
-    emu_ir_put(&g_b, 4u, emu_ir_emit(&g_b, EMU_IR_CTZ, 0u, v,
-                                     EMU_IR_NO_TEMP, 0u, 0u));
-    emu_ir_put(&g_b, 5u, emu_ir_emit(&g_b, EMU_IR_CLZ, 0u, z,
-                                     EMU_IR_NO_TEMP, 0u, 0u));
+    emu_ir_put(&g_b, 3u,
+               emu_ir_emit(&g_b, EMU_IR_CLZ, 0u, v, EMU_IR_NO_TEMP, 0u, 0u));
+    emu_ir_put(&g_b, 4u,
+               emu_ir_emit(&g_b, EMU_IR_CTZ, 0u, v, EMU_IR_NO_TEMP, 0u, 0u));
+    emu_ir_put(&g_b, 5u,
+               emu_ir_emit(&g_b, EMU_IR_CLZ, 0u, z, EMU_IR_NO_TEMP, 0u, 0u));
 
     fake_cpu_t cpu;
     memset(&cpu, 0, sizeof(cpu));
-    cpu.r[1] = 0x00100000u;   /* bit 20 */
+    cpu.r[1] = 0x00100000u; /* bit 20 */
     cpu.r[2] = 0u;
 
     if (!lower_and_run(&cpu)) {
@@ -767,7 +771,7 @@ static void test_lower_bit_counts(void)
     }
     CHECK_EQ(cpu.r[3], 11u);
     CHECK_EQ(cpu.r[4], 20u);
-    CHECK_EQ(cpu.r[5], 32u);   /* defined for zero */
+    CHECK_EQ(cpu.r[5], 32u); /* defined for zero */
 }
 
 /*
@@ -782,11 +786,11 @@ static void test_lower_flags(void)
     const uint16_t b = emu_ir_get(&g_b, 2u);
 
     const uint16_t s1 = emu_ir_alu(&g_b, EMU_IR_ADD, a, b);
-    (void)emu_ir_emit(&g_b, EMU_IR_SETF, EMU_IR_FS_LOGIC, s1,
-                      EMU_IR_NO_TEMP, 0u, EMU_IR_F_ALL);   /* dead */
+    (void)emu_ir_emit(&g_b, EMU_IR_SETF, EMU_IR_FS_LOGIC, s1, EMU_IR_NO_TEMP,
+                      0u, EMU_IR_F_ALL); /* dead */
     const uint16_t s2 = emu_ir_alu(&g_b, EMU_IR_SUB, a, a);
-    (void)emu_ir_emit(&g_b, EMU_IR_SETF, EMU_IR_FS_LOGIC, s2,
-                      EMU_IR_NO_TEMP, 0u, EMU_IR_F_ALL);   /* live */
+    (void)emu_ir_emit(&g_b, EMU_IR_SETF, EMU_IR_FS_LOGIC, s2, EMU_IR_NO_TEMP,
+                      0u, EMU_IR_F_ALL); /* live */
     emu_ir_put(&g_b, 3u, s2);
 
     fake_cpu_t cpu;
@@ -801,7 +805,7 @@ static void test_lower_flags(void)
         return;
     }
     CHECK_EQ(cpu.r[3], 0u);
-    CHECK((cpu.flags & FAKE_F_Z) != 0u);        /* 7 - 7 == 0 */
+    CHECK((cpu.flags & FAKE_F_Z) != 0u); /* 7 - 7 == 0 */
     CHECK((cpu.flags & FAKE_F_S) == 0u);
     CHECK_EQ(cpu.flags & 0x80000000u, 0x80000000u);
 }
@@ -871,15 +875,14 @@ static void test_lower_flags_all_four(void)
     const uint16_t a = emu_ir_get(&g_b, 1u);
     const uint16_t b = emu_ir_get(&g_b, 2u);
 
-    (void)emu_ir_emit(&g_b, EMU_IR_SETF, EMU_IR_FS_SUB, a, b, 0u,
-                      EMU_IR_F_ALL);
+    (void)emu_ir_emit(&g_b, EMU_IR_SETF, EMU_IR_FS_SUB, a, b, 0u, EMU_IR_F_ALL);
     emu_ir_put(&g_b, 3u, emu_ir_alu(&g_b, EMU_IR_SUB, a, b));
 
     fake_cpu_t cpu;
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[1] = 0u;
     cpu.r[2] = 8u;
-    cpu.flags = 0x80000000u;            /* must survive the update */
+    cpu.flags = 0x80000000u; /* must survive the update */
 
     if (!lower_and_run(&cpu)) {
         CHECK(false);
@@ -887,10 +890,10 @@ static void test_lower_flags_all_four(void)
     }
 
     CHECK_EQ(cpu.r[3], (uint32_t)-8);
-    CHECK((cpu.flags & FAKE_F_Z) == 0u);        /* 0 - 8 != 0        */
-    CHECK((cpu.flags & FAKE_F_S) != 0u);        /* the result is < 0 */
-    CHECK((cpu.flags & FAKE_F_V) == 0u);        /* no signed overflow*/
-    CHECK((cpu.flags & FAKE_F_C) != 0u);        /* borrow            */
+    CHECK((cpu.flags & FAKE_F_Z) == 0u); /* 0 - 8 != 0        */
+    CHECK((cpu.flags & FAKE_F_S) != 0u); /* the result is < 0 */
+    CHECK((cpu.flags & FAKE_F_V) == 0u); /* no signed overflow*/
+    CHECK((cpu.flags & FAKE_F_C) != 0u); /* borrow            */
     CHECK_EQ(cpu.flags & 0x80000000u, 0x80000000u);
 }
 #endif /* EMU_HOST_JIT_X86_64 -- needs the lowering */
@@ -911,8 +914,7 @@ static void test_lower_flags_sign_not_less_than(void)
     const uint16_t a = emu_ir_get(&g_b, 1u);
     const uint16_t b = emu_ir_get(&g_b, 2u);
 
-    (void)emu_ir_emit(&g_b, EMU_IR_SETF, EMU_IR_FS_SUB, a, b, 0u,
-                      EMU_IR_F_ALL);
+    (void)emu_ir_emit(&g_b, EMU_IR_SETF, EMU_IR_FS_SUB, a, b, 0u, EMU_IR_F_ALL);
     emu_ir_put(&g_b, 3u, emu_ir_alu(&g_b, EMU_IR_SUB, a, b));
 
     fake_cpu_t cpu;
@@ -926,8 +928,8 @@ static void test_lower_flags_sign_not_less_than(void)
     }
 
     CHECK_EQ(cpu.r[3], 0x7FFFFFFFu);
-    CHECK((cpu.flags & FAKE_F_S) == 0u);        /* result is positive */
-    CHECK((cpu.flags & FAKE_F_V) != 0u);        /* and it overflowed  */
+    CHECK((cpu.flags & FAKE_F_S) == 0u); /* result is positive */
+    CHECK((cpu.flags & FAKE_F_V) != 0u); /* and it overflowed  */
 }
 #endif /* EMU_HOST_JIT_X86_64 -- needs the lowering */
 
@@ -935,11 +937,9 @@ static void test_lower_flags_sign_not_less_than(void)
 static void test_interp_matches_jit(void)
 {
     static const uint32_t k_seeds[][2] = {
-        { 0x00000000u, 0x00000000u },
-        { 0x00000001u, 0xFFFFFFFFu },
-        { 0x80000000u, 0x80000000u },
-        { 0x11223344u, 0x0000000Fu },
-        { 0x00100000u, 0x00000001u },
+        {0x00000000u, 0x00000000u}, {0x00000001u, 0xFFFFFFFFu},
+        {0x80000000u, 0x80000000u}, {0x11223344u, 0x0000000Fu},
+        {0x00100000u, 0x00000001u},
     };
 
     for (unsigned i = 0; i < sizeof(k_seeds) / sizeof(k_seeds[0]); i++) {
@@ -953,28 +953,33 @@ static void test_interp_matches_jit(void)
                           EMU_IR_F_ALL);
         emu_ir_put(&g_b, 3u, sum);
 
-        emu_ir_put(&g_b, 4u, emu_ir_emit(&g_b, EMU_IR_BSWAP32, 0u, r1,
-                                         EMU_IR_NO_TEMP, 0u, 0u));
-        emu_ir_put(&g_b, 5u, emu_ir_emit(&g_b, EMU_IR_HSWAP, 0u, r1,
-                                         EMU_IR_NO_TEMP, 0u, 0u));
-        emu_ir_put(&g_b, 6u, emu_ir_emit(&g_b, EMU_IR_BSWAP16, 0u, r1,
-                                         EMU_IR_NO_TEMP, 0u, 0u));
-        emu_ir_put(&g_b, 7u, emu_ir_emit(&g_b, EMU_IR_CLZ, 0u, r1,
-                                         EMU_IR_NO_TEMP, 0u, 0u));
-        emu_ir_put(&g_b, 8u, emu_ir_emit(&g_b, EMU_IR_CTZ, 0u, r1,
-                                         EMU_IR_NO_TEMP, 0u, 0u));
+        emu_ir_put(
+            &g_b, 4u,
+            emu_ir_emit(&g_b, EMU_IR_BSWAP32, 0u, r1, EMU_IR_NO_TEMP, 0u, 0u));
+        emu_ir_put(
+            &g_b, 5u,
+            emu_ir_emit(&g_b, EMU_IR_HSWAP, 0u, r1, EMU_IR_NO_TEMP, 0u, 0u));
+        emu_ir_put(
+            &g_b, 6u,
+            emu_ir_emit(&g_b, EMU_IR_BSWAP16, 0u, r1, EMU_IR_NO_TEMP, 0u, 0u));
+        emu_ir_put(
+            &g_b, 7u,
+            emu_ir_emit(&g_b, EMU_IR_CLZ, 0u, r1, EMU_IR_NO_TEMP, 0u, 0u));
+        emu_ir_put(
+            &g_b, 8u,
+            emu_ir_emit(&g_b, EMU_IR_CTZ, 0u, r1, EMU_IR_NO_TEMP, 0u, 0u));
 
         const uint16_t d = emu_ir_alu(&g_b, EMU_IR_SUB, r1, r2);
-        (void)emu_ir_emit(&g_b, EMU_IR_SETF, EMU_IR_FS_LOGIC, d,
-                          EMU_IR_NO_TEMP, 0u, EMU_IR_F_ALL);
+        (void)emu_ir_emit(&g_b, EMU_IR_SETF, EMU_IR_FS_LOGIC, d, EMU_IR_NO_TEMP,
+                          0u, EMU_IR_F_ALL);
         emu_ir_put(&g_b, 9u, d);
 
         emu_ir_put(&g_b, 10u, emu_ir_alu(&g_b, EMU_IR_SHL, r1, r2));
         emu_ir_put(&g_b, 11u, emu_ir_alu(&g_b, EMU_IR_SAR, r1, r2));
-        emu_ir_put(&g_b, 12u, emu_ir_emit(&g_b, EMU_IR_BEXT, 0u, r1, r2,
-                                          0u, 0u));
-        emu_ir_put(&g_b, 13u, emu_ir_emit(&g_b, EMU_IR_BINV, 0u, r1, r2,
-                                          0u, 0u));
+        emu_ir_put(&g_b, 12u,
+                   emu_ir_emit(&g_b, EMU_IR_BEXT, 0u, r1, r2, 0u, 0u));
+        emu_ir_put(&g_b, 13u,
+                   emu_ir_emit(&g_b, EMU_IR_BINV, 0u, r1, r2, 0u, 0u));
 
         diff_one(k_seeds[i][0], k_seeds[i][1]);
     }
@@ -999,9 +1004,9 @@ static void test_lower_memory(void)
     emu_ir_reset(&g_b);
     const uint16_t base = emu_ir_get(&g_b, 1u);
     /* r2 = load.b [r1 + 0x40], sign-extended */
-    emu_ir_put(&g_b, 2u, emu_ir_emit(&g_b, EMU_IR_LOAD,
-                                     EMU_IR_MEM_AUX(1u, 1u), base,
-                                     EMU_IR_NO_TEMP, 0x40u, 0u));
+    emu_ir_put(&g_b, 2u,
+               emu_ir_emit(&g_b, EMU_IR_LOAD, EMU_IR_MEM_AUX(1u, 1u), base,
+                           EMU_IR_NO_TEMP, 0x40u, 0u));
     /* store.w r3 -> [r1 + 0x10] */
     (void)emu_ir_emit(&g_b, EMU_IR_STORE, EMU_IR_MEM_AUX(4u, 0u), base,
                       emu_ir_get(&g_b, 3u), 0x10u, 0u);
@@ -1033,15 +1038,15 @@ static void test_lower_memory_trap(void)
 
     emu_ir_reset(&g_b);
     const uint16_t base = emu_ir_get(&g_b, 1u);
-    emu_ir_put(&g_b, 2u, emu_ir_emit(&g_b, EMU_IR_LOAD,
-                                     EMU_IR_MEM_AUX(4u, 0u), base,
-                                     EMU_IR_NO_TEMP, 0u, 0u));
+    emu_ir_put(&g_b, 2u,
+               emu_ir_emit(&g_b, EMU_IR_LOAD, EMU_IR_MEM_AUX(4u, 0u), base,
+                           EMU_IR_NO_TEMP, 0u, 0u));
     /* Must not run. */
     emu_ir_put(&g_b, 4u, emu_ir_const(&g_b, 0xABCDu));
 
     fake_cpu_t cpu;
     memset(&cpu, 0, sizeof(cpu));
-    cpu.r[1] = 0x1000u;                 /* out of range -> refused */
+    cpu.r[1] = 0x1000u; /* out of range -> refused */
 
     if (!lower_and_run(&cpu)) {
         CHECK(false);
@@ -1067,8 +1072,9 @@ static void test_lower_bitop_memory(void)
     const uint16_t bit1 = emu_ir_const(&g_b, 1u);
 
     emu_ir_bitop(&g_b, EMU_IR_BITOP_SET, base, bit1, 0x20u, 0u);
-    emu_ir_put(&g_b, 5u, emu_ir_emit(&g_b, EMU_IR_GETCOND, EMU_IR_C_EQ,
-                                     EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 0u, 0u));
+    emu_ir_put(&g_b, 5u,
+               emu_ir_emit(&g_b, EMU_IR_GETCOND, EMU_IR_C_EQ, EMU_IR_NO_TEMP,
+                           EMU_IR_NO_TEMP, 0u, 0u));
 
     fake_cpu_t cpu;
     memset(&cpu, 0, sizeof(cpu));
@@ -1098,8 +1104,8 @@ static void test_lower_bitop_tst(void)
     emu_ir_reset(&g_b);
     const uint16_t base = emu_ir_get(&g_b, 1u);
 
-    emu_ir_bitop(&g_b, EMU_IR_BITOP_TST, base, emu_ir_const(&g_b, 0u),
-                 0x20u, 0u);
+    emu_ir_bitop(&g_b, EMU_IR_BITOP_TST, base, emu_ir_const(&g_b, 0u), 0x20u,
+                 0u);
 
     fake_cpu_t cpu;
     memset(&cpu, 0, sizeof(cpu));
@@ -1110,7 +1116,7 @@ static void test_lower_bitop_tst(void)
         return;
     }
     CHECK_EQ((uint32_t)g_mem[0x20], 0x80u);
-    CHECK((cpu.flags & FAKE_F_Z) != 0u);   /* bit 0 was clear */
+    CHECK((cpu.flags & FAKE_F_Z) != 0u); /* bit 0 was clear */
 }
 #endif /* EMU_HOST_JIT_X86_64 -- needs the lowering */
 
@@ -1131,9 +1137,9 @@ static void test_encode_rex(void)
     static uint8_t *exec;
 
     if (exec == NULL) {
-        void *const m = mmap(NULL, IR_TEST_CODE_BYTES,
-                             PROT_READ | PROT_WRITE | PROT_EXEC,
-                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        void *const m =
+            mmap(NULL, IR_TEST_CODE_BYTES, PROT_READ | PROT_WRITE | PROT_EXEC,
+                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (m == MAP_FAILED) {
             CHECK(false);
             return;
@@ -1142,13 +1148,14 @@ static void test_encode_rex(void)
     }
 
     emu_jit_emit_begin(exec, IR_TEST_CODE_BYTES);
-    emu_jit_emit8(0x53);                          /* push rbx      */
-    emu_jit_emit8(0x48); emu_jit_emit8(0x89);
-    emu_jit_emit8(0xFB);                          /* mov rbx, rdi  */
+    emu_jit_emit8(0x53); /* push rbx      */
+    emu_jit_emit8(0x48);
+    emu_jit_emit8(0x89);
+    emu_jit_emit8(0xFB); /* mov rbx, rdi  */
 
     x86_mov_imm32(X86_R8, 0x00001000u);
     x86_mov_imm32(X86_R9, 0x00000234u);
-    x86_alu_rr(X86_ADD, X86_R8, X86_R9);          /* r8 = 0x1234   */
+    x86_alu_rr(X86_ADD, X86_R8, X86_R9); /* r8 = 0x1234   */
     x86_st_cpu(X86_R8, (uint32_t)offsetof(fake_cpu_t, r) + 3u * 4u);
 
     x86_ld_cpu(X86_R10, (uint32_t)offsetof(fake_cpu_t, r) + 1u * 4u);
@@ -1156,8 +1163,8 @@ static void test_encode_rex(void)
     x86_mov_rr(X86_R11, X86_R10);
     x86_st_cpu(X86_R11, (uint32_t)offsetof(fake_cpu_t, r) + 4u * 4u);
 
-    emu_jit_emit8(0x5B);                          /* pop rbx       */
-    emu_jit_emit8(0xC3);                          /* ret           */
+    emu_jit_emit8(0x5B); /* pop rbx       */
+    emu_jit_emit8(0xC3); /* ret           */
     if (emu_jit_overflowed()) {
         CHECK(false);
         return;
@@ -1168,8 +1175,8 @@ static void test_encode_rex(void)
     cpu.r[1] = 0x0000000Fu;
     ((void (*)(void *))(void *)exec)(&cpu);
 
-    CHECK_EQ(cpu.r[3], 0x00001234u);   /* imm, add, store via r8/r9 */
-    CHECK_EQ(cpu.r[4], 0x000000F0u);   /* load, shift, mov via r10/r11 */
+    CHECK_EQ(cpu.r[3], 0x00001234u); /* imm, add, store via r8/r9 */
+    CHECK_EQ(cpu.r[4], 0x000000F0u); /* load, shift, mov via r10/r11 */
 }
 #endif /* EMU_HOST_JIT_X86_64 -- needs the lowering */
 
@@ -1195,14 +1202,14 @@ static void test_encode_rex(void)
  * A test built from finite, ordered, in-range values passes against an
  * implementation that gets all four wrong.
  */
-#define F_NAN   0x7FC00000u
-#define F_SNAN  0x7F800001u
-#define F_ONE   0x3F800000u
-#define F_TWO   0x40000000u
-#define F_NEG1  0xBF800000u
+#define F_NAN 0x7FC00000u
+#define F_SNAN 0x7F800001u
+#define F_ONE 0x3F800000u
+#define F_TWO 0x40000000u
+#define F_NEG1 0xBF800000u
 #define F_PZERO 0x00000000u
 #define F_NZERO 0x80000000u
-#define F_PINF  0x7F800000u
+#define F_PINF 0x7F800000u
 
 static uint32_t fp_eval(emu_ir_op_t op, uint8_t aux, uint32_t x, uint32_t y)
 {
@@ -1247,7 +1254,7 @@ static void test_fp_box_reference(void)
     fake_cpu_t cpu;
 
     memset(&cpu, 0, sizeof(cpu));
-    cpu.f[1] = UINT64_C(0x3FF0000000000000);      /* unboxed */
+    cpu.f[1] = UINT64_C(0x3FF0000000000000); /* unboxed */
     cpu.f[2] = F_BOXED(F_TWO);
 
     emu_ir_reset(&g_b);
@@ -1257,10 +1264,10 @@ static void test_fp_box_reference(void)
         const uint16_t b = emu_ir_emit(&g_b, EMU_IR_FGET, EMU_IR_FP_BOX,
                                        EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 2u, 0u);
 
-        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, EMU_IR_FP_BOX, a,
-                          EMU_IR_NO_TEMP, 3u, 0u);
-        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, EMU_IR_FP_BOX, b,
-                          EMU_IR_NO_TEMP, 4u, 0u);
+        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, EMU_IR_FP_BOX, a, EMU_IR_NO_TEMP,
+                          3u, 0u);
+        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, EMU_IR_FP_BOX, b, EMU_IR_NO_TEMP,
+                          4u, 0u);
     }
     emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, NULL);
     if (!emu_ir_interp(&g_b, (emu_cpu_t *)(void *)&cpu, &g_fake_target)) {
@@ -1275,7 +1282,7 @@ static void test_fp_semantics(void)
 {
     /* Arithmetic, to establish the plumbing works at all. */
     CHECK_EQ(fp_eval(EMU_IR_FADD, 0u, F_ONE, F_ONE), F_TWO);
-    CHECK_EQ(fp_eval(EMU_IR_FMUL, 0u, F_TWO, F_TWO), 0x40800000u);  /* 4 */
+    CHECK_EQ(fp_eval(EMU_IR_FMUL, 0u, F_TWO, F_TWO), 0x40800000u); /* 4 */
     CHECK_EQ(fp_eval(EMU_IR_FDIV, 0u, F_TWO, F_ONE), F_TWO);
 
     /* A NaN operand gives the *other* one; two NaNs give the canonical. */
@@ -1303,19 +1310,19 @@ static void test_fp_semantics(void)
              F_NAN | 0x80000000u);
 
     /* NaN converts to the maximum, not to zero; range saturates. */
-    CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ, F_NAN, 0u),
-             0x7FFFFFFFu);
-    CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I,
-                     EMU_IR_FRM_RTZ | EMU_IR_F_UNSIGNED, F_NAN, 0u),
+    CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ, F_NAN, 0u), 0x7FFFFFFFu);
+    CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ | EMU_IR_F_UNSIGNED,
+                     F_NAN, 0u),
              0xFFFFFFFFu);
     CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ, F_PINF, 0u),
              0x7FFFFFFFu);
-    CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I,
-                     EMU_IR_FRM_RTZ | EMU_IR_F_UNSIGNED, F_NEG1, 0u), 0u);
+    CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ | EMU_IR_F_UNSIGNED,
+                     F_NEG1, 0u),
+             0u);
 
     /* Rounding: 2.5 and 3.5 are the pair that separates the modes. */
-    const uint32_t f2h = 0x40200000u;      /* 2.5 */
-    const uint32_t f3h = 0x40600000u;      /* 3.5 */
+    const uint32_t f2h = 0x40200000u; /* 2.5 */
+    const uint32_t f3h = 0x40600000u; /* 3.5 */
     CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RNE, f2h, 0u), 2u);
     CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RNE, f3h, 0u), 4u);
     CHECK_EQ(fp_eval(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RMM, f2h, 0u), 3u);
@@ -1333,9 +1340,9 @@ static void test_fp_semantics(void)
     CHECK_EQ(fp_eval(EMU_IR_FCLASS, 0u, F_NZERO, 0u), 1u << 3);
     CHECK_EQ(fp_eval(EMU_IR_FCLASS, 0u, F_ONE, 0u), 1u << 6);
     CHECK_EQ(fp_eval(EMU_IR_FCLASS, 0u, F_NEG1, 0u), 1u << 1);
-    CHECK_EQ(fp_eval(EMU_IR_FCLASS, 0u, F_NAN, 0u), 1u << 9);   /* quiet   */
-    CHECK_EQ(fp_eval(EMU_IR_FCLASS, 0u, F_SNAN, 0u), 1u << 8);  /* signal  */
-    CHECK_EQ(fp_eval(EMU_IR_FCLASS, 0u, 1u, 0u), 1u << 5);      /* subnorm */
+    CHECK_EQ(fp_eval(EMU_IR_FCLASS, 0u, F_NAN, 0u), 1u << 9); /* quiet   */
+    CHECK_EQ(fp_eval(EMU_IR_FCLASS, 0u, F_SNAN, 0u), 1u << 8); /* signal  */
+    CHECK_EQ(fp_eval(EMU_IR_FCLASS, 0u, 1u, 0u), 1u << 5); /* subnorm */
 
     /* The reference declines square root rather than approximating it. */
     CHECK_EQ(fp_eval(EMU_IR_FSQRT, 0u, F_ONE, 0u), 0xDEADBEEFu);
@@ -1444,24 +1451,30 @@ static void test_lower_fp_box(void)
     {
         const uint16_t a = emu_ir_emit(&g_b, EMU_IR_FGET, EMU_IR_FP_BOX,
                                        EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 1u, 0u);
-        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, EMU_IR_FP_BOX, a,
-                          EMU_IR_NO_TEMP, 3u, 0u);
+        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, EMU_IR_FP_BOX, a, EMU_IR_NO_TEMP,
+                          3u, 0u);
     }
-    if (!lower_and_run(&cpu)) { CHECK(false); return; }
+    if (!lower_and_run(&cpu)) {
+        CHECK(false);
+        return;
+    }
     /* The write boxes too, so the whole 64 bits are checked. */
     CHECK_EQ64(cpu.f[3], F_BOXED(F_TWO));
 
     /* An unboxed one reads as the canonical NaN, whatever it holds. */
     memset(&cpu, 0, sizeof(cpu));
-    cpu.f[1] = UINT64_C(0x3FF0000000000000);      /* 1.0 as a double */
+    cpu.f[1] = UINT64_C(0x3FF0000000000000); /* 1.0 as a double */
     emu_ir_reset(&g_b);
     {
         const uint16_t a = emu_ir_emit(&g_b, EMU_IR_FGET, EMU_IR_FP_BOX,
                                        EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 1u, 0u);
-        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, EMU_IR_FP_BOX, a,
-                          EMU_IR_NO_TEMP, 3u, 0u);
+        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, EMU_IR_FP_BOX, a, EMU_IR_NO_TEMP,
+                          3u, 0u);
     }
-    if (!lower_and_run(&cpu)) { CHECK(false); return; }
+    if (!lower_and_run(&cpu)) {
+        CHECK(false);
+        return;
+    }
     CHECK_EQ64(cpu.f[3], F_BOXED(F_NAN));
 
     /*
@@ -1473,12 +1486,15 @@ static void test_lower_fp_box(void)
     cpu.f[1] = UINT64_C(0x3FF0000000000000);
     emu_ir_reset(&g_b);
     {
-        const uint16_t a = emu_ir_emit(&g_b, EMU_IR_FGET, 0u,
-                                       EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 1u, 0u);
+        const uint16_t a = emu_ir_emit(&g_b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                                       EMU_IR_NO_TEMP, 1u, 0u);
         emu_ir_put(&g_b, 3u, a);
     }
-    if (!lower_and_run(&cpu)) { CHECK(false); return; }
-    CHECK_EQ(cpu.r[3], 0u);                       /* the low half, raw */
+    if (!lower_and_run(&cpu)) {
+        CHECK(false);
+        return;
+    }
+    CHECK_EQ(cpu.r[3], 0u); /* the low half, raw */
 
     /*
      * An unboxed *operand* reaching the arithmetic gives a canonical NaN
@@ -1488,7 +1504,7 @@ static void test_lower_fp_box(void)
      */
     memset(&cpu, 0, sizeof(cpu));
     cpu.f[1] = F_BOXED(F_TWO);
-    cpu.f[2] = (uint64_t)F_TWO;                   /* no box */
+    cpu.f[2] = (uint64_t)F_TWO; /* no box */
     emu_ir_reset(&g_b);
     {
         const uint16_t a = emu_ir_emit(&g_b, EMU_IR_FGET, EMU_IR_FP_BOX,
@@ -1497,10 +1513,13 @@ static void test_lower_fp_box(void)
                                        EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 2u, 0u);
         const uint16_t r = emu_ir_emit(&g_b, EMU_IR_FMUL, 0u, a, b, 0u, 0u);
 
-        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, EMU_IR_FP_BOX, r,
-                          EMU_IR_NO_TEMP, 3u, 0u);
+        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, EMU_IR_FP_BOX, r, EMU_IR_NO_TEMP,
+                          3u, 0u);
     }
-    if (!lower_and_run(&cpu)) { CHECK(false); return; }
+    if (!lower_and_run(&cpu)) {
+        CHECK(false);
+        return;
+    }
     CHECK_EQ64(cpu.f[3], F_BOXED(F_NAN));
 }
 
@@ -1510,7 +1529,7 @@ static void test_lower_fp(void)
     CHECK_EQ(fp_run(EMU_IR_FSUB, 0u, F_TWO, F_ONE), F_ONE);
     CHECK_EQ(fp_run(EMU_IR_FMUL, 0u, F_TWO, F_TWO), 0x40800000u);
     CHECK_EQ(fp_run(EMU_IR_FDIV, 0u, F_TWO, F_ONE), F_TWO);
-    CHECK_EQ(fp_run(EMU_IR_FSQRT, 0u, 0x40800000u, 0u), F_TWO);  /* 4 -> 2 */
+    CHECK_EQ(fp_run(EMU_IR_FSQRT, 0u, 0x40800000u, 0u), F_TWO); /* 4 -> 2 */
 
     /* Bit manipulation, so a NaN must pass through unquietened. */
     CHECK_EQ(fp_run(EMU_IR_FSGNJ, EMU_IR_FSGNJ_J, F_ONE, F_NEG1), F_NEG1);
@@ -1542,15 +1561,13 @@ static void test_lower_fp(void)
      * re-examining the operand, and a lowering that trusted the
      * conversion gives 0x80000000 for three of them.
      */
-    CHECK_EQ(fp_run(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ, F_NAN, 0u),
-             0x7FFFFFFFu);
-    CHECK_EQ(fp_run(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ, F_PINF, 0u),
-             0x7FFFFFFFu);
-    CHECK_EQ(fp_run(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ,
-                    F_PINF | 0x80000000u, 0u), 0x80000000u);
+    CHECK_EQ(fp_run(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ, F_NAN, 0u), 0x7FFFFFFFu);
+    CHECK_EQ(fp_run(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ, F_PINF, 0u), 0x7FFFFFFFu);
+    CHECK_EQ(fp_run(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ, F_PINF | 0x80000000u, 0u),
+             0x80000000u);
     CHECK_EQ(fp_run(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ, 0x40200000u, 0u), 2u);
     CHECK_EQ(fp_run(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RTZ, 0xC0200000u, 0u),
-             0xFFFFFFFEu);                              /* -2.5 -> -2 */
+             0xFFFFFFFEu); /* -2.5 -> -2 */
     /* The MXCSR the block sets is round-to-nearest, ties to even. */
     CHECK_EQ(fp_run(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RNE, 0x40200000u, 0u), 2u);
     CHECK_EQ(fp_run(EMU_IR_FCVT_TO_I, EMU_IR_FRM_RNE, 0x40600000u, 0u), 4u);
@@ -1580,7 +1597,7 @@ static void test_lower_fp_flags(void)
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.f[1] = F_ONE;
-    cpu.f[2] = 0x40400000u;                 /* 3.0; 1/3 is inexact */
+    cpu.f[2] = 0x40400000u; /* 3.0; 1/3 is inexact */
 
     emu_ir_reset(&g_b);
     {

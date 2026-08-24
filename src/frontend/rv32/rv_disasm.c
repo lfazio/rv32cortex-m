@@ -21,8 +21,8 @@
 /* ------------------------------------------------------------------ */
 
 typedef struct {
-    char  *buf;
-    size_t cap;    /* usable characters, excluding the NUL */
+    char *buf;
+    size_t cap; /* usable characters, excluding the NUL */
     size_t len;
 } out_t;
 
@@ -81,10 +81,9 @@ static void emit_hex(out_t *o, uint32_t v)
 /* ------------------------------------------------------------------ */
 
 static const char *const reg_abi[32] = {
-    "zero", "ra", "sp",  "gp",  "tp", "t0", "t1", "t2",
-    "s0",   "s1", "a0",  "a1",  "a2", "a3", "a4", "a5",
-    "a6",   "a7", "s2",  "s3",  "s4", "s5", "s6", "s7",
-    "s8",   "s9", "s10", "s11", "t3", "t4", "t5", "t6",
+    "zero", "ra", "sp", "gp", "tp",  "t0",  "t1", "t2", "s0", "s1", "a0",
+    "a1",   "a2", "a3", "a4", "a5",  "a6",  "a7", "s2", "s3", "s4", "s5",
+    "s6",   "s7", "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6",
 };
 
 const char *rv_reg_name(unsigned r)
@@ -110,8 +109,10 @@ static void emit_mn(out_t *o, const char *m)
 static void emit_rrr(out_t *o, const char *m, uint32_t i)
 {
     emit_mn(o, m);
-    emit_reg(o, rv_rd(i));   emit_str(o, ", ");
-    emit_reg(o, rv_rs1(i));  emit_str(o, ", ");
+    emit_reg(o, rv_rd(i));
+    emit_str(o, ", ");
+    emit_reg(o, rv_rs1(i));
+    emit_str(o, ", ");
     emit_reg(o, rv_rs2(i));
 }
 
@@ -119,8 +120,10 @@ static void emit_rrr(out_t *o, const char *m, uint32_t i)
 static void emit_rri(out_t *o, const char *m, uint32_t i, int32_t imm)
 {
     emit_mn(o, m);
-    emit_reg(o, rv_rd(i));   emit_str(o, ", ");
-    emit_reg(o, rv_rs1(i));  emit_str(o, ", ");
+    emit_reg(o, rv_rd(i));
+    emit_str(o, ", ");
+    emit_reg(o, rv_rs1(i));
+    emit_str(o, ", ");
     emit_int(o, imm);
 }
 
@@ -129,49 +132,41 @@ static void emit_mem(out_t *o, const char *m, uint32_t rd, int32_t imm,
                      uint32_t rs1)
 {
     emit_mn(o, m);
-    emit_reg(o, rd);  emit_str(o, ", ");
-    emit_int(o, imm); emit_ch(o, '(');
-    emit_reg(o, rs1); emit_ch(o, ')');
+    emit_reg(o, rd);
+    emit_str(o, ", ");
+    emit_int(o, imm);
+    emit_ch(o, '(');
+    emit_reg(o, rs1);
+    emit_ch(o, ')');
 }
 
 /* ------------------------------------------------------------------ */
 
-static const char *const branch_mn[8] = {
-    "beq", "bne", NULL, NULL, "blt", "bge", "bltu", "bgeu"
-};
-static const char *const load_mn[8] = {
-    "lb", "lh", "lw", NULL, "lbu", "lhu", NULL, NULL
-};
-static const char *const store_mn[8] = {
-    "sb", "sh", "sw", NULL, NULL, NULL, NULL, NULL
-};
-static const char *const opimm_mn[8] = {
-    "addi", "slli", "slti", "sltiu", "xori", NULL, "ori", "andi"
-};
-static const char *const op_mn[8] = {
-    "add", "sll", "slt", "sltu", "xor", "srl", "or", "and"
-};
-static const char *const mul_mn[8] = {
-    "mul", "mulh", "mulhsu", "mulhu", "div", "divu", "rem", "remu"
-};
+static const char *const branch_mn[8] = {"beq", "bne", NULL,   NULL,
+                                         "blt", "bge", "bltu", "bgeu"};
+static const char *const load_mn[8] = {"lb",  "lh",  "lw", NULL,
+                                       "lbu", "lhu", NULL, NULL};
+static const char *const store_mn[8] = {"sb", "sh", "sw", NULL,
+                                        NULL, NULL, NULL, NULL};
+static const char *const opimm_mn[8] = {"addi", "slli", "slti", "sltiu",
+                                        "xori", NULL,   "ori",  "andi"};
+static const char *const op_mn[8] = {"add", "sll", "slt", "sltu",
+                                     "xor", "srl", "or",  "and"};
+static const char *const mul_mn[8] = {"mul", "mulh", "mulhsu", "mulhu",
+                                      "div", "divu", "rem",    "remu"};
 static const char *const amo_mn[32] = {
-    "amoadd.w", "amoswap.w", "lr.w", "sc.w",
-    "amoxor.w", NULL, NULL, NULL,
-    "amoor.w", NULL, NULL, NULL,
-    "amoand.w", NULL, NULL, NULL,
-    "amomin.w", NULL, NULL, NULL,
-    "amomax.w", NULL, NULL, NULL,
-    "amominu.w", NULL, NULL, NULL,
-    "amomaxu.w", NULL, NULL, NULL,
+    "amoadd.w",  "amoswap.w", "lr.w", "sc.w", "amoxor.w",  NULL, NULL, NULL,
+    "amoor.w",   NULL,        NULL,   NULL,   "amoand.w",  NULL, NULL, NULL,
+    "amomin.w",  NULL,        NULL,   NULL,   "amomax.w",  NULL, NULL, NULL,
+    "amominu.w", NULL,        NULL,   NULL,   "amomaxu.w", NULL, NULL, NULL,
 };
-static const char *const csr_mn[8] = {
-    NULL, "csrrw", "csrrs", "csrrc", NULL, "csrrwi", "csrrsi", "csrrci"
-};
+static const char *const csr_mn[8] = {NULL, "csrrw",  "csrrs",  "csrrc",
+                                      NULL, "csrrwi", "csrrsi", "csrrci"};
 
 size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
                  unsigned len)
 {
-    out_t o = { buf, (buflen == 0u) ? 0u : buflen - 1u, 0u };
+    out_t o = {buf, (buflen == 0u) ? 0u : buflen - 1u, 0u};
     /* RV32 is 2 or 4 bytes and the caller has already expanded RVC, so
      * the length says nothing the encoding does not. */
     const uint32_t insn = (uint32_t)insn64;
@@ -217,8 +212,8 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
             emit_str(&o, "ret");
             break;
         }
-        emit_mem(&o, rv_rd(insn) == 0u ? "jr" : "jalr",
-                 rv_rd(insn), rv_imm_i(insn), rv_rs1(insn));
+        emit_mem(&o, rv_rd(insn) == 0u ? "jr" : "jalr", rv_rd(insn),
+                 rv_imm_i(insn), rv_rs1(insn));
         break;
 
     case OP_BRANCH: {
@@ -227,8 +222,10 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
             break;
         }
         emit_mn(&o, branch_mn[f3]);
-        emit_reg(&o, rv_rs1(insn)); emit_str(&o, ", ");
-        emit_reg(&o, rv_rs2(insn)); emit_str(&o, ", ");
+        emit_reg(&o, rv_rs1(insn));
+        emit_str(&o, ", ");
+        emit_reg(&o, rv_rs2(insn));
+        emit_str(&o, ", ");
         emit_hex(&o, pc + (uint32_t)rv_imm_b(insn));
         break;
     }
@@ -250,7 +247,7 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
         break;
 
     case OP_IMM:
-        if (f3 == 5u) {   /* srli / srai share funct3 */
+        if (f3 == 5u) { /* srli / srai share funct3 */
             emit_rri(&o, (f7 == 0x20u) ? "srai" : "srli", insn,
                      (int32_t)rv_rs2(insn));
             break;
@@ -312,9 +309,8 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
      */
     case OP_LOAD_FP:
     case OP_STORE_FP: {
-        static const char *const w[8] = {
-            NULL, NULL, "w", "d", NULL, NULL, NULL, NULL
-        };
+        static const char *const w[8] = {NULL, NULL, "w",  "d",
+                                         NULL, NULL, NULL, NULL};
         char mn[8];
 
         if (w[f3] == NULL) {
@@ -340,19 +336,25 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
     case OP_MSUB:
     case OP_NMSUB:
     case OP_NMADD: {
-        static const char *const fma[4] = {
-            "fmadd", "fmsub", "fnmsub", "fnmadd"
-        };
+        static const char *const fma[4] = {"fmadd", "fmsub", "fnmsub",
+                                           "fnmadd"};
         const uint32_t fmt = rv_funct7(insn) & 3u;
 
         emit_str(&o, fma[(op >> 2) & 3u]);
         emit_ch(&o, '.');
         emit_ch(&o, (fmt == 1u) ? 'd' : 's');
         emit_ch(&o, ' ');
-        emit_ch(&o, 'f'); emit_uint(&o, rv_rd(insn));  emit_str(&o, ", ");
-        emit_ch(&o, 'f'); emit_uint(&o, rv_rs1(insn)); emit_str(&o, ", ");
-        emit_ch(&o, 'f'); emit_uint(&o, rv_rs2(insn)); emit_str(&o, ", ");
-        emit_ch(&o, 'f'); emit_uint(&o, insn >> 27);
+        emit_ch(&o, 'f');
+        emit_uint(&o, rv_rd(insn));
+        emit_str(&o, ", ");
+        emit_ch(&o, 'f');
+        emit_uint(&o, rv_rs1(insn));
+        emit_str(&o, ", ");
+        emit_ch(&o, 'f');
+        emit_uint(&o, rv_rs2(insn));
+        emit_str(&o, ", ");
+        emit_ch(&o, 'f');
+        emit_uint(&o, insn >> 27);
         break;
     }
 
@@ -379,19 +381,32 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
         bool rd_is_fp = true, rs1_is_fp = true, two_src = true, sfxd = true;
 
         switch (f5v) {
-        case 0x00u: m = "fadd";  break;
-        case 0x01u: m = "fsub";  break;
-        case 0x02u: m = "fmul";  break;
-        case 0x03u: m = "fdiv";  break;
-        case 0x0Bu: m = "fsqrt"; two_src = false; break;
+        case 0x00u:
+            m = "fadd";
+            break;
+        case 0x01u:
+            m = "fsub";
+            break;
+        case 0x02u:
+            m = "fmul";
+            break;
+        case 0x03u:
+            m = "fdiv";
+            break;
+        case 0x0Bu:
+            m = "fsqrt";
+            two_src = false;
+            break;
         case 0x04u: {
-            static const char *const sg[3] = { "fsgnj", "fsgnjn", "fsgnjx" };
+            static const char *const sg[3] = {"fsgnj", "fsgnjn", "fsgnjx"};
             m = (f3 < 3u) ? sg[f3] : NULL;
             break;
         }
-        case 0x05u: m = (f3 == 0u) ? "fmin" : "fmax"; break;
+        case 0x05u:
+            m = (f3 == 0u) ? "fmin" : "fmax";
+            break;
         case 0x14u: {
-            static const char *const cm[3] = { "fle", "flt", "feq" };
+            static const char *const cm[3] = {"fle", "flt", "feq"};
             m = (f3 < 3u) ? cm[f3] : NULL;
             rd_is_fp = false;
             break;
@@ -400,7 +415,8 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
             /* Precision conversion: the *destination* format is in fmt
              * and rs2 names the source, so the suffix is written out. */
             m = (fmt == 1u) ? "fcvt.d.s" : "fcvt.s.d";
-            two_src = false; sfxd = false;
+            two_src = false;
+            sfxd = false;
             break;
         /*
          * The integer conversions name *both* formats, and in opposite
@@ -411,26 +427,34 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
          */
         case 0x18u:
             m = (rv_rs2(insn) == 0u)
-              ? ((fmt == 1u) ? "fcvt.w.d"  : "fcvt.w.s")
-              : ((fmt == 1u) ? "fcvt.wu.d" : "fcvt.wu.s");
-            rd_is_fp = false; two_src = false; sfxd = false;
+                    ? ((fmt == 1u) ? "fcvt.w.d" : "fcvt.w.s")
+                    : ((fmt == 1u) ? "fcvt.wu.d" : "fcvt.wu.s");
+            rd_is_fp = false;
+            two_src = false;
+            sfxd = false;
             break;
         case 0x1Au:
             m = (rv_rs2(insn) == 0u)
-              ? ((fmt == 1u) ? "fcvt.d.w"  : "fcvt.s.w")
-              : ((fmt == 1u) ? "fcvt.d.wu" : "fcvt.s.wu");
-            rs1_is_fp = false; two_src = false; sfxd = false;
+                    ? ((fmt == 1u) ? "fcvt.d.w" : "fcvt.s.w")
+                    : ((fmt == 1u) ? "fcvt.d.wu" : "fcvt.s.wu");
+            rs1_is_fp = false;
+            two_src = false;
+            sfxd = false;
             break;
         case 0x1Cu:
             m = (f3 == 0u) ? "fmv.x.w" : "fclass";
-            rd_is_fp = false; two_src = false;
+            rd_is_fp = false;
+            two_src = false;
             sfxd = (f3 != 0u);
             break;
         case 0x1Eu:
             m = "fmv.w.x";
-            rs1_is_fp = false; two_src = false; sfxd = false;
+            rs1_is_fp = false;
+            two_src = false;
+            sfxd = false;
             break;
-        default: break;
+        default:
+            break;
         }
 
         if (m == NULL) {
@@ -443,14 +467,23 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
             emit_ch(&o, sfx);
         }
         emit_ch(&o, ' ');
-        if (rd_is_fp) { emit_ch(&o, 'f'); emit_uint(&o, rv_rd(insn)); }
-        else          { emit_reg(&o, rv_rd(insn)); }
+        if (rd_is_fp) {
+            emit_ch(&o, 'f');
+            emit_uint(&o, rv_rd(insn));
+        } else {
+            emit_reg(&o, rv_rd(insn));
+        }
         emit_str(&o, ", ");
-        if (rs1_is_fp) { emit_ch(&o, 'f'); emit_uint(&o, rv_rs1(insn)); }
-        else           { emit_reg(&o, rv_rs1(insn)); }
+        if (rs1_is_fp) {
+            emit_ch(&o, 'f');
+            emit_uint(&o, rv_rs1(insn));
+        } else {
+            emit_reg(&o, rv_rs1(insn));
+        }
         if (two_src) {
             emit_str(&o, ", ");
-            emit_ch(&o, 'f'); emit_uint(&o, rv_rs2(insn));
+            emit_ch(&o, 'f');
+            emit_uint(&o, rv_rs2(insn));
         }
         break;
     }
@@ -465,7 +498,7 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
         emit_mn(&o, m);
         emit_reg(&o, rv_rd(insn));
         emit_str(&o, ", ");
-        if ((rv_funct7(insn) >> 2) != 0x02u) {   /* lr.w has no source */
+        if ((rv_funct7(insn) >> 2) != 0x02u) { /* lr.w has no source */
             emit_reg(&o, rv_rs2(insn));
             emit_str(&o, ", ");
         }
@@ -478,11 +511,21 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
     case OP_SYSTEM: {
         if (f3 == 0u) {
             switch (insn >> 20) {
-            case 0x000u: emit_str(&o, "ecall"); break;
-            case 0x001u: emit_str(&o, "ebreak"); break;
-            case 0x302u: emit_str(&o, "mret"); break;
-            case 0x105u: emit_str(&o, "wfi"); break;
-            default:     emit_str(&o, "illegal"); break;
+            case 0x000u:
+                emit_str(&o, "ecall");
+                break;
+            case 0x001u:
+                emit_str(&o, "ebreak");
+                break;
+            case 0x302u:
+                emit_str(&o, "mret");
+                break;
+            case 0x105u:
+                emit_str(&o, "wfi");
+                break;
+            default:
+                emit_str(&o, "illegal");
+                break;
             }
             break;
         }
@@ -505,7 +548,7 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
         emit_str(&o, ", ");
 
         if (f3 & 4u) {
-            emit_uint(&o, rv_rs1(insn));    /* immediate form */
+            emit_uint(&o, rv_rs1(insn)); /* immediate form */
         } else {
             emit_reg(&o, rv_rs1(insn));
         }

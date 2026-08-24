@@ -41,7 +41,7 @@
  * INTC2. The state is one g4mh_intc_t per core for the local half plus a
  * shared one for the global half; see docs/host/g4mh/multicore.md.
  */
-static g4mh_cpu_t  g_cpu[G4MH_PE_COUNT];
+static g4mh_cpu_t g_cpu[G4MH_PE_COUNT];
 static g4mh_intc_t g_intc[G4MH_PE_COUNT];
 
 /*
@@ -50,9 +50,9 @@ static g4mh_intc_t g_intc[G4MH_PE_COUNT];
  * them has a self region. The ports are what the bus regions bind to.
  */
 static g4mh_barrier_t g_barr;
-static g4mh_boot_t    g_boot;
-static g4mh_ipir_t    g_ipir;
-static g4mh_tptm_t    g_tptm;
+static g4mh_boot_t g_boot;
+static g4mh_ipir_t g_ipir;
+static g4mh_tptm_t g_tptm;
 static g4mh_intercpu_port_t g_barr_port[G4MH_PE_COUNT];
 static g4mh_intercpu_port_t g_ipir_port[G4MH_PE_COUNT];
 static g4mh_intercpu_port_t g_tptm_port[G4MH_PE_COUNT];
@@ -77,8 +77,7 @@ static void g4mh_ops_init(emu_cpu_t *cpu, emu_bus_t *bus, uint32_t coreid)
 
     g4mh_cpu_init(c, bus, coreid);
     /* PE0's instance holds the shared INTC2 half; the others point at it. */
-    g4mh_intc_init(&g_intc[coreid], c,
-                   (coreid == 0u) ? NULL : &g_intc[0]);
+    g4mh_intc_init(&g_intc[coreid], c, (coreid == 0u) ? NULL : &g_intc[0]);
     /* Join the cross-core reservation tracker, so this core's LDL.W can be
      * broken by another core's store. */
     g4mh_ll_register(c);
@@ -239,8 +238,8 @@ static uint8_t g_lram[G4MH_PE_COUNT][G4MH_LRAM_BACKED];
 
 /* Where code flash is backed, if a platform has said. */
 static const void *g_flash_ptr;
-static uint32_t    g_flash_len;
-static bool        g_flash_rw;
+static uint32_t g_flash_len;
+static bool g_flash_rw;
 
 #if G4MH_FLASH_BACKED > 0u
 /*
@@ -255,7 +254,7 @@ void g4mh_set_flash(const void *base, uint32_t size, bool writable)
 {
     g_flash_ptr = base;
     g_flash_len = size;
-    g_flash_rw  = writable;
+    g_flash_rw = writable;
 }
 
 /*
@@ -279,8 +278,8 @@ static bool g4mh_ops_add_shared_devices(emu_bus_t *bus)
      * what makes a store from one PE visible to the next.
      */
     const void *fp = g_flash_ptr;
-    uint32_t    fl = g_flash_len;
-    bool        rw = g_flash_rw;
+    uint32_t fl = g_flash_len;
+    bool rw = g_flash_rw;
 
 #if G4MH_FLASH_BACKED > 0u
     if (fp == NULL) {
@@ -297,27 +296,27 @@ static bool g4mh_ops_add_shared_devices(emu_bus_t *bus)
      * own flash passes writable=false and gets the refusal for free.
      */
     if (fp != NULL && fl != 0u) {
-        const bool ok = rw
-            ? emu_bus_add_ram(bus, "flash", G4MH_FLASH_BASE,
-                              (void *)(uintptr_t)fp, fl)
-            : emu_bus_add_rom(bus, "flash", G4MH_FLASH_BASE, fp, fl);
+        const bool ok =
+            rw ? emu_bus_add_ram(bus, "flash", G4MH_FLASH_BASE,
+                                 (void *)(uintptr_t)fp, fl)
+               : emu_bus_add_rom(bus, "flash", G4MH_FLASH_BASE, fp, fl);
         if (!ok) {
             return false;
         }
     }
 
-    return emu_bus_add_ram(bus, "cram", G4MH_CRAM_BASE,
-                           g_cram, (uint32_t)sizeof(g_cram)) &&
-           emu_bus_add_mmio(bus, "intc2", G4MH_INTC2_BASE,
-                            G4MH_INTC2_SIZE, &g4mh_intc2_ops, &g_intc[0]) &&
-           emu_bus_add_mmio(bus, "ostm0", G4MH_OSTM0_BASE,
-                            G4MH_OSTM0_SIZE, &g4mh_ostm_ops, &g_intc[0]) &&
+    return emu_bus_add_ram(bus, "cram", G4MH_CRAM_BASE, g_cram,
+                           (uint32_t)sizeof(g_cram)) &&
+           emu_bus_add_mmio(bus, "intc2", G4MH_INTC2_BASE, G4MH_INTC2_SIZE,
+                            &g4mh_intc2_ops, &g_intc[0]) &&
+           emu_bus_add_mmio(bus, "ostm0", G4MH_OSTM0_BASE, G4MH_OSTM0_SIZE,
+                            &g4mh_ostm_ops, &g_intc[0]) &&
            /*
             * INTIF, for TPTMSEL. One register for the whole system, so
             * it binds to the global INTC instance like INTC2 does.
             */
-           emu_bus_add_mmio(bus, "intif", G4MH_INTIF_BASE,
-                            G4MH_INTIF_SIZE, &g4mh_intif_ops, &g_intc[0]) &&
+           emu_bus_add_mmio(bus, "intif", G4MH_INTIF_BASE, G4MH_INTIF_SIZE,
+                            &g4mh_intif_ops, &g_intc[0]) &&
            /*
             * BOOTCTRL: which PEs are running. Shared rather than per
             * core, because it is one register describing the whole
@@ -360,25 +359,23 @@ static bool g4mh_ops_add_core_devices(emu_cpu_t *cpu, emu_bus_t *bus,
      * The absolute windows descend from PE0, so PE n is at
      * PE0_BASE - n * STRIDE -- see the note in g4mh_memmap.h.
      */
-    if (!emu_bus_add_ram(bus, "lram-self", G4MH_LRAM_SELF_BASE,
-                         g_lram[index], (uint32_t)sizeof(g_lram[0]))) {
+    if (!emu_bus_add_ram(bus, "lram-self", G4MH_LRAM_SELF_BASE, g_lram[index],
+                         (uint32_t)sizeof(g_lram[0]))) {
         return false;
     }
     for (unsigned pe = 0; pe < G4MH_PE_COUNT; pe++) {
-        static const char *const lnm[3] = { "lram-pe0", "lram-pe1",
-                                            "lram-pe2" };
-        if (!emu_bus_add_ram(bus, lnm[pe], G4MH_LRAM_PE_BASE(pe),
-                             g_lram[pe], (uint32_t)sizeof(g_lram[0]))) {
+        static const char *const lnm[3] = {"lram-pe0", "lram-pe1", "lram-pe2"};
+        if (!emu_bus_add_ram(bus, lnm[pe], G4MH_LRAM_PE_BASE(pe), g_lram[pe],
+                             (uint32_t)sizeof(g_lram[0]))) {
             return false;
         }
     }
     for (unsigned pe = 0; pe < G4MH_PE_COUNT; pe++) {
-        static const char *const nm[3] = { "intc1-pe0", "intc1-pe1",
-                                           "intc1-pe2" };
+        static const char *const nm[3] = {"intc1-pe0", "intc1-pe1",
+                                          "intc1-pe2"};
         if (!emu_bus_add_mmio(bus, nm[pe],
                               G4MH_INTC1_PE0_BASE + pe * G4MH_INTC1_PE_STRIDE,
-                              G4MH_INTC1_SIZE, &g4mh_intc1_ops,
-                              &g_intc[pe])) {
+                              G4MH_INTC1_SIZE, &g4mh_intc1_ops, &g_intc[pe])) {
             return false;
         }
     }
@@ -395,11 +392,11 @@ static bool g4mh_ops_add_core_devices(emu_cpu_t *cpu, emu_bus_t *bus,
      * itself.
      */
     g_barr_port[index].state = &g_barr;
-    g_barr_port[index].pe    = index;
+    g_barr_port[index].pe = index;
     g_ipir_port[index].state = &g_ipir;
-    g_ipir_port[index].pe    = index;
+    g_ipir_port[index].pe = index;
     g_tptm_port[index].state = &g_tptm;
-    g_tptm_port[index].pe    = index;
+    g_tptm_port[index].pe = index;
 
     return emu_bus_add_mmio(bus, "barr", G4MH_BARR_BASE, G4MH_BARR_SIZE,
                             &g4mh_barrier_ops, &g_barr_port[index]) &&
@@ -468,7 +465,9 @@ static void g4mh_ops_set_trace(emu_cpu_t *cpu, emu_trace_fn fn, void *user)
     c->trace = fn;
     c->trace_user = user;
 #else
-    (void)cpu; (void)fn; (void)user;
+    (void)cpu;
+    (void)fn;
+    (void)user;
 #endif
 }
 
@@ -491,13 +490,13 @@ static void g4mh_ops_status(const emu_cpu_t *cpu, emu_cpu_status_t *out)
     const g4mh_cpu_t *c = cpu_of(cpu);
 
     out->backend = g4mh_backend->name;
-    out->pc      = c->pc;
+    out->pc = c->pc;
     out->retired = c->retired;
-    out->state   = (emu_state_t)c->state;
+    out->state = (emu_state_t)c->state;
 #if EMU_ENABLE_STATS
-    out->traps   = c->exc_count;
+    out->traps = c->exc_count;
 #else
-    out->traps   = 0u;
+    out->traps = 0u;
 #endif
     /*
      * Parked in HALT with every channel masked means nothing can ever wake
@@ -524,7 +523,7 @@ static void g4mh_ops_reg_write(emu_cpu_t *cpu, unsigned r, uint32_t v)
     if (r < 32u) {
         g4mh_cpu_t *c = cpu_of(cpu);
         c->r[r] = v;
-        c->r[0] = 0u;      /* r0 stays hardwired */
+        c->r[0] = 0u; /* r0 stays hardwired */
     }
 }
 
@@ -544,14 +543,22 @@ static const char *cause_name(uint32_t cause)
         return "trap 16-31";
     }
     switch (cause) {
-    case G4MH_EXC_SYSERR: return "system error";
-    case G4MH_EXC_MIP:    return "instruction-fetch protection";
-    case G4MH_EXC_MDP:    return "data protection";
-    case G4MH_EXC_RIE:    return "reserved instruction";
-    case G4MH_EXC_MAE:    return "misaligned access";
-    case G4MH_EXC_FPP:    return "floating-point operation";
-    case G4MH_EXC_UCPOP:  return "coprocessor unusable";
-    default:              return "none or unknown";
+    case G4MH_EXC_SYSERR:
+        return "system error";
+    case G4MH_EXC_MIP:
+        return "instruction-fetch protection";
+    case G4MH_EXC_MDP:
+        return "data protection";
+    case G4MH_EXC_RIE:
+        return "reserved instruction";
+    case G4MH_EXC_MAE:
+        return "misaligned access";
+    case G4MH_EXC_FPP:
+        return "floating-point operation";
+    case G4MH_EXC_UCPOP:
+        return "coprocessor unusable";
+    default:
+        return "none or unknown";
     }
 }
 
@@ -589,18 +596,30 @@ static void g4mh_ops_dump(const emu_cpu_t *cpu, emu_print_fn out, void *ctx)
      * live return state depends on PSW.NP and reading the wrong one is the
      * classic way to misdiagnose an RH850 fault.
      */
-    out(ctx, "\n  pc      ");  out(ctx, hex32(hb, c->pc));
-    out(ctx, "\n  psw     ");  out(ctx, hex32(hb, c->psw));
-    out(ctx, "\n  eiic    ");  out(ctx, hex32(hb, c->sr[0][G4MH_SR_EIIC]));
-    out(ctx, "  (");           out(ctx, cause_name(c->sr[0][G4MH_SR_EIIC]));
-    out(ctx, ")\n  eipc    ");  out(ctx, hex32(hb, c->sr[0][G4MH_SR_EIPC]));
-    out(ctx, "   eipsw ");     out(ctx, hex32(hb, c->sr[0][G4MH_SR_EIPSW]));
-    out(ctx, "\n  feic    ");  out(ctx, hex32(hb, c->sr[0][G4MH_SR_FEIC]));
-    out(ctx, "  (");           out(ctx, cause_name(c->sr[0][G4MH_SR_FEIC]));
-    out(ctx, ")\n  fepc    ");  out(ctx, hex32(hb, c->sr[0][G4MH_SR_FEPC]));
-    out(ctx, "   fepsw ");     out(ctx, hex32(hb, c->sr[0][G4MH_SR_FEPSW]));
-    out(ctx, "\n  rbase   ");  out(ctx, hex32(hb, c->sr[1][G4MH_SR_RBASE]));
-    out(ctx, "   mea   ");     out(ctx, hex32(hb, c->sr[2][G4MH_SR_MEA]));
+    out(ctx, "\n  pc      ");
+    out(ctx, hex32(hb, c->pc));
+    out(ctx, "\n  psw     ");
+    out(ctx, hex32(hb, c->psw));
+    out(ctx, "\n  eiic    ");
+    out(ctx, hex32(hb, c->sr[0][G4MH_SR_EIIC]));
+    out(ctx, "  (");
+    out(ctx, cause_name(c->sr[0][G4MH_SR_EIIC]));
+    out(ctx, ")\n  eipc    ");
+    out(ctx, hex32(hb, c->sr[0][G4MH_SR_EIPC]));
+    out(ctx, "   eipsw ");
+    out(ctx, hex32(hb, c->sr[0][G4MH_SR_EIPSW]));
+    out(ctx, "\n  feic    ");
+    out(ctx, hex32(hb, c->sr[0][G4MH_SR_FEIC]));
+    out(ctx, "  (");
+    out(ctx, cause_name(c->sr[0][G4MH_SR_FEIC]));
+    out(ctx, ")\n  fepc    ");
+    out(ctx, hex32(hb, c->sr[0][G4MH_SR_FEPC]));
+    out(ctx, "   fepsw ");
+    out(ctx, hex32(hb, c->sr[0][G4MH_SR_FEPSW]));
+    out(ctx, "\n  rbase   ");
+    out(ctx, hex32(hb, c->sr[1][G4MH_SR_RBASE]));
+    out(ctx, "   mea   ");
+    out(ctx, hex32(hb, c->sr[2][G4MH_SR_MEA]));
     out(ctx, "\n");
 
     for (unsigned i = 0; i < 32u; i++) {
@@ -631,45 +650,45 @@ static void g4mh_ops_dump(const emu_cpu_t *cpu, emu_print_fn out, void *ctx)
 /* ------------------------------------------------------------------ */
 
 const emu_cpu_ops_t g4mh_frontend = {
-    .name        = "g4mh",
-    .desc        = "Renesas RH850 G4MH",
-    .elf_machine     = EMU_EM_V850,
+    .name = "g4mh",
+    .desc = "Renesas RH850 G4MH",
+    .elf_machine = EMU_EM_V850,
     .elf_machine_alt = EMU_EM_V800,
 
-    .instance    = g4mh_instance,
-    .init        = g4mh_ops_init,
-    .reset       = g4mh_ops_reset,
-    .boot        = g4mh_ops_boot,
+    .instance = g4mh_instance,
+    .init = g4mh_ops_init,
+    .reset = g4mh_ops_reset,
+    .boot = g4mh_ops_boot,
 
-    .run         = g4mh_ops_run,
-    .invalidate  = g4mh_ops_invalidate,
-    .step        = g4mh_ops_step,
+    .run = g4mh_ops_run,
+    .invalidate = g4mh_ops_invalidate,
+    .step = g4mh_ops_step,
 
-    .ncores          = G4MH_PE_COUNT,
+    .ncores = G4MH_PE_COUNT,
     .add_shared_devices = g4mh_ops_add_shared_devices,
-    .set_image          = g4mh_ops_set_image,
-    .gdb_target         = g4mh_gdb_target,
-    .select_backend     = g4mh_select_backend,
-    .add_core_devices   = g4mh_ops_add_core_devices,
-    .set_irq         = g4mh_ops_set_irq,
+    .set_image = g4mh_ops_set_image,
+    .gdb_target = g4mh_gdb_target,
+    .select_backend = g4mh_select_backend,
+    .add_core_devices = g4mh_ops_add_core_devices,
+    .set_irq = g4mh_ops_set_irq,
     .set_unmask_hook = g4mh_ops_set_unmask_hook,
-    .advance_time    = g4mh_ops_advance_time,
-    .set_time        = g4mh_ops_set_time,
+    .advance_time = g4mh_ops_advance_time,
+    .set_time = g4mh_ops_set_time,
 
     .set_syscall = g4mh_ops_set_syscall,
-    .set_trace   = g4mh_ops_set_trace,
-    .set_cache   = g4mh_ops_set_cache,
-    .halt        = g4mh_ops_halt,
+    .set_trace = g4mh_ops_set_trace,
+    .set_cache = g4mh_ops_set_cache,
+    .halt = g4mh_ops_halt,
 
-    .status      = g4mh_ops_status,
-    .nregs       = 32u,
-    .reg_name    = g4mh_reg_name,
-    .reg_read    = g4mh_ops_reg_read,
-    .reg_write   = g4mh_ops_reg_write,
-    .dump        = g4mh_ops_dump,
+    .status = g4mh_ops_status,
+    .nregs = 32u,
+    .reg_name = g4mh_reg_name,
+    .reg_read = g4mh_ops_reg_read,
+    .reg_write = g4mh_ops_reg_write,
+    .dump = g4mh_ops_dump,
 #if G4MH_ENABLE_DISASM
-    .disasm      = g4mh_disasm,
+    .disasm = g4mh_disasm,
 #else
-    .disasm      = NULL,
+    .disasm = NULL,
 #endif
 };

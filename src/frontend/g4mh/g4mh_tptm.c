@@ -42,7 +42,7 @@
  * is how the halves come to disagree -- the same shape as the G4MH FP
  * field split that only cond=15 could settle.
  */
-#define U_BIT(m, i)     ((unsigned)(8u * (unsigned)(m) + (unsigned)(i)))
+#define U_BIT(m, i) ((unsigned)(8u * (unsigned)(m) + (unsigned)(i)))
 
 void g4mh_tptm_init(g4mh_tptm_t *t)
 {
@@ -71,7 +71,7 @@ static uint32_t steps(uint32_t ticks, uint8_t div, uint32_t *acc)
         return ticks;
     }
     total = (uint64_t)*acc + ticks;
-    *acc  = (uint32_t)(total % period);
+    *acc = (uint32_t)(total % period);
     return (uint32_t)(total / period);
 }
 
@@ -134,7 +134,7 @@ static void tptm_advance_pe(g4mh_tptm_t *t, unsigned pe, uint32_t ticks)
             }
             {
                 const uint32_t from = p->ucnt[m];
-                const uint32_t to   = from + n;
+                const uint32_t to = from + n;
 
                 p->ucnt[m] = to;
 
@@ -204,11 +204,11 @@ static emu_fault_t tptm_read(void *ctx, uint32_t off, uint32_t size,
     *out = 0u;
 
     if (off < G4MH_TPTM_BLOCK) {
-        pe = port->pe;                          /* the self block       */
-        r  = off;
+        pe = port->pe; /* the self block       */
+        r = off;
     } else {
         pe = (off - G4MH_TPTM_BLOCK) / G4MH_TPTM_BLOCK;
-        r  = (off - G4MH_TPTM_BLOCK) % G4MH_TPTM_BLOCK;
+        r = (off - G4MH_TPTM_BLOCK) % G4MH_TPTM_BLOCK;
     }
     if (pe >= G4MH_PE_COUNT) {
         return EMU_FAULT_NONE;
@@ -216,25 +216,63 @@ static emu_fault_t tptm_read(void *ctx, uint32_t off, uint32_t size,
     p = &t->pe[pe];
 
     switch (r) {
-    case G4MH_TPTM_ISTR:  *out = p->irun;  break;
-    case G4MH_TPTM_IIEN:  *out = p->iien;  break;
-    case G4MH_TPTM_IUSTR: *out = p->iustr; break;
-    case G4MH_TPTM_IDIV:  *out = p->idiv;  break;
-    case G4MH_TPTM_FSTR:  *out = p->frun;  break;
-    case G4MH_TPTM_FDIV:  *out = p->fdiv;  break;
-    case G4MH_TPTM_USTR:  *out = p->urun;  break;
-    case G4MH_TPTM_UIEN:  *out = p->uien;  break;
-    case G4MH_TPTM_UCSTR: *out = p->ucstr; break;
-    case G4MH_TPTM_UDIV:  *out = p->udiv;  break;
-    case G4MH_TPTM_UTRG:  *out = p->utrg;  break;
-    case G4MH_TPTM_UICFG: *out = p->uicfg; break;
-    case G4MH_TPTM_ICNT0: *out = p->icnt[0]; break;
-    case G4MH_TPTM_ILD0:  *out = p->ild[0];  break;
-    case G4MH_TPTM_ICNT1: *out = p->icnt[1]; break;
-    case G4MH_TPTM_ILD1:  *out = p->ild[1];  break;
-    case G4MH_TPTM_FCNT:  *out = p->fcnt;    break;
-    case G4MH_TPTM_UCNT0: *out = p->ucnt[0]; break;
-    case G4MH_TPTM_UCNT1: *out = p->ucnt[1]; break;
+    case G4MH_TPTM_ISTR:
+        *out = p->irun;
+        break;
+    case G4MH_TPTM_IIEN:
+        *out = p->iien;
+        break;
+    case G4MH_TPTM_IUSTR:
+        *out = p->iustr;
+        break;
+    case G4MH_TPTM_IDIV:
+        *out = p->idiv;
+        break;
+    case G4MH_TPTM_FSTR:
+        *out = p->frun;
+        break;
+    case G4MH_TPTM_FDIV:
+        *out = p->fdiv;
+        break;
+    case G4MH_TPTM_USTR:
+        *out = p->urun;
+        break;
+    case G4MH_TPTM_UIEN:
+        *out = p->uien;
+        break;
+    case G4MH_TPTM_UCSTR:
+        *out = p->ucstr;
+        break;
+    case G4MH_TPTM_UDIV:
+        *out = p->udiv;
+        break;
+    case G4MH_TPTM_UTRG:
+        *out = p->utrg;
+        break;
+    case G4MH_TPTM_UICFG:
+        *out = p->uicfg;
+        break;
+    case G4MH_TPTM_ICNT0:
+        *out = p->icnt[0];
+        break;
+    case G4MH_TPTM_ILD0:
+        *out = p->ild[0];
+        break;
+    case G4MH_TPTM_ICNT1:
+        *out = p->icnt[1];
+        break;
+    case G4MH_TPTM_ILD1:
+        *out = p->ild[1];
+        break;
+    case G4MH_TPTM_FCNT:
+        *out = p->fcnt;
+        break;
+    case G4MH_TPTM_UCNT0:
+        *out = p->ucnt[0];
+        break;
+    case G4MH_TPTM_UCNT1:
+        *out = p->ucnt[1];
+        break;
     default:
         if (r >= G4MH_TPTM_UCMP0(0) && r <= G4MH_TPTM_UCMP0(3)) {
             *out = p->ucmp[0][(r - G4MH_TPTM_UCMP0(0)) / 4u];
@@ -261,10 +299,10 @@ static emu_fault_t tptm_write(void *ctx, uint32_t off, uint32_t size,
 
     if (off < G4MH_TPTM_BLOCK) {
         pe = port->pe;
-        r  = off;
+        r = off;
     } else {
         pe = (off - G4MH_TPTM_BLOCK) / G4MH_TPTM_BLOCK;
-        r  = (off - G4MH_TPTM_BLOCK) % G4MH_TPTM_BLOCK;
+        r = (off - G4MH_TPTM_BLOCK) % G4MH_TPTM_BLOCK;
     }
     if (pe >= G4MH_PE_COUNT) {
         return EMU_FAULT_NONE;
@@ -316,11 +354,14 @@ static emu_fault_t tptm_write(void *ctx, uint32_t off, uint32_t size,
         p->iustr &= (uint8_t)(val & 0x3u);
         break;
 
-    case G4MH_TPTM_IDIV:  p->idiv = (uint8_t)val; p->iacc = 0u; break;
+    case G4MH_TPTM_IDIV:
+        p->idiv = (uint8_t)val;
+        p->iacc = 0u;
+        break;
 
     case G4MH_TPTM_FRUN:
         if ((val & 1u) != 0u) {
-            p->fcnt = 0u;               /* start is from zero          */
+            p->fcnt = 0u; /* start is from zero          */
             p->frun = 1u;
         }
         break;
@@ -329,8 +370,15 @@ static emu_fault_t tptm_write(void *ctx, uint32_t off, uint32_t size,
             p->fcnt = 0u;
         }
         break;
-    case G4MH_TPTM_FSTP:  if ((val & 1u) != 0u) { p->frun = 0u; } break;
-    case G4MH_TPTM_FDIV:  p->fdiv = (uint8_t)val; p->facc = 0u; break;
+    case G4MH_TPTM_FSTP:
+        if ((val & 1u) != 0u) {
+            p->frun = 0u;
+        }
+        break;
+    case G4MH_TPTM_FDIV:
+        p->fdiv = (uint8_t)val;
+        p->facc = 0u;
+        break;
 
     case G4MH_TPTM_URUN:
         for (unsigned m = 0; m < G4MH_TPTM_UPTIMERS; m++) {
@@ -347,20 +395,47 @@ static emu_fault_t tptm_write(void *ctx, uint32_t off, uint32_t size,
             }
         }
         break;
-    case G4MH_TPTM_USTP:  p->urun &= (uint8_t)~(val & 0x3u); break;
-    case G4MH_TPTM_UIEN:  p->uien  = (uint16_t)(val & 0x0F0Fu); break;
-    case G4MH_TPTM_UCSTR: p->ucstr &= (uint16_t)(val & 0x0F0Fu); break;
-    case G4MH_TPTM_UDIV:  p->udiv = (uint8_t)val; p->uacc = 0u; break;
-    case G4MH_TPTM_UTRG:  p->utrg = (uint16_t)val; break;
-    case G4MH_TPTM_UICFG: p->uicfg = (uint8_t)(val & 1u); break;
+    case G4MH_TPTM_USTP:
+        p->urun &= (uint8_t)~(val & 0x3u);
+        break;
+    case G4MH_TPTM_UIEN:
+        p->uien = (uint16_t)(val & 0x0F0Fu);
+        break;
+    case G4MH_TPTM_UCSTR:
+        p->ucstr &= (uint16_t)(val & 0x0F0Fu);
+        break;
+    case G4MH_TPTM_UDIV:
+        p->udiv = (uint8_t)val;
+        p->uacc = 0u;
+        break;
+    case G4MH_TPTM_UTRG:
+        p->utrg = (uint16_t)val;
+        break;
+    case G4MH_TPTM_UICFG:
+        p->uicfg = (uint8_t)(val & 1u);
+        break;
 
-    case G4MH_TPTM_ICNT0: p->icnt[0] = val; break;
-    case G4MH_TPTM_ILD0:  p->ild[0]  = val; break;
-    case G4MH_TPTM_ICNT1: p->icnt[1] = val; break;
-    case G4MH_TPTM_ILD1:  p->ild[1]  = val; break;
-    case G4MH_TPTM_FCNT:  p->fcnt    = val; break;
-    case G4MH_TPTM_UCNT0: p->ucnt[0] = val; break;
-    case G4MH_TPTM_UCNT1: p->ucnt[1] = val; break;
+    case G4MH_TPTM_ICNT0:
+        p->icnt[0] = val;
+        break;
+    case G4MH_TPTM_ILD0:
+        p->ild[0] = val;
+        break;
+    case G4MH_TPTM_ICNT1:
+        p->icnt[1] = val;
+        break;
+    case G4MH_TPTM_ILD1:
+        p->ild[1] = val;
+        break;
+    case G4MH_TPTM_FCNT:
+        p->fcnt = val;
+        break;
+    case G4MH_TPTM_UCNT0:
+        p->ucnt[0] = val;
+        break;
+    case G4MH_TPTM_UCNT1:
+        p->ucnt[1] = val;
+        break;
 
     default:
         if (r >= G4MH_TPTM_UCMP0(0) && r <= G4MH_TPTM_UCMP0(3)) {
@@ -374,6 +449,6 @@ static emu_fault_t tptm_write(void *ctx, uint32_t off, uint32_t size,
 }
 
 const emu_dev_ops_t g4mh_tptm_ops = {
-    .read  = tptm_read,
+    .read = tptm_read,
     .write = tptm_write,
 };

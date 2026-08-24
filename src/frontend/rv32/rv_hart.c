@@ -195,8 +195,8 @@ static bool trap_to_s(const rv_hart_t *h, uint32_t cause)
         return false;
     }
     const uint32_t code = cause & ~RV_CAUSE_INTERRUPT;
-    const uint32_t deleg = (cause & RV_CAUSE_INTERRUPT) ? h->mideleg
-                                                        : h->medeleg;
+    const uint32_t deleg =
+        (cause & RV_CAUSE_INTERRUPT) ? h->mideleg : h->medeleg;
     return code < 32u && ((deleg >> code) & 1u) != 0u;
 }
 #endif
@@ -218,9 +218,9 @@ void rv_hart_trap(rv_hart_t *h, uint32_t cause, uint32_t tval)
          * S-mode handler are S and U.
          */
         const uint32_t sie_was = (h->mstatus & MSTATUS_SIE) ? MSTATUS_SPIE : 0u;
-        h->mstatus = (h->mstatus & ~(MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP))
-                   | sie_was
-                   | ((h->priv == RV_PRIV_S) ? MSTATUS_SPP : 0u);
+        h->mstatus =
+            (h->mstatus & ~(MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP)) |
+            sie_was | ((h->priv == RV_PRIV_S) ? MSTATUS_SPP : 0u);
 
         h->priv = RV_PRIV_S;
         tvec = h->stvec;
@@ -236,10 +236,9 @@ void rv_hart_trap(rv_hart_t *h, uint32_t cause, uint32_t tval)
          * clears, and MPP records the privilege we came from.
          */
         const uint32_t mie_was = (h->mstatus & MSTATUS_MIE) ? MSTATUS_MPIE : 0u;
-        h->mstatus = (h->mstatus &
-                      ~(MSTATUS_MIE | MSTATUS_MPIE | MSTATUS_MPP_MASK))
-                   | mie_was
-                   | ((uint32_t)h->priv << MSTATUS_MPP_SHIFT);
+        h->mstatus =
+            (h->mstatus & ~(MSTATUS_MIE | MSTATUS_MPIE | MSTATUS_MPP_MASK)) |
+            mie_was | ((uint32_t)h->priv << MSTATUS_MPP_SHIFT);
 
         h->priv = RV_PRIV_M;
         tvec = h->mtvec;
@@ -252,12 +251,12 @@ void rv_hart_trap(rv_hart_t *h, uint32_t cause, uint32_t tval)
      * denies rather than permits. A trap into S-mode raises privilege
      * without reaching M, so this is as load-bearing there as anywhere.
      */
-#  if RV_EXT_PMP
+#if RV_EXT_PMP
     rv_pmp_refresh(h);
-#  endif
-#  if RV_EXT_SV32
+#endif
+#if RV_EXT_SV32
     rv_mmu_refresh(h);
-#  endif
+#endif
 #endif
 
     uint32_t base = tvec & ~MTVEC_MODE_MASK;
@@ -424,9 +423,17 @@ rv_exc_t rv_hart_load(rv_hart_t *h, uint32_t addr, uint32_t size,
 bool rv_amo_valid(uint32_t funct5)
 {
     switch (funct5) {
-    case RV_AMO_ADD:  case RV_AMO_SWAP: case RV_AMO_LR:  case RV_AMO_SC:
-    case RV_AMO_XOR:  case RV_AMO_OR:   case RV_AMO_AND:
-    case RV_AMO_MIN:  case RV_AMO_MAX:  case RV_AMO_MINU: case RV_AMO_MAXU:
+    case RV_AMO_ADD:
+    case RV_AMO_SWAP:
+    case RV_AMO_LR:
+    case RV_AMO_SC:
+    case RV_AMO_XOR:
+    case RV_AMO_OR:
+    case RV_AMO_AND:
+    case RV_AMO_MIN:
+    case RV_AMO_MAX:
+    case RV_AMO_MINU:
+    case RV_AMO_MAXU:
         return true;
 #if RV_EXT_ZACAS
     case RV_AMO_CAS:
@@ -437,8 +444,8 @@ bool rv_amo_valid(uint32_t funct5)
     }
 }
 
-rv_exc_t rv_hart_amo(rv_hart_t *h, uint32_t funct5, uint32_t rd,
-                     uint32_t addr, uint32_t src)
+rv_exc_t rv_hart_amo(rv_hart_t *h, uint32_t funct5, uint32_t rd, uint32_t addr,
+                     uint32_t src)
 {
     /* Every AMO requires a naturally aligned address. */
     if (EMU_UNLIKELY((addr & 3u) != 0u)) {
@@ -463,7 +470,7 @@ rv_exc_t rv_hart_amo(rv_hart_t *h, uint32_t funct5, uint32_t rd,
     if (funct5 == RV_AMO_SC) {
         if (!h->resv_valid || h->resv_addr != addr) {
             if (rd != 0u) {
-                h->x[rd] = 1u;      /* non-zero: the store did not occur */
+                h->x[rd] = 1u; /* non-zero: the store did not occur */
             }
             return RV_EXC_NONE;
         }
@@ -473,7 +480,7 @@ rv_exc_t rv_hart_amo(rv_hart_t *h, uint32_t funct5, uint32_t rd,
             return rv_exc_from_fault(f);
         }
         if (rd != 0u) {
-            h->x[rd] = 0u;          /* zero: success */
+            h->x[rd] = 0u; /* zero: success */
         }
         return RV_EXC_NONE;
     }
@@ -507,15 +514,33 @@ rv_exc_t rv_hart_amo(rv_hart_t *h, uint32_t funct5, uint32_t rd,
 
     uint32_t val;
     switch (funct5) {
-    case RV_AMO_ADD:  val = old + src; break;
-    case RV_AMO_SWAP: val = src; break;
-    case RV_AMO_XOR:  val = old ^ src; break;
-    case RV_AMO_OR:   val = old | src; break;
-    case RV_AMO_AND:  val = old & src; break;
-    case RV_AMO_MIN:  val = ((int32_t)old < (int32_t)src) ? old : src; break;
-    case RV_AMO_MAX:  val = ((int32_t)old > (int32_t)src) ? old : src; break;
-    case RV_AMO_MINU: val = (old < src) ? old : src; break;
-    default:          val = (old > src) ? old : src; break;   /* MAXU */
+    case RV_AMO_ADD:
+        val = old + src;
+        break;
+    case RV_AMO_SWAP:
+        val = src;
+        break;
+    case RV_AMO_XOR:
+        val = old ^ src;
+        break;
+    case RV_AMO_OR:
+        val = old | src;
+        break;
+    case RV_AMO_AND:
+        val = old & src;
+        break;
+    case RV_AMO_MIN:
+        val = ((int32_t)old < (int32_t)src) ? old : src;
+        break;
+    case RV_AMO_MAX:
+        val = ((int32_t)old > (int32_t)src) ? old : src;
+        break;
+    case RV_AMO_MINU:
+        val = (old < src) ? old : src;
+        break;
+    default:
+        val = (old > src) ? old : src;
+        break; /* MAXU */
     }
 
     f = emu_bus_write(h->bus, addr, 4u, val);
@@ -630,8 +655,7 @@ rv_exc_t rv_hart_cbo(rv_hart_t *h, uint32_t op, uint32_t addr,
         }
         if (h->cache != NULL && h->cache->maint != NULL) {
             static const emu_cache_op_t map[3] = {
-                EMU_CACHE_INVAL, EMU_CACHE_CLEAN, EMU_CACHE_FLUSH
-            };
+                EMU_CACHE_INVAL, EMU_CACHE_CLEAN, EMU_CACHE_FLUSH};
             h->cache->maint(h->cache->ctx, host, RV_CACHE_BLOCK_SIZE, map[op]);
         }
         /* No cache maintenance configured: retiring without doing anything

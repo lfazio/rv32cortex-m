@@ -88,7 +88,7 @@ typedef struct ppc_cpu {
 
     /* --- run control --- */
     emu_state_t state;
-    bool        irq_dirty;
+    bool irq_dirty;
 
     /*
      * Which instruction encoding this core is decoding.
@@ -117,13 +117,13 @@ typedef struct ppc_cpu {
      * so this becomes a property of the translation once there is a TLB.
      * Until then it is core-wide, and core-wide *on*.
      */
-    bool        vle;
+    bool vle;
 
     emu_syscall_fn syscall;
-    void          *syscall_user;
+    void *syscall_user;
 #if EMU_ENABLE_TRACE
     emu_trace_fn trace;
-    void        *trace_user;
+    void *trace_user;
 #endif
 } ppc_cpu_t;
 

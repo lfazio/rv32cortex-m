@@ -8,7 +8,10 @@
 
 #if defined(EMU_HOST_JIT_THUMB2)
 
-void t2_emit16(uint16_t h) { emu_jit_emit16(h); }
+void t2_emit16(uint16_t h)
+{
+    emu_jit_emit16(h);
+}
 
 /* A 32-bit Thumb-2 instruction is two halfwords, high first. */
 void t2_emit32(uint16_t hw1, uint16_t hw2)
@@ -30,7 +33,7 @@ void t2_movw(uint32_t rd, uint16_t imm)
     const uint32_t imm8 = imm & 0xFFu;
 
     t2_emit32((uint16_t)(0xF240u | (i << 10) | imm4),
-           (uint16_t)((imm3 << 12) | (rd << 8) | imm8));
+              (uint16_t)((imm3 << 12) | (rd << 8) | imm8));
 }
 
 void t2_movt(uint32_t rd, uint16_t imm)
@@ -41,7 +44,7 @@ void t2_movt(uint32_t rd, uint16_t imm)
     const uint32_t imm8 = imm & 0xFFu;
 
     t2_emit32((uint16_t)(0xF2C0u | (i << 10) | imm4),
-           (uint16_t)((imm3 << 12) | (rd << 8) | imm8));
+              (uint16_t)((imm3 << 12) | (rd << 8) | imm8));
 }
 
 void t2_imm32(uint32_t rd, uint32_t v)
@@ -69,12 +72,14 @@ void t2_mov(uint32_t rd, uint32_t rm)
  */
 void t2_ldr_imm(uint32_t rt, uint32_t rn, uint32_t off)
 {
-    t2_emit32((uint16_t)(0xF8D0u | rn), (uint16_t)((rt << 12) | (off & 0xFFFu)));
+    t2_emit32((uint16_t)(0xF8D0u | rn),
+              (uint16_t)((rt << 12) | (off & 0xFFFu)));
 }
 
 void t2_str_imm(uint32_t rt, uint32_t rn, uint32_t off)
 {
-    t2_emit32((uint16_t)(0xF8C0u | rn), (uint16_t)((rt << 12) | (off & 0xFFFu)));
+    t2_emit32((uint16_t)(0xF8C0u | rn),
+              (uint16_t)((rt << 12) | (off & 0xFFFu)));
 }
 
 /* ------------------------------------------------------------------ */
@@ -129,7 +134,7 @@ void t2_eor(uint32_t rd, uint32_t rn, uint32_t rm)
  */
 bool t2_expand_imm(uint32_t v, uint16_t *out)
 {
-    const uint32_t b  = v & 0xFFu;
+    const uint32_t b = v & 0xFFu;
     const uint32_t hb = (v >> 8) & 0xFFu;
 
     if (v < 0x100u) {
@@ -163,7 +168,7 @@ bool t2_expand_imm(uint32_t v, uint16_t *out)
 static void t2_dp_imm(uint16_t hw1_base, uint32_t rd, uint32_t rn,
                       uint16_t imm12)
 {
-    const uint32_t i    = (imm12 >> 11) & 1u;
+    const uint32_t i = (imm12 >> 11) & 1u;
     const uint32_t imm3 = (imm12 >> 8) & 7u;
     const uint32_t imm8 = imm12 & 0xFFu;
 
@@ -201,7 +206,7 @@ void t2_eor_imm(uint32_t rd, uint32_t rn, uint16_t imm12)
  */
 void t2_addw(uint32_t rd, uint32_t rn, uint16_t imm12)
 {
-    const uint32_t i    = (imm12 >> 11) & 1u;
+    const uint32_t i = (imm12 >> 11) & 1u;
     const uint32_t imm3 = (imm12 >> 8) & 7u;
     const uint32_t imm8 = imm12 & 0xFFu;
 
@@ -211,7 +216,7 @@ void t2_addw(uint32_t rd, uint32_t rn, uint16_t imm12)
 
 void t2_subw(uint32_t rd, uint32_t rn, uint16_t imm12)
 {
-    const uint32_t i    = (imm12 >> 11) & 1u;
+    const uint32_t i = (imm12 >> 11) & 1u;
     const uint32_t imm3 = (imm12 >> 8) & 7u;
     const uint32_t imm8 = imm12 & 0xFFu;
 
@@ -225,7 +230,6 @@ void t2_cmp(uint32_t rn, uint32_t rm)
     t2_emit32((uint16_t)(0xEBB0u | rn), (uint16_t)(0x0F00u | rm));
 }
 
-
 /* MVN.W rd, rm and RSB.W rd, rn, #0 (negate). */
 void t2_mvn(uint32_t rd, uint32_t rm)
 {
@@ -238,11 +242,10 @@ void t2_neg(uint32_t rd, uint32_t rn)
 }
 
 /* Register-controlled shifts: LSL/LSR/ASR/ROR .W rd, rn, rm. */
-void t2_shift_reg(uint32_t kind, uint32_t rd, uint32_t rn,
-                           uint32_t rm)
+void t2_shift_reg(uint32_t kind, uint32_t rd, uint32_t rn, uint32_t rm)
 {
     t2_emit32((uint16_t)(0xFA00u | (kind << 5) | rn),
-           (uint16_t)(0xF000u | (rd << 8) | rm));
+              (uint16_t)(0xF000u | (rd << 8) | rm));
 }
 #define T2_LSL 0u
 #define T2_LSR 1u
@@ -250,8 +253,7 @@ void t2_shift_reg(uint32_t kind, uint32_t rd, uint32_t rn,
 #define T2_ROR 3u
 
 /* Immediate shifts, as the MOV.W shifted-register form. */
-void t2_shift_imm(uint32_t type, uint32_t rd, uint32_t rm,
-                           uint32_t amount)
+void t2_shift_imm(uint32_t type, uint32_t rd, uint32_t rm, uint32_t amount)
 {
     const uint32_t n = amount & 31u;
 
@@ -283,9 +285,8 @@ void t2_shift_imm(uint32_t type, uint32_t rd, uint32_t rm,
      * shift by 31 came out as a shift by 0, and only the guest's own
      * slli/srli/srai self-tests noticed.
      */
-    t2_emit32(0xEA4Fu,
-              (uint16_t)(((n >> 2) << 12) | (rd << 8) | ((n & 3u) << 6) |
-                         (type << 4) | rm));
+    t2_emit32(0xEA4Fu, (uint16_t)(((n >> 2) << 12) | (rd << 8) |
+                                  ((n & 3u) << 6) | (type << 4) | rm));
 }
 #define T2_LSL 0u
 #define T2_LSR 1u
@@ -343,8 +344,8 @@ void t2_uxth(uint32_t rd, uint32_t rm)
  * failure this file has already had once with a Thumb-2 shift amount --
  * it assembles, and it names a different register.
  */
-#define VFP_VD(n)   (((n) >> 1) & 0xFu)
-#define VFP_D(n)    ((n) & 1u)
+#define VFP_VD(n) (((n) >> 1) & 0xFu)
+#define VFP_D(n) ((n) & 1u)
 
 /* VMOV Sn, Rt (op 0) and VMOV Rt, Sn (op 1). */
 void t2_vmov_core(uint32_t sn, uint32_t rt, bool to_core)
@@ -368,8 +369,8 @@ void t2_vfp3(uint16_t hi, bool sub, uint32_t sd, uint32_t sn, uint32_t sm)
 void t2_vsqrt(uint32_t sd, uint32_t sm)
 {
     t2_emit32((uint16_t)(0xEEB1u | (VFP_D(sd) << 6)),
-              (uint16_t)((VFP_VD(sd) << 12) | 0x0AC0u |
-                         (VFP_D(sm) << 5) | VFP_VD(sm)));
+              (uint16_t)((VFP_VD(sd) << 12) | 0x0AC0u | (VFP_D(sm) << 5) |
+                         VFP_VD(sm)));
 }
 
 /* VMRS Rt, FPSCR and VMSR FPSCR, Rt. */
@@ -393,17 +394,28 @@ void t2_vmsr(uint32_t rt)
 uint32_t t2_cond(uint8_t c)
 {
     switch ((emu_ir_cond_t)c) {
-    case EMU_IR_C_EQ:  return 0x0u;
-    case EMU_IR_C_NE:  return 0x1u;
-    case EMU_IR_C_LTU: return 0x3u;   /* CC/LO */
-    case EMU_IR_C_GEU: return 0x2u;   /* CS/HS */
-    case EMU_IR_C_LT:  return 0xBu;
-    case EMU_IR_C_GE:  return 0xAu;
-    case EMU_IR_C_LE:  return 0xDu;
-    case EMU_IR_C_GT:  return 0xCu;
-    case EMU_IR_C_LEU: return 0x9u;   /* LS */
-    case EMU_IR_C_GTU: return 0x8u;   /* HI */
-    default:           return 0xEu;   /* AL */
+    case EMU_IR_C_EQ:
+        return 0x0u;
+    case EMU_IR_C_NE:
+        return 0x1u;
+    case EMU_IR_C_LTU:
+        return 0x3u; /* CC/LO */
+    case EMU_IR_C_GEU:
+        return 0x2u; /* CS/HS */
+    case EMU_IR_C_LT:
+        return 0xBu;
+    case EMU_IR_C_GE:
+        return 0xAu;
+    case EMU_IR_C_LE:
+        return 0xDu;
+    case EMU_IR_C_GT:
+        return 0xCu;
+    case EMU_IR_C_LEU:
+        return 0x9u; /* LS */
+    case EMU_IR_C_GTU:
+        return 0x8u; /* HI */
+    default:
+        return 0xEu; /* AL */
     }
 }
 
@@ -415,9 +427,8 @@ uint32_t t2_cond(uint8_t c)
 void t2_call(const void *fn)
 {
     t2_imm32(T2_R12, (uint32_t)(uintptr_t)fn);
-    t2_emit16((uint16_t)(0x4780u | (T2_R12 << 3)));      /* BLX r12 */
+    t2_emit16((uint16_t)(0x4780u | (T2_R12 << 3))); /* BLX r12 */
 }
-
 
 /*
  * Forward branches, with the displacement filled in by t2_patch_branch
@@ -427,7 +438,7 @@ uint8_t *t2_b_forward(void)
 {
     uint8_t *const at = emu_jit_here();
 
-    t2_emit32(0xF000u, 0xB800u);            /* B.W  <label>  (T4) */
+    t2_emit32(0xF000u, 0xB800u); /* B.W  <label>  (T4) */
     return at;
 }
 
@@ -435,7 +446,7 @@ uint8_t *t2_bcond_forward(uint32_t cond)
 {
     uint8_t *const at = emu_jit_here();
 
-    t2_emit32((uint16_t)(0xF000u | (cond << 6)), 0x8000u);  /* B<c>.W (T3) */
+    t2_emit32((uint16_t)(0xF000u | (cond << 6)), 0x8000u); /* B<c>.W (T3) */
     return at;
 }
 
@@ -457,8 +468,8 @@ void t2_patch_branch(uint8_t *at, const uint8_t *target, bool conditional)
     if (conditional) {
         const uint32_t s = (imm >> 19) & 1u;
 
-        hw[0] = (uint16_t)((hw[0] & 0xFBC0u) | (s << 10) |
-                           ((imm >> 11) & 0x3Fu));
+        hw[0] =
+            (uint16_t)((hw[0] & 0xFBC0u) | (s << 10) | ((imm >> 11) & 0x3Fu));
         hw[1] = (uint16_t)(0x8000u | (((imm >> 18) & 1u) << 11) |
                            (((imm >> 17) & 1u) << 13) | (imm & 0x7FFu));
     } else {
@@ -468,8 +479,7 @@ void t2_patch_branch(uint8_t *at, const uint8_t *target, bool conditional)
         const uint32_t j2 = (~((imm >> 21) ^ s)) & 1u;
 
         hw[0] = (uint16_t)(0xF000u | (s << 10) | ((imm >> 11) & 0x3FFu));
-        hw[1] = (uint16_t)(0x9000u | (j1 << 13) | (j2 << 11) |
-                           (imm & 0x7FFu));
+        hw[1] = (uint16_t)(0x9000u | (j1 << 13) | (j2 << 11) | (imm & 0x7FFu));
     }
 }
 
@@ -481,7 +491,7 @@ void t2_patch_branch(uint8_t *at, const uint8_t *target, bool conditional)
  * these six are the whole of what is callee-saved and free. Low ones
  * first, because a list confined to r0-r7 fits the 16-bit PUSH.
  */
-const uint32_t t2_alloc_regs[T2_ALLOC_REGS] = { 6u, 7u, 8u, 9u, 10u, 11u };
+const uint32_t t2_alloc_regs[T2_ALLOC_REGS] = {6u, 7u, 8u, 9u, 10u, 11u};
 
 /*
  * PUSH and POP of an explicit register list, taking the 16-bit form when
@@ -496,8 +506,8 @@ const uint32_t t2_alloc_regs[T2_ALLOC_REGS] = { 6u, 7u, 8u, 9u, 10u, 11u };
 void t2_push(uint32_t list)
 {
     if ((list & ~0x40FFu) == 0u) {
-        t2_emit16((uint16_t)(0xB400u | ((list >> 6) & 0x100u) |
-                             (list & 0xFFu)));
+        t2_emit16(
+            (uint16_t)(0xB400u | ((list >> 6) & 0x100u) | (list & 0xFFu)));
         return;
     }
     t2_emit32(0xE92Du, (uint16_t)(list & 0x5FFFu));
@@ -506,8 +516,8 @@ void t2_push(uint32_t list)
 void t2_pop(uint32_t list)
 {
     if ((list & ~0x80FFu) == 0u) {
-        t2_emit16((uint16_t)(0xBC00u | ((list >> 7) & 0x100u) |
-                             (list & 0xFFu)));
+        t2_emit16(
+            (uint16_t)(0xBC00u | ((list >> 7) & 0x100u) | (list & 0xFFu)));
         return;
     }
     t2_emit32(0xE8BDu, (uint16_t)(list & 0xDFFFu));
@@ -525,8 +535,7 @@ void t2_mul(uint32_t rd, uint32_t rn, uint32_t rm)
  * The high-half opcodes need this; MUL.W gives only the low 32 bits.
  * rdlo and rdhi must differ, which is the caller's business.
  */
-void t2_mull(bool sign, uint32_t rdlo, uint32_t rdhi, uint32_t rn,
-             uint32_t rm)
+void t2_mull(bool sign, uint32_t rdlo, uint32_t rdhi, uint32_t rn, uint32_t rm)
 {
     t2_emit32((uint16_t)((sign ? 0xFB80u : 0xFBA0u) | rn),
               (uint16_t)((rdlo << 12) | (rdhi << 8) | rm));

@@ -41,7 +41,7 @@
 /* The shim beside this file, not the toolchain's -- see sys/times.h. */
 #include <sys/times.h>
 
-#define UART_THR   (*(volatile uint8_t *)0x10000000u)
+#define UART_THR (*(volatile uint8_t *)0x10000000u)
 
 static void out_char(char ch)
 {
@@ -96,8 +96,8 @@ static void out_fixed1(double v)
         v = -v;
     }
     whole = (long)v;
-    frac  = (long)((v - (double)whole) * 10.0 + 0.5);
-    if (frac >= 10) {          /* 9.96 rounds to 10.0, not 9.10 */
+    frac = (long)((v - (double)whole) * 10.0 + 0.5);
+    if (frac >= 10) { /* 9.96 rounds to 10.0, not 9.10 */
         whole += 1;
         frac = 0;
     }
@@ -133,18 +133,39 @@ int printf(const char *fmt, ...)
             p++;
         }
         switch (*p) {
-        case 'f': out_fixed1(va_arg(ap, double));       break;
-        case 'd': out_dec((long)va_arg(ap, int));       break;
+        case 'f':
+            out_fixed1(va_arg(ap, double));
+            break;
+        case 'd':
+            out_dec((long)va_arg(ap, int));
+            break;
         case 'l':
             /* "%ld" -- the only length modifier in these sources. */
-            if (p[1] == 'd') { p++; out_dec(va_arg(ap, long)); }
-            else             { out_char('%'); out_char('l'); }
+            if (p[1] == 'd') {
+                p++;
+                out_dec(va_arg(ap, long));
+            } else {
+                out_char('%');
+                out_char('l');
+            }
             break;
-        case 'c': out_char((char)va_arg(ap, int));      break;
-        case 's': out_str(va_arg(ap, const char *));    break;
-        case '%': out_char('%');                        break;
-        case '\0': out_char('%'); p--;                  break;
-        default:  out_char('%'); out_char(*p);          break;
+        case 'c':
+            out_char((char)va_arg(ap, int));
+            break;
+        case 's':
+            out_str(va_arg(ap, const char *));
+            break;
+        case '%':
+            out_char('%');
+            break;
+        case '\0':
+            out_char('%');
+            p--;
+            break;
+        default:
+            out_char('%');
+            out_char(*p);
+            break;
         }
     }
     va_end(ap);
@@ -165,7 +186,7 @@ static unsigned g_arena_used;
 
 void *malloc(size_t n)
 {
-    n = (n + 7u) & ~(size_t)7u;          /* keep the arena 8-aligned */
+    n = (n + 7u) & ~(size_t)7u; /* keep the arena 8-aligned */
     if (g_arena_used + n > ARENA_BYTES) {
         return NULL;
     }
@@ -227,7 +248,7 @@ void free(void *p)
  * the one that reads as though it were. Dhrystone does not print DMIPS at
  * all: that is this figure over 1757, the VAX 11/780's rate.
  */
-#define MTIME_LO   (*(volatile uint32_t *)0x0200BFF8u)
+#define MTIME_LO (*(volatile uint32_t *)0x0200BFF8u)
 
 /*
  * Declared `extern int times ();` by dhry_1.c and not declared at all by
@@ -238,8 +259,8 @@ long times(struct tms *buf)
 {
     long now = (long)MTIME_LO;
 
-    buf->tms_utime  = now;
-    buf->tms_stime  = 0;
+    buf->tms_utime = now;
+    buf->tms_stime = 0;
     buf->tms_cutime = 0;
     buf->tms_cstime = 0;
     return now;
@@ -252,12 +273,16 @@ long times(struct tms *buf)
 char *strcpy(char *d, const char *s)
 {
     char *r = d;
-    while ((*d++ = *s++) != '\0') { }
+    while ((*d++ = *s++) != '\0') {
+    }
     return r;
 }
 
 int strcmp(const char *a, const char *b)
 {
-    while (*a != '\0' && *a == *b) { a++; b++; }
+    while (*a != '\0' && *a == *b) {
+        a++;
+        b++;
+    }
     return (int)(unsigned char)*a - (int)(unsigned char)*b;
 }

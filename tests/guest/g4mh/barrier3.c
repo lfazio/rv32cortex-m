@@ -50,10 +50,10 @@
 /* The machine                                                         */
 /* ------------------------------------------------------------------ */
 
-#define BARR_BASE   0xFFFB8000u
-#define BR0EN       (*(volatile unsigned *)(BARR_BASE + 0x004u))
-#define BR0CHKS     (*(volatile unsigned *)(BARR_BASE + 0x100u))
-#define BR0SYNCS    (*(volatile unsigned *)(BARR_BASE + 0x104u))
+#define BARR_BASE 0xFFFB8000u
+#define BR0EN (*(volatile unsigned *)(BARR_BASE + 0x004u))
+#define BR0CHKS (*(volatile unsigned *)(BARR_BASE + 0x100u))
+#define BR0SYNCS (*(volatile unsigned *)(BARR_BASE + 0x104u))
 
 /*
  * BOOTCTRL. **Only PE0 runs at reset release**; PE1 and PE2 sit held
@@ -62,7 +62,7 @@
  * program is a single-core program that waits forever at a barrier
  * whose other participants were never started.
  */
-#define BOOTCTRL    (*(volatile unsigned *)0xFFFB2000u)
+#define BOOTCTRL (*(volatile unsigned *)0xFFFB2000u)
 
 /*
  * The console. An NS16550's transmit holding register is at offset 0 and
@@ -70,18 +70,18 @@
  * poll -- a real driver would wait on LSR.THRE and this one would be
  * wrong on hardware. Stated rather than left as a silent simplification.
  */
-#define UART_THR    (*(volatile unsigned char *)0x10000000u)
+#define UART_THR (*(volatile unsigned char *)0x10000000u)
 
 /* Where the PEs leave their results for PE0 to collect. */
-#define SHARED      ((volatile unsigned *)0x80000800u)
+#define SHARED ((volatile unsigned *)0x80000800u)
 
-#define NPE         3u
+#define NPE 3u
 
 #pragma inline_asm read_htcfg0
 static unsigned read_htcfg0(void)
 {
-    stsr 0, r10, 2      ; HTCFG0 is selID 2, register 0
-    mov  r10, r10
+    stsr 0, r10, 2;
+    HTCFG0 is selID 2, register 0 mov r10, r10
 }
 
 /* ------------------------------------------------------------------ */
@@ -147,12 +147,12 @@ static void halt_(void)
  */
 static void barrier_wait(void)
 {
-    BR0CHKS = 1u;                    /* any write arrives */
+    BR0CHKS = 1u; /* any write arrives */
 
     while (BR0SYNCS == 0u) {
         /* wait for the last participant */
     }
-    BR0SYNCS = 0u;                   /* software clears it */
+    BR0SYNCS = 0u; /* software clears it */
 }
 
 /* ------------------------------------------------------------------ */
@@ -174,7 +174,7 @@ int main(void)
         for (i = 0; i < NPE; i++) {
             SHARED[i] = 0u;
         }
-        BR0EN = (1u << NPE) - 1u;    /* PE0, PE1 and PE2 participate */
+        BR0EN = (1u << NPE) - 1u; /* PE0, PE1 and PE2 participate */
 
         /*
          * Start the others -- *after* the barrier is configured and the

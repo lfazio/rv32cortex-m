@@ -51,16 +51,16 @@
  * project's own A/B checks do.
  */
 #ifndef EMU_JIT_REQUESTED
-#  define EMU_JIT_REQUESTED 1
+#define EMU_JIT_REQUESTED 1
 #endif
 
 #if EMU_JIT_REQUESTED
-#  if defined(__x86_64__) && defined(__linux__)
-#    define EMU_HOST_JIT_X86_64 1
-#  endif
-#  if defined(__ARM_ARCH) && (__ARM_ARCH >= 7) && defined(__thumb2__)
-#    define EMU_HOST_JIT_THUMB2 1
-#  endif
+#if defined(__x86_64__) && defined(__linux__)
+#define EMU_HOST_JIT_X86_64 1
+#endif
+#if defined(__ARM_ARCH) && (__ARM_ARCH >= 7) && defined(__thumb2__)
+#define EMU_HOST_JIT_THUMB2 1
+#endif
 #endif
 
 /*
@@ -77,9 +77,9 @@
  * thing that now notices.
  */
 #if defined(EMU_HOST_JIT_X86_64) || defined(EMU_HOST_JIT_THUMB2)
-#  define EMU_HAVE_JIT 1
+#define EMU_HAVE_JIT 1
 #else
-#  define EMU_HAVE_JIT 0
+#define EMU_HAVE_JIT 0
 #endif
 
 #include <stdbool.h>
@@ -104,13 +104,13 @@ extern "C" {
  * count is the number that says whether translation is being exercised.
  */
 typedef struct emu_jit_stats {
-    uint32_t blocks;            /* blocks currently held               */
-    uint32_t translations;      /* blocks translated since reset       */
-    uint32_t block_entries;     /* times a translated block was run    */
-    uint32_t interp_fallbacks;  /* instructions the interpreter ran    */
-    uint32_t flushes;           /* whole-cache discards                */
-    uint32_t compactions;       /* reclaims that kept the hot blocks   */
-    uint32_t evictions;         /* blocks compaction discarded         */
+    uint32_t blocks; /* blocks currently held               */
+    uint32_t translations; /* blocks translated since reset       */
+    uint32_t block_entries; /* times a translated block was run    */
+    uint32_t interp_fallbacks; /* instructions the interpreter ran    */
+    uint32_t flushes; /* whole-cache discards                */
+    uint32_t compactions; /* reclaims that kept the hot blocks   */
+    uint32_t evictions; /* blocks compaction discarded         */
     uint32_t code_used;
     uint32_t code_size;
     /*
@@ -132,8 +132,8 @@ typedef struct emu_jit_stats {
      * checker that never fires reads as a clean bill of health, which is
      * the failure mode this whole file is annotated against.
      */
-    uint32_t diff_checked;      /* blocks run against the reference    */
-    uint32_t diff_declined;     /* blocks the reference would not run  */
+    uint32_t diff_checked; /* blocks run against the reference    */
+    uint32_t diff_declined; /* blocks the reference would not run  */
 #endif
 #ifdef EMU_JIT_PROFILE
     /* Define EMU_JIT_PROFILE to split host cycles by phase. Needs a cycle
@@ -164,7 +164,7 @@ typedef struct emu_jit_stats {
  */
 typedef struct emu_jit_hot {
     const uint32_t *pc;
-    const uint8_t  *state;
+    const uint8_t *state;
 
     /*
      * Everything the translator bakes into a block, as one value; see the
@@ -328,7 +328,7 @@ void emu_jit_get_stats(emu_jit_stats_t *out);
  */
 extern uint8_t *emu_jit_cursor;
 extern uint8_t *emu_jit_limit;
-extern bool     emu_jit_overflow;
+extern bool emu_jit_overflow;
 
 static inline bool emu_jit_room(uint32_t n)
 {
@@ -371,7 +371,10 @@ static inline void emu_jit_emit64(uint64_t d)
 }
 
 /* Where the next byte will land, for computing a branch displacement. */
-static inline uint8_t *emu_jit_here(void) { return emu_jit_cursor; }
+static inline uint8_t *emu_jit_here(void)
+{
+    return emu_jit_cursor;
+}
 
 /*
  * Abandon everything emitted since `to`, which must have come from
@@ -397,12 +400,15 @@ void emu_jit_rewind(uint8_t *to);
 void emu_jit_emit_begin(void *buf, uint32_t bytes);
 
 /* True once the buffer overflowed; the block will be discarded. */
-static inline bool emu_jit_overflowed(void) { return emu_jit_overflow; }
+static inline bool emu_jit_overflowed(void)
+{
+    return emu_jit_overflow;
+}
 
 /* --- the dispatch loop -------------------------------------------- */
 
-emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
-                             uint32_t *retired, const emu_jit_ops_t *ops);
+emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget, uint32_t *retired,
+                             const emu_jit_ops_t *ops);
 
 #ifdef __cplusplus
 }

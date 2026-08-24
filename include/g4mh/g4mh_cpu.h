@@ -50,7 +50,7 @@ struct g4mh_intc;
 
 typedef struct g4mh_cpu {
     /* --- hot state: keep first --- */
-    uint32_t r[32];              /* r0 is hardwired zero, written then ignored */
+    uint32_t r[32]; /* r0 is hardwired zero, written then ignored */
     uint32_t pc;
 
     struct emu_bus *bus;
@@ -88,7 +88,7 @@ typedef struct g4mh_cpu {
      * manual of the product used").
      */
     uint32_t ll_addr;
-    bool     ll_valid;
+    bool ll_valid;
 
     /* --- interrupts --- */
     struct g4mh_intc *intc;
@@ -107,7 +107,7 @@ typedef struct g4mh_cpu {
     volatile bool irq_dirty;
 
     uint32_t coreid;
-    uint8_t  state;              /* emu_state_t */
+    uint8_t state; /* emu_state_t */
 
     /*
      * True while any performance channel is enabled.
@@ -119,7 +119,7 @@ typedef struct g4mh_cpu {
      * not. Maintained by g4mh_sr_write, the only thing that can enable a
      * channel.
      */
-    bool     pm_active;
+    bool pm_active;
 
 #if G4MH_EXT_MPU
     /*
@@ -132,7 +132,7 @@ typedef struct g4mh_cpu {
      * grows a second gate, fold it in here rather than testing it
      * beside this. Maintained by g4mh_sr_write, the only writer of MPM.
      */
-    bool     mpu_active;
+    bool mpu_active;
 
     /*
      * The SPID this core presents to the MPU's SPID group.
@@ -153,7 +153,7 @@ typedef struct g4mh_cpu {
 
 #if EMU_ENABLE_TRACE
     emu_trace_fn trace;
-    void        *trace_user;
+    void *trace_user;
 #endif
 
     /*
@@ -163,11 +163,11 @@ typedef struct g4mh_cpu {
      * the call. When NULL, TRAP always takes its exception.
      */
     emu_syscall_fn syscall;
-    void          *syscall_user;
+    void *syscall_user;
 
     const emu_cache_ops_t *cache;
 
-    void *user;                  /* opaque platform pointer */
+    void *user; /* opaque platform pointer */
 } g4mh_cpu_t;
 
 /* ------------------------------------------------------------------ */
@@ -238,7 +238,7 @@ int g4mh_cpu_pending_irq(const g4mh_cpu_t *c);
  * exception vectors -- an exception is not an interrupt and must leave
  * the ceiling alone -- and `eiret` when EIRET returns from one.
  */
-int  g4mh_cpu_pending_irq_pri(const g4mh_cpu_t *c, unsigned *priority);
+int g4mh_cpu_pending_irq_pri(const g4mh_cpu_t *c, unsigned *priority);
 void g4mh_cpu_ack_priority(g4mh_cpu_t *c, unsigned pri);
 void g4mh_cpu_eiret_priority(g4mh_cpu_t *c);
 
@@ -300,8 +300,7 @@ void g4mh_ll_drop(g4mh_cpu_t *c);
  * for a reserved system register rather than an exception.
  */
 uint32_t g4mh_sr_read(const g4mh_cpu_t *c, unsigned bank, unsigned reg);
-void     g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg,
-                       uint32_t val);
+void g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg, uint32_t val);
 
 /* ------------------------------------------------------------------ */
 /* Floating point                                                      */

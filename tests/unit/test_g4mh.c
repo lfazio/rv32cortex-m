@@ -47,47 +47,48 @@
 /* ------------------------------------------------------------------ */
 
 /* Format I: reg1 op reg2. */
-#define F1(op, r1, r2)   (uint16_t)(((r2) << 11) | ((op) << 5) | (r1))
+#define F1(op, r1, r2) (uint16_t)(((r2) << 11) | ((op) << 5) | (r1))
 /* Format II: imm5 op reg2. */
-#define F2(op, imm, r2)  (uint16_t)(((r2) << 11) | ((op) << 5) | ((imm) & 0x1Fu))
+#define F2(op, imm, r2) (uint16_t)(((r2) << 11) | ((op) << 5) | ((imm) & 0x1Fu))
 /* Bcond disp9: disp[8:4] up top, disp[3:1] at bits 6:4, cond at the bottom. */
-#define BCOND(cond, d)   (uint16_t)(((((d) >> 4) & 0x1Fu) << 11) | (0x0Bu << 7) | \
-                                    ((((d) >> 1) & 0x7u) << 4) | (cond))
+#define BCOND(cond, d)                                                         \
+    (uint16_t)(((((d) >> 4) & 0x1Fu) << 11) | (0x0Bu << 7) |                   \
+               ((((d) >> 1) & 0x7u) << 4) | (cond))
 
 /* First halfword of any 32-bit format: reg2, opcode, reg1. */
-#define W0(op, r1, r2)   (uint16_t)(((r2) << 11) | ((op) << 5) | (r1))
+#define W0(op, r1, r2) (uint16_t)(((r2) << 11) | ((op) << 5) | (r1))
 
-#define OP_MOV      0x00u
-#define OP_OR       0x08u
-#define OP_AND      0x0Au
-#define OP_SUB      0x0Du
-#define OP_ADD      0x0Eu
-#define OP_CMP      0x0Fu
-#define OP_MOVI     0x10u
-#define OP_ADDI5    0x12u
-#define OP_CMPI5    0x13u
-#define OP_SHL      0x16u
-#define OP_MOVEA    0x31u
-#define OP_MOVHI    0x32u
-#define OP_ORI      0x34u
-#define OP_LD_HW    0x39u
-#define OP_LD_B     0x38u
-#define OP_ST_B     0x3Au
-#define OP_ST_HW    0x3Bu
-#define OP_JARL     0x3Cu
-#define OP_SYSTEM   0x3Fu
+#define OP_MOV 0x00u
+#define OP_OR 0x08u
+#define OP_AND 0x0Au
+#define OP_SUB 0x0Du
+#define OP_ADD 0x0Eu
+#define OP_CMP 0x0Fu
+#define OP_MOVI 0x10u
+#define OP_ADDI5 0x12u
+#define OP_CMPI5 0x13u
+#define OP_SHL 0x16u
+#define OP_MOVEA 0x31u
+#define OP_MOVHI 0x32u
+#define OP_ORI 0x34u
+#define OP_LD_HW 0x39u
+#define OP_LD_B 0x38u
+#define OP_ST_B 0x3Au
+#define OP_ST_HW 0x3Bu
+#define OP_JARL 0x3Cu
+#define OP_SYSTEM 0x3Fu
 
 /* Second halfword sub-opcodes of the system group. */
-#define SUB_LDSR    0x0020u
-#define SUB_STSR    0x0040u
-#define SUB_TRAP    0x0100u
-#define SUB_HALT    0x0120u
-#define SUB_CTRET   0x0144u
-#define SUB_EIRET   0x0148u
-#define SUB_FERET   0x014Au
-#define SUB_DIEI    0x0160u
-#define SUB_MUL     0x0220u
-#define SUB_DIV     0x02C0u
+#define SUB_LDSR 0x0020u
+#define SUB_STSR 0x0040u
+#define SUB_TRAP 0x0100u
+#define SUB_HALT 0x0120u
+#define SUB_CTRET 0x0144u
+#define SUB_EIRET 0x0148u
+#define SUB_FERET 0x014Au
+#define SUB_DIEI 0x0160u
+#define SUB_MUL 0x0220u
+#define SUB_DIV 0x02C0u
 /*
  * The three-operand register shifts, the high-speed divides, the halfword
  * divides and the imm9 multiplies. Every one of these is what CC-RH emits
@@ -96,68 +97,68 @@
  * first shift. The constants come from scripts/g4mh-check-encodings.sh,
  * not from reading the manual's diagrams.
  */
-#define SUB_SHR3    0x0082u
-#define SUB_SAR3    0x00A2u
-#define SUB_SHL3    0x00C2u
-#define SUB_DIVQ    0x02FCu
-#define SUB_DIVQU   0x02FEu
-#define SUB_DIVH    0x0280u
-#define SUB_DIVHU   0x0282u
+#define SUB_SHR3 0x0082u
+#define SUB_SAR3 0x00A2u
+#define SUB_SHL3 0x00C2u
+#define SUB_DIVQ 0x02FCu
+#define SUB_DIVQU 0x02FEu
+#define SUB_DIVH 0x0280u
+#define SUB_DIVHU 0x0282u
 /*
  * The saturating narrowings, and the narrow halves of the link/store-
  * conditional group. reg1 is CLIP's source and reg2 its destination --
  * the opposite sense to most of this group.
  */
-#define SUB_CLIPB   0x0008u
-#define SUB_CLIPBU  0x000Au
-#define SUB_CLIPH   0x000Cu
-#define SUB_CLIPHU  0x000Eu
-#define SUB_LDLBU   0x0370u
-#define SUB_STCB    0x0372u
-#define SUB_LDLHU   0x0374u
-#define SUB_STCH    0x0376u
-#define SUB_LDLW    0x0378u
-#define SUB_STCW    0x037Au
+#define SUB_CLIPB 0x0008u
+#define SUB_CLIPBU 0x000Au
+#define SUB_CLIPH 0x000Cu
+#define SUB_CLIPHU 0x000Eu
+#define SUB_LDLBU 0x0370u
+#define SUB_STCB 0x0372u
+#define SUB_LDLHU 0x0374u
+#define SUB_STCH 0x0376u
+#define SUB_LDLW 0x0378u
+#define SUB_STCW 0x037Au
 /*
  * The reg2 field of the six sub-opcodes above is an opcode extension, not
  * a register: it selects between the link forms and the LD/ST forms that
  * update the pointer. These are the values that go in W0's r2 slot.
  */
-#define EXT_LINK    0u          /* LDL.W, STC.B/H/W                     */
-#define EXT_LINKU   1u          /* LDL.BU, LDL.HU                       */
-#define EXT_POSTI   2u          /* [reg1]+, sign-extending              */
-#define EXT_POSTIU  3u          /* [reg1]+, zero-extending              */
-#define EXT_POSTD   4u          /* [reg1]-, sign-extending              */
-#define EXT_POSTDU  5u          /* [reg1]-, zero-extending              */
+#define EXT_LINK 0u /* LDL.W, STC.B/H/W                     */
+#define EXT_LINKU 1u /* LDL.BU, LDL.HU                       */
+#define EXT_POSTI 2u /* [reg1]+, sign-extending              */
+#define EXT_POSTIU 3u /* [reg1]+, zero-extending              */
+#define EXT_POSTD 4u /* [reg1]-, sign-extending              */
+#define EXT_POSTDU 5u /* [reg1]-, zero-extending              */
 /* imm9 splits: bits[8:5] into sub bits[5:2], bits[4:0] into the reg1 field. */
 #define SUB_MULI(i) (uint16_t)(0x0240u | ((((i) >> 5) & 0xFu) << 2))
 #define SUB_MULUI(i) (uint16_t)(0x0242u | ((((i) >> 5) & 0xFu) << 2))
-#define MULI_R1(i)  (uint16_t)((i) & 0x1Fu)
+#define MULI_R1(i) (uint16_t)((i) & 0x1Fu)
 /* Swap and bit-search group; reg1 is a fixed zero in all of them. */
-#define SUB_BSW     0x0340u
-#define SUB_BSH     0x0342u
-#define SUB_HSW     0x0344u
-#define SUB_HSH     0x0346u
-#define SUB_SCH0R   0x0360u
-#define SUB_SCH1R   0x0362u
-#define SUB_SCH0L   0x0364u
-#define SUB_SCH1L   0x0366u
+#define SUB_BSW 0x0340u
+#define SUB_BSH 0x0342u
+#define SUB_HSW 0x0344u
+#define SUB_HSH 0x0346u
+#define SUB_SCH0R 0x0360u
+#define SUB_SCH1R 0x0362u
+#define SUB_SCH0L 0x0364u
+#define SUB_SCH1L 0x0366u
 /* Bit manipulation, register form: bit number from the value in reg2. */
-#define SUB_SET1    0x00E0u
-#define SUB_NOT1    0x00E2u
-#define SUB_CLR1    0x00E4u
-#define SUB_TST1    0x00E6u
+#define SUB_SET1 0x00E0u
+#define SUB_NOT1 0x00E2u
+#define SUB_CLR1 0x00E4u
+#define SUB_TST1 0x00E6u
 
 /*
  * Format VIII: the operation selector sits in bits[15:14] -- the top of
  * the field every other 32-bit format uses for reg2 -- with the 3-bit
  * bit number below it and reg1 at the bottom.
  */
-#define BOP_SET1    0u
-#define BOP_NOT1    1u
-#define BOP_CLR1    2u
-#define BOP_TST1    3u
-#define BITOP8(sel, bit, r1) \
+#define BOP_SET1 0u
+#define BOP_NOT1 1u
+#define BOP_CLR1 2u
+#define BOP_TST1 3u
+#define BITOP8(sel, bit, r1)                                                   \
     (uint16_t)(((sel) << 14) | ((bit) << 11) | (0x3Eu << 5) | (r1))
 
 /* ------------------------------------------------------------------ */
@@ -192,22 +193,22 @@ static void test_length(void)
      * reg2, not the opcode, which is exactly the case a length rule
      * written on the opcode alone would get wrong.
      */
-    CHECK_EQ(g4mh_insn_len(W0(OP_MOVEA, 9, 0)), 4u);   /* first stage */
+    CHECK_EQ(g4mh_insn_len(W0(OP_MOVEA, 9, 0)), 4u); /* first stage */
     CHECK(g4mh_insn_is_48(W0(OP_MOVEA, 9, 0), 0x1234u));
     CHECK(!g4mh_insn_is_48(W0(OP_MOVEA, 9, 1), 0x1234u));
 
     /* JR / JARL disp32 (0x17) and JMP disp32 (0x37), both reg2 == 0. */
     CHECK(g4mh_insn_is_48(W0(0x17u, 9, 0), 0x0000u));
     CHECK(!g4mh_insn_is_48(W0(0x17u, 9, 1), 0x0000u));
-    CHECK(g4mh_insn_is_48(W0(0x37u, 9, 0), 0x0000u));   /* JMP disp32 */
-    CHECK(!g4mh_insn_is_48(W0(0x37u, 9, 0), 0x0001u));  /* LOOP       */
+    CHECK(g4mh_insn_is_48(W0(0x37u, 9, 0), 0x0000u)); /* JMP disp32 */
+    CHECK(!g4mh_insn_is_48(W0(0x37u, 9, 0), 0x0001u)); /* LOOP       */
 
     /*
      * The 0x3C/0x3D slot holds JR disp22 (32-bit), PREPARE and the disp23
      * loads (48-bit), and only bit 0 of the second halfword separates
      * them -- JR's displacement is even.
      */
-    CHECK(!g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x0100u));  /* JR     */
+    CHECK(!g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x0100u)); /* JR     */
     /*
      * The rest of this slot is not one thing. 0x0101 is PREPARE's short
      * form and is *four* bytes -- this check used to assert six, on the
@@ -215,10 +216,10 @@ static void test_length(void)
      * everything else. It separates JR from everything else; it does not
      * separate the everything else, and PREPARE is in there.
      */
-    CHECK(!g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x0821u));  /* PREPARE     */
-    CHECK(!g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x0823u));  /* ..., sp     */
-    CHECK(g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x082Bu));   /* ..., imm16  */
-    CHECK(g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x0105u));   /* disp23 load */
+    CHECK(!g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x0821u)); /* PREPARE     */
+    CHECK(!g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x0823u)); /* ..., sp     */
+    CHECK(g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x082Bu)); /* ..., imm16  */
+    CHECK(g4mh_insn_is_48(W0(0x3Cu, 0, 0), 0x0105u)); /* disp23 load */
 
     /*
      * Every disp23 sub-opcode, with disp[0] both ways. Six bytes is the
@@ -246,8 +247,7 @@ static void test_length(void)
      * nobody exercising it is exactly what this project keeps finding.
      */
     for (uint32_t w = 0; w <= 0xFFFFu; w++) {
-        if (g4mh_is_16bit((uint16_t)w) !=
-            (g4mh_insn_len((uint16_t)w) == 2u)) {
+        if (g4mh_is_16bit((uint16_t)w) != (g4mh_insn_len((uint16_t)w) == 2u)) {
             CHECK(false);
             break;
         }
@@ -255,17 +255,17 @@ static void test_length(void)
     CHECK(true);
 
     /* And the one encoding the two used to disagree about. */
-    CHECK_EQ(g4mh_insn_len(0x02E0u), 4u);       /* jr  disp32 */
+    CHECK_EQ(g4mh_insn_len(0x02E0u), 4u); /* jr  disp32 */
     CHECK_EQ(g4mh_insn_len(0x02E0u | 19u), 4u); /* jarl disp32, r19 */
     CHECK(g4mh_insn_is_48(0x02E0u, 0x0008u));
     /* MULH imm5 with a real reg2 stays 16 bits. */
     CHECK_EQ(g4mh_insn_len((uint16_t)((10u << 11) | (0x17u << 5) | 4u)), 2u);
 
     {
-        static const uint16_t sub[5] = { 0x5u, 0x7u, 0x9u, 0xDu, 0xFu };
+        static const uint16_t sub[5] = {0x5u, 0x7u, 0x9u, 0xDu, 0xFu};
         for (unsigned i = 0; i < 5u; i++) {
             const uint16_t even = (uint16_t)(0x0100u | sub[i]);
-            const uint16_t odd  = (uint16_t)(0x0110u | sub[i]);
+            const uint16_t odd = (uint16_t)(0x0110u | sub[i]);
             CHECK(g4mh_insn_is_48(W0(0x3Cu, 0, 0), even));
             CHECK(g4mh_insn_is_48(W0(0x3Cu, 0, 0), odd));
             CHECK(g4mh_insn_is_48(W0(0x3Du, 0, 0), even));
@@ -293,9 +293,9 @@ static void test_conditions(void)
      * is S != OV, not S. Checked with OV set and clear so a table that
      * ignored OV would fail one of them.
      */
-    CHECK(g4mh_cond(0x6u, G4MH_PSW_S));                  /* S=1 OV=0 -> lt */
-    CHECK(!g4mh_cond(0x6u, G4MH_PSW_S | G4MH_PSW_OV));   /* S=1 OV=1 -> ge */
-    CHECK(g4mh_cond(0x6u, G4MH_PSW_OV));                 /* S=0 OV=1 -> lt */
+    CHECK(g4mh_cond(0x6u, G4MH_PSW_S)); /* S=1 OV=0 -> lt */
+    CHECK(!g4mh_cond(0x6u, G4MH_PSW_S | G4MH_PSW_OV)); /* S=1 OV=1 -> ge */
+    CHECK(g4mh_cond(0x6u, G4MH_PSW_OV)); /* S=0 OV=1 -> lt */
     CHECK(!g4mh_cond(0x6u, 0u));
 
     /* BGT is (S == OV) && !Z, so Z alone must defeat it. */
@@ -312,12 +312,12 @@ static void test_conditions(void)
 /* Execution, through the frontend contract                            */
 /* ------------------------------------------------------------------ */
 
-#define TEST_RAM_SIZE  4096u
+#define TEST_RAM_SIZE 4096u
 /* Well clear of any program these tests load, so a store cannot land on
  * the instruction stream and change what runs next. */
-#define TEST_SCRATCH   (EMU_GUEST_RAM_BASE + 0x400u)
+#define TEST_SCRATCH (EMU_GUEST_RAM_BASE + 0x400u)
 
-static uint8_t   g_ram[TEST_RAM_SIZE];
+static uint8_t g_ram[TEST_RAM_SIZE];
 static emu_bus_t g_bus;
 static emu_core_t g_core;
 
@@ -325,7 +325,7 @@ static emu_core_t g_core;
 static uint32_t emit(uint32_t off, const uint16_t *hw, unsigned n)
 {
     for (unsigned i = 0; i < n; i++) {
-        g_ram[off + i * 2u]      = (uint8_t)(hw[i] & 0xFFu);
+        g_ram[off + i * 2u] = (uint8_t)(hw[i] & 0xFFu);
         g_ram[off + i * 2u + 1u] = (uint8_t)(hw[i] >> 8);
     }
     return off + n * 2u;
@@ -342,9 +342,9 @@ static uint32_t emit(uint32_t off, const uint16_t *hw, unsigned n)
  */
 static const emu_backend_t *g_force_backend;
 
-static bool load_and_run_hooked(const uint16_t *hw, unsigned n,
-                                uint32_t budget, emu_run_reason_t *why,
-                                uint32_t *retired, emu_syscall_fn hook)
+static bool load_and_run_hooked(const uint16_t *hw, unsigned n, uint32_t budget,
+                                emu_run_reason_t *why, uint32_t *retired,
+                                emu_syscall_fn hook)
 {
     const emu_cpu_ops_t *ops = emu_frontend_find("g4mh");
     if (ops == NULL) {
@@ -429,7 +429,8 @@ static uint32_t sreg(unsigned bank, unsigned idx)
 static uint32_t ram32(uint32_t off)
 {
     return (uint32_t)g_ram[off] | ((uint32_t)g_ram[off + 1u] << 8) |
-           ((uint32_t)g_ram[off + 2u] << 16) | ((uint32_t)g_ram[off + 3u] << 24);
+           ((uint32_t)g_ram[off + 2u] << 16) |
+           ((uint32_t)g_ram[off + 3u] << 24);
 }
 
 static void test_alu(void)
@@ -450,7 +451,8 @@ static void test_alu(void)
         F1(OP_MOV, 10, 12),
         F2(OP_SHL, 4, 12),
         F1(OP_OR, 10, 12),
-        0x07E0u, SUB_HALT,
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -490,7 +492,8 @@ static void test_flags_and_branch(void)
         F2(OP_ADDI5, -1, 10),
         F2(OP_CMPI5, 0, 10),
         BCOND(0xAu, (uint32_t)(-6) & 0x1FFu),
-        0x07E0u, SUB_HALT,
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -502,7 +505,7 @@ static void test_flags_and_branch(void)
     }
 
     CHECK_EQ(reg(10), 0u);
-    CHECK_EQ(reg(11), 5u);   /* the loop ran exactly five times */
+    CHECK_EQ(reg(11), 5u); /* the loop ran exactly five times */
     CHECK_EQ(why, EMU_RUN_WFI);
 }
 
@@ -521,12 +524,17 @@ static void test_load_store(void)
      * the word forms has its low bit taken as the width selector.
      */
     const uint16_t prog[] = {
-        W0(OP_MOVHI, 0, 10),  0x8000u,
-        W0(OP_MOVEA, 10, 10), 0x0100u,
+        W0(OP_MOVHI, 0, 10),
+        0x8000u,
+        W0(OP_MOVEA, 10, 10),
+        0x0100u,
         F2(OP_MOVI, 15, 11),
-        W0(OP_ST_HW, 10, 11), 0x0001u,   /* disp 0, bit0 = 1 -> st.w */
-        W0(OP_LD_HW, 10, 12), 0x0001u,   /* disp 0, bit0 = 1 -> ld.w */
-        0x07E0u, SUB_HALT,
+        W0(OP_ST_HW, 10, 11),
+        0x0001u, /* disp 0, bit0 = 1 -> st.w */
+        W0(OP_LD_HW, 10, 12),
+        0x0001u, /* disp 0, bit0 = 1 -> ld.w */
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -556,8 +564,7 @@ static void test_mov_imm32(void)
      */
     const uint16_t prog[] = {
         W0(OP_MOVEA, 10, 0), 0xBEEFu, 0xDEADu,
-        F2(OP_MOVI, 1, 11),
-        0x07E0u, SUB_HALT,
+        F2(OP_MOVI, 1, 11),  0x07E0u, SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -569,7 +576,7 @@ static void test_mov_imm32(void)
     }
 
     CHECK_EQ(reg(10), 0xDEADBEEFu);
-    CHECK_EQ(reg(11), 1u);        /* proves the pc advanced by six, not four */
+    CHECK_EQ(reg(11), 1u); /* proves the pc advanced by six, not four */
     CHECK_EQ(why, EMU_RUN_WFI);
 }
 
@@ -593,11 +600,14 @@ static void test_muldiv(void)
     const uint16_t prog[] = {
         F2(OP_MOVI, -7, 10),
         F2(OP_MOVI, 3, 11),
-        W0(OP_SYSTEM, 10, 11), (uint16_t)((12u << 11) | SUB_MUL),
+        W0(OP_SYSTEM, 10, 11),
+        (uint16_t)((12u << 11) | SUB_MUL),
         F2(OP_MOVI, 13, 13),
         F2(OP_MOVI, 5, 14),
-        W0(OP_SYSTEM, 14, 13), (uint16_t)((15u << 11) | SUB_DIV),
-        0x07E0u, SUB_HALT,
+        W0(OP_SYSTEM, 14, 13),
+        (uint16_t)((15u << 11) | SUB_DIV),
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -609,9 +619,9 @@ static void test_muldiv(void)
     }
 
     CHECK_EQ(reg(11), (uint32_t)(-21));
-    CHECK_EQ(reg(12), 0xFFFFFFFFu);   /* sign extension of the product */
-    CHECK_EQ(reg(13), 2u);            /* quotient  */
-    CHECK_EQ(reg(15), 3u);            /* remainder */
+    CHECK_EQ(reg(12), 0xFFFFFFFFu); /* sign extension of the product */
+    CHECK_EQ(reg(13), 2u); /* quotient  */
+    CHECK_EQ(reg(15), 3u); /* remainder */
 }
 
 /*
@@ -640,10 +650,14 @@ static void test_shift_three_operand(void)
     const uint16_t prog[] = {
         F2(OP_MOVI, -16, 10),
         F2(OP_MOVI, 2, 11),
-        W0(OP_SYSTEM, 11, 10), (uint16_t)((12u << 11) | SUB_SHR3),
-        W0(OP_SYSTEM, 11, 10), (uint16_t)((13u << 11) | SUB_SAR3),
-        W0(OP_SYSTEM, 11, 10), (uint16_t)((14u << 11) | SUB_SHL3),
-        0x07E0u, SUB_HALT,
+        W0(OP_SYSTEM, 11, 10),
+        (uint16_t)((12u << 11) | SUB_SHR3),
+        W0(OP_SYSTEM, 11, 10),
+        (uint16_t)((13u << 11) | SUB_SAR3),
+        W0(OP_SYSTEM, 11, 10),
+        (uint16_t)((14u << 11) | SUB_SHL3),
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -654,8 +668,8 @@ static void test_shift_three_operand(void)
         return;
     }
 
-    CHECK_EQ(reg(12), 0x3FFFFFFCu);   /* logical: zeroes shifted in  */
-    CHECK_EQ(reg(13), 0xFFFFFFFCu);   /* arithmetic: sign preserved  */
+    CHECK_EQ(reg(12), 0x3FFFFFFCu); /* logical: zeroes shifted in  */
+    CHECK_EQ(reg(13), 0xFFFFFFFCu); /* arithmetic: sign preserved  */
     CHECK_EQ(reg(14), 0xFFFFFFC0u);
     /* reg2 is a source here, not the destination: it must not be written. */
     CHECK_EQ(reg(10), 0xFFFFFFF0u);
@@ -686,11 +700,14 @@ static void test_divq_divh(void)
     const uint16_t prog[] = {
         F2(OP_MOVI, 13, 10),
         F2(OP_MOVI, 5, 11),
-        W0(OP_SYSTEM, 11, 10), (uint16_t)((12u << 11) | SUB_DIVQ),
+        W0(OP_SYSTEM, 11, 10),
+        (uint16_t)((12u << 11) | SUB_DIVQ),
         F2(OP_MOVI, -9, 13),
         F2(OP_MOVI, 2, 14),
-        W0(OP_SYSTEM, 14, 13), (uint16_t)((15u << 11) | SUB_DIVH),
-        0x07E0u, SUB_HALT,
+        W0(OP_SYSTEM, 14, 13),
+        (uint16_t)((15u << 11) | SUB_DIVH),
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -703,7 +720,7 @@ static void test_divq_divh(void)
 
     CHECK_EQ(reg(10), 2u);
     CHECK_EQ(reg(12), 3u);
-    CHECK_EQ(reg(13), (uint32_t)(-4));   /* C truncates toward zero */
+    CHECK_EQ(reg(13), (uint32_t)(-4)); /* C truncates toward zero */
     CHECK_EQ(reg(15), (uint32_t)(-1));
     CHECK_EQ(why, EMU_RUN_WFI);
 }
@@ -726,13 +743,24 @@ static void test_divh_halfword_only(void)
      *   halt
      */
     const uint16_t prog[] = {
-        W0(OP_MOVEA, 10, 0), 0x0000u, 0x0001u,   /* mov 0x00010000, r10 */
-        W0(OP_MOVEA, 11, 0), 0x0064u, 0x0000u,   /* mov 100, r11        */
-        W0(OP_SYSTEM, 10, 11), (uint16_t)((12u << 11) | SUB_DIVH),
-        W0(OP_MOVEA, 13, 0), 0x0002u, 0xDEADu,   /* mov 0xDEAD0002, r13 */
-        W0(OP_MOVEA, 14, 0), 0x0064u, 0x0000u,   /* mov 100, r14        */
-        W0(OP_SYSTEM, 13, 14), (uint16_t)((15u << 11) | SUB_DIVHU),
-        0x07E0u, SUB_HALT,
+        W0(OP_MOVEA, 10, 0),
+        0x0000u,
+        0x0001u, /* mov 0x00010000, r10 */
+        W0(OP_MOVEA, 11, 0),
+        0x0064u,
+        0x0000u, /* mov 100, r11        */
+        W0(OP_SYSTEM, 10, 11),
+        (uint16_t)((12u << 11) | SUB_DIVH),
+        W0(OP_MOVEA, 13, 0),
+        0x0002u,
+        0xDEADu, /* mov 0xDEAD0002, r13 */
+        W0(OP_MOVEA, 14, 0),
+        0x0064u,
+        0x0000u, /* mov 100, r14        */
+        W0(OP_SYSTEM, 13, 14),
+        (uint16_t)((15u << 11) | SUB_DIVHU),
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -745,8 +773,8 @@ static void test_divh_halfword_only(void)
 
     /* Divide by zero leaves the dividend alone and sets OV. */
     CHECK_EQ(reg(11), 100u);
-    CHECK_EQ(reg(14), 50u);           /* 100 / 2, not 100 / 0xDEAD0002 */
-    CHECK_EQ(reg(15), 0u);            /* remainder */
+    CHECK_EQ(reg(14), 50u); /* 100 / 2, not 100 / 0xDEAD0002 */
+    CHECK_EQ(reg(15), 0u); /* remainder */
     CHECK_EQ(why, EMU_RUN_WFI);
 }
 
@@ -768,11 +796,12 @@ static void test_mul_imm9(void)
     const uint16_t prog[] = {
         F2(OP_MOVI, 7, 10),
         W0(OP_SYSTEM, MULI_R1(0x1FFu), 10),
-            (uint16_t)((11u << 11) | SUB_MULI(0x1FFu)),
+        (uint16_t)((11u << 11) | SUB_MULI(0x1FFu)),
         F2(OP_MOVI, 7, 12),
         W0(OP_SYSTEM, MULI_R1(0x1FFu), 12),
-            (uint16_t)((13u << 11) | SUB_MULUI(0x1FFu)),
-        0x07E0u, SUB_HALT,
+        (uint16_t)((13u << 11) | SUB_MULUI(0x1FFu)),
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -834,9 +863,10 @@ static void test_gdb_layout(void)
 
     /* Run something short so the registers hold values worth reading. */
     const uint16_t prog[] = {
-        F2(OP_MOVI, 9, 6),                      /* mov 9, r6            */
-        F2(OP_MOVI, -4, 29),                    /* mov -4, r29 (the fp) */
-        0x07E0u, SUB_HALT,
+        F2(OP_MOVI, 9, 6), /* mov 9, r6            */
+        F2(OP_MOVI, -4, 29), /* mov -4, r29 (the fp) */
+        0x07E0u,
+        SUB_HALT,
     };
     emu_run_reason_t why;
     uint32_t retired = 0;
@@ -855,8 +885,7 @@ static void test_gdb_layout(void)
      * "psw" is register 37 and this frontend keeps PSW at index 5.
      */
     CHECK_EQ(t->reg_get(g_core.cpu, 32u + G4MH_SR_PSW), psw());
-    CHECK_EQ(t->reg_get(g_core.cpu, 32u + G4MH_SR_EIPC),
-             sreg(0, G4MH_SR_EIPC));
+    CHECK_EQ(t->reg_get(g_core.cpu, 32u + G4MH_SR_EIPC), sreg(0, G4MH_SR_EIPC));
 
     /* 64 is the pc, and it is what pc_get reports. */
     CHECK_EQ(t->reg_get(g_core.cpu, 64u), t->pc_get(g_core.cpu));
@@ -874,7 +903,7 @@ static void test_gdb_layout(void)
     t->reg_set(g_core.cpu, 0u, 0xDEADBEEFu);
     CHECK_EQ(t->reg_get(g_core.cpu, 0u), 0u);
 
-    t->reg_set(g_core.cpu, 65u, 0x1234u);       /* fp -> r29 */
+    t->reg_set(g_core.cpu, 65u, 0x1234u); /* fp -> r29 */
     CHECK_EQ(t->reg_get(g_core.cpu, 29u), 0x1234u);
 
     t->reg_set(g_core.cpu, 32u + G4MH_SR_PSW, G4MH_PSW_Z);
@@ -912,22 +941,24 @@ static void test_perf_counters(void)
      *   stsr 16, r14, 14         ; PMCOUNT0
      *   halt
      */
-    const uint32_t ctl = G4MH_PMCTRL_CE |
-                         (G4MH_PM_CND_INSN << G4MH_PMCTRL_CND_SH);
+    const uint32_t ctl =
+        G4MH_PMCTRL_CE | (G4MH_PM_CND_INSN << G4MH_PMCTRL_CND_SH);
     const uint16_t prog[] = {
-        W0(OP_MOVEA, 10, 0), (uint16_t)(ctl & 0xFFFFu),
-                             (uint16_t)(ctl >> 16),
+        W0(OP_MOVEA, 10, 0),
+        (uint16_t)(ctl & 0xFFFFu),
+        (uint16_t)(ctl >> 16),
         /* LDSR: reg1 is the *source* and reg2 the regID -- the opposite
          * sense to STSR below, which is the reversal this frontend
          * already records and which I got backwards writing this. */
         W0(OP_SYSTEM, 10, G4MH_SR_PMCTRL0),
-            (uint16_t)((G4MH_SELID_PM << 11) | SUB_LDSR),
+        (uint16_t)((G4MH_SELID_PM << 11) | SUB_LDSR),
         F2(OP_MOVI, 1, 11),
         F2(OP_MOVI, 2, 12),
         F2(OP_MOVI, 3, 13),
         W0(OP_SYSTEM, G4MH_SR_PMCOUNT0, 14),
-            (uint16_t)((G4MH_SELID_PM << 11) | SUB_STSR),
-        0x07E0u, SUB_HALT,
+        (uint16_t)((G4MH_SELID_PM << 11) | SUB_STSR),
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -973,12 +1004,15 @@ static void test_perf_counters(void)
 static void test_perf_umctrl_bank(void)
 {
     const uint16_t prog[] = {
-        W0(OP_MOVEA, 10, 0), 0xBEEFu, 0xDEADu,
+        W0(OP_MOVEA, 10, 0),
+        0xBEEFu,
+        0xDEADu,
         W0(OP_SYSTEM, 10, G4MH_SR_PMUMCTRL),
-            (uint16_t)((G4MH_SELID_PMU << 11) | SUB_LDSR),
+        (uint16_t)((G4MH_SELID_PMU << 11) | SUB_LDSR),
         W0(OP_SYSTEM, G4MH_SR_PMUMCTRL, 11),
-            (uint16_t)((G4MH_SELID_PMU << 11) | SUB_STSR),
-        0x07E0u, SUB_HALT,
+        (uint16_t)((G4MH_SELID_PMU << 11) | SUB_STSR),
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -1008,20 +1042,22 @@ static void test_perf_umctrl_bank(void)
  */
 static void test_perf_counters_agree(void)
 {
-    const uint32_t ctl = G4MH_PMCTRL_CE |
-                         (G4MH_PM_CND_INSN << G4MH_PMCTRL_CND_SH);
+    const uint32_t ctl =
+        G4MH_PMCTRL_CE | (G4MH_PM_CND_INSN << G4MH_PMCTRL_CND_SH);
     const uint16_t prog[] = {
-        W0(OP_MOVEA, 10, 0), (uint16_t)(ctl & 0xFFFFu),
-                             (uint16_t)(ctl >> 16),
+        W0(OP_MOVEA, 10, 0),
+        (uint16_t)(ctl & 0xFFFFu),
+        (uint16_t)(ctl >> 16),
         W0(OP_SYSTEM, 10, G4MH_SR_PMCTRL0),
-            (uint16_t)((G4MH_SELID_PM << 11) | SUB_LDSR),
+        (uint16_t)((G4MH_SELID_PM << 11) | SUB_LDSR),
         F2(OP_MOVI, 1, 11),
         F2(OP_MOVI, 2, 12),
         F2(OP_MOVI, 3, 13),
-        0x07E0u, SUB_HALT,
+        0x07E0u,
+        SUB_HALT,
     };
     const emu_backend_t *saved = g4mh_backend;
-    uint32_t counts[2] = { 0u, 0u };
+    uint32_t counts[2] = {0u, 0u};
 
     for (unsigned pass = 0; pass < 2u; pass++) {
         emu_run_reason_t why;
@@ -1059,12 +1095,19 @@ static void test_clip(void)
      */
     const uint16_t prog[] = {
         F2(OP_MOVI, -1, 10),
-        W0(OP_SYSTEM, 10, 11), SUB_CLIPB,
-        W0(OP_SYSTEM, 10, 12), SUB_CLIPBU,
-        W0(OP_MOVEA, 13, 0), 0x00C8u, 0x0000u,   /* mov 200, r13 */
-        W0(OP_SYSTEM, 13, 14), SUB_CLIPB,
-        W0(OP_SYSTEM, 13, 15), SUB_CLIPHU,
-        0x07E0u, SUB_HALT,
+        W0(OP_SYSTEM, 10, 11),
+        SUB_CLIPB,
+        W0(OP_SYSTEM, 10, 12),
+        SUB_CLIPBU,
+        W0(OP_MOVEA, 13, 0),
+        0x00C8u,
+        0x0000u, /* mov 200, r13 */
+        W0(OP_SYSTEM, 13, 14),
+        SUB_CLIPB,
+        W0(OP_SYSTEM, 13, 15),
+        SUB_CLIPHU,
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -1075,10 +1118,10 @@ static void test_clip(void)
         return;
     }
 
-    CHECK_EQ(reg(11), 0xFFFFFFFFu);   /* signed: -1 is in range      */
-    CHECK_EQ(reg(12), 255u);          /* unsigned: saturates high    */
-    CHECK_EQ(reg(14), 127u);          /* signed: saturates high      */
-    CHECK_EQ(reg(15), 200u);          /* halfword unsigned: in range */
+    CHECK_EQ(reg(11), 0xFFFFFFFFu); /* signed: -1 is in range      */
+    CHECK_EQ(reg(12), 255u); /* unsigned: saturates high    */
+    CHECK_EQ(reg(14), 127u); /* signed: saturates high      */
+    CHECK_EQ(reg(15), 200u); /* halfword unsigned: in range */
     /* The last CLIP did not saturate, but SAT is sticky and two before
      * it did -- so it must still be set. */
     CHECK((psw() & G4MH_PSW_SAT) != 0u);
@@ -1103,7 +1146,8 @@ static void test_fetrap(void)
      */
     const uint16_t prog[] = {
         (uint16_t)((3u << 11) | (0x02u << 5) | 0u),
-        0x07E0u, SUB_HALT,
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -1139,9 +1183,12 @@ static void test_resbank_is_not_di(void)
      *   halt
      */
     const uint16_t prog[] = {
-        W0(OP_SYSTEM, 0, 0x10u), SUB_DIEI,          /* ei      */
-        W0(OP_SYSTEM, 0, 0x00u), (uint16_t)((16u << 11) | SUB_DIEI),
-        0x07E0u, SUB_HALT,
+        W0(OP_SYSTEM, 0, 0x10u),
+        SUB_DIEI, /* ei      */
+        W0(OP_SYSTEM, 0, 0x00u),
+        (uint16_t)((16u << 11) | SUB_DIEI),
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -1176,15 +1223,24 @@ static void test_narrow_atomics(void)
      */
     const uint16_t prog[] = {
         W0(OP_MOVEA, 10, 0),
-            (uint16_t)(TEST_SCRATCH & 0xFFFFu),
-            (uint16_t)(TEST_SCRATCH >> 16),
-        W0(OP_MOVEA, 11, 0), 0x00ABu, 0x0000u,
-        W0(OP_ST_B, 10, 11), 0x0000u,
-        W0(OP_SYSTEM, 10, 1), (uint16_t)((12u << 11) | SUB_LDLBU),
-        W0(OP_MOVEA, 13, 0), 0x005Cu, 0x0000u,
-        W0(OP_SYSTEM, 10, 0), (uint16_t)((13u << 11) | SUB_STCB),
-        W0(OP_SYSTEM, 10, 1), (uint16_t)((14u << 11) | SUB_LDLHU),
-        0x07E0u, SUB_HALT,
+        (uint16_t)(TEST_SCRATCH & 0xFFFFu),
+        (uint16_t)(TEST_SCRATCH >> 16),
+        W0(OP_MOVEA, 11, 0),
+        0x00ABu,
+        0x0000u,
+        W0(OP_ST_B, 10, 11),
+        0x0000u,
+        W0(OP_SYSTEM, 10, 1),
+        (uint16_t)((12u << 11) | SUB_LDLBU),
+        W0(OP_MOVEA, 13, 0),
+        0x005Cu,
+        0x0000u,
+        W0(OP_SYSTEM, 10, 0),
+        (uint16_t)((13u << 11) | SUB_STCB),
+        W0(OP_SYSTEM, 10, 1),
+        (uint16_t)((14u << 11) | SUB_LDLHU),
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -1195,9 +1251,9 @@ static void test_narrow_atomics(void)
         return;
     }
 
-    CHECK_EQ(reg(12), 0xABu);         /* zero-extended, not sign      */
-    CHECK_EQ(reg(13), 1u);            /* the conditional store stood  */
-    CHECK_EQ(reg(14), 0x005Cu);       /* halfword read of the byte    */
+    CHECK_EQ(reg(12), 0xABu); /* zero-extended, not sign      */
+    CHECK_EQ(reg(13), 1u); /* the conditional store stood  */
+    CHECK_EQ(reg(14), 0x005Cu); /* halfword read of the byte    */
     CHECK_EQ(why, EMU_RUN_WFI);
 }
 
@@ -1257,38 +1313,56 @@ static void test_pointer_update_addressing(void)
      */
     const uint16_t prog[] = {
         W0(OP_MOVEA, 10, 0),
-            (uint16_t)(TEST_SCRATCH & 0xFFFFu),
-            (uint16_t)(TEST_SCRATCH >> 16),
-        W0(OP_MOVEA, 11, 0), 0x0080u, 0x0000u,
-        W0(OP_ST_B, 10, 11), 0x0000u,
-        W0(OP_MOVEA, 11, 0), 0x007Fu, 0x0000u,
-        W0(OP_ST_B, 10, 11), 0x0001u,
+        (uint16_t)(TEST_SCRATCH & 0xFFFFu),
+        (uint16_t)(TEST_SCRATCH >> 16),
+        W0(OP_MOVEA, 11, 0),
+        0x0080u,
+        0x0000u,
+        W0(OP_ST_B, 10, 11),
+        0x0000u,
+        W0(OP_MOVEA, 11, 0),
+        0x007Fu,
+        0x0000u,
+        W0(OP_ST_B, 10, 11),
+        0x0001u,
 
-        W0(OP_SYSTEM, 10, EXT_POSTI),  (uint16_t)((12u << 11) | SUB_LDLBU),
-        W0(OP_SYSTEM, 10, EXT_POSTIU), (uint16_t)((13u << 11) | SUB_LDLBU),
+        W0(OP_SYSTEM, 10, EXT_POSTI),
+        (uint16_t)((12u << 11) | SUB_LDLBU),
+        W0(OP_SYSTEM, 10, EXT_POSTIU),
+        (uint16_t)((13u << 11) | SUB_LDLBU),
         W0(0x00u, 10, 14),
-        W0(OP_SYSTEM, 10, EXT_POSTDU), (uint16_t)((15u << 11) | SUB_LDLBU),
+        W0(OP_SYSTEM, 10, EXT_POSTDU),
+        (uint16_t)((15u << 11) | SUB_LDLBU),
         W0(0x00u, 10, 16),
 
         W0(OP_MOVEA, 17, 0),
-            (uint16_t)((TEST_SCRATCH + 8u) & 0xFFFFu),
-            (uint16_t)((TEST_SCRATCH + 8u) >> 16),
-        W0(OP_MOVEA, 18, 0), 0x005Au, 0x0000u,
-        W0(OP_SYSTEM, 17, EXT_POSTI),  (uint16_t)((18u << 11) | SUB_STCB),
-        W0(OP_MOVEA, 18, 0), 0x00A5u, 0x0000u,
-        W0(OP_SYSTEM, 17, EXT_POSTI),  (uint16_t)((18u << 11) | SUB_STCB),
+        (uint16_t)((TEST_SCRATCH + 8u) & 0xFFFFu),
+        (uint16_t)((TEST_SCRATCH + 8u) >> 16),
+        W0(OP_MOVEA, 18, 0),
+        0x005Au,
+        0x0000u,
+        W0(OP_SYSTEM, 17, EXT_POSTI),
+        (uint16_t)((18u << 11) | SUB_STCB),
+        W0(OP_MOVEA, 18, 0),
+        0x00A5u,
+        0x0000u,
+        W0(OP_SYSTEM, 17, EXT_POSTI),
+        (uint16_t)((18u << 11) | SUB_STCB),
         W0(0x00u, 17, 19),
 
         W0(OP_MOVEA, 20, 0),
-            (uint16_t)((TEST_SCRATCH + 8u) & 0xFFFFu),
-            (uint16_t)((TEST_SCRATCH + 8u) >> 16),
-        W0(OP_SYSTEM, 20, EXT_LINKU),  (uint16_t)((21u << 11) | SUB_LDLBU),
+        (uint16_t)((TEST_SCRATCH + 8u) & 0xFFFFu),
+        (uint16_t)((TEST_SCRATCH + 8u) >> 16),
+        W0(OP_SYSTEM, 20, EXT_LINKU),
+        (uint16_t)((21u << 11) | SUB_LDLBU),
         W0(OP_MOVEA, 20, 0),
-            (uint16_t)((TEST_SCRATCH + 9u) & 0xFFFFu),
-            (uint16_t)((TEST_SCRATCH + 9u) >> 16),
-        W0(OP_SYSTEM, 20, EXT_LINKU),  (uint16_t)((22u << 11) | SUB_LDLBU),
+        (uint16_t)((TEST_SCRATCH + 9u) & 0xFFFFu),
+        (uint16_t)((TEST_SCRATCH + 9u) >> 16),
+        W0(OP_SYSTEM, 20, EXT_LINKU),
+        (uint16_t)((22u << 11) | SUB_LDLBU),
 
-        0x07E0u, SUB_HALT,
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -1299,13 +1373,13 @@ static void test_pointer_update_addressing(void)
         return;
     }
 
-    CHECK_EQ(reg(12), 0xFFFFFF80u);            /* LD.B  sign-extends   */
-    CHECK_EQ(reg(13), 0x0000007Fu);            /* LD.BU zero-extends   */
-    CHECK_EQ(reg(14), TEST_SCRATCH + 2u);      /* two increments        */
-    CHECK_EQ(reg(16), TEST_SCRATCH + 1u);      /* one decrement         */
-    CHECK_EQ(reg(19), TEST_SCRATCH + 10u);     /* two store increments  */
-    CHECK_EQ(reg(21), 0x5Au);                  /* first byte landed     */
-    CHECK_EQ(reg(22), 0xA5u);                  /* second byte landed    */
+    CHECK_EQ(reg(12), 0xFFFFFF80u); /* LD.B  sign-extends   */
+    CHECK_EQ(reg(13), 0x0000007Fu); /* LD.BU zero-extends   */
+    CHECK_EQ(reg(14), TEST_SCRATCH + 2u); /* two increments        */
+    CHECK_EQ(reg(16), TEST_SCRATCH + 1u); /* one decrement         */
+    CHECK_EQ(reg(19), TEST_SCRATCH + 10u); /* two store increments  */
+    CHECK_EQ(reg(21), 0x5Au); /* first byte landed     */
+    CHECK_EQ(reg(22), 0xA5u); /* second byte landed    */
     CHECK_EQ(why, EMU_RUN_WFI);
 }
 
@@ -1338,29 +1412,46 @@ static void test_ldm_stm_mp(void)
 {
     /* ST.W's disp16 carries a format bit in its low position, so the
      * displacement is even and bit 0 is set. */
-#define STW(base, src, disp) \
+#define STW(base, src, disp)                                                   \
     W0(0x3Bu, (base), (src)), (uint16_t)(((disp) & 0xFFFEu) | 1u)
 #define WORD(v) (uint16_t)((v) & 0xFFFFu), (uint16_t)((v) >> 16)
 
     const uint32_t dst = TEST_SCRATCH + 64u;
     const uint16_t prog[] = {
-        W0(OP_MOVEA, 6, 0), WORD(TEST_SCRATCH),
+        W0(OP_MOVEA, 6, 0),
+        WORD(TEST_SCRATCH),
 
         /* entry 2, then entry 3: MPLA, MPUA, MPAT in that order */
-        W0(OP_MOVEA, 7, 0), WORD(0x11110000u), STW(6, 7, 0),
-        W0(OP_MOVEA, 7, 0), WORD(0x1111FFFFu), STW(6, 7, 4),
-        W0(OP_MOVEA, 7, 0), WORD(0x00000007u), STW(6, 7, 8),
-        W0(OP_MOVEA, 7, 0), WORD(0x22220000u), STW(6, 7, 12),
-        W0(OP_MOVEA, 7, 0), WORD(0x2222FFFFu), STW(6, 7, 16),
-        W0(OP_MOVEA, 7, 0), WORD(0x00000005u), STW(6, 7, 20),
+        W0(OP_MOVEA, 7, 0),
+        WORD(0x11110000u),
+        STW(6, 7, 0),
+        W0(OP_MOVEA, 7, 0),
+        WORD(0x1111FFFFu),
+        STW(6, 7, 4),
+        W0(OP_MOVEA, 7, 0),
+        WORD(0x00000007u),
+        STW(6, 7, 8),
+        W0(OP_MOVEA, 7, 0),
+        WORD(0x22220000u),
+        STW(6, 7, 12),
+        W0(OP_MOVEA, 7, 0),
+        WORD(0x2222FFFFu),
+        STW(6, 7, 16),
+        W0(OP_MOVEA, 7, 0),
+        WORD(0x00000005u),
+        STW(6, 7, 20),
 
         /* ldm.mp [r6], 2-3  */
-        W0(OP_SYSTEM, 6, 2), (uint16_t)((3u << 11) | 0x166u),
+        W0(OP_SYSTEM, 6, 2),
+        (uint16_t)((3u << 11) | 0x166u),
         /* stm.mp 2-3, [r8]  */
-        W0(OP_MOVEA, 8, 0), WORD(dst),
-        W0(OP_SYSTEM, 8, 2), (uint16_t)((3u << 11) | 0x164u),
+        W0(OP_MOVEA, 8, 0),
+        WORD(dst),
+        W0(OP_SYSTEM, 8, 2),
+        (uint16_t)((3u << 11) | 0x164u),
 
-        0x07E0u, SUB_HALT,
+        0x07E0u,
+        SUB_HALT,
     };
 #undef STW
 #undef WORD
@@ -1422,11 +1513,14 @@ static void test_ldm_mp_is_privileged(void)
     const uint16_t prog[] = {
         /* mov <UM>, r10 ; ldsr r10, PSW  -- LDSR takes reg1 as the source */
         W0(OP_MOVEA, 10, 0),
-            (uint16_t)(G4MH_PSW_UM & 0xFFFFu),
-            (uint16_t)(G4MH_PSW_UM >> 16),
-        W0(OP_SYSTEM, 10, G4MH_SR_PSW), (uint16_t)((0u << 11) | SUB_LDSR),
-        W0(OP_SYSTEM, 6, 2), (uint16_t)((3u << 11) | 0x166u),
-        0x07E0u, SUB_HALT,
+        (uint16_t)(G4MH_PSW_UM & 0xFFFFu),
+        (uint16_t)(G4MH_PSW_UM >> 16),
+        W0(OP_SYSTEM, 10, G4MH_SR_PSW),
+        (uint16_t)((0u << 11) | SUB_LDSR),
+        W0(OP_SYSTEM, 6, 2),
+        (uint16_t)((3u << 11) | 0x166u),
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -1472,9 +1566,9 @@ static void test_ldm_mp_is_privileged(void)
  */
 static void test_irq_vector_methods(void)
 {
-    const uint16_t prog[] = { 0x07E0u, SUB_HALT };
+    const uint16_t prog[] = {0x07E0u, SUB_HALT};
     const uint32_t chan = 6u;
-    const uint32_t pri  = 3u;
+    const uint32_t pri = 3u;
     const uint32_t base = EMU_GUEST_RAM_BASE + 0x1000u;
     uint32_t vec = 0u;
 
@@ -1524,13 +1618,13 @@ static void test_irq_vector_methods(void)
     const uint32_t handler = 0xABCD1234u;
     const uint32_t off = (tbl - EMU_GUEST_RAM_BASE) + chan * 4u;
 
-    g_ram[off]      = (uint8_t)(handler & 0xFFu);
+    g_ram[off] = (uint8_t)(handler & 0xFFu);
     g_ram[off + 1u] = (uint8_t)((handler >> 8) & 0xFFu);
     g_ram[off + 2u] = (uint8_t)((handler >> 16) & 0xFFu);
     g_ram[off + 3u] = (uint8_t)(handler >> 24);
 
     c->sr[1][G4MH_SR_INTBP] = tbl;
-    c->sr[1][G4MH_SR_RBASE] = base;             /* RINT and DV clear */
+    c->sr[1][G4MH_SR_RBASE] = base; /* RINT and DV clear */
     (void)g4mh_intc1_ops.write(c->intc, G4MH_INTC1_EEIC + chan * 4u, 4u,
                                pri | G4MH_EEIC_EITB);
 
@@ -1552,7 +1646,7 @@ static void test_irq_vector_methods(void)
      * why this returns a bool at all.
      */
     c->sr[1][G4MH_SR_RBASE] = base;
-    c->sr[1][G4MH_SR_INTBP] = 0xE0000000u;      /* nothing mapped here */
+    c->sr[1][G4MH_SR_INTBP] = 0xE0000000u; /* nothing mapped here */
     CHECK(!g4mh_cpu_irq_vector(c, chan, &vec));
 
     /* A channel not set to table reference never reads memory, so an
@@ -1580,19 +1674,22 @@ static void test_irq_vector_methods(void)
  */
 static void test_exception_vector_offsets(void)
 {
-    static const struct { g4mh_exc_t cause; uint32_t off; } k[] = {
-        { G4MH_EXC_SYSERR,       0x010u },
-        { G4MH_EXC_FETRAP + 1u,  0x030u },
-        { G4MH_EXC_TRAP0,        0x040u },
-        { G4MH_EXC_TRAP1,        0x050u },
-        { G4MH_EXC_RIE,          0x060u },
-        { G4MH_EXC_FPP,          0x070u },   /* FPE/FXE                  */
-        { G4MH_EXC_UCPOP,        0x080u },
-        { G4MH_EXC_MIP,          0x090u },   /* was 0x030                */
-        { G4MH_EXC_MDP,          0x090u },   /* was 0x030                */
-        { G4MH_EXC_PIE,          0x0A0u },
-        { G4MH_EXC_MAE,          0x0C0u },   /* was 0x060                */
-        { G4MH_EXC_FEINT,        0x0F0u },
+    static const struct {
+        g4mh_exc_t cause;
+        uint32_t off;
+    } k[] = {
+        {G4MH_EXC_SYSERR, 0x010u},
+        {G4MH_EXC_FETRAP + 1u, 0x030u},
+        {G4MH_EXC_TRAP0, 0x040u},
+        {G4MH_EXC_TRAP1, 0x050u},
+        {G4MH_EXC_RIE, 0x060u},
+        {G4MH_EXC_FPP, 0x070u}, /* FPE/FXE                  */
+        {G4MH_EXC_UCPOP, 0x080u},
+        {G4MH_EXC_MIP, 0x090u}, /* was 0x030                */
+        {G4MH_EXC_MDP, 0x090u}, /* was 0x030                */
+        {G4MH_EXC_PIE, 0x0A0u},
+        {G4MH_EXC_MAE, 0x0C0u}, /* was 0x060                */
+        {G4MH_EXC_FEINT, 0x0F0u},
     };
     const uint32_t base = 0x80000000u;
 
@@ -1663,20 +1760,20 @@ static void test_synci_discards_translations(void)
      *      halt
      */
     const uint16_t prog[] = {
-        0x5A01u,                     /* again: mov 1, r11  <- patched  */
-        0x6260u,                     /* cmp 0, r12                     */
-        0x0DAAu,                     /* bne done                       */
-        0x6201u,                     /* mov 1, r12                     */
-        0x6E40u, 0x8000u,            /* mov 0x80000000, r13  (&again)  */
-        0x7620u, 0x5A02u,            /* movea `mov 2,r11`, zero, r14   */
-        0x776Du, 0x0000u,            /* st.h r14, 0[r13]               */
-        0x001Cu,                     /* synci                          */
-        0xF5D5u,                     /* br again                       */
-        0x07E0u, SUB_HALT,           /* done: halt                     */
+        0x5A01u, /* again: mov 1, r11  <- patched  */
+        0x6260u, /* cmp 0, r12                     */
+        0x0DAAu, /* bne done                       */
+        0x6201u, /* mov 1, r12                     */
+        0x6E40u, 0x8000u, /* mov 0x80000000, r13  (&again)  */
+        0x7620u, 0x5A02u, /* movea `mov 2,r11`, zero, r14   */
+        0x776Du, 0x0000u, /* st.h r14, 0[r13]               */
+        0x001Cu, /* synci                          */
+        0xF5D5u, /* br again                       */
+        0x07E0u, SUB_HALT, /* done: halt                     */
     };
 
     const emu_backend_t *saved = g4mh_backend;
-    uint32_t got[2] = { 0u, 0u };
+    uint32_t got[2] = {0u, 0u};
 
     for (unsigned pass = 0; pass < 2u; pass++) {
         emu_run_reason_t why;
@@ -1734,12 +1831,18 @@ static void test_swap(void)
      *   halt
      */
     const uint16_t prog[] = {
-        W0(OP_MOVHI, 0, 10), 0x00FFu,                    /* movhi 0x00FF,r0,r10 */
-        W0(OP_SYSTEM, 0, 10), (uint16_t)((11u << 11) | SUB_BSW),
-        W0(OP_SYSTEM, 5, 12), (uint16_t)((0u << 11) | SUB_STSR),
-        W0(OP_SYSTEM, 0, 10), (uint16_t)((13u << 11) | SUB_HSW),
-        W0(OP_SYSTEM, 5, 14), (uint16_t)((0u << 11) | SUB_STSR),
-        0x07E0u, SUB_HALT,
+        W0(OP_MOVHI, 0, 10),
+        0x00FFu, /* movhi 0x00FF,r0,r10 */
+        W0(OP_SYSTEM, 0, 10),
+        (uint16_t)((11u << 11) | SUB_BSW),
+        W0(OP_SYSTEM, 5, 12),
+        (uint16_t)((0u << 11) | SUB_STSR),
+        W0(OP_SYSTEM, 0, 10),
+        (uint16_t)((13u << 11) | SUB_HSW),
+        W0(OP_SYSTEM, 5, 14),
+        (uint16_t)((0u << 11) | SUB_STSR),
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -1751,8 +1854,8 @@ static void test_swap(void)
     }
 
     CHECK_EQ(reg(10), 0x00FF0000u);
-    CHECK_EQ(reg(11), 0x0000FF00u);   /* BSW: whole-word byte reverse   */
-    CHECK_EQ(reg(13), 0x000000FFu);   /* HSW: halfword exchange         */
+    CHECK_EQ(reg(11), 0x0000FF00u); /* BSW: whole-word byte reverse   */
+    CHECK_EQ(reg(13), 0x000000FFu); /* HSW: halfword exchange         */
 
     /*
      * BSW result 0x0000FF00 has zero bytes, is non-zero as a word and has
@@ -1782,12 +1885,18 @@ static void test_swap_halfword_flags(void)
      *   halt
      */
     const uint16_t prog[] = {
-        W0(OP_MOVHI, 0, 10), 0x1234u,
-        W0(OP_SYSTEM, 0, 10), (uint16_t)((11u << 11) | SUB_BSH),
-        W0(OP_SYSTEM, 5, 12), (uint16_t)((0u << 11) | SUB_STSR),
-        W0(OP_SYSTEM, 0, 10), (uint16_t)((13u << 11) | SUB_HSH),
-        W0(OP_SYSTEM, 5, 14), (uint16_t)((0u << 11) | SUB_STSR),
-        0x07E0u, SUB_HALT,
+        W0(OP_MOVHI, 0, 10),
+        0x1234u,
+        W0(OP_SYSTEM, 0, 10),
+        (uint16_t)((11u << 11) | SUB_BSH),
+        W0(OP_SYSTEM, 5, 12),
+        (uint16_t)((0u << 11) | SUB_STSR),
+        W0(OP_SYSTEM, 0, 10),
+        (uint16_t)((13u << 11) | SUB_HSH),
+        W0(OP_SYSTEM, 5, 14),
+        (uint16_t)((0u << 11) | SUB_STSR),
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -1837,13 +1946,19 @@ static void test_bit_search(void)
      */
     const uint16_t prog[] = {
         F2(OP_MOVI, 1, 10),
-        W0(OP_SYSTEM, 0, 10), (uint16_t)((11u << 11) | SUB_SCH1R),
-        W0(OP_SYSTEM, 0, 10), (uint16_t)((12u << 11) | SUB_SCH1L),
-        W0(OP_SYSTEM, 5, 13), (uint16_t)((0u << 11) | SUB_STSR),
+        W0(OP_SYSTEM, 0, 10),
+        (uint16_t)((11u << 11) | SUB_SCH1R),
+        W0(OP_SYSTEM, 0, 10),
+        (uint16_t)((12u << 11) | SUB_SCH1L),
+        W0(OP_SYSTEM, 5, 13),
+        (uint16_t)((0u << 11) | SUB_STSR),
         F2(OP_MOVI, 0, 14),
-        W0(OP_SYSTEM, 0, 14), (uint16_t)((15u << 11) | SUB_SCH1R),
-        W0(OP_SYSTEM, 5, 16), (uint16_t)((0u << 11) | SUB_STSR),
-        0x07E0u, SUB_HALT,
+        W0(OP_SYSTEM, 0, 14),
+        (uint16_t)((15u << 11) | SUB_SCH1R),
+        W0(OP_SYSTEM, 5, 16),
+        (uint16_t)((0u << 11) | SUB_STSR),
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -1854,9 +1969,9 @@ static void test_bit_search(void)
         return;
     }
 
-    CHECK_EQ(reg(11), 1u);    /* first bit examined                   */
-    CHECK_EQ(reg(12), 32u);   /* last bit examined                    */
-    CHECK_EQ(reg(15), 0u);    /* not found                            */
+    CHECK_EQ(reg(11), 1u); /* first bit examined                   */
+    CHECK_EQ(reg(12), 32u); /* last bit examined                    */
+    CHECK_EQ(reg(15), 0u); /* not found                            */
 
     /* SCH1L found its bit at the far end, so CY; the result is non-zero. */
     CHECK_EQ(reg(13) & G4MH_PSW_FLAGS, G4MH_PSW_CY);
@@ -1881,11 +1996,15 @@ static void test_bit_search_zero(void)
      */
     const uint16_t prog[] = {
         F2(OP_MOVI, -2, 10),
-        W0(OP_SYSTEM, 0, 10), (uint16_t)((11u << 11) | SUB_SCH0L),
-        W0(OP_SYSTEM, 0, 10), (uint16_t)((12u << 11) | SUB_SCH0R),
+        W0(OP_SYSTEM, 0, 10),
+        (uint16_t)((11u << 11) | SUB_SCH0L),
+        W0(OP_SYSTEM, 0, 10),
+        (uint16_t)((12u << 11) | SUB_SCH0R),
         F2(OP_MOVI, -1, 13),
-        W0(OP_SYSTEM, 0, 13), (uint16_t)((14u << 11) | SUB_SCH0L),
-        0x07E0u, SUB_HALT,
+        W0(OP_SYSTEM, 0, 13),
+        (uint16_t)((14u << 11) | SUB_SCH0L),
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -1913,8 +2032,10 @@ static void test_bit_search_zero(void)
 static void test_swap_reserved_field(void)
 {
     const uint16_t prog[] = {
-        W0(OP_SYSTEM, 1, 10), (uint16_t)((11u << 11) | SUB_BSW),
-        0x07E0u, SUB_HALT,
+        W0(OP_SYSTEM, 1, 10),
+        (uint16_t)((11u << 11) | SUB_BSW),
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -1952,15 +2073,23 @@ static void test_bit_manipulation(void)
      *   halt
      */
     const uint16_t prog[] = {
-        W0(OP_MOVHI, 0, 10),  0x8000u,
-        W0(OP_MOVEA, 10, 10), 0x0100u,
+        W0(OP_MOVHI, 0, 10),
+        0x8000u,
+        W0(OP_MOVEA, 10, 10),
+        0x0100u,
         F2(OP_MOVI, 1, 11),
-        W0(OP_ST_B, 10, 11), 0x0000u,          /* st.b r11, 0[r10] */
-        BITOP8(BOP_SET1, 1, 10), 0x0000u,      /* set1 1, 0[r10]   */
-        W0(OP_SYSTEM, 5, 12), (uint16_t)((0u << 11) | SUB_STSR),
-        BITOP8(BOP_CLR1, 0, 10), 0x0000u,      /* clr1 0, 0[r10]   */
-        W0(OP_SYSTEM, 5, 13), (uint16_t)((0u << 11) | SUB_STSR),
-        0x07E0u, SUB_HALT,
+        W0(OP_ST_B, 10, 11),
+        0x0000u, /* st.b r11, 0[r10] */
+        BITOP8(BOP_SET1, 1, 10),
+        0x0000u, /* set1 1, 0[r10]   */
+        W0(OP_SYSTEM, 5, 12),
+        (uint16_t)((0u << 11) | SUB_STSR),
+        BITOP8(BOP_CLR1, 0, 10),
+        0x0000u, /* clr1 0, 0[r10]   */
+        W0(OP_SYSTEM, 5, 13),
+        (uint16_t)((0u << 11) | SUB_STSR),
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -1973,8 +2102,8 @@ static void test_bit_manipulation(void)
 
     /* 0x01, set bit 1 -> 0x03, clear bit 0 -> 0x02. */
     CHECK_EQ((uint32_t)g_ram[0x100], 0x02u);
-    CHECK((reg(12) & G4MH_PSW_Z) != 0u);   /* bit 1 had been 0 */
-    CHECK((reg(13) & G4MH_PSW_Z) == 0u);   /* bit 0 had been 1 */
+    CHECK((reg(12) & G4MH_PSW_Z) != 0u); /* bit 1 had been 0 */
+    CHECK((reg(13) & G4MH_PSW_Z) == 0u); /* bit 0 had been 1 */
 }
 
 /*
@@ -1998,18 +2127,28 @@ static void test_bit_manipulation_reg(void)
      *   halt
      */
     const uint16_t prog[] = {
-        W0(OP_MOVHI, 0, 10),  0x8000u,
-        W0(OP_MOVEA, 10, 10), 0x0100u,
-        W0(OP_MOVEA, 0, 11), 0x0080u,          /* movea 0x80, r0, r11 */
-        W0(OP_ST_B, 10, 11), 0x0000u,
+        W0(OP_MOVHI, 0, 10),
+        0x8000u,
+        W0(OP_MOVEA, 10, 10),
+        0x0100u,
+        W0(OP_MOVEA, 0, 11),
+        0x0080u, /* movea 0x80, r0, r11 */
+        W0(OP_ST_B, 10, 11),
+        0x0000u,
         F2(OP_MOVI, 0, 12),
-        W0(OP_SYSTEM, 10, 12), SUB_TST1,
-        W0(OP_LD_B, 10, 16), 0x0000u,
-        W0(OP_SYSTEM, 5, 13), (uint16_t)((0u << 11) | SUB_STSR),
+        W0(OP_SYSTEM, 10, 12),
+        SUB_TST1,
+        W0(OP_LD_B, 10, 16),
+        0x0000u,
+        W0(OP_SYSTEM, 5, 13),
+        (uint16_t)((0u << 11) | SUB_STSR),
         F2(OP_MOVI, 3, 14),
-        W0(OP_SYSTEM, 10, 14), SUB_NOT1,
-        W0(OP_SYSTEM, 5, 15), (uint16_t)((0u << 11) | SUB_STSR),
-        0x07E0u, SUB_HALT,
+        W0(OP_SYSTEM, 10, 14),
+        SUB_NOT1,
+        W0(OP_SYSTEM, 5, 15),
+        (uint16_t)((0u << 11) | SUB_STSR),
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -2027,11 +2166,11 @@ static void test_bit_manipulation_reg(void)
      * have stored the value unchanged and the test would have passed
      * either way. Proven by making TST1 store and watching this fail.
      */
-    CHECK_EQ(reg(16), 0xFFFFFF80u);   /* LD.B sign-extends */
+    CHECK_EQ(reg(16), 0xFFFFFF80u); /* LD.B sign-extends */
     /* NOT1 toggled bit 3. */
     CHECK_EQ((uint32_t)g_ram[0x100], 0x88u);
-    CHECK((reg(13) & G4MH_PSW_Z) != 0u);   /* bit 0 was 0 */
-    CHECK((reg(15) & G4MH_PSW_Z) != 0u);   /* bit 3 was 0 */
+    CHECK((reg(13) & G4MH_PSW_Z) != 0u); /* bit 0 was 0 */
+    CHECK((reg(15) & G4MH_PSW_Z) != 0u); /* bit 3 was 0 */
 }
 
 /*
@@ -2068,9 +2207,9 @@ static void test_ir_backend_is_used(void)
         F2(OP_MOVI, 4, 11),
         F1(OP_ADD, 11, 10),
         F1(OP_SUB, 11, 10),
-        F1(OP_OR,  11, 10),
+        F1(OP_OR, 11, 10),
         F1(OP_AND, 11, 10),
-        F1(0x09u,  11, 10),          /* XOR */
+        F1(0x09u, 11, 10), /* XOR */
         F1(OP_CMP, 11, 10),
         /*
          * A store and a load through the generic memory ops. Included
@@ -2079,10 +2218,14 @@ static void test_ir_backend_is_used(void)
          * rest of it to the interpreter, and nothing about the values
          * would have shown that.
          */
-        W0(OP_MOVHI, 0, 20),  0x8000u,
-        W0(OP_MOVEA, 20, 20), 0x0100u,
-        W0(OP_ST_HW, 20, 11), 0x0001u,   /* st.w r11, 0[r20] */
-        W0(OP_LD_HW, 20, 21), 0x0001u,   /* ld.w 0[r20], r21 */
+        W0(OP_MOVHI, 0, 20),
+        0x8000u,
+        W0(OP_MOVEA, 20, 20),
+        0x0100u,
+        W0(OP_ST_HW, 20, 11),
+        0x0001u, /* st.w r11, 0[r20] */
+        W0(OP_LD_HW, 20, 21),
+        0x0001u, /* ld.w 0[r20], r21 */
         /*
          * A Format VIII bit op and a Format IV short store, both of
          * which used to end the block. Included here rather than tested
@@ -2090,10 +2233,12 @@ static void test_ir_backend_is_used(void)
          * still leaves every value correct -- the interpreter runs them
          * -- and only the fallback count says which happened.
          */
-        BITOP8(BOP_SET1, 2, 20), 0x0000u,      /* set1 2, 0[r20] */
-        F1(OP_MOV, 20, 30),                    /* ep = r20       */
-        (uint16_t)((21u << 11) | (0x07u << 7) | 4u),  /* sst.b r21, 4[ep] */
-        0x07E0u, SUB_HALT,
+        BITOP8(BOP_SET1, 2, 20),
+        0x0000u, /* set1 2, 0[r20] */
+        F1(OP_MOV, 20, 30), /* ep = r20       */
+        (uint16_t)((21u << 11) | (0x07u << 7) | 4u), /* sst.b r21, 4[ep] */
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_jit_stats_t before, after;
@@ -2165,9 +2310,12 @@ static void test_system_registers(void)
      */
     const uint16_t prog[] = {
         F2(OP_MOVI, -1, 10),
-        W0(OP_SYSTEM, 10, G4MH_SR_EIPC), SUB_LDSR,
-        W0(OP_SYSTEM, G4MH_SR_EIPC, 11), SUB_STSR,
-        0x07E0u, SUB_HALT,
+        W0(OP_SYSTEM, 10, G4MH_SR_EIPC),
+        SUB_LDSR,
+        W0(OP_SYSTEM, G4MH_SR_EIPC, 11),
+        SUB_STSR,
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -2212,7 +2360,7 @@ static void test_reserved_instruction(void)
      * matched as `sub & 0x7E0`, so anything in that range is some CMOV,
      * SBF, ADF or MAC and retires quietly.
      */
-    prog[1] = 0x01A0u;              /* no such sub-opcode */
+    prog[1] = 0x01A0u; /* no such sub-opcode */
     /* 0x60 bytes in, which is index 0x30 in halfwords. */
     prog[0x30] = 0x07E0u;
     prog[0x31] = SUB_HALT;
@@ -2276,11 +2424,11 @@ static void test_trap_and_syscall(void)
      * Assembling the words here had encoded the same misunderstanding, so
      * this test agreed with the bug until an actual RH850 binary ran.
      */
-    prog[0] = F2(OP_MOVI, 9, 6);    /* r6  = 9, argument 0            */
-    prog[1] = F2(OP_MOVI, 11, 11);  /* r11 = 11, the syscall number   */
-    prog[2] = W0(OP_SYSTEM, 3, 0);  /* trap 3 -- vector, not number   */
+    prog[0] = F2(OP_MOVI, 9, 6); /* r6  = 9, argument 0            */
+    prog[1] = F2(OP_MOVI, 11, 11); /* r11 = 11, the syscall number   */
+    prog[2] = W0(OP_SYSTEM, 3, 0); /* trap 3 -- vector, not number   */
     prog[3] = SUB_TRAP;
-    prog[4] = 0x07E0u;              /* halt, if the trap is consumed  */
+    prog[4] = 0x07E0u; /* halt, if the trap is consumed  */
     prog[5] = SUB_HALT;
     /* The TRAP 0-15 handler, at RBASE + 0x40. */
     prog[0x20] = 0x07E0u;
@@ -2299,8 +2447,8 @@ static void test_trap_and_syscall(void)
     CHECK(g_hook_seen);
     /* From r11, not from the TRAP vector, which is 3 here. */
     CHECK_EQ(g_hook_nr, 11u);
-    CHECK_EQ(g_hook_arg0, 9u);    /* r6 is argument 0 */
-    CHECK_EQ(reg(10), 0x5A5Au);   /* and the result lands in r10 */
+    CHECK_EQ(g_hook_arg0, 9u); /* r6 is argument 0 */
+    CHECK_EQ(reg(10), 0x5A5Au); /* and the result lands in r10 */
     CHECK_EQ(why, EMU_RUN_HALTED);
 
     /* --- without: the architectural exception, at RBASE + 0x40 ------ */
@@ -2370,7 +2518,7 @@ static void test_contract(void)
     CHECK(ops->instance(G4MH_PE_COUNT) == NULL);
 
     /* dump must produce something and must terminate. */
-    const uint16_t prog[] = { 0x07E0u, SUB_HALT };
+    const uint16_t prog[] = {0x07E0u, SUB_HALT};
     emu_run_reason_t why;
     uint32_t retired = 0;
     if (load_and_run(prog, 2u, 8u, &why, &retired)) {
@@ -2389,20 +2537,26 @@ static void test_contract(void)
 /* ------------------------------------------------------------------ */
 
 /* Sub-opcodes of the atomics, from the G4MH software manual. */
-#define SUB_CAXI    0x00EEu
-#define SUB_LDLW    0x0378u
-#define SUB_STCW    0x037Au
+#define SUB_CAXI 0x00EEu
+#define SUB_LDLW 0x0378u
+#define SUB_STCW 0x037Au
 
 static void test_mc_reservation_succeeds(void)
 {
     const uint16_t prog[] = {
-        W0(OP_MOVHI, 0, 11),  0x8000u,
-        W0(OP_MOVEA, 11, 11), 0x0300u,
-        W0(OP_SYSTEM, 11, 0), (uint16_t)((12u << 11) | SUB_LDLW),
+        W0(OP_MOVHI, 0, 11),
+        0x8000u,
+        W0(OP_MOVEA, 11, 11),
+        0x0300u,
+        W0(OP_SYSTEM, 11, 0),
+        (uint16_t)((12u << 11) | SUB_LDLW),
         F2(OP_MOVI, 7, 13),
-        W0(OP_SYSTEM, 11, 0), (uint16_t)((13u << 11) | SUB_STCW),
-        W0(OP_ST_HW, 11, 13), 0x0005u,
-        0x07E0u, SUB_HALT,
+        W0(OP_SYSTEM, 11, 0),
+        (uint16_t)((13u << 11) | SUB_STCW),
+        W0(OP_ST_HW, 11, 13),
+        0x0005u,
+        0x07E0u,
+        SUB_HALT,
     };
 
     /* One core only, so nothing can break the reservation. */
@@ -2413,8 +2567,8 @@ static void test_mc_reservation_succeeds(void)
         CHECK(false);
         return;
     }
-    CHECK_EQ(ram32(0x300u), 7u);   /* the store happened */
-    CHECK_EQ(ram32(0x304u), 1u);   /* and reported success */
+    CHECK_EQ(ram32(0x300u), 7u); /* the store happened */
+    CHECK_EQ(ram32(0x304u), 1u); /* and reported success */
 }
 
 static void test_mc_caxi(void)
@@ -2431,15 +2585,21 @@ static void test_mc_caxi(void)
      *   halt
      */
     const uint16_t prog[] = {
-        W0(OP_MOVHI, 0, 11),  0x8000u,
-        W0(OP_MOVEA, 11, 11), 0x0400u,
+        W0(OP_MOVHI, 0, 11),
+        0x8000u,
+        W0(OP_MOVEA, 11, 11),
+        0x0400u,
         F2(OP_MOVI, 5, 12),
-        W0(OP_ST_HW, 11, 12), 0x0001u,
+        W0(OP_ST_HW, 11, 12),
+        0x0001u,
         F2(OP_MOVI, 5, 13),
         F2(OP_MOVI, 8, 14),
-        W0(OP_SYSTEM, 11, 13), (uint16_t)((14u << 11) | SUB_CAXI),
-        W0(OP_ST_HW, 11, 14), 0x0005u,
-        0x07E0u, SUB_HALT,
+        W0(OP_SYSTEM, 11, 13),
+        (uint16_t)((14u << 11) | SUB_CAXI),
+        W0(OP_ST_HW, 11, 14),
+        0x0005u,
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -2449,14 +2609,14 @@ static void test_mc_caxi(void)
         CHECK(false);
         return;
     }
-    CHECK_EQ(ram32(0x400u), 8u);   /* swapped in */
-    CHECK_EQ(ram32(0x404u), 5u);   /* old value reported */
+    CHECK_EQ(ram32(0x400u), 8u); /* swapped in */
+    CHECK_EQ(ram32(0x404u), 5u); /* old value reported */
 }
 
 #if G4MH_PE_COUNT > 1
 
 static emu_system_t g_sys;
-static emu_bus_t    g_sysbus[EMU_MAX_CORES];
+static emu_bus_t g_sysbus[EMU_MAX_CORES];
 
 /*
  * Bring up a whole machine with `prog` at the reset address, shared by
@@ -2481,8 +2641,8 @@ static bool run_system(const uint16_t *hw, unsigned n, uint32_t quantum,
 
     for (unsigned i = 0; i < G4MH_PE_COUNT; i++) {
         emu_bus_init(&g_sysbus[i]);
-        if (!emu_bus_add_ram(&g_sysbus[i], "ram", EMU_GUEST_RAM_BASE,
-                             g_ram, TEST_RAM_SIZE)) {
+        if (!emu_bus_add_ram(&g_sysbus[i], "ram", EMU_GUEST_RAM_BASE, g_ram,
+                             TEST_RAM_SIZE)) {
             return false;
         }
     }
@@ -2541,15 +2701,20 @@ static bool run_system(const uint16_t *hw, unsigned n, uint32_t quantum,
 static void test_mc_dispatch(void)
 {
     const uint16_t prog[] = {
-        W0(OP_SYSTEM, G4MH_SR_HTCFG0, 10), (uint16_t)((2u << 11) | SUB_STSR),
+        W0(OP_SYSTEM, G4MH_SR_HTCFG0, 10),
+        (uint16_t)((2u << 11) | SUB_STSR),
         F2(OP_SHL, 2, 10),
-        W0(OP_MOVHI, 0, 11),  0x8000u,
-        W0(OP_MOVEA, 11, 11), 0x0200u,
+        W0(OP_MOVHI, 0, 11),
+        0x8000u,
+        W0(OP_MOVEA, 11, 11),
+        0x0200u,
         F1(OP_ADD, 10, 11),
         F2(OP_MOVI, 1, 12),
         F1(OP_ADD, 10, 12),
-        W0(OP_ST_HW, 11, 12), 0x0001u,      /* st.w */
-        0x07E0u, SUB_HALT,
+        W0(OP_ST_HW, 11, 12),
+        0x0001u, /* st.w */
+        0x07E0u,
+        SUB_HALT,
     };
 
     if (!run_system(prog, sizeof(prog) / sizeof(prog[0]), 64u, 64u, NULL)) {
@@ -2571,20 +2736,25 @@ static void test_mc_dispatch(void)
 static void test_mc_quantum_invariance(void)
 {
     const uint16_t prog[] = {
-        W0(OP_SYSTEM, G4MH_SR_HTCFG0, 10), (uint16_t)((2u << 11) | SUB_STSR),
+        W0(OP_SYSTEM, G4MH_SR_HTCFG0, 10),
+        (uint16_t)((2u << 11) | SUB_STSR),
         F2(OP_SHL, 2, 10),
-        W0(OP_MOVHI, 0, 11),  0x8000u,
-        W0(OP_MOVEA, 11, 11), 0x0200u,
+        W0(OP_MOVHI, 0, 11),
+        0x8000u,
+        W0(OP_MOVEA, 11, 11),
+        0x0200u,
         F1(OP_ADD, 10, 11),
         F2(OP_MOVI, 1, 12),
         F1(OP_ADD, 10, 12),
-        W0(OP_ST_HW, 11, 12), 0x0001u,
-        0x07E0u, SUB_HALT,
+        W0(OP_ST_HW, 11, 12),
+        0x0001u,
+        0x07E0u,
+        SUB_HALT,
     };
     const unsigned n = sizeof(prog) / sizeof(prog[0]);
 
-    uint64_t ret[3] = { 0, 0, 0 };
-    const uint32_t q[3] = { 1u, 8u, 1024u };
+    uint64_t ret[3] = {0, 0, 0};
+    const uint32_t q[3] = {1u, 8u, 1024u};
 
     for (unsigned k = 0; k < 3u; k++) {
         if (!run_system(prog, n, q[k], 4096u, &ret[k])) {
@@ -2660,31 +2830,40 @@ static void test_mc_reservation(void)
      * ldl.w, then publish a flag at 0x308 so core 1 knows the
      * reservation exists, then snooze until core 1 has stored.
      */
-    prog[k++] = W0(OP_MOVHI, 0, 11);  prog[k++] = 0x8000u;
-    prog[k++] = W0(OP_MOVEA, 11, 11); prog[k++] = 0x0300u;
-    prog[k++] = W0(OP_SYSTEM, 11, 0); prog[k++] = (uint16_t)((12u << 11) | SUB_LDLW);
+    prog[k++] = W0(OP_MOVHI, 0, 11);
+    prog[k++] = 0x8000u;
+    prog[k++] = W0(OP_MOVEA, 11, 11);
+    prog[k++] = 0x0300u;
+    prog[k++] = W0(OP_SYSTEM, 11, 0);
+    prog[k++] = (uint16_t)((12u << 11) | SUB_LDLW);
     /* flag = 1: the reservation is taken. */
     prog[k++] = F2(OP_MOVI, 1, 15);
-    prog[k++] = W0(OP_ST_HW, 11, 15); prog[k++] = 0x0009u;   /* st.w 8[r11] */
+    prog[k++] = W0(OP_ST_HW, 11, 15);
+    prog[k++] = 0x0009u; /* st.w 8[r11] */
     /*
      * Wait for core 1's acknowledgement at 0x30C rather than snoozing a
      * fixed number of times: a count would be another timing assumption,
      * which is the defect this test had.
      */
     const unsigned wait0 = k;
-    prog[k++] = W0(OP_LD_HW, 11, 16); prog[k++] = 0x000Du;   /* ld.w 12[r11] */
+    prog[k++] = W0(OP_LD_HW, 11, 16);
+    prog[k++] = 0x000Du; /* ld.w 12[r11] */
     prog[k++] = F2(OP_CMPI5, 0, 16);
-    prog[k++] = BCOND(0x2u, 0u);      /* be -> snooze+loop; patched below */
+    prog[k++] = BCOND(0x2u, 0u); /* be -> snooze+loop; patched below */
     const unsigned be0 = k - 1u;
     prog[k++] = F2(OP_MOVI, 7, 13);
-    prog[k++] = W0(OP_SYSTEM, 11, 0); prog[k++] = (uint16_t)((13u << 11) | SUB_STCW);
-    prog[k++] = W0(OP_ST_HW, 11, 13); prog[k++] = 0x0005u;    /* st.w 4[r11] */
-    prog[k++] = 0x07E0u;              prog[k++] = SUB_HALT;
+    prog[k++] = W0(OP_SYSTEM, 11, 0);
+    prog[k++] = (uint16_t)((13u << 11) | SUB_STCW);
+    prog[k++] = W0(OP_ST_HW, 11, 13);
+    prog[k++] = 0x0005u; /* st.w 4[r11] */
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT;
 
     /* The snooze-and-retry the wait loop branches to. */
     const unsigned spin0 = k;
-    prog[k++] = 0x0FE0u;              prog[k++] = SUB_HALT;   /* snooze */
-    prog[k++] = BCOND(0xEu, 0u);      /* br back to wait0; patched below */
+    prog[k++] = 0x0FE0u;
+    prog[k++] = SUB_HALT; /* snooze */
+    prog[k++] = BCOND(0xEu, 0u); /* br back to wait0; patched below */
     const unsigned br0 = k - 1u;
 
     /*
@@ -2692,36 +2871,43 @@ static void test_mc_reservation(void)
      * Spin until core 0's flag appears, then store, then acknowledge.
      */
     const unsigned other = k;
-    prog[k++] = W0(OP_MOVHI, 0, 11);  prog[k++] = 0x8000u;
-    prog[k++] = W0(OP_MOVEA, 11, 11); prog[k++] = 0x0300u;
+    prog[k++] = W0(OP_MOVHI, 0, 11);
+    prog[k++] = 0x8000u;
+    prog[k++] = W0(OP_MOVEA, 11, 11);
+    prog[k++] = 0x0300u;
     const unsigned wait1 = k;
-    prog[k++] = W0(OP_LD_HW, 11, 17); prog[k++] = 0x0009u;   /* ld.w 8[r11] */
+    prog[k++] = W0(OP_LD_HW, 11, 17);
+    prog[k++] = 0x0009u; /* ld.w 8[r11] */
     prog[k++] = F2(OP_CMPI5, 0, 17);
-    prog[k++] = BCOND(0x2u, 0u);      /* be -> snooze+loop; patched below */
+    prog[k++] = BCOND(0x2u, 0u); /* be -> snooze+loop; patched below */
     const unsigned be1 = k - 1u;
     prog[k++] = F2(OP_MOVI, 9, 14);
-    prog[k++] = W0(OP_ST_HW, 11, 14); prog[k++] = 0x0001u;   /* the breaking store */
+    prog[k++] = W0(OP_ST_HW, 11, 14);
+    prog[k++] = 0x0001u; /* the breaking store */
     prog[k++] = F2(OP_MOVI, 1, 18);
-    prog[k++] = W0(OP_ST_HW, 11, 18); prog[k++] = 0x000Du;   /* ack at 12[r11] */
-    prog[k++] = 0x07E0u;              prog[k++] = SUB_HALT;
+    prog[k++] = W0(OP_ST_HW, 11, 18);
+    prog[k++] = 0x000Du; /* ack at 12[r11] */
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT;
 
     const unsigned spin1 = k;
-    prog[k++] = 0x0FE0u;              prog[k++] = SUB_HALT;   /* snooze */
-    prog[k++] = BCOND(0xEu, 0u);      /* br back to wait1; patched below */
+    prog[k++] = 0x0FE0u;
+    prog[k++] = SUB_HALT; /* snooze */
+    prog[k++] = BCOND(0xEu, 0u); /* br back to wait1; patched below */
     const unsigned br1 = k - 1u;
 
     /* Bcond displacements are from the branch itself, in bytes. */
     prog[bne_at] = BCOND(0xAu, (other - bne_at) * 2u);
-    prog[be0]    = BCOND(0x2u, (spin0 - be0) * 2u);
-    prog[br0]    = BCOND(0xEu, (uint16_t)((wait0 - br0) * 2u));
-    prog[be1]    = BCOND(0x2u, (spin1 - be1) * 2u);
-    prog[br1]    = BCOND(0xEu, (uint16_t)((wait1 - br1) * 2u));
+    prog[be0] = BCOND(0x2u, (spin0 - be0) * 2u);
+    prog[br0] = BCOND(0xEu, (uint16_t)((wait0 - br0) * 2u));
+    prog[be1] = BCOND(0x2u, (spin1 - be1) * 2u);
+    prog[br1] = BCOND(0xEu, (uint16_t)((wait1 - br1) * 2u));
 
     /*
      * Three quanta, because the whole point is that the answer must not
      * depend on the interleaving. The old version passed at none of them.
      */
-    static const uint32_t quanta[] = { 1u, 4u, 64u };
+    static const uint32_t quanta[] = {1u, 4u, 64u};
 
     for (unsigned q = 0; q < sizeof quanta / sizeof quanta[0]; q++) {
         if (!run_system(prog, k, quanta[q], 4096u, NULL)) {
@@ -2747,13 +2933,13 @@ static void test_mc_reservation(void)
 /* ------------------------------------------------------------------ */
 
 /* MOV imm32 -- three halfwords -- as the way to build a full address. */
-#define MOVI32(r)      W0(OP_MOVEA, (r), 0)
-#define LO(v)          (uint16_t)((v) & 0xFFFFu)
-#define HI(v)          (uint16_t)((v) >> 16)
+#define MOVI32(r) W0(OP_MOVEA, (r), 0)
+#define LO(v) (uint16_t)((v) & 0xFFFFu)
+#define HI(v) (uint16_t)((v) >> 16)
 
-#define PREPARE_W0(imm5, l0) \
+#define PREPARE_W0(imm5, l0)                                                   \
     (uint16_t)(0x0780u | (((imm5) & 0x1Fu) << 1) | ((l0) & 1u))
-#define DISPOSE_W0(imm5, l0) \
+#define DISPOSE_W0(imm5, l0)                                                   \
     (uint16_t)(0x0640u | (((imm5) & 0x1Fu) << 1) | ((l0) & 1u))
 
 /*
@@ -2772,18 +2958,29 @@ static void test_prepare_dispose(void)
 {
     const uint32_t sp0 = EMU_GUEST_RAM_BASE + 0x400u;
     const uint16_t prog[] = {
-        MOVI32(3),  LO(sp0), HI(sp0),
-        MOVI32(20), 0x1111u, 0x1111u,
-        MOVI32(30), 0x2222u, 0x2222u,
-        MOVI32(31), 0x3333u, 0x3333u,
+        MOVI32(3),
+        LO(sp0),
+        HI(sp0),
+        MOVI32(20),
+        0x1111u,
+        0x1111u,
+        MOVI32(30),
+        0x2222u,
+        0x2222u,
+        MOVI32(31),
+        0x3333u,
+        0x3333u,
         /* prepare {r20, r30, r31}, 2 */
-        PREPARE_W0(2u, 1u), (uint16_t)((1u << 11) | (1u << 5) | 0x01u),
+        PREPARE_W0(2u, 1u),
+        (uint16_t)((1u << 11) | (1u << 5) | 0x01u),
         F2(OP_MOVI, 0, 20),
         F2(OP_MOVI, 0, 30),
         F2(OP_MOVI, 0, 31),
         /* dispose 2, {r20, r30, r31} */
-        DISPOSE_W0(2u, 1u), (uint16_t)((1u << 11) | (1u << 5)),
-        0x07E0u, SUB_HALT,
+        DISPOSE_W0(2u, 1u),
+        (uint16_t)((1u << 11) | (1u << 5)),
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -2797,7 +2994,7 @@ static void test_prepare_dispose(void)
     CHECK_EQ(reg(20), 0x11111111u);
     CHECK_EQ(reg(30), 0x22222222u);
     CHECK_EQ(reg(31), 0x33333333u);
-    CHECK_EQ(reg(3), sp0);              /* the frame is given back      */
+    CHECK_EQ(reg(3), sp0); /* the frame is given back      */
 
     /* Ascending register order, descending addresses: r20 highest. */
     CHECK_EQ(ram32(0x400u - 4u), 0x11111111u);
@@ -2815,19 +3012,29 @@ static void test_unsigned_loads(void)
 {
     const uint32_t base = EMU_GUEST_RAM_BASE + 0x200u;
     const uint16_t prog[] = {
-        MOVI32(11), LO(base), HI(base),
-        MOVI32(12), 0x80FFu, 0x0000u,
-        W0(OP_ST_B, 11, 12), 0x0000u,          /* st.b  r12, 0[r11]     */
-        W0(OP_ST_HW, 11, 12), 0x0002u,         /* st.h  r12, 2[r11]     */
+        MOVI32(11),
+        LO(base),
+        HI(base),
+        MOVI32(12),
+        0x80FFu,
+        0x0000u,
+        W0(OP_ST_B, 11, 12),
+        0x0000u, /* st.b  r12, 0[r11]     */
+        W0(OP_ST_HW, 11, 12),
+        0x0002u, /* st.h  r12, 2[r11]     */
         /* ld.bu 0[r11], r13 -- disp bit 0 rides in the opcode          */
-        (uint16_t)((13u << 11) | (0x3Cu << 5) | 11u), 0x0001u,
-        W0(OP_LD_B, 11, 14), 0x0000u,          /* ld.b -- the control   */
+        (uint16_t)((13u << 11) | (0x3Cu << 5) | 11u),
+        0x0001u,
+        W0(OP_LD_B, 11, 14),
+        0x0000u, /* ld.b -- the control   */
         /* ld.hu 2[r11], r15 */
-        (uint16_t)((15u << 11) | (0x3Fu << 5) | 11u), 0x0003u,
-        F1(OP_MOV, 11, 30),                    /* ep = base             */
-        (uint16_t)((16u << 11) | 0x60u | 0u),  /* sld.bu 0, r16         */
-        (uint16_t)((17u << 11) | 0x70u | 1u),  /* sld.hu 2, r17         */
-        0x07E0u, SUB_HALT,
+        (uint16_t)((15u << 11) | (0x3Fu << 5) | 11u),
+        0x0003u,
+        F1(OP_MOV, 11, 30), /* ep = base             */
+        (uint16_t)((16u << 11) | 0x60u | 0u), /* sld.bu 0, r16         */
+        (uint16_t)((17u << 11) | 0x70u | 1u), /* sld.hu 2, r17         */
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -2838,11 +3045,11 @@ static void test_unsigned_loads(void)
         return;
     }
 
-    CHECK_EQ(reg(13), 0x000000FFu);     /* LD.BU  zero-extends          */
-    CHECK_EQ(reg(14), 0xFFFFFFFFu);     /* LD.B   still sign-extends    */
-    CHECK_EQ(reg(15), 0x000080FFu);     /* LD.HU                        */
-    CHECK_EQ(reg(16), 0x000000FFu);     /* SLD.BU                       */
-    CHECK_EQ(reg(17), 0x000080FFu);     /* SLD.HU                       */
+    CHECK_EQ(reg(13), 0x000000FFu); /* LD.BU  zero-extends          */
+    CHECK_EQ(reg(14), 0xFFFFFFFFu); /* LD.B   still sign-extends    */
+    CHECK_EQ(reg(15), 0x000080FFu); /* LD.HU                        */
+    CHECK_EQ(reg(16), 0x000000FFu); /* SLD.BU                       */
+    CHECK_EQ(reg(17), 0x000080FFu); /* SLD.HU                       */
     CHECK_EQ(why, EMU_RUN_WFI);
 }
 
@@ -2861,12 +3068,12 @@ static void test_unsigned_loads(void)
  * picture: disp[6:0] in w1[10:4] and disp[22:7] in w2, which no amount
  * of staring at `wwwwwddddddd0101` settles on its own.
  */
-#define D23_W0(op6, r1)        (uint16_t)(((op6) << 5) | (r1))
-#define D23_W1(r3, disp, sub)  (uint16_t)(((r3) << 11) | \
-                                          (((disp) & 0x7Fu) << 4) | (sub))
-#define D23_W2(disp)           (uint16_t)(((disp) >> 7) & 0xFFFFu)
+#define D23_W0(op6, r1) (uint16_t)(((op6) << 5) | (r1))
+#define D23_W1(r3, disp, sub)                                                  \
+    (uint16_t)(((r3) << 11) | (((disp) & 0x7Fu) << 4) | (sub))
+#define D23_W2(disp) (uint16_t)(((disp) >> 7) & 0xFFFFu)
 
-#define D23(op6, r1, r3, disp, sub) \
+#define D23(op6, r1, r3, disp, sub)                                            \
     D23_W0(op6, r1), D23_W1(r3, disp, sub), D23_W2(disp)
 
 /*
@@ -2879,16 +3086,22 @@ static void test_unsigned_loads(void)
 static void test_disp23_loads_stores(void)
 {
     const uint32_t cell = EMU_GUEST_RAM_BASE + 0x200u;
-    const uint32_t big  = 0x123456u;            /* bits in w1 and w2    */
+    const uint32_t big = 0x123456u; /* bits in w1 and w2    */
 
     /* base = cell - disp, so the *sum* lands on the cell either way. */
     const uint32_t base_big = cell - big;
     const uint32_t base_neg = cell + 0x400000u; /* disp = -0x400000     */
 
     const uint16_t prog[] = {
-        MOVI32(11), LO(base_big), HI(base_big),
-        MOVI32(12), LO(base_neg), HI(base_neg),
-        MOVI32(13), 0xBEEFu, 0x0000u,
+        MOVI32(11),
+        LO(base_big),
+        HI(base_big),
+        MOVI32(12),
+        LO(base_neg),
+        HI(base_neg),
+        MOVI32(13),
+        0xBEEFu,
+        0x0000u,
 
         /* st.w r13, 0x123456[r11] -- writes the cell through w2        */
         D23(0x3Cu, 11, 13, big, 0xFu),
@@ -2909,11 +3122,19 @@ static void test_disp23_loads_stores(void)
          * decoder that ignored the bit. Mirroring the write and the read
          * cancels the bug out; this does not.
          */
-        MOVI32(18), LO(cell), HI(cell),
-        MOVI32(19), 0x00A5u, 0x0000u,
-        W0(OP_ST_B, 18, 19), 0x0000u,          /* st.b r19, 0[r18]      */
-        MOVI32(19), 0x00EFu, 0x0000u,
-        W0(OP_ST_B, 18, 19), 0x0001u,          /* st.b r19, 1[r18]      */
+        MOVI32(18),
+        LO(cell),
+        HI(cell),
+        MOVI32(19),
+        0x00A5u,
+        0x0000u,
+        W0(OP_ST_B, 18, 19),
+        0x0000u, /* st.b r19, 0[r18]      */
+        MOVI32(19),
+        0x00EFu,
+        0x0000u,
+        W0(OP_ST_B, 18, 19),
+        0x0001u, /* st.b r19, 1[r18]      */
 
         /* ld.bu 0x123457[r11], r16 -- must see 0xEF, not 0xA5          */
         D23(0x3Du, 11, 16, big + 1u, 0x5u),
@@ -2928,8 +3149,10 @@ static void test_disp23_loads_stores(void)
          * The store side, checked the same way round: written with
          * disp23 at an odd displacement, read back with disp16.
          */
-        MOVI32(19), 0x005Au, 0x0000u,
-        D23(0x3Cu, 11, 19, big + 3u, 0xDu),    /* st.b r19, big+3[r11]  */
+        MOVI32(19),
+        0x005Au,
+        0x0000u,
+        D23(0x3Cu, 11, 19, big + 3u, 0xDu), /* st.b r19, big+3[r11]  */
         /*
          * ld.bu 3[r18], r25. The disp16 form splits its displacement
          * too: disp[15:1] in w1[15:1], w1 bit 0 is the marker saying
@@ -2937,9 +3160,11 @@ static void test_disp23_loads_stores(void)
          * so an odd displacement is 0x3D and an even one 0x3C. Writing
          * 0x3C here read cell+2 and returned a plausible zero.
          */
-        (uint16_t)((25u << 11) | (0x3Du << 5) | 18u), 0x0003u,
+        (uint16_t)((25u << 11) | (0x3Du << 5) | 18u),
+        0x0003u,
 
-        0x07E0u, SUB_HALT,
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -2951,17 +3176,17 @@ static void test_disp23_loads_stores(void)
     }
 
     CHECK_EQ(why, EMU_RUN_WFI);
-    CHECK_EQ(reg(14), 0x0000BEEFu);     /* ST.W then LD.W, disp23       */
-    CHECK_EQ(reg(15), 0x0000BEEFu);     /* the same cell, reached from
+    CHECK_EQ(reg(14), 0x0000BEEFu); /* ST.W then LD.W, disp23       */
+    CHECK_EQ(reg(15), 0x0000BEEFu); /* the same cell, reached from
                                          * the far side                 */
     /* cell+1 holds 0xEF and cell holds 0xA5. Both are negative as
      * bytes, so telling them apart is a test of the address and not of
      * the sign extension -- and the sign extension is checked too, by
      * LD.BU and LD.B disagreeing on the same byte. */
-    CHECK_EQ(reg(16), 0x000000EFu);     /* LD.BU, disp[0] = 1           */
-    CHECK_EQ(reg(17), 0xFFFFFFEFu);     /* LD.B,  same byte             */
-    CHECK_EQ(reg(24), 0x000000A5u);     /* LD.BU, disp[0] = 0           */
-    CHECK_EQ(reg(25), 0x0000005Au);     /* ST.B at an odd disp23, read
+    CHECK_EQ(reg(16), 0x000000EFu); /* LD.BU, disp[0] = 1           */
+    CHECK_EQ(reg(17), 0xFFFFFFEFu); /* LD.B,  same byte             */
+    CHECK_EQ(reg(24), 0x000000A5u); /* LD.BU, disp[0] = 0           */
+    CHECK_EQ(reg(25), 0x0000005Au); /* ST.B at an odd disp23, read
                                          * back through disp16          */
 }
 
@@ -2978,9 +3203,15 @@ static void test_disp23_doubleword(void)
 {
     const uint32_t cell = EMU_GUEST_RAM_BASE + 0x240u;
     const uint16_t prog[] = {
-        MOVI32(11), LO(cell), HI(cell),
-        MOVI32(20), 0x1234u, 0x0000u,          /* r20 = low  word      */
-        MOVI32(21), 0x5678u, 0x0000u,          /* r21 = high word      */
+        MOVI32(11),
+        LO(cell),
+        HI(cell),
+        MOVI32(20),
+        0x1234u,
+        0x0000u, /* r20 = low  word      */
+        MOVI32(21),
+        0x5678u,
+        0x0000u, /* r21 = high word      */
 
         /* st.dw r20, 0[r11] -- writes r20 then r21                     */
         D23(0x3Du, 11, 20, 0u, 0xFu),
@@ -2989,7 +3220,8 @@ static void test_disp23_doubleword(void)
         /* ld.dw 0[r11], r25 -- odd, so it must land in r24 and r25     */
         D23(0x3Du, 11, 25, 0u, 0x9u),
 
-        0x07E0u, SUB_HALT,
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -3001,8 +3233,8 @@ static void test_disp23_doubleword(void)
     }
 
     CHECK_EQ(why, EMU_RUN_WFI);
-    CHECK_EQ(reg(22), 0x1234u);         /* low  half at adr             */
-    CHECK_EQ(reg(23), 0x5678u);         /* high half at adr + 4         */
+    CHECK_EQ(reg(22), 0x1234u); /* low  half at adr             */
+    CHECK_EQ(reg(23), 0x5678u); /* high half at adr + 4         */
     /* The odd operand: r25 named, r24/r25 written. r25 holding the
      * *high* word is what says the pair was rebased rather than the
      * request being honoured as-is -- with r25 as the low register the
@@ -3033,7 +3265,8 @@ static void test_disp23_reserved_bit(void)
     prog[k++] = D23_W1(14, 1u, 0x9u);
     prog[k++] = D23_W2(1u);
 
-    prog[0x30] = 0x07E0u; prog[0x31] = SUB_HALT;
+    prog[0x30] = 0x07E0u;
+    prog[0x31] = SUB_HALT;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
@@ -3048,7 +3281,7 @@ static void test_disp23_reserved_bit(void)
 
     CHECK_EQ(why, EMU_RUN_WFI);
     CHECK(st.traps >= 1u);
-    CHECK_EQ(reg(14), 0u);                      /* nothing was loaded   */
+    CHECK_EQ(reg(14), 0u); /* nothing was loaded   */
     /*
      * **The cause, not the fact of a trap.** Reading the bit as disp[0]
      * gives an odd address for a word load, which raises MAE -- also a
@@ -3060,7 +3293,6 @@ static void test_disp23_reserved_bit(void)
      */
     CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_RIE);
 }
-
 
 /*
  * The disassembler, which had none.
@@ -3108,13 +3340,15 @@ static void test_disasm_crowded_slots(void)
     CHECK(strncmp(buf, "prepare ", 8u) == 0);
     g4mh_disasm(buf, sizeof(buf), 0x1000u,
                 0x0782u | (0x007Bull << 16) | (0x5678ull << 32) |
-                (0x1234ull << 48), 8u);
+                    (0x1234ull << 48),
+                8u);
     CHECK(strncmp(buf, "prepare 0x003, 1, 0x12345678", 28u) == 0);
 
     /* mov imm32, which used to print half its constant. */
     g4mh_disasm(buf, sizeof(buf), 0x1000u,
                 (uint64_t)W0(OP_MOVEA, 11, 0) | (0x5678ull << 16) |
-                (0x1234ull << 32), 6u);
+                    (0x1234ull << 32),
+                6u);
     CHECK(strncmp(buf, "mov 0x12345678, r11", 19u) == 0);
 
     /* ld.bu disp16, which shares the slot and is *not* reg2 == 0. */
@@ -3178,20 +3412,26 @@ static void test_jr_disp32(void)
 {
     /* jr +8, then a marker that must be skipped, then the target. */
     const uint16_t prog[] = {
-        0x02E0u, 0x0008u, 0x0000u,      /* jr 0x00000008              */
-        F2(OP_MOVI, 9, 21),             /* skipped: r21 must stay 0   */
-        F2(OP_MOVI, 5, 20),             /* +8: the target             */
-        0x07E0u, SUB_HALT,
+        0x02E0u,
+        0x0008u,
+        0x0000u, /* jr 0x00000008              */
+        F2(OP_MOVI, 9, 21), /* skipped: r21 must stay 0   */
+        F2(OP_MOVI, 5, 20), /* +8: the target             */
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
     uint32_t retired = 0;
     if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
-                      &retired)) { CHECK(false); return; }
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
 
     CHECK_EQ(why, EMU_RUN_WFI);
-    CHECK_EQ(reg(20), 5u);              /* the target ran             */
-    CHECK_EQ(reg(21), 0u);              /* and the marker did not     */
+    CHECK_EQ(reg(20), 5u); /* the target ran             */
+    CHECK_EQ(reg(21), 0u); /* and the marker did not     */
     /* Three instructions, not a budget's worth of jumping to itself. */
     CHECK_EQ(retired, 3u);
 
@@ -3199,12 +3439,14 @@ static void test_jr_disp32(void)
     {
         const uint16_t prog2[] = {
             (uint16_t)(0x02E0u | 19u), 0x0008u, 0x0000u,
-            F2(OP_MOVI, 9, 21),         /* skipped                    */
-            F2(OP_MOVI, 5, 20),
-            0x07E0u, SUB_HALT,
+            F2(OP_MOVI, 9, 21), /* skipped                    */
+            F2(OP_MOVI, 5, 20),        0x07E0u, SUB_HALT,
         };
-        if (!load_and_run(prog2, sizeof(prog2) / sizeof(prog2[0]), 64u,
-                          &why, &retired)) { CHECK(false); return; }
+        if (!load_and_run(prog2, sizeof(prog2) / sizeof(prog2[0]), 64u, &why,
+                          &retired)) {
+            CHECK(false);
+            return;
+        }
         CHECK_EQ(reg(19), EMU_GUEST_RAM_BASE + 6u);
         CHECK_EQ(reg(20), 5u);
         CHECK_EQ(reg(21), 0u);
@@ -3214,15 +3456,21 @@ static void test_jr_disp32(void)
      * wide -- the neighbour that must not have been widened with it. */
     {
         const uint16_t prog3[] = {
-            MOVI32(10), 3u, 0u,
-            (uint16_t)((10u << 11) | (0x17u << 5) | 4u),  /* mulh 4, r10 */
+            MOVI32(10),
+            3u,
+            0u,
+            (uint16_t)((10u << 11) | (0x17u << 5) | 4u), /* mulh 4, r10 */
             F2(OP_MOVI, 5, 20),
-            0x07E0u, SUB_HALT,
+            0x07E0u,
+            SUB_HALT,
         };
-        if (!load_and_run(prog3, sizeof(prog3) / sizeof(prog3[0]), 64u,
-                          &why, &retired)) { CHECK(false); return; }
+        if (!load_and_run(prog3, sizeof(prog3) / sizeof(prog3[0]), 64u, &why,
+                          &retired)) {
+            CHECK(false);
+            return;
+        }
         CHECK_EQ(reg(10), 12u);
-        CHECK_EQ(reg(20), 5u);          /* the next instruction ran   */
+        CHECK_EQ(reg(20), 5u); /* the next instruction ran   */
     }
 }
 
@@ -3278,14 +3526,20 @@ static void test_prepare_imm32(void)
 {
     const uint32_t sp0 = EMU_GUEST_RAM_BASE + 0x300u;
     const uint16_t prog[] = {
-        MOVI32(3), LO(sp0), HI(sp0),           /* sp = a known place    */
+        MOVI32(3),
+        LO(sp0),
+        HI(sp0), /* sp = a known place    */
 
         /* prepare 0x3, 4, 0x12345678 */
-        0x0782u, 0x007Bu, 0x5678u, 0x1234u,
+        0x0782u,
+        0x007Bu,
+        0x5678u,
+        0x1234u,
 
         /* If the length was right, this runs next and nothing else. */
         F2(OP_MOVI, 5, 21),
-        0x07E0u, SUB_HALT,
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -3297,8 +3551,8 @@ static void test_prepare_imm32(void)
     }
 
     CHECK_EQ(why, EMU_RUN_WFI);
-    CHECK_EQ(reg(30), 0x12345678u);     /* ep <- imm32                  */
-    CHECK_EQ(reg(21), 5u);              /* and the pc landed right      */
+    CHECK_EQ(reg(30), 0x12345678u); /* ep <- imm32                  */
+    CHECK_EQ(reg(21), 5u); /* and the pc landed right      */
 
     /*
      * Two words pushed for list12 = 0x3, then sp dropped by imm5 * 4.
@@ -3333,15 +3587,23 @@ static void test_prepare_ff_forms(void)
      * the half of "sign-extended" a positive value cannot check. */
     {
         const uint16_t prog[] = {
-            MOVI32(3), LO(sp0), HI(sp0),
-            0x0782u, 0x006Bu, 0xFFF0u,          /* prepare .., 0xFFF0   */
+            MOVI32(3),
+            LO(sp0),
+            HI(sp0),
+            0x0782u,
+            0x006Bu,
+            0xFFF0u, /* prepare .., 0xFFF0   */
             F2(OP_MOVI, 5, 21),
-            0x07E0u, SUB_HALT,
+            0x07E0u,
+            SUB_HALT,
         };
         emu_run_reason_t why;
         uint32_t retired = 0;
         if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
-                          &retired)) { CHECK(false); return; }
+                          &retired)) {
+            CHECK(false);
+            return;
+        }
         CHECK_EQ(reg(30), 0xFFFFFFF0u);
         CHECK_EQ(reg(21), 5u);
     }
@@ -3350,15 +3612,16 @@ static void test_prepare_ff_forms(void)
      * two are read from the same halfword and treated differently. */
     {
         const uint16_t prog[] = {
-            MOVI32(3), LO(sp0), HI(sp0),
-            0x0782u, 0x0073u, 0xFFF0u,
-            F2(OP_MOVI, 5, 21),
-            0x07E0u, SUB_HALT,
+            MOVI32(3),          LO(sp0), HI(sp0),  0x0782u, 0x0073u, 0xFFF0u,
+            F2(OP_MOVI, 5, 21), 0x07E0u, SUB_HALT,
         };
         emu_run_reason_t why;
         uint32_t retired = 0;
         if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
-                          &retired)) { CHECK(false); return; }
+                          &retired)) {
+            CHECK(false);
+            return;
+        }
         CHECK_EQ(reg(30), 0xFFF00000u);
         CHECK_EQ(reg(21), 5u);
     }
@@ -3368,15 +3631,16 @@ static void test_prepare_ff_forms(void)
      * the instruction after it. */
     {
         const uint16_t prog[] = {
-            MOVI32(3), LO(sp0), HI(sp0),
-            0x0782u, 0x0063u,
-            F2(OP_MOVI, 5, 21),
-            0x07E0u, SUB_HALT,
+            MOVI32(3),          LO(sp0), HI(sp0),  0x0782u, 0x0063u,
+            F2(OP_MOVI, 5, 21), 0x07E0u, SUB_HALT,
         };
         emu_run_reason_t why;
         uint32_t retired = 0;
         if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
-                          &retired)) { CHECK(false); return; }
+                          &retired)) {
+            CHECK(false);
+            return;
+        }
         CHECK_EQ(reg(30), sp0 - 8u - 4u);
         CHECK_EQ(reg(30), reg(3));
         CHECK_EQ(reg(21), 5u);
@@ -3400,7 +3664,7 @@ static void test_prepare_ff_forms(void)
  */
 static bool devbus_up(void)
 {
-    const uint16_t prog[] = { 0x07E0u, SUB_HALT };
+    const uint16_t prog[] = {0x07E0u, SUB_HALT};
     emu_run_reason_t why;
     uint32_t retired = 0;
 
@@ -3431,14 +3695,12 @@ static void tick(uint32_t ticks)
     g_core.ops->advance_time(g_core.cpu, ticks);
 }
 
-#define BARR_INIT(n)        (G4MH_BARR_BASE + 0x000u + 0x10u * (n))
-#define BARR_EN(n)          (G4MH_BARR_BASE + 0x004u + 0x10u * (n))
-#define BARR_CHKS(n)        (G4MH_BARR_BASE + 0x100u + 0x10u * (n))
-#define BARR_SYNCS(n)       (G4MH_BARR_BASE + 0x104u + 0x10u * (n))
-#define BARR_CHK(n, m)      (G4MH_BARR_BASE + 0x800u + 0x10u * (n) + \
-                             0x100u * (m))
-#define BARR_SYNC(n, m)     (G4MH_BARR_BASE + 0x804u + 0x10u * (n) + \
-                             0x100u * (m))
+#define BARR_INIT(n) (G4MH_BARR_BASE + 0x000u + 0x10u * (n))
+#define BARR_EN(n) (G4MH_BARR_BASE + 0x004u + 0x10u * (n))
+#define BARR_CHKS(n) (G4MH_BARR_BASE + 0x100u + 0x10u * (n))
+#define BARR_SYNCS(n) (G4MH_BARR_BASE + 0x104u + 0x10u * (n))
+#define BARR_CHK(n, m) (G4MH_BARR_BASE + 0x800u + 0x10u * (n) + 0x100u * (m))
+#define BARR_SYNC(n, m) (G4MH_BARR_BASE + 0x804u + 0x10u * (n) + 0x100u * (m))
 
 /*
  * A three-PE barrier on channel 3, arriving one PE at a time.
@@ -3451,21 +3713,24 @@ static void tick(uint32_t ticks)
  */
 static void test_barrier(void)
 {
-    if (!devbus_up()) { CHECK(false); return; }
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
 
-    devwr(BARR_EN(3), 0x07u);               /* PE0, PE1, PE2 participate */
+    devwr(BARR_EN(3), 0x07u); /* PE0, PE1, PE2 participate */
 
     CHECK_EQ(devrd(BARR_EN(3)), 0x07u);
     CHECK_EQ(devrd(BARR_SYNC(3, 0)), 0u);
 
-    devwr(BARR_CHKS(3), 0u);                /* PE0 arrives -- value ignored */
+    devwr(BARR_CHKS(3), 0u); /* PE0 arrives -- value ignored */
     CHECK_EQ(devrd(BARR_CHK(3, 0)), 1u);
-    CHECK_EQ(devrd(BARR_SYNC(3, 0)), 0u);   /* not yet */
+    CHECK_EQ(devrd(BARR_SYNC(3, 0)), 0u); /* not yet */
 
-    devwr(BARR_CHK(3, 1), 1u);              /* PE1 arrives */
-    CHECK_EQ(devrd(BARR_SYNC(3, 0)), 0u);   /* still not */
+    devwr(BARR_CHK(3, 1), 1u); /* PE1 arrives */
+    CHECK_EQ(devrd(BARR_SYNC(3, 0)), 0u); /* still not */
 
-    devwr(BARR_CHK(3, 2), 1u);              /* PE2 arrives: complete */
+    devwr(BARR_CHK(3, 2), 1u); /* PE2 arrives: complete */
     CHECK_EQ(devrd(BARR_SYNC(3, 0)), 1u);
     CHECK_EQ(devrd(BARR_SYNC(3, 1)), 1u);
     CHECK_EQ(devrd(BARR_SYNC(3, 2)), 1u);
@@ -3502,7 +3767,10 @@ static void test_barrier(void)
  */
 static void test_barrier_participation(void)
 {
-    if (!devbus_up()) { CHECK(false); return; }
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
 
     /* No participants: the arrival is refused outright. */
     devwr(BARR_CHK(5, 0), 1u);
@@ -3543,26 +3811,28 @@ static void test_barrier_participation(void)
  */
 static void test_barrier_enable_completes(void)
 {
-    if (!devbus_up()) { CHECK(false); return; }
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
 
-    devwr(BARR_EN(1), 0x03u);               /* PE0 and PE1 participate  */
-    devwr(BARR_CHK(1, 0), 1u);              /* PE0 arrives              */
-    CHECK_EQ(devrd(BARR_SYNC(1, 0)), 0u);   /* waiting for PE1          */
+    devwr(BARR_EN(1), 0x03u); /* PE0 and PE1 participate  */
+    devwr(BARR_CHK(1, 0), 1u); /* PE0 arrives              */
+    CHECK_EQ(devrd(BARR_SYNC(1, 0)), 0u); /* waiting for PE1          */
 
-    devwr(BARR_EN(1), 0x01u);               /* PE1 drops out            */
-    CHECK_EQ(devrd(BARR_SYNC(1, 0)), 1u);   /* so PE0 is now everyone   */
-    CHECK_EQ(devrd(BARR_CHK(1, 0)), 0u);    /* and its arrival is spent */
+    devwr(BARR_EN(1), 0x01u); /* PE1 drops out            */
+    CHECK_EQ(devrd(BARR_SYNC(1, 0)), 1u); /* so PE0 is now everyone   */
+    CHECK_EQ(devrd(BARR_CHK(1, 0)), 0u); /* and its arrival is spent */
 }
 
-#define IPIR_EN(n, m)       (G4MH_IPIR_BASE + 0x800u + 0x20u * (n) + \
-                             0x100u * (m))
-#define IPIR_FLG(n, m)      (IPIR_EN(n, m) + 0x04u)
-#define IPIR_FCLR(n, m)     (IPIR_EN(n, m) + 0x08u)
-#define IPIR_REQ(n, m)      (IPIR_EN(n, m) + 0x10u)
-#define IPIR_RCLR(n, m)     (IPIR_EN(n, m) + 0x14u)
-#define IPIR_ENS(n)         (G4MH_IPIR_BASE + 0x000u + 0x20u * (n))
-#define IPIR_FLGS(n)        (G4MH_IPIR_BASE + 0x004u + 0x20u * (n))
-#define IPIR_REQS(n)        (G4MH_IPIR_BASE + 0x010u + 0x20u * (n))
+#define IPIR_EN(n, m) (G4MH_IPIR_BASE + 0x800u + 0x20u * (n) + 0x100u * (m))
+#define IPIR_FLG(n, m) (IPIR_EN(n, m) + 0x04u)
+#define IPIR_FCLR(n, m) (IPIR_EN(n, m) + 0x08u)
+#define IPIR_REQ(n, m) (IPIR_EN(n, m) + 0x10u)
+#define IPIR_RCLR(n, m) (IPIR_EN(n, m) + 0x14u)
+#define IPIR_ENS(n) (G4MH_IPIR_BASE + 0x000u + 0x20u * (n))
+#define IPIR_FLGS(n) (G4MH_IPIR_BASE + 0x004u + 0x20u * (n))
+#define IPIR_REQS(n) (G4MH_IPIR_BASE + 0x010u + 0x20u * (n))
 
 /*
  * PE1 asks PE2 for an interrupt on channel 2.
@@ -3575,14 +3845,17 @@ static void test_barrier_enable_completes(void)
  */
 static void test_ipir_routing(void)
 {
-    if (!devbus_up()) { CHECK(false); return; }
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
 
-    devwr(IPIR_EN(2, 2), 1u << 1);          /* PE2 accepts from PE1     */
-    devwr(IPIR_REQ(2, 1), 1u << 2);         /* PE1 asks PE2             */
+    devwr(IPIR_EN(2, 2), 1u << 1); /* PE2 accepts from PE1     */
+    devwr(IPIR_REQ(2, 1), 1u << 2); /* PE1 asks PE2             */
 
     CHECK_EQ(devrd(IPIR_REQ(2, 1)), 1u << 2);
-    CHECK_EQ(devrd(IPIR_FLG(2, 2)), 1u << 1);   /* PE2 sees *PE1*       */
-    CHECK_EQ(devrd(IPIR_FLG(2, 1)), 0u);        /* and PE1 sees nothing */
+    CHECK_EQ(devrd(IPIR_FLG(2, 2)), 1u << 1); /* PE2 sees *PE1*       */
+    CHECK_EQ(devrd(IPIR_FLG(2, 1)), 0u); /* and PE1 sees nothing */
     /* Another channel is untouched: 0x20 * n really is the stride. */
     CHECK_EQ(devrd(IPIR_FLG(1, 2)), 0u);
     CHECK_EQ(devrd(IPIR_FLG(3, 2)), 0u);
@@ -3604,14 +3877,17 @@ static void test_ipir_routing(void)
  */
 static void test_ipir_enable_gates_transfer(void)
 {
-    if (!devbus_up()) { CHECK(false); return; }
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
 
-    devwr(IPIR_REQ(0, 3), 1u << 4);         /* PE3 asks PE4, disabled   */
-    CHECK_EQ(devrd(IPIR_REQ(0, 3)), 1u << 4);   /* remembered           */
-    CHECK_EQ(devrd(IPIR_FLG(0, 4)), 0u);        /* but not delivered    */
+    devwr(IPIR_REQ(0, 3), 1u << 4); /* PE3 asks PE4, disabled   */
+    CHECK_EQ(devrd(IPIR_REQ(0, 3)), 1u << 4); /* remembered           */
+    CHECK_EQ(devrd(IPIR_FLG(0, 4)), 0u); /* but not delivered    */
 
-    devwr(IPIR_EN(0, 4), 1u << 3);          /* PE4 enables PE3 now      */
-    CHECK_EQ(devrd(IPIR_FLG(0, 4)), 0u);    /* still not delivered      */
+    devwr(IPIR_EN(0, 4), 1u << 3); /* PE4 enables PE3 now      */
+    CHECK_EQ(devrd(IPIR_FLG(0, 4)), 0u); /* still not delivered      */
 
     /* The sender withdrawing clears its own request; with the enable
      * now set it would clear the flag too, and there is none to clear. */
@@ -3622,7 +3898,7 @@ static void test_ipir_enable_gates_transfer(void)
     devwr(IPIR_REQ(0, 3), 1u << 4);
     devwr(IPIR_REQ(0, 3), 0u);
     CHECK_EQ(devrd(IPIR_REQ(0, 3)), 1u << 4);
-    CHECK_EQ(devrd(IPIR_FLG(0, 4)), 1u << 3);   /* enabled now, so it
+    CHECK_EQ(devrd(IPIR_FLG(0, 4)), 1u << 3); /* enabled now, so it
                                                  * did arrive           */
 }
 
@@ -3637,7 +3913,10 @@ static void test_ipir_enable_gates_transfer(void)
  */
 static void test_ipir_self_region(void)
 {
-    if (!devbus_up()) { CHECK(false); return; }
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
 
     devwr(IPIR_ENS(1), 0x21u);
     CHECK_EQ(devrd(IPIR_EN(1, 0)), 0x21u);
@@ -3649,7 +3928,7 @@ static void test_ipir_self_region(void)
     CHECK_EQ(devrd(IPIR_FLGS(1)), 1u << 0);
 }
 
-#define TPTM_SELF(r)        (G4MH_TPTM_BASE + G4MH_TPTM_SELF + (r))
+#define TPTM_SELF(r) (G4MH_TPTM_BASE + G4MH_TPTM_SELF + (r))
 
 /*
  * The interval timer: down-count, underflow, reload.
@@ -3662,21 +3941,24 @@ static void test_ipir_self_region(void)
  */
 static void test_tptm_interval(void)
 {
-    if (!devbus_up()) { CHECK(false); return; }
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
 
     devwr(TPTM_SELF(G4MH_TPTM_ILD0), 9u);
-    devwr(TPTM_SELF(G4MH_TPTM_IRUN), 1u);       /* start channel 0      */
+    devwr(TPTM_SELF(G4MH_TPTM_IRUN), 1u); /* start channel 0      */
 
     CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_ISTR)), 1u);
     CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_ICNT0)), 9u);
 
     tick(9u);
     CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_ICNT0)), 0u);
-    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_IUSTR)), 0u);   /* not yet       */
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_IUSTR)), 0u); /* not yet       */
 
     tick(1u);
     CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_IUSTR)), 1u);
-    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_ICNT0)), 9u);   /* reloaded      */
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_ICNT0)), 9u); /* reloaded      */
 
     /* Write 0 to clear; writing 1 is ignored. */
     devwr(TPTM_SELF(G4MH_TPTM_IUSTR), 1u);
@@ -3690,7 +3972,7 @@ static void test_tptm_interval(void)
     devwr(TPTM_SELF(G4MH_TPTM_ISTP), 1u);
     CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_ISTR)), 0u);
     tick(100u);
-    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_ICNT0)), 9u);   /* stopped       */
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_ICNT0)), 9u); /* stopped       */
 }
 
 /*
@@ -3705,19 +3987,22 @@ static void test_tptm_interval(void)
  */
 static void test_tptm_divider_carry(void)
 {
-    if (!devbus_up()) { CHECK(false); return; }
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
 
-    devwr(TPTM_SELF(G4MH_TPTM_FDIV), 3u);       /* count every 4 ticks  */
+    devwr(TPTM_SELF(G4MH_TPTM_FDIV), 3u); /* count every 4 ticks  */
     devwr(TPTM_SELF(G4MH_TPTM_FRUN), 1u);
 
     tick(3u);
     CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_FCNT)), 0u);
     tick(3u);
-    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_FCNT)), 1u);     /* 6 / 4        */
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_FCNT)), 1u); /* 6 / 4        */
     tick(3u);
-    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_FCNT)), 2u);     /* 9 / 4        */
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_FCNT)), 2u); /* 9 / 4        */
     tick(3u);
-    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_FCNT)), 3u);     /* 12 / 4       */
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_FCNT)), 3u); /* 12 / 4       */
 }
 
 /*
@@ -3730,16 +4015,19 @@ static void test_tptm_divider_carry(void)
  */
 static void test_tptm_up_compare(void)
 {
-    if (!devbus_up()) { CHECK(false); return; }
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
 
     devwr(TPTM_SELF(G4MH_TPTM_UCMP0(1)), 7u);
-    devwr(TPTM_SELF(G4MH_TPTM_URUN), 1u);       /* start up timer 0     */
+    devwr(TPTM_SELF(G4MH_TPTM_URUN), 1u); /* start up timer 0     */
 
     CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_USTR)), 1u);
     tick(20u);
 
     CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_UCNT0)), 20u);
-    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_UCSTR)), 1u << 1);   /* value 1  */
+    CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_UCSTR)), 1u << 1); /* value 1  */
 
     /*
      * Up timer 1's flags live at bits 11:8, not 7:4. Checked by writing
@@ -3748,7 +4036,7 @@ static void test_tptm_up_compare(void)
      * disagrees.
      */
     devwr(TPTM_SELF(G4MH_TPTM_UCMP1(2)), 5u);
-    devwr(TPTM_SELF(G4MH_TPTM_URUN), 2u);       /* start up timer 1     */
+    devwr(TPTM_SELF(G4MH_TPTM_URUN), 2u); /* start up timer 1     */
     tick(6u);
     CHECK((devrd(TPTM_SELF(G4MH_TPTM_UCSTR)) & (1u << 10)) != 0u);
 
@@ -3756,7 +4044,6 @@ static void test_tptm_up_compare(void)
     devwr(TPTM_SELF(G4MH_TPTM_UCSTR), 0u);
     CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_UCSTR)), 0u);
 }
-
 
 /*
  * The interval timer's interrupt, both ways round.
@@ -3773,10 +4060,12 @@ static bool g_tick_hook_seen;
 
 static bool tick_hook(emu_cpu_t *cpu, emu_syscall_t *sc, void *user)
 {
-    (void)cpu; (void)sc; (void)user;
+    (void)cpu;
+    (void)sc;
+    (void)user;
     g_tick_hook_seen = true;
-    tick(64u);                      /* past the reload, whatever it is */
-    return true;                    /* consumed: no architectural trap */
+    tick(64u); /* past the reload, whatever it is */
+    return true; /* consumed: no architectural trap */
 }
 
 /*
@@ -3794,15 +4083,19 @@ static void test_tptm_interrupt_ei(void)
 
     /* r11 = TPTM base, r12 = INTIF base, r13 = INTC1 self base */
     prog[k++] = MOVI32(11);
-    prog[k++] = LO(G4MH_TPTM_BASE); prog[k++] = HI(G4MH_TPTM_BASE);
+    prog[k++] = LO(G4MH_TPTM_BASE);
+    prog[k++] = HI(G4MH_TPTM_BASE);
     prog[k++] = MOVI32(12);
-    prog[k++] = LO(G4MH_INTIF_BASE); prog[k++] = HI(G4MH_INTIF_BASE);
+    prog[k++] = LO(G4MH_INTIF_BASE);
+    prog[k++] = HI(G4MH_INTIF_BASE);
     prog[k++] = MOVI32(13);
-    prog[k++] = LO(G4MH_INTC1_SELF_BASE); prog[k++] = HI(G4MH_INTC1_SELF_BASE);
+    prog[k++] = LO(G4MH_INTC1_SELF_BASE);
+    prog[k++] = HI(G4MH_INTC1_SELF_BASE);
 
     /* TPTMSEL = 1: route PE0's TPTM interrupt to EIINT31. */
     prog[k++] = F2(OP_MOVI, 1, 10);
-    prog[k++] = W0(OP_ST_HW, 12, 10); prog[k++] = G4MH_INTIF_TPTMSEL | 1u;
+    prog[k++] = W0(OP_ST_HW, 12, 10);
+    prog[k++] = G4MH_INTIF_TPTMSEL | 1u;
 
     /*
      * EIC31 = 0: unmasked, highest priority.
@@ -3816,46 +4109,53 @@ static void test_tptm_interrupt_ei(void)
      * Every check but the cause register passed.
      */
     prog[k++] = F2(OP_MOVI, 0, 10);
-    prog[k++] = W0(OP_ST_HW, 13, 10); prog[k++] = (31u * 2u);
+    prog[k++] = W0(OP_ST_HW, 13, 10);
+    prog[k++] = (31u * 2u);
 
     /* ILD0 = 3, IIEN = 1, IRUN = 1 */
     prog[k++] = F2(OP_MOVI, 3, 10);
-    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = G4MH_TPTM_ILD0 | 1u;
+    prog[k++] = W0(OP_ST_HW, 11, 10);
+    prog[k++] = G4MH_TPTM_ILD0 | 1u;
     prog[k++] = F2(OP_MOVI, 1, 10);
-    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = G4MH_TPTM_IIEN | 1u;
+    prog[k++] = W0(OP_ST_HW, 11, 10);
+    prog[k++] = G4MH_TPTM_IIEN | 1u;
     prog[k++] = F2(OP_MOVI, 1, 10);
-    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = G4MH_TPTM_IRUN | 1u;
+    prog[k++] = W0(OP_ST_HW, 11, 10);
+    prog[k++] = G4MH_TPTM_IRUN | 1u;
 
     /*
      * EI: unmask interrupts. **PSW.ID is set out of reset**, so without
      * this the channel is raised, refused, and the guest runs on to its
      * halt -- which looks exactly like a timer that never fired.
      */
-    prog[k++] = W0(OP_SYSTEM, 0, 0x10u); prog[k++] = SUB_DIEI;
+    prog[k++] = W0(OP_SYSTEM, 0, 0x10u);
+    prog[k++] = SUB_DIEI;
 
     /* Let the clock run: the hook consumes this and advances time. */
-    prog[k++] = W0(OP_SYSTEM, 0, 0);        /* trap 0 */
+    prog[k++] = W0(OP_SYSTEM, 0, 0); /* trap 0 */
     prog[k++] = SUB_TRAP;
 
     /* If no interrupt arrives, fall through to a halt with r20 clear. */
-    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT;
 
     /* The EI handler, at RBASE + 0x100. */
-    prog[0x80] = F2(OP_MOVI, 7, 20);        /* r20 = 7: we got here */
-    prog[0x81] = 0x07E0u; prog[0x82] = SUB_HALT;
+    prog[0x80] = F2(OP_MOVI, 7, 20); /* r20 = 7: we got here */
+    prog[0x81] = 0x07E0u;
+    prog[0x82] = SUB_HALT;
 
     g_tick_hook_seen = false;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
-    if (!load_and_run_hooked(prog, sizeof(prog) / sizeof(prog[0]), 256u,
-                             &why, &retired, tick_hook)) {
+    if (!load_and_run_hooked(prog, sizeof(prog) / sizeof(prog[0]), 256u, &why,
+                             &retired, tick_hook)) {
         CHECK(false);
         return;
     }
 
     CHECK(g_tick_hook_seen);
-    CHECK_EQ(reg(20), 7u);                  /* the EI handler ran      */
+    CHECK_EQ(reg(20), 7u); /* the EI handler ran      */
     CHECK_EQ(sreg(0, G4MH_SR_EIIC), G4MH_EXC_EIINT_BASE + 31u);
     /* And the underflow flag is set whether or not IIEN was: it is the
      * enable that gates the interrupt, not the status. */
@@ -3882,7 +4182,8 @@ static void test_tptm_interrupt_feint(void)
     memset(prog, 0, sizeof(prog));
 
     prog[k++] = MOVI32(11);
-    prog[k++] = LO(G4MH_TPTM_BASE); prog[k++] = HI(G4MH_TPTM_BASE);
+    prog[k++] = LO(G4MH_TPTM_BASE);
+    prog[k++] = HI(G4MH_TPTM_BASE);
 
     /*
      * DI: mask EI interrupts. PSW.ID is already set out of reset, so
@@ -3896,34 +4197,41 @@ static void test_tptm_interrupt_feint(void)
      * whose whole subject is that those two are not the same
      * instruction, and this still got it wrong.
      */
-    prog[k++] = W0(OP_SYSTEM, 0, 0x00u); prog[k++] = SUB_DIEI;
+    prog[k++] = W0(OP_SYSTEM, 0, 0x00u);
+    prog[k++] = SUB_DIEI;
 
     prog[k++] = F2(OP_MOVI, 3, 10);
-    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = G4MH_TPTM_ILD0 | 1u;
+    prog[k++] = W0(OP_ST_HW, 11, 10);
+    prog[k++] = G4MH_TPTM_ILD0 | 1u;
     prog[k++] = F2(OP_MOVI, 1, 10);
-    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = G4MH_TPTM_IIEN | 1u;
+    prog[k++] = W0(OP_ST_HW, 11, 10);
+    prog[k++] = G4MH_TPTM_IIEN | 1u;
     prog[k++] = F2(OP_MOVI, 1, 10);
-    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = G4MH_TPTM_IRUN | 1u;
+    prog[k++] = W0(OP_ST_HW, 11, 10);
+    prog[k++] = G4MH_TPTM_IRUN | 1u;
 
-    prog[k++] = W0(OP_SYSTEM, 0, 0); prog[k++] = SUB_TRAP;
-    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;      /* not reached     */
+    prog[k++] = W0(OP_SYSTEM, 0, 0);
+    prog[k++] = SUB_TRAP;
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT; /* not reached     */
 
     /* The FEINT handler, at RBASE + 0xF0. */
     prog[0x78] = F2(OP_MOVI, 9, 20);
-    prog[0x79] = 0x07E0u; prog[0x7A] = SUB_HALT;
+    prog[0x79] = 0x07E0u;
+    prog[0x7A] = SUB_HALT;
 
     g_tick_hook_seen = false;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
-    if (!load_and_run_hooked(prog, sizeof(prog) / sizeof(prog[0]), 256u,
-                             &why, &retired, tick_hook)) {
+    if (!load_and_run_hooked(prog, sizeof(prog) / sizeof(prog[0]), 256u, &why,
+                             &retired, tick_hook)) {
         CHECK(false);
         return;
     }
 
     CHECK(g_tick_hook_seen);
-    CHECK_EQ(reg(20), 9u);                  /* the FE handler ran      */
+    CHECK_EQ(reg(20), 9u); /* the FE handler ran      */
     /* FE level, so the cause is in FEIC and not in EIIC. */
     CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_FEINT);
     /* PSW.ID was set and did not stop it -- which is the whole point
@@ -3948,11 +4256,14 @@ static void test_tptm_interrupt_masked(void)
     memset(prog, 0, sizeof(prog));
 
     prog[k++] = MOVI32(11);
-    prog[k++] = LO(G4MH_TPTM_BASE); prog[k++] = HI(G4MH_TPTM_BASE);
+    prog[k++] = LO(G4MH_TPTM_BASE);
+    prog[k++] = HI(G4MH_TPTM_BASE);
     prog[k++] = MOVI32(12);
-    prog[k++] = LO(G4MH_INTIF_BASE); prog[k++] = HI(G4MH_INTIF_BASE);
+    prog[k++] = LO(G4MH_INTIF_BASE);
+    prog[k++] = HI(G4MH_INTIF_BASE);
     prog[k++] = MOVI32(13);
-    prog[k++] = LO(G4MH_INTC1_SELF_BASE); prog[k++] = HI(G4MH_INTC1_SELF_BASE);
+    prog[k++] = LO(G4MH_INTC1_SELF_BASE);
+    prog[k++] = HI(G4MH_INTC1_SELF_BASE);
 
     /*
      * EIC31 unmasked and PSW.ID clear, so that IIEN is the *only* thing
@@ -3961,38 +4272,46 @@ static void test_tptm_interrupt_masked(void)
      * because something else was refusing the channel.
      */
     prog[k++] = F2(OP_MOVI, 0, 10);
-    prog[k++] = W0(OP_ST_HW, 13, 10); prog[k++] = (31u * 2u);
+    prog[k++] = W0(OP_ST_HW, 13, 10);
+    prog[k++] = (31u * 2u);
 
     /* TPTMSEL = 1, so a raised interrupt would be EIINT31 -- and EI, so
      * PSW.ID is not what suppresses it. Only IIEN is left. */
     prog[k++] = F2(OP_MOVI, 1, 10);
-    prog[k++] = W0(OP_ST_HW, 12, 10); prog[k++] = G4MH_INTIF_TPTMSEL | 1u;
-    prog[k++] = W0(OP_SYSTEM, 0, 0x10u); prog[k++] = SUB_DIEI;
+    prog[k++] = W0(OP_ST_HW, 12, 10);
+    prog[k++] = G4MH_INTIF_TPTMSEL | 1u;
+    prog[k++] = W0(OP_SYSTEM, 0, 0x10u);
+    prog[k++] = SUB_DIEI;
 
     /* ILD0 = 3 and start, with IIEN left at its reset value of 0. */
     prog[k++] = F2(OP_MOVI, 3, 10);
-    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = G4MH_TPTM_ILD0 | 1u;
+    prog[k++] = W0(OP_ST_HW, 11, 10);
+    prog[k++] = G4MH_TPTM_ILD0 | 1u;
     prog[k++] = F2(OP_MOVI, 1, 10);
-    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = G4MH_TPTM_IRUN | 1u;
+    prog[k++] = W0(OP_ST_HW, 11, 10);
+    prog[k++] = G4MH_TPTM_IRUN | 1u;
 
-    prog[k++] = W0(OP_SYSTEM, 0, 0); prog[k++] = SUB_TRAP;
-    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;      /* the expected end */
+    prog[k++] = W0(OP_SYSTEM, 0, 0);
+    prog[k++] = SUB_TRAP;
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT; /* the expected end */
 
-    prog[0x80] = F2(OP_MOVI, 7, 20);                /* EI vector       */
-    prog[0x81] = 0x07E0u; prog[0x82] = SUB_HALT;
+    prog[0x80] = F2(OP_MOVI, 7, 20); /* EI vector       */
+    prog[0x81] = 0x07E0u;
+    prog[0x82] = SUB_HALT;
 
     g_tick_hook_seen = false;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
-    if (!load_and_run_hooked(prog, sizeof(prog) / sizeof(prog[0]), 256u,
-                             &why, &retired, tick_hook)) {
+    if (!load_and_run_hooked(prog, sizeof(prog) / sizeof(prog[0]), 256u, &why,
+                             &retired, tick_hook)) {
         CHECK(false);
         return;
     }
 
     CHECK(g_tick_hook_seen);
-    CHECK_EQ(reg(20), 0u);                          /* no handler ran  */
+    CHECK_EQ(reg(20), 0u); /* no handler ran  */
     CHECK_EQ(sreg(0, G4MH_SR_EIIC), 0u);
     /* But the underflow happened and is recorded. */
     CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_IUSTR)) & 1u, 1u);
@@ -4002,8 +4321,8 @@ static void test_tptm_interrupt_masked(void)
      * caution, and the reason the write to IIEN is not just a store.
      */
     devwr(TPTM_SELF(G4MH_TPTM_IIEN), 1u);
-    CHECK(g4mh_cpu_pending_irq((const g4mh_cpu_t *)(const void *)g_core.cpu)
-          == 31);
+    CHECK(g4mh_cpu_pending_irq((const g4mh_cpu_t *)(const void *)g_core.cpu) ==
+          31);
 }
 
 /*
@@ -4022,28 +4341,36 @@ static void test_ipir_delivers(void)
     memset(prog, 0, sizeof(prog));
 
     prog[k++] = MOVI32(11);
-    prog[k++] = LO(G4MH_IPIR_BASE); prog[k++] = HI(G4MH_IPIR_BASE);
+    prog[k++] = LO(G4MH_IPIR_BASE);
+    prog[k++] = HI(G4MH_IPIR_BASE);
     prog[k++] = MOVI32(13);
-    prog[k++] = LO(G4MH_INTC1_SELF_BASE); prog[k++] = HI(G4MH_INTC1_SELF_BASE);
+    prog[k++] = LO(G4MH_INTC1_SELF_BASE);
+    prog[k++] = HI(G4MH_INTC1_SELF_BASE);
 
     /* EIC1 = 0: channel 1 unmasked. A halfword store -- see the note
      * in test_tptm_interrupt_ei about what a word store does here. */
     prog[k++] = F2(OP_MOVI, 0, 10);
-    prog[k++] = W0(OP_ST_HW, 13, 10); prog[k++] = (1u * 2u);
+    prog[k++] = W0(OP_ST_HW, 13, 10);
+    prog[k++] = (1u * 2u);
 
     /* EI: PSW.ID is set out of reset and would refuse the channel. */
-    prog[k++] = W0(OP_SYSTEM, 0, 0x10u); prog[k++] = SUB_DIEI;
+    prog[k++] = W0(OP_SYSTEM, 0, 0x10u);
+    prog[k++] = SUB_DIEI;
 
     /* IPI1ENS = 1 (accept from PE0), then IPI1REQS = 1. */
     prog[k++] = F2(OP_MOVI, 1, 10);
-    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = (0x20u + 0x00u) | 1u;
+    prog[k++] = W0(OP_ST_HW, 11, 10);
+    prog[k++] = (0x20u + 0x00u) | 1u;
     prog[k++] = F2(OP_MOVI, 1, 10);
-    prog[k++] = W0(OP_ST_HW, 11, 10); prog[k++] = (0x20u + 0x10u) | 1u;
+    prog[k++] = W0(OP_ST_HW, 11, 10);
+    prog[k++] = (0x20u + 0x10u) | 1u;
 
-    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;      /* not reached     */
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT; /* not reached     */
 
-    prog[0x80] = F2(OP_MOVI, 5, 20);                /* EI vector       */
-    prog[0x81] = 0x07E0u; prog[0x82] = SUB_HALT;
+    prog[0x80] = F2(OP_MOVI, 5, 20); /* EI vector       */
+    prog[0x81] = 0x07E0u;
+    prog[0x82] = SUB_HALT;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
@@ -4071,7 +4398,7 @@ static void test_ipir_delivers(void)
 static void test_disp23_jit(void)
 {
     const uint32_t cell = EMU_GUEST_RAM_BASE + 0x200u;
-    const uint32_t big  = 0x123456u;
+    const uint32_t big = 0x123456u;
     const uint32_t base = cell - big;
 
     /*
@@ -4083,19 +4410,28 @@ static void test_disp23_jit(void)
      * only fallback left is the 32-bit HALT.
      */
     const uint16_t prog[] = {
-        MOVI32(11), LO(base), HI(base),
-        MOVI32(12), 0x5A5Au, 0x0000u,
-        MOVI32(20), 0x1111u, 0x0000u,
-        MOVI32(21), 0x2222u, 0x0000u,
+        MOVI32(11),
+        LO(base),
+        HI(base),
+        MOVI32(12),
+        0x5A5Au,
+        0x0000u,
+        MOVI32(20),
+        0x1111u,
+        0x0000u,
+        MOVI32(21),
+        0x2222u,
+        0x0000u,
 
-        D23(0x3Cu, 11, 12, big, 0xFu),         /* st.w  r12, big[r11]  */
-        D23(0x3Cu, 11, 13, big, 0x9u),         /* ld.w  big[r11], r13  */
-        D23(0x3Cu, 11, 12, big + 4u, 0xDu),    /* st.b  r12, big+4     */
-        D23(0x3Du, 11, 14, big + 4u, 0x5u),    /* ld.bu big+4, r14     */
-        D23(0x3Du, 11, 20, big + 8u, 0xFu),    /* st.dw r20, big+8     */
-        D23(0x3Du, 11, 22, big + 8u, 0x9u),    /* ld.dw big+8, r22     */
+        D23(0x3Cu, 11, 12, big, 0xFu), /* st.w  r12, big[r11]  */
+        D23(0x3Cu, 11, 13, big, 0x9u), /* ld.w  big[r11], r13  */
+        D23(0x3Cu, 11, 12, big + 4u, 0xDu), /* st.b  r12, big+4     */
+        D23(0x3Du, 11, 14, big + 4u, 0x5u), /* ld.bu big+4, r14     */
+        D23(0x3Du, 11, 20, big + 8u, 0xFu), /* st.dw r20, big+8     */
+        D23(0x3Du, 11, 22, big + 8u, 0x9u), /* ld.dw big+8, r22     */
 
-        0x07E0u, SUB_HALT,
+        0x07E0u,
+        SUB_HALT,
     };
 
     const emu_backend_t *saved = g4mh_backend;
@@ -4136,11 +4472,11 @@ static void test_disp23_jit(void)
     }
     g4mh_backend = saved;
 
-    CHECK_EQ(vals[0][0], 0x00005A5Au);      /* ST.W then LD.W          */
-    CHECK_EQ(vals[0][1], 0x0000005Au);      /* ST.B then LD.BU         */
-    CHECK_EQ(vals[0][2], 0x1111u);          /* LD.DW low               */
-    CHECK_EQ(vals[0][3], 0x2222u);          /* LD.DW high              */
-    CHECK_EQ(vals[0][4], 0x5Au);            /* the byte really landed  */
+    CHECK_EQ(vals[0][0], 0x00005A5Au); /* ST.W then LD.W          */
+    CHECK_EQ(vals[0][1], 0x0000005Au); /* ST.B then LD.BU         */
+    CHECK_EQ(vals[0][2], 0x1111u); /* LD.DW low               */
+    CHECK_EQ(vals[0][3], 0x2222u); /* LD.DW high              */
+    CHECK_EQ(vals[0][4], 0x5Au); /* the byte really landed  */
 
     for (unsigned i = 0; i < 5u; i++) {
         CHECK_EQ(vals[0][i], vals[1][i]);
@@ -4159,7 +4495,7 @@ static void test_conditional_ops(void)
     const uint16_t prog[] = {
         F2(OP_MOVI, 5, 10),
         F2(OP_MOVI, 5, 11),
-        F1(OP_CMP, 10, 11),                    /* Z = 1                 */
+        F1(OP_CMP, 10, 11), /* Z = 1                 */
         F2(OP_MOVI, 7, 12),
         F2(OP_MOVI, 9, 13),
         /* cmov z, r12, r13, r14   -> 7  (taken)                        */
@@ -4179,8 +4515,10 @@ static void test_conditional_ops(void)
         F1(OP_CMP, 10, 11),
         F2(OP_MOVI, 5, 18),
         /* sasf z, r18             -> (5 << 1) | 1 = 11                 */
-        (uint16_t)((18u << 11) | (0x3Fu << 5) | 0x2u), 0x0200u,
-        0x07E0u, SUB_HALT,
+        (uint16_t)((18u << 11) | (0x3Fu << 5) | 0x2u),
+        0x0200u,
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -4212,23 +4550,38 @@ static void test_conditional_ops(void)
 static void test_mac_bins_rotl(void)
 {
     const uint16_t prog[] = {
-        MOVI32(10), 0x0000u, 0x0001u,          /* r10 = 0x00010000      */
-        MOVI32(11), 0x0000u, 0x0002u,          /* r11 = 0x00020000      */
-        MOVI32(20), 0x0007u, 0x0000u,          /* r20 = 7  (acc low)    */
-        MOVI32(21), 0x0000u, 0x0000u,          /* r21 = 0  (acc high)   */
+        MOVI32(10),
+        0x0000u,
+        0x0001u, /* r10 = 0x00010000      */
+        MOVI32(11),
+        0x0000u,
+        0x0002u, /* r11 = 0x00020000      */
+        MOVI32(20),
+        0x0007u,
+        0x0000u, /* r20 = 7  (acc low)    */
+        MOVI32(21),
+        0x0000u,
+        0x0000u, /* r21 = 0  (acc high)   */
         /* mac r10, r11, r20, r22: r23||r22 = r11*r10 + r21||r20        */
         (uint16_t)((11u << 11) | (0x3Fu << 5) | 10u),
         (uint16_t)(((20u >> 1) << 12) | 0x3C0u | ((22u >> 1) << 1)),
-        MOVI32(12), 0xFFFFu, 0xFFFFu,
-        MOVI32(13), 0x0000u, 0x0000u,
+        MOVI32(12),
+        0xFFFFu,
+        0xFFFFu,
+        MOVI32(13),
+        0x0000u,
+        0x0000u,
         /* bins r12, 15, 17, r13: lsb 15, msb 17 -> three bits at 15    */
         (uint16_t)((13u << 11) | (0x3Fu << 5) | 12u),
         (uint16_t)((1u << 12) | (1u << 11) | 0x0B0u | (7u << 1)),
-        MOVI32(14), 0x0001u, 0x8000u,          /* r14 = 0x80000001      */
+        MOVI32(14),
+        0x0001u,
+        0x8000u, /* r14 = 0x80000001      */
         /* rotl 1, r14, r15 -> 0x00000003, CY from bit 0 of the result  */
         (uint16_t)((14u << 11) | (0x3Fu << 5) | 1u),
         (uint16_t)((15u << 11) | 0x0C4u),
-        0x07E0u, SUB_HALT,
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -4257,12 +4610,14 @@ static void test_mac_bins_rotl(void)
 static void test_loop(void)
 {
     const uint16_t prog[] = {
-        F2(OP_MOVI, 3, 10),                    /* counter               */
-        F2(OP_MOVI, 0, 11),                    /* accumulator           */
-        F2(OP_ADDI5, 5, 11),                   /* loop body: r11 += 5   */
+        F2(OP_MOVI, 3, 10), /* counter               */
+        F2(OP_MOVI, 0, 11), /* accumulator           */
+        F2(OP_ADDI5, 5, 11), /* loop body: r11 += 5   */
         /* loop r10, 2  -- back to the add, two bytes above             */
-        (uint16_t)((0u << 11) | (0x37u << 5) | 10u), (uint16_t)(2u | 1u),
-        0x07E0u, SUB_HALT,
+        (uint16_t)((0u << 11) | (0x37u << 5) | 10u),
+        (uint16_t)(2u | 1u),
+        0x07E0u,
+        SUB_HALT,
     };
 
     emu_run_reason_t why;
@@ -4274,7 +4629,7 @@ static void test_loop(void)
     }
 
     CHECK_EQ(reg(10), 0u);
-    CHECK_EQ(reg(11), 15u);             /* three passes, not one        */
+    CHECK_EQ(reg(11), 15u); /* three passes, not one        */
     CHECK_EQ(why, EMU_RUN_WFI);
 }
 
@@ -4296,23 +4651,29 @@ static void test_callt(void)
     uint16_t prog[64];
     unsigned k = 0;
 
-    prog[k++] = MOVI32(10); prog[k++] = LO(ctbp); prog[k++] = HI(ctbp);
-    prog[k++] = W0(OP_SYSTEM, 10, G4MH_SR_CTBP); prog[k++] = SUB_LDSR;
-    prog[k++] = (uint16_t)(0x0200u | 33u);      /* callt 33, at byte 10 */
-    prog[k++] = F2(OP_MOVI, 1, 12);             /* never reached        */
-    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+    prog[k++] = MOVI32(10);
+    prog[k++] = LO(ctbp);
+    prog[k++] = HI(ctbp);
+    prog[k++] = W0(OP_SYSTEM, 10, G4MH_SR_CTBP);
+    prog[k++] = SUB_LDSR;
+    prog[k++] = (uint16_t)(0x0200u | 33u); /* callt 33, at byte 10 */
+    prog[k++] = F2(OP_MOVI, 1, 12); /* never reached        */
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT;
 
     /* The vector table is the program image: entry 33 is halfword 33. */
     while (k < 33u) {
         prog[k++] = 0u;
     }
-    prog[k++] = 80u;                            /* -> byte 80, hw 40    */
+    prog[k++] = 80u; /* -> byte 80, hw 40    */
     while (k < 40u) {
         prog[k++] = 0u;
     }
-    prog[k++] = W0(OP_SYSTEM, G4MH_SR_CTPC, 13); prog[k++] = SUB_STSR;
+    prog[k++] = W0(OP_SYSTEM, G4MH_SR_CTPC, 13);
+    prog[k++] = SUB_STSR;
     prog[k++] = F2(OP_MOVI, 9, 11);
-    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
@@ -4321,9 +4682,9 @@ static void test_callt(void)
         return;
     }
 
-    CHECK_EQ(reg(11), 9u);                      /* the target ran       */
-    CHECK_EQ(reg(12), 0u);                      /* and the caller did not */
-    CHECK_EQ(reg(13), EMU_GUEST_RAM_BASE + 12u);/* CTPC is the next insn */
+    CHECK_EQ(reg(11), 9u); /* the target ran       */
+    CHECK_EQ(reg(12), 0u); /* and the caller did not */
+    CHECK_EQ(reg(13), EMU_GUEST_RAM_BASE + 12u); /* CTPC is the next insn */
     CHECK_EQ(why, EMU_RUN_WFI);
 }
 
@@ -4343,33 +4704,33 @@ static void test_callt(void)
  * Format X group is keyed on -- floating point simply lives above 0x400
  * in it.
  */
-#define FP0(r1, r2)      W0(OP_SYSTEM, (r1), (r2))
-#define FP1(r3, sub)     (uint16_t)(((r3) << 11) | (sub))
+#define FP0(r1, r2) W0(OP_SYSTEM, (r1), (r2))
+#define FP1(r3, sub) (uint16_t)(((r3) << 11) | (sub))
 
-#define FSUB_ABSNEG   0x448u
-#define FSUB_SQRT     0x44Eu
-#define FSUB_ADD      0x460u
-#define FSUB_SUB      0x462u
-#define FSUB_MUL      0x464u
-#define FSUB_MAX      0x468u
-#define FSUB_MIN      0x46Au
-#define FSUB_DIV      0x46Eu
-#define FSUB_CVT_TOI  0x440u
+#define FSUB_ABSNEG 0x448u
+#define FSUB_SQRT 0x44Eu
+#define FSUB_ADD 0x460u
+#define FSUB_SUB 0x462u
+#define FSUB_MUL 0x464u
+#define FSUB_MAX 0x468u
+#define FSUB_MIN 0x46Au
+#define FSUB_DIV 0x46Eu
+#define FSUB_CVT_TOI 0x440u
 #define FSUB_CVT_FROMI 0x442u
-#define FSUB_FMA      0x4E0u
-#define FSUB_CMP      0x420u
-#define FSUB_CMOV     0x400u
+#define FSUB_FMA 0x4E0u
+#define FSUB_CMP 0x420u
+#define FSUB_CMOV 0x400u
 
 /* Bit patterns, so the expected values are exact rather than rounded. */
-#define F_1_0    0x3F800000u
-#define F_2_0    0x40000000u
-#define F_3_0    0x40400000u
-#define F_4_0    0x40800000u
-#define F_6_0    0x40C00000u
-#define F_0_5    0x3F000000u
-#define F_M2_0   0xC0000000u
-#define F_QNAN   0x7FC00000u
-#define F_SNAN   0x7F800001u
+#define F_1_0 0x3F800000u
+#define F_2_0 0x40000000u
+#define F_3_0 0x40400000u
+#define F_4_0 0x40800000u
+#define F_6_0 0x40C00000u
+#define F_0_5 0x3F000000u
+#define F_M2_0 0xC0000000u
+#define F_QNAN 0x7FC00000u
+#define F_SNAN 0x7F800001u
 
 /*
  * Load a 32-bit constant into a register, enable the FPU in PSW.CU0, and
@@ -4384,14 +4745,19 @@ static void test_callt(void)
 static unsigned fp_prologue(uint16_t *prog, unsigned k)
 {
     /* PSW.CU0 = 1 << 16 */
-    prog[k++] = MOVI32(20); prog[k++] = LO(G4MH_PSW_CU0); prog[k++] = HI(G4MH_PSW_CU0);
-    prog[k++] = FP0(20, G4MH_SR_PSW); prog[k++] = SUB_LDSR;
+    prog[k++] = MOVI32(20);
+    prog[k++] = LO(G4MH_PSW_CU0);
+    prog[k++] = HI(G4MH_PSW_CU0);
+    prog[k++] = FP0(20, G4MH_SR_PSW);
+    prog[k++] = SUB_LDSR;
     return k;
 }
 
 static unsigned fp_ldi(uint16_t *prog, unsigned k, unsigned r, uint32_t v)
 {
-    prog[k++] = MOVI32(r); prog[k++] = LO(v); prog[k++] = HI(v);
+    prog[k++] = MOVI32(r);
+    prog[k++] = LO(v);
+    prog[k++] = HI(v);
     return k;
 }
 
@@ -4402,18 +4768,26 @@ static void test_fp_arith(void)
     unsigned k = 0;
 
     k = fp_prologue(prog, k);
-    k = fp_ldi(prog, k, 10, F_1_0);             /* reg1 */
-    k = fp_ldi(prog, k, 11, F_2_0);             /* reg2 */
+    k = fp_ldi(prog, k, 10, F_1_0); /* reg1 */
+    k = fp_ldi(prog, k, 11, F_2_0); /* reg2 */
 
-    prog[k++] = FP0(10, 11); prog[k++] = FP1(12, FSUB_ADD);   /* 2+1 */
-    prog[k++] = FP0(10, 11); prog[k++] = FP1(13, FSUB_SUB);   /* 2-1 */
-    prog[k++] = FP0(10, 11); prog[k++] = FP1(14, FSUB_MUL);   /* 2*1 */
-    prog[k++] = FP0(11, 11); prog[k++] = FP1(15, FSUB_MUL);   /* 2*2 */
-    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+    prog[k++] = FP0(10, 11);
+    prog[k++] = FP1(12, FSUB_ADD); /* 2+1 */
+    prog[k++] = FP0(10, 11);
+    prog[k++] = FP1(13, FSUB_SUB); /* 2-1 */
+    prog[k++] = FP0(10, 11);
+    prog[k++] = FP1(14, FSUB_MUL); /* 2*1 */
+    prog[k++] = FP0(11, 11);
+    prog[k++] = FP1(15, FSUB_MUL); /* 2*2 */
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
-    if (!load_and_run(prog, k, 128u, &why, &retired)) { CHECK(false); return; }
+    if (!load_and_run(prog, k, 128u, &why, &retired)) {
+        CHECK(false);
+        return;
+    }
 
     CHECK_EQ(reg(12), F_3_0);
     /*
@@ -4437,19 +4811,27 @@ static void test_fp_div_sqrt(void)
     k = fp_ldi(prog, k, 11, F_6_0);
     k = fp_ldi(prog, k, 12, F_4_0);
 
-    prog[k++] = FP0(10, 11); prog[k++] = FP1(13, FSUB_DIV);   /* 6/2   */
+    prog[k++] = FP0(10, 11);
+    prog[k++] = FP1(13, FSUB_DIV); /* 6/2   */
     /*
      * reg1 is an opcode extension here, not a source: 0 is SQRTF.S,
      * 1 RECIPF.S, 2 RSQRTF.S. The operand is reg2 in all three.
      */
-    prog[k++] = FP0(0, 12);  prog[k++] = FP1(14, FSUB_SQRT);  /* sqrt 4 */
-    prog[k++] = FP0(1, 10);  prog[k++] = FP1(15, FSUB_SQRT);  /* 1/2    */
-    prog[k++] = FP0(2, 12);  prog[k++] = FP1(16, FSUB_SQRT);  /* 1/sqrt4*/
-    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+    prog[k++] = FP0(0, 12);
+    prog[k++] = FP1(14, FSUB_SQRT); /* sqrt 4 */
+    prog[k++] = FP0(1, 10);
+    prog[k++] = FP1(15, FSUB_SQRT); /* 1/2    */
+    prog[k++] = FP0(2, 12);
+    prog[k++] = FP1(16, FSUB_SQRT); /* 1/sqrt4*/
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
-    if (!load_and_run(prog, k, 128u, &why, &retired)) { CHECK(false); return; }
+    if (!load_and_run(prog, k, 128u, &why, &retired)) {
+        CHECK(false);
+        return;
+    }
 
     CHECK_EQ(reg(13), F_3_0);
     CHECK_EQ(reg(14), F_2_0);
@@ -4473,16 +4855,22 @@ static void test_fp_abs_neg(void)
     k = fp_prologue(prog, k);
     k = fp_ldi(prog, k, 10, F_M2_0);
 
-    prog[k++] = FP0(0, 10); prog[k++] = FP1(11, FSUB_ABSNEG);  /* ABSF  */
-    prog[k++] = FP0(1, 10); prog[k++] = FP1(12, FSUB_ABSNEG);  /* NEGF  */
-    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+    prog[k++] = FP0(0, 10);
+    prog[k++] = FP1(11, FSUB_ABSNEG); /* ABSF  */
+    prog[k++] = FP0(1, 10);
+    prog[k++] = FP1(12, FSUB_ABSNEG); /* NEGF  */
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
-    if (!load_and_run(prog, k, 128u, &why, &retired)) { CHECK(false); return; }
+    if (!load_and_run(prog, k, 128u, &why, &retired)) {
+        CHECK(false);
+        return;
+    }
 
-    CHECK_EQ(reg(11), F_2_0);                   /* |-2.0| = +2.0        */
-    CHECK_EQ(reg(12), F_2_0);                   /* -(-2.0) = +2.0       */
+    CHECK_EQ(reg(11), F_2_0); /* |-2.0| = +2.0        */
+    CHECK_EQ(reg(12), F_2_0); /* -(-2.0) = +2.0       */
 }
 
 /* MAXF/MINF, on the inputs where "the larger one" is not the answer. */
@@ -4497,16 +4885,24 @@ static void test_fp_minmax(void)
     k = fp_ldi(prog, k, 12, F_M2_0);
 
     /* A quiet NaN operand gives the *other* operand, not a NaN. */
-    prog[k++] = FP0(10, 11); prog[k++] = FP1(13, FSUB_MAX);
-    prog[k++] = FP0(10, 11); prog[k++] = FP1(14, FSUB_MIN);
+    prog[k++] = FP0(10, 11);
+    prog[k++] = FP1(13, FSUB_MAX);
+    prog[k++] = FP0(10, 11);
+    prog[k++] = FP1(14, FSUB_MIN);
     /* And a plain ordered pair, where sign matters. */
-    prog[k++] = FP0(10, 12); prog[k++] = FP1(15, FSUB_MAX);
-    prog[k++] = FP0(10, 12); prog[k++] = FP1(16, FSUB_MIN);
-    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+    prog[k++] = FP0(10, 12);
+    prog[k++] = FP1(15, FSUB_MAX);
+    prog[k++] = FP0(10, 12);
+    prog[k++] = FP1(16, FSUB_MIN);
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
-    if (!load_and_run(prog, k, 128u, &why, &retired)) { CHECK(false); return; }
+    if (!load_and_run(prog, k, 128u, &why, &retired)) {
+        CHECK(false);
+        return;
+    }
 
     CHECK_EQ(reg(13), F_1_0);
     CHECK_EQ(reg(14), F_1_0);
@@ -4524,19 +4920,28 @@ static void test_fp_convert(void)
 
     k = fp_prologue(prog, k);
     k = fp_ldi(prog, k, 10, f_2_5);
-    k = fp_ldi(prog, k, 11, 7u);                /* integer 7            */
+    k = fp_ldi(prog, k, 11, 7u); /* integer 7            */
 
     /* reg1 selects rounding: 0 round, 1 trunc, 2 ceil, 3 floor. */
-    prog[k++] = FP0(0, 10); prog[k++] = FP1(12, FSUB_CVT_TOI); /* ROUNDF */
-    prog[k++] = FP0(1, 10); prog[k++] = FP1(13, FSUB_CVT_TOI); /* TRNCF  */
-    prog[k++] = FP0(2, 10); prog[k++] = FP1(14, FSUB_CVT_TOI); /* CEILF  */
-    prog[k++] = FP0(3, 10); prog[k++] = FP1(15, FSUB_CVT_TOI); /* FLOORF */
-    prog[k++] = FP0(0, 11); prog[k++] = FP1(16, FSUB_CVT_FROMI);/* WS    */
-    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+    prog[k++] = FP0(0, 10);
+    prog[k++] = FP1(12, FSUB_CVT_TOI); /* ROUNDF */
+    prog[k++] = FP0(1, 10);
+    prog[k++] = FP1(13, FSUB_CVT_TOI); /* TRNCF  */
+    prog[k++] = FP0(2, 10);
+    prog[k++] = FP1(14, FSUB_CVT_TOI); /* CEILF  */
+    prog[k++] = FP0(3, 10);
+    prog[k++] = FP1(15, FSUB_CVT_TOI); /* FLOORF */
+    prog[k++] = FP0(0, 11);
+    prog[k++] = FP1(16, FSUB_CVT_FROMI); /* WS    */
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
-    if (!load_and_run(prog, k, 128u, &why, &retired)) { CHECK(false); return; }
+    if (!load_and_run(prog, k, 128u, &why, &retired)) {
+        CHECK(false);
+        return;
+    }
 
     /*
      * 2.5 is the input that separates the four, which is the whole
@@ -4546,7 +4951,7 @@ static void test_fp_convert(void)
     CHECK_EQ(reg(13), 2u);
     CHECK_EQ(reg(14), 3u);
     CHECK_EQ(reg(15), 2u);
-    CHECK_EQ(reg(16), 0x40E00000u);             /* 7.0                  */
+    CHECK_EQ(reg(16), 0x40E00000u); /* 7.0                  */
 }
 
 /*
@@ -4574,16 +4979,24 @@ static void test_fp_compare_and_move(void)
      * orders pass a test that only ever uses fcbit 0, so the encoding
      * below is taken from what the vendor assembler emits.
      */
-    prog[k++] = FP0(10, 11); prog[k++] = FP1(4, FSUB_CMP | (0u << 1));
-    prog[k++] = FP0(10, 11); prog[k++] = FP1(12, FSUB_CMOV | (0u << 1));
+    prog[k++] = FP0(10, 11);
+    prog[k++] = FP1(4, FSUB_CMP | (0u << 1));
+    prog[k++] = FP0(10, 11);
+    prog[k++] = FP1(12, FSUB_CMOV | (0u << 1));
     /* Swap the operands: "is 1.0 < 2.0" is true, into the same CC bit. */
-    prog[k++] = FP0(11, 10); prog[k++] = FP1(4, FSUB_CMP | (0u << 1));
-    prog[k++] = FP0(10, 11); prog[k++] = FP1(13, FSUB_CMOV | (0u << 1));
-    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+    prog[k++] = FP0(11, 10);
+    prog[k++] = FP1(4, FSUB_CMP | (0u << 1));
+    prog[k++] = FP0(10, 11);
+    prog[k++] = FP1(13, FSUB_CMOV | (0u << 1));
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
-    if (!load_and_run(prog, k, 128u, &why, &retired)) { CHECK(false); return; }
+    if (!load_and_run(prog, k, 128u, &why, &retired)) {
+        CHECK(false);
+        return;
+    }
 
     /*
      * CMOVF.S is reg3 <- cc ? reg1 : reg2. This test asserted the other
@@ -4593,8 +5006,8 @@ static void test_fp_compare_and_move(void)
      * cancelled. The direction is pinned to CC-RH's own codegen now; see
      * the note in g4mh_fpu.c.
      */
-    CHECK_EQ(reg(12), F_2_0);                   /* cc clear -> reg2     */
-    CHECK_EQ(reg(13), F_1_0);                   /* cc set   -> reg1     */
+    CHECK_EQ(reg(12), F_2_0); /* cc clear -> reg2     */
+    CHECK_EQ(reg(13), F_1_0); /* cc set   -> reg1     */
 }
 
 /*
@@ -4613,20 +5026,25 @@ static void test_fp_disabled(void)
 
     memset(prog, 0, sizeof(prog));
     k = fp_ldi(prog, k, 10, F_1_0);
-    prog[k++] = FP0(10, 10); prog[k++] = FP1(11, FSUB_ADD);
-    prog[0x40] = 0x07E0u; prog[0x41] = SUB_HALT;   /* 0x80 bytes in */
+    prog[k++] = FP0(10, 10);
+    prog[k++] = FP1(11, FSUB_ADD);
+    prog[0x40] = 0x07E0u;
+    prog[0x41] = SUB_HALT; /* 0x80 bytes in */
 
     emu_run_reason_t why;
     uint32_t retired = 0;
     if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
-                      &retired)) { CHECK(false); return; }
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
 
     emu_cpu_status_t st;
     emu_core_status(&g_core, &st);
 
     CHECK_EQ(why, EMU_RUN_WFI);
     CHECK(st.traps >= 1u);
-    CHECK_EQ(reg(11), 0u);                      /* destination untouched */
+    CHECK_EQ(reg(11), 0u); /* destination untouched */
     /* RBASE + 0x80, plus the 4 bytes of the HALT that stopped us. */
     CHECK_EQ(st.pc, EMU_GUEST_RAM_BASE + 0x84u);
 }
@@ -4646,11 +5064,11 @@ static unsigned fp_ldd(uint16_t *prog, unsigned k, unsigned r, uint64_t v)
     return k;
 }
 
-#define D_1_0    UINT64_C(0x3FF0000000000000)
-#define D_2_0    UINT64_C(0x4000000000000000)
-#define D_3_0    UINT64_C(0x4008000000000000)
-#define D_0_5    UINT64_C(0x3FE0000000000000)
-#define D_M2_0   UINT64_C(0xC000000000000000)
+#define D_1_0 UINT64_C(0x3FF0000000000000)
+#define D_2_0 UINT64_C(0x4000000000000000)
+#define D_3_0 UINT64_C(0x4008000000000000)
+#define D_0_5 UINT64_C(0x3FE0000000000000)
+#define D_M2_0 UINT64_C(0xC000000000000000)
 
 /* Read a double back out of the pair the guest left it in. */
 static uint64_t regd(unsigned r)
@@ -4669,28 +5087,36 @@ static void test_fp_double_arith(void)
     unsigned k = 0;
 
     k = fp_prologue(prog, k);
-    k = fp_ldd(prog, k, 10, D_1_0);            /* r10:r11 = 1.0 */
-    k = fp_ldd(prog, k, 12, D_3_0);            /* r12:r13 = 3.0 */
+    k = fp_ldd(prog, k, 10, D_1_0); /* r10:r11 = 1.0 */
+    k = fp_ldd(prog, k, 12, D_3_0); /* r12:r13 = 3.0 */
 
     /* addf.d r10, r12, r14  ->  r14 = 3.0 + 1.0 */
-    prog[k++] = FP0(10, 12); prog[k++] = FP1(14, 0x470u);
+    prog[k++] = FP0(10, 12);
+    prog[k++] = FP1(14, 0x470u);
     /* subf.d r10, r12, r16  ->  r16 = 3.0 - 1.0, not 1.0 - 3.0 */
-    prog[k++] = FP0(10, 12); prog[k++] = FP1(16, 0x472u);
+    prog[k++] = FP0(10, 12);
+    prog[k++] = FP1(16, 0x472u);
     /* mulf.d r10, r12, r18 */
-    prog[k++] = FP0(10, 12); prog[k++] = FP1(18, 0x474u);
+    prog[k++] = FP0(10, 12);
+    prog[k++] = FP1(18, 0x474u);
     /* divf.d r10, r12, r20  ->  3.0 / 1.0 */
-    prog[k++] = FP0(10, 12); prog[k++] = FP1(20, 0x47Eu);
-    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+    prog[k++] = FP0(10, 12);
+    prog[k++] = FP1(20, 0x47Eu);
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
     if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 128u, &why,
-                      &retired)) { CHECK(false); return; }
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
 
-    CHECK_EQ64(regd(14), UINT64_C(0x4010000000000000));   /* 4.0 */
-    CHECK_EQ64(regd(16), D_2_0);                          /* 2.0 */
-    CHECK_EQ64(regd(18), D_3_0);                          /* 3.0 */
-    CHECK_EQ64(regd(20), D_3_0);                          /* 3.0 */
+    CHECK_EQ64(regd(14), UINT64_C(0x4010000000000000)); /* 4.0 */
+    CHECK_EQ64(regd(16), D_2_0); /* 2.0 */
+    CHECK_EQ64(regd(18), D_3_0); /* 3.0 */
+    CHECK_EQ64(regd(20), D_3_0); /* 3.0 */
 }
 
 /*
@@ -4719,20 +5145,27 @@ static void test_fp_double_pairs(void)
     k = fp_ldd(prog, k, 12, UINT64_C(0x4000000000000002));
 
     /* subf.d r10, r12, r14 -> the difference is 2 ulp, not zero */
-    prog[k++] = FP0(10, 12); prog[k++] = FP1(14, 0x472u);
+    prog[k++] = FP0(10, 12);
+    prog[k++] = FP1(14, 0x472u);
 
     /* absf.d r10, r17 -- an *odd* destination, which must land in
      * r16:r17 and not in r17:r18. */
-    prog[k++] = FP0(0, 10); prog[k++] = FP1(17, 0x458u);
+    prog[k++] = FP0(0, 10);
+    prog[k++] = FP1(17, 0x458u);
     /* negf.d r11, r18 -- an odd *source*, which must read r10:r11. */
-    prog[k++] = FP0(1, 11); prog[k++] = FP1(18, 0x458u);
+    prog[k++] = FP0(1, 11);
+    prog[k++] = FP1(18, 0x458u);
 
-    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
     if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 128u, &why,
-                      &retired)) { CHECK(false); return; }
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
 
     /* Non-zero, and small: reading only the high word would give 0. */
     CHECK(regd(14) != 0u);
@@ -4743,11 +5176,11 @@ static void test_fp_double_pairs(void)
      * here was 0x3CB, which is what "two ulp" gives if you forget the
      * exponent is 1 and not 0.
      */
-    CHECK_EQ64(regd(14), UINT64_C(0x3CD0000000000000));   /* 2^-50 */
+    CHECK_EQ64(regd(14), UINT64_C(0x3CD0000000000000)); /* 2^-50 */
 
-    CHECK_EQ64(regd(16), D_2_0);          /* absf.d wrote r16:r17 */
+    CHECK_EQ64(regd(16), D_2_0); /* absf.d wrote r16:r17 */
     CHECK_EQ(reg(18), (uint32_t)D_M2_0);
-    CHECK_EQ64(regd(18), D_M2_0);         /* negf.d read r10:r11  */
+    CHECK_EQ64(regd(18), D_M2_0); /* negf.d read r10:r11  */
 }
 
 /*
@@ -4760,39 +5193,49 @@ static void test_fp_double_convert(void)
     unsigned k = 0;
 
     k = fp_prologue(prog, k);
-    k = fp_ldi(prog, k, 10, F_3_0);            /* single 3.0        */
-    k = fp_ldd(prog, k, 12, D_2_0);            /* double 2.0        */
-    k = fp_ldi(prog, k, 14, 7u);               /* integer 7         */
-    k = fp_ldi(prog, k, 15, 0xFFFFFFFFu);      /* -1, or 4294967295 */
+    k = fp_ldi(prog, k, 10, F_3_0); /* single 3.0        */
+    k = fp_ldd(prog, k, 12, D_2_0); /* double 2.0        */
+    k = fp_ldi(prog, k, 14, 7u); /* integer 7         */
+    k = fp_ldi(prog, k, 15, 0xFFFFFFFFu); /* -1, or 4294967295 */
 
     /* cvtf.sd r10, r16 -- single 3.0 to double */
-    prog[k++] = FP0(2, 10); prog[k++] = FP1(16, 0x452u);
+    prog[k++] = FP0(2, 10);
+    prog[k++] = FP1(16, 0x452u);
     /* cvtf.ds r12, r18 -- double 2.0 back to single */
-    prog[k++] = FP0(3, 12); prog[k++] = FP1(18, 0x452u);
+    prog[k++] = FP0(3, 12);
+    prog[k++] = FP1(18, 0x452u);
     /* cvtf.wd r14, r20 -- integer 7 to double */
-    prog[k++] = FP0(0, 14); prog[k++] = FP1(20, 0x452u);
+    prog[k++] = FP0(0, 14);
+    prog[k++] = FP1(20, 0x452u);
     /* cvtf.dw r12, r22 -- double 2.0 to integer */
-    prog[k++] = FP0(4, 12); prog[k++] = FP1(22, 0x450u);
+    prog[k++] = FP0(4, 12);
+    prog[k++] = FP1(22, 0x450u);
     /* cvtf.uwd r15, r24 -- *unsigned* word to double: 0xFFFFFFFF is
      * 4294967295 here and -1 through the signed form, which is the one
      * thing that tells the two apart. */
-    prog[k++] = FP0(0x10u, 15); prog[k++] = FP1(24, 0x452u);
+    prog[k++] = FP0(0x10u, 15);
+    prog[k++] = FP1(24, 0x452u);
     /* cvtf.wd r15, r26 -- the signed reading of the same bits */
-    prog[k++] = FP0(0, 15); prog[k++] = FP1(26, 0x452u);
+    prog[k++] = FP0(0, 15);
+    prog[k++] = FP1(26, 0x452u);
 
-    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
     if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 128u, &why,
-                      &retired)) { CHECK(false); return; }
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
 
     CHECK_EQ64(regd(16), D_3_0);
     CHECK_EQ(reg(18), F_2_0);
-    CHECK_EQ64(regd(20), UINT64_C(0x401C000000000000));   /* 7.0  */
+    CHECK_EQ64(regd(20), UINT64_C(0x401C000000000000)); /* 7.0  */
     CHECK_EQ(reg(22), 2u);
-    CHECK_EQ64(regd(24), UINT64_C(0x41EFFFFFFFE00000));   /* 4294967295.0 */
-    CHECK_EQ64(regd(26), UINT64_C(0xBFF0000000000000));   /* -1.0 */
+    CHECK_EQ64(regd(24), UINT64_C(0x41EFFFFFFFE00000)); /* 4294967295.0 */
+    CHECK_EQ64(regd(26), UINT64_C(0xBFF0000000000000)); /* -1.0 */
 }
 
 /*
@@ -4810,34 +5253,43 @@ static void test_fp_long_convert(void)
     const uint64_t big = (UINT64_C(1) << 40) + 5u;
 
     k = fp_prologue(prog, k);
-    k = fp_ldd(prog, k, 10, big);              /* integer, as a pair */
+    k = fp_ldd(prog, k, 10, big); /* integer, as a pair */
 
     /* cvtf.ld r10, r12 -- long to double */
-    prog[k++] = FP0(1, 10); prog[k++] = FP1(12, 0x452u);
+    prog[k++] = FP0(1, 10);
+    prog[k++] = FP1(12, 0x452u);
     /* cvtf.dl r12, r14 -- and back */
-    prog[k++] = FP0(4, 12); prog[k++] = FP1(14, 0x454u);
+    prog[k++] = FP0(4, 12);
+    prog[k++] = FP1(14, 0x454u);
     /* cvtf.ls r10, r16 -- long to *single*, which cannot hold it
      * exactly, so this also says the rounding happened */
-    prog[k++] = FP0(1, 10); prog[k++] = FP1(16, 0x442u);
+    prog[k++] = FP0(1, 10);
+    prog[k++] = FP1(16, 0x442u);
     /* cvtf.sl r16, r18 -- single back to long */
-    prog[k++] = FP0(4, 16); prog[k++] = FP1(18, 0x444u);
+    prog[k++] = FP0(4, 16);
+    prog[k++] = FP1(18, 0x444u);
     /* trncf.dl on a value with a fraction: 2.75 truncates to 2 */
     k = fp_ldd(prog, k, 20, UINT64_C(0x4006000000000000));
-    prog[k++] = FP0(1, 20); prog[k++] = FP1(22, 0x454u);
+    prog[k++] = FP0(1, 20);
+    prog[k++] = FP1(22, 0x454u);
 
-    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
     if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 128u, &why,
-                      &retired)) { CHECK(false); return; }
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
 
-    CHECK_EQ64(regd(14), big);            /* round trip through a double */
+    CHECK_EQ64(regd(14), big); /* round trip through a double */
     /* Through a single it rounds: 2^40 + 5 has 41 significant bits and
      * a float has 24, so the 5 is lost. That is the point -- a result
      * of exactly `big` here would mean the single step did nothing. */
     CHECK_EQ64(regd(18), UINT64_C(1) << 40);
-    CHECK_EQ64(regd(22), 2u);             /* trncf.dl of 2.75 */
+    CHECK_EQ64(regd(22), 2u); /* trncf.dl of 2.75 */
 }
 
 /*
@@ -4862,23 +5314,31 @@ static void test_fp_double_compare(void)
 
     /* cmpf.d 0x4 (OLT), reg1 = r12 (2.0), reg2 = r10 (1.0), fcbit 0.
      * 1.0 < 2.0 is true, so CC0 is set. */
-    prog[k++] = FP0(12, 10); prog[k++] = FP1(4, 0x430u);
+    prog[k++] = FP0(12, 10);
+    prog[k++] = FP1(4, 0x430u);
     /* cmovf.d fcbit 0: r24:r25 <- CC0 ? r20:r21 : r22:r23 */
-    prog[k++] = FP0(20, 22); prog[k++] = FP1(24, 0x410u);
+    prog[k++] = FP0(20, 22);
+    prog[k++] = FP1(24, 0x410u);
 
     /* The other way round: 2.0 < 1.0 is false, into fcbit 1. */
-    prog[k++] = FP0(10, 12); prog[k++] = FP1(4, 0x432u);
-    prog[k++] = FP0(20, 22); prog[k++] = FP1(26, 0x412u);
+    prog[k++] = FP0(10, 12);
+    prog[k++] = FP1(4, 0x432u);
+    prog[k++] = FP0(20, 22);
+    prog[k++] = FP1(26, 0x412u);
 
-    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
     if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 128u, &why,
-                      &retired)) { CHECK(false); return; }
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
 
-    CHECK_EQ(reg(24), 0xAAu);           /* CC0 set   -> reg1 */
-    CHECK_EQ(reg(26), 0xBBu);           /* CC1 clear -> reg2 */
+    CHECK_EQ(reg(24), 0xAAu); /* CC0 set   -> reg1 */
+    CHECK_EQ(reg(26), 0xBBu); /* CC1 clear -> reg2 */
 }
 
 /*
@@ -4897,16 +5357,21 @@ static void test_fp_double_gaps(void)
     memset(prog, 0, sizeof(prog));
     k = fp_prologue(prog, k);
     k = fp_ldd(prog, k, 10, D_1_0);
-    prog[k++] = FP0(10, 10); prog[k++] = FP1(12, 0x4F0u);   /* not FMAF.D */
-    prog[0x30] = 0x07E0u; prog[0x31] = SUB_HALT;
+    prog[k++] = FP0(10, 10);
+    prog[k++] = FP1(12, 0x4F0u); /* not FMAF.D */
+    prog[0x30] = 0x07E0u;
+    prog[0x31] = SUB_HALT;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
     if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 128u, &why,
-                      &retired)) { CHECK(false); return; }
+                      &retired)) {
+        CHECK(false);
+        return;
+    }
 
     CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_RIE);
-    CHECK_EQ64(regd(12), 0u);             /* nothing was computed */
+    CHECK_EQ64(regd(12), 0u); /* nothing was computed */
 }
 
 /*
@@ -4938,25 +5403,30 @@ static void test_fp_fma_rounds_once(void)
      * and proved nothing. Found by computing both forms for a few hundred
      * operand pairs and keeping one where they differ.
      */
-    const uint32_t f_a = 0x3F800001u;           /* 1 + u                */
-    const uint32_t f_b = 0x3F7FFFFFu;           /* 1 - u/2              */
-    const uint32_t f_c = 0xBF800000u;           /* -1.0                 */
+    const uint32_t f_a = 0x3F800001u; /* 1 + u                */
+    const uint32_t f_b = 0x3F7FFFFFu; /* 1 - u/2              */
+    const uint32_t f_c = 0xBF800000u; /* -1.0                 */
 
     k = fp_prologue(prog, k);
     k = fp_ldi(prog, k, 10, f_a);
     k = fp_ldi(prog, k, 11, f_b);
-    k = fp_ldi(prog, k, 12, f_c);               /* the accumulator      */
+    k = fp_ldi(prog, k, 12, f_c); /* the accumulator      */
 
     /* FMAF.S: reg3 <- reg3 + reg2*reg1, so reg3 is read as well. */
-    prog[k++] = FP0(10, 11); prog[k++] = FP1(12, FSUB_FMA);
-    prog[k++] = 0x07E0u; prog[k++] = SUB_HALT;
+    prog[k++] = FP0(10, 11);
+    prog[k++] = FP1(12, FSUB_FMA);
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT;
 
     emu_run_reason_t why;
     uint32_t retired = 0;
-    if (!load_and_run(prog, k, 128u, &why, &retired)) { CHECK(false); return; }
+    if (!load_and_run(prog, k, 128u, &why, &retired)) {
+        CHECK(false);
+        return;
+    }
 
     CHECK_EQ(reg(12), 0x337FFFFEu);
-    CHECK(reg(12) != 0u);                       /* the unfused answer   */
+    CHECK(reg(12) != 0u); /* the unfused answer   */
 }
 
 #endif /* G4MH_EXT_FPU */
@@ -4980,7 +5450,7 @@ static void test_fp_fma_rounds_once(void)
  */
 
 static g4mh_intc_t g_tic;
-static g4mh_cpu_t  g_tic_cpu;
+static g4mh_cpu_t g_tic_cpu;
 
 static void tic_reset(void)
 {
@@ -5098,8 +5568,7 @@ static void test_intc_eeic_six_bit_priority(void)
      * and clearing them would promote this channel from 16 to 0.
      */
     tic1_wr(3u * 2u, G4MH_EIC_EITB | 0x2u);
-    CHECK_EQ(tic1_rd(G4MH_INTC1_EEIC + 3u * 4u) & G4MH_EEIC_EIP_MASK,
-             16u + 2u);
+    CHECK_EQ(tic1_rd(G4MH_INTC1_EEIC + 3u * 4u) & G4MH_EEIC_EIP_MASK, 16u + 2u);
 }
 
 /*
@@ -5213,16 +5682,13 @@ static void test_mpu_modes_and_enable(void)
     CHECK(!g4mh_mpu_permits(&g_tm, 0x1000u, 4u, G4MH_MPU_READ, true, 0u));
 
     /* With SVP set, supervisor is checked too. */
-    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPM,
-                            G4MH_MPM_MPE | G4MH_MPM_SVP);
+    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPM, G4MH_MPM_MPE | G4MH_MPM_SVP);
     CHECK(!g4mh_mpu_permits(&g_tm, 0x1000u, 4u, G4MH_MPU_READ, false, 0u));
 
     /* An area with E clear is not consulted, however permissive. */
-    mpu_entry(0u, 0x1000u, 0x1FFFu,
-              G4MH_MPAT_SR | G4MH_MPAT_RG);          /* no E */
+    mpu_entry(0u, 0x1000u, 0x1FFFu, G4MH_MPAT_SR | G4MH_MPAT_RG); /* no E */
     CHECK(!g4mh_mpu_permits(&g_tm, 0x1000u, 4u, G4MH_MPU_READ, false, 0u));
-    mpu_entry(0u, 0x1000u, 0x1FFFu,
-              G4MH_MPAT_E | G4MH_MPAT_SR | G4MH_MPAT_RG);
+    mpu_entry(0u, 0x1000u, 0x1FFFu, G4MH_MPAT_E | G4MH_MPAT_SR | G4MH_MPAT_RG);
     CHECK(g4mh_mpu_permits(&g_tm, 0x1000u, 4u, G4MH_MPU_READ, false, 0u));
 }
 
@@ -5235,8 +5701,7 @@ static void test_mpu_modes_and_enable(void)
 static void test_mpu_permission_matrix(void)
 {
     g4mh_mpu_reset(&g_tm);
-    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPM,
-                            G4MH_MPM_MPE | G4MH_MPM_SVP);
+    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPM, G4MH_MPM_MPE | G4MH_MPM_SVP);
 
     /* Readable, not executable, not writable -- supervisor. */
     mpu_entry(0u, 0x2000u, 0x2FFFu,
@@ -5269,11 +5734,10 @@ static void test_mpu_permission_matrix(void)
 static void test_mpu_bounds(void)
 {
     g4mh_mpu_reset(&g_tm);
-    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPM,
-                            G4MH_MPM_MPE | G4MH_MPM_SVP);
+    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPM, G4MH_MPM_MPE | G4MH_MPM_SVP);
     mpu_entry(0u, 0x3000u, 0x3FFCu,
-              G4MH_MPAT_E | G4MH_MPAT_SR | G4MH_MPAT_SW |
-              G4MH_MPAT_RG | G4MH_MPAT_WG);
+              G4MH_MPAT_E | G4MH_MPAT_SR | G4MH_MPAT_SW | G4MH_MPAT_RG |
+                  G4MH_MPAT_WG);
 
     /* Both ends are included. */
     CHECK(g4mh_mpu_permits(&g_tm, 0x3000u, 4u, G4MH_MPU_READ, false, 0u));
@@ -5294,10 +5758,10 @@ static void test_mpu_bounds(void)
      * stopped at the first matching entry would make the order
      * significant, and here entry 0 refuses what entry 1 allows.
      */
-    mpu_entry(0u, 0x5000u, 0x5FFFu, G4MH_MPAT_E | G4MH_MPAT_RG |
-                                    G4MH_MPAT_WG);   /* no permissions */
-    mpu_entry(1u, 0x5000u, 0x5FFFu, G4MH_MPAT_E | G4MH_MPAT_SR |
-                                    G4MH_MPAT_RG | G4MH_MPAT_WG);
+    mpu_entry(0u, 0x5000u, 0x5FFFu,
+              G4MH_MPAT_E | G4MH_MPAT_RG | G4MH_MPAT_WG); /* no permissions */
+    mpu_entry(1u, 0x5000u, 0x5FFFu,
+              G4MH_MPAT_E | G4MH_MPAT_SR | G4MH_MPAT_RG | G4MH_MPAT_WG);
     CHECK(g4mh_mpu_permits(&g_tm, 0x5000u, 4u, G4MH_MPU_READ, false, 0u));
 }
 
@@ -5310,14 +5774,13 @@ static void test_mpu_bounds(void)
 static void test_mpu_spid_group(void)
 {
     g4mh_mpu_reset(&g_tm);
-    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPM,
-                            G4MH_MPM_MPE | G4MH_MPM_SVP);
+    (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPM, G4MH_MPM_MPE | G4MH_MPM_SVP);
 
     /* SPID 3 in slot 2, and only slot 2 permitted to read. */
     (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPID0 + 2u, 3u);
     mpu_entry(0u, 0x6000u, 0x6FFFu,
               G4MH_MPAT_E | G4MH_MPAT_SR | G4MH_MPAT_SW |
-              (1u << (G4MH_MPAT_RMPID_SHIFT + 2u)));
+                  (1u << (G4MH_MPAT_RMPID_SHIFT + 2u)));
 
     CHECK(g4mh_mpu_permits(&g_tm, 0x6000u, 4u, G4MH_MPU_READ, false, 3u));
     /* Same area, same mode bits, different master: refused. */
@@ -5333,13 +5796,13 @@ static void test_mpu_spid_group(void)
     /* WG bypasses the SPID group entirely. */
     mpu_entry(0u, 0x6000u, 0x6FFFu,
               G4MH_MPAT_E | G4MH_MPAT_SR | G4MH_MPAT_SW |
-              (1u << (G4MH_MPAT_RMPID_SHIFT + 2u)) | G4MH_MPAT_WG);
+                  (1u << (G4MH_MPAT_RMPID_SHIFT + 2u)) | G4MH_MPAT_WG);
     CHECK(g4mh_mpu_permits(&g_tm, 0x6000u, 4u, G4MH_MPU_WRITE, false, 9u));
 
     /* RMPIDn covers execution as well as reading. */
     mpu_entry(0u, 0x6000u, 0x6FFFu,
               G4MH_MPAT_E | G4MH_MPAT_SX |
-              (1u << (G4MH_MPAT_RMPID_SHIFT + 2u)));
+                  (1u << (G4MH_MPAT_RMPID_SHIFT + 2u)));
     CHECK(g4mh_mpu_permits(&g_tm, 0x6000u, 2u, G4MH_MPU_FETCH, false, 3u));
     CHECK(!g4mh_mpu_permits(&g_tm, 0x6000u, 2u, G4MH_MPU_FETCH, false, 4u));
 }
@@ -5360,11 +5823,13 @@ static void test_mpu_window(void)
     mpu_entry(6u, 0x8000u, 0x8FFFu, G4MH_MPAT_E | G4MH_MPAT_SW);
 
     g_tm.mpidx = 5u;
-    CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &v)); CHECK_EQ(v, 0x7000u);
+    CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &v));
+    CHECK_EQ(v, 0x7000u);
     CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPAT, &v));
     CHECK_EQ(v, (uint32_t)(G4MH_MPAT_E | G4MH_MPAT_SR));
     g_tm.mpidx = 6u;
-    CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &v)); CHECK_EQ(v, 0x8000u);
+    CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &v));
+    CHECK_EQ(v, 0x8000u);
 
     /*
      * Out of range: reads zero, writes go nowhere, and above all they do
@@ -5406,8 +5871,9 @@ static void test_mpu_window(void)
             (void)g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPAT, &at[e]);
         }
 
-        g_tm.mpidx = G4MH_MPU_ENTRIES;      /* the first invalid index */
-        CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &v)); CHECK_EQ(v, 0u);
+        g_tm.mpidx = G4MH_MPU_ENTRIES; /* the first invalid index */
+        CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &v));
+        CHECK_EQ(v, 0u);
         (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPLA, 0xDEADBE00u);
         (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPUA, 0xDEADBE00u);
         (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPAT, 0xFFFFFFFFu);
@@ -5415,9 +5881,12 @@ static void test_mpu_window(void)
         for (unsigned e = 0; e < G4MH_MPU_ENTRIES; e++) {
             uint32_t x;
             g_tm.mpidx = e;
-            (void)g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &x); CHECK_EQ(x, la[e]);
-            (void)g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPUA, &x); CHECK_EQ(x, ua[e]);
-            (void)g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPAT, &x); CHECK_EQ(x, at[e]);
+            (void)g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &x);
+            CHECK_EQ(x, la[e]);
+            (void)g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPUA, &x);
+            CHECK_EQ(x, ua[e]);
+            (void)g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPAT, &x);
+            CHECK_EQ(x, at[e]);
         }
     }
 #else
@@ -5426,9 +5895,11 @@ static void test_mpu_window(void)
     CHECK_EQ((uint32_t)G4MH_MPU_ENTRIES, 32u);
     g_tm.mpidx = 31u;
     (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPLA, 0xABCD0000u);
-    CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &v)); CHECK_EQ(v, 0xABCD0000u);
+    CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &v));
+    CHECK_EQ(v, 0xABCD0000u);
     g_tm.mpidx = 5u;
-    CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &v)); CHECK_EQ(v, 0x7000u);
+    CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &v));
+    CHECK_EQ(v, 0x7000u);
 #endif
 
     /* MPCFG reports the geometry and is read-only. */
@@ -5442,7 +5913,8 @@ static void test_mpu_window(void)
     /* The address registers drop bits 1:0, which read back zero. */
     g_tm.mpidx = 5u;
     (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPLA, 0x9003u);
-    CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &v)); CHECK_EQ(v, 0x9000u);
+    CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &v));
+    CHECK_EQ(v, 0x9000u);
 }
 #endif /* G4MH_EXT_MPU */
 
@@ -5468,9 +5940,9 @@ static void ceil_arm(unsigned ch, unsigned pri)
 static void ceil_reset(void)
 {
     tic_reset();
-    g_tic_cpu.psw = 0u;                 /* PSW.ID clear: interrupts on */
+    g_tic_cpu.psw = 0u; /* PSW.ID clear: interrupts on */
     g_tic_cpu.sr[0][G4MH_SR_PSW] = 0u;
-    g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_PLMR]   = G4MH_PLMR_RESET;
+    g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_PLMR] = G4MH_PLMR_RESET;
     g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_INTCFG] = G4MH_INTCFG_RESET;
     g_tic_cpu.intc = &g_tic;
 }
@@ -5519,8 +5991,7 @@ static void test_int_ceiling_ispr(void)
      * things -- the controller's request flag and the core's ceiling.
      */
     g4mh_intc_ack(&g_tic, 6u);
-    CHECK_EQ(g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_ISPR],
-             (1u << 5) | (1u << 2));
+    CHECK_EQ(g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_ISPR], (1u << 5) | (1u << 2));
 
     /*
      * EIRET clears the *highest* priority in service -- the lowest set
@@ -5595,7 +6066,7 @@ static void test_int_ceiling_eimask(void)
     ceil_reset();
     g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_INTCFG] =
         G4MH_INTCFG_RESET | G4MH_INTCFG_EPL;
-    g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_PLMR] = 63u;   /* PLMR out of the way */
+    g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_PLMR] = 63u; /* PLMR out of the way */
 
     /* EIMASK resets to 0, which admits nothing. */
     ceil_arm(3u, 10u);
@@ -5611,8 +6082,8 @@ static void test_int_ceiling_eimask(void)
     /* Acknowledging stores the priority, which blocks the same level. */
     g_tic_cpu.psw = 11u << G4MH_PSW_EIMASK_SHIFT;
     g4mh_cpu_ack_priority(&g_tic_cpu, 10u);
-    CHECK_EQ((g_tic_cpu.psw & G4MH_PSW_EIMASK_MASK) >>
-             G4MH_PSW_EIMASK_SHIFT, 10u);
+    CHECK_EQ((g_tic_cpu.psw & G4MH_PSW_EIMASK_MASK) >> G4MH_PSW_EIMASK_SHIFT,
+             10u);
     CHECK_EQ((uint32_t)(g4mh_cpu_pending_irq_pri(&g_tic_cpu, &pri) + 1), 0u);
 
     /* And ISPR was not touched, because EPL disables it. */

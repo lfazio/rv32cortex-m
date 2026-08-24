@@ -32,10 +32,10 @@ extern uint8_t __guest_ram_end[];
  * arriving over TFTP or through gdb's `load` repoints them and the
  * address space is rebuilt around the new numbers.
  */
-const uint8_t *board_img      = NULL;
-uint32_t       board_img_size = 0u;
+const uint8_t *board_img = NULL;
+uint32_t board_img_size = 0u;
 
-uint8_t *board_ram      = NULL;
+uint8_t *board_ram = NULL;
 uint32_t board_ram_size = 0u;
 
 /*
@@ -45,7 +45,7 @@ uint32_t board_ram_size = 0u;
  */
 void board_ram_init(void)
 {
-    board_ram      = __guest_ram_start;
+    board_ram = __guest_ram_start;
     board_ram_size = (uint32_t)(__guest_ram_end - __guest_ram_start);
 }
 
@@ -85,18 +85,18 @@ void board_ram_init(void)
  */
 static const board_region_t g_periph_map[] = {
     /* APB1 up to PWR: timers, RTC, WWDG, SPI2/3, USART2/3, UART4/5, I2C */
-    { "apb1",       0x40000000u, 0x00007000u, EMU_PERM_RW },
-    { "pwr",        0x40007000u, 0x00000400u, EMU_PERM_R  },
+    {"apb1", 0x40000000u, 0x00007000u, EMU_PERM_RW},
+    {"pwr", 0x40007000u, 0x00000400u, EMU_PERM_R},
     /* Rest of APB1, all of APB2, GPIO and CRC */
-    { "apb1b+apb2", 0x40007400u, 0x0001C400u, EMU_PERM_RW },
+    {"apb1b+apb2", 0x40007400u, 0x0001C400u, EMU_PERM_RW},
     /* RCC clock tree: CR, PLLCFGR, CFGR, CIR */
-    { "rcc-clock",  0x40023800u, 0x00000010u, EMU_PERM_R  },
+    {"rcc-clock", 0x40023800u, 0x00000010u, EMU_PERM_R},
     /* RCC resets and peripheral clock enables: the guest's to drive */
-    { "rcc-periph", 0x40023810u, 0x000003F0u, EMU_PERM_RW },
+    {"rcc-periph", 0x40023810u, 0x000003F0u, EMU_PERM_RW},
     /* Flash interface: ACR, keys, control, option bytes */
-    { "flash-ctl",  0x40023C00u, 0x00000400u, EMU_PERM_R  },
+    {"flash-ctl", 0x40023C00u, 0x00000400u, EMU_PERM_R},
     /* BKPSRAM, DMA1/2, USB OTG HS, and AHB2 up to 0x5FFFFFFF */
-    { "ahb1b+ahb2", 0x40024000u, 0x1FFDC000u, EMU_PERM_RW },
+    {"ahb1b+ahb2", 0x40024000u, 0x1FFDC000u, EMU_PERM_RW},
 };
 
 /*

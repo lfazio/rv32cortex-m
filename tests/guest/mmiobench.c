@@ -42,23 +42,23 @@
 /* CLINT mtime, driven at 1 MHz on every platform, so ticks are microseconds. */
 #define CLINT_MTIME (*(volatile uint32_t *)0x0200BFF8u)
 
-#define csr_read(name) ({                               \
-    uint32_t v_;                                        \
-    __asm__ volatile ("csrr %0, " name : "=r"(v_));     \
-    v_;                                                 \
-})
+#define csr_read(name)                                                         \
+    ({                                                                         \
+        uint32_t v_;                                                           \
+        __asm__ volatile("csrr %0, " name : "=r"(v_));                         \
+        v_;                                                                    \
+    })
 
-#define csr_write(name, v) \
-    __asm__ volatile ("csrw " name ", %0" :: "r"(v))
+#define csr_write(name, v) __asm__ volatile("csrw " name ", %0" ::"r"(v))
 
 /* STM32F4 peripheral addresses, used verbatim from RM0390. */
 #define RCC_AHB1ENR (*(volatile uint32_t *)0x40023830u)
 #define RCC_GPIOBEN (1u << 1)
 
-#define GPIOB_BASE  0x40020400u
-#define GPIOB_ODR   (*(volatile uint32_t *)(GPIOB_BASE + 0x14u))
-#define GPIOB_BSRR  (*(volatile uint32_t *)(GPIOB_BASE + 0x18u))
-#define GPIOB_IDR   (*(volatile uint32_t *)(GPIOB_BASE + 0x10u))
+#define GPIOB_BASE 0x40020400u
+#define GPIOB_ODR (*(volatile uint32_t *)(GPIOB_BASE + 0x14u))
+#define GPIOB_BSRR (*(volatile uint32_t *)(GPIOB_BASE + 0x18u))
+#define GPIOB_IDR (*(volatile uint32_t *)(GPIOB_BASE + 0x10u))
 
 /* The control target: an ordinary guest-RAM word. */
 static volatile uint32_t g_ram_reg;
@@ -132,7 +132,8 @@ static NOINLINE void k_rmw(volatile uint32_t *p)
 static NOINLINE void k_poll(volatile uint32_t *p)
 {
     for (uint32_t i = 0; i < ITER; i++) {
-        while ((*p & 0x80000000u) != 0u) { }
+        while ((*p & 0x80000000u) != 0u) {
+        }
     }
 }
 
@@ -180,8 +181,8 @@ static unsigned g_checks, g_fails;
  * and the closing mret; without it the handler ends in a plain ret and the
  * first fault stops the guest dead.
  */
-__attribute__((interrupt("machine"), aligned(4), used))
-static void trap_handler(void)
+__attribute__((interrupt("machine"), aligned(4), used)) static void
+trap_handler(void)
 {
     g_last_cause = csr_read("mcause");
     g_traps++;
@@ -220,12 +221,12 @@ static void check(const char *name, uint32_t got, uint32_t want)
  * the firmware dies instead of the test failing. Probing the passthrough
  * window means probing registers that exist.
  */
-#define RCC_CR       (*(volatile uint32_t *)0x40023800u)  /* first in hole */
-#define RCC_CIR      (*(volatile uint32_t *)0x4002380Cu)  /* last in hole  */
-#define ABOVE_HOLE   (*(volatile uint32_t *)0x40023810u)  /* AHB1RSTR      */
+#define RCC_CR (*(volatile uint32_t *)0x40023800u) /* first in hole */
+#define RCC_CIR (*(volatile uint32_t *)0x4002380Cu) /* last in hole  */
+#define ABOVE_HOLE (*(volatile uint32_t *)0x40023810u) /* AHB1RSTR      */
 /* One past the end of the passthrough window; no region covers it, so the
  * helper faults without ever reaching the bus. */
-#define OUTSIDE      (*(volatile uint32_t *)0x60000000u)
+#define OUTSIDE (*(volatile uint32_t *)0x60000000u)
 
 static void verify(void)
 {
@@ -247,7 +248,7 @@ static void verify(void)
         before = g_traps;
         const uint32_t cr = RCC_CR;
         check("hole-load-ok", g_traps - before, 0u);
-        check("hole-load-hsi", cr & 1u, 1u);   /* HSION, always set */
+        check("hole-load-hsi", cr & 1u, 1u); /* HSION, always set */
 
         /*
          * ...and not writable. Writing back the value just read keeps the
@@ -257,7 +258,7 @@ static void verify(void)
         before = g_traps;
         RCC_CR = cr;
         check("hole-store-traps", g_traps - before, 1u);
-        check("hole-store-cause", g_last_cause, 7u);   /* store access fault */
+        check("hole-store-cause", g_last_cause, 7u); /* store access fault */
 
         /* The last word of the hole is inside it too. */
         before = g_traps;
@@ -300,14 +301,14 @@ int main(void)
     puts_("kernel us insns ns_per_access\n");
 
     /* BSRR for stores and IDR for loads: neither disturbs pin state. */
-    report("read-mmio ", k_read,  &GPIOB_IDR);
-    report("read-ram  ", k_read,  &g_ram_reg);
+    report("read-mmio ", k_read, &GPIOB_IDR);
+    report("read-ram  ", k_read, &g_ram_reg);
     report("write-mmio", k_write, &GPIOB_BSRR);
     report("write-ram ", k_write, &g_ram_reg);
-    report("rmw-mmio  ", k_rmw,   &GPIOB_ODR);
-    report("rmw-ram   ", k_rmw,   &g_ram_reg);
-    report("poll-mmio ", k_poll,  &GPIOB_IDR);
-    report("poll-ram  ", k_poll,  &g_ram_reg);
+    report("rmw-mmio  ", k_rmw, &GPIOB_ODR);
+    report("rmw-ram   ", k_rmw, &g_ram_reg);
+    report("poll-mmio ", k_poll, &GPIOB_IDR);
+    report("poll-ram  ", k_poll, &g_ram_reg);
 
     puts_("MMIOBENCH-END\n");
     return 0;

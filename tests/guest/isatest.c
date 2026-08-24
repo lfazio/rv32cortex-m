@@ -18,30 +18,31 @@
 /* Platform                                                            */
 /* ------------------------------------------------------------------ */
 
-#define UART_BASE       0x10000000u
-#define UART_THR        (*(volatile uint8_t *)(UART_BASE + 0x00u))
-#define UART_LSR        (*(volatile uint8_t *)(UART_BASE + 0x05u))
+#define UART_BASE 0x10000000u
+#define UART_THR (*(volatile uint8_t *)(UART_BASE + 0x00u))
+#define UART_LSR (*(volatile uint8_t *)(UART_BASE + 0x05u))
 
-#define CLINT_BASE      0x02000000u
+#define CLINT_BASE 0x02000000u
 #define CLINT_MTIMECMP_LO (*(volatile uint32_t *)(CLINT_BASE + 0x4000u))
 #define CLINT_MTIMECMP_HI (*(volatile uint32_t *)(CLINT_BASE + 0x4004u))
-#define CLINT_MTIME_LO    (*(volatile uint32_t *)(CLINT_BASE + 0xBFF8u))
-#define CLINT_MTIME_HI    (*(volatile uint32_t *)(CLINT_BASE + 0xBFFCu))
+#define CLINT_MTIME_LO (*(volatile uint32_t *)(CLINT_BASE + 0xBFF8u))
+#define CLINT_MTIME_HI (*(volatile uint32_t *)(CLINT_BASE + 0xBFFCu))
 
-#define csr_read(name) ({                                   \
-    uint32_t v_;                                            \
-    __asm__ volatile ("csrr %0, " name : "=r"(v_));         \
-    v_;                                                     \
-})
+#define csr_read(name)                                                         \
+    ({                                                                         \
+        uint32_t v_;                                                           \
+        __asm__ volatile("csrr %0, " name : "=r"(v_));                         \
+        v_;                                                                    \
+    })
 
-#define csr_write(name, val) \
-    __asm__ volatile ("csrw " name ", %0" :: "r"((uint32_t)(val)))
+#define csr_write(name, val)                                                   \
+    __asm__ volatile("csrw " name ", %0" ::"r"((uint32_t)(val)))
 
-#define csr_set(name, val) \
-    __asm__ volatile ("csrs " name ", %0" :: "r"((uint32_t)(val)))
+#define csr_set(name, val)                                                     \
+    __asm__ volatile("csrs " name ", %0" ::"r"((uint32_t)(val)))
 
-#define csr_clear(name, val) \
-    __asm__ volatile ("csrc " name ", %0" :: "r"((uint32_t)(val)))
+#define csr_clear(name, val)                                                   \
+    __asm__ volatile("csrc " name ", %0" ::"r"((uint32_t)(val)))
 
 /* ------------------------------------------------------------------ */
 /* Console                                                             */
@@ -94,7 +95,7 @@ static void check(const char *name, uint32_t got, uint32_t want)
 /* Defeat constant folding so the emulator actually executes the op. */
 static inline uint32_t opaque(uint32_t v)
 {
-    __asm__ volatile ("" : "+r"(v));
+    __asm__ volatile("" : "+r"(v));
     return v;
 }
 
@@ -102,24 +103,24 @@ static inline uint32_t opaque(uint32_t v)
 /* APLIC (AIA), direct delivery mode                                   */
 /* ------------------------------------------------------------------ */
 
-#define APLIC_BASE          0x0C000000u
-#define APLIC_R(off)        (*(volatile uint32_t *)(APLIC_BASE + (off)))
-#define APLIC_DOMAINCFG     APLIC_R(0x0000u)
-#define APLIC_SOURCECFG(i)  APLIC_R(0x0004u + 4u * ((i) - 1u))
-#define APLIC_SETIP         APLIC_R(0x1C00u)
-#define APLIC_SETIPNUM      APLIC_R(0x1CDCu)
-#define APLIC_CLRIPNUM      APLIC_R(0x1DDCu)
-#define APLIC_SETIE         APLIC_R(0x1E00u)
-#define APLIC_SETIENUM      APLIC_R(0x1EDCu)
-#define APLIC_CLRIENUM      APLIC_R(0x1FDCu)
-#define APLIC_TARGET(i)     APLIC_R(0x3004u + 4u * ((i) - 1u))
-#define APLIC_IDELIVERY     APLIC_R(0x4000u)
-#define APLIC_ITHRESHOLD    APLIC_R(0x4008u)
-#define APLIC_TOPI          APLIC_R(0x4018u)
-#define APLIC_CLAIMI        APLIC_R(0x401Cu)
+#define APLIC_BASE 0x0C000000u
+#define APLIC_R(off) (*(volatile uint32_t *)(APLIC_BASE + (off)))
+#define APLIC_DOMAINCFG APLIC_R(0x0000u)
+#define APLIC_SOURCECFG(i) APLIC_R(0x0004u + 4u * ((i) - 1u))
+#define APLIC_SETIP APLIC_R(0x1C00u)
+#define APLIC_SETIPNUM APLIC_R(0x1CDCu)
+#define APLIC_CLRIPNUM APLIC_R(0x1DDCu)
+#define APLIC_SETIE APLIC_R(0x1E00u)
+#define APLIC_SETIENUM APLIC_R(0x1EDCu)
+#define APLIC_CLRIENUM APLIC_R(0x1FDCu)
+#define APLIC_TARGET(i) APLIC_R(0x3004u + 4u * ((i) - 1u))
+#define APLIC_IDELIVERY APLIC_R(0x4000u)
+#define APLIC_ITHRESHOLD APLIC_R(0x4008u)
+#define APLIC_TOPI APLIC_R(0x4018u)
+#define APLIC_CLAIMI APLIC_R(0x401Cu)
 
-#define APLIC_SM_INACTIVE   0u
-#define APLIC_SM_EDGE_RISE  4u
+#define APLIC_SM_INACTIVE 0u
+#define APLIC_SM_EDGE_RISE 4u
 
 /* ------------------------------------------------------------------ */
 /* Trap handling                                                       */
@@ -143,8 +144,8 @@ static volatile uint32_t g_smode_resume;
  * instruction by hand, otherwise the handler would return straight onto it
  * and loop forever.
  */
-__attribute__((interrupt("machine"), aligned(4), used))
-static void trap_handler(void)
+__attribute__((interrupt("machine"), aligned(4), used)) static void
+trap_handler(void)
 {
     const uint32_t cause = csr_read("mcause");
 
@@ -178,7 +179,7 @@ static void trap_handler(void)
          * there is no other way back up a privilege level.
          */
         csr_write("mepc", g_smode_resume);
-        csr_set("mstatus", 0x1800u);          /* MPP = M */
+        csr_set("mstatus", 0x1800u); /* MPP = M */
         return;
     }
 
@@ -218,33 +219,33 @@ static void test_alu(void)
     uint32_t a = opaque(0x12345678u);
     uint32_t b = opaque(0x0000FFFFu);
 
-    check("addi",  opaque(100u) + 23u, 123u);
+    check("addi", opaque(100u) + 23u, 123u);
     check("addi-neg", opaque(100u) + (uint32_t)-1, 99u);
-    check("slti",  (uint32_t)((int32_t)opaque((uint32_t)-5) < 3), 1u);
+    check("slti", (uint32_t)((int32_t)opaque((uint32_t)-5) < 3), 1u);
     check("sltiu", (uint32_t)(opaque((uint32_t)-5) < 3u), 0u);
-    check("xori",  opaque(0xF0F0F0F0u) ^ 0xFFu, 0xF0F0F00Fu);
-    check("ori",   opaque(0xF0F0F000u) | 0x0Fu, 0xF0F0F00Fu);
-    check("andi",  opaque(0xF0F0F0F0u) & 0xFFu, 0xF0u);
+    check("xori", opaque(0xF0F0F0F0u) ^ 0xFFu, 0xF0F0F00Fu);
+    check("ori", opaque(0xF0F0F000u) | 0x0Fu, 0xF0F0F00Fu);
+    check("andi", opaque(0xF0F0F0F0u) & 0xFFu, 0xF0u);
 
-    check("slli",  opaque(1u) << 31, 0x80000000u);
-    check("srli",  opaque(0x80000000u) >> 31, 1u);
-    check("srai",  (uint32_t)((int32_t)opaque(0x80000000u) >> 31), 0xFFFFFFFFu);
-    check("srai-4",(uint32_t)((int32_t)opaque(0xFFFFFFF0u) >> 4), 0xFFFFFFFFu);
+    check("slli", opaque(1u) << 31, 0x80000000u);
+    check("srli", opaque(0x80000000u) >> 31, 1u);
+    check("srai", (uint32_t)((int32_t)opaque(0x80000000u) >> 31), 0xFFFFFFFFu);
+    check("srai-4", (uint32_t)((int32_t)opaque(0xFFFFFFF0u) >> 4), 0xFFFFFFFFu);
 
-    check("add",   a + b, 0x12355677u);
-    check("sub",   a - b, 0x12335679u);
-    check("slt",   (uint32_t)((int32_t)a < (int32_t)b), 0u);
-    check("sltu",  (uint32_t)(a < b), 0u);
-    check("xor",   a ^ b, 0x1234A987u);
-    check("or",    a | b, 0x1234FFFFu);
-    check("and",   a & b, 0x00005678u);
+    check("add", a + b, 0x12355677u);
+    check("sub", a - b, 0x12335679u);
+    check("slt", (uint32_t)((int32_t)a < (int32_t)b), 0u);
+    check("sltu", (uint32_t)(a < b), 0u);
+    check("xor", a ^ b, 0x1234A987u);
+    check("or", a | b, 0x1234FFFFu);
+    check("and", a & b, 0x00005678u);
 
     /* Register shifts use only the low 5 bits of the amount. */
     uint32_t sh = opaque(15u);
-    check("sll",   a << sh, 0x12345678u << 15);
-    check("srl",   a >> sh, 0x12345678u >> 15);
-    check("sra",   (uint32_t)((int32_t)opaque(0x80000000u) >> sh),
-                   (uint32_t)((int32_t)0x80000000 >> 15));
+    check("sll", a << sh, 0x12345678u << 15);
+    check("srl", a >> sh, 0x12345678u >> 15);
+    check("sra", (uint32_t)((int32_t)opaque(0x80000000u) >> sh),
+          (uint32_t)((int32_t)0x80000000 >> 15));
 
     /* Shift amounts use only the low 5 bits of the register. */
     check("sll-mask", opaque(1u) << (opaque(33u) & 31u), 2u);
@@ -253,12 +254,12 @@ static void test_alu(void)
 static void test_lui_auipc(void)
 {
     uint32_t v;
-    __asm__ volatile ("lui %0, 0x12345" : "=r"(v));
+    __asm__ volatile("lui %0, 0x12345" : "=r"(v));
     check("lui", v, 0x12345000u);
 
     /* auipc 0 yields the address of the auipc itself. */
     uint32_t pc, here;
-    __asm__ volatile ("1: auipc %0, 0\n\t la %1, 1b" : "=r"(pc), "=r"(here));
+    __asm__ volatile("1: auipc %0, 0\n\t la %1, 1b" : "=r"(pc), "=r"(here));
     check("auipc", pc, here);
 }
 
@@ -268,17 +269,23 @@ static void test_branches(void)
     int32_t neg = (int32_t)opaque((uint32_t)-1);
     uint32_t big = opaque(0xFFFFFFFFu);
 
-    if (opaque(5u) == 5u)                   taken |= 1u << 0;   /* beq  */
-    if (opaque(5u) != 6u)                   taken |= 1u << 1;   /* bne  */
-    if (neg < 1)                            taken |= 1u << 2;   /* blt  */
-    if ((int32_t)opaque(1u) >= neg)         taken |= 1u << 3;   /* bge  */
-    if (opaque(1u) < big)                   taken |= 1u << 4;   /* bltu */
-    if (big >= opaque(1u))                  taken |= 1u << 5;   /* bgeu */
+    if (opaque(5u) == 5u)
+        taken |= 1u << 0; /* beq  */
+    if (opaque(5u) != 6u)
+        taken |= 1u << 1; /* bne  */
+    if (neg < 1)
+        taken |= 1u << 2; /* blt  */
+    if ((int32_t)opaque(1u) >= neg)
+        taken |= 1u << 3; /* bge  */
+    if (opaque(1u) < big)
+        taken |= 1u << 4; /* bltu */
+    if (big >= opaque(1u))
+        taken |= 1u << 5; /* bgeu */
 
     check("branches", taken, 0x3Fu);
 }
 
-static uint8_t  g_mem8[8];
+static uint8_t g_mem8[8];
 static uint16_t g_mem16[4];
 static uint32_t g_mem32[4];
 
@@ -290,7 +297,7 @@ static uint32_t g_mem32[4];
 static volatile union {
     uint32_t w;
     uint16_t h[2];
-    uint8_t  b[4];
+    uint8_t b[4];
 } g_pun;
 
 static void test_loadstore(void)
@@ -298,13 +305,13 @@ static void test_loadstore(void)
     g_mem8[0] = 0x80u;
     g_mem8[1] = 0x7Fu;
     check("lbu", g_mem8[0], 0x80u);
-    check("lb",  (uint32_t)(int32_t)(int8_t)g_mem8[0], 0xFFFFFF80u);
+    check("lb", (uint32_t)(int32_t)(int8_t)g_mem8[0], 0xFFFFFF80u);
     check("lb+", (uint32_t)(int32_t)(int8_t)g_mem8[1], 0x7Fu);
 
     g_mem16[0] = 0x8000u;
     g_mem16[1] = 0x7FFFu;
     check("lhu", g_mem16[0], 0x8000u);
-    check("lh",  (uint32_t)(int32_t)(int16_t)g_mem16[0], 0xFFFF8000u);
+    check("lh", (uint32_t)(int32_t)(int16_t)g_mem16[0], 0xFFFF8000u);
     check("lh+", (uint32_t)(int32_t)(int16_t)g_mem16[1], 0x7FFFu);
 
     g_mem32[0] = 0xDEADBEEFu;
@@ -327,25 +334,31 @@ static void test_loadstore(void)
 static void test_muldiv(void)
 {
     check("mul", opaque(0x12345678u) * opaque(0x10u), 0x23456780u);
-    check("mul-neg", (uint32_t)((int32_t)opaque((uint32_t)-3) * 5), (uint32_t)-15);
+    check("mul-neg", (uint32_t)((int32_t)opaque((uint32_t)-3) * 5),
+          (uint32_t)-15);
 
     check("mulh",
           (uint32_t)(((int64_t)(int32_t)opaque(0x40000000u) *
-                      (int64_t)(int32_t)opaque(0x00000004u)) >> 32), 1u);
+                      (int64_t)(int32_t)opaque(0x00000004u)) >>
+                     32),
+          1u);
     check("mulhu",
           (uint32_t)(((uint64_t)opaque(0x80000000u) *
-                      (uint64_t)opaque(0x00000002u)) >> 32), 1u);
+                      (uint64_t)opaque(0x00000002u)) >>
+                     32),
+          1u);
     check("mulhsu",
           (uint32_t)(((int64_t)(int32_t)opaque(0xFFFFFFFFu) *
-                      (int64_t)(uint64_t)opaque(0x00000002u)) >> 32),
+                      (int64_t)(uint64_t)opaque(0x00000002u)) >>
+                     32),
           0xFFFFFFFFu);
 
-    check("div",  (uint32_t)((int32_t)opaque(100u) / (int32_t)opaque(7u)), 14u);
+    check("div", (uint32_t)((int32_t)opaque(100u) / (int32_t)opaque(7u)), 14u);
     check("div-neg",
           (uint32_t)((int32_t)opaque((uint32_t)-100) / (int32_t)opaque(7u)),
           (uint32_t)-14);
     check("divu", opaque(100u) / opaque(7u), 14u);
-    check("rem",  (uint32_t)((int32_t)opaque(100u) % (int32_t)opaque(7u)), 2u);
+    check("rem", (uint32_t)((int32_t)opaque(100u) % (int32_t)opaque(7u)), 2u);
     check("rem-neg",
           (uint32_t)((int32_t)opaque((uint32_t)-100) % (int32_t)opaque(7u)),
           (uint32_t)-2);
@@ -357,30 +370,34 @@ static void test_muldiv(void)
      * C would give the compiler licence to do anything here.
      */
     uint32_t r;
-    __asm__ volatile ("div %0, %1, %2"
-                      : "=r"(r) : "r"(opaque(1u)), "r"(opaque(0u)));
+    __asm__ volatile("div %0, %1, %2"
+                     : "=r"(r)
+                     : "r"(opaque(1u)), "r"(opaque(0u)));
     check("div-by-0", r, 0xFFFFFFFFu);
 
-    __asm__ volatile ("divu %0, %1, %2"
-                      : "=r"(r) : "r"(opaque(1u)), "r"(opaque(0u)));
+    __asm__ volatile("divu %0, %1, %2"
+                     : "=r"(r)
+                     : "r"(opaque(1u)), "r"(opaque(0u)));
     check("divu-by-0", r, 0xFFFFFFFFu);
 
-    __asm__ volatile ("rem %0, %1, %2"
-                      : "=r"(r) : "r"(opaque(123u)), "r"(opaque(0u)));
+    __asm__ volatile("rem %0, %1, %2"
+                     : "=r"(r)
+                     : "r"(opaque(123u)), "r"(opaque(0u)));
     check("rem-by-0", r, 123u);
 
-    __asm__ volatile ("remu %0, %1, %2"
-                      : "=r"(r) : "r"(opaque(123u)), "r"(opaque(0u)));
+    __asm__ volatile("remu %0, %1, %2"
+                     : "=r"(r)
+                     : "r"(opaque(123u)), "r"(opaque(0u)));
     check("remu-by-0", r, 123u);
 
-    __asm__ volatile ("div %0, %1, %2"
-                      : "=r"(r)
-                      : "r"(opaque(0x80000000u)), "r"(opaque(0xFFFFFFFFu)));
+    __asm__ volatile("div %0, %1, %2"
+                     : "=r"(r)
+                     : "r"(opaque(0x80000000u)), "r"(opaque(0xFFFFFFFFu)));
     check("div-overflow", r, 0x80000000u);
 
-    __asm__ volatile ("rem %0, %1, %2"
-                      : "=r"(r)
-                      : "r"(opaque(0x80000000u)), "r"(opaque(0xFFFFFFFFu)));
+    __asm__ volatile("rem %0, %1, %2"
+                     : "=r"(r)
+                     : "r"(opaque(0x80000000u)), "r"(opaque(0xFFFFFFFFu)));
     check("rem-overflow", r, 0u);
 }
 
@@ -395,80 +412,100 @@ static void test_atomics(void)
     uint32_t old, sc;
 
     g_atomic = 100u;
-    __asm__ volatile ("amoadd.w %0, %2, (%1)"
-                      : "=&r"(old) : "r"(&g_atomic), "r"(11u) : "memory");
+    __asm__ volatile("amoadd.w %0, %2, (%1)"
+                     : "=&r"(old)
+                     : "r"(&g_atomic), "r"(11u)
+                     : "memory");
     check("amoadd-old", old, 100u);
     check("amoadd-new", g_atomic, 111u);
 
     g_atomic = 0xF0u;
-    __asm__ volatile ("amoswap.w %0, %2, (%1)"
-                      : "=&r"(old) : "r"(&g_atomic), "r"(0x0Fu) : "memory");
+    __asm__ volatile("amoswap.w %0, %2, (%1)"
+                     : "=&r"(old)
+                     : "r"(&g_atomic), "r"(0x0Fu)
+                     : "memory");
     check("amoswap-old", old, 0xF0u);
     check("amoswap-new", g_atomic, 0x0Fu);
 
     g_atomic = 0xF0F0u;
-    __asm__ volatile ("amoand.w %0, %2, (%1)"
-                      : "=&r"(old) : "r"(&g_atomic), "r"(0xFF00u) : "memory");
+    __asm__ volatile("amoand.w %0, %2, (%1)"
+                     : "=&r"(old)
+                     : "r"(&g_atomic), "r"(0xFF00u)
+                     : "memory");
     check("amoand", g_atomic, 0xF000u);
 
     g_atomic = 0xF000u;
-    __asm__ volatile ("amoor.w %0, %2, (%1)"
-                      : "=&r"(old) : "r"(&g_atomic), "r"(0x000Fu) : "memory");
+    __asm__ volatile("amoor.w %0, %2, (%1)"
+                     : "=&r"(old)
+                     : "r"(&g_atomic), "r"(0x000Fu)
+                     : "memory");
     check("amoor", g_atomic, 0xF00Fu);
 
     g_atomic = 0xFFFFu;
-    __asm__ volatile ("amoxor.w %0, %2, (%1)"
-                      : "=&r"(old) : "r"(&g_atomic), "r"(0x0FF0u) : "memory");
+    __asm__ volatile("amoxor.w %0, %2, (%1)"
+                     : "=&r"(old)
+                     : "r"(&g_atomic), "r"(0x0FF0u)
+                     : "memory");
     check("amoxor", g_atomic, 0xF00Fu);
 
     /* Signed min/max must treat the stored value as signed. */
     g_atomic = (uint32_t)-5;
-    __asm__ volatile ("amomin.w %0, %2, (%1)"
-                      : "=&r"(old) : "r"(&g_atomic), "r"(3u) : "memory");
+    __asm__ volatile("amomin.w %0, %2, (%1)"
+                     : "=&r"(old)
+                     : "r"(&g_atomic), "r"(3u)
+                     : "memory");
     check("amomin", g_atomic, (uint32_t)-5);
 
     g_atomic = (uint32_t)-5;
-    __asm__ volatile ("amomax.w %0, %2, (%1)"
-                      : "=&r"(old) : "r"(&g_atomic), "r"(3u) : "memory");
+    __asm__ volatile("amomax.w %0, %2, (%1)"
+                     : "=&r"(old)
+                     : "r"(&g_atomic), "r"(3u)
+                     : "memory");
     check("amomax", g_atomic, 3u);
 
     /* ...and unsigned min/max must not. */
     g_atomic = (uint32_t)-5;
-    __asm__ volatile ("amominu.w %0, %2, (%1)"
-                      : "=&r"(old) : "r"(&g_atomic), "r"(3u) : "memory");
+    __asm__ volatile("amominu.w %0, %2, (%1)"
+                     : "=&r"(old)
+                     : "r"(&g_atomic), "r"(3u)
+                     : "memory");
     check("amominu", g_atomic, 3u);
 
     g_atomic = (uint32_t)-5;
-    __asm__ volatile ("amomaxu.w %0, %2, (%1)"
-                      : "=&r"(old) : "r"(&g_atomic), "r"(3u) : "memory");
+    __asm__ volatile("amomaxu.w %0, %2, (%1)"
+                     : "=&r"(old)
+                     : "r"(&g_atomic), "r"(3u)
+                     : "memory");
     check("amomaxu", g_atomic, (uint32_t)-5);
 
     /* An uninterrupted LR/SC pair must succeed. */
     g_atomic = 7u;
-    __asm__ volatile ("lr.w %0, (%2)\n\t"
-                      "sc.w %1, %3, (%2)"
-                      : "=&r"(old), "=&r"(sc)
-                      : "r"(&g_atomic), "r"(42u)
-                      : "memory");
+    __asm__ volatile("lr.w %0, (%2)\n\t"
+                     "sc.w %1, %3, (%2)"
+                     : "=&r"(old), "=&r"(sc)
+                     : "r"(&g_atomic), "r"(42u)
+                     : "memory");
     check("lr.w", old, 7u);
     check("sc.w-ok", sc, 0u);
     check("sc.w-stored", g_atomic, 42u);
 
     /* A store between LR and SC must break the reservation. */
     g_atomic = 7u;
-    __asm__ volatile ("lr.w %0, (%2)\n\t"
-                      "sw %3, 0(%2)\n\t"
-                      "sc.w %1, %4, (%2)"
-                      : "=&r"(old), "=&r"(sc)
-                      : "r"(&g_atomic), "r"(9u), "r"(42u)
-                      : "memory");
+    __asm__ volatile("lr.w %0, (%2)\n\t"
+                     "sw %3, 0(%2)\n\t"
+                     "sc.w %1, %4, (%2)"
+                     : "=&r"(old), "=&r"(sc)
+                     : "r"(&g_atomic), "r"(9u), "r"(42u)
+                     : "memory");
     check("sc.w-broken", sc != 0u, 1u);
     check("sc.w-nostore", g_atomic, 9u);
 
     /* SC without a preceding LR must fail. */
     g_atomic = 1u;
-    __asm__ volatile ("sc.w %0, %2, (%1)"
-                      : "=&r"(sc) : "r"(&g_atomic), "r"(99u) : "memory");
+    __asm__ volatile("sc.w %0, %2, (%1)"
+                     : "=&r"(sc)
+                     : "r"(&g_atomic), "r"(99u)
+                     : "memory");
     check("sc.w-bare", sc != 0u, 1u);
 }
 
@@ -483,21 +520,21 @@ static void test_csr(void)
 
     /* csrrs with a non-zero source sets bits and returns the old value. */
     uint32_t old;
-    __asm__ volatile ("csrrs %0, mscratch, %1" : "=r"(old) : "r"(0x0000FFFFu));
+    __asm__ volatile("csrrs %0, mscratch, %1" : "=r"(old) : "r"(0x0000FFFFu));
     check("csrrs-old", old, 0xA5A5A5A5u);
     check("csrrs-new", csr_read("mscratch"), 0xA5A5FFFFu);
 
-    __asm__ volatile ("csrrc %0, mscratch, %1" : "=r"(old) : "r"(0x0000FF00u));
+    __asm__ volatile("csrrc %0, mscratch, %1" : "=r"(old) : "r"(0x0000FF00u));
     check("csrrc-new", csr_read("mscratch"), 0xA5A500FFu);
 
     /* csrrs with x0 as the source must not write. */
     csr_write("mscratch", 0x5A5A5A5Au);
-    __asm__ volatile ("csrrs %0, mscratch, zero" : "=r"(old));
+    __asm__ volatile("csrrs %0, mscratch, zero" : "=r"(old));
     check("csrrs-nowrite", csr_read("mscratch"), 0x5A5A5A5Au);
 
     /* misa must advertise exactly the extensions we built. */
     const uint32_t misa = csr_read("misa");
-    check("misa-mxl", misa >> 30, 1u);                        /* MXL=32 */
+    check("misa-mxl", misa >> 30, 1u); /* MXL=32 */
     check("misa-I", (misa >> ('I' - 'A')) & 1u, 1u);
     check("misa-M", (misa >> ('M' - 'A')) & 1u, 1u);
     check("misa-A", (misa >> ('A' - 'A')) & 1u, 1u);
@@ -508,7 +545,8 @@ static void test_csr(void)
     /* Counters must advance. */
     const uint32_t c0 = csr_read("mcycle");
     const uint32_t i0 = csr_read("minstret");
-    for (volatile int i = 0; i < 10; i++) { }
+    for (volatile int i = 0; i < 10; i++) {
+    }
     check("mcycle-advances", csr_read("mcycle") > c0, 1u);
     check("minstret-advances", csr_read("minstret") > i0, 1u);
 }
@@ -527,21 +565,21 @@ static void test_traps(void)
      * illegal *16-bit* instructions and would trap twice.
      */
     before = g_trap_count;
-    __asm__ volatile (".word 0xffffffff");
+    __asm__ volatile(".word 0xffffffff");
     check("trap-illegal-taken", g_trap_count - before, 1u);
     check("trap-illegal-cause", g_last_cause, 2u);
     check("trap-illegal-tval", g_last_tval, 0xFFFFFFFFu);
 
     /* A 16-bit illegal encoding must report the 2-byte parcel in mtval. */
     before = g_trap_count;
-    __asm__ volatile (".half 0x0000");
+    __asm__ volatile(".half 0x0000");
     check("trap-illegal16-taken", g_trap_count - before, 1u);
     check("trap-illegal16-cause", g_last_cause, 2u);
     check("trap-illegal16-tval", g_last_tval, 0u);
 
     /* Breakpoint. */
     before = g_trap_count;
-    __asm__ volatile ("ebreak");
+    __asm__ volatile("ebreak");
     check("trap-ebreak-taken", g_trap_count - before, 1u);
     check("trap-ebreak-cause", g_last_cause, 3u);
 
@@ -550,7 +588,7 @@ static void test_traps(void)
     {
         uint32_t dst;
         volatile uint32_t *bad = (volatile uint32_t *)((uintptr_t)g_mem32 + 1u);
-        __asm__ volatile ("lw %0, 0(%1)" : "=r"(dst) : "r"(bad));
+        __asm__ volatile("lw %0, 0(%1)" : "=r"(dst) : "r"(bad));
         (void)dst;
     }
     check("trap-lw-misaligned-taken", g_trap_count - before, 1u);
@@ -560,7 +598,7 @@ static void test_traps(void)
     before = g_trap_count;
     {
         volatile uint32_t *bad = (volatile uint32_t *)((uintptr_t)g_mem32 + 1u);
-        __asm__ volatile ("sw %0, 0(%1)" :: "r"(0u), "r"(bad));
+        __asm__ volatile("sw %0, 0(%1)" ::"r"(0u), "r"(bad));
     }
     check("trap-sw-misaligned-taken", g_trap_count - before, 1u);
     check("trap-sw-misaligned-cause", g_last_cause, 6u);
@@ -570,7 +608,7 @@ static void test_traps(void)
     {
         uint32_t dst;
         volatile uint32_t *bad = (volatile uint32_t *)0x70000000u;
-        __asm__ volatile ("lw %0, 0(%1)" : "=r"(dst) : "r"(bad));
+        __asm__ volatile("lw %0, 0(%1)" : "=r"(dst) : "r"(bad));
         (void)dst;
     }
     check("trap-access-taken", g_trap_count - before, 1u);
@@ -581,7 +619,7 @@ static void test_traps(void)
     before = g_trap_count;
     {
         uint32_t v;
-        __asm__ volatile ("csrr %0, 0x7c0" : "=r"(v));
+        __asm__ volatile("csrr %0, 0x7c0" : "=r"(v));
         (void)v;
     }
     check("trap-badcsr-taken", g_trap_count - before, 1u);
@@ -605,8 +643,8 @@ static void test_timer_interrupt(void)
     CLINT_MTIMECMP_LO = CLINT_MTIME_LO + 20u;
     CLINT_MTIMECMP_HI = CLINT_MTIME_HI;
 
-    csr_set("mie", 1u << 7);        /* MTIE */
-    csr_set("mstatus", 1u << 3);    /* MIE  */
+    csr_set("mie", 1u << 7); /* MTIE */
+    csr_set("mstatus", 1u << 3); /* MIE  */
 
     /* Spin until the handler fires or we give up. */
     volatile int guard = 0;
@@ -640,7 +678,7 @@ static void test_cbo(void)
      * size is 32 bytes, so exactly the first 8 words must be cleared and
      * the ninth must be untouched.
      */
-    __asm__ volatile ("cbo.zero (%0)" :: "r"(&g_block[0]) : "memory");
+    __asm__ volatile("cbo.zero (%0)" ::"r"(&g_block[0]) : "memory");
 
     uint32_t cleared = 0, intact = 0;
     for (int i = 0; i < 8; i++) {
@@ -662,14 +700,14 @@ static void test_cbo(void)
      * without trapping rather than raising illegal instruction.
      */
     const uint32_t before = g_trap_count;
-    __asm__ volatile ("cbo.clean (%0)" :: "r"(&g_block[0]) : "memory");
-    __asm__ volatile ("cbo.inval (%0)" :: "r"(&g_block[0]) : "memory");
-    __asm__ volatile ("cbo.flush (%0)" :: "r"(&g_block[0]) : "memory");
+    __asm__ volatile("cbo.clean (%0)" ::"r"(&g_block[0]) : "memory");
+    __asm__ volatile("cbo.inval (%0)" ::"r"(&g_block[0]) : "memory");
+    __asm__ volatile("cbo.flush (%0)" ::"r"(&g_block[0]) : "memory");
     check("cbo-maint-no-trap", g_trap_count - before, 0u);
 
     /* A CBO against an unmapped address must fault, not fault silently. */
     const uint32_t b2 = g_trap_count;
-    __asm__ volatile ("cbo.clean (%0)" :: "r"(0x70000000u) : "memory");
+    __asm__ volatile("cbo.clean (%0)" ::"r"(0x70000000u) : "memory");
     check("cbo-unmapped-traps", g_trap_count - b2, 1u);
 }
 
@@ -699,18 +737,22 @@ static void test_zacas(void)
     g_cas = 0x11112222u;
     rd = 0x11112222u;
     sw = 0xAABBCCDDu;
-    __asm__ volatile ("amocas.w %0, %2, (%1)"
-                      : "+r"(rd) : "r"(&g_cas), "r"(sw) : "memory");
-    check("amocas-eq-rd",  rd, 0x11112222u);
+    __asm__ volatile("amocas.w %0, %2, (%1)"
+                     : "+r"(rd)
+                     : "r"(&g_cas), "r"(sw)
+                     : "memory");
+    check("amocas-eq-rd", rd, 0x11112222u);
     check("amocas-eq-mem", g_cas, 0xAABBCCDDu);
 
     /* Comparand differs: no store, rd still returns what memory held. */
     g_cas = 0x11112222u;
     rd = 0x99998888u;
     sw = 0xAABBCCDDu;
-    __asm__ volatile ("amocas.w %0, %2, (%1)"
-                      : "+r"(rd) : "r"(&g_cas), "r"(sw) : "memory");
-    check("amocas-ne-rd",  rd, 0x11112222u);
+    __asm__ volatile("amocas.w %0, %2, (%1)"
+                     : "+r"(rd)
+                     : "r"(&g_cas), "r"(sw)
+                     : "memory");
+    check("amocas-ne-rd", rd, 0x11112222u);
     check("amocas-ne-mem", g_cas, 0x11112222u);
 
     /*
@@ -728,23 +770,24 @@ static void test_zacas(void)
     uint32_t got_lo, got_hi, mem_lo, mem_hi;
 
     {
-        register uint32_t p0 __asm__("a0") = 0x33334444u;   /* comparand lo */
-        register uint32_t p1 __asm__("a1") = 0x11112222u;   /* comparand hi */
-        register uint32_t s0 __asm__("a2") = 0xCCCCDDDDu;   /* swap lo      */
-        register uint32_t s1 __asm__("a3") = 0xAAAABBBBu;   /* swap hi      */
+        register uint32_t p0 __asm__("a0") = 0x33334444u; /* comparand lo */
+        register uint32_t p1 __asm__("a1") = 0x11112222u; /* comparand hi */
+        register uint32_t s0 __asm__("a2") = 0xCCCCDDDDu; /* swap lo      */
+        register uint32_t s1 __asm__("a3") = 0xAAAABBBBu; /* swap hi      */
 
         g_cas64 = 0x1111222233334444ull;
-        __asm__ volatile ("amocas.d %0, %2, (%4)"
-                          : "+r"(p0), "+r"(p1)
-                          : "r"(s0), "r"(s1), "r"(&g_cas64) : "memory");
+        __asm__ volatile("amocas.d %0, %2, (%4)"
+                         : "+r"(p0), "+r"(p1)
+                         : "r"(s0), "r"(s1), "r"(&g_cas64)
+                         : "memory");
         got_lo = p0;
         got_hi = p1;
     }
     mem_lo = (uint32_t)g_cas64;
     mem_hi = (uint32_t)(g_cas64 >> 32);
-    check("amocas.d-eq-lo",   got_lo, 0x33334444u);
-    check("amocas.d-eq-hi",   got_hi, 0x11112222u);
-    check("amocas.d-eq-mem",  mem_lo, 0xCCCCDDDDu);
+    check("amocas.d-eq-lo", got_lo, 0x33334444u);
+    check("amocas.d-eq-hi", got_hi, 0x11112222u);
+    check("amocas.d-eq-mem", mem_lo, 0xCCCCDDDDu);
     check("amocas.d-eq-memh", mem_hi, 0xAAAABBBBu);
 
     /* Mismatching comparand: no store, but rd still takes the loaded value. */
@@ -755,17 +798,18 @@ static void test_zacas(void)
         register uint32_t s1 __asm__("a3") = 0xAAAABBBBu;
 
         g_cas64 = 0x1111222233334444ull;
-        __asm__ volatile ("amocas.d %0, %2, (%4)"
-                          : "+r"(p0), "+r"(p1)
-                          : "r"(s0), "r"(s1), "r"(&g_cas64) : "memory");
+        __asm__ volatile("amocas.d %0, %2, (%4)"
+                         : "+r"(p0), "+r"(p1)
+                         : "r"(s0), "r"(s1), "r"(&g_cas64)
+                         : "memory");
         got_lo = p0;
         got_hi = p1;
     }
     mem_lo = (uint32_t)g_cas64;
     mem_hi = (uint32_t)(g_cas64 >> 32);
-    check("amocas.d-ne-lo",   got_lo, 0x33334444u);
-    check("amocas.d-ne-hi",   got_hi, 0x11112222u);
-    check("amocas.d-ne-mem",  mem_lo, 0x33334444u);
+    check("amocas.d-ne-lo", got_lo, 0x33334444u);
+    check("amocas.d-ne-hi", got_hi, 0x11112222u);
+    check("amocas.d-ne-mem", mem_lo, 0x33334444u);
     check("amocas.d-ne-memh", mem_hi, 0x11112222u);
 }
 #endif
@@ -778,29 +822,33 @@ static void test_zacas(void)
 
 /* Operate on raw bit patterns: the guest ABI is ilp32 (soft-float), so
  * floats cannot be passed to check() as floats without conversion. */
-#define FOP2(mn, a, b) ({                                       \
-    uint32_t r_, x_ = (a), y_ = (b);                            \
-    __asm__ volatile ("fmv.w.x fa0, %1\n\t"                    \
-                      "fmv.w.x fa1, %2\n\t"                    \
-                      mn " fa2, fa0, fa1\n\t"                  \
-                      "fmv.x.w %0, fa2"                         \
-                      : "=r"(r_) : "r"(x_), "r"(y_)             \
-                      : "fa0", "fa1", "fa2");                   \
-    r_; })
+#define FOP2(mn, a, b)                                                         \
+    ({                                                                         \
+        uint32_t r_, x_ = (a), y_ = (b);                                       \
+        __asm__ volatile("fmv.w.x fa0, %1\n\t"                                 \
+                         "fmv.w.x fa1, %2\n\t" mn " fa2, fa0, fa1\n\t"         \
+                         "fmv.x.w %0, fa2"                                     \
+                         : "=r"(r_)                                            \
+                         : "r"(x_), "r"(y_)                                    \
+                         : "fa0", "fa1", "fa2");                               \
+        r_;                                                                    \
+    })
 
-#define FCMP(mn, a, b) ({                                       \
-    uint32_t r_, x_ = (a), y_ = (b);                            \
-    __asm__ volatile ("fmv.w.x fa0, %1\n\t"                    \
-                      "fmv.w.x fa1, %2\n\t"                    \
-                      mn " %0, fa0, fa1"                        \
-                      : "=r"(r_) : "r"(x_), "r"(y_)             \
-                      : "fa0", "fa1");                          \
-    r_; })
+#define FCMP(mn, a, b)                                                         \
+    ({                                                                         \
+        uint32_t r_, x_ = (a), y_ = (b);                                       \
+        __asm__ volatile("fmv.w.x fa0, %1\n\t"                                 \
+                         "fmv.w.x fa1, %2\n\t" mn " %0, fa0, fa1"              \
+                         : "=r"(r_)                                            \
+                         : "r"(x_), "r"(y_)                                    \
+                         : "fa0", "fa1");                                      \
+        r_;                                                                    \
+    })
 
-#define F1_0  0x3F800000u
-#define F2_0  0x40000000u
-#define F3_0  0x40400000u
-#define F4_0  0x40800000u
+#define F1_0 0x3F800000u
+#define F2_0 0x40000000u
+#define F3_0 0x40400000u
+#define F4_0 0x40800000u
 #define F_QNAN 0x7FC00000u
 
 static volatile uint32_t g_fmem;
@@ -820,53 +868,57 @@ static volatile uint32_t g_fmem;
  * translation time -- rather than per execution, or with a flush -- is
  * caught running instructions the guest has just disabled.
  */
-__attribute__((noinline))
-static uint32_t fp_site(uint32_t bits)
+__attribute__((noinline)) static uint32_t fp_site(uint32_t bits)
 {
     uint32_t r;
-    __asm__ volatile ("fmv.w.x fa0, %1\n\t fadd.s fa1, fa0, fa0\n\t"
-                      "fmv.x.w %0, fa1"
-                      : "=r"(r) : "r"(bits) : "fa0", "fa1");
+    __asm__ volatile("fmv.w.x fa0, %1\n\t fadd.s fa1, fa0, fa0\n\t"
+                     "fmv.x.w %0, fa1"
+                     : "=r"(r)
+                     : "r"(bits)
+                     : "fa0", "fa1");
     return r;
 }
 
-__attribute__((noinline))
-static uint32_t cvt_w_dyn(uint32_t bits)
+__attribute__((noinline)) static uint32_t cvt_w_dyn(uint32_t bits)
 {
     uint32_t r;
-    __asm__ volatile ("fmv.w.x fa0, %1\n\t fcvt.w.s %0, fa0, dyn"
-                      : "=r"(r) : "r"(bits) : "fa0");
+    __asm__ volatile("fmv.w.x fa0, %1\n\t fcvt.w.s %0, fa0, dyn"
+                     : "=r"(r)
+                     : "r"(bits)
+                     : "fa0");
     return r;
 }
 
 static void test_fpu(void)
 {
     /* Arithmetic. */
-    check("fadd",  FOP2("fadd.s", F1_0, F2_0), F3_0);
-    check("fsub",  FOP2("fsub.s", F3_0, F1_0), F2_0);
-    check("fmul",  FOP2("fmul.s", F2_0, F2_0), F4_0);
-    check("fdiv",  FOP2("fdiv.s", F4_0, F2_0), F2_0);
-    check("fsqrt", FOP2("fadd.s", 0u, 0u) | 0u, 0u);   /* +0 + +0 == +0 */
+    check("fadd", FOP2("fadd.s", F1_0, F2_0), F3_0);
+    check("fsub", FOP2("fsub.s", F3_0, F1_0), F2_0);
+    check("fmul", FOP2("fmul.s", F2_0, F2_0), F4_0);
+    check("fdiv", FOP2("fdiv.s", F4_0, F2_0), F2_0);
+    check("fsqrt", FOP2("fadd.s", 0u, 0u) | 0u, 0u); /* +0 + +0 == +0 */
 
-    {   /* sqrt(4) == 2 */
+    { /* sqrt(4) == 2 */
         uint32_t r, x = F4_0;
-        __asm__ volatile ("fmv.w.x fa0, %1\n\t fsqrt.s fa1, fa0\n\t"
-                          "fmv.x.w %0, fa1"
-                          : "=r"(r) : "r"(x) : "fa0", "fa1");
+        __asm__ volatile("fmv.w.x fa0, %1\n\t fsqrt.s fa1, fa0\n\t"
+                         "fmv.x.w %0, fa1"
+                         : "=r"(r)
+                         : "r"(x)
+                         : "fa0", "fa1");
         check("fsqrt-4", r, F2_0);
     }
 
     /* Comparisons return 0/1 in an integer register. */
-    check("feq",   FCMP("feq.s", F1_0, F1_0), 1u);
-    check("flt",   FCMP("flt.s", F1_0, F2_0), 1u);
-    check("fle",   FCMP("fle.s", F2_0, F1_0), 0u);
+    check("feq", FCMP("feq.s", F1_0, F1_0), 1u);
+    check("flt", FCMP("flt.s", F1_0, F2_0), 1u);
+    check("fle", FCMP("fle.s", F2_0, F1_0), 0u);
     /* Any comparison against NaN is false. */
     check("feq-nan", FCMP("feq.s", F_QNAN, F1_0), 0u);
 
     /* Sign injection and min/max. */
     check("fsgnj", FOP2("fsgnj.s", F1_0, 0x80000000u), F1_0 | 0x80000000u);
-    check("fmin",  FOP2("fmin.s", F1_0, F2_0), F1_0);
-    check("fmax",  FOP2("fmax.s", F1_0, F2_0), F2_0);
+    check("fmin", FOP2("fmin.s", F1_0, F2_0), F1_0);
+    check("fmax", FOP2("fmax.s", F1_0, F2_0), F2_0);
     /* min/max return the non-NaN operand when only one is NaN. */
     check("fmin-nan", FOP2("fmin.s", F_QNAN, F2_0), F2_0);
 
@@ -878,19 +930,19 @@ static void test_fpu(void)
      * behaviour anyway, because the tempting inline version -- compare and
      * conditionally select -- is wrong on both of the cases below.
      */
-    check("fmax-nan",    FOP2("fmax.s", F_QNAN, F2_0), F2_0);
+    check("fmax-nan", FOP2("fmax.s", F_QNAN, F2_0), F2_0);
     check("fmin-nan-rs2", FOP2("fmin.s", F2_0, F_QNAN), F2_0);
     /* Two NaNs give the canonical NaN, not either input. */
-    check("fmin-2nan",   FOP2("fmin.s", F_QNAN, F_QNAN), 0x7FC00000u);
-    check("fmax-2nan",   FOP2("fmax.s", F_QNAN, F_QNAN), 0x7FC00000u);
+    check("fmin-2nan", FOP2("fmin.s", F_QNAN, F_QNAN), 0x7FC00000u);
+    check("fmax-2nan", FOP2("fmax.s", F_QNAN, F_QNAN), 0x7FC00000u);
     /*
      * -0.0 is *below* +0.0 here, though IEEE comparison calls them equal.
      * A select driven by VCMP returns whichever operand it was told to
      * prefer on equality, so it gets one of these two wrong whichever way
      * it is written.
      */
-    check("fmin-zeros",  FOP2("fmin.s", 0x80000000u, 0u), 0x80000000u);
-    check("fmax-zeros",  FOP2("fmax.s", 0x80000000u, 0u), 0u);
+    check("fmin-zeros", FOP2("fmin.s", 0x80000000u, 0u), 0x80000000u);
+    check("fmax-zeros", FOP2("fmax.s", 0x80000000u, 0u), 0u);
     check("fmin-zeros-rev", FOP2("fmin.s", 0u, 0x80000000u), 0x80000000u);
     check("fmax-zeros-rev", FOP2("fmax.s", 0u, 0x80000000u), 0u);
 
@@ -899,7 +951,7 @@ static void test_fpu(void)
     (void)FOP2("fmin.s", F_QNAN, F2_0);
     check("fmin-qnan-noflag", csr_read("fflags") & 0x10u, 0u);
     csr_write("fflags", 0u);
-    (void)FOP2("fmin.s", 0x7F800001u, F2_0);   /* signalling NaN */
+    (void)FOP2("fmin.s", 0x7F800001u, F2_0); /* signalling NaN */
     check("fmin-snan-nv", csr_read("fflags") & 0x10u, 0x10u);
     csr_write("fflags", 0u);
 
@@ -911,31 +963,38 @@ static void test_fpu(void)
      */
     {
         uint32_t r, a = F2_0, b = F2_0, c = F1_0;
-        __asm__ volatile ("fmv.w.x fa0, %1\n\t fmv.w.x fa1, %2\n\t"
-                          "fmv.w.x fa2, %3\n\t fmadd.s fa3, fa0, fa1, fa2\n\t"
-                          "fmv.x.w %0, fa3"
-                          : "=r"(r) : "r"(a), "r"(b), "r"(c)
-                          : "fa0", "fa1", "fa2", "fa3");
-        check("fmadd", r, 0x40A00000u);            /* 5.0 */
+        __asm__ volatile("fmv.w.x fa0, %1\n\t fmv.w.x fa1, %2\n\t"
+                         "fmv.w.x fa2, %3\n\t fmadd.s fa3, fa0, fa1, fa2\n\t"
+                         "fmv.x.w %0, fa3"
+                         : "=r"(r)
+                         : "r"(a), "r"(b), "r"(c)
+                         : "fa0", "fa1", "fa2", "fa3");
+        check("fmadd", r, 0x40A00000u); /* 5.0 */
 
-        __asm__ volatile ("fmv.w.x fa0, %1\n\t fmv.w.x fa1, %2\n\t"
-                          "fmv.w.x fa2, %3\n\t fnmsub.s fa3, fa0, fa1, fa2\n\t"
-                          "fmv.x.w %0, fa3"
-                          : "=r"(r) : "r"(a), "r"(b), "r"(c)
-                          : "fa0", "fa1", "fa2", "fa3");
-        check("fnmsub", r, 0x40400000u | 0x80000000u);  /* -3.0 */
+        __asm__ volatile("fmv.w.x fa0, %1\n\t fmv.w.x fa1, %2\n\t"
+                         "fmv.w.x fa2, %3\n\t fnmsub.s fa3, fa0, fa1, fa2\n\t"
+                         "fmv.x.w %0, fa3"
+                         : "=r"(r)
+                         : "r"(a), "r"(b), "r"(c)
+                         : "fa0", "fa1", "fa2", "fa3");
+        check("fnmsub", r, 0x40400000u | 0x80000000u); /* -3.0 */
     }
 
     /* Conversions both ways. */
     {
-        uint32_t r; int32_t i = -7;
-        __asm__ volatile ("fcvt.s.w fa0, %1\n\t fmv.x.w %0, fa0"
-                          : "=r"(r) : "r"(i) : "fa0");
-        check("fcvt.s.w", r, 0x40E00000u | 0x80000000u);   /* -7.0 */
+        uint32_t r;
+        int32_t i = -7;
+        __asm__ volatile("fcvt.s.w fa0, %1\n\t fmv.x.w %0, fa0"
+                         : "=r"(r)
+                         : "r"(i)
+                         : "fa0");
+        check("fcvt.s.w", r, 0x40E00000u | 0x80000000u); /* -7.0 */
 
-        uint32_t back, src = 0x41200000u;                  /* 10.0 */
-        __asm__ volatile ("fmv.w.x fa0, %1\n\t fcvt.w.s %0, fa0, rtz"
-                          : "=r"(back) : "r"(src) : "fa0");
+        uint32_t back, src = 0x41200000u; /* 10.0 */
+        __asm__ volatile("fmv.w.x fa0, %1\n\t fcvt.w.s %0, fa0, rtz"
+                         : "=r"(back)
+                         : "r"(src)
+                         : "fa0");
         check("fcvt.w.s", back, 10u);
     }
 
@@ -950,19 +1009,23 @@ static void test_fpu(void)
      * never otherwise. The single 10.0 case above would pass with the
      * fixup deleted.
      */
-#define CVT_W(dst, bits, mode)                                            \
-    __asm__ volatile ("fmv.w.x fa0, %1\n\t fcvt.w.s %0, fa0, " mode       \
-                      : "=r"(dst) : "r"(bits) : "fa0")
-#define CVT_WU(dst, bits, mode)                                           \
-    __asm__ volatile ("fmv.w.x fa0, %1\n\t fcvt.wu.s %0, fa0, " mode      \
-                      : "=r"(dst) : "r"(bits) : "fa0")
+#define CVT_W(dst, bits, mode)                                                 \
+    __asm__ volatile("fmv.w.x fa0, %1\n\t fcvt.w.s %0, fa0, " mode             \
+                     : "=r"(dst)                                               \
+                     : "r"(bits)                                               \
+                     : "fa0")
+#define CVT_WU(dst, bits, mode)                                                \
+    __asm__ volatile("fmv.w.x fa0, %1\n\t fcvt.wu.s %0, fa0, " mode            \
+                     : "=r"(dst)                                               \
+                     : "r"(bits)                                               \
+                     : "fa0")
 
     {
         uint32_t r;
 
         /* The divergence itself. NaN goes to the maximum, not to zero. */
         csr_write("fflags", 0u);
-        CVT_W(r, 0x7FC00000u, "rtz");            /* canonical qNaN */
+        CVT_W(r, 0x7FC00000u, "rtz"); /* canonical qNaN */
         check("fcvt.w.s-nan", r, 0x7FFFFFFFu);
         check("fcvt.w.s-nan-nv", csr_read("fflags"), 0x10u);
 
@@ -977,32 +1040,32 @@ static void test_fpu(void)
 
         /* Saturation, where the two agree. Invalid, and *not* inexact. */
         csr_write("fflags", 0u);
-        CVT_W(r, 0x7F800000u, "rtz");            /* +inf */
+        CVT_W(r, 0x7F800000u, "rtz"); /* +inf */
         check("fcvt.w.s-posinf", r, 0x7FFFFFFFu);
         check("fcvt.w.s-posinf-nv", csr_read("fflags"), 0x10u);
 
-        CVT_W(r, 0xFF800000u, "rtz");            /* -inf */
+        CVT_W(r, 0xFF800000u, "rtz"); /* -inf */
         check("fcvt.w.s-neginf", r, 0x80000000u);
 
-        CVT_W(r, 0x4F800000u, "rtz");            /* 2^32, over signed range */
+        CVT_W(r, 0x4F800000u, "rtz"); /* 2^32, over signed range */
         check("fcvt.w.s-over", r, 0x7FFFFFFFu);
 
-        CVT_WU(r, 0xBF800000u, "rtz");           /* -1.0, under unsigned */
+        CVT_WU(r, 0xBF800000u, "rtz"); /* -1.0, under unsigned */
         check("fcvt.wu.s-neg", r, 0u);
 
-        CVT_WU(r, 0xFF800000u, "rtz");           /* -inf */
+        CVT_WU(r, 0xFF800000u, "rtz"); /* -inf */
         check("fcvt.wu.s-neginf", r, 0u);
 
         /* An exact conversion raises nothing at all. */
         csr_write("fflags", 0u);
-        CVT_W(r, 0xC1200000u, "rtz");            /* -10.0 */
+        CVT_W(r, 0xC1200000u, "rtz"); /* -10.0 */
         check("fcvt.w.s-exact", r, (uint32_t)-10);
         check("fcvt.w.s-exact-noflags", csr_read("fflags"), 0u);
 
         /* Every rounding mode the JIT claims to translate, on a tie. */
-        CVT_W(r, 0x40200000u, "rne");            /* 2.5 -> 2, ties to even */
+        CVT_W(r, 0x40200000u, "rne"); /* 2.5 -> 2, ties to even */
         check("fcvt.w.s-rne", r, 2u);
-        CVT_W(r, 0x40600000u, "rne");            /* 3.5 -> 4, ties to even */
+        CVT_W(r, 0x40600000u, "rne"); /* 3.5 -> 4, ties to even */
         check("fcvt.w.s-rne-odd", r, 4u);
         CVT_W(r, 0x40200000u, "rtz");
         check("fcvt.w.s-rtz", r, 2u);
@@ -1011,7 +1074,7 @@ static void test_fpu(void)
         CVT_W(r, 0x40200000u, "rup");
         check("fcvt.w.s-rup", r, 3u);
 
-        CVT_W(r, 0xC0200000u, "rtz");            /* -2.5 */
+        CVT_W(r, 0xC0200000u, "rtz"); /* -2.5 */
         check("fcvt.w.s-neg-rtz", r, (uint32_t)-2);
         CVT_W(r, 0xC0200000u, "rdn");
         check("fcvt.w.s-neg-rdn", r, (uint32_t)-3);
@@ -1029,16 +1092,16 @@ static void test_fpu(void)
          * rounded value would raise invalid here.
          */
         csr_write("fflags", 0u);
-        CVT_WU(r, 0xBF000000u, "rtz");           /* -0.5 */
+        CVT_WU(r, 0xBF000000u, "rtz"); /* -0.5 */
         check("fcvt.wu.s-negzero", r, 0u);
         check("fcvt.wu.s-negzero-nx", csr_read("fflags"), 0x01u);
 
         /* Dynamic rounding: the mode comes from frm, not the encoding. */
         csr_write("fflags", 0u);
-        csr_write("frm", 3u);                    /* RUP */
+        csr_write("frm", 3u); /* RUP */
         CVT_W(r, 0x40200000u, "dyn");
         check("fcvt.w.s-dyn-rup", r, 3u);
-        csr_write("frm", 1u);                    /* RTZ */
+        csr_write("frm", 1u); /* RTZ */
         CVT_W(r, 0x40200000u, "dyn");
         check("fcvt.w.s-dyn-rtz", r, 2u);
         csr_write("frm", 0u);
@@ -1058,23 +1121,23 @@ static void test_fpu(void)
      * have passed throughout the entire period this was broken.
      */
     {
-        const uint32_t f2_5 = 0x40200000u;      /*  2.5 */
-        const uint32_t fn2_5 = 0xC0200000u;     /* -2.5 */
+        const uint32_t f2_5 = 0x40200000u; /*  2.5 */
+        const uint32_t fn2_5 = 0xC0200000u; /* -2.5 */
 
-        csr_write("frm", 3u);                   /* RUP */
+        csr_write("frm", 3u); /* RUP */
         check("dyn-rup", cvt_w_dyn(f2_5), 3u);
 
-        csr_write("frm", 2u);                   /* RDN: needs the rebuild */
+        csr_write("frm", 2u); /* RDN: needs the rebuild */
         check("dyn-rdn", cvt_w_dyn(f2_5), 2u);
 
-        csr_write("frm", 0u);                   /* RNE: ties to even */
+        csr_write("frm", 0u); /* RNE: ties to even */
         check("dyn-rne", cvt_w_dyn(f2_5), 2u);
 
-        csr_write("frm", 4u);                   /* RMM: ties away */
+        csr_write("frm", 4u); /* RMM: ties away */
         check("dyn-rmm", cvt_w_dyn(f2_5), 3u);
         check("dyn-rmm-neg", cvt_w_dyn(fn2_5), (uint32_t)-3);
 
-        csr_write("frm", 3u);                   /* RUP: re-specialise */
+        csr_write("frm", 3u); /* RUP: re-specialise */
         check("dyn-rup-again", cvt_w_dyn(f2_5), 3u);
 
         csr_write("frm", 0u);
@@ -1091,19 +1154,19 @@ static void test_fpu(void)
      * no traps at all.
      */
     {
-        check("fs-on", fp_site(F1_0), F2_0);        /* 1.0 + 1.0 */
+        check("fs-on", fp_site(F1_0), F2_0); /* 1.0 + 1.0 */
 
         const uint32_t before = g_trap_count;
-        csr_clear("mstatus", 3u << 13);             /* FS = Off */
+        csr_clear("mstatus", 3u << 13); /* FS = Off */
         (void)fp_site(F1_0);
         const uint32_t traps = g_trap_count - before;
 
         /* Restore before checking, so a failure here does not kill the
          * remaining FP tests as well. */
-        csr_set("mstatus", 1u << 13);               /* FS = Initial */
+        csr_set("mstatus", 1u << 13); /* FS = Initial */
 
-        check("fs-off-traps", traps, 3u);           /* one per FP insn */
-        check("fs-off-cause", g_last_cause, 2u);    /* illegal instruction */
+        check("fs-off-traps", traps, 3u); /* one per FP insn */
+        check("fs-off-cause", g_last_cause, 2u); /* illegal instruction */
 
         /* And with FS back on it works again. */
         check("fs-restored", fp_site(F1_0), F2_0);
@@ -1114,12 +1177,16 @@ static void test_fpu(void)
     /* fclass: 1<<6 is a positive normal, 1<<3 is negative zero. */
     {
         uint32_t r, x = F1_0;
-        __asm__ volatile ("fmv.w.x fa0, %1\n\t fclass.s %0, fa0"
-                          : "=r"(r) : "r"(x) : "fa0");
+        __asm__ volatile("fmv.w.x fa0, %1\n\t fclass.s %0, fa0"
+                         : "=r"(r)
+                         : "r"(x)
+                         : "fa0");
         check("fclass-norm", r, 1u << 6);
         x = 0x80000000u;
-        __asm__ volatile ("fmv.w.x fa0, %1\n\t fclass.s %0, fa0"
-                          : "=r"(r) : "r"(x) : "fa0");
+        __asm__ volatile("fmv.w.x fa0, %1\n\t fclass.s %0, fa0"
+                         : "=r"(r)
+                         : "r"(x)
+                         : "fa0");
         check("fclass-negzero", r, 1u << 3);
 
         /*
@@ -1127,21 +1194,25 @@ static void test_fpu(void)
          * all, so it runs through the helper; these pin every bit of the
          * result so that stays honest.
          */
-#define FCLASS(bits) ({                                                   \
-    uint32_t c_;                                                          \
-    const uint32_t b_ = (bits);                                           \
-    __asm__ volatile ("fmv.w.x fa0, %1\n\t fclass.s %0, fa0"              \
-                      : "=r"(c_) : "r"(b_) : "fa0");                      \
-    c_; })
+#define FCLASS(bits)                                                           \
+    ({                                                                         \
+        uint32_t c_;                                                           \
+        const uint32_t b_ = (bits);                                            \
+        __asm__ volatile("fmv.w.x fa0, %1\n\t fclass.s %0, fa0"                \
+                         : "=r"(c_)                                            \
+                         : "r"(b_)                                             \
+                         : "fa0");                                             \
+        c_;                                                                    \
+    })
 
-        check("fclass-neginf",  FCLASS(0xFF800000u), 1u << 0);
-        check("fclass-negnorm", FCLASS(0xBF800000u), 1u << 1);  /* -1.0 */
-        check("fclass-negsub",  FCLASS(0x80000001u), 1u << 2);
+        check("fclass-neginf", FCLASS(0xFF800000u), 1u << 0);
+        check("fclass-negnorm", FCLASS(0xBF800000u), 1u << 1); /* -1.0 */
+        check("fclass-negsub", FCLASS(0x80000001u), 1u << 2);
         check("fclass-poszero", FCLASS(0x00000000u), 1u << 4);
-        check("fclass-possub",  FCLASS(0x00000001u), 1u << 5);
-        check("fclass-posinf",  FCLASS(0x7F800000u), 1u << 7);
-        check("fclass-snan",    FCLASS(0x7F800001u), 1u << 8);
-        check("fclass-qnan",    FCLASS(0x7FC00000u), 1u << 9);
+        check("fclass-possub", FCLASS(0x00000001u), 1u << 5);
+        check("fclass-posinf", FCLASS(0x7F800000u), 1u << 7);
+        check("fclass-snan", FCLASS(0x7F800001u), 1u << 8);
+        check("fclass-qnan", FCLASS(0x7FC00000u), 1u << 9);
         /* Classifying a signalling NaN must not itself raise invalid. */
         csr_write("fflags", 0u);
         (void)FCLASS(0x7F800001u);
@@ -1153,12 +1224,14 @@ static void test_fpu(void)
     {
         uint32_t r;
         g_fmem = 0;
-        __asm__ volatile ("fmv.w.x fa0, %1\n\t fsw fa0, 0(%2)"
-                          :: "r"(0), "r"(F3_0), "r"(&g_fmem)
-                          : "fa0", "memory");
+        __asm__ volatile("fmv.w.x fa0, %1\n\t fsw fa0, 0(%2)" ::"r"(0),
+                         "r"(F3_0), "r"(&g_fmem)
+                         : "fa0", "memory");
         check("fsw", g_fmem, F3_0);
-        __asm__ volatile ("flw fa0, 0(%1)\n\t fmv.x.w %0, fa0"
-                          : "=r"(r) : "r"(&g_fmem) : "fa0");
+        __asm__ volatile("flw fa0, 0(%1)\n\t fmv.x.w %0, fa0"
+                         : "=r"(r)
+                         : "r"(&g_fmem)
+                         : "fa0");
         check("flw", r, F3_0);
     }
 
@@ -1193,8 +1266,8 @@ static volatile uint32_t g_pmp_area2[2] __attribute__((aligned(8)));
  * if it does, this is the site that catches it still using bounds the guest
  * has since changed.
  */
-__attribute__((noinline))
-static void pmp_store(volatile uint32_t *p, uint32_t v)
+__attribute__((noinline)) static void pmp_store(volatile uint32_t *p,
+                                                uint32_t v)
 {
     *p = v;
 }
@@ -1219,17 +1292,17 @@ static void test_pmp(void)
      * writable. Locked is what makes it apply to M-mode at all.
      */
     csr_write("pmpaddr0", ((uint32_t)(uintptr_t)g_pmp_area) >> 2);
-    csr_write("pmpcfg0", 0x99u);          /* L | NAPOT | R */
+    csr_write("pmpcfg0", 0x99u); /* L | NAPOT | R */
 
     /* Reads still work. */
     check("pmp-read-ok", g_pmp_area[0], 0xA5A5A5A5u);
 
     /* Writes now fault, and report a store access fault at the address. */
     uint32_t before = g_trap_count;
-    __asm__ volatile ("sw %0, 0(%1)"
-                      :: "r"(0xDEADBEEFu), "r"(g_pmp_area) : "memory");
+    __asm__ volatile("sw %0, 0(%1)" ::"r"(0xDEADBEEFu), "r"(g_pmp_area)
+                     : "memory");
     check("pmp-write-traps", g_trap_count - before, 1u);
-    check("pmp-write-cause", g_last_cause, 7u);   /* store access fault */
+    check("pmp-write-cause", g_last_cause, 7u); /* store access fault */
     check("pmp-write-blocked", g_pmp_area[0], 0xA5A5A5A5u);
 
     /* A locked entry is immutable until reset: both cfg and address. */
@@ -1268,7 +1341,7 @@ static void test_pmp(void)
 
     /* Entry 1: same shape as entry 0, over the second area. */
     csr_write("pmpaddr1", ((uint32_t)(uintptr_t)g_pmp_area2) >> 2);
-    csr_write("pmpcfg0", 0x9900u);        /* byte 1: L | NAPOT | R */
+    csr_write("pmpcfg0", 0x9900u); /* byte 1: L | NAPOT | R */
     check("pmp2-cfg", (csr_read("pmpcfg0") >> 8) & 0xFFu, 0x99u);
 
     /* The same store must now be denied. */
@@ -1329,20 +1402,19 @@ static void call_stub(uint32_t entry, uint32_t val)
     register uint32_t a0_ __asm__("a0") = (uint32_t)(uintptr_t)&g_xflag;
     register uint32_t a1_ __asm__("a1") = val;
 
-    __asm__ volatile (
-        "la   t0, 1f\n"
-        "sw   t0, 0(%1)\n"
-        "jalr %0\n"
-        "1:\n"
-        :: "r"(entry), "r"(&g_fetch_resume), "r"(a0_), "r"(a1_)
-         : "t0", "ra", "memory");
+    __asm__ volatile("la   t0, 1f\n"
+                     "sw   t0, 0(%1)\n"
+                     "jalr %0\n"
+                     "1:\n" ::"r"(entry),
+                     "r"(&g_fetch_resume), "r"(a0_), "r"(a1_)
+                     : "t0", "ra", "memory");
 }
 
 static void test_pmp_exec(void)
 {
-    g_xbuf[0] = 0x00b52023u;             /* sw   a1, 0(a0)  */
-    g_xbuf[1] = 0x00008067u;             /* jalr x0, 0(ra)  */
-    __asm__ volatile ("fence.i" ::: "memory");
+    g_xbuf[0] = 0x00b52023u; /* sw   a1, 0(a0)  */
+    g_xbuf[1] = 0x00008067u; /* jalr x0, 0(ra)  */
+    __asm__ volatile("fence.i" ::: "memory");
 
     const uint32_t base = (uint32_t)(uintptr_t)g_xbuf;
 
@@ -1376,7 +1448,7 @@ static void test_pmp_exec(void)
     g_xflag = 0u;
     call_stub(base, 0xBADu);
     check("pmpx-exec-traps", g_trap_count - before, 1u);
-    check("pmpx-exec-cause", g_last_cause, 1u);   /* insn access fault */
+    check("pmpx-exec-cause", g_last_cause, 1u); /* insn access fault */
     check("pmpx-exec-tval", g_last_tval, base);
 
     /*
@@ -1416,10 +1488,10 @@ static void test_pmp_exec(void)
  */
 
 #define MSTATUS_MPP_MASK 0x00001800u
-#define MSTATUS_MPP_S    0x00000800u
-#define MSTATUS_SUM      0x00040000u
-#define MSTATUS_TW       0x00200000u
-#define MSTATUS_TSR      0x00400000u
+#define MSTATUS_MPP_S 0x00000800u
+#define MSTATUS_SUM 0x00040000u
+#define MSTATUS_TW 0x00200000u
+#define MSTATUS_TSR 0x00400000u
 
 #define PTE_V 0x001u
 #define PTE_R 0x002u
@@ -1448,7 +1520,7 @@ static uint32_t g_leaf[1024] __attribute__((aligned(4096)));
  * test was about to jump to -- which presents as a fetch fault on a page
  * that is mapped executable, and reads as an emulator bug.
  */
-#define PAGE_DATA  0u
+#define PAGE_DATA 0u
 #define PAGE_EXEC1 1u
 #define PAGE_EXEC2 2u
 static uint32_t g_page[3 * 1024] __attribute__((aligned(4096)));
@@ -1464,12 +1536,12 @@ static uint32_t page_pa(uint32_t which)
  * which is what separates "the walk found the page" from "the walk applied
  * the permissions".
  */
-#define VA_RW   0x90000000u
-#define VA_RO   0x90001000u
+#define VA_RW 0x90000000u
+#define VA_RO 0x90001000u
 #define VA_USER 0x90002000u
-#define VA_NOA  0x90003000u
+#define VA_NOA 0x90003000u
 #define VA_HOLE 0x90004000u
-#define VA_X    0x90005000u
+#define VA_X 0x90005000u
 
 #define VPN1(va) ((va) >> 22)
 #define VPN0(va) (((va) >> 12) & 0x3FFu)
@@ -1500,19 +1572,20 @@ static void build_page_tables(void)
     g_root[VPN1(VA_RW)] = leaf_pte((uint32_t)(uintptr_t)g_leaf, PTE_V);
 
     for (uint32_t i = 0; i < 1024u; i++) {
-        g_leaf[i] = 0u;                       /* unmapped by default */
+        g_leaf[i] = 0u; /* unmapped by default */
     }
 
     const uint32_t pa = page_pa(PAGE_DATA);
 
-    g_leaf[VPN0(VA_RW)]   = leaf_pte(pa, PTE_V|PTE_R|PTE_W|PTE_A|PTE_D);
-    g_leaf[VPN0(VA_RO)]   = leaf_pte(pa, PTE_V|PTE_R|PTE_A);
-    g_leaf[VPN0(VA_USER)] = leaf_pte(pa, PTE_V|PTE_R|PTE_W|PTE_U|PTE_A|PTE_D);
+    g_leaf[VPN0(VA_RW)] = leaf_pte(pa, PTE_V | PTE_R | PTE_W | PTE_A | PTE_D);
+    g_leaf[VPN0(VA_RO)] = leaf_pte(pa, PTE_V | PTE_R | PTE_A);
+    g_leaf[VPN0(VA_USER)] =
+        leaf_pte(pa, PTE_V | PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
     /* A is clear: under Svade the hardware never sets it, so the first
      * touch faults and software is expected to fix it up. */
-    g_leaf[VPN0(VA_NOA)]  = leaf_pte(pa, PTE_V|PTE_R|PTE_W|PTE_D);
-    g_leaf[VPN0(VA_X)]    = leaf_pte(page_pa(PAGE_EXEC1),
-                                     PTE_V|PTE_R|PTE_X|PTE_A);
+    g_leaf[VPN0(VA_NOA)] = leaf_pte(pa, PTE_V | PTE_R | PTE_W | PTE_D);
+    g_leaf[VPN0(VA_X)] =
+        leaf_pte(page_pa(PAGE_EXEC1), PTE_V | PTE_R | PTE_X | PTE_A);
     /* VA_HOLE is left invalid on purpose. */
 }
 
@@ -1548,52 +1621,51 @@ static volatile uint32_t g_smode_regs[13];
 
 static void enter_smode(void (*fn)(void))
 {
-    __asm__ volatile (
-        "la   t0, g_smode_regs\n"
-        "sw   sp,  0(t0)\n"
-        "sw   s0,  4(t0)\n"
-        "sw   s1,  8(t0)\n"
-        "sw   s2, 12(t0)\n"
-        "sw   s3, 16(t0)\n"
-        "sw   s4, 20(t0)\n"
-        "sw   s5, 24(t0)\n"
-        "sw   s6, 28(t0)\n"
-        "sw   s7, 32(t0)\n"
-        "sw   s8, 36(t0)\n"
-        "sw   s9, 40(t0)\n"
-        "sw   s10, 44(t0)\n"
-        "sw   s11, 48(t0)\n"
-        "la   t0, 1f\n"
-        "sw   t0, 0(%1)\n"
-        "csrw mepc, %0\n"
-        "li   t0, %2\n"
-        "csrc mstatus, t0\n"
-        "li   t0, %3\n"
-        "csrs mstatus, t0\n"
-        "mret\n"
-        "1:\n"
-        "la   t0, g_smode_regs\n"
-        "lw   sp,  0(t0)\n"
-        "lw   s0,  4(t0)\n"
-        "lw   s1,  8(t0)\n"
-        "lw   s2, 12(t0)\n"
-        "lw   s3, 16(t0)\n"
-        "lw   s4, 20(t0)\n"
-        "lw   s5, 24(t0)\n"
-        "lw   s6, 28(t0)\n"
-        "lw   s7, 32(t0)\n"
-        "lw   s8, 36(t0)\n"
-        "lw   s9, 40(t0)\n"
-        "lw   s10, 44(t0)\n"
-        "lw   s11, 48(t0)\n"
-        :: "r"(fn), "r"(&g_smode_resume),
-           "i"(MSTATUS_MPP_MASK), "i"(MSTATUS_MPP_S)
-        : "t0", "t1", "t2", "a0", "a1", "a2", "a3", "a4", "a5",
-          "a6", "a7", "ra", "memory");
+    __asm__ volatile("la   t0, g_smode_regs\n"
+                     "sw   sp,  0(t0)\n"
+                     "sw   s0,  4(t0)\n"
+                     "sw   s1,  8(t0)\n"
+                     "sw   s2, 12(t0)\n"
+                     "sw   s3, 16(t0)\n"
+                     "sw   s4, 20(t0)\n"
+                     "sw   s5, 24(t0)\n"
+                     "sw   s6, 28(t0)\n"
+                     "sw   s7, 32(t0)\n"
+                     "sw   s8, 36(t0)\n"
+                     "sw   s9, 40(t0)\n"
+                     "sw   s10, 44(t0)\n"
+                     "sw   s11, 48(t0)\n"
+                     "la   t0, 1f\n"
+                     "sw   t0, 0(%1)\n"
+                     "csrw mepc, %0\n"
+                     "li   t0, %2\n"
+                     "csrc mstatus, t0\n"
+                     "li   t0, %3\n"
+                     "csrs mstatus, t0\n"
+                     "mret\n"
+                     "1:\n"
+                     "la   t0, g_smode_regs\n"
+                     "lw   sp,  0(t0)\n"
+                     "lw   s0,  4(t0)\n"
+                     "lw   s1,  8(t0)\n"
+                     "lw   s2, 12(t0)\n"
+                     "lw   s3, 16(t0)\n"
+                     "lw   s4, 20(t0)\n"
+                     "lw   s5, 24(t0)\n"
+                     "lw   s6, 28(t0)\n"
+                     "lw   s7, 32(t0)\n"
+                     "lw   s8, 36(t0)\n"
+                     "lw   s9, 40(t0)\n"
+                     "lw   s10, 44(t0)\n"
+                     "lw   s11, 48(t0)\n" ::"r"(fn),
+                     "r"(&g_smode_resume), "i"(MSTATUS_MPP_MASK),
+                     "i"(MSTATUS_MPP_S)
+                     : "t0", "t1", "t2", "a0", "a1", "a2", "a3", "a4", "a5",
+                       "a6", "a7", "ra", "memory");
 }
 
 /* Every S-mode test body ends with this. */
-#define LEAVE_SMODE() __asm__ volatile ("ecall" ::: "memory")
+#define LEAVE_SMODE() __asm__ volatile("ecall" ::: "memory")
 
 /* ---- the S-mode bodies -------------------------------------------- */
 
@@ -1631,7 +1703,7 @@ static void smode_ecall_cause(void)
 static void smode_tw_wfi(void)
 {
     const uint32_t before = g_trap_count;
-    __asm__ volatile ("wfi");
+    __asm__ volatile("wfi");
     check("s-tw-wfi-traps", g_trap_count - before, 1u);
     check("s-tw-wfi-cause", g_last_cause, 2u);
     LEAVE_SMODE();
@@ -1640,7 +1712,7 @@ static void smode_tw_wfi(void)
 static void smode_tsr_sret(void)
 {
     const uint32_t before = g_trap_count;
-    __asm__ volatile ("sret");
+    __asm__ volatile("sret");
     check("s-tsr-sret-traps", g_trap_count - before, 1u);
     check("s-tsr-sret-cause", g_last_cause, 2u);
     LEAVE_SMODE();
@@ -1706,13 +1778,12 @@ static void smode_paging(void)
     (void)*(volatile uint32_t *)VA_NOA;
     check("sv32-noa-traps", g_trap_count - before, 1u);
     check("sv32-noa-cause", g_last_cause, 13u);
-    check("sv32-noa-unchanged",
-          g_leaf[VPN0(VA_NOA)] & PTE_A, 0u);
+    check("sv32-noa-unchanged", g_leaf[VPN0(VA_NOA)] & PTE_A, 0u);
 
     /* D is the same rule for stores: readable, not writable. */
     g_leaf[VPN0(VA_NOA)] |= PTE_A;
     g_leaf[VPN0(VA_NOA)] &= ~PTE_D;
-    __asm__ volatile ("sfence.vma" ::: "memory");
+    __asm__ volatile("sfence.vma" ::: "memory");
     before = g_trap_count;
     (void)*(volatile uint32_t *)VA_NOA;
     check("sv32-nod-load-ok", g_trap_count - before, 0u);
@@ -1725,9 +1796,9 @@ static void smode_paging(void)
      * and *not* fencing may legally still fault -- so the check that means
      * something is the one after the fence.
      */
-    g_leaf[VPN0(VA_HOLE)] = leaf_pte(page_pa(PAGE_DATA),
-                                     PTE_V|PTE_R|PTE_W|PTE_A|PTE_D);
-    __asm__ volatile ("sfence.vma" ::: "memory");
+    g_leaf[VPN0(VA_HOLE)] =
+        leaf_pte(page_pa(PAGE_DATA), PTE_V | PTE_R | PTE_W | PTE_A | PTE_D);
+    __asm__ volatile("sfence.vma" ::: "memory");
     before = g_trap_count;
     check("sv32-sfence-visible", *(volatile uint32_t *)VA_HOLE, 0xCAFEBABEu);
     check("sv32-sfence-notrap", g_trap_count - before, 0u);
@@ -1750,15 +1821,14 @@ static void smode_paging(void)
      */
     const uint32_t saved_root = g_root[VPN1(VA_RW)];
 
-    g_root[VPN1(VA_RW)] = leaf_pte((uint32_t)(uintptr_t)g_leaf,
-                                   PTE_V|PTE_W);
-    __asm__ volatile ("sfence.vma" ::: "memory");
+    g_root[VPN1(VA_RW)] = leaf_pte((uint32_t)(uintptr_t)g_leaf, PTE_V | PTE_W);
+    __asm__ volatile("sfence.vma" ::: "memory");
     before = g_trap_count;
     (void)*(volatile uint32_t *)VA_RW;
     check("sv32-wnor-traps", g_trap_count - before, 1u);
     check("sv32-wnor-cause", g_last_cause, 13u);
     g_root[VPN1(VA_RW)] = saved_root;
-    __asm__ volatile ("sfence.vma" ::: "memory");
+    __asm__ volatile("sfence.vma" ::: "memory");
 
     /*
      * D, A and U are reserved in a *non-leaf* PTE and must be clear. An
@@ -1766,7 +1836,7 @@ static void smode_paging(void)
      * correctly, which is why this needs asking directly.
      */
     g_root[VPN1(VA_RW)] |= PTE_A;
-    __asm__ volatile ("sfence.vma" ::: "memory");
+    __asm__ volatile("sfence.vma" ::: "memory");
     before = g_trap_count;
     (void)*(volatile uint32_t *)VA_RW;
     check("sv32-nonleaf-a-traps", g_trap_count - before, 1u);
@@ -1774,14 +1844,14 @@ static void smode_paging(void)
 
     g_root[VPN1(VA_RW)] &= ~PTE_A;
     g_root[VPN1(VA_RW)] |= PTE_U;
-    __asm__ volatile ("sfence.vma" ::: "memory");
+    __asm__ volatile("sfence.vma" ::: "memory");
     before = g_trap_count;
     (void)*(volatile uint32_t *)VA_RW;
     check("sv32-nonleaf-u-traps", g_trap_count - before, 1u);
 
     /* Put the table back, and prove it: the same access now works. */
     g_root[VPN1(VA_RW)] &= ~PTE_U;
-    __asm__ volatile ("sfence.vma" ::: "memory");
+    __asm__ volatile("sfence.vma" ::: "memory");
     before = g_trap_count;
     check("sv32-restored", *(volatile uint32_t *)VA_RW, 0xCAFEBABEu);
     check("sv32-restored-notrap", g_trap_count - before, 0u);
@@ -1813,14 +1883,13 @@ static void smode_paging(void)
  */
 static void call_may_fault(uint32_t entry)
 {
-    __asm__ volatile (
-        "la   t0, 1f\n"
-        "sw   t0, 0(%1)\n"
-        "jalr %0\n"
-        "1:\n"
-        :: "r"(entry), "r"(&g_fetch_resume)
-         : "t0", "t1", "t2", "ra", "a0", "a1", "a2", "a3", "a4", "a5",
-           "a6", "a7", "memory");
+    __asm__ volatile("la   t0, 1f\n"
+                     "sw   t0, 0(%1)\n"
+                     "jalr %0\n"
+                     "1:\n" ::"r"(entry),
+                     "r"(&g_fetch_resume)
+                     : "t0", "t1", "t2", "ra", "a0", "a1", "a2", "a3", "a4",
+                       "a5", "a6", "a7", "memory");
 }
 
 static void smode_exec(void)
@@ -1833,15 +1902,14 @@ static void smode_exec(void)
     /* Repoint the same VA at the second stub. Without the fence a stale
      * translation -- in the TLB or in a cached JIT block -- would keep
      * answering with the first. */
-    g_leaf[VPN0(VA_X)] = leaf_pte(page_pa(PAGE_EXEC2),
-                                  PTE_V|PTE_R|PTE_X|PTE_A);
-    __asm__ volatile ("sfence.vma" ::: "memory");
+    g_leaf[VPN0(VA_X)] =
+        leaf_pte(page_pa(PAGE_EXEC2), PTE_V | PTE_R | PTE_X | PTE_A);
+    __asm__ volatile("sfence.vma" ::: "memory");
     check("sv32-exec-remapped", fn(), 0x222u);
 
     /* Withdraw execute permission and the fetch itself must fault. */
-    g_leaf[VPN0(VA_X)] = leaf_pte(page_pa(PAGE_EXEC2),
-                                  PTE_V|PTE_R|PTE_A);
-    __asm__ volatile ("sfence.vma" ::: "memory");
+    g_leaf[VPN0(VA_X)] = leaf_pte(page_pa(PAGE_EXEC2), PTE_V | PTE_R | PTE_A);
+    __asm__ volatile("sfence.vma" ::: "memory");
     before = g_trap_count;
     call_may_fault(VA_X);
     check("sv32-exec-nox-traps", g_trap_count - before, 1u);
@@ -1865,11 +1933,11 @@ static void test_smode(void)
      * priority, so the three locked entries keep their meaning.
      */
     csr_write("pmpaddr15", 0xFFFFFFFFu);
-    csr_write("pmpcfg3", 0x9F000000u);     /* byte 3: L | NAPOT | RWX */
+    csr_write("pmpcfg3", 0x9F000000u); /* byte 3: L | NAPOT | RWX */
     check("s-pmp-background", (csr_read("pmpcfg3") >> 24) & 0xFFu, 0x9Fu);
 
     csr_write("stvec", 0u);
-    csr_write("medeleg", 0u);              /* everything to M for now */
+    csr_write("medeleg", 0u); /* everything to M for now */
     csr_write("mideleg", 0u);
 
     uint32_t before = g_trap_count;
@@ -1928,14 +1996,13 @@ static void test_sv32(void)
      *
      *   li a0, imm ; jalr x0, 0(ra)
      */
-    g_page[1024] = 0x11100513u;   /* li a0, 0x111 */
-    g_page[1025] = 0x00008067u;   /* ret          */
+    g_page[1024] = 0x11100513u; /* li a0, 0x111 */
+    g_page[1025] = 0x00008067u; /* ret          */
     g_page[2048] = 0x22200513u;
     g_page[2049] = 0x00008067u;
-    __asm__ volatile ("fence.i" ::: "memory");
+    __asm__ volatile("fence.i" ::: "memory");
 
-    csr_write("satp", SATP_SV32 |
-                      ((uint32_t)(uintptr_t)g_root >> 12));
+    csr_write("satp", SATP_SV32 | ((uint32_t)(uintptr_t)g_root >> 12));
     check("sv32-satp-on", csr_read("satp") >> 31, 1u);
 
     /* M-mode is never translated, so nothing has changed here yet. */
@@ -1973,7 +2040,7 @@ static void test_aplic(void)
 
     APLIC_SOURCECFG(A) = APLIC_SM_EDGE_RISE;
     APLIC_SOURCECFG(B) = APLIC_SM_EDGE_RISE;
-    APLIC_TARGET(A) = 5u;               /* lower number is higher priority */
+    APLIC_TARGET(A) = 5u; /* lower number is higher priority */
     APLIC_TARGET(B) = 2u;
     APLIC_SETIENUM = A;
     APLIC_SETIENUM = B;
@@ -2000,21 +2067,21 @@ static void test_aplic(void)
 
     /* ithreshold admits only priorities strictly below it. */
     APLIC_ITHRESHOLD = 5u;
-    APLIC_SETIPNUM = A;                 /* priority 5, not below 5 */
+    APLIC_SETIPNUM = A; /* priority 5, not below 5 */
     check("aplic-threshold-blocks", APLIC_TOPI, 0u);
     APLIC_ITHRESHOLD = 6u;
     check("aplic-threshold-admits", APLIC_TOPI, (A << 16) | 5u);
-    APLIC_ITHRESHOLD = 0u;              /* zero disables the filter */
+    APLIC_ITHRESHOLD = 0u; /* zero disables the filter */
     APLIC_CLRIPNUM = A;
     check("aplic-clripnum", APLIC_SETIP & (1u << A), 0u);
 
     /* Now the delivery path, end to end. */
     APLIC_IDELIVERY = 1u;
-    csr_set("mie", 1u << 11);           /* MEIE */
+    csr_set("mie", 1u << 11); /* MEIE */
 
     const uint32_t before = g_ext_count;
     APLIC_SETIPNUM = B;
-    csr_set("mstatus", 1u << 3);        /* MIE: the trap fires here */
+    csr_set("mstatus", 1u << 3); /* MIE: the trap fires here */
     csr_clear("mstatus", 1u << 3);
 
     check("aplic-delivered", g_ext_count - before, 1u);

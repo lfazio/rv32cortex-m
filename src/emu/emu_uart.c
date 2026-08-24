@@ -22,10 +22,8 @@ static int uart_peek(emu_uart_t *u)
     return u->pending;
 }
 
-void emu_uart_init(emu_uart_t *u,
-                  void (*tx)(void *ctx, uint8_t c),
-                  int (*rx)(void *ctx),
-                  void *ctx)
+void emu_uart_init(emu_uart_t *u, void (*tx)(void *ctx, uint8_t c),
+                   int (*rx)(void *ctx), void *ctx)
 {
     u->tx = tx;
     u->rx = rx;
@@ -37,7 +35,8 @@ void emu_uart_init(emu_uart_t *u,
     u->scr = 0u;
 }
 
-static emu_fault_t uart_read(void *ctx, uint32_t off, uint32_t size, uint32_t *out)
+static emu_fault_t uart_read(void *ctx, uint32_t off, uint32_t size,
+                             uint32_t *out)
 {
     emu_uart_t *u = (emu_uart_t *)ctx;
 
@@ -49,15 +48,23 @@ static emu_fault_t uart_read(void *ctx, uint32_t off, uint32_t size, uint32_t *o
     switch (off) {
     case EMU_UART_RBR_THR: {
         const int c = uart_peek(u);
-        u->pending = -1;                     /* consume */
+        u->pending = -1; /* consume */
         *out = (c < 0) ? 0u : (uint32_t)c;
         break;
     }
 
-    case EMU_UART_IER: *out = u->ier; break;
-    case EMU_UART_IIR_FCR: *out = 0x01u; break;   /* no interrupt pending */
-    case EMU_UART_LCR: *out = u->lcr; break;
-    case EMU_UART_MCR: *out = u->mcr; break;
+    case EMU_UART_IER:
+        *out = u->ier;
+        break;
+    case EMU_UART_IIR_FCR:
+        *out = 0x01u;
+        break; /* no interrupt pending */
+    case EMU_UART_LCR:
+        *out = u->lcr;
+        break;
+    case EMU_UART_MCR:
+        *out = u->mcr;
+        break;
 
     case EMU_UART_LSR: {
         /* TX is synchronous, so THR is permanently empty. */
@@ -69,15 +76,22 @@ static emu_fault_t uart_read(void *ctx, uint32_t off, uint32_t size, uint32_t *o
         break;
     }
 
-    case EMU_UART_MSR: *out = 0u; break;
-    case EMU_UART_SCR: *out = u->scr; break;
-    default: *out = 0u; break;
+    case EMU_UART_MSR:
+        *out = 0u;
+        break;
+    case EMU_UART_SCR:
+        *out = u->scr;
+        break;
+    default:
+        *out = 0u;
+        break;
     }
 
     return EMU_FAULT_NONE;
 }
 
-static emu_fault_t uart_write(void *ctx, uint32_t off, uint32_t size, uint32_t val)
+static emu_fault_t uart_write(void *ctx, uint32_t off, uint32_t size,
+                              uint32_t val)
 {
     emu_uart_t *u = (emu_uart_t *)ctx;
 
@@ -92,18 +106,27 @@ static emu_fault_t uart_write(void *ctx, uint32_t off, uint32_t size, uint32_t v
         }
         break;
 
-    case EMU_UART_IER: u->ier = (uint8_t)val; break;
-    case EMU_UART_LCR: u->lcr = (uint8_t)val; break;
-    case EMU_UART_MCR: u->mcr = (uint8_t)val; break;
-    case EMU_UART_SCR: u->scr = (uint8_t)val; break;
-    default: break;   /* FCR and the read-only registers */
+    case EMU_UART_IER:
+        u->ier = (uint8_t)val;
+        break;
+    case EMU_UART_LCR:
+        u->lcr = (uint8_t)val;
+        break;
+    case EMU_UART_MCR:
+        u->mcr = (uint8_t)val;
+        break;
+    case EMU_UART_SCR:
+        u->scr = (uint8_t)val;
+        break;
+    default:
+        break; /* FCR and the read-only registers */
     }
 
     return EMU_FAULT_NONE;
 }
 
 const emu_dev_ops_t emu_uart_ops = {
-    .read  = uart_read,
+    .read = uart_read,
     .write = uart_write,
-    .tick  = NULL,
+    .tick = NULL,
 };

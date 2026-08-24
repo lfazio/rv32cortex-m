@@ -42,8 +42,8 @@ static void Error_Handler(void)
  */
 static void clock_init(void)
 {
-    RCC_OscInitTypeDef osc = { 0 };
-    RCC_ClkInitTypeDef clk = { 0 };
+    RCC_OscInitTypeDef osc = {0};
+    RCC_ClkInitTypeDef clk = {0};
 
     __HAL_RCC_PWR_CLK_ENABLE();
     __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
@@ -71,8 +71,8 @@ static void clock_init(void)
                     RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
     clk.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
     clk.AHBCLKDivider = RCC_SYSCLK_DIV1;
-    clk.APB1CLKDivider = RCC_HCLK_DIV4;    /* 45 MHz, APB1 max */
-    clk.APB2CLKDivider = RCC_HCLK_DIV2;    /* 90 MHz, APB2 max */
+    clk.APB1CLKDivider = RCC_HCLK_DIV4; /* 45 MHz, APB1 max */
+    clk.APB2CLKDivider = RCC_HCLK_DIV2; /* 90 MHz, APB2 max */
     if (HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_5) != HAL_OK) {
         Error_Handler();
     }
@@ -107,7 +107,7 @@ static void console_init(void)
 /* Called by HAL_UART_Init. */
 void HAL_UART_MspInit(UART_HandleTypeDef *huart)
 {
-    GPIO_InitTypeDef gpio = { 0 };
+    GPIO_InitTypeDef gpio = {0};
 
     if (huart->Instance != USART2) {
         return;
@@ -150,11 +150,11 @@ void board_console_putc(uint8_t c)
 #define RX_RING_SIZE 2048u
 #define RX_RING_MASK (RX_RING_SIZE - 1u)
 
-static uint8_t  g_rx_ring[RX_RING_SIZE];
+static uint8_t g_rx_ring[RX_RING_SIZE];
 static volatile uint32_t g_rx_head;
 static uint32_t g_rx_tail;
 static volatile uint32_t g_rx_overrun;
-static bool     g_rx_irq;
+static bool g_rx_irq;
 
 /* USART2 on a Nucleo-64, which is board.c's fact to own -- see the F746. */
 void USART2_IRQHandler(void)
@@ -163,7 +163,7 @@ void USART2_IRQHandler(void)
     const uint32_t sr = u->SR;
 
     if ((sr & (USART_SR_RXNE | USART_SR_ORE)) != 0u) {
-        const uint8_t c = (uint8_t)(u->DR & 0xFFu);   /* also clears ORE */
+        const uint8_t c = (uint8_t)(u->DR & 0xFFu); /* also clears ORE */
 
         if ((sr & USART_SR_ORE) != 0u) {
             g_rx_overrun++;
@@ -239,9 +239,15 @@ uint32_t board_cycles(void)
 
 /* ------------------------------------------------------------------ */
 
-const char *board_name(void) { return "Cortex-M4"; }
+const char *board_name(void)
+{
+    return "Cortex-M4";
+}
 
-uint32_t board_clock_hz(void) { return SystemCoreClock; }
+uint32_t board_clock_hz(void)
+{
+    return SystemCoreClock;
+}
 
 void board_hw_init(void)
 {
@@ -268,8 +274,8 @@ void board_hw_init(void)
  * LD2, the Nucleo-F446RE's only user LED, on PA5. Both directions share
  * it -- see the note in board.h.
  */
-#define LED_PORT   GPIOA
-#define LED_PIN    GPIO_PIN_5
+#define LED_PORT GPIOA
+#define LED_PIN GPIO_PIN_5
 
 void board_led_toggle(board_led_t led)
 {
@@ -278,7 +284,7 @@ void board_led_toggle(board_led_t led)
     (void)led;
 
     if (!inited) {
-        GPIO_InitTypeDef gpio = { 0 };
+        GPIO_InitTypeDef gpio = {0};
 
         __HAL_RCC_GPIOA_CLK_ENABLE();
         gpio.Pin = LED_PIN;
@@ -321,15 +327,35 @@ void board_fatal(int *status)
  * at run time and the compiler folds the branch, so this costs nothing
  * and needs no #if anywhere.
  */
-uintptr_t board_flash_arena_base(void)  { return 0u; }
-uint32_t board_flash_arena_size(void)  { return 0u; }
-uintptr_t board_flash_arena_begin(void) { return 0u; }
-void     board_flash_arena_commit(uint32_t len) { (void)len; }
-bool     board_flash_arena_reset(void) { return false; }
-uint32_t board_flash_last_error(void)  { return 0u; }
+uintptr_t board_flash_arena_base(void)
+{
+    return 0u;
+}
+uint32_t board_flash_arena_size(void)
+{
+    return 0u;
+}
+uintptr_t board_flash_arena_begin(void)
+{
+    return 0u;
+}
+void board_flash_arena_commit(uint32_t len)
+{
+    (void)len;
+}
+bool board_flash_arena_reset(void)
+{
+    return false;
+}
+uint32_t board_flash_last_error(void)
+{
+    return 0u;
+}
 
 bool board_flash_write(uintptr_t addr, const void *data, uint32_t len)
 {
-    (void)addr; (void)data; (void)len;
+    (void)addr;
+    (void)data;
+    (void)len;
     return false;
 }

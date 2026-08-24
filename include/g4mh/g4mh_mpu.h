@@ -51,25 +51,25 @@ struct g4mh_cpu;
 /* Registers (selID 5)                                                 */
 /* ------------------------------------------------------------------ */
 
-#define G4MH_SR_MPM             0u    /* operation mode                 */
-#define G4MH_SR_MPCFG           2u    /* configuration, read-only       */
-#define G4MH_SR_MCA             8u    /* setting-check address          */
-#define G4MH_SR_MCS             9u    /* setting-check size             */
-#define G4MH_SR_MCC             10u   /* setting-check command          */
-#define G4MH_SR_MCR             11u   /* setting-check result           */
-#define G4MH_SR_MCI             12u   /* setting-check SPID             */
-#define G4MH_SR_MPIDX           16u   /* which entry the window shows   */
-#define G4MH_SR_MPBK            17u   /* bank select                    */
-#define G4MH_SR_MPLA            20u   /* entry: minimum address         */
-#define G4MH_SR_MPUA            21u   /* entry: maximum address         */
-#define G4MH_SR_MPAT            22u   /* entry: attributes              */
-#define G4MH_SR_MPID0           24u   /* .. MPID7 at 31                 */
+#define G4MH_SR_MPM 0u /* operation mode                 */
+#define G4MH_SR_MPCFG 2u /* configuration, read-only       */
+#define G4MH_SR_MCA 8u /* setting-check address          */
+#define G4MH_SR_MCS 9u /* setting-check size             */
+#define G4MH_SR_MCC 10u /* setting-check command          */
+#define G4MH_SR_MCR 11u /* setting-check result           */
+#define G4MH_SR_MCI 12u /* setting-check SPID             */
+#define G4MH_SR_MPIDX 16u /* which entry the window shows   */
+#define G4MH_SR_MPBK 17u /* bank select                    */
+#define G4MH_SR_MPLA 20u /* entry: minimum address         */
+#define G4MH_SR_MPUA 21u /* entry: maximum address         */
+#define G4MH_SR_MPAT 22u /* entry: attributes              */
+#define G4MH_SR_MPID0 24u /* .. MPID7 at 31                 */
 
-#define G4MH_SR_SEL_MPU         5u    /* the selID all of them live in  */
+#define G4MH_SR_SEL_MPU 5u /* the selID all of them live in  */
 
 /* MPM. Everything above bit 1 is reserved and reads zero. */
-#define G4MH_MPM_MPE            (1u << 0)   /* protection enabled       */
-#define G4MH_MPM_SVP            (1u << 1)   /* apply SX/SW/SR in SV mode */
+#define G4MH_MPM_MPE (1u << 0) /* protection enabled       */
+#define G4MH_MPM_SVP (1u << 1) /* apply SX/SW/SR in SV mode */
 
 /*
  * MPAT. The permission bits come in two independent groups and both have
@@ -82,25 +82,25 @@ struct g4mh_cpu;
  * RMPIDn covers *execution and reading* together, which is why there is
  * no XMPIDn: the SPID group has no separate execute permission.
  */
-#define G4MH_MPAT_UR            (1u << 0)
-#define G4MH_MPAT_UW            (1u << 1)
-#define G4MH_MPAT_UX            (1u << 2)
-#define G4MH_MPAT_SR            (1u << 3)
-#define G4MH_MPAT_SW            (1u << 4)
-#define G4MH_MPAT_SX            (1u << 5)
-#define G4MH_MPAT_E             (1u << 7)   /* entry enabled            */
-#define G4MH_MPAT_RG            (1u << 14)  /* read/execute: any SPID   */
-#define G4MH_MPAT_WG            (1u << 15)  /* write: any SPID          */
-#define G4MH_MPAT_RMPID_SHIFT   16u
-#define G4MH_MPAT_WMPID_SHIFT   24u
+#define G4MH_MPAT_UR (1u << 0)
+#define G4MH_MPAT_UW (1u << 1)
+#define G4MH_MPAT_UX (1u << 2)
+#define G4MH_MPAT_SR (1u << 3)
+#define G4MH_MPAT_SW (1u << 4)
+#define G4MH_MPAT_SX (1u << 5)
+#define G4MH_MPAT_E (1u << 7) /* entry enabled            */
+#define G4MH_MPAT_RG (1u << 14) /* read/execute: any SPID   */
+#define G4MH_MPAT_WG (1u << 15) /* write: any SPID          */
+#define G4MH_MPAT_RMPID_SHIFT 16u
+#define G4MH_MPAT_WMPID_SHIFT 24u
 
 /* MPCFG is read-only and reports what this build has. */
-#define G4MH_MPCFG_ARCH         2u    /* RH850 v2.1 MPU                 */
-#define G4MH_MPCFG_VALUE                                                \
+#define G4MH_MPCFG_ARCH 2u /* RH850 v2.1 MPU                 */
+#define G4MH_MPCFG_VALUE                                                       \
     (((G4MH_MPU_ENTRIES - 1u) & 0x1Fu) | (G4MH_MPCFG_ARCH << 16))
 
 /* MPIDn holds a five-bit SPID. */
-#define G4MH_MPID_SPID_MASK     0x1Fu
+#define G4MH_MPID_SPID_MASK 0x1Fu
 
 /* ------------------------------------------------------------------ */
 /* State                                                               */

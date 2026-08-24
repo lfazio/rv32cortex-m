@@ -37,10 +37,10 @@ extern "C" {
 #endif
 
 typedef struct emu_session_cfg {
-    const emu_cpu_ops_t *ops;       /* NULL: the first frontend built in */
-    emu_bus_t  *buses;              /* one per core, already given their
+    const emu_cpu_ops_t *ops; /* NULL: the first frontend built in */
+    emu_bus_t *buses; /* one per core, already given their
                                      * shared regions by the platform    */
-    unsigned    ncores;             /* 0: whatever the frontend reports  */
+    unsigned ncores; /* 0: whatever the frontend reports  */
 
     /*
      * The guest's console UART, and the two ends of it. Initialised here
@@ -50,12 +50,12 @@ typedef struct emu_session_cfg {
      * two ctest cases failed with no message.
      */
     emu_uart_t *uart;
-    void      (*uart_tx)(void *ctx, uint8_t c);
-    int       (*uart_rx)(void *ctx);
+    void (*uart_tx)(void *ctx, uint8_t c);
+    int (*uart_rx)(void *ctx);
 
     /* The guest image, and where it goes. */
     const uint8_t *image;
-    uint32_t       image_size;
+    uint32_t image_size;
 
     /*
      * Placement, for a platform that lets a caller override it.
@@ -87,10 +87,10 @@ typedef struct emu_session_cfg {
 
     /* Installed on every core: any of them may make a system call. */
     emu_syscall_fn syscall_fn;
-    void          *syscall_ctx;
+    void *syscall_ctx;
     const struct emu_cache_ops *cache_ops;
-    emu_unmask_fn  unmask_fn;
-    void          *unmask_ctx;
+    emu_unmask_fn unmask_fn;
+    void *unmask_ctx;
 
     /* Which backend, for a frontend that has two. */
     bool want_jit;

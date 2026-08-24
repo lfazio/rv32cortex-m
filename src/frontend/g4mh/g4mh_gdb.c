@@ -33,10 +33,10 @@
 #include "emu/emu_gdb.h"
 #include "g4mh/g4mh_cpu.h"
 
-#define G4MH_GDB_SR_BASE  32u   /* first system register            */
-#define G4MH_GDB_PC       64u
-#define G4MH_GDB_FP       65u
-#define G4MH_GDB_NREGS    66u
+#define G4MH_GDB_SR_BASE 32u /* first system register            */
+#define G4MH_GDB_PC 64u
+#define G4MH_GDB_FP 65u
+#define G4MH_GDB_NREGS 66u
 
 /*
  * The RH850 EABI's frame pointer. gdb wants it as its own register and
@@ -45,7 +45,7 @@
  * is right; writing it has to write r29, or `set $fp` would be accepted
  * and then silently lost.
  */
-#define G4MH_ABI_FP_REG   29u
+#define G4MH_ABI_FP_REG 29u
 
 static g4mh_cpu_t *cpu_of_gdb(const emu_cpu_t *cpu)
 {
@@ -78,7 +78,7 @@ static void g4mh_gdb_reg_set(emu_cpu_t *cpu, unsigned n, uint32_t v)
 
     if (n < 32u) {
         c->r[n] = v;
-        c->r[0] = 0u;               /* r0 stays zero whatever gdb says */
+        c->r[0] = 0u; /* r0 stays zero whatever gdb says */
     } else if (n < G4MH_GDB_PC) {
         c->sr[0][n - G4MH_GDB_SR_BASE] = v;
         /*
@@ -227,16 +227,16 @@ static const char k_g4mh_memmap[] =
     "</memory-map>";
 
 static const emu_gdb_target_t k_g4mh_gdb_target = {
-    .nregs       = G4MH_GDB_NREGS,
-    .reg_bytes   = 4u,
-    .reg_get     = g4mh_gdb_reg_get,
-    .reg_set     = g4mh_gdb_reg_set,
-    .pc_get      = g4mh_gdb_pc_get,
-    .pc_set      = g4mh_gdb_pc_set,
-    .stop_signal = 5,               /* SIGTRAP: an attach looks like a trap */
-    .arch        = "v850:rh850",
-    .target_xml  = k_g4mh_xml,
-    .memory_map  = k_g4mh_memmap,
+    .nregs = G4MH_GDB_NREGS,
+    .reg_bytes = 4u,
+    .reg_get = g4mh_gdb_reg_get,
+    .reg_set = g4mh_gdb_reg_set,
+    .pc_get = g4mh_gdb_pc_get,
+    .pc_set = g4mh_gdb_pc_set,
+    .stop_signal = 5, /* SIGTRAP: an attach looks like a trap */
+    .arch = "v850:rh850",
+    .target_xml = k_g4mh_xml,
+    .memory_map = k_g4mh_memmap,
 };
 
 const emu_gdb_target_t *g4mh_gdb_target(void);

@@ -67,7 +67,7 @@ static void barrier_eval(g4mh_barrier_t *b, unsigned n)
 static bool barrier_decode(uint32_t off, unsigned self_pe, unsigned *chan,
                            unsigned *pe, unsigned *reg)
 {
-    if (off < 0x100u) {                     /* INIT / EN, per channel   */
+    if (off < 0x100u) { /* INIT / EN, per channel   */
         const uint32_t n = off / 0x10u;
         const uint32_t r = off % 0x10u;
 
@@ -75,12 +75,12 @@ static bool barrier_decode(uint32_t off, unsigned self_pe, unsigned *chan,
             return false;
         }
         *chan = (unsigned)n;
-        *pe   = 0u;
-        *reg  = (r == 0u) ? G4MH_BARR_INIT : G4MH_BARR_EN;
+        *pe = 0u;
+        *reg = (r == 0u) ? G4MH_BARR_INIT : G4MH_BARR_EN;
         return true;
     }
 
-    if (off < 0x200u) {                     /* the self region          */
+    if (off < 0x200u) { /* the self region          */
         const uint32_t n = (off - 0x100u) / 0x10u;
         const uint32_t r = (off - 0x100u) % 0x10u;
 
@@ -88,24 +88,24 @@ static bool barrier_decode(uint32_t off, unsigned self_pe, unsigned *chan,
             return false;
         }
         *chan = (unsigned)n;
-        *pe   = self_pe;
-        *reg  = (r == 0u) ? G4MH_BARR_CHK : G4MH_BARR_SYNC;
+        *pe = self_pe;
+        *reg = (r == 0u) ? G4MH_BARR_CHK : G4MH_BARR_SYNC;
         return true;
     }
 
-    if (off >= 0x800u) {                    /* the absolute windows     */
+    if (off >= 0x800u) { /* the absolute windows     */
         const uint32_t rel = off - 0x800u;
-        const uint32_t m   = rel / 0x100u;
-        const uint32_t n   = (rel % 0x100u) / 0x10u;
-        const uint32_t r   = rel % 0x10u;
+        const uint32_t m = rel / 0x100u;
+        const uint32_t n = (rel % 0x100u) / 0x10u;
+        const uint32_t r = rel % 0x10u;
 
         if (m >= G4MH_INTERCPU_PES || n >= G4MH_BARR_CHANNELS ||
             (r != 0u && r != 4u)) {
             return false;
         }
         *chan = (unsigned)n;
-        *pe   = (unsigned)m;
-        *reg  = (r == 0u) ? G4MH_BARR_CHK : G4MH_BARR_SYNC;
+        *pe = (unsigned)m;
+        *reg = (r == 0u) ? G4MH_BARR_CHK : G4MH_BARR_SYNC;
         return true;
     }
 
@@ -127,10 +127,17 @@ static emu_fault_t barrier_read(void *ctx, uint32_t off, uint32_t size,
     }
 
     switch (reg) {
-    case G4MH_BARR_EN:   *out = b->en[n]; break;
-    case G4MH_BARR_CHK:  *out = (b->chk[n]  >> pe) & 1u; break;
-    case G4MH_BARR_SYNC: *out = (b->sync[n] >> pe) & 1u; break;
-    default:             break;      /* BRnINIT reads 0 always */
+    case G4MH_BARR_EN:
+        *out = b->en[n];
+        break;
+    case G4MH_BARR_CHK:
+        *out = (b->chk[n] >> pe) & 1u;
+        break;
+    case G4MH_BARR_SYNC:
+        *out = (b->sync[n] >> pe) & 1u;
+        break;
+    default:
+        break; /* BRnINIT reads 0 always */
     }
     return EMU_FAULT_NONE;
 }
@@ -151,7 +158,7 @@ static emu_fault_t barrier_write(void *ctx, uint32_t off, uint32_t size,
     switch (reg) {
     case G4MH_BARR_INIT:
         if ((val & 1u) != 0u) {
-            b->chk[n]  = 0u;
+            b->chk[n] = 0u;
             b->sync[n] = 0u;
         }
         break;
@@ -212,6 +219,6 @@ static emu_fault_t barrier_write(void *ctx, uint32_t off, uint32_t size,
 }
 
 const emu_dev_ops_t g4mh_barrier_ops = {
-    .read  = barrier_read,
+    .read = barrier_read,
     .write = barrier_write,
 };

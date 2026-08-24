@@ -61,8 +61,8 @@
  * represent the thing being looked for reads exactly like a histogram of
  * something that is not there.
  */
-#define KIND_FMT4   (1u << 12)      /* keyed on op4, not op6 */
-#define KIND_EXT    (1u << 13)      /* the 0x3F escape       */
+#define KIND_FMT4 (1u << 12) /* keyed on op4, not op6 */
+#define KIND_EXT (1u << 13) /* the 0x3F escape       */
 
 /* Format III/IV occupy op4 0x06..0x0B, i.e. op6 0x18..0x2F. */
 static bool is_fmt34(uint32_t op6)
@@ -139,12 +139,12 @@ static bool fmt4_is_load(uint32_t w0)
     const uint32_t op4 = g4mh_op4(w0);
 
     if (op4 == 0x06u || op4 == 0x08u) {
-        return true;                    /* SLD.B, SLD.H */
+        return true; /* SLD.B, SLD.H */
     }
     if (op4 == 0x0Au) {
-        return (w0 & 1u) == 0u;         /* SLD.W, else SST.W */
+        return (w0 & 1u) == 0u; /* SLD.W, else SST.W */
     }
-    return false;                       /* SST.B, SST.H, Bcond */
+    return false; /* SST.B, SST.H, Bcond */
 }
 
 static uint32_t g4mh_rd(uint64_t insn)
@@ -156,7 +156,7 @@ static uint32_t g4mh_rd(uint64_t insn)
         return fmt4_is_load(w0) ? g4mh_reg2(w0) : 0u;
     }
     if (op == 0x3Au || op == 0x3Bu) {
-        return 0u;                      /* ST.B/ST.H/ST.W disp16 */
+        return 0u; /* ST.B/ST.H/ST.W disp16 */
     }
     return g4mh_reg2(w0);
 }
@@ -172,10 +172,10 @@ static uint32_t g4mh_rs1(uint64_t insn)
     const uint32_t op = g4mh_op6(w0);
 
     if (is_fmt34(op)) {
-        return EMU_PAIR_NO_REG;         /* addressed through EP */
+        return EMU_PAIR_NO_REG; /* addressed through EP */
     }
     if (op >= 0x10u && op <= 0x17u) {
-        return EMU_PAIR_NO_REG;         /* imm5 in the reg1 field */
+        return EMU_PAIR_NO_REG; /* imm5 in the reg1 field */
     }
     return g4mh_reg1(w0);
 }
@@ -211,26 +211,41 @@ static void g4mh_kind_name(uint32_t k, char *buf, unsigned n)
      * rather than from memory, which is how the first version got three
      * of them wrong. */
     static const char *const fmt12[0x18] = {
-        "mov",  "not",     "divh",  "jmp",  "satsubr","satsub","satadd","mulh",
-        "or",   "xor",     "and",   "tst",  "subr",   "sub",   "add",   "cmp",
-        "mov5", "satadd5", "add5",  "cmp5", "shr5",   "sar5",  "shl5",  "mulh5",
+        "mov",    "not",  "divh", "jmp",  "satsubr", "satsub",
+        "satadd", "mulh", "or",   "xor",  "and",     "tst",
+        "subr",   "sub",  "add",  "cmp",  "mov5",    "satadd5",
+        "add5",   "cmp5", "shr5", "sar5", "shl5",    "mulh5",
     };
     static const char *const cond[16] = {
-        "bv","bl","bz","bnh","bn","br","blt","ble",
-        "bnv","bnl","bnz","bh","bp","bsa","bge","bgt",
+        "bv",  "bl",  "bz",  "bnh", "bn", "br",  "blt", "ble",
+        "bnv", "bnl", "bnz", "bh",  "bp", "bsa", "bge", "bgt",
     };
 
     if ((k & KIND_FMT4) != 0u) {
         const uint32_t op4 = (k >> 5) & 0xFu;
 
         switch (op4) {
-        case 0x06: snprintf(buf, n, "sld.b"); return;
-        case 0x07: snprintf(buf, n, "sst.b"); return;
-        case 0x08: snprintf(buf, n, "sld.h"); return;
-        case 0x09: snprintf(buf, n, "sst.h"); return;
-        case 0x0A: snprintf(buf, n, "%s", (k & 1u) ? "sst.w" : "sld.w"); return;
-        case 0x0B: snprintf(buf, n, "%s", cond[k & 0xFu]); return;
-        default:   snprintf(buf, n, "op4.%x", (unsigned)op4); return;
+        case 0x06:
+            snprintf(buf, n, "sld.b");
+            return;
+        case 0x07:
+            snprintf(buf, n, "sst.b");
+            return;
+        case 0x08:
+            snprintf(buf, n, "sld.h");
+            return;
+        case 0x09:
+            snprintf(buf, n, "sst.h");
+            return;
+        case 0x0A:
+            snprintf(buf, n, "%s", (k & 1u) ? "sst.w" : "sld.w");
+            return;
+        case 0x0B:
+            snprintf(buf, n, "%s", cond[k & 0xFu]);
+            return;
+        default:
+            snprintf(buf, n, "op4.%x", (unsigned)op4);
+            return;
         }
     }
     if ((k & KIND_EXT) != 0u) {
@@ -245,24 +260,50 @@ static void g4mh_kind_name(uint32_t k, char *buf, unsigned n)
         return;
     }
     switch (op) {
-    case 0x30: snprintf(buf, n, "addi");    return;
-    case 0x31: snprintf(buf, n, "movea");   return;
-    case 0x32: snprintf(buf, n, "movhi");   return;
-    case 0x33: snprintf(buf, n, "satsubi"); return;
-    case 0x34: snprintf(buf, n, "ori");     return;
-    case 0x35: snprintf(buf, n, "xori");    return;
-    case 0x36: snprintf(buf, n, "andi");    return;
-    case 0x37: snprintf(buf, n, "mulhi");   return;
-    case 0x38: snprintf(buf, n, "ld.b");    return;
-    case 0x39: snprintf(buf, n, "ld.hw");   return;
-    case 0x3A: snprintf(buf, n, "st.b");    return;
-    case 0x3B: snprintf(buf, n, "st.hw");   return;
-    default:   snprintf(buf, n, "op%02x", (unsigned)op); return;
+    case 0x30:
+        snprintf(buf, n, "addi");
+        return;
+    case 0x31:
+        snprintf(buf, n, "movea");
+        return;
+    case 0x32:
+        snprintf(buf, n, "movhi");
+        return;
+    case 0x33:
+        snprintf(buf, n, "satsubi");
+        return;
+    case 0x34:
+        snprintf(buf, n, "ori");
+        return;
+    case 0x35:
+        snprintf(buf, n, "xori");
+        return;
+    case 0x36:
+        snprintf(buf, n, "andi");
+        return;
+    case 0x37:
+        snprintf(buf, n, "mulhi");
+        return;
+    case 0x38:
+        snprintf(buf, n, "ld.b");
+        return;
+    case 0x39:
+        snprintf(buf, n, "ld.hw");
+        return;
+    case 0x3A:
+        snprintf(buf, n, "st.b");
+        return;
+    case 0x3B:
+        snprintf(buf, n, "st.hw");
+        return;
+    default:
+        snprintf(buf, n, "op%02x", (unsigned)op);
+        return;
     }
 }
 
 const emu_pair_ops_t g4mh_pair_ops = {
-    g4mh_kind, g4mh_rd, g4mh_rs1, g4mh_rs2,
+    g4mh_kind,      g4mh_rd,          g4mh_rs1,         g4mh_rs2,
     g4mh_kind_name, g4mh_kind_is_mem, g4mh_kind_is_alu,
 };
 

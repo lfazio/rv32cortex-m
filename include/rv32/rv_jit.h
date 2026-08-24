@@ -46,22 +46,22 @@ extern "C" {
 
 /* Bytes of RAM for translated code. */
 #ifndef RV_JIT_CODE_SIZE
-#  define RV_JIT_CODE_SIZE (12u * 1024u)
+#define RV_JIT_CODE_SIZE (12u * 1024u)
 #endif
 
 /* Maximum number of translated blocks tracked at once. */
 #ifndef RV_JIT_MAX_BLOCKS
-#  define RV_JIT_MAX_BLOCKS 256u
+#define RV_JIT_MAX_BLOCKS 256u
 #endif
 
 /* Power-of-two hash table size for guest pc -> block lookup. */
 #ifndef RV_JIT_HASH_SIZE
-#  define RV_JIT_HASH_SIZE 256u
+#define RV_JIT_HASH_SIZE 256u
 #endif
 
 /* Most guest instructions translated into a single block. */
 #ifndef RV_JIT_MAX_BLOCK_INSNS
-#  define RV_JIT_MAX_BLOCK_INSNS 64u
+#define RV_JIT_MAX_BLOCK_INSNS 64u
 #endif
 
 /*
@@ -95,8 +95,6 @@ void rv_jit_flush(void);
  * of its own should add them there if the dispatch loop can maintain
  * them, and otherwise earn a hook by having something to put in it.
  */
-
-
 
 extern const emu_backend_t rv_backend_jit;
 

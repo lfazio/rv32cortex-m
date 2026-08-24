@@ -44,32 +44,32 @@ struct g4mh_cpu;
 /* ------------------------------------------------------------------ */
 
 /* INTC1, from <INTC1_PEx_base>. Channels 0..31. */
-#define G4MH_INTC1_EIC          0x0000u   /* + 0x02 * n, n = 0..31      */
-#define G4MH_INTC1_IMR0         0x00F0u
-#define G4MH_INTC1_EIBD         0x0100u   /* + 0x04 * n                 */
-#define G4MH_INTC1_FIBD         0x01C0u
-#define G4MH_INTC1_EEIC         0x0200u   /* + 0x04 * n                 */
-#define G4MH_INTC1_EIBG         0x0280u
-#define G4MH_INTC1_FIBG         0x02C0u
-#define G4MH_INTC1_IHVCFG       0x02F0u
+#define G4MH_INTC1_EIC 0x0000u /* + 0x02 * n, n = 0..31      */
+#define G4MH_INTC1_IMR0 0x00F0u
+#define G4MH_INTC1_EIBD 0x0100u /* + 0x04 * n                 */
+#define G4MH_INTC1_FIBD 0x01C0u
+#define G4MH_INTC1_EEIC 0x0200u /* + 0x04 * n                 */
+#define G4MH_INTC1_EIBG 0x0280u
+#define G4MH_INTC1_FIBG 0x02C0u
+#define G4MH_INTC1_IHVCFG 0x02F0u
 
 /* INTC2, from <INTC2_base>. Channels 32..1023. */
-#define G4MH_INTC2_EIC          0x0000u   /* + 0x02 * n, n = 32..1023   */
-#define G4MH_INTC2_IMR          0x1000u   /* + 0x04 * n, n = 1..31      */
-#define G4MH_INTC2_I2EIBG       0x1FE0u   /* + 0x04 * m, m = 0..5       */
-#define G4MH_INTC2_EIBD         0x2000u   /* + 0x04 * n                 */
-#define G4MH_INTC2_EEIC         0x4000u   /* + 0x04 * n                 */
+#define G4MH_INTC2_EIC 0x0000u /* + 0x02 * n, n = 32..1023   */
+#define G4MH_INTC2_IMR 0x1000u /* + 0x04 * n, n = 1..31      */
+#define G4MH_INTC2_I2EIBG 0x1FE0u /* + 0x04 * m, m = 0..5       */
+#define G4MH_INTC2_EIBD 0x2000u /* + 0x04 * n                 */
+#define G4MH_INTC2_EEIC 0x4000u /* + 0x04 * n                 */
 
 /*
  * INTIF, from <INTIF_base> = 0xFF09_0000. A separate block from either
  * INTC unit, and only one register of it is modelled.
  */
-#define G4MH_INTIF_BASE         0xFF090000u
-#define G4MH_INTIF_SIZE         0x00000400u
-#define G4MH_INTIF_TPTMSEL      0x0200u
+#define G4MH_INTIF_BASE 0xFF090000u
+#define G4MH_INTIF_SIZE 0x00000400u
+#define G4MH_INTIF_TPTMSEL 0x0200u
 
 /* The channel at which INTC2 takes over from INTC1. */
-#define G4MH_INTC1_CHANNELS     32u
+#define G4MH_INTC1_CHANNELS 32u
 
 /*
  * EIBDn fields. PEID names the PE the channel is bound to -- 000 is PE0,
@@ -77,8 +77,8 @@ struct g4mh_cpu;
  * array into a router. GPID and the GM/CST/BCP bits belong to the
  * virtualization and broadcast features and are stored but not acted on.
  */
-#define G4MH_EIBD_PEID_MASK     0x00000007u
-#define G4MH_EIBD_GPID_SHIFT    8u
+#define G4MH_EIBD_PEID_MASK 0x00000007u
+#define G4MH_EIBD_GPID_SHIFT 8u
 
 /* ------------------------------------------------------------------ */
 /* Channel state: one set of bits, three windows onto it                */
@@ -111,31 +111,31 @@ struct g4mh_cpu;
  */
 
 /* The canonical word, in EEICn's layout. */
-#define G4MH_EEIC_EICT          (1u << 31)  /* level detection; READ ONLY */
-#define G4MH_EEIC_EIRF          (1u << 28)  /* request pending           */
-#define G4MH_EEIC_EIMK          (1u << 23)  /* masked                    */
-#define G4MH_EEIC_EITB          (1u << 22)  /* table reference method    */
-#define G4MH_EEIC_EIOV          (1u << 15)  /* overflow                  */
-#define G4MH_EEIC_EIP_MASK      0x0000003Fu /* 0 highest, 63 lowest      */
+#define G4MH_EEIC_EICT (1u << 31) /* level detection; READ ONLY */
+#define G4MH_EEIC_EIRF (1u << 28) /* request pending           */
+#define G4MH_EEIC_EIMK (1u << 23) /* masked                    */
+#define G4MH_EEIC_EITB (1u << 22) /* table reference method    */
+#define G4MH_EEIC_EIOV (1u << 15) /* overflow                  */
+#define G4MH_EEIC_EIP_MASK 0x0000003Fu /* 0 highest, 63 lowest      */
 
 /* Masked, lowest priority, edge detection -- 0080_000FH. */
-#define G4MH_EEIC_RESET         0x0080000Fu
+#define G4MH_EEIC_RESET 0x0080000Fu
 
 /*
  * EICn's window. Bit 4 and bits 14:13 and 11:8 are reserved and read
  * back their reset value, which is zero for all of them.
  */
-#define G4MH_EIC_EIP_MASK       0x000Fu   /* EIP[3:0] only               */
-#define G4MH_EIC_EIOV           0x0020u
-#define G4MH_EIC_EITB           0x0040u
-#define G4MH_EIC_EIMK           0x0080u
-#define G4MH_EIC_EIRF           0x1000u
-#define G4MH_EIC_EICT           0x8000u
+#define G4MH_EIC_EIP_MASK 0x000Fu /* EIP[3:0] only               */
+#define G4MH_EIC_EIOV 0x0020u
+#define G4MH_EIC_EITB 0x0040u
+#define G4MH_EIC_EIMK 0x0080u
+#define G4MH_EIC_EIRF 0x1000u
+#define G4MH_EIC_EICT 0x8000u
 
-#define G4MH_EIC_RESET          0x008Fu
+#define G4MH_EIC_RESET 0x008Fu
 
 /* IMRm resets to every channel masked, which is EIMK's reset repeated. */
-#define G4MH_IMR_RESET          0xFFFFFFFFu
+#define G4MH_IMR_RESET 0xFFFFFFFFu
 
 /* ------------------------------------------------------------------ */
 /* OS timer                                                            */
@@ -147,11 +147,11 @@ struct g4mh_cpu;
  * interrupt; not the real OSTM register set, which is why it is documented
  * as a stand-in rather than presented as the peripheral.
  */
-#define G4MH_OSTM_CNT           0x0000u   /* 64-bit, read-only          */
-#define G4MH_OSTM_CMP           0x0008u   /* 64-bit compare             */
+#define G4MH_OSTM_CNT 0x0000u /* 64-bit, read-only          */
+#define G4MH_OSTM_CMP 0x0008u /* 64-bit compare             */
 
 #ifndef G4MH_OSTM_CHANNEL
-#  define G4MH_OSTM_CHANNEL     0u
+#define G4MH_OSTM_CHANNEL 0u
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -182,7 +182,7 @@ typedef struct g4mh_intc {
      * bit is exactly how the mask came to be ignored.
      */
     uint32_t chan[G4MH_INT_CHANNELS];
-    uint32_t eibd[G4MH_INT_CHANNELS];   /* bind: which PE/VM takes it   */
+    uint32_t eibd[G4MH_INT_CHANNELS]; /* bind: which PE/VM takes it   */
 
     uint32_t fibd;
     uint32_t eibg;
@@ -194,7 +194,7 @@ typedef struct g4mh_intc {
      * loop, so volatile even though there is only one core.
      */
     volatile uint64_t ostm_cnt;
-    uint64_t          ostm_cmp;
+    uint64_t ostm_cmp;
 
     /*
      * TPTMSEL: bit n picks EIINT31 over FEINT for PE n's TPTM interval
@@ -231,7 +231,7 @@ typedef struct g4mh_intc {
      * has dealt with it.
      */
     emu_unmask_fn unmask;
-    void         *unmask_ctx;
+    void *unmask_ctx;
 } g4mh_intc_t;
 
 /*
@@ -247,8 +247,7 @@ extern const emu_dev_ops_t g4mh_intif_ops;
  * `global` is the instance holding the INTC2 half -- PE0's. Pass NULL when
  * initialising that one itself.
  */
-void g4mh_intc_init(g4mh_intc_t *ic, struct g4mh_cpu *cpu,
-                    g4mh_intc_t *global);
+void g4mh_intc_init(g4mh_intc_t *ic, struct g4mh_cpu *cpu, g4mh_intc_t *global);
 void g4mh_intc_set_unmask(g4mh_intc_t *ic, emu_unmask_fn fn, void *ctx);
 
 /*

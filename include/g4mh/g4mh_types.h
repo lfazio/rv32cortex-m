@@ -24,16 +24,16 @@
  */
 typedef uint32_t g4mh_exc_t;
 
-#define G4MH_EXC_NONE           0xFFFFFFFFu
+#define G4MH_EXC_NONE 0xFFFFFFFFu
 
 /* FE level: taken to FEPC/FEPSW/FEIC, and not maskable by PSW.ID. */
-#define G4MH_EXC_SYSERR         0x0010u   /* system error                 */
-#define G4MH_EXC_MIP            0x0030u   /* instruction-fetch protection */
-#define G4MH_EXC_MDP            0x0031u   /* data protection              */
-#define G4MH_EXC_RIE            0x0060u   /* reserved instruction         */
-#define G4MH_EXC_MAE            0x0062u   /* misaligned access            */
-#define G4MH_EXC_FPP            0x0071u   /* FP operation                 */
-#define G4MH_EXC_UCPOP          0x0080u   /* coprocessor unusable         */
+#define G4MH_EXC_SYSERR 0x0010u /* system error                 */
+#define G4MH_EXC_MIP 0x0030u /* instruction-fetch protection */
+#define G4MH_EXC_MDP 0x0031u /* data protection              */
+#define G4MH_EXC_RIE 0x0060u /* reserved instruction         */
+#define G4MH_EXC_MAE 0x0062u /* misaligned access            */
+#define G4MH_EXC_FPP 0x0071u /* FP operation                 */
+#define G4MH_EXC_UCPOP 0x0080u /* coprocessor unusable         */
 /*
  * Privileged instruction. R01UH0923EJ0130 table 3.103 "Exception Cause
  * List" gives A0H, FE level, resumable -- and it is the only cause here
@@ -45,12 +45,12 @@ typedef uint32_t g4mh_exc_t;
  * too and this frontend does not check them, which is a real gap rather
  * than a decision -- see docs/frontend/g4mh.md.
  */
-#define G4MH_EXC_PIE            0x00A0u   /* privileged instruction       */
+#define G4MH_EXC_PIE 0x00A0u /* privileged instruction       */
 
 /* EI level: taken to EIPC/EIPSW/EIIC, maskable by PSW.ID. */
-#define G4MH_EXC_TRAP0          0x0040u   /* TRAP 0..15,  +vector         */
-#define G4MH_EXC_TRAP1          0x0050u   /* TRAP 16..31, +vector         */
-#define G4MH_EXC_SYSCALL        0x8000u   /* SYSCALL, +vector             */
+#define G4MH_EXC_TRAP0 0x0040u /* TRAP 0..15,  +vector         */
+#define G4MH_EXC_TRAP1 0x0050u /* TRAP 16..31, +vector         */
+#define G4MH_EXC_SYSCALL 0x8000u /* SYSCALL, +vector             */
 /*
  * FETRAP 1..15. The architecture leaves the cause code to the part ("see
  * the hardware manual of the product used"), and this frontend's codes are
@@ -59,7 +59,7 @@ typedef uint32_t g4mh_exc_t;
  * the obvious reading of the real table would put FETRAP at 0x0031..0x003F,
  * on top of MDP.
  */
-#define G4MH_EXC_FETRAP         0x0090u   /* FETRAP 1..15, +vector        */
+#define G4MH_EXC_FETRAP 0x0090u /* FETRAP 1..15, +vector        */
 
 /*
  * FEINT, the FE-level maskable interrupt. The U2B gives it cause codes
@@ -69,13 +69,13 @@ typedef uint32_t g4mh_exc_t;
  * range is written down rather than the single value because a second
  * source is the first thing that would need the rest of it.
  */
-#define G4MH_EXC_FEINT          0x00F0u   /* FEINT 0..15, +channel        */
+#define G4MH_EXC_FEINT 0x00F0u /* FEINT 0..15, +channel        */
 
 /*
  * An EI interrupt's cause is 0x1000 + channel. The frontend's INTC raises
  * these; the platform sees only a channel number.
  */
-#define G4MH_EXC_EIINT_BASE     0x1000u
+#define G4MH_EXC_EIINT_BASE 0x1000u
 
 /*
  * Map a bus fault onto the G4MH exception that reports it.
@@ -89,9 +89,9 @@ typedef uint32_t g4mh_exc_t;
 static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
 {
     static const uint16_t cause[] = {
-        [EMU_FAULT_NONE]  = 0u,   /* never read; the test below shorts it */
+        [EMU_FAULT_NONE] = 0u, /* never read; the test below shorts it */
         [EMU_FAULT_FETCH] = G4MH_EXC_MIP,
-        [EMU_FAULT_LOAD]  = G4MH_EXC_MDP,
+        [EMU_FAULT_LOAD] = G4MH_EXC_MDP,
         [EMU_FAULT_STORE] = G4MH_EXC_MDP,
     };
     return (f == EMU_FAULT_NONE) ? G4MH_EXC_NONE : cause[f];
@@ -101,19 +101,19 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
 /* PSW                                                                 */
 /* ------------------------------------------------------------------ */
 
-#define G4MH_PSW_Z          (1u << 0)    /* result was zero              */
-#define G4MH_PSW_S          (1u << 1)    /* result was negative          */
-#define G4MH_PSW_OV         (1u << 2)    /* signed overflow              */
-#define G4MH_PSW_CY         (1u << 3)    /* carry / borrow               */
-#define G4MH_PSW_SAT        (1u << 4)    /* saturated (sticky)           */
-#define G4MH_PSW_ID         (1u << 5)    /* EI interrupts disabled       */
-#define G4MH_PSW_EP         (1u << 6)    /* in an exception, not an int  */
-#define G4MH_PSW_NP         (1u << 7)    /* in an FE-level exception     */
-#define G4MH_PSW_EBV        (1u << 15)   /* vectors from EBASE, not RBASE*/
-#define G4MH_PSW_CU0        (1u << 16)
-#define G4MH_PSW_CU1        (1u << 17)
-#define G4MH_PSW_CU2        (1u << 18)
-#define G4MH_PSW_UM         (1u << 30)   /* user mode                    */
+#define G4MH_PSW_Z (1u << 0) /* result was zero              */
+#define G4MH_PSW_S (1u << 1) /* result was negative          */
+#define G4MH_PSW_OV (1u << 2) /* signed overflow              */
+#define G4MH_PSW_CY (1u << 3) /* carry / borrow               */
+#define G4MH_PSW_SAT (1u << 4) /* saturated (sticky)           */
+#define G4MH_PSW_ID (1u << 5) /* EI interrupts disabled       */
+#define G4MH_PSW_EP (1u << 6) /* in an exception, not an int  */
+#define G4MH_PSW_NP (1u << 7) /* in an FE-level exception     */
+#define G4MH_PSW_EBV (1u << 15) /* vectors from EBASE, not RBASE*/
+#define G4MH_PSW_CU0 (1u << 16)
+#define G4MH_PSW_CU1 (1u << 17)
+#define G4MH_PSW_CU2 (1u << 18)
+#define G4MH_PSW_UM (1u << 30) /* user mode                    */
 
 /*
  * PSW.EIMASK, bits 25:20 -- the priority ceiling in 64-priority mode.
@@ -121,11 +121,10 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
  * EIRET restore it for free: the whole PSW comes back.
  */
 #define G4MH_PSW_EIMASK_SHIFT 20u
-#define G4MH_PSW_EIMASK_MASK  (0x3Fu << G4MH_PSW_EIMASK_SHIFT)
+#define G4MH_PSW_EIMASK_MASK (0x3Fu << G4MH_PSW_EIMASK_SHIFT)
 
 /* The condition-code bits, as a group: what an arithmetic result sets. */
-#define G4MH_PSW_FLAGS      (G4MH_PSW_Z | G4MH_PSW_S | G4MH_PSW_OV | \
-                             G4MH_PSW_CY)
+#define G4MH_PSW_FLAGS (G4MH_PSW_Z | G4MH_PSW_S | G4MH_PSW_OV | G4MH_PSW_CY)
 
 /* ------------------------------------------------------------------ */
 /* Register conventions                                                */
@@ -137,36 +136,36 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
  * EP is the base register the 16-bit SLD/SST forms address through, and
  * LP is where JARL leaves the return address by default.
  */
-#define G4MH_REG_ZERO       0u
-#define G4MH_REG_SP         3u
-#define G4MH_REG_GP         4u
-#define G4MH_REG_TP         5u
-#define G4MH_REG_EP         30u
-#define G4MH_REG_LP         31u
+#define G4MH_REG_ZERO 0u
+#define G4MH_REG_SP 3u
+#define G4MH_REG_GP 4u
+#define G4MH_REG_TP 5u
+#define G4MH_REG_EP 30u
+#define G4MH_REG_LP 31u
 
 /* ------------------------------------------------------------------ */
 /* System registers (selID 0 unless noted)                             */
 /* ------------------------------------------------------------------ */
 
-#define G4MH_SR_EIPC        0u
-#define G4MH_SR_EIPSW       1u
-#define G4MH_SR_FEPC        2u
-#define G4MH_SR_FEPSW       3u
-#define G4MH_SR_PSW         5u
-#define G4MH_SR_EIIC        13u
-#define G4MH_SR_FEIC        14u
-#define G4MH_SR_CTPC        16u
-#define G4MH_SR_CTPSW       17u
-#define G4MH_SR_CTBP        20u
-#define G4MH_SR_EIWR        28u
-#define G4MH_SR_FEWR        29u
-#define G4MH_SR_BSEL        31u
+#define G4MH_SR_EIPC 0u
+#define G4MH_SR_EIPSW 1u
+#define G4MH_SR_FEPC 2u
+#define G4MH_SR_FEPSW 3u
+#define G4MH_SR_PSW 5u
+#define G4MH_SR_EIIC 13u
+#define G4MH_SR_FEIC 14u
+#define G4MH_SR_CTPC 16u
+#define G4MH_SR_CTPSW 17u
+#define G4MH_SR_CTBP 20u
+#define G4MH_SR_EIWR 28u
+#define G4MH_SR_FEWR 29u
+#define G4MH_SR_BSEL 31u
 
 /* selID 1 */
-#define G4MH_SR_MCFG0       0u
-#define G4MH_SR_RBASE       2u
-#define G4MH_SR_EBASE       3u
-#define G4MH_SR_INTBP       4u
+#define G4MH_SR_MCFG0 0u
+#define G4MH_SR_RBASE 2u
+#define G4MH_SR_EBASE 3u
+#define G4MH_SR_INTBP 4u
 
 /*
  * RBASE and EBASE carry two flags in the bits the 512-byte alignment
@@ -184,26 +183,26 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
  * versus one for all" is the easy mistake and gets 2048 vectors where the
  * architecture has 16.
  */
-#define G4MH_BASE_RINT      (1u << 0)
-#define G4MH_BASE_DV        (1u << 1)
-#define G4MH_SR_MCTL        5u
-#define G4MH_SR_PID         6u
-#define G4MH_SR_SCCFG       11u
-#define G4MH_SR_SCBP        12u
+#define G4MH_BASE_RINT (1u << 0)
+#define G4MH_BASE_DV (1u << 1)
+#define G4MH_SR_MCTL 5u
+#define G4MH_SR_PID 6u
+#define G4MH_SR_SCCFG 11u
+#define G4MH_SR_SCBP 12u
 
 /* selID 2 */
-#define G4MH_SR_HTCFG0      0u
-#define G4MH_SR_MEA         6u
-#define G4MH_SR_ASID        7u
-#define G4MH_SR_MEI         8u
-#define G4MH_SR_ISPR        10u
-#define G4MH_SR_PMR         11u   /* the manual calls this IMSR         */
-#define G4MH_SR_ICSR        12u
-#define G4MH_SR_INTCFG      13u
-#define G4MH_SR_PLMR        14u
+#define G4MH_SR_HTCFG0 0u
+#define G4MH_SR_MEA 6u
+#define G4MH_SR_ASID 7u
+#define G4MH_SR_MEI 8u
+#define G4MH_SR_ISPR 10u
+#define G4MH_SR_PMR 11u /* the manual calls this IMSR         */
+#define G4MH_SR_ICSR 12u
+#define G4MH_SR_INTCFG 13u
+#define G4MH_SR_PLMR 14u
 
 /* The bank all five of the above live in. */
-#define G4MH_SELID_INT      2u
+#define G4MH_SELID_INT 2u
 
 /*
  * Interrupt priority ceiling. Three registers decide whether an EI
@@ -219,14 +218,14 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
  * by one at every level and lets priority 63 in, which the architecture
  * never acknowledges.
  */
-#define G4MH_ISPR_LEVELS    16u   /* ISP15..ISP0; 16..63 set no bit     */
+#define G4MH_ISPR_LEVELS 16u /* ISP15..ISP0; 16..63 set no bit     */
 
-#define G4MH_INTCFG_ISPC    (1u << 0)   /* stop auto-updating ISPR      */
-#define G4MH_INTCFG_EPL     (1u << 1)   /* 64 priorities, via EIMASK    */
-#define G4MH_INTCFG_RESET   0x000F0000u /* ULNR = 0xF                   */
+#define G4MH_INTCFG_ISPC (1u << 0) /* stop auto-updating ISPR      */
+#define G4MH_INTCFG_EPL (1u << 1) /* 64 priorities, via EIMASK    */
+#define G4MH_INTCFG_RESET 0x000F0000u /* ULNR = 0xF                   */
 
-#define G4MH_PLMR_PLM_MASK  0x3Fu
-#define G4MH_PLMR_RESET     0x00000010u /* 16: priorities 0..15 pass    */
+#define G4MH_PLMR_PLM_MASK 0x3Fu
+#define G4MH_PLMR_RESET 0x00000010u /* 16: priorities 0..15 pass    */
 
 /*
  * The FPU system registers, selID 0. Numbering from the U2B hardware
@@ -238,34 +237,34 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
  * reflects a subset of its bits, so a write through one has to land in
  * FPSR or the two disagree. g4mh_sr_read/write route them.
  */
-#define G4MH_SR_FPSR        6u
-#define G4MH_SR_FPEPC       7u
-#define G4MH_SR_FPST        8u
-#define G4MH_SR_FPCC        9u
-#define G4MH_SR_FPCFG       10u
+#define G4MH_SR_FPSR 6u
+#define G4MH_SR_FPEPC 7u
+#define G4MH_SR_FPST 8u
+#define G4MH_SR_FPCC 9u
+#define G4MH_SR_FPCFG 10u
 
 /*
  * Performance measurement, selID 14 (and PMUMCTRL alone at selID 11).
  * Eight channels: a control register each and a counter each, with the
  * counters at SR16 rather than immediately after the controls.
  */
-#define G4MH_SR_PMCTRL0     0u    /* .. PMCTRL7 at 7, selID 14         */
-#define G4MH_SR_PMCOUNT0    16u   /* .. PMCOUNT7 at 23, selID 14       */
-#define G4MH_SR_PMUMCTRL    8u    /* selID 11                          */
-#define G4MH_PM_CHANNELS    8u
-#define G4MH_SELID_PMU      11u
-#define G4MH_SELID_PM       14u
+#define G4MH_SR_PMCTRL0 0u /* .. PMCTRL7 at 7, selID 14         */
+#define G4MH_SR_PMCOUNT0 16u /* .. PMCOUNT7 at 23, selID 14       */
+#define G4MH_SR_PMUMCTRL 8u /* selID 11                          */
+#define G4MH_PM_CHANNELS 8u
+#define G4MH_SELID_PMU 11u
+#define G4MH_SELID_PM 14u
 
 /*
  * PMCTRLn. CND selects what the channel counts; CE enables it. The event
  * numbering is the part's, and only the two this emulator can source
  * honestly are implemented -- see g4mh_pm_tick().
  */
-#define G4MH_PMCTRL_CE      (1u << 0)
-#define G4MH_PMCTRL_CND_SH  1u
+#define G4MH_PMCTRL_CE (1u << 0)
+#define G4MH_PMCTRL_CND_SH 1u
 #define G4MH_PMCTRL_CND_MSK 0x7Fu
-#define G4MH_PM_CND_CYCLE   0x00u  /* every clock cycle                 */
-#define G4MH_PM_CND_INSN    0x01u  /* every instruction retired         */
+#define G4MH_PM_CND_CYCLE 0x00u /* every clock cycle                 */
+#define G4MH_PM_CND_INSN 0x01u /* every instruction retired         */
 
 /*
  * FPSR, from the same table.
@@ -286,38 +285,38 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
  * shifts below differ by one. Deriving one from the other by shifting a
  * single five-bit mask puts every cause bit one place out.
  */
-#define G4MH_FPSR_CC_SHIFT  24u
-#define G4MH_FPSR_CC_MASK   0xFF000000u
-#define G4MH_FPSR_FN        (1u << 23)
-#define G4MH_FPSR_IF        (1u << 22)
-#define G4MH_FPSR_RSV1      (1u << 21)
-#define G4MH_FPSR_RM_SHIFT  18u
-#define G4MH_FPSR_RM_MASK   (3u << 18)
-#define G4MH_FPSR_FS        (1u << 17)
-#define G4MH_FPSR_XC_SHIFT  10u
-#define G4MH_FPSR_XC_MASK   (0x3Fu << 10)
-#define G4MH_FPSR_XE_SHIFT  5u
-#define G4MH_FPSR_XE_MASK   (0x1Fu << 5)
-#define G4MH_FPSR_XP_SHIFT  0u
-#define G4MH_FPSR_XP_MASK   0x1Fu
+#define G4MH_FPSR_CC_SHIFT 24u
+#define G4MH_FPSR_CC_MASK 0xFF000000u
+#define G4MH_FPSR_FN (1u << 23)
+#define G4MH_FPSR_IF (1u << 22)
+#define G4MH_FPSR_RSV1 (1u << 21)
+#define G4MH_FPSR_RM_SHIFT 18u
+#define G4MH_FPSR_RM_MASK (3u << 18)
+#define G4MH_FPSR_FS (1u << 17)
+#define G4MH_FPSR_XC_SHIFT 10u
+#define G4MH_FPSR_XC_MASK (0x3Fu << 10)
+#define G4MH_FPSR_XE_SHIFT 5u
+#define G4MH_FPSR_XE_MASK (0x1Fu << 5)
+#define G4MH_FPSR_XP_SHIFT 0u
+#define G4MH_FPSR_XP_MASK 0x1Fu
 
 /*
  * The five exception bits, in the order the XE and XP groups use them:
  * bit 0 inexact, 1 underflow, 2 overflow, 3 divide-by-zero, 4 invalid.
  * The cause group adds E above them, at bit 5 of the group.
  */
-#define G4MH_FPX_I          (1u << 0)    /* inexact                     */
-#define G4MH_FPX_U          (1u << 1)    /* underflow                   */
-#define G4MH_FPX_O          (1u << 2)    /* overflow                    */
-#define G4MH_FPX_Z          (1u << 3)    /* divide by zero              */
-#define G4MH_FPX_V          (1u << 4)    /* invalid operation           */
-#define G4MH_FPX_E          (1u << 5)    /* unimplemented; cause only   */
+#define G4MH_FPX_I (1u << 0) /* inexact                     */
+#define G4MH_FPX_U (1u << 1) /* underflow                   */
+#define G4MH_FPX_O (1u << 2) /* overflow                    */
+#define G4MH_FPX_Z (1u << 3) /* divide by zero              */
+#define G4MH_FPX_V (1u << 4) /* invalid operation           */
+#define G4MH_FPX_E (1u << 5) /* unimplemented; cause only   */
 
 /* Rounding modes, as FPSR.RM encodes them. */
-#define G4MH_RM_RN          0u
-#define G4MH_RM_RZ          1u
-#define G4MH_RM_RP          2u
-#define G4MH_RM_RM          3u
+#define G4MH_RM_RN 0u
+#define G4MH_RM_RZ 1u
+#define G4MH_RM_RP 2u
+#define G4MH_RM_RM 3u
 
 /* Number of selID banks this implementation decodes. */
 /*
@@ -335,7 +334,7 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
  * and those are not hot enough to justify one. If this ever needs to
  * shrink, the sparse selIDs are 3..9 and 12..13.
  */
-#define G4MH_SR_BANKS       16u
-#define G4MH_SR_PER_BANK    32u
+#define G4MH_SR_BANKS 16u
+#define G4MH_SR_PER_BANK 32u
 
 #endif /* G4MH_G4MH_TYPES_H */

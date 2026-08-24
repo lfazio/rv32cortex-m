@@ -16,39 +16,57 @@ extern "C" {
 /* Major opcodes (inst[6:0])                                           */
 /* ------------------------------------------------------------------ */
 
-#define OP_LOAD       0x03u
-#define OP_MISC_MEM   0x0Fu
-#define OP_IMM        0x13u
-#define OP_AUIPC      0x17u
-#define OP_STORE      0x23u
-#define OP_AMO        0x2Fu
-#define OP_OP         0x33u
-#define OP_LUI        0x37u
-#define OP_BRANCH     0x63u
-#define OP_JALR       0x67u
-#define OP_JAL        0x6Fu
-#define OP_SYSTEM     0x73u
+#define OP_LOAD 0x03u
+#define OP_MISC_MEM 0x0Fu
+#define OP_IMM 0x13u
+#define OP_AUIPC 0x17u
+#define OP_STORE 0x23u
+#define OP_AMO 0x2Fu
+#define OP_OP 0x33u
+#define OP_LUI 0x37u
+#define OP_BRANCH 0x63u
+#define OP_JALR 0x67u
+#define OP_JAL 0x6Fu
+#define OP_SYSTEM 0x73u
 
 /* F extension major opcodes, shared by the RVC expander (Zcf), the
  * interpreter's dispatch and the JIT translator. */
-#define OP_LOAD_FP    0x07u
-#define OP_STORE_FP   0x27u
-#define OP_FP         0x53u
-#define OP_MADD       0x43u
-#define OP_MSUB       0x47u
-#define OP_NMSUB      0x4Bu
-#define OP_NMADD      0x4Fu
+#define OP_LOAD_FP 0x07u
+#define OP_STORE_FP 0x27u
+#define OP_FP 0x53u
+#define OP_MADD 0x43u
+#define OP_MSUB 0x47u
+#define OP_NMSUB 0x4Bu
+#define OP_NMADD 0x4Fu
 
 /* ------------------------------------------------------------------ */
 /* Field accessors                                                     */
 /* ------------------------------------------------------------------ */
 
-static EMU_ALWAYS_INLINE uint32_t rv_opcode(uint32_t i) { return i & 0x7Fu; }
-static EMU_ALWAYS_INLINE uint32_t rv_rd(uint32_t i)     { return (i >> 7) & 0x1Fu; }
-static EMU_ALWAYS_INLINE uint32_t rv_rs1(uint32_t i)    { return (i >> 15) & 0x1Fu; }
-static EMU_ALWAYS_INLINE uint32_t rv_rs2(uint32_t i)    { return (i >> 20) & 0x1Fu; }
-static EMU_ALWAYS_INLINE uint32_t rv_funct3(uint32_t i) { return (i >> 12) & 0x7u; }
-static EMU_ALWAYS_INLINE uint32_t rv_funct7(uint32_t i) { return (i >> 25) & 0x7Fu; }
+static EMU_ALWAYS_INLINE uint32_t rv_opcode(uint32_t i)
+{
+    return i & 0x7Fu;
+}
+static EMU_ALWAYS_INLINE uint32_t rv_rd(uint32_t i)
+{
+    return (i >> 7) & 0x1Fu;
+}
+static EMU_ALWAYS_INLINE uint32_t rv_rs1(uint32_t i)
+{
+    return (i >> 15) & 0x1Fu;
+}
+static EMU_ALWAYS_INLINE uint32_t rv_rs2(uint32_t i)
+{
+    return (i >> 20) & 0x1Fu;
+}
+static EMU_ALWAYS_INLINE uint32_t rv_funct3(uint32_t i)
+{
+    return (i >> 12) & 0x7u;
+}
+static EMU_ALWAYS_INLINE uint32_t rv_funct7(uint32_t i)
+{
+    return (i >> 25) & 0x7Fu;
+}
 
 /* Immediates, already sign-extended where the format calls for it. */
 static EMU_ALWAYS_INLINE int32_t rv_imm_i(uint32_t i)
@@ -64,10 +82,10 @@ static EMU_ALWAYS_INLINE int32_t rv_imm_s(uint32_t i)
 
 static EMU_ALWAYS_INLINE int32_t rv_imm_b(uint32_t i)
 {
-    uint32_t v = ((i >> 7) & 0x1Eu)          /* imm[4:1]  */
-               | ((i >> 20) & 0x7E0u)        /* imm[10:5] */
-               | ((i << 4) & 0x800u)         /* imm[11]   */
-               | ((i >> 19) & 0x1000u);      /* imm[12]   */
+    uint32_t v = ((i >> 7) & 0x1Eu) /* imm[4:1]  */
+                 | ((i >> 20) & 0x7E0u) /* imm[10:5] */
+                 | ((i << 4) & 0x800u) /* imm[11]   */
+                 | ((i >> 19) & 0x1000u); /* imm[12]   */
     return emu_sext(v, 13);
 }
 
@@ -78,10 +96,10 @@ static EMU_ALWAYS_INLINE uint32_t rv_imm_u(uint32_t i)
 
 static EMU_ALWAYS_INLINE int32_t rv_imm_j(uint32_t i)
 {
-    uint32_t v = ((i >> 20) & 0x7FEu)        /* imm[10:1] */
-               | ((i >> 9) & 0x800u)         /* imm[11]   */
-               | (i & 0xFF000u)              /* imm[19:12]*/
-               | ((i >> 11) & 0x100000u);    /* imm[20]   */
+    uint32_t v = ((i >> 20) & 0x7FEu) /* imm[10:1] */
+                 | ((i >> 9) & 0x800u) /* imm[11]   */
+                 | (i & 0xFF000u) /* imm[19:12]*/
+                 | ((i >> 11) & 0x100000u); /* imm[20]   */
     return emu_sext(v, 21);
 }
 

@@ -14,7 +14,7 @@
 #include <string.h>
 
 /* Defaults that only this file and main() need agree on. */
-#define DEFAULT_RAM_SIZE  (1u << 20)   /* 1 MiB */
+#define DEFAULT_RAM_SIZE (1u << 20) /* 1 MiB */
 
 /*
  * Whether `--jit` means anything in this build.
@@ -41,7 +41,8 @@ static bool parse_u32(const char *s, uint32_t *out)
 void emu_args_list_frontends(void)
 {
     for (const emu_cpu_ops_t *const *p = emu_frontends; *p != NULL; p++) {
-        emu_console_printf("%s%s", (p == emu_frontends) ? "" : ", ", (*p)->name);
+        emu_console_printf("%s%s", (p == emu_frontends) ? "" : ", ",
+                           (*p)->name);
     }
 }
 
@@ -68,7 +69,8 @@ void emu_args_usage(void)
         "  --quantum N          instructions per core per round (default %u).\n"
         "                       1 is instruction-interleaved lockstep\n"
 #if EMU_JIT_SELECTABLE
-        "  --jit                use the JIT backend instead of the interpreter\n"
+        "  --jit                use the JIT backend instead of the "
+        "interpreter\n"
 #endif
         "  --gdb [port]         serve a gdb stub on localhost (default 1234)\n"
         "  --quiet              suppress the exit summary\n"
@@ -77,15 +79,14 @@ void emu_args_usage(void)
         (unsigned)EMU_DEFAULT_BUDGET);
 }
 
-
 bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
 {
     *status = 0;
     memset(opt, 0, sizeof(*opt));
-    opt->load_addr   = EMU_GUEST_ROM_BASE;
-    opt->ram_size    = DEFAULT_RAM_SIZE;
-    opt->quantum     = EMU_DEFAULT_BUDGET;
-    opt->timer_div   = 1u;
+    opt->load_addr = EMU_GUEST_ROM_BASE;
+    opt->ram_size = DEFAULT_RAM_SIZE;
+    opt->quantum = EMU_DEFAULT_BUDGET;
+    opt->timer_div = 1u;
     opt->trace_count = 64u;
 
     for (int i = 1; i < argc; i++) {
@@ -95,8 +96,14 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
             emu_args_usage();
             return false;
         }
-        if (strcmp(a, "--quiet") == 0) { opt->quiet = true; continue; }
-        if (strcmp(a, "--dump") == 0)  { opt->dump = true;  continue; }
+        if (strcmp(a, "--quiet") == 0) {
+            opt->quiet = true;
+            continue;
+        }
+        if (strcmp(a, "--dump") == 0) {
+            opt->dump = true;
+            continue;
+        }
 
         if (i + 1 < argc) {
             if (strcmp(a, "--frontend") == 0) {
@@ -104,20 +111,36 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
                 continue;
             }
             if (strcmp(a, "--load") == 0) {
-                if (!parse_u32(argv[++i], &opt->load_addr)) { emu_args_usage(); *status = 2; return false; }
+                if (!parse_u32(argv[++i], &opt->load_addr)) {
+                    emu_args_usage();
+                    *status = 2;
+                    return false;
+                }
                 continue;
             }
             if (strcmp(a, "--entry") == 0) {
-                if (!parse_u32(argv[++i], &opt->entry)) { emu_args_usage(); *status = 2; return false; }
+                if (!parse_u32(argv[++i], &opt->entry)) {
+                    emu_args_usage();
+                    *status = 2;
+                    return false;
+                }
                 continue;
             }
             if (strcmp(a, "--ram") == 0) {
-                if (!parse_u32(argv[++i], &opt->ram_size)) { emu_args_usage(); *status = 2; return false; }
+                if (!parse_u32(argv[++i], &opt->ram_size)) {
+                    emu_args_usage();
+                    *status = 2;
+                    return false;
+                }
                 continue;
             }
             if (strcmp(a, "--max-insn") == 0) {
                 uint32_t v;
-                if (!parse_u32(argv[++i], &v)) { emu_args_usage(); *status = 2; return false; }
+                if (!parse_u32(argv[++i], &v)) {
+                    emu_args_usage();
+                    *status = 2;
+                    return false;
+                }
                 opt->max_insn = v;
                 continue;
             }
@@ -154,7 +177,11 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
                 opt->gdb_port = 1234;
                 if (i + 1 < argc && argv[i + 1][0] != '-') {
                     uint32_t v;
-                    if (!parse_u32(argv[++i], &v)) { emu_args_usage(); *status = 2; return false; }
+                    if (!parse_u32(argv[++i], &v)) {
+                        emu_args_usage();
+                        *status = 2;
+                        return false;
+                    }
                     opt->gdb_port = (int)v;
                 }
                 continue;
@@ -177,27 +204,46 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
 #else
                 emu_console_printf("emu: no JIT backend for this host\n");
                 *status = 2;
-            return false;
+                return false;
 #endif
                 continue;
             }
 #if EMU_ENABLE_TRACE
             if (strcmp(a, "--trace-skip") == 0) {
-                uint32_t v; if (!parse_u32(argv[++i], &v)) { emu_args_usage(); *status = 2; return false; }
-                opt->trace_skip = v; continue;
+                uint32_t v;
+                if (!parse_u32(argv[++i], &v)) {
+                    emu_args_usage();
+                    *status = 2;
+                    return false;
+                }
+                opt->trace_skip = v;
+                continue;
             }
             if (strcmp(a, "--trace-count") == 0) {
-                uint32_t v; if (!parse_u32(argv[++i], &v)) { emu_args_usage(); *status = 2; return false; }
-                opt->trace_count = v; continue;
+                uint32_t v;
+                if (!parse_u32(argv[++i], &v)) {
+                    emu_args_usage();
+                    *status = 2;
+                    return false;
+                }
+                opt->trace_count = v;
+                continue;
             }
 #endif
             if (strcmp(a, "--timer-hz") == 0) {
-                if (!parse_u32(argv[++i], &opt->timer_div)) { emu_args_usage(); *status = 2; return false; }
+                if (!parse_u32(argv[++i], &opt->timer_div)) {
+                    emu_args_usage();
+                    *status = 2;
+                    return false;
+                }
                 continue;
             }
             if (strcmp(a, "--quantum") == 0) {
-                if (!parse_u32(argv[++i], &opt->quantum) || opt->quantum == 0u) {
-                    emu_args_usage(); *status = 2; return false;
+                if (!parse_u32(argv[++i], &opt->quantum) ||
+                    opt->quantum == 0u) {
+                    emu_args_usage();
+                    *status = 2;
+                    return false;
                 }
                 continue;
             }

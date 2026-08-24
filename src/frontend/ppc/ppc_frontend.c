@@ -79,9 +79,9 @@ static void ppc_ops_status(const emu_cpu_t *cpu, emu_cpu_status_t *out)
     const ppc_cpu_t *c = cpu_of(cpu);
 
     memset(out, 0, sizeof(*out));
-    out->pc      = c->pc;
+    out->pc = c->pc;
     out->retired = c->retired;
-    out->state   = c->state;
+    out->state = c->state;
     out->backend = ppc_backend->name;
 }
 
@@ -93,10 +93,10 @@ static void ppc_ops_status(const emu_cpu_t *cpu, emu_cpu_status_t *out)
 static const char *ppc_reg_name(unsigned r)
 {
     static const char *const k[PPC_NGPR] = {
-        "r0", "sp", "r2",  "r3",  "r4",  "r5",  "r6",  "r7",
-        "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
-        "r16","r17","r18", "r19", "r20", "r21", "r22", "r23",
-        "r24","r25","r26", "r27", "r28", "r29", "r30", "r31",
+        "r0",  "sp",  "r2",  "r3",  "r4",  "r5",  "r6",  "r7",
+        "r8",  "r9",  "r10", "r11", "r12", "r13", "r14", "r15",
+        "r16", "r17", "r18", "r19", "r20", "r21", "r22", "r23",
+        "r24", "r25", "r26", "r27", "r28", "r29", "r30", "r31",
     };
     return (r < PPC_NGPR) ? k[r] : "?";
 }
@@ -156,9 +156,9 @@ static void ppc_set_trace(emu_cpu_t *cpu, emu_trace_fn fn, void *user)
 #endif
 
 const emu_cpu_ops_t ppc_frontend = {
-    .name        = "ppc",
-    .nregs       = PPC_NGPR,
-    .ncores      = 1u,
+    .name = "ppc",
+    .nregs = PPC_NGPR,
+    .ncores = 1u,
     /*
      * EM_PPC. The 64-bit variant has its own number and is a different
      * architecture as far as the loader is concerned, so it is not
@@ -167,24 +167,24 @@ const emu_cpu_ops_t ppc_frontend = {
     .elf_machine = 20u,
 
     .instance = ppc_instance,
-    .init     = ppc_ops_init,
-    .reset    = ppc_ops_reset,
-    .boot     = ppc_ops_boot,
-    .run      = ppc_ops_run,
-    .step     = ppc_ops_step,
-    .halt     = ppc_ops_halt,
-    .status   = ppc_ops_status,
+    .init = ppc_ops_init,
+    .reset = ppc_ops_reset,
+    .boot = ppc_ops_boot,
+    .run = ppc_ops_run,
+    .step = ppc_ops_step,
+    .halt = ppc_ops_halt,
+    .status = ppc_ops_status,
 
-    .reg_name  = ppc_reg_name,
-    .reg_read  = ppc_reg_read,
+    .reg_name = ppc_reg_name,
+    .reg_read = ppc_reg_read,
     .reg_write = ppc_reg_write,
 
     .advance_time = ppc_ops_advance_time,
-    .set_time     = ppc_ops_set_time,
-    .set_irq      = ppc_ops_set_irq,
+    .set_time = ppc_ops_set_time,
+    .set_irq = ppc_ops_set_irq,
 
     .set_syscall = ppc_set_syscall,
 #if EMU_ENABLE_TRACE
-    .set_trace   = ppc_set_trace,
+    .set_trace = ppc_set_trace,
 #endif
 };

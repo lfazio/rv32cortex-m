@@ -61,16 +61,15 @@ const emu_cpu_ops_t *emu_frontend_for_elf(uint16_t machine)
          * ELF machine number of its own. elf_machine_alt is a second
          * number the same frontend answers to -- see EMU_EM_V800. */
         if ((*p)->elf_machine == 0u || (*p)->elf_machine == machine ||
-            ((*p)->elf_machine_alt != 0u &&
-             (*p)->elf_machine_alt == machine)) {
+            ((*p)->elf_machine_alt != 0u && (*p)->elf_machine_alt == machine)) {
             return *p;
         }
     }
     return NULL;
 }
 
-bool emu_core_open(emu_core_t *core, const emu_cpu_ops_t *ops,
-                   emu_bus_t *bus, unsigned index)
+bool emu_core_open(emu_core_t *core, const emu_cpu_ops_t *ops, emu_bus_t *bus,
+                   unsigned index)
 {
     emu_cpu_t *cpu = ops->instance(index);
     if (cpu == NULL) {
@@ -154,7 +153,7 @@ uint32_t emu_system_step(emu_system_t *sys, uint32_t quantum, bool *all_idle)
 
         emu_core_status(c, &st);
         if (st.state == EMU_STATE_HALTED) {
-            continue;                 /* done for good */
+            continue; /* done for good */
         }
         /*
          * Held at reset. Skipped like a halted core but *not* counted as
@@ -167,7 +166,7 @@ uint32_t emu_system_step(emu_system_t *sys, uint32_t quantum, bool *all_idle)
             continue;
         }
         if (st.state == EMU_STATE_WFI && !st.wakeable) {
-            continue;                 /* parked, and nothing can wake it */
+            continue; /* parked, and nothing can wake it */
         }
 
         /*

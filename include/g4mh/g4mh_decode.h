@@ -48,10 +48,22 @@ extern "C" {
  * Formats III and IV overlay this: their opcode is bits[10:7] and the
  * remaining bits carry a displacement.
  */
-static EMU_ALWAYS_INLINE uint32_t g4mh_reg1(uint32_t w) { return w & 0x1Fu; }
-static EMU_ALWAYS_INLINE uint32_t g4mh_reg2(uint32_t w) { return (w >> 11) & 0x1Fu; }
-static EMU_ALWAYS_INLINE uint32_t g4mh_op6(uint32_t w)  { return (w >> 5) & 0x3Fu; }
-static EMU_ALWAYS_INLINE uint32_t g4mh_op4(uint32_t w)  { return (w >> 7) & 0x0Fu; }
+static EMU_ALWAYS_INLINE uint32_t g4mh_reg1(uint32_t w)
+{
+    return w & 0x1Fu;
+}
+static EMU_ALWAYS_INLINE uint32_t g4mh_reg2(uint32_t w)
+{
+    return (w >> 11) & 0x1Fu;
+}
+static EMU_ALWAYS_INLINE uint32_t g4mh_op6(uint32_t w)
+{
+    return (w >> 5) & 0x3Fu;
+}
+static EMU_ALWAYS_INLINE uint32_t g4mh_op4(uint32_t w)
+{
+    return (w >> 7) & 0x0Fu;
+}
 
 /* Format II's 5-bit immediate is sign-extended; the shift forms' is not. */
 static EMU_ALWAYS_INLINE int32_t g4mh_imm5(uint32_t w)

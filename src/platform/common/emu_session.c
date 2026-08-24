@@ -10,7 +10,7 @@
 #include "board.h"
 
 #if EMU_NET
-#  include "emu_net.h"
+#include "emu_net.h"
 #endif
 
 #include "emu/emu_elf.h"
@@ -19,7 +19,7 @@
 #include "emu/emu_memmap.h"
 
 #if EMU_PAIR_STATS
-#  include "emu/emu_pairstats.h"
+#include "emu/emu_pairstats.h"
 #endif
 
 #include <string.h>
@@ -54,8 +54,8 @@ static void fail(const emu_session_cfg_t *cfg, const char *msg,
 static bool place_image(emu_system_t *sys, const emu_session_cfg_t *cfg,
                         uint32_t *entry_out)
 {
-    const uint32_t load = (cfg->load_addr != 0u) ? cfg->load_addr
-                                                 : EMU_GUEST_ROM_BASE;
+    const uint32_t load =
+        (cfg->load_addr != 0u) ? cfg->load_addr : EMU_GUEST_ROM_BASE;
     uint32_t entry = cfg->entry;
     emu_bus_t *const bus = sys->core[0].bus;
 
@@ -305,9 +305,9 @@ void emu_session_report(emu_system_t *sys, uint64_t retired,
      * suppresses the ratio.
      */
     if (retired != 0u && host_cycles != 0u && board_clock_hz() != 0u) {
-        const uint32_t kips = (uint32_t)((uint64_t)retired *
-                                         (board_clock_hz() / 1000u) /
-                                         host_cycles);
+        const uint32_t kips =
+            (uint32_t)((uint64_t)retired * (board_clock_hz() / 1000u) /
+                       host_cycles);
 
         emu_console_printf("  speed    %u KIPS\n", (unsigned)kips);
     }

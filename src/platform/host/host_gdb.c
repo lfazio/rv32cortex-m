@@ -31,12 +31,12 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-void host_gdb_poll(void);       /* used by host_gdb_wait below */
+void host_gdb_poll(void); /* used by host_gdb_wait below */
 
-static int        g_listen = -1;
-static int        g_conn = -1;
-static emu_gdb_t  g_gdb;
-static bool       g_ready;
+static int g_listen = -1;
+static int g_conn = -1;
+static emu_gdb_t g_gdb;
+static bool g_ready;
 
 static void set_nonblock(int fd)
 {
@@ -76,8 +76,7 @@ static void host_gdb_tx(void *ctx, const uint8_t *data, uint32_t len)
     }
 }
 
-bool host_gdb_start(emu_core_t *core, const emu_gdb_target_t *target,
-                    int port)
+bool host_gdb_start(emu_core_t *core, const emu_gdb_target_t *target, int port)
 {
     struct sockaddr_in a;
     int one = 1;
@@ -169,12 +168,12 @@ void host_gdb_poll(void)
             emu_gdb_rx(&g_gdb, buf, (uint32_t)n);
             continue;
         }
-        if (n == 0) {                   /* client went away */
+        if (n == 0) { /* client went away */
             (void)close(g_conn);
             g_conn = -1;
             emu_gdb_detach(&g_gdb);
         }
-        return;                         /* EAGAIN, or closed */
+        return; /* EAGAIN, or closed */
     }
 }
 

@@ -56,44 +56,44 @@ struct rv_hart;
  * writes that same number to setienum instead.
  */
 #ifndef RV_APLIC_SOURCES
-#  define RV_APLIC_SOURCES 128u
+#define RV_APLIC_SOURCES 128u
 #endif
-#define RV_APLIC_WORDS  (RV_APLIC_SOURCES / 32u)
+#define RV_APLIC_WORDS (RV_APLIC_SOURCES / 32u)
 
-#define RV_APLIC_SIZE       0x8000u
+#define RV_APLIC_SIZE 0x8000u
 
 /* Domain offsets. */
-#define RV_APLIC_DOMAINCFG  0x0000u
-#define RV_APLIC_SOURCECFG  0x0004u
-#define RV_APLIC_SETIP      0x1C00u
-#define RV_APLIC_SETIPNUM   0x1CDCu
-#define RV_APLIC_IN_CLRIP   0x1D00u
-#define RV_APLIC_CLRIPNUM   0x1DDCu
-#define RV_APLIC_SETIE      0x1E00u
-#define RV_APLIC_SETIENUM   0x1EDCu
-#define RV_APLIC_CLRIE      0x1F00u
-#define RV_APLIC_CLRIENUM   0x1FDCu
-#define RV_APLIC_TARGET     0x3004u
-#define RV_APLIC_IDC        0x4000u
+#define RV_APLIC_DOMAINCFG 0x0000u
+#define RV_APLIC_SOURCECFG 0x0004u
+#define RV_APLIC_SETIP 0x1C00u
+#define RV_APLIC_SETIPNUM 0x1CDCu
+#define RV_APLIC_IN_CLRIP 0x1D00u
+#define RV_APLIC_CLRIPNUM 0x1DDCu
+#define RV_APLIC_SETIE 0x1E00u
+#define RV_APLIC_SETIENUM 0x1EDCu
+#define RV_APLIC_CLRIE 0x1F00u
+#define RV_APLIC_CLRIENUM 0x1FDCu
+#define RV_APLIC_TARGET 0x3004u
+#define RV_APLIC_IDC 0x4000u
 
-#define RV_APLIC_IDC_IDELIVERY  0x00u
-#define RV_APLIC_IDC_IFORCE     0x04u
+#define RV_APLIC_IDC_IDELIVERY 0x00u
+#define RV_APLIC_IDC_IFORCE 0x04u
 #define RV_APLIC_IDC_ITHRESHOLD 0x08u
-#define RV_APLIC_IDC_TOPI       0x18u
-#define RV_APLIC_IDC_CLAIMI     0x1Cu
+#define RV_APLIC_IDC_TOPI 0x18u
+#define RV_APLIC_IDC_CLAIMI 0x1Cu
 
 /* domaincfg */
-#define RV_APLIC_DOMAINCFG_IE   (1u << 8)
+#define RV_APLIC_DOMAINCFG_IE (1u << 8)
 /* The upper half reads back as 0x80 so software can identify the register. */
-#define RV_APLIC_DOMAINCFG_RO   0x80000000u
+#define RV_APLIC_DOMAINCFG_RO 0x80000000u
 
 /* sourcecfg SM values. */
-#define RV_APLIC_SM_INACTIVE    0u
-#define RV_APLIC_SM_DETACHED    1u
-#define RV_APLIC_SM_EDGE_RISE   4u
-#define RV_APLIC_SM_EDGE_FALL   5u
-#define RV_APLIC_SM_LEVEL_HIGH  6u
-#define RV_APLIC_SM_LEVEL_LOW   7u
+#define RV_APLIC_SM_INACTIVE 0u
+#define RV_APLIC_SM_DETACHED 1u
+#define RV_APLIC_SM_EDGE_RISE 4u
+#define RV_APLIC_SM_EDGE_FALL 5u
+#define RV_APLIC_SM_LEVEL_HIGH 6u
+#define RV_APLIC_SM_LEVEL_LOW 7u
 
 /*
  * Called when a source's pending bit is cleared, which is the guest saying
@@ -106,8 +106,8 @@ typedef emu_unmask_fn rv_aplic_eoi_fn;
 
 typedef struct rv_aplic {
     uint32_t domaincfg;
-    uint8_t  sourcecfg[RV_APLIC_SOURCES];
-    uint8_t  target[RV_APLIC_SOURCES];    /* IPRIO; 0 means "never deliver" */
+    uint8_t sourcecfg[RV_APLIC_SOURCES];
+    uint8_t target[RV_APLIC_SOURCES]; /* IPRIO; 0 means "never deliver" */
     uint32_t pending[RV_APLIC_WORDS];
     uint32_t enabled[RV_APLIC_WORDS];
     uint32_t idelivery;
@@ -116,7 +116,7 @@ typedef struct rv_aplic {
 
     struct rv_hart *hart;
     rv_aplic_eoi_fn eoi;
-    void           *eoi_ctx;
+    void *eoi_ctx;
 } rv_aplic_t;
 
 extern const emu_dev_ops_t rv_aplic_ops;

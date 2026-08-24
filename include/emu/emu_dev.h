@@ -33,25 +33,25 @@ extern "C" {
  *   +0x00  RBR (read) / THR (write)
  *   +0x05  LSR: bit 0 = data ready, bit 5 = THR empty, bit 6 = TX idle
  */
-#define EMU_UART_SIZE        0x100u
-#define EMU_UART_RBR_THR     0x00u
-#define EMU_UART_IER         0x01u
-#define EMU_UART_IIR_FCR     0x02u
-#define EMU_UART_LCR         0x03u
-#define EMU_UART_MCR         0x04u
-#define EMU_UART_LSR         0x05u
-#define EMU_UART_MSR         0x06u
-#define EMU_UART_SCR         0x07u
+#define EMU_UART_SIZE 0x100u
+#define EMU_UART_RBR_THR 0x00u
+#define EMU_UART_IER 0x01u
+#define EMU_UART_IIR_FCR 0x02u
+#define EMU_UART_LCR 0x03u
+#define EMU_UART_MCR 0x04u
+#define EMU_UART_LSR 0x05u
+#define EMU_UART_MSR 0x06u
+#define EMU_UART_SCR 0x07u
 
-#define EMU_UART_LSR_DR      0x01u
-#define EMU_UART_LSR_THRE    0x20u
-#define EMU_UART_LSR_TEMT    0x40u
+#define EMU_UART_LSR_DR 0x01u
+#define EMU_UART_LSR_THRE 0x20u
+#define EMU_UART_LSR_TEMT 0x40u
 
 typedef struct emu_uart {
     /* Backing transport, supplied by the platform. */
     void (*tx)(void *ctx, uint8_t c);
     /* Return the next byte, or -1 if none is available. */
-    int  (*rx)(void *ctx);
+    int (*rx)(void *ctx);
     void *ctx;
 
     /*
@@ -59,7 +59,7 @@ typedef struct emu_uart {
      * without consuming it, but the transport only offers a destructive
      * read. One byte of lookahead bridges the two.  -1 means empty.
      */
-    int     pending;
+    int pending;
 
     uint8_t ier;
     uint8_t lcr;
@@ -69,10 +69,8 @@ typedef struct emu_uart {
 
 extern const emu_dev_ops_t emu_uart_ops;
 
-void emu_uart_init(emu_uart_t *u,
-                   void (*tx)(void *ctx, uint8_t c),
-                   int (*rx)(void *ctx),
-                   void *ctx);
+void emu_uart_init(emu_uart_t *u, void (*tx)(void *ctx, uint8_t c),
+                   int (*rx)(void *ctx), void *ctx);
 
 #ifdef __cplusplus
 }

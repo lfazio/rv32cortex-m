@@ -21,15 +21,15 @@
 #if RV_EXT_PMP
 
 /* cfg byte layout. */
-#define PMP_R     0x01u
-#define PMP_W     0x02u
-#define PMP_X     0x04u
-#define PMP_A     0x18u
-#define PMP_L     0x80u
+#define PMP_R 0x01u
+#define PMP_W 0x02u
+#define PMP_X 0x04u
+#define PMP_A 0x18u
+#define PMP_L 0x80u
 
-#define PMP_A_OFF   0u
-#define PMP_A_TOR   1u
-#define PMP_A_NA4   2u
+#define PMP_A_OFF 0u
+#define PMP_A_TOR 1u
+#define PMP_A_NA4 2u
 #define PMP_A_NAPOT 3u
 
 static uint32_t pmp_cfg(const rv_hart_t *h, uint32_t i)
@@ -72,7 +72,7 @@ static bool pmp_range(const rv_hart_t *h, uint32_t i, uint32_t cfg,
     case PMP_A_TOR: {
         const uint32_t prev = (i == 0u) ? 0u : h->pmpaddr[i - 1u];
         if (addr <= prev) {
-            return false;             /* empty or inverted range */
+            return false; /* empty or inverted range */
         }
         *lo = pmp_bytes(prev);
         *hi = pmp_bytes(addr);
@@ -106,7 +106,7 @@ static bool pmp_range(const rv_hart_t *h, uint32_t i, uint32_t cfg,
         return true;
     }
     default:
-        return false;                 /* OFF */
+        return false; /* OFF */
     }
 }
 
@@ -209,8 +209,8 @@ bool rv_pmp_check(const rv_hart_t *h, uint32_t addr, uint32_t size,
      * store at whatever MPRV says. Both the M-mode exemption for unlocked
      * entries and the no-match rule below turn on this, not on h->priv.
      */
-    const uint32_t eff = (acc == EMU_ACC_FETCH) ? (uint32_t)h->priv
-                                               : rv_hart_data_priv(h);
+    const uint32_t eff =
+        (acc == EMU_ACC_FETCH) ? (uint32_t)h->priv : rv_hart_data_priv(h);
 
     for (uint32_t i = 0; i < RV_PMP_ENTRIES; i++) {
         const uint32_t cfg = pmp_cfg(h, i);
@@ -220,10 +220,10 @@ bool rv_pmp_check(const rv_hart_t *h, uint32_t addr, uint32_t size,
             continue;
         }
         if (addr < lo || addr >= hi) {
-            continue;                 /* first byte is not in this entry */
+            continue; /* first byte is not in this entry */
         }
         if (last >= hi) {
-            return false;             /* access straddles the top */
+            return false; /* access straddles the top */
         }
 
         /*
@@ -241,9 +241,12 @@ bool rv_pmp_check(const rv_hart_t *h, uint32_t addr, uint32_t size,
             return true;
         }
         switch (acc) {
-        case EMU_ACC_FETCH: return (cfg & PMP_X) != 0u;
-        case EMU_ACC_LOAD:  return (cfg & PMP_R) != 0u;
-        default:           return (cfg & PMP_W) != 0u;
+        case EMU_ACC_FETCH:
+            return (cfg & PMP_X) != 0u;
+        case EMU_ACC_LOAD:
+            return (cfg & PMP_R) != 0u;
+        default:
+            return (cfg & PMP_W) != 0u;
         }
     }
 

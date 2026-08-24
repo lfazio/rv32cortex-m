@@ -30,7 +30,7 @@
 #include "emu_image.h"
 
 #if EMU_NET
-#  include "emu_net.h"
+#include "emu_net.h"
 #endif
 
 /*

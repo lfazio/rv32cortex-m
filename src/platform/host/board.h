@@ -62,9 +62,6 @@ uint8_t *host_read_file(const char *path, size_t *out_len);
  */
 bool board_console_open(const char *dev, char *slave_out, unsigned n);
 
-
-
-
 uint32_t board_led_count(board_led_t led);
 
 /* ------------------------------------------------------------------ */
@@ -78,11 +75,11 @@ uint32_t board_led_count(board_led_t led);
  */
 struct emu_core;
 struct emu_gdb_target;
-bool     host_gdb_start(struct emu_core *core,
-                        const struct emu_gdb_target *target, int port);
-void     host_gdb_wait(void);
-void     host_gdb_poll(void);
-bool     host_gdb_attached(void);
+bool host_gdb_start(struct emu_core *core, const struct emu_gdb_target *target,
+                    int port);
+void host_gdb_wait(void);
+void host_gdb_poll(void);
+bool host_gdb_attached(void);
 uint32_t host_gdb_run(uint32_t budget, uint32_t *retired);
 
 /*

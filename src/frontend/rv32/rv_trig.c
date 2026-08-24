@@ -18,17 +18,17 @@
 #if RV_EXT_SDTRIG
 
 /* mcontrol fields, RV32. */
-#define MC_TYPE_SHIFT   28
+#define MC_TYPE_SHIFT 28
 #define MC_TYPE_MCONTROL 2u
-#define MC_DMODE        (1u << 27)
-#define MC_ACTION_MASK  (0xFu << 12)
-#define MC_MATCH_MASK   (0xFu << 7)
-#define MC_M            (1u << 6)
-#define MC_S            (1u << 4)
-#define MC_U            (1u << 3)
-#define MC_EXECUTE      (1u << 2)
-#define MC_STORE        (1u << 1)
-#define MC_LOAD         (1u << 0)
+#define MC_DMODE (1u << 27)
+#define MC_ACTION_MASK (0xFu << 12)
+#define MC_MATCH_MASK (0xFu << 7)
+#define MC_M (1u << 6)
+#define MC_S (1u << 4)
+#define MC_U (1u << 3)
+#define MC_EXECUTE (1u << 2)
+#define MC_STORE (1u << 1)
+#define MC_LOAD (1u << 0)
 
 /*
  * The bits software may set. Everything else is read-only:
@@ -59,8 +59,8 @@ void rv_trig_write_tdata1(rv_hart_t *h, uint32_t val)
     if (type != MC_TYPE_MCONTROL) {
         h->tdata1[i] = 0u;
     } else {
-        h->tdata1[i] = ((uint32_t)MC_TYPE_MCONTROL << MC_TYPE_SHIFT) |
-                       (val & MC_WMASK);
+        h->tdata1[i] =
+            ((uint32_t)MC_TYPE_MCONTROL << MC_TYPE_SHIFT) | (val & MC_WMASK);
     }
     rv_trig_refresh(h);
 }
@@ -85,9 +85,15 @@ bool rv_trig_check(const rv_hart_t *h, uint32_t addr, emu_access_t acc)
     uint32_t want;
 
     switch (acc) {
-    case EMU_ACC_FETCH: want = MC_EXECUTE; break;
-    case EMU_ACC_LOAD:  want = MC_LOAD;    break;
-    default:           want = MC_STORE;   break;
+    case EMU_ACC_FETCH:
+        want = MC_EXECUTE;
+        break;
+    case EMU_ACC_LOAD:
+        want = MC_LOAD;
+        break;
+    default:
+        want = MC_STORE;
+        break;
     }
 
     for (uint32_t i = 0; i < RV_TRIG_COUNT; i++) {

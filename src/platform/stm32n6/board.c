@@ -28,7 +28,7 @@
  * as `timer-fired` and `timer-cause` and nothing else, and cost a session.
  */
 
-#include "board.h"          /* and board_api.h, the contract, through it */
+#include "board.h" /* and board_api.h, the contract, through it */
 
 #include "stm32n6xx_hal.h"
 
@@ -94,10 +94,10 @@ void HAL_UART_MspInit(UART_HandleTypeDef *huart)
     __HAL_RCC_USART1_CLK_ENABLE();
 
     GPIO_InitTypeDef g = {
-        .Pin       = GPIO_PIN_5 | GPIO_PIN_6,
-        .Mode      = GPIO_MODE_AF_PP,
-        .Pull      = GPIO_NOPULL,
-        .Speed     = GPIO_SPEED_FREQ_VERY_HIGH,
+        .Pin = GPIO_PIN_5 | GPIO_PIN_6,
+        .Mode = GPIO_MODE_AF_PP,
+        .Pull = GPIO_NOPULL,
+        .Speed = GPIO_SPEED_FREQ_VERY_HIGH,
         .Alternate = GPIO_AF7_USART1,
     };
 
@@ -106,13 +106,13 @@ void HAL_UART_MspInit(UART_HandleTypeDef *huart)
 
 static void console_init(void)
 {
-    g_console.Instance          = USART1;
-    g_console.Init.BaudRate     = CONSOLE_BAUD;
-    g_console.Init.WordLength   = UART_WORDLENGTH_8B;
-    g_console.Init.StopBits     = UART_STOPBITS_1;
-    g_console.Init.Parity       = UART_PARITY_NONE;
-    g_console.Init.Mode         = UART_MODE_TX_RX;
-    g_console.Init.HwFlowCtl    = UART_HWCONTROL_NONE;
+    g_console.Instance = USART1;
+    g_console.Init.BaudRate = CONSOLE_BAUD;
+    g_console.Init.WordLength = UART_WORDLENGTH_8B;
+    g_console.Init.StopBits = UART_STOPBITS_1;
+    g_console.Init.Parity = UART_PARITY_NONE;
+    g_console.Init.Mode = UART_MODE_TX_RX;
+    g_console.Init.HwFlowCtl = UART_HWCONTROL_NONE;
     g_console.Init.OverSampling = UART_OVERSAMPLING_16;
 
     if (HAL_UART_Init(&g_console) != HAL_OK) {
@@ -144,13 +144,13 @@ void board_console_putc(uint8_t c)
  * 921600.
  */
 #define RX_RING_SIZE 512u
-#define RX_MASK      (RX_RING_SIZE - 1u)
+#define RX_MASK (RX_RING_SIZE - 1u)
 
-static uint8_t  g_rx_ring[RX_RING_SIZE];
-static volatile uint32_t g_rx_head;     /* written by the ISR only  */
-static uint32_t g_rx_tail;              /* written by the loop only */
+static uint8_t g_rx_ring[RX_RING_SIZE];
+static volatile uint32_t g_rx_head; /* written by the ISR only  */
+static uint32_t g_rx_tail; /* written by the loop only */
 static volatile uint32_t g_rx_overrun;
-static bool     g_rx_irq;
+static bool g_rx_irq;
 
 void USART1_IRQHandler(void)
 {
@@ -164,7 +164,7 @@ void USART1_IRQHandler(void)
             g_rx_ring[g_rx_head] = c;
             g_rx_head = next;
         } else {
-            g_rx_overrun++;         /* the reader is behind */
+            g_rx_overrun++; /* the reader is behind */
         }
     }
 
@@ -255,8 +255,8 @@ uint32_t board_cycles(void)
  * reporting no time passing.
  */
 #define DWT_LSR_SLI_Msk 0x1u
-#define DWT_LAR_OFFSET  0xFB0u
-#define DWT_UNLOCK_KEY  0xC5ACCE55u
+#define DWT_LAR_OFFSET 0xFB0u
+#define DWT_UNLOCK_KEY 0xC5ACCE55u
 
 static void cycles_init(void)
 {
@@ -277,8 +277,7 @@ static void cycles_init(void)
 
 void board_led_toggle(board_led_t led)
 {
-    HAL_GPIO_TogglePin(GPIOG,
-                       (led == BOARD_LED_TX) ? GPIO_PIN_10 : GPIO_PIN_8);
+    HAL_GPIO_TogglePin(GPIOG, (led == BOARD_LED_TX) ? GPIO_PIN_10 : GPIO_PIN_8);
 }
 
 static void led_init(void)
@@ -286,9 +285,9 @@ static void led_init(void)
     __HAL_RCC_GPIOG_CLK_ENABLE();
 
     GPIO_InitTypeDef g = {
-        .Pin   = GPIO_PIN_8 | GPIO_PIN_10,
-        .Mode  = GPIO_MODE_OUTPUT_PP,
-        .Pull  = GPIO_NOPULL,
+        .Pin = GPIO_PIN_8 | GPIO_PIN_10,
+        .Mode = GPIO_MODE_OUTPUT_PP,
+        .Pull = GPIO_NOPULL,
         .Speed = GPIO_SPEED_FREQ_LOW,
     };
 
@@ -309,16 +308,36 @@ static void led_init(void)
  * would give this board TFTP uploads with no flash involved at all, which
  * is a thing the flash-based boards cannot do.
  */
-uintptr_t board_flash_arena_base(void)  { return 0u; }
-uint32_t board_flash_arena_size(void)  { return 0u; }
-uintptr_t board_flash_arena_begin(void) { return 0u; }
-void     board_flash_arena_commit(uint32_t len) { (void)len; }
-bool     board_flash_arena_reset(void) { return false; }
-uint32_t board_flash_last_error(void)  { return 0u; }
+uintptr_t board_flash_arena_base(void)
+{
+    return 0u;
+}
+uint32_t board_flash_arena_size(void)
+{
+    return 0u;
+}
+uintptr_t board_flash_arena_begin(void)
+{
+    return 0u;
+}
+void board_flash_arena_commit(uint32_t len)
+{
+    (void)len;
+}
+bool board_flash_arena_reset(void)
+{
+    return false;
+}
+uint32_t board_flash_last_error(void)
+{
+    return 0u;
+}
 
 bool board_flash_write(uintptr_t addr, const void *data, uint32_t len)
 {
-    (void)addr; (void)data; (void)len;
+    (void)addr;
+    (void)data;
+    (void)len;
     return false;
 }
 

@@ -27,13 +27,13 @@
 
 #include <string.h>
 
-#define TEST_RAM_SIZE  4096u
+#define TEST_RAM_SIZE 4096u
 
-static uint8_t    g_ram[TEST_RAM_SIZE];
+static uint8_t g_ram[TEST_RAM_SIZE];
 /* Reachable from a 16-bit program: 64 << 6. See load_and_run_vle. */
-#define VLE_SCRATCH   0x1000u
-static uint8_t    g_scratch[256];
-static emu_bus_t  g_bus;
+#define VLE_SCRATCH 0x1000u
+static uint8_t g_scratch[256];
+static emu_bus_t g_bus;
 static emu_core_t g_core;
 
 /* Lay instructions out big-endian, which is how a PowerPC image is. */
@@ -106,21 +106,25 @@ static const ppc_cpu_t *core(void)
  */
 static void test_vle_length(void)
 {
-    static const struct { uint16_t w0; unsigned len; const char *what; } k[] = {
-        { 0x0143u, 2u, "se_mr r3,r4"       },
-        { 0x0443u, 2u, "se_add r3,r4"      },
-        { 0x2033u, 2u, "se_addi r3,4"      },
-        { 0x4853u, 2u, "se_li r3,5"        },
-        { 0x6043u, 2u, "se_bclri r3,4"     },
-        { 0xC034u, 2u, "se_lwz r3,0(r4)"   },
-        { 0xD034u, 2u, "se_stw r3,0(r4)"   },
-        { 0xE800u, 2u, "se_b"              },
-        { 0x1C64u, 4u, "e_add16i r3,r4,100"},
-        { 0x1803u, 4u, "e_cmpi"            },
-        { 0x5064u, 4u, "e_lwz r3,8(r4)"    },
-        { 0x7060u, 4u, "e_li r3,1000"      },
-        { 0x7800u, 4u, "e_b"               },
-        { 0x7C64u, 4u, "add r3,r4,r5"      },
+    static const struct {
+        uint16_t w0;
+        unsigned len;
+        const char *what;
+    } k[] = {
+        {0x0143u, 2u, "se_mr r3,r4"},
+        {0x0443u, 2u, "se_add r3,r4"},
+        {0x2033u, 2u, "se_addi r3,4"},
+        {0x4853u, 2u, "se_li r3,5"},
+        {0x6043u, 2u, "se_bclri r3,4"},
+        {0xC034u, 2u, "se_lwz r3,0(r4)"},
+        {0xD034u, 2u, "se_stw r3,0(r4)"},
+        {0xE800u, 2u, "se_b"},
+        {0x1C64u, 4u, "e_add16i r3,r4,100"},
+        {0x1803u, 4u, "e_cmpi"},
+        {0x5064u, 4u, "e_lwz r3,8(r4)"},
+        {0x7060u, 4u, "e_li r3,1000"},
+        {0x7800u, 4u, "e_b"},
+        {0x7C64u, 4u, "add r3,r4,r5"},
     };
 
     for (unsigned i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
@@ -139,14 +143,14 @@ static void test_vle_length(void)
 static void test_alu(void)
 {
     static const uint32_t prog[] = {
-        0x38001234u,   /* li    r0,0x1234        -- poison r0            */
-        0x38600064u,   /* li    r3,100                                   */
-        0x38800007u,   /* li    r4,7                                     */
-        0x7CA32214u,   /* add   r5,r3,r4         -- 107                  */
-        0x7CC32050u,   /* subf  r6,r3,r4         -- 7 - 100 = -93        */
-        0x7C671B78u,   /* or    r7,r3,r3         -- mr r7,r3             */
-        0x7C881838u,   /* and   r8,r4,r3         -- 7 & 100 = 4          */
-        0x44000002u,   /* sc                                             */
+        0x38001234u, /* li    r0,0x1234        -- poison r0            */
+        0x38600064u, /* li    r3,100                                   */
+        0x38800007u, /* li    r4,7                                     */
+        0x7CA32214u, /* add   r5,r3,r4         -- 107                  */
+        0x7CC32050u, /* subf  r6,r3,r4         -- 7 - 100 = -93        */
+        0x7C671B78u, /* or    r7,r3,r3         -- mr r7,r3             */
+        0x7C881838u, /* and   r8,r4,r3         -- 7 & 100 = 4          */
+        0x44000002u, /* sc                                             */
     };
 
     emu_run_reason_t why;
@@ -157,10 +161,10 @@ static void test_alu(void)
         return;
     }
 
-    CHECK_EQ(reg(3), 100u);                   /* rA==0 is literal zero  */
+    CHECK_EQ(reg(3), 100u); /* rA==0 is literal zero  */
     CHECK_EQ(reg(4), 7u);
     CHECK_EQ(reg(5), 107u);
-    CHECK_EQ(reg(6), (uint32_t)(-93));        /* subf is rB - rA        */
+    CHECK_EQ(reg(6), (uint32_t)(-93)); /* subf is rB - rA        */
     CHECK_EQ(reg(7), 100u);
     CHECK_EQ(reg(8), 4u);
     /* r0 keeps its poison: nothing above should have written it. */
@@ -179,16 +183,16 @@ static void test_alu(void)
 static void test_load_store_byte_order(void)
 {
     static const uint32_t prog[] = {
-        0x3C601234u,   /* lis   r3,0x1234                                */
-        0x60635678u,   /* ori   r3,r3,0x5678  -- r3 = 0x12345678         */
-        0x3C808000u,   /* lis   r4,0x8000                                */
-        0x60840800u,   /* ori   r4,r4,0x800   -- guest RAM + 0x800       */
-        0x90640000u,   /* stw   r3,0(r4)                                 */
-        0x88A40000u,   /* lbz   r5,0(r4)      -- 0x12 if big-endian      */
-        0x88C40003u,   /* lbz   r6,3(r4)      -- 0x78                    */
-        0xA0E40000u,   /* lhz   r7,0(r4)      -- 0x1234                  */
-        0x80040000u,   /* lwz   r0,0(r4)      -- round trip              */
-        0x44000002u,   /* sc                                             */
+        0x3C601234u, /* lis   r3,0x1234                                */
+        0x60635678u, /* ori   r3,r3,0x5678  -- r3 = 0x12345678         */
+        0x3C808000u, /* lis   r4,0x8000                                */
+        0x60840800u, /* ori   r4,r4,0x800   -- guest RAM + 0x800       */
+        0x90640000u, /* stw   r3,0(r4)                                 */
+        0x88A40000u, /* lbz   r5,0(r4)      -- 0x12 if big-endian      */
+        0x88C40003u, /* lbz   r6,3(r4)      -- 0x78                    */
+        0xA0E40000u, /* lhz   r7,0(r4)      -- 0x1234                  */
+        0x80040000u, /* lwz   r0,0(r4)      -- round trip              */
+        0x44000002u, /* sc                                             */
     };
 
     emu_run_reason_t why;
@@ -200,7 +204,7 @@ static void test_load_store_byte_order(void)
     }
 
     CHECK_EQ(reg(3), 0x12345678u);
-    CHECK_EQ(reg(5), 0x12u);        /* MSB at the lowest address */
+    CHECK_EQ(reg(5), 0x12u); /* MSB at the lowest address */
     CHECK_EQ(reg(6), 0x78u);
     CHECK_EQ(reg(7), 0x1234u);
     CHECK_EQ(reg(0), 0x12345678u);
@@ -220,13 +224,13 @@ static void test_load_store_byte_order(void)
 static void test_condition_register(void)
 {
     static const uint32_t prog[] = {
-        0x38600005u,   /* li    r3,5                                     */
-        0x38800009u,   /* li    r4,9                                     */
-        0x7C032000u,   /* cmpw  cr0,r3,r4     -- 5 < 9  -> LT in CR0     */
-        0x7D832000u,   /* cmpw  cr3,r3,r4     -- same, into CR3          */
-        0x7C641800u,   /* cmpw  cr0,r4,r3     -- 9 > 5  -> GT, overwrite */
-        0x7CA00026u,   /* mfcr  r5                                       */
-        0x44000002u,   /* sc                                             */
+        0x38600005u, /* li    r3,5                                     */
+        0x38800009u, /* li    r4,9                                     */
+        0x7C032000u, /* cmpw  cr0,r3,r4     -- 5 < 9  -> LT in CR0     */
+        0x7D832000u, /* cmpw  cr3,r3,r4     -- same, into CR3          */
+        0x7C641800u, /* cmpw  cr0,r4,r3     -- 9 > 5  -> GT, overwrite */
+        0x7CA00026u, /* mfcr  r5                                       */
+        0x44000002u, /* sc                                             */
     };
 
     emu_run_reason_t why;
@@ -251,13 +255,13 @@ static void test_condition_register(void)
 static void test_spr_number_is_swapped(void)
 {
     static const uint32_t prog[] = {
-        0x38601234u,   /* li    r3,0x1234                                */
-        0x7C6803A6u,   /* mtlr  r3            -- mtspr 8                 */
-        0x7C8802A6u,   /* mflr  r4            -- mfspr 8                 */
-        0x38A05678u,   /* li    r5,0x5678                                */
-        0x7CA903A6u,   /* mtctr r5            -- mtspr 9                 */
-        0x7CC902A6u,   /* mfctr r6                                       */
-        0x44000002u,   /* sc                                             */
+        0x38601234u, /* li    r3,0x1234                                */
+        0x7C6803A6u, /* mtlr  r3            -- mtspr 8                 */
+        0x7C8802A6u, /* mflr  r4            -- mfspr 8                 */
+        0x38A05678u, /* li    r5,0x5678                                */
+        0x7CA903A6u, /* mtctr r5            -- mtspr 9                 */
+        0x7CC902A6u, /* mfctr r6                                       */
+        0x44000002u, /* sc                                             */
     };
 
     emu_run_reason_t why;
@@ -283,11 +287,11 @@ static void test_spr_number_is_swapped(void)
 static void test_branch(void)
 {
     static const uint32_t prog[] = {
-        0x38600001u,   /* li    r3,1                                     */
-        0x48000009u,   /* bl    +8  (to the li r5)                       */
-        0x38600002u,   /* li    r3,2   -- skipped                        */
-        0x38A00003u,   /* li    r5,3                                     */
-        0x44000002u,   /* sc                                             */
+        0x38600001u, /* li    r3,1                                     */
+        0x48000009u, /* bl    +8  (to the li r5)                       */
+        0x38600002u, /* li    r3,2   -- skipped                        */
+        0x38A00003u, /* li    r5,3                                     */
+        0x44000002u, /* sc                                             */
     };
 
     emu_run_reason_t why;
@@ -298,7 +302,7 @@ static void test_branch(void)
         return;
     }
 
-    CHECK_EQ(reg(3), 1u);           /* the skipped li did not run */
+    CHECK_EQ(reg(3), 1u); /* the skipped li did not run */
     CHECK_EQ(reg(5), 3u);
     /* LK set, so LR is the instruction after the branch. */
     CHECK_EQ(core()->lr, EMU_GUEST_RAM_BASE + 8u);
@@ -315,9 +319,9 @@ static void test_branch(void)
 static void test_unimplemented_reports(void)
 {
     static const uint32_t prog[] = {
-        0x38600007u,   /* li    r3,7                                     */
-        0x7C000268u,   /* an X-form extended opcode this core lacks      */
-        0x44000002u,   /* sc                                             */
+        0x38600007u, /* li    r3,7                                     */
+        0x7C000268u, /* an X-form extended opcode this core lacks      */
+        0x44000002u, /* sc                                             */
     };
 
     emu_run_reason_t why;
@@ -421,7 +425,7 @@ static ppc_cpu_t *ppc_core(void)
  */
 static void test_decrementer_transition(void)
 {
-    const uint16_t prog[] = { 0x4400u };        /* se_nop-ish filler */
+    const uint16_t prog[] = {0x4400u}; /* se_nop-ish filler */
     emu_run_reason_t why;
     uint32_t retired = 0;
 
@@ -472,7 +476,7 @@ static void test_decrementer_transition(void)
  */
 static void test_decrementer_autoreload(void)
 {
-    const uint16_t prog[] = { 0x4400u };
+    const uint16_t prog[] = {0x4400u};
     emu_run_reason_t why;
     uint32_t retired = 0;
 
@@ -507,7 +511,7 @@ static void test_decrementer_autoreload(void)
  */
 static void test_timer_interrupt_gating(void)
 {
-    const uint16_t prog[] = { 0x4400u };
+    const uint16_t prog[] = {0x4400u};
     emu_run_reason_t why;
     uint32_t retired = 0;
 
@@ -519,13 +523,13 @@ static void test_timer_interrupt_gating(void)
         ppc_cpu_t *c = ppc_core();
 
         c->tsr = 0u;
-        c->tcr = 0u;                    /* DIE clear */
+        c->tcr = 0u; /* DIE clear */
         c->dec = 5u;
         c->msr |= PPC_MSR_EE;
 
         ppc_cpu_advance(c, 10u);
-        CHECK_EQ(c->tsr & PPC_TSR_DIS, PPC_TSR_DIS);   /* flag set */
-        CHECK_EQ(ppc_cpu_pending_irq(c), -1);          /* but masked */
+        CHECK_EQ(c->tsr & PPC_TSR_DIS, PPC_TSR_DIS); /* flag set */
+        CHECK_EQ(ppc_cpu_pending_irq(c), -1); /* but masked */
 
         c->tcr = PPC_TCR_DIE;
         CHECK_EQ(ppc_cpu_pending_irq(c), (int)PPC_IVOR_DECREMENTER);
@@ -576,9 +580,9 @@ static void test_decrementer_interrupt_taken(void)
      * 8:4 and the register the low nibble.
      */
     for (k = 0; k < sizeof(prog) / sizeof(prog[0]); k++) {
-        prog[k] = (uint16_t)(0x4800u | 7u);     /* se_li r7, 0 */
+        prog[k] = (uint16_t)(0x4800u | 7u); /* se_li r7, 0 */
     }
-    prog[0x20] = (uint16_t)(0x4800u | (9u << 4) | 6u);   /* se_li r6, 9 */
+    prog[0x20] = (uint16_t)(0x4800u | (9u << 4) | 6u); /* se_li r6, 9 */
 
     if (!load_and_run_vle(prog, sizeof(prog) / sizeof(prog[0]), 4u, &why,
                           &retired)) {
@@ -589,8 +593,7 @@ static void test_decrementer_interrupt_taken(void)
         ppc_cpu_t *c = ppc_core();
 
         c->ivpr = EMU_GUEST_RAM_BASE & 0xFFFF0000u;
-        c->ivor[PPC_IVOR_DECREMENTER] =
-            (EMU_GUEST_RAM_BASE & 0xFFFFu) + 0x40u;
+        c->ivor[PPC_IVOR_DECREMENTER] = (EMU_GUEST_RAM_BASE & 0xFFFFu) + 0x40u;
         c->msr |= PPC_MSR_EE;
         c->tcr = PPC_TCR_DIE;
         c->tsr = 0u;
@@ -603,9 +606,9 @@ static void test_decrementer_interrupt_taken(void)
 
         why = emu_core_run(&g_core, 16u, &retired);
 
-        CHECK_EQ(c->r[6], 9u);          /* the handler ran            */
-        CHECK_EQ(c->srr0, EMU_GUEST_RAM_BASE);  /* and can return     */
-        CHECK((c->msr & PPC_MSR_EE) == 0u);     /* entry cleared EE   */
+        CHECK_EQ(c->r[6], 9u); /* the handler ran            */
+        CHECK_EQ(c->srr0, EMU_GUEST_RAM_BASE); /* and can return     */
+        CHECK((c->msr & PPC_MSR_EE) == 0u); /* entry cleared EE   */
         /* TSR[DIS] survives: it is write-1-to-clear by the handler,
          * which is how a guest tells "took a tick" from "one pending". */
         CHECK_EQ(c->tsr & PPC_TSR_DIS, PPC_TSR_DIS);
@@ -627,19 +630,19 @@ static void test_decrementer_interrupt_taken(void)
 static void test_se_alu(void)
 {
     static const uint16_t prog[] = {
-        0x4E43u,   /* se_li   r3,100                                  */
-        0x4874u,   /* se_li   r4,7                                    */
-        0x0135u,   /* se_mr   r5,r3                                   */
-        0x0445u,   /* se_add  r5,r4      -- 107                       */
-        0x0643u,   /* se_sub  r3,r4      -- 100 - 7  = 93             */
-        0x4896u,   /* se_li   r6,9                                    */
-        0x0746u,   /* se_subf r6,r4      -- 7 - 9    = -2             */
-        0x48C7u,   /* se_li   r7,12                                   */
-        0x6827u,   /* se_srwi r7,2       -- 3                         */
-        0x4858u,   /* se_li   r24,5                                   */
-        0x0189u,   /* se_mr   r25,r24                                 */
-        0x21F9u,   /* se_addi r25,32     -- OIM5: 31 encodes 32       */
-        0x0002u,   /* se_sc                                           */
+        0x4E43u, /* se_li   r3,100                                  */
+        0x4874u, /* se_li   r4,7                                    */
+        0x0135u, /* se_mr   r5,r3                                   */
+        0x0445u, /* se_add  r5,r4      -- 107                       */
+        0x0643u, /* se_sub  r3,r4      -- 100 - 7  = 93             */
+        0x4896u, /* se_li   r6,9                                    */
+        0x0746u, /* se_subf r6,r4      -- 7 - 9    = -2             */
+        0x48C7u, /* se_li   r7,12                                   */
+        0x6827u, /* se_srwi r7,2       -- 3                         */
+        0x4858u, /* se_li   r24,5                                   */
+        0x0189u, /* se_mr   r25,r24                                 */
+        0x21F9u, /* se_addi r25,32     -- OIM5: 31 encodes 32       */
+        0x0002u, /* se_sc                                           */
     };
 
     emu_run_reason_t why;
@@ -652,10 +655,10 @@ static void test_se_alu(void)
 
     CHECK_EQ(reg(5), 107u);
     CHECK_EQ(reg(3), 93u);
-    CHECK_EQ(reg(6), (uint32_t)(-2));     /* subf is rY - rX */
+    CHECK_EQ(reg(6), (uint32_t)(-2)); /* subf is rY - rX */
     CHECK_EQ(reg(7), 3u);
-    CHECK_EQ(reg(24), 5u);                /* field 8  -> r24, not r8  */
-    CHECK_EQ(reg(25), 37u);               /* field 9  -> r25, and +32 */
+    CHECK_EQ(reg(24), 5u); /* field 8  -> r24, not r8  */
+    CHECK_EQ(reg(25), 37u); /* field 9  -> r25, and +32 */
     /* r8 and r9 must be untouched, which is what a plain-index read of
      * the field would have written instead. */
     CHECK_EQ(reg(8), 0u);
@@ -674,23 +677,23 @@ static void test_se_alu(void)
 static void test_se_memory_and_branch(void)
 {
     static const uint16_t prog[] = {
-        0x4C04u,   /* se_li   r4,64                                   */
-        0x6C64u,   /* se_slwi r4,6       -- r4 = 0x1000, the scratch  */
-        0x4803u,   /* se_li   r3,0                                    */
-        0xD034u,   /* se_stw  r3,0(r4)   -- zero the word             */
-        0x4DA5u,   /* se_li   r5,90                                   */
-        0x9354u,   /* se_stb  r5,3(r4)   -- the *last* byte, BE       */
-        0x8364u,   /* se_lbz  r6,3(r4)   -- 90                        */
-        0xC074u,   /* se_lwz  r7,0(r4)   -- 90, in the low byte       */
-        0x4858u,   /* se_li   r24,5                                   */
-        0x2A58u,   /* se_cmpi r24,5      -- EQ into CR0               */
-        0xE602u,   /* se_beq  +4         -- taken                     */
-        0x4EF9u,   /* se_li   r25,111    -- skipped                   */
-        0x481Au,   /* se_li   r26,1                                   */
-        0xE902u,   /* se_bl   +4                                      */
-        0x4E3Bu,   /* se_li   r27,99     -- skipped                   */
-        0x008Cu,   /* se_mflr r28                                     */
-        0x0002u,   /* se_sc                                           */
+        0x4C04u, /* se_li   r4,64                                   */
+        0x6C64u, /* se_slwi r4,6       -- r4 = 0x1000, the scratch  */
+        0x4803u, /* se_li   r3,0                                    */
+        0xD034u, /* se_stw  r3,0(r4)   -- zero the word             */
+        0x4DA5u, /* se_li   r5,90                                   */
+        0x9354u, /* se_stb  r5,3(r4)   -- the *last* byte, BE       */
+        0x8364u, /* se_lbz  r6,3(r4)   -- 90                        */
+        0xC074u, /* se_lwz  r7,0(r4)   -- 90, in the low byte       */
+        0x4858u, /* se_li   r24,5                                   */
+        0x2A58u, /* se_cmpi r24,5      -- EQ into CR0               */
+        0xE602u, /* se_beq  +4         -- taken                     */
+        0x4EF9u, /* se_li   r25,111    -- skipped                   */
+        0x481Au, /* se_li   r26,1                                   */
+        0xE902u, /* se_bl   +4                                      */
+        0x4E3Bu, /* se_li   r27,99     -- skipped                   */
+        0x008Cu, /* se_mflr r28                                     */
+        0x0002u, /* se_sc                                           */
     };
 
     emu_run_reason_t why;
@@ -708,9 +711,9 @@ static void test_se_memory_and_branch(void)
     CHECK_EQ(reg(7), 90u);
     CHECK_EQ(g_scratch[3], 90u);
 
-    CHECK_EQ(reg(25), 0u);                /* se_beq was taken         */
+    CHECK_EQ(reg(25), 0u); /* se_beq was taken         */
     CHECK_EQ(reg(26), 1u);
-    CHECK_EQ(reg(27), 0u);                /* se_bl skipped it         */
+    CHECK_EQ(reg(27), 0u); /* se_bl skipped it         */
     /* se_bl links to the instruction after itself. */
     CHECK_EQ(reg(28), EMU_GUEST_RAM_BASE + 28u);
 }
@@ -729,13 +732,13 @@ static void test_se_memory_and_branch(void)
 static void test_se_sd4_is_scaled(void)
 {
     static const uint16_t prog[] = {
-        0x4C04u,   /* se_li   r4,64                                   */
-        0x6C64u,   /* se_slwi r4,6       -- the scratch region        */
-        0x4B73u,   /* se_li   r3,55                                   */
-        0xD134u,   /* se_stw  r3,4(r4)   -- nibble 1, *4 = byte 4     */
-        0xC164u,   /* se_lwz  r6,4(r4)   -- reads it back             */
-        0xA174u,   /* se_lhz  r7,2(r4)   -- nibble 1, *2 = byte 2     */
-        0x0002u,   /* se_sc                                           */
+        0x4C04u, /* se_li   r4,64                                   */
+        0x6C64u, /* se_slwi r4,6       -- the scratch region        */
+        0x4B73u, /* se_li   r3,55                                   */
+        0xD134u, /* se_stw  r3,4(r4)   -- nibble 1, *4 = byte 4     */
+        0xC164u, /* se_lwz  r6,4(r4)   -- reads it back             */
+        0xA174u, /* se_lhz  r7,2(r4)   -- nibble 1, *2 = byte 2     */
+        0x0002u, /* se_sc                                           */
     };
 
     emu_run_reason_t why;
@@ -750,7 +753,7 @@ static void test_se_sd4_is_scaled(void)
     /* The word really is at byte 4, not byte 1: unscaled it would have
      * landed straddling bytes 1..4 and the halfword read would differ. */
     CHECK_EQ(g_scratch[4], 0u);
-    CHECK_EQ(g_scratch[7], 55u);      /* big-endian: LSB last */
+    CHECK_EQ(g_scratch[7], 55u); /* big-endian: LSB last */
     /* Halfword at byte 2 is the top half of that word, so zero. */
     CHECK_EQ(reg(7), 0u);
 }
@@ -777,26 +780,26 @@ static void test_se_sd4_is_scaled(void)
 static void test_e_forms(void)
 {
     static const uint16_t prog[] = {
-        0x7060u, 0x03E8u,   /* e_li     r3,1000                       */
-        0x709Fu, 0x7F9Cu,   /* e_li     r4,-100    -- LI20 sign        */
-        0x1CA3u, 0x0018u,   /* e_add16i r5,r3,24   -- 1024            */
-        0x18C3u, 0x800Au,   /* e_addi   r6,r3,10   -- SCI8, 1010      */
-        0x18E4u, 0xB00Au,   /* e_subfic r7,r4,10   -- 10 - (-100)     */
-        0x1868u, 0xD007u,   /* e_ori    r8,r3,7    -- rA<-rS, 1007    */
-        0x1869u, 0xC00Cu,   /* e_andi   r9,r3,12   -- 1000 & 12 = 8   */
-        0x7142u, 0x0000u,   /* e_li     r10,4096   -- the scratch     */
-        0x546Au, 0x0008u,   /* e_stw    r3,8(r10)                     */
-        0x516Au, 0x0008u,   /* e_lwz    r11,8(r10)                    */
-        0x318Au, 0x0008u,   /* e_lbz    r12,8(r10) -- MSB, so 0       */
-        0x5C8Au, 0x0010u,   /* e_sth    r4,16(r10)                    */
-        0x59AAu, 0x0010u,   /* e_lhz    r13,16(r10)                   */
-        0x1803u, 0xA807u,   /* e_cmpi   cr0,r3,7   -- 1000 > 7 -> GT  */
-        0x7A11u, 0x0008u,   /* e_bgt    +8         -- taken           */
-        0x71C0u, 0x0037u,   /* e_li     r14,55     -- skipped         */
-        0x71E0u, 0x0042u,   /* e_li     r15,66                        */
-        0x7800u, 0x0009u,   /* e_bl     +8                            */
-        0x7200u, 0x004Du,   /* e_li     r16,77     -- skipped         */
-        0x0002u,            /* se_sc               -- 16-bit          */
+        0x7060u, 0x03E8u, /* e_li     r3,1000                       */
+        0x709Fu, 0x7F9Cu, /* e_li     r4,-100    -- LI20 sign        */
+        0x1CA3u, 0x0018u, /* e_add16i r5,r3,24   -- 1024            */
+        0x18C3u, 0x800Au, /* e_addi   r6,r3,10   -- SCI8, 1010      */
+        0x18E4u, 0xB00Au, /* e_subfic r7,r4,10   -- 10 - (-100)     */
+        0x1868u, 0xD007u, /* e_ori    r8,r3,7    -- rA<-rS, 1007    */
+        0x1869u, 0xC00Cu, /* e_andi   r9,r3,12   -- 1000 & 12 = 8   */
+        0x7142u, 0x0000u, /* e_li     r10,4096   -- the scratch     */
+        0x546Au, 0x0008u, /* e_stw    r3,8(r10)                     */
+        0x516Au, 0x0008u, /* e_lwz    r11,8(r10)                    */
+        0x318Au, 0x0008u, /* e_lbz    r12,8(r10) -- MSB, so 0       */
+        0x5C8Au, 0x0010u, /* e_sth    r4,16(r10)                    */
+        0x59AAu, 0x0010u, /* e_lhz    r13,16(r10)                   */
+        0x1803u, 0xA807u, /* e_cmpi   cr0,r3,7   -- 1000 > 7 -> GT  */
+        0x7A11u, 0x0008u, /* e_bgt    +8         -- taken           */
+        0x71C0u, 0x0037u, /* e_li     r14,55     -- skipped         */
+        0x71E0u, 0x0042u, /* e_li     r15,66                        */
+        0x7800u, 0x0009u, /* e_bl     +8                            */
+        0x7200u, 0x004Du, /* e_li     r16,77     -- skipped         */
+        0x0002u, /* se_sc               -- 16-bit          */
     };
 
     emu_run_reason_t why;
@@ -808,20 +811,20 @@ static void test_e_forms(void)
     }
 
     CHECK_EQ(reg(3), 1000u);
-    CHECK_EQ(reg(4), (uint32_t)(-100));   /* LI20 sign-extends       */
+    CHECK_EQ(reg(4), (uint32_t)(-100)); /* LI20 sign-extends       */
     CHECK_EQ(reg(5), 1024u);
-    CHECK_EQ(reg(6), 1010u);              /* SCI8 scale 0            */
-    CHECK_EQ(reg(7), 110u);               /* subfic is imm - rA      */
-    CHECK_EQ(reg(8), 1000u | 7u);         /* rA written from rS      */
+    CHECK_EQ(reg(6), 1010u); /* SCI8 scale 0            */
+    CHECK_EQ(reg(7), 110u); /* subfic is imm - rA      */
+    CHECK_EQ(reg(8), 1000u | 7u); /* rA written from rS      */
     CHECK_EQ(reg(9), 1000u & 12u);
 
     CHECK_EQ(reg(11), 1000u);
-    CHECK_EQ(reg(12), 0u);                /* big-endian: MSB of 1000 */
-    CHECK_EQ(reg(13), 0xFF9Cu);           /* low half of -100        */
+    CHECK_EQ(reg(12), 0u); /* big-endian: MSB of 1000 */
+    CHECK_EQ(reg(13), 0xFF9Cu); /* low half of -100        */
 
-    CHECK_EQ(reg(14), 0u);                /* e_bgt was taken         */
+    CHECK_EQ(reg(14), 0u); /* e_bgt was taken         */
     CHECK_EQ(reg(15), 66u);
-    CHECK_EQ(reg(16), 0u);                /* e_bl skipped it         */
+    CHECK_EQ(reg(16), 0u); /* e_bl skipped it         */
     CHECK_EQ(reg(0), 0u);
     /* e_bl links past itself: the bl is at byte 68, so LR is 72. */
     CHECK_EQ(core()->lr, EMU_GUEST_RAM_BASE + 72u);
@@ -843,15 +846,15 @@ static void test_e_forms(void)
 static void test_e_sci8_and_lha(void)
 {
     static const uint16_t prog[] = {
-        0x7142u, 0x0000u,   /* e_li   r10,4096                        */
-        0x709Fu, 0x7F9Cu,   /* e_li   r4,-100                         */
-        0x5C8Au, 0x0010u,   /* e_sth  r4,16(r10)  -- 0xFF9C           */
-        0x38AAu, 0x0010u,   /* e_lha  r5,16(r10)  -- sign-extends     */
-        0x58CAu, 0x0010u,   /* e_lhz  r6,16(r10)  -- does not         */
-        0x1947u, 0xD201u,   /* e_ori  r7,r10,0x10000  -- SCL=2        */
-        0x190Au, 0x84FFu,   /* e_addi r8,r10,-1       -- F=1          */
-        0x1949u, 0xC400u,   /* e_andi r9,r10,-256     -- F=1, UI8=0   */
-        0x0002u,            /* se_sc                                  */
+        0x7142u, 0x0000u, /* e_li   r10,4096                        */
+        0x709Fu, 0x7F9Cu, /* e_li   r4,-100                         */
+        0x5C8Au, 0x0010u, /* e_sth  r4,16(r10)  -- 0xFF9C           */
+        0x38AAu, 0x0010u, /* e_lha  r5,16(r10)  -- sign-extends     */
+        0x58CAu, 0x0010u, /* e_lhz  r6,16(r10)  -- does not         */
+        0x1947u, 0xD201u, /* e_ori  r7,r10,0x10000  -- SCL=2        */
+        0x190Au, 0x84FFu, /* e_addi r8,r10,-1       -- F=1          */
+        0x1949u, 0xC400u, /* e_andi r9,r10,-256     -- F=1, UI8=0   */
+        0x0002u, /* se_sc                                  */
     };
 
     emu_run_reason_t why;
@@ -894,24 +897,24 @@ static void test_e_sci8_and_lha(void)
 static void test_e_i16_and_rotate(void)
 {
     static const uint16_t prog[] = {
-        0x7070u, 0xE001u,   /* e_lis     r3,0x8001  -- needs bit 15   */
-        0x7062u, 0xC234u,   /* e_or2i    r3,0x1234                    */
-        0x7080u, 0x00FFu,   /* e_li      r4,255                       */
-        0x7080u, 0xC80Fu,   /* e_and2i.  r4,0x000F  -- 15             */
-        0x70A0u, 0x0001u,   /* e_li      r5,1                         */
-        0x70A2u, 0xD234u,   /* e_or2is   r5,0x1234  -- shifted 16     */
-        0x70DFu, 0xE7FFu,   /* e_lis     r6,0xFFFF                    */
-        0x70C0u, 0xE8FFu,   /* e_and2is. r6,0x00FF  -- 0x00FF0000     */
-        0x70E0u, 0x0007u,   /* e_li      r7,7                         */
-        0x73E7u, 0x9FFEu,   /* e_cmp16i  r7,-2      -- 7 > -2 -> GT   */
-        0x7102u, 0x0234u,   /* e_li      r8,0x1234                    */
-        0x7509u, 0x442Fu,   /* e_rlwinm  r9,r8,8,16,23                */
-        0x7141u, 0x070Fu,   /* e_li      r10,0xF0F                    */
-        0x717Fu, 0xE7FFu,   /* e_lis     r11,0xFFFF -- rA is not zero */
-        0x754Bu, 0x2536u,   /* e_rlwimi  r11,r10,4,20,27              */
-        0x719Fu, 0xE7FFu,   /* e_lis     r12,0xFFFF -- non-zero dest   */
-        0x750Cu, 0x442Fu,   /* e_rlwinm  r12,r8,8,16,23                */
-        0x0002u,            /* se_sc                                  */
+        0x7070u, 0xE001u, /* e_lis     r3,0x8001  -- needs bit 15   */
+        0x7062u, 0xC234u, /* e_or2i    r3,0x1234                    */
+        0x7080u, 0x00FFu, /* e_li      r4,255                       */
+        0x7080u, 0xC80Fu, /* e_and2i.  r4,0x000F  -- 15             */
+        0x70A0u, 0x0001u, /* e_li      r5,1                         */
+        0x70A2u, 0xD234u, /* e_or2is   r5,0x1234  -- shifted 16     */
+        0x70DFu, 0xE7FFu, /* e_lis     r6,0xFFFF                    */
+        0x70C0u, 0xE8FFu, /* e_and2is. r6,0x00FF  -- 0x00FF0000     */
+        0x70E0u, 0x0007u, /* e_li      r7,7                         */
+        0x73E7u, 0x9FFEu, /* e_cmp16i  r7,-2      -- 7 > -2 -> GT   */
+        0x7102u, 0x0234u, /* e_li      r8,0x1234                    */
+        0x7509u, 0x442Fu, /* e_rlwinm  r9,r8,8,16,23                */
+        0x7141u, 0x070Fu, /* e_li      r10,0xF0F                    */
+        0x717Fu, 0xE7FFu, /* e_lis     r11,0xFFFF -- rA is not zero */
+        0x754Bu, 0x2536u, /* e_rlwimi  r11,r10,4,20,27              */
+        0x719Fu, 0xE7FFu, /* e_lis     r12,0xFFFF -- non-zero dest   */
+        0x750Cu, 0x442Fu, /* e_rlwinm  r12,r8,8,16,23                */
+        0x0002u, /* se_sc                                  */
     };
 
     emu_run_reason_t why;

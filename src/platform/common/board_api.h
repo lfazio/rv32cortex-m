@@ -91,7 +91,7 @@ extern const char *const board_core_name;
  * removed the two-piece upload.
  */
 extern const uint8_t *board_img;
-extern uint32_t       board_img_size;
+extern uint32_t board_img_size;
 
 /*
  * Where the guest's RAM is and how much of it there is.
@@ -131,10 +131,10 @@ extern uint32_t board_ram_size;
  */
 typedef struct board_region {
     const char *name;
-    uint32_t    base;
-    uint32_t    size;
-    uint8_t     perm;
-    void       *host;
+    uint32_t base;
+    uint32_t size;
+    uint8_t perm;
+    void *host;
 } board_region_t;
 
 const board_region_t *board_regions(unsigned *count);
@@ -316,7 +316,7 @@ void board_fatal(int *status);
  * handover it is not -- and these two only move the byte.
  */
 void board_console_putc(uint8_t c);
-int  board_console_getc(void);
+int board_console_getc(void);
 
 /*
  * Arm receive interrupts, where reception needs them.
@@ -335,10 +335,7 @@ uint32_t board_console_rx_overruns(void);
 /* board_led_ -- activity, where there is somewhere to show it          */
 /* ------------------------------------------------------------------ */
 
-typedef enum {
-    BOARD_LED_RX,
-    BOARD_LED_TX
-} board_led_t;
+typedef enum { BOARD_LED_RX, BOARD_LED_TX } board_led_t;
 
 /*
  * Per *frame*, not per byte: at 921600 a byte is 10.8 us, so a per-byte
@@ -396,7 +393,7 @@ void board_gdb_wait(void);
  * running the cores as well would execute instructions the debugger
  * believes are still ahead of it.
  */
-bool     board_gdb_attached(void);
+bool board_gdb_attached(void);
 uint32_t board_gdb_run(uint32_t budget, uint32_t *retired);
 
 /* Service the transport between slices, where it needs it. */
@@ -505,7 +502,6 @@ uint32_t board_flash_last_error(void);
  * the symbol.
  */
 void board_sync_icache(const void *addr, uint32_t len);
-
 
 #ifdef __cplusplus
 }

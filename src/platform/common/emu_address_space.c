@@ -55,8 +55,8 @@ bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
      * emu_elf_map has to be able to ask whether a segment lands inside
      * this window, and it can only copy one that does.
      */
-    if (!emu_bus_add_ram(bus, "ram", EMU_GUEST_RAM_BASE,
-                         board_ram, board_ram_size)) {
+    if (!emu_bus_add_ram(bus, "ram", EMU_GUEST_RAM_BASE, board_ram,
+                         board_ram_size)) {
         return false;
     }
 
@@ -88,13 +88,13 @@ bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
      * ELF would overlap the segments it is about to map.
      */
     if (!emu_elf_is_elf(board_img, board_img_size) &&
-        !emu_bus_add_rom(bus, "flash", EMU_GUEST_ROM_BASE,
-                         board_img, board_img_size)) {
+        !emu_bus_add_rom(bus, "flash", EMU_GUEST_ROM_BASE, board_img,
+                         board_img_size)) {
         return false;
     }
 
-    if (!emu_bus_add_mmio(bus, "uart0", EMU_GUEST_UART_BASE,
-                          EMU_UART_SIZE, &emu_uart_ops, uart)) {
+    if (!emu_bus_add_mmio(bus, "uart0", EMU_GUEST_UART_BASE, EMU_UART_SIZE,
+                          &emu_uart_ops, uart)) {
         return false;
     }
 
@@ -107,13 +107,12 @@ bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
     const board_region_t *const r = board_regions(&n);
 
     for (unsigned i = 0; i < n; i++) {
-        const bool ok =
-            (r[i].host != NULL)
-                ? emu_bus_add_ram(bus, r[i].name, r[i].base, r[i].host,
-                                  r[i].size)
-                : emu_bus_add_passthru(bus, r[i].name, r[i].base, r[i].size,
-                                       (uintptr_t)r[i].base, r[i].perm,
-                                       EMU_WANY);
+        const bool ok = (r[i].host != NULL)
+                            ? emu_bus_add_ram(bus, r[i].name, r[i].base,
+                                              r[i].host, r[i].size)
+                            : emu_bus_add_passthru(
+                                  bus, r[i].name, r[i].base, r[i].size,
+                                  (uintptr_t)r[i].base, r[i].perm, EMU_WANY);
 
         if (!ok) {
             return false;

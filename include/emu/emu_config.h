@@ -23,7 +23,7 @@
  * registers means splitting a window into several entries.
  */
 #ifndef EMU_MAX_REGIONS
-#  define EMU_MAX_REGIONS 16
+#define EMU_MAX_REGIONS 16
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -35,7 +35,7 @@
  * to the host so it can service ARM-side work (timers, USB, RTOS ticks).
  */
 #ifndef EMU_DEFAULT_BUDGET
-#  define EMU_DEFAULT_BUDGET 4096u
+#define EMU_DEFAULT_BUDGET 4096u
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -44,12 +44,12 @@
 
 /* Per-instruction trace hook. Slow; enable only when chasing a bug. */
 #ifndef EMU_ENABLE_TRACE
-#  define EMU_ENABLE_TRACE 0
+#define EMU_ENABLE_TRACE 0
 #endif
 
 /* Count executed instructions / traps / bus faults for `stats`. */
 #ifndef EMU_ENABLE_STATS
-#  define EMU_ENABLE_STATS 1
+#define EMU_ENABLE_STATS 1
 #endif
 
 #endif /* EMU_CONFIG_H */

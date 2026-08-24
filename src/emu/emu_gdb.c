@@ -35,9 +35,12 @@ static char hex_digit(unsigned v)
 
 static int hex_val(uint8_t c)
 {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
-    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return 10 + (c - 'a');
+    if (c >= 'A' && c <= 'F')
+        return 10 + (c - 'A');
     return -1;
 }
 
@@ -130,8 +133,14 @@ static void send_str(emu_gdb_t *g, const char *s)
     send_packet(g, s, (uint32_t)strlen(s));
 }
 
-static void send_ok(emu_gdb_t *g)     { send_str(g, "OK"); }
-static void send_empty(emu_gdb_t *g)  { send_packet(g, "", 0); }
+static void send_ok(emu_gdb_t *g)
+{
+    send_str(g, "OK");
+}
+static void send_empty(emu_gdb_t *g)
+{
+    send_packet(g, "", 0);
+}
 
 /* E<nn>. gdb prints the number, so use errno-ish values it can explain. */
 static void send_err(emu_gdb_t *g, unsigned code)
@@ -167,7 +176,8 @@ static void send_stop(emu_gdb_t *g, int sig)
         }
         b[n++] = hex_digit(pcno & 0xFu);
         b[n++] = ':';
-        put_reg_hex(&b[n], g->target->pc_get(g->core->cpu), g->target->reg_bytes);
+        put_reg_hex(&b[n], g->target->pc_get(g->core->cpu),
+                    g->target->reg_bytes);
         n += 2u * g->target->reg_bytes;
         b[n++] = ';';
     }
@@ -337,8 +347,8 @@ static void cmd_write_regs(emu_gdb_t *g, const uint8_t *p, uint32_t len)
         if ((r + 1u) * w > len) {
             break;
         }
-        g->target->reg_set(g->core->cpu, r, get_reg_hex(&p[r * w],
-                                                  g->target->reg_bytes));
+        g->target->reg_set(g->core->cpu, r,
+                           get_reg_hex(&p[r * w], g->target->reg_bytes));
     }
     send_ok(g);
 }
@@ -355,7 +365,8 @@ static void cmd_read_one_reg(emu_gdb_t *g, const uint8_t *p, uint32_t len)
         send_err(g, 1);
         return;
     }
-    put_reg_hex(body, g->target->reg_get(g->core->cpu, r), g->target->reg_bytes);
+    put_reg_hex(body, g->target->reg_get(g->core->cpu, r),
+                g->target->reg_bytes);
     send_packet(g, body, 2u * g->target->reg_bytes);
 }
 
@@ -389,7 +400,7 @@ static void cmd_mem_read(emu_gdb_t *g, const uint8_t *p, uint32_t len)
         n = (uint32_t)(sizeof(body) / 2u) - 1u;
     }
     if (!mem_read(g, addr, n, body)) {
-        send_err(g, 14);        /* EFAULT, which gdb reports as such */
+        send_err(g, 14); /* EFAULT, which gdb reports as such */
         return;
     }
     send_packet(g, body, 2u * n);
@@ -462,8 +473,8 @@ static void cmd_mem_write_bin(emu_gdb_t *g, const uint8_t *p, uint32_t len)
         return;
     }
     for (uint32_t i = 0; i < n; i++) {
-        if (emu_bus_write(g->core->bus, addr + i, 1u,
-                          (uint32_t)p[used + i]) != EMU_FAULT_NONE) {
+        if (emu_bus_write(g->core->bus, addr + i, 1u, (uint32_t)p[used + i]) !=
+            EMU_FAULT_NONE) {
             send_err(g, 14);
             return;
         }
@@ -510,7 +521,7 @@ static void cmd_breakpoint(emu_gdb_t *g, const uint8_t *p, uint32_t len,
     }
     if (insert) {
         if (!break_add(g, addr, kind)) {
-            send_err(g, 28);            /* ENOSPC */
+            send_err(g, 28); /* ENOSPC */
             return;
         }
     } else {
@@ -539,7 +550,9 @@ static void cmd_query(emu_gdb_t *g, const uint8_t *p, uint32_t len)
          */
         int n = 0;
         const char *pre = "PacketSize=";
-        while (*pre != '\0') { b[n++] = *pre++; }
+        while (*pre != '\0') {
+            b[n++] = *pre++;
+        }
         {
             const uint32_t sz = EMU_GDB_MAX_PACKET;
             b[n++] = hex_digit((sz >> 8) & 0xFu);
@@ -555,18 +568,24 @@ static void cmd_query(emu_gdb_t *g, const uint8_t *p, uint32_t len)
          */
         {
             const char *ext = ";swbreak+;hwbreak+";
-            while (*ext != '\0') { b[n++] = *ext++; }
+            while (*ext != '\0') {
+                b[n++] = *ext++;
+            }
         }
         if (g->target->target_xml != NULL) {
             const char *ext = ";qXfer:features:read+";
-            while (*ext != '\0') { b[n++] = *ext++; }
+            while (*ext != '\0') {
+                b[n++] = *ext++;
+            }
         }
         if (g->target->memory_map != NULL && g->flash != NULL) {
             /* Both, or neither: a map naming a flash region makes gdb
              * send vFlash*, and answering those without an
              * implementation loses the image silently. */
             const char *ext = ";qXfer:memory-map:read+";
-            while (*ext != '\0') { b[n++] = *ext++; }
+            while (*ext != '\0') {
+                b[n++] = *ext++;
+            }
         }
         send_packet(g, b, (uint32_t)n);
         return;
@@ -586,8 +605,8 @@ static void cmd_query(emu_gdb_t *g, const uint8_t *p, uint32_t len)
          * plus a chunk when more follows and 'l' plus the last one, and
          * gdb keeps asking until it sees 'l'.
          */
-        const char *xml = is_map ? g->target->memory_map
-                                 : g->target->target_xml;
+        const char *xml =
+            is_map ? g->target->memory_map : g->target->target_xml;
         char b[EMU_GDB_MAX_PACKET];
         uint32_t off = 0, want = 0, total = 0, n = 0;
         uint32_t i = 0;
@@ -613,7 +632,7 @@ static void cmd_query(emu_gdb_t *g, const uint8_t *p, uint32_t len)
         }
 
         if (off >= total) {
-            send_str(g, "l");           /* nothing left: end of object */
+            send_str(g, "l"); /* nothing left: end of object */
             return;
         }
         /* Leave room for the prefix, and never exceed what gdb asked
@@ -772,7 +791,7 @@ static void dispatch(emu_gdb_t *g, const uint8_t *p, uint32_t len)
             if (i >= len || p[i] != ':') {
                 send_err(g, 1);
             } else {
-                i += 1u;        /* payload is raw, already unescaped */
+                i += 1u; /* payload is raw, already unescaped */
                 if (g->flash == NULL ||
                     !g->flash->write(addr, &p[i], len - i)) {
                     send_err(g, 1);
@@ -836,10 +855,10 @@ static void dispatch(emu_gdb_t *g, const uint8_t *p, uint32_t len)
         }
         break;
 
-    case 'H':       /* thread selection; one thread, so always fine */
+    case 'H': /* thread selection; one thread, so always fine */
         send_ok(g);
         break;
-    case 'T':       /* is thread alive */
+    case 'T': /* is thread alive */
         send_ok(g);
         break;
 
@@ -879,7 +898,7 @@ void emu_gdb_rx(emu_gdb_t *g, const uint8_t *data, uint32_t len)
                  */
                 g->halted = true;
                 g->stepping = false;
-                send_stop(g, 2);        /* SIGINT */
+                send_stop(g, 2); /* SIGINT */
             }
             /* '+' and '-' outside a packet are acknowledgements. This
              * stub does not retransmit: over TCP the bytes arrive or the
@@ -946,8 +965,8 @@ void emu_gdb_rx(emu_gdb_t *g, const uint8_t *data, uint32_t len)
 /* ------------------------------------------------------------------ */
 
 void emu_gdb_init(emu_gdb_t *g, emu_core_t *core,
-                  const emu_gdb_target_t *target,
-                  emu_gdb_tx_fn tx, void *tx_ctx)
+                  const emu_gdb_target_t *target, emu_gdb_tx_fn tx,
+                  void *tx_ctx)
 {
     memset(g, 0, sizeof(*g));
     g->core = core;
@@ -989,11 +1008,16 @@ void emu_gdb_detach(emu_gdb_t *g)
     }
 }
 
-bool emu_gdb_halted(const emu_gdb_t *g)   { return g->halted; }
-bool emu_gdb_attached(const emu_gdb_t *g) { return g->attached; }
+bool emu_gdb_halted(const emu_gdb_t *g)
+{
+    return g->halted;
+}
+bool emu_gdb_attached(const emu_gdb_t *g)
+{
+    return g->attached;
+}
 
-emu_run_reason_t emu_gdb_run(emu_gdb_t *g, uint32_t budget,
-                             uint32_t *retired)
+emu_run_reason_t emu_gdb_run(emu_gdb_t *g, uint32_t budget, uint32_t *retired)
 {
     const emu_cpu_ops_t *ops = g->core->ops;
 
@@ -1027,7 +1051,7 @@ emu_run_reason_t emu_gdb_run(emu_gdb_t *g, uint32_t budget,
 
         if (why != EMU_RUN_BUDGET) {
             g->halted = true;
-            send_stop(g, 5);            /* SIGTRAP: the target stopped */
+            send_stop(g, 5); /* SIGTRAP: the target stopped */
         }
         return why;
     }
@@ -1104,7 +1128,7 @@ emu_run_reason_t emu_gdb_run(emu_gdb_t *g, uint32_t budget,
         }
         if (break_find(g, g->target->pc_get(g->core->cpu)) != NULL) {
             g->halted = true;
-            send_stop(g, 5);            /* SIGTRAP */
+            send_stop(g, 5); /* SIGTRAP */
             return EMU_RUN_BUDGET;
         }
         if (n == 0u) {
