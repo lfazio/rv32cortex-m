@@ -700,7 +700,7 @@ static emu_args_t g_opt;
 
 /*
  * The real command line, which is what a hosted platform has.
- * emu_main.c parses it and hands the result back through board_startup.
+ * emu_main.c parses it and hands the result back through board_init.
  */
 char *const *board_argv(int *argc)
 {
@@ -708,99 +708,66 @@ char *const *board_argv(int *argc)
     return NULL;
 }
 
-bool board_startup(const emu_args_t *args, int *status,
-                       emu_session_cfg_t *cfg, emu_run_env_t *env)
+/*
+ * Bring this "board" up: a heap, an image read from the file the command
+ * line names, and a pty if a link was asked for.
+ *
+ * The rest of what used to be here is emu_main's now -- the frontend,
+ * which is chosen the same way from any image; the banner; the handover.
+ * Choosing the frontend in particular had drifted: this file had the full
+ * three-way choice and a board had emu_frontend_default(), so a board
+ * could not honour a --frontend its own board_argv named.
+ */
+bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
+                emu_run_env_t *env)
 {
     g_opt = *args;
 
     /*
      * **Where "an image is required" is enforced**, rather than in the
-     * parser: a board's image is linked in and its equivalent command
-     * line names none, so a shared parser cannot insist. This is the one
+     * parser: a board's is linked in and its equivalent command line
+     * names none, so a shared parser cannot insist. This is the one
      * caller that cannot proceed without a path.
      */
     if (g_opt.path == NULL) {
         emu_args_usage();
-        *status = 2;
         return false;
     }
 
-    /* --- read the image first, so its ELF header can pick a frontend - */
     size_t len = 0;
-    uint8_t *image = host_read_file(g_opt.path, &len);
+    uint8_t *const image = host_read_file(g_opt.path, &len);
+
     if (image == NULL) {
-        *status = 1;
         return false;
     }
 
-    const emu_cpu_ops_t *ops;
-    if (g_opt.frontend != NULL) {
-        ops = emu_frontend_find(g_opt.frontend);
-        if (ops == NULL) {
-            emu_console_printf("emu: no frontend '%s'; this build has: ",
-                    g_opt.frontend);
-            emu_args_list_frontends();
-            fputc('\n', stderr);
-            free(image);
-            *status = 2;
-            return false;
-        }
-    } else if (emu_elf_is_elf(image, len)) {
-        const uint16_t m = emu_elf_machine(image, len);
-        ops = emu_frontend_for_elf(m);
-        if (ops == NULL) {
-            emu_console_printf("emu: no frontend for ELF machine %u; this build has: ", m);
-            emu_args_list_frontends();
-            fputc('\n', stderr);
-            free(image);
-            *status = 2;
-            return false;
-        }
-    } else {
-        /* A flat binary says nothing about its architecture. */
-        ops = emu_frontend_default();
-    }
-
-
-    /* --- guest memory, which is this platform's "hardware" -------- */
     g_ram    = calloc(g_opt.ram_size, 1u);
     g_periph = calloc(PERIPH_SIM_SIZE, 1u);
     if (g_ram == NULL || g_periph == NULL) {
         emu_console_printf("emu: cannot allocate guest memory\n");
-        *status = 1;
+        free(image);
         return false;
     }
 
     board_ram      = g_ram;
     board_ram_size = g_opt.ram_size;
-    emu_image_set(image, (uint32_t)len);
 
-    /*
-     * What only this platform decides. The runner already filled in the
-     * buses, the UART and the syscall handler before calling here -- see
-     * emu_board.h on why these are the two structs rather than a hook
-     * each.
-     */
-    cfg->ops       = ops;
-    cfg->load_addr = g_opt.load_addr;
-    cfg->entry     = g_opt.entry;
-    /* 378 architecture tests do not each want a register dump. */
+    /* Found, not installed -- emu_main calls emu_image_set. */
+    cfg->image      = image;
+    cfg->image_size = (uint32_t)len;
+
     board_gdb_configure(g_opt.gdb_port);
-    /*
-     * NULL: this runner calloc'd guest RAM and an ELF's segments are
-     * written into it by the loader. Zeroing it again would erase them.
-     */
-    cfg->ram_host  = NULL;
-
+    cfg->ram_host     = NULL;
     env->advance_time = advance_guest_time;
+
     /*
-     * The link, before the guest runs and after the cores exist -- the
-     * gdb stub needs one to describe.
+     * The wire, before emu_main hands it to the IP stack. Opening it is
+     * this platform's -- a pty, or a device named on the command line --
+     * and the handover itself is not, so emu_board_link_start() is called
+     * one layer up for both platforms.
      *
-     * The pty is this platform's; the handover is not, so it goes through
-     * emu_board_link_start() exactly as the boards' does. Not fatal if it
-     * fails: a runner that cannot get one is still a runner, and saying
-     * so beats refusing to run the guest.
+     * Not fatal if it fails: a runner that cannot get a pty is still a
+     * runner, and saying so beats refusing to run the guest.
      */
     if (g_opt.ppp) {
         char slave[64] = "";
@@ -808,24 +775,13 @@ bool board_startup(const emu_args_t *args, int *status,
         if (!board_console_open(g_opt.ppp_dev, slave, sizeof(slave))) {
             emu_console_printf("emu: --ppp: no serial device; continuing "
                                "without a network\n");
-        } else if (emu_board_link_start()) {
+        } else {
             fprintf(stderr,
                     "emu: ppp on %s\n"
                     "emu:   scripts/ppp-host.sh %s\n",
                     slave, slave);
         }
     }
-
-
-    /* --- run --------------------------------------------------------- */
-    env->take_upload = emu_image_take_pending;
-    /*
-     * Run control comes from board_gdb_*, which picks the transport --
-     * this platform has two and a board has one. Set unconditionally
-     * because they answer false when no stub is listening, which is one
-     * predictable branch per slice against a NULL check that had to be
-     * kept in step with three other places.
-     */
     return true;
 }
 

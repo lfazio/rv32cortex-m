@@ -346,7 +346,7 @@ void board_fatal(int *status)
     }
 }
 
-void board_init(void)
+void board_hw_init(void)
 {
     /*
      * **Caches first, before anything is written.** ST's own FSBL

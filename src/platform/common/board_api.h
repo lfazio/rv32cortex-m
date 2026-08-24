@@ -194,50 +194,55 @@ uint64_t board_time_now(void);
 /* ------------------------------------------------------------------ */
 
 /*
- * Everything before a guest can be brought up: bring the part up, obtain
- * an image, say hello -- and state how this platform wants the run done.
- *
- * *Acquisition*, the first of the two halves emu_session.h says a
- * platform cannot share. A board brings up its clocks and peripherals and
- * has its image linked in; a runner parses argv and reads the file it
- * names. argc/argv are what a hosted platform gets and a bare-metal one
- * ignores.
- *
- * The runner fills in what it owns -- the buses, the UART, the syscall
- * handler -- before calling this, and the platform fills in the rest. Two
- * structs rather than a hook each: what a platform decides about a run is
- * already what emu_session_cfg_t and emu_run_env_t describe.
- *
- * On return, board_img/_size and board_ram/_size must be set.
- * False means stop, with *status as the exit code.
- */
-/*
  * This platform's equivalent command line, or NULL to use the real one.
  *
  * **A board has no argv and still has options.** It wants the JIT, a
  * particular quantum, an instruction cap and a register dump on exit --
  * exactly the things the runner's command line names -- and it used to
- * set the corresponding struct fields by hand in board_startup, in
- * parallel with a parser that understood the same settings by name. Two
- * ways to say one thing, and only one of them was documented by a
- * --help.
+ * set the corresponding struct fields by hand, in parallel with a parser
+ * that understood the same settings by name. Two ways to say one thing,
+ * and only one of them was documented by a --help.
  *
  * So a board hands over the argv it *would* have been given, and one
- * parser reads both. What that buys beyond the deduplication is that a
- * board's policy is now legible as a command line, and that anything
- * added to the parser reaches the boards without a second edit.
+ * parser reads both. Beyond the deduplication, a board's policy is now
+ * legible as a command line, and anything added to the parser reaches the
+ * boards without a second edit.
  *
  * The array must outlive the call; a static is the obvious thing. argv[0]
  * is skipped as a program name, so it must be present.
  */
 char *const *board_argv(int *argc);
 
+/*
+ * Bring this platform up, and state how it wants the run done.
+ *
+ * *Acquisition*, and only that. A board brings up its clocks and console
+ * and has its image linked in; a runner allocates a heap and reads the
+ * file its command line names. On return `cfg->image`/`image_size` name
+ * the image and board_ram/_size the guest's memory, and anything only
+ * this platform knows must be in `cfg` and `env` -- the cache ops, the
+ * interrupt unmask hook, how guest time advances.
+ *
+ * A platform *finds* the image; installing it is emu_main's, through
+ * emu_image_set, because which image is in force is a run-time fact the
+ * upload path also changes.
+ *
+ * **Everything after this is common**, which is what makes this the whole
+ * of a platform's start-up rather than most of it. Choosing the frontend,
+ * printing the banner, handing the wire to the IP stack, and the cfg and
+ * env fields that come straight from the command line are all emu_main's
+ * -- they were written out per platform and the two copies had already
+ * drifted, to the point that a board could not honour a --frontend its
+ * own board_argv named.
+ *
+ * False means stop.
+ */
+struct emu_args;
 struct emu_session_cfg;
 struct emu_run_env;
 struct emu_guest_exit;
-struct emu_args;
-bool board_startup(const struct emu_args *args, int *status,
-                   struct emu_session_cfg *cfg, struct emu_run_env *env);
+bool board_init(const struct emu_args *args, struct emu_session_cfg *cfg,
+                struct emu_run_env *env);
 
 /*
  * Is there anywhere to go when the guest stops?

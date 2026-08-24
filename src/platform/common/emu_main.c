@@ -7,7 +7,7 @@
  * when the guest stops. Everything between -- build the address space,
  * open the cores, run in slices, report -- is one sequence and is here.
  *
- * The two ends are board_startup() and emu_board_after_run(), and
+ * The two ends are board_init() and emu_board_after_run(), and
  * naming them that way is what makes a host a *board*: it brings its own
  * "hardware" up (malloc'd RAM, a pty, stdout), obtains an image (argv and
  * a file rather than an incbin), and at the end returns an exit status
@@ -28,6 +28,8 @@
 #include "emu_console.h"
 #include "emu_debug.h"
 #include "emu_args.h"
+#include "emu_image.h"
+#include "emu/emu_elf.h"
 #include "emu_run.h"
 #include "emu_session.h"
 
@@ -172,6 +174,49 @@ static bool native_coremark_baseline(void)
 #endif
 }
 
+/*
+ * Which frontend runs this image.
+ *
+ * Common, and it was the host's alone: a board took emu_frontend_default()
+ * and nothing else. That stopped being defensible when boards gained a
+ * command line -- a board_argv saying `--frontend g4mh` was parsed and
+ * then ignored.
+ *
+ * Three sources, most specific first: what was asked for, what the ELF
+ * header says, and the first one compiled in. A flat binary carries no
+ * machine type, which is why the last is not a fallback for failure but
+ * the answer for an image that cannot say.
+ */
+static const emu_cpu_ops_t *pick_frontend(const emu_args_t *args)
+{
+    if (args->frontend != NULL) {
+        const emu_cpu_ops_t *const ops = emu_frontend_find(args->frontend);
+
+        if (ops == NULL) {
+            emu_console_printf("emu: no frontend '%s'; this build has: ",
+                               args->frontend);
+            emu_args_list_frontends();
+            emu_console_printf("\n");
+        }
+        return ops;
+    }
+
+    if (emu_elf_is_elf(board_img, board_img_size)) {
+        const uint16_t m = emu_elf_machine(board_img, board_img_size);
+        const emu_cpu_ops_t *const ops = emu_frontend_for_elf(m);
+
+        if (ops == NULL) {
+            emu_console_printf(
+                "emu: no frontend for ELF machine %u; this build has: ", m);
+            emu_args_list_frontends();
+            emu_console_printf("\n");
+        }
+        return ops;
+    }
+
+    return emu_frontend_default();
+}
+
 int main(int argc, char **argv)
 {
     int           status = 0;
@@ -181,7 +226,7 @@ int main(int argc, char **argv)
      * What the runner owns, before the platform is asked: the buses it
      * allocated, the UART it will pump, the syscall handler both
      * platforms share. The platform fills in the rest -- which backend,
-     * where the image goes, what to poll -- in board_startup.
+     * where the image goes, what to poll -- in board_init.
      */
     g_cfg.buses       = g_buses;
     g_cfg.ncores      = 0u;             /* the frontend's count */
@@ -245,9 +290,40 @@ int main(int argc, char **argv)
     env.slice        = args.quantum;
     env.max_insn     = (uint32_t)args.max_insn;
 
-    if (!board_startup(&args, &status, &g_cfg, &env)) {
-        return status;
+    /*
+     * Acquisition: bring the part up, obtain an image, set board_ram and
+     * board_img. Everything after this is the same on every platform,
+     * which is why it is here rather than repeated in each board.
+     */
+    if (!board_init(&args, &g_cfg, &env)) {
+        return 1;
     }
+
+    /*
+     * Installing the image is here, not in a board: an upload changes it
+     * too, and having one place that sets board_img is what keeps "which
+     * image is running" a single run-time fact.
+     */
+    emu_image_set(g_cfg.image, g_cfg.image_size);
+
+    g_cfg.ops = pick_frontend(&args);
+    if (g_cfg.ops == NULL) {
+        return 2;
+    }
+
+    emu_console_printf("\n\nemu: %s on %s @ %u MHz\n",
+                       g_cfg.ops->desc, board_core_name,
+                       (unsigned)(board_clock_hz() / 1000000u));
+
+    /*
+     * The handover, after the banner and before anything else is printed:
+     * these are the last two lines the wire carries as text.
+     */
+    (void)emu_board_link_start();
+
+    g_cfg.load_addr  = args.load_addr;
+    g_cfg.entry      = args.entry;
+    env.take_upload  = emu_image_take_pending;
 
     cfg_refresh();
     if (g_cfg.ops == NULL) {

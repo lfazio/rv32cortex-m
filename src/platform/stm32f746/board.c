@@ -283,8 +283,8 @@ extern uint8_t __itcm_load[];
 /*
  * ST's startup copies .data and knows nothing about .itcm, so anything
  * placed there is unreachable until this has run. It is the first thing
- * board_init does after the caches, which is what makes "nothing may be
- * called from ITCM before board_init" the whole of the rule.
+ * board_hw_init does after the caches, which is what makes "nothing may be
+ * called from ITCM before board_hw_init" the whole of the rule.
  *
  * No cache maintenance is needed on the destination -- a TCM is never
  * cached, which is precisely why code there is immune to the flash bank
@@ -571,7 +571,7 @@ void board_led_toggle(board_led_t led)
     LED_PORT->BSRR = (LED_PORT->ODR & pin) ? (pin << 16) : pin;
 }
 
-void board_init(void)
+void board_hw_init(void)
 {
     /*
      * Caches first, before anything is written that will later be read

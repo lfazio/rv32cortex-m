@@ -243,7 +243,7 @@ const char *board_name(void) { return "Cortex-M4"; }
 
 uint32_t board_clock_hz(void) { return SystemCoreClock; }
 
-void board_init(void)
+void board_hw_init(void)
 {
     /*
      * No caches to enable: this part has only the ART flash accelerator,

@@ -243,62 +243,46 @@ char *const *board_argv(int *argc)
     return av;
 }
 
-bool board_startup(const emu_args_t *args, int *status,
-                       emu_session_cfg_t *cfg, emu_run_env_t *env)
+/*
+ * Bring the board up, and say what only a board knows.
+ *
+ * Short, because everything that is not a fact about this hardware moved
+ * to emu_main: the frontend, the banner, the console-to-network handover,
+ * and every cfg or env field that comes straight from the command line.
+ * What is left is acquisition -- clocks, console, where guest RAM is,
+ * where the image is -- plus the three hooks a board supplies.
+ */
+bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
+                emu_run_env_t *env)
 {
-    (void)status;
+    (void)args;
 
-    board_init();
+    board_hw_init();
     board_ram_init();
 
-
     /*
-     * The frontend names itself and builds its ISA string from the
-     * extensions actually compiled in, so the banner cannot drift from
-     * what the core implements -- which it could when this file spelled
-     * the string out itself.
-     */
-    const emu_cpu_ops_t *const ops = emu_frontend_default();
-
-    emu_console_printf("\n\nemu: %s on %s @ %u MHz\n",
-                       ops->desc, board_core_name,
-                       (unsigned)(board_clock_hz() / 1000000u));
-
-    /*
-     * The handover: after this the UART is the link and the console is
-     * telnet. What it prints and whether it succeeds is the same on every
-     * platform, so it is emu_debug.c's -- see emu_board_link_start.
-     */
-    (void)emu_board_link_start();
-
-    emu_image_set(emu_guest_image, emu_guest_image_size);
-
-    /*
-     * The guest's clock: cycles per tick, and the epoch.
+     * The image is linked in with .incbin. A board has no file to read
+     * and no command line naming one, which is why the shared parser
+     * cannot require a path.
      *
-     * Set here because board_time_now divides by the first, and the
-     * old main() assigned both just before the run. Splitting that main
-     * into a runner and this file left the assignment behind, and the
-     * board stopped *dead* at the first call -- the banner printed and
-     * nothing else, because a divide by zero on this part is a
-     * UsageFault and there is no handler to say so.
-     *
-     * The epoch is the first slice rather than reset, so a guest's clock
-     * starts near zero.
+     * Reported, not installed: emu_main calls emu_image_set. Which image
+     * is in force is a run-time fact that an upload changes too, so one
+     * place owns it.
+     */
+    cfg->image      = emu_guest_image;
+    cfg->image_size = emu_guest_image_size;
+
+    /*
+     * The guest's clock, against this part's cycle counter. Read once
+     * here rather than per call: the divisor never changes and the
+     * elapsed count wants a base.
      */
     g_cycles_per_tick = board_clock_hz() / EMU_TIMER_HZ;
     g_start_cycles    = board_cycles();
 
-    cfg->ops       = ops;
-    cfg->cache_ops = &board_cache_ops;
-    cfg->unmask_fn = board_irq_unmask;
-    /* A board wants speed; a runner chooses, because there it is a
-     * coverage question rather than a performance one. */
-    /* No command line to ask on, and the state after a guest stops is
-     * most of what a person reading a telnet session came for. */
-
+    cfg->cache_ops    = &board_cache_ops;
+    cfg->unmask_fn    = board_irq_unmask;
     env->advance_time = advance_guest_time;
-    env->take_upload  = emu_image_take_pending;
     return true;
 }
 

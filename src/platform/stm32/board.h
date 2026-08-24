@@ -36,7 +36,12 @@
  * Bring the part up: caches, clock tree, console. Called first, before
  * anything reads the clock or prints.
  */
-void board_init(void);
+/*
+ * Bring the silicon up: caches, clock tree, console. The part-specific
+ * half of board_init(), which stm32/board.c implements for all three
+ * STM32s -- everything it does around this call is the same on each.
+ */
+void board_hw_init(void);
 
 
 
