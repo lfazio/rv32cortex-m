@@ -115,7 +115,20 @@ bool emu_main_reload(void)
     return emu_session_reload(&g_sys, &g_cfg);
 }
 
-emu_system_t *emu_main_system(void) { return &g_sys; }
+/*
+ * A board's ISR has masked a real interrupt line and is handing it to the
+ * guest.
+ *
+ * Here because the cores are here. It lived in stm32/board.c carrying a
+ * comment that said exactly that -- "the core is this file's" -- while
+ * reaching back through emu_main_system() to get at it, which is the
+ * reasoning being right about the wrong file. A platform's ISR calls
+ * this; nothing about it is per-part.
+ */
+void emu_raise_irq(uint32_t source, bool level)
+{
+    emu_core_set_irq(&g_sys.core[0], source, level);
+}
 
 /*
  * The native baseline: the same CoreMark sources compiled for the host

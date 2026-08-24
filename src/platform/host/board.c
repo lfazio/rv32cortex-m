@@ -426,7 +426,6 @@ static uint8_t *g_periph;
  * only ever need the bus, and every core's bus maps the shared regions
  * identically.
  */
-#define g_sys  (*emu_main_system())
 
 /* ------------------------------------------------------------------ */
 /* Console transport                                                   */
@@ -643,10 +642,10 @@ uint32_t board_flash_last_error(void)
  */
 static uint32_t g_timer_div = 1u;
 
-static void advance_guest_time(uint64_t retired_total, uint32_t did)
+static void advance_guest_time(emu_system_t *sys, uint64_t retired_total,
+                               uint32_t did)
 {
     (void)retired_total;
-    emu_system_t *const sys = emu_main_system();
 
     if (g_timer_div != 0u && sys->ops->advance_time != NULL) {
         sys->ops->advance_time(sys->core[0].cpu, did / g_timer_div);
@@ -827,9 +826,6 @@ bool board_startup(const emu_args_t *args, int *status,
      * predictable branch per slice against a NULL check that had to be
      * kept in step with three other places.
      */
-#if EMU_ENABLE_TRACE
-    emu_trace_configure(g_opt.trace_skip, g_opt.trace_count);
-#endif
     return true;
 }
 

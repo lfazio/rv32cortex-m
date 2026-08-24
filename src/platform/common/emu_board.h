@@ -69,15 +69,17 @@ bool emu_start_guest(emu_system_t *sys, const struct emu_session_cfg *cfg,
 
 
 /*
- * Rebuild the address space around a new image and restart. What a
- * platform's upload path calls once it has the bytes; in emu_main.c,
+ * Rebuild the address space around a new image and restart. In emu_main.c,
  * because the buses and the session configuration are the runner's.
+ *
+ * Called by emu_image.c once an upload is complete -- common to common,
+ * which is the direction that makes it fine. It used to be called by both
+ * boards, which is what made emu_board.h a header a platform reached
+ * *upward* through; nothing does that any more.
  */
 bool emu_main_reload(void);
 
-/* The system, for a platform that must reach it -- the gdb stub and the
- * interrupt bridge do. */
-emu_system_t *emu_main_system(void);
+
 
 
 

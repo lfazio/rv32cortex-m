@@ -56,8 +56,14 @@ typedef struct emu_run_env {
      * that two runs of the same guest produce the same trace -- there is
      * no wall clock worth tracking there, and determinism is what the
      * architecture suite compares against.
+     *
+     * **`sys` is passed, not fetched.** Both implementations need the
+     * cores, and both used to reach back into the runner's main() for
+     * them through emu_main_system() -- a board file calling upward, for
+     * a value the run loop is holding as it makes the call.
      */
-    void (*advance_time)(uint64_t retired_total, uint32_t did);
+    void (*advance_time)(emu_system_t *sys, uint64_t retired_total,
+                         uint32_t did);
 
     /*
      * True when an uploaded image is waiting. NULL on a platform that

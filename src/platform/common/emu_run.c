@@ -76,7 +76,7 @@ emu_run_outcome_t emu_run_system(emu_system_t *sys, const emu_run_env_t *env,
 
 
         if (env->advance_time != NULL) {
-            env->advance_time(*retired_total, did);
+            env->advance_time(sys, *retired_total, did);
         }
 
         /*

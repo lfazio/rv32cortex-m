@@ -128,16 +128,6 @@ extern const uint32_t emu_guest_image_size;
  */
 #define EMU_BOARD_CORES 1u
 
-/*
- * A board's ISR has masked the line and is handing it over. The core is
- * this file's, which is the whole reason this is not in the board's own
- * file with the handler that calls it.
- */
-void emu_raise_irq(uint32_t source, bool level)
-{
-    emu_core_set_irq(&emu_main_system()->core[0], source, level);
-}
-
 /* ------------------------------------------------------------------ */
 /* Guest time                                                          */
 /* ------------------------------------------------------------------ */
@@ -161,11 +151,11 @@ uint64_t board_time_now(void)
  * interrupt has to bear some relation to the wall clock. The host runner
  * answers the opposite way, and both are right for what they are.
  */
-static void advance_guest_time(uint64_t retired_total, uint32_t did)
+static void advance_guest_time(emu_system_t *sys, uint64_t retired_total,
+                               uint32_t did)
 {
     (void)retired_total;
     (void)did;
-    emu_system_t *const sys = emu_main_system();
 
     sys->ops->set_time(sys->core[0].cpu, board_time_now());
 }
