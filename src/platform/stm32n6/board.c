@@ -28,8 +28,7 @@
  * as `timer-fired` and `timer-cause` and nothing else, and cost a session.
  */
 
-#include "board.h"
-#include "board_api.h"
+#include "board.h"          /* and board_api.h, the contract, through it */
 
 #include "stm32n6xx_hal.h"
 

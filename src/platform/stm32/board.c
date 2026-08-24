@@ -15,23 +15,20 @@
  * fulfils it gives a reader no way to tell which half they are reading.
  */
 
+/* This platform: its own header, and the contract it implements. */
 #include "board.h"
-#include "board_api.h"
-#include "emu_console.h"
+
+/* The shared runner pieces this file talks to. */
+#include "emu_args.h"
+#include "emu_board.h"
+#include "emu_debug.h"
+#include "emu_run.h"
+#include "emu_session.h"
+
+/* emucore. */
+#include "emu/emu_cpu.h"
 
 #include <stdio.h>
-#include "emu_board.h"
-#include "emu_run.h"
-#include "emu_debug.h"
-#include "emu_image.h"
-#include "emu_args.h"
-#include "emu_session.h"
-#include "emu/emu_cpu.h"
-#include "emu/emu_dev.h"
-#include "emu/emu_jit.h"
-#include "emu/emu_elf.h"
-#include "emu/emu_memmap.h"
-#include <string.h>
 
 /*
  * **A board has no gdb transport of its own**, and that is not the same
@@ -161,17 +158,6 @@ static void advance_guest_time(emu_system_t *sys, uint64_t retired_total,
 }
 
 /* ------------------------------------------------------------------ */
-/* Starting a guest                                                    */
-/* ------------------------------------------------------------------ */
-
-
-
-/* ------------------------------------------------------------------ */
-/* Entry                                                               */
-/* ------------------------------------------------------------------ */
-
-
-/* ------------------------------------------------------------------ */
 /* The two ends of a run -- see emu_board.h                            */
 /* ------------------------------------------------------------------ */
 
@@ -285,18 +271,6 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
     env->advance_time = advance_guest_time;
     return true;
 }
-
-/* ------------------------------------------------------------------ */
-/* The gdb transport -- see emu_debug.h                                */
-/* ------------------------------------------------------------------ */
-
-
-
-
-
-
-
-
 
 /* Host cycles for the performance figure, which on this part is the DWT
  * counter the guest's clock is also derived from -- see

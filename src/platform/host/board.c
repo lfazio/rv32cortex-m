@@ -16,10 +16,20 @@
 #define _XOPEN_SOURCE 700
 #define _DEFAULT_SOURCE 1
 
+/* This platform: its own header, and the contract it implements. */
 #include "board.h"
-#include "board_api.h"
-#include "emu_debug.h"
-#include "emu_image.h"
+
+/* The shared runner pieces this file talks to. */
+#include "emu_args.h"
+#include "emu_board.h"
+#include "emu_console.h"
+#include "emu_run.h"
+#include "emu_session.h"
+
+/* emucore. */
+#include "emu/emu_cpu.h"
+#include "emu/emu_gdb.h"
+#include "emu/emu_memmap.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -29,19 +39,6 @@
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
-#include "emu/emu_cpu.h"
-#include "emu_console.h"   /* the shared syscall handler and its context */
-#include "emu_run.h"
-#include "emu_board.h"
-#include "emu_args.h"
-#include "emu_session.h"
-#include "emu/emu_gdb.h"
-#include "emu/emu_dev.h"
-#include "emu/emu_elf.h"
-#include "emu/emu_memmap.h"
-#include "emu/emu_jit.h"
-#include "emu/emu_ir.h"
-#include <stdarg.h>
 
 static int  g_fd = -1;
 static char g_name[64];
@@ -166,7 +163,6 @@ uint8_t *host_read_file(const char *path, size_t *out_len)
     *out_len = (size_t)n;
     return buf;
 }
-
 
 /*
  * **Not the core name**, despite what board_api.h's comment for it used
@@ -458,55 +454,6 @@ void board_irq_unmask(void *ctx, uint32_t source)
     (void)source;
 }
 
-
-
-
-/* ------------------------------------------------------------------ */
-/* System-call services                                                */
-/* ------------------------------------------------------------------ */
-
-/*
- * The guest's exit status. `exited` distinguishes a guest that called
- * exit() from one that halted or hit the cap, because a code of 0 means
- * nothing if the syscall was never reached.
- */
-
-/*
- * The syscall handler is emu_guest_syscall, shared with the firmware.
- *
- * This file used to carry its own -- the same newlib write(64)/exit(93)
- * pair, differing only in how it reached the bus. Two implementations of
- * one ABI, and the drift had already started: the shared one reads the
- * buffer a byte at a time *through the bus* so a buffer spanning two
- * regions works and a bad pointer faults rather than reaching into host
- * memory, and this copy did the same thing without the reasoning and
- * would not have kept doing it.
- */
-
-
-/* ------------------------------------------------------------------ */
-/* Image loading                                                       */
-/* ------------------------------------------------------------------ */
-
-
-
-/* ------------------------------------------------------------------ */
-/* Diagnostics                                                         */
-/* ------------------------------------------------------------------ */
-
-/* emu_print_fn onto stderr, for the frontend's own state dump. */
-
-/*
- * The diagnostic sink the shared files print through.
- *
- * Two functions rather than linking emu_console.c, because the host has
- * two sinks where a board has one: guest output goes to stdout (above)
- * and diagnostics go to stderr and the telnet ring (below). A board gives
- * its only wire away and has no such choice to make.
- */
-
-
-
 /* ------------------------------------------------------------------ */
 /* The guest-image arena, in RAM                                       */
 /* ------------------------------------------------------------------ */
@@ -616,18 +563,9 @@ uint32_t board_flash_last_error(void)
     return 0u;                  /* no programming hardware to complain */
 }
 
-
-/* Where emu_session reports a failure: the same sink as everything else
- * this runner says about itself. */
-
-
-
 /* ------------------------------------------------------------------ */
 /* Entry                                                               */
 /* ------------------------------------------------------------------ */
-
-
-
 
 /*
  * Guest time advances with instructions retired: there is no wall clock
@@ -651,8 +589,6 @@ static void advance_guest_time(emu_system_t *sys, uint64_t retired_total,
         sys->ops->advance_time(sys->core[0].cpu, did / g_timer_div);
     }
 }
-
-
 
 /*
  * What this platform adds to a guest's address space beyond the four
@@ -698,8 +634,6 @@ const uint8_t *board_img      = NULL;
 uint32_t       board_img_size = 0u;
 uint8_t       *board_ram      = NULL;
 uint32_t       board_ram_size = 0u;
-
-
 
 /* ------------------------------------------------------------------ */
 /* The two ends of a run -- see emu_board.h                            */
@@ -803,23 +737,6 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
     return true;
 }
 
-/* ------------------------------------------------------------------ */
-/* The gdb transport -- see emu_debug.h                                */
-/* ------------------------------------------------------------------ */
-
-
-
-
-
-
-
-
-/*
- * No cycle counter worth quoting. Returning 0 suppresses the ratio rather
- * than printing one derived from a clock that means something else --
- * which is exactly the mistake the board made when this was wired to
- * guest time.
- */
 /*
  * A runner can simply stop: there is a shell to report to, and the
  * message has already gone to stderr. The board's version never returns.
@@ -828,7 +745,6 @@ void board_fatal(int *status)
 {
     *status = 1;
 }
-
 
 /*
  * No cycle counter worth quoting for the *ratio*.
