@@ -261,35 +261,66 @@ endif()
 # Flash
 # ---------------------------------------------------------------------
 #
-# probe-rs, as for the other two boards, and the chip name is `STM32N657`
-# -- not the full part number the F4/F7 targets use, because that is what
-# `probe-rs chip list` prints for this family.
+# **The board must be in development boot**, and that is a physical
+# change no tool can make. UM3417 table 11, for this board (MB1940):
 #
-# **An earlier version of this file said probe-rs had no STM32N6 support
-# and shelled out to STM32_Programmer_CLI instead.** That was read off a
-# stale note about 0.24 and never checked: 0.32 lists five STM32N6
-# targets. The symptom it was written to explain -- "No access ports
-# found" -- is a *boot mode* problem, not a tooling one: this part gates
-# the debug access port behind the boot configuration, so a board in its
-# default position refuses an attach whatever is asking.
+#     BOOT0   BOOT1   boot source
+#       -       1     development boot
+#       0       0     flash boot
+#       1       0     serial boot
 #
-# So if this fails to attach, the boot switches are the thing to look at
-# before the tool. --connect-under-reset is the default here for the same
-# reason it is on the F746: this firmware never idles, so a plain attach
-# races a running guest.
+# and "BOOT0 and BOOT1 might be configured manually by pushing the
+# mechanical parts: JP1 (BOOT0) and JP2 (BOOT1)". So BOOT1 has to go
+# high; BOOT0 does not matter once it is.
 #
-set(EMU_PROBE "" CACHE STRING "probe-rs --probe selector (VID:PID:serial)")
-if(EMU_PROBE)
-    set(_probe_arg --probe ${EMU_PROBE})
-else()
-    set(_probe_arg)
-endif()
+# **The board ships in the wrong position for this**, which is why it
+# looks broken out of the box. UM3417 figure 3, "Default board
+# configuration", is JP1 [1-2] and JP2 [1-2], and the jumper table spells
+# JP2 [1-2] as "Boot in flash mode" -- BOOT1 = 0. Moving JP2 off [1-2] is
+# the change; the manual does not name the other position in prose, but
+# the [1-2] notation is a three-pin block.
+#
+# What the wrong position looks like, measured rather than guessed --
+# every one of these was seen on this board in flash boot:
+#
+#   probe-rs, plain attach     JtagNoDeviceConnected
+#   probe-rs --connect-under-reset
+#                              SwdApWdataError
+#   CubeProgrammer HOTPLUG     "Unable to get core ID / No STM32 target
+#                              found! If your product embeds Debug
+#                              Authentication..."  -- which sends you
+#                              looking at debug authentication, and it is
+#                              not that
+#   CubeProgrammer mode=UR     *works*: reports STM32N6xx, Cortex-M55 --
+#                              the DAP is open before the boot ROM closes
+#                              it -- but AXISRAM is not powered yet, so
+#                              reading 0x34080000 fails and a download
+#                              dies with "failed to download Sector[0]"
+#
+# That last pair is the tell, and it is why "the debug port is broken" is
+# the wrong reading: the port is fine, the *memory* is not up. Only the
+# boot ROM enables AXISRAM, and only development boot leaves it enabled
+# with the port still open.
+#
+# probe-rs 0.32 does list five STM32N6 targets, so this could move back to
+# it once the board can be attached at all; it is CubeProgrammer here
+# because mode=UR is the invocation that was shown to reach the core.
+#
+# The .bin at an explicit address rather than the .elf: the linker aligns
+# the first LOAD segment down to its 64 KB page size, so the ELF advertises
+# 0x34000000 while .isr_vector really sits at 0x34000400, and a programmer
+# that believes the segment header writes a kilobyte too low.
+#
+set(EMU_CUBEPROG
+    "/opt/st/stm32cubeide_2.1.0/plugins/com.st.stm32cube.ide.mcu.externaltools.cubeprogrammer.linux64_2.2.400.202601091506/tools/bin/STM32_Programmer_CLI"
+    CACHE STRING "STM32CubeProgrammer CLI, for flashing the N6")
 
 add_custom_target(flash
-    COMMAND probe-rs download --chip STM32N657 --connect-under-reset
-            ${_probe_arg} $<TARGET_FILE:emu-stm32n6>
-    COMMAND probe-rs reset --chip STM32N657 --connect-under-reset
-            ${_probe_arg}
+    COMMAND ${CMAKE_COMMAND} -E echo
+            "N6: JP2 (BOOT1) must be at 1 -- development boot. See UM3417 table 11."
+    COMMAND ${EMU_CUBEPROG} -c port=SWD mode=UR
+            -w "${CMAKE_BINARY_DIR}/emu-stm32n6.bin" 0x34000400
+    COMMAND ${EMU_CUBEPROG} -c port=SWD mode=UR -g 0x34000400
     DEPENDS emu-stm32n6
     USES_TERMINAL
-    COMMENT "Flashing the Nucleo-N657X0-Q over ST-LINK")
+    COMMENT "Loading the Nucleo-N657X0-Q into AXISRAM over ST-LINK")
