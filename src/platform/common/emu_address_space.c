@@ -103,7 +103,23 @@ bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
      * that: the interrupt controller and the timer belong to the guest
      * *architecture* rather than to a board, so the frontend maps them.
      */
-    return board_add_regions(bus);
+    unsigned n = 0u;
+    const board_region_t *const r = board_regions(&n);
+
+    for (unsigned i = 0; i < n; i++) {
+        const bool ok =
+            (r[i].host != NULL)
+                ? emu_bus_add_ram(bus, r[i].name, r[i].base, r[i].host,
+                                  r[i].size)
+                : emu_bus_add_passthru(bus, r[i].name, r[i].base, r[i].size,
+                                       (uintptr_t)r[i].base, r[i].perm,
+                                       EMU_WANY);
+
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /*

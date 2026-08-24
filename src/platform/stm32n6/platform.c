@@ -123,12 +123,7 @@ void board_ram_init(void)
  * guest that reprograms it silences the console, which is the same
  * bargain as everywhere else here: the guest owns the peripherals.
  */
-static const struct {
-    const char *name;
-    uint32_t    base;
-    uint32_t    size;
-    uint8_t     perm;
-} g_periph_map[] = {
+static const board_region_t g_periph_map[] = {
     /* APB1, AHB1, APB2, AHB2: timers, SPI, I2C, USART, GPDMA, ADC */
     { "apb1..ahb2", 0x50000000u, 0x04000000u, EMU_PERM_RW },
     /* DAP ROM, DBGMCU, DFT: the debug subsystem */
@@ -244,17 +239,8 @@ void TIM6_IRQHandler(void)
  * what its datasheet says reaches the real peripheral -- the point of
  * this emulator, and necessarily per-part.
  */
-bool board_add_regions(emu_bus_t *bus)
+const board_region_t *board_regions(unsigned *count)
 {
-    for (unsigned i = 0; i < sizeof(g_periph_map) / sizeof(g_periph_map[0]);
-         i++) {
-        if (!emu_bus_add_passthru(bus, g_periph_map[i].name,
-                                  g_periph_map[i].base,
-                                  g_periph_map[i].size,
-                                  (uintptr_t)g_periph_map[i].base,
-                                  g_periph_map[i].perm, EMU_WANY)) {
-            return false;
-        }
-    }
-    return true;
+    *count = (unsigned)(sizeof(g_periph_map) / sizeof(g_periph_map[0]));
+    return g_periph_map;
 }

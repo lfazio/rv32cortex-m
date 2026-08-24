@@ -665,10 +665,28 @@ static void advance_guest_time(emu_system_t *sys, uint64_t retired_total,
  * hardware itself.
  */
 
-bool board_add_regions(emu_bus_t *bus)
+/*
+ * One window, and it is the other kind: memory the emulator owns, where a
+ * board's entries are passthrough onto real hardware. A host has no
+ * peripherals to identity-map, so a guest driver poking at the window
+ * reads and writes a buffer -- which is enough to exercise the driver's
+ * code paths and is exactly not enough to be a peripheral.
+ *
+ * Not const, because g_periph is allocated in board_init.
+ */
+static board_region_t g_regions[1];
+
+const board_region_t *board_regions(unsigned *count)
 {
-    return emu_bus_add_ram(bus, "periph-sim", EMU_GUEST_PERIPH_BASE,
-                           g_periph, PERIPH_SIM_SIZE);
+    g_regions[0] = (board_region_t){
+        .name = "periph-sim",
+        .base = EMU_GUEST_PERIPH_BASE,
+        .size = PERIPH_SIM_SIZE,
+        .perm = EMU_PERM_RW,
+        .host = g_periph,
+    };
+    *count = 1u;
+    return g_regions;
 }
 
 /*

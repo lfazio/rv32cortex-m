@@ -70,12 +70,7 @@ void board_ram_init(void)
  * driver has to be able to ungate its own peripheral's clock, and denying
  * that would push every driver back into the firmware.
  */
-static const struct {
-    const char *name;
-    uint32_t    base;
-    uint32_t    size;
-    uint8_t     perm;
-} g_periph_map[] = {
+static const board_region_t g_periph_map[] = {
     /* APB1 up to PWR: timers, RTC, WWDG, SPI2/3, USART2/3, UART4/5, I2C */
     { "apb1",       0x40000000u, 0x00007000u, EMU_PERM_RW },
     { "pwr",        0x40007000u, 0x00000400u, EMU_PERM_R  },
@@ -170,17 +165,8 @@ void TIM6_DAC_IRQHandler(void)
  * the windows differ per part, and so does which of them a guest may
  * write.
  */
-bool board_add_regions(emu_bus_t *bus)
+const board_region_t *board_regions(unsigned *count)
 {
-    for (unsigned i = 0; i < sizeof(g_periph_map) / sizeof(g_periph_map[0]);
-         i++) {
-        if (!emu_bus_add_passthru(bus, g_periph_map[i].name,
-                                  g_periph_map[i].base,
-                                  g_periph_map[i].size,
-                                  (uintptr_t)g_periph_map[i].base,
-                                  g_periph_map[i].perm, EMU_WANY)) {
-            return false;
-        }
-    }
-    return true;
+    *count = (unsigned)(sizeof(g_periph_map) / sizeof(g_periph_map[0]));
+    return g_periph_map;
 }

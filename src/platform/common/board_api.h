@@ -21,7 +21,7 @@
  * platform *defined* them, so a name that was supposed to mean "the
  * runner's side" appeared as a definition in board.c. That is why a
  * reader of host/board.c found `emu_` all through a file that is
- * supposed to be the bottom of the stack. They are board_add_regions,
+ * supposed to be the bottom of the stack. They are board_regions,
  * board_irqs_init, board_irq_unmask, board_core_name, board_img and
  * board_ram now, declared here with the rest of what a platform owes.
  *
@@ -110,15 +110,34 @@ extern uint32_t board_ram_size;
 /* ------------------------------------------------------------------ */
 
 /*
- * Add this board's own regions to the bus, after the runner has added
- * the guest image and RAM and before the frontend adds its devices.
+ * The windows this platform offers the guest, beyond RAM and the image.
  *
- * This is where the passthrough windows go -- the identity-mapped
- * peripheral space that lets a guest driver reach real hardware, which is
- * the entire point of this emulator and is necessarily per-part: the
- * windows differ, and so does which of them a guest may write.
+ * A *table*, not a function that adds them, and that is the whole change:
+ * the three STM32 platforms had byte-identical loops over their own
+ * tables, so what varied was never the adding. emu_build_address_space
+ * walks this.
+ *
+ * `host` is what distinguishes the two kinds. NULL means passthrough --
+ * the region is identity-mapped onto the real bus at `base`, which is how
+ * a guest driver reaches actual hardware using the addresses its
+ * datasheet prints, and is the entire point of this emulator. Non-NULL
+ * means memory the emulator owns, which is what a host uses to *simulate*
+ * a peripheral window it does not have.
+ *
+ * `perm` is EMU_PERM_*; a read-only span is how a board withholds
+ * something a guest could take the emulator down with.
+ *
+ * NULL, or a count of zero, is a platform with nothing to add.
  */
-bool board_add_regions(emu_bus_t *bus);
+typedef struct board_region {
+    const char *name;
+    uint32_t    base;
+    uint32_t    size;
+    uint8_t     perm;
+    void       *host;
+} board_region_t;
+
+const board_region_t *board_regions(unsigned *count);
 
 /*
  * Route a real interrupt line to the guest.

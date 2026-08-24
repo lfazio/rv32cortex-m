@@ -47,7 +47,7 @@ void emu_raise_irq(uint32_t source, bool level);
 
 /*
  * Build the guest's address space: the four shared regions, then this
- * board's own through board_add_regions. In emu_address_space.c.
+ * board's own from board_regions(). In emu_address_space.c.
  *
  * The bus is re-initialised, so the frontend's devices have to be added
  * again afterwards by the caller.
