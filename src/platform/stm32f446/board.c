@@ -291,7 +291,7 @@ void board_led_toggle(board_led_t led)
     HAL_GPIO_TogglePin(LED_PORT, LED_PIN);
 }
 
-void board_idle(void)
+void board_wfi(void)
 {
     __WFI();
 }

@@ -27,9 +27,10 @@
 #include "emu_debug.h"
 #include "emu_console.h"
 
+#include "emu_image.h"
+
 #if EMU_NET
 #  include "emu_net.h"
-#  include "emu_image.h"
 #endif
 
 /*
@@ -258,4 +259,56 @@ void emu_board_poll(void)
     emu_net_poll();
 #endif
     board_poll();
+}
+
+/*
+ * The guest has stopped. Park, or hand back an exit status.
+ *
+ * **The same four steps on both platforms**, written out twice until now
+ * and differing only in two answers a board gives: whether there is
+ * anywhere to return to, and what "wait" means.
+ *
+ *   drain    everything the run produced is still in the output ring --
+ *            the run loop stopped, and with it the only thing that was
+ *            delivering. Parking without draining first loses the entire
+ *            report, which is the part a harness came for.
+ *   reload   an image may arrive *after* the guest has finished, and that
+ *            is the normal case rather than an edge one: a harness runs a
+ *            test, waits for it to halt and report, then pushes the next.
+ *            The check inside the run loop never sees those, because that
+ *            loop exited when the guest halted -- so an upload completed
+ *            successfully, said so, and nothing happened.
+ *   debug    run control still works after the guest has finished.
+ *            Without it a park loop services the link and nothing else,
+ *            so gdb accepts `continue` and waits for ever.
+ *   wait     board_idle, which on a board must not stop lwIP's clock.
+ *
+ * True means run again.
+ */
+bool emu_board_after_run(const emu_guest_exit_t *exit, bool capped,
+                         uint32_t slice, int *status)
+{
+    (void)capped;
+
+    if (!board_parks_after_run() && !emu_board_link_up()) {
+        *status = exit->exited ? (int)exit->code : 0;
+        return false;
+    }
+
+    if (!board_parks_after_run()) {
+        emu_console_printf(
+            "emu: guest finished; serving the link (^C to quit)\n");
+    }
+
+    for (;;) {
+        emu_board_poll();
+
+        if (emu_image_take_pending()) {
+            return true;
+        }
+        if (emu_debug_parked_step(slice)) {
+            continue;
+        }
+        board_idle();
+    }
 }

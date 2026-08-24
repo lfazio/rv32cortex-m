@@ -240,16 +240,29 @@ bool board_startup(const struct emu_args *args, int *status,
                    struct emu_session_cfg *cfg, struct emu_run_env *env);
 
 /*
- * The run is over. *Termination*, the second half: a runner returns an
- * exit status a suite reads, and a board has nowhere to go and parks
- * serving its link.
+ * Is there anywhere to go when the guest stops?
  *
- * True means run again -- an image arrived while parked, which is the
- * normal way a board is used by a harness, because a harness uploads
- * *between* runs when the run loop has already exited.
+ * A runner returns an exit status a suite reads; a board has nowhere to
+ * return *to* and parks serving its link. That one bit is the whole of
+ * what the two platforms disagreed about -- the park loop itself was
+ * written out twice, identically, and is emu_board_after_run's now.
+ *
+ * A platform that answers false still parks while a link is up, because
+ * then there is a client that may yet want the report or may push another
+ * image.
  */
-bool board_after_run(const struct emu_guest_exit *exit, bool capped,
-                     int *status);
+bool board_parks_after_run(void);
+
+/*
+ * Wait a short while inside the park loop.
+ *
+ * Per-part because the right way to wait is: a sleep instruction on a
+ * board, a millisecond of real sleep on a machine with other work to do.
+ * Whatever it does must not stop anything the runtime depends on -- see
+ * the note on board_wfi in the STM32s' board.h, where sleeping stops the
+ * clock lwIP tells the time by.
+ */
+void board_idle(void);
 
 /*
  * The platform's last word, once the runner cannot continue.

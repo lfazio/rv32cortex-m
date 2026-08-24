@@ -323,86 +323,44 @@ uint32_t board_perf_cycles(void)
 }
 
 /*
- * A board has nowhere to exit to, so it parks serving its link -- and an
- * image arriving while parked is the *normal* case rather than an edge
- * one: a harness runs a test, waits for it to halt and report, then
- * pushes the next. The reload check inside the run loop never sees those,
- * because that loop exited when the guest halted.
+ * A board has nowhere to return to, so it always parks.
+ *
+ * The loop itself is emu_board_after_run's, in emu_debug.c: drain the
+ * link, take an image if one arrived, let a debugger drive, wait. It was
+ * written out here and in the host's board.c -- the same four steps in
+ * the same order, differing only in this answer and in what "wait" means.
  */
-bool board_after_run(const emu_guest_exit_t *exit, bool capped,
-                         int *status)
+bool board_parks_after_run(void) { return true; }
+
+/*
+ * **Never sleep while the stack is up**, and the reason is the clock
+ * rather than latency.
+ *
+ * lwIP's time base is sys_now(), derived from board_cycles() -- a counter
+ * of *processor* cycles. board_wfi() gates the processor clock, so that
+ * counter stops with it and the stack's notion of time stops advancing.
+ * Measured: over 29 seconds of wall time parked, lwIP's clock advanced
+ * 1.74 seconds, about 6% of real time.
+ *
+ * Every timeout in the stack is frozen by that, not just one. The visible
+ * symptom was TFTP: a client killed mid-transfer leaves a session open,
+ * and the 10-second timeout that would reclaim it needs ~3 minutes of
+ * wall time to expire, so the board refused every later upload until
+ * reset. A TCP retransmission or an ARP entry ageing out is equally late
+ * and would present as a link that is mysteriously sluggish rather than
+ * as a stopped clock.
+ *
+ * Nothing here is power-sensitive: this is a bench board waiting to be
+ * handed the next test image. It still sleeps when the network is *not*
+ * up, which is the plain serial-console case where nothing depends on
+ * lwIP's timers. A free-running peripheral timer would be the better
+ * answer if this ever needs to sleep again -- one keeps its clock through
+ * sleep where a cycle counter does not.
+ */
+void board_idle(void)
 {
-    (void)exit;
-    (void)capped;
-    (void)status;
-
-    for (;;) {
-        /*
-         * Everything above is still sitting in the output ring: the run
-         * loop stopped, and with it the only thing that was delivering.
-         * Parking without draining first would lose the entire report,
-         * which is the part a harness came for.
-         */
-        emu_board_poll();
-
-        /*
-         * An image may arrive after the guest has finished, and that is
-         * the *normal* case rather than an edge one: a harness runs a
-         * test, waits for it to halt and report, then pushes the next.
-         * The reload check inside the run loop never sees those, because
-         * that loop exited when the guest halted -- so an upload
-         * completed successfully, said so, and nothing happened.
-         */
-        if (emu_image_take_pending()) {
-            return true;
-        }
-
-        /* Run control still works after the guest has finished. */
-        if (emu_debug_parked_step(EMU_RUN_SLICE)) {
-            continue;
-        }
-
-        /*
-         * Do not sleep while the stack is up, and the reason is the clock
-         * rather than latency.
-         *
-         * lwIP's time base is sys_now(), derived from board_cycles() --
-         * a counter of *processor* cycles. Sleeping gates the processor
-         * clock, so that counter stops with it and the stack's notion of
-         * time stops advancing. Measured: over 29 seconds of wall time
-         * parked here, lwIP's clock advanced 1.74 seconds, about 6% of
-         * real time.
-         *
-         * Every timeout in the stack is frozen by that, not just one. The
-         * visible symptom was TFTP: a client killed mid-transfer leaves a
-         * session open, and the 10-second timeout that would reclaim it
-         * needs ~3 minutes of wall time to expire, so in practice the
-         * board refused every later upload until reset. A TCP
-         * retransmission or an ARP entry ageing out is equally late and
-         * would present as a link that is mysteriously sluggish rather
-         * than as a stopped clock.
-         *
-         * Nothing here is power-sensitive: this loop is a bench board
-         * waiting to be handed the next test image. The board still
-         * sleeps when the network is *not* up, which is the plain
-         * serial-console case where nothing depends on lwIP's timers.
-         *
-         * Fixing it in the time base instead would mean a free-running
-         * peripheral timer -- one keeps its clock through sleep where a
-         * cycle counter does not -- which is the better answer if this
-         * loop ever needs to sleep again.
-         */
-        if (emu_board_link_up()) {
-            continue;
-        }
-
-        /*
-         * Once, not twice. There were two of these in a row -- so the
-         * board woke on an interrupt and immediately slept again,
-         * doubling the latency of noticing anything. Inert while the link
-         * is up, because that path continues above and never reaches
-         * here.
-         */
-        board_idle();
+    if (emu_board_link_up()) {
+        return;
     }
+    board_wfi();
 }

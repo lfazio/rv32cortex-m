@@ -602,7 +602,7 @@ void board_init(void)
     led_init();
 }
 
-void board_idle(void)
+void board_wfi(void)
 {
     __WFI();
 }

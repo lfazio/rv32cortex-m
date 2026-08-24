@@ -7,7 +7,7 @@
  * when the guest stops. Everything between -- build the address space,
  * open the cores, run in slices, report -- is one sequence and is here.
  *
- * The two ends are board_startup() and board_after_run(), and
+ * The two ends are board_startup() and emu_board_after_run(), and
  * naming them that way is what makes a host a *board*: it brings its own
  * "hardware" up (malloc'd RAM, a pty, stdout), obtains an image (argv and
  * a file rather than an incbin), and at the end returns an exit status
@@ -329,7 +329,7 @@ int main(int argc, char **argv)
                            (unsigned)(g_exit.exited ? 1u : 0u),
                            (unsigned)(capped ? 1u : 0u), (unsigned)retired);
 
-        if (!board_after_run(&g_exit, capped, &status)) {
+        if (!emu_board_after_run(&g_exit, capped, env.slice, &status)) {
             return status;
         }
     }

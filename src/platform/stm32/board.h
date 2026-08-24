@@ -52,7 +52,20 @@ void board_init(void);
  * gates a clock something else depends on, this is where that is
  * decided.
  */
-void board_idle(void);
+/*
+ * Park until an interrupt: this part's sleep instruction, and nothing
+ * else.
+ *
+ * **Not board_idle**, which is the contract emu_main parks with and which
+ * stm32/board.c implements in terms of this. The difference is one hard-won
+ * rule: __WFI gates the processor clock, and CYCCNT counts *processor*
+ * cycles -- so sleeping while the IP stack is up nearly stops lwIP's clock.
+ * Measured at about 6% of real time over 29 seconds parked, which froze
+ * every timeout in the stack and made TFTP sessions unreclaimable. That
+ * rule is the same on all three parts, so it is written once, one layer
+ * up.
+ */
+void board_wfi(void);
 
 /* board_fatal is board_api.h's -- every platform has one, and on these
  * parts it is the per-part halt that the shared board.c used to wrap. */

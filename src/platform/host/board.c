@@ -870,55 +870,26 @@ uint32_t board_perf_cycles(void)
 }
 
 /*
- * A runner exits; a board parks. With --ppp it does both: the link is
- * still worth serving after the guest stops, because the report is
- * sitting in a ring with nobody connected and the next image has not
- * arrived yet.
+ * A runner has a shell to return an exit status to, so it does not park
+ * -- unless a link is up, in which case there may still be a client that
+ * wants the report or means to push another image.
+ *
+ * The loop is emu_board_after_run's; this is the one bit the two
+ * platforms disagreed about.
  */
-bool board_after_run(const emu_guest_exit_t *exit, bool capped,
-                         int *status)
+bool board_parks_after_run(void) { return false; }
+
+/*
+ * A millisecond, inside the park loop.
+ *
+ * The board spins there because it has nothing else to do with the
+ * cycles; a process on a shared machine does. lwIP's finest timeout is
+ * coarser than this by orders of magnitude, and sleeping any longer would
+ * slow the stack's clock the way __WFI did on the board.
+ */
+void board_idle(void)
 {
-    (void)capped;
+    struct timespec ts = { 0, 1000000L };
 
-    /*
-     * With a link up, do not exit: serve it.
-     *
-     * This is the board's park loop, and it is what makes --ppp useful
-     * rather than a demonstration. A guest is over in milliseconds; the
-     * report is sitting in the telnet ring with nobody connected, and the
-     * next image has not been uploaded yet. The board stays up because it
-     * has nowhere to go, and here it is a deliberate choice with the same
-     * consequence: a harness can push image after image at one process.
-     *
-     * ^C is the way out, which is why there is no clever exit condition.
-     * Anything cleverer would have to guess whether a client that has not
-     * connected yet is coming.
-     */
-    if (emu_board_link_up()) {
-        fprintf(stderr, "emu: guest finished; serving the link (^C to quit)\n");
-        for (;;) {
-            emu_board_poll();
-
-            if (emu_image_take_pending()) {
-                return true;            /* run the new image */
-            }
-            if (emu_debug_parked_step(g_opt.quantum)) {
-                continue;
-            }
-
-            /*
-             * A millisecond. The board spins because it has nothing else
-             * to do with the cycles; a process on a shared machine does,
-             * and lwIP's finest timeout is coarser than this by orders of
-             * magnitude. Sleeping any longer would slow the stack's clock
-             * the way __WFI did on the board.
-             */
-            struct timespec ts = { 0, 1000000L };
-
-            (void)nanosleep(&ts, NULL);
-        }
-    }
-
-    *status = exit->exited ? (int)exit->code : 0;
-    return false;
+    (void)nanosleep(&ts, NULL);
 }

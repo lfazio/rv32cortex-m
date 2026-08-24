@@ -332,7 +332,7 @@ const char *board_name(void)
     return "Cortex-M55";
 }
 
-void board_idle(void)
+void board_wfi(void)
 {
     __WFI();
 }

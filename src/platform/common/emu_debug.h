@@ -87,6 +87,18 @@ bool emu_board_link_start(void);
  * last word. Never returns on a board.
  */
 void emu_board_fatal(int *status);
+
+/*
+ * The guest has stopped: park serving the link, or hand back an exit
+ * status. True means an image arrived and the guest should be run again.
+ *
+ * Common, because the park loop is -- drain, take an image, let a
+ * debugger drive, wait. What a platform contributes is
+ * board_parks_after_run() and board_idle().
+ */
+struct emu_guest_exit;
+bool emu_board_after_run(const struct emu_guest_exit *exit, bool capped,
+                         uint32_t slice, int *status);
 bool emu_board_link_up(void);
 
 /*
