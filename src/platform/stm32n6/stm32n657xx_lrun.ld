@@ -49,10 +49,38 @@ _Min_Heap_Size = 0x200;   /* picolibc's vsnprintf wants a little */
 _Min_Stack_Size = 0x2000;
 
 /* Memories definition */
+/*
+ * **This is an FSBL, so it links where the boot ROM puts an FSBL.**
+ *
+ * The pack ships two scripts and the names do not say which is which:
+ * STM32N657XX_LRUN.ld is for the *application* a first-stage loader
+ * copies out of external flash, and STM32N657XX_AXISRAM2_fsbl.ld is for
+ * the loader itself. ST's own Template_FSBL_LRUN uses the second for its
+ * Boot project and the first for its AppS project -- Boot at 0x34180400,
+ * AppS at 0x34000400.
+ *
+ * This firmware is the whole thing: there is no second stage, so it is
+ * the FSBL and belongs at 0x34180400 in AXISRAM2. Linked at the
+ * application's address instead, everything works right up to the point
+ * of running -- the image downloads, reads back correctly, and the
+ * signing tool finds the right entry point -- and the ROM simply never
+ * jumps there, because in development boot it runs an FSBL and nothing
+ * else. No error anywhere; the core just keeps doing what it was doing.
+ *
+ * Guest RAM moves to AXISRAM1, which the FSBL would otherwise have
+ * copied an application into and which is free here for the same reason.
+ * The guest ends up with much the same space from a different bank.
+ *
+ * **AXISRAM1 starts at 0x34000400, not 0x34000000**, for the same reason
+ * the FSBL does: the first kilobyte is a header area. ST's AppS script
+ * leaves it alone and so must this. Put .data there and it reads back as
+ * "STM2" -- the ROM's own signature sitting where a pointer should be,
+ * which looks exactly like a .data copy that half worked.
+ */
 MEMORY
 {
-  ROM    (xrw)    : ORIGIN = 0x34000400,   LENGTH = 511K
-  RAM    (xrw)    : ORIGIN = 0x34080000,   LENGTH = 1536K
+  ROM    (xrw)    : ORIGIN = 0x34180400,   LENGTH = 511K
+  RAM    (xrw)    : ORIGIN = 0x34000400,   LENGTH = 1535K
 }
 
 /* Sections */

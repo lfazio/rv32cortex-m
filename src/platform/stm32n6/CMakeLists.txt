@@ -311,16 +311,51 @@ endif()
 # 0x34000000 while .isr_vector really sits at 0x34000400, and a programmer
 # that believes the segment header writes a kilobyte too low.
 #
-set(EMU_CUBEPROG
-    "/opt/st/stm32cubeide_2.1.0/plugins/com.st.stm32cube.ide.mcu.externaltools.cubeprogrammer.linux64_2.2.400.202601091506/tools/bin/STM32_Programmer_CLI"
-    CACHE STRING "STM32CubeProgrammer CLI, for flashing the N6")
+set(EMU_ST_TOOLS
+    "/opt/st/stm32cubeide_2.1.0/plugins/com.st.stm32cube.ide.mcu.externaltools.cubeprogrammer.linux64_2.2.400.202601091506/tools/bin"
+    CACHE PATH "STM32CubeProgrammer / SigningTool directory")
 
+#
+# **The image needs a boot-ROM header, and that is what the 0x400 in the
+# link script is for.** The ROM does not jump to a bare vector table: it
+# validates a header and takes the entry point from it. So the payload is
+# signed -- `-nk`, an empty header with no keys, which is what an OPEN
+# part accepts -- with `-hv 2.3` and `-align`, the latter documented as
+# "align the payload to the 0x400 offset ... applicable only with header
+# v2.3 for MCUs (STM32N6)".
+#
+# The tool reads the entry point out of the vector table by itself and
+# says so: "Entry point value : 0x340167d1". Header plus payload goes to
+# 0x34000000, which puts our .isr_vector at 0x34000400 exactly where the
+# link script placed it.
+#
+# **This gets as far as "File download complete" and the guest does not
+# run.** Verified as far as it goes: the memory regions match ST's own
+# STM32N657XX_LRUN.ld, every symbol its startup copies with resolves
+# sanely (_sdata 0x34080000, _sidata 0x34020c08, 0x3c bytes), the vector
+# table reads back correctly from RAM, and the signing tool finds the
+# right entry point. What does not happen is execution: after every
+# start, .data at its destination is still zero and USART1's registers
+# are still zero, so the reset handler has not run. Starting the ROM's
+# way (-g 0x34000000) and by hand (-g at the reset handler) both report
+# success and both leave it unexecuted.
+#
+# What is missing is ST's documented development-boot start sequence, and
+# it is not in any package installed here -- CubeIDE ships no STM32N6
+# example projects and the CubeN6 firmware package is not present. The
+# next step is that package's FSBL example, not more guessing at the
+# tools.
+#
 add_custom_target(flash
     COMMAND ${CMAKE_COMMAND} -E echo
-            "N6: JP2 (BOOT1) must be at 1 -- development boot. See UM3417 table 11."
-    COMMAND ${EMU_CUBEPROG} -c port=SWD mode=UR
-            -w "${CMAKE_BINARY_DIR}/emu-stm32n6.bin" 0x34000400
-    COMMAND ${EMU_CUBEPROG} -c port=SWD mode=UR -g 0x34000400
+            "N6: JP2 (BOOT1) at 2-3 = development boot. See UM3417 table 11."
+    COMMAND ${EMU_ST_TOOLS}/STM32_SigningTool_CLI
+            -bin "${CMAKE_BINARY_DIR}/emu-stm32n6.bin"
+            -nk -t fsbl -hv 2.3 -align
+            -o "${CMAKE_BINARY_DIR}/emu-stm32n6-signed.bin"
+    COMMAND ${EMU_ST_TOOLS}/STM32_Programmer_CLI -c port=SWD mode=HOTPLUG
+            -w "${CMAKE_BINARY_DIR}/emu-stm32n6-signed.bin" 0x34000000
+            -g 0x34000000
     DEPENDS emu-stm32n6
     USES_TERMINAL
-    COMMENT "Loading the Nucleo-N657X0-Q into AXISRAM over ST-LINK")
+    COMMENT "Signing and loading the Nucleo-N657X0-Q into AXISRAM")
