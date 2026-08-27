@@ -347,10 +347,23 @@ set(EMU_ST_TOOLS
 # tools.
 #
 #
-# **JP3 (STLK_RST) is the other jumper, and it is OFF by default.** It
-# connects the ST-LINK's reset to the target, and without it nothing can
-# take control of the *core* -- memory still reads and writes, which is
-# what makes it look like a working connection:
+# **Read the Voltage line before the error text.** With the target
+# unpowered CubeProgrammer says "Unable to get core ID / No STM32 target
+# found! If your product embeds Debug Authentication..." -- word for word
+# what it says for a wrong boot mode, and for a part that is genuinely
+# locked. The only line that tells them apart is `Voltage`, which reads
+# 0,22V for a dark board and 3,28V for a live one. CN9 selects where the
+# 5V comes from and [1-2] is "5V from STLINK-V3EC"; move it and the
+# ST-LINK keeps enumerating and keeps printing "Board :
+# NUCLEO-N657X0-Q", so everything looks connected while the MCU has no
+# power at all.
+#
+# **JP3 (STLK_RST) is not the answer, and fitting it makes things worse.**
+# The name is ST-LINK reset: fitting it holds the *on-board debugger* in
+# reset and the probe disappears from USB entirely. It is OFF by default
+# for that reason. This comment previously recommended fitting it, on the
+# reasoning below, which is wrong about the jumper and right about the
+# symptom:
 #
 #   ST-LINK_gdbserver   "Target not halted after reset. Force halt /
 #                       Failed to halt target / Error in initializing
