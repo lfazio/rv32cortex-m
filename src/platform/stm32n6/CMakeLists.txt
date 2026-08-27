@@ -346,6 +346,27 @@ set(EMU_ST_TOOLS
 # next step is that package's FSBL example, not more guessing at the
 # tools.
 #
+#
+# **JP3 (STLK_RST) is the other jumper, and it is OFF by default.** It
+# connects the ST-LINK's reset to the target, and without it nothing can
+# take control of the *core* -- memory still reads and writes, which is
+# what makes it look like a working connection:
+#
+#   ST-LINK_gdbserver   "Target not halted after reset. Force halt /
+#                       Failed to halt target / Error in initializing
+#                       ST-LINK device. Reason: Target not halted."
+#   mode=HWRSTPULSE     ST-LINK error (DEV_CONNECT_ERR) -- the mode that
+#                       drives NRST cannot connect at all
+#   mode=UR             connects and reads memory, because the AHB-AP
+#                       works; it is the core debug that does not
+#
+# So -g reports success and nothing runs, and reads of the core's private
+# peripheral bus come back as nonsense -- VTOR as 0x18, which is not a
+# legal value, because bits 6:0 of VTOR are reserved. Both live access
+# ports answer identically, so it is not an AP selection problem either.
+#
+# Fit JP3 before concluding anything else about this board.
+#
 add_custom_target(flash
     COMMAND ${CMAKE_COMMAND} -E echo
             "N6: JP2 (BOOT1) at 2-3 = development boot. See UM3417 table 11."
