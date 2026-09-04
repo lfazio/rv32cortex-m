@@ -107,7 +107,14 @@ static void clock_init(void)
  * peripheral and the port goes quiet, which is the shape of failure this
  * project has already lost a day to on a serial line.
  */
-#define CONSOLE_BAUD 115200u
+/*
+ * 921600, matching the F446 and F746 rather than the 115200 UM3417 gives
+ * as the VCP default. The ST-LINK's virtual COM port carries whatever
+ * both ends agree on, and the emulator's own output plus a guest's
+ * console is enough traffic that the slower rate is felt -- the F746
+ * runs a whole architecture suite over this wire.
+ */
+#define CONSOLE_BAUD 921600u
 
 void HAL_UART_MspInit(UART_HandleTypeDef *huart)
 {
@@ -161,7 +168,6 @@ static void console_init(void)
     g_console.Init.Mode = UART_MODE_TX_RX;
     g_console.Init.HwFlowCtl = UART_HWCONTROL_NONE;
     g_console.Init.OverSampling = UART_OVERSAMPLING_16;
-
     if (HAL_UART_Init(&g_console) != HAL_OK) {
         Error_Handler();
     }
