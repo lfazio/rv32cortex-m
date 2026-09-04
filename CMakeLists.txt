@@ -131,7 +131,43 @@ option(RV32_LAZY_IRQ "Lazy interrupt-delivery evaluation" ON)
 # replaced it sized its static buffer from EMU_IR_JIT_STATIC_BYTES, which
 # nothing set. -DEMU_JIT_CODE_BYTES=32768 reported `code 1728/12288` and
 # figures identical to the digit.
-set(EMU_JIT_CODE_BYTES "32768" CACHE STRING "JIT code cache size in bytes")
+#
+# **The default follows the platform**, because what makes 32 KB right is
+# scarcity rather than sufficiency. On a 320 KB part every one of those
+# bytes is the guest's; the STM32N6 has 256 KB of AXISRAM2 sitting unused
+# after .bss, and CoreMark on that board measures:
+#
+#              32 KB        128 KB
+#   ratio      201.67       90.24   host cycles per guest instruction
+#   KIPS       2975         6648
+#   evicted    16969        136
+#   xlat       17052        375
+#
+# 2.23x, with crcfinal 0xa69a either way -- the same answer, faster. The
+# eviction count is the whole story: at 32 KB every translation threw
+# another away.
+#
+# **The default stays 32 KB here, and the 128 KB figure is what a
+# RV32-only build should ask for.** The G4MH frontend's .bss does not
+# leave room: at 64 KB that build overflows AXISRAM2, and the part's
+# other 1792 KB is unreachable because the boot ROM leaves AXISRAM3..6
+# powered down -- see the note in stm32n657xx_lrun.ld. Raising this
+# properly means bringing those banks up, which is RCC and RAMCFG work
+# rather than a linker change.
+#
+#   cmake -DEMU_JIT_CODE_BYTES=131072 -DEMU_GUEST_ARCH_G4MH=OFF
+#
+# It has to be decided here rather than in the platform's own
+# CMakeLists, which is added later: by then this cache entry exists and a
+# set() there is a no-op that reads exactly like a setting. Same trap as
+# STM32CUBE_FAMILY having to precede the include.
+if(EMU_PLATFORM STREQUAL "stm32n6")
+    set(_jit_bytes_default "32768")
+else()
+    set(_jit_bytes_default "32768")
+endif()
+set(EMU_JIT_CODE_BYTES "${_jit_bytes_default}" CACHE STRING
+    "JIT code cache size in bytes")
 
 # Build and use the Thumb-2 JIT. Turning this off is how the same guest
 # image is measured on the interpreter, which is also how a suspected JIT

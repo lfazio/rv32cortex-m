@@ -96,17 +96,28 @@ _Min_Stack_Size = 0x2000;
  * for a blinky. The G4MH build then would not fit a JIT cache above
  * 64 KB, and the constraint was entirely self-imposed.
  *
- * **AXISRAM3..6 have to be powered up first**, and this port does that
- * in its own copy of system_stm32n6xx_fsbl.c. The boot ROM leaves them
- * shut down; reading 0x34200000 through a debugger fails outright, and a
- * firmware whose .bss lands there goes silent with no other symptom --
- * which is exactly what happened when this map was widened before the
- * SystemInit change existed.
+ * **The firmware stays inside AXISRAM2, and AXISRAM3..6 are not for it.**
  *
- * With them up: the firmware and its .bss get AXISRAM3..6, 1792 KB that
- * nothing else here uses, and the guest keeps AXISRAM1 plus the lower
- * half of AXISRAM2. ROM stays at 0x34180400 because the boot ROM loads
- * an FSBL there and nowhere else -- only its length grows.
+ * The banks are powered down at reset and this port turns them on in its
+ * own system_stm32n6xx_fsbl.c -- but that enable is code, and code needs
+ * a stack and .bss before it can run. Putting the firmware's own .bss
+ * there is a bootstrap that cannot close, and no amount of moving the
+ * enable earlier in SystemInit fixes it: measured both ways, MEMENR
+ * reads 0x17FF from one position and 0x13F0 from the other, and the
+ * board is silent either way.
+ *
+ * Reading ST's code rather than permuting placements is what settled it.
+ * *Every* example that enables AXISRAM3..6 -- the four VENC ones and
+ * NUCLEO-N657X0-Q's SYSCFG_WritePostingErrors -- keeps its own FSBL in
+ * AXISRAM2 at exactly 255K/256K. The banks are enabled for the
+ * *application's* buffers, never for the loader's runtime.
+ *
+ * So: ROM and RAM divide AXISRAM2, the guest gets AXISRAM1 plus the
+ * lower half of it, and AXISRAM3..6 stay available for a guest that
+ * wants them -- which is what the enable in SystemInit is now for.
+ *
+ * 191K/320K rather than ST's 255K/256K because their split is sized for
+ * a blinky: the G4MH build overflows `RAM` by 3144 bytes at 256K.
  *
  * **ROM must still start at 0x34180400.** The boot ROM loads an FSBL
  * there and nowhere else; it is not a choice this script makes. So ROM
@@ -115,8 +126,8 @@ _Min_Stack_Size = 0x2000;
  */
 MEMORY
 {
-  ROM    (xrw)    : ORIGIN = 0x34180400,   LENGTH = 511K
-  RAM    (xrw)    : ORIGIN = 0x34200000,   LENGTH = 1792K
+  ROM    (xrw)    : ORIGIN = 0x34180400,   LENGTH = 191K
+  RAM    (xrw)    : ORIGIN = 0x341B0000,   LENGTH = 320K
   GUEST  (xrw)    : ORIGIN = 0x34000400,   LENGTH = 1535K
 }
 
