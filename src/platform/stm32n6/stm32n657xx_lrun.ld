@@ -79,8 +79,17 @@ _Min_Stack_Size = 0x2000;
  */
 MEMORY
 {
-  ROM    (xrw)    : ORIGIN = 0x34180400,   LENGTH = 255K
-  RAM    (xrw)    : ORIGIN = 0x341C0000,   LENGTH = 256K
+  /*
+   * AXISRAM2 is 0x34180000..0x34200000, and the two regions divide it.
+   * ST's template splits it 255K/256K, which suits a blinky and not a
+   * 133 KB emulator with a frontend's .bss behind it -- the G4MH build
+   * overflowed `RAM' by 3144 bytes at that split. The boundary is ours
+   * to choose; what is *not* negotiable is that RAM sit above ROM, so
+   * that _estack (ORIGIN(RAM) + LENGTH(RAM)) lands at the top of the
+   * bank rather than underneath the code.
+   */
+  ROM    (xrw)    : ORIGIN = 0x34180400,   LENGTH = 191K
+  RAM    (xrw)    : ORIGIN = 0x341B0000,   LENGTH = 320K
   GUEST  (xrw)    : ORIGIN = 0x34000400,   LENGTH = 1535K
 }
 
