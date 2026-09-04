@@ -54,41 +54,102 @@ static void Error_Handler(void)
 /* ------------------------------------------------------------------ */
 
 /*
- * The boot ROM leaves the CPU on HSI at 64 MHz, and this port stays
- * there.
+ * 600 MHz, from ST's own Template FSBL for this board.
  *
- * Deliberate for a first bring-up: a PLL configuration is a page of
- * register writes whose only test is the board, and the port has enough
- * that is new without it. The emulator is slower for it and correct, and
- * the figures this platform reports say 64 MHz beside them so nobody
- * compares them with the F746's 216 by accident.
+ * The boot ROM leaves the CPU on HSI at 64 MHz, and this port stayed
+ * there while it was being brought up -- deliberately, because a PLL
+ * configuration is a page of register writes whose only test is the
+ * board, and there was enough else that was new. It is 9.4x on the table
+ * and the emulator is the one thing here that spends every cycle it is
+ * given, so it does not stay off.
  *
- * Raising it is the first tuning step, not a correctness one.
+ * HSI 64 MHz / PLLM 4 = 16 MHz -> x PLLN 75 = 1200 MHz, and IC1 divides
+ * that by 2 for the CPU. SYSCLK comes off IC2 at /3 = 400 MHz with AHB
+ * at /2.
+ *
+ * **Three things about the sequence are not obvious and are ST's, not
+ * mine.** The supply and the voltage scaling come first, before any
+ * oscillator is touched -- leaving them out is what stopped this port
+ * running at all for several rounds. The CPU and system clocks are
+ * parked back on HSI before the PLL is reconfigured, because a running
+ * core cannot have the clock it is executing from moved underneath it.
+ * And the "IC" dividers are this family's own layer between a PLL and a
+ * domain; there is no direct PLL-to-CPU path to configure.
  */
 static void clock_init(void)
 {
-    /*
-     * **The supply comes first, and skipping it is why nothing ran.**
-     *
-     * ST's own Template FSBL opens SystemClock_Config with
-     * HAL_PWREx_ConfigSupply() and then the voltage scaling, before it
-     * touches an oscillator. This port had only SystemCoreClockUpdate(),
-     * on the reasoning that staying on the boot ROM's HSI needs no setup
-     * -- true of the *clock* and not of the supply it runs from. The
-     * regulator is left in whatever state the ROM handed over, and the
-     * core does not get far enough to write a UART register.
-     *
-     * PWR_EXTERNAL_SOURCE_SUPPLY is what the Nucleo wants: the board
-     * feeds VDDCORE from an external regulator rather than the internal
-     * SMPS, which is a property of the PCB and matches CN9 selecting the
-     * 5V source. It is also what ST's template for this exact board
-     * passes.
-     */
+    RCC_OscInitTypeDef osc = { 0 };
+    RCC_ClkInitTypeDef clk = { 0 };
+
     if (HAL_PWREx_ConfigSupply(PWR_EXTERNAL_SOURCE_SUPPLY) != HAL_OK) {
         Error_Handler();
     }
     if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1)
         != HAL_OK) {
+        Error_Handler();
+    }
+
+    osc.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+    osc.HSIState = RCC_HSI_ON;
+    osc.HSIDiv = RCC_HSI_DIV1;
+    osc.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+    osc.PLL1.PLLState = RCC_PLL_NONE;
+    osc.PLL2.PLLState = RCC_PLL_NONE;
+    osc.PLL3.PLLState = RCC_PLL_NONE;
+    osc.PLL4.PLLState = RCC_PLL_NONE;
+    if (HAL_RCC_OscConfig(&osc) != HAL_OK) {
+        Error_Handler();
+    }
+
+    /* Park on HSI: the PLL about to be reconfigured may be the one this
+     * core is running from. */
+    HAL_RCC_GetClockConfig(&clk);
+    if (clk.CPUCLKSource == RCC_CPUCLKSOURCE_IC1 ||
+        clk.SYSCLKSource == RCC_SYSCLKSOURCE_IC2_IC6_IC11) {
+        clk.ClockType     = RCC_CLOCKTYPE_CPUCLK | RCC_CLOCKTYPE_SYSCLK;
+        clk.CPUCLKSource  = RCC_CPUCLKSOURCE_HSI;
+        clk.SYSCLKSource  = RCC_SYSCLKSOURCE_HSI;
+        if (HAL_RCC_ClockConfig(&clk) != HAL_OK) {
+            Error_Handler();
+        }
+    }
+
+    /* PLL1: 64 / 4 * 75 = 1200 MHz. */
+    osc.OscillatorType   = RCC_OSCILLATORTYPE_NONE;
+    osc.PLL1.PLLState    = RCC_PLL_ON;
+    osc.PLL1.PLLSource   = RCC_PLLSOURCE_HSI;
+    osc.PLL1.PLLM        = 4;
+    osc.PLL1.PLLN        = 75;
+    osc.PLL1.PLLFractional = 0;
+    osc.PLL1.PLLP1       = 1;
+    osc.PLL1.PLLP2       = 1;
+    osc.PLL2.PLLState    = RCC_PLL_NONE;
+    osc.PLL3.PLLState    = RCC_PLL_NONE;
+    osc.PLL4.PLLState    = RCC_PLL_NONE;
+    if (HAL_RCC_OscConfig(&osc) != HAL_OK) {
+        Error_Handler();
+    }
+
+    clk.ClockType = RCC_CLOCKTYPE_CPUCLK | RCC_CLOCKTYPE_HCLK |
+                    RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 |
+                    RCC_CLOCKTYPE_PCLK2 | RCC_CLOCKTYPE_PCLK5 |
+                    RCC_CLOCKTYPE_PCLK4;
+    clk.CPUCLKSource   = RCC_CPUCLKSOURCE_IC1;      /* PLL1 / 2 = 600 MHz */
+    clk.SYSCLKSource   = RCC_SYSCLKSOURCE_IC2_IC6_IC11;
+    clk.AHBCLKDivider  = RCC_HCLK_DIV2;
+    clk.APB1CLKDivider = RCC_APB1_DIV1;
+    clk.APB2CLKDivider = RCC_APB2_DIV1;
+    clk.APB4CLKDivider = RCC_APB4_DIV1;
+    clk.APB5CLKDivider = RCC_APB5_DIV1;
+    clk.IC1Selection.ClockSelection  = RCC_ICCLKSOURCE_PLL1;
+    clk.IC1Selection.ClockDivider    = 2;
+    clk.IC2Selection.ClockSelection  = RCC_ICCLKSOURCE_PLL1;
+    clk.IC2Selection.ClockDivider    = 3;
+    clk.IC6Selection.ClockSelection  = RCC_ICCLKSOURCE_PLL1;
+    clk.IC6Selection.ClockDivider    = 4;
+    clk.IC11Selection.ClockSelection = RCC_ICCLKSOURCE_PLL1;
+    clk.IC11Selection.ClockDivider   = 3;
+    if (HAL_RCC_ClockConfig(&clk) != HAL_OK) {
         Error_Handler();
     }
 
