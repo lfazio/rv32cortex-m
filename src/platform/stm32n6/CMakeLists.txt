@@ -437,6 +437,35 @@ set(EMU_ST_TOOLS
 # writes. 0x341FFFF0 is the top of the guest's RAM bank: ours from reset,
 # outside .bss, cleared by no startup code.
 #
+#
+# **What was tried against the halting problem, so nobody repeats it:**
+#
+#   -k / --initialize-reset   "initialize the device under reset" -- the
+#                             option CubeIDE uses. Same "Failed to halt
+#                             target".
+#   --halt, --attach          same.
+#   -el <the right .stldr>    same. The stldr-mismatch theory from a
+#                             widely-cited write-up does not apply here.
+#   ap=0..3                   0 and 1 answer identically, 2 and 3 do not
+#                             exist. Not an access-port problem.
+#   debugauth=2               "The target is unable to boot on RSS_DA or
+#                             is in OPEN mode" -- so not locked by Debug
+#                             Authentication either.
+#   -psrss displ              "not recognized for such device"
+#   -ob displ                 "Option Bytes commands are not supported
+#                             for STM32N6 devices"
+#
+# And the start really is inert rather than merely unobservable: in a
+# *single* CubeProgrammer session -- write witness, write image, -g, read
+# witness, no reconnect anywhere -- the witness comes back untouched.
+#
+# Reads are selectively trustworthy, which is what made this slow.
+# RCC CR reads 0x00000009 (HSION|HSIRDY), a real value; AXISRAM holds
+# what is written to it across sessions; but DBGMCU IDC reads 0, BSEC
+# reads 0, and VTOR reads 0x18. The core's private peripheral bus and the
+# secure debug block are what answer wrongly, which is consistent with
+# the halt being refused.
+#
 add_custom_target(flash
     COMMAND ${CMAKE_COMMAND} -E echo
             "N6: JP2 (BOOT1) at 2-3 = development boot. See UM3417 table 11."
