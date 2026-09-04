@@ -115,13 +115,35 @@ void HAL_UART_MspInit(UART_HandleTypeDef *huart)
         return;
     }
 
+    /*
+     * **Select the kernel clock before enabling the peripheral.**
+     *
+     * On this family a USART does not simply run from its APB clock the
+     * way an F4's does: the clock source is a separate choice, and left
+     * unmade the peripheral has no clock at all. HAL_UART_Init then fails
+     * inside UART_SetConfig, before MspInit has written a single
+     * register -- which presents as a console that is silent with the
+     * pins, the AF and the baud rate all correct.
+     *
+     * From ST's own UART_Printf example for this board, which is also
+     * where PE5/PE6 and GPIO_AF7_USART1 come from.
+     */
+    RCC_PeriphCLKInitTypeDef pclk = {
+        .PeriphClockSelection = RCC_PERIPHCLK_USART1,
+        .Usart1ClockSelection = RCC_USART1CLKSOURCE_PCLK2,
+    };
+
+    if (HAL_RCCEx_PeriphCLKConfig(&pclk) != HAL_OK) {
+        Error_Handler();
+    }
+
     __HAL_RCC_GPIOE_CLK_ENABLE();
     __HAL_RCC_USART1_CLK_ENABLE();
 
     GPIO_InitTypeDef g = {
         .Pin = GPIO_PIN_5 | GPIO_PIN_6,
         .Mode = GPIO_MODE_AF_PP,
-        .Pull = GPIO_NOPULL,
+        .Pull = GPIO_PULLUP,
         .Speed = GPIO_SPEED_FREQ_VERY_HIGH,
         .Alternate = GPIO_AF7_USART1,
     };
