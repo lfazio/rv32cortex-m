@@ -411,6 +411,32 @@ set(EMU_ST_TOOLS
 # against a board whose product state is known, or the same image loaded
 # from CubeIDE, which drives a sequence this file does not reproduce.
 #
+#
+# **ST's own template does not run here either, which is what settles
+# whose bug this is.** Their Templates/Template FSBL, built from their
+# sources against the same packs and loaded with the same command, stamps
+# a witness as the first statement of main(). Written 0xDEADBEEF
+# beforehand, read back after `-g`: still 0xDEADBEEF. Neither their code
+# nor this port is reached.
+#
+# So `-w ... -g <entry>` reports "Start operation achieved successfully"
+# and starts nothing, which fits the locked core debug above: DHCSR
+# refuses a halt, and there is no halt-and-release to be had.
+#
+# **Two false positives were reported before that witness existed**, both
+# from reading registers the boot ROM had already written:
+#
+#   GPIOG MODER FFDFFFFF   read as "led_init() ran". It reads FFDFFFFF
+#                          before anything is started -- the ROM sets the
+#                          LEDs up itself.
+#   GPIOG ODR 0x400/0x000  read as "ST's control is blinking". Two reads
+#                          of ROM-driven state, and it is static once the
+#                          ROM settles.
+#
+# Any observable this port is judged by has to be one nothing else
+# writes. 0x341FFFF0 is the top of the guest's RAM bank: ours from reset,
+# outside .bss, cleared by no startup code.
+#
 add_custom_target(flash
     COMMAND ${CMAKE_COMMAND} -E echo
             "N6: JP2 (BOOT1) at 2-3 = development boot. See UM3417 table 11."
