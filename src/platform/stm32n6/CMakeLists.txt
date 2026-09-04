@@ -543,6 +543,30 @@ set(EMU_ST_TOOLS
 # matters), `-i <serial>`, `-el <loader>`, and `-s` if flash verify is
 # wanted.
 #
+#
+# **A debugger reset undoes the load, and the proof is the PC.** Pausing
+# a stalled session shows PC 0x18003518 with every stack frame in
+# 0x18003xxx -- BOOTROM_BASE_S is 0x18000000 and the ROM is 128 KB, so
+# that is 3.4 KB into the boot ROM. The core is alive and spinning there,
+# having never reached the image at 0x34180400.
+#
+# Cortex-Debug's default launch is reset, download, **reset**, halt,
+# break at the entry, continue. The second reset is fatal on a part with
+# no internal flash: the image is in AXISRAM, put there by the download,
+# and a system reset returns the core to the ROM -- which in development
+# boot loads nothing. UM3234 3.2.1 again: the ROM *releases the core*, it
+# does not jump.
+#
+# The launch has to end by doing what the ROM would have done -- take the
+# initial SP and the reset vector from the vector table and set them:
+#
+#   monitor halt
+#   load
+#   set $sp = *(unsigned int *)0x34180400
+#   set $pc = *(unsigned int *)0x34180404
+#
+# which is overrideLaunchCommands in .vscode/launch.json.
+#
 add_custom_target(flash
     COMMAND ${CMAKE_COMMAND} -E echo
             "N6: JP2 (BOOT1) at 2-3 = development boot. See UM3417 table 11."
