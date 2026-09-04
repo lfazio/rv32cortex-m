@@ -79,8 +79,9 @@ _Min_Stack_Size = 0x2000;
  */
 MEMORY
 {
-  ROM    (xrw)    : ORIGIN = 0x34180400,   LENGTH = 511K
-  RAM    (xrw)    : ORIGIN = 0x34000400,   LENGTH = 1535K
+  ROM    (xrw)    : ORIGIN = 0x34180400,   LENGTH = 255K
+  RAM    (xrw)    : ORIGIN = 0x341C0000,   LENGTH = 256K
+  GUEST  (xrw)    : ORIGIN = 0x34000400,   LENGTH = 1535K
 }
 
 /* Sections */
@@ -222,13 +223,26 @@ SECTIONS
    * -- putting it in the image would make the boot ROM copy 1.5 MB of
    * nothing over the link every reset.
    */
+  /*
+   * The guest gets AXISRAM1 whole, as its own region.
+   *
+   * It used to be carved out of the end of >RAM, which is what the F4/F7
+   * ports do -- there the firmware and the guest share one bank and the
+   * guest takes what is left. Here they are different banks, and sharing
+   * the *region* had a consequence that took ST's own template to see:
+   * _estack is ORIGIN(RAM) + LENGTH(RAM), so putting RAM in AXISRAM1
+   * *below* the code in AXISRAM2 put the initial stack pointer at
+   * 0x34180000 -- underneath this image's own first byte. Reset_Handler
+   * sets that as SP in its first two instructions, before anything else,
+   * so nothing ever ran and no diagnostic could say why.
+   */
   .guest_ram (NOLOAD) :
   {
     . = ALIGN(8);
     __guest_ram_start = .;
-    . = ORIGIN(RAM) + LENGTH(RAM) - _Min_Stack_Size - _Min_Heap_Size;
+    . = ORIGIN(GUEST) + LENGTH(GUEST);
     __guest_ram_end = .;
-  } >RAM
+  } >GUEST
 
   /*
    * Reserved after it, so the link fails loudly rather than silently
