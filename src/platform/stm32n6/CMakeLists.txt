@@ -483,6 +483,24 @@ set(EMU_ST_TOOLS
 # boot is available in every CLOSED life-cycle state, which matches
 # debugauth reporting OPEN mode.
 #
+#
+# **CubeIDE's own gdbserver invocation, which does start**, taken from
+# the IDE's console:
+#
+#   ST-LINK_gdbserver -p 61234 -l 1 -d -s -i <stlink serial> \
+#       -cp <cubeprogrammer bin dir> -m 0 -g
+#
+# The two that matter are `-d` (SWD) and `-g` (*attach to running
+# target*, not halt). Every invocation tried before this one asked for a
+# halt -- --halt, -k, the default -- and got "Failed to halt target". With
+# -g the server comes up and listens, which it had never done.
+#
+# It still does not give a session from the command line: gdb connects and
+# the server answers "Session manager. Fail starting session", because
+# attach wants a target that is *already running* and nothing here starts
+# one. In the IDE the launch loads and runs the image first; that half is
+# what remains to be reproduced.
+#
 add_custom_target(flash
     COMMAND ${CMAKE_COMMAND} -E echo
             "N6: JP2 (BOOT1) at 2-3 = development boot. See UM3417 table 11."
