@@ -380,6 +380,37 @@ set(EMU_ST_TOOLS
 #
 # Fit JP3 before concluding anything else about this board.
 #
+#
+# **The core debug is locked, and that is the wall this stops at.**
+#
+# What works: memory. AXISRAM reads and writes, the external flash
+# programs through MX25UM51245G_STM32N6570-NUCLEO.stldr and reads back
+# byte-correct, and CubeProgrammer reports Voltage 3,28V with
+# "Device name : ST32N657, Rev B, Cortex-M55".
+#
+# What does not: anything touching the core.
+#
+#   -w32 0xE000EDF0 0xA05F0003   "Failed to download data!" -- that is
+#                                DHCSR, an ordinary core register with no
+#                                flash behind it, refusing a halt request
+#   -r32 0xE000ED08              0x18, which is not a legal VTOR: bits
+#                                6:0 are reserved. Both live access ports
+#                                answer the same, so it is not an AP
+#                                selection problem
+#   ST-LINK_gdbserver            "Failed to halt target" in development
+#                                boot with power confirmed
+#
+# So -g reports "Start operation achieved successfully" and nothing runs,
+# because there is no halt-and-start to be had. That signature -- AHB-AP
+# alive, core debug dead -- is what Debug Authentication looks like, and
+# CubeProgrammer says so in its own error text on every failed connect.
+# An earlier note here dismissed that message; the DHCSR write is the
+# evidence that it was probably right.
+#
+# Unresolved. What would settle it is `-c port=SWD debugauth=2` succeeding
+# against a board whose product state is known, or the same image loaded
+# from CubeIDE, which drives a sequence this file does not reproduce.
+#
 add_custom_target(flash
     COMMAND ${CMAKE_COMMAND} -E echo
             "N6: JP2 (BOOT1) at 2-3 = development boot. See UM3417 table 11."
