@@ -38,3 +38,6 @@ build/mx-*.log
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+
+# The N6 control's build products; tools/n6-control/build.sh rebuilds them.
+tools/n6-control/STM32CubeN6/
