@@ -96,7 +96,15 @@ list(TRANSFORM hal_src PREPEND "${STM32_HAL_DIR}/Src/")
 #
 add_library(stm32cube STATIC
     ${hal_src}
-    "${CMSIS_DEVICE_DIR}/Source/Templates/system_stm32n6xx_fsbl.c"
+    #
+    # **Our copy, not the pack's.** It is the vendor file plus one
+    # block: bringing up AXISRAM3..6, which the boot ROM leaves powered
+    # down and which .bss and the stack now live in. That has to happen
+    # inside SystemInit, before the startup code copies .data into
+    # memory that is not yet answering -- so it cannot be a call from
+    # board_hw_init.
+    #
+    system_stm32n6xx_fsbl.c
     "${CMSIS_DEVICE_DIR}/Source/Templates/gcc/startup_stm32n657xx_fsbl.s"
 )
 

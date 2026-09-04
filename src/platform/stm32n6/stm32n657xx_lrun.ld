@@ -77,19 +77,46 @@ _Min_Stack_Size = 0x2000;
  * "STM2" -- the ROM's own signature sitting where a pointer should be,
  * which looks exactly like a .data copy that half worked.
  */
+/*
+ * **3.8 MB of contiguous AXISRAM, and this used to use 511 KB of it.**
+ *
+ * RM0486's memory map, which is worth writing down because the bank
+ * numbering does not match the addresses in the obvious way:
+ *
+ *   AXISRAM1  0x34000000..0x340FFFFF  1024 KB
+ *   AXISRAM2  0x34100000..0x341FFFFF  1024 KB
+ *   AXISRAM3  0x34200000..0x3426FFFF   448 KB
+ *   AXISRAM4  0x34270000..0x342DFFFF   448 KB
+ *   AXISRAM5  0x342E0000..0x3434FFFF   448 KB
+ *   AXISRAM6  0x34350000..0x343BFFFF   448 KB
+ *
+ * The port began by dividing AXISRAM2 in half -- ROM at 0x34180400 and
+ * RAM above it -- on the assumption that the bank was 511 KB, which is
+ * what ST's Template FSBL linker script declares. That script is sized
+ * for a blinky. The G4MH build then would not fit a JIT cache above
+ * 64 KB, and the constraint was entirely self-imposed.
+ *
+ * **AXISRAM3..6 have to be powered up first**, and this port does that
+ * in its own copy of system_stm32n6xx_fsbl.c. The boot ROM leaves them
+ * shut down; reading 0x34200000 through a debugger fails outright, and a
+ * firmware whose .bss lands there goes silent with no other symptom --
+ * which is exactly what happened when this map was widened before the
+ * SystemInit change existed.
+ *
+ * With them up: the firmware and its .bss get AXISRAM3..6, 1792 KB that
+ * nothing else here uses, and the guest keeps AXISRAM1 plus the lower
+ * half of AXISRAM2. ROM stays at 0x34180400 because the boot ROM loads
+ * an FSBL there and nowhere else -- only its length grows.
+ *
+ * **ROM must still start at 0x34180400.** The boot ROM loads an FSBL
+ * there and nowhere else; it is not a choice this script makes. So ROM
+ * stays where it was and only its length grows, into the rest of
+ * AXISRAM2 and onward.
+ */
 MEMORY
 {
-  /*
-   * AXISRAM2 is 0x34180000..0x34200000, and the two regions divide it.
-   * ST's template splits it 255K/256K, which suits a blinky and not a
-   * 133 KB emulator with a frontend's .bss behind it -- the G4MH build
-   * overflowed `RAM' by 3144 bytes at that split. The boundary is ours
-   * to choose; what is *not* negotiable is that RAM sit above ROM, so
-   * that _estack (ORIGIN(RAM) + LENGTH(RAM)) lands at the top of the
-   * bank rather than underneath the code.
-   */
-  ROM    (xrw)    : ORIGIN = 0x34180400,   LENGTH = 191K
-  RAM    (xrw)    : ORIGIN = 0x341B0000,   LENGTH = 320K
+  ROM    (xrw)    : ORIGIN = 0x34180400,   LENGTH = 511K
+  RAM    (xrw)    : ORIGIN = 0x34200000,   LENGTH = 1792K
   GUEST  (xrw)    : ORIGIN = 0x34000400,   LENGTH = 1535K
 }
 
