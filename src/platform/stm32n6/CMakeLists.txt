@@ -2,6 +2,27 @@
 #
 # Nucleo-N657X0-Q firmware.
 #
+# **It runs.** A debug session stops in main at emu_debug.c:306, which is
+# inside emu_board_after_run's park loop (inlined by LTO) -- so
+# board_hw_init, clock_init, console_init, the guest's bring-up, the
+# guest itself and emu_session_report have all completed and the firmware
+# is waiting for an upload.
+#
+# Five things had to be right, and each was wrong at some point:
+#
+#   the FSBL link address    0x34180400, from ST's AXISRAM2_fsbl.ld --
+#                            *not* LRUN.ld, which is for the application
+#                            an FSBL loads
+#   _estack above the code   RAM below ROM put the initial stack pointer
+#                            underneath the image's own first byte
+#   HAL_PWREx_ConfigSupply   before touching an oscillator
+#   access port 1            the Cortex-M55 is behind AP 1
+#   no reset after download  the image is in AXISRAM; a reset returns the
+#                            core to the boot ROM
+#
+# Console output on the VCP is still missing, which is now an ordinary
+# bug in a running system.
+#
 # The vendor driver pack supplies the startup code, the device headers,
 # system_stm32n6xx_fsbl.c and the HAL drivers; only the emulator glue is
 # local.
