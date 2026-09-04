@@ -67,6 +67,31 @@ static void Error_Handler(void)
  */
 static void clock_init(void)
 {
+    /*
+     * **The supply comes first, and skipping it is why nothing ran.**
+     *
+     * ST's own Template FSBL opens SystemClock_Config with
+     * HAL_PWREx_ConfigSupply() and then the voltage scaling, before it
+     * touches an oscillator. This port had only SystemCoreClockUpdate(),
+     * on the reasoning that staying on the boot ROM's HSI needs no setup
+     * -- true of the *clock* and not of the supply it runs from. The
+     * regulator is left in whatever state the ROM handed over, and the
+     * core does not get far enough to write a UART register.
+     *
+     * PWR_EXTERNAL_SOURCE_SUPPLY is what the Nucleo wants: the board
+     * feeds VDDCORE from an external regulator rather than the internal
+     * SMPS, which is a property of the PCB and matches CN9 selecting the
+     * 5V source. It is also what ST's template for this exact board
+     * passes.
+     */
+    if (HAL_PWREx_ConfigSupply(PWR_EXTERNAL_SOURCE_SUPPLY) != HAL_OK) {
+        Error_Handler();
+    }
+    if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1)
+        != HAL_OK) {
+        Error_Handler();
+    }
+
     SystemCoreClockUpdate();
 }
 
