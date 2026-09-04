@@ -466,6 +466,23 @@ set(EMU_ST_TOOLS
 # secure debug block are what answer wrongly, which is consistent with
 # the halt being refused.
 #
+#
+# **UM3234 says what the boot ROM actually does, and it is not a jump.**
+# Section 3.2.1: "The start of the vector table is executed when the reset
+# of the Arm Cortex-M55 core is released. It means that it sets the MSP
+# and then executes the ResetHandler exception."
+#
+# The ROM *releases the core from reset*. It does not set a PC. So
+# `-g <entry>` is asking a core that has never been released to start
+# executing, which is consistent with everything measured: the halt is
+# refused, the witness is untouched, and ST's own template behaves
+# identically. Getting this running is about arranging the release the
+# ROM performs, not about finding the right address to jump to.
+#
+# UM3234 table 3 is also worth reading before assuming a lock: development
+# boot is available in every CLOSED life-cycle state, which matches
+# debugauth reporting OPEN mode.
+#
 add_custom_target(flash
     COMMAND ${CMAKE_COMMAND} -E echo
             "N6: JP2 (BOOT1) at 2-3 = development boot. See UM3417 table 11."

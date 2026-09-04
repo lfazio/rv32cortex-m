@@ -389,22 +389,8 @@ void board_fatal(int *status)
     }
 }
 
-/*
- * A witness that this code ran, in a place the boot ROM does not touch.
- *
- * Needed because the obvious observables are not ours. GPIOG's MODER
- * reads FFDFFFFF *before anything is started* -- the ROM configures the
- * LEDs itself -- so "led_init() ran" was read off a register the ROM had
- * already written, and this port was reported as running when it was
- * not. Pick somewhere nothing else writes: the top of the guest's RAM
- * bank, which is ours from reset and is not in .bss, so no startup code
- * clears it either.
- */
-#define BOARD_WITNESS (*(volatile uint32_t *)0x341FFFF0u)
-
 void board_hw_init(void)
 {
-    BOARD_WITNESS = 0xB0A2D000u;        /* reached board_hw_init */
 
     /*
      * **Caches first, before anything is written.** ST's own FSBL
@@ -423,14 +409,9 @@ void board_hw_init(void)
     SCB_EnableICache();
     SCB_EnableDCache();
 
-    BOARD_WITNESS = 0xB0A2D001u;        /* caches on */
     HAL_Init();
-    BOARD_WITNESS = 0xB0A2D002u;        /* HAL_Init returned */
     clock_init();
-    BOARD_WITNESS = 0xB0A2D003u;        /* clocks configured */
     cycles_init();
     led_init();
-    BOARD_WITNESS = 0xB0A2D004u;        /* about to open the console */
     console_init();
-    BOARD_WITNESS = 0xB0A2D005u;        /* console up */
 }
