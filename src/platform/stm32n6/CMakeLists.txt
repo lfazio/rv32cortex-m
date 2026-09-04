@@ -501,6 +501,35 @@ set(EMU_ST_TOOLS
 # one. In the IDE the launch loads and runs the image first; that half is
 # what remains to be reproduced.
 #
+#
+# **The Cortex-M55 is behind access port 1, and that is the whole of it.**
+#
+# ST's own OpenOCD config says so in one line --
+# `target create ... cortex_m ... -ap-num 1` in stm32n6x.cfg -- and the
+# VS Code guide passes `-m 1` to the gdbserver for the same reason. Every
+# tool here defaults to AP 0, including STM32_Programmer_CLI.
+#
+# AP 0 does not fail. It answers, plausibly and wrongly:
+#
+#            AP 0          AP 1
+#   DHCSR    0x00000000    0x00190001   C_DEBUGEN set, S_HALT clear
+#            (writes refused)           -- the core is running
+#   VTOR     0x18          0x34187480   0x18 is not a legal VTOR; bits
+#                                       6:0 are reserved
+#
+# So "the core debug is locked", "DHCSR refuses a halt" and "-g starts
+# nothing" were all conclusions drawn through the wrong access port. With
+# -m 1 the gdbserver comes up and stays up *with* --halt, which it never
+# managed on AP 0.
+#
+# Two rules this cost, both of which this tree already states in other
+# words: an instrument that answers has still to be shown to be answering
+# about the right thing, and a value that is architecturally impossible
+# (VTOR with low bits set) is the instrument telling you so.
+#
+# .vscode/launch.json has a working Cortex-Debug configuration, and a
+# second one for ST's Template FSBL as a control.
+#
 add_custom_target(flash
     COMMAND ${CMAKE_COMMAND} -E echo
             "N6: JP2 (BOOT1) at 2-3 = development boot. See UM3417 table 11."
