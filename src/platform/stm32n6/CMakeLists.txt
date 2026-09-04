@@ -530,6 +530,19 @@ set(EMU_ST_TOOLS
 # .vscode/launch.json has a working Cortex-Debug configuration, and a
 # second one for ST's Template FSBL as a control.
 #
+#
+# **Cortex-Debug builds part of the server command line itself.** It adds
+# `--swd` from `"interface": "swd"` and `--halt`, so a serverArgs copied
+# wholesale from CubeIDE's console collides with them:
+#
+#   PARSE ERROR: Argument: -d (--swd)  Argument already set!
+#
+# and the session dies before gdb connects, surfacing as "GDB Server Quit
+# Unexpectedly" with the real reason only in the TERMINAL tab. Only the
+# *extra* arguments belong there: `-m 1` (the access port, the one that
+# matters), `-i <serial>`, `-el <loader>`, and `-s` if flash verify is
+# wanted.
+#
 add_custom_target(flash
     COMMAND ${CMAKE_COMMAND} -E echo
             "N6: JP2 (BOOT1) at 2-3 = development boot. See UM3417 table 11."
