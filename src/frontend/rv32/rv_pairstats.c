@@ -155,6 +155,55 @@ static void rv_kind_name(uint32_t k, char *buf, unsigned n)
         s = (f3 == 0u && f7) ? "sub" : (f3 == 5u && f7) ? "sra" : r3[f3];
         break;
     }
+    /*
+     * **OP-FP and the fused multiply-adds, by name.**
+     *
+     * Without these the histogram reports the most frequent pair on a
+     * float workload as "op53.f7 op53.f7", which is the instrument
+     * failing to represent the thing being looked for -- the same shape
+     * as the disassembler that reported zero floating point in a
+     * hard-float build. Whetstone's top pair is 5.61% of all adjacent
+     * pairs and it is two OP-FP instructions with a dependency; naming
+     * them is what says *which* two.
+     */
+    case 0x53: {
+        switch (f7 >> 2) {
+        case 0x00: s = "fadd.s";  break;
+        case 0x01: s = "fsub.s";  break;
+        case 0x02: s = "fmul.s";  break;
+        case 0x03: s = "fdiv.s";  break;
+        case 0x0B: s = "fsqrt.s"; break;
+        case 0x04: s = (f3 == 0u) ? "fsgnj.s"
+                     : (f3 == 1u) ? "fsgnjn.s" : "fsgnjx.s"; break;
+        case 0x05: s = (f3 == 0u) ? "fmin.s" : "fmax.s"; break;
+        case 0x14: s = (f3 == 0u) ? "fle.s"
+                     : (f3 == 1u) ? "flt.s" : "feq.s"; break;
+        case 0x18: s = "fcvt.w.s";  break;
+        case 0x1A: s = "fcvt.s.w";  break;
+        case 0x1C: s = (f3 == 0u) ? "fmv.x.w" : "fclass.s"; break;
+        case 0x1E: s = "fmv.w.x";   break;
+        case 0x08: s = "fcvt.s.d";  break;
+        default:   s = "op-fp";     break;
+        }
+        break;
+    }
+    case 0x43: s = "fmadd.s";  break;
+    case 0x47: s = "fmsub.s";  break;
+    case 0x4B: s = "fnmsub.s"; break;
+    case 0x4F: s = "fnmadd.s"; break;
+    case 0x07: {
+        static const char *const l3[8] = {"?", "?", "flw", "fld",
+                                          "?", "?", "?",   "?"};
+        s = l3[f3];
+        break;
+    }
+    case 0x27: {
+        static const char *const s3[8] = {"?", "?", "fsw", "fsd",
+                                          "?", "?", "?",   "?"};
+        s = s3[f3];
+        break;
+    }
+
     default:
         break;
     }

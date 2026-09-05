@@ -295,6 +295,22 @@ typedef enum emu_ir_op {
     EMU_IR_FSQRT, /* dst = sqrt(a)                            */
 
     /*
+     * The fused multiply-adds: dst = +/-(a * b) +/- c, rounded *once*.
+     *
+     * The only operation in the IR that reads three temps, which is why
+     * emu_ir_insn_t has a `c` at all. `aux` carries the two signs as
+     * EMU_IR_FMA_NEG_MUL and EMU_IR_FMA_NEG_ADD, covering RISC-V's
+     * FMADD/FMSUB/FNMADD/FNMSUB with one opcode.
+     *
+     * **Rounding once is the whole point and the whole risk.** A backend
+     * that lowers this to a multiply and an add rounds twice and is
+     * wrong in the last bit; one that declines it gets a helper call
+     * whose result is right. Declining is therefore always safe here,
+     * which is not true of every operation.
+     */
+    EMU_IR_FMA,
+
+    /*
      * Minimum and maximum, which are *not* a compare and a select: both
      * guests define the result for a NaN operand as the other operand,
      * where every host's instruction of that name returns its second.
@@ -469,11 +485,51 @@ typedef enum emu_ir_cond {
 /* No operand in this slot. */
 #define EMU_IR_NO_TEMP 0xFFFFu
 
+/*
+ * EMU_IR_FMA's `aux`: which of the two terms is negated.
+ *
+ * RISC-V's four opcodes map on directly -- FMADD is neither, FMSUB is
+ * NEG_ADD, FNMSUB is NEG_MUL, FNMADD is both. Note that RISC-V's naming
+ * negates the *product* in the "n" forms, which is the opposite of what
+ * the mnemonic suggests to a reader coming from ARM.
+ */
+/*
+ * **Bits 4 and 5, not 0 and 1.** EMU_IR_FRM(aux) is `aux & 7` and
+ * EMU_IR_F_UNSIGNED is bit 3, so the low nibble is spoken for. The first
+ * version used 0x01/0x02 and every FMA therefore presented its sign bits
+ * to can_lower *as a rounding mode* -- FMADD read as RNE and lowered,
+ * FNMSUB read as RTZ and was declined, and the ones that did lower were
+ * checked against the wrong mode. fptest's mixed kernel came back
+ * 0x00000000 against a reference of 0x49370308.
+ */
+#define EMU_IR_FMA_NEG_MUL (1u << 4)
+#define EMU_IR_FMA_NEG_ADD (1u << 5)
+
 typedef struct emu_ir_insn {
     uint8_t op; /* emu_ir_op_t                                 */
     uint8_t aux; /* op-specific: width, flag source, condition  */
     uint16_t dst; /* temp written, or EMU_IR_NO_TEMP             */
     uint16_t a, b; /* temps read, or EMU_IR_NO_TEMP               */
+
+    /*
+     * A third operand, for the one class of instruction that needs it:
+     * the fused multiply-adds. EMU_IR_NO_TEMP everywhere else.
+     *
+     * **It is not free, and the cost is the reason it went unmodelled
+     * for so long.** Every pass that walks operands has to walk this one
+     * too -- the use counter, the dead-code sweep, the copy forwarding,
+     * the register allocator -- and a pass that misses it does not fail
+     * loudly: it computes a wrong use count, and the allocator then
+     * reuses a register still being read. That is a wrong answer, not a
+     * declined block.
+     *
+     * The alternative was what this did before: send all four FMA
+     * opcodes to the helper. That keeps the block whole and gets the
+     * single rounding right, but it is a call per FMA on a workload that
+     * has 6.71% of its adjacent pairs led by one -- measured on fptest
+     * with EMU_PAIR_STATS.
+     */
+    uint16_t c;
     uint32_t imm;
 
     /*
@@ -529,6 +585,15 @@ uint16_t emu_ir_temp(emu_ir_block_t *b);
  */
 uint16_t emu_ir_emit(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux, uint16_t a,
                      uint16_t bb, uint32_t imm, uint8_t defs);
+
+/*
+ * A three-operand emit, for EMU_IR_FMA. Separate from emu_ir_emit rather
+ * than a seventh parameter on it: every other caller would have to pass
+ * EMU_IR_NO_TEMP, and the one place a third operand is legal is worth
+ * naming.
+ */
+uint16_t emu_ir_emit3(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux,
+                      uint16_t a, uint16_t bb, uint16_t c);
 
 /* Shorthands for the shapes that appear most. */
 uint16_t emu_ir_get(emu_ir_block_t *b, uint32_t guest_reg);

@@ -59,6 +59,14 @@ static EMU_ALWAYS_INLINE uint32_t rv_rs2(uint32_t i)
 {
     return (i >> 20) & 0x1Fu;
 }
+/*
+ * The R4-type third source, which only the fused multiply-adds have.
+ * Same five bits as funct7's top, which is why R4 has no funct7.
+ */
+static EMU_ALWAYS_INLINE uint32_t rv_rs3(uint32_t i)
+{
+    return (i >> 27) & 0x1Fu;
+}
 static EMU_ALWAYS_INLINE uint32_t rv_funct3(uint32_t i)
 {
     return (i >> 12) & 0x7u;

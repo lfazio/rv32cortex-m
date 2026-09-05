@@ -615,6 +615,25 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
     case EMU_IR_FSQRT:
         return EMU_IR_FRM(aux) == EMU_IR_FRM_RNE;
 
+    /*
+     * **The fused multiply-adds are declined here**, and it is not an
+     * oversight to be filled in later.
+     *
+     * An FMA rounds once. This build targets baseline x86-64, which has
+     * no FMA instruction -- it arrived with FMA3 on Haswell -- so the
+     * only lowering available is a multiply and an add, which rounds
+     * twice and is wrong in the last bit. Declining sends it to the
+     * frontend's helper, whose 2Product/2Sum gets it right.
+     *
+     * A build that could rely on FMA3 would answer true for RNE and emit
+     * VFMADD213SS, with the sign variants from `aux`. That is a real
+     * option and is deliberately not taken by default: CLAUDE.md records
+     * this project measuring x86-64 FP lowering gains in *frequency
+     * order*, and an FMA that is absent on the baseline is not a gain.
+     */
+    case EMU_IR_FMA:
+        return false;
+
     case EMU_IR_FCVT_FROM_I:
         return (aux & EMU_IR_F_UNSIGNED) == 0u &&
                EMU_IR_FRM(aux) == EMU_IR_FRM_RNE;

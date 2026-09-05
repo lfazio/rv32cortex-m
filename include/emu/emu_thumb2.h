@@ -130,6 +130,34 @@ void t2_call(const void *fn);
 #define T2_VMUL 0xEE20u
 #define T2_VDIV 0xEE80u
 
+/*
+ * The fused multiply-accumulates, which round *once* -- as against
+ * VMLA/VMLS, which are two roundings and are the wrong instruction here.
+ *
+ *   VFMA  sd =  sd + sn * sm    0xEEA0, sub=0
+ *   VFMS  sd =  sd - sn * sm    0xEEA0, sub=1
+ *   VFNMS sd = -sd + sn * sm    0xEE90, sub=0
+ *   VFNMA sd = -sd - sn * sm    0xEE90, sub=1
+ *
+ * **VFNMA is the one that negates both, and it is the sub=1 encoding**
+ * -- so the 0xEE90 pair reads backwards from the 0xEEA0 pair, where
+ * sub=1 is the *subtract*. Naming the constants after a single
+ * instruction each got this wrong on the first attempt and the board
+ * computed 0 for a kernel whose answer is 0x49370308; they are named
+ * after the pair now, so the `sub` argument has to be thought about
+ * rather than implied by the name.
+ *
+ * Same encoding shape as the others, so t2_vfp3 emits them: the `sub`
+ * bit is bit 6 of the second halfword in every one of these.
+ *
+ * **The accumulator is the destination**, which is what makes RISC-V's
+ * four forms reachable from these: the addend has to be moved into `sd`
+ * before the instruction, and the sign of the *product* is the `sub`
+ * bit rather than a separate negate.
+ */
+#define T2_VFMA_VFMS   0xEEA0u /* sub=0 VFMA,  sub=1 VFMS  */
+#define T2_VFNMS_VFNMA 0xEE90u /* sub=0 VFNMS, sub=1 VFNMA */
+
 void t2_vmov_core(uint32_t sn, uint32_t rt, bool to_core);
 void t2_vfp3(uint16_t hi, bool sub, uint32_t sd, uint32_t sn, uint32_t sm);
 void t2_vsqrt(uint32_t sd, uint32_t sm);

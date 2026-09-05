@@ -579,21 +579,70 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
         return true;
     }
 
-    case 0x43u:
-    case 0x47u:
-    case 0x4Bu:
-    case 0x4Fu:
+    case 0x43u:   /* FMADD.S  */
+    case 0x47u:   /* FMSUB.S  */
+    case 0x4Bu:   /* FNMSUB.S */
+    case 0x4Fu: { /* FNMADD.S */
         /*
-         * The fused multiply-adds, which the IR does not model: it has
-         * two operand fields and a third would hide from the use
-         * counter and the register allocator. They go to the helper,
-         * which keeps the block whole and gets the single rounding
-         * right by reusing the code that already does it.
+         * The fused multiply-adds. The IR models these now -- it grew a
+         * third operand for them and nothing else -- so a host with an
+         * FMA instruction gets one, and a host without declines to the
+         * helper that was the only path before.
+         *
+         * **RISC-V's "n" forms negate the product, not the addend**,
+         * which reads backwards from the mnemonic:
+         *
+         *   FMADD    a*b + c
+         *   FMSUB    a*b - c
+         *   FNMSUB  -a*b + c
+         *   FNMADD  -a*b - c
+         *
+         * Only the rounding mode has to be checked here: the block is
+         * specialised on frm, which rv_ir_gen_key already folds in, and
+         * RMM has no ARM equivalent so it stays on the helper.
          */
         if (h_fs_off(cpu)) {
             return false;
         }
-        return rv_ir_fp_fallback(b, pc, insn);
+
+        /*
+         * The rounding mode, resolved here as everywhere else: f3 == 7
+         * means "dynamic", which the IR resolves at *translation* so a
+         * backend can decline a mode it lacks. The block is specialised
+         * on frm and rv_ir_gen_key folds that in, which is what makes
+         * resolving it here sound.
+         */
+        const uint32_t rm = (rv_funct3(insn) == 7u) ? RV_IR_FRM(cpu)
+                                                    : rv_funct3(insn);
+        const uint32_t op5 = op >> 2;
+        uint8_t fma_aux = (uint8_t)(rm & 7u);
+
+        if (op5 == (0x4Bu >> 2) || op5 == (0x4Fu >> 2)) {
+            fma_aux |= EMU_IR_FMA_NEG_MUL;
+        }
+        if (op5 == (0x47u >> 2) || op5 == (0x4Fu >> 2)) {
+            fma_aux |= EMU_IR_FMA_NEG_ADD;
+        }
+
+        if (!emu_ir_can_lower(EMU_IR_FMA, fma_aux)) {
+            return rv_ir_fp_fallback(b, pc, insn);
+        }
+
+        const uint16_t fa =
+            emu_ir_emit(b, EMU_IR_FGET, EMU_IR_FP_BOX, EMU_IR_NO_TEMP,
+                        EMU_IR_NO_TEMP, rv_rs1(insn), 0u);
+        const uint16_t fb =
+            emu_ir_emit(b, EMU_IR_FGET, EMU_IR_FP_BOX, EMU_IR_NO_TEMP,
+                        EMU_IR_NO_TEMP, rv_rs2(insn), 0u);
+        const uint16_t fc =
+            emu_ir_emit(b, EMU_IR_FGET, EMU_IR_FP_BOX, EMU_IR_NO_TEMP,
+                        EMU_IR_NO_TEMP, rv_rs3(insn), 0u);
+        const uint16_t r = emu_ir_emit3(b, EMU_IR_FMA, fma_aux, fa, fb, fc);
+
+        (void)emu_ir_emit(b, EMU_IR_FPUT, EMU_IR_FP_BOX, r, EMU_IR_NO_TEMP,
+                          rv_rd(insn), 0u);
+        return true;
+    }
 
     case 0x53u: { /* OP-FP */
         if (h_fs_off(cpu)) {

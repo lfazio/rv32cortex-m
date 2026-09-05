@@ -480,6 +480,25 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
             return false;
 
         /*
+         * The fused multiply-adds, declined for the same reason and with
+         * more force.
+         *
+         * The whole content of an FMA is that it rounds *once*, and
+         * computing it here as `a * b + c` rounds twice -- so this file
+         * would disagree with a correct native lowering in the last bit,
+         * and the differential harness would report the backend as
+         * broken. Getting it right needs fmaf(), which is libm, which
+         * this file may not call.
+         *
+         * The frontend's own rv_hart_fp does it with 2Product/2Sum for
+         * exactly this reason; that is where a checked answer comes
+         * from. Blocks containing an FMA simply go unchecked, as blocks
+         * with a store or a square root already do.
+         */
+        case EMU_IR_FMA:
+            return false;
+
+        /*
          * A NaN operand gives the *other* operand, which is what both
          * guests define and what no host instruction of this name does.
          * Two NaNs give the canonical one.

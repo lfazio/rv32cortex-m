@@ -462,6 +462,7 @@ static bool bisect_allows(uint8_t op)
     case EMU_IR_FMUL:
     case EMU_IR_FDIV:
     case EMU_IR_FSQRT:
+    case EMU_IR_FMA:
         return T2_BISECT >= 8;
     default:
         return false;
@@ -501,6 +502,20 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
     case EMU_IR_FMUL:
     case EMU_IR_FDIV:
     case EMU_IR_FSQRT:
+        return EMU_IR_FRM(aux) == EMU_IR_FRM_RNE;
+
+    /*
+     * **The fused multiply-adds, natively.** This is the host that makes
+     * the IR's third operand worth having: VFMA and VFMS round once, in
+     * hardware, which is the entire content of the operation.
+     *
+     * All four RISC-V forms are reachable from two ARM instructions
+     * because the sign of the product can be folded into the accumulate
+     * -- see the lowering. Only RNE, as with the rest of the FP set:
+     * FPSCR carries the mode and the block is specialised on frm, but
+     * RMM has no ARM encoding and stays on the helper.
+     */
+    case EMU_IR_FMA:
         return EMU_IR_FRM(aux) == EMU_IR_FRM_RNE;
 
     case EMU_IR_FMIN:
@@ -952,6 +967,58 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         t2_vmov_core(T2_S0, ra, false);
         t2_vmov_core(T2_S1, rb, false);
         t2_vfp3(hi, sub, T2_S0, T2_S0, T2_S1);
+        t2_vmov_core(T2_S0, rd, true);
+        st_slot(rd, in->dst);
+        break;
+    }
+
+    /*
+     * dst = +/-(a * b) +/- c, rounded once.
+     *
+     * ARM's fused instructions accumulate *into the destination*, so the
+     * addend goes into S0 first and the product's sign becomes the `sub`
+     * bit rather than a separate negate:
+     *
+     *   FMADD    a*b + c   VFMA  S0, S1, S2   sub=false, c in S0
+     *   FMSUB    a*b - c   VFMA  with c negated -- VFNMS, see below
+     *   FNMSUB  -a*b + c   VFMS  S0, S1, S2   sub=true,  c in S0
+     *   FNMADD  -a*b - c   VFNMS S0, S1, S2
+     *
+     * The mapping is not one instruction per RISC-V opcode, because
+     * RISC-V negates the *product* in its "n" forms and ARM's VFNM*
+     * negate the *accumulator*. Working it through:
+     *
+     *   NEG_MUL clear, NEG_ADD clear ->  c + a*b   VFMA   0xEEA0 sub=0
+     *   NEG_MUL set,   NEG_ADD clear ->  c - a*b   VFMS   0xEEA0 sub=1
+     *   NEG_MUL clear, NEG_ADD set   -> -c + a*b   VFNMS  0xEE90 sub=0
+     *   NEG_MUL set,   NEG_ADD set   -> -c - a*b   VFNMA  0xEE90 sub=1
+     *
+     * so NEG_ADD picks the encoding pair and NEG_MUL *is* the sub bit,
+     * uniformly. The first version had sub inverted for the NEG_ADD
+     * case, on the reasoning that VFNMA/VFNMS are "named backwards" --
+     * they are, but the sub bit is not, and fptest's mixed kernel came
+     * back 0x00000000 against the host's 0x49370308.
+     */
+    case EMU_IR_FMA: {
+        if (!emu_ir_can_lower((emu_ir_op_t)in->op, in->aux)) {
+            return false;
+        }
+
+        const uint32_t ra = use_reg(in->a, T2_R0);
+        const uint32_t rb = use_reg(in->b, T2_R1);
+        const uint32_t rc = use_reg(in->c, T2_R2);
+        const uint32_t rd = def_reg(in->dst, T2_R0);
+        const bool neg_mul = (in->aux & EMU_IR_FMA_NEG_MUL) != 0u;
+        const bool neg_add = (in->aux & EMU_IR_FMA_NEG_ADD) != 0u;
+        const uint16_t hi = neg_add ? T2_VFNMS_VFNMA : T2_VFMA_VFMS;
+        const bool sub = neg_mul;
+
+        /* The addend is the accumulator, so it goes to the destination
+         * register the instruction reads and writes. */
+        t2_vmov_core(T2_S0, rc, false);
+        t2_vmov_core(T2_S1, ra, false);
+        t2_vmov_core(T2_S2, rb, false);
+        t2_vfp3(hi, sub, T2_S0, T2_S1, T2_S2);
         t2_vmov_core(T2_S0, rd, true);
         st_slot(rd, in->dst);
         break;

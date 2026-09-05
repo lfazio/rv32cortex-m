@@ -1663,8 +1663,84 @@ static void test_lower_fp_flags(void)
 }
 #endif /* EMU_HOST_JIT_X86_64 */
 
+/*
+ * The third operand has to reach every pass that walks operands.
+ *
+ * EMU_IR_FMA is the only instruction that reads three temps, so a pass
+ * that forgets `c` is correct on every block without an FMA and wrong on
+ * the ones that have one -- and "wrong" here is not a declined block. A
+ * missed use count lets the register allocator reuse a register that is
+ * still being read, which is a wrong answer with no diagnostic.
+ *
+ * Three things are checked, one per pass that could drop it:
+ *
+ *   the use counter    c's definition must show a reader
+ *   the dead-code pass c's definition must survive
+ *   copy forwarding    a GET forwarded into c must be rewritten
+ */
+static void test_fma_third_operand(void)
+{
+    emu_ir_reset(&g_b);
+
+    const uint16_t x = emu_ir_get(&g_b, 1u);
+    const uint16_t y = emu_ir_get(&g_b, 2u);
+
+    /* The addend is produced by an instruction of its own, so that the
+     * dead-code pass has something to delete if it does not see the
+     * read. */
+    const uint16_t addend = emu_ir_alu(&g_b, EMU_IR_ADD, x, y);
+    const uint16_t r = emu_ir_emit3(&g_b, EMU_IR_FMA, 0u, x, y, addend);
+
+    emu_ir_put(&g_b, 3u, r);
+
+    emu_ir_opt_stats_t st;
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
+
+    bool addend_alive = false;
+    uint32_t addend_uses = 0u;
+    bool fma_reads_addend = false;
+
+    for (uint32_t i = 0; i < g_b.count; i++) {
+        const emu_ir_insn_t *const in = &g_b.insn[i];
+
+        if (in->dead) {
+            continue;
+        }
+        if (in->dst == addend) {
+            addend_alive = true;
+            addend_uses = in->uses;
+        }
+        if (in->op == (uint8_t)EMU_IR_FMA && in->c == addend) {
+            fma_reads_addend = true;
+        }
+    }
+
+    /* Survived the dead-code sweep: something was seen to read it. */
+    CHECK(addend_alive);
+    /* Counted: exactly the FMA reads it. */
+    CHECK_EQ(addend_uses, 1u);
+    /* And the FMA still names it after every rewrite. */
+    CHECK(fma_reads_addend);
+}
+
+/*
+ * The IR interpreter must decline FMA rather than approximate it.
+ *
+ * It cannot call fmaf(), and `a * b + c` rounds twice -- so an
+ * interpreter that computed it would disagree with a correct native
+ * lowering in the last bit, and the differential harness would report
+ * the *backend* as broken. Declining is the same answer FSQRT gives, for
+ * the same reason.
+ */
+static void test_fma_interp_declines(void)
+{
+    CHECK_EQ(fp_eval(EMU_IR_FMA, 0u, F_ONE, F_ONE), 0xDEADBEEFu);
+}
+
 void test_ir(void)
 {
+    test_fma_third_operand();
+    test_fma_interp_declines();
     test_dead_flags_removed();
     test_flags_kept_when_read();
     test_flags_live_out();

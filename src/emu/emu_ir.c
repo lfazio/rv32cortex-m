@@ -74,6 +74,7 @@ uint16_t emu_ir_emit(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux, uint16_t a,
     in->aux = aux;
     in->a = a;
     in->b = bb;
+    in->c = EMU_IR_NO_TEMP;
     in->imm = imm;
     in->defs = defs;
     /*
@@ -87,6 +88,21 @@ uint16_t emu_ir_emit(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux, uint16_t a,
     in->dead = false;
     in->dst = op_writes(op) ? emu_ir_temp(b) : EMU_IR_NO_TEMP;
     return in->dst;
+}
+
+/*
+ * The three-operand form. Everything emu_ir_emit does, plus the operand
+ * that only EMU_IR_FMA has.
+ */
+uint16_t emu_ir_emit3(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux,
+                      uint16_t a, uint16_t bb, uint16_t c)
+{
+    const uint16_t dst = emu_ir_emit(b, op, aux, a, bb, 0u, 0u);
+
+    if (dst != EMU_IR_NO_TEMP && b->count > 0u) {
+        b->insn[b->count - 1u].c = c;
+    }
+    return dst;
 }
 
 uint16_t emu_ir_get(emu_ir_block_t *b, uint32_t guest_reg)
@@ -288,6 +304,9 @@ static void pass_reg_traffic(emu_ir_block_t *b, const emu_ir_target_t *t,
         if (in->b != EMU_IR_NO_TEMP && in->b < EMU_IR_MAX_TEMPS) {
             in->b = copy[in->b];
         }
+        if (in->c != EMU_IR_NO_TEMP && in->c < EMU_IR_MAX_TEMPS) {
+            in->c = copy[in->c];
+        }
 
         switch ((emu_ir_op_t)in->op) {
         case EMU_IR_GET:
@@ -455,6 +474,9 @@ static void pass_dead_values(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
         if (in->b != EMU_IR_NO_TEMP && in->b < EMU_IR_MAX_TEMPS) {
             used[in->b] = true;
         }
+        if (in->c != EMU_IR_NO_TEMP && in->c < EMU_IR_MAX_TEMPS) {
+            used[in->c] = true;
+        }
     }
 }
 
@@ -608,6 +630,10 @@ static void pass_fuse(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
             uses[in->b] != 255u) {
             uses[in->b]++;
         }
+        if (in->c != EMU_IR_NO_TEMP && in->c < EMU_IR_MAX_TEMPS &&
+            uses[in->c] != 255u) {
+            uses[in->c]++;
+        }
         if (in->dst != EMU_IR_NO_TEMP && in->dst < EMU_IR_MAX_TEMPS) {
             def[in->dst] = (uint16_t)i;
         }
@@ -747,6 +773,10 @@ static void pass_count_uses(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
             uses[in->b] != 255u) {
             uses[in->b]++;
         }
+        if (in->c != EMU_IR_NO_TEMP && in->c < EMU_IR_MAX_TEMPS &&
+            uses[in->c] != 255u) {
+            uses[in->c]++;
+        }
     }
 
     for (uint32_t i = 0; i < b->count; i++) {
@@ -798,9 +828,15 @@ uint32_t emu_ir_regalloc(const emu_ir_block_t *b, uint32_t nregs,
     }
 
     /*
-     * One walk for both ends of every interval. `a` and `b` are
+     * One walk for both ends of every interval. `a`, `b` and `c` are
      * EMU_IR_NO_TEMP when absent, which is 0xFFFF and so above `nt` --
      * the bound doubles as the absent test.
+     *
+     * **`c` has to be here or the allocator reuses a live register.**
+     * It is read by the fused multiply-adds alone, so a version that
+     * forgot it would be correct on every block without an FMA and wrong
+     * on the ones that have one -- the shape of bug this file's history
+     * is full of.
      */
     for (uint32_t i = 0; i < b->count; i++) {
         const emu_ir_insn_t *const in = &b->insn[i];
@@ -813,6 +849,9 @@ uint32_t emu_ir_regalloc(const emu_ir_block_t *b, uint32_t nregs,
         }
         if ((uint32_t)in->b < nt) {
             g_last[in->b] = (uint16_t)i;
+        }
+        if ((uint32_t)in->c < nt) {
+            g_last[in->c] = (uint16_t)i;
         }
         if ((uint32_t)in->dst < nt) {
             g_def[in->dst] = (uint16_t)i;

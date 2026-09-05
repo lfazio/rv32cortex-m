@@ -359,11 +359,32 @@ void t2_vmov_core(uint32_t sn, uint32_t rt, bool to_core)
  * `hi` selects the opcode block and `sub` the bit 6 that separates VADD
  * from VSUB inside it.
  */
+/*
+ * **The N bit is bit 7 of the *second* halfword.**
+ *
+ * It carries sn's low bit, and this put it at bit 7 of the *first* --
+ * where the encoding has nothing, so the instruction assembled with
+ * N clear regardless. Harmless for as long as every caller passed an
+ * even `sn`, which both of the original two did (`vadd s0, s0, s1` and
+ * friends), and wrong the moment one did not: the fused multiply-add
+ * lowering passes `sn = s1` and every FMA read s0 as its multiplicand.
+ *
+ * Checked against the assembler rather than the manual --
+ * `vfma.f32 s0, s1, s2` is `eea0 0a81` and this emitted `eea0 0a01`.
+ * That is the whole difference, and it cost a wrong answer on fptest's
+ * mixed kernel with four other kernels agreeing.
+ *
+ * The lesson this file already carries twice, in a third place: an
+ * encoder whose wrong answers are other valid instructions has to be
+ * tested against the assembler at its *boundary* values, and for a
+ * register field that means an odd one.
+ */
 void t2_vfp3(uint16_t hi, bool sub, uint32_t sd, uint32_t sn, uint32_t sm)
 {
-    t2_emit32((uint16_t)(hi | (VFP_D(sn) << 7) | VFP_VD(sn)),
-              (uint16_t)((VFP_VD(sd) << 12) | 0x0A00u | (VFP_D(sd) << 6) |
-                         (sub ? 0x40u : 0u) | (VFP_D(sm) << 5) | VFP_VD(sm)));
+    t2_emit32((uint16_t)(hi | VFP_VD(sn)),
+              (uint16_t)((VFP_VD(sd) << 12) | 0x0A00u | (VFP_D(sn) << 7) |
+                         (VFP_D(sd) << 6) | (sub ? 0x40u : 0u) |
+                         (VFP_D(sm) << 5) | VFP_VD(sm)));
 }
 
 void t2_vsqrt(uint32_t sd, uint32_t sm)
