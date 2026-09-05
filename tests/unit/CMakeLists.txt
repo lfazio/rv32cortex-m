@@ -71,6 +71,39 @@ if(TARGET guest-isatest AND EMU_GUEST_ARCH_RV32)
     endif()
 endif()
 
+#
+# TinyCrypt: AES-128 and SHA-256 against their published vectors.
+#
+# **A different question from isatest.** That one checks the instructions
+# an ISA test thought to write; this runs a real library that was not
+# written with an emulator in mind, and checks the answer against FIPS
+# rather than against itself. Crypto fails catastrophically -- one wrong
+# bit in a rotation changes every byte after it -- so the vectors are a
+# far stronger assertion than a checksum.
+#
+# It is also the only guest here that executes rotations at all, which is
+# what the Zbb lowerings need in order to be measurable.
+#
+# CRYPTO-END rather than a failure count, for the reason the PowerPC test
+# above records: an exit status of zero is also what a guest that ran
+# nothing returns.
+if(TARGET guest-crypto AND EMU_GUEST_ARCH_RV32)
+    add_test(NAME guest-crypto
+             COMMAND emu-host "${CMAKE_BINARY_DIR}/guest/crypto.bin")
+    set_tests_properties(guest-crypto PROPERTIES
+        LABELS fast
+        PASS_REGULAR_EXPRESSION "failures 0x00000000")
+
+    if(EMU_JIT)
+        add_test(NAME guest-crypto-jit
+                 COMMAND emu-host --jit
+                         "${CMAKE_BINARY_DIR}/guest/crypto.bin")
+        set_tests_properties(guest-crypto-jit PROPERTIES
+            LABELS fast
+            PASS_REGULAR_EXPRESSION "failures 0x00000000")
+    endif()
+endif()
+
 # The e200z7 guest, which is the only thing that runs this frontend as a
 # program rather than as hand-assembled arrays.
 #

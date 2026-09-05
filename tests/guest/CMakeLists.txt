@@ -180,6 +180,55 @@ else()
 endif()
 
 # ---------------------------------------------------------------------
+# TinyCrypt: AES-128 and SHA-256
+# ---------------------------------------------------------------------
+#
+# Intel's TinyCrypt, BSD-3-Clause, fetched rather than vendored -- same
+# arrangement as CoreMark.
+#
+# **This is the only guest that executes bit manipulation.** A trace
+# histogram of CoreMark, Dhrystone and bench over 400,000 sampled
+# instructions each found zero rotations, bit-extracts or
+# count-leading-zeros: compilers emit shifts and masks for ordinary C, and
+# the Zbb lowerings had nothing to measure against. SHA-256 is built from
+# rotations and AES from byte permutes, so this is what makes them visible.
+#
+# It checks itself against FIPS-197 appendix B and FIPS-180-2 before it
+# measures anything, which matters more here than elsewhere: a crypto
+# primitive fails catastrophically, so one wrong bit in a rotation
+# changes every byte downstream and cannot be mistaken for noise.
+set(TINYCRYPT_DIR "${CMAKE_BINARY_DIR}/tinycrypt-src"
+    CACHE PATH "TinyCrypt source")
+set(CRYPTO_ROUNDS "200" CACHE STRING "AES+SHA rounds in the crypto guest")
+
+if(NOT EXISTS "${TINYCRYPT_DIR}/lib/source/aes_encrypt.c")
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+        message(STATUS "Fetching TinyCrypt into ${TINYCRYPT_DIR}")
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} clone --depth 1 -q
+                    https://github.com/intel/tinycrypt.git "${TINYCRYPT_DIR}"
+            RESULT_VARIABLE _tc_rc)
+    endif()
+endif()
+
+if(EXISTS "${TINYCRYPT_DIR}/lib/source/aes_encrypt.c")
+    add_guest_image(crypto
+        SOURCES start.S crypto.c
+        EXTRA_SOURCES
+            "${TINYCRYPT_DIR}/lib/source/aes_encrypt.c"
+            "${TINYCRYPT_DIR}/lib/source/aes_decrypt.c"
+            "${TINYCRYPT_DIR}/lib/source/sha256.c"
+            "${TINYCRYPT_DIR}/lib/source/utils.c"
+        FLAGS
+            -I "${TINYCRYPT_DIR}/lib/include"
+            -DCRYPTO_ROUNDS=${CRYPTO_ROUNDS}
+            -Wno-sign-compare -Wno-unused-parameter)
+else()
+    message(STATUS "TinyCrypt source not available; skipping the crypto image")
+endif()
+
+# ---------------------------------------------------------------------
 # Dhrystone
 # ---------------------------------------------------------------------
 

@@ -152,7 +152,40 @@ static void rv_kind_name(uint32_t k, char *buf, unsigned n)
     case 0x33: {
         static const char *const r3[8] = {"add", "sll", "slt", "sltu",
                                           "xor", "srl", "or",  "and"};
-        s = (f3 == 0u && f7) ? "sub" : (f3 == 5u && f7) ? "sra" : r3[f3];
+        static const char *const m3[8] = {"mul",    "mulh",   "mulhsu",
+                                          "mulhu",  "div",    "divu",
+                                          "rem",    "remu"};
+        static const char *const zbb5[8] = {"?", "?", "?", "?",
+                                            "min", "minu", "max", "maxu"};
+        static const char *const zba[8] = {"?",     "sh1add", "?", "sh2add",
+                                           "?",     "sh3add", "?", "?"};
+
+        /*
+         * **funct7 is not a boolean.** This tested `f7` for truth and
+         * called anything non-zero `sub` or `sra`, so every M-extension
+         * instruction printed as its base-integer neighbour: `mul` as
+         * `add`, `div` as `srl`. Asked which guests execute multiplies,
+         * the histogram answered "none" for all four -- a perfect null
+         * result, and this file's own rule says to suspect the
+         * instrument first.
+         *
+         * The slot is shared four ways on this build: funct7 0x00 is
+         * base, 0x01 is M, 0x20 is sub/sra, and Zba/Zbb take 0x10 and
+         * 0x05. Enumerate it rather than testing a bit.
+         */
+        if (f7 == 0x01u) {
+            s = m3[f3];
+        } else if (f7 == 0x20u) {
+            s = (f3 == 0u) ? "sub" : (f3 == 5u) ? "sra" : "?";
+        } else if (f7 == 0x05u) {
+            s = zbb5[f3];
+        } else if (f7 == 0x10u) {
+            s = zba[f3];
+        } else if (f7 == 0x30u) {
+            s = (f3 == 1u) ? "rol" : (f3 == 5u) ? "ror" : "?";
+        } else if (f7 == 0x00u) {
+            s = r3[f3];
+        }
         break;
     }
     /*
