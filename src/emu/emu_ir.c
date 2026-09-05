@@ -601,6 +601,126 @@ static bool shift_imm_ok(uint8_t op, uint32_t imm)
     }
 }
 
+
+/*
+ * Multiply-accumulate: dst = c +/- (a * b), ARM's MLA and MLS.
+ *
+ * **A separate pass, and it has to run after the dead-code sweeps.** The
+ * frontend emits `PUT rd, MUL(...)` because RISC-V's mul really does
+ * write rd, so at pass_fuse time every multiply has two readers -- the
+ * PUT and the add -- and `uses == 1` is never true. Measured on the
+ * board before this was moved: 277 add/subs whose second operand came
+ * from a MUL, and **zero** with a single use. Only once pass_dead_puts
+ * has removed the PUT of a register nothing reads again does the count
+ * become the one fusion needs.
+ *
+ * `uses == 1` remains the soundness condition. Fusing a multiply that
+ * something else still reads computes it twice, which is bigger and
+ * slower than not fusing.
+ */
+static void pass_mac(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
+{
+    static uint8_t uses[EMU_IR_MAX_TEMPS];
+    static uint16_t def[EMU_IR_MAX_TEMPS];
+
+    memset(uses, 0, sizeof(uses));
+    for (uint32_t i = 0; i < EMU_IR_MAX_TEMPS; i++) {
+        def[i] = (uint16_t)EMU_IR_NO_TEMP;
+    }
+
+    for (uint32_t i = 0; i < b->count; i++) {
+        const emu_ir_insn_t *const in = &b->insn[i];
+
+        if (in->dead) {
+            continue;
+        }
+        if (in->a != EMU_IR_NO_TEMP && in->a < EMU_IR_MAX_TEMPS &&
+            uses[in->a] != 255u) {
+            uses[in->a]++;
+        }
+        if (in->b != EMU_IR_NO_TEMP && in->b < EMU_IR_MAX_TEMPS &&
+            uses[in->b] != 255u) {
+            uses[in->b]++;
+        }
+        if (in->c != EMU_IR_NO_TEMP && in->c < EMU_IR_MAX_TEMPS &&
+            uses[in->c] != 255u) {
+            uses[in->c]++;
+        }
+        if (in->dst != EMU_IR_NO_TEMP && in->dst < EMU_IR_MAX_TEMPS) {
+            def[in->dst] = (uint16_t)i;
+        }
+    }
+
+    for (uint32_t i = 0; i < b->count; i++) {
+        emu_ir_insn_t *const in = &b->insn[i];
+
+        if (in->dead) {
+            continue;
+        }
+        /* --- multiply-accumulate ------------------------------------ */
+        /*
+         * dst = c +/- (a * b), where the multiply's *only* consumer is
+         * this add or subtract. ARM's MLA and MLS; RISC-V has no such
+         * instruction, so the pattern exists only as two.
+         *
+         * **`uses == 1` is the whole soundness condition.** Fusing a
+         * multiply that something else also reads computes it twice,
+         * which is bigger and slower than not fusing -- the rule the
+         * `uses` field exists for, and which the reverted
+         * shifted-operand fusion is recorded as needing.
+         *
+         * **Measured before it was written.** CoreMark retires 6,156
+         * `mul` immediately followed by a dependent `add` in a
+         * 400,000-instruction sample, out of 9,470 multiplies. The pair
+         * histogram's top-N list did not show it -- a direct trace did,
+         * which is worth remembering the next time a pattern looks
+         * absent.
+         *
+         * The subtracting form is asymmetric and easy to get backwards:
+         * MLS is `c - a*b`, so only a SUB whose *second* operand is the
+         * product qualifies. `a*b - c` is not an MLS and is left alone,
+         * which is also why the commuted case below is ADD-only.
+         */
+        if (in->op == (uint8_t)EMU_IR_ADD ||
+            in->op == (uint8_t)EMU_IR_SUB) {
+            const bool is_sub = in->op == (uint8_t)EMU_IR_SUB;
+            uint16_t prod = (uint16_t)EMU_IR_NO_TEMP;
+            uint16_t addend = (uint16_t)EMU_IR_NO_TEMP;
+
+            if (in->b != EMU_IR_NO_TEMP && in->b < EMU_IR_MAX_TEMPS &&
+                uses[in->b] == 1u &&
+                def[in->b] != (uint16_t)EMU_IR_NO_TEMP &&
+                b->insn[def[in->b]].op == (uint8_t)EMU_IR_MUL &&
+                !b->insn[def[in->b]].dead) {
+                prod = in->b;
+                addend = in->a;
+            } else if (!is_sub && in->a != EMU_IR_NO_TEMP &&
+                       in->a < EMU_IR_MAX_TEMPS && uses[in->a] == 1u &&
+                       def[in->a] != (uint16_t)EMU_IR_NO_TEMP &&
+                       b->insn[def[in->a]].op == (uint8_t)EMU_IR_MUL &&
+                       !b->insn[def[in->a]].dead) {
+                prod = in->a;
+                addend = in->b;
+            }
+
+            if (prod != (uint16_t)EMU_IR_NO_TEMP &&
+                addend != (uint16_t)EMU_IR_NO_TEMP &&
+                backend_can_lower((uint8_t)EMU_IR_MAC,
+                                  is_sub ? EMU_IR_MAC_SUB : 0u)) {
+                emu_ir_insn_t *const mul = &b->insn[def[prod]];
+
+                in->op = (uint8_t)EMU_IR_MAC;
+                in->aux = is_sub ? (uint8_t)EMU_IR_MAC_SUB : 0u;
+                in->a = mul->a;
+                in->b = mul->b;
+                in->c = addend;
+                mul->dead = true;
+                st->macs++;
+            }
+        }
+    }
+}
+
 static void pass_fuse(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
 {
     static uint8_t uses[EMU_IR_MAX_TEMPS];
@@ -971,6 +1091,7 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
     pass_fuse(b, stats);
     pass_dead_puts(b, stats);
     pass_dead_values(b, stats);
+    pass_mac(b, stats);
     pass_count_uses(b, stats);
 
     g_opt_totals.blocks++;
@@ -981,5 +1102,6 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
     g_opt_totals.folded += stats->folded;
     g_opt_totals.addr_folded += stats->addr_folded;
     g_opt_totals.identities += stats->identities;
+    g_opt_totals.macs += stats->macs;
     g_opt_totals.dead_removed += stats->dead_removed;
 }

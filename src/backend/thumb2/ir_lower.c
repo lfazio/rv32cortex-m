@@ -448,6 +448,7 @@ static bool bisect_allows(uint8_t op)
     case EMU_IR_MUL:
     case EMU_IR_MULHS:
     case EMU_IR_MULHU:
+    case EMU_IR_MAC:
         return T2_BISECT >= 7;
     case EMU_IR_LOAD:
     case EMU_IR_STORE:
@@ -517,6 +518,15 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
      */
     case EMU_IR_FMA:
         return EMU_IR_FRM(aux) == EMU_IR_FRM_RNE;
+
+    /*
+     * MLA and MLS, both of which this host has. No rounding question --
+     * integer multiply-accumulate wraps the same fused or not -- so
+     * there is nothing to gate on.
+     */
+    case EMU_IR_MAC:
+        (void)aux;
+        return true;
 
     case EMU_IR_FMIN:
     case EMU_IR_FMAX:
@@ -1074,6 +1084,28 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         const uint32_t rd = def_reg(in->dst, T2_R0);
 
         t2_mul(rd, ra, rb);
+        st_slot(rd, in->dst);
+        break;
+    }
+
+    /*
+     * dst = c +/- (a * b), in one instruction.
+     *
+     *   MLA  rd, rn, rm, ra    rd = ra + rn * rm
+     *   MLS  rd, rn, rm, ra    rd = ra - rn * rm
+     *
+     * Both are four-register, and MLS is the asymmetric one -- the
+     * accumulator is subtracted *from*, which is why pass_fuse only
+     * produces the sub form when the product is the SUB's second
+     * operand.
+     */
+    case EMU_IR_MAC: {
+        const uint32_t ra = use_reg(in->a, T2_R0);
+        const uint32_t rb = use_reg(in->b, T2_R1);
+        const uint32_t rc = use_reg(in->c, T2_R2);
+        const uint32_t rd = def_reg(in->dst, T2_R0);
+
+        t2_mla(rd, ra, rb, rc, (in->aux & EMU_IR_MAC_SUB) != 0u);
         st_slot(rd, in->dst);
         break;
     }

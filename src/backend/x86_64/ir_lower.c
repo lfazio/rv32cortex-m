@@ -634,6 +634,15 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
     case EMU_IR_FMA:
         return false;
 
+    /*
+     * No integer multiply-accumulate on x86-64: IMUL writes one
+     * destination and the add would be a second instruction, which is
+     * exactly what the fusion was trying to avoid. Declining leaves
+     * pass_fuse's MUL and ADD in place, which is the right code here.
+     */
+    case EMU_IR_MAC:
+        return false;
+
     case EMU_IR_FCVT_FROM_I:
         return (aux & EMU_IR_F_UNSIGNED) == 0u &&
                EMU_IR_FRM(aux) == EMU_IR_FRM_RNE;

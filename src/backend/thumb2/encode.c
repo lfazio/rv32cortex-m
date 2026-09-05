@@ -551,6 +551,28 @@ void t2_mul(uint32_t rd, uint32_t rn, uint32_t rm)
 }
 
 /*
+ * MLA rd, rn, rm, ra  ->  rd = ra + rn * rm
+ * MLS rd, rn, rm, ra  ->  rd = ra - rn * rm
+ *
+ * The same encoding as MUL with the accumulator in the field MUL sets to
+ * 0xF -- which is how the architecture spells "no accumulator" -- and
+ * bit 4 of the second halfword choosing subtract.
+ *
+ * Checked against the assembler, since an encoder whose wrong answers
+ * are other valid instructions is this project's most-repeated defect:
+ *   mla r0, r1, r2, r3  is  fb01 3002
+ *   mls r0, r1, r2, r3  is  fb01 3012
+ * and `ra` at 0xF turns either back into a plain MUL, silently. Passing
+ * r15 here would therefore drop the accumulate rather than fault, so
+ * callers must not.
+ */
+void t2_mla(uint32_t rd, uint32_t rn, uint32_t rm, uint32_t ra, bool sub)
+{
+    t2_emit32((uint16_t)(0xFB00u | rn),
+              (uint16_t)((ra << 12) | (rd << 8) | (sub ? 0x10u : 0u) | rm));
+}
+
+/*
  * SMULL / UMULL rdlo, rdhi, rn, rm -- the full 64-bit product.
  *
  * The high-half opcodes need this; MUL.W gives only the low 32 bits.

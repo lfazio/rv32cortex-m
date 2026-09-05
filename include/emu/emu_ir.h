@@ -141,6 +141,25 @@ typedef enum emu_ir_op {
     EMU_IR_MULHS,
     EMU_IR_MULHU,
 
+    /*
+     * dst = c +/- (a * b), the multiply-accumulate. ARM's MLA and MLS,
+     * and the second user of the IR's third operand.
+     *
+     * `aux` is EMU_IR_MAC_SUB for the subtracting form. There is no
+     * rounding question here, unlike EMU_IR_FMA -- integer arithmetic
+     * wraps identically whether it is fused or not -- so this is purely
+     * an instruction-count saving, and a host without a multiply-
+     * accumulate can decline it and lose nothing but size.
+     *
+     * **The frontend does not emit this; pass_fuse creates it.** RISC-V
+     * has no multiply-accumulate instruction, so the pattern only exists
+     * as a MUL whose single consumer is an ADD or SUB. That it fires at
+     * all was measured before it was written: CoreMark retires 6,156
+     * `mul` followed immediately by a dependent `add` in a
+     * 400,000-instruction sample, against 9,470 multiplies in total.
+     */
+    EMU_IR_MAC,
+
     /* Same, with `imm` as the right operand. */
     EMU_IR_ADDI,
     EMU_IR_ANDI,
@@ -502,6 +521,9 @@ typedef enum emu_ir_cond {
  * checked against the wrong mode. fptest's mixed kernel came back
  * 0x00000000 against a reference of 0x49370308.
  */
+/* EMU_IR_MAC's `aux`: subtract the product rather than add it. */
+#define EMU_IR_MAC_SUB 0x01u
+
 #define EMU_IR_FMA_NEG_MUL (1u << 4)
 #define EMU_IR_FMA_NEG_ADD (1u << 5)
 
@@ -620,6 +642,7 @@ typedef struct emu_ir_opt_stats {
     uint32_t folded; /* constants absorbed into an immediate  */
     uint32_t addr_folded; /* displacements folded into a LOAD/STORE */
     uint32_t identities; /* no-op arithmetic turned into a move    */
+    uint32_t macs; /* multiply+add pairs fused into an MLA   */
     uint32_t dead_removed; /* values nothing consumed               */
     uint32_t blocks; /* times emu_ir_optimise ran             */
 } emu_ir_opt_stats_t;

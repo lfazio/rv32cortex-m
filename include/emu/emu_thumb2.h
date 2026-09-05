@@ -88,6 +88,9 @@ void t2_addw(uint32_t rd, uint32_t rn, uint16_t imm12);
 void t2_subw(uint32_t rd, uint32_t rn, uint16_t imm12);
 
 void t2_mul(uint32_t rd, uint32_t rn, uint32_t rm);
+
+/* MLA/MLS: rd = ra +/- rn * rm. `ra` must not be r15 -- see encode.c. */
+void t2_mla(uint32_t rd, uint32_t rn, uint32_t rm, uint32_t ra, bool sub);
 void t2_mull(bool sign, uint32_t rdlo, uint32_t rdhi, uint32_t rn, uint32_t rm);
 
 void t2_rev(uint32_t rd, uint32_t rm);
