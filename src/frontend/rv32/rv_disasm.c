@@ -247,13 +247,39 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
         break;
 
     case OP_IMM:
-        if (f3 == 5u) { /* srli / srai share funct3 */
-            emit_rri(&o, (f7 == 0x20u) ? "srai" : "srli", insn,
-                     (int32_t)rv_rs2(insn));
+        /*
+         * **funct7 selects between five instructions here, not two.**
+         * This tested only for 0x20 and called everything else `srli`,
+         * so Zbb's rori -- funct7 0x30 -- printed as a plain shift.
+         * Asked how many rotations the crypto guest executes, a trace
+         * answered "none" while 25,933 of them ran inside SHA-256's
+         * compress function.
+         *
+         * Same defect the pair histogram had for the M extension, in a
+         * second instrument: this file already records the disassembler
+         * printing confident nonsense for G4MH and reporting zero FP in
+         * a hard-float build. Enumerate the slot.
+         */
+        if (f3 == 5u) {
+            const char *mn = (f7 == 0x20u)   ? "srai"
+                             : (f7 == 0x30u) ? "rori"
+                             : (f7 == 0x34u) ? "bexti"
+                             : (f7 == 0x24u) ? "bclri"
+                             : (f7 == 0x00u) ? "srli"
+                                             : "?shift";
+
+            emit_rri(&o, mn, insn, (int32_t)rv_rs2(insn));
             break;
         }
         if (f3 == 1u) {
-            emit_rri(&o, "slli", insn, (int32_t)rv_rs2(insn));
+            const char *mn = (f7 == 0x14u)   ? "bseti"
+                             : (f7 == 0x24u) ? "bclri"
+                             : (f7 == 0x34u) ? "binvi"
+                             : (f7 == 0x30u) ? "?zbb-unary"
+                             : (f7 == 0x00u) ? "slli"
+                                             : "?shift";
+
+            emit_rri(&o, mn, insn, (int32_t)rv_rs2(insn));
             break;
         }
         /* addi rd, zero, imm is the canonical load-immediate. */
@@ -278,7 +304,34 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
         if (f7 == 0x01u) {
             emit_rrr(&o, mul_mn[f3], insn);
         } else if (f7 == 0x20u) {
-            emit_rrr(&o, (f3 == 0u) ? "sub" : "sra", insn);
+            /* sub, sra, and Zbb's andn/orn/xnor share this funct7. */
+            emit_rrr(&o,
+                     (f3 == 0u)   ? "sub"
+                     : (f3 == 5u) ? "sra"
+                     : (f3 == 7u) ? "andn"
+                     : (f3 == 6u) ? "orn"
+                     : (f3 == 4u) ? "xnor"
+                                  : "?op",
+                     insn);
+        } else if (f7 == 0x30u) {
+            emit_rrr(&o, (f3 == 1u) ? "rol" : (f3 == 5u) ? "ror" : "?rot",
+                     insn);
+        } else if (f7 == 0x05u) {
+            emit_rrr(&o,
+                     (f3 == 4u)   ? "min"
+                     : (f3 == 5u) ? "minu"
+                     : (f3 == 6u) ? "max"
+                     : (f3 == 7u) ? "maxu"
+                     : (f3 == 0u) ? "clmul"
+                                  : "?zbb",
+                     insn);
+        } else if (f7 == 0x10u) {
+            emit_rrr(&o,
+                     (f3 == 2u)   ? "sh1add"
+                     : (f3 == 4u) ? "sh2add"
+                     : (f3 == 6u) ? "sh3add"
+                                  : "?zba",
+                     insn);
         } else {
             emit_rrr(&o, op_mn[f3], insn);
         }

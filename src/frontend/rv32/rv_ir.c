@@ -345,6 +345,27 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
                                        insn >> 20 & 31u, 0u));
                 return true;
             }
+            /*
+             * Zbb's rori, which is 4.34% of the crypto guest -- 21,710
+             * of 500,000 executed instructions, all inside SHA-256's
+             * compress. Untranslated until now, so every one of them
+             * ended a block and fell to the interpreter.
+             *
+             * **It rotates right and EMU_IR_ROTLI rotates left**, so the
+             * amount is complemented. A rotate by zero must stay zero
+             * rather than becoming 32: `(32 - n) & 31` gets both, where
+             * `32 - n` alone would turn the identity into a full turn --
+             * which on ARM is the RRX encoding and not a rotation at
+             * all. Same trap as the imm5 == 0 note in t2_shift_imm.
+             */
+            if (sh == 0x30u) {
+                const uint32_t n = (insn >> 20) & 31u;
+
+                emu_ir_put(b, rd,
+                           emu_ir_emit(b, EMU_IR_ROTLI, 0u, x,
+                                       EMU_IR_NO_TEMP, (32u - n) & 31u, 0u));
+                return true;
+            }
             return false;
         default:
             return false;

@@ -165,6 +165,7 @@ void x86_unary(unsigned ext, int reg);
 void x86_bswap(int reg);
 #define X86_NOT 2u
 #define X86_NEG 3u
+#define X86_ROL 0u
 #define X86_ROR 1u
 void x86_add_imm8(int dst, int8_t imm);
 void x86_and_imm8(int dst, int8_t imm);

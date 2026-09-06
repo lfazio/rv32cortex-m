@@ -652,6 +652,16 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
                (EMU_IR_FRM(aux) == EMU_IR_FRM_RTZ ||
                 EMU_IR_FRM(aux) == EMU_IR_FRM_RNE);
 
+    /*
+     * `default` here is false, so an operation lower_one handles has to
+     * be named or the answer is a lie in the safe direction -- the
+     * frontend routes to a helper an operation the backend would have
+     * lowered. ROTL keeps declining: nothing emits it, and it is not
+     * worth an encoder no measurement asked for.
+     */
+    case EMU_IR_ROTLI:
+        return true;
+
     case EMU_IR_FMIN:
     case EMU_IR_FMAX:
     case EMU_IR_FCLASS:
@@ -1458,12 +1468,34 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         break;
     }
 
+    /*
+     * Rotate left by a constant. x86 has ROL, so this is one
+     * instruction -- and unlike ARM there is no boundary to get wrong:
+     * the count is masked to five bits for a 32-bit operand, so a
+     * rotation by zero is a genuine no-op rather than ARM's RRX. The
+     * move that puts the source in rd has already happened.
+     *
+     * Worth doing because the guest that executes rotations executes a
+     * lot of them: SHA-256's Sigma functions are three `rori` each, and
+     * tests/guest/crypto.c retires 21,710 of them in a 500k window --
+     * 4.34%, the eighth most common instruction, and larger than
+     * CoreMark's entire multiply share. Every one of them declined the
+     * whole block before this.
+     */
+    case EMU_IR_ROTLI: {
+        const int rd = dst_reg(in->dst);
+
+        ld_operand(rd, in->a);
+        x86_shift_imm(rd, X86_ROL, in->imm & 31u);
+        st_slot(rd, in->dst);
+        break;
+    }
+
     case EMU_IR_FMIN:
     case EMU_IR_FMAX:
     case EMU_IR_FCLASS:
     case EMU_IR_POPCNT:
     case EMU_IR_ROTL:
-    case EMU_IR_ROTLI:
     default:
         return false;
     }

@@ -429,6 +429,7 @@ static bool bisect_allows(uint8_t op)
     case EMU_IR_SHLI:
     case EMU_IR_SHRI:
     case EMU_IR_SARI:
+    case EMU_IR_ROTLI:
         return T2_BISECT >= 3;
     case EMU_IR_BSWAP32:
     case EMU_IR_BSWAP16:
@@ -549,12 +550,36 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
      * ask about the FP class and nothing else. It stopped being free the
      * moment an IR pass started asking, which is what surfaced it.
      */
-    case EMU_IR_ROTL:
-    case EMU_IR_ROTLI:
+    /*
+     * The rotations lower natively -- ARM has ROR as a shift type and as
+     * a register form -- so a left rotation by n is a right rotation by
+     * 32 - n. The four value bit operations still decline: none has a
+     * single-instruction ARM equivalent, and each would be three or four
+     * instructions of open-coded shifting and masking, which is a second
+     * copy of semantics the core already owns.
+     */
     case EMU_IR_BEXT:
     case EMU_IR_BSET:
     case EMU_IR_BCLR:
     case EMU_IR_BINV:
+        return false;
+
+    /*
+     * **The register-amount rotation is still declined**, and it has to
+     * be named here rather than left to the default.
+     *
+     * `default: return true` makes this function a promise the lowering
+     * has to keep, and emu_ir.h says so. ROTLI gained a case in
+     * lower_one; ROTL did not, so falling through to the default would
+     * claim an operation that lower_one refuses -- which costs the whole
+     * block rather than one instruction, silently. That is the defect
+     * this file already records for ROTL and the four bit operations
+     * when the promise and the lowering last disagreed.
+     *
+     * No guest here executes one: the crypto guest's 21,710 rotations
+     * are all `rori`, the immediate form.
+     */
+    case EMU_IR_ROTL:
         return false;
 
     default:
@@ -773,6 +798,26 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                      : (in->op == (uint8_t)EMU_IR_SHRI) ? T2_LSR
                                                         : T2_ASR,
                      rd, ra, in->imm);
+        st_slot(rd, in->dst);
+        break;
+    }
+
+    /*
+     * Rotate left by `imm`, as a rotate right by 32 - imm.
+     *
+     * **A rotation by zero must not become ROR #32.** ARM has no such
+     * encoding: imm5 == 0 in a ROR is RRX, a 33-bit rotate through the
+     * carry, which is a different instruction and not a rotation at all.
+     * `(32 - imm) & 31` keeps the identity an identity. t2_shift_imm
+     * rewrites a zero-amount ROR to a move for exactly this reason, so
+     * the mask is belt and braces -- but the arithmetic has to be right
+     * before it gets there.
+     */
+    case EMU_IR_ROTLI: {
+        const uint32_t ra = use_reg(in->a, T2_R0);
+        const uint32_t rd = def_reg(in->dst, T2_R0);
+
+        t2_shift_imm(T2_ROR, rd, ra, (32u - (in->imm & 31u)) & 31u);
         st_slot(rd, in->dst);
         break;
     }
@@ -1286,8 +1331,6 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_BITOP_INV:
     case EMU_IR_BITOP_TST:
     case EMU_IR_POPCNT:
-    case EMU_IR_ROTL:
-    case EMU_IR_ROTLI:
     case EMU_IR_BEXT:
     case EMU_IR_BSET:
     case EMU_IR_BCLR:
