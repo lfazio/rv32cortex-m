@@ -260,11 +260,18 @@ void rv_hart_reset(rv_hart_t *h, uint32_t reset_pc);
  * script still work, which is why it is a separate call rather than part
  * of rv_hart_reset.
  *
- *   sp (x2) = ram_base + ram_size, 16-byte aligned
+ *   sp (x2) = the top of what the guest may use, 16-byte aligned --
+ *             below the device tree when there is one, or the top of
+ *             RAM when there is not
  *   a0 (x10) = hartid
- *   a1 (x11) = ram_size
+ *   a1 (x11) = the device tree, or the RAM size when there is none
+ *
+ * **a1 follows the image.** The supervisor convention -- OpenSBI,
+ * U-Boot, Linux -- puts a flattened device tree there. The bare-metal
+ * guests in this tree have none and were given the RAM size, which is
+ * this project's own convention and what `hello` and `coremark` read.
  */
-void rv_hart_boot(rv_hart_t *h, uint32_t ram_base, uint32_t ram_size);
+void rv_hart_boot(rv_hart_t *h, const emu_boot_info_t *info);
 
 /* misa value for the configured extension set. */
 uint32_t rv_hart_misa(void);
