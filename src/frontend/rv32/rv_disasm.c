@@ -563,12 +563,46 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
 
     case OP_SYSTEM: {
         if (f3 == 0u) {
+            /*
+             * **SFENCE.VMA carries two register operands, so it cannot
+             * be matched on `insn >> 20` like the others.** Every form
+             * above is a constant 12-bit field with rs1 and rs2 zero;
+             * this one varies both, and testing the constant made every
+             * `sfence.vma` print as `illegal`.
+             *
+             * That is not cosmetic. This disassembler is the instrument
+             * a trace is read with, and an instruction that retires
+             * while printing "illegal" reads as the *decoder* being
+             * broken -- which is exactly the wrong place to look. It
+             * cost a detour while bringing up a Linux guest, whose first
+             * act after enabling paging is an sfence.vma. Same shape as
+             * this file printing every OP-FP as illegal and turning a
+             * hard-float profile into "there is no floating point here".
+             */
+            if (((insn >> 25) & 0x7Fu) == 0x09u && rv_rd(insn) == 0u) {
+                emit_str(&o, "sfence.vma");
+                if (rv_rs1(insn) != 0u || rv_rs2(insn) != 0u) {
+                    emit_str(&o, " ");
+                    emit_reg(&o, rv_rs1(insn));
+                    emit_str(&o, ", ");
+                    emit_reg(&o, rv_rs2(insn));
+                }
+                break;
+            }
             switch (insn >> 20) {
             case 0x000u:
                 emit_str(&o, "ecall");
                 break;
             case 0x001u:
                 emit_str(&o, "ebreak");
+                break;
+            case 0x102u:
+                /*
+                 * SRET, which was simply absent -- and is the one a
+                 * supervisor returns through on every trap, so a trace
+                 * of any S-mode guest was full of "illegal".
+                 */
+                emit_str(&o, "sret");
                 break;
             case 0x302u:
                 emit_str(&o, "mret");
