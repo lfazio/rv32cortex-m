@@ -483,6 +483,56 @@ static bool lower_one(emu_ir_block_t *b, uint16_t w0, uint32_t pc)
         return true;
     }
 
+    case 0x14: /* SHR imm5, reg2   */
+    case 0x15: /* SAR imm5, reg2   */
+    case 0x16: { /* SHL imm5, reg2   */
+        /*
+         * The amount is a *constant here*, which is what makes these
+         * lowerable at all: the carry a shift defines is the last bit
+         * shifted out, and knowing n at translation turns that into one
+         * more shift of the source rather than a run-time select on
+         * whether n is zero.
+         *
+         * **Shift by zero is a different instruction, not a degenerate
+         * one.** G4MH leaves the value alone, clears OV *and* CY, and
+         * still writes Z and S -- so it is a move with FS_LOGIC, which
+         * defines exactly those four that way. Reaching it through the
+         * general path would compute the carry as bit 31 of the source
+         * (n - 1 wrapping to 31) and set CY from it. The interpreter's
+         * do_shl/do_shr/do_sar all begin `cy = 0` before testing n for
+         * this reason; the same case has to exist here.
+         */
+        static const uint8_t k_sh[3] = {EMU_IR_SHRI, EMU_IR_SARI,
+                                        EMU_IR_SHLI};
+        const uint32_t n = (uint32_t)(w0 & 0x1Fu);
+        const uint16_t v = emu_ir_get(b, r2);
+
+        if (n == 0u) {
+            emu_ir_put(b, r2, v);
+            (void)emu_ir_emit(b, EMU_IR_SETF, EMU_IR_FS_LOGIC, v,
+                              EMU_IR_NO_TEMP, 0u, F_ARITH);
+            return true;
+        }
+
+        const uint16_t res =
+            emu_ir_emit(b, (emu_ir_op_t)k_sh[op - 0x14u], 0u, v,
+                        EMU_IR_NO_TEMP, n, 0u);
+        /*
+         * The bit that leaves: n - 1 from the bottom for the right
+         * shifts, 32 - n from the bottom for the left one. Both are
+         * reads of the *source*, so the shift above and this are
+         * independent and the optimiser is free to order them.
+         */
+        const uint32_t cbit = (op == 0x16u) ? (32u - n) : (n - 1u);
+        const uint16_t cy = emu_ir_emit(b, EMU_IR_SHRI, 0u, v,
+                                        EMU_IR_NO_TEMP, cbit, 0u);
+
+        emu_ir_put(b, r2, res);
+        (void)emu_ir_emit(b, EMU_IR_SETF, EMU_IR_FS_SHIFT, res, cy, 0u,
+                          F_ARITH);
+        return true;
+    }
+
     case 0x13: { /* CMP imm5, reg2   */
         const uint16_t x = emu_ir_get(b, r2);
         const uint16_t y = emu_ir_const(b, (uint32_t)g4mh_imm5(w0));

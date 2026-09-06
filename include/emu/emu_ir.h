@@ -421,7 +421,24 @@ typedef enum emu_ir_flagsrc {
     EMU_IR_FS_LOGIC = 0, /* Z and S from the result; V and C cleared */
     EMU_IR_FS_ADD, /* full add semantics, needs both operands  */
     EMU_IR_FS_SUB, /* full subtract; C is a borrow             */
-    EMU_IR_FS_ZS /* Z and S only, leaving V and C alone      */
+    EMU_IR_FS_ZS, /* Z and S only, leaving V and C alone      */
+    /*
+     * Shift semantics: Z and S from the result in `a`, V cleared, and
+     * **C taken from bit 0 of `b`**.
+     *
+     * The carry a shift defines is the last bit shifted out, which is
+     * not recoverable from the result -- so the frontend computes it as
+     * an ordinary value and hands it over, rather than this enum growing
+     * a direction and an amount. That keeps the shift itself an ordinary
+     * SHLI/SHRI/SARI that every backend already lowers, and it means a
+     * shift by zero is expressed by passing a zero rather than by a
+     * special case here.
+     *
+     * Only bit 0 of `b` is read. Handing it the whole shifted-out word
+     * and expecting the flag to mean "any bit" would be a different
+     * operation, and a plausible one, which is why the bit is stated.
+     */
+    EMU_IR_FS_SHIFT
 } emu_ir_flagsrc_t;
 
 /* Conditions, for GETCOND, SELECT and EXIT_IF. */

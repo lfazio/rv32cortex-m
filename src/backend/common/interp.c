@@ -91,6 +91,13 @@ static void apply_flags(emu_cpu_t *cpu, const emu_ir_target_t *t,
         v = (((res ^ rhs) & (res ^ d) & 0x80000000u) != 0u);
         break;
     }
+    case EMU_IR_FS_SHIFT:
+        /* Z and S from the result, V cleared, C from bit 0 of `b`. */
+        z = (res == 0u);
+        s = (res & 0x80000000u) != 0u;
+        c = (rhs & 1u) != 0u;
+        break;
+
     case EMU_IR_FS_LOGIC:
     case EMU_IR_FS_ZS:
     default:

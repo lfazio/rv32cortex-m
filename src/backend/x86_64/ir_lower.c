@@ -411,9 +411,11 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         break;
     case EMU_IR_FS_LOGIC:
     case EMU_IR_FS_ZS:
+    case EMU_IR_FS_SHIFT:
     default:
         /* test sets ZF and SF and clears CF and OF, which is exactly the
-         * logical-operation definition. */
+         * logical-operation definition -- and for a shift it is right for
+         * Z, S and V, with C supplied separately from `b` below. */
         x86_alu_rr(X86_TEST, T0, T0);
         break;
     }
@@ -477,9 +479,26 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         if ((live & (1u << f)) == 0u || t->flag_bit[f] == 0u) {
             continue;
         }
-        x86_mov_rr(T0, T1);
-        if (k_src_bit[f] != 0u) {
-            x86_shift_imm(T0, X86_SHR, k_src_bit[f]);
+        /*
+         * A shift's C does not come from the host flags at all -- the
+         * TEST above deliberately cleared CF, and the bit the guest
+         * wants was shifted out by an instruction that has long since
+         * retired. It arrives as an ordinary value in `b`.
+         *
+         * Taken here rather than by emitting a second flag-producing
+         * instruction before the snapshot, because anything that writes
+         * CF also writes ZF and SF, and this sequence has already been
+         * wrong once in exactly that way: an earlier version folded each
+         * flag with `shl`/`or` and so every flag after the first read
+         * the accumulator's flags instead of the operation's.
+         */
+        if (in->aux == (uint8_t)EMU_IR_FS_SHIFT && f == 3u) {
+            ld_operand(T0, in->b);
+        } else {
+            x86_mov_rr(T0, T1);
+            if (k_src_bit[f] != 0u) {
+                x86_shift_imm(T0, X86_SHR, k_src_bit[f]);
+            }
         }
         x86_and_imm8(T0, 1);
         x86_shift_imm(T0, X86_SHL, (uint32_t)__builtin_ctz(t->flag_bit[f]));

@@ -67,6 +67,8 @@
 #define OP_MOVI 0x10u
 #define OP_ADDI5 0x12u
 #define OP_CMPI5 0x13u
+#define OP_SHR 0x14u
+#define OP_SAR 0x15u
 #define OP_SHL 0x16u
 #define OP_MOVEA 0x31u
 #define OP_MOVHI 0x32u
@@ -1080,6 +1082,96 @@ static void test_perf_counters_agree(void)
 
     CHECK(counts[0] > 0u);
     CHECK_EQ(counts[0], counts[1]);
+}
+
+/*
+ * The immediate shifts, and the carry they define.
+ *
+ * These are the forms the IR translator lowers, and the whole difficulty
+ * of lowering them is CY: it is the last bit shifted out, which cannot
+ * be recovered from the result, so the frontend computes it as a second
+ * shift of the *source* and hands it to EMU_IR_FS_SHIFT.
+ *
+ * **The input that decides whether that is right is a shift by zero.**
+ * G4MH leaves the value alone and clears CY; the natural lowering reads
+ * bit `n - 1` of the source, and at n == 0 that wraps to bit 31 -- so an
+ * operand with its top bit set comes back with CY wrongly *set*, and
+ * every smaller shift amount agrees with a correct implementation. The
+ * interpreter's do_shl/do_shr/do_sar each begin `cy = 0` before testing
+ * n for exactly this reason. 0xFFFFFFFF shifted by 0 is the one operand
+ * that tells the two apart, which is why it is here and why a
+ * "representative" amount like 4 would not do.
+ *
+ * Run under both backends. With no reference model for this frontend,
+ * interpreter-against-JIT is the only cross-check there is -- and the
+ * flags are produced by different code in each, the IR interpreter
+ * computing them directly and x86-64 snapshotting host flags and
+ * patching C in from the operand.
+ */
+static void test_shift_imm_flags(void)
+{
+    /*
+     *   mov  0, r12
+     *   mov  -1, r10        ; 0xFFFFFFFF
+     *   shl  0, r10         ; unchanged, and CY *must* be clear
+     *   bnl  +4             ; skip when CY clear -- the correct path
+     *   add  1, r12         ; runs only if CY was wrongly set
+     *
+     *   mov  0, r13
+     *   mov  1, r11
+     *   shr  1, r11         ; r11 = 0, CY = bit 0 of 1 = 1
+     *   bnl  +4
+     *   add  1, r13         ; must run: CY is set here
+     *   halt
+     */
+    const uint16_t prog[] = {
+        F2(OP_MOVI, 0, 12),
+        F2(OP_MOVI, -1, 10),
+        F2(OP_SHL, 0, 10),
+        BCOND(0x9u, 4u), /* BNL: branch when CY is clear */
+        F2(OP_ADDI5, 1, 12),
+
+        F2(OP_MOVI, 0, 13),
+        F2(OP_MOVI, 1, 11),
+        F2(OP_SHR, 1, 11),
+        BCOND(0x9u, 4u),
+        F2(OP_ADDI5, 1, 13),
+
+        0x07E0u,
+        SUB_HALT,
+    };
+    /*
+     * **g_force_backend, not `g4mh_backend = ...` before the call.**
+     * emu_core_open runs the frontend's init, which assigns the backend
+     * itself, so setting it beforehand is overwritten and *both* passes
+     * run the JIT -- the test then compares a backend with itself and
+     * passes against any interpreter bug. That is written down in
+     * CLAUDE.md about an earlier G4MH test, and this test reproduced it
+     * on the way in: with the interpreter's shift carry deliberately
+     * broken, both passes still reported CY clear.
+     */
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        emu_run_reason_t why;
+        uint32_t retired = 0;
+
+        g_force_backend = (pass == 1u) ? &g4mh_backend_interp : NULL;
+        if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                          &retired)) {
+            CHECK(false);
+            g_force_backend = NULL;
+            return;
+        }
+
+        /* The values: a shift by zero is a move, not a shift by 32. */
+        CHECK_EQ(reg(10), 0xFFFFFFFFu);
+        CHECK_EQ(reg(11), 0u);
+
+        /* The flags, which is what this test exists for. */
+        CHECK_EQ(reg(12), 0u); /* shl 0: CY clear  */
+        CHECK_EQ(reg(13), 1u); /* shr 1 of 1: CY set */
+        CHECK_EQ(why, EMU_RUN_WFI);
+    }
+    g_force_backend = NULL;
 }
 
 static void test_clip(void)
@@ -6201,6 +6293,7 @@ void test_g4mh(void)
     test_divq_divh();
     test_divh_halfword_only();
     test_mul_imm9();
+    test_shift_imm_flags();
     test_clip();
     test_gdb_layout();
     test_perf_counters();
