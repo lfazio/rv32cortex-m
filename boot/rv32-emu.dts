@@ -60,13 +60,27 @@
         #size-cells = <0>;
 
         /*
-         * The tick the CLINT's mtime runs at. It has to match what the
-         * emulator actually increments mtime by, or every timeout in the
-         * supervisor is wrong by that ratio -- a kernel whose clock runs
-         * slow does not fail, it just takes minutes to do seconds of
-         * work, which reads as the emulator being slow.
+         * The tick the CLINT's mtime runs at, and it has to match what
+         * the emulator actually increments mtime by.
+         *
+         * The host runner advances mtime by **one per retired
+         * instruction** (`advance_guest_time`, divided by --timer-hz),
+         * so this number is exactly "how many instructions the guest
+         * believes fit in a second". At 1 MHz that was a million, which
+         * is far less than a booting kernel needs to make visible
+         * progress -- so its clock raced ahead of its own work and its
+         * watchdogs fired on a machine that was running perfectly:
+         * `BUG: workqueue lockup - pool cpus=0 stuck for 56s`, RCU
+         * stalls, and dmesg timestamps past 1500 seconds during driver
+         * init.
+         *
+         * 100 MHz makes a guest second 100M instructions, which is the
+         * right order for this interpreter and puts a whole boot inside
+         * the tens of seconds the kernel's own timeouts allow. It is
+         * not a claim about speed: nothing here runs faster, the guest
+         * simply stops being told that hours have passed.
          */
-        timebase-frequency = <1000000>;
+        timebase-frequency = <100000000>;
 
         cpu@0 {
             device_type = "cpu";
