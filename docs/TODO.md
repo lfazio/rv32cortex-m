@@ -28,8 +28,41 @@ measured at.
       aclint-mswi and aclint-mtimer, sets up its PMP domains and jumps to
       S-mode at 0x80400000 -- which spins to the instruction cap because
       no payload is loaded there yet. That address is where a kernel goes.
-- [ ] **Linux** - Prepare a Linux guest rv32g with mmu and run it on the emulator (x86_64 only). This is a big task, but it would be a good demonstration of the emulator's capabilities. Implement minimal virtio devices to get a shell and run some benchmarks. This is a big task, but it would be a good demonstration of the emulator's capabilities.
-- [ ] Run doom in Linux so it can be used as a benchmark for the emulator. This is a big task, but it would be a good demonstration of the emulator's capabilities implement a sdl backend for the emulator to run doom in Linux.
+- [ ] **Linux** - rv32 with MMU on the host emulator, to a shell, then
+      benchmarks. Broken into the order the pieces actually unblock each
+      other, because most of them are only testable once the one above
+      works:
+  - [x] OpenSBI in M-mode, above.
+  - [ ] Kernel boot to userspace with **no devices at all**. `earlycon=sbi`
+        and `hvc0` go through SBI calls OpenSBI already serves, so this
+        needs no PLIC, no virtio and no interrupt controller -- which is
+        the point of doing it first: it isolates Sv32, the S-mode trap
+        path and SBI from every device question. Rootfs is an initramfs
+        built into the image (`boot/initramfs/`), so no block device
+        either. A static `-nostdlib` init prints and exits.
+  - [ ] **PLIC.** The emulator has an APLIC; a stock `rv32_defconfig`
+        wants a SiFive PLIC at 0x0c000000, and nothing with an interrupt
+        works until one is there.
+  - [ ] **virtio-mmio transport**, then the devices on it, in this order:
+        `virtio-blk` (a real rootfs, and the first thing that makes the
+        emulator's throughput measurable), `virtio-net`, then the input
+        and display below.
+- [ ] **Doom, then Quake** -- as benchmarks with a real frame rate rather
+      than a checksum. Quake is the harder target and the one that names
+      what is missing: https://github.com/sysprog21/quake-embedded
+  - [ ] **SDL host backend.** A framebuffer the guest writes and the host
+        presents. Keep the split this tree already has: the *device* is
+        portable C in `src/emu/` with no SDL in it, and the host platform
+        owns the window -- the same arrangement as the NS16550 and the
+        console, or it will not build for the F746.
+  - [ ] **virtio-input** for keyboard and mouse, passed through from SDL
+        events. Two devices, not one: Linux binds a separate evdev to
+        each, and a combined one would need a descriptor claiming both
+        which no host driver expects.
+  - [ ] Decide framebuffer vs `virtio-gpu`. A plain framebuffer the guest
+        maps is far less work and is enough for both games; virtio-gpu
+        buys nothing until something wants 3D acceleration the emulator
+        does not have anyway.
 - [ ] **JIT** - Autovectorisation of the IR pipeline. This is a big task, but it would be a good demonstration of the emulator's capabilities.
 - [ ] Add simple drivers for the rh850u2b6.
   - [ ] ltsc
