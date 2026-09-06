@@ -33,16 +33,28 @@ measured at.
       other, because most of them are only testable once the one above
       works:
   - [x] OpenSBI in M-mode, above.
-  - [ ] Kernel boot to userspace with **no devices at all**. `earlycon=sbi`
+  - [~] Kernel boot to userspace with **no devices at all**. Linux 6.12
+        rv32 now boots on OpenSBI to driver init -- 447 lines of dmesg,
+        SBI v3.0 detected, TIME/IPI/RFENCE/DBCN found, memory and zones
+        set up, io schedulers registered. Reaching `init` needs more than
+        3G instructions on the interpreter; still to confirm. `earlycon=sbi`
         and `hvc0` go through SBI calls OpenSBI already serves, so this
         needs no PLIC, no virtio and no interrupt controller -- which is
         the point of doing it first: it isolates Sv32, the S-mode trap
         path and SBI from every device question. Rootfs is an initramfs
         built into the image (`boot/initramfs/`), so no block device
         either. A static `-nostdlib` init prints and exits.
-  - [ ] **PLIC.** The emulator has an APLIC; a stock `rv32_defconfig`
-        wants a SiFive PLIC at 0x0c000000, and nothing with an interrupt
-        works until one is there.
+  - [ ] **An interrupt controller -- and it does not have to be a PLIC.**
+        Established by booting without one: the kernel reaches driver
+        init with *no* interrupt controller in the device tree, because
+        the timer comes from the SBI TIME extension, IPIs from SBI IPI
+        and the console from SBI DBCN. So this blocks devices, not boot.
+        Use the **APLIC the emulator already has** rather than writing a
+        PLIC: a 6.12 kernel has `CONFIG_RISCV_APLIC=y` as well as
+        `CONFIG_SIFIVE_PLIC=y`. It must be wired in **direct mode** --
+        `interrupts-extended` to the cpu intc and no `msi-parent` --
+        because MSI mode needs an IMSIC and the AIA CSRs, which this
+        emulator does not implement.
   - [ ] **virtio-mmio transport**, then the devices on it, in this order:
         `virtio-blk` (a real rootfs, and the first thing that makes the
         emulator's throughput measurable), `virtio-net`, then the input
