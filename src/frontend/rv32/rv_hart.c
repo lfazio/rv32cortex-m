@@ -475,6 +475,50 @@ rv_exc_t rv_hart_amo(rv_hart_t *h, uint32_t funct5, uint32_t rd, uint32_t addr,
                                      : RV_EXC_STORE_MISALIGNED;
     }
 
+    /*
+     * **Translate and check, exactly as rv_hart_load and rv_hart_store
+     * do.** This did neither: every path below went straight to the bus
+     * with whatever address it was handed.
+     *
+     * With satp Bare that is invisible, because a virtual address is a
+     * physical one -- which is every guest in this tree and every
+     * architecture test that does not page, so nothing could see it. Turn
+     * paging on and every atomic fails: a Linux guest dies on its first
+     * `amoswap.w` with a store access fault at a kernel virtual address,
+     * and because the fault handler's own locking is atomic, it faults
+     * again on the same address for ever.
+     *
+     * It was also a **PMP bypass**. Below M, an atomic reached memory the
+     * entries denied. That is the same shape as the JIT's inlined store
+     * writing guest RAM without checking, and it is the reason to state
+     * the rule rather than the fix: anything that reaches emu_bus_read or
+     * emu_bus_write from this file owes the address a translation and a
+     * PMP check first.
+     *
+     * LR is a load; every other form is reported as a store, which is
+     * what the architecture says an AMO's faults are. Checking W is
+     * enough for the read as well, because the walk already rejects the
+     * write-without-read encoding.
+     */
+    const emu_access_t amo_acc =
+        (funct5 == RV_AMO_LR) ? EMU_ACC_LOAD : EMU_ACC_STORE;
+
+#if RV_EXT_SV32
+    if (EMU_UNLIKELY(h->vm_active)) {
+        const rv_exc_t texc = rv_mmu_translate(h, addr, amo_acc, &addr);
+
+        if (EMU_UNLIKELY(texc != RV_EXC_NONE)) {
+            return texc;
+        }
+    }
+#endif
+#if RV_EXT_PMP
+    if (EMU_UNLIKELY(h->pmp_active) && !rv_pmp_check(h, addr, 4u, amo_acc)) {
+        return (funct5 == RV_AMO_LR) ? RV_EXC_LOAD_ACCESS_FAULT
+                                     : RV_EXC_STORE_ACCESS_FAULT;
+    }
+#endif
+
     if (funct5 == RV_AMO_LR) {
         uint32_t v;
         const emu_fault_t f = emu_bus_read(h->bus, addr, 4u, &v);
@@ -584,6 +628,28 @@ rv_exc_t rv_hart_amocas_d(rv_hart_t *h, uint32_t rd, uint32_t rs2,
     if (EMU_UNLIKELY((addr & 7u) != 0u)) {
         return RV_EXC_STORE_MISALIGNED;
     }
+
+    /*
+     * The same translation and check as rv_hart_amo. One translation
+     * covers both halves: the address is 8-byte aligned, so an 8-byte
+     * access cannot straddle a page.
+     */
+#if RV_EXT_SV32
+    if (EMU_UNLIKELY(h->vm_active)) {
+        const rv_exc_t texc =
+            rv_mmu_translate(h, addr, EMU_ACC_STORE, &addr);
+
+        if (EMU_UNLIKELY(texc != RV_EXC_NONE)) {
+            return texc;
+        }
+    }
+#endif
+#if RV_EXT_PMP
+    if (EMU_UNLIKELY(h->pmp_active) &&
+        !rv_pmp_check(h, addr, 8u, EMU_ACC_STORE)) {
+        return RV_EXC_STORE_ACCESS_FAULT;
+    }
+#endif
 
     uint32_t lo, hi;
     if (emu_bus_read(h->bus, addr, 4u, &lo) != EMU_FAULT_NONE ||
