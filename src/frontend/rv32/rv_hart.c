@@ -168,12 +168,34 @@ void rv_hart_reset(rv_hart_t *h, uint32_t reset_pc)
 #endif
 }
 
-void rv_hart_boot(rv_hart_t *h, uint32_t ram_base, uint32_t ram_size)
+void rv_hart_boot(rv_hart_t *h, const emu_boot_info_t *info)
 {
-    /* The RISC-V psABI wants the stack 16-byte aligned on entry. */
-    h->x[2] = (ram_base + ram_size) & ~15u;
+    /*
+     * a0 is the hart id in every RISC-V boot convention there is.
+     *
+     * a1 is where they diverge, and the divergence is the point. The
+     * supervisor and kernel convention -- what OpenSBI, U-Boot and Linux
+     * all expect -- is *the address of a flattened device tree*. The
+     * bare-metal guests in this tree have no device tree and were given
+     * the RAM size there instead, which is this project's own convention
+     * and is what `hello` and `coremark` read.
+     *
+     * So a1 follows the image: a device tree when one was supplied, the
+     * RAM size when not. Passing 0 to a kernel would be a null pointer it
+     * dereferences before it can print anything.
+     */
     h->x[10] = h->hartid;
-    h->x[11] = ram_size;
+    h->x[11] = (info->dtb != 0u) ? info->dtb : info->ram_size;
+
+    /*
+     * The stack goes below the device tree, not at the top of RAM, or the
+     * first thing a guest pushes overwrites the tree it was just handed.
+     * 16-byte aligned, as the psABI requires.
+     */
+    const uint32_t top =
+        (info->dtb != 0u) ? info->dtb : (info->ram_base + info->ram_size);
+
+    h->x[2] = top & ~15u;
 }
 
 /* ------------------------------------------------------------------ */

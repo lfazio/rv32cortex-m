@@ -127,6 +127,9 @@ bool board_console_open(const char *dev, char *slave_out, unsigned n)
  */
 const char *const board_core_name = "x86-64";
 
+static uint8_t *g_dtb;
+static uint32_t g_dtb_size;
+
 uint8_t *host_read_file(const char *path, size_t *out_len)
 {
     FILE *f = fopen(path, "rb");
@@ -693,6 +696,23 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
         return false;
     }
 
+    /*
+     * The device tree, if one was named. Read here beside the image
+     * because both are files this platform knows how to open and the
+     * session takes them as bytes -- src/emu/ has no filesystem.
+     */
+    if (g_opt.dtb_path != NULL) {
+        size_t dlen = 0;
+        uint8_t *const dtb = host_read_file(g_opt.dtb_path, &dlen);
+
+        if (dtb == NULL) {
+            free(image);
+            return false;
+        }
+        g_dtb = dtb;
+        g_dtb_size = (uint32_t)dlen;
+    }
+
     g_ram = calloc(g_opt.ram_size, 1u);
     g_periph = calloc(PERIPH_SIM_SIZE, 1u);
     if (g_ram == NULL || g_periph == NULL) {
@@ -707,6 +727,8 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
     /* Found, not installed -- emu_main calls emu_image_set. */
     cfg->image = image;
     cfg->image_size = (uint32_t)len;
+    cfg->dtb = g_dtb;
+    cfg->dtb_size = g_dtb_size;
 
     board_gdb_configure(g_opt.gdb_port);
     cfg->ram_host = NULL;

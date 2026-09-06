@@ -1,0 +1,122 @@
+/dts-v1/;
+
+/*
+ * The machine this emulator presents to a supervisor payload.
+ *
+ * Why there is a device tree at all
+ * --------------------------------
+ * Every guest in this tree until now was compiled for these addresses.
+ * OpenSBI and Linux are not: they are built once and told the shape of
+ * the machine at boot, through a flattened tree whose address arrives in
+ * a1. So this file *is* the machine description, and anything here that
+ * disagrees with `include/emu/emu_memmap.h` or `include/rv32/rv_memmap.h`
+ * is a bug that presents as firmware hanging with no output.
+ *
+ * The addresses are deliberately the QEMU `virt` ones, which is what the
+ * emulator already chose independently: CLINT at 0x0200_0000, an
+ * NS16550 at 0x1000_0000, RAM at 0x8000_0000. That means OpenSBI's
+ * `generic` platform and an ordinary `rv32_defconfig` Linux need no
+ * board support -- they read this and find a machine they know.
+ *
+ * Build it with:
+ *   dtc -I dts -O dtb -o rv32-emu.dtb boot/rv32-emu.dts
+ */
+
+/ {
+    #address-cells = <1>;
+    #size-cells = <1>;
+    compatible = "rv32cortex-m,emu";
+    model = "rv32cortex-m emulator";
+
+    chosen {
+        /*
+         * `stdout-path` is how OpenSBI and Linux find the console when
+         * they are not told on the command line. Without it OpenSBI
+         * comes up, works, and prints nothing -- which is
+         * indistinguishable from not booting.
+         */
+        stdout-path = "/soc/serial@10000000:115200";
+        bootargs = "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000";
+    };
+
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        /*
+         * The tick the CLINT's mtime runs at. It has to match what the
+         * emulator actually increments mtime by, or every timeout in the
+         * supervisor is wrong by that ratio -- a kernel whose clock runs
+         * slow does not fail, it just takes minutes to do seconds of
+         * work, which reads as the emulator being slow.
+         */
+        timebase-frequency = <1000000>;
+
+        cpu@0 {
+            device_type = "cpu";
+            reg = <0>;
+            status = "okay";
+            compatible = "riscv";
+            /*
+             * What the core actually implements. F and C are there, and
+             * the B extension, but a supervisor payload only cares about
+             * IMA plus the privileged bits -- and naming an extension the
+             * emulator lacks would have the kernel emit instructions that
+             * trap.
+             */
+            riscv,isa = "rv32imafc_zicsr_zifencei";
+            riscv,isa-base = "rv32i";
+            riscv,isa-extensions = "i", "m", "a", "f", "c", "zicsr",
+                                   "zifencei";
+            mmu-type = "riscv,sv32";
+
+            cpu0_intc: interrupt-controller {
+                #interrupt-cells = <1>;
+                interrupt-controller;
+                compatible = "riscv,cpu-intc";
+            };
+        };
+    };
+
+    memory@80000000 {
+        device_type = "memory";
+        /*
+         * Kept in step with the runner's --ram. 128 MiB is what a Linux
+         * guest wants room for; a bare-metal one never reads this.
+         */
+        reg = <0x80000000 0x08000000>;
+    };
+
+    soc {
+        #address-cells = <1>;
+        #size-cells = <1>;
+        compatible = "simple-bus";
+        ranges;
+
+        /*
+         * The console. `clock-frequency` is what the driver divides to
+         * get its baud rate; nothing in the emulator honours a divisor,
+         * so the value only has to be self-consistent with the baud in
+         * `bootargs`.
+         */
+        serial@10000000 {
+            compatible = "ns16550a";
+            reg = <0x10000000 0x100>;
+            clock-frequency = <3686400>;
+            reg-shift = <0>;
+            reg-io-width = <1>;
+            status = "okay";
+        };
+
+        /*
+         * CLINT: software interrupts at the base, mtimecmp at +0x4000 and
+         * mtime at +0xBFF8, which is the legacy SiFive layout the
+         * emulator implements and every RISC-V supervisor expects.
+         */
+        clint@2000000 {
+            compatible = "sifive,clint0", "riscv,clint0";
+            reg = <0x02000000 0x10000>;
+            interrupts-extended = <&cpu0_intc 3 &cpu0_intc 7>;
+        };
+    };
+};

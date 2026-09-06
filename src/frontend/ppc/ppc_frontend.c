@@ -46,7 +46,7 @@ static void ppc_ops_reset(emu_cpu_t *cpu, uint32_t reset_pc)
     ppc_cpu_reset(cpu_of(cpu), reset_pc);
 }
 
-static void ppc_ops_boot(emu_cpu_t *cpu, uint32_t ram_base, uint32_t ram_size)
+static void ppc_ops_boot(emu_cpu_t *cpu, const emu_boot_info_t *info)
 {
     /*
      * The stack pointer convention is the ABI's, not the architecture's:
@@ -55,7 +55,7 @@ static void ppc_ops_boot(emu_cpu_t *cpu, uint32_t ram_base, uint32_t ram_size)
      * EABI requires.
      */
     ppc_cpu_t *c = cpu_of(cpu);
-    c->r[1] = (ram_base + ram_size) & ~7u;
+    c->r[1] = (info->ram_base + info->ram_size) & ~7u;
 }
 
 static emu_run_reason_t ppc_ops_run(emu_cpu_t *cpu, uint32_t budget,

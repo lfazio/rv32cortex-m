@@ -163,6 +163,20 @@ typedef struct emu_cpu_status {
 /* The contract                                                        */
 /* ------------------------------------------------------------------ */
 
+/*
+ * What the platform tells a guest at boot.
+ *
+ * `dtb` is 0 when no device tree was supplied, which is the case for
+ * every bare-metal guest in this tree -- the frontend then falls back to
+ * whatever its architecture's convention says, rather than passing a
+ * null pointer a kernel would dereference.
+ */
+typedef struct emu_boot_info {
+    uint32_t ram_base;
+    uint32_t ram_size;
+    uint32_t dtb;
+} emu_boot_info_t;
+
 typedef struct emu_cpu_ops {
     /* Selector for --frontend and for EMU_FRONTEND in the build. */
     const char *name;
@@ -196,12 +210,18 @@ typedef struct emu_cpu_ops {
 
     /*
      * Hand the guest what only the platform knows: a stack pointer at the
-     * top of guest RAM, its core id, and how much RAM it actually has, in
-     * whichever registers the architecture's boot convention uses. Guests
-     * that set up their own stack from a link script and ignore this still
-     * work, which is why it is separate from reset.
+     * top of guest RAM, its core id, how much RAM it actually has, and
+     * where the device tree is if there is one -- in whichever registers
+     * the architecture's boot convention uses. Guests that set up their
+     * own stack from a link script and ignore this still work, which is
+     * why it is separate from reset.
+     *
+     * A struct rather than a parameter list because the next thing a
+     * booting kernel wants is an initrd, and the one after that a command
+     * line; each would otherwise churn a signature that three frontends
+     * implement.
      */
-    void (*boot)(emu_cpu_t *cpu, uint32_t ram_base, uint32_t ram_size);
+    void (*boot)(emu_cpu_t *cpu, const emu_boot_info_t *info);
 
     /* --- execution ------------------------------------------------- */
 
@@ -444,7 +464,7 @@ bool emu_system_open(emu_system_t *sys, const emu_cpu_ops_t *ops,
                      emu_bus_t *buses, unsigned ncores);
 
 void emu_system_reset(emu_system_t *sys, uint32_t reset_pc);
-void emu_system_boot(emu_system_t *sys, uint32_t ram_base, uint32_t ram_size);
+void emu_system_boot(emu_system_t *sys, const emu_boot_info_t *info);
 void emu_system_invalidate(emu_system_t *sys, uint32_t addr, uint32_t len);
 
 /*
@@ -475,9 +495,9 @@ static inline void emu_core_reset(emu_core_t *c, uint32_t reset_pc)
     c->ops->reset(c->cpu, reset_pc);
 }
 
-static inline void emu_core_boot(emu_core_t *c, uint32_t base, uint32_t size)
+static inline void emu_core_boot(emu_core_t *c, const emu_boot_info_t *info)
 {
-    c->ops->boot(c->cpu, base, size);
+    c->ops->boot(c->cpu, info);
 }
 
 static inline void emu_core_invalidate(emu_core_t *c, uint32_t addr,

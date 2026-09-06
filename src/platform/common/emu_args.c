@@ -64,6 +64,10 @@ void emu_args_usage(void)
         "  --entry ADDR         reset pc (default: load address, or the\n"
         "                       ELF entry point)\n"
         "  --ram BYTES          guest RAM size (default %u)\n"
+        "  --dtb FILE           flattened device tree, placed at the top\n"
+        "                       of RAM with its address in a1 (RISC-V);\n"
+        "                       what OpenSBI and Linux read the machine\n"
+        "                       out of\n"
         "  --max-insn N         stop after N instructions (0 = unlimited)\n"
         "  --timer-hz N         timer ticks per second of guest time\n"
         "  --quantum N          instructions per core per round (default %u).\n"
@@ -124,6 +128,15 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
                     *status = 2;
                     return false;
                 }
+                continue;
+            }
+            if (strcmp(a, "--dtb") == 0) {
+                if (argv[++i] == NULL) {
+                    emu_args_usage();
+                    *status = 2;
+                    return false;
+                }
+                opt->dtb_path = argv[i];
                 continue;
             }
             if (strcmp(a, "--ram") == 0) {

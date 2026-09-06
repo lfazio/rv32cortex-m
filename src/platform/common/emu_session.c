@@ -151,7 +151,39 @@ static bool finish(emu_system_t *sys, const emu_session_cfg_t *cfg)
      * segments land in it -- so this is here, between the two.
      */
     emu_system_reset(sys, entry);
-    emu_system_boot(sys, cfg->ram_base, cfg->ram_size);
+
+    /*
+     * The device tree goes at the top of RAM, below which the frontend
+     * puts the stack. Aligned to 8: the FDT header requires it, and a
+     * misaligned blob is rejected by every parser with a message about
+     * a bad magic rather than about alignment.
+     */
+    emu_boot_info_t boot = {
+        .ram_base = cfg->ram_base,
+        .ram_size = cfg->ram_size,
+        .dtb = 0u,
+    };
+
+    if (cfg->dtb != NULL && cfg->dtb_size != 0u && cfg->ram_size != 0u) {
+        emu_bus_t *const bus = sys->core[0].bus;
+        const uint32_t at =
+            ((cfg->ram_base + cfg->ram_size) - cfg->dtb_size) & ~7u;
+
+        if (at < cfg->ram_base) {
+            fail(cfg, "dtb", "does not fit in guest RAM");
+            return false;
+        }
+        for (uint32_t i = 0; i < cfg->dtb_size; i++) {
+            if (emu_bus_write(bus, at + i, 1u, cfg->dtb[i]) !=
+                EMU_FAULT_NONE) {
+                fail(cfg, "dtb", "could not be written to guest RAM");
+                return false;
+            }
+        }
+        boot.dtb = at;
+    }
+
+    emu_system_boot(sys, &boot);
 
     /*
      * Every translation is stale: a new image at the same guest

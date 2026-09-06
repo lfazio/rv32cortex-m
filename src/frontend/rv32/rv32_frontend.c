@@ -135,9 +135,9 @@ static void rv32_reset(emu_cpu_t *cpu, uint32_t reset_pc)
     }
 }
 
-static void rv32_boot(emu_cpu_t *cpu, uint32_t ram_base, uint32_t ram_size)
+static void rv32_boot(emu_cpu_t *cpu, const emu_boot_info_t *info)
 {
-    rv_hart_boot(hart_of(cpu), ram_base, ram_size);
+    rv_hart_boot(hart_of(cpu), info);
 }
 
 const emu_gdb_target_t *rv32_gdb_target(void);

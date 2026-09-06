@@ -128,9 +128,9 @@ static void g4mh_ops_reset(emu_cpu_t *cpu, uint32_t reset_pc)
     }
 }
 
-static void g4mh_ops_boot(emu_cpu_t *cpu, uint32_t ram_base, uint32_t ram_size)
+static void g4mh_ops_boot(emu_cpu_t *cpu, const emu_boot_info_t *info)
 {
-    g4mh_cpu_boot(cpu_of(cpu), ram_base, ram_size);
+    g4mh_cpu_boot(cpu_of(cpu), info->ram_base, info->ram_size);
 }
 
 const emu_gdb_target_t *g4mh_gdb_target(void);

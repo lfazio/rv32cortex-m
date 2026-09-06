@@ -35,6 +35,15 @@ typedef struct emu_args {
     uint32_t entry;
 
     uint32_t ram_size;
+
+    /*
+     * Path to a flattened device tree, or NULL. A supervisor payload --
+     * OpenSBI, and Linux behind it -- reads the machine's shape out of
+     * this rather than being compiled for one, so it is the difference
+     * between running a kernel and only running bare metal.
+     */
+    const char *dtb_path;
+
     uint32_t quantum;
     uint64_t max_insn;
     uint32_t timer_div;

@@ -75,6 +75,20 @@ typedef struct emu_session_cfg {
     uint32_t ram_size;
 
     /*
+     * A flattened device tree to hand the guest, or NULL.
+     *
+     * Placed at the top of guest RAM and its address passed in whichever
+     * register the frontend's boot convention uses -- a1 on RISC-V. The
+     * stack goes below it, so the tree survives the guest's first push.
+     *
+     * This is what a supervisor-mode payload needs and no bare-metal
+     * guest in this tree does: OpenSBI, U-Boot and Linux all read the
+     * machine's shape out of it rather than being compiled for one.
+     */
+    const uint8_t *dtb;
+    uint32_t dtb_size;
+
+    /*
      * Guest RAM as *this* process sees it, so a fresh guest starts on a
      * cleared one. Without that, one test's leftovers become the next
      * test's initial state and a suite's results start depending on the

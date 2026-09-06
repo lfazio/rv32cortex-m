@@ -128,10 +128,10 @@ void emu_system_reset(emu_system_t *sys, uint32_t reset_pc)
     }
 }
 
-void emu_system_boot(emu_system_t *sys, uint32_t ram_base, uint32_t ram_size)
+void emu_system_boot(emu_system_t *sys, const emu_boot_info_t *info)
 {
     for (unsigned i = 0; i < sys->ncores; i++) {
-        emu_core_boot(&sys->core[i], ram_base, ram_size);
+        emu_core_boot(&sys->core[i], info);
     }
 }
 

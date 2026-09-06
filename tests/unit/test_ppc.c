@@ -67,7 +67,12 @@ static bool load_and_run(const uint32_t *w, unsigned n, uint32_t budget,
         return false;
     }
     emu_core_reset(&g_core, EMU_GUEST_RAM_BASE);
-    emu_core_boot(&g_core, EMU_GUEST_RAM_BASE, TEST_RAM_SIZE);
+    const emu_boot_info_t boot = {
+        .ram_base = EMU_GUEST_RAM_BASE,
+        .ram_size = TEST_RAM_SIZE,
+        .dtb = 0u, /* no device tree: these guests are compiled for the map */
+    };
+    emu_core_boot(&g_core, &boot);
     /*
      * Classic Book E, stated rather than inherited.
      *
@@ -388,7 +393,12 @@ static bool load_and_run_vle(const uint16_t *hw, unsigned n, uint32_t budget,
         return false;
     }
     emu_core_reset(&g_core, EMU_GUEST_RAM_BASE);
-    emu_core_boot(&g_core, EMU_GUEST_RAM_BASE, TEST_RAM_SIZE);
+    const emu_boot_info_t boot = {
+        .ram_base = EMU_GUEST_RAM_BASE,
+        .ram_size = TEST_RAM_SIZE,
+        .dtb = 0u, /* no device tree: these guests are compiled for the map */
+    };
+    emu_core_boot(&g_core, &boot);
     /* VLE and Book E are different encodings of the same bytes, so the
      * mode has to be stated before the first fetch. */
     ((ppc_cpu_t *)(void *)g_core.cpu)->vle = true;

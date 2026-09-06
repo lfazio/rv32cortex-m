@@ -21,19 +21,27 @@ measured at.
       status a suite reads against a park loop serving a link). Those are
       genuinely different and merging them would put an `#if` per platform
       inside one `main()`, which is the arrangement all of this undid.
-- [ ] Add FreeRTOS support to the host emualtor, lwip in one task emulator in another one (it will allow to instanciate later a tinyusb network device over USB). https://github.com/STMicroelectronics/x-cube-freertos/tree/main (https://github.com/hathach/tinyusb)
+- [ ] Add FreeRTOS support to the host emulator, lwip in one task and emulator in another one (it will allow to instanciate later a tinyusb network device over USB). https://github.com/STMicroelectronics/x-cube-freertos/tree/main (https://github.com/hathach/tinyusb)
+- [x] Make rv32 frontend works with opensbi (https://github.com/riscv-software-src/opensbi/tree/master)
+      `scripts/run-opensbi.sh`. OpenSBI v1.9 `generic` boots on the
+      device tree in `boot/rv32-emu.dts`, finds the uart8250, the
+      aclint-mswi and aclint-mtimer, sets up its PMP domains and jumps to
+      S-mode at 0x80400000 -- which spins to the instruction cap because
+      no payload is loaded there yet. That address is where a kernel goes.
 - [ ] **Linux** - Prepare a Linux guest rv32g with mmu and run it on the emulator (x86_64 only). This is a big task, but it would be a good demonstration of the emulator's capabilities. Implement minimal virtio devices to get a shell and run some benchmarks. This is a big task, but it would be a good demonstration of the emulator's capabilities.
-- [ ] Run doom in Linux so it can be used as a benchmark for the emulator. This is a big task, but it would be a good demonstration of the emulator's capabilities implement a sdl backend for the emulator to run doom in Linux. This is a big task, but it would be a good demonstration of the emulator's capabilities.
+- [ ] Run doom in Linux so it can be used as a benchmark for the emulator. This is a big task, but it would be a good demonstration of the emulator's capabilities implement a sdl backend for the emulator to run doom in Linux.
 - [ ] **JIT** - Autovectorisation of the IR pipeline. This is a big task, but it would be a good demonstration of the emulator's capabilities.
 - [ ] Add simple drivers for the rh850u2b6.
-  - [ ] kcrc
   - [ ] ltsc
   - [ ] ostm
+  - [ ] gpio/on emulated on top of stm32 gpio hal, emualated to output the binary state of output on a udp/ip connexion.
+  - [ ] kcrc
   - [ ] wdtb
 - [ ] Architecture a serial protocol over UDP/TCP similar to PCIe so a PC host running the emualtor can access the rh850u2b6's peripherals. This is a big task, but it would be a good demonstration of the emulator's capabilities. First over serial, then maybe over USB or rela ethernet device. This is a big task, but it would be a good demonstration of the emulator's capabilities.
-- [ ] Implement an emulated GTM device for the stm32f746zg to demonstrate the emulator's capabilities.
-- [ ] Finish the ppc emualtor with dual core support and implement a simple driver for the e200z7. This is a big task, but it would be a good demonstration of the emulator's capabilities.
-- [ ] **Port to the Nucleo-N657X0-Q (STM32N6, board MB1940).** A third
+- [ ] Implement an emulated GTM device for the stm32f746zg/stm32n657 to demonstrate the emulator's capabilities.
+- [ ] Implement TAUD peripheral in rh850u2b6 with the remaining stm32 timer availble.
+- [ ] Finish the ppc emualtor with dual core support and implement a simple driver for the e200z7.
+- [x] **Port to the Nucleo-N657X0-Q (STM32N6, board MB1940).** A third
       platform, and the first that is neither ARMv7E-M nor flash-based.
       Facts established from RM0486, PM0273 and UM3417 in `docs/st/stm32n6/`:
 
@@ -215,4 +223,3 @@ measured at.
 |---|---|
 | Interpreter loop in SRAM | **slower** — 162 vs 122 cycles, and 8 KiB off the guest |
 | PMP mapped onto the ARM MPU | **not possible** — the MPU cannot distinguish a guest access from an emulator access, because the JIT's inlined load *is* both |
-

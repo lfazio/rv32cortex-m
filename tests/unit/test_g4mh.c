@@ -390,7 +390,12 @@ static bool load_and_run_hooked(const uint16_t *hw, unsigned n, uint32_t budget,
     }
 
     emu_core_reset(&g_core, EMU_GUEST_RAM_BASE);
-    emu_core_boot(&g_core, EMU_GUEST_RAM_BASE, TEST_RAM_SIZE);
+    const emu_boot_info_t boot = {
+        .ram_base = EMU_GUEST_RAM_BASE,
+        .ram_size = TEST_RAM_SIZE,
+        .dtb = 0u, /* no device tree: these guests are compiled for the map */
+    };
+    emu_core_boot(&g_core, &boot);
 
     *why = emu_core_run(&g_core, budget, retired);
     return true;
@@ -2743,7 +2748,12 @@ static bool run_system(const uint16_t *hw, unsigned n, uint32_t quantum,
     }
 
     emu_system_reset(&g_sys, EMU_GUEST_RAM_BASE);
-    emu_system_boot(&g_sys, EMU_GUEST_RAM_BASE, TEST_RAM_SIZE);
+    const emu_boot_info_t sysboot = {
+        .ram_base = EMU_GUEST_RAM_BASE,
+        .ram_size = TEST_RAM_SIZE,
+        .dtb = 0u,
+    };
+    emu_system_boot(&g_sys, &sysboot);
 
     /*
      * Release the secondary PEs, which is what a bootloader does.
