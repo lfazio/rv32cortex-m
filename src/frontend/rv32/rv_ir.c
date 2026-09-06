@@ -187,9 +187,110 @@ static uint32_t rv_ir_fp_helper(emu_cpu_t *cpu, uint32_t insn, uint32_t unused)
     return 1u;
 }
 
-static const void *const rv_ir_helpers[] = {(const void *)rv_ir_fp_helper};
-#define RV_IR_HELPER_FP 0u
 #endif /* RV_EXT_F */
+
+#if RV_EXT_A
+/*
+ * Atomics, through the same rv_hart_amo the interpreter calls.
+ *
+ * **This exists so a block does not end at every lock.** The A extension
+ * was declined outright, and CLAUDE.md has the rule: what you decline
+ * costs more than what you translate badly, because ending the block
+ * fragments hot code. An atomic is not rare in the guests that matter --
+ * a Linux kernel takes one on every lock, every refcount and every
+ * percpu update -- so declining opcode 0x2F cut a block at each of them.
+ *
+ * The dispatch below is the interpreter's, deliberately line for line:
+ * the same width and validity tests, the same causes, the same two
+ * functions. Anything else would be a second implementation of semantics
+ * the core already owns, which is the mistake the FP helper beside it was
+ * written to avoid.
+ *
+ * Reading h->x[] here is sound because the optimiser treats a helper as
+ * touching everything: pass_reg_traffic drops every forwarded register at
+ * the call, and the dead-PUT pass keeps the stores before it. A helper
+ * that quietly read a stale register would be the sharpest edge in this
+ * file, so it is stated rather than assumed.
+ */
+static uint32_t rv_ir_amo_helper(emu_cpu_t *cpu, uint32_t insn,
+                                 uint32_t unused)
+{
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+    const uint32_t funct5 = rv_funct7(insn) >> 2;
+    uint32_t addr;
+    rv_exc_t exc;
+
+    (void)unused;
+
+#if RV_EXT_ZACAS
+    if (rv_funct3(insn) == 3u && funct5 == RV_AMO_CAS) {
+        /* amocas.d: even-odd pairs, so an odd operand is not encodable. */
+        if (EMU_UNLIKELY((rv_rd(insn) & 1u) != 0u ||
+                         (rv_rs2(insn) & 1u) != 0u)) {
+            rv_hart_trap(h, RV_EXC_ILLEGAL_INSN, insn);
+            return 1u;
+        }
+        addr = h->x[rv_rs1(insn)];
+        exc = rv_hart_amocas_d(h, rv_rd(insn), rv_rs2(insn), addr);
+        if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
+            rv_hart_trap(h, exc, addr);
+            return 1u;
+        }
+        h->x[0] = 0u;
+        return 0u;
+    }
+#endif
+
+    /* Only the 32-bit widths, a defined operation, and LR takes no rs2. */
+    if (EMU_UNLIKELY(rv_funct3(insn) != 2u || !rv_amo_valid(funct5) ||
+                     (funct5 == RV_AMO_LR && rv_rs2(insn) != 0u))) {
+        rv_hart_trap(h, RV_EXC_ILLEGAL_INSN, insn);
+        return 1u;
+    }
+
+    addr = h->x[rv_rs1(insn)];
+    exc = rv_hart_amo(h, funct5, rv_rd(insn), addr, h->x[rv_rs2(insn)]);
+    if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
+        rv_hart_trap(h, exc, addr);
+        return 1u;
+    }
+    h->x[0] = 0u; /* rv_hart_amo skips rd == 0; keep x0 canonical */
+    return 0u;
+}
+#endif /* RV_EXT_A */
+
+/*
+ * The helper table.
+ *
+ * **The indices are fixed whatever the configuration**, because an id is
+ * baked into emitted code and a table that shrinks with a build option
+ * would silently call the wrong function. A slot whose extension is
+ * absent points at a helper that traps illegal-instruction, which cannot
+ * be reached -- the translator declines those instructions -- and is the
+ * honest thing to put there if it ever were.
+ */
+static uint32_t rv_ir_helper_absent(emu_cpu_t *cpu, uint32_t insn,
+                                    uint32_t unused)
+{
+    (void)unused;
+    rv_hart_trap((rv_hart_t *)cpu, RV_EXC_ILLEGAL_INSN, insn);
+    return 1u;
+}
+
+#if RV_EXT_F
+#define RV_IR_H_FP ((const void *)rv_ir_fp_helper)
+#else
+#define RV_IR_H_FP ((const void *)rv_ir_helper_absent)
+#endif
+#if RV_EXT_A
+#define RV_IR_H_AMO ((const void *)rv_ir_amo_helper)
+#else
+#define RV_IR_H_AMO ((const void *)rv_ir_helper_absent)
+#endif
+
+static const void *const rv_ir_helpers[] = {RV_IR_H_FP, RV_IR_H_AMO};
+#define RV_IR_HELPER_FP 0u
+#define RV_IR_HELPER_AMO 1u
 
 const emu_ir_target_t rv_ir_target = {
     .reg_offset = rv_reg_offset,
@@ -204,14 +305,12 @@ const emu_ir_target_t rv_ir_target = {
     .flag_bit = {0u, 0u, 0u, 0u},
     .reg_is_zero = rv_reg_zero,
     .pc_offset = (uint32_t)offsetof(rv_hart_t, pc),
-#if RV_EXT_F
     .helpers = rv_ir_helpers,
-    .helper_count = 1u,
+    .helper_count = (uint32_t)(sizeof(rv_ir_helpers) /
+                               sizeof(rv_ir_helpers[0])),
+#if RV_EXT_F
     .freg_offset = rv_freg_offset,
     .fp_flags = rv_ir_fp_flags,
-#else
-    .helpers = NULL,
-    .helper_count = 0u,
 #endif
     .load = rv_ir_load,
     .store = rv_ir_store,
@@ -814,6 +913,24 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
         return rv_ir_fp_fallback(b, pc, insn);
     }
 #endif /* RV_EXT_F */
+
+#if RV_EXT_A
+    case 0x2Fu:
+        /*
+         * Every atomic, to the helper. It keeps the block whole across a
+         * lock, which is what this is for; the helper itself does the
+         * decoding, the validity tests and the trap, so nothing about
+         * atomics is written twice.
+         *
+         * pc first, because the helper may trap and rv_hart_trap records
+         * the address it finds. Same shape as the FP fallback above.
+         */
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          pc, 0u);
+        (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP, 0u, emu_ir_const(b, insn),
+                          EMU_IR_NO_TEMP, RV_IR_HELPER_AMO, 0u);
+        return true;
+#endif
 
     default:
         return false;
