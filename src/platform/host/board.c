@@ -583,13 +583,52 @@ uint32_t board_flash_last_error(void)
  */
 static uint32_t g_timer_div = 1u;
 
+/*
+ * Guest time, from the host's monotonic clock.
+ *
+ * **It used to advance by instructions retired, and that is wrong for
+ * anything that measures time.** A guest was told a second had passed
+ * every `--timer-hz` instructions, so its clock and its progress were
+ * two unrelated quantities: a Linux kernel booted with dmesg timestamps
+ * past 1500 seconds during driver init and its watchdogs fired on a
+ * machine running perfectly -- `BUG: workqueue lockup ... stuck for
+ * 56s`, RCU stalls -- while raising the device tree's
+ * timebase-frequency to compensate only moved the problem, because then
+ * a timer interrupt the kernel programmed for one jiffy needed a
+ * hundred times more instructions to arrive.
+ *
+ * The board platform has answered this correctly since it existed: it
+ * reads a real cycle counter, because its guest drives real peripherals
+ * and a timer interrupt has to bear some relation to the wall clock.
+ * The comment beside it said the host "answers the opposite way, and
+ * both are right for what they are". Only one of them is: a guest that
+ * cannot tell how long anything took is broken on both.
+ *
+ * So this is the board's arrangement, with clock_gettime where the M7
+ * has DWT. board_cycles() is already CLOCK_MONOTONIC in microseconds,
+ * which makes the divisor exact and the epoch the first slice, so a
+ * guest's clock starts near zero rather than at the host's uptime.
+ *
+ * --timer-hz still divides, which is how a guest is deliberately given
+ * a slower clock than the host's.
+ */
+static uint32_t g_time_epoch;
+
+uint64_t board_time_now(void)
+{
+    const uint32_t div = (g_timer_div != 0u) ? g_timer_div : 1u;
+
+    return (uint64_t)(board_cycles() - g_time_epoch) / div;
+}
+
 static void advance_guest_time(emu_system_t *sys, uint64_t retired_total,
                                uint32_t did)
 {
     (void)retired_total;
+    (void)did;
 
-    if (g_timer_div != 0u && sys->ops->advance_time != NULL) {
-        sys->ops->advance_time(sys->core[0].cpu, did / g_timer_div);
+    if (sys->ops->set_time != NULL) {
+        sys->ops->set_time(sys->core[0].cpu, board_time_now());
     }
 }
 
@@ -723,6 +762,7 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
 
     board_ram = g_ram;
     board_ram_size = g_opt.ram_size;
+    g_time_epoch = board_cycles();
 
     /* Found, not installed -- emu_main calls emu_image_set. */
     cfg->image = image;

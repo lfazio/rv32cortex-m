@@ -41,3 +41,8 @@ build/mx-*.log
 
 # The N6 control's build products; tools/n6-control/build.sh rebuilds them.
 tools/n6-control/STM32CubeN6/
+
+# The rv32 init is compiled from boot/initramfs/init.c; the binary is a
+# build product and the kernel's CONFIG_INITRAMFS_SOURCE reads it from
+# the working tree.
+boot/initramfs/init

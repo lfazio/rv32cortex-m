@@ -63,24 +63,22 @@
          * The tick the CLINT's mtime runs at, and it has to match what
          * the emulator actually increments mtime by.
          *
-         * The host runner advances mtime by **one per retired
-         * instruction** (`advance_guest_time`, divided by --timer-hz),
-         * so this number is exactly "how many instructions the guest
-         * believes fit in a second". At 1 MHz that was a million, which
-         * is far less than a booting kernel needs to make visible
-         * progress -- so its clock raced ahead of its own work and its
-         * watchdogs fired on a machine that was running perfectly:
-         * `BUG: workqueue lockup - pool cpus=0 stuck for 56s`, RCU
-         * stalls, and dmesg timestamps past 1500 seconds during driver
-         * init.
+         * mtime is driven from the host's CLOCK_MONOTONIC in
+         * microseconds -- or, on a Cortex-M board, from DWT CYCCNT --
+         * so this is 1 MHz and it is a *real* frequency rather than a
+         * ratio to pick.
          *
-         * 100 MHz makes a guest second 100M instructions, which is the
-         * right order for this interpreter and puts a whole boot inside
-         * the tens of seconds the kernel's own timeouts allow. It is
-         * not a claim about speed: nothing here runs faster, the guest
-         * simply stops being told that hours have passed.
+         * It used to advance by one per retired instruction, which made
+         * a guest's clock and its progress unrelated quantities: dmesg
+         * timestamps past 1500 seconds during driver init and watchdogs
+         * firing on a machine running perfectly. Compensating here only
+         * moved the problem -- at 100 MHz a timer interrupt programmed
+         * for one jiffy needed a hundred times more instructions to
+         * arrive, and the boot stalled instead.
+         *
+         * Keep this equal to the platform's board_clock_hz().
          */
-        timebase-frequency = <100000000>;
+        timebase-frequency = <1000000>;
 
         cpu@0 {
             device_type = "cpu";
