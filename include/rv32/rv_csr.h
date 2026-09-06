@@ -246,11 +246,30 @@ struct rv_hart;
 /*
  * Every exception this core can raise except ECALL from M, which cannot be
  * delegated to a mode less privileged than the one that took it. That is
- * causes 0 through 9; the page faults are left out because with satp Bare
- * nothing can raise them, and medeleg is WARL, so a bit that could only
- * ever describe an impossible trap is better read back as zero.
+ * causes 0 through 9, plus the three page faults -- 12 instruction, 13
+ * load, 15 store/AMO -- when this build has Sv32. 14 is reserved.
+ *
+ * **The page faults were left out on the reasoning that with satp Bare
+ * nothing can raise them, and Sv32 made that false.** medeleg is WARL, so
+ * dropping the bits is silent: OpenSBI delegates the page faults, reads
+ * back 0x109, and believes it. Every fault a Linux guest takes on a
+ * demand-paged mapping -- which is most of what a kernel does -- then
+ * traps to M-mode, where the firmware has no handler and spins. It
+ * presents as a kernel that reaches its own virtual addresses and prints
+ * nothing: `mepc` in the kernel, `mcause` 15, and 266,416 traps to show
+ * for 60M instructions.
+ *
+ * This is the same defect this tree already recorded in `sail.json`,
+ * where `medeleg.delegatable_bits` was 0 for want of an S-mode. **A
+ * config value meaning "this cannot happen" stops being a safe default
+ * the moment it can** -- and the two masks must stay equal, so a change
+ * here is a change to `sail.json` as well.
  */
+#if RV_EXT_SV32
+#define MEDELEG_WMASK 0x0000B3FFu
+#else
 #define MEDELEG_WMASK 0x000003FFu
+#endif
 
 /* ------------------------------------------------------------------ */
 /* mtvec                                                               */

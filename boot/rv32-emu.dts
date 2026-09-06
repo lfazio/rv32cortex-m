@@ -36,7 +36,23 @@
          * indistinguishable from not booting.
          */
         stdout-path = "/soc/serial@10000000:115200";
-        bootargs = "console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000";
+        /*
+         * **The console goes through SBI, not the UART, and that is
+         * deliberate for the first boot.**
+         *
+         * `earlycon=sbi` and `console=hvc0` are ecalls into OpenSBI,
+         * which is already proven to reach this machine's NS16550. They
+         * need no MMIO mapping, no interrupt and no PLIC -- and this
+         * emulator has no PLIC, so an 8250 console would need the driver
+         * to fall back to polling, which is one more thing that can be
+         * wrong while the question is still whether the kernel boots at
+         * all.
+         *
+         * Swap to `console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000`
+         * once there is a PLIC and the UART is worth driving directly:
+         * an ecall per character is a trap to M-mode per character.
+         */
+        bootargs = "earlycon=sbi console=hvc0 keep_bootcon";
     };
 
     cpus {

@@ -56,13 +56,22 @@
     // correctly hands to S, so the signatures disagree on the one field
     // that is right.
     //
-    // medeleg: causes 0 through 9, which is everything this core can raise
-    // except ECALL from M. The page faults are absent because with Bare
-    // translation nothing can raise them.
+    // medeleg: causes 0 through 9 -- everything this core can raise except
+    // ECALL from M -- plus the three page faults, 12 instruction, 13 load
+    // and 15 store/AMO. 14 is reserved.
+    //
+    // **Keep this equal to MEDELEG_WMASK in include/rv32/rv_csr.h.** The
+    // page faults were absent here and there on the same reasoning, that
+    // Bare translation cannot raise them, and Sv32 made it false in both
+    // places at once. Where the emulator's mask silently dropped
+    // OpenSBI's delegation, a stale mask here makes the *reference model*
+    // take in M-mode a trap the emulator correctly delegates to S -- and
+    // the tests then fail on the one field that is right, the handler's
+    // mode. This file has already cost that once.
     "medeleg": {
       "delegatable_bits": {
         "len": 64,
-        "value": "0x3ff"
+        "value": "0xb3ff"
       }
     },
     // mideleg: the three supervisor interrupts, SSIP/STIP/SEIP.

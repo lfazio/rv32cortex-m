@@ -1965,8 +1965,14 @@ static void test_smode(void)
     check("s-tsr-cleared", (csr_read("mstatus") & MSTATUS_TSR), 0u);
 
     /* medeleg and mideleg are real registers now, and WARL. */
+    /*
+     * Causes 0-9, plus the three page faults -- 12, 13, 15 -- because
+     * this build has Sv32 and can raise them. 14 is reserved and must
+     * read back clear, which is what makes this a WARL test rather than
+     * a constant: 0xB3FF and not 0xF3FF.
+     */
     csr_write("medeleg", 0xFFFFFFFFu);
-    check("s-medeleg-warl", csr_read("medeleg"), 0x3FFu);
+    check("s-medeleg-warl", csr_read("medeleg"), 0xB3FFu);
     csr_write("medeleg", 0u);
     csr_write("mideleg", 0xFFFFFFFFu);
     check("s-mideleg-warl", csr_read("mideleg"), 0x222u);
