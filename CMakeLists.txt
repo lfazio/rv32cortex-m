@@ -186,20 +186,27 @@ set(EMU_JIT_CODE_BYTES "${_jit_bytes_default}" CACHE STRING
 # believing the build.
 #
 #
-# **Empty everywhere, including the N6, and that is a measured result.**
+# The N6 has 64 KiB of ITCM that nothing else uses, so the translator's
+# output buffer goes there: it is the only memory this core fetches from
+# without crossing a bus, and .jitcode is NOLOAD so the image does not
+# grow by a byte.
 #
-# The N6 has 64 KiB of ITCM that nothing else uses, the buffer fits, and
-# the placement works at link time -- `nm` puts g_static_code at
-# 0x10000000. It also does not run: executing from ITCM raises a bus
-# error on that board, reproducibly, in both this placement and the hot
-# path one, with SFSR clear so it is not a security attribution. The
-# evidence and what was ruled out are in docs/stm32n6/itcm.md.
+# Worth 1.36% on CoreMark, which is small and is *measured* rather than
+# argued -- 2,261,843/2,261,576 ticks with it off against
+# 2,231,496/2,230,417 with it on, same crcfinal 0xa69a and the same
+# 6,270,489 retired. The board's counter is repeatable to about 0.05%
+# between runs of one binary, which is what makes a 1.36% difference
+# readable at all; see CLAUDE.md on layout noise before quoting a
+# smaller one.
 #
-# The mechanism stays because it is right and it is one line to turn on
-# once the fetch works, or on a part where it already does. Shipping it
-# ON would be shipping a board that prints its banner and then stops.
+# It needs board_itcm_init's ECC scrub to work at all. See
+# docs/stm32n6/itcm.md.
 #
-set(_jit_section_default "")
+if(EMU_PLATFORM STREQUAL "stm32n6")
+    set(_jit_section_default ".jitcode")
+else()
+    set(_jit_section_default "")
+endif()
 set(EMU_JIT_CODE_SECTION "${_jit_section_default}" CACHE STRING
     "linker section for the JIT code buffer (empty: .bss)")
 
@@ -212,8 +219,14 @@ set(EMU_JIT_CODE_SECTION "${_jit_section_default}" CACHE STRING
 # built on a sound argument and measured *worse*, so both are options
 # and neither is assumed.
 #
-# Off for the same reason, and it is the *same* failure: see above.
-set(_hot_section_default "")
+# The per-dispatch path joins it: emu_jit_run and the two IR memory
+# helpers, 1256 bytes, which with the 32 KiB buffer is 34,024 of the
+# 64 KiB.
+if(EMU_PLATFORM STREQUAL "stm32n6")
+    set(_hot_section_default ".itcm")
+else()
+    set(_hot_section_default "")
+endif()
 set(EMU_HOT_TEXT_SECTION "${_hot_section_default}" CACHE STRING
     "linker section for the per-dispatch path (empty: ordinary .text)")
 

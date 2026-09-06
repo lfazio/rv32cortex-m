@@ -485,6 +485,15 @@ void board_fatal(int *status)
 /* ITCM                                                                */
 /* ------------------------------------------------------------------ */
 
+/*
+ * RM0486 table 2: the I-TCM baseline is 64 KiB at 0x10000000 secure.
+ * The FLEXMEM extension above it needs RAMCFG_CR_ITCMCFG and is not used
+ * here -- ST's own application scripts declare 128 KiB, which is that
+ * extension, and place nothing in it.
+ */
+#define BOARD_ITCM_BASE 0x10000000u
+#define BOARD_ITCM_BYTES (64u * 1024u)
+
 extern uint8_t __itcm_start[];
 extern uint8_t __itcm_end[];
 extern uint8_t __itcm_load[];
@@ -517,6 +526,37 @@ static void itcm_init(void)
     MEMSYSCTL->ITCMCR |= MEMSYSCTL_ITCMCR_EN_Msk;
     __DSB();
     __ISB();
+
+    /*
+     * **Scrub the whole TCM with word writes before anything reads it.**
+     *
+     * The TCM is ECC memory, and an ECC location that has never been
+     * written has no valid check bits -- so *reading* it is an error,
+     * not a read of undefined data. On a fetch that arrives as IBUSERR,
+     * which is what this board did: CFSR 0x00000100, SFSR clear, stacked
+     * PC inside ITCM. It presents as "the code that was copied is wrong"
+     * rather than as an uninitialised memory, because the copy visibly
+     * succeeded and the first word read back correctly.
+     *
+     * Copying only the bytes in use is not enough, for two reasons. The
+     * processor fetches ahead, so it reads past the end of a short
+     * function into locations no copy touched. And a *sub-word* write to
+     * ECC memory is a read-modify-write, which reads the uninitialised
+     * check bits it was supposed to be fixing -- so the fill has to be
+     * `uint32_t`, and memcpy's byte tail is exactly the wrong shape.
+     *
+     * This is ST's own sequence, from STM32CubeN6's
+     * Projects/STM32N6570-DK/Applications/VENC/VENC_RTSP_Server FSBL,
+     * whose SystemInit fills the whole DTCM with 0xa5a5a5a5 before doing
+     * anything else -- including skipping the region below MSP, because
+     * that is the live stack. Nothing here is executing from ITCM yet,
+     * so this one has no such exception and fills all of it.
+     */
+    for (volatile uint32_t *p = (volatile uint32_t *)BOARD_ITCM_BASE;
+         p < (volatile uint32_t *)(BOARD_ITCM_BASE + BOARD_ITCM_BYTES); p++) {
+        *p = 0u;
+    }
+    __DSB();
 
     if (len != 0u) {
         memcpy(__itcm_start, __itcm_load, len);

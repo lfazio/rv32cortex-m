@@ -1,14 +1,17 @@
-# ITCM on the STM32N6: a bus error on fetch, and what it is not
+# ITCM on the STM32N6: the TCM has ECC, and ECC must be written first
 
 The Cortex-M55 on the Nucleo-N657X0-Q has 64 KiB of instruction TCM that
-nothing in this firmware uses. It is the obvious place for the JIT's code
-buffer -- the only memory the core fetches from without crossing a bus,
-and the buffer is fetched on every block entry.
+nothing else in this firmware uses. The JIT's code buffer and the
+per-dispatch path both live there now -- it is the only memory this core
+fetches from without crossing a bus, and it is fetched on every block
+entry.
 
-The mechanism to put it there is built, is generic, and **is off by
-default**, because on this board *executing* from ITCM raises a bus
-error. This note records what was established so the next attempt starts
-from the fault rather than from the beginning.
+**It costs a full-region scrub at boot, and without that it does not
+work at all.** The TCM is ECC memory: a location that has never been
+written has no valid check bits, so *reading* it is an error rather than
+a read of undefined data. On an instruction fetch that arrives as
+IBUSERR. What follows is how that presented, because it does not look
+like uninitialised memory.
 
 ## The mechanism
 
@@ -39,7 +42,48 @@ arm-none-eabi-nm build/n6/src/platform/stm32n6/emu-stm32n6.elf | grep g_static_c
 which puts the 32 KiB buffer and 1256 bytes of hot path in ITCM, 34,024
 bytes of the 64 KiB.
 
-## The failure
+## The fix
+
+`board_itcm_init` fills all 64 KiB with `uint32_t` writes before copying
+anything into it. Two details are load-bearing:
+
+- **The whole region, not the bytes in use.** The processor fetches
+  ahead, so it reads past the end of a short function into locations no
+  copy touched.
+- **Word writes.** A sub-word write to ECC memory is a read-modify-write,
+  which reads the very check bits it was meant to establish -- so
+  `memcpy`'s byte tail is exactly the wrong shape.
+
+This is ST's own sequence. `SystemInit` in STM32CubeN6's
+`Projects/STM32N6570-DK/Applications/VENC/VENC_RTSP_Server` FSBL fills
+the whole DTCM with `0xa5a5a5a5` before doing anything else, skipping
+only the region below MSP because that is the live stack. Nothing here
+executes from ITCM at that point, so this fill has no such exception.
+
+**ST declares ITCM and puts nothing in it.** Their application scripts
+map `ITCM (rx) : ORIGIN = 0x10000000, LENGTH = 128K` -- the FLEXMEM
+extension, which needs `RAMCFG_CR_ITCMCFG` -- and no `>ITCM` placement
+appears anywhere in the tree. What they *do* use is DTCM, for the stack.
+So there was no vendor example to copy for the instruction side, only
+the ECC discipline from the data side, and that turned out to be the
+whole of it.
+
+## What it is worth
+
+CoreMark, 25 iterations, the same binary reflashed:
+
+| | ticks |
+|---|---|
+| buffer and hot path in SRAM | 2,261,843 / 2,261,576 |
+| both in ITCM | 2,231,496 / 2,230,417 |
+
+**1.36%**, with `crcfinal 0xa69a` and 6,270,489 retired in every run.
+The counter repeats to about 0.05% between runs of one binary, which is
+what makes a difference this small readable; CLAUDE.md records layout
+alone moving this board by up to 10% between *different* binaries, so do
+not quote a smaller gap than this without reflashing the same image.
+
+## How it presented
 
 CoreMark, 25 iterations, loaded over `ST-LINK_gdbserver` on **AP 1**:
 
@@ -49,8 +93,8 @@ CoreMark, 25 iterations, loaded over `ST-LINK_gdbserver` on **AP 1**:
 | JIT buffer in ITCM only | banner, then nothing |
 | hot path in ITCM only | banner, then nothing |
 
-Both halves fail, so it is not *which* code goes there. Breaking on the
-fault handlers catches it:
+Both halves failed, so it was not *which* code went there. Breaking on
+the fault handlers caught it:
 
 ```
 Breakpoint 1, HardFault_Handler
@@ -60,7 +104,10 @@ SFSR = 0x00000000     not a security fault
 stacked PC = 0x10000002
 ```
 
-## What was ruled out
+## What was ruled out on the way
+
+All of this was true and none of it was the cause, which is why the list
+is worth keeping -- every item reads like a candidate:
 
 - **The region is enabled and the right size.** `ITCMCR = 0x00000039`:
   EN set, SZ 7, which decodes to 64 KiB. `board_itcm_bytes()` reports
@@ -87,24 +134,27 @@ stacked PC = 0x10000002
 reads at the same addresses succeed. It cost a detour; do not read it as
 evidence about the core.
 
-## What has not been tried
+The lesson, which is the one this port already had and did not apply
+widely enough: **read ST's sources rather than infer memory behaviour**.
+The answer was in a `SystemInit` for a video-encoder demo, in a loop over
+a memory this port was not using, and every architectural reading of the
+fault pointed elsewhere.
 
-- `RAMCFG_CR_ITCMCFG` non-zero. RM0486 table 35 says the first 64 KiB
-  is "I-TCM fix" and needs no allocation, which is why it was not
-  touched -- but "fix" has already turned out to mean *not
-  configurable* rather than *always working*.
-- ST's own N6 examples do not put code in ITCM, so there is no vendor
-  sequence to copy. That is itself worth knowing: this port's rule is to
-  read ST's sources rather than infer memory behaviour, and here the
-  sources are silent.
-- The non-secure alias at `0x00000000`, which this firmware cannot fetch
-  from while running Secure without an SAU region.
+## Not used, and why
+
+- `RAMCFG_CR_ITCMCFG`, which would extend ITCM to 128 or 256 KiB out of
+  FLEXRAM. 64 KiB already holds a 32 KiB buffer and the hot path with
+  30 KiB to spare, and the extension takes the memory from the AXI side
+  where the guest lives.
+- The non-secure alias at `0x00000000`. This firmware runs Secure and
+  would need an SAU region to fetch from it.
 
 ## The two-tier buffer
 
 Splitting the code cache -- hot blocks in ITCM, the rest in SRAM, with
-eviction demoting ITCM blocks into the SRAM tier rather than discarding
-them -- is a good design and is **not** built, because it would be a
-policy layer resting on a fetch that does not work. It needs the bus
-error resolved first; nothing about the split would be measurable until
-then.
+eviction demoting an ITCM block into the SRAM tier rather than
+discarding it -- is now buildable, since the fetch works. Whether it
+pays is a separate question: at 32 KiB the buffer already holds
+CoreMark's whole working set, so the tier boundary would never be
+crossed by the one workload that has been measured here. It wants a
+guest whose translated set exceeds ITCM before the policy can be judged.
