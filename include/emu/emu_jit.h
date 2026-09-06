@@ -76,6 +76,29 @@
  * BUILD.md for the whole gate table and scripts/build-matrix.sh for the
  * thing that now notices.
  */
+/*
+ * The code cache a *host* gets, in bytes.
+ *
+ * Generous where the microcontroller default is not: on a target those
+ * bytes are the guest's, and CLAUDE.md records the 12 KB default making
+ * the JIT lose to the interpreter. On a host they cost nothing that
+ * matters and constant retranslation is what masks a translator bug
+ * behind a fresh translation -- at 12 KB CoreMark flushed nineteen times
+ * a run.
+ *
+ * **One definition, because it was two.** rv_ir.c and g4mh_ir.c each
+ * carried their own `4u * 1024u * 1024u`, so raising it meant knowing
+ * both existed -- and a frontend added later would have quietly got
+ * whatever its author copied.
+ *
+ * A guest large enough to matter is the reason for the size: a Linux
+ * kernel's translated working set is far past 4 MB, and every eviction
+ * there is a retranslation of code that was about to run again.
+ */
+#ifndef EMU_HOST_JIT_CODE_BYTES
+#define EMU_HOST_JIT_CODE_BYTES (32u * 1024u * 1024u)
+#endif
+
 #if defined(EMU_HOST_JIT_X86_64) || defined(EMU_HOST_JIT_THUMB2)
 #define EMU_HAVE_JIT 1
 #else

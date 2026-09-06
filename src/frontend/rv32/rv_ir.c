@@ -51,7 +51,7 @@
 /* On a target these bytes are the guest's; see CLAUDE.md. */
 #define RV_JIT_HOST_CODE_BYTES RV_JIT_CODE_SIZE
 #else
-#define RV_JIT_HOST_CODE_BYTES (4u * 1024u * 1024u)
+#define RV_JIT_HOST_CODE_BYTES EMU_HOST_JIT_CODE_BYTES
 #endif
 
 extern const emu_backend_t rv_backend_interp;

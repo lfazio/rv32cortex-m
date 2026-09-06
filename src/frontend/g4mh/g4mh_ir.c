@@ -54,7 +54,7 @@
  * constant retranslation is what would mask a translator bug behind a
  * fresh translation.
  */
-#define G4MH_JIT_CODE_BYTES (4u * 1024u * 1024u)
+#define G4MH_JIT_CODE_BYTES EMU_HOST_JIT_CODE_BYTES
 
 /* Flags each group defines; see the note above. */
 #define F_ARITH (EMU_IR_F_Z | EMU_IR_F_S | EMU_IR_F_V | EMU_IR_F_C)
