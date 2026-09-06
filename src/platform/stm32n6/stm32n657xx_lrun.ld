@@ -124,11 +124,41 @@ _Min_Stack_Size = 0x2000;
  * stays where it was and only its length grows, into the rest of
  * AXISRAM2 and onward.
  */
+/*
+ * ITCM, and why the JIT wants it
+ * ------------------------------
+ * RM0486 table 2: the Cortex-M55's instruction TCM is 64 KiB of
+ * "baseline" at 0x1000_0000 secure, with a FLEXMEM extension carved out
+ * of FLEXRAM reaching to 0x1003_FFFF. Only the baseline is used here --
+ * the extension needs RAMCFG_CR_ITCMCFG set and takes the memory away
+ * from something else, and 64 KiB is already twice the JIT's default.
+ *
+ * The **secure** alias is the one to name. This firmware is built
+ * -mcmse and runs in the secure state, which is also why stm32n657xx.h
+ * resolves USART1 to its secure alias; the non-secure 0x0000_0000 view
+ * of the same memory would be the wrong window from here.
+ *
+ * Two things go in it, for two different reasons:
+ *
+ *   .jitcode  the translator's output buffer. It is fetched as
+ *             instructions on every block entry, and ITCM is the only
+ *             memory this core fetches from without crossing a bus. It
+ *             is NOLOAD because nothing in it survives a reset -- every
+ *             byte is written by the translator before it is branched
+ *             to -- so the image does not grow by a single byte.
+ *
+ *   .itcm     the emulator's own hot path, copied from ROM at boot the
+ *             way the F746 already does it. This one *is* loaded.
+ *
+ * They are ordered .jitcode last so that overflowing it is a link
+ * error naming ITCM rather than silently pushing hot code out.
+ */
 MEMORY
 {
   ROM    (xrw)    : ORIGIN = 0x34180400,   LENGTH = 191K
   RAM    (xrw)    : ORIGIN = 0x341B0000,   LENGTH = 320K
   GUEST  (xrw)    : ORIGIN = 0x34000400,   LENGTH = 1535K
+  ITCM   (rwx)    : ORIGIN = 0x10000000,   LENGTH = 64K
 }
 
 /* Sections */
@@ -228,6 +258,48 @@ SECTIONS
     _edata = .;        /* define a global symbol at data end */
 
   } >RAM AT> ROM
+
+  /*
+   * The hot path, copied into ITCM at boot by board_itcm_init().
+   *
+   * ST's startup copies .data and knows nothing about this, so the copy
+   * is the board's -- same arrangement as the F746, and it has to happen
+   * before anything calls into a function that lives here.
+   *
+   * The section is emitted unconditionally, so __itcm_start and
+   * __itcm_end are equal when nothing claims it and the copy is a no-op.
+   * That matters: it makes "put nothing in ITCM" a build that still
+   * links, which is the A/B this change has to be measured against.
+   */
+  .itcm :
+  {
+    . = ALIGN(8);
+    __itcm_start = .;
+    *(.itcm)
+    *(.itcm*)
+    . = ALIGN(8);
+    __itcm_end = .;
+  } >ITCM AT> ROM
+  __itcm_load = LOADADDR(.itcm);
+
+  /*
+   * The translator's output buffer. NOLOAD: the translator writes every
+   * byte before branching to it, so there is nothing to carry in the
+   * image, and marking it otherwise would put 32 KiB of zeros in the
+   * .bin the boot ROM has to load.
+   *
+   * Overflowing ITCM here is a link error naming the region, which is
+   * the failure this wants -- silently landing the buffer elsewhere
+   * would read as "TCM made no difference".
+   */
+  .jitcode (NOLOAD) :
+  {
+    . = ALIGN(8);
+    __jitcode_start = .;
+    *(.jitcode)
+    . = ALIGN(8);
+    __jitcode_end = .;
+  } >ITCM
 
   .noncacheable :
   {

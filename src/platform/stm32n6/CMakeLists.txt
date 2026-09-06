@@ -229,6 +229,7 @@ endif()
 # compare it. See emu_console_putchar.
 target_compile_definitions(emu-stm32n6 PRIVATE EMU_CONSOLE_CRLF=1)
 
+
 # -Wundef with the rest, and it earns its place: it is the warning that
 # catches a capability macro read without including what defines it,
 # which #if silently treats as 0.

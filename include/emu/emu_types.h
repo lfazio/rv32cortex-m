@@ -120,4 +120,27 @@ typedef void (*emu_print_fn)(void *ctx, const char *s);
 #define EMU_ALWAYS_INLINE inline
 #endif
 
+/*
+ * EMU_HOT_TEXT -- hot, *and* placed in whatever memory the platform says
+ * is fastest to fetch from.
+ *
+ * A microcontroller with a tightly-coupled instruction memory can put
+ * the per-dispatch path there; a host, and a part without one, get plain
+ * EMU_HOT and nothing changes. The platform names the section, this file
+ * does not know what a TCM is, and neither does any caller.
+ *
+ * **noinline is load-bearing, not a hint.** A section attribute places
+ * the function that carries it; if the compiler inlines the body into a
+ * caller that lives somewhere else, the placement silently does nothing
+ * and the build still links. That failure is invisible -- same shape as
+ * the define that reached the wrong CMake target -- so the check is
+ * `nm` on the symbol's address, not the absence of a warning.
+ */
+#if defined(__GNUC__) && defined(EMU_HOT_TEXT_SECTION)
+#define EMU_HOT_TEXT \
+    EMU_HOT __attribute__((section(EMU_HOT_TEXT_SECTION), noinline))
+#else
+#define EMU_HOT_TEXT EMU_HOT
+#endif
+
 #endif /* EMU_TYPES_H */

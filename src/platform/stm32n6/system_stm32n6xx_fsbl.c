@@ -294,7 +294,23 @@ void SystemInit(void)
                  RCC_MEMENSR_AXISRAM4ENS |
                  RCC_MEMENSR_AXISRAM5ENS |
                  RCC_MEMENSR_AXISRAM6ENS |
-                 RCC_MEMENSR_CACHEAXIRAMENS;
+                 RCC_MEMENSR_CACHEAXIRAMENS |
+                 /*
+                  * FLEXRAM, which RM0486 section "SRAM configuration
+                  * controller" says backs the Cortex-M55's TCMs.
+                  *
+                  * **This did not fix the thing it was added for, and
+                  * the entry is kept honest about that.** Executing
+                  * from ITCM bus-errors on this board -- see
+                  * docs/stm32n6/itcm.md -- and enabling FLEXRAM changed
+                  * the fault not at all. It is kept because the TCMs
+                  * are documented to come out of this memory and
+                  * powering it costs one bit in a register that is
+                  * already being written, not because a failure was
+                  * reproduced and cured.
+                  */
+                 RCC_MEMENSR_FLEXRAMENS;
+  RAMCFG_FLEXRAM->CR &= ~RAMCFG_CR_SRAMSD;
   RAMCFG_SRAM3_AXI->CR &= ~RAMCFG_CR_SRAMSD;
   RAMCFG_SRAM4_AXI->CR &= ~RAMCFG_CR_SRAMSD;
   RAMCFG_SRAM5_AXI->CR &= ~RAMCFG_CR_SRAMSD;

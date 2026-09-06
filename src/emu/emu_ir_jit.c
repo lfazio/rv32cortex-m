@@ -70,6 +70,25 @@ static emu_ir_block_t g_ir;
 #ifndef EMU_IR_JIT_STATIC_BYTES
 #define EMU_IR_JIT_STATIC_BYTES 12288u
 #endif
+
+/*
+ * Where the buffer lands is the platform's business, not this file's.
+ *
+ * A microcontroller with a tightly-coupled instruction memory wants the
+ * translated code *there*: it is the only memory the core fetches from
+ * without crossing a bus, so it costs no wait states and does not
+ * contend with the guest's own data traffic. The buffer holds nothing
+ * across a reset -- every byte in it is written by the translator before
+ * it is executed -- so the platform's section can be NOLOAD and the
+ * image does not grow.
+ *
+ * Left undefined, this is an ordinary .bss array, which is what a host
+ * and a part with no TCM both want. `EMU_JIT_CODE_SECTION` is a string
+ * so the linker script chooses the name.
+ */
+#ifdef EMU_JIT_CODE_SECTION
+__attribute__((section(EMU_JIT_CODE_SECTION)))
+#endif
 static uint8_t g_static_code[EMU_IR_JIT_STATIC_BYTES]
     __attribute__((aligned(8)));
 #endif

@@ -30,10 +30,13 @@
 
 #include "board.h" /* and board_api.h, the contract, through it */
 
+#include "emu_console.h"
+
 #include "stm32n6xx_hal.h"
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 static UART_HandleTypeDef g_console;
 
@@ -478,6 +481,71 @@ void board_fatal(int *status)
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* ITCM                                                                */
+/* ------------------------------------------------------------------ */
+
+extern uint8_t __itcm_start[];
+extern uint8_t __itcm_end[];
+extern uint8_t __itcm_load[];
+
+/*
+ * Bring up the instruction TCM and install the hot path in it.
+ *
+ * **The enable is written rather than assumed.** MEMSYSCTL->ITCMCR.EN is
+ * the Armv8.1-M control (PM0273 / the M55 TRM), and whether the boot ROM
+ * leaves it set is not something to infer from a part that boots through
+ * a ROM this port has already been surprised by twice. Writing it costs
+ * one store and makes the outcome independent of what the ROM did.
+ *
+ * SZ is read-only and reports what the implementation has -- RM0486
+ * table 2 says 64 KiB of baseline at 0x1000_0000, and the linker script
+ * declares exactly that. It is reported at boot rather than checked,
+ * because a mismatch between the script and the silicon is a link-time
+ * question and this is a run-time observation.
+ *
+ * The copy is the F746's, for the same reason: ST's startup copies .data
+ * and knows nothing about .itcm, so **nothing may call into ITCM before
+ * this has run**. It is the first thing board_hw_init does after the
+ * caches. A TCM is never cached, so only the barriers are needed --
+ * there is no clean-to-PoU to do on the destination.
+ */
+static void itcm_init(void)
+{
+    const uint32_t len = (uint32_t)(__itcm_end - __itcm_start);
+
+    MEMSYSCTL->ITCMCR |= MEMSYSCTL_ITCMCR_EN_Msk;
+    __DSB();
+    __ISB();
+
+    if (len != 0u) {
+        memcpy(__itcm_start, __itcm_load, len);
+        __DSB();
+        __ISB();
+    }
+}
+
+/*
+ * What ITCM actually came up as, for the banner.
+ *
+ * SZ is an encoded size, and the encoding is the one the M55 TRM gives:
+ * 0 means absent and n means 1 KiB << (n - 1), so 7 is the 64 KiB this
+ * part documents. Reporting the decoded number rather than the field is
+ * the difference between a line that can be read and one that has to be
+ * looked up -- and a *zero* here says the enable did not take, which is
+ * the failure worth being able to see.
+ */
+uint32_t board_itcm_bytes(void)
+{
+    const uint32_t sz =
+        (MEMSYSCTL->ITCMCR & MEMSYSCTL_ITCMCR_SZ_Msk) >> MEMSYSCTL_ITCMCR_SZ_Pos;
+
+    if ((MEMSYSCTL->ITCMCR & MEMSYSCTL_ITCMCR_EN_Msk) == 0u || sz == 0u) {
+        return 0u;
+    }
+    return 1024u << (sz - 1u);
+}
+
 void board_hw_init(void)
 {
 
@@ -498,9 +566,30 @@ void board_hw_init(void)
     SCB_EnableICache();
     SCB_EnableDCache();
 
+    /*
+     * Before anything else that might be *in* ITCM is called, and after
+     * the caches so the copy's stores go through a configured cache.
+     */
+    itcm_init();
+
     HAL_Init();
     clock_init();
     cycles_init();
     led_init();
     console_init();
+
+    /*
+     * What ITCM came up as, now that there is a console to say it on.
+     *
+     * This is not decoration. The JIT's code buffer is linked into ITCM,
+     * and if the region is smaller than the linker was told, the buffer
+     * runs off the end of real memory -- which does not fault, it
+     * executes whatever the truncated address aliases onto, and presents
+     * as a guest that starts and never finishes. A *number* here is the
+     * difference between diagnosing that in one run and bisecting the
+     * translator.
+     */
+    emu_console_printf("itcm   %u KiB at 0x%08x, jit buffer %u KiB\n",
+                       (unsigned)(board_itcm_bytes() / 1024u), 0x10000000u,
+                       (unsigned)(EMU_IR_JIT_STATIC_BYTES / 1024u));
 }

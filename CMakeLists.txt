@@ -169,6 +169,54 @@ endif()
 set(EMU_JIT_CODE_BYTES "${_jit_bytes_default}" CACHE STRING
     "JIT code cache size in bytes")
 
+#
+# Which linker section the JIT's code buffer lands in.
+#
+# Empty means "an ordinary .bss array", which is what a host and a part
+# without a tightly-coupled memory both want. A platform whose linker
+# script provides somewhere better names it here.
+#
+# **It has to be set at this level, because this is where emu_ir_jit.c is
+# compiled.** Setting it on the platform's own executable target reaches
+# nothing: the file is in `emucore`, so the define never arrives and the
+# buffer stays in .bss -- which links, runs, and reports figures
+# identical to the digit. Exactly the shape of EMU_JIT_CODE_BYTES
+# reaching only the translator that no longer existed, and caught the
+# same way, by reading `nm` for the symbol's address rather than
+# believing the build.
+#
+#
+# **Empty everywhere, including the N6, and that is a measured result.**
+#
+# The N6 has 64 KiB of ITCM that nothing else uses, the buffer fits, and
+# the placement works at link time -- `nm` puts g_static_code at
+# 0x10000000. It also does not run: executing from ITCM raises a bus
+# error on that board, reproducibly, in both this placement and the hot
+# path one, with SFSR clear so it is not a security attribution. The
+# evidence and what was ruled out are in docs/stm32n6/itcm.md.
+#
+# The mechanism stays because it is right and it is one line to turn on
+# once the fetch works, or on a part where it already does. Shipping it
+# ON would be shipping a board that prints its banner and then stops.
+#
+set(_jit_section_default "")
+set(EMU_JIT_CODE_SECTION "${_jit_section_default}" CACHE STRING
+    "linker section for the JIT code buffer (empty: .bss)")
+
+#
+# And the same question for the emulator's own per-dispatch code.
+#
+# Separate from the buffer on purpose: they compete for the same 64 KiB
+# of ITCM, and which of them is worth the space is a measurement rather
+# than a principle. This file already records interpreter-in-SRAM being
+# built on a sound argument and measured *worse*, so both are options
+# and neither is assumed.
+#
+# Off for the same reason, and it is the *same* failure: see above.
+set(_hot_section_default "")
+set(EMU_HOT_TEXT_SECTION "${_hot_section_default}" CACHE STRING
+    "linker section for the per-dispatch path (empty: ordinary .text)")
+
 # Build and use the Thumb-2 JIT. Turning this off is how the same guest
 # image is measured on the interpreter, which is also how a suspected JIT
 # miscompile gets isolated from a core bug.
@@ -401,6 +449,13 @@ target_compile_definitions(emucore PUBLIC
     # nothing: -DEMU_JIT_CODE_BYTES=32768 still reported `code 1728/12288`
     # and produced figures identical to the digit.
     EMU_IR_JIT_STATIC_BYTES=${EMU_JIT_CODE_BYTES}u
+    #
+    # And where it lives. Quoted twice on purpose: the C source uses the
+    # macro as a string literal in __attribute__((section(...))), so the
+    # quotes have to survive CMake.
+    #
+    $<$<BOOL:${EMU_JIT_CODE_SECTION}>:EMU_JIT_CODE_SECTION="${EMU_JIT_CODE_SECTION}">
+    $<$<BOOL:${EMU_HOT_TEXT_SECTION}>:EMU_HOT_TEXT_SECTION="${EMU_HOT_TEXT_SECTION}">
     #
     # Whether a JIT was *asked for*. emu_jit.h reconciles this with what
     # the host can actually emit; before it existed, EMU_HOST_JIT_X86_64 and

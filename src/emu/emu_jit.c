@@ -574,8 +574,9 @@ static emu_run_reason_t run_interp_one(emu_cpu_t *cpu, const emu_jit_ops_t *ops,
     return r;
 }
 
-emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget, uint32_t *retired,
-                             const emu_jit_ops_t *ops)
+EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
+                                          uint32_t *retired,
+                                          const emu_jit_ops_t *ops)
 {
     uint32_t done = 0u;
     emu_run_reason_t reason = EMU_RUN_BUDGET;

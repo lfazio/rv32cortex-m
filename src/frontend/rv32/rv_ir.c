@@ -67,8 +67,8 @@ extern const emu_backend_t rv_backend_interp;
  * reached -- the frontend emits EMU_IR_SETPC ahead of every memory
  * operation -- so rv_hart_trap records the right address.
  */
-static uint32_t rv_ir_load(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
-                           uint32_t *out)
+EMU_HOT_TEXT static uint32_t rv_ir_load(emu_cpu_t *cpu, uint32_t addr,
+                                        uint32_t spec, uint32_t *out)
 {
     rv_hart_t *const h = (rv_hart_t *)cpu;
     const rv_exc_t exc = rv_hart_load(h, addr, EMU_IR_MEM_SIZE(spec),
@@ -81,8 +81,8 @@ static uint32_t rv_ir_load(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
     return 0u;
 }
 
-static uint32_t rv_ir_store(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
-                            uint32_t val)
+EMU_HOT_TEXT static uint32_t rv_ir_store(emu_cpu_t *cpu, uint32_t addr,
+                                         uint32_t spec, uint32_t val)
 {
     rv_hart_t *const h = (rv_hart_t *)cpu;
     const rv_exc_t exc = rv_hart_store(h, addr, EMU_IR_MEM_SIZE(spec), val);
