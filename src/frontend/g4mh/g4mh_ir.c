@@ -350,7 +350,16 @@ static bool lower_one48(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
  * Lower one 16-bit instruction. Returns false for anything not modelled,
  * which ends the block -- the caller has emitted nothing for it.
  */
-static bool lower_one(emu_ir_block_t *b, uint16_t w0, uint32_t pc)
+/*
+ * `counted` is set by a lowering that emitted its own EMU_IR_RETIRE.
+ *
+ * A conditional branch has to: the block leaves through EXIT_IF on the
+ * taken path, and a RETIRE placed after it by the caller is skipped
+ * exactly then -- which undercounts every loop back edge in the guest
+ * while computing entirely correct answers.
+ */
+static bool lower_one(emu_ir_block_t *b, uint16_t w0, uint32_t pc,
+                      bool *counted)
 {
     const uint32_t r1 = g4mh_reg1(w0);
     const uint32_t r2 = g4mh_reg2(w0);
@@ -394,6 +403,80 @@ static bool lower_one(emu_ir_block_t *b, uint16_t w0, uint32_t pc)
         }
         return true;
     }
+    case 0x0B: { /* Bcond disp9      */
+        /*
+         * The branches, which are what make a loop body a block. Without
+         * them every back edge ended a block, so nothing amortised: the
+         * translator paid a full translation for a handful of
+         * instructions and handed the branch back to the interpreter.
+         *
+         * G4MH names sixteen conditions and the IR names ten, and the
+         * ten are exactly the ones a compiler emits -- equality, both
+         * signed orderings, both unsigned. The six left out (BV, BNV,
+         * BN, BP, BSA, and the saturation flag) have no IR spelling
+         * because no other frontend has them; they decline, which is
+         * correct and costs a block each time a guest uses one.
+         *
+         * **The condition table is indexed by the architecture's
+         * encoding, so a hole in it must be a hole and not a wrong
+         * answer.** 0xFF marks the six, and is tested before use --
+         * mapping an unrepresentable condition onto a near neighbour
+         * would be a silently wrong branch, which is the worst thing
+         * available here.
+         */
+        static const uint8_t k_cond[16] = {
+            0xFFu, /* 0 BV   overflow      -- no IR spelling  */
+            EMU_IR_C_LTU, /* 1 BL   carry set                        */
+            EMU_IR_C_EQ, /* 2 BE   zero                             */
+            EMU_IR_C_LEU, /* 3 BNH  carry or zero                    */
+            0xFFu, /* 4 BN   negative      -- no IR spelling  */
+            EMU_IR_C_ALWAYS, /* 5 BR   unconditional                */
+            EMU_IR_C_LT, /* 6 BLT  signed less                      */
+            EMU_IR_C_LE, /* 7 BLE  signed less or equal             */
+            0xFFu, /* 8 BNV                -- no IR spelling  */
+            EMU_IR_C_GEU, /* 9 BNL  carry clear                      */
+            EMU_IR_C_NE, /* A BNE  not zero                         */
+            EMU_IR_C_GTU, /* B BH   higher                           */
+            0xFFu, /* C BP   positive      -- no IR spelling  */
+            0xFFu, /* D BSA  saturated     -- no IR spelling  */
+            EMU_IR_C_GE, /* E BGE  signed greater or equal          */
+            EMU_IR_C_GT /* F BGT  signed greater                   */
+        };
+        const uint32_t cond = k_cond[w0 & 0xFu];
+
+        if (cond == 0xFFu) {
+            return false;
+        }
+
+        /*
+         * disp[8:4] in bits[15:11], disp[3:1] in bits[6:4], bit 0 always
+         * zero, sign-extended from 9 and added to the address of the
+         * *branch* rather than of the next instruction.
+         */
+        const uint32_t d = ((((uint32_t)w0 >> 11) & 0x1Fu) << 4) |
+                           ((((uint32_t)w0 >> 4) & 0x7u) << 1);
+        const uint32_t target = pc + (uint32_t)emu_sext(d, 9);
+
+        /*
+         * The condition is read from PSW into a value, then the exit
+         * compares that value against zero. EXIT_IF compares two
+         * operands -- it is a frontend with no flags that shaped it --
+         * so a flag-testing branch needs the GETCOND in front.
+         *
+         * RETIRE before the exit, and `counted` so the caller does not
+         * add a second one after it.
+         */
+        const uint16_t t = emu_ir_emit(b, EMU_IR_GETCOND, (uint8_t)cond,
+                                       EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 0u, 0u);
+
+        (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          0u, 0u);
+        (void)emu_ir_emit(b, EMU_IR_EXIT_IF, EMU_IR_C_NE, t,
+                          emu_ir_const(b, 0u), target, 0u);
+        *counted = true;
+        return true;
+    }
+
     default:
         break;
     }
@@ -577,10 +660,11 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
          */
         const uint32_t mark = b->count;
         uint32_t len = 2u;
+        bool counted = false;
         bool ok;
 
         if (g4mh_is_16bit(w0)) {
-            ok = lower_one(b, w0, cur);
+            ok = lower_one(b, w0, cur, &counted);
         } else {
             uint16_t w1;
 
@@ -626,8 +710,10 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
 
         cur += len;
         count++;
-        (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
-                          0u, 0u);
+        if (!counted) {
+            (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP,
+                              EMU_IR_NO_TEMP, 0u, 0u);
+        }
         (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
                           cur, 0u);
     }
