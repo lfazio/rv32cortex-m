@@ -193,6 +193,81 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
         return true;
     }
 
+    /*
+     * The register-register group, whose operation is a sub-opcode in the
+     * second halfword. It is the largest thing this translator declined:
+     * instrumenting the decline path and disassembling what came out put
+     * it at 93 of 253 on the g4mh guest, ahead of the branches.
+     *
+     * Only the shifts so far, in both their forms. The sub-opcode's low
+     * bit chooses them: even writes reg2, odd writes **reg3** and leaves
+     * reg2 alone. Getting that backwards is not a wrong answer in one
+     * register, it is a wrong answer in two -- and this frontend has
+     * already been caught by a sub-opcode bit that meant "and also write
+     * reg3", which ran every `ld.w [rN]+` as an LDL.W that never advanced
+     * the pointer.
+     */
+    if (op == 0x3Fu) {
+        const uint32_t sub = (uint32_t)w1 & 0x07FFu;
+        uint8_t shop;
+        bool left;
+
+        switch (sub & ~0x2u) {
+        case 0x080u:
+            shop = EMU_IR_SHR;
+            left = false;
+            break;
+        case 0x0A0u:
+            shop = EMU_IR_SAR;
+            left = false;
+            break;
+        case 0x0C0u:
+            shop = EMU_IR_SHL;
+            left = true;
+            break;
+        default:
+            return false;
+        }
+
+        const uint32_t dst = ((sub & 2u) != 0u) ? ((uint32_t)w1 >> 11) & 0x1Fu
+                                                : r2;
+        const uint16_t v = emu_ir_get(b, r2);
+        const uint16_t n = emu_ir_emit(b, EMU_IR_ANDI, 0u, emu_ir_get(b, r1),
+                                       EMU_IR_NO_TEMP, 31u, 0u);
+        const uint16_t res = emu_ir_alu(b, (emu_ir_op_t)shop, v, n);
+
+        /*
+         * The carry, which is the bit that left: n - 1 from the bottom
+         * for a right shift, 32 - n for a left one -- and **zero when n
+         * is zero**, which no bit position can express, so it is masked
+         * off by whether n was zero at all.
+         *
+         * At n == 0 the position computed here is 31 or 0, either of
+         * which reads a real bit of the operand; only the `n != 0` term
+         * stops it reaching the flag. The interpreter's do_shl and
+         * friends open with `cy = 0` before testing n for the same
+         * reason, and the immediate forms in lower_one settle it at
+         * translation time instead.
+         */
+        const uint16_t pos =
+            left ? emu_ir_alu(b, EMU_IR_SUB, emu_ir_const(b, 32u), n)
+                 : emu_ir_emit(b, EMU_IR_ADDI, 0u, n, EMU_IR_NO_TEMP,
+                               0xFFFFFFFFu, 0u);
+        const uint16_t posm = emu_ir_emit(b, EMU_IR_ANDI, 0u, pos,
+                                          EMU_IR_NO_TEMP, 31u, 0u);
+        const uint16_t bit =
+            emu_ir_emit(b, EMU_IR_ANDI, 0u, emu_ir_alu(b, EMU_IR_SHR, v, posm),
+                        EMU_IR_NO_TEMP, 1u, 0u);
+        const uint16_t nz = emu_ir_emit(b, EMU_IR_SETCC, EMU_IR_C_NE, n,
+                                        emu_ir_const(b, 0u), 0u, 0u);
+        const uint16_t cy = emu_ir_alu(b, EMU_IR_AND, bit, nz);
+
+        emu_ir_put(b, dst, res);
+        (void)emu_ir_emit(b, EMU_IR_SETF, EMU_IR_FS_SHIFT, res, cy, 0u,
+                          F_ARITH);
+        return true;
+    }
+
     if (op < 0x38u || op > 0x3Bu) {
         return false;
     }
