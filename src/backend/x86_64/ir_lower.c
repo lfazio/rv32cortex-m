@@ -518,6 +518,109 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     x86_st_cpu(T1, t->flags_offset);
 }
 
+/*
+ * One guest flag, as 0 or 1, from the flag word already in `src`.
+ *
+ * A flag the frontend does not have reads as false rather than as
+ * whatever sits at bit 0 -- RISC-V declares all four absent, and a
+ * condition that consulted them would otherwise be reading the low bit
+ * of an unrelated word.
+ */
+static void flag_bit_to(int dst, int src, const emu_ir_target_t *t, unsigned f)
+{
+    if (t->flag_bit[f] == 0u) {
+        x86_mov_imm32(dst, 0u);
+        return;
+    }
+    x86_mov_rr(dst, src);
+    const uint32_t sh = (uint32_t)__builtin_ctz(t->flag_bit[f]);
+
+    if (sh != 0u) {
+        x86_shift_imm(dst, X86_SHR, sh);
+    }
+    x86_and_imm8(dst, 1);
+}
+
+/*
+ * EMU_IR_GETCOND: a guest condition, evaluated against the *guest's*
+ * flag word.
+ *
+ * **It used to emit a bare `setcc`, which reads the host's EFLAGS.** By
+ * the time this runs those hold whatever the previously emitted
+ * instruction happened to leave -- an address computation, a spill --
+ * so the answer had nothing to do with the guest at all. SETCC directly
+ * below is the one that may use `setcc`, because it does its own `cmp`
+ * first; this one has no compare to read.
+ *
+ * Nothing caught it because **no frontend emitted GETCOND**. RISC-V has
+ * no flags and uses SETCC; G4MH had no branches lowered. It surfaced the
+ * moment G4MH's Bcond was translated, as a guest that looped for ever
+ * where the interpreter halted in 846 instructions -- which is the only
+ * way an unexercised path ever does surface.
+ *
+ * The derivations are eval_cond's in src/backend/common/interp.c, which
+ * is the reference: LT is s != v, LEU is c || z, and so on.
+ */
+static void emit_getcond(const emu_ir_insn_t *in, const emu_ir_target_t *t)
+{
+    const emu_ir_cond_t c = (emu_ir_cond_t)in->aux;
+
+    if (c == EMU_IR_C_ALWAYS) {
+        x86_mov_imm32(T0, 1u);
+        return;
+    }
+
+    x86_ld_cpu(T1, t->flags_offset);
+
+    switch (c) {
+    case EMU_IR_C_EQ:
+    case EMU_IR_C_NE:
+        flag_bit_to(T0, T1, t, 0); /* Z */
+        break;
+
+    case EMU_IR_C_LTU:
+    case EMU_IR_C_GEU:
+        flag_bit_to(T0, T1, t, 3); /* C */
+        break;
+
+    case EMU_IR_C_LT:
+    case EMU_IR_C_GE:
+        flag_bit_to(T0, T1, t, 1); /* S */
+        flag_bit_to(T2, T1, t, 2); /* V */
+        x86_alu_rr(X86_XOR, T0, T2); /* signed less: S != V */
+        break;
+
+    case EMU_IR_C_LE:
+    case EMU_IR_C_GT:
+        flag_bit_to(T0, T1, t, 1);
+        flag_bit_to(T2, T1, t, 2);
+        x86_alu_rr(X86_XOR, T0, T2);
+        flag_bit_to(T2, T1, t, 0);
+        x86_alu_rr(X86_OR, T0, T2); /* Z || (S != V) */
+        break;
+
+    case EMU_IR_C_LEU:
+    case EMU_IR_C_GTU:
+        flag_bit_to(T0, T1, t, 3);
+        flag_bit_to(T2, T1, t, 0);
+        x86_alu_rr(X86_OR, T0, T2); /* C || Z */
+        break;
+
+    default:
+        x86_mov_imm32(T0, 1u);
+        return;
+    }
+
+    /*
+     * The five negated forms are the positive one with bit 0 flipped,
+     * which is exact because everything above is already 0 or 1.
+     */
+    if (c == EMU_IR_C_NE || c == EMU_IR_C_GEU || c == EMU_IR_C_GE ||
+        c == EMU_IR_C_GT || c == EMU_IR_C_GTU) {
+        x86_alu_imm32(X86_X_XOR, T0, 1u);
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* Lowering                                                            */
 /* ------------------------------------------------------------------ */
@@ -1181,22 +1284,10 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         emit_setf(in, t);
         break;
 
-    case EMU_IR_GETCOND: {
-        static const uint8_t k_cc[] = {
-            [EMU_IR_C_EQ] = X86_CC_E,   [EMU_IR_C_NE] = X86_CC_NE,
-            [EMU_IR_C_LT] = X86_CC_L,   [EMU_IR_C_GE] = X86_CC_GE,
-            [EMU_IR_C_LTU] = X86_CC_B,  [EMU_IR_C_GEU] = X86_CC_AE,
-            [EMU_IR_C_LE] = X86_CC_LE,  [EMU_IR_C_GT] = X86_CC_G,
-            [EMU_IR_C_LEU] = X86_CC_BE, [EMU_IR_C_GTU] = X86_CC_A,
-        };
-        if (in->aux == (uint8_t)EMU_IR_C_ALWAYS) {
-            x86_mov_imm32(T0, 1u);
-        } else {
-            x86_setcc_eax(k_cc[in->aux]);
-        }
+    case EMU_IR_GETCOND:
+        emit_getcond(in, t);
         st_slot(T0, in->dst);
         break;
-    }
 
     case EMU_IR_SETCC: {
         static const uint8_t k_cc[] = {
