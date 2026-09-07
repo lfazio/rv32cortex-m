@@ -104,6 +104,49 @@ if(TARGET guest-crypto AND EMU_GUEST_ARCH_RV32)
     endif()
 endif()
 
+# The A extension.
+#
+# Two different questions, and they need two different assertions.
+#
+# **Correctness cannot guard the lowering.** Both backends call the same
+# rv_hart_amo, so an atomic that stops being translated still computes the
+# right answer -- it just ends the block and interprets. Measured, not
+# argued: with the lowering removed this guest still reports
+# `failures 0x00000000`, and only the `declined` counter moves, from 1 to
+# 6017. A test that checked the answers alone would have passed against
+# the very regression it was written for -- which is this project's
+# most-repeated mistake.
+#
+# So the JIT run is checked twice: once for the answers, once for the
+# coverage. The bound comes from the guest's own design rather than from
+# a number the implementation produced -- it issues 3 * ATOMIC_ROUNDS
+# atomics, so a translator that declined them again cannot come in under
+# a thousand. The 1 that remains is the ecall the guest exits through,
+# which the translator declines deliberately.
+if(TARGET guest-atomics AND EMU_GUEST_ARCH_RV32)
+    add_test(NAME guest-atomics
+             COMMAND emu-host "${CMAKE_BINARY_DIR}/guest/atomics.bin")
+    set_tests_properties(guest-atomics PROPERTIES
+        LABELS fast
+        PASS_REGULAR_EXPRESSION "failures 0x00000000")
+
+    if(EMU_JIT)
+        add_test(NAME guest-atomics-jit
+                 COMMAND emu-host --jit
+                         "${CMAKE_BINARY_DIR}/guest/atomics.bin")
+        set_tests_properties(guest-atomics-jit PROPERTIES
+            LABELS fast
+            PASS_REGULAR_EXPRESSION "failures 0x00000000")
+
+        add_test(NAME guest-atomics-jit-lowered
+                 COMMAND emu-host --jit
+                         "${CMAKE_BINARY_DIR}/guest/atomics.bin")
+        set_tests_properties(guest-atomics-jit-lowered PROPERTIES
+            LABELS fast
+            PASS_REGULAR_EXPRESSION "declined [0-9][0-9]?[0-9]? overflow")
+    endif()
+endif()
+
 # The e200z7 guest, which is the only thing that runs this frontend as a
 # program rather than as hand-assembled arrays.
 #

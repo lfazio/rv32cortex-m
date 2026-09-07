@@ -105,6 +105,19 @@ endfunction()
 add_guest_image(isatest  SOURCES start.S isatest.c)
 add_guest_image(hello    SOURCES start.S hello.c)
 
+#
+# The A extension, as a guest the JIT actually sees.
+#
+# isatest covers the same instructions and cannot guard their *lowering*:
+# it arms PMP early, and the JIT is gated on fetch_guard, so every atomic
+# in it is interpreted whatever the translator can do. This one arms
+# nothing and stays in M-mode.
+#
+set(ATOMIC_ROUNDS "2000" CACHE STRING "atomic iterations in the atomics guest")
+add_guest_image(atomics
+    SOURCES start.S atomics.c
+    FLAGS -DATOMIC_ROUNDS=${ATOMIC_ROUNDS})
+
 # Peripheral drivers running as guest code, talking to real silicon
 # through the passthrough window. Only meaningful on the STM32 target; on
 # the host runner the peripheral window is backed by plain memory, so it
