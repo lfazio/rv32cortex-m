@@ -475,6 +475,12 @@ static bool bisect_allows(uint8_t op)
      */
     case EMU_IR_SETF:
         return T2_BISECT >= 9;
+    /*
+     * The branch conditions, above SETF: the two are only useful
+     * together, and this is the half that decides whether either runs.
+     */
+    case EMU_IR_GETCOND:
+        return T2_BISECT >= 10;
     default:
         return false;
     }
@@ -652,6 +658,22 @@ static bool g_fp_written;
 #define SETF_ACC T2_R3
 #define SETF_PSR T2_R12
 
+/*
+ * dst = the guest's flag `f` as 0 or 1, from a flag word already loaded
+ * into `word`. A flag the frontend declares absent reads as false rather
+ * than as the low bit of an unrelated register.
+ */
+static void setf_flag_bit(uint32_t dst, uint32_t word,
+                          const emu_ir_target_t *t, unsigned f)
+{
+    if (t->flag_bit[f] == 0u) {
+        t2_imm32(dst, 0u);
+        return;
+    }
+    t2_shift_imm(T2_LSR, dst, word, (uint32_t)__builtin_ctz(t->flag_bit[f]));
+    t2_and_imm(dst, dst, 1u);
+}
+
 static bool setf_wants(const emu_ir_insn_t *in, const emu_ir_target_t *t,
                        unsigned f)
 {
@@ -732,6 +754,96 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     t2_and(SETF_A, SETF_A, SETF_PSR);
     t2_orr(SETF_A, SETF_A, SETF_ACC);
     t2_str_imm(SETF_A, T2_CPU, t->flags_offset);
+}
+
+/*
+ * EMU_IR_GETCOND: a guest condition, as 0 or 1, from the guest's own
+ * flag word.
+ *
+ * **This is what actually blocked G4MH on the board**, and SETF was not.
+ * Lowering SETF alone changed nothing measurable: with `-DT2_BISECT=8`
+ * the N6 reported `declined 465 blocks 37 retired 846` and with SETF on
+ * it reported the same to the digit, which by this file's own rule means
+ * the code never ran. It could not -- a G4MH block that sets flags
+ * almost always goes on to branch on them, the branch lowers to a
+ * GETCOND, and a declined GETCOND takes the whole block including the
+ * SETF that fed it. The flags and the branch have to arrive together or
+ * neither arrives.
+ *
+ * Not from the host's APSR, unlike SETF beside it. SETF *recomputes* the
+ * operation, so the flags it wants are the ones it just made; GETCOND is
+ * asked long afterwards, with any number of instructions in between, and
+ * the APSR by then describes whichever of them last set it. The guest's
+ * flag word is the only thing that still holds the answer -- which is
+ * exactly the bug the x86-64 version of this had, where a bare `setcc`
+ * read host flags belonging to an address computation.
+ *
+ * The derivations are eval_cond's in src/backend/common/interp.c, which
+ * is the reference: LT is S != V rather than S, and getting that from
+ * one place is worth more than the three instructions it costs.
+ */
+static void emit_getcond(const emu_ir_insn_t *in, const emu_ir_target_t *t)
+{
+    const emu_ir_cond_t c = (emu_ir_cond_t)in->aux;
+    const uint32_t rd = def_reg(in->dst, T2_R0);
+
+    if (c == EMU_IR_C_ALWAYS) {
+        t2_imm32(rd, 1u);
+        st_slot(rd, in->dst);
+        return;
+    }
+
+    t2_ldr_imm(T2_R12, T2_CPU, t->flags_offset);
+
+    switch (c) {
+    case EMU_IR_C_EQ:
+    case EMU_IR_C_NE:
+        setf_flag_bit(rd, T2_R12, t, 0); /* Z */
+        break;
+
+    case EMU_IR_C_LTU:
+    case EMU_IR_C_GEU:
+        setf_flag_bit(rd, T2_R12, t, 3); /* C */
+        break;
+
+    case EMU_IR_C_LT:
+    case EMU_IR_C_GE:
+        setf_flag_bit(rd, T2_R12, t, 1); /* S */
+        setf_flag_bit(T2_R1, T2_R12, t, 2); /* V */
+        t2_eor(rd, rd, T2_R1); /* signed less: S != V */
+        break;
+
+    case EMU_IR_C_LE:
+    case EMU_IR_C_GT:
+        setf_flag_bit(rd, T2_R12, t, 1);
+        setf_flag_bit(T2_R1, T2_R12, t, 2);
+        t2_eor(rd, rd, T2_R1);
+        setf_flag_bit(T2_R1, T2_R12, t, 0);
+        t2_orr(rd, rd, T2_R1); /* Z || (S != V) */
+        break;
+
+    case EMU_IR_C_LEU:
+    case EMU_IR_C_GTU:
+        setf_flag_bit(rd, T2_R12, t, 3);
+        setf_flag_bit(T2_R1, T2_R12, t, 0);
+        t2_orr(rd, rd, T2_R1); /* C || Z */
+        break;
+
+    default:
+        t2_imm32(rd, 1u);
+        st_slot(rd, in->dst);
+        return;
+    }
+
+    /*
+     * The five negated forms are the positive one with bit 0 flipped,
+     * which is exact because everything above is already 0 or 1.
+     */
+    if (c == EMU_IR_C_NE || c == EMU_IR_C_GEU || c == EMU_IR_C_GE ||
+        c == EMU_IR_C_GT || c == EMU_IR_C_GTU) {
+        t2_eor_imm(rd, rd, 1u);
+    }
+    st_slot(rd, in->dst);
 }
 
 static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
@@ -922,6 +1034,10 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
     case EMU_IR_SETF:
         emit_setf(in, t);
+        break;
+
+    case EMU_IR_GETCOND:
+        emit_getcond(in, t);
         break;
 
     case EMU_IR_SHLI:
@@ -1459,7 +1575,6 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_FCVT_TO_I:
     case EMU_IR_FCVT_FROM_I:
     case EMU_IR_FCLASS:
-    case EMU_IR_GETCOND:
     case EMU_IR_SELECT:
     case EMU_IR_BITOP_SET:
     case EMU_IR_BITOP_CLR:
