@@ -15,29 +15,8 @@
 set(STM32CUBE_FAMILY "f7")
 include(${CMAKE_SOURCE_DIR}/cmake/stm32cube.cmake)
 
-set(RV32_GUEST "isatest" CACHE STRING "Guest image to embed in the firmware")
-set(guest_src "${CMAKE_BINARY_DIR}/guest/${RV32_GUEST}.bin")
-
-# The image is produced in tests/guest, and a cross-directory file
-# dependency is where the two generators diverge: OBJECT_DEPENDS on a path
-# in another directory's scope leaves the Makefile generator with "No rule
-# to make target". Copying it here with a local custom command makes the
-# dependency intra-directory, which both handle identically.
-set(guest_bin "${CMAKE_CURRENT_BINARY_DIR}/guest_image.bin")
-#
-# Both the file and the target are named, and both are needed. The target
-# supplies the rule that builds the image; the *file* supplies staleness.
-# Depending on the target alone is an ordering constraint only, so the copy
-# ran once and never again: editing a guest source rebuilt the .bin, left
-# the staged copy untouched, and produced firmware still carrying the
-# previous guest. Nothing failed, which is what made it dangerous.
-add_custom_command(
-    OUTPUT "${guest_bin}"
-    COMMAND ${CMAKE_COMMAND} -E copy "${guest_src}" "${guest_bin}"
-    DEPENDS "${guest_src}" guest-${RV32_GUEST}
-    COMMENT "Staging guest image ${RV32_GUEST}.bin"
-    VERBATIM)
-add_custom_target(guest-image-staged DEPENDS "${guest_bin}")
+include(${CMAKE_SOURCE_DIR}/cmake/guest-image.cmake)
+emu_stage_guest_image(guest_bin)
 
 # ---------------------------------------------------------------------
 # Vendor sources
@@ -167,13 +146,16 @@ set_source_files_properties(guest_image.S PROPERTIES
     COMPILE_DEFINITIONS "EMU_GUEST_IMAGE=${guest_bin}"
     OBJECT_DEPENDS "${guest_bin}")
 
-if(TARGET guest-${RV32_GUEST})
-    add_dependencies(emu-stm32f746 guest-image-staged)
-else()
-    message(WARNING
-        "Guest image '${RV32_GUEST}' is not built (no RISC-V toolchain?); "
-        "the firmware link will fail until ${guest_bin} exists.")
-endif()
+#
+# Unconditional, because the guarded version was always wrong.
+# `if(TARGET guest-...)` was asked from a directory added *before*
+# tests/guest, so the answer was always no and every configure warned
+# that the link would fail. It never did -- guest_image.S carries an
+# OBJECT_DEPENDS on the staged file, which is the dependency that
+# matters. A warning that is always wrong is the one that teaches you to
+# skip reading them.
+#
+add_dependencies(emu-stm32f746 guest-image-staged)
 
 # -Wundef with the rest, and it earns its place here rather than being
 # tidiness: it is the warning that catches a capability macro read
