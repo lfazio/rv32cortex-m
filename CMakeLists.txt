@@ -362,23 +362,27 @@ set(G4MH_PE_COUNT "1" CACHE STRING "G4MH processing elements (1..3)")
 # The default therefore follows the PE count rather than being a constant
 # somebody has to remember to change with it. Still a cache variable, so a
 # firmware build that knows its map can set it lower and get the RAM back.
-if(EMU_GUEST_ARCH_G4MH AND G4MH_PE_COUNT GREATER 1)
-    math(EXPR _regions_default "16 + 4 * ${G4MH_PE_COUNT}")
-elseif(EMU_PLATFORM STREQUAL "stm32n6")
-    # The N6's peripheral policy is fifteen entries where the F4 and F7
-    # need seven, and that is the part being different rather than the
-    # table being fussy: its RCC mirrors the clock-enable registers at
-    # two further aliases, and it has three things -- the isolation
-    # units, the fuses, the debug port -- that can brick the board or
-    # lock the firmware out of its own console. Each carve-out splits a
-    # span in two. Fifteen plus RV32's five is 20, so 16 would fail at
-    # start-up with "could not bring up 1 rv32 core" -- a message about
-    # cores, for a full region table, which is exactly how the G4MH case
-    # above presented.
-    set(_regions_default 24)
+#
+# **The platform's carve-outs and the frontend's devices are added, not
+# chosen between.** This was an if/elseif chain, so an N6 build with the
+# G4MH frontend took the N6 branch and got a table sized for RV32's five
+# devices -- and failed at start-up with "could not bring the cores up",
+# a message about cores, for a full region table. Third time. It needed
+# 30 where it had 24, and the two terms below are what those 30 are: 15
+# for the N6's policy and 15 for G4MH with one PE.
+#
+if(EMU_PLATFORM STREQUAL "stm32n6")
+    set(_regions_platform 16)
 else()
-    set(_regions_default 16)
+    set(_regions_platform 10)
 endif()
+if(EMU_GUEST_ARCH_G4MH)
+    # Its shared devices, plus the INTC and timers each PE gets.
+    math(EXPR _regions_frontend "12 + 4 * ${G4MH_PE_COUNT}")
+else()
+    set(_regions_frontend 6)
+endif()
+math(EXPR _regions_default "${_regions_platform} + ${_regions_frontend}")
 set(EMU_MAX_REGIONS "${_regions_default}" CACHE STRING "Bus region table size")
 
 # How much of the U2B6's memory map this build actually backs.
