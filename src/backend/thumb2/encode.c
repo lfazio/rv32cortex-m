@@ -100,6 +100,28 @@ void t2_sub(uint32_t rd, uint32_t rn, uint32_t rm)
 {
     t2_dp3(0xEBA0u, rd, rn, rm);
 }
+
+/*
+ * The flag-setting forms, which are the same encodings with bit 4 of the
+ * first halfword set, and MRS to read what they produced.
+ *
+ * Verified against the assembler rather than derived and hoped for --
+ * `adds.w r2, r0, r1` is eb10 0201, `subs.w r2, r0, r1` is ebb0 0201,
+ * `adds.w r2, r0, #0` is f110 0200 and `mrs r12, apsr` is f3ef 8c00.
+ * **Including r12 in each position**, because that is the boundary this
+ * file has already been caught at twice: a register that did not fit an
+ * encoding assembled as a *different valid instruction* rather than
+ * failing, and nothing computed a wrong answer where a host could see
+ * it.
+ */
+void t2_adds(uint32_t rd, uint32_t rn, uint32_t rm)
+{
+    t2_dp3(0xEB10u, rd, rn, rm);
+}
+void t2_subs(uint32_t rd, uint32_t rn, uint32_t rm)
+{
+    t2_dp3(0xEBB0u, rd, rn, rm);
+}
 void t2_and(uint32_t rd, uint32_t rn, uint32_t rm)
 {
     t2_dp3(0xEA00u, rd, rn, rm);
@@ -179,6 +201,29 @@ static void t2_dp_imm(uint16_t hw1_base, uint32_t rd, uint32_t rn,
 void t2_add_imm(uint32_t rd, uint32_t rn, uint16_t imm12)
 {
     t2_dp_imm(0xF100u, rd, rn, imm12);
+}
+/*
+ * ADDS with an immediate, whose whole purpose here is `#0`: it leaves
+ * the value alone, sets N and Z from it, and clears C and V -- which is
+ * exactly what a logical operation defines its flags to be, with no
+ * special case needed to clear them afterwards.
+ */
+void t2_adds_imm(uint32_t rd, uint32_t rn, uint16_t imm12)
+{
+    t2_dp_imm(0xF110u, rd, rn, imm12);
+}
+
+/*
+ * MRS <Rd>, APSR -- N at bit 31, Z at 30, C at 29, V at 28.
+ *
+ * It must follow the flag-setting instruction immediately: anything
+ * between them that touches the flags loses them, and the ones this
+ * backend emits in between (MOVW/MOVT for a constant) do not, which is
+ * a property to keep rather than to rely on silently.
+ */
+void t2_mrs_apsr(uint32_t rd)
+{
+    t2_emit32(0xF3EFu, (uint16_t)(0x8000u | (rd << 8)));
 }
 void t2_sub_imm(uint32_t rd, uint32_t rn, uint16_t imm12)
 {

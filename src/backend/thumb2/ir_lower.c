@@ -616,48 +616,41 @@ static bool g_fp_written;
 /* ------------------------------------------------------------------ */
 
 /*
- * EMU_IR_SETF, computed arithmetically rather than from the host's own
- * NZCV.
+ * EMU_IR_SETF, from the processor's own NZCV.
  *
- * **Why not use the processor's flags.** ARM has them, `ADDS` sets all
- * four, and `MRS` reads them -- three instructions where this is thirty.
- * It would also need two new encoders on a backend where CLAUDE.md
- * records two separate defects from exactly that: a register that did
- * not fit an encoding assembled as a *different valid instruction*, and
- * an imm3:imm2 split came out as a shift by zero. Neither computed a
- * wrong answer anywhere a host suite could see it, because **nothing on
- * a host runs this backend at all** -- it is validated by flashing a
- * board. New encoder surface that only hardware can check is the
- * expensive kind.
+ * ARM has the flags this IR is describing, so the operation is
+ * recomputed with its flag-setting form and the answer read back with
+ * MRS: two instructions where deriving carry and overflow arithmetically
+ * takes about fifteen, and no second statement of when an add overflows.
  *
- * The arithmetic here is `interp.c`'s, term for term, because that is
- * the reference and a second derivation of when an add overflows is
- * exactly the sort of thing to have only once. ARM's own C on a
- * subtract is the *inverse* of the borrow every guest here defines,
- * which is one more reason not to route through it.
+ * The two new encoders that costs are the boundary this backend has been
+ * caught at twice -- a register that did not fit assembled as a
+ * *different valid instruction* -- so they are checked against the
+ * assembler, r12 in each position included, and the bytes are written
+ * down beside them in encode.c.
  *
- * Only the live flags are computed. pass_dead_flags has already reduced
- * `live` to what something actually reads, so a G4MH `cmp` feeding a
- * `bne` pays for Z alone.
+ * **ARM's C on a subtract is the inverse of the borrow every guest here
+ * defines.** SUBS sets C when there was *no* borrow; G4MH's CY, and the
+ * IR's FS_SUB, mean borrow. One EOR, and it is the only place the host's
+ * idea of a flag and the guest's disagree.
  *
- * Registers: r0 = a, r1 = b, r2 = the result, r3 = the accumulator,
- * r12 = the one temp. That is every scratch register there is, which is
- * why the terms are ordered so an operand dies exactly when its last
- * reader is done with it.
+ * `ADDS Rd, Rn, #0` is what a logical operation wants: value unchanged,
+ * N and Z from it, C and V cleared. So FS_LOGIC needs no case of its own
+ * -- extracting C and V from the APSR it produced yields the zeros the
+ * definition asks for.
+ *
+ * Only live flags are extracted. pass_dead_flags has already reduced
+ * `live` to what something reads, so a G4MH `cmp` feeding a `bne` pays
+ * for Z alone.
+ *
+ * Registers: r0 scratch, r1 the second operand, r2 the recomputed
+ * result, r3 the accumulator, r12 the captured APSR.
  */
 #define SETF_A T2_R0
 #define SETF_B T2_R1
 #define SETF_RES T2_R2
 #define SETF_ACC T2_R3
-#define SETF_TMP T2_R12
-
-/* acc |= (tmp & 1) << position of guest flag `f`. */
-static void setf_accum(const emu_ir_target_t *t, unsigned f)
-{
-    t2_shift_imm(T2_LSL, SETF_TMP, SETF_TMP,
-                 (uint32_t)__builtin_ctz(t->flag_bit[f]));
-    t2_orr(SETF_ACC, SETF_ACC, SETF_TMP);
-}
+#define SETF_PSR T2_R12
 
 static bool setf_wants(const emu_ir_insn_t *in, const emu_ir_target_t *t,
                        unsigned f)
@@ -669,6 +662,8 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 {
     const emu_ir_flagsrc_t src = (emu_ir_flagsrc_t)in->aux;
     const bool arith = (src == EMU_IR_FS_ADD) || (src == EMU_IR_FS_SUB);
+    /* Where each guest flag sits in the APSR: Z, S(N), V, C. */
+    static const uint8_t k_psr_bit[4] = {30u, 31u, 28u, 29u};
 
     if (in->live == 0u) {
         return;
@@ -680,85 +675,50 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     }
 
     /*
-     * The result the flags describe. For ADD and SUB the IR hands over
-     * the *operands* -- carry and overflow cannot be recovered from the
-     * result alone -- so the operation is recomputed here; for
-     * everything else `a` is already the result.
+     * The IR hands over the *operands* for ADD and SUB -- carry and
+     * overflow cannot be recovered from the result alone -- so the
+     * operation is recomputed here. For everything else `a` is already
+     * the result and the add of zero is only there to set N and Z.
+     *
+     * MRS immediately after, with nothing between that could disturb
+     * what was just set.
      */
     if (src == EMU_IR_FS_ADD) {
-        t2_add(SETF_RES, SETF_A, SETF_B);
+        t2_adds(SETF_RES, SETF_A, SETF_B);
     } else if (src == EMU_IR_FS_SUB) {
-        t2_sub(SETF_RES, SETF_A, SETF_B);
+        t2_subs(SETF_RES, SETF_A, SETF_B);
     } else {
-        t2_mov(SETF_RES, SETF_A);
+        t2_adds_imm(SETF_RES, SETF_A, 0u);
     }
+    t2_mrs_apsr(SETF_PSR);
 
     t2_imm32(SETF_ACC, 0u);
 
-    /*
-     * V and C first, because they are the only two that still need the
-     * operands: everything after this reads the result alone, so a and b
-     * may be destroyed here.
-     */
-    if (arith && setf_wants(in, t, 2)) {
-        if (src == EMU_IR_FS_ADD) {
-            /* overflow iff the result differs in sign from *both*. */
-            t2_eor(SETF_TMP, SETF_A, SETF_RES);
-            t2_eor(SETF_ACC, SETF_B, SETF_RES); /* acc is still zero */
-            t2_and(SETF_TMP, SETF_TMP, SETF_ACC);
-        } else {
-            t2_eor(SETF_TMP, SETF_A, SETF_B);
-            t2_eor(SETF_ACC, SETF_A, SETF_RES);
-            t2_and(SETF_TMP, SETF_TMP, SETF_ACC);
+    uint32_t clear = 0u;
+
+    for (unsigned f = 0; f < 4u; f++) {
+        if (!setf_wants(in, t, f)) {
+            continue;
         }
-        t2_shift_imm(T2_LSR, SETF_TMP, SETF_TMP, 31u);
-        t2_imm32(SETF_ACC, 0u); /* it was borrowed as a temp */
-        setf_accum(t, 2);
-    }
+        clear |= t->flag_bit[f];
 
-    if (arith && setf_wants(in, t, 3)) {
-        if (src == EMU_IR_FS_ADD) {
-            /* carry-out: (a & b) | ((a | b) & ~sum) */
-            t2_and(SETF_TMP, SETF_A, SETF_B);
-            t2_orr(SETF_A, SETF_A, SETF_B);
-            t2_mvn(SETF_B, SETF_RES);
-            t2_and(SETF_A, SETF_A, SETF_B);
-            t2_orr(SETF_TMP, SETF_TMP, SETF_A);
+        if (src == EMU_IR_FS_SHIFT && f == 3u) {
+            /*
+             * A shift's carry is the bit that left, which the frontend
+             * computed and handed over in `b`; the APSR knows nothing
+             * about it. Only bit 0 is read.
+             */
+            t2_and_imm(SETF_A, SETF_B, 1u);
         } else {
-            /* borrow, which is a < b: (~a & b) | ((~a | b) & d) */
-            t2_mvn(SETF_A, SETF_A);
-            t2_and(SETF_TMP, SETF_A, SETF_B);
-            t2_orr(SETF_A, SETF_A, SETF_B);
-            t2_and(SETF_A, SETF_A, SETF_RES);
-            t2_orr(SETF_TMP, SETF_TMP, SETF_A);
+            t2_shift_imm(T2_LSR, SETF_A, SETF_PSR, k_psr_bit[f]);
+            t2_and_imm(SETF_A, SETF_A, 1u);
+            if (f == 3u && src == EMU_IR_FS_SUB) {
+                t2_eor_imm(SETF_A, SETF_A, 1u); /* borrow, not carry */
+            }
         }
-        t2_shift_imm(T2_LSR, SETF_TMP, SETF_TMP, 31u);
-        setf_accum(t, 3);
-    }
-
-    /*
-     * A shift's carry is the bit that left, which the frontend computed
-     * and handed over in `b`; only bit 0 of it is read.
-     */
-    if (src == EMU_IR_FS_SHIFT && setf_wants(in, t, 3)) {
-        t2_and_imm(SETF_TMP, SETF_B, 1u);
-        setf_accum(t, 3);
-    }
-
-    /*
-     * Z, from the count of leading zeros: CLZ is 32 for zero and at most
-     * 31 for anything else, so bit 5 of it *is* the flag. No compare and
-     * no branch, which matters on a backend with neither to hand.
-     */
-    if (setf_wants(in, t, 0)) {
-        t2_clz(SETF_TMP, SETF_RES);
-        t2_shift_imm(T2_LSR, SETF_TMP, SETF_TMP, 5u);
-        setf_accum(t, 0);
-    }
-
-    if (setf_wants(in, t, 1)) {
-        t2_shift_imm(T2_LSR, SETF_TMP, SETF_RES, 31u);
-        setf_accum(t, 1);
+        t2_shift_imm(T2_LSL, SETF_A, SETF_A,
+                     (uint32_t)__builtin_ctz(t->flag_bit[f]));
+        t2_orr(SETF_ACC, SETF_ACC, SETF_A);
     }
 
     /*
@@ -766,22 +726,10 @@ static void emit_setf(const emu_ir_insn_t *in, const emu_ir_target_t *t)
      * these four bits -- G4MH's PSW carries the interrupt-disable and
      * privilege state in the same register, and clobbering those would
      * be a control-flow bug rather than a wrong arithmetic result.
-     *
-     * FS_LOGIC and FS_SHIFT define V and C as *clear*, and that falls
-     * out of this for free: the bit is in `clear` because the frontend
-     * declared it live, and nothing above ORs anything into it.
      */
-    uint32_t clear = 0u;
-
-    for (unsigned f = 0; f < 4u; f++) {
-        if (setf_wants(in, t, f)) {
-            clear |= t->flag_bit[f];
-        }
-    }
-
     t2_ldr_imm(SETF_A, T2_CPU, t->flags_offset);
-    t2_imm32(SETF_TMP, ~clear);
-    t2_and(SETF_A, SETF_A, SETF_TMP);
+    t2_imm32(SETF_PSR, ~clear);
+    t2_and(SETF_A, SETF_A, SETF_PSR);
     t2_orr(SETF_A, SETF_A, SETF_ACC);
     t2_str_imm(SETF_A, T2_CPU, t->flags_offset);
 }

@@ -54,6 +54,11 @@ void t2_str_imm(uint32_t rt, uint32_t rn, uint32_t off);
 
 void t2_add(uint32_t rd, uint32_t rn, uint32_t rm);
 void t2_sub(uint32_t rd, uint32_t rn, uint32_t rm);
+/* The flag-setting forms, and MRS to read what they set. */
+void t2_adds(uint32_t rd, uint32_t rn, uint32_t rm);
+void t2_subs(uint32_t rd, uint32_t rn, uint32_t rm);
+void t2_adds_imm(uint32_t rd, uint32_t rn, uint16_t imm12);
+void t2_mrs_apsr(uint32_t rd);
 void t2_and(uint32_t rd, uint32_t rn, uint32_t rm);
 void t2_orr(uint32_t rd, uint32_t rn, uint32_t rm);
 void t2_eor(uint32_t rd, uint32_t rn, uint32_t rm);
