@@ -1081,6 +1081,46 @@ session, and every one of them recurred:
   `--connect-under-reset` costs nothing on an idle board and is the
   default in both `flash` targets now. Two full debugging rounds went
   into the network stack before anyone read the flash log.
+- **A failed attach can silence a *different* board, and it reads as a
+  firmware regression.** The entry above is about the flash that does
+  not take; this is about what the attempt costs everything else.
+
+  Two probes were plugged in. `make flash` hung, because `EMU_PROBE` was
+  empty and `probe-rs` was waiting for an interactive choice it could
+  never get through `USES_TERMINAL` -- so the first attempt burned six
+  minutes producing nothing. Naming the probe by serial got past that
+  and then failed to attach twice, under reset and without. After those
+  two failures the F746's ST-LINK **dropped off USB**: `/dev/ttyACM1`
+  vanished and the probe re-enumerated with a new device number.
+
+  From then on the **N6** printed nothing. Not the guest, not the
+  banner, not the one line its board prints before any guest exists --
+  a board that had been running Linux to userspace an hour earlier, on
+  firmware whose console path nothing had touched. Every run after that
+  looked like a firmware regression, and there were fresh commits to
+  blame it on.
+
+  **Read the peripheral before suspecting the code.** Over gdb, in one
+  session: `HAL_UART_Init` returns `HAL_OK`, `CR1` is 0xD (UE, TE, RE),
+  `BRR` is 217 for 921600 on a 200 MHz PCLK2, `ISR` has TEACK and REACK,
+  and the console pins come out of `HAL_GPIO_Init` with
+  `MODER 0xFFFFEBFF` and `AFRL 0x07700000` -- PE5 and PE6 on AF7,
+  exactly right. A UART that is configured, enabled and muxed while
+  nothing arrives is a *wire* fault, and the registers say so in about
+  four minutes.
+
+  **What settles it is a worktree, and nothing else can.** Build the
+  firmware from a commit before the changes, in a `git worktree`, and
+  run it on the same wire: equally silent clears every commit at once.
+  This file already says a worktree at a named commit is the only
+  version of a before/after comparison that cannot lie; here it is the
+  only version that can exonerate one. Guessing from the diff cannot,
+  because the diff *did* touch that board's start-up.
+
+  A replug fixed it. The cost was most of a session, and the two things
+  that would have saved it are: set `EMU_PROBE` when more than one probe
+  is attached, and treat "the board went quiet" as a question about the
+  wire until the registers say otherwise.
 - **`if(TARGET ...)` only sees targets already defined.** The firmware
   asked `if(TARGET guest-${RV32_GUEST})` from a directory added *before*
   `tests/guest`, so the answer was always no and every configure warned
