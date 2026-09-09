@@ -31,59 +31,44 @@ states and the ART accelerator enabled), using
 [`tests/guest/bench.c`](../tests/guest/bench.c) — a compute-bound workload with no
 I/O between the start and end markers.
 
-## CoreMark: native vs interpreted vs JIT, on the board
+## CoreMark on the board: removed as historical
 
-The same CoreMark sources, 150 iterations, on the same 180 MHz Cortex-M4 —
-compiled natively for ARM, and compiled for RV32 and run under each backend.
-This is the number that says what emulation actually costs.
+There was a table here: native ARM against the JIT at five code-cache
+sizes against the interpreter, on a 180 MHz Cortex-M4, quoting 15.3x to
+32.3x slower than native.
 
-These use the full B extension in the guest, which is the best configuration
-for each backend.
+**It described a translator that no longer exists.** Those figures were
+measured against the hand-written Thumb-2 backend, and the sweep across
+cache sizes cannot have been re-measured since: `EMU_JIT_CODE_BYTES` fed
+`RV_JIT_CODE_SIZE`, which only that backend read, so from the IR port
+until it was rewired the knob did nothing at all -- `-DEMU_JIT_CODE_BYTES`
+reported `code 1728/12288` whatever it was set to, and figures identical
+to the digit. A sweep whose independent variable was inert is not a
+sweep.
 
-| | Ticks (µs) | Iterations/s | CoreMark/MHz | vs native |
-|---|---|---|---|---|
-| **Native ARM** | 336,130 | 446.3 | 2.479 | 1× |
-| **JIT**, 64 KB code cache | 5,148,168 | 29.1 | 0.162 | **15.3× slower** |
-| JIT, 48 KB | 6,463,217 | 23.2 | 0.129 | 19.2× slower |
-| JIT, 32 KB | 8,525,192 | 17.6 | 0.098 | 25.4× slower |
-| JIT, 24 KB | 9,329,706 | 16.1 | 0.089 | 27.8× slower |
-| JIT, **12 KB — the default** | 10,850,998 | 13.8 | 0.077 | 32.3× slower |
-| Interpreter | 10,691,637 | 14.0 | 0.078 | 31.8× slower |
+What survives from it is one decision, already recorded in CLAUDE.md: the
+default moved from 12 KB to **32 KB**, because at 12 KB the JIT was
+slower than interpreting. Wiring the knob up was worth 6.55x on `bench`
+(1,185,619,446 host cycles to 181,029,971) with a 26,828-byte working
+set.
 
-All rows at 150 iterations, `crcfinal 0xca90` throughout.
+Re-measuring needs a flash cycle per size and has not been done. Until it
+is, the honest statement about that part is that nobody has current
+numbers for it -- which is better than the old ones, because those read
+as current and were not.
 
-Re-measured after the correctness work on `frm`, `mstatus.FS`, PMP staleness
-and the FP translations: 10,851,525 at 12 KB and 6,375,722 at 48 KB, against
-the 10,850,998 and 6,463,217 above. Both inside the ±3% layout noise, with
-identical compaction and eviction counts — the translated code is byte for
-byte what it was. None of those fixes costs a guest that does not use the
-feature anything, which the flush count confirms: CoreMark reports one flush
-for a whole run.
-
-**The JIT's speed is set by `EMU_JIT_CODE_BYTES` more than by anything in the
-translator**, and the default is not the configuration to quote. CoreMark's
-translated working set is about 48 KB; below that the cache thrashes, and the
-compaction counts show it directly — 231 compactions at 64 KB, 904 at 48 KB,
-8,533 at 12 KB, with evictions going from 8,585 to 94,240.
-
-At the 12 KB default the JIT is **slower than the interpreter**. That is the
-number a fresh checkout reproduces, and it means the default currently buys
-12 KB of SRAM worth of nothing: a build that small should use
-`-DEMU_JIT=OFF` and hand the guest all 122 KiB instead. The JIT starts
-earning its RAM at about 24 KB and is worth 2.1× at 64 KB.
-
-The cost is guest RAM, one for one: 122 KiB with no JIT, 106 at 12 KB, 70 at
-48 KB, 54 at 64 KB. Which end of that to sit at depends on whether the guest
-needs memory or speed, so it is left as a build option rather than decided
-here — but every performance figure below is quoted at **48 KB**, and figures
-from any other size are not comparable.
+**The figures further down this document are quoted at a 48 KB code
+cache**, and figures from any other size are not comparable to them. They
+carry the same caveat as the removed figures wherever they predate the IR
+backend, and none of them says which it is -- so treat a board figure as
+historical unless it names the commit it was measured at.
 
 ## The same three ways, on the x86-64 host
 
 The section above is the board. This is the host runner, which is a
-different question: there the JIT competes with a 180 MHz M4 and a 12 KB
-code cache, here it has 32 MB and an out-of-order superscalar to emit
-for.
+different question: there the JIT competes with a 180 MHz M4 and a code
+cache measured in tens of kilobytes, here it has 32 MB and an
+out-of-order superscalar to emit for.
 
 CoreMark, 6000 iterations, **1,500,449,966 instructions retired** — the
 same number in both emulated modes, which is what says they did the same
