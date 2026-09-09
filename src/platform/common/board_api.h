@@ -140,6 +140,19 @@ typedef struct board_region {
 const board_region_t *board_regions(unsigned *count);
 
 /*
+ * The display, or NULL if this platform has none.
+ *
+ * Weak, defaulting to NULL, because most platforms have no screen and
+ * should pay nothing for the ones that do: a board returns NULL and the
+ * two framebuffer regions are simply never mapped. The *device* is
+ * portable C in src/emu/; what a platform supplies is the pixel buffer
+ * and a `present` that knows how to show it -- exactly the arrangement
+ * the console UART already has for its tx and rx.
+ */
+struct emu_fb;
+struct emu_fb *board_fb(void);
+
+/*
  * Route a real interrupt line to the guest.
  *
  * `unmask` is handed to the frontend, which calls it when the guest

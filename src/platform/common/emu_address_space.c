@@ -99,6 +99,28 @@ bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
     }
 
     /*
+     * The display, if this platform has one. Two regions and not one:
+     * the pixels are RAM, so a guest store is a store, and only the
+     * control block is a device -- see emu_dev.h for why that split is
+     * the whole design.
+     *
+     * A platform with no screen returns NULL and neither region is
+     * mapped, which costs it a null test at start-up and nothing
+     * afterwards.
+     */
+    {
+        emu_fb_t *const fb = board_fb();
+
+        if (fb != NULL &&
+            (!emu_bus_add_mmio(bus, "fb", EMU_GUEST_FB_BASE, EMU_FB_CTRL_SIZE,
+                               &emu_fb_ops, fb) ||
+             !emu_bus_add_ram(bus, "fb-pixels", fb->base, fb->pixels,
+                              fb->bytes))) {
+            return false;
+        }
+    }
+
+    /*
      * The board's own windows last, and the frontend's devices after
      * that: the interrupt controller and the timer belong to the guest
      * *architecture* rather than to a board, so the frontend maps them.
@@ -132,6 +154,18 @@ bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
  * reports whatever the last one returned, so every test after the first
  * passing one looks like it passed.
  */
+/*
+ * No display unless a platform says otherwise.
+ *
+ * Weak rather than a per-platform stub, because most platforms have no
+ * screen and should not have to say so. The host overrides it; the
+ * boards do not, and never map the regions.
+ */
+__attribute__((weak)) emu_fb_t *board_fb(void)
+{
+    return NULL;
+}
+
 bool emu_start_guest(emu_system_t *sys, const struct emu_session_cfg *cfg,
                      emu_uart_t *uart, emu_guest_exit_t *exit_state)
 {

@@ -30,6 +30,15 @@
 #define EMU_GUEST_PERIPH_BASE 0x40000000u
 #define EMU_GUEST_PERIPH_SIZE 0x20000000u
 
+/*
+ * The display, when a platform provides one. Two regions, because the
+ * pixels are RAM and only the control block is a device -- see
+ * emu_dev.h. They sit between the flash window and the peripheral space,
+ * which is the gap in this map that nothing else claims.
+ */
+#define EMU_GUEST_FB_BASE 0x30000000u /* control, EMU_FB_CTRL_SIZE  */
+#define EMU_GUEST_FB_PIXELS 0x30100000u /* the buffer itself          */
+
 #define EMU_GUEST_RAM_BASE 0x80000000u
 
 /* Where a guest starts executing unless the platform says otherwise. */

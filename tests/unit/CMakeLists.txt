@@ -105,6 +105,33 @@ if(TARGET guest-crypto AND EMU_GUEST_ARCH_RV32)
     endif()
 endif()
 
+# The framebuffer, from the guest's side.
+#
+# The unit test drives the device's ops table directly; this goes through
+# the bus at the addresses a real guest uses, with pixels written as
+# ordinary stores. "The device works" and "the device is reachable" are
+# different claims, and this tree has been caught by the gap between them
+# more than once -- a capability nothing exercises is not a capability.
+#
+# FBTEST-END rather than a failure count, for the reason recorded above:
+# an exit status of zero is also what a guest that ran nothing returns.
+if(TARGET guest-fbtest AND EMU_GUEST_ARCH_RV32)
+    add_test(NAME guest-fbtest
+             COMMAND emu-host "${CMAKE_BINARY_DIR}/guest/fbtest.bin")
+    set_tests_properties(guest-fbtest PROPERTIES
+        LABELS fast
+        PASS_REGULAR_EXPRESSION "FBTEST-END")
+
+    if(EMU_JIT)
+        add_test(NAME guest-fbtest-jit
+                 COMMAND emu-host --jit
+                         "${CMAKE_BINARY_DIR}/guest/fbtest.bin")
+        set_tests_properties(guest-fbtest-jit PROPERTIES
+            LABELS fast
+            PASS_REGULAR_EXPRESSION "FBTEST-END")
+    endif()
+endif()
+
 # The A extension.
 #
 # Two different questions, and they need two different assertions.

@@ -612,6 +612,30 @@ static uint32_t g_timer_div = 1u;
  * --timer-hz still divides, which is how a guest is deliberately given
  * a slower clock than the host's.
  */
+/*
+ * The display.
+ *
+ * 320x200 indexed is Doom's mode, and the default here for that reason:
+ * it is the geometry the first guest to use this will ask for, and a
+ * default nothing uses would be a default nobody checks.
+ *
+ * `present` is NULL until there is an SDL backend to point it at. The
+ * device is deliberately usable that way -- the frame counter still
+ * advances, so a guest can measure its own rate and a test can prove the
+ * whole path without a window. See emu_dev.h.
+ */
+#define HOST_FB_WIDTH 320u
+#define HOST_FB_HEIGHT 200u
+
+static emu_fb_t g_fb;
+static uint8_t *g_fb_pixels;
+static bool g_fb_ready;
+
+emu_fb_t *board_fb(void)
+{
+    return g_fb_ready ? &g_fb : NULL;
+}
+
 static uint32_t g_time_epoch;
 
 uint64_t board_time_now(void)
@@ -754,6 +778,21 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
 
     g_ram = calloc(g_opt.ram_size, 1u);
     g_periph = calloc(PERIPH_SIM_SIZE, 1u);
+
+    /*
+     * The framebuffer is allocated whether or not a guest uses one: it
+     * is 64 KB, and making it conditional would mean a guest that probes
+     * for a display getting a different answer depending on a flag
+     * nobody passed.
+     */
+    g_fb_pixels = calloc((size_t)HOST_FB_WIDTH * HOST_FB_HEIGHT, 1u);
+    if (g_fb_pixels != NULL) {
+        g_fb_ready = emu_fb_init(
+            &g_fb, HOST_FB_WIDTH, HOST_FB_HEIGHT, EMU_FB_FMT_IDX8, 0u,
+            g_fb_pixels, EMU_GUEST_FB_PIXELS,
+            (uint32_t)((size_t)HOST_FB_WIDTH * HOST_FB_HEIGHT), NULL, NULL);
+    }
+
     if (g_ram == NULL || g_periph == NULL) {
         emu_console_printf("emu: cannot allocate guest memory\n");
         free(image);

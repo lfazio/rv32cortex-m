@@ -106,6 +106,14 @@ add_guest_image(isatest  SOURCES start.S isatest.c)
 add_guest_image(hello    SOURCES start.S hello.c)
 
 #
+# The framebuffer from the guest's side, through the bus at the addresses
+# a real guest uses. The unit test drives the device's ops table
+# directly; this proves the path is *reachable*, which is a different
+# claim and the one this project has most often found missing.
+#
+add_guest_image(fbtest   SOURCES start.S fbtest.c)
+
+#
 # The A extension, as a guest the JIT actually sees.
 #
 # isatest covers the same instructions and cannot guard their *lowering*:
