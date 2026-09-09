@@ -31,7 +31,7 @@ states and the ART accelerator enabled), using
 [`tests/guest/bench.c`](../tests/guest/bench.c) — a compute-bound workload with no
 I/O between the start and end markers.
 
-## CoreMark: native vs interpreted vs JIT
+## CoreMark: native vs interpreted vs JIT, on the board
 
 The same CoreMark sources, 150 iterations, on the same 180 MHz Cortex-M4 —
 compiled natively for ARM, and compiled for RV32 and run under each backend.
@@ -77,6 +77,82 @@ The cost is guest RAM, one for one: 122 KiB with no JIT, 106 at 12 KB, 70 at
 needs memory or speed, so it is left as a build option rather than decided
 here — but every performance figure below is quoted at **48 KB**, and figures
 from any other size are not comparable.
+
+## The same three ways, on the x86-64 host
+
+The section above is the board. This is the host runner, which is a
+different question: there the JIT competes with a 180 MHz M4 and a 12 KB
+code cache, here it has 32 MB and an out-of-order superscalar to emit
+for.
+
+CoreMark, 6000 iterations, **1,500,449,966 instructions retired** — the
+same number in both emulated modes, which is what says they did the same
+work.
+
+| | Iterations/s | wall | guest MIPS | vs native |
+|---|---|---|---|---|
+| **Native x86-64** | 18,181 | 11.06 s | — | 1x |
+| **JIT** | 500 | 12.79 s | 117 | 36x slower |
+| Interpreter | 240 | 25.38 s | 59 | 76x slower |
+
+`crcfinal 0xa14c` for both emulated rows. Native retires no guest
+instructions, so MIPS is not defined for it; the comparison there is the
+CoreMark score.
+
+**The JIT is 1.98x the interpreter**, against 2.1x on the board at its
+best cache size — close enough to say the ratio is a property of the
+translator rather than of either host. What differs is the distance to
+native: 36x here against 15.3x on the M4, because native x86-64 has far
+more to gain from the same C than an in-order M4 does.
+
+4.5% of instructions still fall back: 67.6M of 1500.4M. That is the
+floor set by what the RV32 translator declines — SYSTEM and MISC-MEM,
+deliberately, so the interpreter fallback stays the one place `frm`,
+`mstatus.FS`, PMP and `satp` can change.
+
+### The other two frontends cannot be measured, and that is the finding
+
+Neither G4MH nor PowerPC has a benchmark-sized guest, so there is nothing
+to time:
+
+| frontend | JIT | largest guest | run time |
+|---|---|---|---|
+| RV32 | yes | CoreMark, 1.5G instructions | seconds |
+| G4MH | yes | `guest.bin`, 846 instructions | 0.002 s |
+| PowerPC | **none** | `isatest.bin`, 212 instructions | 0.006 s |
+
+G4MH's JIT works and is validated — 17 declines of 846, with the board
+and the host agreeing to the digit — but 0.002 s is startup noise and the
+difference between its backends is below resolution. PowerPC has no IR
+translator at all (`src/frontend/ppc/` has three files where the other
+two frontends have fifteen), so `--jit` gets the interpreter whatever is
+asked.
+
+**So "measure all three frontends" is blocked on guests, not on
+backends.** A G4MH CoreMark needs CC-RH, which is not on the build
+machine; a PowerPC one needs a VLE toolchain, which is not either.
+
+### Two ways these numbers went wrong first
+
+Both are worth keeping, because both produced a plausible figure rather
+than an error.
+
+**A run under ten seconds is not a CoreMark result.** The first
+calibration reported 2000 iterations in 0.113 s, and CoreMark printed
+*"Must execute for at least 10 secs for a valid result"* along with
+`Errors detected` — which reads as a miscompile and is not. Iteration
+counts here are chosen so every row exceeds ten seconds; a row that does
+not is not comparable to one that does.
+
+**Two guests share a basename in one build tree.** The PowerPC frontend
+was first measured against `build/*/guest/isatest.bin`, which is 14,704
+bytes and is the *RV32* isatest; the PowerPC one is
+`build/*/tests/guest/ppc/isatest.bin` at 2,704 bytes. The wrong one runs
+without complaint under the PowerPC frontend and retires instructions at
+a plausible rate. It also needs `--load 0x80000000`; without it the
+earlier attempt interpreted 50M instructions of whatever sat at the
+default address and produced a figure that looked like a result. `ctest`
+has both right — read its `COMMAND` before running a guest by hand.
 
 ## Dhrystone, and what it does *not* measure here
 
