@@ -917,6 +917,61 @@ static bool lower_one(emu_ir_block_t *b, uint16_t w0, uint32_t pc,
         emu_ir_put(b, r2, emu_ir_get(b, r1));
         return true;
 
+    case 0x03: /* JMP [reg1] / SLD.BU, SLD.HU */
+        /*
+         * **reg2 is the whole discriminator here**, and the two halves
+         * are unrelated instructions: a register-indirect jump and a
+         * pair of unsigned short loads. This ISA reuses the field as an
+         * opcode extension throughout, and decoding on the opcode alone
+         * is how six unimplemented instructions once retired as writes
+         * into r0.
+         */
+        if (r2 != 0u) {
+            /*
+             * The unsigned short loads, off ep. Their opcode is seven
+             * bits where this switch dispatches on six, so bit 4 -- part
+             * of reg1 for the jump -- picks the width. The displacement
+             * is scaled by that width and is *not* sign-extended.
+             *
+             * The sign-extending SLD.B/.H are a different opcode
+             * entirely, in the Format IV overlay handled above, not a
+             * variant of these.
+             */
+            {
+                const bool half = (w0 & 0x10u) != 0u;
+                const uint32_t disp = half ? ((uint32_t)(w0 & 0xFu) << 1)
+                                           : ((uint32_t)(w0 & 0xFu));
+
+                (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP,
+                                  EMU_IR_NO_TEMP, pc, 0u);
+                emu_ir_put(b, r2,
+                           emu_ir_emit(b, EMU_IR_LOAD,
+                                       EMU_IR_MEM_AUX(half ? 2u : 1u, 0u),
+                                       emu_ir_get(b, G4MH_REG_EP),
+                                       EMU_IR_NO_TEMP, disp, 0u));
+            }
+            return true;
+        }
+
+        /*
+         * JMP [reg1]. The target is dynamic, so it rides in EXIT's
+         * operand rather than its immediate -- the same shape RV32's
+         * JALR uses. **Bit 0 is ignored**, not an error: instructions
+         * are halfword aligned and the architecture discards it rather
+         * than faulting, so masking it is part of the instruction.
+         */
+        {
+            const uint16_t tgt = emu_ir_alu(b, EMU_IR_AND, emu_ir_get(b, r1),
+                                            emu_ir_const(b, ~1u));
+
+            (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP,
+                              EMU_IR_NO_TEMP, 0u, 0u);
+            (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, tgt, EMU_IR_NO_TEMP, 0u, 0u);
+            *counted = true;
+            *ends = true;
+        }
+        return true;
+
     case 0x08: /* OR  reg1, reg2   */
     case 0x09: /* XOR reg1, reg2   */
     case 0x0A: { /* AND reg1, reg2   */
