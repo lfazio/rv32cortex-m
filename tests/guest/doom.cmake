@@ -112,13 +112,34 @@ set(_doom_flags
     #
     -DNORMALUNIX
     #
-    # Selects the WAD that is *present*. w_wad.c picks between
-    # support/rawwad.h and support/rawwad_use.h, and only the first
-    # exists in a fresh checkout -- the second is produced by the port's
-    # own shrinking tools. The name reads like a code generator and is
-    # not: it chooses a header.
+    # **GENERATE_BAKED is a host flag and must not be set here**, which
+    # cost most of a debugging session to establish. It reads as "pick
+    # the WAD header that exists", and it is really "this is the
+    # data-generation build that runs on a computer":
     #
-    -DGENERATE_BAKED
+    #   * stubs.h reads it as a computer build and sets FIXED_HEAP to
+    #     40 MB, overflowing the guest RAM region by exactly that;
+    #   * it turns on the texture and map table *generation*, which
+    #     printfs every texture and then calls fopen to write the tables
+    #     out -- and fopen on a bare-metal guest jumps through a null
+    #     pointer, faults to an mtvec of zero, and traps for ever. The
+    #     run said it plainly: pc 0, mcause 1, ra inside fopen, and
+    #     3,976,719,585 traps out of four billion instructions.
+    #
+    # The port's Makefile shows the intended shape, and its own comment
+    # beside the flag says "Don't do this on target hardware!!!":
+    #
+    #   emdoom.gentables.initial   built WITH the flag, run natively,
+    #                              writes support/baked_*_data.c and
+    #                              support/rawwad_use.[ch]
+    #   emdoom                     built WITHOUT it, links those
+    #
+    # So building DOOM for a guest needs that first stage run on the
+    # host before this one can work, and the README wants 32-bit host
+    # libraries for it because DOOM is 32-bit only. **That stage is not
+    # built here yet**, which is why this file cannot produce a running
+    # image on its own.
+    #
     #
     # alloca is a compiler builtin rather than a library function, and
     # DOOM calls it without declaring it -- which older toolchains
