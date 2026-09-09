@@ -199,12 +199,58 @@ static uint32_t g4mh_ir_prepare_helper(emu_cpu_t *cpu, uint32_t insn,
     return 1u;
 }
 
+/*
+ * The floating-point group, sub >= 0x400, through the same
+ * g4mh_fpu_exec the interpreter calls.
+ *
+ * A helper and not IR floating point, because G4MH keeps single
+ * precision in the *general* registers -- there is no separate file for
+ * EMU_IR_FGET and FPUT to address, and inventing one would be a second
+ * account of where a float lives. The FPU is already a single dispatch
+ * taking (sub, reg1, reg2, reg3), which is exactly a helper's shape.
+ *
+ * HELPER_TRAP: an FP operation can raise, and the block must stop where
+ * the exception was entered.
+ *
+ * The body is guarded rather than the table entry, so a build without
+ * the FPU keeps the helper *indices* -- an id is baked into emitted code
+ * and a table that shrinks with a build option calls the wrong function.
+ */
+static uint32_t g4mh_ir_fpu_helper(emu_cpu_t *cpu, uint32_t insn,
+                                   uint32_t unused)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
+
+    (void)unused;
+#if G4MH_EXT_FPU
+    {
+        const uint16_t w0 = (uint16_t)insn;
+        const uint16_t w1 = (uint16_t)(insn >> 16);
+        const g4mh_exc_t e =
+            g4mh_fpu_exec(c, (uint32_t)w1 & 0x07FFu, g4mh_reg1(w0),
+                          g4mh_reg2(w0), ((uint32_t)w1 >> 11) & 0x1Fu);
+
+        if (e == G4MH_EXC_NONE) {
+            return 0u;
+        }
+        g4mh_cpu_exception(c, e, c->pc);
+        return 1u;
+    }
+#else
+    /* Unreachable: the translator declines the group without an FPU. */
+    g4mh_cpu_exception(c, G4MH_EXC_RIE, c->pc);
+    return 1u;
+#endif
+}
+
 static const void *const g4mh_ir_helpers[] = {
     (const void *)g4mh_ir_adf_helper,
     (const void *)g4mh_ir_prepare_helper,
+    (const void *)g4mh_ir_fpu_helper,
 };
 #define G4MH_IR_HELPER_ADF 0u
 #define G4MH_IR_HELPER_PREPARE 1u
+#define G4MH_IR_HELPER_FPU 2u
 
 const emu_ir_target_t g4mh_ir_target = {
     .reg_offset = g4mh_reg_offset,
@@ -271,6 +317,24 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
             emu_ir_alu(b, EMU_IR_ADD, emu_ir_get(b, r1), emu_ir_const(b, imm)));
         return true;
     }
+
+#if G4MH_EXT_FPU
+    /*
+     * Floating point: the whole sub >= 0x400 range, in one test, because
+     * that is how the interpreter splits it and the FP encodings are
+     * worth decoding in exactly one place -- the rule this frontend
+     * learned the hard way from the shared integer slots.
+     */
+    if ((op == 0x3Fu) && (((uint32_t)w1 & 0x07FFu) >= 0x400u)) {
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          pc, 0u);
+        (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP, 0u,
+                          emu_ir_const(b, (uint32_t)w0 |
+                                              ((uint32_t)w1 << 16)),
+                          EMU_IR_NO_TEMP, G4MH_IR_HELPER_FPU, 0u);
+        return true;
+    }
+#endif
 
     /*
      * PREPARE list12, imm5 -- the 32-bit form.
