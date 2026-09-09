@@ -186,4 +186,86 @@ void test_fb(void)
     CHECK_EQ(emu_fb_ops.read(&fb, EMU_FB_PALETTE + 4u, 4u, &v),
              EMU_FAULT_NONE);
     CHECK_EQ(v, 0x00010101u);
+
+    /* --- VBE mode setting ----------------------------------------- */
+
+    /*
+     * A buffer big enough for every offered mode, which is what a
+     * platform is expected to allocate -- the point of emu_fb_max_bytes
+     * is that a device should not enumerate modes it must then refuse.
+     */
+    static uint8_t big[1024u * 768u * 4u];
+
+    CHECK(emu_fb_max_bytes() == sizeof(big));
+    CHECK(emu_fb_init(&fb, 320u, 200u, EMU_FB_FMT_IDX8, 0u, big, 0x30100000u,
+                      (uint32_t)sizeof(big), NULL, NULL));
+
+    /* The starting geometry is recognised as a mode, so a guest reading
+     * MODE_SET without having written one gets a real number. */
+    CHECK_EQ(emu_fb_ops.read(&fb, EMU_FB_MODE_SET, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, EMU_FB_MODE_320X200X8);
+
+    CHECK_EQ(emu_fb_ops.read(&fb, EMU_FB_MODE_COUNT, 4u, &v), EMU_FAULT_NONE);
+    CHECK(v >= 8u);
+
+    /* Enumeration: index 0 is the smallest, which is Doom's. */
+    CHECK_EQ(emu_fb_ops.write(&fb, EMU_FB_MODE_INDEX, 4u, 0u), EMU_FAULT_NONE);
+    CHECK_EQ(emu_fb_ops.read(&fb, EMU_FB_MODE_NUMBER, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, EMU_FB_MODE_320X200X8);
+    CHECK_EQ(emu_fb_ops.read(&fb, EMU_FB_MODE_WIDTH, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 320u);
+
+    /*
+     * An index past the end clamps rather than faulting: a guest
+     * walking the table until it runs out is a reasonable way to
+     * enumerate, and a loop bound one too large should not be a crash.
+     */
+    CHECK_EQ(emu_fb_ops.write(&fb, EMU_FB_MODE_INDEX, 4u, 9999u),
+             EMU_FAULT_NONE);
+    CHECK_EQ(emu_fb_ops.read(&fb, EMU_FB_MODE_INDEX, 4u, &v), EMU_FAULT_NONE);
+    CHECK(v < 64u); /* clamped to the last entry, not stored raw */
+
+    /* Setting a real mode takes, and the geometry follows it. */
+    CHECK_EQ(emu_fb_ops.write(&fb, EMU_FB_MODE_SET, 4u, EMU_FB_MODE_640X480X32),
+             EMU_FAULT_NONE);
+    CHECK_EQ(emu_fb_ops.read(&fb, EMU_FB_MODE_OK, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 1u);
+    CHECK_EQ(emu_fb_ops.read(&fb, EMU_FB_WIDTH, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 640u);
+    CHECK_EQ(emu_fb_ops.read(&fb, EMU_FB_HEIGHT, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 480u);
+    CHECK_EQ(emu_fb_ops.read(&fb, EMU_FB_FORMAT, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, (uint32_t)EMU_FB_FMT_XRGB8888);
+    /*
+     * **The stride follows the new width and is not carried over.** It
+     * was 320 for the previous mode; keeping it would describe rows a
+     * fifth of their real length, which is exactly how a picture comes
+     * out sheared rather than absent.
+     */
+    CHECK_EQ(emu_fb_ops.read(&fb, EMU_FB_STRIDE, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 640u * 4u);
+
+    /* An unknown mode is refused, says so, and changes nothing. */
+    CHECK_EQ(emu_fb_ops.write(&fb, EMU_FB_MODE_SET, 4u, 0xBEEFu),
+             EMU_FAULT_NONE);
+    CHECK_EQ(emu_fb_ops.read(&fb, EMU_FB_MODE_OK, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 0u);
+    CHECK_EQ(emu_fb_ops.read(&fb, EMU_FB_WIDTH, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 640u); /* still the mode that was taken */
+
+    /*
+     * A mode that does not fit the platform's buffer is refused too --
+     * the case a platform creates by allocating less than
+     * emu_fb_max_bytes. Checked with a deliberately small buffer,
+     * because it is the only way this path is reachable.
+     */
+    CHECK(emu_fb_init(&fb, 320u, 200u, EMU_FB_FMT_IDX8, 0u, big, 0u,
+                      320u * 200u, NULL, NULL));
+    CHECK_EQ(emu_fb_ops.write(&fb, EMU_FB_MODE_SET, 4u,
+                              EMU_FB_MODE_1024X768X32),
+             EMU_FAULT_NONE);
+    CHECK_EQ(emu_fb_ops.read(&fb, EMU_FB_MODE_OK, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 0u);
+    CHECK_EQ(emu_fb_ops.read(&fb, EMU_FB_WIDTH, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 320u);
 }

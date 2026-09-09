@@ -115,7 +115,57 @@ void emu_uart_init(emu_uart_t *u, void (*tx)(void *ctx, uint8_t c),
 #define EMU_FB_BYTES 0x1Cu /* R: size of the pixel region         */
 #define EMU_FB_FLUSH 0x20u /* W: any value presents a frame       */
 #define EMU_FB_FRAMES 0x24u /* R: frames presented, low 32 bits    */
+
+/*
+ * Mode setting, with VBE's numbers.
+ *
+ * **This is not a VBE BIOS and cannot be one.** VBE is reached through
+ * INT 10h, a real-mode x86 software interrupt, and a RISC-V or RH850
+ * guest has no such thing to call. What survives the move is the part
+ * that was never x86-specific: the *mode numbers*, and VBE 2.0's linear
+ * framebuffer -- which is the arrangement this device already has, and
+ * the reason VBE rather than VGA is the right ancestor. See
+ * docs/vga.md.
+ *
+ * So a guest sets a mode by writing its VBE number to MODE_SET rather
+ * than by calling a BIOS, and enumerates what is available by writing an
+ * index to MODE_INDEX and reading the four registers below it. A porting
+ * layer that already knows `0x101 is 640x480x8` keeps that knowledge.
+ *
+ * Setting a mode does not move the pixels: FB_BASE and FB_BYTES describe
+ * a buffer the platform allocated once, large enough for every mode it
+ * offers, and a mode that would not fit is refused. That is what makes
+ * mode setting cheap here where on real hardware it is not.
+ */
+#define EMU_FB_MODE_COUNT 0x28u /* R: how many modes are offered   */
+#define EMU_FB_MODE_INDEX 0x2Cu /* W: which one to describe below  */
+#define EMU_FB_MODE_NUMBER 0x30u /* R: its VBE number               */
+#define EMU_FB_MODE_WIDTH 0x34u /* R                               */
+#define EMU_FB_MODE_HEIGHT 0x38u /* R                               */
+#define EMU_FB_MODE_FORMAT 0x3Cu /* R: emu_fb_format_t              */
+#define EMU_FB_MODE_SET 0x40u /* W: a VBE number; R: the current */
+#define EMU_FB_MODE_OK 0x44u /* R: 1 if the last SET was taken  */
+
 #define EMU_FB_PALETTE 0x400u /* R/W: 256 entries, 0x00RRGGBB       */
+
+/*
+ * The VBE mode numbers this device answers to. Standard values, so a
+ * guest that already has a VBE table does not need a new one; the 8-bit
+ * modes are indexed and the 32-bit modes are XRGB, which are the two
+ * formats above.
+ *
+ * 0x13 is the odd one out: it is a *VGA* mode number rather than a VBE
+ * one, and it is here because 320x200x8 is what Doom asks for and the
+ * number every port of it already uses.
+ */
+#define EMU_FB_MODE_320X200X8 0x013u
+#define EMU_FB_MODE_640X400X8 0x100u
+#define EMU_FB_MODE_640X480X8 0x101u
+#define EMU_FB_MODE_800X600X8 0x103u
+#define EMU_FB_MODE_1024X768X8 0x105u
+#define EMU_FB_MODE_640X480X32 0x112u
+#define EMU_FB_MODE_800X600X32 0x115u
+#define EMU_FB_MODE_1024X768X32 0x118u
 
 #define EMU_FB_ID_MAGIC 0x46425546u /* 'FBUF' */
 #define EMU_FB_VERSION_1 1u
@@ -166,7 +216,21 @@ typedef struct emu_fb {
 
     uint32_t palette[EMU_FB_PALETTE_ENTRIES];
     uint64_t frames;
+
+    /* Mode enumeration: which entry MODE_INDEX last selected, and
+     * whether the last MODE_SET was accepted. */
+    uint32_t mode_index;
+    uint32_t mode_number;
+    uint32_t mode_ok;
 } emu_fb_t;
+
+/* One row of the mode table, in the order a guest enumerates them. */
+typedef struct emu_fb_mode {
+    uint16_t number; /* the VBE number a guest writes to MODE_SET */
+    uint16_t width;
+    uint16_t height;
+    uint8_t format; /* emu_fb_format_t                           */
+} emu_fb_mode_t;
 
 extern const emu_dev_ops_t emu_fb_ops;
 
@@ -188,6 +252,14 @@ bool emu_fb_init(emu_fb_t *fb, uint32_t width, uint32_t height,
 
 /* Bytes per pixel for a format; 0 if the format is not one. */
 uint32_t emu_fb_bpp(emu_fb_format_t format);
+
+/*
+ * The largest buffer any offered mode needs, so a platform can allocate
+ * once and never refuse a mode for want of memory. A platform that
+ * allocates less is not wrong -- modes that do not fit are refused at
+ * MODE_SET -- but it will offer a guest a mode list it cannot honour.
+ */
+uint32_t emu_fb_max_bytes(void);
 
 #ifdef __cplusplus
 }

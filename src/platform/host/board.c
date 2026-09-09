@@ -783,18 +783,24 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
     g_periph = calloc(PERIPH_SIM_SIZE, 1u);
 
     /*
-     * The framebuffer is allocated whether or not a guest uses one: it
-     * is 64 KB, and making it conditional would mean a guest that probes
-     * for a display getting a different answer depending on a flag
-     * nobody passed.
+     * The framebuffer is allocated whether or not a guest uses one, and
+     * at the size the *largest* offered mode needs rather than the size
+     * of the starting one. A guest that sets a bigger mode gets it; a
+     * platform that allocated only for 320x200 would enumerate modes it
+     * then refuses, which is a worse answer than not offering them.
+     *
+     * 3 MB on a host, which is nothing, and unconditional for the same
+     * reason as before: a guest probing for a display should not get a
+     * different answer depending on a flag nobody passed.
      */
-    g_fb_pixels = calloc((size_t)HOST_FB_WIDTH * HOST_FB_HEIGHT, 1u);
+    const uint32_t fb_bytes = emu_fb_max_bytes();
+
+    g_fb_pixels = calloc(fb_bytes, 1u);
     if (g_fb_pixels != NULL) {
-        g_fb_ready = emu_fb_init(
-            &g_fb, HOST_FB_WIDTH, HOST_FB_HEIGHT, EMU_FB_FMT_IDX8, 0u,
-            g_fb_pixels, EMU_GUEST_FB_PIXELS,
-            (uint32_t)((size_t)HOST_FB_WIDTH * HOST_FB_HEIGHT),
-            host_display_present, NULL);
+        g_fb_ready = emu_fb_init(&g_fb, HOST_FB_WIDTH, HOST_FB_HEIGHT,
+                                 EMU_FB_FMT_IDX8, 0u, g_fb_pixels,
+                                 EMU_GUEST_FB_PIXELS, fb_bytes,
+                                 host_display_present, NULL);
     }
 
     if (g_ram == NULL || g_periph == NULL) {

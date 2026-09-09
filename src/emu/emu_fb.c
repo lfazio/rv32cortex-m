@@ -28,6 +28,82 @@ uint32_t emu_fb_bpp(emu_fb_format_t format)
     }
 }
 
+/*
+ * The modes on offer, in the order a guest enumerates them.
+ *
+ * VBE's numbers, so a porting layer that already knows `0x101 is
+ * 640x480x8` keeps that knowledge -- see the note in emu_dev.h for why
+ * this is VBE's numbering and not a VBE BIOS, which a guest with no real
+ * mode could not call.
+ *
+ * Smallest first, because a guest walking the list for "the first mode
+ * that fits" wants the cheapest, and because 320x200 is Doom's and is
+ * the one most likely to be asked for by number.
+ */
+static const emu_fb_mode_t k_modes[] = {
+    {EMU_FB_MODE_320X200X8, 320u, 200u, EMU_FB_FMT_IDX8},
+    {EMU_FB_MODE_640X400X8, 640u, 400u, EMU_FB_FMT_IDX8},
+    {EMU_FB_MODE_640X480X8, 640u, 480u, EMU_FB_FMT_IDX8},
+    {EMU_FB_MODE_800X600X8, 800u, 600u, EMU_FB_FMT_IDX8},
+    {EMU_FB_MODE_1024X768X8, 1024u, 768u, EMU_FB_FMT_IDX8},
+    {EMU_FB_MODE_640X480X32, 640u, 480u, EMU_FB_FMT_XRGB8888},
+    {EMU_FB_MODE_800X600X32, 800u, 600u, EMU_FB_FMT_XRGB8888},
+    {EMU_FB_MODE_1024X768X32, 1024u, 768u, EMU_FB_FMT_XRGB8888},
+};
+
+#define EMU_FB_MODE_TOTAL (sizeof(k_modes) / sizeof(k_modes[0]))
+
+uint32_t emu_fb_max_bytes(void)
+{
+    uint32_t most = 0u;
+
+    for (uint32_t i = 0; i < EMU_FB_MODE_TOTAL; i++) {
+        const uint32_t need = (uint32_t)k_modes[i].width *
+                              (uint32_t)k_modes[i].height *
+                              emu_fb_bpp((emu_fb_format_t)k_modes[i].format);
+
+        if (need > most) {
+            most = need;
+        }
+    }
+    return most;
+}
+
+/*
+ * Take a mode by its VBE number. False if there is no such mode, or if
+ * the platform's buffer cannot hold it.
+ *
+ * **The stride is recomputed, not kept.** A platform may have asked for
+ * a wider one than its width needed -- that is how a guest gets row
+ * alignment -- but that number described the *old* geometry, and
+ * carrying it into a mode 640 pixels wider is how a picture comes out
+ * sheared. Every mode here is naturally strided.
+ */
+static bool fb_set_mode(emu_fb_t *fb, uint32_t number)
+{
+    for (uint32_t i = 0; i < EMU_FB_MODE_TOTAL; i++) {
+        if (k_modes[i].number != number) {
+            continue;
+        }
+
+        const uint32_t bpp = emu_fb_bpp((emu_fb_format_t)k_modes[i].format);
+        const uint32_t stride = (uint32_t)k_modes[i].width * bpp;
+
+        if ((uint64_t)stride * (uint64_t)k_modes[i].height >
+            (uint64_t)fb->bytes) {
+            return false;
+        }
+
+        fb->width = k_modes[i].width;
+        fb->height = k_modes[i].height;
+        fb->format = k_modes[i].format;
+        fb->stride = stride;
+        fb->mode_number = number;
+        return true;
+    }
+    return false;
+}
+
 bool emu_fb_init(emu_fb_t *fb, uint32_t width, uint32_t height,
                  emu_fb_format_t format, uint32_t stride, void *pixels,
                  uint32_t base, uint32_t bytes,
@@ -76,6 +152,24 @@ bool emu_fb_init(emu_fb_t *fb, uint32_t width, uint32_t height,
     fb->stride = stride;
     fb->format = (uint32_t)format;
     fb->frames = 0u;
+    fb->mode_index = 0u;
+    fb->mode_ok = 1u;
+
+    /*
+     * The VBE number for the geometry the platform asked for, if it is
+     * one of the offered modes; zero if it is not. A platform is allowed
+     * a mode outside the table -- the device's geometry is whatever it
+     * was given -- and a guest reading MODE_SET then gets 0, which is
+     * not a VBE mode and is the honest answer.
+     */
+    fb->mode_number = 0u;
+    for (uint32_t i = 0; i < EMU_FB_MODE_TOTAL; i++) {
+        if (k_modes[i].width == width && k_modes[i].height == height &&
+            k_modes[i].format == (uint8_t)format) {
+            fb->mode_number = k_modes[i].number;
+            break;
+        }
+    }
 
     /*
      * A greyscale ramp, so an indexed guest that never writes a palette
@@ -144,6 +238,30 @@ static emu_fault_t fb_read(void *ctx, uint32_t off, uint32_t size,
     case EMU_FB_FRAMES:
         *out = (uint32_t)fb->frames;
         break;
+    case EMU_FB_MODE_COUNT:
+        *out = (uint32_t)EMU_FB_MODE_TOTAL;
+        break;
+    case EMU_FB_MODE_NUMBER:
+        *out = k_modes[fb->mode_index].number;
+        break;
+    case EMU_FB_MODE_WIDTH:
+        *out = k_modes[fb->mode_index].width;
+        break;
+    case EMU_FB_MODE_HEIGHT:
+        *out = k_modes[fb->mode_index].height;
+        break;
+    case EMU_FB_MODE_FORMAT:
+        *out = k_modes[fb->mode_index].format;
+        break;
+    case EMU_FB_MODE_INDEX:
+        *out = fb->mode_index;
+        break;
+    case EMU_FB_MODE_SET:
+        *out = fb->mode_number;
+        break;
+    case EMU_FB_MODE_OK:
+        *out = fb->mode_ok;
+        break;
     default:
         /*
          * Reads of unassigned registers are zero rather than a fault.
@@ -194,6 +312,30 @@ static emu_fault_t fb_write(void *ctx, uint32_t off, uint32_t size,
 
             fb->present(fb->ctx, &frame);
         }
+        return EMU_FAULT_NONE;
+    }
+
+    if (off == EMU_FB_MODE_INDEX) {
+        /*
+         * Clamped rather than refused. A guest walking the table until
+         * it runs out is a reasonable way to enumerate, and the
+         * alternative -- faulting on the entry past the end -- turns a
+         * loop bound that is one too many into a crash.
+         */
+        fb->mode_index = (val < (uint32_t)EMU_FB_MODE_TOTAL)
+                             ? val
+                             : (uint32_t)(EMU_FB_MODE_TOTAL - 1u);
+        return EMU_FAULT_NONE;
+    }
+
+    if (off == EMU_FB_MODE_SET) {
+        /*
+         * A refused mode leaves the current one untouched and says so in
+         * MODE_OK. Not a fault: a guest asking for a mode the device
+         * does not have has done nothing illegal, and it needs to be
+         * able to try the next one on its list.
+         */
+        fb->mode_ok = fb_set_mode(fb, val) ? 1u : 0u;
         return EMU_FAULT_NONE;
     }
 
