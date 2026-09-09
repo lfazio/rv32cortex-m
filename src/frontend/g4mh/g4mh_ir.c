@@ -352,6 +352,38 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
     }
 
     /*
+     * LD.BU disp16, which shares 0x3C/0x3D with the jumps above.
+     *
+     * **Its displacement bit 0 is carried in the opcode**, not in the
+     * second halfword. Every other disp16 form here is naturally
+     * aligned, so bit 0 of w1 is free to be an opcode bit -- and this
+     * one is a *byte* load, so it has no alignment to spend and the bit
+     * has nowhere to live. That is the whole reason 0x3C and 0x3D are
+     * one instruction here and two everywhere else, and reading the
+     * displacement as `w1` alone halves the reach and lands every odd
+     * offset one byte early.
+     *
+     * reg2 == 0 is not this instruction: it selects the 48-bit forms
+     * sharing the slot, which the translate loop has already sized as
+     * six bytes and which never reach here.
+     *
+     * Zero-extended, unlike LD.B in the group above -- the U is the
+     * whole difference between them.
+     */
+    if ((op == 0x3Cu || op == 0x3Du) && ((uint32_t)w1 & 1u) != 0u &&
+        r2 != 0u) {
+        const uint32_t disp = ((uint32_t)w1 & 0xFFFEu) | (op & 1u);
+
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          pc, 0u);
+        emu_ir_put(b, r2,
+                   emu_ir_emit(b, EMU_IR_LOAD, EMU_IR_MEM_AUX(1u, 0u),
+                               emu_ir_get(b, r1), EMU_IR_NO_TEMP,
+                               (uint32_t)emu_sext(disp, 16), 0u));
+        return true;
+    }
+
+    /*
      * Format VIII: the bit-manipulation group on memory. The operation
      * selector is bits[15:14] -- the *top* of the field every other
      * 32-bit format uses for reg2 -- with the 3-bit bit number below it,
