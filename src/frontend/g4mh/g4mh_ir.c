@@ -56,6 +56,35 @@
  */
 #define G4MH_JIT_CODE_BYTES EMU_HOST_JIT_CODE_BYTES
 
+/*
+ * G4MH's sixteen branch conditions onto the IR's ten.
+ *
+ * At file scope because both the branches and CMOV select on it, and a
+ * second copy is a second thing to get wrong. **The table is indexed by
+ * the architecture's encoding, so a hole must be a hole**: 0xFF marks
+ * the six with no IR spelling -- BV, BNV, BN, BP, BSA -- and is tested
+ * before use, because mapping an unrepresentable condition onto a near
+ * neighbour is a silently wrong branch.
+ */
+static const uint8_t k_g4mh_cond[16] = {
+            0xFFu, /* 0 BV   overflow      -- no IR spelling  */
+            EMU_IR_C_LTU, /* 1 BL   carry set                        */
+            EMU_IR_C_EQ, /* 2 BE   zero                             */
+            EMU_IR_C_LEU, /* 3 BNH  carry or zero                    */
+            0xFFu, /* 4 BN   negative      -- no IR spelling  */
+            EMU_IR_C_ALWAYS, /* 5 BR   unconditional                */
+            EMU_IR_C_LT, /* 6 BLT  signed less                      */
+            EMU_IR_C_LE, /* 7 BLE  signed less or equal             */
+            0xFFu, /* 8 BNV                -- no IR spelling  */
+            EMU_IR_C_GEU, /* 9 BNL  carry clear                      */
+            EMU_IR_C_NE, /* A BNE  not zero                         */
+            EMU_IR_C_GTU, /* B BH   higher                           */
+            0xFFu, /* C BP   positive      -- no IR spelling  */
+            0xFFu, /* D BSA  saturated     -- no IR spelling  */
+            EMU_IR_C_GE, /* E BGE  signed greater or equal          */
+            EMU_IR_C_GT /* F BGT  signed greater                   */
+        };
+
 /* Flags each group defines; see the note above. */
 #define F_ARITH (EMU_IR_F_Z | EMU_IR_F_S | EMU_IR_F_V | EMU_IR_F_C)
 #define F_LOGIC (EMU_IR_F_Z | EMU_IR_F_S | EMU_IR_F_V)
@@ -177,6 +206,50 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
         emu_ir_put(
             b, r2,
             emu_ir_alu(b, EMU_IR_ADD, emu_ir_get(b, r1), emu_ir_const(b, imm)));
+        return true;
+    }
+
+    /*
+     * CMOV, in both its forms: reg3 = cond ? {reg1 | imm5} : reg2.
+     *
+     * Sub-opcode 0x300 with the condition in bits [4:1] and bit 5
+     * choosing the register source over the imm5, so the group is
+     * `sub & 0x7C0 == 0x300`. **The condition really is `(sub >> 1) &
+     * 0xF` and not the three-bit reading**; CLAUDE.md records that only
+     * cond 15 can settle it, because every smaller value is consistent
+     * with both.
+     *
+     * **Branch-free, with no EMU_IR_SELECT.** The IR has one and Thumb-2
+     * declines it, so using it would lower this on the host and leave
+     * the board exactly where it was -- which is the trap the whole
+     * SETF/GETCOND episode was: a lowering that cannot reach the backend
+     * that needs it. `b ^ ((a ^ b) & -cond)` is four ordinary ALU
+     * operations that every backend already has, and GETCOND yields the
+     * 0 or 1 that NEG turns into the mask.
+     *
+     * No flags: CMOV moves a value and defines none.
+     */
+    if ((op == 0x3Fu) && (((uint32_t)w1 & 0x7C0u) == 0x300u)) {
+        const uint32_t sub = (uint32_t)w1 & 0x07FFu;
+        const uint32_t cond = k_g4mh_cond[(sub >> 1) & 0xFu];
+
+        if (cond == 0xFFu) {
+            return false;
+        }
+
+        const uint32_t dst = ((uint32_t)w1 >> 11) & 0x1Fu;
+        const uint16_t a = ((sub & 0x20u) != 0u)
+                               ? emu_ir_get(b, r1)
+                               : emu_ir_const(b, (uint32_t)g4mh_imm5(w0));
+        const uint16_t f = emu_ir_get(b, r2);
+        const uint16_t c0 = emu_ir_emit(b, EMU_IR_GETCOND, (uint8_t)cond,
+                                        EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 0u, 0u);
+        const uint16_t m = emu_ir_emit(b, EMU_IR_NEG, 0u, c0, EMU_IR_NO_TEMP,
+                                       0u, 0u);
+        const uint16_t d = emu_ir_alu(b, EMU_IR_AND,
+                                      emu_ir_alu(b, EMU_IR_XOR, a, f), m);
+
+        emu_ir_put(b, dst, emu_ir_alu(b, EMU_IR_XOR, f, d));
         return true;
     }
 
@@ -572,25 +645,8 @@ static bool lower_one(emu_ir_block_t *b, uint16_t w0, uint32_t pc,
          * would be a silently wrong branch, which is the worst thing
          * available here.
          */
-        static const uint8_t k_cond[16] = {
-            0xFFu, /* 0 BV   overflow      -- no IR spelling  */
-            EMU_IR_C_LTU, /* 1 BL   carry set                        */
-            EMU_IR_C_EQ, /* 2 BE   zero                             */
-            EMU_IR_C_LEU, /* 3 BNH  carry or zero                    */
-            0xFFu, /* 4 BN   negative      -- no IR spelling  */
-            EMU_IR_C_ALWAYS, /* 5 BR   unconditional                */
-            EMU_IR_C_LT, /* 6 BLT  signed less                      */
-            EMU_IR_C_LE, /* 7 BLE  signed less or equal             */
-            0xFFu, /* 8 BNV                -- no IR spelling  */
-            EMU_IR_C_GEU, /* 9 BNL  carry clear                      */
-            EMU_IR_C_NE, /* A BNE  not zero                         */
-            EMU_IR_C_GTU, /* B BH   higher                           */
-            0xFFu, /* C BP   positive      -- no IR spelling  */
-            0xFFu, /* D BSA  saturated     -- no IR spelling  */
-            EMU_IR_C_GE, /* E BGE  signed greater or equal          */
-            EMU_IR_C_GT /* F BGT  signed greater                   */
-        };
-        const uint32_t cond = k_cond[w0 & 0xFu];
+        /* k_g4mh_cond, at file scope: CMOV needs the same map. */
+        const uint32_t cond = k_g4mh_cond[w0 & 0xFu];
 
         if (cond == 0xFFu) {
             return false;
