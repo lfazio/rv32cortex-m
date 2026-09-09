@@ -120,8 +120,24 @@ static bool ensure_window(const emu_fb_frame_t *f)
             disable("SDL_Init");
             return false;
         }
-        if (!SDL_CreateWindowAndRenderer("rv32cortex-m", (int)f->width,
-                                         (int)f->height, SDL_WINDOW_RESIZABLE,
+        /*
+         * Opened at a multiple of the guest's mode. 320x200 on a modern
+         * display is a postage stamp -- unreadable rather than merely
+         * small -- and the logical presentation below means the guest
+         * still draws 320x200 and SDL does the scaling. EMU_SDL_SCALE
+         * overrides it for a screen where 3x does not fit.
+         */
+        int scale = 3;
+        const char *const env = SDL_getenv("EMU_SDL_SCALE");
+
+        if (env != NULL && SDL_atoi(env) > 0) {
+            scale = SDL_atoi(env);
+        }
+
+        if (!SDL_CreateWindowAndRenderer("rv32cortex-m",
+                                         (int)f->width * scale,
+                                         (int)f->height * scale,
+                                         SDL_WINDOW_RESIZABLE,
                                          &g_disp.window, &g_disp.renderer)) {
             disable("SDL_CreateWindowAndRenderer");
             return false;

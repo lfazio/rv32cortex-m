@@ -121,7 +121,23 @@ list(FILTER _doom_srcs EXCLUDE REGEX
 # nobody will act on train people to ignore the ones that matter.
 #
 set(_doom_flags
+    -fsigned-char
     -std=gnu99
+    #
+    # **-fsigned-char, and it is not a style preference.** Plain `char`
+    # is signed on x86 and *unsigned* on RISC-V and ARM, and DOOM was
+    # written for the former: ticcmd_t stores movement as
+    # `char forwardmove` and `char sidemove`, so every backward or
+    # leftward value wraps to a large positive one.
+    #
+    # It presents as input being mis-mapped rather than as arithmetic.
+    # Back walked fast forward and strafe-left strafed fast right, while
+    # forward and right were perfect -- because -25 becomes 231 and -24
+    # becomes 232, which is the same direction reversed and roughly ten
+    # times the speed. Three layers of key translation were read and
+    # re-read before the guest was asked what it actually received, and
+    # it received exactly the right codes.
+    #
     #
     # **-fpermissive, and it is not laziness.** GCC 14 turned four
     # things this code does on every page into errors rather than
