@@ -70,12 +70,25 @@ measured at.
       | frontend | JIT | C guest possible | blocker |
       |---|---|---|---|
       | rv32 | yes | yes | none -- CoreMark already runs 1.5G instructions |
-      | g4mh | yes | **no** | CC-RH is not on the build machine, which is why its guests are checked-in `.bin` |
+      | g4mh | yes | **yes** | none known -- CC-RH is installed, see below |
       | ppc  | **no** | **no** | `powerpc-linux-gnu-gcc` is not built with VLE (`-mvle` is rejected), so only hand-written assembly compiles; and there is no IR translator |
 
-      So rv32 is the only one that can be done now. g4mh needs CC-RH
-      before a game can be compiled at all; ppc needs a VLE C compiler
-      *and* a JIT, and the compiler is the harder of the two to acquire.
+      **CC-RH is installed** -- V2.07.00 and V2.08.00 under
+      `/usr/local/Renesas/CC-RH/`, with `ccrh`, `asrh` and `rlink`. Both
+      report *"Paid license of CC-RH V2 is not found, and the evaluation
+      period has expired"* at link time, and both link anyway: a warning,
+      not an error. An 8,000-line source compiled to a 927 KB object
+      without complaint, so there is no obvious size cap -- but nothing
+      Doom-sized has been linked, and that is the thing to test before
+      planning around it rather than after.
+
+      So rv32 first because nothing blocks it, and g4mh is a real second
+      rather than a hypothetical one. ppc is the far one: it needs a VLE
+      C compiler *and* a JIT, and the compiler is the harder to acquire.
+
+      Note `scripts/g4mh-check-encodings.sh` reaches CC-RH through a
+      Docker image and hardcodes the same V2.08.00 path the native
+      install uses, so it may work directly against the local toolchain.
 
   - [ ] **A framebuffer device**, portable C in `src/emu/` with no SDL in
         it -- the guest writes pixels, the host presents them. Same split
@@ -98,7 +111,9 @@ measured at.
         target and the one that will say whether the JIT holds up under
         floating point at scale.
         https://github.com/lfazio/quake-embedded
-  - [ ] Doom II on g4mh, once CC-RH is available.
+  - [ ] Doom II on g4mh. The toolchain is there; what is untested is
+        whether an expired-evaluation `rlink` will produce a binary that
+        large.
   - [ ] Doom II on ppc, once it has both a VLE C compiler and a JIT.
 - [ ] **PowerPC debug infrastructure**, which is three files where the
       other two frontends have fifteen. Every G4MH defect this project
