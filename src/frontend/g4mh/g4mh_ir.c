@@ -643,7 +643,7 @@ static bool lower_one48(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
  * while computing entirely correct answers.
  */
 static bool lower_one(emu_ir_block_t *b, uint16_t w0, uint32_t pc,
-                      bool *counted)
+                      bool *counted, bool *ends)
 {
     const uint32_t r1 = g4mh_reg1(w0);
     const uint32_t r2 = g4mh_reg2(w0);
@@ -733,14 +733,33 @@ static bool lower_one(emu_ir_block_t *b, uint16_t w0, uint32_t pc,
          * RETIRE before the exit, and `counted` so the caller does not
          * add a second one after it.
          */
+        (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          0u, 0u);
+        *counted = true;
+
+        /*
+         * **BR is unconditional, and saying so ends the block.**
+         * Expressing it as GETCOND(ALWAYS) into an EXIT_IF is correct --
+         * the exit is always taken -- but it leaves the translator
+         * walking on into the fall-through, which after an unconditional
+         * branch is not code. It then decodes whatever bytes follow and
+         * declines them, which is invisible except as sub-opcodes in the
+         * decline histogram that appear in no dispatch in the
+         * interpreter, because they are not instructions at all. That is
+         * how these were found.
+         */
+        if (cond == (uint32_t)EMU_IR_C_ALWAYS) {
+            (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP,
+                              EMU_IR_NO_TEMP, target, 0u);
+            *ends = true;
+            return true;
+        }
+
         const uint16_t t = emu_ir_emit(b, EMU_IR_GETCOND, (uint8_t)cond,
                                        EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 0u, 0u);
 
-        (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
-                          0u, 0u);
         (void)emu_ir_emit(b, EMU_IR_EXIT_IF, EMU_IR_C_NE, t,
                           emu_ir_const(b, 0u), target, 0u);
-        *counted = true;
         return true;
     }
 
@@ -932,7 +951,7 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
         bool ok;
 
         if (g4mh_is_16bit(w0)) {
-            ok = lower_one(b, w0, cur, &counted);
+            ok = lower_one(b, w0, cur, &counted, &ends);
         } else {
             uint16_t w1;
 
