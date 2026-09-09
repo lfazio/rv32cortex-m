@@ -55,6 +55,17 @@
 #define KBD_REG(off) (*(volatile uint32_t *)(KBD_BASE + (off)))
 #define MOUSE_REG(off) (*(volatile uint32_t *)(MOUSE_BASE + (off)))
 
+/*
+ * CLINT mtime, 1 MHz on every platform, so a tick is a microsecond.
+ *
+ * Read here because a display test that cannot say how long it took is
+ * not measuring anything -- and because a *game* needs exactly this: a
+ * clock to pace itself against. Doom runs a 35 Hz tick and asks the
+ * platform how much time has passed; if this does not advance, no port
+ * of it can keep time.
+ */
+#define MTIME (*(volatile uint32_t *)0x0200BFF8u)
+
 #define IN_ID 0x00u
 #define IN_PENDING 0x08u
 #define IN_EVENT 0x0Cu
@@ -154,6 +165,7 @@ int main(void)
      * rate cannot be made to depend on the platform having a window.
      */
     const uint32_t before = FB_REG(FB_FRAMES);
+    const uint32_t t0 = MTIME;
 
     /*
      * Sixty frames of something moving, so a run with a window attached
@@ -173,6 +185,24 @@ int main(void)
         FB_REG(FB_FLUSH) = 1u;
     }
     check("frames", FB_REG(FB_FRAMES) - before, FBTEST_FRAMES);
+
+    /*
+     * **The clock must have moved.** A guest that draws for a second and
+     * reads the same time at both ends cannot pace itself, and that is
+     * the whole of what a game needs from a timer -- so this is checked
+     * rather than printed. It is also the one assertion here that fails
+     * if mtime is wired to nothing, which is a plausible state for a
+     * platform that never needed one.
+     */
+    const uint32_t us = MTIME - t0;
+
+    check("clock-advanced", (us > 0u) ? 1u : 0u, 1u);
+
+    puts_("  micros   0x");
+    puthex(us);
+    puts_("\n  fps      0x");
+    puthex((us > 0u) ? ((uint32_t)FBTEST_FRAMES * 1000000u) / us : 0u);
+    puts_("\n");
 
     /* Geometry is read-only; a write must be ignored rather than taken. */
     FB_REG(FB_WIDTH) = 1234u;
