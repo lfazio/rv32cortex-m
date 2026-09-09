@@ -261,6 +261,112 @@ uint32_t emu_fb_bpp(emu_fb_format_t format);
  */
 uint32_t emu_fb_max_bytes(void);
 
+/* ------------------------------------------------------------------ */
+/* Input: keyboard and mouse                                           */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Two devices, not one, and the reason is the same one that makes a
+ * host bind a separate evdev node to each: a guest that wants only a
+ * keyboard should not have to decode mouse motion to find its
+ * keystrokes, and a driver written for one should not need a descriptor
+ * claiming both. They share this file and this implementation because
+ * the *mechanism* is identical -- a ring of events a guest drains -- and
+ * only the payload differs.
+ *
+ * **A ring, not a single register.** A guest polls at whatever rate its
+ * frame loop runs, and a mouse moving under a 35 Hz game produces events
+ * far faster than that; a device holding "the last event" would drop
+ * most of them and, worse, would drop them silently. The ring holds
+ * what arrived between polls, and says so when it could not.
+ *
+ * **Overflow is reported, not hidden.** When the ring fills, the oldest
+ * events are kept and the newest dropped -- keeping the oldest is what
+ * preserves a key-down whose key-up would otherwise be lost, which is
+ * the failure a player feels as a stuck key. LOST counts what did not
+ * fit, so a guest can tell "nothing happened" from "I could not keep
+ * up".
+ *
+ * The event codes are Linux's evdev values, because they are the ones
+ * every port already has a table for, and inventing a third numbering
+ * would mean writing that table again. This is not an evdev protocol --
+ * there is no input_event struct, no timestamps, no SYN -- only the
+ * numbering.
+ */
+#define EMU_INPUT_SIZE 0x100u
+
+#define EMU_INPUT_ID 0x00u /* R: 'INPK' or 'INPM'              */
+#define EMU_INPUT_VERSION 0x04u /* R                                */
+#define EMU_INPUT_PENDING 0x08u /* R: events waiting               */
+#define EMU_INPUT_EVENT 0x0Cu /* R: dequeue one; 0 if empty      */
+#define EMU_INPUT_LOST 0x10u /* R: events dropped, cleared on read */
+
+/*
+ * A mouse's absolute position, which is *not* in the ring.
+ *
+ * Position is state, not an event: a guest that missed three motions
+ * still wants to know where the pointer is now, and making it
+ * reconstruct that by summing deltas it may have dropped is how a
+ * cursor drifts. The ring carries buttons and motion *notifications*;
+ * these two registers carry the truth.
+ */
+#define EMU_INPUT_ABS_X 0x14u /* R: mouse only                    */
+#define EMU_INPUT_ABS_Y 0x18u /* R: mouse only                    */
+#define EMU_INPUT_BUTTONS 0x1Cu /* R: mouse only, bit per button    */
+
+#define EMU_INPUT_ID_KEYBOARD 0x4B504E49u /* 'INPK' */
+#define EMU_INPUT_ID_MOUSE 0x4D504E49u /* 'INPM' */
+#define EMU_INPUT_VERSION_1 1u
+
+/*
+ * One event word: the code in the low 16 bits, the value above it, and
+ * bit 31 marking the word as real -- so a guest that reads an empty ring
+ * gets 0 and can test for it without a separate register access. A
+ * legitimate event always has bit 31 set, including a key-up whose value
+ * is zero.
+ */
+#define EMU_INPUT_EV_VALID 0x80000000u
+#define EMU_INPUT_EV_CODE(w) ((w) & 0xFFFFu)
+#define EMU_INPUT_EV_VALUE(w) (((w) >> 16) & 0x7FFFu)
+
+/*
+ * Mouse buttons, as bits in EMU_INPUT_BUTTONS and as codes in the ring.
+ * The codes are evdev's BTN_LEFT and its neighbours.
+ */
+#define EMU_INPUT_BTN_LEFT 0x110u
+#define EMU_INPUT_BTN_RIGHT 0x111u
+#define EMU_INPUT_BTN_MIDDLE 0x112u
+
+#define EMU_INPUT_RING 64u
+
+typedef struct emu_input {
+    uint32_t id; /* EMU_INPUT_ID_KEYBOARD or _MOUSE           */
+
+    uint32_t ring[EMU_INPUT_RING];
+    uint32_t head; /* next to read                              */
+    uint32_t count; /* how many are waiting                      */
+    uint32_t lost;
+
+    /* Mouse state. Meaningless on a keyboard and read as zero. */
+    uint32_t abs_x;
+    uint32_t abs_y;
+    uint32_t buttons;
+} emu_input_t;
+
+extern const emu_dev_ops_t emu_input_ops;
+
+void emu_input_init(emu_input_t *in, uint32_t id);
+
+/*
+ * Post an event. Called by the platform from wherever its events come
+ * from -- SDL on a host -- and safe to call when nothing is draining:
+ * the ring fills, LOST counts, and no memory is touched beyond it.
+ */
+void emu_input_post(emu_input_t *in, uint32_t code, uint32_t value);
+
+/* Update the pointer, which is state rather than an event. */
+void emu_input_motion(emu_input_t *in, uint32_t x, uint32_t y);
+
 #ifdef __cplusplus
 }
 #endif

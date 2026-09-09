@@ -153,6 +153,15 @@ struct emu_fb;
 struct emu_fb *board_fb(void);
 
 /*
+ * The keyboard and the mouse, or NULL for either. Weak and NULL by
+ * default, on the same terms as board_fb: a platform with no input pays
+ * a null test at start-up and the regions are never mapped.
+ */
+struct emu_input;
+struct emu_input *board_keyboard(void);
+struct emu_input *board_mouse(void);
+
+/*
  * Route a real interrupt line to the guest.
  *
  * `unmask` is handed to the frontend, which calls it when the guest

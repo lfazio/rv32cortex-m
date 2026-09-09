@@ -39,6 +39,14 @@
 #define EMU_GUEST_FB_BASE 0x30000000u /* control, EMU_FB_CTRL_SIZE  */
 #define EMU_GUEST_FB_PIXELS 0x30100000u /* the buffer itself          */
 
+/*
+ * Keyboard and mouse. Two devices rather than one, for the reason a host
+ * binds a separate evdev node to each -- see emu_dev.h. Adjacent, so a
+ * guest that has one has the other at a known offset.
+ */
+#define EMU_GUEST_KBD_BASE 0x30001000u
+#define EMU_GUEST_MOUSE_BASE 0x30002000u
+
 #define EMU_GUEST_RAM_BASE 0x80000000u
 
 /* Where a guest starts executing unless the platform says otherwise. */

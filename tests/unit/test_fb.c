@@ -269,3 +269,143 @@ void test_fb(void)
     CHECK_EQ(emu_fb_ops.read(&fb, EMU_FB_WIDTH, 4u, &v), EMU_FAULT_NONE);
     CHECK_EQ(v, 320u);
 }
+
+/*
+ * The input devices.
+ *
+ * Same file because they share the framebuffer's arrangement -- a
+ * portable device with the platform supplying the events -- and the same
+ * reason it needs no display: a test posts its own and reads them back
+ * exactly as a guest would.
+ */
+void test_input(void)
+{
+    emu_input_t in;
+    uint32_t v;
+
+    emu_input_init(&in, EMU_INPUT_ID_KEYBOARD);
+
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_ID, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, EMU_INPUT_ID_KEYBOARD);
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_PENDING, 4u, &v),
+             EMU_FAULT_NONE);
+    CHECK_EQ(v, 0u);
+
+    /* An empty ring reads 0, which cannot be a valid event. */
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_EVENT, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 0u);
+
+    /* --- an event round-trips, and the encoding is decodable ------ */
+    emu_input_post(&in, 30u, 1u); /* 'a' down */
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_PENDING, 4u, &v),
+             EMU_FAULT_NONE);
+    CHECK_EQ(v, 1u);
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_EVENT, 4u, &v), EMU_FAULT_NONE);
+    CHECK(  (v & EMU_INPUT_EV_VALID) != 0u);
+    CHECK_EQ(EMU_INPUT_EV_CODE(v), 30u);
+    CHECK_EQ(EMU_INPUT_EV_VALUE(v), 1u);
+
+    /*
+     * **A key-up must be distinguishable from an empty ring**, and it is
+     * the one case where they could be confused: its value is zero, so
+     * only the VALID bit separates "the key was released" from "there is
+     * nothing here". A device that returned a bare 0 for a key-up would
+     * make every release invisible.
+     */
+    emu_input_post(&in, 30u, 0u);
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_EVENT, 4u, &v), EMU_FAULT_NONE);
+    CHECK(  (v & EMU_INPUT_EV_VALID) != 0u);
+    CHECK_EQ(EMU_INPUT_EV_CODE(v), 30u);
+    CHECK_EQ(EMU_INPUT_EV_VALUE(v), 0u);
+
+    /* Drained again. */
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_EVENT, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 0u);
+
+    /* --- order is preserved, which a ring can get wrong ----------- */
+    for (uint32_t i = 0; i < 8u; i++) {
+        emu_input_post(&in, 100u + i, 1u);
+    }
+    for (uint32_t i = 0; i < 8u; i++) {
+        CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_EVENT, 4u, &v),
+                 EMU_FAULT_NONE);
+        CHECK_EQ(EMU_INPUT_EV_CODE(v), 100u + i);
+    }
+
+    /*
+     * --- overflow keeps the oldest and counts the rest -------------
+     *
+     * The discriminating case. A ring that dropped the *front* to make
+     * room would keep the newest, which sounds equally reasonable and is
+     * not: it discards the key-down and keeps the key-up, so a guest
+     * sees a release it never saw pressed. That is the stuck key a
+     * player feels rather than a message anyone reads.
+     */
+    emu_input_init(&in, EMU_INPUT_ID_KEYBOARD);
+    for (uint32_t i = 0; i < EMU_INPUT_RING + 10u; i++) {
+        emu_input_post(&in, 200u + i, 1u);
+    }
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_PENDING, 4u, &v),
+             EMU_FAULT_NONE);
+    CHECK_EQ(v, EMU_INPUT_RING);
+
+    /* The first event still there is the first one posted. */
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_EVENT, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(EMU_INPUT_EV_CODE(v), 200u);
+
+    /* LOST reports the ten that did not fit, and clears on read. */
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_LOST, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 10u);
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_LOST, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 0u);
+
+    /* --- the mouse: position is state, buttons are both ----------- */
+    emu_input_init(&in, EMU_INPUT_ID_MOUSE);
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_ID, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, EMU_INPUT_ID_MOUSE);
+
+    /*
+     * Motion does not fill the ring. A guest that missed three motions
+     * still wants to know where the pointer is, and reconstructing that
+     * by summing deltas it may have dropped is how a cursor drifts.
+     */
+    for (uint32_t i = 0; i < 100u; i++) {
+        emu_input_motion(&in, 10u + i, 20u + i);
+    }
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_PENDING, 4u, &v),
+             EMU_FAULT_NONE);
+    CHECK_EQ(v, 0u); /* 100 motions, no events, no overflow */
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_LOST, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 0u);
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_ABS_X, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 109u);
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_ABS_Y, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 119u);
+
+    /* A button is an event *and* a bit in the summary. */
+    emu_input_post(&in, EMU_INPUT_BTN_LEFT, 1u);
+    emu_input_post(&in, EMU_INPUT_BTN_RIGHT, 1u);
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_BUTTONS, 4u, &v),
+             EMU_FAULT_NONE);
+    CHECK_EQ(v, 0x3u);
+    emu_input_post(&in, EMU_INPUT_BTN_LEFT, 0u);
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_BUTTONS, 4u, &v),
+             EMU_FAULT_NONE);
+    CHECK_EQ(v, 0x2u);
+    /* And all three are still in the ring. */
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_PENDING, 4u, &v),
+             EMU_FAULT_NONE);
+    CHECK_EQ(v, 3u);
+
+    /* --- word accesses only, naming the direction ----------------- */
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_ID, 1u, &v), EMU_FAULT_LOAD);
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_ID + 1u, 4u, &v),
+             EMU_FAULT_LOAD);
+    CHECK_EQ(emu_input_ops.write(&in, EMU_INPUT_ID, 2u, 0u), EMU_FAULT_STORE);
+
+    /* Nothing is writable; a write is ignored rather than fatal. */
+    CHECK_EQ(emu_input_ops.write(&in, EMU_INPUT_ABS_X, 4u, 999u),
+             EMU_FAULT_NONE);
+    CHECK_EQ(emu_input_ops.read(&in, EMU_INPUT_ABS_X, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 109u);
+}

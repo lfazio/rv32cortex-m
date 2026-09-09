@@ -444,6 +444,7 @@ add_library(emucore STATIC
     src/emu/emu_elf.c
     src/emu/emu_uart.c
     src/emu/emu_fb.c
+    src/emu/emu_input.c
 )
 
 target_include_directories(emucore PUBLIC

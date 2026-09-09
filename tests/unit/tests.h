@@ -35,6 +35,7 @@ void test_decode(void);
 #endif
 void test_bus(void);
 void test_fb(void);
+void test_input(void);
 void test_ir(void);
 #if EMU_GUEST_ARCH_RV32
 void test_fpu(void);

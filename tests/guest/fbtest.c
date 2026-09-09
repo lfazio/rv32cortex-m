@@ -36,6 +36,16 @@
 
 #define FB_ID_MAGIC 0x46425546u /* 'FBUF' */
 
+/* The two input devices, at their own addresses. */
+#define KBD_BASE 0x30001000u
+#define MOUSE_BASE 0x30002000u
+#define KBD_REG(off) (*(volatile uint32_t *)(KBD_BASE + (off)))
+#define MOUSE_REG(off) (*(volatile uint32_t *)(MOUSE_BASE + (off)))
+
+#define IN_ID 0x00u
+#define IN_PENDING 0x08u
+#define IN_EVENT 0x0Cu
+
 static void puts_(const char *s)
 {
     while (*s != '\0') {
@@ -154,6 +164,22 @@ int main(void)
     /* Geometry is read-only; a write must be ignored rather than taken. */
     FB_REG(FB_WIDTH) = 1234u;
     check("width-read-only", FB_REG(FB_WIDTH), w);
+
+    /*
+     * The input devices, from the guest's side.
+     *
+     * Nothing posts to them in a test run -- there is no window and no
+     * SDL -- so what this proves is that they are *mapped and readable*,
+     * which is the half that would otherwise be assumed. A guest polling
+     * a device nobody feeds must read an empty ring rather than fault or
+     * hang, and that is exactly the case a board is in.
+     */
+    check("kbd-id", KBD_REG(IN_ID), 0x4B504E49u); /* 'INPK' */
+    check("mouse-id", MOUSE_REG(IN_ID), 0x4D504E49u); /* 'INPM' */
+    check("kbd-empty", KBD_REG(IN_PENDING), 0u);
+    check("kbd-event-empty", KBD_REG(IN_EVENT), 0u);
+    check("mouse-empty", MOUSE_REG(IN_PENDING), 0u);
+    check("kbd-not-mouse", (KBD_REG(IN_ID) != MOUSE_REG(IN_ID)) ? 1u : 0u, 1u);
 
     puts_("  failures 0x");
     puthex(g_fail);

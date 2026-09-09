@@ -639,6 +639,28 @@ emu_fb_t *board_fb(void)
     return g_fb_ready ? &g_fb : NULL;
 }
 
+/*
+ * Keyboard and mouse.
+ *
+ * Present unconditionally, like the framebuffer and for the same reason:
+ * a guest probing for input should not get a different answer depending
+ * on whether a window happens to be open. Without SDL nothing posts to
+ * them and a guest reads an empty ring, which is exactly what a board
+ * with no input does.
+ */
+static emu_input_t g_kbd;
+static emu_input_t g_mouse;
+
+emu_input_t *board_keyboard(void)
+{
+    return &g_kbd;
+}
+
+emu_input_t *board_mouse(void)
+{
+    return &g_mouse;
+}
+
 static uint32_t g_time_epoch;
 
 uint64_t board_time_now(void)
@@ -793,6 +815,9 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
      * reason as before: a guest probing for a display should not get a
      * different answer depending on a flag nobody passed.
      */
+    emu_input_init(&g_kbd, EMU_INPUT_ID_KEYBOARD);
+    emu_input_init(&g_mouse, EMU_INPUT_ID_MOUSE);
+
     const uint32_t fb_bytes = emu_fb_max_bytes();
 
     g_fb_pixels = calloc(fb_bytes, 1u);

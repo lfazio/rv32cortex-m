@@ -118,6 +118,20 @@ bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
                               fb->bytes))) {
             return false;
         }
+
+        emu_input_t *const kbd = board_keyboard();
+        emu_input_t *const mouse = board_mouse();
+
+        if (kbd != NULL &&
+            !emu_bus_add_mmio(bus, "kbd", EMU_GUEST_KBD_BASE, EMU_INPUT_SIZE,
+                              &emu_input_ops, kbd)) {
+            return false;
+        }
+        if (mouse != NULL &&
+            !emu_bus_add_mmio(bus, "mouse", EMU_GUEST_MOUSE_BASE,
+                              EMU_INPUT_SIZE, &emu_input_ops, mouse)) {
+            return false;
+        }
     }
 
     /*
@@ -162,6 +176,17 @@ bool emu_build_address_space(emu_bus_t *bus, emu_uart_t *uart)
  * boards do not, and never map the regions.
  */
 __attribute__((weak)) emu_fb_t *board_fb(void)
+{
+    return NULL;
+}
+
+/* No input either, unless a platform says otherwise. */
+__attribute__((weak)) emu_input_t *board_keyboard(void)
+{
+    return NULL;
+}
+
+__attribute__((weak)) emu_input_t *board_mouse(void)
 {
     return NULL;
 }
