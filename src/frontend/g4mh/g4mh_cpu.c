@@ -899,3 +899,69 @@ void g4mh_adf(g4mh_cpu_t *c, uint32_t r1, uint32_t r2, uint32_t rd,
     c->r[rd] = res;
     c->r[0] = 0u;
 }
+
+static const uint8_t k_list12_bit[12] = {
+    27u, 26u, 25u, 24u, /* r20 r21 r22 r23 */
+    31u, 30u, 29u, 28u, /* r24 r25 r26 r27 */
+    23u, 22u, 0u,  21u /* r28 r29 r30 r31 */
+};
+
+bool g4mh_list12_has(uint32_t list, unsigned reg)
+{
+    return (list & (1u << k_list12_bit[reg - 20u])) != 0u;
+}
+
+/*
+ * PREPARE's register save. Ascending register order, each one four bytes
+ * below the last, so r20 lands highest and r31 lowest -- and DISPOSE
+ * therefore walks *descending* to undo it. The manual states the two
+ * orders in separate places and they are not the same; reading one and
+ * assuming the other restores every register into its neighbour, which
+ * is a wrong answer rather than a fault.
+ */
+static g4mh_exc_t prepare_save(g4mh_cpu_t *c, uint32_t list,
+                               uint32_t *sp_out)
+{
+    uint32_t tmp = c->r[3];
+
+    for (unsigned reg = 20u; reg <= 31u; reg++) {
+        if (!g4mh_list12_has(list, reg)) {
+            continue;
+        }
+        tmp -= 4u;
+        const g4mh_exc_t e = g4mh_store(c, tmp & ~3u, 4u, c->r[reg]);
+        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+            return e;
+        }
+    }
+    *sp_out = tmp;
+    return G4MH_EXC_NONE;
+}
+
+/*
+ * PREPARE's common half: save the listed registers and drop sp.
+ *
+ * Shared because the JIT reaches it through a helper -- the arrangement
+ * this codebase uses for any semantics both backends need, so a rule
+ * this fiddly exists once. The ep-loading forms add to this rather than
+ * repeating it; only the wider encodings have an ep to load.
+ *
+ * It can fault: every register save is a store, and the caller must
+ * report the exception rather than carry on.
+ */
+g4mh_exc_t g4mh_prepare(g4mh_cpu_t *c, uint32_t list, uint32_t imm5,
+                        uint32_t *sp_out)
+{
+    uint32_t sp;
+    const g4mh_exc_t e = prepare_save(c, list, &sp);
+
+    if (e != G4MH_EXC_NONE) {
+        return e;
+    }
+    sp -= imm5 << 2;
+    c->r[3] = sp;
+    if (sp_out != NULL) {
+        *sp_out = sp;
+    }
+    return G4MH_EXC_NONE;
+}

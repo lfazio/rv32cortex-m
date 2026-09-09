@@ -370,4 +370,10 @@ void g4mh_set_flash(const void *base, uint32_t size, bool writable);
 void g4mh_adf(g4mh_cpu_t *c, uint32_t r1, uint32_t r2, uint32_t rd,
               uint32_t cond);
 
+/* list12's register bits, and PREPARE's save-and-drop-sp half. Shared so
+ * the interpreter and the JIT's helper cannot drift; see g4mh_cpu.c. */
+bool g4mh_list12_has(uint32_t list, unsigned reg);
+g4mh_exc_t g4mh_prepare(g4mh_cpu_t *c, uint32_t list, uint32_t imm5,
+                        uint32_t *sp_out);
+
 #endif /* G4MH_G4MH_CPU_H */

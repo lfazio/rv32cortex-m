@@ -395,43 +395,8 @@ static EMU_ALWAYS_INLINE uint32_t do_sar(g4mh_cpu_t *c, uint32_t v, uint32_t n)
  * why deriving it from the register number, the obvious thing to try,
  * silently saves the wrong registers.
  */
-static const uint8_t k_list12_bit[12] = {
-    27u, 26u, 25u, 24u, /* r20 r21 r22 r23 */
-    31u, 30u, 29u, 28u, /* r24 r25 r26 r27 */
-    23u, 22u, 0u,  21u /* r28 r29 r30 r31 */
-};
-
-static EMU_ALWAYS_INLINE bool list12_has(uint32_t list, unsigned reg)
-{
-    return (list & (1u << k_list12_bit[reg - 20u])) != 0u;
-}
-
-/*
- * PREPARE's register save. Ascending register order, each one four bytes
- * below the last, so r20 lands highest and r31 lowest -- and DISPOSE
- * therefore walks *descending* to undo it. The manual states the two
- * orders in separate places and they are not the same; reading one and
- * assuming the other restores every register into its neighbour, which
- * is a wrong answer rather than a fault.
- */
-static g4mh_exc_t do_prepare_save(g4mh_cpu_t *c, uint32_t list,
-                                  uint32_t *sp_out)
-{
-    uint32_t tmp = c->r[3];
-
-    for (unsigned reg = 20u; reg <= 31u; reg++) {
-        if (!list12_has(list, reg)) {
-            continue;
-        }
-        tmp -= 4u;
-        const g4mh_exc_t e = g4mh_store(c, tmp & ~3u, 4u, c->r[reg]);
-        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
-            return e;
-        }
-    }
-    *sp_out = tmp;
-    return G4MH_EXC_NONE;
-}
+/* list12 and PREPARE live in g4mh_cpu.c, beside the PE state, because
+ * the JIT reaches them through a helper and the two must not drift. */
 
 static g4mh_exc_t do_dispose_load(g4mh_cpu_t *c, uint32_t list, uint32_t imm5,
                                   uint32_t *sp_out)
@@ -439,7 +404,7 @@ static g4mh_exc_t do_dispose_load(g4mh_cpu_t *c, uint32_t list, uint32_t imm5,
     uint32_t tmp = c->r[3] + (imm5 << 2);
 
     for (unsigned reg = 32u; reg-- > 20u;) {
-        if (!list12_has(list, reg)) {
+        if (!g4mh_list12_has(list, reg)) {
             continue;
         }
         uint32_t v;
@@ -2298,12 +2263,10 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     const uint32_t ff = (w1 >> 3) & 3u;
                     uint32_t sp;
 
-                    const g4mh_exc_t e = do_prepare_save(c, list, &sp);
+                    const g4mh_exc_t e = g4mh_prepare(c, list, imm5, &sp);
                     if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
                         EXC(e);
                     }
-                    sp -= imm5 << 2;
-                    c->r[3] = sp;
 
                     if ((w1 & 0x07u) == 0x03u) {
                         /*

@@ -171,10 +171,40 @@ static uint32_t g4mh_ir_adf_helper(emu_cpu_t *cpu, uint32_t insn,
     return 0u;
 }
 
+/*
+ * PREPARE list12,imm5 -- the 32-bit form, which saves the listed
+ * registers and drops sp.
+ *
+ * A helper because the register list is a twelve-bit field whose mapping
+ * to r20-r31 is a table rather than arithmetic, and because every save
+ * is a store that can fault. HELPER_TRAP, not HELPER: a non-zero return
+ * means the exception was entered and the block must stop there.
+ *
+ * The wider forms also load ep and are 48 or 64 bits, so they never
+ * reach here -- the translate loop sizes them and sends them elsewhere.
+ */
+static uint32_t g4mh_ir_prepare_helper(emu_cpu_t *cpu, uint32_t insn,
+                                       uint32_t unused)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
+    const uint16_t w0 = (uint16_t)insn;
+    const uint32_t imm5 = ((uint32_t)w0 >> 1) & 0x1Fu;
+    const g4mh_exc_t e = g4mh_prepare(c, insn, imm5, NULL);
+
+    (void)unused;
+    if (e == G4MH_EXC_NONE) {
+        return 0u;
+    }
+    g4mh_cpu_exception(c, e, c->pc);
+    return 1u;
+}
+
 static const void *const g4mh_ir_helpers[] = {
     (const void *)g4mh_ir_adf_helper,
+    (const void *)g4mh_ir_prepare_helper,
 };
 #define G4MH_IR_HELPER_ADF 0u
+#define G4MH_IR_HELPER_PREPARE 1u
 
 const emu_ir_target_t g4mh_ir_target = {
     .reg_offset = g4mh_reg_offset,
@@ -239,6 +269,32 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
         emu_ir_put(
             b, r2,
             emu_ir_alu(b, EMU_IR_ADD, emu_ir_get(b, r1), emu_ir_const(b, imm)));
+        return true;
+    }
+
+    /*
+     * PREPARE list12, imm5 -- the 32-bit form.
+     *
+     * It shares 0x3C/0x3D with the jumps and the disp23 loads, and
+     * `w1 & 0x1F == 0x01` is what picks it out. **Its length is the
+     * subtle part and is already settled elsewhere**: g4mh_insn_is_48
+     * deliberately answers false here, because PREPARE's short form sets
+     * the same bit 0 that marks the 48-bit group and is nonetheless four
+     * bytes -- answering otherwise would advance the pc two bytes too far
+     * and desynchronise everything after. Reaching this case at all means
+     * that decision was made correctly upstream.
+     *
+     * The instruction word carries the register list in its own bits, so
+     * the whole 32 bits go across and the helper takes them as the list.
+     */
+    if ((op == 0x3Cu || op == 0x3Du) && r2 == 0u &&
+        (((uint32_t)w1 & 0x1Fu) == 0x01u)) {
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          pc, 0u);
+        (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP, 0u,
+                          emu_ir_const(b, (uint32_t)w0 |
+                                              ((uint32_t)w1 << 16)),
+                          EMU_IR_NO_TEMP, G4MH_IR_HELPER_PREPARE, 0u);
         return true;
     }
 
