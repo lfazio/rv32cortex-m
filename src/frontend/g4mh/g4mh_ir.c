@@ -210,6 +210,37 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
     }
 
     /*
+     * MUL and MULU, which produce a 64-bit product across two registers:
+     * the low half to reg2 and **the high half to reg3**.
+     *
+     * Both destinations are written, and reg2 is also a source, so the
+     * operands are read into temps before either is stored -- and when
+     * reg3 names reg2 the high half lands last, exactly as the
+     * interpreter's two `wr` calls do it. An ISA that varies one bit to
+     * mean "and also write reg3" has already caught this frontend out
+     * once, in the pointer-update loads.
+     *
+     * One case for both, matched on `sub & 0x7FD`, which is the mask the
+     * interpreter switches on: bit 1 is the signedness and is tested in
+     * the body rather than doubling the case.
+     *
+     * No flags -- a multiply here defines none.
+     */
+    if ((op == 0x3Fu) && ((((uint32_t)w1 & 0x07FFu) & 0x7FDu) == 0x220u)) {
+        const bool uns = (((uint32_t)w1 & 0x07FFu) & 0x2u) != 0u;
+        const uint32_t r3 = ((uint32_t)w1 >> 11) & 0x1Fu;
+        const uint16_t x = emu_ir_get(b, r2);
+        const uint16_t y = emu_ir_get(b, r1);
+        const uint16_t lo = emu_ir_alu(b, EMU_IR_MUL, x, y);
+        const uint16_t hi =
+            emu_ir_alu(b, uns ? EMU_IR_MULHU : EMU_IR_MULHS, x, y);
+
+        emu_ir_put(b, r2, lo);
+        emu_ir_put(b, r3, hi);
+        return true;
+    }
+
+    /*
      * CMOV, in both its forms: reg3 = cond ? {reg1 | imm5} : reg2.
      *
      * Sub-opcode 0x300 with the condition in bits [4:1] and bit 5
