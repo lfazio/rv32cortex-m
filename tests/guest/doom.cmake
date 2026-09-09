@@ -193,6 +193,13 @@ set(_doom_flags
     # resolved for free and this one leaves to the linker.
     #
     -Dalloca=__builtin_alloca
+    #
+    # Tells i_main.c it has no command line, so it supplies one. Without
+    # it DOOM reaches the title screen and plays its attract-mode demo,
+    # which dies on "Demo is from a different game version!" -- the demo
+    # lumps record the version that made them.
+    #
+    -DRV32_EMU
     -I "${DOOM_DIR}/src"
     -w)
 
