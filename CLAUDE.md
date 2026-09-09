@@ -1117,10 +1117,19 @@ session, and every one of them recurred:
   only version that can exonerate one. Guessing from the diff cannot,
   because the diff *did* touch that board's start-up.
 
-  A replug fixed it. The cost was most of a session, and the two things
-  that would have saved it are: set `EMU_PROBE` when more than one probe
-  is attached, and treat "the board went quiet" as a question about the
-  wire until the registers say otherwise.
+  A replug fixed it. **And it happened again an hour later, from
+  ordinary use** -- no failed flash that time, just a run of
+  ST-LINK_gdbserver load-and-detach cycles, after which the same board
+  went silent again and a replug restored it. So the trigger is not
+  "a failed attach" but *attaching repeatedly*, which is what debugging
+  a board consists of.
+
+  Treat it as a consumable: when the console stops and the firmware did
+  not change in a way that could explain it, replug before doing
+  anything else. The cost of being wrong about that is thirty seconds;
+  the cost of being wrong the other way was most of a session. And set
+  `EMU_PROBE` when more than one probe is attached, which is what
+  started the first occurrence.
 - **`if(TARGET ...)` only sees targets already defined.** The firmware
   asked `if(TARGET guest-${RV32_GUEST})` from a directory added *before*
   `tests/guest`, so the answer was always no and every configure warned
