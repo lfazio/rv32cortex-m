@@ -181,6 +181,33 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
     }
 
     /*
+     * The imm16 logical group: ORI, XORI, ANDI.
+     *
+     * **They zero-extend where the arithmetic forms sign-extend**, which
+     * is the only thing about them that can be got wrong quietly -- a
+     * sign-extended ANDI mask clears the top half of the register
+     * instead of preserving it, and every operand with bit 15 clear
+     * behaves identically either way.
+     *
+     * Flags are the logical set: Z and S from the result, OV cleared,
+     * **CY left alone**. That last is why the mask is F_LOGIC and not
+     * F_ARITH -- writing a zero to CY here would destroy a carry the
+     * guest is still carrying between an add and the branch that reads
+     * it.
+     */
+    if (op >= 0x34u && op <= 0x36u) {
+        static const uint8_t k_log[3] = {EMU_IR_OR, EMU_IR_XOR, EMU_IR_AND};
+        const uint16_t v =
+            emu_ir_alu(b, (emu_ir_op_t)k_log[op - 0x34u], emu_ir_get(b, r1),
+                       emu_ir_const(b, (uint32_t)w1));
+
+        emu_ir_put(b, r2, v);
+        (void)emu_ir_emit(b, EMU_IR_SETF, EMU_IR_FS_LOGIC, v, EMU_IR_NO_TEMP,
+                          0u, F_LOGIC);
+        return true;
+    }
+
+    /*
      * Format V: JARL and JR, disp22.
      *
      * One encoding serves both -- reg2 == 0 makes it a JR, because the
