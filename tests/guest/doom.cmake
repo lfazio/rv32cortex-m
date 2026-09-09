@@ -78,7 +78,36 @@ endif()
 # must not be compiled into a guest.
 #
 file(GLOB _doom_srcs "${DOOM_DIR}/src/*.c")
-list(APPEND _doom_srcs "${DOOM_DIR}/src/support/rawwad.c")
+#
+# The three files the host generation stage produces: the *shrunken*
+# WAD and the pre-computed texture and map tables. Without
+# GENERATE_BAKED the sources read `bakemaps`, `textureheight` and
+# `firstspritelump` out of these -- so the flag's absence and these
+# files are two halves of one decision, and leaving them out fails at
+# the link rather than at run time, which is the good direction.
+#
+# `support/rawwad.c` is the *full* 25 MB WAD and belongs to the
+# generator alone; linking it here would carry data the tables already
+# encode.
+#
+list(APPEND _doom_srcs
+    "${DOOM_DIR}/src/support/rawwad_use.c"
+    "${DOOM_DIR}/src/support/baked_texture_data.c"
+    "${DOOM_DIR}/src/support/baked_map_data.c")
+
+#
+# Those are build products of a stage this file does not run, so their
+# absence is reported as the missing *step* rather than as a missing
+# file -- which is what a first-time builder needs to be told.
+#
+foreach(_f IN LISTS _doom_srcs)
+    if(NOT EXISTS "${_f}")
+        message(STATUS
+            "DOOM: ${_f} is missing -- the host generation stage has "
+            "not been run; skipping the doom image")
+        return()
+    endif()
+endforeach()
 list(FILTER _doom_srcs EXCLUDE REGEX
      "/(i_video|i_video_console|XDriver|i_net|i_sound|os_generic)\\.c$")
 
