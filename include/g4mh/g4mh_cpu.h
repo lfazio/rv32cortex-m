@@ -362,4 +362,12 @@ void g4mh_set_flash(const void *base, uint32_t size, bool writable);
 }
 #endif
 
+/*
+ * ADF's semantics, shared by the interpreter and the JIT's helper so the
+ * two cannot drift. See the note beside the definition for why the IR
+ * cannot express a three-input add's flags.
+ */
+void g4mh_adf(g4mh_cpu_t *c, uint32_t r1, uint32_t r2, uint32_t rd,
+              uint32_t cond);
+
 #endif /* G4MH_G4MH_CPU_H */

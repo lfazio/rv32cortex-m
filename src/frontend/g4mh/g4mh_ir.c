@@ -144,6 +144,38 @@ static bool g4mh_reg_zero(uint32_t n)
     return n == 0u;
 }
 
+/*
+ * ADF, through the same g4mh_adf the interpreter calls.
+ *
+ * A helper rather than open-coded IR, because the flags of a three-input
+ * add are not expressible with EMU_IR_SETF's two operands -- see the
+ * note beside g4mh_adf. Declining it instead would end the block, and
+ * this project has measured that costing more than translating badly.
+ *
+ * EMU_IR_HELPER and not HELPER_TRAP: an ADF cannot fault.
+ *
+ * The whole instruction is passed as one constant and decoded here, the
+ * way RV32's floating-point fallback does it, which keeps the helper ABI
+ * at two arguments however many fields the instruction has.
+ */
+static uint32_t g4mh_ir_adf_helper(emu_cpu_t *cpu, uint32_t insn,
+                                   uint32_t unused)
+{
+    const uint16_t w0 = (uint16_t)insn;
+    const uint16_t w1 = (uint16_t)(insn >> 16);
+
+    (void)unused;
+    g4mh_adf((g4mh_cpu_t *)cpu, g4mh_reg1(w0), g4mh_reg2(w0),
+             ((uint32_t)w1 >> 11) & 0x1Fu,
+             ((((uint32_t)w1 & 0x07FFu) >> 1) & 0xFu));
+    return 0u;
+}
+
+static const void *const g4mh_ir_helpers[] = {
+    (const void *)g4mh_ir_adf_helper,
+};
+#define G4MH_IR_HELPER_ADF 0u
+
 const emu_ir_target_t g4mh_ir_target = {
     .reg_offset = g4mh_reg_offset,
     .flags_offset = (uint32_t)offsetof(g4mh_cpu_t, psw),
@@ -155,8 +187,9 @@ const emu_ir_target_t g4mh_ir_target = {
     .flag_bit = {G4MH_PSW_Z, G4MH_PSW_S, G4MH_PSW_OV, G4MH_PSW_CY},
     .reg_is_zero = g4mh_reg_zero,
     .pc_offset = (uint32_t)offsetof(g4mh_cpu_t, pc),
-    .helpers = NULL,
-    .helper_count = 0u,
+    .helpers = g4mh_ir_helpers,
+    .helper_count = (uint32_t)(sizeof(g4mh_ir_helpers) /
+                               sizeof(g4mh_ir_helpers[0])),
     .load = g4mh_ir_load,
     .store = g4mh_ir_store,
 };
@@ -206,6 +239,25 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
         emu_ir_put(
             b, r2,
             emu_ir_alu(b, EMU_IR_ADD, emu_ir_get(b, r1), emu_ir_const(b, imm)));
+        return true;
+    }
+
+    /*
+     * ADF: reg3 = reg1 + reg2 + (condition ? 1 : 0).
+     *
+     * Sub-opcode 0x3A0 under `sub & 0x7E0`, with the condition in bits
+     * [4:1] -- the same field CMOV and the branches use, and the same
+     * table, so an unrepresentable condition declines here too rather
+     * than becoming a near neighbour.
+     */
+    if ((op == 0x3Fu) && ((((uint32_t)w1 & 0x07FFu) & 0x7E0u) == 0x3A0u)) {
+        if (k_g4mh_cond[(((uint32_t)w1 & 0x07FFu) >> 1) & 0xFu] == 0xFFu) {
+            return false;
+        }
+        (void)emu_ir_emit(b, EMU_IR_HELPER, 0u,
+                          emu_ir_const(b, (uint32_t)w0 |
+                                              ((uint32_t)w1 << 16)),
+                          EMU_IR_NO_TEMP, G4MH_IR_HELPER_ADF, 0u);
         return true;
     }
 

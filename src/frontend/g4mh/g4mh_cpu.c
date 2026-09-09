@@ -3,6 +3,7 @@
  * g4mh_cpu.c - Core lifecycle, exception entry, and checked memory.
  */
 
+#include "g4mh/g4mh_decode.h"
 #include "g4mh/g4mh_cpu.h"
 #include "g4mh/g4mh_intc.h"
 #include "g4mh/g4mh_memmap.h"
@@ -855,4 +856,46 @@ void g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg, uint32_t val)
     if (bank == G4MH_SELID_PM && reg < G4MH_PM_CHANNELS) {
         pm_refresh(c);
     }
+}
+
+/*
+ * ADF: reg3 = reg1 + reg2 + (condition ? 1 : 0), defining all four flags.
+ *
+ * Here rather than in the interpreter because the JIT reaches it too,
+ * through a helper -- the same arrangement as rv_hart_amo, and for the
+ * same reason: a three-input add whose carry comes from a 33-bit sum and
+ * whose overflow is taken from the two *original* operands is not
+ * something to derive twice.
+ *
+ * **The IR cannot express this and it is worth saying why.** EMU_IR_SETF
+ * has two operands, so FS_ADD would have to be given `a + b` and `k`,
+ * which loses a carry out of the first add and computes overflow from
+ * the wrong pair. Every operand where a + b does not carry agrees with
+ * the correct answer, which is most of them.
+ */
+void g4mh_adf(g4mh_cpu_t *c, uint32_t r1, uint32_t r2, uint32_t rd,
+              uint32_t cond)
+{
+    const uint32_t a = c->r[r1];
+    const uint32_t b = c->r[r2];
+    const uint32_t k = g4mh_cond(cond, c->psw) ? 1u : 0u;
+    const uint64_t wide = (uint64_t)a + (uint64_t)b + (uint64_t)k;
+    const uint32_t res = (uint32_t)wide;
+    uint32_t psw = c->psw & ~G4MH_PSW_FLAGS;
+
+    if ((wide >> 32) != 0u) {
+        psw |= G4MH_PSW_CY;
+    }
+    if (res == 0u) {
+        psw |= G4MH_PSW_Z;
+    }
+    if ((res & 0x80000000u) != 0u) {
+        psw |= G4MH_PSW_S;
+    }
+    if ((~(a ^ b) & (a ^ res) & 0x80000000u) != 0u) {
+        psw |= G4MH_PSW_OV;
+    }
+    c->psw = psw;
+    c->r[rd] = res;
+    c->r[0] = 0u;
 }

@@ -2047,31 +2047,9 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     goto sub_done;
                 }
 
-                case 0x3A0: { /* ADF cccc         */
-                    const uint32_t a = c->r[r1];
-                    const uint32_t b = c->r[r2];
-                    const uint32_t k =
-                        g4mh_cond((sub >> 1) & 0xFu, c->psw) ? 1u : 0u;
-                    const uint64_t wide = (uint64_t)a + b + k;
-                    const uint32_t res = (uint32_t)wide;
-                    uint32_t psw = c->psw & ~G4MH_PSW_FLAGS;
-
-                    if ((wide >> 32) != 0u) {
-                        psw |= G4MH_PSW_CY;
-                    }
-                    if (res == 0u) {
-                        psw |= G4MH_PSW_Z;
-                    }
-                    if ((res & 0x80000000u) != 0u) {
-                        psw |= G4MH_PSW_S;
-                    }
-                    if ((~(a ^ b) & (a ^ res) & 0x80000000u) != 0u) {
-                        psw |= G4MH_PSW_OV;
-                    }
-                    c->psw = psw;
-                    wr(c, sel, res);
+                case 0x3A0: /* ADF cccc         */
+                    g4mh_adf(c, r1, r2, sel, (sub >> 1) & 0xFu);
                     goto sub_done;
-                }
 
                 case 0x3C0: /* MAC  reg1,r2,r3,r4 */
                 case 0x3E0: { /* MACU               */
