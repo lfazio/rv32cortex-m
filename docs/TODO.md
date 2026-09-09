@@ -107,10 +107,20 @@ measured at.
   - [ ] **Input**, keyboard and mouse, from SDL events. Two devices and
         not one: a host binds a separate evdev to each, and a combined
         descriptor claiming both is not what any driver expects.
-  - [ ] **Doom II on rv32.** Needs the framebuffer, a timer the guest can
-        read, and enough RAM for the WAD -- which the host runner has and
-        the F746 does not, so this is a host-only guest from the start.
-        https://github.com/lfazio/embeddedDOOM
+  - [x] **DOOM on rv32 -- it plays.** Full startup, E1M1, frames through
+        the framebuffer, keyboard and mouse live.
+
+        `-DEMU_DOOM=ON`, then `scripts/doom-gentables.sh`, then
+        `guest-doom`; run with `--jit --ram 0x2000000 --timer-hz 6`.
+        The port layer is GPL and lives in the port
+        (https://github.com/lfazio/embeddedDOOM, branch `rv32cortex-m`);
+        nothing of DOOM's is in this tree.
+
+        `--timer-hz` is the dial that matters. The guest renders a few
+        frames a second while `mtime` runs at wall-clock, so DOOM
+        advances many world-tics per drawn frame and the game appears to
+        fast-forward. Dividing guest time back down matches its own
+        rate -- 6 suits this machine, another will differ.
   - [ ] **Quake III on rv32**, after Doom II works. It is the harder
         target and the one that will say whether the JIT holds up under
         floating point at scale.

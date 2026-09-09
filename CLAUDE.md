@@ -1783,6 +1783,26 @@ session, and every one of them recurred:
   printing confident nonsense for G4MH, and here the same gap turned
   into a performance conclusion that would have closed the question
   the wrong way.
+- **`char` is signed on x86 and unsigned on ARM and RISC-V, and code
+  written for the first stores negative numbers in it.** DOOM's
+  `ticcmd_t` keeps movement as `char forwardmove` and `char sidemove`,
+  so on this target -25 became 231 and -24 became 232: the opposite
+  direction at roughly ten times the speed. `-fsigned-char`.
+
+  **It presented as input being mis-mapped, and cost three layers of
+  fruitless reading on that theory** -- SDL scancodes, the SDL-to-evdev
+  table, the evdev-to-DOOM table -- every one of which was correct. What
+  settled it in one run was asking the guest what it had actually
+  received: LEFT arrived as 0xac, ALT as 0xb8, RIGHT as 0xae, each press
+  cleanly paired with its release. Reading the code proved nothing; one
+  line of logging from inside the guest proved everything.
+
+  The tell was there from the first report and was not read: **forward
+  and strafe-right worked perfectly** while back and strafe-left were
+  reversed *and* fast. A wrong lookup table does not get half its
+  entries right, and "same axis, opposite sign, much faster" is what a
+  lost sign bit in an 8-bit field looks like. When half of a symmetric
+  thing works, suspect arithmetic rather than mapping.
 - **Measure; do not reason about performance.** Interpreter-in-SRAM was
   *slower*, lazy-IRQ was neutral, and the `clmul` fix was 1.3% when the real
   cost was 4.12-instruction blocks. Layout noise is ±3% on the host; on the
