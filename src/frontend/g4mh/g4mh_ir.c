@@ -243,6 +243,33 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
     }
 
     /*
+     * SETF cccc, reg2 -- the instruction, which has nothing to do with
+     * EMU_IR_SETF beside sharing a name. It stores the condition itself:
+     * reg2 = cond ? 1 : 0.
+     *
+     * **The condition is in the reg1 field**, which is not a register
+     * here at all. This ISA reuses that field as an opcode extension
+     * throughout -- CALLT, DISPOSE, MOV imm32 and the pointer-update
+     * loads all hide there -- and decoding it as a register is how six
+     * unimplemented instructions once retired silently as writes into
+     * r0.
+     *
+     * It defines no flags; it only reads them, which GETCOND already
+     * declares for the dead-flag pass.
+     */
+    if ((op == 0x3Fu) && (((uint32_t)w1 & 0x07FFu) == 0x000u)) {
+        const uint32_t cond = k_g4mh_cond[r1 & 0xFu];
+
+        if (cond == 0xFFu) {
+            return false;
+        }
+        emu_ir_put(b, r2,
+                   emu_ir_emit(b, EMU_IR_GETCOND, (uint8_t)cond,
+                               EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 0u, 0u));
+        return true;
+    }
+
+    /*
      * ADF: reg3 = reg1 + reg2 + (condition ? 1 : 0).
      *
      * Sub-opcode 0x3A0 under `sub & 0x7E0`, with the condition in bits
