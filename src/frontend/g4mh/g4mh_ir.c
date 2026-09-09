@@ -146,8 +146,14 @@ const emu_ir_target_t g4mh_ir_target = {
  * the displacement has to be masked before it is used, and a lowering
  * that forgot would be off by one on every odd-looking displacement.
  */
+/*
+ * `ends` is set by a lowering that left the block through EMU_IR_EXIT.
+ * Everything after an unconditional jump is unreachable, and translating
+ * it is not merely wasted buffer: the bytes after a call are frequently
+ * not instructions at all.
+ */
 static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
-                        uint32_t pc)
+                        uint32_t pc, bool *ends)
 {
     const uint32_t r1 = g4mh_reg1(w0);
     const uint32_t r2 = g4mh_reg2(w0);
@@ -171,6 +177,46 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
         emu_ir_put(
             b, r2,
             emu_ir_alu(b, EMU_IR_ADD, emu_ir_get(b, r1), emu_ir_const(b, imm)));
+        return true;
+    }
+
+    /*
+     * Format V: JARL and JR, disp22.
+     *
+     * One encoding serves both -- reg2 == 0 makes it a JR, because the
+     * return address is then written to r0 and discarded -- so there is
+     * nothing here to tell them apart and nothing that needs to.
+     *
+     * **The displacement has its high bits in the first halfword**:
+     * disp[21:16] in w0[5:0] and disp[15:1] in w1[15:1], with disp[0]
+     * hardwired zero, relative to the address of *this* instruction
+     * rather than the next. The natural assumption is the other order,
+     * low bits first as RISC-V does it, and the interpreter's comment
+     * records that being implemented first and giving plausible-looking
+     * displacements for small forward jumps and garbage for the rest.
+     * The two must agree; this is a copy of that expression, deliberately.
+     *
+     * Bit 0 of the second halfword is what separates this from
+     * everything else sharing the slot -- the displacement is even, so
+     * the bit is free to be an opcode.
+     */
+    if ((op == 0x3Cu || op == 0x3Du) && (w1 & 1u) == 0u) {
+        const uint32_t d =
+            ((uint32_t)(w0 & 0x3Fu) << 16) | ((uint32_t)w1 & 0xFFFEu);
+
+        /*
+         * The link first, because it is the address after this
+         * instruction and every 32-bit form here is four bytes; then the
+         * retire, before the exit rather than after it, since a count
+         * placed past the exit charges the guest for an instruction it
+         * did run and never records it.
+         */
+        emu_ir_put(b, r2, emu_ir_const(b, pc + 4u));
+        (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          0u, 0u);
+        (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          pc + (uint32_t)emu_sext(d, 22), 0u);
+        *ends = true;
         return true;
     }
 
@@ -736,6 +782,7 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
         const uint32_t mark = b->count;
         uint32_t len = 2u;
         bool counted = false;
+        bool ends = false;
         bool ok;
 
         if (g4mh_is_16bit(w0)) {
@@ -767,7 +814,7 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
                 ok = lower_one48(b, w0, w1, w2, cur);
             } else {
                 len = 4u;
-                ok = lower_one32(b, w0, w1, cur);
+                ok = lower_one32(b, w0, w1, cur, &ends);
             }
         }
 
@@ -791,6 +838,9 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
         }
         (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
                           cur, 0u);
+        if (ends) {
+            break;
+        }
     }
 
     if (b->overflow) {
