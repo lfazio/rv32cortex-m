@@ -12,6 +12,7 @@
 # already has -- every network defect this project has had needed a board,
 # a flash cycle and a UART to find.
 option(EMU_NET "IP/TFTP/telnet/gdb transport over a pty" OFF)
+option(EMU_SDL "show the guest framebuffer in an SDL3 window" OFF)
 
 add_executable(emu-host
     # board.c is this platform's "hardware": the console wire, the clock,
@@ -19,6 +20,7 @@ add_executable(emu-host
     # wire through board_console_putc whether or not there is a network --
     # having it under if(EMU_NET) broke every host build without one.
     board.c
+    sdl_display.c
 
     # The command line and the file it names: 188 of main()'s 477 lines,
     # and the half emu_session.h calls acquisition -- the one thing a
@@ -82,6 +84,25 @@ if(EMU_NET)
     emu_net_attach(emu-host)
 else()
     target_compile_definitions(emu-host PRIVATE EMU_NET=0)
+endif()
+
+#
+# The display, on the same terms as the network above: defined either
+# way so `#if EMU_SDL` is meaningful and -Wundef can catch a typo.
+#
+# **Off by default, and that is not timidity.** A host without SDL3 must
+# still build -- CI has none -- and the framebuffer is deliberately
+# usable headless, the guest drawing and counting frames into memory
+# nobody looks at. Turning this on adds a window; it does not add the
+# device.
+#
+if(EMU_SDL)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(SDL3 REQUIRED IMPORTED_TARGET sdl3)
+    target_link_libraries(emu-host PRIVATE PkgConfig::SDL3)
+    target_compile_definitions(emu-host PRIVATE EMU_SDL=1)
+else()
+    target_compile_definitions(emu-host PRIVATE EMU_SDL=0)
 endif()
 
 target_compile_definitions(emu-host PRIVATE EMU_CONSOLE_CRLF=0)

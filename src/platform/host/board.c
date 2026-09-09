@@ -619,11 +619,14 @@ static uint32_t g_timer_div = 1u;
  * it is the geometry the first guest to use this will ask for, and a
  * default nothing uses would be a default nobody checks.
  *
- * `present` is NULL until there is an SDL backend to point it at. The
- * device is deliberately usable that way -- the frame counter still
- * advances, so a guest can measure its own rate and a test can prove the
- * whole path without a window. See emu_dev.h.
+ * `present` is host_display_present, which draws into an SDL3 window
+ * when the build has one and does nothing when it does not. The device
+ * is deliberately usable either way -- the frame counter still advances,
+ * so a guest can measure its own rate and a test can prove the whole
+ * path without a window. See emu_dev.h.
  */
+void host_display_present(void *ctx, const emu_fb_frame_t *frame);
+void host_display_shutdown(void);
 #define HOST_FB_WIDTH 320u
 #define HOST_FB_HEIGHT 200u
 
@@ -790,7 +793,8 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
         g_fb_ready = emu_fb_init(
             &g_fb, HOST_FB_WIDTH, HOST_FB_HEIGHT, EMU_FB_FMT_IDX8, 0u,
             g_fb_pixels, EMU_GUEST_FB_PIXELS,
-            (uint32_t)((size_t)HOST_FB_WIDTH * HOST_FB_HEIGHT), NULL, NULL);
+            (uint32_t)((size_t)HOST_FB_WIDTH * HOST_FB_HEIGHT),
+            host_display_present, NULL);
     }
 
     if (g_ram == NULL || g_periph == NULL) {

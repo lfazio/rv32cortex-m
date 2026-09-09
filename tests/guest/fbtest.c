@@ -132,7 +132,21 @@ int main(void)
      */
     const uint32_t before = FB_REG(FB_FRAMES);
 
+    /*
+     * Sixty frames of something moving, so a run with a window attached
+     * shows a picture that is obviously alive rather than a still that
+     * could equally be a stuck buffer. A colour ramp scrolling under a
+     * moving bar exercises the two things a display can get wrong
+     * independently: the palette, and the stride.
+     */
     for (uint32_t i = 0; i < 60u; i++) {
+        for (uint32_t y = 0; y < h; y++) {
+            for (uint32_t x = 0; x < w; x++) {
+                const uint32_t bar = ((x + i * 4u) % w < 8u) ? 255u : 0u;
+
+                fb[y * stride + x] = (uint8_t)(bar | ((x + y + i) & 0x7Fu));
+            }
+        }
         FB_REG(FB_FLUSH) = 1u;
     }
     check("frames", FB_REG(FB_FRAMES) - before, 60u);
