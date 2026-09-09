@@ -59,22 +59,65 @@ measured at.
         `virtio-blk` (a real rootfs, and the first thing that makes the
         emulator's throughput measurable), `virtio-net`, then the input
         and display below.
-- [ ] **Doom, then Quake** -- as benchmarks with a real frame rate rather
-      than a checksum. Quake is the harder target and the one that names
-      what is missing: https://github.com/sysprog21/quake-embedded
-  - [ ] **SDL host backend.** A framebuffer the guest writes and the host
-        presents. Keep the split this tree already has: the *device* is
-        portable C in `src/emu/` with no SDL in it, and the host platform
-        owns the window -- the same arrangement as the NS16550 and the
-        console, or it will not build for the F746.
-  - [ ] **virtio-input** for keyboard and mouse, passed through from SDL
-        events. Two devices, not one: Linux binds a separate evdev to
-        each, and a combined one would need a descriptor claiming both
-        which no host driver expects.
-  - [ ] Decide framebuffer vs `virtio-gpu`. A plain framebuffer the guest
-        maps is far less work and is enough for both games; virtio-gpu
-        buys nothing until something wants 3D acceleration the emulator
-        does not have anyway.
+- [ ] **Doom II, then Quake III** -- as benchmarks with a real frame rate
+      rather than a checksum, and as the first guests big enough to make
+      the JIT's figures mean something.
+
+      Order is rv32, then g4mh, then ppc -- but **the second and third are
+      blocked on toolchains rather than on the emulator**, which is worth
+      knowing before planning around them:
+
+      | frontend | JIT | C guest possible | blocker |
+      |---|---|---|---|
+      | rv32 | yes | yes | none -- CoreMark already runs 1.5G instructions |
+      | g4mh | yes | **no** | CC-RH is not on the build machine, which is why its guests are checked-in `.bin` |
+      | ppc  | **no** | **no** | `powerpc-linux-gnu-gcc` is not built with VLE (`-mvle` is rejected), so only hand-written assembly compiles; and there is no IR translator |
+
+      So rv32 is the only one that can be done now. g4mh needs CC-RH
+      before a game can be compiled at all; ppc needs a VLE C compiler
+      *and* a JIT, and the compiler is the harder of the two to acquire.
+
+  - [ ] **A framebuffer device**, portable C in `src/emu/` with no SDL in
+        it -- the guest writes pixels, the host presents them. Same split
+        as the NS16550 and the console: the *device* is portable and the
+        platform owns the window, or it will not build for the F746. A
+        plain framebuffer rather than `virtio-gpu`, which buys nothing
+        until something wants 3D acceleration this emulator does not have.
+  - [ ] **An SDL host backend** to present it. SDL2 is **not installed on
+        the build machine**; that is one apt away but it is a real
+        prerequisite, and the device above must build and be testable
+        without it.
+  - [ ] **Input**, keyboard and mouse, from SDL events. Two devices and
+        not one: a host binds a separate evdev to each, and a combined
+        descriptor claiming both is not what any driver expects.
+  - [ ] **Doom II on rv32.** Needs the framebuffer, a timer the guest can
+        read, and enough RAM for the WAD -- which the host runner has and
+        the F746 does not, so this is a host-only guest from the start.
+        https://github.com/lfazio/embeddedDOOM
+  - [ ] **Quake III on rv32**, after Doom II works. It is the harder
+        target and the one that will say whether the JIT holds up under
+        floating point at scale.
+        https://github.com/lfazio/quake-embedded
+  - [ ] Doom II on g4mh, once CC-RH is available.
+  - [ ] Doom II on ppc, once it has both a VLE C compiler and a JIT.
+- [ ] **PowerPC debug infrastructure**, which is three files where the
+      other two frontends have fifteen. Every G4MH defect this project
+      found was found with a trace and a disassembler; the PowerPC ones
+      were found by bisecting by hand with external `objdump`, which is
+      the same job done slowly.
+  - [ ] `ppc_decode.c` -- decoding is inline in the interpreter, so
+        nothing else can ask what an instruction is. A JIT needs this
+        before it needs anything else.
+  - [ ] `ppc_disasm.c` -- and it is worth remembering that this tree's
+        disassemblers have twice been the *weaker* instrument: rv32
+        printed every OP-FP as `illegal` and turned a hard-float profile
+        into "there is no floating point here", and g4mh printed
+        confident nonsense for a slot it did not know. Write it against
+        the assembler, not against the interpreter.
+  - [ ] `ppc_gdb.c` -- the register layout gdb expects, which is a fixed
+        per-architecture order and not a choice.
+  - [ ] `ppc_pairstats.c` -- the histogram that answers "which
+        instruction next" with a measurement instead of an opinion.
 - [ ] **JIT** - Autovectorisation of the IR pipeline. This is a big task, but it would be a good demonstration of the emulator's capabilities.
 - [ ] Add simple drivers for the rh850u2b6.
   - [ ] ltsc
