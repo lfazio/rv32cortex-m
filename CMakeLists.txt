@@ -443,6 +443,7 @@ add_library(emucore STATIC
     src/emu/emu_cpu.c
     src/emu/emu_elf.c
     src/emu/emu_uart.c
+    src/emu/emu_fb.c
 )
 
 target_include_directories(emucore PUBLIC

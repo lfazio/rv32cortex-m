@@ -3,6 +3,7 @@
 add_executable(emu-unit
     test_main.c
     test_bus.c
+    test_fb.c
     test_ir.c
 )
 
