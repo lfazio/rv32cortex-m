@@ -111,7 +111,9 @@ add_guest_image(hello    SOURCES start.S hello.c)
 # directly; this proves the path is *reachable*, which is a different
 # claim and the one this project has most often found missing.
 #
-add_guest_image(fbtest   SOURCES start.S fbtest.c)
+set(FBTEST_FRAMES "60" CACHE STRING "frames the fbtest guest draws")
+add_guest_image(fbtest   SOURCES start.S fbtest.c
+    FLAGS -DFBTEST_FRAMES=${FBTEST_FRAMES}u)
 
 #
 # The A extension, as a guest the JIT actually sees.

@@ -36,6 +36,19 @@
 
 #define FB_ID_MAGIC 0x46425546u /* 'FBUF' */
 
+/*
+ * How many frames to draw.
+ *
+ * Sixty is enough to prove FLUSH counts and keeps the test suite quick,
+ * and it is far too few to *look* at: the whole run takes under a second
+ * on the interpreter, so a window opens and vanishes before a human can
+ * judge it. Raise it to watch the thing work --
+ * `-DFBTEST_FRAMES=20000` gives a couple of minutes.
+ */
+#ifndef FBTEST_FRAMES
+#define FBTEST_FRAMES 60u
+#endif
+
 /* The two input devices, at their own addresses. */
 #define KBD_BASE 0x30001000u
 #define MOUSE_BASE 0x30002000u
@@ -149,7 +162,7 @@ int main(void)
      * moving bar exercises the two things a display can get wrong
      * independently: the palette, and the stride.
      */
-    for (uint32_t i = 0; i < 60u; i++) {
+    for (uint32_t i = 0; i < FBTEST_FRAMES; i++) {
         for (uint32_t y = 0; y < h; y++) {
             for (uint32_t x = 0; x < w; x++) {
                 const uint32_t bar = ((x + i * 4u) % w < 8u) ? 255u : 0u;
@@ -159,7 +172,7 @@ int main(void)
         }
         FB_REG(FB_FLUSH) = 1u;
     }
-    check("frames", FB_REG(FB_FRAMES) - before, 60u);
+    check("frames", FB_REG(FB_FRAMES) - before, FBTEST_FRAMES);
 
     /* Geometry is read-only; a write must be ignored rather than taken. */
     FB_REG(FB_WIDTH) = 1234u;
