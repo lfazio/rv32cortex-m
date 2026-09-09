@@ -96,6 +96,10 @@ measured at.
         platform owns the window, or it will not build for the F746. A
         plain framebuffer rather than `virtio-gpu`, which buys nothing
         until something wants 3D acceleration this emulator does not have.
+        **Done** -- `src/emu/emu_fb.c`. Why it is not an emulated VGA, and
+        what one would cost, is in [`docs/vga.md`](vga.md): the deciding
+        factor is that VGA's write modes live in the store path, so every
+        pixel would become a device dispatch.
   - [ ] **An SDL host backend** to present it. SDL2 is **not installed on
         the build machine**; that is one apt away but it is a real
         prerequisite, and the device above must build and be testable
