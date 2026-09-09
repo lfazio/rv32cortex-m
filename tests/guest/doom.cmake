@@ -135,10 +135,28 @@ set(_doom_flags
     #   emdoom                     built WITHOUT it, links those
     #
     # So building DOOM for a guest needs that first stage run on the
-    # host before this one can work, and the README wants 32-bit host
-    # libraries for it because DOOM is 32-bit only. **That stage is not
-    # built here yet**, which is why this file cannot produce a running
-    # image on its own.
+    # host before this one can work. **Attempting it found two
+    # independent blockers**, both worth knowing before anyone tries
+    # again:
+    #
+    #   * the generator must be built `-m32`, because DOOM is 32-bit
+    #     only, and that needs the i386 development libraries -- a
+    #     plain `gcc -m32` link here fails on a missing Scrt1.o. The
+    #     port's README says to install gcc-multilib and the :i386 X11
+    #     packages, which is a system change rather than a build one.
+    #
+    #   * `support/rawwad_begin.c`, which the generator links, does not
+    #     exist in a checkout: it is produced by `support/shrinkwad`.
+    #     That tool builds and runs, and writes no output -- the block
+    #     that reads `lumpaccess.txt` and fills its chunk map is behind
+    #     `#if 0` in the shipped source, so every lump comes out with
+    #     chunk -1 and nothing is emitted. The Makefile rule above it
+    #     carries a commented-out `cat gentableslog.txt | grep
+    #     ACCESS_LUMP > lumpaccess.txt`, which suggests the bootstrap
+    #     was a manual step rather than a working target.
+    #
+    # Neither is an emulator problem, and both are upstream of anything
+    # this file can decide.
     #
     #
     # alloca is a compiler builtin rather than a library function, and
