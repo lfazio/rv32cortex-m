@@ -376,4 +376,7 @@ bool g4mh_list12_has(uint32_t list, unsigned reg);
 g4mh_exc_t g4mh_prepare(g4mh_cpu_t *c, uint32_t list, uint32_t imm5,
                         uint32_t *sp_out);
 
+g4mh_exc_t g4mh_dispose(g4mh_cpu_t *c, uint32_t list, uint32_t imm5,
+                        uint32_t rt, uint32_t *target_out);
+
 #endif /* G4MH_G4MH_CPU_H */

@@ -965,3 +965,54 @@ g4mh_exc_t g4mh_prepare(g4mh_cpu_t *c, uint32_t list, uint32_t imm5,
     }
     return G4MH_EXC_NONE;
 }
+
+static g4mh_exc_t dispose_load(g4mh_cpu_t *c, uint32_t list, uint32_t imm5,
+                                  uint32_t *sp_out)
+{
+    uint32_t tmp = c->r[3] + (imm5 << 2);
+
+    for (unsigned reg = 32u; reg-- > 20u;) {
+        if (!g4mh_list12_has(list, reg)) {
+            continue;
+        }
+        uint32_t v;
+        const g4mh_exc_t e = g4mh_load(c, tmp & ~3u, 4u, false, &v);
+        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+            return e;
+        }
+        c->r[reg] = v;
+        tmp += 4u;
+    }
+    *sp_out = tmp;
+    return G4MH_EXC_NONE;
+}
+
+/*
+ * DISPOSE: restore the listed registers, drop sp, and read the return
+ * target.
+ *
+ * **Descending, where PREPARE ascends.** The manual states the two
+ * orders in separate places and they are not the same; reading one and
+ * assuming the other restores every register into its neighbour, which
+ * is a wrong answer rather than a fault.
+ *
+ * **The target is read after the loads**, because one of them may
+ * restore the very register it comes from -- a leaf epilogue that pops
+ * lp and returns through it is exactly that. sp is written after the
+ * target for the same reason, in case the target register is sp.
+ *
+ * Shared with the JIT's helper so the ordering exists once.
+ */
+g4mh_exc_t g4mh_dispose(g4mh_cpu_t *c, uint32_t list, uint32_t imm5,
+                        uint32_t rt, uint32_t *target_out)
+{
+    uint32_t sp;
+    const g4mh_exc_t e = dispose_load(c, list, imm5, &sp);
+
+    if (e != G4MH_EXC_NONE) {
+        return e;
+    }
+    *target_out = c->r[rt] & ~1u;
+    c->r[3] = sp;
+    return G4MH_EXC_NONE;
+}

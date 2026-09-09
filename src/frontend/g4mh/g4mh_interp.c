@@ -398,26 +398,6 @@ static EMU_ALWAYS_INLINE uint32_t do_sar(g4mh_cpu_t *c, uint32_t v, uint32_t n)
 /* list12 and PREPARE live in g4mh_cpu.c, beside the PE state, because
  * the JIT reaches them through a helper and the two must not drift. */
 
-static g4mh_exc_t do_dispose_load(g4mh_cpu_t *c, uint32_t list, uint32_t imm5,
-                                  uint32_t *sp_out)
-{
-    uint32_t tmp = c->r[3] + (imm5 << 2);
-
-    for (unsigned reg = 32u; reg-- > 20u;) {
-        if (!g4mh_list12_has(list, reg)) {
-            continue;
-        }
-        uint32_t v;
-        const g4mh_exc_t e = g4mh_load(c, tmp & ~3u, 4u, false, &v);
-        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
-            return e;
-        }
-        c->r[reg] = v;
-        tmp += 4u;
-    }
-    *sp_out = tmp;
-    return G4MH_EXC_NONE;
-}
 
 /* ------------------------------------------------------------------ */
 /* Run loop                                                            */
@@ -1035,14 +1015,13 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 const uint32_t list = ((uint32_t)w1 << 16) | w0;
                 const uint32_t imm5 = (w0 >> 1) & 0x1Fu;
                 const uint32_t rt = w1 & 0x1Fu;
-                uint32_t sp;
-                const g4mh_exc_t e = do_dispose_load(c, list, imm5, &sp);
+                uint32_t target;
+                const g4mh_exc_t e =
+                    g4mh_dispose(c, list, imm5, rt, &target);
 
                 if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
                     EXC(e);
                 }
-                const uint32_t target = c->r[rt] & ~1u;
-                c->r[3] = sp;
                 if (rt != 0u) {
                     pc = target;
                     goto retired_insn;

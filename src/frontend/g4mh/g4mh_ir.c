@@ -243,14 +243,54 @@ static uint32_t g4mh_ir_fpu_helper(emu_cpu_t *cpu, uint32_t insn,
 #endif
 }
 
+/*
+ * DISPOSE: pop the listed registers, drop sp, and optionally return
+ * through reg1.
+ *
+ * **The helper only moves memory; the jump is the block's.** Returning
+ * non-zero for a taken return would have satisfied HELPER_TRAP's "stop,
+ * the pc is authoritative" contract -- and it undercounts by one, because
+ * the caller's RETIRE sits after the helper and is skipped on exactly
+ * that path. The interpreter said 846 and the JIT 845. That is the same
+ * defect EXIT_IF has and the reason `counted` exists; a helper that
+ * leaves the block has it too.
+ *
+ * So the helper always returns success, and the lowering emits the
+ * RETIRE and then the jump, reading the target register *after* the
+ * helper has run -- which is required anyway, since one of the loads may
+ * have restored it.
+ */
+static uint32_t g4mh_ir_dispose_helper(emu_cpu_t *cpu, uint32_t insn,
+                                       uint32_t unused)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
+    const uint16_t w0 = (uint16_t)insn;
+    const uint16_t w1 = (uint16_t)(insn >> 16);
+    const uint32_t rt = (uint32_t)w1 & 0x1Fu;
+    uint32_t target = 0u;
+    const g4mh_exc_t e =
+        g4mh_dispose(c, insn, ((uint32_t)w0 >> 1) & 0x1Fu, rt, &target);
+
+    (void)unused;
+    if (e != G4MH_EXC_NONE) {
+        g4mh_cpu_exception(c, e, c->pc);
+        return 1u;
+    }
+    (void)rt;
+    (void)target;
+    return 0u; /* the jump, if any, is the block's -- see the lowering */
+}
+
 static const void *const g4mh_ir_helpers[] = {
+    (const void *)g4mh_ir_dispose_helper,
     (const void *)g4mh_ir_adf_helper,
     (const void *)g4mh_ir_prepare_helper,
     (const void *)g4mh_ir_fpu_helper,
 };
-#define G4MH_IR_HELPER_ADF 0u
-#define G4MH_IR_HELPER_PREPARE 1u
-#define G4MH_IR_HELPER_FPU 2u
+#define G4MH_IR_HELPER_DISPOSE 0u
+#define G4MH_IR_HELPER_ADF 1u
+#define G4MH_IR_HELPER_PREPARE 2u
+#define G4MH_IR_HELPER_FPU 3u
 
 const emu_ir_target_t g4mh_ir_target = {
     .reg_offset = g4mh_reg_offset,
@@ -296,6 +336,52 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
     const uint32_t r1 = g4mh_reg1(w0);
     const uint32_t r2 = g4mh_reg2(w0);
     const uint32_t op = g4mh_op6(w0);
+
+    /*
+     * DISPOSE, which is what reg2 == 0 means in the MOVHI and SATSUBI
+     * slots. It straddles both for the same reason CALLT straddles two:
+     * its imm5 is five bits where the opcode field is six, so the
+     * opcode's low bit *is* imm5[4].
+     */
+    if ((op == 0x32u || op == 0x33u) && r2 == 0u) {
+        const uint32_t rt = (uint32_t)w1 & 0x1Fu;
+
+        /*
+         * **Returning through sp is declined**, because the block reads
+         * the target after the helper and the helper has by then written
+         * sp. The interpreter reads it before that write, so the two
+         * would disagree by exactly the frame size -- on an encoding
+         * nothing emits, which is the kind that goes unnoticed.
+         */
+        if (rt == 3u) {
+            return false;
+        }
+
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          pc, 0u);
+        (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP, 0u,
+                          emu_ir_const(b, (uint32_t)w0 |
+                                              ((uint32_t)w1 << 16)),
+                          EMU_IR_NO_TEMP, G4MH_IR_HELPER_DISPOSE, 0u);
+
+        if (rt != 0u) {
+            /*
+             * Pop and return. The RETIRE is emitted here, before the
+             * exit, because the instruction did retire -- and the target
+             * is read now rather than at translation because the loads
+             * above may have restored the register it comes from.
+             */
+            const uint16_t tgt = emu_ir_alu(b, EMU_IR_AND, emu_ir_get(b, rt),
+                                            emu_ir_const(b, ~1u));
+
+            (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP,
+                              EMU_IR_NO_TEMP, 0u, 0u);
+            (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, tgt, EMU_IR_NO_TEMP, 0u, 0u);
+            *ends = true;
+            return true;
+        }
+        return true;
+    }
 
     /*
      * Address formation. Both share their slot with a 48-bit encoding
