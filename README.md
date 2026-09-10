@@ -118,6 +118,10 @@ board result.
 | `EMU_ENABLE_TRACE` | `OFF` | Per-instruction trace hook. Slow, and the fastest way to find where execution diverges. |
 | `RV32_EXT_PMP` / `RV32_EXT_SDTRIG` | `ON` | Each costs a little even unused; `OFF` removes it. |
 | `RV32_NATIVE_COREMARK` | `OFF` | Run CoreMark natively on the ARM instead of the emulator, for the baseline. |
+| `EMU_SDL` | `OFF` | Show the guest framebuffer in an SDL3 window, and feed the keyboard and mouse devices from it. Needs `sdl3` via pkg-config; off by default so a host without it still builds. |
+| `EMU_SDL_SCALE` | `3` | Window scale. 320x200 is small on a modern display. |
+| `EMU_DOOM` | `OFF` | Fetch and build DOOM as a guest. The fetch is large -- the WAD is compiled in as a C array -- so a checkout that does not ask for it does not pay. |
+| `EMU_GUEST_RAM_KIB` | `48` | Guest RAM region the images are linked against. DOOM needs `8192`; below that its rv32 image is skipped with a message naming this flag. |
 | `RV_GUEST_MARCH` | see below | Guest ISA. A **cache variable**, so pass it explicitly when changing it. |
 
 Guest images are built
@@ -165,6 +169,84 @@ backend for either frontend; without it, the interpreter.
 Useful flags: `--dump` (register file on exit), `--max-insn N`,
 `--trace-skip`/`--trace-count` (with `-DEMU_ENABLE_TRACE=ON`), `--gdb`
 (RSP stub on :1234, waits for a client).
+
+### Games
+
+DOOM runs as a guest on both frontends. It is **fetched, never
+vendored**: DOOM is GPL-2.0 and this tree is Apache-2.0, so nothing of
+it lives here and `tests/guest/doom.cmake` is a recipe rather than a
+copy. The platform layer it needs lives in the DOOM port beside the
+video driver, for the same reason.
+
+**Two stages, and the first is not optional.** The port bakes its
+texture and map tables and shrinks the WAD on the *host* before any
+guest image can be built, so run the generator once:
+
+```sh
+cmake -S . -B build/doom -DEMU_PLATFORM=host -DEMU_SDL=ON \
+      -DEMU_DOOM=ON -DEMU_GUEST_RAM_KIB=8192
+scripts/doom-gentables.sh            # host stage: needs gcc-multilib
+```
+
+Then the image for whichever frontend, and run it:
+
+```sh
+# RISC-V
+cmake --build build/doom --target guest-doom
+./build/doom/emu-host --jit --ram 0x2000000 --timer-hz 6 \
+                      build/doom/guest/doom.bin
+
+# RH850 G4MH -- needs Renesas CC-RH, the only compiler that emits G4MH
+cmake --build build/doom --target guest-doom-g4mh
+./build/doom/emu-host --frontend g4mh --load 0x80000000 --ram 0x4000000 \
+                      --jit --timer-hz 6 build/doom/guest/doom-g4mh.bin
+```
+
+`--timer-hz` is the dial worth knowing. The guest renders a few frames a
+second while `mtime` and the LTSC run at wall-clock, so DOOM advances
+many world-tics per drawn frame and plays absurdly fast; dividing its
+clock trades simulated time for playability.
+
+`-DDOOM_DIR=<path>` points at an existing checkout instead of fetching.
+
+**Status.** rv32 plays. G4MH builds, boots, completes every init and
+loads E1M1, then stops in `R_PrecacheLevel` -- both backends fail
+identically to the instruction, which makes it guest data rather than
+the translator.
+
+### The G4MH toolchain
+
+CC-RH is the only compiler that emits G4MH and a checkout cannot assume
+it. Two scripts drive it, and both take the shared start-up in
+`tests/guest/g4mh/crt0.asm` -- a vector table, `gp`/`ep`, zeroed `.bss`
+and `PSW.CU0`, every line of which is there because something failed
+without it:
+
+```sh
+scripts/g4mh-build-guest.sh tests/guest/g4mh/barrier3.c   # one C guest
+scripts/g4mh-build-doom.sh  <doom-src> [out.bin]          # what the target runs
+scripts/g4mh-check-encodings.sh                           # assemble, print fields
+```
+
+`g4mh-check-encodings.sh` is the second encoder, and **the only thing
+here that can say a hand-written opcode constant is wrong**. Run it
+before writing one.
+
+`g4mh-sweep` is the other direction -- what the frontend cannot *name*,
+counted over a real image and ordered by how often it occurs:
+
+```sh
+cmake --build build/doom --target g4mh-sweep
+./build/doom/g4mh-sweep build/doom/guest/doom-g4mh.bin 0x80000000
+```
+
+Read the slots and not the total: a flat image is code and data
+together, so a real gap recurs at one sub-opcode and noise is scattered
+singletons. And a `.short` is a *candidate*, not a defect -- confirm it
+by executing the encoding, because this disassembler has printed
+`.short` for instructions the interpreter handles correctly. The
+reverse error is the dangerous one and the sweep cannot see it: a slot
+it names can still be decoded wrongly.
 
 ### Validation
 

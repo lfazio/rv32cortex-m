@@ -40,11 +40,32 @@ endif()
 # written down somewhere, because a build flag quoted in prose is not a
 # tested thing, and the message a first-time builder needs is the flag.
 #
+# **DOOM does not fit in the default guest RAM**, and the way it does not
+# fit is a link error naming a region rather than a game:
+#
+#   section `.data' will not fit in region `RAM'
+#   region `RAM' overflowed by 833548 bytes
+#
+# The zone allocator takes one static array of several megabytes, so the
+# guest needs a RAM region sized for it. Checked rather than written
+# down somewhere, because a build flag quoted in prose is not a tested
+# thing and the message a first-time builder needs is the flag.
+#
+# It **skips the image rather than failing the configure**, and only the
+# rv32 one. Two reasons, both found by getting it wrong: the G4MH image
+# is linked by CC-RH from its own script and places its own sections, so
+# it neither reads this nor cares; and the rv32 guest images are built
+# whenever the RISC-V toolchain is present, independent of which
+# frontend is compiled in -- so a hard error here stopped a G4MH-only
+# tree from building anything at all, emu-host included.
+#
+set(_doom_rv32 ON)
 if(EMU_GUEST_RAM_KIB LESS 8192)
-    message(FATAL_ERROR
-        "DOOM needs a larger guest RAM region than the ${EMU_GUEST_RAM_KIB} KiB "
-        "configured: re-run cmake with -DEMU_GUEST_RAM_KIB=8192. "
-        "(The G4MH image links its own way and is not affected.)")
+    message(STATUS
+        "DOOM: skipping the rv32 image -- it needs more than the "
+        "${EMU_GUEST_RAM_KIB} KiB guest RAM configured; re-run cmake with "
+        "-DEMU_GUEST_RAM_KIB=8192. The G4MH image is unaffected.")
+    set(_doom_rv32 OFF)
 endif()
 
 set(DOOM_REPO "https://github.com/lfazio/embeddedDOOM.git"
@@ -263,11 +284,13 @@ set(_doom_flags
 # driver, because what `_write` should do is a property of the guest
 # rather than of the emulator.
 #
-add_guest_image(doom
-    SOURCES start.S
-    EXTRA_SOURCES ${_doom_srcs}
-    FLAGS ${_doom_flags}
-    LIBS -lc -lgcc)
+if(_doom_rv32)
+    add_guest_image(doom
+        SOURCES start.S
+        EXTRA_SOURCES ${_doom_srcs}
+        FLAGS ${_doom_flags}
+        LIBS -lc -lgcc)
+endif()
 
 # ------------------------------------------------------------------
 # The same game, for the G4MH frontend

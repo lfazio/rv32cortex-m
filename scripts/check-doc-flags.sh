@@ -54,7 +54,15 @@ docfiles=$(find README.md CLAUDE.md docs -name '*.md' \
                 -not -path 'docs/renesas/*' 2>/dev/null)
 # -Dmain=... is a C preprocessor define CoreMark needs, not a CMake
 # option; it is the one legitimate lowercase name here.
-grep -rhoE '\-D[A-Z_][A-Za-z0-9_]*' $docfiles 2>/dev/null |
+# `\B` would be the right idea and grep -E has no such thing, so the
+# hyphen must be preceded by the start of a line, a space or a quote.
+# Without that, an ordinary hyphenated word is read as an option: the
+# evdev-to-DOOM table gave `-DOOM` and STM32N6570-DK gave `-DK`, both
+# of which are prose and neither of which is a flag. A guard whose
+# warnings are always wrong is the one that teaches you to skip reading
+# them, which this file exists to prevent.
+grep -rhoE '(^|[[:space:]`"(])\-D[A-Z_][A-Za-z0-9_]*' $docfiles 2>/dev/null |
+    sed 's/^.*-D/-D/' |
     sed 's/^-D//' | sort -u > "$used"
 
 bad=0
