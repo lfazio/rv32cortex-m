@@ -20,6 +20,7 @@
 
 set -eu
 
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 IMAGE=${CCRH_IMAGE:-ccrh:latest}
 CCRH_BIN=/usr/local/Renesas/CC-RH/V2.08.00/bin
 
@@ -71,184 +72,12 @@ cp "$src" "$work/in.c"
 #
 # 32 slots of 16 bytes is 512, which is exactly RBASE's alignment.
 #
-cat > "$work/entry.asm" <<'ASM'
-	.section .text_entry, text
-	.public _entry
-	.extern _main
-
-; --- the table -----------------------------------------------------
-; Each slot records *which slot it is* in r19 before branching. That
-; costs 4 bytes of a 16-byte entry and is what makes the report able
-; to tell a mis-mapped exception from a correctly mapped one: without
-; it every FE cause prints identically, so a vector sent to the wrong
-; handler reads exactly like a vector sent to the right one.
-	.offset  0x000
-_entry:
-	jr   _main                  ; reset
-; Renesas' board package puts a SYNCI here, citing technical update
-; TN-RH8-B0183B/E: without it the lockstep checker core reads an
-; uninitialised register. A no-op here, kept so the table is the
-; shape a real guest has.
-	synci
-	.offset  0x010
-	mov  0x010, r19
-	jr   _fe                    ; SYSERR
-	.offset  0x020
-	mov  0x020, r19
-	jr   _fe                    ; (reserved)
-	.offset  0x030
-	mov  0x030, r19
-	jr   _fe                    ; FETRAP
-	.offset  0x040
-	mov  0x040, r19
-	jr   _ei                    ; TRAP 0-15
-	.offset  0x050
-	mov  0x050, r19
-	jr   _ei                    ; TRAP 16-31
-	.offset  0x060
-	mov  0x060, r19
-	jr   _fe                    ; RIE
-	.offset  0x070
-	mov  0x070, r19
-	jr   _fe                    ; FPE / FXE
-	.offset  0x080
-	mov  0x080, r19
-	jr   _fe                    ; UCPOP
-	.offset  0x090
-	mov  0x090, r19
-	jr   _fe                    ; MIP / MDP
-	.offset  0x0A0
-	mov  0x0A0, r19
-	jr   _fe                    ; PIE
-	.offset  0x0B0
-	mov  0x0B0, r19
-	jr   _fe                    ; (reserved: debug)
-	.offset  0x0C0
-	mov  0x0C0, r19
-	jr   _fe                    ; MAE
-	.offset  0x0D0
-	mov  0x0D0, r19
-	jr   _fe                    ; (reserved)
-	.offset  0x0E0
-	mov  0x0E0, r19
-	jr   _fe                    ; FENMI
-	.offset  0x0F0
-	mov  0x0F0, r19
-	jr   _fe                    ; FEINT
-	.offset  0x100
-	mov  0x100, r19
-	jr   _ei                    ; EIINT priority 0
-	.offset  0x110
-	mov  0x110, r19
-	jr   _ei                    ; EIINT priority 1
-	.offset  0x120
-	mov  0x120, r19
-	jr   _ei                    ; EIINT priority 2
-	.offset  0x130
-	mov  0x130, r19
-	jr   _ei                    ; EIINT priority 3
-	.offset  0x140
-	mov  0x140, r19
-	jr   _ei                    ; EIINT priority 4
-	.offset  0x150
-	mov  0x150, r19
-	jr   _ei                    ; EIINT priority 5
-	.offset  0x160
-	mov  0x160, r19
-	jr   _ei                    ; EIINT priority 6
-	.offset  0x170
-	mov  0x170, r19
-	jr   _ei                    ; EIINT priority 7
-	.offset  0x180
-	mov  0x180, r19
-	jr   _ei                    ; EIINT priority 8
-	.offset  0x190
-	mov  0x190, r19
-	jr   _ei                    ; EIINT priority 9
-	.offset  0x1A0
-	mov  0x1A0, r19
-	jr   _ei                    ; EIINT priority 10
-	.offset  0x1B0
-	mov  0x1B0, r19
-	jr   _ei                    ; EIINT priority 11
-	.offset  0x1C0
-	mov  0x1C0, r19
-	jr   _ei                    ; EIINT priority 12
-	.offset  0x1D0
-	mov  0x1D0, r19
-	jr   _ei                    ; EIINT priority 13
-	.offset  0x1E0
-	mov  0x1E0, r19
-	jr   _ei                    ; EIINT priority 14
-	.offset  0x1F0
-	mov  0x1F0, r19
-	jr   _ei                    ; EIINT priority 15  (16+ share this)
-	.offset  0x200
-
-; --- handlers ------------------------------------------------------
-; FE and EI differ only in which pair of registers holds the cause and
-; the return address; everything after that is common.
-_fe:
-	stsr 14, r6, 0              ; FEIC
-	stsr 2,  r7, 0              ; FEPC
-	jr   _report
-_ei:
-	stsr 13, r6, 0              ; EIIC
-	stsr 0,  r7, 0              ; EIPC
-
-; Print "!TRAP <cause> @<pc> #<slot>" and stop. Halting is the point: carrying on
-; is what made these invisible.
-_report:
-	mov  0x10000000, r20        ; NS16550 transmit holding register
-	mov  0x21, r8               ; '!'
-	st.b r8, 0x00000000[r20]
-	mov  0x54, r8               ; 'T'
-	st.b r8, 0x00000000[r20]
-	mov  0x52, r8               ; 'R'
-	st.b r8, 0x00000000[r20]
-	mov  0x41, r8               ; 'A'
-	st.b r8, 0x00000000[r20]
-	mov  0x50, r8               ; 'P'
-	st.b r8, 0x00000000[r20]
-	mov  0x20, r8               ; ' '
-	st.b r8, 0x00000000[r20]
-	mov  r6, r18
-	jarl _hex, r31
-	mov  0x20, r8               ; ' '
-	st.b r8, 0x00000000[r20]
-	mov  0x40, r8               ; '@'
-	st.b r8, 0x00000000[r20]
-	mov  r7, r18
-	jarl _hex, r31
-	mov  0x20, r8               ; ' '
-	st.b r8, 0x00000000[r20]
-	mov  0x23, r8               ; '#'
-	st.b r8, 0x00000000[r20]
-	mov  r19, r18
-	jarl _hex, r31
-	mov  0x0A, r8               ; '\n'
-	st.b r8, 0x00000000[r20]
-	halt
-
-; r18 in, eight hex digits out, r20 the port. Clobbers r8, r9, r10.
-_hex:
-	mov  28, r9
-_hex_loop:
-	shr  r9, r18, r10
-	andi 0x000F, r10, r10
-	cmp  10, r10
-	bge  _hex_af
-	addi 0x0030, r10, r10       ; '0'
-	br   _hex_out
-_hex_af:
-	addi 0x0037, r10, r10       ; 'A' - 10
-_hex_out:
-	st.b r10, 0x00000000[r20]
-	add  -4, r9
-	cmp  0, r9
-	bge  _hex_loop
-	jmp  [r31]
-ASM
+#
+# The vector table and C start-up, which every G4MH guest gets. It lived
+# here as a heredoc until a second script needed the same thing; what it
+# contains and why each line is in it is at the top of the file.
+#
+cp "$ROOT/tests/guest/g4mh/crt0.asm" "$work/entry.asm"
 
 #
 # -Xcpu=g4mh picks the core; -Osize keeps the image small. The section

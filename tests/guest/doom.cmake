@@ -27,6 +27,26 @@ if(NOT EMU_DOOM)
     return()
 endif()
 
+#
+# **DOOM does not fit in the default guest RAM**, and the way it does not
+# fit is a link error naming a region rather than a game:
+#
+#   section `.data' will not fit in region `RAM'
+#   region `RAM' overflowed by 833548 bytes
+#
+# The zone allocator takes one static array of several megabytes, so the
+# guest needs a RAM region sized for it -- 8 MiB is what this port's
+# FIXED_HEAP asks for and a little over. Checked here rather than
+# written down somewhere, because a build flag quoted in prose is not a
+# tested thing, and the message a first-time builder needs is the flag.
+#
+if(EMU_GUEST_RAM_KIB LESS 8192)
+    message(FATAL_ERROR
+        "DOOM needs a larger guest RAM region than the ${EMU_GUEST_RAM_KIB} KiB "
+        "configured: re-run cmake with -DEMU_GUEST_RAM_KIB=8192. "
+        "(The G4MH image links its own way and is not affected.)")
+endif()
+
 set(DOOM_REPO "https://github.com/lfazio/embeddedDOOM.git"
     CACHE STRING "DOOM port to build")
 set(DOOM_BRANCH "rv32cortex-m"
@@ -44,9 +64,9 @@ if(NOT EXISTS "${DOOM_DIR}/src/d_main.c")
     endif()
 endif()
 
-if(NOT EXISTS "${DOOM_DIR}/src/i_video_rv32.c")
+if(NOT EXISTS "${DOOM_DIR}/src/i_video_emu.c")
     message(STATUS
-        "DOOM source or its rv32 platform layer is not available; "
+        "DOOM source or its emulator platform layer is not available; "
         "skipping the doom image")
     return()
 endif()
@@ -108,8 +128,16 @@ foreach(_f IN LISTS _doom_srcs)
         return()
     endif()
 endforeach()
+#
+# i_platform_g4mh.c is excluded here and compiled by the G4MH target
+# below: it is the other frontend's platform layer and addresses an
+# LTSC this one has not got. The *video* driver is shared -- the
+# framebuffer and the two input devices belong to the emulator's
+# platform rather than to the guest ISA, so both frontends drive them
+# with the same file.
+#
 list(FILTER _doom_srcs EXCLUDE REGEX
-     "/(i_video|i_video_console|XDriver|i_net|i_sound|os_generic)\\.c$")
+     "/(i_video|i_video_console|XDriver|i_net|i_sound|os_generic|i_platform_g4mh)\\.c$")
 
 #
 # DOOM is from 1993 and does not compile as C23: `typedef enum {false,
@@ -215,7 +243,12 @@ set(_doom_flags
     # which dies on "Demo is from a different game version!" -- the demo
     # lumps record the version that made them.
     #
-    -DRV32_EMU
+    #
+    # Renamed from RV32_EMU once a second frontend used the same port:
+    # supplying a command line is a property of *being a guest of this
+    # emulator*, not of the guest ISA.
+    #
+    -DEMU_GUEST
     -I "${DOOM_DIR}/src"
     -w)
 
@@ -235,3 +268,55 @@ add_guest_image(doom
     EXTRA_SOURCES ${_doom_srcs}
     FLAGS ${_doom_flags}
     LIBS -lc -lgcc)
+
+# ------------------------------------------------------------------
+# The same game, for the G4MH frontend
+# ------------------------------------------------------------------
+#
+# A custom target driving scripts/g4mh-build-doom.sh rather than another
+# add_guest_image, because CC-RH is a whole separate toolchain -- its own
+# driver, assembler and linker, none of which this build is configured
+# for. The script documents what it needs; the point of the target is
+# that `cmake --build . --target guest-doom-g4mh` is the same gesture as
+# every other guest here.
+#
+# Not gated on EMU_GUEST_ARCH_G4MH: building the image and running it are
+# different questions, and a tree configured for one frontend can still
+# usefully produce the other's guest.
+#
+find_program(CCRH_EXECUTABLE ccrh
+    HINTS /usr/local/Renesas/CC-RH/V2.08.00/bin
+    DOC "Renesas CC-RH, the only compiler that emits G4MH")
+
+if(CCRH_EXECUTABLE)
+    add_custom_command(
+        OUTPUT "${CMAKE_BINARY_DIR}/guest/doom-g4mh.bin"
+        COMMAND "${CMAKE_SOURCE_DIR}/scripts/g4mh-build-doom.sh"
+                "${DOOM_DIR}" "${CMAKE_BINARY_DIR}/guest/doom-g4mh.bin"
+        #
+        # The sources by name and not only the directory: this file
+        # already records that add_custom_command(DEPENDS <target>) is
+        # ordering and not staleness, and a guest that silently keeps
+        # the previous build is exactly what that produced last time.
+        #
+        DEPENDS "${CMAKE_SOURCE_DIR}/scripts/g4mh-build-doom.sh"
+                "${CMAKE_SOURCE_DIR}/tests/guest/g4mh/crt0.asm"
+                "${DOOM_DIR}/src/i_platform_g4mh.c"
+                "${DOOM_DIR}/src/i_video_emu.c"
+        COMMENT "Building DOOM for G4MH with CC-RH"
+        VERBATIM)
+
+    add_custom_target(guest-doom-g4mh
+        DEPENDS "${CMAKE_BINARY_DIR}/guest/doom-g4mh.bin")
+else()
+    #
+    # A target that explains itself, rather than no target at all: the
+    # failure someone needs to see is "CC-RH is not installed", and a
+    # missing target reads as "this was never implemented".
+    #
+    add_custom_target(guest-doom-g4mh
+        COMMAND ${CMAKE_COMMAND} -E echo
+                "guest-doom-g4mh needs Renesas CC-RH; set CCRH_EXECUTABLE or see docs/renesas/Dockerfile"
+        COMMAND ${CMAKE_COMMAND} -E false
+        VERBATIM)
+endif()
