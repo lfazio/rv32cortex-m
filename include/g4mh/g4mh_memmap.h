@@ -68,6 +68,16 @@
 #define G4MH_TPTM_BASE 0xFFFBB000u
 #define G4MH_TPTM_SIZE 0x00001000u
 
+/*
+ * The Long-Term System Counter, U2B section 44. Its base is the one
+ * peripheral here that is *not* in the 0xFFFBxxxx inter-CPU block: it
+ * sits in the peripheral group at 0xFFC7xxxx, and the size is the
+ * documented channel spacing rather than the extent of the six
+ * registers it defines.
+ */
+#define G4MH_LTSC_BASE 0xFFC78100u
+#define G4MH_LTSC_SIZE 0x00000100u
+
 /* ------------------------------------------------------------------ */
 /* Memory                                                              */
 /* ------------------------------------------------------------------ */

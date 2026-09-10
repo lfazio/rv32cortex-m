@@ -37,6 +37,7 @@
 #include "g4mh/g4mh_intc.h"
 #include "g4mh/g4mh_intercpu.h"
 #include "g4mh/g4mh_memmap.h"
+#include "g4mh/g4mh_ltsc.h"
 #include "emu/emu_gdb.h"
 #include "emu/emu_jit.h"
 
@@ -4041,6 +4042,136 @@ static void test_ipir_self_region(void)
  * exactly the count that must not have underflowed yet, then by one
  * more.
  */
+/* ------------------------------------------------------------------ */
+/* LTSC -- the long-term system counter                                */
+/* ------------------------------------------------------------------ */
+
+#define LTSC(r) (G4MH_LTSC_BASE + (r))
+
+/*
+ * The capture, which is the only behaviour here that is not obvious.
+ *
+ * A 64-bit counter read through two 32-bit registers tears when the low
+ * half wraps between the reads: low is read just before the wrap and
+ * high just after, so the pair describes a time 2^32 ticks in the
+ * future. The architecture prevents it by making the read of the low
+ * half capture the high one.
+ *
+ * **So the test has to make the wrap happen between the two reads**,
+ * which is what preloading 0xFFFFFFFF and advancing one tick does. A
+ * test that read the pair from a counter nowhere near a boundary would
+ * pass whether or not the capture existed -- and by this file's own
+ * rule, when the whole difficulty of a change is one input, that input
+ * is what to test.
+ */
+static void test_ltsc_capture(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+
+    /* Preset to one tick below the low-half wrap, which needs it stopped. */
+    devwr(LTSC(G4MH_LTSC_CNTL), 0xFFFFFFFFu);
+    devwr(LTSC(G4MH_LTSC_CNTH), 0u);
+    devwr(LTSC(G4MH_LTSC_TCS), G4MH_LTSC_TS);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CSTR)), G4MH_LTSC_CST);
+
+    /* Read the low half: this is the capture. */
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 0xFFFFFFFFu);
+
+    /* The wrap happens here, between the guest's two reads. */
+    tick(1u);
+
+    /*
+     * The captured high half, not the current one. Without the capture
+     * this reads 1 and the guest computes a time 2^32 ticks ahead.
+     */
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTH)), 0u);
+
+    /* A fresh pair sees the wrap: low is 0 and the captured high is 1. */
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 0u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTH)), 1u);
+}
+
+/*
+ * Presetting the counter: low then high, and only while stopped.
+ *
+ * The low write is *held* rather than applied, because the manual makes
+ * the pair effective on the high write. Applying it immediately would
+ * step the counter through an intermediate value made of the new low
+ * half and the old high one -- which a guest reading concurrently would
+ * see as time jumping and coming back.
+ */
+static void test_ltsc_preset(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+
+    devwr(LTSC(G4MH_LTSC_CNTL), 0u);
+    devwr(LTSC(G4MH_LTSC_CNTH), 0u);
+
+    /* The low half alone must not move the counter. */
+    devwr(LTSC(G4MH_LTSC_CNTL), 0xDEADBEEFu);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 0u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTH)), 0u);
+
+    /* The high write is what applies the pair. */
+    devwr(LTSC(G4MH_LTSC_CNTH), 0x12345678u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 0xDEADBEEFu);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTH)), 0x12345678u);
+
+    /* Running, a write is ignored -- the counter keeps its own value. */
+    devwr(LTSC(G4MH_LTSC_TCS), G4MH_LTSC_TS);
+    devwr(LTSC(G4MH_LTSC_CNTL), 0u);
+    devwr(LTSC(G4MH_LTSC_CNTH), 0u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 0xDEADBEEFu);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTH)), 0x12345678u);
+}
+
+/*
+ * Start, stop, and the two things about them that are specified rather
+ * than incidental: starting does not clear the counter, and stopping an
+ * already-stopped one is explicitly ignored.
+ */
+static void test_ltsc_start_stop(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+
+    devwr(LTSC(G4MH_LTSC_CNTL), 0u);
+    devwr(LTSC(G4MH_LTSC_CNTH), 0u);
+
+    /* Stopped after reset: it does not advance. */
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CSTR)), 0u);
+    tick(50u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 0u);
+
+    devwr(LTSC(G4MH_LTSC_TCS), G4MH_LTSC_TS);
+    tick(50u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 50u);
+
+    /* Stop, and it holds. */
+    devwr(LTSC(G4MH_LTSC_TCT), G4MH_LTSC_TT);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CSTR)), 0u);
+    tick(50u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 50u);
+
+    /* Restart continues from where it was: this is a clock, not a lap
+     * timer, and the TPTM's free-running channel is the one that zeroes. */
+    devwr(LTSC(G4MH_LTSC_TCS), G4MH_LTSC_TS);
+    tick(7u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 57u);
+
+    /* TCS and TCT always read zero, being write-only strobes. */
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_TCS)), 0u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_TCT)), 0u);
+}
+
 static void test_tptm_interval(void)
 {
     if (!devbus_up()) {
@@ -6287,6 +6418,9 @@ void test_g4mh(void)
     test_ipir_routing();
     test_ipir_enable_gates_transfer();
     test_ipir_self_region();
+    test_ltsc_capture();
+    test_ltsc_preset();
+    test_ltsc_start_stop();
     test_tptm_interval();
     test_tptm_divider_carry();
     test_tptm_up_compare();

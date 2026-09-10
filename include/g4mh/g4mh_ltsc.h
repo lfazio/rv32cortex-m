@@ -1,0 +1,89 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/*
+ * g4mh_ltsc.h - the Long-Term System Counter.
+ *
+ * RH850/U2B section 44. The simplest peripheral in this frontend and the
+ * most useful one to a guest that wants to know how long something took:
+ * a 64-bit free-running counter on PCLK, with **neither a compare nor an
+ * interrupt**. There is nothing to program and nothing to service -- a
+ * guest starts it once and reads it.
+ *
+ * That is why it exists here. The TPTM's free-running channel is 32 bits
+ * and wraps in an hour at a megahertz; the OSTM is an interval timer
+ * whose counter is a means to an interrupt. Neither is a timebase, and a
+ * guest wanting `gettimeofday` had to pick one and work around it.
+ *
+ * **Reading the low half captures the high half**, which is the one
+ * behaviour here that is not obvious and the one that cannot be left
+ * out. Two independent 32-bit reads of a running 64-bit counter tear at
+ * every low-half wrap: the low half is read just before it wraps and the
+ * high half just after, so the result jumps back by 2^32. The
+ * architecture solves it by making the low read a capture, and a guest
+ * that reads high-then-low gets a value this device did not promise.
+ * See the note on the read path in g4mh_ltsc.c.
+ *
+ * One channel. The U2B has LTSC0 and the register block is documented
+ * per channel; a second would be another instance of this state at
+ * another base rather than anything new here.
+ */
+
+#ifndef G4MH_LTSC_H
+#define G4MH_LTSC_H
+
+#include <stdint.h>
+
+#include "emu/emu_dev.h"
+
+/*
+ * Register offsets from <LTSCn_base>, table 44.2. The gaps are real --
+ * the block is sparse and everything unlisted reads zero.
+ */
+#define G4MH_LTSC_TCS 0x0010u  /* W:  bit 0 starts the counter        */
+#define G4MH_LTSC_TCT 0x0014u  /* W:  bit 0 stops it, clears CST      */
+#define G4MH_LTSC_CSTR 0x0018u /* R:  bit 0 is set while running      */
+#define G4MH_LTSC_RMSK 0x0034u /* RW: bit 0 masks the software reset  */
+#define G4MH_LTSC_CNTL 0x0040u /* RW: low 32; a read captures all 64  */
+#define G4MH_LTSC_CNTH 0x0044u /* RW: high 32; a read returns capture */
+
+#define G4MH_LTSC_TS 0x1u   /* LTSCnTCS.LTSCnTS   */
+#define G4MH_LTSC_TT 0x1u   /* LTSCnTCT.LTSCnTT   */
+#define G4MH_LTSC_CST 0x1u  /* LTSCnCSTR.LTSCnCST */
+#define G4MH_LTSC_RM 0x1u   /* LTSCnRMSK.LTSCnRM  */
+
+typedef struct g4mh_ltsc {
+    uint64_t cnt; /* the counter itself */
+
+    /*
+     * The value a read of CNTL captured, so the following read of CNTH
+     * describes the same instant. Only the upper half is ever served
+     * from here -- CNTL answers from `cnt` and captures as a side
+     * effect, which is the order the architecture specifies.
+     */
+    uint32_t captured_high;
+
+    /*
+     * A 64-bit write arrives as two 32-bit ones and "the total 64-bit
+     * register value will become effective after the higher 32-bit
+     * value has been written to". So the low half is held here rather
+     * than in `cnt`: writing it must not move the counter, or a guest
+     * setting a value larger than the current one steps through every
+     * intermediate value in between.
+     */
+    uint32_t pending_low;
+
+    uint8_t running; /* CSTR.CST */
+    uint8_t rmsk;    /* RMSK.RM  */
+} g4mh_ltsc_t;
+
+void g4mh_ltsc_init(g4mh_ltsc_t *t);
+
+/*
+ * Advance by `ticks` of PCLK. There is no divider -- section 44 gives it
+ * none -- so this is one for one, and on the host the platform tick is a
+ * microsecond, which makes the counter a microsecond clock.
+ */
+void g4mh_ltsc_advance(g4mh_ltsc_t *t, uint32_t ticks);
+
+extern const emu_dev_ops_t g4mh_ltsc_ops;
+
+#endif /* G4MH_LTSC_H */

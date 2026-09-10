@@ -378,7 +378,7 @@ else()
 endif()
 if(EMU_GUEST_ARCH_G4MH)
     # Its shared devices, plus the INTC and timers each PE gets.
-    math(EXPR _regions_frontend "12 + 4 * ${G4MH_PE_COUNT}")
+    math(EXPR _regions_frontend "13 + 4 * ${G4MH_PE_COUNT}")
 else()
     set(_regions_frontend 6)
 endif()
@@ -592,6 +592,7 @@ if(EMU_GUEST_ARCH_G4MH)
         src/frontend/g4mh/g4mh_interp.c
         src/frontend/g4mh/g4mh_fpu.c
         src/frontend/g4mh/g4mh_tptm.c
+        src/frontend/g4mh/g4mh_ltsc.c
     )
     # JIT-only, as for RV32 above.
     if(EMU_JIT)

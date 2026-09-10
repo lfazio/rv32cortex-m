@@ -23,6 +23,7 @@
 #include "g4mh/g4mh_intc.h"
 #include "g4mh/g4mh_intercpu.h"
 #include "g4mh/g4mh_memmap.h"
+#include "g4mh/g4mh_ltsc.h"
 
 #include <string.h>
 
@@ -53,6 +54,8 @@ static g4mh_barrier_t g_barr;
 static g4mh_boot_t g_boot;
 static g4mh_ipir_t g_ipir;
 static g4mh_tptm_t g_tptm;
+/* Shared, not per-PE: one counter is the point of a system timebase. */
+static g4mh_ltsc_t g_ltsc;
 static g4mh_intercpu_port_t g_barr_port[G4MH_PE_COUNT];
 static g4mh_intercpu_port_t g_ipir_port[G4MH_PE_COUNT];
 static g4mh_intercpu_port_t g_tptm_port[G4MH_PE_COUNT];
@@ -93,6 +96,7 @@ static void g4mh_ops_init(emu_cpu_t *cpu, emu_bus_t *bus, uint32_t coreid)
         g4mh_barrier_init(&g_barr);
         g4mh_ipir_init(&g_ipir);
         g4mh_tptm_init(&g_tptm);
+        g4mh_ltsc_init(&g_ltsc);
         g4mh_boot_init(&g_boot);
     }
     /*
@@ -403,7 +407,15 @@ static bool g4mh_ops_add_core_devices(emu_cpu_t *cpu, emu_bus_t *bus,
            emu_bus_add_mmio(bus, "ipir", G4MH_IPIR_BASE, G4MH_IPIR_SIZE,
                             &g4mh_ipir_ops, &g_ipir_port[index]) &&
            emu_bus_add_mmio(bus, "tptm", G4MH_TPTM_BASE, G4MH_TPTM_SIZE,
-                            &g4mh_tptm_ops, &g_tptm_port[index]);
+                            &g4mh_tptm_ops, &g_tptm_port[index]) &&
+           /*
+            * No port wrapper, unlike its three neighbours: those answer
+            * differently depending on which PE is asking, and a system
+            * timebase that did would not be one. Every core sees the
+            * same counter, which is the entire purpose.
+            */
+           emu_bus_add_mmio(bus, "ltsc", G4MH_LTSC_BASE, G4MH_LTSC_SIZE,
+                            &g4mh_ltsc_ops, &g_ltsc);
 }
 
 static void g4mh_ops_set_irq(emu_cpu_t *cpu, uint32_t source, bool level)
@@ -439,6 +451,8 @@ static void g4mh_ops_advance_time(emu_cpu_t *cpu, uint32_t ticks)
      * period from a datasheet frequency will be wrong by that ratio.
      */
     g4mh_tptm_advance(&g_tptm, ticks);
+    /* No divider: LTSC is PCLK direct, so this is one for one. */
+    g4mh_ltsc_advance(&g_ltsc, ticks);
 }
 
 static void g4mh_ops_set_time(emu_cpu_t *cpu, uint64_t now)
