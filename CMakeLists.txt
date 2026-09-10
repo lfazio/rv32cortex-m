@@ -785,6 +785,25 @@ if(EMU_PLATFORM STREQUAL "host")
     include(cmake/validation.cmake)
 endif()
 
+#
+# g4mh-sweep: what the G4MH frontend cannot name, counted over a real
+# image. Built only where the frontend is, since it links its decoder.
+#
+# It answers the question a mnemonic-by-mnemonic sweep does not: not
+# whether an encoding exists, but whether the compiler emits it -- and
+# it orders the answer by how often. Read the *slots*, not the total:
+# a flat image is code and data together, so a gap is a sub-opcode that
+# recurs thousands of times, and noise is scattered singletons.
+#
+if(EMU_PLATFORM STREQUAL "host" AND EMU_GUEST_ARCH_G4MH)
+    add_executable(g4mh-sweep tests/tools/g4mh_sweep.c
+                   src/frontend/g4mh/g4mh_disasm.c
+                   src/frontend/g4mh/g4mh_decode.c)
+    target_include_directories(g4mh-sweep PRIVATE include)
+    target_compile_definitions(g4mh-sweep PRIVATE
+                               EMU_MAX_REGIONS=${EMU_MAX_REGIONS})
+endif()
+
 # ---------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------

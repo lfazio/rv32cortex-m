@@ -215,6 +215,27 @@ size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn,
                      (int)emu_sext(w1 & 0xFFFEu, 16), a);
         break;
 
+    case 0x3E: {
+        /*
+         * The bit operations: SET1, NOT1, CLR1 and TST1 against a byte
+         * at reg1 plus a signed 16-bit displacement.
+         *
+         * **The reg2 field is not a register here.** Its top two bits
+         * choose the operation and its low three name the bit, which is
+         * why a reader looking for a destination register finds 0 or 31
+         * and no pattern. Same opcode-extension shape as the rest of
+         * this ISA, and the reason this printed `.short`: 694 sites in
+         * one compiled guest's .text, which reads as a decoder gap when
+         * the interpreter has handled them all along.
+         */
+        static const char *const k_bit[4] = {"set1", "not1", "clr1", "tst1"};
+
+        n = snprintf(buf, buflen, "%s %u, %d[%s]",
+                     k_bit[(w0 >> 14) & 0x3u], (unsigned)((w0 >> 11) & 0x7u),
+                     (int)emu_sext(w1, 16), a);
+        break;
+    }
+
     case 0x3C:
     case 0x3D:
         /*
@@ -434,6 +455,28 @@ size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn,
         }
 
         default:
+            /*
+             * MUL/MULU imm9, before the switch and on its own mask.
+             * **The immediate is not all in the reg1 field**: its low
+             * five bits are, and bits [8:5] sit inside the sub-opcode at
+             * [5:2]. So it cannot be a case in a switch that also has to
+             * match exact sub-opcodes -- masking those bits in would
+             * make every multiplier a different value, and masking them
+             * out would swallow MUL's register form. The interpreter
+             * splits it the same way and for the same reason.
+             *
+             * Worth naming: 85 sites in one compiled guest, every one of
+             * them printing `.short`, which reads as a decoder gap when
+             * the decoder is right.
+             */
+            if ((sub & 0x7C0u) == 0x240u) {
+                const uint32_t imm9 = (((sub >> 2) & 0xFu) << 5) | r1;
+
+                n = snprintf(buf, buflen, "mul%s %d, %s, %s",
+                             (sub & 2u) ? "u" : "",
+                             (int)emu_sext(imm9, 9), b, g4mh_reg_name(sel));
+                break;
+            }
             switch (sub & 0x7FDu) {
             case 0x220:
                 n = snprintf(buf, buflen, "mul%s %s, %s, %s",
