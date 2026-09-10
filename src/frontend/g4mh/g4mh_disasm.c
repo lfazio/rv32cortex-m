@@ -318,6 +318,37 @@ size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn,
         const uint32_t sel = (w1 >> 11) & 0x1Fu;
         const char *srn = g4mh_sr_name(sel, r1);
 
+        /*
+         * Bcond disp17 and LD.HU disp16 share this opcode and are told
+         * apart by reg2, which is an opcode extension when zero. Both
+         * come first because their second halfword is a *displacement*
+         * and not a sub-opcode -- classifying them by `sub` puts a
+         * backward branch, whose w1 is near 0xFFFF, in whatever range
+         * happens to cover it.
+         *
+         * Worth having rather than leaving as `.short`: this printed
+         * nothing useful while a real decode bug in the same slot was
+         * being hunted, and a trace that says `.short` reads as a
+         * disassembler gap when it may be a decoder gap. The two are
+         * indistinguishable from the output, which is exactly the
+         * confusion this file has caused before.
+         */
+        if ((w1 & 1u) != 0u) {
+            if (r2 == 0u) {
+                const uint32_t d = (((uint32_t)w0 >> 4) & 1u) << 16 |
+                                   ((uint32_t)w1 & 0xFFFEu);
+
+                n = snprintf(buf, buflen, "b%s17 0x%08x",
+                             g4mh_cond_name(w0 & 0xFu),
+                             (unsigned)(pc + (uint32_t)emu_sext(d, 17)));
+            } else {
+                n = snprintf(buf, buflen, "ld.hu %d[%s], %s",
+                             (int)emu_sext(w1 & 0xFFFEu, 16),
+                             g4mh_reg_name(r1), g4mh_reg_name(r2));
+            }
+            break;
+        }
+
         switch (sub) {
         case 0x000:
             n = snprintf(buf, buflen, "setf %s, %s", g4mh_cond_name(r1), b);

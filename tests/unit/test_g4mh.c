@@ -3511,6 +3511,163 @@ static void test_disasm_crowded_slots(void)
  * one in the one slot where the length decoder's first stage cannot see
  * past its own rule of thumb.
  */
+/*
+ * Bcond disp17, which shares its slot with LD.HU disp16 and is told
+ * apart by reg2 being zero.
+ *
+ *   w0  00000 111111 s cccc      s = disp[16], c = the condition
+ *   w1  ddddddddddddddd 1        disp[15:1]
+ *
+ * The emulator decoded every one of these as LD.HU through whatever
+ * register the condition field named, which is not a wrong answer but a
+ * wrong *trap*: CC-RH emits this form for any `if` whose target is out
+ * of the 9-bit branch's reach, so nothing compiled against the C library
+ * could run. sprintf died 762 instructions in.
+ *
+ * Encodings confirmed against CC-RH, the only second encoder here:
+ *   bz17 07E2   bnz17 07EA   bge17 07EE   blt17 07E6
+ *
+ * **The backward branch is the case worth testing**, because the sign
+ * lives in w0 bit 4 rather than in the displacement halfword -- an
+ * implementation that took the displacement from w1 alone gets every
+ * forward branch right and every backward one wrong, and a forward-only
+ * test would report that as working.
+ */
+#define BCOND17_W0(cond, d) \
+    (uint16_t)(0x07E0u | (((uint32_t)(d) >> 16) & 1u) << 4 | ((cond) & 0xFu))
+#define BCOND17_W1(d) (uint16_t)(((uint32_t)(d) & 0xFFFEu) | 1u)
+
+static void test_bcond_disp17(void)
+{
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+
+    /*
+     * Taken, forwards. The compare is not decoration: MOV does not touch
+     * the flags on this architecture, so a branch placed straight after
+     * one tests whatever the previous instruction left behind.
+     *
+     *   byte 0  mov 0, r20
+     *   byte 2  cmp 0, r20      -> Z
+     *   byte 4  bz17 +6         -> byte 10
+     *   byte 8  mov 9, r21      skipped
+     *   byte 10 mov 5, r20      the target
+     */
+    {
+        const uint16_t prog[] = {
+            F2(OP_MOVI, 0, 20),
+            F2(OP_CMPI5, 0, 20),
+            BCOND17_W0(0x2u, 6), BCOND17_W1(6),
+            F2(OP_MOVI, 9, 21),
+            F2(OP_MOVI, 5, 20),
+            0x07E0u, SUB_HALT,
+        };
+
+        if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                          &retired)) {
+            CHECK(false);
+            return;
+        }
+        CHECK_EQ(reg(20), 5u);
+        CHECK_EQ(reg(21), 0u);
+    }
+
+    /* Not taken: bnz with Z set falls through, so the marker runs. */
+    {
+        const uint16_t prog[] = {
+            F2(OP_MOVI, 0, 20),
+            F2(OP_CMPI5, 0, 20),
+            BCOND17_W0(0xAu, 6), BCOND17_W1(6),
+            F2(OP_MOVI, 9, 21),
+            F2(OP_MOVI, 5, 20),
+            0x07E0u, SUB_HALT,
+        };
+
+        if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                          &retired)) {
+            CHECK(false);
+            return;
+        }
+        CHECK_EQ(reg(21), 9u);
+    }
+
+    /*
+     * Backwards, which is the case that needs w0 bit 4: an
+     * implementation taking the displacement from w1 alone gets every
+     * forward branch right and every backward one wrong.
+     *
+     *   byte 4  add -1, r21     the loop body, and it sets the flags
+     *   byte 6  bnz17 -2        back to it
+     *   byte 10 mov 7, r20      only once r21 reaches zero
+     */
+    {
+        /*
+         * The encoding itself, against CC-RH's bytes for `bnz17` to a
+         * label two behind it. Asserting this separately is what stops a
+         * macro bug reading as an emulator bug -- they fail identically
+         * from the outside.
+         */
+        CHECK_EQ(BCOND17_W0(0xAu, -2), 0x07FAu);
+        CHECK_EQ(BCOND17_W1(-2), 0xFFFFu);
+
+        const uint16_t prog[] = {
+            F2(OP_MOVI, 3, 21),
+            F2(OP_MOVI, 0, 20),
+            F2(OP_ADDI5, -1, 21),
+            BCOND17_W0(0xAu, -2), BCOND17_W1(-2),
+            F2(OP_MOVI, 7, 20),
+            0x07E0u, SUB_HALT,
+        };
+
+        if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 256u, &why,
+                          &retired)) {
+            CHECK(false);
+            return;
+        }
+        CHECK_EQ(reg(21), 0u);   /* the loop ran to zero  */
+        CHECK_EQ(reg(20), 7u);   /* and then fell through */
+
+        /* A/B: the same program on the interpreter alone. */
+        g_force_backend = &g4mh_backend_interp;
+        if (load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 256u, &why,
+                         &retired)) {
+            CHECK_EQ(reg(21), 0u);
+            CHECK_EQ(reg(20), 7u);
+        }
+        g_force_backend = NULL;
+    }
+
+    /*
+     * The neighbour that must not have been taken with it: the same
+     * opcode with a *non-zero* reg2 is still LD.HU disp16, and its w1
+     * bit 0 is set exactly as a branch's is. reg2 is the only thing
+     * telling them apart, which is the whole point of this case --
+     * without it the fix could have claimed the slot outright and no
+     * test would have said so.
+     *
+     * Both encodings are CC-RH's: st.h r18,0[r19] is 9773 0000 and
+     * ld.hu 0[r19],r20 is a7f3 0001.
+     */
+    {
+        const uint16_t prog[] = {
+            (uint16_t)(0x0621u | (19u << 11)),
+            (uint16_t)(EMU_GUEST_RAM_BASE & 0xFFFFu),
+            (uint16_t)(EMU_GUEST_RAM_BASE >> 16),
+            (uint16_t)(0x0621u | (18u << 11)), 0x1234u, 0x0000u,
+            (uint16_t)((18u << 11) | (0x3Bu << 5) | 19u), 0x0000u,
+            (uint16_t)((20u << 11) | (0x3Fu << 5) | 19u), 0x0001u,
+            0x07E0u, SUB_HALT,
+        };
+
+        if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                          &retired)) {
+            CHECK(false);
+            return;
+        }
+        CHECK_EQ(reg(20), 0x1234u);
+    }
+}
+
 static void test_jr_disp32(void)
 {
     /* jr +8, then a marker that must be skipped, then the target. */
@@ -6409,6 +6566,7 @@ void test_g4mh(void)
     test_disp23_jit();
     test_disasm_crowded_slots();
     test_disasm_length_disagreement();
+    test_bcond_disp17();
     test_jr_disp32();
     test_prepare_imm32();
     test_prepare_ff_forms();

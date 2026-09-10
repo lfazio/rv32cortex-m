@@ -331,7 +331,7 @@ const emu_ir_target_t g4mh_ir_target = {
  * not instructions at all.
  */
 static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
-                        uint32_t pc, bool *ends)
+                        uint32_t pc, bool *ends, bool *counted)
 {
     const uint32_t r1 = g4mh_reg1(w0);
     const uint32_t r2 = g4mh_reg2(w0);
@@ -401,6 +401,72 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
         emu_ir_put(
             b, r2,
             emu_ir_alu(b, EMU_IR_ADD, emu_ir_get(b, r1), emu_ir_const(b, imm)));
+        return true;
+    }
+
+    /*
+     * **Ahead of every other op 0x3F test, the floating-point group
+     * included.** Those all classify by `w1 & 0x7FF`, and a branch's w1
+     * is a displacement -- so a backward one, whose low halfword is near
+     * 0xFFFF, lands in the FP range and was sent to the FP helper, while
+     * a forward one with a small displacement fell through and worked.
+     * That is what made the two directions fail independently, and it is
+     * why this test cannot be filed with its neighbours below.
+     */
+    /*
+     * Bcond disp17, which shares op 0x3F with LD.HU disp16 and is told
+     * apart by **reg2 being zero** -- the same opcode-extension trick
+     * this frontend has now been caught by four times.
+     *
+     * This is the *second copy* of the rule: the interpreter has it too,
+     * and G4MH keeps separate interpreter and translation paths, so an
+     * instruction added to one is absent from the other. Missing it here
+     * was not a declined block, which would have been merely slow: the
+     * slot fell through to the sub-opcode switch below and a backward
+     * branch went somewhere else entirely, while a forward one happened
+     * to look right. The unit test A/B's the two backends against each
+     * other for exactly that reason.
+     *
+     *   w0  00000 111111 s cccc      s = disp[16], c = the condition
+     *   w1  ddddddddddddddd 1        disp[15:1]
+     *
+     * The sign is in w0 bit 4 rather than in the displacement halfword,
+     * which is why forward and backward fail independently.
+     *
+     * RETIRE goes *before* the exit and sets `counted`, because unlike
+     * the unconditional jump above this one falls through when the
+     * condition does not hold -- and there the caller's own RETIRE would
+     * be a second count of one instruction.
+     */
+    if (op == 0x3Fu && r2 == 0u && ((uint32_t)w1 & 1u) != 0u) {
+        const uint32_t cond = k_g4mh_cond[w0 & 0xFu];
+        const uint32_t d = ((((uint32_t)w0 >> 4) & 1u) << 16) |
+                           ((uint32_t)w1 & 0xFFFEu);
+        const uint32_t target = pc + (uint32_t)emu_sext(d, 17);
+
+        if (cond == 0xFFu) {
+            return false;       /* a condition the IR cannot name */
+        }
+
+        (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          0u, 0u);
+        *counted = true;
+
+        if (cond == (uint32_t)EMU_IR_C_ALWAYS) {
+            (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP,
+                              EMU_IR_NO_TEMP, target, 0u);
+            *ends = true;
+            return true;
+        }
+
+        {
+            const uint16_t t = emu_ir_emit(b, EMU_IR_GETCOND, (uint8_t)cond,
+                                           EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 0u,
+                                           0u);
+
+            (void)emu_ir_emit(b, EMU_IR_EXIT_IF, EMU_IR_C_NE, t,
+                              emu_ir_const(b, 0u), target, 0u);
+        }
         return true;
     }
 
@@ -1319,7 +1385,7 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
                 ok = lower_one48(b, w0, w1, w2, cur);
             } else {
                 len = 4u;
-                ok = lower_one32(b, w0, w1, cur, &ends);
+                ok = lower_one32(b, w0, w1, cur, &ends, &counted);
             }
         }
 

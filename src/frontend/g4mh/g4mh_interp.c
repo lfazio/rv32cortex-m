@@ -1143,16 +1143,69 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
              * separating it from the whole Format X/XI group is bit 0.
              * Every sub-opcode below is even, so the test is exact.
              */
-            if ((w1 & 1u) != 0u) { /* LD.HU disp16     */
-                uint32_t v;
-                const uint32_t adr =
-                    c->r[r1] + (uint32_t)emu_sext(w1 & 0xFFFEu, 16);
-                const g4mh_exc_t e = g4mh_load(c, adr, 2u, false, &v);
-                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
-                    EXC(e);
+            if ((w1 & 1u) != 0u) {
+                /*
+                 * **reg2 == 0 is an opcode extension here, and missing it
+                 * decoded every long conditional branch as a load.**
+                 *
+                 * The rule above -- bit 0 of w1 separates LD.HU from the
+                 * sub-opcode group -- is true and is not sufficient.
+                 * Bcond disp17 shares the slot and is told apart by reg2
+                 * being zero, which for LD.HU would name r0 as the
+                 * destination and so describe a load whose result is
+                 * discarded. That is exactly the shape this frontend has
+                 * been caught by before: CALLT in the MOV imm5 slot,
+                 * DISPOSE in MOVHI's, the pointer-updating loads in
+                 * LDL.W's.
+                 *
+                 * It is not a wrong answer, it is a wrong *trap*. CC-RH
+                 * emits Bcond disp17 for any `if` whose target is out of
+                 * the 9-bit form's reach, so it is in the prologue of
+                 * ordinary compiled code -- and the emulator read it as
+                 * LD.HU through whatever register the condition field
+                 * happened to name, faulting on an address built from a
+                 * displacement that was really a branch target. Nothing
+                 * in the C library could run: sprintf died 762
+                 * instructions in with MAE, and DOOM died in vfprintf
+                 * with MDP at 0xFFFFFE68, both of which are r18 or r2
+                 * plus a sign-extended branch displacement.
+                 *
+                 *   w0  00000 111111 s cccc      s = disp[16], c = cond
+                 *   w1  ddddddddddddddd 1        disp[15:1]
+                 *
+                 * Confirmed against CC-RH, which is the only thing here
+                 * that can say an opcode constant is wrong:
+                 *   bz17  -> 07E2   bnz17 -> 07EA
+                 *   bge17 -> 07EE   blt17 -> 07E6
+                 * and a backward branch sets w0 bit 4, which is what
+                 * makes the displacement 17 bits rather than 16.
+                 */
+                if (r2 == 0u) { /* Bcond disp17 */
+                    const uint32_t d = (((uint32_t)w0 >> 4) & 1u) << 16 |
+                                       ((uint32_t)w1 & 0xFFFEu);
+
+                    if (g4mh_cond(w0 & 0xFu, c->psw)) {
+                        /*
+                         * Relative to the branch, as the disp9 form is --
+                         * not to the next instruction.
+                         */
+                        pc = pc + (uint32_t)emu_sext(d, 17);
+                        goto retired_insn;
+                    }
+                    break;
                 }
-                wr(c, r2, v);
-                break;
+
+                { /* LD.HU disp16     */
+                    uint32_t v;
+                    const uint32_t adr =
+                        c->r[r1] + (uint32_t)emu_sext(w1 & 0xFFFEu, 16);
+                    const g4mh_exc_t e = g4mh_load(c, adr, 2u, false, &v);
+                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                        EXC(e);
+                    }
+                    wr(c, r2, v);
+                    break;
+                }
             }
             const uint32_t sub = w1 & 0x7FFu;
             const uint32_t sel = (w1 >> 11) & 0x1Fu;
