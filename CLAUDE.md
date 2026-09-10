@@ -1952,6 +1952,57 @@ mistakes get made rather than what the mistakes were:
   reading the *post*-state in the trace rather than the disassembly --
   `tp` went 7 to 0x64 across the multiply, so the multiply was right and
   the value was being lost afterwards.
+- **`reg2 == 0` as an opcode extension, fifth instance, and this one
+  stopped every compiled C guest.** `Bcond disp17` shares op 0x3F with
+  `LD.HU disp16`; the interpreter tested only w1's bit 0 -- true, and
+  not sufficient -- so every long conditional branch decoded as a load
+  through whatever register the *condition field* named. CC-RH emits
+  that form for any `if` whose target is out of the 9-bit branch's
+  reach, which is ordinary compiled code, so nothing linked against the
+  C library could run: `sprintf` died 762 instructions in.
+
+  **It is not a wrong answer, it is a wrong trap**, and that is what
+  made it findable: MAE and MDP at addresses like `0xFFFFFE68`, which
+  is a register plus a sign-extended branch displacement read as an
+  address. Print MEA in the vector table -- a protection trap naming
+  only its pc says an access was refused without saying what was
+  reached for, and the two are rarely near each other.
+
+  Three things generalise past the slot.
+
+  **A branch's second halfword is a displacement, so it must be
+  classified before anything that switches on it.** The IR tests the FP
+  group as `w1 & 0x7FF >= 0x400`; a backward branch has w1 near 0xFFFF
+  and landed in that range, while a forward one with a small
+  displacement fell through and worked. **Forward and backward failed
+  independently**, which reads as a half-working implementation rather
+  than a misplaced test.
+
+  **The sign lives in w0, not in the displacement halfword** -- so a
+  forward-only test passes against an implementation that gets every
+  backward branch wrong. When the whole difficulty is one input, test
+  that input.
+
+  **Three sites, not one.** Interpreter, IR translator and
+  disassembler; the first two are separate copies in this frontend and
+  that is now the third time it has bitten. The unit test runs the same
+  program on both backends for exactly that reason -- and asserts the
+  *encoding* against CC-RH's bytes separately from the behaviour,
+  because a macro bug and an emulator bug fail identically from the
+  outside and a round went on confusing the two.
+- **`.short` from the disassembler is not evidence of a decoder gap,
+  and treating it as one costs sessions.** This file already says the
+  disassembler is not a decoder; the sharper form is that its output
+  *cannot distinguish* the two, so a trace full of `.short` reads as
+  "unimplemented" when the interpreter has been executing it correctly
+  all along. `g4mh-sweep` histograms them over a real image and each
+  candidate is then confirmed by executing it with the RIE vector
+  armed. Of three gaps in DOOM's `.text` -- the bit operations and MUL
+  imm9, 779 sites -- **all three decoded correctly and none trapped**.
+
+  The limit is worth stating because it is the dangerous direction: a
+  slot the disassembler *names* can still be decoded wrongly, and the
+  sweep cannot see that at all. Bcond disp17 was exactly that case.
 - **There is a second encoder, and it is the only thing that can say a
   hand-written opcode constant is wrong.** `scripts/g4mh-check-encodings.sh`
   assembles with Renesas CC-RH and prints the fields this frontend
