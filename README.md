@@ -241,7 +241,7 @@ failing at the link on `region overflowed`.
 **Status.** rv32 plays. It initialises fully -- 339 files from the PAK,
 console, 8 MB heap, surface cache -- loads `demo1.dem`, names the level
 and runs the game, presenting frames the framebuffer counts, with no
-trap across two billion instructions. There is no sound: the port's
+trap across four billion instructions. There is no sound: the port's
 audio path is a syscall belonging to another board, and this one has no
 audio device. The G4MH board is written and not yet built.
 
