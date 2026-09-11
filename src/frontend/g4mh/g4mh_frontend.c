@@ -459,6 +459,16 @@ static void g4mh_ops_set_time(emu_cpu_t *cpu, uint64_t now)
 {
     (void)cpu;
     g4mh_intc_set_time(&g_intc[0], now);
+    /*
+     * The LTSC too, and this is the hook that matters on a host: the
+     * runner drives guest time by reading a real clock and calling
+     * set_time, so the frontend's advance_time op is never reached
+     * there. Wiring the LTSC only into that one left it started and
+     * stuck at zero -- and DOOM, whose TryRunTics waits for the clock
+     * to move, spun for two billion instructions without drawing a
+     * frame. Nothing trapped; it simply never advanced.
+     */
+    g4mh_ltsc_set_time(&g_ltsc, now);
 }
 
 /* ------------------------------------------------------------------ */

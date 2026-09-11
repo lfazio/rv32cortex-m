@@ -3955,6 +3955,17 @@ static void tick(uint32_t ticks)
     g_core.ops->advance_time(g_core.cpu, ticks);
 }
 
+/*
+ * The other way a platform tells the guest what time it is: absolute,
+ * from a real clock. The host runner uses this one and never calls
+ * advance_time, which is how the LTSC came to be wired to a hook
+ * nothing reaches.
+ */
+static void set_now(uint64_t now)
+{
+    g_core.ops->set_time(g_core.cpu, now);
+}
+
 #define BARR_INIT(n) (G4MH_BARR_BASE + 0x000u + 0x10u * (n))
 #define BARR_EN(n) (G4MH_BARR_BASE + 0x004u + 0x10u * (n))
 #define BARR_CHKS(n) (G4MH_BARR_BASE + 0x100u + 0x10u * (n))
@@ -4260,6 +4271,68 @@ static void test_ltsc_capture(void)
  * half and the old high one -- which a guest reading concurrently would
  * see as time jumping and coming back.
  */
+/*
+ * Absolute time, which is how a *host* drives this device and is the
+ * path that was missing.
+ *
+ * The LTSC was wired only into the frontend's advance_time op, which
+ * takes a tick delta -- and nothing calls it on a host: the runner reads
+ * a real clock and says what time it is through set_time, exactly as the
+ * CLINT is driven. So the counter started, reported itself running, and
+ * stayed at zero for ever.
+ *
+ * **It did not trap and nothing failed.** DOOM's TryRunTics waits for
+ * the clock to move before drawing, so it spun for two billion
+ * instructions having printed every line of its start-up -- which reads
+ * as a hang in the game rather than as a stopped clock.
+ */
+static void test_ltsc_absolute_time(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+
+    /* Stopped: the clock moves and the counter does not. */
+    set_now(1000u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 0u);
+    set_now(5000u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 0u);
+
+    /*
+     * Started at t=5000, so the 4000 that passed while it was stopped is
+     * not credited to it -- the counter anchors to the clock as it is at
+     * the start rather than to the epoch.
+     */
+    devwr(LTSC(G4MH_LTSC_TCS), G4MH_LTSC_TS);
+    set_now(6000u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 1000u);
+
+    set_now(9000u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 4000u);
+
+    /* Stopped again: it holds, and holds across further time. */
+    devwr(LTSC(G4MH_LTSC_TCT), G4MH_LTSC_TT);
+    set_now(20000u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 4000u);
+
+    /* And resumes from where it stopped, not from where the clock is. */
+    devwr(LTSC(G4MH_LTSC_TCS), G4MH_LTSC_TS);
+    set_now(20500u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 4500u);
+
+    /*
+     * A preset re-anchors. Without that the next set_time would compute
+     * from the old origin and undo the value just written.
+     */
+    devwr(LTSC(G4MH_LTSC_TCT), G4MH_LTSC_TT);
+    devwr(LTSC(G4MH_LTSC_CNTL), 100u);
+    devwr(LTSC(G4MH_LTSC_CNTH), 0u);
+    devwr(LTSC(G4MH_LTSC_TCS), G4MH_LTSC_TS);
+    set_now(20800u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 400u);
+}
+
 static void test_ltsc_preset(void)
 {
     if (!devbus_up()) {
@@ -6577,6 +6650,7 @@ void test_g4mh(void)
     test_ipir_enable_gates_transfer();
     test_ipir_self_region();
     test_ltsc_capture();
+    test_ltsc_absolute_time();
     test_ltsc_preset();
     test_ltsc_start_stop();
     test_tptm_interval();

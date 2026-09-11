@@ -25,6 +25,17 @@ void g4mh_ltsc_init(g4mh_ltsc_t *t)
      */
     t->running = 0u;
     t->rmsk = 0u;
+    t->origin = 0u;
+    t->offset = 0u;
+    t->last_now = 0u;
+}
+
+void g4mh_ltsc_set_time(g4mh_ltsc_t *t, uint64_t now)
+{
+    t->last_now = now;
+    if (t->running != 0u) {
+        t->cnt = t->offset + (now - t->origin);
+    }
 }
 
 void g4mh_ltsc_advance(g4mh_ltsc_t *t, uint32_t ticks)
@@ -119,6 +130,13 @@ static emu_fault_t ltsc_write(void *ctx, uint32_t off, uint32_t size,
              * pausing a clock, not resetting one.
              */
             t->running = 1u;
+            /*
+             * Anchor the counter to the clock as it is now, so the time
+             * the guest spent with it stopped is not credited to it the
+             * moment it starts.
+             */
+            t->origin = t->last_now;
+            t->offset = t->cnt;
         }
         break;
 
@@ -130,6 +148,7 @@ static emu_fault_t ltsc_write(void *ctx, uint32_t off, uint32_t size,
          */
         if ((val & G4MH_LTSC_TT) != 0u && t->running != 0u) {
             t->running = 0u;
+            t->offset = t->cnt;
         }
         break;
 
@@ -156,6 +175,9 @@ static emu_fault_t ltsc_write(void *ctx, uint32_t off, uint32_t size,
          */
         if (t->running == 0u) {
             t->cnt = ((uint64_t)val << 32) | (uint64_t)t->pending_low;
+            /* A preset re-anchors, or the next set_time would undo it. */
+            t->offset = t->cnt;
+            t->origin = t->last_now;
         }
         break;
 

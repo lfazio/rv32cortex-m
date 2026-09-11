@@ -71,6 +71,21 @@ typedef struct g4mh_ltsc {
      */
     uint32_t pending_low;
 
+    /*
+     * Where the counter was, and when, so absolute host time can drive
+     * it. `origin` is the host time at the last start or preset and
+     * `offset` the counter value at that moment, so a running counter
+     * reads offset + (now - origin) -- which keeps the architectural
+     * start/stop and preset behaviour while the *platform* supplies a
+     * wall clock rather than a tick count.
+     *
+     * `last_now` is remembered because a start has to know what "now"
+     * is, and the only thing that tells this device is set_time.
+     */
+    uint64_t origin;
+    uint64_t offset;
+    uint64_t last_now;
+
     uint8_t running; /* CSTR.CST */
     uint8_t rmsk;    /* RMSK.RM  */
 } g4mh_ltsc_t;
@@ -83,6 +98,18 @@ void g4mh_ltsc_init(g4mh_ltsc_t *t);
  * microsecond, which makes the counter a microsecond clock.
  */
 void g4mh_ltsc_advance(g4mh_ltsc_t *t, uint32_t ticks);
+
+/*
+ * Absolute time, which is how a *host* drives this: the platform reads a
+ * real clock and says what time it is rather than how much has passed.
+ *
+ * A platform uses one or the other, never both -- the same arrangement
+ * rv_clint_set_time and rv_clint_advance already have, and for the same
+ * reason: mixing them counts the same microsecond twice. The host
+ * runner calls this one; a board with only a tick counter calls
+ * g4mh_ltsc_advance.
+ */
+void g4mh_ltsc_set_time(g4mh_ltsc_t *t, uint64_t now);
 
 extern const emu_dev_ops_t g4mh_ltsc_ops;
 
