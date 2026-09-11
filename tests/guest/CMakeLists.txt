@@ -114,6 +114,7 @@ add_guest_image(hello    SOURCES start.S hello.c)
 # DOOM, fetched rather than vendored -- it is GPL-2.0 and this tree is
 # Apache-2.0. See doom.cmake for the whole arrangement.
 include(${CMAKE_CURRENT_SOURCE_DIR}/doom.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/quake.cmake)
 
 set(FBTEST_FRAMES "60" CACHE STRING "frames the fbtest guest draws")
 add_guest_image(fbtest   SOURCES start.S fbtest.c
