@@ -3537,6 +3537,61 @@ static void test_disasm_crowded_slots(void)
     (uint16_t)(0x07E0u | (((uint32_t)(d) >> 16) & 1u) << 4 | ((cond) & 0xFu))
 #define BCOND17_W1(d) (uint16_t)(((uint32_t)(d) & 0xFFFEu) | 1u)
 
+/*
+ * LD.HU disp16 whose displacement looks like a floating-point
+ * sub-opcode.
+ *
+ * The slot at op 0x3F is shared three ways: bit 0 of w1 marks this pair
+ * (branch when reg2 is zero, load otherwise) and everything else is a
+ * sub-opcode. The translator classified the *sub-opcode* first, and
+ * this w1 is a **displacement** -- so a displacement whose low 11 bits
+ * reach 0x400 landed in the floating-point range and went to the FP
+ * helper, which raised reserved-instruction on an ordinary load.
+ *
+ * **Only the JIT had it**, and the interpreter running the same program
+ * correctly is what says so -- which is why this runs both. Quake found
+ * it: D_PolysetCalcGradients contains `ld.hu -19444[r7], r2`, and the
+ * JIT trapped where the interpreter ran 900 million instructions
+ * without complaint.
+ *
+ * The displacement here is 0x400 exactly, the first value that reaches
+ * the FP range, because the whole difficulty is that one input.
+ */
+static void test_ldhu_disp_in_fp_range(void)
+{
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    const uint16_t prog[] = {
+        /* r19 = RAM base */
+        (uint16_t)(0x0621u | (19u << 11)),
+        (uint16_t)(EMU_GUEST_RAM_BASE & 0xFFFFu),
+        (uint16_t)(EMU_GUEST_RAM_BASE >> 16),
+        /* r18 = 0x1234, stored at base + 0x400 */
+        (uint16_t)(0x0621u | (18u << 11)), 0x1234u, 0x0000u,
+        (uint16_t)((18u << 11) | (0x3Bu << 5) | 19u), 0x0400u,
+        /*
+         * ld.hu 0x400[r19], r20 -- w1 = 0x0401, whose low 11 bits are
+         * 0x401 and so sit inside the FP group's range.
+         */
+        (uint16_t)((20u << 11) | (0x3Fu << 5) | 19u), 0x0401u,
+        0x07E0u, SUB_HALT,
+    };
+    unsigned pass;
+
+    for (pass = 0; pass < 2u; pass++) {
+        g_force_backend = (pass == 0u) ? &g4mh_backend_interp : NULL;
+
+        if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                          &retired)) {
+            CHECK(false);
+            g_force_backend = NULL;
+            return;
+        }
+        CHECK_EQ(reg(20), 0x1234u);
+    }
+    g_force_backend = NULL;
+}
+
 static void test_bcond_disp17(void)
 {
     emu_run_reason_t why;
@@ -6646,6 +6701,7 @@ void test_g4mh(void)
     test_disp23_jit();
     test_disasm_crowded_slots();
     test_disasm_length_disagreement();
+    test_ldhu_disp_in_fp_range();
     test_bcond_disp17();
     test_jr_disp32();
     test_prepare_imm32();

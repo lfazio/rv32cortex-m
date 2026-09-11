@@ -438,6 +438,29 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
      * condition does not hold -- and there the caller's own RETIRE would
      * be a second count of one instruction.
      */
+    if (op == 0x3Fu && ((uint32_t)w1 & 1u) != 0u && r2 != 0u) {
+        /*
+         * **LD.HU disp16, and declining it here is the whole point.**
+         *
+         * Bit 0 of w1 separates this pair from every sub-opcode in the
+         * slot, and reg2 separates the two: zero is the branch below,
+         * non-zero is the load. The load is not lowered -- but it must
+         * be *declined here*, before the tests that follow, because
+         * those classify by `w1 & 0x7FF` and this w1 is a
+         * **displacement**. A displacement whose low 11 bits reach
+         * 0x400 lands in the floating-point range and is sent to the FP
+         * helper, which raises reserved-instruction on a perfectly
+         * ordinary load.
+         *
+         * That is what it did: Quake's D_PolysetCalcGradients contains
+         * `ld.hu -19444[r7], r2`, whose w1 is 0xB40D, and the JIT
+         * trapped where the interpreter -- which tests bit 0 first --
+         * ran for 900 million instructions without complaint. Same
+         * defect as the branch below, one operand apart.
+         */
+        return false;
+    }
+
     if (op == 0x3Fu && r2 == 0u && ((uint32_t)w1 & 1u) != 0u) {
         const uint32_t cond = k_g4mh_cond[w0 & 0xFu];
         const uint32_t d = ((((uint32_t)w0 >> 4) & 1u) << 16) |
