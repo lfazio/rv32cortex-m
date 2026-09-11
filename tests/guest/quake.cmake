@@ -68,6 +68,26 @@ endif()
 # it wanted. The guest has no file system, so the data is in the image;
 # see the board's fio.c.
 #
+#
+# **The PAK does not fit the default flash window**, and the way it does
+# not fit is a link error naming a region rather than a game:
+#
+#   section `.rodata' will not fit in region `FLASH'
+#   region `FLASH' overflowed by 2212096 bytes
+#
+# 18.7 MiB of game data lands in .rodata, so the window has to be told
+# about it. Checked here rather than written down somewhere, because a
+# build flag quoted in prose is not a tested thing and the message a
+# first-time builder needs is the flag.
+#
+if(EMU_GUEST_ROM_MIB LESS 32)
+    message(STATUS
+        "Quake: skipping the image -- its PAK needs more than the "
+        "${EMU_GUEST_ROM_MIB} MiB flash window configured; re-run cmake "
+        "with -DEMU_GUEST_ROM_MIB=32")
+    return()
+endif()
+
 set(_quake_pak_c "${CMAKE_CURRENT_BINARY_DIR}/quake_pak.c")
 
 if(NOT QUAKE_PAK)
