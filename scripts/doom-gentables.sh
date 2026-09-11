@@ -59,7 +59,11 @@ cd "$SRC"
 # X11; and the rv32 files are excluded because they address memory that
 # exists only inside the emulator.
 #
-SRCS=$(ls ./*.c | grep -vE '/(i_video|i_video_rv32|i_platform_rv32|XDriver)\.c$')
+# Every platform layer is excluded, not just the rv32 one: they address
+# memory that exists only inside the emulator, and i_video_emu.c is the
+# shared driver both frontends use. The generator runs on the *host* and
+# needs none of them -- i_video_console.c stands in.
+SRCS=$(ls ./*.c | grep -vE '/(i_video|i_video_emu|i_video_rv32|i_platform_rv32|i_platform_g4mh|XDriver)\.c$')
 
 # The four rawdraw hooks, which i_video.c would otherwise supply.
 STUB=$(mktemp /tmp/cnfg_stub_XXXXXX.c)
@@ -88,8 +92,52 @@ echo "generating tables"
 
 echo "shrinking the WAD"
 cd support
-grep -a ADD_SPRITE bakedoutput.txt > add_sprites.txt
-cat augment_sprites.txt >> add_sprites.txt
+
+#
+# **Every sprite in sprnames[], not the ones the generator reached.**
+#
+# shrinkwad strips any sprite absent from this list, and the obvious
+# input -- the ADD_SPRITE lines the generator prints as it plays -- is a
+# record of what one play-through *touched*: 39 of 138 here. But
+# R_InitSpriteDefs runs at start-up and walks the whole of sprnames,
+# calling I_Error on the first entry with no lumps. So a list derived
+# from play can never be sufficient, and which sprite it dies on is an
+# accident of ordering rather than a clue: it was MISF, the rocket
+# launcher's muzzle flash, because you would have to fire one during
+# generation for it to be recorded.
+#
+# That is why augment_sprites.txt exists upstream -- it lists PISG, the
+# pistol flash, for exactly this reason -- but hand-listing the other 98
+# is the same mistake one entry at a time.
+#
+# The names come from info.c, which is where the engine's own table is,
+# so the list cannot drift from what R_InitSpriteDefs will demand.
+# shrinkwad reads "%127s %d %d %15s" and uses only the *index*; the
+# first field must not be 1, which is what marks the sprite in use.
+#
+# It costs about a megabyte of WAD -- 3,248,919 bytes against 4,196,020
+# -- and that is the whole of what sprite stripping was buying.
+#
+awk '
+    /sprnames/      { in_names = 1 }
+    in_names && /}/ { exit }
+    in_names {
+        while (match($0, /"[A-Z0-9]{4}"/)) {
+            name = substr($0, RSTART + 1, 4)
+            printf "ADD_SPRITE 2 %d %s\n", n++, name
+            $0 = substr($0, RSTART + RLENGTH)
+        }
+    }
+' ../info.c > add_sprites.txt
+
+sprites=$(wc -l < add_sprites.txt)
+if [ "$sprites" -lt 100 ]; then
+    echo "error: only $sprites sprites found in info.c; shrinkwad would" >&2
+    echo "       strip the rest and DOOM would die in R_InitSpriteDefs" >&2
+    exit 1
+fi
+echo "  keeping all $sprites sprites"
+
 ./shrinkwad stripchoice.txt add_sprites.txt rawwad_use.c rawwad_use.h >/dev/null
 
 echo

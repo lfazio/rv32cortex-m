@@ -326,6 +326,20 @@ if(CCRH_EXECUTABLE)
                 "${CMAKE_SOURCE_DIR}/tests/guest/g4mh/crt0.asm"
                 "${DOOM_DIR}/src/i_platform_g4mh.c"
                 "${DOOM_DIR}/src/i_video_emu.c"
+                #
+                # **The generation stage's output, by name.** Without
+                # these the target is "up to date" after the tables and
+                # the WAD have been regenerated underneath it, and the
+                # next run reproduces the previous failure exactly --
+                # same trap, same address, same retired count to the
+                # digit. That reads as a fix that did not work rather
+                # than as a build that did not happen, and it is the
+                # trap this tree already records for guest_image.S.
+                #
+                "${DOOM_DIR}/src/support/rawwad_use.c"
+                "${DOOM_DIR}/src/support/baked_texture_data.c"
+                "${DOOM_DIR}/src/support/baked_map_data.c"
+                "${DOOM_DIR}/src/r_data.c"
         COMMENT "Building DOOM for G4MH with CC-RH"
         VERBATIM)
 
