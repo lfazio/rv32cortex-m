@@ -220,6 +220,26 @@ by number, packed them at odd offsets that a target trapping on
 misaligned access cannot read, and stripped 99 of the 138 sprites
 `R_InitSpriteDefs` insists on. A second frontend is what found them.
 
+Quake runs the same way, with the game data supplied rather than
+fetched: id Software made the shareware `pak0.pak` freely
+redistributable and it is still not this repository's to ship.
+
+```sh
+cmake -S . -B build/quake -DEMU_PLATFORM=host -DEMU_SDL=ON \
+      -DEMU_QUAKE=ON -DQUAKE_PAK=/path/to/pak0.pak \
+      -DEMU_GUEST_ROM_MIB=32
+cmake --build build/quake --target guest-quake
+./build/quake/emu-host --jit --ram 0x4000000 build/quake/guest/quake.bin
+```
+
+`-DEMU_GUEST_ROM_MIB=32` is not optional: the PAK is 18.7 MiB and lands
+in `.rodata`, so the default 16 MiB flash window cannot hold the image.
+The build says so and skips rather than failing at the link.
+
+**Status.** rv32 initialises fully -- 339 files from the PAK, console,
+8 MB heap, surface cache -- and plays the demo loop, presenting frames
+the framebuffer counts. The G4MH board is written and not yet built.
+
 ### The G4MH toolchain
 
 CC-RH is the only compiler that emits G4MH and a checkout cannot assume
