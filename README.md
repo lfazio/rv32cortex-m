@@ -209,10 +209,16 @@ clock trades simulated time for playability.
 
 `-DDOOM_DIR=<path>` points at an existing checkout instead of fetching.
 
-**Status.** rv32 plays. G4MH builds, boots, completes every init and
-loads E1M1, then stops in `R_PrecacheLevel` -- both backends fail
-identically to the instruction, which makes it guest data rather than
-the translator.
+**Status.** Both frontends run it: start-up, level load and rendering,
+with the framebuffer's own frame counter agreeing with the guest's.
+
+Getting G4MH there needed four fixes in the *generation* stage rather
+than the emulator, and all four were invisible on x86 -- the baked
+texture arrays were two bytes short of what the struct's padding
+requires, the shrunken WAD renumbered lumps that the baked tables index
+by number, packed them at odd offsets that a target trapping on
+misaligned access cannot read, and stripped 99 of the 138 sprites
+`R_InitSpriteDefs` insists on. A second frontend is what found them.
 
 ### The G4MH toolchain
 

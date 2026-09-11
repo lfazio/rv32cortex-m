@@ -1990,6 +1990,48 @@ mistakes get made rather than what the mistakes were:
   *encoding* against CC-RH's bytes separately from the behaviour,
   because a macro bug and an emulator bug fail identically from the
   outside and a round went on confusing the two.
+- **A second target is the only audit a data format gets.** DOOM's
+  baked tables had been generated, shipped and played for a whole
+  session on RV32 while carrying four defects, every one of which x86
+  and RISC-V forgive and an RH850 does not:
+
+  | defect | why the first target did not care |
+  |---|---|
+  | baked texture arrays two bytes short | the generator hand-counted a 14-byte header where the struct pads to 16; the host's linker aligns the next array, so the overrun reads padding |
+  | lumps packed at odd offsets | DOOM reads WAD structures in place; x86 does misaligned loads in hardware |
+  | the shrinker renumbered lumps | the tables index lumps *by number*, and the numbers still happened to resolve |
+  | 99 of 138 sprites stripped | `R_InitSpriteDefs` walks all of `sprnames` and dies on the first with no lumps |
+
+  The last one is the sharpest: the sprite list was built from
+  `ADD_SPRITE` lines the generator prints *as it plays*, so it records
+  what one play-through touched. Which sprite it then dies on is an
+  accident of ordering -- MISF, the rocket launcher's muzzle flash,
+  because you would have to fire one during generation. **A list
+  derived from observing a program is not a list of what the program
+  requires.**
+
+  None of the four announced itself. Three presented as a fault at an
+  address (`0x49420411` is a patch index and the two ASCII bytes of the
+  next array), and the fourth as a missing sprite in a WAD that
+  contained it.
+- **"Runs to the instruction cap" is not "works", and the difference
+  was two billion instructions.** With the clock dead, DOOM printed
+  every line of its start-up, loaded E1M1 and then span for ever --
+  `TryRunTics` waits for time to move before it will run a tic. No
+  trap, no error, full output.
+
+  The cause was a hook nothing calls: the LTSC was wired into the
+  frontend's `advance_time`, which takes a tick delta, while the host
+  runner drives guest time *absolutely* through `set_time` -- as it has
+  driven the CLINT all along. `advance_time` on a frontend is reached
+  by no caller in this tree.
+
+  **Ask the device, not the program.** A ten-line guest that starts the
+  counter and reads it twice answered it in one run, after the trace
+  and the game had said nothing. And the regression test drives the
+  *frontend op*, not the device: the device was correct throughout, so
+  a test calling it directly passes against the bug -- which is this
+  file's own rule about testing the thing that was actually wrong.
 - **`.short` from the disassembler is not evidence of a decoder gap,
   and treating it as one costs sessions.** This file already says the
   disassembler is not a decoder; the sharper form is that its output
