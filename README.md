@@ -238,9 +238,12 @@ heap is a 16 MiB static array, so `.bss` comes to about 17.5 MiB. The
 build checks both and skips with a message naming the flag, rather than
 failing at the link on `region overflowed`.
 
-**Status.** rv32 initialises fully -- 339 files from the PAK, console,
-8 MB heap, surface cache -- and plays the demo loop, presenting frames
-the framebuffer counts. The G4MH board is written and not yet built.
+**Status.** rv32 plays. It initialises fully -- 339 files from the PAK,
+console, 8 MB heap, surface cache -- loads `demo1.dem`, names the level
+and runs the game, presenting frames the framebuffer counts, with no
+trap across two billion instructions. There is no sound: the port's
+audio path is a syscall belonging to another board, and this one has no
+audio device. The G4MH board is written and not yet built.
 
 ### The G4MH toolchain
 
