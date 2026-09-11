@@ -4257,8 +4257,14 @@ static void test_ltsc_capture(void)
      */
     CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTH)), 0u);
 
-    /* A fresh pair sees the wrap: low is 0 and the captured high is 1. */
-    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 0u);
+    /*
+     * A fresh pair sees the wrap. The low half is not zero: one platform
+     * microsecond is G4MH_LTSC_HZ / G4MH_LTSC_PLATFORM_HZ counts, so the
+     * counter steps *over* the boundary rather than onto it. Written as
+     * the ratio rather than as 79, so this says what it depends on.
+     */
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)),
+             (G4MH_LTSC_HZ / G4MH_LTSC_PLATFORM_HZ) - 1u);
     CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTH)), 1u);
 }
 
@@ -4306,20 +4312,20 @@ static void test_ltsc_absolute_time(void)
      */
     devwr(LTSC(G4MH_LTSC_TCS), G4MH_LTSC_TS);
     set_now(6000u);
-    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 1000u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 1000u * 80u);
 
     set_now(9000u);
-    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 4000u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 4000u * 80u);
 
     /* Stopped again: it holds, and holds across further time. */
     devwr(LTSC(G4MH_LTSC_TCT), G4MH_LTSC_TT);
     set_now(20000u);
-    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 4000u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 4000u * 80u);
 
     /* And resumes from where it stopped, not from where the clock is. */
     devwr(LTSC(G4MH_LTSC_TCS), G4MH_LTSC_TS);
     set_now(20500u);
-    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 4500u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 4500u * 80u);
 
     /*
      * A preset re-anchors. Without that the next set_time would compute
@@ -4330,7 +4336,7 @@ static void test_ltsc_absolute_time(void)
     devwr(LTSC(G4MH_LTSC_CNTH), 0u);
     devwr(LTSC(G4MH_LTSC_TCS), G4MH_LTSC_TS);
     set_now(20800u);
-    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 400u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 100u + 300u * 80u);
 }
 
 static void test_ltsc_preset(void)
@@ -4383,19 +4389,20 @@ static void test_ltsc_start_stop(void)
 
     devwr(LTSC(G4MH_LTSC_TCS), G4MH_LTSC_TS);
     tick(50u);
-    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 50u);
+    /* 80 MHz against a 1 MHz platform tick: 50 microseconds is 4000. */
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 50u * 80u);
 
     /* Stop, and it holds. */
     devwr(LTSC(G4MH_LTSC_TCT), G4MH_LTSC_TT);
     CHECK_EQ(devrd(LTSC(G4MH_LTSC_CSTR)), 0u);
     tick(50u);
-    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 50u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 50u * 80u);
 
     /* Restart continues from where it was: this is a clock, not a lap
      * timer, and the TPTM's free-running channel is the one that zeroes. */
     devwr(LTSC(G4MH_LTSC_TCS), G4MH_LTSC_TS);
     tick(7u);
-    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 57u);
+    CHECK_EQ(devrd(LTSC(G4MH_LTSC_CNTL)), 57u * 80u);
 
     /* TCS and TCT always read zero, being write-only strobes. */
     CHECK_EQ(devrd(LTSC(G4MH_LTSC_TCS)), 0u);

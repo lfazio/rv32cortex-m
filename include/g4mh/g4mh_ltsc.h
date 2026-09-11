@@ -45,6 +45,27 @@
 #define G4MH_LTSC_CNTL 0x0040u /* RW: low 32; a read captures all 64  */
 #define G4MH_LTSC_CNTH 0x0044u /* RW: high 32; a read returns capture */
 
+/*
+ * **The counter runs at 80 MHz**, which is PCLK for this unit: section
+ * 44's clock-supply table names CLKC_HSB, and section 15 calls that
+ * "CLKC_HSB (80-MHz clean clock)".
+ *
+ * It matters because the platform does not supply counts, it supplies
+ * *time* -- the host reads a monotonic clock in microseconds and a board
+ * ticks at 1 MHz -- so this ratio is what turns one into the other.
+ * Getting it wrong does not fail: the counter still counts, monotonically
+ * and smoothly, just at the wrong rate, and a guest measuring anything
+ * against it is wrong by exactly this factor.
+ */
+#define G4MH_LTSC_HZ 80000000u
+
+/*
+ * What the platform's time is measured in. Both platforms here speak
+ * microseconds; the conversion is written out rather than folded into a
+ * constant so that changing either end is one edit.
+ */
+#define G4MH_LTSC_PLATFORM_HZ 1000000u
+
 #define G4MH_LTSC_TS 0x1u   /* LTSCnTCS.LTSCnTS   */
 #define G4MH_LTSC_TT 0x1u   /* LTSCnTCT.LTSCnTT   */
 #define G4MH_LTSC_CST 0x1u  /* LTSCnCSTR.LTSCnCST */

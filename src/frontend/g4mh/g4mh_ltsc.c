@@ -11,6 +11,18 @@
 
 #include "g4mh/g4mh_ltsc.h"
 
+/*
+ * Platform time to counter steps. The platform speaks microseconds and
+ * the counter runs at 80 MHz, so this is x80 -- done in 64 bits and as
+ * a single expression so it stays exact for any ratio rather than only
+ * for integer ones.
+ */
+static uint64_t ltsc_counts(uint64_t platform_ticks)
+{
+    return (platform_ticks * (uint64_t)G4MH_LTSC_HZ) /
+           (uint64_t)G4MH_LTSC_PLATFORM_HZ;
+}
+
 void g4mh_ltsc_init(g4mh_ltsc_t *t)
 {
     t->cnt = 0u;
@@ -34,14 +46,14 @@ void g4mh_ltsc_set_time(g4mh_ltsc_t *t, uint64_t now)
 {
     t->last_now = now;
     if (t->running != 0u) {
-        t->cnt = t->offset + (now - t->origin);
+        t->cnt = t->offset + ltsc_counts(now - t->origin);
     }
 }
 
 void g4mh_ltsc_advance(g4mh_ltsc_t *t, uint32_t ticks)
 {
     if (t->running != 0u) {
-        t->cnt += ticks;
+        t->cnt += ltsc_counts((uint64_t)ticks);
     }
 }
 
