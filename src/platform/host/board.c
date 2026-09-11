@@ -615,9 +615,15 @@ static uint32_t g_timer_div = 1u;
 /*
  * The display.
  *
- * 320x200 indexed is Doom's mode, and the default here for that reason:
- * it is the geometry the first guest to use this will ask for, and a
- * default nothing uses would be a default nobody checks.
+ * 1024x768 indexed, which is what the guests here ask for. A guest
+ * that wants something else sets it -- the mode registers are the point
+ * of the device -- and every mode in its table fits the buffer, which
+ * is sized by emu_fb_max_bytes() rather than by this geometry.
+ *
+ * It was 320x200, Doom's mode and the cheapest thing to draw: every
+ * pixel is a guest store the emulator has to execute, so a frame is now
+ * 768 KiB against 64. That cost is paid by the guest, in emulated
+ * instructions, rather than by the host.
  *
  * `present` is host_display_present, which draws into an SDL3 window
  * when the build has one and does nothing when it does not. The device
@@ -627,8 +633,8 @@ static uint32_t g_timer_div = 1u;
  */
 void host_display_present(void *ctx, const emu_fb_frame_t *frame);
 void host_display_shutdown(void);
-#define HOST_FB_WIDTH 320u
-#define HOST_FB_HEIGHT 200u
+#define HOST_FB_WIDTH 1024u
+#define HOST_FB_HEIGHT 768u
 
 static emu_fb_t g_fb;
 static uint8_t *g_fb_pixels;

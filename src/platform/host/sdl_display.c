@@ -121,13 +121,23 @@ static bool ensure_window(const emu_fb_frame_t *f)
             return false;
         }
         /*
-         * Opened at a multiple of the guest's mode. 320x200 on a modern
-         * display is a postage stamp -- unreadable rather than merely
-         * small -- and the logical presentation below means the guest
-         * still draws 320x200 and SDL does the scaling. EMU_SDL_SCALE
-         * overrides it for a screen where 3x does not fit.
+         * Opened at a multiple of the guest's mode, and **the multiple
+         * depends on the mode**: 320x200 on a modern display is a
+         * postage stamp -- unreadable rather than merely small -- while
+         * 1024x768 tripled is 3072x2304 and fits on nothing. So the
+         * scale is whatever keeps the window inside a conventional
+         * screen, and EMU_SDL_SCALE overrides it either way.
+         *
+         * The logical presentation below means the guest draws its own
+         * geometry regardless and SDL does the scaling.
          */
         int scale = 3;
+
+        while (scale > 1 &&
+               ((int)f->width * scale > 1600 ||
+                (int)f->height * scale > 1000)) {
+            scale--;
+        }
         const char *const env = SDL_getenv("EMU_SDL_SCALE");
 
         if (env != NULL && SDL_atoi(env) > 0) {
