@@ -80,6 +80,22 @@ endif()
 # build flag quoted in prose is not a tested thing and the message a
 # first-time builder needs is the flag.
 #
+#
+# **And the guest RAM, for the same kind of reason at the other end.**
+# Quake's heap is a static array -- 16 MiB, which is what its own
+# default memsize asks for -- plus the surface cache and the engine's
+# statics, so .bss comes to about 17.5 MiB. Below that the link fails
+# with `region RAM overflowed`, which reads as a broken guest and is a
+# missing -D.
+#
+if(EMU_GUEST_RAM_KIB LESS 32768)
+    message(STATUS
+        "Quake: skipping the image -- its heap needs more than the "
+        "${EMU_GUEST_RAM_KIB} KiB guest RAM configured; re-run cmake "
+        "with -DEMU_GUEST_RAM_KIB=32768")
+    return()
+endif()
+
 if(EMU_GUEST_ROM_MIB LESS 32)
     message(STATUS
         "Quake: skipping the image -- its PAK needs more than the "
