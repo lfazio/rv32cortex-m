@@ -29,6 +29,12 @@ ENTRY(_start)
  * large it is. That is what lets an architecture test needing 345 KiB
  * run on a part with 264 KiB of guest RAM.
  *
+ * Its size is a *link-time bound*, not a mapping: the host maps
+ * whatever the image turns out to be, and a board serves it from its own
+ * flash. 16 MiB is plenty for every guest here except one -- Quake
+ * carries an 18.7 MiB PAK in .rodata -- so it is a variable rather than
+ * a constant, raised by the recipe that needs it.
+ *
  * **The emulator does not need to know where the boundary is.** It used
  * to: the image was split at __guest_ro_end and the two halves uploaded
  * separately, which is how the board learned where to stop serving flash
@@ -38,7 +44,7 @@ ENTRY(_start)
  */
 MEMORY
 {
-    FLASH (rx)  : ORIGIN = 0x20000000, LENGTH = 16M
+    FLASH (rx)  : ORIGIN = 0x20000000, LENGTH = @EMU_GUEST_ROM_MIB@M
     RAM   (rwx) : ORIGIN = 0x80000000, LENGTH = @EMU_GUEST_RAM_KIB@K
 }
 
@@ -93,6 +99,29 @@ SECTIONS
         PROVIDE(__global_pointer$ = . + 0x800);
         *(.sdata .sdata.*)
         . = ALIGN(4);
+    } > RAM AT> FLASH
+
+    /*
+     * Thread-local storage, which a single-threaded bare-metal guest
+     * still needs because **picolibc keeps errno and the random-number
+     * state in it**. A TLS access goes through `tp`, so with tp unset
+     * every one of them lands near address 0 -- and a guest whose mtvec
+     * is also unset traps there and spins, silently. Quake found it
+     * twice in one run: rand() faulted on a load and srand() on a
+     * store, both at address 0.
+     *
+     * .tdata and .tbss must be *contiguous and in this order*, because
+     * the compiler addresses both as offsets from one base. .tdata sits
+     * inside the .data copy range so start.S carries its initialisers
+     * across; .tbss sits inside the .bss zero range for the same
+     * reason, which is why __bss_start is declared here rather than in
+     * .bss below.
+     */
+    .tdata : ALIGN(8)
+    {
+        __tls_base = .;
+        *(.tdata .tdata.*)
+        . = ALIGN(4);
         __data_end = .;
     } > RAM AT> FLASH
 
@@ -113,9 +142,15 @@ SECTIONS
      */
     __data_lma = LOADADDR(.data);
 
+    .tbss (NOLOAD) : ALIGN(4)
+    {
+        /* Zeroed with .bss, and immediately after .tdata: see above. */
+        __bss_start = .;
+        *(.tbss .tbss.*)
+    } > RAM
+
     .bss (NOLOAD) : ALIGN(4)
     {
-        __bss_start = .;
         *(.sbss .sbss.*)
         *(.bss .bss.*)
         *(COMMON)

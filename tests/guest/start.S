@@ -19,6 +19,20 @@ _start:
 .option push
 .option norelax
     la      gp, __global_pointer$
+
+    /*
+     * tp, the thread pointer, which every thread-local access is
+     * relative to. A single-threaded guest still has TLS: **picolibc
+     * puts errno and the random-number state there**, so leaving tp
+     * zero sends those accesses to address 0 -- a fault, and on a guest
+     * with no trap handler a silent spin rather than a message. Quake
+     * hit it twice in one run, on rand() and on srand().
+     *
+     * __tls_base is the start of .tdata, which the linker script keeps
+     * immediately ahead of .tbss for exactly this. Inside the same
+     * norelax block as gp, for the same reason.
+     */
+    la      tp, __tls_base
 .option pop
 
     /*
