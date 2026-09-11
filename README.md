@@ -119,7 +119,7 @@ board result.
 | `RV32_EXT_PMP` / `RV32_EXT_SDTRIG` | `ON` | Each costs a little even unused; `OFF` removes it. |
 | `RV32_NATIVE_COREMARK` | `OFF` | Run CoreMark natively on the ARM instead of the emulator, for the baseline. |
 | `EMU_SDL` | `OFF` | Show the guest framebuffer in an SDL3 window, and feed the keyboard and mouse devices from it. Needs `sdl3` via pkg-config; off by default so a host without it still builds. |
-| `EMU_SDL_SCALE` | `3` | Window scale. 320x200 is small on a modern display. |
+| `EMU_SDL_SCALE` | auto | Window scale, stepped down until the window fits a conventional screen -- 3x suits 320x200 and 1x suits the 1024x768 default. Set it to override either way. |
 | `EMU_DOOM` | `OFF` | Fetch and build DOOM as a guest. The fetch is large -- the WAD is compiled in as a C array -- so a checkout that does not ask for it does not pay. |
 | `EMU_GUEST_RAM_KIB` | `48` | Guest RAM region the images are linked against. DOOM needs `8192`; below that its rv32 image is skipped with a message naming this flag. |
 | `RV_GUEST_MARCH` | see below | Guest ISA. A **cache variable**, so pass it explicitly when changing it. |
