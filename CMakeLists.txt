@@ -81,6 +81,15 @@ option(EMU_ENABLE_STATS "Collect run statistics" ON)
 # static carve-out so the two can never disagree; see tests/guest/guest.ld.in.
 set(EMU_GUEST_RAM_KIB "48" CACHE STRING "Guest RAM size in KiB")
 
+#
+# The guest's read-only window, in MiB, and a *link-time bound* rather
+# than a mapping: the host maps whatever the image turns out to be and a
+# board serves it from its own flash, so this only decides when the
+# linker refuses. 16 covers every guest here but Quake, which carries an
+# 18.7 MiB PAK in .rodata.
+#
+set(EMU_GUEST_ROM_MIB "16" CACHE STRING "Guest flash window in MiB")
+
 # Link-time optimisation. The interpreter calls into rv_hart and rv_bus on
 # every emulated instruction; without cross-TU inlining those stay real
 # calls, and they are the hottest code in the project.
@@ -291,6 +300,23 @@ set(SOFTFLOAT_DIR "${CMAKE_BINARY_DIR}/softfloat" CACHE PATH "Berkeley SoftFloat
 
 option(RV32_EXT_SDTRIG "Sdtrig debug triggers" ON)
 option(RV32_EXT_PMP "Physical memory protection" ON)
+
+#
+# Misaligned loads and stores, emulated by splitting rather than raising.
+#
+# **The C library needs it.** picolibc's strcmp and friends are
+# word-at-a-time with no alignment preamble -- they read `lw` straight
+# off the pointer -- so any guest that links them and compares an
+# odd-addressed string takes a load-address-misaligned trap inside the
+# library. Quake does it on its first file lookup; DOOM happened not to,
+# which is the only reason this was not found sooner.
+#
+# ON by default for that reason: a guest built with this toolchain is
+# far more likely to need it than to be testing a core that traps. The
+# RISC-V spec permits either, and embedded cores usually raise -- so
+# turn it OFF to model one of those.
+#
+option(RV32_MISALIGNED "Emulate misaligned load/store instead of trapping" ON)
 option(RV32_EXT_ZCB "Zcb compressed instructions" ON)
 #
 # The bit-manipulation set. Declared here and not only in rv_config.h,
@@ -537,6 +563,7 @@ if(EMU_GUEST_ARCH_RV32)
         RV_EXT_ZBC=$<BOOL:${RV32_EXT_ZBC}>
         RV_EXT_ZBS=$<BOOL:${RV32_EXT_ZBS}>
         RV_EXT_PMP=$<BOOL:${RV32_EXT_PMP}>
+        RV_MISALIGNED_OK=$<BOOL:${RV32_MISALIGNED}>
         RV_EXT_SDTRIG=$<BOOL:${RV32_EXT_SDTRIG}>
         RV_FPU_SOFTFLOAT=1
         RV_EXT_M=$<BOOL:${RV32_EXT_M}>
