@@ -1580,6 +1580,52 @@ session, and every one of them recurred:
   which two it actually used.** The performance-counter test in the same
   file had the identical defect.
 
+- **A suite passing is a statement about what it covers, and I checked
+  the wrong two.** Placing `.tdata`/`.tbss` in output sections of their
+  own put an *empty* `.tbss` before an `ALIGN(8)`'d `.tdata`, so
+  `__bss_start` came out below `__data_end` and the start-up copied and
+  zeroed overlapping ranges. Every guest that links `tests/guest/start.S`
+  stopped running -- CoreMark, Dhrystone, bench, crypto -- trapping to
+  an mtvec of zero and spinning silently.
+
+  arch-test (378/378) and riscv-tests (77/77) passed throughout, and I
+  ran both and believed them. **Their guests bring their own start-up
+  and never link that script.** The guests that do link it are the ones
+  nobody runs in a suite, so the one change that could break them was
+  the one the suites could not see.
+
+  The fix is to put `.tdata` inside `.data` and `.tbss` at the head of
+  `.bss`: contiguous and in order, which the compiler needs because it
+  addresses both from one base, and with the bounding symbols left in
+  the sections that are actually copied and zeroed.
+- **A failing build reads exactly like a passing A/B, and `grep -c`
+  hides it.** Three bisection steps of the above measured a binary
+  built before any of the changes, because `cmake --build ... | grep -cE
+  ' error'` swallowed the failure and the stale `.bin` was still at the
+  path the runner defaults to. Two of those steps pointed at innocent
+  files.
+
+  This file already says to `ls -la` the runner before believing a suite
+  result. The same rule for a bisection: **assert the build succeeded
+  before believing the run**, and check the artefact's timestamp moved.
+  A step that cannot fail loudly is a step that will mislead quietly.
+- **Measure before attributing, even when the theory is good.** The
+  host/guest instruction ratio on Quake is ~47, far above what a
+  translated block should cost, and the obvious explanation was
+  SoftFloat: this tree routes every FP operation through it unless a
+  backend lowers it natively, and Quake is full of them. I said so.
+
+  Dhrystone contains no floating point at all and measures **52.6**,
+  worse than Quake's 46.6; Whetstone is the most FP-heavy of the three
+  and measures **34.2**, the best. The theory is refuted in both
+  directions by one run each, and the same numbers say the native FP
+  lowering is working -- otherwise Whetstone would be the worst rather
+  than the best.
+
+  The instrument that settled it did not exist an hour earlier, which
+  is the other half: a ratio nobody can see is a question nobody can
+  answer, and the line that shows it took less time than the argument
+  about what it would show.
 - **A guest that runs is worth more than a suite that passes, when the
   suite shares an author with the thing it tests.** G4MH's unit tests are
   hand-assembled halfword arrays, deliberately not sharing an encoder
