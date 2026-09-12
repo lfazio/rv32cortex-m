@@ -725,6 +725,36 @@ void host_rate_init(bool quiet)
     }
 }
 
+/*
+ * A count with thousands separators. Written out rather than left to
+ * the locale, because a run under LC_ALL=C would silently lose them and
+ * a nine-digit number without grouping is unreadable at a glance --
+ * which is the whole reason this line exists.
+ */
+static const char *grouped(uint64_t v, char *buf, size_t n)
+{
+    char raw[24];
+    int len;
+    size_t out = 0u;
+    int i;
+
+    len = snprintf(raw, sizeof(raw), "%llu", (unsigned long long)v);
+    if (len < 0) {
+        return "?";
+    }
+
+    for (i = 0; i < len; i++) {
+        if (i > 0 && ((len - i) % 3) == 0 && out + 1u < n) {
+            buf[out++] = ',';
+        }
+        if (out + 1u < n) {
+            buf[out++] = raw[i];
+        }
+    }
+    buf[out] = '\0';
+    return buf;
+}
+
 static void rate_report(uint64_t retired_total, uint64_t now_us)
 {
     /*
@@ -760,7 +790,7 @@ static void rate_report(uint64_t retired_total, uint64_t now_us)
         double host_mcps = 0.0;
         emu_jit_stats_t js;
         char hbuf[32];
-        char cbuf[32];
+        char gbuf[32];
 
         host_perf_read(&hi, &hc);
         host_mips = (double)(hi - g_rate_last_hinsns) / (double)dt;
@@ -776,16 +806,18 @@ static void rate_report(uint64_t retired_total, uint64_t now_us)
          * declining.
          */
         if (host_perf_have_insns()) {
-            (void)snprintf(hbuf, sizeof(hbuf), "%7.1f", host_mips);
+            (void)snprintf(hbuf, sizeof(hbuf), "%6.1f", host_mips);
         } else {
-            (void)snprintf(hbuf, sizeof(hbuf), "%7s", "-");
+            (void)snprintf(hbuf, sizeof(hbuf), "%6s", "-");
         }
-        if (host_perf_have_cycles()) {
-            (void)snprintf(cbuf, sizeof(cbuf), "%7.1f%s", host_mcps,
-                           host_perf_cycles_are_tsc() ? "t" : " ");
-        } else {
-            (void)snprintf(cbuf, sizeof(cbuf), "%7s ", "-");
-        }
+        /*
+         * Cycles are measured but no longer shown. Without perf they
+         * are the TSC, which ticks at a fixed rate and so reports
+         * elapsed time rather than work -- a figure that looks like a
+         * measurement and is not. The ratio above is what the line is
+         * for, and it needs instructions rather than cycles.
+         */
+        (void)host_mcps;
 
         emu_jit_get_stats(&js);
 
@@ -798,21 +830,31 @@ static void rate_report(uint64_t retired_total, uint64_t now_us)
          * counter, so elapsed time in disguise rather than work done.
          */
         /*
-         * The units are on the line because two of these are rates and
-         * two are totals, and a reader should not have to know which:
-         * `MIPS` is millions per second of *this interval*, `entries`
-         * is cumulative since the run began.
+         * A dashboard, and **ratio is the headline**: host instructions
+         * per guest instruction is the one number that says how good
+         * the translation is, and it is the one a JIT change moves.
+         * Everything else on the line is either an input to it or the
+         * JIT's own bookkeeping.
          *
-         * `hostMIPS/guestMIPS` is the ratio worth watching -- host
-         * instructions per guest instruction is what a JIT change
-         * moves -- which is why the two sit next to each other.
+         * It is a dash whenever the host figure is, because a ratio
+         * computed from a counter that is not there would be a
+         * confident number derived from nothing -- which is worse than
+         * an absent one.
          */
+        char rbuf[16];
+
+        if (host_perf_have_insns() && mips > 0.0) {
+            (void)snprintf(rbuf, sizeof(rbuf), "%5.2f", host_mips / mips);
+        } else {
+            (void)snprintf(rbuf, sizeof(rbuf), "%5s", "-");
+        }
+
         (void)fprintf(stderr,
-                      "\r  guest %7.1f MIPS   host %s MIPS %s Mcyc/s   "
-                      "jit %5u blocks %5u built %6u KiB  %10llu entries ",
-                      mips, hbuf, cbuf, js.blocks, js.translations,
+                      "\r  guest %6.1f M/s   host %s M/s   ratio %s   "
+                      "jit %5u blk  comp %5u  code %5u KiB  exec %s ",
+                      mips, hbuf, rbuf, js.blocks, js.translations,
                       (unsigned)(js.code_used / 1024u),
-                      (unsigned long long)js.block_entries);
+                      grouped(js.block_entries, gbuf, sizeof(gbuf)));
         (void)fflush(stderr);
         g_rate_printed = true;
     }
