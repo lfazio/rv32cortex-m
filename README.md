@@ -257,6 +257,32 @@ as a C array is 93 MB of source and CC-RH runs out of memory on it.
 There is no sound on either: the port's audio path is a syscall
 belonging to another board, and this one has no audio device.
 
+### Linux, and the devices for it
+
+Not booting yet -- see [docs/TODO.md](docs/TODO.md) for what is done and
+what is not -- but the machine it will need is in place:
+
+```sh
+dtc -I dts -O dtb -o rv32-emu.dtb boot/rv32-emu.dts
+./build/host/emu-host --supervisor --dtb rv32-emu.dtb \
+                      --virtio-input --9p share:/path/to/dir <image>
+```
+
+| flag | what it does |
+|---|---|
+| `--supervisor` | delivers external interrupts to S-mode, where an OS under OpenSBI runs. Without it every register reads correctly and the interrupt arrives where nothing is listening. |
+| `--virtio-input` | a virtio keyboard and mouse, for a driver to bind to. The simple polled devices stay; both see the same events. |
+| `--9p [TAG:]DIR` | a host directory as a filesystem: `mount -t 9p -o trans=virtio,version=9p2000.L TAG /mnt` |
+
+Devices land at `0x1000_1000` upwards, `0x1000` apart, on interrupts
+from 1, **in the order the options ask for them**. The device tree has
+to agree and nothing checks that it does -- they are two descriptions
+of one machine, and disagreeing is silent.
+
+The virtio devices themselves are TinyEMU's, vendored under
+[third_party/tinyemu/](third_party/tinyemu/README.md) and unmodified;
+the porting layer is four functions.
+
 ### The G4MH toolchain
 
 CC-RH is the only compiler that emits G4MH and a checkout cannot assume
