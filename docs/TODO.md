@@ -55,13 +55,46 @@ measured at.
         `interrupts-extended` to the cpu intc and no `msi-parent` --
         because MSI mode needs an IMSIC and the AIA CSRs, which this
         emulator does not implement.
-  - [ ] **virtio-mmio transport**, then the devices on it, in this order:
-        `virtio-blk` (a real rootfs, and the first thing that makes the
-        emulator's throughput measurable), `virtio-net`, then the input
-        and display below.
-- [ ] **Doom II, then Quake III** -- as benchmarks with a real frame rate
+  - [x] **virtio-mmio transport**, done by importing rather than
+        writing: TinyEMU's `virtio.c` is vendored byte-identical under
+        `third_party/tinyemu/` (MIT), and the porting layer is four
+        functions -- `cpu_register_device` to `emu_bus_add_mmio`,
+        `phys_mem_get_ram_ptr` to `emu_bus_host_ptr`, `set_irq` to
+        `emu_raise_irq`, and a dozen inline helpers. That brings block,
+        console, net, input and 9p with it. The PCI transport is refused
+        loudly rather than stubbed, because a stub lets `virtio_pci_init`
+        appear to succeed and return a device that never answers.
+  - [~] **The devices on it.** `--9p [TAG:]DIR` works and is the first
+        one on purpose: it needs no image to build and no partition
+        table to get right, so the host directory *is* the filesystem.
+        Next is `virtio-blk` (the one that makes throughput measurable),
+        then `virtio-net`, then input and display.
+
+        **None of them can interrupt yet**, which is the blocker above
+        rather than here: the devices are mapped and answer their magic,
+        version and device id, and a driver that probes will find them
+        and then wait for ever on a queue whose completion nothing
+        signals. The APLIC is the next piece.
+
+        And the device tree has to name them: 0x1000_1000 upwards,
+        0x1000 apart, interrupts from 1. Nothing checks that the tree
+        and the emulator agree -- they are two descriptions of one
+        machine, and the usual failure is a driver finding nothing.
+- [~] **Doom II, then Quake III** -- as benchmarks with a real frame rate
       rather than a checksum, and as the first guests big enough to make
       the JIT's figures mean something.
+
+      **DOOM and Quake 1 both run, on rv32 and on G4MH**, at 1024x768:
+      DOOM loads E1M1 and plays, Quake initialises, loads `demo1.dem`
+      and runs it. Recipes are in the README; the game data is supplied
+      rather than fetched. What they bought beyond being playable was
+      four emulator defects neither test suite could see -- a JIT that
+      read a load's displacement as a floating-point opcode, a guest
+      runtime with no thread pointer, misaligned access the C library
+      assumes, and a flash window sized for smaller images.
+
+      Still to do here: Doom II and Quake III, which are the larger
+      data sets rather than new ports.
 
       Order is rv32, then g4mh, then ppc -- but **the second and third are
       blocked on toolchains rather than on the emulator**, which is worth
@@ -148,7 +181,9 @@ measured at.
   - [ ] `ppc_pairstats.c` -- the histogram that answers "which
         instruction next" with a measurement instead of an opinion.
 - [ ] **JIT** - Autovectorisation of the IR pipeline. This is a big task, but it would be a good demonstration of the emulator's capabilities.
-- [ ] Add simple drivers for the rh850u2b6.
+- [ ] Add simple drivers for the rh850u2b6.based on their specification in the reference manual.
+  - [ ] Option bytes: impact on clocks
+  - [ ] Clock tree
   - [ ] ltsc
   - [ ] ostm
   - [ ] gpio/on emulated on top of stm32 gpio hal, emualated to output the binary state of output on a udp/ip connexion.
