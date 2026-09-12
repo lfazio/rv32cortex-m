@@ -473,6 +473,44 @@ add_library(emucore STATIC
     src/emu/emu_input.c
 )
 
+#
+# virtio-mmio, over TinyEMU's implementation.
+#
+# **Host only, and off elsewhere by construction.** virtio walks the
+# guest's descriptor rings through host pointers and TinyEMU's 9p
+# backend calls openat, statfs and friends -- neither is available on a
+# microcontroller, and neither would fit in its flash if it were.
+#
+# The vendored sources are compiled with warnings relaxed: they are not
+# this project's code to tidy, and warnings nobody will act on train
+# people to ignore the ones that matter. The glue beside them is built
+# with the project's usual flags, because that part *is* ours.
+#
+option(EMU_VIRTIO "virtio-mmio devices (host only)" ON)
+
+if(EMU_VIRTIO AND EMU_PLATFORM STREQUAL "host")
+    target_sources(emucore PRIVATE
+        third_party/tinyemu/virtio.c
+        third_party/tinyemu/fs.c
+        third_party/tinyemu/fs_disk.c
+        src/emu/virtio/virtio_glue.c
+        src/emu/virtio/virtio_nopci.c
+        src/emu/virtio/emu_virtio.c)
+
+    target_include_directories(emucore PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinyemu
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/emu/virtio)
+
+    set_source_files_properties(
+        third_party/tinyemu/virtio.c
+        third_party/tinyemu/fs.c
+        third_party/tinyemu/fs_disk.c
+        PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+target_compile_definitions(emucore PUBLIC
+    EMU_HAVE_VIRTIO=$<BOOL:${EMU_VIRTIO}>)
+
 target_include_directories(emucore PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 

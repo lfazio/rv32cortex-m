@@ -4,6 +4,12 @@ add_executable(emu-unit
     test_main.c
     test_bus.c
     test_fb.c
+    #
+    # Built unconditionally and empty when virtio is off, rather than
+    # conditionally added: a test file that disappears from the list is
+    # a test nobody notices has stopped running.
+    #
+    test_virtio.c
     test_ir.c
 )
 

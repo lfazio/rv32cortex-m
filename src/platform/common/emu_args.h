@@ -44,6 +44,15 @@ typedef struct emu_args {
      */
     const char *dtb_path;
 
+    /*
+     * A host directory the guest mounts over virtio-9p, and the tag it
+     * mounts by. NULL means no filesystem device, which is the default:
+     * a guest that does not ask for one should not be given a device
+     * its device tree does not describe.
+     */
+    const char *p9_root;
+    const char *p9_tag;
+
     uint32_t quantum;
     uint64_t max_insn;
     uint32_t timer_div;

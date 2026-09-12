@@ -76,6 +76,10 @@ void emu_args_usage(void)
         "  --entry ADDR         reset pc (default: load address, or the",
         "                       ELF entry point)",
         "  --dtb FILE           flattened device tree, placed at the top of",
+        "  --9p [TAG:]DIR       share a host directory over virtio-9p; the",
+        "                       guest mounts it with",
+        "                         mount -t 9p -o trans=virtio,version=9p2000.L",
+        "                                     TAG /mnt   (TAG defaults to host)",
         "                       RAM with its address in a1 (RISC-V) -- what",
         "                       OpenSBI and Linux read the machine out of",
         "  --max-insn N         stop after N instructions (0 = unlimited)",
@@ -167,6 +171,41 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
                     return false;
                 }
                 opt->dtb_path = argv[i];
+                continue;
+            }
+            if (strcmp(a, "--9p") == 0) {
+                if (argv[++i] == NULL) {
+                    emu_args_usage();
+                    *status = 2;
+                    return false;
+                }
+                /*
+                 * `tag:dir`, or just `dir` with a default tag. The tag
+                 * is what `mount -t 9p` names, so it has to be
+                 * settable -- a device tree written elsewhere will have
+                 * picked one.
+                 */
+                {
+                    const char *const colon = strchr(argv[i], ':');
+
+                    if (colon != NULL && colon != argv[i]) {
+                        static char tagbuf[64];
+                        const size_t n = (size_t)(colon - argv[i]);
+
+                        if (n >= sizeof(tagbuf)) {
+                            emu_args_usage();
+                            *status = 2;
+                            return false;
+                        }
+                        memcpy(tagbuf, argv[i], n);
+                        tagbuf[n] = '\0';
+                        opt->p9_tag = tagbuf;
+                        opt->p9_root = colon + 1;
+                    } else {
+                        opt->p9_tag = "host";
+                        opt->p9_root = argv[i];
+                    }
+                }
                 continue;
             }
             if (strcmp(a, "--ram") == 0) {

@@ -28,6 +28,9 @@
 #include "emu_console.h"
 #include "emu_debug.h"
 #include "emu_args.h"
+
+void host_rate_init(bool quiet);
+#include "emu/emu_virtio.h"
 #include "emu_image.h"
 #include "emu/emu_elf.h"
 #include "emu_run.h"
@@ -129,10 +132,74 @@ bool emu_main_reload(void)
  * reasoning being right about the wrong file. A platform's ISR calls
  * this; nothing about it is per-part.
  */
+/*
+ * Weak, so a platform with no terminal needs no opinion about it. The
+ * host overrides it; a board links this and does nothing.
+ */
+__attribute__((weak)) void host_rate_init(bool quiet)
+{
+    (void)quiet;
+}
+
 void emu_raise_irq(uint32_t source, bool level)
 {
     emu_core_set_irq(&g_sys.core[0], source, level);
 }
+
+#if EMU_HAVE_VIRTIO
+/*
+ * virtio's interrupt line, which is the same line any other device
+ * raises -- emu_raise_irq is what a platform's ISR already calls, and a
+ * virtio device is not special about it.
+ *
+ * **Level triggered**, which is the part that is easy to get wrong: the
+ * device holds the line up until the guest writes InterruptACK, so this
+ * must pass `level` through rather than pulsing. A driver that acks and
+ * still sees the line asserted takes another interrupt, which is
+ * correct; one that never sees it asserted at all hangs waiting for a
+ * queue that is already done.
+ */
+static void virtio_irq(void *ctx, int irq_num, int level)
+{
+    (void)ctx;
+    emu_raise_irq((uint32_t)irq_num, level != 0);
+}
+
+/*
+ * Where the devices live.
+ *
+ * Chosen to match what a device tree for this machine would say, and
+ * **nothing checks that they agree** -- they are two descriptions of one
+ * machine, and the usual failure is a driver that probes and finds
+ * nothing. 0x1000_1000 upwards at 0x1000 apart is the layout the
+ * `virt` machines use, so a device tree written for one of those needs
+ * the fewest changes.
+ */
+#define EMU_VIRTIO_BASE 0x10001000u
+#define EMU_VIRTIO_STRIDE 0x1000u
+#define EMU_VIRTIO_IRQ_BASE 1
+
+static void virtio_attach(emu_bus_t *bus, const emu_args_t *args)
+{
+    unsigned n = 0;
+
+    if (!emu_virtio_init(bus, virtio_irq, NULL)) {
+        return;
+    }
+
+    if (args->p9_root != NULL) {
+        const uint32_t base = EMU_VIRTIO_BASE + n * EMU_VIRTIO_STRIDE;
+
+        if (emu_virtio_add_9p(base, EMU_VIRTIO_IRQ_BASE + (int)n,
+                              args->p9_tag, args->p9_root)) {
+            emu_console_printf("virtio-9p  '%s' as '%s' at 0x%08x irq %d\n",
+                               args->p9_root, args->p9_tag,
+                               (unsigned)base, EMU_VIRTIO_IRQ_BASE + (int)n);
+            n++;
+        }
+    }
+}
+#endif /* EMU_HAVE_VIRTIO */
 
 /*
  * The native baseline: the same CoreMark sources compiled for the host
@@ -340,6 +407,22 @@ int main(int argc, char **argv)
             return status;
         }
     }
+
+    /*
+     * The rate trace, once the options are known. On the host it draws
+     * a self-rewriting line on stderr; everywhere else this is a weak
+     * no-op, because a board has no terminal to rewrite.
+     */
+    host_rate_init(args.quiet);
+
+#if EMU_HAVE_VIRTIO
+    /*
+     * After the address space, because the devices are mapped into it,
+     * and on core 0's bus only: virtio is not per-core, and every core
+     * sees the same devices through the same addresses.
+     */
+    virtio_attach(&g_buses[0], &args);
+#endif
 
     if (!emu_session_start(&g_sys, &g_cfg)) {
         emu_board_fatal(&status);
