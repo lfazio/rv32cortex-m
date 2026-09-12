@@ -43,6 +43,14 @@ static VIRTIODevice *g_devs[EMU_VIRTIO_MAX_DEVICES];
 static unsigned g_ndevs;
 static bool g_ready;
 
+/*
+ * Kept by pointer rather than by index, because posting an event has to
+ * find the right device and there is at most one of each. A machine
+ * with two keyboards is not a thing this emulator presents.
+ */
+static VIRTIODevice *g_kbd;
+static VIRTIODevice *g_mouse;
+
 static emu_virtio_irq_fn g_irq_fn;
 static void *g_irq_ctx;
 
@@ -70,6 +78,8 @@ bool emu_virtio_init(emu_bus_t *bus, emu_virtio_irq_fn irq, void *irq_ctx)
     g_irq_fn = irq;
     g_irq_ctx = irq_ctx;
     g_ndevs = 0u;
+    g_kbd = NULL;
+    g_mouse = NULL;
     g_ready = true;
     return true;
 }
@@ -167,6 +177,72 @@ bool emu_virtio_add_console(uint32_t base, int irq_num)
     cdev.read_data = console_read;
 
     return remember(virtio_console_init(&def, &cdev), "console", base);
+}
+
+/* ------------------------------------------------------------------ */
+/* Input                                                               */
+/* ------------------------------------------------------------------ */
+
+bool emu_virtio_add_keyboard(uint32_t base, int irq_num)
+{
+    VIRTIOBusDef def;
+    VIRTIODevice *dev;
+
+    if (bus_def_for(base, irq_num, &def) == NULL) {
+        return false;
+    }
+
+    dev = virtio_input_init(&def, VIRTIO_INPUT_TYPE_KEYBOARD);
+    if (!remember(dev, "keyboard", base)) {
+        return false;
+    }
+    g_kbd = dev;
+    return true;
+}
+
+bool emu_virtio_add_mouse(uint32_t base, int irq_num)
+{
+    VIRTIOBusDef def;
+    VIRTIODevice *dev;
+
+    if (bus_def_for(base, irq_num, &def) == NULL) {
+        return false;
+    }
+
+    /*
+     * MOUSE rather than TABLET: relative motion, which is what a mouse
+     * is and what a guest expects to be able to turn past the edge of
+     * the screen with. TABLET reports an absolute position, which suits
+     * a pointer that must track the host's cursor exactly and is the
+     * wrong shape for a game.
+     */
+    dev = virtio_input_init(&def, VIRTIO_INPUT_TYPE_MOUSE);
+    if (!remember(dev, "mouse", base)) {
+        return false;
+    }
+    g_mouse = dev;
+    return true;
+}
+
+void emu_virtio_key_event(bool down, uint16_t evdev_code)
+{
+    if (g_kbd != NULL) {
+        /*
+         * The return value says the queue was full -- the guest is not
+         * draining. Dropped rather than retried: input is only
+         * interesting while it is recent, and a queue that has backed
+         * up is one whose events are already stale.
+         */
+        (void)virtio_input_send_key_event(g_kbd, down ? TRUE : FALSE,
+                                          evdev_code);
+    }
+}
+
+void emu_virtio_mouse_event(int dx, int dy, int dz, unsigned int buttons)
+{
+    if (g_mouse != NULL) {
+        (void)virtio_input_send_mouse_event(g_mouse, dx, dy, dz, buttons);
+    }
 }
 
 /* ------------------------------------------------------------------ */

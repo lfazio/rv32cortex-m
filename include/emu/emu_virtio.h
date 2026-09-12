@@ -78,6 +78,41 @@ bool emu_virtio_add_9p(uint32_t base, int irq_num, const char *tag,
                        const char *root);
 
 /*
+ * A keyboard and a mouse on virtio-mmio.
+ *
+ * Separate devices, as they are on real hardware and as Linux expects:
+ * one evdev node each, so a guest can grab the mouse without taking the
+ * keyboard with it.
+ *
+ * These are *additional* to the emulator's own simple input devices at
+ * 0x3000_1000 and 0x3000_2000, not a replacement. Those are a ring a
+ * bare-metal guest polls, which is what DOOM and Quake use; these are
+ * what an operating system's driver binds to. Both can exist, and both
+ * are fed from the same events.
+ */
+bool emu_virtio_add_keyboard(uint32_t base, int irq_num);
+bool emu_virtio_add_mouse(uint32_t base, int irq_num);
+
+/*
+ * Post an event to whichever of the above exist.
+ *
+ * evdev codes, which is what the devices carry and what the SDL layer
+ * already converts to for the simple devices -- so one conversion feeds
+ * both and the two cannot disagree about what a key is.
+ *
+ * The mouse is *relative*: dx, dy and a wheel, plus a button bitmask
+ * that is the current state rather than a change. That is the shape
+ * virtio's mouse has, and it differs from the simple device beside it,
+ * which reports an absolute position because a guest that missed an
+ * event still has to know where the pointer is.
+ *
+ * Both are no-ops when the device was never created, so a caller does
+ * not have to ask first.
+ */
+void emu_virtio_key_event(bool down, uint16_t evdev_code);
+void emu_virtio_mouse_event(int dx, int dy, int dz, unsigned int buttons);
+
+/*
  * How many devices have been added, which is what a device-tree builder
  * needs to know and what a start-up banner should report.
  */

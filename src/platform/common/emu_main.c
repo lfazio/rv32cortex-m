@@ -187,6 +187,33 @@ static void virtio_attach(emu_bus_t *bus, const emu_args_t *args)
         return;
     }
 
+    if (args->virtio_input) {
+        /*
+         * Keyboard then mouse, in that order, so their addresses and
+         * interrupts are predictable from the command line rather than
+         * from which one happened to be created first -- the device
+         * tree has to name them and cannot ask.
+         */
+        const uint32_t kb = EMU_VIRTIO_BASE + n * EMU_VIRTIO_STRIDE;
+
+        if (emu_virtio_add_keyboard(kb, EMU_VIRTIO_IRQ_BASE + (int)n)) {
+            emu_console_printf("virtio-kbd  at 0x%08x irq %d\n",
+                               (unsigned)kb, EMU_VIRTIO_IRQ_BASE + (int)n);
+            n++;
+        }
+
+        {
+            const uint32_t ms = EMU_VIRTIO_BASE + n * EMU_VIRTIO_STRIDE;
+
+            if (emu_virtio_add_mouse(ms, EMU_VIRTIO_IRQ_BASE + (int)n)) {
+                emu_console_printf("virtio-mouse at 0x%08x irq %d\n",
+                                   (unsigned)ms,
+                                   EMU_VIRTIO_IRQ_BASE + (int)n);
+                n++;
+            }
+        }
+    }
+
     if (args->p9_root != NULL) {
         const uint32_t base = EMU_VIRTIO_BASE + n * EMU_VIRTIO_STRIDE;
 

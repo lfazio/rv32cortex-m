@@ -29,6 +29,7 @@
 #include "board_api.h"
 
 #include "emu/emu_dev.h"
+#include "emu/emu_virtio.h"
 #include "emu_console.h"
 
 #if EMU_SDL
@@ -37,6 +38,14 @@
 #include <string.h>
 
 static struct {
+    /*
+     * Which mouse buttons are down. Kept here because virtio carries
+     * the *current state* with every motion event rather than a press
+     * and a release, so something has to remember it between events --
+     * and SDL reports the transitions, not the state.
+     */
+    unsigned buttons;
+
     SDL_Window *window;
     SDL_Renderer *renderer;
     SDL_Texture *texture;
@@ -322,8 +331,19 @@ static void pump_events(void)
             const uint32_t code = evdev_for(e.key.scancode);
 
             if (code != 0u) {
-                emu_input_post(kbd, code,
-                               (e.type == SDL_EVENT_KEY_DOWN) ? 1u : 0u);
+                const bool down = (e.type == SDL_EVENT_KEY_DOWN);
+
+                emu_input_post(kbd, code, down ? 1u : 0u);
+                /*
+                 * And the virtio keyboard, from the *same* converted
+                 * code. One conversion feeds both, so the two device
+                 * families cannot disagree about what a key is -- which
+                 * they would the moment someone fixed a mapping in one
+                 * of two tables.
+                 *
+                 * A no-op when the device was not asked for.
+                 */
+                emu_virtio_key_event(down, (uint16_t)code);
             }
             break;
         }
@@ -333,6 +353,19 @@ static void pump_events(void)
                 emu_input_motion(mouse, (uint32_t)e.motion.x,
                                  (uint32_t)e.motion.y);
             }
+            /*
+             * **Relative for virtio, absolute for the simple device**,
+             * from the same SDL event, because the two devices are
+             * genuinely different shapes: a virtio mouse reports motion
+             * and a guest integrates it, while the polled device
+             * reports a position so a guest that missed an event still
+             * knows where the pointer is.
+             *
+             * SDL carries both, so neither is derived from the other
+             * and the deltas cannot drift from the position.
+             */
+            emu_virtio_mouse_event((int)e.motion.xrel, (int)e.motion.yrel, 0,
+                                   g_disp.buttons);
             break;
 
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -356,12 +389,40 @@ static void pump_events(void)
                 break;
             }
             if (code != 0u) {
-                emu_input_post(mouse, code,
-                               (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) ? 1u
-                                                                       : 0u);
+                const bool down = (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
+
+                emu_input_post(mouse, code, down ? 1u : 0u);
+
+                /*
+                 * virtio carries the *current button state* with each
+                 * motion event rather than a press and a release, so
+                 * the state has to be kept here. Sent with zero motion
+                 * so a click without movement still reaches the guest.
+                 */
+                {
+                    const unsigned bit =
+                        1u << (code - EMU_INPUT_BTN_LEFT);
+
+                    if (down) {
+                        g_disp.buttons |= bit;
+                    } else {
+                        g_disp.buttons &= ~bit;
+                    }
+                    emu_virtio_mouse_event(0, 0, 0, g_disp.buttons);
+                }
             }
             break;
         }
+
+        case SDL_EVENT_MOUSE_WHEEL:
+            /*
+             * virtio only. The simple polled device has no wheel: it
+             * reports a position and a button mask, and adding one
+             * would be inventing a register a guest does not know to
+             * read.
+             */
+            emu_virtio_mouse_event(0, 0, (int)e.wheel.y, g_disp.buttons);
+            break;
 
         default:
             break;

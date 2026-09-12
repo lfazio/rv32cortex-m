@@ -57,6 +57,13 @@ typedef struct emu_args {
      */
     bool supervisor;
 
+    /*
+     * Present a virtio keyboard and mouse as well as the simple polled
+     * devices. An operating system's driver binds to these; a
+     * bare-metal guest uses the others.
+     */
+    bool virtio_input;
+
     const char *p9_root;
     const char *p9_tag;
 

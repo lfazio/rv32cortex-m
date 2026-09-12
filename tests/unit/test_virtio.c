@@ -32,6 +32,7 @@
 
 #define VIRTIO_MAGIC_VALUE 0x74726976u /* 'virt', little-endian */
 #define VIRTIO_ID_9P 9u
+#define VIRTIO_ID_INPUT 18u
 
 #define TEST_VIRTIO_BASE 0x10001000u
 
@@ -126,6 +127,53 @@ void test_virtio(void)
                           1u, &v),
              EMU_FAULT_NONE);
     CHECK_EQ(v & 0xFFu, (uint32_t)'t');
+
+    /*
+     * A keyboard and a mouse beside it, at the next addresses.
+     *
+     * Checked mostly for the *device id*: virtio's input device is id
+     * 18 whatever it is configured as, so a keyboard and a mouse look
+     * identical from outside and the thing that separates them is the
+     * config space the driver reads afterwards. Getting the type
+     * backwards would produce two devices that both enumerate and one
+     * that reports the wrong events -- so what this pins is that two
+     * distinct devices exist, at the addresses the device tree will
+     * name.
+     */
+    if (!emu_virtio_add_keyboard(TEST_VIRTIO_BASE + 0x1000u, 2)) {
+        CHECK(false);
+        return;
+    }
+    if (!emu_virtio_add_mouse(TEST_VIRTIO_BASE + 0x2000u, 3)) {
+        CHECK(false);
+        return;
+    }
+    CHECK_EQ(emu_virtio_count(), 3u);
+
+    CHECK_EQ(emu_bus_read(&bus, TEST_VIRTIO_BASE + 0x1000u +
+                                    VIRTIO_MMIO_DEVICE_ID,
+                          4u, &v),
+             EMU_FAULT_NONE);
+    CHECK_EQ(v, VIRTIO_ID_INPUT);
+
+    CHECK_EQ(emu_bus_read(&bus, TEST_VIRTIO_BASE + 0x2000u +
+                                    VIRTIO_MMIO_DEVICE_ID,
+                          4u, &v),
+             EMU_FAULT_NONE);
+    CHECK_EQ(v, VIRTIO_ID_INPUT);
+
+    /*
+     * Posting with no driver attached must not fault.
+     *
+     * **This is the case that matters for the caller.** The SDL layer
+     * posts every event to these unconditionally -- it does not ask
+     * whether a device exists or whether a guest has configured one --
+     * so an event arriving before any queue is set up is the normal
+     * state of affairs for the whole of start-up, not an edge case.
+     */
+    emu_virtio_key_event(true, 30u);  /* 'a' */
+    emu_virtio_key_event(false, 30u);
+    emu_virtio_mouse_event(3, -2, 0, 1u);
 
     /*
      * Nothing has driven a queue, so nothing should have raised an

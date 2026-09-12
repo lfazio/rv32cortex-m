@@ -76,6 +76,9 @@ void emu_args_usage(void)
         "  --entry ADDR         reset pc (default: load address, or the",
         "                       ELF entry point)",
         "  --dtb FILE           flattened device tree, placed at the top of",
+        "  --virtio-input       present a virtio keyboard and mouse, for an",
+        "                       OS driver to bind to. The simple polled",
+        "                       devices stay; both see the same events.",
         "  --supervisor         the guest's OS runs in S-mode (Linux under",
         "                       OpenSBI). Routes external interrupts there",
         "                       instead of to M-mode; without it a driver",
@@ -175,6 +178,10 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
                     return false;
                 }
                 opt->dtb_path = argv[i];
+                continue;
+            }
+            if (strcmp(a, "--virtio-input") == 0) {
+                opt->virtio_input = true;
                 continue;
             }
             if (strcmp(a, "--supervisor") == 0) {
