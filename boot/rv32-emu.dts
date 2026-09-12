@@ -146,5 +146,66 @@
             reg = <0x02000000 0x10000>;
             interrupts-extended = <&cpu0_intc 3 &cpu0_intc 7>;
         };
+
+        /*
+         * APLIC, in **direct mode**.
+         *
+         * Direct because MSI mode needs an IMSIC and the AIA CSRs, and
+         * this emulator implements neither -- which the absence of
+         * `msi-parent` is what states. A node with one would be probed
+         * as MSI and fail at a layer that does not mention the tree.
+         *
+         * `interrupts-extended = <&cpu0_intc 9>` is the supervisor
+         * external interrupt, and it is the line this whole node hangs
+         * on: the emulator's APLIC delivers to M-mode by default and
+         * must be told otherwise with **--supervisor**. The two have to
+         * agree and nothing checks that they do -- they are two
+         * descriptions of one machine, and disagreeing is silent. Every
+         * register reads correctly and the interrupt arrives at a
+         * privilege Linux is not running at, so a driver waits for ever
+         * on a queue that already completed.
+         *
+         * 9 is S-mode external; 11 would be M-mode, for a tree
+         * describing a machine with no supervisor.
+         */
+        aplic: interrupt-controller@c000000 {
+            compatible = "riscv,aplic";
+            reg = <0x0c000000 0x8000>;
+            interrupts-extended = <&cpu0_intc 9>;
+            interrupt-controller;
+            #interrupt-cells = <2>;
+            riscv,num-sources = <31>;
+        };
+
+        /*
+         * virtio-mmio, at the addresses emu_main.c hands the devices:
+         * 0x1000_1000 upwards, 0x1000 apart, interrupts from 1. That is
+         * the `virt` machines' layout, so a tree written for one of
+         * those needs the fewest changes.
+         *
+         * The second cell of `interrupts` is the trigger type, and 4 is
+         * level-high -- which is what virtio-mmio is: the device holds
+         * its line up until the guest writes InterruptACK. Declaring it
+         * edge would work until two completions arrived close together,
+         * which is the kind of bug that appears only under load.
+         *
+         * One node per device the emulator was asked for. A node with
+         * no device behind it reads all-ones and is skipped by the
+         * driver, so extras are harmless -- but a *device* with no node
+         * is invisible, which is the direction that costs time.
+         */
+        virtio_mmio@10001000 {
+            compatible = "virtio,mmio";
+            reg = <0x10001000 0x1000>;
+            interrupt-parent = <&aplic>;
+            interrupts = <1 4>;
+        };
+
+        virtio_mmio@10002000 {
+            compatible = "virtio,mmio";
+            reg = <0x10002000 0x1000>;
+            interrupt-parent = <&aplic>;
+            interrupts = <2 4>;
+        };
     };
 };
