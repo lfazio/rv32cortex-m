@@ -20,6 +20,12 @@ add_executable(emu-host
     # wire through board_console_putc whether or not there is a network --
     # having it under if(EMU_NET) broke every host build without one.
     board.c
+    #
+    # The host's own instruction and cycle counters, for the rate line.
+    # Separate from board.c because it is the one part that is about the
+    # machine the emulator *runs on* rather than the one it presents.
+    #
+    host_perf.c
     sdl_display.c
 
     # The command line and the file it names: 188 of main()'s 477 lines,

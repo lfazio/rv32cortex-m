@@ -17,6 +17,8 @@
 #define _DEFAULT_SOURCE 1
 
 /* This platform: its own header, and the contract it implements. */
+#include "host_perf.h"
+#include "emu/emu_jit.h"
 #include "board.h"
 
 /* The shared runner pieces this file talks to. */
@@ -698,6 +700,8 @@ static bool g_rate_on;
 static bool g_rate_printed;
 static uint64_t g_rate_last_us;
 static uint64_t g_rate_last_retired;
+static uint64_t g_rate_last_hinsns;
+static uint64_t g_rate_last_hcycles;
 
 /* The line is left open, so something has to close it before anything
  * else prints -- otherwise the exit summary lands on top of it. */
@@ -714,6 +718,8 @@ void host_rate_init(bool quiet)
     g_rate_on = !quiet && isatty(fileno(stderr));
     g_rate_last_us = board_time_now();
     g_rate_last_retired = 0u;
+    host_perf_init();
+    host_perf_read(&g_rate_last_hinsns, &g_rate_last_hcycles);
     if (g_rate_on) {
         (void)atexit(rate_finish);
     }
@@ -747,10 +753,59 @@ static void rate_report(uint64_t retired_total, uint64_t now_us)
     /* instructions per microsecond is already millions per second. */
     mips = (double)dn / (double)dt;
 
-    (void)fprintf(stderr, "\r  %8.2f MIPS   %12llu retired ",
-                  mips, (unsigned long long)retired_total);
-    (void)fflush(stderr);
-    g_rate_printed = true;
+    {
+        uint64_t hi = 0u;
+        uint64_t hc = 0u;
+        double host_mips = 0.0;
+        double host_mcps = 0.0;
+        emu_jit_stats_t js;
+        char hbuf[32];
+        char cbuf[32];
+
+        host_perf_read(&hi, &hc);
+        host_mips = (double)(hi - g_rate_last_hinsns) / (double)dt;
+        host_mcps = (double)(hc - g_rate_last_hcycles) / (double)dt;
+        g_rate_last_hinsns = hi;
+        g_rate_last_hcycles = hc;
+
+        /*
+         * A dash rather than 0.00 for a counter that is not there.
+         * Zero is a measurement, and "the host executed no
+         * instructions" is the one reading that cannot be true -- so
+         * printing it would be the instrument lying rather than
+         * declining.
+         */
+        if (host_perf_have_insns()) {
+            (void)snprintf(hbuf, sizeof(hbuf), "%7.1f", host_mips);
+        } else {
+            (void)snprintf(hbuf, sizeof(hbuf), "%7s", "-");
+        }
+        if (host_perf_have_cycles()) {
+            (void)snprintf(cbuf, sizeof(cbuf), "%7.1f%s", host_mcps,
+                           host_perf_cycles_are_tsc() ? "t" : " ");
+        } else {
+            (void)snprintf(cbuf, sizeof(cbuf), "%7s ", "-");
+        }
+
+        emu_jit_get_stats(&js);
+
+        /*
+         * One line, and the order is guest then host then JIT --
+         * outermost measurement first, because that is the one a reader
+         * is usually watching and the others explain it.
+         *
+         * `t` after the cycle figure marks the TSC fallback: a fixed-rate
+         * counter, so elapsed time in disguise rather than work done.
+         */
+        (void)fprintf(stderr,
+                      "\r  guest %7.1f  host %s %s Mc/s  jit %6u blk "
+                      "%5u comp  %6u KiB  %10llu exec ",
+                      mips, hbuf, cbuf, js.blocks, js.translations,
+                      (unsigned)(js.code_used / 1024u),
+                      (unsigned long long)js.block_entries);
+        (void)fflush(stderr);
+        g_rate_printed = true;
+    }
 }
 
 static void advance_guest_time(emu_system_t *sys, uint64_t retired_total,
