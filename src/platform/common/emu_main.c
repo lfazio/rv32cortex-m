@@ -188,6 +188,16 @@ static void virtio_attach(emu_bus_t *bus, const emu_args_t *args)
         return;
     }
 
+    if (args->virtio_console) {
+        const uint32_t base = EMU_VIRTIO_BASE + n * EMU_VIRTIO_STRIDE;
+
+        if (emu_virtio_add_console(base, EMU_VIRTIO_IRQ_BASE + (int)n)) {
+            emu_console_printf("virtio-con  at 0x%08x irq %d\n",
+                               (unsigned)base, EMU_VIRTIO_IRQ_BASE + (int)n);
+            n++;
+        }
+    }
+
     if (args->virtio_input) {
         /*
          * Keyboard then mouse, in that order, so their addresses and

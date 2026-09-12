@@ -102,7 +102,15 @@ function(add_guest_image name)
     add_custom_target(guest-${name} ALL DEPENDS "${bin}")
 endfunction()
 
-add_guest_image(isatest  SOURCES start.S isatest.c)
+#
+# isatest is told how the *emulator* was configured, because one of the
+# behaviours it checks is a build option: whether a misaligned access
+# completes or raises. The architecture permits either, so the test has
+# to assert what this build chose -- and passing the flag here is what
+# keeps the two from drifting.
+#
+add_guest_image(isatest  SOURCES start.S isatest.c
+                FLAGS -DRV32_MISALIGNED=$<BOOL:${RV32_MISALIGNED}>)
 add_guest_image(hello    SOURCES start.S hello.c)
 
 #
@@ -143,6 +151,12 @@ add_guest_image(stm32drv SOURCES start.S stm32drv.c)
 # meaningful on the board; on the host the peripheral window is plain
 # memory, so it detects the absent timer and reports rather than hanging.
 add_guest_image(irqtest SOURCES start.S irqtest.c)
+#
+# Drives a virtio queue to completion and waits for the interrupt. Needs
+# the emulator started with --virtio-console; without one it reports
+# that and exits rather than hanging.
+#
+add_guest_image(virtiotest SOURCES start.S virtiotest.c)
 
 # The CMSIS-Core shim, taking the same interrupt through the vendor API
 # rather than through APLIC registers.

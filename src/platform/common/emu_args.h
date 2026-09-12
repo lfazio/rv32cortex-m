@@ -70,6 +70,13 @@ typedef struct emu_args {
      */
     bool rate;
 
+    /*
+     * A virtio console, in addition to the NS16550. An OS can move its
+     * console to it once drivers are up; a test guest can use it to
+     * drive a queue end to end without needing a filesystem.
+     */
+    bool virtio_console;
+
     bool virtio_input;
 
     const char *p9_root;

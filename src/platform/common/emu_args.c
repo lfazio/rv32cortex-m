@@ -80,6 +80,7 @@ void emu_args_usage(void)
         "                       is not a terminal. It is shown anyway on a",
         "                       terminal; a whole-run average is printed at",
         "                       exit either way.",
+        "  --virtio-console     a virtio console beside the NS16550.",
         "  --virtio-input       present a virtio keyboard and mouse, for an",
         "                       OS driver to bind to. The simple polled",
         "                       devices stay; both see the same events.",
@@ -186,6 +187,10 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
             }
             if (strcmp(a, "--rate") == 0) {
                 opt->rate = true;
+                continue;
+            }
+            if (strcmp(a, "--virtio-console") == 0) {
+                opt->virtio_console = true;
                 continue;
             }
             if (strcmp(a, "--virtio-input") == 0) {

@@ -583,7 +583,21 @@ static void test_traps(void)
     check("trap-ebreak-taken", g_trap_count - before, 1u);
     check("trap-ebreak-cause", g_last_cause, 3u);
 
-    /* Misaligned load: the core reports rather than emulating. */
+    /*
+     * Misaligned access, **whichever way this build was configured**.
+     *
+     * The architecture permits either: a core may complete the access
+     * or raise. Most embedded cores raise and this emulator did, until
+     * the C library forced the question -- picolibc's strcmp is
+     * word-at-a-time with no alignment preamble, so a guest that links
+     * it and compares an odd-addressed string takes a trap inside the
+     * library.
+     *
+     * So the behaviour is a build option, and this asserts what the
+     * build chose rather than one answer. Asserting only the trap would
+     * fail on the default; asserting only completion would leave the
+     * trap path untested by anything.
+     */
     before = g_trap_count;
     {
         uint32_t dst;
@@ -591,8 +605,12 @@ static void test_traps(void)
         __asm__ volatile("lw %0, 0(%1)" : "=r"(dst) : "r"(bad));
         (void)dst;
     }
+#if RV32_MISALIGNED
+    check("misaligned-lw-completed", g_trap_count - before, 0u);
+#else
     check("trap-lw-misaligned-taken", g_trap_count - before, 1u);
     check("trap-lw-misaligned-cause", g_last_cause, 4u);
+#endif
 
     /* Misaligned store. */
     before = g_trap_count;
@@ -600,8 +618,12 @@ static void test_traps(void)
         volatile uint32_t *bad = (volatile uint32_t *)((uintptr_t)g_mem32 + 1u);
         __asm__ volatile("sw %0, 0(%1)" ::"r"(0u), "r"(bad));
     }
+#if RV32_MISALIGNED
+    check("misaligned-sw-completed", g_trap_count - before, 0u);
+#else
     check("trap-sw-misaligned-taken", g_trap_count - before, 1u);
     check("trap-sw-misaligned-cause", g_last_cause, 6u);
+#endif
 
     /* Access fault: nothing is mapped here. */
     before = g_trap_count;

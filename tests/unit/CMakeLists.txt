@@ -69,6 +69,29 @@ if(TARGET guest-isatest AND EMU_GUEST_ARCH_RV32)
     # this project has found needed a board, a flash cycle and a UART, and
     # three of them were live for months first. On a host with a JIT
     # backend, translated code is covered by `ctest -L fast`.
+    #
+    # A virtio queue, driven to completion by guest code.
+    #
+    # **This is the only test that proves an interrupt reaches a guest.**
+    # Everything else about virtio can be checked by reading registers,
+    # and registers read correctly in exactly the state where the
+    # interesting part is broken -- a device that never signals, or
+    # signals at a privilege the guest is not running at, is
+    # indistinguishable from one that works until something waits for it.
+    #
+    # Asserting VIRTIOTEST-PASS rather than the exit status, because the
+    # status is a failure count and zero is also what a guest that ran
+    # nothing returns.
+    #
+    if(EMU_VIRTIO)
+        add_test(NAME guest-virtiotest
+                 COMMAND emu-host --virtio-console --ram 0x400000
+                         "${CMAKE_BINARY_DIR}/guest/virtiotest.bin")
+        set_tests_properties(guest-virtiotest PROPERTIES
+            LABELS fast
+            PASS_REGULAR_EXPRESSION "VIRTIOTEST-PASS")
+    endif()
+
     if(EMU_JIT)
         add_test(NAME guest-isatest-jit
                  COMMAND emu-host --jit
