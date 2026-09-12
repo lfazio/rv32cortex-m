@@ -704,17 +704,64 @@ static host_perf_sample_t g_rate_prev;
 
 /* The line is left open, so something has to close it before anything
  * else prints -- otherwise the exit summary lands on top of it. */
+/*
+ * The whole run, once, at the end.
+ *
+ * The live line samples an interval and says nothing about a guest that
+ * finishes inside one -- CoreMark and Dhrystone retire their whole
+ * workload in well under half a second, so every short guest reported
+ * nothing at all. This is the average over everything, which is also
+ * the figure worth quoting: an interval sample catches whatever phase
+ * the guest happened to be in.
+ */
+static uint64_t g_rate_start_us;
+static uint64_t g_rate_total;
+static host_perf_sample_t g_rate_first;
+
 static void rate_finish(void)
 {
     if (g_rate_printed) {
         (void)fputc('\n', stderr);
         g_rate_printed = false;
     }
+
+    if (g_rate_on && g_rate_total > 0u) {
+        const uint64_t dt = board_time_now() - g_rate_start_us;
+        host_perf_sample_t now;
+        double mips;
+
+        if (dt == 0u) {
+            return;
+        }
+
+        host_perf_read(&now);
+        mips = (double)g_rate_total / (double)dt;
+
+        (void)fprintf(stderr, "  run total: %.1f M/s guest", mips);
+        if (host_perf_have_insns()) {
+            const double h =
+                (double)(now.insns - g_rate_first.insns) / (double)dt;
+
+            (void)fprintf(stderr, ", %.1f M/s host, ratio %.2f", h,
+                          (mips > 0.0) ? h / mips : 0.0);
+        }
+        (void)fprintf(stderr, "  (%llu instructions in %.2f s)\n",
+                      (unsigned long long)g_rate_total,
+                      (double)dt / 1000000.0);
+    }
 }
 
-void host_rate_init(bool quiet)
+void host_rate_init(bool quiet, bool force)
 {
-    g_rate_on = !quiet && isatty(fileno(stderr));
+    /*
+     * A terminal gets it automatically; --rate asks for it anyway.
+     * Without the flag a redirected run gets no trace at all, which
+     * meant measuring anything needed a pty -- and needing a trick to
+     * see your own numbers is the same as not having them.
+     *
+     * --quiet still wins: it is the switch that means "no commentary".
+     */
+    g_rate_on = !quiet && (force || isatty(fileno(stderr)) != 0);
     g_rate_last_us = board_time_now();
     g_rate_last_retired = 0u;
     /*
@@ -723,9 +770,12 @@ void host_rate_init(bool quiet)
      * prints an explanation of a feature nobody asked for -- which on a
      * redirected run is noise in someone's log.
      */
+    g_rate_start_us = g_rate_last_us;
+    g_rate_total = 0u;
     if (g_rate_on) {
         host_perf_init();
         host_perf_read(&g_rate_prev);
+        g_rate_first = g_rate_prev;
     }
     if (g_rate_on) {
         (void)atexit(rate_finish);
@@ -774,9 +824,13 @@ static void rate_report(uint64_t retired_total, uint64_t now_us)
     uint64_t dn;
     double mips;
 
-    if (!g_rate_on) {
-        return;
-    }
+
+    /*
+     * Before the interval test, so the end-of-run average counts every
+     * slice rather than only the sampled ones -- which for a guest that
+     * finishes inside one interval is all of them.
+     */
+    g_rate_total = retired_total;
 
     dt = now_us - g_rate_last_us;
     if (dt < interval_us) {
@@ -870,6 +924,10 @@ static void rate_report(uint64_t retired_total, uint64_t now_us)
          * quality -- while c/g is how many cycles, which is the same
          * thing plus whatever the host is stalling on.
          */
+        if (!g_rate_on) {
+            return;
+        }
+
         (void)fprintf(stderr,
                       "\r  guest %6.1f  host %s  ratio %s  cyc %s  c/g %s  "
                       "br %s  miss %s M/s | jit %4u blk %4u built %5u KiB "

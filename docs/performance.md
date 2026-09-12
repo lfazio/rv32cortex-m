@@ -117,6 +117,49 @@ asked.
 backends.** A G4MH CoreMark needs CC-RH, which is not on the build
 machine; a PowerPC one needs a VLE toolchain, which is not either.
 
+## What a guest instruction costs, measured live
+
+The runner draws a performance line on stderr -- automatically on a
+terminal, and with `--rate` anywhere -- plus a whole-run average at
+exit, which is what a guest finishing inside one sample interval gets.
+
+```
+guest  143.5  host 6681.9  ratio 46.58  cyc 2766.2  c/g 19.28  br 1243.0  miss 17.19 M/s
+```
+
+`ratio` is host instructions per guest instruction and is the headline:
+it is what a translation change moves. `c/g` is the same in cycles,
+which is that plus whatever the host is stalling on. Host figures need
+`perf_event_open`; `kernel.perf_event_paranoid` must be 2 or lower, and
+everything derived from an absent counter shows a dash rather than a
+number.
+
+| guest | floating point | translated | ratio |
+|---|---|---|---|
+| dhrystone | none | 98.5% | 52.6 |
+| whetstone | heavy | | 34.2 |
+| quake | heavy | 98.1% | 46.6 |
+
+**The first thing these said was that a plausible theory was wrong.**
+The ratio on Quake looked like evidence that SoftFloat dominates --
+this tree routes every FP operation through it unless a backend lowers
+it natively, and Quake is full of them. Dhrystone contains no floating
+point at all and costs *more* per instruction; Whetstone is the most
+FP-heavy of the three and costs least. So the ~50x is the JIT's
+baseline, and it is not about FP.
+
+It also confirms the native FP lowering is doing its job: were the
+arithmetic going to helpers, Whetstone would be the worst of the three
+rather than the best. See [floating-point.md](jit/floating-point.md)
+for what each backend lowers and what it declines.
+
+What the ~50x *is* about is not yet established. 98% of instructions
+run translated in both guests, so it is not interpreter fallback; block
+entries are 7.1 guest instructions apart on Quake, so dispatch is
+amortised over very short blocks. Longer blocks are the thing to
+attack, which is what this file already says about the 4.12-instruction
+average.
+
 ### Two ways these numbers went wrong first
 
 Both are worth keeping, because both produced a plausible figure rather

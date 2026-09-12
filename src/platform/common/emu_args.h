@@ -62,6 +62,14 @@ typedef struct emu_args {
      * devices. An operating system's driver binds to these; a
      * bare-metal guest uses the others.
      */
+    /*
+     * Force the performance trace on. It is shown automatically when
+     * stderr is a terminal; this is for a run whose output is
+     * redirected or piped, where there is no cursor to rewrite but the
+     * numbers are still wanted.
+     */
+    bool rate;
+
     bool virtio_input;
 
     const char *p9_root;

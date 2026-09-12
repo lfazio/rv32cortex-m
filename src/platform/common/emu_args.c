@@ -76,6 +76,10 @@ void emu_args_usage(void)
         "  --entry ADDR         reset pc (default: load address, or the",
         "                       ELF entry point)",
         "  --dtb FILE           flattened device tree, placed at the top of",
+        "  --rate               show the performance trace even when stderr",
+        "                       is not a terminal. It is shown anyway on a",
+        "                       terminal; a whole-run average is printed at",
+        "                       exit either way.",
         "  --virtio-input       present a virtio keyboard and mouse, for an",
         "                       OS driver to bind to. The simple polled",
         "                       devices stay; both see the same events.",
@@ -178,6 +182,10 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
                     return false;
                 }
                 opt->dtb_path = argv[i];
+                continue;
+            }
+            if (strcmp(a, "--rate") == 0) {
+                opt->rate = true;
                 continue;
             }
             if (strcmp(a, "--virtio-input") == 0) {

@@ -76,11 +76,16 @@ measured at.
         console, net, input and 9p with it. The PCI transport is refused
         loudly rather than stubbed, because a stub lets `virtio_pci_init`
         appear to succeed and return a device that never answers.
-  - [~] **The devices on it.** `--9p [TAG:]DIR` works and is the first
-        one on purpose: it needs no image to build and no partition
-        table to get right, so the host directory *is* the filesystem.
-        Next is `virtio-blk` (the one that makes throughput measurable),
-        then `virtio-net`, then input and display.
+  - [~] **The devices on it.** `--9p [TAG:]DIR` and `--virtio-input`
+        work. 9p was first on purpose: it needs no image to build and no
+        partition table to get right, so the host directory *is* the
+        filesystem. The input pair is a keyboard and a mouse, fed from
+        the same SDL events as the simple polled devices and from the
+        same converted evdev codes, so the two families cannot disagree
+        about what a key is.
+
+        Next is `virtio-blk` -- the one that makes throughput
+        measurable -- then `virtio-net`, then the display.
 
         The interrupt path now exists end to end on paper: the device
         raises, the APLIC delivers to the privilege the machine says,
@@ -93,6 +98,23 @@ measured at.
         0x1000 apart, interrupts from 1. Nothing checks that the tree
         and the emulator agree -- they are two descriptions of one
         machine, and the usual failure is a driver finding nothing.
+- [ ] **Find out what the 50x is.** The runner now reports host
+      instructions per guest instruction live, and it is 46-53 across
+      every guest measured -- far above what a translated block should
+      cost.
+
+      What it is *not*: SoftFloat, which was the first theory and is
+      refuted by Dhrystone, which has no floating point and costs more
+      per instruction than Quake, and by Whetstone, which is the most
+      FP-heavy and costs least. Nor interpreter fallback: 98% of
+      instructions run translated in both guests measured.
+
+      What is left is the shape of the blocks. Quake enters one every
+      7.1 guest instructions, so every dispatch is amortised over very
+      little -- which is the same conclusion the pair-statistics work
+      reached from the other end, and the reason this file already says
+      to go after longer blocks rather than more registers.
+
 - [~] **Doom II, then Quake III** -- as benchmarks with a real frame rate
       rather than a checksum, and as the first guests big enough to make
       the JIT's figures mean something.

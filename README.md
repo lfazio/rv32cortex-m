@@ -317,6 +317,27 @@ by executing the encoding, because this disassembler has printed
 reverse error is the dangerous one and the sweep cannot see it: a slot
 it names can still be decoded wrongly.
 
+### Watching it run
+
+```
+guest  143.5  host 6681.9  ratio 46.58  cyc 2766.2  c/g 19.28  br 1243.0  miss 17.19 M/s
+```
+
+A performance line on stderr, rewritten in place twice a second, and a
+whole-run average at exit. Shown automatically on a terminal, and with
+`--rate` when output is redirected -- no special build, and no pty
+trick.
+
+`ratio` is host instructions per guest instruction, which is what a
+translation change moves; `c/g` is the same in cycles. The host columns
+come from `perf_event_open` and need `kernel.perf_event_paranoid` at 2
+or lower; anything derived from a counter that is not there shows a
+dash rather than a number, because zero is a measurement and "the host
+executed nothing" cannot be true.
+
+Figures and what they have already disproved are in
+[docs/performance.md](docs/performance.md).
+
 ### Validation
 
 ```sh

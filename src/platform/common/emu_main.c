@@ -29,7 +29,7 @@
 #include "emu_debug.h"
 #include "emu_args.h"
 
-void host_rate_init(bool quiet);
+void host_rate_init(bool quiet, bool force);
 #include "emu/emu_virtio.h"
 #include "emu_image.h"
 #include "emu/emu_elf.h"
@@ -136,9 +136,10 @@ bool emu_main_reload(void)
  * Weak, so a platform with no terminal needs no opinion about it. The
  * host overrides it; a board links this and does nothing.
  */
-__attribute__((weak)) void host_rate_init(bool quiet)
+__attribute__((weak)) void host_rate_init(bool quiet, bool force)
 {
     (void)quiet;
+    (void)force;
 }
 
 void emu_raise_irq(uint32_t source, bool level)
@@ -448,7 +449,7 @@ int main(int argc, char **argv)
      */
     g_cfg.supervisor = args.supervisor;
 
-    host_rate_init(args.quiet);
+    host_rate_init(args.quiet, args.rate);
 
 #if EMU_HAVE_VIRTIO
     /*
