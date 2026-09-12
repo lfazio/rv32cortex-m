@@ -676,14 +676,94 @@ uint64_t board_time_now(void)
     return (uint64_t)(board_cycles() - g_time_epoch) / div;
 }
 
+/*
+ * How fast the guest is going, on one line that rewrites itself.
+ *
+ * **\r and never \n**, so a long run leaves one line rather than a
+ * screenful -- and on *stderr*, so a guest's own output on stdout stays
+ * clean and a redirected run is unaffected.
+ *
+ * Only when stderr is a terminal. A pipe or a file has no cursor to
+ * return to, so the carriage returns would accumulate as one enormous
+ * line; and a build log full of progress meters is the thing nobody
+ * reads. --quiet turns it off explicitly, on the same reasoning that
+ * already suppresses the exit summary.
+ *
+ * The rate is measured over the interval rather than since the start:
+ * what a reader wants to know is whether it is going faster or slower
+ * *now* -- a JIT warming up, a guest entering a different phase -- and
+ * a running average hides exactly that.
+ */
+static bool g_rate_on;
+static bool g_rate_printed;
+static uint64_t g_rate_last_us;
+static uint64_t g_rate_last_retired;
+
+/* The line is left open, so something has to close it before anything
+ * else prints -- otherwise the exit summary lands on top of it. */
+static void rate_finish(void)
+{
+    if (g_rate_printed) {
+        (void)fputc('\n', stderr);
+        g_rate_printed = false;
+    }
+}
+
+void host_rate_init(bool quiet)
+{
+    g_rate_on = !quiet && isatty(fileno(stderr));
+    g_rate_last_us = board_time_now();
+    g_rate_last_retired = 0u;
+    if (g_rate_on) {
+        (void)atexit(rate_finish);
+    }
+}
+
+static void rate_report(uint64_t retired_total, uint64_t now_us)
+{
+    /*
+     * Twice a second. Often enough to watch, rare enough that the
+     * printing itself is not part of what is being measured -- this is
+     * called once per run slice, which is thousands of times a second.
+     */
+    const uint64_t interval_us = 500000u;
+    uint64_t dt;
+    uint64_t dn;
+    double mips;
+
+    if (!g_rate_on) {
+        return;
+    }
+
+    dt = now_us - g_rate_last_us;
+    if (dt < interval_us) {
+        return;
+    }
+
+    dn = retired_total - g_rate_last_retired;
+    g_rate_last_us = now_us;
+    g_rate_last_retired = retired_total;
+
+    /* instructions per microsecond is already millions per second. */
+    mips = (double)dn / (double)dt;
+
+    (void)fprintf(stderr, "\r  %8.2f MIPS   %12llu retired ",
+                  mips, (unsigned long long)retired_total);
+    (void)fflush(stderr);
+    g_rate_printed = true;
+}
+
 static void advance_guest_time(emu_system_t *sys, uint64_t retired_total,
                                uint32_t did)
 {
-    (void)retired_total;
+    const uint64_t now = board_time_now();
+
     (void)did;
 
+    rate_report(retired_total, now);
+
     if (sys->ops->set_time != NULL) {
-        sys->ops->set_time(sys->core[0].cpu, board_time_now());
+        sys->ops->set_time(sys->core[0].cpu, now);
     }
 }
 
