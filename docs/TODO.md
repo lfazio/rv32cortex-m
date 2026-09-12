@@ -44,7 +44,7 @@ measured at.
         path and SBI from every device question. Rootfs is an initramfs
         built into the image (`boot/initramfs/`), so no block device
         either. A static `-nostdlib` init prints and exits.
-  - [ ] **An interrupt controller -- and it does not have to be a PLIC.**
+  - [~] **An interrupt controller -- and it does not have to be a PLIC.**
         Established by booting without one: the kernel reaches driver
         init with *no* interrupt controller in the device tree, because
         the timer comes from the SBI TIME extension, IPIs from SBI IPI
@@ -55,6 +55,18 @@ measured at.
         `interrupts-extended` to the cpu intc and no `msi-parent` --
         because MSI mode needs an IMSIC and the AIA CSRs, which this
         emulator does not implement.
+
+        **Done, and the part that was missing was not the controller.**
+        The APLIC drove MEIP unconditionally, which is right for every
+        bare-metal guest here and invisible to Linux: it runs in S-mode
+        under OpenSBI and never sees MEIP. `--supervisor` moves
+        delivery, carried as emu_boot_info_t::supervisor because it is a
+        property of the machine. The device tree now describes the
+        APLIC in direct mode and the virtio nodes.
+
+        What is *not* done is seeing it fire under Linux -- the unit
+        test proves delivery moves between privileges, and nothing has
+        yet driven a real queue completion through the whole path.
   - [x] **virtio-mmio transport**, done by importing rather than
         writing: TinyEMU's `virtio.c` is vendored byte-identical under
         `third_party/tinyemu/` (MIT), and the porting layer is four
@@ -70,11 +82,12 @@ measured at.
         Next is `virtio-blk` (the one that makes throughput measurable),
         then `virtio-net`, then input and display.
 
-        **None of them can interrupt yet**, which is the blocker above
-        rather than here: the devices are mapped and answer their magic,
-        version and device id, and a driver that probes will find them
-        and then wait for ever on a queue whose completion nothing
-        signals. The APLIC is the next piece.
+        The interrupt path now exists end to end on paper: the device
+        raises, the APLIC delivers to the privilege the machine says,
+        and the tree names both. **Nothing has driven a completion
+        through it yet**, which is the next thing to prove -- and the
+        way to prove it is a guest that probes a device and waits for
+        one, not a reading of the code.
 
         And the device tree has to name them: 0x1000_1000 upwards,
         0x1000 apart, interrupts from 1. Nothing checks that the tree
@@ -182,7 +195,7 @@ measured at.
         instruction next" with a measurement instead of an opinion.
 - [ ] **JIT** - Autovectorisation of the IR pipeline. This is a big task, but it would be a good demonstration of the emulator's capabilities.
 - [ ] Add simple drivers for the rh850u2b6.based on their specification in the reference manual.
-  - [ ] Option bytes: impact on clocks
+  - [ ] Option bytes: impact on clocks and startup.
   - [ ] Clock tree
   - [ ] ltsc
   - [ ] ostm
