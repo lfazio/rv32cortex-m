@@ -797,9 +797,19 @@ static void rate_report(uint64_t retired_total, uint64_t now_us)
          * `t` after the cycle figure marks the TSC fallback: a fixed-rate
          * counter, so elapsed time in disguise rather than work done.
          */
+        /*
+         * The units are on the line because two of these are rates and
+         * two are totals, and a reader should not have to know which:
+         * `MIPS` is millions per second of *this interval*, `entries`
+         * is cumulative since the run began.
+         *
+         * `hostMIPS/guestMIPS` is the ratio worth watching -- host
+         * instructions per guest instruction is what a JIT change
+         * moves -- which is why the two sit next to each other.
+         */
         (void)fprintf(stderr,
-                      "\r  guest %7.1f  host %s %s Mc/s  jit %6u blk "
-                      "%5u comp  %6u KiB  %10llu exec ",
+                      "\r  guest %7.1f MIPS   host %s MIPS %s Mcyc/s   "
+                      "jit %5u blocks %5u built %6u KiB  %10llu entries ",
                       mips, hbuf, cbuf, js.blocks, js.translations,
                       (unsigned)(js.code_used / 1024u),
                       (unsigned long long)js.block_entries);
