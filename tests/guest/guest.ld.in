@@ -98,59 +98,47 @@ SECTIONS
         . = ALIGN(8);
         PROVIDE(__global_pointer$ = . + 0x800);
         *(.sdata .sdata.*)
-        . = ALIGN(4);
-    } > RAM AT> FLASH
 
-    /*
-     * Thread-local storage, which a single-threaded bare-metal guest
-     * still needs because **picolibc keeps errno and the random-number
-     * state in it**. A TLS access goes through `tp`, so with tp unset
-     * every one of them lands near address 0 -- and a guest whose mtvec
-     * is also unset traps there and spins, silently. Quake found it
-     * twice in one run: rand() faulted on a load and srand() on a
-     * store, both at address 0.
-     *
-     * .tdata and .tbss must be *contiguous and in this order*, because
-     * the compiler addresses both as offsets from one base. .tdata sits
-     * inside the .data copy range so start.S carries its initialisers
-     * across; .tbss sits inside the .bss zero range for the same
-     * reason, which is why __bss_start is declared here rather than in
-     * .bss below.
-     */
-    .tdata : ALIGN(8)
-    {
+        /*
+         * Thread-local storage, which a single-threaded bare-metal
+         * guest still has: **picolibc keeps errno and the
+         * random-number state in it**, so a guest that touches either
+         * with tp unset faults near address 0 -- and with no trap
+         * handler that is a silent spin.
+         *
+         * .tdata goes *inside* .data and .tbss at the head of .bss,
+         * rather than in output sections of their own. Two reasons,
+         * and the second cost a working build: they have to be
+         * contiguous and in this order, because the compiler addresses
+         * both as offsets from one base; and the symbols bounding the
+         * copy and the zero have to stay in the sections that are
+         * actually copied and zeroed. Given their own sections, an
+         * *empty* .tbss was placed before an ALIGN'd .tdata, which put
+         * __bss_start below __data_end and broke every guest that links
+         * this script.
+         */
+        . = ALIGN(8);
         __tls_base = .;
         *(.tdata .tdata.*)
+
         . = ALIGN(4);
         __data_end = .;
     } > RAM AT> FLASH
 
     /*
      * Where .data's initialiser lives, and where it has to end up.
-     *
-     * **The guest copies this itself.** It used to be the emulator's
-     * job: the image was split at __guest_ro_end into a read-only half
-     * and a writable one, and the firmware memcpy'd the second into the
-     * base of guest RAM before entry. That worked and was the wrong
-     * place for it -- a guest that cannot initialise itself is not a
-     * guest, it is a core image, and the split it forced has already
-     * cost one silent bug (three bytes lost wherever .rodata ended
-     * unaligned, putting .data below where the guest read it).
-     *
      * LOADADDR is in ROM, VMA is in RAM, and start.S copies between
-     * them the way any embedded crt0 does.
+     * them the way any embedded crt0 does. The range it copies now
+     * includes .tdata, which is inside .data above for exactly that
+     * reason.
      */
     __data_lma = LOADADDR(.data);
 
-    .tbss (NOLOAD) : ALIGN(4)
-    {
-        /* Zeroed with .bss, and immediately after .tdata: see above. */
-        __bss_start = .;
-        *(.tbss .tbss.*)
-    } > RAM
-
     .bss (NOLOAD) : ALIGN(4)
     {
+        __bss_start = .;
+        /* Immediately after .tdata, and zeroed with the rest: see above. */
+        *(.tbss .tbss.*)
         *(.sbss .sbss.*)
         *(.bss .bss.*)
         *(COMMON)
