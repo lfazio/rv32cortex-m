@@ -40,6 +40,9 @@ int main(void)
 #endif
     test_bus();
     test_fb();
+#if EMU_GUEST_ARCH_RV32
+    test_aplic();
+#endif
 #if EMU_HAVE_VIRTIO
     test_virtio();
 #endif

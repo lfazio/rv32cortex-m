@@ -137,6 +137,22 @@ static void rv32_reset(emu_cpu_t *cpu, uint32_t reset_pc)
 
 static void rv32_boot(emu_cpu_t *cpu, const emu_boot_info_t *info)
 {
+    /*
+     * Where the APLIC delivers, decided here because it is a property
+     * of the machine and this is where the machine is described.
+     *
+     * A bare-metal guest runs in M-mode and takes MEIP; Linux runs in
+     * S-mode under OpenSBI and never sees MEIP at all. **Getting it
+     * wrong is silent**: every register reads correctly, the source
+     * shows pending, and the interrupt arrives at a privilege the guest
+     * is not running at -- so the driver waits for ever on a queue that
+     * already completed.
+     *
+     * Set on every boot rather than once, because rv_aplic_init runs
+     * again on a reload and returns the default.
+     */
+    rv_aplic_set_smode(&g_aplic, info->supervisor);
+
     rv_hart_boot(hart_of(cpu), info);
 }
 

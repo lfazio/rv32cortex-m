@@ -34,6 +34,9 @@ void check_eq64(const char *file, int line, const char *expr, uint64_t got,
 void test_decode(void);
 #endif
 void test_bus(void);
+#if EMU_GUEST_ARCH_RV32
+void test_aplic(void);
+#endif
 #if EMU_HAVE_VIRTIO
 void test_virtio(void);
 #endif

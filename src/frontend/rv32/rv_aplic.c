@@ -89,7 +89,7 @@ static void aplic_update(rv_aplic_t *a)
                          (aplic_topi(a) != 0u || a->iforce != 0u);
 
     if (a->hart != NULL) {
-        rv_hart_set_irq(a->hart, RV_INT_M_EXT, deliver);
+        rv_hart_set_irq(a->hart, a->target_int, deliver);
     }
 }
 
@@ -367,6 +367,15 @@ const emu_dev_ops_t rv_aplic_ops = {
 
 void rv_aplic_init(rv_aplic_t *a, struct rv_hart *hart)
 {
+    /*
+     * M-mode by default: every guest that used this before an operating
+     * system existed runs in M-mode, and a default that moved would
+     * break them silently -- the registers would all still read
+     * correctly and the interrupt would go somewhere nobody was
+     * listening.
+     */
+    a->target_int = RV_INT_M_EXT;
+
     for (uint32_t i = 0; i < RV_APLIC_SOURCES; i++) {
         a->sourcecfg[i] = 0u;
         a->target[i] = 1u; /* a usable default priority */
@@ -398,4 +407,9 @@ void rv_aplic_raise(rv_aplic_t *a, uint32_t source)
     }
     aplic_set_pending(a, source / 32u, 1u << (source % 32u));
     aplic_update(a);
+}
+
+void rv_aplic_set_smode(rv_aplic_t *a, bool on)
+{
+    a->target_int = on ? RV_INT_S_EXT : RV_INT_M_EXT;
 }

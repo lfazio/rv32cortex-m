@@ -50,6 +50,13 @@ typedef struct emu_args {
      * a guest that does not ask for one should not be given a device
      * its device tree does not describe.
      */
+    /*
+     * The guest boots an OS that runs in supervisor mode. See
+     * emu_boot_info_t::supervisor for what it decides and why guessing
+     * it fails silently.
+     */
+    bool supervisor;
+
     const char *p9_root;
     const char *p9_tag;
 

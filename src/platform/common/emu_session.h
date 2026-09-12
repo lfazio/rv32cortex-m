@@ -125,6 +125,13 @@ typedef struct emu_session_cfg {
      * function rather than this file choosing one.
      */
     void (*fail)(const char *msg, const char *detail);
+
+    /*
+     * The guest's OS runs below the highest privilege level -- Linux
+     * under OpenSBI rather than a bare-metal image. Passed through to
+     * emu_boot_info_t, where the note explains what it decides.
+     */
+    bool supervisor;
 } emu_session_cfg_t;
 
 /*

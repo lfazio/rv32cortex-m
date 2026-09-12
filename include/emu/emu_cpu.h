@@ -175,6 +175,25 @@ typedef struct emu_boot_info {
     uint32_t ram_base;
     uint32_t ram_size;
     uint32_t dtb;
+
+    /*
+     * Whether the guest's operating system runs below the highest
+     * privilege level -- Linux under OpenSBI, rather than a bare-metal
+     * image.
+     *
+     * It is here because it is a property of the *machine* rather than
+     * of the image: what it decides is where an interrupt controller
+     * delivers. A frontend with two privilege levels routes external
+     * interrupts to the supervisor one when this is set, and to the
+     * machine one when it is not.
+     *
+     * **Getting it wrong is silent.** Every register still reads
+     * correctly and the device still says it is pending; the interrupt
+     * simply arrives at a privilege the guest is not running at, so the
+     * driver waits for ever on a queue that completed. A frontend with
+     * only one privilege level ignores it.
+     */
+    bool supervisor;
 } emu_boot_info_t;
 
 typedef struct emu_cpu_ops {

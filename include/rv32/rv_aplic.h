@@ -117,6 +117,27 @@ typedef struct rv_aplic {
     struct rv_hart *hart;
     rv_aplic_eoi_fn eoi;
     void *eoi_ctx;
+
+    /*
+     * Which external interrupt this domain drives: RV_INT_M_EXT or
+     * RV_INT_S_EXT.
+     *
+     * **The architecture has two domains, not a setting.** A real APLIC
+     * has separate M and S register blocks, each with its own sources
+     * and delivery; this models one, so which privilege it serves is a
+     * property of the machine rather than of the device.
+     *
+     * It matters the moment an operating system is involved. A
+     * bare-metal guest runs in M-mode and takes MEIP; Linux runs in
+     * S-mode under OpenSBI and never sees MEIP at all -- so an APLIC
+     * left on the default would deliver interrupts to a privilege level
+     * the guest is not running at, and the device would appear dead
+     * while every register read correctly.
+     *
+     * Defaults to M, which is what every guest in this tree used before
+     * there was an operating system to disagree.
+     */
+    uint32_t target_int;
 } rv_aplic_t;
 
 extern const emu_dev_ops_t rv_aplic_ops;
@@ -137,6 +158,13 @@ void rv_aplic_set_eoi(rv_aplic_t *a, rv_aplic_eoi_fn fn, void *ctx);
  * re-enter the host handler forever without the guest ever running.
  */
 void rv_aplic_raise(rv_aplic_t *a, uint32_t source);
+
+/*
+ * Deliver to S-mode external instead of M-mode. Call after
+ * rv_aplic_init and before the guest runs; see target_int above for why
+ * this is a property of the machine.
+ */
+void rv_aplic_set_smode(rv_aplic_t *a, bool on);
 
 #ifdef __cplusplus
 }

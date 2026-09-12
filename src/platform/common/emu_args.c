@@ -76,6 +76,10 @@ void emu_args_usage(void)
         "  --entry ADDR         reset pc (default: load address, or the",
         "                       ELF entry point)",
         "  --dtb FILE           flattened device tree, placed at the top of",
+        "  --supervisor         the guest's OS runs in S-mode (Linux under",
+        "                       OpenSBI). Routes external interrupts there",
+        "                       instead of to M-mode; without it a driver",
+        "                       waits for ever on a completed queue.",
         "  --9p [TAG:]DIR       share a host directory over virtio-9p; the",
         "                       guest mounts it with",
         "                         mount -t 9p -o trans=virtio,version=9p2000.L",
@@ -171,6 +175,10 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
                     return false;
                 }
                 opt->dtb_path = argv[i];
+                continue;
+            }
+            if (strcmp(a, "--supervisor") == 0) {
+                opt->supervisor = true;
                 continue;
             }
             if (strcmp(a, "--9p") == 0) {

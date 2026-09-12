@@ -718,8 +718,16 @@ void host_rate_init(bool quiet)
     g_rate_on = !quiet && isatty(fileno(stderr));
     g_rate_last_us = board_time_now();
     g_rate_last_retired = 0u;
-    host_perf_init();
-    host_perf_read(&g_rate_last_hinsns, &g_rate_last_hcycles);
+    /*
+     * Only when the line will be shown. Opening the counters otherwise
+     * costs two file descriptors and, on a machine that denies them,
+     * prints an explanation of a feature nobody asked for -- which on a
+     * redirected run is noise in someone's log.
+     */
+    if (g_rate_on) {
+        host_perf_init();
+        host_perf_read(&g_rate_last_hinsns, &g_rate_last_hcycles);
+    }
     if (g_rate_on) {
         (void)atexit(rate_finish);
     }

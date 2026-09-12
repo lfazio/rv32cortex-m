@@ -162,6 +162,7 @@ static bool finish(emu_system_t *sys, const emu_session_cfg_t *cfg)
         .ram_base = cfg->ram_base,
         .ram_size = cfg->ram_size,
         .dtb = 0u,
+        .supervisor = cfg->supervisor,
     };
 
     if (cfg->dtb != NULL && cfg->dtb_size != 0u && cfg->ram_size != 0u) {

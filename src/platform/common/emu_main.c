@@ -413,6 +413,14 @@ int main(int argc, char **argv)
      * a self-rewriting line on stderr; everywhere else this is a weak
      * no-op, because a board has no terminal to rewrite.
      */
+    /*
+     * Where external interrupts are delivered, which a frontend with
+     * two privilege levels needs before it boots. Set here rather than
+     * in the block above because that runs before the options are
+     * parsed. See emu_boot_info_t::supervisor.
+     */
+    g_cfg.supervisor = args.supervisor;
+
     host_rate_init(args.quiet);
 
 #if EMU_HAVE_VIRTIO
