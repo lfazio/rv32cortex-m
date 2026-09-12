@@ -27,6 +27,26 @@ bool host_perf_have_cycles(void);
  * the two differ by exactly the thing anyone reads cycles to learn. */
 bool host_perf_cycles_are_tsc(void);
 
-void host_perf_read(uint64_t *insns, uint64_t *cycles);
+/*
+ * One sample of everything, taken together.
+ *
+ * A struct rather than out-parameters because the counters are read in
+ * one pass and a caller that took them separately would sample them at
+ * slightly different instants -- which for a *ratio* like cycles per
+ * instruction is exactly the error that matters.
+ */
+typedef struct {
+    uint64_t insns;
+    uint64_t cycles;
+    uint64_t branches;
+    uint64_t branch_misses;
+} host_perf_sample_t;
+
+/* Whether branch counters are available. Separate from the instruction
+ * ones: there are only so many hardware counters and they are shared,
+ * so a machine can have some and not others. */
+bool host_perf_have_branches(void);
+
+void host_perf_read(host_perf_sample_t *out);
 
 #endif /* HOST_PERF_H */

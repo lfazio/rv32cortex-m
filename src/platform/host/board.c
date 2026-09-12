@@ -700,8 +700,7 @@ static bool g_rate_on;
 static bool g_rate_printed;
 static uint64_t g_rate_last_us;
 static uint64_t g_rate_last_retired;
-static uint64_t g_rate_last_hinsns;
-static uint64_t g_rate_last_hcycles;
+static host_perf_sample_t g_rate_prev;
 
 /* The line is left open, so something has to close it before anything
  * else prints -- otherwise the exit summary lands on top of it. */
@@ -726,7 +725,7 @@ void host_rate_init(bool quiet)
      */
     if (g_rate_on) {
         host_perf_init();
-        host_perf_read(&g_rate_last_hinsns, &g_rate_last_hcycles);
+        host_perf_read(&g_rate_prev);
     }
     if (g_rate_on) {
         (void)atexit(rate_finish);
@@ -792,76 +791,91 @@ static void rate_report(uint64_t retired_total, uint64_t now_us)
     mips = (double)dn / (double)dt;
 
     {
-        uint64_t hi = 0u;
-        uint64_t hc = 0u;
-        double host_mips = 0.0;
-        double host_mcps = 0.0;
+        host_perf_sample_t now;
+        double host_mips;
+        double cyc_mps;
+        double br_mps;
+        double miss_mps;
         emu_jit_stats_t js;
-        char hbuf[32];
+        char hbuf[16];
+        char rbuf[16];
+        char cbuf[16];
+        char cgbuf[16];
+        char bbuf[16];
+        char mbuf[16];
         char gbuf[32];
 
-        host_perf_read(&hi, &hc);
-        host_mips = (double)(hi - g_rate_last_hinsns) / (double)dt;
-        host_mcps = (double)(hc - g_rate_last_hcycles) / (double)dt;
-        g_rate_last_hinsns = hi;
-        g_rate_last_hcycles = hc;
+        host_perf_read(&now);
+
+        host_mips = (double)(now.insns - g_rate_prev.insns) / (double)dt;
+        cyc_mps = (double)(now.cycles - g_rate_prev.cycles) / (double)dt;
+        br_mps = (double)(now.branches - g_rate_prev.branches) / (double)dt;
+        miss_mps =
+            (double)(now.branch_misses - g_rate_prev.branch_misses) /
+            (double)dt;
+        g_rate_prev = now;
 
         /*
-         * A dash rather than 0.00 for a counter that is not there.
-         * Zero is a measurement, and "the host executed no
-         * instructions" is the one reading that cannot be true -- so
-         * printing it would be the instrument lying rather than
-         * declining.
+         * A dash for anything whose counter is absent, and for anything
+         * derived from one.
+         *
+         * Zero is a measurement. "The host executed no instructions" and
+         * "no branch was taken" are readings that cannot be true, so
+         * printing them would be the instrument lying rather than
+         * declining -- and a *ratio* computed from an absent counter is
+         * worse still, because it looks like the answer to the question
+         * the line exists to ask.
          */
         if (host_perf_have_insns()) {
             (void)snprintf(hbuf, sizeof(hbuf), "%6.1f", host_mips);
+            (void)snprintf(rbuf, sizeof(rbuf), "%5.2f",
+                           (mips > 0.0) ? host_mips / mips : 0.0);
         } else {
             (void)snprintf(hbuf, sizeof(hbuf), "%6s", "-");
+            (void)snprintf(rbuf, sizeof(rbuf), "%5s", "-");
         }
+
         /*
-         * Cycles are measured but no longer shown. Without perf they
-         * are the TSC, which ticks at a fixed rate and so reports
-         * elapsed time rather than work -- a figure that looks like a
-         * measurement and is not. The ratio above is what the line is
-         * for, and it needs instructions rather than cycles.
+         * Cycles are shown again now that there is something to divide
+         * them by, and the `t` still marks the time-stamp fallback --
+         * which ticks at a fixed rate, so cycles-per-guest computed
+         * from it is really microseconds per guest instruction wearing
+         * a different name.
          */
-        (void)host_mcps;
+        if (host_perf_have_cycles()) {
+            (void)snprintf(cbuf, sizeof(cbuf), "%6.1f%s", cyc_mps,
+                           host_perf_cycles_are_tsc() ? "t" : "");
+            (void)snprintf(cgbuf, sizeof(cgbuf), "%5.2f",
+                           (mips > 0.0) ? cyc_mps / mips : 0.0);
+        } else {
+            (void)snprintf(cbuf, sizeof(cbuf), "%6s", "-");
+            (void)snprintf(cgbuf, sizeof(cgbuf), "%5s", "-");
+        }
+
+        if (host_perf_have_branches()) {
+            (void)snprintf(bbuf, sizeof(bbuf), "%6.1f", br_mps);
+            (void)snprintf(mbuf, sizeof(mbuf), "%5.2f", miss_mps);
+        } else {
+            (void)snprintf(bbuf, sizeof(bbuf), "%6s", "-");
+            (void)snprintf(mbuf, sizeof(mbuf), "%5s", "-");
+        }
 
         emu_jit_get_stats(&js);
 
         /*
-         * One line, and the order is guest then host then JIT --
-         * outermost measurement first, because that is the one a reader
-         * is usually watching and the others explain it.
-         *
-         * `t` after the cycle figure marks the TSC fallback: a fixed-rate
-         * counter, so elapsed time in disguise rather than work done.
+         * Rates first, then what they divide into, then the JIT's own
+         * bookkeeping. `ratio` and `c/g` are the two derived numbers and
+         * they answer different questions: ratio is how many host
+         * instructions a guest instruction costs -- the translation's
+         * quality -- while c/g is how many cycles, which is the same
+         * thing plus whatever the host is stalling on.
          */
-        /*
-         * A dashboard, and **ratio is the headline**: host instructions
-         * per guest instruction is the one number that says how good
-         * the translation is, and it is the one a JIT change moves.
-         * Everything else on the line is either an input to it or the
-         * JIT's own bookkeeping.
-         *
-         * It is a dash whenever the host figure is, because a ratio
-         * computed from a counter that is not there would be a
-         * confident number derived from nothing -- which is worse than
-         * an absent one.
-         */
-        char rbuf[16];
-
-        if (host_perf_have_insns() && mips > 0.0) {
-            (void)snprintf(rbuf, sizeof(rbuf), "%5.2f", host_mips / mips);
-        } else {
-            (void)snprintf(rbuf, sizeof(rbuf), "%5s", "-");
-        }
-
         (void)fprintf(stderr,
-                      "\r  guest %6.1f M/s   host %s M/s   ratio %s   "
-                      "jit %5u blk  comp %5u  code %5u KiB  exec %s ",
-                      mips, hbuf, rbuf, js.blocks, js.translations,
-                      (unsigned)(js.code_used / 1024u),
+                      "\r  guest %6.1f  host %s  ratio %s  cyc %s  c/g %s  "
+                      "br %s  miss %s M/s | jit %4u blk %4u built %5u KiB "
+                      "%s exec ",
+                      mips, hbuf, rbuf, cbuf, cgbuf, bbuf, mbuf, js.blocks,
+                      js.translations, (unsigned)(js.code_used / 1024u),
                       grouped(js.block_entries, gbuf, sizeof(gbuf)));
         (void)fflush(stderr);
         g_rate_printed = true;

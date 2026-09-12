@@ -42,7 +42,10 @@
 
 static int g_fd_insns = -1;
 static int g_fd_cycles = -1;
+static int g_fd_branches = -1;
+static int g_fd_misses = -1;
 static bool g_have_perf;
+static bool g_have_branches;
 static bool g_have_tsc;
 
 #if defined(__linux__)
@@ -91,6 +94,17 @@ void host_perf_init(void)
 #if defined(__linux__)
     g_fd_insns = perf_open_one(PERF_COUNT_HW_INSTRUCTIONS);
     g_fd_cycles = perf_open_one(PERF_COUNT_HW_CPU_CYCLES);
+    /*
+     * Branches are opened separately and are allowed to fail on their
+     * own: a machine can expose instructions and cycles while having no
+     * branch counters, or have them taken by something else -- there
+     * are only so many hardware counters and they are shared. Treating
+     * the four as one all-or-nothing group would hide the two that
+     * worked.
+     */
+    g_fd_branches = perf_open_one(PERF_COUNT_HW_BRANCH_INSTRUCTIONS);
+    g_fd_misses = perf_open_one(PERF_COUNT_HW_BRANCH_MISSES);
+    g_have_branches = (g_fd_branches >= 0 && g_fd_misses >= 0);
     g_have_perf = (g_fd_insns >= 0 && g_fd_cycles >= 0);
 
     if (!g_have_perf) {
@@ -117,6 +131,17 @@ void host_perf_init(void)
         g_fd_insns = -1;
         g_fd_cycles = -1;
     }
+
+    if (!g_have_branches) {
+        if (g_fd_branches >= 0) {
+            (void)close(g_fd_branches);
+        }
+        if (g_fd_misses >= 0) {
+            (void)close(g_fd_misses);
+        }
+        g_fd_branches = -1;
+        g_fd_misses = -1;
+    }
 #endif
 
     g_have_tsc = (read_tsc() != 0u);
@@ -125,6 +150,11 @@ void host_perf_init(void)
 bool host_perf_have_insns(void)
 {
     return g_have_perf;
+}
+
+bool host_perf_have_branches(void)
+{
+    return g_have_branches;
 }
 
 bool host_perf_have_cycles(void)
@@ -137,24 +167,37 @@ bool host_perf_cycles_are_tsc(void)
     return !g_have_perf && g_have_tsc;
 }
 
-void host_perf_read(uint64_t *insns, uint64_t *cycles)
+static uint64_t read_counter(int fd)
 {
-    *insns = 0u;
-    *cycles = 0u;
+    uint64_t v = 0u;
 
 #if defined(__linux__)
-    if (g_have_perf) {
-        uint64_t v;
+    if (fd >= 0 && read(fd, &v, sizeof(v)) != (ssize_t)sizeof(v)) {
+        v = 0u;
+    }
+#else
+    (void)fd;
+#endif
+    return v;
+}
 
-        if (read(g_fd_insns, &v, sizeof(v)) == (ssize_t)sizeof(v)) {
-            *insns = v;
-        }
-        if (read(g_fd_cycles, &v, sizeof(v)) == (ssize_t)sizeof(v)) {
-            *cycles = v;
-        }
+void host_perf_read(host_perf_sample_t *out)
+{
+    uint64_t *const insns = &out->insns;
+    uint64_t *const cycles = &out->cycles;
+
+    memset(out, 0, sizeof(*out));
+
+    if (g_have_branches) {
+        out->branches = read_counter(g_fd_branches);
+        out->branch_misses = read_counter(g_fd_misses);
+    }
+
+    if (g_have_perf) {
+        *insns = read_counter(g_fd_insns);
+        *cycles = read_counter(g_fd_cycles);
         return;
     }
-#endif
 
     if (g_have_tsc) {
         *cycles = read_tsc();
