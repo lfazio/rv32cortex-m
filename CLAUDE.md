@@ -1580,6 +1580,23 @@ session, and every one of them recurred:
   which two it actually used.** The performance-counter test in the same
   file had the identical defect.
 
+- **A device can accept every write and do nothing, and no register is
+  wrong.** The first virtio guest spoke the legacy transport -- QUEUE_PFN,
+  a guest page size, one page holding all three rings -- at a device
+  that reports version 2. Every status write landed, the queue reported
+  its maximum size, the feature words read back, and `QueueNotify` then
+  did *nothing whatever*, because the device was reading ring addresses
+  the driver had never set.
+
+  The lesson is about what a register read can prove. Identity registers
+  told me the device was there and wired; they cannot tell me the
+  driver and the device agree about where the rings are. **The only
+  thing that can is waiting for a completion** -- which is why the test
+  asserts the used ring advanced and names the descriptor, rather than
+  only that an interrupt arrived.
+
+  Check the version before writing the driver. Both transports live in
+  the same register block and differ by which offsets are real.
 - **A suite passing is a statement about what it covers, and I checked
   the wrong two.** Placing `.tdata`/`.tbss` in output sections of their
   own put an *empty* `.tbss` before an `ALIGN(8)`'d `.tdata`, so

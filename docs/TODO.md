@@ -85,14 +85,21 @@ measured at.
         about what a key is.
 
         Next is `virtio-blk` -- the one that makes throughput
-        measurable -- then `virtio-net`, then the display.
+        measurable -- then `virtio-net`, then the display. The
+        groundwork they need is done: the transport works, a queue
+        completes, and the interrupt arrives.
 
-        The interrupt path now exists end to end on paper: the device
-        raises, the APLIC delivers to the privilege the machine says,
-        and the tree names both. **Nothing has driven a completion
-        through it yet**, which is the next thing to prove -- and the
-        way to prove it is a guest that probes a device and waits for
-        one, not a reading of the code.
+        **The interrupt path is proven.** `tests/guest/virtiotest.c`
+        drives the console queue to completion from guest code and takes
+        the interrupt: descriptor ring in guest RAM, QueueNotify, the
+        device printing the bytes and advancing the used ring, the APLIC
+        delivering, and the handler acknowledging both device and
+        controller. It runs under `ctest -L fast`.
+
+        Its first version failed in the way this whole entry was written
+        to expect: it spoke the *legacy* transport at a device reporting
+        version 2, every write was accepted, and QueueNotify did nothing
+        at all. No register was wrong.
 
         And the device tree has to name them: 0x1000_1000 upwards,
         0x1000 apart, interrupts from 1. Nothing checks that the tree
