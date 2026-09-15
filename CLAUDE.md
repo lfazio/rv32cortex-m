@@ -1626,6 +1626,39 @@ session, and every one of them recurred:
   result. The same rule for a bisection: **assert the build succeeded
   before believing the run**, and check the artefact's timestamp moved.
   A step that cannot fail loudly is a step that will mislead quietly.
+- **arch-test validates a machine against a *description* of that
+  machine, so changing a default silently invalidates the description.**
+  `RV32_MISALIGNED` became ON by default in 38a8fd1, for a good reason
+  -- picolibc's word-at-a-time `strcmp` reads `lw` straight off an odd
+  pointer -- while `tests/arch-test/*/{*.yaml,sail.json}` both declare
+  `MISALIGNED_LDST: false`, "this core reports misaligned accesses
+  rather than splitting them". From that commit the emulator was no
+  longer the core its own config described, and the four `ExceptionsSv`
+  tests failed with *"DUT generated too many traps"*.
+
+  **Nothing said so for six days.** The suite kept reporting 378/378
+  because `scripts/run-arch-test.sh` defaults to `build/host/emu-host`,
+  which no other workflow rebuilds -- the stale-binary trap already
+  recorded above, hit again and hiding a real regression rather than
+  merely a stale pass. It surfaced only because the binary was rebuilt
+  before a routine suite run; `ls -la` on it read September 9 against a
+  September 15 tree.
+
+  The script builds its own runner now, with the flag the config
+  requires, in the same command as the tests -- so the two cannot drift
+  apart and there is no path for a stale one to be used. `EMU_HOST`
+  still overrides for bisecting.
+
+  Three things generalise. **A build option that changes architectural
+  behaviour has a second home** -- the DUT description -- and changing
+  one without the other produces a failure that looks like an emulator
+  bug and is a disagreement about what the machine is. **A suite result
+  is only about the binary that produced it**, which is why "run both
+  suites" is not enough on its own: riscv-tests passed 77/77 throughout,
+  because its guests never make a misaligned access. And bisecting this
+  took six steps of about a minute each, because the failing ELF
+  self-checks and prints its own verdict -- **run the artefact directly
+  rather than the harness around it** when a suite has one failing case.
 - **Measure before attributing, even when the theory is good.** The
   host/guest instruction ratio on Quake is ~47, far above what a
   translated block should cost, and the obvious explanation was

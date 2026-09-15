@@ -20,7 +20,31 @@ set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 suite="${ARCH_TEST_DIR:-$here/build/arch-test}"
-runner="${EMU_HOST:-$here/build/host/emu-host}"
+
+# The runner is built here, into a directory of its own, and that is not
+# tidiness.
+#
+# **The suite validates a machine against a description of that machine**,
+# and tests/arch-test/*/{*.yaml,sail.json} both declare MISALIGNED_LDST
+# false -- "this core reports misaligned accesses rather than splitting
+# them". The emulator's own default became the opposite (RV32_MISALIGNED
+# ON, which picolibc's word-at-a-time strcmp needs), so an ordinary build
+# is no longer the core this description describes, and the four
+# ExceptionsSv tests fail with "DUT generated too many traps".
+#
+# Nothing said so. The default flipped in 38a8fd1, the suite kept
+# reporting 378/378 for days because it was running a binary from before
+# it, and the failure only appeared when that stale binary was rebuilt.
+# So the flag is applied *here*, where it cannot drift from the config it
+# has to agree with -- and the build runs in the same command as the
+# tests, which is this tree's standing rule for any runner a script
+# defaults to.
+#
+# EMU_HOST still overrides, for bisecting or for testing a binary built
+# elsewhere. It is on the caller to match the config when they do.
+runner="${EMU_HOST:-$here/build/arch-test-host/emu-host}"
+build_runner=1
+[[ -n "${EMU_HOST:-}" ]] && build_runner=0
 
 cfg_name="rv32cortex-m-rv32"
 cfg_src="$here/tests/arch-test/$cfg_name"
@@ -54,9 +78,21 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ "$build_runner" == 1 ]]; then
+    echo "==> building the runner (RV32_MISALIGNED=OFF, as the config declares)"
+    cmake -S "$here" -B "$here/build/arch-test-host" \
+          -DCMAKE_BUILD_TYPE=Release -DRV32_MISALIGNED=OFF >/dev/null || exit 1
+    # By exit status, not by grepping for "error": a "No rule to make
+    # target" contains neither that word nor any other this script could
+    # match, and a failed build leaves the previous binary at exactly the
+    # path the tests are about to use.
+    cmake --build "$here/build/arch-test-host" --target emu-host \
+          -j"$(nproc)" >/dev/null || exit 1
+fi
+
 if [[ ! -x "$runner" ]]; then
     echo "error: host runner not found at $runner" >&2
-    echo "       cmake -B build/host -DRV32_PLATFORM=host && cmake --build build/host" >&2
+    echo "       cmake -B build/host && cmake --build build/host" >&2
     exit 1
 fi
 command -v uv >/dev/null || { echo "error: uv is required by the suite's build" >&2; exit 1; }
