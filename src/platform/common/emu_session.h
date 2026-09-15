@@ -50,6 +50,14 @@ typedef struct emu_session_cfg {
      * two ctest cases failed with no message.
      */
     emu_uart_t *uart;
+    /*
+     * How the console raises its interrupt line, or NULL for a UART
+     * that cannot. Carried here rather than set by the caller after
+     * emu_session_start, because emu_uart_init runs *inside* that call
+     * and clears it -- setting it beforehand looks right and is undone
+     * a moment later.
+     */
+    void (*uart_irq)(void *ctx, int level);
     void (*uart_tx)(void *ctx, uint8_t c);
     int (*uart_rx)(void *ctx);
 
@@ -142,6 +150,13 @@ typedef struct emu_session_cfg {
  * the run loop all need it and they are the platform's to wire.
  */
 bool emu_session_start(emu_system_t *sys, const emu_session_cfg_t *cfg);
+
+/*
+ * Poll the console for input, raising its receive interrupt if a byte
+ * has arrived. Called from the run loop; a no-op before a session has
+ * started or when the UART cannot interrupt.
+ */
+void emu_session_poll_uart(void);
 
 /*
  * Place the image and restart, without re-opening the cores.

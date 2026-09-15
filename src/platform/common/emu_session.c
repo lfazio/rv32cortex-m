@@ -207,6 +207,26 @@ bool emu_session_reload(emu_system_t *sys, const emu_session_cfg_t *cfg)
     return add_devices(sys, cfg) && finish(sys, cfg);
 }
 
+/*
+ * The console, kept so the run loop can poll it for input without every
+ * caller having to hold the pointer. See emu_session_poll_uart.
+ */
+static emu_uart_t *g_uart;
+
+/*
+ * Look for an arriving byte, and raise the receive interrupt if one has.
+ *
+ * The transport is polled, so this is the only thing that ever notices;
+ * a guest that enables the receive interrupt and waits is waiting for
+ * something nothing else can cause.
+ */
+void emu_session_poll_uart(void)
+{
+    if (g_uart != NULL) {
+        emu_uart_poll(g_uart);
+    }
+}
+
 bool emu_session_start(emu_system_t *sys, const emu_session_cfg_t *cfg)
 {
     const emu_cpu_ops_t *const ops =
@@ -214,7 +234,10 @@ bool emu_session_start(emu_system_t *sys, const emu_session_cfg_t *cfg)
 
     if (cfg->uart != NULL && cfg->uart_tx != NULL) {
         emu_uart_init(cfg->uart, cfg->uart_tx, cfg->uart_rx, NULL);
+        /* After init, which clears it. See emu_session_cfg_t::uart_irq. */
+        emu_uart_set_irq(cfg->uart, cfg->uart_irq, NULL);
     }
+    g_uart = cfg->uart;
 
     if (!emu_system_open(sys, ops, cfg->buses, cfg->ncores)) {
         fail(cfg, "could not bring the cores up", NULL);

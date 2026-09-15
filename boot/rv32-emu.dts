@@ -48,11 +48,24 @@
          * wrong while the question is still whether the kernel boots at
          * all.
          *
-         * Swap to `console=ttyS0,115200 earlycon=uart8250,mmio,0x10000000`
-         * once there is a PLIC and the UART is worth driving directly:
-         * an ecall per character is a trap to M-mode per character.
+         * **console=ttyS0, and hvc0 is the trap.** hvc0 works for printk
+         * and does not work for userspace: it queues bytes and a kernel
+         * thread (khvcd) pushes them out, so a write() from init
+         * returns success and nothing is ever printed unless khvcd
+         * gets scheduled. Every line of userspace output was lost that
+         * way, with the only visible result a panic about killing init
+         * -- which says nothing about whether userspace ran.
+         *
+         * ttyS0 is the NS16550 the emulator already provides, at
+         * 0x10000000, and the 8250 driver binds to it from the node
+         * below. Writes reach the host immediately because there is no
+         * thread in between.
+         *
+         * earlycon stays on sbi: it runs before any driver is probed,
+         * which is the whole point of it, and keep_bootcon leaves it
+         * registered so nothing is lost at the handover.
          */
-        bootargs = "earlycon=sbi console=hvc0 keep_bootcon";
+        bootargs = "earlycon=sbi console=ttyS0";
     };
 
     cpus {
@@ -133,6 +146,23 @@
             clock-frequency = <3686400>;
             reg-shift = <0>;
             reg-io-width = <1>;
+            /*
+             * **The interrupt is what makes userspace output work.**
+             * Without it the 8250 driver binds anyway and the kernel's
+             * own messages appear -- printk uses the polled console
+             * path -- while every byte written by a *process* goes into
+             * the tty buffer and waits for a transmit interrupt that
+             * cannot arrive. write() returns success and userspace is
+             * silent, which reads as the program not running.
+             *
+             * 10, above the virtio range: those are handed out from 1
+             * in the order the emulator's options ask for, so a lower
+             * number would collide as soon as a fourth device existed.
+             * Nothing checks that this agrees with EMU_UART_IRQ in
+             * emu_main.c -- two descriptions of one machine.
+             */
+            interrupt-parent = <&aplic>;
+            interrupts = <10 4>;
             status = "okay";
         };
 

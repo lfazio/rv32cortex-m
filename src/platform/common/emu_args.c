@@ -35,6 +35,29 @@
  */
 #define EMU_JIT_SELECTABLE EMU_HAVE_JIT
 
+/*
+ * For the options whose field is 64-bit.
+ *
+ * **--max-insn is the one that needed it.** Its field has always been
+ * uint64_t and it was parsed through a uint32_t, so any budget above
+ * 4,294,967,295 was rejected as a *usage error* -- which prints the
+ * help and looks like a typo in the command line. That ceiling is
+ * exactly where the interesting work is: a Linux kernel needs more than
+ * 3G instructions to reach init, so the first budget anyone would want
+ * to raise it to is the first one the parser refuses.
+ */
+static bool parse_u64(const char *s, uint64_t *out)
+{
+    char *end = NULL;
+    errno = 0;
+    const unsigned long long v = strtoull(s, &end, 0);
+    if (errno != 0 || end == s || *end != '\0') {
+        return false;
+    }
+    *out = (uint64_t)v;
+    return true;
+}
+
 static bool parse_u32(const char *s, uint32_t *out)
 {
     char *end = NULL;
@@ -337,13 +360,11 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
                 continue;
             }
             if (strcmp(a, "--max-insn") == 0) {
-                uint32_t v;
-                if (!parse_u32(argv[++i], &v)) {
+                if (!parse_u64(argv[++i], &opt->max_insn)) {
                     emu_args_usage();
                     *status = 2;
                     return false;
                 }
-                opt->max_insn = v;
                 continue;
             }
 #if EMU_NET

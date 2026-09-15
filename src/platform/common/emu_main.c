@@ -51,6 +51,17 @@ void host_rate_init(bool quiet, bool force);
  */
 static emu_bus_t g_buses[EMU_MAX_CORES];
 static emu_system_t g_sys;
+/*
+ * The console UART's interrupt.
+ *
+ * Above the virtio range on purpose: those are handed out from 1 in the
+ * order the options ask for, so a fixed number below them would collide
+ * as soon as a fourth device was added. 10 is what boot/rv32-emu.dts
+ * names, and **nothing checks that the two agree** -- the device tree
+ * and the emulator are two descriptions of one machine.
+ */
+#define EMU_UART_IRQ 10u
+
 static emu_uart_t g_uart;
 
 static emu_guest_exit_t g_exit;
@@ -165,6 +176,20 @@ static void virtio_irq(void *ctx, int irq_num, int level)
     (void)ctx;
     emu_raise_irq((uint32_t)irq_num, level != 0);
 }
+#endif /* EMU_HAVE_VIRTIO */
+
+/*
+ * The console UART's line, which is the same mechanism and is wanted
+ * whether or not this build has virtio -- hence outside the block
+ * above.
+ */
+static void uart_irq(void *ctx, int level)
+{
+    (void)ctx;
+    emu_raise_irq(EMU_UART_IRQ, level != 0);
+}
+
+#if EMU_HAVE_VIRTIO
 
 /*
  * Where the devices live.
@@ -364,6 +389,18 @@ int main(int argc, char **argv)
     g_cfg.buses = g_buses;
     g_cfg.ncores = 0u; /* the frontend's count */
     g_cfg.uart = &g_uart;
+    /*
+     * Let the console interrupt.
+     *
+     * Bare-metal guests poll LSR and never enable it, so this costs
+     * them nothing. An operating system needs it: Linux writes kernel
+     * messages through the driver's *polled* console path and
+     * everything userspace writes through the tty layer, which waits
+     * for a transmit interrupt to drain. Without one the kernel's own
+     * output is perfect and every byte a process writes is queued for
+     * ever -- write() returns success and userspace is simply silent.
+     */
+    g_cfg.uart_irq = uart_irq;
     g_cfg.uart_tx = guest_tx;
     g_cfg.uart_rx = guest_rx;
     g_cfg.syscall_fn = emu_guest_syscall;

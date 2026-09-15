@@ -47,6 +47,15 @@ extern "C" {
 #define EMU_UART_LSR_THRE 0x20u
 #define EMU_UART_LSR_TEMT 0x40u
 
+/* IER, the two bits that mean anything here. */
+#define EMU_UART_IER_RDA 0x01u /* received data available    */
+#define EMU_UART_IER_THRE 0x02u /* transmit holding empty    */
+
+/* IIR: bit 0 *clear* means an interrupt is pending. */
+#define EMU_UART_IIR_NONE 0x01u
+#define EMU_UART_IIR_THRE 0x02u
+#define EMU_UART_IIR_RDA 0x04u
+
 typedef struct emu_uart {
     /* Backing transport, supplied by the platform. */
     void (*tx)(void *ctx, uint8_t c);
@@ -65,12 +74,62 @@ typedef struct emu_uart {
     uint8_t lcr;
     uint8_t mcr;
     uint8_t scr;
+
+    /*
+     * How the line is raised, or NULL for a UART that cannot interrupt.
+     *
+     * **A polled console is not enough for an operating system.** Linux
+     * writes kernel messages through the driver's polled console path
+     * and everything *userspace* writes through the tty layer, which
+     * waits for a transmit interrupt to drain its buffer. With no
+     * interrupt the kernel's own output appears perfectly and every
+     * byte a process writes is queued and never sent -- write() returns
+     * success, and the only symptom is silence from userspace. That
+     * cost a session to find, because it looks like the program not
+     * running rather than the console not draining.
+     *
+     * Level triggered, like the virtio devices: `level` is 0 or 1 and
+     * the line stays up until the condition is cleared.
+     */
+    void (*irq)(void *ctx, int level);
+    void *irq_ctx;
+
+    /*
+     * Whether the transmit interrupt is still outstanding.
+     *
+     * Transmission here is instantaneous, so THRE is permanently true
+     * and an interrupt conditioned on it alone would re-assert the
+     * moment it was acknowledged -- a storm the guest cannot escape
+     * except by disabling the interrupt. A real 16550 clears the THRE
+     * indication when IIR is read and sets it again on the next write
+     * to THR, so that is what this tracks.
+     */
+    bool thre_pending;
+    bool line;
 } emu_uart_t;
 
 extern const emu_dev_ops_t emu_uart_ops;
 
 void emu_uart_init(emu_uart_t *u, void (*tx)(void *ctx, uint8_t c),
                    int (*rx)(void *ctx), void *ctx);
+
+/*
+ * Give the UART somewhere to raise its line. Optional: without it the
+ * device behaves exactly as before, which is what every bare-metal
+ * guest in this tree wants.
+ */
+void emu_uart_set_irq(emu_uart_t *u, void (*irq)(void *ctx, int level),
+                      void *irq_ctx);
+
+/*
+ * Re-evaluate the line, having looked for input.
+ *
+ * **Must be called from the run loop** for receive interrupts to exist
+ * at all: the transport is polled, so nothing else ever notices that a
+ * byte has arrived. Cheap and safe to call when no interrupt is
+ * configured.
+ */
+void emu_uart_poll(emu_uart_t *u);
 
 /* ------------------------------------------------------------------ */
 /* Framebuffer                                                         */

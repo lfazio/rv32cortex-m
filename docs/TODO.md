@@ -33,17 +33,67 @@ measured at.
       other, because most of them are only testable once the one above
       works:
   - [x] OpenSBI in M-mode, above.
-  - [~] Kernel boot to userspace with **no devices at all**. Linux 6.12
-        rv32 now boots on OpenSBI to driver init -- 447 lines of dmesg,
-        SBI v3.0 detected, TIME/IPI/RFENCE/DBCN found, memory and zones
-        set up, io schedulers registered. Reaching `init` needs more than
-        3G instructions on the interpreter; still to confirm. `earlycon=sbi`
-        and `hvc0` go through SBI calls OpenSBI already serves, so this
-        needs no PLIC, no virtio and no interrupt controller -- which is
-        the point of doing it first: it isolates Sv32, the S-mode trap
-        path and SBI from every device question. Rootfs is an initramfs
-        built into the image (`boot/initramfs/`), so no block device
-        either. A static `-nostdlib` init prints and exits.
+  - [x] **Kernel boot to userspace. Done.** Linux 6.12 rv32 boots on
+        OpenSBI, reaches `Run /init as init process`, and the init
+        process makes user-mode `ecall`s that land in `do_trap_ecall_u`
+        -- so Sv32, the S-mode trap path and the U-mode boundary all
+        work. ~1.5e9 instructions interpreted, about 10 seconds of guest
+        time. Rootfs is an initramfs built into the image.
+
+        **`scripts/run-linux.sh` builds and runs the whole thing**, and
+        that is most of what this entry was worth. It had been assembled
+        by hand, which is how the tree came to be running a kernel image
+        six hours *older* than the init binary supposedly inside it --
+        every run was exercising a previous userspace, and nothing said
+        so. The script rebuilds init, regenerates the cpio manifest,
+        rebuilds the kernel and OpenSBI, and runs, in one command.
+
+        Two things it had to fix to get this far:
+
+        **The initramfs had no `/dev/console`.** A directory handed to
+        CONFIG_INITRAMFS_SOURCE cannot carry a device node -- creating
+        one needs root -- so the kernel reported "unable to open an
+        initial console" and userspace had no file descriptors. The
+        manifest form of INITRAMFS_SOURCE lets gen_init_cpio write the
+        node as a cpio record, which needs no privilege.
+
+        **`--max-insn` could not express the budget this needs.** Its
+        field is uint64_t and it was parsed through a uint32_t, so
+        anything over 4,294,967,295 was rejected as a *usage error* --
+        printing the help, which reads as a typo in the command line.
+        A kernel needs more than 3G instructions to reach init, so the
+        first budget anyone would want was the first one refused.
+  - [ ] **Userspace output does not reach the console**, and this is the
+        open one. The kernel's own messages appear perfectly; every byte
+        a *process* writes is accepted and never sent.
+
+        What is established, by counting in the emulator rather than
+        reasoning: `write()` returns success, on `/dev/console` and on
+        `/dev/ttyS0` opened by name, and with two seconds of guest time
+        afterwards to drain. printk works because it uses the 8250
+        driver's *polled* console path; the tty layer uses the transmit
+        interrupt.
+
+        So the UART was given one -- `emu_uart.c` stored `ier` and never
+        consulted it, which is this file's own "a register the code
+        stores and never reads" tell -- wired to APLIC source 10, with
+        `interrupts = <10 4>` on the serial node. The driver now binds
+        with `irq = 12` instead of 0. It did not fix it. The counters
+        say `thr=13673 ier=110 iir=6 raises=3`: the line is raised three
+        times across a whole boot, which is far too few to be the tty
+        draining and is consistent with the three raises all being the
+        8250's start-up interrupt test.
+
+        Next: find out whether `serial8250_start_tx` ever enables THRI
+        for these writes -- if it does not, the interrupt is not the
+        problem and the tty is not reaching the driver at all. The
+        virtio console is the other candidate and is already attached.
+
+        **Do not read the doubled output as two consoles.** Every line
+        appears twice with an identical timestamp, and it still does
+        with `keep_bootcon` removed, so it is the emulator emitting each
+        byte twice -- a separate, older oddity that has nothing to do
+        with this.
   - [~] **An interrupt controller -- and it does not have to be a PLIC.**
         Established by booting without one: the kernel reaches driver
         init with *no* interrupt controller in the device tree, because
@@ -91,9 +141,22 @@ measured at.
         *content*, since a device that signalled and filled nothing
         would pass every other check in the guest.
 
-        Next is `virtio-net`, then the display. The groundwork they need
-        is done: the transport works, a queue completes, and the
-        interrupt arrives.
+        virtio-net is `--net loop` and `--net tap:NAME`. The loopback
+        backend exists because a tap cannot be tested: it needs a device
+        node, a persistent interface and an address on it, none of which
+        a suite can assume, so a device offered only over tap would ship
+        having never moved a packet. `guest-virtiotest-net` is also the
+        first test to drive two queues at once.
+
+        **All three probe under Linux**, which is the check that matters
+        and which no unit test can make: `virtio_blk virtio0: [vda]
+        32768 512-byte logical blocks (16.8 MB/16.0 MiB)`.
+
+        Next is the display. And note what a *missing* device does:
+        every virtio node in the device tree needs one behind it, or
+        virtio_mmio_probe reads the magic, the bus refuses an unmapped
+        address, and the kernel takes a load access fault and panics
+        inside driver_attach. Not a driver quietly finding nothing.
 
         **What virtio-blk cost was a barrier in the guest, not a bug in
         the device.** A volatile access does not order the ordinary
@@ -138,7 +201,7 @@ measured at.
       reached from the other end, and the reason this file already says
       to go after longer blocks rather than more registers.
 
-- [~] **Doom II, then Quake III** -- as benchmarks with a real frame rate
+- [~] **Doom, then Quake** -- as benchmarks with a real frame rate
       rather than a checksum, and as the first guests big enough to make
       the JIT's figures mean something.
 
@@ -150,9 +213,6 @@ measured at.
       read a load's displacement as a floating-point opcode, a guest
       runtime with no thread pointer, misaligned access the C library
       assumes, and a flash window sized for smaller images.
-
-      Still to do here: Doom II and Quake III, which are the larger
-      data sets rather than new ports.
 
       Order is rv32, then g4mh, then ppc -- but **the second and third are
       blocked on toolchains rather than on the emulator**, which is worth
@@ -220,14 +280,11 @@ measured at.
         advances many world-tics per drawn frame and the game appears to
         fast-forward. Dividing guest time back down matches its own
         rate -- 6 suits this machine, another will differ.
-  - [ ] **Quake III on rv32**, after Doom II works. It is the harder
+  - [ ] **Quake on rv32**, after Doom works. It is the harder
         target and the one that will say whether the JIT holds up under
         floating point at scale.
         https://github.com/lfazio/quake-embedded
-  - [ ] Doom II on g4mh. The toolchain is there; what is untested is
-        whether an expired-evaluation `rlink` will produce a binary that
-        large.
-  - [ ] Doom II on ppc, once it has both a VLE C compiler and a JIT.
+  - [ ] Doom on ppc, once it has a JIT.
 - [ ] **PowerPC debug infrastructure**, which is three files where the
       other two frontends have fifteen. Every G4MH defect this project
       found was found with a trace and a disassembler; the PowerPC ones

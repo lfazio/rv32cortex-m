@@ -28,6 +28,7 @@
 #include "emu_console.h"
 
 #include "emu_image.h"
+#include "emu_session.h"
 
 #if EMU_NET
 #include "emu_net.h"
@@ -269,6 +270,14 @@ void emu_board_poll(void)
 #if EMU_NET
     emu_net_poll();
 #endif
+    /*
+     * The console's receive line. The transport is polled, so this is
+     * the only thing that ever notices a byte has arrived -- without it
+     * a guest that enables the receive interrupt waits for one that
+     * cannot happen.
+     */
+    emu_session_poll_uart();
+
 #if EMU_HAVE_VIRTIO
     /*
      * The guest's own network interface, which is a different thing from
