@@ -112,6 +112,28 @@ if(TARGET guest-isatest AND EMU_GUEST_ARCH_RV32)
         set_tests_properties(guest-virtiotest-blk PROPERTIES
             LABELS fast
             PASS_REGULAR_EXPRESSION "VIRTIOTEST-PASS")
+
+        # And against a network interface.
+        #
+        # The loopback backend, which is why it can be a test at all: a
+        # tap needs a device node, a persistent interface and an address
+        # on it, none of which a suite can assume. What this covers that
+        # the other two do not is **two queues at once** -- a frame is
+        # transmitted on queue 1 and arrives on queue 0, and the receive
+        # buffer has to be posted before the transmit or there is
+        # nowhere for it to land.
+        #
+        # It asserts the frame's *bytes*, not the interrupt. The
+        # interrupt is raised by the transmit completing, so a device
+        # that delivered nothing to the guest still takes one -- checked
+        # by breaking it, and "net interrupt taken" passed while the
+        # three checks about the frame failed.
+        add_test(NAME guest-virtiotest-net
+                 COMMAND emu-host --net loop --ram 0x400000
+                         "${CMAKE_BINARY_DIR}/guest/virtiotest.bin")
+        set_tests_properties(guest-virtiotest-net PROPERTIES
+            LABELS fast
+            PASS_REGULAR_EXPRESSION "VIRTIOTEST-PASS")
     endif()
 
     # The same self-test through the JIT.

@@ -10,6 +10,7 @@
 
 #include "emu/emu_virtio.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -323,6 +324,263 @@ bool emu_virtio_add_block(uint32_t base, int irq_num, const char *path,
     blk.dev.opaque = &blk;
 
     return remember(virtio_block_init(&def, &blk.dev), "block", base);
+}
+
+/* ------------------------------------------------------------------ */
+/* Network                                                             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Two backends, and the second exists because the first cannot be
+ * tested.
+ *
+ * A tap interface is real networking and needs a host administrator: a
+ * device node, a persistent interface, and an address on it. None of
+ * that can be assumed by a test, so a suite built only on tap would
+ * assert nothing anywhere it matters -- which is how a device comes to
+ * be shipped having never moved a packet.
+ *
+ * The loopback backend hands every transmitted frame straight back to
+ * the guest. It proves the part that is this project's: the TX queue is
+ * consumed, the backend is reached, the RX queue is filled and the
+ * interrupt arrives. What it deliberately does not prove is anything
+ * about the host's network, which is the tap backend's job and is not
+ * something a test can own.
+ */
+typedef struct emu_net {
+    EthernetDevice es;
+    int fd; /* tap; -1 for loopback */
+    bool loopback;
+    uint64_t tx_packets;
+    uint64_t rx_packets;
+    uint64_t rx_dropped;
+} emu_net_dev_t;
+
+static emu_net_dev_t g_net;
+static bool g_net_ready;
+
+/*
+ * The guest transmitted a frame.
+ *
+ * For loopback that means handing it back, and `device_can_write_packet`
+ * has to be asked first: the RX queue may have no buffer posted, and
+ * writing anyway would walk a ring the driver has not filled. A frame
+ * dropped here is counted rather than reported -- a full receive ring is
+ * an ordinary condition on a real link, not an error, and printing per
+ * packet would bury the run.
+ */
+static void net_write_packet(EthernetDevice *es, const uint8_t *buf, int len)
+{
+    emu_net_dev_t *const n = es->opaque;
+
+    n->tx_packets++;
+
+    if (n->loopback) {
+        if (es->device_can_write_packet != NULL &&
+            es->device_can_write_packet(es)) {
+            es->device_write_packet(es, buf, len);
+            n->rx_packets++;
+        } else {
+            n->rx_dropped++;
+        }
+        return;
+    }
+
+#if defined(__linux__)
+    if (n->fd >= 0) {
+        ssize_t w = write(n->fd, buf, (size_t)len);
+
+        /*
+         * A short or refused write is the host's queue being full. The
+         * frame is lost, which is what an overrun on a real interface
+         * does, and Ethernet is allowed to lose frames -- so it is
+         * counted, not retried.
+         */
+        if (w != (ssize_t)len) {
+            n->rx_dropped++;
+        }
+    }
+#endif
+}
+
+/*
+ * Drain whatever the host has for us into the guest's receive queue.
+ *
+ * Called from the run loop rather than from a thread, so it must never
+ * block: the tap fd is opened non-blocking and this returns as soon as
+ * the read would wait. It also stops as soon as the guest has no buffer
+ * posted, which keeps one busy interface from starving the guest of the
+ * cycles it needs to post more.
+ */
+void emu_virtio_net_poll(void)
+{
+#if defined(__linux__)
+    emu_net_dev_t *const n = &g_net;
+    uint8_t frame[2048];
+
+    if (!g_net_ready || n->loopback || n->fd < 0) {
+        return;
+    }
+
+    for (;;) {
+        ssize_t r;
+
+        if (n->es.device_can_write_packet == NULL ||
+            !n->es.device_can_write_packet(&n->es)) {
+            return;
+        }
+        r = read(n->fd, frame, sizeof(frame));
+        if (r <= 0) {
+            return;
+        }
+        n->es.device_write_packet(&n->es, frame, (int)r);
+        n->rx_packets++;
+    }
+#endif
+}
+
+#if defined(__linux__)
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <linux/if.h>
+#include <linux/if_tun.h>
+
+/*
+ * Attach to an interface that already exists.
+ *
+ * Deliberately not created here. Creating one needs CAP_NET_ADMIN,
+ * which would mean running the whole emulator privileged for the sake
+ * of one ioctl; attaching to a persistent tap owned by the user needs
+ * nothing:
+ *
+ *   sudo ip tuntap add dev tap0 mode tap user $USER
+ *   sudo ip addr add 192.168.100.1/24 dev tap0
+ *   sudo ip link set tap0 up
+ *
+ * IFF_NO_PI because virtio carries its own header and the guest would
+ * otherwise see tun's four bytes in front of every frame -- which does
+ * not fail, it just makes every packet malformed by four bytes.
+ */
+static int tap_open(const char *name)
+{
+    struct ifreq ifr;
+    int fd = open("/dev/net/tun", O_RDWR);
+
+    if (fd < 0) {
+        fprintf(stderr, "virtio-net: cannot open /dev/net/tun (%s)\n",
+                strerror(errno));
+        return -1;
+    }
+
+    memset(&ifr, 0, sizeof(ifr));
+    ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
+    (void)snprintf(ifr.ifr_name, IFNAMSIZ, "%s", name);
+
+    if (ioctl(fd, TUNSETIFF, &ifr) < 0) {
+        fprintf(stderr,
+                "virtio-net: cannot attach to tap '%s' (%s).\n"
+                "  Create it once, owned by you:\n"
+                "    sudo ip tuntap add dev %s mode tap user $USER\n"
+                "    sudo ip addr add 192.168.100.1/24 dev %s\n"
+                "    sudo ip link set %s up\n",
+                name, strerror(errno), name, name, name);
+        (void)close(fd);
+        return -1;
+    }
+
+    /*
+     * Non-blocking, because the poll above runs on the same thread as
+     * the guest. A blocking read here stops the emulated machine until
+     * a packet arrives, which on an idle network is for ever.
+     */
+    (void)fcntl(fd, F_SETFL, O_NONBLOCK);
+    return fd;
+}
+#endif /* __linux__ */
+
+bool emu_virtio_add_net(uint32_t base, int irq_num, const char *spec)
+{
+    VIRTIOBusDef def;
+    VIRTIODevice *dev;
+
+    if (spec == NULL) {
+        return false;
+    }
+
+    memset(&g_net, 0, sizeof(g_net));
+    g_net.fd = -1;
+
+    if (strcmp(spec, "loop") == 0) {
+        g_net.loopback = true;
+    } else if (strncmp(spec, "tap:", 4) == 0) {
+#if defined(__linux__)
+        g_net.fd = tap_open(spec + 4);
+        if (g_net.fd < 0) {
+            return false;
+        }
+#else
+        fprintf(stderr, "virtio-net: tap is Linux only\n");
+        return false;
+#endif
+    } else {
+        fprintf(stderr,
+                "virtio-net: '%s' is not a backend; use 'loop' or "
+                "'tap:NAME'\n",
+                spec);
+        return false;
+    }
+
+    /*
+     * A locally administered address -- bit 1 of the first octet -- so
+     * it cannot collide with a real manufacturer's. Fixed rather than
+     * random because a guest that caches its address across runs, and a
+     * DHCP server that hands out leases by MAC, both behave far more
+     * predictably when it does not move.
+     */
+    g_net.es.mac_addr[0] = 0x02u;
+    g_net.es.mac_addr[1] = 0x00u;
+    g_net.es.mac_addr[2] = 0x00u;
+    g_net.es.mac_addr[3] = 0x00u;
+    g_net.es.mac_addr[4] = 0x00u;
+    g_net.es.mac_addr[5] = 0x01u;
+
+    g_net.es.opaque = &g_net;
+    g_net.es.write_packet = net_write_packet;
+
+    if (bus_def_for(base, irq_num, &def) == NULL) {
+        return false;
+    }
+
+    dev = virtio_net_init(&def, &g_net.es);
+    if (!remember(dev, "net", base)) {
+        return false;
+    }
+
+    /*
+     * The link comes up. Without this the guest's driver sees
+     * VIRTIO_NET_S_LINK_UP clear and, depending on the driver, either
+     * waits for a carrier that never arrives or brings the interface up
+     * and reports it down -- neither of which looks like a missing call.
+     */
+    if (g_net.es.device_set_carrier != NULL) {
+        g_net.es.device_set_carrier(&g_net.es, TRUE);
+    }
+
+    g_net_ready = true;
+    return true;
+}
+
+void emu_virtio_net_stats(uint64_t *tx, uint64_t *rx, uint64_t *dropped)
+{
+    if (tx != NULL) {
+        *tx = g_net.tx_packets;
+    }
+    if (rx != NULL) {
+        *rx = g_net.rx_packets;
+    }
+    if (dropped != NULL) {
+        *dropped = g_net.rx_dropped;
+    }
 }
 
 /* ------------------------------------------------------------------ */

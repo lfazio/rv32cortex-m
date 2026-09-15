@@ -93,6 +93,53 @@ bool emu_virtio_add_block(uint32_t base, int irq_num, const char *path,
                           bool writable);
 
 /*
+ * A network interface on virtio-mmio.
+ *
+ * `spec` names the backend:
+ *
+ *   "loop"      every frame the guest transmits is handed straight
+ *               back to it. Needs no host configuration and no
+ *               privileges, which is what makes it testable -- it
+ *               proves the TX queue is consumed, the backend reached,
+ *               the RX queue filled and the interrupt delivered,
+ *               without asserting anything about the host's network.
+ *
+ *   "tap:NAME"  a tap interface that **already exists**. Creating one
+ *               needs CAP_NET_ADMIN, which would mean running the whole
+ *               emulator privileged for one ioctl; attaching to a
+ *               persistent tap owned by the user needs nothing:
+ *
+ *                 sudo ip tuntap add dev tap0 mode tap user $USER
+ *                 sudo ip addr add 192.168.100.1/24 dev tap0
+ *                 sudo ip link set tap0 up
+ *
+ * The MAC is fixed and locally administered (02:00:00:00:00:01). Fixed
+ * rather than random because a guest that caches its address, and a
+ * DHCP server handing out leases by MAC, both behave far more
+ * predictably when it does not move between runs.
+ */
+bool emu_virtio_add_net(uint32_t base, int irq_num, const char *spec);
+
+/*
+ * Move whatever the host has into the guest's receive queue.
+ *
+ * **Must be called from the run loop**, and is a no-op for the loopback
+ * backend, which completes inside the transmit. The tap fd is
+ * non-blocking and this returns as soon as a read would wait, because
+ * it runs on the thread the guest runs on -- a blocking read here stops
+ * the emulated machine until a packet arrives, which on an idle network
+ * is for ever.
+ *
+ * It also stops as soon as the guest has no receive buffer posted, so a
+ * busy interface cannot starve the guest of the cycles it needs to post
+ * more.
+ */
+void emu_virtio_net_poll(void);
+
+/* Frames transmitted, received, and dropped for want of a buffer. */
+void emu_virtio_net_stats(uint64_t *tx, uint64_t *rx, uint64_t *dropped);
+
+/*
  * A keyboard and a mouse on virtio-mmio.
  *
  * Separate devices, as they are on real hardware and as Linux expects:

@@ -201,6 +201,19 @@ static void virtio_attach(emu_bus_t *bus, const emu_args_t *args)
         }
     }
 
+    if (args->net_spec != NULL) {
+        const uint32_t base = EMU_VIRTIO_BASE + n * EMU_VIRTIO_STRIDE;
+
+        if (emu_virtio_add_net(base, EMU_VIRTIO_IRQ_BASE + (int)n,
+                               args->net_spec)) {
+            emu_console_printf("virtio-net  '%s' at 0x%08x irq %d, "
+                               "mac 02:00:00:00:00:01\n",
+                               args->net_spec, (unsigned)base,
+                               EMU_VIRTIO_IRQ_BASE + (int)n);
+            n++;
+        }
+    }
+
     if (args->virtio_console) {
         const uint32_t base = EMU_VIRTIO_BASE + n * EMU_VIRTIO_STRIDE;
 

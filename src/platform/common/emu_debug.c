@@ -34,6 +34,17 @@
 #endif
 
 /*
+ * emu_virtio.h, not just the macro. EMU_HAVE_VIRTIO comes from emucore's
+ * PUBLIC compile definitions, so it is defined here -- but this file
+ * *calls* emu_virtio_net_poll, and a capability macro read without
+ * including what declares the function behind it is the shape that
+ * already cost this tree a silently-interpreted frontend.
+ */
+#if EMU_HAVE_VIRTIO
+#include "emu/emu_virtio.h"
+#endif
+
+/*
  * Is the IP stack up and therefore serving the stub?
  *
  * A function rather than `#if EMU_NET` at each site: with the transport
@@ -257,6 +268,20 @@ void emu_board_poll(void)
 {
 #if EMU_NET
     emu_net_poll();
+#endif
+#if EMU_HAVE_VIRTIO
+    /*
+     * The guest's own network interface, which is a different thing from
+     * the one above: emu_net_poll drives the stack *the firmware* speaks
+     * over its UART, and this moves frames between the host and the
+     * guest's virtio device. A machine can have both, and they share
+     * nothing but this line.
+     *
+     * Once per slice, because the receive path has no other schedule --
+     * a tap fd nobody reads fills up and the host starts dropping, which
+     * presents as a link that works in one direction.
+     */
+    emu_virtio_net_poll();
 #endif
     board_poll();
 }

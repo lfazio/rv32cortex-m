@@ -99,6 +99,14 @@ typedef struct emu_args {
     const char *disk_path;
     bool disk_ro;
 
+    /*
+     * The virtio network backend, or NULL for no interface: "loop", or
+     * "tap:NAME". See emu_virtio_add_net -- the two differ in whether
+     * they touch the host's network at all, which is why the loopback
+     * one exists.
+     */
+    const char *net_spec;
+
     bool virtio_console;
 
     bool virtio_input;

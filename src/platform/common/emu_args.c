@@ -91,6 +91,10 @@ void emu_args_usage(void)
         "                       exit either way.",
         "  --disk FILE          a disk image on virtio-blk, read-write.",
         "  --disk-ro FILE       the same, but the file is never written.",
+        "  --net BACKEND        a virtio network interface. 'loop' hands",
+        "                       every frame back to the guest and needs no",
+        "                       host setup; 'tap:NAME' attaches to a tap",
+        "                       that already exists (see docs/virtio.md).",
         "  --virtio-console     a virtio console beside the NS16550.",
         "  --virtio-input       present a virtio keyboard and mouse, for an",
         "                       OS driver to bind to. The simple polled",
@@ -216,6 +220,15 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
                 }
                 opt->disk_path = argv[i];
                 opt->disk_ro = (strcmp(a, "--disk-ro") == 0);
+                continue;
+            }
+            if (strcmp(a, "--net") == 0) {
+                if (argv[++i] == NULL) {
+                    emu_args_usage();
+                    *status = 2;
+                    return false;
+                }
+                opt->net_spec = argv[i];
                 continue;
             }
             if (strcmp(a, "--virtio-console") == 0) {

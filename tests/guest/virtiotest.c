@@ -136,6 +136,7 @@ static void check(const char *what, uint32_t got, uint32_t want)
 #define V_MAGIC_VALUE 0x74726976u /* 'virt' */
 #define V_ID_BLOCK 2u
 #define V_ID_CONSOLE 3u
+#define V_ID_NET 1u
 
 #define ST_ACK 1u
 #define ST_DRIVER 2u
@@ -180,6 +181,20 @@ static struct vring_desc g_desc[QSZ] __attribute__((aligned(16)));
 static struct vring_avail g_avail __attribute__((aligned(2)));
 static struct vring_used g_used __attribute__((aligned(4)));
 static const char g_msg[] = "virtio console says hello\n";
+
+/*
+ * A second ring set, for the one device that needs two queues at once.
+ *
+ * The console and the disk each drive a single queue, so one set served
+ * them. A network interface cannot: a frame is transmitted on queue 1
+ * and arrives back on queue 0, and the receive buffer has to be posted
+ * *before* the transmit, or there is nowhere for the reply to land.
+ * Sharing one set between the two would have the transmit overwrite the
+ * descriptor the receive is waiting on.
+ */
+static struct vring_desc g_desc1[QSZ] __attribute__((aligned(16)));
+static struct vring_avail g_avail1 __attribute__((aligned(2)));
+static struct vring_used g_used1 __attribute__((aligned(4)));
 
 /* ---- APLIC (direct delivery) --------------------------------------- */
 
@@ -279,6 +294,109 @@ static void irq_setup(void)
 #define VIRTIO_BLK_T_IN 0u
 #define VRING_DESC_F_WRITE 2u
 
+/* ---- the network interface ----------------------------------------- */
+
+/*
+ * **Two queues, and the receive buffer goes first.**
+ *
+ * virtio-net numbers them the way the device sees traffic, not the way
+ * the driver does: queue 0 is *receive* and queue 1 is *transmit*. The
+ * receive queue is the one with no notify -- the device marks it
+ * manual_recv, so writing QueueNotify for it does nothing at all and
+ * the buffer is simply left in the avail ring for the host to find when
+ * a frame turns up. A driver that waits for a used entry on queue 0
+ * after notifying it waits for ever, and everything it can read says
+ * the queue is configured and ready.
+ *
+ * Every frame carries a 12-byte virtio-net header in front of it, in
+ * the same buffer. It is not a separate descriptor and it is not
+ * optional: the device reads header_size bytes before the frame on
+ * transmit and writes them before the frame on receive, so a driver
+ * that omits it transmits its first 12 bytes as header and loses them.
+ */
+#define VIRTIO_NET_HDR_LEN 12u
+#define NET_FRAME_LEN 60u
+
+static uint8_t g_tx[VIRTIO_NET_HDR_LEN + NET_FRAME_LEN]
+    __attribute__((aligned(16)));
+static uint8_t g_rx[VIRTIO_NET_HDR_LEN + NET_FRAME_LEN]
+    __attribute__((aligned(16)));
+
+static void test_net(void)
+{
+    uint32_t i;
+    uint32_t bad = 0u;
+
+    puts_("virtiotest: sending a frame and waiting for it to come back\n");
+
+    /*
+     * A frame that is recognisably ours rather than zeros. Zeros would
+     * pass against a device that completed the descriptor without
+     * copying anything, which is the failure worth ruling out -- the
+     * receive buffer starts as zeros too.
+     */
+    for (i = 0; i < VIRTIO_NET_HDR_LEN; i++) {
+        g_tx[i] = 0u;
+    }
+    for (i = 0; i < NET_FRAME_LEN; i++) {
+        g_tx[VIRTIO_NET_HDR_LEN + i] = (uint8_t)(0xA0u + (i & 0x0Fu));
+    }
+    for (i = 0; i < sizeof(g_rx); i++) {
+        g_rx[i] = 0u;
+    }
+
+    /*
+     * The receive buffer, posted on queue 0 and left there. Written by
+     * the device, so VRING_DESC_F_WRITE; it has to be big enough for
+     * the header as well as the frame, because the device refuses the
+     * whole delivery if header+frame does not fit and drops the packet
+     * without saying so.
+     */
+    g_desc[0].addr = (uint64_t)(uintptr_t)g_rx;
+    g_desc[0].len = sizeof(g_rx);
+    g_desc[0].flags = VRING_DESC_F_WRITE;
+    g_desc[0].next = 0u;
+    g_avail.ring[0] = 0u;
+    g_avail.idx = 1u;
+
+    /* The frame to send, on queue 1: header and payload, read-only. */
+    g_desc1[0].addr = (uint64_t)(uintptr_t)g_tx;
+    g_desc1[0].len = sizeof(g_tx);
+    g_desc1[0].flags = 0u;
+    g_desc1[0].next = 0u;
+    g_avail1.ring[0] = 0u;
+    g_avail1.idx = 1u;
+
+    g_took_irq = 0;
+    VIRTIO_WMB();
+    V(V_QUEUE_NOTIFY) = 1u; /* transmit */
+
+    for (i = 0; i < 20000000u && g_took_irq == 0; i++) {
+        __asm__ volatile("" ::: "memory");
+    }
+
+    check("net interrupt taken", (uint32_t)g_took_irq, 1u);
+    /* The transmit was consumed... */
+    check("net tx used ring advanced", g_used1.idx, 1u);
+    /* ...and the loopback put it back on the receive queue. */
+    check("net rx used ring advanced", g_used.idx, 1u);
+
+    /*
+     * The length the device reported, which is header plus frame. A
+     * device that completed the descriptor without copying would report
+     * zero here and still advance the ring.
+     */
+    check("net rx length", g_used.ring[0].len,
+          VIRTIO_NET_HDR_LEN + NET_FRAME_LEN);
+
+    for (i = 0; i < NET_FRAME_LEN; i++) {
+        if (g_rx[VIRTIO_NET_HDR_LEN + i] != g_tx[VIRTIO_NET_HDR_LEN + i]) {
+            bad++;
+        }
+    }
+    check("net frame came back intact", bad, 0u);
+}
+
 struct blk_req {
     uint32_t type;
     uint32_t reserved;
@@ -373,11 +491,12 @@ int main(void)
      * "no device" and "the wrong device" need different fixes.
      */
     dev_id = V(V_DEVICE_ID);
-    if (dev_id != V_ID_CONSOLE && dev_id != V_ID_BLOCK) {
+    if (dev_id != V_ID_CONSOLE && dev_id != V_ID_BLOCK &&
+        dev_id != V_ID_NET) {
         puts_("virtiotest: device id ");
         puthex(dev_id);
-        puts_(" is neither console nor block -- run with --virtio-console"
-              " or --disk\n");
+        puts_(" is not console, block or net -- run with"
+              " --virtio-console, --disk or --net\n");
         return 1;
     }
 
@@ -412,8 +531,12 @@ int main(void)
     V(V_DRIVER_FEATURES) = 0u;
     V(V_STATUS) = ST_ACK | ST_DRIVER | ST_FEATURES_OK;
 
-    /* Console: queue 1 transmits, 0 receives. Block: one queue, 0. */
-    V(V_QUEUE_SEL) = (dev_id == V_ID_BLOCK) ? 0u : 1u;
+    /*
+     * Which queue this device's work goes on. Console: queue 1
+     * transmits, 0 receives. Block: one queue, 0. Net: both, and it is
+     * the only one that needs two -- see test_net.
+     */
+    V(V_QUEUE_SEL) = (dev_id == V_ID_CONSOLE) ? 1u : 0u;
     check("queue max", (V(V_QUEUE_NUM_MAX) >= QSZ) ? 1u : 0u, 1u);
     V(V_QUEUE_NUM) = QSZ;
     V(V_QUEUE_DESC_LOW) = (uint32_t)(uintptr_t)g_desc;
@@ -423,10 +546,28 @@ int main(void)
     V(V_QUEUE_USED_LOW) = (uint32_t)(uintptr_t)&g_used;
     V(V_QUEUE_USED_HIGH) = 0u;
     V(V_QUEUE_READY) = 1u;
+
+    if (dev_id == V_ID_NET) {
+        /* Queue 1, transmit, with the second ring set. */
+        V(V_QUEUE_SEL) = 1u;
+        V(V_QUEUE_NUM) = QSZ;
+        V(V_QUEUE_DESC_LOW) = (uint32_t)(uintptr_t)g_desc1;
+        V(V_QUEUE_DESC_HIGH) = 0u;
+        V(V_QUEUE_AVAIL_LOW) = (uint32_t)(uintptr_t)&g_avail1;
+        V(V_QUEUE_AVAIL_HIGH) = 0u;
+        V(V_QUEUE_USED_LOW) = (uint32_t)(uintptr_t)&g_used1;
+        V(V_QUEUE_USED_HIGH) = 0u;
+        V(V_QUEUE_READY) = 1u;
+    }
+
     V(V_STATUS) = ST_ACK | ST_DRIVER | ST_FEATURES_OK | ST_DRIVER_OK;
 
     if (dev_id == V_ID_BLOCK) {
         test_block();
+        goto report;
+    }
+    if (dev_id == V_ID_NET) {
+        test_net();
         goto report;
     }
 
