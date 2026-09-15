@@ -37,6 +37,23 @@ typedef struct emu_args {
     uint32_t ram_size;
 
     /*
+     * The framebuffer geometry the device comes up in, as --fb WxH.
+     *
+     * Only the *starting* mode. The buffer is always allocated for the
+     * largest mode in the table, so a guest that sets a different one
+     * through the mode registers gets it whatever this said -- which is
+     * why this is a runtime option rather than a build one: it changes
+     * what a guest finds at reset, not what the machine can do.
+     *
+     * Rejected unless it is a mode the device actually has. A geometry
+     * the table does not hold would leave the device reporting a size
+     * no mode can produce, and a guest that enumerates modes to pick
+     * one would never find the one it is already in.
+     */
+    uint32_t fb_width;
+    uint32_t fb_height;
+
+    /*
      * Path to a flattened device tree, or NULL. A supervisor payload --
      * OpenSBI, and Linux behind it -- reads the machine's shape out of
      * this rather than being compiled for one, so it is the difference

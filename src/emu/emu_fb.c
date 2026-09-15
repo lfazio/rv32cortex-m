@@ -53,6 +53,18 @@ static const emu_fb_mode_t k_modes[] = {
 
 #define EMU_FB_MODE_TOTAL (sizeof(k_modes) / sizeof(k_modes[0]))
 
+bool emu_fb_has_mode(uint32_t width, uint32_t height, emu_fb_format_t format)
+{
+    for (uint32_t i = 0; i < EMU_FB_MODE_TOTAL; i++) {
+        if ((uint32_t)k_modes[i].width == width &&
+            (uint32_t)k_modes[i].height == height &&
+            (emu_fb_format_t)k_modes[i].format == format) {
+            return true;
+        }
+    }
+    return false;
+}
+
 uint32_t emu_fb_max_bytes(void)
 {
     uint32_t most = 0u;

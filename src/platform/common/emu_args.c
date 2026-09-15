@@ -7,6 +7,7 @@
 #include "emu_console.h"
 
 #include "emu/emu_cpu.h"
+#include "emu/emu_dev.h"
 #include "emu/emu_jit.h"
 
 #include <errno.h>
@@ -15,6 +16,14 @@
 
 /* Defaults that only this file and main() need agree on. */
 #define DEFAULT_RAM_SIZE (1u << 20) /* 1 MiB */
+
+/*
+ * The framebuffer mode the device starts in. 1024x768 is what the
+ * guests in this tree ask for; --fb picks another from the device's
+ * table. See emu_args_t::fb_width.
+ */
+#define DEFAULT_FB_WIDTH 1024u
+#define DEFAULT_FB_HEIGHT 768u
 
 /*
  * Whether `--jit` means anything in this build.
@@ -123,6 +132,12 @@ void emu_args_usage(void)
                        (unsigned)EMU_GUEST_RAM_BASE);
     emu_console_printf("  --ram BYTES          guest RAM size (default %u)\n",
                        (unsigned)DEFAULT_RAM_SIZE);
+    emu_console_printf("  --fb WxH             framebuffer mode at reset "
+                       "(default %ux%u); one of\n",
+                       (unsigned)DEFAULT_FB_WIDTH,
+                       (unsigned)DEFAULT_FB_HEIGHT);
+    emu_console_printf("                       320x200, 640x400, 640x480, "
+                       "800x600, 1024x768\n");
 
     for (unsigned i = 0; i < sizeof(k_tail) / sizeof(k_tail[0]); i++) {
         emu_console_printf("%s\n", k_tail[i]);
@@ -137,6 +152,8 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
     memset(opt, 0, sizeof(*opt));
     opt->load_addr = EMU_GUEST_ROM_BASE;
     opt->ram_size = DEFAULT_RAM_SIZE;
+    opt->fb_width = DEFAULT_FB_WIDTH;
+    opt->fb_height = DEFAULT_FB_HEIGHT;
     opt->quantum = EMU_DEFAULT_BUDGET;
     opt->timer_div = 1u;
     opt->trace_count = 64u;
@@ -254,6 +271,56 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
                     *status = 2;
                     return false;
                 }
+                continue;
+            }
+            /*
+             * --fb WxH. Parsed here rather than as two options because
+             * a geometry is one decision: a run that set the width and
+             * forgot the height would get a mode the device does not
+             * have, and the point of rejecting those is that nobody
+             * should be able to ask for one by halves.
+             */
+            if (strcmp(a, "--fb") == 0) {
+                const char *v = argv[++i];
+                char *end = NULL;
+                unsigned long w;
+                unsigned long h;
+
+                if (v == NULL) {
+                    emu_args_usage();
+                    *status = 2;
+                    return false;
+                }
+                w = strtoul(v, &end, 10);
+                if (end == v || *end != 'x') {
+                    emu_args_usage();
+                    *status = 2;
+                    return false;
+                }
+                v = end + 1;
+                h = strtoul(v, &end, 10);
+                if (end == v || *end != '\0') {
+                    emu_args_usage();
+                    *status = 2;
+                    return false;
+                }
+                if (!emu_fb_has_mode((uint32_t)w, (uint32_t)h,
+                                     EMU_FB_FMT_IDX8)) {
+                    /*
+                     * Named, not just refused. "800x600 is not a mode"
+                     * leaves the reader guessing which ones are, and
+                     * the list is four entries long.
+                     */
+                    emu_console_printf(
+                        "emu: --fb %lux%lu is not a mode this device has; "
+                        "try 320x200, 640x400, 640x480, 800x600 or "
+                        "1024x768\n",
+                        w, h);
+                    *status = 2;
+                    return false;
+                }
+                opt->fb_width = (uint32_t)w;
+                opt->fb_height = (uint32_t)h;
                 continue;
             }
             if (strcmp(a, "--max-insn") == 0) {

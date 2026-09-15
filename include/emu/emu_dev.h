@@ -261,6 +261,18 @@ uint32_t emu_fb_bpp(emu_fb_format_t format);
  */
 uint32_t emu_fb_max_bytes(void);
 
+/*
+ * Whether the device offers this geometry at this format.
+ *
+ * For a *platform* choosing the mode it starts in. emu_fb_init accepts
+ * any geometry that fits the buffer, which is right for it -- the
+ * buffer is the only thing it can check -- but a platform that started
+ * the device at a size no mode produces would report that size from the
+ * geometry registers while MODE_GET matched nothing in the list, so a
+ * guest enumerating modes could not find the one it was already in.
+ */
+bool emu_fb_has_mode(uint32_t width, uint32_t height, emu_fb_format_t format);
+
 /* ------------------------------------------------------------------ */
 /* Input: keyboard and mouse                                           */
 /* ------------------------------------------------------------------ */

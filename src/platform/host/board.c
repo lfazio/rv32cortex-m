@@ -617,10 +617,11 @@ static uint32_t g_timer_div = 1u;
 /*
  * The display.
  *
- * 1024x768 indexed, which is what the guests here ask for. A guest
- * that wants something else sets it -- the mode registers are the point
- * of the device -- and every mode in its table fits the buffer, which
- * is sized by emu_fb_max_bytes() rather than by this geometry.
+ * Indexed, at whatever --fb asked for and 1024x768 by default, which is
+ * what the guests here ask for. A guest that wants something else sets
+ * it -- the mode registers are the point of the device -- and every
+ * mode in its table fits the buffer, which is sized by
+ * emu_fb_max_bytes() rather than by this geometry.
  *
  * It was 320x200, Doom's mode and the cheapest thing to draw: every
  * pixel is a guest store the emulator has to execute, so a frame is now
@@ -635,8 +636,6 @@ static uint32_t g_timer_div = 1u;
  */
 void host_display_present(void *ctx, const emu_fb_frame_t *frame);
 void host_display_shutdown(void);
-#define HOST_FB_WIDTH 1024u
-#define HOST_FB_HEIGHT 768u
 
 static emu_fb_t g_fb;
 static uint8_t *g_fb_pixels;
@@ -1095,7 +1094,14 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
 
     g_fb_pixels = calloc(fb_bytes, 1u);
     if (g_fb_pixels != NULL) {
-        g_fb_ready = emu_fb_init(&g_fb, HOST_FB_WIDTH, HOST_FB_HEIGHT,
+        /*
+         * The geometry the run asked for, which defaults to the same
+         * 1024x768 this file used to hardwire. The buffer above is
+         * sized for the largest mode either way, so changing the
+         * starting mode costs nothing and cannot make a later MODE_SET
+         * fail.
+         */
+        g_fb_ready = emu_fb_init(&g_fb, g_opt.fb_width, g_opt.fb_height,
                                  EMU_FB_FMT_IDX8, 0u, g_fb_pixels,
                                  EMU_GUEST_FB_PIXELS, fb_bytes,
                                  host_display_present, NULL);

@@ -180,6 +180,31 @@ if(TARGET guest-fbtest AND EMU_GUEST_ARCH_RV32)
         LABELS fast
         PASS_REGULAR_EXPRESSION "FBTEST-END")
 
+    # The same, in a mode that is not the default.
+    #
+    # --fb only moves the mode the device *starts* in, and everything
+    # downstream reads the geometry from the device -- so a build that
+    # ignored the option entirely would still pass guest-fbtest above.
+    # 800x600 is 61% of 1024x768's pixels and the guest touches every
+    # one, which is why this is worth a run: the count it retires says
+    # whether the option reached the device.
+    add_test(NAME guest-fbtest-800x600
+             COMMAND emu-host --fb 800x600
+                     "${CMAKE_BINARY_DIR}/guest/fbtest.bin")
+    set_tests_properties(guest-fbtest-800x600 PROPERTIES
+        LABELS fast
+        PASS_REGULAR_EXPRESSION "FBTEST-END")
+
+    # And that a geometry the device does not have is refused rather
+    # than started. Accepting it would leave the device reporting a size
+    # no mode in its table produces.
+    add_test(NAME fb-mode-rejected
+             COMMAND emu-host --fb 1280x1024
+                     "${CMAKE_BINARY_DIR}/guest/fbtest.bin")
+    set_tests_properties(fb-mode-rejected PROPERTIES
+        LABELS fast
+        PASS_REGULAR_EXPRESSION "is not a mode this device has")
+
     if(EMU_JIT)
         add_test(NAME guest-fbtest-jit
                  COMMAND emu-host --jit
