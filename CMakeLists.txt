@@ -488,7 +488,36 @@ add_library(emucore STATIC
 #
 option(EMU_VIRTIO "virtio-mmio devices (host only)" ON)
 
+#
+# **Asked for, and possible, are two different things, and the macro has
+# to mean the second.**
+#
+# EMU_HAVE_VIRTIO used to be defined from the option, which defaults ON
+# for every platform, while the sources below are compiled only for the
+# host. So every board firmware compiled emu_main.c's `#if
+# EMU_HAVE_VIRTIO` block and then failed to link against six functions
+# nothing provided -- stm32f446, stm32f746 and stm32n6 alike, from the
+# commit that attached virtio to the host until this one. Nobody had
+# built a board with the default options in between.
+#
+# This is the same reconciliation rv_config.h does for the JIT, and it
+# is here for the same reason recorded in CLAUDE.md: a capability that
+# depends on nobody selecting it is not a capability that is off.
+#
 if(EMU_VIRTIO AND EMU_PLATFORM STREQUAL "host")
+    set(EMU_VIRTIO_BUILT ON)
+else()
+    set(EMU_VIRTIO_BUILT OFF)
+    # Say so, rather than silently doing less than was asked. Only when
+    # it was actually requested: the default being ON, an unqualified
+    # note would fire on every board build and say nothing.
+    if(EMU_VIRTIO)
+        message(STATUS
+            "virtio: not built for platform '${EMU_PLATFORM}' (host only)")
+    endif()
+endif()
+
+if(EMU_VIRTIO_BUILT)
     target_sources(emucore PRIVATE
         third_party/tinyemu/virtio.c
         third_party/tinyemu/fs.c
@@ -509,7 +538,7 @@ if(EMU_VIRTIO AND EMU_PLATFORM STREQUAL "host")
 endif()
 
 target_compile_definitions(emucore PUBLIC
-    EMU_HAVE_VIRTIO=$<BOOL:${EMU_VIRTIO}>)
+    EMU_HAVE_VIRTIO=$<BOOL:${EMU_VIRTIO_BUILT}>)
 
 target_include_directories(emucore PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
