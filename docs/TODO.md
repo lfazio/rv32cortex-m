@@ -76,18 +76,34 @@ measured at.
         console, net, input and 9p with it. The PCI transport is refused
         loudly rather than stubbed, because a stub lets `virtio_pci_init`
         appear to succeed and return a device that never answers.
-  - [~] **The devices on it.** `--9p [TAG:]DIR` and `--virtio-input`
-        work. 9p was first on purpose: it needs no image to build and no
-        partition table to get right, so the host directory *is* the
-        filesystem. The input pair is a keyboard and a mouse, fed from
-        the same SDL events as the simple polled devices and from the
-        same converted evdev codes, so the two families cannot disagree
-        about what a key is.
+  - [~] **The devices on it.** `--9p [TAG:]DIR`, `--virtio-input` and
+        `--disk FILE` / `--disk-ro FILE` work. 9p was first on purpose:
+        it needs no image to build and no partition table to get right,
+        so the host directory *is* the filesystem. The input pair is a
+        keyboard and a mouse, fed from the same SDL events as the simple
+        polled devices and from the same converted evdev codes, so the
+        two families cannot disagree about what a key is.
 
-        Next is `virtio-blk` -- the one that makes throughput
-        measurable -- then `virtio-net`, then the display. The
-        groundwork they need is done: the transport works, a queue
-        completes, and the interrupt arrives.
+        virtio-blk is a file-backed `BlockDevice`: 512-byte sectors,
+        synchronous, because the completion path already handles it --
+        `read_async` returning 0 means "done" and the request ends
+        inline. `guest-virtiotest-blk` reads sector 0 and asserts its
+        *content*, since a device that signalled and filled nothing
+        would pass every other check in the guest.
+
+        Next is `virtio-net`, then the display. The groundwork they need
+        is done: the transport works, a queue completes, and the
+        interrupt arrives.
+
+        **What virtio-blk cost was a barrier in the guest, not a bug in
+        the device.** A volatile access does not order the ordinary
+        stores around it, so GCC sank the descriptor ring and
+        `avail->idx` past the volatile write to QueueNotify. The device
+        read an avail ring still holding zero and did nothing; every
+        register was right and nothing faulted. The console queue had
+        the identical defect and passed anyway, because its one
+        descriptor happened to be scheduled first -- one weak test is
+        worse than none, again.
 
         **The interrupt path is proven.** `tests/guest/virtiotest.c`
         drives the console queue to completion from guest code and takes
@@ -175,6 +191,14 @@ measured at.
         what one would cost, is in [`docs/vga.md`](vga.md): the deciding
         factor is that VGA's write modes live in the store path, so every
         pixel would become a device dispatch.
+
+        `--fb WxH` picks the mode it starts in, 1024x768 by default, and
+        refuses a geometry the device's table does not hold -- otherwise
+        the geometry registers would report a size MODE_GET matches
+        nothing for, and a guest enumerating modes could not find the
+        one it is already in. It only moves the *starting* mode: the
+        buffer is sized for the largest either way, so a guest that sets
+        its own through the mode registers is unaffected.
   - [ ] **An SDL host backend** to present it. SDL2 is **not installed on
         the build machine**; that is one apt away but it is a real
         prerequisite, and the device above must build and be testable

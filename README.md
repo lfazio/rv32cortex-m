@@ -350,6 +350,17 @@ Figures and what they have already disproved are in
 **Run both suites.** They cover different things, and a regression that
 only the Berkeley suite catches will sit unnoticed if only arch-test is
 run — which is exactly what happened to `rv32mi/csr` when F was added.
+It runs the other way too: four `ExceptionsSv` tests failed for six days
+while riscv-tests stayed at 77/77, because its guests never make a
+misaligned access.
+
+`run-arch-test.sh` **builds its own runner**, into `build/arch-test-host`
+and with `-DRV32_MISALIGNED=OFF`. That is not a spare copy: the suite
+validates the core against `tests/arch-test/*/{*.yaml,sail.json}`, which
+declare that this core reports misaligned accesses rather than splitting
+them, and the emulator's own default is the opposite because picolibc
+needs it. Set `EMU_HOST` to test a binary built elsewhere, and match the
+config yourself if you do.
 
 ### Debugging
 
