@@ -180,6 +180,152 @@ bool emu_virtio_add_console(uint32_t base, int irq_num)
 }
 
 /* ------------------------------------------------------------------ */
+/* Block                                                               */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A disk, backed by a host file.
+ *
+ * **512-byte sectors, which is not a choice.** virtio-blk defines the
+ * unit of every request as 512 bytes regardless of what the underlying
+ * storage does, so a file whose length is not a multiple of that has a
+ * partial last sector the guest cannot address -- reported at start-up
+ * rather than rounded, because a rounded-up image reads whatever
+ * follows the file and a rounded-down one silently loses the tail.
+ */
+#define EMU_VIRTIO_SECTOR 512
+
+typedef struct {
+    BlockDevice dev;
+    FILE *fp;
+    int64_t sectors;
+    bool writable;
+} emu_block_t;
+
+static int64_t block_sector_count(BlockDevice *bs)
+{
+    const emu_block_t *const b = (const emu_block_t *)bs->opaque;
+
+    return b->sectors;
+}
+
+/*
+ * Synchronous, and reporting so by returning 0.
+ *
+ * TinyEMU's interface allows a device to return 1 and call the
+ * completion later, which is what a real asynchronous backend wants.
+ * A host file read is a memcpy from the page cache -- making it
+ * asynchronous would mean a thread, a queue and an ordering question,
+ * to hide a latency that is not there.
+ */
+static int block_read(BlockDevice *bs, uint64_t sector, uint8_t *buf, int n,
+                      BlockDeviceCompletionFunc *cb, void *opaque)
+{
+    emu_block_t *const b = (emu_block_t *)bs->opaque;
+    const size_t want = (size_t)n * EMU_VIRTIO_SECTOR;
+
+    (void)cb;
+    (void)opaque;
+
+    if ((int64_t)sector + n > b->sectors) {
+        return -1;
+    }
+
+    if (fseek(b->fp, (long)(sector * EMU_VIRTIO_SECTOR), SEEK_SET) != 0 ||
+        fread(buf, 1u, want, b->fp) != want) {
+        return -1;
+    }
+    return 0;
+}
+
+static int block_write(BlockDevice *bs, uint64_t sector, const uint8_t *buf,
+                       int n, BlockDeviceCompletionFunc *cb, void *opaque)
+{
+    emu_block_t *const b = (emu_block_t *)bs->opaque;
+    const size_t want = (size_t)n * EMU_VIRTIO_SECTOR;
+
+    (void)cb;
+    (void)opaque;
+
+    /*
+     * A read-only disk refuses rather than pretending. virtio-blk has a
+     * status byte for exactly this, and a write that silently vanished
+     * would give a guest a filesystem that appears to work and loses
+     * everything at the next mount.
+     */
+    if (!b->writable || (int64_t)sector + n > b->sectors) {
+        return -1;
+    }
+
+    if (fseek(b->fp, (long)(sector * EMU_VIRTIO_SECTOR), SEEK_SET) != 0 ||
+        fwrite(buf, 1u, want, b->fp) != want) {
+        return -1;
+    }
+    (void)fflush(b->fp);
+    return 0;
+}
+
+bool emu_virtio_add_block(uint32_t base, int irq_num, const char *path,
+                          bool writable)
+{
+    static emu_block_t blk;
+    VIRTIOBusDef def;
+    long size;
+
+    if (path == NULL) {
+        return false;
+    }
+
+    /*
+     * Opened read-write first when asked, and the fallback is reported
+     * rather than silent: a disk that turns out to be read-only is
+     * something a guest will discover much later, as a filesystem that
+     * will not mount.
+     */
+    blk.fp = writable ? fopen(path, "r+b") : NULL;
+    blk.writable = (blk.fp != NULL);
+    if (blk.fp == NULL) {
+        blk.fp = fopen(path, "rb");
+        if (blk.fp == NULL) {
+            fprintf(stderr, "virtio: cannot open disk '%s'\n", path);
+            return false;
+        }
+        if (writable) {
+            fprintf(stderr, "virtio: '%s' is not writable; attached read-only\n",
+                    path);
+        }
+    }
+
+    if (fseek(blk.fp, 0, SEEK_END) != 0) {
+        fprintf(stderr, "virtio: cannot size disk '%s'\n", path);
+        return false;
+    }
+    size = ftell(blk.fp);
+    if (size <= 0) {
+        fprintf(stderr, "virtio: disk '%s' is empty\n", path);
+        return false;
+    }
+    if ((size % EMU_VIRTIO_SECTOR) != 0) {
+        fprintf(stderr,
+                "virtio: disk '%s' is %ld bytes, not a multiple of %d -- "
+                "the last partial sector is unreachable\n",
+                path, size, EMU_VIRTIO_SECTOR);
+    }
+    blk.sectors = size / EMU_VIRTIO_SECTOR;
+
+    if (bus_def_for(base, irq_num, &def) == NULL) {
+        return false;
+    }
+
+    blk.dev.get_sector_count = block_sector_count;
+    blk.dev.read_async = block_read;
+    blk.dev.write_async = block_write;
+    blk.dev.opaque = &blk;
+
+    return remember(virtio_block_init(&def, &blk.dev), "block", base);
+}
+
+/* ------------------------------------------------------------------ */
 /* Input                                                               */
 /* ------------------------------------------------------------------ */
 

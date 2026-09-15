@@ -80,6 +80,8 @@ void emu_args_usage(void)
         "                       is not a terminal. It is shown anyway on a",
         "                       terminal; a whole-run average is printed at",
         "                       exit either way.",
+        "  --disk FILE          a disk image on virtio-blk, read-write.",
+        "  --disk-ro FILE       the same, but the file is never written.",
         "  --virtio-console     a virtio console beside the NS16550.",
         "  --virtio-input       present a virtio keyboard and mouse, for an",
         "                       OS driver to bind to. The simple polled",
@@ -187,6 +189,16 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
             }
             if (strcmp(a, "--rate") == 0) {
                 opt->rate = true;
+                continue;
+            }
+            if (strcmp(a, "--disk") == 0 || strcmp(a, "--disk-ro") == 0) {
+                if (argv[++i] == NULL) {
+                    emu_args_usage();
+                    *status = 2;
+                    return false;
+                }
+                opt->disk_path = argv[i];
+                opt->disk_ro = (strcmp(a, "--disk-ro") == 0);
                 continue;
             }
             if (strcmp(a, "--virtio-console") == 0) {

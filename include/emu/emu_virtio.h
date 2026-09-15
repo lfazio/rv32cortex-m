@@ -78,6 +78,21 @@ bool emu_virtio_add_9p(uint32_t base, int irq_num, const char *tag,
                        const char *root);
 
 /*
+ * A disk, backed by a host file.
+ *
+ * Sectors are 512 bytes, which virtio-blk defines and the backing file
+ * does not get a say in; a file whose length is not a multiple of that
+ * has an unreachable tail, which is reported at start-up.
+ *
+ * `writable` opens read-write and falls back to read-only with a
+ * message rather than silently -- a disk that turns out to be read-only
+ * is something a guest discovers much later, as a filesystem that will
+ * not mount.
+ */
+bool emu_virtio_add_block(uint32_t base, int irq_num, const char *path,
+                          bool writable);
+
+/*
  * A keyboard and a mouse on virtio-mmio.
  *
  * Separate devices, as they are on real hardware and as Linux expects:

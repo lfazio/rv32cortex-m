@@ -79,6 +79,28 @@ static void check(const char *what, uint32_t got, uint32_t want)
 #define VIRTIO_BASE 0x10001000u
 #define V(off) (*(volatile uint32_t *)(VIRTIO_BASE + (off)))
 
+/*
+ * Publish the ring before telling the device to look at it.
+ *
+ * **A volatile access does not order the ordinary stores around it.**
+ * The descriptors and `avail->idx` are plain memory, so the compiler
+ * may sink them past the volatile write to QueueNotify -- and does:
+ * without this, GCC emitted the notify at 0x200005b4 and the whole ring
+ * setup after it, so the device looked at an avail ring still reading
+ * zero, consumed nothing, and completed nothing. Every register was
+ * right and no access faulted.
+ *
+ * The console queue had the same defect and passed anyway, because its
+ * one descriptor happened to be scheduled before the notify. That is
+ * this tree's recurring "one weak test" shape: the barrier is needed by
+ * both and was proved by neither.
+ *
+ * A compiler barrier is enough here and a real driver would need more:
+ * there is one guest hart, the device runs inside the same host thread,
+ * and nothing reorders at the bus.
+ */
+#define VIRTIO_WMB() __asm__ volatile("" ::: "memory")
+
 #define V_MAGIC 0x000u
 #define V_VERSION 0x004u
 #define V_DEVICE_ID 0x008u
@@ -112,6 +134,7 @@ static void check(const char *what, uint32_t got, uint32_t want)
 #define V_STATUS 0x070u
 
 #define V_MAGIC_VALUE 0x74726976u /* 'virt' */
+#define V_ID_BLOCK 2u
 #define V_ID_CONSOLE 3u
 
 #define ST_ACK 1u
@@ -239,20 +262,126 @@ static void irq_setup(void)
     __asm__ volatile("csrs mstatus, %0" : : "r"(1u << 3));
 }
 
-int main(void)
+/*
+ * virtio-blk, driven the same way.
+ *
+ * The console proves a queue completes; this proves the device can
+ * *fill* a buffer the guest supplied, which the console never does --
+ * its transmit queue only reads. A device whose descriptor walk was
+ * write-only would pass the console test and fail here.
+ *
+ * A block request is three descriptors chained: a header the guest
+ * writes, the data the device fills, and a status byte the device
+ * writes. The chain is the point -- it exercises VRING_DESC_F_NEXT and
+ * VRING_DESC_F_WRITE, neither of which the single-descriptor console
+ * path touches.
+ */
+#define VIRTIO_BLK_T_IN 0u
+#define VRING_DESC_F_WRITE 2u
+
+struct blk_req {
+    uint32_t type;
+    uint32_t reserved;
+    uint64_t sector;
+};
+
+static struct blk_req g_req;
+static uint8_t g_sector[512] __attribute__((aligned(16)));
+static volatile uint8_t g_status = 0xFF;
+
+static void test_block(void)
 {
     struct vring_desc *const desc = g_desc;
     struct vring_avail *const avail = &g_avail;
     struct vring_used *const used = &g_used;
     uint32_t i;
 
+    puts_("virtiotest: reading sector 0 from the disk\n");
+
+    g_req.type = VIRTIO_BLK_T_IN;
+    g_req.reserved = 0u;
+    g_req.sector = 0u;
+
+    /* header: read by the device */
+    desc[0].addr = (uint64_t)(uintptr_t)&g_req;
+    desc[0].len = sizeof(g_req);
+    desc[0].flags = VRING_DESC_F_NEXT;
+    desc[0].next = 1u;
+
+    /* data: written by the device */
+    desc[1].addr = (uint64_t)(uintptr_t)g_sector;
+    desc[1].len = sizeof(g_sector);
+    desc[1].flags = VRING_DESC_F_NEXT | VRING_DESC_F_WRITE;
+    desc[1].next = 2u;
+
+    /* status: written by the device */
+    desc[2].addr = (uint64_t)(uintptr_t)&g_status;
+    desc[2].len = 1u;
+    desc[2].flags = VRING_DESC_F_WRITE;
+    desc[2].next = 0u;
+
+    avail->ring[0] = 0u;
+    avail->idx = 1u;
+
+    g_took_irq = 0;
+    VIRTIO_WMB();
+    V(V_QUEUE_NOTIFY) = 0u; /* blk has one queue, number 0 */
+
+    for (i = 0; i < 20000000u && g_took_irq == 0; i++) {
+        __asm__ volatile("" ::: "memory");
+    }
+
+    check("blk interrupt taken", (uint32_t)g_took_irq, 1u);
+    check("blk used ring advanced", used->idx, 1u);
+    check("blk status ok", g_status, 0u);
+
+    /*
+     * The content, which is the whole point: a completion that filled
+     * nothing would pass every check above. The image the test is run
+     * with begins with this string.
+     */
+    {
+        static const char want[] = "VIRTIO-DISK-SECTOR-0";
+        uint32_t k;
+        uint32_t bad = 0u;
+
+        for (k = 0; k < sizeof(want) - 1u; k++) {
+            if (g_sector[k] != (uint8_t)want[k]) {
+                bad++;
+            }
+        }
+        check("blk sector 0 content", bad, 0u);
+    }
+}
+
+int main(void)
+{
+    struct vring_desc *const desc = g_desc;
+    struct vring_avail *const avail = &g_avail;
+    struct vring_used *const used = &g_used;
+    uint32_t i;
+    uint32_t dev_id;
+
     puts_("virtiotest: driving a console queue to completion\n");
 
     check("magic", V(V_MAGIC), V_MAGIC_VALUE);
-    check("device id", V(V_DEVICE_ID), V_ID_CONSOLE);
+
+    /*
+     * Whichever device is at the first slot. The runner places them in
+     * the order the options ask for, so the test follows the command
+     * line rather than requiring one -- and says what it found, because
+     * "no device" and "the wrong device" need different fixes.
+     */
+    dev_id = V(V_DEVICE_ID);
+    if (dev_id != V_ID_CONSOLE && dev_id != V_ID_BLOCK) {
+        puts_("virtiotest: device id ");
+        puthex(dev_id);
+        puts_(" is neither console nor block -- run with --virtio-console"
+              " or --disk\n");
+        return 1;
+    }
 
     if (g_fails != 0) {
-        puts_("virtiotest: no device -- run with --virtio-console\n");
         return 1;
     }
 
@@ -283,8 +412,8 @@ int main(void)
     V(V_DRIVER_FEATURES) = 0u;
     V(V_STATUS) = ST_ACK | ST_DRIVER | ST_FEATURES_OK;
 
-    /* Queue 1 is the console's transmit queue; 0 is receive. */
-    V(V_QUEUE_SEL) = 1u;
+    /* Console: queue 1 transmits, 0 receives. Block: one queue, 0. */
+    V(V_QUEUE_SEL) = (dev_id == V_ID_BLOCK) ? 0u : 1u;
     check("queue max", (V(V_QUEUE_NUM_MAX) >= QSZ) ? 1u : 0u, 1u);
     V(V_QUEUE_NUM) = QSZ;
     V(V_QUEUE_DESC_LOW) = (uint32_t)(uintptr_t)g_desc;
@@ -296,6 +425,11 @@ int main(void)
     V(V_QUEUE_READY) = 1u;
     V(V_STATUS) = ST_ACK | ST_DRIVER | ST_FEATURES_OK | ST_DRIVER_OK;
 
+    if (dev_id == V_ID_BLOCK) {
+        test_block();
+        goto report;
+    }
+
     /* One descriptor pointing at the message, and one available entry. */
     desc[0].addr = (uint64_t)(uintptr_t)g_msg;
     desc[0].len = (uint32_t)(sizeof(g_msg) - 1u);
@@ -306,13 +440,17 @@ int main(void)
     /*
      * The index last, after the descriptor it refers to. The device
      * reads idx to decide there is work, so publishing it first is a
-     * race it would win -- and on a host that reorders, a barrier
-     * belongs here. There is none on this emulator: the device runs
-     * only when the guest stops, at QueueNotify below.
+     * race it would win.
+     *
+     * "The device runs only when the guest stops, so no barrier is
+     * needed" is what used to be written here, and it is wrong about
+     * *which* reordering is the danger: the compiler's, not the
+     * machine's. See VIRTIO_WMB.
      */
     avail->idx = 1u;
 
     puts_("virtiotest: notifying\n");
+    VIRTIO_WMB();
     V(V_QUEUE_NOTIFY) = 1u;
 
     /*
@@ -329,6 +467,7 @@ int main(void)
     check("used ring advanced", used->idx, 1u);
     check("used entry names descriptor 0", used->ring[0].id, 0u);
 
+report:
     if (g_fails == 0) {
         puts_("VIRTIOTEST-PASS\n");
     } else {

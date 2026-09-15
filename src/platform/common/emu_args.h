@@ -75,6 +75,13 @@ typedef struct emu_args {
      * console to it once drivers are up; a test guest can use it to
      * drive a queue end to end without needing a filesystem.
      */
+    /*
+     * A disk image for virtio-blk. Attached read-write; `disk_ro` keeps
+     * the file untouched, which is what a shared or golden image wants.
+     */
+    const char *disk_path;
+    bool disk_ro;
+
     bool virtio_console;
 
     bool virtio_input;

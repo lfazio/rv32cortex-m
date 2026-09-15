@@ -63,13 +63,6 @@ if(TARGET guest-isatest AND EMU_GUEST_ARCH_RV32)
         LABELS fast
         PASS_REGULAR_EXPRESSION "PASS")
 
-    # The same self-test through the JIT.
-    #
-    # This is the check the Thumb-2 backend can never have: every JIT bug
-    # this project has found needed a board, a flash cycle and a UART, and
-    # three of them were live for months first. On a host with a JIT
-    # backend, translated code is covered by `ctest -L fast`.
-    #
     # A virtio queue, driven to completion by guest code.
     #
     # **This is the only test that proves an interrupt reaches a guest.**
@@ -90,8 +83,43 @@ if(TARGET guest-isatest AND EMU_GUEST_ARCH_RV32)
         set_tests_properties(guest-virtiotest PROPERTIES
             LABELS fast
             PASS_REGULAR_EXPRESSION "VIRTIOTEST-PASS")
+
+        # The same, against a disk.
+        #
+        # Worth its own test rather than folding into the one above,
+        # because the two reach the device by different routes: the
+        # console's queue is fed by the *host* and completes when the
+        # emulator has somewhere to put the bytes, while the block
+        # device's is fed by the guest and completes only when a backend
+        # has read a file. A console that works says nothing about
+        # whether a request ever reaches storage.
+        #
+        # The image is generated here, and its first sector is the
+        # string the guest compares against -- so the test asserts
+        # *content*, not merely that a completion arrived. A device that
+        # signalled and filled nothing would pass every other check in
+        # the guest.
+        string(REPEAT "-" 492 _virtio_disk_pad)
+        file(WRITE "${CMAKE_BINARY_DIR}/guest/disk.img"
+             "VIRTIO-DISK-SECTOR-0${_virtio_disk_pad}")
+        unset(_virtio_disk_pad)
+
+        add_test(NAME guest-virtiotest-blk
+                 COMMAND emu-host --disk
+                         "${CMAKE_BINARY_DIR}/guest/disk.img"
+                         --ram 0x400000
+                         "${CMAKE_BINARY_DIR}/guest/virtiotest.bin")
+        set_tests_properties(guest-virtiotest-blk PROPERTIES
+            LABELS fast
+            PASS_REGULAR_EXPRESSION "VIRTIOTEST-PASS")
     endif()
 
+    # The same self-test through the JIT.
+    #
+    # This is the check the Thumb-2 backend can never have: every JIT bug
+    # this project has found needed a board, a flash cycle and a UART, and
+    # three of them were live for months first. On a host with a JIT
+    # backend, translated code is covered by `ctest -L fast`.
     if(EMU_JIT)
         add_test(NAME guest-isatest-jit
                  COMMAND emu-host --jit
