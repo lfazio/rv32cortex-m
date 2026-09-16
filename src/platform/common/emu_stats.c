@@ -22,8 +22,12 @@
 
 void emu_print_run_summary(uint64_t retired, uint32_t host_cycles)
 {
-    emu_console_printf("\n-- done --\n  retired  %u instructions\n",
-                       (unsigned)retired);
+    {
+        char n[21];
+
+        emu_console_printf("\n-- done --\n  retired  %s instructions\n",
+                           emu_u64_str(n, (unsigned long long)retired));
+    }
 
     /*
      * A host with no cycle counter worth quoting passes 0, and gets

@@ -51,6 +51,28 @@ extern "C" {
 #define EMU_UART_IER_RDA 0x01u /* received data available    */
 #define EMU_UART_IER_THRE 0x02u /* transmit holding empty    */
 
+/*
+ * MSR, the modem status bits this UART asserts.
+ *
+ * **A console with no modem lines is a console that will not
+ * transmit.** The 16550 reports the state of a peer that is not there
+ * unless something says otherwise, so a guest driver sees no
+ * clear-to-send and no carrier: a tty opened without CLOCAL blocks
+ * waiting for carrier, and one using hardware flow control never starts
+ * a transmission. Reporting zero is modelling an unplugged cable.
+ *
+ * What this device actually is -- a transmitter that completes
+ * instantly, into a host that is always ready -- is exactly a peer
+ * holding CTS, DSR and DCD asserted, so that is what it reports. The
+ * delta bits stay clear: they mean "changed since last read", and
+ * nothing here ever changes.
+ */
+#define EMU_UART_MSR_CTS 0x10u
+#define EMU_UART_MSR_DSR 0x20u
+#define EMU_UART_MSR_DCD 0x80u
+#define EMU_UART_MSR_READY \
+    (EMU_UART_MSR_CTS | EMU_UART_MSR_DSR | EMU_UART_MSR_DCD)
+
 /* IIR: bit 0 *clear* means an interrupt is pending. */
 #define EMU_UART_IIR_NONE 0x01u
 #define EMU_UART_IIR_THRE 0x02u

@@ -152,7 +152,8 @@ static emu_fault_t uart_read(void *ctx, uint32_t off, uint32_t size,
     }
 
     case EMU_UART_MSR:
-        *out = 0u;
+        /* Always connected, always clear to send. See emu_dev.h. */
+        *out = EMU_UART_MSR_READY;
         break;
     case EMU_UART_SCR:
         *out = u->scr;

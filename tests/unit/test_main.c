@@ -39,6 +39,7 @@ int main(void)
     test_decode();
 #endif
     test_bus();
+    test_uart();
     test_fb();
 #if EMU_GUEST_ARCH_RV32
     test_aplic();

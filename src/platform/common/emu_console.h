@@ -67,6 +67,23 @@ void emu_console_puts(const char *s);
  * a diagnostic -- a stats line that loses its tail beats one that cannot
  * be printed at all.
  */
+/*
+ * Render a 64-bit value into `buf`, returning it.
+ *
+ * **Because `%llu` is not portable to the boards.** emu_console_printf
+ * goes through vsnprintf, and a newlib built without long-long support
+ * -- which is the usual choice on a microcontroller -- prints the
+ * format string rather than the number. The counts that need 64 bits
+ * are retired-instruction totals, which are shared code: a Linux kernel
+ * reaching userspace is about 1.5e9 and a long run passes 4.29e9, at
+ * which point `(unsigned)` silently wraps. That wrap is how a 5e9 cap
+ * came to report 705,032,704 and read as a truncated *cap* rather than
+ * a truncated *print*.
+ *
+ * `buf` must hold at least 21 bytes.
+ */
+const char *emu_u64_str(char *buf, unsigned long long v);
+
 void emu_console_printf(const char *fmt, ...)
     __attribute__((format(printf, 1, 2)));
 

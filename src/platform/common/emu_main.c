@@ -458,7 +458,7 @@ int main(int argc, char **argv)
     g_cfg.want_jit = args.want_jit;
     g_cfg.dump_state = args.dump;
     env.slice = args.quantum;
-    env.max_insn = (uint32_t)args.max_insn;
+    env.max_insn = args.max_insn;
 
     /*
      * Acquisition: bring the part up, obtain an image, set board_ram and
@@ -592,11 +592,15 @@ int main(int argc, char **argv)
          * or was capped, because exit=0 means nothing if the syscall was
          * never reached.
          */
+        char retired_str[21];
+
         emu_console_printf("\nemu-result exit=%u exited=%u capped=%u "
-                           "retired=%u\n",
+                           "retired=%s\n",
                            (unsigned)g_exit.code,
                            (unsigned)(g_exit.exited ? 1u : 0u),
-                           (unsigned)(capped ? 1u : 0u), (unsigned)retired);
+                           (unsigned)(capped ? 1u : 0u),
+                           emu_u64_str(retired_str,
+                                       (unsigned long long)retired));
 
         if (!emu_board_after_run(&g_exit, capped, env.slice, &status)) {
             return status;

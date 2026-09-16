@@ -58,6 +58,28 @@ void emu_console_puts(const char *s)
     }
 }
 
+const char *emu_u64_str(char *buf, unsigned long long v)
+{
+    char tmp[21];
+    unsigned i = 0u;
+    unsigned j = 0u;
+
+    if (v == 0ull) {
+        buf[0] = '0';
+        buf[1] = '\0';
+        return buf;
+    }
+    while (v != 0ull && i < sizeof(tmp)) {
+        tmp[i++] = (char)('0' + (unsigned)(v % 10ull));
+        v /= 10ull;
+    }
+    while (i > 0u) {
+        buf[j++] = tmp[--i];
+    }
+    buf[j] = '\0';
+    return buf;
+}
+
 void emu_console_printf(const char *fmt, ...)
 {
     /*

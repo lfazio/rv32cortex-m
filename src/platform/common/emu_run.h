@@ -34,7 +34,20 @@ typedef enum {
 
 typedef struct emu_run_env {
     uint32_t slice; /* guest instructions between returns to us */
-    uint32_t max_insn; /* 0 = no cap */
+    /*
+     * 0 = no cap.
+     *
+     * **64-bit, because the interesting budgets are above 4G.** This
+     * was uint32_t while emu_args_t::max_insn was uint64_t, and
+     * emu_main assigned one to the other through an explicit cast --
+     * so nothing warned and `--max-insn 6000000000` silently became
+     * 1,705,032,704. It presented as two runs retiring an identical
+     * count, which this project reads as "the code never ran"; here it
+     * meant both had been truncated to the same wrong number. A Linux
+     * kernel reaching userspace is about 1.5e9, so this ceiling sits
+     * exactly where the work is.
+     */
+    uint64_t max_insn;
 
     /*
      * What used to be here: `poll`, `gdb_attached` and `gdb_run`.
