@@ -1800,6 +1800,22 @@ session, and every one of them recurred:
   belongs to INTC1 -- biasing the index to make 0x1000 mean IMR1 aliases
   every register onto its neighbour. Written, caught by re-reading the
   address line, and now covered.
+- **A replace-by-range edit deletes whatever else was in the range, and
+  checking that your new text landed does not check that.** Rewriting one
+  entry in `docs/TODO.md` as `s[:start] + new + s[end:]`, with `start`
+  and `end` found by searching for two markers, removed **99 lines**
+  between them -- the whole virtio section, written and committed the
+  same day. Every check afterwards passed: the new text was present, the
+  file was still there, the commit succeeded. Nobody greps for what they
+  did not intend to write.
+
+  Two habits. **Replace the smallest unique string, not a span between
+  markers** -- an exact-match replace of one block cannot swallow a
+  neighbour. And when a span really must go, **assert the shape**: line
+  count before and after, or a `grep -c` of a word that must survive.
+  `git show <commit>:<file> | wc -l` against the working copy takes one
+  command and is the only thing that would have caught this.
+
 - **`git checkout -- <file>` discards uncommitted work, and there is no
   undo.** Used it to unwind a one-line A/B and lost an entire
   uncommitted rewrite of `g4mh_intc.c`; the build then reported success

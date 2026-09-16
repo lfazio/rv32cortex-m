@@ -26,8 +26,11 @@ measured at.
       `scripts/run-opensbi.sh`. OpenSBI v1.9 `generic` boots on the
       device tree in `boot/rv32-emu.dts`, finds the uart8250, the
       aclint-mswi and aclint-mtimer, sets up its PMP domains and jumps to
-      S-mode at 0x80400000 -- which spins to the instruction cap because
-      no payload is loaded there yet. That address is where a kernel goes.
+      S-mode at 0x80400000. That address is where a kernel goes, and one
+      goes there now: `scripts/run-linux.sh` builds fw_payload with a
+      kernel inside it. Run bare, with no payload, it still spins to the
+      instruction cap, which is the expected outcome rather than a
+      failure.
 - [ ] **Linux** - rv32 with MMU on the host emulator, to a shell, then
       benchmarks. Broken into the order the pieces actually unblock each
       other, because most of them are only testable once the one above
@@ -63,6 +66,42 @@ measured at.
         printing the help, which reads as a typo in the command line.
         A kernel needs more than 3G instructions to reach init, so the
         first budget anyone would want was the first one refused.
+  - [ ] **The JIT is worse than useless under Linux, and this is the
+        open performance question.** Measured, same 600M-instruction
+        budget, same image, one after the other:
+
+        | backend | wall | interpreted | blocks |
+        |---|---|---|---|
+        | `--jit` | 52.5 s | 580,180,660 of 600M (**96.7%**) | 4786 translated, 2.43M entries |
+        | interpreter | 46.8 s | all | -- |
+
+        So the JIT is **12% slower** than the interpreter here: it
+        translates almost nothing and pays the dispatch overhead on
+        everything else. The 4786 blocks are OpenSBI's M-mode boot,
+        before paging comes up.
+
+        The cause is `fetch_guard`, which folds Sdtrig, PMP and paging
+        into one word that `rv_jit_bind` points the framework's
+        `blocked` at. Linux sets two of the three -- Sv32, and the PMP
+        entries OpenSBI locks -- so from the moment the kernel enables
+        paging, every instruction interprets.
+
+        **The ratio entry below does not cover this.** "98% of
+        instructions run translated in both guests measured" is Quake
+        and DOOM, which never enable paging. Linux is the exact inverse,
+        and no figure in this file said so until now.
+
+        Fixing it means the IR translator fetching through the MMU and
+        checking execute permission itself -- which is what the deleted
+        hand-written Thumb-2 backend did: it walked the page tables,
+        checked fetch permission per halfword, and gated on
+        `trig_active` alone. The IR path inherited the x86-64 backend's
+        gate instead, which declines because *that* backend implements
+        neither. Its data accesses already go through the checked
+        `rv_ir_load`/`rv_ir_store`, and `rv_ir_gen_key` already folds
+        `vm_gen`, so the missing piece is the fetch. CLAUDE.md says do
+        not simply relax the gate, and it is right: a block built while
+        a page was executable outlives the guest revoking that.
   - [x] **Userspace output reaches the console. Done**, and the cause
         was the emulator stealing the guest kernel's syscalls.
 
@@ -103,6 +142,96 @@ measured at.
         `tests/unit/test_ecall.c` pins all three privileges. Reverting
         the fix gives 6 failures.
 
+  - [~] **An interrupt controller -- and it does not have to be a PLIC.**
+        Established by booting without one: the kernel reaches driver
+        init with *no* interrupt controller in the device tree, because
+        the timer comes from the SBI TIME extension, IPIs from SBI IPI
+        and the console from SBI DBCN. So this blocks devices, not boot.
+        Use the **APLIC the emulator already has** rather than writing a
+        PLIC: a 6.12 kernel has `CONFIG_RISCV_APLIC=y` as well as
+        `CONFIG_SIFIVE_PLIC=y`. It must be wired in **direct mode** --
+        `interrupts-extended` to the cpu intc and no `msi-parent` --
+        because MSI mode needs an IMSIC and the AIA CSRs, which this
+        emulator does not implement.
+
+        **Done, and the part that was missing was not the controller.**
+        The APLIC drove MEIP unconditionally, which is right for every
+        bare-metal guest here and invisible to Linux: it runs in S-mode
+        under OpenSBI and never sees MEIP. `--supervisor` moves
+        delivery, carried as emu_boot_info_t::supervisor because it is a
+        property of the machine. The device tree now describes the
+        APLIC in direct mode and the virtio nodes.
+
+        What is *not* done is seeing it fire under Linux -- the unit
+        test proves delivery moves between privileges, and nothing has
+        yet driven a real queue completion through the whole path.
+  - [x] **virtio-mmio transport**, done by importing rather than
+        writing: TinyEMU's `virtio.c` is vendored byte-identical under
+        `third_party/tinyemu/` (MIT), and the porting layer is four
+        functions -- `cpu_register_device` to `emu_bus_add_mmio`,
+        `phys_mem_get_ram_ptr` to `emu_bus_host_ptr`, `set_irq` to
+        `emu_raise_irq`, and a dozen inline helpers. That brings block,
+        console, net, input and 9p with it. The PCI transport is refused
+        loudly rather than stubbed, because a stub lets `virtio_pci_init`
+        appear to succeed and return a device that never answers.
+  - [~] **The devices on it.** `--9p [TAG:]DIR`, `--virtio-input` and
+        `--disk FILE` / `--disk-ro FILE` work. 9p was first on purpose:
+        it needs no image to build and no partition table to get right,
+        so the host directory *is* the filesystem. The input pair is a
+        keyboard and a mouse, fed from the same SDL events as the simple
+        polled devices and from the same converted evdev codes, so the
+        two families cannot disagree about what a key is.
+
+        virtio-blk is a file-backed `BlockDevice`: 512-byte sectors,
+        synchronous, because the completion path already handles it --
+        `read_async` returning 0 means "done" and the request ends
+        inline. `guest-virtiotest-blk` reads sector 0 and asserts its
+        *content*, since a device that signalled and filled nothing
+        would pass every other check in the guest.
+
+        virtio-net is `--net loop` and `--net tap:NAME`. The loopback
+        backend exists because a tap cannot be tested: it needs a device
+        node, a persistent interface and an address on it, none of which
+        a suite can assume, so a device offered only over tap would ship
+        having never moved a packet. `guest-virtiotest-net` is also the
+        first test to drive two queues at once.
+
+        **All three probe under Linux**, which is the check that matters
+        and which no unit test can make: `virtio_blk virtio0: [vda]
+        32768 512-byte logical blocks (16.8 MB/16.0 MiB)`.
+
+        Next is the display. And note what a *missing* device does:
+        every virtio node in the device tree needs one behind it, or
+        virtio_mmio_probe reads the magic, the bus refuses an unmapped
+        address, and the kernel takes a load access fault and panics
+        inside driver_attach. Not a driver quietly finding nothing.
+
+        **What virtio-blk cost was a barrier in the guest, not a bug in
+        the device.** A volatile access does not order the ordinary
+        stores around it, so GCC sank the descriptor ring and
+        `avail->idx` past the volatile write to QueueNotify. The device
+        read an avail ring still holding zero and did nothing; every
+        register was right and nothing faulted. The console queue had
+        the identical defect and passed anyway, because its one
+        descriptor happened to be scheduled first -- one weak test is
+        worse than none, again.
+
+        **The interrupt path is proven.** `tests/guest/virtiotest.c`
+        drives the console queue to completion from guest code and takes
+        the interrupt: descriptor ring in guest RAM, QueueNotify, the
+        device printing the bytes and advancing the used ring, the APLIC
+        delivering, and the handler acknowledging both device and
+        controller. It runs under `ctest -L fast`.
+
+        Its first version failed in the way this whole entry was written
+        to expect: it spoke the *legacy* transport at a device reporting
+        version 2, every write was accepted, and QueueNotify did nothing
+        at all. No register was wrong.
+
+        And the device tree has to name them: 0x1000_1000 upwards,
+        0x1000 apart, interrupts from 1. Nothing checks that the tree
+        and the emulator agree -- they are two descriptions of one
+        machine, and the usual failure is a driver finding nothing.
 - [ ] **Find out what the 50x is.** The runner now reports host
       instructions per guest instruction live, and it is 46-53 across
       every guest measured -- far above what a translated block should
@@ -124,7 +253,7 @@ measured at.
       rather than a checksum, and as the first guests big enough to make
       the JIT's figures mean something.
 
-      **DOOM and Quake 1 both run, on rv32 and on G4MH**, at 1024x768:
+      **DOOM and Quake 1 both run, on rv32 and on G4MH**, at 800x600:
       DOOM loads E1M1 and plays, Quake initialises, loads `demo1.dem`
       and runs it. Recipes are in the README; the game data is supplied
       rather than fetched. What they bought beyond being playable was

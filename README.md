@@ -46,7 +46,7 @@ Three axes, independent of each other:
 
 | axis | what it decides | selected by |
 |---|---|---|
-| platform | where it runs | `EMU_PLATFORM=host\|stm32f446\|stm32f746` |
+| platform | where it runs | `EMU_PLATFORM=host\|stm32f446\|stm32f746\|stm32n6` |
 | frontend | what it emulates | `EMU_GUEST_ARCH_RV32`, `EMU_GUEST_ARCH_G4MH` |
 | backend | how it executes | `EMU_JIT=ON\|OFF`, `--jit` on the host runner |
 
@@ -238,7 +238,7 @@ heap is a 16 MiB static array, so `.bss` comes to about 17.5 MiB. The
 build checks both and skips with a message naming the flag, rather than
 failing at the link on `region overflowed`.
 
-Both frontends run it, at 1024x768:
+Both frontends run it, at 800x600:
 
 ```sh
 # RH850 G4MH -- needs Renesas CC-RH
