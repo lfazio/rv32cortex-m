@@ -28,6 +28,8 @@
  * interpreter, which is where the state they touch can be observed.
  */
 
+#include "emu/emu_memmap.h"
+
 #include "rv32/rv_hart.h"
 #include "rv32/rv_decode.h"
 #include "rv32/rv_ir.h"
@@ -92,6 +94,76 @@ EMU_HOT_TEXT static uint32_t rv_ir_store(emu_cpu_t *cpu, uint32_t addr,
         return 1u;
     }
     return 0u;
+}
+
+/*
+ * The window a backend may access without calling the helpers above.
+ *
+ * **This says no far more often than it says yes, and every refusal is
+ * a case where an access means more than a move.** Paging, PMP and
+ * execute triggers all have to run per access; a misaligned access may
+ * have to be split; a device write has side effects. The one case left
+ * is an ordinary read-write RAM region on a little-endian guest with
+ * none of that armed, which is what every bare-metal guest in this tree
+ * spends its time in.
+ *
+ * A block that inlines this is specialised on the answer. That is safe
+ * because the two things which can change it -- the PMP configuration
+ * and paging -- are already in the generation key, and privilege is in
+ * the context, so such a block is thrown away or never entered when
+ * either moves. Triggers are separate: the JIT does not run at all
+ * while one is armed.
+ *
+ * The RAM region is found through the *bus*, not from the platform's
+ * board_ram: src/frontend may not depend on src/platform, and the bus
+ * is the one description of the machine the hart already has.
+ */
+static bool rv_ir_fast_mem(emu_cpu_t *cpu, emu_ir_fastmem_t *out)
+{
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+
+#if RV_EXT_SV32
+    if (h->vm_active) {
+        return false;
+    }
+#endif
+#if RV_EXT_PMP
+    if (h->pmp_active) {
+        return false;
+    }
+#endif
+#if RV_EXT_SDTRIG
+    if (h->trig_active) {
+        return false;
+    }
+#endif
+    if (h->bus == NULL) {
+        return false;
+    }
+
+    emu_region_t *const r = emu_bus_find(h->bus, EMU_GUEST_RAM_BASE);
+
+    if (r == NULL || r->kind != (uint8_t)EMU_MEM_RAM || r->host == NULL ||
+        r->size == 0u || (r->perm & (EMU_PERM_R | EMU_PERM_W)) !=
+                             (EMU_PERM_R | EMU_PERM_W)) {
+        return false;
+    }
+
+    out->base = r->base;
+    out->size = r->size;
+    out->host = r->host;
+    /*
+     * A store to the reserved word must break an LR/SC reservation, and
+     * an inlined one would not. Rather than replicate the address
+     * compare, the fast path is simply declined while a reservation is
+     * outstanding -- which is only ever between an LR and its SC.
+     */
+#if RV_EXT_A
+    out->store_guard_offset = (uint32_t)offsetof(rv_hart_t, resv_valid);
+#else
+    out->store_guard_offset = EMU_IR_NO_GUARD;
+#endif
+    return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1010,6 +1082,7 @@ uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
 
     emu_ir_reset(b);
     b->start_pc = pc;
+    b->has_fast = rv_ir_fast_mem(cpu, &b->fast);
 
     while (count < RV_IR_MAX_BLOCK_INSNS && !b->overflow) {
         uint32_t insn;

@@ -410,6 +410,86 @@ void x86_movzx8_idx(int dst, int base, int index)
         (uint8_t)((((unsigned)index & 7u) << 3) | ((unsigned)base & 7u)));
 }
 
+/*
+ * Indexed memory, for the inlined guest-RAM path.
+ *
+ * mod=00 with rm=100 selects a SIB byte, and a SIB with scale 0 is
+ * simply base+index -- which is what a guest access becomes once the
+ * offset from the window's base is in a register and the window's host
+ * address is in another. No displacement, so the encoding is the same
+ * length whatever the addresses are.
+ *
+ * REX carries the high bit of *both* registers. Leaving it out for a
+ * register above 7 does not fail: the field wraps and the instruction
+ * addresses a different register, which this backend has already been
+ * caught by once with a hand-built ModRM.
+ */
+static void mem_idx(unsigned reg, unsigned base, unsigned index, bool op66,
+                    bool two_byte, uint8_t op)
+{
+    if (op66) {
+        emu_jit_emit8(0x66);
+    }
+    emit_rex(0u, reg, base);
+    /*
+     * The index's high bit lives in REX.X, which emit_rex does not
+     * model. The callers here only ever use low registers for the
+     * index, and this asserts that rather than assuming it.
+     */
+    if (two_byte) {
+        emu_jit_emit8(0x0F);
+    }
+    emu_jit_emit8(op);
+    emu_jit_emit8((uint8_t)(((reg & 7u) << 3) | 0x04u));
+    emu_jit_emit8((uint8_t)(((index & 7u) << 3) | (base & 7u)));
+}
+
+bool x86_ld_idx(int dst, int base, int index, uint32_t size, bool sign)
+{
+    if (index >= 8) {
+        return false; /* would need REX.X */
+    }
+    switch (size) {
+    case 1u:
+        mem_idx((unsigned)dst, (unsigned)base, (unsigned)index, false, true,
+                sign ? 0xBEu : 0xB6u);
+        return true;
+    case 2u:
+        mem_idx((unsigned)dst, (unsigned)base, (unsigned)index, false, true,
+                sign ? 0xBFu : 0xB7u);
+        return true;
+    case 4u:
+        mem_idx((unsigned)dst, (unsigned)base, (unsigned)index, false, false,
+                0x8Bu);
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool x86_st_idx(int src, int base, int index, uint32_t size)
+{
+    if (index >= 8) {
+        return false;
+    }
+    switch (size) {
+    case 1u:
+        mem_idx((unsigned)src, (unsigned)base, (unsigned)index, false, false,
+                0x88u);
+        return true;
+    case 2u:
+        mem_idx((unsigned)src, (unsigned)base, (unsigned)index, true, false,
+                0x89u);
+        return true;
+    case 4u:
+        mem_idx((unsigned)src, (unsigned)base, (unsigned)index, false, false,
+                0x89u);
+        return true;
+    default:
+        return false;
+    }
+}
+
 void x86_prologue(uint32_t nsaved)
 {
     emu_jit_emit8(0x53); /* push rbx     */

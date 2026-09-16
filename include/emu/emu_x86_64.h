@@ -160,6 +160,15 @@ void x86_stmxcsr(uint32_t disp);
 void x86_ldmxcsr(uint32_t disp);
 void x86_movzx8_idx(int dst, int base, int index);
 
+/*
+ * Indexed guest-memory access: base + index, no displacement, for the
+ * inlined RAM path. False when the encoding cannot be built -- an index
+ * above r7 needs REX.X, which these do not model.
+ */
+bool x86_ld_idx(int dst, int base, int index, uint32_t size, bool sign);
+bool x86_st_idx(int src, int base, int index, uint32_t size);
+
+
 /* The F7 group -- /2 not, /3 neg -- and bswap, for any register. */
 void x86_unary(unsigned ext, int reg);
 void x86_bswap(int reg);

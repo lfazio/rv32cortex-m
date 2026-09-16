@@ -26,6 +26,8 @@ void emu_ir_reset(emu_ir_block_t *b)
     b->next_temp = 0u;
     b->guest_insns = 0u;
     b->overflow = false;
+    /* A frontend that says nothing gets the helpers, which always work. */
+    b->has_fast = false;
 }
 
 uint16_t emu_ir_temp(emu_ir_block_t *b)

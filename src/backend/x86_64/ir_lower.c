@@ -654,6 +654,14 @@ static uint32_t g_nexits;
  * a temp outlives an iteration -- and the pc has already been written by
  * the exit that got here.
  */
+/*
+ * The guest-RAM window this block may access without calling a helper,
+ * and whether there is one. Asked once per block; see
+ * emu_ir_target_t::fast_mem for when the frontend says no.
+ */
+static emu_ir_fastmem_t g_fast;
+static bool g_has_fast;
+
 static uint8_t *g_body;
 static uint32_t g_start_pc;
 static bool g_has_start_pc;
@@ -698,6 +706,38 @@ static void lea_rcx_slot(uint16_t n)
     emu_jit_emit8(0x8C);
     emu_jit_emit8(0x24);
     emu_jit_emit32(slot(n));
+}
+
+/*
+ * Guard the inlined access: leave the offset from the window's base in
+ * EDX and branch to the slow path on anything unusual.
+ *
+ * Returns the patch sites to aim at the helper, and how many. One
+ * unsigned compare covers both ends of the window -- an address below
+ * the base wraps to a huge offset -- and the alignment test is the
+ * other half of what the helper would have decided, because a
+ * misaligned access either faults or has to be split and neither is a
+ * single instruction.
+ */
+static uint32_t emit_fast_guard(int addr_reg, uint32_t size, uint8_t **out)
+{
+    uint32_t n = 0u;
+
+    x86_mov_rr(X86_EDX, addr_reg);
+    x86_alu_imm32(5u, X86_EDX, g_fast.base); /* sub edx, base */
+    /*
+     * size - 1 subtracted from the limit so the *last* byte is in the
+     * window too. An access of 4 at base+size-1 must not be inlined.
+     */
+    x86_alu_imm32(7u, X86_EDX, g_fast.size - size); /* cmp */
+    out[n++] = x86_jcc32(X86_CC_A);
+
+    if (size > 1u) {
+        x86_mov_rr(X86_EAX, addr_reg);
+        x86_and_imm8(X86_EAX, (int8_t)(size - 1u));
+        out[n++] = x86_jcc32(X86_CC_NE);
+    }
+    return n;
 }
 
 /* Address of a memory operation: operand `a` plus the displacement. */
@@ -1471,6 +1511,67 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         const int pd = phys(in->dst);
 
         emit_addr(in, X86_ESI);
+
+        /*
+         * The inlined path. Roughly 40% of a guest's instructions are a
+         * memory access and each was a C call into the region walk;
+         * this is a compare, a branch and a move.
+         */
+        if (g_has_fast) {
+            const uint32_t sz = EMU_IR_MEM_SIZE(in->aux);
+            const bool sign = (in->aux & EMU_IR_MEM_SIGNED) != 0u;
+            uint8_t *slow[2];
+            const uint32_t nslow = emit_fast_guard(X86_ESI, sz, slow);
+
+            x86_mov_imm64(X86_EAX, (uint64_t)(uintptr_t)g_fast.host);
+            if (x86_ld_idx((pd >= 0) ? pd : T0, X86_EAX, X86_EDX, sz, sign)) {
+                if (pd < 0) {
+                    /*
+                     * **The slot has to be written even when the
+                     * dead-store rule says nobody reads it.** That rule
+                     * leaves the value in T0 for the next instruction,
+                     * which is true of this path and false of the
+                     * helper below -- and the two converge. Honouring
+                     * it here made isatest fail and crypto loop.
+                     */
+                    g_dead_store = EMU_IR_NO_TEMP;
+                    st_slot(T0, in->dst);
+                }
+                uint8_t *const done = x86_jmp32();
+
+                for (uint32_t k = 0; k < nslow; k++) {
+                    x86_patch_rel32(slow[k], emu_jit_here());
+                }
+                lea_rcx_slot((pd >= 0) ? SCRATCH_VAL : in->dst);
+                emit_mem_call((const void *)t->load, in->aux);
+                if (pd >= 0) {
+                    ld_slot(pd, SCRATCH_VAL);
+                }
+                x86_patch_rel32(done, emu_jit_here());
+                /*
+                 * **The two paths converge and only one of them is
+                 * modelled.** st_slot above records that T0 holds this
+                 * temp, so the next instruction may read T0 instead of
+                 * reloading -- which is true of the inlined path and
+                 * false of the helper, whose call clobbers EAX. Leaving
+                 * the record standing made the fast path correct and
+                 * everything after a *slow* one read whatever the
+                 * helper left: crypto and atomics computed wrong
+                 * answers and fbtest looped for ever.
+                 */
+                g_t0_holds = EMU_IR_NO_TEMP;
+                break;
+            }
+            /*
+             * The encoding did not build. Fall through to the helper
+             * with the guard's branches aimed at it, which is correct
+             * but wastes the compare -- it does not happen for any
+             * register this allocator hands out.
+             */
+            for (uint32_t k = 0; k < nslow; k++) {
+                x86_patch_rel32(slow[k], emu_jit_here());
+            }
+        }
         /*
          * The helper writes through a pointer, and a register has no
          * address -- so an allocated destination lands in the scratch
@@ -1489,14 +1590,51 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         break;
     }
 
-    case EMU_IR_STORE:
+    case EMU_IR_STORE: {
         if (t->store == NULL) {
             return false;
         }
         emit_addr(in, X86_ESI);
         ld_operand(X86_ECX, in->b); /* the value */
+
+        if (g_has_fast) {
+            const uint32_t sz = EMU_IR_MEM_SIZE(in->aux);
+            uint8_t *slow[3];
+            uint32_t nslow = emit_fast_guard(X86_ESI, sz, slow);
+
+            /*
+             * A store to the reserved word must break an LR/SC
+             * reservation, which an inlined one would not -- so decline
+             * while one is outstanding rather than replicating the
+             * address compare. It is outstanding only between an LR and
+             * its SC.
+             */
+            if (g_fast.store_guard_offset != EMU_IR_NO_GUARD) {
+                x86_ld_cpu(X86_EAX, g_fast.store_guard_offset);
+                x86_and_imm8(X86_EAX, (int8_t)0xFF);
+                slow[nslow++] = x86_jcc32(X86_CC_NE);
+            }
+
+            x86_mov_imm64(X86_EAX, (uint64_t)(uintptr_t)g_fast.host);
+            if (x86_st_idx(X86_ECX, X86_EAX, X86_EDX, sz)) {
+                uint8_t *const done = x86_jmp32();
+
+                for (uint32_t k = 0; k < nslow; k++) {
+                    x86_patch_rel32(slow[k], emu_jit_here());
+                }
+                emit_mem_call((const void *)t->store, in->aux);
+                x86_patch_rel32(done, emu_jit_here());
+                /* See the note in LOAD: the paths converge. */
+                g_t0_holds = EMU_IR_NO_TEMP;
+                break;
+            }
+            for (uint32_t k = 0; k < nslow; k++) {
+                x86_patch_rel32(slow[k], emu_jit_here());
+            }
+        }
         emit_mem_call((const void *)t->store, in->aux);
         break;
+    }
 
     /*
      * The memory bit ops: one IR instruction, three host steps. Read the
@@ -1722,6 +1860,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     }
 
     g_nexits = 0u;
+    g_has_fast = b->has_fast;
+    g_fast = b->fast;
     g_body = NULL;
     g_start_pc = b->start_pc;
     g_has_start_pc = true;

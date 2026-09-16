@@ -598,6 +598,39 @@ typedef struct emu_ir_insn {
     bool dead;
 } emu_ir_insn_t;
 
+/*
+ * A window of guest memory a backend may read and write directly.
+ *
+ * **Every guest load and store is otherwise a C call**, and on the
+ * guests measured roughly 40% of instructions are one: 3,728,397 calls
+ * in a 9.4M-instruction Dhrystone. That is the largest single cost in
+ * translated code -- far larger than the dispatcher -- because the
+ * helper walks the region table, checks permissions and translates,
+ * none of which a plain access to guest RAM needs.
+ *
+ * The frontend decides when there is such a window, and says no
+ * whenever anything could make an access mean more than a move: PMP,
+ * paging, execute triggers, a big-endian guest. A block that inlines
+ * one is therefore specialised on that answer, and is invalidated by
+ * the same generation and context keys that already cover PMP, paging
+ * and privilege.
+ *
+ * `store_guard_offset` names a byte in emu_cpu_t that must be zero for
+ * an inlined *store* to be legal -- for RISC-V that is the LR/SC
+ * reservation flag, because a store to the reserved word has to break
+ * the reservation and an inlined one would not. Falling back while one
+ * is outstanding costs nothing: they last from an LR to its SC.
+ * EMU_IR_NO_GUARD means stores need no such test.
+ */
+#define EMU_IR_NO_GUARD 0xFFFFFFFFu
+
+typedef struct emu_ir_fastmem {
+    uint32_t base; /* guest address of the first byte   */
+    uint32_t size; /* bytes in the window               */
+    void *host; /* host address of `base`            */
+    uint32_t store_guard_offset;
+} emu_ir_fastmem_t;
+
 typedef struct emu_ir_block {
     emu_ir_insn_t insn[EMU_IR_MAX_INSNS];
     uint32_t count;
@@ -615,6 +648,16 @@ typedef struct emu_ir_block {
      * Nothing else in the IR depends on where the block came from.
      */
     uint32_t start_pc;
+
+    /*
+     * The window a backend may access without calling the target's
+     * load/store, and whether there is one. Filled by the frontend at
+     * translation, because only it can say whether an access means more
+     * than a move -- see emu_ir_fastmem_t. A frontend that leaves
+     * has_fast false gets the helpers, which are always correct.
+     */
+    emu_ir_fastmem_t fast;
+    bool has_fast;
 
     /* Set when the block ran out of room; it is then discarded. */
     bool overflow;
@@ -718,6 +761,7 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
  * where the guest register file and flags live, and what to call for
  * EMU_IR_HELPER. Supplied once, not per instruction.
  */
+
 typedef struct emu_ir_target {
     /* Byte offset of guest register `n` within emu_cpu_t. */
     uint32_t (*reg_offset)(uint32_t n);
