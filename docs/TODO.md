@@ -31,8 +31,50 @@ measured at.
       kernel inside it. Run bare, with no payload, it still spins to the
       instruction cap, which is the expected outcome rather than a
       failure.
-- [ ] **Linux** - rv32 with MMU on the host emulator, to a shell, then
-      benchmarks. Broken into the order the pieces actually unblock each
+- [~] **Linux** - rv32 with MMU on the host emulator, to a shell, then
+      benchmarks.
+
+      **A full distribution boots to a login prompt.** Yocto
+      `core-image-minimal` for `qemuriscv32` (poky scarthgap), root
+      filesystem on virtio-blk:
+
+          EXT4-fs (vda): mounted filesystem ... r/w, ordered data mode
+          Run /sbin/init as init process
+          INIT: Entering runlevel: 5
+          Poky (Yocto Project Reference Distro) 5.0.20 qemuriscv32 /dev/ttyS0
+          qemuriscv32 login:
+
+      udev, syslogd, network interfaces configured, getty on ttyS0 and
+      on the virtio console. Built with `MACHINE=qemuriscv32`, which is
+      a first-class machine in poky and needs none of the config
+      fragments the usual write-ups describe. Run it with:
+
+          LINUX_INITRAMFS=0 \
+          LINUX_BOOTARGS="earlycon=sbi console=ttyS0 root=/dev/vda rw rootwait" \
+          LINUX_DISK=<rootfs.ext4> scripts/run-linux.sh
+
+      Three things that cost time and would cost it again:
+
+      **A built-in initramfs containing /init wins over `root=`.** The
+      kernel runs it and never looks at the root device. No warning.
+      `LINUX_INITRAMFS=0` builds without one.
+
+      **Yocto's own kernel does not work on this machine.** It builds
+      6.6 for qemuriscv32 and the APLIC driver landed in 6.10, so every
+      device needing an interrupt defers for ever. Its *rootfs* on our
+      6.12 kernel is the pairing, and the right one: a rootfs is
+      userspace and only needs virtio-blk and ext4 in whatever kernel
+      runs it.
+
+      **The host build needs two Debian packages Yocto assumes**,
+      `libcrypt-dev` and `rpcsvc-proto`. Both fail late and obscurely --
+      `crypt() not found` inside shadow-native, and a HOSTTOOLS error
+      naming `rpcgen` -- and `dpkg -s` reports "ok" for a package in
+      `deinstall ok config-files`, which is how both were missed on the
+      first check. Use `dpkg-query -W -f='${Status}'`.
+
+      Still open: a shell session driven from the host end (the login
+      prompt is there; nothing types into it yet), and benchmarks. Broken into the order the pieces actually unblock each
       other, because most of them are only testable once the one above
       works:
   - [x] OpenSBI in M-mode, above.
