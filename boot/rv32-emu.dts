@@ -128,10 +128,17 @@
     memory@80000000 {
         device_type = "memory";
         /*
-         * Kept in step with the runner's --ram. 128 MiB is what a Linux
-         * guest wants room for; a bare-metal one never reads this.
+         * Kept in step with the runner's --ram -- two descriptions of
+         * one machine, and nothing checks they agree. A kernel handed
+         * more than is there will use it and fault; handed less, it
+         * simply never sees the rest.
+         *
+         * 256 MiB, which is room for a real root filesystem's page
+         * cache as well as the kernel. A bare-metal guest never reads
+         * this node, and the host pays only for what the guest
+         * touches.
          */
-        reg = <0x80000000 0x08000000>;
+        reg = <0x80000000 0x10000000>;
     };
 
     soc {

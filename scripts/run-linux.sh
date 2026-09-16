@@ -175,7 +175,24 @@ make -C "$OPENSBI_SRC" -j"$(nproc)" PLATFORM=generic \
 
 FW=$OPENSBI_SRC/build/platform/generic/firmware/fw_payload.bin
 DTB=$WORK/rv32-emu.dtb
-dtc -I dts -O dtb -o "$DTB" "$ROOT/boot/rv32-emu.dts" 2>/dev/null
+
+#
+# The kernel command line lives in the device tree's chosen/bootargs,
+# because that is where a kernel reads it from -- so overriding it means
+# rewriting the tree, not passing another option to the emulator.
+#
+# LINUX_BOOTARGS is what makes one script serve two very different
+# guests: the initramfs above, which needs no root device, and a real
+# distribution on virtio-blk, which needs `root=/dev/vda`.
+#
+if [ -n "${LINUX_BOOTARGS:-}" ]; then
+    sed -e "s|bootargs = \"[^\"]*\";|bootargs = \"$LINUX_BOOTARGS\";|" \
+        "$ROOT/boot/rv32-emu.dts" > "$WORK/rv32-emu.dts"
+    echo "bootargs: $LINUX_BOOTARGS"
+    dtc -I dts -O dtb -o "$DTB" "$WORK/rv32-emu.dts" 2>/dev/null
+else
+    dtc -I dts -O dtb -o "$DTB" "$ROOT/boot/rv32-emu.dts" 2>/dev/null
+fi
 
 echo "payload: $FW ($(wc -c <"$FW") bytes)"
 echo
@@ -197,7 +214,8 @@ DISK=${LINUX_DISK:-$WORK/disk.img}
 # and invisible to a kernel running in S-mode under OpenSBI. Without it
 # every virtio driver waits for ever on a queue that already completed.
 #
-exec "$EMU" --ram 0x8000000 --load 0x80000000 --dtb "$DTB" \
+# 256 MiB, matching the device tree's memory node.
+exec "$EMU" --ram 0x10000000 --load 0x80000000 --dtb "$DTB" \
      --supervisor \
      --disk "$DISK" --net loop --virtio-console \
      --max-insn "$MAXINSN" "$FW"
