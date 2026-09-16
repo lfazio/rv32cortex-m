@@ -66,6 +66,12 @@
          * registered so nothing is lost at the handover.
          */
         bootargs = "earlycon=sbi console=ttyS0";
+        /*
+         * No `keep_bootcon`. It leaves the SBI boot console registered
+         * beside ttyS0, so every line is printed twice -- which reads
+         * as the emulator emitting each byte twice and was written down
+         * here as exactly that before anyone removed the flag.
+         */
     };
 
     cpus {

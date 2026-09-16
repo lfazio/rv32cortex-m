@@ -132,6 +132,7 @@ nod /dev/console 0600 0 0 c 5 1
 nod /dev/null 0666 0 0 c 1 3
 nod /dev/tty 0666 0 0 c 5 0
 nod /dev/ttyS0 0600 0 0 c 4 64
+nod /dev/kmsg 0600 0 0 c 1 11
 file /init $WORK/init 0755 0 0
 EOF
 

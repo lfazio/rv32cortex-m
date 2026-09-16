@@ -84,16 +84,34 @@ measured at.
         draining and is consistent with the three raises all being the
         8250's start-up interrupt test.
 
-        Next: find out whether `serial8250_start_tx` ever enables THRI
-        for these writes -- if it does not, the interrupt is not the
-        problem and the tty is not reaching the driver at all. The
-        virtio console is the other candidate and is already attached.
+        **It is not the serial driver, and it is not the interrupt.**
+        Counting IER writes that request THRI gives 3 in a whole boot,
+        matching the 3 line raises, and both are the 8250's start-up
+        probe -- so `serial8250_start_tx` is never called for these
+        writes and the bytes never reach the driver.
 
-        **Do not read the doubled output as two consoles.** Every line
-        appears twice with an identical timestamp, and it still does
-        with `keep_bootcon` removed, so it is the emulator emitting each
-        byte twice -- a separate, older oddity that has nothing to do
-        with this.
+        Nor is it the tty layer, which is the part that was surprising.
+        `/dev/kmsg` bypasses the tty completely and goes straight to
+        printk, and a write there behaves the same way: the call returns
+        **29**, the full byte count, carried out through the exit code
+        because it is the one channel that always reaches a human -- and
+        nothing is printed, at `<0>` KERN_EMERG, with 85 seconds of
+        guest time afterwards for any flushing thread to run. Reading
+        the ring buffer back from userspace returned 90+ records without
+        the message in them, though that loop stops on any non-positive
+        read, so treat it as suggestive rather than settled.
+
+        So: userspace executes at length, every write returns success at
+        three different destinations, and nothing any process writes is
+        recorded or printed, while the kernel's own printk is perfect.
+        Next is to find where printk_emit drops it -- a kernel built
+        with a `pr_emerg` at the top of `devkmsg_write` would answer it
+        in one run, since kernel-context printk demonstrably works.
+
+        The doubled console output *was* two consoles after all --
+        `keep_bootcon` keeping sbi0 registered alongside ttyS0. Removing
+        it leaves one copy of each line. An earlier note here guessed
+        the emulator was emitting each byte twice; it was not.
   - [~] **An interrupt controller -- and it does not have to be a PLIC.**
         Established by booting without one: the kernel reaches driver
         init with *no* interrupt controller in the device tree, because
