@@ -66,42 +66,58 @@ measured at.
         printing the help, which reads as a typo in the command line.
         A kernel needs more than 3G instructions to reach init, so the
         first budget anyone would want was the first one refused.
-  - [ ] **The JIT is worse than useless under Linux, and this is the
-        open performance question.** Measured, same 600M-instruction
-        budget, same image, one after the other:
+  - [~] **The JIT translates under paging now, and is still not a win
+        on wall time.** It used to decline the moment Sdtrig, PMP or
+        paging was armed, because `blocked` pointed at `fetch_guard`,
+        which folds all three -- so under Linux it translated nothing
+        after the first page table and was 12% *slower* than no JIT.
 
-        | backend | wall | interpreted | blocks |
+        `ir_fetch16` walks the page tables and checks execute permission
+        per halfword now, as the interpreter's fetch does, and `blocked`
+        is Sdtrig alone. Same 600M budget, same image:
+
+        | | wall | interpreted | translations |
         |---|---|---|---|
-        | `--jit` | 52.5 s | 580,180,660 of 600M (**96.7%**) | 4786 translated, 2.43M entries |
+        | before | 52.5 s | 580,180,660 (96.7%) | 4,786 |
+        | after | 61.9 s | 228,272,019 (38.0%) | 951,343 |
         | interpreter | 46.8 s | all | -- |
 
-        So the JIT is **12% slower** than the interpreter here: it
-        translates almost nothing and pays the dispatch overhead on
-        everything else. The 4786 blocks are OpenSBI's M-mode boot,
-        before paging comes up.
+        Coverage is transformed; the clock is not. **Two costs remain,
+        and both are measured rather than guessed.**
 
-        The cause is `fetch_guard`, which folds Sdtrig, PMP and paging
-        into one word that `rv_jit_bind` points the framework's
-        `blocked` at. Linux sets two of the three -- Sv32, and the PMP
-        entries OpenSBI locks -- so from the moment the kernel enables
-        paging, every instruction interprets.
+        **SFENCE.VMA flushes the whole code cache** -- 129,286 times in
+        a boot. An A/B with the invalidation simply removed (incorrect,
+        for measurement only) runs 55.7 s with 97,646 translations, so
+        this is worth about 6 s. Fixing it properly means page-granular
+        invalidation: a block would record the guest page it was
+        translated from, and a targeted SFENCE would invalidate only
+        matching blocks. The handler currently ignores its operands,
+        which is legal and maximally coarse.
 
-        **The ratio entry below does not cover this.** "98% of
-        instructions run translated in both guests measured" is Quake
-        and DOOM, which never enable paging. Linux is the exact inverse,
-        and no figure in this file said so until now.
+        **The fallback path calls the interpreter's whole run loop for
+        one instruction**, 228 million times. `run_interp_one` does
+        `ops->interp->run(cpu, 1u, &n)`, so every declined instruction
+        pays the per-run setup that the interpreter proper amortises
+        over a whole budget. That is why 38% interpreted costs far more
+        than 38% of the interpreter's time, and it is the larger of the
+        two. Running a *run* of declined instructions in one call --
+        until the next address that translates -- is the obvious shape.
 
-        Fixing it means the IR translator fetching through the MMU and
-        checking execute permission itself -- which is what the deleted
-        hand-written Thumb-2 backend did: it walked the page tables,
-        checked fetch permission per halfword, and gated on
-        `trig_active` alone. The IR path inherited the x86-64 backend's
-        gate instead, which declines because *that* backend implements
-        neither. Its data accesses already go through the checked
-        `rv_ir_load`/`rv_ir_store`, and `rv_ir_gen_key` already folds
-        `vm_gen`, so the missing piece is the fetch. CLAUDE.md says do
-        not simply relax the gate, and it is right: a block built while
-        a page was executable outlives the guest revoking that.
+        Also worth knowing: the JIT attempts a full translation before
+        almost every interpreted instruction and gets nothing back,
+        which is ~230M attempts for 951k successes.
+
+        Guests that never page are unaffected and still twice the
+        interpreter: bench 0.028 s against 0.057, dhrystone 0.104
+        against 0.203.
+
+        **What made any of this checkable is `EMU_EXTRA_ARGS` on
+        run-arch-test.sh.** Nothing validated a translating backend
+        under the privileged features before -- the suite runs the
+        interpreter, and the JIT passed the Sv32 and PMP tests by
+        declining to execute them. It is 378/378 both ways, and with
+        `--jit` those tests now translate for the first time.
+
   - [x] **Userspace output reaches the console. Done**, and the cause
         was the emulator stealing the guest kernel's syscalls.
 

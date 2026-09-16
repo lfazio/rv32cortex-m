@@ -1869,6 +1869,51 @@ session, and every one of them recurred:
   the same way, and that one failed two ctest cases with no output at
   all. Both are part of bringing a guest up, so both live in
   `emu_session_start` now where a caller cannot forget them.
+- **The macro that builds both IR backends has now dropped three hooks,
+  and each was invisible until something needed it.** `.sync` was the
+  first (I-cache maintenance, NULL for both hosts with a comment that
+  was true only for x86-64). `.after_interp` is the third, and it is the
+  one that mattered most: the frontend supplied it, `emu_ir_frontend_t`
+  declared it, and the macro never forwarded it into `emu_jit_ops_t`. So
+  `jit_gen` -- the generation key carrying frm, `mstatus.FS` and
+  `vm_gen` -- was only ever sampled in `bind`, **once per run slice**,
+  and every staleness protection this file describes at length was inert
+  on the IR path. A block could outlive what it baked in for a whole
+  budget.
+
+  Nothing failed, because the window is small and the guests that would
+  notice were the ones the JIT declined to run. It surfaced only when
+  the JIT was allowed under PMP and a test written for exactly that
+  case -- isatest's `pmpx-exec-noeffect`, which runs code once to get a
+  cached block and *then* protects it -- reported that the store had
+  run inside a no-execute region.
+
+  **When a struct is filled by a macro, the missing field is invisible
+  at both ends**: the frontend sees its hook assigned, the framework
+  sees a NULL it is designed to tolerate. Grep the macro for every
+  member of the struct it builds, not the callers for the hook.
+- **A flag says a feature is on; it does not say what the feature
+  says.** `pmp_active` was in the generation key's inputs by way of
+  `fetch_guard`, and the PMP *configuration* was in nothing -- so arming
+  a no-execute region over an already-translated block left the block
+  runnable. This file already states the rule for `satp` versus the
+  mappings and for `pmp_active` versus the bounds; the third instance
+  is that a translator which checks a permission has to invalidate on
+  the permission changing, and the counter for that belongs on the CSR
+  writes that alter an entry, not on `rv_pmp_refresh` -- which is also
+  called on every privilege change and would flush thousands of times a
+  second under an operating system.
+- **Identity and invalidation are different questions, and conflating
+  them costs the whole cache.** Privilege and address space decide what
+  a block *is for*; changing them does not make existing blocks wrong.
+  Put them in the generation and every trap, return and context switch
+  flushes everything -- 129,293 flushes and 952,308 translations across
+  one Linux boot, which made the JIT slower than no JIT. Put them in
+  the block's key and blocks from every world coexist. The key must be
+  exact rather than hashed, or a block can be entered under a context
+  it was not built for; and it must be mixed into the *hash* as well as
+  compared, or every context collides in one bucket and lookup walks
+  the chain.
 - **A capability macro that depends on include order is worse than no
   macro.** `G4MH_HAVE_JIT` was defined in `g4mh_cpu.h` from
   `EMU_HOST_JIT_X86_64`, which `emu/emu_jit.h` defines -- and
