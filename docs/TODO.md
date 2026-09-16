@@ -63,145 +63,46 @@ measured at.
         printing the help, which reads as a typo in the command line.
         A kernel needs more than 3G instructions to reach init, so the
         first budget anyone would want was the first one refused.
-  - [ ] **Userspace output does not reach the console**, and this is the
-        open one. The kernel's own messages appear perfectly; every byte
-        a *process* writes is accepted and never sent.
+  - [x] **Userspace output reaches the console. Done**, and the cause
+        was the emulator stealing the guest kernel's syscalls.
 
-        What is established, by counting in the emulator rather than
-        reasoning: `write()` returns success, on `/dev/console` and on
-        `/dev/ttyS0` opened by name, and with two seconds of guest time
-        afterwards to drain. printk works because it uses the 8250
-        driver's *polled* console path; the tty layer uses the transmit
-        interrupt.
+        `emu_guest_syscall` is semihosting: it answers `write` and
+        `exit` so a bare-metal guest can print and terminate with no
+        kernel underneath it. The interpreter consulted it for *every*
+        ECALL, at any privilege -- so a Linux process calling write(2),
+        which traps from U-mode, was answered by the emulator and the
+        kernel never saw the call. It is M-mode only now, which is where
+        every bare-metal guest here runs. An S-mode ECALL is an SBI call
+        and belongs to the firmware.
 
-        So the UART was given one -- `emu_uart.c` stored `ier` and never
-        consulted it, which is this file's own "a register the code
-        stores and never reads" tell -- wired to APLIC source 10, with
-        `interrupts = <10 4>` on the serial node. The driver now binds
-        with `irq = 12` instead of 0. It did not fix it. The counters
-        say `thr=13673 ier=110 iir=6 raises=3`: the line is raised three
-        times across a whole boot, which is far too few to be the tty
-        draining and is consistent with the three raises all being the
-        8250's start-up interrupt test.
+        **It imitated success almost perfectly**, which is why it took
+        so long. The hook returns the length it was given, so write()
+        reported every byte written; it ignores the descriptor, so
+        `write(-1, ...)` reported success too; and it reads the buffer
+        with a *physical* bus access, which under Sv32 is not where a
+        user pointer points -- so the read faults on the first byte and
+        nothing is printed. Userspace was mute while every call
+        succeeded.
 
-        **It is not the serial driver, and it is not the interrupt.**
-        Counting IER writes that request THRI gives 3 in a whole boot,
-        matching the 3 line raises, and both are the 8250's start-up
-        probe -- so `serial8250_start_tx` is never called for these
-        writes and the bytes never reach the driver.
+        Four things were ruled out first, and all four were sound
+        conclusions from a broken instrument: the transmit interrupt
+        (requested 3 times a boot, all start-up probe), the tty layer
+        (/dev/kmsg bypasses it and behaved identically), the process
+        exiting too early (a busy loop bought 85 seconds of guest time),
+        and printk from process context (a `pr_emerg` in `do_group_exit`
+        printed perfectly).
 
-        Nor is it the tty layer, which is the part that was surprising.
-        `/dev/kmsg` bypasses the tty completely and goes straight to
-        printk, and a write there behaves the same way: the call returns
-        **29**, the full byte count, carried out through the exit code
-        because it is the one channel that always reaches a human -- and
-        nothing is printed, at `<0>` KERN_EMERG, with 85 seconds of
-        guest time afterwards for any flushing thread to run. Reading
-        the ring buffer back from userspace returned 90+ records without
-        the message in them, though that loop stops on any non-positive
-        read, so treat it as suggestive rather than settled.
+        **What broke the deadlock was testing the instrument**, which
+        this file already tells you to do: `write(-1, buf, 29)` must
+        return -EBADF and returned 29. Everything measured with that
+        wrapper was worthless, and the contradiction it had produced --
+        "the write succeeds" against "the kernel function it must go
+        through is never entered" -- was the shape of a lying
+        instrument rather than a strange kernel.
 
-        So: userspace executes at length, every write returns success at
-        three different destinations, and nothing any process writes is
-        recorded or printed, while the kernel's own printk is perfect.
-        Next is to find where printk_emit drops it -- a kernel built
-        with a `pr_emerg` at the top of `devkmsg_write` would answer it
-        in one run, since kernel-context printk demonstrably works.
+        `tests/unit/test_ecall.c` pins all three privileges. Reverting
+        the fix gives 6 failures.
 
-        The doubled console output *was* two consoles after all --
-        `keep_bootcon` keeping sbi0 registered alongside ttyS0. Removing
-        it leaves one copy of each line. An earlier note here guessed
-        the emulator was emitting each byte twice; it was not.
-  - [~] **An interrupt controller -- and it does not have to be a PLIC.**
-        Established by booting without one: the kernel reaches driver
-        init with *no* interrupt controller in the device tree, because
-        the timer comes from the SBI TIME extension, IPIs from SBI IPI
-        and the console from SBI DBCN. So this blocks devices, not boot.
-        Use the **APLIC the emulator already has** rather than writing a
-        PLIC: a 6.12 kernel has `CONFIG_RISCV_APLIC=y` as well as
-        `CONFIG_SIFIVE_PLIC=y`. It must be wired in **direct mode** --
-        `interrupts-extended` to the cpu intc and no `msi-parent` --
-        because MSI mode needs an IMSIC and the AIA CSRs, which this
-        emulator does not implement.
-
-        **Done, and the part that was missing was not the controller.**
-        The APLIC drove MEIP unconditionally, which is right for every
-        bare-metal guest here and invisible to Linux: it runs in S-mode
-        under OpenSBI and never sees MEIP. `--supervisor` moves
-        delivery, carried as emu_boot_info_t::supervisor because it is a
-        property of the machine. The device tree now describes the
-        APLIC in direct mode and the virtio nodes.
-
-        What is *not* done is seeing it fire under Linux -- the unit
-        test proves delivery moves between privileges, and nothing has
-        yet driven a real queue completion through the whole path.
-  - [x] **virtio-mmio transport**, done by importing rather than
-        writing: TinyEMU's `virtio.c` is vendored byte-identical under
-        `third_party/tinyemu/` (MIT), and the porting layer is four
-        functions -- `cpu_register_device` to `emu_bus_add_mmio`,
-        `phys_mem_get_ram_ptr` to `emu_bus_host_ptr`, `set_irq` to
-        `emu_raise_irq`, and a dozen inline helpers. That brings block,
-        console, net, input and 9p with it. The PCI transport is refused
-        loudly rather than stubbed, because a stub lets `virtio_pci_init`
-        appear to succeed and return a device that never answers.
-  - [~] **The devices on it.** `--9p [TAG:]DIR`, `--virtio-input` and
-        `--disk FILE` / `--disk-ro FILE` work. 9p was first on purpose:
-        it needs no image to build and no partition table to get right,
-        so the host directory *is* the filesystem. The input pair is a
-        keyboard and a mouse, fed from the same SDL events as the simple
-        polled devices and from the same converted evdev codes, so the
-        two families cannot disagree about what a key is.
-
-        virtio-blk is a file-backed `BlockDevice`: 512-byte sectors,
-        synchronous, because the completion path already handles it --
-        `read_async` returning 0 means "done" and the request ends
-        inline. `guest-virtiotest-blk` reads sector 0 and asserts its
-        *content*, since a device that signalled and filled nothing
-        would pass every other check in the guest.
-
-        virtio-net is `--net loop` and `--net tap:NAME`. The loopback
-        backend exists because a tap cannot be tested: it needs a device
-        node, a persistent interface and an address on it, none of which
-        a suite can assume, so a device offered only over tap would ship
-        having never moved a packet. `guest-virtiotest-net` is also the
-        first test to drive two queues at once.
-
-        **All three probe under Linux**, which is the check that matters
-        and which no unit test can make: `virtio_blk virtio0: [vda]
-        32768 512-byte logical blocks (16.8 MB/16.0 MiB)`.
-
-        Next is the display. And note what a *missing* device does:
-        every virtio node in the device tree needs one behind it, or
-        virtio_mmio_probe reads the magic, the bus refuses an unmapped
-        address, and the kernel takes a load access fault and panics
-        inside driver_attach. Not a driver quietly finding nothing.
-
-        **What virtio-blk cost was a barrier in the guest, not a bug in
-        the device.** A volatile access does not order the ordinary
-        stores around it, so GCC sank the descriptor ring and
-        `avail->idx` past the volatile write to QueueNotify. The device
-        read an avail ring still holding zero and did nothing; every
-        register was right and nothing faulted. The console queue had
-        the identical defect and passed anyway, because its one
-        descriptor happened to be scheduled first -- one weak test is
-        worse than none, again.
-
-        **The interrupt path is proven.** `tests/guest/virtiotest.c`
-        drives the console queue to completion from guest code and takes
-        the interrupt: descriptor ring in guest RAM, QueueNotify, the
-        device printing the bytes and advancing the used ring, the APLIC
-        delivering, and the handler acknowledging both device and
-        controller. It runs under `ctest -L fast`.
-
-        Its first version failed in the way this whole entry was written
-        to expect: it spoke the *legacy* transport at a device reporting
-        version 2, every write was accepted, and QueueNotify did nothing
-        at all. No register was wrong.
-
-        And the device tree has to name them: 0x1000_1000 upwards,
-        0x1000 apart, interrupts from 1. Nothing checks that the tree
-        and the emulator agree -- they are two descriptions of one
-        machine, and the usual failure is a driver finding nothing.
 - [ ] **Find out what the 50x is.** The runner now reports host
       instructions per guest instruction live, and it is 46-53 across
       every guest measured -- far above what a translated block should

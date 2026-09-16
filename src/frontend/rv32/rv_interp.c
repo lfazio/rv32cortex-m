@@ -1010,7 +1010,32 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                 switch (insn >> 20) {
                 case 0x000u: /* ECALL */
 #if RV_ENABLE_ECALL_HOOK
-                    if (h->ecall != NULL) {
+                    /*
+                     * **Semihosting is for a guest with no operating
+                     * system, so it must not outrank one that has.**
+                     *
+                     * The hook answers `write` and `exit` for the
+                     * bare-metal guests in this tree, which run in
+                     * M-mode. Consulting it for *every* ECALL steals
+                     * the syscalls of a guest that brought its own
+                     * kernel: under Linux, a process calling write(2)
+                     * traps from U-mode, and this hook answered it --
+                     * returning the full byte count, printing nothing,
+                     * and never letting the kernel see the call.
+                     *
+                     * It printed nothing because the hook reads the
+                     * buffer with a *physical* bus access, and the
+                     * pointer is a user virtual address under Sv32; the
+                     * read faults on the first byte and the loop stops.
+                     * So userspace was mute while every write reported
+                     * success, and `write(-1, ...)` returned the length
+                     * too, because the hook ignores the descriptor.
+                     *
+                     * M-mode only. An S-mode ECALL is an SBI call and
+                     * belongs to the firmware; a U-mode one belongs to
+                     * whatever kernel is above it.
+                     */
+                    if (h->ecall != NULL && h->priv == RV_PRIV_M) {
                         h->pc = pc;
                         /*
                          * The RISC-V half of the syscall convention, which

@@ -1899,6 +1899,42 @@ session, and every one of them recurred:
   entries right, and "same axis, opposite sign, much faster" is what a
   lost sign bit in an 8-bit field looks like. When half of a symmetric
   thing works, suspect arithmetic rather than mapping.
+- **Semihosting must not outrank a guest that brought its own kernel,
+  and when it does it imitates success.** `emu_guest_syscall` answers
+  `write` and `exit` for bare-metal guests; the interpreter consulted it
+  for *every* ECALL, at any privilege. So a Linux process calling
+  write(2) -- which traps from U-mode -- was answered by the emulator,
+  and the kernel never saw the call. M-mode only now: an S-mode ECALL is
+  an SBI call and belongs to the firmware.
+
+  Every symptom said "working": the hook returns the length it was
+  given, so write() reported every byte written; it ignores the
+  descriptor, so `write(-1, ...)` succeeded too; and it reads the buffer
+  with a **physical** bus access, which under Sv32 is not where a user
+  pointer points, so the read faults on the first byte and prints
+  nothing. Userspace was mute while every call returned success.
+
+  **Four correct deductions from a lying instrument.** The transmit
+  interrupt was ruled out by counting (requested 3 times a boot, all
+  start-up probe), the tty layer by going round it (/dev/kmsg behaved
+  identically), an early exit by burning 85 seconds of guest time, and
+  process-context printk by a `pr_emerg` in `do_group_exit` that
+  printed perfectly. All four were sound and all four were about the
+  wrong thing.
+
+  What broke it was **testing the instrument**, which this file already
+  demands: `write(-1, buf, 29)` must return -EBADF, and returned 29. The
+  contradiction it had been producing -- "the write succeeds" against
+  "the kernel function it must go through is never entered" -- is the
+  shape of a lying instrument, not of a strange kernel. When two
+  measurements cannot both be true, suspect the thing doing the
+  measuring before the thing being measured.
+
+  A corollary about reading a disassembly: init's syscall wrapper
+  compiled *correctly* -- `bltz a0` right after the `ecall` -- so the
+  wrapper was exonerated by inspection and was still reporting a wrong
+  answer, because the wrongness was a whole layer below it. Reading the
+  code proved the code; only running it proved the behaviour.
 - **Measure; do not reason about performance.** Interpreter-in-SRAM was
   *slower*, lazy-IRQ was neutral, and the `clmul` fix was 1.3% when the real
   cost was 4.12-instruction blocks. Layout noise is ±3% on the host; on the

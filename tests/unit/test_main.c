@@ -40,6 +40,9 @@ int main(void)
 #endif
     test_bus();
     test_uart();
+#if EMU_GUEST_ARCH_RV32
+    test_ecall();
+#endif
     test_fb();
 #if EMU_GUEST_ARCH_RV32
     test_aplic();

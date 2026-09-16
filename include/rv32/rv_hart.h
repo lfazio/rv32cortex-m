@@ -228,8 +228,19 @@ typedef struct rv_hart {
      * Optional ECALL interception, for host-side test harnesses and for
      * platforms that want to offer SBI-style services alongside the
      * memory-mapped devices. Return true to consume the ECALL (execution
-     * resumes after it); return false to take the normal M-mode trap.
-     * When NULL, ECALL always traps, which is the architectural behaviour.
+     * resumes after it); return false to take the normal trap. When
+     * NULL, ECALL always traps, which is the architectural behaviour.
+     *
+     * **Consulted only for an ECALL taken in M-mode.** Semihosting is
+     * for a guest with no operating system, and those run in M-mode;
+     * a guest that brought its own kernel must keep its syscalls. An
+     * S-mode ECALL is an SBI call and belongs to the firmware, and a
+     * U-mode one belongs to whatever kernel is above it. Answering
+     * those imitates success almost perfectly -- the usual handler
+     * returns the length it was given and ignores the descriptor, and
+     * reads the buffer physically, which under Sv32 is not where a user
+     * pointer points -- so userspace goes mute while every call
+     * succeeds. See tests/unit/test_ecall.c.
      *
      * The handler sees an emu_syscall_t rather than the hart, so the same
      * newlib write/exit implementation serves any frontend: unpacking the

@@ -38,6 +38,9 @@ void test_uart(void);
 #if EMU_GUEST_ARCH_RV32
 void test_aplic(void);
 #endif
+#if EMU_GUEST_ARCH_RV32
+void test_ecall(void);
+#endif
 #if EMU_HAVE_VIRTIO
 void test_virtio(void);
 #endif

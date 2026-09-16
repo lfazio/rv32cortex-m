@@ -20,7 +20,7 @@ add_executable(emu-unit
 # rv_hart_fp directly -- the FP unit is shared, but the only way in is
 # through an RV32 hart.
 if(EMU_GUEST_ARCH_RV32)
-    target_sources(emu-unit PRIVATE test_decode.c test_fpu.c)
+    target_sources(emu-unit PRIVATE test_decode.c test_fpu.c test_ecall.c)
 endif()
 if(EMU_GUEST_ARCH_G4MH)
     target_sources(emu-unit PRIVATE test_g4mh.c)
