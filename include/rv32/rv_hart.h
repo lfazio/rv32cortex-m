@@ -126,6 +126,24 @@ typedef struct rv_hart {
      * something re-derived.
      */
     uint32_t jit_gen;
+    /*
+     * The privilege a JIT block was translated for. Part of a block's
+     * identity rather than something that invalidates it -- see
+     * emu_jit_hot_t::context and rv_jit_bind.
+     */
+    uint32_t jit_ctx;
+    /*
+     * Bumped whenever the PMP *configuration* changes, so a translated
+     * block that baked in "this page is executable" is thrown away when
+     * that stops being true.
+     *
+     * Not `pmp_active`, and not rv_pmp_refresh: the flag stays true
+     * while the entries under it change, and the refresh is also called
+     * on every privilege change, which would flush the code cache
+     * thousands of times a second under an operating system. Only the
+     * CSR writes that alter an entry touch this.
+     */
+    uint32_t pmp_gen;
 
     /*
      * Direct-mapped TLB. Tagged with the full VPN, so no flush is needed
@@ -392,6 +410,24 @@ void rv_mmu_refresh(rv_hart_t *h);
 
 /* Discard every cached translation. SFENCE.VMA and satp writes land here. */
 void rv_mmu_flush(rv_hart_t *h);
+
+/*
+ * Invalidate the TLB without telling the JIT its blocks are stale.
+ *
+ * **Only for a change of address space, never for a change of
+ * mapping.** Switching satp does not alter what any page contains -- it
+ * chooses a different set of pages -- and translated blocks carry the
+ * satp they were built under in their identity, so blocks from both
+ * spaces stay valid and are told apart at lookup. Bumping the
+ * generation here instead flushed the whole code cache on every context
+ * switch: 129,293 flushes and 952,308 translations across one Linux
+ * boot, which made the JIT slower than no JIT.
+ *
+ * Editing a PTE *is* a change of mapping, and the architecture requires
+ * an SFENCE.VMA to make it visible -- that still goes through
+ * rv_mmu_flush and still invalidates every block.
+ */
+void rv_mmu_flush_tlb(rv_hart_t *h);
 
 /*
  * Translate a virtual address for one access. Returns RV_EXC_NONE and

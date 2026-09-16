@@ -65,11 +65,16 @@ static uint32_t acc_priv(const rv_hart_t *h, emu_access_t acc)
     return (acc == EMU_ACC_FETCH) ? (uint32_t)h->priv : rv_hart_data_priv(h);
 }
 
-void rv_mmu_flush(rv_hart_t *h)
+void rv_mmu_flush_tlb(rv_hart_t *h)
 {
     for (uint32_t i = 0; i < RV_TLB_ENTRIES; i++) {
         h->tlb[i].valid = false;
     }
+}
+
+void rv_mmu_flush(rv_hart_t *h)
+{
+    rv_mmu_flush_tlb(h);
     /* Tells the JIT its blocks may no longer describe the code at the
      * virtual addresses they were built from. */
     h->vm_gen++;

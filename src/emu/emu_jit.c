@@ -75,6 +75,7 @@
 
 typedef struct {
     uint32_t guest_pc;
+    uint32_t context; /* see emu_jit_hot_t::context           */
     uint8_t *code;
     uint32_t len; /* bytes, so compaction can move it      */
     uint32_t insns; /* guest instructions this block retires */
@@ -171,9 +172,22 @@ static uint32_t prof_now(void)
 /* Blocks                                                              */
 /* ------------------------------------------------------------------ */
 
-static uint32_t pc_hash(uint32_t pc)
+/*
+ * The context is mixed in, not just compared.
+ *
+ * **Leaving it out turns the chain into a linked list.** Blocks that
+ * differ only by context -- the same user address under a dozen
+ * processes, the same address in user and in kernel -- would hash to one
+ * bucket and be told apart only by the compare, so a lookup walks every
+ * one of them. Under Linux that was measured at roughly 383ns per block
+ * entry, which is about fifteen hundred cycles to find a block.
+ *
+ * The shift keeps the pc's own bits where they were, so a guest with a
+ * single context hashes exactly as before.
+ */
+static uint32_t pc_hash(uint32_t pc, uint32_t context)
 {
-    return (pc >> 1) & (EMU_JIT_HASH_SIZE - 1u);
+    return ((pc >> 1) ^ (context * 2654435761u)) & (EMU_JIT_HASH_SIZE - 1u);
 }
 
 void emu_jit_flush(void)
@@ -203,7 +217,8 @@ void emu_jit_flush(void)
  */
 static void chain_insert(uint32_t index)
 {
-    const uint32_t h = pc_hash(g_blocks[index].guest_pc);
+    const uint32_t h =
+        pc_hash(g_blocks[index].guest_pc, g_blocks[index].context);
 
     g_blocks[index].next = g_hash[h];
     g_hash[h] = (int32_t)index;
@@ -219,10 +234,11 @@ static void rebuild_hash(void)
     }
 }
 
-static jit_block_t *lookup(uint32_t pc)
+static jit_block_t *lookup(uint32_t pc, uint32_t context)
 {
-    for (int32_t i = g_hash[pc_hash(pc)]; i >= 0; i = g_blocks[i].next) {
-        if (g_blocks[i].guest_pc == pc) {
+    for (int32_t i = g_hash[pc_hash(pc, context)]; i >= 0;
+         i = g_blocks[i].next) {
+        if (g_blocks[i].guest_pc == pc && g_blocks[i].context == context) {
             if (g_blocks[i].hits != UINT32_MAX) {
                 g_blocks[i].hits++;
             }
@@ -362,7 +378,8 @@ static bool space_low(void)
  * buffer, which is a reclaim signal.
  */
 static jit_block_t *translate_once(emu_cpu_t *cpu, uint32_t pc,
-                                   const emu_jit_ops_t *ops)
+                                   const emu_jit_ops_t *ops,
+                                   uint32_t context)
 {
     /* Blocks are entered by branching to them, so keep them aligned. */
     g_code_used = (g_code_used + 3u) & ~3u;
@@ -391,6 +408,7 @@ static jit_block_t *translate_once(emu_cpu_t *cpu, uint32_t pc,
 
     jit_block_t *const b = &g_blocks[g_block_count++];
     b->guest_pc = pc;
+    b->context = context;
     b->code = start;
     b->len = (uint32_t)(g_emit - start);
     b->insns = insns;
@@ -425,11 +443,11 @@ static jit_block_t *translate_once(emu_cpu_t *cpu, uint32_t pc,
  * between them -- while every suite passed and the guest computed the
  * right answer.
  */
-static jit_block_t *translate(emu_cpu_t *cpu, uint32_t pc,
+static jit_block_t *translate(emu_cpu_t *cpu, uint32_t pc, uint32_t context,
                               const emu_jit_ops_t *ops)
 {
     if (!space_low()) {
-        jit_block_t *b = translate_once(cpu, pc, ops);
+        jit_block_t *b = translate_once(cpu, pc, ops, context);
         if (b != NULL) {
             return b;
         }
@@ -445,7 +463,7 @@ static jit_block_t *translate(emu_cpu_t *cpu, uint32_t pc,
     if (ops->relocatable) {
         compact(ops);
         if (!space_low()) {
-            jit_block_t *b = translate_once(cpu, pc, ops);
+            jit_block_t *b = translate_once(cpu, pc, ops, context);
             if (b != NULL) {
                 return b;
             }
@@ -457,7 +475,7 @@ static jit_block_t *translate(emu_cpu_t *cpu, uint32_t pc,
 
     /* Compaction could not free enough, or blocks cannot move. Start over. */
     emu_jit_flush();
-    return translate_once(cpu, pc, ops);
+    return translate_once(cpu, pc, ops, context);
 }
 
 /* ------------------------------------------------------------------ */
@@ -646,12 +664,17 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
         }
 
         const uint32_t pc = *hot.pc;
-        jit_block_t *b = lookup(pc);
+        /*
+         * Part of a block's identity, not a reason to throw blocks away.
+         * See emu_jit_hot_t::context.
+         */
+        const uint32_t context = (hot.context != NULL) ? *hot.context : 0u;
+        jit_block_t *b = lookup(pc, context);
 
         bool fresh = false;
 
         if (b == NULL) {
-            b = translate(cpu, pc, ops);
+            b = translate(cpu, pc, context, ops);
             fresh = (b != NULL);
             if (b == NULL) {
                 const emu_run_reason_t r = run_interp_one(cpu, ops, &done);

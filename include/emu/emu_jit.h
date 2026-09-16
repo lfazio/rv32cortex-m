@@ -202,6 +202,29 @@ typedef struct emu_jit_hot {
     const bool *blocked;
 
     /*
+     * What a block is *for*, beyond its address -- part of its identity
+     * rather than something that invalidates it. NULL means a guest
+     * address alone names a block.
+     *
+     * **The difference from `generation` is the whole point.** A change
+     * of generation means every existing block may be wrong, so the
+     * cache is flushed. A change of context means blocks belong to
+     * different worlds and both are still valid, so they coexist and
+     * are told apart at lookup.
+     *
+     * RV32 puts the privilege level here. Fetch permission depends on
+     * it -- a supervisor page is not executable from U-mode -- and a
+     * block records the permission that held when it was translated. If
+     * the two shared an identity, a guest could branch to a kernel
+     * address, find the block the kernel left there, and execute it
+     * instead of taking the fault the architecture requires. Putting
+     * privilege in `generation` instead would be correct and useless:
+     * every trap and every return would flush the cache, which under an
+     * operating system is thousands of times a second.
+     */
+    const uint32_t *context;
+
+    /*
      * Cleared by the frontend when it knows no interrupt can be pending,
      * so take_irq is called only when there is something to find. NULL
      * means ask every time.

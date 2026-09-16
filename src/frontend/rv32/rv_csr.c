@@ -460,7 +460,12 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
          * about it.
          */
         h->satp = val & (SATP_MODE_SV32 | SATP_ASID_MASK | SATP_PPN_MASK);
-        rv_mmu_flush(h);
+        /*
+         * The TLB only. satp is part of a translated block's identity,
+         * so blocks from the old address space stay valid and simply
+         * stop matching -- see rv_mmu_flush_tlb.
+         */
+        rv_mmu_flush_tlb(h);
         rv_mmu_refresh(h);
 #endif
         break;
@@ -590,6 +595,7 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
             cur = (cur & ~(0xFFu << sh)) | (nb << sh);
         }
         h->pmpcfg[idx] = cur;
+        h->pmp_gen++; /* translated blocks baked this in */
         rv_pmp_refresh(h);
         break;
     }
@@ -637,6 +643,7 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
                 }
             }
             h->pmpaddr[i] = val;
+            h->pmp_gen++; /* translated blocks baked this in */
             break;
         }
 #endif

@@ -229,6 +229,25 @@ static bool ir_diff_ref(emu_cpu_t *cpu, const emu_ir_frontend_t *fe)
         }                                                                                             \
     }                                                                                                 \
                                                                                                       \
+    /*                                                                                                \
+     * **The generation key was inert without this.** The framework      \
+     * calls after_interp once per interpreted instruction, which is the \
+     * only place frm, mstatus.FS, the PMP configuration and vm_gen can  \
+     * change -- the translator declines SYSTEM, so every write to them  \
+     * lands there. The frontend supplied the hook and emu_ir_frontend_t \
+     * declared it, and this macro never forwarded it, so `jit_gen` was  \
+     * only ever sampled in bind: once per run slice. A block outlived   \
+     * what it baked in for up to a whole budget, which is exactly the   \
+     * staleness the key exists to prevent. Same shape as `.sync`, which \
+     * this macro also dropped.                                          \
+     */                                                                                               \
+    static void prefix##_after_interp(emu_cpu_t *cpu)                                                 \
+    {                                                                                                 \
+        if ((fe).after_interp != NULL) {                                                              \
+            (fe).after_interp(cpu);                                                                   \
+        }                                                                                             \
+    }                                                                                                 \
+                                                                                                      \
     EMU_IR_DIFF_HOOK(fe, prefix)                                                                      \
                                                                                                       \
     static const emu_jit_ops_t prefix##_jit_ops = {                                                   \
@@ -256,6 +275,7 @@ static bool ir_diff_ref(emu_cpu_t *cpu, const emu_ir_frontend_t *fe)
         .wake = prefix##_wake,                                                                        \
         .take_irq = prefix##_take_irq,                                                                \
         .count = prefix##_count,                                                                      \
+        .after_interp = prefix##_after_interp,                                                         \
     };                                                                                                \
                                                                                                       \
     static emu_jit_ops_t prefix##_ops_live;                                                           \

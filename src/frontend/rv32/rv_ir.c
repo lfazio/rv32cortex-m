@@ -937,6 +937,49 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
     }
 }
 
+/*
+ * Fetch one halfword the way the interpreter fetches it.
+ *
+ * **The translator reads guest memory at a virtual address, so under
+ * paging it has to walk the page tables like everything else.** Reading
+ * the bus directly compiles whatever physical memory happens to sit at
+ * that number, which is not the guest's code and is not even reliably
+ * memory.
+ *
+ * Fetch permission is checked here too, per halfword, which gets the
+ * straddle rule for a 32-bit instruction crossing a page or a PMP
+ * boundary for free: the two halves are translated and checked
+ * independently, exactly as the interpreter does.
+ *
+ * A failure of any kind ends the block rather than raising anything.
+ * That is not a shortcut -- the translator must never take a trap,
+ * because the instruction may never execute. The interpreter picks the
+ * address up and raises the architectural fault with the right cause and
+ * the right tval.
+ *
+ * The TLB fill this may cause is the one side effect, and it is the same
+ * fill the interpreter would do. Svade means the walk never *writes* A
+ * or D -- it faults instead -- so translating ahead cannot dirty a page
+ * the guest has not touched.
+ */
+static bool ir_fetch16(rv_hart_t *h, uint32_t va, uint16_t *out)
+{
+    uint32_t pa = va;
+
+#if RV_EXT_SV32
+    if (h->vm_active &&
+        rv_mmu_translate(h, va, EMU_ACC_FETCH, &pa) != RV_EXC_NONE) {
+        return false;
+    }
+#endif
+#if RV_EXT_PMP
+    if (h->pmp_active && !rv_pmp_check(h, pa, 2u, EMU_ACC_FETCH)) {
+        return false;
+    }
+#endif
+    return emu_bus_fetch16(h->bus, pa, out) == EMU_FAULT_NONE;
+}
+
 uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
 {
     rv_hart_t *const h = (rv_hart_t *)cpu;
@@ -951,11 +994,11 @@ uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
         uint16_t lo, hi;
         uint32_t len;
 
-        if (emu_bus_fetch16(h->bus, cur, &lo) != EMU_FAULT_NONE) {
+        if (!ir_fetch16(h, cur, &lo)) {
             break;
         }
         if (rv_is_32bit(lo)) {
-            if (emu_bus_fetch16(h->bus, cur + 2u, &hi) != EMU_FAULT_NONE) {
+            if (!ir_fetch16(h, cur + 2u, &hi)) {
                 break;
             }
             insn = (uint32_t)lo | ((uint32_t)hi << 16);
@@ -1063,15 +1106,53 @@ uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
  * keeping the field would flush the cache on the first float of every
  * block -- which is a correctness-preserving way to have no JIT at all.
  */
+/*
+ * What a block is *for*: the address space and the privilege.
+ *
+ * Both decide what the instruction bytes at a virtual address are and
+ * whether they may be fetched, and neither invalidates anything when it
+ * changes -- the kernel's blocks are still the kernel's after a switch
+ * to a user process. So they are part of a block's identity rather than
+ * part of the generation, and blocks from every context coexist.
+ *
+ * satp has exactly two spare bits for the privilege: MODE is bit 31,
+ * ASID is 30:22, and this implementation's PPN is 19:0, because the
+ * field is WARL and its width follows a 32-bit physical address space.
+ * So 21:20 are free and the packing is exact -- no hash, no collision,
+ * and a block can never be entered under a context it was not built
+ * for.
+ */
+static uint32_t rv_ir_ctx_key(const rv_hart_t *h)
+{
+#if RV_EXT_SV32
+    return h->satp | ((uint32_t)h->priv << 20);
+#else
+    return (uint32_t)h->priv;
+#endif
+}
+
 static uint32_t rv_ir_gen_key(const rv_hart_t *h)
 {
+    /*
+     * The PMP configuration, because the translator now checks fetch
+     * permission and bakes the answer in. Arming a no-execute region
+     * after a block was built there must throw that block away --
+     * without this, isatest's `pmpx-exec-noeffect` reported 0xBAD: the
+     * store really did run inside a region that forbade execution.
+     *
+     * Summed with vm_gen rather than given its own field: both are
+     * monotonic counters and only their *changing* matters, so one word
+     * carries both and a change in either is a change in the sum.
+     */
+    const uint32_t maps = h->vm_gen + h->pmp_gen;
+
 #if RV_EXT_F
     const uint32_t fs_off = ((h->mstatus & MSTATUS_FS_MASK) == 0u) ? 1u : 0u;
     const uint32_t frm = (h->fcsr >> 5) & 7u;
 
-    return (h->vm_gen << 8) | (fs_off << 4) | frm;
+    return (maps << 8) | (fs_off << 4) | frm;
 #else
-    return h->vm_gen;
+    return maps;
 #endif
 }
 
@@ -1090,6 +1171,13 @@ static void rv_jit_after_interp(emu_cpu_t *cpu)
     rv_hart_t *const h = (rv_hart_t *)cpu;
 
     h->jit_gen = rv_ir_gen_key(h);
+    /*
+     * Privilege moves on a trap or an xRET, both of which the
+     * translator declines, so the interpreter fallback is the one place
+     * it can change -- the same argument the generation key makes for
+     * frm and mstatus.FS.
+     */
+    h->jit_ctx = rv_ir_ctx_key(h);
 }
 
 static void rv_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
@@ -1103,9 +1191,50 @@ static void rv_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
      */
     h->jit_gen = rv_ir_gen_key(h);
 
+    /*
+     * The privilege a block was translated for, as part of its identity.
+     *
+     * Fetch permission depends on it -- a supervisor page is not
+     * executable from U-mode -- and the translator checks that
+     * permission once, at translation. Without this, a guest could
+     * branch to a kernel address, find the block the kernel left there,
+     * and run it instead of taking the fault the architecture requires:
+     * the dispatch looks a block up by address and enters it, and the
+     * emitted code re-checks nothing.
+     *
+     * In `context` rather than in `generation` because a privilege
+     * change does not invalidate anything -- the kernel's blocks are
+     * still the kernel's. Putting it in `generation` would be correct
+     * and useless: every trap and every return would flush the cache,
+     * which under Linux is thousands of times a second.
+     */
+    h->jit_ctx = rv_ir_ctx_key(h);
+
     out->pc = &h->pc;
     out->state = &h->state;
-    out->blocked = &h->fetch_guard;
+    /*
+     * **Sdtrig alone, not the whole fetch guard.**
+     *
+     * `fetch_guard` folds Sdtrig, PMP and paging together for the
+     * interpreter's benefit, where it is one branch on the hot fetch
+     * path. Pointing `blocked` at it meant the JIT stopped translating
+     * the moment any of the three was armed -- which for an operating
+     * system is from the first page table onwards, so Linux ran 96.7%
+     * interpreted and the JIT was 12% *slower* than no JIT at all.
+     *
+     * PMP and paging are handled now: ir_fetch16 walks and checks, and
+     * the loads and stores already go through rv_ir_load/rv_ir_store,
+     * which check exactly as the interpreter does. Sdtrig is not: an
+     * execute trigger has to be evaluated per instruction against the
+     * virtual address, and there is nowhere in a translated block to do
+     * that.
+     */
+#if RV_EXT_SDTRIG
+    out->blocked = &h->trig_active;
+#else
+    out->blocked = NULL;
+#endif
+    out->context = &h->jit_ctx;
     out->generation = &h->jit_gen;
 #if RV_LAZY_IRQ_CHECK
     out->irq_pending = &h->irq_dirty;

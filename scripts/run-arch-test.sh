@@ -43,6 +43,20 @@ suite="${ARCH_TEST_DIR:-$here/build/arch-test}"
 # EMU_HOST still overrides, for bisecting or for testing a binary built
 # elsewhere. It is on the caller to match the config when they do.
 runner="${EMU_HOST:-$here/build/arch-test-host/emu-host}"
+
+#
+# Extra arguments for every test, and the reason it exists is `--jit`.
+#
+# **Nothing else in this tree validates a translating backend under the
+# privileged features.** The suite runs the interpreter, so the Sv32,
+# PMP and U-mode tests -- the ones that exist precisely because those
+# paths are subtle -- say nothing about the JIT. And the JIT declines to
+# run at all when any of them is armed, so today it passes them by not
+# executing: `EMU_EXTRA_ARGS=--jit scripts/run-arch-test.sh` is a
+# baseline that proves the *harness* works, before the backend is
+# changed to actually translate under them.
+#
+EMU_EXTRA_ARGS="${EMU_EXTRA_ARGS:-}"
 build_runner=1
 [[ -n "${EMU_HOST:-}" ]] && build_runner=0
 
@@ -163,6 +177,6 @@ echo "==> running against $runner"
     # cap is a safety net: a test that never reaches HALT would otherwise
     # spin forever.
     ./run_tests.py --jobs "$jobs" \
-        "$runner --quiet --ram 0x800000 --max-insn 500000000" \
+        "$runner $EMU_EXTRA_ARGS --quiet --ram 0x800000 --max-insn 500000000" \
         "work/$cfg_name/elfs"
 )
