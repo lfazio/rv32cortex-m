@@ -578,14 +578,57 @@ static uint32_t run_block_checked(emu_cpu_t *cpu, const jit_block_t *b,
 }
 #endif /* EMU_JIT_DIFF */
 
-static emu_run_reason_t run_interp_one(emu_cpu_t *cpu, const emu_jit_ops_t *ops,
-                                       uint32_t *done)
+/*
+ * How many instructions one fallback may interpret.
+ *
+ * **Not an interrupt-latency knob**, unlike the loop cap: a frontend's
+ * interpreter takes interrupts inside its own loop -- RV32 checks
+ * `irq_dirty` every instruction -- so a longer batch delays nothing.
+ * What it trades is *coverage*: the batch can run past the point where
+ * translatable code resumes, and those instructions are interpreted
+ * instead of becoming a block.
+ *
+ * Which is why the size adapts rather than being fixed. See the note on
+ * `batch` in emu_jit_run.
+ */
+#ifndef EMU_JIT_FALLBACK_MAX
+#define EMU_JIT_FALLBACK_MAX 64u
+#endif
+
+/*
+ * Interpret, when the translator declined or a guard is up.
+ *
+ * **One call per instruction was costing more than the instructions.**
+ * This used to ask for exactly 1, so every declined instruction paid
+ * the interpreter's whole run-loop entry -- the prologue, the hot-state
+ * reload, the loop setup -- which the interpreter proper amortises over
+ * a budget of thousands. Under Linux that is 228 million such calls in
+ * a 600M-instruction run, and it is why 38% of instructions interpreted
+ * cost far more than 38% of the interpreter's time.
+ */
+static emu_run_reason_t run_interp_batch(emu_cpu_t *cpu,
+                                         const emu_jit_ops_t *ops,
+                                         uint32_t *done, uint32_t budget,
+                                         uint32_t batch)
 {
+    const uint32_t left = budget - *done;
+    uint32_t want = (batch < left) ? batch : left;
     uint32_t n = 0u;
-    const emu_run_reason_t r = ops->interp->run(cpu, 1u, &n);
+
+    if (want == 0u) {
+        want = 1u;
+    }
+
+    const emu_run_reason_t r = ops->interp->run(cpu, want, &n);
 
     *done += n;
     g_stats.interp_fallbacks += n;
+    /*
+     * After the whole batch, not after each instruction. Everything the
+     * key carries -- the rounding mode, FS, the PMP configuration, the
+     * page-table generation, the privilege -- matters only to a
+     * *translated block*, and none runs until this returns.
+     */
     if (ops->after_interp != NULL) {
         ops->after_interp(cpu);
     }
@@ -616,6 +659,29 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
             return EMU_RUN_WFI;
         }
     }
+
+    /*
+     * How much the next fallback may interpret in one go.
+     *
+     * **Adaptive, because a fixed size is wrong at both ends.** One
+     * instruction per call is what made the fallback dominate; a large
+     * fixed batch would interpret straight past the point where
+     * translatable code resumes, and those instructions never become a
+     * block.
+     *
+     * So it doubles while translation keeps failing -- a trap handler
+     * full of CSR writes is hundreds of instructions the translator
+     * will not take, and paying a call each is the case being fixed --
+     * and resets to one the moment a block is found. That keeps the
+     * common shape exact: a hot loop containing a single declined
+     * instruction interprets exactly that instruction and translates
+     * everything around it, which is what it did before.
+     *
+     * The overshoot is bounded by the batch at the point translation
+     * resumes, which is at most the length of the stretch that
+     * declined.
+     */
+    uint32_t batch = 1u;
 
     while (done < budget) {
         const uint8_t st = *hot.state;
@@ -655,7 +721,17 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
          * valid -- it simply must not run while the guard is up.
          */
         if (hot.blocked != NULL && *hot.blocked) {
-            const emu_run_reason_t r = run_interp_one(cpu, ops, &done);
+            /*
+             * A guard is long-lived -- Sdtrig stays armed -- so there is
+             * nothing to be gained by creeping through it one
+             * instruction at a time.
+             */
+            const emu_run_reason_t r =
+                run_interp_batch(cpu, ops, &done, budget, batch);
+
+            if (batch < EMU_JIT_FALLBACK_MAX) {
+                batch *= 2u;
+            }
             if (r == EMU_RUN_HALTED || r == EMU_RUN_WFI) {
                 reason = r;
                 break;
@@ -677,7 +753,12 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
             b = translate(cpu, pc, context, ops);
             fresh = (b != NULL);
             if (b == NULL) {
-                const emu_run_reason_t r = run_interp_one(cpu, ops, &done);
+                const emu_run_reason_t r =
+                    run_interp_batch(cpu, ops, &done, budget, batch);
+
+                if (batch < EMU_JIT_FALLBACK_MAX) {
+                    batch *= 2u;
+                }
                 if (r == EMU_RUN_HALTED || r == EMU_RUN_WFI) {
                     reason = r;
                     break;
@@ -685,6 +766,20 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
                 continue;
             }
         }
+
+        /*
+         * A block is about to run, so whatever declined is behind us:
+         * the next decline is an isolated one until proven otherwise.
+         *
+         * **Here rather than beside the translation.** Resetting only
+         * when a *fresh* block is built leaves the batch pegged at its
+         * maximum in steady state, because a warm cache answers from
+         * the lookup and translates nothing -- and the batch then runs
+         * past translatable code every time. Measured: interpreted rose
+         * from 228M to 443M and block entries fell from 99M to 22M,
+         * which is a JIT quietly turning itself off.
+         */
+        batch = 1u;
 
 #ifdef EMU_JIT_DIFF
         const uint32_t n = run_block_checked(cpu, b, ops, fresh);
