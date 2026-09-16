@@ -120,12 +120,14 @@ measured at.
 
         | | wall | interpreted | translations |
         |---|---|---|---|
-        | before | 52.5 s | 580,180,660 (96.7%) | 4,786 |
-        | after | 61.9 s | 228,272,019 (38.0%) | 951,343 |
+        | originally | 52.5 s | 580,180,660 (96.7%) | 4,786 |
+        | translating | 61.9 s | 228,272,019 (38.0%) | 951,343 |
+        | + batched fallback | 53.1 s | 236,069,284 (39.3%) | 931,905 |
+        | + FENCE lowered | **49.4 s** | 161,193,429 (26.9%) | 931,160 |
         | interpreter | 46.8 s | all | -- |
 
-        Coverage is transformed; the clock is not. **Two costs remain,
-        and both are measured rather than guessed.**
+        Coverage is transformed and the clock is nearly level. **What
+        remains is measured rather than guessed.**
 
         **SFENCE.VMA flushes the whole code cache** -- 129,286 times in
         a boot. An A/B with the invalidation simply removed (incorrect,
@@ -136,14 +138,39 @@ measured at.
         matching blocks. The handler currently ignores its operands,
         which is legal and maximally coarse.
 
-        **The fallback path calls the interpreter's whole run loop for
-        one instruction**, 228 million times. `run_interp_one` does
-        `ops->interp->run(cpu, 1u, &n)`, so every declined instruction
-        pays the per-run setup that the interpreter proper amortises
-        over a whole budget. That is why 38% interpreted costs far more
-        than 38% of the interpreter's time, and it is the larger of the
-        two. Running a *run* of declined instructions in one call --
-        until the next address that translates -- is the obvious shape.
+        **The fallback interpreted one instruction per call. Fixed.**
+        Every declined instruction paid the interpreter's whole run-loop
+        entry, which the interpreter proper amortises over thousands.
+        It now interprets a run in one call, with an adaptive size:
+        doubling while translation keeps failing, reset to one on block
+        entry, so an isolated declined instruction still costs exactly
+        one. 61.9 s to 53.1 s with coverage unchanged.
+
+        Resetting that size in the wrong place is worth knowing about.
+        The first version reset only on a *fresh* translation, which in
+        steady state never happens -- a warm cache answers from the
+        lookup -- so the batch pegged at its maximum and ran past
+        translatable code. Interpreted rose to 443M of 600M, block
+        entries fell 99M to 22M, and it was **faster**: 45.5 s, because
+        an efficient interpreter beat a JIT that had stopped
+        translating. A speed-up is not evidence.
+
+        **Plain FENCE was not lowered. Fixed.** It is a no-op on this
+        machine and the translator declined it, so every barrier ended a
+        block and took a fallback -- and kernel code is full of them.
+        53.1 s to 49.4 s, interpreted 39% to 27%.
+
+        **The next lever is a minimum block length.** Lowering FENCE
+        took block entries from 100M to 180M: the instructions that
+        stopped being interpreted land in roughly one-instruction
+        blocks, because a block starting at a FENCE lowers it and then
+        declines on whatever follows. At about 300 cycles of dispatch
+        per entry -- which is what differencing the two runs above
+        gives -- entering a block to run a single no-op is a loss.
+        Refusing to keep a block below some length would send those back
+        to the (now efficient) fallback. Not done here because guests
+        with genuinely short hot blocks, CoreMark at 4.12 instructions,
+        have to be measured against it.
 
         Also worth knowing: the JIT attempts a full translation before
         almost every interpreted instruction and gets nothing back,
