@@ -232,6 +232,25 @@ typedef struct emu_jit_hot {
     const volatile bool *irq_pending;
 } emu_jit_hot_t;
 
+/*
+ * Guest instructions a chained loop may run before returning to the
+ * dispatcher.
+ *
+ * **An interrupt-latency knob, not a throughput one.** A block whose
+ * back edge jumps to itself never reaches the dispatch loop, so nothing
+ * checks for a pending interrupt, tests the budget or looks at the
+ * generation. The accumulated retired count is already in a register
+ * for the return value, so the bound costs a compare and a
+ * not-taken branch per iteration.
+ *
+ * 128 is the value this project measured for the hand-written backend
+ * it first had chaining in: each doubling returns half the previous one
+ * and doubles worst-case latency.
+ */
+#ifndef EMU_JIT_LOOP_CAP
+#define EMU_JIT_LOOP_CAP 128u
+#endif
+
 typedef struct emu_jit_ops {
     const char *name;
 

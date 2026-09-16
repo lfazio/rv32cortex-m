@@ -606,6 +606,16 @@ typedef struct emu_ir_block {
     /* Guest instructions folded in so far, for the retired count. */
     uint32_t guest_insns;
 
+    /*
+     * The guest address this block starts at.
+     *
+     * A backend needs it to recognise its own back edge: an EXIT whose
+     * constant target is this address is a loop closing on the block
+     * itself, and can be a jump rather than a return to the dispatcher.
+     * Nothing else in the IR depends on where the block came from.
+     */
+    uint32_t start_pc;
+
     /* Set when the block ran out of room; it is then discarded. */
     bool overflow;
 } emu_ir_block_t;

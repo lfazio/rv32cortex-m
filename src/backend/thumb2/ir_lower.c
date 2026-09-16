@@ -293,6 +293,22 @@ static uint32_t g_nexits;
  * stopped accepting emissions -- the block is discarded either way, and
  * writing through the pointer would corrupt whatever follows.
  */
+/*
+ * Where this block's instruction stream begins, and the guest address it
+ * begins at. See the identical pair in the x86-64 backend: an EXIT whose
+ * constant target is this address is a loop closing on the block itself,
+ * and becomes a branch rather than a return to the dispatcher.
+ *
+ * Every branch here is the wide form, so there is no range cliff. The
+ * hand-written backend this replaced chained only when the back edge
+ * fitted the 16-bit conditional encoding and silently stopped chaining
+ * when a block outgrew it, which cost 2.4x on the loops that crossed
+ * the line.
+ */
+static uint8_t *g_body;
+static uint32_t g_start_pc;
+static bool g_has_start_pc;
+
 static void patch_branch(uint8_t *at, const uint8_t *target, bool conditional)
 {
     if (at == NULL || emu_jit_overflowed()) {
@@ -333,6 +349,36 @@ static void note_exit(uint8_t *at, bool conditional)
         g_exits[g_nexits].conditional = conditional;
         g_nexits++;
     }
+}
+
+/*
+ * Emit a back edge to this block's own body, bounded by the retired
+ * count. False if the target is not this block's start, in which case
+ * the caller emits an ordinary exit.
+ *
+ * R0 is free here: every caller has just stored the pc from it or from
+ * a temp whose last use that was.
+ */
+static bool loop_back(uint32_t target_pc)
+{
+    if (!g_has_start_pc || g_body == NULL || target_pc != g_start_pc) {
+        return false;
+    }
+    /*
+     * The bound is not optional. A chained loop never reaches the
+     * dispatcher, so nothing checks for a pending interrupt or tests
+     * the caller's budget, and a guest spinning on a flag a device sets
+     * would hang. The count is already in a register because it is the
+     * return value.
+     */
+    if (!t2_cmp_imm8(T2_CNT, EMU_JIT_LOOP_CAP)) {
+        t2_imm32(T2_R0, EMU_JIT_LOOP_CAP);
+        t2_cmp(T2_CNT, T2_R0);
+    }
+    /* HS/CS: unsigned >=, because the count is a count. */
+    note_exit(t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_GEU)), true);
+    patch_branch(t2_b_forward(), g_body, false);
+    return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1356,7 +1402,14 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         }
         t2_str_imm(rp, T2_CPU, t->pc_offset);
         if (in->op == (uint8_t)EMU_IR_EXIT) {
-            note_exit(t2_b_forward(), false);
+            /*
+             * A computed target cannot be matched against the block's
+             * start at translation time, so only the constant form
+             * chains.
+             */
+            if (in->a != EMU_IR_NO_TEMP || !loop_back(in->imm)) {
+                note_exit(t2_b_forward(), false);
+            }
         }
         break;
     }
@@ -1370,7 +1423,9 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         uint8_t *const skip = t2_bcond_forward(t2_cond(in->aux) ^ 1u);
         t2_imm32(T2_R0, in->imm);
         t2_str_imm(T2_R0, T2_CPU, t->pc_offset);
-        note_exit(t2_b_forward(), false);
+        if (!loop_back(in->imm)) {
+            note_exit(t2_b_forward(), false);
+        }
         patch_branch(skip, emu_jit_here(), true);
         break;
     }
@@ -1601,6 +1656,9 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_r0_holds = EMU_IR_NO_TEMP;
     g_dead_store = EMU_IR_NO_TEMP;
     g_nexits = 0u;
+    g_body = NULL;
+    g_start_pc = b->start_pc;
+    g_has_start_pc = true;
 
     g_nsaved = emu_ir_regalloc(b, T2_ALLOC_REGS, g_reg);
 
@@ -1684,6 +1742,14 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         t2_and(T2_R0, T2_R0, T2_R1);
         t2_vmsr(T2_R0);
     }
+
+    /*
+     * The body starts here: after the frame and any mode setup, before
+     * the first guest instruction. A back edge branches to this rather
+     * than to the block's entry, because the frame is already pushed and
+     * re-running the prologue would push it again.
+     */
+    g_body = emu_jit_here();
 
     for (uint32_t i = 0; i < b->count; i++) {
         if (b->insn[i].dead) {

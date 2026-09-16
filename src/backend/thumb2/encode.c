@@ -270,6 +270,26 @@ void t2_subw(uint32_t rd, uint32_t rn, uint16_t imm12)
 }
 
 /* CMP.W rn, rm -- sets the flags and discards the result. */
+/*
+ * CMP.W Rn, #imm -- SUB with S set and Rd = 1111.
+ *
+ * The modified-immediate form covers 0..255 with no rotation, which is
+ * every value the loop cap is likely to take. Anything wider is
+ * materialised into a scratch register by the caller rather than
+ * encoded here, because getting ThumbExpandImm's rotations wrong
+ * assembles as a *different constant* rather than as an error -- the
+ * same shape as the imm5 shift this backend has already been caught by
+ * twice.
+ */
+bool t2_cmp_imm8(uint32_t rn, uint32_t imm)
+{
+    if (imm > 255u) {
+        return false;
+    }
+    t2_emit32((uint16_t)(0xF1B0u | rn), (uint16_t)(0x0F00u | imm));
+    return true;
+}
+
 void t2_cmp(uint32_t rn, uint32_t rm)
 {
     t2_emit32((uint16_t)(0xEBB0u | rn), (uint16_t)(0x0F00u | rm));

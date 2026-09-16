@@ -446,6 +446,16 @@ void x86_epilogue(uint32_t nsaved)
     emu_jit_emit8(0xC3); /* ret          */
 }
 
+void x86_cmp_imm32(int reg, uint32_t imm)
+{
+    if (reg >= 8) {
+        emu_jit_emit8(0x41); /* REX.B */
+    }
+    emu_jit_emit8(0x81);
+    emu_jit_emit8((uint8_t)(0xF8u | ((uint32_t)reg & 7u))); /* /7 = cmp */
+    emu_jit_emit32(imm);
+}
+
 void x86_count_one(void)
 {
     x86_add_imm8(X86_CNT, 1);

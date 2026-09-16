@@ -638,11 +638,56 @@ static void emit_getcond(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 static uint8_t *g_exits[IR_MAX_EXITS];
 static uint32_t g_nexits;
 
+/*
+ * Where this block's instruction stream begins, and the guest address it
+ * begins at -- the two halves of recognising a loop that closes on the
+ * block itself.
+ *
+ * **This is what a dispatch round trip costs, avoided.** Without it
+ * every exit returns to the dispatcher: epilogue, state and generation
+ * checks, a hash lookup, a mispredicted indirect call and a prologue,
+ * for a block averaging five guest instructions. Measured at about 230
+ * cycles against roughly 20 of actual work.
+ *
+ * Jumping back into the body is safe because a block's temporaries are
+ * recomputed from the guest register file each time round -- nothing in
+ * a temp outlives an iteration -- and the pc has already been written by
+ * the exit that got here.
+ */
+static uint8_t *g_body;
+static uint32_t g_start_pc;
+static bool g_has_start_pc;
+
+
+
 static void note_exit(uint8_t *slot)
 {
     if (g_nexits < IR_MAX_EXITS) {
         g_exits[g_nexits++] = slot;
     }
+}
+
+/*
+ * Emit a back edge to this block's own body, bounded by the retired
+ * count. Returns false if the target is not this block's start, in which
+ * case the caller emits an ordinary exit.
+ */
+static bool loop_back(uint32_t target_pc)
+{
+    if (!g_has_start_pc || g_body == NULL || target_pc != g_start_pc) {
+        return false;
+    }
+    /*
+     * The bound is not optional. A chained loop never reaches the
+     * dispatcher, so without it nothing checks for a pending interrupt
+     * or tests the caller's budget, and a guest spinning on a flag
+     * another device sets would hang for ever. The count is already in
+     * a register because it is the return value.
+     */
+    x86_cmp_imm32(X86_CNT, EMU_JIT_LOOP_CAP);
+    note_exit(x86_jcc32(X86_CC_AE));
+    x86_patch_rel32(x86_jmp32(), g_body);
+    return true;
 }
 
 /* lea rcx, [rsp + disp] -- the out-pointer a load writes through. */
@@ -1362,7 +1407,9 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         uint8_t *const not_taken = x86_jcc32((uint8_t)(k_cc[in->aux] ^ 1u));
         x86_mov_imm32(T0, in->imm);
         x86_st_cpu(T0, t->pc_offset);
-        note_exit(x86_jmp32());
+        if (!loop_back(in->imm)) {
+            note_exit(x86_jmp32());
+        }
         x86_patch_rel32(not_taken, emu_jit_here());
         break;
     }
@@ -1394,7 +1441,13 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             x86_mov_imm32(T0, in->imm);
         }
         x86_st_cpu(T0, t->pc_offset);
-        note_exit(x86_jmp32());
+        /*
+         * A computed target cannot be matched against the block's start
+         * at translation time, so only the constant form chains.
+         */
+        if (in->a != EMU_IR_NO_TEMP || !loop_back(in->imm)) {
+            note_exit(x86_jmp32());
+        }
         break;
 
     /*
@@ -1669,6 +1722,9 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     }
 
     g_nexits = 0u;
+    g_body = NULL;
+    g_start_pc = b->start_pc;
+    g_has_start_pc = true;
 
     /*
      * The block prologue belongs here rather than in the caller, so that
@@ -1715,6 +1771,14 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         x86_st_rsp(T0, slot(SCRATCH_MXCUR));
         x86_ldmxcsr(slot(SCRATCH_MXCUR));
     }
+
+    /*
+     * The body starts here: after the frame and any mode setup, before
+     * the first guest instruction. A back edge jumps to this, not to the
+     * block's entry, because the frame is already established and
+     * re-running the prologue would push it a second time.
+     */
+    g_body = emu_jit_here();
 
     for (uint32_t i = 0; i < b->count; i++) {
         if (b->insn[i].dead) {

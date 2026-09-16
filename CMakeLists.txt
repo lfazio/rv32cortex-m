@@ -538,7 +538,8 @@ if(EMU_VIRTIO_BUILT)
 endif()
 
 target_compile_definitions(emucore PUBLIC
-    EMU_HAVE_VIRTIO=$<BOOL:${EMU_VIRTIO_BUILT}>)
+    EMU_HAVE_VIRTIO=$<BOOL:${EMU_VIRTIO_BUILT}>
+    EMU_JIT_LOOP_CAP=${EMU_JIT_LOOP_CAP}u)
 
 target_include_directories(emucore PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)

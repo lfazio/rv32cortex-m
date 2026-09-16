@@ -1009,6 +1009,7 @@ uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
     uint32_t count = 0u;
 
     emu_ir_reset(b);
+    b->start_pc = pc;
 
     while (count < RV_IR_MAX_BLOCK_INSNS && !b->overflow) {
         uint32_t insn;

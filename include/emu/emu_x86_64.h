@@ -235,6 +235,9 @@ void x86_epilogue(uint32_t nsaved);
 extern const int x86_alloc_regs[X86_ALLOC_REGS];
 
 /* Add one to the retired count. */
+/* cmp reg, imm32 -- for bounding a chained loop against the retired count. */
+void x86_cmp_imm32(int reg, uint32_t imm);
+
 void x86_count_one(void);
 
 #ifdef __cplusplus
