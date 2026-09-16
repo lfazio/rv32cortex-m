@@ -141,7 +141,6 @@ EOF
 # ---------------------------------------------------------------------
 echo "==> kernel"
 make -C "$SRC" ARCH=riscv CROSS_COMPILE="$CROSS" \
-    CONFIG_INITRAMFS_SOURCE="$WORK/initramfs.list" \
     -j"$(nproc)" olddefconfig >"$WORK/kbuild.log" 2>&1 ||
     { echo "error: kernel configure failed; see $WORK/kbuild.log" >&2; exit 1; }
 
@@ -150,8 +149,23 @@ make -C "$SRC" ARCH=riscv CROSS_COMPILE="$CROSS" \
 # kernel records it, and a stale value there silently rebuilds the old
 # initramfs -- which is exactly the failure this script exists to stop.
 #
-"$SRC/scripts/config" --file "$SRC/.config" \
-    --set-str CONFIG_INITRAMFS_SOURCE "$WORK/initramfs.list"
+#
+# LINUX_INITRAMFS=0 builds a kernel with *no* built-in initramfs, which
+# is what booting a real distribution needs.
+#
+# **A built-in initramfs containing /init wins over `root=`.** The
+# kernel unpacks it, finds /init and runs it, and never looks at the
+# root device -- so pointing root= at a filesystem while the initramfs
+# is still compiled in boots the initramfs and ignores the disk. There
+# is no warning; the rootfs simply does not appear.
+#
+if [ "${LINUX_INITRAMFS:-1}" = "0" ]; then
+    "$SRC/scripts/config" --file "$SRC/.config" \
+        --set-str CONFIG_INITRAMFS_SOURCE ""
+else
+    "$SRC/scripts/config" --file "$SRC/.config" \
+        --set-str CONFIG_INITRAMFS_SOURCE "$WORK/initramfs.list"
+fi
 
 make -C "$SRC" ARCH=riscv CROSS_COMPILE="$CROSS" -j"$(nproc)" \
     >>"$WORK/kbuild.log" 2>&1 ||
