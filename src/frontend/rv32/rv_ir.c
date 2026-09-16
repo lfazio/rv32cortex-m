@@ -384,6 +384,28 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
         emu_ir_put(b, rd, emu_ir_const(b, pc + (uint32_t)rv_imm_u(insn)));
         return true;
 
+    case 0x0Fu: /* MISC-MEM */
+        /*
+         * **Plain FENCE is a no-op here, and declining it was costing
+         * whole blocks.** One hart, no store buffer, no cache between
+         * the core and its devices -- the interpreter says so and does
+         * nothing. The translator did not lower it at all, so every
+         * barrier ended a block *and* took a fallback, which under
+         * Linux is constant: memory barriers are everywhere in kernel
+         * code, and blocks were averaging under three instructions
+         * because of it.
+         *
+         * Only f3 == 0. FENCE.I means the guest wrote instructions and
+         * a translating backend must discard what it built from them,
+         * which is not something a block can do to itself; CBO is a
+         * real operation on real memory. Both still decline, and
+         * declining is correct for them.
+         */
+        if (f3 != 0u) {
+            return false;
+        }
+        return true;
+
     case 0x13u: { /* OP-IMM */
         const uint16_t x = emu_ir_get(b, rs1);
         const uint32_t imm = (uint32_t)rv_imm_i(insn);
