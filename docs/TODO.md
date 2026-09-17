@@ -160,6 +160,23 @@ measured at.
         block and took a fallback -- and kernel code is full of them.
         53.1 s to 49.4 s, interpreted 39% to 27%.
 
+        **Since then: the memory fast path and block chaining.** What
+        the ratio measurement said, and what each step was worth on
+        Dhrystone against an interpreter at 0.231 s:
+
+        | | wall | ratio | block entries |
+        |---|---|---|---|
+        | before | 0.104 s | 44.21 | 1,665,337 |
+        | + self-loop chaining | 0.084 s | -- | 741,085 |
+        | + inlined RAM access | 0.057 s | 33.02 | 741,085 |
+        | + cross-block linking | **0.046 s** | **29.65** | **320,738** |
+
+        2.0x to **5.0x**. The order came from measuring rather than
+        guessing: 40% of guest instructions were a memory access and
+        each was a C call (3,728,397 of them), which was far larger than
+        the dispatcher; only after that did linking exits become the
+        biggest remaining term. 134 links removed 420,000 dispatches.
+
         **The next lever is a minimum block length.** Lowering FENCE
         took block entries from 100M to 180M: the instructions that
         stopped being interpreted land in roughly one-instruction
