@@ -73,10 +73,40 @@ measured at.
       `deinstall ok config-files`, which is how both were missed on the
       first check. Use `dpkg-query -W -f='${Status}'`.
 
-      Still open: a shell session driven from the host end (the login
-      prompt is there; nothing types into it yet), and benchmarks. Broken into the order the pieces actually unblock each
-      other, because most of them are only testable once the one above
-      works:
+      **The prompt can be typed at now**, and two CMake targets stand
+      the whole thing up:
+
+          cmake -B build/host -DEMU_LINUX_ROOTFS=<rootfs.ext4>
+          cmake --build build/host --target linux-shell
+
+      `linux` is the same without a root filesystem, on the built-in
+      initramfs.
+
+      **Output had a fallback and input did not.** `board_console_putc`
+      drops through to stdout when no pty is configured, so every guest
+      in this tree printed; `board_console_getc` returned -1
+      unconditionally. Every bare-metal guest here only ever prints,
+      which is why nothing noticed for the life of the project -- and
+      then a distribution booted to a login prompt that could not be
+      answered. stdin is pumped into a ring from `board_poll`, once per
+      slice rather than per LSR read: a guest polls that register far
+      more often than it retires an instruction, and a `poll(2)` there
+      would put a syscall on the hottest path a device has.
+
+      **`USES_TERMINAL` is what makes the target work, not a tidiness
+      flag.** Without it the build tool hands the command a pipe, raw
+      mode is skipped for anything that is not a terminal, and the line
+      arrives assembled and echoed instead of keystroke by keystroke.
+
+      Ctrl-C ends the emulator rather than reaching the guest: ISIG is
+      left on deliberately. That costs a guest shell its interrupt key,
+      which is a real limitation; an emulator a person cannot escape
+      from is a worse one. QEMU's answer is an escape sequence, which
+      is a state machine rather than a flag.
+
+      Still open: benchmarks. Broken into the order the pieces actually
+      unblock each other, because most of them are only testable once
+      the one above works:
   - [x] OpenSBI in M-mode, above.
   - [x] **Kernel boot to userspace. Done.** Linux 6.12 rv32 boots on
         OpenSBI, reaches `Run /init as init process`, and the init

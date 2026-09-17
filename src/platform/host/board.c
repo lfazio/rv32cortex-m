@@ -36,6 +36,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <poll.h>
 #include <stdlib.h>
 #include <string.h>
 #include <termios.h>
@@ -43,6 +44,17 @@
 #include <unistd.h>
 
 static int g_fd = -1;
+
+/*
+ * The guest's keyboard when there is no pty or device to be one: a ring
+ * the run loop fills from stdin. See console_pump.
+ */
+static uint8_t g_in[256];
+static unsigned g_in_head;
+static unsigned g_in_tail;
+
+static struct termios g_tty_saved;
+static bool g_tty_raw;
 static char g_name[64];
 
 /*
@@ -253,7 +265,13 @@ int board_console_getc(void)
     uint8_t c;
 
     if (g_fd < 0) {
-        return -1;
+        /* Whatever the run loop pumped in from stdin; see console_pump. */
+        if (g_in_tail == g_in_head) {
+            return -1;
+        }
+        c = g_in[g_in_tail];
+        g_in_tail = (g_in_tail + 1u) % sizeof(g_in);
+        return (int)c;
     }
 
     const ssize_t r = read(g_fd, &c, 1);
@@ -380,13 +398,109 @@ uint32_t board_gdb_run(uint32_t budget, uint32_t *retired)
     return host_gdb_run(budget, retired);
 }
 
+/* ------------------------------------------------------------------ */
+/* Console input                                                       */
+/* ------------------------------------------------------------------ */
+
 /*
- * Nothing of this platform's own between slices. Driving the IP stack is
- * emu_board_poll's, on every platform that has one -- it was here and in
- * the board's copy behind an #if, which made a build option look like a
- * property of the machine.
+ * The guest's keyboard, when there is no pty or device to be one.
+ *
+ * **Output had a fallback and input did not.** board_console_putc drops
+ * through to stdout when g_fd is unset, so a plain run prints; getc
+ * returned -1 unconditionally, so a plain run could not be typed at.
+ * Every bare-metal guest here only ever prints, which is why nothing
+ * noticed -- and then a Linux distribution booted to a login prompt
+ * that could not be answered.
+ *
+ * Pumped from the run loop into a ring rather than read where the guest
+ * asks. A guest polling LSR does so far more often than it retires an
+ * instruction, and a poll(2) per LSR read would put a syscall on the
+ * hottest path a device has. Once per slice is enough: the kernel is
+ * already buffering the line.
  */
-void board_poll(void) {}
+static void tty_restore(void)
+{
+    if (g_tty_raw) {
+        (void)tcsetattr(STDIN_FILENO, TCSANOW, &g_tty_saved);
+        g_tty_raw = false;
+    }
+}
+
+/*
+ * Raw, so the guest sees each keystroke and its own echo rather than
+ * the line the terminal would otherwise assemble.
+ *
+ * **ISIG is deliberately left on**, so Ctrl-C still kills the emulator.
+ * That costs a guest shell its interrupt key, which is a real
+ * limitation; an emulator a person cannot escape from is a worse one.
+ * The alternative is an escape sequence -- Ctrl-A X, as QEMU does --
+ * and that is a state machine rather than a flag.
+ *
+ * Restored through atexit, because leaving a terminal with echo off is
+ * a mess the user has to type `reset` blind to undo.
+ */
+static void tty_raw(void)
+{
+    if (g_tty_raw || isatty(STDIN_FILENO) != 1) {
+        return;
+    }
+    if (tcgetattr(STDIN_FILENO, &g_tty_saved) != 0) {
+        return;
+    }
+
+    struct termios t = g_tty_saved;
+
+    t.c_lflag &= (unsigned)~(ICANON | ECHO);
+    t.c_cc[VMIN] = 0;
+    t.c_cc[VTIME] = 0;
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &t) != 0) {
+        return;
+    }
+    g_tty_raw = true;
+    (void)atexit(tty_restore);
+}
+
+static void console_pump(void)
+{
+    if (g_fd >= 0) {
+        return; /* a pty or device is the console; stdin is not */
+    }
+    tty_raw();
+
+    /*
+     * poll rather than O_NONBLOCK on stdin: the flag lives on the file
+     * *description*, which is shared with the shell that started this,
+     * so setting it can leave that shell non-blocking after exit.
+     */
+    struct pollfd p = {.fd = STDIN_FILENO, .events = POLLIN, .revents = 0};
+
+    while (poll(&p, 1, 0) > 0 && (p.revents & POLLIN) != 0) {
+        const unsigned next = (g_in_head + 1u) % sizeof(g_in);
+
+        if (next == g_in_tail) {
+            break; /* ring full; the guest has not kept up */
+        }
+
+        uint8_t c;
+
+        if (read(STDIN_FILENO, &c, 1) != 1) {
+            break;
+        }
+        g_in[g_in_head] = c;
+        g_in_head = next;
+    }
+}
+
+/*
+ * Nothing else of this platform's own between slices. Driving the IP
+ * stack is emu_board_poll's, on every platform that has one -- it was
+ * here and in the board's copy behind an #if, which made a build option
+ * look like a property of the machine.
+ */
+void board_poll(void)
+{
+    console_pump();
+}
 
 /* ------------------------------------------------------------------ */
 /* The image store, the clocks, and the two ends of a run             */

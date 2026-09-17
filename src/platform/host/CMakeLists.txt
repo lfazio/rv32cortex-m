@@ -135,3 +135,47 @@ endif()
 # The test scripts look for the binary at a stable path.
 set_target_properties(emu-host PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+
+# ---------------------------------------------------------------------
+# Linux
+# ---------------------------------------------------------------------
+#
+# Two targets, because there are two very different guests behind the
+# same kernel.
+#
+#   linux         the built-in initramfs: a static -nostdlib init that
+#                 prints and exits. Fast, self-contained, and what
+#                 proves Sv32 and the U-mode boundary.
+#
+#   linux-shell   a real root filesystem on virtio-blk, booted to a
+#                 login prompt you can type at.
+#
+# **USES_TERMINAL is what makes the second one work at all.** Without
+# it the build tool gives the command a pipe for stdin, and the console
+# needs a terminal: raw mode is skipped for anything that is not one, so
+# the line arrives assembled and echoed instead of keystroke by
+# keystroke, and a getty sees nothing until Enter.
+#
+# Ctrl-C ends the emulator rather than reaching the guest -- ISIG is
+# deliberately left on, see console_pump in board.c.
+set(EMU_LINUX_ROOTFS "" CACHE PATH
+    "Root filesystem image for the linux-shell target (ext4)")
+
+add_custom_target(linux
+    COMMAND ${CMAKE_COMMAND} -E env
+            "${CMAKE_SOURCE_DIR}/scripts/run-linux.sh"
+            $<TARGET_FILE:emu-host>
+    DEPENDS emu-host
+    USES_TERMINAL
+    COMMENT "Booting Linux on the built-in initramfs")
+
+add_custom_target(linux-shell
+    COMMAND ${CMAKE_COMMAND} -E env
+            LINUX_INITRAMFS=0
+            "LINUX_BOOTARGS=earlycon=sbi console=ttyS0 root=/dev/vda rw rootwait"
+            "LINUX_DISK=${EMU_LINUX_ROOTFS}"
+            "${CMAKE_SOURCE_DIR}/scripts/run-linux.sh"
+            $<TARGET_FILE:emu-host>
+    DEPENDS emu-host
+    USES_TERMINAL
+    COMMENT "Booting a root filesystem to a login prompt")

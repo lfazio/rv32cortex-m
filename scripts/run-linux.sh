@@ -58,6 +58,11 @@ CROSS=riscv64-linux-gnu-
 # stops, not one that is slightly slow.
 MAXINSN=${LINUX_MAXINSN:-20000000000}
 
+# The backend. `LINUX_JIT=0` interprets, which is what to do when a boot
+# misbehaves and the question is whether the translator is why.
+JITARG=
+[ "${LINUX_JIT:-1}" = "0" ] || JITARG=--jit
+
 if [ ! -x "$EMU" ]; then
     echo "error: no emulator at $EMU" >&2
     echo "       cmake -B build/host && cmake --build build/host" >&2
@@ -93,6 +98,35 @@ done
     echo "error: no OpenSBI at $OPENSBI_SRC; run scripts/run-opensbi.sh first" >&2
     exit 1
 }
+
+#
+# The root filesystem is checked *here*, with the other prerequisites,
+# and not beside the run it is needed for.
+#
+# Everything below this rebuilds init, the kernel and OpenSBI: minutes of
+# work. A missing file discovered afterwards is a prerequisite failure
+# reported at the end of the work it should have prevented -- and the
+# build output scrolls it off the screen, so what the user sees is a
+# five-minute wait ending in a boot that never happens.
+#
+# Only a scratch image is ever created. A *root* filesystem is not
+# something this build can produce, and inventing an empty one boots to
+# "Waiting for root device" for ever, which reads as an emulator fault
+# rather than as a missing file.
+#
+if [ -n "${LINUX_DISK+set}" ] && [ -z "$LINUX_DISK" ]; then
+    echo "error: LINUX_DISK is set but empty." >&2
+    echo "       The linux-shell target needs a root filesystem:" >&2
+    echo "         cmake -B build/host -DEMU_LINUX_ROOTFS=/path/rootfs.ext4" >&2
+    exit 1
+fi
+if [ -n "${LINUX_DISK:-}" ] && [ ! -f "$LINUX_DISK" ]; then
+    echo "error: no root filesystem at $LINUX_DISK" >&2
+    echo "       Build one with Yocto (poky scarthgap):" >&2
+    echo "         MACHINE=qemuriscv32 bitbake core-image-minimal" >&2
+    echo "       and point EMU_LINUX_ROOTFS at the .ext4 it produces." >&2
+    exit 1
+fi
 
 mkdir -p "$WORK"
 
@@ -222,6 +256,21 @@ echo
 DISK=${LINUX_DISK:-$WORK/disk.img}
 [ -f "$DISK" ] || dd if=/dev/zero of="$DISK" bs=1M count=16 2>/dev/null
 
+if [ -n "${LINUX_BOOTARGS:-}" ]; then
+    case "$LINUX_BOOTARGS" in
+    *root=/dev/vda*)
+        echo
+        echo "Booting to a login prompt. This takes several minutes of"
+        echo "wall time before the prompt appears -- the kernel alone is"
+        echo "about 1.5e9 emulated instructions."
+        echo
+        echo "  login: root   (no password)"
+        echo "  Ctrl-C ends the emulator; it does not reach the guest."
+        echo
+        ;;
+    esac
+fi
+
 #
 # --supervisor is not optional and fails silently without: the APLIC
 # raises MEIP by default, which is right for every bare-metal guest here
@@ -230,6 +279,6 @@ DISK=${LINUX_DISK:-$WORK/disk.img}
 #
 # 256 MiB, matching the device tree's memory node.
 exec "$EMU" --ram 0x10000000 --load 0x80000000 --dtb "$DTB" \
-     --supervisor \
+     --supervisor $JITARG \
      --disk "$DISK" --net loop --virtio-console \
      --max-insn "$MAXINSN" "$FW"

@@ -257,10 +257,47 @@ as a C array is 93 MB of source and CC-RH runs out of memory on it.
 There is no sound on either: the port's audio path is a syscall
 belonging to another board, and this one has no audio device.
 
-### Linux, and the devices for it
+### Linux
 
-Not booting yet -- see [docs/TODO.md](docs/TODO.md) for what is done and
-what is not -- but the machine it will need is in place:
+Linux 6.12 boots on the RV32 frontend, through OpenSBI, with Sv32
+paging and userspace in U-mode. Two targets, because there are two
+different guests behind the same kernel:
+
+```sh
+cmake --build build/host --target linux         # built-in initramfs
+cmake --build build/host --target linux-shell   # a root filesystem, to a prompt
+```
+
+`linux` runs a static `-nostdlib` init that prints and exits. It is
+self-contained -- no root filesystem to supply -- and it is what
+exercises Sv32 and the U-mode boundary.
+
+`linux-shell` boots a real root filesystem on virtio-blk to a login
+prompt you can type at (`root`, no password). Point it at one first;
+this build cannot produce a root filesystem and does not try:
+
+```sh
+cmake -B build/host -DEMU_LINUX_ROOTFS=/path/to/core-image-minimal.ext4
+```
+
+A Yocto `core-image-minimal` for `MACHINE=qemuriscv32` (poky
+**scarthgap**) is what this was tested against. Yocto's *own* kernel is
+6.6 and does not work here -- the APLIC driver landed in 6.10 -- so it
+is Yocto's root filesystem on the 6.12 kernel `scripts/run-linux.sh`
+builds, and that pairing is the one that reaches a shell.
+
+Both targets go through [`scripts/run-linux.sh`](scripts/run-linux.sh),
+which builds init, the kernel and OpenSBI before it runs anything;
+`LINUX_SRC`, `LINUX_BOOTARGS`, `LINUX_DISK`, `LINUX_MAXINSN` and
+`LINUX_JIT` override the pieces. Expect minutes of wall time before the
+prompt appears -- the kernel alone is about 1.5e9 emulated
+instructions. Ctrl-C ends the emulator; it does not reach the guest.
+
+`LINUX_JIT=0` interprets instead of translating, which is what to do
+when a boot misbehaves and the question is whether the translator is
+why.
+
+The machine those targets describe can also be driven by hand:
 
 ```sh
 dtc -I dts -O dtb -o rv32-emu.dtb boot/rv32-emu.dts
