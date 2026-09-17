@@ -599,6 +599,32 @@ typedef struct emu_ir_insn {
 } emu_ir_insn_t;
 
 /*
+ * Does this exit go somewhere known at translation time?
+ *
+ * **The question a backend has to ask before it can chain.** An exit to
+ * a constant can have its jump patched to land in the successor's code;
+ * one to a computed address cannot, and has to go back to the
+ * dispatcher so the target can be looked up.
+ *
+ * The information was always in the IR -- `a` unset means the target is
+ * the immediate -- but both backends rediscovered it by testing for
+ * EMU_IR_NO_TEMP, which reads as a register check rather than as the
+ * property it stands for. Naming it puts the rule in one place and lets
+ * a backend say what it means.
+ *
+ * EMU_IR_EXIT_IF is always constant: its target is the branch
+ * displacement, and the *condition* is what varies.
+ */
+static inline bool emu_ir_exit_is_const(const emu_ir_insn_t *in)
+{
+    if (in->op == (uint8_t)EMU_IR_EXIT_IF) {
+        return true;
+    }
+    return in->op == (uint8_t)EMU_IR_EXIT && in->a == EMU_IR_NO_TEMP;
+}
+
+
+/*
  * A window of guest memory a backend may read and write directly.
  *
  * **Every guest load and store is otherwise a C call**, and on the

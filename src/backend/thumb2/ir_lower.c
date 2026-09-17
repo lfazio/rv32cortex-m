@@ -390,6 +390,81 @@ static void note_exit(uint8_t *at, bool conditional)
 }
 
 /*
+ * Exits that have already torn the frame down.
+ *
+ * A chained exit undoes its own frame before branching into the next
+ * block, which builds its own -- otherwise the stack grows by a frame
+ * per link and never comes back. So when it *cannot* branch (the budget
+ * is spent, or the edge is unlinked) it rejoins the epilogue past the
+ * teardown rather than at the top of it.
+ */
+static struct {
+    uint8_t *at;
+    bool conditional;
+} g_exits_nf[IR_MAX_EXITS];
+static uint32_t g_nexits_nf;
+
+static void note_exit_nf(uint8_t *at, bool conditional)
+{
+    if (g_nexits_nf < IR_MAX_EXITS) {
+        g_exits_nf[g_nexits_nf].at = at;
+        g_exits_nf[g_nexits_nf].conditional = conditional;
+        g_nexits_nf++;
+    }
+}
+
+/* This block's frame, needed at every chained exit. */
+static uint32_t g_frame;
+/* Where its code begins, so a patch site can be an offset. */
+static uint8_t *g_block_start;
+
+/* ADD.W sp, sp, #imm -- the epilogue's teardown, emitted at an exit. */
+static void emit_frame_release(uint32_t frame)
+{
+    if (frame != 0u) {
+        t2_imm32(T2_R12, frame);
+        t2_emit32(0xEB0Du, (uint16_t)((13u << 8) | T2_R12));
+    }
+}
+
+/*
+ * Emit a chained exit to a statically known target.
+ *
+ * Nothing is linked here: the target usually has not been translated
+ * yet. The branch is left pointing at this block's own tail and the
+ * framework patches it once both blocks exist and the edge has been
+ * taken.
+ */
+static bool chain_exit(uint32_t target_pc)
+{
+    if (!emu_jit_layout.chainable ||
+        emu_jit_layout.nlink >= EMU_JIT_MAX_CHAIN) {
+        return false;
+    }
+    emit_frame_release(g_frame);
+    /*
+     * The bound, for the same reason the self-loop has one: a chain
+     * never reaches the dispatcher, so nothing checks for a pending
+     * interrupt or tests the caller's budget.
+     */
+    if (!t2_cmp_imm8(T2_CNT, EMU_JIT_LOOP_CAP)) {
+        t2_imm32(T2_R12, EMU_JIT_LOOP_CAP);
+        t2_cmp(T2_CNT, T2_R12);
+    }
+    note_exit_nf(t2_bcond_forward(0x2u), true); /* HS */
+
+    uint8_t *const site = t2_b_forward();
+
+    emu_jit_layout.link[emu_jit_layout.nlink].target_pc = target_pc;
+    emu_jit_layout.link[emu_jit_layout.nlink].site =
+        (uint32_t)(site - g_block_start);
+    emu_jit_layout.link[emu_jit_layout.nlink].linked = false;
+    emu_jit_layout.nlink++;
+    note_exit_nf(site, false);
+    return true;
+}
+
+/*
  * Emit a back edge to this block's own body, bounded by the retired
  * count. False if the target is not this block's start, in which case
  * the caller emits an ordinary exit.
@@ -1445,7 +1520,8 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
              * start at translation time, so only the constant form
              * chains.
              */
-            if (in->a != EMU_IR_NO_TEMP || !loop_back(in->imm)) {
+            if (!emu_ir_exit_is_const(in) ||
+                (!loop_back(in->imm) && !chain_exit(in->imm))) {
                 note_exit(t2_b_forward(), false);
             }
         }
@@ -1461,7 +1537,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         uint8_t *const skip = t2_bcond_forward(t2_cond(in->aux) ^ 1u);
         t2_imm32(T2_R0, in->imm);
         t2_str_imm(T2_R0, T2_CPU, t->pc_offset);
-        if (!loop_back(in->imm)) {
+        if (!loop_back(in->imm) && !chain_exit(in->imm)) {
             note_exit(t2_b_forward(), false);
         }
         patch_branch(skip, emu_jit_here(), true);
@@ -1770,11 +1846,27 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_nexits = 0u;
     g_has_fast = b->has_fast;
     g_fast = b->fast;
+    g_block_start = emu_jit_here();
+    g_nexits_nf = 0u;
     g_body = NULL;
     g_start_pc = b->start_pc;
     g_has_start_pc = true;
 
-    g_nsaved = emu_ir_regalloc(b, T2_ALLOC_REGS, g_reg);
+    /*
+     * **A uniform save set, so a chained block's epilogue matches
+     * whichever block's prologue actually ran.** A chain enters the
+     * successor past the push, so the pop at the end undoes a push made
+     * by a *different* block, and a variable list would restore the
+     * wrong registers and return to the wrong place.
+     *
+     * Set before the frame is sized, because the frame's alignment pad
+     * is chosen from this count: sizing the pad from the allocator's
+     * number and then pushing a different one leaves sp misaligned at a
+     * helper call, which AAPCS requires and nothing here would fault on
+     * until something used LDRD or a double.
+     */
+    (void)emu_ir_regalloc(b, T2_ALLOC_REGS, g_reg);
+    g_nsaved = T2_ALLOC_REGS;
 
     /*
      * Asked once. Everything FPSCR costs -- saving it, setting the rules
@@ -1819,6 +1911,19 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     t2_push(list | T2_LIST_LR);
     t2_mov(T2_CPU, T2_R0);
     t2_imm32(T2_CNT, 0u);
+    g_frame = frame;
+    /*
+     * Where a predecessor branches in: past the push, past the cpu
+     * pointer it already holds, and past the counter zeroing -- a chain
+     * accumulates one retired count across all its blocks -- at this
+     * block's own frame setup.
+     *
+     * Blocks that touch the FP unit are not chainable: every exit of
+     * theirs must pass through the harvest in the tail, and a chained
+     * one would skip it.
+     */
+    emu_jit_layout.chain_entry = (uint32_t)(emu_jit_here() - g_block_start);
+    emu_jit_layout.chainable = !g_has_fp && !g_fp_written;
     if (frame != 0u) {
         /* SUB.W sp, sp, #frame */
         t2_imm32(T2_R12, frame);
@@ -1913,9 +2018,15 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         t2_call((const void *)t->fp_flags);
     }
 
-    if (frame != 0u) {
-        t2_imm32(T2_R12, frame);
-        t2_emit32(0xEB0Du, (uint16_t)((13u << 8) | T2_R12)); /* ADD.W sp, sp */
+    emit_frame_release(frame);
+    /*
+     * Past the teardown: where an exit that has already undone its own
+     * frame rejoins, and what the framework aims a chained branch back
+     * at when it unlinks one.
+     */
+    emu_jit_layout.tail = (uint32_t)(emu_jit_here() - g_block_start);
+    for (uint32_t i = 0; i < g_nexits_nf; i++) {
+        patch_branch(g_exits_nf[i].at, emu_jit_here(), g_exits_nf[i].conditional);
     }
     t2_mov(T2_R0, T2_CNT);
     t2_pop(list | T2_LIST_PC);

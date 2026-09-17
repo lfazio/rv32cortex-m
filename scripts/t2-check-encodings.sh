@@ -46,6 +46,8 @@ strb.w  r3, [r12, r2]
 strh.w  r3, [r12, r2]
 tst.w   r1, #3
 cmp.w   r6, #128
+add.w   sp, sp, ip
+sub.w   sp, sp, ip
 EOF
 
 cat >"$work/emit.c" <<'EOF'
@@ -88,6 +90,14 @@ int main(void)
     (void)t2_st_reg(3u, 12u, 2u, 2u);
     (void)t2_tst_imm8(1u, 3u);
     (void)t2_cmp_imm8(6u, 128u);
+
+    /*
+     * The frame adjust a chained exit and the prologue emit by hand.
+     * ADD.W/SUB.W sp, sp, ip -- written as raw halfwords in ir_lower.c,
+     * which is exactly the kind of constant this script exists for.
+     */
+    t2_emit32(0xEB0Du, (uint16_t)((13u << 8) | 12u));
+    t2_emit32(0xEBADu, (uint16_t)((13u << 8) | 12u));
 
     for (uint8_t *p = buf; p < emu_jit_cursor; p++) {
         printf("%02x", *p);

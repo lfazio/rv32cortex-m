@@ -1555,7 +1555,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
          * A computed target cannot be matched against the block's start
          * at translation time, so only the constant form chains.
          */
-        if (in->a != EMU_IR_NO_TEMP ||
+        if (!emu_ir_exit_is_const(in) ||
             (!loop_back(in->imm) && !chain_exit(in->imm))) {
             note_exit(x86_jmp32());
         }
