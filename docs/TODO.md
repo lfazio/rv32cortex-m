@@ -334,7 +334,36 @@ measured at.
         0x1000 apart, interrupts from 1. Nothing checks that the tree
         and the emulator agree -- they are two descriptions of one
         machine, and the usual failure is a driver finding nothing.
-- [ ] **Find out what the 50x is.** The runner now reports host
+- [x] **Find out what the 50x is. Answered, and it was two things.**
+
+      `--rate` reports host instructions per guest instruction directly,
+      and on Dhrystone the JIT was **44.21** against the interpreter's
+      131. A translated ALU operation should be 4-8.
+
+      **40% of guest instructions were a C call.** Every load and store
+      went to rv_hart_load/rv_hart_store, which walk the region table:
+      3,728,397 calls in a 9.4M-instruction run. Inlining the ones that
+      are plain RAM took the ratio to 33.02.
+
+      **The rest was the dispatcher**, at about 80 cycles a round trip
+      for blocks of a handful of instructions -- measured by differencing
+      two runs that differed only in block entries, not by reasoning.
+      Linking exits took it to **29.65** and Dhrystone from 0.104 s to
+      0.046 s, 2.0x to **5.0x** the interpreter.
+
+      What is left at 29.65 is the *register file*: every GET is a load
+      from the cpu struct and every PUT a store, because the allocator
+      covers temps rather than guest registers. That is the next lever
+      and it needs measuring before it is built -- a guest-register
+      cache was tried on Thumb-2 with three registers and measured
+      **15.5% slower**, and x86-64 with fifteen is a different
+      proposition. `EMU_JIT_HOT_REG_STATS` is the histogram that would
+      answer it.
+
+      The original reasoning below was wrong in an instructive way, and
+      is kept for that:
+
+- [ ] ~~**Find out what the 50x is.**~~ The runner now reports host
       instructions per guest instruction live, and it is 46-53 across
       every guest measured -- far above what a translated block should
       cost.
@@ -391,7 +420,7 @@ measured at.
       Docker image and hardcodes the same V2.08.00 path the native
       install uses, so it may work directly against the local toolchain.
 
-  - [ ] **A framebuffer device**, portable C in `src/emu/` with no SDL in
+  - [x] **A framebuffer device**, portable C in `src/emu/` with no SDL in
         it -- the guest writes pixels, the host presents them. Same split
         as the NS16550 and the console: the *device* is portable and the
         platform owns the window, or it will not build for the F746. A
@@ -409,13 +438,19 @@ measured at.
         one it is already in. It only moves the *starting* mode: the
         buffer is sized for the largest either way, so a guest that sets
         its own through the mode registers is unaffected.
-  - [ ] **An SDL host backend** to present it. SDL2 is **not installed on
-        the build machine**; that is one apt away but it is a real
-        prerequisite, and the device above must build and be testable
-        without it.
-  - [ ] **Input**, keyboard and mouse, from SDL events. Two devices and
+  - [x] **An SDL host backend** to present it. `src/platform/host/
+        sdl_display.c`, behind `-DEMU_SDL=ON`, against **sdl3** rather
+        than the SDL2 this entry was written expecting. Off by default,
+        because the device above must build and be testable on a host
+        that has neither -- which is how the F746 gets a framebuffer at
+        all.
+  - [x] **Input**, keyboard and mouse, from SDL events. Two devices and
         not one: a host binds a separate evdev to each, and a combined
-        descriptor claiming both is not what any driver expects.
+        descriptor claiming both is not what any driver expects. There
+        are now two *pairs* -- these simple polled rings, which DOOM and
+        Quake use, and the virtio pair an operating system's driver
+        binds to. Both are fed from the same converted evdev codes, so
+        they cannot disagree about what a key is.
   - [x] **DOOM on rv32 -- it plays.** Full startup, E1M1, frames through
         the framebuffer, keyboard and mouse live.
 
@@ -430,9 +465,13 @@ measured at.
         advances many world-tics per drawn frame and the game appears to
         fast-forward. Dividing guest time back down matches its own
         rate -- 6 suits this machine, another will differ.
-  - [ ] **Quake on rv32**, after Doom works. It is the harder
-        target and the one that will say whether the JIT holds up under
-        floating point at scale.
+  - [x] **Quake on rv32 -- it runs.** Initialises, loads `demo1.dem`
+        and plays it, on rv32 and on G4MH, at 800x600. It was the
+        harder target and it answered the question it was set: the JIT
+        holds up under floating point at scale, and the host/guest
+        ratio on it (46.6) is *better* than Dhrystone's (52.6), which
+        has no floating point at all -- which is what refuted the
+        theory that SoftFloat was the cost.
         https://github.com/lfazio/quake-embedded
   - [ ] Doom on ppc, once it has a JIT.
 - [ ] **PowerPC debug infrastructure**, which is three files where the
