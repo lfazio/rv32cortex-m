@@ -1996,6 +1996,21 @@ session, and every one of them recurred:
   wrapper was exonerated by inspection and was still reporting a wrong
   answer, because the wrongness was a whole layer below it. Reading the
   code proved the code; only running it proved the behaviour.
+- **A short block still beats interpreting, so refusing one is a loss.**
+  Lowering FENCE took Linux block entries from 100M to 180M, because
+  instructions that had been interpreted started landing in
+  one-instruction blocks -- and a dispatch is ~80 cycles. The obvious
+  conclusion was to refuse blocks below some length and let the
+  batched fallback take them. Measured on Dhrystone: minimum 1 is
+  0.044s, 2 is 0.071, 3 is 0.138, 4 is 0.305, 6 is 0.643. Monotonic,
+  and by a factor of fifteen at the end.
+
+  The reasoning compared a short block against *free*. What actually
+  happens instead is that those instructions are interpreted, and even
+  a one-instruction block beats the interpreter by enough to pay for
+  its own dispatch. **Block entries fell as intended and the clock rose
+  anyway** -- which is the signature of an optimisation whose metric is
+  not the cost.
 - **Measure; do not reason about performance.** Interpreter-in-SRAM was
   *slower*, lazy-IRQ was neutral, and the `clmul` fix was 1.3% when the real
   cost was 4.12-instruction blocks. Layout noise is ±3% on the host; on the

@@ -177,17 +177,26 @@ measured at.
         the dispatcher; only after that did linking exits become the
         biggest remaining term. 134 links removed 420,000 dispatches.
 
-        **The next lever is a minimum block length.** Lowering FENCE
-        took block entries from 100M to 180M: the instructions that
-        stopped being interpreted land in roughly one-instruction
-        blocks, because a block starting at a FENCE lowers it and then
-        declines on whatever follows. At about 300 cycles of dispatch
-        per entry -- which is what differencing the two runs above
-        gives -- entering a block to run a single no-op is a loss.
-        Refusing to keep a block below some length would send those back
-        to the (now efficient) fallback. Not done here because guests
-        with genuinely short hot blocks, CoreMark at 4.12 instructions,
-        have to be measured against it.
+        **A minimum block length was tried and is much worse.**
+        Refusing to keep a block below N instructions, so those go to
+        the (now efficient) fallback instead of paying a dispatch:
+
+        | minimum | Dhrystone | block entries |
+        |---|---|---|
+        | **1 (kept)** | **0.044 s** | 320,735 |
+        | 2 | 0.071 s | 300,725 |
+        | 3 | 0.138 s | 280,713 |
+        | 4 | 0.305 s | 320,639 |
+        | 6 | 0.643 s | 160,426 |
+
+        Monotonic, and by a lot. The reasoning behind it -- "entering a
+        block to run one no-op costs 80 cycles and is a loss" --
+        compared a short block against *free* rather than against what
+        actually happens instead, which is interpreting those
+        instructions. Even a one-instruction block beats the
+        interpreter by enough to pay for its own dispatch. Entries fall
+        as intended and the clock rises anyway, which is the shape of
+        an optimisation measuring the wrong thing.
 
         Also worth knowing: the JIT attempts a full translation before
         almost every interpreted instruction and gets nothing back,
