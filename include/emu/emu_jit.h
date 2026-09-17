@@ -134,6 +134,14 @@ typedef struct emu_jit_stats {
     uint32_t flushes; /* whole-cache discards                */
     uint32_t compactions; /* reclaims that kept the hot blocks   */
     uint32_t evictions; /* blocks compaction discarded         */
+    /*
+     * Exits patched to jump straight into their successor. Reported
+     * because a chaining that never fires and a chaining that is not
+     * paying look identical from the outside -- and this project has
+     * been caught by exactly that with an optimisation whose counters
+     * nobody read.
+     */
+    uint32_t links;
     uint32_t code_used;
     uint32_t code_size;
     /*
@@ -251,6 +259,52 @@ typedef struct emu_jit_hot {
 #define EMU_JIT_LOOP_CAP 128u
 #endif
 
+/*
+ * What a backend tells the framework about a block it just emitted, so
+ * that one block's exit can jump straight into the next.
+ *
+ * **A dispatch round trip costs about 80 cycles** -- epilogue, state and
+ * generation checks, a hash lookup, a mispredicted indirect call, and a
+ * prologue -- for a block averaging a handful of guest instructions.
+ * Linking the exits removes it for every edge whose target is known.
+ *
+ * Offsets, not addresses, because the code cache *compacts*: a block
+ * moves as a unit, so an offset within it survives the move and an
+ * absolute pointer does not.
+ *
+ * `chain_entry` is where a predecessor jumps in -- past the prologue,
+ * which has already run, and at the point where this block establishes
+ * its own frame. `tail` is the epilogue *after* the frame teardown,
+ * because a chained exit has already torn its own down and must not do
+ * it twice.
+ *
+ * A backend that fills nothing gets the dispatcher, which is always
+ * correct.
+ */
+#define EMU_JIT_MAX_CHAIN 2u
+
+typedef struct emu_jit_link {
+    uint32_t target_pc; /* guest address this exit goes to  */
+    uint32_t site; /* offset of the patchable jump     */
+    bool linked;
+} emu_jit_link_t;
+
+typedef struct emu_jit_layout {
+    uint32_t chain_entry;
+    uint32_t tail;
+    emu_jit_link_t link[EMU_JIT_MAX_CHAIN];
+    uint8_t nlink;
+    bool chainable;
+} emu_jit_layout_t;
+
+/*
+ * Filled by the backend during translate(), read by the framework
+ * immediately afterwards. A global rather than a return value because
+ * translate() already returns the instruction count, and the emit
+ * cursor is shared the same way.
+ */
+extern emu_jit_layout_t emu_jit_layout;
+
 typedef struct emu_jit_ops {
     const char *name;
 
@@ -299,6 +353,13 @@ typedef struct emu_jit_ops {
      * `generation` should then be a cached value: one load and a compare.
      */
     void (*after_interp)(emu_cpu_t *cpu);
+
+    /*
+     * Point a block's chained exit at `target`, or back at its own tail
+     * to unlink it. The framework knows when, the backend knows how --
+     * the patch is a host instruction encoding.
+     */
+    void (*patch_link)(uint8_t *site, const uint8_t *target);
 
     /* True when the hart is parked and only an interrupt can restart it. */
     bool (*is_idle)(emu_cpu_t *cpu);

@@ -44,10 +44,37 @@
 #include "emu/emu_thumb2.h" /* for t2_sync_code, below */
 #define EMU_IR_JIT_SYNC t2_sync_code
 #define EMU_IR_JIT_NAME "jit-ir-thumb2"
+
+/*
+ * Aim a chained exit at another block, or back at its own tail.
+ *
+ * The framework decides when; only the host knows how, because the
+ * patch is an instruction encoding. B.W throughout here, so there is no
+ * range to run out of.
+ */
+static void ir_patch_link(uint8_t *site, const uint8_t *target)
+{
+    t2_patch_branch(site, target, false);
+    /*
+     * The bytes just changed under an instruction side that may have
+     * fetched them. Harmless on a part with no caches and not on a
+     * Cortex-M7, where this is the difference between a jump and
+     * arbitrary code.
+     */
+    t2_sync_code(site, 4u);
+}
+#define EMU_IR_JIT_PATCH_LINK ir_patch_link
 #else
+#include "emu/emu_x86_64.h" /* for x86_patch_rel32, below */
 #define EMU_IR_JIT_NAME "jit-ir-x86-64"
 /* x86 needs none: its caches are coherent with instruction fetch. */
 #define EMU_IR_JIT_SYNC NULL
+
+static void ir_patch_link(uint8_t *site, const uint8_t *target)
+{
+    x86_patch_rel32(site, target);
+}
+#define EMU_IR_JIT_PATCH_LINK ir_patch_link
 #endif
 
 static emu_ir_block_t g_ir;
@@ -276,6 +303,7 @@ static bool ir_diff_ref(emu_cpu_t *cpu, const emu_ir_frontend_t *fe)
         .take_irq = prefix##_take_irq,                                                                \
         .count = prefix##_count,                                                                      \
         .after_interp = prefix##_after_interp,                                                         \
+        .patch_link = EMU_IR_JIT_PATCH_LINK,                                                          \
     };                                                                                                \
                                                                                                       \
     static emu_jit_ops_t prefix##_ops_live;                                                           \

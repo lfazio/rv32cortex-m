@@ -676,6 +676,76 @@ static void note_exit(uint8_t *slot)
 }
 
 /*
+ * Exits that have already torn the frame down.
+ *
+ * A chained exit must undo its own frame before jumping into the next
+ * block, which establishes its own -- otherwise the stack grows by a
+ * frame per link and never comes back. So when it *cannot* jump (the
+ * budget is spent, or the edge is unlinked) it has to rejoin the
+ * epilogue past the teardown rather than at the top of it.
+ */
+static uint8_t *g_exits_nf[IR_MAX_EXITS];
+static uint32_t g_nexits_nf;
+
+static void note_exit_nf(uint8_t *slot)
+{
+    if (g_nexits_nf < IR_MAX_EXITS) {
+        g_exits_nf[g_nexits_nf++] = slot;
+    }
+}
+
+/* The frame this block reserves, needed at every chained exit. */
+static uint32_t g_frame;
+
+/* Where this block's code begins, so a patch site can be an offset. */
+static uint8_t *g_block_start;
+
+/*
+ * Emit a chained exit to a statically known target.
+ *
+ * Nothing is linked here: the target usually has not been translated
+ * yet. The jump is left pointing at this block's own tail and the
+ * framework patches it once both blocks exist and the edge has actually
+ * been taken.
+ */
+static bool chain_exit(uint32_t target_pc)
+{
+    if (!emu_jit_layout.chainable ||
+        emu_jit_layout.nlink >= EMU_JIT_MAX_CHAIN) {
+        return false;
+    }
+    if (g_frame != 0u) {
+        emu_jit_emit8(0x48);
+        emu_jit_emit8(0x81);
+        emu_jit_emit8(0xC4);
+        emu_jit_emit32(g_frame); /* add rsp, frame */
+    }
+    /*
+     * The bound, for the same reason the self-loop has one: a chain
+     * never reaches the dispatcher, so nothing checks for a pending
+     * interrupt or tests the caller's budget.
+     */
+    x86_alu_imm32(7u, X86_CNT, EMU_JIT_LOOP_CAP); /* cmp ebp, cap */
+    note_exit_nf(x86_jcc32(X86_CC_AE));
+
+    /*
+     * The *slot*, not the instruction. x86_jmp32 returns the address of
+     * the four-byte displacement, which is what x86_patch_rel32 takes;
+     * recording where the opcode starts instead patches one byte early
+     * and rewrites the jump into something else entirely.
+     */
+    uint8_t *const slot = x86_jmp32();
+
+    emu_jit_layout.link[emu_jit_layout.nlink].target_pc = target_pc;
+    emu_jit_layout.link[emu_jit_layout.nlink].site =
+        (uint32_t)(slot - g_block_start);
+    emu_jit_layout.link[emu_jit_layout.nlink].linked = false;
+    emu_jit_layout.nlink++;
+    note_exit_nf(slot);
+    return true;
+}
+
+/*
  * Emit a back edge to this block's own body, bounded by the retired
  * count. Returns false if the target is not this block's start, in which
  * case the caller emits an ordinary exit.
@@ -1447,7 +1517,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         uint8_t *const not_taken = x86_jcc32((uint8_t)(k_cc[in->aux] ^ 1u));
         x86_mov_imm32(T0, in->imm);
         x86_st_cpu(T0, t->pc_offset);
-        if (!loop_back(in->imm)) {
+        if (!loop_back(in->imm) && !chain_exit(in->imm)) {
             note_exit(x86_jmp32());
         }
         x86_patch_rel32(not_taken, emu_jit_here());
@@ -1485,7 +1555,8 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
          * A computed target cannot be matched against the block's start
          * at translation time, so only the constant form chains.
          */
-        if (in->a != EMU_IR_NO_TEMP || !loop_back(in->imm)) {
+        if (in->a != EMU_IR_NO_TEMP ||
+            (!loop_back(in->imm) && !chain_exit(in->imm))) {
             note_exit(x86_jmp32());
         }
         break;
@@ -1820,7 +1891,22 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_t0_holds = EMU_IR_NO_TEMP;
     g_dead_store = EMU_IR_NO_TEMP;
 
-    g_nsaved = emu_ir_regalloc(b, X86_ALLOC_REGS, g_reg);
+    /*
+     * **A uniform save set, so a chained block's epilogue matches
+     * whichever block's prologue actually ran.** A chain enters the
+     * successor past its prologue, so the pops at the end undo pushes
+     * made by a *different* block, and a variable count would leave the
+     * stack out of step by however much the two disagreed.
+     *
+     * Set here, before the frame is sized, because the frame's
+     * alignment pad is chosen from this count: computing the pad from
+     * the allocator's number and then pushing a different one misaligns
+     * rsp by 8, which does not fault in the emitted code -- it faults
+     * inside whatever libc routine a helper reaches that uses an
+     * aligned SSE store.
+     */
+    (void)emu_ir_regalloc(b, X86_ALLOC_REGS, g_reg);
+    g_nsaved = X86_ALLOC_REGS;
 
     /*
      * Does this block touch the FP unit? Asked once, because everything
@@ -1862,6 +1948,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_nexits = 0u;
     g_has_fast = b->has_fast;
     g_fast = b->fast;
+    g_block_start = emu_jit_here();
+    g_nexits_nf = 0u;
     g_body = NULL;
     g_start_pc = b->start_pc;
     g_has_start_pc = true;
@@ -1872,6 +1960,15 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      * that did.
      */
     x86_prologue(g_nsaved);
+    g_frame = frame;
+    /*
+     * Where a predecessor jumps in: past the prologue, at this block's
+     * own frame setup. Blocks that touch the FP unit are not chainable,
+     * because every exit of theirs must pass through the flag
+     * accumulation in the tail and a chained one would skip it.
+     */
+    emu_jit_layout.chain_entry = (uint32_t)(emu_jit_here() - g_block_start);
+    emu_jit_layout.chainable = !g_has_fp && !g_fp_written;
 
     if (frame != 0u) {
         emu_jit_emit8(0x48);
@@ -1999,6 +2096,20 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         emu_jit_emit8(0x81);
         emu_jit_emit8(0xC4);
         emu_jit_emit32(frame); /* add rsp, imm32 */
+    }
+    /*
+     * Past the teardown: where an exit that has already undone its own
+     * frame rejoins, and what the framework aims a chained jump back at
+     * when it unlinks one.
+     *
+     * Leaving this out is not a subtle failure. The chained exits'
+     * jumps are never patched at all, so they carry whatever
+     * displacement the buffer happened to hold -- every JIT test
+     * segfaulted immediately.
+     */
+    emu_jit_layout.tail = (uint32_t)(emu_jit_here() - g_block_start);
+    for (uint32_t i = 0; i < g_nexits_nf; i++) {
+        x86_patch_rel32(g_exits_nf[i], emu_jit_here());
     }
     x86_epilogue(g_nsaved);
     return !emu_jit_overflowed();

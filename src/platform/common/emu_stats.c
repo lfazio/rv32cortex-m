@@ -96,11 +96,20 @@ bool emu_print_jit_stats(void)
      * recoveries, and conflating them once cost 65% of all host cycles
      * with every test still passing.
      */
+    /*
+     * `links` beside the entries on purpose: the two are the whole
+     * story of chaining. An exit patched to jump straight into its
+     * successor removes a dispatch, so entries falling while links rise
+     * is what the optimisation doing its job looks like -- and a
+     * chaining that never fires looks exactly like one that does not
+     * pay unless both numbers are in front of you.
+     */
     emu_console_printf("  interp   %u instructions fell back\n"
                        "  declined %u overflow %u\n"
-                       "  blk entr %u\n",
+                       "  blk entr %u  links %u\n",
                        (unsigned)js.interp_fallbacks, (unsigned)js.declined,
-                       (unsigned)js.overflowed, (unsigned)js.block_entries);
+                       (unsigned)js.overflowed, (unsigned)js.block_entries,
+                       (unsigned)js.links);
 
 #ifdef EMU_JIT_PROFILE
     /*

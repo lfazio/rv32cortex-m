@@ -73,9 +73,12 @@
 #endif
 #endif
 
+emu_jit_layout_t emu_jit_layout;
+
 typedef struct {
     uint32_t guest_pc;
     uint32_t context; /* see emu_jit_hot_t::context           */
+    emu_jit_layout_t layout; /* how its exits may be chained   */
     uint8_t *code;
     uint32_t len; /* bytes, so compaction can move it      */
     uint32_t insns; /* guest instructions this block retires */
@@ -234,6 +237,65 @@ static void rebuild_hash(void)
     }
 }
 
+/*
+ * Point every chained exit back at its own block's tail.
+ *
+ * **Called whenever a block can move or die**, which here is compaction
+ * -- it relocates the survivors and drops the rest, so a jump from a
+ * surviving block into a moved or evicted one becomes a jump into
+ * whatever now occupies those bytes. There is no test that would catch
+ * that: the guest executes something, and what it executes depends on
+ * what the allocator happened to put there.
+ *
+ * A flush needs none of this. It empties the table, so no block is
+ * reachable and no stale jump inside one can be executed.
+ */
+static void unlink_all(const emu_jit_ops_t *ops)
+{
+    if (ops->patch_link == NULL) {
+        return;
+    }
+    for (uint32_t i = 0; i < g_block_count; i++) {
+        jit_block_t *const b = &g_blocks[i];
+
+        for (uint32_t k = 0; k < b->layout.nlink; k++) {
+            if (b->layout.link[k].linked) {
+                ops->patch_link(b->code + b->layout.link[k].site,
+                                b->code + b->layout.tail);
+                b->layout.link[k].linked = false;
+            }
+        }
+    }
+}
+
+/*
+ * Link the exit the previous block took, now that its target is known.
+ *
+ * Done here rather than at translation because the target usually does
+ * not exist yet: a block is built, runs, and only then is its successor
+ * translated. Waiting until both are present links exactly the edges a
+ * guest actually takes, and costs two compares on the dispatch that
+ * would have happened anyway.
+ */
+static void link_exit(jit_block_t *from, const jit_block_t *to,
+                      const emu_jit_ops_t *ops)
+{
+    if (ops->patch_link == NULL || from == NULL || !to->layout.chainable) {
+        return;
+    }
+    for (uint32_t k = 0; k < from->layout.nlink; k++) {
+        emu_jit_link_t *const l = &from->layout.link[k];
+
+        if (!l->linked && l->target_pc == to->guest_pc) {
+            ops->patch_link(from->code + l->site,
+                            to->code + to->layout.chain_entry);
+            l->linked = true;
+            g_stats.links++;
+            return;
+        }
+    }
+}
+
 static jit_block_t *lookup(uint32_t pc, uint32_t context)
 {
     for (int32_t i = g_hash[pc_hash(pc, context)]; i >= 0;
@@ -295,6 +357,13 @@ static void compact(const emu_jit_ops_t *ops)
     if (threshold < 2u) {
         threshold = 2u;
     }
+
+    /*
+     * Before anything moves. A surviving block's chained jump points
+     * into another block's code, and compaction relocates or discards
+     * that other block.
+     */
+    unlink_all(ops);
 
     uint8_t *dst = g_code;
     uint32_t kept = 0u;
@@ -392,6 +461,8 @@ static jit_block_t *translate_once(emu_cpu_t *cpu, uint32_t pc,
 #ifdef EMU_JIT_PROFILE
     const uint32_t t0 = prof_now();
 #endif
+    memset(&emu_jit_layout, 0, sizeof(emu_jit_layout));
+
     const uint32_t insns = ops->translate(cpu, pc);
 #ifdef EMU_JIT_PROFILE
     g_stats.cyc_translate += prof_now() - t0;
@@ -409,6 +480,7 @@ static jit_block_t *translate_once(emu_cpu_t *cpu, uint32_t pc,
     jit_block_t *const b = &g_blocks[g_block_count++];
     b->guest_pc = pc;
     b->context = context;
+    b->layout = emu_jit_layout;
     b->code = start;
     b->len = (uint32_t)(g_emit - start);
     b->insns = insns;
@@ -682,6 +754,14 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
      * declined.
      */
     uint32_t batch = 1u;
+    /*
+     * The block that last returned to this loop, so the exit it took can
+     * be pointed straight at its successor. Cleared whenever the guest
+     * did something other than fall out of a block -- an interpreted
+     * instruction, a trap, a flush -- because then the edge about to be
+     * taken is not the one that block's exit encodes.
+     */
+    jit_block_t *prev = NULL;
 
     while (done < budget) {
         const uint8_t st = *hot.state;
@@ -709,6 +789,7 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
             if (!g_have_generation || gen != g_generation) {
                 if (g_have_generation && gen != g_generation) {
                     emu_jit_flush();
+                    prev = NULL; /* every block it could name is gone */
                 }
                 g_generation = gen;
                 g_have_generation = true;
@@ -729,6 +810,7 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
             const emu_run_reason_t r =
                 run_interp_batch(cpu, ops, &done, budget, batch);
 
+            prev = NULL;
             if (batch < EMU_JIT_FALLBACK_MAX) {
                 batch *= 2u;
             }
@@ -752,10 +834,13 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
         if (b == NULL) {
             b = translate(cpu, pc, context, ops);
             fresh = (b != NULL);
+            /* It may have compacted, which moved or dropped `prev`. */
+            prev = NULL;
             if (b == NULL) {
                 const emu_run_reason_t r =
                     run_interp_batch(cpu, ops, &done, budget, batch);
 
+                prev = NULL;
                 if (batch < EMU_JIT_FALLBACK_MAX) {
                     batch *= 2u;
                 }
@@ -780,6 +865,14 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
          * which is a JIT quietly turning itself off.
          */
         batch = 1u;
+
+        /*
+         * Point the exit `prev` took at the block about to run. Both are
+         * present and the context matched, which is the moment the edge
+         * is known to be real.
+         */
+        link_exit(prev, b, ops);
+        prev = b;
 
 #ifdef EMU_JIT_DIFF
         const uint32_t n = run_block_checked(cpu, b, ops, fresh);
