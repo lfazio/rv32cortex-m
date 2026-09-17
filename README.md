@@ -345,6 +345,7 @@ Figures and what they have already disproved are in
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77
 ./scripts/report-figures.sh     # every quoted figure, regenerated
 ./scripts/check-doc-flags.sh    # every build flag named in the docs exists
+./scripts/t2-check-encodings.sh # Thumb-2 emitters against arm-none-eabi-as
 ```
 
 **Run both suites.** They cover different things, and a regression that

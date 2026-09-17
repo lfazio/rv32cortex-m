@@ -281,6 +281,69 @@ void t2_subw(uint32_t rd, uint32_t rn, uint16_t imm12)
  * same shape as the imm5 shift this backend has already been caught by
  * twice.
  */
+/*
+ * Register-offset memory, for the inlined guest-RAM path.
+ *
+ * The T2 forms: hw0 selects the operation and names the base, hw1 is
+ * Rt<<12 with the index in its low bits and a shift of zero. Verified
+ * against the assembler rather than derived -- `ldr.w r5, [ip, r2]`
+ * assembles to f85c 5002, which is exactly 0xF850|Rn and Rt<<12|Rm.
+ * An encoder whose wrong answers are other valid instructions has to
+ * be checked against something that already knows.
+ */
+bool t2_ld_reg(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t size,
+               bool sign)
+{
+    uint32_t op;
+
+    switch (size) {
+    case 1u:
+        op = sign ? 0xF910u : 0xF810u;
+        break;
+    case 2u:
+        op = sign ? 0xF930u : 0xF830u;
+        break;
+    case 4u:
+        op = 0xF850u;
+        break;
+    default:
+        return false;
+    }
+    t2_emit32((uint16_t)(op | rn), (uint16_t)((rt << 12) | rm));
+    return true;
+}
+
+bool t2_st_reg(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t size)
+{
+    uint32_t op;
+
+    switch (size) {
+    case 1u:
+        op = 0xF800u;
+        break;
+    case 2u:
+        op = 0xF820u;
+        break;
+    case 4u:
+        op = 0xF840u;
+        break;
+    default:
+        return false;
+    }
+    t2_emit32((uint16_t)(op | rn), (uint16_t)((rt << 12) | rm));
+    return true;
+}
+
+/* TST.W Rn, #imm -- AND with S set and Rd = 1111. */
+bool t2_tst_imm8(uint32_t rn, uint32_t imm)
+{
+    if (imm > 255u) {
+        return false;
+    }
+    t2_emit32((uint16_t)(0xF010u | rn), (uint16_t)(0x0F00u | imm));
+    return true;
+}
+
 bool t2_cmp_imm8(uint32_t rn, uint32_t imm)
 {
     if (imm > 255u) {
@@ -685,9 +748,17 @@ void t2_sync_code(const void *addr, uint32_t len)
      * the pipeline so nothing already fetched from these addresses is
      * executed. On a part without caches this pair alone is sufficient
      * and is what the M4 relies on.
+     *
+     * Guarded on the host architecture, not on EMU_HOST_JIT_THUMB2,
+     * because the *encoders* in this file are plain C that writes bytes
+     * and scripts/t2-check-encodings.sh compiles them for the build
+     * machine to check them against the assembler. The barriers are the
+     * one thing here that needs an ARM to exist on.
      */
+#if defined(__arm__) || defined(__thumb__)
     __asm__ volatile("dsb 0xF" ::: "memory");
     __asm__ volatile("isb 0xF" ::: "memory");
+#endif
 }
 
 #endif /* EMU_HOST_JIT_THUMB2 */

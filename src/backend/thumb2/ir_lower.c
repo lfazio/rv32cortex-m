@@ -305,6 +305,44 @@ static uint32_t g_nexits;
  * when a block outgrew it, which cost 2.4x on the loops that crossed
  * the line.
  */
+/*
+ * The guest-RAM window this block may access without calling a helper.
+ * See emu_ir_fastmem_t: the frontend refuses whenever an access could
+ * mean more than a move.
+ */
+static emu_ir_fastmem_t g_fast;
+static bool g_has_fast;
+
+/*
+ * Guard the inlined access: leave the offset from the window's base in
+ * r2 and branch to the slow path on anything unusual. Returns the patch
+ * sites and how many.
+ *
+ * One *unsigned* compare covers both ends -- an address below the base
+ * wraps to a huge offset -- and the alignment test is the other half of
+ * what the helper would have decided, because a misaligned access
+ * either faults or has to be split.
+ *
+ * r12 is the scratch. It is the procedure-call scratch register and
+ * nothing in a lowered block holds a value there across an instruction.
+ */
+static uint32_t emit_fast_guard(uint32_t addr_reg, uint32_t size,
+                                uint8_t **out)
+{
+    uint32_t n = 0u;
+
+    t2_imm32(T2_R12, g_fast.base);
+    t2_sub(T2_R2, addr_reg, T2_R12);
+    t2_imm32(T2_R12, g_fast.size - size);
+    t2_cmp(T2_R2, T2_R12);
+    out[n++] = t2_bcond_forward(0x8u); /* HI: unsigned > */
+
+    if (size > 1u && t2_tst_imm8(addr_reg, size - 1u)) {
+        out[n++] = t2_bcond_forward(0x1u); /* NE */
+    }
+    return n;
+}
+
 static uint8_t *g_body;
 static uint32_t g_start_pc;
 static bool g_has_start_pc;
@@ -1509,6 +1547,38 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         } else if (ra != T2_R1) {
             t2_mov(T2_R1, ra);
         }
+        /*
+         * The inlined path: about 40% of a guest's instructions are a
+         * memory access, and each was a call into the region walk.
+         */
+        uint8_t *ldone = NULL;
+        if (g_has_fast) {
+            const uint32_t sz = EMU_IR_MEM_SIZE(in->aux);
+            const bool sign = (in->aux & EMU_IR_MEM_SIGNED) != 0u;
+            uint8_t *slow[2];
+            const uint32_t nslow = emit_fast_guard(T2_R1, sz, slow);
+            const uint32_t rt = (pd >= 0) ? (uint32_t)pd : T2_R0;
+
+            t2_imm32(T2_R12, (uint32_t)(uintptr_t)g_fast.host);
+            if (t2_ld_reg(rt, T2_R12, T2_R2, sz, sign)) {
+                if (pd < 0) {
+                    /*
+                     * The slot has to be written even when the
+                     * dead-store rule says nobody reads it: that rule
+                     * leaves the value in r0 for the next instruction,
+                     * which is true here and false of the helper. The
+                     * two paths converge.
+                     */
+                    g_dead_store = EMU_IR_NO_TEMP;
+                    st_slot(T2_R0, in->dst);
+                }
+                ldone = t2_b_forward();
+            }
+            for (uint32_t k = 0; k < nslow; k++) {
+                patch_branch(slow[k], emu_jit_here(), true);
+            }
+        }
+
         t2_mov(T2_R0, T2_CPU);
         t2_imm32(T2_R2, in->aux);
         /*
@@ -1534,6 +1604,14 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         if (pd >= 0) {
             ld_slot((uint32_t)pd, SCRATCH_VAL);
         }
+        if (ldone != NULL) {
+            patch_branch(ldone, emu_jit_here(), false);
+            /*
+             * Whatever r0 held on the inlined path is not what the
+             * helper leaves there, and the two merge here.
+             */
+            g_r0_holds = EMU_IR_NO_TEMP;
+        }
         break;
     }
 
@@ -1555,12 +1633,46 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         if (rv != T2_R3) {
             t2_mov(T2_R3, rv);
         }
+
+        uint8_t *sdone = NULL;
+        if (g_has_fast) {
+            const uint32_t sz = EMU_IR_MEM_SIZE(in->aux);
+            uint8_t *slow[3];
+            uint32_t nslow = emit_fast_guard(T2_R1, sz, slow);
+
+            /*
+             * A store to the reserved word must break an LR/SC
+             * reservation, which an inlined one would not -- so decline
+             * while one is outstanding rather than replicating the
+             * address compare. That is only between an LR and its SC.
+             */
+            if (g_fast.store_guard_offset != EMU_IR_NO_GUARD) {
+                t2_ldr_imm(T2_R12, T2_CPU, g_fast.store_guard_offset);
+                t2_imm32(T2_R0, 0u);
+                t2_cmp(T2_R12, T2_R0);
+                slow[nslow++] = t2_bcond_forward(0x1u); /* NE */
+            }
+
+            t2_imm32(T2_R12, (uint32_t)(uintptr_t)g_fast.host);
+            if (t2_st_reg(T2_R3, T2_R12, T2_R2, sz)) {
+                sdone = t2_b_forward();
+            }
+            for (uint32_t k = 0; k < nslow; k++) {
+                patch_branch(slow[k], emu_jit_here(), true);
+            }
+        }
+
         t2_mov(T2_R0, T2_CPU);
         t2_imm32(T2_R2, in->aux);
         t2_call((const void *)t->store);
         t2_imm32(T2_R1, 0u);
         t2_cmp(T2_R0, T2_R1);
         note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
+        if (sdone != NULL) {
+            patch_branch(sdone, emu_jit_here(), false);
+            /* The paths merge; r0 is not the same on both. */
+            g_r0_holds = EMU_IR_NO_TEMP;
+        }
         break;
     }
 
@@ -1656,6 +1768,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_r0_holds = EMU_IR_NO_TEMP;
     g_dead_store = EMU_IR_NO_TEMP;
     g_nexits = 0u;
+    g_has_fast = b->has_fast;
+    g_fast = b->fast;
     g_body = NULL;
     g_start_pc = b->start_pc;
     g_has_start_pc = true;

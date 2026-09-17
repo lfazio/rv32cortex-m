@@ -65,6 +65,16 @@ void t2_eor(uint32_t rd, uint32_t rn, uint32_t rm);
 void t2_cmp(uint32_t rn, uint32_t rm);
 /* CMP.W Rn, #imm for imm <= 255; false if it will not encode. */
 bool t2_cmp_imm8(uint32_t rn, uint32_t imm);
+/* TST.W Rn, #imm for imm <= 255; false if it will not encode. */
+bool t2_tst_imm8(uint32_t rn, uint32_t imm);
+
+/*
+ * Register-offset guest memory, for the inlined RAM path: [Rn, Rm] with
+ * no shift. False for a size that is not 1, 2 or 4.
+ */
+bool t2_ld_reg(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t size,
+               bool sign);
+bool t2_st_reg(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t size);
 void t2_mvn(uint32_t rd, uint32_t rm);
 void t2_neg(uint32_t rd, uint32_t rn);
 
