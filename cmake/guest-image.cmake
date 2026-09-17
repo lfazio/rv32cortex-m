@@ -33,7 +33,29 @@ function(emu_stage_guest_image out_bin)
     #
     set(guest_bin "${CMAKE_CURRENT_BINARY_DIR}/guest_image.bin")
 
-    if(EMU_GUEST_ARCH_RV32)
+    #
+    # An image from outside the tree, named by path.
+    #
+    # For anything this build does not produce -- OpenSBI's fw_jump.bin,
+    # a kernel, a binary from another toolchain. There is no target to
+    # depend on, only the file, exactly as for the prebuilt G4MH guest
+    # below; and it is the *file* that is named, because a target-only
+    # dependency is an ordering constraint and that is how one build came
+    # to carry the previous guest with nothing failing.
+    #
+    # A path, not a name, so nothing here has to guess where it came
+    # from:
+    #
+    #   -DEMU_GUEST_BIN=/path/to/fw_jump.bin
+    #
+    if(EMU_GUEST_BIN)
+        if(NOT EXISTS "${EMU_GUEST_BIN}")
+            message(FATAL_ERROR "EMU_GUEST_BIN does not exist: ${EMU_GUEST_BIN}")
+        endif()
+        set(_src "${EMU_GUEST_BIN}")
+        set(_dep "${EMU_GUEST_BIN}")
+        get_filename_component(_name "${EMU_GUEST_BIN}" NAME)
+    elseif(EMU_GUEST_ARCH_RV32)
         set(RV32_GUEST "isatest"
             CACHE STRING "Guest image to embed in the firmware")
         set(_src "${CMAKE_BINARY_DIR}/guest/${RV32_GUEST}.bin")
