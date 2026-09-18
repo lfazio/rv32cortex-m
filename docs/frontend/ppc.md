@@ -7,9 +7,16 @@ family, and this project's first big-endian guest.
 cmake -B build/ppc -DEMU_PLATFORM=host \
       -DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_PPC=ON
 cmake --build build/ppc
-./build/ppc/emu-host \
+./build/ppc/emu-host --load 0x80000000 --max-insn 200000 \
     build/ppc/tests/guest/ppc/isatest.bin
 ```
+
+**`--load 0x80000000` is not optional, and leaving it off fails
+quietly.** The guest is linked for that address; loaded at the default
+it runs all 212 of its instructions, reads every string from memory
+that holds none, prints a line of blanks and **exits 0**. That is the
+same silent pass this frontend's notes below already record once, and
+the command above is the one `ctest` uses for exactly that reason.
 
 ## What it decodes
 

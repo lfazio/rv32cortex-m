@@ -5,7 +5,6 @@ add_executable(emu-unit
     test_bus.c
     test_uart.c
     test_fb.c
-    test_aplic.c
     #
     # Built unconditionally and empty when virtio is off, rather than
     # conditionally added: a test file that disappears from the list is
@@ -19,8 +18,21 @@ add_executable(emu-unit
 # link tests for it. test_fpu.c is here rather than above because it drives
 # rv_hart_fp directly -- the FP unit is shared, but the only way in is
 # through an RV32 hart.
+#
+# test_aplic.c is here and not in the unconditional list above, which is
+# where it sat for six days: the APLIC is `src/frontend/rv32/rv_aplic.c`,
+# so a PowerPC-only build compiled the test and linked against a device
+# that was not built -- ten undefined references, in exactly the
+# configuration `docs/frontend/ppc.md` tells the reader to use.
+#
+# **This file already records the same lesson twice**, both times about
+# tests being *queued* in a tree that cannot run them. This is the link
+# step finding it instead, and it went unnoticed for the same reason:
+# nobody builds the PowerPC-only configuration.
+#
 if(EMU_GUEST_ARCH_RV32)
-    target_sources(emu-unit PRIVATE test_decode.c test_fpu.c test_ecall.c)
+    target_sources(emu-unit PRIVATE
+        test_decode.c test_fpu.c test_ecall.c test_aplic.c)
 endif()
 if(EMU_GUEST_ARCH_G4MH)
     target_sources(emu-unit PRIVATE test_g4mh.c)

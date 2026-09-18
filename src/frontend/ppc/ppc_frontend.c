@@ -157,6 +157,12 @@ static void ppc_set_trace(emu_cpu_t *cpu, emu_trace_fn fn, void *user)
 
 const emu_cpu_ops_t ppc_frontend = {
     .name = "ppc",
+    /*
+     * The banner's line, and it was missing: `emu_main` prints
+     * `ops->desc` unconditionally, so a PowerPC run opened with
+     * "emu: (null) on x86-64". The other two frontends both set it.
+     */
+    .desc = "NXP PowerPC e200z7 (Book E, VLE)",
     .nregs = PPC_NGPR,
     .ncores = 1u,
     /*
