@@ -411,12 +411,68 @@ measured at.
 
       What is left at 29.65 is the *register file*: every GET is a load
       from the cpu struct and every PUT a store, because the allocator
-      covers temps rather than guest registers. That is the next lever
-      and it needs measuring before it is built -- a guest-register
-      cache was tried on Thumb-2 with three registers and measured
-      **15.5% slower**, and x86-64 with fifteen is a different
-      proposition. `EMU_JIT_HOT_REG_STATS` is the histogram that would
-      answer it.
+      covers temps rather than guest registers.
+
+      **Measured, and the answer is no.** `EMU_JIT_HOT_REG_STATS` was
+      an option nothing read -- declared in CMakeLists, defaulted in
+      `rv_config.h`, consulted by no line of code -- so the histogram
+      it names had never existed. It does now, in `emu_regstats.c`,
+      counting what a block leaves behind *after* the optimiser:
+
+      | | Dhrystone | CoreMark | bench |
+      |---|---|---|---|
+      | refs to one register in one block: 1 | 67.5% | 67.6% | 54.0% |
+      | 2 | 21.1% | 25.0% | 26.9% |
+      | **3 or more** | **11.5%** | **7.4%** | **19.1%** |
+      | surviving reads | 594 | 1122 | 451 |
+      | surviving writes | 1300 | 1678 | 910 |
+      | distinct registers per block | 5.79 | 5.61 | 12.27 |
+      | busiest register's share | 12.3% | 14.8% | 9.2% |
+
+      Pinning costs a load at block entry and a store at exit, so it
+      breaks even at two references and only pays above them: **7-19%
+      of the traffic can pay for itself and the rest is a loss.**
+
+      **And what survives is writes, by 1.5 to 2.2 to one** -- which is
+      exactly the traffic a register cache cannot help. This is the
+      cost model the Thumb-2 attempt lacked, and it explains the 15.5%
+      rather than contradicting it: a cached read is a MOV where an
+      uncached one is an LDR, one instruction either way, while a
+      write must still be written through. `pass_reg_traffic` has
+      already taken the redundant reads; the residue is stores that a
+      short block has to make before it exits.
+
+      There is also no small hot set to choose: the busiest register is
+      9-15% and the top eight reach 46-69%, so a three-register pin
+      covers about a third of a third.
+
+      **The histogram is weighted per translation, not per block
+      entry**, and that limit is stated in the header. It does not
+      weaken this conclusion -- benefit and cost both scale with
+      entries, so a register that cannot pay in a block cannot pay in a
+      hot one -- but it would have to be fixed before any *positive*
+      result was believed.
+
+      Two things about building it are worth keeping.
+
+      **The first version reported RV32's `x0` as the busiest register
+      in every guest**, at 19-24% of all references. A GET of x0
+      survives the passes deliberately and every backend answers it
+      with a constant at lowering, so it is not traffic at all -- the
+      instrument was counting a quarter of its own histogram into a
+      bucket that cannot be optimised, and would have made a pinned x0
+      the obvious first choice. `emu_reg_note_block` takes the target
+      and skips hardwired-zero registers now.
+
+      **Its `#include` landed inside `#if EMU_PAIR_STATS`**, an
+      unrelated option, so the declaration was absent in exactly the
+      configuration the header was written for and the build failed on
+      an implicit declaration. A conditional include belongs to its own
+      condition.
+
+      So: **do not build a guest-register allocator.** The lever this
+      entry was looking for is longer blocks, which is what this file
+      already says two entries down.
 
       The original reasoning below was wrong in an instructive way, and
       is kept for that:

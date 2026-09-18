@@ -416,6 +416,23 @@ session, and every one of them recurred:
   before/after comparison uses two build directories, check that the
   "before" one is the commit you think it is -- a `git worktree` at a
   named commit is the only version of that comparison that cannot lie.
+
+  **Third instance, and this one accused a change that was innocent.**
+  `cmake --build build/host --target emu-host` does not rebuild the
+  guests, and `ctest` runs them: after a session of emulator work,
+  `guest-virtiotest-net` failed against a `virtiotest.bin` from three
+  days earlier, while the same test passed in a worktree at the commit
+  before. That reads as "the last commit broke it" and is the opposite
+  -- the *old* artefact was the broken one. A `cmake --build` with no
+  `--target` made it 16/16 and the rebuilt image was byte-identical to
+  the worktree's, which is what settled it.
+
+  The general rule the three share: **name the artefact, not the
+  target, when deciding whether a result is current.** `md5sum` across
+  the two trees localises a disagreement to the emulator or the guest
+  in one command, and crossing them -- old emulator with new guest,
+  new emulator with old guest -- says which of the two changed
+  behaviour without reading a line of either.
 - **A test whose pass condition is "nothing failed" also passes when
   nothing ran.** The PowerPC guest's exit status is its count of failed
   checks, so zero is both outcomes. When the execute-in-place change moved
@@ -1048,6 +1065,35 @@ session, and every one of them recurred:
   uncached one is `LDR` -- one instruction either way -- while write-through
   adds an instruction per write and three more registers hit every PUSH/POP.
   Do not retry without a cost model, not just a frequency count.
+
+  **The cost model exists now, and it says no on both hosts.**
+  `EMU_JIT_HOT_REG_STATS` had been an option *nothing read* -- declared
+  in CMakeLists, defaulted in `rv_config.h`, consulted nowhere -- so the
+  histogram two documents called "the thing that would answer it" had
+  never been written. Written, over the IR after the optimiser, so it
+  measures what a backend actually has to emit: **88-93% of (block,
+  register) pairs are referenced once or twice**, and pinning costs an
+  entry load and an exit store, so it breaks even at two. Only 7.4%
+  (CoreMark), 11.5% (Dhrystone) and 19.1% (bench) can pay at all.
+
+  **What survives is writes, 1.5-2.2 to one** -- which is precisely the
+  traffic a cache cannot help, and is why the Thumb-2 attempt lost.
+  `pass_reg_traffic` has already taken the redundant reads; what is
+  left is stores a short block must make before it exits. There is no
+  small hot set either: the busiest register is 9-15% and the top eight
+  reach 46-69%. Full table in [`docs/TODO.md`](docs/TODO.md).
+
+  Two things about the instrument, both this file's own rules again.
+  **It reported `x0` as the busiest register in every guest** at 19-24%
+  of references -- a GET of x0 survives the passes deliberately and
+  every backend answers it with a constant, so a quarter of the
+  histogram was a bucket that cannot be optimised, and a pinned x0
+  would have looked like the obvious first move. Check that a
+  histogram's buckets hold only the thing you are looking for, not just
+  that they can represent it. And it is weighted **per translation, not
+  per block entry**, which is stated in the header: that cannot rescue
+  a negative result, because benefit and cost both scale with entries,
+  but it would have to be fixed before believing a positive one.
 - **`-Os` is 33% smaller and 8.8% slower** on the F446. The ART accelerator is
   not the binding constraint, so the code-density argument does not pay. Use
   `MinSizeRel` only when flash is actually scarce.

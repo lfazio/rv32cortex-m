@@ -13,6 +13,7 @@
 
 #include "emu/emu_ir.h"
 #include "emu/emu_jit.h" /* EMU_HAVE_JIT */
+#include "emu/emu_regstats.h"
 
 #include <string.h>
 
@@ -1106,4 +1107,13 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
     g_opt_totals.identities += stats->identities;
     g_opt_totals.macs += stats->macs;
     g_opt_totals.dead_removed += stats->dead_removed;
+
+#if EMU_JIT_HOT_REG_STATS
+    /*
+     * Here and not in a backend: the register traffic a block leaves
+     * behind is a property of the IR after the passes, and measuring it
+     * per host would be two copies of one number that must agree.
+     */
+    emu_reg_note_block(b, t);
+#endif
 }

@@ -22,6 +22,16 @@
 #include "emu/emu_pairstats.h"
 #endif
 
+/*
+ * Its own conditional, not the one above. Tucking this inside
+ * EMU_PAIR_STATS made the declaration depend on an unrelated option
+ * being on, so the build failed on an implicit declaration in exactly
+ * the configuration the header was added for.
+ */
+#if EMU_JIT_HOT_REG_STATS
+#include "emu/emu_regstats.h"
+#endif
+
 #include <string.h>
 
 static void fail(const emu_session_cfg_t *cfg, const char *msg,
@@ -351,6 +361,10 @@ void emu_session_report(emu_system_t *sys, uint64_t retired,
 
 #if EMU_PAIR_STATS
     emu_pair_report(40u);
+#endif
+
+#if EMU_JIT_HOT_REG_STATS
+    emu_reg_report();
 #endif
 
     /*

@@ -453,6 +453,9 @@ add_library(emucore STATIC
     src/emu/emu_ir.c
     src/emu/emu_gdb.c
     src/emu/emu_pairstats.c
+    # Self-guarding on EMU_JIT_HOT_REG_STATS, as emu_pairstats.c is on
+    # EMU_PAIR_STATS: listed always, compiling to nothing when off.
+    src/emu/emu_regstats.c
     # The IR JIT framework and its two host backends. Every one of these
     # guards itself on the host it emits for, so all of them can stay in
     # the list and exactly one backend compiles to anything. They belong
@@ -552,6 +555,7 @@ target_compile_definitions(emucore PUBLIC
     EMU_ENABLE_TRACE=$<BOOL:${EMU_ENABLE_TRACE}>
     EMU_ENABLE_STATS=$<BOOL:${EMU_ENABLE_STATS}>
     EMU_PAIR_STATS=$<BOOL:${EMU_PAIR_STATS}>
+    EMU_JIT_HOT_REG_STATS=$<BOOL:${EMU_JIT_HOT_REG_STATS}>
     #
     # The IR backend's static code cache.
     #
