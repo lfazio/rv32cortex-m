@@ -104,9 +104,28 @@ measured at.
       from is a worse one. QEMU's answer is an escape sequence, which
       is a state machine rather than a flag.
 
-      Still open: benchmarks. Broken into the order the pieces actually
-      unblock each other, because most of them are only testable once
-      the one above works:
+      **A udev worker on vda blocks for ~1170 guest-seconds and is
+      then killed**, and that -- not emulation speed -- is most of the
+      40 minutes a boot takes:
+
+          [  102.136618] udevd[81]: starting eudev-3.2.14
+          [ 1276.400027] udevd[81]: worker [86] .../virtio0/block/vda
+                         timeout; kill it
+          [ 1276.492807] udevd[81]: seq 1280 '.../block/vda' killed
+
+      Everything either side of it is brisk: `/sbin/init` at guest 3.5s
+      translated, and the whole of runlevel 5 after the kill. So the
+      guest is waiting on something that never completes rather than
+      grinding -- which makes it a device question, not a JIT one. The
+      obvious suspects are the block device's config space or an
+      attribute read that never answers; `poweroff` and the emulator's
+      own exit statistics from a session that has reached the shell
+      would say whether the queue is idle while it waits. **Nothing has
+      been measured here yet**; the numbers above are read off one boot.
+
+      Still open: that stall, and benchmarks. Broken into the order the
+      pieces actually unblock each other, because most of them are only
+      testable once the one above works:
   - [x] OpenSBI in M-mode, above.
   - [x] **Kernel boot to userspace. Done.** Linux 6.12 rv32 boots on
         OpenSBI, reaches `Run /init as init process`, and the init

@@ -289,9 +289,14 @@ builds, and that pairing is the one that reaches a shell.
 Both targets go through [`scripts/run-linux.sh`](scripts/run-linux.sh),
 which builds init, the kernel and OpenSBI before it runs anything;
 `LINUX_SRC`, `LINUX_BOOTARGS`, `LINUX_DISK`, `LINUX_MAXINSN` and
-`LINUX_JIT` override the pieces. Expect minutes of wall time before the
-prompt appears -- the kernel alone is about 1.5e9 emulated
-instructions. Ctrl-C ends the emulator; it does not reach the guest.
+`LINUX_JIT` override the pieces. Ctrl-C ends the emulator; it does not
+reach the guest.
+
+**Budget about 40 minutes to the prompt**, translated, and almost none
+of it is the kernel: `/sbin/init` runs inside a minute, and then one
+udev worker on `vda` blocks for ~1170 guest-seconds before udev kills
+it. See [docs/TODO.md](docs/TODO.md) -- that stall is an open question,
+not a speed problem.
 
 `LINUX_JIT=0` interprets instead of translating, which is what to do
 when a boot misbehaves and the question is whether the translator is

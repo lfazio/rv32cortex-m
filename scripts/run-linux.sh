@@ -260,9 +260,10 @@ if [ -n "${LINUX_BOOTARGS:-}" ]; then
     case "$LINUX_BOOTARGS" in
     *root=/dev/vda*)
         echo
-        echo "Booting to a login prompt. This takes several minutes of"
-        echo "wall time before the prompt appears -- the kernel alone is"
-        echo "about 1.5e9 emulated instructions."
+        echo "Booting to a login prompt. Measured at about 40 minutes"
+        echo "of wall time, translated -- most of it one udev worker on"
+        echo "vda, which blocks for ~1170 guest-seconds and is killed."
+        echo "The kernel itself reaches /sbin/init in under a minute."
         echo
         echo "  login: root   (no password)"
         echo "  Ctrl-C ends the emulator; it does not reach the guest."
