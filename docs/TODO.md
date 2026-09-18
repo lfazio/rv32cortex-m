@@ -262,6 +262,63 @@ measured at.
         declining to execute them. It is 378/378 both ways, and with
         `--jit` those tests now translate for the first time.
 
+        **The inlined memory path is off under every operating system,
+        and for two reasons rather than one.** `rv_ir_fast_mem`
+        declines on `vm_active`, `pmp_active` or `trig_active`, and
+        `rv_pmp_refresh` sets `pmp_active` **from the privilege alone**
+        -- before it looks at a single entry:
+
+            h->pmp_active = false;
+            if (h->priv != RV_PRIV_M || rv_hart_data_priv(h) != RV_PRIV_M) {
+                h->pmp_active = true;
+
+        So a kernel gets no inlined access even with no PMP region
+        configured, and "add an inline TLB probe" -- which is how this
+        item was written -- would leave the second gate shut and change
+        nothing. Anything built here has to answer both questions
+        inline: virtual to physical, *and* whether the access is
+        permitted.
+
+        **What it is worth, measured.** `tests/guest/sv32bench.c` is
+        one source built twice, differing in one `-D`: the same
+        memory-bound kernel in M-mode under Bare, and in S-mode under
+        an identity-mapped Sv32 with a background PMP entry. Retired
+        counts agree exactly (8,579,610), block entries agree to 0.2%,
+        so the difference is the per-access helper call and not
+        dispatch:
+
+        | | interpreter | JIT | JIT speedup |
+        |---|---|---|---|
+        | bare, fast path on | 129 ms | **21 ms** | 6.1x |
+        | paged, fast path off | 351 ms | **85 ms** | 4.1x |
+
+        Three interleaved rounds, 21/21/22 against 84/85/85 -- far
+        outside the +/-3% this host is noisy by.
+
+        **4.0x is the ceiling, and the realistic prize is smaller.**
+        The interpreter pays 2.7x for the same move (129 to 351) while
+        inlining nothing either way, so a large part of that 4.0x is
+        address translation and permission work that an inline probe
+        still has to do. Do not quote 4x as what a TLB probe would
+        recover; it is what the *call* plus the walk costs together.
+
+        The pieces exist: a 32-entry direct-mapped TLB tagged by full
+        VPN with the PTE bits stored, and `rv_pmp_simple`, which is
+        already written to report a single entry's bounds "so a caller
+        can inline a range test instead of calling the full check".
+        What is missing is IR surface to express a probe-with-fallback,
+        and on Thumb-2 the code-size question is real -- the
+        passthrough test alone is ~18 bytes a load and ~48 a store, and
+        always-on grew CoreMark past a 12 KB code cache.
+
+        **And this configuration now has a test, which it did not.**
+        isatest arms PMP early and from then on everything interprets,
+        so the JIT's behaviour under Sv32 and PMP was covered by
+        nothing. `guest-sv32bench` and `guest-sv32bench-jit` run the
+        paged guest on both backends and assert `SV32BENCH-END`, the
+        line only a completed run prints. Confirmed by breaking it:
+        both fail with the trap reported.
+
   - [x] **Userspace output reaches the console. Done**, and the cause
         was the emulator stealing the guest kernel's syscalls.
 

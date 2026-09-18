@@ -151,6 +151,39 @@ if(TARGET guest-isatest AND EMU_GUEST_ARCH_RV32)
             LABELS fast
             PASS_REGULAR_EXPRESSION "PASS")
     endif()
+
+    #
+    # A translated block running in S-mode, under Sv32 and with a PMP
+    # entry armed -- which nothing else here covers.
+    #
+    # isatest exercises Sv32 and PMP on the *interpreter*: it arms a PMP
+    # entry early, and from then on fetch_guard sends everything to the
+    # interpreter, so the JIT's behaviour under either is untested by it.
+    # This guest runs a memory-bound kernel below M-mode instead, which
+    # is the configuration every operating system uses and the one the
+    # inlined memory path declines.
+    #
+    # It asserts SV32BENCH-END, the line only a completed run prints --
+    # not the absence of a failure. A trap in S-mode prints
+    # SV32BENCH-TRAP with its cause and returns 1, and the first version
+    # of this guest needed exactly that: it read `minstret`, which is
+    # illegal below M-mode, and printed both markers with no kernel
+    # between them.
+    add_test(NAME guest-sv32bench
+             COMMAND emu-host --ram 0x800000
+                     "${CMAKE_BINARY_DIR}/guest/sv32bench-paged.bin")
+    set_tests_properties(guest-sv32bench PROPERTIES
+        LABELS fast
+        PASS_REGULAR_EXPRESSION "SV32BENCH-END")
+
+    if(EMU_JIT)
+        add_test(NAME guest-sv32bench-jit
+                 COMMAND emu-host --jit --ram 0x800000
+                         "${CMAKE_BINARY_DIR}/guest/sv32bench-paged.bin")
+        set_tests_properties(guest-sv32bench-jit PROPERTIES
+            LABELS fast
+            PASS_REGULAR_EXPRESSION "SV32BENCH-END")
+    endif()
 endif()
 
 #

@@ -278,6 +278,23 @@ session, and every one of them recurred:
   on the self-test. Open-coding costs 25-35 emitted instructions each in the
   code cache, which sets performance more than the translator does, and makes
   a second copy of semantics the core owns. Reach for the helper first.
+- **`pmp_active` is true below M-mode whether or not a PMP entry exists**,
+  because `rv_pmp_refresh` tests the privilege before it looks at any
+  entry. So the inlined memory path is off for *every* operating system,
+  and for two independent reasons -- paging and this -- which makes
+  "add an inline TLB probe" a mis-scoped fix: it leaves the second gate
+  shut and changes nothing. Anything inlined below M has to answer both
+  questions, virtual-to-physical *and* permitted-or-not.
+
+  What the gate is worth is `tests/guest/sv32bench.c`, one source built
+  twice from one `-D`: the same kernel in M-mode under Bare and in
+  S-mode under an identity-mapped Sv32. Identical retired counts and
+  block entries, so it isolates the per-access call -- **JIT 21 ms
+  against 85 ms, 4.0x**. But the *interpreter* pays 2.7x across the
+  same move while inlining nothing either way, so most of that gap is
+  translation and permission work a probe would still do. **4.0x is the
+  ceiling, not the prize**, and quoting it as what a TLB probe recovers
+  would be the same error as attributing Quake's ratio to SoftFloat.
 - **Inlining a memory access is only sound while nothing can deny it.** That
   holds in M-mode with no locked PMP entry, and stops holding below M, where
   matching no entry *denies* rather than permits. `pmp_active` therefore

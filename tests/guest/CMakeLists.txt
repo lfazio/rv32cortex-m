@@ -167,6 +167,19 @@ add_guest_image(cmsistest
 # Compute-bound workload for throughput measurement.
 add_guest_image(bench    SOURCES start.S bench.c)
 
+# What the inlined memory path is worth, and what turns it off.
+#
+# Two images from one source, differing in one -D: the kernel between
+# the markers is identical and only the privilege and the translation
+# change. `rv_ir_fast_mem` inlines guest RAM accesses in the first and
+# declines in the second -- for *two* reasons, since `pmp_active` is set
+# by privilege alone and is true for anything below M-mode whether or
+# not a PMP entry exists. See the file header.
+add_guest_image(sv32bench-bare
+    SOURCES start.S sv32bench.c FLAGS -DSV32BENCH_PAGING=0)
+add_guest_image(sv32bench-paged
+    SOURCES start.S sv32bench.c FLAGS -DSV32BENCH_PAGING=1)
+
 # Floating point, and deliberately no PMP: isatest arms one early, after
 # which fetch_guard sends everything to the interpreter and no FP change
 # can be measured on the JIT at all. See CLAUDE.md.
