@@ -178,6 +178,43 @@ measured at.
         Coverage is transformed and the clock is nearly level. **What
         remains is measured rather than guessed.**
 
+        **Re-measured after the fast path and chaining, and the JIT is
+        still behind.** Same image, same 2e9 instruction cap both ways
+        so the guest work is identical, two interleaved rounds:
+
+        | | round 1 | round 2 |
+        |---|---|---|
+        | `LINUX_JIT=1` | 190 s | 189 s |
+        | `LINUX_JIT=0` | 177 s | 175 s |
+
+        About 8% *slower* translated. The headline above therefore still
+        holds, and it is worth saying plainly that none of the work in
+        the entries below moved it: Dhrystone went 2.0x to 5.0x over the
+        same period and the Linux boot did not follow, because what
+        costs here is not what costs there.
+
+        **What costs here, from the same run's counters:**
+
+            flushes  129285
+            interp   638699763 instructions fell back
+            declined 636822916
+            blocks   1764 resident, 957612 optimised
+
+        **636.8M declined translations against 638.7M interpreted
+        instructions is 99.7%**: essentially every instruction the
+        interpreter runs was preceded by a translation attempt that
+        produced nothing. The note further down guessed "~230M attempts
+        for 951k successes"; at this budget it is 637M, and it is the
+        largest single term in the run.
+
+        That points somewhere cheaper than the inline memory path. A
+        translator that declines at a given pc will decline there again
+        -- the reasons are properties of the code, not of the moment --
+        so a negative cache keyed on pc would remove almost all of it
+        for a few bytes an entry. **It has not been built or measured**;
+        what is established is only that the attempts are 99.7% of the
+        interpreted instructions and that the clock is 8% the wrong way.
+
         **SFENCE.VMA flushes the whole code cache** -- 129,286 times in
         a boot. An A/B with the invalidation simply removed (incorrect,
         for measurement only) runs 55.7 s with 97,646 translations, so
@@ -249,7 +286,10 @@ measured at.
 
         Also worth knowing: the JIT attempts a full translation before
         almost every interpreted instruction and gets nothing back,
-        which is ~230M attempts for 951k successes.
+        which is ~230M attempts for 951k successes at a 600M budget --
+        counted since at a 2e9 budget as **636.8M declined against
+        638.7M interpreted, 99.7%**, and it is the largest term in the
+        run. See the re-measurement above.
 
         Guests that never page are unaffected and still twice the
         interpreter: bench 0.028 s against 0.057, dhrystone 0.104

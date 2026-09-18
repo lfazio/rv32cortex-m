@@ -47,7 +47,7 @@ Three axes, independent of each other:
 | axis | what it decides | selected by |
 |---|---|---|
 | platform | where it runs | `EMU_PLATFORM=host\|stm32f446\|stm32f746\|stm32n6` |
-| frontend | what it emulates | `EMU_GUEST_ARCH_RV32`, `EMU_GUEST_ARCH_G4MH` |
+| frontend | what it emulates | `EMU_GUEST_ARCH_RV32`, `EMU_GUEST_ARCH_G4MH`, `EMU_GUEST_ARCH_PPC` |
 | backend | how it executes | `EMU_JIT=ON\|OFF`, `--jit` on the host runner |
 
 ---
@@ -112,7 +112,7 @@ board result.
 | Option | Default | Effect |
 |---|---|---|
 | `EMU_JIT` | `ON` | The JIT. `OFF` is smaller, and is how a suspected JIT bug is isolated. |
-| `EMU_JIT_CODE_BYTES` | `12288` | Code cache. **The dominant performance term** — see [docs/jit/tuning.md](docs/jit/tuning.md). A small value forces compaction and is a useful stress test. |
+| `EMU_JIT_CODE_BYTES` | `32768` | Code cache. **The dominant performance term** — see [docs/jit/tuning.md](docs/jit/tuning.md). A small value forces compaction and is a useful stress test. |
 | `EMU_JIT_LOOP_CAP` | `128` | Guest instructions per block entry: an interrupt-latency knob, not a throughput one. |
 | `EMU_NET` | `ON` (F746) | lwIP over SLIP on the console UART: telnet, gdb and TFTP. **The UART stops being a console** -- `OFF` gets it back. |
 | `EMU_ENABLE_TRACE` | `OFF` | Per-instruction trace hook. Slow, and the fastest way to find where execution diverges. |
@@ -468,6 +468,11 @@ Guest images (`tests/guest/`):
 | `coremark`| CoreMark, fetched from upstream and built for RV32 |
 | `dhrystone`| netlib's Dhrystone 2.1. On the host its clock is derived from the instruction count, so it compares *frontends* and not backends — see [docs/performance.md](docs/performance.md) |
 | `whetstone`| Whetstone 1.2, single precision — the floating-point counterpart. Same clock caveat, and its rate depends on `WHET_LOOPS` |
+| `atomics` | the A extension, LR/SC and the AMOs |
+| `crypto`  | TinyCrypt AES-128 and SHA-256 against their published vectors — a real library, checked against FIPS rather than against itself |
+| `fbtest`  | the framebuffer device |
+| `virtiotest`| drives a virtio queue to completion and waits for the interrupt; needs `--virtio-console`, `--disk` or `--net` |
+| `sv32bench-bare` / `sv32bench-paged` | one source built twice, differing in one `-D`: the same kernel in M-mode under Bare and in S-mode under Sv32 with PMP armed. What the inlined memory path is worth, and the only coverage of a *translated* block below M-mode |
 
 ---
 
