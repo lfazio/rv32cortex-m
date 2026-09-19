@@ -265,7 +265,33 @@ measured at.
         which is the next item.
 
         **SFENCE.VMA flushes the whole code cache** -- 129,286 times in
-        a boot. An A/B with the invalidation simply removed (incorrect,
+        a boot, and **99.994% of those requests were not global**:
+
+            SFENCE   global 8   page 131890   asid 2
+
+        Eight whole-address-space flushes in an entire boot, against
+        131,890 carrying a virtual address in rs1. Every one of the
+        131,890 discards all 1,750 resident blocks, which is what makes
+        the run translate 1,026,399 times -- roughly 585 retranslations
+        per block. So the operands are not a detail to be conservative
+        about here; they are almost the whole population.
+
+        The design that follows, and the thing that makes it feasible:
+        a chained exit is patched to `chain_entry`, which is *past* the
+        prologue and shares the caller's frame, so an invalidated block
+        can be made harmless by writing a jump from its own
+        `chain_entry` to its own `tail`. Every inbound link then falls
+        into the dispatcher and the pc is retranslated -- **no reverse
+        index from target back to the blocks that jump into it**, which
+        is the part that would otherwise make this cost more than it
+        saves: `unlink_all` is O(blocks x links) and would run 131,890
+        times.
+
+        What it needs that does not exist: a hook that *writes* an
+        unconditional jump. Both `patch_link` implementations only
+        rewrite the displacement of a branch already there
+        (`t2_patch_branch`, `x86_patch_rel32`), which is the wrong
+        primitive for turning ordinary code into a jump. An A/B with the invalidation simply removed (incorrect,
         for measurement only) runs 55.7 s with 97,646 translations, so
         this is worth about 6 s. Fixing it properly means page-granular
         invalidation: a block would record the guest page it was
