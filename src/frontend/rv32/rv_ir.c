@@ -144,8 +144,8 @@ static bool rv_ir_fast_mem(emu_cpu_t *cpu, emu_ir_fastmem_t *out)
     emu_region_t *const r = emu_bus_find(h->bus, EMU_GUEST_RAM_BASE);
 
     if (r == NULL || r->kind != (uint8_t)EMU_MEM_RAM || r->host == NULL ||
-        r->size == 0u || (r->perm & (EMU_PERM_R | EMU_PERM_W)) !=
-                             (EMU_PERM_R | EMU_PERM_W)) {
+        r->size == 0u ||
+        (r->perm & (EMU_PERM_R | EMU_PERM_W)) != (EMU_PERM_R | EMU_PERM_W)) {
         return false;
     }
 
@@ -284,8 +284,7 @@ static uint32_t rv_ir_fp_helper(emu_cpu_t *cpu, uint32_t insn, uint32_t unused)
  * that quietly read a stale register would be the sharpest edge in this
  * file, so it is stated rather than assumed.
  */
-static uint32_t rv_ir_amo_helper(emu_cpu_t *cpu, uint32_t insn,
-                                 uint32_t unused)
+static uint32_t rv_ir_amo_helper(emu_cpu_t *cpu, uint32_t insn, uint32_t unused)
 {
     rv_hart_t *const h = (rv_hart_t *)cpu;
     const uint32_t funct5 = rv_funct7(insn) >> 2;
@@ -332,6 +331,32 @@ static uint32_t rv_ir_amo_helper(emu_cpu_t *cpu, uint32_t insn,
 #endif /* RV_EXT_A */
 
 /*
+ * Read one counter CSR.
+ *
+ * HELPER_TRAP because the read itself can fault: `time` is readable from
+ * S- and U-mode only while the corresponding counteren bit is set, and
+ * rv_csr_read is where that rule lives. Doing the check here rather than
+ * at translation is not an optimisation -- counteren can change under a
+ * block, and a translate-time check is only half a guard.
+ */
+static uint32_t rv_ir_csr_helper(emu_cpu_t *cpu, uint32_t insn, uint32_t unused)
+{
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+    uint32_t v = 0u;
+    const rv_exc_t exc = rv_csr_read(h, insn >> 20, &v);
+
+    (void)unused;
+    if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
+        rv_hart_trap(h, exc, insn);
+        return 1u;
+    }
+    if (rv_rd(insn) != 0u) {
+        h->x[rv_rd(insn)] = v;
+    }
+    return 0u;
+}
+
+/*
  * The helper table.
  *
  * **The indices are fixed whatever the configuration**, because an id is
@@ -360,9 +385,11 @@ static uint32_t rv_ir_helper_absent(emu_cpu_t *cpu, uint32_t insn,
 #define RV_IR_H_AMO ((const void *)rv_ir_helper_absent)
 #endif
 
-static const void *const rv_ir_helpers[] = {RV_IR_H_FP, RV_IR_H_AMO};
+static const void *const rv_ir_helpers[] = {RV_IR_H_FP, RV_IR_H_AMO,
+                                            (const void *)rv_ir_csr_helper};
 #define RV_IR_HELPER_FP 0u
 #define RV_IR_HELPER_AMO 1u
+#define RV_IR_HELPER_CSR 2u
 
 const emu_ir_target_t rv_ir_target = {
     .reg_offset = rv_reg_offset,
@@ -378,8 +405,8 @@ const emu_ir_target_t rv_ir_target = {
     .reg_is_zero = rv_reg_zero,
     .pc_offset = (uint32_t)offsetof(rv_hart_t, pc),
     .helpers = rv_ir_helpers,
-    .helper_count = (uint32_t)(sizeof(rv_ir_helpers) /
-                               sizeof(rv_ir_helpers[0])),
+    .helper_count =
+        (uint32_t)(sizeof(rv_ir_helpers) / sizeof(rv_ir_helpers[0])),
 #if RV_EXT_F
     .freg_offset = rv_freg_offset,
     .fp_flags = rv_ir_fp_flags,
@@ -555,8 +582,8 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
                 const uint32_t n = (insn >> 20) & 31u;
 
                 emu_ir_put(b, rd,
-                           emu_ir_emit(b, EMU_IR_ROTLI, 0u, x,
-                                       EMU_IR_NO_TEMP, (32u - n) & 31u, 0u));
+                           emu_ir_emit(b, EMU_IR_ROTLI, 0u, x, EMU_IR_NO_TEMP,
+                                       (32u - n) & 31u, 0u));
                 return true;
             }
             return false;
@@ -793,9 +820,9 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
         return true;
     }
 
-    case 0x43u:   /* FMADD.S  */
-    case 0x47u:   /* FMSUB.S  */
-    case 0x4Bu:   /* FNMSUB.S */
+    case 0x43u: /* FMADD.S  */
+    case 0x47u: /* FMSUB.S  */
+    case 0x4Bu: /* FNMSUB.S */
     case 0x4Fu: { /* FNMADD.S */
         /*
          * The fused multiply-adds. The IR models these now -- it grew a
@@ -826,8 +853,8 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
          * on frm and rv_ir_gen_key folds that in, which is what makes
          * resolving it here sound.
          */
-        const uint32_t rm = (rv_funct3(insn) == 7u) ? RV_IR_FRM(cpu)
-                                                    : rv_funct3(insn);
+        const uint32_t rm =
+            (rv_funct3(insn) == 7u) ? RV_IR_FRM(cpu) : rv_funct3(insn);
         const uint32_t op5 = op >> 2;
         uint8_t fma_aux = (uint8_t)(rm & 7u);
 
@@ -1025,6 +1052,51 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
                           EMU_IR_NO_TEMP, RV_IR_HELPER_AMO, 0u);
         return true;
 #endif
+
+    case 0x73u: { /* SYSTEM */
+        /*
+         * Almost all of it stays declined, and deliberately: the
+         * translator refusing SYSTEM is what makes the interpreter
+         * fallback the *single* place frm, mstatus.FS, the PMP
+         * configuration and satp can change, which is why the
+         * generation key only has to be re-derived there. Lowering a
+         * CSR *write* would break that invariant, and the failure is
+         * the staleness class this project has five separate entries
+         * about.
+         *
+         * `time` is the exception, and it is worth one: a Linux boot
+         * executes it **335,195,899 times** -- 99.2% of all CSR
+         * accesses and half of every interpreted instruction -- because
+         * the kernel polls it in delay loops. Each one declined a
+         * block, so the loop around it paid a dispatch and an
+         * interpreter entry per iteration.
+         *
+         * Narrowed to exactly what is safe:
+         *
+         *   - a *read*, so nothing in the hart changes. CSRRS/CSRRC
+         *     with rs1 == x0 and the immediate forms with uimm == 0 are
+         *     the encodings that do not write; CSRRW always writes.
+         *   - `time` and `timeh` only. Not cycle or instret, which are
+         *     maintained per retired instruction: a block accumulates
+         *     its retirements and commits them at the end, so reading
+         *     either mid-block would see a stale count. They are 0.8%
+         *     of the traffic and all of the risk.
+         */
+        const uint32_t csr = insn >> 20;
+        const bool reads_only = ((f3 == 2u || f3 == 3u) && rs1 == 0u) ||
+                                ((f3 == 6u || f3 == 7u) && rs1 == 0u);
+
+        if (!reads_only || (csr != 0xC01u && csr != 0xC81u)) {
+            return false;
+        }
+        /* pc first: the helper can trap, and rv_hart_trap records what
+         * it finds. Same shape as the FP and AMO fallbacks above. */
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          pc, 0u);
+        (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP, 0u, emu_ir_const(b, insn),
+                          EMU_IR_NO_TEMP, RV_IR_HELPER_CSR, 0u);
+        return true;
+    }
 
     default:
         return false;
