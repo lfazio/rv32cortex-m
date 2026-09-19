@@ -925,16 +925,37 @@ if(EMU_GUEST_ARCH_RV32)
     if(RV32_EXT_ZBA AND RV32_EXT_ZBB AND RV32_EXT_ZBS)
         string(APPEND _isa "B")
     endif()
+    #
+    # Zicsr, Zifencei and Zicntr before the Zb* group, which is the
+    # canonical order and -- more to the point -- the order
+    # RV32_ISA_STRING uses in rv32_frontend.c.
+    #
+    # **This summary has advertised all three since it was written and
+    # the runtime banner did not**, which is the same disagreement the
+    # comment above records about B, in the other direction: two
+    # descriptions of one core, and the one a user actually sees at run
+    # time was the wrong one. Neither is generated from the other, so
+    # they are kept in step by hand and a change to one belongs in both.
+    #
+    # No option gates Zicsr or Zicntr -- rv_config.h defaults them on and
+    # nothing in CMake declares them -- so they are unconditional here
+    # for the same reason they are unconditional there. Zifencei has no
+    # macro at all: MISC-MEM funct3 1 reaches rv_invalidate unguarded.
+    #
+    string(APPEND _isa "_zicsr_zifencei_zicntr")
     if(RV32_EXT_ZBC)
         string(APPEND _isa "_zbc")
     endif()
+    # U and S are privilege modes rather than instruction-set
+    # extensions, so they are reported here and deliberately absent from
+    # the ISA string the banner prints.
     if(RV32_EXT_U)
-        string(APPEND _isa "U")
+        string(APPEND _isa " +U")
     endif()
     if(RV32_EXT_S)
-        string(APPEND _isa "S")
+        string(APPEND _isa " +S")
     endif()
-    list(APPEND _frontends "rv32 (${_isa}_zicsr_zicntr_zifencei)")
+    list(APPEND _frontends "rv32 (${_isa})")
 endif()
 if(EMU_GUEST_ARCH_G4MH)
     list(APPEND _frontends "g4mh (RH850 G4MH, ${G4MH_PE_COUNT} PE)")

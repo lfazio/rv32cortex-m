@@ -129,16 +129,31 @@ measured at.
           isa : rv32imafc_zicntr_zicsr_zifencei_zca_zcf
           mmu : sv32
 
-      while the emulator's own banner says `RV32IMAFCB_zbc`:
-      `boot/rv32-emu.dts` declares `riscv,isa = "rv32imafc_zicsr_zifencei"`
-      and omits B entirely. Nothing is wrong at run time -- the kernel
-      is being conservative about instructions it is told do not exist
-      -- but it means **no Linux guest can reach the Zba/Zbb/Zbc/Zbs
-      lowerings in either backend**, so the largest guest in the tree
-      gives those paths no coverage at all. This is the "two
-      descriptions of one machine, and disagreeing is silent" rule in
-      its quiet direction: the disagreement costs testing rather than
-      correctness, so nothing will ever report it.
+      while the emulator's own banner says
+      `RV32IMAFDCB_zicsr_zifencei_zicntr_zbc`: `boot/rv32-emu.dts`
+      declares `riscv,isa = "rv32imafc_zicsr_zifencei"` and omits B and
+      D. Nothing is wrong at run time -- the kernel is being
+      conservative about instructions it is told do not exist -- but it
+      means **no Linux guest can reach the Zba/Zbb/Zbc/Zbs lowerings in
+      either backend**, so the largest guest in the tree gives those
+      paths no coverage at all. This is the "two descriptions of one
+      machine, and disagreeing is silent" rule in its quiet direction:
+      the disagreement costs testing rather than correctness, so
+      nothing will ever report it.
+
+      **The banner itself was understating the core, and finding that
+      took a third description to notice.** It read `RV32IMAFCB_zbc`:
+      no D, though `rv_fpu.c` implements it; and no Zicsr, Zifencei or
+      Zicntr, though all three are implemented and the 20191213 spec
+      requires them to be *named* -- a string without Zicsr describes a
+      core that cannot execute `csrr`. CMake's configure summary had
+      been printing `_zicsr_zicntr_zifencei` and `D` all along, so the
+      two descriptions this tree generates disagreed with each other
+      and the one a user sees at run time was the wrong one. Both now
+      read `RV32IMAFDCB_zicsr_zifencei_zicntr_zbc`.
+
+      Neither is generated from the other; they are kept in step by
+      hand, which is what the comment beside each now says.
 
       `mmu : sv32` is the kernel's own confirmation of the paging work.
 
@@ -741,6 +756,41 @@ measured at.
         per-architecture order and not a choice.
   - [ ] `ppc_pairstats.c` -- the histogram that answers "which
         instruction next" with a measurement instead of an opinion.
+- [ ] **rv32: Zihpm, Zihintntl, Zihintpause, Zicond, Zawrs, Zacas,
+      Zalasr.** Six of the seven are absent from the tree entirely;
+      `Zacas` is the exception and is the one to read first, because it
+      is already written and deliberately **off**:
+
+      | | state |
+      |---|---|
+      | Zihpm | absent -- `mhpmcounter*`/`mhpmevent*`; `mcountinhibit` and the counter-enable plumbing already exist for Zicntr |
+      | Zihintntl | absent -- `ntl.*`, hints, so a correct implementation may decode and retire them as no-ops |
+      | Zihintpause | absent -- `pause`, likewise a no-op here; there is no other hart to yield to |
+      | Zicond | absent -- `czero.eqz`/`czero.nez`, and the one with real JIT value: a conditional move both backends can lower natively |
+      | Zawrs | absent -- `wrs.nto`/`wrs.sto`, which pair with LR/SC |
+      | Zacas | **written and disabled.** `amocas.w` is verified; `amocas.d` is implemented over even-odd pairs and is *wrong* -- its checks read the low half back in the high half's register, and whether the fault is the pair handling or the test's asm constraints was never established |
+      | Zalasr | absent -- `lb.aq`/`sb.rl` and friends, load-acquire/store-release |
+
+      Two things this tree's own rules say about doing it.
+
+      **Each one lands in four places or it is not done**: both RV32
+      backends, `tests/arch-test/` config *and* `sail.json`, and the
+      ISA string. The last is not cosmetic -- arch-test validates a
+      machine against a description of that machine, so an extension
+      the emulator implements and the config does not declare produces
+      failures that look like emulator bugs.
+
+      **The hint extensions are the trap.** Zihintntl and Zihintpause
+      retire as no-ops, so an implementation that decodes nothing at
+      all passes every test that merely runs them. What distinguishes
+      "implemented" from "absent" there is that the *encodings* are
+      claimed rather than raising illegal-instruction, which is
+      something only a test asserting the absence of a trap can see.
+
+      Zicond is the one worth doing first on merit: it is two
+      instructions, it has an obvious native lowering on both hosts,
+      and unlike the hints it computes something a test can check.
+
 - [ ] **JIT** - Autovectorisation of the IR pipeline. This is a big task, but it would be a good demonstration of the emulator's capabilities.
 - [ ] Add simple drivers for the rh850u2b6.based on their specification in the reference manual.
   - [ ] Option bytes: impact on clocks and startup.

@@ -50,6 +50,17 @@
 #else
 #define RV32_S_F ""
 #endif
+/*
+ * D, which this string omitted entirely while rv_fpu.c implements it and
+ * the configure summary reported it. Widening FLEN to 64 is the change
+ * NaN-boxing exists for, so a core with D is not a core with F and the
+ * banner claiming otherwise understated it.
+ */
+#if RV_EXT_D
+#define RV32_S_D "D"
+#else
+#define RV32_S_D ""
+#endif
 #if RV_EXT_C
 #define RV32_S_C "C"
 #else
@@ -65,9 +76,41 @@
 #else
 #define RV32_S_ZBC ""
 #endif
+/*
+ * Zicsr, Zifencei and Zicntr, which this string omitted while the core
+ * implemented all three.
+ *
+ * **Since the 20191213 spec these have to be named.** "RV32IMAFC" no
+ * longer implies CSR access or FENCE.I -- they were split out of the
+ * base, so a string without them describes a core that cannot execute
+ * `csrr` and the banner was claiming exactly that. `boot/rv32-emu.dts`
+ * has declared them to Linux all along, so the emulator's own
+ * description was the one that disagreed with the machine.
+ *
+ * Zifencei is unconditional because the instruction is: MISC-MEM
+ * funct3 1 reaches `rv_invalidate` with nothing guarding it, and there
+ * is no RV_EXT_ZIFENCEI to test. Inventing one to gate a string would
+ * be a flag nothing reads.
+ */
+#if RV_EXT_ZICSR
+#define RV32_S_ZICSR "_zicsr"
+#else
+#define RV32_S_ZICSR ""
+#endif
+#define RV32_S_ZIFENCEI "_zifencei"
+#if RV_EXT_ZICNTR
+#define RV32_S_ZICNTR "_zicntr"
+#else
+#define RV32_S_ZICNTR ""
+#endif
 
+/*
+ * Canonical order: the single letters, then the Zi* extensions, then
+ * the Zb* ones.
+ */
 #define RV32_ISA_STRING                                                        \
-    "RV32I" RV32_S_M RV32_S_A RV32_S_F RV32_S_C RV32_S_B RV32_S_ZBC
+    "RV32I" RV32_S_M RV32_S_A RV32_S_F RV32_S_D RV32_S_C RV32_S_B RV32_S_ZICSR \
+        RV32_S_ZIFENCEI RV32_S_ZICNTR RV32_S_ZBC
 
 /* ------------------------------------------------------------------ */
 /* State                                                               */
