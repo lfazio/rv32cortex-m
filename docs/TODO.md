@@ -123,9 +123,29 @@ measured at.
       would say whether the queue is idle while it waits. **Nothing has
       been measured here yet**; the numbers above are read off one boot.
 
-      Still open: that stall, and benchmarks. Broken into the order the
-      pieces actually unblock each other, because most of them are only
-      testable once the one above works:
+      **The device tree understates the machine, and the cost is
+      coverage.** The guest reports
+
+          isa : rv32imafc_zicntr_zicsr_zifencei_zca_zcf
+          mmu : sv32
+
+      while the emulator's own banner says `RV32IMAFCB_zbc`:
+      `boot/rv32-emu.dts` declares `riscv,isa = "rv32imafc_zicsr_zifencei"`
+      and omits B entirely. Nothing is wrong at run time -- the kernel
+      is being conservative about instructions it is told do not exist
+      -- but it means **no Linux guest can reach the Zba/Zbb/Zbc/Zbs
+      lowerings in either backend**, so the largest guest in the tree
+      gives those paths no coverage at all. This is the "two
+      descriptions of one machine, and disagreeing is silent" rule in
+      its quiet direction: the disagreement costs testing rather than
+      correctness, so nothing will ever report it.
+
+      `mmu : sv32` is the kernel's own confirmation of the paging work.
+
+      Still open: that stall, the ISA declaration above, and
+      benchmarks. Broken into the order the pieces actually unblock
+      each other, because most of them are only testable once the one
+      above works:
   - [x] OpenSBI in M-mode, above.
   - [x] **Kernel boot to userspace. Done.** Linux 6.12 rv32 boots on
         OpenSBI, reaches `Run /init as init process`, and the init
@@ -419,9 +439,27 @@ measured at.
         property of the machine. The device tree now describes the
         APLIC in direct mode and the virtio nodes.
 
-        What is *not* done is seeing it fire under Linux -- the unit
-        test proves delivery moves between privileges, and nothing has
-        yet driven a real queue completion through the whole path.
+        **Seen firing under Linux now**, which is what was missing: the
+        unit test only proved delivery moves between privileges, and
+        nothing had driven a real queue completion through the whole
+        path. `/proc/interrupts`, from a distribution at its shell:
+
+            10:   554825  RISC-V INTC   5 Edge    riscv-timer
+            12:      124  APLIC-DIRECT 10 Level   ttyS0
+            13:        0  APLIC-DIRECT  3 Level   virtio2
+            14:      824  APLIC-DIRECT  1 Level   virtio0
+            15:        0  APLIC-DIRECT  2 Level   virtio1
+
+        824 completions on virtio-blk, delivered to S-mode. The
+        controller reports **APLIC-DIRECT**, so the direct-mode wiring
+        above is what the kernel actually bound to rather than what the
+        device tree merely offered. The two zeros are right: nothing
+        used the console or sent a frame at the loopback net device.
+
+        The 124 on ttyS0 are a second thing confirmed for free -- the
+        NS16550 receive path is **interrupt-driven end to end**, not
+        polled. Those are keystrokes typed from the host reaching a
+        getty through `emu_uart_poll`'s line.
   - [x] **virtio-mmio transport**, done by importing rather than
         writing: TinyEMU's `virtio.c` is vendored byte-identical under
         `third_party/tinyemu/` (MIT), and the porting layer is four
