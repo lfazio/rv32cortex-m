@@ -104,12 +104,20 @@ bool emu_print_jit_stats(void)
      * chaining that never fires looks exactly like one that does not
      * pay unless both numbers are in front of you.
      */
+    /*
+     * `cached` beside `declined` for the same reason `links` sits beside
+     * the entries: it is the negative cache's whole story. A translation
+     * attempt that produced nothing was the largest term in a Linux run,
+     * so `declined` falling while `cached` rises is what the fix working
+     * looks like -- and a cache that never hits is indistinguishable
+     * from one that does not pay unless both are printed.
+     */
     emu_console_printf("  interp   %u instructions fell back\n"
-                       "  declined %u overflow %u\n"
+                       "  declined %u (cached %u) overflow %u\n"
                        "  blk entr %u  links %u\n",
                        (unsigned)js.interp_fallbacks, (unsigned)js.declined,
-                       (unsigned)js.overflowed, (unsigned)js.block_entries,
-                       (unsigned)js.links);
+                       (unsigned)js.declined_cached, (unsigned)js.overflowed,
+                       (unsigned)js.block_entries, (unsigned)js.links);
 
 #ifdef EMU_JIT_PROFILE
     /*

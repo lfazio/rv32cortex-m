@@ -154,6 +154,18 @@ typedef struct emu_jit_stats {
      */
     uint32_t declined;
     uint32_t overflowed;
+    /*
+     * Translation attempts skipped because this pc had already declined
+     * and nothing has invalidated that answer since.
+     *
+     * Reported because the whole claim behind the negative cache is that
+     * `declined` was the largest term in a run -- 636.8M against 638.7M
+     * interpreted instructions on a Linux boot, 99.7% -- and an
+     * optimisation aimed at a counter has to be judged by that counter
+     * moving. A cache that never hits and a cache that does not pay look
+     * identical without this.
+     */
+    uint32_t declined_cached;
 #ifdef EMU_JIT_DIFF
     /*
      * How much of the differential check actually ran. Without these,

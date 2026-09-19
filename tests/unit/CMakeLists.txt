@@ -12,6 +12,12 @@ add_executable(emu-unit
     #
     test_virtio.c
     test_ir.c
+    #
+    # The JIT framework, driven through a stub frontend: the negative
+    # cache is bookkeeping that belongs to this layer, and a test written
+    # against a real frontend would assert its lowering decisions too.
+    #
+    test_jit.c
 )
 
 # Frontend tests follow the frontends: a build without one must not try to
@@ -322,7 +328,13 @@ if(TARGET guest-atomics AND EMU_GUEST_ARCH_RV32)
                          "${CMAKE_BINARY_DIR}/guest/atomics.bin")
         set_tests_properties(guest-atomics-jit-lowered PROPERTIES
             LABELS fast
-            PASS_REGULAR_EXPRESSION "declined [0-9][0-9]?[0-9]? overflow")
+            # The stats line gained a `(cached N)` between the count and
+            # `overflow` when the negative cache was added. The bound is
+            # what this test is about -- three digits, i.e. the AMOs are
+            # being lowered rather than declined -- so it is the shape
+            # around it that had to move, not the assertion.
+            PASS_REGULAR_EXPRESSION
+                "declined [0-9][0-9]?[0-9]? \\(cached [0-9]+\\) overflow")
     endif()
 endif()
 

@@ -193,6 +193,103 @@ static uint32_t pc_hash(uint32_t pc, uint32_t context)
     return ((pc >> 1) ^ (context * 2654435761u)) & (EMU_JIT_HASH_SIZE - 1u);
 }
 
+/* ------------------------------------------------------------------ */
+/* The negative cache                                                  */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Which pcs the translator has already refused.
+ *
+ * **`declined` was the largest single term in a Linux run**: 636.8M
+ * attempts against 638.7M interpreted instructions, 99.7%, each one a
+ * full translation that produced nothing and was thrown away. The
+ * reason a pc declines is a property of the code there -- an opcode no
+ * backend lowers, a fetch that faults -- so asking a second time gets
+ * the same answer for the same work.
+ *
+ * Keyed on the context as well as the pc, because the bytes at a
+ * virtual address depend on the address space; the same pc under a
+ * different satp is a different question.
+ *
+ * **Invalidated by an epoch rather than by clearing.** Every path that
+ * could make a declined pc translatable again -- a generation change, a
+ * FENCE.I, guest code being rewritten -- reaches emu_jit_flush, and a
+ * Linux boot flushes 129,285 times. A memset of this table per flush
+ * would be a new cost proportional to the old one; bumping a counter is
+ * not.
+ */
+#define JIT_NEG_SIZE 1024u /* power of two */
+
+static struct {
+    uint32_t pc;
+    uint32_t context;
+    uint32_t epoch;
+} g_neg[JIT_NEG_SIZE];
+
+/*
+ * Starts at 1 so that a zeroed table -- epoch 0 everywhere -- reads as
+ * empty rather than as a valid entry for pc 0.
+ */
+static uint32_t g_neg_epoch = 1u;
+
+static uint32_t neg_slot(uint32_t pc, uint32_t context)
+{
+    /*
+     * Multiply and take the *high* bits, rather than masking the low
+     * ones.
+     *
+     * The first version was `(pc >> 1) & (SIZE - 1)`, which reads only
+     * bits 1..10 of the address -- so any two pcs 0x800 apart share a
+     * slot and evict each other. That is not a rare collision, it is
+     * every pair of declined addresses at the same offset in different
+     * pages, which is precisely the shape guest code has. A unit test
+     * using 0x8000 and 0x9000 caught it: the second evicted the first
+     * and the first was translated a second time.
+     *
+     * Multiplying by a 32-bit odd constant carries every input bit
+     * upward, so the top bits depend on the whole address.
+     *
+     * A collision is only ever a wasted translation -- the pc and the
+     * context are compared before the entry is believed -- so this is a
+     * question of how often, not of whether the answer is right.
+     */
+    uint32_t h = (pc >> 1) ^ (context * 2654435761u);
+
+    h *= 2654435761u;
+    return (h >> 16) & (JIT_NEG_SIZE - 1u);
+}
+
+static bool neg_hit(uint32_t pc, uint32_t context)
+{
+    const uint32_t s = neg_slot(pc, context);
+
+    return g_neg[s].epoch == g_neg_epoch && g_neg[s].pc == pc &&
+           g_neg[s].context == context;
+}
+
+static void neg_note(uint32_t pc, uint32_t context)
+{
+    const uint32_t s = neg_slot(pc, context);
+
+    g_neg[s].pc = pc;
+    g_neg[s].context = context;
+    g_neg[s].epoch = g_neg_epoch;
+}
+
+static void neg_invalidate(void)
+{
+    g_neg_epoch++;
+    if (g_neg_epoch == 0u) {
+        /*
+         * Wrapped, so stale entries would read as current. Only reachable
+         * after 2^32 flushes -- about 33,000 Linux boots -- and cheap
+         * enough to handle rather than document as a limit.
+         */
+        memset(g_neg, 0, sizeof(g_neg));
+        g_neg_epoch = 1u;
+    }
+}
+
 void emu_jit_flush(void)
 {
     for (uint32_t i = 0; i < EMU_JIT_HASH_SIZE; i++) {
@@ -201,6 +298,7 @@ void emu_jit_flush(void)
     g_block_count = 0u;
     g_code_used = 0u;
     g_stats.flushes++;
+    neg_invalidate();
 }
 
 /*
@@ -472,7 +570,14 @@ static jit_block_t *translate_once(emu_cpu_t *cpu, uint32_t pc,
         if (g_overflow) {
             g_stats.overflowed++;
         } else {
+            /*
+             * Noted here and not in the caller, because this is the one
+             * place that knows the attempt failed for a reason belonging
+             * to the pc rather than to the buffer. An overflow must not
+             * be remembered: nothing is wrong with that pc.
+             */
             g_stats.declined++;
+            neg_note(pc, context);
         }
         return NULL;
     }
@@ -832,6 +937,30 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
         bool fresh = false;
 
         if (b == NULL) {
+            /*
+             * Do not ask again. The translator has already refused this
+             * pc in this context and nothing has flushed since, so a
+             * second attempt does the same work for the same answer --
+             * and that work was 99.7% of the interpreted instructions in
+             * a Linux boot.
+             */
+            if (neg_hit(pc, context)) {
+                g_stats.declined_cached++;
+
+                const emu_run_reason_t r =
+                    run_interp_batch(cpu, ops, &done, budget, batch);
+
+                prev = NULL;
+                if (batch < EMU_JIT_FALLBACK_MAX) {
+                    batch *= 2u;
+                }
+                if (r == EMU_RUN_HALTED || r == EMU_RUN_WFI) {
+                    reason = r;
+                    break;
+                }
+                continue;
+            }
+
             b = translate(cpu, pc, context, ops);
             fresh = (b != NULL);
             /* It may have compacted, which moved or dropped `prev`. */
