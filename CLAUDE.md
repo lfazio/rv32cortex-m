@@ -2059,6 +2059,48 @@ session, and every one of them recurred:
   wrapper was exonerated by inspection and was still reporting a wrong
   answer, because the wrongness was a whole layer below it. Reading the
   code proved the code; only running it proved the behaviour.
+- **A translator asked the same question 636 million times.**
+  `declined` -- a translation attempt that produced nothing -- was the
+  largest single term in a Linux boot: 636.8M against 638.7M
+  interpreted instructions, **99.7%**, because the dispatch loop asked
+  at every pass. Why a pc declines is a property of the code there, so
+  the second answer costs what the first did and *is* the first.
+  Remembering refusals, keyed on (pc, context), took the boot from
+  210/207s to 148/146s -- **1.42x** -- with `translations` unchanged at
+  ~1.025M across 134,860 flushes, which is the number that says nothing
+  legitimate was suppressed.
+
+  Invalidate with an epoch bump, not a memset: every path that can
+  change the answer reaches `emu_jit_flush`, and that runs 129,285
+  times a boot, so clearing the table there would add a cost
+  proportional to the one being removed. Do not remember an *overflow*
+  -- nothing is wrong with that pc, and conflating the two is the
+  three-outcomes defect this file already records twice.
+
+  **The counter was sitting in the stats line for months.** It was
+  printed, it was documented as "the JIT attempts a full translation
+  before almost every interpreted instruction and gets nothing back",
+  and the figure quoted beside it was a guess (~230M) that nobody had
+  re-counted. The fix is small; what was missing was reading the number
+  that was already there.
+
+  And the *test* for it found two defects in the fix, both of which
+  passing-looking work would have shipped:
+
+  **A stub-driven test asserted nothing at all**, because `emu_jit_run`
+  hands the whole budget to the interpreter when no code buffer is
+  installed. Ten checks failed at once -- and only because they were
+  equalities. `declined` staying *small* is exactly what a JIT that was
+  never entered produces, so a bound would have passed.
+
+  **A direct-mapped table masking the low bits collides
+  systematically.** `(pc >> 1) & (SIZE - 1)` reads bits 1..10 only, so
+  any two pcs 0x800 apart evict each other -- which is every pair of
+  declined addresses at the same offset in different pages, i.e. the
+  shape guest code has. Multiply and take the *high* bits so every
+  input bit reaches the slot. Two addresses 0x1000 apart caught it;
+  typical ones would not have.
+
 - **A short block still beats interpreting, so refusing one is a loss.**
   Lowering FENCE took Linux block entries from 100M to 180M, because
   instructions that had been interpreted started landing in

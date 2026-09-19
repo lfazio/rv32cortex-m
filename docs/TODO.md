@@ -242,13 +242,27 @@ measured at.
         for 951k successes"; at this budget it is 637M, and it is the
         largest single term in the run.
 
-        That points somewhere cheaper than the inline memory path. A
-        translator that declines at a given pc will decline there again
-        -- the reasons are properties of the code, not of the moment --
-        so a negative cache keyed on pc would remove almost all of it
-        for a few bytes an entry. **It has not been built or measured**;
-        what is established is only that the attempts are 99.7% of the
-        interpreted instructions and that the clock is 8% the wrong way.
+        **Built and measured.** A translator that declines at a pc
+        declines there again, so the refusals are remembered, keyed on
+        (pc, context) and invalidated by an epoch the flush bumps:
+
+        |  | with | without |
+        |---|---|---|
+        | wall, 2e9 cap | **148 / 146 s** | 210 / 207 s |
+        | declined | 258,596 | 624,309,893 |
+        | cached | 668,408,667 | -- |
+        | translations | 1,025,340 | 1,024,706 |
+
+        **1.42x**, two interleaved rounds, both binaries against the
+        same kernel. Translations unchanged across 134,860 flushes is
+        what says nothing legitimate was suppressed; arch-test is
+        378/378 with `--jit` and riscv-tests 77/77.
+
+        So the JIT is no longer behind the interpreter here -- 148s
+        against the 175/177s an interpreted boot took, though note that
+        comparison crosses a kernel change and has not been re-run.
+        What remains of the gap is the 129,285 whole-cache flushes,
+        which is the next item.
 
         **SFENCE.VMA flushes the whole code cache** -- 129,286 times in
         a boot. An A/B with the invalidation simply removed (incorrect,
