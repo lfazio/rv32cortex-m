@@ -105,16 +105,44 @@
             status = "okay";
             compatible = "riscv";
             /*
-             * What the core actually implements. F and C are there, and
-             * the B extension, but a supervisor payload only cares about
-             * IMA plus the privileged bits -- and naming an extension the
-             * emulator lacks would have the kernel emit instructions that
-             * trap.
+             * What the core actually implements, and it has to be the
+             * whole of it.
+             *
+             * This said `rv32imafc_zicsr_zifencei` on the reasoning that
+             * "a supervisor payload only cares about IMA plus the
+             * privileged bits". That was true while the payload was
+             * OpenSBI and is false for a kernel, in two ways that a boot
+             * log states outright:
+             *
+             *     This kernel does not support systems with F but not D
+             *     riscv: base ISA extensions acfim
+             *     riscv: ELF capabilities acim
+             *
+             * **Declaring F without D loses F.** Linux refuses that
+             * combination, so `f` is dropped from the ELF capabilities
+             * and userspace is told this core has no floating point --
+             * while rv_fpu.c implements both.
+             *
+             * And omitting B costs coverage rather than correctness: a
+             * 6.12 kernel patches Zbb routines in at boot through the
+             * alternatives mechanism, so with B absent **no Linux guest
+             * ever reaches the Zba/Zbb/Zbc/Zbs lowerings in either
+             * backend**. The largest guest in the tree was giving those
+             * paths nothing.
+             *
+             * The old caution is still right and now points the other
+             * way: naming an extension the emulator lacks makes the
+             * kernel emit instructions that trap. **This file is a
+             * third description of the core**, beside RV32_ISA_STRING
+             * and CMake's configure summary, and nothing checks the
+             * three agree. It describes a default build; a tree built
+             * with RV32_EXT_ZBB=OFF and friends has to edit it.
              */
-            riscv,isa = "rv32imafc_zicsr_zifencei";
+            riscv,isa = "rv32imafdc_zicsr_zifencei_zicntr_zba_zbb_zbc_zbs";
             riscv,isa-base = "rv32i";
-            riscv,isa-extensions = "i", "m", "a", "f", "c", "zicsr",
-                                   "zifencei";
+            riscv,isa-extensions = "i", "m", "a", "f", "d", "c", "zicsr",
+                                   "zifencei", "zicntr",
+                                   "zba", "zbb", "zbc", "zbs";
             mmu-type = "riscv,sv32";
 
             cpu0_intc: interrupt-controller {

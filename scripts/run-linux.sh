@@ -201,6 +201,37 @@ else
         --set-str CONFIG_INITRAMFS_SOURCE "$WORK/initramfs.list"
 fi
 
+#
+# Zbb, and this is a *test* rather than a speed setting.
+#
+# `olddefconfig` leaves CONFIG_RISCV_ISA_ZBB unset, so the kernel never
+# patches its Zbb string routines in and the extension goes unexercised
+# however the device tree describes the core. Enabled, the alternatives
+# mechanism can rewrite strlen, strcmp and memchr at boot, and those run
+# constantly -- the only thing in this tree that would drive the Zbb
+# lowerings in both backends from a real program rather than from an
+# architecture test.
+#
+# **What has been established is weaker than that, and the difference
+# matters.** With this on, the DT declaring zbb and the kernel carrying
+# 1227 Zbb instructions, the guest boots to userspace and exits
+# cleanly. That is consistent with the alternatives patching and the
+# lowerings being right -- and equally consistent with nothing being
+# patched at all, because a boot that never executes one cannot fail on
+# it. Distinguishing the two needs a count of Zbb instructions
+# *executed*, which nothing here reports yet. So this is set up to be a
+# test and is not yet evidence.
+#
+# LINUX_ZBB=0 turns it off, which is the bisection the paragraph above
+# would otherwise only describe: a kernel that boots without it and not
+# with it accuses the bit-manipulation path directly.
+#
+if [ "${LINUX_ZBB:-1}" = "0" ]; then
+    "$SRC/scripts/config" --file "$SRC/.config" --disable CONFIG_RISCV_ISA_ZBB
+else
+    "$SRC/scripts/config" --file "$SRC/.config" --enable CONFIG_RISCV_ISA_ZBB
+fi
+
 make -C "$SRC" ARCH=riscv CROSS_COMPILE="$CROSS" -j"$(nproc)" \
     >>"$WORK/kbuild.log" 2>&1 ||
     { echo "error: kernel build failed; see $WORK/kbuild.log" >&2; exit 1; }
