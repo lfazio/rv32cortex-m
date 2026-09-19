@@ -408,8 +408,24 @@ static EMU_ALWAYS_INLINE uint32_t rv_hart_data_priv(const rv_hart_t *h)
  */
 void rv_mmu_refresh(rv_hart_t *h);
 
-/* Discard every cached translation. SFENCE.VMA and satp writes land here. */
+/* Discard every cached translation. A global SFENCE.VMA and satp writes
+ * land here. */
 void rv_mmu_flush(rv_hart_t *h);
+
+/*
+ * SFENCE.VMA naming an address: invalidate that page and nothing else.
+ *
+ * **This is the overwhelmingly common case and was treated as the rare
+ * one.** A Linux boot issues 8 global SFENCE.VMAs against 131,890
+ * carrying an address, and every one of the 131,890 used to discard all
+ * 1,750 resident blocks -- which is what made the run translate
+ * 1,026,399 times.
+ *
+ * Narrowing is legal in one direction only: flushing more than asked is
+ * always correct, flushing less never is. So the TLB entry for the page
+ * goes, and the JIT is told the page rather than told everything.
+ */
+void rv_mmu_flush_page(rv_hart_t *h, uint32_t vaddr);
 
 /*
  * Invalidate the TLB without telling the JIT its blocks are stale.

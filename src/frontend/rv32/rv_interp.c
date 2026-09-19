@@ -998,7 +998,18 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                          (h->mstatus & MSTATUS_TVM) != 0u)) {
                         TRAP(RV_EXC_ILLEGAL_INSN, insn);
                     }
-                    rv_mmu_flush(h);
+                    /*
+                     * rs1 names a virtual address, and almost every
+                     * SFENCE.VMA does: 131,890 of the 131,898 a Linux
+                     * boot issues. Treating them all as global is what
+                     * made that boot retranslate its whole working set
+                     * a million times.
+                     */
+                    if (rv_rs1(insn) != 0u) {
+                        rv_mmu_flush_page(h, h->x[rv_rs1(insn)]);
+                    } else {
+                        rv_mmu_flush(h);
+                    }
                     break;
                 }
 #endif

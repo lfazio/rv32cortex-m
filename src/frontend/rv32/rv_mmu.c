@@ -21,6 +21,7 @@
 
 #include "rv32/rv_hart.h"
 #include "rv32/rv_csr.h"
+#include "rv32/rv_jit.h"
 
 #if RV_EXT_SV32
 
@@ -199,6 +200,31 @@ static rv_exc_t read_pte(rv_hart_t *h, uint32_t pa, emu_access_t acc,
 static uint32_t tlb_slot(uint32_t vpn)
 {
     return vpn & (RV_TLB_ENTRIES - 1u);
+}
+
+void rv_mmu_flush_page(rv_hart_t *h, uint32_t vaddr)
+{
+    const uint32_t vpn = vaddr >> 12;
+    const uint32_t slot = tlb_slot(vpn);
+
+    /*
+     * One entry, because the TLB is tagged with the full VPN and this
+     * request names exactly one. Clearing the other thirty-one would be
+     * legal and is what rv_mmu_flush does; there is no reason to here.
+     */
+    if (h->tlb[slot].valid && h->tlb[slot].vpn == vpn) {
+        h->tlb[slot].valid = false;
+    }
+
+    /*
+     * And the translated code. **No vm_gen bump**: that is the
+     * generation the JIT keys every block on, so touching it here would
+     * discard all of them and undo the whole point. The framework is
+     * told the page instead, and retires only the blocks built from it.
+     */
+#if EMU_HAVE_JIT
+    rv_jit_invalidate_page(vaddr);
+#endif
 }
 
 rv_exc_t rv_mmu_translate(rv_hart_t *h, uint32_t va, emu_access_t acc,

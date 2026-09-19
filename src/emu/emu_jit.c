@@ -194,6 +194,114 @@ static uint32_t pc_hash(uint32_t pc, uint32_t context)
 }
 
 /* ------------------------------------------------------------------ */
+/* Invalidating one page                                               */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The guest pages a block was translated from.
+ *
+ * Derived rather than recorded: the framework is told how many guest
+ * instructions a block retires, not how many bytes it spans, so the end
+ * is bounded by four bytes an instruction. That over-estimates for any
+ * guest with compressed encodings, which invalidates a superset -- the
+ * safe direction, and bounded, because a block of a dozen instructions
+ * reaches at most two pages either way.
+ */
+#define JIT_PAGE_SHIFT 12u
+
+static uint32_t block_page_lo(const jit_block_t *b)
+{
+    return b->guest_pc >> JIT_PAGE_SHIFT;
+}
+
+static uint32_t block_page_hi(const jit_block_t *b)
+{
+    const uint32_t span = (b->insns != 0u) ? (b->insns * 4u - 1u) : 0u;
+
+    return (b->guest_pc + span) >> JIT_PAGE_SHIFT;
+}
+
+/* Take the block out of its hash bucket so nothing can enter it again. */
+static void unhash(uint32_t idx)
+{
+    jit_block_t *const b = &g_blocks[idx];
+    const uint32_t bucket = pc_hash(b->guest_pc, b->context);
+    int32_t *link = &g_hash[bucket];
+
+    while (*link >= 0) {
+        if ((uint32_t)*link == idx) {
+            *link = b->next;
+            b->next = -1;
+            return;
+        }
+        link = &g_blocks[*link].next;
+    }
+}
+
+void emu_jit_invalidate_page(uint32_t vaddr, const emu_jit_ops_t *ops)
+{
+    const uint32_t page = vaddr >> JIT_PAGE_SHIFT;
+
+    if (ops->emit_jump == NULL || ops->jump_bytes == 0u) {
+        emu_jit_flush(); /* the host cannot retire one block */
+        return;
+    }
+
+    /*
+     * **Both patchers decline while the overflow flag is up**, and it
+     * stays up from the last translation that ran out of room until the
+     * next one starts. Nothing is being emitted here, so the flag is
+     * meaningless -- and left alone it would make a patch silently not
+     * happen, which is the one outcome that must not be possible: an
+     * inbound chained jump would then run the stale body.
+     */
+    g_overflow = false;
+
+    for (uint32_t i = 0; i < g_block_count; i++) {
+        jit_block_t *const b = &g_blocks[i];
+
+        if (b->code == NULL || page < block_page_lo(b) ||
+            page > block_page_hi(b)) {
+            continue;
+        }
+
+        /*
+         * A block nothing can jump into needs no patch: link_exit
+         * refuses a target that is not chainable, so unhashing is the
+         * whole of it.
+         */
+        if (b->layout.chainable) {
+            const uint32_t body = (b->layout.tail > b->layout.chain_entry)
+                                      ? b->layout.tail - b->layout.chain_entry
+                                      : 0u;
+
+            if (body < ops->jump_bytes) {
+                /*
+                 * No room to turn the entry into a jump, so inbound
+                 * links cannot be made harmless one block at a time.
+                 * Discarding everything is the correct answer and this
+                 * is the only path that needs it.
+                 */
+                emu_jit_flush();
+                return;
+            }
+            ops->emit_jump(b->code + b->layout.chain_entry,
+                           b->code + b->layout.tail);
+        }
+
+        unhash(i);
+        /*
+         * Retired, not reclaimed. The bytes stay until compaction, which
+         * drops anything unreachable; freeing here would need the code
+         * after it to move, and something may be executing it right now.
+         */
+        b->code = NULL;
+        b->hits = 0u;
+        g_stats.page_invalidations++;
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* The negative cache                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -356,6 +464,10 @@ static void unlink_all(const emu_jit_ops_t *ops)
     for (uint32_t i = 0; i < g_block_count; i++) {
         jit_block_t *const b = &g_blocks[i];
 
+        /* Retired by a page invalidation; its code is already a jump. */
+        if (b->code == NULL) {
+            continue;
+        }
         for (uint32_t k = 0; k < b->layout.nlink; k++) {
             if (b->layout.link[k].linked) {
                 ops->patch_link(b->code + b->layout.link[k].site,
@@ -430,6 +542,9 @@ static void compact(const emu_jit_ops_t *ops)
 
     memset(bytes, 0, sizeof(bytes));
     for (uint32_t i = 0; i < g_block_count; i++) {
+        if (g_blocks[i].code == NULL) {
+            continue; /* retired; its bytes are about to be reclaimed */
+        }
         bytes[hit_bin(g_blocks[i].hits)] += g_blocks[i].len;
     }
 
@@ -471,6 +586,16 @@ static void compact(const emu_jit_ops_t *ops)
     for (uint32_t i = 0; i < g_block_count; i++) {
         jit_block_t b = g_blocks[i];
 
+        /*
+         * Retired by a page invalidation. Dropped here rather than left
+         * to the hit threshold, because rebuild_hash below re-adds every
+         * survivor -- so a retired block kept by a low threshold would
+         * become findable again, which is the one thing invalidation
+         * must not allow.
+         */
+        if (b.code == NULL) {
+            continue;
+        }
         if (hit_bin(b.hits) < threshold) {
             g_stats.evictions++;
             continue;
@@ -545,8 +670,7 @@ static bool space_low(void)
  * buffer, which is a reclaim signal.
  */
 static jit_block_t *translate_once(emu_cpu_t *cpu, uint32_t pc,
-                                   const emu_jit_ops_t *ops,
-                                   uint32_t context)
+                                   const emu_jit_ops_t *ops, uint32_t context)
 {
     /* Blocks are entered by branching to them, so keep them aligned. */
     g_code_used = (g_code_used + 3u) & ~3u;

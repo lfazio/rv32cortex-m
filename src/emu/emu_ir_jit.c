@@ -64,6 +64,25 @@ static void ir_patch_link(uint8_t *site, const uint8_t *target)
     t2_sync_code(site, 4u);
 }
 #define EMU_IR_JIT_PATCH_LINK ir_patch_link
+
+/*
+ * Write an unconditional jump over code that was not a branch.
+ *
+ * Different from patch_link, which rewrites the displacement of a
+ * branch already emitted. This one *creates* one, which is what
+ * retiring a block needs: its chain_entry is ordinary code and has to
+ * become a jump to its own tail.
+ *
+ * T4 encodes +/-16 MB, and the code buffer is far smaller, so there is
+ * no range to check.
+ */
+static void ir_emit_jump(uint8_t *at, const uint8_t *target)
+{
+    t2_patch_branch(at, target, false);
+    t2_sync_code(at, 4u);
+}
+#define EMU_IR_JIT_EMIT_JUMP ir_emit_jump
+#define EMU_IR_JIT_JUMP_BYTES 4u
 #else
 #include "emu/emu_x86_64.h" /* for x86_patch_rel32, below */
 #define EMU_IR_JIT_NAME "jit-ir-x86-64"
@@ -75,6 +94,24 @@ static void ir_patch_link(uint8_t *site, const uint8_t *target)
     x86_patch_rel32(site, target);
 }
 #define EMU_IR_JIT_PATCH_LINK ir_patch_link
+
+/*
+ * As above: patch_link rewrites the displacement of a jump already
+ * emitted, so on x86-64 it takes the address *after* the opcode. This
+ * writes the opcode too, which is what turning ordinary code into a
+ * jump requires.
+ *
+ * E9 rel32, and the displacement is relative to the next instruction --
+ * which is (at + 1) + 4, exactly what x86_patch_rel32 computes from the
+ * slot it is given.
+ */
+static void ir_emit_jump(uint8_t *at, const uint8_t *target)
+{
+    at[0] = 0xE9u;
+    x86_patch_rel32(at + 1, target);
+}
+#define EMU_IR_JIT_EMIT_JUMP ir_emit_jump
+#define EMU_IR_JIT_JUMP_BYTES 5u
 #endif
 
 static emu_ir_block_t g_ir;
@@ -222,40 +259,40 @@ static bool ir_diff_ref(emu_cpu_t *cpu, const emu_ir_frontend_t *fe)
 #define EMU_IR_DIFF_FIELDS(prefix)
 #endif
 
-#define EMU_IR_DEFINE_X86_BACKEND(sym, fe, prefix)                                                    \
-                                                                                                      \
-    static uint32_t prefix##_translate(emu_cpu_t *cpu, uint32_t pc)                                   \
-    {                                                                                                 \
-        return ir_translate(cpu, pc, &(fe));                                                          \
-    }                                                                                                 \
-                                                                                                      \
-    static void prefix##_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)                                     \
-    {                                                                                                 \
-        (fe).bind(cpu, out);                                                                          \
-    }                                                                                                 \
-                                                                                                      \
-    static bool prefix##_is_idle(emu_cpu_t *cpu)                                                      \
-    {                                                                                                 \
-        return (fe).is_idle != NULL && (fe).is_idle(cpu);                                             \
-    }                                                                                                 \
-                                                                                                      \
-    static bool prefix##_wake(emu_cpu_t *cpu)                                                         \
-    {                                                                                                 \
-        return (fe).wake != NULL && (fe).wake(cpu);                                                   \
-    }                                                                                                 \
-                                                                                                      \
-    static bool prefix##_take_irq(emu_cpu_t *cpu)                                                     \
-    {                                                                                                 \
-        return (fe).take_irq != NULL && (fe).take_irq(cpu);                                           \
-    }                                                                                                 \
-                                                                                                      \
-    static void prefix##_count(emu_cpu_t *cpu, uint32_t n)                                            \
-    {                                                                                                 \
-        if ((fe).count != NULL) {                                                                     \
-            (fe).count(cpu, n);                                                                       \
-        }                                                                                             \
-    }                                                                                                 \
-                                                                                                      \
+#define EMU_IR_DEFINE_X86_BACKEND(sym, fe, prefix)                                                      \
+                                                                                                        \
+    static uint32_t prefix##_translate(emu_cpu_t *cpu, uint32_t pc)                                     \
+    {                                                                                                   \
+        return ir_translate(cpu, pc, &(fe));                                                            \
+    }                                                                                                   \
+                                                                                                        \
+    static void prefix##_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)                                       \
+    {                                                                                                   \
+        (fe).bind(cpu, out);                                                                            \
+    }                                                                                                   \
+                                                                                                        \
+    static bool prefix##_is_idle(emu_cpu_t *cpu)                                                        \
+    {                                                                                                   \
+        return (fe).is_idle != NULL && (fe).is_idle(cpu);                                               \
+    }                                                                                                   \
+                                                                                                        \
+    static bool prefix##_wake(emu_cpu_t *cpu)                                                           \
+    {                                                                                                   \
+        return (fe).wake != NULL && (fe).wake(cpu);                                                     \
+    }                                                                                                   \
+                                                                                                        \
+    static bool prefix##_take_irq(emu_cpu_t *cpu)                                                       \
+    {                                                                                                   \
+        return (fe).take_irq != NULL && (fe).take_irq(cpu);                                             \
+    }                                                                                                   \
+                                                                                                        \
+    static void prefix##_count(emu_cpu_t *cpu, uint32_t n)                                              \
+    {                                                                                                   \
+        if ((fe).count != NULL) {                                                                       \
+            (fe).count(cpu, n);                                                                         \
+        }                                                                                               \
+    }                                                                                                   \
+                                                                                                        \
     /*                                                                                                \
      * **The generation key was inert without this.** The framework      \
      * calls after_interp once per interpreted instruction, which is the \
@@ -267,26 +304,26 @@ static bool ir_diff_ref(emu_cpu_t *cpu, const emu_ir_frontend_t *fe)
      * what it baked in for up to a whole budget, which is exactly the   \
      * staleness the key exists to prevent. Same shape as `.sync`, which \
      * this macro also dropped.                                          \
-     */                                                                                               \
-    static void prefix##_after_interp(emu_cpu_t *cpu)                                                 \
-    {                                                                                                 \
-        if ((fe).after_interp != NULL) {                                                              \
-            (fe).after_interp(cpu);                                                                   \
-        }                                                                                             \
-    }                                                                                                 \
-                                                                                                      \
-    EMU_IR_DIFF_HOOK(fe, prefix)                                                                      \
-                                                                                                      \
-    static const emu_jit_ops_t prefix##_jit_ops = {                                                   \
-        .name = EMU_IR_JIT_NAME,                                                                      \
-        EMU_IR_DIFF_FIELDS(prefix).bind = prefix##_bind,                                              \
-        .translate =                                                                                  \
+     */ \
+    static void prefix##_after_interp(emu_cpu_t *cpu)                                                   \
+    {                                                                                                   \
+        if ((fe).after_interp != NULL) {                                                                \
+            (fe).after_interp(cpu);                                                                     \
+        }                                                                                               \
+    }                                                                                                   \
+                                                                                                        \
+    EMU_IR_DIFF_HOOK(fe, prefix)                                                                        \
+                                                                                                        \
+    static const emu_jit_ops_t prefix##_jit_ops = {                                                     \
+        .name = EMU_IR_JIT_NAME,                                                                        \
+        EMU_IR_DIFF_FIELDS(prefix).bind = prefix##_bind,                                                \
+        .translate =                                                                                    \
             prefix##_translate, /*                                                                  \
      * Relocatable: every branch inside a block is a rel32 whose ends    \
      * move together, and every address that is not -- helpers, guest    \
      * pc -- is an absolute immediate.                                   \
-     */ \
-        .relocatable =                                                                                \
+     */   \
+        .relocatable =                                                                                  \
             true, /*                                                                  \
      * **Per host, and it was not.** This said `NULL` for both, with a   \
      * comment justifying it for x86 -- whose caches are coherent with   \
@@ -295,66 +332,68 @@ static bool ir_diff_ref(emu_cpu_t *cpu, const emu_ir_frontend_t *fe)
      * on a Cortex-M7 that means branching into bytes the instruction    \
      * side has never seen. Not a wrong answer: arbitrary code, and only \
      * once the buffer is *reused*, so a short run looks healthy.        \
-     */               \
-        .sync = EMU_IR_JIT_SYNC,                                                                      \
-        .interp = NULL, /* filled below; see the note there */                                        \
-        .is_idle = prefix##_is_idle,                                                                  \
-        .wake = prefix##_wake,                                                                        \
-        .take_irq = prefix##_take_irq,                                                                \
-        .count = prefix##_count,                                                                      \
-        .after_interp = prefix##_after_interp,                                                         \
-        .patch_link = EMU_IR_JIT_PATCH_LINK,                                                          \
-    };                                                                                                \
-                                                                                                      \
-    static emu_jit_ops_t prefix##_ops_live;                                                           \
-                                                                                                      \
-    static bool prefix##_init(emu_cpu_t *cpu)                                                         \
-    {                                                                                                 \
-        (void)cpu;                                                                                    \
+     */                 \
+        .sync = EMU_IR_JIT_SYNC,                                                                        \
+        .interp = NULL, /* filled below; see the note there */                                          \
+        .is_idle = prefix##_is_idle,                                                                    \
+        .wake = prefix##_wake,                                                                          \
+        .take_irq = prefix##_take_irq,                                                                  \
+        .count = prefix##_count,                                                                        \
+        .after_interp = prefix##_after_interp,                                                          \
+        .patch_link = EMU_IR_JIT_PATCH_LINK,                                                            \
+        .emit_jump = EMU_IR_JIT_EMIT_JUMP,                                                              \
+        .jump_bytes = EMU_IR_JIT_JUMP_BYTES,                                                            \
+    };                                                                                                  \
+                                                                                                        \
+    static emu_jit_ops_t prefix##_ops_live;                                                             \
+                                                                                                        \
+    static bool prefix##_init(emu_cpu_t *cpu)                                                           \
+    {                                                                                                   \
+        (void)cpu;                                                                                      \
         /*                                                                  \
      * `interp` is a pointer to another translation unit's const object \
      * and so is not a constant expression for a static initialiser.    \
      * Bound here, once, rather than left NULL -- the dispatch loop      \
      * calls it for every declined instruction, which is the common      \
      * case rather than an edge one.                                    \
-     */                         \
-        prefix##_ops_live = prefix##_jit_ops;                                                         \
-        prefix##_ops_live.interp = (fe).interp;                                                       \
-        prefix##_ops_live.state_bytes = (fe).diff_state_bytes;                                        \
-        if (emu_jit_init((fe).code_bytes)) {                                                          \
-            return true;                                                                              \
-        }                                                                                             \
-        return emu_ir_jit_static_buffer();                                                            \
-    }                                                                                                 \
-                                                                                                      \
-    static void prefix##_reset(emu_cpu_t *cpu)                                                        \
-    {                                                                                                 \
-        (void)cpu;                                                                                    \
-        emu_jit_flush();                                                                              \
-    }                                                                                                 \
-                                                                                                      \
-    static void prefix##_invalidate(emu_cpu_t *cpu, uint32_t a, uint32_t l)                           \
-    {                                                                                                 \
-        (void)cpu;                                                                                    \
-        (void)a;                                                                                      \
-        (void)l;                                                                                      \
+     */                           \
+        prefix##_ops_live = prefix##_jit_ops;                                                           \
+        prefix##_ops_live.interp = (fe).interp;                                                         \
+        prefix##_ops_live.state_bytes = (fe).diff_state_bytes;                                          \
+        if (emu_jit_init((fe).code_bytes)) {                                                            \
+            return true;                                                                                \
+        }                                                                                               \
+        return emu_ir_jit_static_buffer();                                                              \
+    }                                                                                                   \
+                                                                                                        \
+    static void prefix##_reset(emu_cpu_t *cpu)                                                          \
+    {                                                                                                   \
+        (void)cpu;                                                                                      \
+        emu_jit_flush();                                                                                \
+    }                                                                                                   \
+                                                                                                        \
+    static void prefix##_invalidate(emu_cpu_t *cpu, uint32_t a, uint32_t l)                             \
+    {                                                                                                   \
+        (void)cpu;                                                                                      \
+        (void)a;                                                                                        \
+        (void)l;                                                                                        \
         /* Whole-cache flush: translations are cheap to rebuild, and         \
-     * tracking which blocks covered a range costs more than it saves. */                        \
-        emu_jit_flush();                                                                              \
-    }                                                                                                 \
-                                                                                                      \
-    static emu_run_reason_t prefix##_run(emu_cpu_t *cpu, uint32_t budget,                             \
-                                         uint32_t *retired)                                           \
-    {                                                                                                 \
-        return emu_jit_run(cpu, budget, retired, &prefix##_ops_live);                                 \
-    }                                                                                                 \
-                                                                                                      \
-    const emu_backend_t sym = {                                                                       \
-        .name = EMU_IR_JIT_NAME,                                                                      \
-        .init = prefix##_init,                                                                        \
-        .reset = prefix##_reset,                                                                      \
-        .run = prefix##_run,                                                                          \
-        .invalidate = prefix##_invalidate,                                                            \
+     * tracking which blocks covered a range costs more than it saves. */                          \
+        emu_jit_flush();                                                                                \
+    }                                                                                                   \
+                                                                                                        \
+    static emu_run_reason_t prefix##_run(emu_cpu_t *cpu, uint32_t budget,                               \
+                                         uint32_t *retired)                                             \
+    {                                                                                                   \
+        return emu_jit_run(cpu, budget, retired, &prefix##_ops_live);                                   \
+    }                                                                                                   \
+                                                                                                        \
+    const emu_backend_t sym = {                                                                         \
+        .name = EMU_IR_JIT_NAME,                                                                        \
+        .init = prefix##_init,                                                                          \
+        .reset = prefix##_reset,                                                                        \
+        .run = prefix##_run,                                                                            \
+        .invalidate = prefix##_invalidate,                                                              \
     }
 
 #if EMU_GUEST_ARCH_RV32
@@ -364,6 +403,16 @@ EMU_IR_DEFINE_X86_BACKEND(rv_backend_jit, rv_ir_frontend, rv);
 void rv_jit_flush(void)
 {
     emu_jit_flush();
+}
+
+/*
+ * SFENCE.VMA naming an address, which is 131,890 of the 131,898 a Linux
+ * boot issues. Discarding only the blocks built from that page is what
+ * stops the other 1,750 being retranslated for the millionth time.
+ */
+void rv_jit_invalidate_page(uint32_t vaddr)
+{
+    emu_jit_invalidate_page(vaddr, &rv_ops_live);
 }
 #endif /* EMU_GUEST_ARCH_RV32 */
 

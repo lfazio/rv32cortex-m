@@ -75,6 +75,13 @@ void rv_jit_set_code_buffer(void *buf, uint32_t size);
 void rv_jit_flush(void);
 
 /*
+ * Retire only the blocks translated from the guest page holding
+ * `vaddr`. See rv_mmu_flush_page for why this exists and emu_jit.h for
+ * how a block is retired without a reverse index of who jumps into it.
+ */
+void rv_jit_invalidate_page(uint32_t vaddr);
+
+/*
  * The RV32 JIT's own statistics used to live here, duplicating the
  * framework's and adding nine counters of its own -- helper calls by
  * class, elided loads and stores, passthrough arming, and reads per block

@@ -166,6 +166,14 @@ typedef struct emu_jit_stats {
      * identical without this.
      */
     uint32_t declined_cached;
+    /*
+     * Blocks retired by emu_jit_invalidate_page rather than by a flush.
+     * Beside `flushes` for the same reason `cached` sits beside
+     * `declined`: the claim is that almost every SFENCE.VMA names one
+     * page, so these two moving in opposite directions is what the
+     * change working looks like.
+     */
+    uint32_t page_invalidations;
 #ifdef EMU_JIT_DIFF
     /*
      * How much of the differential check actually ran. Without these,
@@ -373,6 +381,28 @@ typedef struct emu_jit_ops {
      */
     void (*patch_link)(uint8_t *site, const uint8_t *target);
 
+    /*
+     * Write an unconditional jump at `at`, over whatever was there.
+     *
+     * Distinct from patch_link, which rewrites the displacement of a
+     * branch *already emitted* -- the wrong primitive for retiring a
+     * block, whose chain_entry is ordinary code that has to become a
+     * jump to its own tail.
+     *
+     * That is what lets a single block be invalidated without a reverse
+     * index from a block back to everything that jumps into it: an
+     * inbound chained jump lands on the new jump and falls into the
+     * dispatcher, which retranslates the pc. Building the reverse index
+     * instead would be O(blocks x links) per invalidation, and a Linux
+     * boot invalidates 131,890 times.
+     *
+     * NULL means the host cannot do this, and emu_jit_invalidate_page
+     * then falls back to discarding everything -- always a legal answer
+     * to a narrower request. `jump_bytes` is how much room it needs.
+     */
+    void (*emit_jump)(uint8_t *at, const uint8_t *target);
+    uint32_t jump_bytes;
+
     /* True when the hart is parked and only an interrupt can restart it. */
     bool (*is_idle)(emu_cpu_t *cpu);
     bool (*wake)(emu_cpu_t *cpu);
@@ -448,6 +478,23 @@ void emu_jit_set_buffer(void *mem, uint32_t bytes);
 
 /* Discard every translated block. */
 void emu_jit_flush(void);
+
+/*
+ * Discard only the blocks translated from the guest page holding
+ * `vaddr`.
+ *
+ * SFENCE.VMA almost always names an address: a Linux boot issues 8
+ * global ones against 131,890 page-targeted, and treating every one as
+ * global is what makes that boot translate a million times for 1,750
+ * resident blocks.
+ *
+ * Conservative in two directions on purpose. The page range a block
+ * covers is derived from its guest pc and its instruction count, which
+ * over-estimates; and a host with no `emit_jump`, or a block whose body
+ * is too short to hold a jump, falls back to discarding everything.
+ * Both invalidate a superset, which is always correct.
+ */
+void emu_jit_invalidate_page(uint32_t vaddr, const emu_jit_ops_t *ops);
 
 void emu_jit_get_stats(emu_jit_stats_t *out);
 
