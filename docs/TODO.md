@@ -261,8 +261,25 @@ measured at.
         So the JIT is no longer behind the interpreter here -- 148s
         against the 175/177s an interpreted boot took, though note that
         comparison crosses a kernel change and has not been re-run.
-        What remains of the gap is the 129,285 whole-cache flushes,
-        which is the next item.
+
+        **Then page-granular SFENCE.VMA, and then `time`.** The first
+        collapsed flushes 134,857 to 2,968 and translations 1,023,251 to
+        174,903 -- and moved the clock 2%, which is what said
+        translation was never the cost. The second is where it was:
+
+        | | wall | interp | block entries |
+        |---|---|---|---|
+        | negative cache | 148 s | 673.7M | 682.0M |
+        | + page-granular | 137 s | 674.6M | 685.8M |
+        | + `time` lowered | **80 s** | **358.1M** | **366.6M** |
+
+        `rdtime` was **335,195,899** of the boot's 2e9 instructions,
+        polled in kernel delay loops and declined by the translator, so
+        each iteration paid a dispatch and an interpreter entry.
+
+        What is left: `interp` is still 358M of 2e9, 18%. The next
+        question is the same one asked again -- which instruction, not
+        which class -- and it has not been asked yet.
 
         **SFENCE.VMA flushes the whole code cache** -- 129,286 times in
         a boot, and **99.994% of those requests were not global**:

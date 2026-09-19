@@ -2059,6 +2059,48 @@ session, and every one of them recurred:
   wrapper was exonerated by inspection and was still reporting a wrong
   answer, because the wrongness was a whole layer below it. Reading the
   code proved the code; only running it proved the behaviour.
+- **Half of a Linux boot was one instruction, and the counter that
+  would have said so was three layers down.** A third of the guest's
+  instructions were interpreted, which reads as "the translator refuses
+  a lot of this kernel". It refuses **one thing**: `rdtime`, executed
+  **335,195,899 times** in a 2e9-instruction boot -- 99.2% of all CSR
+  accesses -- because the kernel polls it in delay loops. Lowering
+  *reads* of `time` took the boot from 137s to **80s**, halving both
+  interpreted instructions (674.6M to 358.1M) and block entries (685.8M
+  to 366.6M).
+
+  **Getting there took three instruments, each refuting the last.**
+  `declined` said translation attempts were 99.7% of interpreted
+  instructions -- true, and the negative cache that fixed it bought
+  1.42x. Then a histogram of *why* blocks declined said SYSTEM was
+  90.8%, which reads as trap-entry CSR churn. Only a histogram of
+  *which CSR* showed it was a single counter in a spin loop. Two of my
+  three readings along the way were wrong, and each was wrong because
+  the bucket was too coarse to distinguish the cases.
+
+  The same run settled a hypothesis worth keeping dead: `fetch` failed
+  **once** in the whole boot, so the translator's page walk is not
+  stricter than the interpreter's.
+
+  **Why the fix is three lines of conditions rather than "lower CSR
+  access".** The translator declining SYSTEM is a *designed* invariant,
+  not an omission: it is what makes the interpreter fallback the single
+  place frm, `mstatus.FS`, the PMP configuration and satp can change,
+  and therefore the only place the generation key has to be
+  re-derived. Lowering a CSR *write* breaks it, and the failure is the
+  staleness class this file has five entries about. So: reads only
+  (CSRRW always writes); `time` and `timeh` only -- **not `cycle` or
+  `instret`, which a block cannot read correctly at all**, because it
+  accumulates retirements and commits them at the end, so a mid-block
+  read sees a stale count; and HELPER_TRAP rather than HELPER, because
+  reading `time` below M faults unless counteren allows it and
+  counteren can change under a block.
+
+  The general lesson is the one about dynamic frequency, in a new
+  place: **ask which instruction, not which class.** "SYSTEM is 90.8%
+  of declines" and "one counter is 99.2% of CSR executions" point at
+  completely different fixes, and only the second is true.
+
 - **A translator asked the same question 636 million times.**
   `declined` -- a translation attempt that produced nothing -- was the
   largest single term in a Linux boot: 636.8M against 638.7M
