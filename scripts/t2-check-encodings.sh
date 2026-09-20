@@ -48,6 +48,10 @@ tst.w   r1, #3
 cmp.w   r6, #128
 add.w   sp, sp, ip
 sub.w   sp, sp, ip
+sdiv    r0, r2, r3
+udiv    r0, r2, r3
+sdiv    r1, r2, r3
+mls     r0, r1, r3, r2
 EOF
 
 cat >"$work/emit.c" <<'EOF'
@@ -98,6 +102,17 @@ int main(void)
      */
     t2_emit32(0xEB0Du, (uint16_t)((13u << 8) | 12u));
     t2_emit32(0xEBADu, (uint16_t)((13u << 8) | 12u));
+
+    /*
+     * The divide family. `mls` is the remainder's second half and its
+     * operand order is the easiest thing here to get backwards -- the
+     * encoding is rd = ra - rn * rm, and the assembler writes it
+     * `mls rd, rn, rm, ra`.
+     */
+    t2_sdiv(0u, 2u, 3u);
+    t2_udiv(0u, 2u, 3u);
+    t2_sdiv(1u, 2u, 3u);
+    t2_mls(0u, 1u, 3u, 2u);
 
     for (uint8_t *p = buf; p < emu_jit_cursor; p++) {
         printf("%02x", *p);

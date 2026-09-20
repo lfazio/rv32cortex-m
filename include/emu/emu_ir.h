@@ -142,6 +142,29 @@ typedef enum emu_ir_op {
     EMU_IR_MULHU,
 
     /*
+     * Integer divide and remainder, with the *host's* semantics and not
+     * a guest's.
+     *
+     * **The divisor must be non-zero, and the signed forms must not be
+     * asked for INT_MIN / -1.** Both are the caller's responsibility,
+     * because there is no answer a backend could give that suits every
+     * guest: RISC-V defines those cases as producing values, x86 raises
+     * #DE, and ARM's SDIV returns zero. A frontend that emits these
+     * without guaranteeing the precondition has written a guest-visible
+     * fault into translated code that the interpreter would not take.
+     *
+     * Normalising in the frontend rather than here is what keeps it to
+     * one copy: the alternative is every backend reproducing the same
+     * two special cases, which is the arrangement that made the FP unit
+     * disagree with itself until it was routed through one
+     * implementation.
+     */
+    EMU_IR_DIVS,
+    EMU_IR_DIVU,
+    EMU_IR_REMS,
+    EMU_IR_REMU,
+
+    /*
      * dst = c +/- (a * b), the multiply-accumulate. ARM's MLA and MLS,
      * and the second user of the IR's third operand.
      *
@@ -622,7 +645,6 @@ static inline bool emu_ir_exit_is_const(const emu_ir_insn_t *in)
     }
     return in->op == (uint8_t)EMU_IR_EXIT && in->a == EMU_IR_NO_TEMP;
 }
-
 
 /*
  * A window of guest memory a backend may read and write directly.

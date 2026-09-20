@@ -666,8 +666,6 @@ static uint8_t *g_body;
 static uint32_t g_start_pc;
 static bool g_has_start_pc;
 
-
-
 static void note_exit(uint8_t *slot)
 {
     if (g_nexits < IR_MAX_EXITS) {
@@ -877,6 +875,12 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
     case EMU_IR_SHLI:
     case EMU_IR_SHRI:
     case EMU_IR_SARI:
+        return true;
+
+    case EMU_IR_DIVS:
+    case EMU_IR_DIVU:
+    case EMU_IR_REMS:
+    case EMU_IR_REMU:
         return true;
 
     case EMU_IR_FGET:
@@ -1835,6 +1839,47 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                                     : 0xE9u)); /* imul ecx */
         if (in->op != (uint8_t)EMU_IR_MUL) {
             x86_mov_rr(T0, T2); /* the high half */
+        }
+        st_slot(T0, in->dst);
+        break;
+    }
+
+    case EMU_IR_DIVS:
+    case EMU_IR_DIVU:
+    case EMU_IR_REMS:
+    case EMU_IR_REMU: {
+        /*
+         * The same shape as the multiplies above, and the same fixed
+         * pair: the one-operand form divides edx:eax by the operand and
+         * leaves the quotient in eax and the remainder in edx.
+         *
+         * **The dividend's upper half has to be set up, and the two
+         * signednesses do it differently.** CDQ sign-extends eax into
+         * edx, which is what idiv needs; div needs edx zeroed outright.
+         * Getting that wrong does not compute a wrong answer, it raises
+         * #DE for a quotient that does not fit.
+         *
+         * Nothing here guards the divisor. EMU_IR_DIV* are defined as
+         * host divides with the precondition that the divisor is
+         * non-zero and the signed case is not INT_MIN / -1 -- the
+         * frontend normalises, once, rather than each backend doing it
+         * again.
+         */
+        const bool sgn =
+            (in->op == (uint8_t)EMU_IR_DIVS || in->op == (uint8_t)EMU_IR_REMS);
+
+        ld_operand(T0, in->a);
+        ld_operand(T1, in->b);
+        if (sgn) {
+            emu_jit_emit8(0x99); /* cdq */
+        } else {
+            x86_alu_rr(0x31u, T2, T2); /* xor edx, edx */
+        }
+        emu_jit_emit8(0xF7);
+        emu_jit_emit8((uint8_t)(sgn ? 0xF9u /* idiv ecx */
+                                    : 0xF1u)); /* div  ecx */
+        if (in->op == (uint8_t)EMU_IR_REMS || in->op == (uint8_t)EMU_IR_REMU) {
+            x86_mov_rr(T0, T2); /* the remainder */
         }
         st_slot(T0, in->dst);
         break;

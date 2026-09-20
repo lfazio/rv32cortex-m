@@ -291,8 +291,7 @@ void t2_subw(uint32_t rd, uint32_t rn, uint16_t imm12)
  * An encoder whose wrong answers are other valid instructions has to
  * be checked against something that already knows.
  */
-bool t2_ld_reg(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t size,
-               bool sign)
+bool t2_ld_reg(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t size, bool sign)
 {
     uint32_t op;
 
@@ -710,6 +709,41 @@ void t2_mull(bool sign, uint32_t rdlo, uint32_t rdhi, uint32_t rn, uint32_t rm)
 {
     t2_emit32((uint16_t)((sign ? 0xFB80u : 0xFBA0u) | rn),
               (uint16_t)((rdlo << 12) | (rdhi << 8) | rm));
+}
+
+/*
+ * SDIV and UDIV, T1.
+ *
+ * ARMv7E-M has both, so a Cortex-M3 and above can divide in hardware --
+ * which is the whole reason the frontend normalises rather than calling
+ * a helper.
+ *
+ * **They do not fault.** ARM returns zero for a division by zero and
+ * INT_MIN for INT_MIN / -1, where x86 raises #DE for both. That is why
+ * EMU_IR_DIV* is defined with a precondition instead of a guest's
+ * semantics: neither host's answer is RISC-V's, so neither backend is
+ * the right place to decide.
+ */
+void t2_sdiv(uint32_t rd, uint32_t rn, uint32_t rm)
+{
+    t2_emit32((uint16_t)(0xFB90u | rn), (uint16_t)(0xF0F0u | (rd << 8) | rm));
+}
+
+void t2_udiv(uint32_t rd, uint32_t rn, uint32_t rm)
+{
+    t2_emit32((uint16_t)(0xFBB0u | rn), (uint16_t)(0xF0F0u | (rd << 8) | rm));
+}
+
+/*
+ * MLS: rd = ra - rn * rm.
+ *
+ * There is no remainder instruction, so a remainder is a divide, a
+ * multiply and a subtract -- and MLS folds the last two into one.
+ */
+void t2_mls(uint32_t rd, uint32_t rn, uint32_t rm, uint32_t ra)
+{
+    t2_emit32((uint16_t)(0xFB00u | rn),
+              (uint16_t)((ra << 12) | (rd << 8) | 0x0010u | rm));
 }
 
 /* ------------------------------------------------------------------ */

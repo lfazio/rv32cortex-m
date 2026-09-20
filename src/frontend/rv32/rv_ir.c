@@ -331,6 +331,152 @@ static uint32_t rv_ir_amo_helper(emu_cpu_t *cpu, uint32_t insn, uint32_t unused)
 #endif /* RV_EXT_A */
 
 /*
+ * Divide and remainder, natively, with RISC-V's answers built around a
+ * host divide that must never see the awkward operands.
+ *
+ * **The arithmetic was never the problem; the two cases around it are.**
+ * RISC-V *defines* divide by zero and signed overflow as producing
+ * values -- x86 raises #DE for both and ARM's SDIV returns zero -- so a
+ * host divide is right for every other input and wrong, differently per
+ * host, for exactly two. This is the same shape as the FP work: the
+ * operation matches and what surrounds it does not.
+ *
+ * The divisor is substituted rather than branched around, so the emitted
+ * code is straight-line and the host divide never faults:
+ *
+ *      z   = (b == 0)
+ *      ov  = (a == INT_MIN) & (b == -1)      -- signed only
+ *      sel = z | ov
+ *      b'  = sel ? 1 : b
+ *
+ * With b' = 1 the divide is exact and cheap, and every answer falls out
+ * of a mask rather than a second branch:
+ *
+ *      DIVU  q = a / b'        result = q | -z          (b==0 -> ~0)
+ *      DIVS  q = a / b'        result = q | -z
+ *            ...and the overflow case needs nothing: a / 1 is a, which
+ *            is INT_MIN, which is the answer the architecture gives.
+ *      REMU  r = a % b'        result = z ? a : r
+ *      REMS  r = a % b'        result = z ? a : r
+ *            ...and overflow again needs nothing: a % 1 is 0.
+ *
+ * Both overflow cases being free is not luck, it is why substituting 1
+ * was chosen over substituting anything else.
+ */
+static bool rv_ir_lower_divrem(emu_ir_block_t *b, uint32_t insn, uint32_t f3,
+                               uint32_t rd, uint32_t rs1, uint32_t rs2)
+{
+    const bool sgn = (f3 == 4u || f3 == 6u);
+    const bool rem = (f3 >= 6u);
+    const uint16_t x = emu_ir_get(b, rs1);
+    const uint16_t y = emu_ir_get(b, rs2);
+    const uint16_t zero = emu_ir_const(b, 0u);
+
+    (void)insn;
+
+    /* z = (b == 0), as 0 or 1. */
+    const uint16_t z =
+        emu_ir_emit(b, EMU_IR_SETCC, EMU_IR_C_EQ, y, zero, 0u, 0u);
+    uint16_t sel = z;
+
+    if (sgn) {
+        /*
+         * The overflow pair, and it has to be both halves: INT_MIN by
+         * anything else is ordinary, and -1 into anything else is too.
+         */
+        const uint16_t is_min =
+            emu_ir_emit(b, EMU_IR_SETCC, EMU_IR_C_EQ, x,
+                        emu_ir_const(b, 0x80000000u), 0u, 0u);
+        const uint16_t is_m1 =
+            emu_ir_emit(b, EMU_IR_SETCC, EMU_IR_C_EQ, y,
+                        emu_ir_const(b, 0xFFFFFFFFu), 0u, 0u);
+        const uint16_t ov = emu_ir_alu(b, EMU_IR_AND, is_min, is_m1);
+
+        sel = emu_ir_alu(b, EMU_IR_OR, z, ov);
+    }
+
+    /*
+     * b' = sel ? 1 : b, as (b & ~mask) | sel with mask = -sel. One more
+     * instruction than a conditional move and no branch at all, which
+     * matters more: this sits in the middle of whatever loop the guest
+     * put the divide in.
+     */
+    const uint16_t mask = emu_ir_alu(b, EMU_IR_SUB, zero, sel);
+    const uint16_t keep = emu_ir_alu(
+        b, EMU_IR_AND, y,
+        emu_ir_alu(b, EMU_IR_XOR, mask, emu_ir_const(b, 0xFFFFFFFFu)));
+    const uint16_t safe = emu_ir_alu(b, EMU_IR_OR, keep, sel);
+
+    const emu_ir_op_t op = rem ? (sgn ? EMU_IR_REMS : EMU_IR_REMU)
+                               : (sgn ? EMU_IR_DIVS : EMU_IR_DIVU);
+    const uint16_t q = emu_ir_alu(b, op, x, safe);
+
+    const uint16_t zmask = emu_ir_alu(b, EMU_IR_SUB, zero, z);
+
+    if (rem) {
+        /* result = z ? a : r */
+        const uint16_t a_part = emu_ir_alu(b, EMU_IR_AND, x, zmask);
+        const uint16_t r_part = emu_ir_alu(
+            b, EMU_IR_AND, q,
+            emu_ir_alu(b, EMU_IR_XOR, zmask, emu_ir_const(b, 0xFFFFFFFFu)));
+
+        emu_ir_put(b, rd, emu_ir_alu(b, EMU_IR_OR, a_part, r_part));
+    } else {
+        /* result = q | -z, which is all-ones exactly when b was zero */
+        emu_ir_put(b, rd, emu_ir_alu(b, EMU_IR_OR, q, zmask));
+    }
+    return true;
+}
+
+/*
+ * Divide, remainder and MULHSU.
+ *
+ * EMU_IR_HELPER rather than HELPER_TRAP: RISC-V *defines* divide by zero
+ * and signed overflow as producing values, so none of these can take a
+ * trap and the caller needs no exit check.
+ *
+ * **Declining these cost far more than the divide does.** A Linux boot
+ * executes DIV 356,462,035 times -- 99.4% of everything still
+ * interpreted once `time` was lowered -- and each one ended a block, so
+ * the loop containing it paid a dispatch and an interpreter entry every
+ * iteration.
+ *
+ * The arithmetic is rv_hart.h's, shared with the interpreter rather than
+ * written again here.
+ */
+static uint32_t rv_ir_muldiv_helper(emu_cpu_t *cpu, uint32_t insn,
+                                    uint32_t unused)
+{
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+    const uint32_t a = h->x[rv_rs1(insn)];
+    const uint32_t d = h->x[rv_rs2(insn)];
+    uint32_t v;
+
+    (void)unused;
+    switch (rv_funct3(insn)) {
+    case 2u: /* MULHSU: the one multiply with no single host instruction */
+        v = (uint32_t)(((int64_t)(int32_t)a * (int64_t)(uint64_t)d) >> 32);
+        break;
+    case 4u:
+        v = rv_div_s((int32_t)a, (int32_t)d);
+        break;
+    case 5u:
+        v = rv_div_u(a, d);
+        break;
+    case 6u:
+        v = rv_rem_s((int32_t)a, (int32_t)d);
+        break;
+    default:
+        v = rv_rem_u(a, d);
+        break;
+    }
+    if (rv_rd(insn) != 0u) {
+        h->x[rv_rd(insn)] = v;
+    }
+    return 0u;
+}
+
+/*
  * Read one counter CSR.
  *
  * HELPER_TRAP because the read itself can fault: `time` is readable from
@@ -386,10 +532,12 @@ static uint32_t rv_ir_helper_absent(emu_cpu_t *cpu, uint32_t insn,
 #endif
 
 static const void *const rv_ir_helpers[] = {RV_IR_H_FP, RV_IR_H_AMO,
-                                            (const void *)rv_ir_csr_helper};
+                                            (const void *)rv_ir_csr_helper,
+                                            (const void *)rv_ir_muldiv_helper};
 #define RV_IR_HELPER_FP 0u
 #define RV_IR_HELPER_AMO 1u
 #define RV_IR_HELPER_CSR 2u
+#define RV_IR_HELPER_MULDIV 3u
 
 const emu_ir_target_t rv_ir_target = {
     .reg_offset = rv_reg_offset,
@@ -597,19 +745,32 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
 
         if (f7 == 1u) { /* M extension */
             /*
-             * The multiplies only. Divide and remainder stay on the
-             * interpreter: they need the guest's divide-by-zero and
-             * overflow results, which RISC-V defines and x86 traps on,
-             * so open-coding them means reproducing two special cases
-             * per host rather than one helper.
+             * The multiplies are lowered natively; divide, remainder
+             * and MULHSU go to a helper.
              *
-             * MULHSU is skipped for the same reason -- it is the one
-             * form with no single host instruction behind it.
+             * They are not open-coded, and the reason is the one this
+             * comment used to give for declining them outright: RISC-V
+             * defines divide by zero and signed overflow as producing
+             * values where x86 traps, so emitting them inline means
+             * reproducing two special cases per host. A call reproduces
+             * none, and -- unlike declining -- keeps the block whole.
              */
             static const uint8_t k_mul[4] = {EMU_IR_MUL, EMU_IR_MULHS, 0u,
                                              EMU_IR_MULHU};
-            if (f3 == 2u || f3 > 3u) {
-                return false;
+            if (f3 == 2u) {
+                /*
+                 * MULHSU alone stays on the helper: it is the one
+                 * multiply with no single host instruction, and it is
+                 * rare enough that open-coding the widening mixed-sign
+                 * product would be three copies of arithmetic for no
+                 * measured gain.
+                 */
+                (void)emu_ir_emit(b, EMU_IR_HELPER, 0u, emu_ir_const(b, insn),
+                                  EMU_IR_NO_TEMP, RV_IR_HELPER_MULDIV, 0u);
+                return true;
+            }
+            if (f3 > 3u) {
+                return rv_ir_lower_divrem(b, insn, f3, rd, rs1, rs2);
             }
             emu_ir_put(b, rd,
                        emu_ir_alu(b, (emu_ir_op_t)k_mul[f3], emu_ir_get(b, rs1),

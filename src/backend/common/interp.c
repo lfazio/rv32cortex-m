@@ -344,6 +344,31 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
         case EMU_IR_AND:
             r = a & bv;
             break;
+        /*
+         * The divides carry a precondition -- non-zero divisor, and no
+         * INT_MIN / -1 -- which the frontend guarantees by substituting
+         * the divisor. Both are still handled here rather than assumed,
+         * because this is the *reference* the differential checker
+         * compares emitted code against, and a reference that invokes
+         * undefined behaviour on an input it believes cannot arrive is
+         * worth nothing on the day it does.
+         */
+        case EMU_IR_DIVS:
+            r = (bv == 0u || (a == 0x80000000u && bv == 0xFFFFFFFFu))
+                    ? a
+                    : (uint32_t)((int32_t)a / (int32_t)bv);
+            break;
+        case EMU_IR_DIVU:
+            r = (bv == 0u) ? a : (a / bv);
+            break;
+        case EMU_IR_REMS:
+            r = (bv == 0u || (a == 0x80000000u && bv == 0xFFFFFFFFu))
+                    ? 0u
+                    : (uint32_t)((int32_t)a % (int32_t)bv);
+            break;
+        case EMU_IR_REMU:
+            r = (bv == 0u) ? 0u : (a % bv);
+            break;
         case EMU_IR_OR:
             r = a | bv;
             break;

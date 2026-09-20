@@ -64,42 +64,6 @@ static EMU_ALWAYS_INLINE uint32_t mulh_uu(uint32_t a, uint32_t b)
     return (uint32_t)(((uint64_t)a * (uint64_t)b) >> 32);
 }
 
-/*
- * RISC-V defines division by zero and signed overflow as producing specific
- * values rather than trapping, so these cases are handled explicitly. C
- * would treat INT32_MIN / -1 as undefined behaviour.
- */
-static EMU_ALWAYS_INLINE uint32_t div_s(int32_t a, int32_t b)
-{
-    if (EMU_UNLIKELY(b == 0)) {
-        return 0xFFFFFFFFu; /* -1 */
-    }
-    if (EMU_UNLIKELY(a == INT32_MIN && b == -1)) {
-        return (uint32_t)INT32_MIN; /* overflow wraps to the dividend */
-    }
-    return (uint32_t)(a / b);
-}
-
-static EMU_ALWAYS_INLINE uint32_t rem_s(int32_t a, int32_t b)
-{
-    if (EMU_UNLIKELY(b == 0)) {
-        return (uint32_t)a;
-    }
-    if (EMU_UNLIKELY(a == INT32_MIN && b == -1)) {
-        return 0u;
-    }
-    return (uint32_t)(a % b);
-}
-
-static EMU_ALWAYS_INLINE uint32_t div_u(uint32_t a, uint32_t b)
-{
-    return EMU_UNLIKELY(b == 0u) ? 0xFFFFFFFFu : (a / b);
-}
-
-static EMU_ALWAYS_INLINE uint32_t rem_u(uint32_t a, uint32_t b)
-{
-    return EMU_UNLIKELY(b == 0u) ? a : (a % b);
-}
 #endif /* RV_EXT_M */
 
 /* ------------------------------------------------------------------ */
@@ -870,16 +834,16 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                     wr(h, rd, mulh_uu(a, b));
                     break; /* MULHU  */
                 case 4:
-                    wr(h, rd, div_s((int32_t)a, (int32_t)b));
+                    wr(h, rd, rv_div_s((int32_t)a, (int32_t)b));
                     break; /* DIV    */
                 case 5:
-                    wr(h, rd, div_u(a, b));
+                    wr(h, rd, rv_div_u(a, b));
                     break; /* DIVU   */
                 case 6:
-                    wr(h, rd, rem_s((int32_t)a, (int32_t)b));
+                    wr(h, rd, rv_rem_s((int32_t)a, (int32_t)b));
                     break; /* REM    */
                 default:
-                    wr(h, rd, rem_u(a, b));
+                    wr(h, rd, rv_rem_u(a, b));
                     break; /* REMU   */
                 }
             }

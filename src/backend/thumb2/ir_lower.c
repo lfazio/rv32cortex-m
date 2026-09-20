@@ -326,8 +326,7 @@ static bool g_has_fast;
  * r12 is the scratch. It is the procedure-call scratch register and
  * nothing in a lowered block holds a value there across an instruction.
  */
-static uint32_t emit_fast_guard(uint32_t addr_reg, uint32_t size,
-                                uint8_t **out)
+static uint32_t emit_fast_guard(uint32_t addr_reg, uint32_t size, uint8_t **out)
 {
     uint32_t n = 0u;
 
@@ -609,6 +608,10 @@ static bool bisect_allows(uint8_t op)
     case EMU_IR_MULHS:
     case EMU_IR_MULHU:
     case EMU_IR_MAC:
+    case EMU_IR_DIVS:
+    case EMU_IR_DIVU:
+    case EMU_IR_REMS:
+    case EMU_IR_REMU:
         return T2_BISECT >= 7;
     case EMU_IR_LOAD:
     case EMU_IR_STORE:
@@ -822,8 +825,8 @@ static bool g_fp_written;
  * into `word`. A flag the frontend declares absent reads as false rather
  * than as the low bit of an unrelated register.
  */
-static void setf_flag_bit(uint32_t dst, uint32_t word,
-                          const emu_ir_target_t *t, unsigned f)
+static void setf_flag_bit(uint32_t dst, uint32_t word, const emu_ir_target_t *t,
+                          unsigned f)
 {
     if (t->flag_bit[f] == 0u) {
         t2_imm32(dst, 0u);
@@ -1596,6 +1599,50 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         break;
     }
 
+    case EMU_IR_DIVS:
+    case EMU_IR_DIVU:
+    case EMU_IR_REMS:
+    case EMU_IR_REMU: {
+        /*
+         * SDIV/UDIV, and a remainder is the divide plus MLS -- there is
+         * no remainder instruction on ARM.
+         *
+         * Nothing checks the divisor. EMU_IR_DIV* is defined as a host
+         * divide with the divisor guaranteed non-zero, because ARM's
+         * answer for zero (0) and x86's (a fault) are both wrong for
+         * RISC-V and the frontend already normalises. Adding a test here
+         * would be a second implementation of the same rule, and a
+         * slower one.
+         */
+        const bool sgn =
+            (in->op == (uint8_t)EMU_IR_DIVS || in->op == (uint8_t)EMU_IR_REMS);
+        const bool rem =
+            (in->op == (uint8_t)EMU_IR_REMS || in->op == (uint8_t)EMU_IR_REMU);
+        const uint32_t ra = use_reg(in->a, T2_R2);
+        const uint32_t rb = use_reg(in->b, T2_R3);
+        const uint32_t rd = def_reg(in->dst, T2_R0);
+
+        if (rem) {
+            /*
+             * The quotient goes to r1 and is then consumed by the MLS,
+             * so it needs no allocated register of its own -- and r1
+             * cannot collide with rd, which is r0 or an allocated one.
+             */
+            if (sgn) {
+                t2_sdiv(T2_R1, ra, rb);
+            } else {
+                t2_udiv(T2_R1, ra, rb);
+            }
+            t2_mls(rd, T2_R1, rb, ra); /* rd = a - (a / b) * b */
+        } else if (sgn) {
+            t2_sdiv(rd, ra, rb);
+        } else {
+            t2_udiv(rd, ra, rb);
+        }
+        st_slot(rd, in->dst);
+        break;
+    }
+
     case EMU_IR_LOAD: {
         if (t->load == NULL) {
             return false;
@@ -2026,7 +2073,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      */
     emu_jit_layout.tail = (uint32_t)(emu_jit_here() - g_block_start);
     for (uint32_t i = 0; i < g_nexits_nf; i++) {
-        patch_branch(g_exits_nf[i].at, emu_jit_here(), g_exits_nf[i].conditional);
+        patch_branch(g_exits_nf[i].at, emu_jit_here(),
+                     g_exits_nf[i].conditional);
     }
     t2_mov(T2_R0, T2_CNT);
     t2_pop(list | T2_LIST_PC);

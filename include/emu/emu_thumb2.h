@@ -72,8 +72,7 @@ bool t2_tst_imm8(uint32_t rn, uint32_t imm);
  * Register-offset guest memory, for the inlined RAM path: [Rn, Rm] with
  * no shift. False for a size that is not 1, 2 or 4.
  */
-bool t2_ld_reg(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t size,
-               bool sign);
+bool t2_ld_reg(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t size, bool sign);
 bool t2_st_reg(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t size);
 void t2_mvn(uint32_t rd, uint32_t rm);
 void t2_neg(uint32_t rd, uint32_t rn);
@@ -109,6 +108,9 @@ void t2_mul(uint32_t rd, uint32_t rn, uint32_t rm);
 /* MLA/MLS: rd = ra +/- rn * rm. `ra` must not be r15 -- see encode.c. */
 void t2_mla(uint32_t rd, uint32_t rn, uint32_t rm, uint32_t ra, bool sub);
 void t2_mull(bool sign, uint32_t rdlo, uint32_t rdhi, uint32_t rn, uint32_t rm);
+void t2_sdiv(uint32_t rd, uint32_t rn, uint32_t rm);
+void t2_udiv(uint32_t rd, uint32_t rn, uint32_t rm);
+void t2_mls(uint32_t rd, uint32_t rn, uint32_t rm, uint32_t ra);
 
 void t2_rev(uint32_t rd, uint32_t rm);
 void t2_rev16(uint32_t rd, uint32_t rm);
@@ -175,7 +177,7 @@ void t2_call(const void *fn);
  * before the instruction, and the sign of the *product* is the `sub`
  * bit rather than a separate negate.
  */
-#define T2_VFMA_VFMS   0xEEA0u /* sub=0 VFMA,  sub=1 VFMS  */
+#define T2_VFMA_VFMS 0xEEA0u /* sub=0 VFMA,  sub=1 VFMS  */
 #define T2_VFNMS_VFNMA 0xEE90u /* sub=0 VFNMS, sub=1 VFNMA */
 
 void t2_vmov_core(uint32_t sn, uint32_t rt, bool to_core);

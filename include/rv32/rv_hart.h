@@ -408,6 +408,54 @@ static EMU_ALWAYS_INLINE uint32_t rv_hart_data_priv(const rv_hart_t *h)
  */
 void rv_mmu_refresh(rv_hart_t *h);
 
+/*
+ * M-extension division, shared by the interpreter and the JIT's helper.
+ *
+ * **Here rather than in rv_interp.c, where it was, because there are now
+ * two callers.** The JIT used to decline divide entirely -- the comment
+ * said open-coding it means reproducing RISC-V's divide-by-zero and
+ * overflow rules per host -- which is a good argument against
+ * open-coding and none at all against a helper call. A second copy of
+ * these four functions is exactly the drift this tree keeps `rv_hart_amo`
+ * and `rv_hart_cbo` beside the state to avoid.
+ */
+/*
+ * RISC-V defines division by zero and signed overflow as producing specific
+ * values rather than trapping, so these cases are handled explicitly. C
+ * would treat INT32_MIN / -1 as undefined behaviour.
+ */
+static EMU_ALWAYS_INLINE uint32_t rv_div_s(int32_t a, int32_t b)
+{
+    if (EMU_UNLIKELY(b == 0)) {
+        return 0xFFFFFFFFu; /* -1 */
+    }
+    if (EMU_UNLIKELY(a == INT32_MIN && b == -1)) {
+        return (uint32_t)INT32_MIN; /* overflow wraps to the dividend */
+    }
+    return (uint32_t)(a / b);
+}
+
+static EMU_ALWAYS_INLINE uint32_t rv_rem_s(int32_t a, int32_t b)
+{
+    if (EMU_UNLIKELY(b == 0)) {
+        return (uint32_t)a;
+    }
+    if (EMU_UNLIKELY(a == INT32_MIN && b == -1)) {
+        return 0u;
+    }
+    return (uint32_t)(a % b);
+}
+
+static EMU_ALWAYS_INLINE uint32_t rv_div_u(uint32_t a, uint32_t b)
+{
+    return EMU_UNLIKELY(b == 0u) ? 0xFFFFFFFFu : (a / b);
+}
+
+static EMU_ALWAYS_INLINE uint32_t rv_rem_u(uint32_t a, uint32_t b)
+{
+    return EMU_UNLIKELY(b == 0u) ? a : (a % b);
+}
+
 /* Discard every cached translation. A global SFENCE.VMA and satp writes
  * land here. */
 void rv_mmu_flush(rv_hart_t *h);
