@@ -813,6 +813,60 @@ measured at.
         per-architecture order and not a choice.
   - [ ] `ppc_pairstats.c` -- the histogram that answers "which
         instruction next" with a measurement instead of an opinion.
+- [ ] **A Thumb-2 frontend**, so ARMv7E-M is a guest and not only a
+      host. It would be the fourth, after RV32, G4MH and e200z7, and it
+      is the first one this tree could run *on itself*: a Cortex-M
+      guest on a Cortex-M host, where the backend already emits the
+      instruction set the frontend would be decoding.
+
+      **The encoder is not a decoder, and reusing it is the trap.**
+      `src/backend/thumb2/encode.c` writes instructions and knows
+      nothing about reading them. This file has already recorded the
+      same confusion twice in the other direction -- `rv_disasm`
+      printing confident nonsense for G4MH, and reporting zero FP
+      instructions in a hard-float build -- so a frontend gets its own
+      decoder and the two are checked against each other by
+      `scripts/t2-check-encodings.sh`, which exists and would simply
+      gain a second caller.
+
+      What the existing frontends say it will cost, in the order the
+      mistakes were made:
+
+      - **The length decoder is where the exceptions hide.** Thumb-2
+        mixes 16- and 32-bit encodings and selects by the top five bits
+        of the first halfword. G4MH's staged decoder answered from a
+        rule of thumb, was wrong for exactly one slot, and produced an
+        *infinite loop* rather than a wrong answer -- in an
+        implementation that had never executed. Write the length test
+        once, and property-test it across all 65536 first halfwords as
+        `g4mh_insn_len` now is.
+      - **IT blocks have no analogue in any frontend here.** Up to four
+        instructions whose execution depends on state bits carried
+        forward, which is a decoder that is not stateless and a
+        translator that cannot start a block anywhere. Everything else
+        in this tree assumes a block may begin at any instruction
+        boundary.
+      - **Write the vector table and the trap report first.** Four
+        instances so far, and the last one found three wrong vectors
+        the moment a table existed to find them with. ARMv7-M's is a
+        table of *addresses*, not of instructions, with the initial
+        stack pointer at offset 0 -- so a guest that gets it wrong
+        faults before its first instruction rather than twenty bytes
+        later, which is the good direction.
+      - **Do not model the memory map in `.bss`.** The G4MH frontend
+        allocated the part's whole address space as static arrays --
+        3.44 MiB on a part with 320 KiB -- which works on a host and
+        cannot be ported. Serve the guest image from the platform's
+        flash, as RV32 does.
+
+      The interesting question it would answer is whether the
+      near-identity case is worth special-casing: a Thumb-2 guest on a
+      Thumb-2 host is the one pairing where a block could in principle
+      be copied rather than translated. That is a measurement, not a
+      plan -- the register file still lives in memory and the guest's
+      pc is not the host's, so "copy it" is unlikely to survive
+      contact.
+
 - [ ] **rv32: Zihpm, Zihintntl, Zihintpause, Zicond, Zawrs, Zacas,
       Zalasr.** Six of the seven are absent from the tree entirely;
       `Zacas` is the exception and is the one to read first, because it
