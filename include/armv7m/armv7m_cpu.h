@@ -55,6 +55,49 @@ extern "C" {
  * an ARMv7-M core has no ARM state to switch to. */
 #define ARMV7M_T (1u << 24)
 
+/*
+ * ITSTATE, and it lives **in xpsr at the two places the architecture
+ * puts it** rather than in a field of its own: IT[1:0] in bits 26:25 and
+ * IT[7:2] in bits 15:10.
+ *
+ * Split across two fields is awkward to read and is still the right
+ * place to keep it. A separate field would be a second description of
+ * one piece of state, and an MRS, an MSR or an exception entry -- which
+ * stacks xPSR whole, ITSTATE included -- would then have to remember to
+ * compose it. This tree has the rule written down from the G4MH INTC,
+ * where `eic[]` and `imr[]` were two stores of one architectural bit and
+ * the second was written by the guest and never read.
+ *
+ * The composed value is firstcond:mask. ITSTATE[7:4] is the condition
+ * the *current* instruction runs under, and the low five bits shift left
+ * after each one -- so each mask bit becomes the condition's low bit in
+ * turn, which is how ITT and ITE need no separate decoding.
+ */
+#define ARMV7M_IT_LO_MASK (3u << 25)
+#define ARMV7M_IT_HI_MASK (0x3Fu << 10)
+
+static inline uint32_t armv7m_it_get(uint32_t xpsr)
+{
+    return ((xpsr >> 25) & 3u) | (((xpsr >> 10) & 0x3Fu) << 2);
+}
+
+static inline uint32_t armv7m_it_put(uint32_t xpsr, uint32_t it)
+{
+    return (xpsr & ~(ARMV7M_IT_LO_MASK | ARMV7M_IT_HI_MASK)) |
+           ((it & 3u) << 25) | (((it >> 2) & 0x3Fu) << 10);
+}
+
+/*
+ * In an IT block exactly when the low four bits are non-zero -- the
+ * architecture's own test, and not "the condition field is non-zero":
+ * EQ is condition 0b0000, so a block led by `IT EQ` would read as no
+ * block at all.
+ */
+static inline bool armv7m_in_it(uint32_t xpsr)
+{
+    return (armv7m_it_get(xpsr) & 0x0Fu) != 0u;
+}
+
 typedef struct armv7m_cpu {
     /*
      * Hot state first, as rv_hart.h, g4mh_cpu.h and ppc_cpu.h all do.

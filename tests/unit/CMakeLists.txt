@@ -85,6 +85,20 @@ if(TARGET guest-armv7m-alu)
         PASS_REGULAR_EXPRESSION "ARMV7M-ALU-OK")
 endif()
 
+#
+# IT blocks: the only stateful thing in this decoder, and the one place
+# a half-correct implementation is right for the first instruction of a
+# block and wrong for the rest.
+#
+if(TARGET guest-armv7m-itblock)
+    add_test(NAME guest-armv7m-itblock
+             COMMAND emu-host --max-insn 200000
+                     "${CMAKE_BINARY_DIR}/guest/armv7m-itblock.bin")
+    set_tests_properties(guest-armv7m-itblock PROPERTIES
+        LABELS fast
+        PASS_REGULAR_EXPRESSION "ARMV7M-IT-OK")
+endif()
+
 if(TARGET guest-armv7m-hello)
     add_test(NAME guest-armv7m-hello
              COMMAND emu-host --max-insn 1000

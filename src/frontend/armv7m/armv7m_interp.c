@@ -80,6 +80,26 @@ static void set_add_flags(armv7m_cpu_t *c, uint32_t a, uint32_t b,
     set_nz(c, res);
 }
 
+/*
+ * ITAdvance, from A7.3.2: the low five bits shift left, and the block
+ * ends when the low three are zero.
+ *
+ * The trailing 1 the assembler puts in the mask is what makes that
+ * work -- it walks down to bit 0 and the block is over when it falls
+ * off. Shifting the whole byte instead would destroy the condition in
+ * the top three bits.
+ */
+static void it_advance(armv7m_cpu_t *c)
+{
+    const uint32_t it = armv7m_it_get(c->xpsr);
+
+    if ((it & 7u) == 0u) {
+        c->xpsr = armv7m_it_put(c->xpsr, 0u);
+    } else {
+        c->xpsr = armv7m_it_put(c->xpsr, (it & 0xE0u) | ((it << 1) & 0x1Fu));
+    }
+}
+
 static bool cond_holds(const armv7m_cpu_t *c, uint32_t cond)
 {
     const bool n = (c->xpsr & ARMV7M_N) != 0u;
@@ -236,6 +256,23 @@ static uint32_t do_shift(uint32_t type, uint32_t amount, uint32_t v)
 static bool exec16(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
 {
     const uint32_t pc4 = pc + 4u;
+    /*
+     * **Inside an IT block the 16-bit data-processing forms do not set
+     * flags**, which is a semantic rule and not an assembly-syntax one:
+     * the ARM ARM spells it `setflags = !InITBlock()` on each of those
+     * encodings.
+     *
+     * It matters because of what a block is *for*. `cmp; it ne; addne`
+     * is the shape, and if the ADD overwrote the flags then a second
+     * instruction in the same block would be conditioned on the result
+     * of the first rather than on the compare -- right for one
+     * instruction and wrong for the rest, which reads as a condition
+     * bug somewhere else entirely.
+     *
+     * TST, CMP and CMN are unaffected: the flags are their whole
+     * purpose and they have no destination to write instead.
+     */
+    const bool setf = !armv7m_in_it(c->xpsr);
 
     /*
      * Shift (immediate), add, subtract: bits 15:13 == 0b000.
@@ -260,16 +297,22 @@ static bool exec16(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
         switch (op) {
         case 0u: /* LSL (immediate) */
             c->r[rd] = c->r[rm] << imm5;
-            set_nz(c, c->r[rd]);
+            if (setf) {
+                set_nz(c, c->r[rd]);
+            }
             return true;
         case 1u: /* LSR (immediate); a shift of 0 means 32 */
             c->r[rd] = (imm5 == 0u) ? 0u : (c->r[rm] >> imm5);
-            set_nz(c, c->r[rd]);
+            if (setf) {
+                set_nz(c, c->r[rd]);
+            }
             return true;
         case 2u: /* ASR (immediate); likewise */
             c->r[rd] = (imm5 == 0u) ? (uint32_t)((int32_t)c->r[rm] >> 31)
                                     : (uint32_t)((int32_t)c->r[rm] >> imm5);
-            set_nz(c, c->r[rd]);
+            if (setf) {
+                set_nz(c, c->r[rd]);
+            }
             return true;
         default:
             break; /* 0b0001100..0b0001111: ADD/SUB register/immediate */
@@ -285,7 +328,9 @@ static bool exec16(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
         const uint32_t res = a + b + (sub ? 1u : 0u);
 
         c->r[insn & 7u] = res;
-        set_add_flags(c, a, b, sub ? 1u : 0u, res);
+        if (setf) {
+            set_add_flags(c, a, b, sub ? 1u : 0u, res);
+        }
         return true;
     }
 
@@ -298,7 +343,9 @@ static bool exec16(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
         switch (op) {
         case 0u: /* MOV */
             c->r[rd] = imm8;
-            set_nz(c, imm8);
+            if (setf) {
+                set_nz(c, imm8);
+            }
             return true;
         case 1u: { /* CMP */
             const uint32_t b = ~imm8;
@@ -310,7 +357,9 @@ static bool exec16(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
         case 2u: { /* ADD */
             const uint32_t res = c->r[rd] + imm8;
 
-            set_add_flags(c, c->r[rd], imm8, 0u, res);
+            if (setf) {
+                set_add_flags(c, c->r[rd], imm8, 0u, res);
+            }
             c->r[rd] = res;
             return true;
         }
@@ -318,7 +367,9 @@ static bool exec16(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
             const uint32_t b = ~imm8;
             const uint32_t res = c->r[rd] + b + 1u;
 
-            set_add_flags(c, c->r[rd], b, 1u, res);
+            if (setf) {
+                set_add_flags(c, c->r[rd], b, 1u, res);
+            }
             c->r[rd] = res;
             return true;
         }
@@ -352,31 +403,43 @@ static bool exec16(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
         switch (op) {
         case 0u: /* AND */
             c->r[rd] = a & b;
-            set_nz(c, c->r[rd]);
+            if (setf) {
+                set_nz(c, c->r[rd]);
+            }
             return true;
         case 1u: /* EOR */
             c->r[rd] = a ^ b;
-            set_nz(c, c->r[rd]);
+            if (setf) {
+                set_nz(c, c->r[rd]);
+            }
             return true;
         case 2u: /* LSL (register) */
             c->r[rd] = ((b & 0xFFu) >= 32u) ? 0u : (a << (b & 0xFFu));
-            set_nz(c, c->r[rd]);
+            if (setf) {
+                set_nz(c, c->r[rd]);
+            }
             return true;
         case 3u: /* LSR (register) */
             c->r[rd] = ((b & 0xFFu) >= 32u) ? 0u : (a >> (b & 0xFFu));
-            set_nz(c, c->r[rd]);
+            if (setf) {
+                set_nz(c, c->r[rd]);
+            }
             return true;
         case 4u: /* ASR (register) */
             c->r[rd] = ((b & 0xFFu) >= 32u)
                            ? (uint32_t)((int32_t)a >> 31)
                            : (uint32_t)((int32_t)a >> (b & 0xFFu));
-            set_nz(c, c->r[rd]);
+            if (setf) {
+                set_nz(c, c->r[rd]);
+            }
             return true;
         case 5u: { /* ADC */
             const uint32_t ci = (c->xpsr & ARMV7M_C) ? 1u : 0u;
             const uint32_t res = a + b + ci;
 
-            set_add_flags(c, a, b, ci, res);
+            if (setf) {
+                set_add_flags(c, a, b, ci, res);
+            }
             c->r[rd] = res;
             return true;
         }
@@ -385,7 +448,9 @@ static bool exec16(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
             const uint32_t nb = ~b;
             const uint32_t res = a + nb + ci;
 
-            set_add_flags(c, a, nb, ci, res);
+            if (setf) {
+                set_add_flags(c, a, nb, ci, res);
+            }
             c->r[rd] = res;
             return true;
         }
@@ -393,7 +458,9 @@ static bool exec16(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
             if ((b & 31u) != 0u) {
                 c->r[rd] = do_shift(3u, b & 31u, a);
             }
-            set_nz(c, c->r[rd]);
+            if (setf) {
+                set_nz(c, c->r[rd]);
+            }
             return true;
         case 8u: /* TST */
             set_nz(c, a & b);
@@ -402,7 +469,9 @@ static bool exec16(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
             const uint32_t na = ~b;
             const uint32_t res = na + 1u;
 
-            set_add_flags(c, na, 0u, 1u, res);
+            if (setf) {
+                set_add_flags(c, na, 0u, 1u, res);
+            }
             c->r[rd] = res;
             return true;
         }
@@ -421,19 +490,27 @@ static bool exec16(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
         }
         case 12u: /* ORR */
             c->r[rd] = a | b;
-            set_nz(c, c->r[rd]);
+            if (setf) {
+                set_nz(c, c->r[rd]);
+            }
             return true;
         case 13u: /* MUL */
             c->r[rd] = a * b;
-            set_nz(c, c->r[rd]);
+            if (setf) {
+                set_nz(c, c->r[rd]);
+            }
             return true;
         case 14u: /* BIC */
             c->r[rd] = a & ~b;
-            set_nz(c, c->r[rd]);
+            if (setf) {
+                set_nz(c, c->r[rd]);
+            }
             return true;
         default: /* MVN */
             c->r[rd] = ~b;
-            set_nz(c, c->r[rd]);
+            if (setf) {
+                set_nz(c, c->r[rd]);
+            }
             return true;
         }
     }
@@ -613,8 +690,34 @@ static bool exec16(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
      * missing feature.
      */
     if ((insn >> 8) == 0xBFu) {
-        return (insn & 0x00FFu) == 0u ||
-               ((insn & 0x000Fu) == 0u && (insn & 0x00F0u) <= 0x0050u);
+        const uint32_t mask = insn & 0x0Fu;
+        const uint32_t firstcond = (insn >> 4) & 0x0Fu;
+
+        /*
+         * IT, which shares this slot with the hints and is told apart by
+         * a non-zero mask -- `0xBF00` with both fields zero is NOP, so
+         * testing the mask first is what keeps NOP out of here.
+         *
+         * ITSTATE is simply firstcond:mask. There is no T/E pattern to
+         * decode: the mask bits become the condition's low bit as the
+         * field shifts, so ITT and ITE fall out of one mechanism.
+         *
+         * **firstcond 0b1111 does not exist** and 0b1110 (AL) with an
+         * else branch would need its inverse, which also does not --
+         * both are UNPREDICTABLE, and a frontend this incomplete should
+         * report them rather than invent an answer.
+         */
+        if (mask != 0u) {
+            if (firstcond == 0x0Fu ||
+                (firstcond == 0x0Eu && (mask & 7u) != 0u &&
+                 (mask & 0x0Eu) != 0x0Au)) {
+                return false;
+            }
+            c->xpsr = armv7m_it_put(c->xpsr, (firstcond << 4) | mask);
+            return true;
+        }
+        /* NOP, YIELD, WFE, WFI, SEV -- all retire with no effect here. */
+        return firstcond <= 5u;
     }
 
     /* Conditional branch and the supervisor calls: 1101 cond imm8 */
@@ -1201,6 +1304,30 @@ emu_run_reason_t armv7m_run(armv7m_cpu_t *c, uint32_t budget, uint32_t *retired)
 
         const uint16_t hw = (uint16_t)lo;
 
+        /*
+         * Whether this instruction runs at all, and the flag rule that
+         * goes with it.
+         *
+         * Read *before* executing, because ITAdvance happens after and
+         * both the condition and the setflags rule below are about the
+         * state this instruction sees.
+         *
+         * An instruction whose condition fails still retires and still
+         * advances ITSTATE -- it is executed-as-a-NOP, not skipped, and
+         * counting it is what keeps a budget and a trace honest.
+         */
+        const bool was_in_it = armv7m_in_it(c->xpsr);
+        const bool runs =
+            !was_in_it || cond_holds(c, armv7m_it_get(c->xpsr) >> 4);
+
+        if (!runs) {
+            c->r[ARMV7M_PC] = pc + armv7m_insn_len(hw);
+            it_advance(c);
+            done++;
+            c->retired++;
+            continue;
+        }
+
         if (armv7m_is_32bit(hw)) {
             uint32_t hi = 0u;
 
@@ -1228,6 +1355,24 @@ emu_run_reason_t armv7m_run(armv7m_cpu_t *c, uint32_t budget, uint32_t *retired)
                 armv7m_fault(c, pc, hw);
                 break;
             }
+        }
+
+        /*
+         * **Only when we were already in a block**, which is also what
+         * stops the IT instruction advancing the state it just wrote:
+         * IT is only permitted outside a block, so `was_in_it` is false
+         * on the instruction that sets ITSTATE and true on each one it
+         * governs.
+         *
+         * A taken branch inside a block leaves ITSTATE advanced rather
+         * than cleared. That is correct for well-formed code -- the
+         * architecture requires a branch to be the *last* instruction of
+         * a block, where the advance zeroes ITSTATE anyway -- and
+         * branching into the middle of a block is UNPREDICTABLE, so
+         * there is no right answer to give for the ill-formed case.
+         */
+        if (was_in_it) {
+            it_advance(c);
         }
 
         /* r15 is a register like any other, and writing it is a branch --
