@@ -59,6 +59,9 @@ int main(void)
 #if EMU_GUEST_ARCH_G4MH
     test_g4mh();
 #endif
+#if EMU_GUEST_ARCH_ARMV7M
+    test_armv7m();
+#endif
 #if EMU_GUEST_ARCH_PPC
     test_ppc();
 #endif

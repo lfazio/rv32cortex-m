@@ -46,6 +46,34 @@ endif()
 if(EMU_GUEST_ARCH_PPC)
     target_sources(emu-unit PRIVATE test_ppc.c)
 endif()
+if(EMU_GUEST_ARCH_ARMV7M)
+    target_sources(emu-unit PRIVATE test_armv7m.c)
+endif()
+
+#
+# The ARMv7-M frontend's first guest, run through the host runner.
+#
+# **This is the test that matters, and the unit test is not.** The
+# length decoder's property test proves one function; this proves the
+# frontend fetches, decodes, executes, stores to a device and takes a
+# backward conditional branch. Every frontend in this tree has had
+# defects that only a running program found -- G4MH three, PowerPC
+# four -- and this one was no different: a prefix read two bits wide
+# instead of three aliased MOVS onto LSL, and no unit test would have
+# seen it.
+#
+# `OKAAA` asserts the loop ran the right number of times, not merely
+# that something printed: a broken Z flag gives the wrong number of
+# As, which names its own cause.
+#
+if(TARGET guest-armv7m-hello)
+    add_test(NAME guest-armv7m-hello
+             COMMAND emu-host --max-insn 1000
+                     "${CMAKE_BINARY_DIR}/guest/armv7m-hello.bin")
+    set_tests_properties(guest-armv7m-hello PROPERTIES
+        LABELS fast
+        PASS_REGULAR_EXPRESSION "OKAAA")
+endif()
 
 target_link_libraries(emu-unit PRIVATE emucore)
 target_include_directories(emu-unit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

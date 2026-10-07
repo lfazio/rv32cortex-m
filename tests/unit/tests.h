@@ -54,6 +54,9 @@ void test_fpu(void);
 #if EMU_GUEST_ARCH_G4MH
 void test_g4mh(void);
 #endif
+#if EMU_GUEST_ARCH_ARMV7M
+void test_armv7m(void);
+#endif
 #if EMU_GUEST_ARCH_PPC
 void test_ppc(void);
 #endif

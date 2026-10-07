@@ -57,9 +57,31 @@ option(EMU_GUEST_ARCH_G4MH "Renesas RH850 G4MH frontend" OFF)
 # for what that costs and, more importantly, for which region kinds it
 # does *not* apply to.
 option(EMU_GUEST_ARCH_PPC "NXP PowerPC e200z7 frontend (VLE, big-endian)" OFF)
+#
+# ARMv7E-M as a *guest*, which is a different thing from the Thumb-2
+# backend and exists for a different reason: the backend can only be
+# validated on hardware today, and a Cortex-M guest lets an x86 host run
+# the firmware that contains it. Off by default -- it is a fraction of
+# the instruction set so far, and says so by faulting rather than by
+# skipping.
+#
+option(EMU_GUEST_ARCH_ARMV7M "ARM Cortex-M frontend (ARMv7E-M, Thumb-2)" OFF)
 
-if(NOT EMU_GUEST_ARCH_RV32 AND NOT EMU_GUEST_ARCH_G4MH AND NOT EMU_GUEST_ARCH_PPC)
-    message(FATAL_ERROR "at least one EMU_FRONTEND_* must be enabled")
+#
+# A list a new frontend falls off, which is why it is written as a count
+# rather than as a chain of ANDs: adding ARMV7M to the options and
+# forgetting this line rejects an ARMV7M-only build as having no
+# frontend at all. This tree has the same shape recorded three times for
+# `default:` cases that silently decline.
+#
+set(_frontend_count 0)
+foreach(_fe RV32 G4MH PPC ARMV7M)
+    if(EMU_GUEST_ARCH_${_fe})
+        math(EXPR _frontend_count "${_frontend_count} + 1")
+    endif()
+endforeach()
+if(_frontend_count EQUAL 0)
+    message(FATAL_ERROR "at least one EMU_GUEST_ARCH_* must be enabled")
 endif()
 
 # ---------------------------------------------------------------------
@@ -551,6 +573,7 @@ target_compile_definitions(emucore PUBLIC
     EMU_GUEST_ARCH_RV32=$<BOOL:${EMU_GUEST_ARCH_RV32}>
     EMU_GUEST_ARCH_G4MH=$<BOOL:${EMU_GUEST_ARCH_G4MH}>
     EMU_GUEST_ARCH_PPC=$<BOOL:${EMU_GUEST_ARCH_PPC}>
+    EMU_GUEST_ARCH_ARMV7M=$<BOOL:${EMU_GUEST_ARCH_ARMV7M}>
     EMU_MAX_REGIONS=${EMU_MAX_REGIONS}
     EMU_ENABLE_TRACE=$<BOOL:${EMU_ENABLE_TRACE}>
     EMU_ENABLE_STATS=$<BOOL:${EMU_ENABLE_STATS}>
@@ -668,6 +691,17 @@ if(EMU_GUEST_ARCH_PPC)
         src/frontend/ppc/ppc_cpu.c
         src/frontend/ppc/ppc_frontend.c
         src/frontend/ppc/ppc_interp.c
+    )
+endif()
+
+# ---------------------------------------------------------------------
+# Frontend: ARM Cortex-M (ARMv7E-M)
+# ---------------------------------------------------------------------
+
+if(EMU_GUEST_ARCH_ARMV7M)
+    target_sources(emucore PRIVATE
+        src/frontend/armv7m/armv7m_frontend.c
+        src/frontend/armv7m/armv7m_interp.c
     )
 endif()
 

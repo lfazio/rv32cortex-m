@@ -13,6 +13,53 @@ find_program(RISCV_OBJCOPY
     NAMES riscv64-unknown-elf-objcopy riscv32-unknown-elf-objcopy
           riscv64-elf-objcopy)
 
+#
+# **Before the RISC-V early return below, not after it.**
+#
+# That return skips the rest of this file when the RISC-V toolchain is
+# absent, which is right for RV32 images and wrong for this one: it is
+# built with the ARM toolchain and has nothing to do with RISC-V. Placed
+# after the return, an ARMv7-M-only tree builds no guest at all and
+# nothing says so -- the same shape as the three RISC-V tests this tree
+# once queued in a PowerPC-only build.
+#
+#
+# The ARMv7-M frontend's first guest. Built with the *ARM* toolchain,
+# not the RISC-V one, so it is here rather than in add_guest_image --
+# which exists to build RV32 images and hardcodes that compiler.
+#
+# 16-bit encodings only, because that is the whole of what the frontend
+# decodes so far, and assembled rather than hand-encoded: three defects
+# in this tree came from instruction arrays that held what their author
+# believed instead of what the assembler emits.
+#
+if(EMU_GUEST_ARCH_ARMV7M AND CMAKE_C_COMPILER_ID)
+    find_program(ARM_AS arm-none-eabi-as)
+    find_program(ARM_LD arm-none-eabi-ld)
+    find_program(ARM_OBJCOPY arm-none-eabi-objcopy)
+    if(ARM_AS AND ARM_LD AND ARM_OBJCOPY)
+        set(_m7_dir "${CMAKE_BINARY_DIR}/guest")
+        file(WRITE "${CMAKE_BINARY_DIR}/armv7m-guest.ld"
+             "ENTRY(_start)\nSECTIONS {\n  . = 0x20000000;\n"
+             "  .vectors : { *(.vectors) }\n  .text : { *(.text*) }\n}\n")
+        add_custom_command(
+            OUTPUT "${_m7_dir}/armv7m-hello.bin"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_m7_dir}"
+            COMMAND ${ARM_AS} -mthumb -mcpu=cortex-m4
+                    "${CMAKE_CURRENT_SOURCE_DIR}/armv7m/hello.S"
+                    -o "${_m7_dir}/armv7m-hello.o"
+            COMMAND ${ARM_LD} -T "${CMAKE_BINARY_DIR}/armv7m-guest.ld"
+                    "${_m7_dir}/armv7m-hello.o"
+                    -o "${_m7_dir}/armv7m-hello.elf"
+            COMMAND ${ARM_OBJCOPY} -O binary "${_m7_dir}/armv7m-hello.elf"
+                    "${_m7_dir}/armv7m-hello.bin"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/armv7m/hello.S"
+            COMMENT "Building ARMv7-M guest armv7m-hello.bin")
+        add_custom_target(guest-armv7m-hello ALL
+                          DEPENDS "${_m7_dir}/armv7m-hello.bin")
+    endif()
+endif()
+
 if(NOT RISCV_GCC OR NOT RISCV_OBJCOPY)
     message(STATUS "RISC-V toolchain not found: guest images will not be built")
     return()
