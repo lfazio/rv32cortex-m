@@ -140,6 +140,9 @@ static void armv7m_ops_status(const emu_cpu_t *cpu, emu_cpu_status_t *out)
     out->retired = c->retired;
     out->state = c->state;
     out->backend = "interp";
+    out->faulted = c->faulted;
+    out->fault_pc = c->fault_pc;
+    out->fault_insn = c->fault_insn;
 }
 
 /*

@@ -17,46 +17,50 @@ find_program(RISCV_OBJCOPY
 # **Before the RISC-V early return below, not after it.**
 #
 # That return skips the rest of this file when the RISC-V toolchain is
-# absent, which is right for RV32 images and wrong for this one: it is
-# built with the ARM toolchain and has nothing to do with RISC-V. Placed
-# after the return, an ARMv7-M-only tree builds no guest at all and
-# nothing says so -- the same shape as the three RISC-V tests this tree
-# once queued in a PowerPC-only build.
+# absent, which is right for RV32 images and wrong for these: they are
+# built with the ARM toolchain and have nothing to do with RISC-V.
+# Placed after the return, an ARMv7-M-only tree builds no guest at all
+# and nothing says so -- the same shape as the three RISC-V tests this
+# tree once queued in a PowerPC-only build.
 #
+# hello.S is hand-written assembly and 16-bit only; alu.c is compiled C,
+# which is what found three decode defects the hand-written one could
+# not. Both go through the same link script and start-up, so a guest
+# installs its own .data rather than depending on the loader.
 #
-# The ARMv7-M frontend's first guest. Built with the *ARM* toolchain,
-# not the RISC-V one, so it is here rather than in add_guest_image --
-# which exists to build RV32 images and hardcodes that compiler.
-#
-# 16-bit encodings only, because that is the whole of what the frontend
-# decodes so far, and assembled rather than hand-encoded: three defects
-# in this tree came from instruction arrays that held what their author
-# believed instead of what the assembler emits.
-#
-if(EMU_GUEST_ARCH_ARMV7M AND CMAKE_C_COMPILER_ID)
-    find_program(ARM_AS arm-none-eabi-as)
-    find_program(ARM_LD arm-none-eabi-ld)
+if(EMU_GUEST_ARCH_ARMV7M)
+    find_program(ARM_GCC arm-none-eabi-gcc)
     find_program(ARM_OBJCOPY arm-none-eabi-objcopy)
-    if(ARM_AS AND ARM_LD AND ARM_OBJCOPY)
+    if(ARM_GCC AND ARM_OBJCOPY)
         set(_m7_dir "${CMAKE_BINARY_DIR}/guest")
-        file(WRITE "${CMAKE_BINARY_DIR}/armv7m-guest.ld"
-             "ENTRY(_start)\nSECTIONS {\n  . = 0x20000000;\n"
-             "  .vectors : { *(.vectors) }\n  .text : { *(.text*) }\n}\n")
-        add_custom_command(
-            OUTPUT "${_m7_dir}/armv7m-hello.bin"
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${_m7_dir}"
-            COMMAND ${ARM_AS} -mthumb -mcpu=cortex-m4
-                    "${CMAKE_CURRENT_SOURCE_DIR}/armv7m/hello.S"
-                    -o "${_m7_dir}/armv7m-hello.o"
-            COMMAND ${ARM_LD} -T "${CMAKE_BINARY_DIR}/armv7m-guest.ld"
-                    "${_m7_dir}/armv7m-hello.o"
-                    -o "${_m7_dir}/armv7m-hello.elf"
-            COMMAND ${ARM_OBJCOPY} -O binary "${_m7_dir}/armv7m-hello.elf"
-                    "${_m7_dir}/armv7m-hello.bin"
-            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/armv7m/hello.S"
-            COMMENT "Building ARMv7-M guest armv7m-hello.bin")
-        add_custom_target(guest-armv7m-hello ALL
-                          DEPENDS "${_m7_dir}/armv7m-hello.bin")
+        set(_m7_src "${CMAKE_CURRENT_SOURCE_DIR}/armv7m")
+        file(MAKE_DIRECTORY "${_m7_dir}")
+
+        function(add_armv7m_guest name)
+            cmake_parse_arguments(A "" "" "SOURCES" ${ARGN})
+            set(srcs "")
+            foreach(f IN LISTS A_SOURCES)
+                list(APPEND srcs "${_m7_src}/${f}")
+            endforeach()
+            add_custom_command(
+                OUTPUT "${_m7_dir}/armv7m-${name}.bin"
+                COMMAND ${ARM_GCC} -mthumb -mcpu=cortex-m4 -O1 -g
+                        -ffreestanding -nostdlib -fno-builtin -fno-common
+                        -Wall -Wextra
+                        -T "${_m7_src}/guest.ld" ${srcs}
+                        -o "${_m7_dir}/armv7m-${name}.elf"
+                COMMAND ${ARM_OBJCOPY} -O binary
+                        "${_m7_dir}/armv7m-${name}.elf"
+                        "${_m7_dir}/armv7m-${name}.bin"
+                DEPENDS ${srcs} "${_m7_src}/guest.ld"
+                COMMENT "Building ARMv7-M guest armv7m-${name}.bin"
+                VERBATIM)
+            add_custom_target(guest-armv7m-${name} ALL
+                              DEPENDS "${_m7_dir}/armv7m-${name}.bin")
+        endfunction()
+
+        add_armv7m_guest(hello SOURCES hello.S)
+        add_armv7m_guest(alu   SOURCES start.S alu.c)
     endif()
 endif()
 

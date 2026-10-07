@@ -66,6 +66,25 @@ endif()
 # that something printed: a broken Z flag gives the wrong number of
 # As, which names its own cause.
 #
+#
+# The compiled-C guest, which is the one that matters: it found three
+# decode defects the hand-written assembly could not, because a
+# compiler reaches for MOVW/MOVT, the modified immediate and shifts by
+# register without being asked.
+#
+# It asserts ARMV7M-ALU-OK, a line only a *completed* run prints, and
+# its expected values are constants worked out independently of the
+# implementation.
+#
+if(TARGET guest-armv7m-alu)
+    add_test(NAME guest-armv7m-alu
+             COMMAND emu-host --max-insn 200000
+                     "${CMAKE_BINARY_DIR}/guest/armv7m-alu.bin")
+    set_tests_properties(guest-armv7m-alu PROPERTIES
+        LABELS fast
+        PASS_REGULAR_EXPRESSION "ARMV7M-ALU-OK")
+endif()
+
 if(TARGET guest-armv7m-hello)
     add_test(NAME guest-armv7m-hello
              COMMAND emu-host --max-insn 1000

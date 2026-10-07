@@ -91,7 +91,12 @@ typedef struct armv7m_cpu {
      * instructions.
      */
     uint32_t fault_pc;
-    uint16_t fault_insn;
+    /*
+     * The whole encoding, w0 in the high half -- the order objdump
+     * prints a wide instruction in, so the number can be searched for
+     * in a disassembly without rearranging it.
+     */
+    uint32_t fault_insn;
     bool faulted;
 } armv7m_cpu_t;
 

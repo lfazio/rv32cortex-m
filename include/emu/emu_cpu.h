@@ -157,6 +157,23 @@ typedef struct emu_cpu_status {
      * than spin forever on a guest that fell off the end of main().
      */
     bool wakeable;
+    /*
+     * Set when the core stopped because it could not execute the
+     * instruction at `fault_pc`, whose encoding is `fault_insn`.
+     *
+     * **Generic because the need is.** Every frontend in this tree has
+     * had the same defect at least once -- an encoding it did not
+     * implement advancing the pc, or vectoring to a handler a bare guest
+     * never installed -- and in each case the cost was a guest that kept
+     * producing plausible output. A frontend can halt honestly instead,
+     * but only if something prints the reason: without these fields the
+     * ARMv7-M frontend stopped mid-line and the run looked successful.
+     *
+     * A frontend that vectors its faults to the guest leaves them clear.
+     */
+    bool faulted;
+    uint32_t fault_pc;
+    uint32_t fault_insn;
 } emu_cpu_status_t;
 
 /* ------------------------------------------------------------------ */

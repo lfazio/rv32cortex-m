@@ -185,8 +185,7 @@ static bool finish(emu_system_t *sys, const emu_session_cfg_t *cfg)
             return false;
         }
         for (uint32_t i = 0; i < cfg->dtb_size; i++) {
-            if (emu_bus_write(bus, at + i, 1u, cfg->dtb[i]) !=
-                EMU_FAULT_NONE) {
+            if (emu_bus_write(bus, at + i, 1u, cfg->dtb[i]) != EMU_FAULT_NONE) {
                 fail(cfg, "dtb", "could not be written to guest RAM");
                 return false;
             }
@@ -310,6 +309,30 @@ void emu_session_report(emu_system_t *sys, uint64_t retired,
          */
         emu_console_printf("\nemu: instruction cap reached, guest did not "
                            "halt\n");
+    }
+
+    /*
+     * Why the core stopped, when it stopped on an instruction it could
+     * not execute.
+     *
+     * **Before the numbers, because a fault makes them meaningless.**
+     * Every frontend here has at some point halted or wandered on an
+     * unimplemented encoding, and the expensive part was never the
+     * missing instruction -- it was that the run looked like a run. This
+     * turns "the output stops mid-line" into an address and an encoding,
+     * which objdump resolves in one step.
+     */
+    for (unsigned i = 0; i < sys->ncores; i++) {
+        emu_cpu_status_t fs;
+
+        emu_core_status(&sys->core[i], &fs);
+        if (fs.faulted) {
+            emu_console_printf("\nemu: core %u stopped on an instruction it "
+                               "could not execute\n"
+                               "     pc %08x  encoding %08x\n",
+                               i, (unsigned)fs.fault_pc,
+                               (unsigned)fs.fault_insn);
+        }
     }
 
     emu_print_run_summary(retired, host_cycles);
