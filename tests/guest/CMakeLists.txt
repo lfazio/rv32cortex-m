@@ -63,6 +63,41 @@ if(EMU_GUEST_ARCH_ARMV7M)
         add_armv7m_guest(alu   SOURCES start.S alu.c)
         add_armv7m_guest(itblock SOURCES start.S itblock.c)
         add_armv7m_guest(nvic  SOURCES start.S nvic.c frame.S)
+
+        #
+        # **The Thumb-2 encoder, as a guest, executing what it emits.**
+        #
+        # This is the one that justifies the frontend: the backend's
+        # emitters can only be executed on hardware today, and three of
+        # its defects were live for months because no host suite could
+        # reach them. Here the real `src/backend/thumb2/encode.c` is
+        # compiled into a Cortex-M guest, so an x86 host runs it.
+        #
+        # It reaches outside tests/guest for that source, which is
+        # deliberate: a copy would be a second encoder and would agree
+        # with itself.
+        #
+        add_custom_command(
+            OUTPUT "${_m7_dir}/armv7m-t2exec.bin"
+            COMMAND ${ARM_GCC} -mthumb -mcpu=cortex-m4 -O1 -g
+                    -ffreestanding -nostdlib -fno-builtin -fno-common
+                    -Wall -Wextra
+                    -I "${CMAKE_SOURCE_DIR}/include"
+                    -DEMU_HOST_JIT_THUMB2=1
+                    -T "${_m7_src}/guest.ld"
+                    "${_m7_src}/start.S" "${_m7_src}/t2exec.c"
+                    "${CMAKE_SOURCE_DIR}/src/backend/thumb2/encode.c"
+                    -o "${_m7_dir}/armv7m-t2exec.elf"
+            COMMAND ${ARM_OBJCOPY} -O binary
+                    "${_m7_dir}/armv7m-t2exec.elf"
+                    "${_m7_dir}/armv7m-t2exec.bin"
+            DEPENDS "${_m7_src}/t2exec.c" "${_m7_src}/start.S"
+                    "${_m7_src}/guest.ld"
+                    "${CMAKE_SOURCE_DIR}/src/backend/thumb2/encode.c"
+            COMMENT "Building ARMv7-M guest armv7m-t2exec.bin"
+            VERBATIM)
+        add_custom_target(guest-armv7m-t2exec ALL
+                          DEPENDS "${_m7_dir}/armv7m-t2exec.bin")
     endif()
 endif()
 

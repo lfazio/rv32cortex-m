@@ -613,6 +613,68 @@ static bool exec16(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
     }
 
     /*
+     * The extend and reverse group: 1011 0010 xx / 1011 1010 xx.
+     *
+     * SXTH, SXTB, UXTH, UXTB and REV, REV16, REVSH -- narrowing and
+     * byte-swapping, which a compiler emits for any cast to a narrower
+     * type. `uxtb` arrived here from `(unsigned char)` in a guest's
+     * UART write.
+     */
+    /*
+     * **Eight bits of prefix, not six.** The extend group is 0xB2xx and
+     * the reverse group 0xBAxx, and nothing wider than that: `insn >> 10
+     * == 0x2C` spans 0xB000-0xB3FF, which also contains ADD/SUB sp and
+     * -- the one that bit -- **CBZ at 0xB1xx**. So a compare-and-branch
+     * decoded as a zero-extend, the branch never happened, and the guest
+     * fell out of a loop it should have stayed in. It printed one
+     * character short and then stopped.
+     *
+     * Third prefix-width defect in this frontend: two bits short on the
+     * shift group, one bit short on the modified immediate, two bits
+     * here. Each produced a wrong answer rather than an unrecognised
+     * encoding, which is what makes the class worth naming.
+     */
+    if ((insn >> 8) == 0xB2u || (insn >> 8) == 0xBAu) {
+        const uint32_t op = (insn >> 6) & 3u;
+        const uint32_t rm = (insn >> 3) & 7u;
+        const uint32_t rd = insn & 7u;
+        const uint32_t v = c->r[rm];
+
+        if ((insn >> 8) == 0xB2u) { /* extend */
+            switch (op) {
+            case 0u: /* SXTH */
+                c->r[rd] = (uint32_t)(int32_t)(int16_t)v;
+                return true;
+            case 1u: /* SXTB */
+                c->r[rd] = (uint32_t)(int32_t)(int8_t)v;
+                return true;
+            case 2u: /* UXTH */
+                c->r[rd] = v & 0xFFFFu;
+                return true;
+            default: /* UXTB */
+                c->r[rd] = v & 0xFFu;
+                return true;
+            }
+        }
+        switch (op) { /* reverse */
+        case 0u: /* REV */
+            c->r[rd] = ((v & 0xFFu) << 24) | ((v & 0xFF00u) << 8) |
+                       ((v >> 8) & 0xFF00u) | ((v >> 24) & 0xFFu);
+            return true;
+        case 1u: /* REV16: each halfword independently */
+            c->r[rd] = ((v & 0x00FFu) << 8) | ((v & 0xFF00u) >> 8) |
+                       ((v & 0x00FF0000u) << 8) | ((v & 0xFF000000u) >> 8);
+            return true;
+        case 3u: /* REVSH: the low halfword, sign extended */
+            c->r[rd] = (uint32_t)(int32_t)(int16_t)((
+                uint16_t)(((v & 0xFFu) << 8) | ((v >> 8) & 0xFFu)));
+            return true;
+        default:
+            return false; /* 0b10 is unallocated */
+        }
+    }
+
+    /*
      * CPSIE and CPSID: 1011 0110 0110 x010, the two-instruction way a
      * guest turns interrupts off and on. `i` is bit 1 of the immediate
      * and selects PRIMASK; `f` selects FAULTMASK, which this frontend
@@ -891,6 +953,52 @@ static bool exec32(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
 
     /* ---- branches and the data-processing immediates: 11110 ---- */
     if (op1 == 2u) {
+        /*
+         * **The misc-control instructions live inside the branch
+         * encoding space**, and have to be taken out of it first.
+         *
+         * DSB, DMB, ISB, MSR and MRS all have w1's bit 15 set, which is
+         * what the branch test below keys on -- so `DSB SY`
+         * (f3bf 8f4f) entered the branch decoder, came out as a
+         * conditional branch with cond 0b1110, and was reported as an
+         * unimplemented encoding. The architecture distinguishes them by
+         * exactly that: cond 0b111x in a B(T3) is not a condition, it
+         * selects this group.
+         *
+         * Checking them before the branch is the fix. Putting the
+         * barriers *after* it, which is where they were, meant the
+         * handler existed and could not be reached -- the same
+         * unreachable-handler shape as the 0xE8xx range sitting behind
+         * the wrong op1.
+         */
+        if ((w0 & 0xFFF0u) == 0xF3B0u) {
+            return true; /* DSB, DMB, ISB: no reordering to prevent */
+        }
+        if ((w0 & 0xFFF0u) == 0xF3E0u && (w1 & 0xF000u) == 0x8000u) {
+            const uint32_t rd = (uint32_t)((w1 >> 8) & 15u);
+            const uint32_t sysm = (uint32_t)(w1 & 0xFFu);
+
+            if (sysm == 16u) { /* PRIMASK */
+                c->r[rd] = c->primask;
+                return true;
+            }
+            if (sysm <= 3u) { /* xPSR and its views */
+                c->r[rd] = c->xpsr;
+                return true;
+            }
+            return false;
+        }
+        if ((w0 & 0xFFF0u) == 0xF380u && (w1 & 0xFF00u) == 0x8800u) {
+            const uint32_t rn = (uint32_t)(w0 & 15u);
+            const uint32_t sysm = (uint32_t)(w1 & 0xFFu);
+
+            if (sysm == 16u) { /* PRIMASK */
+                c->primask = c->r[rn] & 1u;
+                return true;
+            }
+            return false;
+        }
+
         /* B/BL/BLX: w1's bit 15 set */
         if ((w1 & 0x8000u) != 0u) {
             const uint32_t s = (uint32_t)((w0 >> 10) & 1u);
@@ -977,18 +1085,6 @@ static bool exec32(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
         }
 
         /*
-         * DSB, DMB and ISB: 1111 0011 1011. They retire with no effect
-         * -- one core, one thread, so there is no reordering for them to
-         * prevent, which is the same reasoning recorded for G4MH's SYNC
-         * family. The exception there applies here too: an
-         * instruction-sync has to discard translations, and that matters
-         * only once this frontend has a JIT.
-         */
-        if ((w0 & 0xFFF0u) == 0xF3B0u) {
-            return true;
-        }
-
-        /*
          * The bitfield group: UBFX, SBFX, BFI and BFC.
          *
          * **A compiler reaches for these on its own**, which is how this
@@ -1064,38 +1160,6 @@ static bool exec32(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
 
                     c->r[rd] = (c->r[rd] & ~mask) | ins;
                 }
-                return true;
-            }
-            return false;
-        }
-
-        /*
-         * MSR and MRS, for PRIMASK and xPSR. The system registers a
-         * bare-metal guest actually touches; SP_process, CONTROL and
-         * the fault masks are reported rather than answered, because a
-         * stub that returned zero for CONTROL would tell a guest it was
-         * privileged on the main stack whether or not that was true.
-         */
-        if ((w0 & 0xFFF0u) == 0xF3E0u && (w1 & 0xF000u) == 0x8000u) {
-            const uint32_t rd = (uint32_t)((w1 >> 8) & 15u);
-            const uint32_t sysm = (uint32_t)(w1 & 0xFFu);
-
-            if (sysm == 16u) { /* PRIMASK */
-                c->r[rd] = c->primask;
-                return true;
-            }
-            if (sysm <= 3u) { /* xPSR and its views */
-                c->r[rd] = c->xpsr;
-                return true;
-            }
-            return false;
-        }
-        if ((w0 & 0xFFF0u) == 0xF380u && (w1 & 0xFF00u) == 0x8800u) {
-            const uint32_t rn = (uint32_t)(w0 & 15u);
-            const uint32_t sysm = (uint32_t)(w1 & 0xFFu);
-
-            if (sysm == 16u) { /* PRIMASK */
-                c->primask = c->r[rn] & 1u;
                 return true;
             }
             return false;

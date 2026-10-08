@@ -100,6 +100,28 @@ endif()
 # nothing. So the guest asserts a handler that *ran*, a counter that
 # moved, and a register value that survived the frame.
 #
+#
+# **The Thumb-2 backend's emitters, executed.**
+#
+# This is the test that justifies the ARMv7-M frontend. The emitters
+# could only be *run* on hardware until now -- three of the backend's
+# defects were live for months because no host suite could reach them,
+# and both of the ones this guest reproduces produced a working program
+# that did something else rather than a wrong answer.
+#
+# scripts/t2-check-encodings.sh compares emitted bytes against
+# arm-none-eabi-as, which catches a wrong encoding. It cannot catch a
+# wrong *choice* of encoding. Executing them does.
+#
+if(TARGET guest-armv7m-t2exec)
+    add_test(NAME guest-armv7m-t2exec
+             COMMAND emu-host --max-insn 2000000
+                     "${CMAKE_BINARY_DIR}/guest/armv7m-t2exec.bin")
+    set_tests_properties(guest-armv7m-t2exec PROPERTIES
+        LABELS fast
+        PASS_REGULAR_EXPRESSION "T2EXEC-OK")
+endif()
+
 if(TARGET guest-armv7m-nvic)
     add_test(NAME guest-armv7m-nvic
              COMMAND emu-host --max-insn 5000000
