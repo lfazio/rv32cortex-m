@@ -6,7 +6,7 @@ independent of each other:
 | axis | what it decides | selected by | values |
 |---|---|---|---|
 | **platform** | where the emulator runs | `EMU_PLATFORM` | `host`, `stm32f446` |
-| **frontend** | what it emulates | `EMU_GUEST_ARCH_*` | `rv32`, `g4mh` |
+| **frontend** | what it emulates | `EMU_GUEST_ARCH_*` | `rv32`, `g4mh`, `ppc`, `armv7m` |
 | **backend** | how it executes | per frontend | interpreter, Thumb-2 JIT |
 
 Any platform can host any frontend, and each frontend brings its own

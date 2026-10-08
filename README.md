@@ -4,12 +4,20 @@ A retargetable 32-bit ISA emulator whose host is an **ARM Cortex-M
 microcontroller**, with the emulated guest driving the host's **real
 peripherals** through an identity-mapped passthrough window.
 
-Two guest architectures (RISC-V RV32 and Renesas RH850 G4MH), two JIT
-backends (Thumb-2 and x86-64), and two platforms (a native host runner
-and STM32F4/F7 firmware). Validated against the official
+Four guest architectures (RISC-V RV32, Renesas RH850 G4MH, NXP PowerPC
+e200z7 and ARM Cortex-M), two JIT backends (Thumb-2 and x86-64), and
+four platforms (a native host runner and STM32F4/F7/N6 firmware).
+Validated against the official
 [RISC-V Architecture Test Suite](https://github.com/riscv/riscv-arch-test)
 at **378/378** and the Berkeley `riscv-tests` at **77/77**, on hardware
 as well as on a host.
+
+The ARMv7-M frontend is there for a particular reason: it makes the
+**Thumb-2 backend testable without hardware**. That backend's emitters
+could previously only be *run* on a board, and three of its defects were
+live for months because no host suite could reach them —
+`tests/guest/armv7m/t2exec.c` compiles the real encoder into a Cortex-M
+guest, emits instructions into guest RAM and executes them.
 
 ---
 
@@ -47,7 +55,7 @@ Three axes, independent of each other:
 | axis | what it decides | selected by |
 |---|---|---|
 | platform | where it runs | `EMU_PLATFORM=host\|stm32f446\|stm32f746\|stm32n6` |
-| frontend | what it emulates | `EMU_GUEST_ARCH_RV32`, `EMU_GUEST_ARCH_G4MH`, `EMU_GUEST_ARCH_PPC` |
+| frontend | what it emulates | `EMU_GUEST_ARCH_RV32`, `EMU_GUEST_ARCH_G4MH`, `EMU_GUEST_ARCH_PPC`, `EMU_GUEST_ARCH_ARMV7M` |
 | backend | how it executes | `EMU_JIT=ON\|OFF`, `--jit` on the host runner |
 
 ---
@@ -288,15 +296,18 @@ builds, and that pairing is the one that reaches a shell.
 
 Both targets go through [`scripts/run-linux.sh`](scripts/run-linux.sh),
 which builds init, the kernel and OpenSBI before it runs anything;
-`LINUX_SRC`, `LINUX_BOOTARGS`, `LINUX_DISK`, `LINUX_MAXINSN` and
-`LINUX_JIT` override the pieces. Ctrl-C ends the emulator; it does not
+`LINUX_SRC`, `LINUX_BOOTARGS`, `LINUX_DISK`, `LINUX_MAXINSN`,
+`LINUX_JIT` and `LINUX_ZBB` override the pieces. Ctrl-C ends the emulator; it does not
 reach the guest.
 
-**Budget about 40 minutes to the prompt**, translated, and almost none
-of it is the kernel: `/sbin/init` runs inside a minute, and then one
-udev worker on `vda` blocks for ~1170 guest-seconds before udev kills
-it. See [docs/TODO.md](docs/TODO.md) -- that stall is an open question,
-not a speed problem.
+Expect minutes, and **the figure this paragraph used to quote is
+stale**: 40 minutes was measured before the JIT work that took the
+kernel boot from 210 s to 38 s, and the rootfs boot has not been timed
+since. What has not changed is where the time goes -- `/sbin/init` runs
+inside a minute of guest time and then one udev worker on `vda` blocks
+for ~1170 guest-seconds before udev kills it. See
+[docs/TODO.md](docs/TODO.md): that stall is an open question, not a
+speed problem, and no amount of translator work will move it.
 
 `LINUX_JIT=0` interprets instead of translating, which is what to do
 when a boot misbehaves and the question is whether the translator is
@@ -473,6 +484,18 @@ Guest images (`tests/guest/`):
 | `fbtest`  | the framebuffer device |
 | `virtiotest`| drives a virtio queue to completion and waits for the interrupt; needs `--virtio-console`, `--disk` or `--net` |
 | `sv32bench-bare` / `sv32bench-paged` | one source built twice, differing in one `-D`: the same kernel in M-mode under Bare and in S-mode under Sv32 with PMP armed. What the inlined memory path is worth, and the only coverage of a *translated* block below M-mode |
+
+ARMv7-M guests are separate, in `tests/guest/armv7m/`, because they are
+built with the ARM toolchain rather than the RISC-V one and run on the
+`armv7m` frontend:
+
+| Image | Purpose |
+|---|---|
+| `hello` | hand-written assembly, 16-bit encodings only; the first thing that ran |
+| `alu` | compiled C; found three decode defects the assembly could not |
+| `itblock` | IT, ITT, ITE, ITTTT and the in-block flag rule |
+| `nvic` | SysTick, exception entry and return, PRIMASK, an external source |
+| `t2exec` | **the real Thumb-2 encoder, emitting into RAM and executing it** |
 
 ---
 

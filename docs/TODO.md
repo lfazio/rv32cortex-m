@@ -157,10 +157,22 @@ measured at.
 
       `mmu : sv32` is the kernel's own confirmation of the paging work.
 
-      Still open: that stall, the ISA declaration above, and
-      benchmarks. Broken into the order the pieces actually unblock
-      each other, because most of them are only testable once the one
-      above works:
+      Still open:
+
+      - **the udev stall**, which is most of the wall time and has not
+        been looked at;
+      - **whether the Zbb alternatives actually patch.** The device
+        tree declares B and the kernel is built with
+        CONFIG_RISCV_ISA_ZBB, so the mechanism is in place and the
+        guest boots -- which is consistent with the lowerings being
+        right *and* with nothing being patched, because a boot that
+        never executes a Zbb instruction cannot fail on one. Telling
+        those apart needs a count of Zbb instructions **executed**, and
+        nothing reports that. `LINUX_ZBB=0` is the bisection;
+      - **benchmarks**, still not run under Linux.
+
+      Broken into the order the pieces actually unblock each other,
+      because most of them are only testable once the one above works:
   - [x] OpenSBI in M-mode, above.
   - [x] **Kernel boot to userspace. Done.** Linux 6.12 rv32 boots on
         OpenSBI, reaches `Run /init as init process`, and the init
@@ -269,17 +281,38 @@ measured at.
 
         | | wall | interp | block entries |
         |---|---|---|---|
+        | before | 210 s | 626.4M | 641.7M |
         | negative cache | 148 s | 673.7M | 682.0M |
         | + page-granular | 137 s | 674.6M | 685.8M |
-        | + `time` lowered | **80 s** | **358.1M** | **366.6M** |
+        | + `time` lowered | 80 s | 358.1M | 366.6M |
+        | + `div` lowered | **38 s** | — | — |
+
+        **210 s to 38 s, 5.5x**, and each step was found by asking the
+        same question and getting a different answer:
 
         `rdtime` was **335,195,899** of the boot's 2e9 instructions,
-        polled in kernel delay loops and declined by the translator, so
-        each iteration paid a dispatch and an interpreter entry.
+        polled in kernel delay loops; `DIV` was **356,462,035** --
+        99.4% of everything still interpreted after `time` -- declined
+        because open-coding it means reproducing RISC-V's divide-by-zero
+        and overflow rules per host. That is an argument against
+        open-coding and none at all against a call.
 
-        What is left: `interp` is still 358M of 2e9, 18%. The next
-        question is the same one asked again -- which instruction, not
-        which class -- and it has not been asked yet.
+        **Native divide was then built, measured, and does not pay**:
+        39 s against the helper's 38 s, two interleaved rounds. A
+        hardware `idiv` is 20-40 cycles, so the call was never the
+        dominant term, while the normalisation adds ~8 IR instructions
+        per divide. It is kept -- correct, suite-clean, and the balance
+        differs on Thumb-2 where an M7 `SDIV` is 2-12 cycles against a
+        call with register save/restore -- but **that is unmeasured**,
+        and the x86 figure is the only one in hand. See
+        `EMU_IR_DIVS` in emu_ir.h for the precondition it carries.
+
+        What is left: **`interp` is still 358M of 2e9 after `time`, and
+        the divide work removed most of the rest.** The question to ask
+        next is the same one, a third time -- *which instruction, not
+        which class* -- against a current boot, because the last two
+        answers were each a single instruction and neither was
+        guessable from the class histogram.
 
         **SFENCE.VMA flushes the whole code cache** -- 129,286 times in
         a boot, and **99.994% of those requests were not global**:
@@ -813,59 +846,107 @@ measured at.
         per-architecture order and not a choice.
   - [ ] `ppc_pairstats.c` -- the histogram that answers "which
         instruction next" with a measurement instead of an opinion.
-- [ ] **A Thumb-2 frontend**, so ARMv7E-M is a guest and not only a
-      host. It would be the fourth, after RV32, G4MH and e200z7, and it
-      is the first one this tree could run *on itself*: a Cortex-M
-      guest on a Cortex-M host, where the backend already emits the
-      instruction set the frontend would be decoding.
+- [~] **An ARMv7-M frontend, so the Thumb-2 backend is testable without
+      hardware.** Built, and the thing it was for works: the real
+      `src/backend/thumb2/encode.c` compiles into a Cortex-M guest,
+      runs on this frontend on an x86 host, emits instructions into
+      guest RAM and **branches to them** --
+      `tests/guest/armv7m/t2exec.c`, asserting `T2EXEC-OK`.
 
-      **The encoder is not a decoder, and reusing it is the trap.**
-      `src/backend/thumb2/encode.c` writes instructions and knows
-      nothing about reading them. This file has already recorded the
-      same confusion twice in the other direction -- `rv_disasm`
-      printing confident nonsense for G4MH, and reporting zero FP
-      instructions in a hard-float build -- so a frontend gets its own
-      decoder and the two are checked against each other by
-      `scripts/t2-check-encodings.sh`, which exists and would simply
-      gain a second caller.
+      That closes a gap this file has complained about since the
+      backend existed. `scripts/t2-check-encodings.sh` compares emitted
+      bytes against `arm-none-eabi-as`, which catches a wrong
+      *encoding* and cannot catch a wrong *choice* of encoding -- an
+      emitter that assembles perfectly and is the wrong instruction for
+      its operands. Confirmed against the two historical defects by
+      reintroducing them: removing the shift-by-zero rewrite gives
+      `FAIL lsr-0-is-a-move`, and reversing the imm3:imm2 split kills
+      the guest. The first of those originally cost a Nucleo, a flash
+      cycle and two architecture tests.
 
-      What the existing frontends say it will cost, in the order the
-      mistakes were made:
+      Named `armv7m`, not `thumb2`: `src/backend/thumb2/` owns every
+      `t2_` symbol and those are an *encoder*. This is a decoder.
 
-      - **The length decoder is where the exceptions hide.** Thumb-2
-        mixes 16- and 32-bit encodings and selects by the top five bits
-        of the first halfword. G4MH's staged decoder answered from a
-        rule of thumb, was wrong for exactly one slot, and produced an
-        *infinite loop* rather than a wrong answer -- in an
-        implementation that had never executed. Write the length test
-        once, and property-test it across all 65536 first halfwords as
-        `g4mh_insn_len` now is.
-      - **IT blocks have no analogue in any frontend here.** Up to four
-        instructions whose execution depends on state bits carried
-        forward, which is a decoder that is not stateless and a
-        translator that cannot start a block anywhere. Everything else
-        in this tree assumes a block may begin at any instruction
-        boundary.
-      - **Write the vector table and the trap report first.** Four
-        instances so far, and the last one found three wrong vectors
-        the moment a table existed to find them with. ARMv7-M's is a
-        table of *addresses*, not of instructions, with the initial
-        stack pointer at offset 0 -- so a guest that gets it wrong
-        faults before its first instruction rather than twenty bytes
-        later, which is the good direction.
-      - **Do not model the memory map in `.bss`.** The G4MH frontend
-        allocated the part's whole address space as static arrays --
-        3.44 MiB on a part with 320 KiB -- which works on a host and
-        cannot be ported. Serve the guest image from the platform's
-        flash, as RV32 does.
+      **What it decodes**: the 16-bit integer set, the 32-bit
+      encodings a compiler actually emits (chosen by compiling C and
+      reading the disassembly rather than by working down the manual),
+      IT blocks, SysTick, the NVIC, and exception entry and return.
+      Guests in `tests/guest/armv7m/`: hello, alu, itblock, nvic,
+      t2exec -- 6/6 in an `EMU_GUEST_ARCH_ARMV7M=ON` tree.
 
-      The interesting question it would answer is whether the
-      near-identity case is worth special-casing: a Thumb-2 guest on a
-      Thumb-2 host is the one pairing where a block could in principle
-      be copied rather than translated. That is a measurement, not a
-      plan -- the register file still lives in memory and the guest's
-      pc is not the host's, so "copy it" is unlikely to survive
-      contact.
+      **What it does not**: the FPU, the MPU, the process stack,
+      BASEPRI, FAULTMASK, HardFault escalation, priorities beyond
+      "something is pending", and most of the 32-bit space. Every one
+      of those is a *reported fault* with its encoding, never a skip --
+      `emu_cpu_status_t` carries `faulted`/`fault_pc`/`fault_insn` and
+      the session prints them before the numbers, which is a generic
+      addition because every frontend here has needed it.
+
+      Still open:
+
+      - **The whole F746 firmware as a guest**, which was the original
+        phrasing and is a much larger job than the encoder. It is
+        linked at 0x08000000 with ITCM at 0 and drives **366 distinct
+        STM32 peripheral registers** -- RCC, PWR, the flash controller,
+        GPIO, USART, DWT -- so it needs an STM32F746 machine model.
+        Worth deciding deliberately: this tree's whole design is that
+        peripheral drivers live in the *guest* and reach real silicon
+        through passthrough, so adding peripheral *models* is a
+        direction change rather than an increment.
+      - **The IR and the register allocator**, which t2exec does not
+        reach: it tests the encoder end to end and nothing above it.
+        Running `emu_ir_lower` in the guest is the next layer and needs
+        far more of the 32-bit space.
+      - the FPU, the MPU, and the exception features listed above.
+
+      **Five defects, every one found by running a program and none by
+      a unit test**, which is this file's most-repeated lesson arriving
+      again. Four were the same class -- a field read too few bits wide,
+      aliasing one group of instructions onto another:
+
+      | | read | needs | symptom |
+      |---|---|---|---|
+      | shift/add/sub group | 2 bits | 3 | `movs r0,#16` ran as `lsls r0,r2,#0` |
+      | modified immediate | bits 10:9 | bit 9 | rejected every immediate with `i` set |
+      | extend group | 6 bits | 8 | swallowed **CBZ**; a branch became a zero-extend |
+      | MOVW/MOVT | masked 0x7B vs 0x24 | — | provably constant; neither ever decoded |
+
+      The fifth is the one worth keeping separately: the whole
+      0xE8xx-0xEFxx range sat behind `op1 == 3` and is `op1 == 1`, so
+      `add.w r5, r5, r5` reported as unimplemented while its handler
+      was forty lines below in a block the decoder could not enter. Two
+      more of the same shape followed -- the barriers checked *after*
+      the branch test that swallows them, and a dead duplicate of
+      MSR/MRS. **An unreachable handler reads exactly like a missing
+      one**, and only the fault report tells them apart.
+
+      Only MOVW/MOVT was caught by the compiler
+      (`-Wtautological-compare`). The other four needed a guest.
+
+      And the instruments were wrong more often than the code:
+
+      - an A/B harness that grepped the guest for `FAIL` scored a
+        *crashed* guest as a pass, so three real catches read as
+        misses. Detection is `ctest` now, which asserts a line only a
+        completed run prints.
+      - the exception-frame check was inline asm and passed with the
+        restore of r0 and of r12 broken, because gcc needs registers
+        for the operands and chose the ones under test. It is
+        `frame.S` now, where nothing is allocated, and it checks `sp`
+        too -- the 8-byte alignment bit is otherwise invisible until a
+        handler takes a *second* exception.
+      - three tests used the one input where correct and broken agree:
+        `ITTTT EQ` cannot see an ITAdvance that shifts the whole byte
+        (EQ is condition 0b0000, so the top three bits are already
+        zero), and an IT block with a *true* condition cannot see a
+        handler that inherits ITSTATE. The awkward input is the whole
+        test.
+
+      The question the frontend was also meant to answer -- whether a
+      Thumb-2 guest on a Thumb-2 host could copy a block rather than
+      translate it -- is untouched and still a measurement rather than
+      a plan. The register file is in memory and the guest's pc is not
+      the host's, so "copy it" is unlikely to survive contact.
 
 - [ ] **rv32: Zihpm, Zihintntl, Zihintpause, Zicond, Zawrs, Zacas,
       Zalasr.** Six of the seven are absent from the tree entirely;
