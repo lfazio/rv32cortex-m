@@ -121,6 +121,59 @@ typedef struct armv7m_cpu {
     /* Where the vector table lives. VTOR, which resets to 0. */
     uint32_t vtor;
 
+    /* ---- the exception model ---- */
+
+    /*
+     * PRIMASK, and nothing else of the three.
+     *
+     * FAULTMASK and BASEPRI exist and are not implemented: FAULTMASK
+     * needs HardFault escalation to mean anything, and BASEPRI needs
+     * priorities to be compared rather than merely stored. Modelling
+     * either badly would make an interrupt arrive when the guest had
+     * disabled it, which is the shape of bug that looks like the
+     * *handler* misbehaving.
+     */
+    uint32_t primask;
+
+    /*
+     * The interrupt controller. 32 external sources, which covers the
+     * SysTick-plus-a-UART machines this frontend is for -- a real part
+     * has up to 240 and the arrays would simply be longer.
+     *
+     * `pending` is the latch and `enabled` the mask, held apart because
+     * the architecture does: a disabled source still latches, and
+     * enabling it later delivers. Collapsing them loses an interrupt
+     * that arrived while masked, which presents as a device that
+     * sometimes does not answer.
+     */
+    uint32_t irq_pending;
+    uint32_t irq_enabled;
+    uint32_t irq_active;
+
+    /*
+     * SysTick, the one timer every Cortex-M has in the same place. The
+     * 24-bit counter counts *down*, reloads from RVR, and sets COUNTFLAG
+     * on the wrap -- a bit that clears when read, which is the detail a
+     * polling guest depends on.
+     */
+    uint32_t systick_ctrl;
+    uint32_t systick_reload;
+    uint32_t systick_value;
+    bool systick_countflag;
+
+    /*
+     * True while an exception handler is running, so a return can be
+     * told from an ordinary branch.
+     *
+     * **Derived from the magic LR value, not from a counter.** ARMv7-M
+     * has no "return from interrupt" instruction: a handler returns by
+     * branching to an address of the form 0xFFFFFFFx, and the core
+     * recognises *that* rather than tracking depth. A counter would
+     * disagree with the architecture the moment a handler branched to a
+     * tail-called function, which is what compilers do.
+     */
+    uint32_t nest;
+
     uint64_t retired;
 
     /*
@@ -168,6 +221,27 @@ static inline bool armv7m_is_32bit(uint16_t hw)
 
     return top == 0x1Du || top == 0x1Eu || top == 0x1Fu;
 }
+
+/*
+ * The SysTick and NVIC register block, at the addresses every Cortex-M
+ * puts them. Fixed by the architecture rather than by a part, which is
+ * why they are here and not in a platform header.
+ */
+#define ARMV7M_SCS_BASE 0xE000E000u
+#define ARMV7M_SCS_SIZE 0x1000u
+
+/* Exception numbers: 15 is SysTick, and external IRQ n is 16 + n. */
+#define ARMV7M_EXC_SYSTICK 15u
+#define ARMV7M_EXC_EXTERNAL 16u
+
+/*
+ * The EXC_RETURN values a handler branches to. Bit 2 chooses which
+ * stack was used; this frontend has only the main one, so the other
+ * values are reported rather than guessed at.
+ */
+#define ARMV7M_EXC_RETURN_MASK 0xFFFFFFF0u
+
+extern const struct emu_dev_ops armv7m_scs_ops;
 
 static inline uint32_t armv7m_insn_len(uint16_t hw)
 {

@@ -24,6 +24,7 @@
 
 emu_run_reason_t armv7m_run(armv7m_cpu_t *c, uint32_t budget,
                             uint32_t *retired);
+void armv7m_set_irq(armv7m_cpu_t *c, uint32_t source, bool level);
 
 static armv7m_cpu_t g_cpu;
 
@@ -113,6 +114,32 @@ static void armv7m_ops_boot(emu_cpu_t *cpu, const emu_boot_info_t *info)
     }
 }
 
+/*
+ * The SysTick and NVIC block, which every Cortex-M puts at the same
+ * address -- so it is the frontend's device and not a platform's.
+ *
+ * add_core_devices rather than add_shared_devices: the SCS is banked per
+ * core on a multi-core part, and getting that wrong on a single-core
+ * frontend would be invisible now and wrong the moment there are two.
+ */
+static bool armv7m_add_core_devices(emu_cpu_t *cpu, emu_bus_t *bus,
+                                    unsigned index)
+{
+    (void)index;
+    return emu_bus_add_mmio(bus, "scs", ARMV7M_SCS_BASE, ARMV7M_SCS_SIZE,
+                            &armv7m_scs_ops, cpu_of(cpu));
+}
+
+/*
+ * A device raising its line. Source numbers are external IRQ numbers --
+ * 0 is exception 16 -- which is the numbering a guest's NVIC_ISER bit
+ * positions use, so a platform does not have to add the offset.
+ */
+static void armv7m_ops_set_irq(emu_cpu_t *cpu, uint32_t source, bool level)
+{
+    armv7m_set_irq(cpu_of(cpu), source, level);
+}
+
 static emu_run_reason_t armv7m_ops_run(emu_cpu_t *cpu, uint32_t budget,
                                        uint32_t *retired)
 {
@@ -189,6 +216,9 @@ const emu_cpu_ops_t armv7m_frontend = {
     .step = armv7m_ops_step,
     .halt = armv7m_ops_halt,
     .status = armv7m_ops_status,
+
+    .add_core_devices = armv7m_add_core_devices,
+    .set_irq = armv7m_ops_set_irq,
 
     .reg_name = armv7m_reg_name,
     .reg_read = armv7m_reg_read,

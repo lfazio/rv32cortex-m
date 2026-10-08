@@ -21,8 +21,39 @@
     .thumb
 
     .section .vectors, "a"
-    .word   0x80100000          /* initial SP: top of the RAM window   */
-    .word   _start + 1          /* reset, Thumb bit set                */
+    .word   0x80100000          /* 0  initial SP: top of the RAM window */
+    .word   _start + 1          /* 1  reset, Thumb bit set              */
+    /*
+     * The rest of the system exceptions, up to SysTick at 15.
+     *
+     * **A table with only reset in it is a table that cannot report.**
+     * Every unused slot points at `.Lunhandled`, which halts on a BKPT
+     * -- so an exception this guest did not expect stops *here*, at a
+     * known address, instead of vectoring through a zero and executing
+     * whatever is at the bottom of the image. That is the fourth time
+     * this project has written that lesson down, and the first time the
+     * vectors were right the first time because of it.
+     *
+     * SysTick_Handler is weak-by-convention rather than weak: a guest
+     * that does not define one gets a link error, which is the honest
+     * failure for a test that is *about* the handler running.
+     */
+    .word   .Lunhandled + 1     /* 2  NMI          */
+    .word   .Lunhandled + 1     /* 3  HardFault    */
+    .word   .Lunhandled + 1     /* 4  MemManage    */
+    .word   .Lunhandled + 1     /* 5  BusFault     */
+    .word   .Lunhandled + 1     /* 6  UsageFault   */
+    .word   0                   /* 7  reserved     */
+    .word   0                   /* 8  reserved     */
+    .word   0                   /* 9  reserved     */
+    .word   0                   /* 10 reserved     */
+    .word   .Lunhandled + 1     /* 11 SVCall       */
+    .word   .Lunhandled + 1     /* 12 DebugMonitor */
+    .word   0                   /* 13 reserved     */
+    .word   .Lunhandled + 1     /* 14 PendSV       */
+    .word   SysTick_Handler + 1 /* 15 SysTick      */
+    .word   IRQ0_Handler + 1    /* 16 external 0   */
+    .word   .Lunhandled + 1     /* 17 external 1   */
 
     .text
     .thumb_func
@@ -55,3 +86,29 @@ _start:
 .Lmain:
     bl      main
     bkpt    #0
+
+/*
+ * Any exception the guest did not arrange for. Halting with the
+ * exception number in r0 is what turns "it stopped" into "it stopped
+ * because something vectored here" -- the emulator prints the pc, and
+ * this address is in the map.
+ */
+    .thumb_func
+.Lunhandled:
+    mrs     r0, ipsr
+    bkpt    #0xAD
+    b       .Lunhandled
+
+/*
+ * A guest with no SysTick handler still links, and still reports: this
+ * is overridden by any strong definition.
+ */
+    .weak   SysTick_Handler
+    .thumb_func
+SysTick_Handler:
+    b       .Lunhandled
+
+    .weak   IRQ0_Handler
+    .thumb_func
+IRQ0_Handler:
+    b       .Lunhandled

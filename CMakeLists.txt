@@ -702,6 +702,7 @@ if(EMU_GUEST_ARCH_ARMV7M)
     target_sources(emucore PRIVATE
         src/frontend/armv7m/armv7m_frontend.c
         src/frontend/armv7m/armv7m_interp.c
+        src/frontend/armv7m/armv7m_nvic.c
     )
 endif()
 

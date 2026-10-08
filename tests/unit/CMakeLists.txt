@@ -90,6 +90,25 @@ endif()
 # a half-correct implementation is right for the first instruction of a
 # block and wrong for the rest.
 #
+#
+# SysTick and the exception model.
+#
+# **Only waiting for an interrupt can prove one works.** Every NVIC
+# register can be written and read back by a controller that never
+# signals -- which this project has already been caught by once, when
+# the first virtio guest accepted every write and the device did
+# nothing. So the guest asserts a handler that *ran*, a counter that
+# moved, and a register value that survived the frame.
+#
+if(TARGET guest-armv7m-nvic)
+    add_test(NAME guest-armv7m-nvic
+             COMMAND emu-host --max-insn 5000000
+                     "${CMAKE_BINARY_DIR}/guest/armv7m-nvic.bin")
+    set_tests_properties(guest-armv7m-nvic PROPERTIES
+        LABELS fast
+        PASS_REGULAR_EXPRESSION "ARMV7M-NVIC-OK")
+endif()
+
 if(TARGET guest-armv7m-itblock)
     add_test(NAME guest-armv7m-itblock
              COMMAND emu-host --max-insn 200000

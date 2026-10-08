@@ -62,6 +62,7 @@ if(EMU_GUEST_ARCH_ARMV7M)
         add_armv7m_guest(hello SOURCES hello.S)
         add_armv7m_guest(alu   SOURCES start.S alu.c)
         add_armv7m_guest(itblock SOURCES start.S itblock.c)
+        add_armv7m_guest(nvic  SOURCES start.S nvic.c frame.S)
     endif()
 endif()
 

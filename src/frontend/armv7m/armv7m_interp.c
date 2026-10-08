@@ -613,6 +613,22 @@ static bool exec16(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
     }
 
     /*
+     * CPSIE and CPSID: 1011 0110 0110 x010, the two-instruction way a
+     * guest turns interrupts off and on. `i` is bit 1 of the immediate
+     * and selects PRIMASK; `f` selects FAULTMASK, which this frontend
+     * does not have and therefore reports.
+     */
+    if ((insn & 0xFFE8u) == 0xB660u) {
+        if ((insn & 1u) != 0u) {
+            return false; /* the `f` variant: FAULTMASK */
+        }
+        if ((insn & 2u) != 0u) {
+            c->primask = ((insn >> 4) & 1u) != 0u ? 1u : 0u;
+        }
+        return true;
+    }
+
+    /*
      * PUSH and POP: 1011 L10 R register_list.
      *
      * **POP with pc in the list is a return**, which is why this cannot
@@ -973,6 +989,119 @@ static bool exec32(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
         }
 
         /*
+         * The bitfield group: UBFX, SBFX, BFI and BFC.
+         *
+         * **A compiler reaches for these on its own**, which is how this
+         * one arrived: `SYST_CSR & (1u << 16)` -- testing one bit of a
+         * device register -- compiled to `ubfx r1, r1, #16, #1` rather
+         * than to the AND a reader would expect.
+         *
+         * lsb is imm3:imm2 and the width field is width-1, so a width of
+         * 32 is encoded as 31 and a zero-width field cannot be written.
+         * BFC is BFI with Rn == pc, in the same way MOV is ORR with
+         * Rn == pc elsewhere in this encoding space.
+         */
+        if ((w1 & 0x8000u) == 0u &&
+            (((w0 & 0xFFF0u) == 0xF3C0u) || ((w0 & 0xFFF0u) == 0xF340u) ||
+             ((w0 & 0xFFF0u) == 0xF360u))) {
+            const uint32_t rn = (uint32_t)(w0 & 15u);
+            const uint32_t rd = (uint32_t)((w1 >> 8) & 15u);
+            const uint32_t lsb =
+                (uint32_t)(((w1 >> 12) & 7u) << 2) | (uint32_t)((w1 >> 6) & 3u);
+            const uint32_t top = (uint32_t)(w1 & 31u);
+            /*
+             * Three exact patterns rather than a field: UBFX is 0xF3C0,
+             * SBFX 0xF340 and BFI/BFC 0xF360, and they are not adjacent
+             * values of one selector. The first version masked with
+             * 0xFF90 and compared against 0xF300, which `0xF3C1 &
+             * 0xFF90 == 0xF380` cannot equal -- so none of the three
+             * decoded. That is the second mask of this shape in this
+             * frontend; the first was MOVW/MOVT, and the compiler caught
+             * that one because the comparison was provably constant.
+             * This one was only caught because a guest needed it.
+             */
+            const uint32_t kind = ((w0 & 0xFFF0u) == 0xF3C0u)   ? 2u
+                                  : ((w0 & 0xFFF0u) == 0xF340u) ? 0u
+                                                                : 1u;
+
+            if (kind == 2u) { /* UBFX */
+                const uint32_t width = top + 1u;
+
+                if (lsb + width > 32u) {
+                    return false;
+                }
+                c->r[rd] = (width == 32u)
+                               ? c->r[rn]
+                               : ((c->r[rn] >> lsb) & ((1u << width) - 1u));
+                return true;
+            }
+            if (kind == 0u) { /* SBFX */
+                const uint32_t width = top + 1u;
+
+                if (lsb + width > 32u) {
+                    return false;
+                }
+                {
+                    const uint32_t sh = 32u - width;
+
+                    c->r[rd] =
+                        (uint32_t)(((int32_t)(c->r[rn] << (sh - lsb))) >> sh);
+                }
+                return true;
+            }
+            if (kind == 1u) { /* BFI, and BFC when rn is pc */
+                /* `top` is the *msb* here, not a width. */
+                if (top < lsb) {
+                    return false;
+                }
+                {
+                    const uint32_t width = top - lsb + 1u;
+                    const uint32_t mask = (width == 32u)
+                                              ? 0xFFFFFFFFu
+                                              : (((1u << width) - 1u) << lsb);
+                    const uint32_t ins =
+                        (rn == ARMV7M_PC) ? 0u : ((c->r[rn] << lsb) & mask);
+
+                    c->r[rd] = (c->r[rd] & ~mask) | ins;
+                }
+                return true;
+            }
+            return false;
+        }
+
+        /*
+         * MSR and MRS, for PRIMASK and xPSR. The system registers a
+         * bare-metal guest actually touches; SP_process, CONTROL and
+         * the fault masks are reported rather than answered, because a
+         * stub that returned zero for CONTROL would tell a guest it was
+         * privileged on the main stack whether or not that was true.
+         */
+        if ((w0 & 0xFFF0u) == 0xF3E0u && (w1 & 0xF000u) == 0x8000u) {
+            const uint32_t rd = (uint32_t)((w1 >> 8) & 15u);
+            const uint32_t sysm = (uint32_t)(w1 & 0xFFu);
+
+            if (sysm == 16u) { /* PRIMASK */
+                c->r[rd] = c->primask;
+                return true;
+            }
+            if (sysm <= 3u) { /* xPSR and its views */
+                c->r[rd] = c->xpsr;
+                return true;
+            }
+            return false;
+        }
+        if ((w0 & 0xFFF0u) == 0xF380u && (w1 & 0xFF00u) == 0x8800u) {
+            const uint32_t rn = (uint32_t)(w0 & 15u);
+            const uint32_t sysm = (uint32_t)(w1 & 0xFFu);
+
+            if (sysm == 16u) { /* PRIMASK */
+                c->primask = c->r[rn] & 1u;
+                return true;
+            }
+            return false;
+        }
+
+        /*
          * Data processing (modified immediate).
          *
          * **Bit 9 alone, not bits 10:9.** Bit 10 is the immediate's `i`
@@ -1282,6 +1411,139 @@ static bool exec32(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
 }
 
 /* ------------------------------------------------------------------ */
+/* Exceptions                                                          */
+/* ------------------------------------------------------------------ */
+
+uint32_t armv7m_pending(const armv7m_cpu_t *c);
+void armv7m_systick_tick(armv7m_cpu_t *c, uint32_t insns);
+
+/*
+ * Take an exception: stack eight words, load the vector, run the
+ * handler.
+ *
+ * **The frame is architectural and its order is not negotiable**:
+ * r0-r3, r12, lr, the return address, and xPSR, from the lowest address
+ * up. A handler written in C reads its arguments from the first four
+ * and a debugger unwinds through the rest, so a frontend that stacks
+ * them in a different order produces a handler that runs and reads
+ * rubbish -- which looks like the *interrupting* code having corrupted
+ * something.
+ *
+ * ITSTATE rides in the stacked xPSR, which is the reason it lives there
+ * rather than in a field of its own: an exception in the middle of an IT
+ * block must resume with the block intact, and nothing here has to do
+ * anything special for that to happen.
+ */
+static bool exc_enter(armv7m_cpu_t *c, uint32_t exc)
+{
+    uint32_t sp = c->r[ARMV7M_SP];
+    uint32_t vector = 0u;
+
+    /*
+     * The frame is 8-byte aligned, and the aligner is recorded in bit 9
+     * of the stacked xPSR so the return can undo it. Getting this wrong
+     * is invisible until a handler takes a second exception, at which
+     * point the stack walks away by four bytes each time.
+     */
+    const bool realign = (sp & 4u) != 0u;
+
+    if (realign) {
+        sp -= 4u;
+    }
+    sp -= 32u;
+
+    const uint32_t xpsr_stacked =
+        (c->xpsr & ~(1u << 9)) | (realign ? (1u << 9) : 0u);
+    const uint32_t frame[8] = {
+        c->r[0],  c->r[1],         c->r[2],         c->r[3],
+        c->r[12], c->r[ARMV7M_LR], c->r[ARMV7M_PC], xpsr_stacked,
+    };
+
+    for (uint32_t i = 0u; i < 8u; i++) {
+        if (!st32(c, sp + i * 4u, frame[i])) {
+            return false;
+        }
+    }
+
+    if (!ld32(c, c->vtor + exc * 4u, &vector) || vector == 0u) {
+        return false;
+    }
+
+    c->r[ARMV7M_SP] = sp;
+    /*
+     * EXC_RETURN in lr. 0xFFFFFFF9 is "return to thread mode, main
+     * stack", which is the only combination this frontend has -- there
+     * is no process stack and no handler-to-handler return. A handler
+     * that branches to one of the other magic values gets a reported
+     * fault rather than a guess.
+     */
+    c->r[ARMV7M_LR] = 0xFFFFFFF9u;
+    c->r[ARMV7M_PC] = vector & ~1u;
+    /*
+     * ITSTATE is cleared on entry: the handler is ordinary code and must
+     * not inherit the interrupted block's condition. The stacked copy is
+     * what restores it.
+     */
+    c->xpsr = armv7m_it_put(c->xpsr, 0u);
+    c->nest = exc;
+    c->irq_active |= 1u;
+
+    /* Taken, so the latch is cleared -- a level still asserted will
+     * simply pend again. */
+    if (exc == ARMV7M_EXC_SYSTICK) {
+        c->irq_pending &= ~(1u << 31);
+    } else if (exc >= ARMV7M_EXC_EXTERNAL) {
+        c->irq_pending &= ~(1u << (exc - ARMV7M_EXC_EXTERNAL));
+    }
+    return true;
+}
+
+/*
+ * Return from one: unstack the same eight words.
+ *
+ * Recognised by the *target address*, not by a counter, because that is
+ * how the architecture does it -- there is no return-from-interrupt
+ * instruction, only a branch to 0xFFFFFFFx. A handler that tail-calls
+ * through an ordinary function still returns correctly, which a depth
+ * counter would get wrong.
+ */
+static bool exc_return(armv7m_cpu_t *c)
+{
+    uint32_t sp = c->r[ARMV7M_SP];
+    uint32_t frame[8];
+
+    for (uint32_t i = 0u; i < 8u; i++) {
+        if (!ld32(c, sp + i * 4u, &frame[i])) {
+            return false;
+        }
+    }
+    sp += 32u;
+    /* Undo the entry aligner, which the stacked xPSR recorded. */
+    if ((frame[7] & (1u << 9)) != 0u) {
+        sp += 4u;
+    }
+
+    c->r[0] = frame[0];
+    c->r[1] = frame[1];
+    c->r[2] = frame[2];
+    c->r[3] = frame[3];
+    c->r[12] = frame[4];
+    c->r[ARMV7M_LR] = frame[5];
+    c->r[ARMV7M_PC] = frame[6] & ~1u;
+    /*
+     * xPSR whole, which restores N/Z/C/V *and* ITSTATE together -- an
+     * exception in the middle of an IT block resumes with the rest of
+     * the block still conditional. Restoring the flags alone would leave
+     * ITSTATE at whatever the handler advanced it to.
+     */
+    c->xpsr = (frame[7] & ~(1u << 9)) | ARMV7M_T;
+    c->r[ARMV7M_SP] = sp;
+    c->nest = 0u;
+    c->irq_active = 0u;
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
 /* The run loop                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -1292,6 +1554,41 @@ emu_run_reason_t armv7m_run(armv7m_cpu_t *c, uint32_t budget, uint32_t *retired)
     while (done < budget) {
         if (c->state != EMU_STATE_RUNNING) {
             break;
+        }
+
+        /*
+         * **EXC_RETURN is checked here, before the fetch**, because
+         * there is nothing at 0xFFFFFFF9 to fetch. A handler returns by
+         * branching to a magic address and the core recognises it as an
+         * address rather than as an instruction -- so looking for it
+         * after a failed fetch would report a bus error on a perfectly
+         * ordinary return.
+         */
+        if ((c->r[ARMV7M_PC] & ARMV7M_EXC_RETURN_MASK) == 0xFFFFFFF0u) {
+            if (c->nest == 0u || !exc_return(c)) {
+                armv7m_fault(c, c->r[ARMV7M_PC], 0u);
+                break;
+            }
+            continue;
+        }
+
+        /*
+         * An exception, if one is waiting and nothing is masking it.
+         * Between instructions only: the architecture permits a core to
+         * take one mid-instruction for a long multiple-load, and doing
+         * so would need the instruction restartable, which none of these
+         * are written to be.
+         */
+        {
+            const uint32_t exc = armv7m_pending(c);
+
+            if (exc != 0u) {
+                if (!exc_enter(c, exc)) {
+                    armv7m_fault(c, c->r[ARMV7M_PC], 0u);
+                    break;
+                }
+                continue;
+            }
         }
 
         const uint32_t pc = c->r[ARMV7M_PC];
@@ -1380,6 +1677,30 @@ emu_run_reason_t armv7m_run(armv7m_cpu_t *c, uint32_t budget, uint32_t *retired)
          * undoing. */
         done++;
         c->retired++;
+
+        /*
+         * **Per instruction, not once per slice**, and the difference is
+         * not efficiency -- it is how many interrupts exist.
+         *
+         * Ticking in bulk at the end of a slice sets the pending latch
+         * once however many times the counter wrapped, and an exception
+         * is only taken between instructions, so **at most one SysTick
+         * could ever be delivered per slice**. With a reload of 20 and a
+         * 4096-instruction budget a real core delivers about two
+         * hundred; this delivered one. A guest counting ticks to measure
+         * time would read a rate two orders of magnitude slow, and
+         * nothing would say so -- the handler runs, the counter moves,
+         * every test passes.
+         *
+         * The cost is a load and a branch per instruction, which this
+         * project's own measurements say to expect: anything on the hot
+         * path is paid by every guest whether or not it uses the
+         * feature. It is behind the enable bit so a guest with SysTick
+         * off pays only the branch.
+         */
+        if ((c->systick_ctrl & 1u) != 0u) {
+            armv7m_systick_tick(c, 1u);
+        }
     }
 
     if (retired != NULL) {
