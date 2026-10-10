@@ -634,6 +634,25 @@ if(EMU_GUEST_ARCH_PPC)
                          "${CMAKE_SOURCE_DIR}/tests/ppc-check/check.py"
                          --dis $<TARGET_FILE:ppc-dis> --sets vle16,random)
         set_tests_properties(ppc-decode-vs-binutils PROPERTIES LABELS fast)
+        #
+        # Generated instructions, three ways: a Python model of the
+        # integer semantics, the interpreter, and the translator, in both
+        # encodings. The model is the only opinion here that is not this
+        # tree's C, and "block entries" in the tool's own verdict is what
+        # says the translated run was translated.
+        #
+        # 44 deliberate defects -- 34 in the translator, 10 in the
+        # interpreter -- each fail it; see docs/frontend/ppc.md.
+        #
+        if(EMU_JIT)
+            add_test(NAME ppc-model-interp-jit
+                     COMMAND ${Python3_EXECUTABLE}
+                             "${CMAKE_SOURCE_DIR}/tests/ppc-check/cases.py"
+                             --emu $<TARGET_FILE:emu-host>
+                             --seed 1 --count 3000
+                             --out "${CMAKE_BINARY_DIR}/ppc-cases")
+            set_tests_properties(ppc-model-interp-jit PROPERTIES LABELS fast)
+        endif()
         if(TARGET guest-ppc-alu AND TARGET guest-ppc-coremark AND
            TARGET guest-ppc-crypto)
             add_test(NAME ppc-decode-compiled
