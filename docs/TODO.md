@@ -5,6 +5,70 @@ they go stale: `scripts/report-figures.sh` regenerates the ones a host can
 check, and anything measured on hardware carries the commit it was
 measured at.
 
+## Open, from the board runs of October 2026
+
+Found by putting the PowerPC frontend on the Nucleo-F746ZG and timing
+long runs. The defects are fixed; these are what the measurements left
+standing. Figures are in [jit/tuning.md](jit/tuning.md).
+
+- [ ] **The default code cache makes the JIT slower than the
+      interpreter, and that is a decision nobody has taken.** At
+      `EMU_JIT_CODE_BYTES=32768` RV32 CoreMark is 169.6 host cycles an
+      instruction against the interpreter's 108.2, `bench` 199.5
+      against 98.2, and a JIT build pays 77 KiB of guest RAM for it.
+      The JIT only wins once the translated working set fits — about
+      83 KB for RV32 CoreMark, where it is 2.04× ahead. Three ways out,
+      and they are not exclusive: raise the default and say what it
+      costs the guest; default the firmware to the interpreter and make
+      the JIT a choice for guests known to fit; or make the code
+      smaller, which is the next two items.
+- [ ] **A memory access is a hundred bytes of emitted code**, measured
+      on x86-64, and loads and stores are half of everything emitted for
+      RV32 CoreMark. The window test and the access are inline; so is
+      the call to the checked accessor with its trap exit, once per
+      access. One out-of-line slow path per block, or per shape of
+      access, is the obvious thing to try — on Thumb-2 first, where it
+      is the cache and not the clock that pays. The histogram that says
+      so is thirty lines around the call to `lower_one` and should be
+      an option rather than a patch
+      ([backend/x86_64.md](backend/x86_64.md)). **Nobody has measured
+      bytes per guest instruction on Thumb-2 at all.**
+- [ ] **`RETIRE` is still one operation per guest instruction**, 5% of
+      emitted code. Consecutive ones with no exit between them could be
+      one addition; it has to stay exact at every point a block can
+      leave, which is the same observer list the dead-store pass uses.
+- [ ] **Retention ranks blocks by dispatcher lookups, and a chained
+      block gets none.** `compact()` keeps what has been looked up more
+      than once; a block entered through a chain is never looked up, so
+      the hottest loop bodies look cold and are evicted every time,
+      while the block that jumps into them survives. Whether that is
+      costing anything measurable has not been tested — count entries
+      in the chained path, or age differently, and A/B it on the board.
+- [ ] **The G4MH translator binds no context and no generation.** Every
+      other translator states what a block is for and what invalidates
+      it. Whether a change of PSW.UM, or of the MPU's execute
+      permission, can leave a cached G4MH block wrong has not been
+      examined ([jit/staleness.md](jit/staleness.md)).
+- [ ] **The ARMv7-M frontend has never run on a board**, under either
+      backend. A Cortex-M guest on a Cortex-M host, with the board that
+      is its own reference sitting next to it.
+- [ ] **Board figures that predate `emu_cycles.h`.** Any of them from a
+      run longer than 19.9 s at 216 MHz (23.9 s on the F446) is a whole
+      wrap short, and the documents do not record run lengths. The ones
+      in `jit/tuning.md`, `backend/thumb2.md` and the first section of
+      `performance.md` are after the fix. The second half of
+      `performance.md` and both `stm32f446/` pages are not, and are
+      marked as history.
+- [ ] **The driver-shaped workload has not been measured on the IR
+      backends.** The hand-written translator inlined the peripheral
+      window and `mmiobench` was 2.2–3.1× better for it; the IR
+      backends inline guest RAM only. `mmiobench` on the F746 would say
+      what that cost.
+- [ ] **Is `-ffp-contract=off` on `rv_fpu.c` still doing anything?** It
+      was there for a 2Product/2Sum error term in a host-float FP unit;
+      the file is SoftFloat throughout now. Harmless either way, and
+      unexamined.
+
 ## Roadmap
 
 - [x] LWIP's PPP stack in the host runner. `--ppp` opens a pty, `pppd`
@@ -817,7 +881,7 @@ measured at.
       |---|---|---|---|
       | rv32 | yes | yes | none -- CoreMark already runs 1.5G instructions |
       | g4mh | yes | **yes** | none known -- CC-RH is installed, see below |
-      | ppc  | **no** | **no** | `powerpc-linux-gnu-gcc` is not built with VLE (`-mvle` is rejected), so only hand-written assembly compiles; and there is no IR translator |
+      | ppc  | yes | **yes, as Book E** | `powerpc-linux-gnu-gcc` is not built with VLE (`-mvle` is rejected), but the core runs classic Book E too and GCC generates that: CoreMark and crypto run on both backends. What is missing for a game is a 32-bit `libgcc` and a C library for that build |
 
       **CC-RH is installed** -- V2.07.00 and V2.08.00 under
       `/usr/local/Renesas/CC-RH/`, with `ccrh`, `asrh` and `rlink`. Both
@@ -889,25 +953,32 @@ measured at.
         has no floating point at all -- which is what refuted the
         theory that SoftFloat was the cost.
         https://github.com/lfazio/quake-embedded
-  - [ ] Doom on ppc, once it has a JIT.
-- [ ] **PowerPC debug infrastructure**, which is three files where the
-      other two frontends have fifteen. Every G4MH defect this project
-      found was found with a trace and a disassembler; the PowerPC ones
-      were found by bisecting by hand with external `objdump`, which is
-      the same job done slowly.
-  - [ ] `ppc_decode.c` -- decoding is inline in the interpreter, so
-        nothing else can ask what an instruction is. A JIT needs this
-        before it needs anything else.
-  - [ ] `ppc_disasm.c` -- and it is worth remembering that this tree's
-        disassemblers have twice been the *weaker* instrument: rv32
-        printed every OP-FP as `illegal` and turned a hard-float profile
-        into "there is no floating point here", and g4mh printed
-        confident nonsense for a slot it did not know. Write it against
-        the assembler, not against the interpreter.
-  - [ ] `ppc_gdb.c` -- the register layout gdb expects, which is a fixed
+  - [ ] Doom on ppc. It has a JIT now and runs compiled C; what stops
+        it is that the Book E guests are `-nostdlib` with no 32-bit
+        `libgcc` in this toolchain (the same reason Dhrystone is not
+        built), and that the image lives in guest RAM rather than
+        executing in place.
+- [~] **PowerPC debug infrastructure.** It was three files where the
+      other frontends had fifteen, and every PowerPC defect was found by
+      bisecting by hand with external `objdump`.
+  - [x] `ppc_decode.c` — one decoder, 313 mnemonics to 125 semantic
+        classes, consumed by the interpreter, the translator and the
+        disassembler. Checked against binutils over four million
+        encodings, in both directions.
+  - [x] `ppc_disasm.c` — written against the assembler, as this entry
+        asked: it is tested by assembling what it prints.
+  - [x] The embedded FP unit, against exact rational arithmetic, and an
+        IR translator — neither was on this list, and both were what
+        "finish" turned out to mean. See [frontend/ppc.md](frontend/ppc.md).
+  - [ ] `ppc_gdb.c` — the register layout gdb expects, which is a fixed
         per-architecture order and not a choice.
-  - [ ] `ppc_pairstats.c` -- the histogram that answers "which
+  - [ ] `ppc_pairstats.c` — the histogram that answers "which
         instruction next" with a measurement instead of an opinion.
+  - [ ] **An MMU.** Addresses are physical; real MPC57xx start-up code
+        programs the TLB before anything else.
+  - [ ] **Anything to compare it with.** No e200 is attached and no
+        other emulator is consulted, so a shared misreading of the
+        manual is invisible to every check there is.
 - [~] **An ARMv7-M frontend, so the Thumb-2 backend is testable without
       hardware.** Built, and the thing it was for works: the real
       `src/backend/thumb2/encode.c` compiles into a Cortex-M guest,
@@ -1064,7 +1135,16 @@ measured at.
 - [ ] Architecture a serial protocol over UDP/TCP similar to PCIe so a PC host running the emualtor can access the rh850u2b6's peripherals. This is a big task, but it would be a good demonstration of the emulator's capabilities. First over serial, then maybe over USB or rela ethernet device. This is a big task, but it would be a good demonstration of the emulator's capabilities.
 - [ ] Implement an emulated GTM device for the stm32f746zg/stm32n657 to demonstrate the emulator's capabilities.
 - [ ] Implement TAUD peripheral in rh850u2b6 with the remaining stm32 timer availble.
-- [ ] Finish the ppc emualtor with dual core support and implement a simple driver for the e200z7.
+- [~] Finish the ppc emualtor with dual core support and implement a simple driver for the e200z7.
+      **The single core is finished and the other two halves are not
+      started.** Decoder, disassembler, the embedded FP unit, an IR
+      translator and a JIT on both hosts are in, each checked against
+      something that is not this code, and the frontend runs on the
+      F746 ([frontend/ppc.md](frontend/ppc.md)). Still to do: a second
+      core — `ncores` is 1, and the reservation is a flag with no
+      address, which is the manual's single-core behaviour and needs
+      revisiting for two — and a driver, which wants a peripheral model
+      or the passthrough window to drive.
 - [x] **Port to the Nucleo-N657X0-Q (STM32N6, board MB1940).** A third
       platform, and the first that is neither ARMv7E-M nor flash-based.
       Facts established from RM0486, PM0273 and UM3417 in `docs/st/stm32n6/`:

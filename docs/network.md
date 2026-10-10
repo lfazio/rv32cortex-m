@@ -5,15 +5,22 @@ image over TFTP, reports over telnet and serves gdb — so running the
 274-test architecture suite on hardware costs seconds per test instead of
 a reflash.
 
-There is no second wire. SLIP runs over the **ST-LINK's virtual COM
+There is no second wire. IP runs over the **ST-LINK's virtual COM
 port**, the same one the serial console used, rather than bringing up the
 on-board LAN8742A — which would mean an ETH driver, DMA descriptors
 maintained by hand on a part with caches, and PHY bring-up.
 
+Two link layers, chosen at build time with `EMU_NET_LINK`:
+
+| | host end | why |
+|---|---|---|
+| `ppp` (default) | `scripts/ppp-up.sh`, which runs `pppd` and so needs root | the two ends *negotiate*: addresses come from IPCP rather than being compiled into the firmware and configured again on the host, and a link that goes down is detected |
+| `slip` | `scripts/slip-up.sh`, or `scripts/slip-tun.py` without root | a framing rule in thirty lines, kept buildable because it is what there is when `pppd` is not |
+
 > **The UART stops being a console.** `emu_net_init()` is a one-way
 > handover: after it the serial line carries nothing but IP. Text and
-> SLIP cannot share a wire, so this cannot be a fallback. Build with
-> `-DEMU_NET=OFF` to get the serial console back.
+> a framed link cannot share a wire, so this cannot be a fallback. Build
+> with `-DEMU_NET=OFF` to get the serial console back.
 
 ---
 
@@ -25,13 +32,14 @@ cmake -B build/f746 -DEMU_PLATFORM=stm32f746 \
       -DCMAKE_BUILD_TYPE=Release
 cmake --build build/f746 --target flash
 
-sudo ./scripts/slip-up.sh        # *after* the board prints "net SLIP on this port"
+./scripts/ppp-up.sh              # *after* the board prints "net ... on this port"
 ping 192.168.7.2
 ```
 
-Order matters: the board prints its banner on the serial line and *then*
-hands the port over, so attaching SLIP first loses the banner and
-attaching it late is harmless — everything printed before a client
+(`-DEMU_NET_LINK=slip` and `sudo ./scripts/slip-up.sh` for the other
+link.) Order matters: the board prints its banner on the serial line and
+*then* hands the port over, so attaching first loses the banner and
+attaching late is harmless — everything printed before a client
 connects is held in a 4 KiB ring and delivered on connect.
 
 | | default | option |

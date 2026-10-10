@@ -1,7 +1,12 @@
 # host / g4mh
 
-The Renesas RH850 G4MH frontend on the native runner, on the interpreter.
-The only pair where G4MH has actually executed anything.
+The Renesas RH850 G4MH frontend on the native runner, on either backend —
+the interpreter, or with `--jit` the x86-64 JIT.
+
+**This page is the older of the two.** What is implemented, what is
+simplified and what is not verified is in
+[../../frontend/g4mh.md](../../frontend/g4mh.md), which is current; parts
+of what follows describe the frontend as it first ran, and say so.
 
 ```sh
 cmake -B build/both -DEMU_PLATFORM=host -DEMU_GUEST_ARCH_G4MH=ON
@@ -19,7 +24,9 @@ Reference: [`docs/renesas/rh850g4mh-users-manual-software.pdf`](../../renesas/)
 Modelled on the **RH850/U2B6** — three G4MH cores, PE0 to PE2; the manual's
 base table runs to PE5 because the larger U2B parts have six, and §40
 states plainly that "CPU3, CPU4, CPU5 are not implemented in RH850/U2B6".
-This frontend is single-core, so only SELF and PE0 are mapped.
+With the default `G4MH_PE_COUNT` of 1 only SELF and PE0 are mapped; up to
+three PEs can be built, each with its own INTC1 —
+see [multicore.md](multicore.md).
 
 | guest address | what | role |
 |---|---|---|
@@ -70,9 +77,12 @@ both were wrong the same way. That is not hypothetical: the first version
 of the `LDSR` test built its encodings symmetrically with `STSR` and would
 have passed against the backwards implementation it was meant to catch.
 
-**There is no reference model and no toolchain.** RV32 has riscv-arch-test,
-the Berkeley suite and Sail to disagree with; G4MH has none of that here.
-Treat any G4MH result as verified only as far as those 191 checks reach.
+**There is no reference model.** RV32 has riscv-arch-test, the Berkeley
+suite and Sail to disagree with; G4MH has none of that. What it has
+gained since this was written is a toolchain — Renesas CC-RH, as a second
+*encoder* and as the compiler of real guests — and that is what has found
+its defects since. Treat a G4MH result as verified only as far as the
+unit checks and the compiled guests reach.
 
 ## Things that have bitten
 
@@ -152,9 +162,6 @@ Architecture not modelled:
 
 ## Investigate
 
-- **Where a G4MH guest image would come from.** Without a toolchain, the
-  ceiling on this frontend is hand-assembled tests. GCC has a `v850` target
-  that may be close enough to bootstrap against.
 - **Whether the exception vector offsets match a real part.**
   `handler_address()` uses a compact layout; a real table is larger and
   `RBASE`/`EBASE` flag bits are masked off rather than honoured.
@@ -246,12 +253,16 @@ the whole of HTCFG0 or a field within it is not settled by the text that
 extracts cleanly from these PDFs. Nothing here depends on the surrounding
 bits, so it matters only to a guest that reads them.
 
-There is no JIT for this frontend. `g4mh_backend_interp` is the only
-backend; the x86-64 JIT is an RV32 one.
-
 ## The JIT
 
-`g4mh_jit_x86_64.c`, on the shared framework -- see docs/Architecture.md.
+`g4mh_ir.c` lowers G4MH to the shared IR, and the two host emitters do
+the rest — see [../../jit/README.md](../../jit/README.md). DOOM and
+Quake run under it.
+
+It began as a translator of its own, straight to x86-64, and the rest of
+this section is about that first version: the flag capture it describes
+is now the x86-64 backend's `SETF` lowering, and the coverage figures
+are of a translator that has since been replaced.
 
 The hard part of this ISA is not arithmetic, it is PSW: almost every
 instruction writes Z, S, OV and CY, and the interpreter does four tests

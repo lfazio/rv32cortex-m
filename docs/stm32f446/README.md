@@ -5,6 +5,13 @@ exists: **the guest drives the host's real peripherals**, so peripheral
 drivers live in the guest and not in the emulator. Adding a GPIO or UART
 driver to `src/platform/` is almost always the wrong fix.
 
+This was the first board and is no longer the usual one: the
+Nucleo-F746ZG (`stm32f746`, a Cortex-M7 with caches and 320 KiB) is what
+current figures are measured on, and the Nucleo-N657X0-Q (`stm32n6`) is
+the third. What is on this page about the passthrough window and
+interrupts holds for all three; what is measured is this part's, and
+old.
+
 Bring-up is entirely ST's driver pack — CMSIS device headers, ST's startup
 and `system_stm32f4xx.c`, and the STM32Cube HAL for the clock tree, GPIO
 and USART. Nothing here reimplements a peripheral the vendor already
@@ -37,8 +44,9 @@ peripheral space, and that is not a coincidence — it is exactly the range a
 RISC-V platform leaves free for memory-mapped I/O. A guest driver therefore
 uses the addresses printed in RM0390 with no translation to reason about.
 
-Policy table in `src/platform/stm32f446/main.c`. Only what would take the
-emulator down with the guest is withheld:
+Policy table in `src/platform/stm32f446/platform.c` (`g_periph_map`; each
+board has its own). Only what would take the emulator down with the guest
+is withheld:
 
 | region | permission | why |
 |---|---|---|
@@ -91,35 +99,42 @@ real operations on the lines backing the guest block.
 
 ## Measured, and settled
 
-- **`EMU_JIT_CODE_BYTES` dominates JIT performance, and the 12 KB default
-  is worse than no JIT at all.** CoreMark's translated working set is
-  ~48 KB. 12 KB: 10,850,998 ticks (8533 compactions, 94240 evictions);
-  24 KB: 9,329,706; 32 KB: 8,525,192; 48 KB: 6,463,217 (904); 64 KB:
-  5,148,168 (231). The interpreter is 10,691,637 — so at the default the
-  JIT *loses*. Guest RAM pays one for one: 122 KiB with no JIT, 106 at
-  12 KB, 70 at 48 KB, 54 at 64 KB.
+These are from this part, under the hand-written Thumb-2 translator that
+the IR backends replaced. They are kept for what they decided, not as
+current figures — current ones, from the F746, are in
+[../jit/tuning.md](../jit/tuning.md).
+
+- **The code cache dominates JIT performance, and a cache smaller than
+  the working set is worse than no JIT at all.** CoreMark's translated
+  working set was ~48 KB then. 12 KB: 10,850,998 ticks (8533
+  compactions, 94240 evictions); 24 KB: 9,329,706; 32 KB: 8,525,192;
+  48 KB: 6,463,217 (904); 64 KB: 5,148,168 (231). The interpreter was
+  10,691,637 — so at 12 KB the JIT *lost*. Guest RAM pays one for one.
+  The same is true today at 32 KB, with a working set nearer 83 KB.
 - **`-Os` is 33% smaller and 8.8% slower.** The ART accelerator is not the
   binding constraint, so the code-density argument does not pay. Use
   `MinSizeRel` only when flash is actually scarce.
-- **Layout noise is ±3%.** Ignore differences below that.
+- **Layout is worth up to 10%.** Two emulator binaries with byte-identical
+  translations have differed by that much, purely from where the hot
+  loop landed in flash. The counter itself is exact; rerun the same
+  binary before calling a difference noise.
 
 ## To do
 
-- **A second STM32.** Moving to another part should be the clock setup and
-  the policy table, not new drivers. Never tried.
-- **Cortex-M7 validation.** The cache maintenance path is written for it
-  and has never run on one.
 - **DMA from a guest driver.** Zicbom translates guest addresses to the
   host addresses that actually back them, so a guest cleaning a DMA buffer
   cleans the right ARM cache lines — on a part that has a cache. Untested.
+- **Re-measure on this part.** Nothing here has been run on the F446
+  since the IR backends and the cycle-counter fix.
 
 ## Investigate
 
 - **Whether the passthrough policy should be data rather than code.** It is
   a table already; making it a linker section would let a board be added
-  without touching `main.c`.
-- **Interrupt latency under the JIT.** `RV_JIT_LOOP_CAP` bounds it to
-  ~22 µs at the default 128, derived rather than measured end to end.
+  without touching its `platform.c`.
+- **Interrupt latency under the JIT.** `EMU_JIT_LOOP_CAP` bounds it to
+  a block chain of 128 guest instructions at the default, derived rather
+  than measured end to end.
 
 ## Discarded
 

@@ -48,9 +48,10 @@ typedef struct emu_gdb_target {
 } emu_gdb_target_t;
 ```
 
-RV32's is in `src/frontend/rv32/rv_gdb.c`. **G4MH has none yet**, so
-`--gdb` is RV32-only; adding one is a target descriptor and four
-accessors.
+RV32's is in `src/frontend/rv32/rv_gdb.c` and G4MH's in
+`src/frontend/g4mh/g4mh_gdb.c`. **PowerPC and ARMv7-M have none yet**,
+so `--gdb` serves those two frontends only; adding one is a target
+descriptor and four accessors.
 
 ### The register order is not a choice
 

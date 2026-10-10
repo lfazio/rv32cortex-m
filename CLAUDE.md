@@ -12,6 +12,8 @@ Detailed notes live under `docs/`, split by platform and by
 platform/frontend pair — memory maps, peripheral policy, what has been
 measured, and **to do / investigate / discarded** for each:
 [`docs/Architecture.md`](docs/Architecture.md),
+[`docs/frontend/`](docs/frontend/), [`docs/backend/`](docs/backend/),
+[`docs/jit/`](docs/jit/README.md),
 [`docs/host/`](docs/host/README.md),
 [`docs/stm32f446/`](docs/stm32f446/README.md), and
 `docs/<platform>/<frontend>/README.md`.
@@ -20,20 +22,30 @@ Three axes, independent of each other:
 
 | axis | what it decides | selected by |
 |---|---|---|
-| platform | where it runs | `EMU_PLATFORM=host\|stm32f446` |
-| frontend | what it emulates | `EMU_GUEST_ARCH_RV32`, `EMU_GUEST_ARCH_G4MH` |
-| backend | how it executes | `EMU_JIT=ON\|OFF`, per frontend |
+| platform | where it runs | `EMU_PLATFORM=host\|stm32f446\|stm32f746\|stm32n6` |
+| frontend | what it emulates | `EMU_GUEST_ARCH_{RV32,G4MH,PPC,ARMV7M}` |
+| backend | how it executes | `EMU_JIT=ON\|OFF`; `--jit` on the host runner |
 
 ```
 include/emu/   src/emu/          ISA-agnostic runtime: bus, regions,
                                  passthrough, NS16550 console, ELF loader,
-                                 cache ops, the frontend registry
+                                 the frontend registry -- and the IR, the
+                                 JIT framework and the glue between them
+               src/backend/      IR -> host code: thumb2/, x86_64/
 include/rv32/  src/frontend/rv32/  RISC-V RV32: hart, CSRs, decoder,
-                                 interpreter, Thumb-2 JIT, CLINT, APLIC
+                                 interpreter, IR translator, CLINT, APLIC
 include/g4mh/  src/frontend/g4mh/  Renesas RH850 G4MH: core, decoder,
-                                 interpreter, INTC
-               src/platform/     host runner and STM32F446 firmware
+                                 interpreter, IR translator, INTC
+include/ppc/   src/frontend/ppc/   NXP e200z7: core, decoder, disassembler,
+                                 interpreter, IR translator, EFPU2
+include/armv7m/ src/frontend/armv7m/  ARMv7E-M: core, decoder, interpreter,
+                                 IR translator, NVIC
+               src/platform/     host runner; common/, stm32/ and one
+                                 directory per board
 ```
+
+Every frontend has an interpreter and a translator to the shared IR;
+there is no per-host translator anywhere.
 
 **`include/emu/emu_cpu.h` is the contract**, and the note at the top of it is
 the thing to read before adding a frontend or a member. The rule it lives by:
@@ -42,10 +54,11 @@ setup or fires on a trap. Nothing in that table may end up on a
 per-instruction path — a single extra *direct* branch on the fetch path
 measured 9.3% on CoreMark.
 
-The two frontends are symmetric. `rv32_frontend.c` and `g4mh_frontend.c` are
-the same file with different contents, which is the intended shape: if a third
-one needs something neither has, it probably belongs in `emu_cpu_ops_t` rather
-than in a platform `#ifdef`.
+The frontends are symmetric. `rv32_frontend.c`, `g4mh_frontend.c`,
+`ppc_frontend.c` and `armv7m_frontend.c` are the same file with different
+contents, which is the intended shape: if a new one needs something none
+has, it probably belongs in `emu_cpu_ops_t` rather than in a platform
+`#ifdef`.
 ## Build, run, validate
 
 All of it -- every configuration, every option, the console settings, the
@@ -57,8 +70,10 @@ came to document an `RV32_PLATFORM` option that has never existed.
 What belongs here is only what the recipes do not say:
 
 ```sh
-./scripts/run-arch-test.sh      # 274/274, interpreter and --jit alike
-./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77 both ways
+./scripts/run-arch-test.sh      # 378/378; EMU_EXTRA_ARGS=--jit for the JIT
+./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77; EMU_HOST=<a wrapper
+                                # adding --jit> for the JIT -- it takes no flag
+./scripts/build-matrix.sh --test # every configuration, and its ctest
 ./scripts/report-figures.sh     # figures, with the cache vars that set them
 ./scripts/check-doc-flags.sh    # every -D flag in the docs exists
 ```
@@ -72,17 +87,23 @@ and that failure looks like an emulator bug until you disassemble the
 test.
 
 **The Thumb-2 backend cannot be exercised by any host suite.** Validate
-it by flashing `isatest` and reading the UART. This has caught real JIT
-bugs that both x86 suites passed. Hardware is a Nucleo-F746ZG on
-`/dev/ttyACM1` at 921600; `--connect-under-reset` is the default in both
-`flash` targets because this firmware never idles and a plain attach
-races it.
+it by flashing a guest and reading the UART. This has caught real JIT
+bugs that both x86 suites passed. Hardware is a Nucleo-F746ZG, its
+ST-LINK's virtual COM port at 921600 (`/dev/ttyACM0` with one probe
+attached); `--connect-under-reset` is the default in the `flash` targets
+because this firmware never idles and a plain attach races it. Build
+`-DEMU_NET=OFF` to keep the UART a console.
 
-**`isatest` could not measure JIT coverage** -- it arms PMP early, and
-the JIT used to stop at the first PMP entry. It no longer does: on the
-x86-64 host `isatest --jit` interprets 436 of 45,799 instructions. The
-board has not been re-measured since, so use `bench` or `coremark` there
-until it has.
+**`isatest` on the board is necessary and nowhere near sufficient.** It
+measures coverage now -- 436 of 45,799 instructions interpreted under
+the JIT, on the board as on x86-64 -- but it never fills the code cache
+and it finishes in a tenth of a second. Two defects sat behind those
+two facts while it passed: a compaction that moved blocks with their
+chained jumps intact, and a cycle counter that wrapped at 19.9 seconds.
+**Follow it with CoreMark at 120 iterations**
+(`-DRV32_GUEST=coremark -DCOREMARK_ITERATIONS=120`), which does both,
+and time the run from the host end as well as reading the firmware's
+figure.
 
 ## Things that have bitten, and will again
 
@@ -91,7 +112,7 @@ what is implemented, what the figures are, how a block is specialised --
 lives in [docs/](docs/Architecture.md); what is here is only what was
 *learned the hard way*, with the number or symbol that proves it.
 
-If you read nothing else, read these six. Each has cost more than one
+If you read nothing else, read these seven. Each has cost more than one
 session, and every one of them recurred:
 
 1. **A trap only reports if something catches it.** Unimplemented
@@ -111,7 +132,11 @@ session, and every one of them recurred:
    all measured worse.
 6. **A flag or invariant quoted in prose is not a tested thing.** Two
    documented build options named variables that did not exist;
-   `scripts/check-doc-flags.sh` exists because of it.
+   `scripts/check-doc-flags.sh` exists because of it. Four more existed
+   and were read by nothing.
+7. **A figure that is too good is the instrument, until a second clock
+   agrees.** A board run reported the JIT 5x ahead of the interpreter
+   while taking nearly twice as long by the wall clock.
 
 - **Extensions sharing an opcode slot must be decoded in one place.** Zbb's
   `min`/`max` and Zbc's `clmul` share funct7 0x05; a separate `else if` later in
@@ -2348,6 +2373,188 @@ session, and every one of them recurred:
   compressed FP load/stores, and UDB rejects the config without it.
 - CoreMark's `core_main.c` defines `main()`; `-Dmain=...` must be scoped to that
   file or it renames the firmware's entry point.
+- **A 32-bit cycle counter less an epoch is a whole wrap short for any
+  run longer than one wrap, and still a plausible number.** DWT CYCCNT
+  wraps every 19.9 s at 216 MHz. The firmware took *both* its clocks
+  that way -- the guest's time base, and the host-cycle total behind
+  "host cycles per guest instruction" -- on all three boards.
+
+  It was found the worst way: I measured the SETPC pass on the F746,
+  got PowerPC CoreMark going from 117.2 cycles an instruction to 42.0
+  against an interpreter at 222.3, wrote in the commit message that
+  2.8x was "far more than the size saved" and "has not been
+  established", and **committed and pushed it anyway**. Both runs were
+  a wrap short: 472.1 and 393.4, which is 16.7% and the JIT 1.77x
+  *slower* than the interpreter. A result I could not explain was a
+  result I had not got.
+
+  The tell was sitting in the profile taken to explain it: translation
+  cost 105,000 cycles a block at 64 KB and 865 at 32 KB. What settled
+  it was a second clock -- the wall time of the same run, taken on the
+  host end of the UART: 21.9 s for the "5x faster" JIT against 12.3 s
+  for the interpreter.
+
+  The guest saw it too, and said so in its own way: RV32 CoreMark at
+  120 iterations ran 24.99 s and reported 5.47 s to itself, then
+  declared its result invalid -- *"Must execute for at least 10 secs"*
+  -- which this file already records as a thing that looks like a
+  miscompile and is not.
+
+  `emu_cycles.h` accumulates wrap-correct deltas into 64 bits.
+  `src/net/net.c` had done exactly that for lwIP's clock all along, with
+  a comment explaining the wrap; nobody read it across. The host runner
+  had the same arithmetic over microseconds and wrapped at 71.6 minutes.
+
+  Rules. **Time a board run from the host end as well**, and distrust
+  the firmware's figure until the two agree. **Any board figure from
+  before this is suspect if its run was long**, and the documents do
+  not record run lengths. And when a measurement cannot be explained,
+  that is the finding -- do not attach it to a change and ship it.
+
+- **A sweep taken with a broken instrument does not merely have wrong
+  numbers, it points the wrong way.** Before the counter was fixed, a
+  sweep of PowerPC's block-length cap said 16 instructions made
+  CoreMark *eight times slower* than 64 (337 against "42"). Measured
+  properly it is 15% faster (335 against 393). The decision would have
+  been the opposite one.
+
+- **A hook on committed code must not consult the emitter's state.**
+  When a translation overflowed the code buffer, `compact()` ran with
+  the emitter's overflow flag still set; `unlink_all` went through each
+  host's link hook; the hook reached the emitter's branch patcher; and
+  the patcher declines to write while that flag is up. So every chained
+  exit was marked unlinked and none was rewritten, and the survivors
+  were moved with jumps into blocks that had just been evicted. On the
+  F746: `b.w` to 0x7A4 bytes *below* the code buffer.
+
+  Four things about it.
+
+  **It could only happen on a microcontroller.** It needs a block
+  larger than `EMU_JIT_BLOCK_RESERVE` -- 512 bytes there, 8192 on a
+  host, which no block reaches -- so the overflow path had never run
+  under any host suite. A host runner built with the board's sizes
+  (`CMAKE_C_FLAGS` defining `EMU_JIT_BLOCK_RESERVE=512u`,
+  `EMU_HOST_JIT_CODE_BYTES=32768u`, `EMU_JIT_MAX_BLOCKS=256u`,
+  `EMU_JIT_HASH_SIZE=256u`) segfaulted at once: x86-64's patcher had
+  the same guard. **The host's JIT sizes hide every eviction path.**
+
+  **`isatest` could not see it**, and neither could CoreMark at two
+  iterations: neither overflows the buffer.
+
+  **It was RV32's defect as much as PowerPC's, and I said otherwise.**
+  PowerPC found it, and I wrote in a commit message and in a test
+  comment that RV32's short blocks "rarely" overflowed. That was a
+  guess about something countable. RV32 CoreMark at 120 iterations
+  overflows 982 times; built in a worktree from the commit before the
+  fix it prints its banner and never finishes, and with the one fix
+  cherry-picked onto that tree it completes. **Do not write "rarely"
+  for something you can count.**
+
+  **The same hazard had already been fixed at the other call site.**
+  `emu_jit_invalidate_page` clears the flag by hand before calling the
+  same hooks, under a comment explaining exactly why. `compact()` calls
+  them too and had no such line. A fix applied at one of two call sites
+  is a note about where the other one is: grep for the callers of what
+  you just protected.
+
+  How it was found is reusable: the stacked pc was in `.bss`, range
+  checks on every block pointer and link patch had not fired, and a
+  dump of the code buffer and the block table over gdb showed a block
+  whose table entry said *unlinked* and whose bytes said `b.w`
+  somewhere else. When the bookkeeping and the bytes disagree, that is
+  the whole diagnosis.
+
+- **A table that drops its Nth entry in silence is a wrong program
+  waiting for an Nth entry.** Both backends kept 64 exit patch sites
+  per block and did not record a 65th -- whose jump then kept its zero
+  displacement and went to the next instruction, so the exit did not
+  leave. Found by reading `note_exit` for another reason; no guest here
+  has such a block (the counters are identical with the block refused),
+  and one that did would have run on past a taken branch.
+
+- **Ask which suite can see a rule broken, by breaking it.** With the
+  dead-store pass no longer treating a load as an observer of the pc,
+  riscv-tests still passed 77/77 under the JIT. `isatest` failed; the
+  unit tests failed; and the PowerPC system guest **passed**, because
+  every fault it took was the *first* instruction of a stub -- where a
+  block starts, and the pc is right whatever the block does about it.
+  It takes them two instructions in now, and reports
+  `load-mid-srr0 got 80001878 want 80001880` against the same mutation.
+  A test that puts the interesting event at a block boundary cannot see
+  a translator's mistakes about the middle of one.
+
+- **An answer that defaults to "no" is a silent decline.** x86-64's
+  `emu_ir_can_lower` did not name the byte swaps, the leading-zero
+  count or the high multiplies it lowers, so the PowerPC translator
+  routed 165 of 1,332 instructions to its helper while every test
+  passed. Same shape as Thumb-2's default-"yes" promising operations it
+  refuses, from the other side; both defaults are answers.
+
+- **`set_image` is called on a reload and never on the first start.**
+  The PowerPC frontend chose its instruction encoding there and so
+  decoded every first image as VLE. The image reaches `boot` through
+  `emu_boot_info_t` now. G4MH depends on the reload-only behaviour, so
+  it could not simply be called earlier.
+
+- **A firmware handed an argument its own parser rejects is a brick.**
+  `board_argv` passed `--jit` unconditionally and the parser refuses it
+  in a build without a JIT, so every `-DEMU_JIT=OFF` image returned
+  from `main` into the reset handler and hard-faulted before the
+  console existed. The build matrix had a row for that configuration,
+  added the last time it failed to *compile*, and it was green.
+  **A row that builds is not a row that runs.**
+
+- **Adding a table entry must not replace its neighbour.** IVPR was
+  missing from the PowerPC SPR table; the edit that added it overwrote
+  ESR's slot. `mfspr rN, ESR` then raised an illegal instruction inside
+  the interrupt handlers, which recursed. The test that wanted IVPR
+  passed.
+
+- **An oracle is code too.** The first run of the EFPU checker reported
+  40 wrong square roots and the emulator was right: the Python model's
+  scaling was too coarse to round correctly. And a checker cannot catch
+  what both sides took from the same sentence of the manual, which is
+  everything about a frontend with no hardware to compare against --
+  say so wherever a result is quoted.
+
+- **Random operands plus a table of special values still miss
+  *relations*.** Breaking the PowerPC translator's carry for a
+  subtract-from-immediate (`>=` for `>`) passed 6,000 random cases: it
+  only differs when the register *equals* the immediate. Likewise
+  `INT_MIN / -1`, a zero divisor, equal compares. Mutation testing is
+  what finds the class; put the relation in on purpose.
+
+- **A mutation driver restores whatever its backup was.** The scripts
+  that break the PowerPC sources and rebuild restore each file from a
+  copy taken when the script was written. One of those copies was
+  older than the tree; running it would have reverted the interpreter's
+  decode cache and reported success. `cmp` the backups
+  against the tree before every run, or take them inside the run.
+
+- **For every build option, grep for a reader of the macro it becomes.**
+  `EMU_JIT_LOOP_CHAIN`, `EMU_JIT_INLINE_PERIPH`, `EMU_JIT_ELIDE_LD` and
+  `EMU_JIT_ELIDE_ST` were declared, forwarded, defaulted under long
+  notes -- and read by nothing since the IR backends replaced the
+  translator they configured. This file said to do exactly this when
+  `EMU_JIT_CODE_BYTES` was found inert, and it was done for that one
+  option. Four of fifty-two; they are gone.
+
+- **A null result tests a hypothesis too.** PowerPC CoreMark at 96 KB
+  ended with 68,668 of 98,304 bytes in use behind 15,309 translations,
+  which reads exactly like a full 256-entry block table. With 1024
+  entries the translation and compaction counts were identical to the
+  digit on three runs -- so the table was never the limit, and that is
+  a fact rather than a failed experiment. Identical counters mean the
+  code never ran; sometimes that is the answer.
+
+- **The host's guest clock is the wall clock, and a quarter of
+  `docs/performance.md` said otherwise for a month.** It was a count of
+  retired instructions until September, under which a self-timing
+  benchmark reported the same rate on both backends "to the digit" --
+  and an earlier entry in this file quotes Dhrystone's 2128.3 as proof
+  that an FP change cost integer code nothing. That was a valid
+  instrument *then*. Under the wall clock the same figure moves with
+  the machine's load. Use `retired` for a reproducible quantity.
 
 ## Conventions
 

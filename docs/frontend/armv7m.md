@@ -152,8 +152,8 @@ interleaved medians:
 
 | | time |
 |---|---|
-| interpreter | 6,025 ms |
-| JIT | 620 ms |
+| interpreter | 6,116 ms |
+| JIT | 555 ms |
 
 Three outcomes per instruction, counted in the run's report:
 **lowered** to IR; **helper**, the interpreter's own single-instruction
@@ -172,6 +172,7 @@ What the measurements decided, in order:
 | SysTick: subtract per block, walk only a block that wraps | 1,446 ms |
 | inlined RAM access | 707 ms |
 | native SMULxy/SMLAxy, divide, register shifts, TBB/TBH, CLZ, flash literals | 620 ms |
+| the shared optimiser deleting pc writes nothing observes | 555 ms |
 
 The flag representation was the obvious target and the smallest win;
 the profile said a loop decrementing SysTick once per instruction was
@@ -196,6 +197,13 @@ What a block may assume, and what invalidates it:
   board tests failed until it did.
 - **IT blocks are lowered whole** as straight-line code with
   conditional writes, or not at all.
+- **r15 is the pc, and the optimiser has to know it.** The pc slot is
+  register 15 in this frontend's register file, and a block that ends
+  on a computed target does it with `EXIT` on `GET r15` after something
+  has written it. A pass that deletes pc writes nothing observes would
+  delete that one — `EXIT` overwrites the pc — unless a `GET` of the
+  register whose slot is the pc counts as an observer. It does, and
+  `test_setpc_kept_when_a_register_reads_it` is that case.
 
 How it is checked: every stored board run again under `--jit`
 (`--rerun --emu-args=--jit`), the `armv7m-jit-vs-interp` ctest, which
@@ -238,6 +246,9 @@ with a dead intermediate, 2.6% address generation into an access.
 
 ## Not done
 
+- **It has not run on a board.** A Cortex-M guest on a Cortex-M host is
+  the obvious experiment and has not been done: no firmware has been
+  built around this frontend, under either backend.
 - **Guests below 0x10000000 get no inlined memory.** The window is the
   RAM the stack is in; a guest whose RAM is mapped low takes the checked
   path for every access.

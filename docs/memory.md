@@ -28,28 +28,42 @@ silently did not exist".
 
 ## RV32
 
-Three regions, and the split between them is what buys the guest its
-address space.
+Laid out the way a microcontroller is: code and constants execute from
+flash, writable data lives in RAM.
 
 ```
-0x2000_0000  ROM   the guest image, executed in place from ARM flash
-0x8000_0000  ROM   the image's read-only half   (guest-ro)
-     + ro    RAM   guest RAM, the rest of SRAM  (ram)
+0x2000_0000  ROM   the guest image, executed in place from the host's flash
 0x4000_0000  pass  the ARM's own peripherals, identity-mapped
+0x8000_0000  RAM   .data, .bss and the stack: whatever SRAM the firmware
+                   does not use
 ```
 
-The guest is linked contiguously from `EMU_GUEST_RAM_BASE` and still
-resets to offset 0; only *which backing store answers the low addresses*
-changes. The read-only half is served straight out of flash where
-`guest_image.S` put it, so the SRAM buffer covers
-`[ro, ro + GUEST_RAM_SIZE)` instead of `[0, GUEST_RAM_SIZE)`. On the
-largest architecture tests that is **140 KiB of the 345 they need**,
-gained for nothing.
+`.text` and `.rodata` are linked at `EMU_GUEST_ROM_BASE`; `.data` has its
+run address in RAM and its initialiser at a load address in flash, and
+the guest's own `start.S` copies it across — as any crt0 does. The
+image is therefore one blob, mapped read-only wherever it already lives,
+and it costs the guest no RAM however large it is: that is what lets an
+architecture test needing 345 KiB run on a part with 264 KiB of guest
+RAM.
+
+**The emulator does not know where the read-only part ends, and no
+longer needs to.** It used to: the guest was linked entirely in RAM, the
+image was split at `__guest_ro_end`, and the firmware served one half
+from flash and installed the other. That put the guest's initialisation
+in the loader, and the split was lossy for half the guests — three bytes
+wherever `.rodata` ended unaligned — while a comment said the build
+checked it. A fragile invariant is a prompt to ask why anything depends
+on it.
+
+The host cannot prove the copy loop works, by construction: it loads the
+whole blob into RAM, so `.data` is already where it runs. The board is
+the test — CoreMark's CRC there would change on zeroed `.data`.
 
 RAM comes from the linker script (`__guest_ram_start` / `__guest_ram_end`)
 — whatever the firmware does not use — not from a `.bss` array. That is
 the property worth copying: the size is a link-time fact about the part,
-not a number compiled into the emulator.
+not a number compiled into the emulator. A guest is told how much it has
+at reset.
 
 Two things that have bitten here, both recorded in CLAUDE.md:
 
@@ -62,6 +76,23 @@ Two things that have bitten here, both recorded in CLAUDE.md:
   begins with `emu_bus_init()`, which clears the region table, so the
   frontend's `add_shared_devices` / `add_core_devices` have to run again
   every time.
+
+## PowerPC
+
+One flat image at `0x8000_0000`, in RAM — the 64 KiB-aligned address
+IVPR needs, with the vectors first. It is loaded as an **ELF**, on the
+host and in the firmware alike, because which instruction encoding it is
+in is a flag on its segment ([frontend/ppc.md](frontend/ppc.md)); `.bss`
+is not in the file and `crt0.S` zeroes it.
+
+The stack is the loader's to give: `r1` arrives pointing at the top of
+RAM. The guests' link script used to name that address, which is right
+on one machine — a megabyte on the host, a fifth of that on the F746 —
+and the first `stwu` landed outside RAM on the other.
+
+Unlike RV32, the image occupies guest RAM here. Linking it for
+execute-in-place from the host's flash is the obvious next step and has
+not been done.
 
 ## G4MH
 
@@ -117,9 +148,9 @@ someone tries the firmware build — which is why
 
 ## Byte order
 
-Both existing frontends are little-endian and every host is
-little-endian, so the bus composed bytes in host order and was never
-wrong. A big-endian guest (PowerPC e200z7, task #36) makes that a real
+Three of the four frontends are little-endian and every host is
+little-endian, so for a long time the bus composed bytes in host order
+and was never wrong. PowerPC is big-endian, which makes it a real
 question, and the answer is a split rather than a switch:
 
 | region kind | swapped? | why |
@@ -146,3 +177,14 @@ derived from the frontends selected, so the test compiles away entirely.
 Verified by inspection rather than asserted: `emu_bus.c` compiled with
 `-DEMU_GUEST_ARCH_PPC=0` contains **zero** byte-swap instructions, and two
 with it set.
+
+**The JIT has to keep the same split, and it has two paths to keep it
+on.** A translated block may read guest RAM directly, through a window
+that is bytes on a little-endian host; so for a big-endian guest an IR
+`LOAD` means *the bytes as the host reads them*, and the translator
+follows it with a byte swap. Outside the window the backend calls the
+frontend's accessor, which goes through the bus — and the bus has
+already swapped, for RAM, and has not, for a device. So that accessor
+swaps what the bus returned, in order that the IR's swap undoes it: one
+rule on both paths, and a device register read from translated code
+comes out as the value the device holds.

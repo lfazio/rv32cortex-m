@@ -5,8 +5,9 @@ microcontroller**, with the emulated guest driving the host's **real
 peripherals** through an identity-mapped passthrough window.
 
 Four guest architectures (RISC-V RV32, Renesas RH850 G4MH, NXP PowerPC
-e200z7 and ARM Cortex-M), two JIT backends (Thumb-2 and x86-64), and
-four platforms (a native host runner and STM32F4/F7/N6 firmware).
+e200z7 and ARM Cortex-M), each with an interpreter and a JIT; two JIT
+backends (Thumb-2 and x86-64) behind one shared IR; and four platforms
+(a native host runner and STM32F4/F7/N6 firmware).
 Validated against the official
 [RISC-V Architecture Test Suite](https://github.com/riscv/riscv-arch-test)
 at **378/378** and the Berkeley `riscv-tests` at **77/77**, on hardware
@@ -72,8 +73,11 @@ cmake --build build/host
 ctest --test-dir build/host -L fast
 ```
 
-Add `-DEMU_GUEST_ARCH_G4MH=ON` to compile both frontends, so the runner can
-pick one with `--frontend`.
+RV32 is on by default. Add `-DEMU_GUEST_ARCH_G4MH=ON`,
+`-DEMU_GUEST_ARCH_PPC=ON` or `-DEMU_GUEST_ARCH_ARMV7M=ON` to compile
+more frontends into one runner, which then picks with `--frontend` or
+from the image's ELF header; `-DEMU_GUEST_ARCH_RV32=OFF` builds one
+alone. Each has its own page under [docs/frontend/](docs/frontend/).
 
 ### Firmware — Nucleo-F746ZG
 
@@ -98,12 +102,14 @@ picocom -b 921600 /dev/ttyACM1
 
 On the F746 the network is **on by default**, so that port carries IP
 rather than text once the banner is out: the console becomes telnet, gdb
-listens on 1234 and guest images go up by TFTP, all over SLIP on the same
-wire. See [docs/network.md](docs/network.md); build `-DEMU_NET=OFF` for a
-plain serial console.
+listens on 1234 and guest images go up by TFTP, all over PPP on the same
+wire (SLIP with `-DEMU_NET_LINK=slip`). See
+[docs/network.md](docs/network.md); build `-DEMU_NET=OFF` for a plain
+serial console, which is what the board figures in
+[docs/jit/tuning.md](docs/jit/tuning.md) were measured with.
 
 ```sh
-sudo ./scripts/slip-up.sh        # after the board says "net SLIP on this port"
+./scripts/ppp-up.sh              # after the board says "net ... on this port"
 telnet 192.168.7.2
 ```
 
@@ -117,17 +123,18 @@ board result.
 
 `-DRV32_GUEST=` selects the embedded guest image: `isatest`, `hello`,
 `bench`, `stm32drv`, `irqtest`, `cmsistest`, `coremark`, `dhrystone`,
-`whetstone`, `fptest` or `mmiobench`.
+`whetstone`, `fptest` or `mmiobench`. A PowerPC firmware takes
+`-DPPC_GUEST=` instead: `alu`, `sys`, `coremark` or `crypto`.
 
 | Option | Default | Effect |
 |---|---|---|
 | `EMU_JIT` | `ON` | The JIT. `OFF` is smaller, and is how a suspected JIT bug is isolated. |
-| `EMU_JIT_CODE_BYTES` | `32768` | Code cache. **The dominant performance term** — see [docs/jit/tuning.md](docs/jit/tuning.md). A small value forces compaction and is a useful stress test. |
+| `EMU_JIT_CODE_BYTES` | `32768` | Code cache, on a microcontroller. **The dominant performance term, and a threshold rather than a dial**: below a guest's translated working set the JIT is *slower* than the interpreter, and at the default that is true of CoreMark — see [docs/jit/tuning.md](docs/jit/tuning.md). |
 | `EMU_JIT_LOOP_CAP` | `128` | Guest instructions per block entry: an interrupt-latency knob, not a throughput one. |
-| `EMU_NET` | `ON` (F746) | lwIP over SLIP on the console UART: telnet, gdb and TFTP. **The UART stops being a console** -- `OFF` gets it back. |
+| `EMU_NET` | `ON` (F746) | lwIP over PPP (or SLIP, `EMU_NET_LINK`) on the console UART: telnet, gdb and TFTP. **The UART stops being a console** -- `OFF` gets it back. |
 | `EMU_ENABLE_TRACE` | `OFF` | Per-instruction trace hook. Slow, and the fastest way to find where execution diverges. |
 | `RV32_EXT_PMP` / `RV32_EXT_SDTRIG` | `ON` | Each costs a little even unused; `OFF` removes it. |
-| `RV32_NATIVE_COREMARK` | `OFF` | Run CoreMark natively on the ARM instead of the emulator, for the baseline. |
+| `EMU_NATIVE_COREMARK` | `OFF` | Run CoreMark natively on the ARM instead of the emulator, for the baseline. |
 | `EMU_SDL` | `OFF` | Show the guest framebuffer in an SDL3 window, and feed the keyboard and mouse devices from it. Needs `sdl3` via pkg-config; off by default so a host without it still builds. |
 | `EMU_SDL_SCALE` | auto | Window scale, stepped down until the window fits a conventional screen -- 3x suits 320x200 and 1x suits the 1024x768 default. Set it to override either way. |
 | `EMU_DOOM` | `OFF` | Fetch and build DOOM as a guest. The fetch is large -- the WAD is compiled in as a C array -- so a checkout that does not ask for it does not pay. |
@@ -161,20 +168,24 @@ cmake -B build/stm32f446 ... -DSTM32CUBE_LOCAL_DIR=/path/to/checkouts
 
 ---
 
----
-
 ## Running
 
 ```sh
 ./build/host/emu-host build/host/guest/isatest.bin
 ./build/host/emu-host --jit --quiet build/host/guest/isatest.bin
 ./build/host/emu-host --frontend g4mh guest.bin
+./build/ppc/emu-host --jit build/ppc/guest/ppc-coremark.elf
 ```
 
 `emu-host` picks a frontend from `--frontend`, else from the image's ELF
 `e_machine`, else the first compiled in. A flat binary says nothing about
 its architecture, so it gets the default. `--jit` selects the translating
-backend for either frontend; without it, the interpreter.
+backend for any frontend; without it, the interpreter.
+
+Read the report at the end of a run before believing it. It says how
+many instructions were translated, how many were interpreted, and how
+many translation attempts were declined or overflowed — and a backend
+that declines everything passes every test while proving nothing.
 
 Useful flags: `--dump` (register file on exit), `--max-insn N`,
 `--trace-skip`/`--trace-count` (with `-DEMU_ENABLE_TRACE=ON`), `--gdb`
@@ -403,10 +414,23 @@ Figures and what they have already disproved are in
 ```sh
 ./scripts/run-arch-test.sh      # official riscv-arch-test, 378/378
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77
+./scripts/build-matrix.sh --test # every configuration that should build, and its ctest
 ./scripts/report-figures.sh     # every quoted figure, regenerated
 ./scripts/check-doc-flags.sh    # every build flag named in the docs exists
 ./scripts/t2-check-encodings.sh # Thumb-2 emitters against arm-none-eabi-as
 ```
+
+Both RISC-V suites also run against translated code:
+`EMU_EXTRA_ARGS=--jit` for the first, and `EMU_HOST` naming a wrapper
+that adds `--jit` for the second.
+
+The other frontends have no reference model, so each is held against
+something that is not this code. G4MH: Renesas' own assembler as a
+second encoder, and compiled guests. ARMv7-M: **a real Cortex-M7** — the
+same programs run on the Nucleo-F746ZG and on the emulator
+(`tests/armv7m-diff/`). PowerPC: binutils for every encoding, a Python
+model on unbounded integers, and exact rational arithmetic for the FP
+unit (`tests/ppc-check/`), all three in `ctest`.
 
 **Run both suites.** They cover different things, and a regression that
 only the Berkeley suite catches will sit unnoticed if only arch-test is
@@ -452,22 +476,33 @@ The host `gdb` on Debian is x86-only; use `gdb-multiarch`, or
 
 ```
 include/emu/      the frontend contract, and the ISA-agnostic runtime's API
-include/rv32/     RISC-V frontend headers
-include/g4mh/     RH850 G4MH frontend headers
-src/emu/          bus, passthrough, NS16550 console, ELF loader, registry
+include/<isa>/    one frontend's headers: rv32, g4mh, ppc, armv7m
+src/emu/          bus, passthrough, console, ELF loader, gdb stub, registry;
+                  the IR, the JIT framework and the glue between them
+src/backend/      IR -> host code: thumb2/, x86_64/, and an IR interpreter
 src/frontend/
-  rv32/           hart, decode, CSRs, traps, interpreter, Thumb-2 JIT,
+  rv32/           hart, CSRs, PMP, Sv32, decoder, interpreter, translator,
                   CLINT, APLIC
-  g4mh/           core, decode, interpreter, INTC
+  g4mh/           core, decoder, interpreter, translator, MPU, INTC, timers
+  ppc/            core, decoder, disassembler, interpreter, translator,
+                  the embedded FP unit
+  armv7m/         core, decoder, disassembler, interpreter, translator,
+                  exceptions, NVIC
+  softfloat/      Berkeley SoftFloat: every frontend's FP unit
 src/platform/
+  common/         the session and run loop every platform shares
   host/           native runner (frontend-neutral)
-  stm32f446/      Nucleo-F446RE firmware, ST HAL integration, linker script
+  stm32/          what the boards share
+  stm32f446/ stm32f746/ stm32n6/   firmware: clocks, linker scripts, vendor glue
+src/net/          lwIP over SLIP or PPP: telnet, gdb, TFTP
 tests/
-  unit/           host unit tests: RVC expansion, bus permissions,
-                  G4MH decode and the frontend contract
-  guest/          RISC-V programs that run inside the emulator
-  arch-test/      DUT description for the official suite
-scripts/          validation runners
+  unit/           host unit tests, per layer and per frontend
+  guest/          programs that run inside the emulator
+  arch-test/      DUT description for the official RISC-V suite
+  armv7m-diff/    one program, on a Cortex-M7 and on the emulator
+  ppc-check/      the PowerPC decoder, semantics and FP unit, each against
+                  something that is not this code
+scripts/          validation runners, the build matrix, encoder checks
 docs/<vendor>/    reference documentation
 ```
 
@@ -510,7 +545,17 @@ Instruction-level conformance is not a guest: it is
 encodings and a system-level suite on the board and on the emulator and
 compares them.
 
----
+PowerPC guests are in `tests/guest/ppc/`, run on the `ppc` frontend, and
+are loaded as ELF — the image's segment flag is what says whether it is
+VLE or Book E:
+
+| Image | Purpose |
+|---|---|
+| `isatest.bin` | hand-written VLE: the 16-bit forms and what only VLE has. A flat image, so it needs `--load 0x80000000` |
+| `ppc-alu` | compiled C against values computed in Python: the forms a compiler reaches for unasked |
+| `ppc-sys` | the system level, 183 checks with the manual's section beside each: interrupts, privilege, SPRs, reservations, timers, the FP interrupts |
+| `ppc-park` | a `wait` that nothing may end |
+| `ppc-coremark`, `ppc-crypto` | the shared benchmarks, with a decrementer interrupt landing in compiled code throughout |
 
 ---
 
@@ -521,9 +566,9 @@ compares them.
 | [docs/Architecture.md](docs/Architecture.md) | the three axes and the frontend contract |
 | [docs/frontend/rv32.md](docs/frontend/rv32.md) | RV32 scope, memory map, floating point |
 | [docs/frontend/g4mh.md](docs/frontend/g4mh.md) | G4MH scope, and what is *not* verified |
-| [docs/frontend/ppc.md](docs/frontend/ppc.md) | e200z7 scope, its guest, and what the first running program found |
+| [docs/frontend/ppc.md](docs/frontend/ppc.md) | e200z7 scope, the decoder, FP unit and JIT, and how each is checked without an e200 |
 | [docs/frontend/armv7m.md](docs/frontend/armv7m.md) | ARMv7-M scope, the board-differential suites, the JIT |
-| [docs/backend/thumb2.md](docs/backend/thumb2.md) | the ARMv7E-M emitter |
+| [docs/backend/thumb2.md](docs/backend/thumb2.md) | the ARMv7E-M emitter, and what it measures on the board |
 | [docs/backend/x86_64.md](docs/backend/x86_64.md) | the x86-64 emitter, which exists for coverage |
 | [docs/jit/README.md](docs/jit/README.md) | the IR pipeline, block model, FP policy |
 | [docs/jit/staleness.md](docs/jit/staleness.md) | what a translated block bakes in |
@@ -536,7 +581,8 @@ compares them.
 | [docs/network.md](docs/network.md) | the board over IP: telnet, gdb and TFTP, and what the handover costs |
 | [docs/porting.md](docs/porting.md) | porting to another target |
 | [docs/TODO.md](docs/TODO.md) | open work |
-| [docs/host/](docs/host/README.md), [docs/stm32f446/](docs/stm32f446/README.md) | per-platform and per-platform/frontend notes |
+| [docs/host/](docs/host/README.md), [docs/stm32f446/](docs/stm32f446/README.md), [docs/stm32n6/](docs/stm32n6/itcm.md) | per-platform and per-platform/frontend notes |
+| [BUILD.md](BUILD.md) | every build gate, and which combinations are checked |
 
 Working notes — what has bitten, and will again — are in
 [CLAUDE.md](CLAUDE.md).

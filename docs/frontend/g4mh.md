@@ -863,11 +863,11 @@ have caught the bug above -- no single-backend run can see it.
 - **Register banks and hardware context save**, `GMCFG`, the guest modes.
 - **Debug level.** No `DBPC`/`DBPSW`, `DBTRAP`/`DBRET` — the analogue of
   Sdtrig.
-- **No Thumb-2 JIT.** There *is* an x86-64 one:
-  `g4mh_backend_jit` comes from the shared IR framework, and
-  `emu-host --jit` selects it. A Thumb-2 translator would be a third
-  `emu_backend_t` and is what the firmware would need, since the host
-  backend exists for coverage rather than for speed.
+- **The JIT's keys.** `g4mh_backend_jit` comes from the shared IR
+  framework, on x86-64 (`emu-host --jit`) and on Thumb-2 alike. Unlike
+  the other three translators it binds **no context and no generation**:
+  whether a change of PSW.UM, or of the MPU's execute permission, can
+  leave a cached block wrong has not been examined.
 
   Run both and diff them. With no reference model, interpreter against
   JIT on the same guest is the only cross-check this frontend has --

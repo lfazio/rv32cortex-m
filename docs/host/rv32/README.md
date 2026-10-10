@@ -1,8 +1,8 @@
 # host / rv32
 
-The RISC-V frontend on the native runner, always on the interpreter — the
-JIT is forced off on a non-Thumb-2 host. This is where conformance is
-established.
+The RISC-V frontend on the native runner, on either backend: the
+interpreter, or with `--jit` the x86-64 JIT. This is where conformance is
+established, for both.
 
 Devices added to the guest map: ACLINT MSWI at `0x0200_0000`, ACLINT MTIMER
 at `0x0200_4000`, APLIC at `0x0C00_0000`. Same addresses as the firmware,
@@ -11,16 +11,17 @@ so a guest image is portable between them.
 ## Validation
 
 ```sh
-./scripts/run-arch-test.sh      # official riscv-arch-test
-./scripts/run-riscv-tests.sh    # Berkeley suite
+./scripts/run-arch-test.sh                        # official riscv-arch-test
+EMU_EXTRA_ARGS=--jit ./scripts/run-arch-test.sh   # the same, translated
+./scripts/run-riscv-tests.sh                      # Berkeley suite
 ctest --test-dir build/host -L fast
 ```
 
 | suite | result |
 |---|---|
-| riscv-arch-test | **274/274**. SoftFloat is mandatory now; when it was optional, turning it off failed 52 tests and every one of them was F |
-| riscv-tests (Berkeley) | **77/77** |
-| ctest `-L fast` | unit tests + the guest self-test through the runner |
+| riscv-arch-test | **378/378**, interpreter and JIT. SoftFloat is mandatory now; when it was optional, turning it off failed 52 tests and every one of them was F |
+| riscv-tests (Berkeley) | **77/77**, interpreter and JIT (the JIT through an `EMU_HOST` wrapper that adds `--jit`) |
+| ctest `-L fast` | unit tests, and the guests through the runner on both backends |
 
 **Run both suites.** They cover different things, and a regression only the
 Berkeley suite catches will sit unnoticed — which is exactly what happened
@@ -76,20 +77,20 @@ that failure looks like an emulator bug until you disassemble the test.
 
 ## To do
 
-- **S-mode.** Started and not landed — see the uncommitted work on
-  `main`: the CSR bank, delegation, `SRET` and the TVM/TW/TSR traps,
-  with `satp` Bare only. Sv32 would put a page-table walk on the fetch and
-  access paths, which is the most expensive place in this emulator to add
-  anything.
-- **`amocas.d`.** Implemented and wrong; `RV_EXT_ZACAS` gates it.
 - **Zicbop prefetch.** Decoded as a hint and ignored, which is legal, but
   never exercised.
 
-## Investigate
+## Settled since this page was written
 
-- **Whether `RV_MISALIGNED_OK` should default on.** We raise, which matches
-  most embedded RISC-V cores and keeps the memory path branch-free. A guest
-  that relies on hardware misalignment support gets an exception instead.
+- **S-mode and Sv32 landed**, behind `vm_active` folded into
+  `fetch_guard`, so a guest that never enables paging pays one branch
+  that already existed. Linux boots.
+- **Misaligned accesses are emulated by default** (`RV32_MISALIGNED`),
+  because picolibc's word-at-a-time string routines read through odd
+  pointers. The architecture suite's description of this core says they
+  trap, so `run-arch-test.sh` builds its own runner with the option off —
+  a build option that changes architectural behaviour has a second home
+  in the DUT description.
 
 ## Discarded
 

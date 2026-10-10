@@ -27,9 +27,9 @@ no platform *and no ISA* in it, so a frontend and a platform meet only at
 
 | axis | question | option |
 |---|---|---|
-| platform | where the emulator runs | `EMU_PLATFORM=host\|stm32f446\|stm32f746` |
-| guest | which ISA it emulates | `EMU_GUEST_ARCH_{RV32,G4MH,PPC}` |
-| backend | how it executes | `EMU_JIT=ON\|OFF` |
+| platform | where the emulator runs | `EMU_PLATFORM=host\|stm32f446\|stm32f746\|stm32n6` |
+| guest | which ISA it emulates | `EMU_GUEST_ARCH_{RV32,G4MH,PPC,ARMV7M}` |
+| backend | how it executes | `EMU_JIT=ON\|OFF`, and `--jit` on the host runner |
 
 More than one guest may be on at once; the host runner picks with
 `--frontend` or from the ELF header. Firmware normally builds exactly
@@ -59,9 +59,15 @@ backend that nothing compiled. `f746-rv32-nojit` and `host-nojit` both
 failed to build, for months, because nobody built them.
 
 What a JIT-off build must not contain follows from that, and CMake now
-enforces it: `rv_ir.c` and `g4mh_ir.c` are the IR *translators* and call
-`emu_ir_can_lower`, which only a backend lowering file defines — so they
-are listed under `if(EMU_JIT)`.
+enforces it: each frontend's `<isa>_ir.c` is its IR *translator* and
+calls `emu_ir_can_lower`, which only a backend lowering file defines — so
+all four are listed under `if(EMU_JIT)`.
+
+**Building a configuration is not running it.** The firmware passed
+`--jit` to its own argument parser unconditionally, and that parser
+refuses `--jit` in a build without one: every `-DEMU_JIT=OFF` image
+built, linked, and hard-faulted before its console existed. The matrix
+row for that configuration had been green since it was added.
 
 ## Per guest
 
@@ -110,6 +116,30 @@ does not get raised.
 
 **Big-endian**, the only one here. See the note by `EMU_BUS_ORDER` in
 `emu_bus.h` for which region kinds that does *not* apply to.
+**No hardware reference**: binutils, a Python model and exact rational
+arithmetic stand in for one ([docs/frontend/ppc.md](docs/frontend/ppc.md)).
+
+| gate | default | notes |
+|---|---|---|
+| `PPC_GUEST` | `alu` | the guest a firmware embeds: `alu`, `sys`, `coremark`, `crypto`. Embedded as an ELF, because the encoding (VLE or Book E) is a flag on its segment |
+| `PPC_ENABLE_DISASM` | ON | checked against binutils, both directions |
+
+Needs SoftFloat, as every frontend with an FP unit does. Blocks are
+capped at 16 guest instructions when the host is Thumb-2 and 64
+otherwise; that is in `ppc_ir.c`, with the measurements.
+
+### ARMv7-M — `EMU_GUEST_ARCH_ARMV7M`
+
+A Cortex-M guest on a Cortex-M host, **checked against a Cortex-M7**:
+`tests/armv7m-diff/` runs the same programs on the Nucleo-F746ZG and on
+the emulator.
+
+| gate | default | notes |
+|---|---|---|
+| `ARMV7M_ENABLE_DISASM` | ON | tested by assembling what it prints |
+| `ARMV7M_COREMARK_ITERATIONS` | 40 | its own count, not `COREMARK_ITERATIONS` |
+
+It has not been built into firmware and flashed.
 
 ## Per platform
 
@@ -118,8 +148,9 @@ does not get raised.
 | `host` | — | x86-64 Linux; the JIT emits x86-64 |
 | `stm32f446` | `-DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake` | Cortex-M4: **no caches**, no DWT software lock |
 | `stm32f746` | the same | Cortex-M7: caches and a DWT lock, both of which the JIT depends on |
+| `stm32n6` | the same | Cortex-M55, Armv8.1-M: no internal flash, and megabytes of guest RAM |
 
-The toolchain file is not optional for either firmware platform, and
+The toolchain file is not optional for any firmware platform, and
 CMake's error for its absence names the option rather than the cause — so
 a first configure without it leaves a *poisoned* build directory that
 keeps failing after the option is added. Delete the directory.
@@ -139,10 +170,19 @@ for the readers of a flag, not for the flag.
 |---|---|---|
 | `EMU_ENABLE_TRACE` | OFF | per-instruction hook. **Read pc deltas, not the disassembly** |
 | `EMU_ENABLE_STATS` | ON | `xlat`/`interp` — read the ratio before believing a pass |
-| `EMU_JIT_CODE_BYTES` | 12288 | dominates JIT performance; at the default the JIT can *lose* to the interpreter |
+| `EMU_JIT_CODE_BYTES` | 32768 | the code cache on a microcontroller. A threshold, not a dial: below a guest's translated working set the JIT is **slower** than the interpreter, and at the default that includes CoreMark — [docs/jit/tuning.md](docs/jit/tuning.md) |
 | `EMU_JIT_LOOP_CAP` | 128 | interrupt-latency knob. CoreMark **cannot observe it** |
 | `EMU_JIT_DIFF` | OFF | checks each block against the IR interpreter — and see its `diff_declined` counter before trusting silence |
-| `EMU_NET` | | lwIP, SLIP, TFTP on the F746 |
+| `EMU_NET` | ON on the F746 | lwIP over PPP or SLIP: telnet, gdb, TFTP. **The UART stops being a console** |
+| `EMU_NATIVE_COREMARK` | OFF | CoreMark natively on the ARM, for the baseline |
+
+**Four JIT options are gone**: `EMU_JIT_LOOP_CHAIN`,
+`EMU_JIT_INLINE_PERIPH`, `EMU_JIT_ELIDE_LD` and `EMU_JIT_ELIDE_ST`. They
+configured the hand-written Thumb-2 translator, and for as long as the IR
+backends have existed they were declared, forwarded and defaulted — and
+read by nothing. Setting one changed no byte of the build. The audit that
+found them is one loop: for every option, grep for a reader of the macro
+it becomes.
 
 ## Cache variables outlive the tree
 

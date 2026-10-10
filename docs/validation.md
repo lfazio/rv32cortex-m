@@ -1,30 +1,37 @@
 # Validation
 
-Two suites, and they cover different things. **Run both.** A regression
-that only the Berkeley suite catches will sit unnoticed if only
-arch-test is run -- which is exactly what happened to `rv32mi/csr` when F
-was added.
+Each frontend is held against something that is not this code, and what
+that something is differs for each — which is most of what this page is
+about.
+
+| frontend | reference | where |
+|---|---|---|
+| RV32 | the official architecture suite (Sail computes the expected values), the Berkeley suite | below |
+| G4MH | **none.** Renesas' assembler as a second encoder, and compiled guests | [frontend/g4mh.md](frontend/g4mh.md) |
+| ARMv7-M | **a Cortex-M7**: the same programs on the Nucleo-F746ZG and on the emulator | [frontend/armv7m.md](frontend/armv7m.md) |
+| PowerPC | binutils for every encoding; a Python model on unbounded integers; exact rational arithmetic for the FP unit. **No e200** | [frontend/ppc.md](frontend/ppc.md) |
 
 ```sh
-./scripts/run-arch-test.sh      # official riscv-arch-test, interpreter and --jit
-./scripts/run-riscv-tests.sh    # Berkeley suite
-./scripts/report-figures.sh     # every number below, regenerated
+./scripts/run-arch-test.sh       # official riscv-arch-test
+./scripts/run-riscv-tests.sh     # Berkeley suite
+./scripts/build-matrix.sh --test # every configuration, and its ctest
+./scripts/report-figures.sh      # the host figures, regenerated
 ```
+
+## RV32: two suites, and run both
+
+They cover different things. A regression that only the Berkeley suite
+catches will sit unnoticed if only arch-test is run — which is exactly
+what happened to `rv32mi/csr` when F was added — and it runs the other
+way too: four `ExceptionsSv` tests failed for six days while riscv-tests
+stayed at 77/77, because its guests never make a misaligned access.
 
 Keep the suites' `-march` in step with what `misa` advertises:
 `rv32mi/csr` deliberately fails when built without F and run on a core
 reporting F, and that failure looks like an emulator bug until you
 disassemble the test.
 
-G4MH has no reference model and no architecture suite. Its evidence is
-`tests/unit/test_g4mh.c` -- hand-assembled halfword arrays that
-deliberately do not share an encoder with the interpreter -- plus a
-CC-RH-built guest, which is the thing that has actually found bugs. See
-[frontend/g4mh.md](frontend/g4mh.md).
-
-## Validation
-
-Two suites, both wired to CMake targets:
+Both are wired to CMake targets as well:
 
 ```sh
 cmake --build build/host --target arch-test        # official RISC-V suite
@@ -33,32 +40,32 @@ cmake --build build/host --target riscv-tests      # Berkeley suite
 cmake --build build/host --target validate         # everything
 ```
 
-Current state, all re-run on the tree as it stands:
+Current state:
 
 | | result | runs on |
 |---|---|---|
-| `riscv-arch-test` | **378 / 378** | host |
-| `riscv-arch-test`, default (host FPU) | 222 / 274 — every failure in `F`; historical, from before SoftFloat was mandatory | host |
-| `riscv-tests` | **77 / 77** | host |
-| host unit + guest self-tests (`ctest -L fast`) | **3 / 3**, one of them through the JIT | host |
-| `riscv-arch-test`, `--jit` + SoftFloat | **378 / 378** — the whole suite through translated code | host |
-| `riscv-arch-test`, `--jit`, host FPU | 222 / 274 — identical to the interpreter on the same build; historical | host |
-| `riscv-tests`, `--jit` | **77 / 77** | host |
-| `isatest`, JIT | **296 / 296** | hardware |
-| `isatest`, `-DEMU_JIT=OFF` | **296 / 296** | hardware |
-| `isatest`, host, both FP backends | **296 / 296** | host |
-| `mmiobench` | **72 / 72** | hardware |
-| CoreMark | `crcfinal 0xca90` on all three backends | hardware |
+| `riscv-arch-test`, interpreter | **378 / 378** | host |
+| `riscv-arch-test`, `EMU_EXTRA_ARGS=--jit` | **378 / 378** — the whole suite through translated code | host, x86-64 |
+| `riscv-tests`, interpreter | **77 / 77** | host |
+| `riscv-tests`, `--jit` through an `EMU_HOST` wrapper | **77 / 77** | host, x86-64 |
+| `ctest`, RV32 tree | 18 tests: unit, the guests, and most of them again under `--jit` | host |
+| `isatest`, JIT | **298 checks**, 436 of 45,799 instructions interpreted | Nucleo-F746ZG, Thumb-2 |
+| CoreMark, 120 iterations | `crcfinal 0xd340` on the interpreter and on the JIT at four cache sizes | Nucleo-F746ZG |
 
-**What these suites do not cover: the JIT.** Both run the host interpreter, so
-nothing in `src/frontend/rv32/rv_jit_thumb2.c` is exercised by either — it only
-compiles for ARM. Everything the translator emits is validated by `isatest`
-and `mmiobench` on the board, and by CoreMark's CRC agreeing across native
-ARM, interpreter and JIT.
+`run-arch-test.sh` **builds its own runner**, with `-DRV32_MISALIGNED=OFF`,
+because the suite validates the core against a description of it and
+that description says misaligned accesses trap. A stale runner at the
+path a script defaults to once hid a real regression for six days.
 
-That gap is not theoretical. Every JIT defect found so far was found on
-hardware, and none of them could have been caught by a signature-checking
-suite:
+### What the host suites do not cover
+
+**The Thumb-2 lowering**, which compiles only for ARM. The x86-64 backend
+exists so that everything *above* it — each translator, the IR, the
+passes, the framework — runs under the suites on a host; what turns IR
+into Thumb-2 is validated by flashing a guest and reading the UART.
+
+That gap is not theoretical. Every defect below was found on hardware,
+and none could have been caught by a signature-checking suite on a host:
 
 | defect | how it presented |
 |---|---|
@@ -69,58 +76,50 @@ suite:
 | `rm=dyn` resolved `RMM` as round-to-nearest | ties rounded to even where the guest asked for away |
 | `mstatus.FS` decided at translation | FP ran after the guest turned the FPU off |
 | PMP flush watched a flag, not the configuration | a store landed in memory PMP had been told to deny |
+| a shift by zero encoded as a shift by 32 | two architecture tests, on the board only |
+| a compaction caused by an overflow unlinked nothing | a hard fault, or a hang: RV32 CoreMark at 120 iterations never finished |
+| the cycle counter wrapped | *no* wrong answer — guest time restarted every 19.9 s, and every long run's performance figure was a wrap short |
 
-Two of those produced no wrong answer at all, only performance that made no
-sense. Three were staleness: a decision taken when a block was translated,
-still in force after the state behind it changed. The self-test grew from 148
-checks to 296 chasing them, and the checks that matter are the ones that
-re-execute *one* instruction at *one* address after changing the state it was
-compiled against — a fresh call site is translated against the current
-configuration and proves nothing.
+Three of those produced no wrong answer at all, only numbers that made
+no sense. Three were staleness: a decision taken when a block was
+translated, still in force after the state behind it changed. The
+self-test grew from 148 checks to 298 chasing them, and the checks that
+matter are the ones that re-execute *one* instruction at *one* address
+after changing the state it was compiled against — a fresh call site is
+translated against the current configuration and proves nothing.
 
-## Floating point (F)
+The last two rows are from the framework and the platform rather than
+from the emitter, and they are why "run it on the board" means a guest
+large enough to fill the code cache and a run long enough to wrap the
+counter: `isatest` does neither, and passed throughout both.
 
-F is implemented — the register file, `fcsr`/`frm`/`fflags`, `mstatus.FS`,
-all of OP-FP, the four fused multiply-adds, `FLW`/`FSW`, and `Zcf`'s
-compressed FP load/stores (which `C` on RV32F is defined to include).
+## Floating point (F and D)
 
-There is one implementation. SoftFloat is the FP unit -- not an option,
-and a missing checkout is a configure error rather than a fallback. The
-history below is why.
+Both are implemented — the 64-bit register file with NaN-boxing,
+`fcsr`/`frm`/`fflags`, `mstatus.FS`, all of OP-FP in both widths, the
+fused multiply-adds, the loads and stores, and `Zcf` and `Zcd`, which
+`C` on RV32 is defined to include alongside F and D.
 
-**Berkeley SoftFloat (`ON`) passes all 224 tests.** It is the library the
-RISC-V FP spec was written against, and the fit is exact rather than
-convenient: its rounding modes are numerically identical to `frm`
-(`near_even`/`minMag`/`min`/`max`/`near_maxMag` = 0..4) and its exception
-flags identical to `fflags` (1/2/4/8/16), so neither needs translating. It
-also ships a `RISCV` specialization carrying the canonical-NaN and
-NaN-propagation rules. `f32_mulAdd` is a genuine single-rounding fused
-multiply-add, which is where most of the previous failures were.
+There is one implementation. **Berkeley SoftFloat is the FP unit** — not
+an option, and a missing checkout is a configure error rather than a
+fallback. It is the library the RISC-V FP spec was written against, and
+the fit is exact rather than convenient: its rounding modes are
+numerically identical to `frm` and its exception flags to `fflags`, so
+neither needs translating, and its `mulAdd` is a genuine single-rounding
+fused multiply-add.
 
-**The host FPU via `<fenv.h>` (`OFF`, the default) passes 172 of 224.** It is
-smaller and faster — one hardware instruction per operation on a Cortex-M4F —
-but the flags it can report are the ones the hardware happens to raise, and
-those differ from RISC-V's rules on the fused multiply-adds and around
-subnormals. It remains the default because most guests never look at `fflags`,
-and conformance is a build option away.
+It was once a build option beside a host-FPU path through `<fenv.h>`,
+and that path was the default. It passed 172 of 224 F tests: the flags
+it could report were the ones the hardware happened to raise, which
+differ from RISC-V's rules on the fused multiply-adds and around
+subnormals. Worse, the documented way to select SoftFloat named a
+variable that did not exist, so the check that would have shown the
+difference changed nothing and reported nothing. That history is why
+`scripts/check-doc-flags.sh` exists.
 
-That split is the useful outcome: correctness when it is wanted, size and speed
-when it is not. On the Nucleo, SoftFloat costs about 8.7 KB of flash
-(51.3 KB against 42.6 KB with the JIT enabled), which on a 512 KB part is
-affordable but is real.
-
-Both are validated on hardware. Note that with the JIT enabled the arithmetic
-is translated to VFP and never reaches SoftFloat, so the run that actually
-exercises it is `-DEMU_JIT=OFF`; both configurations pass 296/296. That the
-two backends agree is worth having deliberately — they use genuinely different
-FP implementations, VFP against SoftFloat, so the self-test doubles as a
-differential check between them.
-
-**D is not implemented and is not planned**: the Cortex-M4F and M7 FPUs are
-single-precision, so D would be entirely soft-float on the intended targets.
-**Zcd follows from that** — it is the compressed *double* load/stores
-(`c.fld`/`c.fldsp`/`c.fsd`/`c.fsdsp`), which target 64-bit FP registers that do
-not exist without D. It is ruled out by the D decision, not separately skipped.
+The JIT lowers the five IEEE-exact single-precision operations to the
+host FPU and sends the rest to the same SoftFloat routines the
+interpreter uses; see [jit/floating-point.md](jit/floating-point.md).
 
 **Zcb is implemented and passes 7/7.** It reuses the `funct6=100111` slot that
 RV64 spends on `c.subw`/`c.addw`: bits [6:5] select `c.mul` or a group of unary
@@ -129,7 +128,7 @@ Three of the unary ops (`c.sext.b`, `c.zext.h`, `c.sext.h`) expand to Zbb
 instructions, which is why the spec makes Zcb depend on Zbb — without it there
 would be nothing to expand them into.
 
-## Official RISC-V Architecture Test Suite — 378/378 with SoftFloat
+## Official RISC-V Architecture Test Suite — 378/378
 
 [`riscv/riscv-arch-test`](https://github.com/riscv/riscv-arch-test), the RVCP
 suite governed by RISC-V International. Modern versions are self-checking: the
