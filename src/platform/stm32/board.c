@@ -26,6 +26,7 @@
 #include "emu_session.h"
 
 /* emucore. */
+#include "emu/emu_jit.h"
 #include "emu/emu_cpu.h"
 
 #include <stdio.h>
@@ -222,20 +223,36 @@ char *const *board_argv(int *argc)
     (void)snprintf(slice, sizeof(slice), "%u", (unsigned)EMU_RUN_SLICE);
     (void)snprintf(maxi, sizeof(maxi), "%u", (unsigned)EMU_MAX_INSN);
 
-    static char *av[] = {
-        "emu",       "--jit", /* a board wants speed; a runner
-                                         * chooses, because there it is a
-                                         * coverage question */
-        "--dump", /* the register state on exit is
-                                         * most of what a person reading a
-                                         * telnet session came for */
-        "--quantum", NULL,    "--max-insn", NULL,
-    };
+    static char *av[8];
+    int n = 0;
 
-    av[4] = slice;
-    av[6] = maxi;
+    av[n++] = "emu";
+    /*
+     * A board wants speed; a runner chooses, because there it is a
+     * coverage question.
+     *
+     * **Only where there is a JIT to want.** This was unconditional, and
+     * the parser refuses --jit in a build without one -- correctly, on a
+     * host, where it is somebody's typing. Here it was the firmware's
+     * own argument: an -DEMU_JIT=OFF image rejected it, main returned
+     * into the reset handler's `bx lr`, and the board hard-faulted before
+     * the console existed to say why. Every such firmware built, linked
+     * and was a brick; the build matrix has had a row for exactly that
+     * configuration since it was last broken, and a row that builds is
+     * not a row that runs.
+     */
+#if EMU_HAVE_JIT
+    av[n++] = "--jit";
+#endif
+    /* The register state on exit is most of what a person reading a
+     * telnet session came for. */
+    av[n++] = "--dump";
+    av[n++] = "--quantum";
+    av[n++] = slice;
+    av[n++] = "--max-insn";
+    av[n++] = maxi;
 
-    *argc = (int)(sizeof(av) / sizeof(av[0]));
+    *argc = n;
     return av;
 }
 

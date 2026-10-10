@@ -43,7 +43,5 @@ SECTIONS
         __bss_end = .;
     } > RAM
 
-    __stack_top = ORIGIN(RAM) + LENGTH(RAM);
-
     /DISCARD/ : { *(.comment) *(.note.*) *(.eh_frame) *(.gnu.attributes) }
 }

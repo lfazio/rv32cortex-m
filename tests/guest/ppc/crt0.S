@@ -159,8 +159,11 @@ _puthex:
 /* ------------------------------------------------------------------ */
 
 _reset:
-	lis	%r1, __stack_top@ha
-	addi	%r1, %r1, __stack_top@l
+	/*
+	 * r1 is the loader's: the top of whatever RAM this machine has,
+	 * which is a megabyte on a host and a fifth of that on a board.
+	 * A link script that named it would be right on one of them.
+	 */
 	li	%r0, 0
 	stwu	%r0, -16(%r1)		/* a terminated back chain */
 

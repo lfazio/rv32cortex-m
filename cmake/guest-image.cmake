@@ -23,6 +23,12 @@
 #   G4MH   checked in prebuilt, because it is compiled by Renesas CC-RH
 #          and this tree cannot assume that exists. So there is no target
 #          to depend on, only the file.
+#
+#   PPC    built here, and embedded as an **ELF** rather than a binary:
+#          the e200z7 has two encodings of the same bytes, and which one
+#          an image is in is a flag on its ELF segment that a raw binary
+#          has nowhere to carry. Stripped, because the firmware carries
+#          the whole file and the debug sections are four fifths of it.
 
 function(emu_stage_guest_image out_bin)
     #
@@ -61,6 +67,12 @@ function(emu_stage_guest_image out_bin)
         set(_src "${CMAKE_BINARY_DIR}/guest/${RV32_GUEST}.bin")
         set(_dep "${_src}" "guest-${RV32_GUEST}")
         set(_name "${RV32_GUEST}.bin")
+    elseif(EMU_GUEST_ARCH_PPC)
+        set(PPC_GUEST "alu"
+            CACHE STRING "PowerPC guest to embed in the firmware (alu, sys, coremark, crypto)")
+        set(_src "${CMAKE_BINARY_DIR}/guest/ppc-${PPC_GUEST}.img")
+        set(_dep "${_src}" "guest-ppc-${PPC_GUEST}")
+        set(_name "ppc-${PPC_GUEST}.img")
     elseif(EMU_GUEST_ARCH_G4MH)
         set(G4MH_GUEST "guest"
             CACHE STRING "G4MH guest image to embed in the firmware")

@@ -135,7 +135,10 @@ endif()
 if(EMU_GUEST_ARCH_PPC)
     find_program(PPC_GCC NAMES powerpc-linux-gnu-gcc powerpc64-linux-gnu-gcc
                                powerpc-eabi-gcc)
-    if(PPC_GCC)
+    find_program(PPC_GUEST_OBJCOPY NAMES powerpc-linux-gnu-objcopy
+                                         powerpc64-linux-gnu-objcopy
+                                         powerpc-eabi-objcopy)
+    if(PPC_GCC AND PPC_GUEST_OBJCOPY)
         set(_ppc_dir "${CMAKE_BINARY_DIR}/guest")
         set(_ppc_src "${CMAKE_CURRENT_SOURCE_DIR}/ppc")
         file(MAKE_DIRECTORY "${_ppc_dir}")
@@ -150,20 +153,28 @@ if(EMU_GUEST_ARCH_PPC)
             if(NOT A_OPT)
                 set(A_OPT "-O1")
             endif()
+            #
+            # .elf is what a host run loads and a debugger reads; .img
+            # is the same ELF stripped, which is what a firmware embeds.
+            #
             add_custom_command(
-                OUTPUT "${_ppc_dir}/ppc-${name}.elf"
+                OUTPUT "${_ppc_dir}/ppc-${name}.elf" "${_ppc_dir}/ppc-${name}.img"
                 COMMAND ${PPC_GCC} -m32 -mbig-endian -mcpu=8540 -msoft-float
                         -msdata=none ${A_OPT} -g
                         -ffreestanding -nostdlib -fno-builtin -fno-common
                         -fno-pic -static -Wl,--build-id=none
+                        -Wl,-z,max-page-size=0x1000
                         -Wall -Wextra -I "${_ppc_src}" ${A_FLAGS}
                         -T "${_ppc_src}/cguest.ld" ${srcs}
                         -o "${_ppc_dir}/ppc-${name}.elf"
+                COMMAND ${PPC_GUEST_OBJCOPY} --strip-all
+                        "${_ppc_dir}/ppc-${name}.elf" "${_ppc_dir}/ppc-${name}.img"
                 DEPENDS ${srcs} "${_ppc_src}/cguest.ld" "${_ppc_src}/ppc_clock.h"
                 COMMENT "Building PowerPC guest ppc-${name}.elf"
                 VERBATIM)
             add_custom_target(guest-ppc-${name} ALL
-                              DEPENDS "${_ppc_dir}/ppc-${name}.elf")
+                              DEPENDS "${_ppc_dir}/ppc-${name}.elf"
+                                      "${_ppc_dir}/ppc-${name}.img")
         endfunction()
 
         add_ppc_guest(alu SOURCES alu.c)
