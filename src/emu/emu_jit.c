@@ -278,12 +278,19 @@ void emu_jit_invalidate_page(uint32_t vaddr, const emu_jit_ops_t *ops)
     }
 
     /*
-     * **Both patchers decline while the overflow flag is up**, and it
-     * stays up from the last translation that ran out of room until the
-     * next one starts. Nothing is being emitted here, so the flag is
-     * meaningless -- and left alone it would make a patch silently not
-     * happen, which is the one outcome that must not be possible: an
-     * inbound chained jump would then run the stale body.
+     * **The emitters' patchers decline while the overflow flag is up.**
+     * Nothing is being emitted here, so the flag is meaningless -- and
+     * left alone it would make a patch silently not happen, which is
+     * the one outcome that must not be possible: an inbound chained jump
+     * would then run the stale body.
+     *
+     * translate_once clears it when an attempt ends, and the hooks no
+     * longer go through the guarded patchers at all. This site was the
+     * first to know and for a long time the only one: compact() calls
+     * the same hooks and had no such line, which is how a compaction
+     * caused by an overflow came to unlink nothing. It stays because
+     * emu_jit_emit_begin is public, so a lowering driven from outside
+     * the dispatch loop can still leave the flag set.
      */
     g_overflow = false;
 
@@ -708,9 +715,21 @@ static bool space_low(void)
  * caller below is for: the translator declined (ordinary and frequent --
  * every interpreted instruction lands here), or it ran off the end of the
  * buffer, which is a reclaim signal.
+ *
+ * **Which of the two is returned in `overflowed`, and the emitter's own
+ * flag is cleared before this returns.** That flag describes an emission
+ * in progress: the patchers consult it so that a slot past the end of
+ * the buffer is not written through. It used to be left set for the
+ * caller to read, and the caller's next move on an overflow is
+ * compact() -- which unlinks every chained exit through a host hook
+ * that reaches those same patchers. They wrote nothing, unlink_all
+ * marked every exit unlinked regardless, and the surviving blocks were
+ * moved with their jumps still aimed at blocks that had been evicted.
+ * The attempt is over when this returns, so its flag is too.
  */
 static jit_block_t *translate_once(emu_cpu_t *cpu, uint32_t pc,
-                                   const emu_jit_ops_t *ops, uint64_t context)
+                                   const emu_jit_ops_t *ops, uint64_t context,
+                                   bool *overflowed)
 {
     /* Blocks are entered by branching to them, so keep them aligned. */
     g_code_used = (g_code_used + 3u) & ~3u;
@@ -730,8 +749,13 @@ static jit_block_t *translate_once(emu_cpu_t *cpu, uint32_t pc,
     g_stats.cyc_translate += prof_now() - t0;
 #endif
 
-    if (insns == 0u || g_overflow) {
-        if (g_overflow) {
+    const bool ran_out = g_overflow;
+
+    g_overflow = false;
+    *overflowed = ran_out;
+
+    if (insns == 0u || ran_out) {
+        if (ran_out) {
             g_stats.overflowed++;
         } else {
             /*
@@ -787,12 +811,14 @@ static jit_block_t *translate_once(emu_cpu_t *cpu, uint32_t pc,
 static jit_block_t *translate(emu_cpu_t *cpu, uint32_t pc, uint64_t context,
                               const emu_jit_ops_t *ops)
 {
+    bool overflowed = false;
+
     if (!space_low()) {
-        jit_block_t *b = translate_once(cpu, pc, ops, context);
+        jit_block_t *b = translate_once(cpu, pc, ops, context, &overflowed);
         if (b != NULL) {
             return b;
         }
-        if (!g_overflow) {
+        if (!overflowed) {
             return NULL; /* nothing here to translate */
         }
     }
@@ -804,11 +830,12 @@ static jit_block_t *translate(emu_cpu_t *cpu, uint32_t pc, uint64_t context,
     if (ops->relocatable) {
         compact(ops);
         if (!space_low()) {
-            jit_block_t *b = translate_once(cpu, pc, ops, context);
+            jit_block_t *b =
+                translate_once(cpu, pc, ops, context, &overflowed);
             if (b != NULL) {
                 return b;
             }
-            if (!g_overflow) {
+            if (!overflowed) {
                 return NULL;
             }
         }
@@ -816,7 +843,7 @@ static jit_block_t *translate(emu_cpu_t *cpu, uint32_t pc, uint64_t context,
 
     /* Compaction could not free enough, or blocks cannot move. Start over. */
     emu_jit_flush();
-    return translate_once(cpu, pc, ops, context);
+    return translate_once(cpu, pc, ops, context, &overflowed);
 }
 
 /* ------------------------------------------------------------------ */

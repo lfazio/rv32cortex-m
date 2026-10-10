@@ -131,6 +131,17 @@ uint8_t *t2_bcond_forward(uint32_t cond);
 void t2_patch_branch(uint8_t *at, const uint8_t *target, bool conditional);
 
 /*
+ * Rewrite a branch in code that is already committed -- a chained exit
+ * being linked or unlinked, a retired block's entry becoming a jump.
+ *
+ * Unconditionally, which is the difference from t2_patch_branch. That
+ * one declines while the emitter has overflowed, because its slot may
+ * lie past the end of the buffer; this one's slot is in a finished
+ * block, and what the emitter is doing has no bearing on it.
+ */
+void t2_write_branch(uint8_t *at, const uint8_t *target, bool conditional);
+
+/*
  * Call an absolute address. BLX takes its target in a register, so the
  * address is materialised into r12 -- the one scratch register AAPCS
  * lets a callee clobber and that is not an argument.

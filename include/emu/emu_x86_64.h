@@ -214,6 +214,17 @@ uint8_t *x86_jcc32(uint8_t cc);
 uint8_t *x86_jmp32(void);
 void x86_patch_rel32(uint8_t *slot, const uint8_t *target);
 
+/*
+ * Rewrite the displacement of a jump in code that is already committed
+ * -- a chained exit being linked or unlinked, a retired block's entry.
+ *
+ * Unconditionally. x86_patch_rel32 declines while the emitter has
+ * overflowed, because its slot may lie past the end of the buffer; this
+ * one's slot is in a finished block, and a patch that quietly does not
+ * happen there leaves a jump aimed at code that is about to move.
+ */
+void x86_write_rel32(uint8_t *slot, const uint8_t *target);
+
 /* call rax, having loaded it with x86_mov_imm64. */
 void x86_call_rax(void);
 

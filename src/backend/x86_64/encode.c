@@ -275,7 +275,13 @@ void x86_patch_rel32(uint8_t *slot, const uint8_t *target)
     if (slot == NULL || emu_jit_overflowed()) {
         return;
     }
+    x86_write_rel32(slot, target);
+}
+
+void x86_write_rel32(uint8_t *slot, const uint8_t *target)
+{
     const int32_t rel = (int32_t)(target - (slot + 4));
+
     memcpy(slot, &rel, sizeof(rel));
 }
 

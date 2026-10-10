@@ -16,10 +16,15 @@
  * believed rather than what the assembler produces.
  */
 
+#include <string.h>
+
 #include "tests.h"
 
 #include "emu/emu_backend.h"
 #include "emu/emu_jit.h"
+#if defined(EMU_HOST_JIT_X86_64)
+#include "emu/emu_x86_64.h" /* x86_patch_rel32, for the link hook below */
+#endif
 
 /* ------------------------------------------------------------------ */
 /* A frontend that translates nothing                                  */
@@ -355,6 +360,252 @@ static void test_blocks_are_per_context(void)
     CHECK_EQ(after.flushes - before.flushes, 0u);
     CHECK_EQ(after.blocks, 2u);
 }
+
+/* ------------------------------------------------------------------ */
+/* Chained blocks across an overflow                                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A guest of four blocks: A -> B -> C -> END, and BIG -> END. END is
+ * declined, so the stub interpreter runs there and chooses where the
+ * guest goes next. Each block stores its successor's address in the pc
+ * and leaves through a patchable jump, which is the whole of what a
+ * chained exit is.
+ *
+ * B, C and BIG carry padding. Their size is the test: B and C have to be
+ * worth evicting, and BIG has to fit the buffer only once they are gone.
+ */
+#define CH_A 0x9000u
+#define CH_B 0x9004u
+#define CH_C 0x9008u
+#define CH_BIG 0x9100u
+#define CH_END 0x9200u
+
+#define CH_BUFFER (64u * 1024u) /* what test_jit hands emu_jit_init */
+#define CH_PAD_SMALL 4000u
+#define CH_PAD_BIG 60000u
+
+static uint32_t g_ch_built[5]; /* A, B, C, BIG, anything else */
+static uint8_t *g_ch_a_code;
+static uint32_t g_ch_a_site;
+static uint32_t g_ch_a_tail;
+static uint32_t g_ch_end_visits;
+static uint32_t g_ch_big_at; /* the END visit after which BIG runs; 0 = never */
+static uint32_t g_ch_patches;
+static uint32_t g_ch_patched_overflowed;
+
+static uint32_t stub_translate_chain(emu_cpu_t *cpu, uint32_t pc)
+{
+    uint32_t next;
+    uint32_t pad;
+    uint32_t which;
+
+    (void)cpu;
+    switch (pc) {
+    case CH_A:
+        next = CH_B;
+        pad = 0u;
+        which = 0u;
+        break;
+    case CH_B:
+        next = CH_C;
+        pad = CH_PAD_SMALL;
+        which = 1u;
+        break;
+    case CH_C:
+        next = CH_END;
+        pad = CH_PAD_SMALL;
+        which = 2u;
+        break;
+    case CH_BIG:
+        next = CH_END;
+        pad = CH_PAD_BIG;
+        which = 3u;
+        break;
+    default:
+        g_ch_built[4]++;
+        return 0u;
+    }
+    g_ch_built[which]++;
+
+    uint8_t *const start = emu_jit_here();
+    const uint64_t pc_addr = (uint64_t)(uintptr_t)&g_pc;
+
+    for (uint32_t i = 0; i < pad; i++) {
+        emu_jit_emit8(0x90u); /* nop */
+    }
+    emu_jit_emit8(0x48u); /* mov rax, &g_pc */
+    emu_jit_emit8(0xB8u);
+    emu_jit_emit32((uint32_t)pc_addr);
+    emu_jit_emit32((uint32_t)(pc_addr >> 32));
+    emu_jit_emit8(0xC7u); /* mov dword [rax], next */
+    emu_jit_emit8(0x00u);
+    emu_jit_emit32(next);
+    emu_jit_emit8(0xE9u); /* jmp tail -- the chained exit, unlinked */
+
+    const uint32_t site = (uint32_t)(emu_jit_here() - start);
+
+    emu_jit_emit32(0u);
+
+    const uint32_t tail = (uint32_t)(emu_jit_here() - start);
+
+    emu_jit_emit8(0xB8u); /* mov eax, 1 */
+    emu_jit_emit32(1u);
+    emu_jit_emit8(0xC3u); /* ret */
+
+    emu_jit_layout.chain_entry = 0u;
+    emu_jit_layout.tail = tail;
+    emu_jit_layout.link[0].target_pc = next;
+    emu_jit_layout.link[0].site = site;
+    emu_jit_layout.link[0].linked = false;
+    emu_jit_layout.nlink = 1u;
+    emu_jit_layout.chainable = true;
+
+    if (pc == CH_A) {
+        g_ch_a_code = start;
+        g_ch_a_site = site;
+        g_ch_a_tail = tail;
+    }
+    return 1u;
+}
+
+/*
+ * The link hook, **guarded exactly as both hosts' were**: it goes through
+ * the emitter's own patcher, which declines to write while the buffer
+ * has overflowed. That guard is right during emission -- the slot may be
+ * past the end -- and is why a framework that leaves the flag set across
+ * a compaction unlinks nothing while marking everything unlinked.
+ */
+static void stub_patch_link(uint8_t *site, const uint8_t *target)
+{
+    g_ch_patches++;
+    if (emu_jit_overflowed()) {
+        g_ch_patched_overflowed++;
+    }
+    x86_patch_rel32(site, target);
+}
+
+static emu_run_reason_t stub_interp_chain(emu_cpu_t *cpu, uint32_t budget,
+                                          uint32_t *retired)
+{
+    (void)cpu;
+    (void)budget;
+    g_ch_end_visits++;
+    g_pc = (g_ch_end_visits == g_ch_big_at) ? CH_BIG : CH_A;
+    if (retired != NULL) {
+        *retired = 1u;
+    }
+    return EMU_RUN_BUDGET;
+}
+
+static const emu_backend_t k_stub_interp_chain = {
+    .name = "stub-interp-chain",
+    .run = stub_interp_chain,
+};
+
+static const emu_jit_ops_t k_stub_chain_ops = {
+    .name = "stub-chain",
+    .bind = stub_bind,
+    .translate = stub_translate_chain,
+    .interp = &k_stub_interp_chain,
+    .patch_link = stub_patch_link,
+    .relocatable = true,
+};
+
+static int32_t ch_a_rel32(void)
+{
+    int32_t rel;
+
+    memcpy(&rel, g_ch_a_code + g_ch_a_site, sizeof(rel));
+    return rel;
+}
+
+/*
+ * A compaction caused by an *overflow* must unlink, exactly as one
+ * caused by the reserve running low does.
+ *
+ * It did not. The overflow flag is the emitter's, it was still set when
+ * compact() ran, and each host's link hook reaches the emitter's patcher
+ * -- which writes nothing while that flag is up. So unlink_all marked
+ * every exit unlinked and rewrote none of them, and the survivors were
+ * then moved with jumps into blocks that had been evicted. On the
+ * Nucleo-F746ZG that was a branch to 0x7A4 bytes *below* the code
+ * buffer, executing .bss until something was undefined.
+ *
+ * Only reachable when a block is larger than EMU_JIT_BLOCK_RESERVE,
+ * because otherwise the reserve triggers the compaction first and the
+ * flag is clear. That is 512 bytes on a microcontroller and 8192 on a
+ * host, so no host run ever overflowed and RISC-V's short blocks rarely
+ * did on the board; PowerPC's reach 890 bytes of Thumb-2.
+ *
+ * The shape here is the board's: A is entered from the dispatcher every
+ * time round and stays hot, B and C are reached through the chain and so
+ * are looked up once each, and the compaction keeps the caller and
+ * evicts what it jumps to.
+ */
+static void test_overflow_compaction_unlinks(void)
+{
+    emu_jit_stats_t before;
+    emu_jit_stats_t after;
+
+    emu_jit_flush();
+    memset(g_ch_built, 0, sizeof(g_ch_built));
+    g_ch_end_visits = 0u;
+    g_ch_big_at = 0u;
+    g_ch_patches = 0u;
+    g_ch_patched_overflowed = 0u;
+    g_ch_a_code = NULL;
+
+    /* Warm up: A becomes hot, and A->B and B->C get linked. */
+    uint32_t retired = 0u;
+
+    g_pc = CH_A;
+    (void)emu_jit_run(k_cpu, 64u, &retired, &k_stub_chain_ops);
+    CHECK_EQ(g_ch_built[0], 1u);
+    CHECK_EQ(g_ch_built[1], 1u);
+    CHECK_EQ(g_ch_built[2], 1u);
+    CHECK(g_ch_a_code != NULL);
+    if (g_ch_a_code == NULL) {
+        return;
+    }
+    /* Linked: A's exit no longer reaches its own tail. */
+    CHECK(ch_a_rel32() != (int32_t)(g_ch_a_tail - (g_ch_a_site + 4u)));
+
+    emu_jit_get_stats(&before);
+
+    /* BIG does not fit until B and C have gone. */
+    g_ch_big_at = g_ch_end_visits + 1u;
+    (void)emu_jit_run(k_cpu, 16u, &retired, &k_stub_chain_ops);
+
+    emu_jit_get_stats(&after);
+
+    /*
+     * The scenario happened -- without these the rest is a statement
+     * about a compaction that was never caused this way. The first
+     * attempt at BIG overflowed, a compaction followed, and the second
+     * attempt fitted.
+     *
+     * Two compactions, and only the first is the one under test: BIG
+     * then fills the buffer to within the reserve, so bringing B back
+     * compacts again -- by the ordinary route, with the flag clear. A
+     * count of one here means B was never asked for, which is the bug.
+     */
+    CHECK_EQ(after.overflowed - before.overflowed, 1u);
+    CHECK_EQ(after.compactions - before.compactions, 2u);
+    CHECK_EQ(after.flushes - before.flushes, 0u);
+    CHECK_EQ(g_ch_built[3], 2u);
+
+    /* No hook on committed code ever saw the emitter's flag. */
+    CHECK(g_ch_patches != 0u);
+    CHECK_EQ(g_ch_patched_overflowed, 0u);
+
+    /*
+     * B was evicted, so A had to come back through the dispatcher for
+     * it. With the stale jump A instead runs straight into BIG's padding,
+     * which now occupies the bytes B had, and B is never asked for.
+     */
+    CHECK_EQ(g_ch_built[1], 2u);
+}
 #endif
 
 void test_jit(void)
@@ -380,6 +631,7 @@ void test_jit(void)
     test_declines_are_per_context();
 #if defined(EMU_HOST_JIT_X86_64)
     test_blocks_are_per_context();
+    test_overflow_compaction_unlinks();
 #endif
 
     /* Leave nothing behind for whatever runs next. */

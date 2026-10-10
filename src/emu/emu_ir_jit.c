@@ -54,7 +54,14 @@
  */
 static void ir_patch_link(uint8_t *site, const uint8_t *target)
 {
-    t2_patch_branch(site, target, false);
+    /*
+     * t2_write_branch, not t2_patch_branch: the site is in a committed
+     * block. The patcher declines while the emitter has overflowed, and
+     * an overflow is exactly when the framework compacts and calls this
+     * to unlink -- so the guarded form unlinked nothing, and the blocks
+     * were then moved with their jumps intact.
+     */
+    t2_write_branch(site, target, false);
     /*
      * The bytes just changed under an instruction side that may have
      * fetched them. Harmless on a part with no caches and not on a
@@ -78,7 +85,7 @@ static void ir_patch_link(uint8_t *site, const uint8_t *target)
  */
 static void ir_emit_jump(uint8_t *at, const uint8_t *target)
 {
-    t2_patch_branch(at, target, false);
+    t2_write_branch(at, target, false); /* committed code, as above */
     t2_sync_code(at, 4u);
 }
 #define EMU_IR_JIT_EMIT_JUMP ir_emit_jump
@@ -91,7 +98,13 @@ static void ir_emit_jump(uint8_t *at, const uint8_t *target)
 
 static void ir_patch_link(uint8_t *site, const uint8_t *target)
 {
-    x86_patch_rel32(site, target);
+    /*
+     * x86_write_rel32, not x86_patch_rel32: the site is in a committed
+     * block, and the patcher declines while the emitter has overflowed
+     * -- which is exactly when the framework compacts and calls this to
+     * unlink. See the Thumb-2 hook above; it was the same defect.
+     */
+    x86_write_rel32(site, target);
 }
 #define EMU_IR_JIT_PATCH_LINK ir_patch_link
 
@@ -102,13 +115,13 @@ static void ir_patch_link(uint8_t *site, const uint8_t *target)
  * jump requires.
  *
  * E9 rel32, and the displacement is relative to the next instruction --
- * which is (at + 1) + 4, exactly what x86_patch_rel32 computes from the
+ * which is (at + 1) + 4, exactly what x86_write_rel32 computes from the
  * slot it is given.
  */
 static void ir_emit_jump(uint8_t *at, const uint8_t *target)
 {
     at[0] = 0xE9u;
-    x86_patch_rel32(at + 1, target);
+    x86_write_rel32(at + 1, target);
 }
 #define EMU_IR_JIT_EMIT_JUMP ir_emit_jump
 #define EMU_IR_JIT_JUMP_BYTES 5u

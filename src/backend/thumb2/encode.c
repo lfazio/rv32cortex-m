@@ -602,13 +602,22 @@ uint8_t *t2_bcond_forward(uint32_t cond)
  * Guarded on overflow because `at` may be past the end of a buffer that
  * stopped accepting emissions -- the block is discarded either way, and
  * writing through the pointer would corrupt whatever follows.
+ *
+ * **For a branch in the block being emitted, and nothing else.** A
+ * branch in a block that has already been committed is t2_write_branch:
+ * the flag says nothing about that block, and a patch that quietly does
+ * not happen there leaves a jump aimed at code that is about to move.
  */
 void t2_patch_branch(uint8_t *at, const uint8_t *target, bool conditional)
 {
     if (at == NULL || emu_jit_overflowed()) {
         return;
     }
+    t2_write_branch(at, target, conditional);
+}
 
+void t2_write_branch(uint8_t *at, const uint8_t *target, bool conditional)
+{
     uint16_t *const hw = (uint16_t *)(void *)at;
     /* A branch reads pc as its own address plus 4. */
     const uint32_t imm = (uint32_t)(int32_t)(target - (at + 4)) >> 1;
