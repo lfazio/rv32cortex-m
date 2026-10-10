@@ -51,6 +51,11 @@ uint32_t ppc_mn_format(uint32_t id)
     return (id < PPC_M_COUNT) ? k_mn[id].fmt : PPC_F_RAW;
 }
 
+uint32_t ppc_mn_sem(uint32_t id)
+{
+    return (id < PPC_M_COUNT) ? k_mn[id].sem : PPC_S_ILLEGAL;
+}
+
 static void set(I *d, uint32_t id)
 {
     d->id = (uint16_t)id;

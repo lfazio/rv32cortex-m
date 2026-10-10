@@ -991,6 +991,11 @@ if(EMU_PLATFORM STREQUAL "host" AND EMU_GUEST_ARCH_PPC)
                    src/frontend/ppc/ppc_disasm.c
                    src/frontend/ppc/ppc_decode.c)
     target_include_directories(ppc-dis PRIVATE include)
+
+    # ppc-fpu: the embedded FP unit, an operation per line, for
+    # tests/ppc-check/efpu.py and its exact-arithmetic model.
+    add_executable(ppc-fpu tests/tools/ppc_fpu.c)
+    target_link_libraries(ppc-fpu PRIVATE emucore)
 endif()
 
 #

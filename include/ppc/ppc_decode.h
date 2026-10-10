@@ -593,6 +593,7 @@ void ppc_decode(uint32_t insn, unsigned len, bool vle, ppc_insn_t *out);
 
 const char *ppc_mn_name(uint32_t id);
 uint32_t ppc_mn_format(uint32_t id);
+uint32_t ppc_mn_sem(uint32_t id);
 
 #ifdef __cplusplus
 }

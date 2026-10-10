@@ -644,6 +644,19 @@ if(EMU_GUEST_ARCH_PPC)
         # 44 deliberate defects -- 34 in the translator, 10 in the
         # interpreter -- each fail it; see docs/frontend/ppc.md.
         #
+        #
+        # The embedded FP unit against exact rational arithmetic: every
+        # pair of special operands for the operations the manual gives
+        # tables for, then random ones, with each interrupt enabled in
+        # turn. 30 deliberate defects in ppc_fpu.c: 28 fail it and the
+        # other two cannot change an answer for single-precision
+        # operands.
+        #
+        add_test(NAME ppc-efpu-vs-exact
+                 COMMAND ${Python3_EXECUTABLE}
+                         "${CMAKE_SOURCE_DIR}/tests/ppc-check/efpu.py"
+                         --tool $<TARGET_FILE:ppc-fpu> --seed 1 --count 20000)
+        set_tests_properties(ppc-efpu-vs-exact PROPERTIES LABELS fast)
         if(EMU_JIT)
             add_test(NAME ppc-model-interp-jit
                      COMMAND ${Python3_EXECUTABLE}
