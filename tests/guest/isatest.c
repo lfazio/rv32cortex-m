@@ -1941,6 +1941,99 @@ static void smode_exec(void)
     LEAVE_SMODE();
 }
 
+/* ---- a trap from inside a translated block ------------------------ */
+
+/*
+ * A page of its own in .text, executable by M-mode and denied to S-mode.
+ *
+ * That split is what PMP gives for free: an *unlocked* entry binds below
+ * M only, so the page can be the machine trap vector and still be one
+ * S-mode must not fetch from. The stub is
+ *
+ *   +0  j +8                    translatable; the block the bug files
+ *   +4  nop                     under the wrong context
+ *   +8  csrrs x0, mscratch, x0  declined, so no block is ever built here
+ *   +12 j trap_handler
+ *
+ * and the page is padded on both sides so that nothing else shares the
+ * PMP region. `norvc`, because those offsets are the test's expectation:
+ * compressed, `j` and `nop` are two bytes each and the second
+ * instruction moves to +4.
+ */
+__asm__(".pushsection .text\n"
+        ".balign 4096\n"
+        ".option push\n"
+        ".option norvc\n"
+        "g_ctx_stub:\n"
+        "    j 1f\n"
+        "    nop\n"
+        "1:  csrrs x0, mscratch, x0\n"
+        "    j trap_handler\n"
+        ".option pop\n"
+        ".balign 4096\n"
+        ".popsection\n");
+extern const uint32_t g_ctx_stub[];
+
+static volatile uint32_t g_ctx_load_cause;
+static volatile uint32_t g_ctx_fetch_cause;
+static volatile uint32_t g_ctx_fetch_tval;
+
+/*
+ * The load faults inside a translated block -- it is in the body's first
+ * block, which has nothing to decline -- so the trap is raised by the
+ * JIT's load helper rather than by the interpreter. Then the jump: S-mode
+ * may not fetch the stub page, so the fetch must fault, *at the stub*.
+ *
+ * The causes are copied out before LEAVE_SMODE, whose ecall would
+ * overwrite them.
+ */
+static void smode_trap_in_block(void)
+{
+    (void)*(volatile const uint32_t *)&g_ctx_stub[64];
+    g_ctx_load_cause = g_last_cause;
+
+    call_may_fault((uint32_t)(uintptr_t)g_ctx_stub);
+    g_ctx_fetch_cause = g_last_cause;
+    g_ctx_fetch_tval = g_last_tval;
+
+    LEAVE_SMODE();
+}
+
+/*
+ * A trap taken inside a translated block must move the JIT's context.
+ *
+ * It did not. The context -- which carries the privilege -- was
+ * refreshed only on the interpreter fallback, so after the load above
+ * faulted the dispatch looked the machine-mode handler up under the
+ * *supervisor's* context, translated it there, and filed it there. The
+ * jump that follows then found that block and ran it in S-mode, from a
+ * page S-mode may not execute: the fetch fault arrived at +8, where the
+ * translator had stopped, instead of at +0.
+ *
+ * So the check that names the mechanism is the tval. A cause of 1 alone
+ * would pass against the bug.
+ */
+static void test_jit_trap_context(void)
+{
+    const uint32_t stub = (uint32_t)(uintptr_t)g_ctx_stub;
+
+    csr_write("pmpaddr8", (stub >> 2) | 0x1FFu); /* NAPOT, 4 KiB */
+    csr_write("pmpcfg2", 0x18u); /* entry 8: NAPOT, nothing, unlocked */
+    check("jit-ctx-pmp", csr_read("pmpcfg2") & 0xFFu, 0x18u);
+
+    csr_write("medeleg", 0u);
+    csr_write("mtvec", stub);
+
+    enter_smode(smode_trap_in_block);
+
+    install_trap_handler();
+    csr_write("pmpcfg2", 0u);
+
+    check("jit-ctx-load-cause", g_ctx_load_cause, 5u);
+    check("jit-ctx-fetch-cause", g_ctx_fetch_cause, 1u);
+    check("jit-ctx-fetch-tval", g_ctx_fetch_tval, stub);
+}
+
 /* ---- the M-mode driver --------------------------------------------- */
 
 static void test_smode(void)
@@ -2161,6 +2254,7 @@ int main(void)
     test_pmp_exec();
     test_smode();
     test_sv32();
+    test_jit_trap_context();
     test_aplic();
 #if defined(__riscv_zacas)
     test_zacas();

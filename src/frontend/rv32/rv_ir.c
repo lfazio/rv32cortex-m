@@ -602,7 +602,7 @@ static bool rv_ir_fp_fallback(emu_ir_block_t *b, uint32_t pc, uint32_t insn)
 /*
  * `cpu` is read only for the state the block is *specialised* on -- the
  * rounding mode and whether the FP unit is on -- and both are carried in
- * rv_ir_ctx_key, so a block is never entered once either differs. Reading
+ * rv_jit_ctx_key, so a block is never entered once either differs. Reading
  * anything else here would be a staleness bug; that is the rule, and
  * this file has one place it applies.
  */
@@ -930,7 +930,7 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
      *
      * Everything here is gated on mstatus.FS being on *at translation*,
      * and that is only half a guard on its own -- a block outlives the
-     * check. The other half is rv_ir_ctx_key, which carries FS
+     * check. The other half is rv_jit_ctx_key, which carries FS
      * off-ness, so a block that assumed the unit was on is never entered
      * while it is off.
      *
@@ -1000,7 +1000,7 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
          *   FNMADD  -a*b - c
          *
          * Only the rounding mode has to be checked here: the block is
-         * specialised on frm, which rv_ir_ctx_key already carries, and
+         * specialised on frm, which rv_jit_ctx_key already carries, and
          * RMM has no ARM equivalent so it stays on the helper.
          */
         if (h_fs_off(cpu)) {
@@ -1011,7 +1011,7 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
          * The rounding mode, resolved here as everywhere else: f3 == 7
          * means "dynamic", which the IR resolves at *translation* so a
          * backend can decline a mode it lacks. The block is specialised
-         * on frm and rv_ir_ctx_key carries that, which is what makes
+         * on frm and rv_jit_ctx_key carries that, which is what makes
          * resolving it here sound.
          */
         const uint32_t rm =
@@ -1144,7 +1144,7 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
              * deliberate arrangement: it lets a backend decline a mode
              * it has no encoding for -- RMM, which neither host has --
              * instead of silently rounding some other way. frm is in
-             * rv_ir_ctx_key, so a block specialised on it is never entered
+             * rv_jit_ctx_key, so a block specialised on it is never entered
              * under another. Modes 5 and 6 are reserved and 7 is
              * only meaningful in the instruction, so anything that is
              * not one of the five real ones falls through to the helper,
@@ -1406,74 +1406,13 @@ uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
 /* ------------------------------------------------------------------ */
 
 /*
- * What a block is *for*: the address space, the privilege, and the state
- * of the FP unit.
- *
- * Each decides what a block at a given address may legally do, and none
- * of them invalidates anything when it changes -- the kernel's blocks are
- * still the kernel's after a switch to a user process, and a block built
- * while the FP unit was on is still right whenever it is on again. So
- * they are part of a block's identity rather than part of the
- * generation, and blocks from every context coexist.
- *
- * The low word is satp with the privilege in 21:20. MODE is bit 31, ASID
- * is 30:22, and this implementation's PPN is 19:0, because the field is
- * WARL and its width follows a 32-bit physical address space -- so 21:20
- * are free and the packing is exact.
- *
- * The high word is the FP unit, and it is here because the low word was
- * full:
- *
- *   FS     an FP instruction is legal only while the unit is on, and the
- *          translator checks that once. A block built while FS was on
- *          must never run while it is off, or three instructions that
- *          must raise illegal-instruction run silently -- which has
- *          happened here before.
- *   frm    the IR resolves a "dynamic" rounding mode at translation, on
- *          purpose, so that a backend without an encoding for one --
- *          neither x86 nor ARM has ties-away -- can decline the block
- *          rather than round differently.
- *
- * **Both used to be in the generation, and that was the udev stall.**
- * Linux clears sstatus.FS on every trap into the kernel and restores it
- * at the return, so every system call and every interrupt taken from a
- * process that had touched a float flipped FS off and on -- and each
- * flip flushed the whole cache. Booting a root filesystem, udev forks
- * processes that all do: 21,949 of 22,126 flushes were FS, the cache
- * held a median of 438 blocks against ~7,000 while the kernel booted,
- * and every other block entry paid a translation. Correct throughout,
- * which is why nothing failed.
- *
- * FS is reduced to *off or not*, not carried as the two-bit field. An FP
- * operation moves it Initial or Clean to Dirty as a side effect, so
- * keeping the field would give every block a second copy for no reason.
- * The accrued flags share fcsr with frm and are not specialised on, so
- * they are not here either.
- */
-static uint64_t rv_ir_ctx_key(const rv_hart_t *h)
-{
-#if RV_EXT_SV32
-    uint64_t key = h->satp | ((uint32_t)h->priv << 20);
-#else
-    uint64_t key = (uint32_t)h->priv;
-#endif
-#if RV_EXT_F
-    const uint32_t fs_off = ((h->mstatus & MSTATUS_FS_MASK) == 0u) ? 1u : 0u;
-    const uint32_t frm = (h->fcsr >> 5) & 7u;
-
-    key |= (uint64_t)((fs_off << 3) | frm) << 32;
-#endif
-    return key;
-}
-
-/*
  * What, when it changes, makes every existing block possibly wrong.
  *
  * The framework compares this on each block entry and flushes the cache
  * when it moves, so it has to change whenever something a block baked in
  * stops being true -- and must *not* change for anything else, because
  * every spurious change throws away the whole cache. That second half is
- * the one that went wrong: see rv_ir_ctx_key for the FP state that used
+ * the one that went wrong: see rv_jit_ctx_key for the FP state that used
  * to be here.
  *
  * What is left is the mappings and the PMP configuration, both of which
@@ -1508,12 +1447,13 @@ static void rv_jit_after_interp(emu_cpu_t *cpu)
 
     h->jit_gen = rv_ir_gen_key(h);
     /*
-     * Privilege moves on a trap or an xRET, both of which the
-     * translator declines, so the interpreter fallback is the one place
-     * it can change -- the same argument as for frm and mstatus.FS,
-     * which share the context with it.
+     * Privilege moves on an xRET, which the translator declines, and on
+     * a trap -- which is *not* always an instruction this fallback ran:
+     * rv_ir_load raises one from inside a block and the interrupt hook
+     * between blocks. So rv_hart_trap refreshes the context too, and
+     * this covers everything else, frm and mstatus.FS included.
      */
-    h->jit_ctx = rv_ir_ctx_key(h);
+    h->jit_ctx = rv_jit_ctx_key(h);
 }
 
 static void rv_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
@@ -1544,7 +1484,7 @@ static void rv_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
      * and useless: every trap and every return would flush the cache,
      * which under Linux is thousands of times a second.
      */
-    h->jit_ctx = rv_ir_ctx_key(h);
+    h->jit_ctx = rv_jit_ctx_key(h);
 
     out->pc = &h->pc;
     out->state = &h->state;

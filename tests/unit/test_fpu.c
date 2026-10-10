@@ -334,6 +334,41 @@ static void test_jit_generation_key(void)
     CHECK(gen_key() != gen);
     CHECK_EQ64(ctx_key(), clean);
 }
+#if RV_EXT_U
+/*
+ * A trap moves the privilege, so it moves the context -- including a trap
+ * raised from *inside* a translated block.
+ *
+ * The context used to be refreshed only on the interpreter fallback, on
+ * the argument that privilege "moves on a trap or an xRET, both of which
+ * the translator declines". ECALL is declined; a load that faults is not.
+ * rv_ir_load calls rv_hart_trap from inside the block, and the interrupt
+ * hook does the same between blocks, so the dispatch looked the handler
+ * up under the context it had trapped *from* and filed whatever it
+ * translated there under that context -- a machine-mode block that
+ * user mode could then branch to and run.
+ *
+ * Asserted on rv_hart_trap itself, because both of those reach it and
+ * nothing else changes the privilege without passing the interpreter.
+ */
+static void test_jit_context_follows_a_trap(void)
+{
+    fp_reset();
+    g_hart.priv = RV_PRIV_U;
+    g_hart.medeleg = 0u; /* to M, so the privilege really moves */
+
+    const uint64_t from_u = ctx_key();
+
+    rv_hart_trap(&g_hart, RV_EXC_LOAD_ACCESS_FAULT, 0x1000u);
+
+    const uint64_t after_trap = g_hart.jit_ctx;
+    const uint64_t fresh = ctx_key(); /* what the fallback would derive */
+
+    CHECK(fresh != from_u); /* or this test is not about anything */
+    CHECK_EQ64(after_trap, fresh);
+}
+#endif
+
 #endif /* EMU_HAVE_JIT -- rv_ir_frontend only exists with one */
 
 void test_fpu(void)
@@ -496,6 +531,9 @@ void test_fpu(void)
     test_reset_clears_fetch_guard();
 #if EMU_HAVE_JIT
     test_jit_generation_key();
+#if RV_EXT_U
+    test_jit_context_follows_a_trap();
+#endif
 #endif
 }
 

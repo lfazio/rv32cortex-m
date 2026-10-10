@@ -276,12 +276,13 @@ if(TARGET guest-isatest AND EMU_GUEST_ARCH_RV32)
     # A translated block running in S-mode, under Sv32 and with a PMP
     # entry armed -- which nothing else here covers.
     #
-    # isatest exercises Sv32 and PMP on the *interpreter*: it arms a PMP
-    # entry early, and from then on fetch_guard sends everything to the
-    # interpreter, so the JIT's behaviour under either is untested by it.
-    # This guest runs a memory-bound kernel below M-mode instead, which
-    # is the configuration every operating system uses and the one the
-    # inlined memory path declines.
+    # isatest used to exercise Sv32 and PMP on the interpreter only: it
+    # arms a PMP entry early, and `blocked` pointed at fetch_guard. It
+    # points at Sdtrig alone now, and isatest --jit interprets 436 of
+    # 45,799 instructions -- its jit-ctx-* checks depend on that. This
+    # guest is still the one that runs a memory-bound kernel below
+    # M-mode, which is the configuration every operating system uses
+    # and the one the inlined memory path declines.
     #
     # It asserts SV32BENCH-END, the line only a completed run prints --
     # not the absence of a failure. A trap in S-mode prints

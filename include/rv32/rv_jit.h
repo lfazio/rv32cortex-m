@@ -36,6 +36,7 @@
 
 #include "rv_types.h"
 #include "rv_config.h"
+#include "rv_hart.h"
 #include "emu/emu_backend.h"
 
 #ifdef __cplusplus
@@ -104,6 +105,76 @@ void rv_jit_invalidate_page(uint32_t vaddr);
  */
 
 extern const emu_backend_t rv_backend_jit;
+
+/*
+ * What a block is *for*: the address space, the privilege, and the state
+ * of the FP unit.
+ *
+ * Each decides what a block at a given address may legally do, and none
+ * of them invalidates anything when it changes -- the kernel's blocks are
+ * still the kernel's after a switch to a user process, and a block built
+ * while the FP unit was on is still right whenever it is on again. So
+ * they are part of a block's identity rather than part of the
+ * generation, and blocks from every context coexist.
+ *
+ * The low word is satp with the privilege in 21:20. MODE is bit 31, ASID
+ * is 30:22, and this implementation's PPN is 19:0, because the field is
+ * WARL and its width follows a 32-bit physical address space -- so 21:20
+ * are free and the packing is exact.
+ *
+ * The high word is the FP unit, and it is here because the low word was
+ * full:
+ *
+ *   FS     an FP instruction is legal only while the unit is on, and the
+ *          translator checks that once. A block built while FS was on
+ *          must never run while it is off, or three instructions that
+ *          must raise illegal-instruction run silently -- which has
+ *          happened here before.
+ *   frm    the IR resolves a "dynamic" rounding mode at translation, on
+ *          purpose, so that a backend without an encoding for one --
+ *          neither x86 nor ARM has ties-away -- can decline the block
+ *          rather than round differently.
+ *
+ * **Both used to be in the generation, and that was the udev stall.**
+ * Linux clears sstatus.FS on every trap into the kernel and restores it
+ * at the return, so every system call and every interrupt taken from a
+ * process that had touched a float flipped FS off and on -- and each
+ * flip flushed the whole cache. Booting a root filesystem, udev forks
+ * processes that all do: 21,949 of 22,126 flushes were FS, the cache
+ * held a median of 438 blocks against ~7,000 while the kernel booted,
+ * and every other block entry paid a translation. Correct throughout,
+ * which is why nothing failed.
+ *
+ * FS is reduced to *off or not*, not carried as the two-bit field. An FP
+ * operation moves it Initial or Clean to Dirty as a side effect, so
+ * keeping the field would give every block a second copy for no reason.
+ * The accrued flags share fcsr with frm and are not specialised on, so
+ * they are not here either.
+ *
+ * **In this header so that rv_hart_trap can call it.** It used to be
+ * static in rv_ir.c and refreshed only on the interpreter fallback, on
+ * the argument that every privilege change is an instruction the
+ * translator declines. A faulting load is not: rv_ir_load raises the
+ * trap from inside the block, the interrupt hook raises one between
+ * blocks, and in both cases the dispatch then looked the handler up
+ * under the context it had trapped *from*.
+ */
+static inline uint64_t rv_jit_ctx_key(const rv_hart_t *h)
+{
+#if RV_EXT_SV32
+    uint64_t key = h->satp | ((uint32_t)h->priv << 20);
+#else
+    uint64_t key = (uint32_t)h->priv;
+#endif
+#if RV_EXT_F
+    const uint32_t fs_off = ((h->mstatus & MSTATUS_FS_MASK) == 0u) ? 1u : 0u;
+    const uint32_t frm = (h->fcsr >> 5) & 7u;
+
+    key |= (uint64_t)((fs_off << 3) | frm) << 32;
+#endif
+    return key;
+}
+
 
 #endif /* EMU_HAVE_JIT */
 

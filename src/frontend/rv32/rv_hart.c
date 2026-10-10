@@ -4,6 +4,7 @@
  */
 
 #include "rv32/rv_hart.h"
+#include "rv32/rv_jit.h"
 
 #include <string.h>
 
@@ -279,6 +280,17 @@ void rv_hart_trap(rv_hart_t *h, uint32_t cause, uint32_t tval)
 #if RV_EXT_SV32
     rv_mmu_refresh(h);
 #endif
+#endif
+
+#if EMU_HAVE_JIT
+    /*
+     * The JIT's context, for the same reason: it carries the privilege.
+     * The interpreter fallback re-derives it after every instruction, but
+     * a trap is not always an instruction the fallback ran -- rv_ir_load
+     * raises one from inside a translated block and the interrupt hook
+     * between blocks -- and the next lookup is for the handler.
+     */
+    h->jit_ctx = rv_jit_ctx_key(h);
 #endif
 
     uint32_t base = tvec & ~MTVEC_MODE_MASK;

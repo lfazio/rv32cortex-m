@@ -130,7 +130,7 @@ typedef struct rv_hart {
      * What a JIT block was translated *for*: satp, the privilege, and
      * the FP unit's state. Part of a block's identity rather than
      * something that invalidates it -- see emu_jit_hot_t::context and
-     * rv_ir_ctx_key.
+     * rv_jit_ctx_key.
      */
     uint64_t jit_ctx;
     /*
