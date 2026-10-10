@@ -8,8 +8,11 @@
  *
  * Nothing here is architecture-specific except the e_machine check, and
  * that is the caller's to make: the frontend declares the machine number
- * it accepts and the loader reports what it found. RV32 and RH850 images
- * are both little-endian ELF32 with the same program header layout.
+ * it accepts and the loader reports what it found. RV32, RH850 and ARM
+ * images are little-endian ELF32 and PowerPC ones big-endian, with the
+ * same program header layout: the file says which in EI_DATA, and that
+ * decides how its own header fields are read. It says nothing about the
+ * guest's memory -- the segments are bytes, copied as they lie.
  *
  * The loader is deliberately strict. A malformed image is a bug in the
  * build, not something to recover from, so every field that matters is
@@ -64,15 +67,21 @@ typedef struct {
  * the image is caller-supplied and need not satisfy the alignment these
  * structures require.
  */
-static uint16_t rd16(const uint8_t *p)
+#define ELFDATA2LSB 1
+#define ELFDATA2MSB 2
+
+static uint16_t rd16(const uint8_t *p, bool be)
 {
-    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+    return be ? (uint16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1])
+              : (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
 }
 
-static uint32_t rd32(const uint8_t *p)
+static uint32_t rd32(const uint8_t *p, bool be)
 {
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
-           ((uint32_t)p[3] << 24);
+    return be ? (((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+                 ((uint32_t)p[2] << 8) | (uint32_t)p[3])
+              : ((uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+                 ((uint32_t)p[3] << 24));
 }
 
 bool emu_elf_is_elf(const void *image, size_t len)
@@ -87,7 +96,7 @@ uint16_t emu_elf_machine(const void *image, size_t len)
 {
     const uint8_t *const b = (const uint8_t *)image;
 
-    return (len >= 20u) ? rd16(b + 18) : 0u;
+    return (len >= 20u) ? rd16(b + 18, b[5] == ELFDATA2MSB) : 0u;
 }
 
 /*
@@ -113,16 +122,18 @@ static const char *elf_walk(emu_bus_t *bus, const void *image, size_t len,
     if (img[4] != 1) {
         return "not ELF32";
     }
-    if (img[5] != 1) {
-        return "not little-endian";
+    if (img[5] != ELFDATA2LSB && img[5] != ELFDATA2MSB) {
+        return "neither little- nor big-endian";
     }
 
-    const uint16_t e_type = rd16(img + 16);
-    const uint16_t e_machine = rd16(img + 18);
-    const uint32_t e_entry = rd32(img + 24);
-    const uint32_t e_phoff = rd32(img + 28);
-    const uint16_t e_phentsz = rd16(img + 42);
-    const uint16_t e_phnum = rd16(img + 44);
+    const bool be = img[5] == ELFDATA2MSB;
+
+    const uint16_t e_type = rd16(img + 16, be);
+    const uint16_t e_machine = rd16(img + 18, be);
+    const uint32_t e_entry = rd32(img + 24, be);
+    const uint32_t e_phoff = rd32(img + 28, be);
+    const uint16_t e_phentsz = rd16(img + 42, be);
+    const uint16_t e_phnum = rd16(img + 44, be);
 
     if (e_type != ET_EXEC) {
         return "not a static executable (ET_EXEC)";
@@ -153,15 +164,15 @@ static const char *elf_walk(emu_bus_t *bus, const void *image, size_t len,
     for (uint16_t i = 0; i < e_phnum; i++) {
         const uint8_t *ph = img + e_phoff + (size_t)i * e_phentsz;
 
-        if (rd32(ph + 0) != PT_LOAD) {
+        if (rd32(ph + 0, be) != PT_LOAD) {
             continue;
         }
 
-        const uint32_t p_offset = rd32(ph + 4);
-        const uint32_t p_vaddr = rd32(ph + 8);
-        const uint32_t p_paddr = rd32(ph + 12);
-        const uint32_t p_filesz = rd32(ph + 16);
-        const uint32_t p_memsz = rd32(ph + 20);
+        const uint32_t p_offset = rd32(ph + 4, be);
+        const uint32_t p_vaddr = rd32(ph + 8, be);
+        const uint32_t p_paddr = rd32(ph + 12, be);
+        const uint32_t p_filesz = rd32(ph + 16, be);
+        const uint32_t p_memsz = rd32(ph + 20, be);
 
         if (p_filesz > p_memsz) {
             return "segment filesz exceeds memsz";

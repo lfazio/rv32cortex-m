@@ -120,6 +120,25 @@ typedef struct ppc_cpu {
     uint32_t decar;
 
     /*
+     * What the two count, which HID0 chooses (table 2-7): nothing until
+     * TBEN is set, then either the processor clock or the p_tbclk
+     * input.
+     *
+     * The processor clock is one tick per instruction here, exactly:
+     * `cycles` is the count and `clk_synced` how much of it the timers
+     * have been given. Kept lazily -- handed over when something looks
+     * at a timer or when the run loop reaches the instruction the
+     * decrementer expires on -- so counting costs the interpreter
+     * nothing per instruction and a decrementer interrupt still lands
+     * on the exact instruction, the same one every run.
+     *
+     * p_tbclk is the platform's time, arriving through set_time;
+     * `tbclk_last` is where it had got to.
+     */
+    uint64_t clk_synced;
+    uint64_t tbclk_last;
+
+    /*
      * The external interrupt input, level. Set by the platform through
      * set_irq and cleared by the guest's interrupt controller -- there
      * is none here, so it is cleared when the interrupt is taken, which
@@ -225,7 +244,21 @@ uint32_t ppc_spr_write(ppc_cpu_t *c, uint32_t spr, uint32_t v);
  * corners.
  */
 void ppc_cpu_advance(ppc_cpu_t *c, uint32_t ticks);
+
+/* The p_tbclk input: the platform's time. Counted only while HID0 has
+ * the time base enabled and selects it. */
 void ppc_cpu_set_time(ppc_cpu_t *c, uint64_t now);
+
+/*
+ * The processor clock: give the timers the instructions executed since
+ * they were last given any. Called before anything reads or writes a
+ * timer, and by the run loop.
+ */
+void ppc_cpu_sync_clock(ppc_cpu_t *c);
+
+/* Instructions until the decrementer expires on the processor clock,
+ * or UINT32_MAX when that is not what will happen next. */
+uint32_t ppc_cpu_clock_until(const ppc_cpu_t *c);
 
 /* The external input, level. */
 void ppc_cpu_set_ext(ppc_cpu_t *c, bool level);

@@ -189,6 +189,13 @@ extern "C" {
 
 /* HID0[ICR], interrupt inputs clear the reservation (bit 14). */
 #define PPC_HID0_ICR (1u << 17)
+/*
+ * HID0[TBEN] and HID0[SEL_TBCLK] (bits 17 and 18): whether the time
+ * base and the decrementer count at all, and what they count -- the
+ * processor clock, or the p_tbclk input.
+ */
+#define PPC_HID0_TBEN (1u << 14)
+#define PPC_HID0_SEL_TBCLK (1u << 13)
 /* L1CSR0[DCE], the data cache enable (bit 31). */
 #define PPC_L1CSR0_DCE 1u
 

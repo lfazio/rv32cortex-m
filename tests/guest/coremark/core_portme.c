@@ -59,6 +59,14 @@ static void clock_start(void)
 {
     systick_clock_start();
 }
+#elif defined(__powerpc__)
+/* An e200z7 guest reads the time base; see the header. */
+#include "ppc_clock.h"
+
+#define GETMYTIME(_t)        (*_t = ppc_clock_now())
+static void clock_start(void)
+{
+}
 #else
 #define CLINT_MTIME_LO (*(volatile ee_u32 *)0x0200BFF8u)
 #define GETMYTIME(_t)        (*_t = CLINT_MTIME_LO)

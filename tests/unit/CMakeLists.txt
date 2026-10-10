@@ -563,3 +563,66 @@ if(TARGET guest-ppc-isatest AND EMU_GUEST_ARCH_PPC)
         LABELS fast
         PASS_REGULAR_EXPRESSION "PPC-ISATEST-END")
 endif()
+
+#
+# The compiled e200z7 guests: classic Book E, as ELF, because that is
+# where the image says which of the core's two encodings it is in.
+#
+# Each expression is something only a completed run prints. For alu that
+# includes the *number* of checks, so a run that skipped half of them is
+# not a pass, and "ticked", so the decrementer interrupt really did land
+# in the middle of it.
+#
+if(EMU_GUEST_ARCH_PPC)
+    foreach(_g "alu:PPC-ALU-END checks=00000044 fails=00000000 ticked"
+               "coremark:Correct operation validated"
+               "crypto:failures 0x00000000")
+        string(FIND "${_g}" ":" _at)
+        string(SUBSTRING "${_g}" 0 ${_at} _name)
+        math(EXPR _at "${_at} + 1")
+        string(SUBSTRING "${_g}" ${_at} -1 _want)
+        if(TARGET guest-ppc-${_name})
+            add_test(NAME guest-ppc-${_name}
+                     COMMAND emu-host --max-insn 400000000
+                             "${CMAKE_BINARY_DIR}/guest/ppc-${_name}.elf")
+            set_tests_properties(guest-ppc-${_name} PROPERTIES
+                LABELS fast
+                PASS_REGULAR_EXPRESSION "${_want}")
+        endif()
+    endforeach()
+
+    #
+    # The decoder and the disassembler against binutils: the 16-bit VLE
+    # space exhaustively and random 32-bit words in both encodings, and
+    # then every instruction the compiler put in the guests above, none
+    # of which may be one this core does not have. The full sweeps
+    # (--sets vle32,booke: four million encodings, a minute) are run by
+    # hand; see tests/ppc-check/check.py.
+    #
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    find_program(PPC_CHECK_AS NAMES powerpc-linux-gnu-as powerpc64-linux-gnu-as)
+    #
+    # Not `if(TARGET ppc-dis)`: that target is defined after this
+    # directory is read, and if(TARGET) only sees what already exists --
+    # the answer would always be no, and nothing would say so. The
+    # generator expression below is resolved later, when it does exist.
+    #
+    if(Python3_FOUND AND PPC_CHECK_AS AND EMU_PLATFORM STREQUAL "host")
+        add_test(NAME ppc-decode-vs-binutils
+                 COMMAND ${Python3_EXECUTABLE}
+                         "${CMAKE_SOURCE_DIR}/tests/ppc-check/check.py"
+                         --dis $<TARGET_FILE:ppc-dis> --sets vle16,random)
+        set_tests_properties(ppc-decode-vs-binutils PROPERTIES LABELS fast)
+        if(TARGET guest-ppc-alu AND TARGET guest-ppc-coremark AND
+           TARGET guest-ppc-crypto)
+            add_test(NAME ppc-decode-compiled
+                     COMMAND ${Python3_EXECUTABLE}
+                             "${CMAKE_SOURCE_DIR}/tests/ppc-check/check.py"
+                             --dis $<TARGET_FILE:ppc-dis>
+                             --elf "${CMAKE_BINARY_DIR}/guest/ppc-alu.elf"
+                                   "${CMAKE_BINARY_DIR}/guest/ppc-coremark.elf"
+                                   "${CMAKE_BINARY_DIR}/guest/ppc-crypto.elf")
+            set_tests_properties(ppc-decode-compiled PROPERTIES LABELS fast)
+        endif()
+    endif()
+endif()

@@ -3,6 +3,7 @@
 """check.py - the e200z7 decoder and disassembler, against binutils.
 
     tests/ppc-check/check.py [--dis build/x/ppc-dis] [--sets vle16,vle32,booke,random]
+    tests/ppc-check/check.py --elf build/x/guest/ppc-coremark.elf ...
 
 Two questions, asked of the same encodings:
 
@@ -20,6 +21,11 @@ Two questions, asked of the same encodings:
                decoder does not is an instruction this core would refuse;
                the reverse is one it would run that binutils has never
                heard of. Both are reported.
+
+With --elf the encodings are a compiled program's: every word of its
+executable sections, which must all be instructions this core has. That
+is the question the sweeps cannot ask -- not "is this encoding decoded
+correctly" but "does the decoder have everything a compiler emits".
 
 The 16-bit VLE space is checked exhaustively. The 32-bit spaces are swept
 by primary opcode with the operand fields held at a few patterns, plus
@@ -334,16 +340,63 @@ def gen(sets, seed):
     return out
 
 
+SHF_EXECINSTR = 0x4
+SHF_PPC_VLE = 0x10000000
+
+
+def elf_words(path):
+    """The distinct instruction words of a Book E ELF's code sections."""
+    d = open(path, "rb").read()
+    if d[:4] != b"\x7fELF" or d[4] != 1 or d[5] != 2:
+        raise SystemExit("%s: not a big-endian ELF32" % path)
+    shoff = int.from_bytes(d[32:36], "big")
+    shentsize = int.from_bytes(d[46:48], "big")
+    shnum = int.from_bytes(d[48:50], "big")
+    seen = collections.OrderedDict()
+    for i in range(shnum):
+        sh = d[shoff + i * shentsize:shoff + (i + 1) * shentsize]
+        flags = int.from_bytes(sh[8:12], "big")
+        off = int.from_bytes(sh[16:20], "big")
+        size = int.from_bytes(sh[20:24], "big")
+        if not flags & SHF_EXECINSTR or int.from_bytes(sh[4:8], "big") != 1:
+            continue
+        if flags & SHF_PPC_VLE:
+            raise SystemExit("%s: a VLE section; instruction boundaries "
+                             "are not recoverable from the bytes" % path)
+        for o in range(off, off + size - 3, 4):
+            seen[int.from_bytes(d[o:o + 4], "big")] = True
+    return [(w, 4, "b") for w in seen]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dis", default=os.path.join(ROOT, "build", "ppcf",
                                                   "ppc-dis"))
-    ap.add_argument("--sets", default="vle16,vle32,booke,random")
+    ap.add_argument("--sets", default=None)
+    ap.add_argument("--elf", nargs="*", default=[])
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("-v", "--verbose", type=int, default=6)
     a = ap.parse_args()
     failed = False
+    if a.sets is None:
+        a.sets = "" if a.elf else "vle16,vle32,booke,random"
     with tempfile.TemporaryDirectory() as tmp:
+        for path in a.elf:
+            items = elf_words(path)
+            res = dis(a.dis, [(w, n, m, 0) for w, n, m in items])
+            unknown = [w for (w, n, m), (t, f) in zip(items, res)
+                       if t.startswith(".")]
+            name = os.path.basename(path)
+            if unknown:
+                failed = True
+                print("%s: %d of %d distinct words are not instructions "
+                      "of this core:" % (name, len(unknown), len(items)))
+                for w in unknown[:a.verbose]:
+                    print("    %08x" % w)
+            if not items:
+                failed = True
+                print("%s: no code found" % name)
+            failed |= check(name, items, a.dis, tmp, a.verbose)
         for name, items in gen(a.sets.split(","), a.seed).items():
             for mode in ("v", "b"):
                 sel = [it for it in items if it[2] == mode]

@@ -998,6 +998,21 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
      * and for nothing else; with none pending, this slice is empty.
      */
     if (EMU_UNLIKELY(c->state == EMU_STATE_WFI)) {
+        /*
+         * The processor clock does not stop for a wait, and here it
+         * only moves when instructions do -- so a core waiting on its
+         * own decrementer is carried straight to the expiry. Without
+         * this it would wait for ever on a clock that waits for it.
+         */
+        if (ppc_cpu_pending_irq(c) < 0) {
+            const uint32_t until = ppc_cpu_clock_until(c);
+
+            ppc_cpu_sync_clock(c);
+            if (until != 0xFFFFFFFFu) {
+                c->cycles += until;
+                ppc_cpu_sync_clock(c);
+            }
+        }
         if (ppc_cpu_pending_irq(c) < 0) {
             if (retired != NULL) {
                 *retired = 0u;
@@ -1009,6 +1024,24 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
     }
 
     while (done < budget) {
+        /*
+         * The stretch up to the next thing the processor clock will do.
+         * The timers are brought up to date, and the run is cut at the
+         * instruction the decrementer expires on, so the interrupt is
+         * taken exactly there without a test per instruction: the inner
+         * loop's bound *is* the test.
+         */
+        uint32_t limit;
+
+        ppc_cpu_sync_clock(c);
+        {
+            const uint32_t left = budget - done;
+            const uint32_t until = ppc_cpu_clock_until(c);
+
+            limit = done + ((until < left) ? until : left);
+        }
+
+    while (done < limit) {
         uint32_t pc;
         uint16_t w0;
         uint32_t insn;
@@ -1023,7 +1056,7 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
          */
         if (EMU_UNLIKELY(c->state != EMU_STATE_RUNNING)) {
             reason = (c->state == EMU_STATE_HALTED) ? EMU_RUN_HALTED : EMU_RUN_WFI;
-            break;
+            goto out;
         }
         if (EMU_UNLIKELY(c->irq_dirty)) {
             /*
@@ -1036,8 +1069,9 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
             if (ppc_cpu_take_irq(c)) {
                 done++;
                 c->cycles++;
-                continue;
             }
+            /* Whatever dirtied it may have moved the expiry: recompute. */
+            break;
         }
 
         pc = c->pc;
@@ -1086,7 +1120,10 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
         done++;
         c->cycles++;
     }
+    }
 
+out:
+    ppc_cpu_sync_clock(c);
     if (retired != NULL) {
         *retired = done;
     }

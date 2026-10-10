@@ -113,6 +113,65 @@ if(EMU_GUEST_ARCH_ARMV7M)
     endif()
 endif()
 
+#
+# PowerPC, compiled. Before the early return for the same reason as the
+# ARMv7-M guests above, and *classic Book E*, because GCC has no VLE
+# code generator -- so these are the only guests that exercise that half
+# of the e200z7 decoder, and the assembly guest in ppc/ is the only one
+# that exercises VLE.
+#
+# They are run as ELF. The frontend picks its decoder from the image's
+# PF_PPC_VLE segment flag, and a raw binary has nowhere to carry one.
+#
+# -mcpu=8540 is the nearest thing GCC has to an e200: Book E, isel, no
+# classic FPU with -msoft-float, and none of the POWER-only forms
+# (mfocrf, popcntb) that the e200 decodes as illegal. -msdata=none keeps
+# r2 and r13 out of it, so crt0 has no small-data bases to set up.
+#
+# There is no 32-bit libgcc beside a powerpc64 cross compiler, so a
+# guest cannot use 64-bit division or soft-float: Dhrystone, whose
+# report is in doubles, is not built for this frontend.
+#
+if(EMU_GUEST_ARCH_PPC)
+    find_program(PPC_GCC NAMES powerpc-linux-gnu-gcc powerpc64-linux-gnu-gcc
+                               powerpc-eabi-gcc)
+    if(PPC_GCC)
+        set(_ppc_dir "${CMAKE_BINARY_DIR}/guest")
+        set(_ppc_src "${CMAKE_CURRENT_SOURCE_DIR}/ppc")
+        file(MAKE_DIRECTORY "${_ppc_dir}")
+
+        function(add_ppc_guest name)
+            cmake_parse_arguments(A "" "OPT" "SOURCES;EXTRA_SOURCES;FLAGS" ${ARGN})
+            set(srcs "${_ppc_src}/crt0.S")
+            foreach(f IN LISTS A_SOURCES)
+                list(APPEND srcs "${_ppc_src}/${f}")
+            endforeach()
+            list(APPEND srcs ${A_EXTRA_SOURCES})
+            if(NOT A_OPT)
+                set(A_OPT "-O1")
+            endif()
+            add_custom_command(
+                OUTPUT "${_ppc_dir}/ppc-${name}.elf"
+                COMMAND ${PPC_GCC} -m32 -mbig-endian -mcpu=8540 -msoft-float
+                        -msdata=none ${A_OPT} -g
+                        -ffreestanding -nostdlib -fno-builtin -fno-common
+                        -fno-pic -static -Wl,--build-id=none
+                        -Wall -Wextra -I "${_ppc_src}" ${A_FLAGS}
+                        -T "${_ppc_src}/cguest.ld" ${srcs}
+                        -o "${_ppc_dir}/ppc-${name}.elf"
+                DEPENDS ${srcs} "${_ppc_src}/cguest.ld" "${_ppc_src}/ppc_clock.h"
+                COMMENT "Building PowerPC guest ppc-${name}.elf"
+                VERBATIM)
+            add_custom_target(guest-ppc-${name} ALL
+                              DEPENDS "${_ppc_dir}/ppc-${name}.elf")
+        endfunction()
+
+        add_ppc_guest(alu SOURCES alu.c)
+    else()
+        message(STATUS "No PowerPC compiler: the compiled e200z7 guests will not be built")
+    endif()
+endif()
+
 if(NOT RISCV_GCC OR NOT RISCV_OBJCOPY)
     message(STATUS "RISC-V toolchain not found: guest images will not be built")
     return()
@@ -366,6 +425,25 @@ if(EXISTS "${COREMARK_DIR}/core_main.c")
                 -Wno-unused-parameter -Wno-sign-compare
                 -Wno-implicit-fallthrough)
     endif()
+    # And for the e200z7, with the time base for a clock.
+    if(EMU_GUEST_ARCH_PPC AND PPC_GCC)
+        add_ppc_guest(coremark
+            OPT -O2
+            EXTRA_SOURCES
+                "${COREMARK_DIR}/core_main.c"
+                "${COREMARK_DIR}/core_list_join.c"
+                "${COREMARK_DIR}/core_matrix.c"
+                "${COREMARK_DIR}/core_state.c"
+                "${COREMARK_DIR}/core_util.c"
+                "${guest_dir}/coremark/core_portme.c"
+            FLAGS
+                -I "${COREMARK_DIR}"
+                -I "${guest_dir}/coremark"
+                -DPERFORMANCE_RUN=1
+                -DITERATIONS=${ARMV7M_COREMARK_ITERATIONS}
+                -Wno-unused-parameter -Wno-sign-compare
+                -Wno-implicit-fallthrough)
+    endif()
 else()
     message(STATUS "CoreMark source not available; skipping the coremark image")
 endif()
@@ -425,6 +503,20 @@ if(EXISTS "${TINYCRYPT_DIR}/lib/source/aes_encrypt.c")
         add_armv7m_guest(crypto
             OPT -O2
             SOURCES start.S
+            EXTRA_SOURCES
+                "${guest_dir}/crypto.c"
+                "${TINYCRYPT_DIR}/lib/source/aes_encrypt.c"
+                "${TINYCRYPT_DIR}/lib/source/aes_decrypt.c"
+                "${TINYCRYPT_DIR}/lib/source/sha256.c"
+                "${TINYCRYPT_DIR}/lib/source/utils.c"
+            FLAGS
+                -I "${TINYCRYPT_DIR}/lib/include"
+                -DCRYPTO_ROUNDS=${CRYPTO_ROUNDS}
+                -Wno-sign-compare -Wno-unused-parameter)
+    endif()
+    if(EMU_GUEST_ARCH_PPC AND PPC_GCC)
+        add_ppc_guest(crypto
+            OPT -O2
             EXTRA_SOURCES
                 "${guest_dir}/crypto.c"
                 "${TINYCRYPT_DIR}/lib/source/aes_encrypt.c"

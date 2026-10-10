@@ -211,6 +211,22 @@ typedef struct emu_boot_info {
      * only one privilege level ignores it.
      */
     bool supervisor;
+
+    /*
+     * The image as the runner was given it -- the file, ELF headers and
+     * all -- or NULL where there is none to show.
+     *
+     * For a frontend that has to read something the loader does not
+     * interpret. The loader places segments and reports an entry point,
+     * and that is the whole of what an ELF means to it; but a PowerPC
+     * ELF also says, per segment, whether its code is VLE or classic
+     * Book E, which are two decodings of the same bytes and which only
+     * that frontend can do anything about.
+     *
+     * Read-only, and only valid during the call.
+     */
+    const void *image;
+    uint32_t image_size;
 } emu_boot_info_t;
 
 typedef struct emu_cpu_ops {

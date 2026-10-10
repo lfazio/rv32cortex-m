@@ -74,6 +74,7 @@ void ppc_cpu_reset(ppc_cpu_t *c, uint32_t reset_pc)
     c->irq_dirty = false;
     c->retired = 0u;
     c->cycles = 0u;
+    c->clk_synced = 0u;
     c->jit_ctx = ppc_cpu_ctx(c);
     c->jit_flush = true;
 }
@@ -141,7 +142,6 @@ void ppc_cpu_raise(ppc_cpu_t *c, ppc_ivor_t which, uint32_t ret_pc,
     c->msr &= keep;
     c->pc = handler_address(c, which);
     c->jit_ctx = ppc_cpu_ctx(c);
-    c->irq_dirty = true;
 }
 
 void ppc_cpu_exception(ppc_cpu_t *c, ppc_ivor_t which, uint32_t ret_pc)
@@ -280,12 +280,15 @@ uint32_t ppc_spr_read(ppc_cpu_t *c, uint32_t spr, uint32_t *out)
         *out = c->xer;
         return PPC_EXC_NONE;
     case PPC_SPR_DEC:
+        ppc_cpu_sync_clock(c);
         *out = c->dec;
         return PPC_EXC_NONE;
     case PPC_SPR_TBL_R:
+        ppc_cpu_sync_clock(c);
         *out = (uint32_t)c->tb;
         return PPC_EXC_NONE;
     case PPC_SPR_TBU_R:
+        ppc_cpu_sync_clock(c);
         *out = (uint32_t)(c->tb >> 32);
         return PPC_EXC_NONE;
     case PPC_SPR_SPRG4_R:
@@ -355,13 +358,23 @@ uint32_t ppc_spr_write(ppc_cpu_t *c, uint32_t spr, uint32_t v)
     case PPC_SPR_XER:
         c->xer = v & PPC_XER_IMPL;
         return PPC_EXC_NONE;
+    /*
+     * The timers are brought up to date before they are changed, under
+     * the settings that were in force while that time passed, and the
+     * run loop is told to look again -- it may be counting down to an
+     * expiry that has just moved.
+     */
     case PPC_SPR_DEC:
+        ppc_cpu_sync_clock(c);
         c->dec = v;
+        c->irq_dirty = true;
         return PPC_EXC_NONE;
     case PPC_SPR_TBL_W:
+        ppc_cpu_sync_clock(c);
         c->tb = (c->tb & 0xFFFFFFFF00000000ull) | v;
         return PPC_EXC_NONE;
     case PPC_SPR_TBU_W:
+        ppc_cpu_sync_clock(c);
         c->tb = (c->tb & 0xFFFFFFFFull) | ((uint64_t)v << 32);
         return PPC_EXC_NONE;
     case PPC_SPR_TSR:
@@ -370,8 +383,13 @@ uint32_t ppc_spr_write(ppc_cpu_t *c, uint32_t spr, uint32_t v)
         c->irq_dirty = true;
         return PPC_EXC_NONE;
     case PPC_SPR_TCR:
+        ppc_cpu_sync_clock(c);
         c->tcr = v;
         c->irq_dirty = true;
+        return PPC_EXC_NONE;
+    case PPC_SPR_DECAR:
+        ppc_cpu_sync_clock(c);
+        c->decar = v;
         return PPC_EXC_NONE;
     case PPC_SPR_DBSR:
         c->dbsr &= ~v;
@@ -384,7 +402,9 @@ uint32_t ppc_spr_write(ppc_cpu_t *c, uint32_t spr, uint32_t v)
         c->spefscr = v & PPC_SPEFSCR_IMPL;
         return PPC_EXC_NONE;
     case PPC_SPR_HID0:
+        ppc_cpu_sync_clock(c);
         c->hid0 = v;
+        c->irq_dirty = true;
         return PPC_EXC_NONE;
     case PPC_SPR_L1CSR0:
         c->l1csr0 = v;
@@ -420,9 +440,46 @@ uint32_t ppc_spr_write(ppc_cpu_t *c, uint32_t spr, uint32_t v)
 /* Time base, decrementer and the interrupts they raise                */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Two clocks, and HID0 says which one the timers are on (table 2-7).
+ * Out of reset neither: TBEN is clear and the time base does not move,
+ * which is the core's behaviour and the first thing its startup code
+ * changes.
+ */
+static bool on_core_clock(const ppc_cpu_t *c)
+{
+    return (c->hid0 & (PPC_HID0_TBEN | PPC_HID0_SEL_TBCLK)) == PPC_HID0_TBEN;
+}
+
+static bool on_tbclk(const ppc_cpu_t *c)
+{
+    return (c->hid0 & (PPC_HID0_TBEN | PPC_HID0_SEL_TBCLK)) ==
+           (PPC_HID0_TBEN | PPC_HID0_SEL_TBCLK);
+}
+
 void ppc_cpu_set_time(ppc_cpu_t *c, uint64_t now)
 {
-    ppc_cpu_advance(c, (uint32_t)(now - c->tb));
+    const uint32_t d = (uint32_t)(now - c->tbclk_last);
+
+    c->tbclk_last = now;
+    if (on_tbclk(c)) {
+        ppc_cpu_advance(c, d);
+    }
+}
+
+void ppc_cpu_sync_clock(ppc_cpu_t *c)
+{
+    const uint64_t n = c->cycles - c->clk_synced;
+
+    c->clk_synced = c->cycles;
+    if (n != 0u && on_core_clock(c)) {
+        ppc_cpu_advance(c, (uint32_t)n);
+    }
+}
+
+uint32_t ppc_cpu_clock_until(const ppc_cpu_t *c)
+{
+    return (on_core_clock(c) && c->dec != 0u) ? c->dec : 0xFFFFFFFFu;
 }
 
 void ppc_cpu_advance(ppc_cpu_t *c, uint32_t ticks)

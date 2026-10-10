@@ -40,8 +40,6 @@ static ppc_cpu_t g_cpu;
  * taken as VLE -- what an MPC57xx runs, and what every assembled guest
  * here is.
  */
-static bool g_image_vle = true;
-
 #define PF_PPC_VLE 0x10000000u
 
 static uint32_t be32(const uint8_t *p)
@@ -55,15 +53,14 @@ static uint32_t be16(const uint8_t *p)
     return ((uint32_t)p[0] << 8) | p[1];
 }
 
-static void ppc_ops_set_image(const void *base, uint32_t size)
+static bool image_is_vle(const void *base, uint32_t size)
 {
     const uint8_t *const d = (const uint8_t *)base;
 
-    g_image_vle = true;
     /* ELF32, big-endian, with program headers of the size we read. */
     if (d == NULL || size < 52u || d[0] != 0x7Fu || d[1] != 'E' || d[2] != 'L' ||
         d[3] != 'F' || d[4] != 1u || d[5] != 2u) {
-        return;
+        return true;
     }
     {
         const uint32_t entry = be32(d + 24);
@@ -72,24 +69,24 @@ static void ppc_ops_set_image(const void *base, uint32_t size)
         const uint32_t phnum = be16(d + 44);
 
         if (phentsize < 32u) {
-            return;
+            return true;
         }
         for (uint32_t i = 0u; i < phnum; i++) {
             const uint64_t at = (uint64_t)phoff + (uint64_t)i * phentsize;
             const uint8_t *ph;
 
             if (at + 32u > size) {
-                return;
+                break;
             }
             ph = d + at;
             /* PT_LOAD holding the entry point. */
             if (be32(ph) == 1u && entry >= be32(ph + 8) &&
                 entry - be32(ph + 8) < be32(ph + 20)) {
-                g_image_vle = (be32(ph + 24) & PF_PPC_VLE) != 0u;
-                return;
+                return (be32(ph + 24) & PF_PPC_VLE) != 0u;
             }
         }
     }
+    return true;
 }
 
 static EMU_ALWAYS_INLINE ppc_cpu_t *cpu_of(const emu_cpu_t *cpu)
@@ -105,15 +102,12 @@ static emu_cpu_t *ppc_instance(unsigned index)
 static void ppc_ops_init(emu_cpu_t *cpu, emu_bus_t *bus, uint32_t coreid)
 {
     ppc_cpu_init(cpu_of(cpu), bus, coreid);
-    cpu_of(cpu)->vle = g_image_vle;
 }
 
 static void ppc_ops_reset(emu_cpu_t *cpu, uint32_t reset_pc)
 {
     ppc_cpu_t *const c = cpu_of(cpu);
 
-    /* Before the reset, which derives the translator's context from it. */
-    c->vle = g_image_vle;
     ppc_cpu_reset(c, reset_pc);
     if (ppc_backend->reset != NULL) {
         ppc_backend->reset(cpu);
@@ -153,6 +147,14 @@ static void ppc_ops_boot(emu_cpu_t *cpu, const emu_boot_info_t *info)
      */
     ppc_cpu_t *c = cpu_of(cpu);
     c->r[1] = (info->ram_base + info->ram_size) & ~7u;
+
+    /*
+     * And the encoding, which is the image's to say. Here rather than
+     * at reset because this is where the image is in hand: boot runs on
+     * every start and every reload, after the reset that preceded it.
+     */
+    c->vle = image_is_vle(info->image, info->image_size);
+    c->jit_ctx = ppc_cpu_ctx(c);
 }
 
 static emu_run_reason_t ppc_ops_run(emu_cpu_t *cpu, uint32_t budget,
@@ -349,7 +351,6 @@ const emu_cpu_ops_t ppc_frontend = {
     .step = ppc_ops_step,
     .halt = ppc_ops_halt,
     .status = ppc_ops_status,
-    .set_image = ppc_ops_set_image,
     .select_backend = ppc_select_backend,
     .invalidate = ppc_ops_invalidate,
     .dump = ppc_dump,
