@@ -998,29 +998,12 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
      * and for nothing else; with none pending, this slice is empty.
      */
     if (EMU_UNLIKELY(c->state == EMU_STATE_WFI)) {
-        /*
-         * The processor clock does not stop for a wait, and here it
-         * only moves when instructions do -- so a core waiting on its
-         * own decrementer is carried straight to the expiry. Without
-         * this it would wait for ever on a clock that waits for it.
-         */
-        if (ppc_cpu_pending_irq(c) < 0) {
-            const uint32_t until = ppc_cpu_clock_until(c);
-
-            ppc_cpu_sync_clock(c);
-            if (until != 0xFFFFFFFFu) {
-                c->cycles += until;
-                ppc_cpu_sync_clock(c);
-            }
-        }
-        if (ppc_cpu_pending_irq(c) < 0) {
+        if (!ppc_cpu_wake(c)) {
             if (retired != NULL) {
                 *retired = 0u;
             }
             return EMU_RUN_WFI;
         }
-        c->state = EMU_STATE_RUNNING;
-        c->irq_dirty = true;
     }
 
     while (done < budget) {

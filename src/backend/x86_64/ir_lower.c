@@ -943,6 +943,27 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
     case EMU_IR_ROTLI:
         return true;
 
+    /*
+     * The same lie, found the same way and four more times over: each
+     * of these has had a case in lower_one for as long as it has
+     * existed, and none was named here, so every frontend that asked
+     * first was told no and sent the instruction to a helper. The
+     * ARMv7-M frontend asks before CLZ; the PowerPC one asks before
+     * every load and store, because a big-endian guest's access is a
+     * byte swap -- and its first translated run showed 165 loads going
+     * to the interpreter out of 1,332 instructions, with every test
+     * passing. Declining is always correct, which is why no test can
+     * see it; the translator's own report could.
+     */
+    case EMU_IR_BSWAP32:
+    case EMU_IR_BSWAP16:
+    case EMU_IR_HSWAP:
+    case EMU_IR_CLZ:
+    case EMU_IR_CTZ:
+    case EMU_IR_MULHS:
+    case EMU_IR_MULHU:
+        return true;
+
     case EMU_IR_FMIN:
     case EMU_IR_FMAX:
     case EMU_IR_FCLASS:

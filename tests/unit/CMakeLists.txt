@@ -588,8 +588,29 @@ if(EMU_GUEST_ARCH_PPC)
             set_tests_properties(guest-ppc-${_name} PROPERTIES
                 LABELS fast
                 PASS_REGULAR_EXPRESSION "${_want}")
+            #
+            # And translated. A separate test because it is a separate
+            # claim: interpreted, a guest checks the frontend; through
+            # --jit it checks the translator.
+            #
+            if(EMU_JIT)
+                add_test(NAME guest-ppc-${_name}-jit
+                         COMMAND emu-host --jit --max-insn 400000000
+                                 "${CMAKE_BINARY_DIR}/guest/ppc-${_name}.elf")
+                set_tests_properties(guest-ppc-${_name}-jit PROPERTIES
+                    LABELS fast
+                    PASS_REGULAR_EXPRESSION "${_want}")
+            endif()
         endif()
     endforeach()
+    if(TARGET guest-ppc-isatest AND EMU_JIT)
+        add_test(NAME guest-ppc-isatest-jit
+                 COMMAND emu-host --jit --load 0x80000000 --max-insn 200000
+                         "${CMAKE_BINARY_DIR}/tests/guest/ppc/isatest.bin")
+        set_tests_properties(guest-ppc-isatest-jit PROPERTIES
+            LABELS fast
+            PASS_REGULAR_EXPRESSION "PPC-ISATEST-END")
+    endif()
 
     #
     # The decoder and the disassembler against binutils: the 16-bit VLE

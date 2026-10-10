@@ -79,10 +79,9 @@ void ppc_cpu_reset(ppc_cpu_t *c, uint32_t reset_pc)
     c->jit_flush = true;
 }
 
-uint32_t ppc_cpu_ctx(const ppc_cpu_t *c)
+uint64_t ppc_cpu_ctx(const ppc_cpu_t *c)
 {
-    return (c->vle ? 1u : 0u) | (((c->msr & PPC_MSR_PR) != 0u) ? 2u : 0u) |
-           (((c->msr & PPC_MSR_SPE) != 0u) ? 4u : 0u);
+    return c->vle ? 1u : 0u;
 }
 
 void ppc_cpu_set_msr(ppc_cpu_t *c, uint32_t v)
@@ -555,6 +554,32 @@ int ppc_cpu_pending_irq(const ppc_cpu_t *c)
         return (int)PPC_IVOR_DECREMENTER;
     }
     return -1;
+}
+
+bool ppc_cpu_wake(ppc_cpu_t *c)
+{
+    /*
+     * The processor clock does not stop for a wait, and here it only
+     * moves when instructions do -- so a core waiting on its own
+     * decrementer is carried straight to the expiry. Without this it
+     * would wait for ever on a clock that waits for it.
+     */
+    if (ppc_cpu_pending_irq(c) < 0) {
+        uint32_t until;
+
+        ppc_cpu_sync_clock(c);
+        until = ppc_cpu_clock_until(c);
+        if (until != 0xFFFFFFFFu) {
+            c->cycles += until;
+            ppc_cpu_sync_clock(c);
+        }
+    }
+    if (ppc_cpu_pending_irq(c) < 0) {
+        return false;
+    }
+    c->state = EMU_STATE_RUNNING;
+    c->irq_dirty = true;
+    return true;
 }
 
 bool ppc_cpu_take_irq(ppc_cpu_t *c)

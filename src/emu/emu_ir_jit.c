@@ -428,4 +428,10 @@ EMU_IR_DEFINE_X86_BACKEND(g4mh_backend_jit, g4mh_ir_frontend, g4mh);
 EMU_IR_DEFINE_X86_BACKEND(armv7m_backend_jit, armv7m_ir_frontend, a7m);
 #endif
 
+#if EMU_GUEST_ARCH_PPC
+#include "ppc/ppc_ir.h"
+/* `ppcj`, for the same reason: ppc_run is the interpreter's. */
+EMU_IR_DEFINE_X86_BACKEND(ppc_backend_jit, ppc_ir_frontend, ppcj);
+#endif
+
 #endif /* EMU_HAVE_JIT */

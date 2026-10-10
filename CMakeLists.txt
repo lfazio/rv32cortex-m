@@ -698,6 +698,12 @@ if(EMU_GUEST_ARCH_PPC)
         src/frontend/ppc/ppc_frontend.c
         src/frontend/ppc/ppc_interp.c
     )
+
+    # JIT-only, as for the other three.
+    if(EMU_JIT)
+        target_sources(emucore PRIVATE src/frontend/ppc/ppc_ir.c)
+    endif()
+
     target_compile_definitions(emucore PUBLIC
         PPC_ENABLE_DISASM=$<BOOL:${PPC_ENABLE_DISASM}>
     )

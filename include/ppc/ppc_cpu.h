@@ -155,13 +155,15 @@ typedef struct ppc_cpu {
     bool irq_dirty;
 
     /*
-     * The translator's view. `jit_ctx` is what a block is built for --
-     * the encoding, the privilege and MSR[SPE] -- and is rewritten by
-     * every path that changes them, including an interrupt taken from
-     * inside a block. `jit_gen` moves when something a block has
-     * specialised on changes; nothing does yet, so it never moves.
+     * The translator's view. `jit_ctx` is what a block is built for,
+     * which is the encoding it was decoded as and nothing else: privilege
+     * and MSR[SPE] decide nothing in lowered code, because everything
+     * that depends on either is left to the interpreter, and with no
+     * MMU there is no permission a block could have been checked
+     * against. `jit_gen` moves when something a block has specialised
+     * on changes; nothing does, so it never moves.
      */
-    uint32_t jit_ctx;
+    uint64_t jit_ctx;
     uint32_t jit_gen;
     bool jit_flush; /* icbi asked for the translations to go */
 
@@ -208,8 +210,15 @@ void ppc_cpu_raise(ppc_cpu_t *c, ppc_ivor_t which, uint32_t ret_pc,
 /* The older spelling, for an interrupt with no syndrome. */
 void ppc_cpu_exception(ppc_cpu_t *c, ppc_ivor_t which, uint32_t ret_pc);
 
-/* What a block is built for: the encoding, MSR[PR] and MSR[SPE]. */
-uint32_t ppc_cpu_ctx(const ppc_cpu_t *c);
+/* What a block is built for: which of the two encodings it decoded. */
+uint64_t ppc_cpu_ctx(const ppc_cpu_t *c);
+
+/*
+ * Leave the wait state if an enabled interrupt is pending, carrying a
+ * core that is waiting on its own decrementer forward to the expiry.
+ * True if the core is running again.
+ */
+bool ppc_cpu_wake(ppc_cpu_t *c);
 
 /* MSR written by software: keep the implemented bits, refresh what
  * depends on them. */

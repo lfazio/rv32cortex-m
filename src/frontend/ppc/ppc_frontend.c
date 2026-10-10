@@ -20,13 +20,9 @@
 #include "ppc/ppc_cpu.h"
 #include "ppc/ppc_decode.h"
 #include "ppc/ppc_disasm.h"
+#include "ppc/ppc_ir.h"
 
 #include <string.h>
-
-/* Flipped when the translator is linked in; see ppc_ir.c. */
-#ifndef PPC_HAVE_JIT
-#define PPC_HAVE_JIT 0
-#endif
 
 static ppc_cpu_t g_cpu;
 
@@ -121,7 +117,7 @@ static void ppc_ops_reset(emu_cpu_t *cpu, uint32_t reset_pc)
  */
 static bool ppc_select_backend(emu_cpu_t *cpu, bool want_jit)
 {
-#if EMU_HAVE_JIT && PPC_HAVE_JIT
+#if EMU_HAVE_JIT
     ppc_backend = want_jit ? &ppc_backend_jit : &ppc_backend_interp;
 #else
     (void)want_jit;
@@ -310,6 +306,73 @@ static size_t ppc_ops_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t ins
 }
 #endif
 
+#if EMU_HAVE_JIT
+static void put_dec(emu_print_fn out, void *ctx, uint64_t v)
+{
+    char buf[24];
+    unsigned i = sizeof(buf);
+
+    buf[--i] = '\0';
+    do {
+        buf[--i] = (char)('0' + (unsigned)(v % 10u));
+        v /= 10u;
+    } while (v != 0u && i > 0u);
+    out(ctx, &buf[i]);
+}
+
+static void put_top(emu_print_fn out, void *ctx, const char *title,
+                    const uint32_t *by_sem)
+{
+    bool used[PPC_S_COUNT] = {false};
+
+    out(ctx, title);
+    for (unsigned k = 0u; k < 12u; k++) {
+        uint32_t best = 0u;
+        uint32_t at = 0u;
+
+        for (uint32_t s = 0u; s < (uint32_t)PPC_S_COUNT; s++) {
+            if (!used[s] && by_sem[s] > best) {
+                best = by_sem[s];
+                at = s;
+            }
+        }
+        if (best == 0u) {
+            break;
+        }
+        used[at] = true;
+        out(ctx, " ");
+        out(ctx, ppc_sem_name(at));
+        out(ctx, ":");
+        put_dec(out, ctx, best);
+    }
+    out(ctx, "\n");
+}
+
+/*
+ * What the translator did with each instruction it was shown. The
+ * framework's own figures cannot say: a call to the interpreter from
+ * inside a block counts as translated there.
+ */
+static void ppc_report(emu_print_fn out, void *ctx)
+{
+    const ppc_ir_stats_t *const s = ppc_ir_get_stats();
+
+    if (s->native + s->helper + s->declined == 0u) {
+        return;
+    }
+    out(ctx, "\n-- ppc translator (per instruction translated) --\n"
+             "  lowered  ");
+    put_dec(out, ctx, s->native);
+    out(ctx, "  helper ");
+    put_dec(out, ctx, s->helper);
+    out(ctx, "  declined ");
+    put_dec(out, ctx, s->declined);
+    out(ctx, "\n");
+    put_top(out, ctx, "  helper  ", s->helper_by_sem);
+    put_top(out, ctx, "  declined", s->declined_by_sem);
+}
+#endif
+
 static void ppc_set_syscall(emu_cpu_t *cpu, emu_syscall_fn fn, void *user)
 {
     ppc_cpu_t *c = cpu_of(cpu);
@@ -356,6 +419,9 @@ const emu_cpu_ops_t ppc_frontend = {
     .dump = ppc_dump,
 #if PPC_ENABLE_DISASM
     .disasm = ppc_ops_disasm,
+#endif
+#if EMU_HAVE_JIT
+    .report = ppc_report,
 #endif
 
     .reg_name = ppc_reg_name,
