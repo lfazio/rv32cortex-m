@@ -246,55 +246,93 @@ static uint32_t gen_key(void)
     return g_hart.jit_gen;
 }
 
+static uint64_t ctx_key(void)
+{
+    rv_ir_frontend.after_interp((emu_cpu_t *)&g_hart);
+    return g_hart.jit_ctx;
+}
+
+static void set_fs(uint32_t fs)
+{
+    g_hart.mstatus =
+        (g_hart.mstatus & ~MSTATUS_FS_MASK) | (fs << MSTATUS_FS_SHIFT);
+}
+
+/*
+ * The FP unit's state is part of a block's identity, and must not be part
+ * of what invalidates every block.
+ *
+ * Both directions matter and they fail differently. Too narrow -- FS
+ * off-ness in neither key -- lets a block built with the unit on run with
+ * it off, and three instructions that must raise illegal-instruction run
+ * silently. In the generation instead of the context is the udev stall:
+ * Linux turns FS off on every trap into the kernel and back on at the
+ * return, so every system call from a process that had used a float
+ * flushed the whole cache. Correct, and a JIT that was not there.
+ */
 static void test_jit_generation_key(void)
 {
     fp_reset();
-    g_hart.mstatus = (g_hart.mstatus & ~MSTATUS_FS_MASK) |
-                     (2u << MSTATUS_FS_SHIFT); /* Clean */
+    set_fs(2u); /* Clean */
     g_hart.fcsr = 0u; /* frm = RNE */
 
-    const uint32_t base = gen_key();
+    const uint32_t gen = gen_key();
+    const uint64_t base = ctx_key();
 
-    /* Dirty is still "on", so the key must not move. */
-    g_hart.mstatus = (g_hart.mstatus & ~MSTATUS_FS_MASK) |
-                     (3u << MSTATUS_FS_SHIFT); /* Dirty */
-    CHECK_EQ(gen_key(), base);
+    /* Dirty is still "on", so neither key may move. */
+    set_fs(3u);
+    CHECK_EQ64(ctx_key(), base);
+    CHECK_EQ(gen_key(), gen);
 
     /* Initial is also on. */
-    g_hart.mstatus =
-        (g_hart.mstatus & ~MSTATUS_FS_MASK) | (1u << MSTATUS_FS_SHIFT);
-    CHECK_EQ(gen_key(), base);
+    set_fs(1u);
+    CHECK_EQ64(ctx_key(), base);
 
-    /* Off is not, and a block built while it was on must be discarded. */
-    g_hart.mstatus &= ~MSTATUS_FS_MASK;
-    CHECK(gen_key() != base);
+    /* Off is a different block identity... */
+    set_fs(0u);
+    const uint64_t off = ctx_key();
+    CHECK(off != base);
+    /* ...and not a flush. This is the line the stall was. */
+    CHECK_EQ(gen_key(), gen);
 
-    /* Back on, and every rounding mode is its own specialisation. */
-    g_hart.mstatus |= (2u << MSTATUS_FS_SHIFT);
-    CHECK_EQ(gen_key(), base);
+    /* Back on is the original identity, so its blocks are found again. */
+    set_fs(2u);
+    CHECK_EQ64(ctx_key(), base);
 
-    uint32_t seen[8];
+    /* Every rounding mode is its own specialisation, and none flushes. */
+    uint64_t seen[8];
     for (uint32_t rm = 0u; rm < 5u; rm++) {
         g_hart.fcsr = rm << 5;
-        seen[rm] = gen_key();
+        seen[rm] = ctx_key();
+        CHECK(seen[rm] != off);
         for (uint32_t j = 0u; j < rm; j++) {
             CHECK(seen[rm] != seen[j]);
         }
+        CHECK_EQ(gen_key(), gen);
     }
 
     /*
      * The accrued exception flags share fcsr with frm and are written
      * by every operation that raises one. They are not specialised on,
-     * so they must not flush.
+     * so they must move neither key.
      */
     g_hart.fcsr = 0u;
-    const uint32_t clean = gen_key();
+    const uint64_t clean = ctx_key();
     g_hart.fcsr = 0x1Fu; /* all fflags set */
-    CHECK_EQ(gen_key(), clean);
+    CHECK_EQ64(ctx_key(), clean);
+    CHECK_EQ(gen_key(), gen);
+
+    /*
+     * The FP state sits above bit 31 of the context, so a framework that
+     * kept 32 bits of it anywhere would merge FS-on and FS-off blocks.
+     * test_jit covers the framework; this pins where the frontend put it.
+     */
+    CHECK((off >> 32) != (base >> 32));
 
     /* A mapping change invalidates blocks keyed on virtual addresses. */
     g_hart.vm_gen++;
-    CHECK(gen_key() != clean);
+    CHECK(gen_key() != gen);
+    CHECK_EQ64(ctx_key(), clean);
 }
 #endif /* EMU_HAVE_JIT -- rv_ir_frontend only exists with one */
 

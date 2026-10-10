@@ -249,8 +249,17 @@ typedef struct emu_jit_hot {
      * privilege in `generation` instead would be correct and useless:
      * every trap and every return would flush the cache, which under an
      * operating system is thousands of times a second.
+     *
+     * **64 bits because RV32 filled 32.** satp alone uses every bit but
+     * two, and the privilege took those -- so when the FP unit's state
+     * turned out to be identity too (an OS turns it off on every trap
+     * from a process that uses it, and back on at the return), there
+     * was nowhere to put it but the generation, which flushed the whole
+     * cache twice per system call. Compared whole and exactly; a key
+     * that is hashed or truncated anywhere lets a block be entered
+     * under a context it was not built for.
      */
-    const uint32_t *context;
+    const uint64_t *context;
 
     /*
      * Cleared by the frontend when it knows no interrupt can be pending,

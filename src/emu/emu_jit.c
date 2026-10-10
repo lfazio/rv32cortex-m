@@ -76,8 +76,9 @@
 emu_jit_layout_t emu_jit_layout;
 
 typedef struct {
+    uint64_t context; /* see emu_jit_hot_t::context. 64 bytes a
+                       * block to 72 on Cortex-M: 2 KiB at 256      */
     uint32_t guest_pc;
-    uint32_t context; /* see emu_jit_hot_t::context           */
     emu_jit_layout_t layout; /* how its exits may be chained   */
     uint8_t *code;
     uint32_t len; /* bytes, so compaction can move it      */
@@ -188,9 +189,21 @@ static uint32_t prof_now(void)
  * The shift keeps the pc's own bits where they were, so a guest with a
  * single context hashes exactly as before.
  */
-static uint32_t pc_hash(uint32_t pc, uint32_t context)
+static uint32_t ctx_fold(uint64_t context)
 {
-    return ((pc >> 1) ^ (context * 2654435761u)) & (EMU_JIT_HASH_SIZE - 1u);
+    /*
+     * Both halves reach the hash, and a context whose high word is zero
+     * folds to its low word unchanged. The high word is multiplied first
+     * so that it cannot cancel against a low word that happens to equal
+     * it.
+     */
+    return (uint32_t)context ^ ((uint32_t)(context >> 32) * 0x9E3779B9u);
+}
+
+static uint32_t pc_hash(uint32_t pc, uint64_t context)
+{
+    return ((pc >> 1) ^ (ctx_fold(context) * 2654435761u)) &
+           (EMU_JIT_HASH_SIZE - 1u);
 }
 
 /* ------------------------------------------------------------------ */
@@ -328,6 +341,14 @@ void emu_jit_invalidate_page(uint32_t vaddr, const emu_jit_ops_t *ops)
  */
 #define JIT_NEG_SIZE 1024u /* power of two */
 
+/*
+ * `context` is the 32-bit fold of the block key, not the key itself, and
+ * that is a choice rather than an oversight: a false hit here costs one
+ * pc being interpreted until the next flush -- never a wrong answer,
+ * because the interpreter is always right -- while storing the whole key
+ * costs a microcontroller 4 KiB of the guest's RAM. The block table is
+ * the opposite case and compares all 64 bits.
+ */
 static struct {
     uint32_t pc;
     uint32_t context;
@@ -367,16 +388,18 @@ static uint32_t neg_slot(uint32_t pc, uint32_t context)
     return (h >> 16) & (JIT_NEG_SIZE - 1u);
 }
 
-static bool neg_hit(uint32_t pc, uint32_t context)
+static bool neg_hit(uint32_t pc, uint64_t key)
 {
+    const uint32_t context = ctx_fold(key);
     const uint32_t s = neg_slot(pc, context);
 
     return g_neg[s].epoch == g_neg_epoch && g_neg[s].pc == pc &&
            g_neg[s].context == context;
 }
 
-static void neg_note(uint32_t pc, uint32_t context)
+static void neg_note(uint32_t pc, uint64_t key)
 {
+    const uint32_t context = ctx_fold(key);
     const uint32_t s = neg_slot(pc, context);
 
     g_neg[s].pc = pc;
@@ -506,7 +529,7 @@ static void link_exit(jit_block_t *from, const jit_block_t *to,
     }
 }
 
-static jit_block_t *lookup(uint32_t pc, uint32_t context)
+static jit_block_t *lookup(uint32_t pc, uint64_t context)
 {
     for (int32_t i = g_hash[pc_hash(pc, context)]; i >= 0;
          i = g_blocks[i].next) {
@@ -670,7 +693,7 @@ static bool space_low(void)
  * buffer, which is a reclaim signal.
  */
 static jit_block_t *translate_once(emu_cpu_t *cpu, uint32_t pc,
-                                   const emu_jit_ops_t *ops, uint32_t context)
+                                   const emu_jit_ops_t *ops, uint64_t context)
 {
     /* Blocks are entered by branching to them, so keep them aligned. */
     g_code_used = (g_code_used + 3u) & ~3u;
@@ -744,7 +767,7 @@ static jit_block_t *translate_once(emu_cpu_t *cpu, uint32_t pc,
  * between them -- while every suite passed and the guest computed the
  * right answer.
  */
-static jit_block_t *translate(emu_cpu_t *cpu, uint32_t pc, uint32_t context,
+static jit_block_t *translate(emu_cpu_t *cpu, uint32_t pc, uint64_t context,
                               const emu_jit_ops_t *ops)
 {
     if (!space_low()) {
@@ -1055,7 +1078,7 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
          * Part of a block's identity, not a reason to throw blocks away.
          * See emu_jit_hot_t::context.
          */
-        const uint32_t context = (hot.context != NULL) ? *hot.context : 0u;
+        const uint64_t context = (hot.context != NULL) ? *hot.context : 0u;
         jit_block_t *b = lookup(pc, context);
 
         bool fresh = false;

@@ -118,20 +118,21 @@ typedef struct rv_hart {
     uint32_t vm_gen;
 
     /*
-     * What the IR JIT's blocks are specialised on, as one word: the
-     * rounding mode, whether the FP unit is on, and vm_gen. Maintained
-     * on the interpreter fallback -- see rv_ir.c -- because everything
-     * in it moves only through a CSR write, and read by the framework on
-     * every block entry, which is why it is a cached value rather than
-     * something re-derived.
+     * What invalidates every IR JIT block when it moves: the mappings
+     * and the PMP configuration. Maintained on the interpreter fallback
+     * -- see rv_ir.c -- because both move only through instructions the
+     * translator declines, and read by the framework on every block
+     * entry, which is why it is a cached value rather than something
+     * re-derived.
      */
     uint32_t jit_gen;
     /*
-     * The privilege a JIT block was translated for. Part of a block's
-     * identity rather than something that invalidates it -- see
-     * emu_jit_hot_t::context and rv_jit_bind.
+     * What a JIT block was translated *for*: satp, the privilege, and
+     * the FP unit's state. Part of a block's identity rather than
+     * something that invalidates it -- see emu_jit_hot_t::context and
+     * rv_ir_ctx_key.
      */
-    uint32_t jit_ctx;
+    uint64_t jit_ctx;
     /*
      * Bumped whenever the PMP *configuration* changes, so a translated
      * block that baked in "this page is executable" is thrown away when

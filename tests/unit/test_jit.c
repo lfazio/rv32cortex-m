@@ -219,6 +219,144 @@ static void test_cache_is_per_pc(void)
     g_pc = 0x8000u;
 }
 
+/* ------------------------------------------------------------------ */
+/* The context key                                                     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A frontend whose context the test sets, so the key's width is what is
+ * under test.
+ *
+ * RV32 puts the FP unit's state above bit 31: FS off-ness and frm went
+ * into the context when they were found flushing the whole cache twice
+ * per Linux system call, and the low word had no room. **A framework that
+ * kept only 32 bits of the key anywhere would merge a block built with
+ * the FP unit on into the world where it is off** -- and the FP
+ * instructions in it would run where they must raise illegal-instruction.
+ * So every context below differs from its neighbour only in the high
+ * word.
+ */
+static uint64_t g_ctx;
+
+static void stub_bind_ctx(emu_cpu_t *cpu, emu_jit_hot_t *out)
+{
+    stub_bind(cpu, out);
+    out->context = &g_ctx;
+}
+
+static const emu_jit_ops_t k_stub_ctx_ops = {
+    .name = "stub-ctx",
+    .bind = stub_bind_ctx,
+    .translate = stub_translate,
+    .interp = &k_stub_interp,
+    .relocatable = false,
+};
+
+static uint32_t run_ctx(uint32_t budget, const emu_jit_ops_t *ops)
+{
+    uint32_t retired = 0u;
+
+    (void)emu_jit_run(k_cpu, budget, &retired, ops);
+    return retired;
+}
+
+#define CTX_LO 0x80012345u /* a plausible satp: Sv32, ASID 0, a PPN */
+
+/* The negative cache is keyed on the whole context, not its low word. */
+static void test_declines_are_per_context(void)
+{
+    emu_jit_flush();
+    g_translate_calls = 0u;
+
+    g_ctx = CTX_LO;
+    (void)run_ctx(64u, &k_stub_ctx_ops);
+    CHECK_EQ(g_translate_calls, 1u);
+
+    g_ctx = CTX_LO | (1ull << 32);
+    (void)run_ctx(64u, &k_stub_ctx_ops);
+    CHECK_EQ(g_translate_calls, 2u);
+
+    /* Both are remembered. */
+    g_ctx = CTX_LO;
+    (void)run_ctx(64u, &k_stub_ctx_ops);
+    g_ctx = CTX_LO | (1ull << 32);
+    (void)run_ctx(64u, &k_stub_ctx_ops);
+    CHECK_EQ(g_translate_calls, 2u);
+}
+
+#if defined(EMU_HOST_JIT_X86_64)
+static uint32_t g_built;
+
+/*
+ * A real block: `mov eax, 1; ret`, which retires one instruction and
+ * leaves the pc where it was, so the next pass looks the same pc up again.
+ */
+static uint32_t stub_translate_ret1(emu_cpu_t *cpu, uint32_t pc)
+{
+    (void)cpu;
+    (void)pc;
+    g_built++;
+    emu_jit_emit8(0xB8u);
+    emu_jit_emit32(1u);
+    emu_jit_emit8(0xC3u);
+    return 1u;
+}
+
+static const emu_jit_ops_t k_stub_build_ops = {
+    .name = "stub-build",
+    .bind = stub_bind_ctx,
+    .translate = stub_translate_ret1,
+    .interp = &k_stub_interp,
+    .relocatable = false,
+};
+
+/*
+ * The block table is keyed on the whole context: two contexts differing
+ * only above bit 31 are two blocks, both found again afterwards, and
+ * nothing is flushed to get there.
+ *
+ * This is the direction that matters for correctness. The negative
+ * cache above is allowed to fold its key, because a false hit only
+ * interprets; here a false hit *runs a block built for somewhere else*.
+ *
+ * What it catches, checked by breaking each: a 32-bit context anywhere
+ * on the path from `hot.context` to the table (5 failures). What it does
+ * **not** catch is a truncation in lookup's compare alone -- the hash
+ * still sees both words and puts the two contexts in different buckets,
+ * so they never meet at the compare. That needs two contexts that
+ * collide in the hash, and choosing them would mean copying the hash
+ * into this file.
+ */
+static void test_blocks_are_per_context(void)
+{
+    emu_jit_flush();
+    g_built = 0u;
+
+    emu_jit_stats_t before;
+    emu_jit_stats_t after;
+
+    emu_jit_get_stats(&before);
+
+    g_ctx = CTX_LO;
+    (void)run_ctx(64u, &k_stub_build_ops);
+    CHECK_EQ(g_built, 1u);
+
+    g_ctx = CTX_LO | (1ull << 35);
+    (void)run_ctx(64u, &k_stub_build_ops);
+    CHECK_EQ(g_built, 2u);
+
+    g_ctx = CTX_LO;
+    (void)run_ctx(64u, &k_stub_build_ops);
+    g_ctx = CTX_LO | (1ull << 35);
+    (void)run_ctx(64u, &k_stub_build_ops);
+    CHECK_EQ(g_built, 2u);
+
+    emu_jit_get_stats(&after);
+    CHECK_EQ(after.flushes - before.flushes, 0u);
+    CHECK_EQ(after.blocks, 2u);
+}
+#endif
+
 void test_jit(void)
 {
     /*
@@ -239,6 +377,10 @@ void test_jit(void)
     test_flush_reopens_a_declined_pc();
     test_generation_change_reopens_a_declined_pc();
     test_cache_is_per_pc();
+    test_declines_are_per_context();
+#if defined(EMU_HOST_JIT_X86_64)
+    test_blocks_are_per_context();
+#endif
 
     /* Leave nothing behind for whatever runs next. */
     emu_jit_flush();
