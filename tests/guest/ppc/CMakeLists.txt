@@ -26,6 +26,20 @@
 # -a32 and -m elf32ppc are what make the 64-bit tools emit this image;
 # both are harmless to the 32-bit tools, so one set of flags serves both.
 #
+#
+# **And an old tree has to notice too.** find_program does not look again
+# once its result is cached, so a build directory configured while
+# powerpc-linux-gnu-as existed went on naming it after the package was
+# gone -- and failed at build time with "not found", in the one row of
+# the build matrix that had been configured longest. A cached path that
+# no longer exists is forgotten here, so the search below runs again.
+#
+foreach(_tool PPC_AS PPC_LD PPC_OBJCOPY)
+    if(${_tool} AND NOT EXISTS "${${_tool}}")
+        unset(${_tool} CACHE)
+    endif()
+endforeach()
+
 find_program(PPC_AS      NAMES powerpc-linux-gnu-as powerpc-eabi-as
                                powerpc64-linux-gnu-as)
 find_program(PPC_LD      NAMES powerpc-linux-gnu-ld powerpc-eabi-ld
