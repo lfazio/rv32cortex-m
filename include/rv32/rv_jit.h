@@ -1,35 +1,18 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * rv_jit.h - Thumb-2 just-in-time backend.
+ * rv_jit.h - what the RV32 frontend exposes of its JIT.
  *
- * Translates RV32 basic blocks into Thumb-2 machine code held in a RAM
- * code cache, eliminating the per-instruction costs the interpreter
- * cannot avoid: the bus call to fetch, RVC expansion, the dispatch switch,
- * the pc write and the counter update.
+ * There is no RV32 translator *to a host* any more. rv_ir.c lowers RV32
+ * to the shared IR, src/backend/ lowers that to Thumb-2 or x86-64, and
+ * emu_jit.c owns the code cache, the block table and the dispatch --
+ * see docs/jit/README.md. What is left here is the backend's name, the
+ * two invalidation entry points, and the keys that say what a block is
+ * for and whether it is still valid.
  *
- * Design choices, and why:
- *
- *   Register file stays in memory. Guest x1..x31 live in the hart struct
- *   and every operation loads and stores them. That sounds wasteful, but
- *   hart->x is at offset 0 so each access is a single 16-bit
- *   LDR/STR Rt,[r4,#n] -- and it means guest state is coherent at every
- *   instruction boundary, so a trap, an interrupt or a debugger read needs
- *   no unwinding. Register allocation across a block would be the next
- *   optimisation, not a prerequisite.
- *
- *   Blocks end at every control transfer. No block chaining or inline
- *   caching: each block writes h->pc and returns to the dispatcher. This
- *   keeps interrupt latency bounded by one block rather than by a chain.
- *
- *   Anything not translated ends the block early and is executed by the
- *   interpreter. The JIT is a fast path over the interpreter, not a
- *   replacement, so correctness never depends on covering every encoding.
- *
- * ARM register usage inside a translated block:
- *
- *   r4        hart pointer (callee-saved, so it survives helper calls)
- *   r0-r3     scratch, and the argument registers for helper calls
- *   lr        pushed in the prologue, popped into pc at the exit
+ * This header used to describe the hand-written Thumb-2 translator it
+ * was written for -- no chaining, a 16-bit LDR per register access --
+ * and to declare its code-buffer setter, its statistics and three table
+ * sizes, none of which had a definition or a reader left.
  */
 #ifndef RV32_RV_JIT_H
 #define RV32_RV_JIT_H
@@ -45,32 +28,14 @@ extern "C" {
 
 #if EMU_HAVE_JIT
 
-/* Bytes of RAM for translated code. */
+/*
+ * Bytes of RAM for translated code on a microcontroller, from
+ * EMU_JIT_CODE_BYTES. The fallback is only for a build that bypasses
+ * CMake; the configured default is 32 KB.
+ */
 #ifndef RV_JIT_CODE_SIZE
 #define RV_JIT_CODE_SIZE (12u * 1024u)
 #endif
-
-/* Maximum number of translated blocks tracked at once. */
-#ifndef RV_JIT_MAX_BLOCKS
-#define RV_JIT_MAX_BLOCKS 256u
-#endif
-
-/* Power-of-two hash table size for guest pc -> block lookup. */
-#ifndef RV_JIT_HASH_SIZE
-#define RV_JIT_HASH_SIZE 256u
-#endif
-
-/* Most guest instructions translated into a single block. */
-#ifndef RV_JIT_MAX_BLOCK_INSNS
-#define RV_JIT_MAX_BLOCK_INSNS 64u
-#endif
-
-/*
- * The code cache must live in memory the core can execute. On Cortex-M
- * that is ordinary SRAM; a platform that places it elsewhere passes the
- * buffer in. Must be 4-byte aligned.
- */
-void rv_jit_set_code_buffer(void *buf, uint32_t size);
 
 /* Discard every translation. Cheap; called on reset and on invalidate. */
 void rv_jit_flush(void);

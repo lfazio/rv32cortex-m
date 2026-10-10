@@ -1,27 +1,28 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * rv_fpu.c - Single-precision floating point (F extension).
+ * rv_fpu.c - The F and D extensions: one FP unit, and both backends
+ * reach it.
  *
- * D is deliberately not implemented: the Cortex-M4F and M7 FPUs this
- * emulator targets are single-precision, so D would be entirely soft-float
- * and is not what the hardware is for. Without D, the register file is 32
- * bits wide and there is no NaN-boxing to maintain.
+ * Berkeley SoftFloat is the implementation -- not an option, and a
+ * missing checkout is a configure error rather than a fallback. This
+ * file is the RISC-V side of it: the register file and its NaN-boxing,
+ * frm and fflags, the canonical NaN, and rv_hart_fp, which is what the
+ * interpreter calls for every FP instruction and what a translated
+ * block calls for every one the host does not lower itself.
  *
- * Arithmetic uses `float` and nothing wider. On a Cortex-M4F or M7 that is
- * the hardware FPU, one instruction per operation. An earlier version
- * evaluated in `double` and rounded once, which made the flags easy to
- * derive but dragged in libgcc's soft-float double routines: 17 KiB of
- * firmware to emulate a single-precision FPU on a part that has one.
+ * D widens the register file to 64 bits, and from that moment a single
+ * carries all-ones in its upper half or is read as the canonical NaN.
+ * Every F operation goes through one pair of accessors for that reason;
+ * see "The register file, and NaN-boxing" below, and CLAUDE.md for what
+ * it cost to find the two that did not.
  *
- * Rounding modes and exception flags come from <fenv.h>, which is the
- * standard interface to exactly the FPU control and status bits needed.
- * That is smaller and more accurate than inferring them.
+ * The fused multiply-adds are SoftFloat's mulAdd, which rounds once.
  *
- * The fused multiply-adds are the one place where single precision is not
- * enough on its own: a*b+c evaluated in float rounds twice, and the whole
- * point of a fused operation is that it rounds once. They use error-free
- * transformations (Dekker's 2Product and 2Sum) to recover the exact
- * product and sum from float arithmetic alone. See f_fma.
+ * This comment used to say that D was deliberately not implemented and
+ * that the arithmetic was host `float` with flags from <fenv.h>. Both
+ * were true of an earlier file: the host-FPU path failed 52 of the F
+ * architecture tests on NaN propagation, subnormals and flags, and was
+ * removed when SoftFloat became mandatory.
  */
 
 #include "rv32/rv_hart.h"

@@ -260,140 +260,25 @@
 #endif
 
 /*
- * Chain a loop back edge inside translated code, so a loop branches within
- * the block instead of returning to the dispatcher every iteration.
+ * Seven macros used to be defaulted here: RV_JIT_LOOP_CHAIN,
+ * RV_JIT_LOOP_CAP, RV_JIT_INLINE_PERIPH, RV_JIT_PT_MAX_HOLES,
+ * RV_JIT_PT_ARM_AT, RV_JIT_ELIDE_LD and RV_JIT_ELIDE_ST, each under a
+ * long note on what it was worth.
  *
- * Only a backward branch to the block's own start is chained. The edge
- * emits one constant addition to the retired-instruction count, executed on
- * the first pass and on every iteration alike, so the loop body has to be
- * the whole path -- which is true exactly when the target is the start. A
- * mid-block target would need a different constant on the first pass than
- * on the rest, and getting that wrong is what made two earlier versions
- * miscount.
+ * They configured the hand-written Thumb-2 translator. That translator
+ * was replaced by the shared IR backends and nothing has read any of
+ * them since -- while four CMake options went on feeding them and the
+ * documents went on quoting what they bought. A flag nothing reads is
+ * the marker of a mechanism that is not there.
  *
- * The accumulation is emitted before the conditional split so both paths
- * account for the same instructions, and each exit adds only what it
- * retired since that point.
- *
- * RV_JIT_LOOP_CAP bounds interrupt latency: delivery happens between
- * blocks, so a loop must return to the dispatcher eventually.
+ * What is live: the loop cap is EMU_JIT_LOOP_CAP, in emu/emu_jit.h,
+ * because it is the framework's and every frontend's; back-edge
+ * chaining and the reload elision are unconditional in the backends;
+ * and the inlined peripheral window does not exist in the IR backends
+ * at all -- only guest RAM is inlined (emu_ir_fastmem_t). The
+ * measurements those notes carried are in docs/jit/tuning.md, marked as
+ * belonging to the translator they were taken on.
  */
-#ifndef RV_JIT_LOOP_CHAIN
-#define RV_JIT_LOOP_CHAIN 1
-#endif
-/*
- * Guest instructions a chained loop runs before returning to the
- * dispatcher, which is where interrupts are delivered -- so this is
- * directly the worst-case interrupt latency the guest sees, and the reason
- * the knob exists at all.
- *
- * Measured on the F446 at 64, 128 and 256 (cycles per guest instruction):
- *
- *              64      128     256
- *   bench      18.88   18.39   18.13
- *   mmiobench  24.40   23.46   22.99
- *   CoreMark   31.39   31.16   31.25
- *
- * Each doubling returns about half of the previous one, which puts 128 on
- * the knee. CoreMark does not care at all -- its loops end on branches the
- * translator cannot chain, so the cap is not what exits them -- while the
- * tightest loops care most: mmiobench's block entries halve exactly with
- * each doubling, and its RAM-only kernels gain 5% at 128 and 18% at 256.
- *
- * The cost is linear and certain where the gain is small and diminishing.
- * At ~31 cycles per guest instruction, 128 is about 22 us of worst-case
- * latency against 11 us at 64 and 44 us at 256. 256 buys a further 2% on
- * aggregate for double that again, which is not a good trade for an
- * emulator whose guest is driving real peripherals; drop to 64 if a guest
- * ISR has a tighter deadline than this.
- */
-#ifndef RV_JIT_LOOP_CAP
-#define RV_JIT_LOOP_CAP 128u
-#endif
-
-/*
- * Inline the peripheral window as well as guest RAM.
- *
- * Guest drivers spend their time in the passthrough window, and until this
- * existed every one of those accesses left the block through a helper call,
- * rv_hart_load/store and a bus region walk. Measured on the F446 with
- * mmiobench, that path cost about 165 host cycles more per access than the
- * inlined RAM one.
- *
- * What makes it inlinable is that the window is an identity map, so the
- * host address is the guest address and there is nothing to translate: the
- * whole fast path is a range test and the access itself.
- *
- * Stores are the awkward half, because a few sub-ranges are deliberately
- * read-only -- on the STM32 the PLL, PWR and flash controller, the three
- * registers a guest could use to take the emulator down with it. Those
- * become holes punched out of the window, and a store tests them all. Three
- * is enough for the F446 and for any policy table shaped like it; a
- * platform needing more falls back to the helper for stores and keeps the
- * inlined loads.
- */
-#ifndef RV_JIT_INLINE_PERIPH
-#define RV_JIT_INLINE_PERIPH 1
-#endif
-#ifndef RV_JIT_PT_MAX_HOLES
-#define RV_JIT_PT_MAX_HOLES 3u
-#endif
-
-/*
- * Elide the register-file round trip between dependent instructions.
- *
- * The register file lives in memory, so an instruction ends by storing its
- * result and the next begins by loading its operand; when they are the
- * same register the load reads back what the store just wrote. Measured
- * with EMU_PAIR_STATS, that is 24-33% of adjacent executed pairs.
- *
- * Two eliminations, both translate-time:
- *   - the reload, when R1 still holds the value (always safe);
- *   - the store itself, when the next instruction overwrites the register
- *     and cannot trap before doing so (so nothing could observe it).
- *
- * **Both default off, because measured they do not pay.** On the F446 with
- * `bench` and a 48 KB code cache -- the regime with no compaction, so the
- * emitted code is what is being timed:
- *
- *              cycles/insn   KIPS   code bytes
- *   off           18.32      9824      48028
- *   on            18.29      9837      47408
- *
- * 0.16% apart, which is inside the +/-3% layout noise, for 1.3% less code.
- * At the 12 KB default it is far worse -- 112.70 with the load elision and
- * 127.16 with both, against 104.01 -- because that configuration
- * re-translates 4671 times with 855 compactions, and the bookkeeping added
- * to the emitters is paid on every one of them.
- *
- * The instruction count really does fall (10,708 loads and 7,714 stores
- * removed in the 12 KB run) and it buys nothing, which is the same lesson
- * the r8-r10 register cache taught: on an in-order M4 with the code cache
- * in SRAM, a guest instruction already costs ~18 host cycles and removing
- * one host instruction from a subset of them is not where the time goes.
- *
- * Left in, off, because the code-size win is real and the translation-time
- * cost is an implementation artefact rather than something fundamental --
- * jit_r1_forget() writes four globals from twenty emitters. Anyone
- * revisiting this should fix that first and re-measure at 12 KB, which is
- * the only configuration where 1.3% less code could matter.
- */
-#ifndef RV_JIT_ELIDE_LD
-#define RV_JIT_ELIDE_LD 0
-#endif
-#ifndef RV_JIT_ELIDE_ST
-#define RV_JIT_ELIDE_ST 0
-#endif
-
-/*
- * Passthrough accesses that must go through the helper before the inlined
- * path is emitted. Low enough that a driver converts during its own setup,
- * high enough that a guest poking one register at boot and then computing
- * for an hour keeps the smaller code.
- */
-#ifndef RV_JIT_PT_ARM_AT
-#define RV_JIT_PT_ARM_AT 64u
-#endif
 
 /*
  * Whether there is a JIT is `EMU_HAVE_JIT`, in emu/emu_jit.h. There is no

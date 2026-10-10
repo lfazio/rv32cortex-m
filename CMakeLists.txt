@@ -277,13 +277,15 @@ option(EMU_JIT_DIFF
     "Check every translated block against the IR interpreter" OFF)
 option(EMU_JIT "Thumb-2 JIT backend" ON)
 
-# Chain loop back edges inside translated code: 35% on bench, 7% on CoreMark.
-option(EMU_JIT_LOOP_CHAIN "Chain loop back edges in the JIT" ON)
-option(EMU_JIT_INLINE_PERIPH "Inline the peripheral window in the JIT" ON)
-# Both measured neutral at 48 KB and a large regression at 12 KB; see
-# the note in include/rv32/rv_config.h before turning either on.
-option(EMU_JIT_ELIDE_LD "Elide the reload of a value already in R1" OFF)
-option(EMU_JIT_ELIDE_ST "Elide a store the next instruction makes dead" OFF)
+# EMU_JIT_LOOP_CHAIN, EMU_JIT_INLINE_PERIPH, EMU_JIT_ELIDE_LD and
+# EMU_JIT_ELIDE_ST were options here. Each configured the hand-written
+# Thumb-2 translator, each was still declared, forwarded as a compile
+# definition and defaulted in rv_config.h -- and **read by nothing**
+# since the IR backend replaced that translator. Setting one changed no
+# byte of the build. They are gone rather than kept as no-ops: a knob
+# that reads like a setting and is not one is how a measurement comes to
+# compare two identical binaries. What they did, and what survived as
+# behaviour rather than as an option, is in docs/jit/tuning.md.
 set(EMU_JIT_LOOP_CAP "128" CACHE STRING
     "Guest instructions a chained loop runs before returning to the dispatcher")
 
@@ -672,11 +674,6 @@ if(EMU_GUEST_ARCH_RV32)
         RV_LAZY_IRQ_CHECK=$<BOOL:${RV32_LAZY_IRQ}>
         RV_JIT_CODE_SIZE=${EMU_JIT_CODE_BYTES}u
         $<$<BOOL:${EMU_JIT_DIFF}>:EMU_JIT_DIFF>
-        RV_JIT_LOOP_CHAIN=$<BOOL:${EMU_JIT_LOOP_CHAIN}>
-        RV_JIT_INLINE_PERIPH=$<BOOL:${EMU_JIT_INLINE_PERIPH}>
-        RV_JIT_ELIDE_LD=$<BOOL:${EMU_JIT_ELIDE_LD}>
-        RV_JIT_ELIDE_ST=$<BOOL:${EMU_JIT_ELIDE_ST}>
-        RV_JIT_LOOP_CAP=${EMU_JIT_LOOP_CAP}u
         RV_JIT_HOT_REG_STATS=$<BOOL:${EMU_JIT_HOT_REG_STATS}>
     )
 

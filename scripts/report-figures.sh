@@ -79,7 +79,7 @@ rule
 say "## Build settings"
 say ""
 for v in EMU_JIT EMU_JIT_CODE_BYTES EMU_JIT_MAX_BLOCKS EMU_JIT_LOOP_CAP \
-         EMU_JIT_LOOP_CHAIN EMU_JIT_INLINE_PERIPH RV_GUEST_MARCH \
+         RV_GUEST_MARCH \
          COREMARK_ITERATIONS CMAKE_BUILD_TYPE RV32_EXT_F RV32_EXT_ZCB; do
     line=$(grep -E "^$v:" "$BUILD/CMakeCache.txt" 2>/dev/null || true)
     if [ -n "$line" ]; then

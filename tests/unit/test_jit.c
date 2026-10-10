@@ -534,9 +534,12 @@ static int32_t ch_a_rel32(void)
  *
  * Only reachable when a block is larger than EMU_JIT_BLOCK_RESERVE,
  * because otherwise the reserve triggers the compaction first and the
- * flag is clear. That is 512 bytes on a microcontroller and 8192 on a
- * host, so no host run ever overflowed and RISC-V's short blocks rarely
- * did on the board; PowerPC's reach 890 bytes of Thumb-2.
+ * flag is clear. That is 8192 bytes on a host, which no block reaches,
+ * so no host run ever overflowed -- and 512 on a microcontroller, where
+ * every guest that fills the cache does. RV32 CoreMark at 120
+ * iterations overflows 982 times on the Nucleo-F746ZG; built from the
+ * commit before the fix it prints its banner and never finishes, and
+ * with this one change applied to that tree it completes.
  *
  * The shape here is the board's: A is entered from the dispatcher every
  * time round and stays hot, B and C are reached through the chain and so

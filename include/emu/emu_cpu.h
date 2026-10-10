@@ -31,11 +31,13 @@
  *   1. include/<isa>/          public headers, <isa>_ prefixed
  *   2. src/frontend/<isa>/     state, decoder, interpreter, devices
  *   3. one emu_cpu_ops_t, registered in src/emu/emu_cpu.c
- *   4. -DEMU_FRONTEND_<ISA>=ON in the top-level CMakeLists
+ *   4. option(EMU_GUEST_ARCH_<ISA>) in the top-level CMakeLists
  *
  * The ISA-agnostic runtime it gets for free: the bus and its region table,
  * passthrough onto real peripherals, the NS16550 console, the ELF loader,
- * platform cache maintenance, and both platforms.
+ * platform cache maintenance, and every platform. A JIT is one more
+ * file -- a translator to the shared IR -- and both host emitters come
+ * with it; see docs/jit/README.md.
  */
 #ifndef EMU_CPU_H
 #define EMU_CPU_H
