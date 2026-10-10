@@ -78,9 +78,11 @@ bugs that both x86 suites passed. Hardware is a Nucleo-F746ZG on
 `flash` targets because this firmware never idles and a plain attach
 races it.
 
-**`isatest` cannot measure JIT coverage** -- it arms PMP early, so
-everything downstream interprets. Use `bench` or `coremark` for that, and
-read `isatest` only as a correctness check.
+**`isatest` could not measure JIT coverage** -- it arms PMP early, and
+the JIT used to stop at the first PMP entry. It no longer does: on the
+x86-64 host `isatest --jit` interprets 436 of 45,799 instructions. The
+board has not been re-measured since, so use `bench` or `coremark` there
+until it has.
 
 ## Things that have bitten, and will again
 
@@ -340,7 +342,9 @@ session, and every one of them recurred:
     flushes the code cache. That is a correctness-preserving way to have
     no JIT, and no test of correctness would notice. `test_jit_generation_key`
     checks both directions; both were confirmed by breaking them (10
-    failures narrow, 2 coarse).
+    failures narrow, 2 coarse). **There is a third way to be wrong: the
+    right state in the wrong key** -- see "Identity and invalidation"
+    below, which is where FS off-ness and frm went in the end.
   - **Re-derive on the interpreter fallback, never per dispatch.** frm,
     `mstatus.FS` and PMP all move only through a CSR write, and the
     translator declines `SYSTEM`, so the fallback is the single place any
@@ -1018,11 +1022,15 @@ session, and every one of them recurred:
   guest turns the FPU off, so instructions that must raise
   illegal-instruction run silently.
 
-  It now has one: `rv_ir_gen_key` folds frm, FS off-ness and `vm_gen`
+  It got one: `rv_ir_gen_key` folded frm, FS off-ness and `vm_gen`
   into a word that `after_interp` refreshes and `bind` points
   `generation` at. Re-derived on the interpreter fallback rather than in
   `generation` itself, because that is read on every block entry and
-  CoreMark enters blocks 2.9M times a run.
+  CoreMark enters blocks 2.9M times a run. **frm and FS have since moved
+  to the block's context** -- they decide what a block is for, not
+  whether it is still valid, and as part of the generation they flushed
+  the cache twice per Linux system call. See "Identity and invalidation"
+  below.
 
   **The key can be wrong in two opposite directions and only one of them
   is a wrong answer.** Too narrow -- missing frm, say -- leaves blocks
@@ -1034,14 +1042,16 @@ session, and every one of them recurred:
   would notice. `test_jit_generation_key` checks both, and both were
   confirmed by breaking them: 10 failures narrow, 2 failures coarse.
   Accrued fflags share fcsr with frm and must *not* flush; that is
-  checked too.
+  checked too. Since the move it checks the context as well: FS back
+  in the generation is 1 failure, FS out of the context is 3.
 - **`isatest` cannot measure JIT coverage, because it arms PMP early.**
   Confirmed on the board, same firmware, one guest apart: `isatest`
   interprets 14,700 of 45,399 instructions (32%), `bench` interprets
   40,521 of 1,274,518 (**3.2%**). `rv_jit_bind` points the framework's
   `blocked` at `h->fetch_guard`, so once a PMP entry is locked
   everything downstream goes to the interpreter whatever the backend
-  could have lowered.
+  could have lowered. (`blocked` is Sdtrig alone now; see the line near
+  the top of this file for what that changed on the host.)
 
   That is why three consecutive changes here -- floating-point emission,
   then Thumb-2 helper calls -- each produced a board run whose counters
@@ -1977,6 +1987,29 @@ session, and every one of them recurred:
   it was not built for; and it must be mixed into the *hash* as well as
   compared, or every context collides in one bucket and lookup walks
   the chain.
+
+  **Second instance, in the same two functions: the FP unit's
+  state.** FS off-ness and frm were in `rv_ir_gen_key`, directly
+  below a comment stating the rule they broke. The argument for it was
+  that "trap entry does not touch FS", which is true of the hardware
+  and false of the guest: Linux clears `sstatus.FS` in its trap handler
+  and restores it before `sret`, so every system call from a process
+  that had used a float flushed twice. Booting a root filesystem,
+  **21,949 of 22,126 flushes** were FS, the cache held a median of 438
+  blocks against ~7,000 while the kernel booted, and a 15-minute run
+  never reached the login prompt.
+  Moved to the context, which had to widen to 64 bits because satp and
+  the privilege fill 32. **When a key is full, the next thing that
+  belongs in it goes into the other key**, and that is the moment to
+  widen rather than to reason about why the other key is acceptable.
+
+  The framework test that guards the width (`test_blocks_are_per_context`)
+  catches a 32-bit context anywhere on the path from `hot.context` to the
+  table -- 5 failures -- and **does not** catch a truncation in lookup's
+  compare alone, because the hash still sees both words and the two
+  contexts never share a bucket. That is written down in the test rather
+  than papered over: catching it needs two contexts that collide in the
+  hash, which means copying the hash into the test.
 - **A capability macro that depends on include order is worse than no
   macro.** `G4MH_HAVE_JIT` was defined in `g4mh_cpu.h` from
   `EMU_HOST_JIT_X86_64`, which `emu/emu_jit.h` defines -- and
@@ -2158,6 +2191,87 @@ session, and every one of them recurred:
   its own dispatch. **Block entries fell as intended and the clock rose
   anyway** -- which is the signature of an optimisation whose metric is
   not the cost.
+- **A trap is not always an instruction the interpreter ran.** The
+  JIT's context carries the privilege, and it was refreshed only on the
+  interpreter fallback, on the argument -- in a comment beside the code
+  -- that privilege moves only on traps and xRETs, "both of which the
+  translator declines". ECALL is declined. A load that faults is not:
+  `rv_ir_load` calls `rv_hart_trap` from inside the block, and the
+  interrupt hook does the same between blocks. The dispatch then looked
+  the handler up under the context it had trapped *from* and filed the
+  handler's first block there, where the lower mode could later find it
+  and run machine-mode code from a page it may not fetch. Linux never
+  showed it, because its vector starts with `csrrw`, which declines.
+
+  `rv_hart_trap` refreshes the context now, beside the PMP and MMU
+  refreshes that were already there for the same reason. isatest's
+  `jit-ctx-fetch-tval` is the consequence, not just the mechanism: with
+  the fix reverted, S-mode's fetch fault on the denied stub arrives at
+  **0x20001008 instead of 0x20001000**, under `--jit` only. The first
+  version of that test was assembled compressed and failed at +4 rather
+  than the +8 its own comment predicted -- the right failure for the
+  wrong reason in the comment, caught by reading the address rather than
+  the verdict.
+
+- **"Waiting, not grinding" is a measurement, and the udev stall was
+  both.** docs/TODO.md said a udev worker on vda "blocks for ~1170
+  guest-seconds", that the guest was "waiting on something that never
+  completes rather than grinding -- which makes it a device question,
+  not a JIT one", and that no translator work would move it. Nothing
+  had been measured. It was three defects, and boot to a login prompt
+  went from over 900 s to 109 s:
+
+  | | 8192 blocks | 65536 blocks |
+  |---|---|---|
+  | FS out of the generation | 202 s | 188 s |
+  | ...and GET_ID answered | 202 s | 109 s |
+
+  The JIT flushing on every FS flip (the entry above), the block table
+  filling at 8192 while the code buffer was a fifth used (2,578
+  compactions, translation 81% of host time), and **virtio-blk dropping
+  GET_ID**: TinyEMU lets every request type but IN and OUT fall through
+  a `default: break;`, Linux sends one to read `/sys/block/vda/serial`,
+  and the worker blocked until `udevadm settle` gave up at 120 s.
+
+  Three things generalise.
+
+  **Two bottlenecks the same size hide each other.** With the request
+  dropped, udev ends when the timeout does however fast the CPU runs;
+  with 8192 blocks the CPU work takes about as long as the timeout.
+  Each fix alone measured 202 s -- a perfect null result, twice, for two
+  changes that were both right. This file says an A/B that shows
+  nothing is a result about the workload; the specific form here is
+  that it can be a result about *the other bottleneck*. What separated
+  them was the telemetry's guest rate: **executing at 4.8 M/s and idle
+  at 0.1 M/s are different stalls**, and the same boot had both, one
+  after the other.
+
+  **Read the columns before reading the numbers.** The live line's
+  `jit` is resident blocks and `blk` is cumulative translations; read
+  the other way round, the first telemetry looked like a cache
+  growing, and it was a cache being wiped. `src/platform/host/board.c`
+  names them; ten seconds there would have saved the first wrong
+  theory.
+
+  **And quote a distribution, not a line.** `jit` is a snapshot of a
+  cache that was being emptied thousands of times a second, so one
+  line can land just after a flush: "as few as 5 blocks" went into
+  four documents from the worst line of one paste, and the true
+  minimum over the run was 0 -- which is as meaningless. The median was
+  438. The last line of a run is worse again, because its rates cover a
+  partial period. Every figure in this entry is a median over the run,
+  first and last lines dropped.
+
+  **A device that drops what it does not recognise fails as a hang in
+  the guest, and the guest cannot say why.** No status, no used-ring
+  entry, no interrupt: the driver waits in the kernel and every
+  register reads correctly. Unknown requests complete with UNSUPP now.
+  The vendored file stays byte-identical -- `virtio_tinyemu.c`
+  `#include`s it and wraps one function, so an update is still a copy
+  and a reshaped upstream fails to compile rather than silently
+  bypassing the wrapper. The probe that found it was one `fprintf` in
+  the `default:` case: **type 8, once per boot**.
+
 - **Measure; do not reason about performance.** Interpreter-in-SRAM was
   *slower*, lazy-IRQ was neutral, and the `clmul` fix was 1.3% when the real
   cost was 4.12-instruction blocks. Layout noise is ±3% on the host; on the

@@ -300,14 +300,19 @@ which builds init, the kernel and OpenSBI before it runs anything;
 `LINUX_JIT` and `LINUX_ZBB` override the pieces. Ctrl-C ends the emulator; it does not
 reach the guest.
 
-Expect minutes, and **the figure this paragraph used to quote is
-stale**: 40 minutes was measured before the JIT work that took the
-kernel boot from 210 s to 38 s, and the rootfs boot has not been timed
-since. What has not changed is where the time goes -- `/sbin/init` runs
-inside a minute of guest time and then one udev worker on `vda` blocks
-for ~1170 guest-seconds before udev kills it. See
-[docs/TODO.md](docs/TODO.md): that stall is an open question, not a
-speed problem, and no amount of translator work will move it.
+Expect about two minutes: **109 s to the login prompt**, translated,
+on an x86-64 host. udev is about half of that.
+
+It used to be over fifteen minutes, and this paragraph used to call the
+udev stall "an open question, not a speed problem, and no amount of
+translator work will move it". It was three problems, two of them the
+translator's: the JIT flushed its whole cache every time Linux turned
+the FP unit off and on around a trap; its block table filled at 8192
+blocks while the code buffer was a fifth used; and virtio-blk never
+answered the GET_ID request udev sends to read the disk's serial. The
+first two are fixed in the JIT and the third in
+`src/emu/virtio/virtio_tinyemu.c`; the measurements are in
+[docs/TODO.md](docs/TODO.md).
 
 `LINUX_JIT=0` interprets instead of translating, which is what to do
 when a boot misbehaves and the question is whether the translator is

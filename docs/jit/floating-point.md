@@ -60,7 +60,9 @@ host has RISC-V's ties-away (`RMM`), and an earlier run-time table mapped
 it to ties-even with nothing noticing.
 
 A block is therefore *specialised* on `frm`, which is why `frm` is in
-`rv_ir_gen_key` — see [`staleness.md`](staleness.md). The block also sets
+`rv_jit_ctx_key`: a block built for one rounding mode is never entered under
+another, and changing the mode flushes nothing — see
+[`staleness.md`](staleness.md). The block also sets
 the mode rather than inheriting it, or `emu_ir_can_lower`'s answer would
 be a guess about the caller.
 

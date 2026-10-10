@@ -52,13 +52,26 @@ confirmed it: three instructions that had to trap produced no traps at all.
 OP-FP and the fused multiply-adds were not consulting FS in the first place.
 
 Fixed the way `frm` is: FS off-ness is recorded when a block is built, and a
-change flushes. Both checks sit on the interpreter fallback, because a CSR
-write to `mstatus` is the only thing that reaches Off — trap entry and `mret`
-do not touch FS, and `emit_fp_dirty` only ever moves it away from Off. It is
+block is never entered under a different one. Both are re-derived on the
+interpreter fallback, because a CSR write to `mstatus` is the only thing that
+reaches Off — `emit_fp_dirty` only ever moves it away from Off. It is
 *off-ness* that is tracked rather than the two-bit field, since `emit_fp_dirty`
-moves Initial or Clean to Dirty on most operations and flushing for that would
-discard the cache continuously. A guest with no FP never flushes for either:
-CoreMark still reports one flush for its whole run.
+moves Initial or Clean to Dirty on most operations.
+
+**"Recorded" means part of the block's identity, not of its generation, and
+the first version got that wrong.** FS off-ness and frm were in
+`rv_ir_gen_key`, so a change *flushed the whole cache*. The argument that this
+was cheap was that "trap entry and `mret` do not touch FS" — true of the
+hardware and false of the guest: Linux clears `sstatus.FS` in its trap handler
+on every entry to the kernel and restores it before `sret`, so every system
+call and interrupt taken from a process that had used a float flipped FS off
+and back on, and each flip flushed. Booting a root filesystem, 21,949 of
+22,126 flushes were FS; the cache held a median of 438 blocks against ~7,000
+while the kernel booted; boot did not reach a login prompt in fifteen minutes. Both now live in the high
+word of `rv_jit_ctx_key` — the context had to widen to 64 bits for it, because
+satp and the privilege fill 32 — and an FS flip costs nothing.
+`test_jit_generation_key` asserts both halves: off-ness changes the context,
+and changes the generation not at all.
 
 **Still declined**, so the block ends there:
 

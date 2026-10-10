@@ -104,24 +104,88 @@ measured at.
       from is a worse one. QEMU's answer is an escape sequence, which
       is a state machine rather than a flag.
 
-      **A udev worker on vda blocks for ~1170 guest-seconds and is
-      then killed**, and that -- not emulation speed -- is most of the
-      40 minutes a boot takes:
+      **The udev stall: fixed, and it was three things, two of them
+      the JIT's.** This entry used to say the guest was "waiting on
+      something that never completes rather than grinding -- which
+      makes it a device question, not a JIT one". Half right. Boot to
+      a login prompt is **109 s** now, from over 900 s (a 15-minute
+      run did not reach it):
 
-          [  102.136618] udevd[81]: starting eudev-3.2.14
-          [ 1276.400027] udevd[81]: worker [86] .../virtio0/block/vda
-                         timeout; kill it
-          [ 1276.492807] udevd[81]: seq 1280 '.../block/vda' killed
+      | | 8192 blocks | 65536 blocks |
+      |---|---|---|
+      | FS out of the generation only | 202 s | 188 s |
+      | ...and GET_ID answered | 202 s | **109 s** |
 
-      Everything either side of it is brisk: `/sbin/init` at guest 3.5s
-      translated, and the whole of runlevel 5 after the kill. So the
-      guest is waiting on something that never completes rather than
-      grinding -- which makes it a device question, not a JIT one. The
-      obvious suspects are the block device's config space or an
-      attribute read that never answers; `poweroff` and the emulator's
-      own exit statistics from a session that has reached the shell
-      would say whether the queue is idle while it waits. **Nothing has
-      been measured here yet**; the numbers above are read off one boot.
+      - **The JIT flushed on every system call.** Linux clears
+        `sstatus.FS` on each trap into the kernel and restores it at
+        the return, and FS off-ness was in `rv_ir_gen_key` -- so every
+        trap from a process that had touched a float threw the whole
+        cache away. 21,949 of 22,126 flushes; a median of 438 resident
+        blocks against ~7,000 while the kernel booted; guest 2.4 M
+        instructions/s with 1,776 host instructions each (medians over
+        the run, first and last lines dropped). FS and frm are part of a block's *identity*
+        now, in a context widened to 64 bits. The telemetry showed it
+        from the start -- `jit` (resident) collapsing while `blk`
+        (translations) climbed -- once the columns were read the right
+        way round.
+      - **The block table filled first.** Blocks are keyed on the
+        address space, so every process udev starts translates its
+        code afresh. At 8192 blocks: 2,578 compactions, 13.7M blocks
+        evicted, translation 81% of host time, with the 32 MiB code
+        buffer a fifth used. At 65536 the buffer fills first, as it
+        should.
+      - **virtio-blk dropped GET_ID.** Reading
+        `/sys/block/vda/serial` sends `VIRTIO_BLK_T_GET_ID`, and
+        TinyEMU lets every type but IN and OUT fall through a
+        `default: break;`. The worker blocked in the kernel and
+        `udevadm settle` waited out its 120 s. One dropped request
+        per boot, measured: type 8, 16 bytes out, 21 back. Its
+        signature in the console log is udevd's own, 180 s after the
+        worker started:
+
+            [   81.562662] udevd[81]: worker [88] .../block/vda is taking a long time
+            [  199.198842] udevd[81]: worker [88] .../block/vda timeout
+            [  199.217723] udevd[81]: seq 1280 '.../block/vda' killed
+
+        That is the control -- every fix but this one. With it, none of
+        the three lines appears and the root filesystem is remounted at
+        guest 65.8 s. The `killed` at guest 1153 s or 1276 s in slower
+        boots is the same event, dispatched late because udev itself
+        was crawling.
+
+      **The last two hid each other**, which is why each looked
+      worthless alone. With the request dropped, udev ends when the
+      settle timeout does however fast the CPU work runs; with 8192
+      blocks the CPU work takes about as long as the timeout. Both
+      single fixes measure 202 s; both together, 109 s. An A/B that
+      shows nothing is a result about the workload -- here, about a
+      second bottleneck the same size as the first. What separated
+      them was the telemetry's guest rate: **executing at 4.8 M/s and
+      idle at 0.1 M/s are different stalls**, and one boot had both.
+
+      Still costing time, measured and not yet done:
+
+      - **FENCE.I flushes the whole cache**: ~3,770 a boot, nearly
+        all before udev. A store into a page holding translated code
+        is what it has to catch; tracking that per page would make it
+        local.
+      - **Every process translates its own copy of libc.** The key is
+        satp, so identical physical pages in two address spaces are
+        two sets of blocks. Keying on the physical page would share
+        them, at the cost of a translation on every lookup.
+
+      Found on the way, and **fixed**: a trap taken inside a block left
+      `jit_ctx` stale. `rv_ir_load` raises a fault from inside the
+      block and the interrupt hook raises one between blocks, and the
+      context -- which carries the privilege -- was refreshed only on
+      the interpreter fallback. So the dispatch looked the handler up
+      under the context it had trapped *from*, and filed the handler's
+      first block there. `rv_hart_trap` refreshes it now, beside the PMP
+      and MMU refreshes it already did. isatest's `jit-ctx-fetch-tval`
+      shows the consequence: S-mode jumps to a machine-mode trap stub on
+      a page PMP denies it, and with the fix reverted the fetch fault
+      arrives at stub+8 -- S-mode had run the stub's first block -- where
+      it must arrive at stub+0. Interpreter unaffected, as it should be.
 
       **The device tree understates the machine, and the cost is
       coverage.** The guest reports
@@ -159,8 +223,6 @@ measured at.
 
       Still open:
 
-      - **the udev stall**, which is most of the wall time and has not
-        been looked at;
       - **whether the Zbb alternatives actually patch.** The device
         tree declares B and the kernel is built with
         CONFIG_RISCV_ISA_ZBB, so the mechanism is in place and the
