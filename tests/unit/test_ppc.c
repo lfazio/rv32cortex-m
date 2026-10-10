@@ -233,7 +233,7 @@ static void test_condition_register(void)
         0x38800009u, /* li    r4,9                                     */
         0x7C032000u, /* cmpw  cr0,r3,r4     -- 5 < 9  -> LT in CR0     */
         0x7D832000u, /* cmpw  cr3,r3,r4     -- same, into CR3          */
-        0x7C641800u, /* cmpw  cr0,r4,r3     -- 9 > 5  -> GT, overwrite */
+        0x7C041800u, /* cmpw  cr0,r4,r3     -- 9 > 5  -> GT, overwrite */
         0x7CA00026u, /* mfcr  r5                                       */
         0x44000002u, /* sc                                             */
     };

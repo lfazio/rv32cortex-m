@@ -25,19 +25,83 @@ extern "C" {
 #define PPC_NGPR 32u
 
 /*
- * Machine State Register, the bits this core models. Named by their
- * PowerPC bit number in the comment and given as masks, because the
- * manual's numbers are from the left and mixing the two conventions is
- * how MSR[EE] and MSR[PR] end up swapped.
+ * Machine State Register, every bit the e200z759n3 implements (manual
+ * table 7-4). Named by their PowerPC bit number in the comment and given
+ * as masks, because the manual's numbers are from the left and mixing
+ * the two conventions is how MSR[EE] and MSR[PR] end up swapped.
  */
-#define PPC_MSR_CE (1u << 17) /* bit 14: critical enable      */
-#define PPC_MSR_EE (1u << 15) /* bit 16: external enable      */
-#define PPC_MSR_PR (1u << 14) /* bit 17: problem state (user) */
-#define PPC_MSR_ME (1u << 12) /* bit 19: machine check enable */
-#define PPC_MSR_DE (1u << 9) /* bit 22: debug enable         */
-#define PPC_MSR_IS (1u << 5) /* bit 26: instruction space    */
-#define PPC_MSR_DS (1u << 4) /* bit 27: data space           */
-#define PPC_MSR_SPE (1u << 25) /* bit  6: SPE available        */
+#define PPC_MSR_UCLE (1u << 26) /* bit  5: user cache lock enable */
+#define PPC_MSR_SPE (1u << 25)  /* bit  6: SPE/EFPU available     */
+#define PPC_MSR_WE (1u << 18)   /* bit 13: wait state enable      */
+#define PPC_MSR_CE (1u << 17)   /* bit 14: critical enable        */
+#define PPC_MSR_EE (1u << 15)   /* bit 16: external enable        */
+#define PPC_MSR_PR (1u << 14)   /* bit 17: problem state (user)   */
+#define PPC_MSR_FP (1u << 13)   /* bit 18: FP available (ignored) */
+#define PPC_MSR_ME (1u << 12)   /* bit 19: machine check enable   */
+#define PPC_MSR_FE0 (1u << 11)  /* bit 20: unused by this core    */
+#define PPC_MSR_DE (1u << 9)    /* bit 22: debug enable           */
+#define PPC_MSR_FE1 (1u << 8)   /* bit 23: unused by this core    */
+#define PPC_MSR_IS (1u << 5)    /* bit 26: instruction space      */
+#define PPC_MSR_DS (1u << 4)    /* bit 27: data space             */
+#define PPC_MSR_PMM (1u << 2)   /* bit 29: performance mark       */
+#define PPC_MSR_RI (1u << 1)    /* bit 30: recoverable interrupt  */
+
+/* The bits that exist; the rest read as zero and ignore writes. */
+#define PPC_MSR_IMPL                                                           \
+    (PPC_MSR_UCLE | PPC_MSR_SPE | PPC_MSR_WE | PPC_MSR_CE | PPC_MSR_EE |       \
+     PPC_MSR_PR | PPC_MSR_FP | PPC_MSR_ME | PPC_MSR_FE0 | PPC_MSR_DE |         \
+     PPC_MSR_FE1 | PPC_MSR_IS | PPC_MSR_DS | PPC_MSR_PMM | PPC_MSR_RI)
+
+/*
+ * Exception Syndrome Register (table 7-3). An interrupt that sets ESR
+ * clears every bit it does not name -- the register describes the last
+ * synchronous exception, not a history.
+ */
+#define PPC_ESR_PIL (1u << 27)   /* bit  4: illegal instruction     */
+#define PPC_ESR_PPR (1u << 26)   /* bit  5: privileged instruction  */
+#define PPC_ESR_PTR (1u << 25)   /* bit  6: trap                    */
+#define PPC_ESR_ST (1u << 23)    /* bit  8: the access was a store  */
+#define PPC_ESR_SPE (1u << 7)    /* bit 24: SPE/EFPU operation      */
+#define PPC_ESR_VLEMI (1u << 5)  /* bit 26: a VLE instruction       */
+#define PPC_ESR_MIF (1u << 1)    /* bit 30: misaligned fetch        */
+
+/*
+ * SPEFSCR, the embedded floating-point status and control register
+ * (table 5-1). The "H" bits describe the high element of a vector
+ * operation, which this model does not execute; a scalar instruction
+ * clears them, which is all they ever do here.
+ */
+#define PPC_SPEFSCR_SOVH (1u << 31)
+#define PPC_SPEFSCR_OVH (1u << 30)
+#define PPC_SPEFSCR_FGH (1u << 29)
+#define PPC_SPEFSCR_FXH (1u << 28)
+#define PPC_SPEFSCR_FINVH (1u << 27)
+#define PPC_SPEFSCR_FDBZH (1u << 26)
+#define PPC_SPEFSCR_FUNFH (1u << 25)
+#define PPC_SPEFSCR_FOVFH (1u << 24)
+#define PPC_SPEFSCR_FINXS (1u << 21)
+#define PPC_SPEFSCR_FINVS (1u << 20)
+#define PPC_SPEFSCR_FDBZS (1u << 19)
+#define PPC_SPEFSCR_FUNFS (1u << 18)
+#define PPC_SPEFSCR_FOVFS (1u << 17)
+#define PPC_SPEFSCR_MODE (1u << 16) /* only mode 0 exists: reads 0 */
+#define PPC_SPEFSCR_SOV (1u << 15)
+#define PPC_SPEFSCR_OV (1u << 14)
+#define PPC_SPEFSCR_FG (1u << 13)
+#define PPC_SPEFSCR_FX (1u << 12)
+#define PPC_SPEFSCR_FINV (1u << 11)
+#define PPC_SPEFSCR_FDBZ (1u << 10)
+#define PPC_SPEFSCR_FUNF (1u << 9)
+#define PPC_SPEFSCR_FOVF (1u << 8)
+#define PPC_SPEFSCR_FINXE (1u << 6)
+#define PPC_SPEFSCR_FINVE (1u << 5)
+#define PPC_SPEFSCR_FDBZE (1u << 4)
+#define PPC_SPEFSCR_FUNFE (1u << 3)
+#define PPC_SPEFSCR_FOVFE (1u << 2)
+#define PPC_SPEFSCR_FRMC 3u /* 0 RN, 1 RZ, 2 RP, 3 RM */
+
+/* Every implemented bit: bits 8:9 and 24 are reserved, MODE reads 0. */
+#define PPC_SPEFSCR_IMPL 0xFF3EFF7Fu
 
 /*
  * Condition register. Eight 4-bit fields, CR0..CR7, numbered from the
@@ -49,45 +113,84 @@ extern "C" {
 #define PPC_CR_EQ 0x2u
 #define PPC_CR_SO 0x1u
 
-/* XER, the fixed-point exception register. */
+/* XER, the fixed-point exception register. Bits 25:31 are the string
+ * byte count, which exists as storage although the string instructions
+ * do not. */
 #define PPC_XER_SO (1u << 31)
 #define PPC_XER_OV (1u << 30)
 #define PPC_XER_CA (1u << 29)
+#define PPC_XER_IMPL (PPC_XER_SO | PPC_XER_OV | PPC_XER_CA | 0x7Fu)
 
 /*
- * Special purpose registers, by SPR number. The e200 has a great many;
- * these are the ones a guest cannot start without.
+ * Special purpose registers, by SPR number (manual table 16). The
+ * privileged ones have bit 5 of the *split* field set, which in the
+ * swapped number is 0x10 -- the rule mfspr and mtspr apply to an
+ * unimplemented number as well.
  */
 #define PPC_SPR_XER 1u
 #define PPC_SPR_LR 8u
 #define PPC_SPR_CTR 9u
+#define PPC_SPR_DEC 22u
 #define PPC_SPR_SRR0 26u
 #define PPC_SPR_SRR1 27u
+#define PPC_SPR_PID0 48u
+#define PPC_SPR_DECAR 54u
 #define PPC_SPR_CSRR0 58u
 #define PPC_SPR_CSRR1 59u
 #define PPC_SPR_DEAR 61u
 #define PPC_SPR_ESR 62u
 #define PPC_SPR_IVPR 63u
+#define PPC_SPR_USPRG0 256u
+#define PPC_SPR_SPRG4_R 260u /* .. SPRG7_R at 263, user read-only   */
+#define PPC_SPR_TBL_R 268u
+#define PPC_SPR_TBU_R 269u
+#define PPC_SPR_SPRG0 272u   /* .. SPRG7 at 279                     */
+#define PPC_SPR_TBL_W 284u
+#define PPC_SPR_TBU_W 285u
 #define PPC_SPR_PIR 286u
 #define PPC_SPR_PVR 287u
 #define PPC_SPR_DBSR 304u
-#define PPC_SPR_DBCR0 308u
+#define PPC_SPR_DBCR0 308u   /* .. DBCR2 at 310                     */
+#define PPC_SPR_IAC1 312u    /* .. IAC4 at 315                      */
+#define PPC_SPR_DAC1 316u    /* .. DAC2 at 317                      */
+#define PPC_SPR_DVC1 318u    /* .. DVC2 at 319                      */
 #define PPC_SPR_TSR 336u
 #define PPC_SPR_TCR 340u
-/*
- * The timer facility. Book E gives the time base two SPR numbers each,
- * because reading and writing it are different privileges: 268/269 are
- * the user-readable TBL/TBU and 284/285 the supervisor-writable ones.
- * A guest that writes 268 is not writing the time base, it is taking a
- * program interrupt -- so the two pairs are separate constants and not
- * one with a comment.
- */
-#define PPC_SPR_DEC 22u
-#define PPC_SPR_DECAR 54u
-#define PPC_SPR_TBL_R 268u
-#define PPC_SPR_TBU_R 269u
-#define PPC_SPR_TBL_W 284u
-#define PPC_SPR_TBU_W 285u
+#define PPC_SPR_IVOR0 400u   /* .. IVOR15 at 415                    */
+#define PPC_SPR_SPEFSCR 512u
+#define PPC_SPR_L1CFG0 515u
+#define PPC_SPR_L1CFG1 516u
+#define PPC_SPR_IVOR32 528u  /* .. IVOR35 at 531                    */
+#define PPC_SPR_DBCR3 561u
+#define PPC_SPR_DBCNT 562u
+#define PPC_SPR_DBCR4 563u
+#define PPC_SPR_DBCR5 564u
+#define PPC_SPR_IAC5 565u    /* .. IAC8 at 568                      */
+#define PPC_SPR_DBERC0 569u
+#define PPC_SPR_MCSRR0 570u
+#define PPC_SPR_MCSRR1 571u
+#define PPC_SPR_MCSR 572u
+#define PPC_SPR_MCAR 573u
+#define PPC_SPR_DSRR0 574u
+#define PPC_SPR_DSRR1 575u
+#define PPC_SPR_DDAM 576u
+#define PPC_SPR_DBCR6 603u
+#define PPC_SPR_SPRG8 604u
+#define PPC_SPR_SPRG9 605u
+#define PPC_SPR_L1FINV1 959u
+#define PPC_SPR_DEVENT 975u
+#define PPC_SPR_HID0 1008u
+#define PPC_SPR_HID1 1009u
+#define PPC_SPR_L1CSR0 1010u
+#define PPC_SPR_L1CSR1 1011u
+#define PPC_SPR_BUCSR 1013u
+#define PPC_SPR_L1FINV0 1016u
+#define PPC_SPR_SVR 1023u
+
+/* HID0[ICR], interrupt inputs clear the reservation (bit 14). */
+#define PPC_HID0_ICR (1u << 17)
+/* L1CSR0[DCE], the data cache enable (bit 31). */
+#define PPC_L1CSR0_DCE 1u
 
 /*
  * TSR and TCR, with Book E's bit numbers in the comments and masks in
@@ -105,19 +208,15 @@ extern "C" {
 #define PPC_TCR_FIE (1u << 23) /* bit  8: fixed-interval en    */
 #define PPC_TCR_ARE (1u << 22) /* bit  9: auto-reload          */
 
-#define PPC_SPR_IVOR0 400u /* .. IVOR15 at 415                   */
-#define PPC_SPR_SPRG0 272u /* .. SPRG7                           */
-
-/* How many SPRs are storable. 1024 is the architectural space; a flat
- * array of that is 4 KiB, which is more than the sparse set justifies,
- * so the frontend maps the ones above onto a small table. */
-#define PPC_NSPR 1024u
-
 /*
- * Book E interrupts, as IVOR index. The handler address is
+ * Book E interrupts, by IVOR number. The handler address is
  * IVPR[0:15] || IVORn[16:27] || 0b0000 -- the vector is *in a register*,
  * not at a fixed offset, which is the main structural difference from
  * RISC-V's mtvec and from G4MH's RBASE table.
+ *
+ * 32 to 35 are the e200's own: the SPE/EFPU unit and the performance
+ * monitor. There is no IVOR16 to 31, and the array that holds them is
+ * indexed by this number, so it has 36 slots of which 20 are used.
  */
 typedef enum {
     PPC_IVOR_CRITICAL = 0,
@@ -136,7 +235,11 @@ typedef enum {
     PPC_IVOR_DTLB_ERROR = 13,
     PPC_IVOR_ITLB_ERROR = 14,
     PPC_IVOR_DEBUG = 15,
-    PPC_IVOR_COUNT = 16,
+    PPC_IVOR_SPE_UNAVAIL = 32,
+    PPC_IVOR_FP_DATA = 33,
+    PPC_IVOR_FP_ROUND = 34,
+    PPC_IVOR_PERF_MON = 35,
+    PPC_IVOR_COUNT = 36,
 } ppc_ivor_t;
 
 /* No exception pending. Distinct from every valid IVOR index. */

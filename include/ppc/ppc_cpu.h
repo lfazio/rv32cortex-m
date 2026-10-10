@@ -40,23 +40,68 @@ typedef struct ppc_cpu {
     uint32_t msr;
 
     /*
-     * Special purpose registers, sparse.
-     *
-     * The architectural space is 1024 and a flat array of it is 4 KiB --
-     * more than a part with 320 KiB of SRAM should spend on registers
-     * that are overwhelmingly unimplemented. mfspr/mtspr map through
-     * ppc_spr_slot(), and an unmapped number raises a program interrupt
-     * rather than reading zero, because "reads zero" is how a guest
-     * silently mis-detects its own core.
+     * The embedded floating-point unit's status and control. EFPU2
+     * keeps its operands in the GPRs, so this is the whole of its state.
      */
-    uint32_t sprg[8];
+    uint32_t spefscr;
+
+    /*
+     * The reservation, as HID1[ATS] describes it: a flag and no
+     * address. The e200 compares no address on a store conditional
+     * (manual 3.5), so neither does this.
+     */
+    bool reserve;
+
+    /*
+     * Which instruction encoding this core is decoding.
+     *
+     * VLE and classic Book E are *different encodings of the same
+     * bytes*, not a superset and a subset: 0x48000009 is `bl` in Book E
+     * and a 16-bit se_ form followed by something else in VLE. A real
+     * e200 chooses per page, from the VLE attribute of the TLB entry;
+     * this model has no MMU, so the frontend chooses once per image from
+     * the ELF's PF_PPC_VLE segment flag, which is the same attribute as
+     * the linker records it. A raw binary is VLE, which is what this
+     * core runs out of reset (the p_rst_vlemode input).
+     *
+     * It was once false by default and written only by a unit test, so
+     * the whole 16-bit half of the interpreter was unreachable by any
+     * real guest -- a capability nobody can exercise is not one.
+     */
+    bool vle;
+
+    /*
+     * Special purpose registers, each where it can be named.
+     *
+     * Read and written through ppc_spr_read/ppc_spr_write, which apply
+     * the manual's rules for numbers that do not exist: an illegal
+     * instruction, or a privileged one from user mode when the number's
+     * privilege bit is set (section 3.15). "Reads zero" is how a guest
+     * silently mis-detects its own core, so nothing reads zero by
+     * default.
+     */
+    uint32_t sprg[10];
+    uint32_t usprg0;
     uint32_t ivor[PPC_IVOR_COUNT];
     uint32_t ivpr;
     uint32_t srr0, srr1;
     uint32_t csrr0, csrr1;
+    uint32_t dsrr0, dsrr1;
+    uint32_t mcsrr0, mcsrr1;
     uint32_t dear, esr;
+    uint32_t mcsr, mcar;
     uint32_t tsr, tcr;
-    uint32_t pir, pvr;
+    uint32_t pir, pvr, svr;
+    uint32_t pid0;
+    uint32_t hid0, hid1;
+    uint32_t l1csr0, l1csr1, l1finv0, l1finv1, bucsr;
+    /*
+     * The debug facility's registers. They hold what is written and
+     * nothing acts on them: the debug architecture is not modelled, and
+     * a guest that writes DBCR0 to make sure it is off should not trap
+     * for it.
+     */
+    uint32_t dbcr[7], dbsr, iac[8], dac[2], dvc[2], dbcnt, ddam, devent;
 
     /*
      * The time base and the decrementer.
@@ -91,33 +136,15 @@ typedef struct ppc_cpu {
     bool irq_dirty;
 
     /*
-     * Which instruction encoding this core is decoding.
-     *
-     * VLE and classic Book E are *different encodings of the same
-     * bytes*, not a superset and a subset: 0x48000009 is `bl` in Book E
-     * and a 16-bit se_ form followed by something else in VLE. A real
-     * e200 chooses per page, from the VLE attribute in the TLB entry,
-     * so this will become a property of the translation once there is a
-     * TLB. Until then it is a core-wide mode.
-     *
-     * **True is the default, and it has to be.** It was false, on the
-     * reasoning that Book E is what powerpc-linux-gnu-as emits without
-     * -mvle -- but nothing in the tree ever set it except
-     * tests/unit/test_ppc.c reaching into this struct, so the entire
-     * 16-bit half of the interpreter was unreachable by any real guest.
-     * Every se_ test passed and none of them could have run outside a
-     * unit test. That is the shape this project already has written
-     * down: a capability nobody can exercise is not a capability.
-     *
-     * VLE is also simply what this core runs. The e200z7 in an MPC57xx
-     * executes VLE, the scope note in ppc_types.h says "Book E *with*
-     * VLE", and every guest here is built -mvle.
-     *
-     * A real e200 chooses per page from the TLB entry's VLE attribute,
-     * so this becomes a property of the translation once there is a TLB.
-     * Until then it is core-wide, and core-wide *on*.
+     * The translator's view. `jit_ctx` is what a block is built for --
+     * the encoding, the privilege and MSR[SPE] -- and is rewritten by
+     * every path that changes them, including an interrupt taken from
+     * inside a block. `jit_gen` moves when something a block has
+     * specialised on changes; nothing does yet, so it never moves.
      */
-    bool vle;
+    uint32_t jit_ctx;
+    uint32_t jit_gen;
+    bool jit_flush; /* icbi asked for the translations to go */
 
     emu_syscall_fn syscall;
     void *syscall_user;
@@ -135,19 +162,52 @@ void ppc_cpu_init(ppc_cpu_t *c, struct emu_bus *bus, uint32_t coreid);
 void ppc_cpu_reset(ppc_cpu_t *c, uint32_t reset_pc);
 
 /* ------------------------------------------------------------------ */
-/* Exceptions                                                          */
+/* Interrupts                                                          */
 /* ------------------------------------------------------------------ */
+
+/* ESR left as it is: the asynchronous interrupts do not describe
+ * themselves there. */
+#define PPC_ESR_KEEP 0xFFFFFFFFu
 
 /*
  * Take a Book E interrupt.
  *
  * The handler address is IVPR[0:15] || IVORn[16:27] || 0b0000 -- the
- * vector lives *in a register*, not at a fixed offset from a base. That
- * is the main structural difference from RISC-V's mtvec and from G4MH's
- * RBASE table, and it means a guest that has not written IVPR and the
- * IVORs vectors to address zero rather than to something recognisable.
+ * vector lives *in a register*, not at a fixed offset from a base. A
+ * guest that has not written IVPR and the IVORs vectors to address
+ * zero rather than to something recognisable.
+ *
+ * `ret_pc` is what the save/restore register receives: the faulting
+ * instruction for most, the next one for a system call, a round
+ * exception and anything asynchronous. `esr` is the syndrome to write,
+ * or PPC_ESR_KEEP; ESR[VLEMI] is added here for a synchronous interrupt
+ * taken while decoding VLE, as the manual lists it for each of them.
  */
+void ppc_cpu_raise(ppc_cpu_t *c, ppc_ivor_t which, uint32_t ret_pc,
+                   uint32_t esr);
+
+/* The older spelling, for an interrupt with no syndrome. */
 void ppc_cpu_exception(ppc_cpu_t *c, ppc_ivor_t which, uint32_t ret_pc);
+
+/* What a block is built for: the encoding, MSR[PR] and MSR[SPE]. */
+uint32_t ppc_cpu_ctx(const ppc_cpu_t *c);
+
+/* MSR written by software: keep the implemented bits, refresh what
+ * depends on them. */
+void ppc_cpu_set_msr(ppc_cpu_t *c, uint32_t v);
+
+/* ------------------------------------------------------------------ */
+/* Special purpose registers                                           */
+/* ------------------------------------------------------------------ */
+
+/*
+ * mfspr and mtspr. Return PPC_EXC_NONE, or the ESR bit of the program
+ * interrupt the access raises: PIL for a number that does not exist or
+ * a write to a read-only one, PPR for a privileged number from user
+ * mode -- which is decided by the number alone, implemented or not.
+ */
+uint32_t ppc_spr_read(ppc_cpu_t *c, uint32_t spr, uint32_t *out);
+uint32_t ppc_spr_write(ppc_cpu_t *c, uint32_t spr, uint32_t v);
 
 /* ------------------------------------------------------------------ */
 /* Time base, decrementer and the interrupts they raise                */
@@ -177,14 +237,19 @@ void ppc_cpu_set_ext(ppc_cpu_t *c, bool level);
  */
 int ppc_cpu_pending_irq(const ppc_cpu_t *c);
 
+/* Take a pending interrupt, if there is one; true if one was taken. */
+bool ppc_cpu_take_irq(ppc_cpu_t *c);
+
 /* ------------------------------------------------------------------ */
 /* Memory                                                              */
 /* ------------------------------------------------------------------ */
 
 /*
- * Alignment is checked here so a misaligned access can be reported as an
- * alignment interrupt, and so the bus can assume aligned accesses on its
- * fast paths -- the same split the other two frontends use.
+ * Data accesses. Unaligned ones are performed, as the e200 does in
+ * hardware (manual 3.4) -- only the reservation, multiple and context
+ * save instructions require alignment, and they check it themselves.
+ * An access the bus refuses is a data storage interrupt; these set
+ * DEAR and return the IVOR, and the caller raises it with ESR.
  *
  * Byte order is *not* handled here. It belongs to the bus, which is the
  * only place that knows whether an access composes bytes (RAM) or takes
@@ -196,10 +261,28 @@ ppc_exc_t ppc_load(ppc_cpu_t *c, uint32_t addr, uint32_t size, bool sext,
 ppc_exc_t ppc_store(ppc_cpu_t *c, uint32_t addr, uint32_t size, uint32_t val);
 
 /* ------------------------------------------------------------------ */
+/* Execution                                                           */
+/* ------------------------------------------------------------------ */
+
+struct ppc_insn;
+
+/*
+ * Execute one decoded instruction at `pc`. True if it completed, with
+ * c->pc where execution continues; false if it raised an interrupt
+ * instead, with c->pc at the handler. The interpreter's whole semantics,
+ * and the translator's fallback for what it does not lower -- one copy,
+ * so the two cannot disagree.
+ */
+bool ppc_exec(ppc_cpu_t *c, const struct ppc_insn *d, uint32_t pc);
+
+/* ------------------------------------------------------------------ */
 /* Backends                                                            */
 /* ------------------------------------------------------------------ */
 
 extern const emu_backend_t ppc_backend_interp;
+#if EMU_HAVE_JIT
+extern const emu_backend_t ppc_backend_jit;
+#endif
 extern const emu_backend_t *ppc_backend;
 
 emu_run_reason_t ppc_step(ppc_cpu_t *c);

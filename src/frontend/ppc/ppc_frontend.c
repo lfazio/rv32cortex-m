@@ -18,10 +18,79 @@
 #include "emu/emu_memmap.h"
 
 #include "ppc/ppc_cpu.h"
+#include "ppc/ppc_decode.h"
+#include "ppc/ppc_disasm.h"
 
 #include <string.h>
 
+/* Flipped when the translator is linked in; see ppc_ir.c. */
+#ifndef PPC_HAVE_JIT
+#define PPC_HAVE_JIT 0
+#endif
+
 static ppc_cpu_t g_cpu;
+
+/*
+ * Which encoding the image's entry point is in.
+ *
+ * On the part this is a pin sampled at reset (p_rst_vlemode) and then a
+ * bit of each TLB entry. This model has no MMU, so it is one answer per
+ * image, and the image says it itself: a PowerPC ELF marks a segment
+ * holding VLE code with PF_PPC_VLE. A raw binary cannot say, and is
+ * taken as VLE -- what an MPC57xx runs, and what every assembled guest
+ * here is.
+ */
+static bool g_image_vle = true;
+
+#define PF_PPC_VLE 0x10000000u
+
+static uint32_t be32(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) |
+           p[3];
+}
+
+static uint32_t be16(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 8) | p[1];
+}
+
+static void ppc_ops_set_image(const void *base, uint32_t size)
+{
+    const uint8_t *const d = (const uint8_t *)base;
+
+    g_image_vle = true;
+    /* ELF32, big-endian, with program headers of the size we read. */
+    if (d == NULL || size < 52u || d[0] != 0x7Fu || d[1] != 'E' || d[2] != 'L' ||
+        d[3] != 'F' || d[4] != 1u || d[5] != 2u) {
+        return;
+    }
+    {
+        const uint32_t entry = be32(d + 24);
+        const uint32_t phoff = be32(d + 28);
+        const uint32_t phentsize = be16(d + 42);
+        const uint32_t phnum = be16(d + 44);
+
+        if (phentsize < 32u) {
+            return;
+        }
+        for (uint32_t i = 0u; i < phnum; i++) {
+            const uint64_t at = (uint64_t)phoff + (uint64_t)i * phentsize;
+            const uint8_t *ph;
+
+            if (at + 32u > size) {
+                return;
+            }
+            ph = d + at;
+            /* PT_LOAD holding the entry point. */
+            if (be32(ph) == 1u && entry >= be32(ph + 8) &&
+                entry - be32(ph + 8) < be32(ph + 20)) {
+                g_image_vle = (be32(ph + 24) & PF_PPC_VLE) != 0u;
+                return;
+            }
+        }
+    }
+}
 
 static EMU_ALWAYS_INLINE ppc_cpu_t *cpu_of(const emu_cpu_t *cpu)
 {
@@ -36,14 +105,42 @@ static emu_cpu_t *ppc_instance(unsigned index)
 static void ppc_ops_init(emu_cpu_t *cpu, emu_bus_t *bus, uint32_t coreid)
 {
     ppc_cpu_init(cpu_of(cpu), bus, coreid);
-    if (ppc_backend->init != NULL && !ppc_backend->init(cpu)) {
-        ppc_backend = &ppc_backend_interp;
-    }
+    cpu_of(cpu)->vle = g_image_vle;
 }
 
 static void ppc_ops_reset(emu_cpu_t *cpu, uint32_t reset_pc)
 {
-    ppc_cpu_reset(cpu_of(cpu), reset_pc);
+    ppc_cpu_t *const c = cpu_of(cpu);
+
+    /* Before the reset, which derives the translator's context from it. */
+    c->vle = g_image_vle;
+    ppc_cpu_reset(c, reset_pc);
+    if (ppc_backend->reset != NULL) {
+        ppc_backend->reset(cpu);
+    }
+}
+
+/*
+ * The runner says which backend it wants. A frontend that picked for
+ * itself could not be asked to run the same guest both ways, and here
+ * the interpreter is the only statement of what an answer should be.
+ */
+static bool ppc_select_backend(emu_cpu_t *cpu, bool want_jit)
+{
+#if EMU_HAVE_JIT && PPC_HAVE_JIT
+    ppc_backend = want_jit ? &ppc_backend_jit : &ppc_backend_interp;
+#else
+    (void)want_jit;
+    ppc_backend = &ppc_backend_interp;
+#endif
+    return ppc_backend->init == NULL || ppc_backend->init(cpu);
+}
+
+static void ppc_ops_invalidate(emu_cpu_t *cpu, uint32_t addr, uint32_t len)
+{
+    if (ppc_backend->invalidate != NULL) {
+        ppc_backend->invalidate(cpu, addr, len);
+    }
 }
 
 static void ppc_ops_boot(emu_cpu_t *cpu, const emu_boot_info_t *info)
@@ -139,6 +236,78 @@ static void ppc_ops_set_irq(emu_cpu_t *cpu, uint32_t source, bool level)
     ppc_cpu_set_ext(cpu_of(cpu), level);
 }
 
+/* ------------------------------------------------------------------ */
+/* Post-mortem                                                         */
+/* ------------------------------------------------------------------ */
+
+static const char *hex8(char b[9], uint32_t v)
+{
+    for (unsigned i = 0u; i < 8u; i++) {
+        b[i] = "0123456789abcdef"[(v >> (28u - 4u * i)) & 15u];
+    }
+    b[8] = '\0';
+    return b;
+}
+
+static void ppc_dump(const emu_cpu_t *cpu, emu_print_fn out, void *ctx)
+{
+    const ppc_cpu_t *const c = cpu_of(cpu);
+    char b[9];
+    const struct {
+        const char *name;
+        uint32_t v;
+    } k[] = {
+        {"pc   ", c->pc},   {"msr  ", c->msr},   {"cr   ", c->cr},
+        {"xer  ", c->xer},  {"lr   ", c->lr},    {"ctr  ", c->ctr},
+        {"srr0 ", c->srr0}, {"srr1 ", c->srr1},  {"esr  ", c->esr},
+        {"dear ", c->dear}, {"csrr0", c->csrr0}, {"spefs", c->spefscr},
+    };
+
+    out(ctx, c->vle ? "\n  VLE" : "\n  Book E");
+    /*
+     * The syndrome in words: ESR is the only thing that says which of
+     * the conditions sharing IVOR6 was raised.
+     */
+    out(ctx, (c->esr & PPC_ESR_PIL) != 0u   ? "  (illegal instruction)"
+             : (c->esr & PPC_ESR_PPR) != 0u ? "  (privileged instruction)"
+             : (c->esr & PPC_ESR_PTR) != 0u ? "  (trap)"
+             : (c->esr & PPC_ESR_SPE) != 0u ? "  (SPE/EFPU)"
+                                            : "");
+    for (unsigned i = 0u; i < sizeof(k) / sizeof(k[0]); i++) {
+        out(ctx, (i % 4u) == 0u ? "\n  " : "  ");
+        out(ctx, k[i].name);
+        out(ctx, " ");
+        out(ctx, hex8(b, k[i].v));
+    }
+    for (unsigned i = 0u; i < PPC_NGPR; i++) {
+        char n[6] = {'r', (char)('0' + i / 10u), (char)('0' + i % 10u), ' ', ' ', '\0'};
+
+        if (i < 10u) {
+            n[1] = (char)('0' + i);
+            n[2] = ' ';
+        }
+        out(ctx, (i % 4u) == 0u ? "\n  " : "  ");
+        out(ctx, n);
+        out(ctx, " ");
+        out(ctx, hex8(b, c->r[i]));
+    }
+    out(ctx, "\n");
+}
+
+#if PPC_ENABLE_DISASM
+/*
+ * The trace hook's disassembler. The contract hands over the encoding
+ * and not the core, and which of this core's two encodings those bytes
+ * are in is not in the bytes -- so it is the image's, the same answer
+ * the fetch that produced them used.
+ */
+static size_t ppc_ops_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn,
+                             unsigned len)
+{
+    return ppc_disasm_mode(buf, buflen, pc, (uint32_t)insn, len, g_cpu.vle);
+}
+#endif
+
 static void ppc_set_syscall(emu_cpu_t *cpu, emu_syscall_fn fn, void *user)
 {
     ppc_cpu_t *c = cpu_of(cpu);
@@ -180,6 +349,13 @@ const emu_cpu_ops_t ppc_frontend = {
     .step = ppc_ops_step,
     .halt = ppc_ops_halt,
     .status = ppc_ops_status,
+    .set_image = ppc_ops_set_image,
+    .select_backend = ppc_select_backend,
+    .invalidate = ppc_ops_invalidate,
+    .dump = ppc_dump,
+#if PPC_ENABLE_DISASM
+    .disasm = ppc_ops_disasm,
+#endif
 
     .reg_name = ppc_reg_name,
     .reg_read = ppc_reg_read,

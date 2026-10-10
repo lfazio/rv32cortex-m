@@ -1,30 +1,40 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * ppc_cpu.c - e200z7 state, exceptions and checked memory access.
+ * ppc_cpu.c - e200z7 state, interrupts, special purpose registers and
+ * data access.
+ *
+ * Everything here is from the e200z759n3 Core Reference Manual, Rev. 2;
+ * section and table numbers in the comments are that document's.
  */
 
 #include "ppc/ppc_cpu.h"
 
 #include <string.h>
 
-/* e200z7 processor version. Reported by mfspr PVR, which is how a guest
- * identifies its core; zero would be a claim to be nothing in particular. */
-#define PPC_PVR_E200Z7 0x81560000u
+/*
+ * Processor version, table 4: Freescale (0b1000), Zen Z7 (0b010110),
+ * version 0b1001 for the e200z759n3. The low half comes from p_pvrin
+ * pins the SoC ties, so a model of the core alone leaves it zero.
+ */
+#define PPC_PVR_E200Z759N3 0x81690000u
+
+/*
+ * L1 cache configuration, figures 11-6 and 11-7: Harvard, way
+ * partitioning, flush/invalidate by set and way, 32-byte lines,
+ * pseudo-round-robin, line locking, error checking, 4 ways, 16 KiB --
+ * data and instruction alike except that only the data side has
+ * CWPA. Read-only, and read by startup code that sizes its loops from
+ * them, which is why they are the manual's values rather than zero.
+ */
+#define PPC_L1CFG0 0x284D1810u
+#define PPC_L1CFG1 0x084D1810u
 
 void ppc_cpu_init(ppc_cpu_t *c, struct emu_bus *bus, uint32_t coreid)
 {
     memset(c, 0, sizeof(*c));
     c->bus = bus;
     c->pir = coreid;
-    c->pvr = PPC_PVR_E200Z7;
-
-    /*
-     * VLE, which is what this core executes -- see the note beside the
-     * field. Set here rather than left to the memset's zero, because
-     * zero meant "classic Book E" and no guest had any way to change it:
-     * the only writer in the tree was a unit test assigning the struct
-     * member directly.
-     */
+    c->pvr = PPC_PVR_E200Z759N3;
     c->vle = true;
 
     /*
@@ -37,70 +47,373 @@ void ppc_cpu_init(ppc_cpu_t *c, struct emu_bus *bus, uint32_t coreid)
 
 void ppc_cpu_reset(ppc_cpu_t *c, uint32_t reset_pc)
 {
+    /*
+     * Table 17. Most of the state is "unaffected" by a reset on the
+     * real core; it is cleared here because a reload is a new guest and
+     * nothing the previous one left behind is meant to be visible.
+     */
     memset(c->r, 0, sizeof(c->r));
     c->pc = reset_pc;
     c->cr = 0u;
     c->xer = 0u;
     c->lr = 0u;
     c->ctr = 0u;
-    /*
-     * Reset clears MSR entirely: interrupts disabled, supervisor state.
-     * A guest enables what it wants. Notably MSR[SPE] is clear, so the
-     * SPE unit is unavailable until asked for -- which is the correct
-     * report for a unit this frontend does not implement.
-     */
     c->msr = 0u;
+    c->spefscr = 0u;
+    c->reserve = false;
+    c->esr = 0u;
+    c->hid0 = c->hid1 = 0u;
+    c->l1csr0 = c->l1csr1 = c->l1finv0 = c->l1finv1 = 0u;
+    c->bucsr = 0u;
+    c->tcr = 0u;
+    c->tsr = 0u;
+    c->mcsr = 0u;
+    memset(c->dbcr, 0, sizeof(c->dbcr));
+    c->dbsr = 0x10000000u; /* table 17 */
     c->state = EMU_STATE_RUNNING;
     c->irq_dirty = false;
     c->retired = 0u;
     c->cycles = 0u;
+    c->jit_ctx = ppc_cpu_ctx(c);
+    c->jit_flush = true;
 }
 
-/*
- * Where a handler lives.
- *
- * IVPR[0:15] || IVORn[16:27] || 0b0000. Two registers, both writable by
- * the guest, and both zero out of reset -- so a guest that takes an
- * interrupt before setting them vectors to 0. That is the architecture's
- * behaviour and not a bug to paper over; it is worth knowing because it
- * looks exactly like a wild branch.
- */
+uint32_t ppc_cpu_ctx(const ppc_cpu_t *c)
+{
+    return (c->vle ? 1u : 0u) | (((c->msr & PPC_MSR_PR) != 0u) ? 2u : 0u) |
+           (((c->msr & PPC_MSR_SPE) != 0u) ? 4u : 0u);
+}
+
+void ppc_cpu_set_msr(ppc_cpu_t *c, uint32_t v)
+{
+    c->msr = v & PPC_MSR_IMPL;
+    c->jit_ctx = ppc_cpu_ctx(c);
+    c->irq_dirty = true;
+}
+
+/* ------------------------------------------------------------------ */
+/* Interrupts                                                          */
+/* ------------------------------------------------------------------ */
+
 static uint32_t handler_address(const ppc_cpu_t *c, ppc_ivor_t which)
 {
     return (c->ivpr & 0xFFFF0000u) | (c->ivor[which] & 0x0000FFF0u);
 }
 
-void ppc_cpu_exception(ppc_cpu_t *c, ppc_ivor_t which, uint32_t ret_pc)
+void ppc_cpu_raise(ppc_cpu_t *c, ppc_ivor_t which, uint32_t ret_pc,
+                   uint32_t esr)
 {
-    /*
-     * Critical interrupts save to CSRR0/CSRR1 and everything else to
-     * SRR0/SRR1. That is the whole of what separates the two levels, and
-     * it exists so a critical interrupt inside a normal handler does not
-     * destroy the return state the handler is standing on -- the same
-     * argument as G4MH's FE level.
-     */
-    const bool crit =
-        (which == PPC_IVOR_CRITICAL || which == PPC_IVOR_MACHINE_CHECK ||
-         which == PPC_IVOR_WATCHDOG || which == PPC_IVOR_DEBUG);
+    uint32_t keep;
 
-    if (crit) {
+    /*
+     * Which save/restore pair, and which MSR bits survive, from the
+     * register-settings table of each interrupt (7.7). The non-critical
+     * class keeps CE, ME, DE and RI and clears the rest; critical input
+     * and watchdog clear CE as well, and DE because the debug APU is not
+     * enabled in this model; a machine check clears ME and RI too.
+     */
+    switch (which) {
+    case PPC_IVOR_CRITICAL:
+    case PPC_IVOR_WATCHDOG:
         c->csrr0 = ret_pc;
         c->csrr1 = c->msr;
-    } else {
+        keep = PPC_MSR_ME | PPC_MSR_RI;
+        break;
+    case PPC_IVOR_MACHINE_CHECK:
+        c->mcsrr0 = ret_pc;
+        c->mcsrr1 = c->msr;
+        keep = 0u;
+        break;
+    case PPC_IVOR_DEBUG:
+        c->dsrr0 = ret_pc;
+        c->dsrr1 = c->msr;
+        keep = PPC_MSR_ME | PPC_MSR_RI;
+        break;
+    default:
         c->srr0 = ret_pc;
         c->srr1 = c->msr;
+        keep = PPC_MSR_CE | PPC_MSR_ME | PPC_MSR_DE | PPC_MSR_RI;
+        break;
     }
-
-    /*
-     * Entry clears EE and PR: interrupts off and supervisor state. CE is
-     * cleared only by a critical interrupt, which is what lets a normal
-     * handler still be interrupted by one.
-     */
-    c->msr &= ~(uint32_t)(PPC_MSR_EE | PPC_MSR_PR | PPC_MSR_DE);
-    if (crit) {
-        c->msr &= ~(uint32_t)PPC_MSR_CE;
+    if (esr != PPC_ESR_KEEP) {
+        c->esr = esr | (c->vle ? PPC_ESR_VLEMI : 0u);
     }
+    c->msr &= keep;
     c->pc = handler_address(c, which);
+    c->jit_ctx = ppc_cpu_ctx(c);
+    c->irq_dirty = true;
+}
+
+void ppc_cpu_exception(ppc_cpu_t *c, ppc_ivor_t which, uint32_t ret_pc)
+{
+    ppc_cpu_raise(c, which, ret_pc, PPC_ESR_KEEP);
+}
+
+/* ------------------------------------------------------------------ */
+/* Special purpose registers                                           */
+/* ------------------------------------------------------------------ */
+
+/* Bit 5 of the split field: 0x10 in the number as software writes it. */
+static bool spr_privileged(uint32_t spr)
+{
+    return (spr & 0x10u) != 0u;
+}
+
+/*
+ * Where a plain read/write register lives, or NULL. The ones with side
+ * effects, the read-only ones and the write-only ones are handled in
+ * the two functions below.
+ */
+static uint32_t *spr_slot(ppc_cpu_t *c, uint32_t spr)
+{
+    if (spr >= PPC_SPR_IVOR0 && spr <= PPC_SPR_IVOR0 + 15u) {
+        return &c->ivor[spr - PPC_SPR_IVOR0];
+    }
+    if (spr >= PPC_SPR_IVOR32 && spr <= PPC_SPR_IVOR32 + 3u) {
+        return &c->ivor[32u + (spr - PPC_SPR_IVOR32)];
+    }
+    if (spr >= PPC_SPR_SPRG0 && spr <= PPC_SPR_SPRG0 + 7u) {
+        return &c->sprg[spr - PPC_SPR_SPRG0];
+    }
+    if (spr >= PPC_SPR_IAC1 && spr <= PPC_SPR_IAC1 + 3u) {
+        return &c->iac[spr - PPC_SPR_IAC1];
+    }
+    if (spr >= PPC_SPR_IAC5 && spr <= PPC_SPR_IAC5 + 3u) {
+        return &c->iac[4u + (spr - PPC_SPR_IAC5)];
+    }
+    if (spr >= PPC_SPR_DBCR0 && spr <= PPC_SPR_DBCR0 + 2u) {
+        return &c->dbcr[spr - PPC_SPR_DBCR0];
+    }
+    switch (spr) {
+    case PPC_SPR_LR:
+        return &c->lr;
+    case PPC_SPR_CTR:
+        return &c->ctr;
+    case PPC_SPR_SRR0:
+        return &c->srr0;
+    case PPC_SPR_SRR1:
+        return &c->srr1;
+    case PPC_SPR_CSRR0:
+        return &c->csrr0;
+    case PPC_SPR_CSRR1:
+        return &c->csrr1;
+    case PPC_SPR_DSRR0:
+        return &c->dsrr0;
+    case PPC_SPR_DSRR1:
+        return &c->dsrr1;
+    case PPC_SPR_MCSRR0:
+        return &c->mcsrr0;
+    case PPC_SPR_MCSRR1:
+        return &c->mcsrr1;
+    case PPC_SPR_MCAR:
+        return &c->mcar;
+    case PPC_SPR_DEAR:
+        return &c->dear;
+    case PPC_SPR_IVPR:
+        return &c->ivpr;
+    case PPC_SPR_DECAR:
+        return &c->decar;
+    case PPC_SPR_USPRG0:
+        return &c->usprg0;
+    case PPC_SPR_SPRG8:
+        return &c->sprg[8];
+    case PPC_SPR_SPRG9:
+        return &c->sprg[9];
+    case PPC_SPR_PID0:
+        return &c->pid0;
+    case PPC_SPR_PIR:
+        return &c->pir;
+    case PPC_SPR_HID1:
+        return &c->hid1;
+    case PPC_SPR_L1CSR1:
+        return &c->l1csr1;
+    case PPC_SPR_L1FINV0:
+        return &c->l1finv0;
+    case PPC_SPR_L1FINV1:
+        return &c->l1finv1;
+    case PPC_SPR_BUCSR:
+        return &c->bucsr;
+    case PPC_SPR_DAC1:
+        return &c->dac[0];
+    case PPC_SPR_DAC1 + 1u:
+        return &c->dac[1];
+    case PPC_SPR_DVC1:
+        return &c->dvc[0];
+    case PPC_SPR_DVC1 + 1u:
+        return &c->dvc[1];
+    case PPC_SPR_DBCR3:
+        return &c->dbcr[3];
+    case PPC_SPR_DBCR4:
+        return &c->dbcr[4];
+    case PPC_SPR_DBCR5:
+        return &c->dbcr[5];
+    case PPC_SPR_DBCR6:
+        return &c->dbcr[6];
+    case PPC_SPR_DBCNT:
+        return &c->dbcnt;
+    case PPC_SPR_DDAM:
+        return &c->ddam;
+    case PPC_SPR_DEVENT:
+        return &c->devent;
+    default:
+        return NULL;
+    }
+}
+
+static uint32_t spr_missing(const ppc_cpu_t *c, uint32_t spr)
+{
+    /* 3.15: privileged numbers from user mode are a privilege fault
+     * whether or not the register exists. */
+    return (spr_privileged(spr) && (c->msr & PPC_MSR_PR) != 0u) ? PPC_ESR_PPR
+                                                                : PPC_ESR_PIL;
+}
+
+uint32_t ppc_spr_read(ppc_cpu_t *c, uint32_t spr, uint32_t *out)
+{
+    uint32_t *slot;
+
+    if (spr_privileged(spr) && (c->msr & PPC_MSR_PR) != 0u) {
+        return PPC_ESR_PPR;
+    }
+    switch (spr) {
+    case PPC_SPR_XER:
+        *out = c->xer;
+        return PPC_EXC_NONE;
+    case PPC_SPR_DEC:
+        *out = c->dec;
+        return PPC_EXC_NONE;
+    case PPC_SPR_TBL_R:
+        *out = (uint32_t)c->tb;
+        return PPC_EXC_NONE;
+    case PPC_SPR_TBU_R:
+        *out = (uint32_t)(c->tb >> 32);
+        return PPC_EXC_NONE;
+    case PPC_SPR_SPRG4_R:
+    case PPC_SPR_SPRG4_R + 1u:
+    case PPC_SPR_SPRG4_R + 2u:
+    case PPC_SPR_SPRG4_R + 3u:
+        *out = c->sprg[4u + (spr - PPC_SPR_SPRG4_R)];
+        return PPC_EXC_NONE;
+    case PPC_SPR_PVR:
+        *out = c->pvr;
+        return PPC_EXC_NONE;
+    case PPC_SPR_SVR:
+        *out = c->svr;
+        return PPC_EXC_NONE;
+    case PPC_SPR_TSR:
+        *out = c->tsr;
+        return PPC_EXC_NONE;
+    case PPC_SPR_TCR:
+        *out = c->tcr;
+        return PPC_EXC_NONE;
+    case PPC_SPR_DBSR:
+        *out = c->dbsr;
+        return PPC_EXC_NONE;
+    case PPC_SPR_MCSR:
+        *out = c->mcsr;
+        return PPC_EXC_NONE;
+    case PPC_SPR_SPEFSCR:
+        *out = c->spefscr;
+        return PPC_EXC_NONE;
+    case PPC_SPR_L1CFG0:
+        *out = PPC_L1CFG0;
+        return PPC_EXC_NONE;
+    case PPC_SPR_L1CFG1:
+        *out = PPC_L1CFG1;
+        return PPC_EXC_NONE;
+    case PPC_SPR_HID0:
+        *out = c->hid0;
+        return PPC_EXC_NONE;
+    case PPC_SPR_L1CSR0:
+        *out = c->l1csr0;
+        return PPC_EXC_NONE;
+    case PPC_SPR_DBERC0:
+        *out = 0u; /* no external debug resources */
+        return PPC_EXC_NONE;
+    case PPC_SPR_TBL_W:
+    case PPC_SPR_TBU_W:
+        return PPC_ESR_PIL; /* write-only: "an invalid SPR reference" */
+    default:
+        break;
+    }
+    slot = spr_slot(c, spr);
+    if (slot == NULL) {
+        return spr_missing(c, spr);
+    }
+    *out = *slot;
+    return PPC_EXC_NONE;
+}
+
+uint32_t ppc_spr_write(ppc_cpu_t *c, uint32_t spr, uint32_t v)
+{
+    uint32_t *slot;
+
+    if (spr_privileged(spr) && (c->msr & PPC_MSR_PR) != 0u) {
+        return PPC_ESR_PPR;
+    }
+    switch (spr) {
+    case PPC_SPR_XER:
+        c->xer = v & PPC_XER_IMPL;
+        return PPC_EXC_NONE;
+    case PPC_SPR_DEC:
+        c->dec = v;
+        return PPC_EXC_NONE;
+    case PPC_SPR_TBL_W:
+        c->tb = (c->tb & 0xFFFFFFFF00000000ull) | v;
+        return PPC_EXC_NONE;
+    case PPC_SPR_TBU_W:
+        c->tb = (c->tb & 0xFFFFFFFFull) | ((uint64_t)v << 32);
+        return PPC_EXC_NONE;
+    case PPC_SPR_TSR:
+        /* Write one to clear. */
+        c->tsr &= ~v;
+        c->irq_dirty = true;
+        return PPC_EXC_NONE;
+    case PPC_SPR_TCR:
+        c->tcr = v;
+        c->irq_dirty = true;
+        return PPC_EXC_NONE;
+    case PPC_SPR_DBSR:
+        c->dbsr &= ~v;
+        return PPC_EXC_NONE;
+    case PPC_SPR_MCSR:
+        c->mcsr &= ~v;
+        return PPC_EXC_NONE;
+    case PPC_SPR_SPEFSCR:
+        /* MODE reads back 0: mode 1 is not implemented (table 5-1). */
+        c->spefscr = v & PPC_SPEFSCR_IMPL;
+        return PPC_EXC_NONE;
+    case PPC_SPR_HID0:
+        c->hid0 = v;
+        return PPC_EXC_NONE;
+    case PPC_SPR_L1CSR0:
+        c->l1csr0 = v;
+        return PPC_EXC_NONE;
+    case PPC_SPR_ESR:
+        c->esr = v;
+        return PPC_EXC_NONE;
+    /* Read-only: a write is an invalid reference, 3.15. */
+    case PPC_SPR_TBL_R:
+    case PPC_SPR_TBU_R:
+    case PPC_SPR_SPRG4_R:
+    case PPC_SPR_SPRG4_R + 1u:
+    case PPC_SPR_SPRG4_R + 2u:
+    case PPC_SPR_SPRG4_R + 3u:
+    case PPC_SPR_PVR:
+    case PPC_SPR_SVR:
+    case PPC_SPR_L1CFG0:
+    case PPC_SPR_L1CFG1:
+    case PPC_SPR_DBERC0:
+        return PPC_ESR_PIL;
+    default:
+        break;
+    }
+    slot = spr_slot(c, spr);
+    if (slot == NULL) {
+        return spr_missing(c, spr);
+    }
+    *slot = v;
+    return PPC_EXC_NONE;
 }
 
 /* ------------------------------------------------------------------ */
@@ -163,11 +476,6 @@ void ppc_cpu_set_ext(ppc_cpu_t *c, bool level)
 
 int ppc_cpu_pending_irq(const ppc_cpu_t *c)
 {
-    /*
-     * MSR[EE] gates both, which is the whole of Book E's masking at
-     * this level: there is no per-source enable below it, so a guest
-     * running with EE clear takes neither however its timer is set up.
-     */
     if ((c->msr & PPC_MSR_EE) == 0u) {
         return -1;
     }
@@ -192,47 +500,61 @@ int ppc_cpu_pending_irq(const ppc_cpu_t *c)
     return -1;
 }
 
+bool ppc_cpu_take_irq(ppc_cpu_t *c)
+{
+    const int which = ppc_cpu_pending_irq(c);
+
+    if (which < 0) {
+        return false;
+    }
+    /*
+     * The external input is edge-like here because there is no
+     * interrupt controller to hold it: taking the interrupt consumes
+     * it. TSR[DIS] is *not* cleared -- it is write-1-to-clear by the
+     * handler, which is how a guest distinguishes "I took a tick" from
+     * "a tick is pending".
+     */
+    if (which == (int)PPC_IVOR_EXTERNAL) {
+        c->ext_pending = false;
+        if ((c->hid0 & PPC_HID0_ICR) != 0u) {
+            c->reserve = false; /* 3.5, mechanism 3 */
+        }
+    }
+    c->state = EMU_STATE_RUNNING;
+    ppc_cpu_raise(c, (ppc_ivor_t)which, c->pc, PPC_ESR_KEEP);
+    return true;
+}
+
 /* ------------------------------------------------------------------ */
 /* Memory                                                              */
 /* ------------------------------------------------------------------ */
 
-/*
- * Book E takes an alignment interrupt on a misaligned access. Checked
- * here rather than in the bus so the cause is the architecture's, and so
- * the bus keeps its assumption that callers are aligned.
- */
-static EMU_ALWAYS_INLINE bool aligned(uint32_t addr, uint32_t size)
-{
-    return (addr & (size - 1u)) == 0u;
-}
-
-static ppc_exc_t exc_from_fault(emu_fault_t f, bool store)
-{
-    if (f == EMU_FAULT_NONE) {
-        return PPC_EXC_NONE;
-    }
-    (void)store;
-    /* Both directions are a data storage interrupt on this core; what
-     * distinguishes them is ESR, which the caller sets. */
-    return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
-}
-
 ppc_exc_t ppc_load(ppc_cpu_t *c, uint32_t addr, uint32_t size, bool sext,
                    uint32_t *out)
 {
-    if (EMU_UNLIKELY(!aligned(addr, size))) {
-        c->dear = addr;
-        return (ppc_exc_t)PPC_IVOR_ALIGNMENT;
-    }
-
     uint32_t v = 0u;
-    const emu_fault_t f = emu_bus_read(c->bus, addr, size, &v);
-    if (EMU_UNLIKELY(f != EMU_FAULT_NONE)) {
-        c->dear = addr;
-        c->esr = 0u;
-        return exc_from_fault(f, false);
-    }
 
+    if (EMU_LIKELY((addr & (size - 1u)) == 0u)) {
+        if (EMU_UNLIKELY(emu_bus_read(c->bus, addr, size, &v) != EMU_FAULT_NONE)) {
+            c->dear = addr;
+            return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
+        }
+    } else {
+        /*
+         * Unaligned, which the core performs (3.4). Byte by byte, most
+         * significant first, because that is what big-endian means and
+         * a byte access is the one width with no order to get wrong.
+         */
+        for (uint32_t i = 0u; i < size; i++) {
+            uint32_t b = 0u;
+
+            if (emu_bus_read(c->bus, addr + i, 1u, &b) != EMU_FAULT_NONE) {
+                c->dear = addr + i;
+                return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
+            }
+            v = (v << 8) | (b & 0xFFu);
+        }
+    }
     if (sext) {
         v = (size == 1u) ? (uint32_t)(int32_t)(int8_t)v
                          : (uint32_t)(int32_t)(int16_t)v;
@@ -243,16 +565,20 @@ ppc_exc_t ppc_load(ppc_cpu_t *c, uint32_t addr, uint32_t size, bool sext,
 
 ppc_exc_t ppc_store(ppc_cpu_t *c, uint32_t addr, uint32_t size, uint32_t val)
 {
-    if (EMU_UNLIKELY(!aligned(addr, size))) {
-        c->dear = addr;
-        return (ppc_exc_t)PPC_IVOR_ALIGNMENT;
+    if (EMU_LIKELY((addr & (size - 1u)) == 0u)) {
+        if (EMU_UNLIKELY(emu_bus_write(c->bus, addr, size, val) != EMU_FAULT_NONE)) {
+            c->dear = addr;
+            return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
+        }
+        return PPC_EXC_NONE;
     }
+    for (uint32_t i = 0u; i < size; i++) {
+        const uint32_t b = (val >> (8u * (size - 1u - i))) & 0xFFu;
 
-    const emu_fault_t f = emu_bus_write(c->bus, addr, size, val);
-    if (EMU_UNLIKELY(f != EMU_FAULT_NONE)) {
-        c->dear = addr;
-        c->esr = 0x00800000u; /* ESR[ST]: the access was a store */
-        return exc_from_fault(f, true);
+        if (emu_bus_write(c->bus, addr + i, 1u, b) != EMU_FAULT_NONE) {
+            c->dear = addr + i;
+            return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
+        }
     }
     return PPC_EXC_NONE;
 }

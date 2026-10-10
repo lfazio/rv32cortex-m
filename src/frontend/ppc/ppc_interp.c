@@ -2,35 +2,38 @@
 /*
  * ppc_interp.c - the e200z7 interpreter.
  *
- * VLE, so instructions are 16 or 32 bits and the length comes from the
- * first halfword -- see ppc_vle_len(), whose rule was derived from the
- * assembler rather than from a diagram.
+ * Executes what ppc_decode() says an instruction is; it does not look at
+ * encodings itself. It used to, and that inline decode was a second
+ * description of the encoding space with nothing holding it to the
+ * first: e_cmpi compared into CR0 whatever field it named, the SCI8
+ * group's record forms never recorded, and se_btsti wrote the wrong CR
+ * bits. One decoder, checked against binutils by tests/ppc-check, is
+ * the fix for that whole class.
  *
- * Everything not decoded raises a program interrupt, which is the
- * architecture's report for an unimplemented encoding. The G4MH lesson
- * applies in full and is worth repeating here, because it is easy to
- * believe otherwise: **a trap only reports if something catches it.** A
- * flat guest with IVPR and the IVORs still zero vectors to address 0,
- * which in a flat image is the guest's own entry point -- so an
- * unimplemented instruction presents as a restart, not as a diagnostic.
- * Read the pc deltas in a trace: an instruction that changes the pc
- * without retiring is a trap.
+ * ppc_exec() is the instruction semantics, and it is also what the
+ * translator calls for an instruction it does not lower -- so a
+ * translated block and the interpreter cannot disagree about anything
+ * the block hands back.
+ *
+ * Everything not implemented raises a program interrupt, which is the
+ * architecture's report. **A trap only reports if something catches
+ * it**: a flat guest with IVPR and the IVORs still zero vectors to
+ * address 0, which in a flat image is its own entry point -- so an
+ * unimplemented instruction presents as a restart, not as a
+ * diagnostic. Read the pc deltas in a trace: an instruction that
+ * changes the pc without retiring is a trap.
  */
 
 #include "ppc/ppc_cpu.h"
 #include "ppc/ppc_decode.h"
+#include "ppc/ppc_fpu.h"
 
-/* Raise `e` and restart the dispatch loop. */
-#define EXC(e)                                                                 \
-    do {                                                                       \
-        c->pc = pc;                                                            \
-        ppc_cpu_exception(c, (ppc_ivor_t)(e), pc);                             \
-        pc = c->pc;                                                            \
-        goto next_insn;                                                        \
-    } while (0)
+#include <stdint.h>
+
+typedef ppc_insn_t I;
 
 /* ------------------------------------------------------------------ */
-/* Condition register                                                  */
+/* Condition register and XER                                          */
 /* ------------------------------------------------------------------ */
 
 /*
@@ -43,6 +46,7 @@
 static EMU_ALWAYS_INLINE void cr_set(ppc_cpu_t *c, uint32_t field, uint32_t v)
 {
     const unsigned sh = 4u * (7u - field);
+
     c->cr = (c->cr & ~(0xFu << sh)) | ((v & 0xFu) << sh);
 }
 
@@ -51,43 +55,931 @@ static EMU_ALWAYS_INLINE uint32_t cr_get(const ppc_cpu_t *c, uint32_t field)
     return (c->cr >> (4u * (7u - field))) & 0xFu;
 }
 
-/* Compare and set a CR field, signed or unsigned, plus XER[SO]. */
+/* CR bit `bi`, also from the left. */
+static EMU_ALWAYS_INLINE uint32_t cr_bit(const ppc_cpu_t *c, uint32_t bi)
+{
+    return (c->cr >> (31u - bi)) & 1u;
+}
+
+static EMU_ALWAYS_INLINE uint32_t so(const ppc_cpu_t *c)
+{
+    return (c->xer & PPC_XER_SO) != 0u ? PPC_CR_SO : 0u;
+}
+
 static EMU_ALWAYS_INLINE void cr_compare(ppc_cpu_t *c, uint32_t field,
                                          uint32_t a, uint32_t b, bool sgn)
 {
     uint32_t v;
 
     if (sgn) {
-        v = ((int32_t)a < (int32_t)b)
-                ? PPC_CR_LT
-                : (((int32_t)a > (int32_t)b) ? PPC_CR_GT : PPC_CR_EQ);
+        v = ((int32_t)a < (int32_t)b)   ? PPC_CR_LT
+            : ((int32_t)a > (int32_t)b) ? PPC_CR_GT
+                                        : PPC_CR_EQ;
     } else {
         v = (a < b) ? PPC_CR_LT : ((a > b) ? PPC_CR_GT : PPC_CR_EQ);
     }
-    if ((c->xer & PPC_XER_SO) != 0u) {
-        v |= PPC_CR_SO;
-    }
-    cr_set(c, field, v);
+    cr_set(c, field, v | so(c));
 }
 
-/* The Rc bit's effect: compare the result against zero into CR0. */
-static EMU_ALWAYS_INLINE void cr0_from(ppc_cpu_t *c, uint32_t res)
+/* The Rc bit: the result against zero, into CR0. */
+static EMU_ALWAYS_INLINE void cr0(ppc_cpu_t *c, uint32_t res)
 {
     cr_compare(c, 0u, res, 0u, true);
 }
 
-/*
- * XER[CA], the carry.
- *
- * Written by the carrying arithmetic and by the arithmetic right
- * shifts, and by nothing else -- which is why it had no setter until
- * those existed. It is *not* touched by plain `add` or `subf`: the
- * carrying forms are separate instructions precisely so that the common
- * ones need not maintain it.
- */
-static EMU_ALWAYS_INLINE void xer_set_ca(ppc_cpu_t *c, bool ca)
+static EMU_ALWAYS_INLINE void set_ca(ppc_cpu_t *c, bool ca)
 {
     c->xer = ca ? (c->xer | PPC_XER_CA) : (c->xer & ~PPC_XER_CA);
+}
+
+static EMU_ALWAYS_INLINE uint32_t get_ca(const ppc_cpu_t *c)
+{
+    return (c->xer & PPC_XER_CA) != 0u ? 1u : 0u;
+}
+
+/* OE: OV is this instruction's, SO is sticky. */
+static EMU_ALWAYS_INLINE void set_ov(ppc_cpu_t *c, bool ov)
+{
+    c->xer = ov ? (c->xer | PPC_XER_OV | PPC_XER_SO) : (c->xer & ~PPC_XER_OV);
+}
+
+/* a + b + cin, with the carry out and the signed overflow. */
+static EMU_ALWAYS_INLINE uint32_t add3(uint32_t a, uint32_t b, uint32_t cin,
+                                       bool *ca, bool *ov)
+{
+    const uint64_t w = (uint64_t)a + b + cin;
+    const uint32_t r = (uint32_t)w;
+
+    *ca = (w >> 32) != 0u;
+    *ov = (((a ^ r) & (b ^ r)) >> 31) != 0u;
+    return r;
+}
+
+/* MASK(mb, me) as rlwinm builds it, wrapping when mb > me. */
+static EMU_ALWAYS_INLINE uint32_t rl_mask(uint32_t mb, uint32_t me)
+{
+    const uint32_t a = 0xFFFFFFFFu >> mb;
+    const uint32_t b = 0xFFFFFFFFu << (31u - me);
+
+    return (mb <= me) ? (a & b) : (a | b);
+}
+
+static EMU_ALWAYS_INLINE uint32_t rotl(uint32_t v, uint32_t n)
+{
+    n &= 31u;
+    return (n == 0u) ? v : ((v << n) | (v >> (32u - n)));
+}
+
+static EMU_ALWAYS_INLINE uint32_t bswap(uint32_t v, uint32_t size)
+{
+    if (size == 2u) {
+        return ((v >> 8) & 0xFFu) | ((v & 0xFFu) << 8);
+    }
+    return (v >> 24) | ((v >> 8) & 0xFF00u) | ((v << 8) & 0xFF0000u) | (v << 24);
+}
+
+static EMU_ALWAYS_INLINE uint32_t clz32(uint32_t v)
+{
+    return (v == 0u) ? 32u : (uint32_t)__builtin_clz(v);
+}
+
+/* rA|0: the value 0 where the instruction says rA = 0 means zero. */
+static EMU_ALWAYS_INLINE uint32_t base_of(const ppc_cpu_t *c, const I *d)
+{
+    return (d->ra0 && d->ra == 0u) ? 0u : c->r[d->ra];
+}
+
+static EMU_ALWAYS_INLINE uint32_t ea_of(const ppc_cpu_t *c, const I *d)
+{
+    return base_of(c, d) + (d->idx ? c->r[d->rb] : d->imm);
+}
+
+/* The register a compare takes its second operand from, or its immediate. */
+static EMU_ALWAYS_INLINE bool cmp_reg(const I *d)
+{
+    const uint32_t f = ppc_mn_format(d->id);
+
+    return f == PPC_F_A_B || f == PPC_F_CRF_A_B;
+}
+
+/* A branch target's low bits: one in VLE, two in Book E. */
+static EMU_ALWAYS_INLINE uint32_t target_mask(const ppc_cpu_t *c)
+{
+    return c->vle ? ~1u : ~3u;
+}
+
+/*
+ * BO, Book E's encoding, which the VLE branches are decoded into:
+ * 0x10 ignores the condition, 0x08 is the value it must have, 0x04
+ * leaves CTR alone, 0x02 branches on CTR reaching zero rather than not.
+ * The low bit is a prediction hint and changes nothing.
+ */
+static EMU_ALWAYS_INLINE bool bo_taken(ppc_cpu_t *c, uint32_t bo, uint32_t bi)
+{
+    bool ctr_ok = true;
+
+    if ((bo & 0x04u) == 0u) {
+        c->ctr--;
+        ctr_ok = ((bo & 0x02u) != 0u) ? (c->ctr == 0u) : (c->ctr != 0u);
+    }
+    return ctr_ok && ((bo & 0x10u) != 0u || cr_bit(c, bi) == ((bo >> 3) & 1u));
+}
+
+/* ------------------------------------------------------------------ */
+/* Faults                                                              */
+/* ------------------------------------------------------------------ */
+
+static bool program(ppc_cpu_t *c, uint32_t pc, uint32_t esr)
+{
+    ppc_cpu_raise(c, PPC_IVOR_PROGRAM, pc, esr);
+    return false;
+}
+
+static bool dsi(ppc_cpu_t *c, uint32_t pc, bool store)
+{
+    ppc_cpu_raise(c, PPC_IVOR_DATA_STORAGE, pc, store ? PPC_ESR_ST : 0u);
+    return false;
+}
+
+static bool misaligned(ppc_cpu_t *c, uint32_t pc, uint32_t ea, bool store)
+{
+    c->dear = ea;
+    ppc_cpu_raise(c, PPC_IVOR_ALIGNMENT, pc, store ? PPC_ESR_ST : 0u);
+    return false;
+}
+
+static EMU_ALWAYS_INLINE bool user(const ppc_cpu_t *c)
+{
+    return (c->msr & PPC_MSR_PR) != 0u;
+}
+
+/* ------------------------------------------------------------------ */
+/* The multiple and context-save transfers                             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The volatile context save/restore registers (3.14), by the set
+ * number the decoder put in `crs`: r0 and r3-r12, then CR/LR/CTR/XER,
+ * then each save/restore pair.
+ */
+static uint32_t *lmv_reg(ppc_cpu_t *c, uint32_t set, uint32_t i)
+{
+    switch (set) {
+    case 0u:
+        return &c->r[(i == 0u) ? 0u : i + 2u];
+    case 1u: {
+        uint32_t *const k[4] = {&c->cr, &c->lr, &c->ctr, &c->xer};
+        return k[i];
+    }
+    case 4u:
+        return (i == 0u) ? &c->srr0 : &c->srr1;
+    case 5u:
+        return (i == 0u) ? &c->csrr0 : &c->csrr1;
+    case 6u:
+        return (i == 0u) ? &c->dsrr0 : &c->dsrr1;
+    default:
+        return (i == 0u) ? &c->mcsrr0 : &c->mcsrr1;
+    }
+}
+
+static bool exec_multi(ppc_cpu_t *c, const I *d, uint32_t pc)
+{
+    const bool store = d->sem == PPC_S_STMW || d->sem == PPC_S_STMV;
+    const bool vol = d->sem == PPC_S_LMV || d->sem == PPC_S_STMV;
+    const uint32_t n = !vol ? 32u - d->rd : (d->crs == 0u) ? 11u : (d->crs == 1u) ? 4u : 2u;
+    uint32_t ea = ea_of(c, d);
+
+    /* The save/restore pairs are supervisor registers. */
+    if (vol && d->crs >= 4u && user(c)) {
+        return program(c, pc, PPC_ESR_PPR);
+    }
+    if ((ea & 3u) != 0u) {
+        return misaligned(c, pc, ea, store);
+    }
+    /*
+     * 3.16.2: the base is the value rA had when the instruction began,
+     * even when the instruction loads over it -- computed once, above.
+     */
+    for (uint32_t i = 0u; i < n; i++, ea += 4u) {
+        uint32_t *const r = vol ? lmv_reg(c, d->crs, i) : &c->r[d->rd + i];
+
+        if (store) {
+            if (ppc_store(c, ea, 4u, *r) != PPC_EXC_NONE) {
+                return dsi(c, pc, true);
+            }
+        } else {
+            uint32_t v;
+
+            if (ppc_load(c, ea, 4u, false, &v) != PPC_EXC_NONE) {
+                return dsi(c, pc, false);
+            }
+            *r = (vol && d->crs == 1u && i == 3u) ? (v & PPC_XER_IMPL) : v;
+        }
+    }
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* One instruction                                                     */
+/* ------------------------------------------------------------------ */
+
+bool ppc_exec(ppc_cpu_t *c, const I *d, uint32_t pc)
+{
+    const uint32_t next = pc + d->len;
+    uint32_t *const r = c->r;
+    uint32_t res = 0u;
+    bool ca = false;
+    bool ov = false;
+
+    switch ((ppc_sem_t)d->sem) {
+    /* --- integer arithmetic, register --------------------------- */
+    case PPC_S_ADD:
+    case PPC_S_ADDC:
+    case PPC_S_ADDE:
+    case PPC_S_ADDME:
+    case PPC_S_ADDZE:
+    case PPC_S_SUBF:
+    case PPC_S_SUBFC:
+    case PPC_S_SUBFE:
+    case PPC_S_SUBFME:
+    case PPC_S_SUBFZE:
+    case PPC_S_NEG: {
+        /*
+         * Everything is a + b + carry-in. The subtracts add the
+         * complement of rA; the "extended" forms take XER[CA] in;
+         * ME and ZE replace rB with all ones and zero.
+         */
+        const uint32_t sem = d->sem;
+        const bool sub = sem == PPC_S_SUBF || sem == PPC_S_SUBFC || sem == PPC_S_SUBFE ||
+                         sem == PPC_S_SUBFME || sem == PPC_S_SUBFZE || sem == PPC_S_NEG;
+        const uint32_t a = sub ? ~r[d->ra] : r[d->ra];
+        const uint32_t b = (sem == PPC_S_ADDME || sem == PPC_S_SUBFME) ? 0xFFFFFFFFu
+                           : (sem == PPC_S_ADDZE || sem == PPC_S_SUBFZE ||
+                              sem == PPC_S_NEG)
+                               ? 0u
+                               : r[d->rb];
+        const uint32_t cin = (sem == PPC_S_SUBF || sem == PPC_S_SUBFC || sem == PPC_S_NEG)
+                                 ? 1u
+                             : (sem == PPC_S_ADD || sem == PPC_S_ADDC) ? 0u
+                                                                       : get_ca(c);
+
+        res = add3(a, b, cin, &ca, &ov);
+        if (sem != PPC_S_ADD && sem != PPC_S_SUBF && sem != PPC_S_NEG) {
+            set_ca(c, ca);
+        }
+        if (d->oe) {
+            set_ov(c, ov);
+        }
+        r[d->rd] = res;
+        if (d->rc) {
+            cr0(c, res);
+        }
+        break;
+    }
+    case PPC_S_MULLW: {
+        const int64_t p = (int64_t)(int32_t)r[d->ra] * (int32_t)r[d->rb];
+
+        res = (uint32_t)p;
+        if (d->oe) {
+            set_ov(c, p != (int64_t)(int32_t)res);
+        }
+        r[d->rd] = res;
+        if (d->rc) {
+            cr0(c, res);
+        }
+        break;
+    }
+    case PPC_S_MULHW:
+        res = (uint32_t)(((int64_t)(int32_t)r[d->ra] * (int32_t)r[d->rb]) >> 32);
+        r[d->rd] = res;
+        if (d->rc) {
+            cr0(c, res);
+        }
+        break;
+    case PPC_S_MULHWU:
+        res = (uint32_t)(((uint64_t)r[d->ra] * r[d->rb]) >> 32);
+        r[d->rd] = res;
+        if (d->rc) {
+            cr0(c, res);
+        }
+        break;
+    case PPC_S_DIVW:
+    case PPC_S_DIVWU: {
+        /*
+         * Division by zero, and INT_MIN / -1 for divw, leave rD
+         * undefined (Book E) and the e200 manual does not say what it
+         * leaves. Zero, and OV when OE asks. They must not be executed
+         * in C, where both are undefined behaviour and the second
+         * raises SIGFPE on x86.
+         */
+        const uint32_t a = r[d->ra];
+        const uint32_t b = r[d->rb];
+        const bool bad = (b == 0u) || (d->sem == PPC_S_DIVW && a == 0x80000000u &&
+                                       b == 0xFFFFFFFFu);
+
+        res = bad ? 0u
+              : (d->sem == PPC_S_DIVW) ? (uint32_t)((int32_t)a / (int32_t)b)
+                                       : a / b;
+        if (d->oe) {
+            set_ov(c, bad);
+        }
+        r[d->rd] = res;
+        if (d->rc) {
+            cr0(c, res);
+        }
+        break;
+    }
+
+    /* --- integer arithmetic, immediate -------------------------- */
+    case PPC_S_LI:
+        r[d->rd] = d->imm;
+        break;
+    case PPC_S_ADDI:
+        res = base_of(c, d) + d->imm;
+        r[d->rd] = res;
+        if (d->rc) {
+            cr0(c, res);
+        }
+        break;
+    case PPC_S_ADDIC:
+        res = add3(r[d->ra], d->imm, 0u, &ca, &ov);
+        set_ca(c, ca);
+        r[d->rd] = res;
+        if (d->rc) {
+            cr0(c, res);
+        }
+        break;
+    case PPC_S_SUBFIC:
+        res = add3(~r[d->ra], d->imm, 1u, &ca, &ov);
+        set_ca(c, ca);
+        r[d->rd] = res;
+        if (d->rc) {
+            cr0(c, res);
+        }
+        break;
+    case PPC_S_MULLI:
+        res = r[d->ra] * d->imm;
+        r[d->rd] = res;
+        if (d->rc) {
+            cr0(c, res);
+        }
+        break;
+
+    /* --- logical: rA = rS op rB, or rS op imm ------------------- */
+    case PPC_S_AND:
+    case PPC_S_ANDC:
+    case PPC_S_OR:
+    case PPC_S_ORC:
+    case PPC_S_XOR:
+    case PPC_S_NAND:
+    case PPC_S_NOR:
+    case PPC_S_EQV: {
+        const uint32_t s = r[d->rd];
+        const uint32_t b = r[d->rb];
+
+        switch (d->sem) {
+        case PPC_S_AND:
+            res = s & b;
+            break;
+        case PPC_S_ANDC:
+            res = s & ~b;
+            break;
+        case PPC_S_OR:
+            res = s | b;
+            break;
+        case PPC_S_ORC:
+            res = s | ~b;
+            break;
+        case PPC_S_XOR:
+            res = s ^ b;
+            break;
+        case PPC_S_NAND:
+            res = ~(s & b);
+            break;
+        case PPC_S_NOR:
+            res = ~(s | b);
+            break;
+        default:
+            res = ~(s ^ b);
+            break;
+        }
+        r[d->ra] = res;
+        if (d->rc) {
+            cr0(c, res);
+        }
+        break;
+    }
+    case PPC_S_ANDI:
+    case PPC_S_ORI:
+    case PPC_S_XORI:
+        res = (d->sem == PPC_S_ANDI)  ? (r[d->rd] & d->imm)
+              : (d->sem == PPC_S_ORI) ? (r[d->rd] | d->imm)
+                                      : (r[d->rd] ^ d->imm);
+        r[d->ra] = res;
+        if (d->rc) {
+            cr0(c, res);
+        }
+        break;
+    case PPC_S_MR:
+        r[d->rd] = r[d->ra];
+        break;
+    case PPC_S_EXTSB:
+    case PPC_S_EXTSH:
+    case PPC_S_EXTZB:
+    case PPC_S_EXTZH:
+    case PPC_S_CNTLZW: {
+        const uint32_t s = r[d->rd];
+
+        res = (d->sem == PPC_S_EXTSB)   ? (uint32_t)(int32_t)(int8_t)s
+              : (d->sem == PPC_S_EXTSH) ? (uint32_t)(int32_t)(int16_t)s
+              : (d->sem == PPC_S_EXTZB) ? (s & 0xFFu)
+              : (d->sem == PPC_S_EXTZH) ? (s & 0xFFFFu)
+                                        : clz32(s);
+        r[d->ra] = res;
+        if (d->rc) {
+            cr0(c, res);
+        }
+        break;
+    }
+
+    /* --- shifts and rotates -------------------------------------- */
+    case PPC_S_SLW:
+    case PPC_S_SRW: {
+        /* Six bits of rB: 32 to 63 shift everything out. */
+        const uint32_t n = r[d->rb] & 0x3Fu;
+
+        res = (n >= 32u) ? 0u : (d->sem == PPC_S_SLW) ? (r[d->rd] << n) : (r[d->rd] >> n);
+        r[d->ra] = res;
+        if (d->rc) {
+            cr0(c, res);
+        }
+        break;
+    }
+    case PPC_S_SRAW:
+    case PPC_S_SRAWI: {
+        /*
+         * CA is set when the value is negative and any 1 bit is shifted
+         * out -- the information a rounding-toward-zero divide needs. A
+         * shift of 32 or more shifts every bit out.
+         */
+        const uint32_t n = (d->sem == PPC_S_SRAW) ? (r[d->rb] & 0x3Fu) : d->sh;
+        const uint32_t s = r[d->rd];
+        const bool neg = (s & 0x80000000u) != 0u;
+
+        if (n >= 32u) {
+            res = neg ? 0xFFFFFFFFu : 0u;
+            set_ca(c, neg);
+        } else {
+            res = (uint32_t)((int32_t)s >> n);
+            set_ca(c, neg && n != 0u && (s & ((1u << n) - 1u)) != 0u);
+        }
+        r[d->ra] = res;
+        if (d->rc) {
+            cr0(c, res);
+        }
+        break;
+    }
+    case PPC_S_RLWINM:
+    case PPC_S_RLWNM:
+    case PPC_S_RLWIMI: {
+        const uint32_t n = (d->sem == PPC_S_RLWNM) ? (r[d->rb] & 31u) : d->sh;
+        const uint32_t m = rl_mask(d->mb, d->me);
+        const uint32_t v = rotl(r[d->rd], n);
+
+        res = (d->sem == PPC_S_RLWIMI) ? ((v & m) | (r[d->ra] & ~m)) : (v & m);
+        r[d->ra] = res;
+        if (d->rc) {
+            cr0(c, res);
+        }
+        break;
+    }
+    case PPC_S_BTST:
+        /* se_btsti: GT if the bit is set, EQ if not, and SO. */
+        cr_set(c, 0u, (((r[d->ra] & d->imm) != 0u) ? PPC_CR_GT : PPC_CR_EQ) | so(c));
+        break;
+
+    /* --- compares ------------------------------------------------- */
+    case PPC_S_CMP:
+    case PPC_S_CMPL:
+        cr_compare(c, d->crf, r[d->ra], cmp_reg(d) ? r[d->rb] : d->imm,
+                   d->sem == PPC_S_CMP);
+        break;
+    case PPC_S_CMPH:
+        cr_compare(c, d->crf, (uint32_t)(int32_t)(int16_t)r[d->ra],
+                   cmp_reg(d) ? (uint32_t)(int32_t)(int16_t)r[d->rb] : d->imm, true);
+        break;
+    case PPC_S_CMPHL:
+        cr_compare(c, d->crf, r[d->ra] & 0xFFFFu,
+                   cmp_reg(d) ? (r[d->rb] & 0xFFFFu) : d->imm, false);
+        break;
+
+    /* --- the condition register ----------------------------------- */
+    case PPC_S_CRAND:
+    case PPC_S_CRANDC:
+    case PPC_S_CREQV:
+    case PPC_S_CRNAND:
+    case PPC_S_CRNOR:
+    case PPC_S_CROR:
+    case PPC_S_CRORC:
+    case PPC_S_CRXOR: {
+        const uint32_t a = cr_bit(c, d->ra);
+        const uint32_t b = cr_bit(c, d->rb);
+        uint32_t t;
+
+        switch (d->sem) {
+        case PPC_S_CRAND:
+            t = a & b;
+            break;
+        case PPC_S_CRANDC:
+            t = a & (b ^ 1u);
+            break;
+        case PPC_S_CREQV:
+            t = (a ^ b) ^ 1u;
+            break;
+        case PPC_S_CRNAND:
+            t = (a & b) ^ 1u;
+            break;
+        case PPC_S_CRNOR:
+            t = (a | b) ^ 1u;
+            break;
+        case PPC_S_CROR:
+            t = a | b;
+            break;
+        case PPC_S_CRORC:
+            t = a | (b ^ 1u);
+            break;
+        default:
+            t = a ^ b;
+            break;
+        }
+        c->cr = (c->cr & ~(1u << (31u - d->rd))) | (t << (31u - d->rd));
+        break;
+    }
+    case PPC_S_MCRF:
+        cr_set(c, d->crf, cr_get(c, d->crs));
+        break;
+    case PPC_S_MCRXR:
+        cr_set(c, d->crf, c->xer >> 28);
+        c->xer &= 0x0FFFFFFFu;
+        break;
+    case PPC_S_MFCR:
+        r[d->rd] = c->cr;
+        break;
+    case PPC_S_MTCRF: {
+        uint32_t m = 0u;
+
+        for (uint32_t i = 0u; i < 8u; i++) {
+            if (((d->imm >> (7u - i)) & 1u) != 0u) {
+                m |= 0xFu << (4u * (7u - i));
+            }
+        }
+        c->cr = (c->cr & ~m) | (r[d->rd] & m);
+        break;
+    }
+    case PPC_S_ISEL:
+        r[d->rd] = (cr_bit(c, d->bi) != 0u) ? base_of(c, d) : r[d->rb];
+        break;
+
+    /* --- memory --------------------------------------------------- */
+    case PPC_S_LOAD: {
+        const uint32_t ea = ea_of(c, d);
+        uint32_t v;
+
+        if (EMU_UNLIKELY(ppc_load(c, ea, d->size, d->sext != 0u, &v) != PPC_EXC_NONE)) {
+            return dsi(c, pc, false);
+        }
+        if (d->rev) {
+            v = bswap(v, d->size);
+        }
+        /*
+         * 3.16.1: an update form with rD = rA, or rA = 0, is executed;
+         * rA takes the address and then rD the data, so where they are
+         * the same register the data is what is left.
+         */
+        if (d->upd) {
+            r[d->ra] = ea;
+        }
+        r[d->rd] = v;
+        break;
+    }
+    case PPC_S_STORE: {
+        const uint32_t ea = ea_of(c, d);
+        uint32_t v = r[d->rd];
+
+        if (d->rev) {
+            v = bswap(v, d->size);
+        }
+        if (EMU_UNLIKELY(ppc_store(c, ea, d->size, v) != PPC_EXC_NONE)) {
+            return dsi(c, pc, true);
+        }
+        if (d->upd) {
+            r[d->ra] = ea;
+        }
+        break;
+    }
+    case PPC_S_LMW:
+    case PPC_S_STMW:
+    case PPC_S_LMV:
+    case PPC_S_STMV:
+        if (!exec_multi(c, d, pc)) {
+            return false;
+        }
+        break;
+    case PPC_S_LARX: {
+        const uint32_t ea = ea_of(c, d);
+        uint32_t v;
+
+        if ((ea & (d->size - 1u)) != 0u) {
+            return misaligned(c, pc, ea, false);
+        }
+        if (ppc_load(c, ea, d->size, false, &v) != PPC_EXC_NONE) {
+            return dsi(c, pc, false);
+        }
+        c->reserve = true;
+        r[d->rd] = v;
+        break;
+    }
+    case PPC_S_STCX: {
+        const uint32_t ea = ea_of(c, d);
+
+        /*
+         * 3.5: with no reservation the instruction is a no-op that
+         * reports failure, and "no exceptions will be taken" -- so the
+         * flag is looked at before the alignment.
+         */
+        if (!c->reserve) {
+            cr_set(c, 0u, so(c));
+            break;
+        }
+        if ((ea & (d->size - 1u)) != 0u) {
+            return misaligned(c, pc, ea, true);
+        }
+        if (ppc_store(c, ea, d->size, r[d->rd]) != PPC_EXC_NONE) {
+            return dsi(c, pc, true);
+        }
+        c->reserve = false;
+        cr_set(c, 0u, PPC_CR_EQ | so(c));
+        break;
+    }
+    case PPC_S_DCBZ: {
+        /*
+         * 7.7.6: dcbz with the data cache disabled is an alignment
+         * interrupt, and out of reset it is disabled. With L1CSR0[DCE]
+         * set it zeroes the 32-byte line, which is all a cache that
+         * this model does not otherwise have can be seen to do.
+         */
+        const uint32_t ea = ea_of(c, d);
+
+        if ((c->l1csr0 & PPC_L1CSR0_DCE) == 0u) {
+            return misaligned(c, pc, ea, true);
+        }
+        for (uint32_t i = 0u; i < 32u; i += 4u) {
+            if (ppc_store(c, (ea & ~31u) + i, 4u, 0u) != PPC_EXC_NONE) {
+                return dsi(c, pc, true);
+            }
+        }
+        break;
+    }
+
+    /* --- branches ------------------------------------------------- */
+    case PPC_S_B:
+        if (d->lk) {
+            c->lr = next;
+        }
+        c->pc = (d->aa ? 0u : pc) + d->imm;
+        return true;
+    case PPC_S_BC: {
+        const bool t = bo_taken(c, d->bo, d->bi);
+
+        if (d->lk) {
+            c->lr = next;
+        }
+        c->pc = t ? ((d->aa ? 0u : pc) + d->imm) : next;
+        return true;
+    }
+    case PPC_S_BCLR: {
+        const uint32_t tgt = c->lr & target_mask(c);
+        const bool t = bo_taken(c, d->bo, d->bi);
+
+        if (d->lk) {
+            c->lr = next;
+        }
+        c->pc = t ? tgt : next;
+        return true;
+    }
+    case PPC_S_BCCTR: {
+        /* 3.16.3: BO2 = 0 decrements, and branches to the value CTR had
+         * before -- read it first. */
+        const uint32_t tgt = c->ctr & target_mask(c);
+        const bool t = bo_taken(c, d->bo, d->bi);
+
+        if (d->lk) {
+            c->lr = next;
+        }
+        c->pc = t ? tgt : next;
+        return true;
+    }
+
+    /* --- system --------------------------------------------------- */
+    case PPC_S_SC:
+        /*
+         * The platform's syscall hook gets first refusal, so a host
+         * harness can offer write/exit the way it does for the other
+         * frontends -- but only from supervisor state. A system call
+         * from user mode belongs to whatever kernel the guest brought,
+         * and answering it here would hide that kernel's handler: the
+         * RV32 frontend learned that from a Linux userspace that could
+         * not print.
+         */
+        if (c->syscall != NULL && !user(c)) {
+            emu_syscall_t sc = {
+                .nr = r[0],
+                .arg = {r[3], r[4], r[5], r[6]},
+                .ret = 0u,
+            };
+
+            c->pc = next;
+            if (c->syscall((emu_cpu_t *)c, &sc, c->syscall_user)) {
+                r[3] = sc.ret;
+                return true;
+            }
+        }
+        ppc_cpu_raise(c, PPC_IVOR_SYSTEM_CALL, next, 0u);
+        return false;
+    case PPC_S_RFI:
+    case PPC_S_RFCI:
+    case PPC_S_RFDI:
+    case PPC_S_RFMCI: {
+        uint32_t ret;
+        uint32_t msr;
+
+        if (user(c)) {
+            return program(c, pc, PPC_ESR_PPR);
+        }
+        switch (d->sem) {
+        case PPC_S_RFI:
+            ret = c->srr0;
+            msr = c->srr1;
+            break;
+        case PPC_S_RFCI:
+            ret = c->csrr0;
+            msr = c->csrr1;
+            break;
+        case PPC_S_RFDI:
+            ret = c->dsrr0;
+            msr = c->dsrr1;
+            break;
+        default:
+            ret = c->mcsrr0;
+            msr = c->mcsrr1;
+            break;
+        }
+        ppc_cpu_set_msr(c, msr);
+        c->pc = ret & target_mask(c);
+        return true;
+    }
+    case PPC_S_TW: {
+        const uint32_t to = d->rd;
+        const uint32_t a = r[d->ra];
+        const uint32_t b = (d->id == PPC_M_TWI) ? d->imm : r[d->rb];
+
+        if (((to & 0x10u) != 0u && (int32_t)a < (int32_t)b) ||
+            ((to & 0x08u) != 0u && (int32_t)a > (int32_t)b) ||
+            ((to & 0x04u) != 0u && a == b) || ((to & 0x02u) != 0u && a < b) ||
+            ((to & 0x01u) != 0u && a > b)) {
+            return program(c, pc, PPC_ESR_PTR);
+        }
+        break;
+    }
+    case PPC_S_WAIT:
+        /* 3.12: completes, and the next fetch waits for an interrupt,
+         * which then names the following instruction. */
+        c->state = EMU_STATE_WFI;
+        break;
+    case PPC_S_MFMSR:
+        if (user(c)) {
+            return program(c, pc, PPC_ESR_PPR);
+        }
+        r[d->rd] = c->msr;
+        break;
+    case PPC_S_MTMSR:
+        if (user(c)) {
+            return program(c, pc, PPC_ESR_PPR);
+        }
+        ppc_cpu_set_msr(c, r[d->rd]);
+        break;
+    case PPC_S_WRTEE: {
+        const bool ee = (d->id == PPC_M_WRTEEI) ? (d->imm != 0u)
+                                                : ((r[d->rd] & PPC_MSR_EE) != 0u);
+
+        if (user(c)) {
+            return program(c, pc, PPC_ESR_PPR);
+        }
+        ppc_cpu_set_msr(c, ee ? (c->msr | PPC_MSR_EE) : (c->msr & ~PPC_MSR_EE));
+        break;
+    }
+    case PPC_S_MFSPR: {
+        uint32_t v = 0u;
+        const uint32_t e = ppc_spr_read(c, d->imm, &v);
+
+        if (e != PPC_EXC_NONE) {
+            return program(c, pc, e);
+        }
+        r[d->rd] = v;
+        break;
+    }
+    case PPC_S_MTSPR: {
+        const uint32_t e = ppc_spr_write(c, d->imm, r[d->rd]);
+
+        if (e != PPC_EXC_NONE) {
+            return program(c, pc, e);
+        }
+        break;
+    }
+    case PPC_S_NOP:
+        /*
+         * The barriers and the cache hints. icbi is the one with a
+         * consequence here: it is how a guest says it rewrote code, and
+         * a translator's blocks of that code are what is stale. The host
+         * equivalent is discarding translations, not a host barrier.
+         */
+        if (d->id == PPC_M_ICBI) {
+            c->jit_flush = true;
+        }
+        break;
+    case PPC_S_PRIV_NOP:
+        if (user(c)) {
+            return program(c, pc, PPC_ESR_PPR);
+        }
+        break;
+
+    /* --- the embedded floating-point unit ------------------------- */
+    case PPC_S_EFSADD:
+    case PPC_S_EFSSUB:
+    case PPC_S_EFSMUL:
+    case PPC_S_EFSDIV:
+    case PPC_S_EFSMADD:
+    case PPC_S_EFSMSUB:
+    case PPC_S_EFSNMADD:
+    case PPC_S_EFSNMSUB:
+    case PPC_S_EFSABS:
+    case PPC_S_EFSNABS:
+    case PPC_S_EFSNEG:
+    case PPC_S_EFSSQRT:
+    case PPC_S_EFSMAX:
+    case PPC_S_EFSMIN:
+    case PPC_S_EFSCMPGT:
+    case PPC_S_EFSCMPLT:
+    case PPC_S_EFSCMPEQ:
+    case PPC_S_EFSTSTGT:
+    case PPC_S_EFSTSTLT:
+    case PPC_S_EFSTSTEQ:
+    case PPC_S_EFSCFUI:
+    case PPC_S_EFSCFSI:
+    case PPC_S_EFSCFUF:
+    case PPC_S_EFSCFSF:
+    case PPC_S_EFSCFH:
+    case PPC_S_EFSCTUI:
+    case PPC_S_EFSCTSI:
+    case PPC_S_EFSCTUF:
+    case PPC_S_EFSCTSF:
+    case PPC_S_EFSCTUIZ:
+    case PPC_S_EFSCTSIZ:
+    case PPC_S_EFSCTH: {
+        /* MSR[SPE] gates the vector half only (7.7.18): scalar EFPU
+         * instructions run with it clear. */
+        const uint32_t e = ppc_fpu_exec(c, d->sem, d->rd, d->ra, d->rb, d->crf);
+
+        if (e == (uint32_t)PPC_IVOR_FP_DATA) {
+            ppc_cpu_raise(c, PPC_IVOR_FP_DATA, pc, PPC_ESR_SPE);
+            return false;
+        }
+        if (e == (uint32_t)PPC_IVOR_FP_ROUND) {
+            ppc_cpu_raise(c, PPC_IVOR_FP_ROUND, next, PPC_ESR_SPE);
+            return false;
+        }
+        break;
+    }
+    case PPC_S_SPE:
+        /*
+         * The vector instructions, SPE's and the EFPU's. Unavailable
+         * while MSR[SPE] is clear, as on the core; with it set this
+         * model has no vector unit to run them on, and says so with an
+         * illegal instruction rather than computing nothing.
+         */
+        if ((c->msr & PPC_MSR_SPE) == 0u) {
+            ppc_cpu_raise(c, PPC_IVOR_SPE_UNAVAIL, pc, PPC_ESR_SPE);
+            return false;
+        }
+        return program(c, pc, PPC_ESR_PIL);
+    case PPC_S_PRIV_ILLEGAL:
+        return program(c, pc, user(c) ? PPC_ESR_PPR : PPC_ESR_PIL);
+    case PPC_S_ILLEGAL:
+    default:
+        return program(c, pc, PPC_ESR_PIL);
+    }
+    c->pc = next;
+    return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -97,84 +989,83 @@ static EMU_ALWAYS_INLINE void xer_set_ca(ppc_cpu_t *c, bool ca)
 static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                                 uint32_t *retired)
 {
-    ppc_cpu_t *c = (ppc_cpu_t *)(void *)cpu;
-    uint32_t pc = c->pc;
+    ppc_cpu_t *const c = (ppc_cpu_t *)(void *)cpu;
     uint32_t done = 0u;
     emu_run_reason_t reason = EMU_RUN_BUDGET;
 
+    /*
+     * A waiting core leaves its wait for an enabled interrupt (3.12)
+     * and for nothing else; with none pending, this slice is empty.
+     */
+    if (EMU_UNLIKELY(c->state == EMU_STATE_WFI)) {
+        if (ppc_cpu_pending_irq(c) < 0) {
+            if (retired != NULL) {
+                *retired = 0u;
+            }
+            return EMU_RUN_WFI;
+        }
+        c->state = EMU_STATE_RUNNING;
+        c->irq_dirty = true;
+    }
+
     while (done < budget) {
+        uint32_t pc;
+        uint16_t w0;
+        uint32_t insn;
+        unsigned len;
+        ppc_insn_t d;
+
         /*
-         * Tested at the top, not only where a halt instruction is
-         * decoded: the syscall hook can halt the core to implement
-         * exit(), and a loop that only checks at the decode site runs
-         * one more instruction and reports the wrong reason.
+         * Tested at the top, not only where wait or a halt is decoded:
+         * the syscall hook can halt the core to implement exit(), and a
+         * loop that only checks at the decode site runs one more
+         * instruction and reports the wrong reason.
          */
-        if (EMU_UNLIKELY(c->state == EMU_STATE_HALTED)) {
-            reason = EMU_RUN_HALTED;
+        if (EMU_UNLIKELY(c->state != EMU_STATE_RUNNING)) {
+            reason = (c->state == EMU_STATE_HALTED) ? EMU_RUN_HALTED : EMU_RUN_WFI;
             break;
         }
-
-        /* --- interrupts -------------------------------------------- */
         if (EMU_UNLIKELY(c->irq_dirty)) {
             /*
              * Cleared before the evaluation, not after: on a target the
              * platform raises the external input from an ARM handler,
              * and a set performed while we are deciding would otherwise
-             * be overwritten and lost until something else dirtied the
-             * flag again. Same rule as both other frontends.
+             * be overwritten and lost.
              */
             c->irq_dirty = false;
-
-            const int which = ppc_cpu_pending_irq(c);
-            if (which >= 0) {
-                c->state = EMU_STATE_RUNNING;
-                /*
-                 * The external input is edge-like here because there is
-                 * no interrupt controller to hold it: taking the
-                 * interrupt consumes it. A part with an INTC would
-                 * instead leave it asserted until the guest wrote that
-                 * controller's acknowledge register.
-                 *
-                 * TSR[DIS] is *not* cleared -- it is write-1-to-clear
-                 * by the handler, which is how a guest distinguishes
-                 * "I took a tick" from "a tick is pending".
-                 */
-                if (which == (int)PPC_IVOR_EXTERNAL) {
-                    c->ext_pending = false;
-                }
-                c->pc = pc;
-                ppc_cpu_exception(c, (ppc_ivor_t)which, pc);
-                pc = c->pc;
+            if (ppc_cpu_take_irq(c)) {
                 done++;
+                c->cycles++;
                 continue;
             }
         }
 
-        /* --- fetch ------------------------------------------------- */
-        uint16_t w0;
-        emu_fault_t f = emu_bus_fetch16(c->bus, pc, &w0);
-        if (EMU_UNLIKELY(f != EMU_FAULT_NONE)) {
-            EXC(PPC_IVOR_INST_STORAGE);
+        pc = c->pc;
+        if (EMU_UNLIKELY(emu_bus_fetch16(c->bus, pc, &w0) != EMU_FAULT_NONE)) {
+            ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, 0u);
+            done++;
+            c->cycles++;
+            continue;
         }
-
         /*
          * Classic Book E is fixed 32-bit; only VLE has a length rule.
          * Applying the VLE rule to Book E desynchronises the stream on
          * the first branch, because `bl` has top4 = 0x4 and would read
          * as a 16-bit parcel.
          */
-        const unsigned len = c->vle ? ppc_vle_len(w0) : 4u;
-        uint32_t insn = (uint32_t)w0 << 16;
+        len = c->vle ? ppc_vle_len(w0) : 4u;
+        insn = (uint32_t)w0 << 16;
         if (len == 4u) {
             uint16_t w1;
-            f = emu_bus_fetch16(c->bus, pc + 2u, &w1);
-            if (EMU_UNLIKELY(f != EMU_FAULT_NONE)) {
-                EXC(PPC_IVOR_INST_STORAGE);
+
+            if (EMU_UNLIKELY(emu_bus_fetch16(c->bus, pc + 2u, &w1) != EMU_FAULT_NONE)) {
+                ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, 0u);
+                done++;
+                c->cycles++;
+                continue;
             }
             insn |= w1;
         }
-
-        const uint32_t next = pc + len;
 
 #if EMU_ENABLE_TRACE
         if (c->trace != NULL) {
@@ -182,1325 +1073,20 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
         }
 #endif
 
-        /* --- execute ----------------------------------------------- */
-        if (len == 2u) {
-            /*
-             * VLE's 16-bit se_ forms.
-             *
-             * Every encoding below came from the assembler, and the
-             * grouping follows what the encodings actually do rather
-             * than the manual's form names: the operand layout is not
-             * uniform across them. In particular the two-register forms
-             * put the *source* in bits[7:4] and the destination in
-             * bits[3:0], while the load/store forms put the data
-             * register in bits[7:4] and the *base* in bits[3:0] -- the
-             * same two nibbles, opposite senses.
-             */
-            const uint16_t w = (uint16_t)(insn >> 16);
-            const uint32_t rx = ppc_se_reg((uint32_t)w & 0xFu);
-            const uint32_t ry = ppc_se_reg(((uint32_t)w >> 4) & 0xFu);
-            const uint32_t hi = (uint32_t)w >> 8;
-
-            if (hi == 0x00u) {
-                /* No operands, or one register in the low nibble. */
-                switch (((uint32_t)w >> 4) & 0xFu) {
-                case 0x0u:
-                    switch ((uint32_t)w & 0xFu) {
-                    case 0x1u:
-                        break; /* se_isync: a no-op  */
-                    case 0x2u: /* se_sc              */
-                        goto do_syscall;
-                    case 0x4u: /* se_blr             */
-                    case 0x5u: /* se_blrl            */
-                    {
-                        const uint32_t tgt = c->lr & ~1u;
-                        if (((uint32_t)w & 1u) != 0u) {
-                            c->lr = next;
-                        }
-                        pc = tgt;
-                        goto retired_insn;
-                    }
-                    case 0x6u: /* se_bctr            */
-                    case 0x7u: /* se_bctrl           */
-                    {
-                        const uint32_t tgt = c->ctr & ~1u;
-                        if (((uint32_t)w & 1u) != 0u) {
-                            c->lr = next;
-                        }
-                        pc = tgt;
-                        goto retired_insn;
-                    }
-                    case 0x8u: /* se_rfi             */
-                        c->msr = c->srr1;
-                        pc = c->srr0;
-                        goto retired_insn;
-                    case 0x9u: /* se_rfci            */
-                    case 0xAu: /* se_rfdi            */
-                        c->msr = c->csrr1;
-                        pc = c->csrr0;
-                        goto retired_insn;
-                    default: /* se_illegal, 0x0000 */
-                        EXC(PPC_IVOR_PROGRAM);
-                    }
-                    break;
-                case 0x2u:
-                    c->r[rx] = ~c->r[rx];
-                    break; /* not   */
-                case 0x3u:
-                    c->r[rx] = (uint32_t)(-(int32_t)c->r[rx]);
-                    break;
-                case 0x8u:
-                    c->r[rx] = c->lr;
-                    break; /* mflr  */
-                case 0x9u:
-                    c->lr = c->r[rx];
-                    break; /* mtlr  */
-                case 0xAu:
-                    c->r[rx] = c->ctr;
-                    break; /* mfctr */
-                case 0xBu:
-                    c->ctr = c->r[rx];
-                    break; /* mtctr */
-                case 0xCu:
-                    c->r[rx] = c->r[rx] & 0xFFu;
-                    break; /* extzb */
-                case 0xDu:
-                    c->r[rx] = (uint32_t)(int32_t)(int8_t)c->r[rx];
-                    break;
-                case 0xEu:
-                    c->r[rx] = c->r[rx] & 0xFFFFu;
-                    break; /* extzh */
-                case 0xFu:
-                    c->r[rx] = (uint32_t)(int32_t)(int16_t)c->r[rx];
-                    break;
-                default:
-                    EXC(PPC_IVOR_PROGRAM);
-                }
-            } else if (hi == 0x01u) { /* se_mr  rX <- rY    */
-                c->r[rx] = c->r[ry];
-            } else if (hi >= 0x04u && hi <= 0x07u) {
-                switch (hi) {
-                case 0x04u:
-                    c->r[rx] += c->r[ry];
-                    break; /* se_add   */
-                case 0x05u:
-                    c->r[rx] *= c->r[ry];
-                    break; /* se_mullw */
-                /*
-                 * se_sub and se_subf are not the same instruction with
-                 * the operands swapped in the encoding -- they are two
-                 * instructions with opposite senses, and both write rX.
-                 */
-                case 0x06u:
-                    c->r[rx] -= c->r[ry];
-                    break; /* rX - rY  */
-                default:
-                    c->r[rx] = c->r[ry] - c->r[rx];
-                    break;
-                }
-            } else if (hi >= 0x0Cu && hi <= 0x0Eu) {
-                /*
-                 * The 16-bit compares always target CR0, and se_cmph
-                 * compares only the low halfwords -- sign-extended, so
-                 * it is not a masked se_cmp.
-                 */
-                if (hi == 0x0Cu) {
-                    cr_compare(c, 0u, c->r[rx], c->r[ry], true);
-                } else if (hi == 0x0Du) {
-                    cr_compare(c, 0u, c->r[rx], c->r[ry], false);
-                } else {
-                    cr_compare(c, 0u, (uint32_t)(int32_t)(int16_t)c->r[rx],
-                               (uint32_t)(int32_t)(int16_t)c->r[ry], true);
-                }
-            } else if (hi >= 0x40u && hi <= 0x47u) {
-                /* Shift counts are masked to 5 bits; PowerPC's 6-bit
-                 * behaviour is a 64-bit rule and does not apply here. */
-                const uint32_t sh = c->r[ry] & 0x1Fu;
-                switch (hi) {
-                case 0x40u:
-                    c->r[rx] >>= sh;
-                    break; /* srw  */
-                case 0x41u:
-                    c->r[rx] = (uint32_t)((int32_t)c->r[rx] >> sh);
-                    break; /* sraw */
-                case 0x42u:
-                    c->r[rx] <<= sh;
-                    break; /* slw  */
-                case 0x44u:
-                    c->r[rx] |= c->r[ry];
-                    break; /* or   */
-                case 0x45u:
-                    c->r[rx] &= ~c->r[ry];
-                    break; /* andc */
-                case 0x46u:
-                    c->r[rx] &= c->r[ry];
-                    break; /* and  */
-                case 0x47u:
-                    c->r[rx] &= c->r[ry]; /* and. */
-                    cr0_from(c, c->r[rx]);
-                    break;
-                default:
-                    EXC(PPC_IVOR_PROGRAM);
-                }
-            } else if ((w >> 11) == 0x09u) { /* se_li  imm7        */
-                c->r[rx] = ((uint32_t)w >> 4) & 0x7Fu;
-            } else if ((w >> 9) == 0x10u || (w >> 9) == 0x11u ||
-                       (w >> 9) == 0x12u) {
-                /*
-                 * OIM5 encodes 1..32 as 0..31, because adding zero is
-                 * not worth an encoding. Reading it straight makes
-                 * `se_addi rX,1` a no-op and `se_addi rX,32` add 31.
-                 *
-                 * se_cmpli shares that encoding and sat *between* the
-                 * two that were implemented -- 0x10 and 0x12 were here
-                 * and 0x11 was not, which is this file's second instance
-                 * of the same miss and the reason the whole slot was
-                 * enumerated against the assembler rather than extended
-                 * one instruction at a time.
-                 */
-                const uint32_t oim = (((uint32_t)w >> 4) & 0x1Fu) + 1u;
-                if ((w >> 9) == 0x10u) {
-                    c->r[rx] += oim;
-                } else if ((w >> 9) == 0x12u) {
-                    c->r[rx] -= oim;
-                } else {
-                    cr_compare(c, 0u, c->r[rx], oim, false);
-                }
-            } else if ((w >> 9) == 0x15u) { /* se_cmpi  ui5       */
-                cr_compare(c, 0u, c->r[rx], ((uint32_t)w >> 4) & 0x1Fu, true);
-            } else if ((w >> 9) == 0x16u) { /* se_bmaski ui5      */
-                const uint32_t n = ((uint32_t)w >> 4) & 0x1Fu;
-                c->r[rx] = (n == 0u) ? 0xFFFFFFFFu : ((1u << n) - 1u);
-            } else if ((w >> 9) == 0x30u) { /* se_bclri           */
-                c->r[rx] &= ~(1u << (31u - (((uint32_t)w >> 4) & 0x1Fu)));
-            } else if ((w >> 9) == 0x31u) { /* se_bgeni           */
-                c->r[rx] = 1u << (31u - (((uint32_t)w >> 4) & 0x1Fu));
-            } else if ((w >> 9) == 0x32u) { /* se_bseti           */
-                c->r[rx] |= 1u << (31u - (((uint32_t)w >> 4) & 0x1Fu));
-            } else if ((w >> 9) == 0x33u) { /* se_btsti           */
-                const uint32_t b =
-                    c->r[rx] & (1u << (31u - (((uint32_t)w >> 4) & 0x1Fu)));
-                cr_compare(c, 0u, b, 0u, true);
-            } else if ((w >> 9) == 0x34u) { /* se_srwi            */
-                c->r[rx] >>= ((uint32_t)w >> 4) & 0x1Fu;
-            } else if ((w >> 9) == 0x35u) { /* se_srawi           */
-                /*
-                 * Arithmetic, so the sign is replicated -- and it sat
-                 * between se_srwi and se_slwi, both of which were
-                 * implemented. A logical shift where an arithmetic one
-                 * belongs is not a trap, it is a wrong answer for
-                 * exactly the negative inputs a test of 0x5A5A never
-                 * reaches.
-                 *
-                 * XER[CA] is not updated, which matches the 32-bit
-                 * `sraw` beside it; carry is not modelled anywhere in
-                 * this frontend yet, and doing it here alone would make
-                 * the two disagree.
-                 */
-                c->r[rx] = (uint32_t)((int32_t)c->r[rx] >>
-                                      (((uint32_t)w >> 4) & 0x1Fu));
-            } else if ((w >> 9) == 0x36u) { /* se_slwi            */
-                c->r[rx] <<= ((uint32_t)w >> 4) & 0x1Fu;
-            } else if (hi >= 0x80u && hi <= 0xDFu) {
-                /*
-                 * SD4-form. The data register is bits[7:4] and the base
-                 * is bits[3:0] -- the opposite sense to every
-                 * two-register form above, which is the single easiest
-                 * thing to get wrong here.
-                 *
-                 * The displacement is scaled by the access size, so the
-                 * same nibble is 15 bytes or 60 bytes depending on the
-                 * width.
-                 */
-                const uint32_t kind = (uint32_t)w >> 12;
-                const uint32_t sz =
-                    (kind == 0x8u || kind == 0x9u)
-                        ? 1u
-                        : ((kind == 0xAu || kind == 0xBu) ? 2u : 4u);
-                const uint32_t ea = c->r[rx] + ppc_se_sd4(w, sz);
-                const bool store =
-                    (kind == 0x9u || kind == 0xBu || kind == 0xDu);
-                if (store) {
-                    const ppc_exc_t e = ppc_store(c, ea, sz, c->r[ry]);
-                    if (EMU_UNLIKELY(e != PPC_EXC_NONE)) {
-                        EXC(e);
-                    }
-                } else {
-                    uint32_t v;
-                    const ppc_exc_t e = ppc_load(c, ea, sz, false, &v);
-                    if (EMU_UNLIKELY(e != PPC_EXC_NONE)) {
-                        EXC(e);
-                    }
-                    c->r[ry] = v;
-                }
-            } else if (hi >= 0xE0u && hi <= 0xE7u) {
-                /*
-                 * se_bc. The condition is CR0 only: bits[1:0] of the
-                 * opcode pick LT/GT/EQ/SO and bit 2 picks true or false,
-                 * so se_bge is "branch if not LT" rather than an
-                 * encoding of its own.
-                 */
-                static const uint32_t k_bit[4] = {PPC_CR_LT, PPC_CR_GT,
-                                                  PPC_CR_EQ, PPC_CR_SO};
-                const bool want = (hi & 0x4u) != 0u;
-                const bool got = (cr_get(c, 0u) & k_bit[hi & 0x3u]) != 0u;
-                if (got == want) {
-                    /* BD8 is signed and scaled by two: it counts
-                     * halfwords, because no instruction is odd. */
-                    const int32_t bd = (int32_t)(int8_t)(uint8_t)(w & 0xFFu);
-                    pc = pc + (uint32_t)(bd * 2);
-                    goto retired_insn;
-                }
-            } else if (hi == 0xE8u || hi == 0xE9u) {
-                const int32_t bd = (int32_t)(int8_t)(uint8_t)(w & 0xFFu);
-                if (hi == 0xE9u) {
-                    c->lr = next;
-                } /* se_bl */
-                pc = pc + (uint32_t)(bd * 2);
-                goto retired_insn;
-            } else {
-                EXC(PPC_IVOR_PROGRAM);
-            }
-
-            pc = next;
-            goto retired_insn;
+        ppc_decode(insn, len, c->vle, &d);
+        if (ppc_exec(c, &d, pc)) {
+            c->retired++;
         }
-
         /*
-         * VLE's 32-bit e_ forms have their own primary opcodes: e_lwz is
-         * 0x14 where Book E's lwz is 0x20. Only the X-form pool at 0x1F
-         * is shared, so the two switches meet there and nowhere else.
-         */
-        if (c->vle) {
-            const uint32_t rd = ppc_rd(insn);
-            const uint32_t ra = ppc_ra(insn);
-
-            switch (ppc_op6(insn)) {
-            case 0x0C: /* e_lbz                    */
-            case 0x0D: /* e_stb                    */
-            case 0x0E: /* e_lha                    */
-            case 0x14: /* e_lwz                    */
-            case 0x15: /* e_stw                    */
-            case 0x16: /* e_lhz                    */
-            case 0x17: { /* e_sth                    */
-                const uint32_t o = ppc_op6(insn);
-                const uint32_t base = (ra == 0u) ? 0u : c->r[ra];
-                const uint32_t ea = base + (uint32_t)ppc_d16(insn);
-                const uint32_t sz =
-                    (o == 0x0Cu || o == 0x0Du)
-                        ? 1u
-                        : ((o == 0x14u || o == 0x15u) ? 4u : 2u);
-                const bool store = (o == 0x0Du || o == 0x15u || o == 0x17u);
-
-                if (store) {
-                    const ppc_exc_t e = ppc_store(c, ea, sz, c->r[rd]);
-                    if (EMU_UNLIKELY(e != PPC_EXC_NONE)) {
-                        EXC(e);
-                    }
-                } else {
-                    uint32_t v;
-                    /* e_lha is the only sign-extending load here. */
-                    const ppc_exc_t e = ppc_load(c, ea, sz, o == 0x0Eu, &v);
-                    if (EMU_UNLIKELY(e != PPC_EXC_NONE)) {
-                        EXC(e);
-                    }
-                    c->r[rd] = v;
-                }
-                break;
-            }
-
-            case 0x07: /* e_add16i rD,rA,simm16    */
-                c->r[rd] =
-                    ((ra == 0u) ? 0u : c->r[ra]) + (uint32_t)ppc_d16(insn);
-                break;
-
-            case 0x06: { /* the SCI8 group           */
-                /*
-                 * SCI8 is not a plain immediate. Eleven bits hold a
-                 * *scale* and a fill bit as well as the value: F(1),
-                 * SCL(2), UI8(8), and the byte UI8 lands in is chosen by
-                 * SCL with the other three bytes filled from F. So the
-                 * same UI8 is 100, 25600, or 0xFFFFFF64 depending on
-                 * fields that look like padding.
-                 */
-                const uint32_t xo = (insn >> 11) & 0x1Fu;
-                const uint32_t sci = insn & 0x7FFu;
-                const uint32_t f = (sci >> 10) & 1u;
-                const uint32_t scl = (sci >> 8) & 3u;
-                const uint32_t ui8 = sci & 0xFFu;
-                const uint32_t fill = (f != 0u) ? 0xFFFFFFFFu : 0u;
-                const uint32_t sh = 8u * scl;
-                const uint32_t imm = (fill & ~(0xFFu << sh)) | (ui8 << sh);
-
-                switch (xo) {
-                case 0x10u: /* e_addi                   */
-                    c->r[rd] = ((ra == 0u) ? 0u : c->r[ra]) + imm;
-                    break;
-                case 0x11u: /* e_addi.                  */
-                    c->r[rd] = ((ra == 0u) ? 0u : c->r[ra]) + imm;
-                    cr0_from(c, c->r[rd]);
-                    break;
-                case 0x12u: /* e_addic                  */
-                    c->r[rd] = c->r[ra] + imm;
-                    break;
-                case 0x14u: /* e_mulli                  */
-                    c->r[rd] = c->r[ra] * imm;
-                    break;
-                case 0x15u: /* e_cmpi   -- crD in rd    */
-                    cr_compare(c, (rd >> 2) & 0x7u, c->r[ra], imm, true);
-                    break;
-                case 0x16u: /* e_subfic                 */
-                    c->r[rd] = imm - c->r[ra];
-                    break;
-                /*
-                 * The logical forms write rA from rS, the reverse of the
-                 * arithmetic ones above -- same two fields, opposite
-                 * senses, which is the classic PowerPC trap.
-                 */
-                case 0x18u: /* e_andi                   */
-                    c->r[ra] = c->r[rd] & imm;
-                    break;
-                case 0x19u: /* e_andi.                  */
-                    c->r[ra] = c->r[rd] & imm;
-                    cr0_from(c, c->r[ra]);
-                    break;
-                case 0x1Au: /* e_ori                    */
-                    c->r[ra] = c->r[rd] | imm;
-                    break;
-                case 0x1Cu: /* e_xori                   */
-                    c->r[ra] = c->r[rd] ^ imm;
-                    break;
-                case 0x1Du: /* e_cmpli                  */
-                    cr_compare(c, (rd >> 2) & 0x7u, c->r[ra], imm, false);
-                    break;
-                default:
-                    EXC(PPC_IVOR_PROGRAM);
-                }
-                break;
-            }
-
-            case 0x1D: { /* e_rlwinm / e_rlwimi      */
-                /*
-                 * **Bit 0 is not Rc here.** It picks between rlwimi (0)
-                 * and rlwinm (1), which is the reverse of the intuition
-                 * a Book E reader brings: e_rlwinm r3,r4,5,6,7 assembles
-                 * as ...8F and e_rlwimi as ...8E. Read as a record bit,
-                 * every e_rlwinm becomes an insert -- which merges with
-                 * the old rA instead of replacing it, so the answer is
-                 * only wrong when rA held something.
-                 */
-                const uint32_t rs = ppc_rd(insn);
-                const uint32_t sh = (insn >> 11) & 0x1Fu;
-                const uint32_t mb = (insn >> 6) & 0x1Fu;
-                const uint32_t me = (insn >> 1) & 0x1Fu;
-                const uint32_t rot =
-                    (sh == 0u) ? c->r[rs]
-                               : ((c->r[rs] << sh) | (c->r[rs] >> (32u - sh)));
-                /*
-                 * MB and ME are bit numbers from the *most* significant
-                 * end and the range is inclusive, so mb > me is a
-                 * legitimate wrapped mask rather than an error.
-                 */
-                const uint32_t m =
-                    (mb <= me)
-                        ? ((0xFFFFFFFFu >> mb) & (0xFFFFFFFFu << (31u - me)))
-                        : ((0xFFFFFFFFu >> mb) | (0xFFFFFFFFu << (31u - me)));
-
-                if ((insn & 1u) != 0u) { /* e_rlwinm */
-                    c->r[ra] = rot & m;
-                } else { /* e_rlwimi */
-                    c->r[ra] = (rot & m) | (c->r[ra] & ~m);
-                }
-                break;
-            }
-
-            case 0x1C: /* e_li  (LI20)             */
-                /*
-                 * LI20 is split into *three* fields and not in address
-                 * order: bits[14:11] are the most significant four,
-                 * bits[20:16] the next five, and bits[10:0] the low
-                 * eleven. Reading it as two fields in the obvious order
-                 * gives e_li rD,4096 the value 65536 -- which is what it
-                 * did here first time round, and which only showed up
-                 * because the test used an address the region did not
-                 * cover and the store faulted.
-                 *
-                 * Bit 15 clear is what makes this e_li at all; set, the
-                 * opcode is a different group (e_lis, e_or2i and
-                 * friends), which is why the test is on that bit rather
-                 * than on an extended opcode field.
-                 */
-                if ((insn & 0x8000u) == 0u) {
-                    const uint32_t li20 = (((insn >> 11) & 0x0Fu) << 16) |
-                                          (((insn >> 16) & 0x1Fu) << 11) |
-                                          (insn & 0x7FFu);
-                    c->r[rd] = (uint32_t)((int32_t)(li20 << 12) >> 12);
-                } else {
-                    /*
-                     * The I16A and I16L forms, told apart by the XO at
-                     * bits[15:11]. Both split their 16-bit immediate
-                     * across two fields, and *which* two depends on the
-                     * form -- because the field not used for the
-                     * immediate is the register:
-                     *
-                     *   I16L (rD, ui16): rD = [25:21], imm = [20:16]:[10:0]
-                     *   I16A (rA, si16): rA = [20:16], imm = [25:21]:[10:0]
-                     *
-                     * So the same bits are a register in one form and
-                     * the top of an immediate in the other. Confirmed
-                     * with 0x8001, which needs bit 15 of the immediate
-                     * and so cannot be produced by the low field alone.
-                     */
-                    const uint32_t xo = (insn >> 11) & 0x1Fu;
-                    const uint32_t lo = insn & 0x7FFu;
-                    const uint32_t hi_l = (insn >> 16) & 0x1Fu;
-                    const uint32_t hi_a = (insn >> 21) & 0x1Fu;
-                    const uint32_t ui16_l = (hi_l << 11) | lo;
-                    const uint32_t ui16_a = (hi_a << 11) | lo;
-
-                    /*
-                     * The whole slot, enumerated from the assembler
-                     * rather than from a diagram -- `e_add2i.` is XO
-                     * 0x11 and not the 0x10 the group's start suggests,
-                     * so a guessed base would have shifted every entry
-                     * by one. Seven of these twelve were implemented and
-                     * five were not, and the five were invisible because
-                     * the unit tests only ever used the seven. This is
-                     * the enumerate-the-slot rule from CLAUDE.md, in a
-                     * new place.
-                     */
-                    switch (xo) {
-                    case 0x11u: /* e_add2i.   rA, si16      */
-                        /* Always records, hence the dot in the name. */
-                        c->r[ra] += (uint32_t)(int32_t)(int16_t)ui16_a;
-                        cr0_from(c, c->r[ra]);
-                        break;
-                    case 0x12u: /* e_add2is   rA, si16      */
-                        /*
-                         * Adds to the *upper* half and does not record.
-                         * The field is signed, so a decoder that
-                         * zero-extends is right for every positive
-                         * addend -- which is why the guest checks -1.
-                         */
-                        c->r[ra] += (uint32_t)((int32_t)(int16_t)ui16_a << 16);
-                        break;
-                    case 0x13u: /* e_cmp16i   rA, si16      */
-                        cr_compare(c, 0u, c->r[ra],
-                                   (uint32_t)(int32_t)(int16_t)ui16_a, true);
-                        break;
-                    case 0x14u: /* e_mull2i   rA, si16      */
-                        c->r[ra] = (uint32_t)((int32_t)c->r[ra] *
-                                              (int32_t)(int16_t)ui16_a);
-                        break;
-                    case 0x15u: /* e_cmpl16i  rA, ui16      */
-                        cr_compare(c, 0u, c->r[ra], ui16_a, false);
-                        break;
-                    case 0x16u: /* e_cmph16i  rA, si16      */
-                        /*
-                         * Compares the *low halfword* of rA, not the
-                         * word -- which is the whole difference from
-                         * e_cmp16i and is invisible to any operand whose
-                         * upper half is a sign extension of its lower.
-                         * 0x00018000 against -32768 separates the two
-                         * readings; the guest uses exactly that.
-                         */
-                        cr_compare(c, 0u, (uint32_t)(int32_t)(int16_t)c->r[ra],
-                                   (uint32_t)(int32_t)(int16_t)ui16_a, true);
-                        break;
-                    case 0x17u: /* e_cmphl16i rA, ui16      */
-                        cr_compare(c, 0u, c->r[ra] & 0xFFFFu, ui16_a, false);
-                        break;
-                    case 0x18u: /* e_or2i     rD, ui16      */
-                        c->r[rd] |= ui16_l;
-                        break;
-                    case 0x19u: /* e_and2i.   rD, ui16      */
-                        c->r[rd] &= ui16_l;
-                        cr0_from(c, c->r[rd]);
-                        break;
-                    case 0x1Au: /* e_or2is    rD, ui16      */
-                        c->r[rd] |= ui16_l << 16;
-                        break;
-                    case 0x1Cu: /* e_lis      rD, ui16      */
-                        c->r[rd] = ui16_l << 16;
-                        break;
-                    case 0x1Du: /* e_and2is.  rD, ui16      */
-                        c->r[rd] &= ui16_l << 16;
-                        cr0_from(c, c->r[rd]);
-                        break;
-                    default:
-                        EXC(PPC_IVOR_PROGRAM);
-                    }
-                }
-                break;
-
-            case 0x1E: { /* e_b / e_bl / e_bc        */
-                const bool lk = (insn & 1u) != 0u;
-
-                if ((insn & 0x02000000u) != 0u) {
-                    /*
-                     * e_bc. BI32 names a CR bit as field*4 + bit, and
-                     * **BO32 is two bits, not one**:
-                     *
-                     *   0  branch if CR[BI32] is clear
-                     *   1  branch if CR[BI32] is set
-                     *   2  decrement CTR, branch if CTR != 0   (e_bdnz)
-                     *   3  decrement CTR, branch if CTR == 0   (e_bdz)
-                     *
-                     * Only the low bit was read here, which made the two
-                     * counter forms alias the two condition forms:
-                     * `e_bdnz` and `e_bge` both came out as BO32 bit 0
-                     * clear with BI32 0, so a counted loop executed as
-                     * "branch while CR0[LT] is clear" -- always true, so
-                     * it never terminated. Not a declined encoding and
-                     * not a trap: a silent wrong answer, found by the
-                     * first guest that wrote a loop.
-                     */
-                    static const uint32_t k_bit[4] = {PPC_CR_LT, PPC_CR_GT,
-                                                      PPC_CR_EQ, PPC_CR_SO};
-                    const uint32_t bo = (insn >> 20) & 0x3u;
-                    const uint32_t bi = (insn >> 16) & 0xFu;
-                    bool take;
-
-                    if ((bo & 2u) != 0u) {
-                        /*
-                         * The decrement happens whether or not the
-                         * branch is taken, and it is CTR *after* the
-                         * decrement that decides -- so a CTR of 3 runs
-                         * the body three times. Testing before
-                         * decrementing runs it four.
-                         */
-                        c->ctr--;
-                        take =
-                            ((bo & 1u) == 0u) ? (c->ctr != 0u) : (c->ctr == 0u);
-                    } else {
-                        const bool got = (cr_get(c, (bi >> 2) & 0x7u) &
-                                          k_bit[bi & 3u]) != 0u;
-                        take = (got == ((bo & 1u) != 0u));
-                    }
-
-                    if (lk) {
-                        c->lr = next;
-                    }
-                    if (take) {
-                        /* BD15 is bits[15:1], signed; bit 0 is LK. */
-                        const int32_t bd =
-                            (int32_t)(int16_t)(uint16_t)(insn & 0xFFFEu);
-                        pc = pc + (uint32_t)bd;
-                        goto retired_insn;
-                    }
-                } else {
-                    /* e_b: BD24 is bits[24:1], signed. */
-                    int32_t bd = (int32_t)(insn & 0x01FFFFFEu);
-                    if ((bd & 0x01000000) != 0) {
-                        bd |= (int32_t)0xFE000000;
-                    }
-                    if (lk) {
-                        c->lr = next;
-                    }
-                    pc = pc + (uint32_t)bd;
-                    goto retired_insn;
-                }
-                break;
-            }
-
-            case 0x1F:
-                /* The X-form pool, shared with Book E. Fall through to
-                 * the switch below rather than duplicating it. */
-                goto shared_xform;
-
-            default:
-                EXC(PPC_IVOR_PROGRAM);
-            }
-
-            pc = next;
-            goto retired_insn;
-        }
-
-    shared_xform:
-        switch (ppc_op6(insn)) {
-        case 0x0E: { /* addi / li  (D-form)      */
-            /*
-             * rA == 0 means the *literal* zero, not r0. That is
-             * PowerPC's one pervasive irregularity and the reason `li`
-             * is an extended mnemonic for `addi rD, 0, imm` rather than
-             * a separate instruction. Reading r[0] here would make every
-             * `li` return whatever r0 happened to hold.
-             */
-            const uint32_t a = (ppc_ra(insn) == 0u) ? 0u : c->r[ppc_ra(insn)];
-            c->r[ppc_rd(insn)] = a + (uint32_t)ppc_d16(insn);
-            break;
-        }
-
-        case 0x0F: { /* addis / lis              */
-            const uint32_t a = (ppc_ra(insn) == 0u) ? 0u : c->r[ppc_ra(insn)];
-            c->r[ppc_rd(insn)] = a + ((insn & 0xFFFFu) << 16);
-            break;
-        }
-
-        case 0x20: /* lwz                      */
-        case 0x22: /* lbz                      */
-        case 0x28: { /* lhz                      */
-            const uint32_t a = (ppc_ra(insn) == 0u) ? 0u : c->r[ppc_ra(insn)];
-            const uint32_t ea = a + (uint32_t)ppc_d16(insn);
-            const uint32_t sz = (ppc_op6(insn) == 0x20u)
-                                    ? 4u
-                                    : ((ppc_op6(insn) == 0x22u) ? 1u : 2u);
-            uint32_t v;
-            const ppc_exc_t e = ppc_load(c, ea, sz, false, &v);
-            if (EMU_UNLIKELY(e != PPC_EXC_NONE)) {
-                EXC(e);
-            }
-            c->r[ppc_rd(insn)] = v;
-            break;
-        }
-
-        case 0x24: /* stw                      */
-        case 0x26: /* stb                      */
-        case 0x2C: { /* sth                      */
-            const uint32_t a = (ppc_ra(insn) == 0u) ? 0u : c->r[ppc_ra(insn)];
-            const uint32_t ea = a + (uint32_t)ppc_d16(insn);
-            const uint32_t sz = (ppc_op6(insn) == 0x24u)
-                                    ? 4u
-                                    : ((ppc_op6(insn) == 0x26u) ? 1u : 2u);
-            const ppc_exc_t e = ppc_store(c, ea, sz, c->r[ppc_rd(insn)]);
-            if (EMU_UNLIKELY(e != PPC_EXC_NONE)) {
-                EXC(e);
-            }
-            break;
-        }
-
-        case 0x18: { /* ori  (and thus nop)      */
-            c->r[ppc_ra(insn)] = c->r[ppc_rd(insn)] | (insn & 0xFFFFu);
-            break;
-        }
-        case 0x19: { /* oris                     */
-            c->r[ppc_ra(insn)] = c->r[ppc_rd(insn)] | ((insn & 0xFFFFu) << 16);
-            break;
-        }
-        case 0x1A: { /* xori                     */
-            c->r[ppc_ra(insn)] = c->r[ppc_rd(insn)] ^ (insn & 0xFFFFu);
-            break;
-        }
-        case 0x1C: { /* andi.  -- always sets CR0 */
-            const uint32_t v = c->r[ppc_rd(insn)] & (insn & 0xFFFFu);
-            c->r[ppc_ra(insn)] = v;
-            cr0_from(c, v);
-            break;
-        }
-
-        case 0x0B: /* cmpi                     */
-            cr_compare(c, (insn >> 23) & 0x7u, c->r[ppc_ra(insn)],
-                       (uint32_t)ppc_d16(insn), true);
-            break;
-
-        case 0x0A: /* cmpli                    */
-            cr_compare(c, (insn >> 23) & 0x7u, c->r[ppc_ra(insn)],
-                       insn & 0xFFFFu, false);
-            break;
-
-        case 0x12: { /* b / bl / ba / bla        */
-            /*
-             * LI is a signed 26-bit *byte* displacement whose low two
-             * bits are architecturally zero, so the field is bits 6:29
-             * shifted left by two. AA picks absolute or relative and LK
-             * asks for the return address.
-             */
-            int32_t li = (int32_t)(insn & 0x03FFFFFCu);
-            if ((li & 0x02000000) != 0) {
-                li |= (int32_t)0xFC000000; /* sign-extend from bit 25 */
-            }
-            const bool aa = (insn & 2u) != 0u;
-            if ((insn & 1u) != 0u) { /* LK */
-                c->lr = next;
-            }
-            pc = aa ? (uint32_t)li : (pc + (uint32_t)li);
-            goto retired_insn;
-        }
-
-        case 0x1F: /* the X-form pool          */
-            switch (ppc_xo10(insn)) {
-            case 0x10A: { /* add                      */
-                const uint32_t v = c->r[ppc_ra(insn)] + c->r[ppc_rb(insn)];
-                c->r[ppc_rd(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-            case 0x028: { /* subf                     */
-                const uint32_t v = c->r[ppc_rb(insn)] - c->r[ppc_ra(insn)];
-                c->r[ppc_rd(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-            case 0x068: { /* neg                      */
-                const uint32_t v = (uint32_t)0u - c->r[ppc_ra(insn)];
-                c->r[ppc_rd(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-
-            /*
-             * The carrying forms. XER[CA] existed and nothing had ever
-             * written it, so these were left out rather than
-             * implemented without it -- which would have been the worse
-             * choice: a right sum with a wrong carry is silent, and the
-             * next `adde` is where it shows.
-             *
-             * The carry is computed on the *unsigned* result, and for
-             * the extended forms the incoming CA is part of the sum, so
-             * a 64-bit intermediate is the honest way to get the
-             * carry-out of a three-term add.
-             */
-            case 0x00A: { /* addc                     */
-                const uint64_t s =
-                    (uint64_t)c->r[ppc_ra(insn)] + (uint64_t)c->r[ppc_rb(insn)];
-                c->r[ppc_rd(insn)] = (uint32_t)s;
-                xer_set_ca(c, (s >> 32) != 0u);
-                if (ppc_rc(insn)) {
-                    cr0_from(c, (uint32_t)s);
-                }
-                break;
-            }
-            case 0x08A: { /* adde                     */
-                const uint64_t s = (uint64_t)c->r[ppc_ra(insn)] +
-                                   (uint64_t)c->r[ppc_rb(insn)] +
-                                   (uint64_t)((c->xer & PPC_XER_CA) ? 1u : 0u);
-                c->r[ppc_rd(insn)] = (uint32_t)s;
-                xer_set_ca(c, (s >> 32) != 0u);
-                if (ppc_rc(insn)) {
-                    cr0_from(c, (uint32_t)s);
-                }
-                break;
-            }
-            case 0x008: { /* subfc                    */
-                /*
-                 * Subtract is defined as ~rA + rB + 1, and the carry is
-                 * that addition's carry-out -- which is the *opposite*
-                 * sense to a borrow. Writing it as a comparison instead
-                 * gets the boundary case rA == rB wrong.
-                 */
-                const uint64_t s = (uint64_t)(uint32_t)~c->r[ppc_ra(insn)] +
-                                   (uint64_t)c->r[ppc_rb(insn)] + 1u;
-                c->r[ppc_rd(insn)] = (uint32_t)s;
-                xer_set_ca(c, (s >> 32) != 0u);
-                if (ppc_rc(insn)) {
-                    cr0_from(c, (uint32_t)s);
-                }
-                break;
-            }
-            case 0x088: { /* subfe                    */
-                const uint64_t s = (uint64_t)(uint32_t)~c->r[ppc_ra(insn)] +
-                                   (uint64_t)c->r[ppc_rb(insn)] +
-                                   (uint64_t)((c->xer & PPC_XER_CA) ? 1u : 0u);
-                c->r[ppc_rd(insn)] = (uint32_t)s;
-                xer_set_ca(c, (s >> 32) != 0u);
-                if (ppc_rc(insn)) {
-                    cr0_from(c, (uint32_t)s);
-                }
-                break;
-            }
-
-            /*
-             * Multiply and divide. The whole family was absent, which
-             * the first guest to compute anything found immediately --
-             * a compiler emits mullw for `a * b` and there is no way to
-             * avoid it.
-             */
-            case 0x0EB: { /* mullw                    */
-                const uint32_t v = (uint32_t)((int32_t)c->r[ppc_ra(insn)] *
-                                              (int32_t)c->r[ppc_rb(insn)]);
-                c->r[ppc_rd(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-            case 0x04B: { /* mulhw                    */
-                const int64_t p = (int64_t)(int32_t)c->r[ppc_ra(insn)] *
-                                  (int64_t)(int32_t)c->r[ppc_rb(insn)];
-                const uint32_t v = (uint32_t)((uint64_t)p >> 32);
-                c->r[ppc_rd(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-            case 0x00B: { /* mulhwu                   */
-                const uint64_t p =
-                    (uint64_t)c->r[ppc_ra(insn)] * (uint64_t)c->r[ppc_rb(insn)];
-                const uint32_t v = (uint32_t)(p >> 32);
-                c->r[ppc_rd(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-            case 0x1EB: { /* divw                     */
-                const int32_t a = (int32_t)c->r[ppc_ra(insn)];
-                const int32_t b = (int32_t)c->r[ppc_rb(insn)];
-                /*
-                 * Division by zero and INT_MIN / -1 are both
-                 * *undefined* results architecturally rather than
-                 * traps, so the rd write is boundedly undefined -- but
-                 * they must not be executed in C, where either is
-                 * undefined behaviour and INT_MIN / -1 raises SIGFPE on
-                 * x86. Zero is as good a value as any and is what the
-                 * hardware is documented to leave.
-                 */
-                const uint32_t v = (b == 0 || (a == INT32_MIN && b == -1))
-                                       ? 0u
-                                       : (uint32_t)(a / b);
-                c->r[ppc_rd(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-            case 0x1CB: { /* divwu                    */
-                const uint32_t a = c->r[ppc_ra(insn)];
-                const uint32_t b = c->r[ppc_rb(insn)];
-                const uint32_t v = (b == 0u) ? 0u : (a / b);
-                c->r[ppc_rd(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-            /*
-             * The logical group writes rA from rS, which is the reverse
-             * of the arithmetic group's rD from rA. rD and rS are the
-             * same field; only its meaning changes, and reading it as a
-             * destination here would write the wrong register with the
-             * right value.
-             */
-            case 0x1BC: { /* or  (and thus mr)        */
-                const uint32_t v = c->r[ppc_rd(insn)] | c->r[ppc_rb(insn)];
-                c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-            case 0x01C: { /* and                      */
-                const uint32_t v = c->r[ppc_rd(insn)] & c->r[ppc_rb(insn)];
-                c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-            case 0x13C: { /* xor                      */
-                const uint32_t v = c->r[ppc_rd(insn)] ^ c->r[ppc_rb(insn)];
-                c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-            case 0x03C: { /* andc                     */
-                const uint32_t v = c->r[ppc_rd(insn)] & ~c->r[ppc_rb(insn)];
-                c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-            case 0x19C: { /* orc                      */
-                const uint32_t v = c->r[ppc_rd(insn)] | ~c->r[ppc_rb(insn)];
-                c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-            case 0x1DC: { /* nand                     */
-                const uint32_t v = ~(c->r[ppc_rd(insn)] & c->r[ppc_rb(insn)]);
-                c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-            case 0x07C: { /* nor  (and thus `not`)    */
-                const uint32_t v = ~(c->r[ppc_rd(insn)] | c->r[ppc_rb(insn)]);
-                c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-            case 0x11C: { /* eqv                      */
-                const uint32_t v = ~(c->r[ppc_rd(insn)] ^ c->r[ppc_rb(insn)]);
-                c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-
-            /*
-             * The register shifts. PowerPC's shift amount is **six**
-             * bits, not five: a count of 32..63 shifts the value out
-             * entirely and yields zero, where masking to five bits
-             * would make `slw` by 32 a no-op. That is the whole
-             * difference from the se_ forms above, whose count is an
-             * immediate that cannot exceed 31.
-             */
-            case 0x018: { /* slw                      */
-                const uint32_t n = c->r[ppc_rb(insn)] & 0x3Fu;
-                const uint32_t v = (n >= 32u) ? 0u : (c->r[ppc_rd(insn)] << n);
-                c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-            case 0x218: { /* srw                      */
-                const uint32_t n = c->r[ppc_rb(insn)] & 0x3Fu;
-                const uint32_t v = (n >= 32u) ? 0u : (c->r[ppc_rd(insn)] >> n);
-                c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-            case 0x318: { /* sraw                     */
-                /*
-                 * The arithmetic shift saturates at 31 rather than
-                 * yielding zero -- the sign fills the register -- and
-                 * it is the one shift that writes XER[CA]: set when the
-                 * operand was negative and any one bit was shifted out.
-                 */
-                const uint32_t n = c->r[ppc_rb(insn)] & 0x3Fu;
-                const int32_t a = (int32_t)c->r[ppc_rd(insn)];
-                const uint32_t sh = (n >= 32u) ? 31u : n;
-                const uint32_t v = (uint32_t)(a >> sh);
-
-                xer_set_ca(
-                    c, a < 0 && (c->r[ppc_rd(insn)] & ((1u << sh) - 1u)) != 0u);
-                c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-            case 0x338: { /* srawi                    */
-                const uint32_t sh = (insn >> 11) & 0x1Fu;
-                const int32_t a = (int32_t)c->r[ppc_rd(insn)];
-                const uint32_t v = (uint32_t)(a >> sh);
-
-                xer_set_ca(
-                    c, a < 0 && (c->r[ppc_rd(insn)] & ((1u << sh) - 1u)) != 0u);
-                c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-
-            case 0x3BA: { /* extsb                    */
-                const uint32_t v =
-                    (uint32_t)(int32_t)(int8_t)c->r[ppc_rd(insn)];
-                c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-            case 0x39A: { /* extsh                    */
-                const uint32_t v =
-                    (uint32_t)(int32_t)(int16_t)c->r[ppc_rd(insn)];
-                c->r[ppc_ra(insn)] = v;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, v);
-                }
-                break;
-            }
-            case 0x01A: { /* cntlzw                   */
-                uint32_t x = c->r[ppc_rd(insn)];
-                uint32_t n = 0u;
-
-                /* 32 for a zero input, which the loop gives for free. */
-                while (n < 32u && (x & 0x80000000u) == 0u) {
-                    x <<= 1;
-                    n++;
-                }
-                c->r[ppc_ra(insn)] = n;
-                if (ppc_rc(insn)) {
-                    cr0_from(c, n);
-                }
-                break;
-            }
-
-            case 0x090: { /* mtcrf                    */
-                /*
-                 * FXM is a byte-wide field mask, one bit per CR field,
-                 * most significant first -- so bit 7 of FXM is CR0.
-                 * Reading it the other way round writes CR7 where CR0
-                 * belongs, which is the same left-to-right numbering
-                 * trap the compares have.
-                 */
-                const uint32_t fxm = (insn >> 12) & 0xFFu;
-                const uint32_t s = c->r[ppc_rd(insn)];
-                uint32_t mask = 0u;
-
-                for (unsigned fld = 0; fld < 8u; fld++) {
-                    if ((fxm & (0x80u >> fld)) != 0u) {
-                        mask |= 0xFu << (4u * (7u - fld));
-                    }
-                }
-                c->cr = (c->cr & ~mask) | (s & mask);
-                break;
-            }
-
-            case 0x000: /* cmp                      */
-                cr_compare(c, (insn >> 23) & 0x7u, c->r[ppc_ra(insn)],
-                           c->r[ppc_rb(insn)], true);
-                break;
-            case 0x020: /* cmpl                     */
-                cr_compare(c, (insn >> 23) & 0x7u, c->r[ppc_ra(insn)],
-                           c->r[ppc_rb(insn)], false);
-                break;
-
-            case 0x153: /* mfspr                    */
-            case 0x1D3: { /* mtspr                    */
-                /*
-                 * The SPR number is *split and swapped*: bits 11:15 are
-                 * the low five bits and 16:20 the high five, so the
-                 * field reads back-to-front. Reading it straight gives
-                 * SPR 256 where 1 was meant -- and LR is 8, which
-                 * unswapped is 256, so `mflr` would silently address a
-                 * different register.
-                 */
-                const uint32_t sprf = (insn >> 11) & 0x3FFu;
-                const uint32_t spr =
-                    ((sprf & 0x1Fu) << 5) | ((sprf >> 5) & 0x1Fu);
-                const bool store = ppc_xo10(insn) == 0x1D3u;
-                /*
-                 * NULL for the registers that are not a plain slot --
-                 * TSR is write-1-to-clear and the time base is split
-                 * across two SPR numbers per direction. They do their
-                 * own work in the switch and leave this null, and the
-                 * common transfer below is skipped rather than reading
-                 * an uninitialised pointer.
-                 */
-                uint32_t *slot = NULL;
-
-                switch (spr) {
-                case PPC_SPR_XER:
-                    slot = &c->xer;
-                    break;
-                case PPC_SPR_LR:
-                    slot = &c->lr;
-                    break;
-                case PPC_SPR_CTR:
-                    slot = &c->ctr;
-                    break;
-                case PPC_SPR_SRR0:
-                    slot = &c->srr0;
-                    break;
-                case PPC_SPR_SRR1:
-                    slot = &c->srr1;
-                    break;
-                case PPC_SPR_CSRR0:
-                    slot = &c->csrr0;
-                    break;
-                case PPC_SPR_CSRR1:
-                    slot = &c->csrr1;
-                    break;
-                case PPC_SPR_DEAR:
-                    slot = &c->dear;
-                    break;
-                case PPC_SPR_ESR:
-                    slot = &c->esr;
-                    break;
-                case PPC_SPR_IVPR:
-                    slot = &c->ivpr;
-                    break;
-                case PPC_SPR_PIR:
-                    slot = &c->pir;
-                    break;
-                case PPC_SPR_PVR:
-                    slot = &c->pvr;
-                    break;
-                case PPC_SPR_DECAR:
-                    slot = &c->decar;
-                    break;
-                case PPC_SPR_TCR:
-                    slot = &c->tcr;
-                    break;
-
-                /*
-                 * The four below are not plain slots, so they are
-                 * handled here and not through `slot`. Giving them one
-                 * would make mtspr a store and lose the side effect
-                 * each of them has -- which is the whole content of the
-                 * register.
-                 */
-                case PPC_SPR_TSR:
-                    if (store) {
-                        /* Write-1-to-clear. A guest acknowledging its
-                         * tick writes the bit it saw set, and treating
-                         * that as a plain store would *set* every other
-                         * status bit it happened to read back. */
-                        c->tsr &= ~c->r[ppc_rd(insn)];
-                    } else {
-                        c->r[ppc_rd(insn)] = c->tsr;
-                    }
-                    c->irq_dirty = true;
-                    break;
-
-                case PPC_SPR_DEC:
-                    if (store) {
-                        c->dec = c->r[ppc_rd(insn)];
-                    } else {
-                        c->r[ppc_rd(insn)] = c->dec;
-                    }
-                    break;
-
-                case PPC_SPR_TBL_R:
-                case PPC_SPR_TBU_R:
-                    /* Read-only at these numbers; a write is to 284/285
-                     * and lands in the two cases below. */
-                    if (store) {
-                        EXC(PPC_IVOR_PROGRAM);
-                    }
-                    c->r[ppc_rd(insn)] = (spr == PPC_SPR_TBL_R)
-                                             ? (uint32_t)c->tb
-                                             : (uint32_t)(c->tb >> 32);
-                    break;
-
-                case PPC_SPR_TBL_W:
-                case PPC_SPR_TBU_W:
-                    if (!store) {
-                        EXC(PPC_IVOR_PROGRAM);
-                    }
-                    if (spr == PPC_SPR_TBL_W) {
-                        c->tb = (c->tb & UINT64_C(0xFFFFFFFF00000000)) |
-                                c->r[ppc_rd(insn)];
-                    } else {
-                        c->tb = (c->tb & UINT64_C(0xFFFFFFFF)) |
-                                ((uint64_t)c->r[ppc_rd(insn)] << 32);
-                    }
-                    break;
-
-                default:
-                    if (spr >= PPC_SPR_SPRG0 && spr < PPC_SPR_SPRG0 + 8u) {
-                        slot = &c->sprg[spr - PPC_SPR_SPRG0];
-                    } else if (spr >= PPC_SPR_IVOR0 &&
-                               spr < PPC_SPR_IVOR0 + PPC_IVOR_COUNT) {
-                        slot = &c->ivor[spr - PPC_SPR_IVOR0];
-                    } else {
-                        /* Unimplemented SPRs raise rather than reading
-                         * zero: "reads zero" is how a guest silently
-                         * mis-detects its own core. */
-                        EXC(PPC_IVOR_PROGRAM);
-                    }
-                    break;
-                }
-
-                if (slot == NULL) {
-                    break; /* handled in the switch */
-                }
-                if (store) {
-                    /* PVR and PIR identify the part and the core; a
-                     * write is architecturally ignored rather than
-                     * faulting, so a guest cannot claim to be another
-                     * core by writing one. */
-                    if (spr != PPC_SPR_PVR && spr != PPC_SPR_PIR) {
-                        *slot = c->r[ppc_rd(insn)];
-                    }
-                } else {
-                    c->r[ppc_rd(insn)] = *slot;
-                }
-                break;
-            }
-
-            case 0x053: /* mfmsr                    */
-                c->r[ppc_rd(insn)] = c->msr;
-                break;
-            case 0x092: /* mtmsr                    */
-                c->msr = c->r[ppc_rd(insn)];
-                c->irq_dirty = true;
-                break;
-
-            case 0x013: /* mfcr                     */
-                c->r[ppc_rd(insn)] = c->cr;
-                break;
-
-            default:
-                EXC(PPC_IVOR_PROGRAM);
-            }
-            break;
-
-        case 0x11: /* sc -- the system call    */
-        do_syscall:
-            /*
-             * The platform's syscall hook gets first refusal, so a host
-             * harness can offer write/exit the way it does for the other
-             * frontends. Only if it declines does this become an
-             * architectural interrupt.
-             */
-            if (c->syscall != NULL) {
-                /*
-                 * The PowerPC EABI passes arguments in r3..r10 and
-                 * returns in r3, so the syscall number is r0 by the
-                 * Linux convention and the arguments start at r3. That
-                 * is an ABI choice, not an architectural one -- `sc`
-                 * itself says nothing about where anything lives.
-                 */
-                emu_syscall_t sc = {
-                    .nr = c->r[0],
-                    .arg = {c->r[3], c->r[4], c->r[5], c->r[6]},
-                    .ret = 0u,
-                };
-
-                c->pc = next;
-                if (c->syscall((emu_cpu_t *)c, &sc, c->syscall_user)) {
-                    c->r[3] = sc.ret;
-                    pc = c->pc;
-                    goto retired_insn;
-                }
-            }
-            EXC(PPC_IVOR_SYSTEM_CALL);
-
-        default:
-            EXC(PPC_IVOR_PROGRAM);
-        }
-
-        pc = next;
-
-    retired_insn:
-        done++;
-        c->retired++;
-        c->cycles++;
-        continue;
-
-    next_insn:
-        /*
-         * Reached after an exception: the pc is the handler's and the
-         * instruction did *not* retire -- so `retired` is not bumped.
-         *
-         * `done` is, and that is not bookkeeping, it is termination. The
-         * budget bounds *work*, and an exception is work; counting only
-         * retirements means a core that never retires is never bounded.
-         * That is reachable in one line of guest code: with IVPR and the
-         * IVORs still zero the vector is address 0, which is unmapped,
-         * so the fetch faults, vectors to 0 again, and spins forever
-         * without the caller's cap ever being consulted. Found exactly
-         * that way by test_unimplemented_reports hanging.
+         * `done` counts an interrupt as well as a retirement, and that
+         * is termination rather than bookkeeping: with the IVORs zero a
+         * fetch fault vectors to an unmapped 0 and faults again, and a
+         * budget that counted only retirements would never run out.
          */
         done++;
         c->cycles++;
-        continue;
     }
 
-    c->pc = pc;
     if (retired != NULL) {
         *retired = done;
     }

@@ -391,6 +391,7 @@ set(G4MH_MPU_ENTRIES "32" CACHE STRING "G4MH MPU entries (1..32)")
 
 option(G4MH_ENABLE_DISASM "Build the G4MH disassembler" ON)
 option(ARMV7M_ENABLE_DISASM "Build the ARMv7-M disassembler" ON)
+option(PPC_ENABLE_DISASM "Build the e200z7 disassembler" ON)
 
 # Processing elements to model. The RH850/U2B6 has three; the default is 1
 # because the constraint is memory -- 64 KiB of local RAM per PE does not
@@ -691,8 +692,14 @@ endif()
 if(EMU_GUEST_ARCH_PPC)
     target_sources(emucore PRIVATE
         src/frontend/ppc/ppc_cpu.c
+        src/frontend/ppc/ppc_decode.c
+        src/frontend/ppc/ppc_disasm.c
+        src/frontend/ppc/ppc_fpu.c
         src/frontend/ppc/ppc_frontend.c
         src/frontend/ppc/ppc_interp.c
+    )
+    target_compile_definitions(emucore PUBLIC
+        PPC_ENABLE_DISASM=$<BOOL:${PPC_ENABLE_DISASM}>
     )
 endif()
 
@@ -764,7 +771,7 @@ endif()
 # ARMv7-M's FPv5-SP is the third FP unit built on it, and the reason the
 # half-precision conversions are listed: VCVTB/VCVTT.
 if((EMU_GUEST_ARCH_RV32 AND RV32_EXT_F) OR (EMU_GUEST_ARCH_G4MH AND G4MH_EXT_FPU)
-   OR EMU_GUEST_ARCH_ARMV7M)
+   OR EMU_GUEST_ARCH_ARMV7M OR EMU_GUEST_ARCH_PPC)
     if(NOT EXISTS "${SOFTFLOAT_DIR}/source/include/softfloat.h")
         find_package(Git QUIET)
         if(GIT_FOUND)
@@ -827,6 +834,11 @@ if((EMU_GUEST_ARCH_RV32 AND RV32_EXT_F) OR (EMU_GUEST_ARCH_G4MH AND G4MH_EXT_FPU
         set(_need_f64 ON)
     endif()
     if(EMU_GUEST_ARCH_RV32 AND RV32_EXT_F AND RV32_EXT_D)
+        set(_need_f64 ON)
+    endif()
+    # The e200's EFPU2 is single precision, and computes in double: that
+    # is where its guard and sticky bits come from. See ppc_fpu.c.
+    if(EMU_GUEST_ARCH_PPC)
         set(_need_f64 ON)
     endif()
     if(_need_f64)
@@ -962,6 +974,17 @@ if(EMU_PLATFORM STREQUAL "host" AND EMU_GUEST_ARCH_G4MH)
     target_include_directories(g4mh-sweep PRIVATE include)
     target_compile_definitions(g4mh-sweep PRIVATE
                                EMU_MAX_REGIONS=${EMU_MAX_REGIONS})
+endif()
+
+#
+# ppc-dis: the e200z7 decoder and disassembler, for tests/ppc-check, which
+# assembles what it prints and compares the decode of the result.
+#
+if(EMU_PLATFORM STREQUAL "host" AND EMU_GUEST_ARCH_PPC)
+    add_executable(ppc-dis tests/tools/ppc_dis.c
+                   src/frontend/ppc/ppc_disasm.c
+                   src/frontend/ppc/ppc_decode.c)
+    target_include_directories(ppc-dis PRIVATE include)
 endif()
 
 #

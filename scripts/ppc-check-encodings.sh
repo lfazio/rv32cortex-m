@@ -38,8 +38,15 @@
 
 set -eu
 
-AS=${PPC_AS:-powerpc-linux-gnu-as}
-OBJDUMP=${PPC_OBJDUMP:-powerpc-linux-gnu-objdump}
+# The 32-bit binutils if they are there, the 64-bit ones in 32-bit mode
+# otherwise: Debian ships only the latter now.
+if command -v powerpc-linux-gnu-as >/dev/null 2>&1; then
+    AS=${PPC_AS:-powerpc-linux-gnu-as}
+    OBJDUMP=${PPC_OBJDUMP:-powerpc-linux-gnu-objdump}
+else
+    AS=${PPC_AS:-powerpc64-linux-gnu-as}
+    OBJDUMP=${PPC_OBJDUMP:-powerpc64-linux-gnu-objdump}
+fi
 MODE=${PPC_MODE:-vle}
 
 if ! command -v "$AS" >/dev/null 2>&1; then
@@ -49,8 +56,8 @@ if ! command -v "$AS" >/dev/null 2>&1; then
 fi
 
 case "$MODE" in
-vle)   asflags="-mvle -mbig"; ddflags="-Mvle" ;;
-booke) asflags="-mbig -mpower4"; ddflags="-Mbooke" ;;
+vle)   asflags="-a32 -mvle -mbig"; ddflags="-Mvle" ;;
+booke) asflags="-a32 -mbig -mpower4"; ddflags="-Mbooke" ;;
 *)     echo "ppc-check-encodings: PPC_MODE must be vle or booke" >&2; exit 2 ;;
 esac
 
