@@ -1043,10 +1043,33 @@ static const x_form_t k_x31[] = {
     {0x016u, PPC_M_ICBT, Z_B31, 0u, 0u},
 };
 
+/*
+ * k_x31 by extended opcode, built the first time it is asked for: the
+ * table above is in the order a reader wants and a scan of it was most
+ * of what an X-form instruction cost the interpreter to decode. An
+ * entry with an OE bit answers to both values of it, which is the
+ * nine-bit match the scan used to make.
+ */
+static uint8_t x31_index[1024];
+
+static void x31_build(void)
+{
+    for (uint32_t i = 0u; i < sizeof(k_x31) / sizeof(k_x31[0]); i++) {
+        x31_index[k_x31[i].xo] = (uint8_t)(i + 1u);
+        if (k_x31[i].oe) {
+            x31_index[k_x31[i].xo | 0x200u] = (uint8_t)(i + 1u);
+        }
+    }
+}
+
 static void d_31(uint32_t w, I *d)
 {
     const uint32_t xo10 = F_XO10(w);
     const uint32_t xo9 = xo10 & 0x1FFu;
+
+    if (EMU_UNLIKELY(x31_index[0x10Au] == 0u)) { /* add: always present */
+        x31_build();
+    }
 
     /* isel: XO is five bits, at 26:30, and BC in 21:25 is an operand. */
     if (((w >> 1) & 31u) == 0x0Fu) {
@@ -1058,13 +1081,10 @@ static void d_31(uint32_t w, I *d)
         d->ra0 = 1u;
         return;
     }
-    for (uint32_t i = 0u; i < sizeof(k_x31) / sizeof(k_x31[0]); i++) {
-        const x_form_t *const e = &k_x31[i];
-        const uint32_t key = e->oe ? xo9 : xo10;
+    (void)xo9;
+    if (x31_index[xo10] != 0u) {
+        const x_form_t *const e = &k_x31[x31_index[xo10] - 1u];
 
-        if (e->xo != key) {
-            continue;
-        }
         if ((w & e->zero) != 0u) {
             return;
         }
@@ -1074,7 +1094,6 @@ static void d_31(uint32_t w, I *d)
         d->rb = (uint8_t)F_RB(w);
         d->rc = e->rc ? (uint8_t)(w & 1u) : 0u;
         d->oe = e->oe ? (uint8_t)((w >> 10) & 1u) : 0u;
-        break;
     }
 
     switch (d->sem) {

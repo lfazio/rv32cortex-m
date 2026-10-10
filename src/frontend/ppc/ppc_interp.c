@@ -32,6 +32,22 @@
 
 typedef ppc_insn_t I;
 
+/*
+ * Entries in the interpreter's decode cache; a power of two.
+ *
+ * It is worth 35% of the interpreter on a host (CoreMark, 40
+ * iterations: 397 ms without, 260 ms with) and 48 KiB of .bss at this
+ * size -- which on a microcontroller is the guest's memory, so there it
+ * is a sixteenth of that.
+ */
+#ifndef PPC_DECODE_CACHE
+#if defined(__arm__)
+#define PPC_DECODE_CACHE 64u
+#else
+#define PPC_DECODE_CACHE 1024u
+#endif
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Condition register and XER                                          */
 /* ------------------------------------------------------------------ */
@@ -986,6 +1002,23 @@ bool ppc_exec(ppc_cpu_t *c, const I *d, uint32_t pc)
 /* Run loop                                                            */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Decoded instructions, by address.
+ *
+ * The bytes are fetched every time -- that is what makes this safe
+ * without anyone announcing that code changed: an entry is used only if
+ * the instruction just fetched is the one it was decoded from, in the
+ * encoding it was decoded as. What it saves is the decode.
+ */
+typedef struct {
+    uint32_t pc;
+    uint32_t insn;
+    uint8_t vle;
+    ppc_insn_t d;
+} dc_t;
+
+static dc_t g_dc[PPC_DECODE_CACHE];
+
 static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                                 uint32_t *retired)
 {
@@ -1029,7 +1062,6 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
         uint16_t w0;
         uint32_t insn;
         unsigned len;
-        ppc_insn_t d;
 
         /*
          * Tested at the top, not only where wait or a halt is decoded:
@@ -1090,9 +1122,19 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
         }
 #endif
 
-        ppc_decode(insn, len, c->vle, &d);
-        if (ppc_exec(c, &d, pc)) {
-            c->retired++;
+        {
+            dc_t *const e = &g_dc[(pc >> 1) & (PPC_DECODE_CACHE - 1u)];
+
+            if (EMU_UNLIKELY(e->pc != pc || e->insn != insn ||
+                             e->vle != (uint8_t)c->vle || e->d.len == 0u)) {
+                ppc_decode(insn, len, c->vle, &e->d);
+                e->pc = pc;
+                e->insn = insn;
+                e->vle = (uint8_t)c->vle;
+            }
+            if (ppc_exec(c, &e->d, pc)) {
+                c->retired++;
+            }
         }
         /*
          * `done` counts an interrupt as well as a retirement, and that

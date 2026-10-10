@@ -386,6 +386,197 @@ _start:
 	divwu	%r5, %r3, %r4
 	CHECK	5, 0x24924916, divwu
 
+/* ---- what only VLE has, and no compiler emits -------------------- */
+
+	/*
+	 * The volatile context save and restore (manual 3.14): one
+	 * instruction for an interrupt handler's whole prologue. Each
+	 * names a fixed set of registers, so the test is that the right
+	 * ones went, in the right order, to the right words -- and came
+	 * back. r26 is a frame below the stack pointer the loader set.
+	 */
+	e_add16i %r26, %r1, -128
+
+	e_li	%r0, 0x100
+	e_li	%r3, 0x103
+	e_li	%r4, 0x104
+	e_li	%r5, 0x105
+	e_li	%r6, 0x106
+	e_li	%r7, 0x107
+	e_li	%r8, 0x108
+	e_li	%r9, 0x109
+	e_li	%r10, 0x10A
+	e_li	%r11, 0x10B
+	e_li	%r12, 0x10C
+	e_stmvgprw 0(%r26)
+	e_li	%r0, 0
+	e_li	%r3, 0
+	e_li	%r4, 0
+	e_li	%r5, 0
+	e_li	%r6, 0
+	e_li	%r7, 0
+	e_li	%r8, 0
+	e_li	%r9, 0
+	e_li	%r10, 0
+	e_li	%r11, 0
+	e_li	%r12, 0
+	e_lmvgprw 0(%r26)
+	/* r0 first and r3 second: r1 and r2 are not volatile and have no
+	 * slot, so r3 is the *second* word, not the fourth. */
+	CHECK	12, 0x10C, lmv_r12
+	CHECK	8, 0x108, lmv_r8
+	CHECK	3, 0x103, lmv_r3
+	e_lwz	%r20, 0(%r26)
+	CHECK	20, 0x100, stmv_word0
+	e_lwz	%r20, 4(%r26)
+	CHECK	20, 0x103, stmv_word1
+	e_lwz	%r20, 40(%r26)
+	CHECK	20, 0x10C, stmv_word10
+
+	/* CR, LR, CTR and XER, in that order. */
+	e_lis	%r3, 0x1234
+	e_or2i	%r3, 0x5678
+	mtcrf	0xff, %r3
+	e_li	%r3, 0x1110
+	mtspr	8, %r3
+	e_li	%r3, 0x2220
+	mtspr	9, %r3
+	e_lis	%r3, 0x2000		/* XER[CA] */
+	mtspr	1, %r3
+	e_stmvsprw 48(%r26)
+	e_li	%r3, 0
+	mtcrf	0xff, %r3
+	mtspr	8, %r3
+	mtspr	9, %r3
+	mtspr	1, %r3
+	e_lmvsprw 48(%r26)
+	mfcr	%r20
+	CHECK	20, 0x12345678, lmv_cr
+	mfspr	%r20, 8
+	CHECK	20, 0x1110, lmv_lr
+	mfspr	%r20, 9
+	CHECK	20, 0x2220, lmv_ctr
+	mfspr	%r20, 1
+	CHECK	20, 0x20000000, lmv_xer
+	/*
+	 * Every word, not the ends: a save and a restore that agree on the
+	 * wrong order round-trip perfectly, and the handler that reads the
+	 * frame is the one that finds out.
+	 */
+	e_lwz	%r20, 48(%r26)
+	CHECK	20, 0x12345678, stmv_cr_first
+	e_lwz	%r20, 52(%r26)
+	CHECK	20, 0x1110, stmv_lr_second
+	e_lwz	%r20, 56(%r26)
+	CHECK	20, 0x2220, stmv_ctr_third
+	e_lwz	%r20, 60(%r26)
+	CHECK	20, 0x20000000, stmv_xer_last
+
+	/* The four save/restore pairs. */
+	e_li	%r3, 0x4410
+	mtspr	26, %r3
+	e_li	%r3, 0x5510
+	mtspr	27, %r3
+	e_stmvsrrw 64(%r26)
+	e_li	%r3, 0
+	mtspr	26, %r3
+	mtspr	27, %r3
+	e_lmvsrrw 64(%r26)
+	mfspr	%r20, 26
+	CHECK	20, 0x4410, lmv_srr0
+	mfspr	%r20, 27
+	CHECK	20, 0x5510, lmv_srr1
+	e_li	%r3, 0x4420
+	mtspr	58, %r3
+	e_li	%r3, 0x5520
+	mtspr	59, %r3
+	e_stmvcsrrw 64(%r26)
+	e_li	%r3, 0
+	mtspr	58, %r3
+	mtspr	59, %r3
+	e_lmvcsrrw 64(%r26)
+	mfspr	%r20, 58
+	CHECK	20, 0x4420, lmv_csrr0
+	mfspr	%r20, 59
+	CHECK	20, 0x5520, lmv_csrr1
+	e_li	%r3, 0x4430
+	mtspr	574, %r3
+	e_li	%r3, 0x5530
+	mtspr	575, %r3
+	e_stmvdsrrw 64(%r26)
+	e_li	%r3, 0
+	mtspr	574, %r3
+	mtspr	575, %r3
+	e_lmvdsrrw 64(%r26)
+	mfspr	%r20, 574
+	CHECK	20, 0x4430, lmv_dsrr0
+	mfspr	%r20, 575
+	CHECK	20, 0x5530, lmv_dsrr1
+	e_li	%r3, 0x4440
+	mtspr	570, %r3
+	e_li	%r3, 0x5540
+	mtspr	571, %r3
+	e_stmvmcsrrw 64(%r26)
+	e_li	%r3, 0
+	mtspr	570, %r3
+	mtspr	571, %r3
+	e_lmvmcsrrw 64(%r26)
+	mfspr	%r20, 570
+	CHECK	20, 0x4440, lmv_mcsrr0
+	mfspr	%r20, 571
+	CHECK	20, 0x5540, lmv_mcsrr1
+
+	/* e_stmw and e_lmw: rS up to r31, which takes r30 and r31 with it
+	 * -- the failure count and the scratch -- and puts them back. */
+	e_li	%r27, 0x777
+	e_li	%r28, 0x888
+	e_li	%r29, 0x999
+	e_li	%r31, 0x31F
+	e_stmw	%r27, 80(%r26)
+	/* The last register of the five is the one a count that is one
+	 * short leaves out, and it is r31 -- so look at its slot, then
+	 * change the slot and see that the load brings the change back. */
+	e_lwz	%r20, 96(%r26)
+	CHECK	20, 0x31F, stmw_r31_slot
+	e_li	%r20, 0xABC
+	e_stw	%r20, 96(%r26)
+	e_li	%r27, 0
+	e_li	%r28, 0
+	e_li	%r29, 0
+	e_lmw	%r27, 80(%r26)
+	or	%r20, %r31, %r31
+	CHECK	20, 0xABC, lmw_r31
+	CHECK	27, 0x777, lmw_r27
+	CHECK	29, 0x999, lmw_r29
+
+	/*
+	 * An interrupt taken from VLE says so: ESR[VLEMI] beside the cause
+	 * (manual table 7-3). The handler is this guest's own for the one
+	 * instruction, steps over it -- se_illegal is two bytes -- and
+	 * comes back with se_rfi.
+	 */
+	e_lis	%r3, vle_handler@ha
+	e_add16i %r3, %r3, vle_handler@l
+	mtspr	406, %r3
+	e_li	%r20, 0
+	e_li	%r21, 0
+ill_at:
+	se_illegal
+	CHECK	20, 0x08000020, esr_vlemi
+	e_lis	%r22, ill_at@ha
+	e_add16i %r22, %r22, ill_at@l
+	subf	%r21, %r22, %r21
+	CHECK	21, 0, illegal_srr0
+	e_li	%r3, 0x100
+	mtspr	406, %r3
+
+	/* e_sc is the 32-bit spelling of the same system call: a write of
+	 * no bytes, which the harness answers and nothing else notices. */
+	e_li	%r5, 0
+	e_li	%r3, 1
+	e_li	%r0, 64
+	e_sc
+
 /* ---- done -------------------------------------------------------- */
 
 	e_lis	%r4, msg_done@ha
@@ -407,6 +598,18 @@ _start:
 subr:
 	e_li	%r3, 0x99
 	se_blr
+
+/*
+ * IVOR6 for the one instruction above. Sixteen-byte aligned, because
+ * an IVOR's low four bits are not part of the address.
+ */
+	.balign	16
+vle_handler:
+	mfspr	%r20, 62		/* ESR  */
+	mfspr	%r21, 26		/* SRR0 */
+	e_add16i %r22, %r21, 2
+	mtspr	26, %r22
+	se_rfi
 
 /* ------------------------------------------------------------------ */
 /* Data                                                                */
@@ -441,6 +644,34 @@ subr:
 	MSG	divw,          "FAIL divw"
 	MSG	divw_neg,      "FAIL divw negative"
 	MSG	divwu,         "FAIL divwu"
+	MSG	stmv_lr_second, "FAIL stmv lr second"
+	MSG	stmv_ctr_third, "FAIL stmv ctr third"
+	MSG	stmw_r31_slot, "FAIL stmw r31 slot"
+	MSG	lmw_r31, "FAIL lmw r31"
+	MSG	lmv_r12, "FAIL lmv r12"
+	MSG	lmv_r8, "FAIL lmv r8"
+	MSG	lmv_r3, "FAIL lmv r3"
+	MSG	stmv_word0, "FAIL stmv word0"
+	MSG	stmv_word1, "FAIL stmv word1"
+	MSG	stmv_word10, "FAIL stmv word10"
+	MSG	lmv_cr, "FAIL lmv cr"
+	MSG	lmv_lr, "FAIL lmv lr"
+	MSG	lmv_ctr, "FAIL lmv ctr"
+	MSG	lmv_xer, "FAIL lmv xer"
+	MSG	stmv_cr_first, "FAIL stmv cr first"
+	MSG	stmv_xer_last, "FAIL stmv xer last"
+	MSG	lmv_srr0, "FAIL lmv srr0"
+	MSG	lmv_srr1, "FAIL lmv srr1"
+	MSG	lmv_csrr0, "FAIL lmv csrr0"
+	MSG	lmv_csrr1, "FAIL lmv csrr1"
+	MSG	lmv_dsrr0, "FAIL lmv dsrr0"
+	MSG	lmv_dsrr1, "FAIL lmv dsrr1"
+	MSG	lmv_mcsrr0, "FAIL lmv mcsrr0"
+	MSG	lmv_mcsrr1, "FAIL lmv mcsrr1"
+	MSG	lmw_r27, "FAIL lmw r27"
+	MSG	lmw_r29, "FAIL lmw r29"
+	MSG	esr_vlemi, "FAIL esr vlemi"
+	MSG	illegal_srr0, "FAIL illegal srr0"
 
 	.section .rodata
 msg_done:
