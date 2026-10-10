@@ -94,6 +94,7 @@ host-nojit|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=ON -DEMU_JIT=OFF|
 host-g4-x3|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DG4MH_PE_COUNT=3|multicore; PE_COUNT>1 was untested for years
 host-g4-mpu8|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DG4MH_MPU_ENTRIES=8|the MPU out-of-range guard is unreachable at 32
 host-ppc|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_PPC=ON|big-endian frontend, alone
+host-armv7m|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_ARMV7M=ON|the Cortex-M guest alone: its SoftFloat build, the SCS, the guests in tests/guest/armv7m
 host-trace|host|-DEMU_GUEST_ARCH_G4MH=ON -DEMU_ENABLE_TRACE=ON -DEMU_JIT=OFF|the trace build, which is how pc deltas get read
 host-net|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON|the IP stack on the host, over a pty -- this row exists because it did not, and the whole EMU_NET path stopped compiling here while every other row passed
 f746-rv32|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF|the shipping firmware: Thumb-2 emitter, lwIP/SLIP/TFTP (EMU_NET defaults ON)
@@ -181,8 +182,28 @@ echo "$matrix" | while IFS='|' read -r name plat opts why; do
         continue
     fi
 
-    if [ "$run_tests" -eq 1 ] && [ "$plat" = host ]; then
-        if ctest --test-dir "$dir" >>"$dir.log" 2>&1; then
+    #
+    # host-net builds and is not tested here: its console *is* the IP
+    # link, so its guests wait on a pty nothing answers and ctest idles
+    # until its own timeout. The link is exercised on the board, by the
+    # f746-net row under --board; building the host row is what it is
+    # for.
+    #
+    # And ctest reads stdin, which here is the rest of this table: left
+    # attached, the first tested row ate every row after it and the loop
+    # ended after one configuration while reporting success.
+    #
+    # host-coremark is the same case from the other side: with
+    # EMU_NATIVE_COREMARK the runner *is* CoreMark, compiled for the host,
+    # so every guest test hands its image to a program that ignores it.
+    # Both surfaced the day this loop started reaching past its first row.
+    #
+    if [ "$run_tests" -eq 1 ] && [ "$plat" = host ] && [ "$name" = host-net ]; then
+        echo "ok (built; tests skipped -- the console is the link)"
+    elif [ "$run_tests" -eq 1 ] && [ "$plat" = host ] && [ "$name" = host-coremark ]; then
+        echo "ok (built; tests skipped -- the runner is native CoreMark)"
+    elif [ "$run_tests" -eq 1 ] && [ "$plat" = host ]; then
+        if ctest --test-dir "$dir" </dev/null >>"$dir.log" 2>&1; then
             echo "ok (tests pass)"
         else
             echo "TESTS FAILED      (see $dir.log)"
