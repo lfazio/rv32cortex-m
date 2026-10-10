@@ -61,12 +61,29 @@
  * gigabytes nothing -- and being generous matters: at 256 blocks CoreMark
  * flushed nineteen times in a run, and constant retranslation is exactly
  * what hides a translator bug behind a fresh translation.
+ *
+ * **The block table should never be the tighter of the two limits**, and
+ * at 8192 it was. Blocks are keyed on the address space, so every process
+ * an operating system starts translates its code afresh, and a Linux boot
+ * running udev holds tens of thousands of blocks at once. At 8192 the
+ * table filled while the 32 MiB code buffer was a fifth used: 2,578
+ * compactions evicting 13.7M blocks, translation 81% of host time, the
+ * guest at a median 4.8 M instructions/s. At 65536 it is 111
+ * compactions, with the code buffer full first -- about 41,000 blocks of
+ * ~800 bytes -- and the median is 9.7 M/s. Boot to a login prompt went
+ * from 202 s to 109 s
+ * -- with virtio-blk's GET_ID answered; without that, udev waits out a
+ * 120 s settle timeout either way and the two sizes measure 202 and 188.
+ *
+ * 72 bytes a block, so 4.5 MiB of table and 256 KiB of hash: .bss, and
+ * only touched as far as it is used -- except that a flush clears the
+ * whole hash, which is in the figure above.
  */
 #ifndef EMU_JIT_MAX_BLOCKS
-#define EMU_JIT_MAX_BLOCKS 8192u
+#define EMU_JIT_MAX_BLOCKS 65536u
 #endif
 #ifndef EMU_JIT_HASH_SIZE
-#define EMU_JIT_HASH_SIZE 8192u
+#define EMU_JIT_HASH_SIZE 65536u
 #endif
 #ifndef EMU_JIT_BLOCK_RESERVE
 #define EMU_JIT_BLOCK_RESERVE 8192u
