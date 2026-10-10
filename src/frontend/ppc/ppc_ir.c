@@ -62,8 +62,36 @@
  * Guest instructions per block. Interrupts and the decrementer are
  * delivered between blocks, so this is an interrupt-latency bound as
  * much as a size one.
+ *
+ * **Shorter on a microcontroller, and that was measured rather than
+ * argued.** There the code cache is smaller than a guest's translated
+ * working set, so blocks are evicted and built again, and a long block
+ * is the expensive one to lose: it is more work to translate, and it is
+ * the one that overruns the buffer's reserve and has to be translated
+ * twice. Nucleo-F746ZG, host cycles per guest instruction:
+ *
+ *                      cap 64    cap 32    cap 16    cap 8
+ *   32 KB  crypto      1567.1     721.7     716.5      --
+ *          CoreMark     393.4     388.3     335.1     341.2
+ *   96 KB  crypto        33.2       --       35.4      --
+ *          CoreMark     167.9       --      125.8      --
+ *
+ * Sixteen is better wherever the cache is thrashing -- which at the
+ * default 32 KB is everywhere -- and 6.6% worse in the one cell where
+ * the working set fits (crypto at 96 KB), because a shorter block is
+ * one more trip through the dispatcher. A host has 32 MB and never
+ * thrashes, so it keeps the long ones.
+ *
+ * It does not make the JIT a win at 32 KB: the interpreter is 243.4 on
+ * crypto and 222.3 on CoreMark. See docs/jit/tuning.md.
  */
+#ifndef PPC_MAX_BLOCK_INSNS
+#if defined(EMU_HOST_JIT_THUMB2)
+#define PPC_MAX_BLOCK_INSNS 16u
+#else
 #define PPC_MAX_BLOCK_INSNS 64u
+#endif
+#endif
 
 /*
  * Room an instruction may need. A block that overflows is discarded, so
