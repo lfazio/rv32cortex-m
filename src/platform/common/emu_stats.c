@@ -20,7 +20,7 @@
 
 #include "emu/emu_jit.h"
 
-void emu_print_run_summary(uint64_t retired, uint32_t host_cycles)
+void emu_print_run_summary(uint64_t retired, uint64_t host_cycles)
 {
     {
         char n[21];
@@ -38,7 +38,12 @@ void emu_print_run_summary(uint64_t retired, uint32_t host_cycles)
         return;
     }
 
-    emu_console_printf("  host     %u cycles\n", (unsigned)host_cycles);
+    {
+        char n[21];
+
+        emu_console_printf("  host     %s cycles\n",
+                           emu_u64_str(n, (unsigned long long)host_cycles));
+    }
 
     /*
      * Host cycles per emulated guest instruction, x100 so the fractional
@@ -46,7 +51,7 @@ void emu_print_run_summary(uint64_t retired, uint32_t host_cycles)
      * formatting, which is right on a part whose FPU is single precision
      * and whose guest owns it.
      */
-    const uint32_t x100 = (uint32_t)((uint64_t)host_cycles * 100u / retired);
+    const uint32_t x100 = (uint32_t)(host_cycles * 100u / retired);
 
     emu_console_printf("  ratio    %u.%02u host cycles per guest instruction\n",
                        (unsigned)(x100 / 100u), (unsigned)(x100 % 100u));

@@ -301,7 +301,7 @@ bool emu_session_start(emu_system_t *sys, const emu_session_cfg_t *cfg)
 /* ------------------------------------------------------------------ */
 
 void emu_session_report(emu_system_t *sys, uint64_t retired,
-                        uint32_t host_cycles, bool capped, bool dump_state)
+                        uint64_t host_cycles, bool capped, bool dump_state)
 {
     if (capped) {
         /*

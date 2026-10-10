@@ -149,7 +149,7 @@ bool emu_guest_syscall(emu_cpu_t *cpu, emu_syscall_t *sc, void *user);
  * returns false when this build has no JIT, so a caller can skip its own
  * frontend-specific additions.
  */
-void emu_print_run_summary(uint64_t retired, uint32_t host_cycles);
+void emu_print_run_summary(uint64_t retired, uint64_t host_cycles);
 bool emu_print_jit_stats(void);
 
 #ifdef __cplusplus

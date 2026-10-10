@@ -183,7 +183,7 @@ bool emu_session_reload(emu_system_t *sys, const emu_session_cfg_t *cfg);
  * a hook each platform implemented differently.
  */
 void emu_session_report(emu_system_t *sys, uint64_t retired,
-                        uint32_t host_cycles, bool capped, bool dump_state);
+                        uint64_t host_cycles, bool capped, bool dump_state);
 
 #ifdef __cplusplus
 }

@@ -18,6 +18,12 @@ add_executable(emu-unit
     # against a real frontend would assert its lowering decisions too.
     #
     test_jit.c
+    #
+    # The firmware's clocks, as arithmetic: a 32-bit cycle counter read
+    # past its wrap. The part that had the bug cannot run a unit test,
+    # and the bug was not about the part.
+    #
+    test_cycles.c
 )
 
 # Frontend tests follow the frontends: a build without one must not try to

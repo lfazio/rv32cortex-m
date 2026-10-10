@@ -1283,7 +1283,7 @@ void board_fatal(int *status)
  * reporting that as "host cycles per guest instruction" gave 2.01 for a
  * board that spends 429.
  */
-uint32_t board_perf_cycles(void)
+uint64_t board_perf_cycles(void)
 {
     return 0u;
 }

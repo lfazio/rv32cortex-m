@@ -562,7 +562,7 @@ int main(int argc, char **argv)
                            (unsigned)(board_ram_size / 1024u),
                            (unsigned)board_ram_size, st.backend);
 
-        const uint32_t t0 = board_perf_cycles();
+        const uint64_t t0 = board_perf_cycles();
         uint64_t retired = 0;
         bool capped = false;
 
@@ -576,7 +576,7 @@ int main(int argc, char **argv)
             capped = (out == EMU_RUN_OUTCOME_CAPPED);
         }
 
-        const uint32_t elapsed = board_perf_cycles() - t0;
+        const uint64_t elapsed = board_perf_cycles() - t0;
 
         emu_session_report(&g_sys, retired, elapsed, capped, g_cfg.dump_state);
 

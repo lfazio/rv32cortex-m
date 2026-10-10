@@ -26,6 +26,7 @@
 #include "emu_session.h"
 
 /* emucore. */
+#include "emu/emu_cycles.h"
 #include "emu/emu_jit.h"
 #include "emu/emu_cpu.h"
 
@@ -148,11 +149,18 @@ extern const uint32_t emu_guest_image_size;
  * near zero.
  */
 static uint32_t g_cycles_per_tick;
-static uint32_t g_start_cycles;
+
+/*
+ * The cycle counter, without its wrap -- see emu_cycles.h for what the
+ * wrap cost while this was a 32-bit subtraction from an epoch. Both
+ * clocks below read it, and the run loop reads one of them every guest
+ * slice, which is what keeps any two readings less than a wrap apart.
+ */
+static emu_cycles_t g_cycles;
 
 uint64_t board_time_now(void)
 {
-    return (uint64_t)(board_cycles() - g_start_cycles) / g_cycles_per_tick;
+    return emu_cycles_read(&g_cycles, board_cycles()) / g_cycles_per_tick;
 }
 
 /*
@@ -291,7 +299,7 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
      * elapsed count wants a base.
      */
     g_cycles_per_tick = board_clock_hz() / EMU_TIMER_HZ;
-    g_start_cycles = board_cycles();
+    emu_cycles_start(&g_cycles, board_cycles());
 
     cfg->cache_ops = &board_cache_ops;
     cfg->unmask_fn = board_irq_unmask;
@@ -301,10 +309,11 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
 
 /* Host cycles for the performance figure, which on this part is the DWT
  * counter the guest's clock is also derived from -- see
- * board_time_now for the division that separates them. */
-uint32_t board_perf_cycles(void)
+ * board_time_now for the division that separates them, and g_cycles for
+ * why it is not the counter itself. */
+uint64_t board_perf_cycles(void)
 {
-    return board_cycles();
+    return emu_cycles_read(&g_cycles, board_cycles());
 }
 
 /*

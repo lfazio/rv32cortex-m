@@ -219,8 +219,13 @@ void board_poll(void);
  *
  * A platform with no meaningful answer returns 0, and the ratio is
  * suppressed rather than computed from a clock that means something else.
+ *
+ * **64 bits, and a count rather than a counter.** It was the part's
+ * 32-bit cycle counter, and the caller subtracted two readings -- right
+ * for a run shorter than one wrap, 19.9 s at 216 MHz, and a whole wrap
+ * short for every longer one. See emu_cycles.h.
  */
-uint32_t board_perf_cycles(void);
+uint64_t board_perf_cycles(void);
 
 /*
  * Guest time, in the units the frontend's timer expects.
