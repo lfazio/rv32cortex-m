@@ -97,6 +97,9 @@ void emu_console_printf(const char *fmt, ...)
  */
 void emu_report_state(emu_cpu_t *cpu, const emu_cpu_ops_t *ops);
 
+/* The frontend's own counters, where it has any; see emu_cpu_ops_t.report. */
+void emu_report_frontend(const emu_cpu_ops_t *ops);
+
 /* Every core's, headed by index when there is more than one. */
 void emu_report_states(emu_system_t *sys);
 

@@ -1,51 +1,44 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * armv7m_interp.c - the ARMv7E-M interpreter.
+ * armv7m_interp.c - the ARMv7E-M interpreter: decode, execute, run.
  *
- * **What is here is a fraction of the instruction set, and every
- * encoding that is not decodes to a reported fault rather than to a
- * skip.** That order is deliberate and is the one lesson four frontends
- * in this tree have each had to learn the hard way: an unimplemented
- * encoding that quietly advances the pc produces a guest which keeps
- * running and keeps printing plausible output, and the cost of finding
- * it later has been measured in sessions, not hours.
+ * Organised the way the ARM ARM's chapter A5 is: one function per
+ * encoding table, each taking exactly the fields that table describes.
+ * **Every defect this decoder has had was a field read too narrow** --
+ * two bits where three were needed, one where two were -- aliasing one
+ * group of instructions onto another. Following the tables' own
+ * boundaries is the defence, and tests/armv7m-diff is the check: the
+ * same generated cases run on a Cortex-M7 and here, and every line has
+ * to match.
  *
- * So `armv7m_fault` records the pc and the halfword and stops the core.
- * A guest that hits one says exactly which encoding it was and where,
- * which is what turns "the output is wrong" into an objdump line.
+ * An instruction returns the exception it raised, or ARMV7M_X_NONE. It
+ * never half-completes: loads collect their values before writing any
+ * register, which is what lets a fault be *taken* -- vectored through the
+ * guest's table, exactly as on the board -- rather than only reported.
  */
 
 #include "armv7m/armv7m_cpu.h"
+#include "armv7m/armv7m_pairstats.h"
 
 #include "emu/emu_bus.h"
 
 #include <string.h>
 
-/* ------------------------------------------------------------------ */
-/* Faults                                                              */
-/* ------------------------------------------------------------------ */
+typedef armv7m_exc_t X;
+#define OK ARMV7M_X_NONE
 
-/*
- * Stop, and remember why.
- *
- * A real ARMv7-M takes a UsageFault here and vectors through VTOR. That
- * is the next step and not this one: vectoring to a handler a bare guest
- * has not installed lands on whatever is at that address, which is the
- * silent-wrong-answer shape this file exists to avoid. Halting is honest
- * while the frontend is incomplete, and the fault fields say what a
- * handler would have been told.
- */
-static void armv7m_fault(armv7m_cpu_t *c, uint32_t pc, uint32_t insn)
-{
-    c->faulted = true;
-    c->fault_pc = pc;
-    c->fault_insn = insn;
-    c->state = EMU_STATE_HALTED;
-}
+/* CCR bits the interpreter consults. */
+#define CCR_UNALIGN_TRP (1u << 3)
+#define CCR_DIV_0_TRP (1u << 4)
 
 /* ------------------------------------------------------------------ */
 /* Flags                                                               */
 /* ------------------------------------------------------------------ */
+
+static inline uint32_t carry(const armv7m_cpu_t *c)
+{
+    return (c->xpsr & ARMV7M_C) ? 1u : 0u;
+}
 
 static void set_nz(armv7m_cpu_t *c, uint32_t v)
 {
@@ -53,41 +46,59 @@ static void set_nz(armv7m_cpu_t *c, uint32_t v)
     if (v == 0u) {
         c->xpsr |= ARMV7M_Z;
     }
-    if ((v & 0x80000000u) != 0u) {
-        c->xpsr |= ARMV7M_N;
-    }
+    c->xpsr |= v & ARMV7M_N;
+}
+
+/* N, Z and C: the logical operations, whose carry is the shifter's. */
+static void set_nzc(armv7m_cpu_t *c, uint32_t v, uint32_t cy)
+{
+    set_nz(c, v);
+    c->xpsr = (c->xpsr & ~ARMV7M_C) | (cy ? ARMV7M_C : 0u);
 }
 
 /*
- * The carry and overflow of an addition, which is also how subtraction
- * is defined: a - b is a + ~b + 1, and the flags fall out of the same
- * arithmetic. Writing subtraction any other way is how a borrow ends up
- * inverted on one of the two paths.
+ * AddWithCarry, which is also how subtraction is defined: a - b is
+ * a + ~b + 1, and the flags fall out of the same arithmetic. Writing
+ * subtraction any other way is how a borrow ends up inverted on one of
+ * the two paths.
  */
-static void set_add_flags(armv7m_cpu_t *c, uint32_t a, uint32_t b,
-                          uint32_t carry_in, uint32_t res)
+static uint32_t add_c(armv7m_cpu_t *c, uint32_t a, uint32_t b, uint32_t ci,
+                      bool setflags)
 {
-    const uint64_t wide = (uint64_t)a + (uint64_t)b + (uint64_t)carry_in;
+    const uint64_t u = (uint64_t)a + (uint64_t)b + (uint64_t)ci;
+    const uint32_t res = (uint32_t)u;
 
-    c->xpsr &= ~(ARMV7M_C | ARMV7M_V);
-    if ((wide >> 32) != 0u) {
-        c->xpsr |= ARMV7M_C;
+    if (setflags) {
+        c->xpsr &= ~(ARMV7M_C | ARMV7M_V);
+        if ((u >> 32) != 0u) {
+            c->xpsr |= ARMV7M_C;
+        }
+        if ((((a ^ res) & (b ^ res)) & 0x80000000u) != 0u) {
+            c->xpsr |= ARMV7M_V;
+        }
+        set_nz(c, res);
     }
-    /* Overflow: the operands agreed in sign and the result did not. */
-    if ((((a ^ res) & (b ^ res)) & 0x80000000u) != 0u) {
-        c->xpsr |= ARMV7M_V;
-    }
-    set_nz(c, res);
+    return res;
+}
+
+static inline void set_q(armv7m_cpu_t *c)
+{
+    c->xpsr |= ARMV7M_Q;
+}
+
+static inline uint32_t ge(const armv7m_cpu_t *c)
+{
+    return (c->xpsr >> ARMV7M_GE_SHIFT) & 0xFu;
+}
+
+static inline void set_ge(armv7m_cpu_t *c, uint32_t g)
+{
+    c->xpsr = (c->xpsr & ~ARMV7M_GE_MASK) | ((g & 0xFu) << ARMV7M_GE_SHIFT);
 }
 
 /*
  * ITAdvance, from A7.3.2: the low five bits shift left, and the block
  * ends when the low three are zero.
- *
- * The trailing 1 the assembler puts in the mask is what makes that
- * work -- it walks down to bit 0 and the block is over when it falls
- * off. Shifting the whole byte instead would destroy the condition in
- * the top three bits.
  */
 static void it_advance(armv7m_cpu_t *c)
 {
@@ -123,1488 +134,2002 @@ static bool cond_holds(const armv7m_cpu_t *c, uint32_t cond)
     case 6u:
         return (cond & 1u) ? (z || (n != v)) : (!z && (n == v)); /* GT / LE */
     default:
-        return true; /* AL; 0b1111 is not a condition in Thumb */
+        return true; /* AL */
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Shifts and immediates                                               */
+/* ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ */
+/* Saturation                                                          */
+/* ------------------------------------------------------------------ */
+
+static int64_t ssat(int64_t v, uint32_t bits, bool *sat)
+{
+    const int64_t hi = ((int64_t)1 << (bits - 1u)) - 1;
+    const int64_t lo = -((int64_t)1 << (bits - 1u));
+
+    if (v > hi) {
+        *sat = true;
+        return hi;
+    }
+    if (v < lo) {
+        *sat = true;
+        return lo;
+    }
+    return v;
+}
+
+static int64_t usat(int64_t v, uint32_t bits, bool *sat)
+{
+    const int64_t hi = (bits >= 63u) ? INT64_MAX : (((int64_t)1 << bits) - 1);
+
+    if (v > hi) {
+        *sat = true;
+        return hi;
+    }
+    if (v < 0) {
+        *sat = true;
+        return 0;
+    }
+    return v;
+}
+
+/* ------------------------------------------------------------------ */
+/* Writing the pc                                                      */
+/* ------------------------------------------------------------------ */
+
+/* BranchWritePC / ALUWritePC: bit 0 is ignored. */
+static inline void branch_to(armv7m_cpu_t *c, uint32_t addr)
+{
+    c->r[ARMV7M_PC] = addr & ~1u;
+}
+
+/*
+ * BXWritePC / LoadWritePC.
+ *
+ * In Handler mode a value of the form 0xFxxxxxxx is an exception return,
+ * and is left in the pc for the run loop to recognise -- there is nothing
+ * there to fetch. Otherwise bit 0 becomes EPSR.T, and **a zero is not a
+ * switch to ARM state**: an ARMv7-M core has none, so the next fetch
+ * takes a UsageFault (INVSTATE) instead.
+ */
+static void bx_write_pc(armv7m_cpu_t *c, uint32_t addr)
+{
+    if (armv7m_handler_mode(c) &&
+        (addr & ARMV7M_EXC_RETURN_MASK) == ARMV7M_EXC_RETURN_MASK) {
+        c->r[ARMV7M_PC] = addr;
+        return;
+    }
+    c->xpsr = (c->xpsr & ~ARMV7M_T) | ((addr & 1u) ? ARMV7M_T : 0u);
+    c->r[ARMV7M_PC] = addr & ~1u;
 }
 
 /* ------------------------------------------------------------------ */
 /* Memory                                                              */
 /* ------------------------------------------------------------------ */
 
-static bool ld32(armv7m_cpu_t *c, uint32_t addr, uint32_t *out)
+/*
+ * An access that may be unaligned: LDR, STR, LDRH, STRH, LDRSH and
+ * their unprivileged forms. With CCR.UNALIGN_TRP clear the architecture
+ * performs it, and does so as a sequence of byte accesses -- which is
+ * also what keeps an MPU check honest for an access straddling two
+ * regions.
+ */
+static X rd_u(armv7m_cpu_t *c, uint32_t addr, uint32_t size, bool unpriv,
+              uint32_t *out)
 {
-    return emu_bus_read(c->bus, addr, 4u, out) == EMU_FAULT_NONE;
+    if (size > 1u && (addr & (size - 1u)) != 0u) {
+        uint32_t v = 0u;
+
+        if ((c->ccr & CCR_UNALIGN_TRP) != 0u) {
+            return ARMV7M_X_UNALIGNED;
+        }
+        for (uint32_t i = 0u; i < size; i++) {
+            uint32_t b = 0u;
+            const X x = armv7m_mem_read(c, addr + i, 1u, unpriv, &b);
+
+            if (x != OK) {
+                return x;
+            }
+            v |= (b & 0xFFu) << (8u * i);
+        }
+        *out = v;
+        return OK;
+    }
+    return armv7m_mem_read(c, addr, size, unpriv, out);
 }
 
-static bool st32(armv7m_cpu_t *c, uint32_t addr, uint32_t v)
+static X wr_u(armv7m_cpu_t *c, uint32_t addr, uint32_t size, bool unpriv,
+              uint32_t v)
 {
-    return emu_bus_write(c->bus, addr, 4u, v) == EMU_FAULT_NONE;
+    if (size > 1u && (addr & (size - 1u)) != 0u) {
+        if ((c->ccr & CCR_UNALIGN_TRP) != 0u) {
+            return ARMV7M_X_UNALIGNED;
+        }
+        for (uint32_t i = 0u; i < size; i++) {
+            const X x =
+                armv7m_mem_write(c, addr + i, 1u, unpriv, (v >> (8u * i)) & 0xFFu);
+
+            if (x != OK) {
+                return x;
+            }
+        }
+        return OK;
+    }
+    return armv7m_mem_write(c, addr, size, unpriv, v);
 }
+
+/* MemA: an access that must be aligned -- LDRD, LDM, LDREX and stacking. */
+static X rd_a(armv7m_cpu_t *c, uint32_t addr, uint32_t size, uint32_t *out)
+{
+    if ((addr & (size - 1u)) != 0u) {
+        return ARMV7M_X_UNALIGNED;
+    }
+    return armv7m_mem_read(c, addr, size, false, out);
+}
+
+static X wr_a(armv7m_cpu_t *c, uint32_t addr, uint32_t size, uint32_t v)
+{
+    if ((addr & (size - 1u)) != 0u) {
+        return ARMV7M_X_UNALIGNED;
+    }
+    return armv7m_mem_write(c, addr, size, false, v);
+}
+
+static uint32_t extend(uint32_t v, uint32_t size, bool sext)
+{
+    if (!sext) {
+        return v;
+    }
+    if (size == 1u) {
+        return (uint32_t)(int32_t)(int8_t)v;
+    }
+    if (size == 2u) {
+        return (uint32_t)(int32_t)(int16_t)v;
+    }
+    return v;
+}
+
+/* pc as an operand: this instruction's address plus four. */
+static inline uint32_t reg_pc(const armv7m_cpu_t *c, uint32_t n, uint32_t pc)
+{
+    return (n == ARMV7M_PC) ? pc + 4u : c->r[n];
+}
+
+/* ------------------------------------------------------------------ */
+/* Load/store multiple                                                 */
+/* ------------------------------------------------------------------ */
 
 /*
- * Sized accesses. `size` is 1, 2 or 4 and `sext` says whether a narrow
- * load sign-extends -- LDRSB and LDRSH against LDRB and LDRH.
+ * LDM and STM, both widths. `before` is the DB form, `wback` the
+ * writeback. Loads collect every value before writing any register, so a
+ * fault partway through leaves the registers as they were -- the
+ * architecture permits restarting the instruction, which only works if
+ * the first attempt did not consume its own base.
  */
-static bool ldn(armv7m_cpu_t *c, uint32_t addr, uint32_t size, bool sext,
-                uint32_t *out)
+static X ldm_stm(armv7m_cpu_t *c, uint32_t rn, uint32_t list, bool load,
+                 bool before, bool wback)
 {
+    uint32_t count = 0u;
+    uint32_t vals[16];
+
+    for (uint32_t i = 0u; i < 16u; i++) {
+        count += (list >> i) & 1u;
+    }
+    const uint32_t base = c->r[rn];
+    const uint32_t start = before ? base - 4u * count : base;
+    const uint32_t final = before ? base - 4u * count : base + 4u * count;
+    uint32_t addr = start;
+
+    for (uint32_t i = 0u; i < 16u; i++) {
+        if ((list & (1u << i)) == 0u) {
+            continue;
+        }
+        if (load) {
+            const X x = rd_a(c, addr, 4u, &vals[i]);
+
+            if (x != OK) {
+                return x;
+            }
+        } else {
+            const X x = wr_a(c, addr, 4u, c->r[i]);
+
+            if (x != OK) {
+                return x;
+            }
+        }
+        addr += 4u;
+    }
+    if (wback) {
+        c->r[rn] = final;
+    }
+    if (load) {
+        for (uint32_t i = 0u; i < 15u; i++) {
+            if ((list & (1u << i)) != 0u) {
+                c->r[i] = vals[i];
+            }
+        }
+        if ((list & (1u << 15)) != 0u) {
+            bx_write_pc(c, vals[15]);
+        }
+    }
+    return OK;
+}
+
+/* ------------------------------------------------------------------ */
+/* Special registers                                                   */
+/* ------------------------------------------------------------------ */
+
+static uint32_t mrs(armv7m_cpu_t *c, uint32_t sysm)
+{
+    const bool priv = armv7m_privileged(c);
     uint32_t v = 0u;
 
-    if (emu_bus_read(c->bus, addr, size, &v) != EMU_FAULT_NONE) {
-        return false;
-    }
-    if (sext) {
-        if (size == 1u) {
-            v = (uint32_t)(int32_t)(int8_t)v;
-        } else if (size == 2u) {
-            v = (uint32_t)(int32_t)(int16_t)v;
+    switch (sysm >> 3) {
+    case 0u: /* the xPSR views */
+        if ((sysm & 1u) != 0u) {
+            v |= c->xpsr & ARMV7M_IPSR_MASK;
         }
-    }
-    *out = v;
-    return true;
-}
-
-static bool stn(armv7m_cpu_t *c, uint32_t addr, uint32_t size, uint32_t v)
-{
-    return emu_bus_write(c->bus, addr, size, v) == EMU_FAULT_NONE;
-}
-
-/* ------------------------------------------------------------------ */
-/* Immediates and shifts                                              */
-/* ------------------------------------------------------------------ */
-
-/*
- * ThumbExpandImm: the 12-bit "modified immediate" the wide
- * data-processing forms carry, as i:imm3:imm8.
- *
- * **This is the most error-prone decode in the instruction set**, and
- * it is worth writing out rather than paraphrasing. With bits 11:10
- * clear the value is one of four byte patterns selected by bits 9:8;
- * otherwise it is `1:imm7` rotated right by the whole top five bits.
- * The second case is easy to write as a shift and be wrong for every
- * rotation that wraps.
- */
-static uint32_t expand_imm12(uint32_t imm12)
-{
-    const uint32_t imm8 = imm12 & 0xFFu;
-
-    if ((imm12 & 0xC00u) == 0u) {
-        switch ((imm12 >> 8) & 3u) {
+        /* EPSR reads as zero, so bit 1 adds nothing. */
+        if ((sysm & 4u) == 0u) {
+            v |= c->xpsr & ARMV7M_APSR_MASK;
+        }
+        return v;
+    case 1u:
+        if (!priv) {
+            return 0u;
+        }
+        return armv7m_get_sp(c, sysm & 7u);
+    case 2u:
+        switch (sysm & 7u) {
         case 0u:
-            return imm8;
+            return priv ? c->primask : 0u;
         case 1u:
-            return (imm8 << 16) | imm8;
         case 2u:
-            return (imm8 << 24) | (imm8 << 8);
+            return priv ? c->basepri : 0u;
+        case 3u:
+            return priv ? c->faultmask : 0u;
+        case 4u:
+            return c->control & 7u;
         default:
-            return (imm8 << 24) | (imm8 << 16) | (imm8 << 8) | imm8;
+            return 0u;
         }
+    default:
+        return 0u;
+    }
+}
+
+static void msr(armv7m_cpu_t *c, uint32_t sysm, uint32_t mask, uint32_t v)
+{
+    const bool priv = armv7m_privileged(c);
+
+    switch (sysm >> 3) {
+    case 0u:
+        if ((sysm & 4u) == 0u) {
+            if ((mask & 1u) != 0u) {
+                c->xpsr = (c->xpsr & ~ARMV7M_GE_MASK) | (v & ARMV7M_GE_MASK);
+            }
+            if ((mask & 2u) != 0u) {
+                c->xpsr = (c->xpsr & ~0xF8000000u) | (v & 0xF8000000u);
+            }
+        }
+        return;
+    case 1u:
+        if (priv) {
+            armv7m_set_sp(c, sysm & 7u, v);
+        }
+        return;
+    case 2u:
+        if (!priv) {
+            return;
+        }
+        switch (sysm & 7u) {
+        case 0u:
+            c->primask = v & 1u;
+            return;
+        case 1u:
+            c->basepri = v & 0xFFu;
+            return;
+        case 2u: { /* BASEPRI_MAX: only ever raises the priority */
+            const uint32_t nv = v & 0xFFu;
+
+            if (nv != 0u && (nv < c->basepri || c->basepri == 0u)) {
+                c->basepri = nv;
+            }
+            return;
+        }
+        case 3u:
+            if (armv7m_exec_priority(c) > -1) {
+                c->faultmask = v & 1u;
+            }
+            return;
+        case 4u:
+            armv7m_write_control(c, v);
+            return;
+        default:
+            return;
+        }
+    default:
+        return;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* 16-bit instructions                                                 */
+/* ------------------------------------------------------------------ */
+
+/* Shift (immediate), add, subtract, move and compare: 00xxxx. */
+static X t16_shift_add(armv7m_cpu_t *c, uint16_t insn, bool setf)
+{
+    const uint32_t op = (insn >> 9) & 31u;
+    const uint32_t rd = insn & 7u;
+    const uint32_t rm = (insn >> 3) & 7u;
+
+    if (op < 12u) { /* LSL, LSR, ASR (immediate) */
+        uint32_t t;
+        uint32_t n;
+        uint32_t cy;
+
+        armv7m_decode_imm_shift(op >> 2, (insn >> 6) & 31u, &t, &n);
+        c->r[rd] = armv7m_shift_c(c->r[rm], t, n, carry(c), &cy);
+        if (setf) {
+            set_nzc(c, c->r[rd], cy);
+        }
+        return OK;
+    }
+    switch (op) {
+    case 12u: /* ADD (register) */
+    case 13u: /* SUB (register) */
+    case 14u: /* ADD (3-bit immediate) */
+    case 15u: { /* SUB (3-bit immediate) */
+        const uint32_t rn = (insn >> 3) & 7u;
+        const uint32_t m = (insn >> 6) & 7u;
+        const uint32_t b = (op >= 14u) ? m : c->r[m];
+        const bool sub = (op & 1u) != 0u;
+
+        c->r[rd] = add_c(c, c->r[rn], sub ? ~b : b, sub ? 1u : 0u, setf);
+        return OK;
+    }
+    default:
+        break;
     }
     {
-        const uint32_t v = 0x80u | (imm12 & 0x7Fu);
-        const uint32_t rot = (imm12 >> 7) & 31u;
-
-        return (v >> rot) | (v << (32u - rot));
-    }
-}
-
-/*
- * The shift a wide data-processing instruction applies to its second
- * operand, and the one a 16-bit shift-immediate applies.
- *
- * **imm5 == 0 does not mean "no shift" for three of the four types.**
- * LSR #0 is LSR #32, ASR #0 is ASR #32 and ROR #0 is RRX -- the same
- * trap the Thumb-2 *backend* in this tree was caught by twice, once
- * where a RISC-V shift by zero came out as a shift by 32. Only LSL
- * reads zero as an identity.
- */
-static uint32_t do_shift(uint32_t type, uint32_t amount, uint32_t v)
-{
-    switch (type) {
-    case 0u: /* LSL */
-        return (amount == 0u) ? v : (v << amount);
-    case 1u: /* LSR; 0 means 32 */
-        return (amount == 0u) ? 0u : (v >> amount);
-    case 2u: /* ASR; 0 means 32 */
-        return (amount == 0u) ? (uint32_t)((int32_t)v >> 31)
-                              : (uint32_t)((int32_t)v >> amount);
-    default: /* ROR, and 0 is RRX -- which needs the carry, so the
-              * caller must not hand a zero amount here. */
-        return (amount == 0u) ? v : ((v >> amount) | (v << (32u - amount)));
-    }
-}
-
-/* ------------------------------------------------------------------ */
-/* Execution                                                           */
-/* ------------------------------------------------------------------ */
-
-/*
- * One 16-bit instruction.
- *
- * The subset is chosen to be what a first guest needs to prove the
- * frontend runs at all -- move, add, subtract, compare, load, store,
- * branch -- rather than what is easiest. Everything else faults with
- * its encoding recorded.
- *
- * **pc reads as the address of this instruction plus four.** Not plus
- * two: the architecture defines pc-relative reads against a pipeline
- * that fetched two halfwords ahead, and every literal load and
- * pc-relative address in compiled Thumb code depends on it. Getting it
- * wrong shifts every constant a guest loads by two bytes, which reads
- * as data corruption rather than as a decode bug.
- */
-static bool exec16(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
-{
-    const uint32_t pc4 = pc + 4u;
-    /*
-     * **Inside an IT block the 16-bit data-processing forms do not set
-     * flags**, which is a semantic rule and not an assembly-syntax one:
-     * the ARM ARM spells it `setflags = !InITBlock()` on each of those
-     * encodings.
-     *
-     * It matters because of what a block is *for*. `cmp; it ne; addne`
-     * is the shape, and if the ADD overwrote the flags then a second
-     * instruction in the same block would be conditioned on the result
-     * of the first rather than on the compare -- right for one
-     * instruction and wrong for the rest, which reads as a condition
-     * bug somewhere else entirely.
-     *
-     * TST, CMP and CMN are unaffected: the flags are their whole
-     * purpose and they have no destination to write instead.
-     */
-    const bool setf = !armv7m_in_it(c->xpsr);
-
-    /*
-     * Shift (immediate), add, subtract: bits 15:13 == 0b000.
-     *
-     * **Three bits, not two.** `insn >> 14` also matches 0b001, which is
-     * the mov/cmp/add/sub-immediate group below -- so `movs r0, #16`
-     * (0x2010) decoded as `lsls r0, r2, #0` and left r0 holding r2.
-     * Nothing faulted; the guest simply stored to address 0 and the
-     * frontend reported a bus error two instructions later.
-     *
-     * This is the e_bc defect from the PowerPC frontend in a new place:
-     * a field read one bit too short aliases one group of instructions
-     * onto another, and the result is a wrong answer rather than an
-     * unrecognised encoding.
-     */
-    if ((insn >> 13) == 0u) {
-        const uint32_t op = (insn >> 11) & 3u;
-        const uint32_t imm5 = (insn >> 6) & 31u;
-        const uint32_t rm = (insn >> 3) & 7u;
-        const uint32_t rd = insn & 7u;
-
-        switch (op) {
-        case 0u: /* LSL (immediate) */
-            c->r[rd] = c->r[rm] << imm5;
-            if (setf) {
-                set_nz(c, c->r[rd]);
-            }
-            return true;
-        case 1u: /* LSR (immediate); a shift of 0 means 32 */
-            c->r[rd] = (imm5 == 0u) ? 0u : (c->r[rm] >> imm5);
-            if (setf) {
-                set_nz(c, c->r[rd]);
-            }
-            return true;
-        case 2u: /* ASR (immediate); likewise */
-            c->r[rd] = (imm5 == 0u) ? (uint32_t)((int32_t)c->r[rm] >> 31)
-                                    : (uint32_t)((int32_t)c->r[rm] >> imm5);
-            if (setf) {
-                set_nz(c, c->r[rd]);
-            }
-            return true;
-        default:
-            break; /* 0b0001100..0b0001111: ADD/SUB register/immediate */
-        }
-
-        const uint32_t sub = (insn >> 9) & 1u;
-        const uint32_t imm3_form = (insn >> 10) & 1u;
-        const uint32_t rn = (insn >> 3) & 7u;
-        const uint32_t operand =
-            imm3_form ? ((insn >> 6) & 7u) : c->r[(insn >> 6) & 7u];
-        const uint32_t a = c->r[rn];
-        const uint32_t b = sub ? ~operand : operand;
-        const uint32_t res = a + b + (sub ? 1u : 0u);
-
-        c->r[insn & 7u] = res;
-        if (setf) {
-            set_add_flags(c, a, b, sub ? 1u : 0u, res);
-        }
-        return true;
-    }
-
-    /* MOV/CMP/ADD/SUB immediate: 001xxx */
-    if ((insn >> 13) == 1u) {
-        const uint32_t op = (insn >> 11) & 3u;
-        const uint32_t rd = (insn >> 8) & 7u;
+        const uint32_t rdn = (insn >> 8) & 7u;
         const uint32_t imm8 = insn & 0xFFu;
 
-        switch (op) {
-        case 0u: /* MOV */
-            c->r[rd] = imm8;
+        switch (op >> 2) {
+        case 4u: /* MOV (immediate): C is unchanged */
+            c->r[rdn] = imm8;
             if (setf) {
                 set_nz(c, imm8);
             }
-            return true;
-        case 1u: { /* CMP */
-            const uint32_t b = ~imm8;
-            const uint32_t res = c->r[rd] + b + 1u;
-
-            set_add_flags(c, c->r[rd], b, 1u, res);
-            return true;
-        }
-        case 2u: { /* ADD */
-            const uint32_t res = c->r[rd] + imm8;
-
-            if (setf) {
-                set_add_flags(c, c->r[rd], imm8, 0u, res);
-            }
-            c->r[rd] = res;
-            return true;
-        }
-        default: { /* SUB */
-            const uint32_t b = ~imm8;
-            const uint32_t res = c->r[rd] + b + 1u;
-
-            if (setf) {
-                set_add_flags(c, c->r[rd], b, 1u, res);
-            }
-            c->r[rd] = res;
-            return true;
-        }
+            return OK;
+        case 5u: /* CMP */
+            (void)add_c(c, c->r[rdn], ~imm8, 1u, true);
+            return OK;
+        case 6u: /* ADD (8-bit immediate) */
+            c->r[rdn] = add_c(c, c->r[rdn], imm8, 0u, setf);
+            return OK;
+        default: /* SUB (8-bit immediate) */
+            c->r[rdn] = add_c(c, c->r[rdn], ~imm8, 1u, setf);
+            return OK;
         }
     }
-
-    /* LDR (literal): 01001 rt imm8 -- the pc-relative literal pool */
-    if ((insn >> 11) == 0x09u) {
-        const uint32_t rt = (insn >> 8) & 7u;
-        const uint32_t addr = (pc4 & ~3u) + ((insn & 0xFFu) * 4u);
-
-        return ld32(c, addr, &c->r[rt]);
-    }
-
-    /*
-     * The register-operand ALU group: 0100 00xx xxxx xxxx.
-     *
-     * Sixteen operations in one slot, selected by bits 9:6, and the
-     * low-register pair in bits 5:3 and 2:0. Several of them write no
-     * destination (TST, CMP, CMN) and one writes the flags from a
-     * negation (RSB #0), so the destination is decided per operation
-     * rather than once.
-     */
-    if ((insn >> 10) == 0x10u) {
-        const uint32_t op = (insn >> 6) & 15u;
-        const uint32_t rm = (insn >> 3) & 7u;
-        const uint32_t rd = insn & 7u;
-        const uint32_t a = c->r[rd];
-        const uint32_t b = c->r[rm];
-
-        switch (op) {
-        case 0u: /* AND */
-            c->r[rd] = a & b;
-            if (setf) {
-                set_nz(c, c->r[rd]);
-            }
-            return true;
-        case 1u: /* EOR */
-            c->r[rd] = a ^ b;
-            if (setf) {
-                set_nz(c, c->r[rd]);
-            }
-            return true;
-        case 2u: /* LSL (register) */
-            c->r[rd] = ((b & 0xFFu) >= 32u) ? 0u : (a << (b & 0xFFu));
-            if (setf) {
-                set_nz(c, c->r[rd]);
-            }
-            return true;
-        case 3u: /* LSR (register) */
-            c->r[rd] = ((b & 0xFFu) >= 32u) ? 0u : (a >> (b & 0xFFu));
-            if (setf) {
-                set_nz(c, c->r[rd]);
-            }
-            return true;
-        case 4u: /* ASR (register) */
-            c->r[rd] = ((b & 0xFFu) >= 32u)
-                           ? (uint32_t)((int32_t)a >> 31)
-                           : (uint32_t)((int32_t)a >> (b & 0xFFu));
-            if (setf) {
-                set_nz(c, c->r[rd]);
-            }
-            return true;
-        case 5u: { /* ADC */
-            const uint32_t ci = (c->xpsr & ARMV7M_C) ? 1u : 0u;
-            const uint32_t res = a + b + ci;
-
-            if (setf) {
-                set_add_flags(c, a, b, ci, res);
-            }
-            c->r[rd] = res;
-            return true;
-        }
-        case 6u: { /* SBC */
-            const uint32_t ci = (c->xpsr & ARMV7M_C) ? 1u : 0u;
-            const uint32_t nb = ~b;
-            const uint32_t res = a + nb + ci;
-
-            if (setf) {
-                set_add_flags(c, a, nb, ci, res);
-            }
-            c->r[rd] = res;
-            return true;
-        }
-        case 7u: /* ROR (register) */
-            if ((b & 31u) != 0u) {
-                c->r[rd] = do_shift(3u, b & 31u, a);
-            }
-            if (setf) {
-                set_nz(c, c->r[rd]);
-            }
-            return true;
-        case 8u: /* TST */
-            set_nz(c, a & b);
-            return true;
-        case 9u: { /* RSB rd, rm, #0 -- the negation */
-            const uint32_t na = ~b;
-            const uint32_t res = na + 1u;
-
-            if (setf) {
-                set_add_flags(c, na, 0u, 1u, res);
-            }
-            c->r[rd] = res;
-            return true;
-        }
-        case 10u: { /* CMP */
-            const uint32_t nb = ~b;
-            const uint32_t res = a + nb + 1u;
-
-            set_add_flags(c, a, nb, 1u, res);
-            return true;
-        }
-        case 11u: { /* CMN */
-            const uint32_t res = a + b;
-
-            set_add_flags(c, a, b, 0u, res);
-            return true;
-        }
-        case 12u: /* ORR */
-            c->r[rd] = a | b;
-            if (setf) {
-                set_nz(c, c->r[rd]);
-            }
-            return true;
-        case 13u: /* MUL */
-            c->r[rd] = a * b;
-            if (setf) {
-                set_nz(c, c->r[rd]);
-            }
-            return true;
-        case 14u: /* BIC */
-            c->r[rd] = a & ~b;
-            if (setf) {
-                set_nz(c, c->r[rd]);
-            }
-            return true;
-        default: /* MVN */
-            c->r[rd] = ~b;
-            if (setf) {
-                set_nz(c, c->r[rd]);
-            }
-            return true;
-        }
-    }
-
-    /*
-     * The high-register forms: 0100 01xx. ADD, CMP and MOV with either
-     * operand allowed to be any of the sixteen registers -- which is how
-     * `bx lr` and `mov r8, r0` are spelled, and how a branch through a
-     * register happens at all.
-     */
-    if ((insn >> 10) == 0x11u) {
-        const uint32_t op = (insn >> 8) & 3u;
-        const uint32_t rm = (insn >> 3) & 15u;
-        const uint32_t rd = (uint32_t)((insn & 7u) | ((insn >> 4) & 8u));
-
-        switch (op) {
-        case 0u: /* ADD (register, high) -- no flags */
-            c->r[rd] += (rm == ARMV7M_PC) ? pc4 : c->r[rm];
-            return true;
-        case 1u: { /* CMP (register, high) */
-            const uint32_t b = ~c->r[rm];
-            const uint32_t res = c->r[rd] + b + 1u;
-
-            set_add_flags(c, c->r[rd], b, 1u, res);
-            return true;
-        }
-        case 2u: /* MOV (register, high) -- no flags */
-            c->r[rd] = (rm == ARMV7M_PC) ? pc4 : c->r[rm];
-            return true;
-        default: {
-            /*
-             * BX and BLX. The link register takes the address of the
-             * *next* instruction with the Thumb bit set, which is what
-             * lets the matching BX return to it.
-             */
-            const uint32_t target = c->r[rm];
-
-            if (((insn >> 7) & 1u) != 0u) { /* BLX */
-                c->r[ARMV7M_LR] = (pc + 2u) | 1u;
-            }
-            c->r[ARMV7M_PC] = target & ~1u;
-            return true;
-        }
-        }
-    }
-
-    /* LDR/STR (immediate): 011 B L imm5 rn rt, word or byte */
-    if ((insn >> 13) == 3u) {
-        const bool byte = ((insn >> 12) & 1u) != 0u;
-        const uint32_t load = (insn >> 11) & 1u;
-        const uint32_t off = ((insn >> 6) & 31u) * (byte ? 1u : 4u);
-        const uint32_t addr = c->r[(insn >> 3) & 7u] + off;
-        const uint32_t rt = insn & 7u;
-        const uint32_t size = byte ? 1u : 4u;
-
-        return load ? ldn(c, addr, size, false, &c->r[rt])
-                    : stn(c, addr, size, c->r[rt]);
-    }
-
-    /* LDRH/STRH (immediate): 1000 L imm5 rn rt */
-    if ((insn >> 12) == 8u) {
-        const uint32_t load = (insn >> 11) & 1u;
-        const uint32_t addr =
-            c->r[(insn >> 3) & 7u] + (((insn >> 6) & 31u) * 2u);
-        const uint32_t rt = insn & 7u;
-
-        return load ? ldn(c, addr, 2u, false, &c->r[rt])
-                    : stn(c, addr, 2u, c->r[rt]);
-    }
-
-    /* LDR/STR (sp-relative): 1001 L rt imm8 -- how locals are reached */
-    if ((insn >> 12) == 9u) {
-        const uint32_t load = (insn >> 11) & 1u;
-        const uint32_t rt = (insn >> 8) & 7u;
-        const uint32_t addr = c->r[ARMV7M_SP] + ((insn & 0xFFu) * 4u);
-
-        return load ? ld32(c, addr, &c->r[rt]) : st32(c, addr, c->r[rt]);
-    }
-
-    /* ADR and ADD (sp plus immediate): 1010 S rd imm8 */
-    if ((insn >> 12) == 0x0Au) {
-        const uint32_t rd = (insn >> 8) & 7u;
-        const uint32_t imm = (insn & 0xFFu) * 4u;
-
-        c->r[rd] = (((insn >> 11) & 1u) != 0u) ? (c->r[ARMV7M_SP] + imm)
-                                               : ((pc4 & ~3u) + imm);
-        return true;
-    }
-
-    /* ADD/SUB sp, #imm7*4: 1011 0000 S imm7 */
-    if ((insn >> 8) == 0xB0u) {
-        const uint32_t imm = (insn & 0x7Fu) * 4u;
-
-        if (((insn >> 7) & 1u) != 0u) {
-            c->r[ARMV7M_SP] -= imm;
-        } else {
-            c->r[ARMV7M_SP] += imm;
-        }
-        return true;
-    }
-
-    /*
-     * The extend and reverse group: 1011 0010 xx / 1011 1010 xx.
-     *
-     * SXTH, SXTB, UXTH, UXTB and REV, REV16, REVSH -- narrowing and
-     * byte-swapping, which a compiler emits for any cast to a narrower
-     * type. `uxtb` arrived here from `(unsigned char)` in a guest's
-     * UART write.
-     */
-    /*
-     * **Eight bits of prefix, not six.** The extend group is 0xB2xx and
-     * the reverse group 0xBAxx, and nothing wider than that: `insn >> 10
-     * == 0x2C` spans 0xB000-0xB3FF, which also contains ADD/SUB sp and
-     * -- the one that bit -- **CBZ at 0xB1xx**. So a compare-and-branch
-     * decoded as a zero-extend, the branch never happened, and the guest
-     * fell out of a loop it should have stayed in. It printed one
-     * character short and then stopped.
-     *
-     * Third prefix-width defect in this frontend: two bits short on the
-     * shift group, one bit short on the modified immediate, two bits
-     * here. Each produced a wrong answer rather than an unrecognised
-     * encoding, which is what makes the class worth naming.
-     */
-    if ((insn >> 8) == 0xB2u || (insn >> 8) == 0xBAu) {
-        const uint32_t op = (insn >> 6) & 3u;
-        const uint32_t rm = (insn >> 3) & 7u;
-        const uint32_t rd = insn & 7u;
-        const uint32_t v = c->r[rm];
-
-        if ((insn >> 8) == 0xB2u) { /* extend */
-            switch (op) {
-            case 0u: /* SXTH */
-                c->r[rd] = (uint32_t)(int32_t)(int16_t)v;
-                return true;
-            case 1u: /* SXTB */
-                c->r[rd] = (uint32_t)(int32_t)(int8_t)v;
-                return true;
-            case 2u: /* UXTH */
-                c->r[rd] = v & 0xFFFFu;
-                return true;
-            default: /* UXTB */
-                c->r[rd] = v & 0xFFu;
-                return true;
-            }
-        }
-        switch (op) { /* reverse */
-        case 0u: /* REV */
-            c->r[rd] = ((v & 0xFFu) << 24) | ((v & 0xFF00u) << 8) |
-                       ((v >> 8) & 0xFF00u) | ((v >> 24) & 0xFFu);
-            return true;
-        case 1u: /* REV16: each halfword independently */
-            c->r[rd] = ((v & 0x00FFu) << 8) | ((v & 0xFF00u) >> 8) |
-                       ((v & 0x00FF0000u) << 8) | ((v & 0xFF000000u) >> 8);
-            return true;
-        case 3u: /* REVSH: the low halfword, sign extended */
-            c->r[rd] = (uint32_t)(int32_t)(int16_t)((
-                uint16_t)(((v & 0xFFu) << 8) | ((v >> 8) & 0xFFu)));
-            return true;
-        default:
-            return false; /* 0b10 is unallocated */
-        }
-    }
-
-    /*
-     * CPSIE and CPSID: 1011 0110 0110 x010, the two-instruction way a
-     * guest turns interrupts off and on. `i` is bit 1 of the immediate
-     * and selects PRIMASK; `f` selects FAULTMASK, which this frontend
-     * does not have and therefore reports.
-     */
-    if ((insn & 0xFFE8u) == 0xB660u) {
-        if ((insn & 1u) != 0u) {
-            return false; /* the `f` variant: FAULTMASK */
-        }
-        if ((insn & 2u) != 0u) {
-            c->primask = ((insn >> 4) & 1u) != 0u ? 1u : 0u;
-        }
-        return true;
-    }
-
-    /*
-     * PUSH and POP: 1011 L10 R register_list.
-     *
-     * **POP with pc in the list is a return**, which is why this cannot
-     * be a loop over registers that ignores r15: the Thumb bit comes off
-     * the popped value exactly as it does for BX.
-     */
-    if ((insn >> 12) == 0x0Bu && ((insn >> 9) & 3u) == 2u) {
-        const bool pop = ((insn >> 11) & 1u) != 0u;
-        const uint32_t extra = ((insn >> 8) & 1u) != 0u;
-        uint32_t sp = c->r[ARMV7M_SP];
-
-        if (pop) {
-            for (uint32_t i = 0u; i < 8u; i++) {
-                if ((insn & (1u << i)) != 0u) {
-                    if (!ld32(c, sp, &c->r[i])) {
-                        return false;
-                    }
-                    sp += 4u;
-                }
-            }
-            if (extra) { /* pc */
-                uint32_t t = 0u;
-
-                if (!ld32(c, sp, &t)) {
-                    return false;
-                }
-                sp += 4u;
-                c->r[ARMV7M_PC] = t & ~1u;
-            }
-        } else {
-            /* Pushed highest-first, so the lowest register ends up at
-             * the lowest address -- the order POP undoes. */
-            if (extra) { /* lr */
-                sp -= 4u;
-                if (!st32(c, sp, c->r[ARMV7M_LR])) {
-                    return false;
-                }
-            }
-            for (int32_t i = 7; i >= 0; i--) {
-                if ((insn & (1u << (uint32_t)i)) != 0u) {
-                    sp -= 4u;
-                    if (!st32(c, sp, c->r[(uint32_t)i])) {
-                        return false;
-                    }
-                }
-            }
-        }
-        c->r[ARMV7M_SP] = sp;
-        return true;
-    }
-
-    /* CBZ/CBNZ: 1011 o0i1 imm5 rn -- a compare and branch in one */
-    if ((insn >> 12) == 0x0Bu && ((insn >> 8) & 5u) == 1u) {
-        const uint32_t rn = insn & 7u;
-        const bool nonzero = ((insn >> 11) & 1u) != 0u;
-        const uint32_t imm =
-            (((insn >> 3) & 31u) * 2u) | (((insn >> 9) & 1u) << 6);
-
-        if ((c->r[rn] != 0u) == nonzero) {
-            c->r[ARMV7M_PC] = pc4 + imm;
-        }
-        return true;
-    }
-
-    /*
-     * The hint space: 1011 1111 opA opB. NOP, YIELD, WFE, WFI and SEV
-     * all retire with no effect here -- there is no second core to yield
-     * to and no interrupt to wait for yet.
-     *
-     * **IT is in this slot and is deliberately not implemented.** It
-     * makes the next four instructions conditional, which means a
-     * decoder that is not stateless; faulting is honest until that is
-     * built, and silently treating it as a NOP would execute the
-     * instructions it guards unconditionally -- a wrong answer, not a
-     * missing feature.
-     */
-    if ((insn >> 8) == 0xBFu) {
-        const uint32_t mask = insn & 0x0Fu;
-        const uint32_t firstcond = (insn >> 4) & 0x0Fu;
-
-        /*
-         * IT, which shares this slot with the hints and is told apart by
-         * a non-zero mask -- `0xBF00` with both fields zero is NOP, so
-         * testing the mask first is what keeps NOP out of here.
-         *
-         * ITSTATE is simply firstcond:mask. There is no T/E pattern to
-         * decode: the mask bits become the condition's low bit as the
-         * field shifts, so ITT and ITE fall out of one mechanism.
-         *
-         * **firstcond 0b1111 does not exist** and 0b1110 (AL) with an
-         * else branch would need its inverse, which also does not --
-         * both are UNPREDICTABLE, and a frontend this incomplete should
-         * report them rather than invent an answer.
-         */
-        if (mask != 0u) {
-            if (firstcond == 0x0Fu ||
-                (firstcond == 0x0Eu && (mask & 7u) != 0u &&
-                 (mask & 0x0Eu) != 0x0Au)) {
-                return false;
-            }
-            c->xpsr = armv7m_it_put(c->xpsr, (firstcond << 4) | mask);
-            return true;
-        }
-        /* NOP, YIELD, WFE, WFI, SEV -- all retire with no effect here. */
-        return firstcond <= 5u;
-    }
-
-    /* Conditional branch and the supervisor calls: 1101 cond imm8 */
-    if ((insn >> 12) == 0x0Du) {
-        const uint32_t cond = (insn >> 8) & 15u;
-
-        /*
-         * 0b1110 is a permanently-undefined encoding and 0b1111 is SVC.
-         * Neither is a condition, and treating them as one is the
-         * classic Thumb decode slip -- `cond == 15` is exactly the
-         * awkward input this project's own rule says to test.
-         */
-        if (cond == 14u || cond == 15u) {
-            return false;
-        }
-        if (cond_holds(c, cond)) {
-            const int32_t off = (int32_t)(int8_t)(insn & 0xFFu) * 2;
-
-            c->r[ARMV7M_PC] = (uint32_t)((int32_t)pc4 + off);
-        }
-        return true;
-    }
-
-    /* Unconditional branch: 11100 imm11 */
-    if ((insn >> 11) == 0x1Cu) {
-        int32_t off = (int32_t)((uint32_t)(insn & 0x7FFu) << 1);
-
-        if ((off & 0x800) != 0) {
-            off |= (int32_t)0xFFFFF000; /* sign extend from 12 bits */
-        }
-        c->r[ARMV7M_PC] = (uint32_t)((int32_t)pc4 + off);
-        return true;
-    }
-
-    /*
-     * BKPT: 1011 1110 imm8. The guest's way of saying it is finished,
-     * and how a test ends without needing a semihosting call.
-     */
-    if ((insn >> 8) == 0xBEu) {
-        c->state = EMU_STATE_HALTED;
-        return true;
-    }
-
-    return false;
 }
 
-/* ------------------------------------------------------------------ */
-/* 32-bit encodings                                                    */
-/* ------------------------------------------------------------------ */
-
-/*
- * The wide data-processing result, shared by the immediate and register
- * forms: they differ only in where the second operand comes from.
- *
- * `setflags` is the S bit, and the architecture spends several encodings
- * on "S set with rd == pc" meaning something else entirely (CMP, TST,
- * and the compare forms) -- which the callers resolve before arriving
- * here.
- */
-static bool dp_apply(armv7m_cpu_t *c, uint32_t op, uint32_t rd, uint32_t rn,
-                     uint32_t b, bool setflags)
+/* Data processing: 010000. */
+static X t16_dp(armv7m_cpu_t *c, uint16_t insn, bool setf)
 {
-    const uint32_t a = c->r[rn];
+    const uint32_t op = (insn >> 6) & 15u;
+    const uint32_t rm = (insn >> 3) & 7u;
+    const uint32_t rd = insn & 7u;
+    const uint32_t a = c->r[rd];
+    const uint32_t b = c->r[rm];
+    uint32_t cy = carry(c);
     uint32_t res;
 
     switch (op) {
     case 0u: /* AND */
         res = a & b;
         break;
-    case 1u: /* BIC */
-        res = a & ~b;
-        break;
-    case 2u: /* ORR, and MOV when rn is pc */
-        res = (rn == ARMV7M_PC) ? b : (a | b);
-        break;
-    case 3u: /* ORN, and MVN when rn is pc */
-        res = (rn == ARMV7M_PC) ? ~b : (a | ~b);
-        break;
-    case 4u: /* EOR */
+    case 1u: /* EOR */
         res = a ^ b;
         break;
-    case 8u: /* ADD */
-        res = a + b;
-        if (setflags) {
-            set_add_flags(c, a, b, 0u, res);
+    case 2u: /* LSL (register) */
+        res = armv7m_shift_c(a, ARMV7M_SH_LSL, b & 0xFFu, cy, &cy);
+        break;
+    case 3u: /* LSR (register) */
+        res = armv7m_shift_c(a, ARMV7M_SH_LSR, b & 0xFFu, cy, &cy);
+        break;
+    case 4u: /* ASR (register) */
+        res = armv7m_shift_c(a, ARMV7M_SH_ASR, b & 0xFFu, cy, &cy);
+        break;
+    case 5u: /* ADC */
+        c->r[rd] = add_c(c, a, b, carry(c), setf);
+        return OK;
+    case 6u: /* SBC */
+        c->r[rd] = add_c(c, a, ~b, carry(c), setf);
+        return OK;
+    case 7u: /* ROR (register) */
+        res = armv7m_shift_c(a, ARMV7M_SH_ROR, b & 0xFFu, cy, &cy);
+        break;
+    case 8u: /* TST */
+        set_nzc(c, a & b, cy);
+        return OK;
+    case 9u: /* RSB (immediate #0): the negation */
+        c->r[rd] = add_c(c, ~b, 0u, 1u, setf);
+        return OK;
+    case 10u: /* CMP */
+        (void)add_c(c, a, ~b, 1u, true);
+        return OK;
+    case 11u: /* CMN */
+        (void)add_c(c, a, b, 0u, true);
+        return OK;
+    case 12u: /* ORR */
+        res = a | b;
+        break;
+    case 13u: /* MUL: N and Z only, C and V untouched */
+        c->r[rd] = a * b;
+        if (setf) {
+            set_nz(c, c->r[rd]);
         }
-        if (rd != ARMV7M_PC) {
-            c->r[rd] = res;
-        }
-        return rd != ARMV7M_PC;
-    case 10u: { /* ADC */
-        const uint32_t ci = (c->xpsr & ARMV7M_C) ? 1u : 0u;
-
-        res = a + b + ci;
-        if (setflags) {
-            set_add_flags(c, a, b, ci, res);
-        }
-        c->r[rd] = res;
-        return true;
-    }
-    case 11u: { /* SBC */
-        const uint32_t ci = (c->xpsr & ARMV7M_C) ? 1u : 0u;
-        const uint32_t nb = ~b;
-
-        res = a + nb + ci;
-        if (setflags) {
-            set_add_flags(c, a, nb, ci, res);
-        }
-        c->r[rd] = res;
-        return true;
-    }
-    case 13u: { /* SUB */
-        const uint32_t nb = ~b;
-
-        res = a + nb + 1u;
-        if (setflags) {
-            set_add_flags(c, a, nb, 1u, res);
-        }
-        if (rd != ARMV7M_PC) {
-            c->r[rd] = res;
-        }
-        return rd != ARMV7M_PC;
-    }
-    case 14u: { /* RSB */
-        const uint32_t na = ~a;
-
-        res = na + b + 1u;
-        if (setflags) {
-            set_add_flags(c, na, b, 1u, res);
-        }
-        c->r[rd] = res;
-        return true;
-    }
-    default:
-        return false;
-    }
-
-    /* The logical group falls through to here: N and Z only. */
-    if (setflags) {
-        set_nz(c, res);
+        return OK;
+    case 14u: /* BIC */
+        res = a & ~b;
+        break;
+    default: /* MVN */
+        res = ~b;
+        break;
     }
     c->r[rd] = res;
-    return true;
+    if (setf) {
+        set_nzc(c, res, cy);
+    }
+    return OK;
 }
 
-/*
- * One 32-bit instruction, as the pair of halfwords the architecture
- * describes it by rather than as a single word -- which is how the
- * manual is organised and how the field positions stay readable.
- */
-static bool exec32(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
+/* Special data instructions and branch and exchange: 010001. */
+static X t16_special(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
 {
-    const uint32_t pc4 = pc + 4u;
-    const uint32_t op1 = (uint32_t)((w0 >> 11) & 3u);
+    const uint32_t op = (insn >> 6) & 15u;
+    const uint32_t rm = (insn >> 3) & 15u;
+    const uint32_t rd = (insn & 7u) | ((insn >> 4) & 8u);
 
-    /* ---- branches and the data-processing immediates: 11110 ---- */
-    if (op1 == 2u) {
-        /*
-         * **The misc-control instructions live inside the branch
-         * encoding space**, and have to be taken out of it first.
-         *
-         * DSB, DMB, ISB, MSR and MRS all have w1's bit 15 set, which is
-         * what the branch test below keys on -- so `DSB SY`
-         * (f3bf 8f4f) entered the branch decoder, came out as a
-         * conditional branch with cond 0b1110, and was reported as an
-         * unimplemented encoding. The architecture distinguishes them by
-         * exactly that: cond 0b111x in a B(T3) is not a condition, it
-         * selects this group.
-         *
-         * Checking them before the branch is the fix. Putting the
-         * barriers *after* it, which is where they were, meant the
-         * handler existed and could not be reached -- the same
-         * unreachable-handler shape as the 0xE8xx range sitting behind
-         * the wrong op1.
-         */
-        if ((w0 & 0xFFF0u) == 0xF3B0u) {
-            return true; /* DSB, DMB, ISB: no reordering to prevent */
+    switch (op >> 2) {
+    case 0u: { /* ADD (register), any registers, no flags */
+        const uint32_t v = reg_pc(c, rd, pc) + reg_pc(c, rm, pc);
+
+        if (rd == ARMV7M_PC) {
+            branch_to(c, v);
+        } else {
+            c->r[rd] = v;
         }
-        if ((w0 & 0xFFF0u) == 0xF3E0u && (w1 & 0xF000u) == 0x8000u) {
-            const uint32_t rd = (uint32_t)((w1 >> 8) & 15u);
-            const uint32_t sysm = (uint32_t)(w1 & 0xFFu);
-
-            if (sysm == 16u) { /* PRIMASK */
-                c->r[rd] = c->primask;
-                return true;
-            }
-            if (sysm <= 3u) { /* xPSR and its views */
-                c->r[rd] = c->xpsr;
-                return true;
-            }
-            return false;
-        }
-        if ((w0 & 0xFFF0u) == 0xF380u && (w1 & 0xFF00u) == 0x8800u) {
-            const uint32_t rn = (uint32_t)(w0 & 15u);
-            const uint32_t sysm = (uint32_t)(w1 & 0xFFu);
-
-            if (sysm == 16u) { /* PRIMASK */
-                c->primask = c->r[rn] & 1u;
-                return true;
-            }
-            return false;
-        }
-
-        /* B/BL/BLX: w1's bit 15 set */
-        if ((w1 & 0x8000u) != 0u) {
-            const uint32_t s = (uint32_t)((w0 >> 10) & 1u);
-            const uint32_t typ = (uint32_t)((w1 >> 12) & 5u);
-
-            if (typ == 5u || typ == 4u) { /* BL (T1) and BLX */
-                const uint32_t j1 = (uint32_t)((w1 >> 13) & 1u);
-                const uint32_t j2 = (uint32_t)((w1 >> 11) & 1u);
-                const uint32_t i1 = 1u - (j1 ^ s);
-                const uint32_t i2 = 1u - (j2 ^ s);
-                int32_t off = (int32_t)((s << 24) | (i1 << 23) | (i2 << 22) |
-                                        ((uint32_t)(w0 & 0x3FFu) << 12) |
-                                        ((uint32_t)(w1 & 0x7FFu) << 1));
-
-                if (s != 0u) {
-                    off |= (int32_t)0xFE000000;
-                }
-                c->r[ARMV7M_LR] = pc4 | 1u;
-                c->r[ARMV7M_PC] = (uint32_t)((int32_t)pc4 + off);
-                return true;
-            }
-            if (typ == 1u) { /* B (T4), unconditional */
-                const uint32_t j1 = (uint32_t)((w1 >> 13) & 1u);
-                const uint32_t j2 = (uint32_t)((w1 >> 11) & 1u);
-                const uint32_t i1 = 1u - (j1 ^ s);
-                const uint32_t i2 = 1u - (j2 ^ s);
-                int32_t off = (int32_t)((s << 24) | (i1 << 23) | (i2 << 22) |
-                                        ((uint32_t)(w0 & 0x3FFu) << 12) |
-                                        ((uint32_t)(w1 & 0x7FFu) << 1));
-
-                if (s != 0u) {
-                    off |= (int32_t)0xFE000000;
-                }
-                c->r[ARMV7M_PC] = (uint32_t)((int32_t)pc4 + off);
-                return true;
-            }
-            if (typ == 0u) { /* B (T3), conditional */
-                const uint32_t cond = (uint32_t)((w0 >> 6) & 15u);
-                const uint32_t j1 = (uint32_t)((w1 >> 13) & 1u);
-                const uint32_t j2 = (uint32_t)((w1 >> 11) & 1u);
-                int32_t off = (int32_t)((s << 20) | (j2 << 19) | (j1 << 18) |
-                                        ((uint32_t)(w0 & 0x3Fu) << 12) |
-                                        ((uint32_t)(w1 & 0x7FFu) << 1));
-
-                if (cond >= 14u) {
-                    return false; /* not conditions */
-                }
-                if (s != 0u) {
-                    off |= (int32_t)0xFFE00000;
-                }
-                if (cond_holds(c, cond)) {
-                    c->r[ARMV7M_PC] = (uint32_t)((int32_t)pc4 + off);
-                }
-                return true;
-            }
-            return false;
-        }
-
-        /*
-         * MOVW and MOVT: the only way to build an arbitrary 32-bit
-         * constant without a literal pool.
-         *
-         * Bits 9:4 of w0 select them -- 0b100100 and 0b101100. The first
-         * version masked with 0x7B, which does not contain bit 2, so the
-         * comparison against 0x24 could never be true and **neither
-         * instruction decoded at all**. The compiler said so
-         * (-Wtautological-compare); nothing else would have, because the
-         * fall-through is a reported fault and the first C guest happened
-         * to use the modified-immediate form instead.
-         */
-        if (((w0 >> 4) & 0x3Fu) == 0x24u || ((w0 >> 4) & 0x3Fu) == 0x2Cu) {
-            const uint32_t rd = (uint32_t)((w1 >> 8) & 15u);
-            const uint32_t imm16 = (uint32_t)((w0 & 0xFu) << 12) |
-                                   (uint32_t)(((w0 >> 10) & 1u) << 11) |
-                                   (uint32_t)(((w1 >> 12) & 7u) << 8) |
-                                   (uint32_t)(w1 & 0xFFu);
-
-            if (((w0 >> 7) & 1u) != 0u) { /* MOVT: the top half only */
-                c->r[rd] = (c->r[rd] & 0xFFFFu) | (imm16 << 16);
-            } else {
-                c->r[rd] = imm16;
-            }
-            return true;
-        }
-
-        /*
-         * The bitfield group: UBFX, SBFX, BFI and BFC.
-         *
-         * **A compiler reaches for these on its own**, which is how this
-         * one arrived: `SYST_CSR & (1u << 16)` -- testing one bit of a
-         * device register -- compiled to `ubfx r1, r1, #16, #1` rather
-         * than to the AND a reader would expect.
-         *
-         * lsb is imm3:imm2 and the width field is width-1, so a width of
-         * 32 is encoded as 31 and a zero-width field cannot be written.
-         * BFC is BFI with Rn == pc, in the same way MOV is ORR with
-         * Rn == pc elsewhere in this encoding space.
-         */
-        if ((w1 & 0x8000u) == 0u &&
-            (((w0 & 0xFFF0u) == 0xF3C0u) || ((w0 & 0xFFF0u) == 0xF340u) ||
-             ((w0 & 0xFFF0u) == 0xF360u))) {
-            const uint32_t rn = (uint32_t)(w0 & 15u);
-            const uint32_t rd = (uint32_t)((w1 >> 8) & 15u);
-            const uint32_t lsb =
-                (uint32_t)(((w1 >> 12) & 7u) << 2) | (uint32_t)((w1 >> 6) & 3u);
-            const uint32_t top = (uint32_t)(w1 & 31u);
-            /*
-             * Three exact patterns rather than a field: UBFX is 0xF3C0,
-             * SBFX 0xF340 and BFI/BFC 0xF360, and they are not adjacent
-             * values of one selector. The first version masked with
-             * 0xFF90 and compared against 0xF300, which `0xF3C1 &
-             * 0xFF90 == 0xF380` cannot equal -- so none of the three
-             * decoded. That is the second mask of this shape in this
-             * frontend; the first was MOVW/MOVT, and the compiler caught
-             * that one because the comparison was provably constant.
-             * This one was only caught because a guest needed it.
-             */
-            const uint32_t kind = ((w0 & 0xFFF0u) == 0xF3C0u)   ? 2u
-                                  : ((w0 & 0xFFF0u) == 0xF340u) ? 0u
-                                                                : 1u;
-
-            if (kind == 2u) { /* UBFX */
-                const uint32_t width = top + 1u;
-
-                if (lsb + width > 32u) {
-                    return false;
-                }
-                c->r[rd] = (width == 32u)
-                               ? c->r[rn]
-                               : ((c->r[rn] >> lsb) & ((1u << width) - 1u));
-                return true;
-            }
-            if (kind == 0u) { /* SBFX */
-                const uint32_t width = top + 1u;
-
-                if (lsb + width > 32u) {
-                    return false;
-                }
-                {
-                    const uint32_t sh = 32u - width;
-
-                    c->r[rd] =
-                        (uint32_t)(((int32_t)(c->r[rn] << (sh - lsb))) >> sh);
-                }
-                return true;
-            }
-            if (kind == 1u) { /* BFI, and BFC when rn is pc */
-                /* `top` is the *msb* here, not a width. */
-                if (top < lsb) {
-                    return false;
-                }
-                {
-                    const uint32_t width = top - lsb + 1u;
-                    const uint32_t mask = (width == 32u)
-                                              ? 0xFFFFFFFFu
-                                              : (((1u << width) - 1u) << lsb);
-                    const uint32_t ins =
-                        (rn == ARMV7M_PC) ? 0u : ((c->r[rn] << lsb) & mask);
-
-                    c->r[rd] = (c->r[rd] & ~mask) | ins;
-                }
-                return true;
-            }
-            return false;
-        }
-
-        /*
-         * Data processing (modified immediate).
-         *
-         * **Bit 9 alone, not bits 10:9.** Bit 10 is the immediate's `i`
-         * field, so testing both rejected every such instruction with
-         * the high bit of its immediate set -- half of them. The first C
-         * guest's `mov.w r3, #0x10000000` has i == 0 and so worked,
-         * which is exactly the kind of accident that leaves a decode bug
-         * in place.
-         */
-        if (((w0 >> 9) & 1u) == 0u) {
-            const uint32_t op = (uint32_t)((w0 >> 5) & 15u);
-            const uint32_t rn = (uint32_t)(w0 & 15u);
-            const bool setflags = ((w0 >> 4) & 1u) != 0u;
-            uint32_t rd = (uint32_t)((w1 >> 8) & 15u);
-            const uint32_t imm12 = (uint32_t)(((w0 >> 10) & 1u) << 11) |
-                                   (uint32_t)(((w1 >> 12) & 7u) << 8) |
-                                   (uint32_t)(w1 & 0xFFu);
-            const uint32_t b = expand_imm12(imm12);
-
-            /*
-             * **S with rd == pc is a different instruction**, not a
-             * write to the pc: TST for AND, TEQ for EOR, CMN for ADD
-             * and CMP for SUB. Treating them as the arithmetic form
-             * would write a result into r15 and branch somewhere
-             * computed, which is the worst available failure.
-             */
-            if (setflags && rd == ARMV7M_PC) {
-                switch (op) {
-                case 0u:
-                    set_nz(c, c->r[rn] & b);
-                    return true;
-                case 4u:
-                    set_nz(c, c->r[rn] ^ b);
-                    return true;
-                case 8u: {
-                    const uint32_t res = c->r[rn] + b;
-
-                    set_add_flags(c, c->r[rn], b, 0u, res);
-                    return true;
-                }
-                case 13u: {
-                    const uint32_t nb = ~b;
-                    const uint32_t res = c->r[rn] + nb + 1u;
-
-                    set_add_flags(c, c->r[rn], nb, 1u, res);
-                    return true;
-                }
-                default:
-                    return false;
-                }
-            }
-            return dp_apply(c, op, rd, rn, b, setflags);
-        }
-        return false;
+        return OK;
     }
+    case 1u: /* CMP (register) */
+        (void)add_c(c, reg_pc(c, rd, pc), ~reg_pc(c, rm, pc), 1u, true);
+        return OK;
+    case 2u: { /* MOV (register), no flags */
+        const uint32_t v = reg_pc(c, rm, pc);
+
+        if (rd == ARMV7M_PC) {
+            branch_to(c, v);
+        } else {
+            c->r[rd] = v;
+        }
+        return OK;
+    }
+    default: {
+        /*
+         * BX and BLX. The link register takes the address of the *next*
+         * instruction with the Thumb bit set, which is what lets the
+         * matching BX return to it.
+         */
+        const uint32_t target = reg_pc(c, rm, pc);
+
+        if ((insn & 7u) != 0u) {
+            return ARMV7M_X_UNDEF;
+        }
+        if ((op & 2u) != 0u) { /* BLX */
+            c->r[ARMV7M_LR] = (pc + 2u) | 1u;
+        }
+        bx_write_pc(c, target);
+        return OK;
+    }
+    }
+}
+
+/* Load/store single: 0101, 011x, 100x. */
+static X t16_ldst(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
+{
+    const uint32_t opa = insn >> 12;
+    const uint32_t rt = insn & 7u;
+    const uint32_t rn = (insn >> 3) & 7u;
+    uint32_t addr;
+    uint32_t size;
+    bool load;
+    bool sext = false;
+
+    (void)pc;
+    if (opa == 5u) { /* register offset */
+        static const uint8_t k_size[8] = {4u, 2u, 1u, 1u, 4u, 2u, 1u, 2u};
+        const uint32_t opb = (insn >> 9) & 7u;
+
+        addr = c->r[rn] + c->r[(insn >> 6) & 7u];
+        size = k_size[opb];
+        load = opb >= 3u;
+        sext = (opb == 3u) || (opb == 7u);
+    } else if (opa == 6u || opa == 7u || opa == 8u) {
+        const uint32_t imm5 = (insn >> 6) & 31u;
+
+        size = (opa == 6u) ? 4u : ((opa == 7u) ? 1u : 2u);
+        load = ((insn >> 11) & 1u) != 0u;
+        addr = c->r[rn] + imm5 * size;
+    } else { /* 1001: sp-relative */
+        size = 4u;
+        load = ((insn >> 11) & 1u) != 0u;
+        addr = c->r[ARMV7M_SP] + (insn & 0xFFu) * 4u;
+        if (load) {
+            uint32_t v = 0u;
+            const X x = rd_u(c, addr, 4u, false, &v);
+
+            if (x == OK) {
+                c->r[(insn >> 8) & 7u] = v;
+            }
+            return x;
+        }
+        return wr_u(c, addr, 4u, false, c->r[(insn >> 8) & 7u]);
+    }
+    if (load) {
+        uint32_t v = 0u;
+        const X x = rd_u(c, addr, size, false, &v);
+
+        if (x == OK) {
+            c->r[rt] = extend(v, size, sext);
+        }
+        return x;
+    }
+    return wr_u(c, addr, size, false, c->r[rt]);
+}
+
+/* Miscellaneous 16-bit instructions: 1011. */
+static X t16_misc(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
+{
+    const uint32_t op = (insn >> 5) & 0x7Fu;
+
+    if (op == 0x33u) { /* CPS: 1011 0110 011 im 0 0 I F */
+        if (armv7m_privileged(c)) {
+            const bool disable = ((insn >> 4) & 1u) != 0u;
+
+            if ((insn & 2u) != 0u) {
+                c->primask = disable ? 1u : 0u;
+            }
+            if ((insn & 1u) != 0u) {
+                if (!disable) {
+                    c->faultmask = 0u;
+                } else if (armv7m_exec_priority(c) > -1) {
+                    c->faultmask = 1u;
+                }
+            }
+        }
+        return OK;
+    }
+    /*
+     * ADD/SUB sp, #imm7*4: opcode 0000xxx, and bit 7 of the instruction
+     * chooses subtract. **Three bits of prefix, not five**: 00000xx is
+     * ADD and 00001xx is SUB, and testing `op >> 2` took ADD alone -- so
+     * every function prologue's `sub sp, #n` was an undefined
+     * instruction. The fourth field-width defect in this decoder, and the
+     * first one the board harness's own start-up found.
+     */
+    if ((op >> 3) == 0u) {
+        const uint32_t imm = (insn & 0x7Fu) * 4u;
+
+        if ((insn & 0x80u) != 0u) {
+            c->r[ARMV7M_SP] -= imm;
+        } else {
+            c->r[ARMV7M_SP] += imm;
+        }
+        return OK;
+    }
+    /* CBZ/CBNZ: 1011 o0i1 -- bit 8 set, bit 10 clear. */
+    if ((insn & 0x0500u) == 0x0100u) {
+        const uint32_t rn = insn & 7u;
+        const bool nonzero = ((insn >> 11) & 1u) != 0u;
+        const uint32_t imm = (((insn >> 3) & 31u) << 1) | (((insn >> 9) & 1u) << 6);
+
+        if ((c->r[rn] != 0u) == nonzero) {
+            c->r[ARMV7M_PC] = pc + 4u + imm;
+        }
+        return OK;
+    }
+    if ((insn & 0xFF00u) == 0xB200u) { /* SXTH, SXTB, UXTH, UXTB */
+        const uint32_t v = c->r[(insn >> 3) & 7u];
+        uint32_t res;
+
+        switch ((insn >> 6) & 3u) {
+        case 0u:
+            res = (uint32_t)(int32_t)(int16_t)v;
+            break;
+        case 1u:
+            res = (uint32_t)(int32_t)(int8_t)v;
+            break;
+        case 2u:
+            res = v & 0xFFFFu;
+            break;
+        default:
+            res = v & 0xFFu;
+            break;
+        }
+        c->r[insn & 7u] = res;
+        return OK;
+    }
+    if ((insn & 0xFF00u) == 0xBA00u) { /* REV, REV16, REVSH */
+        const uint32_t v = c->r[(insn >> 3) & 7u];
+        uint32_t res;
+
+        switch ((insn >> 6) & 3u) {
+        case 0u:
+            res = __builtin_bswap32(v);
+            break;
+        case 1u:
+            res = ((v & 0x00FF00FFu) << 8) | ((v >> 8) & 0x00FF00FFu);
+            break;
+        case 3u:
+            res = (uint32_t)(int32_t)(int16_t)(uint16_t)(((v & 0xFFu) << 8) |
+                                                          ((v >> 8) & 0xFFu));
+            break;
+        default:
+            return ARMV7M_X_UNDEF;
+        }
+        c->r[insn & 7u] = res;
+        return OK;
+    }
+    if ((insn & 0x0600u) == 0x0400u) { /* PUSH 1011 010x, POP 1011 110x */
+        const bool pop = ((insn >> 11) & 1u) != 0u;
+        uint32_t list = insn & 0xFFu;
+
+        if ((insn & 0x0100u) != 0u) {
+            list |= pop ? (1u << 15) : (1u << 14);
+        }
+        if (list == 0u) {
+            return ARMV7M_X_UNDEF; /* UNPREDICTABLE: an empty list */
+        }
+        return ldm_stm(c, ARMV7M_SP, list, pop, !pop, true);
+    }
+    if ((insn & 0xFF00u) == 0xBE00u) { /* BKPT */
+        return ARMV7M_X_BKPT;
+    }
+    if ((insn & 0xFF00u) == 0xBF00u) { /* IT, and the hints */
+        const uint32_t mask = insn & 0x0Fu;
+        const uint32_t firstcond = (insn >> 4) & 0x0Fu;
+
+        /*
+         * IT is told from the hints by a non-zero mask -- 0xBF00 with
+         * both fields zero is NOP. ITSTATE is firstcond:mask, and the
+         * mask bits become the condition's low bit as the field shifts,
+         * so ITT and ITE need no decoding of their own.
+         *
+         * firstcond 0b1111 does not exist, and AL with an else branch
+         * would need its inverse, which also does not: both are
+         * UNPREDICTABLE and are reported rather than given an answer.
+         */
+        if (mask != 0u) {
+            if (firstcond == 0x0Fu ||
+                (firstcond == 0x0Eu && (mask & 7u) != 0u &&
+                 (mask & 0x0Eu) != 0x0Au)) {
+                return ARMV7M_X_UNDEF;
+            }
+            if (armv7m_in_it(c->xpsr)) {
+                return ARMV7M_X_UNDEF; /* IT inside IT */
+            }
+            c->xpsr = armv7m_it_put(c->xpsr, (firstcond << 4) | mask);
+            return OK;
+        }
+        /* NOP, YIELD, WFE, WFI, SEV, and the unallocated hints, which
+         * the architecture says execute as NOPs. */
+        return OK;
+    }
+    return ARMV7M_X_UNDEF;
+}
+
+static X exec16(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
+{
+    /*
+     * **Inside an IT block the 16-bit data-processing forms do not set
+     * flags** -- `setflags = !InITBlock()` on each of those encodings.
+     * A block is `cmp; it ne; addne; subne`, and if the ADD overwrote
+     * the flags the SUB would be conditioned on the ADD instead of on the
+     * compare. TST, CMP and CMN set them regardless.
+     */
+    const bool setf = !armv7m_in_it(c->xpsr);
+    const uint32_t op6 = insn >> 10;
+
+    if ((op6 >> 4) == 0u) {
+        return t16_shift_add(c, insn, setf);
+    }
+    if (op6 == 0x10u) {
+        return t16_dp(c, insn, setf);
+    }
+    if (op6 == 0x11u) {
+        return t16_special(c, insn, pc);
+    }
+    if ((op6 >> 1) == 0x09u) { /* LDR (literal) */
+        uint32_t v = 0u;
+        const X x = rd_u(c, ((pc + 4u) & ~3u) + (insn & 0xFFu) * 4u, 4u, false,
+                         &v);
+
+        if (x == OK) {
+            c->r[(insn >> 8) & 7u] = v;
+        }
+        return x;
+    }
+    if ((op6 >> 2) == 0x05u || (op6 >> 3) == 0x03u || (op6 >> 3) == 0x04u) {
+        return t16_ldst(c, insn, pc);
+    }
+    if ((op6 >> 1) == 0x14u) { /* ADR */
+        c->r[(insn >> 8) & 7u] = ((pc + 4u) & ~3u) + (insn & 0xFFu) * 4u;
+        return OK;
+    }
+    if ((op6 >> 1) == 0x15u) { /* ADD rd, sp, #imm8*4 */
+        c->r[(insn >> 8) & 7u] = c->r[ARMV7M_SP] + (insn & 0xFFu) * 4u;
+        return OK;
+    }
+    if ((op6 >> 2) == 0x0Bu) {
+        return t16_misc(c, insn, pc);
+    }
+    if ((op6 >> 1) == 0x18u || (op6 >> 1) == 0x19u) { /* STM / LDM */
+        const uint32_t rn = (insn >> 8) & 7u;
+        const uint32_t list = insn & 0xFFu;
+        const bool load = ((insn >> 11) & 1u) != 0u;
+
+        if (list == 0u) {
+            return ARMV7M_X_UNDEF;
+        }
+        /* LDM writes back only when the base is not in the list. */
+        return ldm_stm(c, rn, list, load, false,
+                       !load || (list & (1u << rn)) == 0u);
+    }
+    if ((op6 >> 2) == 0x0Du) { /* B<cond>, UDF, SVC */
+        const uint32_t cond = (insn >> 8) & 15u;
+
+        if (cond == 15u) {
+            return ARMV7M_X_SVC;
+        }
+        if (cond == 14u) {
+            return ARMV7M_X_UNDEF;
+        }
+        if (armv7m_in_it(c->xpsr)) {
+            return ARMV7M_X_UNDEF; /* a conditional branch inside IT */
+        }
+        if (cond_holds(c, cond)) {
+            c->r[ARMV7M_PC] =
+                (uint32_t)((int32_t)(pc + 4u) + (int32_t)(int8_t)(insn & 0xFFu) * 2);
+        }
+        return OK;
+    }
+    if ((op6 >> 1) == 0x1Cu) { /* B */
+        int32_t off = (int32_t)((uint32_t)(insn & 0x7FFu) << 1);
+
+        if ((off & 0x800) != 0) {
+            off -= 0x1000;
+        }
+        c->r[ARMV7M_PC] = (uint32_t)((int32_t)(pc + 4u) + off);
+        return OK;
+    }
+    return ARMV7M_X_UNDEF;
+}
+
+/* ------------------------------------------------------------------ */
+/* 32-bit: data processing                                             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The sixteen data-processing operations, shared by the modified-immediate
+ * and shifted-register forms -- they differ only in where the second
+ * operand and its carry come from.
+ *
+ * **S with rd == pc is a different instruction**, not a write to the pc:
+ * TST for AND, TEQ for EOR, CMN for ADD and CMP for SUB. And rn == pc
+ * turns ORR into MOV and ORN into MVN. Both are handled here so neither
+ * form can forget them.
+ */
+static X dp_op(armv7m_cpu_t *c, uint32_t op, uint32_t rd, uint32_t rn,
+               uint32_t b, uint32_t cy, bool s)
+{
+    const uint32_t a = c->r[rn];
+    uint32_t res;
+
+    if (s && rd == ARMV7M_PC) {
+        switch (op) {
+        case 0u:
+            set_nzc(c, a & b, cy); /* TST */
+            return OK;
+        case 4u:
+            set_nzc(c, a ^ b, cy); /* TEQ */
+            return OK;
+        case 8u:
+            (void)add_c(c, a, b, 0u, true); /* CMN */
+            return OK;
+        case 13u:
+            (void)add_c(c, a, ~b, 1u, true); /* CMP */
+            return OK;
+        default:
+            return ARMV7M_X_UNDEF;
+        }
+    }
+    switch (op) {
+    case 0u:
+        res = a & b;
+        break;
+    case 1u:
+        res = a & ~b;
+        break;
+    case 2u:
+        res = (rn == ARMV7M_PC) ? b : (a | b);
+        break;
+    case 3u:
+        res = (rn == ARMV7M_PC) ? ~b : (a | ~b);
+        break;
+    case 4u:
+        res = a ^ b;
+        break;
+    case 8u:
+        c->r[rd] = add_c(c, a, b, 0u, s);
+        return OK;
+    case 10u:
+        c->r[rd] = add_c(c, a, b, carry(c), s);
+        return OK;
+    case 11u:
+        c->r[rd] = add_c(c, a, ~b, carry(c), s);
+        return OK;
+    case 13u:
+        c->r[rd] = add_c(c, a, ~b, 1u, s);
+        return OK;
+    case 14u:
+        c->r[rd] = add_c(c, ~a, b, 1u, s);
+        return OK;
+    default:
+        return ARMV7M_X_UNDEF;
+    }
+    c->r[rd] = res;
+    if (s) {
+        set_nzc(c, res, cy);
+    }
+    return OK;
+}
+
+/* Data processing (modified immediate): 11110 x0 xxxxx | 0 */
+static X t32_dp_imm(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
+{
+    const uint32_t imm12 = ((uint32_t)((w0 >> 10) & 1u) << 11) |
+                           ((uint32_t)((w1 >> 12) & 7u) << 8) | (w1 & 0xFFu);
+    uint32_t cy;
+    const uint32_t b = armv7m_expand_imm_c(imm12, carry(c), &cy);
+
+    return dp_op(c, (w0 >> 5) & 15u, (w1 >> 8) & 15u, w0 & 15u, b, cy,
+                 ((w0 >> 4) & 1u) != 0u);
+}
+
+/* Data processing (plain binary immediate): 11110 x1 xxxxx | 0 */
+static X t32_dp_plain(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
+{
+    const uint32_t op = (w0 >> 4) & 31u;
+    const uint32_t rn = w0 & 15u;
+    const uint32_t rd = (w1 >> 8) & 15u;
+    const uint32_t imm3 = (w1 >> 12) & 7u;
+    const uint32_t imm2 = (w1 >> 6) & 3u;
+    const uint32_t i = (w0 >> 10) & 1u;
+    const uint32_t imm12 = (i << 11) | (imm3 << 8) | (w1 & 0xFFu);
+    const uint32_t imm16 = ((uint32_t)(w0 & 15u) << 12) | imm12;
+    const uint32_t lsb = (imm3 << 2) | imm2;
+    const uint32_t field = w1 & 31u;
+
+    switch (op) {
+    case 0x00u: /* ADDW, and ADR when rn is pc */
+        c->r[rd] = (rn == ARMV7M_PC) ? ((pc + 4u) & ~3u) + imm12 : c->r[rn] + imm12;
+        return OK;
+    case 0x04u: /* MOVW */
+        c->r[rd] = imm16;
+        return OK;
+    case 0x0Au: /* SUBW, and ADR (subtract) */
+        c->r[rd] = (rn == ARMV7M_PC) ? ((pc + 4u) & ~3u) - imm12 : c->r[rn] - imm12;
+        return OK;
+    case 0x0Cu: /* MOVT */
+        c->r[rd] = (c->r[rd] & 0xFFFFu) | (imm16 << 16);
+        return OK;
+    default:
+        break;
+    }
+    if (i != 0u) {
+        return ARMV7M_X_UNDEF;
+    }
+    switch (op) {
+    case 0x10u:   /* SSAT, LSL */
+    case 0x12u: { /* SSAT, ASR -- or SSAT16 when the shift is zero */
+        const bool sat16 = (op == 0x12u) && lsb == 0u;
+        bool sat = false;
+
+        if ((w1 & 0x0020u) != 0u) {
+            return ARMV7M_X_UNDEF;
+        }
+        if (sat16) {
+            const uint32_t n = field + 1u;
+            const int64_t lo = ssat((int16_t)(c->r[rn] & 0xFFFFu), n, &sat);
+            const int64_t hi = ssat((int16_t)(c->r[rn] >> 16), n, &sat);
+
+            if ((w1 & 0x0030u) != 0u) {
+                return ARMV7M_X_UNDEF;
+            }
+            c->r[rd] = ((uint32_t)lo & 0xFFFFu) | ((uint32_t)hi << 16);
+        } else {
+            uint32_t cy;
+            const uint32_t v = armv7m_shift_c(c->r[rn], (op == 0x12u) ? ARMV7M_SH_ASR : ARMV7M_SH_LSL,
+                                       lsb, 0u, &cy);
+
+            c->r[rd] = (uint32_t)ssat((int32_t)v, field + 1u, &sat);
+        }
+        if (sat) {
+            set_q(c);
+        }
+        return OK;
+    }
+    case 0x18u:   /* USAT, LSL */
+    case 0x1Au: { /* USAT, ASR -- or USAT16 */
+        const bool sat16 = (op == 0x1Au) && lsb == 0u;
+        bool sat = false;
+
+        if ((w1 & 0x0020u) != 0u || (sat16 && (w1 & 0x0010u) != 0u)) {
+            return ARMV7M_X_UNDEF;
+        }
+        if (sat16) {
+            const int64_t lo = usat((int16_t)(c->r[rn] & 0xFFFFu), field & 15u, &sat);
+            const int64_t hi = usat((int16_t)(c->r[rn] >> 16), field & 15u, &sat);
+
+            c->r[rd] = ((uint32_t)lo & 0xFFFFu) | ((uint32_t)hi << 16);
+        } else {
+            uint32_t cy;
+            const uint32_t v = armv7m_shift_c(c->r[rn], (op == 0x1Au) ? ARMV7M_SH_ASR : ARMV7M_SH_LSL,
+                                       lsb, 0u, &cy);
+
+            c->r[rd] = (uint32_t)usat((int32_t)v, field, &sat);
+        }
+        if (sat) {
+            set_q(c);
+        }
+        return OK;
+    }
+    case 0x14u:   /* SBFX */
+    case 0x1Cu: { /* UBFX */
+        const uint32_t width = field + 1u;
+
+        if (lsb + width > 32u || (w1 & 0x0020u) != 0u) {
+            return ARMV7M_X_UNDEF;
+        }
+        if (op == 0x1Cu) {
+            c->r[rd] = (width == 32u) ? c->r[rn]
+                                      : ((c->r[rn] >> lsb) & ((1u << width) - 1u));
+        } else {
+            const uint32_t sh = 32u - width;
+
+            c->r[rd] = (uint32_t)((int32_t)(c->r[rn] << (sh - lsb)) >> sh);
+        }
+        return OK;
+    }
+    case 0x16u: { /* BFI, and BFC when rn is pc; the field is the msb */
+        if (field < lsb || (w1 & 0x0020u) != 0u) {
+            return ARMV7M_X_UNDEF;
+        }
+        const uint32_t width = field - lsb + 1u;
+        const uint32_t mask =
+            (width == 32u) ? 0xFFFFFFFFu : (((1u << width) - 1u) << lsb);
+        const uint32_t ins = (rn == ARMV7M_PC) ? 0u : ((c->r[rn] << lsb) & mask);
+
+        c->r[rd] = (c->r[rd] & ~mask) | ins;
+        return OK;
+    }
+    default:
+        return ARMV7M_X_UNDEF;
+    }
+}
+
+/* Data processing (shifted register): 1110101 */
+static X t32_dp_reg(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
+{
+    const uint32_t op = (w0 >> 5) & 15u;
+    const uint32_t rn = w0 & 15u;
+    const uint32_t rd = (w1 >> 8) & 15u;
+    const uint32_t rm = w1 & 15u;
+    const uint32_t imm5 = (((uint32_t)(w1 >> 12) & 7u) << 2) | ((w1 >> 6) & 3u);
+    const uint32_t type = (w1 >> 4) & 3u;
+    uint32_t t;
+    uint32_t n;
+    uint32_t cy;
 
     /*
-     * Everything else, dispatched on exact w0 patterns rather than on
-     * op1.
-     *
-     * **The first version gated this on `op1 == 3` and three of the
-     * handlers inside it were unreachable.** A 32-bit Thumb-2
-     * instruction has bits 15:11 of 0b11101, 0b11110 or 0b11111 -- so
-     * `(w0 >> 11) & 3` is 1, 2 or 3, and the whole 0xE8xx-0xEFxx range
-     * (load/store multiple, and data processing on a shifted register)
-     * is op1 == 1. `add.w r5, r5, r5` reported as an unimplemented
-     * encoding while its handler sat a few lines below, in a block the
-     * decoder could not enter.
-     *
-     * The patterns below are exact and mutually exclusive, so the gate
-     * bought nothing even when it was right.
+     * **Should-be bits are decoded strictly**, here and in every table
+     * below: a (0) that is one, or a (1) that is zero, is UNDEFINSTR on a
+     * Cortex-M7, where the manual says only UNPREDICTABLE. Found by
+     * running encodings rather than instructions on the board; see
+     * armv7m_decode.c, which carries the same checks and is held to this
+     * file by a test over the whole encoding space.
      */
+    if ((w1 & 0x8000u) != 0u) {
+        return ARMV7M_X_UNDEF;
+    }
+    if (op == 6u) { /* PKHBT / PKHTB */
+        const bool tb = ((w1 >> 5) & 1u) != 0u;
+
+        if (((w0 >> 4) & 1u) != 0u || ((w1 >> 4) & 1u) != 0u) {
+            return ARMV7M_X_UNDEF; /* no S form, and T is zero */
+        }
+        const uint32_t m = armv7m_shift_c(c->r[rm], tb ? ARMV7M_SH_ASR : ARMV7M_SH_LSL,
+                                   (tb && imm5 == 0u) ? 32u : imm5, 0u, &cy);
+
+        c->r[rd] = tb ? ((c->r[rn] & 0xFFFF0000u) | (m & 0xFFFFu))
+                      : ((m & 0xFFFF0000u) | (c->r[rn] & 0xFFFFu));
+        return OK;
+    }
+    armv7m_decode_imm_shift(type, imm5, &t, &n);
     {
-        /* Data processing (shifted register): 1110101x */
-        if ((w0 & 0xFE00u) == 0xEA00u) {
-            const uint32_t op = (uint32_t)((w0 >> 5) & 15u);
-            const uint32_t rn = (uint32_t)(w0 & 15u);
-            const bool setflags = ((w0 >> 4) & 1u) != 0u;
-            const uint32_t rd = (uint32_t)((w1 >> 8) & 15u);
-            const uint32_t rm = (uint32_t)(w1 & 15u);
-            const uint32_t typ = (uint32_t)((w1 >> 4) & 3u);
-            const uint32_t amount =
-                (uint32_t)(((w1 >> 12) & 7u) << 2) | (uint32_t)((w1 >> 6) & 3u);
-            const uint32_t b = do_shift(typ, amount, c->r[rm]);
+        const uint32_t b = armv7m_shift_c(c->r[rm], t, n, carry(c), &cy);
 
-            if (setflags && rd == ARMV7M_PC) {
-                switch (op) {
-                case 0u:
-                    set_nz(c, c->r[rn] & b);
-                    return true;
-                case 4u:
-                    set_nz(c, c->r[rn] ^ b);
-                    return true;
-                case 8u: {
-                    const uint32_t res = c->r[rn] + b;
+        return dp_op(c, op, rd, rn, b, cy, ((w0 >> 4) & 1u) != 0u);
+    }
+}
 
-                    set_add_flags(c, c->r[rn], b, 0u, res);
-                    return true;
-                }
-                case 13u: {
-                    const uint32_t nb = ~b;
-                    const uint32_t res = c->r[rn] + nb + 1u;
+/* ------------------------------------------------------------------ */
+/* 32-bit: data processing (register), parallel, misc                  */
+/* ------------------------------------------------------------------ */
 
-                    set_add_flags(c, c->r[rn], nb, 1u, res);
-                    return true;
-                }
-                default:
-                    return false;
-                }
-            }
-            return dp_apply(c, op, rd, rn, b, setflags);
+static uint32_t ror8(uint32_t v, uint32_t rot)
+{
+    return (rot == 0u) ? v : ((v >> rot) | (v << (32u - rot)));
+}
+
+/* The signed and unsigned parallel add/subtract: A5.3.13 and A5.3.14. */
+static X t32_parallel(armv7m_cpu_t *c, uint32_t op1, uint32_t op2, bool u,
+                      uint32_t rd, uint32_t a, uint32_t b)
+{
+    int32_t r[4];
+    uint32_t nlanes;
+    const bool bytes = (op1 == 0u) || (op1 == 4u);
+
+    if (op2 == 3u) {
+        return ARMV7M_X_UNDEF;
+    }
+    if (bytes) {
+        nlanes = 4u;
+        for (uint32_t i = 0u; i < 4u; i++) {
+            const int32_t x = u ? (int32_t)((a >> (8u * i)) & 0xFFu)
+                                : (int32_t)(int8_t)(a >> (8u * i));
+            const int32_t y = u ? (int32_t)((b >> (8u * i)) & 0xFFu)
+                                : (int32_t)(int8_t)(b >> (8u * i));
+
+            r[i] = (op1 == 0u) ? x + y : x - y;
         }
+    } else {
+        const int32_t alo = u ? (int32_t)(a & 0xFFFFu) : (int32_t)(int16_t)a;
+        const int32_t ahi = u ? (int32_t)(a >> 16) : (int32_t)(int16_t)(a >> 16);
+        const int32_t blo = u ? (int32_t)(b & 0xFFFFu) : (int32_t)(int16_t)b;
+        const int32_t bhi = u ? (int32_t)(b >> 16) : (int32_t)(int16_t)(b >> 16);
 
-        /*
-         * Load and store, single, with every addressing mode in one
-         * place: 1111 100x xxxx. Size and signedness come from w0, and
-         * the mode from w1 -- T3 is a 12-bit positive offset, T4 is an
-         * 8-bit one with explicit index/add/writeback bits.
-         */
-        if ((w0 & 0xFE00u) == 0xF800u) {
-            const uint32_t sz = (uint32_t)((w0 >> 5) & 3u);
-            const bool load = ((w0 >> 4) & 1u) != 0u;
-            const bool sext = ((w0 >> 8) & 1u) != 0u;
-            const uint32_t rn = (uint32_t)(w0 & 15u);
-            const uint32_t rt = (uint32_t)((w1 >> 12) & 15u);
-            const uint32_t size = (sz == 0u) ? 1u : ((sz == 1u) ? 2u : 4u);
-            bool index = true;
-            bool add = true;
-            bool wback = false;
-            uint32_t off;
-
-            if (sz > 2u) {
-                return false;
-            }
-            if (((w0 >> 7) & 1u) != 0u) { /* T3: imm12, always add */
-                off = (uint32_t)(w1 & 0xFFFu);
-            } else if ((w1 & 0x0800u) != 0u) { /* T4: imm8 with P/U/W */
-                off = (uint32_t)(w1 & 0xFFu);
-                index = ((w1 >> 10) & 1u) != 0u;
-                add = ((w1 >> 9) & 1u) != 0u;
-                wback = ((w1 >> 8) & 1u) != 0u;
-            } else if ((w1 & 0x0FC0u) == 0u) { /* register offset */
-                const uint32_t rm = (uint32_t)(w1 & 15u);
-
-                off = c->r[rm] << ((w1 >> 4) & 3u);
-            } else {
-                return false;
-            }
-
-            const uint32_t base = (rn == ARMV7M_PC) ? (pc4 & ~3u) : c->r[rn];
-            const uint32_t ea = index ? (add ? base + off : base - off) : base;
-
-            if (load) {
-                uint32_t v = 0u;
-
-                if (!ldn(c, ea, size, sext, &v)) {
-                    return false;
-                }
-                /* The writeback happens whether or not rt == rn, and the
-                 * loaded value wins -- so write the base first. */
-                if (wback && rn != ARMV7M_PC) {
-                    c->r[rn] = add ? base + off : base - off;
-                }
-                c->r[rt] = v;
-            } else {
-                if (!stn(c, ea, size, c->r[rt])) {
-                    return false;
-                }
-                if (wback && rn != ARMV7M_PC) {
-                    c->r[rn] = add ? base + off : base - off;
-                }
-            }
-            return true;
+        nlanes = 2u;
+        switch (op1) {
+        case 1u: /* ADD16 */
+            r[0] = alo + blo;
+            r[1] = ahi + bhi;
+            break;
+        case 2u: /* ASX: low = a.lo - b.hi, high = a.hi + b.lo */
+            r[0] = alo - bhi;
+            r[1] = ahi + blo;
+            break;
+        case 6u: /* SAX: low = a.lo + b.hi, high = a.hi - b.lo */
+            r[0] = alo + bhi;
+            r[1] = ahi - blo;
+            break;
+        case 5u: /* SUB16 */
+            r[0] = alo - blo;
+            r[1] = ahi - bhi;
+            break;
+        default:
+            return ARMV7M_X_UNDEF;
         }
+    }
 
-        /*
-         * Shift by register: 1111 1010 0ttS Rn | 1111 Rd 0000 Rm.
-         *
-         * The wide forms of LSL, LSR, ASR and ROR, which is what a
-         * compiler emits for any shift by a variable amount once the
-         * operands are not all low registers. **The amount is the low
-         * eight bits of Rm, not five** -- a shift by 32 or more yields
-         * zero rather than wrapping, which is the opposite of what
-         * masking to 31 would give.
-         */
-        if ((w0 & 0xFF80u) == 0xFA00u && (w1 & 0xF0F0u) == 0xF000u) {
-            const uint32_t typ = (uint32_t)((w0 >> 5) & 3u);
-            const bool setflags = ((w0 >> 4) & 1u) != 0u;
-            const uint32_t rn = (uint32_t)(w0 & 15u);
-            const uint32_t rd = (uint32_t)((w1 >> 8) & 15u);
-            const uint32_t rm = (uint32_t)(w1 & 15u);
-            const uint32_t amount = c->r[rm] & 0xFFu;
-            const uint32_t v = c->r[rn];
-            uint32_t res;
+    const uint32_t lane = bytes ? 8u : 16u;
+    const uint32_t lmask = (1u << lane) - 1u;
+    uint32_t res = 0u;
+    uint32_t g = 0u;
 
-            if (typ == 3u) { /* ROR, by the low five bits */
-                res = do_shift(3u, amount & 31u, v);
-            } else if (amount >= 32u) {
-                res = (typ == 2u) ? (uint32_t)((int32_t)v >> 31) : 0u;
-            } else if (amount == 0u) {
-                res = v;
+    for (uint32_t i = 0u; i < nlanes; i++) {
+        int64_t v = r[i];
+
+        if (op2 == 0u) {
+            /*
+             * The plain forms set GE per lane: for a signed lane when the
+             * result is non-negative, for an unsigned addition when it
+             * carried out and for an unsigned subtraction when it did not
+             * borrow -- which, written out, is the same test.
+             */
+            bool flag;
+            const bool is_add = bytes ? (op1 == 0u)
+                                      : ((op1 == 1u) || (i == 1u && op1 == 2u) ||
+                                         (i == 0u && op1 == 6u));
+
+            if (u && is_add) {
+                flag = v >= (int64_t)1 << lane;
             } else {
-                res = do_shift(typ, amount, v);
+                flag = v >= 0;
+            }
+            if (flag) {
+                g |= bytes ? (1u << i) : (3u << (2u * i));
+            }
+        } else if (op2 == 1u) {
+            bool sat = false;
+
+            v = u ? usat(v, lane, &sat) : ssat(v, lane, &sat);
+        } else {
+            v >>= 1; /* halving: arithmetic on the wide result */
+        }
+        res |= ((uint32_t)v & lmask) << (lane * i);
+    }
+    if (op2 == 0u) {
+        set_ge(c, g);
+    }
+    c->r[rd] = res;
+    return OK;
+}
+
+/* Data processing (register): 11111010 */
+static X t32_dp_register(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
+{
+    const uint32_t op1 = (w0 >> 4) & 15u;
+    const uint32_t op2 = (w1 >> 4) & 15u;
+    const uint32_t rn = w0 & 15u;
+    const uint32_t rd = (w1 >> 8) & 15u;
+    const uint32_t rm = w1 & 15u;
+
+    if ((w1 & 0xF000u) != 0xF000u) {
+        return ARMV7M_X_UNDEF;
+    }
+    if ((op1 >> 3) == 0u && op2 == 0u) { /* LSL, LSR, ASR, ROR (register) */
+        uint32_t cy;
+        const uint32_t res =
+            armv7m_shift_c(c->r[rn], (op1 >> 1) & 3u, c->r[rm] & 0xFFu, carry(c), &cy);
+
+        c->r[rd] = res;
+        if ((op1 & 1u) != 0u) {
+            set_nzc(c, res, cy);
+        }
+        return OK;
+    }
+    if ((op1 >> 3) == 0u && (op2 & 8u) != 0u) { /* the extends */
+        const uint32_t v = ror8(c->r[rm], ((w1 >> 4) & 3u) * 8u);
+
+        if ((w1 & 0x0040u) != 0u) {
+            return ARMV7M_X_UNDEF;
+        }
+        const uint32_t add = (rn == ARMV7M_PC) ? 0u : c->r[rn];
+        uint32_t res;
+
+        switch (op1) {
+        case 0u:
+            res = add + (uint32_t)(int32_t)(int16_t)v;
+            break;
+        case 1u:
+            res = add + (v & 0xFFFFu);
+            break;
+        case 2u: /* SXTAB16 / SXTB16: two lanes */
+            res = ((add & 0xFFFFu) + (uint32_t)(int32_t)(int8_t)v) & 0xFFFFu;
+            res |= ((add >> 16) + (uint32_t)(int32_t)(int8_t)(v >> 16)) << 16;
+            break;
+        case 3u:
+            res = ((add & 0xFFFFu) + (v & 0xFFu)) & 0xFFFFu;
+            res |= ((add >> 16) + ((v >> 16) & 0xFFu)) << 16;
+            break;
+        case 4u:
+            res = add + (uint32_t)(int32_t)(int8_t)v;
+            break;
+        case 5u:
+            res = add + (v & 0xFFu);
+            break;
+        default:
+            return ARMV7M_X_UNDEF;
+        }
+        c->r[rd] = res;
+        return OK;
+    }
+    if ((op1 >> 3) == 1u && (op2 >> 3) == 0u) { /* parallel */
+        return t32_parallel(c, op1 & 7u, op2 & 3u, (op2 & 4u) != 0u, rd,
+                            c->r[rn], c->r[rm]);
+    }
+    if ((op1 >> 2) == 2u && (op2 >> 2) == 2u) { /* miscellaneous */
+        const uint32_t m = c->r[rm];
+        const uint32_t sel = ((op1 & 3u) << 2) | (op2 & 3u);
+
+        switch (sel) {
+        case 0x0u:   /* QADD:  rm + rn */
+        case 0x1u:   /* QDADD: rm + sat(2 * rn) */
+        case 0x2u:   /* QSUB:  rm - rn */
+        case 0x3u: { /* QDSUB: rm - sat(2 * rn) */
+            bool sat = false;
+            int64_t n = (int32_t)c->r[rn];
+
+            if ((sel & 1u) != 0u) {
+                n = ssat(2 * n, 32u, &sat);
+            }
+            const int64_t v = (sel & 2u) ? (int64_t)(int32_t)m - n
+                                         : (int64_t)(int32_t)m + n;
+
+            c->r[rd] = (uint32_t)ssat(v, 32u, &sat);
+            if (sat) {
+                set_q(c);
+            }
+            return OK;
+        }
+        case 0x4u:
+            c->r[rd] = __builtin_bswap32(m);
+            return OK;
+        case 0x5u:
+            c->r[rd] = ((m & 0x00FF00FFu) << 8) | ((m >> 8) & 0x00FF00FFu);
+            return OK;
+        case 0x6u: { /* RBIT */
+            uint32_t v = m;
+
+            v = ((v >> 1) & 0x55555555u) | ((v & 0x55555555u) << 1);
+            v = ((v >> 2) & 0x33333333u) | ((v & 0x33333333u) << 2);
+            v = ((v >> 4) & 0x0F0F0F0Fu) | ((v & 0x0F0F0F0Fu) << 4);
+            c->r[rd] = __builtin_bswap32(v);
+            return OK;
+        }
+        case 0x7u:
+            c->r[rd] = (uint32_t)(int32_t)(int16_t)(uint16_t)(((m & 0xFFu) << 8) |
+                                                              ((m >> 8) & 0xFFu));
+            return OK;
+        case 0x8u: { /* SEL */
+            const uint32_t g = ge(c);
+            const uint32_t n = c->r[rn];
+            uint32_t res = 0u;
+
+            for (uint32_t i = 0u; i < 4u; i++) {
+                const uint32_t b = 0xFFu << (8u * i);
+
+                res |= ((g >> i) & 1u) ? (n & b) : (m & b);
             }
             c->r[rd] = res;
-            if (setflags) {
-                set_nz(c, res);
-            }
-            return true;
+            return OK;
         }
-
-        /* Multiply: MUL and MLA/MLS share 1111 1011 0000 */
-        if ((w0 & 0xFFF0u) == 0xFB00u) {
-            const uint32_t rn = (uint32_t)(w0 & 15u);
-            const uint32_t ra = (uint32_t)((w1 >> 12) & 15u);
-            const uint32_t rd = (uint32_t)((w1 >> 8) & 15u);
-            const uint32_t rm = (uint32_t)(w1 & 15u);
-            const uint32_t prod = c->r[rn] * c->r[rm];
-
-            if (((w1 >> 4) & 15u) == 0u) {
-                c->r[rd] = (ra == ARMV7M_PC) ? prod : (c->r[ra] + prod);
-                return true;
-            }
-            if (((w1 >> 4) & 15u) == 1u) { /* MLS */
-                c->r[rd] = c->r[ra] - prod;
-                return true;
-            }
-            return false;
+        case 0xCu:
+            c->r[rd] = (m == 0u) ? 32u : (uint32_t)__builtin_clz(m);
+            return OK;
+        default:
+            return ARMV7M_X_UNDEF;
         }
+    }
+    return ARMV7M_X_UNDEF;
+}
 
-        /* SDIV and UDIV: 1111 1011 1x01 */
-        if ((w0 & 0xFFD0u) == 0xFB90u && ((w1 >> 4) & 15u) == 15u) {
-            const uint32_t rn = (uint32_t)(w0 & 15u);
-            const uint32_t rd = (uint32_t)((w1 >> 8) & 15u);
-            const uint32_t rm = (uint32_t)(w1 & 15u);
-            const uint32_t a = c->r[rn];
-            const uint32_t b = c->r[rm];
+/* ------------------------------------------------------------------ */
+/* 32-bit: multiplies                                                  */
+/* ------------------------------------------------------------------ */
 
-            /*
-             * **ARM returns zero for a division by zero**, and that is
-             * the architecture's answer rather than an approximation --
-             * the same fact the IR's EMU_IR_DIV* precondition exists
-             * because of, from the other side.
-             */
-            if (b == 0u) {
-                c->r[rd] = 0u;
-            } else if (((w0 >> 5) & 1u) != 0u) { /* UDIV */
-                c->r[rd] = a / b;
-            } else if (a == 0x80000000u && b == 0xFFFFFFFFu) {
-                c->r[rd] = 0x80000000u;
-            } else {
-                c->r[rd] = (uint32_t)((int32_t)a / (int32_t)b);
-            }
-            return true;
+static inline int32_t half(uint32_t v, bool top)
+{
+    return top ? (int32_t)(int16_t)(v >> 16) : (int32_t)(int16_t)v;
+}
+
+/* Multiply, multiply accumulate, absolute difference: 111110110 */
+static X t32_mul(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
+{
+    const uint32_t op1 = (w0 >> 4) & 7u;
+    const uint32_t op2 = (w1 >> 4) & 3u;
+    const uint32_t rn = w0 & 15u;
+    const uint32_t ra = (w1 >> 12) & 15u;
+    const uint32_t rd = (w1 >> 8) & 15u;
+    const uint32_t rm = w1 & 15u;
+    const uint32_t n = c->r[rn];
+    const uint32_t m = c->r[rm];
+    const bool acc = ra != ARMV7M_PC;
+    const int64_t a = acc ? (int64_t)(int32_t)c->r[ra] : 0;
+
+    if ((w1 & 0x00C0u) != 0u) {
+        return ARMV7M_X_UNDEF;
+    }
+    switch (op1) {
+    case 0u:
+        if (op2 == 0u) { /* MLA / MUL */
+            c->r[rd] = n * m + (acc ? c->r[ra] : 0u);
+            return OK;
         }
+        if (op2 == 1u && acc) { /* MLS */
+            c->r[rd] = c->r[ra] - n * m;
+            return OK;
+        }
+        return ARMV7M_X_UNDEF;
+    case 1u: { /* SMLA<x><y> / SMUL<x><y>: N is bit 5, M bit 4 */
+        const int64_t p = (int64_t)half(n, (op2 & 2u) != 0u) *
+                          half(m, (op2 & 1u) != 0u);
+        const int64_t v = p + a;
 
+        c->r[rd] = (uint32_t)v;
+        if (acc && v != (int64_t)(int32_t)v) {
+            set_q(c);
+        }
+        return OK;
+    }
+    case 2u:   /* SMLAD / SMUAD */
+    case 4u: { /* SMLSD / SMUSD */
+        const uint32_t mm = (op2 & 1u) ? ror8(m, 16u) : m;
+        const int64_t p1 = (int64_t)half(n, false) * half(mm, false);
+        const int64_t p2 = (int64_t)half(n, true) * half(mm, true);
+        const int64_t v = ((op1 == 2u) ? p1 + p2 : p1 - p2) + a;
+
+        if (op2 > 1u) {
+            return ARMV7M_X_UNDEF;
+        }
+        c->r[rd] = (uint32_t)v;
+        if (v != (int64_t)(int32_t)v) {
+            set_q(c);
+        }
+        return OK;
+    }
+    case 3u: { /* SMLAW<y> / SMULW<y> */
+        const int64_t p = (int64_t)(int32_t)n * half(m, (op2 & 1u) != 0u);
+        const int64_t v = (p >> 16) + a;
+
+        if (op2 > 1u) {
+            return ARMV7M_X_UNDEF;
+        }
+        c->r[rd] = (uint32_t)v;
+        if (acc && v != (int64_t)(int32_t)v) {
+            set_q(c);
+        }
+        return OK;
+    }
+    case 5u:   /* SMMLA / SMMUL */
+    case 6u: { /* SMMLS */
+        const int64_t p = (int64_t)(int32_t)n * (int64_t)(int32_t)m;
+        int64_t v = (int64_t)((uint64_t)a << 32);
+
+        if (op2 > 1u || (op1 == 6u && !acc)) {
+            return ARMV7M_X_UNDEF;
+        }
+        v = (op1 == 5u) ? v + p : v - p;
+        if ((op2 & 1u) != 0u) {
+            v += 0x80000000;
+        }
+        c->r[rd] = (uint32_t)((uint64_t)v >> 32);
+        return OK;
+    }
+    default: { /* USAD8 / USADA8 */
+        uint32_t s = 0u;
+
+        if (op2 != 0u) {
+            return ARMV7M_X_UNDEF;
+        }
+        for (uint32_t i = 0u; i < 4u; i++) {
+            const int32_t d = (int32_t)((n >> (8u * i)) & 0xFFu) -
+                              (int32_t)((m >> (8u * i)) & 0xFFu);
+
+            s += (uint32_t)((d < 0) ? -d : d);
+        }
+        c->r[rd] = s + (acc ? c->r[ra] : 0u);
+        return OK;
+    }
+    }
+}
+
+/* Long multiply, long multiply accumulate, and divide: 111110111 */
+static X t32_mull(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
+{
+    const uint32_t op1 = (w0 >> 4) & 7u;
+    const uint32_t op2 = (w1 >> 4) & 15u;
+    const uint32_t rn = w0 & 15u;
+    const uint32_t lo = (w1 >> 12) & 15u;
+    const uint32_t hi = (w1 >> 8) & 15u;
+    const uint32_t rm = w1 & 15u;
+    const uint32_t n = c->r[rn];
+    const uint32_t m = c->r[rm];
+    const uint64_t acc = ((uint64_t)c->r[hi] << 32) | c->r[lo];
+    uint64_t v;
+
+    /* One register cannot hold both halves; the M7 refuses the encoding. */
+    if (op1 != 1u && op1 != 3u && lo == hi) {
+        return ARMV7M_X_UNDEF;
+    }
+    switch (op1) {
+    case 0u:
+        if (op2 != 0u) {
+            return ARMV7M_X_UNDEF;
+        }
+        v = (uint64_t)((int64_t)(int32_t)n * (int32_t)m);
+        break;
+    case 2u:
+        if (op2 != 0u) {
+            return ARMV7M_X_UNDEF;
+        }
+        v = (uint64_t)n * m;
+        break;
+    case 1u:   /* SDIV */
+    case 3u: { /* UDIV */
+        if (op2 != 15u || lo != 15u) {
+            return ARMV7M_X_UNDEF;
+        }
         /*
-         * LDM and STM, which is how a wide PUSH/POP is spelled:
-         * 1110 100x x0x1 for LDMIA/STMDB and friends.
+         * A division by zero is 0 unless CCR.DIV_0_TRP is set, in which
+         * case it is a UsageFault -- the architecture's answer, not an
+         * approximation, and the reason the IR's EMU_IR_DIV* carries a
+         * precondition.
          */
-        if ((w0 & 0xFE40u) == 0xE800u) {
-            const bool load = ((w0 >> 4) & 1u) != 0u;
-            const bool before = ((w0 >> 8) & 1u) != 0u; /* DB form */
-            const bool wback = ((w0 >> 5) & 1u) != 0u;
-            const uint32_t rn = (uint32_t)(w0 & 15u);
-            const uint32_t list = w1;
-            uint32_t count = 0u;
-
-            for (uint32_t i = 0u; i < 16u; i++) {
-                if ((list & (1u << i)) != 0u) {
-                    count++;
-                }
+        if (m == 0u) {
+            if ((c->ccr & CCR_DIV_0_TRP) != 0u) {
+                return ARMV7M_X_DIVBYZERO;
             }
-
-            uint32_t addr = before ? (c->r[rn] - count * 4u) : c->r[rn];
-
-            for (uint32_t i = 0u; i < 16u; i++) {
-                if ((list & (1u << i)) == 0u) {
-                    continue;
-                }
-                if (load) {
-                    uint32_t v = 0u;
-
-                    if (!ld32(c, addr, &v)) {
-                        return false;
-                    }
-                    if (i == ARMV7M_PC) {
-                        c->r[ARMV7M_PC] = v & ~1u;
-                    } else {
-                        c->r[i] = v;
-                    }
-                } else if (!st32(c, addr, c->r[i])) {
-                    return false;
-                }
-                addr += 4u;
-            }
-            if (wback) {
-                c->r[rn] =
-                    before ? (c->r[rn] - count * 4u) : (c->r[rn] + count * 4u);
-            }
-            return true;
+            c->r[hi] = 0u;
+        } else if (op1 == 3u) {
+            c->r[hi] = n / m;
+        } else if (n == 0x80000000u && m == 0xFFFFFFFFu) {
+            c->r[hi] = 0x80000000u;
+        } else {
+            c->r[hi] = (uint32_t)((int32_t)n / (int32_t)m);
         }
+        return OK;
+    }
+    case 4u:
+        if (op2 == 0u) { /* SMLAL */
+            v = acc + (uint64_t)((int64_t)(int32_t)n * (int32_t)m);
+        } else if ((op2 & 0xCu) == 0x8u) { /* SMLAL<x><y> */
+            v = acc + (uint64_t)((int64_t)half(n, (op2 & 2u) != 0u) *
+                                 half(m, (op2 & 1u) != 0u));
+        } else if ((op2 & 0xEu) == 0xCu) { /* SMLALD */
+            const uint32_t mm = (op2 & 1u) ? ror8(m, 16u) : m;
 
-        return false;
+            v = acc + (uint64_t)((int64_t)half(n, false) * half(mm, false) +
+                                 (int64_t)half(n, true) * half(mm, true));
+        } else {
+            return ARMV7M_X_UNDEF;
+        }
+        break;
+    case 5u: { /* SMLSLD */
+        const uint32_t mm = (op2 & 1u) ? ror8(m, 16u) : m;
+
+        if ((op2 & 0xEu) != 0xCu) {
+            return ARMV7M_X_UNDEF;
+        }
+        v = acc + (uint64_t)((int64_t)half(n, false) * half(mm, false) -
+                             (int64_t)half(n, true) * half(mm, true));
+        break;
+    }
+    case 6u:
+        if (op2 == 0u) { /* UMLAL */
+            v = acc + (uint64_t)n * m;
+        } else if (op2 == 6u) { /* UMAAL */
+            v = (uint64_t)n * m + c->r[lo] + c->r[hi];
+        } else {
+            return ARMV7M_X_UNDEF;
+        }
+        break;
+    default:
+        return ARMV7M_X_UNDEF;
+    }
+    c->r[lo] = (uint32_t)v;
+    c->r[hi] = (uint32_t)(v >> 32);
+    return OK;
+}
+
+/* ------------------------------------------------------------------ */
+/* 32-bit: loads and stores                                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Every single load and store, 1111 100x: size, sign and direction from
+ * w0, addressing mode from w1 -- the T2/T3 imm12, the T4 imm8 with its
+ * P/U/W bits (and the unprivileged forms, which are P=1 U=1 W=0), the
+ * register offset, and the pc-relative literal.
+ *
+ * **Rt == pc on a narrow load is a preload hint**, not a load into the
+ * pc: PLD and PLI live in exactly those slots and must do nothing --
+ * including not faulting on an address nobody can read.
+ */
+static X t32_ldst(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
+{
+    const uint32_t sz = (w0 >> 5) & 3u;
+    const bool load = ((w0 >> 4) & 1u) != 0u;
+    const bool sext = ((w0 >> 8) & 1u) != 0u;
+    const uint32_t rn = w0 & 15u;
+    const uint32_t rt = (w1 >> 12) & 15u;
+    const uint32_t size = 1u << sz;
+    bool index = true;
+    bool add = true;
+    bool wback = false;
+    bool unpriv = false;
+    uint32_t off;
+
+    /*
+     * A word has no sign to extend, so bit 24 on a word load selects no
+     * row of the table. **This executed for as long as only assembled
+     * instructions were tested**: `f9d0 0004` loaded exactly as
+     * `f8d0 0004` does, and a Cortex-M7 raises UNDEFINSTR.
+     */
+    if (sz == 3u || (!load && sext) || (load && sz == 2u && sext)) {
+        return ARMV7M_X_UNDEF;
+    }
+    if (rn == ARMV7M_PC) {
+        if (!load) {
+            return ARMV7M_X_UNDEF;
+        }
+        add = ((w0 >> 7) & 1u) != 0u;
+        off = w1 & 0xFFFu;
+    } else if (((w0 >> 7) & 1u) != 0u) { /* imm12, add */
+        if (sext && !load) {
+            return ARMV7M_X_UNDEF;
+        }
+        off = w1 & 0xFFFu;
+    } else if ((w1 & 0x0800u) != 0u) { /* imm8 with P/U/W */
+        const uint32_t puw = (w1 >> 8) & 7u;
+
+        off = w1 & 0xFFu;
+        index = (puw & 4u) != 0u;
+        add = (puw & 2u) != 0u;
+        wback = (puw & 1u) != 0u;
+        if (!index && !wback) {
+            return ARMV7M_X_UNDEF;
+        }
+        if (puw == 6u) { /* LDRT and friends */
+            unpriv = true;
+        }
+    } else if ((w1 & 0x0FC0u) == 0u) { /* register, LSL #0-3 */
+        off = c->r[w1 & 15u] << ((w1 >> 4) & 3u);
+    } else {
+        return ARMV7M_X_UNDEF;
+    }
+
+    const uint32_t base = (rn == ARMV7M_PC) ? ((pc + 4u) & ~3u) : c->r[rn];
+    const uint32_t offaddr = add ? base + off : base - off;
+    const uint32_t addr = index ? offaddr : base;
+
+    if (load && rt == ARMV7M_PC && size < 4u) {
+        return OK; /* PLD, PLI, and the unallocated hints */
+    }
+    if (load) {
+        uint32_t v = 0u;
+        const X x = rd_u(c, addr, size, unpriv, &v);
+
+        if (x != OK) {
+            return x;
+        }
+        if (wback) {
+            c->r[rn] = offaddr;
+        }
+        if (rt == ARMV7M_PC) {
+            bx_write_pc(c, v);
+        } else {
+            c->r[rt] = extend(v, size, sext);
+        }
+        return OK;
+    }
+    {
+        const X x = wr_u(c, addr, size, unpriv, c->r[rt]);
+
+        if (x == OK && wback) {
+            c->r[rn] = offaddr;
+        }
+        return x;
+    }
+}
+
+/* LDRD and STRD, immediate and literal: word aligned, or a UsageFault. */
+static X t32_dual(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
+{
+    const uint32_t rn = w0 & 15u;
+    const uint32_t rt = (w1 >> 12) & 15u;
+    const uint32_t rt2 = (w1 >> 8) & 15u;
+    const uint32_t imm8 = w1 & 0xFFu;
+    const bool index = ((w0 >> 8) & 1u) != 0u;
+    const bool add = ((w0 >> 7) & 1u) != 0u;
+    const bool wback = ((w0 >> 5) & 1u) != 0u;
+    const bool load = ((w0 >> 4) & 1u) != 0u;
+    const uint32_t base = (rn == ARMV7M_PC) ? ((pc + 4u) & ~3u) : c->r[rn];
+    const uint32_t offaddr = add ? base + imm8 * 4u : base - imm8 * 4u;
+    const uint32_t addr = index ? offaddr : base;
+
+    if (load) {
+        uint32_t v1 = 0u;
+        uint32_t v2 = 0u;
+        X x;
+
+        if (rt == rt2) {
+            return ARMV7M_X_UNDEF; /* two words into one register */
+        }
+        x = rd_a(c, addr, 4u, &v1);
+        if (x == OK) {
+            x = rd_a(c, addr + 4u, 4u, &v2);
+        }
+        if (x != OK) {
+            return x;
+        }
+        if (wback) {
+            c->r[rn] = offaddr;
+        }
+        c->r[rt] = v1;
+        c->r[rt2] = v2;
+        return OK;
+    }
+    {
+        X x = wr_a(c, addr, 4u, c->r[rt]);
+
+        if (x == OK) {
+            x = wr_a(c, addr + 4u, 4u, c->r[rt2]);
+        }
+        if (x == OK && wback) {
+            c->r[rn] = offaddr;
+        }
+        return x;
+    }
+}
+
+/* Load/store dual or exclusive, table branch: 1110100xx1 */
+static X t32_dual_excl(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
+{
+    const uint32_t op1 = (w0 >> 7) & 3u;
+    const uint32_t op2 = (w0 >> 4) & 3u;
+    const uint32_t op3 = (w1 >> 4) & 15u;
+    const uint32_t rn = w0 & 15u;
+    const uint32_t rt = (w1 >> 12) & 15u;
+    const uint32_t rt2 = (w1 >> 8) & 15u;
+    const uint32_t imm8 = w1 & 0xFFu;
+
+    /*
+     * **LDRD/STRD first.** Table A5-17 gives them every encoding with
+     * op1<1> or op2<1> set, and the exclusives and table branches only
+     * what is left. Checked the other way round, a post-indexed STRD
+     * whose second halfword happened to have bits 7:4 = 0100 decoded as
+     * STREXB -- the first case of the board harness to stop.
+     */
+    if ((op1 & 2u) != 0u || (op2 & 2u) != 0u) {
+        return t32_dual(c, w0, w1, pc);
+    }
+    if (op1 == 0u) { /* STREX / LDREX */
+        const uint32_t addr = c->r[rn] + imm8 * 4u;
+
+        if (op2 == 1u) {
+            uint32_t v = 0u;
+            X x;
+
+            if (rt2 != 15u) {
+                return ARMV7M_X_UNDEF; /* (1)(1)(1)(1) where STREX has Rd */
+            }
+            x = rd_a(c, addr, 4u, &v);
+
+            if (x != OK) {
+                return x;
+            }
+            c->excl_open = true;
+            c->excl_addr = addr;
+            c->r[rt] = v;
+            return OK;
+        }
+        if ((addr & 3u) != 0u) {
+            return ARMV7M_X_UNALIGNED;
+        }
+        if (c->excl_open) {
+            const X x = wr_a(c, addr, 4u, c->r[rt]);
+
+            if (x != OK) {
+                return x;
+            }
+            c->r[rt2] = 0u;
+        } else {
+            c->r[rt2] = 1u;
+        }
+        c->excl_open = false;
+        return OK;
+    }
+    if (op1 == 1u && op2 == 1u && (op3 == 0u || op3 == 1u)) { /* TBB, TBH */
+        const uint32_t base = (rn == ARMV7M_PC) ? pc + 4u : c->r[rn];
+        const uint32_t m = c->r[w1 & 15u];
+        uint32_t e = 0u;
+        X x;
+
+        if ((w1 & 0xFF00u) != 0xF000u) {
+            return ARMV7M_X_UNDEF;
+        }
+        x = (op3 == 0u) ? armv7m_mem_read(c, base + m, 1u, false, &e)
+                        : rd_u(c, base + (m << 1), 2u, false, &e);
+        if (x != OK) {
+            return x;
+        }
+        c->r[ARMV7M_PC] = pc + 4u + 2u * e;
+        return OK;
+    }
+    if (op1 == 1u && (op3 == 4u || op3 == 5u)) { /* the byte/half exclusives */
+        const uint32_t size = (op3 == 4u) ? 1u : 2u;
+        const uint32_t addr = c->r[rn];
+
+        if (rt2 != 15u || (op2 == 1u && (w1 & 15u) != 15u)) {
+            return ARMV7M_X_UNDEF;
+        }
+        if (op2 == 1u) {
+            uint32_t v = 0u;
+            const X x = rd_a(c, addr, size, &v);
+
+            if (x != OK) {
+                return x;
+            }
+            c->excl_open = true;
+            c->excl_addr = addr;
+            c->r[rt] = v;
+            return OK;
+        }
+        if (op2 != 0u) {
+            return ARMV7M_X_UNDEF;
+        }
+        if ((addr & (size - 1u)) != 0u) {
+            return ARMV7M_X_UNALIGNED;
+        }
+        if (c->excl_open) {
+            const X x = wr_a(c, addr, size, c->r[rt]);
+
+            if (x != OK) {
+                return x;
+            }
+            c->r[w1 & 15u] = 0u;
+        } else {
+            c->r[w1 & 15u] = 1u;
+        }
+        c->excl_open = false;
+        return OK;
+    }
+    return ARMV7M_X_UNDEF;
+}
+
+/* ------------------------------------------------------------------ */
+/* 32-bit: branches and miscellaneous control                          */
+/* ------------------------------------------------------------------ */
+
+static X t32_branch_misc(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
+{
+    const uint32_t op = (w0 >> 4) & 0x7Fu;
+    const uint32_t op1 = (w1 >> 12) & 7u;
+    const uint32_t s = (w0 >> 10) & 1u;
+    const uint32_t j1 = (w1 >> 13) & 1u;
+    const uint32_t j2 = (w1 >> 11) & 1u;
+
+    if ((op1 & 5u) == 0u) { /* 0x0 */
+        if ((op & 0x38u) != 0x38u) { /* B<cond>.W */
+            const uint32_t cond = (w0 >> 6) & 15u;
+            int32_t off = (int32_t)((s << 20) | (j2 << 19) | (j1 << 18) |
+                                    ((uint32_t)(w0 & 0x3Fu) << 12) |
+                                    ((uint32_t)(w1 & 0x7FFu) << 1));
+
+            if (armv7m_in_it(c->xpsr)) {
+                return ARMV7M_X_UNDEF;
+            }
+            if (s != 0u) {
+                off -= 0x200000;
+            }
+            if (cond_holds(c, cond)) {
+                c->r[ARMV7M_PC] = (uint32_t)((int32_t)(pc + 4u) + off);
+            }
+            return OK;
+        }
+        if ((op & 0x7Eu) == 0x38u) { /* MSR */
+            const uint32_t mask = (w1 >> 10) & 3u;
+
+            if (op != 0x38u || (w1 & 0x2300u) != 0u || mask == 0u ||
+                !armv7m_sysm_valid(w1 & 0xFFu)) {
+                return ARMV7M_X_UNDEF;
+            }
+            msr(c, w1 & 0xFFu, mask, c->r[w0 & 15u]);
+            return OK;
+        }
+        if (op == 0x3Au) { /* hints */
+            /*
+             * Not strict, unlike everything around it: the board runs a
+             * hint whose should-be bits are wrong.
+             */
+            if (((w1 >> 8) & 7u) != 0u) {
+                return ARMV7M_X_UNDEF; /* the A/R-profile CPS */
+            }
+            return OK; /* NOP, YIELD, WFE, WFI, SEV, CSDB, DBG */
+        }
+        if (op == 0x3Bu) { /* misc control */
+            if ((w0 & 15u) != 15u || (w1 & 0x2F00u) != 0x0F00u) {
+                return ARMV7M_X_UNDEF;
+            }
+            switch ((w1 >> 4) & 15u) {
+            case 2u: /* CLREX */
+                if ((w1 & 15u) != 15u) {
+                    return ARMV7M_X_UNDEF;
+                }
+                c->excl_open = false;
+                return OK;
+            case 4u: /* DSB (and SSBB, PSSBB) */
+            case 5u: /* DMB */
+            case 6u: /* ISB */
+                return OK;
+            default:
+                return ARMV7M_X_UNDEF;
+            }
+        }
+        if ((op & 0x7Eu) == 0x3Eu) { /* MRS */
+            const uint32_t rd = (w1 >> 8) & 15u;
+
+            if (rd == ARMV7M_SP || rd == ARMV7M_PC || op != 0x3Eu ||
+                (w0 & 15u) != 15u || (w1 & 0x2000u) != 0u ||
+                !armv7m_sysm_valid(w1 & 0xFFu)) {
+                return ARMV7M_X_UNDEF;
+            }
+            c->r[rd] = mrs(c, w1 & 0xFFu);
+            return OK;
+        }
+        return ARMV7M_X_UNDEF;
+    }
+    if ((op1 & 5u) == 1u || (op1 & 5u) == 5u) { /* B.W, BL */
+        const uint32_t i1 = (~(j1 ^ s)) & 1u;
+        const uint32_t i2 = (~(j2 ^ s)) & 1u;
+        int32_t off = (int32_t)((s << 24) | (i1 << 23) | (i2 << 22) |
+                                ((uint32_t)(w0 & 0x3FFu) << 12) |
+                                ((uint32_t)(w1 & 0x7FFu) << 1));
+
+        if (s != 0u) {
+            off -= 0x2000000;
+        }
+        if ((op1 & 4u) != 0u) {
+            c->r[ARMV7M_LR] = (pc + 4u) | 1u;
+        } else if (armv7m_in_it(c->xpsr) &&
+                   (armv7m_it_get(c->xpsr) & 7u) != 0u) {
+            /* B inside an IT block must be its last instruction. */
+            return ARMV7M_X_UNDEF;
+        }
+        c->r[ARMV7M_PC] = (uint32_t)((int32_t)(pc + 4u) + off);
+        return OK;
+    }
+    return ARMV7M_X_UNDEF; /* UDF, and BLX (immediate), which v7-M lacks */
+}
+
+static X exec32(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
+{
+    const uint32_t op1 = (w0 >> 11) & 3u;
+    const uint32_t op2 = (w0 >> 4) & 0x7Fu;
+
+    if (op1 == 1u) {
+        if ((op2 & 0x64u) == 0x00u) { /* 00xx0xx: LDM/STM */
+            const uint32_t op = (w0 >> 7) & 3u;
+            const bool load = ((w0 >> 4) & 1u) != 0u;
+            const bool wback = ((w0 >> 5) & 1u) != 0u;
+            const uint32_t rn = w0 & 15u;
+
+            if (op != 1u && op != 2u) {
+                return ARMV7M_X_UNDEF;
+            }
+            if ((w1 & (1u << 13)) != 0u || (!load && (w1 & (1u << 15)) != 0u) ||
+                rn == ARMV7M_PC) {
+                return ARMV7M_X_UNDEF;
+            }
+            return ldm_stm(c, rn, w1, load, op == 2u, wback);
+        }
+        if ((op2 & 0x64u) == 0x04u) { /* 00xx1xx: dual, exclusive, table */
+            return t32_dual_excl(c, w0, w1, pc);
+        }
+        if ((op2 & 0x60u) == 0x20u) { /* 01xxxxx: DP shifted register */
+            return t32_dp_reg(c, w0, w1);
+        }
+        return armv7m_fpu_exec(c, w0, w1, pc); /* 1xxxxxx: coprocessor */
+    }
+    if (op1 == 2u) {
+        if ((w1 & 0x8000u) != 0u) {
+            return t32_branch_misc(c, w0, w1, pc);
+        }
+        if ((op2 & 0x20u) == 0u) {
+            return t32_dp_imm(c, w0, w1);
+        }
+        return t32_dp_plain(c, w0, w1, pc);
+    }
+    /* op1 == 3 */
+    if ((op2 & 0x71u) == 0x00u || (op2 & 0x67u) == 0x01u ||
+        (op2 & 0x67u) == 0x03u || (op2 & 0x67u) == 0x05u) {
+        return t32_ldst(c, w0, w1, pc);
+    }
+    if ((op2 & 0x70u) == 0x20u) {
+        return t32_dp_register(c, w0, w1);
+    }
+    if ((op2 & 0x78u) == 0x30u) {
+        return t32_mul(c, w0, w1);
+    }
+    if ((op2 & 0x78u) == 0x38u) {
+        return t32_mull(c, w0, w1);
+    }
+    if ((op2 & 0x40u) != 0u) {
+        return armv7m_fpu_exec(c, w0, w1, pc);
+    }
+    return ARMV7M_X_UNDEF;
+}
+
+/* ------------------------------------------------------------------ */
+/* One instruction                                                     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Execute one fetched instruction: its IT condition, the instruction,
+ * and -- if it completed -- ITAdvance. A fault is *returned*, with the pc
+ * put back, and has not been raised.
+ *
+ * **One copy, for two callers.** The run loop below and the translator's
+ * fallback (armv7m_step_insn) both come through here, because the other
+ * frontend with a JIT kept a second copy of its run loop's logic for the
+ * translated path and has been bitten by it three times. Inlined into
+ * the loop, so sharing it costs the interpreter nothing.
+ */
+static inline X step(armv7m_cpu_t *c, uint16_t hw, uint16_t w1, uint32_t pc,
+                     uint32_t len)
+{
+    /*
+     * Whether this instruction runs at all, read before it executes:
+     * ITAdvance happens after, and the condition and the setflags rule
+     * are both about the state this instruction sees. A failed
+     * condition still retires and still advances ITSTATE -- it is
+     * executed-as-a-NOP, not skipped.
+     */
+    const bool was_in_it = armv7m_in_it(c->xpsr);
+    const bool runs = !was_in_it || cond_holds(c, armv7m_it_get(c->xpsr) >> 4);
+    X x = OK;
+
+    c->r[ARMV7M_PC] = pc + len;
+    if (runs) {
+        x = (len == 4u) ? exec32(c, hw, w1, pc) : exec16(c, hw, pc);
+    }
+    if (x == OK || x == ARMV7M_X_SVC) {
+        /* SVC completes; the exception it raises returns to the next one. */
+        if (was_in_it) {
+            it_advance(c);
+        }
+        return x;
+    }
+    if (x != ARMV7M_X_BKPT) {
+        /*
+         * A fault: the instruction did not happen, and the exception
+         * returns to it. The pc and encoding are kept even though the
+         * fault is *taken* -- a guest with no handler ends in lockup,
+         * and the lockup report has to be able to say what started it.
+         */
+        c->fault_pc = pc;
+        c->fault_insn = (len == 4u) ? (((uint32_t)hw << 16) | w1) : hw;
+    }
+    c->r[ARMV7M_PC] = pc;
+    return x;
+}
+
+bool armv7m_step_insn(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
+{
+    const uint32_t len = armv7m_insn_len(w0);
+    const X x = step(c, w0, w1, pc, len);
+
+    if (x == OK) {
+        return true;
+    }
+    if (x == ARMV7M_X_BKPT) {
+        c->state = EMU_STATE_HALTED;
+    } else {
+        armv7m_raise(c, x, (x == ARMV7M_X_SVC) ? pc + len : pc);
     }
     return false;
 }
 
-/* ------------------------------------------------------------------ */
-/* Exceptions                                                          */
-/* ------------------------------------------------------------------ */
-
-uint32_t armv7m_pending(const armv7m_cpu_t *c);
-void armv7m_systick_tick(armv7m_cpu_t *c, uint32_t insns);
-
-/*
- * Take an exception: stack eight words, load the vector, run the
- * handler.
- *
- * **The frame is architectural and its order is not negotiable**:
- * r0-r3, r12, lr, the return address, and xPSR, from the lowest address
- * up. A handler written in C reads its arguments from the first four
- * and a debugger unwinds through the rest, so a frontend that stacks
- * them in a different order produces a handler that runs and reads
- * rubbish -- which looks like the *interrupting* code having corrupted
- * something.
- *
- * ITSTATE rides in the stacked xPSR, which is the reason it lives there
- * rather than in a field of its own: an exception in the middle of an IT
- * block must resume with the block intact, and nothing here has to do
- * anything special for that to happen.
- */
-static bool exc_enter(armv7m_cpu_t *c, uint32_t exc)
+armv7m_exc_t armv7m_load_u(armv7m_cpu_t *c, uint32_t addr, uint32_t size,
+                           uint32_t *out)
 {
-    uint32_t sp = c->r[ARMV7M_SP];
-    uint32_t vector = 0u;
-
-    /*
-     * The frame is 8-byte aligned, and the aligner is recorded in bit 9
-     * of the stacked xPSR so the return can undo it. Getting this wrong
-     * is invisible until a handler takes a second exception, at which
-     * point the stack walks away by four bytes each time.
-     */
-    const bool realign = (sp & 4u) != 0u;
-
-    if (realign) {
-        sp -= 4u;
-    }
-    sp -= 32u;
-
-    const uint32_t xpsr_stacked =
-        (c->xpsr & ~(1u << 9)) | (realign ? (1u << 9) : 0u);
-    const uint32_t frame[8] = {
-        c->r[0],  c->r[1],         c->r[2],         c->r[3],
-        c->r[12], c->r[ARMV7M_LR], c->r[ARMV7M_PC], xpsr_stacked,
-    };
-
-    for (uint32_t i = 0u; i < 8u; i++) {
-        if (!st32(c, sp + i * 4u, frame[i])) {
-            return false;
-        }
-    }
-
-    if (!ld32(c, c->vtor + exc * 4u, &vector) || vector == 0u) {
-        return false;
-    }
-
-    c->r[ARMV7M_SP] = sp;
-    /*
-     * EXC_RETURN in lr. 0xFFFFFFF9 is "return to thread mode, main
-     * stack", which is the only combination this frontend has -- there
-     * is no process stack and no handler-to-handler return. A handler
-     * that branches to one of the other magic values gets a reported
-     * fault rather than a guess.
-     */
-    c->r[ARMV7M_LR] = 0xFFFFFFF9u;
-    c->r[ARMV7M_PC] = vector & ~1u;
-    /*
-     * ITSTATE is cleared on entry: the handler is ordinary code and must
-     * not inherit the interrupted block's condition. The stacked copy is
-     * what restores it.
-     */
-    c->xpsr = armv7m_it_put(c->xpsr, 0u);
-    c->nest = exc;
-    c->irq_active |= 1u;
-
-    /* Taken, so the latch is cleared -- a level still asserted will
-     * simply pend again. */
-    if (exc == ARMV7M_EXC_SYSTICK) {
-        c->irq_pending &= ~(1u << 31);
-    } else if (exc >= ARMV7M_EXC_EXTERNAL) {
-        c->irq_pending &= ~(1u << (exc - ARMV7M_EXC_EXTERNAL));
-    }
-    return true;
+    return rd_u(c, addr, size, false, out);
 }
 
-/*
- * Return from one: unstack the same eight words.
- *
- * Recognised by the *target address*, not by a counter, because that is
- * how the architecture does it -- there is no return-from-interrupt
- * instruction, only a branch to 0xFFFFFFFx. A handler that tail-calls
- * through an ordinary function still returns correctly, which a depth
- * counter would get wrong.
- */
-static bool exc_return(armv7m_cpu_t *c)
+armv7m_exc_t armv7m_store_u(armv7m_cpu_t *c, uint32_t addr, uint32_t size,
+                            uint32_t v)
 {
-    uint32_t sp = c->r[ARMV7M_SP];
-    uint32_t frame[8];
-
-    for (uint32_t i = 0u; i < 8u; i++) {
-        if (!ld32(c, sp + i * 4u, &frame[i])) {
-            return false;
-        }
-    }
-    sp += 32u;
-    /* Undo the entry aligner, which the stacked xPSR recorded. */
-    if ((frame[7] & (1u << 9)) != 0u) {
-        sp += 4u;
-    }
-
-    c->r[0] = frame[0];
-    c->r[1] = frame[1];
-    c->r[2] = frame[2];
-    c->r[3] = frame[3];
-    c->r[12] = frame[4];
-    c->r[ARMV7M_LR] = frame[5];
-    c->r[ARMV7M_PC] = frame[6] & ~1u;
-    /*
-     * xPSR whole, which restores N/Z/C/V *and* ITSTATE together -- an
-     * exception in the middle of an IT block resumes with the rest of
-     * the block still conditional. Restoring the flags alone would leave
-     * ITSTATE at whatever the handler advanced it to.
-     */
-    c->xpsr = (frame[7] & ~(1u << 9)) | ARMV7M_T;
-    c->r[ARMV7M_SP] = sp;
-    c->nest = 0u;
-    c->irq_active = 0u;
-    return true;
+    return wr_u(c, addr, size, false, v);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1621,146 +2146,111 @@ emu_run_reason_t armv7m_run(armv7m_cpu_t *c, uint32_t budget, uint32_t *retired)
         }
 
         /*
-         * **EXC_RETURN is checked here, before the fetch**, because
+         * **EXC_RETURN is recognised here, before the fetch**, because
          * there is nothing at 0xFFFFFFF9 to fetch. A handler returns by
-         * branching to a magic address and the core recognises it as an
-         * address rather than as an instruction -- so looking for it
-         * after a failed fetch would report a bus error on a perfectly
-         * ordinary return.
+         * branching to a magic address, and the core recognises it as an
+         * address rather than as an instruction.
          */
-        if ((c->r[ARMV7M_PC] & ARMV7M_EXC_RETURN_MASK) == 0xFFFFFFF0u) {
-            if (c->nest == 0u || !exc_return(c)) {
-                armv7m_fault(c, c->r[ARMV7M_PC], 0u);
-                break;
+        if (armv7m_handler_mode(c) &&
+            (c->r[ARMV7M_PC] & ARMV7M_EXC_RETURN_MASK) == ARMV7M_EXC_RETURN_MASK) {
+            const X x = armv7m_exc_return(c, c->r[ARMV7M_PC]);
+
+            if (x != OK) {
+                armv7m_raise(c, x, c->r[ARMV7M_PC]);
             }
             continue;
         }
 
         /*
-         * An exception, if one is waiting and nothing is masking it.
-         * Between instructions only: the architecture permits a core to
-         * take one mid-instruction for a long multiple-load, and doing
-         * so would need the instruction restartable, which none of these
+         * An asynchronous exception, if one is pending and can preempt.
+         * Between instructions only: the architecture permits taking one
+         * partway through a long LDM, and doing so would need the
+         * instruction restartable from its ICI state, which none of these
          * are written to be.
          */
         {
-            const uint32_t exc = armv7m_pending(c);
+            bool preempts = false;
+            const uint32_t exc = armv7m_pending_exc(c, &preempts);
 
-            if (exc != 0u) {
-                if (!exc_enter(c, exc)) {
-                    armv7m_fault(c, c->r[ARMV7M_PC], 0u);
-                    break;
-                }
+            if (preempts) {
+                (void)armv7m_take(c, exc, c->r[ARMV7M_PC]);
                 continue;
             }
         }
 
         const uint32_t pc = c->r[ARMV7M_PC];
-        uint32_t lo = 0u;
 
-        if (emu_bus_read(c->bus, pc, 2u, &lo) != EMU_FAULT_NONE) {
-            armv7m_fault(c, pc, 0u);
-            break;
-        }
-
-        const uint16_t hw = (uint16_t)lo;
-
-        /*
-         * Whether this instruction runs at all, and the flag rule that
-         * goes with it.
-         *
-         * Read *before* executing, because ITAdvance happens after and
-         * both the condition and the setflags rule below are about the
-         * state this instruction sees.
-         *
-         * An instruction whose condition fails still retires and still
-         * advances ITSTATE -- it is executed-as-a-NOP, not skipped, and
-         * counting it is what keeps a budget and a trace honest.
-         */
-        const bool was_in_it = armv7m_in_it(c->xpsr);
-        const bool runs =
-            !was_in_it || cond_holds(c, armv7m_it_get(c->xpsr) >> 4);
-
-        if (!runs) {
-            c->r[ARMV7M_PC] = pc + armv7m_insn_len(hw);
-            it_advance(c);
-            done++;
-            c->retired++;
+        if ((c->xpsr & ARMV7M_T) == 0u) {
+            armv7m_raise(c, ARMV7M_X_INVSTATE, pc);
             continue;
         }
 
-        if (armv7m_is_32bit(hw)) {
-            uint32_t hi = 0u;
+        uint16_t hw = 0u;
+        {
+            const X x = armv7m_mem_fetch16(c, pc, &hw);
 
+            if (x != OK) {
+                armv7m_raise(c, x, pc);
+                continue;
+            }
+        }
+
+        const uint32_t len = armv7m_insn_len(hw);
+        uint16_t w1 = 0u;
+
+        if (len == 4u) {
             /*
-             * The second halfword, and it gets its own read because it
-             * can be in a different page from the first -- which is the
-             * straddle case the RV32 frontend had to learn about
-             * separately. Nothing maps pages here yet, but a fetch that
-             * assumes both halves are reachable together is a bug
-             * waiting for the first MPU.
+             * The second halfword gets its own fetch, because it can sit
+             * in a different MPU region from the first -- the straddle
+             * case the RV32 frontend had to learn about separately.
              */
-            if (emu_bus_read(c->bus, pc + 2u, 2u, &hi) != EMU_FAULT_NONE) {
-                armv7m_fault(c, pc, hw);
-                break;
-            }
+            const X x = armv7m_mem_fetch16(c, pc + 2u, &w1);
 
-            c->r[ARMV7M_PC] = pc + 4u;
-            if (!exec32(c, hw, (uint16_t)hi, pc)) {
-                armv7m_fault(c, pc, ((uint32_t)hw << 16) | (hi & 0xFFFFu));
-                break;
-            }
-        } else {
-            c->r[ARMV7M_PC] = pc + 2u;
-            if (!exec16(c, hw, pc)) {
-                armv7m_fault(c, pc, hw);
-                break;
+            if (x != OK) {
+                armv7m_raise(c, x, pc);
+                continue;
             }
         }
 
-        /*
-         * **Only when we were already in a block**, which is also what
-         * stops the IT instruction advancing the state it just wrote:
-         * IT is only permitted outside a block, so `was_in_it` is false
-         * on the instruction that sets ITSTATE and true on each one it
-         * governs.
-         *
-         * A taken branch inside a block leaves ITSTATE advanced rather
-         * than cleared. That is correct for well-formed code -- the
-         * architecture requires a branch to be the *last* instruction of
-         * a block, where the advance zeroes ITSTATE anyway -- and
-         * branching into the middle of a block is UNPREDICTABLE, so
-         * there is no right answer to give for the ill-formed case.
-         */
-        if (was_in_it) {
-            it_advance(c);
+#if EMU_PAIR_STATS
+        emu_pair_note(&armv7m_pair_ops, pc, (uint64_t)hw | ((uint64_t)w1 << 16),
+                      len);
+#endif
+
+#if EMU_ENABLE_TRACE
+        if (c->trace != NULL) {
+            c->trace((emu_cpu_t *)c, pc, (uint64_t)hw | ((uint64_t)w1 << 16), len,
+                     c->trace_user);
+        }
+#endif
+
+        const X x = step(c, hw, w1, pc, len);
+
+        if (x == ARMV7M_X_BKPT) {
+            /* The emulator's convention for "this guest is finished". */
+            c->state = EMU_STATE_HALTED;
+            done++;
+            c->retired++;
+            break;
+        }
+        if (x == ARMV7M_X_SVC) {
+            done++;
+            c->retired++;
+            armv7m_raise(c, x, pc + len);
+            continue;
+        }
+        if (x != OK) {
+            armv7m_raise(c, x, pc);
+            continue;
         }
 
-        /* r15 is a register like any other, and writing it is a branch --
-         * but x0-style hardwiring does not exist here, so nothing needs
-         * undoing. */
         done++;
         c->retired++;
 
         /*
-         * **Per instruction, not once per slice**, and the difference is
-         * not efficiency -- it is how many interrupts exist.
-         *
-         * Ticking in bulk at the end of a slice sets the pending latch
-         * once however many times the counter wrapped, and an exception
-         * is only taken between instructions, so **at most one SysTick
-         * could ever be delivered per slice**. With a reload of 20 and a
-         * 4096-instruction budget a real core delivers about two
-         * hundred; this delivered one. A guest counting ticks to measure
-         * time would read a rate two orders of magnitude slow, and
-         * nothing would say so -- the handler runs, the counter moves,
-         * every test passes.
-         *
-         * The cost is a load and a branch per instruction, which this
-         * project's own measurements say to expect: anything on the hot
-         * path is paid by every guest whether or not it uses the
-         * feature. It is behind the enable bit so a guest with SysTick
-         * off pays only the branch.
+         * **Per instruction, not once per slice.** Ticking in bulk sets
+         * the pending latch once however many times the counter wrapped,
+         * so at most one SysTick could ever be delivered per slice.
          */
         if ((c->systick_ctrl & 1u) != 0u) {
             armv7m_systick_tick(c, 1u);

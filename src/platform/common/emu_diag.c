@@ -50,6 +50,13 @@ static void console_out(void *ctx, const char *s)
     emu_console_puts(s);
 }
 
+void emu_report_frontend(const emu_cpu_ops_t *ops)
+{
+    if (ops->report != NULL) {
+        ops->report(console_out, NULL);
+    }
+}
+
 void emu_report_state(emu_cpu_t *cpu, const emu_cpu_ops_t *ops)
 {
     /*

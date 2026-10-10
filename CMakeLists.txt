@@ -390,6 +390,7 @@ option(G4MH_EXT_MPU "G4MH memory protection unit" ON)
 set(G4MH_MPU_ENTRIES "32" CACHE STRING "G4MH MPU entries (1..32)")
 
 option(G4MH_ENABLE_DISASM "Build the G4MH disassembler" ON)
+option(ARMV7M_ENABLE_DISASM "Build the ARMv7-M disassembler" ON)
 
 # Processing elements to model. The RH850/U2B6 has three; the default is 1
 # because the constraint is memory -- 64 KiB of local RAM per PE does not
@@ -701,9 +702,23 @@ endif()
 
 if(EMU_GUEST_ARCH_ARMV7M)
     target_sources(emucore PRIVATE
+        $<$<BOOL:${EMU_PAIR_STATS}>:src/frontend/armv7m/armv7m_pairstats.c>
         src/frontend/armv7m/armv7m_frontend.c
         src/frontend/armv7m/armv7m_interp.c
+        src/frontend/armv7m/armv7m_decode.c
+        src/frontend/armv7m/armv7m_disasm.c
+        src/frontend/armv7m/armv7m_exc.c
+        src/frontend/armv7m/armv7m_fpu.c
         src/frontend/armv7m/armv7m_nvic.c
+    )
+
+    # JIT-only, as for RV32 and G4MH.
+    if(EMU_JIT)
+        target_sources(emucore PRIVATE src/frontend/armv7m/armv7m_ir.c)
+    endif()
+
+    target_compile_definitions(emucore PUBLIC
+        ARMV7M_ENABLE_DISASM=$<BOOL:${ARMV7M_ENABLE_DISASM}>
     )
 endif()
 
@@ -746,7 +761,10 @@ if(EMU_GUEST_ARCH_G4MH)
     )
 endif()
 
-if((EMU_GUEST_ARCH_RV32 AND RV32_EXT_F) OR (EMU_GUEST_ARCH_G4MH AND G4MH_EXT_FPU))
+# ARMv7-M's FPv5-SP is the third FP unit built on it, and the reason the
+# half-precision conversions are listed: VCVTB/VCVTT.
+if((EMU_GUEST_ARCH_RV32 AND RV32_EXT_F) OR (EMU_GUEST_ARCH_G4MH AND G4MH_EXT_FPU)
+   OR EMU_GUEST_ARCH_ARMV7M)
     if(NOT EXISTS "${SOFTFLOAT_DIR}/source/include/softfloat.h")
         find_package(Git QUIET)
         if(GIT_FOUND)
@@ -800,6 +818,10 @@ if((EMU_GUEST_ARCH_RV32 AND RV32_EXT_F) OR (EMU_GUEST_ARCH_G4MH AND G4MH_EXT_FPU
     # Double precision, wanted by either frontend that has it: RV32's D
     # and G4MH's .D operations are the same SoftFloat entry points.
     #
+    if(EMU_GUEST_ARCH_ARMV7M)
+        list(APPEND _sf_names f32_to_f16 f16_to_f32 s_roundPackToF16
+                              s_normSubnormalF16Sig s_countLeadingZeros16)
+    endif()
     set(_need_f64 OFF)
     if(EMU_GUEST_ARCH_G4MH AND G4MH_EXT_FPU)
         set(_need_f64 ON)
@@ -842,6 +864,9 @@ if((EMU_GUEST_ARCH_RV32 AND RV32_EXT_F) OR (EMU_GUEST_ARCH_G4MH AND G4MH_EXT_FPU
     if(_need_f64)
         list(APPEND _sf_riscv s_f64UIToCommonNaN s_commonNaNToF64UI
                               s_propagateNaNF64UI)
+    endif()
+    if(EMU_GUEST_ARCH_ARMV7M)
+        list(APPEND _sf_riscv s_f16UIToCommonNaN s_commonNaNToF16UI)
     endif()
     foreach(_n IN LISTS _sf_riscv)
         if(EXISTS "${SOFTFLOAT_DIR}/source/RISCV/${_n}.c")
@@ -937,6 +962,18 @@ if(EMU_PLATFORM STREQUAL "host" AND EMU_GUEST_ARCH_G4MH)
     target_include_directories(g4mh-sweep PRIVATE include)
     target_compile_definitions(g4mh-sweep PRIVATE
                                EMU_MAX_REGIONS=${EMU_MAX_REGIONS})
+endif()
+
+#
+# armv7m-dis: the ARMv7-M disassembler over the code ranges of an image.
+# tests/armv7m-diff/disasm-check.py drives it and then assembles what it
+# printed, which is the disassembler's test.
+#
+if(EMU_PLATFORM STREQUAL "host" AND EMU_GUEST_ARCH_ARMV7M)
+    add_executable(armv7m-dis tests/tools/armv7m_dis.c
+                   src/frontend/armv7m/armv7m_disasm.c
+                   src/frontend/armv7m/armv7m_decode.c)
+    target_include_directories(armv7m-dis PRIVATE include)
 endif()
 
 # ---------------------------------------------------------------------

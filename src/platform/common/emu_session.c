@@ -382,6 +382,8 @@ void emu_session_report(emu_system_t *sys, uint64_t retired,
         }
     }
 
+    emu_report_frontend(sys->ops);
+
 #if EMU_PAIR_STATS
     emu_pair_report(40u);
 #endif

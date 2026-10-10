@@ -936,13 +936,13 @@ measured at.
       Guests in `tests/guest/armv7m/`: hello, alu, itblock, nvic,
       t2exec -- 6/6 in an `EMU_GUEST_ARCH_ARMV7M=ON` tree.
 
-      **What it does not**: the FPU, the MPU, the process stack,
-      BASEPRI, FAULTMASK, HardFault escalation, priorities beyond
-      "something is pending", and most of the 32-bit space. Every one
-      of those is a *reported fault* with its encoding, never a skip --
-      `emu_cpu_status_t` carries `faulted`/`fault_pc`/`fault_insn` and
-      the session prints them before the numbers, which is a generic
-      addition because every frontend here has needed it.
+      **Since then, everything that was listed as missing** -- the
+      FPU, the MPU, the process stack, BASEPRI, FAULTMASK, escalation,
+      real priorities and the whole 32-bit space -- plus a decoder, a
+      disassembler, pair statistics and an IR translator, all checked
+      against a Cortex-M7 board rather than a reading of the manual.
+      Scope, the board-differential suites and what they corrected are
+      in [frontend/armv7m.md](frontend/armv7m.md).
 
       Still open:
 
@@ -957,9 +957,16 @@ measured at.
         direction change rather than an increment.
       - **The IR and the register allocator**, which t2exec does not
         reach: it tests the encoder end to end and nothing above it.
-        Running `emu_ir_lower` in the guest is the next layer and needs
-        far more of the 32-bit space.
-      - the FPU, the MPU, and the exception features listed above.
+        Running `emu_ir_lower` in the guest is the next layer; the
+        32-bit space it needed is there now.
+      - **The JIT's own open items**: IT blocks holding a load, a store
+        or a conditional return are given back to the interpreter (6%
+        of Dhrystone), RAM below 0x10000000 gets no inlined access, and
+        interrupt latency is a block. See frontend/armv7m.md.
+      - **The board's answers live in `build/`**, not the repository.
+        Kept as fixtures, `--rerun` would be a regression suite anyone
+        could run without the board; that is a decision about 3 MB of
+        test data, not a technical one.
 
       **Five defects, every one found by running a program and none by
       a unit test**, which is this file's most-repeated lesson arriving

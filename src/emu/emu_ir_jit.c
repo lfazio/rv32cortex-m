@@ -421,4 +421,11 @@ void rv_jit_invalidate_page(uint32_t vaddr)
 EMU_IR_DEFINE_X86_BACKEND(g4mh_backend_jit, g4mh_ir_frontend, g4mh);
 #endif
 
+#if EMU_GUEST_ARCH_ARMV7M
+#include "armv7m/armv7m_ir.h"
+/* `a7m`, not `armv7m`: the macro names a static run function after its
+ * prefix, and armv7m_run is the interpreter's. */
+EMU_IR_DEFINE_X86_BACKEND(armv7m_backend_jit, armv7m_ir_frontend, a7m);
+#endif
+
 #endif /* EMU_HAVE_JIT */

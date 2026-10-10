@@ -46,3 +46,6 @@ tools/n6-control/STM32CubeN6/
 # build product and the kernel's CONFIG_INITRAMFS_SOURCE reads it from
 # the working tree.
 boot/initramfs/init
+
+# Python bytecode from the test scripts that import each other.
+__pycache__/

@@ -149,6 +149,98 @@ if(TARGET guest-armv7m-hello)
         PASS_REGULAR_EXPRESSION "OKAAA")
 endif()
 
+#
+# The same guests through the JIT, and the JIT against the interpreter.
+#
+# Separate tests rather than a loop over the ones above, because they
+# make a different claim. Interpreted, a guest checks the frontend;
+# translated, it checks the translator -- and a translator that declined
+# everything would pass the first kind unchanged, which is why the
+# differential test below also requires that blocks were entered.
+#
+if(EMU_GUEST_ARCH_ARMV7M AND EMU_JIT)
+    foreach(_g alu:ARMV7M-ALU-OK:200000 itblock:ARMV7M-IT-OK:200000
+               nvic:ARMV7M-NVIC-OK:5000000 t2exec:T2EXEC-OK:2000000
+               hello:OKAAA:1000)
+        string(REPLACE ":" ";" _p "${_g}")
+        list(GET _p 0 _name)
+        list(GET _p 1 _want)
+        list(GET _p 2 _cap)
+        if(TARGET guest-armv7m-${_name})
+            add_test(NAME guest-armv7m-${_name}-jit
+                     COMMAND emu-host --jit --max-insn ${_cap}
+                             "${CMAKE_BINARY_DIR}/guest/armv7m-${_name}.bin")
+            set_tests_properties(guest-armv7m-${_name}-jit PROPERTIES
+                LABELS fast
+                PASS_REGULAR_EXPRESSION "${_want}")
+        endif()
+    endforeach()
+
+    #
+    # Generated instructions, interpreted and translated, compared line
+    # by line. The interpreter's answers were checked against a
+    # Cortex-M7; this carries that verdict to the translator without the
+    # board being attached.
+    #
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_FOUND AND TARGET guest-armv7m-alu)
+        add_test(NAME armv7m-jit-vs-interp
+                 COMMAND ${Python3_EXECUTABLE}
+                         "${CMAKE_SOURCE_DIR}/tests/armv7m-diff/run.py"
+                         --self --seed 1 --count 3000
+                         --emu $<TARGET_FILE:emu-host>
+                         --out "${CMAKE_BINARY_DIR}/armv7m-self")
+        set_tests_properties(armv7m-jit-vs-interp PROPERTIES LABELS fast)
+    endif()
+endif()
+
+#
+# CoreMark as an ARMv7-M guest, both ways. "Correct operation validated"
+# is CoreMark's own verdict on its CRCs *and* on having run long enough,
+# so the image is built with enough iterations for the second -- a run
+# CoreMark calls invalid prints "Errors detected", which reads as a
+# miscompile and is not.
+#
+if(TARGET guest-armv7m-coremark)
+    add_test(NAME guest-armv7m-coremark
+             COMMAND emu-host --max-insn 400000000
+                     "${CMAKE_BINARY_DIR}/guest/armv7m-coremark.bin")
+    set_tests_properties(guest-armv7m-coremark PROPERTIES
+        LABELS fast
+        PASS_REGULAR_EXPRESSION "Correct operation validated")
+    if(EMU_JIT)
+        add_test(NAME guest-armv7m-coremark-jit
+                 COMMAND emu-host --jit --max-insn 400000000
+                         "${CMAKE_BINARY_DIR}/guest/armv7m-coremark.bin")
+        set_tests_properties(guest-armv7m-coremark-jit PROPERTIES
+            LABELS fast
+            PASS_REGULAR_EXPRESSION "Correct operation validated")
+    endif()
+endif()
+
+# AES and SHA-256 against their FIPS vectors, and Dhrystone, the same
+# two ways. Dhrystone prints no verdict of its own, so its test is the
+# last line it prints -- which a run that stopped early never reaches.
+foreach(_g crypto:failures\ 0x00000000 dhrystone:Dhrystones\ per\ Second)
+    string(REPLACE ":" ";" _p "${_g}")
+    list(GET _p 0 _name)
+    list(GET _p 1 _want)
+    if(TARGET guest-armv7m-${_name})
+        add_test(NAME guest-armv7m-${_name}
+                 COMMAND emu-host --max-insn 400000000
+                         "${CMAKE_BINARY_DIR}/guest/armv7m-${_name}.bin")
+        set_tests_properties(guest-armv7m-${_name} PROPERTIES
+            LABELS fast PASS_REGULAR_EXPRESSION "${_want}")
+        if(EMU_JIT)
+            add_test(NAME guest-armv7m-${_name}-jit
+                     COMMAND emu-host --jit --max-insn 400000000
+                             "${CMAKE_BINARY_DIR}/guest/armv7m-${_name}.bin")
+            set_tests_properties(guest-armv7m-${_name}-jit PROPERTIES
+                LABELS fast PASS_REGULAR_EXPRESSION "${_want}")
+        endif()
+    endif()
+endforeach()
+
 target_link_libraries(emu-unit PRIVATE emucore)
 target_include_directories(emu-unit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # -Wundef with the rest, and it earns its place here rather than being

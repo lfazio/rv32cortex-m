@@ -36,18 +36,30 @@ if(EMU_GUEST_ARCH_ARMV7M)
         set(_m7_src "${CMAKE_CURRENT_SOURCE_DIR}/armv7m")
         file(MAKE_DIRECTORY "${_m7_dir}")
 
+        #
+        # SOURCES are relative to tests/guest/armv7m; EXTRA_SOURCES are
+        # absolute, for a benchmark whose code lives elsewhere. OPT is
+        # -O1 unless a guest says otherwise: the test guests want the
+        # compiler to leave their instructions recognisable, and a
+        # benchmark wants what a product would ship.
+        #
         function(add_armv7m_guest name)
-            cmake_parse_arguments(A "" "" "SOURCES" ${ARGN})
+            cmake_parse_arguments(A "" "OPT"
+                                  "SOURCES;EXTRA_SOURCES;FLAGS;LIBS" ${ARGN})
             set(srcs "")
             foreach(f IN LISTS A_SOURCES)
                 list(APPEND srcs "${_m7_src}/${f}")
             endforeach()
+            list(APPEND srcs ${A_EXTRA_SOURCES})
+            if(NOT A_OPT)
+                set(A_OPT "-O1")
+            endif()
             add_custom_command(
                 OUTPUT "${_m7_dir}/armv7m-${name}.bin"
-                COMMAND ${ARM_GCC} -mthumb -mcpu=cortex-m4 -O1 -g
+                COMMAND ${ARM_GCC} -mthumb -mcpu=cortex-m4 ${A_OPT} -g
                         -ffreestanding -nostdlib -fno-builtin -fno-common
-                        -Wall -Wextra
-                        -T "${_m7_src}/guest.ld" ${srcs}
+                        -Wall -Wextra -I "${_m7_src}" ${A_FLAGS}
+                        -T "${_m7_src}/guest.ld" ${srcs} ${A_LIBS}
                         -o "${_m7_dir}/armv7m-${name}.elf"
                 COMMAND ${ARM_OBJCOPY} -O binary
                         "${_m7_dir}/armv7m-${name}.elf"
@@ -318,6 +330,42 @@ if(EXISTS "${COREMARK_DIR}/core_main.c")
             -DPERFORMANCE_RUN=1
             -DITERATIONS=${COREMARK_ITERATIONS}
             -Wno-unused-parameter -Wno-sign-compare -Wno-implicit-fallthrough)
+    #
+    # The same benchmark as an ARMv7-M guest, for the one question the
+    # generated cases cannot answer: is translated code *faster*. They
+    # say whether each instruction is right; this is thousands of them
+    # in the proportions a compiler emits, with a SysTick interrupt
+    # landing every ten thousand.
+    #
+    #
+    # Its own iteration count, and not COREMARK_ITERATIONS: that one is
+    # sized for a microcontroller running an interpreter, and at its
+    # default of 2 CoreMark declares the run invalid -- "Must execute for
+    # at least 10 secs" -- and prints "Errors detected". This guest's
+    # second is a million instructions, so forty iterations is eleven of
+    # them and a fraction of a real one on a host.
+    #
+    set(ARMV7M_COREMARK_ITERATIONS "40" CACHE STRING
+        "CoreMark iterations in the ARMv7-M guest")
+    if(EMU_GUEST_ARCH_ARMV7M AND ARM_GCC AND ARM_OBJCOPY)
+        add_armv7m_guest(coremark
+            OPT -O2
+            SOURCES start.S
+            EXTRA_SOURCES
+                "${COREMARK_DIR}/core_main.c"
+                "${COREMARK_DIR}/core_list_join.c"
+                "${COREMARK_DIR}/core_matrix.c"
+                "${COREMARK_DIR}/core_state.c"
+                "${COREMARK_DIR}/core_util.c"
+                "${guest_dir}/coremark/core_portme.c"
+            FLAGS
+                -I "${COREMARK_DIR}"
+                -I "${guest_dir}/coremark"
+                -DPERFORMANCE_RUN=1
+                -DITERATIONS=${ARMV7M_COREMARK_ITERATIONS}
+                -Wno-unused-parameter -Wno-sign-compare
+                -Wno-implicit-fallthrough)
+    endif()
 else()
     message(STATUS "CoreMark source not available; skipping the coremark image")
 endif()
@@ -367,6 +415,27 @@ if(EXISTS "${TINYCRYPT_DIR}/lib/source/aes_encrypt.c")
             -I "${TINYCRYPT_DIR}/lib/include"
             -DCRYPTO_ROUNDS=${CRYPTO_ROUNDS}
             -Wno-sign-compare -Wno-unused-parameter)
+    #
+    # The same guest for ARMv7-M. It needs nothing but a console, and it
+    # is the harshest of the compiled guests on a translator: one wrong
+    # bit in a rotation or a carry changes every byte downstream, and it
+    # checks itself against FIPS-197 and FIPS-180-2 before it reports.
+    #
+    if(EMU_GUEST_ARCH_ARMV7M AND ARM_GCC AND ARM_OBJCOPY)
+        add_armv7m_guest(crypto
+            OPT -O2
+            SOURCES start.S
+            EXTRA_SOURCES
+                "${guest_dir}/crypto.c"
+                "${TINYCRYPT_DIR}/lib/source/aes_encrypt.c"
+                "${TINYCRYPT_DIR}/lib/source/aes_decrypt.c"
+                "${TINYCRYPT_DIR}/lib/source/sha256.c"
+                "${TINYCRYPT_DIR}/lib/source/utils.c"
+            FLAGS
+                -I "${TINYCRYPT_DIR}/lib/include"
+                -DCRYPTO_ROUNDS=${CRYPTO_ROUNDS}
+                -Wno-sign-compare -Wno-unused-parameter)
+    endif()
 else()
     message(STATUS "TinyCrypt source not available; skipping the crypto image")
 endif()
@@ -427,6 +496,29 @@ if(EXISTS "${guest_dir}/dhrystone/dhry_1.c")
             # would.
             #
         LIBS -lgcc)
+
+    # And as an ARMv7-M guest, with SysTick for a clock.
+    if(EMU_GUEST_ARCH_ARMV7M AND ARM_GCC AND ARM_OBJCOPY)
+        add_armv7m_guest(dhrystone
+            OPT -O2
+            SOURCES start.S
+            EXTRA_SOURCES
+                "${guest_dir}/dhrystone/dhry_1.c"
+                "${guest_dir}/dhrystone/dhry_2.c"
+                "${guest_dir}/dhrystone/dhry_portme.c"
+            FLAGS
+                -I "${guest_dir}/dhrystone"
+                -DHZ=1000000
+                -DDHRY_RUNS=${DHRY_RUNS}
+                -DREG=register
+                -std=gnu89
+                -Wno-implicit-fallthrough -Wno-implicit-int
+                -Wno-builtin-declaration-mismatch -Wno-return-type
+                -Wno-implicit-function-declaration
+                -Wno-unused-parameter -Wno-old-style-definition
+                -Wno-missing-prototypes -Wno-sign-compare
+            LIBS -lgcc)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------

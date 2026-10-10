@@ -248,7 +248,13 @@ void free(void *p)
  * the one that reads as though it were. Dhrystone does not print DMIPS at
  * all: that is this figure over 1757, the VAX 11/780's rate.
  */
+#if defined(__arm__)
+/* An ARMv7-M guest has no CLINT; its clock is SysTick, in instructions. */
+#include "systick_clock.h"
+#define MTIME_LO systick_clock_now()
+#else
 #define MTIME_LO (*(volatile uint32_t *)0x0200BFF8u)
+#endif
 
 /*
  * Declared `extern int times ();` by dhry_1.c and not declared at all by

@@ -47,11 +47,25 @@ ee_u32 default_num_contexts = 1;
 /* ------------------------------------------------------------------ */
 
 #define UART_THR   (*(volatile unsigned char *)0x10000000u)
-#define CLINT_MTIME_LO (*(volatile ee_u32 *)0x0200BFF8u)
 
 static CORETIMETYPE start_time_val, stop_time_val;
 
+#if defined(__arm__)
+/* An ARMv7-M guest has no CLINT; see the header for what it has. */
+#include "systick_clock.h"
+
+#define GETMYTIME(_t)        (*_t = systick_clock_now())
+static void clock_start(void)
+{
+    systick_clock_start();
+}
+#else
+#define CLINT_MTIME_LO (*(volatile ee_u32 *)0x0200BFF8u)
 #define GETMYTIME(_t)        (*_t = CLINT_MTIME_LO)
+static void clock_start(void)
+{
+}
+#endif
 #define MYTIMEDIFF(fin, ini) ((fin) - (ini))
 
 void start_time(void)
@@ -79,6 +93,7 @@ void portable_init(core_portable *p, int *argc, char *argv[])
 {
     (void)argc;
     (void)argv;
+    clock_start();
     p->portable_id = 1;
 }
 

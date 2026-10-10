@@ -2272,6 +2272,35 @@ session, and every one of them recurred:
   bypassing the wrapper. The probe that found it was one `fprintf` in
   the `default:` case: **type 8, once per boot**.
 
+- **A suite of instructions cannot see the encodings that are not
+  instructions, and that is where the ARMv7-M core was wrong.** The
+  interpreter matched a Cortex-M7 on 38,000 generated cases and 33
+  system tests, and then the first 6,000 *raw* encodings run on the
+  board (`tests/armv7m-diff/rawgen.py`) differed on 465. The manual
+  calls a wrong should-be bit UNPREDICTABLE; the M7 raises UNDEFINSTR
+  for every one asked -- except a hint, which runs, and VRINT's bit 7,
+  which it ignores. No reading of the manual could have produced that
+  table. The structured decoder was then held to the interpreter by a
+  property test over all 402,712,576 encodings, which found twelve
+  slots where the two disagreed. **An assembler only writes valid
+  instructions, so a generator built on one tests the valid half.**
+
+  And the harness lied once, in the usual way: a raw case marked its
+  base register as an address to be printed relative to the image, and
+  `ldrd r0, r1, [r1]` loads a *value* into it -- so a correct load
+  differed by exactly 0xA0000000, the distance between the two images'
+  RAM. A difference that is a round number between two address maps is
+  the instrument.
+- **Profile before choosing what to make faster; the obvious target was
+  the smallest.** The ARMv7-M JIT packed N, Z, C and V into xPSR after
+  every flag-setting instruction, seventeen IR operations each, and
+  splitting them into four lazily-read words was clearly the thing to
+  do. It bought 3.7%. Callgrind then said a loop ticking SysTick once per
+  retired instruction, per block, was **16% of all host instructions**;
+  a subtraction for the blocks that do not wrap took CoreMark from 1,943
+  to 1,446 ms, and inlining RAM access -- 44% of host instructions were
+  the checked load and store -- to 707. Both were visible in the first
+  profile, which was taken after the flag work rather than before it.
 - **Measure; do not reason about performance.** Interpreter-in-SRAM was
   *slower*, lazy-IRQ was neutral, and the `clmul` fix was 1.3% when the real
   cost was 4.12-instruction blocks. Layout noise is ±3% on the host; on the

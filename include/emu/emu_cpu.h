@@ -403,6 +403,20 @@ typedef struct emu_cpu_ops {
     void (*dump)(const emu_cpu_t *cpu, emu_print_fn out, void *ctx);
 
     /*
+     * Anything this frontend counted about its own execution that the
+     * shared report cannot know to ask for, printed after the run's
+     * figures. NULL for a frontend with nothing to add.
+     *
+     * It exists for one reason: the framework's counters say how many
+     * blocks were translated and how many instructions were interpreted
+     * *outside* blocks, and a helper call inside a block is neither. A
+     * frontend that keeps its blocks whole by calling its own
+     * interpreter can therefore show full coverage while lowering
+     * nothing -- and only it knows which instructions those were.
+     */
+    void (*report)(emu_print_fn out, void *ctx);
+
+    /*
      * Disassemble one instruction. `insn` is the encoding as fetched and
      * `len` its width in bytes. Returns characters written, excluding
      * the NUL. NULL when the frontend was built without its

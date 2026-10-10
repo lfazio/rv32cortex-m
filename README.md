@@ -12,12 +12,14 @@ Validated against the official
 at **378/378** and the Berkeley `riscv-tests` at **77/77**, on hardware
 as well as on a host.
 
-The ARMv7-M frontend is there for a particular reason: it makes the
-**Thumb-2 backend testable without hardware**. That backend's emitters
-could previously only be *run* on a board, and three of its defects were
-live for months because no host suite could reach them —
-`tests/guest/armv7m/t2exec.c` compiles the real encoder into a Cortex-M
-guest, emits instructions into guest RAM and executes them.
+The ARMv7-M frontend began as a way to make the **Thumb-2 backend
+testable without hardware** — `tests/guest/armv7m/t2exec.c` compiles the
+real encoder into a Cortex-M guest, emits instructions into guest RAM
+and executes them — and is now a complete ARMv7E-M + FPv5-SP core with a
+JIT, **checked against a real Cortex-M7** rather than another emulator:
+the same test programs run as guests and as native Nucleo-F746ZG
+firmware, and every difference is the emulator's. See
+[docs/frontend/armv7m.md](docs/frontend/armv7m.md).
 
 ---
 
@@ -501,6 +503,12 @@ built with the ARM toolchain rather than the RISC-V one and run on the
 | `itblock` | IT, ITT, ITE, ITTTT and the in-block flag rule |
 | `nvic` | SysTick, exception entry and return, PRIMASK, an external source |
 | `t2exec` | **the real Thumb-2 encoder, emitting into RAM and executing it** |
+| `coremark`, `dhrystone`, `crypto` | the shared benchmarks, timed by SysTick -- which lands an interrupt in compiled code thousands of times a run |
+
+Instruction-level conformance is not a guest: it is
+`tests/armv7m-diff/run.py`, which runs generated instructions, raw
+encodings and a system-level suite on the board and on the emulator and
+compares them.
 
 ---
 
@@ -514,6 +522,7 @@ built with the ARM toolchain rather than the RISC-V one and run on the
 | [docs/frontend/rv32.md](docs/frontend/rv32.md) | RV32 scope, memory map, floating point |
 | [docs/frontend/g4mh.md](docs/frontend/g4mh.md) | G4MH scope, and what is *not* verified |
 | [docs/frontend/ppc.md](docs/frontend/ppc.md) | e200z7 scope, its guest, and what the first running program found |
+| [docs/frontend/armv7m.md](docs/frontend/armv7m.md) | ARMv7-M scope, the board-differential suites, the JIT |
 | [docs/backend/thumb2.md](docs/backend/thumb2.md) | the ARMv7E-M emitter |
 | [docs/backend/x86_64.md](docs/backend/x86_64.md) | the x86-64 emitter, which exists for coverage |
 | [docs/jit/README.md](docs/jit/README.md) | the IR pipeline, block model, FP policy |
