@@ -543,8 +543,10 @@ else()
 endif()
 
 if(EMU_VIRTIO_BUILT)
+    # virtio.c is compiled through virtio_tinyemu.c, which includes it
+    # unmodified and completes the block requests it drops -- see there.
     target_sources(emucore PRIVATE
-        third_party/tinyemu/virtio.c
+        src/emu/virtio/virtio_tinyemu.c
         third_party/tinyemu/fs.c
         third_party/tinyemu/fs_disk.c
         src/emu/virtio/virtio_glue.c
@@ -556,7 +558,6 @@ if(EMU_VIRTIO_BUILT)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/emu/virtio)
 
     set_source_files_properties(
-        third_party/tinyemu/virtio.c
         third_party/tinyemu/fs.c
         third_party/tinyemu/fs_disk.c
         PROPERTIES COMPILE_OPTIONS "-w")

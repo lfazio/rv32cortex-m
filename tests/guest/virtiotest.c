@@ -292,6 +292,9 @@ static void irq_setup(void)
  * path touches.
  */
 #define VIRTIO_BLK_T_IN 0u
+#define VIRTIO_BLK_T_GET_ID 8u
+#define VIRTIO_BLK_T_UNKNOWN 0x7Fu /* no such type, which is the point */
+#define VIRTIO_BLK_S_UNSUPP 2u
 #define VRING_DESC_F_WRITE 2u
 
 /* ---- the network interface ----------------------------------------- */
@@ -407,6 +410,98 @@ static struct blk_req g_req;
 static uint8_t g_sector[512] __attribute__((aligned(16)));
 static volatile uint8_t g_status = 0xFF;
 
+/*
+ * Post one three-descriptor request -- header, a writable buffer, a
+ * status byte -- as entry `slot` of the avail ring, and wait for it.
+ */
+static uint8_t g_id[20];
+
+static void blk_submit(uint32_t type, uint8_t *buf, uint32_t len,
+                       uint16_t slot)
+{
+    struct vring_desc *const desc = g_desc;
+    struct vring_avail *const avail = &g_avail;
+    uint32_t i;
+
+    g_req.type = type;
+    g_req.reserved = 0u;
+    g_req.sector = 0u;
+    g_status = 0xFFu;
+
+    desc[0].addr = (uint64_t)(uintptr_t)&g_req;
+    desc[0].len = sizeof(g_req);
+    desc[0].flags = VRING_DESC_F_NEXT;
+    desc[0].next = 1u;
+
+    desc[1].addr = (uint64_t)(uintptr_t)buf;
+    desc[1].len = len;
+    desc[1].flags = VRING_DESC_F_NEXT | VRING_DESC_F_WRITE;
+    desc[1].next = 2u;
+
+    desc[2].addr = (uint64_t)(uintptr_t)&g_status;
+    desc[2].len = 1u;
+    desc[2].flags = VRING_DESC_F_WRITE;
+    desc[2].next = 0u;
+
+    avail->ring[slot % QSZ] = 0u;
+    VIRTIO_WMB();
+    avail->idx = (uint16_t)(slot + 1u);
+
+    g_took_irq = 0;
+    VIRTIO_WMB();
+    V(V_QUEUE_NOTIFY) = 0u;
+
+    for (i = 0; i < 20000000u && g_took_irq == 0; i++) {
+        __asm__ volatile("" ::: "memory");
+    }
+}
+
+/*
+ * GET_ID, which Linux sends to read /sys/block/vdX/serial and which
+ * udev reads for every virtio disk.
+ *
+ * **The device used to drop it** -- no status, descriptor never returned
+ * -- and the udev worker that asked sat in the kernel until `udevadm
+ * settle` gave up after 120 s. So the assertion that matters is the used
+ * ring moving; that the ID comes back empty is second.
+ */
+static void blk_get_id(void)
+{
+    uint32_t k;
+    uint32_t untouched = 0u;
+
+    puts_("virtiotest: asking the disk for its ID\n");
+
+    for (k = 0; k < sizeof(g_id); k++) {
+        g_id[k] = 0xAAu;
+    }
+    blk_submit(VIRTIO_BLK_T_GET_ID, g_id, sizeof(g_id), 1u);
+
+    check("blk get-id completed", g_used.idx, 2u);
+    check("blk get-id status ok", g_status, 0u);
+    for (k = 0; k < sizeof(g_id); k++) {
+        if (g_id[k] != 0u) {
+            untouched++;
+        }
+    }
+    /* Twenty zeros: an empty serial, not a buffer nobody wrote. */
+    check("blk get-id wrote an empty id", untouched, 0u);
+}
+
+/*
+ * A type the device has never heard of must come back refused, not
+ * vanish. UNSUPP is the status the specification has for it.
+ */
+static void blk_unknown_type(void)
+{
+    puts_("virtiotest: sending a request type that does not exist\n");
+
+    blk_submit(VIRTIO_BLK_T_UNKNOWN, g_id, sizeof(g_id), 2u);
+
+    check("blk unknown type completed", g_used.idx, 3u);
+    check("blk unknown type refused", g_status, VIRTIO_BLK_S_UNSUPP);
+}
+
 static void test_block(void)
 {
     struct vring_desc *const desc = g_desc;
@@ -470,6 +565,9 @@ static void test_block(void)
         }
         check("blk sector 0 content", bad, 0u);
     }
+
+    blk_get_id();
+    blk_unknown_type();
 }
 
 int main(void)

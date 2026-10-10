@@ -21,6 +21,7 @@
  * guard**, so naming it here as well redefines every type in it.
  */
 #include "virtio.h"
+#include "virtio_tinyemu.h"
 
 /* ------------------------------------------------------------------ */
 /* State                                                               */
@@ -323,7 +324,7 @@ bool emu_virtio_add_block(uint32_t base, int irq_num, const char *path,
     blk.dev.write_async = block_write;
     blk.dev.opaque = &blk;
 
-    return remember(virtio_block_init(&def, &blk.dev), "block", base);
+    return remember(emu_virtio_block_init(&def, &blk.dev), "block", base);
 }
 
 /* ------------------------------------------------------------------ */
