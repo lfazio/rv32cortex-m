@@ -208,6 +208,8 @@ static uint32_t *spr_slot(ppc_cpu_t *c, uint32_t spr)
         return &c->mcar;
     case PPC_SPR_DEAR:
         return &c->dear;
+    case PPC_SPR_ESR:
+        return &c->esr;
     case PPC_SPR_IVPR:
         return &c->ivpr;
     case PPC_SPR_DECAR:
@@ -259,18 +261,16 @@ static uint32_t *spr_slot(ppc_cpu_t *c, uint32_t spr)
     }
 }
 
-static uint32_t spr_missing(const ppc_cpu_t *c, uint32_t spr)
-{
-    /* 3.15: privileged numbers from user mode are a privilege fault
-     * whether or not the register exists. */
-    return (spr_privileged(spr) && (c->msr & PPC_MSR_PR) != 0u) ? PPC_ESR_PPR
-                                                                : PPC_ESR_PIL;
-}
-
 uint32_t ppc_spr_read(ppc_cpu_t *c, uint32_t spr, uint32_t *out)
 {
     uint32_t *slot;
 
+    /*
+     * 2.5.1 and 3.15: a privileged number from user mode is a privilege
+     * fault *whether or not the register exists*, so this is decided on
+     * the number, before anything looks for the register. Everything
+     * below it that does not exist is an illegal instruction.
+     */
     if (spr_privileged(spr) && (c->msr & PPC_MSR_PR) != 0u) {
         return PPC_ESR_PPR;
     }
@@ -340,7 +340,7 @@ uint32_t ppc_spr_read(ppc_cpu_t *c, uint32_t spr, uint32_t *out)
     }
     slot = spr_slot(c, spr);
     if (slot == NULL) {
-        return spr_missing(c, spr);
+        return PPC_ESR_PIL;
     }
     *out = *slot;
     return PPC_EXC_NONE;
@@ -408,9 +408,6 @@ uint32_t ppc_spr_write(ppc_cpu_t *c, uint32_t spr, uint32_t v)
     case PPC_SPR_L1CSR0:
         c->l1csr0 = v;
         return PPC_EXC_NONE;
-    case PPC_SPR_ESR:
-        c->esr = v;
-        return PPC_EXC_NONE;
     /* Read-only: a write is an invalid reference, 3.15. */
     case PPC_SPR_TBL_R:
     case PPC_SPR_TBU_R:
@@ -429,7 +426,7 @@ uint32_t ppc_spr_write(ppc_cpu_t *c, uint32_t spr, uint32_t v)
     }
     slot = spr_slot(c, spr);
     if (slot == NULL) {
-        return spr_missing(c, spr);
+        return PPC_ESR_PIL;
     }
     *slot = v;
     return PPC_EXC_NONE;

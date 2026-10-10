@@ -178,6 +178,14 @@ static void ppc_ops_status(const emu_cpu_t *cpu, emu_cpu_status_t *out)
     out->retired = c->retired;
     out->state = c->state;
     out->backend = ppc_backend->name;
+    /*
+     * A waiting core leaves its wait for an *enabled* interrupt (3.12),
+     * so one waiting with both enables clear is parked for good -- a
+     * guest that fell off the end of main() -- and the runner may stop.
+     * Without this every wait ended the run: the status said nothing
+     * could wake a core that was waiting on its own decrementer.
+     */
+    out->wakeable = (c->msr & (PPC_MSR_EE | PPC_MSR_CE)) != 0u;
 }
 
 /*

@@ -575,6 +575,7 @@ endif()
 #
 if(EMU_GUEST_ARCH_PPC)
     foreach(_g "alu:PPC-ALU-END checks=00000044 fails=00000000 ticked"
+               "sys:PPC-SYS-END checks=000000a8 fails=00000000"
                "coremark:Correct operation validated"
                "crypto:failures 0x00000000")
         string(FIND "${_g}" ":" _at)
@@ -603,6 +604,26 @@ if(EMU_GUEST_ARCH_PPC)
             endif()
         endif()
     endforeach()
+    #
+    # A wait with interrupts masked, which nothing may end. The pass is
+    # the line before it; the failure is the line after it, or running
+    # to the instruction cap, which is what a core that never parked
+    # does. Both backends, because each has its own wake path.
+    #
+    if(TARGET guest-ppc-park)
+        foreach(_m "" "--jit")
+            if(_m STREQUAL "" OR EMU_JIT)
+                string(REPLACE "--" "-" _sfx "${_m}")
+                add_test(NAME guest-ppc-park${_sfx}
+                         COMMAND emu-host ${_m} --max-insn 5000000
+                                 "${CMAKE_BINARY_DIR}/guest/ppc-park.elf")
+                set_tests_properties(guest-ppc-park${_sfx} PROPERTIES
+                    LABELS fast
+                    PASS_REGULAR_EXPRESSION "PARK-BEFORE"
+                    FAIL_REGULAR_EXPRESSION "PARK-AFTER;capped=1;TRAP")
+            endif()
+        endforeach()
+    endif()
     if(TARGET guest-ppc-isatest AND EMU_JIT)
         add_test(NAME guest-ppc-isatest-jit
                  COMMAND emu-host --jit --load 0x80000000 --max-insn 200000
