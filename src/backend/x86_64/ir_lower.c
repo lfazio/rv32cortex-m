@@ -666,10 +666,27 @@ static uint8_t *g_body;
 static uint32_t g_start_pc;
 static bool g_has_start_pc;
 
+/*
+ * Set when an exit could not be recorded, and it makes emu_ir_lower
+ * refuse the block.
+ *
+ * An exit is emitted as a jump with no displacement and patched to the
+ * epilogue once that exists. One that is not recorded is never patched
+ * -- and a jump with a zero displacement is a jump to the next
+ * instruction, so the exit quietly does not leave: a taken branch runs
+ * on into the code after it, and a faulting load's trap exit carries on
+ * with what the fault should have stopped. This used to drop the 65th
+ * exit and say nothing. A block with that many is rare and losing it to
+ * the interpreter costs little; emitting it wrong costs a guest.
+ */
+static bool g_exits_lost;
+
 static void note_exit(uint8_t *slot)
 {
     if (g_nexits < IR_MAX_EXITS) {
         g_exits[g_nexits++] = slot;
+    } else {
+        g_exits_lost = true;
     }
 }
 
@@ -689,6 +706,8 @@ static void note_exit_nf(uint8_t *slot)
 {
     if (g_nexits_nf < IR_MAX_EXITS) {
         g_exits_nf[g_nexits_nf++] = slot;
+    } else {
+        g_exits_lost = true;
     }
 }
 
@@ -2012,6 +2031,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     }
 
     g_nexits = 0u;
+    g_exits_lost = false;
     g_has_fast = b->has_fast;
     g_fast = b->fast;
     g_block_start = emu_jit_here();
@@ -2178,7 +2198,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         x86_patch_rel32(g_exits_nf[i], emu_jit_here());
     }
     x86_epilogue(g_nsaved);
-    return !emu_jit_overflowed();
+    return !emu_jit_overflowed() && !g_exits_lost;
 }
 
 #endif /* EMU_HOST_JIT_X86_64 */

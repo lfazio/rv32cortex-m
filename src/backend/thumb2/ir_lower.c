@@ -379,12 +379,23 @@ static void patch_branch(uint8_t *at, const uint8_t *target, bool conditional)
     }
 }
 
+/*
+ * Set when an exit could not be recorded, and it makes emu_ir_lower
+ * refuse the block. An unrecorded exit is never patched, and the
+ * placeholder it was emitted as branches to the next instruction -- so
+ * the exit quietly does not leave. See the same flag in the x86-64
+ * backend; this table dropped its 65th entry in silence too.
+ */
+static bool g_exits_lost;
+
 static void note_exit(uint8_t *at, bool conditional)
 {
     if (g_nexits < IR_MAX_EXITS) {
         g_exits[g_nexits].at = at;
         g_exits[g_nexits].conditional = conditional;
         g_nexits++;
+    } else {
+        g_exits_lost = true;
     }
 }
 
@@ -409,6 +420,8 @@ static void note_exit_nf(uint8_t *at, bool conditional)
         g_exits_nf[g_nexits_nf].at = at;
         g_exits_nf[g_nexits_nf].conditional = conditional;
         g_nexits_nf++;
+    } else {
+        g_exits_lost = true;
     }
 }
 
@@ -1891,6 +1904,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_r0_holds = EMU_IR_NO_TEMP;
     g_dead_store = EMU_IR_NO_TEMP;
     g_nexits = 0u;
+    g_exits_lost = false;
     g_has_fast = b->has_fast;
     g_fast = b->fast;
     g_block_start = emu_jit_here();
@@ -2079,7 +2093,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     t2_mov(T2_R0, T2_CNT);
     t2_pop(list | T2_LIST_PC);
 
-    return !emu_jit_overflowed();
+    return !emu_jit_overflowed() && !g_exits_lost;
 }
 
 #endif /* EMU_HOST_JIT_THUMB2 */

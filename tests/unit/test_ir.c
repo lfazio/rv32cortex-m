@@ -816,6 +816,80 @@ static void test_lower_add(void)
     CHECK_EQ(cpu.r[3], 42u);
 }
 
+/*
+ * More exits than the lowering keeps a patch site for.
+ *
+ * Every exit is a forward jump to the block's epilogue, recorded in a
+ * fixed table and patched when the epilogue's address is known. The
+ * table held 64 and **an exit past the end was simply not recorded**:
+ * its jump kept the zero displacement it was emitted with, which is a
+ * jump to the next instruction. So the 65th exit of a block did not
+ * leave it. A taken branch fell through into the code after it, and a
+ * faulting load's trap exit carried on with the instructions the fault
+ * should have stopped.
+ *
+ * Nothing computed a wrong answer in any suite, because a block needs
+ * 65 loads, stores, helper calls and branches between them to get
+ * there -- and then needs one of the late ones to actually leave.
+ *
+ * The lowering refuses such a block now, which costs it to the
+ * interpreter and nothing else. This takes exit 68 of 70: with the
+ * silent drop it ends at the block's fall-through address with the
+ * marker written, having run straight past a branch that was taken.
+ */
+static void test_lower_more_exits_than_the_table(void)
+{
+    enum { NEXITS = 70 };
+
+    emu_ir_reset(&g_b);
+
+    const uint16_t sel = emu_ir_get(&g_b, 1u);
+
+    for (uint32_t k = 0; k < (uint32_t)NEXITS; k++) {
+        (void)emu_ir_emit(&g_b, EMU_IR_EXIT_IF, (uint8_t)EMU_IR_C_EQ, sel,
+                          emu_ir_const(&g_b, k), 0x1000u + 4u * k, 0u);
+    }
+    /* Reached only if no exit was taken. */
+    emu_ir_put(&g_b, 2u, emu_ir_const(&g_b, 0xBADu));
+    (void)emu_ir_emit(&g_b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                      0x2000u, 0u);
+
+    fake_cpu_t cpu;
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[1] = 68u;
+
+    /*
+     * Either outcome is a correct lowering: refuse the block, or emit
+     * one whose 68th exit leaves. What must not happen is the third.
+     */
+    if (lower_and_run(&cpu)) {
+        CHECK_EQ(cpu.pc, 0x1000u + 4u * 68u);
+        CHECK_EQ(cpu.r[2], 0u);
+    } else {
+        CHECK(!emu_jit_overflowed()); /* refused, not out of room */
+    }
+
+    /* And a block that fits is still lowered: the control. */
+    emu_ir_reset(&g_b);
+
+    const uint16_t sel2 = emu_ir_get(&g_b, 1u);
+
+    for (uint32_t k = 0; k < 8u; k++) {
+        (void)emu_ir_emit(&g_b, EMU_IR_EXIT_IF, (uint8_t)EMU_IR_C_EQ, sel2,
+                          emu_ir_const(&g_b, k), 0x1000u + 4u * k, 0u);
+    }
+    (void)emu_ir_emit(&g_b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                      0x2000u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[1] = 5u;
+    if (!lower_and_run(&cpu)) {
+        CHECK(false);
+        return;
+    }
+    CHECK_EQ(cpu.pc, 0x1000u + 4u * 5u);
+}
+
 /* Register 0 reads as zero and discards writes, as both guests define. */
 static void test_lower_zero_register(void)
 {
@@ -1962,6 +2036,7 @@ void test_ir(void)
 #if defined(EMU_HOST_JIT_X86_64)
     test_lower_add();
     test_lower_zero_register();
+    test_lower_more_exits_than_the_table();
     test_zero_register_write_then_read();
     test_zero_register_not_forwarded();
     test_lower_bit_ops();
