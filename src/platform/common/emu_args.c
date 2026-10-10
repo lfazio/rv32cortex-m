@@ -117,7 +117,7 @@ void emu_args_usage(void)
         "  --net BACKEND        a virtio network interface. 'loop' hands",
         "                       every frame back to the guest and needs no",
         "                       host setup; 'tap:NAME' attaches to a tap",
-        "                       that already exists (see docs/virtio.md).",
+        "                       that already exists (see docs/TODO.md).",
         "  --virtio-console     a virtio console beside the NS16550.",
         "  --virtio-input       present a virtio keyboard and mouse, for an",
         "                       OS driver to bind to. The simple polled",

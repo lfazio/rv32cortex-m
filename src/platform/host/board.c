@@ -30,6 +30,7 @@
 
 /* emucore. */
 #include "emu/emu_cpu.h"
+#include "emu/emu_cycles.h"
 #include "emu/emu_gdb.h"
 #include "emu/emu_memmap.h"
 
@@ -687,15 +688,9 @@ uint32_t board_flash_last_error(void)
 /* ------------------------------------------------------------------ */
 
 /*
- * Guest time advances with instructions retired: there is no wall clock
- * worth tracking here, and a deterministic time base is what makes two
- * runs of the same guest comparable -- which is the whole point of the
- * architecture suite. One tick per instruction matches the rate the cycle
- * counter advances at, which is what its Sail config declares.
- *
- * Once per round, not once per core, or it would run N times fast. The
- * firmware answers this hook from a real cycle counter instead, because
- * its guest drives real peripherals.
+ * What --timer-hz divides the guest's clock by. The clock itself is the
+ * host's monotonic one; see board_time_now below for why it stopped
+ * being a count of retired instructions.
  */
 static uint32_t g_timer_div = 1u;
 
@@ -782,13 +777,22 @@ emu_input_t *board_mouse(void)
     return &g_mouse;
 }
 
-static uint32_t g_time_epoch;
+/*
+ * Accumulated, not subtracted from an epoch. board_cycles() is 32 bits
+ * of microseconds and wraps every 71.6 minutes; taken as a difference
+ * from the start, a guest's clock went back to zero at that moment --
+ * an evening of a booted Linux, or of DOOM. The firmware had the same
+ * defect at 19.9 seconds, which is how it was found; see emu_cycles.h.
+ * The run loop reads this every slice, so two readings are never a wrap
+ * apart.
+ */
+static emu_cycles_t g_time;
 
 uint64_t board_time_now(void)
 {
     const uint32_t div = (g_timer_div != 0u) ? g_timer_div : 1u;
 
-    return (uint64_t)(board_cycles() - g_time_epoch) / div;
+    return emu_cycles_read(&g_time, board_cycles()) / div;
 }
 
 /*
@@ -1229,7 +1233,7 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
 
     board_ram = g_ram;
     board_ram_size = g_opt.ram_size;
-    g_time_epoch = board_cycles();
+    emu_cycles_start(&g_time, board_cycles());
 
     /* Found, not installed -- emu_main calls emu_image_set. */
     cfg->image = image;
