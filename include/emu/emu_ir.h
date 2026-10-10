@@ -757,6 +757,7 @@ typedef struct emu_ir_opt_stats {
     uint32_t flags_removed; /* dead EMU_IR_SETF deleted              */
     uint32_t gets_removed; /* guest register reloads elided         */
     uint32_t puts_removed; /* guest register stores made redundant  */
+    uint32_t setpcs_removed; /* pc writes overwritten unobserved     */
     uint32_t folded; /* constants absorbed into an immediate  */
     uint32_t addr_folded; /* displacements folded into a LOAD/STORE */
     uint32_t identities; /* no-op arithmetic turned into a move    */

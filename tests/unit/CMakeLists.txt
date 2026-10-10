@@ -575,7 +575,7 @@ endif()
 #
 if(EMU_GUEST_ARCH_PPC)
     foreach(_g "alu:PPC-ALU-END checks=00000044 fails=00000000 ticked"
-               "sys:PPC-SYS-END checks=000000a8 fails=00000000"
+               "sys:PPC-SYS-END checks=000000b7 fails=00000000"
                "coremark:Correct operation validated"
                "crypto:failures 0x00000000")
         string(FIND "${_g}" ":" _at)

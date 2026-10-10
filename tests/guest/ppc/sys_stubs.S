@@ -249,6 +249,43 @@ stub stub_store				/* r3 = address, r4 = value */
 	li	%r3, 0xAA
 	blr
 
+/*
+ * The same faults from the *middle* of a block.
+ *
+ * Every stub above faults on its first instruction, and a block starts
+ * where its caller branched to -- so under a translator the pc is right
+ * by construction and so is every register, whatever the block did
+ * about either. These put two instructions in front. SRR0 then has to
+ * be the third instruction's address rather than the block's, and r6
+ * has to hold what the first two computed: a translator that keeps the
+ * pc or a register in its head until the block ends hands the handler
+ * the value from before.
+ *
+ * Three ways in, because they are three paths through a translator: a
+ * load, a store, and an instruction that goes to a helper.
+ */
+stub stub_load_mid			/* r3 = address */
+	li	%r6, 0x11
+	addi	%r6, %r6, 0x22		/* 0x33, and the handler must see it */
+	lwz	%r6, 0(%r3)		/* faults, so never writes r6 */
+	blr
+
+stub stub_store_mid			/* r3 = address, r4 = value */
+	li	%r6, 0x44
+	addi	%r6, %r6, 0x11		/* 0x55 */
+	stw	%r4, 0(%r3)
+	li	%r6, 0x66		/* never reached */
+	li	%r3, 0xAA
+	blr
+
+stub stub_trap_mid
+	li	%r6, 0x70
+	addi	%r6, %r6, 0x07		/* 0x77 */
+	twi	31, %r0, 0		/* every condition: always taken */
+	li	%r6, 0x66
+	li	%r3, 0xAA
+	blr
+
 stub stub_jump				/* r3 = address; LR stays the caller's */
 	mtctr	%r3
 	bctr

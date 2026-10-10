@@ -71,6 +71,7 @@ u32 wr_esr(u32 v), wr_dear(u32 v), wr_spefscr(u32 v), wr_sprg4(u32 v);
 u32 wr_usprg0(u32 v), wr_l1csr0(u32 v), wr_undef(u32 v);
 void stub_wrteei0(void), stub_wrteei1(void);
 u32 stub_load(u32 a), stub_store(u32 a, u32 v), stub_jump(u32 a), stub_lwarx(u32 a);
+u32 stub_load_mid(u32 a), stub_store_mid(u32 a, u32 v), stub_trap_mid(void);
 u32 stub_resv_w(u32 a, u32 v), stub_stwcx(u32 a, u32 v);
 u32 stub_resv_other(u32 a, u32 v, u32 other), stub_resv_b(u32 a, u32 v);
 u32 stub_resv_h(u32 a, u32 v), stub_lharx(u32 a), stub_multi(u32 buf);
@@ -245,6 +246,23 @@ int main(void)
     check("store-dear", g_trap.dear, 0xD0000004u);
     took("fetch-unmapped", stub_jump(0xD0000100u), 3u, 0u);
     check("fetch-srr0", g_trap.srr0, 0xD0000100u);
+
+    /*
+     * The same again two instructions into a block: the address has to
+     * be the faulting instruction's and not the block's, and what the
+     * block computed before the fault has to be in the register. See
+     * the stubs -- everything above faults on a block's first
+     * instruction, where neither can be wrong.
+     */
+    took("load-mid-block", stub_load_mid(0xD0000000u), 2u, 0u);
+    check("load-mid-srr0", g_trap.srr0, (u32)&stub_load_mid + 8u);
+    check("load-mid-r6", g_trap.r6, 0x33u);
+    took("store-mid-block", stub_store_mid(0xD0000004u, 1u), 2u, ESR_ST);
+    check("store-mid-srr0", g_trap.srr0, (u32)&stub_store_mid + 8u);
+    check("store-mid-r6", g_trap.r6, 0x55u);
+    took("trap-mid-block", stub_trap_mid(), 6u, ESR_PTR);
+    check("trap-mid-srr0", g_trap.srr0, (u32)&stub_trap_mid + 8u);
+    check("trap-mid-r6", g_trap.r6, 0x77u);
 
     /* --- alignment (7.7.6): only what the list names ----------------- */
     took("lwarx-odd", stub_lwarx((u32)g_mem + 1u), 5u, 0u);

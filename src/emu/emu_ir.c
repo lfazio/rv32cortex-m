@@ -360,9 +360,50 @@ static void pass_reg_traffic(emu_ir_block_t *b, const emu_ir_target_t *t,
  * so only a PUT strictly dominated by another PUT with no helper and no
  * block exit between them can go.
  */
-static void pass_dead_puts(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
+/*
+ * The pc is one more register, and SETPC is the PUT that writes it --
+ * so the same walk deletes a SETPC that a later one overwrites with
+ * nothing in between that could observe it.
+ *
+ * It is worth having because frontends emit one per guest instruction:
+ * the pc has to be right wherever a fault can be taken, and saying so
+ * after every instruction is the version of that which cannot be got
+ * wrong. Measured before this existed, SETPC was 19.3% of the code
+ * emitted for RV32 CoreMark and 13% for PowerPC's, on a host where code
+ * size is what decides whether the cache holds the working set.
+ *
+ * Three things differ from a register, and each is a way to get it
+ * wrong:
+ *
+ * - **EXIT writes the pc itself**, so it is an overwrite and not only an
+ *   observation: a SETPC before it with nothing between is dead.
+ * - **EXIT_IF is neither.** Taken, it writes the pc; not taken, it falls
+ *   through to whatever follows. Both ways an earlier SETPC is
+ *   overwritten or it is not, exactly as it would be without the branch,
+ *   so the state passes through unchanged. Treating it as an observer --
+ *   which it is for *registers*, the line below -- would keep the SETPC
+ *   ahead of every conditional branch for nothing.
+ * - **A guest register can be the pc.** ARMv7-M's r15 is, and its
+ *   translator ends a block with EXIT on `GET r15` after a helper has
+ *   written it. So a GET of the register whose slot is pc_offset reads
+ *   the pc and is an observer -- which is why this needs the target,
+ *   and why it deletes nothing when handed none.
+ */
+static bool reg_is_pc(const emu_ir_target_t *t, uint32_t n)
+{
+    return t->reg_offset != NULL && t->reg_offset(n) == t->pc_offset;
+}
+
+static void pass_dead_puts(emu_ir_block_t *b, const emu_ir_target_t *t,
+                           emu_ir_opt_stats_t *st)
 {
     bool seen[IR_MAX_GUEST_REGS];
+    /*
+     * True while every path from here writes the pc again before
+     * anything reads it. False at the end of the block: the dispatcher
+     * reads it there.
+     */
+    bool pc_rewritten = false;
 
     memset(seen, 0, sizeof(seen));
 
@@ -381,6 +422,24 @@ static void pass_dead_puts(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
                 } else {
                     seen[in->imm] = true;
                 }
+            }
+            break;
+
+        case EMU_IR_SETPC:
+            if (t == NULL) {
+                break; /* cannot tell which GET reads the pc */
+            }
+            if (pc_rewritten) {
+                in->dead = true;
+                st->setpcs_removed++;
+            } else {
+                pc_rewritten = true;
+            }
+            break;
+
+        case EMU_IR_GET:
+            if (t != NULL && reg_is_pc(t, in->imm)) {
+                pc_rewritten = false;
             }
             break;
 
@@ -411,10 +470,19 @@ static void pass_dead_puts(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
         case EMU_IR_BITOP_TST:
         case EMU_IR_HELPER:
         case EMU_IR_HELPER_TRAP:
+            /* A fault records the pc, and a helper may read it. */
+            memset(seen, 0, sizeof(seen));
+            pc_rewritten = false;
+            break;
+
         case EMU_IR_EXIT:
+            memset(seen, 0, sizeof(seen));
+            pc_rewritten = true; /* it writes the pc; see above */
+            break;
+
         case EMU_IR_EXIT_IF:
             memset(seen, 0, sizeof(seen));
-            break;
+            break; /* the pc passes through; see above */
 
         default:
             break;
@@ -1092,7 +1160,7 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
      * remove the CONSTs and ADDIs it orphans.
      */
     pass_fuse(b, stats);
-    pass_dead_puts(b, stats);
+    pass_dead_puts(b, t, stats);
     pass_dead_values(b, stats);
     pass_mac(b, stats);
     pass_count_uses(b, stats);
@@ -1102,6 +1170,7 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
     g_opt_totals.flags_removed += stats->flags_removed;
     g_opt_totals.gets_removed += stats->gets_removed;
     g_opt_totals.puts_removed += stats->puts_removed;
+    g_opt_totals.setpcs_removed += stats->setpcs_removed;
     g_opt_totals.folded += stats->folded;
     g_opt_totals.addr_folded += stats->addr_folded;
     g_opt_totals.identities += stats->identities;

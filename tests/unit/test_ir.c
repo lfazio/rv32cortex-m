@@ -276,6 +276,204 @@ static void test_put_kept_across_helper(void)
     CHECK_EQ(count_op(EMU_IR_PUT), 2u);
 }
 
+/* ------------------------------------------------------------------ */
+/* The pc is a register too                                            */
+/* ------------------------------------------------------------------ */
+
+#define NOT EMU_IR_NO_TEMP
+
+static void setpc(uint32_t pc)
+{
+    (void)emu_ir_emit(&g_b, EMU_IR_SETPC, 0u, NOT, NOT, pc, 0u);
+}
+
+/* The pc values the surviving SETPCs write, in order, as a bitmap of
+ * which of up to 32 emitted ones are still live. */
+static uint32_t live_setpcs(void)
+{
+    uint32_t map = 0u;
+    uint32_t k = 0u;
+
+    for (uint32_t i = 0; i < g_b.count; i++) {
+        if (g_b.insn[i].op == (uint8_t)EMU_IR_SETPC) {
+            if (!g_b.insn[i].dead) {
+                map |= 1u << k;
+            }
+            k++;
+        }
+    }
+    return map;
+}
+
+/* A target whose register 15 *is* the pc, as ARMv7-M's is. */
+static uint32_t pcreg_offset(uint32_t n)
+{
+    return n * 4u;
+}
+
+static const emu_ir_target_t g_pcreg_target = {
+    .reg_offset = pcreg_offset,
+    .pc_offset = 15u * 4u,
+};
+
+/*
+ * One SETPC per guest instruction is what a frontend emits, and between
+ * two instructions that cannot fault only the later one matters.
+ */
+static void test_dead_setpc_removed(void)
+{
+    emu_ir_reset(&g_b);
+
+    const uint16_t a = emu_ir_get(&g_b, 1u);
+
+    setpc(0x1000u); /* dead */
+    emu_ir_put(&g_b, 2u, emu_ir_alu(&g_b, EMU_IR_ADD, a, a));
+    setpc(0x1004u); /* dead */
+    emu_ir_put(&g_b, 3u, emu_ir_alu(&g_b, EMU_IR_XOR, a, a));
+    setpc(0x1008u); /* the block ends here: the dispatcher reads it */
+
+    emu_ir_opt_stats_t st;
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
+
+    CHECK_EQ(st.setpcs_removed, 2u);
+    CHECK_EQ(live_setpcs(), 0x4u);
+}
+
+/*
+ * ...but anything that can fault, or call out, sees the pc -- and that
+ * is the direction that produces a wrong answer: a trap recorded at the
+ * address of an *earlier* instruction, which a handler then returns to.
+ *
+ * One case per observer, because the list is a list and the failure
+ * mode of a list is a member left off it.
+ */
+static void test_setpc_kept_before_each_observer(void)
+{
+    static const emu_ir_op_t k_obs[] = {
+        EMU_IR_LOAD,      EMU_IR_STORE,     EMU_IR_HELPER,
+        EMU_IR_HELPER_TRAP, EMU_IR_BITOP_SET, EMU_IR_BITOP_CLR,
+        EMU_IR_BITOP_INV, EMU_IR_BITOP_TST,
+    };
+
+    for (uint32_t k = 0; k < sizeof(k_obs) / sizeof(k_obs[0]); k++) {
+        emu_ir_reset(&g_b);
+
+        const uint16_t a = emu_ir_get(&g_b, 1u);
+
+        setpc(0x2000u); /* must survive: the observer runs under it */
+        (void)emu_ir_emit(&g_b, k_obs[k], EMU_IR_MEM_AUX(4u, 0u), a, a, 0u,
+                          0u);
+        setpc(0x2004u);
+
+        emu_ir_opt_stats_t st;
+        emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
+
+        CHECK_EQ(st.setpcs_removed, 0u);
+        CHECK_EQ(live_setpcs(), 0x3u);
+    }
+}
+
+/* EXIT writes the pc, so a SETPC straight before it wrote it for nobody. */
+static void test_setpc_dead_before_exit(void)
+{
+    emu_ir_reset(&g_b);
+
+    setpc(0x3000u);
+    (void)emu_ir_emit(&g_b, EMU_IR_EXIT, 0u, NOT, NOT, 0x4000u, 0u);
+
+    emu_ir_opt_stats_t st;
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
+
+    CHECK_EQ(st.setpcs_removed, 1u);
+    CHECK_EQ(live_setpcs(), 0x0u);
+    CHECK_EQ(count_op(EMU_IR_EXIT), 1u);
+}
+
+/*
+ * A conditional exit passes the question through, in both directions.
+ *
+ * Taken, it writes the pc; not taken, the next SETPC does. So the one
+ * before it is dead -- unless the fall-through path reaches something
+ * that can fault first, and then it is the address that fault records.
+ * The second half is the case a pass that treated EXIT_IF as an
+ * overwrite would get wrong, and the first is the one a pass that
+ * treated it as an observer would simply never optimise.
+ */
+static void test_setpc_across_conditional_exit(void)
+{
+    emu_ir_opt_stats_t st;
+
+    emu_ir_reset(&g_b);
+    uint16_t a = emu_ir_get(&g_b, 1u);
+
+    setpc(0x5000u); /* dead either way */
+    (void)emu_ir_emit(&g_b, EMU_IR_EXIT_IF, (uint8_t)EMU_IR_C_EQ, a, a,
+                      0x6000u, 0u);
+    setpc(0x5004u);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
+    CHECK_EQ(st.setpcs_removed, 1u);
+    CHECK_EQ(live_setpcs(), 0x2u);
+
+    emu_ir_reset(&g_b);
+    a = emu_ir_get(&g_b, 1u);
+
+    setpc(0x5000u); /* the load below faults at this address */
+    (void)emu_ir_emit(&g_b, EMU_IR_EXIT_IF, (uint8_t)EMU_IR_C_EQ, a, a,
+                      0x6000u, 0u);
+    emu_ir_put(&g_b, 2u,
+               emu_ir_emit(&g_b, EMU_IR_LOAD, EMU_IR_MEM_AUX(4u, 0u), a, NOT,
+                           0u, 0u));
+    setpc(0x5004u);
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
+    CHECK_EQ(st.setpcs_removed, 0u);
+    CHECK_EQ(live_setpcs(), 0x3u);
+}
+
+/*
+ * Where a guest register is the pc, reading that register reads the pc.
+ *
+ * ARMv7-M ends a block with EXIT on `GET r15` after something has
+ * written it. EXIT overwrites the pc, so without this the SETPC is
+ * deleted as dead and the GET hands EXIT whatever was there before.
+ * Register 14 is the control: same shape, not the pc, deleted.
+ */
+static void test_setpc_kept_when_a_register_reads_it(void)
+{
+    emu_ir_opt_stats_t st;
+
+    emu_ir_reset(&g_b);
+    setpc(0x7000u);
+    (void)emu_ir_emit(&g_b, EMU_IR_EXIT, 0u, emu_ir_get(&g_b, 15u), NOT, 0u,
+                      0u);
+    emu_ir_optimise(&g_b, &g_pcreg_target, EMU_IR_F_ALL, &st);
+    CHECK_EQ(st.setpcs_removed, 0u);
+    CHECK_EQ(live_setpcs(), 0x1u);
+
+    emu_ir_reset(&g_b);
+    setpc(0x7000u);
+    (void)emu_ir_emit(&g_b, EMU_IR_EXIT, 0u, emu_ir_get(&g_b, 14u), NOT, 0u,
+                      0u);
+    emu_ir_optimise(&g_b, &g_pcreg_target, EMU_IR_F_ALL, &st);
+    CHECK_EQ(st.setpcs_removed, 1u);
+    CHECK_EQ(live_setpcs(), 0x0u);
+}
+
+/* With no target there is no telling which GET reads the pc. */
+static void test_setpc_untouched_without_a_target(void)
+{
+    emu_ir_reset(&g_b);
+    setpc(0x8000u);
+    setpc(0x8004u);
+
+    emu_ir_opt_stats_t st;
+    emu_ir_optimise(&g_b, NULL, EMU_IR_F_ALL, &st);
+
+    CHECK_EQ(st.setpcs_removed, 0u);
+    CHECK_EQ(live_setpcs(), 0x3u);
+}
+
+#undef NOT
+
 /*
  * A helper may also write the register file, so a read after one cannot
  * be served from a temp captured before it.
@@ -1748,6 +1946,12 @@ void test_ir(void)
     test_dead_put_removed();
     test_put_kept_across_helper();
     test_put_kept_across_faulting_load();
+    test_dead_setpc_removed();
+    test_setpc_kept_before_each_observer();
+    test_setpc_dead_before_exit();
+    test_setpc_across_conditional_exit();
+    test_setpc_kept_when_a_register_reads_it();
+    test_setpc_untouched_without_a_target();
     test_get_not_elided_across_helper();
     test_dead_values();
     test_flagless_frontend();
