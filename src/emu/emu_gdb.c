@@ -61,31 +61,53 @@ static uint32_t hex_to_u32(const uint8_t *s, uint32_t len, uint32_t *out)
 }
 
 /*
- * A register, as gdb wants it in a `g` packet: hex, but *little-endian
- * by byte*. Writing it as plain big-endian hex is the classic mistake
- * and produces byte-swapped registers rather than an error.
+ * A register, as gdb wants it in a `g` packet: hex, byte by byte, in
+ * the *target's* byte order. Writing a little-endian guest's register
+ * as plain big-endian hex is the classic mistake and produces
+ * byte-swapped registers rather than an error. PowerPC is the case
+ * the other way round, and the stub encoded every register
+ * little-endian until there was a big-endian target to serve.
+ *
+ * The order comes from the bus, where the frontend states it once.
  */
-static void put_reg_hex(char *dst, uint32_t v, unsigned bytes)
+static bool reg_big_endian(const emu_gdb_t *g)
 {
+#if EMU_BUS_ANY_BE
+    return g->core->bus != NULL && g->core->bus->big_endian;
+#else
+    (void)g; /* no big-endian frontend in this build, so no field */
+    return false;
+#endif
+}
+
+static void put_reg_hex(const emu_gdb_t *g, char *dst, uint32_t v)
+{
+    const unsigned bytes = g->target->reg_bytes;
+    const bool big = reg_big_endian(g);
+
     for (unsigned b = 0; b < bytes; b++) {
-        const uint8_t byte = (uint8_t)(v >> (8u * b));
+        const unsigned at = big ? (bytes - 1u - b) : b;
+        const uint8_t byte = (uint8_t)(v >> (8u * at));
         *dst++ = hex_digit((unsigned)(byte >> 4));
         *dst++ = hex_digit((unsigned)(byte & 0xFu));
     }
 }
 
-static uint32_t get_reg_hex(const uint8_t *src, unsigned bytes)
+static uint32_t get_reg_hex(const emu_gdb_t *g, const uint8_t *src)
 {
+    const unsigned bytes = g->target->reg_bytes;
+    const bool big = reg_big_endian(g);
     uint32_t v = 0;
 
     for (unsigned b = 0; b < bytes; b++) {
+        const unsigned at = big ? (bytes - 1u - b) : b;
         const int hi = hex_val(src[2u * b]);
         const int lo = hex_val(src[2u * b + 1u]);
 
         if (hi < 0 || lo < 0) {
             break;
         }
-        v |= (uint32_t)(((unsigned)hi << 4) | (unsigned)lo) << (8u * b);
+        v |= (uint32_t)(((unsigned)hi << 4) | (unsigned)lo) << (8u * at);
     }
     return v;
 }
@@ -167,8 +189,8 @@ static void send_stop(emu_gdb_t *g, int sig)
     b[n++] = hex_digit(((unsigned)sig >> 4) & 0xFu);
     b[n++] = hex_digit((unsigned)sig & 0xFu);
 
-    if (g->target->pc_get != NULL) {
-        const unsigned pcno = g->target->nregs - 1u;
+    if (g->target->pc_get != NULL && g->target->pc_regno < g->target->nregs) {
+        const unsigned pcno = g->target->pc_regno;
 
         /* "<regno>:<value>;" -- the register number is hex too. */
         if (pcno >= 16u) {
@@ -176,8 +198,7 @@ static void send_stop(emu_gdb_t *g, int sig)
         }
         b[n++] = hex_digit(pcno & 0xFu);
         b[n++] = ':';
-        put_reg_hex(&b[n], g->target->pc_get(g->core->cpu),
-                    g->target->reg_bytes);
+        put_reg_hex(g, &b[n], g->target->pc_get(g->core->cpu));
         n += 2u * g->target->reg_bytes;
         b[n++] = ';';
     }
@@ -332,8 +353,7 @@ static void cmd_read_regs(emu_gdb_t *g)
         if (n + w >= sizeof(body)) {
             break;
         }
-        put_reg_hex(&body[n], g->target->reg_get(g->core->cpu, r),
-                    g->target->reg_bytes);
+        put_reg_hex(g, &body[n], g->target->reg_get(g->core->cpu, r));
         n += w;
     }
     send_packet(g, body, n);
@@ -347,8 +367,7 @@ static void cmd_write_regs(emu_gdb_t *g, const uint8_t *p, uint32_t len)
         if ((r + 1u) * w > len) {
             break;
         }
-        g->target->reg_set(g->core->cpu, r,
-                           get_reg_hex(&p[r * w], g->target->reg_bytes));
+        g->target->reg_set(g->core->cpu, r, get_reg_hex(g, &p[r * w]));
     }
     send_ok(g);
 }
@@ -365,8 +384,7 @@ static void cmd_read_one_reg(emu_gdb_t *g, const uint8_t *p, uint32_t len)
         send_err(g, 1);
         return;
     }
-    put_reg_hex(body, g->target->reg_get(g->core->cpu, r),
-                g->target->reg_bytes);
+    put_reg_hex(g, body, g->target->reg_get(g->core->cpu, r));
     send_packet(g, body, 2u * g->target->reg_bytes);
 }
 
@@ -379,8 +397,7 @@ static void cmd_write_one_reg(emu_gdb_t *g, const uint8_t *p, uint32_t len)
         send_err(g, 1);
         return;
     }
-    g->target->reg_set(g->core->cpu, r,
-                       get_reg_hex(&p[used + 1u], g->target->reg_bytes));
+    g->target->reg_set(g->core->cpu, r, get_reg_hex(g, &p[used + 1u]));
     send_ok(g);
 }
 

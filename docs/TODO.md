@@ -1090,13 +1090,15 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
         or a conditional return are given back to the interpreter (6%
         of Dhrystone), RAM below 0x10000000 gets no inlined access, and
         interrupt latency is a block. See frontend/armv7m.md.
-      - **No gdb target.** RV32 and G4MH each supply an
-        `emu_gdb_target_t`; this frontend and PowerPC do not, so
-        `--gdb` has nothing to describe the registers with. For a
-        Cortex-M it is r0-r12, sp, lr, pc and xPSR under
-        `org.gnu.gdb.arm.m-profile`, and it is the one frontend where
-        the same gdb can be pointed at real silicon to say what the
-        answer should look like.
+      - ~~**No gdb target.**~~ Done, with PowerPC's, and a real gdb
+        checks all four frontends (`scripts/gdb-check.sh`, the
+        `gdb-check` ctest). Writing it found the stub encoding
+        registers little-endian for a big-endian guest, the stop reply
+        naming the wrong register for every target but RV32, and every
+        ARMv7-M ELF booting from a garbage address. Still not
+        described: the FP registers and MSP/PSP ([gdb.md](gdb.md)).
+        The real-silicon comparison it makes possible -- the same gdb
+        against the M7 and against the emulator -- has not been run.
       - **The board's answers live in `build/`**, not the repository.
         Kept as fixtures, `--rerun` would be a regression suite anyone
         could run without the board; that is a decision about 3 MB of
@@ -1318,6 +1320,17 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       over set bits. RVA20's list is met but for Zicclsm being a build
       option, and Sstvala and Ssccptr being true without a test that
       says so.
+
+- [ ] **gdb: what the four targets still do not describe.** Every
+      register the stub carries is `reg_bytes` wide, and the features
+      gdb has for ARMv7-M's FP registers (`org.gnu.gdb.arm.vfp`, d0..d15)
+      and PowerPC's SPE (`org.gnu.gdb.power.spe`, with a 64-bit `acc`)
+      need 64-bit members -- a per-register width in
+      `emu_gdb_target_t`. Neither new target serves a memory map either,
+      so on the board `load` writes them with `X` rather than through
+      the flash ops; the map is the platform's address space
+      (docs/memory.md), not the frontend's, and RV32's hard-coded one
+      should probably move with them.
 
 - [ ] **rv32: Zihpm counts traps only.** No overflow interrupt
       (Sscofpmf), no privilege filter bits in `mhpmevent`. Linux finds

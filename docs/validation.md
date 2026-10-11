@@ -48,7 +48,9 @@ Current state:
 | `riscv-arch-test`, `EMU_EXTRA_ARGS=--jit` | **496 / 496** — the whole suite through translated code | host, x86-64 |
 | `riscv-tests`, interpreter | **77 / 77** | host |
 | `riscv-tests`, `--jit` through an `EMU_HOST` wrapper | **77 / 77** | host, x86-64 |
-| `ctest`, RV32 tree | 19 tests: unit, the guests, and most of them again under `--jit` | host |
+| `ctest`, RV32 tree | 20 tests: unit, the guests, most of them again under `--jit`, and `gdb-check` | host |
+| `ctest`, all four frontends (`host-all`) | **54 tests**. 20 of them failed in this configuration until their flat images named a frontend: a `.bin` carries no architecture and ran as RV32 | host |
+| `scripts/gdb-check.sh`, the `gdb-check` ctest | a real gdb attached to all four frontends: pc at a breakpoint against the ELF symbol, the stop reply's register number against gdb's, a register round trip, `stepi`, memory | host, x86-64, gdb-multiarch 17.2 |
 | `isatest`, JIT | **748 checks**, 1,129 of 65,829 instructions interpreted — the same two numbers the x86-64 host gives | Nucleo-F746ZG, Thumb-2 |
 | Linux 6.12 under OpenSBI, `scripts/run-linux.sh` | boots to userspace; the test init passes **17 checks** from U-mode on the extensions the device tree declares | host, x86-64 JIT |
 | CoreMark, 120 iterations | `crcfinal 0xd340` on the interpreter and on the JIT at four cache sizes | Nucleo-F746ZG |

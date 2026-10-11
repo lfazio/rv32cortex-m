@@ -76,6 +76,7 @@ What belongs here is only what the recipes do not say:
 ./scripts/build-matrix.sh --test # every configuration, and its ctest
 ./scripts/report-figures.sh     # figures, with the cache vars that set them
 ./scripts/check-doc-flags.sh    # every -D flag in the docs exists
+./scripts/gdb-check.sh BUILD    # a real gdb against each frontend's stub
 ```
 
 **Run both suites.** They cover different things, and a regression that
@@ -2738,6 +2739,44 @@ session, and every one of them recurred:
   value is read has to be checked against how the value is made** --
   print the row the fix was for, and a name that cannot appear is the
   tell.
+
+- **A debugger is a test harness for everything around the core, and
+  the first real one found three defects in a morning.** Writing gdb
+  targets for ARMv7-M and PowerPC, and a script that attaches
+  gdb-multiarch to each frontend:
+
+  - the stub encoded every register **little-endian**, which was right
+    for every target until there was a big-endian one;
+  - the stop reply sent the pc as register `nregs - 1`, which is the pc
+    for RV32 and **`fp` for G4MH** -- and xpsr, xer for the new two;
+  - every ARMv7-M **ELF** took its vector table from `e_entry` and ran
+    0 to 2 instructions from a garbage address. ctest ran the `.bin`s.
+
+  The second had shipped with G4MH's target and nothing looked wrong:
+  gdb 17, still lacking the pc, fetched the whole register file and
+  overwrote the bogus `fp`. So the obvious check -- read a register,
+  flush gdb's cache, read it again -- **passes against the bug**, and so
+  does writing a register and reading it back against a byte-swapped
+  encoding. The checks that can fail compare with something the stub
+  did not produce: the pc at a breakpoint with the ELF's symbol, and the
+  number in the stop reply with gdb's own `maint print remote-registers`.
+  Each was confirmed by reverting its fix.
+
+  And building every frontend into one runner -- no matrix row did --
+  failed 20 tests that pass alone: a flat image carries no architecture,
+  so `armv7m-*.bin` ran as RV32. **A test that only passes in the
+  configuration it was written in is a test of that configuration**;
+  `host-all` is a row now.
+
+  **And the build matrix had its own stale cache.** It reuses
+  `build/mx-<row>`, and `host-both` -- "the default" -- still held
+  `EMU_MAX_REGIONS=16` from before the table was sized per frontend
+  (27 now), so it could not start a G4MH guest: "could not bring the
+  cores up", the third time that message has meant a full region table.
+  Every matrix run passed it, because no test in that row ran a G4MH
+  guest until `gdb-check` did. The script removes each row's cache
+  before configuring now. This file's rule about cache variables
+  outliving the tree applies to the tool written to check the tree.
 
 - **An out-parameter on a hot function is not free, and neither is a
   helper the compiler inlined into it.** A fault that crosses a page

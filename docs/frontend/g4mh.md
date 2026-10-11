@@ -28,6 +28,13 @@ target-supplied registers, so its built-in numbering is the contract and
 the served XML documents it without being able to enforce it.
 `test_gdb_layout` is what holds the two together.
 
+**Every stop reply named the wrong register until `pc_regno`.** The stub
+expedited the pc as register `nregs - 1`, which here is `fp`, not the pc
+at 64. gdb then lacked the pc, fetched the whole register file and so
+overwrote the bogus `fp` -- nothing looked wrong, and the expedite never
+saved a round trip. `scripts/gdb-check.sh` compares the number sent with
+gdb's own.
+
 ---
 
 **There is no reference model.** RV32 has riscv-arch-test, the Berkeley

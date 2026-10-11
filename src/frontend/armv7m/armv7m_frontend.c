@@ -21,10 +21,12 @@
 #include "armv7m/armv7m_ir.h"
 
 #include "emu/emu_cpu.h"
+#include "emu/emu_gdb.h"
 #include "emu/emu_memmap.h"
 
 #include <string.h>
 
+const emu_gdb_target_t *armv7m_gdb_target(void);
 
 static armv7m_cpu_t g_cpu;
 
@@ -146,11 +148,77 @@ static void armv7m_ops_reset(emu_cpu_t *cpu, uint32_t reset_pc)
  * `.bin` with no table runnable, which is what the other three
  * frontends' guests are.
  */
+/*
+ * For an ELF: its entry point, and the base of the PT_LOAD segment that
+ * holds it -- which is where every ARM toolchain puts the vector table,
+ * and where a `.bin` of the same program is loaded. False for anything
+ * that is not a little-endian ELF32 with such a segment.
+ */
+static uint32_t le32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
+static bool elf_table_base(const void *image, uint32_t size, uint32_t *base,
+                           uint32_t *entry)
+{
+    const uint8_t *const e = (const uint8_t *)image;
+
+    if (e == NULL || size < 52u || e[0] != 0x7Fu || e[1] != 'E' ||
+        e[2] != 'L' || e[3] != 'F' || e[4] != 1u /* ELF32 */ ||
+        e[5] != 1u /* little-endian */) {
+        return false;
+    }
+    const uint32_t phoff = le32(e + 28);
+    const uint32_t phentsize = (uint32_t)e[42] | ((uint32_t)e[43] << 8);
+    const uint32_t phnum = (uint32_t)e[44] | ((uint32_t)e[45] << 8);
+    const uint32_t at = le32(e + 24) & ~1u;
+
+    for (uint32_t i = 0; i < phnum; i++) {
+        const uint64_t ph = (uint64_t)phoff + (uint64_t)i * phentsize;
+
+        if (phentsize < 32u || ph + 32u > size) {
+            return false;
+        }
+        const uint8_t *const h = e + ph;
+        const uint32_t vaddr = le32(h + 8);
+        const uint32_t memsz = le32(h + 20);
+
+        if (le32(h) == 1u /* PT_LOAD */ && at >= vaddr &&
+            (uint64_t)at < (uint64_t)vaddr + memsz) {
+            *base = vaddr;
+            *entry = le32(e + 24);
+            return true;
+        }
+    }
+    return false;
+}
+
 static void armv7m_ops_boot(emu_cpu_t *cpu, const emu_boot_info_t *info)
 {
     armv7m_cpu_t *const c = cpu_of(cpu);
     uint32_t sp = 0u;
     uint32_t entry = 0u;
+    uint32_t elf_base = 0u;
+    uint32_t elf_entry = 0u;
+    const bool is_elf =
+        elf_table_base(info->image, info->image_size, &elf_base, &elf_entry);
+
+    /*
+     * **An ELF's entry point is not its vector table.** reset() points
+     * VTOR at the reset pc, which for a `.bin` is the load address --
+     * the table -- and for an ELF is e_entry: the reset *handler*, with
+     * the Thumb bit set. So every ELF read its "table" from an odd
+     * address in the middle of its own code, took a stack pointer and a
+     * reset vector from instruction bytes, and ran 0 to 2 instructions
+     * from an address that changed with the build (0x0442914a,
+     * 0x4b600120). Nothing noticed because ctest runs these guests as
+     * `.bin`; gdb, which needs the ELF for its symbols, did.
+     */
+    if (is_elf) {
+        c->vtor = elf_base;
+    }
 
     c->r[ARMV7M_SP] = (info->ram_base + info->ram_size) & ~7u;
 
@@ -161,6 +229,15 @@ static void armv7m_ops_boot(emu_cpu_t *cpu, const emu_boot_info_t *info)
         c->r[ARMV7M_PC] = entry & ~1u;
         /* EPSR.T comes from the reset vector's low bit, as on silicon. */
         c->xpsr = (c->xpsr & ~ARMV7M_T) | ((entry & 1u) ? ARMV7M_T : 0u);
+    }
+    /*
+     * And where the ELF names an entry its table does not -- no table at
+     * the segment base, or one whose reset vector is elsewhere -- the
+     * ELF is the authority on where it starts.
+     */
+    if (is_elf && entry != elf_entry) {
+        c->r[ARMV7M_PC] = elf_entry & ~1u;
+        c->xpsr = (c->xpsr & ~ARMV7M_T) | ((elf_entry & 1u) ? ARMV7M_T : 0u);
     }
     /* The main stack is the one reset selects, and r13 mirrors it. */
     c->msp = c->r[ARMV7M_SP];
@@ -463,6 +540,7 @@ const emu_cpu_ops_t armv7m_frontend = {
     .reg_name = armv7m_reg_name,
     .reg_read = armv7m_reg_read,
     .reg_write = armv7m_reg_write,
+    .gdb_target = armv7m_gdb_target,
 #if ARMV7M_ENABLE_DISASM
     .disasm = armv7m_disasm,
 #else

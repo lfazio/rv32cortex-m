@@ -95,6 +95,7 @@ host-g4-x3|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DG4MH_PE_COU
 host-g4-mpu8|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DG4MH_MPU_ENTRIES=8|the MPU out-of-range guard is unreachable at 32
 host-ppc|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_PPC=ON|big-endian frontend, alone
 host-armv7m|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_ARMV7M=ON|the Cortex-M guest alone: its SoftFloat build, the SCS, the guests in tests/guest/armv7m
+host-all|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=ON -DEMU_GUEST_ARCH_PPC=ON -DEMU_GUEST_ARCH_ARMV7M=ON|every frontend in one runner: a flat image runs as the default unless its test names the frontend, which 20 tests did not; and gdb-check reaches all four here
 host-trace|host|-DEMU_GUEST_ARCH_G4MH=ON -DEMU_ENABLE_TRACE=ON -DEMU_JIT=OFF|the trace build, which is how pc deltas get read
 host-net|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON|the IP stack on the host, over a pty -- this row exists because it did not, and the whole EMU_NET path stopped compiling here while every other row passed
 f746-rv32|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF|the shipping firmware: Thumb-2 emitter, lwIP/SLIP/TFTP (EMU_NET defaults ON)
@@ -158,6 +159,16 @@ echo "$matrix" | while IFS='|' read -r name plat opts why; do
         stm32*) tc=-DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake ;;
     esac
 
+    # **A fresh cache for every row, every time.** The directories are
+    # reused so that a rerun is incremental, and a reused CMakeCache.txt
+    # keeps every *computed default* from the configure that first wrote
+    # it. host-both carried EMU_MAX_REGIONS=16 from before the region
+    # table was sized per frontend -- 27 is the default now -- so the
+    # row named "the default" could not start a G4MH guest ("could not
+    # bring the cores up"), and passed, because none of its tests ran
+    # one. Removing the cache keeps the objects; a row's options are
+    # exactly what this table says and nothing an older tree said.
+    rm -f "$dir/CMakeCache.txt"
     # shellcheck disable=SC2086
     if ! cmake -S . -B "$dir" -DEMU_PLATFORM="$plat" $tc $opts >"$dir.log" 2>&1; then
         echo "CONFIGURE FAILED  (see $dir.log)"

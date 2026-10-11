@@ -229,6 +229,7 @@ static const char k_g4mh_memmap[] =
 static const emu_gdb_target_t k_g4mh_gdb_target = {
     .nregs = G4MH_GDB_NREGS,
     .reg_bytes = 4u,
+    .pc_regno = G4MH_GDB_PC, /* not the last: fp follows it */
     .reg_get = g4mh_gdb_reg_get,
     .reg_set = g4mh_gdb_reg_set,
     .pc_get = g4mh_gdb_pc_get,

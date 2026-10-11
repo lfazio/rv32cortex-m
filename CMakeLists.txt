@@ -691,6 +691,7 @@ if(EMU_GUEST_ARCH_PPC)
         src/frontend/ppc/ppc_disasm.c
         src/frontend/ppc/ppc_fpu.c
         src/frontend/ppc/ppc_frontend.c
+        src/frontend/ppc/ppc_gdb.c
         src/frontend/ppc/ppc_interp.c
     )
 
@@ -712,6 +713,7 @@ if(EMU_GUEST_ARCH_ARMV7M)
     target_sources(emucore PRIVATE
         $<$<BOOL:${EMU_PAIR_STATS}>:src/frontend/armv7m/armv7m_pairstats.c>
         src/frontend/armv7m/armv7m_frontend.c
+        src/frontend/armv7m/armv7m_gdb.c
         src/frontend/armv7m/armv7m_interp.c
         src/frontend/armv7m/armv7m_decode.c
         src/frontend/armv7m/armv7m_disasm.c

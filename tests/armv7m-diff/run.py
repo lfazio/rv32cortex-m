@@ -74,7 +74,10 @@ def build(out, target, suite="cases"):
 
 
 def run_emu(out, emu, extra=()):
-    r = subprocess.run([emu, "--max-insn", "400000000"] + list(extra) +
+    # A flat binary carries no architecture, so a runner built with more
+    # than one frontend would run it as its default -- RV32 -- and every
+    # case would "differ". Name the frontend.
+    r = subprocess.run([emu, "--frontend", "armv7m", "--max-insn", "400000000"] + list(extra) +
                        [os.path.join(out, "emu.bin")],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     text = r.stdout.decode("latin1")

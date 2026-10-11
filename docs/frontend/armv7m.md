@@ -235,6 +235,28 @@ emulator counts instructions. That makes them tests as well: the
 interrupt lands thousands of times a run in the middle of compiled
 code, and the benchmark's own checksum has to survive it.
 
+**Each runs as an ELF too, and until recently none of them did.** Reset
+reads the vector table at VTOR, and VTOR followed the reset pc -- the
+load address for a `.bin`, which is the table, and `e_entry` for an
+ELF, which is the reset *handler* with the Thumb bit set. So an ELF read
+its stack pointer and reset vector from an odd address inside its own
+code and ran 0 to 2 instructions from an address that changed with the
+build. ctest ran only the `.bin`s. `boot` now points VTOR at the base of
+the segment holding `e_entry`, where the table is, and lets `e_entry`
+win when that table's reset vector disagrees; `guest-armv7m-alu-elf`
+runs the ELF path. gdb, which needs the ELF for its symbols, is what
+found it.
+
+## gdb
+
+`--gdb` serves this frontend: `src/frontend/armv7m/armv7m_gdb.c`
+describes r0..r12, sp, lr, pc and xpsr as gdb's
+`org.gnu.gdb.arm.m-profile`, so gdb knows it is talking to a Cortex-M.
+`xpsr` is packed from the JIT's split flags before it is read. The FP
+registers, MSP/PSP and the masks are not described -- see
+[../gdb.md](../gdb.md) -- and `scripts/gdb-check.sh` attaches a real gdb
+to `armv7m-alu.elf` and checks what it sees.
+
 ## Pair statistics
 
 `-DEMU_PAIR_STATS=ON` histograms adjacent executed pairs, as for the

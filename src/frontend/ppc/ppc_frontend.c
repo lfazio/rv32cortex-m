@@ -15,6 +15,7 @@
  */
 
 #include "emu/emu_cpu.h"
+#include "emu/emu_gdb.h"
 #include "emu/emu_memmap.h"
 
 #include "ppc/ppc_cpu.h"
@@ -23,6 +24,8 @@
 #include "ppc/ppc_ir.h"
 
 #include <string.h>
+
+const emu_gdb_target_t *ppc_gdb_target(void);
 
 static ppc_cpu_t g_cpu;
 
@@ -435,6 +438,7 @@ const emu_cpu_ops_t ppc_frontend = {
     .reg_name = ppc_reg_name,
     .reg_read = ppc_reg_read,
     .reg_write = ppc_reg_write,
+    .gdb_target = ppc_gdb_target,
 
     .advance_time = ppc_ops_advance_time,
     .set_time = ppc_ops_set_time,

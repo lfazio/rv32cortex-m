@@ -148,6 +148,7 @@ static const char k_rv32_memmap[] =
 static const emu_gdb_target_t k_rv32_gdb_target = {
     .nregs = RV_GDB_NREGS,
     .reg_bytes = 4u,
+    .pc_regno = RV_GDB_PC,
     .reg_get = rv_gdb_reg_get,
     .reg_set = rv_gdb_reg_set,
     .pc_get = rv_gdb_pc_get,

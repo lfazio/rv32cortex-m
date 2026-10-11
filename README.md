@@ -464,10 +464,11 @@ gdb-multiarch build/f746/src/platform/stm32f746/emu-stm32f746.elf \
 ```
 
 That debugs the *emulator*. To debug the **guest**, use the built-in RSP
-stub: `emu-host --gdb`, then `target remote :1234`. Two connections,
-two different programs -- [docs/gdb.md](docs/gdb.md) has the rest,
-including the three RSP mistakes that fail by hanging rather than
-erroring.
+stub: `emu-host --gdb`, then `target remote :1234`. It serves all four
+frontends, and `scripts/gdb-check.sh` attaches a real gdb to each. Two
+connections, two different programs -- [docs/gdb.md](docs/gdb.md) has
+the rest, including the three RSP mistakes that fail by hanging rather
+than erroring.
 
 The host `gdb` on Debian is x86-only; use `gdb-multiarch`, or
 `probe-rs gdb`.

@@ -37,6 +37,7 @@ learn what an architecture calls things.
 typedef struct emu_gdb_target {
     unsigned nregs;             /* the length of the `g` packet          */
     unsigned reg_bytes;         /* 4 here                                */
+    unsigned pc_regno;          /* gdb's number for pc -- not the last   */
     uint32_t (*reg_get)(const emu_cpu_t *, unsigned gdb_regno);
     void     (*reg_set)(emu_cpu_t *, unsigned gdb_regno, uint32_t);
     uint32_t (*pc_get)(const emu_cpu_t *);
@@ -48,16 +49,61 @@ typedef struct emu_gdb_target {
 } emu_gdb_target_t;
 ```
 
-RV32's is in `src/frontend/rv32/rv_gdb.c` and G4MH's in
-`src/frontend/g4mh/g4mh_gdb.c`. **PowerPC and ARMv7-M have none yet**,
-so `--gdb` serves those two frontends only; adding one is a target
-descriptor and four accessors.
+Every frontend has one:
+
+| frontend | file | registers | pc is | gdb feature |
+|---|---|---|---|---|
+| RV32 | `src/frontend/rv32/rv_gdb.c` | 33: x0..x31, pc | 32 | `org.gnu.gdb.riscv.cpu` |
+| G4MH | `src/frontend/g4mh/g4mh_gdb.c` | 66: r0..r31, sr0..sr31, pc, fp | 64 | gdb's built-in v850 numbering |
+| ARMv7-M | `src/frontend/armv7m/armv7m_gdb.c` | 17: r0..r12, sp, lr, pc, xpsr | 15 | `org.gnu.gdb.arm.m-profile` |
+| PowerPC | `src/frontend/ppc/ppc_gdb.c` | 38: r0..r31, pc, msr, cr, lr, ctr, xer | 32 | `org.gnu.gdb.power.core` |
+
+Not described, because every register here is `reg_bytes` wide and
+gdb's features for them have 64-bit members: the ARMv7-M FP registers
+(`org.gnu.gdb.arm.vfp` is d0..d15) and PowerPC's SPE upper halves
+(`org.gnu.gdb.power.spe` needs the 64-bit `acc`). Nor MSP/PSP and the
+masks on ARMv7-M, or the PowerPC SPRs -- the state dump has those.
+Neither new target serves a memory map, so on the board `load` writes
+with `X` for them rather than through the flash ops.
+
+### Checked by a real gdb
+
+`scripts/gdb-check.sh [BUILD_DIR]`, and the `gdb-check` ctest wherever
+`gdb-multiarch` is installed, attach gdb to each frontend in the runner
+and compare what it sees with things the stub did not produce:
+
+| check | against | catches |
+|---|---|---|
+| pc at `break *main` | the ELF's symbol | the register byte order |
+| the register number in the stop reply | gdb's remote number for `pc` | expediting the wrong register |
+| a register written, read back after a cache flush | the value written | P/p and g plumbing |
+| `stepi` | the pc before it | run control |
+| a word at the pc | the file (`trust-readonly-sections`), or the image | memory reads |
+
+A register written and read back **cannot** see the byte order -- a
+swapped encoding is swapped both ways and round-trips perfectly -- which
+is why the pc is compared with the symbol. Each check was confirmed by
+reverting what it guards: little-endian registers make PowerPC's pc at
+`main` read `e4050080` for `800005e4`; "the pc is the last register"
+makes the other three report 16, 37 and 65 for 15, 32 and 64.
 
 ### The register order is not a choice
 
 gdb's `g` packet is a fixed per-architecture concatenation and gdb does
 not ask. For rv32 it is `x0..x31` then `pc`, 32-bit, **little-endian by
-byte**.
+byte** -- because rv32 is little-endian, not because the packet is. Each
+register travels in the *target's* byte order, which the stub takes from
+the bus (`emu_bus_t::big_endian`, set once by a big-endian frontend). It
+encoded every register little-endian until PowerPC had a target, and a
+round trip through gdb could not have shown it.
+
+**The stop reply names the pc by number, and the number is not "the
+last register".** The stub used `nregs - 1`, which is the pc for RV32
+and `fp` for G4MH -- so every G4MH stop told gdb "fp = pc". It never
+showed: gdb 17, still lacking the pc, fetched the whole `g` packet and
+overwrote the bogus `fp`. So the expedite was worthless on every stop,
+and comparing a register before and after a cache flush -- the obvious
+test -- passes against the bug. `pc_regno` says which register it is.
 
 Getting it wrong yields an `info registers` that is plausible and
 entirely wrong — every value present, every value in the wrong place. So

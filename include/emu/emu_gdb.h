@@ -27,7 +27,8 @@
  * fixed concatenation defined per architecture, and getting it wrong
  * does not produce an error, it produces plausible wrong values in
  * `info registers`. For RV32 it is x0..x31 then pc, all 32-bit,
- * little-endian, which is what rv_gdb.c implements.
+ * little-endian, which is what rv_gdb.c implements; armv7m_gdb.c,
+ * ppc_gdb.c and g4mh_gdb.c are the other three.
  *
  * Transport is anything that can move bytes: emu_gdb_rx() takes what
  * arrived and the tx callback is handed what to send. src/net/net_gdb.c
@@ -71,8 +72,26 @@ typedef struct emu_gdb_target {
      * the `g` packet in registers.
      */
     unsigned nregs;
-    unsigned reg_bytes; /* per register; 4 on both targets */
+    unsigned reg_bytes; /* per register; 4 on every target */
 
+    /*
+     * gdb's number for the pc, which the stop reply sends along so gdb
+     * need not ask. It is *not* "the last register": G4MH has `fp`
+     * after it, ARM `xpsr`, PowerPC five control registers. The stub
+     * assumed it was, so every G4MH stop reported the pc as `fp`. gdb
+     * 17 then fetched the whole register file because it still lacked
+     * the pc, which overwrote the bogus `fp` and hid it -- and made the
+     * expedite worthless on every stop. scripts/gdb-check.sh compares
+     * this with gdb's own remote number for `pc`.
+     */
+    unsigned pc_regno;
+
+    /*
+     * Values, not encodings. The `g` packet carries each register in
+     * the *target's* byte order, which the stub takes from the bus --
+     * the one place a big-endian frontend already states it -- rather
+     * than from a second flag here that could disagree with it.
+     */
     uint32_t (*reg_get)(const emu_cpu_t *cpu, unsigned gdb_regno);
     void (*reg_set)(emu_cpu_t *cpu, unsigned gdb_regno, uint32_t v);
 

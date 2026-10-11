@@ -19,6 +19,18 @@ scripts/build-matrix.sh host       # just the host rows
 scripts/build-matrix.sh f746-g4    # one row
 ```
 
+Each row is configured **from a fresh cache** every time: its directory
+is reused so a rerun is incremental, but `CMakeCache.txt` is removed
+first. A reused cache keeps every computed default from whichever tree
+first wrote it, and `host-both` -- the row called "the default" -- had
+carried a region table sized before G4MH was counted, so it could not
+start a G4MH guest while all its tests passed.
+
+More than one guest frontend in a host runner means a flat image runs as
+the *default* frontend unless it is named: a `.bin` carries no
+architecture. Tests that run one name theirs (`--frontend armv7m`), and
+`host-all` builds all four together to keep them honest.
+
 ## The three axes
 
 They are independent, and that is the point of the layout: `src/emu/` has

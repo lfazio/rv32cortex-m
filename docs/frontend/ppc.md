@@ -33,7 +33,8 @@ of them can catch is a shared misreading of the manual.
 | SPE and the vector half of the EFPU (`ev*`) | **not implemented** — SPE-unavailable while MSR[SPE] is clear, as the core does; an illegal-instruction program interrupt once it is set |
 | Classic floating point (`fadd` …) | not on this core |
 | Caches, the debug facility (IAC/DAC/DBCR do hold what is written) | not modelled |
-| gdb stub, pair statistics | not written for this frontend |
+| gdb stub | `src/frontend/ppc/ppc_gdb.c`: r0..r31, pc, msr, cr, lr, ctr, xer as `org.gnu.gdb.power.core`, big-endian; not the SPE halves or the SPRs ([../gdb.md](../gdb.md)) |
+| pair statistics | not written for this frontend |
 | More than one core | no |
 
 Both backends run everything in the table: the interpreter, and a JIT
@@ -426,6 +427,8 @@ existing rather than on the frontend being compiled in.
   framework's sizes more than of this frontend.
 - **A spurious wake from `wait`** — an interrupt that arrives and is
   masked again before delivery — is not tested.
-- **No gdb target and no pair statistics.**
+- **No pair statistics.** The gdb target exists; it does not describe
+  the SPE upper halves, which gdb wants alongside a 64-bit `acc` the
+  stub cannot carry, nor the SPRs.
 - Dhrystone is not built: it needs a 32-bit `libgcc` this toolchain does
   not ship.

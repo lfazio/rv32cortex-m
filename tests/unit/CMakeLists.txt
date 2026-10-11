@@ -85,9 +85,22 @@ endif()
 #
 if(TARGET guest-armv7m-alu)
     add_test(NAME guest-armv7m-alu
-             COMMAND emu-host --max-insn 200000
+             COMMAND emu-host --frontend armv7m --max-insn 200000
                      "${CMAKE_BINARY_DIR}/guest/armv7m-alu.bin")
     set_tests_properties(guest-armv7m-alu PROPERTIES
+        LABELS fast
+        PASS_REGULAR_EXPRESSION "ARMV7M-ALU-OK")
+    #
+    # The same program as an ELF, which is a different boot. Every
+    # ARMv7-M ELF used to take its vector table from e_entry -- the
+    # reset handler, Thumb bit and all -- and ran 0 to 2 instructions
+    # from a garbage address, while every test here passed on the
+    # `.bin`. gdb needs the ELF for its symbols, which is what found it.
+    #
+    add_test(NAME guest-armv7m-alu-elf
+             COMMAND emu-host --max-insn 200000
+                     "${CMAKE_BINARY_DIR}/guest/armv7m-alu.elf")
+    set_tests_properties(guest-armv7m-alu-elf PROPERTIES
         LABELS fast
         PASS_REGULAR_EXPRESSION "ARMV7M-ALU-OK")
 endif()
@@ -122,7 +135,7 @@ endif()
 #
 if(TARGET guest-armv7m-t2exec)
     add_test(NAME guest-armv7m-t2exec
-             COMMAND emu-host --max-insn 2000000
+             COMMAND emu-host --frontend armv7m --max-insn 2000000
                      "${CMAKE_BINARY_DIR}/guest/armv7m-t2exec.bin")
     set_tests_properties(guest-armv7m-t2exec PROPERTIES
         LABELS fast
@@ -131,7 +144,7 @@ endif()
 
 if(TARGET guest-armv7m-nvic)
     add_test(NAME guest-armv7m-nvic
-             COMMAND emu-host --max-insn 5000000
+             COMMAND emu-host --frontend armv7m --max-insn 5000000
                      "${CMAKE_BINARY_DIR}/guest/armv7m-nvic.bin")
     set_tests_properties(guest-armv7m-nvic PROPERTIES
         LABELS fast
@@ -140,7 +153,7 @@ endif()
 
 if(TARGET guest-armv7m-itblock)
     add_test(NAME guest-armv7m-itblock
-             COMMAND emu-host --max-insn 200000
+             COMMAND emu-host --frontend armv7m --max-insn 200000
                      "${CMAKE_BINARY_DIR}/guest/armv7m-itblock.bin")
     set_tests_properties(guest-armv7m-itblock PROPERTIES
         LABELS fast
@@ -149,7 +162,7 @@ endif()
 
 if(TARGET guest-armv7m-hello)
     add_test(NAME guest-armv7m-hello
-             COMMAND emu-host --max-insn 1000
+             COMMAND emu-host --frontend armv7m --max-insn 1000
                      "${CMAKE_BINARY_DIR}/guest/armv7m-hello.bin")
     set_tests_properties(guest-armv7m-hello PROPERTIES
         LABELS fast
@@ -175,7 +188,7 @@ if(EMU_GUEST_ARCH_ARMV7M AND EMU_JIT)
         list(GET _p 2 _cap)
         if(TARGET guest-armv7m-${_name})
             add_test(NAME guest-armv7m-${_name}-jit
-                     COMMAND emu-host --jit --max-insn ${_cap}
+                     COMMAND emu-host --frontend armv7m --jit --max-insn ${_cap}
                              "${CMAKE_BINARY_DIR}/guest/armv7m-${_name}.bin")
             set_tests_properties(guest-armv7m-${_name}-jit PROPERTIES
                 LABELS fast
@@ -210,14 +223,14 @@ endif()
 #
 if(TARGET guest-armv7m-coremark)
     add_test(NAME guest-armv7m-coremark
-             COMMAND emu-host --max-insn 400000000
+             COMMAND emu-host --frontend armv7m --max-insn 400000000
                      "${CMAKE_BINARY_DIR}/guest/armv7m-coremark.bin")
     set_tests_properties(guest-armv7m-coremark PROPERTIES
         LABELS fast
         PASS_REGULAR_EXPRESSION "Correct operation validated")
     if(EMU_JIT)
         add_test(NAME guest-armv7m-coremark-jit
-                 COMMAND emu-host --jit --max-insn 400000000
+                 COMMAND emu-host --frontend armv7m --jit --max-insn 400000000
                          "${CMAKE_BINARY_DIR}/guest/armv7m-coremark.bin")
         set_tests_properties(guest-armv7m-coremark-jit PROPERTIES
             LABELS fast
@@ -234,13 +247,13 @@ foreach(_g crypto:failures\ 0x00000000 dhrystone:Dhrystones\ per\ Second)
     list(GET _p 1 _want)
     if(TARGET guest-armv7m-${_name})
         add_test(NAME guest-armv7m-${_name}
-                 COMMAND emu-host --max-insn 400000000
+                 COMMAND emu-host --frontend armv7m --max-insn 400000000
                          "${CMAKE_BINARY_DIR}/guest/armv7m-${_name}.bin")
         set_tests_properties(guest-armv7m-${_name} PROPERTIES
             LABELS fast PASS_REGULAR_EXPRESSION "${_want}")
         if(EMU_JIT)
             add_test(NAME guest-armv7m-${_name}-jit
-                     COMMAND emu-host --jit --max-insn 400000000
+                     COMMAND emu-host --frontend armv7m --jit --max-insn 400000000
                              "${CMAKE_BINARY_DIR}/guest/armv7m-${_name}.bin")
             set_tests_properties(guest-armv7m-${_name}-jit PROPERTIES
                 LABELS fast PASS_REGULAR_EXPRESSION "${_want}")
@@ -564,7 +577,7 @@ endif()
 # passing.
 if(TARGET guest-ppc-isatest AND EMU_GUEST_ARCH_PPC)
     add_test(NAME guest-ppc-isatest
-             COMMAND emu-host --load 0x80000000 --max-insn 200000
+             COMMAND emu-host --frontend ppc --load 0x80000000 --max-insn 200000
                      "${CMAKE_BINARY_DIR}/tests/guest/ppc/isatest.bin")
     set_tests_properties(guest-ppc-isatest PROPERTIES
         LABELS fast
@@ -633,7 +646,7 @@ if(EMU_GUEST_ARCH_PPC)
     endif()
     if(TARGET guest-ppc-isatest AND EMU_JIT)
         add_test(NAME guest-ppc-isatest-jit
-                 COMMAND emu-host --jit --load 0x80000000 --max-insn 200000
+                 COMMAND emu-host --frontend ppc --jit --load 0x80000000 --max-insn 200000
                          "${CMAKE_BINARY_DIR}/tests/guest/ppc/isatest.bin")
         set_tests_properties(guest-ppc-isatest-jit PROPERTIES
             LABELS fast
@@ -706,4 +719,26 @@ if(EMU_GUEST_ARCH_PPC)
             set_tests_properties(ppc-decode-compiled PROPERTIES LABELS fast)
         endif()
     endif()
+endif()
+
+#
+# A real gdb against the stub, once per frontend in this build that has
+# a guest to attach to. scripts/gdb-check.sh says what it compares and
+# why each comparison can fail; it found the stub encoding every
+# register little-endian, the stop reply sending the pc under the
+# number of whatever register came last, and every ARMv7-M ELF booting
+# from a garbage address. Skipped (77) where gdb-multiarch is absent.
+#
+find_program(GDB_MULTIARCH NAMES gdb-multiarch)
+if(GDB_MULTIARCH AND TARGET emu-host)
+    add_test(NAME gdb-check
+             COMMAND "${CMAKE_SOURCE_DIR}/scripts/gdb-check.sh"
+                     "${CMAKE_BINARY_DIR}")
+    set_tests_properties(gdb-check PROPERTIES
+        LABELS gdb
+        SKIP_RETURN_CODE 77
+        ENVIRONMENT "GDB=${GDB_MULTIARCH}"
+        # The exit status is the verdict: 0 only when at least one
+        # frontend ran and every one passed, 77 when none could run.
+        FAIL_REGULAR_EXPRESSION "    FAIL ")
 endif()
