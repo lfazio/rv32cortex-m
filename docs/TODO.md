@@ -26,10 +26,18 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
         reservation table, per-core JIT state, and a serialised console
         first ([os.md](os.md#toward-an-smp-host)).
       - [ ] **The F446 and the N6 have built and not run** under
-        FreeRTOS. The N6's `flash` target also needs a probe selector
-        before it is safe with two ST-LINKs attached: it does not take
-        `EMU_PROBE`, and STM32_Programmer_CLI picks whichever enumerates
-        first.
+        FreeRTOS. The N6's `flash` target had never worked: without
+        `VERBATIM` the echo's "(BOOT1)" was a `/bin/sh` syntax error,
+        and a second load hung in the signing tool's overwrite prompt.
+        Both are fixed and it takes `EMU_PROBE` now. Loaded that way,
+        **the firmware from before FreeRTOS is as silent as the one
+        after** -- "File download complete", "Start operation achieved
+        successfully", and nothing on the console -- so the question is
+        the board or the load path, not the port. CLAUDE.md records
+        this board going quiet after repeated attaches until replugged,
+        and the path that last booted Linux on it was CubeIDE's launch
+        (`emu-stm32n6.launch`, untracked). Replug, then load the old
+        firmware first: if it speaks, the new one is the question.
       - [ ] **The F746's hot path is at the mercy of the linker.**
         Linking the kernel moved the emulator's hot functions 456 bytes
         and CoreMark went 140.0 → 152.8 cycles an instruction at 32 KB
