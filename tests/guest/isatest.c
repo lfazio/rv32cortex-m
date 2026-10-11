@@ -1550,7 +1550,13 @@ static uint32_t g_leaf[1024] __attribute__((aligned(4096)));
 #define PAGE_DATA 0u
 #define PAGE_EXEC1 1u
 #define PAGE_EXEC2 2u
-static uint32_t g_page[3 * 1024] __attribute__((aligned(4096)));
+/*
+ * A fourth page nothing maps, after the third. test_split_access asks
+ * for memory that runs off the end of the third page; an emulator that
+ * takes it physically contiguous lands here, in zeros, rather than in
+ * whatever the linker put next.
+ */
+static uint32_t g_page[4 * 1024] __attribute__((aligned(4096)));
 
 static uint32_t page_pa(uint32_t which)
 {
@@ -2378,11 +2384,11 @@ static void test_zicond(void)
     check("zicond-no-trap", g_trap_count - before, 0u);
 }
 
-/* ---- Zihintpause, Zihintntl ---------------------------------------- */
+/* ---- Zihintpause, Zihintntl, Zicbop -------------------------------- */
 
 /*
- * Two extensions whose every instruction does nothing, so the only thing
- * there is to get wrong is refusing them.
+ * Three extensions whose every instruction does nothing, so the only
+ * thing there is to get wrong is refusing them.
  *
  * **That is the test: no trap, and the next instruction runs.** Each
  * hint is an encoding of something older -- `pause` a FENCE with an
@@ -2432,7 +2438,47 @@ static void test_hints(void)
 
     check("hints-no-trap", g_trap_count - before, 0u);
     check("hints-all-ran", sum, 1023u);
+
+    /*
+     * fence.tso, which is not a hint and not optional: the RVI20 profile
+     * calls it mandatory in the base ISA and notes it was once described
+     * as optional by mistake. A FENCE with fm = 1000; a decoder that
+     * insists the reserved-looking top bits are zero traps on it.
+     */
+    {
+        const uint32_t b1 = g_trap_count;
+
+        __asm__ volatile("fence.tso");
+        check("fence.tso-no-trap", g_trap_count - b1, 0u);
+    }
     check("hints-x0-stays-zero", zero, 0u);
+
+    /*
+     * Zicbop: three more, ORIs into x0, and the one thing that earns
+     * them lines of their own -- the operand looks like an address and
+     * is not one. Nothing is mapped at 0x70000000: a load there is an
+     * access fault, which test_traps asserts, and a prefetch there is
+     * nothing at all. An implementation that "does" the prefetch by
+     * reaching for the memory faults on a guest that asked for a hint.
+     */
+    {
+        const uint32_t b2 = g_trap_count;
+        uint32_t n, z;
+
+        __asm__ volatile(WITH_EXT("zicbop", "li   %0, 1\n"
+                                            "prefetch.i 0(%2)\n"
+                                            "addi %0, %0, 2\n"
+                                            "prefetch.r 32(%2)\n"
+                                            "addi %0, %0, 4\n"
+                                            "prefetch.w -64(%2)\n"
+                                            "addi %0, %0, 8\n"
+                                            "add  %1, x0, x0")
+                         : "=&r"(n), "=&r"(z)
+                         : "r"(0x70000000u));
+        check("prefetch-no-trap", g_trap_count - b2, 0u);
+        check("prefetch-all-ran", n, 15u);
+        check("prefetch-x0-stays-zero", z, 0u);
+    }
 }
 
 /* ---- Zalasr -------------------------------------------------------- */
@@ -3144,7 +3190,7 @@ static void test_cbo_below_m(void)
      * the check found an entry by the access's first byte -- so an
      * access that began below an entry and ran into it was handed on to
      * the next one, here the background that permits everything. Four
-     * bytes against four-byte entries cannot do that. Sixty-four can:
+     * bytes against four-byte entries cannot do that. Thirty-two can:
      * entry 9 is one word in the middle of the block, with no
      * permissions at all.
      */
@@ -3152,6 +3198,9 @@ static void test_cbo_below_m(void)
     csr_write("pmpcfg2", 0x1000u); /* entry 9: NA4, ---, unlocked */
     check("s-cbo-straddle-cfg", (csr_read("pmpcfg2") >> 8) & 0xFFu, 0x10u);
     check("s-cbo-straddle-refused", cbo_from_smode(0xF0u), 0x8000000Fu);
+    /* cbo.zero is one store of the block. It was a store per word, so
+     * the four words below the denied one were zeroed first. */
+    check("s-cbo-straddle-nothing-zeroed", g_block[0], 0x11111111u);
     /* All four as a store access fault: 7, which is 2 with 5 xored in. */
     check("s-cbo-straddle-cause", g_cbo_s[1], 5u);
     csr_write("pmpcfg2", 0u);
@@ -3259,6 +3308,179 @@ static void test_double_alignment(void)
 }
 #endif
 
+/* ---- an access in two parts ---------------------------------------- */
+
+/*
+ * Two virtually adjacent pages over physical memory that is not: A maps
+ * the *third* page of g_page and B, the page after it, maps the *first*.
+ * C, after B, maps nothing.
+ *
+ * A misaligned access that runs from A into B is two pieces of physical
+ * memory with a different translation each. The emulator translated its
+ * first byte and then took four *physically* contiguous bytes -- so it
+ * read the tail of the third page and whatever followed it in memory,
+ * not the first page, and it did so without complaint when the second
+ * virtual page was not mapped at all. RV32_MISALIGNED is on by default.
+ */
+#define VA_SPLIT_A 0x90010000u
+#define VA_SPLIT_B 0x90011000u
+#define VA_SPLIT_C 0x90012000u
+
+static volatile uint32_t g_split[20];
+
+static void smode_split(void)
+{
+#if RV32_MISALIGNED
+    volatile uint32_t *const a_tail =
+        (volatile uint32_t *)(page_pa(PAGE_EXEC2) + 0xFFCu);
+    volatile uint32_t *const b_head = (volatile uint32_t *)page_pa(PAGE_DATA);
+    uint32_t before, v;
+
+    /* Read across: two bytes from each side. */
+    __asm__ volatile("lw %0, 0(%1)" : "=&r"(v) : "r"(VA_SPLIT_B - 2u));
+    g_split[0] = v;
+    __asm__ volatile("lh %0, 0(%1)" : "=&r"(v) : "r"(VA_SPLIT_B - 1u));
+    g_split[1] = v;
+
+    /* Write across: three bytes on one side and one on the other. */
+    __asm__ volatile("sw %0, 0(%1)" ::"r"(0xA1B2C3D4u),
+                     "r"(VA_SPLIT_B - 3u)
+                     : "memory");
+    g_split[2] = *a_tail;
+    g_split[3] = *b_head;
+
+    /*
+     * Into the page that is not there. A fault, naming *that* page --
+     * the first half is mapped, so a handler told the first address
+     * would find nothing to fix and return to the same fault -- and
+     * with the half that could have been written left alone.
+     */
+    before = g_trap_count;
+    __asm__ volatile("sw %0, 0(%1)" ::"r"(0xDEADBEEFu),
+                     "r"(VA_SPLIT_C - 2u)
+                     : "memory");
+    g_split[4] = g_trap_count - before;
+    g_split[5] = g_last_cause;
+    g_split[6] = g_last_tval;
+
+    before = g_trap_count;
+    v = 0x5A5A5A5Au;
+    __asm__ volatile("lw %0, 0(%1)" : "+r"(v) : "r"(VA_SPLIT_C - 1u));
+    g_split[7] = g_trap_count - before;
+    g_split[8] = g_last_cause;
+    g_split[9] = g_last_tval;
+    g_split[10] = v;
+
+#if defined(__riscv_flen) && (__riscv_flen >= 32)
+    /* A double whose two words are in two pages... */
+    __asm__ volatile(WITH_EXT("d", "fmv.w.x ft0, %1\n"
+                                   "fsd     ft0, 0(%0)") ::"r"(VA_SPLIT_B - 4u),
+                     "r"(0x0D0E0F00u)
+                     : "ft0", "memory");
+    g_split[11] = *a_tail;
+    g_split[12] = *b_head;
+
+    /* ...and one whose second word has nowhere to go. */
+    before = g_trap_count;
+    __asm__ volatile(WITH_EXT("d", "fsd ft0, 0(%0)") ::"r"(VA_SPLIT_C - 4u)
+                     : "memory");
+    g_split[13] = g_trap_count - before;
+    g_split[14] = g_last_cause;
+    g_split[15] = g_last_tval;
+#endif
+#endif /* RV32_MISALIGNED */
+    LEAVE_SMODE();
+}
+
+#if defined(__riscv_flen) && (__riscv_flen >= 32)
+/* An aligned double, with PMP over its upper word only. */
+static void smode_fsd_pmp(void)
+{
+    const uint32_t before = g_trap_count;
+
+    __asm__ volatile(WITH_EXT("d", "fmv.w.x ft0, %1\n"
+                                   "fsd     ft0, 0(%0)") ::"r"(g_dbl),
+                     "r"(0xCAFEF00Du)
+                     : "ft0", "memory");
+    g_split[16] = g_trap_count - before;
+    g_split[17] = g_last_cause;
+    g_split[18] = g_last_tval;
+    LEAVE_SMODE();
+}
+#endif
+
+static void test_split_access(void)
+{
+    volatile uint32_t *const a_tail =
+        (volatile uint32_t *)(page_pa(PAGE_EXEC2) + 0xFFCu);
+    volatile uint32_t *const b_head = (volatile uint32_t *)page_pa(PAGE_DATA);
+    volatile uint32_t *const b_tail =
+        (volatile uint32_t *)(page_pa(PAGE_DATA) + 0xFFCu);
+
+    csr_write("medeleg", 0u);
+    csr_set("mstatus", 1u << 13); /* FS on: the doubles below */
+
+    *a_tail = 0x44332211u;
+    *b_head = 0x88776655u;
+    *b_tail = 0x0F0E0D0Cu;
+    g_leaf[VPN0(VA_SPLIT_A)] = leaf_pte(
+        page_pa(PAGE_EXEC2), PTE_V | PTE_R | PTE_W | PTE_A | PTE_D);
+    g_leaf[VPN0(VA_SPLIT_B)] =
+        leaf_pte(page_pa(PAGE_DATA), PTE_V | PTE_R | PTE_W | PTE_A | PTE_D);
+    g_leaf[VPN0(VA_SPLIT_C)] = 0u;
+
+    csr_write("satp", SATP_SV32 | ((uint32_t)(uintptr_t)g_root >> 12));
+    __asm__ volatile("sfence.vma" ::: "memory");
+    enter_smode(smode_split);
+    csr_write("satp", 0u);
+
+#if RV32_MISALIGNED
+    check("split-lw", g_split[0], 0x66554433u);
+    check("split-lh", g_split[1], 0x5544u);
+    check("split-sw-first-page", g_split[2], 0xB2C3D411u);
+    check("split-sw-second-page", g_split[3], 0x887766A1u);
+
+    check("split-sw-hole-taken", g_split[4], 1u);
+    check("split-sw-hole-cause", g_split[5], 15u);
+    check("split-sw-hole-tval", g_split[6], VA_SPLIT_C);
+    check("split-lw-hole-taken", g_split[7], 1u);
+    check("split-lw-hole-cause", g_split[8], 13u);
+    check("split-lw-hole-tval", g_split[9], VA_SPLIT_C);
+    check("split-lw-hole-rd", g_split[10], 0x5A5A5A5Au);
+#if defined(__riscv_flen) && (__riscv_flen >= 32)
+    check("split-fsd-low", g_split[11], 0x0D0E0F00u);
+    check("split-fsd-high", g_split[12], 0xFFFFFFFFu); /* a boxed single */
+    check("split-fsd-hole-taken", g_split[13], 1u);
+    check("split-fsd-hole-cause", g_split[14], 15u);
+    check("split-fsd-hole-tval", g_split[15], VA_SPLIT_C);
+#endif
+    /* Neither refused store left its first half behind. */
+    check("split-hole-nothing-written", *b_tail, 0x0F0E0D0Cu);
+#endif
+
+#if defined(__riscv_flen) && (__riscv_flen >= 32)
+    /*
+     * The same question without paging, and in every build: an aligned
+     * double with PMP over its upper word. FSD was two word stores, each
+     * checked alone, so the lower word was written and the fault named
+     * the upper one. Eight bytes are one access: PMP has to hold all of
+     * them in one entry, the fault is at the double, and nothing moves.
+     */
+    g_dbl[0] = 0x11111111u;
+    g_dbl[1] = 0x22222222u;
+    csr_write("pmpaddr9", ((uint32_t)(uintptr_t)&g_dbl[1]) >> 2);
+    csr_write("pmpcfg2", 0x1000u); /* entry 9: NA4, ---, unlocked */
+    enter_smode(smode_fsd_pmp);
+    csr_write("pmpcfg2", 0u);
+    csr_write("pmpaddr9", 0u);
+    check("fsd-pmp-upper-taken", g_split[16], 1u);
+    check("fsd-pmp-upper-cause", g_split[17], 7u);
+    check("fsd-pmp-upper-tval", g_split[18], (uint32_t)(uintptr_t)&g_dbl[0]);
+    check("fsd-pmp-upper-low-untouched", g_dbl[0], 0x11111111u);
+    check("fsd-pmp-upper-high-untouched", g_dbl[1], 0x22222222u);
+#endif
+}
+
 /* ------------------------------------------------------------------ */
 
 int main(void)
@@ -3300,6 +3522,7 @@ int main(void)
 #if defined(__riscv_flen) && (__riscv_flen >= 32)
     test_double_alignment();
 #endif
+    test_split_access();
     test_timer_interrupt();
 
     puts_("checks   ");

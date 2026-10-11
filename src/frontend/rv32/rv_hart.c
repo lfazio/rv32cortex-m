@@ -90,6 +90,7 @@ void rv_hart_reset(rv_hart_t *h, uint32_t reset_pc)
     memset(h->mhpmevent, 0, sizeof(h->mhpmevent));
     rv_hpm_rearm(h); /* derived: recomputed, never cleared by hand */
 #endif
+    h->split_valid = false;
 
 #if RV_EXT_F
     memset(h->f, 0, sizeof(h->f));
@@ -233,6 +234,21 @@ static bool trap_to_s(const rv_hart_t *h, uint32_t cause)
 void rv_hart_trap(rv_hart_t *h, uint32_t cause, uint32_t tval)
 {
     uint32_t tvec;
+
+    /*
+     * An access that crossed a page boundary and was refused in the
+     * second page: its caller has just handed over the address it asked
+     * for, and the address that matters is the one recorded. Applied only
+     * if this trap is for that access -- same address, not an interrupt
+     * -- and cleared either way, so a record nobody collected cannot
+     * outlive the next trap.
+     */
+    if (EMU_UNLIKELY(h->split_valid)) {
+        if ((cause & RV_CAUSE_INTERRUPT) == 0u && tval == h->split_req) {
+            tval = h->split_at;
+        }
+        h->split_valid = false;
+    }
 
 #if RV_EXT_S
     if (trap_to_s(h, cause)) {
@@ -414,6 +430,233 @@ void rv_hart_set_irq(rv_hart_t *h, unsigned cause, bool level)
 /* Memory access                                                       */
 /* ------------------------------------------------------------------ */
 
+/* An exception, and the address it is about. Cold by construction. */
+static EMU_ALWAYS_INLINE rv_exc_t mem_fault(uint32_t *tval, uint32_t va,
+                                            rv_exc_t exc)
+{
+    *tval = va;
+    return exc;
+}
+
+/*
+ * An access that is not one aligned bus transaction: a doubleword, or
+ * anything that runs across a page boundary.
+ *
+ * **Everything that can refuse it is asked about all of it before any of
+ * it happens.** Three things can -- translation, PMP and the bus -- and
+ * each is asked per *part*, where a part is what lies in one page: with
+ * paging on, two virtually adjacent pages are two unrelated pieces of
+ * physical memory, and the second has its own translation, its own
+ * permissions and possibly nothing behind it at all.
+ *
+ * That is two separate defects this replaces, and they were the same
+ * mistake at two widths:
+ *
+ *   - FSD was two word stores. A fault on the second -- a page not yet
+ *     mapped, a PMP entry over the upper word -- arrived with the first
+ *     already written.
+ *   - A misaligned word access was translated once, at its first byte,
+ *     and then read or written as four *physically* contiguous bytes. Run
+ *     across a page boundary it reached into whatever physical page
+ *     happened to follow, not the page the guest had mapped next, and it
+ *     never faulted when that next page was not there. RV32_MISALIGNED
+ *     is on by default, so every Linux boot ran with it.
+ *
+ * `val` is the value for a store and receives it for a load, little-
+ * endian in both directions. A fault names the part it is in: for one
+ * that crosses a page, the *second* page's address when that is where
+ * the refusal came from, which is the address a fault handler needs.
+ */
+static rv_exc_t mem_wide(rv_hart_t *h, uint32_t va, uint32_t size,
+                         emu_access_t acc, uint64_t *val, uint32_t *tval)
+{
+    const bool store = (acc == EMU_ACC_STORE);
+    const rv_exc_t refused =
+        store ? RV_EXC_STORE_ACCESS_FAULT : RV_EXC_LOAD_ACCESS_FAULT;
+    const uint8_t need = store ? EMU_PERM_W : EMU_PERM_R;
+    uint32_t pa[2] = {va, 0u};
+    uint32_t len[2] = {size, 0u};
+    unsigned parts = 1u;
+
+#if RV_EXT_SV32
+    if (h->vm_active) {
+        const uint32_t room = 0x1000u - (va & 0xFFFu);
+
+        if (room < size) {
+            len[0] = room;
+            len[1] = size - room;
+            parts = 2u;
+        }
+        for (unsigned i = 0; i < parts; i++) {
+            const uint32_t part = va + ((i != 0u) ? len[0] : 0u);
+            const rv_exc_t e = rv_mmu_translate(h, part, acc, &pa[i]);
+
+            if (e != RV_EXC_NONE) {
+                return mem_fault(tval, part, e);
+            }
+        }
+    }
+#endif
+
+    for (unsigned i = 0; i < parts; i++) {
+        const uint32_t part = va + ((i != 0u) ? len[0] : 0u);
+
+#if RV_EXT_PMP
+        if (h->pmp_active && !rv_pmp_check(h, pa[i], len[i], acc)) {
+            return mem_fault(tval, part, refused);
+        }
+#endif
+        /* The bus, asked without doing anything: a region, of the right
+         * kind, holding the whole part. */
+        const emu_region_t *const r = emu_bus_find(h->bus, pa[i]);
+
+        if (r == NULL || (r->perm & need) == 0u ||
+            (pa[i] - r->base) + len[i] > r->size) {
+            return mem_fault(tval, part, refused);
+        }
+    }
+
+    /*
+     * Nothing can refuse it now. Each part goes out in the largest
+     * naturally aligned transactions that fit, which for an aligned
+     * doubleword is the two words it always was.
+     */
+    uint64_t v = store ? *val : 0u;
+    unsigned done = 0u;
+
+    for (unsigned i = 0; i < parts; i++) {
+        for (uint32_t off = 0u; off < len[i];) {
+            const uint32_t a = pa[i] + off;
+            uint32_t n = 4u;
+            emu_fault_t f;
+
+            while (n > 1u && ((a & (n - 1u)) != 0u || off + n > len[i])) {
+                n >>= 1;
+            }
+            if (store) {
+#if RV_EXT_A
+                if (h->resv_valid && (a & ~3u) == h->resv_addr) {
+                    h->resv_valid = false; /* as rv_hart_store does */
+                }
+#endif
+                f = emu_bus_write(h->bus, a, n, (uint32_t)(v >> (done * 8u)));
+            } else {
+                uint32_t w = 0u;
+
+                f = emu_bus_read(h->bus, a, n, &w);
+                v |= (uint64_t)w << (done * 8u);
+            }
+            if (EMU_UNLIKELY(f != EMU_FAULT_NONE)) {
+                /* A device that takes the region and not the width. */
+                return mem_fault(tval, va + done, rv_exc_from_fault(f));
+            }
+            off += n;
+            done += n;
+        }
+    }
+    if (!store) {
+        *val = v;
+    }
+    return RV_EXC_NONE;
+}
+
+#if RV_EXT_D
+/*
+ * Sdtrig matches an access by its address, and a doubleword used to be
+ * two accesses with two addresses. Both are still offered, so a trigger
+ * set on the upper word of a double fires as it did.
+ */
+static bool wide_trigger(const rv_hart_t *h, uint32_t addr, emu_access_t acc)
+{
+#if RV_EXT_SDTRIG
+    return h->trig_active &&
+           (rv_trig_check(h, addr, acc) || rv_trig_check(h, addr + 4u, acc));
+#else
+    (void)h;
+    (void)addr;
+    (void)acc;
+    return false;
+#endif
+}
+
+rv_exc_t rv_hart_load64(rv_hart_t *h, uint32_t addr, uint64_t *out,
+                        uint32_t *tval)
+{
+#if !RV_MISALIGNED_OK
+    /* Eight bytes are aligned to eight. Two aligned words are not. */
+    if (EMU_UNLIKELY((addr & 7u) != 0u)) {
+        return mem_fault(tval, addr, RV_EXC_LOAD_MISALIGNED);
+    }
+#endif
+    if (EMU_UNLIKELY(wide_trigger(h, addr, EMU_ACC_LOAD))) {
+        return mem_fault(tval, addr, RV_EXC_BREAKPOINT);
+    }
+    return mem_wide(h, addr, 8u, EMU_ACC_LOAD, out, tval);
+}
+
+rv_exc_t rv_hart_store64(rv_hart_t *h, uint32_t addr, uint64_t val,
+                         uint32_t *tval)
+{
+#if !RV_MISALIGNED_OK
+    if (EMU_UNLIKELY((addr & 7u) != 0u)) {
+        return mem_fault(tval, addr, RV_EXC_STORE_MISALIGNED);
+    }
+#endif
+    if (EMU_UNLIKELY(wide_trigger(h, addr, EMU_ACC_STORE))) {
+        return mem_fault(tval, addr, RV_EXC_BREAKPOINT);
+    }
+    return mem_wide(h, addr, 8u, EMU_ACC_STORE, &val, tval);
+}
+#endif /* RV_EXT_D */
+
+#if RV_MISALIGNED_OK && RV_EXT_SV32
+/*
+ * A word or halfword that runs across a page boundary. Out of line and
+ * cold: the two callers below test for it inside the vm_active branch.
+ *
+ * The caller of rv_hart_load will trap with the address it asked for.
+ * If the refusal came from the second page, that is the wrong address,
+ * and this is where it is recorded for rv_hart_trap to apply.
+ */
+EMU_COLD_NOINLINE static rv_exc_t split_access(rv_hart_t *h, uint32_t va,
+                                               uint32_t size, emu_access_t acc,
+                                               uint64_t *val)
+{
+    uint32_t at = va;
+    const rv_exc_t e = mem_wide(h, va, size, acc, val, &at);
+
+    if (e != RV_EXC_NONE && at != va) {
+        h->split_req = va;
+        h->split_at = at;
+        h->split_valid = true;
+    }
+    return e;
+}
+
+EMU_COLD_NOINLINE static rv_exc_t load_split(rv_hart_t *h, uint32_t va,
+                                             uint32_t size, bool sign_extend,
+                                             uint32_t *out)
+{
+    uint64_t wide = 0u;
+    const rv_exc_t e = split_access(h, va, size, EMU_ACC_LOAD, &wide);
+
+    if (e == RV_EXC_NONE) {
+        *out = (sign_extend && size < 4u)
+                   ? (uint32_t)emu_sext((uint32_t)wide, size * 8u)
+                   : (uint32_t)wide;
+    }
+    return e;
+}
+
+EMU_COLD_NOINLINE static rv_exc_t store_split(rv_hart_t *h, uint32_t va,
+                                              uint32_t size, uint32_t val)
+{
+    uint64_t wide = val;
+
+    return split_access(h, va, size, EMU_ACC_STORE, &wide);
+}
+#endif /* RV_MISALIGNED_OK && RV_EXT_SV32 */
+
 /*
  * Alignment is checked here rather than in the bus so the correct
  * misaligned-vs-access-fault cause can be reported, and so the bus can
@@ -439,6 +682,16 @@ rv_exc_t rv_hart_load(rv_hart_t *h, uint32_t addr, uint32_t size,
      * see the address the bus will.
      */
     if (EMU_UNLIKELY(h->vm_active)) {
+#if RV_MISALIGNED_OK
+        /*
+         * Across a page boundary, which only a misaligned access can
+         * be. Asked here, under vm_active, so a guest that never turns
+         * paging on does not pay for the question.
+         */
+        if (EMU_UNLIKELY((addr & 0xFFFu) + size > 0x1000u)) {
+            return load_split(h, addr, size, sign_extend, out);
+        }
+#endif
         const rv_exc_t texc = rv_mmu_translate(h, addr, EMU_ACC_LOAD, &addr);
         if (EMU_UNLIKELY(texc != RV_EXC_NONE)) {
             return texc;
@@ -928,14 +1181,58 @@ rv_exc_t rv_hart_cbo(rv_hart_t *h, uint32_t op, uint32_t addr,
     if (op == RV_CBO_OP_ZERO) {
         /*
          * Unlike the maintenance operations this has an architecturally
-         * visible effect, so it goes through the permission-checked store
-         * path rather than writing host memory directly.
+         * visible effect, so it is checked exactly as a store is -- and
+         * as *one* store, of the whole block. It used to be a store per
+         * word, each checked on its own, which zeroed the words below a
+         * PMP boundary and then reported the one above it. The block
+         * lies in one page, so one translation serves all of it.
          */
+        uint32_t pa = base;
+
+#if RV_EXT_SDTRIG
+        if (EMU_UNLIKELY(h->trig_active)) {
+            for (uint32_t i = 0; i < RV_CACHE_BLOCK_SIZE; i += 4u) {
+                if (rv_trig_check(h, base + i, EMU_ACC_STORE)) {
+                    *fault_addr = base + i;
+                    return RV_EXC_BREAKPOINT;
+                }
+            }
+        }
+#endif
+#if RV_EXT_SV32
+        if (EMU_UNLIKELY(h->vm_active)) {
+            const rv_exc_t texc =
+                rv_mmu_translate(h, base, EMU_ACC_STORE, &pa);
+
+            if (EMU_UNLIKELY(texc != RV_EXC_NONE)) {
+                return texc;
+            }
+        }
+#endif
+#if RV_EXT_PMP
+        if (EMU_UNLIKELY(h->pmp_active) &&
+            !rv_pmp_check(h, pa, RV_CACHE_BLOCK_SIZE, EMU_ACC_STORE)) {
+            return RV_EXC_STORE_ACCESS_FAULT;
+        }
+#endif
+        const emu_region_t *const r = emu_bus_find(h->bus, pa);
+
+        if (EMU_UNLIKELY(r == NULL || (r->perm & EMU_PERM_W) == 0u ||
+                         (pa - r->base) + RV_CACHE_BLOCK_SIZE > r->size)) {
+            return RV_EXC_STORE_ACCESS_FAULT;
+        }
+
         for (uint32_t i = 0; i < RV_CACHE_BLOCK_SIZE; i += 4u) {
-            const rv_exc_t exc = rv_hart_store(h, base + i, 4u, 0u);
-            if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
+#if RV_EXT_A
+            if (h->resv_valid && ((pa + i) & ~3u) == h->resv_addr) {
+                h->resv_valid = false;
+            }
+#endif
+            const emu_fault_t f = emu_bus_write(h->bus, pa + i, 4u, 0u);
+
+            if (EMU_UNLIKELY(f != EMU_FAULT_NONE)) {
                 *fault_addr = base + i;
-                return exc;
+                return rv_exc_from_fault(f);
             }
         }
         return RV_EXC_NONE;
@@ -1023,6 +1320,14 @@ rv_exc_t rv_hart_store(rv_hart_t *h, uint32_t addr, uint32_t size, uint32_t val)
 #endif
 #if RV_EXT_SV32
     if (EMU_UNLIKELY(h->vm_active)) {
+#if RV_MISALIGNED_OK
+        /* Across a page boundary: see rv_hart_load, and mem_wide for
+         * why this one matters more -- a store has something to leave
+         * half done. */
+        if (EMU_UNLIKELY((addr & 0xFFFu) + size > 0x1000u)) {
+            return store_split(h, addr, size, val);
+        }
+#endif
         const rv_exc_t texc = rv_mmu_translate(h, addr, EMU_ACC_STORE, &addr);
         if (EMU_UNLIKELY(texc != RV_EXC_NONE)) {
             return texc;

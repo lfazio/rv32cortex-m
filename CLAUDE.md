@@ -2644,7 +2644,7 @@ session, and every one of them recurred:
   misaligned accesses. Under PMP it took an access fault where the
   architecture says address-misaligned. Same shape in the PMP check
   itself, which found the entry for an access by its first byte: right
-  for four bytes against four-byte entries, and wrong for a 64-byte
+  for four bytes against four-byte entries, and wrong for a 32-byte
   cache block that begins below an entry and runs into it. Both were
   invisible while every access was a word. **When a wider access is
   built out of narrower ones, the checks that belong to the whole do

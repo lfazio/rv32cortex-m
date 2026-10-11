@@ -101,16 +101,12 @@ cfg_src="$here/tests/arch-test/$cfg_name"
 #
 #   Zabha, ZacasZabha, Zbkb, Zbkc, Zbkx, Zcmop, Zfa*, Zfh*, Zfbfmin,
 #   Zimop, Zknd, Zkne, Zknh, Zksed, Zksh             not implemented
-#   Zicbop                                           not *claimed*: the
-#                                                    prefetches are ORIs
-#                                                    into x0 and execute
-#                                                    already; see TODO
 #   Misalign, MisalignD, MisalignF, MisalignZca      this description
 #                                                    says MISALIGNED_LDST
 #                                                    false
 #   Svadu, SvaduPMP, Svinval, Svnapot, Svpbmt        not implemented;
 #                                                    Svade is the choice
-extensions="${ARCH_TEST_EXTENSIONS:-I,M,Zmmul,Zaamo,Zalrsc,Zca,Zicsr,Zicntr,Zifencei,Zicbom,Zicboz,Zicond,Zihintntl,ZihintntlZca,Zihintpause,Zihpm,Zbb,Zba,Zbc,Zbs,Zacas,F,D,Zcb,ZcbM,ZcbZbb,Zcf,Zcd,PMPU,PMPF,PMPS,PMPSm,PMPZaamo,PMPZalrsc,PMPZca,PMPZicbo,Sv,Svbare,Svade,SvZicbo,ExceptionsSv,ExceptionsSvZaamo,ExceptionsSvZalrsc,SvPMP,SvPMPZicbo}"
+extensions="${ARCH_TEST_EXTENSIONS:-I,M,Zmmul,Zaamo,Zalrsc,Zca,Zicsr,Zicntr,Zifencei,Zicbom,Zicbop,Zicboz,Zicond,Zihintntl,ZihintntlZca,Zihintpause,Zihpm,Zbb,Zba,Zbc,Zbs,Zacas,F,D,Zcb,ZcbM,ZcbZbb,Zcf,Zcd,PMPU,PMPF,PMPS,PMPSm,PMPZaamo,PMPZalrsc,PMPZca,PMPZicbo,Sv,Svbare,Svade,SvZicbo,ExceptionsSv,ExceptionsSvZaamo,ExceptionsSvZalrsc,SvPMP,SvPMPZicbo}"
 jobs="$(nproc)"
 verbose=""
 

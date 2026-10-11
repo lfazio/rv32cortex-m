@@ -229,7 +229,7 @@ bool rv_pmp_check(const rv_hart_t *h, uint32_t addr, uint32_t size,
          * byte: one that began below an entry and ended inside it was
          * passed on to a lower-priority entry, or to none at all. A
          * four-byte access against four-byte entries cannot do that; a
-         * 64-byte cache block can.
+         * 32-byte cache block can.
          */
         if (addr < lo || last >= hi) {
             return false;

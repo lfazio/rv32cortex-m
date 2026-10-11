@@ -297,6 +297,22 @@ typedef struct rv_hart {
     uint32_t mhpmevent[RV_HPM_COUNT];
     uint32_t hpm_armed;
 #endif
+
+    /*
+     * Where an access that crossed a page boundary was really refused.
+     *
+     * Written by the one function that splits an access, read and
+     * cleared by rv_hart_trap. `split_req` is the address the access was
+     * *asked* for, which is what its caller will hand the trap as tval;
+     * the trap substitutes `split_at` only if the two match. So a record
+     * left behind by a caller that dropped its exception cannot rewrite
+     * some later, unrelated trap -- it is checked against what it was
+     * for, not merely against being set. Cold, and at the end for the
+     * reason given above.
+     */
+    uint32_t split_req;
+    uint32_t split_at;
+    bool split_valid;
 } rv_hart_t;
 
 /* ------------------------------------------------------------------ */
@@ -375,10 +391,40 @@ void rv_hart_set_irq(rv_hart_t *h, unsigned cause, bool level);
 /* Memory helpers (permission-checked, used by the interpreter)        */
 /* ------------------------------------------------------------------ */
 
+/*
+ * A caller that gets an exception back traps with the address it asked
+ * for, and that is right for every access but one kind: an access that
+ * crosses a page boundary and is refused in the *second* page has to
+ * name the second page, or a kernel's fault handler maps a page that is
+ * already mapped, returns, and takes the same fault for ever.
+ *
+ * That case reports itself, through `split_*` in the hart, and
+ * rv_hart_trap applies it. It is done that way rather than by handing
+ * every caller the address because these two are on the path every
+ * guest instruction that touches memory takes: an out-parameter for the
+ * fault address measured +1.3% of the interpreter's host instructions on
+ * CoreMark, to serve a case most guests cannot reach.
+ */
 rv_exc_t rv_hart_load(rv_hart_t *h, uint32_t addr, uint32_t size,
                       bool sign_extend, uint32_t *out);
 rv_exc_t rv_hart_store(rv_hart_t *h, uint32_t addr, uint32_t size,
                        uint32_t val);
+
+#if RV_EXT_D
+/*
+ * A doubleword, for FLD and FSD.
+ *
+ * One access of eight bytes, which is not what two word accesses are:
+ * it is aligned to eight, PMP has to hold all eight in one entry, and
+ * nothing is stored unless all of it can be. The bus is 32 bits wide, so
+ * it is *carried out* as two transactions -- after everything that can
+ * refuse it has been asked about the whole.
+ */
+rv_exc_t rv_hart_load64(rv_hart_t *h, uint32_t addr, uint64_t *out,
+                        uint32_t *tval);
+rv_exc_t rv_hart_store64(rv_hart_t *h, uint32_t addr, uint64_t val,
+                         uint32_t *tval);
+#endif
 
 #if RV_EXT_SDTRIG
 void rv_trig_refresh(rv_hart_t *h);

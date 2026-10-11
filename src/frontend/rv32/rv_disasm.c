@@ -293,6 +293,25 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
             break;
         }
         /* addi rd, zero, imm is the canonical load-immediate. */
+        if (f3 == 6u && rv_rd(insn) == 0u &&
+            ((insn >> 20) & 0x1Fu) <= 3u && ((insn >> 20) & 0x1Fu) != 2u) {
+            /*
+             * Zicbop: `ori x0, rs1, imm` with the low five bits of the
+             * immediate naming the kind of prefetch -- 0, 1 and 3 -- and
+             * the rest the offset, which is why it is always a multiple
+             * of 32. Any other value there is an ORI into x0 that means
+             * nothing yet, and prints as one.
+             */
+            static const char *const pf[4] = {"prefetch.i", "prefetch.r",
+                                              NULL, "prefetch.w"};
+
+            emit_mn(&o, pf[(insn >> 20) & 0x1Fu]);
+            emit_int(&o, (int32_t)((uint32_t)rv_imm_i(insn) & ~0x1Fu));
+            emit_ch(&o, '(');
+            emit_reg(&o, rv_rs1(insn));
+            emit_ch(&o, ')');
+            break;
+        }
         if (f3 == 0u && rv_rs1(insn) == 0u) {
             emit_mn(&o, "li");
             emit_reg(&o, rv_rd(insn));

@@ -371,7 +371,7 @@
     "B": { "supported": true },
     "Zibi": { "supported": false },
     "Zicbom": { "supported": true },
-    "Zicbop": { "supported": false },
+    "Zicbop": { "supported": true },
     "Zicboz": { "supported": true },
     "Zic64b": { "supported": false },
     "Ziccamoa": { "supported": false },

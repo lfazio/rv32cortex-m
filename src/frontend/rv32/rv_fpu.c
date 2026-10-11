@@ -574,52 +574,36 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
         }
         if (opcode == OP_LOAD_FP) {
             const uint32_t addr = h->x[rs1] + (uint32_t)((int32_t)insn >> 20);
-            uint32_t v;
             rv_exc_t exc;
 
-#if RV_EXT_D && !RV_MISALIGNED_OK
-            /*
-             * **An eight-byte access is aligned to eight, not to four.**
-             * FLD is done as two word loads because the bus is 32 bits
-             * wide, and each of those checks its own alignment -- so an
-             * address that is 4 mod 8 passed both, and a core built to
-             * *report* misaligned accesses completed this one. Under PMP
-             * it then took an access fault where the architecture, and
-             * the reference model, say address-misaligned.
-             *
-             * How it is carried out is not what it is.
-             */
-            if (wide && (addr & 7u) != 0u) {
-                *tval = addr;
-                return RV_EXC_LOAD_MISALIGNED;
-            }
-#endif
-            exc = rv_hart_load(h, addr, 4u, false, &v);
-
-            if (exc != RV_EXC_NONE) {
-                *tval = addr;
-                return exc;
-            }
 #if RV_EXT_D
             if (wide) {
                 /*
-                 * FLD is eight bytes and the bus is 32 bits wide, so it
-                 * is two accesses -- and both complete before the
-                 * register is written, so a fault on the second leaves
-                 * it as the handler expects. Same shape as G4MH's
-                 * LD.DW.
+                 * **One access of eight bytes**, which is what the
+                 * architecture says FLD is. It was two word loads, and
+                 * that is how it is still carried out -- the bus is 32
+                 * bits wide -- but alignment, PMP and the address a fault
+                 * reports all belong to the eight, and rv_hart_load64 is
+                 * where they are asked. Same shape as G4MH's LD.DW.
                  */
-                uint32_t hi;
-                exc = rv_hart_load(h, addr + 4u, 4u, false, &hi);
+                uint64_t dv = 0u;
+
+                exc = rv_hart_load64(h, addr, &dv, tval);
                 if (exc != RV_EXC_NONE) {
-                    *tval = addr + 4u;
                     return exc;
                 }
-                fw64(h, rd, (uint64_t)v | ((uint64_t)hi << 32));
+                fw64(h, rd, dv);
                 f_dirty(h);
                 return RV_EXC_NONE;
             }
 #endif
+            uint32_t v;
+
+            exc = rv_hart_load(h, addr, 4u, false, &v);
+            if (exc != RV_EXC_NONE) {
+                *tval = addr;
+                return exc;
+            }
             fw32(h, rd, v);
             f_dirty(h);
             return RV_EXC_NONE;
@@ -628,40 +612,27 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
             const int32_t imm = (int32_t)((insn & 0xFE000000u)) >> 20 |
                                 (int32_t)((insn >> 7) & 0x1Fu);
             const uint32_t addr = h->x[rs1] + (uint32_t)imm;
-            rv_exc_t exc;
-#if RV_EXT_D && !RV_MISALIGNED_OK
-            /* As FLD above: FSD is one eight-byte store. */
-            if (wide && (addr & 7u) != 0u) {
-                *tval = addr;
-                return RV_EXC_STORE_MISALIGNED;
-            }
-#endif
+
 #if RV_EXT_D
             if (wide) {
-                const uint64_t v = fr64(h, rs2);
-
-                exc = rv_hart_store(h, addr, 4u, (uint32_t)v);
-                if (exc != RV_EXC_NONE) {
-                    *tval = addr;
-                    return exc;
-                }
-                exc = rv_hart_store(h, addr + 4u, 4u, (uint32_t)(v >> 32));
-                if (exc != RV_EXC_NONE) {
-                    *tval = addr + 4u;
-                    return exc;
-                }
-                return RV_EXC_NONE;
+                /*
+                 * As FLD, and this is the one with something to leave
+                 * half done: nothing is stored unless all eight bytes
+                 * can be.
+                 */
+                return rv_hart_store64(h, addr, fr64(h, rs2), tval);
             }
 #endif
             /* FSW stores the low half raw -- *not* through fr32, which
              * would turn an unboxed register into a canonical NaN. The
              * spec says the bits are stored as they are. */
-            exc = rv_hart_store(h, addr, 4u, (uint32_t)h->f[rs2]);
+            const rv_exc_t exc =
+                rv_hart_store(h, addr, 4u, (uint32_t)h->f[rs2]);
+
             if (exc != RV_EXC_NONE) {
                 *tval = addr;
-                return exc;
             }
-            return RV_EXC_NONE;
+            return exc;
         }
     }
 

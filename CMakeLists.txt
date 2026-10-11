@@ -1049,7 +1049,7 @@ if(EMU_GUEST_ARCH_RV32)
     # same reason they are there. Zalasr and Zawrs follow A, as their
     # gates do; Zacas is A's too.
     #
-    string(APPEND _isa "_zicbom_zicboz_zicntr_zicond_zicsr_zifencei")
+    string(APPEND _isa "_zicbom_zicbop_zicboz_zicntr_zicond_zicsr_zifencei")
     string(APPEND _isa "_zihintntl_zihintpause_zihpm")
     if(RV32_EXT_A)
         string(APPEND _isa "_zacas_zalasr_zawrs")

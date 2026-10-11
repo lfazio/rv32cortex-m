@@ -1179,7 +1179,7 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       cache-block operation ran at every privilege; FIOM was writable
       and CBIE held its reserved value, against this core's own
       description; and the PMP check matched an access by its first
-      byte, which a 64-byte block can straddle. `isatest` holds those.
+      byte, which a 32-byte block can straddle. `isatest` holds those.
 
       **490/490 on both backends** now, all fifteen in the default
       list, and `isatest` is 491 checks -- on the F746 too, where the

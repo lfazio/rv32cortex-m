@@ -154,6 +154,14 @@ static void test_disasm(void)
         {0xE0C5A52Fu, "amomaxu.w a0, a2, (a1)"},
         {0x1005A52Fu, "lr.w a0, (a1)"},
         {0x18C5A52Fu, "sc.w a0, a2, (a1)"},
+        /* Zicbop, and the ORIs into x0 on either side that are not it. */
+        {0x00056013u, "prefetch.i 0(a0)"},
+        {0x0215E013u, "prefetch.r 32(a1)"},
+        {0xFC32E013u, "prefetch.w -64(t0)"},
+        {0x7E35E013u, "prefetch.w 2016(a1)"},
+        {0x00256013u, "ori zero, a0, 2"},
+        {0x00456013u, "ori zero, a0, 4"},
+        {0x00156513u, "ori a0, a0, 1"},
     };
 
     for (size_t i = 0; i < sizeof(ref) / sizeof(ref[0]); i++) {

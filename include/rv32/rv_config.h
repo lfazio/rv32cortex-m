@@ -123,12 +123,17 @@
 #error "RV_EXT_ZIHPM requires RV_EXT_ZICNTR"
 #endif
 /*
- * Zihintpause and Zihintntl have no gate, deliberately. Both are hints
- * carved out of encodings the base ISA already executes as no-ops --
- * `pause` is a FENCE with an otherwise unused predecessor set, and
- * `ntl.*` are ADDs into x0 -- so there is nothing a macro could switch
- * off, and one that existed only to edit the ISA string would be a flag
- * nothing reads.
+ * Zihintpause, Zihintntl and Zicbop have no gate, deliberately. All
+ * three are hints carved out of encodings the base ISA already executes
+ * as no-ops -- `pause` is a FENCE with an otherwise unused predecessor
+ * set, `ntl.*` are ADDs into x0 and `prefetch.*` are ORIs into x0 -- so
+ * there is nothing a macro could switch off, and one that existed only
+ * to edit the ISA string would be a flag nothing reads.
+ *
+ * Zicbop is not a cache-block *operation* in the sense the other two
+ * Zicbo extensions are: it reaches no memory, cannot fault whatever its
+ * address, and is not subject to menvcfg. A prefetch of an address with
+ * nothing behind it is still a no-op.
  */
 #ifndef RV_EXT_ZBB
 #define RV_EXT_ZBB 1 /* basic bit manipulation */

@@ -92,10 +92,10 @@
  * the configure summary in CMakeLists.txt -- a second copy, kept by hand
  * -- is held to this one by the `rv32-isa-string` test.
  *
- * Three have no gate and are unconditional, for the same reason each
+ * Four have no gate and are unconditional, for the same reason each
  * time: there is nothing to switch off. FENCE.I reaches rv_invalidate
  * unguarded; `pause` is a FENCE the base ISA already executes; `ntl.*`
- * are ADDs into x0. Inventing a macro to gate a string would be a flag
+ * are ADDs into x0 and `prefetch.*` are ORIs into x0. Inventing a macro to gate a string would be a flag
  * nothing reads.
  */
 #if RV_EXT_ZICBOM
@@ -160,7 +160,8 @@
  */
 #define RV32_ISA_STRING                                                        \
     "RV32I" RV32_S_M RV32_S_A RV32_S_F RV32_S_D RV32_S_C RV32_S_B              \
-        RV32_S_ZICBOM RV32_S_ZICBOZ RV32_S_ZICNTR RV32_S_ZICOND RV32_S_ZICSR   \
+        RV32_S_ZICBOM "_zicbop" RV32_S_ZICBOZ RV32_S_ZICNTR RV32_S_ZICOND      \
+        RV32_S_ZICSR                                                           \
         RV32_S_ZIFENCEI RV32_S_ZIHINT RV32_S_ZIHPM RV32_S_ZACAS RV32_S_ZALASR  \
         RV32_S_ZAWRS RV32_S_ZCB RV32_S_ZBC
 
