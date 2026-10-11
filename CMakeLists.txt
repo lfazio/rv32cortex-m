@@ -642,17 +642,15 @@ if(EMU_GUEST_ARCH_RV32)
         target_sources(emucore PRIVATE src/frontend/rv32/rv_ir.c)
     endif()
 
-    # The fused multiply-adds recover their rounding error with
-    # 2Product/2Sum, which is only exact if `a * b - p` is evaluated as
-    # written. GCC's default -ffp-contract=fast fuses exactly that into a
-    # single VFMA wherever the host has one, so the error term computes as
-    # zero and the FMA rounds twice instead of once. It is silent: the
-    # answer is merely a little wrong, and only on the host with hardware
-    # FMA -- which is why the same guest binary gave one answer on x86-64
-    # and another on the Cortex-M7, in the one kernel that emitted an
-    # FMADD. Confirmed by finding eleven VFMA/VFNMS in rv_hart_fp.
-    set_source_files_properties(src/frontend/rv32/rv_fpu.c
-        PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+    # rv_fpu.c was built -ffp-contract=off here, for a 2Product/2Sum
+    # error term that GCC's default contraction fused into a VFMA on the
+    # Cortex-M7 and so computed as zero. That arithmetic went when the FP
+    # unit became SoftFloat; the flag stayed, with a comment describing
+    # code that was no longer in the file. Compiled with and without it --
+    # on x86-64, on x86-64 with -mfma, and for the M7 -- the object code
+    # is identical instruction for instruction, with no fused multiply in
+    # any of them. An error-free transformation written in host floating
+    # point needs the flag back; nothing here is one.
 
     target_compile_definitions(emucore PUBLIC
         RV_EXT_F=$<BOOL:${RV32_EXT_F}>

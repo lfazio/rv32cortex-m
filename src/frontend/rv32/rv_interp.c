@@ -430,6 +430,7 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
          * costs a table update per instruction.
          */
         emu_pair_note(&rv_pair_ops, pc, insn, len);
+        rv_ext_note(insn, len);
 #endif
 
         next = pc + len;

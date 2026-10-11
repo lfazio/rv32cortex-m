@@ -21,6 +21,22 @@ extern "C" {
 
 #if EMU_PAIR_STATS
 extern const emu_pair_ops_t rv_pair_ops;
+
+/*
+ * Which extension each executed instruction belongs to.
+ *
+ * A second instrument on the same hook, answering a question the pair
+ * histogram cannot: *did this guest execute any of it at all*. Declaring
+ * Zbb to a kernel and booting says the kernel did not die of Zbb, which
+ * is true of a kernel that patched every string routine and equally of
+ * one that patched none. Only a count of what ran tells them apart.
+ *
+ * Interpreter only, like the histogram beside it: an instruction a
+ * translated block executes is not seen. Run the guest interpreted to
+ * count it.
+ */
+void rv_ext_note(uint32_t insn, unsigned len);
+void rv_ext_report(emu_print_fn out, void *ctx);
 #endif
 
 #ifdef __cplusplus

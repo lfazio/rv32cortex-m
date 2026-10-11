@@ -76,13 +76,6 @@ static float f_bits_to_float(uint32_t b)
     return f;
 }
 
-static uint32_t f_float_to_bits(float f)
-{
-    uint32_t b;
-    memcpy(&b, &f, sizeof(b));
-    return b;
-}
-
 /* ------------------------------------------------------------------ */
 /* Rounding                                                            */
 /* ------------------------------------------------------------------ */
@@ -791,51 +784,6 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
     case 0x0Bu: { /* FSQRT.S */
         f_begin(f_rm(h, rm));
         res = f_end(f32_sqrt(f_v(a)), &flags);
-        break;
-    }
-    case 0xFFu: { /* unreachable; keeps the host-FPU arm below intact */
-        if (f_is_snan(a)) {
-            flags |= FFLAG_NV;
-            res = F_CANON_NAN;
-        } else if (f_is_nan(a)) {
-            res = F_CANON_NAN;
-        } else if (f_is_zero(a)) {
-            res = a; /* sqrt(+-0) = +-0 */
-        } else if (F_SIGN(a) != 0u) {
-            flags |= FFLAG_NV; /* sqrt of a negative */
-            res = F_CANON_NAN;
-        } else if (f_is_inf(a)) {
-            res = a;
-        } else {
-            /*
-             * Newton-Raphson in float: the core must not depend on libm,
-             * because the firmware links -nostdlib.
-             *
-             * Subnormals are scaled into the normal range first. The
-             * exponent-halving seed assumes a normalised exponent field and
-             * on a subnormal lands orders of magnitude out. 2^96 is an even
-             * power, so the root scales by exactly 2^48.
-             */
-            uint32_t norm = a;
-            float unscale = 1.0f;
-            if (F_EXP(a) == 0u) {
-                norm = f_float_to_bits(f_bits_to_float(a) *
-                                       79228162514264337593543950336.0f);
-                unscale = 1.0f / 281474976710656.0f; /* 2^-48 */
-            }
-
-            const float v = f_bits_to_float(norm);
-            float g = f_bits_to_float((norm >> 1) + 0x1FC00000u);
-
-            /* Converge in RNE; only the final rounding is architectural. */
-            for (int i = 0; i < 5; i++) {
-                g = 0.5f * (g + v / g);
-            }
-
-            (void)g;
-            (void)unscale;
-            res = F_CANON_NAN; /* unreachable: handled by f32_sqrt above */
-        }
         break;
     }
 

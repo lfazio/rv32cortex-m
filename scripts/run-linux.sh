@@ -212,15 +212,19 @@ fi
 # lowerings in both backends from a real program rather than from an
 # architecture test.
 #
-# **What has been established is weaker than that, and the difference
-# matters.** With this on, the DT declaring zbb and the kernel carrying
-# 1227 Zbb instructions, the guest boots to userspace and exits
-# cleanly. That is consistent with the alternatives patching and the
-# lowerings being right -- and equally consistent with nothing being
-# patched at all, because a boot that never executes one cannot fail on
-# it. Distinguishing the two needs a count of Zbb instructions
-# *executed*, which nothing here reports yet. So this is set up to be a
-# test and is not yet evidence.
+# **It is evidence now, and for a while it was not.** With this on, the
+# DT declaring zbb and the kernel carrying 1227 Zbb instructions, the
+# guest boots to userspace and exits cleanly -- which is consistent with
+# the alternatives patching, and equally with nothing being patched at
+# all, because a boot that never executes one cannot fail on it. What
+# tells them apart is a count of Zbb instructions *executed*, and a
+# -DEMU_PAIR_STATS=ON runner prints one: **331,550 in one boot**, with
+# 36,225 cbo.zero and 3,270 clmul beside them.
+#
+# Run that count under --jit, not interpreted. It counts the
+# instructions the interpreter executes, and the translator declines
+# all of Zbb but rori -- so under the JIT that is every one of them,
+# and the boot takes twenty seconds instead of most of an hour.
 #
 # LINUX_ZBB=0 turns it off, which is the bisection the paragraph above
 # would otherwise only describe: a kernel that boots without it and not

@@ -253,4 +253,202 @@ const emu_pair_ops_t rv_pair_ops = {
     rv_kind_name, rv_kind_is_mem, rv_kind_is_alu,
 };
 
+/* ------------------------------------------------------------------ */
+/* Executed instructions, by extension                                 */
+/* ------------------------------------------------------------------ */
+
+enum {
+    X_BASE,
+    X_M,
+    X_A,
+    X_FD,
+    X_ZICSR,
+    X_ZICNTR,
+    X_ZIHPM,
+    X_ZIFENCEI,
+    X_ZBA,
+    X_ZBB,
+    X_ZBC,
+    X_ZBS,
+    X_ZICOND,
+    X_ZICBOM,
+    X_ZICBOP,
+    X_ZICBOZ,
+    X_ZIHINTNTL,
+    X_ZIHINTPAUSE,
+    X_ZACAS,
+    X_ZALASR,
+    X_ZAWRS,
+    X_COUNT
+};
+
+static const char *const k_ext_name[X_COUNT] = {
+    "base", "M", "A", "F/D", "Zicsr", "Zicntr", "Zihpm", "Zifencei",
+    "Zba", "Zbb", "Zbc", "Zbs", "Zicond", "Zicbom", "Zicbop", "Zicboz",
+    "Zihintntl", "Zihintpause", "Zacas", "Zalasr", "Zawrs",
+};
+
+static uint64_t g_ext_count[X_COUNT];
+static uint64_t g_ext_compressed;
+
+/* Is this CSR number one of the 29 programmable counters or its event? */
+static bool is_hpm_csr(uint32_t csr)
+{
+    const uint32_t n = csr & 0x1Fu;
+    const uint32_t bank = csr & ~0x1Fu;
+
+    return n >= 3u && (bank == 0xB00u || bank == 0xB80u || bank == 0x320u ||
+                       bank == 0xC00u || bank == 0xC80u);
+}
+
+/*
+ * The interpreter's decode, read off it a second time -- which is what
+ * an instrument has to be, and why it can be wrong independently. It is
+ * checked the only way that means anything: the guest self-test executes
+ * a known number of each, and those numbers are in docs/frontend/rv32.md.
+ *
+ * It classifies encodings, not outcomes: an instruction that traps is
+ * counted where it would have belonged.
+ */
+static unsigned ext_of(uint32_t i)
+{
+    const uint32_t op = i & 0x7Fu;
+    const uint32_t f3 = (i >> 12) & 7u;
+    const uint32_t f7 = i >> 25;
+    const uint32_t rd = (i >> 7) & 0x1Fu;
+    const uint32_t rs1 = (i >> 15) & 0x1Fu;
+    const uint32_t rs2 = (i >> 20) & 0x1Fu;
+
+    switch (op) {
+    case 0x33u: /* OP */
+        switch (f7) {
+        case 0x01u:
+            return X_M;
+        case 0x20u:
+            return (f3 == 4u || f3 == 6u || f3 == 7u) ? X_ZBB : X_BASE;
+        case 0x05u:
+            return (f3 >= 4u) ? X_ZBB : X_ZBC;
+        case 0x30u:
+        case 0x04u:
+            return X_ZBB;
+        case 0x10u:
+            return X_ZBA;
+        case 0x14u:
+        case 0x24u:
+        case 0x34u:
+            return X_ZBS;
+        case 0x07u:
+            return X_ZICOND;
+        default:
+            return (f7 == 0u && f3 == 0u && rd == 0u && rs1 == 0u &&
+                    rs2 >= 2u && rs2 <= 5u)
+                       ? X_ZIHINTNTL
+                       : X_BASE;
+        }
+
+    case 0x13u: /* OP-IMM */
+        if (f3 == 1u) {
+            return (f7 == 0x30u) ? X_ZBB
+                   : (f7 == 0x14u || f7 == 0x24u || f7 == 0x34u) ? X_ZBS
+                                                                 : X_BASE;
+        }
+        if (f3 == 5u) {
+            /* rori, rev8 and orc.b are Zbb; bexti is Zbs. */
+            return (f7 == 0x30u || f7 == 0x34u || f7 == 0x14u) ? X_ZBB
+                   : (f7 == 0x24u)                             ? X_ZBS
+                                                               : X_BASE;
+        }
+        if (f3 == 6u && rd == 0u && rs2 <= 3u && rs2 != 2u) {
+            return X_ZICBOP; /* ori x0: the low five bits pick the kind */
+        }
+        return X_BASE;
+
+    case 0x0Fu: /* MISC-MEM */
+        if (f3 == 1u) {
+            return X_ZIFENCEI;
+        }
+        if (f3 == 2u) {
+            return ((i >> 20) == 4u) ? X_ZICBOZ : X_ZICBOM;
+        }
+        return (i == 0x0100000Fu) ? X_ZIHINTPAUSE : X_BASE;
+
+    case 0x2Fu: /* AMO */
+        switch (f7 >> 2) {
+        case 0x05u:
+            return X_ZACAS;
+        case 0x06u:
+        case 0x07u:
+            return X_ZALASR;
+        default:
+            return X_A;
+        }
+
+    case 0x73u: /* SYSTEM */
+        if (f3 == 0u) {
+            const uint32_t imm = i >> 20;
+
+            return (imm == 0x00Du || imm == 0x01Du) ? X_ZAWRS : X_BASE;
+        }
+        if (is_hpm_csr(i >> 20)) {
+            return X_ZIHPM;
+        }
+        {
+            const uint32_t csr = i >> 20;
+            const uint32_t bank = csr & 0xF00u;
+            const uint32_t n = csr & 0x7Fu; /* the high halves are +0x80 */
+
+            /* cycle, time, instret and their machine and high forms. */
+            return ((bank == 0xC00u || bank == 0xB00u) && n <= 2u)
+                       ? X_ZICNTR
+                       : X_ZICSR;
+        }
+
+    case 0x07u: /* LOAD-FP  */
+    case 0x27u: /* STORE-FP */
+    case 0x43u: /* the fused multiply-adds */
+    case 0x47u:
+    case 0x4Bu:
+    case 0x4Fu:
+    case 0x53u: /* OP-FP    */
+        return X_FD;
+
+    default:
+        return X_BASE;
+    }
+}
+
+void rv_ext_note(uint32_t insn, unsigned len)
+{
+    g_ext_count[ext_of(insn)]++;
+    if (len == 2u) {
+        g_ext_compressed++;
+    }
+}
+
+void rv_ext_report(emu_print_fn out, void *ctx)
+{
+    char line[96];
+    uint64_t total = 0u;
+
+    for (unsigned x = 0; x < X_COUNT; x++) {
+        total += g_ext_count[x];
+    }
+    if (total == 0u) {
+        return; /* nothing was interpreted: say nothing rather than zeros */
+    }
+    out(ctx, "\n-- executed, by extension (interpreted instructions) --\n");
+    for (unsigned x = 0; x < X_COUNT; x++) {
+        if (g_ext_count[x] != 0u) {
+            (void)snprintf(line, sizeof(line), "  %-12s %12llu\n",
+                           k_ext_name[x], (unsigned long long)g_ext_count[x]);
+            out(ctx, line);
+        }
+    }
+    (void)snprintf(line, sizeof(line),
+                   "  %-12s %12llu\n  %-12s %12llu  (16-bit encodings)\n",
+                   "total", (unsigned long long)total, "C",
+                   (unsigned long long)g_ext_compressed);
+    out(ctx, line);
+}
+
 #endif /* EMU_PAIR_STATS */

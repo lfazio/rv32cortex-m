@@ -23,6 +23,9 @@
 #include "rv32/rv_hart.h"
 #include "rv32/rv_jit.h"
 #include "rv32/rv_memmap.h"
+#if EMU_PAIR_STATS
+#include "rv32/rv_pairstats.h"
+#endif
 
 #include <string.h>
 
@@ -629,6 +632,9 @@ const emu_cpu_ops_t rv32_frontend = {
     .set_cache = rv32_set_cache,
     .halt = rv32_halt,
 
+#if EMU_PAIR_STATS
+    .report = rv_ext_report, /* which extensions the guest executed */
+#endif
     .status = rv32_status,
     .nregs = 32u,
     .reg_name = rv_reg_name,

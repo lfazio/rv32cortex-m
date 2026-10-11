@@ -134,15 +134,45 @@
              * way: naming an extension the emulator lacks makes the
              * kernel emit instructions that trap. **This file is a
              * third description of the core**, beside RV32_ISA_STRING
-             * and CMake's configure summary, and nothing checks the
-             * three agree. It describes a default build; a tree built
-             * with RV32_EXT_ZBB=OFF and friends has to edit it.
+             * and CMake's configure summary. A test holds those two to
+             * each other; nothing holds this one to either, so a change
+             * to the string in rv32_frontend.c belongs here as well. It
+             * describes a default build; a tree built with
+             * RV32_EXT_ZBB=OFF and friends has to edit it.
+             *
+             * The Zi*, Za* and Zicbo* names came with the extensions
+             * themselves, later than the rest, and two of them are not
+             * decoration. **zicboz changes what the kernel executes**:
+             * clear_page becomes a loop of cbo.zero, 128 to a page at
+             * this block size, from the first page it clears. And it
+             * depends on the firmware: cbo.* below M is illegal unless
+             * menvcfg says otherwise, which OpenSBI arranges -- so a
+             * kernel that reaches userspace with this declared has been
+             * through both. zawrs likewise turns the kernel's
+             * compare-and-wait into wrs.nto.
+             *
+             * 6.12 does not know zalasr or zicbop by name and ignores
+             * them; they are here because this is a description of the
+             * machine, not of what one kernel can use.
              */
-            riscv,isa = "rv32imafdc_zicsr_zifencei_zicntr_zba_zbb_zbc_zbs";
+            riscv,isa = "rv32imafdc_zicbom_zicbop_zicboz_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm_zacas_zalasr_zawrs_zca_zcb_zcd_zcf_zba_zbb_zbc_zbs";
             riscv,isa-base = "rv32i";
-            riscv,isa-extensions = "i", "m", "a", "f", "d", "c", "zicsr",
-                                   "zifencei", "zicntr",
+            riscv,isa-extensions = "i", "m", "a", "f", "d", "c",
+                                   "zicbom", "zicbop", "zicboz", "zicntr",
+                                   "zicond", "zicsr", "zifencei",
+                                   "zihintntl", "zihintpause", "zihpm",
+                                   "zacas", "zalasr", "zawrs",
+                                   "zca", "zcb", "zcd", "zcf",
                                    "zba", "zbb", "zbc", "zbs";
+            /*
+             * RV_CACHE_BLOCK_SIZE. The kernel will not use cbo.zero or
+             * the maintenance operations without being told the block,
+             * and steps its loops by this -- so it has to be the size
+             * the emulator zeroes, not the 64 most parts have.
+             */
+            riscv,cbom-block-size = <32>;
+            riscv,cbop-block-size = <32>;
+            riscv,cboz-block-size = <32>;
             mmu-type = "riscv,sv32";
 
             cpu0_intc: interrupt-controller {
