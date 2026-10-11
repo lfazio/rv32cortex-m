@@ -10,8 +10,12 @@ backends (Thumb-2 and x86-64) behind one shared IR; and four platforms
 (a native host runner and STM32F4/F7/N6 firmware).
 Validated against the official
 [RISC-V Architecture Test Suite](https://github.com/riscv/riscv-arch-test)
-at **490/490** and the Berkeley `riscv-tests` at **77/77**, on hardware
-as well as on a host.
+at **496/496** and the Berkeley `riscv-tests` at **77/77**, on hardware
+as well as on a host. The RV32 core implements the **RVI20U32** profile
+and every extension it lists as optional, boots Linux 6.12 under
+OpenSBI, and is described extension by extension -- including how far
+it is from an RV32 reading of RVA20 and RVA22, which are 64-bit only --
+in [docs/frontend/rv32.md](docs/frontend/rv32.md#profiles).
 
 The ARMv7-M frontend began as a way to make the **Thumb-2 backend
 testable without hardware** — `tests/guest/armv7m/t2exec.c` compiles the
@@ -416,7 +420,7 @@ Figures and what they have already disproved are in
 ### Validation
 
 ```sh
-./scripts/run-arch-test.sh      # official riscv-arch-test, 490/490
+./scripts/run-arch-test.sh      # official riscv-arch-test, 496/496
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77
 ./scripts/build-matrix.sh --test # every configuration that should build, and its ctest
 ./scripts/report-figures.sh     # every quoted figure, regenerated

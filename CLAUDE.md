@@ -70,7 +70,7 @@ came to document an `RV32_PLATFORM` option that has never existed.
 What belongs here is only what the recipes do not say:
 
 ```sh
-./scripts/run-arch-test.sh      # 490/490; EMU_EXTRA_ARGS=--jit for the JIT
+./scripts/run-arch-test.sh      # 496/496; EMU_EXTRA_ARGS=--jit for the JIT
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77; EMU_HOST=<a wrapper
                                 # adding --jit> for the JIT -- it takes no flag
 ./scripts/build-matrix.sh --test # every configuration, and its ctest
@@ -95,7 +95,7 @@ because this firmware never idles and a plain attach races it. Build
 `-DEMU_NET=OFF` to keep the UART a console.
 
 **`isatest` on the board is necessary and nowhere near sufficient.** It
-measures coverage now -- 1,116 of 58,255 instructions interpreted under
+measures coverage now -- 1,171 of 62,362 instructions interpreted under
 the JIT, on the board as on x86-64 -- but it never fills the code cache
 and it finishes in a tenth of a second. Two defects sat behind those
 two facts while it passed: a compaction that moved blocks with their
@@ -2650,6 +2650,20 @@ session, and every one of them recurred:
   built out of narrower ones, the checks that belong to the whole do
   not happen by themselves.**
 
+  **The same rule had a third instance, and it was the default build.**
+  With `RV32_MISALIGNED=ON` a misaligned word was translated once, at
+  its first byte, and then read or written as four physically
+  contiguous bytes. Across a page boundary under Sv32 that is the tail
+  of one frame and the head of *whatever frame follows it*, not of the
+  page the guest mapped next -- and no fault when the next page is not
+  mapped at all. Under Linux, from user mode: a store across the
+  boundary into a page not yet touched put two bytes in the first page
+  and two in the process's own `.bss`, **on the counter of the test
+  that was checking it** (`0x0000a1b7 checks`). `fsd` had the half-store
+  form of it. All three are one checked access now, split per page.
+  The architecture suite could not see any of this: its description of
+  the core says misaligned accesses trap, and it runs that build.
+
 - **A failing operation still has to be asked whether it could have
   succeeded.** `sc.w` with no reservation returns 1 and stores nothing,
   so it never reached the bus -- and an address with no memory behind
@@ -2658,6 +2672,90 @@ session, and every one of them recurred:
   before the reservation, for this reason; the bus was the third thing
   that can refuse and the one that was skipped. The early return was
   the optimisation and the bug.
+
+- **The measurement answered a question nobody had asked, which is the
+  usual way.** Asked what Zicond is worth in a guest's `-march`: nothing
+  on CoreMark (four `czero` sites, 15 executions in 518,236), and
+  **`bench` 20% slower under the JIT**. The compiler pairs `czero` with
+  `bexti`; the translator declines `bexti`; 32,768 instructions went to
+  the interpreter and block entries rose 2.9x. So the finding was not
+  about Zicond. A count of executed instructions *by extension* -- now
+  part of `-DEMU_PAIR_STATS=ON` -- then said that on the default guests
+  nearly everything the JIT hands back is the B extension: 23,061 of
+  CoreMark's 23,339 interpreted instructions, 120,111 of Dhrystone's
+  120,566, 331,550 in a Linux boot. `rv_ir.c` lowers `rori` and declines
+  the rest, and most of the rest is `sh1add`: a shift and an add.
+
+  This file already says to ask which instruction rather than which
+  class, and that what is declined costs more than what is translated
+  badly. Both were true of a hole that had been there since the
+  extension was. **`interp` in the stats line was the symptom for
+  months; what was missing was its breakdown.** It is docs/TODO.md's
+  first entry.
+
+  Two things about the instrument. **Run it where it is exact and
+  cheap.** It counts what the interpreter executes, so under `--jit` it
+  is exactly the set the translator declines, in twenty seconds of a
+  Linux boot. Interpreted, the same boot had not reached userspace
+  after several minutes -- the guest's clock is the wall clock, so a
+  slower emulator takes more timer ticks and executes *more
+  instructions* to do the same work. And it settled a question
+  `run-linux.sh` had carried in a comment since Zbb was declared to the
+  kernel -- "consistent with the alternatives patching, and equally with
+  nothing being patched" -- in one run.
+
+- **An out-parameter on a hot function is not free, and neither is a
+  helper the compiler inlined into it.** A fault that crosses a page
+  boundary has to report the second page's address, and the obvious
+  place for that is a `uint32_t *tval` on `rv_hart_load` and
+  `rv_hart_store`. Callgrind, which counts host instructions and so
+  does not care about layout: **+1.3% on CoreMark**, all of it in those
+  two functions -- the pointer and the original address both have to
+  survive the cold calls, which is two more callee-saved registers on
+  every access. Recording the address where the access is split, and
+  applying it in `rv_hart_trap`, brought that to +0.5%. The rest was a
+  `static` helper with one caller, reached once in a million calls and
+  inlined anyway: its `uint64_t`, whose address is taken, became
+  `rv_hart_load`'s stack frame. `EMU_COLD_NOINLINE`; 4,131,149 host
+  instructions before and after, to the digit.
+
+  The record in the hart is hidden state on the trap path, and is built
+  not to go stale: it holds the address the access was *asked* for as
+  well as where it was refused, and the trap applies it only if that is
+  the address it was handed.
+
+- **An LTO object has no code in it.** Asked whether `-ffp-contract=off`
+  still did anything for `rv_fpu.c`, the comparison was `objdump -d` of
+  the object with and without the flag: identical. So was the same
+  comparison for the Cortex-M7 build -- **with the same checksum as the
+  x86-64 one**, which is what gave it away. CMake builds these objects
+  `-flto`; they hold bytecode, the disassembly is empty, and two empty
+  disassemblies agree perfectly across architectures. Recompiled
+  `-fno-lto`, with the instruction count asserted (1,587 and 1,697), the
+  answer was the same and this time it was an answer. A perfect match
+  is this file's loudest signal; a match *between two things that
+  cannot be equal* is not even subtle.
+
+- **A program with no C runtime has no global pointer.** The Linux test
+  init is `-nostdlib` and had no writable globals, so nothing had ever
+  set `gp`. Given a 64-byte buffer, the linker relaxed its address to
+  an offset from `gp`, `gp` was zero, and init died of SIGSEGV at
+  0xFFFFF840 -- on a plain byte store, two lines *above* the `cbo.zero`
+  the test was about, under a kernel whose panic names the signal and
+  nothing else. It read as the emulator refusing the new instruction.
+  A temporary line in `rv_hart_trap` printing user-mode traps gave the
+  pc, and the pc gave the instruction. **Print a line before each step
+  of a test that can die**, and when the death is a signal, find the
+  faulting pc before forming a theory about the instruction you meant
+  to test.
+
+- **Declaring an extension releases tests in suites that were already
+  named.** Zicbop has three tests in its own directory, and naming it
+  built six: `sv32_zicbop_{S,U}mode` and `pmpzicbo_prefetch` had been in
+  `SvZicbo` and `PMPZicbo` -- both in the list -- filtered out by their
+  own `REQUIRED_EXTENSIONS` against a description that did not have it.
+  The two mechanisms are independent: the name offers, the description
+  admits. A suite can be named and be silently short.
 
 - **A comment about a default is checked by reading the default.**
   `rv_config.h` carried two blocks saying Zacas was off because it was

@@ -11,6 +11,35 @@ Found by putting the PowerPC frontend on the Nucleo-F746ZG and timing
 long runs. The defects are fixed; these are what the measurements left
 standing. Figures are in [jit/tuning.md](jit/tuning.md).
 
+- [ ] **The RV32 translator declines the B extension, and that is
+      nearly all of what the JIT still interprets.** Counted with
+      `-DEMU_PAIR_STATS=ON`, which now reports executed instructions by
+      extension:
+
+      | guest | interpreted under the JIT | Zba / Zbb / Zbc / Zbs |
+      |---|---|---|
+      | CoreMark | 23,339 of 518,234 | 14,615 / 5,623 / 2,352 / 471 -- **98.8%** |
+      | Dhrystone | 120,566 of 9,431,232 | 120,111 Zba -- **99.6%** |
+      | crypto | 65,776 of 2,720,538 | 39,178 Zba, plus Zbb beyond `rori` |
+      | a Linux boot | 1,308,143 | 331,550 Zbb |
+
+      `rv_ir.c` lowers `rori` -- added when a histogram said it was
+      4.34% of the crypto guest -- and nothing else from the four. Each
+      of the others ends a block, costs a dispatch and runs in the
+      interpreter, which is the expensive outcome this file's rules name
+      first. Most of it is `sh1add`/`sh2add`/`sh3add`: a shift and an
+      add, in operations both backends already lower. `andn`, `orn`,
+      `xnor`, `bexti`, `bseti`, `bclri`, `binvi`, `zext.h` and the sign
+      extensions are the same kind; the IR has `CLZ`, `CTZ`, `POPCNT`,
+      `BSWAP32` and the four bit operations for the rest, each behind
+      `emu_ir_can_lower`, and a helper keeps a block whole where a host
+      lacks one. Do it in the order the table gives, measure CoreMark
+      on the F746 at 32 KB and 96 KB before and after, and expect the
+      block count to fall as well as the fallback.
+
+      It was found by asking a different question -- what Zicond is
+      worth in a guest's `-march` -- and getting `bench` 20% slower
+      under the JIT, because the compiler pairs `czero` with `bexti`.
 - [ ] **The default code cache makes the JIT slower than the
       interpreter, and that is a decision nobody has taken.** At
       `EMU_JIT_CODE_BYTES=32768` RV32 CoreMark is 169.6 host cycles an
@@ -64,10 +93,16 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       window and `mmiobench` was 2.2–3.1× better for it; the IR
       backends inline guest RAM only. `mmiobench` on the F746 would say
       what that cost.
-- [ ] **Is `-ffp-contract=off` on `rv_fpu.c` still doing anything?** It
-      was there for a 2Product/2Sum error term in a host-float FP unit;
-      the file is SoftFloat throughout now. Harmless either way, and
-      unexamined.
+- [x] **Is `-ffp-contract=off` on `rv_fpu.c` still doing anything?
+      No, and it is gone.** This entry said the file was "SoftFloat
+      throughout", which was not quite true: it still held the
+      host-float square root, in a `case 0xFF` no seven-bit funct7 can
+      reach. With that removed, the object code is identical with and
+      without the flag -- x86-64, x86-64 with `-mfma`, and the
+      Cortex-M7 -- instruction for instruction, and with no fused
+      multiply in any of them. The first attempt at that comparison
+      hashed the objects CMake had built, which are LTO and contain no
+      code: two architectures "matched".
 
 ## Roadmap
 
@@ -277,25 +312,32 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       core that cannot execute `csrr`. CMake's configure summary had
       been printing `_zicsr_zicntr_zifencei` and `D` all along, so the
       two descriptions this tree generates disagreed with each other
-      and the one a user sees at run time was the wrong one. Both now
-      read `RV32IMAFDCB_zicsr_zifencei_zicntr_zbc`.
-
-      Neither is generated from the other; they are kept in step by
-      hand, which is what the comment beside each now says.
+      and the one a user sees at run time was the wrong one. Both then
+      read `RV32IMAFDCB_zicsr_zifencei_zicntr_zbc` -- which still named
+      three multi-letter extensions out of a dozen implemented. They
+      name all of them now, and the `rv32-isa-string` test fails if the
+      two differ. The device tree is the third description and nothing
+      holds it to the other two.
 
       `mmu : sv32` is the kernel's own confirmation of the paging work.
 
+      **Whether the Zbb alternatives actually patch: they do.** This
+      was open for as long as the device tree has declared B, because a
+      boot that never executes a Zbb instruction cannot fail on one and
+      nothing counted them. A `-DEMU_PAIR_STATS=ON` runner does now:
+      **331,550 Zbb instructions in one boot**, with 36,225 `cbo.zero`,
+      4,096 cache-block maintenance operations and 3,270 `clmul`. Run it
+      under `--jit`: it counts what the interpreter executes, and the
+      translator declines all of Zbb but `rori`, so that is every one
+      of them in twenty seconds.
+
       Still open:
 
-      - **whether the Zbb alternatives actually patch.** The device
-        tree declares B and the kernel is built with
-        CONFIG_RISCV_ISA_ZBB, so the mechanism is in place and the
-        guest boots -- which is consistent with the lowerings being
-        right *and* with nothing being patched, because a boot that
-        never executes a Zbb instruction cannot fail on one. Telling
-        those apart needs a count of Zbb instructions **executed**, and
-        nothing reports that. `LINUX_ZBB=0` is the bisection;
-      - **benchmarks**, still not run under Linux.
+      - **benchmarks**, still not run under Linux;
+      - **the run ends in a kernel panic**, because the test init exits
+        and there is nothing in the device tree to power off through.
+        It is read as the terminator, and it means every run goes to
+        the instruction cap or a timeout to print its figures.
 
       Broken into the order the pieces actually unblock each other,
       because most of them are only testable once the one above works:
@@ -843,7 +885,8 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       The original reasoning below was wrong in an instructive way, and
       is kept for that:
 
-- [ ] ~~**Find out what the 50x is.**~~ The runner now reports host
+- [x] ~~**Find out what the 50x is.**~~ (The first answer, kept under
+      the one above that replaced it.) The runner now reports host
       instructions per guest instruction live, and it is 46-53 across
       every guest measured -- far above what a translated block should
       cost.
@@ -1034,6 +1077,13 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
         or a conditional return are given back to the interpreter (6%
         of Dhrystone), RAM below 0x10000000 gets no inlined access, and
         interrupt latency is a block. See frontend/armv7m.md.
+      - **No gdb target.** RV32 and G4MH each supply an
+        `emu_gdb_target_t`; this frontend and PowerPC do not, so
+        `--gdb` has nothing to describe the registers with. For a
+        Cortex-M it is r0-r12, sp, lr, pc and xPSR under
+        `org.gnu.gdb.arm.m-profile`, and it is the one frontend where
+        the same gdb can be pointed at real silicon to say what the
+        answer should look like.
       - **The board's answers live in `build/`**, not the repository.
         Kept as fixtures, `--rerun` would be a regression suite anyone
         could run without the board; that is a decision about 3 MB of
@@ -1189,33 +1239,34 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
 
       What is left of it:
 
-      - [ ] **The rest of the checkout.** Every directory is accounted
-            for in the script's comment, by being named or by a reason
-            it is not. Two reasons are weaker than they read. `Zicbop`
-            is "not claimed" rather than not implemented: its three
-            prefetches are ORIs into x0 and already execute, which is
-            exactly what Zihintntl was. And the four `Misalign*` suites
-            are out because the description says `MISALIGNED_LDST:
-            false` -- so nothing validates the *default* build's
-            behaviour, which is to complete them. A second DUT
-            description for `RV32_MISALIGNED=ON` would.
-      - [ ] **`fld`/`fsd` are still two word accesses.** The alignment
-            is checked for the whole now; a fault on the second half
-            still leaves the first half stored, and reports the second
-            half's address. No test here reaches it: it needs a PMP
-            boundary inside an aligned doubleword.
+      - [x] **Zicbop**, which the script's comment had as "not
+            claimed": claimed. Six tests, not three -- declaring it to
+            UDB released three more that were already in `SvZicbo` and
+            `PMPZicbo`, named and silently filtered.
+      - [x] **`fld`/`fsd` were still two word accesses**, and the same
+            mistake was live at another width: a misaligned word across
+            a page boundary was translated at its first byte and taken
+            physically contiguous. Both are one checked access now, as
+            is `cbo.zero`. See [frontend/rv32.md](frontend/rv32.md).
+      - [ ] **The four `Misalign*` suites.** They are out because the
+            description says `MISALIGNED_LDST: false`, so nothing
+            validates the *default* build's behaviour, which is to
+            complete misaligned accesses -- and that path has just been
+            found wrong under paging by a hand-written test. A second
+            DUT description for `RV32_MISALIGNED=ON` would run them.
       - [ ] **`ctest`'s `arch-test-I` is misnamed.** The runner executes
             every ELF in the work directory whatever `--extensions`
-            names, so it runs all 490 once they have been built and
+            names, so it runs all 496 once they have been built and
             the 39 of the `I` suite from a fresh checkout. It passes or
             fails with whatever the directory holds.
 
 - [ ] **rv32: Zalasr and Zawrs have no second opinion.** No arch-test
       suite for either, and no Sail model for Zalasr at 0.13.1.
       `isatest` covers both on both backends, with every check
-      confirmed by a mutant, which makes it a consistent reading of
-      the specification and not a checked one. Revisit when the Sail
-      pin moves: Zalasr is in later models.
+      confirmed by a mutant, and the Linux test init executes both
+      from user mode -- which makes three consistent readings of the
+      specification and not a checked one. Revisit when the Sail pin
+      moves: Zalasr is in later models.
 
 - [ ] **rv32: `-DRV32_EXT_PMP=OFF` is not a configuration anything
       checks.** No build-matrix row has it. Its unit tests did not
@@ -1224,22 +1275,50 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       assumes the default core. The CSR defect
       above lived there for exactly that reason.
 
-- [ ] **rv32: the new extensions and the rest of the tree.** None of
-      the seven is in `RV_GUEST_MARCH`, deliberately, so no guest but
-      the self-test executes a `czero`; what Zicond is worth to
-      CoreMark under either backend is unmeasured. `boot/rv32-emu.dts`
-      does not declare them to Linux, which will therefore not use
-      Zawrs in its spinlocks or Zicond anywhere -- declare them and
-      boot before believing they work under an operating system. And
-      Zihpm counts traps only: no overflow interrupt (Sscofpmf), no
-      privilege filter bits in `mhpmevent`.
+- [x] **rv32: the new extensions and the rest of the tree.** Both
+      halves measured.
+
+      *In a guest's `-march`*: only Zicond changes what the compiler
+      emits, and it emits little -- four `czero` in CoreMark, executed
+      15 times in 518,236 instructions; none in Dhrystone or the crypto
+      guest; one in `bench`, which retires 2.6% fewer instructions and
+      runs 20% slower under the JIT for a reason that is not Zicond's
+      (the B-extension entry at the top of this file). The march stays
+      as it is.
+
+      *Under Linux*: `boot/rv32-emu.dts` declares them, the kernel
+      boots, and the test init passes 17 checks from user mode. The
+      kernel itself executes Zbb, `cbo.zero`, the cache-block
+      maintenance operations and `clmul`, counted; it never executes
+      `wrs.nto`, because one hart has nobody to wait for.
+
+- [ ] **rv32: what the RVA profiles would still need.** RVI20U32 is
+      met. The RVA families are 64-bit only, so there is nothing to
+      claim, but read for RV32 the RVA22 mandatory list is short by
+      four things ([frontend/rv32.md](frontend/rv32.md#profiles)):
+      **Zfhmin** (half-precision load, store and conversion -- SoftFloat
+      has `f16`), **Zic64b** (a 64-byte cache block; `RV_CACHE_BLOCK_SIZE`
+      is 32 to match the M7's line, and the device tree and both suite
+      configs would follow it), **Svinval** (three instructions that
+      are SFENCE.VMA in parts), and **Zkt**, which is a claim about
+      timing nobody has examined -- the interpreter's `clmul` loops
+      over set bits. RVA20's list is met but for Zicclsm being a build
+      option, and Sstvala and Ssccptr being true without a test that
+      says so.
+
+- [ ] **rv32: Zihpm counts traps only.** No overflow interrupt
+      (Sscofpmf), no privilege filter bits in `mhpmevent`. Linux finds
+      the 29 counters through OpenSBI ("16 firmware and 31 hardware
+      counters") and says sampling is unsupported for want of sscof.
 
 - [ ] **JIT** - Autovectorisation of the IR pipeline. This is a big task, but it would be a good demonstration of the emulator's capabilities.
 - [ ] Add simple drivers for the rh850u2b6.based on their specification in the reference manual.
   - [ ] Option bytes: impact on clocks and startup.
   - [ ] Clock tree
-  - [ ] ltsc
-  - [ ] ostm
+  - [x] ltsc -- modelled in `g4mh_ltsc.c`, driven by the runner's
+        `set_time`; DOOM's clock runs off it.
+  - [x] ostm -- OSTM0 is in `g4mh_intc.c` with its compare interrupt.
+        One channel; the part has more.
   - [ ] gpio/on emulated on top of stm32 gpio hal, emualated to output the binary state of output on a udp/ip connexion.
   - [ ] kcrc
   - [ ] wdtb

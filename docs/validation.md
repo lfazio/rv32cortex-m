@@ -44,12 +44,13 @@ Current state:
 
 | | result | runs on |
 |---|---|---|
-| `riscv-arch-test`, interpreter | **490 / 490** | host |
-| `riscv-arch-test`, `EMU_EXTRA_ARGS=--jit` | **490 / 490** — the whole suite through translated code | host, x86-64 |
+| `riscv-arch-test`, interpreter | **496 / 496** | host |
+| `riscv-arch-test`, `EMU_EXTRA_ARGS=--jit` | **496 / 496** — the whole suite through translated code | host, x86-64 |
 | `riscv-tests`, interpreter | **77 / 77** | host |
 | `riscv-tests`, `--jit` through an `EMU_HOST` wrapper | **77 / 77** | host, x86-64 |
 | `ctest`, RV32 tree | 19 tests: unit, the guests, and most of them again under `--jit` | host |
-| `isatest`, JIT | **491 checks**, 1,116 of 58,255 instructions interpreted — the same two numbers the x86-64 host gives | Nucleo-F746ZG, Thumb-2 |
+| `isatest`, JIT | **518 checks**, 1,171 of 62,362 instructions interpreted — the same two numbers the x86-64 host gives | Nucleo-F746ZG, Thumb-2 |
+| Linux 6.12 under OpenSBI, `scripts/run-linux.sh` | boots to userspace; the test init passes **17 checks** from U-mode on the extensions the device tree declares | host, x86-64 JIT |
 | CoreMark, 120 iterations | `crcfinal 0xd340` on the interpreter and on the JIT at four cache sizes | Nucleo-F746ZG |
 
 `run-arch-test.sh` **builds its own runner**, with `-DRV32_MISALIGNED=OFF`,
@@ -83,7 +84,7 @@ and none could have been caught by a signature-checking suite on a host:
 Three of those produced no wrong answer at all, only numbers that made
 no sense. Three were staleness: a decision taken when a block was
 translated, still in force after the state behind it changed. The
-self-test grew from 148 checks to 298 chasing them (it is 491 now, the
+self-test grew from 148 checks to 298 chasing them (it is 518 now, the
 rest being the extensions and the suites below), and the checks that
 matter are the ones that re-execute *one* instruction at *one* address
 after changing the state it was compiled against — a fresh call site is
@@ -129,7 +130,7 @@ Three of the unary ops (`c.sext.b`, `c.zext.h`, `c.sext.h`) expand to Zbb
 instructions, which is why the spec makes Zcb depend on Zbb — without it there
 would be nothing to expand them into.
 
-## Official RISC-V Architecture Test Suite — 490/490
+## Official RISC-V Architecture Test Suite — 496/496
 
 [`riscv/riscv-arch-test`](https://github.com/riscv/riscv-arch-test), the RVCP
 suite governed by RISC-V International. Modern versions are self-checking: the
@@ -147,7 +148,7 @@ and the UDB gems, then builds and runs.
 Prerequisites beyond the normal toolchain: `uv`, Ruby, and Bundler
 (`gem install --user-install bundler`).
 
-**What 490 covers is what the script names.** ACT selects suites by
+**What 496 covers is what the script names.** ACT selects suites by
 *directory name*, so a suite nobody names is a suite nobody runs,
 whatever the core implements. The total stood at 378 for months, and
 that was a statement about thirty directory names:
@@ -157,6 +158,12 @@ that was a statement about thirty directory names:
 | the thirty | 378 | |
 | Zicond, Zihintpause, Zihintntl, `ZihintntlZca`, Zihpm | 13 | the extensions were added |
 | `Zcf`, `Zcd`, `ZcbM`, `ZcbZbb`, seven more PMP directories, `SvZicbo`, `SvPMPZicbo`, two `ExceptionsSv*` | 99 | listing the checkout to find `ZihintntlZca` |
+| Zicbop | 6 | claimed -- three in its own directory, and three that had been sitting in `SvZicbo` and `PMPZicbo`, already named, waiting for the description to say the extension was there |
+
+That last row is both halves of the mechanism in one line. Naming a
+directory *offers* its tests; each test's own requirements, checked
+against the UDB description, decide whether it is built. A suite can be
+named and still be silently short.
 
 The 99 were for things this core had implemented for a long time.
 **Thirteen of them failed the first time they ran**, and every one was
