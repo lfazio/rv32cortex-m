@@ -1355,6 +1355,56 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
 - [ ] Architecture a serial protocol over UDP/TCP similar to PCIe so a PC host running the emualtor can access the rh850u2b6's peripherals. This is a big task, but it would be a good demonstration of the emulator's capabilities. First over serial, then maybe over USB or rela ethernet device. This is a big task, but it would be a good demonstration of the emulator's capabilities.
 - [ ] Implement an emulated GTM device for the stm32f746zg/stm32n657 to demonstrate the emulator's capabilities.
 - [ ] Implement TAUD peripheral in rh850u2b6 with the remaining stm32 timer availble.
+- [ ] **PowerPC: the e200z7 MMU. Designed from the manual, not
+      started** -- parked for the FreeRTOS work. What the reading of
+      `docs/ppc/e200z759CRM.pdf` chapter 10 and section 7.7 settled:
+
+      - **One TLB, TLB1: 32 entries, fully associative**, 23 page sizes
+        (TSIZE 0 = 1 KB .. 22 = 4 GB, every power of two). TLB0 is null.
+        Entry: V, IPROT, TID[0:7], TS, TSIZE, EPN/RPN[0:21], VLE, WIMGE,
+        U0-U3, UX/SX/UW/SW/UR/SR. Match: V, TS = MSR[IS] or [DS], TID =
+        PID0 or 0, EPN on the page's bits. A multi-hit is a programming
+        error with an undefined result; lowest index wins is a choice to
+        state, not a fact.
+      - **SPRs**: MAS0 624, MAS1 625, MAS2 626, MAS3 627, MAS4 628, MAS6
+        630 (no MAS5), PID0 48 (8 bits), MMUCSR0 1012 (TLB1_FI, IPROT
+        survives it), MMUCFG 1015, TLB0CFG 688 (zero), TLB1CFG 689 (ASSOC
+        0x20, MINSIZE 0, MAXSIZE 0xB, IPROT/AVAIL/P2PSA set, NENTRY
+        0x20). `tlbre`, `tlbwe`, `tlbsx`, `tlbivax` (EA bit 28 TLBSEL,
+        bit 29 INV_ALL, matches on EPN only, ignores AS and TID) and
+        `tlbsync` (a no-op), all privileged.
+      - **MAS updates are table 10-15**: on a TLB error MAS0 takes
+        TLBSELD and ESEL = NV; MAS1 V=1, IPROT=0, TID from TIDSELD, TS
+        from MSR, TSIZE = TSIZED; MAS2 the EPN and MAS4's VWIMGE; MAS3
+        zeroed; MAS6 SPID = PID0, SAS = MSR. `tlbsx` hit fills all of
+        MAS0-3 from the entry; a miss clears V and loads the defaults.
+      - **Interrupts**: DTLB error IVOR13 (DEAR = EA, ESR [ST, SPE,
+        VLEMI]), ITLB error IVOR14 (ESR [MIF] only -- *no* VLEMI, which
+        `ppc_cpu_raise` adds unconditionally today), DSI IVOR2 on a
+        read/write permission (DEAR, ESR [ST, SPE, VLEMI]), ISI IVOR3 on
+        execute (ESR [BO, MIF, VLEMI]).
+      - **Reset loads entry 0 only: a 4 KB page at the reset base**,
+        IPROT, VLE from a pin. Every guest in this tree would fault 4 KB
+        into its image; real parts get past that because the boot ROM
+        programs entries first. The emulator has to stand in for that
+        ROM -- a 4 GB identity entry 0 (TS 0, TID 0, all permissions,
+        IPROT, VLE from the image) is the proposal -- and say so.
+      - **The VLE bit is per page**, which is what the frontend's
+        image-wide `vle` stands in for today: under a programmed TLB the
+        fetch's page decides the encoding.
+      - **Cost**: translation sits on the fetch and every access, which
+        this tree has measured at 9.3% for one branch. Gate it behind a
+        flag that is true only in the reset state with MSR[IS]=MSR[DS]=0,
+        recomputed on TLB writes and MSR changes; measure interpreter
+        CoreMark with callgrind before and after. The JIT inlines RAM
+        and so cannot run under a non-identity TLB until its accesses
+        translate: block it there first (as RV32's JIT once did under
+        paging), and bump `jit_gen` on every TLB write.
+      - **Validation** has no e200 to compare with and no GPL oracle may
+        be used: a guest programming the TLB the way MPC57xx start-up
+        code does, every expectation derived from the manual in its
+        comments, and the limits of that stated wherever it is quoted.
+
 - [~] Finish the ppc emualtor with dual core support and implement a simple driver for the e200z7.
       **The single core is finished and the other two halves are not
       started.** Decoder, disassembler, the embedded FP unit, an IR
