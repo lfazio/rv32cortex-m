@@ -10,7 +10,7 @@ backends (Thumb-2 and x86-64) behind one shared IR; and four platforms
 (a native host runner and STM32F4/F7/N6 firmware).
 Validated against the official
 [RISC-V Architecture Test Suite](https://github.com/riscv/riscv-arch-test)
-at **391/391** and the Berkeley `riscv-tests` at **77/77**, on hardware
+at **490/490** and the Berkeley `riscv-tests` at **77/77**, on hardware
 as well as on a host.
 
 The ARMv7-M frontend began as a way to make the **Thumb-2 backend
@@ -416,7 +416,7 @@ Figures and what they have already disproved are in
 ### Validation
 
 ```sh
-./scripts/run-arch-test.sh      # official riscv-arch-test, 391/391
+./scripts/run-arch-test.sh      # official riscv-arch-test, 490/490
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77
 ./scripts/build-matrix.sh --test # every configuration that should build, and its ctest
 ./scripts/report-figures.sh     # every quoted figure, regenerated

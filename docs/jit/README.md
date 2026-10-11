@@ -185,6 +185,28 @@ once forwarded a value "written" to RISC-V's `x0`; all three consumers
 of the IR then faithfully compiled a guest reading its own discarded
 result, and the differential checker agreed with all of them.
 
+**An operation is removable only if it is on a list of pure ones.**
+The dead-value pass deletes anything whose result nothing reads, and it
+used to decide that from a list of operations *with* an effect --
+everything else could go. `LOAD` was not on it. A load whose
+destination was overwritten later in the same block, with no load,
+store, helper or exit in between, was therefore deleted: it did not
+fault, and on a device it did not *read* -- where reading is how an
+interrupt is acknowledged or a flag cleared, and `(void)UART->DR;
+return 0;` is how a driver says so. Under a JIT built so a guest can
+drive real peripherals.
+
+Nothing in the tree had that shape: ten guests emit byte-identical code
+with loads removable and with loads kept, so the optimisation had never
+once fired on one and the fix costs nothing. It was found by an
+architecture test from a suite nobody had named
+(`pmpsm_cfg_A_tor_zero`: `lw a4, 0(zero)`, then `a4` loaded with an
+address), which passed interpreted and failed translated. The list is
+of the pure operations now, so one nobody has considered is kept, and
+`test_only_pure_ops_are_removable` offers every operation in the
+enumeration unread. The floating-point operations that raise flags are
+kept for the same reason with a different effect.
+
 **The pc is a register, and `SETPC` is the store that writes it.**
 Frontends emit one after every guest instruction, because the pc must be
 right wherever a fault can be taken and saying so every time is the
@@ -234,7 +256,7 @@ their helpers.
 ## Reading a coverage number
 
 Read `interp` against the retired count before believing a passing
-suite. `isatest` under the JIT interprets 829 of 54,087 instructions, on
+suite. `isatest` under the JIT interprets 1,116 of 58,255 instructions, on
 x86-64 and on the F746 alike.
 
 It used to interpret a third of them on the board, because it arms PMP

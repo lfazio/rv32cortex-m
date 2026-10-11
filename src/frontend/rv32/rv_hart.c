@@ -559,6 +559,20 @@ rv_exc_t rv_hart_amo(rv_hart_t *h, uint32_t funct5, uint32_t rd, uint32_t addr,
     }
 
     if (funct5 == RV_AMO_SC) {
+        /*
+         * **Whether the store could land is asked before whether it
+         * will.** A failing SC writes nothing, so it never reached the
+         * bus -- and an address with no memory behind it, which a real
+         * store reports as an access fault, came back as an ordinary
+         * "reservation lost". Translation and PMP were already checked
+         * above for exactly this reason; the bus was the third thing
+         * that can refuse and the one that was missed.
+         */
+        const emu_region_t *const r = emu_bus_find(h->bus, addr);
+
+        if (EMU_UNLIKELY(r == NULL || (r->perm & EMU_PERM_W) == 0u)) {
+            return RV_EXC_STORE_ACCESS_FAULT;
+        }
         if (!h->resv_valid || h->resv_addr != addr) {
             if (rd != 0u) {
                 h->x[rd] = 1u; /* non-zero: the store did not occur */
@@ -853,12 +867,62 @@ bool rv_cbo_valid(uint32_t op)
     }
 }
 
+/*
+ * May the current privilege run this operation at all -- and, for
+ * cbo.inval, as what.
+ *
+ * menvcfg says what S-mode and U-mode may do; senvcfg narrows that for
+ * U-mode. Three separate enables: CBZE for cbo.zero, CBCFE for clean and
+ * flush, and the two-bit CBIE for inval, whose middle value means "it
+ * runs, but as a flush" -- a supervisor that does not trust its users
+ * with an operation that discards data.
+ *
+ * **Both registers existed, were written and read back correctly, and
+ * were consulted by nothing.** Every cache-block operation ran at every
+ * privilege whatever they held. The mask that says which bits are
+ * writable was the only reader the fields had.
+ */
+static bool cbo_permitted(const rv_hart_t *h, uint32_t *op)
+{
+    if (h->priv == RV_PRIV_M) {
+        return true;
+    }
+
+    const uint32_t m = h->menvcfg;
+#if RV_EXT_S
+    const uint32_t s = (h->priv == RV_PRIV_U) ? h->senvcfg : m;
+#else
+    const uint32_t s = m;
+#endif
+
+    switch (*op) {
+    case RV_CBO_OP_ZERO:
+        return (m & s & ENVCFG_CBZE) != 0u;
+    case RV_CBO_OP_CLEAN:
+    case RV_CBO_OP_FLUSH:
+        return (m & s & ENVCFG_CBCFE) != 0u;
+    default: /* cbo.inval */
+        if ((m & ENVCFG_CBIE) == 0u || (s & ENVCFG_CBIE) == 0u) {
+            return false;
+        }
+        if ((m & ENVCFG_CBIE) == ENVCFG_CBIE_FLUSH ||
+            (s & ENVCFG_CBIE) == ENVCFG_CBIE_FLUSH) {
+            *op = RV_CBO_OP_FLUSH;
+        }
+        return true;
+    }
+}
+
 rv_exc_t rv_hart_cbo(rv_hart_t *h, uint32_t op, uint32_t addr,
                      uint32_t *fault_addr)
 {
     const uint32_t base = addr & ~(RV_CACHE_BLOCK_SIZE - 1u);
 
     *fault_addr = base;
+
+    if (EMU_UNLIKELY(!cbo_permitted(h, &op))) {
+        return RV_EXC_ILLEGAL_INSN;
+    }
 
 #if RV_EXT_ZICBOZ
     if (op == RV_CBO_OP_ZERO) {
@@ -881,15 +945,54 @@ rv_exc_t rv_hart_cbo(rv_hart_t *h, uint32_t op, uint32_t addr,
 #if RV_EXT_ZICBOM
     {
         /*
-         * Maintenance applies to the host memory backing the block, so a
-         * guest cleaning a DMA buffer cleans the ARM cache lines that
-         * really hold it.
+         * **The block is named by a virtual address and protected like
+         * any other memory.** This went from the guest's address
+         * straight to the bus: no translation, so under Sv32 it looked
+         * up a virtual address as a physical one and either faulted on
+         * a page that was mapped or maintained memory that was not the
+         * guest's; and no PMP, so a block a lower privilege could
+         * neither read nor write was cleaned without complaint.
+         * rv_hart_amo records the same omission, with the same rule:
+         * anything in this file that reaches the bus owes the address a
+         * translation and a PMP check first.
+         *
+         * The permission is the architecture's and is unusual: allowed
+         * if a load *or* a store would be, and reported as a store
+         * fault when neither is, whichever kind of fault it was.
          */
-        void *host = emu_bus_host_ptr(h->bus, base, RV_CACHE_BLOCK_SIZE);
-        if (EMU_UNLIKELY(host == NULL)) {
+        uint32_t pa = base;
+
+#if RV_EXT_SV32
+        if (EMU_UNLIKELY(h->vm_active)) {
+            const rv_exc_t texc = rv_mmu_translate(h, base, EMU_ACC_LOAD, &pa);
+
+            if (EMU_UNLIKELY(texc != RV_EXC_NONE)) {
+                return (texc == RV_EXC_LOAD_PAGE_FAULT)
+                           ? RV_EXC_STORE_PAGE_FAULT
+                           : RV_EXC_STORE_ACCESS_FAULT;
+            }
+        }
+#endif
+#if RV_EXT_PMP
+        if (EMU_UNLIKELY(h->pmp_active) &&
+            !rv_pmp_check(h, pa, RV_CACHE_BLOCK_SIZE, EMU_ACC_LOAD) &&
+            !rv_pmp_check(h, pa, RV_CACHE_BLOCK_SIZE, EMU_ACC_STORE)) {
             return RV_EXC_STORE_ACCESS_FAULT;
         }
-        if (h->cache != NULL && h->cache->maint != NULL) {
+#endif
+        if (EMU_UNLIKELY(emu_bus_find(h->bus, pa) == NULL)) {
+            return RV_EXC_STORE_ACCESS_FAULT; /* nothing is there at all */
+        }
+
+        /*
+         * Maintenance applies to the host memory backing the block, so a
+         * guest cleaning a DMA buffer cleans the ARM cache lines that
+         * really hold it. A virtual device has no backing and nothing
+         * to maintain; the operation retires.
+         */
+        void *host = emu_bus_host_ptr(h->bus, pa, RV_CACHE_BLOCK_SIZE);
+
+        if (host != NULL && h->cache != NULL && h->cache->maint != NULL) {
             static const emu_cache_op_t map[3] = {
                 EMU_CACHE_INVAL, EMU_CACHE_CLEAN, EMU_CACHE_FLUSH};
             h->cache->maint(h->cache->ctx, host, RV_CACHE_BLOCK_SIZE, map[op]);

@@ -44,12 +44,12 @@ Current state:
 
 | | result | runs on |
 |---|---|---|
-| `riscv-arch-test`, interpreter | **391 / 391** | host |
-| `riscv-arch-test`, `EMU_EXTRA_ARGS=--jit` | **391 / 391** — the whole suite through translated code | host, x86-64 |
+| `riscv-arch-test`, interpreter | **490 / 490** | host |
+| `riscv-arch-test`, `EMU_EXTRA_ARGS=--jit` | **490 / 490** — the whole suite through translated code | host, x86-64 |
 | `riscv-tests`, interpreter | **77 / 77** | host |
 | `riscv-tests`, `--jit` through an `EMU_HOST` wrapper | **77 / 77** | host, x86-64 |
 | `ctest`, RV32 tree | 19 tests: unit, the guests, and most of them again under `--jit` | host |
-| `isatest`, JIT | **454 checks**, 829 of 54,087 instructions interpreted — the same two numbers the x86-64 host gives | Nucleo-F746ZG, Thumb-2 |
+| `isatest`, JIT | **491 checks**, 1,116 of 58,255 instructions interpreted — the same two numbers the x86-64 host gives | Nucleo-F746ZG, Thumb-2 |
 | CoreMark, 120 iterations | `crcfinal 0xd340` on the interpreter and on the JIT at four cache sizes | Nucleo-F746ZG |
 
 `run-arch-test.sh` **builds its own runner**, with `-DRV32_MISALIGNED=OFF`,
@@ -83,8 +83,8 @@ and none could have been caught by a signature-checking suite on a host:
 Three of those produced no wrong answer at all, only numbers that made
 no sense. Three were staleness: a decision taken when a block was
 translated, still in force after the state behind it changed. The
-self-test grew from 148 checks to 298 chasing them (it is 454 now, the
-rest being the extensions below), and the checks that
+self-test grew from 148 checks to 298 chasing them (it is 491 now, the
+rest being the extensions and the suites below), and the checks that
 matter are the ones that re-execute *one* instruction at *one* address
 after changing the state it was compiled against — a fresh call site is
 translated against the current configuration and proves nothing.
@@ -129,7 +129,7 @@ Three of the unary ops (`c.sext.b`, `c.zext.h`, `c.sext.h`) expand to Zbb
 instructions, which is why the spec makes Zcb depend on Zbb — without it there
 would be nothing to expand them into.
 
-## Official RISC-V Architecture Test Suite — 391/391
+## Official RISC-V Architecture Test Suite — 490/490
 
 [`riscv/riscv-arch-test`](https://github.com/riscv/riscv-arch-test), the RVCP
 suite governed by RISC-V International. Modern versions are self-checking: the
@@ -147,24 +147,39 @@ and the UDB gems, then builds and runs.
 Prerequisites beyond the normal toolchain: `uv`, Ruby, and Bundler
 (`gem install --user-install bundler`).
 
-**What 391 covers is what the script names.** ACT selects suites by
+**What 490 covers is what the script names.** ACT selects suites by
 *directory name*, so a suite nobody names is a suite nobody runs,
-whatever the core implements. Thirteen of the 391 are Zicond, the two
-hint extensions -- `Zihintntl` and, separately, `ZihintntlZca` -- and
-Zihpm, added when those were. They were confirmed the usual way: with
-Zicond's condition inverted, `c.add x0` made illegal and the counter
-reads removed, exactly those tests fail (2, 4 and 2, and `Zca-c.add`
-with them) and the other 382 pass.
+whatever the core implements. The total stood at 378 for months, and
+that was a statement about thirty directory names:
+
+| | tests | how it came to be named |
+|---|---|---|
+| the thirty | 378 | |
+| Zicond, Zihintpause, Zihintntl, `ZihintntlZca`, Zihpm | 13 | the extensions were added |
+| `Zcf`, `Zcd`, `ZcbM`, `ZcbZbb`, seven more PMP directories, `SvZicbo`, `SvPMPZicbo`, two `ExceptionsSv*` | 99 | listing the checkout to find `ZihintntlZca` |
+
+The 99 were for things this core had implemented for a long time.
+**Thirteen of them failed the first time they ran**, and every one was
+a defect in the emulator; they are in the table at the end of this
+page. Both groups were confirmed the usual way, by breaking the
+emulator and watching exactly the right tests fail.
+
+When the checkout moves, list `tests/rv32i`, `tests/priv` and
+`tests/priv/pmp/pmp32` and account for every directory: the comment
+above the list in `scripts/run-arch-test.sh` names each one that is
+left out and why.
 
 Two extensions the core implements have **no suite at all**: Zalasr and
 Zawrs. Zalasr is not in Sail 0.13.1 either, so there is no golden model
 for it; it is covered by `tests/guest/isatest.c` alone. Zawrs is in the
 model, and `tests/arch-test/probes/zawrs.S` asks it seven questions
-directly -- see [frontend/rv32.md](frontend/rv32.md).
+directly -- see [frontend/rv32.md](frontend/rv32.md). And three of the
+defects the 99 led to are held by no architecture test either, only by
+`isatest`: the suite is a floor.
 
 The runner executes every ELF in the work directory, not only the
-suites named on the command line: naming five still runs 391. The list
-decides what is *built*.
+suites named on the command line: naming one still runs everything
+that has ever been built there. The list decides what is *built*.
 
 ## riscv-tests — 77/77
 
@@ -191,6 +206,12 @@ Worth recording, because each was a genuine defect:
 | `riscv-arch-test` `Zacas` | the Sail config declared `atomic_support: AMOArithmetic` on guest RAM, so the golden model **trapped** on `amocas` and baked trap-derived values into the signatures — three sessions were spent looking for an emulator bug that was never there |
 | `riscv-tests` `rv32mi/csr` | the suite was built without F while `misa` advertised it. The test detects exactly that mismatch and fails on purpose; the emulator was correct and the runner's `-march` was not |
 | hardware `isatest` | the JIT's inlined store wrote guest RAM without consulting PMP, so a protected region was writable under the JIT and not under the interpreter |
+| `riscv-arch-test` `PMPSm`, under `--jit` | **the optimiser deleted a load nothing read.** A load whose destination was overwritten later in the block was never executed: no fault, and on a device no read -- `(void)UART->DR;` did nothing. Passed interpreted, failed translated; reproduced on the F746, where an APLIC claim discarded that way left the interrupt pending |
+| `riscv-arch-test` `PMPSm` | `pmpaddr` stored 32 bits where a 32-bit bus allows 30, so it reported a boundary nothing could reach |
+| `riscv-arch-test` `PMPF`, `PMPZca` | `fld`/`fsd` are two word accesses, each aligned, so a double at an address 4 mod 8 never raised address-misaligned on a core built to report it |
+| `riscv-arch-test` `ExceptionsSvZalrsc` | a failing `sc.w` returned "reservation lost" for an address with no memory behind it, where any store reports an access fault |
+| `riscv-arch-test` `SvZicbo`, `PMPZicbo` | cbo.clean, cbo.flush and cbo.inval took the guest's *virtual* address straight to the bus, and were not checked against PMP |
+| guest `isatest`, written to hold the above | `menvcfg` and `senvcfg` were stored, read back, and consulted by nothing: every cache-block operation ran at every privilege |
 
 ### What the second backend found in the first runner
 

@@ -1107,10 +1107,10 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       | Zalasr | `rv_hart_atomic` | the same function, as a helper | UDB; **not in Sail 0.13.1** | none |
       | Zawrs | parks as WFI while reserved | SYSTEM declines | both | none; Sail probed directly |
 
-      arch-test is **391/391** on both backends (378 + 13), riscv-tests
-      77/77 on both, `isatest` 454 checks on both and on the F746 under
-      the Thumb-2 JIT -- 829 of 54,087 instructions interpreted there,
-      the same two numbers as x86-64. The ISA string names all of them
+      At that point arch-test was 391/391 on both backends (378 + 13),
+      riscv-tests 77/77 on both, and `isatest` 454 checks on both and
+      on the F746 under the Thumb-2 JIT. The next entry is why none of
+      those three numbers lasted the day. The ISA string names all of them
       and a test holds the configure summary to it. Details in
       [frontend/rv32.md](frontend/rv32.md).
 
@@ -1156,37 +1156,59 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
         which moved every field after them by 352 bytes. Moved to the
         end of the struct before anything was measured against it.
 
-- [ ] **rv32: fifteen arch-test suites nobody named, and twelve
-      failures in them.** ACT builds a suite only if its *directory* is
-      named, and the default list in `scripts/run-arch-test.sh` names
+- [x] **rv32: fifteen arch-test suites nobody had named, and thirteen
+      defects in them.** ACT builds a suite only if its *directory* is
+      named, and the default list in `scripts/run-arch-test.sh` named
       thirty. Listing the checkout to find `ZihintntlZca` turned up
-      fifteen more this core is eligible for. Offered, they build **99
-      tests that had never run: 87 pass and 12 fail.**
+      fifteen more this core is eligible for: `Zcf`, `Zcd`, `ZcbM`,
+      `ZcbZbb`, seven PMP directories, `SvZicbo`, `SvPMPZicbo` and two
+      `ExceptionsSv*`. Offered, they built **99 tests that had never
+      run. Thirteen failed, and all thirteen were the emulator.**
 
-      | suite | tests | failing |
-      |---|---|---|
-      | `Zcf`, `Zcd`, `ZcbM`, `ZcbZbb` | 4, 4, 1, 3 | none |
-      | `PMPS`, `PMPZaamo`, `PMPZalrsc` | 11, 1, 1 | none |
-      | `ExceptionsSvZaamo`, `SvPMPZicbo` | 3, 8 | none |
-      | `PMPSm` | 37 | `pmpsm_grain`, `pmpsm_grain_check`, `pmpsm_csr_walk-1`, `pmpsm_csr_walk-5` |
-      | `ExceptionsSvZalrsc` | 3 | all three: `sv32_exceptions_Zalrsc_{M,S,U}mode` |
-      | `SvZicbo` | 4 | `sv32_zicbom_exceptions_{S,U}mode` |
-      | `PMPF` | 1 | `pmpf_cfg_wr` |
-      | `PMPZicbo` | 3 | `pmpzicbo_cbo_wr_01` |
-      | `PMPZca` | 15 | `pmpzcd_legal_lxwr` |
+      | defect | tests |
+      |---|---|
+      | **the JIT's dead-value pass deleted a load nothing read** -- no fault, and on a device no read | `pmpsm_cfg_A_tor_zero`, `--jit` only |
+      | `pmpaddr` stored 32 bits where a 32-bit bus allows 30 | `pmpsm_grain`, `pmpsm_grain_check`, `pmpsm_csr_walk-1`, `-5` |
+      | `fld`/`fsd` at 4 mod 8 never raised address-misaligned | `pmpf_cfg_wr`, `pmpzcd_legal_lxwr` |
+      | a failing `sc.w` never asked whether memory was there | `sv32_exceptions_Zalrsc_{M,S,U}mode` |
+      | cbo.clean/flush/inval took a virtual address to the bus | `sv32_zicbom_exceptions_{S,U}mode` |
+      | ...and were not checked against PMP | `pmpzicbo_cbo_wr_01` |
 
-      Not yet triaged: each is either a defect in the emulator or a
-      disagreement between the emulator and its description in
-      `tests/arch-test/` -- this file records the second kind three
-      times -- and telling them apart is the first job. Run the failing
-      ELF directly, then `sail_riscv_sim --trace-instr` on the same one.
+      And three more found on the way that no architecture test holds
+      at all: `menvcfg`/`senvcfg` were consulted by nothing, so every
+      cache-block operation ran at every privilege; FIOM was writable
+      and CBIE held its reserved value, against this core's own
+      description; and the PMP check matched an access by its first
+      byte, which a 64-byte block can straddle. `isatest` holds those.
 
-      None of the fifteen is in the default list yet, so the documented
-      391/391 is what a fresh checkout reports; **a work directory that
-      has had them built reports 490 with 12 failing**, and so does
-      `ctest`'s `arch-test-I`, because the runner executes every ELF it
-      finds whatever `--extensions` names. Add each suite to the list
-      as it goes green.
+      **490/490 on both backends** now, all fifteen in the default
+      list, and `isatest` is 491 checks -- on the F746 too, where the
+      first row was reproduced with the fix reverted: the APLIC claim
+      was not acknowledged. Which test holds which fix was measured by
+      reverting each alone; the table is in CLAUDE.md.
+
+      What is left of it:
+
+      - [ ] **The rest of the checkout.** Every directory is accounted
+            for in the script's comment, by being named or by a reason
+            it is not. Two reasons are weaker than they read. `Zicbop`
+            is "not claimed" rather than not implemented: its three
+            prefetches are ORIs into x0 and already execute, which is
+            exactly what Zihintntl was. And the four `Misalign*` suites
+            are out because the description says `MISALIGNED_LDST:
+            false` -- so nothing validates the *default* build's
+            behaviour, which is to complete them. A second DUT
+            description for `RV32_MISALIGNED=ON` would.
+      - [ ] **`fld`/`fsd` are still two word accesses.** The alignment
+            is checked for the whole now; a fault on the second half
+            still leaves the first half stored, and reports the second
+            half's address. No test here reaches it: it needs a PMP
+            boundary inside an aligned doubleword.
+      - [ ] **`ctest`'s `arch-test-I` is misnamed.** The runner executes
+            every ELF in the work directory whatever `--extensions`
+            names, so it runs all 490 once they have been built and
+            the 39 of the `I` suite from a fresh checkout. It passes or
+            fails with whatever the directory holds.
 
 - [ ] **rv32: Zalasr and Zawrs have no second opinion.** No arch-test
       suite for either, and no Sail model for Zalasr at 0.13.1.

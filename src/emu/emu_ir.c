@@ -502,6 +502,103 @@ static void pass_dead_puts(emu_ir_block_t *b, const emu_ir_target_t *t,
  * reads it, and the operands of a deleted SETF are frequently used by
  * nothing else.
  */
+/*
+ * Is this operation nothing but its result?
+ *
+ * **The list is of the pure ones, so an operation nobody has thought
+ * about is kept.** It was the other way round -- a list of the
+ * operations with an effect, everything else removable when unread --
+ * and what fell off it was LOAD.
+ *
+ * A load can fault, and it reads: on a device, reading is an action --
+ * a claim register acknowledges, a data register pops, a status
+ * register clears -- and `(void)REG;` is how a driver asks for exactly
+ * that. Judged by its result alone, a load whose destination was
+ * overwritten later in the block was deleted, and the access never
+ * happened. Under a JIT whose reason for existing is a guest driving
+ * real peripherals.
+ *
+ * It took a narrow shape to reach: the overwrite has to come with no
+ * load, store, helper or exit in between, because any of those keeps
+ * the first write alive in pass_dead_puts. A compiler seldom leaves
+ * that, which is why 378 architecture tests and every guest in the tree
+ * ran translated without it showing. `pmpsm_cfg_A_tor_zero`, from a
+ * suite nobody had named, does it on purpose: `lw a4, 0(zero)` and then
+ * loads a4 with an address.
+ *
+ * Not pure, and therefore kept, without being named here:
+ *
+ *   LOAD, STORE                                memory, and faults
+ *   the memory bit operations                  likewise -- three of the
+ *                                              four define only a flag,
+ *                                              and judged by that alone
+ *                                              a SET1 whose Z nobody
+ *                                              read would be deleted
+ *   PUT, FPUT, SETF, SETPC, RETIRE             guest state
+ *   HELPER, HELPER_TRAP, EXIT, EXIT_IF         anything at all
+ *   FADD .. FMA, FMIN, FMAX, FCMP, the FCVTs   the FP flags, which are
+ *                                              sometimes the only reason
+ *                                              one is executed
+ */
+static bool op_is_pure(uint8_t op)
+{
+    switch ((emu_ir_op_t)op) {
+    case EMU_IR_GET:
+    case EMU_IR_CONST:
+    case EMU_IR_MOV:
+    case EMU_IR_ADD:
+    case EMU_IR_SUB:
+    case EMU_IR_AND:
+    case EMU_IR_OR:
+    case EMU_IR_XOR:
+    case EMU_IR_SHL:
+    case EMU_IR_SHR:
+    case EMU_IR_SAR:
+    case EMU_IR_ROTL:
+    case EMU_IR_MUL:
+    case EMU_IR_MULHS:
+    case EMU_IR_MULHU:
+    case EMU_IR_DIVS:
+    case EMU_IR_DIVU:
+    case EMU_IR_REMS:
+    case EMU_IR_REMU:
+    case EMU_IR_MAC:
+    case EMU_IR_ADDI:
+    case EMU_IR_ANDI:
+    case EMU_IR_ORI:
+    case EMU_IR_XORI:
+    case EMU_IR_SHLI:
+    case EMU_IR_SHRI:
+    case EMU_IR_SARI:
+    case EMU_IR_ROTLI:
+    case EMU_IR_NEG:
+    case EMU_IR_NOT:
+    case EMU_IR_BSWAP32:
+    case EMU_IR_BSWAP16:
+    case EMU_IR_HSWAP:
+    case EMU_IR_CLZ:
+    case EMU_IR_CTZ:
+    case EMU_IR_POPCNT:
+    case EMU_IR_BEXT:
+    case EMU_IR_BSET:
+    case EMU_IR_BCLR:
+    case EMU_IR_BINV:
+    case EMU_IR_SEXT8:
+    case EMU_IR_SEXT16:
+    case EMU_IR_ZEXT8:
+    case EMU_IR_ZEXT16:
+    case EMU_IR_GETCOND:
+    case EMU_IR_SETCC:
+    case EMU_IR_SELECT:
+    case EMU_IR_FGET:
+    case EMU_IR_FSGNJ: /* moves bits; raises nothing */
+    case EMU_IR_FCLASS: /* likewise */
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void pass_dead_values(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
 {
     bool used[EMU_IR_MAX_TEMPS];
@@ -514,23 +611,7 @@ static void pass_dead_values(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
             continue;
         }
 
-        /*
-         * The memory bit ops are effectful even though three of the four
-         * define only a flag: they change memory. A dead-value pass that
-         * judged them by their flag alone would delete a SET1 whose Z
-         * nobody read, which is a silent wrong answer in guest memory.
-         */
-        const bool has_effect = (in->op == (uint8_t)EMU_IR_PUT) ||
-                                (in->op == (uint8_t)EMU_IR_STORE) ||
-                                (in->op == (uint8_t)EMU_IR_SETF) ||
-                                (in->op == (uint8_t)EMU_IR_HELPER) ||
-                                (in->op == (uint8_t)EMU_IR_HELPER_TRAP) ||
-                                (in->op == (uint8_t)EMU_IR_RETIRE) ||
-                                (in->op == (uint8_t)EMU_IR_SETPC) ||
-                                (in->op == (uint8_t)EMU_IR_EXIT) ||
-                                (in->op == (uint8_t)EMU_IR_EXIT_IF) ||
-                                (in->op >= (uint8_t)EMU_IR_BITOP_SET &&
-                                 in->op <= (uint8_t)EMU_IR_BITOP_TST);
+        const bool has_effect = !op_is_pure(in->op);
 
         if (!has_effect && in->dst != EMU_IR_NO_TEMP &&
             in->dst < EMU_IR_MAX_TEMPS && !used[in->dst]) {

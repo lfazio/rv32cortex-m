@@ -519,6 +519,141 @@ static void test_dead_values(void)
 }
 
 /*
+ * A load nothing reads is still executed.
+ *
+ * **This is the shape, and it has to be exact to mean anything.** The
+ * load's own PUT is overwritten by the next instruction with no load,
+ * store, helper or exit in between -- so the dead-store pass removes it,
+ * correctly, and the load is then a value with no reader. A test that
+ * put anything observable between the two would keep the PUT alive and
+ * pass whether or not a LOAD counts as having an effect.
+ *
+ * It does: it can fault, and on a device it acts. `(void)UART->DR;
+ * return 0;` compiles to exactly this.
+ */
+static void test_unread_load_is_kept(void)
+{
+    emu_ir_reset(&g_b);
+
+    const uint16_t base = emu_ir_get(&g_b, 1u);
+
+    emu_ir_put(&g_b, 5u,
+               emu_ir_emit(&g_b, EMU_IR_LOAD, EMU_IR_MEM_AUX(4u, 0u), base,
+                           EMU_IR_NO_TEMP, 0u, 0u));
+    emu_ir_put(&g_b, 5u, emu_ir_const(&g_b, 0u)); /* li a5, 0 */
+
+    emu_ir_opt_stats_t st;
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
+
+    /* The first store really was dead, or this proves nothing... */
+    CHECK_EQ(st.puts_removed, 1u);
+    CHECK_EQ(count_op(EMU_IR_PUT), 1u);
+    /* ...and the load it carried is still there. */
+    CHECK_EQ(count_op(EMU_IR_LOAD), 1u);
+}
+
+/*
+ * The same for the floating-point operations that raise flags, and not
+ * for the two that only move bits. A comparison is sometimes executed
+ * for its invalid flag and nothing else.
+ */
+static void test_unread_fp_keeps_its_flags(void)
+{
+    static const emu_ir_op_t raises[] = {
+        EMU_IR_FADD, EMU_IR_FSUB, EMU_IR_FMUL,      EMU_IR_FDIV,
+        EMU_IR_FMIN, EMU_IR_FMAX, EMU_IR_FCMP,      EMU_IR_FSQRT,
+        EMU_IR_FCVT_TO_I,         EMU_IR_FCVT_FROM_I};
+    static const emu_ir_op_t moves[] = {EMU_IR_FSGNJ, EMU_IR_FCLASS};
+
+    for (size_t i = 0; i < sizeof(raises) / sizeof(raises[0]); i++) {
+        emu_ir_reset(&g_b);
+        const uint16_t x = emu_ir_emit(&g_b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                                       EMU_IR_NO_TEMP, 1u, 0u);
+        (void)emu_ir_emit(&g_b, raises[i], 0u, x, x, 0u, 0u);
+
+        emu_ir_opt_stats_t st;
+        emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
+        CHECK_EQ(count_op(raises[i]), 1u);
+    }
+    for (size_t i = 0; i < sizeof(moves) / sizeof(moves[0]); i++) {
+        emu_ir_reset(&g_b);
+        const uint16_t x = emu_ir_emit(&g_b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                                       EMU_IR_NO_TEMP, 1u, 0u);
+        (void)emu_ir_emit(&g_b, moves[i], 0u, x, x, 0u, 0u);
+
+        emu_ir_opt_stats_t st;
+        emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
+        CHECK_EQ(count_op(moves[i]), 0u);
+    }
+}
+
+/*
+ * And the rule behind both: an operation is removable only if it is on
+ * the list of pure ones. Every operation in the enumeration is offered
+ * unread, and exactly the listed ones may go.
+ *
+ * The list is repeated here on purpose. One written from the pass would
+ * agree with the pass; this is the second copy that has to be edited
+ * for a new operation to become removable, and "kept" is the answer for
+ * one nobody has considered.
+ */
+static void test_only_pure_ops_are_removable(void)
+{
+    static const emu_ir_op_t pure[] = {
+        EMU_IR_GET,     EMU_IR_CONST,   EMU_IR_MOV,     EMU_IR_ADD,
+        EMU_IR_SUB,     EMU_IR_AND,     EMU_IR_OR,      EMU_IR_XOR,
+        EMU_IR_SHL,     EMU_IR_SHR,     EMU_IR_SAR,     EMU_IR_ROTL,
+        EMU_IR_MUL,     EMU_IR_MULHS,   EMU_IR_MULHU,   EMU_IR_DIVS,
+        EMU_IR_DIVU,    EMU_IR_REMS,    EMU_IR_REMU,    EMU_IR_MAC,
+        EMU_IR_ADDI,    EMU_IR_ANDI,    EMU_IR_ORI,     EMU_IR_XORI,
+        EMU_IR_SHLI,    EMU_IR_SHRI,    EMU_IR_SARI,    EMU_IR_ROTLI,
+        EMU_IR_NEG,     EMU_IR_NOT,     EMU_IR_BSWAP32, EMU_IR_BSWAP16,
+        EMU_IR_HSWAP,   EMU_IR_CLZ,     EMU_IR_CTZ,     EMU_IR_POPCNT,
+        EMU_IR_BEXT,    EMU_IR_BSET,    EMU_IR_BCLR,    EMU_IR_BINV,
+        EMU_IR_SEXT8,   EMU_IR_SEXT16,  EMU_IR_ZEXT8,   EMU_IR_ZEXT16,
+        EMU_IR_GETCOND, EMU_IR_SETCC,   EMU_IR_SELECT,  EMU_IR_FGET,
+        EMU_IR_FSGNJ,   EMU_IR_FCLASS};
+    unsigned removed = 0;
+
+    for (unsigned op = (unsigned)EMU_IR_NOP + 1u; op < (unsigned)EMU_IR_OP_COUNT;
+         op++) {
+        bool listed = false;
+
+        for (size_t i = 0; i < sizeof(pure) / sizeof(pure[0]); i++) {
+            listed = listed || ((unsigned)pure[i] == op);
+        }
+
+        /*
+         * One instruction defining a temp nothing reads, and nothing
+         * else. Built by hand rather than through emu_ir_emit, which
+         * would refuse some of these operand shapes; the pass looks at
+         * the operation and the destination and that is all.
+         */
+        emu_ir_reset(&g_b);
+        const uint16_t x = emu_ir_get(&g_b, 1u);
+        const uint16_t t = emu_ir_alu(&g_b, EMU_IR_ADD, x, x);
+
+        g_b.insn[g_b.count - 1u].op = (uint8_t)op;
+        (void)t;
+
+        emu_ir_opt_stats_t st;
+        emu_ir_optimise(&g_b, &g_fake_target, 0u, &st);
+
+        const bool gone = g_b.insn[g_b.count - 1u].dead;
+
+        if (gone != listed) {
+            printf("  op %u: %s, and it is %s the pure list\n", op,
+                   gone ? "removed" : "kept", listed ? "on" : "not on");
+        }
+        CHECK_EQ(gone, listed);
+        removed += gone ? 1u : 0u;
+    }
+    /* All fifty were reached: a loop that removed nothing would agree
+     * with an empty list just as well. */
+    CHECK_EQ(removed, (unsigned)(sizeof(pure) / sizeof(pure[0])));
+}
+
+/*
  * A frontend with no condition flags at all -- RISC-V -- must pay
  * nothing. No SETF is ever emitted, so there is nothing for the flag
  * pass to find, and the register passes still apply.
@@ -2028,6 +2163,9 @@ void test_ir(void)
     test_setpc_untouched_without_a_target();
     test_get_not_elided_across_helper();
     test_dead_values();
+    test_unread_load_is_kept();
+    test_unread_fp_keeps_its_flags();
+    test_only_pure_ops_are_removable();
     test_flagless_frontend();
     test_use_counts();
     test_overflow_not_optimised();

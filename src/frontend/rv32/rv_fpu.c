@@ -575,7 +575,26 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
         if (opcode == OP_LOAD_FP) {
             const uint32_t addr = h->x[rs1] + (uint32_t)((int32_t)insn >> 20);
             uint32_t v;
-            rv_exc_t exc = rv_hart_load(h, addr, 4u, false, &v);
+            rv_exc_t exc;
+
+#if RV_EXT_D && !RV_MISALIGNED_OK
+            /*
+             * **An eight-byte access is aligned to eight, not to four.**
+             * FLD is done as two word loads because the bus is 32 bits
+             * wide, and each of those checks its own alignment -- so an
+             * address that is 4 mod 8 passed both, and a core built to
+             * *report* misaligned accesses completed this one. Under PMP
+             * it then took an access fault where the architecture, and
+             * the reference model, say address-misaligned.
+             *
+             * How it is carried out is not what it is.
+             */
+            if (wide && (addr & 7u) != 0u) {
+                *tval = addr;
+                return RV_EXC_LOAD_MISALIGNED;
+            }
+#endif
+            exc = rv_hart_load(h, addr, 4u, false, &v);
 
             if (exc != RV_EXC_NONE) {
                 *tval = addr;
@@ -610,6 +629,13 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
                                 (int32_t)((insn >> 7) & 0x1Fu);
             const uint32_t addr = h->x[rs1] + (uint32_t)imm;
             rv_exc_t exc;
+#if RV_EXT_D && !RV_MISALIGNED_OK
+            /* As FLD above: FSD is one eight-byte store. */
+            if (wide && (addr & 7u) != 0u) {
+                *tval = addr;
+                return RV_EXC_STORE_MISALIGNED;
+            }
+#endif
 #if RV_EXT_D
             if (wide) {
                 const uint64_t v = fr64(h, rs2);

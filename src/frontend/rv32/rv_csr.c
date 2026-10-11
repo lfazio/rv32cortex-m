@@ -43,6 +43,21 @@ static EMU_ALWAYS_INLINE uint32_t csr_min_priv(uint32_t csr)
 #define COUNTINHIBIT_WMASK 0x5u
 #endif
 
+/*
+ * menvcfg and senvcfg as they are stored. CBIE is two bits with three
+ * legal values; the fourth is reserved, and writing it selects "cbo.inval
+ * is illegal", which is what the reference model does with it and the
+ * one reading that cannot grant something by accident.
+ */
+static uint32_t envcfg_legal(uint32_t val)
+{
+    val &= ENVCFG_WMASK;
+    if ((val & ENVCFG_CBIE) == ENVCFG_CBIE_RSVD) {
+        val &= ~ENVCFG_CBIE;
+    }
+    return val;
+}
+
 static uint64_t read_time(const rv_hart_t *h)
 {
     /*
@@ -573,7 +588,7 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
         h->scounteren = val & COUNTEREN_WMASK;
         break;
     case CSR_SENVCFG:
-        h->senvcfg = val & ENVCFG_WMASK;
+        h->senvcfg = envcfg_legal(val);
         break;
     case CSR_SSCRATCH:
         h->sscratch = val;
@@ -630,7 +645,7 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
         break;
 
     case CSR_MENVCFG:
-        h->menvcfg = val & ENVCFG_WMASK;
+        h->menvcfg = envcfg_legal(val);
         break;
     case CSR_MENVCFGH:
         break; /* every field belongs to an absent extension */
@@ -812,7 +827,7 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
                     break;
                 }
             }
-            h->pmpaddr[i] = val;
+            h->pmpaddr[i] = val & RV_PMPADDR_MASK;
             h->pmp_gen++; /* translated blocks baked this in */
             break;
         }

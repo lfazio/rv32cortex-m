@@ -70,7 +70,7 @@ came to document an `RV32_PLATFORM` option that has never existed.
 What belongs here is only what the recipes do not say:
 
 ```sh
-./scripts/run-arch-test.sh      # 391/391; EMU_EXTRA_ARGS=--jit for the JIT
+./scripts/run-arch-test.sh      # 490/490; EMU_EXTRA_ARGS=--jit for the JIT
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77; EMU_HOST=<a wrapper
                                 # adding --jit> for the JIT -- it takes no flag
 ./scripts/build-matrix.sh --test # every configuration, and its ctest
@@ -95,7 +95,7 @@ because this firmware never idles and a plain attach races it. Build
 `-DEMU_NET=OFF` to keep the UART a console.
 
 **`isatest` on the board is necessary and nowhere near sufficient.** It
-measures coverage now -- 829 of 54,087 instructions interpreted under
+measures coverage now -- 1,116 of 58,255 instructions interpreted under
 the JIT, on the board as on x86-64 -- but it never fills the code cache
 and it finishes in a tenth of a second. Two defects sat behind those
 two facts while it passed: a compaction that moved blocks with their
@@ -2571,9 +2571,93 @@ session, and every one of them recurred:
   `ZihintntlZca` -- the compressed forms, the half a decoder gets wrong
   -- has four more that naming the first does not offer. Listing the
   checkout to find that turned up **fifteen further suites this core is
-  eligible for that had never been named: 99 tests, of which 12 fail.**
-  A 378/378 that had stood for months was a statement about thirty
-  directory names. They are in docs/TODO.md, untriaged.
+  eligible for that had never been named: 99 tests, of which 13
+  failed.** A 378/378 that had stood for months was a statement about
+  thirty directory names. The next entry is what they were.
+
+- **Thirteen failures in suites nobody had named, and every one was the
+  emulator.** This file's reflex for a failing architecture test is to
+  suspect the Sail config, with three entries to justify it. None of
+  these was that. Each test prints its own diagnosis -- expected cause,
+  actual cause, the register and both values -- and reading those took
+  less time than forming a theory would have:
+
+  | what was wrong | found by | also held by |
+  |---|---|---|
+  | **the JIT deleted a load nothing read** | `pmpsm_cfg_A_tor_zero`, under `--jit` only | `isatest`: the APLIC claim, a faulting load |
+  | `pmpaddr` stored 32 bits; this bus allows 30 | `pmpsm_grain`, `_grain_check`, `_csr_walk-1`, `-5` | `pmpaddr-30-bits` |
+  | `fld`/`fsd` at 4 mod 8 never raised misaligned | `pmpf_cfg_wr`, `pmpzcd_legal_lxwr` | nothing in the default build |
+  | a failing `sc.w` never reached the bus | `sv32_exceptions_Zalrsc_{M,S,U}mode` | `sc-nowhere` |
+  | cbo.clean/flush/inval took a virtual address to the bus | `sv32_zicbom_exceptions_{S,U}mode` | `s-cbo-paged` |
+  | ...and skipped PMP | `pmpzicbo_cbo_wr_01`, `sv32_pmp_on_pa_zicbom_{S,U}mode` | `s-cbo-straddle` |
+  | `menvcfg`/`senvcfg` were consulted by nothing | **no architecture test** | `s-cbo-*`, six checks |
+  | FIOM writable, CBIE held its reserved value | **no architecture test**; found by asking Sail | `menvcfg-warl` |
+  | PMP matched an access by its first byte only | **no architecture test** | `s-cbo-straddle-refused` |
+
+  The table is measured, not remembered: each fix was reverted alone
+  and the 490 tests and `isatest` run against it on both backends.
+  Three rows have no architecture test at all, which is the same lesson
+  one level down -- 490 is a statement about 45 directory names.
+
+  **The first row is the one to carry.** `pass_dead_values` decided
+  what was removable from a list of operations *with* an effect, and
+  `LOAD` was not on it. A load whose destination register was
+  overwritten later in the block -- with no load, store, helper or exit
+  between, since any of those keeps the first write alive -- was never
+  executed. It did not fault, which is what the test saw. And on a
+  device it did not read, where reading is how an interrupt is
+  acknowledged or a flag cleared: `(void)UART->DR; return 0;` compiles
+  to exactly that shape. In a project whose first line says the guest
+  drives the host's real peripherals. `isatest` now discards an APLIC
+  claim that way and checks the interrupt was acknowledged; with the
+  fix reverted it stays pending, under `--jit` only.
+
+  Three things about it generalise.
+
+  **It had never fired, in either direction.** Ten guests -- CoreMark,
+  bench, mmiobench, the driver and interrupt tests among them -- emit
+  byte-identical code with loads removable and with loads kept. So the
+  optimisation had bought nothing, ever, and the defect had bitten
+  nothing, yet. A removal that never fires is not a safe removal; it is
+  an untested one.
+
+  **A list of exceptions fails open.** "Everything is removable except
+  these" loses an operation by omission, silently, and the omitted one
+  was the most effectful in the set. It is a list of the *pure*
+  operations now, so one nobody has thought about is kept, and
+  `test_only_pure_ops_are_removable` offers every operation in the
+  enumeration unread -- with its own copy of the list, on purpose. Same
+  rule as the `default:` that declines, pointed the other way: choose
+  the default by which mistake is survivable.
+
+  **And "consulted by nothing" was greppable.** `ENVCFG_CBIE`,
+  `ENVCFG_CBCFE` and `ENVCFG_CBZE` appeared in exactly one expression:
+  the mask of which bits may be written. Two registers were stored,
+  read back and reset correctly, and every cache-block operation ran at
+  every privilege regardless. This file says to grep for the readers of
+  a field three separate times.
+
+- **How an access is carried out is not what the access is.** `fld`
+  and `fsd` are two word accesses here because the bus is 32 bits
+  wide, and each word checked its own alignment -- so eight bytes at an
+  address that is 4 mod 8 passed both, on a core built to *report*
+  misaligned accesses. Under PMP it took an access fault where the
+  architecture says address-misaligned. Same shape in the PMP check
+  itself, which found the entry for an access by its first byte: right
+  for four bytes against four-byte entries, and wrong for a 64-byte
+  cache block that begins below an entry and runs into it. Both were
+  invisible while every access was a word. **When a wider access is
+  built out of narrower ones, the checks that belong to the whole do
+  not happen by themselves.**
+
+- **A failing operation still has to be asked whether it could have
+  succeeded.** `sc.w` with no reservation returns 1 and stores nothing,
+  so it never reached the bus -- and an address with no memory behind
+  it, which any store reports as an access fault, came back as an
+  ordinary lost reservation. Translation and PMP were already checked
+  before the reservation, for this reason; the bus was the third thing
+  that can refuse and the one that was skipped. The early return was
+  the optimisation and the bug.
 
 - **A comment about a default is checked by reading the default.**
   `rv_config.h` carried two blocks saying Zacas was off because it was

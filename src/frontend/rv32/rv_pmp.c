@@ -219,11 +219,20 @@ bool rv_pmp_check(const rv_hart_t *h, uint32_t addr, uint32_t size,
         if (!pmp_range(h, i, cfg, &lo, &hi)) {
             continue;
         }
-        if (addr < lo || addr >= hi) {
-            continue; /* first byte is not in this entry */
+        if (last < lo || addr >= hi) {
+            continue; /* no byte of the access is in this entry */
         }
-        if (last >= hi) {
-            return false; /* access straddles the top */
+        /*
+         * Some byte is, so this entry decides -- and it must hold *all*
+         * of them. Straddling either edge fails. This tested only the
+         * top, on the grounds that an access is found by its first
+         * byte: one that began below an entry and ended inside it was
+         * passed on to a lower-priority entry, or to none at all. A
+         * four-byte access against four-byte entries cannot do that; a
+         * 64-byte cache block can.
+         */
+        if (addr < lo || last >= hi) {
+            return false;
         }
 
         /*

@@ -897,7 +897,9 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                 const rv_exc_t exc =
                     rv_hart_cbo(h, op, h->x[rv_rs1(insn)], &fault_addr);
                 if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
-                    TRAP(exc, fault_addr);
+                    /* An operation this privilege may not run reports
+                     * itself, as any illegal instruction does. */
+                    TRAP(exc, (exc == RV_EXC_ILLEGAL_INSN) ? insn : fault_addr);
                 }
                 break;
             }

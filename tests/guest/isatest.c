@@ -2234,6 +2234,22 @@ static void test_aplic(void)
     check("aplic-ie-on-delivers", g_ext_count - before2, 1u);
 
     csr_clear("mie", 1u << 11);
+
+    /*
+     * A read whose value is thrown away is still a read -- and this is
+     * the one that matters here, because reading claimi is what
+     * acknowledges the interrupt. The load's destination is overwritten
+     * on the next line with nothing in between, which is exactly the
+     * shape the JIT's dead-value pass deleted: see test_discarded_reads.
+     * On a real peripheral it is `(void)UART->DR;`.
+     */
+    APLIC_SETIPNUM = B;
+    check("aplic-discard-pending", APLIC_TOPI, (B << 16) | 2u);
+    __asm__ volatile("lw   t0, 0(%0)\n"
+                     "li   t0, 0" ::"r"(&APLIC_CLAIMI)
+                     : "t0", "memory");
+    check("aplic-discarded-claim-acks", APLIC_TOPI, 0u);
+
     APLIC_IDELIVERY = 0u;
     APLIC_DOMAINCFG = 0u;
 }
@@ -2934,6 +2950,316 @@ static void test_zihpm(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* What fifteen arch-test suites nobody had named found                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * riscv-arch-test builds a suite only if its directory is named, and
+ * fifteen that this core is eligible for never had been. Offered, they
+ * were 99 tests and 13 failures. The architecture suite checks all of
+ * what follows now; it is repeated here because this file is the one
+ * that runs on a board, under the Thumb-2 backend, and because one of
+ * the thirteen was a defect in the *translator* that only a guest
+ * executing under it can hold.
+ */
+
+/* ---- a read nothing reads ------------------------------------------ */
+
+/*
+ * A load whose result is thrown away is still a load.
+ *
+ * The JIT's dead-value pass deletes an operation nothing reads, and its
+ * list of operations with an effect of their own did not include LOAD.
+ * So a load whose destination was overwritten later in the same block
+ * -- with no store, load, call or branch in between to make the first
+ * write observable -- simply was not executed. It did not fault. And it
+ * did not read: on a device, where reading is how a flag is cleared and
+ * `(void)UART->DR; return 0;` is how a driver says so, the access never
+ * reached the register.
+ *
+ * **Each of these overwrites its own destination on the next line**,
+ * which is the whole condition. The same load followed by anything that
+ * touches memory is kept, and that is why 378 architecture tests, this
+ * file and every guest in the tree ran through the JIT without it
+ * showing: a compiler rarely leaves a dead load, and a hand-written
+ * test usually looks at what it read.
+ */
+static void test_discarded_reads(void)
+{
+    uint32_t before = g_trap_count;
+
+    __asm__ volatile("lw   t0, 0(%0)\n"
+                     "li   t0, 0" ::"r"(0x70000000u)
+                     : "t0", "memory");
+    check("discarded-load-faults", g_trap_count - before, 1u);
+    check("discarded-load-cause", g_last_cause, 5u);
+    check("discarded-load-tval", g_last_tval, 0x70000000u);
+
+#if defined(__riscv_flen) && (__riscv_flen >= 32)
+    /*
+     * The same pass, the same omission, a different effect: a
+     * floating-point comparison or conversion raises flags, and the
+     * flags are the only reason some of them are executed at all. `flt`
+     * signals on any NaN; a conversion of NaN to an integer is invalid.
+     */
+    csr_set("mstatus", 1u << 13);
+    csr_write("fflags", 0u);
+    __asm__ volatile("fmv.w.x ft0, %0\n"
+                     "fmv.w.x ft1, %1\n"
+                     "flt.s   t0, ft0, ft1\n"
+                     "li      t0, 0" ::"r"(F_QNAN),
+                     "r"(F1_0)
+                     : "t0", "ft0", "ft1");
+    check("discarded-flt-raises-nv", csr_read("fflags") & 0x10u, 0x10u);
+
+    csr_write("fflags", 0u);
+    __asm__ volatile("fmv.w.x   ft0, %0\n"
+                     "fcvt.w.s  t0, ft0, rtz\n"
+                     "li        t0, 0" ::"r"(F_QNAN)
+                     : "t0", "ft0");
+    check("discarded-fcvt-raises-nv", csr_read("fflags") & 0x10u, 0x10u);
+    csr_write("fflags", 0u);
+#endif
+}
+
+/* ---- WARL fields wider than the machine ---------------------------- */
+
+static void test_warl_widths(void)
+{
+    /*
+     * pmpaddr holds bits 33:2 of a physical address and this machine
+     * has 32 of them. The top two bits of the register name memory that
+     * cannot exist, so they read as zero -- the same rule, and the same
+     * mistake, as satp.PPN.
+     */
+    csr_write("pmpaddr10", 0xFFFFFFFFu);
+    check("pmpaddr-30-bits", csr_read("pmpaddr10"), 0x3FFFFFFFu);
+    csr_write("pmpaddr10", 0u);
+
+    /* menvcfg and senvcfg: the three cache-block fields and nothing
+     * else, and CBIE cannot hold its reserved value. */
+    csr_write("menvcfg", 0xFFFFFFFFu);
+    check("menvcfg-warl", csr_read("menvcfg"), 0xF0u);
+    csr_write("menvcfg", 0x20u);
+    check("menvcfg-cbie-reserved", csr_read("menvcfg"), 0u);
+    csr_write("senvcfg", 0xFFFFFFFFu);
+    check("senvcfg-warl", csr_read("senvcfg"), 0xF0u);
+    csr_write("senvcfg", 0u);
+    csr_write("menvcfg", 0u);
+}
+
+/* ---- the cache-block operations, below M --------------------------- */
+
+static volatile uint32_t g_cbo_s[2];
+
+/*
+ * All four, from S-mode. g_cbo_s[0] gets a bit for each that trapped --
+ * zero, clean, flush, inval, from bit 0 -- and g_cbo_s[1] is non-zero if
+ * any of those traps was something other than illegal-instruction.
+ */
+static void smode_cbo(void)
+{
+    uint32_t pat = 0u, odd = 0u, before;
+
+#define CBO_TRY(bit, insn)                                                     \
+    before = g_trap_count;                                                     \
+    __asm__ volatile(insn " (%0)" ::"r"(g_block) : "memory");                  \
+    if (g_trap_count != before) {                                              \
+        pat |= (bit);                                                          \
+        odd |= g_last_cause ^ 2u;                                              \
+    }
+
+    CBO_TRY(1u, "cbo.zero")
+    CBO_TRY(2u, "cbo.clean")
+    CBO_TRY(4u, "cbo.flush")
+    CBO_TRY(8u, "cbo.inval")
+#undef CBO_TRY
+
+    g_cbo_s[0] = pat;
+    g_cbo_s[1] = odd;
+    LEAVE_SMODE();
+}
+
+static uint32_t cbo_from_smode(uint32_t menvcfg)
+{
+    csr_write("menvcfg", menvcfg);
+    g_block[0] = 0x11111111u;
+    enter_smode(smode_cbo);
+    return g_cbo_s[0] | ((g_cbo_s[1] != 0u) ? 0x80000000u : 0u);
+}
+
+static volatile uint32_t g_cbo_paged[5];
+
+/*
+ * A page nothing maps. Not VA_HOLE: smode_paging makes that one valid
+ * on its way through, to show that SFENCE.VMA is what publishes a PTE,
+ * and it stays that way.
+ */
+#define VA_NEVER 0x90008000u
+
+/* Under Sv32: a mapped page, a read-only one, and one that is not there. */
+static void smode_cbo_paged(void)
+{
+    uint32_t before = g_trap_count;
+
+    __asm__ volatile("cbo.clean (%0)" ::"r"(VA_RW) : "memory");
+    g_cbo_paged[0] = g_trap_count - before;
+
+    /* Readable is enough: the rule is "a load *or* a store would be". */
+    before = g_trap_count;
+    __asm__ volatile("cbo.inval (%0)" ::"r"(VA_RO) : "memory");
+    g_cbo_paged[1] = g_trap_count - before;
+
+    before = g_trap_count;
+    __asm__ volatile("cbo.flush (%0)" ::"r"(VA_NEVER + 0x48u) : "memory");
+    g_cbo_paged[2] = g_trap_count - before;
+    g_cbo_paged[3] = g_last_cause;
+    g_cbo_paged[4] = g_last_tval;
+
+    LEAVE_SMODE();
+}
+
+static void test_cbo_below_m(void)
+{
+    csr_write("medeleg", 0u);
+
+    /*
+     * menvcfg decides what S-mode may run, one enable per kind, and for
+     * as long as the register has existed nothing read it: every
+     * operation ran at every privilege. The pattern has a bit for each
+     * that was *refused*.
+     */
+    check("s-cbo-none-enabled", cbo_from_smode(0x00u), 0xFu);
+    check("s-cbo-refused-untouched", g_block[0], 0x11111111u);
+    check("s-cbo-zero-only", cbo_from_smode(0x80u), 0xEu);
+    check("s-cbo-zero-zeroed", g_block[0], 0u);
+    check("s-cbo-clean-flush-only", cbo_from_smode(0x40u), 0x9u);
+    check("s-cbo-inval-as-flush", cbo_from_smode(0x10u), 0x7u);
+    check("s-cbo-inval", cbo_from_smode(0x30u), 0x7u);
+    check("s-cbo-all", cbo_from_smode(0xF0u), 0x0u);
+
+    /*
+     * A block that lies only *partly* in a PMP entry. The rule is that
+     * the entry holding any byte of an access must hold all of it, and
+     * the check found an entry by the access's first byte -- so an
+     * access that began below an entry and ran into it was handed on to
+     * the next one, here the background that permits everything. Four
+     * bytes against four-byte entries cannot do that. Sixty-four can:
+     * entry 9 is one word in the middle of the block, with no
+     * permissions at all.
+     */
+    csr_write("pmpaddr9", ((uint32_t)(uintptr_t)&g_block[4]) >> 2);
+    csr_write("pmpcfg2", 0x1000u); /* entry 9: NA4, ---, unlocked */
+    check("s-cbo-straddle-cfg", (csr_read("pmpcfg2") >> 8) & 0xFFu, 0x10u);
+    check("s-cbo-straddle-refused", cbo_from_smode(0xF0u), 0x8000000Fu);
+    /* All four as a store access fault: 7, which is 2 with 5 xored in. */
+    check("s-cbo-straddle-cause", g_cbo_s[1], 5u);
+    csr_write("pmpcfg2", 0u);
+    csr_write("pmpaddr9", 0u);
+    check("s-cbo-straddle-cleared", cbo_from_smode(0xF0u), 0x0u);
+
+    /*
+     * And under paging the block is named by a *virtual* address. The
+     * maintenance operations took it to the bus as a physical one: a
+     * mapped page faulted, because nothing lives at 0x90000000.
+     */
+    csr_write("satp", SATP_SV32 | ((uint32_t)(uintptr_t)g_root >> 12));
+    enter_smode(smode_cbo_paged);
+    csr_write("satp", 0u);
+    csr_write("menvcfg", 0u);
+
+    check("s-cbo-paged-mapped", g_cbo_paged[0], 0u);
+    check("s-cbo-paged-readonly", g_cbo_paged[1], 0u);
+    check("s-cbo-paged-hole-taken", g_cbo_paged[2], 1u);
+    /* A store page fault, though nothing was stored: the architecture
+     * reports every refusal of these as the store kind. */
+    check("s-cbo-paged-hole-cause", g_cbo_paged[3], 15u);
+    check("s-cbo-paged-hole-tval", g_cbo_paged[4], VA_NEVER + 0x40u);
+}
+
+/* ---- a store-conditional that could never have stored -------------- */
+
+static void test_sc_nowhere(void)
+{
+    uint32_t rd = 0x5A5A5A5Au;
+    const uint32_t before = g_trap_count;
+
+    /*
+     * No reservation is held, so this SC fails -- and it used to say
+     * only that. But nothing is mapped at the address, and whether a
+     * store *could* land is asked before whether it will: an access
+     * fault, exactly as a plain store there reports.
+     */
+    drop_reservation();
+    __asm__ volatile("sc.w %0, %1, (%2)"
+                     : "+r"(rd)
+                     : "r"(opaque(0u)), "r"(0x70000000u)
+                     : "memory");
+    check("sc-nowhere-taken", g_trap_count - before, 1u);
+    check("sc-nowhere-cause", g_last_cause, 7u);
+    check("sc-nowhere-tval", g_last_tval, 0x70000000u);
+    check("sc-nowhere-rd", rd, 0x5A5A5A5Au);
+}
+
+/* ---- eight bytes are aligned to eight ------------------------------ */
+
+#if defined(__riscv_flen) && (__riscv_flen >= 32)
+static volatile uint32_t g_dbl[4] __attribute__((aligned(8)));
+
+/*
+ * FLD and FSD at an address that is 4 mod 8.
+ *
+ * The emulator carries a double out as two word accesses, and each of
+ * those is aligned -- so a core configured to *report* misaligned
+ * accesses completed this one. As with the word forms above, what is
+ * right depends on the build, and both answers are asserted.
+ */
+static void test_double_alignment(void)
+{
+    uint32_t before;
+
+    csr_set("mstatus", 1u << 13);
+    g_dbl[0] = 0x11111111u;
+    g_dbl[1] = 0x22222222u;
+    g_dbl[2] = 0x33333333u;
+    g_dbl[3] = 0x44444444u;
+
+    before = g_trap_count;
+    __asm__ volatile(WITH_EXT("d", "fmv.w.x ft0, %1\n"
+                                   "fsd     ft0, 4(%0)") ::"r"(g_dbl),
+                     "r"(0xCAFEF00Du)
+                     : "ft0", "memory");
+#if RV32_MISALIGNED
+    check("fsd-4mod8-completes", g_trap_count - before, 0u);
+    check("fsd-4mod8-low", g_dbl[1], 0xCAFEF00Du);
+    check("fsd-4mod8-high", g_dbl[2], 0xFFFFFFFFu); /* a boxed single */
+#else
+    check("fsd-4mod8-taken", g_trap_count - before, 1u);
+    check("fsd-4mod8-cause", g_last_cause, 6u);
+    check("fsd-4mod8-tval", g_last_tval, (uint32_t)(uintptr_t)&g_dbl[1]);
+    check("fsd-4mod8-untouched", g_dbl[1], 0x22222222u);
+#endif
+
+    before = g_trap_count;
+    __asm__ volatile(WITH_EXT("d", "fld ft0, 4(%0)") ::"r"(g_dbl)
+                     : "ft0", "memory");
+#if RV32_MISALIGNED
+    check("fld-4mod8-completes", g_trap_count - before, 0u);
+#else
+    check("fld-4mod8-taken", g_trap_count - before, 1u);
+    check("fld-4mod8-cause", g_last_cause, 4u);
+    check("fld-4mod8-tval", g_last_tval, (uint32_t)(uintptr_t)&g_dbl[1]);
+#endif
+
+    /* An aligned one is untouched by any of this. */
+    before = g_trap_count;
+    __asm__ volatile(WITH_EXT("d", "fsd ft0, 8(%0)") ::"r"(g_dbl)
+                     : "memory");
+    check("fsd-aligned", g_trap_count - before, 0u);
+}
+#endif
+
+/* ------------------------------------------------------------------ */
 
 int main(void)
 {
@@ -2967,6 +3293,13 @@ int main(void)
     test_zalasr();
     test_zawrs();
     test_zihpm();
+    test_discarded_reads();
+    test_warl_widths();
+    test_cbo_below_m();
+    test_sc_nowhere();
+#if defined(__riscv_flen) && (__riscv_flen >= 32)
+    test_double_alignment();
+#endif
     test_timer_interrupt();
 
     puts_("checks   ");

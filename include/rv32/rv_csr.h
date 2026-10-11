@@ -74,9 +74,19 @@ struct rv_hart;
  */
 #define ENVCFG_FIOM (1u << 0)
 #define ENVCFG_CBIE (3u << 4)
+#define ENVCFG_CBIE_FLUSH (1u << 4) /* cbo.inval runs, as a flush   */
+#define ENVCFG_CBIE_RSVD (2u << 4) /* not a value the field can hold */
+#define ENVCFG_CBIE_INVAL (3u << 4) /* cbo.inval runs as written     */
 #define ENVCFG_CBCFE (1u << 6)
 #define ENVCFG_CBZE (1u << 7)
-#define ENVCFG_WMASK (ENVCFG_FIOM | ENVCFG_CBIE | ENVCFG_CBCFE | ENVCFG_CBZE)
+/*
+ * What can be written. FIOM is not in it: the bit is vacuous here, and
+ * the description of this core in tests/arch-test says it is read-only
+ * zero (`writable_fiom: false`). It was writable for as long as the
+ * register has existed, which is a core that does not match its own
+ * description, in the direction no test had read back.
+ */
+#define ENVCFG_WMASK (ENVCFG_CBIE | ENVCFG_CBCFE | ENVCFG_CBZE)
 
 /* Machine trap handling. */
 #define CSR_MSCRATCH 0x340
@@ -124,6 +134,14 @@ struct rv_hart;
 /* Physical memory protection. */
 #define CSR_PMPCFG0 0x3A0
 #define CSR_PMPADDR0 0x3B0
+/*
+ * pmpaddr holds bits 33:2 of a physical address, and this bus has 32 of
+ * them: the top two bits of the register name memory that cannot exist,
+ * so they are read-only zero. Same rule as satp.PPN being 20 bits -- a
+ * WARL field's width follows the *physical* address space, and storing
+ * more does not widen anything, it reports a boundary nothing can reach.
+ */
+#define RV_PMPADDR_MASK 0x3FFFFFFFu
 
 /* Machine counters. */
 #define CSR_MCYCLE 0xB00

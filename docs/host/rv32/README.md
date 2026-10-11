@@ -19,7 +19,7 @@ ctest --test-dir build/host -L fast
 
 | suite | result |
 |---|---|
-| riscv-arch-test | **391/391**, interpreter and JIT. SoftFloat is mandatory now; when it was optional, turning it off failed 52 tests and every one of them was F |
+| riscv-arch-test | **490/490**, interpreter and JIT. SoftFloat is mandatory now; when it was optional, turning it off failed 52 tests and every one of them was F |
 | riscv-tests (Berkeley) | **77/77**, interpreter and JIT (the JIT through an `EMU_HOST` wrapper that adds `--jit`) |
 | ctest `-L fast` | unit tests, and the guests through the runner on both backends |
 

@@ -85,7 +85,32 @@ cfg_src="$here/tests/arch-test/$cfg_name"
 # naming Zihintntl alone would have offered half the suite and reported
 # all of it passing. Zawrs and Zalasr have no directory at all: the
 # emulator implements both and this suite says nothing about either.
-extensions="${ARCH_TEST_EXTENSIONS:-I,M,Zmmul,Zaamo,Zalrsc,Zca,Zicsr,Zicntr,Zifencei,Zicbom,Zicboz,Zicond,Zihintntl,ZihintntlZca,Zihintpause,Zihpm,Zbb,Zba,Zbc,Zbs,Zacas,F,D,Zcb,PMPU,Sv,Svbare,Svade,ExceptionsSv,SvPMP}"
+#
+# **And fifteen more that went unnamed for as long as this list has
+# existed**: the combination directories. `Zcb` was here and `ZcbM` and
+# `ZcbZbb` were not; `F` and `D` without `Zcf` and `Zcd`; `PMPU` alone of
+# eight PMP directories; `Sv` without `SvZicbo`. Each is a suite this
+# core is eligible for, 99 tests between them, and 13 of those failed
+# the first time they ran -- one of them a defect in the JIT's optimiser
+# that deleted a device read. A total of 378 was a statement about thirty
+# directory names.
+#
+# So, when the checkout moves: `ls tests/rv32i tests/priv tests/priv/pmp/*`
+# and account for every directory, by adding it here or by saying below
+# why not.
+#
+#   Zabha, ZacasZabha, Zbkb, Zbkc, Zbkx, Zcmop, Zfa*, Zfh*, Zfbfmin,
+#   Zimop, Zknd, Zkne, Zknh, Zksed, Zksh             not implemented
+#   Zicbop                                           not *claimed*: the
+#                                                    prefetches are ORIs
+#                                                    into x0 and execute
+#                                                    already; see TODO
+#   Misalign, MisalignD, MisalignF, MisalignZca      this description
+#                                                    says MISALIGNED_LDST
+#                                                    false
+#   Svadu, SvaduPMP, Svinval, Svnapot, Svpbmt        not implemented;
+#                                                    Svade is the choice
+extensions="${ARCH_TEST_EXTENSIONS:-I,M,Zmmul,Zaamo,Zalrsc,Zca,Zicsr,Zicntr,Zifencei,Zicbom,Zicboz,Zicond,Zihintntl,ZihintntlZca,Zihintpause,Zihpm,Zbb,Zba,Zbc,Zbs,Zacas,F,D,Zcb,ZcbM,ZcbZbb,Zcf,Zcd,PMPU,PMPF,PMPS,PMPSm,PMPZaamo,PMPZalrsc,PMPZca,PMPZicbo,Sv,Svbare,Svade,SvZicbo,ExceptionsSv,ExceptionsSvZaamo,ExceptionsSvZalrsc,SvPMP,SvPMPZicbo}"
 jobs="$(nproc)"
 verbose=""
 
