@@ -272,11 +272,11 @@ static uint32_t rv_ir_fp_helper(emu_cpu_t *cpu, uint32_t insn, uint32_t unused)
  * a Linux kernel takes one on every lock, every refcount and every
  * percpu update -- so declining opcode 0x2F cut a block at each of them.
  *
- * The dispatch below is the interpreter's, deliberately line for line:
- * the same width and validity tests, the same causes, the same two
- * functions. Anything else would be a second implementation of semantics
- * the core already owns, which is the mistake the FP helper beside it was
- * written to avoid.
+ * The whole of it is rv_hart_atomic, which is also the whole of the
+ * interpreter's AMO case: the same width and validity tests, the same
+ * causes. This used to be a copy of that case "deliberately line for
+ * line" -- a second implementation held to the first by intention,
+ * which is the mistake the FP helper beside it was written to avoid.
  *
  * Reading h->x[] here is sound because the optimiser treats a helper as
  * touching everything: pass_reg_traffic drops every forwarded register at
@@ -287,45 +287,16 @@ static uint32_t rv_ir_fp_helper(emu_cpu_t *cpu, uint32_t insn, uint32_t unused)
 static uint32_t rv_ir_amo_helper(emu_cpu_t *cpu, uint32_t insn, uint32_t unused)
 {
     rv_hart_t *const h = (rv_hart_t *)cpu;
-    const uint32_t funct5 = rv_funct7(insn) >> 2;
-    uint32_t addr;
-    rv_exc_t exc;
+    uint32_t tval;
 
     (void)unused;
 
-#if RV_EXT_ZACAS
-    if (rv_funct3(insn) == 3u && funct5 == RV_AMO_CAS) {
-        /* amocas.d: even-odd pairs, so an odd operand is not encodable. */
-        if (EMU_UNLIKELY((rv_rd(insn) & 1u) != 0u ||
-                         (rv_rs2(insn) & 1u) != 0u)) {
-            rv_hart_trap(h, RV_EXC_ILLEGAL_INSN, insn);
-            return 1u;
-        }
-        addr = h->x[rv_rs1(insn)];
-        exc = rv_hart_amocas_d(h, rv_rd(insn), rv_rs2(insn), addr);
-        if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
-            rv_hart_trap(h, exc, addr);
-            return 1u;
-        }
-        h->x[0] = 0u;
-        return 0u;
-    }
-#endif
+    const rv_exc_t exc = rv_hart_atomic(h, insn, &tval);
 
-    /* Only the 32-bit widths, a defined operation, and LR takes no rs2. */
-    if (EMU_UNLIKELY(rv_funct3(insn) != 2u || !rv_amo_valid(funct5) ||
-                     (funct5 == RV_AMO_LR && rv_rs2(insn) != 0u))) {
-        rv_hart_trap(h, RV_EXC_ILLEGAL_INSN, insn);
-        return 1u;
-    }
-
-    addr = h->x[rv_rs1(insn)];
-    exc = rv_hart_amo(h, funct5, rv_rd(insn), addr, h->x[rv_rs2(insn)]);
     if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
-        rv_hart_trap(h, exc, addr);
+        rv_hart_trap(h, exc, tval);
         return 1u;
     }
-    h->x[0] = 0u; /* rv_hart_amo skips rd == 0; keep x0 canonical */
     return 0u;
 }
 #endif /* RV_EXT_A */
@@ -777,8 +748,38 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
                                   emu_ir_get(b, rs2)));
             return true;
         }
+#if RV_EXT_ZICOND
+        if (f7 == 0x07u && (f3 == 5u || f3 == 7u)) {
+            /*
+             * czero.eqz / czero.nez: rd = rs1, or zero when rs2 is --
+             * respectively is not -- zero.
+             *
+             * `rs1 & -(keep)`, where keep is the 0-or-1 answer to "is
+             * rs2 the value that lets rs1 through". Three operations
+             * every backend already lowers, and no EMU_IR_SELECT: that
+             * one reads the guest's *flags*, of which RISC-V has none,
+             * and Thumb-2 declines it besides -- so using it would have
+             * lowered this on the host and left the board where it was.
+             * The G4MH translator made the same choice for CMOV, for the
+             * same reason.
+             *
+             * Branch-free is also the point of the extension: a guest
+             * compiled with Zicond is asking not to have a branch here.
+             */
+            const uint16_t keep =
+                emu_ir_emit(b, EMU_IR_SETCC,
+                            (f3 == 5u) ? EMU_IR_C_NE : EMU_IR_C_EQ,
+                            emu_ir_get(b, rs2), emu_ir_const(b, 0u), 0u, 0u);
+            const uint16_t mask = emu_ir_emit(b, EMU_IR_NEG, 0u, keep,
+                                              EMU_IR_NO_TEMP, 0u, 0u);
+
+            emu_ir_put(b, rd,
+                       emu_ir_alu(b, EMU_IR_AND, emu_ir_get(b, rs1), mask));
+            return true;
+        }
+#endif
         if (f7 != 0u && f7 != 0x20u) {
-            return false; /* Zba/Zbb/Zbs, Zacas */
+            return false; /* Zba/Zbb/Zbs */
         }
         const uint16_t x = emu_ir_get(b, rs1);
         const uint16_t y = emu_ir_get(b, rs2);

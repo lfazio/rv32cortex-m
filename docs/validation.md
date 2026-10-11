@@ -44,12 +44,12 @@ Current state:
 
 | | result | runs on |
 |---|---|---|
-| `riscv-arch-test`, interpreter | **378 / 378** | host |
-| `riscv-arch-test`, `EMU_EXTRA_ARGS=--jit` | **378 / 378** — the whole suite through translated code | host, x86-64 |
+| `riscv-arch-test`, interpreter | **391 / 391** | host |
+| `riscv-arch-test`, `EMU_EXTRA_ARGS=--jit` | **391 / 391** — the whole suite through translated code | host, x86-64 |
 | `riscv-tests`, interpreter | **77 / 77** | host |
 | `riscv-tests`, `--jit` through an `EMU_HOST` wrapper | **77 / 77** | host, x86-64 |
-| `ctest`, RV32 tree | 18 tests: unit, the guests, and most of them again under `--jit` | host |
-| `isatest`, JIT | **298 checks**, 436 of 45,799 instructions interpreted | Nucleo-F746ZG, Thumb-2 |
+| `ctest`, RV32 tree | 19 tests: unit, the guests, and most of them again under `--jit` | host |
+| `isatest`, JIT | **454 checks**, 829 of 54,087 instructions interpreted — the same two numbers the x86-64 host gives | Nucleo-F746ZG, Thumb-2 |
 | CoreMark, 120 iterations | `crcfinal 0xd340` on the interpreter and on the JIT at four cache sizes | Nucleo-F746ZG |
 
 `run-arch-test.sh` **builds its own runner**, with `-DRV32_MISALIGNED=OFF`,
@@ -83,7 +83,8 @@ and none could have been caught by a signature-checking suite on a host:
 Three of those produced no wrong answer at all, only numbers that made
 no sense. Three were staleness: a decision taken when a block was
 translated, still in force after the state behind it changed. The
-self-test grew from 148 checks to 298 chasing them, and the checks that
+self-test grew from 148 checks to 298 chasing them (it is 454 now, the
+rest being the extensions below), and the checks that
 matter are the ones that re-execute *one* instruction at *one* address
 after changing the state it was compiled against — a fresh call site is
 translated against the current configuration and proves nothing.
@@ -128,7 +129,7 @@ Three of the unary ops (`c.sext.b`, `c.zext.h`, `c.sext.h`) expand to Zbb
 instructions, which is why the spec makes Zcb depend on Zbb — without it there
 would be nothing to expand them into.
 
-## Official RISC-V Architecture Test Suite — 378/378
+## Official RISC-V Architecture Test Suite — 391/391
 
 [`riscv/riscv-arch-test`](https://github.com/riscv/riscv-arch-test), the RVCP
 suite governed by RISC-V International. Modern versions are self-checking: the
@@ -145,6 +146,25 @@ and the UDB gems, then builds and runs.
 
 Prerequisites beyond the normal toolchain: `uv`, Ruby, and Bundler
 (`gem install --user-install bundler`).
+
+**What 391 covers is what the script names.** ACT selects suites by
+*directory name*, so a suite nobody names is a suite nobody runs,
+whatever the core implements. Thirteen of the 391 are Zicond, the two
+hint extensions -- `Zihintntl` and, separately, `ZihintntlZca` -- and
+Zihpm, added when those were. They were confirmed the usual way: with
+Zicond's condition inverted, `c.add x0` made illegal and the counter
+reads removed, exactly those tests fail (2, 4 and 2, and `Zca-c.add`
+with them) and the other 382 pass.
+
+Two extensions the core implements have **no suite at all**: Zalasr and
+Zawrs. Zalasr is not in Sail 0.13.1 either, so there is no golden model
+for it; it is covered by `tests/guest/isatest.c` alone. Zawrs is in the
+model, and `tests/arch-test/probes/zawrs.S` asks it seven questions
+directly -- see [frontend/rv32.md](frontend/rv32.md).
+
+The runner executes every ELF in the work directory, not only the
+suites named on the command line: naming five still runs 391. The list
+decides what is *built*.
 
 ## riscv-tests — 77/77
 

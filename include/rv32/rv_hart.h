@@ -271,6 +271,32 @@ typedef struct rv_hart {
 #endif
 
     void *user; /* opaque platform pointer */
+
+#if RV_EXT_ZIHPM
+    /*
+     * Zihpm. Counter n is element n - 3 of each array.
+     *
+     * `hpm_armed` has a bit per element that is counting something: an
+     * event selected, and not inhibited. It is what rv_hart_trap tests,
+     * so a guest that programs no counter pays one load and one
+     * not-taken branch per *trap* and nothing per instruction. It is
+     * derived state -- rv_hpm_rearm is its only writer, and reset calls
+     * it rather than clearing the word by hand, for the reason
+     * fetch_guard's note gives.
+     *
+     * **Last in the struct, and that is the point of where it is.** It
+     * is 352 bytes that almost no guest touches. Beside the other
+     * counters, where it reads best, it moved every field after it --
+     * the FP registers, the state word, the fetch guard, the PMP and
+     * reservation state -- by that much, and where the emulator's hot
+     * data and code land has been measured at 10% on the F746 with no
+     * change to what is executed. Cold state goes where it displaces
+     * nothing.
+     */
+    uint64_t mhpmcounter[RV_HPM_COUNT];
+    uint32_t mhpmevent[RV_HPM_COUNT];
+    uint32_t hpm_armed;
+#endif
 } rv_hart_t;
 
 /* ------------------------------------------------------------------ */
@@ -557,6 +583,18 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval);
 #define RV_AMO_MINU 0x18u
 #define RV_AMO_MAXU 0x1Cu
 #define RV_AMO_CAS 0x05u /* Zacas: amocas.w */
+#define RV_AMO_LOAD_ACQ 0x06u /* Zalasr: lb/lh/lw.aq[rl] */
+#define RV_AMO_STORE_REL 0x07u /* Zalasr: sb/sh/sw.[aq]rl */
+
+/*
+ * Execute one instruction of the AMO opcode -- LR/SC, an AMO, amocas or
+ * a Zalasr load-acquire or store-release -- including the test that the
+ * encoding exists. Returns RV_EXC_NONE, or the cause, with `tval` the
+ * value the trap records for it.
+ *
+ * The one entry point for both backends: see rv_hart.c.
+ */
+rv_exc_t rv_hart_atomic(rv_hart_t *h, uint32_t insn, uint32_t *tval);
 
 /* True if `funct5` names an operation this core implements. */
 bool rv_amo_valid(uint32_t funct5);

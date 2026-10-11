@@ -132,6 +132,47 @@ struct rv_hart;
 #define CSR_MINSTRETH 0xB82
 #define CSR_MCOUNTINHIBIT 0x320
 
+/*
+ * Zihpm: twenty-nine programmable counters, numbered 3 to 31 so that
+ * their bit in mcounteren, scounteren and mcountinhibit is their number.
+ * Each constant is the CSR that counter *zero* would have, which is why
+ * none of these names a register by itself: counter n is at base + n.
+ */
+#define CSR_MHPMCOUNTER_BASE 0xB00 /* mhpmcounter3..31   0xB03..0xB1F */
+#define CSR_MHPMCOUNTERH_BASE 0xB80 /* mhpmcounter3h..31h 0xB83..0xB9F */
+#define CSR_MHPMEVENT_BASE 0x320 /* mhpmevent3..31     0x323..0x33F */
+#define CSR_HPMCOUNTER_BASE 0xC00 /* hpmcounter3..31    0xC03..0xC1F */
+#define CSR_HPMCOUNTERH_BASE 0xC80 /* hpmcounter3h..31h  0xC83..0xC9F */
+
+#define RV_HPM_FIRST 3u
+#define RV_HPM_COUNT 29u
+
+/*
+ * What a counter can be told to count, written to its mhpmevent.
+ *
+ * The architecture leaves the events to the platform, and this platform
+ * is an emulator: what it can count for nothing is what it already
+ * stops to deal with. So the events are traps -- every exception, every
+ * interrupt, or one cause exactly -- and deliberately not anything per
+ * instruction. A count of loads or taken branches would be a test on
+ * the path every guest instruction takes, paid by every guest that
+ * never programs a counter; the fetch path has been measured at 9.3%
+ * for one branch.
+ *
+ * **The selector is WARL and the legal set is exactly this list.** Any
+ * other value written reads back as zero, "no event", which is how a
+ * guest finds out what a platform counts: write the selector, read it
+ * back. Storing whatever was written would answer yes to everything and
+ * then count nothing. The same list is HPM_EVENTS in the architecture
+ * test's description of this core; a change here belongs there.
+ */
+#define RV_HPM_EVENT_NONE 0x000u
+#define RV_HPM_EVENT_EXCEPTION 0x001u /* any synchronous exception    */
+#define RV_HPM_EVENT_INTERRUPT 0x002u /* any interrupt                */
+#define RV_HPM_EVENT_EXC_CAUSE 0x100u /* | n: exception cause n, 0-15 */
+#define RV_HPM_EVENT_IRQ_CAUSE 0x200u /* | n: interrupt cause n, 0-15 */
+#define RV_HPM_EVENT_CAUSES 16u
+
 /* ------------------------------------------------------------------ */
 /* mstatus fields                                                      */
 /* ------------------------------------------------------------------ */
@@ -297,6 +338,20 @@ struct rv_hart;
  */
 rv_exc_t rv_csr_read(struct rv_hart *h, uint32_t csr, uint32_t *out);
 rv_exc_t rv_csr_write(struct rv_hart *h, uint32_t csr, uint32_t val);
+
+#if RV_EXT_ZIHPM
+/*
+ * Recompute which counters are counting, after anything that decides it
+ * has changed: an event selector, mcountinhibit, or a reset.
+ */
+void rv_hpm_rearm(struct rv_hart *h);
+
+/*
+ * A trap was taken: advance every armed counter whose event it is.
+ * Called from rv_hart_trap, and only when something is armed.
+ */
+void rv_hpm_note_trap(struct rv_hart *h, uint32_t cause);
+#endif
 
 /* True if the CSR number exists on this implementation. */
 bool rv_csr_exists(uint32_t csr);

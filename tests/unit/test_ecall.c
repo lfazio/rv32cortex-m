@@ -84,11 +84,15 @@ static void run_ecall_at(uint32_t priv)
      * NAPOT with pmpaddr all ones is the whole address space; the cfg
      * byte is R|W|X plus A=NAPOT.
      */
+#if RV_EXT_PMP
     g_hart.pmpaddr[0] = 0xFFFFFFFFu;
     g_hart.pmpcfg[0] = 0x1Fu;
+#endif
 
     g_hart.priv = priv;
+#if RV_EXT_PMP
     rv_pmp_refresh(&g_hart);
+#endif
 
 #if RV_ENABLE_ECALL_HOOK
     g_hart.ecall = count_hook;
@@ -99,8 +103,42 @@ static void run_ecall_at(uint32_t priv)
     (void)rv_step(&g_hart);
 }
 
+/*
+ * A CSR that does not exist raises illegal-instruction, read or written.
+ *
+ * Here rather than in a file of its own because it is one function, and
+ * here at all because of what it found: the `default:` arm of
+ * rv_csr_read sat inside `#if RV_EXT_PMP`, on the grounds that the PMP
+ * address registers were the only *range* it had to recognise. A build
+ * without PMP therefore had no default, and a read of a CSR that does
+ * not exist fell out of the switch and returned success with the
+ * result whatever the caller's stack held.
+ *
+ * **This passes in the default build whether or not that is fixed**,
+ * because the default build has PMP -- it is the weak half of the test.
+ * The half that bites is the same function in a `-DRV32_EXT_PMP=OFF`
+ * tree, which is a configuration no row of the build matrix has; see
+ * docs/TODO.md. The numbers are chosen to be absent everywhere: a
+ * custom machine CSR, and the three neighbours of the Zihpm ranges.
+ */
+static void test_csr_absent(void)
+{
+    static const uint32_t absent[] = {0x7C0u, 0xB01u, 0xB20u, 0x321u};
+
+    emu_bus_init(&g_bus);
+    rv_hart_init(&g_hart, &g_bus, 0u);
+    for (size_t i = 0; i < sizeof(absent) / sizeof(absent[0]); i++) {
+        uint32_t v = 0xA5A5A5A5u;
+
+        CHECK_EQ(rv_csr_read(&g_hart, absent[i], &v), RV_EXC_ILLEGAL_INSN);
+        CHECK_EQ(rv_csr_write(&g_hart, absent[i], 0u), RV_EXC_ILLEGAL_INSN);
+    }
+}
+
 void test_ecall(void)
 {
+    test_csr_absent();
+
 #if !RV_ENABLE_ECALL_HOOK
     return;
 #else

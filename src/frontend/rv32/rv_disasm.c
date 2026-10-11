@@ -99,8 +99,18 @@ static void emit_reg(out_t *o, unsigned r)
 /* mnemonic, padded so the operands line up in a trace. */
 static void emit_mn(out_t *o, const char *m)
 {
+    /*
+     * Padded to a column of eight, **and always followed by at least one
+     * space.** The padding alone was the separator, so a mnemonic of
+     * eight characters or more ran straight into its first operand:
+     * `amoadd.wa0, a2, (a1)`, for every AMO this file has ever printed,
+     * and `amoswap.w`, `amominu.w` and `amomaxu.w` the same. A trace is
+     * read by people and split on whitespace by scripts, and to both of
+     * those that is a different instruction.
+     */
     emit_str(o, m);
-    for (size_t i = strlen(m); i < 8u; i++) {
+    emit_ch(o, ' ');
+    for (size_t i = strlen(m) + 1u; i < 8u; i++) {
         emit_ch(o, ' ');
     }
 }
@@ -300,45 +310,91 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
         emit_rri(&o, opimm_mn[f3], insn, rv_imm_i(insn));
         break;
 
-    case OP_OP:
-        if (f7 == 0x01u) {
-            emit_rrr(&o, mul_mn[f3], insn);
+    case OP_OP: {
+        /*
+         * **Enumerated, and what is not listed is `illegal`.** This
+         * ended in an `else` that printed the base operation for any
+         * funct7 it did not recognise, so `bclr` read as `sll`, `bext`
+         * as `srl`, `zext.h` as `xor` -- and an encoding the interpreter
+         * traps on read as a perfectly good shift. It also had `clmul`
+         * at funct3 0, which is reserved; the instruction is at 1, and
+         * printed as `?zbb`.
+         *
+         * OP-IMM above records the same defect one case up. The rule is
+         * the interpreter's: the table here is its switch, read off it,
+         * and the unit test checks the names against what the assembler
+         * calls the same words.
+         */
+        static const char *const zbc_zbb[8] = {NULL,   "clmul", "clmulr",
+                                               "clmulh", "min",  "minu",
+                                               "max",    "maxu"};
+        const char *m = NULL;
+
+        if (f7 == 0x00u) {
+            m = op_mn[f3];
+        } else if (f7 == 0x01u) {
+            m = mul_mn[f3];
         } else if (f7 == 0x20u) {
             /* sub, sra, and Zbb's andn/orn/xnor share this funct7. */
-            emit_rrr(&o,
-                     (f3 == 0u)   ? "sub"
-                     : (f3 == 5u) ? "sra"
-                     : (f3 == 7u) ? "andn"
-                     : (f3 == 6u) ? "orn"
-                     : (f3 == 4u) ? "xnor"
-                                  : "?op",
-                     insn);
+            m = (f3 == 0u)   ? "sub"
+                : (f3 == 5u) ? "sra"
+                : (f3 == 7u) ? "andn"
+                : (f3 == 6u) ? "orn"
+                : (f3 == 4u) ? "xnor"
+                             : NULL;
         } else if (f7 == 0x30u) {
-            emit_rrr(&o, (f3 == 1u) ? "rol" : (f3 == 5u) ? "ror" : "?rot",
-                     insn);
+            m = (f3 == 1u) ? "rol" : (f3 == 5u) ? "ror" : NULL;
         } else if (f7 == 0x05u) {
-            emit_rrr(&o,
-                     (f3 == 4u)   ? "min"
-                     : (f3 == 5u) ? "minu"
-                     : (f3 == 6u) ? "max"
-                     : (f3 == 7u) ? "maxu"
-                     : (f3 == 0u) ? "clmul"
-                                  : "?zbb",
-                     insn);
+            m = zbc_zbb[f3];
         } else if (f7 == 0x10u) {
-            emit_rrr(&o,
-                     (f3 == 2u)   ? "sh1add"
-                     : (f3 == 4u) ? "sh2add"
-                     : (f3 == 6u) ? "sh3add"
-                                  : "?zba",
-                     insn);
+            m = (f3 == 2u)   ? "sh1add"
+                : (f3 == 4u) ? "sh2add"
+                : (f3 == 6u) ? "sh3add"
+                             : NULL;
+        } else if (f7 == 0x14u) {
+            m = (f3 == 1u) ? "bset" : NULL;
+        } else if (f7 == 0x24u) {
+            m = (f3 == 1u) ? "bclr" : (f3 == 5u) ? "bext" : NULL;
+        } else if (f7 == 0x34u) {
+            m = (f3 == 1u) ? "binv" : NULL;
+        } else if (f7 == 0x07u) {
+            /* Zicond, and the whole of this funct7. */
+            m = (f3 == 5u) ? "czero.eqz" : (f3 == 7u) ? "czero.nez" : NULL;
+        }
+
+        if (f7 == 0x04u && f3 == 4u && rv_rs2(insn) == 0u) {
+            /* zext.h: one source, and rs2 is part of the opcode. */
+            emit_mn(&o, "zext.h");
+            emit_reg(&o, rv_rd(insn));
+            emit_str(&o, ", ");
+            emit_reg(&o, rv_rs1(insn));
+        } else if (f7 == 0u && f3 == 0u && rv_rd(insn) == 0u &&
+                   rv_rs1(insn) == 0u && rv_rs2(insn) >= 2u &&
+                   rv_rs2(insn) <= 5u) {
+            /*
+             * Zihintntl: `add x0, x0, x2..x5`. Named, because a trace
+             * that prints a non-temporal-locality hint as an add into
+             * the zero register reads as a compiler having emitted
+             * nonsense. The compressed forms arrive here already
+             * expanded to these.
+             */
+            static const char *const ntl[4] = {"ntl.p1", "ntl.pall",
+                                               "ntl.s1", "ntl.all"};
+
+            emit_str(&o, ntl[rv_rs2(insn) - 2u]);
+        } else if (m == NULL) {
+            emit_str(&o, "illegal");
         } else {
-            emit_rrr(&o, op_mn[f3], insn);
+            emit_rrr(&o, m, insn);
         }
         break;
+    }
 
     case OP_MISC_MEM:
-        emit_str(&o, (f3 == 1u) ? "fence.i" : "fence");
+        /* Zihintpause: a FENCE with pred = W, succ = 0 and nothing else. */
+        emit_str(&o, (insn == 0x0100000Fu) ? "pause"
+                     : (f3 == 1u)         ? "fence.i"
+                                          : "fence");
         break;
 
 #if RV_EXT_F
@@ -543,7 +599,48 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
 #endif /* RV_EXT_F */
 
     case OP_AMO: {
-        const char *m = amo_mn[rv_funct7(insn) >> 2];
+        const uint32_t f5 = rv_funct7(insn) >> 2;
+
+        if (f5 == 0x05u && (f3 == 2u || f3 == 3u)) {
+            /* Zacas. rd is the comparand as well as the destination. */
+            emit_mn(&o, (f3 == 2u) ? "amocas.w" : "amocas.d");
+            emit_reg(&o, rv_rd(insn));
+            emit_str(&o, ", ");
+            emit_reg(&o, rv_rs2(insn));
+            emit_str(&o, ", (");
+            emit_reg(&o, rv_rs1(insn));
+            emit_ch(&o, ')');
+            break;
+        }
+        if ((f5 == 0x06u || f5 == 0x07u) && f3 <= 2u) {
+            /*
+             * Zalasr. The ordering suffix is part of the mnemonic and
+             * the mandatory half of it part of the opcode: a load with
+             * aq clear or a store with rl clear is reserved, and is
+             * printed as what it is rather than as the instruction it
+             * resembles.
+             */
+            const bool st = (f5 == 0x07u);
+            const bool aq = (insn & (1u << 26)) != 0u;
+            const bool rl = (insn & (1u << 25)) != 0u;
+
+            if ((st && (!rl || rv_rd(insn) != 0u)) ||
+                (!st && (!aq || rv_rs2(insn) != 0u))) {
+                emit_str(&o, "illegal");
+                break;
+            }
+            emit_ch(&o, st ? 's' : 'l');
+            emit_ch(&o, "bhw"[f3]);
+            emit_str(&o, (aq && rl) ? ".aqrl" : aq ? ".aq" : ".rl");
+            emit_ch(&o, ' ');
+            emit_reg(&o, st ? rv_rs2(insn) : rv_rd(insn));
+            emit_str(&o, ", (");
+            emit_reg(&o, rv_rs1(insn));
+            emit_ch(&o, ')');
+            break;
+        }
+
+        const char *m = (f3 == 2u) ? amo_mn[f5] : NULL;
         if (m == NULL) {
             emit_str(&o, "illegal");
             break;
@@ -609,6 +706,12 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
                 break;
             case 0x105u:
                 emit_str(&o, "wfi");
+                break;
+            case 0x00Du:
+                emit_str(&o, "wrs.nto");
+                break;
+            case 0x01Du:
+                emit_str(&o, "wrs.sto");
                 break;
             default:
                 emit_str(&o, "illegal");

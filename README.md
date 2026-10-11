@@ -10,7 +10,7 @@ backends (Thumb-2 and x86-64) behind one shared IR; and four platforms
 (a native host runner and STM32F4/F7/N6 firmware).
 Validated against the official
 [RISC-V Architecture Test Suite](https://github.com/riscv/riscv-arch-test)
-at **378/378** and the Berkeley `riscv-tests` at **77/77**, on hardware
+at **391/391** and the Berkeley `riscv-tests` at **77/77**, on hardware
 as well as on a host.
 
 The ARMv7-M frontend began as a way to make the **Thumb-2 backend
@@ -144,7 +144,11 @@ board result.
 Guest images are built
 `rv32imafc_zicsr_zifencei_zicbom_zicboz_zba_zbb_zbc_zbs_zacas`. `Zcb` is
 supported by the emulator but deliberately absent there — compressed
-guest code is *slower* to interpret, not faster.
+guest code is *slower* to interpret, not faster. So are Zicond, Zihpm,
+Zalasr, Zawrs and the two hint extensions, which the core implements and
+no guest but the self-test uses: the march decides what the compiler
+emits for *every* guest, and every published retired count with it. See
+[docs/frontend/rv32.md](docs/frontend/rv32.md).
 
 **`EMU_JIT_CODE_BYTES`, `RV_GUEST_MARCH` and `COREMARK_ITERATIONS` are
 cache variables and silently outlive the build directory they were set
@@ -412,7 +416,7 @@ Figures and what they have already disproved are in
 ### Validation
 
 ```sh
-./scripts/run-arch-test.sh      # official riscv-arch-test, 378/378
+./scripts/run-arch-test.sh      # official riscv-arch-test, 391/391
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77
 ./scripts/build-matrix.sh --test # every configuration that should build, and its ctest
 ./scripts/report-figures.sh     # every quoted figure, regenerated

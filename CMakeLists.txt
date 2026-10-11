@@ -1030,25 +1030,42 @@ if(EMU_GUEST_ARCH_RV32)
         string(APPEND _isa "B")
     endif()
     #
-    # Zicsr, Zifencei and Zicntr before the Zb* group, which is the
-    # canonical order and -- more to the point -- the order
-    # RV32_ISA_STRING uses in rv32_frontend.c.
+    # The multi-letter extensions, in canonical order -- which is the
+    # order RV32_ISA_STRING uses in rv32_frontend.c, and that is the
+    # thing to be equal to.
     #
-    # **This summary has advertised all three since it was written and
-    # the runtime banner did not**, which is the same disagreement the
-    # comment above records about B, in the other direction: two
-    # descriptions of one core, and the one a user actually sees at run
-    # time was the wrong one. Neither is generated from the other, so
-    # they are kept in step by hand and a change to one belongs in both.
+    # **Two descriptions of one core, neither generated from the
+    # other.** They have disagreed three times: this summary advertised
+    # B from a condition that was always false, then advertised Zicsr,
+    # Zifencei and Zicntr while the run-time banner did not, and then
+    # both stopped there with four more extensions implemented. "Kept in
+    # step by hand" was the arrangement each time. The `rv32-isa-string`
+    # test below runs a guest and requires the banner to be this string,
+    # so a change to one that misses the other fails a test instead of
+    # waiting to be noticed.
     #
-    # No option gates Zicsr or Zicntr -- rv_config.h defaults them on and
-    # nothing in CMake declares them -- so they are unconditional here
-    # for the same reason they are unconditional there. Zifencei has no
-    # macro at all: MISC-MEM funct3 1 reaches rv_invalidate unguarded.
+    # Most of these have no CMake option: rv_config.h defaults them on
+    # and nothing here declares them, so they are unconditional for the
+    # same reason they are there. Zalasr and Zawrs follow A, as their
+    # gates do; Zacas is A's too.
     #
-    string(APPEND _isa "_zicsr_zifencei_zicntr")
+    string(APPEND _isa "_zicbom_zicboz_zicntr_zicond_zicsr_zifencei")
+    string(APPEND _isa "_zihintntl_zihintpause_zihpm")
+    if(RV32_EXT_A)
+        string(APPEND _isa "_zacas_zalasr_zawrs")
+    endif()
+    if(RV32_EXT_C AND RV32_EXT_ZCB)
+        string(APPEND _isa "_zcb")
+    endif()
     if(RV32_EXT_ZBC)
         string(APPEND _isa "_zbc")
+    endif()
+    if(BUILD_TESTING AND TARGET emu-host AND TARGET guest-hello)
+        add_test(NAME rv32-isa-string
+                 COMMAND emu-host "${CMAKE_BINARY_DIR}/guest/hello.bin")
+        set_tests_properties(rv32-isa-string PROPERTIES
+            LABELS fast
+            PASS_REGULAR_EXPRESSION "emu: ${_isa} on ")
     endif()
     # U and S are privilege modes rather than instruction-set
     # extensions, so they are reported here and deliberately absent from

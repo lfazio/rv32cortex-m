@@ -49,6 +49,7 @@ void test_input(void);
 void test_ir(void);
 void test_jit(void);
 void test_cycles(void);
+void test_cpu(void);
 #if EMU_GUEST_ARCH_RV32
 void test_fpu(void);
 #endif

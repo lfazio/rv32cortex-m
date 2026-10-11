@@ -31,11 +31,7 @@
 #ifndef RV_EXT_C
 #define RV_EXT_C 1 /* compressed 16-bit instructions */
 #endif
-/*
- * Single-precision floating point. D is deliberately not implemented: the
- * Cortex-M4F and M7 FPUs are single-precision, so D would be entirely
- * soft-float on the intended targets.
- */
+/* Single-precision floating point, on SoftFloat. D is below. */
 #ifndef RV_EXT_F
 #define RV_EXT_F 1
 #endif
@@ -45,26 +41,6 @@
 #ifndef RV_EXT_ZICNTR
 #define RV_EXT_ZICNTR 1 /* cycle / time / instret counters */
 #endif
-/*
- * Zacas (amocas). Off: the implementation below is incomplete and does not
- * pass the official suite. amocas.w returns the wrong prior value, and
- * amocas.d is not implemented at all -- on RV32 it operates on even-odd
- * register pairs, which rv_hart_amo's single-register interface cannot
- * express. With this clear, an amocas encoding raises illegal-instruction,
- * which is the correct report for an extension that is not implemented.
- */
-/*
- * Zacas, off because it is unfinished.
- *
- * amocas.w is implemented and its semantics are verified by targeted checks
- * in tests/guest/isatest.c. amocas.d is implemented too (rv_hart_amocas_d,
- * even-odd register pairs) but is *wrong*: its targeted checks read the low
- * half back in the high half's register. Whether the fault is in the pair
- * handling or in the test's inline-asm constraints is not yet established.
- *
- * With this clear, amocas raises illegal-instruction, which is the correct
- * report for an extension that is not implemented.
- */
 /*
  * Double precision. FLEN becomes 64 and single-precision values are
  * NaN-boxed; see the note on rv_hart_t.f.
@@ -81,9 +57,79 @@
 #if RV_EXT_D && !RV_EXT_F
 #error "RV_EXT_D requires RV_EXT_F"
 #endif
+/*
+ * Zacas: amocas.w, and amocas.d over even-odd register pairs.
+ *
+ * On, and passing the architecture suite's two Zacas tests on both
+ * backends. Two comments stood here for a long time saying it was *off*
+ * because it was unfinished -- one that amocas.d was not implemented, one
+ * that it was implemented and wrong -- above a define that had been 1
+ * since the Sail configuration was corrected: the failures had been the
+ * golden model trapping on amocas because guest RAM was declared
+ * `AMOArithmetic`, and never this code. docs/TODO.md repeated the claim.
+ * A comment about a default is checked by reading the default.
+ */
 #ifndef RV_EXT_ZACAS
 #define RV_EXT_ZACAS 1
 #endif
+/*
+ * Zicond: czero.eqz and czero.nez. Two instructions, lowered natively by
+ * the translator as a compare, a negate and an AND -- there is no branch
+ * in it on either host.
+ */
+#ifndef RV_EXT_ZICOND
+#define RV_EXT_ZICOND 1
+#endif
+/*
+ * Zalasr: load-acquire and store-release (lb/lh/lw.aq[rl],
+ * sb/sh/sw.[aq]rl). One hart and no store buffer, so the ordering they
+ * ask for is the ordering there already is; what they add over a plain
+ * load and store is that the address must be naturally aligned whatever
+ * RV_MISALIGNED_OK says, and that the encodings exist.
+ */
+#ifndef RV_EXT_ZALASR
+#define RV_EXT_ZALASR RV_EXT_A
+#endif
+/*
+ * Zawrs: wrs.nto and wrs.sto, the polite way to wait for a reservation
+ * to be broken. See the SYSTEM case in rv_interp.c for what "wait" means
+ * with one hart.
+ */
+#ifndef RV_EXT_ZAWRS
+#define RV_EXT_ZAWRS RV_EXT_A
+#endif
+/*
+ * Zihpm: mhpmcounter3-31, their event selectors and the unprivileged
+ * shadows. Real counters rather than the read-only zeros the privileged
+ * spec permits; what they can count is in rv_csr.h. 352 bytes of hart
+ * state, at the end of it.
+ */
+#ifndef RV_EXT_ZIHPM
+#define RV_EXT_ZIHPM RV_EXT_ZICNTR
+#endif
+/*
+ * Each of the three leans on state another extension owns -- the
+ * reservation for the first two, mcounteren and mcountinhibit for the
+ * third -- and says so here rather than failing to compile somewhere
+ * that does not mention the reason.
+ */
+#if RV_EXT_ZALASR && !RV_EXT_A
+#error "RV_EXT_ZALASR requires RV_EXT_A"
+#endif
+#if RV_EXT_ZAWRS && !RV_EXT_A
+#error "RV_EXT_ZAWRS requires RV_EXT_A"
+#endif
+#if RV_EXT_ZIHPM && !RV_EXT_ZICNTR
+#error "RV_EXT_ZIHPM requires RV_EXT_ZICNTR"
+#endif
+/*
+ * Zihintpause and Zihintntl have no gate, deliberately. Both are hints
+ * carved out of encodings the base ISA already executes as no-ops --
+ * `pause` is a FENCE with an otherwise unused predecessor set, and
+ * `ntl.*` are ADDs into x0 -- so there is nothing a macro could switch
+ * off, and one that existed only to edit the ISA string would be a flag
+ * nothing reads.
+ */
 #ifndef RV_EXT_ZBB
 #define RV_EXT_ZBB 1 /* basic bit manipulation */
 #endif

@@ -81,6 +81,7 @@ The reference frontend: three external models disagree with it
 | `RV32_EXT_M/A/C/F/D` | ON | `D` requires `F`; `F` forces `Zcf` |
 | `RV32_EXT_ZBA/ZBB/ZBC/ZBS` | ON | bit manipulation |
 | `RV32_EXT_ZCB` | ON | in the *emulator* it is a small win; in guest **codegen** it costs ~9% |
+| `RV_EXT_ZICOND`, `RV_EXT_ZIHPM`, `RV_EXT_ZALASR`, `RV_EXT_ZAWRS`, `RV_EXT_ZACAS` | 1 | **header gates, not CMake options** -- `include/rv32/rv_config.h`; override with a compile definition. Zalasr and Zawrs follow `A`, Zihpm follows Zicntr, and each `#error`s without it. Zihintpause and Zihintntl have no gate: there is nothing to switch off |
 | `RV32_EXT_PMP`, `RV32_EXT_SDTRIG` | ON | both are free until a guest arms them, and both are on the fetch path — measure the interpreter after touching either |
 | `RV32_ENABLE_DISASM` | | the disassembler is **not** a decoder; it lags |
 | `RV32_INTERP_IN_RAM` | OFF | measured *slower* on the F446 |

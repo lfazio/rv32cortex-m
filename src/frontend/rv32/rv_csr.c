@@ -27,6 +27,22 @@ static EMU_ALWAYS_INLINE uint32_t csr_min_priv(uint32_t csr)
     return (csr >> 8) & 0x3u;
 }
 
+/*
+ * Which bits of mcounteren, scounteren and mcountinhibit exist.
+ *
+ * With Zihpm every counter does, so every bit of the two enables is
+ * writable and all but TM of the inhibit. Without it only the three
+ * fixed counters do, and the rest read as zero -- which is how a guest
+ * asks whether a counter is there.
+ */
+#if RV_EXT_ZIHPM
+#define COUNTEREN_WMASK 0xFFFFFFFFu
+#define COUNTINHIBIT_WMASK 0xFFFFFFFDu
+#else
+#define COUNTEREN_WMASK 0x7u
+#define COUNTINHIBIT_WMASK 0x5u
+#endif
+
 static uint64_t read_time(const rv_hart_t *h)
 {
     /*
@@ -70,8 +86,13 @@ static bool counter_enabled(const rv_hart_t *h, uint32_t csr)
     if (h->priv == RV_PRIV_M) {
         return true;
     }
-    /* cycle/time/instret are bits 0/1/2 of both registers. */
-    const uint32_t bit = 1u << (csr & 3u);
+    /*
+     * A counter's bit in both registers is its number: cycle, time and
+     * instret are 0, 1 and 2, and hpmcounter3-31 follow. The low five
+     * bits of the CSR number are that number for the low and the high
+     * half alike.
+     */
+    const uint32_t bit = 1u << (csr & 0x1Fu);
 
     if ((h->mcounteren & bit) == 0u) {
         return false;
@@ -83,6 +104,101 @@ static bool counter_enabled(const rv_hart_t *h, uint32_t csr)
 #endif
     return true;
 }
+
+#if RV_EXT_ZIHPM
+/* ------------------------------------------------------------------ */
+/* Zihpm                                                               */
+/* ------------------------------------------------------------------ */
+
+/*
+ * If `csr` is counter 3..31 of the bank whose counter zero is `base`,
+ * its index into the hart's arrays.
+ *
+ * mcycle and minstret sit at base + 0 and base + 2 of the same banks,
+ * and base + 1 is the hole mtime leaves; none of the three is ours, so
+ * the range starts at 3 and the callers reach them by name first.
+ */
+static EMU_ALWAYS_INLINE bool hpm_index(uint32_t csr, uint32_t base,
+                                        uint32_t *idx)
+{
+    if (csr >= base + RV_HPM_FIRST && csr <= base + 31u) {
+        *idx = csr - base - RV_HPM_FIRST;
+        return true;
+    }
+    return false;
+}
+
+/*
+ * Does this selector name something rv_hpm_note_trap counts? Asked when
+ * mhpmevent is written, which is what makes the register WARL: a value
+ * that fails this is never stored.
+ */
+static bool hpm_event_known(uint32_t ev)
+{
+    const uint32_t kind = ev & ~(RV_HPM_EVENT_CAUSES - 1u);
+
+    return ev == RV_HPM_EVENT_EXCEPTION || ev == RV_HPM_EVENT_INTERRUPT ||
+           kind == RV_HPM_EVENT_EXC_CAUSE || kind == RV_HPM_EVENT_IRQ_CAUSE;
+}
+
+void rv_hpm_rearm(rv_hart_t *h)
+{
+    uint32_t armed = 0u;
+
+    for (uint32_t i = 0; i < RV_HPM_COUNT; i++) {
+        if (h->mhpmevent[i] != RV_HPM_EVENT_NONE &&
+            (h->mcountinhibit & (1u << (i + RV_HPM_FIRST))) == 0u) {
+            armed |= 1u << i;
+        }
+    }
+    h->hpm_armed = armed;
+}
+
+void rv_hpm_note_trap(rv_hart_t *h, uint32_t cause)
+{
+    const bool irq = (cause & RV_CAUSE_INTERRUPT) != 0u;
+    const uint32_t code = cause & ~RV_CAUSE_INTERRUPT;
+    const uint32_t any = irq ? RV_HPM_EVENT_INTERRUPT : RV_HPM_EVENT_EXCEPTION;
+    /*
+     * A cause with no selector of its own matches nothing: NONE is never
+     * armed, so comparing against it is the same as not comparing.
+     */
+    const uint32_t exact =
+        (code < RV_HPM_EVENT_CAUSES)
+            ? ((irq ? RV_HPM_EVENT_IRQ_CAUSE : RV_HPM_EVENT_EXC_CAUSE) | code)
+            : RV_HPM_EVENT_NONE;
+    uint32_t armed = h->hpm_armed;
+
+    for (uint32_t i = 0; armed != 0u; i++, armed >>= 1) {
+        if ((armed & 1u) != 0u &&
+            (h->mhpmevent[i] == any || h->mhpmevent[i] == exact)) {
+            h->mhpmcounter[i]++;
+        }
+    }
+}
+
+/* The counter CSRs, both halves and both privileges. False if not one. */
+static bool hpm_read(const rv_hart_t *h, uint32_t csr, uint32_t *out)
+{
+    uint32_t i;
+
+    if (hpm_index(csr, CSR_MHPMCOUNTER_BASE, &i) ||
+        hpm_index(csr, CSR_HPMCOUNTER_BASE, &i)) {
+        *out = (uint32_t)h->mhpmcounter[i];
+        return true;
+    }
+    if (hpm_index(csr, CSR_MHPMCOUNTERH_BASE, &i) ||
+        hpm_index(csr, CSR_HPMCOUNTERH_BASE, &i)) {
+        *out = (uint32_t)(h->mhpmcounter[i] >> 32);
+        return true;
+    }
+    if (hpm_index(csr, CSR_MHPMEVENT_BASE, &i)) {
+        *out = h->mhpmevent[i];
+        return true;
+    }
+    return false;
+}
+#endif /* RV_EXT_ZIHPM */
 
 /* ------------------------------------------------------------------ */
 /* Read                                                                */
@@ -270,13 +386,39 @@ rv_exc_t rv_csr_read(rv_hart_t *h, uint32_t csr, uint32_t *out)
     case CSR_PMPCFG0 + 3:
         *out = h->pmpcfg[csr - CSR_PMPCFG0];
         break;
+#endif
+
+    /*
+     * Everything that is a *range* of CSR numbers, and then the answer
+     * for a CSR that does not exist.
+     *
+     * **This arm used to be inside `#if RV_EXT_PMP`**, because the PMP
+     * address registers were the only range. So a build without PMP had
+     * no default at all: a read of a CSR that does not exist fell out of
+     * the switch and returned success, with `*out` whatever the caller's
+     * stack held. The default build has PMP, which is why nothing saw it.
+     */
     default:
+#if RV_EXT_PMP
         if (csr >= CSR_PMPADDR0 && csr < CSR_PMPADDR0 + RV_PMP_ENTRIES) {
             *out = h->pmpaddr[csr - CSR_PMPADDR0];
             break;
         }
-        return RV_EXC_ILLEGAL_INSN;
 #endif
+#if RV_EXT_ZIHPM
+        /*
+         * hpmcounter3-31 are the shadows a lower privilege reads, and
+         * they are gated exactly as cycle and instret are; the machine
+         * numbers have their privilege from csr_min_priv already.
+         */
+        if ((csr & 0xF00u) == 0xC00u && !counter_enabled(h, csr)) {
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        if (hpm_read(h, csr, out)) {
+            break;
+        }
+#endif
+        return RV_EXC_ILLEGAL_INSN;
 
         /* --- counters --- */
 #if RV_EXT_ZICNTR
@@ -428,7 +570,7 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
         break;
 
     case CSR_SCOUNTEREN:
-        h->scounteren = val & 0x7u;
+        h->scounteren = val & COUNTEREN_WMASK;
         break;
     case CSR_SENVCFG:
         h->senvcfg = val & ENVCFG_WMASK;
@@ -484,7 +626,7 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
 #endif /* RV_EXT_S */
 
     case CSR_MCOUNTEREN:
-        h->mcounteren = val & 0x7u;
+        h->mcounteren = val & COUNTEREN_WMASK;
         break;
 
     case CSR_MENVCFG:
@@ -615,12 +757,40 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
         h->minstret = (h->minstret & 0xFFFFFFFFull) | ((uint64_t)val << 32);
         break;
     case CSR_MCOUNTINHIBIT:
-        /* Only CY (bit 0) and IR (bit 2) exist; TM (bit 1) is hardwired 0. */
-        h->mcountinhibit = val & 0x5u;
+        /*
+         * CY (bit 0), IR (bit 2) and one bit per HPM counter. TM (bit 1)
+         * is hardwired zero: `time` is the platform's and is not this
+         * register's to stop.
+         */
+        h->mcountinhibit = val & COUNTINHIBIT_WMASK;
+#if RV_EXT_ZIHPM
+        rv_hpm_rearm(h);
+#endif
         break;
 #endif
 
     default:
+#if RV_EXT_ZIHPM
+    {
+        uint32_t i;
+
+        if (hpm_index(csr, CSR_MHPMCOUNTER_BASE, &i)) {
+            h->mhpmcounter[i] =
+                (h->mhpmcounter[i] & 0xFFFFFFFF00000000ull) | val;
+            break;
+        }
+        if (hpm_index(csr, CSR_MHPMCOUNTERH_BASE, &i)) {
+            h->mhpmcounter[i] =
+                (h->mhpmcounter[i] & 0xFFFFFFFFull) | ((uint64_t)val << 32);
+            break;
+        }
+        if (hpm_index(csr, CSR_MHPMEVENT_BASE, &i)) {
+            h->mhpmevent[i] = hpm_event_known(val) ? val : RV_HPM_EVENT_NONE;
+            rv_hpm_rearm(h);
+            break;
+        }
+    }
+#endif
 #if RV_EXT_PMP
         if (csr >= CSR_PMPADDR0 && csr < CSR_PMPADDR0 + RV_PMP_ENTRIES) {
             const uint32_t i = csr - CSR_PMPADDR0;
@@ -781,6 +951,29 @@ const char *rv_csr_name(uint32_t csr)
 #if RV_EXT_PMP
         if (csr >= CSR_PMPADDR0 && csr < CSR_PMPADDR0 + RV_PMP_ENTRIES) {
             return "pmpaddr";
+        }
+#endif
+#if RV_EXT_ZIHPM
+        /* Unnumbered, as pmpaddr is: the caller has the number. */
+        if (csr >= CSR_MHPMCOUNTER_BASE + RV_HPM_FIRST &&
+            csr <= CSR_MHPMCOUNTER_BASE + 31u) {
+            return "mhpmcounter";
+        }
+        if (csr >= CSR_MHPMCOUNTERH_BASE + RV_HPM_FIRST &&
+            csr <= CSR_MHPMCOUNTERH_BASE + 31u) {
+            return "mhpmcounterh";
+        }
+        if (csr >= CSR_MHPMEVENT_BASE + RV_HPM_FIRST &&
+            csr <= CSR_MHPMEVENT_BASE + 31u) {
+            return "mhpmevent";
+        }
+        if (csr >= CSR_HPMCOUNTER_BASE + RV_HPM_FIRST &&
+            csr <= CSR_HPMCOUNTER_BASE + 31u) {
+            return "hpmcounter";
+        }
+        if (csr >= CSR_HPMCOUNTERH_BASE + RV_HPM_FIRST &&
+            csr <= CSR_HPMCOUNTERH_BASE + 31u) {
+            return "hpmcounterh";
         }
 #endif
         return NULL;

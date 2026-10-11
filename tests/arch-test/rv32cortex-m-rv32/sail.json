@@ -12,18 +12,24 @@
     // The extension set is fixed at build time (rv_hart_misa).
     "writable_misa": false,
     "writable_fiom": false,
+    // mhpmcounter3-31, all of them (Zihpm). Bits 0-2 are cycle, time and
+    // instret and are not this field's.
     "writable_hpm_counters": {
       "len": 32,
-      "value": "0x00000000"
+      "value": "0xFFFFFFF8"
     },
-    // No S or U mode, so these counter-enable CSRs have nothing to grant.
+    // One enable bit per counter, in both registers.
+    //
+    // These two said 0x0 under a comment reading "No S or U mode" for as
+    // long as the emulator has had both, with three writable bits. No
+    // test read either register back, so nothing disagreed.
     "scounteren_writable_bits": {
       "len": 32,
-      "value": "0x0"
+      "value": "0xFFFFFFFF"
     },
     "mcounteren_writable_bits": {
       "len": 32,
-      "value": "0x0"
+      "value": "0xFFFFFFFF"
     },
     // Both mtvec modes are supported. Only the low two bits are masked, so
     // BASE needs 4-byte (2^2) alignment.
@@ -375,13 +381,13 @@
     "Ziccrse": { "supported": false },
     "Zicfilp": { "supported": false },
     "Zicfiss": { "supported": false },
-    "Zicond": { "supported": false },
+    "Zicond": { "supported": true },
     "Zicntr": { "supported": true },
     "Zicsr": { "supported": true },
     "Zifencei": { "supported": true },
-    "Zihintntl": { "supported": false },
-    "Zihintpause": { "supported": false },
-    "Zihpm": { "supported": false },
+    "Zihintntl": { "supported": true },
+    "Zihintpause": { "supported": true },
+    "Zihpm": { "supported": true },
     "Zimop": { "supported": false },
     "Zmmul": { "supported": true },
     "Zaamo": { "supported": true },
@@ -389,8 +395,19 @@
     "Zacas": { "supported": true },
     "Zalrsc": { "supported": true },
     "Zama16b": { "supported": false },
+    // Not a no-op in either form, and that was checked against this
+    // model rather than assumed: below M with mstatus.TW set, WRS.NTO
+    // raises illegal-instruction *only when a reservation is live* --
+    // with nothing reserved it completes -- and WRS.STO never traps. The
+    // emulator does the same. Where the two differ is in M-mode with a
+    // reservation and no interrupt: the emulator parks, as WFI does, and
+    // this model carries on. Both are permitted ("may end the stall for
+    // any reason") and no test can tell them apart without hanging.
+    //
+    // Zalasr is absent from this file because it is absent from Sail
+    // 0.13.1. It is declared to UDB, and tested by the guest self-test.
     "Zawrs": {
-      "supported": false,
+      "supported": true,
       "nto": { "is_nop": false },
       "sto": { "is_nop": false }
     },
@@ -403,7 +420,6 @@
     "Zca": { "supported": true },
     "Zcf": { "supported": true },
     "Zcd": { "supported": true },
-    // Zcb is not implemented: those encodings raise illegal instruction.
     "Zcb": { "supported": true },
     "Zcmop": { "supported": false },
     "Zba": { "supported": true },

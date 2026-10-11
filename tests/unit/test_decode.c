@@ -10,6 +10,10 @@
 #include "tests.h"
 
 #include "rv32/rv_decode.h"
+#include "rv32/rv_disasm.h"
+
+#include <stdio.h>
+#include <string.h>
 
 /* Expected expansions, assembled by hand from the ISA manual. */
 static void expand_ok(uint16_t c, uint32_t want)
@@ -24,8 +28,161 @@ static void expand_illegal(uint16_t c)
              rv_decode_expand_c(c), 0u);
 }
 
+#if RV_ENABLE_DISASM
+/*
+ * The disassembler against the assembler.
+ *
+ * Every pair below is binutils' own: the words were assembled and read
+ * back with objdump, and the text is what objdump printed with its
+ * commas spaced. So this checks the name the disassembler gives a word
+ * against the name the tool that produced the word gives it -- the one
+ * comparison that does not have this file's author on both sides.
+ *
+ * It exists because the disassembler is an *instrument*: traces are
+ * histogrammed by mnemonic to decide what to optimise, and a name it
+ * gets wrong is a bucket in the wrong place. Three of those were live
+ * when this was written, all found by adding the Zicond row and reading
+ * the rows around it:
+ *
+ *   - any mnemonic of eight characters or more ran into its operands --
+ *     `amoadd.wa0, a2, (a1)` -- because the column padding was the only
+ *     separator;
+ *   - `clmul` was decoded at funct3 0, which is reserved, and the real
+ *     one printed as `?zbb`;
+ *   - an unrecognised funct7 printed as the base operation, so `bclr`
+ *     read as `sll` and `zext.h` as `xor`.
+ *
+ * Runs of spaces are squeezed before comparing; the column is layout.
+ */
+static void disasm_is(uint32_t insn, const char *want)
+{
+    char raw[96];
+    char got[96];
+    size_t n = 0;
+
+    (void)rv_disasm(raw, sizeof(raw), 0x1000u, insn, 4u);
+    for (size_t i = 0; raw[i] != '\0'; i++) {
+        if (raw[i] == ' ' && n > 0u && got[n - 1u] == ' ') {
+            continue;
+        }
+        got[n++] = raw[i];
+    }
+    got[n] = '\0';
+
+    if (strcmp(got, want) != 0) {
+        printf("  disasm %08x: got \"%s\" want \"%s\"\n", (unsigned)insn, got,
+               want);
+    }
+    check_eq(__FILE__, __LINE__, "rv_disasm", (uint32_t)strcmp(got, want) != 0u,
+             0u);
+}
+
+static void test_disasm(void)
+{
+    static const struct {
+        uint32_t insn;
+        const char *text;
+    } ref[] = {
+        {0x00C58533u, "add a0, a1, a2"},
+        {0x40C58533u, "sub a0, a1, a2"},
+        {0x00C59533u, "sll a0, a1, a2"},
+        {0x00C5A533u, "slt a0, a1, a2"},
+        {0x00C5B533u, "sltu a0, a1, a2"},
+        {0x00C5C533u, "xor a0, a1, a2"},
+        {0x00C5D533u, "srl a0, a1, a2"},
+        {0x40C5D533u, "sra a0, a1, a2"},
+        {0x00C5E533u, "or a0, a1, a2"},
+        {0x00C5F533u, "and a0, a1, a2"},
+        {0x02C58533u, "mul a0, a1, a2"},
+        {0x02C59533u, "mulh a0, a1, a2"},
+        {0x02C5A533u, "mulhsu a0, a1, a2"},
+        {0x02C5B533u, "mulhu a0, a1, a2"},
+        {0x02C5C533u, "div a0, a1, a2"},
+        {0x02C5D533u, "divu a0, a1, a2"},
+        {0x02C5E533u, "rem a0, a1, a2"},
+        {0x02C5F533u, "remu a0, a1, a2"},
+        {0x40C5F533u, "andn a0, a1, a2"},
+        {0x40C5E533u, "orn a0, a1, a2"},
+        {0x40C5C533u, "xnor a0, a1, a2"},
+        {0x60C59533u, "rol a0, a1, a2"},
+        {0x60C5D533u, "ror a0, a1, a2"},
+        {0x0AC5C533u, "min a0, a1, a2"},
+        {0x0AC5D533u, "minu a0, a1, a2"},
+        {0x0AC5E533u, "max a0, a1, a2"},
+        {0x0AC5F533u, "maxu a0, a1, a2"},
+        {0x0AC59533u, "clmul a0, a1, a2"},
+        {0x0AC5A533u, "clmulr a0, a1, a2"},
+        {0x0AC5B533u, "clmulh a0, a1, a2"},
+        {0x20C5A533u, "sh1add a0, a1, a2"},
+        {0x20C5C533u, "sh2add a0, a1, a2"},
+        {0x20C5E533u, "sh3add a0, a1, a2"},
+        {0x28C59533u, "bset a0, a1, a2"},
+        {0x48C59533u, "bclr a0, a1, a2"},
+        {0x68C59533u, "binv a0, a1, a2"},
+        {0x48C5D533u, "bext a0, a1, a2"},
+        {0x0EC5D533u, "czero.eqz a0, a1, a2"},
+        {0x0EC5F533u, "czero.nez a0, a1, a2"},
+        {0x0FF2F4B3u, "czero.nez s1, t0, t6"},
+        {0x0805C533u, "zext.h a0, a1"},
+        {0x0100000Fu, "pause"},
+        {0x00200033u, "ntl.p1"},
+        {0x00300033u, "ntl.pall"},
+        {0x00400033u, "ntl.s1"},
+        {0x00500033u, "ntl.all"},
+        {0x00D00073u, "wrs.nto"},
+        {0x01D00073u, "wrs.sto"},
+        {0x3405852Fu, "lb.aq a0, (a1)"},
+        {0x3405952Fu, "lh.aq a0, (a1)"},
+        {0x3405A52Fu, "lw.aq a0, (a1)"},
+        {0x3605A52Fu, "lw.aqrl a0, (a1)"},
+        {0x3602A4AFu, "lw.aqrl s1, (t0)"},
+        {0x3AC5802Fu, "sb.rl a2, (a1)"},
+        {0x3AC5902Fu, "sh.rl a2, (a1)"},
+        {0x3AC5A02Fu, "sw.rl a2, (a1)"},
+        {0x3EC5A02Fu, "sw.aqrl a2, (a1)"},
+        {0x3FF2A02Fu, "sw.aqrl t6, (t0)"},
+        {0x28C5A52Fu, "amocas.w a0, a2, (a1)"},
+        {0x28C5B52Fu, "amocas.d a0, a2, (a1)"},
+        {0x00C5A52Fu, "amoadd.w a0, a2, (a1)"},
+        {0x08C5A52Fu, "amoswap.w a0, a2, (a1)"},
+        {0x20C5A52Fu, "amoxor.w a0, a2, (a1)"},
+        {0x40C5A52Fu, "amoor.w a0, a2, (a1)"},
+        {0x60C5A52Fu, "amoand.w a0, a2, (a1)"},
+        {0x80C5A52Fu, "amomin.w a0, a2, (a1)"},
+        {0xA0C5A52Fu, "amomax.w a0, a2, (a1)"},
+        {0xC0C5A52Fu, "amominu.w a0, a2, (a1)"},
+        {0xE0C5A52Fu, "amomaxu.w a0, a2, (a1)"},
+        {0x1005A52Fu, "lr.w a0, (a1)"},
+        {0x18C5A52Fu, "sc.w a0, a2, (a1)"},
+    };
+
+    for (size_t i = 0; i < sizeof(ref) / sizeof(ref[0]); i++) {
+        disasm_is(ref[i].insn, ref[i].text);
+    }
+
+    /*
+     * And the words the interpreter traps on, which a disassembler that
+     * matches on half the fields names as their nearest neighbour. Each
+     * is one field away from a row above.
+     */
+    disasm_is(0x0EC59533u, "illegal"); /* funct7 0x07, not a czero       */
+    disasm_is(0x0AC58533u, "illegal"); /* funct7 0x05 funct3 0: no clmul */
+    disasm_is(0x28C5D533u, "illegal"); /* bset's funct7, bext's funct3   */
+    disasm_is(0x7EC58533u, "illegal"); /* a funct7 nothing uses          */
+    disasm_is(0x3005A52Fu, "illegal"); /* lw.aq without aq               */
+    disasm_is(0x3415A52Fu, "illegal"); /* lw.aq with an rs2              */
+    disasm_is(0x3405B52Fu, "illegal"); /* ld.aq: RV64                    */
+    disasm_is(0x38C5A02Fu, "illegal"); /* sw.rl without rl               */
+    disasm_is(0x3AC5A0AFu, "illegal"); /* sw.rl with an rd               */
+}
+#endif /* RV_ENABLE_DISASM */
+
 void test_decode(void)
 {
+#if RV_ENABLE_DISASM
+    test_disasm();
+#endif
+
     /*
      * The expected values below are not hand-computed: each pair was
      * produced by assembling the compressed form and, separately, the
@@ -155,6 +312,18 @@ void test_decode(void)
     /* Each really does target x0. */
     CHECK_EQ(rv_rd(rv_decode_expand_c(0x4005u)), 0u);
     CHECK_EQ(rv_rd(rv_decode_expand_c(0x802Eu)), 0u);
+
+    /*
+     * Zihintntl's compressed forms are four of those hints by name:
+     * `c.add x0, x2..x5`, expanding to the `add x0, x0, x2..x5` the
+     * 32-bit hints are. A decoder that treats rd == 0 here as it must
+     * for C.JR and C.MV's neighbours raises illegal-instruction on a
+     * guest that asked for nothing.
+     */
+    expand_ok(0x900Au, 0x00200033u); /* c.ntl.p1   */
+    expand_ok(0x900Eu, 0x00300033u); /* c.ntl.pall */
+    expand_ok(0x9012u, 0x00400033u); /* c.ntl.s1   */
+    expand_ok(0x9016u, 0x00500033u); /* c.ntl.all  */
 
     /* ---- a 0b11 parcel is not compressed at all ---- */
     expand_illegal(0x0003u);

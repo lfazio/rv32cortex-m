@@ -33,6 +33,12 @@ implemented_extensions:
   - { name: F, version: "= 2.2" }
   - { name: D, version: "= 2.2" }
   - { name: Zacas, version: "= 1.0.0" }
+  # Load-acquire and store-release. UDB knows it; Sail 0.13.1 does not,
+  # so there is no golden model for it and no suite: it is declared here
+  # because it is implemented, and tested by tests/guest/isatest.c.
+  - { name: Zalasr, version: "= 1.0.0" }
+  # Wait-on-reservation-set. No suite either; ZAWRS_NTO_IS_NOP below.
+  - { name: Zawrs, version: "= 1.0.0" }
   - { name: Zba, version: "= 1.0.0" }
   - { name: Zbb, version: "= 1.0.0" }
   - { name: Zbc, version: "= 1.0.0" }
@@ -48,6 +54,14 @@ implemented_extensions:
   - { name: Zcb, version: "= 1.0.0" }
   - { name: Zicsr, version: "= 2.0" }
   - { name: Zicntr, version: "= 2.0" }
+  - { name: Zicond, version: "= 1.0.0" }
+  # The two hint extensions. Nothing to implement and something to
+  # *claim*: an implementation is absent exactly when it traps on them.
+  - { name: Zihintntl, version: "= 1.0.0" }
+  - { name: Zihintpause, version: "= 2.0.0" }
+  # mhpmcounter3-31, their events and their shadows. HPM_COUNTER_EN and
+  # HPM_EVENTS below say what they count.
+  - { name: Zihpm, version: "= 2.0.0" }
   - { name: Zifencei, version: "= 2.0" }
   # Cache-block operations, forwarded to the host's cache maintenance
   # (SCB_*DCache_by_Addr on an ARMv7-M with a data cache).
@@ -199,13 +213,13 @@ params:
   # be believed.
   ASID_WIDTH: 9
 
-  # scounteren mirrors mcounteren: CY, TM and IR, no HPM counters.
+  # scounteren mirrors mcounteren: one writable bit per counter.
   SCOUNTENABLE_EN:
     [
-      true,  true,  true,  false, false, false, false, false,
-      false, false, false, false, false, false, false, false,
-      false, false, false, false, false, false, false, false,
-      false, false, false, false, false, false, false, false,
+      true, true, true, true, true, true, true, true,
+      true, true, true, true, true, true, true, true,
+      true, true, true, true, true, true, true, true,
+      true, true, true, true, true, true, true, true,
     ]
 
   # No vector extension, so mstatus.VS is read-only zero.
@@ -248,31 +262,55 @@ params:
   PMP_NAPOT_SUPPORTED: true
 
   # ---- counters ----
-  # mcycle and minstret only; no hardware performance monitors.
+  # All 29 hardware performance monitors, each a real 64-bit counter. The
+  # first three entries are cycle, time and instret and must be false.
   HPM_COUNTER_EN:
     [
-      false, false, false, false, false, false, false, false,
-      false, false, false, false, false, false, false, false,
-      false, false, false, false, false, false, false, false,
-      false, false, false, false, false, false, false, false,
+      false, false, false, true, true, true, true, true,
+      true, true, true, true, true, true, true, true,
+      true, true, true, true, true, true, true, true,
+      true, true, true, true, true, true, true, true,
     ]
-  # CY, TM and IR are writable; there are no HPM counters to grant. This
-  # was all-false while M was the only mode and there was nothing to grant
-  # anything to -- with S and U it is a real register.
+  # What a counter can be told to count, and the whole list: a selector
+  # not on it reads back as zero, which is "no event" and is how a guest
+  # finds out what exists. Traps only -- nothing here is per instruction,
+  # because nothing on the fetch path may be (see CLAUDE.md).
+  #
+  #   1            any exception
+  #   2            any interrupt
+  #   0x100 | c    the exception with cause c, 0-15
+  #   0x200 | c    the interrupt with cause c, 0-15
+  HPM_EVENTS:
+    [
+      1, 2,
+      256, 257, 258, 259, 260, 261, 262, 263,
+      264, 265, 266, 267, 268, 269, 270, 271,
+      512, 513, 514, 515, 516, 517, 518, 519,
+      520, 521, 522, 523, 524, 525, 526, 527,
+    ]
+  # Every counter has an enable bit. This was all-false while M was the
+  # only mode and there was nothing to grant anything to, then three bits
+  # with S and U, and is all of them now that the counters exist.
   MCOUNTENABLE_EN:
     [
-      true,  true,  true,  false, false, false, false, false,
-      false, false, false, false, false, false, false, false,
-      false, false, false, false, false, false, false, false,
-      false, false, false, false, false, false, false, false,
+      true, true, true, true, true, true, true, true,
+      true, true, true, true, true, true, true, true,
+      true, true, true, true, true, true, true, true,
+      true, true, true, true, true, true, true, true,
     ]
   MCOUNTINHIBIT_IMPLEMENTED: true
-  # CY (bit 0) and IR (bit 2) are writable; TM is always false per UDB.
+  # Every counter but TM, which is always false per UDB: `time` is the
+  # platform's and is not this register's to stop.
   COUNTINHIBIT_EN:
     [
-      true, false, true, false, false, false, false, false,
-      false, false, false, false, false, false, false, false,
-      false, false, false, false, false, false, false, false,
-      false, false, false, false, false, false, false, false,
+      true, false, true, true, true, true, true, true,
+      true, true, true, true, true, true, true, true,
+      true, true, true, true, true, true, true, true,
+      true, true, true, true, true, true, true, true,
     ]
+
+  # ---- Zawrs ----
+  # WRS.NTO with a live reservation parks the hart until an interrupt, as
+  # WFI does; with nothing reserved it completes at once. Not a no-op.
+  ZAWRS_NTO_IS_NOP: false
 # end

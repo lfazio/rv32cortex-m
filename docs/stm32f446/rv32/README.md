@@ -81,10 +81,6 @@ translator's and no longer exist; the rule is what survives.
 
 ## To do
 
-- **Zacas.** `amocas.d` operates on even-odd register pairs and its
-  targeted checks read the low half back in the high half's register;
-  whether the fault is the pair handling or the test's asm constraints is
-  not established.
 - **Run this board again.** Nothing here has been re-measured on the F446
   since the IR backends replaced the translator these notes describe.
 

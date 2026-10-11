@@ -78,7 +78,14 @@ cfg_src="$here/tests/arch-test/$cfg_name"
 # only the Sv32 ones build -- naming a suite offers it, it does not force
 # it. Svadu is deliberately absent: this core implements Svade, which is
 # the opposite choice about who sets A and D.
-extensions="${ARCH_TEST_EXTENSIONS:-I,M,Zmmul,Zaamo,Zalrsc,Zca,Zicsr,Zicntr,Zifencei,Zicbom,Zicboz,Zbb,Zba,Zbc,Zbs,Zacas,F,D,Zcb,PMPU,Sv,Svbare,Svade,ExceptionsSv,SvPMP}"
+#
+# Zicond, the two hint extensions and Zihpm each have a directory.
+# ZihintntlZca is a *separate* one -- the compressed forms of the same
+# four hints -- and is the half a decoder is likelier to get wrong, so
+# naming Zihintntl alone would have offered half the suite and reported
+# all of it passing. Zawrs and Zalasr have no directory at all: the
+# emulator implements both and this suite says nothing about either.
+extensions="${ARCH_TEST_EXTENSIONS:-I,M,Zmmul,Zaamo,Zalrsc,Zca,Zicsr,Zicntr,Zifencei,Zicbom,Zicboz,Zicond,Zihintntl,ZihintntlZca,Zihintpause,Zihpm,Zbb,Zba,Zbc,Zbs,Zacas,F,D,Zcb,PMPU,Sv,Svbare,Svade,ExceptionsSv,SvPMP}"
 jobs="$(nproc)"
 verbose=""
 

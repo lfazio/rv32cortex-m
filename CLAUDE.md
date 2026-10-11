@@ -70,7 +70,7 @@ came to document an `RV32_PLATFORM` option that has never existed.
 What belongs here is only what the recipes do not say:
 
 ```sh
-./scripts/run-arch-test.sh      # 378/378; EMU_EXTRA_ARGS=--jit for the JIT
+./scripts/run-arch-test.sh      # 391/391; EMU_EXTRA_ARGS=--jit for the JIT
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77; EMU_HOST=<a wrapper
                                 # adding --jit> for the JIT -- it takes no flag
 ./scripts/build-matrix.sh --test # every configuration, and its ctest
@@ -95,7 +95,7 @@ because this firmware never idles and a plain attach races it. Build
 `-DEMU_NET=OFF` to keep the UART a console.
 
 **`isatest` on the board is necessary and nowhere near sufficient.** It
-measures coverage now -- 436 of 45,799 instructions interpreted under
+measures coverage now -- 829 of 54,087 instructions interpreted under
 the JIT, on the board as on x86-64 -- but it never fills the code cache
 and it finishes in a tenth of a second. Two defects sat behind those
 two facts while it passed: a compaction that moved blocks with their
@@ -2556,6 +2556,113 @@ session, and every one of them recurred:
   instrument *then*. Under the wall clock the same figure moves with
   the machine's load. Use `retired` for a reproducible quantity.
 
+- **An extension made of hints is implemented by being *claimed*, and
+  the interpreter is the one place that does not change.** Zihintpause
+  and Zihintntl are encodings the base ISA already executes -- a FENCE,
+  and ADDs into x0 -- so "implemented" and "absent" run identically.
+  What differs is everything around the core: the disassembler's name,
+  the UDB and Sail declarations, the ISA string, and a test that asserts
+  *no trap and the right length*. `isatest` sums an `addi` after each of
+  the nine hints: a 16-bit `c.ntl.*` read as 32 bits swallows the next
+  instruction and the total comes out short, with nothing trapping.
+
+  **And its suite was two directories.** ACT selects by directory name,
+  which this file has said since U-mode; `Zihintntl` has four tests and
+  `ZihintntlZca` -- the compressed forms, the half a decoder gets wrong
+  -- has four more that naming the first does not offer. Listing the
+  checkout to find that turned up **fifteen further suites this core is
+  eligible for that had never been named: 99 tests, of which 12 fail.**
+  A 378/378 that had stood for months was a statement about thirty
+  directory names. They are in docs/TODO.md, untriaged.
+
+- **A comment about a default is checked by reading the default.**
+  `rv_config.h` carried two blocks saying Zacas was off because it was
+  unfinished -- one that `amocas.d` was not implemented, one that it was
+  implemented and wrong -- and docs/TODO.md said "written and
+  disabled", all above `#define RV_EXT_ZACAS 1` and a suite passing
+  both Zacas tests. The cause had been found long before (the Sail
+  config, recorded above) and the three descriptions outlived it. Same
+  rule as a flag quoted in prose, pointing the other way: the prose
+  said *broken* about something that worked.
+
+- **An `#if` around a `default:` removes the default.** `rv_csr_read`
+  ended in `default:` inside `#if RV_EXT_PMP`, because the PMP address
+  registers were the only range of numbers it had to recognise. Built
+  without PMP the switch had no default at all: a read of a CSR that
+  does not exist fell out of it and returned **success**, with the value
+  whatever the caller's stack held. Nothing saw it because nothing
+  builds that configuration -- its unit tests did not even compile.
+  `test_csr_absent` gives 4 failures with the guard put back, in a
+  PMP-off tree, and passes either way in the default one, which is
+  stated in the test rather than left to be discovered.
+
+- **A struct the callee fills in part is uninitialised in the rest.**
+  `emu_cpu_status_t` gained `faulted` for the frontend that halts on an
+  instruction it cannot execute, with the contract saying the others
+  "leave them clear". The callers pass a stack variable and RV32 and
+  G4MH assigned the members they had always assigned, so **every RV32
+  run ended with "core 0 stopped on an instruction it could not
+  execute"** at a pc that changed between runs. Every ctest that ran a
+  guest printed it and passed, because they look for `PASS`. It is
+  cleared in `emu_core_status` now: one place, which a frontend cannot
+  forget, instead of four that had to remember.
+
+- **Restoring a file is a write, and the build has to see it as one.**
+  A mutation driver put each source back with `shutil.copy2`, which
+  preserves the modification time. The restored file was therefore
+  *older* than the object built from the mutant, `make` rebuilt
+  nothing, and from the fifth mutant on every result was that mutant
+  plus all the earlier ones. This is the stale-artefact trap a fourth
+  time, and the instrument built to avoid being fooled is the thing
+  that was. What gave it away was a contradiction rather than a count:
+  a mutation in the *translator* failing the *interpreter's* run. The
+  driver gives a restored file a new mtime and asserts the binary was
+  relinked before it believes a run.
+
+- **A check named for a bug has to start from the value the bug
+  destroys.** `hpm-write-high-keeps-low` wrote the high half of a
+  counter and checked the low half was unchanged -- while the low half
+  was zero, which is what a write that clears its neighbour leaves. The
+  mutant that should have failed it failed two unrelated checks instead
+  and that was the only sign. Same family as the reserved-encoding
+  cases that all failed together because one test's store had changed
+  the memory the next one checked: **reset what a case depends on
+  inside the case**, or a failure names its neighbour.
+
+- **Cold state goes at the end of a hot struct, and that is decided
+  before measuring, not after.** Zihpm's counters are 352 bytes that
+  almost no guest touches. They went beside `mcycle` and `minstret`,
+  where they read best -- ahead of the FP registers, the state word, the
+  fetch guard, the PMP and reservation state, every one of which moved
+  by 352 bytes. This file records layout alone as worth 10% on the F746
+  with byte-identical translations. Nothing was measured against the
+  first placement; it was moved because the experiment that would have
+  shown a difference cannot attribute it.
+
+- **An instrument gets a reference table too.** Adding two mnemonics to
+  the RV32 disassembler and printing them found three defects in what
+  was already there: every mnemonic of eight characters or more ran
+  into its first operand (`amoadd.wa0, a2, (a1)` -- the column padding
+  was the only separator); `clmul` was decoded at funct3 0, which is
+  reserved, so the real one printed `?zbb`; and an unrecognised funct7
+  printed as the base operation, so `bclr` read as `sll`. Traces are
+  histogrammed by mnemonic here to decide what to optimise.
+  `test_disasm` holds 71 words to what binutils calls them, and nine
+  reserved ones to `illegal`.
+
+- **When there is no suite, ask the model directly.** Zawrs has no
+  directory in riscv-arch-test, so nothing compared this core with Sail
+  on it -- and "what does TW do to an instruction that might not wait"
+  is exactly the kind of question two careful readings answer
+  differently. `tests/arch-test/probes/zawrs.S` is seven cases read off
+  the model's instruction trace: six agree, including the one that was
+  in doubt (below M with TW set, `wrs.nto` is illegal *only* with a
+  live reservation), and the seventh is a permitted difference that no
+  self-checking test can hold. A probe is not a test -- nothing runs it
+  -- but it turns "implemented as I read the specification" into
+  "implemented as the reference model behaves", with the command to
+  check.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must
@@ -2569,6 +2676,14 @@ frontend (`rv_hart_amo`, `rv_hart_cbo`) live beside the state so that
 frontend's interpreter and JIT cannot drift apart. New RV32 ISA work goes in
 **both** RV32 backends plus `tests/arch-test/` config, or is declared
 unsupported.
+
+"Config" is five places, and each has been the one that was missed:
+the UDB yaml, `sail.json` (a separate job, and Sail may not have the
+extension at all), `RV32_ISA_STRING`, the configure summary in
+`CMakeLists.txt` (held to the string by the `rv32-isa-string` test), and
+the default suite list in `scripts/run-arch-test.sh` -- **by directory
+name**, so check `ls build/arch-test/tests/rv32i` for a second directory
+with a longer name before believing a suite is covered.
 
 ### Adding a frontend
 

@@ -578,6 +578,22 @@ static inline void emu_core_invalidate(emu_core_t *c, uint32_t addr,
 
 static inline void emu_core_status(const emu_core_t *c, emu_cpu_status_t *out)
 {
+    /*
+     * Cleared here, once, rather than by each frontend.
+     *
+     * The contract above says a frontend that vectors its faults to the
+     * guest "leaves them clear", and that was a statement about fields
+     * nobody had cleared: the callers pass a stack variable, and RV32 and
+     * G4MH assigned the members they knew about. So every RV32 run ended
+     * with "core 0 stopped on an instruction it could not execute" and a
+     * pc that changed from run to run -- whatever the stack held -- under
+     * a test that looks only for PASS. A member added to this struct is
+     * one more for a frontend to forget; this is the place that cannot.
+     *
+     * Once per slice of a few thousand instructions, never per
+     * instruction.
+     */
+    *out = (emu_cpu_status_t){0};
     c->ops->status(c->cpu, out);
 }
 

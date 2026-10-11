@@ -818,6 +818,18 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                 wr(h, rd, (a >> (b & 31u)) & 1u);
             }
 #endif
+#if RV_EXT_ZICOND
+            else if (f7 == 0x07u && (f3 == 5u || f3 == 7u)) {
+                /*
+                 * czero.eqz (f3 5) and czero.nez (f3 7): rd is rs1, or
+                 * zero when rs2 is -- respectively is not -- zero. The
+                 * whole of Zicond, and the whole of funct7 0x07: every
+                 * other funct3 under it is reserved and falls through
+                 * to the illegal-instruction arm below.
+                 */
+                wr(h, rd, ((b == 0u) == (f3 == 5u)) ? 0u : a);
+            }
+#endif
 #if RV_EXT_M
             else if (f7 == 1u) {
                 switch (f3) {
@@ -898,44 +910,18 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
         /* ---------------- atomics ---------------- */
 #if RV_EXT_A
         case OP_AMO >> 2: {
-            const uint32_t funct5 = rv_funct7(insn) >> 2;
+            /*
+             * All of it is rv_hart_atomic: which operation this is,
+             * whether the encoding exists, and what a failure reports.
+             * The translator's helper calls the same function, so there
+             * is one description of an atomic and not two.
+             */
+            uint32_t atval;
+            const rv_exc_t aexc = rv_hart_atomic(h, insn, &atval);
 
-#if RV_EXT_ZACAS
-            if (rv_funct3(insn) == 3u && funct5 == RV_AMO_CAS) {
-                /* amocas.d: even-odd register pairs, so odd operands are
-                 * not encodable and must raise illegal instruction. */
-                if (EMU_UNLIKELY((rv_rd(insn) & 1u) || (rv_rs2(insn) & 1u))) {
-                    TRAP(RV_EXC_ILLEGAL_INSN, insn);
-                }
-                const uint32_t daddr = h->x[rv_rs1(insn)];
-                const rv_exc_t dexc =
-                    rv_hart_amocas_d(h, rv_rd(insn), rv_rs2(insn), daddr);
-                if (EMU_UNLIKELY(dexc != RV_EXC_NONE)) {
-                    TRAP(dexc, daddr);
-                }
-                h->x[0] = 0u;
-                break;
+            if (EMU_UNLIKELY(aexc != RV_EXC_NONE)) {
+                TRAP(aexc, atval);
             }
-#endif
-            if (EMU_UNLIKELY(rv_funct3(insn) != 2u)) {
-                TRAP(RV_EXC_ILLEGAL_INSN, insn); /* only 32/64-bit AMOs */
-            }
-
-            if (EMU_UNLIKELY(!rv_amo_valid(funct5))) {
-                TRAP(RV_EXC_ILLEGAL_INSN, insn);
-            }
-            /* LR takes no source operand; a non-zero rs2 is not an LR. */
-            if (EMU_UNLIKELY(funct5 == RV_AMO_LR && rv_rs2(insn) != 0u)) {
-                TRAP(RV_EXC_ILLEGAL_INSN, insn);
-            }
-
-            const uint32_t addr = h->x[rv_rs1(insn)];
-            const rv_exc_t exc =
-                rv_hart_amo(h, funct5, rv_rd(insn), addr, h->x[rv_rs2(insn)]);
-            if (EMU_UNLIKELY(exc != RV_EXC_NONE)) {
-                TRAP(exc, addr);
-            }
-            h->x[0] = 0u; /* rv_hart_amo skips rd==0; keep x0 canonical */
             break;
         }
 #endif /* RV_EXT_A */
@@ -1176,6 +1162,62 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
 #endif
                     h->state = EMU_STATE_WFI;
                     break;
+
+#if RV_EXT_ZAWRS
+                case 0x00Du: /* WRS.NTO */
+                    /*
+                     * Wait for the reservation set to be invalidated, or
+                     * for an interrupt -- with no timeout.
+                     *
+                     * **With one hart, those are the same event.**
+                     * Nothing else can write the reserved word, so the
+                     * only thing that ends the wait is an interrupt; and
+                     * rv_hart_trap drops the reservation on the way in,
+                     * which is the invalidation the guest was waiting
+                     * for. So a WRS.NTO with a live reservation *is* a
+                     * WFI, by the spec's own rule that it resumes as WFI
+                     * does, and it parks the hart the same way -- which
+                     * on a microcontroller is the processor actually
+                     * sleeping instead of spinning on LR.
+                     *
+                     * With no reservation there is nothing to wait for
+                     * and it completes at once. That half is not an
+                     * optimisation: it is the documented way a guest
+                     * falls straight through when the lock was released
+                     * between its LR and here.
+                     *
+                     * TW is WFI's rule too, narrowed to the case that
+                     * would actually wait: below M with TW set, an
+                     * instruction that will not complete in bounded time
+                     * is illegal, and one that completes at once is not.
+                     */
+                    if (!h->resv_valid) {
+                        break;
+                    }
+#if RV_EXT_S
+                    if (h->priv < RV_PRIV_M &&
+                        (h->mstatus & MSTATUS_TW) != 0u) {
+                        TRAP(RV_EXC_ILLEGAL_INSN, insn);
+                    }
+#endif
+                    h->state = EMU_STATE_WFI;
+                    break;
+
+                case 0x01Du: /* WRS.STO */
+                    /*
+                     * The same wait with a short timeout, and the
+                     * timeout here is zero: it completes at once and the
+                     * guest goes round its loop again. The architecture
+                     * leaves the bound to the implementation and lets
+                     * the wait end "for any reason", so this is the
+                     * degenerate legal choice rather than a shortcut --
+                     * a real bound would need a timer the guest has not
+                     * programmed. It never traps, whatever TW says:
+                     * that rule is about instructions that may not
+                     * return.
+                     */
+                    break;
+#endif
 
                 default:
                     TRAP(RV_EXC_ILLEGAL_INSN, insn);

@@ -1088,40 +1088,129 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       a plan. The register file is in memory and the guest's pc is not
       the host's, so "copy it" is unlikely to survive contact.
 
-- [ ] **rv32: Zihpm, Zihintntl, Zihintpause, Zicond, Zawrs, Zacas,
-      Zalasr.** Six of the seven are absent from the tree entirely;
-      `Zacas` is the exception and is the one to read first, because it
-      is already written and deliberately **off**:
+- [x] **rv32: Zihpm, Zihintntl, Zihintpause, Zicond, Zawrs, Zacas,
+      Zalasr.** All seven, in the four places this entry said each had
+      to land -- and the entry was wrong about the starting point: it
+      called Zacas "written and disabled" with `amocas.d` *wrong*,
+      under two comments in `rv_config.h` saying the same, above a
+      define that had been 1 and passing both architecture tests since
+      the Sail configuration was corrected. A claim about a default is
+      checked by reading the default.
 
-      | | state |
-      |---|---|
-      | Zihpm | absent -- `mhpmcounter*`/`mhpmevent*`; `mcountinhibit` and the counter-enable plumbing already exist for Zicntr |
-      | Zihintntl | absent -- `ntl.*`, hints, so a correct implementation may decode and retire them as no-ops |
-      | Zihintpause | absent -- `pause`, likewise a no-op here; there is no other hart to yield to |
-      | Zicond | absent -- `czero.eqz`/`czero.nez`, and the one with real JIT value: a conditional move both backends can lower natively |
-      | Zawrs | absent -- `wrs.nto`/`wrs.sto`, which pair with LR/SC |
-      | Zacas | **written and disabled.** `amocas.w` is verified; `amocas.d` is implemented over even-odd pairs and is *wrong* -- its checks read the low half back in the high half's register, and whether the fault is the pair handling or the test's asm constraints was never established |
-      | Zalasr | absent -- `lb.aq`/`sb.rl` and friends, load-acquire/store-release |
+      | | interpreter | JIT | UDB + Sail | suite |
+      |---|---|---|---|---|
+      | Zicond | one line | compare, negate, AND; branch-free on both hosts | both | arch-test, 2 |
+      | Zihintpause | nothing to add | lowered with FENCE, as nothing | both | arch-test, 1 |
+      | Zihintntl | nothing to add | an ADD into x0 | both | arch-test, 4 + 4 compressed |
+      | Zihpm | 29 real counters, events are traps | CSR access declines, as all of it does | both, with `HPM_EVENTS` | arch-test, 2 |
+      | Zacas | was already there | helper | both | arch-test, 2 |
+      | Zalasr | `rv_hart_atomic` | the same function, as a helper | UDB; **not in Sail 0.13.1** | none |
+      | Zawrs | parks as WFI while reserved | SYSTEM declines | both | none; Sail probed directly |
 
-      Two things this tree's own rules say about doing it.
+      arch-test is **391/391** on both backends (378 + 13), riscv-tests
+      77/77 on both, `isatest` 454 checks on both and on the F746 under
+      the Thumb-2 JIT -- 829 of 54,087 instructions interpreted there,
+      the same two numbers as x86-64. The ISA string names all of them
+      and a test holds the configure summary to it. Details in
+      [frontend/rv32.md](frontend/rv32.md).
 
-      **Each one lands in four places or it is not done**: both RV32
-      backends, `tests/arch-test/` config *and* `sail.json`, and the
-      ISA string. The last is not cosmetic -- arch-test validates a
-      machine against a description of that machine, so an extension
-      the emulator implements and the config does not declare produces
-      failures that look like emulator bugs.
+      What doing it found, none of which was in the seven:
 
-      **The hint extensions are the trap.** Zihintntl and Zihintpause
-      retire as no-ops, so an implementation that decodes nothing at
-      all passes every test that merely runs them. What distinguishes
-      "implemented" from "absent" there is that the *encodings* are
-      claimed rather than raising illegal-instruction, which is
-      something only a test asserting the absence of a trap can see.
+      - **`rv_csr_read` had no `default:` without PMP.** The arm was
+        inside `#if RV_EXT_PMP` because the PMP address registers were
+        the only range it recognised, so a `-DRV32_EXT_PMP=OFF` build
+        returned *success* for a CSR that does not exist, with the
+        value whatever the caller's stack held. `test_csr_absent`: 4
+        failures with the guard put back, in a PMP-off tree.
+      - **Every RV32 run was reported as a fault.** `emu_cpu_status_t`
+        gained `faulted`, the callers pass a stack variable, and RV32
+        and G4MH never cleared it: "core 0 stopped on an instruction it
+        could not execute", at a pc that changed from run to run, under
+        tests that look only for PASS. Cleared in `emu_core_status`
+        now; `test_cpu.c`.
+      - **The disassembler ran every long mnemonic into its operands**
+        -- `amoadd.wa0, a2, (a1)` -- had `clmul` at a reserved funct3,
+        and printed any funct7 it did not know as the base operation,
+        so `bclr` read as `sll`. `test_disasm` checks 71 words against
+        what binutils calls them.
+      - **Sail's counter-enable masks said `0x0`** under "No S or U
+        mode", for as long as the emulator has had both. Nothing read
+        the registers back.
 
-      Zicond is the one worth doing first on merit: it is two
-      instructions, it has an obvious native lowering on both hosts,
-      and unlike the hints it computes something a test can check.
+      And three about the testing itself:
+
+      - **The first mutation run was worthless from the fifth mutant
+        on.** The driver restored each file with `shutil.copy2`, which
+        preserves the modification time -- so the restored source was
+        *older* than the object built from the mutant, `make` rebuilt
+        nothing, and every later mutant inherited the earlier ones. It
+        showed as an interpreter-only test failing under a
+        translator-only mutation. 38 mutants, all detected once it was
+        fixed; the driver now asserts the binary was relinked.
+      - **A check named for a bug passed against it.**
+        `hpm-write-high-keeps-low` wrote the high half while the low
+        half was zero, and zero is what a write that clears its
+        neighbour leaves. Found by the mutant that should have failed
+        it failing two other checks instead.
+      - **The counters were first put beside the other counters**,
+        which moved every field after them by 352 bytes. Moved to the
+        end of the struct before anything was measured against it.
+
+- [ ] **rv32: fifteen arch-test suites nobody named, and twelve
+      failures in them.** ACT builds a suite only if its *directory* is
+      named, and the default list in `scripts/run-arch-test.sh` names
+      thirty. Listing the checkout to find `ZihintntlZca` turned up
+      fifteen more this core is eligible for. Offered, they build **99
+      tests that had never run: 87 pass and 12 fail.**
+
+      | suite | tests | failing |
+      |---|---|---|
+      | `Zcf`, `Zcd`, `ZcbM`, `ZcbZbb` | 4, 4, 1, 3 | none |
+      | `PMPS`, `PMPZaamo`, `PMPZalrsc` | 11, 1, 1 | none |
+      | `ExceptionsSvZaamo`, `SvPMPZicbo` | 3, 8 | none |
+      | `PMPSm` | 37 | `pmpsm_grain`, `pmpsm_grain_check`, `pmpsm_csr_walk-1`, `pmpsm_csr_walk-5` |
+      | `ExceptionsSvZalrsc` | 3 | all three: `sv32_exceptions_Zalrsc_{M,S,U}mode` |
+      | `SvZicbo` | 4 | `sv32_zicbom_exceptions_{S,U}mode` |
+      | `PMPF` | 1 | `pmpf_cfg_wr` |
+      | `PMPZicbo` | 3 | `pmpzicbo_cbo_wr_01` |
+      | `PMPZca` | 15 | `pmpzcd_legal_lxwr` |
+
+      Not yet triaged: each is either a defect in the emulator or a
+      disagreement between the emulator and its description in
+      `tests/arch-test/` -- this file records the second kind three
+      times -- and telling them apart is the first job. Run the failing
+      ELF directly, then `sail_riscv_sim --trace-instr` on the same one.
+
+      None of the fifteen is in the default list yet, so the documented
+      391/391 is what a fresh checkout reports; **a work directory that
+      has had them built reports 490 with 12 failing**, and so does
+      `ctest`'s `arch-test-I`, because the runner executes every ELF it
+      finds whatever `--extensions` names. Add each suite to the list
+      as it goes green.
+
+- [ ] **rv32: Zalasr and Zawrs have no second opinion.** No arch-test
+      suite for either, and no Sail model for Zalasr at 0.13.1.
+      `isatest` covers both on both backends, with every check
+      confirmed by a mutant, which makes it a consistent reading of
+      the specification and not a checked one. Revisit when the Sail
+      pin moves: Zalasr is in later models.
+
+- [ ] **rv32: `-DRV32_EXT_PMP=OFF` is not a configuration anything
+      checks.** No build-matrix row has it. Its unit tests did not
+      compile (`test_ecall.c` named `pmpaddr`; guarded now) and
+      `isatest` did not finish in five minutes there: the self-test
+      assumes the default core. The CSR defect
+      above lived there for exactly that reason.
+
+- [ ] **rv32: the new extensions and the rest of the tree.** None of
+      the seven is in `RV_GUEST_MARCH`, deliberately, so no guest but
+      the self-test executes a `czero`; what Zicond is worth to
+      CoreMark under either backend is unmeasured. `boot/rv32-emu.dts`
+      does not declare them to Linux, which will therefore not use
+      Zawrs in its spinlocks or Zicond anywhere -- declare them and
+      boot before believing they work under an operating system. And
+      Zihpm counts traps only: no overflow interrupt (Sscofpmf), no
+      privilege filter bits in `mhpmevent`.
 
 - [ ] **JIT** - Autovectorisation of the IR pipeline. This is a big task, but it would be a good demonstration of the emulator's capabilities.
 - [ ] Add simple drivers for the rh850u2b6.based on their specification in the reference manual.

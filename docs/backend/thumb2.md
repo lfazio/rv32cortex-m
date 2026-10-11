@@ -11,7 +11,7 @@ the one macro in `src/emu/emu_ir_jit.c`.
 
 | frontend | run on a board under this backend |
 |---|---|
-| RV32 | yes — `isatest` (298 checks), CoreMark, `bench`, on the Nucleo-F746ZG |
+| RV32 | yes — `isatest` (454 checks), CoreMark, `bench`, on the Nucleo-F746ZG |
 | PowerPC e200z7 | yes — `alu`, `sys`, CoreMark, crypto and 600 generated cases, on the F746 |
 | G4MH | yes — its small guest, with the board and the host agreeing to the digit |
 | ARMv7-M | **no** — it builds; nothing has been flashed |

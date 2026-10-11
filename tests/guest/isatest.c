@@ -738,10 +738,15 @@ static void test_cbo(void)
 /* ------------------------------------------------------------------ */
 
 /*
- * Only built when the guest is compiled with _zacas. These checks pass,
- * which is what localises the remaining Zacas problem: amocas.w's
- * compare-and-swap semantics are right, so the official suite's failure is
- * elsewhere. See the roadmap note in README.md.
+ * Only built when the guest is compiled with _zacas, which the default
+ * march is.
+ *
+ * (This comment used to say the checks below localised "the remaining
+ * Zacas problem" to somewhere else, and pointed at a roadmap note. There
+ * was no problem in the emulator: the architecture suite's failure was
+ * the Sail configuration declaring guest RAM `AMOArithmetic`, so the
+ * golden model trapped on amocas and recorded the trap as the expected
+ * result. Both Zacas tests pass.)
  *
  * This guard is on the *guest* compiler's march, which cannot see whether
  * the emulator was built with RV_EXT_ZACAS. Building the guest with _zacas
@@ -2234,6 +2239,701 @@ static void test_aplic(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Extensions the guest compiler is not asked for                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Everything from here to main() tests an extension the emulator
+ * implements and RV_GUEST_MARCH does not name. That is deliberate: the
+ * march decides what the *compiler* emits for every guest in the tree,
+ * and adding Zicond to it would change the instruction mix -- and so
+ * every published retired count -- for the sake of a test. `.option
+ * arch` scopes the extension to one statement instead, and the
+ * assembler still does the encoding, which is the half that matters: a
+ * `.word` would be this file's reading of the manual checked against
+ * the emulator's reading of the same manual.
+ *
+ * (It is also the only way to reach Zalasr at all. GCC 15 does not take
+ * it in -march; binutils 2.47 assembles it.)
+ */
+#define WITH_EXT(ext, body)                                                    \
+    ".option push\n.option arch, +" ext "\n" body "\n.option pop\n"
+
+static void arm_timer_in(uint32_t ticks)
+{
+    /* High half to all-ones first, as test_timer_interrupt does. */
+    CLINT_MTIMECMP_HI = 0xFFFFFFFFu;
+    CLINT_MTIMECMP_LO = CLINT_MTIME_LO + ticks;
+    CLINT_MTIMECMP_HI = CLINT_MTIME_HI;
+}
+
+static void disarm_timer(void)
+{
+    CLINT_MTIMECMP_HI = 0xFFFFFFFFu;
+    CLINT_MTIMECMP_LO = 0xFFFFFFFFu;
+}
+
+/* ---- Zicond -------------------------------------------------------- */
+
+/* rd, rs1 and rs2 all distinct, and chosen by the compiler. */
+#define CZERO(mn, a, b)                                                        \
+    ({                                                                         \
+        uint32_t r_;                                                           \
+        __asm__ volatile(WITH_EXT("zicond", mn " %0, %1, %2")                  \
+                         : "=&r"(r_)                                           \
+                         : "r"(opaque(a)), "r"(opaque(b)));                    \
+        r_;                                                                    \
+    })
+
+/*
+ * The same instruction with its registers named: t0 holds the value, t1
+ * the condition, and `seq` leaves its answer in t2.
+ *
+ * Named because the aliasings are the whole risk. czero is a select
+ * between rs1 and zero keyed on rs2, and an implementation that writes
+ * rd before it has finished reading -- which is what a lowering to "test,
+ * then move" does when rd is the register being tested -- is right for
+ * every case the compiler happens to allocate and wrong for these.
+ */
+#define CZERO_REGS(seq, a, b)                                                  \
+    ({                                                                         \
+        register uint32_t t0_ __asm__("t0") = opaque(a);                       \
+        register uint32_t t1_ __asm__("t1") = opaque(b);                       \
+        register uint32_t t2_ __asm__("t2") = 0xDEADBEEFu;                     \
+        __asm__ volatile(WITH_EXT("zicond", seq)                               \
+                         : "+r"(t0_), "+r"(t1_), "+r"(t2_));                   \
+        t2_;                                                                   \
+    })
+
+static void test_zicond(void)
+{
+    const uint32_t before = g_trap_count;
+    const uint32_t v = 0x12345678u;
+
+    /*
+     * The condition is "rs2 is zero", over all 32 bits. One and zero
+     * cannot tell that from "bit 0 is clear" or from a signed compare;
+     * a condition that is only its sign bit, and one whose low half is
+     * zero, can.
+     */
+    check("czero.eqz-0", CZERO("czero.eqz", v, 0u), 0u);
+    check("czero.eqz-1", CZERO("czero.eqz", v, 1u), v);
+    check("czero.eqz-msb", CZERO("czero.eqz", v, 0x80000000u), v);
+    check("czero.eqz-hi", CZERO("czero.eqz", v, 0x00010000u), v);
+    check("czero.nez-0", CZERO("czero.nez", v, 0u), v);
+    check("czero.nez-1", CZERO("czero.nez", v, 1u), 0u);
+    check("czero.nez-msb", CZERO("czero.nez", v, 0x80000000u), 0u);
+    check("czero.nez-hi", CZERO("czero.nez", v, 0x00010000u), 0u);
+
+    /* rd == rs1: the value is replaced in place. */
+    check("czero.eqz-rd=rs1-z",
+          CZERO_REGS("czero.eqz t0, t0, t1\nmv t2, t0", v, 0u), 0u);
+    check("czero.eqz-rd=rs1-nz",
+          CZERO_REGS("czero.eqz t0, t0, t1\nmv t2, t0", v, 5u), v);
+
+    /* rd == rs2: the condition is overwritten by what it selects. */
+    check("czero.eqz-rd=rs2-z",
+          CZERO_REGS("czero.eqz t1, t0, t1\nmv t2, t1", v, 0u), 0u);
+    check("czero.eqz-rd=rs2-nz",
+          CZERO_REGS("czero.eqz t1, t0, t1\nmv t2, t1", v, 5u), v);
+    check("czero.nez-rd=rs2-z",
+          CZERO_REGS("czero.nez t1, t0, t1\nmv t2, t1", v, 0u), v);
+    check("czero.nez-rd=rs2-nz",
+          CZERO_REGS("czero.nez t1, t0, t1\nmv t2, t1", v, 5u), 0u);
+
+    /* rs1 == rs2: a value conditioned on itself. */
+    check("czero.eqz-rs1=rs2", CZERO_REGS("czero.eqz t2, t1, t1", 0u, 7u), 7u);
+    check("czero.nez-rs1=rs2", CZERO_REGS("czero.nez t2, t1, t1", 0u, 7u), 0u);
+
+    /* x0 as the condition is always zero, and as the value is zero. */
+    check("czero.eqz-rs2=x0", CZERO_REGS("czero.eqz t2, t0, x0", v, 5u), 0u);
+    check("czero.nez-rs2=x0", CZERO_REGS("czero.nez t2, t0, x0", v, 5u), v);
+    check("czero.nez-rs1=x0", CZERO_REGS("czero.nez t2, x0, t1", v, 0u), 0u);
+
+    /*
+     * x0 as the destination. The select here *would* produce v, so a
+     * backend that forwards the last value written to a register hands
+     * v to the read that follows -- where the architecture guarantees
+     * zero. See pass_reg_traffic in CLAUDE.md for the time that happened.
+     */
+    check("czero-rd=x0",
+          CZERO_REGS("czero.nez x0, t0, x0\nadd t2, x0, x0", v, 5u), 0u);
+
+    check("zicond-no-trap", g_trap_count - before, 0u);
+}
+
+/* ---- Zihintpause, Zihintntl ---------------------------------------- */
+
+/*
+ * Two extensions whose every instruction does nothing, so the only thing
+ * there is to get wrong is refusing them.
+ *
+ * **That is the test: no trap, and the next instruction runs.** Each
+ * hint is an encoding of something older -- `pause` a FENCE with an
+ * otherwise meaningless predecessor set, the four `ntl.*` an ADD into
+ * x0, and the compressed four a C.ADD into x0, which the C extension
+ * reserves for exactly this. A decoder that validates FENCE's fields, or
+ * that treats rd == x0 in C.ADD as the illegal encoding its neighbours
+ * are, raises illegal-instruction on a guest that asked for nothing.
+ *
+ * The running sum is what says each one was the right *length*: a
+ * 16-bit hint read as 32 swallows the addi after it, and the total comes
+ * out short rather than anything trapping.
+ */
+static void test_hints(void)
+{
+    const uint32_t before = g_trap_count;
+    register uint32_t t0_ __asm__("t0") = opaque(0xDEAD0000u);
+    uint32_t sum, zero;
+
+    __asm__ volatile(WITH_EXT("zihintpause, +zihintntl",
+                              "li   %0, 1\n"
+                              "pause\n"
+                              "addi %0, %0, 2\n"
+                              "ntl.p1\n"
+                              "addi %0, %0, 4\n"
+                              "ntl.pall\n"
+                              "addi %0, %0, 8\n"
+                              "ntl.s1\n"
+                              "addi %0, %0, 16\n"
+                              "ntl.all\n"
+                              "addi %0, %0, 32\n"
+                              "c.ntl.p1\n"
+                              "addi %0, %0, 64\n"
+                              "c.ntl.pall\n"
+                              "addi %0, %0, 128\n"
+                              "c.ntl.s1\n"
+                              "addi %0, %0, 256\n"
+                              "c.ntl.all\n"
+                              "addi %0, %0, 512\n"
+                              /*
+                               * ntl.all is `add x0, x0, t0`, and t0 is
+                               * not zero: x0 must still read as zero.
+                               */
+                              "add  %1, x0, x0")
+                     : "=&r"(sum), "=&r"(zero)
+                     : "r"(t0_));
+
+    check("hints-no-trap", g_trap_count - before, 0u);
+    check("hints-all-ran", sum, 1023u);
+    check("hints-x0-stays-zero", zero, 0u);
+}
+
+/* ---- Zalasr -------------------------------------------------------- */
+
+static volatile uint32_t g_ar[2];
+
+/* A load-acquire into a register that already holds a marker. */
+#define LD_AQ(mn, addr)                                                        \
+    ({                                                                         \
+        uint32_t r_ = 0x5A5A5A5Au;                                             \
+        __asm__ volatile(WITH_EXT("zalasr", mn " %0, (%1)")                    \
+                         : "+r"(r_)                                            \
+                         : "r"((uint32_t)(uintptr_t)(addr))                    \
+                         : "memory");                                          \
+        r_;                                                                    \
+    })
+
+#define ST_RL(mn, addr, val)                                                   \
+    __asm__ volatile(WITH_EXT("zalasr", mn " %0, (%1)")                        \
+                     ::"r"((uint32_t)(val)),                                   \
+                     "r"((uint32_t)(uintptr_t)(addr))                          \
+                     : "memory")
+
+/*
+ * A raw word in the AMO opcode, with the registers every encoding below
+ * names: a0 the destination and holding a marker, a1 a valid address,
+ * a2 a value. Returns a0, which an instruction that trapped has not
+ * touched.
+ */
+#define AMO_RAW(word)                                                          \
+    ({                                                                         \
+        register uint32_t a0_ __asm__("a0") = 0x5A5A5A5Au;                     \
+        register uint32_t a1_ __asm__("a1") = (uint32_t)(uintptr_t)g_ar;       \
+        register uint32_t a2_ __asm__("a2") = 0x0BADF00Du;                     \
+        __asm__ volatile(".word " word                                         \
+                         : "+r"(a0_)                                           \
+                         : "r"(a1_), "r"(a2_)                                  \
+                         : "memory");                                          \
+        a0_;                                                                   \
+    })
+
+/* One reserved encoding: illegal, reported as itself, and nothing moved. */
+static void zalasr_reserved(const char *name, uint32_t got_a0, uint32_t word,
+                            uint32_t traps)
+{
+    check(name, traps, 1u);
+    check(name, g_last_cause, 2u);
+    check(name, g_last_tval, word);
+    check(name, got_a0, 0x5A5A5A5Au);
+    check(name, g_ar[0], 0x11223344u);
+}
+
+static void test_zalasr(void)
+{
+    const uint8_t *const base = (const uint8_t *)g_ar;
+    uint32_t before = g_trap_count;
+    uint32_t got;
+
+    /* Loads sign-extend, as LR and the AMOs do; there is no unsigned form. */
+    g_ar[0] = 0x8182F384u;
+    check("lb.aq", LD_AQ("lb.aq", base), 0xFFFFFF84u);
+    check("lb.aq+1", LD_AQ("lb.aq", base + 1), 0xFFFFFFF3u);
+    check("lh.aq", LD_AQ("lh.aq", base), 0xFFFFF384u);
+    check("lh.aq+2", LD_AQ("lh.aq", base + 2), 0xFFFF8182u);
+    check("lw.aq", LD_AQ("lw.aq", base), 0x8182F384u);
+    check("lw.aqrl", LD_AQ("lw.aqrl", base), 0x8182F384u);
+
+    /* Stores write exactly their width. */
+    g_ar[0] = 0x11223344u;
+    ST_RL("sb.rl", base, 0xAABBCCDDu);
+    check("sb.rl", g_ar[0], 0x112233DDu);
+    ST_RL("sh.rl", base + 2, 0xAABBCCDDu);
+    check("sh.rl", g_ar[0], 0xCCDD33DDu);
+    ST_RL("sw.rl", base, 0x55667788u);
+    check("sw.rl", g_ar[0], 0x55667788u);
+    ST_RL("sw.aqrl", base, 0x99AABBCCu);
+    check("sw.aqrl", g_ar[0], 0x99AABBCCu);
+    check("zalasr-no-trap", g_trap_count - before, 0u);
+
+    /*
+     * A store-release is a store: it ends a reservation on the word it
+     * writes. Checked because the instruction is reached through the
+     * atomic dispatch rather than the store path, and this file already
+     * records one inlined store that had to drop the reservation by
+     * hand.
+     */
+    {
+        uint32_t sc = 0u;
+
+        g_ar[0] = 1u;
+        __asm__ volatile(WITH_EXT("zalasr", "lr.w  t0, (%1)\n"
+                                            "sw.rl %2, (%1)\n"
+                                            "sc.w  %0, %3, (%1)")
+                         : "=&r"(sc)
+                         : "r"(g_ar), "r"(2u), "r"(3u)
+                         : "t0", "memory");
+        check("sw.rl-ends-reservation", sc != 0u, 1u);
+        check("sw.rl-ends-reservation-mem", g_ar[0], 2u);
+    }
+
+    /*
+     * Misaligned, **and this is not the build option.** RV32_MISALIGNED
+     * lets an ordinary load or store complete across a boundary; an
+     * atomic never may, because splitting it is exactly what it exists
+     * to rule out. So these trap in both configurations, with the
+     * misaligned cause and the address -- not an access fault, and not
+     * silently done.
+     */
+    g_ar[0] = 0x11223344u;
+    before = g_trap_count;
+    got = LD_AQ("lh.aq", base + 1);
+    check("lh.aq-misaligned-taken", g_trap_count - before, 1u);
+    check("lh.aq-misaligned-cause", g_last_cause, 4u);
+    check("lh.aq-misaligned-tval", g_last_tval, (uint32_t)(uintptr_t)base + 1u);
+    check("lh.aq-misaligned-rd", got, 0x5A5A5A5Au);
+
+    before = g_trap_count;
+    got = LD_AQ("lw.aq", base + 2);
+    check("lw.aq-misaligned-taken", g_trap_count - before, 1u);
+    check("lw.aq-misaligned-cause", g_last_cause, 4u);
+    check("lw.aq-misaligned-rd", got, 0x5A5A5A5Au);
+
+    before = g_trap_count;
+    ST_RL("sh.rl", base + 1, 0xAABBCCDDu);
+    check("sh.rl-misaligned-taken", g_trap_count - before, 1u);
+    check("sh.rl-misaligned-cause", g_last_cause, 6u);
+    check("sh.rl-misaligned-tval", g_last_tval, (uint32_t)(uintptr_t)base + 1u);
+
+    before = g_trap_count;
+    ST_RL("sw.rl", base + 2, 0xAABBCCDDu);
+    check("sw.rl-misaligned-taken", g_trap_count - before, 1u);
+    check("sw.rl-misaligned-cause", g_last_cause, 6u);
+    check("zalasr-misaligned-mem", g_ar[0], 0x11223344u);
+    check("zalasr-misaligned-mem1", g_ar[1], 0u);
+
+    /*
+     * The reserved encodings. The ordering bit that gives each
+     * instruction its name is mandatory -- there is no load-release and
+     * no store-acquire -- and the unused register field must be zero.
+     * Each of these differs from a working instruction above by one bit,
+     * and "one bit away from implemented" is where this decoder has
+     * been wrong before: an implementation that matches on funct5 alone
+     * runs all of them.
+     *
+     *   0x3405a52f  lw.aq a0, (a1)        0x3ac5a02f  sw.rl a2, (a1)
+     */
+#define RESERVED(name, word)                                                   \
+    do {                                                                       \
+        g_ar[0] = 0x11223344u; /* each case names only itself */               \
+        const uint32_t b_ = g_trap_count;                                      \
+        const uint32_t a0_ = AMO_RAW(#word);                                   \
+        zalasr_reserved(name, a0_, word##u, g_trap_count - b_);                \
+    } while (0)
+
+    RESERVED("zalasr-load-no-aq", 0x3005a52f);
+    RESERVED("zalasr-load-rl-only", 0x3205a52f);
+    RESERVED("zalasr-load-rs2", 0x3415a52f);
+    RESERVED("zalasr-load-64", 0x3405b52f);
+    RESERVED("zalasr-store-no-rl", 0x38c5a02f);
+    RESERVED("zalasr-store-aq-only", 0x3cc5a02f);
+    RESERVED("zalasr-store-rd", 0x3ac5a0af);
+    RESERVED("zalasr-store-64", 0x3ac5b02f);
+#undef RESERVED
+}
+
+/* ---- Zawrs --------------------------------------------------------- */
+
+#define MIP_MTIP (1u << 7)
+
+/*
+ * End any reservation, without changing memory: SC always ends one, and
+ * if it happens to succeed it stores what was there.
+ */
+static void drop_reservation(void)
+{
+    __asm__ volatile("lw   t1, 0(%0)\n"
+                     "sc.w t0, t1, (%0)" ::"r"(&g_atomic)
+                     : "t0", "t1", "memory");
+}
+
+/* How far ahead the wake-up is set. Long against the handful of
+ * instructions between arming it and waiting, so an implementation that
+ * does not wait cannot pass by arriving late. */
+#define WRS_TICKS 2000u
+
+static void smode_tw_wrs(void)
+{
+    uint32_t before = g_trap_count;
+
+    /*
+     * TW forbids an instruction that may not return in bounded time. A
+     * WRS.NTO with nothing reserved returns at once, so it is legal --
+     * the bit is about waiting, not about the opcode.
+     */
+    drop_reservation();
+    __asm__ volatile(WITH_EXT("zawrs", "wrs.nto"));
+    check("s-tw-wrs.nto-no-resv", g_trap_count - before, 0u);
+
+    /* WRS.STO has a timeout, so it is never the instruction TW means. */
+    __asm__ volatile(WITH_EXT("zawrs", "lr.w t0, (%0)\n"
+                                       "wrs.sto") ::"r"(&g_atomic)
+                     : "t0", "memory");
+    check("s-tw-wrs.sto", g_trap_count - before, 0u);
+
+    /* And with something reserved it would wait: illegal, as WFI is. */
+    before = g_trap_count;
+    __asm__ volatile(WITH_EXT("zawrs", "lr.w t0, (%0)\n"
+                                       "wrs.nto") ::"r"(&g_atomic)
+                     : "t0", "memory");
+    check("s-tw-wrs.nto-traps", g_trap_count - before, 1u);
+    check("s-tw-wrs.nto-cause", g_last_cause, 2u);
+    check("s-tw-wrs.nto-tval", g_last_tval, 0x00D00073u);
+
+    LEAVE_SMODE();
+}
+
+static void test_zawrs(void)
+{
+    uint32_t before = g_trap_count;
+    uint32_t woke, mip;
+
+    csr_write("mie", 0u);
+    csr_write("mstatus", 0u);
+    disarm_timer();
+
+    /*
+     * Nothing reserved, and no interrupt source enabled at all. This is
+     * the case that must not wait: a hart that parked here would never
+     * be woken, and the run would end without reaching the next line.
+     */
+    drop_reservation();
+    __asm__ volatile(WITH_EXT("zawrs", "wrs.nto"));
+    check("wrs.nto-no-resv-returns", g_trap_count - before, 0u);
+
+    /* The short wait returns whether or not anything is reserved. */
+    __asm__ volatile(WITH_EXT("zawrs", "wrs.sto"));
+    __asm__ volatile(WITH_EXT("zawrs", "lr.w t0, (%0)\n"
+                                       "wrs.sto") ::"r"(&g_atomic)
+                     : "t0", "memory");
+    check("wrs.sto-returns", g_trap_count - before, 0u);
+
+    /*
+     * Reserved, and a timer two thousand ticks out. The count is read by
+     * the instruction after the wait: it has moved only if the hart sat
+     * there until the interrupt arrived, which is the whole instruction.
+     */
+    drop_reservation();
+    before = g_trap_count;
+    arm_timer_in(WRS_TICKS);
+    csr_set("mie", MIP_MTIP);
+    csr_set("mstatus", 1u << 3);
+    __asm__ volatile(WITH_EXT("zawrs", "lr.w t0, (%1)\n"
+                                       "wrs.nto\n"
+                                       "lw   %0, 0(%2)")
+                     : "=&r"(woke)
+                     : "r"(&g_atomic), "r"(&g_trap_count)
+                     : "t0", "memory");
+    csr_clear("mstatus", 1u << 3);
+    check("wrs.nto-waits-for-irq", woke - before, 1u);
+    check("wrs.nto-irq-cause", g_last_cause, 0x80000007u);
+
+    /*
+     * The same wait with interrupts globally off, and TW set. It
+     * resumes as WFI does -- on an interrupt that is pending and
+     * enabled in mie, taken or not -- so it returns with MTIP up and no
+     * trap. And M-mode is never the subject of its own control bit.
+     */
+    drop_reservation();
+    before = g_trap_count;
+    csr_set("mstatus", MSTATUS_TW);
+    arm_timer_in(WRS_TICKS);
+    __asm__ volatile(WITH_EXT("zawrs", "lr.w t0, (%1)\n"
+                                       "wrs.nto\n"
+                                       "csrr %0, mip")
+                     : "=&r"(mip)
+                     : "r"(&g_atomic)
+                     : "t0", "memory");
+    disarm_timer();
+    csr_write("mie", 0u);
+    check("wrs.nto-wakes-masked", mip & MIP_MTIP, MIP_MTIP);
+    check("wrs.nto-masked-no-trap", g_trap_count - before, 0u);
+
+    /* Below M, with TW still set. */
+    csr_write("medeleg", 0u);
+    csr_write("mideleg", 0u);
+    enter_smode(smode_tw_wrs);
+    csr_clear("mstatus", MSTATUS_TW);
+}
+
+/* ---- Zihpm --------------------------------------------------------- */
+
+/*
+ * What this implementation's counters count. The architecture leaves the
+ * events to the platform and requires only that selector 0 means "no
+ * event"; these are this emulator's, from rv_csr.h.
+ */
+#define HPM_EV_EXCEPTION 1u
+#define HPM_EV_INTERRUPT 2u
+#define HPM_EV_EXC_CAUSE(c) (0x100u | (c))
+#define HPM_EV_IRQ_CAUSE(c) (0x200u | (c))
+
+static void take_breakpoints(unsigned n)
+{
+    while (n-- != 0u) {
+        __asm__ volatile("ebreak");
+    }
+}
+
+static volatile uint32_t g_hpm_s[4];
+
+/* Which of four counter CSRs an S-mode read of traps on. */
+static void smode_hpm(void)
+{
+    uint32_t before;
+
+    before = g_trap_count;
+    (void)csr_read("0xc03"); /* hpmcounter3  */
+    g_hpm_s[0] = g_trap_count - before;
+
+    before = g_trap_count;
+    (void)csr_read("0xc83"); /* hpmcounter3h */
+    g_hpm_s[1] = g_trap_count - before;
+
+    before = g_trap_count;
+    (void)csr_read("0xc07"); /* hpmcounter7  */
+    g_hpm_s[2] = g_trap_count - before;
+
+    before = g_trap_count;
+    (void)csr_read("0xb03"); /* mhpmcounter3: a machine register */
+    g_hpm_s[3] = g_trap_count - before;
+
+    LEAVE_SMODE();
+}
+
+static uint32_t hpm_s_pattern(void)
+{
+    return g_hpm_s[0] | (g_hpm_s[1] << 4) | (g_hpm_s[2] << 8) |
+           (g_hpm_s[3] << 12);
+}
+
+/* A read of a CSR number that must not exist. */
+#define CSR_ABSENT(name, num)                                                  \
+    do {                                                                       \
+        const uint32_t b_ = g_trap_count;                                      \
+        (void)csr_read(num);                                                   \
+        check(name, g_trap_count - b_, 1u);                                    \
+        check(name, g_last_cause, 2u);                                         \
+    } while (0)
+
+static void test_zihpm(void)
+{
+    uint32_t before;
+
+    /*
+     * Three hundred checks' worth of traps have been taken by now, and
+     * with no event selected none of them was counted. This is the
+     * reset state, and it is also what "selector 0 is no event" means.
+     */
+    check("hpm-event-reset", csr_read("mhpmevent3"), 0u);
+    check("hpm-idle-low", csr_read("mhpmcounter3"), 0u);
+    check("hpm-idle-high", csr_read("mhpmcounter3h"), 0u);
+    check("hpm-idle-last", csr_read("mhpmcounter31"), 0u);
+
+    csr_write("mhpmevent3", HPM_EV_EXCEPTION);
+    csr_write("mhpmevent4", HPM_EV_INTERRUPT);
+    csr_write("mhpmevent5", HPM_EV_EXC_CAUSE(3u)); /* breakpoint */
+    csr_write("mhpmevent6", HPM_EV_IRQ_CAUSE(7u)); /* machine timer */
+    csr_write("mhpmevent31", HPM_EV_EXC_CAUSE(2u)); /* illegal */
+    check("hpm-event-reads-back", csr_read("mhpmevent5"), 0x103u);
+
+    /*
+     * The selector is WARL. Something this core does not count reads
+     * back as "no event" -- which is how a guest asks what exists -- and
+     * that includes the value one past the last cause, the neighbour of
+     * a legal selector.
+     */
+    csr_write("mhpmevent7", 0x7FFFu);
+    check("hpm-event-unknown-is-none", csr_read("mhpmevent7"), 0u);
+    csr_write("mhpmevent7", HPM_EV_EXC_CAUSE(16u));
+    check("hpm-event-cause16-is-none", csr_read("mhpmevent7"), 0u);
+    csr_write("mhpmevent7", HPM_EV_EXC_CAUSE(15u));
+    check("hpm-event-cause15-exists", csr_read("mhpmevent7"), 0x10Fu);
+    csr_write("mhpmevent7", 0x7FFFu);
+
+    take_breakpoints(3u);
+    __asm__ volatile(".word 0xffffffff");
+    __asm__ volatile(".word 0xffffffff");
+
+    check("hpm-exc-any", csr_read("mhpmcounter3"), 5u);
+    check("hpm-exc-breakpoint", csr_read("mhpmcounter5"), 3u);
+    check("hpm-exc-illegal-c31", csr_read("mhpmcounter31"), 2u);
+    check("hpm-irq-not-yet", csr_read("mhpmcounter4"), 0u);
+    check("hpm-unknown-event", csr_read("mhpmcounter7"), 0u);
+
+    /* One timer interrupt, and only the two interrupt counters move. */
+    before = g_trap_count;
+    arm_timer_in(20u);
+    csr_set("mie", MIP_MTIP);
+    csr_set("mstatus", 1u << 3);
+    {
+        volatile int guard = 0;
+        while (g_trap_count == before && guard < 100000) {
+            guard++;
+        }
+    }
+    csr_write("mie", 0u);
+    csr_write("mstatus", 0u);
+    check("hpm-irq-any", csr_read("mhpmcounter4"), 1u);
+    check("hpm-irq-timer", csr_read("mhpmcounter6"), 1u);
+    check("hpm-exc-unmoved-by-irq", csr_read("mhpmcounter3"), 5u);
+    check("hpm-bp-unmoved-by-irq", csr_read("mhpmcounter5"), 3u);
+
+    /* mcountinhibit stops one counter and not its neighbour. */
+    csr_write("mcountinhibit", 1u << 3);
+    check("hpm-inhibit-reads-back", csr_read("mcountinhibit"), 1u << 3);
+    take_breakpoints(1u);
+    check("hpm-inhibit-stops", csr_read("mhpmcounter3"), 5u);
+    check("hpm-inhibit-per-counter", csr_read("mhpmcounter5"), 4u);
+    csr_write("mcountinhibit", 0u);
+    take_breakpoints(1u);
+    check("hpm-inhibit-released", csr_read("mhpmcounter3"), 6u);
+
+    /* Every counter has an inhibit bit; `time` (bit 1) does not. */
+    csr_write("mcountinhibit", 0xFFFFFFFFu);
+    check("hpm-inhibit-warl", csr_read("mcountinhibit"), 0xFFFFFFFDu);
+    csr_write("mcountinhibit", 0u);
+
+    /*
+     * Sixty-four bits in two registers. The carry out of the low half
+     * is the only thing here that can be wrong without the low half
+     * being wrong, so that is the value to start from.
+     */
+    csr_write("mhpmcounter3", 0xFFFFFFFFu);
+    csr_write("mhpmcounter3h", 7u);
+    take_breakpoints(1u);
+    check("hpm-carry-low", csr_read("mhpmcounter3"), 0u);
+    check("hpm-carry-high", csr_read("mhpmcounter3h"), 8u);
+
+    /* Nothing counts from here: the reads below take traps of their own. */
+    csr_write("mhpmevent3", 0u);
+    csr_write("mhpmevent4", 0u);
+    csr_write("mhpmevent5", 0u);
+    csr_write("mhpmevent6", 0u);
+    csr_write("mhpmevent7", 0u);
+    csr_write("mhpmevent31", 0u);
+    take_breakpoints(1u);
+    /* Six breakpoints counted: three, then one each for the inhibit, its
+     * release and the carry. This seventh is the one that must not be. */
+    check("hpm-deselected-stops", csr_read("mhpmcounter5"), 6u);
+
+    /*
+     * Each half is written on its own. The other half holds something
+     * that is not zero when it is checked: a write that clears its
+     * neighbour is the bug, and zero is what that leaves behind.
+     */
+    csr_write("mhpmcounter3", 0x0BADF00Du);
+    csr_write("mhpmcounter3h", 0x12345678u);
+    check("hpm-write-high-keeps-low", csr_read("mhpmcounter3"), 0x0BADF00Du);
+    csr_write("mhpmcounter3", 0xCAFEF00Du);
+    check("hpm-write-low-keeps-high", csr_read("mhpmcounter3h"), 0x12345678u);
+
+    /* The unprivileged shadows read the same counter, and only read. */
+    check("hpm-shadow-low", csr_read("0xc03"), 0xCAFEF00Du);
+    check("hpm-shadow-high", csr_read("0xc83"), 0x12345678u);
+    before = g_trap_count;
+    csr_write("0xc03", 0u);
+    check("hpm-shadow-readonly", g_trap_count - before, 1u);
+    check("hpm-shadow-readonly-cause", g_last_cause, 2u);
+    check("hpm-shadow-unwritten", csr_read("mhpmcounter3"), 0xCAFEF00Du);
+
+    /*
+     * The edges of the range. Counters 3 to 31 exist in each of five
+     * banks, and what sits either side of each bank does not: 1 is the
+     * hole `time` leaves in the machine banks, mhpmevent has no 1 or 2,
+     * and 32 is past the end.
+     */
+    check("hpm-last-high", csr_read("mhpmcounter31h"), 0u);
+    check("hpm-last-event", csr_read("mhpmevent31"), 0u);
+    check("hpm-last-shadow", csr_read("0xc1f"), 2u); /* the two illegals */
+    check("hpm-last-shadow-high", csr_read("0xc9f"), 0u);
+    CSR_ABSENT("hpm-absent-b01", "0xb01");
+    CSR_ABSENT("hpm-absent-b81", "0xb81");
+    CSR_ABSENT("hpm-absent-321", "0x321");
+    CSR_ABSENT("hpm-absent-322", "0x322");
+    CSR_ABSENT("hpm-absent-b20", "0xb20");
+    CSR_ABSENT("hpm-absent-ba0", "0xba0");
+    CSR_ABSENT("hpm-absent-ca0", "0xca0");
+
+    /*
+     * Below M the shadows are gated by mcounteren, one bit per counter
+     * *by its number*. Counter 7 is in the pattern for a reason: its
+     * low two bits are 3, so a gate that looks at two bits of the CSR
+     * number -- which was enough while only cycle, time and instret
+     * existed -- opens it with counter 3's bit.
+     */
+    csr_write("medeleg", 0u);
+    csr_write("mcounteren", 0u);
+    enter_smode(smode_hpm);
+    check("hpm-s-all-gated", hpm_s_pattern(), 0x1111u);
+
+    csr_write("mcounteren", 1u << 3);
+    enter_smode(smode_hpm);
+    check("hpm-s-counter3-open", hpm_s_pattern(), 0x1100u);
+
+    csr_write("mcounteren", 1u << 7);
+    enter_smode(smode_hpm);
+    check("hpm-s-counter7-open", hpm_s_pattern(), 0x1011u);
+
+    csr_write("mcounteren", 0xFFFFFFFFu);
+    check("hpm-mcounteren-warl", csr_read("mcounteren"), 0xFFFFFFFFu);
+    csr_write("mcounteren", 0u);
+
+    csr_write("mhpmcounter3", 0u);
+    csr_write("mhpmcounter3h", 0u);
+}
+
+/* ------------------------------------------------------------------ */
 
 int main(void)
 {
@@ -2262,6 +2962,11 @@ int main(void)
 #if defined(__riscv_flen) && (__riscv_flen >= 32)
     test_fpu();
 #endif
+    test_zicond();
+    test_hints();
+    test_zalasr();
+    test_zawrs();
+    test_zihpm();
     test_timer_interrupt();
 
     puts_("checks   ");

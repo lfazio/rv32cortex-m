@@ -4,6 +4,7 @@
  */
 
 #include "rv32/rv_hart.h"
+#include "rv32/rv_decode.h"
 #include "rv32/rv_jit.h"
 
 #include <string.h>
@@ -84,6 +85,11 @@ void rv_hart_reset(rv_hart_t *h, uint32_t reset_pc)
     h->mcountinhibit = 0u;
     h->mcycle = 0u;
     h->minstret = 0u;
+#if RV_EXT_ZIHPM
+    memset(h->mhpmcounter, 0, sizeof(h->mhpmcounter));
+    memset(h->mhpmevent, 0, sizeof(h->mhpmevent));
+    rv_hpm_rearm(h); /* derived: recomputed, never cleared by hand */
+#endif
 
 #if RV_EXT_F
     memset(h->f, 0, sizeof(h->f));
@@ -308,6 +314,13 @@ void rv_hart_trap(rv_hart_t *h, uint32_t cause, uint32_t tval)
      */
 #if RV_EXT_A
     h->resv_valid = false;
+#endif
+
+#if RV_EXT_ZIHPM
+    /* One load and a branch, per trap, for a guest counting nothing. */
+    if (EMU_UNLIKELY(h->hpm_armed != 0u)) {
+        rv_hpm_note_trap(h, cause);
+    }
 #endif
 
 #if EMU_ENABLE_STATS
@@ -694,6 +707,129 @@ rv_exc_t rv_hart_amocas_d(rv_hart_t *h, uint32_t rd, uint32_t rs2,
     return RV_EXC_NONE;
 }
 #endif /* RV_EXT_ZACAS */
+
+#if RV_EXT_ZALASR
+/*
+ * Zalasr: lb/lh/lw.aq[rl] and sb/sh/sw.[aq]rl.
+ *
+ * A load-acquire is a load and a store-release is a store. What the
+ * extension adds is an ordering guarantee against other harts, and with
+ * one hart and no store buffer the order things happen in is already
+ * the order they were asked for -- so the work here is the encoding and
+ * the two ways these differ from lw and sw:
+ *
+ *   - **the ordering bit is part of the opcode.** A load must have aq
+ *     set and a store must have rl; the other bit is optional. The
+ *     encodings with the mandatory bit clear are reserved, as is a load
+ *     with a non-zero rs2 field or a store with a non-zero rd, and a
+ *     reserved encoding here is an illegal instruction.
+ *   - **the address must be naturally aligned, always.** rv_hart_load
+ *     and rv_hart_store emulate a misaligned access when
+ *     RV_MISALIGNED_OK is set, which is right for lw and not available
+ *     to an atomic: so the test is made here, before either is called.
+ *
+ * Everything else -- translation, PMP, a trigger, the reservation a
+ * store breaks, which fault a device reports -- is those two functions,
+ * called rather than copied. Loads sign-extend, as lb and lh do; there
+ * is no unsigned form.
+ */
+static rv_exc_t rv_hart_zalasr(rv_hart_t *h, uint32_t insn, uint32_t *tval)
+{
+    const bool store = ((rv_funct7(insn) >> 2) == RV_AMO_STORE_REL);
+    const bool aq = (insn & (1u << 26)) != 0u;
+    const bool rl = (insn & (1u << 25)) != 0u;
+    const uint32_t f3 = rv_funct3(insn);
+    const uint32_t addr = h->x[rv_rs1(insn)];
+
+    /* 8, 16 and 32 bits; funct3 3 is ld.aq/sd.rl and RV64 only. */
+    if (EMU_UNLIKELY(f3 > 2u)) {
+        return RV_EXC_ILLEGAL_INSN;
+    }
+
+    const uint32_t size = 1u << f3;
+
+    if (store) {
+        if (EMU_UNLIKELY(!rl || rv_rd(insn) != 0u)) {
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        *tval = addr;
+        if (EMU_UNLIKELY((addr & (size - 1u)) != 0u)) {
+            return RV_EXC_STORE_MISALIGNED;
+        }
+        return rv_hart_store(h, addr, size, h->x[rv_rs2(insn)]);
+    }
+
+    if (EMU_UNLIKELY(!aq || rv_rs2(insn) != 0u)) {
+        return RV_EXC_ILLEGAL_INSN;
+    }
+    *tval = addr;
+    if (EMU_UNLIKELY((addr & (size - 1u)) != 0u)) {
+        return RV_EXC_LOAD_MISALIGNED;
+    }
+
+    uint32_t v;
+    const rv_exc_t exc = rv_hart_load(h, addr, size, true, &v);
+
+    if (exc == RV_EXC_NONE && rv_rd(insn) != 0u) {
+        h->x[rv_rd(insn)] = v;
+    }
+    return exc;
+}
+#endif /* RV_EXT_ZALASR */
+
+/*
+ * One instruction of the AMO opcode, whole: which operation it is,
+ * whether that encoding exists, the operation, and what it reports.
+ *
+ * **Both backends call this and neither decodes an atomic for itself.**
+ * They used to -- the interpreter's switch and the translator's helper
+ * carried the same dispatch "deliberately line for line", which is a
+ * second copy kept in step by intention. It held for LR/SC, the AMOs and
+ * amocas; a fourth group was the moment to stop relying on it.
+ *
+ * `tval` is what the trap records: the encoding for an illegal
+ * instruction, the address for everything else.
+ */
+rv_exc_t rv_hart_atomic(rv_hart_t *h, uint32_t insn, uint32_t *tval)
+{
+    const uint32_t funct5 = rv_funct7(insn) >> 2;
+    const uint32_t f3 = rv_funct3(insn);
+    rv_exc_t exc;
+
+    *tval = insn;
+
+#if RV_EXT_ZALASR
+    if (funct5 == RV_AMO_LOAD_ACQ || funct5 == RV_AMO_STORE_REL) {
+        return rv_hart_zalasr(h, insn, tval);
+    }
+#endif
+
+#if RV_EXT_ZACAS
+    if (f3 == 3u && funct5 == RV_AMO_CAS) {
+        /* amocas.d: even-odd register pairs, so an odd operand is not
+         * encodable and must raise illegal instruction. */
+        if (EMU_UNLIKELY((rv_rd(insn) & 1u) != 0u ||
+                         (rv_rs2(insn) & 1u) != 0u)) {
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        *tval = h->x[rv_rs1(insn)];
+        exc = rv_hart_amocas_d(h, rv_rd(insn), rv_rs2(insn), *tval);
+        h->x[0] = 0u;
+        return exc;
+    }
+#endif
+
+    /* Only the 32-bit width, a defined operation, and LR takes no rs2. */
+    if (EMU_UNLIKELY(f3 != 2u || !rv_amo_valid(funct5) ||
+                     (funct5 == RV_AMO_LR && rv_rs2(insn) != 0u))) {
+        return RV_EXC_ILLEGAL_INSN;
+    }
+
+    *tval = h->x[rv_rs1(insn)];
+    exc = rv_hart_amo(h, funct5, rv_rd(insn), *tval, h->x[rv_rs2(insn)]);
+    h->x[0] = 0u; /* rv_hart_amo skips rd == 0; keep x0 canonical */
+    return exc;
+}
 
 #endif /* RV_EXT_A */
 

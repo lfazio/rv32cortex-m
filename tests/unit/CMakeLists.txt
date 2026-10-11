@@ -24,6 +24,7 @@ add_executable(emu-unit
     # and the bug was not about the part.
     #
     test_cycles.c
+    test_cpu.c
 )
 
 # Frontend tests follow the frontends: a build without one must not try to

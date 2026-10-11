@@ -77,40 +77,92 @@
 #define RV32_S_ZBC ""
 #endif
 /*
- * Zicsr, Zifencei and Zicntr, which this string omitted while the core
- * implemented all three.
+ * The multi-letter extensions, every one of them.
  *
- * **Since the 20191213 spec these have to be named.** "RV32IMAFC" no
- * longer implies CSR access or FENCE.I -- they were split out of the
- * base, so a string without them describes a core that cannot execute
- * `csrr` and the banner was claiming exactly that. `boot/rv32-emu.dts`
- * has declared them to Linux all along, so the emulator's own
- * description was the one that disagreed with the machine.
+ * **Since the 20191213 spec Zicsr and Zifencei have to be named.**
+ * "RV32IMAFC" no longer implies CSR access or FENCE.I -- they were split
+ * out of the base, so a string without them describes a core that cannot
+ * execute `csrr`, and for a long time this banner claimed exactly that
+ * while `boot/rv32-emu.dts` declared them to Linux.
  *
- * Zifencei is unconditional because the instruction is: MISC-MEM
- * funct3 1 reaches `rv_invalidate` with nothing guarding it, and there
- * is no RV_EXT_ZIFENCEI to test. Inventing one to gate a string would
- * be a flag nothing reads.
+ * It then named three and stopped, with Zicbom, Zicboz, Zacas and Zcb
+ * implemented and passing the architecture suite: a string that lists
+ * some of what is compiled in reads as a list of all of it. So the rule
+ * is that an extension with a gate in rv_config.h has a line here, and
+ * the configure summary in CMakeLists.txt -- a second copy, kept by hand
+ * -- is held to this one by the `rv32-isa-string` test.
+ *
+ * Three have no gate and are unconditional, for the same reason each
+ * time: there is nothing to switch off. FENCE.I reaches rv_invalidate
+ * unguarded; `pause` is a FENCE the base ISA already executes; `ntl.*`
+ * are ADDs into x0. Inventing a macro to gate a string would be a flag
+ * nothing reads.
  */
+#if RV_EXT_ZICBOM
+#define RV32_S_ZICBOM "_zicbom"
+#else
+#define RV32_S_ZICBOM ""
+#endif
+#if RV_EXT_ZICBOZ
+#define RV32_S_ZICBOZ "_zicboz"
+#else
+#define RV32_S_ZICBOZ ""
+#endif
+#if RV_EXT_ZICNTR
+#define RV32_S_ZICNTR "_zicntr"
+#else
+#define RV32_S_ZICNTR ""
+#endif
+#if RV_EXT_ZICOND
+#define RV32_S_ZICOND "_zicond"
+#else
+#define RV32_S_ZICOND ""
+#endif
 #if RV_EXT_ZICSR
 #define RV32_S_ZICSR "_zicsr"
 #else
 #define RV32_S_ZICSR ""
 #endif
 #define RV32_S_ZIFENCEI "_zifencei"
-#if RV_EXT_ZICNTR
-#define RV32_S_ZICNTR "_zicntr"
+#define RV32_S_ZIHINT "_zihintntl_zihintpause"
+#if RV_EXT_ZIHPM
+#define RV32_S_ZIHPM "_zihpm"
 #else
-#define RV32_S_ZICNTR ""
+#define RV32_S_ZIHPM ""
+#endif
+#if RV_EXT_A && RV_EXT_ZACAS
+#define RV32_S_ZACAS "_zacas"
+#else
+#define RV32_S_ZACAS ""
+#endif
+#if RV_EXT_ZALASR
+#define RV32_S_ZALASR "_zalasr"
+#else
+#define RV32_S_ZALASR ""
+#endif
+#if RV_EXT_ZAWRS
+#define RV32_S_ZAWRS "_zawrs"
+#else
+#define RV32_S_ZAWRS ""
+#endif
+#if RV_EXT_C && RV_EXT_ZCB
+#define RV32_S_ZCB "_zcb"
+#else
+#define RV32_S_ZCB ""
 #endif
 
 /*
- * Canonical order: the single letters, then the Zi* extensions, then
- * the Zb* ones.
+ * Canonical order, which is not alphabetical: the single letters, then
+ * the Z extensions grouped by the letter after the Z in the order the
+ * single letters come in -- i, a, c, b -- and alphabetical inside a
+ * group. It is the order `sail_riscv_sim --print-isa-string` gives for
+ * the same machine, which is what it was checked against.
  */
 #define RV32_ISA_STRING                                                        \
-    "RV32I" RV32_S_M RV32_S_A RV32_S_F RV32_S_D RV32_S_C RV32_S_B RV32_S_ZICSR \
-        RV32_S_ZIFENCEI RV32_S_ZICNTR RV32_S_ZBC
+    "RV32I" RV32_S_M RV32_S_A RV32_S_F RV32_S_D RV32_S_C RV32_S_B              \
+        RV32_S_ZICBOM RV32_S_ZICBOZ RV32_S_ZICNTR RV32_S_ZICOND RV32_S_ZICSR   \
+        RV32_S_ZIFENCEI RV32_S_ZIHINT RV32_S_ZIHPM RV32_S_ZACAS RV32_S_ZALASR  \
+        RV32_S_ZAWRS RV32_S_ZCB RV32_S_ZBC
 
 /* ------------------------------------------------------------------ */
 /* State                                                               */
