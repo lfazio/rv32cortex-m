@@ -128,7 +128,7 @@ board result.
 `-DRV32_GUEST=` selects the embedded guest image: `isatest`, `hello`,
 `bench`, `stm32drv`, `irqtest`, `cmsistest`, `coremark`, `dhrystone`,
 `whetstone`, `fptest` or `mmiobench`. A PowerPC firmware takes
-`-DPPC_GUEST=` instead: `alu`, `sys`, `coremark` or `crypto`.
+`-DPPC_GUEST=` instead: `alu`, `sys`, `mmu`, `coremark` or `crypto`.
 
 | Option | Default | Effect |
 |---|---|---|
@@ -494,7 +494,7 @@ src/frontend/
                   CLINT, APLIC
   g4mh/           core, decoder, interpreter, translator, MPU, INTC, timers
   ppc/            core, decoder, disassembler, interpreter, translator,
-                  the embedded FP unit
+                  the embedded FP unit, the MMU
   armv7m/         core, decoder, disassembler, interpreter, translator,
                   exceptions, NVIC
   softfloat/      Berkeley SoftFloat: every frontend's FP unit
@@ -562,7 +562,8 @@ VLE or Book E:
 |---|---|
 | `isatest.bin` | hand-written VLE: the 16-bit forms and what only VLE has. A flat image, so it needs `--load 0x80000000` |
 | `ppc-alu` | compiled C against values computed in Python: the forms a compiler reaches for unasked |
-| `ppc-sys` | the system level, 183 checks with the manual's section beside each: interrupts, privilege, SPRs, reservations, timers, the FP interrupts |
+| `ppc-sys` | the system level, 184 checks with the manual's section beside each: interrupts, privilege, SPRs, reservations, timers, the FP interrupts |
+| `ppc-mmu` | the MMU, 150 checks: the TLB programmed as an MPC57xx start-up does, then translation, address spaces, permissions, the TLB interrupts, per-page VLE |
 | `ppc-park` | a `wait` that nothing may end |
 | `ppc-coremark`, `ppc-crypto` | the shared benchmarks, with a decrementer interrupt landing in compiled code throughout |
 
@@ -575,7 +576,7 @@ VLE or Book E:
 | [docs/Architecture.md](docs/Architecture.md) | the three axes and the frontend contract |
 | [docs/frontend/rv32.md](docs/frontend/rv32.md) | RV32 scope, memory map, floating point |
 | [docs/frontend/g4mh.md](docs/frontend/g4mh.md) | G4MH scope, and what is *not* verified |
-| [docs/frontend/ppc.md](docs/frontend/ppc.md) | e200z7 scope, the decoder, FP unit and JIT, and how each is checked without an e200 |
+| [docs/frontend/ppc.md](docs/frontend/ppc.md) | e200z7 scope, the decoder, FP unit, MMU and JIT, and how each is checked without an e200 |
 | [docs/frontend/armv7m.md](docs/frontend/armv7m.md) | ARMv7-M scope, the board-differential suites, the JIT |
 | [docs/backend/thumb2.md](docs/backend/thumb2.md) | the ARMv7E-M emitter, and what it measures on the board |
 | [docs/backend/x86_64.md](docs/backend/x86_64.md) | the x86-64 emitter, which exists for coverage |

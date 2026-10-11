@@ -75,6 +75,7 @@ void ppc_cpu_reset(ppc_cpu_t *c, uint32_t reset_pc)
     c->retired = 0u;
     c->cycles = 0u;
     c->clk_synced = 0u;
+    ppc_mmu_reset(c);
     c->jit_ctx = ppc_cpu_ctx(c);
     c->jit_flush = true;
 }
@@ -87,8 +88,9 @@ uint64_t ppc_cpu_ctx(const ppc_cpu_t *c)
 void ppc_cpu_set_msr(ppc_cpu_t *c, uint32_t v)
 {
     c->msr = v & PPC_MSR_IMPL;
-    c->jit_ctx = ppc_cpu_ctx(c);
     c->irq_dirty = true;
+    ppc_mmu_refresh(c); /* IS and DS choose the address space */
+    c->jit_ctx = ppc_cpu_ctx(c);
 }
 
 /* ------------------------------------------------------------------ */
@@ -136,10 +138,18 @@ void ppc_cpu_raise(ppc_cpu_t *c, ppc_ivor_t which, uint32_t ret_pc,
         break;
     }
     if (esr != PPC_ESR_KEEP) {
-        c->esr = esr | (c->vle ? PPC_ESR_VLEMI : 0u);
+        /*
+         * Table 7-24: an instruction TLB error sets ESR[MIF] and clears
+         * everything else, VLEMI included -- there is no instruction yet
+         * to have been a VLE one.
+         */
+        const bool vlemi = c->vle && which != PPC_IVOR_ITLB_ERROR;
+
+        c->esr = esr | (vlemi ? PPC_ESR_VLEMI : 0u);
     }
     c->msr &= keep;
     c->pc = handler_address(c, which);
+    ppc_mmu_refresh(c); /* the handler runs with IS and DS clear */
     c->jit_ctx = ppc_cpu_ctx(c);
 }
 
@@ -220,8 +230,6 @@ static uint32_t *spr_slot(ppc_cpu_t *c, uint32_t spr)
         return &c->sprg[8];
     case PPC_SPR_SPRG9:
         return &c->sprg[9];
-    case PPC_SPR_PID0:
-        return &c->pid0;
     case PPC_SPR_PIR:
         return &c->pir;
     case PPC_SPR_HID1:
@@ -332,6 +340,40 @@ uint32_t ppc_spr_read(ppc_cpu_t *c, uint32_t spr, uint32_t *out)
     case PPC_SPR_DBERC0:
         *out = 0u; /* no external debug resources */
         return PPC_EXC_NONE;
+    /* The MMU (chapter 10). */
+    case PPC_SPR_MAS0:
+        *out = c->mas0;
+        return PPC_EXC_NONE;
+    case PPC_SPR_MAS1:
+        *out = c->mas1;
+        return PPC_EXC_NONE;
+    case PPC_SPR_MAS2:
+        *out = c->mas2;
+        return PPC_EXC_NONE;
+    case PPC_SPR_MAS3:
+        *out = c->mas3;
+        return PPC_EXC_NONE;
+    case PPC_SPR_MAS4:
+        *out = c->mas4;
+        return PPC_EXC_NONE;
+    case PPC_SPR_MAS6:
+        *out = c->mas6;
+        return PPC_EXC_NONE;
+    case PPC_SPR_MMUCSR0:
+        *out = 0u; /* TLB1_FI reads 0 once the invalidation is done */
+        return PPC_EXC_NONE;
+    case PPC_SPR_MMUCFG:
+        *out = PPC_MMUCFG;
+        return PPC_EXC_NONE;
+    case PPC_SPR_TLB0CFG:
+        *out = PPC_TLB0CFG;
+        return PPC_EXC_NONE;
+    case PPC_SPR_TLB1CFG:
+        *out = PPC_TLB1CFG;
+        return PPC_EXC_NONE;
+    case PPC_SPR_PID0:
+        *out = c->pid0;
+        return PPC_EXC_NONE;
     case PPC_SPR_TBL_W:
     case PPC_SPR_TBU_W:
         return PPC_ESR_PIL; /* write-only: "an invalid SPR reference" */
@@ -408,6 +450,43 @@ uint32_t ppc_spr_write(ppc_cpu_t *c, uint32_t spr, uint32_t v)
     case PPC_SPR_L1CSR0:
         c->l1csr0 = v;
         return PPC_EXC_NONE;
+    /*
+     * The MMU's. Writing a MAS register changes nothing until tlbwe;
+     * the bits a register does not implement read as zero (tables
+     * 10-9 to 10-14).
+     */
+    case PPC_SPR_MAS0:
+        c->mas0 = v & PPC_MAS0_IMPL;
+        return PPC_EXC_NONE;
+    case PPC_SPR_MAS1:
+        c->mas1 = v & PPC_MAS1_IMPL;
+        return PPC_EXC_NONE;
+    case PPC_SPR_MAS2:
+        c->mas2 = v & PPC_MAS2_IMPL;
+        return PPC_EXC_NONE;
+    case PPC_SPR_MAS3:
+        c->mas3 = v & PPC_MAS3_IMPL;
+        return PPC_EXC_NONE;
+    case PPC_SPR_MAS4:
+        c->mas4 = v & PPC_MAS4_IMPL;
+        return PPC_EXC_NONE;
+    case PPC_SPR_MAS6:
+        c->mas6 = v & PPC_MAS6_IMPL;
+        return PPC_EXC_NONE;
+    case PPC_SPR_MMUCSR0:
+        if ((v & PPC_MMUCSR0_TLB1_FI) != 0u) {
+            ppc_mmu_flash_invalidate(c);
+        }
+        return PPC_EXC_NONE;
+    /*
+     * 10.2.3: eight bits on this core, the rest read as zero. No refresh:
+     * the reset entry is shared (TID 0), so the PID cannot make the
+     * reset TLB stop being the identity, and a programmed TLB is looked
+     * up afresh on every access.
+     */
+    case PPC_SPR_PID0:
+        c->pid0 = v & 0xFFu;
+        return PPC_EXC_NONE;
     /* Read-only: a write is an invalid reference, 3.15. */
     case PPC_SPR_TBL_R:
     case PPC_SPR_TBU_R:
@@ -420,6 +499,9 @@ uint32_t ppc_spr_write(ppc_cpu_t *c, uint32_t spr, uint32_t v)
     case PPC_SPR_L1CFG0:
     case PPC_SPR_L1CFG1:
     case PPC_SPR_DBERC0:
+    case PPC_SPR_MMUCFG:
+    case PPC_SPR_TLB0CFG:
+    case PPC_SPR_TLB1CFG:
         return PPC_ESR_PIL;
     default:
         break;
@@ -608,12 +690,108 @@ bool ppc_cpu_take_irq(ppc_cpu_t *c)
 /* Memory                                                              */
 /* ------------------------------------------------------------------ */
 
+/*
+ * The two accesses under a programmed TLB, out of line: the flat path
+ * pays one test of mmu_on and nothing else.
+ *
+ * Byte by byte, each byte translated, because an unaligned access may
+ * cross into a page mapped elsewhere or not at all -- and the manual
+ * sets DEAR to "the effective address of a byte" of the faulting access,
+ * which is the first byte that faults. An aligned access cannot cross a
+ * page (the smallest is 1 KB), so it translates once.
+ */
+static EMU_COLD_NOINLINE ppc_exc_t load_xlate(ppc_cpu_t *c, uint32_t addr,
+                                              uint32_t size, uint32_t *out)
+{
+    uint32_t v = 0u;
+
+    if ((addr & (size - 1u)) == 0u) {
+        uint32_t pa;
+        const ppc_exc_t x = ppc_mmu_xlate(c, addr, PPC_ACC_READ, &pa, NULL);
+
+        if (x != PPC_EXC_NONE) {
+            return x;
+        }
+        if (emu_bus_read(c->bus, pa, size, &v) != EMU_FAULT_NONE) {
+            c->dear = addr;
+            return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
+        }
+        *out = v;
+        return PPC_EXC_NONE;
+    }
+    for (uint32_t i = 0u; i < size; i++) {
+        uint32_t pa;
+        uint32_t b = 0u;
+        const ppc_exc_t x = ppc_mmu_xlate(c, addr + i, PPC_ACC_READ, &pa, NULL);
+
+        if (x != PPC_EXC_NONE) {
+            return x;
+        }
+        if (emu_bus_read(c->bus, pa, 1u, &b) != EMU_FAULT_NONE) {
+            c->dear = addr + i;
+            return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
+        }
+        v = (v << 8) | (b & 0xFFu);
+    }
+    *out = v;
+    return PPC_EXC_NONE;
+}
+
+static EMU_COLD_NOINLINE ppc_exc_t store_xlate(ppc_cpu_t *c, uint32_t addr,
+                                               uint32_t size, uint32_t val)
+{
+    if ((addr & (size - 1u)) == 0u) {
+        uint32_t pa;
+        const ppc_exc_t x = ppc_mmu_xlate(c, addr, PPC_ACC_WRITE, &pa, NULL);
+
+        if (x != PPC_EXC_NONE) {
+            return x;
+        }
+        if (emu_bus_write(c->bus, pa, size, val) != EMU_FAULT_NONE) {
+            c->dear = addr;
+            return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
+        }
+        return PPC_EXC_NONE;
+    }
+    /*
+     * Every byte translated before any is written, so a store that
+     * faults half way leaves memory as it was -- the rule this tree
+     * holds RV32's accesses to, and the one the interrupt's "the
+     * instruction did not happen" implies.
+     */
+    uint32_t pa[4];
+
+    for (uint32_t i = 0u; i < size; i++) {
+        const ppc_exc_t x =
+            ppc_mmu_xlate(c, addr + i, PPC_ACC_WRITE, &pa[i], NULL);
+
+        if (x != PPC_EXC_NONE) {
+            return x;
+        }
+    }
+    for (uint32_t i = 0u; i < size; i++) {
+        const uint32_t b = (val >> (8u * (size - 1u - i))) & 0xFFu;
+
+        if (emu_bus_write(c->bus, pa[i], 1u, b) != EMU_FAULT_NONE) {
+            c->dear = addr + i;
+            return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
+        }
+    }
+    return PPC_EXC_NONE;
+}
+
 ppc_exc_t ppc_load(ppc_cpu_t *c, uint32_t addr, uint32_t size, bool sext,
                    uint32_t *out)
 {
     uint32_t v = 0u;
 
-    if (EMU_LIKELY((addr & (size - 1u)) == 0u)) {
+    if (EMU_UNLIKELY(c->mmu_on)) {
+        const ppc_exc_t x = load_xlate(c, addr, size, &v);
+
+        if (x != PPC_EXC_NONE) {
+            return x;
+        }
+    } else if (EMU_LIKELY((addr & (size - 1u)) == 0u)) {
         if (EMU_UNLIKELY(emu_bus_read(c->bus, addr, size, &v) != EMU_FAULT_NONE)) {
             c->dear = addr;
             return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
@@ -644,6 +822,9 @@ ppc_exc_t ppc_load(ppc_cpu_t *c, uint32_t addr, uint32_t size, bool sext,
 
 ppc_exc_t ppc_store(ppc_cpu_t *c, uint32_t addr, uint32_t size, uint32_t val)
 {
+    if (EMU_UNLIKELY(c->mmu_on)) {
+        return store_xlate(c, addr, size, val);
+    }
     if (EMU_LIKELY((addr & (size - 1u)) == 0u)) {
         if (EMU_UNLIKELY(emu_bus_write(c->bus, addr, size, val) != EMU_FAULT_NONE)) {
             c->dear = addr;

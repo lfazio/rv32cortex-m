@@ -272,6 +272,8 @@ int main(void)
     took("stwcx-odd", stub_resv_other((u32)g_mem, 1u, (u32)g_mem + 2u), 5u, ESR_ST);
     /* dcbz with the data cache off, which it is out of reset. */
     took("dcbz-cache-off", stub_dcbz((u32)g_mem), 5u, ESR_ST);
+    /* rA is 0 in the stub, so the address is rB alone. */
+    check("dcbz-dear", g_trap.dear, (u32)g_mem);
     /* An ordinary unaligned access is performed (3.4). */
     g_mem[4] = 0x11223344u;
     g_mem[5] = 0x55667788u;

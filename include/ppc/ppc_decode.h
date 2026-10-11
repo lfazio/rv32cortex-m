@@ -145,6 +145,8 @@ static EMU_ALWAYS_INLINE uint32_t ppc_se_sd4(uint16_t w, uint32_t size)
     X(B) X(BC) X(BCLR) X(BCCTR)                                                \
     X(SC) X(RFI) X(RFCI) X(RFDI) X(RFMCI) X(TW) X(WAIT)                        \
     X(MFMSR) X(MTMSR) X(WRTEE) X(MFSPR) X(MTSPR) X(NOP) X(PRIV_NOP)            \
+    /* the MMU */                                                              \
+    X(TLBRE) X(TLBWE) X(TLBSX) X(TLBIVAX)                                      \
     /* the embedded floating point unit, scalar */                             \
     X(EFSADD) X(EFSSUB) X(EFSMUL) X(EFSDIV) X(EFSMADD) X(EFSMSUB)              \
     X(EFSNMADD) X(EFSNMSUB) X(EFSABS) X(EFSNABS) X(EFSNEG) X(EFSSQRT)          \
@@ -506,6 +508,11 @@ enum {
     X(ICBI, "icbi", NOP, A_B)                                                  \
     X(DCBA, "dcba", NOP, A_B)                                                  \
     X(ICBT, "icbt", NOP, CT_A_B)                                               \
+    X(TLBRE, "tlbre", TLBRE, NONE)                                             \
+    X(TLBWE, "tlbwe", TLBWE, NONE)                                             \
+    X(TLBSX, "tlbsx", TLBSX, A_B)                                              \
+    X(TLBIVAX, "tlbivax", TLBIVAX, A_B)                                        \
+    X(TLBSYNC, "tlbsync", PRIV_NOP, NONE)                                      \
     /* the embedded floating point unit */                                     \
     X(EFSADD, "efsadd", EFSADD, D_A_B)                                         \
     X(EFSSUB, "efssub", EFSSUB, D_A_B)                                         \

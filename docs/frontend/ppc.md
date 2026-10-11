@@ -29,7 +29,7 @@ of them can catch is a shared misreading of the manual.
 | Interrupts: IVPR and IVOR0–15, 32–35; the four save/restore pairs (SRR, CSRR, DSRR, MCSRR); ESR; `sc`, `tw`, `rfi`/`rfci`/`rfdi`/`rfmci` | implemented |
 | Privilege: MSR[PR], SPR access by number, the user-readable SPRGs | implemented |
 | Time base, decrementer with auto-reload, TSR/TCR, HID0[TBEN] and [SEL_TBCLK], `wait` | implemented |
-| MMU: the TLBs, MAS registers, `tlb*`, address spaces | **not modelled** — addresses are physical |
+| MMU: the 32-entry TLB, MAS0–4 and 6, PID0, MMUCSR0, the `tlb*` instructions, address spaces, per-page VLE | implemented ([below](#the-mmu)); little-endian pages are not, and say so |
 | SPE and the vector half of the EFPU (`ev*`) | **not implemented** — SPE-unavailable while MSR[SPE] is clear, as the core does; an illegal-instruction program interrupt once it is set |
 | Classic floating point (`fadd` …) | not on this core |
 | Caches, the debug facility (IAC/DAC/DBCR do hold what is written) | not modelled |
@@ -48,8 +48,8 @@ VLE and classic Book E are different encodings of the *same bytes* —
 `0x48000009` is `bl` in Book E and a 16-bit `se_` form followed by
 something else in VLE — so which one a page holds has to be known
 before its first fetch. A real e200 takes it from the VLE attribute of
-the TLB entry. There is no TLB here, so it is core-wide and **comes
-from the image**:
+the TLB entry. Out of reset that is the one entry the model starts
+with ([the MMU](#the-mmu)), whose VLE bit **comes from the image**:
 
 - an **ELF** says: binutils marks a VLE segment with `PF_PPC_VLE`
   (`0x10000000` in `p_flags`), and the boot hook reads it;
@@ -57,7 +57,8 @@ from the image**:
 
 So the compiled guests are loaded as ELF and are Book E, and
 `isatest.bin` is a flat VLE image. The firmware embeds the ELF rather
-than a binary for the same reason (see below).
+than a binary for the same reason (see below). Once a guest programs
+the TLB, the encoding is each page's own.
 
 The loader had to learn two things for this: ELF headers are in the
 file's byte order, and it read them little-endian only ("machine 5120"
@@ -154,6 +155,129 @@ Things the manual settles and a reading of the mnemonics would not:
   nothing can then wake it.
 - The semihosted `write`/`exit` are answered **in supervisor state
   only**; an `sc` from problem state is the guest's, and goes to IVOR8.
+
+## The MMU
+
+`ppc_mmu.c`: chapter 10 as the e200z759n3 has it — one TLB of 32
+entries, fully associative, pages of 2^TSIZE KB from 1 KB to 4 GB, the
+MAS registers and the five TLB instructions. Every rule is the manual's,
+with its section beside it in the code; nothing here has met an e200.
+
+| | |
+|---|---|
+| TLB1, 32 entries; TLB0 null; MMUCFG, TLB0CFG, TLB1CFG as tables 10-3 and 10-5 | implemented |
+| MAS0–4, MAS6, PID0 (eight bits), MMUCSR0[TLB1_FI] | implemented; unimplemented bits read 0 |
+| `tlbre`, `tlbwe`, `tlbsx`, `tlbivax` (TLBSEL, INV_ALL, IPROT, EPN only), `tlbsync` (no-op) — all privileged | implemented |
+| the MAS registers after a TLB error, a `tlbsx` hit or miss, and `tlbre` (table 10-15) | implemented |
+| matching: V, TS against MSR[IS]/[DS], TID against PID0 with 0 shared, EPN on the page's bits | implemented |
+| UX/SX/UW/SW/UR/SR, as data storage and instruction storage interrupts | implemented |
+| DTLB and ITLB errors; ISI[MIF] for an odd halfword of a Book E page; ITLB[MIF] and ISI[BO] for a 32-bit VLE instruction straddling into a missing page or one of the other encoding | implemented |
+| the encoding per page, MAS2[VLE] | implemented |
+| WIMG | held, and does nothing: no cache is modelled |
+| E, little-endian pages | **not modelled**: MAS2[E] and MAS4[DE] read 0, so `tlbre` shows the guest every page is big-endian |
+| cache instructions taking TLB errors (`dcbf`, `dcbst`, `icbi`, `dcbt`, …) | no: they stay no-ops; `dcbz` is translated, because it stores |
+
+**Where the model is not the manual**, each written down where it is
+made:
+
+- **The reset entry.** The manual's entry 0 is one 4 KB page at the reset
+  base, which a part's boot ROM extends before user code runs. There is
+  no ROM here, so entry 0 is the whole 4 GB, identity, every permission
+  — with the manual's other attributes: valid, IPROT, TS 0, TID 0,
+  cache-inhibited, and the image's encoding. A guest that programs the
+  TLB overwrites it as it would the ROM's entries.
+- **A multi-hit** is "a programming error" with an undefined result; the
+  lowest-numbered entry wins. A TSIZE above 22 is undefined and matches
+  nothing. MAS0[TLBSEL] is "ignored", and reads back as written.
+- **A misaligned access across a page** is translated byte by byte, and
+  a store translates every byte before writing any. 3.4 lets the core
+  write the first page and redo it; this does not. DEAR is the first byte
+  of the page that faulted, which 7.7.14's "a byte of the access" allows.
+- **Branch targets on the identity map.** 3.3: `bclr`, `bcctr` and the
+  `rfi` family keep bit 62 on this core, and an odd halfword on a Book E
+  page is ISI[MIF]. Under a programmed TLB that is what happens. With the
+  reset TLB the whole map is one encoding, and a Book E image still has
+  its targets masked to a word, as before — only a broken Book E program
+  can tell, and doing better would put a check on both backends' branch
+  paths.
+
+**What the identity map pays.** `mmu_on` is true unless the TLB is in its
+reset state with MSR[IS] and [DS] clear, and only `ppc_mmu_refresh`
+writes it — after a TLB write, an MSR change and every interrupt. The
+interpreter reads it into a local once per stretch and branches on that
+to an out-of-line translating fetch; a change sets `irq_dirty`, which
+ends the stretch. Loads and stores test the flag. CoreMark, identical
+retired counts and CRCs against the commit before:
+
+| | before | after | |
+|---|---|---|---|
+| x86-64 interpreter, callgrind | 1,473,600,779 | 1,462,832,203 | −0.73% |
+| x86-64 `--jit`, callgrind | 263,305,060 | 263,984,261 | +0.26%, all in the dispatcher |
+| F746 interpreter, three layouts | 224.05 / 231.50 / 225.15 | 225.50 / 230.95 / 223.77 | host cycles an instruction |
+
+The JIT's share is reading `blocked`, which for this frontend was NULL:
+two or three host instructions a block entry. "Three layouts" is the
+same source built with `-falign-functions` default, 32 and 64, because
+this part moves by up to 10% with placement alone.
+
+**The first version cost the F746 10%, and x86-64 could not see it.** It
+moved the inner loop into a `stretch()` function taking `&reason` and
+`&stop`, inlined once per mode: callgrind said +0.10%, the board said
+224–231 became 242–256 across the same three layouts. Every guess was
+wrong, each by measurement: the MMU's tests compiled out changed the
+board run by under 0.01%; the TLB code LTO had inlined into the
+interpreter's switch (1.2 KB, kept out of line now anyway) was not it;
+padding the old `ppc_cpu_t` to the new size, which moves guest RAM by
+the same 416 bytes, reproduced the old figure to the digit. Bisecting by
+file did it in two steps — everything new except `ppc_interp.c` ran at
+216.96 — and putting the loop back in its old shape, inline with a
+`goto out`, gave the figures in the table. On the Cortex-M7 the
+difference is register allocation in the hottest loop; an instruction
+count on another architecture has no way to show that.
+
+**The JIT stands aside under a programmed TLB.** `blocked` points at
+`mmu_on`: the emitted code reaches RAM through a window that does not
+translate, and the translator fetches physical bytes. The TLB
+instructions end a block, so the switch happens between blocks.
+`ppc-mmu --jit` interprets 4,496 of its 25,427 instructions — everything
+after the start-up programs the TLB. Lifting it needs three things: a
+side-effect-free lookup for the translator's fetch, PID0 and MSR[IS]
+in the block's context and TLB writes in its generation, and no inline
+window while translating — or one that translates.
+
+**How it was checked.** `ppc-mmu` is 150 checks whose expectations are
+the manual's tables or bytes the guest wrote to physical memory; two
+are marked as the model's choices (the reset entry, MAS2[E]). Then 37
+single-point defects — the TS and TID compares, the page mask, the RPN
+mask, each permission, each MAS update, INV_ALL, IPROT, the MIF and BO
+cases, VLEMI on an ITLB error, the per-byte split of a crossing access,
+the loop choice, the JIT gate, the decoder's `tlbsx` address — each
+fails on the check named for it; two end the run instead, which ctest
+sees by the missing `PPC-MMU-END`.
+
+One survived at first: the line that sets `irq_dirty` when translation
+turns on. Every test reached its first translated fetch through an
+`mtmsr`, an `rfi` or an interrupt, and each of those ends the stretch
+for reasons of its own. The case that needs the line is a start-up that
+writes the TLB and branches straight into the new mapping — and the
+first version of that check failed against the *correct* emulator,
+because the 4 GB reset entry still covered the target and the
+lowest-numbered entry wins. It lives in the start-up now, after entry 0
+is overwritten, and fails under the interpreter alone: under `--jit`
+every interpreter entry after the declined `tlbwe` reads the flag
+afresh. Reading it once per *run* instead of once per stretch is caught
+the same way.
+
+Two defects came out of the decoder work beside it. **`dcbz` ignored
+rB** for the life of the frontend: its decode never set the indexed
+flag, so the address was `(rA|0) + 0`. The only test used `dcbz 0, r3`
+and checked the vector and ESR — never DEAR, which said 0 where it
+should have said the buffer. And `check.py` had the TLB instructions
+listed as "the MMU, which this model does not have"; taking them out
+showed objdump naming XO 978 `tlbld` — the 603e's — under the Book E
+option set, which the script's first-name-wins rule then filed as not
+on this core. It maps that name to `tlbwe` now, and the reserved fields
+of all five are held to 3.16.4.
 
 ## The embedded floating-point unit
 
@@ -274,7 +398,8 @@ handle VLE fine. They are built `-m32 -mbig-endian -mcpu=8540
 |---|---|
 | `isatest.bin` | hand-written **VLE**: the 16-bit forms, the `e_` immediates, the multiple moves, a VLE-only illegal encoding. Exit status is its failure count, and it must print `PPC-ISATEST-END` |
 | `ppc-alu` | compiled C against values from Python's integers (`alu_want.py`): the forms a compiler reaches for unasked — `addc`/`adde` chains, `srawi`+`addze`, `rlwinm`/`rlwimi`, `isel`, update forms, `lmw`/`stmw`, `bctr` through a jump table |
-| `ppc-sys` | the system level, 183 checks with the manual's section beside each: interrupts, privilege, SPRs, reservations, the timers, `wait`, both FP interrupts |
+| `ppc-sys` | the system level, 184 checks with the manual's section beside each: interrupts, privilege, SPRs, reservations, the timers, `wait`, both FP interrupts |
+| `ppc-mmu` | the MMU, 150 checks: the TLB programmed as an MPC57xx start-up does, then translation, address spaces, PIDs, permissions, every TLB interrupt and the MAS registers it leaves, per-page VLE, invalidation |
 | `ppc-park` | a `wait` nothing may end: the run must stop there, and the line after it must not print |
 | `ppc-coremark`, `ppc-crypto` | the shared benchmarks |
 
@@ -305,6 +430,7 @@ will execute without complaint.
 | `efpu.py` | exact rational arithmetic |
 | `ppc-alu` | Python's integers, through a compiler |
 | `ppc-sys` | the manual, section by section |
+| `ppc-mmu` | chapter 10 and tables 7-13 to 7-24, and memory the guest wrote itself |
 | `ppc-coremark`, `ppc-crypto` | their own checksums — CoreMark's CRCs, FIPS vectors — identical across backends and to RV32's |
 | `tests/unit/test_ppc.c` | hand-assembled words |
 
@@ -324,6 +450,7 @@ seeds agree, as do 100,000 from an earlier tree.
 | 44 in the translator and the interpreter, against `cases.py` | 44 |
 | 30 in the FP unit, against `efpu.py` | 28; the other two change nothing observable |
 | 22 in the system level, against `ppc-sys` | 21; the other wakes a `wait` with nothing pending |
+| 37 in the MMU, the fetch path and the JIT's gate, against `ppc-mmu` | 37, after one was found surviving (below) |
 | 8 in the SETPC rule of the shared optimiser, against the unit tests | 8 |
 
 Several first passed everything, and the directed cases exist because
@@ -348,16 +475,17 @@ cmake -B build/f746-ppc -DEMU_PLATFORM=stm32f746 \
 cmake --build build/f746-ppc --target flash
 ```
 
-`PPC_GUEST` is `alu`, `sys`, `coremark` or `crypto`. The image is
+`PPC_GUEST` is `alu`, `sys`, `mmu`, `coremark` or `crypto`. The image is
 embedded as a **stripped ELF**, not a binary, because the encoding is a
 flag on its segment that a binary has nowhere to carry; stripped,
 because the debug sections were four fifths of the file. The guests take
 their stack from the loader rather than from the link script, since the
 top of RAM is a megabyte on a host and a fifth of that here.
 
-Run on the Nucleo-F746ZG, on both backends: `alu` 68 checks, `sys` 183,
-CoreMark `crcfinal 0x65c5` and crypto `0x60ae7a25`, each with the
-retired count the host gives — and 600 generated cases, line for line
+Run on the Nucleo-F746ZG, on both backends: `alu` 68 checks, `sys` 184,
+`mmu` 150, CoreMark `crcfinal 0x65c5` and crypto `0x60ae7a25`, each with
+the retired count the host gives — `mmu` with the same 4,496
+instructions falling back under the JIT — and 600 generated cases, line for line
 identical to the host under the Thumb-2 JIT.
 
 That last run is what found a defect in the *shared* JIT framework: a
@@ -416,8 +544,10 @@ existing rather than on the frontend being compiled in.
   choice — a negative value converted to unsigned, for one — the code
   documents the choice it made, and the checker agreeing there is two
   readers of one sentence.
-- **No MMU.** A guest that programs the TLB cannot run; MPC57xx start-up
-  code does.
+- **No translated block runs under a programmed TLB**, so a guest that
+  programs it — as MPC57xx start-up code does — is interpreted from
+  there on. See [the MMU](#the-mmu) for what lifting that needs.
+- **Little-endian pages** (MAS2[E]) are refused rather than modelled.
 - **No VLE compiler**, so compiled code is Book E and VLE is covered by
   the decoder sweeps, the generated cases and hand-written assembly. An
   NXP S32DS or CodeWarrior build would do for VLE what CC-RH did for

@@ -61,6 +61,7 @@ extern "C" {
 #define PPC_ESR_PPR (1u << 26)   /* bit  5: privileged instruction  */
 #define PPC_ESR_PTR (1u << 25)   /* bit  6: trap                    */
 #define PPC_ESR_ST (1u << 23)    /* bit  8: the access was a store  */
+#define PPC_ESR_BO (1u << 17)    /* bit 14: byte ordering/mismatch  */
 #define PPC_ESR_SPE (1u << 7)    /* bit 24: SPE/EFPU operation      */
 #define PPC_ESR_VLEMI (1u << 5)  /* bit 26: a VLE instruction       */
 #define PPC_ESR_MIF (1u << 1)    /* bit 30: misaligned fetch        */
@@ -134,6 +135,17 @@ extern "C" {
 #define PPC_SPR_SRR0 26u
 #define PPC_SPR_SRR1 27u
 #define PPC_SPR_PID0 48u
+/* The MMU's, chapter 10: all privileged (0x10 set in each). */
+#define PPC_SPR_MAS0 624u
+#define PPC_SPR_MAS1 625u
+#define PPC_SPR_MAS2 626u
+#define PPC_SPR_MAS3 627u
+#define PPC_SPR_MAS4 628u
+#define PPC_SPR_MAS6 630u /* there is no MAS5 on this core */
+#define PPC_SPR_TLB0CFG 688u
+#define PPC_SPR_TLB1CFG 689u
+#define PPC_SPR_MMUCSR0 1012u
+#define PPC_SPR_MMUCFG 1015u
 #define PPC_SPR_DECAR 54u
 #define PPC_SPR_CSRR0 58u
 #define PPC_SPR_CSRR1 59u
@@ -251,6 +263,91 @@ typedef enum {
 
 /* No exception pending. Distinct from every valid IVOR index. */
 #define PPC_EXC_NONE 0xFFFFFFFFu
+
+/* ------------------------------------------------------------------ */
+/* The MMU (manual chapter 10)                                         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * One TLB of 32 entries, fully associative -- TLB1 in the EIS's terms;
+ * TLB0 is null. Field positions below are values, converted from the
+ * manual's numbering, where bit 0 is the most significant.
+ */
+#define PPC_TLB_ENTRIES 32u
+
+#define PPC_MAS0_TLBSEL 0x30000000u /* bits 2:3, "should be 01"     */
+#define PPC_MAS0_TLBSEL1 0x10000000u
+#define PPC_MAS0_ESEL_SHIFT 16      /* bits 11:15                  */
+#define PPC_MAS0_ESEL 0x001F0000u
+#define PPC_MAS0_NV 0x0000001Fu     /* bits 27:31, next victim      */
+#define PPC_MAS0_IMPL (PPC_MAS0_TLBSEL | PPC_MAS0_ESEL | PPC_MAS0_NV)
+
+#define PPC_MAS1_V 0x80000000u      /* bit 0                        */
+#define PPC_MAS1_IPROT 0x40000000u  /* bit 1                        */
+#define PPC_MAS1_TID_SHIFT 16       /* bits 8:15                   */
+#define PPC_MAS1_TID 0x00FF0000u
+#define PPC_MAS1_TS 0x00001000u     /* bit 19                       */
+#define PPC_MAS1_TSIZE_SHIFT 7      /* bits 20:24                  */
+#define PPC_MAS1_TSIZE 0x00000F80u
+#define PPC_MAS1_IMPL                                                          \
+    (PPC_MAS1_V | PPC_MAS1_IPROT | PPC_MAS1_TID | PPC_MAS1_TS | PPC_MAS1_TSIZE)
+
+#define PPC_MAS2_EPN 0xFFFFFC00u    /* bits 0:21                    */
+#define PPC_MAS2_VLE 0x00000020u    /* bit 26                       */
+#define PPC_MAS2_WIMGE 0x0000001Fu  /* bits 27:31                   */
+#define PPC_MAS2_I 0x00000008u
+#define PPC_MAS2_E 0x00000001u
+/*
+ * E -- a little-endian page -- is not modelled, and reads as zero so
+ * that a guest can see it was refused: tlbre shows every page
+ * big-endian. Accepting it and ignoring it would be a silent wrong
+ * answer. See docs/frontend/ppc.md.
+ */
+#define PPC_MAS2_IMPL                                                          \
+    (PPC_MAS2_EPN | PPC_MAS2_VLE | (PPC_MAS2_WIMGE & ~PPC_MAS2_E))
+
+#define PPC_MAS3_RPN 0xFFFFFC00u    /* bits 0:21                    */
+#define PPC_MAS3_U03 0x000003C0u    /* bits 22:25                   */
+#define PPC_MAS3_UX 0x00000020u     /* bit 26                       */
+#define PPC_MAS3_SX 0x00000010u
+#define PPC_MAS3_UW 0x00000008u
+#define PPC_MAS3_SW 0x00000004u
+#define PPC_MAS3_UR 0x00000002u
+#define PPC_MAS3_SR 0x00000001u     /* bit 31                       */
+#define PPC_MAS3_PERMS 0x0000003Fu
+#define PPC_MAS3_IMPL (PPC_MAS3_RPN | PPC_MAS3_U03 | PPC_MAS3_PERMS)
+
+#define PPC_MAS4_TLBSELD 0x30000000u /* bits 2:3                    */
+#define PPC_MAS4_TIDSELD 0x00030000u /* bits 14:15; 3 = TIDZ        */
+#define PPC_MAS4_TIDSELD_SHIFT 16
+#define PPC_MAS4_TSIZED 0x00000F80u  /* bits 20:24                  */
+#define PPC_MAS4_VLED 0x00000020u    /* bit 26                      */
+#define PPC_MAS4_DWIMGE 0x0000001Fu  /* bits 27:31                  */
+#define PPC_MAS4_IMPL                                                          \
+    (PPC_MAS4_TLBSELD | PPC_MAS4_TIDSELD | PPC_MAS4_TSIZED | PPC_MAS4_VLED |    \
+     (PPC_MAS4_DWIMGE & ~PPC_MAS2_E)) /* DE: as MAS2[E] */
+
+#define PPC_MAS6_SPID_SHIFT 16       /* bits 8:15                   */
+#define PPC_MAS6_SPID 0x00FF0000u
+#define PPC_MAS6_SAS 0x00000001u     /* bit 31                      */
+#define PPC_MAS6_IMPL (PPC_MAS6_SPID | PPC_MAS6_SAS)
+
+#define PPC_MMUCSR0_TLB1_FI 0x00000002u /* bit 30                   */
+
+/*
+ * The read-only configuration, from tables 10-3 and 10-5. MMUCFG:
+ * RASIZE 32 (bits 8:14), one PID register (NPIDS, 17:20), PIDSIZE 7 --
+ * eight bits -- (21:25), NTLBS 01 (28:29), MAVN 0. TLB1CFG: ASSOC 0x20,
+ * MINSIZE 0, MAXSIZE 0xB, IPROT, AVAIL and P2PSA set, NENTRY 0x20.
+ */
+#define PPC_MMUCFG ((32u << 17) | (1u << 11) | (7u << 6) | (1u << 2))
+#define PPC_TLB0CFG 0u
+#define PPC_TLB1CFG                                                            \
+    ((0x20u << 24) | (0xBu << 16) | (1u << 15) | (1u << 14) | (1u << 13) |     \
+     0x020u)
+
+/* TSIZE 0 is 1 KB, each step doubles, 22 is 4 GB; 23..31 are undefined. */
+#define PPC_TSIZE_MAX 22u
 
 typedef uint32_t ppc_exc_t;
 

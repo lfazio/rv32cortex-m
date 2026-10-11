@@ -153,6 +153,8 @@ static void ppc_ops_boot(emu_cpu_t *cpu, const emu_boot_info_t *info)
      * every start and every reload, after the reset that preceded it.
      */
     c->vle = image_is_vle(info->image, info->image_size);
+    /* The reset TLB entry carries the encoding too (MAS2[VLE]). */
+    ppc_mmu_reset(c);
     c->jit_ctx = ppc_cpu_ctx(c);
 }
 

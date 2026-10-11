@@ -2825,7 +2825,47 @@ session, and every one of them recurred:
   the morning's figures to the digit, which is what made the comparison
   mean anything.
 
-- **An out-parameter on a hot function is not free, and neither is a
+- **A test of "choose again when this changes" needs the change to be
+  the only thing that happens.** The PowerPC interpreter picks its
+  identity or translating loop where a stretch begins, and a TLB change
+  sets `irq_dirty` to end the stretch. Deleting that line passed all 149
+  checks of the MMU guest on both backends: every test reached its first
+  translated fetch through an `mtmsr`, an `rfi` or an interrupt, and
+  each of those ends a stretch for reasons of its own. The case that
+  needs the line -- write the TLB, branch straight into the new mapping
+  -- then failed against the *correct* emulator in its first version,
+  because the 4 GB reset entry still covered the target and the
+  lowest-numbered entry wins. **In a TLB test, a mapping is invisible
+  while a lower-numbered entry covers its address.**
+
+  Two more from the same work, both the weak-test rule again. `dcbz`
+  had ignored rB since it was written -- its decode never set the
+  indexed flag -- and its one test, `dcbz 0, r3`, checked the vector
+  and ESR and not DEAR, which said 0. **A test of a fault checks the
+  address, not just that it faulted.** And `check.py` filed the TLB
+  instructions as "the MMU this model does not have"; with that gone,
+  objdump named XO 978 `tlbld` (the 603e's) under the Book E options and
+  the first-name-wins rule threw it away. **An oracle's exception list
+  is a claim about the model, and goes stale with it.**
+
+- **An instruction count on x86-64 cannot see register allocation on
+  the Cortex-M7, and the interpreter's loop is where that lives.**
+  Moving PowerPC's inner loop into a `stretch()` helper taking `&reason`
+  and `&stop` -- to inline it once per MMU mode -- measured +0.10% by
+  callgrind and **+10% on the F746**, 224-231 against 242-256 host
+  cycles an instruction across three `-falign-functions` layouts each,
+  so not placement. Three plausible causes were each measured and
+  dropped: the MMU's own tests compiled out moved the board run by under
+  0.01%; 1.2 KB of TLB code LTO had inlined into the switch was not it;
+  padding the old struct so guest RAM moved by the same 416 bytes
+  reproduced the old figure to the digit. Bisecting by *file* found it
+  in two runs -- everything but `ppc_interp.c` was 216.96 -- and the
+  loop back in its old shape is 223.8-231.0. Two rules: **a change to
+  an interpreter's loop is measured on the board**, whatever callgrind
+  says; and **when the ratios of different binaries agree to two
+  decimals, read the raw cycle counts** -- 253.11 twice was 3,080,576,778
+  against 3,080,582,934, which is a result, not an instrument fault.
+
 - **An out-parameter on a hot function is not free, and neither is a
   helper the compiler inlined into it.** A fault that crosses a page
   boundary has to report the second page's address, and the obvious

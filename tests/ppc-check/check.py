@@ -94,9 +94,9 @@ NOT_ON_THIS_CORE = {
     "mfapidi",
     # EFPU2 is single precision; efd* is the double-precision unit
     "efscfd",
-    # the MMU, which this model does not have; see docs/frontend/ppc.md
-    "tlbre", "tlbwe", "tlbsx", "tlbivax", "tlbsync", "tlbia", "tlbie",
-    "tlbld", "tlbli",
+    # other MMUs' TLB instructions: this core has tlbre, tlbwe, tlbsx,
+    # tlbivax and tlbsync (chapter 10), and none of these
+    "tlbia", "tlbie", "tlbli",
     # other cores'
     "eciwx", "ecowx", "mfrtcu", "mtdbatl", "mfdbatl",
     "dcbtls", "dcbtstls", "dcblc", "icbtls", "icblc", "dcbzl",
@@ -107,6 +107,15 @@ NOT_ON_THIS_CORE = {
     # e500mc's indexed-with-decoration forms
     "lhdx", "lwdx", "lddx", "sthdx", "stwdx", "stddx", "lfddx", "stfddx",
 }
+
+
+#
+# One encoding, two cores' names, and which objdump prints depends on the
+# option set: XO 978 is the 603e's tlbld in the booke table and this
+# core's tlbwe in e500's. The first set to name a word wins, so the
+# booke one would hide every tlbwe.
+#
+OTHER_CORES_NAME = {"tlbld": "tlbwe"}
 
 
 def not_on_this_core(name):
@@ -163,6 +172,10 @@ def executed_invalid(mn, w, t):
 # the z bits of BO. Each entry is the field and the form it is in.
 #
 RESERVED_HERE = {
+    # 10.5: the TLB instructions' unused fields are 0 in every diagram,
+    # including bit 31 -- there is no tlbsx. on this core.
+    "tlbre": "bits 6:20", "tlbwe": "bits 6:20", "tlbsx": "bits 6:10, 31",
+    "tlbsx.": "bit 31", "tlbivax": "bits 6:10, 31",
     "e_mcrf": "bits 9:10 and 14:20, as mcrf",
     "mcrf": "bits 9:10 and 14:20",
     "mbar": "MO other than 0, 1 or 2 is illegal on this core (3.5)",
@@ -455,7 +468,7 @@ def check(label, items, tool, tmp, verbose):
     us_ex = {}
     for i, ((w, n, m), (t, f)) in enumerate(zip(items, res)):
         ours = not t.startswith(".") or f.startswith("spe")
-        theirs = names[i]
+        theirs = OTHER_CORES_NAME.get(names[i], names[i])
         if theirs is not None and (not_on_this_core(theirs)
                                    or classic_fp(w, mode)):
             theirs = None

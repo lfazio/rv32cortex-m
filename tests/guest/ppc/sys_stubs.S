@@ -93,12 +93,14 @@ sys_trap:
 	cmpwi	%r3, 0
 	bne	1f
 
-	/* Abandon the stub: back to its caller, in supervisor state, with
-	 * the interrupt's number where its result would have been. */
+	/* Abandon the stub: back to its caller, in supervisor state and
+	 * address space 0, with the interrupt's number where its result
+	 * would have been. mmu.c faults from address space 1 on purpose. */
 	mflr	%r3
 	mtspr	SPR_SRR0, %r3
 	mfspr	%r3, SPR_SRR1
 	rlwinm	%r3, %r3, 0, 18, 16	/* clear PR */
+	rlwinm	%r3, %r3, 0, 28, 25	/* clear IS and DS */
 	mtspr	SPR_SRR1, %r3
 	lwz	%r3, T_IVOR(%r4)
 	mfspr	%r4, SPR_SPRG1

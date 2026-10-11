@@ -173,6 +173,37 @@ typedef struct ppc_cpu {
     emu_trace_fn trace;
     void *trace_user;
 #endif
+
+    /*
+     * The MMU (ppc_mmu.c), at the end because almost no guest touches
+     * it: an access tests `mmu_on` and nothing else unless a guest has
+     * programmed the TLB.
+     *
+     * Entries are kept as the MAS1/MAS2/MAS3 words tlbwe wrote, masked
+     * to what is implemented, so tlbre gives back exactly what is there.
+     */
+    struct {
+        uint32_t mas1, mas2, mas3;
+    } tlb[PPC_TLB_ENTRIES];
+    uint32_t mas0, mas1, mas2, mas3, mas4, mas6;
+
+    /*
+     * False while translation is the identity with every permission:
+     * the TLB holds only the entry this model loads at reset, and
+     * MSR[IS] and MSR[DS] are both 0, which that entry's TS needs to
+     * match. Recomputed by ppc_mmu_refresh wherever the TLB or MSR
+     * changes, which sets irq_dirty when it moves -- that is what sends
+     * the interpreter to the loop that translates. The JIT's `blocked`
+     * points here: its inlined accesses do not translate.
+     */
+    bool mmu_on;
+    bool tlb_default; /* the TLB is exactly its reset state */
+    /*
+     * Entry 0's MAS2 at reset, which carries the image's VLE choice. Kept
+     * rather than derived from `vle`, because under a programmed TLB
+     * `vle` follows whichever page is executing.
+     */
+    uint32_t tlb_reset_mas2;
 } ppc_cpu_t;
 
 /* ------------------------------------------------------------------ */
@@ -286,6 +317,42 @@ bool ppc_cpu_take_irq(ppc_cpu_t *c);
 /* Memory                                                              */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* The MMU (ppc_mmu.c)                                                 */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    PPC_ACC_READ,
+    PPC_ACC_WRITE,
+    PPC_ACC_EXEC,
+} ppc_acc_t;
+
+/*
+ * Reset state: entry 0 the whole 4 GB, every other entry invalid. See
+ * ppc_mmu.c for why that, and not the manual's 4 KB page.
+ */
+void ppc_mmu_reset(ppc_cpu_t *c);
+
+/* Recompute mmu_on. Called wherever the TLB or MSR changes. */
+void ppc_mmu_refresh(ppc_cpu_t *c);
+
+/*
+ * Effective to real. PPC_EXC_NONE, or the interrupt to take -- data or
+ * instruction TLB error on a miss, data or instruction storage on a
+ * permission -- with DEAR and the MAS registers already updated as the
+ * manual says that interrupt leaves them. `vle` (may be NULL) is the
+ * page's VLE attribute.
+ */
+ppc_exc_t ppc_mmu_xlate(ppc_cpu_t *c, uint32_t ea, ppc_acc_t acc, uint32_t *pa,
+                        bool *vle);
+
+/* The TLB instructions, after the privilege check. */
+void ppc_tlbre(ppc_cpu_t *c);
+void ppc_tlbwe(ppc_cpu_t *c);
+void ppc_tlbsx(ppc_cpu_t *c, uint32_t ea);
+void ppc_tlbivax(ppc_cpu_t *c, uint32_t ea);
+void ppc_mmu_flash_invalidate(ppc_cpu_t *c); /* MMUCSR0[TLB1_FI] */
+
 /*
  * Data accesses. Unaligned ones are performed, as the e200 does in
  * hardware (manual 3.4) -- only the reservation, multiple and context
@@ -297,6 +364,11 @@ bool ppc_cpu_take_irq(ppc_cpu_t *c);
  * only place that knows whether an access composes bytes (RAM) or takes
  * a value (MMIO, passthrough). A frontend that swapped on top of that
  * would double-swap RAM and corrupt every peripheral register.
+ *
+ * Under a programmed TLB the address is translated first, and the
+ * result is PPC_EXC_NONE or the interrupt the access raises: data
+ * storage for a bus error or a permission, data TLB error for a miss.
+ * DEAR is set either way, and the caller raises it with ESR.
  */
 ppc_exc_t ppc_load(ppc_cpu_t *c, uint32_t addr, uint32_t size, bool sext,
                    uint32_t *out);

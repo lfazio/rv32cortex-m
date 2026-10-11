@@ -93,6 +93,7 @@ static void ppc_gdb_reg_set(emu_cpu_t *cpu, unsigned n, uint32_t v)
          */
         c->msr = v;
         c->irq_dirty = true;
+        ppc_mmu_refresh(c); /* IS and DS choose the address space */
         break;
     case PPC_GDB_CR:
         c->cr = v;

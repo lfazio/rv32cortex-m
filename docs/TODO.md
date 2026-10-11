@@ -25,19 +25,13 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
         FreeRTOS host needs locks on G4MH's shared devices and the
         reservation table, per-core JIT state, and a serialised console
         first ([os.md](os.md#toward-an-smp-host)).
-      - [ ] **The F446 and the N6 have built and not run** under
-        FreeRTOS. The N6's `flash` target had never worked: without
-        `VERBATIM` the echo's "(BOOT1)" was a `/bin/sh` syntax error,
-        and a second load hung in the signing tool's overwrite prompt.
-        Both are fixed and it takes `EMU_PROBE` now. Loaded that way,
-        **the firmware from before FreeRTOS is as silent as the one
-        after** -- "File download complete", "Start operation achieved
-        successfully", and nothing on the console -- so the question is
-        the board or the load path, not the port. CLAUDE.md records
-        this board going quiet after repeated attaches until replugged,
-        and the path that last booted Linux on it was CubeIDE's launch
-        (`emu-stm32n6.launch`, untracked). Replug, then load the old
-        firmware first: if it speaks, the new one is the question.
+      - [x] **The N6 runs under FreeRTOS** -- reported working by the
+        user on the board (2026-10-11), after the `flash` target was
+        fixed: without `VERBATIM` the echo's "(BOOT1)" was a `/bin/sh`
+        syntax error, a second load hung in the signing tool's overwrite
+        prompt, and it takes `EMU_PROBE` now. The silence seen here
+        before that was the load path and the probe, not the port.
+      - [ ] **The F446 has built and not run** under FreeRTOS.
       - [ ] **The F746's hot path is at the mercy of the linker.**
         Linking the kernel moved the emulator's hot functions 456 bytes
         and CoreMark went 140.0 → 152.8 cycles an instruction at 32 KB
@@ -45,6 +39,16 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
         same binary it is 152.0, so the kernel's own cost is 0.5% and
         the rest is placement. ITCM (16 KiB, mostly free) or alignment,
         measured as [stm32n6/itcm.md](stm32n6/itcm.md) was.
+
+        **ITCM is not a drop-in, measured.** Putting PowerPC's `ppc_run`,
+        `ppc_load` and `ppc_store` there by section attribute gave 266.86
+        host cycles an instruction against 253.11 from flash in one
+        build, and in two others -- the commit before, and the same tree
+        with two tests compiled out -- CoreMark never finished: the core
+        was running (DWT_PCSR in `ppc_load` and `ppc_run`, CFSR 0) and
+        printed nothing for minutes. Unexplained; find out why before
+        trusting anything placed there. Layout spread itself, for that
+        guest: 224-231 across `-falign-functions` default/32/64.
 
 - [x] **The RV32 translator declined the B extension, and that was
       nearly all of what the JIT still interpreted. Lowered.** Counted
@@ -1069,8 +1073,8 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
         per-architecture order and not a choice.
   - [ ] `ppc_pairstats.c` — the histogram that answers "which
         instruction next" with a measurement instead of an opinion.
-  - [ ] **An MMU.** Addresses are physical; real MPC57xx start-up code
-        programs the TLB before anything else.
+  - [x] **An MMU.** Chapter 10, with a guest that programs the TLB as
+        MPC57xx start-up code does; see the entry below.
   - [ ] **Anything to compare it with.** No e200 is attached and no
         other emulator is consulted, so a shared misreading of the
         manual is invisible to every check there is.
@@ -1390,55 +1394,34 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
 - [ ] Architecture a serial protocol over UDP/TCP similar to PCIe so a PC host running the emualtor can access the rh850u2b6's peripherals. This is a big task, but it would be a good demonstration of the emulator's capabilities. First over serial, then maybe over USB or rela ethernet device. This is a big task, but it would be a good demonstration of the emulator's capabilities.
 - [ ] Implement an emulated GTM device for the stm32f746zg/stm32n657 to demonstrate the emulator's capabilities.
 - [ ] Implement TAUD peripheral in rh850u2b6 with the remaining stm32 timer availble.
-- [ ] **PowerPC: the e200z7 MMU. Designed from the manual, not
-      started** -- parked for the FreeRTOS work. What the reading of
-      `docs/ppc/e200z759CRM.pdf` chapter 10 and section 7.7 settled:
-
-      - **One TLB, TLB1: 32 entries, fully associative**, 23 page sizes
-        (TSIZE 0 = 1 KB .. 22 = 4 GB, every power of two). TLB0 is null.
-        Entry: V, IPROT, TID[0:7], TS, TSIZE, EPN/RPN[0:21], VLE, WIMGE,
-        U0-U3, UX/SX/UW/SW/UR/SR. Match: V, TS = MSR[IS] or [DS], TID =
-        PID0 or 0, EPN on the page's bits. A multi-hit is a programming
-        error with an undefined result; lowest index wins is a choice to
-        state, not a fact.
-      - **SPRs**: MAS0 624, MAS1 625, MAS2 626, MAS3 627, MAS4 628, MAS6
-        630 (no MAS5), PID0 48 (8 bits), MMUCSR0 1012 (TLB1_FI, IPROT
-        survives it), MMUCFG 1015, TLB0CFG 688 (zero), TLB1CFG 689 (ASSOC
-        0x20, MINSIZE 0, MAXSIZE 0xB, IPROT/AVAIL/P2PSA set, NENTRY
-        0x20). `tlbre`, `tlbwe`, `tlbsx`, `tlbivax` (EA bit 28 TLBSEL,
-        bit 29 INV_ALL, matches on EPN only, ignores AS and TID) and
-        `tlbsync` (a no-op), all privileged.
-      - **MAS updates are table 10-15**: on a TLB error MAS0 takes
-        TLBSELD and ESEL = NV; MAS1 V=1, IPROT=0, TID from TIDSELD, TS
-        from MSR, TSIZE = TSIZED; MAS2 the EPN and MAS4's VWIMGE; MAS3
-        zeroed; MAS6 SPID = PID0, SAS = MSR. `tlbsx` hit fills all of
-        MAS0-3 from the entry; a miss clears V and loads the defaults.
-      - **Interrupts**: DTLB error IVOR13 (DEAR = EA, ESR [ST, SPE,
-        VLEMI]), ITLB error IVOR14 (ESR [MIF] only -- *no* VLEMI, which
-        `ppc_cpu_raise` adds unconditionally today), DSI IVOR2 on a
-        read/write permission (DEAR, ESR [ST, SPE, VLEMI]), ISI IVOR3 on
-        execute (ESR [BO, MIF, VLEMI]).
-      - **Reset loads entry 0 only: a 4 KB page at the reset base**,
-        IPROT, VLE from a pin. Every guest in this tree would fault 4 KB
-        into its image; real parts get past that because the boot ROM
-        programs entries first. The emulator has to stand in for that
-        ROM -- a 4 GB identity entry 0 (TS 0, TID 0, all permissions,
-        IPROT, VLE from the image) is the proposal -- and say so.
-      - **The VLE bit is per page**, which is what the frontend's
-        image-wide `vle` stands in for today: under a programmed TLB the
-        fetch's page decides the encoding.
-      - **Cost**: translation sits on the fetch and every access, which
-        this tree has measured at 9.3% for one branch. Gate it behind a
-        flag that is true only in the reset state with MSR[IS]=MSR[DS]=0,
-        recomputed on TLB writes and MSR changes; measure interpreter
-        CoreMark with callgrind before and after. The JIT inlines RAM
-        and so cannot run under a non-identity TLB until its accesses
-        translate: block it there first (as RV32's JIT once did under
-        paging), and bump `jit_gen` on every TLB write.
-      - **Validation** has no e200 to compare with and no GPL oracle may
-        be used: a guest programming the TLB the way MPC57xx start-up
-        code does, every expectation derived from the manual in its
-        comments, and the limits of that stated wherever it is quoted.
+- [x] **PowerPC: the e200z7 MMU.** Built as designed here, from
+      `docs/ppc/e200z759CRM.pdf` chapter 10 and section 7.7 and nothing
+      else -- [frontend/ppc.md](frontend/ppc.md#the-mmu) has what is
+      modelled, the four places the model is not the manual, and the
+      figures. `ppc-mmu` is 150 checks against the manual's tables, and
+      37 single-point defects each fail the check named for them. The
+      identity map costs nothing measurable interpreted -- -0.73% by
+      callgrind, 224-231 against 224-231 host cycles an instruction on
+      the F746 -- and +0.26% under `--jit`. Getting there found that
+      moving the interpreter's loop into a function cost the F746 10%
+      with x86-64 seeing +0.1%. Two things the design note did not foresee:
+      `dcbz` had been ignoring rB since it was written, and `check.py`'s
+      list of instructions "not on this core" hid a `tlbld`/`tlbwe`
+      naming clash in objdump.
+- [ ] **PowerPC: run the JIT under a programmed TLB.** Today `blocked`
+      is `mmu_on`, so a guest that programs the TLB is interpreted from
+      then on (`ppc-mmu --jit`: 4,496 of 25,427). Needs a lookup with no
+      side effects for the translator's fetch (a miss must not touch the
+      MAS registers), PID0 and MSR[IS]/[DS] in the block's context, TLB
+      writes in its generation, and loads and stores that do not use the
+      untranslated window while `mmu_on` -- the helper path, or a window
+      per TLB entry. Measure on a guest that programs the TLB and then
+      runs CoreMark; none exists yet.
+- [ ] **PowerPC: little-endian pages.** MAS2[E] reads 0 today. Doing it
+      means byte-reversed data access per page, ISI[BO] for a VLE page
+      marked E, and DSI[BO] for an access crossing pages of different
+      endianness (11.16.5) -- and a data fault path that can carry
+      ESR[BO].
 
 - [~] Finish the ppc emualtor with dual core support and implement a simple driver for the e200z7.
       **The single core is finished and the other two halves are not

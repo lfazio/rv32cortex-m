@@ -158,8 +158,10 @@ static uint32_t ppc_ir_load(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
     const uint32_t size = EMU_IR_MEM_SIZE(spec);
     uint32_t v = 0u;
 
-    if (EMU_UNLIKELY(ppc_load(c, addr, size, false, &v) != PPC_EXC_NONE)) {
-        ppc_cpu_raise(c, PPC_IVOR_DATA_STORAGE, c->pc, 0u);
+    const ppc_exc_t x = ppc_load(c, addr, size, false, &v);
+
+    if (EMU_UNLIKELY(x != PPC_EXC_NONE)) {
+        ppc_cpu_raise(c, (ppc_ivor_t)x, c->pc, 0u);
         return 1u;
     }
     *out = swap(v, size);
@@ -172,8 +174,10 @@ static uint32_t ppc_ir_store(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
     ppc_cpu_t *const c = (ppc_cpu_t *)cpu;
     const uint32_t size = EMU_IR_MEM_SIZE(spec);
 
-    if (EMU_UNLIKELY(ppc_store(c, addr, size, swap(val, size)) != PPC_EXC_NONE)) {
-        ppc_cpu_raise(c, PPC_IVOR_DATA_STORAGE, c->pc, PPC_ESR_ST);
+    const ppc_exc_t x = ppc_store(c, addr, size, swap(val, size));
+
+    if (EMU_UNLIKELY(x != PPC_EXC_NONE)) {
+        ppc_cpu_raise(c, (ppc_ivor_t)x, c->pc, PPC_ESR_ST);
         return 1u;
     }
     return 0u;
@@ -1190,6 +1194,11 @@ static bool must_decline(const I *d)
     case PPC_S_PRIV_NOP:
     case PPC_S_ILLEGAL:
     case PPC_S_PRIV_ILLEGAL:
+    /* They can turn translation on, which stops every block. */
+    case PPC_S_TLBRE:
+    case PPC_S_TLBWE:
+    case PPC_S_TLBSX:
+    case PPC_S_TLBIVAX:
         return true;
     case PPC_S_MFSPR:
     case PPC_S_MTSPR:
@@ -1374,6 +1383,13 @@ static void ppc_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
     out->generation = &c->jit_gen;
     out->context = &c->jit_ctx;
     out->irq_pending = &c->irq_dirty;
+    /*
+     * No block runs under a programmed TLB: the emitted code reaches
+     * guest RAM through a window that does not translate. The
+     * interpreter takes the whole run from the first tlbwe, or from
+     * MSR[IS] or [DS] being set; see docs/frontend/ppc.md.
+     */
+    out->blocked = &c->mmu_on;
 }
 
 const emu_ir_frontend_t ppc_ir_frontend = {

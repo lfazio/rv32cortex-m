@@ -178,10 +178,15 @@ static EMU_ALWAYS_INLINE bool cmp_reg(const I *d)
     return f == PPC_F_A_B || f == PPC_F_CRF_A_B;
 }
 
-/* A branch target's low bits: one in VLE, two in Book E. */
+/*
+ * A branch target's low bits: one in VLE, two in Book E. Under a
+ * programmed TLB the encoding is the *target* page's, which is not known
+ * until it is fetched, so bit 62 is kept and the fetch raises ISI[MIF]
+ * if it lands at an odd halfword of a Book E page (2.4.6.2).
+ */
 static EMU_ALWAYS_INLINE uint32_t target_mask(const ppc_cpu_t *c)
 {
-    return c->vle ? ~1u : ~3u;
+    return (c->vle || c->mmu_on) ? ~1u : ~3u;
 }
 
 /*
@@ -211,9 +216,15 @@ static bool program(ppc_cpu_t *c, uint32_t pc, uint32_t esr)
     return false;
 }
 
-static bool dsi(ppc_cpu_t *c, uint32_t pc, bool store)
+/*
+ * A load or store that did not happen: the interrupt the access path
+ * returned -- data storage for a bus error or a permission, data TLB
+ * error for a miss -- with ESR[ST] for a store (tables 7-13 and 7-23).
+ * DEAR is already set.
+ */
+static bool data_fault(ppc_cpu_t *c, uint32_t pc, bool store, ppc_exc_t x)
 {
-    ppc_cpu_raise(c, PPC_IVOR_DATA_STORAGE, pc, store ? PPC_ESR_ST : 0u);
+    ppc_cpu_raise(c, (ppc_ivor_t)x, pc, store ? PPC_ESR_ST : 0u);
     return false;
 }
 
@@ -264,6 +275,7 @@ static bool exec_multi(ppc_cpu_t *c, const I *d, uint32_t pc)
     const bool vol = d->sem == PPC_S_LMV || d->sem == PPC_S_STMV;
     const uint32_t n = !vol ? 32u - d->rd : (d->crs == 0u) ? 11u : (d->crs == 1u) ? 4u : 2u;
     uint32_t ea = ea_of(c, d);
+    ppc_exc_t mx;
 
     /* The save/restore pairs are supervisor registers. */
     if (vol && d->crs >= 4u && user(c)) {
@@ -280,14 +292,14 @@ static bool exec_multi(ppc_cpu_t *c, const I *d, uint32_t pc)
         uint32_t *const r = vol ? lmv_reg(c, d->crs, i) : &c->r[d->rd + i];
 
         if (store) {
-            if (ppc_store(c, ea, 4u, *r) != PPC_EXC_NONE) {
-                return dsi(c, pc, true);
+            if ((mx = ppc_store(c, ea, 4u, *r)) != PPC_EXC_NONE) {
+                return data_fault(c, pc, true, mx);
             }
         } else {
             uint32_t v;
 
-            if (ppc_load(c, ea, 4u, false, &v) != PPC_EXC_NONE) {
-                return dsi(c, pc, false);
+            if ((mx = ppc_load(c, ea, 4u, false, &v)) != PPC_EXC_NONE) {
+                return data_fault(c, pc, false, mx);
             }
             *r = (vol && d->crs == 1u && i == 3u) ? (v & PPC_XER_IMPL) : v;
         }
@@ -306,6 +318,7 @@ bool ppc_exec(ppc_cpu_t *c, const I *d, uint32_t pc)
     uint32_t res = 0u;
     bool ca = false;
     bool ov = false;
+    ppc_exc_t mx;
 
     switch ((ppc_sem_t)d->sem) {
     /* --- integer arithmetic, register --------------------------- */
@@ -661,8 +674,9 @@ bool ppc_exec(ppc_cpu_t *c, const I *d, uint32_t pc)
         const uint32_t ea = ea_of(c, d);
         uint32_t v;
 
-        if (EMU_UNLIKELY(ppc_load(c, ea, d->size, d->sext != 0u, &v) != PPC_EXC_NONE)) {
-            return dsi(c, pc, false);
+        if (EMU_UNLIKELY((mx = ppc_load(c, ea, d->size, d->sext != 0u, &v)) !=
+                         PPC_EXC_NONE)) {
+            return data_fault(c, pc, false, mx);
         }
         if (d->rev) {
             v = bswap(v, d->size);
@@ -685,8 +699,8 @@ bool ppc_exec(ppc_cpu_t *c, const I *d, uint32_t pc)
         if (d->rev) {
             v = bswap(v, d->size);
         }
-        if (EMU_UNLIKELY(ppc_store(c, ea, d->size, v) != PPC_EXC_NONE)) {
-            return dsi(c, pc, true);
+        if (EMU_UNLIKELY((mx = ppc_store(c, ea, d->size, v)) != PPC_EXC_NONE)) {
+            return data_fault(c, pc, true, mx);
         }
         if (d->upd) {
             r[d->ra] = ea;
@@ -708,8 +722,8 @@ bool ppc_exec(ppc_cpu_t *c, const I *d, uint32_t pc)
         if ((ea & (d->size - 1u)) != 0u) {
             return misaligned(c, pc, ea, false);
         }
-        if (ppc_load(c, ea, d->size, false, &v) != PPC_EXC_NONE) {
-            return dsi(c, pc, false);
+        if ((mx = ppc_load(c, ea, d->size, false, &v)) != PPC_EXC_NONE) {
+            return data_fault(c, pc, false, mx);
         }
         c->reserve = true;
         r[d->rd] = v;
@@ -730,8 +744,8 @@ bool ppc_exec(ppc_cpu_t *c, const I *d, uint32_t pc)
         if ((ea & (d->size - 1u)) != 0u) {
             return misaligned(c, pc, ea, true);
         }
-        if (ppc_store(c, ea, d->size, r[d->rd]) != PPC_EXC_NONE) {
-            return dsi(c, pc, true);
+        if ((mx = ppc_store(c, ea, d->size, r[d->rd])) != PPC_EXC_NONE) {
+            return data_fault(c, pc, true, mx);
         }
         c->reserve = false;
         cr_set(c, 0u, PPC_CR_EQ | so(c));
@@ -750,8 +764,8 @@ bool ppc_exec(ppc_cpu_t *c, const I *d, uint32_t pc)
             return misaligned(c, pc, ea, true);
         }
         for (uint32_t i = 0u; i < 32u; i += 4u) {
-            if (ppc_store(c, (ea & ~31u) + i, 4u, 0u) != PPC_EXC_NONE) {
-                return dsi(c, pc, true);
+            if ((mx = ppc_store(c, (ea & ~31u) + i, 4u, 0u)) != PPC_EXC_NONE) {
+                return data_fault(c, pc, true, mx);
             }
         }
         break;
@@ -929,6 +943,36 @@ bool ppc_exec(ppc_cpu_t *c, const I *d, uint32_t pc)
         }
         break;
 
+    /*
+     * --- the MMU (10.5): all privileged. tlbsync is a privileged
+     * no-op on this core and decodes to PRIV_NOP above. ------------
+     */
+    case PPC_S_TLBRE:
+    case PPC_S_TLBWE:
+    case PPC_S_TLBSX:
+    case PPC_S_TLBIVAX: {
+        if (user(c)) {
+            return program(c, pc, PPC_ESR_PPR);
+        }
+        const uint32_t ea = ea_of(c, d);
+
+        switch ((ppc_sem_t)d->sem) {
+        case PPC_S_TLBRE:
+            ppc_tlbre(c);
+            break;
+        case PPC_S_TLBWE:
+            ppc_tlbwe(c);
+            break;
+        case PPC_S_TLBSX:
+            ppc_tlbsx(c, ea);
+            break;
+        default:
+            ppc_tlbivax(c, ea);
+            break;
+        }
+        break;
+    }
+
     /* --- the embedded floating-point unit ------------------------- */
     case PPC_S_EFSADD:
     case PPC_S_EFSSUB:
@@ -1019,6 +1063,83 @@ typedef struct {
 
 static dc_t g_dc[PPC_DECODE_CACHE];
 
+/*
+ * A fetch under a programmed TLB, out of line: the identity loop only
+ * branches past it. The page decides the encoding, so c->vle is the
+ * page's from here until the next fetch -- which is also what ESR[VLEMI]
+ * and a branch's target mask read.
+ *
+ * What it raises, from 7.7.4, 7.7.15 and 2.4.6.2: an ITLB error with ESR
+ * clear for a miss, or with MIF if the miss is the second half of a
+ * 32-bit VLE instruction straddling a page -- SRR0 names the first half
+ * and MAS2 the page that missed; an ISI for an execute permission, with
+ * MIF for an odd halfword of a Book E page, and with BO for a straddle
+ * onto a page whose VLE bit differs.
+ *
+ * The word and its length come back packed, length in the high half and
+ * zero for "an interrupt was taken": out-parameters would take the
+ * addresses of the loop's two hottest locals, and that is paid on every
+ * instruction whether or not this is ever called.
+ */
+static EMU_COLD_NOINLINE uint64_t fetch_xlate(ppc_cpu_t *c, uint32_t pc)
+{
+    uint32_t pa;
+    bool vle = false;
+    uint16_t w0;
+    uint32_t insn;
+    unsigned len;
+    ppc_exc_t x = ppc_mmu_xlate(c, pc, PPC_ACC_EXEC, &pa, &vle);
+
+    if (x == (ppc_exc_t)PPC_IVOR_ITLB_ERROR) {
+        ppc_cpu_raise(c, PPC_IVOR_ITLB_ERROR, pc, 0u);
+        return 0u;
+    }
+    c->vle = vle;
+    if (x != PPC_EXC_NONE) {
+        ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, 0u);
+        return 0u;
+    }
+    if (!vle && (pc & 2u) != 0u) {
+        ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, PPC_ESR_MIF);
+        return 0u;
+    }
+    if (emu_bus_fetch16(c->bus, pa, &w0) != EMU_FAULT_NONE) {
+        ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, 0u);
+        return 0u;
+    }
+    len = vle ? ppc_vle_len(w0) : 4u;
+    insn = (uint32_t)w0 << 16;
+    if (len == 4u) {
+        uint32_t pa2 = pa + 2u;
+        uint16_t w1;
+
+        /* Every page is a multiple of 1 KB on a boundary of its size. */
+        if (((pc + 2u) & 0x3FFu) == 0u) {
+            bool vle2 = false;
+
+            x = ppc_mmu_xlate(c, pc + 2u, PPC_ACC_EXEC, &pa2, &vle2);
+            if (x == (ppc_exc_t)PPC_IVOR_ITLB_ERROR) {
+                ppc_cpu_raise(c, PPC_IVOR_ITLB_ERROR, pc, PPC_ESR_MIF);
+                return 0u;
+            }
+            if (x != PPC_EXC_NONE) {
+                ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, 0u);
+                return 0u;
+            }
+            if (vle2 != vle) {
+                ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, PPC_ESR_BO);
+                return 0u;
+            }
+        }
+        if (emu_bus_fetch16(c->bus, pa2, &w1) != EMU_FAULT_NONE) {
+            ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, 0u);
+            return 0u;
+        }
+        insn |= w1;
+    }
+    return ((uint64_t)len << 32) | insn;
+}
+
 static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                                 uint32_t *retired)
 {
@@ -1046,8 +1167,16 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
          * instruction the decrementer expires on, so the interrupt is
          * taken exactly there without a test per instruction: the inner
          * loop's bound *is* the test.
+         *
+         * Whether translation is on is read here too, once a stretch:
+         * anything that turns it on or off sets irq_dirty, which ends
+         * the stretch. The identity map pays a test of a register per
+         * instruction. This loop is HEAD's shape on purpose -- moving it
+         * into a function with out-parameters cost 10% on the F746 and
+         * nothing on x86-64; see docs/frontend/ppc.md.
          */
         uint32_t limit;
+        const bool mmu = c->mmu_on;
 
         ppc_cpu_sync_clock(c);
         {
@@ -1059,7 +1188,6 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
 
     while (done < limit) {
         uint32_t pc;
-        uint16_t w0;
         uint32_t insn;
         unsigned len;
 
@@ -1085,35 +1213,52 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
                 done++;
                 c->cycles++;
             }
-            /* Whatever dirtied it may have moved the expiry: recompute. */
+            /* Whatever dirtied it may have moved the expiry, or turned
+             * translation on or off: recompute both. */
             break;
         }
 
         pc = c->pc;
-        if (EMU_UNLIKELY(emu_bus_fetch16(c->bus, pc, &w0) != EMU_FAULT_NONE)) {
-            ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, 0u);
-            done++;
-            c->cycles++;
-            continue;
-        }
-        /*
-         * Classic Book E is fixed 32-bit; only VLE has a length rule.
-         * Applying the VLE rule to Book E desynchronises the stream on
-         * the first branch, because `bl` has top4 = 0x4 and would read
-         * as a 16-bit parcel.
-         */
-        len = c->vle ? ppc_vle_len(w0) : 4u;
-        insn = (uint32_t)w0 << 16;
-        if (len == 4u) {
-            uint16_t w1;
+        if (EMU_UNLIKELY(mmu)) {
+            const uint64_t f = fetch_xlate(c, pc);
 
-            if (EMU_UNLIKELY(emu_bus_fetch16(c->bus, pc + 2u, &w1) != EMU_FAULT_NONE)) {
+            if (EMU_UNLIKELY(f == 0u)) {
+                done++;
+                c->cycles++;
+                continue;
+            }
+            insn = (uint32_t)f;
+            len = (unsigned)(f >> 32);
+        } else {
+            uint16_t w0;
+
+            if (EMU_UNLIKELY(emu_bus_fetch16(c->bus, pc, &w0) !=
+                             EMU_FAULT_NONE)) {
                 ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, 0u);
                 done++;
                 c->cycles++;
                 continue;
             }
-            insn |= w1;
+            /*
+             * Classic Book E is fixed 32-bit; only VLE has a length rule.
+             * Applying the VLE rule to Book E desynchronises the stream on
+             * the first branch, because `bl` has top4 = 0x4 and would read
+             * as a 16-bit parcel.
+             */
+            len = c->vle ? ppc_vle_len(w0) : 4u;
+            insn = (uint32_t)w0 << 16;
+            if (len == 4u) {
+                uint16_t w1;
+
+                if (EMU_UNLIKELY(emu_bus_fetch16(c->bus, pc + 2u, &w1) !=
+                                 EMU_FAULT_NONE)) {
+                    ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, 0u);
+                    done++;
+                    c->cycles++;
+                    continue;
+                }
+                insn |= w1;
+            }
         }
 
 #if EMU_ENABLE_TRACE

@@ -693,6 +693,7 @@ if(EMU_GUEST_ARCH_PPC)
         src/frontend/ppc/ppc_frontend.c
         src/frontend/ppc/ppc_gdb.c
         src/frontend/ppc/ppc_interp.c
+        src/frontend/ppc/ppc_mmu.c
     )
 
     # JIT-only, as for the other three.

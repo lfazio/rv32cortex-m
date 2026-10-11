@@ -1041,6 +1041,12 @@ static const x_form_t k_x31[] = {
     {0x3D6u, PPC_M_ICBI, Z_RD | Z_B31, 0u, 0u},
     {0x2F6u, PPC_M_DCBA, Z_RD | Z_B31, 0u, 0u},
     {0x016u, PPC_M_ICBT, Z_B31, 0u, 0u},
+    /* The MMU (chapter 10). tlbsync is a privileged no-op on this core. */
+    {0x3B2u, PPC_M_TLBRE, Z_RD | Z_RA | Z_RB | Z_B31, 0u, 0u},
+    {0x3D2u, PPC_M_TLBWE, Z_RD | Z_RA | Z_RB | Z_B31, 0u, 0u},
+    {0x392u, PPC_M_TLBSX, Z_RD | Z_B31, 0u, 0u},
+    {0x312u, PPC_M_TLBIVAX, Z_RD | Z_B31, 0u, 0u},
+    {0x236u, PPC_M_TLBSYNC, Z_RD | Z_RA | Z_RB | Z_B31, 0u, 0u},
 };
 
 /*
@@ -1175,6 +1181,9 @@ static void d_31(uint32_t w, I *d)
         }
         return;
     case PPC_S_DCBZ:
+    case PPC_S_TLBSX:
+    case PPC_S_TLBIVAX:
+        d->idx = 1u;
         d->ra0 = 1u;
         return;
     default:
