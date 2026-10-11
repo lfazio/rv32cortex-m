@@ -2778,6 +2778,18 @@ session, and every one of them recurred:
   before configuring now. This file's rule about cache variables
   outliving the tree applies to the tool written to check the tree.
 
+- **A hook the contract calls optional is optional at every caller,
+  and the one that forgot is found by the first frontend without it.**
+  The boards' clock hook called `ops->set_time` unconditionally; the
+  host runner had always tested it for NULL. RV32, G4MH and PowerPC all
+  supply it, so it held until ARMv7-M -- whose SysTick counts retired
+  instructions and needs no clock -- ran on the F746: the guest printed
+  its whole result, then the firmware branched to address 0 at the end
+  of the slice. `monitor halt` and `bt` over the probe named the line in
+  one step, which beat any theory about the guest. When a frontend
+  reaches a platform for the first time, grep the platform for
+  `ops->` and check every call against the contract's "may be NULL".
+
 - **An out-parameter on a hot function is not free, and neither is a
   helper the compiler inlined into it.** A fault that crosses a page
   boundary has to report the second page's address, and the obvious

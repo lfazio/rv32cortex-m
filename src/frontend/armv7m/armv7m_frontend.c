@@ -222,10 +222,23 @@ static void armv7m_ops_boot(emu_cpu_t *cpu, const emu_boot_info_t *info)
 
     c->r[ARMV7M_SP] = (info->ram_base + info->ram_size) & ~7u;
 
-    if (emu_bus_read(c->bus, c->vtor, 4u, &sp) == EMU_FAULT_NONE &&
-        emu_bus_read(c->bus, c->vtor + 4u, 4u, &entry) == EMU_FAULT_NONE &&
-        sp != 0u && entry != 0u) {
-        c->r[ARMV7M_SP] = sp & ~3u;
+    /*
+     * The two words are read separately. A reset vector is honoured on
+     * its own; an initial stack pointer of **zero** means the loader's
+     * -- the top of whatever RAM this machine has, set just above --
+     * which is what this tree's guests put there, because the same image
+     * runs on a host with a megabyte and a board with a fifth of it. A
+     * real core would load zero and fault on the first push, which tells
+     * nobody anything a test guest could act on.
+     */
+    if (emu_bus_read(c->bus, c->vtor, 4u, &sp) != EMU_FAULT_NONE) {
+        sp = 0u;
+    }
+    if (emu_bus_read(c->bus, c->vtor + 4u, 4u, &entry) == EMU_FAULT_NONE &&
+        entry != 0u) {
+        if (sp != 0u) {
+            c->r[ARMV7M_SP] = sp & ~3u;
+        }
         c->r[ARMV7M_PC] = entry & ~1u;
         /* EPSR.T comes from the reset vector's low bit, as on silicon. */
         c->xpsr = (c->xpsr & ~ARMV7M_T) | ((entry & 1u) ? ARMV7M_T : 0u);

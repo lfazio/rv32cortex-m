@@ -14,7 +14,7 @@ the one macro in `src/emu/emu_ir_jit.c`.
 | RV32 | yes — `isatest` (748 checks, every B instruction among them), CoreMark, `bench`, on the Nucleo-F746ZG |
 | PowerPC e200z7 | yes — `alu`, `sys`, CoreMark, crypto and 600 generated cases, on the F746 |
 | G4MH | yes — its small guest, with the board and the host agreeing to the digit |
-| ARMv7-M | **no** — it builds; nothing has been flashed |
+| ARMv7-M | yes — all eight guests, both backends, on the F746, each with the host's retired count ([../frontend/armv7m.md](../frontend/armv7m.md#firmware)) |
 
 ---
 

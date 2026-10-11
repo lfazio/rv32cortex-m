@@ -87,9 +87,13 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       it. Whether a change of PSW.UM, or of the MPU's execute
       permission, can leave a cached G4MH block wrong has not been
       examined ([jit/staleness.md](jit/staleness.md)).
-- [ ] **The ARMv7-M frontend has never run on a board**, under either
-      backend. A Cortex-M guest on a Cortex-M host, with the board that
-      is its own reference sitting next to it.
+- [x] **The ARMv7-M frontend has run on a board**: all eight guests on
+      the F746 under both backends, every retired count equal to the
+      host's ([frontend/armv7m.md](frontend/armv7m.md#firmware)). It
+      took a NULL check the boards' clock hook had never needed, guest
+      staging for the firmware, and a guest stack that was not the top
+      of a host's megabyte. Left open from it: the interpreter is 2.7x
+      RV32's cost per instruction there.
 - [ ] **Board figures that predate `emu_cycles.h`.** Any of them from a
       run longer than 19.9 s at 216 MHz (23.9 s on the F446) is a whole
       wrap short, and the documents do not record run lengths. The ones

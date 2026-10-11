@@ -21,7 +21,16 @@
     .thumb
 
     .section .vectors, "a"
-    .word   0x80100000          /* 0  initial SP: top of the RAM window */
+    /*
+     * Zero: **the loader's stack**, which is the top of whatever RAM
+     * this machine has -- the convention the RV32 and PowerPC guests
+     * already follow, and the only one that works on more than one
+     * machine. This said 0x80100000, the top of a host's megabyte; the
+     * F746 gives a guest a fifth of that, so the first push landed
+     * outside RAM. A real core would load zero; armv7m_ops_boot keeps
+     * the stack it set up instead, and its comment says why.
+     */
+    .word   0                   /* 0  initial SP: the loader's          */
     .word   _start + 1          /* 1  reset, Thumb bit set              */
     /*
      * The rest of the system exceptions, up to SysTick at 15.

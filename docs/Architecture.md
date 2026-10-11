@@ -142,7 +142,7 @@ cache, block table, chaining, compaction and dispatch for all of them.
 | RV32 | `rv_interp.c` | `rv_ir.c` | x86-64, Thumb-2 (hardware) |
 | G4MH | `g4mh_interp.c` | `g4mh_ir.c` | x86-64, Thumb-2 (hardware) |
 | PowerPC | `ppc_interp.c` | `ppc_ir.c` | x86-64, Thumb-2 (hardware) |
-| ARMv7-M | `armv7m_interp.c` | `armv7m_ir.c` | x86-64 |
+| ARMv7-M | `armv7m_interp.c` | `armv7m_ir.c` | x86-64, Thumb-2 (hardware) |
 
 The x86-64 backend exists for **coverage, not speed**: it is what lets
 the suites run against translated code on a host, since the Thumb-2
@@ -207,7 +207,6 @@ its architecture, so it gets the default.
   contract and G4MH brings up to three PEs
   ([`host/g4mh/multicore.md`](host/g4mh/multicore.md)); every other
   frontend answers one.
-- **The ARMv7-M frontend has not run on a board**, under either backend.
 
 ## Investigate
 

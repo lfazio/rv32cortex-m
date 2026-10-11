@@ -175,7 +175,18 @@ static void advance_guest_time(emu_system_t *sys, uint64_t retired_total,
     (void)retired_total;
     (void)did;
 
-    sys->ops->set_time(sys->core[0].cpu, board_time_now());
+    /*
+     * Optional, as every hook in the contract is. The ARMv7-M frontend
+     * has none -- SysTick counts retired instructions inside the core --
+     * and this called it anyway: the first ARMv7-M firmware printed its
+     * guest's whole output and then branched to address 0 at the end of
+     * the first slice, a HardFault with INVSTATE. The host runner had
+     * always tested for NULL here; the boards had only ever run
+     * frontends that supply it.
+     */
+    if (sys->ops->set_time != NULL) {
+        sys->ops->set_time(sys->core[0].cpu, board_time_now());
+    }
 }
 
 /* ------------------------------------------------------------------ */

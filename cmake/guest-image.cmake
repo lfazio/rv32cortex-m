@@ -87,6 +87,18 @@ function(emu_stage_guest_image out_bin)
                 "missing one is a wrong G4MH_GUEST rather than a missing "
                 "toolchain.")
         endif()
+    elseif(EMU_GUEST_ARCH_ARMV7M)
+        #
+        # A flat binary, as for RV32: the vector table is the first word
+        # of the image, so the load address is VTOR and nothing has to be
+        # carried that a `.bin` cannot say. Built by tests/guest with the
+        # ARM toolchain the firmware already needs.
+        #
+        set(ARMV7M_GUEST "alu"
+            CACHE STRING "ARMv7-M guest to embed in the firmware (alu, itblock, nvic, t2exec, hello, coremark, dhrystone, crypto)")
+        set(_src "${CMAKE_BINARY_DIR}/guest/armv7m-${ARMV7M_GUEST}.bin")
+        set(_dep "${_src}" "guest-armv7m-${ARMV7M_GUEST}")
+        set(_name "armv7m-${ARMV7M_GUEST}.bin")
     else()
         #
         # Loud, because the alternative is a firmware that links against
