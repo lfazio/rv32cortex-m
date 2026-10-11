@@ -23,7 +23,21 @@ MEMORY
  * iterative and the deepest call chain is the HAL's clock init, so 4 KiB
  * is generous; every byte saved here goes to the guest.
  */
-_stack_size = 4K;
+_stack_size = 2K;
+
+/*
+ * The first FreeRTOS task's stack, where the main stack always was.
+ *
+ * Once the scheduler runs, the main stack serves interrupts and nothing
+ * else, and the run loop, the translator and the console run on this
+ * one (src/platform/common/emu_os.c). It is reserved here, beside the
+ * main stack at the top of RAM, rather than declared in .bss, because a
+ * .bss array moved everything after it: on the F746 the JIT's code
+ * buffer slid 9 KiB further out of the DTCM and CoreMark at a 32 KB
+ * cache ran 9.6% slower with identical translations. A run measured
+ * 1,308 bytes used.
+ */
+_task_stack_size = 4K;
 _min_heap_size = 0;
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);
@@ -161,7 +175,7 @@ SECTIONS
     {
         . = ALIGN(8);
         __guest_ram_start = .;
-        . = ORIGIN(RAM) + LENGTH(RAM) - _stack_size - _min_heap_size;
+        . = ORIGIN(RAM) + LENGTH(RAM) - _stack_size - _task_stack_size - _min_heap_size;
         __guest_ram_end = .;
     } > RAM
 
@@ -174,6 +188,9 @@ SECTIONS
         . = ALIGN(8);
         PROVIDE(end = .);
         PROVIDE(_end = .);
+        __task_stack_start = .;
+        . = . + _task_stack_size;
+        __task_stack_end = .;
         . = . + _min_heap_size;
         . = . + _stack_size;
         . = ALIGN(8);

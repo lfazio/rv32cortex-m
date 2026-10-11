@@ -33,6 +33,7 @@ void host_rate_init(bool quiet, bool force);
 #include "emu/emu_virtio.h"
 #include "emu_image.h"
 #include "emu/emu_elf.h"
+#include "emu_os.h"
 #include "emu_run.h"
 #include "emu_session.h"
 
@@ -375,7 +376,12 @@ static const emu_cpu_ops_t *pick_frontend(const emu_args_t *args)
     return emu_frontend_default();
 }
 
-int main(int argc, char **argv)
+/*
+ * The runner itself, as the first FreeRTOS task -- see main() below and
+ * emu_os.h. It is emulated core 0, and every further core of a multicore
+ * guest runs on a task of its own.
+ */
+static int emu_main_body(int argc, char **argv)
 {
     int status = 0;
     emu_run_env_t env = {0};
@@ -579,6 +585,7 @@ int main(int argc, char **argv)
         const uint64_t elapsed = board_perf_cycles() - t0;
 
         emu_session_report(&g_sys, retired, elapsed, capped, g_cfg.dump_state);
+        emu_os_report();
 
         /*
          * The machine-readable terminator, and deliberately the last
@@ -606,4 +613,16 @@ int main(int argc, char **argv)
             return status;
         }
     }
+}
+
+/*
+ * Every platform runs under FreeRTOS: the hardware a scheduler needs,
+ * then the scheduler, with the runner above as its first task. On a
+ * board this never returns; on the host the process exits from inside
+ * that task with its status (emu_os.c says why).
+ */
+int main(int argc, char **argv)
+{
+    board_early_init();
+    return emu_os_start(emu_main_body, argc, argv);
 }

@@ -1225,7 +1225,13 @@ session, and every one of them recurred:
 
   Treat it as a consumable: when the console stops and the firmware did
   not change in a way that could explain it, replug before doing
-  anything else. The cost of being wrong about that is thirty seconds;
+  anything else.
+
+  **Or check which board you are listening to.** With the F746 and the
+  N6 both attached, a few failed OpenOCD attaches made the F746's ST-LINK
+  re-enumerate and the two `ttyACM` numbers *swapped*: a known-good
+  firmware then "printed nothing" on `/dev/ttyACM0`, which was the N6.
+  Open consoles by `/dev/serial/by-id/...`, never by number. The cost of being wrong about that is thirty seconds;
   the cost of being wrong the other way was most of a session. And set
   `EMU_PROBE` when more than one probe is attached, which is what
   started the first occurrence.
@@ -2790,6 +2796,36 @@ session, and every one of them recurred:
   reaches a platform for the first time, grep the platform for
   `ops->` and check every call against the contract's "may be NULL".
 
+- **A property no guest output can show has to be asserted where it
+  is made.** Moving each emulated core onto its own FreeRTOS task kept
+  the round's order -- core 0, 1, 2 -- by relying on a cooperative
+  scheduler running released tasks in release order. Two mutants broke
+  that order (core 0 last; cores 1 and 2 swapped) and `barrier3`'s
+  output, its `--dump` *and* its full instruction trace stayed
+  byte-identical at quanta 1, 4 and 64: a multicore test is written to
+  give the same answer at any interleaving, and running core 0 last is a
+  rotation of the round, which for that guest is the same sequence. The
+  only thing that can see it is the scheduler itself, so each core
+  records its position and the coordinator asserts it every round --
+  which both mutants trip. Same family as "identical counters mean the
+  code never ran": `os 3 cores as tasks, 302 rounds` is what said the
+  identical output came through the tasks at all.
+
+- **Adding code can cost 9% without running any of it.** The FreeRTOS
+  firmware ran CoreMark at 152.8 host cycles an instruction against the
+  previous commit's 140.0, with identical translation counts. Moving the
+  task stack out of `.bss` (it had pushed the JIT buffer out of the DTCM)
+  changed nothing. What settled it was **the same binary with the
+  scheduler bypassed**: 152.0 -- so the kernel costs 0.5%, and the rest is
+  that linking it moved the hot functions 456 bytes in flash. This file
+  already says layout is worth up to 10% here; the method worth keeping
+  is the A/B that holds the layout fixed and toggles only the behaviour,
+  because comparing against the previous commit cannot separate the two.
+  The control was rebuilt from a worktree at that commit and reproduced
+  the morning's figures to the digit, which is what made the comparison
+  mean anything.
+
+- **An out-parameter on a hot function is not free, and neither is a
 - **An out-parameter on a hot function is not free, and neither is a
   helper the compiler inlined into it.** A fault that crosses a page
   boundary has to report the second page's address, and the obvious

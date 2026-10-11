@@ -550,6 +550,14 @@ void emu_system_invalidate(emu_system_t *sys, uint32_t addr, uint32_t len);
  */
 uint32_t emu_system_step(emu_system_t *sys, uint32_t quantum, bool *all_idle);
 
+/*
+ * One core's share of a round: run it for `quantum` if it is live, and
+ * say whether it was. emu_system_step is this, for each core in order;
+ * src/platform/common/emu_os.c calls it from one task per core, which is
+ * why it exists separately -- the two must decide "live" identically.
+ */
+uint32_t emu_core_slice(emu_core_t *c, uint32_t quantum, bool *live);
+
 /* Convenience wrappers, so callers read as verbs rather than as tables. */
 
 static inline emu_run_reason_t emu_core_run(emu_core_t *c, uint32_t budget,

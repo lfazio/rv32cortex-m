@@ -935,6 +935,11 @@ endif()
 # Platform
 # ---------------------------------------------------------------------
 
+# FreeRTOS, on every platform: the runner is a task, and so is each
+# further core of a multicore guest. Not an option -- one execution model
+# is what keeps a board and a runner comparable. See cmake/freertos.cmake.
+include(cmake/freertos.cmake)
+
 if(EMU_PLATFORM STREQUAL "host")
     add_subdirectory(src/platform/host)
 elseif(EMU_PLATFORM MATCHES "^stm32(f446|f746|n6)$")

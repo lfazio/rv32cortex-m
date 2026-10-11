@@ -47,6 +47,14 @@ More than one guest may be on at once; the host runner picks with
 `--frontend` or from the ELF header. Firmware normally builds exactly
 one, because a frontend costs flash only when it is on.
 
+**Every platform runs under FreeRTOS**, which is not an option: the
+runner is a task and so is each further emulated core
+([docs/os.md](docs/os.md)). The kernel is fetched at configure time, as
+SoftFloat is -- `FREERTOS_KERNEL_TAG` (`V11.1.0`) into
+`FREERTOS_KERNEL_DIR`, a configure error if it cannot be -- and the port
+follows `EMU_PLATFORM`. How many cores get a task, and so a stack, is
+derived: one, or `G4MH_PE_COUNT` in a G4MH build.
+
 ## The JIT gates, and why there is only one answer
 
 This is the part that went wrong, so it is written out in full. There are

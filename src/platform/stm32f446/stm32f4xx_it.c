@@ -11,6 +11,13 @@
 
 #include "stm32f4xx_hal.h"
 
+#include "FreeRTOS.h"
+#include "task.h"
+
+/* The port's tick, exported under this name by every port in use here
+ * (cmake/freertos.cmake renames the ARMv8-M port's). */
+void xPortSysTickHandler(void);
+
 void NMI_Handler(void)
 {
     for (;;) {
@@ -46,20 +53,25 @@ void UsageFault_Handler(void)
     }
 }
 
-void SVC_Handler(void)
-{
-}
+/*
+ * SVC_Handler and PendSV_Handler are FreeRTOS's own (FreeRTOSConfig.h
+ * maps the port's names onto them, or the ARMv8-M port defines them), and
+ * must be: V11 checks the vector table points straight at them.
+ */
 
 void DebugMon_Handler(void)
 {
 }
 
-void PendSV_Handler(void)
-{
-}
-
 void SysTick_Handler(void)
 {
-    /* Drives HAL_GetTick(), which the HAL's timeout loops depend on. */
+    /*
+     * Shared: the HAL's millisecond, which its timeout loops depend on,
+     * and the kernel's tick once the scheduler runs. Both at 1 kHz --
+     * configTICK_RATE_HZ is chosen so.
+     */
     HAL_IncTick();
+    if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED) {
+        xPortSysTickHandler();
+    }
 }

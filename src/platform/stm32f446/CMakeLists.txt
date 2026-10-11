@@ -89,6 +89,8 @@ add_executable(emu-stm32f446
 # The shared runner pieces -- see src/platform/common/emu_console.h.
 target_sources(emu-stm32f446 PRIVATE
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_main.c"
+    # The runner as FreeRTOS tasks, one per emulated core -- emu_os.h.
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_os.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_debug.c"
     "${CMAKE_SOURCE_DIR}/src/platform/stm32/board.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_console.c"
@@ -109,7 +111,7 @@ target_include_directories(emu-stm32f446 PRIVATE
     "${CMAKE_SOURCE_DIR}/src/platform/stm32"
     "${CMAKE_SOURCE_DIR}/src/platform/common")
 
-target_link_libraries(emu-stm32f446 PRIVATE emucore stm32cube)
+target_link_libraries(emu-stm32f446 PRIVATE emucore emu_freertos stm32cube)
 
 # guest_image.S pulls the binary in with .incbin.
 set_source_files_properties(guest_image.S PROPERTIES

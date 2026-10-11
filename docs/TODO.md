@@ -11,6 +11,33 @@ Found by putting the PowerPC frontend on the Nucleo-F746ZG and timing
 long runs. The defects are fixed; these are what the measurements left
 standing. Figures are in [jit/tuning.md](jit/tuning.md).
 
+- [x] **FreeRTOS on every platform: a task per emulated core, the
+      cores synchronised at every quantum** ([os.md](os.md)). The POSIX
+      port on the host, CM7, CM4F and CM55 on the boards; cooperative, so
+      a multicore round is still core 0, 1, 2 -- asserted every round,
+      because two order mutants left `barrier3`'s output and trace
+      byte-identical. Identical to the commit before at quanta 1, 4, 64
+      and 4096 on both backends; on the F746 the three-PE guest matches
+      the host core by core. Left open by it:
+
+      - [ ] **No host runs the cores in parallel.** The POSIX port is
+        one task at a time and every board is single-core; an SMP
+        FreeRTOS host needs locks on G4MH's shared devices and the
+        reservation table, per-core JIT state, and a serialised console
+        first ([os.md](os.md#toward-an-smp-host)).
+      - [ ] **The F446 and the N6 have built and not run** under
+        FreeRTOS. The N6's `flash` target also needs a probe selector
+        before it is safe with two ST-LINKs attached: it does not take
+        `EMU_PROBE`, and STM32_Programmer_CLI picks whichever enumerates
+        first.
+      - [ ] **The F746's hot path is at the mercy of the linker.**
+        Linking the kernel moved the emulator's hot functions 456 bytes
+        and CoreMark went 140.0 → 152.8 cycles an instruction at 32 KB
+        with identical translations; with the scheduler bypassed in the
+        same binary it is 152.0, so the kernel's own cost is 0.5% and
+        the rest is placement. ITCM (16 KiB, mostly free) or alignment,
+        measured as [stm32n6/itcm.md](stm32n6/itcm.md) was.
+
 - [x] **The RV32 translator declined the B extension, and that was
       nearly all of what the JIT still interpreted. Lowered.** Counted
       with `-DEMU_PAIR_STATS=ON`, which reports executed instructions by

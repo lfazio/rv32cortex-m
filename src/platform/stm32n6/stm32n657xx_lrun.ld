@@ -36,6 +36,10 @@ ENTRY(Reset_Handler)
 
 /* Highest address of the user mode stack */
 _estack = ORIGIN(RAM) + LENGTH(RAM); /* end of "RAM" Ram type memory */
+
+/* The first FreeRTOS task's stack, reserved beside the main one -- see
+ * the F746's script for why it is not a .bss array. */
+_task_stack_size = 8K;
 _sstack = _estack - _Min_Stack_Size;
 
 /*
@@ -372,6 +376,9 @@ SECTIONS
     . = ALIGN(8);
     PROVIDE ( end = . );
     PROVIDE ( _end = . );
+    __task_stack_start = .;
+    . = . + _task_stack_size;
+    __task_stack_end = .;
     . = . + _Min_Heap_Size;
     . = . + _Min_Stack_Size;
     . = ALIGN(8);

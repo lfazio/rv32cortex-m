@@ -144,6 +144,12 @@ cache, block table, chaining, compaction and dispatch for all of them.
 | PowerPC | `ppc_interp.c` | `ppc_ir.c` | x86-64, Thumb-2 (hardware) |
 | ARMv7-M | `armv7m_interp.c` | `armv7m_ir.c` | x86-64, Thumb-2 (hardware) |
 
+**Every platform runs the backends under FreeRTOS**, one task per
+emulated core, the cores meeting at every quantum boundary
+([os.md](os.md)). The scheduler is cooperative, so a multicore guest's
+interleaving is the round-robin's and is reproducible at any quantum;
+nothing in `src/emu/` knows there is an operating system.
+
 The x86-64 backend exists for **coverage, not speed**: it is what lets
 the suites run against translated code on a host, since the Thumb-2
 lowering cannot be exercised by any host suite. The framework, the block
@@ -204,9 +210,12 @@ its architecture, so it gets the default.
 ## To do
 
 - **Multi-core beyond G4MH.** `ncores` and `instance(index)` are in the
-  contract and G4MH brings up to three PEs
-  ([`host/g4mh/multicore.md`](host/g4mh/multicore.md)); every other
-  frontend answers one.
+  contract and G4MH brings up to three PEs, each on its own FreeRTOS
+  task ([`host/g4mh/multicore.md`](host/g4mh/multicore.md),
+  [os.md](os.md)); every other frontend answers one.
+- **Parallel cores.** The tasks run one at a time on every host here;
+  an SMP-capable FreeRTOS host would run a round's quanta in parallel,
+  and [os.md](os.md) lists what is shared and unlocked.
 
 ## Investigate
 

@@ -283,6 +283,16 @@ char *const *board_argv(int *argc);
  *
  * False means stop.
  */
+/*
+ * The hardware a scheduler needs, before there is one: clocks, caches,
+ * the console UART. Called by main() ahead of emu_os_start, because the
+ * FreeRTOS port programs SysTick from SystemCoreClock when the scheduler
+ * starts and owns its priority from then on -- a clock configured
+ * afterwards would leave every tick, and the HAL's millisecond, at the
+ * reset oscillator's rate. Nothing on a runner.
+ */
+void board_early_init(void);
+
 struct emu_args;
 struct emu_session_cfg;
 struct emu_run_env;

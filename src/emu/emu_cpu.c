@@ -148,43 +148,51 @@ void emu_system_invalidate(emu_system_t *sys, uint32_t addr, uint32_t len)
     }
 }
 
+uint32_t emu_core_slice(emu_core_t *c, uint32_t quantum, bool *live)
+{
+    emu_cpu_status_t st;
+
+    *live = false;
+    emu_core_status(c, &st);
+    if (st.state == EMU_STATE_HALTED) {
+        return 0u; /* done for good */
+    }
+    /*
+     * Held at reset. Skipped like a halted core but *not* counted as
+     * live: a core waiting to be released cannot release itself, so if
+     * every other core has finished, the system is idle and the run must
+     * end rather than spinning over cores that will never start.
+     */
+    if (st.state == EMU_STATE_HELD) {
+        return 0u;
+    }
+    if (st.state == EMU_STATE_WFI && !st.wakeable) {
+        return 0u; /* parked, and nothing can wake it */
+    }
+
+    /*
+     * Anything not halted and not permanently parked counts as live,
+     * including a core that yields immediately: it is waiting on another
+     * core, and that other core is in this same round.
+     */
+    *live = true;
+
+    uint32_t did = 0u;
+
+    (void)emu_core_run(c, quantum, &did);
+    return did;
+}
+
 uint32_t emu_system_step(emu_system_t *sys, uint32_t quantum, bool *all_idle)
 {
     uint32_t total = 0u;
     bool idle = true;
 
     for (unsigned i = 0; i < sys->ncores; i++) {
-        emu_core_t *c = &sys->core[i];
-        emu_cpu_status_t st;
+        bool live = false;
 
-        emu_core_status(c, &st);
-        if (st.state == EMU_STATE_HALTED) {
-            continue; /* done for good */
-        }
-        /*
-         * Held at reset. Skipped like a halted core but *not* counted as
-         * live: a core waiting to be released cannot release itself, so
-         * if every other core has finished, the system is idle and the
-         * run must end rather than spinning over cores that will never
-         * start.
-         */
-        if (st.state == EMU_STATE_HELD) {
-            continue;
-        }
-        if (st.state == EMU_STATE_WFI && !st.wakeable) {
-            continue; /* parked, and nothing can wake it */
-        }
-
-        /*
-         * Anything not halted and not permanently parked counts as live,
-         * including a core that yields immediately: it is waiting on
-         * another core, and that other core is in this same round.
-         */
-        idle = false;
-
-        uint32_t did = 0u;
-        (void)emu_core_run(c, quantum, &did);
-        total += did;
+        total += emu_core_slice(&sys->core[i], quantum, &live);
+        idle = idle && !live;
     }
 
     if (all_idle != NULL) {

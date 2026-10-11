@@ -24,6 +24,7 @@
  * stub.
  */
 
+#include "emu_os.h"
 #include "emu_debug.h"
 #include "emu_console.h"
 
@@ -193,7 +194,7 @@ uint32_t emu_debug_run(emu_system_t *sys, uint32_t budget, uint32_t *retired,
             *retired = n;
             return n;
         }
-        *retired = emu_system_step(sys, budget, all_idle);
+        *retired = emu_os_system_step(sys, budget, all_idle);
         return *retired;
     }
 #endif
@@ -206,7 +207,7 @@ uint32_t emu_debug_run(emu_system_t *sys, uint32_t budget, uint32_t *retired,
         return n;
     }
 
-    *retired = emu_system_step(sys, budget, all_idle);
+    *retired = emu_os_system_step(sys, budget, all_idle);
     return *retired;
 }
 

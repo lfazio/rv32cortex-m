@@ -276,6 +276,15 @@ char *const *board_argv(int *argc)
 }
 
 /*
+ * Clocks, caches and the console, before FreeRTOS starts -- see
+ * board_api.h. The rest of bring-up is board_init, from the first task.
+ */
+void board_early_init(void)
+{
+    board_hw_init();
+}
+
+/*
  * Bring the board up, and say what only a board knows.
  *
  * Short, because everything that is not a fact about this hardware moved
@@ -289,7 +298,7 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
 {
     (void)args;
 
-    board_hw_init();
+    /* board_hw_init() has run: board_early_init, before the scheduler. */
     board_ram_init();
 
     /*

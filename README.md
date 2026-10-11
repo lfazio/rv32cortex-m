@@ -586,6 +586,7 @@ VLE or Book E:
 | [docs/validation.md](docs/validation.md) | the suites, and the bugs they caught |
 | [docs/performance.md](docs/performance.md) | the measured figures |
 | [docs/memory.md](docs/memory.md) | ROM, RAM and flash: who backs what, and why the platform does |
+| [docs/os.md](docs/os.md) | FreeRTOS on every platform: a task per emulated core, synchronised every quantum |
 | [docs/gdb.md](docs/gdb.md) | the guest stub and the emulator stub -- two connections, different programs |
 | [docs/network.md](docs/network.md) | the board over IP: telnet, gdb and TFTP, and what the handover costs |
 | [docs/porting.md](docs/porting.md) | porting to another target |

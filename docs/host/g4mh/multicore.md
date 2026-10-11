@@ -94,7 +94,7 @@ the good one.
 | model | why not |
 |---|---|
 | **Instruction-interleaved lockstep only** | it is `quantum = 1`; no reason to build it separately, and as the *only* mode it pays 3× dispatch overhead forever and forecloses a G4MH JIT |
-| **One host thread per core** | needs a real memory model. The guest's stores must become visible to other cores in an order its barriers can constrain; emulating an RH850 (weak) on x86 (TSO) makes the emulator *stronger* than the target and hides guest bugs. And it discards determinism, which is the one thing making the missing reference model survivable. There is also no forcing function: three interpreted cores on a PC are fast enough. |
+| **One host thread per core, free-running** | needs a real memory model. The guest's stores must become visible to other cores in an order its barriers can constrain; emulating an RH850 (weak) on x86 (TSO) makes the emulator *stronger* than the target and hides guest bugs. And it discards determinism, which is the one thing making the missing reference model survivable. There is also no forcing function: three interpreted cores on a PC are fast enough. |
 | **Event-driven with a global timeline** | the right answer if cores ran at different clocks or the model had to be cycle-accurate. Neither is true here, and it costs a priority queue on every scheduling decision. |
 
 Nothing below precludes threads later. Keeping all state per-core, with
@@ -271,6 +271,16 @@ Three constraints that cost nothing now and are expensive to retrofit:
 ---
 
 ## Status
+
+**Each PE runs on its own FreeRTOS task now** ([../../os.md](../../os.md)),
+and that does not contradict the table above: the tasks meet at every
+quantum, the scheduler is cooperative, and a round runs core 0, 1, 2 in
+the order this design chose -- asserted every round, since no guest
+output can tell. Output, state dumps and instruction traces are
+byte-identical to the single-threaded round-robin at quanta 1, 4, 64 and
+4096. What threading buys is the structure an SMP host would run in
+parallel; what it would cost there is the determinism this note values,
+and `os.md` lists the shared state that would need locks first.
 
 Multicore works on the host and is exercised at 1, 2 and 3 PEs:
 

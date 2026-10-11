@@ -57,6 +57,8 @@ add_executable(emu-host
     # file had its own copy under the name build_buses.
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_address_space.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_main.c"
+    # The runner as FreeRTOS tasks, one per emulated core -- emu_os.h.
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_os.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_debug.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_console.c"
 
@@ -77,7 +79,7 @@ target_include_directories(emu-host PRIVATE
 # host build *without* a network stopped finding it.
 target_include_directories(emu-host PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
-target_link_libraries(emu-host PRIVATE emucore)
+target_link_libraries(emu-host PRIVATE emucore emu_freertos)
 
 #
 # EMU_NET is defined either way, never left undefined. `#if` on a macro

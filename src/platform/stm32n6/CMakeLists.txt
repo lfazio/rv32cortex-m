@@ -143,6 +143,8 @@ add_executable(emu-stm32n6
     guest_image.S
 
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_main.c"
+    # The runner as FreeRTOS tasks, one per emulated core -- emu_os.h.
+    "${CMAKE_SOURCE_DIR}/src/platform/common/emu_os.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_debug.c"
     "${CMAKE_SOURCE_DIR}/src/platform/stm32/board.c"
     "${CMAKE_SOURCE_DIR}/src/platform/common/emu_console.c"
@@ -165,7 +167,7 @@ target_include_directories(emu-stm32n6 PRIVATE
     "${CMAKE_SOURCE_DIR}/src/platform/stm32"
     "${CMAKE_SOURCE_DIR}/src/platform/common")
 
-target_link_libraries(emu-stm32n6 PRIVATE emucore stm32cube)
+target_link_libraries(emu-stm32n6 PRIVATE emucore emu_freertos stm32cube)
 
 # ---------------------------------------------------------------------
 # Network transport

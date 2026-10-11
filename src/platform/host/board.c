@@ -1270,6 +1270,9 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
     return true;
 }
 
+/* A process has no clocks to bring up. */
+void board_early_init(void) {}
+
 /*
  * A runner can simply stop: there is a shell to report to, and the
  * message has already gone to stderr. The board's version never returns.
