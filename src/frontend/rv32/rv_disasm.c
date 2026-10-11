@@ -270,26 +270,50 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
          * printing confident nonsense for G4MH and reporting zero FP in
          * a hard-float build. Enumerate the slot.
          */
-        if (f3 == 5u) {
-            const char *mn = (f7 == 0x20u)   ? "srai"
-                             : (f7 == 0x30u) ? "rori"
-                             : (f7 == 0x34u) ? "bexti"
-                             : (f7 == 0x24u) ? "bclri"
-                             : (f7 == 0x00u) ? "srli"
-                                             : "?shift";
+        /*
+         * **And it was still wrong for three of them, in the other
+         * slot.** Under srli, funct7 0x34 is rev8 and 0x24 is bexti;
+         * this printed them as `bexti` and `bclri` -- the names of the
+         * same funct7 under *slli* -- so a trace of the crypto guest put
+         * every byte swap in SHA-256 in the single-bit bucket. orc.b and
+         * the five counts and extensions printed as placeholders. Where
+         * rs2 is part of the opcode (the one-source forms) any other
+         * value is reserved, and the interpreter traps on it.
+         */
+        if (f3 == 5u || f3 == 1u) {
+            static const char *const unary[8] = {
+                "clz", "ctz", "cpop", NULL, "sext.b", "sext.h", NULL, NULL};
+            const uint32_t rs2 = rv_rs2(insn);
+            const char *mn = NULL;
+            const char *one = NULL;
 
-            emit_rri(&o, mn, insn, (int32_t)rv_rs2(insn));
-            break;
-        }
-        if (f3 == 1u) {
-            const char *mn = (f7 == 0x14u)   ? "bseti"
-                             : (f7 == 0x24u) ? "bclri"
-                             : (f7 == 0x34u) ? "binvi"
-                             : (f7 == 0x30u) ? "?zbb-unary"
-                             : (f7 == 0x00u) ? "slli"
-                                             : "?shift";
-
-            emit_rri(&o, mn, insn, (int32_t)rv_rs2(insn));
+            if (f3 == 5u) {
+                mn = (f7 == 0x00u)   ? "srli"
+                     : (f7 == 0x20u) ? "srai"
+                     : (f7 == 0x30u) ? "rori"
+                     : (f7 == 0x24u) ? "bexti"
+                                     : NULL;
+                one = (f7 == 0x14u && rs2 == 7u)    ? "orc.b"
+                      : (f7 == 0x34u && rs2 == 24u) ? "rev8"
+                                                    : NULL;
+            } else {
+                mn = (f7 == 0x00u)   ? "slli"
+                     : (f7 == 0x14u) ? "bseti"
+                     : (f7 == 0x24u) ? "bclri"
+                     : (f7 == 0x34u) ? "binvi"
+                                     : NULL;
+                one = (f7 == 0x30u && rs2 < 8u) ? unary[rs2] : NULL;
+            }
+            if (mn != NULL) {
+                emit_rri(&o, mn, insn, (int32_t)rs2);
+            } else if (one != NULL) {
+                emit_mn(&o, one);
+                emit_reg(&o, rv_rd(insn));
+                emit_str(&o, ", ");
+                emit_reg(&o, rv_rs1(insn));
+            } else {
+                emit_str(&o, "illegal");
+            }
             break;
         }
         /* addi rd, zero, imm is the canonical load-immediate. */

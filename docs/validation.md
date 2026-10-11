@@ -49,7 +49,7 @@ Current state:
 | `riscv-tests`, interpreter | **77 / 77** | host |
 | `riscv-tests`, `--jit` through an `EMU_HOST` wrapper | **77 / 77** | host, x86-64 |
 | `ctest`, RV32 tree | 19 tests: unit, the guests, and most of them again under `--jit` | host |
-| `isatest`, JIT | **518 checks**, 1,171 of 62,362 instructions interpreted — the same two numbers the x86-64 host gives | Nucleo-F746ZG, Thumb-2 |
+| `isatest`, JIT | **748 checks**, 1,129 of 65,829 instructions interpreted — the same two numbers the x86-64 host gives | Nucleo-F746ZG, Thumb-2 |
 | Linux 6.12 under OpenSBI, `scripts/run-linux.sh` | boots to userspace; the test init passes **17 checks** from U-mode on the extensions the device tree declares | host, x86-64 JIT |
 | CoreMark, 120 iterations | `crcfinal 0xd340` on the interpreter and on the JIT at four cache sizes | Nucleo-F746ZG |
 
@@ -84,8 +84,8 @@ and none could have been caught by a signature-checking suite on a host:
 Three of those produced no wrong answer at all, only numbers that made
 no sense. Three were staleness: a decision taken when a block was
 translated, still in force after the state behind it changed. The
-self-test grew from 148 checks to 298 chasing them (it is 518 now, the
-rest being the extensions and the suites below), and the checks that
+self-test grew from 148 checks to 298 chasing them (it is 748 now, the
+rest being the extensions, the suites below and the B extension), and the checks that
 matter are the ones that re-execute *one* instruction at *one* address
 after changing the state it was compiled against — a fresh call site is
 translated against the current configuration and proves nothing.
@@ -94,6 +94,22 @@ The last two rows are from the framework and the platform rather than
 from the emitter, and they are why "run it on the board" means a guest
 large enough to fill the code cache and a run long enough to wrap the
 counter: `isatest` does neither, and passed throughout both.
+
+**The B extension's 230 checks are the board's only view of its
+Thumb-2 lowering.** The architecture suite covers Zba/Zbb/Zbc/Zbs
+properly -- and, since they are translated, now covers the translator
+too, under `--jit` -- but only on x86-64. So `isatest` holds every one
+of them to `tests/guest/bitmanip-expect.py`, a model written from the
+specification with unbounded integers, at the inputs where the two
+hosts disagree with the guest (a count of zero, an amount of 32, the
+sign boundary), with every register aliasing. Thirty-four mutants of
+the lowering, its helper, the shared arithmetic and the interpreter
+were run against it: every one that changes an answer fails on the
+backend it changes. Five pass everywhere, and none of them can change
+an answer -- `bexti` and `bext` through an arithmetic shift are still
+one bit after the `& 1`, a rotation by `32 - 0` is masked to 0 by both
+emitters, `ror` by zero written as `v | v` is `v`, and one was a
+mutant of the helper that, as written, could not alter its result.
 
 ## Floating point (F and D)
 

@@ -124,6 +124,28 @@ static void test_disasm(void)
         {0x0EC5F533u, "czero.nez a0, a1, a2"},
         {0x0FF2F4B3u, "czero.nez s1, t0, t6"},
         {0x0805C533u, "zext.h a0, a1"},
+        /*
+         * The B extension's immediate and one-source forms, which share
+         * slli's and srli's slots and were the rows this table did not
+         * have: rev8 printed as `bexti`, bexti as `bclri`, orc.b as
+         * `?shift` and the five counts and extensions as `?zbb-unary`.
+         */
+        {0x60059513u, "clz a0, a1"},
+        {0x60159513u, "ctz a0, a1"},
+        {0x60259513u, "cpop a0, a1"},
+        {0x60459513u, "sext.b a0, a1"},
+        {0x60559513u, "sext.h a0, a1"},
+        {0x2875D513u, "orc.b a0, a1"},
+        {0x6985D513u, "rev8 a0, a1"},
+        {0x6075D513u, "rori a0, a1, 7"},
+        {0x6005D513u, "rori a0, a1, 0"},
+        {0x49F5D513u, "bexti a0, a1, 31"},
+        {0x28359513u, "bseti a0, a1, 3"},
+        {0x49F59513u, "bclri a0, a1, 31"},
+        {0x68059513u, "binvi a0, a1, 0"},
+        {0x00559513u, "slli a0, a1, 5"},
+        {0x0055D513u, "srli a0, a1, 5"},
+        {0x4055D513u, "srai a0, a1, 5"},
         {0x0100000Fu, "pause"},
         {0x00200033u, "ntl.p1"},
         {0x00300033u, "ntl.pall"},
@@ -177,6 +199,11 @@ static void test_disasm(void)
     disasm_is(0x0AC58533u, "illegal"); /* funct7 0x05 funct3 0: no clmul */
     disasm_is(0x28C5D533u, "illegal"); /* bset's funct7, bext's funct3   */
     disasm_is(0x7EC58533u, "illegal"); /* a funct7 nothing uses          */
+    disasm_is(0x60359513u, "illegal"); /* clz's slot, rs2 3: no count    */
+    disasm_is(0x2865D513u, "illegal"); /* orc.b with rs2 6               */
+    disasm_is(0x6995D513u, "illegal"); /* rev8 with rs2 25               */
+    disasm_is(0x0805D513u, "illegal"); /* funct7 0x04 under srli         */
+    disasm_is(0x08059513u, "illegal"); /* funct7 0x04 under slli         */
     disasm_is(0x3005A52Fu, "illegal"); /* lw.aq without aq               */
     disasm_is(0x3415A52Fu, "illegal"); /* lw.aq with an rs2              */
     disasm_is(0x3405B52Fu, "illegal"); /* ld.aq: RV64                    */

@@ -31,6 +31,7 @@
 #include "emu/emu_memmap.h"
 
 #include "rv32/rv_hart.h"
+#include "rv32/rv_bitmanip.h"
 #include "rv32/rv_decode.h"
 #include "rv32/rv_ir.h"
 #include "rv32/rv_jit.h"
@@ -448,6 +449,96 @@ static uint32_t rv_ir_muldiv_helper(emu_cpu_t *cpu, uint32_t insn,
 }
 
 /*
+ * The bit-manipulation instructions that are not worth IR of their own.
+ *
+ * Which ones is a measurement, not a judgement about difficulty. Counted
+ * per instruction with -DEMU_PAIR_STATS=ON across every guest here, the
+ * B extension is the three shifted adds, `sext.h`, `zext.h`, `andn`,
+ * `rori`, `rev8` and `bexti` -- all of which lower_one emits natively,
+ * in one or two operations each -- and then nothing: `minu` eight times
+ * in the crypto guest, `bext` three times in CoreMark. What comes here
+ * is everything else, plus the two things no amount of frequency would
+ * move:
+ *
+ *   clmul, clmulh, clmulr   a 32-step loop; neither host has the
+ *                           instruction (x86-64 would need PCLMULQDQ
+ *                           and a feature test, a Cortex-M has nothing)
+ *   orc.b                   four compares
+ *   cpop                    declined by both backends as EMU_IR_POPCNT
+ *   min, max, minu, maxu    five IR operations each without a select,
+ *                           and EMU_IR_SELECT reads flags RISC-V lacks
+ *   rol, ror                four, EMU_IR_ROTL being declined by both
+ *
+ * CoreMark does execute clmul -- 2,352 times, its CRC -- and that is the
+ * case for the helper rather than against it: declined, each one ended
+ * its block and took an interpreter entry.
+ *
+ * EMU_IR_HELPER, not HELPER_TRAP: none of these can fault.
+ *
+ * **The decode below is the interpreter's, a second time, for the
+ * subset sent here** -- lower_one decides what that subset is, so an
+ * instruction it does not route cannot arrive. The arithmetic is
+ * rv_bitmanip.h's, which the interpreter shares.
+ */
+#if RV_EXT_ZBB || RV_EXT_ZBC
+static uint32_t rv_ir_bitop_helper(emu_cpu_t *cpu, uint32_t insn,
+                                   uint32_t unused)
+{
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+    const uint32_t a = h->x[rv_rs1(insn)];
+    const uint32_t s = h->x[rv_rs2(insn)];
+    const uint32_t f3 = rv_funct3(insn);
+    uint32_t v = 0u;
+
+    (void)unused;
+    (void)s;
+#if RV_EXT_ZBB
+    if ((insn & 0x7Fu) == 0x13u) {
+        /* OP-IMM: cpop shares slli's funct3, orc.b shares srli's. */
+        v = (f3 == 1u) ? (uint32_t)__builtin_popcount(a) : zbb_orcb(a);
+    } else if (rv_funct7(insn) == 0x30u) {
+        v = (f3 == 1u) ? zbb_rol(a, s) : zbb_ror(a, s);
+    } else
+#endif
+    {
+        switch (f3) {
+#if RV_EXT_ZBC
+        case 1u:
+            v = zbc_clmul(a, s);
+            break;
+        case 2u:
+            v = zbc_clmulr(a, s);
+            break;
+        case 3u:
+            v = zbc_clmulh(a, s);
+            break;
+#endif
+#if RV_EXT_ZBB
+        case 4u:
+            v = ((int32_t)a < (int32_t)s) ? a : s;
+            break;
+        case 5u:
+            v = (a < s) ? a : s;
+            break;
+        case 6u:
+            v = ((int32_t)a > (int32_t)s) ? a : s;
+            break;
+        case 7u:
+            v = (a > s) ? a : s;
+            break;
+#endif
+        default:
+            break;
+        }
+    }
+    if (rv_rd(insn) != 0u) {
+        h->x[rv_rd(insn)] = v;
+    }
+    return 0u;
+}
+#endif
+
+/*
  * Read one counter CSR.
  *
  * HELPER_TRAP because the read itself can fault: `time` is readable from
@@ -483,6 +574,7 @@ static uint32_t rv_ir_csr_helper(emu_cpu_t *cpu, uint32_t insn, uint32_t unused)
  * be reached -- the translator declines those instructions -- and is the
  * honest thing to put there if it ever were.
  */
+#if !(RV_EXT_F && RV_EXT_A && (RV_EXT_ZBB || RV_EXT_ZBC))
 static uint32_t rv_ir_helper_absent(emu_cpu_t *cpu, uint32_t insn,
                                     uint32_t unused)
 {
@@ -490,6 +582,7 @@ static uint32_t rv_ir_helper_absent(emu_cpu_t *cpu, uint32_t insn,
     rv_hart_trap((rv_hart_t *)cpu, RV_EXC_ILLEGAL_INSN, insn);
     return 1u;
 }
+#endif
 
 #if RV_EXT_F
 #define RV_IR_H_FP ((const void *)rv_ir_fp_helper)
@@ -502,13 +595,34 @@ static uint32_t rv_ir_helper_absent(emu_cpu_t *cpu, uint32_t insn,
 #define RV_IR_H_AMO ((const void *)rv_ir_helper_absent)
 #endif
 
-static const void *const rv_ir_helpers[] = {RV_IR_H_FP, RV_IR_H_AMO,
-                                            (const void *)rv_ir_csr_helper,
-                                            (const void *)rv_ir_muldiv_helper};
+#if RV_EXT_ZBB || RV_EXT_ZBC
+#define RV_IR_H_BITOP ((const void *)rv_ir_bitop_helper)
+#else
+#define RV_IR_H_BITOP ((const void *)rv_ir_helper_absent)
+#endif
+
+static const void *const rv_ir_helpers[] = {
+    RV_IR_H_FP, RV_IR_H_AMO, (const void *)rv_ir_csr_helper,
+    (const void *)rv_ir_muldiv_helper, RV_IR_H_BITOP};
 #define RV_IR_HELPER_FP 0u
 #define RV_IR_HELPER_AMO 1u
 #define RV_IR_HELPER_CSR 2u
 #define RV_IR_HELPER_MULDIV 3u
+#define RV_IR_HELPER_BITOP 4u
+
+/* One instruction, handed whole to rv_ir_bitop_helper. */
+static bool rv_ir_bitop_call(emu_ir_block_t *b, uint32_t insn)
+{
+    (void)emu_ir_emit(b, EMU_IR_HELPER, 0u, emu_ir_const(b, insn),
+                      EMU_IR_NO_TEMP, RV_IR_HELPER_BITOP, 0u);
+    return true;
+}
+
+/* A one-operand IR operation on `x`. */
+static uint16_t rv_ir_unary(emu_ir_block_t *b, emu_ir_op_t op, uint16_t x)
+{
+    return emu_ir_emit(b, op, 0u, x, EMU_IR_NO_TEMP, 0u, 0u);
+}
 
 const emu_ir_target_t rv_ir_target = {
     .reg_offset = rv_reg_offset,
@@ -658,19 +772,73 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
             return true;
         case 1u:
             /*
-             * Only shift-left lives here; every other funct7 in this
-             * slot belongs to Zba/Zbb/Zbs, which share it. Declining on
-             * anything but zero is the rule this project learned the
-             * hard way: an extension sharing an opcode slot that is
-             * decoded in one place, or it is decoded wrongly.
+             * Shift-left, and under every other funct7 the Zbb unary
+             * operations and Zbs's immediate forms, which share the
+             * slot. The whole slot is decoded here, in the
+             * interpreter's order and under the interpreter's gates: an
+             * encoding it would trap on is declined, so that it does.
              */
-            if (sh != 0u) {
-                return false;
+            if (sh == 0u) {
+                emu_ir_put(b, rd,
+                           emu_ir_emit(b, EMU_IR_SHLI, 0u, x, EMU_IR_NO_TEMP,
+                                       insn >> 20 & 31u, 0u));
+                return true;
             }
-            emu_ir_put(b, rd,
-                       emu_ir_emit(b, EMU_IR_SHLI, 0u, x, EMU_IR_NO_TEMP,
-                                   insn >> 20 & 31u, 0u));
-            return true;
+#if RV_EXT_ZBB
+            if (sh == 0x30u) {
+                switch (rs2) {
+                case 0u: /* clz */
+                case 1u: /* ctz */ {
+                    /*
+                     * Both IR operations answer 32 for a zero input,
+                     * which is Zbb's definition and is the awkward
+                     * case: x86's BSR leaves its destination undefined
+                     * there and ARM's CLZ does not, so it is the
+                     * lowering's to get right and isatest asks.
+                     */
+                    const emu_ir_op_t count =
+                        (rs2 == 0u) ? EMU_IR_CLZ : EMU_IR_CTZ;
+
+                    if (!emu_ir_can_lower(count, 0u)) {
+                        return false;
+                    }
+                    emu_ir_put(b, rd, rv_ir_unary(b, count, x));
+                    return true;
+                }
+                case 2u: /* cpop */
+                    return rv_ir_bitop_call(b, insn);
+                case 4u: /* sext.b */
+                    emu_ir_put(b, rd, rv_ir_unary(b, EMU_IR_SEXT8, x));
+                    return true;
+                case 5u: /* sext.h */
+                    emu_ir_put(b, rd, rv_ir_unary(b, EMU_IR_SEXT16, x));
+                    return true;
+                default:
+                    return false;
+                }
+            }
+#endif
+#if RV_EXT_ZBS
+            /*
+             * bseti, bclri, binvi: the mask is a constant, so each is
+             * the ordinary logical operation with an immediate -- and
+             * the optimiser folds the constant into the immediate form
+             * where the host has one.
+             */
+            if (sh == 0x14u || sh == 0x24u || sh == 0x34u) {
+                const uint32_t bit = 1u << rs2;
+
+                emu_ir_put(
+                    b, rd,
+                    (sh == 0x14u)
+                        ? emu_ir_alu(b, EMU_IR_OR, x, emu_ir_const(b, bit))
+                    : (sh == 0x24u)
+                        ? emu_ir_alu(b, EMU_IR_AND, x, emu_ir_const(b, ~bit))
+                        : emu_ir_alu(b, EMU_IR_XOR, x, emu_ir_const(b, bit)));
+                return true;
+            }
+#endif
+            return false;
         case 5u:
             if (sh == 0u) {
                 emu_ir_put(b, rd,
@@ -697,6 +865,7 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
              * which on ARM is the RRX encoding and not a rotation at
              * all. Same trap as the imm5 == 0 note in t2_shift_imm.
              */
+#if RV_EXT_ZBB
             if (sh == 0x30u) {
                 const uint32_t n = (insn >> 20) & 31u;
 
@@ -705,6 +874,26 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
                                        (32u - n) & 31u, 0u));
                 return true;
             }
+            /* orc.b and rev8 are single encodings: the rs2 field is
+             * part of the opcode, and any other value is reserved. */
+            if (sh == 0x14u && rs2 == 7u) {
+                return rv_ir_bitop_call(b, insn);
+            }
+            if (sh == 0x34u && rs2 == 24u) {
+                emu_ir_put(b, rd, rv_ir_unary(b, EMU_IR_BSWAP32, x));
+                return true;
+            }
+#endif
+#if RV_EXT_ZBS
+            if (sh == 0x24u) { /* bexti */
+                const uint16_t t =
+                    emu_ir_emit(b, EMU_IR_SHRI, 0u, x, EMU_IR_NO_TEMP, rs2, 0u);
+
+                emu_ir_put(b, rd,
+                           emu_ir_alu(b, EMU_IR_AND, t, emu_ir_const(b, 1u)));
+                return true;
+            }
+#endif
             return false;
         default:
             return false;
@@ -778,12 +967,100 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
             return true;
         }
 #endif
-        if (f7 != 0u && f7 != 0x20u) {
-            return false; /* Zba/Zbb/Zbs */
-        }
         const uint16_t x = emu_ir_get(b, rs1);
         const uint16_t y = emu_ir_get(b, rs2);
         const bool alt = (f7 == 0x20u);
+
+        /*
+         * Zba, Zbb, Zbc and Zbs, which is every remaining funct7.
+         *
+         * **Declining this slot was 98.8% of what the JIT still
+         * interpreted on CoreMark and 99.6% on Dhrystone**, and nearly
+         * all of that is one family: sh1add, sh2add and sh3add, which
+         * the compiler emits for every array index. Each one ended its
+         * block. Two IR operations.
+         *
+         * Decoded in one place and under the interpreter's own gates --
+         * min/max and clmul share funct7 0x05, bclr and bext share 0x24
+         * -- and whatever is not named declines, so a reserved encoding
+         * still reaches the interpreter and traps there.
+         *
+         * Everything open-coded uses operations *both* backends lower:
+         * shifts, the three logical operations, NOT. The IR has
+         * EMU_IR_BSET and its three siblings and x86-64 has bt/bts for
+         * them, but Thumb-2 declines all four, and an operation one
+         * backend refuses costs that host the whole block. The variable
+         * shifts mask their count to five bits in every consumer of the
+         * IR, which is Zbs's definition of the bit index.
+         */
+        if (f7 != 0u && !alt) {
+            switch (f7) {
+#if RV_EXT_ZBA
+            case 0x10u: /* sh1add, sh2add, sh3add: (rs1 << n) + rs2 */
+                if (f3 != 2u && f3 != 4u && f3 != 6u) {
+                    return false;
+                }
+                emu_ir_put(b, rd,
+                           emu_ir_alu(b, EMU_IR_ADD,
+                                      emu_ir_emit(b, EMU_IR_SHLI, 0u, x,
+                                                  EMU_IR_NO_TEMP, f3 >> 1, 0u),
+                                      y));
+                return true;
+#endif
+#if RV_EXT_ZBB || RV_EXT_ZBC
+            case 0x05u: /* clmul* below 4, min/max from 4 */
+#if !RV_EXT_ZBC
+                if (f3 < 4u) {
+                    return false;
+                }
+#endif
+#if !RV_EXT_ZBB
+                if (f3 >= 4u) {
+                    return false;
+                }
+#endif
+                return (f3 != 0u) && rv_ir_bitop_call(b, insn);
+#endif
+#if RV_EXT_ZBB
+            case 0x30u: /* rol, ror */
+                return (f3 == 1u || f3 == 5u) && rv_ir_bitop_call(b, insn);
+            case 0x04u: /* zext.h: rs2 is part of the encoding */
+                if (f3 != 4u || rs2 != 0u) {
+                    return false;
+                }
+                emu_ir_put(b, rd, rv_ir_unary(b, EMU_IR_ZEXT16, x));
+                return true;
+#endif
+#if RV_EXT_ZBS
+            case 0x14u: /* bset */
+            case 0x34u: /* binv */
+            case 0x24u: /* bclr, and bext at funct3 5 */ {
+                if (f7 == 0x24u && f3 == 5u) {
+                    emu_ir_put(b, rd,
+                               emu_ir_alu(b, EMU_IR_AND,
+                                          emu_ir_alu(b, EMU_IR_SHR, x, y),
+                                          emu_ir_const(b, 1u)));
+                    return true;
+                }
+                if (f3 != 1u) {
+                    return false;
+                }
+                const uint16_t bit =
+                    emu_ir_alu(b, EMU_IR_SHL, emu_ir_const(b, 1u), y);
+
+                emu_ir_put(b, rd,
+                           (f7 == 0x14u) ? emu_ir_alu(b, EMU_IR_OR, x, bit)
+                           : (f7 == 0x34u)
+                               ? emu_ir_alu(b, EMU_IR_XOR, x, bit)
+                               : emu_ir_alu(b, EMU_IR_AND, x,
+                                            rv_ir_unary(b, EMU_IR_NOT, bit)));
+                return true;
+            }
+#endif
+            default:
+                return false;
+            }
+        }
 
         switch (f3) {
         case 0u:
@@ -812,8 +1089,15 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
                 emu_ir_emit(b, EMU_IR_SETCC, EMU_IR_C_LTU, x, y, 0u, 0u));
             return true;
         case 4u:
-            if (alt) {
+            if (alt) { /* xnor */
+#if RV_EXT_ZBB
+                emu_ir_put(b, rd,
+                           rv_ir_unary(b, EMU_IR_NOT,
+                                       emu_ir_alu(b, EMU_IR_XOR, x, y)));
+                return true;
+#else
                 return false;
+#endif
             }
             emu_ir_put(b, rd, emu_ir_alu(b, EMU_IR_XOR, x, y));
             return true;
@@ -822,14 +1106,28 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
                        emu_ir_alu(b, alt ? EMU_IR_SAR : EMU_IR_SHR, x, y));
             return true;
         case 6u:
-            if (alt) {
+            if (alt) { /* orn */
+#if RV_EXT_ZBB
+                emu_ir_put(
+                    b, rd,
+                    emu_ir_alu(b, EMU_IR_OR, x, rv_ir_unary(b, EMU_IR_NOT, y)));
+                return true;
+#else
                 return false;
+#endif
             }
             emu_ir_put(b, rd, emu_ir_alu(b, EMU_IR_OR, x, y));
             return true;
         case 7u:
-            if (alt) {
+            if (alt) { /* andn */
+#if RV_EXT_ZBB
+                emu_ir_put(b, rd,
+                           emu_ir_alu(b, EMU_IR_AND, x,
+                                      rv_ir_unary(b, EMU_IR_NOT, y)));
+                return true;
+#else
                 return false;
+#endif
             }
             emu_ir_put(b, rd, emu_ir_alu(b, EMU_IR_AND, x, y));
             return true;

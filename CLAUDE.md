@@ -95,7 +95,7 @@ because this firmware never idles and a plain attach races it. Build
 `-DEMU_NET=OFF` to keep the UART a console.
 
 **`isatest` on the board is necessary and nowhere near sufficient.** It
-measures coverage now -- 1,171 of 62,362 instructions interpreted under
+measures coverage now -- 1,129 of 65,829 instructions interpreted under
 the JIT, on the board as on x86-64 -- but it never fills the code cache
 and it finishes in a tenth of a second. Two defects sat behind those
 two facts while it passed: a compaction that moved blocks with their
@@ -2690,8 +2690,8 @@ session, and every one of them recurred:
   class, and that what is declined costs more than what is translated
   badly. Both were true of a hole that had been there since the
   extension was. **`interp` in the stats line was the symptom for
-  months; what was missing was its breakdown.** It is docs/TODO.md's
-  first entry.
+  months; what was missing was its breakdown.** It is lowered now; see
+  the next entry.
 
   Two things about the instrument. **Run it where it is exact and
   cheap.** It counts what the interpreter executes, so under `--jit` it
@@ -2703,6 +2703,41 @@ session, and every one of them recurred:
   `run-linux.sh` had carried in a comment since Zbb was declared to the
   kernel -- "consistent with the alternatives patching, and equally with
   nothing being patched" -- in one run.
+
+- **A capability the old translator had is not a capability the new one
+  has.** The hand-written Thumb-2 translator lowered Zbb, and
+  `docs/performance.md` says what it was worth: 307,128 fallbacks to 89
+  on CoreMark. The IR that replaced it lowered `rori` and nothing else
+  from the four extensions, and that stood for months while every suite
+  passed, because declining is correct. Lowered now -- open-coded from
+  operations both backends lower, with one helper for the rare and the
+  loop-shaped -- CoreMark interprets **1 instruction where it
+  interpreted 23,339**, and on the F746 it went 172.3 to 140.0 host
+  cycles an instruction at 32 KB and 47.6 to 31.1 at 96 KB, with
+  `crcfinal` unchanged.
+
+  This file already says, of `EMU_JIT_CODE_BYTES`, to grep for the
+  readers of a replaced subsystem's options. The same holds for its
+  *measured wins*: each is a line in an old document saying what the
+  old code bought, and each is a check the new code has to pass. Read
+  them as a list when the replacement lands, not one at a time when a
+  benchmark happens to ask.
+
+- **Two instruments had their names fixed and not their inputs.** The
+  pair histogram's kind keeps *what a fusion would match on* -- and kept
+  one bit of funct7, bit 30, from the day it was written. Two later
+  fixes to its printed names compared that bit against 0x01, 0x05 and
+  0x20, and `>> 2` of it against the FP function codes, so neither took
+  effect: `mul` still printed as `add`, `sub` as `mul`, every OP-FP as
+  `fadd.s`, and the Zba table was indexed at funct3 1, 3 and 5 where
+  the instructions are 2, 4 and 6. The disassembler's `srli` slot named
+  `rev8` as `bexti` and `bexti` as `bclri` -- the names that funct7
+  has under *slli*. Both surfaced from adding the rows for instructions
+  that were about to be lowered, and neither changed a single aggregate
+  figure: 29.63% dependent pairs before and after. **A fix to how a
+  value is read has to be checked against how the value is made** --
+  print the row the fix was for, and a name that cannot appear is the
+  tell.
 
 - **An out-parameter on a hot function is not free, and neither is a
   helper the compiler inlined into it.** A fault that crosses a page

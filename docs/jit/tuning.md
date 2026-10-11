@@ -33,21 +33,31 @@ and how many translations the run needed:
 
 | | RV32 CoreMark | RV32 `bench` | PowerPC CoreMark | PowerPC crypto | guest RAM |
 |---|---|---|---|---|---|
-| interpreter | **108.2** | **98.2** | **222.3** | **243.4** | 309 KiB |
-| 32 KB (default) | 169.6 (82,075) | 199.5 (1,873) | 335.1 (46,199) | 716.5 (28,545) | 232 KiB |
-| 48 KB | 143.5 (60,171) | | | | 216 KiB |
-| 64 KB | 97.7 (29,682) | | 212.1 (27,780) | 373.7 (12,532) | 200 KiB |
-| 96 KB | **53.1** (588) | | 125.8 (15,309) | **35.4** (468) | 168 KiB |
+| interpreter | **107.4** | **100.1** | **222.3** | **243.4** | 309 KiB |
+| 32 KB (default) | 140.0 (63,733) | 194.6 (1,872) | 335.1 (46,199) | 716.5 (28,545) | 232 KiB |
+| 48 KB | 118.9 (51,895) | | | | 216 KiB |
+| 64 KB | 67.4 (26,858) | | 212.1 (27,780) | 373.7 (12,532) | 200 KiB |
+| 96 KB | **31.1** (7,152) | | 125.8 (15,309) | **35.4** (468) | 168 KiB |
 
 RV32 CoreMark is 120 iterations, 30,027,635 instructions, which CoreMark
 accepts as a valid run; PowerPC's is 40 iterations, 12,170,464. Guest RAM
-is RV32's; PowerPC's is three or four KiB less.
+is RV32's; PowerPC's is three or four KiB less. The RV32 columns are
+from the tree that lowered the B extension, and the PowerPC ones from
+before it, which that change does not touch.
+
+**What the B extension was worth here**, the same configuration before
+and after, `crcfinal 0xd340` both times: 32 KB 172.3 → 140.0, 96 KB
+47.6 → 31.1, and instructions handed back to the interpreter 1,366,260
+→ 1. The 96 KB row needs *more* translations than it did (588 → 7,152)
+and is still a third faster: a block that used to end at an `sh1add`
+now runs on through it, so there is more code to hold and far fewer
+dispatches to pay for it -- block entries 2,212,003 → 1,025,577.
 
 Read the translation counts before the cycles. A guest with a few
-hundred blocks that needs 82,075 translations is not being translated,
+hundred blocks that needs 63,733 translations is not being translated,
 it is being *re*-translated: the cache is a queue. RV32 CoreMark's
-working set is about 83 KB, and the row where it fits is the only one
-where the JIT is clearly ahead — 2.04× the interpreter. PowerPC crypto
+working set no longer fits even at 96 KB, and that row is the one where
+the JIT is clearly ahead — 3.45× the interpreter. PowerPC crypto
 fits at 96 KB and is 6.9× ahead; PowerPC CoreMark never fits here.
 
 So the knob is not a dial, it is a threshold per guest, and below the

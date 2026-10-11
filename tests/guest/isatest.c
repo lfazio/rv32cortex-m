@@ -2384,6 +2384,561 @@ static void test_zicond(void)
     check("zicond-no-trap", g_trap_count - before, 0u);
 }
 
+/* ---- Zba, Zbb, Zbc, Zbs ------------------------------------------- */
+
+/*
+ * The four bit-manipulation extensions, instruction by instruction.
+ *
+ * **This guest executed almost none of them before**: 33 sh2add, one
+ * zext.h and six single-bit operations in a whole run, every one of
+ * them whatever the compiler happened to emit for an array index. The
+ * official suite covers the extensions properly and cannot run on a
+ * board -- so the Thumb-2 lowering of each of these was checked by
+ * nothing, which did not matter while the translator declined them all
+ * and matters now that it does not.
+ *
+ * Every expectation is from tests/guest/bitmanip-expect.py, a model
+ * written from the specification with unbounded integers: no 32-bit
+ * shift, no builtin, nothing shared with either implementation. Never
+ * assert a value the implementation computed.
+ *
+ * The inputs are the awkward ones, because those are where the two
+ * hosts differ from the guest and from each other:
+ *
+ *   clz, ctz of zero       32, where x86's BSR/BSF leave the result
+ *                          undefined and ARM's CLZ does not
+ *   rotate, bit index 32   the low five bits only -- an ARM register
+ *                          shift reads the low *byte* and saturates
+ *   rotate by 0            which on ARM is the RRX encoding
+ *   min/max across the     0x80000000 against 0x7FFFFFFF, where signed
+ *   sign boundary          and unsigned disagree about every answer
+ *   clmulh / clmulr        differ by one bit position, and agree for
+ *                          any product that fits 31 bits
+ *   andn / orn             not symmetric: both operand orders
+ *
+ * And each family again with its registers named, for the aliasings: an
+ * instruction whose destination is one of its own operands is right for
+ * every allocation the compiler chooses and wrong for these when a
+ * lowering writes before it has finished reading.
+ */
+#define BM_ARCH "zba,+zbb,+zbc,+zbs"
+
+/* rd, rs1 and rs2 distinct, chosen by the compiler. */
+#define B2(mn, a, b)                                                           \
+    ({                                                                         \
+        uint32_t r_;                                                           \
+        __asm__ volatile(WITH_EXT(BM_ARCH, mn " %0, %1, %2")                   \
+                         : "=&r"(r_)                                           \
+                         : "r"(opaque(a)), "r"(opaque(b)));                    \
+        r_;                                                                    \
+    })
+
+#define B1(mn, a)                                                              \
+    ({                                                                         \
+        uint32_t r_;                                                           \
+        __asm__ volatile(WITH_EXT(BM_ARCH, mn " %0, %1")                       \
+                         : "=&r"(r_)                                           \
+                         : "r"(opaque(a)));                                    \
+        r_;                                                                    \
+    })
+
+#define BI(mn, a, n)                                                           \
+    ({                                                                         \
+        uint32_t r_;                                                           \
+        __asm__ volatile(WITH_EXT(BM_ARCH, mn " %0, %1, " #n)                  \
+                         : "=&r"(r_)                                           \
+                         : "r"(opaque(a)));                                    \
+        r_;                                                                    \
+    })
+
+/* t0 and t1 hold the operands; `seq` leaves its answer in t2. */
+#define B_REGS(seq, a, b)                                                      \
+    ({                                                                         \
+        register uint32_t t0_ __asm__("t0") = opaque(a);                       \
+        register uint32_t t1_ __asm__("t1") = opaque(b);                       \
+        register uint32_t t2_ __asm__("t2") = 0xDEADBEEFu;                     \
+        __asm__ volatile(WITH_EXT(BM_ARCH, seq)                                \
+                         : "+r"(t0_), "+r"(t1_), "+r"(t2_));                   \
+        t2_;                                                                   \
+    })
+
+static void test_bitmanip(void)
+{
+    const uint32_t before = g_trap_count;
+
+    /*
+     * Zba. (1, 1) alone tells the three apart -- 3, 5 and 9 -- which is
+     * the funct3-to-shift mapping; the others carry out of bit 31.
+     */
+    check("sh1add 00000001,00000001", B2("sh1add", 0x00000001u, 0x00000001u),
+          0x00000003u);
+    check("sh1add 80000001,7fffffff", B2("sh1add", 0x80000001u, 0x7FFFFFFFu),
+          0x80000001u);
+    check("sh1add ffffffff,ffffffff", B2("sh1add", 0xFFFFFFFFu, 0xFFFFFFFFu),
+          0xFFFFFFFDu);
+    check("sh2add 00000001,00000001", B2("sh2add", 0x00000001u, 0x00000001u),
+          0x00000005u);
+    check("sh2add 40000001,00000003", B2("sh2add", 0x40000001u, 0x00000003u),
+          0x00000007u);
+    check("sh2add ffffffff,ffffffff", B2("sh2add", 0xFFFFFFFFu, 0xFFFFFFFFu),
+          0xFFFFFFFBu);
+    check("sh3add 00000001,00000001", B2("sh3add", 0x00000001u, 0x00000001u),
+          0x00000009u);
+    check("sh3add 20000001,fffffff8", B2("sh3add", 0x20000001u, 0xFFFFFFF8u),
+          0x00000000u);
+    check("sh3add ffffffff,ffffffff", B2("sh3add", 0xFFFFFFFFu, 0xFFFFFFFFu),
+          0xFFFFFFF7u);
+    check("sh2add rd=rs1",
+          B_REGS("sh2add t0, t0, t1\nmv t2, t0", 0x00001000u, 0x00000234u),
+          0x00004234u);
+    check("sh2add rd=rs2",
+          B_REGS("sh2add t1, t0, t1\nmv t2, t1", 0x00001000u, 0x00000234u),
+          0x00004234u);
+    check("sh2add rs1=rs2",
+          B_REGS("sh2add t2, t1, t1", 0x00001000u, 0x00000234u), 0x00000B04u);
+    check("sh3add rd=rs1=rs2",
+          B_REGS("sh3add t1, t1, t1\nmv t2, t1", 0x00001000u, 0x00000234u),
+          0x000013D4u);
+    check("sh1add rd=x0",
+          B_REGS("sh1add x0, t0, t1\nadd t2, x0, x0", 0x00001000u, 0x00000234u),
+          0x00000000u);
+    check("sh1add rs1=x0",
+          B_REGS("sh1add t2, x0, t1", 0x00001000u, 0x00000234u), 0x00000234u);
+    check("sh1add rs2=x0",
+          B_REGS("sh1add t2, t0, x0", 0x00001000u, 0x00000234u), 0x00002000u);
+
+    /* Zbb: the three logical operations with an inverted operand. */
+    check("andn ff00ff00,0f0f0f0f", B2("andn", 0xFF00FF00u, 0x0F0F0F0Fu),
+          0xF000F000u);
+    check("andn 0f0f0f0f,ff00ff00", B2("andn", 0x0F0F0F0Fu, 0xFF00FF00u),
+          0x000F000Fu);
+    check("andn 00000000,00000000", B2("andn", 0x00000000u, 0x00000000u),
+          0x00000000u);
+    check("andn ffffffff,00000000", B2("andn", 0xFFFFFFFFu, 0x00000000u),
+          0xFFFFFFFFu);
+    check("andn 00000000,ffffffff", B2("andn", 0x00000000u, 0xFFFFFFFFu),
+          0x00000000u);
+    check("orn ff00ff00,0f0f0f0f", B2("orn", 0xFF00FF00u, 0x0F0F0F0Fu),
+          0xFFF0FFF0u);
+    check("orn 0f0f0f0f,ff00ff00", B2("orn", 0x0F0F0F0Fu, 0xFF00FF00u),
+          0x0FFF0FFFu);
+    check("orn 00000000,00000000", B2("orn", 0x00000000u, 0x00000000u),
+          0xFFFFFFFFu);
+    check("orn ffffffff,00000000", B2("orn", 0xFFFFFFFFu, 0x00000000u),
+          0xFFFFFFFFu);
+    check("orn 00000000,ffffffff", B2("orn", 0x00000000u, 0xFFFFFFFFu),
+          0x00000000u);
+    check("xnor ff00ff00,0f0f0f0f", B2("xnor", 0xFF00FF00u, 0x0F0F0F0Fu),
+          0x0FF00FF0u);
+    check("xnor 0f0f0f0f,ff00ff00", B2("xnor", 0x0F0F0F0Fu, 0xFF00FF00u),
+          0x0FF00FF0u);
+    check("xnor 00000000,00000000", B2("xnor", 0x00000000u, 0x00000000u),
+          0xFFFFFFFFu);
+    check("xnor ffffffff,00000000", B2("xnor", 0xFFFFFFFFu, 0x00000000u),
+          0x00000000u);
+    check("xnor 00000000,ffffffff", B2("xnor", 0x00000000u, 0xFFFFFFFFu),
+          0x00000000u);
+    check("andn rd=rs2",
+          B_REGS("andn t1, t0, t1\nmv t2, t1", 0xFF00FF00u, 0x0F0F0F0Fu),
+          0xF000F000u);
+    check("andn rd=rs1",
+          B_REGS("andn t0, t0, t1\nmv t2, t0", 0xFF00FF00u, 0x0F0F0F0Fu),
+          0xF000F000u);
+    check("andn rs1=rs2", B_REGS("andn t2, t1, t1", 0xFF00FF00u, 0x0F0F0F0Fu),
+          0x00000000u);
+    check("orn rd=rs2",
+          B_REGS("orn t1, t0, t1\nmv t2, t1", 0xFF00FF00u, 0x0F0F0F0Fu),
+          0xFFF0FFF0u);
+    check("orn rs1=rs2", B_REGS("orn t2, t1, t1", 0xFF00FF00u, 0x0F0F0F0Fu),
+          0xFFFFFFFFu);
+    check("xnor rd=rs2",
+          B_REGS("xnor t1, t0, t1\nmv t2, t1", 0xFF00FF00u, 0x0F0F0F0Fu),
+          0x0FF00FF0u);
+    check("xnor rs1=rs2", B_REGS("xnor t2, t1, t1", 0xFF00FF00u, 0x0F0F0F0Fu),
+          0xFFFFFFFFu);
+    check("orn rd=x0",
+          B_REGS("orn x0, t0, t1\nadd t2, x0, x0", 0xFF00FF00u, 0x0F0F0F0Fu),
+          0x00000000u);
+
+    /* Zbb: counts. Zero is the input that matters. */
+    check("clz 00000000", B1("clz", 0x00000000u), 0x00000020u);
+    check("clz 00000001", B1("clz", 0x00000001u), 0x0000001Fu);
+    check("clz 80000000", B1("clz", 0x80000000u), 0x00000000u);
+    check("clz 00010000", B1("clz", 0x00010000u), 0x0000000Fu);
+    check("clz 7fffffff", B1("clz", 0x7FFFFFFFu), 0x00000001u);
+    check("clz ffffffff", B1("clz", 0xFFFFFFFFu), 0x00000000u);
+    check("ctz 00000000", B1("ctz", 0x00000000u), 0x00000020u);
+    check("ctz 00000001", B1("ctz", 0x00000001u), 0x00000000u);
+    check("ctz 80000000", B1("ctz", 0x80000000u), 0x0000001Fu);
+    check("ctz 00010000", B1("ctz", 0x00010000u), 0x00000010u);
+    check("ctz fffffffe", B1("ctz", 0xFFFFFFFEu), 0x00000001u);
+    check("ctz ffffffff", B1("ctz", 0xFFFFFFFFu), 0x00000000u);
+    check("cpop 00000000", B1("cpop", 0x00000000u), 0x00000000u);
+    check("cpop ffffffff", B1("cpop", 0xFFFFFFFFu), 0x00000020u);
+    check("cpop 80000001", B1("cpop", 0x80000001u), 0x00000002u);
+    check("cpop 12345678", B1("cpop", 0x12345678u), 0x0000000Du);
+    check("cpop 00010000", B1("cpop", 0x00010000u), 0x00000001u);
+    check("clz rd=rs1",
+          B_REGS("clz t0, t0\nmv t2, t0", 0x00010000u, 0x00000000u),
+          0x0000000Fu);
+    check("clz rd=rs1 zero",
+          B_REGS("clz t0, t0\nmv t2, t0", 0x00000000u, 0x00000000u),
+          0x00000020u);
+    check("ctz rd=rs1 zero",
+          B_REGS("ctz t0, t0\nmv t2, t0", 0x00000000u, 0x00000000u),
+          0x00000020u);
+    check("cpop rd=rs1",
+          B_REGS("cpop t0, t0\nmv t2, t0", 0x12345678u, 0x00000000u),
+          0x0000000Du);
+    check("clz rs1=x0", B_REGS("clz t2, x0", 0x00000005u, 0x00000005u),
+          0x00000020u);
+    check("cpop rd=x0",
+          B_REGS("cpop x0, t0\nadd t2, x0, x0", 0xFFFFFFFFu, 0x00000000u),
+          0x00000000u);
+
+    /*
+     * Zbb: extensions. The interesting bit is the top one of the field,
+     * with the bits above it set the other way.
+     */
+    check("sext.b 0000007f", B1("sext.b", 0x0000007Fu), 0x0000007Fu);
+    check("sext.b 00000080", B1("sext.b", 0x00000080u), 0xFFFFFF80u);
+    check("sext.b 12345680", B1("sext.b", 0x12345680u), 0xFFFFFF80u);
+    check("sext.b ffffff7f", B1("sext.b", 0xFFFFFF7Fu), 0x0000007Fu);
+    check("sext.b 00000000", B1("sext.b", 0x00000000u), 0x00000000u);
+    check("sext.h 00007fff", B1("sext.h", 0x00007FFFu), 0x00007FFFu);
+    check("sext.h 00008000", B1("sext.h", 0x00008000u), 0xFFFF8000u);
+    check("sext.h 12348000", B1("sext.h", 0x12348000u), 0xFFFF8000u);
+    check("sext.h ffff7fff", B1("sext.h", 0xFFFF7FFFu), 0x00007FFFu);
+    check("sext.h 00000080", B1("sext.h", 0x00000080u), 0x00000080u);
+    check("zext.h ffffffff", B1("zext.h", 0xFFFFFFFFu), 0x0000FFFFu);
+    check("zext.h 12348000", B1("zext.h", 0x12348000u), 0x00008000u);
+    check("zext.h ffff0000", B1("zext.h", 0xFFFF0000u), 0x00000000u);
+    check("zext.h 0000ffff", B1("zext.h", 0x0000FFFFu), 0x0000FFFFu);
+    check("sext.b rd=rs1",
+          B_REGS("sext.b t0, t0\nmv t2, t0", 0x12345680u, 0x00000000u),
+          0xFFFFFF80u);
+    check("zext.h rd=rs1",
+          B_REGS("zext.h t0, t0\nmv t2, t0", 0xFFFFFFFFu, 0x00000000u),
+          0x0000FFFFu);
+
+    /* Zbb: minimum and maximum, signed and unsigned. */
+    check("min 80000000,7fffffff", B2("min", 0x80000000u, 0x7FFFFFFFu),
+          0x80000000u);
+    check("min 7fffffff,80000000", B2("min", 0x7FFFFFFFu, 0x80000000u),
+          0x80000000u);
+    check("min ffffffff,00000001", B2("min", 0xFFFFFFFFu, 0x00000001u),
+          0xFFFFFFFFu);
+    check("min 00000001,ffffffff", B2("min", 0x00000001u, 0xFFFFFFFFu),
+          0xFFFFFFFFu);
+    check("min 00000005,00000005", B2("min", 0x00000005u, 0x00000005u),
+          0x00000005u);
+    check("min 00000000,ffffffff", B2("min", 0x00000000u, 0xFFFFFFFFu),
+          0xFFFFFFFFu);
+    check("max 80000000,7fffffff", B2("max", 0x80000000u, 0x7FFFFFFFu),
+          0x7FFFFFFFu);
+    check("max 7fffffff,80000000", B2("max", 0x7FFFFFFFu, 0x80000000u),
+          0x7FFFFFFFu);
+    check("max ffffffff,00000001", B2("max", 0xFFFFFFFFu, 0x00000001u),
+          0x00000001u);
+    check("max 00000001,ffffffff", B2("max", 0x00000001u, 0xFFFFFFFFu),
+          0x00000001u);
+    check("max 00000005,00000005", B2("max", 0x00000005u, 0x00000005u),
+          0x00000005u);
+    check("max 00000000,ffffffff", B2("max", 0x00000000u, 0xFFFFFFFFu),
+          0x00000000u);
+    check("minu 80000000,7fffffff", B2("minu", 0x80000000u, 0x7FFFFFFFu),
+          0x7FFFFFFFu);
+    check("minu 7fffffff,80000000", B2("minu", 0x7FFFFFFFu, 0x80000000u),
+          0x7FFFFFFFu);
+    check("minu ffffffff,00000001", B2("minu", 0xFFFFFFFFu, 0x00000001u),
+          0x00000001u);
+    check("minu 00000001,ffffffff", B2("minu", 0x00000001u, 0xFFFFFFFFu),
+          0x00000001u);
+    check("minu 00000005,00000005", B2("minu", 0x00000005u, 0x00000005u),
+          0x00000005u);
+    check("minu 00000000,ffffffff", B2("minu", 0x00000000u, 0xFFFFFFFFu),
+          0x00000000u);
+    check("maxu 80000000,7fffffff", B2("maxu", 0x80000000u, 0x7FFFFFFFu),
+          0x80000000u);
+    check("maxu 7fffffff,80000000", B2("maxu", 0x7FFFFFFFu, 0x80000000u),
+          0x80000000u);
+    check("maxu ffffffff,00000001", B2("maxu", 0xFFFFFFFFu, 0x00000001u),
+          0xFFFFFFFFu);
+    check("maxu 00000001,ffffffff", B2("maxu", 0x00000001u, 0xFFFFFFFFu),
+          0xFFFFFFFFu);
+    check("maxu 00000005,00000005", B2("maxu", 0x00000005u, 0x00000005u),
+          0x00000005u);
+    check("maxu 00000000,ffffffff", B2("maxu", 0x00000000u, 0xFFFFFFFFu),
+          0xFFFFFFFFu);
+    check("min rd=rs1",
+          B_REGS("min t0, t0, t1\nmv t2, t0", 0x80000000u, 0x7FFFFFFFu),
+          0x80000000u);
+    check("maxu rd=rs2",
+          B_REGS("maxu t1, t0, t1\nmv t2, t1", 0x80000000u, 0x7FFFFFFFu),
+          0x80000000u);
+    check("max rs1=rs2", B_REGS("max t2, t1, t1", 0x80000000u, 0x7FFFFFFFu),
+          0x7FFFFFFFu);
+    check("min rd=x0",
+          B_REGS("min x0, t0, t1\nadd t2, x0, x0", 0x80000000u, 0x7FFFFFFFu),
+          0x00000000u);
+    check("minu rs1=x0", B_REGS("minu t2, x0, t1", 0x80000000u, 0x7FFFFFFFu),
+          0x00000000u);
+    check("maxu rs2=x0", B_REGS("maxu t2, t0, x0", 0x80000000u, 0x7FFFFFFFu),
+          0x80000000u);
+
+    /*
+     * Zbb: rotations, orc.b and rev8. An amount of 32, 36 or -28 is the
+     * same rotation as 0, 4 or 4.
+     */
+    check("rol 80000001,00000001", B2("rol", 0x80000001u, 0x00000001u),
+          0x00000003u);
+    check("rol 12345678,00000000", B2("rol", 0x12345678u, 0x00000000u),
+          0x12345678u);
+    check("rol 12345678,00000020", B2("rol", 0x12345678u, 0x00000020u),
+          0x12345678u);
+    check("rol 12345678,00000024", B2("rol", 0x12345678u, 0x00000024u),
+          0x23456781u);
+    check("rol 12345678,0000001f", B2("rol", 0x12345678u, 0x0000001Fu),
+          0x091A2B3Cu);
+    check("rol 12345678,ffffffe4", B2("rol", 0x12345678u, 0xFFFFFFE4u),
+          0x23456781u);
+    check("rol ffffffff,00000007", B2("rol", 0xFFFFFFFFu, 0x00000007u),
+          0xFFFFFFFFu);
+    check("ror 80000001,00000001", B2("ror", 0x80000001u, 0x00000001u),
+          0xC0000000u);
+    check("ror 12345678,00000000", B2("ror", 0x12345678u, 0x00000000u),
+          0x12345678u);
+    check("ror 12345678,00000020", B2("ror", 0x12345678u, 0x00000020u),
+          0x12345678u);
+    check("ror 12345678,00000024", B2("ror", 0x12345678u, 0x00000024u),
+          0x81234567u);
+    check("ror 12345678,0000001f", B2("ror", 0x12345678u, 0x0000001Fu),
+          0x2468ACF0u);
+    check("ror 12345678,ffffffe4", B2("ror", 0x12345678u, 0xFFFFFFE4u),
+          0x81234567u);
+    check("ror ffffffff,00000007", B2("ror", 0xFFFFFFFFu, 0x00000007u),
+          0xFFFFFFFFu);
+    check("rori 12345678,0", BI("rori", 0x12345678u, 0), 0x12345678u);
+    check("rori 12345678,4", BI("rori", 0x12345678u, 4), 0x81234567u);
+    check("rori 12345678,31", BI("rori", 0x12345678u, 31), 0x2468ACF0u);
+    check("rori 80000001,1", BI("rori", 0x80000001u, 1), 0xC0000000u);
+    check("rori 12345678,16", BI("rori", 0x12345678u, 16), 0x56781234u);
+    check("rol rd=rs1",
+          B_REGS("rol t0, t0, t1\nmv t2, t0", 0x12345678u, 0x00000004u),
+          0x23456781u);
+    check("ror rd=rs2",
+          B_REGS("ror t1, t0, t1\nmv t2, t1", 0x12345678u, 0x00000004u),
+          0x81234567u);
+    check("rol rs1=rs2", B_REGS("rol t2, t1, t1", 0x00000000u, 0x00000105u),
+          0x000020A0u);
+    check("rori rd=rs1",
+          B_REGS("rori t0, t0, 12\nmv t2, t0", 0x12345678u, 0x00000000u),
+          0x67812345u);
+    check("orc.b 00000000", B1("orc.b", 0x00000000u), 0x00000000u);
+    check("orc.b 00010000", B1("orc.b", 0x00010000u), 0x00FF0000u);
+    check("orc.b 80000001", B1("orc.b", 0x80000001u), 0xFF0000FFu);
+    check("orc.b 01010101", B1("orc.b", 0x01010101u), 0xFFFFFFFFu);
+    check("orc.b 00ff0100", B1("orc.b", 0x00FF0100u), 0x00FFFF00u);
+    check("orc.b ffffffff", B1("orc.b", 0xFFFFFFFFu), 0xFFFFFFFFu);
+    check("rev8 12345678", B1("rev8", 0x12345678u), 0x78563412u);
+    check("rev8 000000ff", B1("rev8", 0x000000FFu), 0xFF000000u);
+    check("rev8 ff000000", B1("rev8", 0xFF000000u), 0x000000FFu);
+    check("rev8 00ff0000", B1("rev8", 0x00FF0000u), 0x0000FF00u);
+    check("orc.b rd=rs1",
+          B_REGS("orc.b t0, t0\nmv t2, t0", 0x00010000u, 0x00000000u),
+          0x00FF0000u);
+    check("rev8 rd=rs1",
+          B_REGS("rev8 t0, t0\nmv t2, t0", 0x12345678u, 0x00000000u),
+          0x78563412u);
+
+    /*
+     * Zbc. All-ones squared is 0x5555_5555_5555_5555, which makes
+     * clmulr -- bits 62..31 -- 0xAAAAAAAA and unlike either neighbour.
+     */
+    check("clmul ffffffff,ffffffff", B2("clmul", 0xFFFFFFFFu, 0xFFFFFFFFu),
+          0x55555555u);
+    check("clmul 80000000,00000002", B2("clmul", 0x80000000u, 0x00000002u),
+          0x00000000u);
+    check("clmul 00000003,00000003", B2("clmul", 0x00000003u, 0x00000003u),
+          0x00000005u);
+    check("clmul 12345678,00000000", B2("clmul", 0x12345678u, 0x00000000u),
+          0x00000000u);
+    check("clmul 12345678,00000001", B2("clmul", 0x12345678u, 0x00000001u),
+          0x12345678u);
+    check("clmul 00000001,12345678", B2("clmul", 0x00000001u, 0x12345678u),
+          0x12345678u);
+    check("clmul 12345678,9abcdef0", B2("clmul", 0x12345678u, 0x9ABCDEF0u),
+          0x5CD25A80u);
+    check("clmul 80000000,80000000", B2("clmul", 0x80000000u, 0x80000000u),
+          0x00000000u);
+    check("clmul ffffffff,80000000", B2("clmul", 0xFFFFFFFFu, 0x80000000u),
+          0x80000000u);
+    check("clmulh ffffffff,ffffffff", B2("clmulh", 0xFFFFFFFFu, 0xFFFFFFFFu),
+          0x55555555u);
+    check("clmulh 80000000,00000002", B2("clmulh", 0x80000000u, 0x00000002u),
+          0x00000001u);
+    check("clmulh 00000003,00000003", B2("clmulh", 0x00000003u, 0x00000003u),
+          0x00000000u);
+    check("clmulh 12345678,00000000", B2("clmulh", 0x12345678u, 0x00000000u),
+          0x00000000u);
+    check("clmulh 12345678,00000001", B2("clmulh", 0x12345678u, 0x00000001u),
+          0x00000000u);
+    check("clmulh 00000001,12345678", B2("clmulh", 0x00000001u, 0x12345678u),
+          0x00000000u);
+    check("clmulh 12345678,9abcdef0", B2("clmulh", 0x12345678u, 0x9ABCDEF0u),
+          0x08860E94u);
+    check("clmulh 80000000,80000000", B2("clmulh", 0x80000000u, 0x80000000u),
+          0x40000000u);
+    check("clmulh ffffffff,80000000", B2("clmulh", 0xFFFFFFFFu, 0x80000000u),
+          0x7FFFFFFFu);
+    check("clmulr ffffffff,ffffffff", B2("clmulr", 0xFFFFFFFFu, 0xFFFFFFFFu),
+          0xAAAAAAAAu);
+    check("clmulr 80000000,00000002", B2("clmulr", 0x80000000u, 0x00000002u),
+          0x00000002u);
+    check("clmulr 00000003,00000003", B2("clmulr", 0x00000003u, 0x00000003u),
+          0x00000000u);
+    check("clmulr 12345678,00000000", B2("clmulr", 0x12345678u, 0x00000000u),
+          0x00000000u);
+    check("clmulr 12345678,00000001", B2("clmulr", 0x12345678u, 0x00000001u),
+          0x00000000u);
+    check("clmulr 00000001,12345678", B2("clmulr", 0x00000001u, 0x12345678u),
+          0x00000000u);
+    check("clmulr 12345678,9abcdef0", B2("clmulr", 0x12345678u, 0x9ABCDEF0u),
+          0x110C1D28u);
+    check("clmulr 80000000,80000000", B2("clmulr", 0x80000000u, 0x80000000u),
+          0x80000000u);
+    check("clmulr ffffffff,80000000", B2("clmulr", 0xFFFFFFFFu, 0x80000000u),
+          0xFFFFFFFFu);
+    check("clmul rd=rs1",
+          B_REGS("clmul t0, t0, t1\nmv t2, t0", 0x12345678u, 0x9ABCDEF0u),
+          0x5CD25A80u);
+    check("clmulh rd=rs2",
+          B_REGS("clmulh t1, t0, t1\nmv t2, t1", 0x12345678u, 0x9ABCDEF0u),
+          0x08860E94u);
+    check("clmulr rs1=rs2",
+          B_REGS("clmulr t2, t1, t1", 0x12345678u, 0x9ABCDEF0u), 0x82888AA0u);
+    check("clmul rd=x0",
+          B_REGS("clmul x0, t0, t1\nadd t2, x0, x0", 0x12345678u, 0x9ABCDEF0u),
+          0x00000000u);
+
+    /* Zbs: one bit, indexed by the low five bits of rs2 or by shamt. */
+    check("bset 00000000,0000001f", B2("bset", 0x00000000u, 0x0000001Fu),
+          0x80000000u);
+    check("bset 00000000,00000020", B2("bset", 0x00000000u, 0x00000020u),
+          0x00000001u);
+    check("bset 00000000,ffffffe4", B2("bset", 0x00000000u, 0xFFFFFFE4u),
+          0x00000010u);
+    check("bset ffffffff,00000005", B2("bset", 0xFFFFFFFFu, 0x00000005u),
+          0xFFFFFFFFu);
+    check("bset 80000000,00000000", B2("bset", 0x80000000u, 0x00000000u),
+          0x80000001u);
+    check("bclr ffffffff,0000001f", B2("bclr", 0xFFFFFFFFu, 0x0000001Fu),
+          0x7FFFFFFFu);
+    check("bclr ffffffff,00000020", B2("bclr", 0xFFFFFFFFu, 0x00000020u),
+          0xFFFFFFFEu);
+    check("bclr ffffffff,ffffffe4", B2("bclr", 0xFFFFFFFFu, 0xFFFFFFE4u),
+          0xFFFFFFEFu);
+    check("bclr 00000000,00000003", B2("bclr", 0x00000000u, 0x00000003u),
+          0x00000000u);
+    check("bclr 00000001,00000000", B2("bclr", 0x00000001u, 0x00000000u),
+          0x00000000u);
+    check("binv 00000000,0000001f", B2("binv", 0x00000000u, 0x0000001Fu),
+          0x80000000u);
+    check("binv ffffffff,00000020", B2("binv", 0xFFFFFFFFu, 0x00000020u),
+          0xFFFFFFFEu);
+    check("binv ffffffff,0000001f", B2("binv", 0xFFFFFFFFu, 0x0000001Fu),
+          0x7FFFFFFFu);
+    check("binv 00000000,ffffffe4", B2("binv", 0x00000000u, 0xFFFFFFE4u),
+          0x00000010u);
+    check("binv 80000000,0000001f", B2("binv", 0x80000000u, 0x0000001Fu),
+          0x00000000u);
+    check("bext 80000000,0000001f", B2("bext", 0x80000000u, 0x0000001Fu),
+          0x00000001u);
+    check("bext 80000000,0000003f", B2("bext", 0x80000000u, 0x0000003Fu),
+          0x00000001u);
+    check("bext 7fffffff,0000001f", B2("bext", 0x7FFFFFFFu, 0x0000001Fu),
+          0x00000000u);
+    check("bext 00000001,00000020", B2("bext", 0x00000001u, 0x00000020u),
+          0x00000001u);
+    check("bext fffffffe,00000000", B2("bext", 0xFFFFFFFEu, 0x00000000u),
+          0x00000000u);
+    check("bext 00010000,00000010", B2("bext", 0x00010000u, 0x00000010u),
+          0x00000001u);
+    check("bext 00010000,0000000f", B2("bext", 0x00010000u, 0x0000000Fu),
+          0x00000000u);
+    check("bseti 00000000,31", BI("bseti", 0x00000000u, 31), 0x80000000u);
+    check("bseti 00000000,0", BI("bseti", 0x00000000u, 0), 0x00000001u);
+    check("bseti ffffffff,7", BI("bseti", 0xFFFFFFFFu, 7), 0xFFFFFFFFu);
+    check("bseti 00000000,16", BI("bseti", 0x00000000u, 16), 0x00010000u);
+    check("bclri ffffffff,31", BI("bclri", 0xFFFFFFFFu, 31), 0x7FFFFFFFu);
+    check("bclri ffffffff,0", BI("bclri", 0xFFFFFFFFu, 0), 0xFFFFFFFEu);
+    check("bclri 00000000,7", BI("bclri", 0x00000000u, 7), 0x00000000u);
+    check("bclri ffffffff,16", BI("bclri", 0xFFFFFFFFu, 16), 0xFFFEFFFFu);
+    check("binvi 80000000,31", BI("binvi", 0x80000000u, 31), 0x00000000u);
+    check("binvi 00000000,0", BI("binvi", 0x00000000u, 0), 0x00000001u);
+    check("binvi ffffffff,31", BI("binvi", 0xFFFFFFFFu, 31), 0x7FFFFFFFu);
+    check("binvi 00000000,16", BI("binvi", 0x00000000u, 16), 0x00010000u);
+    check("bexti 80000000,31", BI("bexti", 0x80000000u, 31), 0x00000001u);
+    check("bexti 80000000,30", BI("bexti", 0x80000000u, 30), 0x00000000u);
+    check("bexti 00000001,0", BI("bexti", 0x00000001u, 0), 0x00000001u);
+    check("bexti fffffffe,0", BI("bexti", 0xFFFFFFFEu, 0), 0x00000000u);
+    check("bexti 00010000,16", BI("bexti", 0x00010000u, 16), 0x00000001u);
+    check("bexti 00010000,17", BI("bexti", 0x00010000u, 17), 0x00000000u);
+    check("bset rd=rs2",
+          B_REGS("bset t1, t0, t1\nmv t2, t1", 0x00000100u, 0x00000005u),
+          0x00000120u);
+    check("bclr rd=rs1",
+          B_REGS("bclr t0, t0, t1\nmv t2, t0", 0xFFFFFFFFu, 0x00000005u),
+          0xFFFFFFDFu);
+    check("bext rd=rs2",
+          B_REGS("bext t1, t0, t1\nmv t2, t1", 0x00000020u, 0x00000005u),
+          0x00000001u);
+    check("binv rs1=rs2", B_REGS("binv t2, t1, t1", 0x00000000u, 0x00000005u),
+          0x00000025u);
+    check("bset rs1=rs2", B_REGS("bset t2, t1, t1", 0x00000000u, 0x00000024u),
+          0x00000034u);
+    check("bext rs1=rs2", B_REGS("bext t2, t1, t1", 0x00000000u, 0x00000024u),
+          0x00000000u);
+    check("bseti rd=x0",
+          B_REGS("bseti x0, t0, 3\nadd t2, x0, x0", 0x00000000u, 0x00000000u),
+          0x00000000u);
+    check("bexti rd=rs1",
+          B_REGS("bexti t0, t0, 31\nmv t2, t0", 0x80000000u, 0x00000000u),
+          0x00000001u);
+    check("bset rs1=x0", B_REGS("bset t2, x0, t1", 0x00000007u, 0x00000021u),
+          0x00000002u);
+
+    /*
+     * A called operation beside a lowered one. The translator hands a
+     * few of these -- clmul, cpop, orc.b, min/max, rol/ror -- to a C
+     * function that reads and writes the register file directly, where
+     * the rest become IR that may keep values in host registers. So what
+     * the function reads has to have been stored by then, and what it
+     * writes must not be answered from a copy made before the call.
+     */
+    check("helper reads prior write",
+          B_REGS("addi t0, t0, 1\nclmul t2, t0, t1", 0x00000F0Fu, 0x00000033u),
+          0x00010230u);
+    check("helper result read back",
+          B_REGS("li t2, 7\nclmul t2, t0, t1\naddi t2, t2, 1", 0x00000F0Fu,
+                 0x00000033u),
+          0x00010002u);
+    check("helper overwrites operand",
+          B_REGS("min t0, t0, t1\nadd t2, t0, t0", 0x00000F0Fu, 0x00000033u),
+          0x00000066u);
+    check("native after helper",
+          B_REGS("cpop t0, t0\nsh2add t2, t0, t1", 0x00000F0Fu, 0x00000033u),
+          0x00000053u);
+    check("helper after native",
+          B_REGS("sh2add t0, t0, t1\ncpop t2, t0", 0x00000F0Fu, 0x00000033u),
+          0x0000000Au);
+    check("two helpers",
+          B_REGS("rol t0, t0, t1\norc.b t2, t0", 0x00000F0Fu, 0x00000033u),
+          0xFFFF0000u);
+
+    check("bitmanip-no-trap", g_trap_count - before, 0u);
+}
+
 /* ---- Zihintpause, Zihintntl, Zicbop -------------------------------- */
 
 /*
@@ -3511,6 +4066,7 @@ int main(void)
     test_fpu();
 #endif
     test_zicond();
+    test_bitmanip();
     test_hints();
     test_zalasr();
     test_zawrs();

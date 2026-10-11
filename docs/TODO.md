@@ -11,42 +11,51 @@ Found by putting the PowerPC frontend on the Nucleo-F746ZG and timing
 long runs. The defects are fixed; these are what the measurements left
 standing. Figures are in [jit/tuning.md](jit/tuning.md).
 
-- [ ] **The RV32 translator declines the B extension, and that is
-      nearly all of what the JIT still interprets.** Counted with
-      `-DEMU_PAIR_STATS=ON`, which now reports executed instructions by
-      extension:
+- [x] **The RV32 translator declined the B extension, and that was
+      nearly all of what the JIT still interpreted. Lowered.** Counted
+      with `-DEMU_PAIR_STATS=ON`, which reports executed instructions by
+      extension and now by B instruction:
 
-      | guest | interpreted under the JIT | Zba / Zbb / Zbc / Zbs |
+      | guest | interpreted under the JIT, before | after |
       |---|---|---|
-      | CoreMark | 23,339 of 518,234 | 14,615 / 5,623 / 2,352 / 471 -- **98.8%** |
-      | Dhrystone | 120,566 of 9,431,232 | 120,111 Zba -- **99.6%** |
-      | crypto | 65,776 of 2,720,538 | 39,178 Zba, plus Zbb beyond `rori` |
-      | a Linux boot | 1,308,143 | 331,550 Zbb |
+      | CoreMark | 23,339 of 518,234 -- 98.8% B | **1** |
+      | Dhrystone | 120,566 of 9,431,232 -- 99.6% Zba | **1** |
+      | crypto | 65,776 of 2,720,538 | **1** |
+      | a Linux boot, 3e9 instructions | 1,308,143, 331,550 of them Zbb | 913,551, **no B** |
 
-      `rv_ir.c` lowers `rori` -- added when a histogram said it was
-      4.34% of the crypto guest -- and nothing else from the four. Each
-      of the others ends a block, costs a dispatch and runs in the
-      interpreter, which is the expensive outcome this file's rules name
-      first. Most of it is `sh1add`/`sh2add`/`sh3add`: a shift and an
-      add, in operations both backends already lower. `andn`, `orn`,
-      `xnor`, `bexti`, `bseti`, `bclri`, `binvi`, `zext.h` and the sign
-      extensions are the same kind; the IR has `CLZ`, `CTZ`, `POPCNT`,
-      `BSWAP32` and the four bit operations for the rest, each behind
-      `emu_ir_can_lower`, and a helper keeps a block whole where a host
-      lacks one. Do it in the order the table gives, measure CoreMark
-      on the F746 at 32 KB and 96 KB before and after, and expect the
-      block count to fall as well as the fallback.
+      Every guest here executes the same nine: the three shifted adds,
+      `sext.h`, `zext.h`, `andn`, `rori`, `rev8` and `bexti`, then
+      nothing (`minu` eight times, `bext` three). Those and the rest of
+      Zba/Zbb/Zbs are open-coded from operations *both* backends lower;
+      `clmul*`, `cpop`, `orc.b`, `min`/`max` and `rol`/`ror` go to one
+      helper built on `rv_bitmanip.h`, which the interpreter shares.
 
-      It was found by asking a different question -- what Zicond is
-      worth in a guest's `-march` -- and getting `bench` 20% slower
-      under the JIT, because the compiler pairs `czero` with `bexti`.
+      On the F746, CoreMark ×120, `crcfinal 0xd340` throughout: **32 KB
+      172.3 → 140.0** host cycles an instruction (wall 23.6 s → 19.1 s),
+      **96 KB 47.6 → 31.1** (6.5 s → 4.2 s). On x86-64, medians of
+      fifteen interleaved: CoreMark −11.5%, Dhrystone −15.8%, crypto
+      −19.7%, with `bench` and Whetstone -- which execute almost none --
+      at +4.1% and +0.4%.
+
+      **This was a capability the old translator had.** The
+      hand-written Thumb-2 one translated Zbb and measured it
+      ([performance.md](performance.md#what-the-jit-needed-along-the-way):
+      307,128 fallbacks to 89); the IR that replaced it lowered `rori`
+      and nothing else, and nothing said so but the `interp` line.
+      Checked by `isatest`'s 230 new cases (expectations from
+      `tests/guest/bitmanip-expect.py`, an independent model), on the
+      board as on x86-64, and by 34 mutants of the lowering, the helper,
+      the shared arithmetic and the interpreter: every one that changes
+      an answer on a backend fails on that backend
+      ([validation.md](validation.md#what-the-host-suites-do-not-cover)).
 - [ ] **The default code cache makes the JIT slower than the
       interpreter, and that is a decision nobody has taken.** At
-      `EMU_JIT_CODE_BYTES=32768` RV32 CoreMark is 169.6 host cycles an
-      instruction against the interpreter's 108.2, `bench` 199.5
-      against 98.2, and a JIT build pays 77 KiB of guest RAM for it.
-      The JIT only wins once the translated working set fits — about
-      83 KB for RV32 CoreMark, where it is 2.04× ahead. Three ways out,
+      `EMU_JIT_CODE_BYTES=32768` RV32 CoreMark is 140.0 host cycles an
+      instruction against the interpreter's 107.4, `bench` 194.6
+      against 100.1, and a JIT build pays 77 KiB of guest RAM for it.
+      Lowering the B extension narrowed it (from 172.3) and did not
+      close it. The JIT wins from 64 KB (67.4), and at 96 KB it is
+      3.45× ahead. Three ways out,
       and they are not exclusive: raise the default and say what it
       costs the guest; default the firmware to the interpreter and make
       the JIT a choice for guests known to fit; or make the code
@@ -302,7 +311,9 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       paths no coverage at all. This is the "two descriptions of one
       machine, and disagreeing is silent" rule in its quiet direction:
       the disagreement costs testing rather than correctness, so
-      nothing will ever report it.
+      nothing will ever report it. **Resolved in 6cd92f5:** the device
+      tree declares all of it, and the kernel executes Zbb -- counted
+      below, and translated since the B lowering.
 
       **The banner itself was understating the core, and finding that
       took a third description to notice.** It read `RV32IMAFCB_zbc`:
@@ -326,10 +337,12 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       boot that never executes a Zbb instruction cannot fail on one and
       nothing counted them. A `-DEMU_PAIR_STATS=ON` runner does now:
       **331,550 Zbb instructions in one boot**, with 36,225 `cbo.zero`,
-      4,096 cache-block maintenance operations and 3,270 `clmul`. Run it
-      under `--jit`: it counts what the interpreter executes, and the
-      translator declines all of Zbb but `rori`, so that is every one
-      of them in twenty seconds.
+      4,096 cache-block maintenance operations and 3,270 `clmul`. That
+      was counted under `--jit`, which then gave every one of them in
+      twenty seconds because the translator declined all of Zbb but
+      `rori`. **It does not any more**, so the same run now reports no
+      B at all: the kernel's Zbb executes translated. Counting it again
+      means `LINUX_JIT=0`, which takes several minutes to userspace.
 
       Still open:
 

@@ -67,88 +67,12 @@ static EMU_ALWAYS_INLINE uint32_t mulh_uu(uint32_t a, uint32_t b)
 #endif /* RV_EXT_M */
 
 /* ------------------------------------------------------------------ */
-/* Zbb helpers                                                         */
+/* Zbb and Zbc helpers                                                 */
 /* ------------------------------------------------------------------ */
 
-#if RV_EXT_ZBB
-/* __builtin_clz/ctz are undefined for zero; Zbb defines both as 32. */
-static EMU_ALWAYS_INLINE uint32_t zbb_clz(uint32_t v)
-{
-    return (v == 0u) ? 32u : (uint32_t)__builtin_clz(v);
-}
-
-static EMU_ALWAYS_INLINE uint32_t zbb_ctz(uint32_t v)
-{
-    return (v == 0u) ? 32u : (uint32_t)__builtin_ctz(v);
-}
-
-/* Rotates by a multiple of 32 must not shift by 32, which is UB in C. */
-static EMU_ALWAYS_INLINE uint32_t zbb_ror(uint32_t v, uint32_t n)
-{
-    n &= 31u;
-    return (n == 0u) ? v : ((v >> n) | (v << (32u - n)));
-}
-
-static EMU_ALWAYS_INLINE uint32_t zbb_rol(uint32_t v, uint32_t n)
-{
-    n &= 31u;
-    return (n == 0u) ? v : ((v << n) | (v >> (32u - n)));
-}
-
-/* orc.b: each byte becomes 0xFF if any of its bits are set, else 0x00. */
-static EMU_ALWAYS_INLINE uint32_t zbb_orcb(uint32_t v)
-{
-    uint32_t r = 0u;
-    for (unsigned i = 0; i < 4u; i++) {
-        if ((v & (0xFFu << (i * 8u))) != 0u) {
-            r |= 0xFFu << (i * 8u);
-        }
-    }
-    return r;
-}
-#endif /* RV_EXT_ZBB */
-
-#if RV_EXT_ZBC
-/*
- * Carry-less multiply: the same shift-and-accumulate as an ordinary
- * multiply with XOR in place of addition, so there are no carries between
- * bit positions. clmulh takes the high half of the 64-bit product and
- * clmulr the middle 32 bits (63:31), which is why their shifts differ by
- * one.
- */
-static uint32_t zbc_clmul(uint32_t a, uint32_t b)
-{
-    uint32_t r = 0u;
-    for (unsigned i = 0; i < 32u; i++) {
-        if ((b >> i) & 1u) {
-            r ^= a << i;
-        }
-    }
-    return r;
-}
-
-static uint32_t zbc_clmulh(uint32_t a, uint32_t b)
-{
-    uint32_t r = 0u;
-    for (unsigned i = 1; i < 32u; i++) {
-        if ((b >> i) & 1u) {
-            r ^= a >> (32u - i);
-        }
-    }
-    return r;
-}
-
-static uint32_t zbc_clmulr(uint32_t a, uint32_t b)
-{
-    uint32_t r = 0u;
-    for (unsigned i = 0; i < 32u; i++) {
-        if ((b >> i) & 1u) {
-            r ^= a >> (31u - i);
-        }
-    }
-    return r;
-}
-#endif /* RV_EXT_ZBC */
+/* clz, ctz, the rotates, orc.b and the carry-less multiplies: shared
+ * with the translator's helper, so they live in a header. */
+#include "rv32/rv_bitmanip.h"
 
 /* ------------------------------------------------------------------ */
 /* Control-transfer target validation                                  */
@@ -756,12 +680,18 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                     TRAP(RV_EXC_ILLEGAL_INSN, insn);
                 }
             }
-#if RV_EXT_ZBB
+#if RV_EXT_ZBB || RV_EXT_ZBC
             else if (f7 == 0x05u) {
                 /* Zbb's min/max and Zbc's clmul share this funct7, so they
                  * are decoded together: a separate branch further down the
-                 * chain would never be reached. */
+                 * chain would never be reached.
+                 *
+                 * Together, but each under its own gate. The whole
+                 * switch used to sit inside RV_EXT_ZBB, so a build with
+                 * Zbc and without Zbb advertised carry-less multiply in
+                 * its ISA string and trapped on every one. */
                 switch (f3) {
+#if RV_EXT_ZBB
                 case 4:
                     wr(h, rd, ((int32_t)a < (int32_t)b) ? a : b);
                     break; /* min  */
@@ -774,6 +704,7 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                 case 7:
                     wr(h, rd, (a > b) ? a : b);
                     break; /* maxu */
+#endif
 #if RV_EXT_ZBC
                 case 1:
                     wr(h, rd, zbc_clmul(a, b));
@@ -788,7 +719,10 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                 default:
                     TRAP(RV_EXC_ILLEGAL_INSN, insn);
                 }
-            } else if (f7 == 0x30u) {
+            }
+#endif
+#if RV_EXT_ZBB
+            else if (f7 == 0x30u) {
                 if (f3 == 1u) {
                     wr(h, rd, zbb_rol(a, b));
                 } /* rol */

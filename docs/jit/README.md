@@ -256,7 +256,7 @@ their helpers.
 ## Reading a coverage number
 
 Read `interp` against the retired count before believing a passing
-suite. `isatest` under the JIT interprets 1,171 of 62,362 instructions, on
+suite. `isatest` under the JIT interprets 1,129 of 65,829 instructions, on
 x86-64 and on the F746 alike.
 
 It used to interpret a third of them on the board, because it arms PMP

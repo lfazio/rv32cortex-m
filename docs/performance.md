@@ -211,6 +211,10 @@ Today, x86-64 host, medians of five:
 9,431,251 and 10,665,593 guest instructions. The JIT translates
 essentially all of both: 120,566 and 51,238 instructions fell back,
 1.3% and 0.48% — the ratio to read before believing any figure here.
+Dhrystone's 120,566 were all `sh1add`/`sh2add`/`sh3add`, which the
+translator declined until the B extension was lowered; it is **1**
+now, and the same JIT run is 35.8 ms against 42.5 ms on the host
+(medians of fifteen, interleaved with the build before).
 
 Neither rate is comparable with a published number: Dhrystone does not
 print DMIPS, and these are an emulated core on a desktop. For a
