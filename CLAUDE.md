@@ -2866,6 +2866,16 @@ session, and every one of them recurred:
   decimals, read the raw cycle counts** -- 253.11 twice was 3,080,576,778
   against 3,080,582,934, which is a result, not an instrument fault.
 
+- **A formatter can break a source whose binary is committed, and nothing
+  notices.** clang-format read the `;` that starts a CC-RH inline-asm
+  comment as the end of a C statement and moved each comment onto the
+  next instruction, in `guest.c` and `barrier3.c` (1205abc). Neither has
+  built since, and every run used the committed `.bin` from before --
+  the hazard `g4mh-build-guest.sh` describes in its own header, with the
+  `--check` that finds it in one command. Found a month later, when a
+  new guest needed the toolchain. The bodies are fenced with
+  `clang-format off` now.
+
 - **An out-parameter on a hot function is not free, and neither is a
   helper the compiler inlined into it.** A fault that crosses a page
   boundary has to report the second page's address, and the obvious

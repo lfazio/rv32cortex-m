@@ -77,12 +77,14 @@
 
 #define NPE 3u
 
+/* clang-format off -- see guest.c: it breaks inline_asm comments */
 #pragma inline_asm read_htcfg0
 static unsigned read_htcfg0(void)
 {
-    stsr 0, r10, 2;
-    HTCFG0 is selID 2, register 0 mov r10, r10
+    stsr 0, r10, 2      ; HTCFG0 is selID 2, register 0
+    mov  r10, r10
 }
+/* clang-format on */
 
 /* ------------------------------------------------------------------ */
 /* Console                                                             */

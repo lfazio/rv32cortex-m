@@ -1,14 +1,22 @@
 /* A G4MH guest built by CC-RH, exercising integer and FP paths. */
 
+/*
+ * clang-format must not touch inline_asm bodies: it reads the `;` that
+ * starts an assembler comment as the end of a C statement and moves the
+ * comment onto the next instruction, which CC-RH then rejects. It did
+ * exactly that in 1205abc and the guests stopped building.
+ */
+/* clang-format off */
 #pragma inline_asm sys3
 static int sys3(int nr, int a0, const void *a1, int a2)
 {
-    mov r6, r11;
-    nr mov r7, r6;
-    arg0 mov r8, r7;
-    arg1 mov r9, r8;
-    arg2 trap 0
+    mov r6, r11        ; nr
+    mov r7, r6         ; arg0
+    mov r8, r7         ; arg1
+    mov r9, r8         ; arg2
+    trap 0
 }
+/* clang-format on */
 
 static void wr(const char *s, int n)
 {
