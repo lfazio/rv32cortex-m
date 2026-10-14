@@ -42,6 +42,13 @@ arm-none-eabi-nm build/n6/src/platform/stm32n6/emu-stm32n6.elf | grep g_static_c
 which puts the 32 KiB buffer and 1256 bytes of hot path in ITCM, 34,024
 bytes of the 64 KiB.
 
+**That is now only a G4MH build's default.** Without G4MH the buffer is
+128 KiB and lives in AXISRAM2, because size beats placement by far:
+RV32 CoreMark x120 is 175.46 host cycles an instruction with 32 KiB in
+ITCM and 20.21 with 128 KiB in AXISRAM2, where this page's ITCM placement
+was worth 1.36%. ITCM keeps the dispatch path either way
+(`EMU_HOT_TEXT_SECTION`). See [../jit/tuning.md](../jit/tuning.md).
+
 ## The fix
 
 `board_itcm_init` fills all 64 KiB with `uint32_t` writes before copying

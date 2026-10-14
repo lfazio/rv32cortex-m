@@ -142,11 +142,12 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       an answer on a backend fails on that backend
       ([validation.md](validation.md#what-the-host-suites-do-not-cover)).
 - [ ] **The default code cache makes the JIT slower than the
-      interpreter on the F446 and the N6.** Decided for the F746 in
-      915f583: 96 KB and the dispatch path in ITCM, CoreMark 29.85
-      against 152.85, except with G4MH compiled in. The N6 measured
-      2.23x at 128 KB but its G4MH build does not fit; the F446 has
-      128 KiB of RAM in all. What follows is the original entry. At
+      interpreter on the F446, and on G4MH builds.** Decided for the
+      F746 (915f583: 96 KB, CoreMark 152.85 → 27.82 with chain heat)
+      and the N6 (128 KB in AXISRAM2, 175.46 → 20.21, the guest paying
+      nothing), each except with G4MH compiled in, whose RAM leaves no
+      room. The F446 has 128 KiB of RAM in all. What follows is the
+      original entry. At
       `EMU_JIT_CODE_BYTES=32768` RV32 CoreMark is 140.0 host cycles an
       instruction against the interpreter's 107.4, `bench` 194.6
       against 100.1, and a JIT build pays 77 KiB of guest RAM for it.

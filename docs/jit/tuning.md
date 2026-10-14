@@ -239,6 +239,22 @@ overrun the buffer, which is translated twice and — until it was fixed —
 compacted without unlinking
 ([../backend/thumb2.md](../backend/thumb2.md)).
 
+## The N6
+
+The same knob on the Nucleo-N657X0-Q, where it costs the guest nothing:
+guest RAM is AXISRAM1, and the buffer goes in AXISRAM2. RV32 CoreMark
+x120 at 600 MHz, the dispatch path in ITCM throughout:
+
+| | 32 KB in ITCM | 64 KB | 96 KB | **128 KB** (the default without G4MH) |
+|---|---|---|---|---|
+| cycles / instruction | 175.46 | 110.05 | 36.60 | **20.21** |
+| translations | 63,462 | 35,336 | 6,885 | 301 |
+| compactions | 3,616 | 1,175 | 183 | 2 |
+
+At 128 KB the working set fits. A 650-iteration run takes 5.33 s by the
+host's clock and 5.30 s by the firmware's. G4MH builds keep 32 KB in
+ITCM: their RAM leaves no room in AXISRAM2.
+
 ## Retention and chained blocks
 
 `compact()` ranks blocks by dispatcher lookups, and a block entered

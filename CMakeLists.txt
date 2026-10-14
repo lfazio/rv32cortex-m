@@ -178,15 +178,23 @@ option(RV32_LAZY_IRQ "Lazy interrupt-delivery evaluation" ON)
 # eviction count is the whole story: at 32 KB every translation threw
 # another away.
 #
-# **The default stays 32 KB here, and the 128 KB figure is what a
-# RV32-only build should ask for.** The G4MH frontend's .bss does not
-# leave room: at 64 KB that build overflows AXISRAM2, and the part's
-# other 1792 KB is unreachable because the boot ROM leaves AXISRAM3..6
-# powered down -- see the note in stm32n657xx_lrun.ld. Raising this
-# properly means bringing those banks up, which is RCC and RAMCFG work
-# rather than a linker change.
+# **The N6 takes 128 KB unless G4MH is compiled in**, in AXISRAM2 rather
+# than ITCM, and the guest pays nothing: its RAM is AXISRAM1. Measured
+# again with the dispatch path in ITCM, RV32 CoreMark x120, host cycles
+# an instruction at 600 MHz:
 #
-#   cmake -DEMU_JIT_CODE_BYTES=131072 -DEMU_GUEST_ARCH_G4MH=OFF
+#              32 KB ITCM   64 KB    96 KB    128 KB
+#   ratio      175.46       110.05   36.60    20.21
+#   xlat       63,462       35,336   6,885    301
+#
+# 8.7x, and at 128 KB the working set fits: two compactions in a run. A
+# 650-iteration run takes 5.33 s by the host's clock against 5.30 s by
+# the firmware's. The G4MH frontend's .bss does not leave room -- at
+# 64 KB that build overflows AXISRAM2, and the part's other 1792 KB is
+# unreachable because the boot ROM leaves AXISRAM3..6 powered down (see
+# the note in stm32n657xx_lrun.ld) -- so a G4MH build keeps 32 KB in
+# ITCM. Raising that means bringing those banks up, which is RCC and
+# RAMCFG work rather than a linker change.
 #
 # It has to be decided here rather than in the platform's own
 # CMakeLists, which is added later: by then this cache entry exists and a
@@ -208,6 +216,8 @@ option(RV32_LAZY_IRQ "Lazy interrupt-delivery evaluation" ON)
 #
 if(EMU_PLATFORM STREQUAL "stm32f746" AND NOT EMU_GUEST_ARCH_G4MH)
     set(_jit_bytes_default "98304")
+elseif(EMU_PLATFORM STREQUAL "stm32n6" AND NOT EMU_GUEST_ARCH_G4MH)
+    set(_jit_bytes_default "131072")
 else()
     set(_jit_bytes_default "32768")
 endif()
@@ -247,7 +257,12 @@ set(EMU_JIT_CODE_BYTES "${_jit_bytes_default}" CACHE STRING
 # It needs board_itcm_init's ECC scrub to work at all. See
 # docs/stm32n6/itcm.md.
 #
-if(EMU_PLATFORM STREQUAL "stm32n6")
+# **Only where the buffer fits**: 32 KB, which is a G4MH build's. A
+# 128 KB buffer cannot be in 64 KiB of ITCM, and is worth 8.7x where
+# ITCM was worth 1.36%, so the larger buffer goes to AXISRAM2 and ITCM
+# keeps the dispatch path.
+#
+if(EMU_PLATFORM STREQUAL "stm32n6" AND EMU_GUEST_ARCH_G4MH)
     set(_jit_section_default ".jitcode")
 else()
     set(_jit_section_default "")
