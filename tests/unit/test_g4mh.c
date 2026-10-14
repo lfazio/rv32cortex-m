@@ -345,6 +345,10 @@ static uint32_t emit(uint32_t off, const uint16_t *hw, unsigned n)
  */
 static const emu_backend_t *g_force_backend;
 
+/* When non-NULL, called after boot and before the run: state a test sets
+ * up that a reset would otherwise clear. */
+static void (*g_pre_run)(void);
+
 static bool load_and_run_hooked(const uint16_t *hw, unsigned n, uint32_t budget,
                                 emu_run_reason_t *why, uint32_t *retired,
                                 emu_syscall_fn hook)
@@ -397,6 +401,9 @@ static bool load_and_run_hooked(const uint16_t *hw, unsigned n, uint32_t budget,
         .dtb = 0u, /* no device tree: these guests are compiled for the map */
     };
     emu_core_boot(&g_core, &boot);
+    if (g_pre_run != NULL) {
+        g_pre_run();
+    }
 
     *why = emu_core_run(&g_core, budget, retired);
     return true;
@@ -6450,6 +6457,140 @@ static void test_mpu_spid_group(void)
  * register" -- reads zero, writes dropped. Wrapping onto entry 0 instead
  * would corrupt a configured area from a typo.
  */
+/*
+ * Execute permission under the JIT, and the mode an exception runs in.
+ *
+ * The interpreter checks the MPU on every fetch; the translator checked
+ * nothing and keyed blocks on the pc alone, so a block outlived both the
+ * mode it was translated in and the MPU configuration it ran under --
+ * code the MPU refuses to user mode ran anyway. And exception entry left
+ * PSW.UM alone, so a fetch fault taken in user mode ran its handler as
+ * user, which faulted again on the handler, for ever.
+ *
+ * Three phases on one core, without a reset between them, so a block the
+ * JIT built in one phase is still cached for the next:
+ *
+ *   1  user mode, the area user-executable: the code runs (and is
+ *      translated, under the JIT);
+ *   2  the same mode, execute withdrawn through the system-register path:
+ *      the cached block must not run -- MIP at the first instruction,
+ *      handled in supervisor mode. Only the generation can see this;
+ *   3  supervisor runs the code (MPM.SVP clear: unrestricted), then user
+ *      again with no MPU write in between. Only the context can see this.
+ *
+ * Both backends; the interpreter is what the JIT has to agree with.
+ */
+static uint32_t mpu_test_attr;
+
+static void mpu_test_setup(void)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+
+    g4mh_sr_write(c, G4MH_SR_SEL_MPU, G4MH_SR_MPIDX, 0u);
+    g4mh_sr_write(c, G4MH_SR_SEL_MPU, G4MH_SR_MPLA, EMU_GUEST_RAM_BASE);
+    g4mh_sr_write(c, G4MH_SR_SEL_MPU, G4MH_SR_MPUA,
+                  EMU_GUEST_RAM_BASE + TEST_RAM_SIZE - 1u);
+    g4mh_sr_write(c, G4MH_SR_SEL_MPU, G4MH_SR_MPAT, mpu_test_attr);
+    g4mh_sr_write(c, G4MH_SR_SEL_MPU, G4MH_SR_MPM, G4MH_MPM_MPE);
+    c->psw |= G4MH_PSW_UM;
+}
+
+/* Run again from the start of the image, in the mode given, keeping the
+ * core -- and the JIT's cache -- as they are. */
+static emu_run_reason_t mpu_test_rerun(bool user)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+    uint32_t retired = 0u;
+
+    c->pc = EMU_GUEST_RAM_BASE;
+    c->r[10] = 0u;
+    c->state = EMU_STATE_RUNNING;
+    if (user) {
+        c->psw |= G4MH_PSW_UM;
+    } else {
+        c->psw &= ~G4MH_PSW_UM;
+    }
+    return emu_core_run(&g_core, 64u, &retired);
+}
+
+static void test_mpu_exec_permission_both_backends(void)
+{
+    const uint32_t user_rw =
+        G4MH_MPAT_E | G4MH_MPAT_UR | G4MH_MPAT_UW | G4MH_MPAT_RG | G4MH_MPAT_WG;
+    uint16_t prog[0x50];
+
+    memset(prog, 0, sizeof(prog));
+    prog[0] = F2(OP_MOVI, 5, 10); /* mov 5, r10              */
+    prog[1] = F2(OP_ADDI5, 1, 10); /* add 1, r10 -- three times */
+    prog[2] = F2(OP_ADDI5, 1, 10);
+    prog[3] = F2(OP_ADDI5, 1, 10);
+    prog[4] = 0x07E0u; /* halt: r10 = 8            */
+    prog[5] = SUB_HALT;
+    prog[0x48] = 0x07E0u; /* the MIP handler, at RBASE + 0x90 */
+    prog[0x49] = SUB_HALT;
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        emu_run_reason_t why;
+        uint32_t retired = 0u;
+
+        g_force_backend = (pass == 0u) ? &g4mh_backend_interp : NULL;
+
+        /* 1: user-executable. */
+        mpu_test_attr = user_rw | G4MH_MPAT_UX;
+        g_pre_run = mpu_test_setup;
+        if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                          &retired)) {
+            CHECK(false);
+            break;
+        }
+        g_pre_run = NULL;
+        CHECK_EQ(reg(10), 8u);
+        CHECK_EQ(why, EMU_RUN_WFI); /* HALT parks */
+
+        /* 2: execute withdrawn; the mode is unchanged. */
+        {
+            g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+
+            g4mh_sr_write(c, G4MH_SR_SEL_MPU, G4MH_SR_MPIDX, 0u);
+            g4mh_sr_write(c, G4MH_SR_SEL_MPU, G4MH_SR_MPAT, user_rw);
+        }
+        why = mpu_test_rerun(true);
+        CHECK_EQ(reg(10), 0u); /* not one instruction of it ran */
+        CHECK_EQ(sreg(0, G4MH_SR_FEIC), (uint32_t)G4MH_EXC_MIP);
+        CHECK_EQ(sreg(0, G4MH_SR_FEPC), EMU_GUEST_RAM_BASE);
+        CHECK((sreg(0, G4MH_SR_FEPSW) & G4MH_PSW_UM) != 0u);
+        CHECK((psw() & G4MH_PSW_UM) == 0u); /* the handler is supervisor */
+        CHECK_EQ(why, EMU_RUN_WFI); /* HALT parks */
+
+        /*
+         * 3: supervisor runs it; then user, with nothing written.
+         *
+         * Flushed first, by rewriting MPAT with the value it has. Phase
+         * 2's user-mode decline at the first instruction is in the
+         * declined-pc cache, and without a context it answers for the
+         * supervisor run too: that run then interprets the first
+         * instruction and translates from the second, the user run
+         * meets the cached decline at the first, and the test passes
+         * against a JIT with no context at all -- which the first
+         * version of it did.
+         */
+        {
+            g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+
+            g4mh_sr_write(c, G4MH_SR_SEL_MPU, G4MH_SR_MPAT, user_rw);
+        }
+        why = mpu_test_rerun(false);
+        CHECK_EQ(reg(10), 8u);
+        CHECK_EQ(why, EMU_RUN_WFI); /* HALT parks */
+        why = mpu_test_rerun(true);
+        CHECK_EQ(reg(10), 0u);
+        CHECK_EQ(sreg(0, G4MH_SR_FEIC), (uint32_t)G4MH_EXC_MIP);
+        CHECK_EQ(why, EMU_RUN_WFI); /* HALT parks */
+    }
+    g_force_backend = NULL;
+    g_pre_run = NULL;
+}
+
 static void test_mpu_window(void)
 {
     uint32_t v;
@@ -6793,6 +6934,7 @@ void test_g4mh(void)
     test_mpu_bounds();
     test_mpu_spid_group();
     test_mpu_window();
+    test_mpu_exec_permission_both_backends();
 #endif
     test_intc_imr_aliases_eimk();
     test_intc_imr_masks_delivery();

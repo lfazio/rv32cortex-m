@@ -172,7 +172,31 @@ typedef struct g4mh_cpu {
     const emu_cache_ops_t *cache;
 
     void *user; /* opaque platform pointer */
+
+    /*
+     * The JIT's keys, which this frontend did not have: a translated
+     * block bakes in the MPU's answer to "may this be fetched", and that
+     * answer depends on the mode and on the MPU's configuration.
+     *
+     * `jit_ctx` is the mode, PSW.UM: part of what a block *is for*, so
+     * user and supervisor blocks coexist rather than flushing at every
+     * exception and return. Kept by g4mh_jit_ctx_refresh at the only
+     * places PSW.UM moves while blocks can run -- exception entry, which
+     * a block can reach through a helper, and the interpreter fallback,
+     * where LDSR, EIRET and FERET run.
+     *
+     * `jit_gen` counts writes to the MPU's registers, so every block is
+     * discarded when the configuration it was checked against changes.
+     */
+    uint64_t jit_ctx;
+    uint32_t jit_gen;
 } g4mh_cpu_t;
+
+/* Recompute the JIT's context from PSW; see jit_ctx. */
+static inline void g4mh_jit_ctx_refresh(g4mh_cpu_t *c)
+{
+    c->jit_ctx = ((c->psw & G4MH_PSW_UM) != 0u) ? 1u : 0u;
+}
 
 /* ------------------------------------------------------------------ */
 /* Lifecycle                                                           */

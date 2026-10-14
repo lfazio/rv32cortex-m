@@ -67,6 +67,8 @@ void g4mh_cpu_reset(g4mh_cpu_t *c, uint32_t reset_pc)
     }
     c->mpu_active = false;
 #endif
+    g4mh_jit_ctx_refresh(c);
+    c->jit_gen++;
 
     /*
      * RBASE is where the reset vector and the exception handlers live.
@@ -343,11 +345,13 @@ static void exception_to(g4mh_cpu_t *c, g4mh_exc_t cause, uint32_t ret_pc,
          * of save registers to restore from.
          */
         c->psw |= G4MH_PSW_NP | G4MH_PSW_EP | G4MH_PSW_ID;
+        c->psw &= ~G4MH_PSW_UM;
     } else {
         c->sr[0][G4MH_SR_EIPC] = ret_pc;
         c->sr[0][G4MH_SR_EIPSW] = c->psw;
         c->sr[0][G4MH_SR_EIIC] = cause;
         c->psw |= G4MH_PSW_ID;
+        c->psw &= ~G4MH_PSW_UM;
         /*
          * EP distinguishes a synchronous exception from an interrupt at
          * the same level. TRAP sets it; an EI interrupt does not, and
@@ -360,7 +364,17 @@ static void exception_to(g4mh_cpu_t *c, g4mh_exc_t cause, uint32_t ret_pc,
         }
     }
 
+    /*
+     * **Into supervisor mode, at either level.** "When an exception is
+     * acknowledged in User mode, the authority operating mode changes to
+     * Supervisor mode" (R01UH0865EJ0140 2.1.3.3), and each instruction
+     * that raises one says PSW.UM <- 0. Only SYSCALL did here, so every
+     * other exception taken in user mode ran its handler as user -- which
+     * a fetch-protection fault turns into the same fault again, in the
+     * handler, for ever.
+     */
     c->sr[0][G4MH_SR_PSW] = c->psw;
+    g4mh_jit_ctx_refresh(c);
     c->pc = handler;
     c->irq_dirty = true;
 
@@ -902,6 +916,12 @@ void g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg, uint32_t val)
          * test, and this is the only path to MPM.
          */
         c->mpu_active = g4mh_mpu_is_active(c->mpu);
+        /*
+         * Any MPU register, not only MPM: an area's bounds or attributes
+         * change what a translated block was allowed to fetch. A guest
+         * reprograms the MPU at a task switch, not per instruction.
+         */
+        c->jit_gen++;
         return;
     }
 #endif

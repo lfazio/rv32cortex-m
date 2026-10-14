@@ -1431,6 +1431,21 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
     while (count < G4MH_IR_MAX_BLOCK_INSNS && !b->overflow) {
         uint16_t w0;
 
+#if G4MH_EXT_MPU
+        /*
+         * Execute permission, checked as the interpreter checks it -- on
+         * the first halfword, in the mode the block is keyed on -- and
+         * the block ends before an instruction the MPU refuses, so the
+         * interpreter raises MIP for it. Without this a block translated
+         * in supervisor mode ran in user mode, and one translated before
+         * an area lost its execute bit kept running.
+         */
+        if (EMU_UNLIKELY(c->mpu_active) &&
+            !g4mh_mpu_permits(c->mpu, cur, 2u, G4MH_MPU_FETCH,
+                              (c->jit_ctx & 1u) != 0u, c->spid)) {
+            break;
+        }
+#endif
         if (emu_bus_fetch16(c->bus, cur, &w0) != EMU_FAULT_NONE) {
             break;
         }
@@ -1611,18 +1626,36 @@ static void g4mh_jit_count(emu_cpu_t *cpu, uint32_t n)
 extern const emu_backend_t g4mh_backend_interp;
 
 /*
- * generation stays NULL: nothing is baked into a block. Every instruction
- * translated here reads only its own operands, and anything that could
- * change the meaning of a later one -- a system register write, a mode
- * change -- is not translated at all. The day one is, it needs a
- * generation.
+ * What a block depends on, and it is not nothing.
+ *
+ * This used to say "generation stays NULL: nothing is baked into a
+ * block", on the ground that every translated instruction reads only its
+ * own operands -- true of the instructions, and not of the *fetch*: the
+ * MPU decides whether code may execute at all, by mode and by area, and
+ * the translator answered that question for the whole block. So the mode
+ * is the context and the MPU's configuration the generation; see
+ * jit_ctx in g4mh_cpu.h, and docs/jit/staleness.md for the rule.
  */
 static void g4mh_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
 {
     g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
 
+    /* A platform may have written PSW between slices. */
+    g4mh_jit_ctx_refresh(c);
     out->pc = &c->pc;
     out->state = &c->state;
+    out->context = &c->jit_ctx;
+    out->generation = &c->jit_gen;
+}
+
+/*
+ * After the interpreter, which is where LDSR, EIRET and FERET -- every
+ * instruction that can set PSW.UM -- run: the translator declines all
+ * three.
+ */
+static void g4mh_jit_after_interp(emu_cpu_t *cpu)
+{
+    g4mh_jit_ctx_refresh((g4mh_cpu_t *)cpu);
 }
 
 const emu_ir_frontend_t g4mh_ir_frontend = {
@@ -1635,7 +1668,7 @@ const emu_ir_frontend_t g4mh_ir_frontend = {
     .wake = g4mh_jit_wake,
     .take_irq = g4mh_jit_take_irq,
     .count = g4mh_jit_count,
-    .after_interp = NULL,
+    .after_interp = g4mh_jit_after_interp,
     .code_bytes = G4MH_JIT_CODE_BYTES,
     /* r[0..31], pc and psw. */
     .diff_state_bytes = (uint32_t)offsetof(g4mh_cpu_t, psw) + 4u,

@@ -68,7 +68,7 @@ Linux boot executed `rdtime` 335 million times.
 
 | frontend | context | generation |
 |---|---|---|
-| G4MH | **none bound** | **none bound** — whether the MPU's execute permission or a change of PSW.UM can leave a cached block wrong has not been examined; see [../TODO.md](../TODO.md) |
+| G4MH | PSW.UM | any MPU register write (`jit_gen`) — both added when the answer to "can a cached block outlive the MPU's execute permission" turned out to be yes: the translator checked nothing, so code the MPU refuses to user mode ran from a block built in supervisor mode, or before the area lost its execute bit. The fetch is now checked per instruction at translation, in the mode the block is keyed on |
 | ARMv7-M | Thumb, inside IT, Handler mode, privileged | any MPU register write; CCR's UNALIGN_TRP and DIV_0_TRP |
 | PowerPC | the encoding (VLE or Book E) | none: whatever changes MSR or an SPR is declined, so nothing a block assumes can move under it |
 

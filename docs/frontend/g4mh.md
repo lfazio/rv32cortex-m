@@ -881,10 +881,19 @@ have caught the bug above -- no single-backend run can see it.
 - **Debug level.** No `DBPC`/`DBPSW`, `DBTRAP`/`DBRET` — the analogue of
   Sdtrig.
 - **The JIT's keys.** `g4mh_backend_jit` comes from the shared IR
-  framework, on x86-64 (`emu-host --jit`) and on Thumb-2 alike. Unlike
-  the other three translators it binds **no context and no generation**:
-  whether a change of PSW.UM, or of the MPU's execute permission, can
-  leave a cached block wrong has not been examined.
+  framework, on x86-64 (`emu-host --jit`) and on Thumb-2 alike. A block
+  is keyed on PSW.UM and discarded on any MPU register write, and the
+  translator checks execute permission per instruction as the
+  interpreter does. It bound neither until the question "can a cached
+  block outlive the MPU" was asked and the answer was yes: code the MPU
+  refused to user mode ran from a block translated in supervisor mode,
+  or before its area lost the execute bit.
+  `test_mpu_exec_permission_both_backends` fails against each of the
+  three pieces removed alone.
+- **An exception enters supervisor mode**, at either level, as
+  R01UH0865EJ0140 2.1.3.3 says. Only SYSCALL cleared PSW.UM, so every
+  other exception taken in user mode ran its handler as user -- and a
+  fetch-protection fault then faulted again on its own handler.
 
   Run both and diff them. With no reference model, interpreter against
   JIT on the same guest is the only cross-check this frontend has --

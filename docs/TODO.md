@@ -179,11 +179,20 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       while the block that jumps into them survives. Whether that is
       costing anything measurable has not been tested — count entries
       in the chained path, or age differently, and A/B it on the board.
-- [ ] **The G4MH translator binds no context and no generation.** Every
-      other translator states what a block is for and what invalidates
-      it. Whether a change of PSW.UM, or of the MPU's execute
-      permission, can leave a cached G4MH block wrong has not been
-      examined ([jit/staleness.md](jit/staleness.md)).
+- [x] **The G4MH translator bound no context and no generation, and
+      that was a permission bypass.** The interpreter checks MPU execute
+      permission on every fetch; the translator checked nothing, so
+      code the MPU refuses to user mode ran from a block translated in
+      supervisor mode, or translated before its area lost the execute
+      bit. Now: PSW.UM is the context, any MPU register write the
+      generation, and the fetch is checked per instruction at
+      translation. And exception entry did not clear PSW.UM -- only
+      SYSCALL did -- so a user-mode fault ran its handler as user and,
+      for a fetch fault, faulted again there for ever.
+      `test_mpu_exec_permission_both_backends` catches each of the four
+      pieces removed alone; its first version passed with the context
+      removed, because the declined-pc cache answered for it
+      ([jit/staleness.md](jit/staleness.md)).
 - [x] **The ARMv7-M frontend has run on a board**: all eight guests on
       the F746 under both backends, every retired count equal to the
       host's ([frontend/armv7m.md](frontend/armv7m.md#firmware)). It

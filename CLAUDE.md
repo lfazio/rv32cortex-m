@@ -3120,6 +3120,24 @@ session, and every one of them recurred:
   step, translating only hot code, was built on the same belief and
   bought nothing, because the code being retranslated was hot.
 
+- **"Nothing is baked into a block" was true of the instructions and
+  false of the fetch.** The G4MH translator's comment said it needed no
+  generation because every lowered instruction reads only its operands.
+  But translating a block answers "may this code execute" for all of it,
+  and on G4MH the MPU answers that by mode and by area -- so user code
+  ran from blocks built in supervisor mode, and from blocks built before
+  an area lost its execute bit. **The fetch is a translate-time read of
+  mutable state**; this file's staleness rule applies to it like any
+  other.
+
+  And the test for the context **passed with the context removed**, the
+  first time. A decline recorded in user mode at the first instruction
+  sat in the declined-pc cache, which -- without a context -- answered
+  for the supervisor run as well; the supervisor block began one
+  instruction later and the user run never reached it. **A cache in
+  front of the thing under test can answer for it**: flush before the
+  phase whose only protection is the mechanism being tested.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must
