@@ -241,6 +241,30 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       status a suite reads against a park loop serving a link). Those are
       genuinely different and merging them would put an `#if` per platform
       inside one `main()`, which is the arrangement all of this undid.
+- [ ] **A host runner that accepts any frontend already supported.** One
+      `emu-host` that runs an RV32, G4MH, PowerPC or ARMv7-M guest
+      without reconfiguring. The mechanism exists: the runner picks a
+      frontend from the ELF's `e_machine` or from `--frontend NAME`, and
+      the `host-all` row of `scripts/build-matrix.sh` builds all four and
+      passes its 54 ctests. What is missing is that it is not what a
+      plain build gives you: `EMU_GUEST_ARCH_G4MH`, `_PPC` and `_ARMV7M`
+      default OFF (`CMakeLists.txt`), so `build/host` -- the tree
+      `run-riscv-tests.sh`, `gdb-check.sh` and the docs' recipes default
+      to -- accepts RV32 alone, and the other three are exercised only by
+      configurations someone has to ask for. To do:
+      - default every frontend ON for `EMU_PLATFORM=host`; the firmware
+        keeps one, because there a frontend costs flash;
+      - a flat `.bin` carries no architecture and runs as the first
+        frontend compiled in -- which is how 20 tests failed when
+        `host-all` was first built. With more than one compiled in,
+        refuse a flat image without `--frontend` rather than guess;
+      - check what grows with the set: `EMU_MAX_REGIONS` is computed per
+        frontend (27 with all four), and the build matrix once kept a
+        stale 16 in a cached row;
+      - measure that RV32 pays nothing for the company -- CoreMark on
+        both backends, interleaved, before and after, since layout alone
+        moves a host figure by about 3%;
+      - then the validation table, README and BUILD.md say one runner.
 - [ ] Add FreeRTOS support to the host emulator, lwip in one task and emulator in another one (it will allow to instanciate later a tinyusb network device over USB). https://github.com/STMicroelectronics/x-cube-freertos/tree/main (https://github.com/hathach/tinyusb)
 - [x] Make rv32 frontend works with opensbi (https://github.com/riscv-software-src/opensbi/tree/master)
       `scripts/run-opensbi.sh`. OpenSBI v1.9 `generic` boots on the
