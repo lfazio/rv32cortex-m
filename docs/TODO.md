@@ -45,11 +45,26 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
         serves Thumb-2, which cannot lower `EMU_IR_BITOP` and used to
         lose the whole block to it -- its `emu_ir_can_lower` promised it
         could, and x86-64's denied what it does.
-      - [x] **The N6 runs under FreeRTOS** after the `flash` target was
-        fixed: without `VERBATIM` the echo's "(BOOT1)" was a `/bin/sh`
-        syntax error, a second load hung in the signing tool's overwrite
-        prompt, and it takes `EMU_PROBE` now. The silence seen here
-        before that was the load path and the probe, not the port.
+      - [ ] **FreeRTOS has never run on the N6.** (This box was ticked
+        in 18c54e1 on a misreading: the board worked *before*
+        FreeRTOS.) The `flash` target's fixes stand -- `VERBATIM`, the
+        signing tool's overwrite prompt, `EMU_PROBE` -- but its `-g`
+        leaves the core in the boot ROM (pc 0x18003514). Loaded through
+        `ST-LINK_gdbserver -d -m 1 -g` and gdb (`load`, then sp/pc from
+        0x34180400/4, as `.vscode/launch.json` does), RV32 `isatest` and
+        three-PE G4MH `smp` both print the banner and then HardFault on
+        a return through a zero: INVSTATE, pc 0, in the **first** JIT
+        slice. The task's SP at the fault is ~224 bytes below the top of
+        its 8 KiB stack -- inside `emu_main`'s frame, whose argv strings
+        are what got popped -- having entered `emu_jit_run` at
+        0x341bf068. So SP drifts *up* during a slice; no stack overflow
+        (high-water 1,044 of 8,192). The G4MH bit-op helper and
+        `--load` were each A/B'd out and are not it. Next: break inside
+        the slice (block entry, then each exception return) and find
+        the instruction after which SP is wrong -- the ARMv8-M port's
+        PendSV/SysTick frames are the first suspect. Reset with
+        `set *(unsigned*)0xE000ED0C = 0x05FA0004` then detach;
+        `monitor reset` does not.
       - [ ] **The F446 has built and not run** under FreeRTOS.
       - [ ] **The F746's hot path is at the mercy of the linker.**
         Linking the kernel moved the emulator's hot functions 456 bytes
