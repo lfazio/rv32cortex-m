@@ -325,14 +325,14 @@ endif()
 # boot ROM enables AXISRAM, and only development boot leaves it enabled
 # with the port still open.
 #
-# probe-rs 0.32 does list five STM32N6 targets, so this could move back to
-# it once the board can be attached at all; it is CubeProgrammer here
-# because mode=UR is the invocation that was shown to reach the core.
+# probe-rs 0.32 does list five STM32N6 targets, so this could move to it;
+# what is shown to reach the core today is ST-LINK_gdbserver on access
+# port 1, which is what `flash` below uses.
 #
-# The .bin at an explicit address rather than the .elf: the linker aligns
-# the first LOAD segment down to its 64 KB page size, so the ELF advertises
-# 0x34000000 while .isr_vector really sits at 0x34000400, and a programmer
-# that believes the segment header writes a kilobyte too low.
+# gdb's `load` writes each section at its own address, so the ELF is
+# loaded directly. A programmer that went by the *segment* headers would
+# not do: the linker aligns the first LOAD segment down to its 64 KB page
+# size, so the ELF advertises a load address below .isr_vector's.
 #
 set(EMU_ST_TOOLS
     "/opt/st/stm32cubeide_2.1.0/plugins/com.st.stm32cube.ide.mcu.externaltools.cubeprogrammer.linux64_2.2.400.202601091506/tools/bin"
@@ -612,34 +612,76 @@ set(EMU_ST_TOOLS
 #
 # Which ST-LINK, when more than one is attached: EMU_PROBE, in the
 # VID:PID:serial form the other boards' probe-rs targets take. Without it
-# STM32_Programmer_CLI connects to whichever enumerates first -- with the
-# F746 also plugged in, that can be the wrong board.
+# the tools take whichever enumerates first -- with the F746 also plugged
+# in, that can be the wrong board.
 #
 set(EMU_PROBE "" CACHE STRING "probe selector (VID:PID:serial); the serial is passed as sn=")
-set(_n6_connect port=SWD mode=HOTPLUG)
+set(_n6_sn "")
 if(EMU_PROBE)
     string(REGEX REPLACE "^.*:" "" _n6_sn "${EMU_PROBE}")
-    list(APPEND _n6_connect "sn=${_n6_sn}")
 endif()
+
+#
+# **`flash` loads and starts the firmware, through ST's gdbserver.**
+#
+# It used to sign the image and hand it to STM32_Programmer_CLI with
+# `-w ... 0x34000000 -g 0x34000000`, which reported "Start operation
+# achieved successfully" and left the core in the boot ROM (pc
+# 0x18003514) every time. Two reasons, either sufficient:
+#
+#   - the CLI connects on access port 0, which reaches the bus and not
+#     the Cortex-M55 -- a core register read there is DEV_TARGET_CMD_ERR,
+#     and with ap=1 the CLI cannot identify the device at all;
+#   - in development boot the ROM loads nothing and jumps nowhere, so the
+#     *signed* image -- a boot-ROM header for flash boot -- was written
+#     0x180400 below where the code is linked.
+#
+# ST-LINK_gdbserver with -m 1 does reach the core, and gdb then does what
+# the IDE's launch does: load at the link address, take sp and pc from
+# the vector table. scripts/n6-load.sh holds the sequence, including the
+# reset that returns a crashed core to the ROM first.
+#
+get_filename_component(_st_plugins "${EMU_ST_TOOLS}/../../.." ABSOLUTE)
+file(GLOB _st_gdbserver
+    "${_st_plugins}/*stlink-gdb-server*/tools/bin/ST-LINK_gdbserver")
+set(_st_gdbserver_first "")
+if(_st_gdbserver)
+    # The newest, when an IDE update has left several side by side.
+    list(SORT _st_gdbserver)
+    list(REVERSE _st_gdbserver)
+    list(GET _st_gdbserver 0 _st_gdbserver_first)
+endif()
+set(EMU_ST_GDBSERVER "${_st_gdbserver_first}"
+    CACHE FILEPATH "ST-LINK_gdbserver, from STM32CubeIDE")
+find_program(EMU_GDB NAMES gdb-multiarch arm-none-eabi-gdb
+    DOC "a gdb that speaks ARM, for the N6's flash target")
 
 add_custom_target(flash
     COMMAND ${CMAKE_COMMAND} -E echo
             "N6: JP2 (BOOT1) at 2-3 = development boot. See UM3417 table 11."
-    # The signing tool asks before overwriting its output, on a stdin
-    # nobody is typing into, and spins there: the second load of a build
-    # hung for good. Remove the previous signed image first.
+    COMMAND "${CMAKE_SOURCE_DIR}/scripts/n6-load.sh"
+            "${EMU_ST_GDBSERVER}" "${EMU_ST_TOOLS}" "${EMU_GDB}"
+            "$<TARGET_FILE:emu-stm32n6>" ${_n6_sn}
+    DEPENDS emu-stm32n6
+    USES_TERMINAL
+    # VERBATIM, or the echo's "(BOOT1)" reaches /bin/sh unquoted and the
+    # target dies on a syntax error -- which it did, every time, until a
+    # board was flashed through it.
+    VERBATIM
+    COMMENT "Loading the Nucleo-N657X0-Q into AXISRAM and starting it")
+
+#
+# The image with its boot-ROM header, for flash boot -- programming the
+# external flash, which `flash` does not do. The signing tool asks before
+# overwriting its output, on a stdin nobody is typing into, and spins
+# there; the previous one is removed first.
+#
+add_custom_target(signed-image
     COMMAND ${CMAKE_COMMAND} -E rm -f "${CMAKE_BINARY_DIR}/emu-stm32n6-signed.bin"
     COMMAND ${EMU_ST_TOOLS}/STM32_SigningTool_CLI
             -bin "${CMAKE_BINARY_DIR}/emu-stm32n6.bin"
             -nk -t fsbl -hv 2.3 -align
             -o "${CMAKE_BINARY_DIR}/emu-stm32n6-signed.bin"
-    COMMAND ${EMU_ST_TOOLS}/STM32_Programmer_CLI -c ${_n6_connect}
-            -w "${CMAKE_BINARY_DIR}/emu-stm32n6-signed.bin" 0x34000000
-            -g 0x34000000
     DEPENDS emu-stm32n6
-    USES_TERMINAL
-    # VERBATIM, or the echo's "(BOOT1)" reaches /bin/sh unquoted and the
-    # target dies on a syntax error before it signs anything -- which it
-    # did, every time, until a board was flashed through it.
     VERBATIM
-    COMMENT "Signing and loading the Nucleo-N657X0-Q into AXISRAM")
+    COMMENT "Signing the Nucleo-N657X0-Q image for flash boot")

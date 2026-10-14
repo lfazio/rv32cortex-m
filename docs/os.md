@@ -118,12 +118,22 @@ picolibc's own script does, and `board_tls_init()`, first in
 that `&errno` falls inside. One block for every task: the boards'
 scheduler is cooperative and nothing keeps `errno` across a switch.
 
-**The N6's `flash` target loads but does not start the core** -- it is
-left in the boot ROM. gdb through `ST-LINK_gdbserver -d -m 1 -g` does:
-`load`, then sp and pc from the vector table at 0x34180400, which is
-what `.vscode/launch.json` does. Measured that way: RV32 `isatest`
-passes as on the F746, and three-PE G4MH `smp.bin` prints the model's
-line in 3,776 rounds of 4,096, the host's cooperative count.
+**The N6's `flash` target starts the core now, through gdb.** It used
+to hand a signed image to `STM32_Programmer_CLI -g`, which reported
+success and left the core in the boot ROM: the CLI works on access port
+0, which reaches the bus but not the Cortex-M55, and the signed image is
+the flash-boot layout, written 0x180400 below the link address.
+`scripts/n6-load.sh` starts `ST-LINK_gdbserver -m 1`, resets the core to
+the ROM through AIRCR, `load`s the ELF, takes sp and pc from
+`g_pfnVectors` and detaches. Through it: RV32 `isatest` passes as on the
+F746, and three-PE G4MH `smp.bin` prints the model's line in 3,776
+rounds of 4,096, the host's cooperative count -- twice in a row, the
+second over the first. `signed-image` still builds the flash-boot image.
+
+**Do not poke the N6 with `STM32_Programmer_CLI` while debugging.** A
+software reset and halt attempts through it left access port 1
+answering "Target unknown error 32" to every tool, through an NRST
+reset, until the board was power-cycled.
 
 **A CC-RH guest is copied to 0x80000000 before it runs.** Every G4MH
 guest is linked there, which is guest RAM, so running it in place at

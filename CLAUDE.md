@@ -3094,6 +3094,16 @@ session, and every one of them recurred:
   reasoning about the code.** And a TODO box was ticked on a misreading
   of "the board worked": ask what it ran, not whether it ran.
 
+- **"Start operation achieved successfully" started nothing, for the
+  whole life of the N6's `flash` target.** STM32_Programmer_CLI works on
+  access port 0, which reaches the bus and not the Cortex-M55, so its
+  `-g` was a request nobody received; and the image it wrote was the
+  signed flash-boot one, 0x180400 below where the code is linked. The
+  core sat in the boot ROM at 0x18003514 every time. The tell was
+  available from the first run -- **ask the core where it is** (one gdb
+  attach) before believing a tool that says it started it.
+  `scripts/n6-load.sh` goes through ST-LINK_gdbserver on AP 1.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must

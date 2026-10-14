@@ -64,13 +64,12 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
         `board_tls_init()` points `__tls` at the block, first thing,
         checking that `&errno` lands inside it.
 
-        Still open: the `flash` target loads the image but its `-g`
-        leaves the core in the boot ROM (pc 0x18003514). What starts it
-        is gdb through `ST-LINK_gdbserver -d -m 1 -g`: `load`, then sp
-        and pc from 0x34180400/4, as `.vscode/launch.json` does. Reset
-        first with `set *(unsigned*)0xE000ED0C = 0x05FA0004` and a
-        detach -- `monitor reset` does not, and a core left in a
-        HardFault runs the next image in handler mode.
+        And the `flash` target starts the core now: it loaded a signed
+        image through `STM32_Programmer_CLI -g`, which left the core in
+        the boot ROM -- the CLI is on access port 0 and the M55 on 1.
+        `scripts/n6-load.sh` does it through `ST-LINK_gdbserver -m 1` and
+        gdb, resetting a crashed core to the ROM first
+        ([os.md](os.md#on-a-board)).
       - [ ] **The F446 has built and not run** under FreeRTOS.
       - [ ] **The F746's hot path is at the mercy of the linker.**
         Linking the kernel moved the emulator's hot functions 456 bytes
