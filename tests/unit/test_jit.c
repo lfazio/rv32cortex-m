@@ -179,6 +179,51 @@ static void test_flush_reopens_a_declined_pc(void)
 }
 
 /*
+ * Translate only what is hot: below the threshold a missing pc is
+ * interpreted, one instruction at a time, and offered to the translator
+ * only on the miss that reaches it.
+ *
+ * Exact counts, for the reason the test above gives: a bound would pass
+ * against a threshold that is ignored. Three misses must reach the
+ * translator zero times; the fifth exactly once; and `cold` must say
+ * four, because that is what the option costs and what it has to be
+ * judged by.
+ */
+static void test_hot_threshold_delays_translation(void)
+{
+    emu_jit_stats_t before;
+    emu_jit_stats_t after;
+
+    emu_jit_flush();
+    g_translate_calls = 0u;
+    emu_jit_set_hot_threshold(5u);
+    emu_jit_get_stats(&before);
+
+    (void)run_budget(3u);
+    CHECK_EQ(g_translate_calls, 0u);
+
+    (void)run_budget(4096u);
+    CHECK_EQ(g_translate_calls, 1u);
+    emu_jit_get_stats(&after);
+    CHECK_EQ(after.cold - before.cold, 4u);
+
+    /* A flush says nothing about what is still hot: count again. */
+    emu_jit_flush();
+    (void)run_budget(4u);
+    CHECK_EQ(g_translate_calls, 1u);
+    (void)run_budget(1u);
+    CHECK_EQ(g_translate_calls, 2u);
+
+    /* Clamped to what the table can count. */
+    emu_jit_set_hot_threshold(0u);
+    CHECK_EQ(emu_jit_hot_threshold(), 1u);
+    emu_jit_set_hot_threshold(1000u);
+    CHECK_EQ(emu_jit_hot_threshold(), 254u);
+
+    emu_jit_set_hot_threshold(EMU_JIT_HOT_THRESHOLD);
+}
+
+/*
  * A generation change flushes, so it reopens the pc too -- by the same
  * mechanism, but through the path a frontend actually uses.
  */
@@ -628,6 +673,7 @@ void test_jit(void)
     }
 
     test_declined_pc_is_not_retried();
+    test_hot_threshold_delays_translation();
     test_flush_reopens_a_declined_pc();
     test_generation_change_reopens_a_declined_pc();
     test_cache_is_per_pc();

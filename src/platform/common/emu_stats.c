@@ -117,12 +117,13 @@ bool emu_print_jit_stats(void)
      * looks like -- and a cache that never hits is indistinguishable
      * from one that does not pay unless both are printed.
      */
-    emu_console_printf("  interp   %u instructions fell back\n"
+    emu_console_printf("  interp   %u instructions fell back (cold %u)\n"
                        "  declined %u (cached %u) overflow %u\n"
                        "  blk entr %u  links %u\n",
-                       (unsigned)js.interp_fallbacks, (unsigned)js.declined,
-                       (unsigned)js.declined_cached, (unsigned)js.overflowed,
-                       (unsigned)js.block_entries, (unsigned)js.links);
+                       (unsigned)js.interp_fallbacks, (unsigned)js.cold,
+                       (unsigned)js.declined, (unsigned)js.declined_cached,
+                       (unsigned)js.overflowed, (unsigned)js.block_entries,
+                       (unsigned)js.links);
 
 #ifdef EMU_JIT_PROFILE
     /*

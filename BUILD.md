@@ -200,7 +200,10 @@ for the readers of a flag, not for the flag.
 | `EMU_ENABLE_TRACE` | OFF | per-instruction hook. **Read pc deltas, not the disassembly** |
 | `EMU_ENABLE_STATS` | ON | `xlat`/`interp` — read the ratio before believing a pass |
 | `EMU_JIT_CODE_BYTES` | 32768 | the code cache on a microcontroller. A threshold, not a dial: below a guest's translated working set the JIT is **slower** than the interpreter, and at the default that includes CoreMark — [docs/jit/tuning.md](docs/jit/tuning.md) |
+| `EMU_JIT_HOT_THRESHOLD` | 1 | misses before a pc is translated; until then it is interpreted. `--jit-hot N` per run on the host. **Nothing measured gains from more than 1** — [docs/jit/tuning.md](docs/jit/tuning.md) |
 | `EMU_JIT_LOOP_CAP` | 128 | interrupt-latency knob. CoreMark **cannot observe it** |
+| `EMU_LAYOUT_PAD`, `EMU_LAYOUT_PAD_RAM` | 0 | F746 only, instruments: move all of `.text`, or guest RAM, by N bytes and change nothing else — so a figure that moves with them is layout |
+| `EMU_PC_PROFILE` | 0 | F746 only: keep N interrupted pcs from the 1 kHz tick and print them after the run, to say which host code is hot |
 | `EMU_JIT_DIFF` | OFF | checks each block against the IR interpreter — and see its `diff_declined` counter before trusting silence |
 | `EMU_NET` | ON on the F746 | lwIP over PPP or SLIP: telnet, gdb, TFTP. **The UART stops being a console** |
 | `EMU_NATIVE_COREMARK` | OFF | CoreMark natively on the ARM, for the baseline |

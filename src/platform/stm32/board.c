@@ -405,8 +405,28 @@ uint64_t board_perf_cycles(void)
  * written out here and in the host's board.c -- the same four steps in
  * the same order, differing only in this answer and in what "wait" means.
  */
+#if EMU_PC_PROFILE
+#include "emu_console.h"
+
+/* The tick's samples (stm32f7xx_it.c), printed once after the run. */
+extern uint32_t g_pc_profile[];
+extern volatile uint32_t g_pc_profile_n;
+#endif
+
 bool board_parks_after_run(void)
 {
+#if EMU_PC_PROFILE
+    static bool dumped;
+
+    if (!dumped) {
+        dumped = true;
+        emu_console_printf("pcprof %u\n", (unsigned)g_pc_profile_n);
+        for (uint32_t i = 0; i < g_pc_profile_n; i++) {
+            emu_console_printf("%08x\n", (unsigned)g_pc_profile[i]);
+        }
+        emu_console_printf("pcprof-end\n");
+    }
+#endif
     return true;
 }
 

@@ -117,6 +117,8 @@ typedef struct emu_args {
     /* 0 unless --quantum was given; emu_main then picks the default,
      * which depends on whether the cores will run in parallel. */
     uint32_t quantum;
+    /* --jit-hot: misses before a pc is translated; 0 keeps the build's. */
+    uint32_t jit_hot;
     uint64_t max_insn;
     uint32_t timer_div;
 

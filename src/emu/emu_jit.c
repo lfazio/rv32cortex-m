@@ -459,10 +459,20 @@ void emu_jit_invalidate_page(uint32_t vaddr, const emu_jit_ops_t *ops)
  * costs a microcontroller 4 KiB of the guest's RAM. The block table is
  * the opposite case and compares all 64 bits.
  */
+/*
+ * **Two answers in one table**, because on a microcontroller every entry
+ * is the guest's RAM: whether this pc declined, and how often it has
+ * missed the block table while not yet hot (emu_jit_set_hot_threshold).
+ * `tag` is the epoch in its top 24 bits and that count in the low 8,
+ * with JIT_SEEN_DECLINED meaning the translator refused it.
+ */
+#define JIT_SEEN_DECLINED 0xFFu
+#define JIT_SEEN_EPOCH_MAX 0x00FFFFFFu
+
 static EMU_PER_CORE struct {
     uint32_t pc;
     uint32_t context;
-    uint32_t epoch;
+    uint32_t tag;
 } g_neg[JIT_NEG_SIZE];
 
 /*
@@ -470,6 +480,19 @@ static EMU_PER_CORE struct {
  * empty rather than as a valid entry for pc 0.
  */
 static EMU_PER_CORE uint32_t g_neg_epoch = 1u;
+
+/* Shared by every core: it is configuration, set before a run. */
+static uint32_t g_hot_threshold = EMU_JIT_HOT_THRESHOLD;
+
+void emu_jit_set_hot_threshold(uint32_t misses)
+{
+    g_hot_threshold = (misses < 1u) ? 1u : (misses > 254u) ? 254u : misses;
+}
+
+uint32_t emu_jit_hot_threshold(void)
+{
+    return g_hot_threshold;
+}
 
 static uint32_t neg_slot(uint32_t pc, uint32_t context)
 {
@@ -498,32 +521,77 @@ static uint32_t neg_slot(uint32_t pc, uint32_t context)
     return (h >> 16) & (JIT_NEG_SIZE - 1u);
 }
 
+/* This epoch's answer for (pc, context): 0 if none, else the count or
+ * JIT_SEEN_DECLINED. */
+static uint32_t seen_get(uint32_t s, uint32_t pc, uint32_t context)
+{
+    const uint32_t tag = g_neg[s].tag;
+
+    if ((tag >> 8) != g_neg_epoch || g_neg[s].pc != pc ||
+        g_neg[s].context != context) {
+        return 0u;
+    }
+    return tag & 0xFFu;
+}
+
+static void seen_set(uint32_t s, uint32_t pc, uint32_t context, uint32_t v)
+{
+    g_neg[s].pc = pc;
+    g_neg[s].context = context;
+    g_neg[s].tag = (g_neg_epoch << 8) | v;
+}
+
 static bool neg_hit(uint32_t pc, uint64_t key)
 {
     const uint32_t context = ctx_fold(key);
-    const uint32_t s = neg_slot(pc, context);
 
-    return g_neg[s].epoch == g_neg_epoch && g_neg[s].pc == pc &&
-           g_neg[s].context == context;
+    return seen_get(neg_slot(pc, context), pc, context) == JIT_SEEN_DECLINED;
 }
 
 static void neg_note(uint32_t pc, uint64_t key)
 {
     const uint32_t context = ctx_fold(key);
-    const uint32_t s = neg_slot(pc, context);
 
-    g_neg[s].pc = pc;
-    g_neg[s].context = context;
-    g_neg[s].epoch = g_neg_epoch;
+    seen_set(neg_slot(pc, context), pc, context, JIT_SEEN_DECLINED);
+}
+
+/*
+ * One more miss for a pc with no block. True once it has missed often
+ * enough to be translated.
+ *
+ * The count is *not* stored on the miss that crosses the threshold, so
+ * it stays one short: a block of a hot pc that compaction later evicts
+ * is retranslated on its next miss rather than warming up again, which
+ * is right -- it was hot. A flush starts every count again, because it
+ * says nothing about which code is still hot.
+ *
+ * A collision loses another pc's count, or its declined mark; the cost
+ * is a warm-up repeated or a translation retried, never a wrong answer.
+ */
+static bool heat_bump(uint32_t pc, uint64_t key)
+{
+    if (g_hot_threshold <= 1u) {
+        return true;
+    }
+
+    const uint32_t context = ctx_fold(key);
+    const uint32_t s = neg_slot(pc, context);
+    const uint32_t n = seen_get(s, pc, context) + 1u;
+
+    if (n >= g_hot_threshold) {
+        return true;
+    }
+    seen_set(s, pc, context, n);
+    return false;
 }
 
 static void neg_invalidate(void)
 {
     g_neg_epoch++;
-    if (g_neg_epoch == 0u) {
+    if (g_neg_epoch > JIT_SEEN_EPOCH_MAX) {
         /*
-         * Wrapped, so stale entries would read as current. Only reachable
-         * after 2^32 flushes -- about 33,000 Linux boots -- and cheap
+         * Wrapped, so stale entries would read as current. 2^24 flushes
+         * is about 130 Linux boots in one process -- reachable, and cheap
          * enough to handle rather than document as a limit.
          */
         memset(g_neg, 0, sizeof(g_neg));
@@ -1289,6 +1357,26 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
                 if (batch < EMU_JIT_FALLBACK_MAX) {
                     batch *= 2u;
                 }
+                if (r == EMU_RUN_HALTED || r == EMU_RUN_WFI) {
+                    reason = r;
+                    break;
+                }
+                continue;
+            }
+
+            /*
+             * Not hot yet: interpret one instruction and look again. One,
+             * so that the next pc is counted too -- in a loop the head
+             * crosses the threshold first and its block then covers the
+             * body, whose own counts are never consulted again.
+             */
+            if (!heat_bump(pc, context)) {
+                const uint32_t before = done;
+                const emu_run_reason_t r =
+                    run_interp_batch(cpu, ops, &done, budget, 1u);
+
+                g_stats.cold += done - before;
+                prev = NULL;
                 if (r == EMU_RUN_HALTED || r == EMU_RUN_WFI) {
                     reason = r;
                     break;

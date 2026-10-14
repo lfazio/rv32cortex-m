@@ -261,6 +261,16 @@ endif()
 set(EMU_HOT_TEXT_SECTION "${_hot_section_default}" CACHE STRING
     "linker section for the per-dispatch path (empty: ordinary .text)")
 
+#
+# How many times a pc must miss the block cache before it is translated;
+# until then it is interpreted. 1 translates on the first miss, which is
+# the default because nothing measured gains from more -- see
+# docs/jit/tuning.md before raising it. `--jit-hot N` sets it per run on
+# the host.
+#
+set(EMU_JIT_HOT_THRESHOLD 1 CACHE STRING
+    "misses before a pc is translated (1: translate on the first)")
+
 # Build and use the Thumb-2 JIT. Turning this off is how the same guest
 # image is measured on the interpreter, which is also how a suspected JIT
 # miscompile gets isolated from a core bug.
@@ -602,6 +612,7 @@ target_compile_definitions(emucore PUBLIC
     #
     $<$<BOOL:${EMU_JIT_CODE_SECTION}>:EMU_JIT_CODE_SECTION="${EMU_JIT_CODE_SECTION}">
     $<$<BOOL:${EMU_HOT_TEXT_SECTION}>:EMU_HOT_TEXT_SECTION="${EMU_HOT_TEXT_SECTION}">
+    EMU_JIT_HOT_THRESHOLD=${EMU_JIT_HOT_THRESHOLD}u
     #
     # Whether a JIT was *asked for*. emu_jit.h reconciles this with what
     # the host can actually emit; before it existed, EMU_HOST_JIT_X86_64 and

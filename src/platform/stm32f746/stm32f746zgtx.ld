@@ -115,6 +115,14 @@ SECTIONS
     .text :
     {
         . = ALIGN(4);
+        /*
+         * An instrument, 0 unless -DEMU_LAYOUT_PAD=N: moves every function
+         * in .text by N bytes and changes nothing else, so a figure that
+         * moves with it is layout and not code. The complement of the A/B
+         * this board's notes already use -- the same code at another
+         * address, where that one is other code at the same address.
+         */
+        . = . + (DEFINED(EMU_LAYOUT_PAD) ? EMU_LAYOUT_PAD : 0);
         *(.text)
         *(.text*)
         *(.glue_7)
@@ -309,6 +317,9 @@ SECTIONS
     .guest_ram (NOLOAD) :
     {
         . = ALIGN(8);
+        /* The same instrument for data: -DEMU_LAYOUT_PAD_RAM=N moves the
+           guest's RAM N bytes up, and nothing else. */
+        . = . + (DEFINED(EMU_LAYOUT_PAD_RAM) ? EMU_LAYOUT_PAD_RAM : 0);
         __guest_ram_start = .;
         . = ORIGIN(RAM) + LENGTH(RAM) - _stack_size - _task_stack_size - _min_heap_size;
         __guest_ram_end = .;

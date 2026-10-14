@@ -141,6 +141,8 @@ void emu_args_usage(void)
         "                       an SMP host otherwise runs them in parallel",
 #if EMU_JIT_SELECTABLE
         "  --jit                use the JIT backend, not the interpreter",
+        "  --jit-hot N          translate a pc only once it has missed the",
+        "                       block cache N times; until then interpret",
 #endif
         "  --gdb [port]         serve a gdb stub on localhost (default 1234)",
         "  --quiet              suppress the exit summary",
@@ -478,6 +480,17 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
                 }
                 continue;
             }
+#if EMU_JIT_SELECTABLE
+            if (strcmp(a, "--jit-hot") == 0) {
+                if (!parse_u32(argv[++i], &opt->jit_hot) ||
+                    opt->jit_hot == 0u) {
+                    emu_args_usage();
+                    *status = 2;
+                    return false;
+                }
+                continue;
+            }
+#endif
         }
 
         if (a[0] == '-') {

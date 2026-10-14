@@ -3104,6 +3104,20 @@ session, and every one of them recurred:
   attach) before believing a tool that says it started it.
   `scripts/n6-load.sh` goes through ST-LINK_gdbserver on AP 1.
 
+- **"The linker moved the hot path" was an explanation nobody had tested,
+  and what it explained was a lucky number.** CoreMark on the F746 went
+  140.0 to 152.8 across the FreeRTOS commit with identical translations,
+  and placement took the blame. Shifting all of `.text` by up to 1.5 KB
+  moved nothing; reordering functions with `-falign-functions` took the
+  *old* tree from 140.0 to 148-149. The old figure was the outlier.
+  What made order matter is that at 32 KB the board is translation-bound
+  -- a tick-driven PC profile put 70% of samples in the translator and
+  7.6% in translated code. **Before attributing a figure to layout, move
+  the layout and see whether the figure follows** (`EMU_LAYOUT_PAD`),
+  and **profile before choosing what to optimise**: the obvious next
+  step, translating only hot code, was built on the same belief and
+  bought nothing, because the code being retranslated was hot.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must

@@ -81,6 +81,88 @@ figure in this repo was once measured with a 48 KB cache inherited from
 an old build directory while the declared default was 12 KB; `rm -rf
 build/` moved them by 68% with no code change.
 
+## Layout on the F746 — what the 140-to-153 swing was
+
+RV32 CoreMark at 32 KB measured 140.0 host cycles an instruction before
+FreeRTOS and 152.8 after, with identical translations, and the
+difference was put down to the linker moving the hot path. Three
+instruments say what it was, all CoreMark x120 under the JIT, one
+flash each -- the counter repeats to 0.05% on one binary:
+
+| what moves | how | result |
+|---|---|---|
+| all of `.text`, by 0-1,536 bytes | `-DEMU_LAYOUT_PAD=N` | 152.67-152.85: **nothing** |
+| guest RAM, by 104 or 512 bytes | `-DEMU_LAYOUT_PAD_RAM=N` | 152.84 both: nothing |
+| the order of functions | `-falign-functions` 32 / 64 | pre-FreeRTOS 140.01 → **147.90 / 149.30**; HEAD 152.85 → 148.53 / 150.54 |
+
+So the old 140.0 was a lucky *relative* order of functions, which LTO
+redraws whenever code is added -- not a baseline FreeRTOS cost 9%
+against. The kernel's own cost is the 0.5% measured by bypassing it.
+
+**And why order matters at all: at 32 KB the hot path is the
+translator.** A tick-driven PC profile (`-DEMU_PC_PROFILE=8192`, F746
+only) over the first 8 s of that run:
+
+| | share of samples |
+|---|---|
+| `emu_ir_optimise` | 23.5% |
+| `memset` | 15.9% |
+| `lower_one` (Thumb-2) | 11.8% |
+| `rv_translate` | 10.5% |
+| translated blocks | **7.6%** |
+| `rv_run`, the interpreter | 3.6% |
+
+63,733 translations for a few hundred blocks: CoreMark's working set
+does not fit, the cache is a queue, and the code being run is tens of
+kilobytes of translator spread across flash behind a 4 KiB I-cache --
+exactly the code whose speed depends on what sits next to it. At
+96 KB, where translation is rare, the same three `-falign-functions`
+layouts give 32.56 / 32.12 / 31.89: a 2% spread instead of 9%.
+
+Placement in the TCMs is worth something and is stable, but it is small
+beside the buffer size:
+
+| at 32 KB | flash, SRAM buffer | hot path in ITCM | buffer in DTCM | both |
+|---|---|---|---|---|
+| cycles / instruction | 152.85 | 150.39 (150.33-150.42 over five pads) | 150.11 | 148.15 |
+
+## `EMU_JIT_HOT_THRESHOLD` — translating only hot code
+
+`-DEMU_JIT_HOT_THRESHOLD=N`, or `--jit-hot N` on the host runner: a pc
+that misses the block cache is interpreted, one instruction at a time,
+until it has missed N times in the current epoch, and only then
+translated. The counts share the declined-pc table, reset on every
+flush, and are reported as `cold` beside `interp`. **The default is 1,
+which is translate-on-first-miss, because nothing measured gains from
+more:**
+
+| | 1 | 2 | 4 | 8 | 16 | 32 |
+|---|---|---|---|---|---|---|
+| F746 CoreMark, 32 KB, cycles / instruction | **152.70** | 156.19 | 154.83 | 156.37 | 159.64 | 160.08 |
+| ...translations | 63,733 | 64,818 | 64,448 | 64,696 | 65,724 | 64,860 |
+| F746 CoreMark, 96 KB | **32.52** | | 39.44 | | 32.38 | |
+| ...translations | 7,152 | | 10,241 | | 7,051 | |
+| host, Linux kernel init (s, two runs) | 4.38 / 4.66 | **4.35 / 4.36** | 5.21 / 5.05 | | 7.80 / 8.26 | |
+
+Three reasons, each visible in the counters:
+
+- **The F746's problem is a hot set larger than the buffer**, not cold
+  code in it. Translations do not fall at any threshold, because the
+  blocks being retranslated are the ones that were evicted while hot.
+- **Single-stepping cold code lets the middle of a block cross the
+  threshold first**, and its block then overlaps the one translated
+  later from the real start: 96 KB at 4 is 10,241 translations against
+  7,152.
+- **On x86-64 a translation is cheap and an interpreted step is not**,
+  and a Linux boot flushes thousands of times, so every flush restarts
+  every warm-up.
+
+Host CoreMark at two iterations does translate less -- 278 blocks at 1,
+175 at 8, 127 at 32 -- which is the cold code the option exists for;
+it is simply not where the time goes in anything measured here. Try it
+on a guest whose translated set is mostly run-once code before
+believing it pays.
+
 ## Block length — per frontend, and shorter where the cache is small
 
 Interrupts are delivered between blocks, so a cap on guest instructions
@@ -187,6 +269,8 @@ to say, by an amount nobody has measured since.
   a one-instruction block still beats the interpreter by enough to pay
   for its own dispatch.
 - **Interpreter-in-SRAM**: slower.
+- **Translating only hot code** (`EMU_JIT_HOT_THRESHOLD`): kept as an
+  option, off by default; no measured workload gains. See above.
 - **Lazy IRQ**: neutral.
 - **Instruction fusion generally.** The textbook RISC-V fusions are not
   present in this guest: `lui`+`addi` is 0.2% of CoreMark pairs and

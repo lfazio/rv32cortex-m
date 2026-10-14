@@ -167,6 +167,15 @@ typedef struct emu_jit_stats {
      */
     uint32_t declined_cached;
     /*
+     * Instructions interpreted because their pc had not yet missed the
+     * block table often enough to be worth a translation -- see
+     * emu_jit_set_hot_threshold. Part of interp_fallbacks, and printed
+     * beside it: a threshold that leaves this near zero is not doing
+     * anything, and one that makes it most of the run has turned the JIT
+     * into an interpreter.
+     */
+    uint32_t cold;
+    /*
      * Blocks retired by emu_jit_invalidate_page rather than by a flush.
      * Beside `flushes` for the same reason `cached` sits beside
      * `declined`: the claim is that almost every SFENCE.VMA names one
@@ -519,6 +528,24 @@ void emu_jit_flush_all(void);
 void emu_jit_invalidate_page(uint32_t vaddr, const emu_jit_ops_t *ops);
 
 void emu_jit_get_stats(emu_jit_stats_t *out);
+
+/*
+ * Translate only what is hot: a pc missing the block table is
+ * interpreted, one instruction at a time, until it has missed this many
+ * times in the current epoch, and only then translated. 1 translates on
+ * the first miss.
+ *
+ * Cold code then never takes a translation or a place in the buffer,
+ * which on a microcontroller is the scarce thing: a translation there
+ * costs tens of thousands of cycles and a block evicted to make room is
+ * one that has to be translated again. Counts live with the declined-pc
+ * cache and reset with it on every flush. Clamped to 1..254.
+ */
+#ifndef EMU_JIT_HOT_THRESHOLD
+#define EMU_JIT_HOT_THRESHOLD 1u
+#endif
+void emu_jit_set_hot_threshold(uint32_t misses);
+uint32_t emu_jit_hot_threshold(void);
 
 /* --- emitting, for use inside ops->translate ---------------------- */
 

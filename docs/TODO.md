@@ -71,29 +71,36 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
         gdb, resetting a crashed core to the ROM first
         ([os.md](os.md#on-a-board)).
       - [ ] **The F446 has built and not run** under FreeRTOS.
-      - [ ] **The F746's hot path is at the mercy of the linker.**
-        Linking the kernel moved the emulator's hot functions 456 bytes
-        and CoreMark went 140.0 → 152.8 cycles an instruction at 32 KB
-        with identical translations; with the scheduler bypassed in the
-        same binary it is 152.0, so the kernel's own cost is 0.5% and
-        the rest is placement. ITCM (16 KiB, mostly free) or alignment,
-        measured as [stm32n6/itcm.md](stm32n6/itcm.md) was.
-
-        **ITCM is not a drop-in, measured.** Putting PowerPC's `ppc_run`,
-        `ppc_load` and `ppc_store` there by section attribute gave 266.86
-        host cycles an instruction against 253.11 from flash in one
-        build, and in two others -- the commit before, and the same tree
-        with two tests compiled out -- CoreMark never finished: the core
-        was running (DWT_PCSR in `ppc_load` and `ppc_run`, CFSR 0) and
-        printed nothing for minutes. **Probably explained, not yet
-        re-measured:** `errno` was being stored to address 8, and the
-        F7's ITCM RAM is mapped at 0 -- harmless while ITCM held
-        nothing, which is what the shipped F746 firmware puts there, and
-        a corrupted word in whatever function lands at offset 8 once
-        something does (see the N6 entry above, where it was the
-        `sub sp` of `emu_jit_run`). Re-run this with the TLS fix before
-        trusting either figure. Layout spread itself, for that
-        guest: 224-231 across `-falign-functions` default/32/64.
+      - [x] **The F746's hot path was at the mercy of the linker
+        because at 32 KB the hot path is the translator.** Measured
+        ([jit/tuning.md](jit/tuning.md#layout-on-the-f746--what-the-140-to-153-swing-was)):
+        moving all of `.text` by up to 1.5 KB changes nothing (152.67 to
+        152.85), and so does moving guest RAM; changing the *order* of
+        functions with `-falign-functions` takes the pre-FreeRTOS 140.01
+        to 147.9 and 149.3 and HEAD's 152.85 to 148.5 and 150.5. So
+        140.0 was a lucky order, not a baseline. A PC profile from the
+        tick puts 70% of the time in `emu_ir_optimise`, `memset`,
+        `lower_one` and `rv_translate` and 7.6% in translated code: with
+        63,733 translations the cache is a queue, and tens of kilobytes
+        of translator behind a 4 KiB I-cache are exactly the code that
+        cares what sits next to it. At 96 KB the same layouts spread 2%,
+        not 9%. The ITCM hang this entry used to record was `errno` at
+        address 8 (fixed in ced1558); ITCM and DTCM now work, and are
+        worth 1.6% and 1.8%, 3.1% together, stable across layouts.
+      - [ ] **Choose the F746's JIT buffer**, which is what decides
+        everything above. 32 KB is slower than the interpreter on
+        CoreMark (152.7 against 107.4) and translation-bound; 96 KB is
+        32.5, 4.7x faster, at 64 KiB of guest RAM (232 → 168 KiB). With
+        the buffer settled, the TCM placement is the remaining 3%: the
+        dispatch path in ITCM fits either way, the buffer fits DTCM only
+        at 32 KB.
+      - [x] **Translate only hot code** -- built
+        (`EMU_JIT_HOT_THRESHOLD`, `--jit-hot`), tested, and off by
+        default: no measured workload gains. The F746's translations do
+        not fall at any threshold, because what it retranslates is hot
+        code it evicted; on x86-64 a translation is cheaper than
+        single-stepping cold code, and Linux kernel init went 4.4 s to
+        8.0 s at 16 ([jit/tuning.md](jit/tuning.md)).
 
 - [x] **The RV32 translator declined the B extension, and that was
       nearly all of what the JIT still interpreted. Lowered.** Counted

@@ -38,6 +38,7 @@ void host_rate_init(bool quiet, bool force);
 #include "emu_session.h"
 
 #include "emu/emu_cpu.h"
+#include "emu/emu_jit.h"
 #include "emu/emu_dev.h"
 #include "emu/emu_memmap.h"
 
@@ -466,6 +467,11 @@ static int emu_main_body(int argc, char **argv)
     env.slice = args.quantum;
     env.max_insn = args.max_insn;
     emu_os_set_serial(args.serial);
+#if EMU_HAVE_JIT
+    if (args.jit_hot != 0u) {
+        emu_jit_set_hot_threshold(args.jit_hot);
+    }
+#endif
 
     /*
      * Acquisition: bring the part up, obtain an image, set board_ram and

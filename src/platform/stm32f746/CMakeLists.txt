@@ -198,6 +198,28 @@ endif()
 
 # The linker script path is passed unquoted: CMake treats each list item as
 # one argument already, and embedded quotes reach the driver literally.
+# Shift .text by N bytes to tell layout from code; see the link script.
+set(EMU_LAYOUT_PAD 0 CACHE STRING
+    "bytes to shift .text by, to measure layout sensitivity (0: none)")
+if(EMU_LAYOUT_PAD)
+    target_link_options(emu-stm32f746 PRIVATE
+        -Wl,--defsym=EMU_LAYOUT_PAD=${EMU_LAYOUT_PAD})
+endif()
+# A PC profile from the tick, printed after the run: stm32f7xx_it.c.
+set(EMU_PC_PROFILE 0 CACHE STRING
+    "pc samples to take at 1 kHz and print after the run (0: none)")
+if(EMU_PC_PROFILE)
+    target_compile_definitions(emu-stm32f746 PRIVATE
+        EMU_PC_PROFILE=${EMU_PC_PROFILE})
+endif()
+
+set(EMU_LAYOUT_PAD_RAM 0 CACHE STRING
+    "bytes to shift guest RAM by, to measure layout sensitivity (0: none)")
+if(EMU_LAYOUT_PAD_RAM)
+    target_link_options(emu-stm32f746 PRIVATE
+        -Wl,--defsym=EMU_LAYOUT_PAD_RAM=${EMU_LAYOUT_PAD_RAM})
+endif()
+
 target_link_options(emu-stm32f746 PRIVATE
     -T${CMAKE_CURRENT_SOURCE_DIR}/stm32f746zgtx.ld
     -Wl,-Map=${CMAKE_BINARY_DIR}/emu-stm32f746.map
