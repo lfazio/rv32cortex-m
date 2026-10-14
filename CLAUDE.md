@@ -101,10 +101,12 @@ the JIT, on the board as on x86-64 -- but it never fills the code cache
 and it finishes in a tenth of a second. Two defects sat behind those
 two facts while it passed: a compaction that moved blocks with their
 chained jumps intact, and a cycle counter that wrapped at 19.9 seconds.
-**Follow it with CoreMark at 120 iterations**
-(`-DRV32_GUEST=coremark -DCOREMARK_ITERATIONS=120`), which does both,
-and time the run from the host end as well as reading the firmware's
-figure.
+**Follow it with CoreMark long enough to do both**: 650 iterations
+(`-DRV32_GUEST=coremark -DCOREMARK_ITERATIONS=650 -DEMU_MAX_INSN=0`),
+about 22 s, and time the run from the host end as well as reading the
+firmware's figure. 120 iterations used to be enough, and with the
+96 KB buffer now the F746's default it finishes in 4 s -- under the
+counter's 19.9 s wrap and under the 10 s CoreMark itself requires.
 
 ## Things that have bitten, and will again
 

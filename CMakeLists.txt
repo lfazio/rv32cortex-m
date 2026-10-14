@@ -192,8 +192,22 @@ option(RV32_LAZY_IRQ "Lazy interrupt-delivery evaluation" ON)
 # CMakeLists, which is added later: by then this cache entry exists and a
 # set() there is a no-op that reads exactly like a setting. Same trap as
 # STM32CUBE_FAMILY having to precede the include.
-if(EMU_PLATFORM STREQUAL "stm32n6")
-    set(_jit_bytes_default "32768")
+#
+# **The F746 takes 96 KB**, and pays 64 KiB of guest RAM for it (232 ->
+# 168 KiB). At 32 KB RV32 CoreMark is translation-bound -- 63,733
+# translations, 70% of the time in the translator by a PC profile, and
+# slower than the interpreter (152.7 against 107.4); at 96 KB it is 32.5,
+# 4.7x faster, and the 9% swing that function order caused at 32 KB
+# shrinks to 2%. docs/jit/tuning.md has both measurements.
+#
+# **Not with G4MH compiled in**, for the reason the N6 above gives: its
+# default cluster and local RAM are 192 KiB of .bss, and with 64 KiB more
+# buffer a single-PE build overflows the part by 49 KiB. Such a build
+# keeps 32 KB; shrinking G4MH_CRAM_KIB/G4MH_LRAM_KIB, as the three-PE
+# build already must, makes room to ask for more.
+#
+if(EMU_PLATFORM STREQUAL "stm32f746" AND NOT EMU_GUEST_ARCH_G4MH)
+    set(_jit_bytes_default "98304")
 else()
     set(_jit_bytes_default "32768")
 endif()
@@ -253,7 +267,13 @@ set(EMU_JIT_CODE_SECTION "${_jit_section_default}" CACHE STRING
 # The per-dispatch path joins it: emu_jit_run and the two IR memory
 # helpers, 1256 bytes, which with the 32 KiB buffer is 34,024 of the
 # 64 KiB.
-if(EMU_PLATFORM STREQUAL "stm32n6")
+#
+# The F746 too: its 16 KiB of ITCM held only the flash driver, and the
+# dispatch path there is 1.6% on CoreMark with the figure unmoved across
+# five .text layouts (150.33-150.42) -- see docs/jit/tuning.md. Its
+# buffer stays in SRAM: at 96 KB it does not fit the 64 KiB DTCM.
+#
+if(EMU_PLATFORM STREQUAL "stm32n6" OR EMU_PLATFORM STREQUAL "stm32f746")
     set(_hot_section_default ".itcm")
 else()
     set(_hot_section_default "")
@@ -961,6 +981,14 @@ elseif(EMU_PLATFORM MATCHES "^stm32(f446|f746|n6)$")
             "EMU_PLATFORM=${EMU_PLATFORM} needs the cross toolchain:\n"
             "  -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake")
     endif()
+    #
+    # Where a board stops a guest that never halts. 0 never stops it,
+    # which is what a run long enough to cross the cycle counter's wrap
+    # needs: CoreMark at 650 iterations is 162M instructions.
+    #
+    set(EMU_MAX_INSN 100000000 CACHE STRING
+        "board: instructions before a guest is stopped (0: never)")
+    add_compile_definitions(EMU_MAX_INSN=${EMU_MAX_INSN}u)
     add_subdirectory(src/platform/${EMU_PLATFORM})
 else()
     message(FATAL_ERROR "unknown EMU_PLATFORM '${EMU_PLATFORM}'")

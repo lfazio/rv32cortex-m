@@ -85,7 +85,15 @@ SECTIONS
      * The section is emitted unconditionally, so __itcm_start and
      * __itcm_end are equal when nothing uses it and the copy is a no-op.
      */
-    .itcm :
+    /*
+     * At 0x100, not 0: ITCM *is* address zero on this part, so a store
+     * through a near-NULL pointer lands in it. picolibc's errno did
+     * exactly that until __tls was set (board.c), and on the N6 it
+     * zeroed the first instructions of emu_jit_run. With the hot path
+     * here that would be every guest instruction's dispatch; below 0x100
+     * such a store hits nothing that runs.
+     */
+    .itcm (ORIGIN(ITCM) + 0x100) :
     {
         . = ALIGN(8);
         __itcm_start = .;

@@ -34,7 +34,7 @@ and how many translations the run needed:
 | | RV32 CoreMark | RV32 `bench` | PowerPC CoreMark | PowerPC crypto | guest RAM |
 |---|---|---|---|---|---|
 | interpreter | **107.4** | **100.1** | **222.3** | **243.4** | 309 KiB |
-| 32 KB (default) | 140.0 (63,733) | 194.6 (1,872) | 335.1 (46,199) | 716.5 (28,545) | 232 KiB |
+| 32 KB (the F746 default until 96 KB) | 140.0 (63,733) | 194.6 (1,872) | 335.1 (46,199) | 716.5 (28,545) | 232 KiB |
 | 48 KB | 118.9 (51,895) | | | | 216 KiB |
 | 64 KB | 67.4 (26,858) | | 212.1 (27,780) | 373.7 (12,532) | 200 KiB |
 | 96 KB | **31.1** (7,152) | | 125.8 (15,309) | **35.4** (468) | 168 KiB |
@@ -72,9 +72,11 @@ Guest RAM pays one for one, and a JIT build is 77 KiB down at the
 default: the 32 KB buffer, and 45 KiB of block table and IR storage that
 it pays at any size. On a microcontroller those bytes are the guest's,
 which is the whole tension — there is no right answer, only a stated
-one. What is *not* defensible is the present default, which pays the
-77 KiB and runs slower; that is an open decision in
-[../TODO.md](../TODO.md).
+one. **The stated one, on the F746, is 96 KB with the dispatch path in
+ITCM**: RV32 CoreMark x120 at 29.85 host cycles an instruction against
+152.85, for 64 KiB of guest RAM (232 → 164 KiB). Not when G4MH is
+compiled in, whose RAM does not leave room -- those builds keep 32 KB.
+The other boards keep 32 KB as well.
 
 **Check `CMakeCache.txt` before quoting any of these.** Every performance
 figure in this repo was once measured with a 48 KB cache inherited from

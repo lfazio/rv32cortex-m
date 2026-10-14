@@ -39,7 +39,7 @@ the number of translations the run needed.
 | | RV32 CoreMark | RV32 `bench` | PowerPC CoreMark | PowerPC crypto |
 |---|---|---|---|---|
 | interpreter | **108.2** | **98.2** | **222.3** | **243.4** |
-| JIT, 32 KB (default) | 169.6 (82,075) | 199.5 (1,873) | 335.1 (46,199) | 716.5 (28,545) |
+| JIT, 32 KB (the default until 96 KB) | 169.6 (82,075) | 199.5 (1,873) | 335.1 (46,199) | 716.5 (28,545) |
 | JIT, 64 KB | 97.7 (29,682) | | 212.1 (27,780) | 373.7 (12,532) |
 | JIT, 96 KB | **53.1** (588) | | 125.8 (15,309) | **35.4** (468) |
 
@@ -54,6 +54,13 @@ interpreting, and at 96 KB it needs 588 and is 2.04× faster. PowerPC
 crypto goes from 2.9× slower to 6.9× faster across the same range.
 The knob, the block-length cap that goes with it, and what was tried are
 in [jit/tuning.md](jit/tuning.md).
+
+**96 KB is the F746's default now, with the dispatch path in ITCM**:
+RV32 CoreMark x120 at 29.85 host cycles an instruction against 152.85
+the day before, 4.1 s against 20.9 by the host's clock, `crcfinal
+0xd340`; 6,413 translations. At 650 iterations, 22 s and past the
+counter's wrap, it is 29.30 and CoreMark validates itself. The guest
+has 164 KiB of RAM where it had 232.
 
 There was an older table here — native ARM against the JIT at five cache
 sizes on a 180 MHz M4, quoting 15.3× to 32.3× slower than native. It

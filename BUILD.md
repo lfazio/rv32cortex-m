@@ -199,7 +199,9 @@ for the readers of a flag, not for the flag.
 |---|---|---|
 | `EMU_ENABLE_TRACE` | OFF | per-instruction hook. **Read pc deltas, not the disassembly** |
 | `EMU_ENABLE_STATS` | ON | `xlat`/`interp` — read the ratio before believing a pass |
-| `EMU_JIT_CODE_BYTES` | 32768 | the code cache on a microcontroller. A threshold, not a dial: below a guest's translated working set the JIT is **slower** than the interpreter, and at the default that includes CoreMark — [docs/jit/tuning.md](docs/jit/tuning.md) |
+| `EMU_JIT_CODE_BYTES` | 98304 on the F746 without G4MH (whose RAM does not leave room), 32768 elsewhere | the code cache on a microcontroller. A threshold, not a dial: below a guest's translated working set the JIT is **slower** than the interpreter -- CoreMark on the F746 is 152.7 host cycles an instruction at 32 KB and 29.9 at 96 KB, for 64 KiB of guest RAM — [docs/jit/tuning.md](docs/jit/tuning.md) |
+| `EMU_HOT_TEXT_SECTION` | `.itcm` on the F746 and the N6 | where the dispatch path lives; ITCM is uncached and zero-wait. Worth 8% on the F746 at 96 KB |
+| `EMU_MAX_INSN` | 100000000 | boards: stop a guest after this many instructions; 0 never does, for a run past the 19.9 s counter wrap |
 | `EMU_JIT_HOT_THRESHOLD` | 1 | misses before a pc is translated; until then it is interpreted. `--jit-hot N` per run on the host. **Nothing measured gains from more than 1** — [docs/jit/tuning.md](docs/jit/tuning.md) |
 | `EMU_JIT_LOOP_CAP` | 128 | interrupt-latency knob. CoreMark **cannot observe it** |
 | `EMU_LAYOUT_PAD`, `EMU_LAYOUT_PAD_RAM` | 0 | F746 only, instruments: move all of `.text`, or guest RAM, by N bytes and change nothing else — so a figure that moves with them is layout |

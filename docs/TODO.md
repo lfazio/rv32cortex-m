@@ -87,13 +87,15 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
         not 9%. The ITCM hang this entry used to record was `errno` at
         address 8 (fixed in ced1558); ITCM and DTCM now work, and are
         worth 1.6% and 1.8%, 3.1% together, stable across layouts.
-      - [ ] **Choose the F746's JIT buffer**, which is what decides
-        everything above. 32 KB is slower than the interpreter on
-        CoreMark (152.7 against 107.4) and translation-bound; 96 KB is
-        32.5, 4.7x faster, at 64 KiB of guest RAM (232 → 168 KiB). With
-        the buffer settled, the TCM placement is the remaining 3%: the
-        dispatch path in ITCM fits either way, the buffer fits DTCM only
-        at 32 KB.
+      - [x] **The F746's JIT buffer is 96 KB, and its dispatch path is in
+        ITCM** -- the defaults now. RV32 CoreMark x120 is 29.85 host
+        cycles an instruction against 152.85, 5.1x, `crcfinal 0xd340`;
+        ITCM is 8% of that at this size, against 1.6% at 32 KB, because
+        translation no longer drowns it. A second layout gives 29.10, so
+        the swing is 2.5% where it was 9%. The guest has 164 KiB of RAM
+        where it had 232. ITCM's contents start at 0x100, so a store
+        through a near-NULL pointer -- `errno`, until ced1558 -- hits
+        nothing that runs.
       - [x] **Translate only hot code** -- built
         (`EMU_JIT_HOT_THRESHOLD`, `--jit-hot`), tested, and off by
         default: no measured workload gains. The F746's translations do
