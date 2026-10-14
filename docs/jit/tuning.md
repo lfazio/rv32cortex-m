@@ -239,6 +239,33 @@ overrun the buffer, which is translated twice and — until it was fixed —
 compacted without unlinking
 ([../backend/thumb2.md](../backend/thumb2.md)).
 
+## Retention and chained blocks
+
+`compact()` ranks blocks by dispatcher lookups, and a block entered
+through a chain is never looked up. So the body of a hot loop -- reached
+from the block before it by a patched jump -- read as cold and was
+evicted, while the block jumping into it survived and the body had to be
+translated again. `EMU_JIT_CHAIN_HEAT` (on by default, and
+`emu_jit_set_chain_heat`) gives every block a linked exit leads to at
+least the count of the block exiting to it, at compaction only, along
+every linked edge until nothing changes. RV32 CoreMark x120 on the F746:
+
+| | chain heat off | on |
+|---|---|---|
+| 96 KB, cycles / instruction | 29.85 | **27.80** |
+| ...a second function order | 29.10 | **27.25** |
+| ...translations | 6,413 | **5,731** |
+| 32 KB, cycles / instruction | 150.20 | 154.32 |
+| ...translations / compactions | 63,246 / 2,671 | 64,147 / 3,596 |
+
+At 96 KB it is the effect the TODO suspected: 11% fewer translations and
+6-7% faster under two layouts. At 32 KB, where CoreMark's hot set does
+not fit at all, keeping more of it leaves less room, and compaction runs
+35% more often for 3% -- in a regime where the JIT already loses to the
+interpreter. Inheriting half the count instead was worse at both sizes
+(29.63, 156.71). `test_chain_heat_keeps_chained_blocks` asserts both
+settings, so a switch that does nothing fails it.
+
 ## What is no longer a knob
 
 Four options configured the hand-written Thumb-2 translator and outlived

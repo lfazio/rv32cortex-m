@@ -736,6 +736,65 @@ static jit_block_t *lookup(uint32_t pc, uint64_t context)
     return NULL;
 }
 
+static bool g_chain_heat = EMU_JIT_CHAIN_HEAT != 0;
+
+void emu_jit_set_chain_heat(bool on)
+{
+    g_chain_heat = on;
+}
+
+/* lookup() without counting a hit: compaction is not an entry. */
+static jit_block_t *find_block(uint32_t pc, uint64_t context)
+{
+    for (int32_t i = g_hash[pc_hash(pc, context)]; i >= 0;
+         i = g_blocks[i].next) {
+        if (g_blocks[i].guest_pc == pc && g_blocks[i].context == context) {
+            return &g_blocks[i];
+        }
+    }
+    return NULL;
+}
+
+/*
+ * A block entered through a chain is never looked up, so its own count
+ * says it is cold however often it runs: the body of a hot loop is
+ * reached from the block before it by a patched jump, and only that
+ * block is counted. Retention by count then evicts the loop body and
+ * keeps the block that jumps into it.
+ *
+ * So before ranking, every block a linked exit leads to is given at
+ * least the count of the block that exits to it -- along every linked
+ * edge, until nothing changes or eight passes have run. Compaction-time
+ * only: nothing is added to a dispatch or to emitted code.
+ */
+static void chain_heat(void)
+{
+    bool moved = true;
+
+    for (unsigned pass = 0u; moved && pass < 8u; pass++) {
+        moved = false;
+        for (uint32_t i = 0; i < g_block_count; i++) {
+            const jit_block_t *const a = &g_blocks[i];
+
+            if (a->code == NULL) {
+                continue;
+            }
+            for (uint32_t k = 0; k < a->layout.nlink; k++) {
+                if (!a->layout.link[k].linked) {
+                    continue;
+                }
+                jit_block_t *const t =
+                    find_block(a->layout.link[k].target_pc, a->context);
+
+                if (t != NULL && t->code != NULL && t->hits < a->hits) {
+                    t->hits = a->hits;
+                    moved = true;
+                }
+            }
+        }
+    }
+}
+
 /*
  * Reclaim space by discarding the least-used blocks and sliding the rest
  * down, rather than throwing the whole cache away.
@@ -756,6 +815,9 @@ static void compact(const emu_jit_ops_t *ops)
     const uint32_t t0 = prof_now();
 #endif
 
+    if (g_chain_heat) {
+        chain_heat();
+    }
     memset(bytes, 0, sizeof(bytes));
     for (uint32_t i = 0; i < g_block_count; i++) {
         if (g_blocks[i].code == NULL) {

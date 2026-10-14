@@ -425,17 +425,22 @@ static void test_blocks_are_per_context(void)
 #define CH_C 0x9008u
 #define CH_BIG 0x9100u
 #define CH_END 0x9200u
+#define CH_MID 0x9300u /* big enough to fill the buffer, run once */
+#define CH_TRIG 0x9400u /* small; asking for it compacts */
 
 #define CH_BUFFER (64u * 1024u) /* what test_jit hands emu_jit_init */
 #define CH_PAD_SMALL 4000u
 #define CH_PAD_BIG 60000u
+#define CH_PAD_MID 50000u
 
-static uint32_t g_ch_built[5]; /* A, B, C, BIG, anything else */
+static uint32_t g_ch_built[7]; /* A, B, C, BIG, other, MID, TRIG */
 static uint8_t *g_ch_a_code;
 static uint32_t g_ch_a_site;
 static uint32_t g_ch_a_tail;
 static uint32_t g_ch_end_visits;
 static uint32_t g_ch_big_at; /* the END visit after which BIG runs; 0 = never */
+static uint32_t g_ch_mid_at; /* ...MID, and TRIG, likewise */
+static uint32_t g_ch_trig_at;
 static uint32_t g_ch_patches;
 static uint32_t g_ch_patched_overflowed;
 
@@ -466,6 +471,16 @@ static uint32_t stub_translate_chain(emu_cpu_t *cpu, uint32_t pc)
         next = CH_END;
         pad = CH_PAD_BIG;
         which = 3u;
+        break;
+    case CH_MID:
+        next = CH_END;
+        pad = CH_PAD_MID;
+        which = 5u;
+        break;
+    case CH_TRIG:
+        next = CH_END;
+        pad = 0u;
+        which = 6u;
         break;
     default:
         g_ch_built[4]++;
@@ -536,7 +551,10 @@ static emu_run_reason_t stub_interp_chain(emu_cpu_t *cpu, uint32_t budget,
     (void)cpu;
     (void)budget;
     g_ch_end_visits++;
-    g_pc = (g_ch_end_visits == g_ch_big_at) ? CH_BIG : CH_A;
+    g_pc = (g_ch_end_visits == g_ch_big_at)    ? CH_BIG
+           : (g_ch_end_visits == g_ch_mid_at)  ? CH_MID
+           : (g_ch_end_visits == g_ch_trig_at) ? CH_TRIG
+                                               : CH_A;
     if (retired != NULL) {
         *retired = 1u;
     }
@@ -596,10 +614,19 @@ static void test_overflow_compaction_unlinks(void)
     emu_jit_stats_t before;
     emu_jit_stats_t after;
 
+    /*
+     * With chain heat off. What is under test is that survivors' jumps
+     * into blocks a compaction evicts are unlinked, and under chain heat
+     * a survivor never jumps into an evicted block: B and C inherit A's
+     * count and survive with it. The scenario needs the eviction.
+     */
+    emu_jit_set_chain_heat(false);
     emu_jit_flush();
     memset(g_ch_built, 0, sizeof(g_ch_built));
     g_ch_end_visits = 0u;
     g_ch_big_at = 0u;
+    g_ch_mid_at = 0u;
+    g_ch_trig_at = 0u;
     g_ch_patches = 0u;
     g_ch_patched_overflowed = 0u;
     g_ch_a_code = NULL;
@@ -653,6 +680,60 @@ static void test_overflow_compaction_unlinks(void)
      * which now occupies the bytes B had, and B is never asked for.
      */
     CHECK_EQ(g_ch_built[1], 2u);
+    emu_jit_set_chain_heat(EMU_JIT_CHAIN_HEAT != 0);
+}
+
+/*
+ * Chain heat: a block reached only through a chain keeps its place.
+ *
+ * A is entered from the dispatcher every lap, B and C only through A's
+ * and B's linked exits -- so by lookups B and C have run zero times and
+ * A dozens. MID fills the buffer and runs once; asking for TRIG then
+ * compacts, ordinarily (no overflow, no flush). With heat B survives and
+ * is not built again; without it B is evicted and rebuilt when A next
+ * exits to it. Both are asserted, so the test cannot pass against a
+ * switch that does nothing.
+ */
+static uint32_t chain_heat_rebuilds_b(bool heat)
+{
+    emu_jit_stats_t before;
+    emu_jit_stats_t after;
+    uint32_t retired = 0u;
+
+    emu_jit_set_chain_heat(heat);
+    emu_jit_flush();
+    memset(g_ch_built, 0, sizeof(g_ch_built));
+    g_ch_end_visits = 0u;
+    g_ch_big_at = 0u;
+    g_ch_mid_at = 0u;
+    g_ch_trig_at = 0u;
+
+    g_pc = CH_A;
+    (void)emu_jit_run(k_cpu, 64u, &retired, &k_stub_chain_ops);
+
+    g_ch_mid_at = g_ch_end_visits + 1u;
+    (void)emu_jit_run(k_cpu, 16u, &retired, &k_stub_chain_ops);
+
+    emu_jit_get_stats(&before);
+    g_ch_trig_at = g_ch_end_visits + 1u;
+    (void)emu_jit_run(k_cpu, 32u, &retired, &k_stub_chain_ops);
+    emu_jit_get_stats(&after);
+
+    /* The scenario: one ordinary compaction, and MID built once. */
+    CHECK_EQ(after.compactions - before.compactions, 1u);
+    CHECK_EQ(after.overflowed - before.overflowed, 0u);
+    CHECK_EQ(after.flushes - before.flushes, 0u);
+    CHECK_EQ(g_ch_built[5], 1u);
+    CHECK_EQ(g_ch_built[6], 1u);
+
+    emu_jit_set_chain_heat(EMU_JIT_CHAIN_HEAT != 0);
+    return g_ch_built[1];
+}
+
+static void test_chain_heat_keeps_chained_blocks(void)
+{
+    CHECK_EQ(chain_heat_rebuilds_b(true), 1u);
+    CHECK_EQ(chain_heat_rebuilds_b(false), 2u);
 }
 #endif
 
@@ -681,6 +762,7 @@ void test_jit(void)
 #if defined(EMU_HOST_JIT_X86_64)
     test_blocks_are_per_context();
     test_overflow_compaction_unlinks();
+    test_chain_heat_keeps_chained_blocks();
 #endif
 
     /* Leave nothing behind for whatever runs next. */

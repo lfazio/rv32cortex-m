@@ -172,13 +172,14 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       emitted code. Consecutive ones with no exit between them could be
       one addition; it has to stay exact at every point a block can
       leave, which is the same observer list the dead-store pass uses.
-- [ ] **Retention ranks blocks by dispatcher lookups, and a chained
-      block gets none.** `compact()` keeps what has been looked up more
-      than once; a block entered through a chain is never looked up, so
-      the hottest loop bodies look cold and are evicted every time,
-      while the block that jumps into them survives. Whether that is
-      costing anything measurable has not been tested — count entries
-      in the chained path, or age differently, and A/B it on the board.
+- [x] **Retention ranked blocks by dispatcher lookups, and a chained
+      block got none** -- and it cost: at compaction every block a
+      linked exit leads to now inherits the count of the block exiting
+      to it (`EMU_JIT_CHAIN_HEAT`, on). RV32 CoreMark on the F746 at
+      96 KB: 29.85 → 27.80 cycles an instruction, 6,413 → 5,731
+      translations, and 29.10 → 27.25 under a second layout. At 32 KB it
+      costs 3%, compaction running 35% more often
+      ([jit/tuning.md](jit/tuning.md#retention-and-chained-blocks)).
 - [x] **The G4MH translator bound no context and no generation, and
       that was a permission bypass.** The interpreter checks MPU execute
       permission on every fetch; the translator checked nothing, so

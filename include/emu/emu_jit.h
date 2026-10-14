@@ -547,6 +547,20 @@ void emu_jit_get_stats(emu_jit_stats_t *out);
 void emu_jit_set_hot_threshold(uint32_t misses);
 uint32_t emu_jit_hot_threshold(void);
 
+/*
+ * At compaction, let a block a retained block chains into inherit that
+ * block's hit count. Retention ranks by dispatcher lookups, and a block
+ * entered through a chain is never looked up -- so without this the body
+ * of a hot loop reads as cold and is evicted while the block that jumps
+ * into it survives. On by default: RV32 CoreMark on the F746 at 96 KB is
+ * 6-7% faster and translates 11% less; at 32 KB, where the hot set does
+ * not fit, it costs ~3% (docs/jit/tuning.md). Compaction-time only.
+ */
+#ifndef EMU_JIT_CHAIN_HEAT
+#define EMU_JIT_CHAIN_HEAT 1
+#endif
+void emu_jit_set_chain_heat(bool on);
+
 /* --- emitting, for use inside ops->translate ---------------------- */
 
 /*

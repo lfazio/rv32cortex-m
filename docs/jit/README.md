@@ -149,7 +149,13 @@ does — `EMU_JIT_LOOP_CAP` retired instructions — or nothing would check
 for a pending interrupt.
 
 When the buffer fills, `compact()` keeps the blocks that have been
-looked up more than once, slides them down, and drops the rest. Before
+looked up more than once, slides them down, and drops the rest. **A
+block entered through a chain is never looked up**, so it first gives
+every block a linked exit leads to at least the count of the block
+exiting to it (`EMU_JIT_CHAIN_HEAT`, on): without that the body of a
+hot loop read as cold and was evicted while the block jumping into it
+survived. Worth 6-7% and 11% of translations on the F746 at 96 KB; see
+[tuning.md](tuning.md#retention-and-chained-blocks). Before
 anything moves, **every chained exit is pointed back at its own tail**:
 a surviving block's jump otherwise lands in whatever now occupies the
 bytes its successor had.
