@@ -137,7 +137,7 @@ void g4mh_intc_set_unmask(g4mh_intc_t *ic, emu_unmask_fn fn, void *ctx)
     ic->unmask_ctx = ctx;
 }
 
-void g4mh_intc_raise(g4mh_intc_t *ic, uint32_t channel)
+static void g4mh_intc_raise_impl(g4mh_intc_t *ic, uint32_t channel)
 {
     if (channel >= G4MH_INT_CHANNELS) {
         return;
@@ -164,7 +164,7 @@ void g4mh_intc_raise(g4mh_intc_t *ic, uint32_t channel)
     }
 }
 
-void g4mh_intc_ack(g4mh_intc_t *ic, uint32_t channel)
+static void g4mh_intc_ack_impl(g4mh_intc_t *ic, uint32_t channel)
 {
     if (channel >= G4MH_INT_CHANNELS) {
         return;
@@ -181,12 +181,13 @@ void g4mh_intc_ack(g4mh_intc_t *ic, uint32_t channel)
     }
 }
 
-int g4mh_intc_pending(const g4mh_intc_t *ic, unsigned pe)
+static int g4mh_intc_pending_impl(const g4mh_intc_t *ic, unsigned pe)
 {
     return g4mh_intc_pending_pri(ic, pe, NULL);
 }
 
-bool g4mh_intc_chan_is_table(const g4mh_intc_t *ic, uint32_t channel)
+static bool g4mh_intc_chan_is_table_impl(const g4mh_intc_t *ic,
+                                         uint32_t channel)
 {
     if (ic == NULL || channel >= (uint32_t)G4MH_INT_CHANNELS) {
         return false;
@@ -194,8 +195,8 @@ bool g4mh_intc_chan_is_table(const g4mh_intc_t *ic, uint32_t channel)
     return (ic->chan[channel] & G4MH_EEIC_EITB) != 0u;
 }
 
-bool g4mh_intc_chan_priority(const g4mh_intc_t *ic, uint32_t channel,
-                             unsigned *priority)
+static bool g4mh_intc_chan_priority_impl(const g4mh_intc_t *ic,
+                                         uint32_t channel, unsigned *priority)
 {
     if (ic == NULL || channel >= (uint32_t)G4MH_INT_CHANNELS) {
         return false;
@@ -204,8 +205,8 @@ bool g4mh_intc_chan_priority(const g4mh_intc_t *ic, uint32_t channel,
     return true;
 }
 
-int g4mh_intc_pending_pri(const g4mh_intc_t *ic, unsigned pe,
-                          unsigned *priority)
+static int g4mh_intc_pending_pri_impl(const g4mh_intc_t *ic, unsigned pe,
+                                      unsigned *priority)
 {
     int best = -1;
     /* 64 levels, so no real priority can tie with "nothing found". */
@@ -495,7 +496,7 @@ static emu_fault_t intc2_write(void *ctx, uint32_t off, uint32_t size,
 /* INTIF: TPTMSEL, and the FEINT path it selects                       */
 /* ------------------------------------------------------------------ */
 
-void g4mh_intc_raise_tptm(g4mh_intc_t *ic, unsigned pe)
+static void g4mh_intc_raise_tptm_impl(g4mh_intc_t *ic, unsigned pe)
 {
     const g4mh_intc_t *g = (ic->global != NULL) ? ic->global : ic;
 
@@ -515,13 +516,13 @@ void g4mh_intc_raise_tptm(g4mh_intc_t *ic, unsigned pe)
     }
 }
 
-bool g4mh_intc_fe_pending(const g4mh_intc_t *ic, unsigned pe)
+static bool g4mh_intc_fe_pending_impl(const g4mh_intc_t *ic, unsigned pe)
 {
     (void)pe;
     return ic->feint != 0u;
 }
 
-void g4mh_intc_ack_fe(g4mh_intc_t *ic, unsigned pe)
+static void g4mh_intc_ack_fe_impl(g4mh_intc_t *ic, unsigned pe)
 {
     (void)pe;
     ic->feint = 0u;
@@ -619,3 +620,89 @@ const emu_dev_ops_t g4mh_intif_ops = {
     .write = intif_write,
     .tick = NULL,
 };
+
+/* ------------------------------------------------------------------ */
+/* The ways in, under g4mh_sys_lock                                    */
+/* ------------------------------------------------------------------ */
+
+/*
+ * What a core calls during its own quantum -- to decide on an interrupt,
+ * to acknowledge one -- while another core may be writing the same
+ * controller through a device. The lock is empty unless the host runs
+ * cores in parallel, and recursive, so a device that is already holding
+ * it raises an interrupt through here for the price of a compare.
+ */
+void g4mh_intc_raise(g4mh_intc_t *ic, uint32_t channel)
+{
+    emu_lock(&g4mh_sys_lock);
+    g4mh_intc_raise_impl(ic, channel);
+    emu_unlock(&g4mh_sys_lock);
+}
+
+void g4mh_intc_ack(g4mh_intc_t *ic, uint32_t channel)
+{
+    emu_lock(&g4mh_sys_lock);
+    g4mh_intc_ack_impl(ic, channel);
+    emu_unlock(&g4mh_sys_lock);
+}
+
+int g4mh_intc_pending(const g4mh_intc_t *ic, unsigned pe)
+{
+    emu_lock(&g4mh_sys_lock);
+    const int r = g4mh_intc_pending_impl(ic, pe);
+
+    emu_unlock(&g4mh_sys_lock);
+    return r;
+}
+
+bool g4mh_intc_chan_is_table(const g4mh_intc_t *ic, uint32_t channel)
+{
+    emu_lock(&g4mh_sys_lock);
+    const bool r = g4mh_intc_chan_is_table_impl(ic, channel);
+
+    emu_unlock(&g4mh_sys_lock);
+    return r;
+}
+
+void g4mh_intc_raise_tptm(g4mh_intc_t *ic, unsigned pe)
+{
+    emu_lock(&g4mh_sys_lock);
+    g4mh_intc_raise_tptm_impl(ic, pe);
+    emu_unlock(&g4mh_sys_lock);
+}
+
+bool g4mh_intc_fe_pending(const g4mh_intc_t *ic, unsigned pe)
+{
+    emu_lock(&g4mh_sys_lock);
+    const bool r = g4mh_intc_fe_pending_impl(ic, pe);
+
+    emu_unlock(&g4mh_sys_lock);
+    return r;
+}
+
+void g4mh_intc_ack_fe(g4mh_intc_t *ic, unsigned pe)
+{
+    emu_lock(&g4mh_sys_lock);
+    g4mh_intc_ack_fe_impl(ic, pe);
+    emu_unlock(&g4mh_sys_lock);
+}
+
+bool g4mh_intc_chan_priority(const g4mh_intc_t *ic, uint32_t channel,
+                             unsigned *priority)
+{
+    emu_lock(&g4mh_sys_lock);
+    const bool r = g4mh_intc_chan_priority_impl(ic, channel, priority);
+
+    emu_unlock(&g4mh_sys_lock);
+    return r;
+}
+
+int g4mh_intc_pending_pri(const g4mh_intc_t *ic, unsigned pe,
+                          unsigned *priority)
+{
+    emu_lock(&g4mh_sys_lock);
+    const int r = g4mh_intc_pending_pri_impl(ic, pe, priority);
+
+    emu_unlock(&g4mh_sys_lock);
+    return r;
+}

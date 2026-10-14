@@ -91,7 +91,8 @@ done
 matrix='
 host-both|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=ON|the default: both frontends, JIT, ctest
 host-nojit|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=ON -DEMU_JIT=OFF|interpreter only; where a fetch-path cost lands
-host-g4-x3|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DG4MH_PE_COUNT=3|multicore; PE_COUNT>1 was untested for years
+host-g4-x3|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DG4MH_PE_COUNT=3|multicore, in parallel (EMU_OS_SMP); PE_COUNT>1 was untested for years
+host-g4-x3-coop|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DG4MH_PE_COUNT=3 -DEMU_OS_SMP=OFF|multicore on the single-core FreeRTOS port: the cooperative round and its order assertion
 host-g4-mpu8|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DG4MH_MPU_ENTRIES=8|the MPU out-of-range guard is unreachable at 32
 host-ppc|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_PPC=ON|big-endian frontend, alone
 host-armv7m|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_ARMV7M=ON|the Cortex-M guest alone: its SoftFloat build, the SCS, the guests in tests/guest/armv7m

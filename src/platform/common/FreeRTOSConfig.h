@@ -6,7 +6,9 @@
  * What that asks of the kernel is small, and the settings below are
  * chosen for it rather than taken from a demo:
  *
- *   - **Cooperative.** configUSE_PREEMPTION is 0 and time slicing is off,
+ *   - **Cooperative** on every single-core port (an SMP host is the
+ *     exception, and says why below). configUSE_PREEMPTION is 0 and time
+ *     slicing is off,
  *     so a task leaves the CPU only where it blocks -- at the round
  *     barrier between quanta. That is what keeps a multicore guest's
  *     interleaving exactly what the single-threaded round-robin produced
@@ -18,7 +20,8 @@
  *     board's RAM is decided at link time and the guest gets the rest.
  *   - **Nothing else.** No software timers, no queues used, no idle hook.
  *
- * EMU_OS_PORT_POSIX / _ARMV7M / _ARMV8M come from cmake/freertos.cmake.
+ * EMU_OS_PORT_POSIX / _POSIX_SMP / _ARMV7M / _ARMV8M come from
+ * cmake/freertos.cmake.
  */
 #ifndef FREERTOS_CONFIG_H
 #define FREERTOS_CONFIG_H
@@ -31,7 +34,23 @@
 /* The scheduler                                                       */
 /* ------------------------------------------------------------------ */
 
+#if defined(EMU_OS_PORT_POSIX_SMP)
+/*
+ * **SMP, on a multicore host** (src/platform/host/freertos_smp): one
+ * FreeRTOS core per emulated core, so a round's quanta run in parallel.
+ * Preemption has to be on here, and it is not a change of policy: with
+ * it off the kernel never asks an idle core to pick up a task that has
+ * just been released, so each idle core would have to spin looking. The
+ * cores' tasks share one priority above idle and time slicing stays off,
+ * so they never preempt each other -- only idle tasks are ever
+ * preempted. There is no order to assert: see emu_os_system_step.
+ */
+#define configUSE_PREEMPTION 1
+#define configRUN_MULTIPLE_PRIORITIES 1
+#define configUSE_CORE_AFFINITY 0
+#else
 #define configUSE_PREEMPTION 0
+#endif
 #define configUSE_TIME_SLICING 0
 #define configUSE_PORT_OPTIMISED_TASK_SELECTION 0
 #define configMAX_PRIORITIES 4
@@ -41,7 +60,11 @@
 #define configIDLE_SHOULD_YIELD 1
 #define configUSE_TASK_NOTIFICATIONS 1
 #define configTASK_NOTIFICATION_ARRAY_ENTRIES 1
+#if defined(EMU_OS_PORT_POSIX_SMP)
+#define configNUMBER_OF_CORES EMU_OS_MAX_CORES
+#else
 #define configNUMBER_OF_CORES 1
+#endif
 
 /* No heap at all: a dynamic allocation is a link error, which is the
  * point. */
@@ -61,7 +84,13 @@
 #define configUSE_QUEUE_SETS 0
 #define configQUEUE_REGISTRY_SIZE 0
 #define configUSE_CO_ROUTINES 0
+#if defined(EMU_OS_PORT_POSIX_SMP)
+/* Idle cores sleep in their hooks instead of spinning (emu_os.c). */
+#define configUSE_IDLE_HOOK 1
+#define configUSE_PASSIVE_IDLE_HOOK 1
+#else
 #define configUSE_IDLE_HOOK 0
+#endif
 #define configUSE_TICK_HOOK 0
 #define configUSE_MALLOC_FAILED_HOOK 0
 #define configUSE_TRACE_FACILITY 0
@@ -98,7 +127,7 @@ void emu_os_assert_failed(const char *file, int line);
 /* The ports                                                           */
 /* ------------------------------------------------------------------ */
 
-#if defined(EMU_OS_PORT_POSIX)
+#if defined(EMU_OS_PORT_POSIX) || defined(EMU_OS_PORT_POSIX_SMP)
 
 /*
  * The host. The tick is a SIGALRM sent to whichever task's thread is

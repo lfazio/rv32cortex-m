@@ -39,7 +39,7 @@
 
 #if defined(EMU_HOST_JIT_THUMB2)
 
-static uint16_t g_ntemps;
+static EMU_PER_CORE uint16_t g_ntemps;
 
 #define SCRATCH_ADDR ((uint16_t)(g_ntemps))
 #define SCRATCH_VAL ((uint16_t)(g_ntemps + 1u))
@@ -61,8 +61,8 @@ static uint32_t slot(uint16_t n)
  * host is the *pair*, the store and the reload, not the width of one
  * access.
  */
-static uint8_t g_reg[EMU_IR_MAX_TEMPS];
-static uint32_t g_nsaved;
+static EMU_PER_CORE uint8_t g_reg[EMU_IR_MAX_TEMPS];
+static EMU_PER_CORE uint32_t g_nsaved;
 
 /*
  * The register holding temp `n`, or -1 for one that lives in the frame.
@@ -113,7 +113,7 @@ void ld_slot(uint32_t rt, uint16_t n)
  * halves matter; `uses == 1` alone would allow a reader further down
  * the block with r0 clobbered in between.
  */
-static uint16_t g_dead_store;
+static EMU_PER_CORE uint16_t g_dead_store;
 
 /* Ops whose first act is ld_operand(r0, in->a), so the elision applies. */
 static bool reads_a_in_r0(uint8_t op)
@@ -155,9 +155,9 @@ static bool reads_a_in_r0(uint8_t op)
     }
 }
 
-static uint16_t g_r0_holds;
-static uint16_t g_r0_avail;
-static bool g_r0_first;
+static EMU_PER_CORE uint16_t g_r0_holds;
+static EMU_PER_CORE uint16_t g_r0_avail;
+static EMU_PER_CORE bool g_r0_first;
 
 void st_slot(uint32_t rt, uint16_t n)
 {
@@ -283,8 +283,8 @@ typedef struct {
  * with B.W's field layout -- landing somewhere plausible instead of
  * somewhere right.
  */
-static ir_exit_t g_exits[IR_MAX_EXITS];
-static uint32_t g_nexits;
+static EMU_PER_CORE ir_exit_t g_exits[IR_MAX_EXITS];
+static EMU_PER_CORE uint32_t g_nexits;
 
 /*
  * Patch a forward branch emitted above to reach `target`.
@@ -310,8 +310,8 @@ static uint32_t g_nexits;
  * See emu_ir_fastmem_t: the frontend refuses whenever an access could
  * mean more than a move.
  */
-static emu_ir_fastmem_t g_fast;
-static bool g_has_fast;
+static EMU_PER_CORE emu_ir_fastmem_t g_fast;
+static EMU_PER_CORE bool g_has_fast;
 
 /*
  * Guard the inlined access: leave the offset from the window's base in
@@ -342,9 +342,9 @@ static uint32_t emit_fast_guard(uint32_t addr_reg, uint32_t size, uint8_t **out)
     return n;
 }
 
-static uint8_t *g_body;
-static uint32_t g_start_pc;
-static bool g_has_start_pc;
+static EMU_PER_CORE uint8_t *g_body;
+static EMU_PER_CORE uint32_t g_start_pc;
+static EMU_PER_CORE bool g_has_start_pc;
 
 static void patch_branch(uint8_t *at, const uint8_t *target, bool conditional)
 {
@@ -386,7 +386,7 @@ static void patch_branch(uint8_t *at, const uint8_t *target, bool conditional)
  * the exit quietly does not leave. See the same flag in the x86-64
  * backend; this table dropped its 65th entry in silence too.
  */
-static bool g_exits_lost;
+static EMU_PER_CORE bool g_exits_lost;
 
 static void note_exit(uint8_t *at, bool conditional)
 {
@@ -412,7 +412,7 @@ static struct {
     uint8_t *at;
     bool conditional;
 } g_exits_nf[IR_MAX_EXITS];
-static uint32_t g_nexits_nf;
+static EMU_PER_CORE uint32_t g_nexits_nf;
 
 static void note_exit_nf(uint8_t *at, bool conditional)
 {
@@ -426,9 +426,9 @@ static void note_exit_nf(uint8_t *at, bool conditional)
 }
 
 /* This block's frame, needed at every chained exit. */
-static uint32_t g_frame;
+static EMU_PER_CORE uint32_t g_frame;
 /* Where its code begins, so a patch site can be an offset. */
-static uint8_t *g_block_start;
+static EMU_PER_CORE uint8_t *g_block_start;
 
 /* ADD.W sp, sp, #imm -- the epilogue's teardown, emitted at an exit. */
 static void emit_frame_release(uint32_t frame)
@@ -778,7 +778,7 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
 }
 
 /* Does this block touch the FP unit, and so need FPSCR framed? */
-static bool g_has_fp;
+static EMU_PER_CORE bool g_has_fp;
 
 /*
  * Did this block write an FP register without doing any arithmetic?
@@ -790,7 +790,7 @@ static bool g_has_fp;
  * needs nothing of FPSCR, so folding it into g_has_fp would pay the
  * framing for nothing. Set by FPUT, because reading dirties nothing.
  */
-static bool g_fp_written;
+static EMU_PER_CORE bool g_fp_written;
 
 /* ------------------------------------------------------------------ */
 /* Condition flags                                                     */

@@ -16,8 +16,10 @@
  * (FreeRTOSConfig.h), so on a single-core host the round runs core 0,
  * 1, 2 in that order every time -- the interleaving the round-robin
  * produced, and what the multicore tests' quantum invariance is checked
- * against. On an SMP-capable FreeRTOS host the same round runs the cores
- * in parallel; what that needs from the shared devices is in docs/os.md.
+ * against. On a multicore host (EMU_OS_SMP) the same round runs the
+ * cores in parallel, one FreeRTOS core each, and --serial gives the
+ * ordered round back; what parallelism needs from the rest of the
+ * emulator is in docs/os.md.
  */
 #ifndef EMU_PLATFORM_OS_H
 #define EMU_PLATFORM_OS_H
@@ -47,6 +49,14 @@ int emu_os_start(emu_os_body_fn body, int argc, char **argv);
  */
 uint32_t emu_os_system_step(emu_system_t *sys, uint32_t quantum,
                             bool *all_idle);
+
+/*
+ * Run every round on the calling task, core 0 then 1 then 2: the
+ * single-threaded round-robin, reproducible to the instruction. Off by
+ * default; it only changes anything on an SMP host, where a round
+ * otherwise runs its cores in parallel.
+ */
+void emu_os_set_serial(bool serial);
 
 /* One line: how much of each task's stack the run used. */
 void emu_os_report(void);

@@ -136,6 +136,9 @@ void emu_args_usage(void)
         "  --timer-hz N         timer ticks per second of guest time",
         "  --quantum N          instructions per core per round;",
         "                       1 is instruction-interleaved lockstep",
+        "  --serial             run a multicore guest's cores one after",
+        "                       another on one thread: reproducible, where",
+        "                       an SMP host otherwise runs them in parallel",
 #if EMU_JIT_SELECTABLE
         "  --jit                use the JIT backend, not the interpreter",
 #endif
@@ -198,6 +201,10 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
         }
         if (strcmp(a, "--dump") == 0) {
             opt->dump = true;
+            continue;
+        }
+        if (strcmp(a, "--serial") == 0) {
+            opt->serial = true;
             continue;
         }
 

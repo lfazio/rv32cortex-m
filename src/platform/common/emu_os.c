@@ -132,8 +132,19 @@ static uint64_t g_task_rounds;
 static unsigned g_task_cores;
 
 /* Position in the round of the next core to run -- see the check in
- * emu_os_system_step. */
+ * emu_os_system_step. Single-core kernels only: under SMP the round has
+ * no order, and this would be a race. */
+#if configNUMBER_OF_CORES == 1
 static unsigned g_round_pos;
+#endif
+
+/* --serial: every round inline, in core order. */
+static bool g_serial;
+
+void emu_os_set_serial(bool serial)
+{
+    g_serial = serial;
+}
 
 static void core_task(void *arg)
 {
@@ -142,7 +153,9 @@ static void core_task(void *arg)
 
     for (;;) {
         (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+#if configNUMBER_OF_CORES == 1
         t->pos = g_round_pos++;
+#endif
         t->did =
             emu_core_slice(&g_round_sys->core[k], g_round_quantum, &t->live);
         (void)xTaskNotifyGive(g_coordinator);
@@ -177,9 +190,10 @@ uint32_t emu_os_system_step(emu_system_t *sys, uint32_t quantum, bool *all_idle)
      * One core: the round-robin itself, inline. Every single-core guest
      * -- which is every guest but G4MH's multicore builds -- pays the
      * scheduler nothing. And a system with more cores than this build
-     * has tasks for runs the same way rather than not at all.
+     * has tasks for runs the same way rather than not at all -- and so
+     * does every round under --serial.
      */
-    if (n <= 1u || n > EMU_OS_MAX_CORES) {
+    if (n <= 1u || n > EMU_OS_MAX_CORES || g_serial) {
         return emu_system_step(sys, quantum, all_idle);
     }
 
@@ -197,14 +211,23 @@ uint32_t emu_os_system_step(emu_system_t *sys, uint32_t quantum, bool *all_idle)
      * order they were released. So a round is core 0, 1, 2 ... -- the
      * order emu_system_step runs them in, which is what makes the two
      * interchangeable and every multicore result reproducible.
+     *
+     * Under SMP each release puts a core's task on an idle FreeRTOS core
+     * at once, and the round's quanta run in parallel. The notifications
+     * are still the ordering between this task's writes above and the
+     * cores' reads, and the wait below is still the barrier.
      */
+#if configNUMBER_OF_CORES == 1
     g_round_pos = 0u;
+#endif
     for (unsigned k = 1u; k < n; k++) {
         (void)xTaskNotifyGive(g_core[k].handle);
     }
 
     bool live = false;
+#if configNUMBER_OF_CORES == 1
     const unsigned pos0 = g_round_pos++;
+#endif
     uint32_t total = emu_core_slice(&sys->core[0], quantum, &live);
     bool idle = !live;
 
@@ -229,8 +252,6 @@ uint32_t emu_os_system_step(emu_system_t *sys, uint32_t quantum, bool *all_idle)
     for (unsigned k = 1u; k < n; k++) {
         configASSERT(g_core[k].pos == k);
     }
-#else
-    (void)pos0;
 #endif
     for (unsigned k = 1u; k < n; k++) {
         total += g_core[k].did;
@@ -370,6 +391,38 @@ void vApplicationGetIdleTaskMemory(StaticTask_t **tcb, StackType_t **stack,
     *stack = idle_stack;
     *words = configMINIMAL_STACK_SIZE;
 }
+
+#if configNUMBER_OF_CORES > 1
+/*
+ * SMP: an idle task per FreeRTOS core. They run whenever a core has no
+ * emulated core to run -- between rounds, and on cores past the guest's
+ * -- and sleep in the hooks rather than spin, so an idle host core costs
+ * the machine nothing (the port's vPortIdleWait).
+ */
+void vApplicationGetPassiveIdleTaskMemory(StaticTask_t **tcb,
+                                          StackType_t **stack,
+                                          configSTACK_DEPTH_TYPE *words,
+                                          BaseType_t index)
+{
+    static StaticTask_t idle_tcb[configNUMBER_OF_CORES - 1];
+    static StackType_t idle_stack[configNUMBER_OF_CORES - 1]
+                                 [configMINIMAL_STACK_SIZE];
+
+    *tcb = &idle_tcb[index];
+    *stack = idle_stack[index];
+    *words = configMINIMAL_STACK_SIZE;
+}
+
+void vApplicationIdleHook(void)
+{
+    vPortIdleWait();
+}
+
+void vApplicationPassiveIdleHook(void)
+{
+    vPortIdleWait();
+}
+#endif
 
 void vApplicationStackOverflowHook(TaskHandle_t task, char *name)
 {

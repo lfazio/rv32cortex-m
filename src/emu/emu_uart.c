@@ -16,6 +16,7 @@
  */
 
 #include "emu/emu_dev.h"
+#include "emu/emu_lock.h"
 
 #include <stdbool.h>
 
@@ -89,15 +90,15 @@ static void uart_update_irq(emu_uart_t *u)
     u->irq(u->irq_ctx, want ? 1 : 0);
 }
 
-void emu_uart_poll(emu_uart_t *u)
+static void uart_poll_impl(emu_uart_t *u)
 {
     if (u->irq != NULL) {
         uart_update_irq(u);
     }
 }
 
-static emu_fault_t uart_read(void *ctx, uint32_t off, uint32_t size,
-                             uint32_t *out)
+static emu_fault_t uart_read_impl(void *ctx, uint32_t off, uint32_t size,
+                                  uint32_t *out)
 {
     emu_uart_t *u = (emu_uart_t *)ctx;
 
@@ -166,8 +167,8 @@ static emu_fault_t uart_read(void *ctx, uint32_t off, uint32_t size,
     return EMU_FAULT_NONE;
 }
 
-static emu_fault_t uart_write(void *ctx, uint32_t off, uint32_t size,
-                              uint32_t val)
+static emu_fault_t uart_write_impl(void *ctx, uint32_t off, uint32_t size,
+                                   uint32_t val)
 {
     emu_uart_t *u = (emu_uart_t *)ctx;
 
@@ -220,8 +221,41 @@ static emu_fault_t uart_write(void *ctx, uint32_t off, uint32_t size,
     return EMU_FAULT_NONE;
 }
 
+/*
+ * Every core's bus maps the console, and on an SMP host several cores
+ * can write it in one round. One lock, empty elsewhere (emu_lock.h).
+ */
+static emu_lock_t g_uart_lock = EMU_LOCK_INIT;
+
+static emu_fault_t uart_read(void *ctx, uint32_t off, uint32_t size,
+                             uint32_t *out)
+{
+    emu_lock(&g_uart_lock);
+    const emu_fault_t f = uart_read_impl(ctx, off, size, out);
+
+    emu_unlock(&g_uart_lock);
+    return f;
+}
+
+static emu_fault_t uart_write(void *ctx, uint32_t off, uint32_t size,
+                              uint32_t val)
+{
+    emu_lock(&g_uart_lock);
+    const emu_fault_t f = uart_write_impl(ctx, off, size, val);
+
+    emu_unlock(&g_uart_lock);
+    return f;
+}
+
 const emu_dev_ops_t emu_uart_ops = {
     .read = uart_read,
     .write = uart_write,
     .tick = NULL,
 };
+
+void emu_uart_poll(emu_uart_t *u)
+{
+    emu_lock(&g_uart_lock);
+    uart_poll_impl(u);
+    emu_unlock(&g_uart_lock);
+}

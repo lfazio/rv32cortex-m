@@ -121,6 +121,7 @@ typedef struct emu_args {
     bool want_jit;
     bool quiet;
     bool dump;
+    bool serial; /* cores in order on one thread, never in parallel */
 
     int gdb_port; /* 0: no stub                          */
     bool ppp; /* the IP stack, over a pty            */

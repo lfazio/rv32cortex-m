@@ -38,6 +38,7 @@
  * got this header first would silently see EMU_HAVE_JIT as 0 and declare
  * no backend, which is a link error at best and a wrong default at worst. */
 #include "emu/emu_jit.h"
+#include "emu/emu_lock.h"
 
 #include "g4mh_mpu.h"
 #include "g4mh_types.h"
@@ -88,6 +89,9 @@ typedef struct g4mh_cpu {
      * manual of the product used").
      */
     uint32_t ll_addr;
+    /* The word LDL read, so an SMP host's STC can be a compare-and-swap
+     * against it: see g4mh_interp.c. Unused otherwise. */
+    uint32_t ll_word;
     bool ll_valid;
 
     /* --- interrupts --- */
@@ -268,6 +272,28 @@ g4mh_exc_t g4mh_store(g4mh_cpu_t *c, uint32_t addr, uint32_t size,
 /* ------------------------------------------------------------------ */
 /* Reservations                                                        */
 /* ------------------------------------------------------------------ */
+
+/*
+ * Everything one core can do to another core's state -- the interrupt
+ * controllers, the inter-CPU devices, BOOTCTRL, this reservation table --
+ * is done holding this. Empty unless the host runs cores in parallel
+ * (EMU_SMP, emu/emu_lock.h), and recursive, so it is taken at every
+ * public way in and nested calls cost a compare.
+ */
+extern emu_lock_t g4mh_sys_lock;
+
+/*
+ * The host bytes behind a read-modify-write of `size` bytes at `addr`,
+ * after the checks g4mh_load and g4mh_store would make -- alignment and
+ * the MPU for reading, and for writing too if `write`. NULL with *exc
+ * set if one of those
+ * refuses; NULL with *exc clear if the target is not plain RAM, and the
+ * instruction must take the ordinary path. An SMP host uses it to make
+ * CAXI, the bit operations and STC atomic against other cores' plain
+ * stores, which no lock can do since a plain store takes none.
+ */
+uint8_t *g4mh_rmw_ptr(g4mh_cpu_t *c, uint32_t addr, uint32_t size, bool write,
+                      g4mh_exc_t *exc);
 
 /*
  * Break any core's reservation covering `addr`.

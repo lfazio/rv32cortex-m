@@ -11,14 +11,15 @@ and the kernel is fetched by [`cmake/freertos.cmake`](../cmake/freertos.cmake).
 
 | platform | FreeRTOS port | parallel? |
 |---|---|---|
-| host | `portable/ThirdParty/GCC/Posix` -- tasks are pthreads | no: the POSIX port runs one task at a time |
+| host, a build that can run more than one core (`EMU_OS_SMP`, the default) | `src/platform/host/freertos_smp` -- written here; tasks are pthreads, one FreeRTOS core per emulated core | **yes**, unless `--serial` |
+| host, otherwise | `portable/ThirdParty/GCC/Posix` -- tasks are pthreads | no: the POSIX port runs one task at a time |
 | `stm32f746` | `GCC/ARM_CM7/r0p1` | no: one core |
 | `stm32f446` | `GCC/ARM_CM4F` | no: one core |
 | `stm32n6` | `GCC/ARM_CM55_NTZ/non_secure`, secure-only | no: one core |
 
-So nothing runs in parallel yet. The structure is what an SMP-capable
-FreeRTOS host would run in parallel, and the last section says what that
-would still need. Kernel: FreeRTOS-Kernel `V11.1.0`, MIT, pinned by
+A multicore guest on a multicore host runs its cores in parallel: see
+[SMP on the host](#smp-on-the-host). Everywhere else the cores take turns,
+reproducibly. Kernel: FreeRTOS-Kernel `V11.1.0`, MIT, pinned by
 `FREERTOS_KERNEL_TAG` and fetched into `FREERTOS_KERNEL_DIR` at configure
 time; point the latter at a checkout to build offline.
 
@@ -43,8 +44,11 @@ all; that is every guest but a multicore G4MH build.
 
 ### Determinism, and how it is checked
 
-The scheduler is **cooperative** (`configUSE_PREEMPTION 0`, no time
-slicing) and every task has the same priority. A task gives up the CPU
+On every single-core FreeRTOS port the scheduler is **cooperative**
+(`configUSE_PREEMPTION 0`, no time slicing) and every task has the same
+priority -- that is the boards, and a host build that runs one core or
+was configured `-DEMU_OS_SMP=OFF`. An SMP host has no order at all and
+`--serial` puts it back; see [SMP on the host](#smp-on-the-host). A task gives up the CPU
 only where it blocks, and released tasks run in the order they were
 released. So a round is core 0, then 1, then 2 -- the order
 `emu_system_step` has always used -- and a multicore run is as
@@ -71,7 +75,9 @@ Against the commit before FreeRTOS, built with three PEs: output and
 `os 3 cores as tasks, 302 rounds` at quantum 1 -- so the identical output
 came through the tasks, not around them. On the F746, `barrier3` under the
 Thumb-2 JIT retires 4,422 / 4,155 / 24 on its three cores, the host's
-figures exactly.
+figures exactly -- for the binary of that time: it was rebuilt on
+2026-10-14 from a source the house style had broken, and the start-up
+code it carries now changes those counts.
 
 ## On a board
 
@@ -132,27 +138,192 @@ variable; three things about it shaped `emu_os.c`:
 - **stdio is safe because the scheduler is cooperative**: a task is never
   switched out in the middle of a `printf`.
 
-## Toward an SMP host
+The SMP port keeps SIGALRM as the tick, sent to core 0's thread, adds
+SIGUSR2 for one core asking another to yield, and installs both with
+`SA_RESTART` itself. stdio stays safe there for a narrower reason: the
+cores' tasks are never preempted -- only idle tasks are, and they print
+nothing -- and the guest's console is behind a lock.
 
-What a FreeRTOS SMP kernel (`configNUMBER_OF_CORES > 1`) would run in
-parallel is each round's quanta, and these are the shared things a
-quantum touches, none of which is locked today because nothing runs
-concurrently:
+## SMP on the host
 
-- **G4MH's shared devices** -- INTC2, the IPIR, the barrier registers,
-  OSTM -- and the **reservation table**, which a store on one core clears
-  for the others. These are the "explicitly shared bus regions" the
-  multicore design kept separate for exactly this; a lock per device,
-  taken by its MMIO handler, is the shape.
-- **The JIT framework** (`src/emu/emu_jit.c`) keeps the code cache and
-  block table in globals; per-core instances, or a lock around
-  translation, before two cores may translate at once.
-- **The console**, which several cores may write to in one round.
-- **Memory ordering.** Guest stores land in host memory with the host's
-  ordering. A round barrier is a full barrier, but within a quantum a weak
-  guest (RH850) on a stronger host is still emulated *more* strongly than
-  the silicon -- the limitation [host/g4mh/multicore.md](host/g4mh/multicore.md)
-  already records, now with a way out of it.
+A G4MH build with more than one PE (`-DG4MH_PE_COUNT=3`) on a host gets
+**one FreeRTOS core per emulated core**, and a round's quanta run on
+that many host threads at once. `-DEMU_OS_SMP=OFF` builds the
+single-core port instead, and `--serial` on the command line runs every
+round inline on one task in core order -- the single-threaded
+round-robin, reproducible to the instruction -- in the same binary.
 
-The order assertion has to go under SMP, and with it the reproducibility
-it protects: that is the trade, and the quantum is still the knob.
+### The port
+
+**FreeRTOS has no SMP POSIX port**, in V11.1.0 or in any release up to
+V11.3.1: its SMP ports are the RP2040 and XCORE.AI. So
+`src/platform/host/freertos_smp` is written here, on the POSIX port's
+model -- one pthread per task, a task that is not running is a thread
+waiting on its own event -- with several running at once:
+
+- **A core's ID** is a thread-local, set by whoever resumes the thread
+  onto a core.
+- **A core's interrupts** are two signals, masked by a thread-local flag:
+  a handler that finds it set leaves its work pending, and enabling
+  services what is pending before it returns -- the kernel's demand that
+  a pending yield be serviced *immediately*, which
+  `prvCheckForRunStateChange` asserts. That includes a yield whose signal
+  is still in flight, because the requester sets the core's pending flag
+  first, under the kernel's locks.
+- **`portYIELD_CORE`** is a flag and a `pthread_kill` to the thread on
+  that core; the handler acts only if the flag is set, so a signal that
+  arrives late does nothing.
+- **The kernel's two locks** are recursive spinlocks owned by core.
+- **Waits spin before they sleep**, for 200 us: a thread waiting to be
+  handed a core, and an idle core watching for work -- which takes a
+  yield request by itself while it watches, with no signal. Past that
+  they sleep, so a host core with nothing to do costs nothing.
+
+One ordering problem decides the design. A core that has just switched
+tasks can be asked to yield before the port has recorded which thread now
+runs there; if the request lands on the old thread and the flag is then
+cleared by the switch, the new task never yields and the kernel asserts.
+So "which thread is on this core" and "no yield pending" are written in
+`portTASK_SWITCH_HOOK`, which `vTaskSwitchContext` calls holding both
+kernel locks -- the locks every yield request is made under.
+
+**Preemption is on under SMP**, and that is not a change of policy: with
+it off the kernel never asks an idle core to pick up a task that has just
+been released (`taskYIELD_ANY_CORE_IF_USING_PREEMPTION` compiles to
+nothing), so idle cores would have to spin looking. The cores' tasks share
+one priority above idle and time slicing stays off, so they never preempt
+each other; only idle tasks are preempted.
+
+### What the emulator had to stop sharing
+
+The multicore design kept every core's state per core with sharing only
+through named devices, precisely so this would be "a locking exercise
+rather than a redesign" ([host/g4mh/multicore.md](host/g4mh/multicore.md)).
+It was, plus four things that design note could not have seen:
+
+| what | was | now |
+|---|---|---|
+| the JIT: code buffer, block table, hash, translator scratch | one set of globals | `EMU_PER_CORE` -- `_Thread_local` under `EMU_SMP`, and a cache per core is G4MH's own model, since SYNCI and its I-cache are per PE. A core's thread maps its buffer on its first slice; `emu_jit_flush_all` and a once-per-slice epoch for what changes every core's memory |
+| G4MH's shared devices: INTC1/2, OSTM, INTIF, BOOTCTRL, the barrier, IPIR, TPTM, LTSC | unlocked | a locking twin of each device's ops, chosen at registration; the controller's public functions lock too. One recursive `emu_lock`, empty unless `EMU_SMP` |
+| the reservation table | unlocked | locked |
+| CAXI, SET1/CLR1/NOT1, LDL.W/STC.W | atomic because one core ran at a time | **host atomics on RAM**. A lock cannot do it: another core's plain store takes none. STC.W is a compare-and-swap against the word LDL.W read, with the reservation still checked |
+| the JIT's memory bit operations | a load, a computation and a store | declined under SMP, so the interpreter's atomic runs them |
+| the boot protocol's stack pointer | the top of RAM for *every* PE | PE *k* starts *k* strides below PE0, which keeps the top |
+| the console | unlocked | locked |
+
+The stack pointer was a bug before any of this: three PEs shared one
+stack from the moment they started, so a quantum boundary in the middle
+of a call could corrupt another PE's frame. `barrier3` survived it
+because its `main` barely touches the stack.
+
+Three came from failures rather than reading. Making the framework's
+state thread-local put 4.9 MB of TLS on every thread -- the block table
+alone is 4.5 MB -- and glibc takes TLS out of the thread's stack, so
+`pthread_create` refused the first 32 KB idle task with EINVAL. The two
+big tables are allocated per core now, TLS is 69 KB, and the port gives
+every thread at least 2 MB of uncommitted stack. A core whose thread had
+not run the backend's init had no code buffer, which the framework treats
+as "run the interpreter" -- silently, for the whole run. And the first
+LL/SC took the reservation word with a second read after the load that
+gave the program its value, so another core's increment could land
+between them and be overwritten: 59,996 of 60,000 interpreted, 58,615
+translated.
+
+### How it is checked
+
+**`tests/guest/g4mh/smp.c`**, built with CC-RH: three PEs contend -- a
+CAXI spinlock around a deliberately non-atomic increment, LL/SC
+increments of one word, NOT1 toggles of each PE's own bit in one shared
+byte -- and then each runs its own xorshift loop. Every number it prints
+is the same at any interleaving, and `smp_want.py` computes them in
+Python; ctest holds the default, `--serial`, `--jit` and `--jit --serial`
+runs to that one line.
+
+**Each atomic was broken on purpose, and the guest noticed** -- runs
+three to eight times each, with the fixes in place every run correct:
+
+| mutant | what the guest printed |
+|---|---|
+| CAXI as a load and a store | nothing: two PEs inside the lock leave the lock word held by nobody, and every run spins until its timeout -- ctest's 120 s is the verdict |
+| NOT1 as a load and a store | 8 of 8 wrong, both backends: `bits=4,0`, `5,5`, `0,6` ... |
+| the JIT's native memory bit operation allowed under SMP | 4 of 4 wrong, in the *second* byte only |
+| STC.W as a plain store | 3 of 3 wrong: `llsc=59768`, `59960`, `59947` |
+
+The third survived the first version of the guest. It toggled bits with
+NOT1's register form only, and the JIT lowers only the immediate form --
+so the mutant was in code the guest never reached. The second byte is
+toggled with the immediate form, and the toggle count went from 20,001 to
+200,001 when the second row caught two runs in three rather than all of
+them.
+
+**ThreadSanitizer** builds and runs under the port (`-fsanitize=thread`).
+With `tests/tsan.supp` -- the kernel's own deliberate unlocked read, the
+guest's memory, and BOOTCTRL asking a running core whether it is held --
+`barrier3` reports no races, interpreted and translated, at quanta 1, 4
+and 64. Its first reports were the port's own bookkeeping, an exported
+global the JIT inventory missed (`emu_jit_layout`), and the barrier
+device.
+
+### What it buys
+
+A variant of `smp.c` with almost no contention and four times the
+independent work, three PEs on a 20-CPU host, five interleaved runs,
+medians; every run printed the same line:
+
+| backend | quantum 1,024 | 4,096 (default) | 65,536 |
+|---|---|---|---|
+| interpreter | 2.05x | 2.71x | 2.82x |
+| JIT | 1.33x | 2.06x | 2.59x |
+
+**A round is a barrier across host threads, and what it cost decided
+everything.** The first version of the port took the speedup *below one*
+for the JIT at the default quantum: about 66 us of overhead a round
+against about 14 us of translated work per core. `strace` counted where
+it went -- some 260 system calls a round -- and three changes took it to
+the three that the console's poll makes in either mode:
+
+| port | JIT, q 4,096 | interpreter, q 4,096 |
+|---|---|---|
+| blocking waits; interrupts as the signal mask | 0.88x | 1.62x |
+| waits spin 200 us before sleeping | 1.02x | 1.71x |
+| an idle core takes a yield without a signal | 1.09x | 1.96x |
+| interrupts masked by a flag, not `pthread_sigmask` | **2.06x** | **2.71x** |
+
+The last was 87 `pthread_sigmask` calls a round -- the kernel masks
+around every critical section -- several of them made holding the
+kernel's locks, so the other cores spun on those locks meanwhile: 71
+`sched_yield`s a round. The contention guest itself is slower in parallel
+at small quanta, and should be: a PE that fails a CAXI yields its quantum,
+and under real contention that happens far more often than when the PEs
+take turns.
+
+**What the SMP build costs when it is not parallel**, the same guest
+with `--serial` in both, nine interleaved runs: **+3.6%** interpreted,
+**+5.4%** translated, against a `-DEMU_OS_SMP=OFF` build -- the JIT's
+thread-local state and the locks that are real now. Not the idle cores'
+spinning: a build that does not spin measures the same.
+
+And **`--serial` is the fast way to be reproducible.** It runs a round
+inline on one task; the cooperative single-core port sends a three-PE
+round through three task switches, and the same guest takes 1.05 s that
+way against 0.60 s inline, translated -- about 57 us a round of
+switching.
+
+### What it does not do
+
+- **Order.** A round has none under SMP, and the order assertion
+  compiles out; the quantum is still the only synchronisation point the
+  emulator imposes. Per-core retired counts vary from run to run; a
+  program's answer should not.
+- **The memory model.** Guest stores land in host memory with the host's
+  ordering. x86 is TSO, which is *stronger* than the RH850, so a guest
+  missing a barrier still works here -- the limitation
+  [host/g4mh/multicore.md](host/g4mh/multicore.md) records, now
+  real rather than hypothetical.
+- **LL/SC's ABA case.** A word changed and changed back between LDL.W and
+  STC.W is not seen, when another core's store did not land in the
+  window where it breaks the reservation directly. That is the usual
+  price of emulating LL/SC with compare-and-swap.
+- **Boards.** Every board here is single-core, and the port is the
+  host's. `EMU_SMP` is never set there, so the locks and `EMU_PER_CORE`
+  compile to nothing and a board binary is unchanged.

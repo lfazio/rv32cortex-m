@@ -332,7 +332,7 @@ typedef struct emu_jit_layout {
  * translate() already returns the instruction count, and the emit
  * cursor is shared the same way.
  */
-extern emu_jit_layout_t emu_jit_layout;
+extern EMU_PER_CORE emu_jit_layout_t emu_jit_layout;
 
 typedef struct emu_jit_ops {
     const char *name;
@@ -485,8 +485,21 @@ typedef struct emu_jit_ops {
 bool emu_jit_init(uint32_t bytes);
 void emu_jit_set_buffer(void *mem, uint32_t bytes);
 
-/* Discard every translated block. */
+/*
+ * Discard every translated block -- this core's. Under EMU_SMP each core
+ * has its own cache (EMU_PER_CORE), and this is the one belonging to the
+ * calling thread: right for what a core does to itself, like the
+ * staleness keys.
+ */
 void emu_jit_flush(void);
+
+/*
+ * Discard every core's translated blocks: memory changed under all of
+ * them -- an image loaded, a reset, a debugger's write. The others find
+ * out the next time they enter emu_jit_run, once per slice and never per
+ * dispatch. Without EMU_SMP the same as emu_jit_flush.
+ */
+void emu_jit_flush_all(void);
 
 /*
  * Discard only the blocks translated from the guest page holding
@@ -520,9 +533,9 @@ void emu_jit_get_stats(emu_jit_stats_t *out);
  *
  * Written only by this header's inlines and by emu_jit.c.
  */
-extern uint8_t *emu_jit_cursor;
-extern uint8_t *emu_jit_limit;
-extern bool emu_jit_overflow;
+extern EMU_PER_CORE uint8_t *emu_jit_cursor;
+extern EMU_PER_CORE uint8_t *emu_jit_limit;
+extern EMU_PER_CORE bool emu_jit_overflow;
 
 static inline bool emu_jit_room(uint32_t n)
 {

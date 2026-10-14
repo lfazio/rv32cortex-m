@@ -121,9 +121,19 @@ void g4mh_cpu_reset(g4mh_cpu_t *c, uint32_t reset_pc)
 
 void g4mh_cpu_boot(g4mh_cpu_t *c, uint32_t ram_base, uint32_t ram_size)
 {
-    /* The RH850 ABI wants the stack 4-byte aligned; 8 costs nothing and
-     * satisfies any guest that assumes more. */
-    c->r[G4MH_REG_SP] = (ram_base + ram_size) & ~7u;
+    /*
+     * Each PE its own stack. They share the RAM, and handing every PE the
+     * same top -- which this did until a guest with real functions ran on
+     * three of them -- put each PE's frames on top of the others': a
+     * quantum boundary in the middle of a call was enough to corrupt one,
+     * and running the cores in parallel made it certain. PE0 keeps the
+     * top, so a single-core guest sees no change; PE k starts k strides
+     * below it. The bottom half of RAM is left for the image and its
+     * data. The RH850 ABI wants 4-byte alignment; 8 costs nothing.
+     */
+    const uint32_t stride = (ram_size / (2u * G4MH_PE_COUNT)) & ~0xFFFu;
+
+    c->r[G4MH_REG_SP] = (ram_base + ram_size - c->coreid * stride) & ~7u;
     c->r[6] = c->coreid;
     c->r[7] = ram_size;
 }
@@ -567,6 +577,8 @@ bool g4mh_cpu_pending_fe(const g4mh_cpu_t *c)
 static g4mh_cpu_t *g_cores[G4MH_PE_COUNT];
 static unsigned g_core_count;
 
+emu_lock_t g4mh_sys_lock = EMU_LOCK_INIT;
+
 /*
  * How many cores currently hold one. Kept as a count rather than derived
  * by walking, because g4mh_ll_break is called from the store path and the
@@ -601,41 +613,91 @@ void g4mh_ll_register(g4mh_cpu_t *c)
     }
 }
 
+/*
+ * Read without the lock, on every store: a hint, and under threads a
+ * stale one is harmless -- a reservation taken a moment ago is checked
+ * by STC.W's compare-and-swap whatever this said. Relaxed atomics, which
+ * are plain loads and stores on every host here.
+ */
 bool g4mh_any_reservation(void)
 {
-    return g_ll_held != 0u;
+    return __atomic_load_n(&g_ll_held, __ATOMIC_RELAXED) != 0u;
+}
+
+static void ll_held_add(int d)
+{
+    __atomic_store_n(
+        &g_ll_held, __atomic_load_n(&g_ll_held, __ATOMIC_RELAXED) + (unsigned)d,
+        __ATOMIC_RELAXED); /* only ever under the lock */
 }
 
 void g4mh_ll_break(uint32_t addr)
 {
     const uint32_t word = addr & ~3u;
 
+    emu_lock(&g4mh_sys_lock);
     for (unsigned i = 0; i < g_core_count; i++) {
         g4mh_cpu_t *c = g_cores[i];
         if (c->ll_valid && c->ll_addr == word) {
             c->ll_valid = false;
-            g_ll_held--;
+            ll_held_add(-1);
         }
     }
+    emu_unlock(&g4mh_sys_lock);
 }
 
 /* Take a reservation on `addr` for `c`, replacing any it already held. */
 void g4mh_ll_take(g4mh_cpu_t *c, uint32_t addr)
 {
+    emu_lock(&g4mh_sys_lock);
     if (!c->ll_valid) {
-        g_ll_held++;
+        ll_held_add(1);
     }
     c->ll_valid = true;
     c->ll_addr = addr & ~3u;
+    emu_unlock(&g4mh_sys_lock);
 }
 
 /* Drop `c`'s reservation, if it has one. */
 void g4mh_ll_drop(g4mh_cpu_t *c)
 {
+    emu_lock(&g4mh_sys_lock);
     if (c->ll_valid) {
         c->ll_valid = false;
-        g_ll_held--;
+        ll_held_add(-1);
     }
+    emu_unlock(&g4mh_sys_lock);
+}
+
+uint8_t *g4mh_rmw_ptr(g4mh_cpu_t *c, uint32_t addr, uint32_t size, bool write,
+                      g4mh_exc_t *exc)
+{
+    *exc = G4MH_EXC_NONE;
+    if (EMU_UNLIKELY((addr & (size - 1u)) != 0u)) {
+        c->sr[2][G4MH_SR_MEA] = addr;
+        *exc = G4MH_EXC_MAE;
+        return NULL;
+    }
+#if G4MH_EXT_MPU
+    if (EMU_UNLIKELY(c->mpu_active)) {
+        const bool um = (c->psw & G4MH_PSW_UM) != 0u;
+
+        if (!g4mh_mpu_permits(c->mpu, addr, size, G4MH_MPU_READ, um, c->spid) ||
+            (write && !g4mh_mpu_permits(c->mpu, addr, size, G4MH_MPU_WRITE, um,
+                                        c->spid))) {
+            c->sr[2][G4MH_SR_MEA] = addr;
+            *exc = G4MH_EXC_MDP;
+            return NULL;
+        }
+    }
+#endif
+    const emu_region_t *const r = emu_bus_find(c->bus, addr);
+
+    if (r == NULL || r->kind != EMU_MEM_RAM || r->host == NULL ||
+        addr - r->base > r->size - size) {
+        return NULL; /* not plain RAM: the ordinary, locked path */
+    }
+    return (uint8_t *)r->host + (addr - r->base);
 }
 
 /* ------------------------------------------------------------------ */

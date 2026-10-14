@@ -48,7 +48,36 @@ set(_frt_port_srcs)
 set(_frt_port_inc)
 set(_frt_defs)
 
-if(EMU_PLATFORM STREQUAL "host")
+#
+# How many cores the build can run as tasks: one, unless a frontend with
+# several is compiled in. Decided before the port, because on a host it
+# chooses the port.
+#
+set(_emu_os_cores 1)
+if(EMU_GUEST_ARCH_G4MH AND G4MH_PE_COUNT GREATER 1)
+    set(_emu_os_cores ${G4MH_PE_COUNT})
+endif()
+
+option(EMU_OS_SMP
+    "Host: run a multicore guest's cores in parallel (FreeRTOS SMP on pthreads)"
+    ON)
+
+if(EMU_PLATFORM STREQUAL "host" AND EMU_OS_SMP AND _emu_os_cores GREATER 1)
+    #
+    # The kernel's POSIX port is single-core in every release; this is
+    # the same model with several cores (src/platform/host/freertos_smp).
+    #
+    set(_frt_port "${CMAKE_SOURCE_DIR}/src/platform/host/freertos_smp")
+    list(APPEND _frt_port_srcs "${_frt_port}/port.c")
+    list(APPEND _frt_port_inc "${_frt_port}")
+    list(APPEND _frt_defs EMU_OS_PORT_POSIX=1 EMU_OS_PORT_POSIX_SMP=1)
+    #
+    # And the emulator learns that cores really can run at once: its
+    # locks stop compiling to nothing and the JIT's state becomes per
+    # thread (include/emu/emu_lock.h, emu_types.h).
+    #
+    target_compile_definitions(emucore PUBLIC EMU_SMP=1)
+elseif(EMU_PLATFORM STREQUAL "host")
     set(_frt_port "${_frt}/portable/ThirdParty/GCC/Posix")
     list(APPEND _frt_port_srcs "${_frt_port}/port.c"
                                "${_frt_port}/utils/wait_for_event.c")
@@ -105,10 +134,6 @@ target_compile_definitions(emu_freertos PUBLIC ${_frt_defs})
 # allocates stacks for those and no more: on a board each is RAM the
 # guest would otherwise have.
 #
-set(_emu_os_cores 1)
-if(EMU_GUEST_ARCH_G4MH AND G4MH_PE_COUNT GREATER 1)
-    set(_emu_os_cores ${G4MH_PE_COUNT})
-endif()
 target_compile_definitions(emu_freertos PUBLIC EMU_OS_MAX_CORES=${_emu_os_cores}u)
 
 # Third-party code: built, not linted. The project's -Werror-adjacent

@@ -155,4 +155,31 @@ typedef void (*emu_print_fn)(void *ctx, const char *s);
 #define EMU_HOT_TEXT EMU_HOT
 #endif
 
+/*
+ * EMU_PER_CORE -- state belonging to whichever core is running, kept per
+ * host thread.
+ *
+ * Under EMU_SMP (an SMP host, cmake/freertos.cmake) every emulated core
+ * runs on a thread of its own for the whole run -- one FreeRTOS task
+ * each -- so per thread *is* per core: the JIT's code cache, block table
+ * and translator scratch become each core's own, with no lock anywhere
+ * on the dispatch path. G4MH's instruction caches and SYNCI are per PE,
+ * so a cache per core is the architecture's model rather than a
+ * compromise. Everywhere else this is nothing and the state is the one
+ * global it always was.
+ *
+ * A run that puts several cores on one thread -- --serial, or a system
+ * with more cores than this build has tasks for -- shares that thread's
+ * state between them, which is exactly the single-threaded arrangement.
+ */
+#ifndef EMU_SMP
+#define EMU_SMP 0
+#endif
+
+#if EMU_SMP
+#define EMU_PER_CORE _Thread_local
+#else
+#define EMU_PER_CORE
+#endif
+
 #endif /* EMU_TYPES_H */

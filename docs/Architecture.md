@@ -146,9 +146,14 @@ cache, block table, chaining, compaction and dispatch for all of them.
 
 **Every platform runs the backends under FreeRTOS**, one task per
 emulated core, the cores meeting at every quantum boundary
-([os.md](os.md)). The scheduler is cooperative, so a multicore guest's
-interleaving is the round-robin's and is reproducible at any quantum;
-nothing in `src/emu/` knows there is an operating system.
+([os.md](os.md)). On a board, and on a host running one core, the
+scheduler is cooperative, so a multicore guest's interleaving is the
+round-robin's and is reproducible at any quantum. A multicore guest on a
+host runs its cores **in parallel**, one FreeRTOS core each, on an SMP
+port written for this tree (`EMU_OS_SMP`); `--serial` gives the
+reproducible round back. Nothing in `src/emu/` knows there is an
+operating system: it knows only `EMU_SMP`, which makes `emu_lock` real and
+`EMU_PER_CORE` thread-local.
 
 The x86-64 backend exists for **coverage, not speed**: it is what lets
 the suites run against translated code on a host, since the Thumb-2
@@ -213,9 +218,10 @@ its architecture, so it gets the default.
   contract and G4MH brings up to three PEs, each on its own FreeRTOS
   task ([`host/g4mh/multicore.md`](host/g4mh/multicore.md),
   [os.md](os.md)); every other frontend answers one.
-- **Parallel cores.** The tasks run one at a time on every host here;
-  an SMP-capable FreeRTOS host would run a round's quanta in parallel,
-  and [os.md](os.md) lists what is shared and unlocked.
+- **Parallel cores on a board.** A host runs a round's quanta in
+  parallel ([os.md](os.md#smp-on-the-host)); every board here is
+  single-core, and a dual-core part would need FreeRTOS's SMP port for
+  it plus the same `EMU_SMP` the host build sets.
 
 ## Investigate
 

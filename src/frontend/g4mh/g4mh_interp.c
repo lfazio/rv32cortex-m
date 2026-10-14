@@ -258,6 +258,40 @@ static g4mh_exc_t do_bitop(g4mh_cpu_t *c, unsigned op, uint32_t adr,
     const uint32_t mask = 1u << (bit & 7u);
     uint32_t token;
 
+#if EMU_SMP
+    /*
+     * With cores really running at once the read and the write-back are
+     * two accesses another core's plain store can land between, losing
+     * it -- so on RAM the whole thing is one host atomic, after the same
+     * checks the two accesses would make. TST1 is a read and stays one.
+     */
+    if (op != BITOP_TST) {
+        g4mh_exc_t ex;
+        uint8_t *const hp = g4mh_rmw_ptr(c, adr, 1u, true, &ex);
+
+        if (EMU_UNLIKELY(ex != G4MH_EXC_NONE)) {
+            return ex;
+        }
+        if (hp != NULL) {
+            const uint8_t m = (uint8_t)mask;
+            const uint8_t old =
+                (op == BITOP_SET) ? __atomic_fetch_or(hp, m, __ATOMIC_SEQ_CST)
+                : (op == BITOP_CLR)
+                    ? __atomic_fetch_and(hp, (uint8_t)~m, __ATOMIC_SEQ_CST)
+                    : __atomic_fetch_xor(hp, m, __ATOMIC_SEQ_CST);
+
+            if ((old & m) != 0u) {
+                c->psw &= ~G4MH_PSW_Z;
+            } else {
+                c->psw |= G4MH_PSW_Z;
+            }
+            if (EMU_UNLIKELY(g4mh_any_reservation())) {
+                g4mh_ll_break(adr); /* it is a store, as below */
+            }
+            return G4MH_EXC_NONE;
+        }
+    }
+#endif
     g4mh_exc_t e = g4mh_load(c, adr, 1u, false, &token);
     if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
         return e;
@@ -1483,15 +1517,42 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 const uint32_t r3 = sel;
                 const uint32_t adr = c->r[r1];
                 uint32_t token;
-                g4mh_exc_t e = g4mh_load(c, adr, 4u, false, &token);
-                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
-                    EXC(e);
-                }
+                bool match;
+#if EMU_SMP
+                /*
+                 * Threads: a host compare-and-swap on RAM, after the
+                 * checks a load and a store would make. A mismatch
+                 * writes nothing -- the token it would have written back
+                 * is the value already there -- and still counts as the
+                 * store it architecturally is, for others' reservations.
+                 */
+                g4mh_exc_t ex;
+                uint8_t *const hp = g4mh_rmw_ptr(c, adr, 4u, true, &ex);
 
-                const bool match = (c->r[r2] == token);
-                e = g4mh_store(c, adr, 4u, match ? c->r[r3] : token);
-                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
-                    EXC(e);
+                if (EMU_UNLIKELY(ex != G4MH_EXC_NONE)) {
+                    EXC(ex);
+                }
+                if (hp != NULL) {
+                    token = c->r[r2];
+                    match = __atomic_compare_exchange_n(
+                        (uint32_t *)(void *)hp, &token, c->r[r3], false,
+                        __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+                    if (EMU_UNLIKELY(g4mh_any_reservation())) {
+                        g4mh_ll_break(adr);
+                    }
+                } else
+#endif
+                {
+                    g4mh_exc_t e = g4mh_load(c, adr, 4u, false, &token);
+                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                        EXC(e);
+                    }
+
+                    match = (c->r[r2] == token);
+                    e = g4mh_store(c, adr, 4u, match ? c->r[r3] : token);
+                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                        EXC(e);
+                    }
                 }
                 wr(c, r3, token);
 
@@ -1555,6 +1616,34 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                 wr(c, r3, v);
 
                 if (mode == 0u) {
+#if EMU_SMP
+                    /*
+                     * The word as it was, for STC's compare-and-swap --
+                     * and the value the program gets is taken from that
+                     * same read. Reading it a second time after the load
+                     * above let another core's increment land between the
+                     * two: the program held n, the reservation n+1, the
+                     * swap succeeded, and the increment was lost. The
+                     * load above stays, for its checks.
+                     */
+                    g4mh_exc_t ex;
+                    const uint8_t *const hp =
+                        g4mh_rmw_ptr(c, adr & ~3u, 4u, false, &ex);
+
+                    if (hp != NULL) {
+                        const uint32_t word =
+                            __atomic_load_n((const uint32_t *)(const void *)hp,
+                                            __ATOMIC_SEQ_CST);
+                        const uint32_t sh = (adr & 3u) * 8u;
+
+                        c->ll_word = word;
+                        wr(c, r3,
+                           (w == 4u) ? word
+                                     : (word >> sh) & ((1u << (w * 8u)) - 1u));
+                    } else {
+                        c->ll_word = 0u;
+                    }
+#endif
                     g4mh_ll_take(c, adr);
                 } else {
                     /* The manual updates reg1 *after* writing reg3, so
@@ -1607,7 +1696,56 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                     break;
                 }
 
-                const bool held = c->ll_valid && c->ll_addr == (adr & ~3u);
+                bool held;
+
+#if EMU_SMP
+                /*
+                 * Threads. Another core's plain store breaks this
+                 * reservation, but it can land between the check and the
+                 * store below, and before LDL took the reservation at all
+                 * -- so on RAM the store is a compare-and-swap against
+                 * the word LDL read, and succeeds only if the word is
+                 * still that. A value written and written back in
+                 * between goes unnoticed; that is the usual price of
+                 * emulating LL/SC this way, and it is the stronger
+                 * guarantee that matters to a lock.
+                 */
+                emu_lock(&g4mh_sys_lock);
+                held = c->ll_valid && c->ll_addr == (adr & ~3u);
+                if (held) {
+                    g4mh_exc_t ex;
+                    uint8_t *const hp =
+                        g4mh_rmw_ptr(c, adr & ~3u, 4u, true, &ex);
+
+                    /* A misaligned width takes the ordinary store, which
+                     * raises MAE exactly as it did. */
+                    if (hp != NULL && (adr & (w - 1u)) == 0u) {
+                        const uint32_t sh = (adr & 3u) * 8u;
+                        const uint32_t m =
+                            (w == 4u) ? 0xFFFFFFFFu
+                                      : (((1u << (w * 8u)) - 1u) << sh);
+                        uint32_t expect = c->ll_word;
+                        const uint32_t want =
+                            (expect & ~m) | ((c->r[r3] << sh) & m);
+
+                        held = __atomic_compare_exchange_n(
+                            (uint32_t *)(void *)hp, &expect, want, false,
+                            __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+                        if (held && g4mh_any_reservation()) {
+                            g4mh_ll_break(adr);
+                        }
+                    } else {
+                        const g4mh_exc_t e = g4mh_store(c, adr, w, c->r[r3]);
+
+                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                            emu_unlock(&g4mh_sys_lock);
+                            EXC(e);
+                        }
+                    }
+                }
+                emu_unlock(&g4mh_sys_lock);
+#else
+                held = c->ll_valid && c->ll_addr == (adr & ~3u);
 
                 if (held) {
                     const g4mh_exc_t e = g4mh_store(c, adr, w, c->r[r3]);
@@ -1615,6 +1753,7 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
                         EXC(e);
                     }
                 }
+#endif
                 g4mh_ll_drop(c);
                 wr(c, r3, held ? 1u : 0u);
 

@@ -743,3 +743,54 @@ if(GDB_MULTIARCH AND TARGET emu-host)
         # frontend ran and every one passed, 77 when none could run.
         FAIL_REGULAR_EXPRESSION "    FAIL ")
 endif()
+
+#
+# The multicore G4MH guests, which until these existed no test ran: every
+# multicore check drove emu_system_step directly, beneath the runner and
+# its tasks. Prebuilt with CC-RH (scripts/g4mh-build-guest.sh), linked at
+# 0x80000000 -- without --load the code runs and every string it prints
+# reads as nothing, which is how barrier3 printed "0711072207" for a while.
+#
+# smp.bin contends -- a CAXI lock, LL/SC, NOT1 on one byte -- and then
+# works alone, and prints a line that is the same at any interleaving, so
+# one expectation holds the serial round-robin and an SMP host alike. The
+# line is tests/guest/g4mh/smp_want.py's, and g4mh-smp-want checks that
+# the copy below is still what the script computes.
+#
+if(EMU_GUEST_ARCH_G4MH AND G4MH_PE_COUNT EQUAL 3)
+    set(_g4 "${CMAKE_SOURCE_DIR}/tests/guest/g4mh")
+    set(_smp_want "g4mh smp: lock=60000 llsc=60000 bits=7,7 sum=00af4a57,d87dee1e,b82ba4d7")
+    add_test(NAME g4mh-barrier3
+             COMMAND emu-host --frontend g4mh --load 0x80000000
+                     --max-insn 50000000 "${_g4}/barrier3.bin")
+    set_tests_properties(g4mh-barrier3 PROPERTIES LABELS fast
+        PASS_REGULAR_EXPRESSION "past the barrier: PE0=7 PE1=107 PE2=207")
+    # A mode with two options is written with a comma: a CMake list
+    # element cannot hold the semicolon.
+    set(_modes "none" "--serial")
+    if(EMU_JIT)
+        list(APPEND _modes "--jit" "--jit,--serial")
+    endif()
+    foreach(_m IN LISTS _modes)
+        string(REPLACE "," "" _n "g4mh-smp${_m}")
+        string(REPLACE "--" "-" _n "${_n}")
+        string(REPLACE "g4mh-smpnone" "g4mh-smp" _n "${_n}")
+        string(REPLACE "," ";" _args "${_m}")
+        string(REPLACE "none" "" _args "${_args}")
+        add_test(NAME "${_n}"
+                 COMMAND emu-host ${_args} --frontend g4mh --load 0x80000000
+                         --quantum 4096 --max-insn 300000000
+                         "${_g4}/smp.bin")
+        # A broken lock does not fail, it spins: the timeout is the
+        # verdict then (see docs/os.md, the CAXI mutant).
+        set_tests_properties("${_n}" PROPERTIES LABELS fast TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "${_smp_want}\nG4MH-SMP-END")
+    endforeach()
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_FOUND)
+        add_test(NAME g4mh-smp-want
+                 COMMAND ${Python3_EXECUTABLE} "${_g4}/smp_want.py")
+        set_tests_properties(g4mh-smp-want PROPERTIES LABELS fast
+            PASS_REGULAR_EXPRESSION "^${_smp_want}\n$")
+    endif()
+endif()

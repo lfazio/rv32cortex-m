@@ -60,6 +60,46 @@ static g4mh_intercpu_port_t g_barr_port[G4MH_PE_COUNT];
 static g4mh_intercpu_port_t g_ipir_port[G4MH_PE_COUNT];
 static g4mh_intercpu_port_t g_tptm_port[G4MH_PE_COUNT];
 
+/*
+ * Every shared device is reached through a twin of its ops that holds
+ * g4mh_sys_lock for the access: here, once, rather than inside each
+ * device's two handlers. Only an SMP host has twins; otherwise they are
+ * the originals and nothing changes.
+ */
+#if EMU_SMP
+#define G4MH_LOCKED_OPS(inner)                                                 \
+    static emu_fault_t inner##_lrd(void *ctx, uint32_t off, uint32_t size,     \
+                                   uint32_t *out)                              \
+    {                                                                          \
+        emu_lock(&g4mh_sys_lock);                                              \
+        const emu_fault_t f = inner.read(ctx, off, size, out);                 \
+        emu_unlock(&g4mh_sys_lock);                                            \
+        return f;                                                              \
+    }                                                                          \
+    static emu_fault_t inner##_lwr(void *ctx, uint32_t off, uint32_t size,     \
+                                   uint32_t val)                               \
+    {                                                                          \
+        emu_lock(&g4mh_sys_lock);                                              \
+        const emu_fault_t f = inner.write(ctx, off, size, val);                \
+        emu_unlock(&g4mh_sys_lock);                                            \
+        return f;                                                              \
+    }                                                                          \
+    static const emu_dev_ops_t inner##_locked = {inner##_lrd, inner##_lwr,     \
+                                                 NULL};
+G4MH_LOCKED_OPS(g4mh_intc1_ops)
+G4MH_LOCKED_OPS(g4mh_intc2_ops)
+G4MH_LOCKED_OPS(g4mh_ostm_ops)
+G4MH_LOCKED_OPS(g4mh_intif_ops)
+G4MH_LOCKED_OPS(g4mh_boot_ops)
+G4MH_LOCKED_OPS(g4mh_barrier_ops)
+G4MH_LOCKED_OPS(g4mh_ipir_ops)
+G4MH_LOCKED_OPS(g4mh_tptm_ops)
+G4MH_LOCKED_OPS(g4mh_ltsc_ops)
+#define SHARED_OPS(ops) (&ops##_locked)
+#else
+#define SHARED_OPS(ops) (&ops)
+#endif
+
 static emu_cpu_t *g4mh_instance(unsigned index)
 {
     return (index < G4MH_PE_COUNT) ? (emu_cpu_t *)&g_cpu[index] : NULL;
@@ -312,22 +352,23 @@ static bool g4mh_ops_add_shared_devices(emu_bus_t *bus)
     return emu_bus_add_ram(bus, "cram", G4MH_CRAM_BASE, g_cram,
                            (uint32_t)sizeof(g_cram)) &&
            emu_bus_add_mmio(bus, "intc2", G4MH_INTC2_BASE, G4MH_INTC2_SIZE,
-                            &g4mh_intc2_ops, &g_intc[0]) &&
+                            SHARED_OPS(g4mh_intc2_ops), &g_intc[0]) &&
            emu_bus_add_mmio(bus, "ostm0", G4MH_OSTM0_BASE, G4MH_OSTM0_SIZE,
-                            &g4mh_ostm_ops, &g_intc[0]) &&
+                            SHARED_OPS(g4mh_ostm_ops), &g_intc[0]) &&
            /*
             * INTIF, for TPTMSEL. One register for the whole system, so
             * it binds to the global INTC instance like INTC2 does.
             */
            emu_bus_add_mmio(bus, "intif", G4MH_INTIF_BASE, G4MH_INTIF_SIZE,
-                            &g4mh_intif_ops, &g_intc[0]) &&
+                            SHARED_OPS(g4mh_intif_ops), &g_intc[0]) &&
            /*
             * BOOTCTRL: which PEs are running. Shared rather than per
             * core, because it is one register describing the whole
             * system and PE0 writes it to start the others.
             */
            emu_bus_add_mmio(bus, "bootctrl", G4MH_BOOTCTRL_BASE,
-                            G4MH_BOOTCTRL_SIZE, &g4mh_boot_ops, &g_boot);
+                            G4MH_BOOTCTRL_SIZE, SHARED_OPS(g4mh_boot_ops),
+                            &g_boot);
 }
 
 /*
@@ -349,7 +390,8 @@ static bool g4mh_ops_add_core_devices(emu_cpu_t *cpu, emu_bus_t *bus,
     (void)cpu;
 
     if (!emu_bus_add_mmio(bus, "intc1-self", G4MH_INTC1_SELF_BASE,
-                          G4MH_INTC1_SIZE, &g4mh_intc1_ops, &g_intc[index])) {
+                          G4MH_INTC1_SIZE, SHARED_OPS(g4mh_intc1_ops),
+                          &g_intc[index])) {
         return false;
     }
 
@@ -377,9 +419,9 @@ static bool g4mh_ops_add_core_devices(emu_cpu_t *cpu, emu_bus_t *bus,
     for (unsigned pe = 0; pe < G4MH_PE_COUNT; pe++) {
         static const char *const nm[3] = {"intc1-pe0", "intc1-pe1",
                                           "intc1-pe2"};
-        if (!emu_bus_add_mmio(bus, nm[pe],
-                              G4MH_INTC1_PE0_BASE + pe * G4MH_INTC1_PE_STRIDE,
-                              G4MH_INTC1_SIZE, &g4mh_intc1_ops, &g_intc[pe])) {
+        if (!emu_bus_add_mmio(
+                bus, nm[pe], G4MH_INTC1_PE0_BASE + pe * G4MH_INTC1_PE_STRIDE,
+                G4MH_INTC1_SIZE, SHARED_OPS(g4mh_intc1_ops), &g_intc[pe])) {
             return false;
         }
     }
@@ -403,11 +445,12 @@ static bool g4mh_ops_add_core_devices(emu_cpu_t *cpu, emu_bus_t *bus,
     g_tptm_port[index].pe = index;
 
     return emu_bus_add_mmio(bus, "barr", G4MH_BARR_BASE, G4MH_BARR_SIZE,
-                            &g4mh_barrier_ops, &g_barr_port[index]) &&
+                            SHARED_OPS(g4mh_barrier_ops),
+                            &g_barr_port[index]) &&
            emu_bus_add_mmio(bus, "ipir", G4MH_IPIR_BASE, G4MH_IPIR_SIZE,
-                            &g4mh_ipir_ops, &g_ipir_port[index]) &&
+                            SHARED_OPS(g4mh_ipir_ops), &g_ipir_port[index]) &&
            emu_bus_add_mmio(bus, "tptm", G4MH_TPTM_BASE, G4MH_TPTM_SIZE,
-                            &g4mh_tptm_ops, &g_tptm_port[index]) &&
+                            SHARED_OPS(g4mh_tptm_ops), &g_tptm_port[index]) &&
            /*
             * No port wrapper, unlike its three neighbours: those answer
             * differently depending on which PE is asking, and a system
@@ -415,7 +458,7 @@ static bool g4mh_ops_add_core_devices(emu_cpu_t *cpu, emu_bus_t *bus,
             * same counter, which is the entire purpose.
             */
            emu_bus_add_mmio(bus, "ltsc", G4MH_LTSC_BASE, G4MH_LTSC_SIZE,
-                            &g4mh_ltsc_ops, &g_ltsc);
+                            SHARED_OPS(g4mh_ltsc_ops), &g_ltsc);
 }
 
 static void g4mh_ops_set_irq(emu_cpu_t *cpu, uint32_t source, bool level)
@@ -516,7 +559,9 @@ static void g4mh_ops_status(const emu_cpu_t *cpu, emu_cpu_status_t *out)
     out->backend = g4mh_backend->name;
     out->pc = c->pc;
     out->retired = c->retired;
-    out->state = (emu_state_t)c->state;
+    /* Atomic: BOOTCTRL, on another core's thread, is what moves a held
+     * core to running (g4mh_boot.c). */
+    out->state = (emu_state_t)__atomic_load_n(&c->state, __ATOMIC_ACQUIRE);
 #if EMU_ENABLE_STATS
     out->traps = c->exc_count;
 #else

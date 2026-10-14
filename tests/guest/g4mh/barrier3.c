@@ -77,7 +77,9 @@
 
 #define NPE 3u
 
-/* clang-format off -- see guest.c: it breaks inline_asm comments */
+/* See guest.c: clang-format breaks inline_asm comments, and only the
+ * bare form of this fence is recognised -- text after "off" disables it. */
+/* clang-format off */
 #pragma inline_asm read_htcfg0
 static unsigned read_htcfg0(void)
 {

@@ -127,7 +127,7 @@ static void ir_emit_jump(uint8_t *at, const uint8_t *target)
 #define EMU_IR_JIT_JUMP_BYTES 5u
 #endif
 
-static emu_ir_block_t g_ir;
+static EMU_PER_CORE emu_ir_block_t g_ir;
 
 /*
  * A code buffer for hosts that cannot map one.
@@ -382,7 +382,7 @@ static bool ir_diff_ref(emu_cpu_t *cpu, const emu_ir_frontend_t *fe)
     static void prefix##_reset(emu_cpu_t *cpu)                                                          \
     {                                                                                                   \
         (void)cpu;                                                                                      \
-        emu_jit_flush();                                                                                \
+        emu_jit_flush_all(); /* every core's: see emu_jit.h */                                          \
     }                                                                                                   \
                                                                                                         \
     static void prefix##_invalidate(emu_cpu_t *cpu, uint32_t a, uint32_t l)                             \
@@ -391,8 +391,10 @@ static bool ir_diff_ref(emu_cpu_t *cpu, const emu_ir_frontend_t *fe)
         (void)a;                                                                                        \
         (void)l;                                                                                        \
         /* Whole-cache flush: translations are cheap to rebuild, and         \
-     * tracking which blocks covered a range costs more than it saves. */                          \
-        emu_jit_flush();                                                                                \
+     * tracking which blocks covered a range costs more than it saves.   \
+     * Every core's, because memory is shared -- a SYNCI comes here too, \
+     * and flushes more than its own PE needs, which is rare and right.  */                          \
+        emu_jit_flush_all();                                                                            \
     }                                                                                                   \
                                                                                                         \
     static emu_run_reason_t prefix##_run(emu_cpu_t *cpu, uint32_t budget,                               \

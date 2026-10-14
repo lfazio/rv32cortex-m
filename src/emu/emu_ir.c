@@ -13,6 +13,7 @@
 
 #include "emu/emu_ir.h"
 #include "emu/emu_jit.h" /* EMU_HAVE_JIT */
+#include "emu/emu_lock.h"
 #include "emu/emu_regstats.h"
 
 #include <string.h>
@@ -274,7 +275,7 @@ static void pass_reg_traffic(emu_ir_block_t *b, const emu_ir_target_t *t,
                              emu_ir_opt_stats_t *st)
 {
     uint16_t cur[IR_MAX_GUEST_REGS];
-    static uint16_t copy[EMU_IR_MAX_TEMPS];
+    static EMU_PER_CORE uint16_t copy[EMU_IR_MAX_TEMPS];
 
     for (uint32_t i = 0; i < IR_MAX_GUEST_REGS; i++) {
         cur[i] = EMU_IR_NO_TEMP;
@@ -772,8 +773,8 @@ static bool shift_imm_ok(uint8_t op, uint32_t imm)
  */
 static void pass_mac(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
 {
-    static uint8_t uses[EMU_IR_MAX_TEMPS];
-    static uint16_t def[EMU_IR_MAX_TEMPS];
+    static EMU_PER_CORE uint8_t uses[EMU_IR_MAX_TEMPS];
+    static EMU_PER_CORE uint16_t def[EMU_IR_MAX_TEMPS];
 
     memset(uses, 0, sizeof(uses));
     for (uint32_t i = 0; i < EMU_IR_MAX_TEMPS; i++) {
@@ -875,8 +876,8 @@ static void pass_mac(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
 
 static void pass_fuse(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
 {
-    static uint8_t uses[EMU_IR_MAX_TEMPS];
-    static uint16_t def[EMU_IR_MAX_TEMPS];
+    static EMU_PER_CORE uint8_t uses[EMU_IR_MAX_TEMPS];
+    static EMU_PER_CORE uint16_t def[EMU_IR_MAX_TEMPS];
 
     memset(uses, 0, sizeof(uses));
     for (uint32_t i = 0; i < EMU_IR_MAX_TEMPS; i++) {
@@ -1027,7 +1028,7 @@ static void pass_fuse(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
 
 static void pass_count_uses(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
 {
-    static uint8_t uses[EMU_IR_MAX_TEMPS];
+    static EMU_PER_CORE uint8_t uses[EMU_IR_MAX_TEMPS];
 
     memset(uses, 0, sizeof(uses));
 
@@ -1074,8 +1075,8 @@ static void pass_count_uses(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
  * guest's stack; the pass is not reentrant, which is true of every pass
  * here and of the block buffer they all walk.
  */
-static uint16_t g_def[EMU_IR_MAX_TEMPS];
-static uint16_t g_last[EMU_IR_MAX_TEMPS];
+static EMU_PER_CORE uint16_t g_def[EMU_IR_MAX_TEMPS];
+static EMU_PER_CORE uint16_t g_last[EMU_IR_MAX_TEMPS];
 
 #define IR_NO_POS 0xFFFFu
 
@@ -1206,11 +1207,16 @@ uint32_t emu_ir_regalloc(const emu_ir_block_t *b, uint32_t nregs,
 
 /* ------------------------------------------------------------------ */
 
+/* One total for every core: it changes once per translation, never per
+ * dispatch, so a lock costs nothing that matters (emu_lock.h). */
 static emu_ir_opt_stats_t g_opt_totals;
+static emu_lock_t g_opt_lock = EMU_LOCK_INIT;
 
 void emu_ir_opt_totals(emu_ir_opt_stats_t *out)
 {
+    emu_lock(&g_opt_lock);
     *out = g_opt_totals;
+    emu_unlock(&g_opt_lock);
 }
 
 void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
@@ -1246,6 +1252,7 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
     pass_mac(b, stats);
     pass_count_uses(b, stats);
 
+    emu_lock(&g_opt_lock);
     g_opt_totals.blocks++;
     g_opt_totals.single_use += stats->single_use;
     g_opt_totals.flags_removed += stats->flags_removed;
@@ -1257,6 +1264,7 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
     g_opt_totals.identities += stats->identities;
     g_opt_totals.macs += stats->macs;
     g_opt_totals.dead_removed += stats->dead_removed;
+    emu_unlock(&g_opt_lock);
 
 #if EMU_JIT_HOT_REG_STATS
     /*

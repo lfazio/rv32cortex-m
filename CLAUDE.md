@@ -2866,6 +2866,46 @@ session, and every one of them recurred:
   decimals, read the raw cycle counts** -- 253.11 twice was 3,080,576,778
   against 3,080,582,934, which is a result, not an instrument fault.
 
+- **Running cores in parallel turned five quiet assumptions into
+  failures, and three of them were mine.** The SMP host port
+  ([docs/os.md](docs/os.md#smp-on-the-host)), in the order they bit:
+
+  - **Thread-local is per-thread *initialisation* too.** Making the JIT's
+    state `_Thread_local` gave each core its own cache -- and only the
+    thread that ran the backend's init a code buffer. The framework reads
+    "no buffer" as "run the interpreter", so cores 1 and 2 would have
+    been interpreted for the whole run with every check passing. They
+    map their own on their first slice now.
+  - **TLS comes out of the thread's stack.** 4.9 MB of it, mostly the
+    block table, and `pthread_create` refused a 32 KB idle task with
+    EINVAL. Big per-core tables are allocated; TLS is 69 KB.
+  - **Two reads of one value are two values.** LDL.W gave the program
+    one read and the reservation another, so an increment landing
+    between them was overwritten: 59,996 of 60,000. One read now.
+  - **Every PE booted onto the same stack**, since multicore existed. A
+    quantum boundary mid-call could already corrupt another PE's frame;
+    `barrier3` never noticed because its `main` barely uses the stack.
+  - **A check that reads only the digits.** `barrier3` "printed the
+    right answer" for an afternoon as `0711072207` -- the runner loads
+    at 0x20000000, CC-RH links at 0x80000000, and every string read as
+    nothing. The ctest entries assert the whole line now.
+
+  And the instrument lied once in the usual way: a mutation driver
+  killed by its own timeout never reached its final rebuild, so the next
+  run's *baseline* was the previous mutant and read as a broken
+  emulator. Rebuild before the baseline, not only after a mutant.
+
+  **And the parallel run was slower than the serial one until a syscall
+  count said why.** At the default quantum the JIT went 0.88x: spinning
+  waits and signal-free idle yields, both reasoned out, bought 1.09x
+  between them. `strace -c` then showed some 260 system calls a round,
+  87 of them `pthread_sigmask` -- the kernel masks interrupts around
+  every critical section, sometimes holding its locks -- and 71
+  `sched_yield`s from the cores spinning on those locks meanwhile.
+  Masking with a thread-local flag made it 2.06x. The first two changes
+  were right and small; the third was the cost, and it was countable
+  from the start.
+
 - **A formatter can break a source whose binary is committed, and nothing
   notices.** clang-format read the `;` that starts a CC-RH inline-asm
   comment as the end of a C statement and moved each comment onto the
@@ -2875,6 +2915,13 @@ session, and every one of them recurred:
   `--check` that finds it in one command. Found a month later, when a
   new guest needed the toolchain. The bodies are fenced with
   `clang-format off` now.
+
+  **And two of the three fences did nothing.** `/* clang-format off --
+  see guest.c */` carries its reason after the word, and clang-format
+  recognises only the bare comment, so `barrier3.c` and `smp.c` were as
+  exposed as before while reading as protected. A fence is checked by
+  running the formatter through it -- `clang-format f.c | diff f.c -`
+  must be empty -- not by reading it.
 
 - **An out-parameter on a hot function is not free, and neither is a
   helper the compiler inlined into it.** A fault that crosses a page

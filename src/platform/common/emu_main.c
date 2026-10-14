@@ -465,6 +465,7 @@ static int emu_main_body(int argc, char **argv)
     g_cfg.dump_state = args.dump;
     env.slice = args.quantum;
     env.max_insn = args.max_insn;
+    emu_os_set_serial(args.serial);
 
     /*
      * Acquisition: bring the part up, obtain an image, set board_ram and

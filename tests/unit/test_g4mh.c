@@ -2384,7 +2384,12 @@ static void test_ir_backend_is_used(void)
      * Only the 32-bit HALT should reach the interpreter.
      */
     const uint32_t fell_back = after.interp_fallbacks - before.interp_fallbacks;
-    CHECK_EQ(fell_back, 1u);
+    /*
+     * And on an SMP host, the set1: a memory bit operation is declined
+     * there on purpose, because the lowering is a load and a store that
+     * another core's store can land between (g4mh_ir.c). Still exact.
+     */
+    CHECK_EQ(fell_back, EMU_SMP ? 2u : 1u);
 }
 #endif /* EMU_HAVE_JIT -- asserts a translation happened */
 

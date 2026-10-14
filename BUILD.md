@@ -55,6 +55,13 @@ SoftFloat is -- `FREERTOS_KERNEL_TAG` (`V11.1.0`) into
 follows `EMU_PLATFORM`. How many cores get a task, and so a stack, is
 derived: one, or `G4MH_PE_COUNT` in a G4MH build.
 
+On a host, a build that can run more than one core runs them **in
+parallel**: `EMU_OS_SMP` (default ON) selects the SMP port in
+`src/platform/host/freertos_smp`, with one FreeRTOS core per emulated
+core, and defines `EMU_SMP` for the emulator. `-DEMU_OS_SMP=OFF` builds
+the kernel's single-core POSIX port instead; `--serial` gets the same
+reproducible round-robin from an SMP binary at run time.
+
 ## The JIT gates, and why there is only one answer
 
 This is the part that went wrong, so it is written out in full. There are
@@ -120,6 +127,7 @@ wrong.
 | `G4MH_EXT_MPU` | ON | not an option a real part omits |
 | `G4MH_MPU_ENTRIES` | 32 | the out-of-range guard is **unreachable at 32**: MPIDX is five bits. Build 8 to exercise it |
 | `G4MH_PE_COUNT` | 1 | `> 1` was untested for years and the first run found three defects |
+| `EMU_OS_SMP` | ON | host only, and only when `G4MH_PE_COUNT > 1`: the PEs run in parallel ([docs/os.md](docs/os.md#smp-on-the-host)). OFF, or `--serial` at run time, for the reproducible round-robin |
 | `G4MH_CRAM_KIB`, `G4MH_LRAM_KIB` | 128, 64 | **per PE for LRAM.** See below |
 
 **The RAM arithmetic is what breaks the firmware.** 128 KiB of cluster

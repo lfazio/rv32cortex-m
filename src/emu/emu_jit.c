@@ -8,6 +8,7 @@
  */
 
 #include "emu/emu_jit.h"
+#include "emu/emu_lock.h"
 
 #include <string.h>
 
@@ -90,7 +91,7 @@
 #endif
 #endif
 
-emu_jit_layout_t emu_jit_layout;
+EMU_PER_CORE emu_jit_layout_t emu_jit_layout;
 
 typedef struct {
     uint64_t context; /* see emu_jit_hot_t::context. 64 bytes a
@@ -115,27 +116,94 @@ static uint32_t hit_bin(uint32_t hits)
     return (hits >= HIT_BINS) ? (HIT_BINS - 1u) : hits;
 }
 
-static uint8_t *g_code;
-static uint32_t g_code_size;
-static uint32_t g_code_used;
-static bool g_owned; /* did we map it, or was it handed over? */
+/*
+ * Everything below that a translation or a dispatch writes is
+ * EMU_PER_CORE: one cache per core under EMU_SMP, the one global
+ * otherwise. See emu_types.h.
+ */
+static EMU_PER_CORE uint8_t *g_code;
+static EMU_PER_CORE uint32_t g_code_size;
+static EMU_PER_CORE uint32_t g_code_used;
+static EMU_PER_CORE bool g_owned; /* mapped by us, or handed over? */
 
+#if EMU_SMP
+/*
+ * The two big tables, allocated per core rather than thread-local: as
+ * TLS they were 4.9 MB, which glibc carves out of *every* thread's stack
+ * -- idle tasks and the tick thread included -- and pthread_create
+ * refused the first 32 KB one. One pointer per core instead, mapped
+ * with the code buffer. The board build keeps its arrays.
+ */
+typedef struct {
+    jit_block_t blocks[EMU_JIT_MAX_BLOCKS];
+    int32_t hash[EMU_JIT_HASH_SIZE];
+} jit_tables_t;
+static EMU_PER_CORE jit_tables_t *g_tables;
+#define g_blocks (g_tables->blocks)
+#define g_hash (g_tables->hash)
+#else
 static jit_block_t g_blocks[EMU_JIT_MAX_BLOCKS];
-static uint32_t g_block_count;
 static int32_t g_hash[EMU_JIT_HASH_SIZE];
+#endif
+static EMU_PER_CORE uint32_t g_block_count;
 
-uint8_t *emu_jit_cursor;
-uint8_t *emu_jit_limit;
-bool emu_jit_overflow;
+EMU_PER_CORE uint8_t *emu_jit_cursor;
+EMU_PER_CORE uint8_t *emu_jit_limit;
+EMU_PER_CORE bool emu_jit_overflow;
 
 #define g_emit emu_jit_cursor
 #define g_emit_end emu_jit_limit
 #define g_overflow emu_jit_overflow
 
-static uint32_t g_generation;
-static bool g_have_generation;
+static EMU_PER_CORE uint32_t g_generation;
+static EMU_PER_CORE bool g_have_generation;
 
-static emu_jit_stats_t g_stats;
+static EMU_PER_CORE emu_jit_stats_t g_stats;
+
+#if EMU_SMP
+#include <stdatomic.h>
+
+/*
+ * The size the backend asked for. A core whose thread has no buffer yet
+ * maps its own on the first slice it runs (emu_jit_run), rather than
+ * falling back to the interpreter for the whole run -- which is what
+ * per-core state does by default, silently, since only the thread that
+ * ran the backend's init has a buffer. Written once by that init,
+ * before any core's task exists.
+ */
+static uint32_t g_want_bytes;
+
+/*
+ * Every core's counters, so a report adds them up rather than showing
+ * whichever core happened to print it. Registered when a core maps its
+ * buffer; read between rounds, when no core is running.
+ */
+#define JIT_MAX_CORES 32u
+typedef struct {
+    emu_jit_stats_t *stats;
+    uint32_t *blocks;
+    uint32_t *used;
+    uint32_t *size;
+} jit_core_ref_t;
+static jit_core_ref_t g_core_ref[JIT_MAX_CORES];
+static unsigned g_core_refs;
+static emu_lock_t g_core_ref_lock = EMU_LOCK_INIT;
+
+/* Bumped by emu_jit_flush_all; each core compares on entry. */
+static atomic_uint g_flush_epoch;
+static EMU_PER_CORE unsigned g_seen_epoch;
+
+static void register_core(void)
+{
+    emu_lock(&g_core_ref_lock);
+    if (g_core_refs < JIT_MAX_CORES) {
+        g_core_ref[g_core_refs++] = (jit_core_ref_t){
+            &g_stats, &g_block_count, &g_code_used, &g_code_size};
+    }
+    emu_unlock(&g_core_ref_lock);
+    g_seen_epoch = atomic_load_explicit(&g_flush_epoch, memory_order_acquire);
+}
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Code buffer                                                         */
@@ -151,6 +219,11 @@ void emu_jit_set_buffer(void *mem, uint32_t bytes)
 
 bool emu_jit_init(uint32_t bytes)
 {
+#if EMU_SMP
+    if (g_want_bytes == 0u) {
+        g_want_bytes = bytes;
+    }
+#endif
     if (g_code != NULL) {
         return true;
     }
@@ -166,10 +239,23 @@ bool emu_jit_init(uint32_t bytes)
     if (p == MAP_FAILED) {
         return false;
     }
+#if EMU_SMP
+    void *t = mmap(NULL, sizeof(jit_tables_t), PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+    if (t == MAP_FAILED) {
+        (void)munmap(p, bytes);
+        return false;
+    }
+    g_tables = (jit_tables_t *)t;
+#endif
     g_code = (uint8_t *)p;
     g_code_size = bytes;
     g_owned = true;
     emu_jit_flush();
+#if EMU_SMP
+    register_core();
+#endif
     return true;
 #else
     /* No mapping available: the platform must supply the buffer. */
@@ -373,7 +459,7 @@ void emu_jit_invalidate_page(uint32_t vaddr, const emu_jit_ops_t *ops)
  * costs a microcontroller 4 KiB of the guest's RAM. The block table is
  * the opposite case and compares all 64 bits.
  */
-static struct {
+static EMU_PER_CORE struct {
     uint32_t pc;
     uint32_t context;
     uint32_t epoch;
@@ -383,7 +469,7 @@ static struct {
  * Starts at 1 so that a zeroed table -- epoch 0 everywhere -- reads as
  * empty rather than as a valid entry for pc 0.
  */
-static uint32_t g_neg_epoch = 1u;
+static EMU_PER_CORE uint32_t g_neg_epoch = 1u;
 
 static uint32_t neg_slot(uint32_t pc, uint32_t context)
 {
@@ -447,6 +533,11 @@ static void neg_invalidate(void)
 
 void emu_jit_flush(void)
 {
+#if EMU_SMP
+    if (g_tables == NULL) {
+        return; /* this core has translated nothing to discard */
+    }
+#endif
     for (uint32_t i = 0; i < EMU_JIT_HASH_SIZE; i++) {
         g_hash[i] = -1;
     }
@@ -454,6 +545,16 @@ void emu_jit_flush(void)
     g_code_used = 0u;
     g_stats.flushes++;
     neg_invalidate();
+}
+
+void emu_jit_flush_all(void)
+{
+#if EMU_SMP
+    g_seen_epoch =
+        atomic_fetch_add_explicit(&g_flush_epoch, 1u, memory_order_acq_rel) +
+        1u;
+#endif
+    emu_jit_flush();
 }
 
 /*
@@ -694,6 +795,33 @@ void emu_jit_get_stats(emu_jit_stats_t *out)
     g_stats.blocks = g_block_count;
     g_stats.code_used = g_code_used;
     g_stats.code_size = g_code_size;
+#if EMU_SMP
+    /* Every field is a uint32_t count or size, so the total is the sum. */
+    _Static_assert(sizeof(emu_jit_stats_t) % sizeof(uint32_t) == 0u,
+                   "emu_jit_stats_t must be uint32_t fields");
+    uint32_t sum[sizeof(emu_jit_stats_t) / sizeof(uint32_t)] = {0};
+
+    emu_lock(&g_core_ref_lock);
+    for (unsigned i = 0u; i < g_core_refs; i++) {
+        emu_jit_stats_t one = *g_core_ref[i].stats;
+        uint32_t w[sizeof(sum) / sizeof(sum[0])];
+
+        one.blocks = *g_core_ref[i].blocks;
+        one.code_used = *g_core_ref[i].used;
+        one.code_size = *g_core_ref[i].size;
+        memcpy(w, &one, sizeof(w));
+        for (size_t k = 0u; k < sizeof(sum) / sizeof(sum[0]); k++) {
+            sum[k] += w[k];
+        }
+    }
+    const unsigned n = g_core_refs;
+
+    emu_unlock(&g_core_ref_lock);
+    if (n != 0u) {
+        memcpy(out, sum, sizeof(*out));
+        return;
+    }
+#endif
     *out = g_stats;
 }
 
@@ -891,8 +1019,8 @@ static block_fn_t block_entry(const uint8_t *code)
 #define EMU_JIT_DIFF_MAX 1024u
 #endif
 
-static uint8_t g_diff_before[EMU_JIT_DIFF_MAX];
-static uint8_t g_diff_want[EMU_JIT_DIFF_MAX];
+static EMU_PER_CORE uint8_t g_diff_before[EMU_JIT_DIFF_MAX];
+static EMU_PER_CORE uint8_t g_diff_want[EMU_JIT_DIFF_MAX];
 
 /* Reported by the platform; see the host runner. */
 void emu_jit_diff_report(uint32_t pc, uint32_t off, uint32_t want,
@@ -1011,8 +1139,24 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
     emu_run_reason_t reason = EMU_RUN_BUDGET;
 
     if (g_code == NULL) {
-        return ops->interp->run(cpu, budget, retired);
+#if EMU_SMP
+        if (g_want_bytes == 0u || !emu_jit_init(g_want_bytes))
+#endif
+        {
+            return ops->interp->run(cpu, budget, retired);
+        }
     }
+#if EMU_SMP
+    {
+        const unsigned epoch =
+            atomic_load_explicit(&g_flush_epoch, memory_order_acquire);
+
+        if (EMU_UNLIKELY(epoch != g_seen_epoch)) {
+            g_seen_epoch = epoch;
+            emu_jit_flush();
+        }
+    }
+#endif
 
     /* Once per call, not per dispatch; see emu_jit_hot_t. */
     emu_jit_hot_t hot;

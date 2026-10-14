@@ -237,10 +237,19 @@ Confirmed by breaking it: with the cross-core clear disabled, the test
 fails naming the mechanism — core 0's `STC.W` reports success (1, not 0)
 and its 7 overwrites core 1's 9.
 
-A full spinlock passing a token PE0 → PE1 → PE2 → PE0 is still to write.
+A contended lock across three PEs is `tests/guest/g4mh/smp.c` now: a
+CAXI spinlock around a non-atomic increment, LL/SC increments and NOT1
+toggles of one shared byte, with an answer that is the same at any
+interleaving.
 
-**Phase 4 — not done, and deliberately.**
-Threads. Do not start this without a workload that is actually too slow.
+**Phase 4 — threads: done, on request, keeping determinism one flag
+away.** Each round's quanta run in parallel on a multicore host, one
+FreeRTOS core per PE ([../../os.md](../../os.md#smp-on-the-host)), and
+`--serial` (or `-DEMU_OS_SMP=OFF`) is this note's round-robin to the
+instruction. The cores still meet at every quantum, so it is not the
+free-running model the table above rejects -- but it does give up order
+within a round, and with it the reproducibility, whenever `--serial` is
+not passed.
 
 ## Keep the door open
 
@@ -250,7 +259,8 @@ Three constraints that cost nothing now and are expensive to retrofit:
    through bus regions that are explicitly shared.
 2. **The reservation table is the only cross-core mutable structure.** If a
    second one appears, that is the moment to reconsider threading, because
-   it is the moment locking stops being trivial.
+   it is the moment locking stops being trivial. (Under threads it is
+   locked, and the stores it guards are compare-and-swaps.)
 3. **The frontend contract stays budget-granular.** If anything in
    `emu_cpu_ops_t` ever needs calling per instruction to make multicore
    work, the design has gone wrong — see the note at the top of
@@ -278,9 +288,15 @@ quantum, the scheduler is cooperative, and a round runs core 0, 1, 2 in
 the order this design chose -- asserted every round, since no guest
 output can tell. Output, state dumps and instruction traces are
 byte-identical to the single-threaded round-robin at quanta 1, 4, 64 and
-4096. What threading buys is the structure an SMP host would run in
-parallel; what it would cost there is the determinism this note values,
-and `os.md` lists the shared state that would need locks first.
+4096.
+
+**On a multicore host they run in parallel** (`EMU_OS_SMP`), and the
+"locking exercise" this note promised was one, plus what threads could
+see and a single thread could not: the atomics became host atomics,
+because a lock cannot stop another core's *plain* store; and every PE
+had been booted onto the same stack. `--serial` keeps everything this
+note says about determinism true. See
+[../../os.md](../../os.md#smp-on-the-host).
 
 Multicore works on the host and is exercised at 1, 2 and 3 PEs:
 

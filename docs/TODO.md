@@ -20,13 +20,23 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       and 4096 on both backends; on the F746 the three-PE guest matches
       the host core by core. Left open by it:
 
-      - [ ] **No host runs the cores in parallel.** The POSIX port is
-        one task at a time and every board is single-core; an SMP
-        FreeRTOS host needs locks on G4MH's shared devices and the
-        reservation table, per-core JIT state, and a serialised console
-        first ([os.md](os.md#toward-an-smp-host)).
-      - [x] **The N6 runs under FreeRTOS** -- reported working by the
-        user on the board (2026-10-11), after the `flash` target was
+      - [x] **A multicore host runs the cores in parallel.** FreeRTOS
+        has no SMP POSIX port, so one is written here
+        (`src/platform/host/freertos_smp`); the emulator got per-core JIT
+        state, locks on G4MH's shared devices and the console, host
+        atomics for CAXI, the bit operations and LL/SC, and a stack per
+        PE ([os.md](os.md#smp-on-the-host)). `--serial` is the
+        reproducible round-robin. Three PEs of independent work run 2.71x (interpreted) and
+        2.06x (translated) faster at the default quantum on a 20-CPU host.
+      - [ ] **Quantum and SMP.** Every round is a barrier across host
+        threads, so a small quantum costs most of what parallelism buys:
+        the JIT goes 1.33x at 1,024, 2.06x at 4,096 and 2.59x at 65,536.
+        The default stays 4,096 for every guest; whether a parallel run
+        should default larger is the next measurement.
+      - [ ] **The JIT under SMP declines memory bit operations**, so
+        each one ends a block. A helper that is one host atomic would
+        keep the block whole.
+      - [ ] **The N6 runs under FreeRTOS** after the `flash` target was
         fixed: without `VERBATIM` the echo's "(BOOT1)" was a `/bin/sh`
         syntax error, a second load hung in the signing tool's overwrite
         prompt, and it takes `EMU_PROBE` now. The silence seen here

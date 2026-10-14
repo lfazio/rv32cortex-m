@@ -56,8 +56,8 @@ static uint32_t slot(uint16_t n)
  * clobbers every scratch register, so an address that has to survive one
  * needs somewhere the call cannot reach.
  */
-static uint16_t g_ntemps;
-static uint32_t g_stats_elided;
+static EMU_PER_CORE uint16_t g_ntemps;
+static EMU_PER_CORE uint32_t g_stats_elided;
 
 /*
  * A store that need not be emitted.
@@ -77,7 +77,7 @@ static uint32_t g_stats_elided;
  * uses is counted after every pass that deletes code, so a reader that
  * is itself about to be swept does not keep a store alive.
  */
-static uint16_t g_dead_store;
+static EMU_PER_CORE uint16_t g_dead_store;
 
 /* Ops whose first operand load is `a`, so the elision reaches it. */
 static bool reads_a_in_t0(uint8_t op)
@@ -136,9 +136,9 @@ static bool reads_a_in_t0(uint8_t op)
  * Filled once rather than written out, because sixty-four hand-computed
  * constants is exactly the sort of table that is wrong in one entry.
  */
-static uint8_t g_fe_map[64];
-static bool g_fe_map_ready;
-static bool g_has_fp;
+static EMU_PER_CORE uint8_t g_fe_map[64];
+static EMU_PER_CORE bool g_fe_map_ready;
+static EMU_PER_CORE bool g_has_fp;
 
 /*
  * Did this block write an FP register without doing any arithmetic?
@@ -152,7 +152,7 @@ static bool g_has_fp;
  *
  * Set by FPUT rather than by FGET: reading a register dirties nothing.
  */
-static bool g_fp_written;
+static EMU_PER_CORE bool g_fp_written;
 
 static void fe_map_init(void)
 {
@@ -223,8 +223,8 @@ static void canonicalise_nan(int reg, int xmm)
  * eight a `[rsp + disp32]` access needs, and on this backend code size
  * is what the IR path has been losing on.
  */
-static uint8_t g_reg[EMU_IR_MAX_TEMPS];
-static uint32_t g_nsaved;
+static EMU_PER_CORE uint8_t g_reg[EMU_IR_MAX_TEMPS];
+static EMU_PER_CORE uint32_t g_nsaved;
 
 /*
  * The physical register holding temp `n`, or -1 for one that lives in
@@ -267,9 +267,12 @@ static void ld_slot(int reg, uint16_t n)
  * starts with nothing held -- both fall out of clearing at the top of
  * every instruction and only re-establishing it at a final store.
  */
-static uint16_t g_t0_holds; /* set by a store, read by the next load */
-static uint16_t g_t0_avail; /* what was held when this insn started  */
-static bool g_t0_first; /* still before this insn's first load?  */
+/* set by a store, read by the next load */
+static EMU_PER_CORE uint16_t g_t0_holds;
+/* what was held when this insn started */
+static EMU_PER_CORE uint16_t g_t0_avail;
+/* still before this insn's first load? */
+static EMU_PER_CORE bool g_t0_first;
 
 static void st_slot(int reg, uint16_t n)
 {
@@ -635,8 +638,8 @@ static void emit_getcond(const emu_ir_insn_t *in, const emu_ir_target_t *t)
  * adjustment or the return address is read from the wrong place.
  */
 #define IR_MAX_EXITS 64u
-static uint8_t *g_exits[IR_MAX_EXITS];
-static uint32_t g_nexits;
+static EMU_PER_CORE uint8_t *g_exits[IR_MAX_EXITS];
+static EMU_PER_CORE uint32_t g_nexits;
 
 /*
  * Where this block's instruction stream begins, and the guest address it
@@ -659,12 +662,12 @@ static uint32_t g_nexits;
  * and whether there is one. Asked once per block; see
  * emu_ir_target_t::fast_mem for when the frontend says no.
  */
-static emu_ir_fastmem_t g_fast;
-static bool g_has_fast;
+static EMU_PER_CORE emu_ir_fastmem_t g_fast;
+static EMU_PER_CORE bool g_has_fast;
 
-static uint8_t *g_body;
-static uint32_t g_start_pc;
-static bool g_has_start_pc;
+static EMU_PER_CORE uint8_t *g_body;
+static EMU_PER_CORE uint32_t g_start_pc;
+static EMU_PER_CORE bool g_has_start_pc;
 
 /*
  * Set when an exit could not be recorded, and it makes emu_ir_lower
@@ -679,7 +682,7 @@ static bool g_has_start_pc;
  * exit and say nothing. A block with that many is rare and losing it to
  * the interpreter costs little; emitting it wrong costs a guest.
  */
-static bool g_exits_lost;
+static EMU_PER_CORE bool g_exits_lost;
 
 static void note_exit(uint8_t *slot)
 {
@@ -699,8 +702,8 @@ static void note_exit(uint8_t *slot)
  * budget is spent, or the edge is unlinked) it has to rejoin the
  * epilogue past the teardown rather than at the top of it.
  */
-static uint8_t *g_exits_nf[IR_MAX_EXITS];
-static uint32_t g_nexits_nf;
+static EMU_PER_CORE uint8_t *g_exits_nf[IR_MAX_EXITS];
+static EMU_PER_CORE uint32_t g_nexits_nf;
 
 static void note_exit_nf(uint8_t *slot)
 {
@@ -712,10 +715,10 @@ static void note_exit_nf(uint8_t *slot)
 }
 
 /* The frame this block reserves, needed at every chained exit. */
-static uint32_t g_frame;
+static EMU_PER_CORE uint32_t g_frame;
 
 /* Where this block's code begins, so a patch site can be an offset. */
-static uint8_t *g_block_start;
+static EMU_PER_CORE uint8_t *g_block_start;
 
 /*
  * Emit a chained exit to a statically known target.

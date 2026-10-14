@@ -763,7 +763,14 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
      * 32-bit format uses for reg2 -- with the 3-bit bit number below it,
      * so reading a register out of [15:11] here gets nonsense.
      */
-    if (op == 0x3Eu) {
+    /*
+     * Not on an SMP host: EMU_IR_BITOP is a load, a computation and a
+     * store, and another core's plain store can land in between and be
+     * lost. Declined there, the instruction goes to the interpreter,
+     * whose implementation is one host atomic (g4mh_interp.c do_bitop).
+     * It ends the block, which is the price of being right.
+     */
+    if (op == 0x3Eu && !EMU_SMP) {
         static const uint8_t k_bitop[4] = {EMU_IR_BITOP_SET, EMU_IR_BITOP_INV,
                                            EMU_IR_BITOP_CLR, EMU_IR_BITOP_TST};
         const uint32_t sel = (w0 >> 14) & 3u;

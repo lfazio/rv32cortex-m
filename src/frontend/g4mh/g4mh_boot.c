@@ -85,8 +85,12 @@ static emu_fault_t boot_write(void *ctx, uint32_t off, uint32_t size,
         const bool was = ((b->bc >> pe) & 1u) != 0u;
 
         if (now && !was && b->cpu[pe] != NULL &&
-            b->cpu[pe]->state == EMU_STATE_HELD) {
-            b->cpu[pe]->state = EMU_STATE_RUNNING;
+            __atomic_load_n(&b->cpu[pe]->state, __ATOMIC_ACQUIRE) ==
+                EMU_STATE_HELD) {
+            /* The one write of another core's state: atomic, because on
+             * an SMP host that core's thread reads it at every slice. */
+            __atomic_store_n(&b->cpu[pe]->state, (uint8_t)EMU_STATE_RUNNING,
+                             __ATOMIC_RELEASE);
         }
     }
     b->bc = bc;

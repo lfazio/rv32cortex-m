@@ -1,0 +1,30 @@
+# ThreadSanitizer suppressions for an SMP host build (EMU_SMP).
+#
+#   TSAN_OPTIONS=suppressions=tests/tsan.supp build/<tsan>/emu-host ...
+#
+# Each entry is a race that is meant to be there. Anything not listed is
+# a defect until shown otherwise: docs/os.md has how this file was arrived
+# at, and what each removed report turned out to be.
+
+# FreeRTOS reads the idle priority's ready-list length without a lock, and
+# says so: "an occasional incorrect value will not matter" (tasks.c,
+# prvIdleTask / prvPassiveIdleTask). Its consequence is one extra yield.
+race:prvIdleTask
+race:prvPassiveIdleTask
+
+# Guest memory. Two cores storing to shared RAM with no synchronisation of
+# their own is a race in the *guest*, and the model's answer is the host's
+# memory -- as the guest's atomics are the host's (g4mh_interp.c). These
+# are the bus functions every guest access goes through.
+race:emu_bus_read
+race:emu_bus_read_slow
+race:emu_bus_write
+race:emu_bus_write_slow
+race:emu_bus_fetch16
+race:emu_bus_fetch16_slow
+
+# BOOTCTRL asks whether each core is still held. A core it has already
+# released writes its own state as it runs; only "held" matters to the
+# question, and a core leaves "held" only through BOOTCTRL, under the
+# system lock (g4mh_boot.c).
+race:boot_write

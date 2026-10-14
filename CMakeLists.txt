@@ -476,6 +476,7 @@ set(G4MH_LRAM_KIB "64"  CACHE STRING "G4MH local RAM per PE backed, KiB")
 add_library(emucore STATIC
     src/emu/emu_bus.c
     src/emu/emu_jit.c
+    src/emu/emu_lock.c
     src/emu/emu_ir.c
     src/emu/emu_gdb.c
     src/emu/emu_pairstats.c
