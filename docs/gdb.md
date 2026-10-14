@@ -70,7 +70,9 @@ with `X` for them rather than through the flash ops.
 
 `scripts/gdb-check.sh [BUILD_DIR]`, and the `gdb-check` ctest wherever
 `gdb-multiarch` is installed, attach gdb to each frontend in the runner
-and compare what it sees with things the stub did not produce:
+-- twice when the runner has a JIT, once interpreted and once with
+`--jit` -- and compare what it sees with things the stub did not
+produce:
 
 | check | against | catches |
 |---|---|---|
@@ -78,6 +80,8 @@ and compare what it sees with things the stub did not produce:
 | the register number in the stop reply | gdb's remote number for `pc` | expediting the wrong register |
 | a register written, read back after a cache flush | the value written | P/p and g plumbing |
 | `stepi` | the pc before it | run control |
+| `stepi` lands on the next instruction | gdb's disassembler (`$_` after `x/2i`) | a step that is really a block |
+| a breakpoint two instructions ahead | its own address | a `continue` that runs through it |
 | a word at the pc | the file (`trust-readonly-sections`), or the image | memory reads |
 
 A register written and read back **cannot** see the byte order -- a
@@ -142,8 +146,30 @@ is wrong here twice over:
 - a patched instruction is invisible to the **JIT** until the block is
   retranslated, so the breakpoint would fire only on interpreted paths.
 
-Checking a pc against a short list costs a compare per instruction on a
-path that is already checked, and is correct in both backends.
+### Under the JIT
+
+The stub runs whatever backend the session chose, so a JIT miscompile
+can be chased with breakpoints rather than disappearing under them.
+Two mechanisms make that exact:
+
+- **`step` is one instruction under every backend.** The contract in
+  `emu_cpu.h` always said so, and every frontend implemented it as
+  `backend->run(cpu, 1)` -- one instruction from an interpreter, a whole
+  block (or chain of blocks) from the JIT. A JIT backend now supplies
+  `emu_backend_t::step`, which is `emu_jit_step`: one instruction
+  through the interpreter, then the frontend's `after_interp`, as the
+  dispatcher does for an instruction it declines.
+- **While a breakpoint is set the stub steps where one could be, and
+  runs one block elsewhere** -- with the JIT's chained exits undone
+  (`emu_jit_unchain`), because a chained exit runs into the next block
+  without returning and "one block" would otherwise be any number. A
+  breakpoint within 4 KB ahead of the pc means step; the longest block
+  any translator builds is 64 instructions.
+
+Both were missing until gdb-check ran with `--jit`. At the commit before,
+RV32 and PowerPC under the JIT failed its two new checks exactly: `stepi`
+ran the guest to its exit loop, and the breakpoint ahead was never hit.
+ARMv7-M passed, because its step had always called the interpreter.
 
 ## Debugging the emulator on hardware
 

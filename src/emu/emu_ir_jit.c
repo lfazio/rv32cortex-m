@@ -403,12 +403,18 @@ static bool ir_diff_ref(emu_cpu_t *cpu, const emu_ir_frontend_t *fe)
         return emu_jit_run(cpu, budget, retired, &prefix##_ops_live);                                   \
     }                                                                                                   \
                                                                                                         \
+    static emu_run_reason_t prefix##_step(emu_cpu_t *cpu)                                               \
+    {                                                                                                   \
+        return emu_jit_step(cpu, &prefix##_ops_live);                                                   \
+    }                                                                                                   \
+                                                                                                        \
     const emu_backend_t sym = {                                                                         \
         .name = EMU_IR_JIT_NAME,                                                                        \
         .init = prefix##_init,                                                                          \
         .reset = prefix##_reset,                                                                        \
         .run = prefix##_run,                                                                            \
         .invalidate = prefix##_invalidate,                                                              \
+        .step = prefix##_step,                                                                          \
     }
 
 #if EMU_GUEST_ARCH_RV32

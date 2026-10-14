@@ -738,6 +738,25 @@ static jit_block_t *lookup(uint32_t pc, uint64_t context)
 
 static bool g_chain_heat = EMU_JIT_CHAIN_HEAT != 0;
 
+/* Set by emu_jit_unchain, consumed by the next emu_jit_run. */
+static EMU_PER_CORE bool g_unchain;
+
+void emu_jit_unchain(void)
+{
+    g_unchain = true;
+}
+
+emu_run_reason_t emu_jit_step(emu_cpu_t *cpu, const emu_jit_ops_t *ops)
+{
+    uint32_t n = 0u;
+    const emu_run_reason_t r = ops->interp->run(cpu, 1u, &n);
+
+    if (ops->after_interp != NULL) {
+        ops->after_interp(cpu);
+    }
+    return r;
+}
+
 void emu_jit_set_chain_heat(bool on)
 {
     g_chain_heat = on;
@@ -1288,6 +1307,12 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
     }
 #endif
 
+    /* Here because it needs the host's patcher, which arrives with ops. */
+    if (EMU_UNLIKELY(g_unchain)) {
+        g_unchain = false;
+        unlink_all(ops);
+    }
+
     /* Once per call, not per dispatch; see emu_jit_hot_t. */
     emu_jit_hot_t hot;
     memset(&hot, 0, sizeof(hot));
@@ -1491,6 +1516,7 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
 #ifdef EMU_JIT_DIFF
         const uint32_t n = run_block_checked(cpu, b, ops, fresh);
 #else
+        (void)fresh; /* read by the differential checker alone */
         const uint32_t n = block_entry(b->code)(cpu);
 #endif
         g_stats.block_entries++;

@@ -561,6 +561,29 @@ uint32_t emu_jit_hot_threshold(void);
 #endif
 void emu_jit_set_chain_heat(bool on);
 
+/*
+ * Undo every chained exit before the next block runs.
+ *
+ * For a caller that runs one block at a time and has to see every block
+ * boundary: the gdb stub, while a breakpoint is set. A chained exit
+ * jumps straight into its successor without coming back here, so a run
+ * of "one block" carries on through any number of them -- and past a
+ * breakpoint in any. Unchained, emu_jit_run with a budget of 1 runs
+ * exactly one block, because it links an exit only between two blocks
+ * of the same call and a budget of 1 ends the call after the first.
+ * Nothing needs undoing afterwards: links form again, on demand, once
+ * the caller returns to whole budgets.
+ */
+void emu_jit_unchain(void);
+
+/*
+ * One instruction through the frontend's interpreter, followed by
+ * ops->after_interp -- exactly what the dispatch loop does for an
+ * instruction it declines, so whatever the instruction changed is seen
+ * by the next block. The `step` of every JIT backend.
+ */
+emu_run_reason_t emu_jit_step(emu_cpu_t *cpu, const emu_jit_ops_t *ops);
+
 /* --- emitting, for use inside ops->translate ---------------------- */
 
 /*

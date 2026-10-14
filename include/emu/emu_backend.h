@@ -58,6 +58,22 @@ typedef struct emu_backend {
     /* Guest memory [addr, addr+len) changed. May be NULL. */
     void (*invalidate)(struct emu_cpu *cpu, uint32_t addr, uint32_t len);
 
+    /*
+     * Execute exactly one instruction. NULL for a backend whose
+     * run(cpu, 1, ...) already does that, which is an interpreter.
+     *
+     * A block backend cannot: its unit is a block, and a budget of 1 runs
+     * one -- or a whole chain of them, which never come back to be
+     * counted. Every frontend's step hook was `run(cpu, 1)`, which under
+     * the JIT made gdb's `stepi` a block and let a `continue` run through
+     * breakpoints. And it cannot simply call the interpreter either: the
+     * JIT keeps state the interpreter does not maintain -- its generation
+     * key, its context, PowerPC's pending flush -- and the step has to be
+     * followed by what the dispatcher does after an interpreted
+     * instruction. emu_jit_step is that.
+     */
+    emu_run_reason_t (*step)(struct emu_cpu *cpu);
+
 } emu_backend_t;
 
 #ifdef __cplusplus

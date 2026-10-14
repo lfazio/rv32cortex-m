@@ -2391,6 +2391,61 @@ static void test_bit_manipulation_backends(void)
 }
 
 /*
+ * ops->step is one instruction under the JIT as well.
+ *
+ * The contract says "exactly one instruction", and every frontend's step
+ * was backend->run(cpu, 1): one instruction from an interpreter, and a
+ * whole block from the JIT -- or a chain of them. So gdb's `stepi` ran a
+ * block, and a `continue` through the stub ran on past breakpoints,
+ * while every test of either was made with the interpreter.
+ *
+ * The run(1) half is what says this can tell the two apart: from the
+ * same pc it goes further than one instruction, so a step built that
+ * way fails the first half.
+ */
+#if EMU_HAVE_JIT
+static void test_step_is_one_instruction(void)
+{
+    /* mov 1..5 into r10..r14, halt */
+    const uint16_t prog[] = {
+        F2(OP_MOVI, 1, 10), F2(OP_MOVI, 2, 11), F2(OP_MOVI, 3, 12),
+        F2(OP_MOVI, 4, 13), F2(OP_MOVI, 5, 14), 0x07E0u,
+        SUB_HALT,
+    };
+    const g4mh_cpu_t *const c = (const g4mh_cpu_t *)(const void *)g_core.cpu;
+    emu_run_reason_t why;
+    uint32_t retired = 0u;
+
+    g_force_backend = &g4mh_backend_jit;
+    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 0u, &why,
+                      &retired)) {
+        CHECK(false);
+        g_force_backend = NULL;
+        return;
+    }
+    CHECK_EQ(c->pc, EMU_GUEST_RAM_BASE);
+
+    (void)g_core.ops->step(g_core.cpu);
+    CHECK_EQ(c->pc, EMU_GUEST_RAM_BASE + 2u);
+    CHECK_EQ(reg(10), 1u);
+    CHECK_EQ(reg(11), 0u);
+
+    (void)g_core.ops->step(g_core.cpu);
+    CHECK_EQ(c->pc, EMU_GUEST_RAM_BASE + 4u);
+    CHECK_EQ(reg(11), 2u);
+    CHECK_EQ(reg(12), 0u);
+
+    /* The instrument: a block from here takes the rest in one go. */
+    retired = 0u;
+    (void)g_core.ops->run(g_core.cpu, 1u, &retired);
+    CHECK(retired > 1u);
+    CHECK(c->pc > EMU_GUEST_RAM_BASE + 6u);
+    CHECK_EQ(reg(14), 5u);
+    g_force_backend = NULL;
+}
+#endif
+
+/*
  * The IR path, and proof that it is the one being used.
  *
  * The G4MH JIT now goes guest -> IR -> optimise -> x86-64, and on this
@@ -7013,6 +7068,7 @@ void test_g4mh(void)
     test_bit_manipulation_backends();
 #if EMU_HAVE_JIT
     test_ir_backend_is_used();
+    test_step_is_one_instruction();
 #endif
     test_system_registers();
     test_reserved_instruction();

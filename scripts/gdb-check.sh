@@ -31,13 +31,25 @@
 #                        every G4MH session and nothing looked wrong.
 #   a written register   read back after a flush, so it has really gone
 #                        through P and come back through p/g.
-#   stepi                the pc moves, by an instruction's length.
+#   stepi                the pc moves to the next instruction, which
+#                        gdb's own disassembler names (`$_` after
+#                        `x/2i`) -- not merely somewhere else.
+#   a breakpoint ahead   two instructions further on, which under the
+#                        JIT is inside a block: hit, at that address.
 #   memory at the pc     read from the target and from the file, which
 #                        `trust-readonly-sections` switches between.
 #
 # The flat G4MH image has no symbols and no file for gdb to compare
 # with, so its breakpoint is an address and its memory is compared with
 # the image's bytes read here.
+#
+# **Every frontend twice when the runner has a JIT: once interpreted,
+# once with --jit.** The stub runs whatever backend the session chose,
+# and for as long as this script ran only the interpreter it could not
+# see that under the JIT `stepi` ran a whole block and `continue` ran
+# through breakpoints -- the step hook was run(cpu, 1), and a block
+# backend's unit is a block. The last two checks above are the ones
+# that failed.
 
 set -u
 
@@ -53,6 +65,8 @@ command -v "$GDB" >/dev/null 2>&1 || { echo "gdb-check: $GDB not found" >&2; exi
 [ -x "$EMU" ] || { echo "gdb-check: no runner at $EMU" >&2; exit 77; }
 
 have=$("$EMU" --help 2>&1 | sed -n 's/.*This build has: //p' | tr -d ' ')
+modes="interp"
+"$EMU" --help 2>&1 | grep -q -- '--jit ' && modes="interp jit"
 port=$((20000 + $$ % 20000))
 failed=0
 ran=0
@@ -85,9 +99,18 @@ expect_ne() { # name a b
 #   MEM    the word expected at the pc before the step, for an image gdb
 #          has no file for; otherwise the file is asked
 one_frontend() {
-    local name=$1 image=$2 args=$3 setup=$4 brk=$5 reg=$6
-    local mem_want=${7:-}
-    local log="$TMP/$name.gdb.log" emulog="$TMP/$name.emu.log"
+    local mode
+    for mode in $modes; do
+        one_frontend_in "$mode" "$@"
+    done
+}
+
+one_frontend_in() {
+    local mode=$1 name=$2 image=$3 args=$4 setup=$5 brk=$6 reg=$7
+    local mem_want=${8:-}
+    local log="$TMP/$name.$mode.gdb.log" emulog="$TMP/$name.$mode.emu.log"
+
+    [ "$mode" = jit ] && args="$args --jit"
 
     case ",$have," in
     *,"$name",*) ;;
@@ -127,10 +150,19 @@ one_frontend() {
         echo "printf \"REG_READBACK %x\\n\", \$$reg"
         echo "set \$$reg = \$saved"
         echo 'set $before = $pc'
+        echo 'x/2i $pc'
+        echo 'set $next = $_'
         echo "set debug remote 1"
         echo "stepi"
         echo "set debug remote 0"
-        echo 'printf "STEP %x %x\n", $before, $pc'
+        echo 'printf "STEP %x %x %x\n", $before, $pc, $next'
+        if [ -n "$brk" ]; then
+            echo 'x/3i $pc'
+            echo 'set $ahead = $_'
+            echo 'break *$ahead'
+            echo "continue"
+            echo 'printf "AHEAD %x %x\n", $pc, $ahead'
+        fi
         echo 'set trust-readonly-sections off'
         echo 'printf "MEM_TARGET %x\n", *(unsigned int *)$before'
         echo 'set trust-readonly-sections on'
@@ -147,7 +179,7 @@ one_frontend() {
     kill "$emu_pid" 2>/dev/null
     wait "$emu_pid" 2>/dev/null
 
-    echo "  $name: $(grep -m1 '^emu: ' "$emulog" | sed 's/^emu: //')"
+    echo "  $name, $mode: $(grep -m1 '^emu: ' "$emulog" | sed 's/^emu: //')"
     if [ -n "$brk" ]; then
         expect_eq "pc at breakpoint" "$(field AT_BREAK 1 "$log")" \
                   "$(field AT_BREAK 2 "$log")"
@@ -162,6 +194,15 @@ one_frontend() {
     expect_eq "\$$reg written" "$(field REG_READBACK 1 "$log")" "12345678"
     expect_ne "stepi moves the pc" "$(field STEP 1 "$log")" \
               "$(field STEP 2 "$log")"
+    if [ -n "$brk" ]; then
+        # At a breakpoint gdb chose, so a prologue: no branch, and the
+        # next instruction is the one after. The flat G4MH image steps
+        # from its reset vector, which is a jump.
+        expect_eq "stepi is one instruction" "$(field STEP 2 "$log")" \
+                  "$(field STEP 3 "$log")"
+        expect_eq "breakpoint ahead hit" "$(field AHEAD 1 "$log")" \
+                  "$(field AHEAD 2 "$log")"
+    fi
     if [ -n "$mem_want" ]; then
         expect_eq "memory at the pc" "$(field MEM_TARGET 1 "$log")" \
                   "$mem_want"
@@ -172,7 +213,7 @@ one_frontend() {
     if [ "$bad" -ne 0 ]; then
         failed=$((failed + 1))
         echo "    gdb said:"
-        grep -vE '^(ATTACH_PC|AT_BREAK|LAST_|REG_|STEP|MEM_)' "$log" |
+        grep -vE '^(ATTACH_PC|AT_BREAK|AHEAD|LAST_|REG_|STEP|MEM_)' "$log" |
             head -n 12 | sed 's/^/      /'
         echo "    the runner said:"
         grep -vE '^\s*$' "$emulog" | head -n 8 | sed 's/^/      /'
@@ -202,5 +243,5 @@ if [ "$ran" -eq 0 ]; then
     echo "gdb-check: nothing to run"
     exit 77
 fi
-echo "gdb-check: $((ran - failed)) of $ran frontends passed"
+echo "gdb-check: $((ran - failed)) of $ran sessions passed"
 [ "$failed" -eq 0 ]

@@ -3139,6 +3139,21 @@ session, and every one of them recurred:
   front of the thing under test can answer for it**: flush before the
   phase whose only protection is the mechanism being tested.
 
+- **A contract every implementation met by being an interpreter.**
+  `emu_cpu_ops_t::step` says "exactly one instruction", and all four
+  frontends wrote it as `backend->run(cpu, 1)` -- exact for an
+  interpreter, and under the JIT a block, or a chain of them. So gdb's
+  `stepi` ran a block and a `continue` ran through breakpoints, and
+  `gdb-check` passed throughout because it never passed `--jit`. Above
+  the loop in `emu_gdb_run`, two comments described a block-at-a-time
+  design that a later commit had replaced with always-step, leaving its
+  helper defined and called by nothing; a compiler warning was the only
+  sign. **When a test of a mechanism runs one backend, the claim is
+  about that backend** -- the same shape as the guests that only ran
+  `isatest` under PMP. Run against the commit before, the new checks
+  fail on RV32 and PowerPC under the JIT and pass on ARMv7-M, whose step
+  happened to call its interpreter. See [docs/gdb.md](docs/gdb.md).
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must

@@ -195,6 +195,7 @@ typedef struct {
     bool halted; /* guest is stopped for gdb     */
     bool stepping; /* one instruction, then stop   */
     bool ack_mode; /* +/- acknowledgement in use   */
+    bool unchained; /* JIT links undone for stepping */
 
     const emu_gdb_flash_ops_t *flash;
     bool flash_touched; /* an erase or write has arrived */

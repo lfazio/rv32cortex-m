@@ -321,11 +321,25 @@ static void armv7m_ops_invalidate(emu_cpu_t *cpu, uint32_t addr, uint32_t len)
     }
 }
 
+/*
+ * One instruction whatever the backend; see emu_backend_t::step. This
+ * one always called the interpreter, which was exact and was correct
+ * here only because a7_bind re-derives everything the JIT keeps on its
+ * next entry -- PowerPC's does not, and the framework's step is what all
+ * four use now. Packed on the way out as run is.
+ */
 static emu_run_reason_t armv7m_ops_step(emu_cpu_t *cpu)
 {
     uint32_t n = 0u;
+    emu_run_reason_t why;
 
-    return armv7m_run(cpu_of(cpu), 1u, &n);
+    if (armv7m_backend->step != NULL) {
+        why = armv7m_backend->step(cpu);
+    } else {
+        why = armv7m_run(cpu_of(cpu), 1u, &n);
+    }
+    armv7m_flags_pack(cpu_of(cpu));
+    return why;
 }
 
 static void armv7m_ops_halt(emu_cpu_t *cpu)

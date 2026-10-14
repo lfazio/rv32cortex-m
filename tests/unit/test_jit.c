@@ -735,7 +735,116 @@ static void test_chain_heat_keeps_chained_blocks(void)
     CHECK_EQ(chain_heat_rebuilds_b(true), 1u);
     CHECK_EQ(chain_heat_rebuilds_b(false), 2u);
 }
+
+/*
+ * After emu_jit_unchain, a budget of 1 runs one block.
+ *
+ * What the gdb stub runs between breakpoints. Linked, A's exit goes
+ * straight into B and B's into C, and the call comes back once with the
+ * pc past all three -- over any breakpoint in B or C, and in a debug
+ * session the links are whatever an earlier unbroken run left. The pc
+ * says how far a call went; the retired count cannot, because each
+ * block reports its own and only the last one's comes back.
+ */
+static void test_unchain_runs_one_block(void)
+{
+    uint32_t retired = 0u;
+
+    emu_jit_flush();
+    memset(g_ch_built, 0, sizeof(g_ch_built));
+    g_ch_end_visits = 0u;
+    g_ch_big_at = 0u;
+    g_ch_mid_at = 0u;
+    g_ch_trig_at = 0u;
+    g_ch_a_code = NULL;
+
+    g_pc = CH_A;
+    (void)emu_jit_run(k_cpu, 64u, &retired, &k_stub_chain_ops);
+    CHECK(g_ch_a_code != NULL);
+    if (g_ch_a_code == NULL) {
+        return;
+    }
+    CHECK(ch_a_rel32() !=
+          (int32_t)(g_ch_a_tail - (g_ch_a_site + 4u))); /* linked */
+
+    /* Linked: one call from A runs the chain to its end. */
+    g_pc = CH_A;
+    (void)emu_jit_run(k_cpu, 1u, &retired, &k_stub_chain_ops);
+    CHECK_EQ(g_pc, CH_END);
+
+    /* Unchained: A alone, and its exit is its own tail again. */
+    emu_jit_unchain();
+    g_pc = CH_A;
+    (void)emu_jit_run(k_cpu, 1u, &retired, &k_stub_chain_ops);
+    CHECK_EQ(g_pc, CH_B);
+    CHECK_EQ(ch_a_rel32(), (int32_t)(g_ch_a_tail - (g_ch_a_site + 4u)));
+
+    /* Calls of one block link nothing, so it stays that way... */
+    (void)emu_jit_run(k_cpu, 1u, &retired, &k_stub_chain_ops);
+    CHECK_EQ(g_pc, CH_C);
+    g_pc = CH_A;
+    (void)emu_jit_run(k_cpu, 1u, &retired, &k_stub_chain_ops);
+    CHECK_EQ(g_pc, CH_B);
+
+    /* ...until whole budgets link the edges again. */
+    g_pc = CH_A;
+    (void)emu_jit_run(k_cpu, 64u, &retired, &k_stub_chain_ops);
+    CHECK(ch_a_rel32() != (int32_t)(g_ch_a_tail - (g_ch_a_site + 4u)));
+}
 #endif
+
+/*
+ * emu_jit_step: one instruction through the interpreter, then what the
+ * dispatcher does after one -- after_interp, which is where every
+ * frontend re-derives what its blocks were built under, and where
+ * PowerPC performs the flush an interpreted instruction asked for.
+ * Calling the interpreter alone would skip that, and translating would
+ * not be one instruction.
+ */
+static uint32_t g_step_budget;
+static uint32_t g_step_after;
+
+static emu_run_reason_t stub_interp_step(emu_cpu_t *cpu, uint32_t budget,
+                                         uint32_t *retired)
+{
+    (void)cpu;
+    g_step_budget = budget;
+    if (retired != NULL) {
+        *retired = budget;
+    }
+    return EMU_RUN_BUDGET;
+}
+
+static void stub_after_step(emu_cpu_t *cpu)
+{
+    (void)cpu;
+    g_step_after++;
+}
+
+static const emu_backend_t k_stub_interp_step = {
+    .name = "stub-interp-step",
+    .run = stub_interp_step,
+};
+
+static const emu_jit_ops_t k_stub_step_ops = {
+    .name = "stub-step",
+    .bind = stub_bind,
+    .translate = stub_translate,
+    .interp = &k_stub_interp_step,
+    .after_interp = stub_after_step,
+};
+
+static void test_step_is_interpreted_and_followed(void)
+{
+    const uint32_t translations = g_translate_calls;
+
+    g_step_budget = 0u;
+    g_step_after = 0u;
+    CHECK_EQ(emu_jit_step(k_cpu, &k_stub_step_ops), EMU_RUN_BUDGET);
+    CHECK_EQ(g_step_budget, 1u);
+    CHECK_EQ(g_step_after, 1u);
+    CHECK_EQ(g_translate_calls, translations);
+}
 
 void test_jit(void)
 {
@@ -763,7 +872,9 @@ void test_jit(void)
     test_blocks_are_per_context();
     test_overflow_compaction_unlinks();
     test_chain_heat_keeps_chained_blocks();
+    test_unchain_runs_one_block();
 #endif
+    test_step_is_interpreted_and_followed();
 
     /* Leave nothing behind for whatever runs next. */
     emu_jit_flush();

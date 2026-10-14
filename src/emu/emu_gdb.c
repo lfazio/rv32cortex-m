@@ -21,6 +21,7 @@
  */
 
 #include "emu/emu_gdb.h"
+#include "emu/emu_jit.h"
 
 #include <string.h>
 
@@ -1064,6 +1065,7 @@ emu_run_reason_t emu_gdb_run(emu_gdb_t *g, uint32_t budget, uint32_t *retired)
      * in two seconds.
      */
     if (!break_any(g)) {
+        g->unchained = false; /* whole budgets link exits again */
         const emu_run_reason_t why = ops->run(g->core->cpu, budget, retired);
 
         if (why != EMU_RUN_BUDGET) {
@@ -1090,14 +1092,12 @@ emu_run_reason_t emu_gdb_run(emu_gdb_t *g, uint32_t budget, uint32_t *retired)
      * can only stop between blocks, which is normally a hazard and is
      * exactly the lever here.
      *
-     * The cost is honest and worth stating: a breakpoint is recognised
-     * at *block granularity* while the JIT is live, so one in the middle
-     * of a translated block is reported at the next block entry rather
-     * than before the instruction. `stepi` is still exact, because a
-     * single step has to go through the interpreter whatever the
-     * backend. For finding out what a block computed -- which is what a
-     * JIT bug needs -- stopping just after it is the useful place
-     * anyway.
+     * Stopping at block boundaries alone misses a breakpoint inside a
+     * block, which is where breakpoints are; the loop below steps
+     * instead wherever one could be, and says why. The price is that
+     * the few instructions just before a breakpoint run interpreted.
+     * `stepi` is exact either way, because a single step goes through
+     * the interpreter whatever the backend.
      */
     while (*retired < budget) {
         const uint32_t pc = g->target->pc_get(g->core->cpu);
@@ -1128,10 +1128,35 @@ emu_run_reason_t emu_gdb_run(emu_gdb_t *g, uint32_t budget, uint32_t *retired)
          * before a breakpoint, which is the property that matters: a
          * miscompile is reproduced right up to the instruction being
          * examined.
+         *
+         * **For two months it did not, under this comment.** 554d136
+         * replaced the test with an unconditional ops->step -- the
+         * interpreter for every instruction while any breakpoint was
+         * set, which is the defect the paragraph above the loop says
+         * this design exists to avoid -- and left both comments
+         * describing the code it removed. break_near was still defined
+         * and called by nothing, and a compiler warning saying so was
+         * the only sign.
+         *
+         * There was a reason to distrust the old version, and it is why
+         * the links are undone first: a chained exit runs straight into
+         * the next block without returning, so "one block" could be a
+         * whole chain -- through a call to a function below this pc,
+         * which the window, looking forward, would not have seen. See
+         * emu_jit_unchain. A backend with no chaining ignores it. The
+         * longest block any translator here builds is 64 instructions,
+         * at most 384 bytes, so the window covers one with room over.
          */
-        (void)pc;
-        why = ops->step(g->core->cpu);
-        n = 1u;
+        if (!g->unchained) {
+            emu_jit_unchain();
+            g->unchained = true;
+        }
+        if (break_near(g, pc)) {
+            why = ops->step(g->core->cpu);
+            n = 1u;
+        } else {
+            why = ops->run(g->core->cpu, 1u, &n);
+        }
 
         *retired += n;
 

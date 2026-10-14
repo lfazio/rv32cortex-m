@@ -2628,7 +2628,11 @@ const emu_backend_t g4mh_backend_interp = {
 
 const emu_backend_t *g4mh_backend = &g4mh_backend_interp;
 
+/* One instruction whatever the backend; see emu_backend_t::step. */
 emu_run_reason_t g4mh_step(g4mh_cpu_t *c)
 {
+    if (g4mh_backend->step != NULL) {
+        return g4mh_backend->step((emu_cpu_t *)c);
+    }
     return g4mh_backend->run((emu_cpu_t *)c, 1u, NULL);
 }

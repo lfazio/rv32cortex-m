@@ -1328,7 +1328,11 @@ const emu_backend_t rv_backend_interp = {
 /* Platforms may override this; the interpreter is the default. */
 const emu_backend_t *rv_backend = &rv_backend_interp;
 
+/* One instruction whatever the backend; see emu_backend_t::step. */
 emu_run_reason_t rv_step(rv_hart_t *h)
 {
+    if (rv_backend->step != NULL) {
+        return rv_backend->step((emu_cpu_t *)h);
+    }
     return rv_backend->run((emu_cpu_t *)h, 1u, NULL);
 }

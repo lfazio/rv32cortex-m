@@ -1300,8 +1300,12 @@ out:
     return reason;
 }
 
+/* One instruction whatever the backend; see emu_backend_t::step. */
 emu_run_reason_t ppc_step(ppc_cpu_t *c)
 {
+    if (ppc_backend->step != NULL) {
+        return ppc_backend->step((emu_cpu_t *)c);
+    }
     return ppc_backend->run((emu_cpu_t *)c, 1u, NULL);
 }
 
