@@ -36,7 +36,7 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       - [ ] **The JIT under SMP declines memory bit operations**, so
         each one ends a block. A helper that is one host atomic would
         keep the block whole.
-      - [ ] **The N6 runs under FreeRTOS** after the `flash` target was
+      - [x] **The N6 runs under FreeRTOS** after the `flash` target was
         fixed: without `VERBATIM` the echo's "(BOOT1)" was a `/bin/sh`
         syntax error, a second load hung in the signing tool's overwrite
         prompt, and it takes `EMU_PROBE` now. The silence seen here
