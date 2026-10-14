@@ -81,7 +81,16 @@ void emu_image_set(const uint8_t *img, uint32_t len)
  * guest executes in place from flash now and copies its own .data, so
  * there is no boundary and no ordering contract.
  */
-static uint32_t g_up_addr;
+/*
+ * uintptr_t, as board_flash_arena_begin returns. It was uint32_t, which
+ * is the same thing on every board and drops the top half of a host
+ * pointer: the host's arena is a 512 KB malloc, mapped far above 4 GB,
+ * so every board_flash_write to the truncated address fell outside the
+ * arena and failed -- which is also what a *full* arena reports, so an
+ * upload to a host network build would have been erased and retried
+ * for ever. A compiler warning said so, beside two others nobody read.
+ */
+static uintptr_t g_up_addr;
 static bool g_reload;
 
 #if EMU_NET

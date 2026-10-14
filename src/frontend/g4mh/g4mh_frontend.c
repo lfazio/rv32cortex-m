@@ -118,6 +118,21 @@ static void g4mh_ops_init(emu_cpu_t *cpu, emu_bus_t *bus, uint32_t coreid)
 {
     g4mh_cpu_t *c = cpu_of(cpu);
 
+    /*
+     * Unreachable today -- emu_core_open takes the cpu from instance(),
+     * which hands out G4MH_PE_COUNT of them, before it calls this -- and
+     * stated, because g_intc[coreid] is otherwise bounded by nothing in
+     * this function. GCC said so on every build with one PE ("memset
+     * writing 1096 bytes into a region of size 0"), as a warning.
+     *
+     * A three-PE build still reports it, at offset 3288 inside
+     * g4mh_ops_init.part.0 -- after this test, and even with the index
+     * taken modulo the count, which cannot reach 3. That one is GCC's
+     * partial inlining losing the range, not this code.
+     */
+    if (coreid >= G4MH_PE_COUNT) {
+        return;
+    }
     g4mh_cpu_init(c, bus, coreid);
     /* PE0's instance holds the shared INTC2 half; the others point at it. */
     g4mh_intc_init(&g_intc[coreid], c, (coreid == 0u) ? NULL : &g_intc[0]);
