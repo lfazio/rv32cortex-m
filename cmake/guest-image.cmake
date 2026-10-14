@@ -32,6 +32,11 @@
 
 function(emu_stage_guest_image out_bin)
     #
+    # Where the image runs from, for the firmware's --load: empty means in
+    # place, at EMU_GUEST_ROM_BASE. Returned as EMU_GUEST_LOAD_ADDR.
+    #
+    set(_load "")
+    #
     # The copy lands in *this* directory's binary dir on purpose. A
     # cross-directory file dependency is where the two generators
     # diverge: OBJECT_DEPENDS on a path in another directory's scope
@@ -79,6 +84,15 @@ function(emu_stage_guest_image out_bin)
         set(_src "${CMAKE_SOURCE_DIR}/tests/guest/g4mh/${G4MH_GUEST}.bin")
         set(_dep "${_src}")
         set(_name "g4mh/${G4MH_GUEST}.bin")
+        #
+        # **CC-RH links every one of these at 0x80000000** (`-start=` in
+        # scripts/g4mh-build-guest.sh), which is guest RAM. Run in place at
+        # EMU_GUEST_ROM_BASE the code works -- its branches are relative --
+        # and every absolute address is wrong: each string the guest prints
+        # reads as nothing, and smp.c's shared words land in whatever RAM
+        # holds. The host's ctest passes --load for the same reason.
+        #
+        set(_load 0x80000000)
 
         if(NOT EXISTS "${_src}")
             message(FATAL_ERROR
@@ -118,4 +132,5 @@ function(emu_stage_guest_image out_bin)
     add_custom_target(guest-image-staged DEPENDS "${guest_bin}")
 
     set(${out_bin} "${guest_bin}" PARENT_SCOPE)
+    set(EMU_GUEST_LOAD_ADDR "${_load}" PARENT_SCOPE)
 endfunction()

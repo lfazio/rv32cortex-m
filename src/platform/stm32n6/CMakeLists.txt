@@ -216,6 +216,11 @@ add_dependencies(emu-stm32n6 guest-image-staged)
 # putting \r into guest output there would break the two suites that
 # compare it. See emu_console_putchar.
 target_compile_definitions(emu-stm32n6 PRIVATE EMU_CONSOLE_CRLF=1)
+# Where the guest runs, when it is not in place -- cmake/guest-image.cmake.
+if(EMU_GUEST_LOAD_ADDR)
+    target_compile_definitions(emu-stm32n6 PRIVATE
+        EMU_GUEST_LOAD=${EMU_GUEST_LOAD_ADDR}u)
+endif()
 
 
 # -Wundef with the rest, and it earns its place: it is the warning that

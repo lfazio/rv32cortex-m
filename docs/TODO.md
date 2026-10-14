@@ -45,26 +45,32 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
         serves Thumb-2, which cannot lower `EMU_IR_BITOP` and used to
         lose the whole block to it -- its `emu_ir_can_lower` promised it
         could, and x86-64's denied what it does.
-      - [ ] **FreeRTOS has never run on the N6.** (This box was ticked
-        in 18c54e1 on a misreading: the board worked *before*
-        FreeRTOS.) The `flash` target's fixes stand -- `VERBATIM`, the
-        signing tool's overwrite prompt, `EMU_PROBE` -- but its `-g`
-        leaves the core in the boot ROM (pc 0x18003514). Loaded through
-        `ST-LINK_gdbserver -d -m 1 -g` and gdb (`load`, then sp/pc from
-        0x34180400/4, as `.vscode/launch.json` does), RV32 `isatest` and
-        three-PE G4MH `smp` both print the banner and then HardFault on
-        a return through a zero: INVSTATE, pc 0, in the **first** JIT
-        slice. The task's SP at the fault is ~224 bytes below the top of
-        its 8 KiB stack -- inside `emu_main`'s frame, whose argv strings
-        are what got popped -- having entered `emu_jit_run` at
-        0x341bf068. So SP drifts *up* during a slice; no stack overflow
-        (high-water 1,044 of 8,192). The G4MH bit-op helper and
-        `--load` were each A/B'd out and are not it. Next: break inside
-        the slice (block entry, then each exception return) and find
-        the instruction after which SP is wrong -- the ARMv8-M port's
-        PendSV/SysTick frames are the first suspect. Reset with
-        `set *(unsigned*)0xE000ED0C = 0x05FA0004` then detach;
-        `monitor reset` does not.
+      - [x] **FreeRTOS runs on the N6**, for the first time, and what
+        stopped it was not the port. (A box here was ticked in 18c54e1 on
+        a misreading: the board had worked *before* FreeRTOS.) RV32
+        `isatest` passes with 1,129 of 65,829 interpreted, as on the F746
+        and x86-64, and three-PE G4MH `smp.bin` prints the model's line,
+        3,776 rounds of 4,096 -- the host's cooperative count exactly.
+
+        **picolibc's `errno` is thread-local, and nothing on the boards
+        set the thread pointer.** ST's Reset_Handler is not picolibc's
+        crt0, so `__tls` stayed 0 and every `errno` store went to
+        address 8 -- ITCM on the N6. `strtoull`, parsing `--quantum`,
+        zeroed the `sub sp, #228` at the head of `emu_jit_run`; every
+        slice then returned through `emu_main`'s frame and the first one
+        HardFaulted on a pc of 0. A gdb hardware watchpoint on the one
+        word that differed from the ELF named the writer. The link
+        scripts now lay out `.tdata`/`.tbss` as picolibc's own does and
+        `board_tls_init()` points `__tls` at the block, first thing,
+        checking that `&errno` lands inside it.
+
+        Still open: the `flash` target loads the image but its `-g`
+        leaves the core in the boot ROM (pc 0x18003514). What starts it
+        is gdb through `ST-LINK_gdbserver -d -m 1 -g`: `load`, then sp
+        and pc from 0x34180400/4, as `.vscode/launch.json` does. Reset
+        first with `set *(unsigned*)0xE000ED0C = 0x05FA0004` and a
+        detach -- `monitor reset` does not, and a core left in a
+        HardFault runs the next image in handler mode.
       - [ ] **The F446 has built and not run** under FreeRTOS.
       - [ ] **The F746's hot path is at the mercy of the linker.**
         Linking the kernel moved the emulator's hot functions 456 bytes
@@ -80,8 +86,14 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
         build, and in two others -- the commit before, and the same tree
         with two tests compiled out -- CoreMark never finished: the core
         was running (DWT_PCSR in `ppc_load` and `ppc_run`, CFSR 0) and
-        printed nothing for minutes. Unexplained; find out why before
-        trusting anything placed there. Layout spread itself, for that
+        printed nothing for minutes. **Probably explained, not yet
+        re-measured:** `errno` was being stored to address 8, and the
+        F7's ITCM RAM is mapped at 0 -- harmless while ITCM held
+        nothing, which is what the shipped F746 firmware puts there, and
+        a corrupted word in whatever function lands at offset 8 once
+        something does (see the N6 entry above, where it was the
+        `sub sp` of `emu_jit_run`). Re-run this with the TLS fix before
+        trusting either figure. Layout spread itself, for that
         guest: 224-231 across `-falign-functions` default/32/64.
 
 - [x] **The RV32 translator declined the B extension, and that was

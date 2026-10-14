@@ -209,6 +209,43 @@ SECTIONS
         _edata = .;
     } > RAM AT> FLASH
 
+    /*
+     * Thread-local storage, the way picolibc's own linker script lays it
+     * out -- because picolibc keeps errno thread-local and reads it through
+     * __tls. Nothing set __tls on these boards, so it stayed 0 and every
+     * errno store went to address 8: ITCM on the N6 (and on the F746),
+     * where it zeroed the `sub sp` at the head of emu_jit_run. board.c's
+     * board_tls_init() copies and zeroes this block and points __tls at it
+     * before anything else runs. Separate output sections, not input
+     * sections inside .data/.bss: ld takes the TLS segment, and every
+     * thread-pointer offset, from output sections it can see are TLS.
+     */
+    .tdata : ALIGN(8)
+    {
+        __tls_base = .;
+        *(.tdata .tdata.* .gnu.linkonce.td.*)
+    } > RAM AT> FLASH
+    __tdata_source = LOADADDR(.tdata);
+    __tdata_size = SIZEOF(.tdata);
+
+    .tbss (NOLOAD) : ALIGN(8)
+    {
+        *(.tbss .tbss.* .gnu.linkonce.tb.*)
+        *(.tcommon)
+    } > RAM
+    __tbss_offset = ADDR(.tbss) - __tls_base;
+    __tbss_size = SIZEOF(.tbss);
+    __tls_align = MAX(ALIGNOF(.tdata), ALIGNOF(.tbss));
+    __arm32_tls_tcb_offset = MAX(8, __tls_align);
+
+    /* Both ALIGN(8): ld drops an empty .tdata, and .tbss must then start
+       where __tls_base says the block does. board_tls_init() checks it. */
+    /* .tbss occupies no address space of its own; reserve it. */
+    .tbss_space (NOLOAD) :
+    {
+        . = ADDR(.tbss) + SIZEOF(.tbss);
+    } > RAM
+
     .bss :
     {
         . = ALIGN(4);

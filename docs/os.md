@@ -106,6 +106,31 @@ none. The F746 guest has 2,936 bytes less RAM than before.
 target, and the consoles opened by `/dev/serial/by-id/...`: the
 `ttyACM` numbers are plug order and swapped mid-session here.
 
+**picolibc's thread pointer is set before anything else.** `errno` is
+thread-local in picolibc, reached through `__tls`, and these boards start
+from ST's Reset_Handler rather than picolibc's crt0 -- so `__tls` was 0
+and every `errno` store went to address 8, which is ITCM on the N6 and
+the F746. On the N6 it zeroed the `sub sp` at the head of `emu_jit_run`,
+and the firmware HardFaulted in its first JIT slice: the reason FreeRTOS
+had never run there. The link scripts give `.tdata`/`.tbss` the layout
+picolibc's own script does, and `board_tls_init()`, first in
+`board_early_init()`, copies the block, points `__tls` at it and checks
+that `&errno` falls inside. One block for every task: the boards'
+scheduler is cooperative and nothing keeps `errno` across a switch.
+
+**The N6's `flash` target loads but does not start the core** -- it is
+left in the boot ROM. gdb through `ST-LINK_gdbserver -d -m 1 -g` does:
+`load`, then sp and pc from the vector table at 0x34180400, which is
+what `.vscode/launch.json` does. Measured that way: RV32 `isatest`
+passes as on the F746, and three-PE G4MH `smp.bin` prints the model's
+line in 3,776 rounds of 4,096, the host's cooperative count.
+
+**A CC-RH guest is copied to 0x80000000 before it runs.** Every G4MH
+guest is linked there, which is guest RAM, so running it in place at
+`EMU_GUEST_ROM_BASE` leaves every absolute address wrong -- each string
+reads as nothing. `cmake/guest-image.cmake` says so for G4MH images and
+the board passes `--load`, as the host's ctest does.
+
 ## What it costs
 
 | where | measurement | result |

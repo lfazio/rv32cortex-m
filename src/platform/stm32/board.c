@@ -16,6 +16,7 @@
  */
 
 /* This platform: its own header, and the contract it implements. */
+#include <errno.h>
 #include "board.h"
 
 /* The shared runner pieces this file talks to. */
@@ -121,6 +122,16 @@ extern const uint32_t emu_guest_image_size;
 
 #ifndef EMU_RUN_SLICE
 #define EMU_RUN_SLICE 4096u
+#endif
+
+/*
+ * Where the guest runs from, when not in place at EMU_GUEST_ROM_BASE:
+ * passed as --load, so the image is copied there. Set by the build for
+ * an image linked to run from RAM -- every CC-RH-built G4MH guest, at
+ * 0x80000000 (cmake/guest-image.cmake). 0 runs in place.
+ */
+#ifndef EMU_GUEST_LOAD
+#define EMU_GUEST_LOAD 0u
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -238,11 +249,13 @@ char *const *board_argv(int *argc)
      */
     static char slice[16];
     static char maxi[24];
+    static char load[16];
 
     (void)snprintf(slice, sizeof(slice), "%u", (unsigned)EMU_RUN_SLICE);
     (void)snprintf(maxi, sizeof(maxi), "%u", (unsigned)EMU_MAX_INSN);
+    (void)snprintf(load, sizeof(load), "0x%08x", (unsigned)EMU_GUEST_LOAD);
 
-    static char *av[8];
+    static char *av[10];
     int n = 0;
 
     av[n++] = "emu";
@@ -270,6 +283,10 @@ char *const *board_argv(int *argc)
     av[n++] = slice;
     av[n++] = "--max-insn";
     av[n++] = maxi;
+    if (EMU_GUEST_LOAD != 0u) {
+        av[n++] = "--load";
+        av[n++] = load;
+    }
 
     *argc = n;
     return av;
@@ -279,8 +296,52 @@ char *const *board_argv(int *argc)
  * Clocks, caches and the console, before FreeRTOS starts -- see
  * board_api.h. The rest of bring-up is board_init, from the first task.
  */
+/*
+ * picolibc's thread-local storage, for the one thread there is.
+ *
+ * errno is thread-local in picolibc and reached through __tls, which
+ * picolibc's crt0 points at the TLS block -- and these boards start from
+ * ST's Reset_Handler, which knows nothing about it. So __tls stayed 0 and
+ * every errno store landed at address 8. On the N6 and the F746 that is
+ * ITCM: strtoull parsing --quantum zeroed the `sub sp, #228` at the head
+ * of emu_jit_run, every slice then returned through emu_main's frame, and
+ * the firmware HardFaulted on a pc of 0 in its first JIT slice.
+ *
+ * One block for every FreeRTOS task: the boards' scheduler is
+ * cooperative and nothing here keeps errno across a switch.
+ */
+extern char __tls_base[];
+extern char __tbss_offset[];
+extern char __tbss_size[];
+void _init_tls(void *tls);
+void _set_tls(void *tls);
+
+static void board_tls_init(void)
+{
+    _init_tls(__tls_base);
+    _set_tls(__tls_base);
+
+    /*
+     * And prove the layout agrees with the compiler's: errno has to land
+     * inside the block. The first version of the link script put
+     * __tls_base on top of __tls itself, so errno would have overwritten
+     * the thread pointer -- the same defect moved somewhere quieter.
+     */
+    const uintptr_t lo = (uintptr_t)__tls_base;
+    const uintptr_t hi = lo + (uintptr_t)__tbss_offset + (uintptr_t)__tbss_size;
+    const uintptr_t e = (uintptr_t)&errno;
+
+    if (e < lo || e + sizeof(errno) > hi) {
+        for (;;) {
+            /* No console yet: a debugger finds this loop by its pc. */
+        }
+    }
+}
+
 void board_early_init(void)
 {
+    /* First: anything below may reach libc, and libc may write errno. */
+    board_tls_init();
     board_hw_init();
 }
 

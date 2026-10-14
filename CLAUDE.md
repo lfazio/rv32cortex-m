@@ -3078,6 +3078,22 @@ session, and every one of them recurred:
   an hour before the suite did. The default is 32,768 only when cores
   really run in parallel, which is the case that pays for it.
 
+- **A C library's thread pointer is start-up code, and ST's start-up
+  does not have it.** picolibc keeps `errno` thread-local behind
+  `__tls`; picolibc's crt0 sets it and ST's Reset_Handler does not, so
+  on every board `errno` lived at address 8. Harmless where 8 is flash
+  or empty ITCM -- which is why the F746 shipped -- and on the N6 it
+  zeroed the `sub sp` at the head of `emu_jit_run`, so FreeRTOS never
+  ran there. It presented as a port bug: banner, then a HardFault on a
+  pc of 0 in the first JIT slice, with the task's SP drifted up into
+  `emu_main`'s frame. Two A/Bs cleared the changes under suspicion; what
+  found it was gdb -- break at the function's entry and after its
+  prologue, see SP not move, dump ITCM, diff it against the ELF (one
+  word), and set a hardware watchpoint on that word. **When code
+  misbehaves on hardware, diff the code memory against the image before
+  reasoning about the code.** And a TODO box was ticked on a misreading
+  of "the board worked": ask what it ran, not whether it ran.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must
