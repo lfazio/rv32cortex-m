@@ -142,7 +142,11 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       an answer on a backend fails on that backend
       ([validation.md](validation.md#what-the-host-suites-do-not-cover)).
 - [ ] **The default code cache makes the JIT slower than the
-      interpreter, and that is a decision nobody has taken.** At
+      interpreter on the F446 and the N6.** Decided for the F746 in
+      915f583: 96 KB and the dispatch path in ITCM, CoreMark 29.85
+      against 152.85, except with G4MH compiled in. The N6 measured
+      2.23x at 128 KB but its G4MH build does not fit; the F446 has
+      128 KiB of RAM in all. What follows is the original entry. At
       `EMU_JIT_CODE_BYTES=32768` RV32 CoreMark is 140.0 host cycles an
       instruction against the interpreter's 107.4, `bench` 194.6
       against 100.1, and a JIT build pays 77 KiB of guest RAM for it.
@@ -1123,8 +1127,9 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
   - [x] The embedded FP unit, against exact rational arithmetic, and an
         IR translator — neither was on this list, and both were what
         "finish" turned out to mean. See [frontend/ppc.md](frontend/ppc.md).
-  - [ ] `ppc_gdb.c` — the register layout gdb expects, which is a fixed
-        per-architecture order and not a choice.
+  - [x] `ppc_gdb.c` — the register layout gdb expects, which is a fixed
+        per-architecture order and not a choice. Written with the
+        ARMv7-M one; `scripts/gdb-check.sh` attaches gdb-multiarch to it.
   - [ ] `ppc_pairstats.c` — the histogram that answers "which
         instruction next" with a measurement instead of an opinion.
   - [x] **An MMU.** Chapter 10, with a guest that programs the TLB as
