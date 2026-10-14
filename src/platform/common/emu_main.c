@@ -545,6 +545,16 @@ static int emu_main_body(int argc, char **argv)
         return status;
     }
 
+    /*
+     * The default quantum, now that the core count is known. A parallel
+     * round is a barrier across host threads and wants a long one; every
+     * other run keeps the guest clock fine-grained -- see emu_config.h.
+     */
+    if (env.slice == 0u) {
+        env.slice = emu_os_parallel(g_sys.ncores) ? EMU_PARALLEL_BUDGET
+                                                  : EMU_DEFAULT_BUDGET;
+    }
+
     board_irqs_init();
     emu_debug_start(&g_sys, g_cfg.ops);
 

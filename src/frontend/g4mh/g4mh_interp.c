@@ -229,94 +229,6 @@ static EMU_ALWAYS_INLINE void do_sch(g4mh_cpu_t *c, uint32_t rd, uint32_t v,
 /* Bit manipulation on memory                                          */
 /* ------------------------------------------------------------------ */
 
-enum { BITOP_SET, BITOP_NOT, BITOP_CLR, BITOP_TST };
-
-/*
- * SET1 / NOT1 / CLR1 / TST1, which differ only in what they write back.
- *
- * Shared between the two encodings -- Format VIII takes the bit number
- * from the opcode and the address from a disp16, Format IX takes both
- * from registers -- because the semantics below are the whole
- * instruction and having them in one place is what keeps the two forms
- * from drifting.
- *
- * Three things here are easy to get wrong and none of them shows up as a
- * wrong register value:
- *
- *   - Z is the *old* value of the bit, complemented, and is set before
- *     the modification. Computing it from the result makes SET1 always
- *     clear Z and CLR1 always set it.
- *   - only Z moves. CY, OV and S keep whatever the previous instruction
- *     left, which is unlike almost everything else in this file.
- *   - the access is a byte, and it is a read-modify-write even for NOT1.
- *     TST1 alone does not store, which also means it alone cannot raise
- *     a store-side fault.
- */
-static g4mh_exc_t do_bitop(g4mh_cpu_t *c, unsigned op, uint32_t adr,
-                           uint32_t bit)
-{
-    const uint32_t mask = 1u << (bit & 7u);
-    uint32_t token;
-
-#if EMU_SMP
-    /*
-     * With cores really running at once the read and the write-back are
-     * two accesses another core's plain store can land between, losing
-     * it -- so on RAM the whole thing is one host atomic, after the same
-     * checks the two accesses would make. TST1 is a read and stays one.
-     */
-    if (op != BITOP_TST) {
-        g4mh_exc_t ex;
-        uint8_t *const hp = g4mh_rmw_ptr(c, adr, 1u, true, &ex);
-
-        if (EMU_UNLIKELY(ex != G4MH_EXC_NONE)) {
-            return ex;
-        }
-        if (hp != NULL) {
-            const uint8_t m = (uint8_t)mask;
-            const uint8_t old =
-                (op == BITOP_SET) ? __atomic_fetch_or(hp, m, __ATOMIC_SEQ_CST)
-                : (op == BITOP_CLR)
-                    ? __atomic_fetch_and(hp, (uint8_t)~m, __ATOMIC_SEQ_CST)
-                    : __atomic_fetch_xor(hp, m, __ATOMIC_SEQ_CST);
-
-            if ((old & m) != 0u) {
-                c->psw &= ~G4MH_PSW_Z;
-            } else {
-                c->psw |= G4MH_PSW_Z;
-            }
-            if (EMU_UNLIKELY(g4mh_any_reservation())) {
-                g4mh_ll_break(adr); /* it is a store, as below */
-            }
-            return G4MH_EXC_NONE;
-        }
-    }
-#endif
-    g4mh_exc_t e = g4mh_load(c, adr, 1u, false, &token);
-    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
-        return e;
-    }
-
-    if ((token & mask) != 0u) {
-        c->psw &= ~G4MH_PSW_Z;
-    } else {
-        c->psw |= G4MH_PSW_Z;
-    }
-
-    if (op == BITOP_TST) {
-        return G4MH_EXC_NONE;
-    }
-
-    uint32_t out = token;
-    if (op == BITOP_SET) {
-        out |= mask;
-    } else if (op == BITOP_CLR) {
-        out &= ~mask;
-    } else {
-        out ^= mask;
-    }
-    return g4mh_store(c, adr, 1u, out);
-}
 
 /*
  * Shifts. A shift of zero leaves the operand alone and clears CY, which is
@@ -1369,10 +1281,8 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
             case 0x0E2: /* NOT1 reg2, [reg1] */
             case 0x0E4: /* CLR1 reg2, [reg1] */
             case 0x0E6: { /* TST1 reg2, [reg1] */
-                static const uint8_t k_regbitop[4] = {BITOP_SET, BITOP_NOT,
-                                                      BITOP_CLR, BITOP_TST};
-                const g4mh_exc_t e = do_bitop(
-                    c, k_regbitop[(sub - 0x0E0u) >> 1], c->r[r1], c->r[r2]);
+                const g4mh_exc_t e =
+                    g4mh_bitop(c, (sub - 0x0E0u) >> 1, c->r[r1], c->r[r2]);
                 if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
                     EXC(e);
                 }
@@ -2644,12 +2554,10 @@ static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
          * back.
          */
         case 0x3E: {
-            static const uint8_t k_bitop[4] = {BITOP_SET, BITOP_NOT, BITOP_CLR,
-                                               BITOP_TST};
-            const uint32_t op = (w0 >> 14) & 0x3u;
+            const uint32_t bop = (w0 >> 14) & 0x3u;
             const uint32_t bit = (w0 >> 11) & 0x7u;
             const uint32_t adr = c->r[r1] + (uint32_t)(int32_t)(int16_t)w1;
-            const g4mh_exc_t e = do_bitop(c, k_bitop[op], adr, bit);
+            const g4mh_exc_t e = g4mh_bitop(c, bop, adr, bit);
             if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
                 EXC(e);
             }

@@ -3064,6 +3064,20 @@ session, and every one of them recurred:
   "implemented as the reference model behaves", with the command to
   check.
 
+- **A longer quantum is a coarser clock, and the workloads chosen to
+  measure that could not see it.** The host's guest clock moves once
+  per quantum. Raising the default from 4,096 to 32,768 for the SMP
+  speedup (1.85x to 2.67x) was checked against a Linux kernel init, a
+  contended guest and four single-core benchmarks -- all as fast or
+  faster -- and written up as costing nothing. Then the build matrix
+  failed `Zicntr-csrrc-00` and `-csrrs-00`, which read `time` twice
+  about 11,000 instructions apart: pass at 8,192, fail from 11,000. None
+  of the three timed anything short, so none could have failed.
+  **Choose the measurement by what the change can break, then run the
+  suites before writing the verdict** -- the doc said "nothing noticed"
+  an hour before the suite did. The default is 32,768 only when cores
+  really run in parallel, which is the case that pays for it.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must

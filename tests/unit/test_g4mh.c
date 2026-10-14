@@ -2272,6 +2272,118 @@ static void test_bit_manipulation_reg(void)
 }
 
 /*
+ * All eight bit operations -- four per encoding -- on both backends, and
+ * proof that the JIT translated them rather than handing them back.
+ *
+ * Each one is chosen so that it *changes* the byte (TST1 aside) and so
+ * that Z alternates, so a skipped operation moves the final byte and a
+ * stale Z is visible at the next SETF: the first test in this file to
+ * cover the JIT's bit operations set a bit that was already set, and
+ * passed whether or not the instruction ran. CY and S are set first and
+ * must survive all eight, because Z is the only flag these move.
+ *
+ * The translated pass is what the SMP host's helper rides on. Bit
+ * operations used to be declined there, so the exact fallback count is
+ * the assertion that says they no longer are: only the HALT.
+ */
+static void test_bit_manipulation_backends(void)
+{
+#define SETF_(cond, rd) W0(OP_SYSTEM, (cond), (rd)), 0x0000u
+    const uint16_t prog[] = {
+        W0(OP_MOVHI, 0, 10),
+        0x8000u,
+        W0(OP_MOVEA, 10, 10),
+        0x0100u, /* r10 = RAM + 0x100 */
+        W0(OP_MOVEA, 10, 25),
+        0x0020u, /* r25 = r10 + 0x20  */
+        W0(OP_MOVEA, 0, 11),
+        0x005Au,
+        W0(OP_ST_B, 10, 11),
+        0x0000u, /* [r10] = 0101 1010 */
+        F2(OP_MOVI, 1, 22),
+        F2(OP_MOVI, 0, 23),
+        F1(OP_CMP, 22, 23), /* 0 - 1: CY and S set */
+
+        BITOP8(BOP_SET1, 0, 10),
+        0x0000u, /* bit 0 was 0: Z=1, 0x5B */
+        SETF_(2u, 12),
+        BITOP8(BOP_CLR1, 1, 10),
+        0x0000u, /* bit 1 was 1: Z=0, 0x59 */
+        SETF_(2u, 13),
+        BITOP8(BOP_NOT1, 7, 25),
+        0xFFE0u, /* -0x20[r25]; bit 7 was 0: Z=1, 0xD9 */
+        SETF_(2u, 14),
+        BITOP8(BOP_TST1, 3, 10),
+        0x0000u, /* bit 3 is 1: Z=0, unchanged */
+        SETF_(2u, 15),
+
+        F2(OP_MOVI, 2, 16),
+        W0(OP_SYSTEM, 10, 16),
+        SUB_SET1, /* bit 2 was 0: Z=1, 0xDD */
+        SETF_(2u, 17),
+        F2(OP_MOVI, 4, 16),
+        W0(OP_SYSTEM, 10, 16),
+        SUB_CLR1, /* bit 4 was 1: Z=0, 0xCD */
+        SETF_(2u, 18),
+        F2(OP_MOVI, 13, 16),
+        W0(OP_SYSTEM, 10, 16),
+        SUB_NOT1, /* 13 is bit 5, which was 0: Z=1, 0xED */
+        SETF_(2u, 19),
+        F2(OP_MOVI, 6, 16),
+        W0(OP_SYSTEM, 10, 16),
+        SUB_TST1, /* bit 6 is 1: Z=0, unchanged */
+        SETF_(2u, 24),
+
+        SETF_(1u, 20), /* CY */
+        SETF_(6u, 21), /* LT, which is S while OV is clear: the IR
+                        * has no spelling for N, so SETF N would be
+                        * declined and spoil the fallback count */
+        0x07E0u,
+        SUB_HALT,
+    };
+#undef SETF_
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        emu_run_reason_t why;
+        uint32_t retired = 0;
+#if EMU_HAVE_JIT
+        emu_jit_stats_t before, after;
+        emu_jit_get_stats(&before);
+#endif
+
+        g_force_backend = (pass == 0u) ? &g4mh_backend_interp : NULL;
+        if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 128u, &why,
+                          &retired)) {
+            CHECK(false);
+            g_force_backend = NULL;
+            return;
+        }
+
+        CHECK_EQ((uint32_t)g_ram[0x100], 0xEDu);
+        CHECK_EQ(reg(12), 1u);
+        CHECK_EQ(reg(13), 0u);
+        CHECK_EQ(reg(14), 1u);
+        CHECK_EQ(reg(15), 0u);
+        CHECK_EQ(reg(17), 1u);
+        CHECK_EQ(reg(18), 0u);
+        CHECK_EQ(reg(19), 1u);
+        CHECK_EQ(reg(24), 0u);
+        CHECK_EQ(reg(20), 1u);
+        CHECK_EQ(reg(21), 1u);
+        CHECK_EQ(why, EMU_RUN_WFI);
+
+#if EMU_HAVE_JIT
+        emu_jit_get_stats(&after);
+        if (pass == 1u) {
+            CHECK(after.translations > before.translations);
+            CHECK_EQ(after.interp_fallbacks - before.interp_fallbacks, 1u);
+        }
+#endif
+    }
+    g_force_backend = NULL;
+}
+
+/*
  * The IR path, and proof that it is the one being used.
  *
  * The G4MH JIT now goes guest -> IR -> optimise -> x86-64, and on this
@@ -2384,12 +2496,7 @@ static void test_ir_backend_is_used(void)
      * Only the 32-bit HALT should reach the interpreter.
      */
     const uint32_t fell_back = after.interp_fallbacks - before.interp_fallbacks;
-    /*
-     * And on an SMP host, the set1: a memory bit operation is declined
-     * there on purpose, because the lowering is a load and a store that
-     * another core's store can land between (g4mh_ir.c). Still exact.
-     */
-    CHECK_EQ(fell_back, EMU_SMP ? 2u : 1u);
+    CHECK_EQ(fell_back, 1u);
 }
 #endif /* EMU_HAVE_JIT -- asserts a translation happened */
 
@@ -6761,6 +6868,7 @@ void test_g4mh(void)
     test_swap_reserved_field();
     test_bit_manipulation();
     test_bit_manipulation_reg();
+    test_bit_manipulation_backends();
 #if EMU_HAVE_JIT
     test_ir_backend_is_used();
 #endif

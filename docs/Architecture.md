@@ -79,8 +79,10 @@ in `docs/<platform>/` and `docs/frontend/`.
 the note at the top of it is the thing to read before adding a frontend or
 a member. The rule it lives by:
 
-> `run` executes a whole budget (4096 instructions) behind one indirect
-> call, and every other hook is either setup or fires on a trap.
+> `run` executes a whole budget (`--quantum`: 4,096 instructions by
+> default, 32,768 when an SMP host runs a multicore guest's cores in
+> parallel) behind one indirect call, and every other hook is either
+> setup or fires on a trap.
 
 Nothing in that table may end up on a per-instruction path. One extra
 *direct* branch on the fetch path measured 9.3% on CoreMark; an indirect

@@ -207,7 +207,7 @@ It was, plus four things that design note could not have seen:
 | G4MH's shared devices: INTC1/2, OSTM, INTIF, BOOTCTRL, the barrier, IPIR, TPTM, LTSC | unlocked | a locking twin of each device's ops, chosen at registration; the controller's public functions lock too. One recursive `emu_lock`, empty unless `EMU_SMP` |
 | the reservation table | unlocked | locked |
 | CAXI, SET1/CLR1/NOT1, LDL.W/STC.W | atomic because one core ran at a time | **host atomics on RAM**. A lock cannot do it: another core's plain store takes none. STC.W is a compare-and-swap against the word LDL.W read, with the reservation still checked |
-| the JIT's memory bit operations | a load, a computation and a store | declined under SMP, so the interpreter's atomic runs them |
+| the JIT's memory bit operations | a load, a computation and a store | a helper call into the interpreter's atomic (`g4mh_bitop`), so the block stays whole. Declined until the helper existed, which ended a block at every one |
 | the boot protocol's stack pointer | the top of RAM for *every* PE | PE *k* starts *k* strides below PE0, which keeps the top |
 | the console | unlocked | locked |
 
@@ -245,16 +245,24 @@ three to eight times each, with the fixes in place every run correct:
 | mutant | what the guest printed |
 |---|---|
 | CAXI as a load and a store | nothing: two PEs inside the lock leave the lock word held by nobody, and every run spins until its timeout -- ctest's 120 s is the verdict |
-| NOT1 as a load and a store | 8 of 8 wrong, both backends: `bits=4,0`, `5,5`, `0,6` ... |
-| the JIT's native memory bit operation allowed under SMP | 4 of 4 wrong, in the *second* byte only |
+| NOT1 as a load and a store | 8 of 8 wrong, both backends: `bits=4,0`, `5,5`, `0,6` ... -- and 2 of 3 under `--jit` once the JIT reached it through its helper |
+| the JIT's native memory bit operation allowed under SMP | 3 of 3 wrong, in both bytes: `bits=4,6`, `3,4`, `3,2` (4 of 4 in the second byte alone, before the register form was translated) |
+| the JIT declining them under SMP again | nothing in the guest -- slower is not wrong -- so `test_bit_manipulation_backends` counts fallbacks exactly and fails |
 | STC.W as a plain store | 3 of 3 wrong: `llsc=59768`, `59960`, `59947` |
 
 The third survived the first version of the guest. It toggled bits with
-NOT1's register form only, and the JIT lowers only the immediate form --
-so the mutant was in code the guest never reached. The second byte is
-toggled with the immediate form, and the toggle count went from 20,001 to
-200,001 when the second row caught two runs in three rather than all of
-them.
+NOT1's register form only, and the JIT then lowered only the immediate
+form -- so the mutant was in code the guest never reached. The second
+byte is toggled with the immediate form, and the toggle count went from
+20,001 to 200,001 when the second row caught two runs in three rather
+than all of them. The JIT lowers both forms now, through one function,
+and the mutant corrupts both bytes.
+
+What the helper bought on this guest is coverage rather than time:
+1.28M fewer instructions handed back to the interpreter (5,440,774 to
+4,159,113) and the same wall time within noise, 0.257 s against 0.271 s
+over seven interleaved runs. The guest's bit loops are as contended as
+its lock, and its time goes there.
 
 **ThreadSanitizer** builds and runs under the port (`-fsanitize=thread`).
 With `tests/tsan.supp` -- the kernel's own deliberate unlocked read, the
@@ -270,14 +278,20 @@ A variant of `smp.c` with almost no contention and four times the
 independent work, three PEs on a 20-CPU host, five interleaved runs,
 medians; every run printed the same line:
 
-| backend | quantum 1,024 | 4,096 (default) | 65,536 |
-|---|---|---|---|
-| interpreter | 2.05x | 2.71x | 2.82x |
-| JIT | 1.33x | 2.06x | 2.59x |
+| backend | 4,096 | 8,192 | 16,384 | 32,768 (default here) | 65,536 |
+|---|---|---|---|---|---|
+| interpreter | 2.57x | 2.39x | 2.59x | 2.79x | 2.76x |
+| JIT | 1.85x | 2.24x | 2.38x | 2.67x | 2.66x |
+
+The first run of this table, when 4,096 was the default, gave 2.71x and
+2.06x there and 2.05x and 1.33x at 1,024; the host was busier for this
+one (a load average of 3), so read across a row rather than between the
+two. Why a parallel run's default is 32,768 now, and what that costs,
+is below.
 
 **A round is a barrier across host threads, and what it cost decided
 everything.** The first version of the port took the speedup *below one*
-for the JIT at the default quantum: about 66 us of overhead a round
+for the JIT at 4,096, then the default: about 66 us of overhead a round
 against about 14 us of translated work per core. `strace` counted where
 it went -- some 260 system calls a round -- and three changes took it to
 the three that the console's poll makes in either mode:
@@ -308,6 +322,55 @@ inline on one task; the cooperative single-core port sends a three-PE
 round through three task switches, and the same guest takes 1.05 s that
 way against 0.60 s inline, translated -- about 57 us a round of
 switching.
+
+### The quantum
+
+**32,768 by default when an SMP host runs a multicore guest's cores in
+parallel, and 4,096 everywhere else** (`EMU_PARALLEL_BUDGET` and
+`EMU_DEFAULT_BUDGET`, picked once the core count is known; `--quantum`
+overrides both). A parallel round is a barrier across host threads and
+the table above stops growing at 32,768: the JIT goes 1.85x, 2.24x,
+2.38x, 2.67x, then 2.66x at 65,536.
+
+What a longer quantum costs is not throughput. **The guest's clock moves
+once per quantum** -- `advance_guest_time` sets it between slices -- so
+the quantum is also the clock's resolution and the bound on how late a
+timer interrupt can be taken; a guest that polls the time in a delay
+loop spins for at least one quantum per wait, and two reads of `time`
+inside one quantum are equal.
+
+**A single default of 32,768 was tried first, and the architecture suite
+refused it.** `Zicntr-csrrc-00` and `Zicntr-csrrs-00` read `time` about
+11,000 instructions apart and want it to have moved: they pass at 8,192
+and fail from 11,000 up. Three workloads measured beforehand had said
+nothing -- three interleaved runs of the kernel at each quantum, five of
+the guest, ranges and medians:
+
+| workload | 4,096 | 16,384 | 32,768 |
+|---|---|---|---|
+| Linux kernel init, to the root-mount panic (wall) | 4.25-4.42 s | 4.14-4.34 s | 4.07-4.15 s |
+| `smp.c`, contended, 3 PEs in parallel, JIT | 0.257 s | 0.251 s | 0.246 s |
+| `smp.c`, contended, 3 PEs in parallel, interpreted | 0.331 s | 0.318 s | 0.297 s |
+
+The kernel is the prebuilt one in `build/linux`, configured for a root
+filesystem the disk image does not hold, so it panics at mount -- after
+calibration, driver probing and every delay loop of kernel init, about
+2.9 guest-seconds, which is the part a coarse clock would slow. And the
+single-core RV32 guests -- CoreMark and `bench` both ways, Dhrystone and
+`irqtest` -- ran 0-9% faster at 32,768 than at 4,096 with the same
+retired counts and exit codes; `irqtest` interpreted was +0.9%.
+
+None of that could see a frozen clock, because none of it times anything
+short; a conformance test that does saw it at once. So a single-core run,
+which gains a few percent at most, keeps the fine clock, and only the
+case that gains 1.4x pays for the coarse one.
+
+**The boards keep 4,096.** Theirs is `EMU_RUN_SLICE`, a separate knob:
+one core, so there is no parallelism to buy, and on a board the slice is
+also how often the console and the network are serviced, which nothing
+here measured. The `g4mh-smp` ctest cases pin `--quantum 4096` for the
+other reason: a smaller quantum interleaves the cores more finely, which
+is what a contention test wants.
 
 ### What it does not do
 

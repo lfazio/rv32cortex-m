@@ -11,8 +11,8 @@
  * ------------------------------
  *
  * There is no per-instruction entry point. `run` executes a whole budget
- * (EMU_DEFAULT_BUDGET, 4096 instructions) behind one indirect call, and
- * every other hook is either setup or fires on a trap. That is the rule
+ * (EMU_DEFAULT_BUDGET instructions by default) behind one indirect call,
+ * and every other hook is either setup or fires on a trap. That is the rule
  * this interface lives by: an indirect call anywhere on the fetch or
  * execute path would cost more than the entire abstraction saves. The
  * measurements in CLAUDE.md are about exactly that -- 9.3% on CoreMark for

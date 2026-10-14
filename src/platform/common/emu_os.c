@@ -146,6 +146,12 @@ void emu_os_set_serial(bool serial)
     g_serial = serial;
 }
 
+bool emu_os_parallel(unsigned ncores)
+{
+    return configNUMBER_OF_CORES > 1 && ncores > 1u &&
+           ncores <= EMU_OS_MAX_CORES && !g_serial;
+}
+
 static void core_task(void *arg)
 {
     const unsigned k = (unsigned)(uintptr_t)arg;
@@ -344,9 +350,11 @@ void emu_os_report(void)
     if (g_task_rounds != 0u) {
         char n[21];
 
-        emu_console_printf("  os       %u cores as tasks, %s rounds\n",
+        /* The quantum too: its default depends on the run (emu_main). */
+        emu_console_printf("  os       %u cores as tasks, %s rounds of %u\n",
                            g_task_cores,
-                           emu_u64_str(n, (unsigned long long)g_task_rounds));
+                           emu_u64_str(n, (unsigned long long)g_task_rounds),
+                           (unsigned)g_round_quantum);
     }
 #if !defined(EMU_OS_PORT_POSIX)
     /*

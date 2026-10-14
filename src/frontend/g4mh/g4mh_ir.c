@@ -281,16 +281,76 @@ static uint32_t g4mh_ir_dispose_helper(emu_cpu_t *cpu, uint32_t insn,
     return 0u; /* the jump, if any, is the block's -- see the lowering */
 }
 
+/*
+ * SET1 / NOT1 / CLR1 / TST1 through the g4mh_bitop the interpreter
+ * calls, wherever EMU_IR_BITOP will not do:
+ *
+ *   - on an SMP host, where g4mh_bitop is one host atomic. EMU_IR_BITOP
+ *     is a load, a computation and a store, and with cores really
+ *     running at once another core's plain store can land between the
+ *     two and be lost. Declining the instruction was right and ended the
+ *     block at every bit operation; a helper is right and keeps it whole.
+ *   - on a host whose backend cannot lower EMU_IR_BITOP (Thumb-2), where
+ *     emitting it anyway cost the whole block at emission.
+ *
+ * The second argument carries the operation above the bit number, so
+ * both encodings fit the two-argument ABI: Format VIII's bit is a
+ * constant and Format IX's is a register. HELPER_TRAP, because the
+ * access can fault.
+ */
+static uint32_t g4mh_ir_bitop_helper(emu_cpu_t *cpu, uint32_t adr,
+                                     uint32_t op_bit)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
+    const g4mh_exc_t e = g4mh_bitop(c, (op_bit >> 3) & 3u, adr, op_bit & 7u);
+
+    if (e == G4MH_EXC_NONE) {
+        return 0u;
+    }
+    g4mh_cpu_exception(c, e, c->pc);
+    return 1u;
+}
+
 static const void *const g4mh_ir_helpers[] = {
     (const void *)g4mh_ir_dispose_helper,
     (const void *)g4mh_ir_adf_helper,
     (const void *)g4mh_ir_prepare_helper,
     (const void *)g4mh_ir_fpu_helper,
+    (const void *)g4mh_ir_bitop_helper,
 };
 #define G4MH_IR_HELPER_DISPOSE 0u
 #define G4MH_IR_HELPER_ADF 1u
 #define G4MH_IR_HELPER_PREPARE 2u
 #define G4MH_IR_HELPER_FPU 3u
+#define G4MH_IR_HELPER_BITOP 4u
+
+/*
+ * One memory bit operation, either encoding: `sel` is the operation as
+ * both number it, `addr` the byte's address and `bit` a temp holding the
+ * bit number (only its low three bits count, in both paths).
+ */
+static void lower_bitop(emu_ir_block_t *b, uint32_t pc, uint32_t sel,
+                        uint16_t addr, uint16_t bit, uint32_t disp)
+{
+    (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, pc,
+                      0u);
+    if (EMU_SMP || !emu_ir_can_lower(EMU_IR_BITOP_SET, 1u)) {
+        const uint16_t at =
+            disp != 0u ? emu_ir_alu(b, EMU_IR_ADD, addr, emu_ir_const(b, disp))
+                       : addr;
+        const uint16_t op_bit = emu_ir_alu(
+            b, EMU_IR_OR, emu_ir_alu(b, EMU_IR_AND, bit, emu_ir_const(b, 7u)),
+            emu_ir_const(b, sel << 3));
+
+        (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP, 0u, at, op_bit,
+                          G4MH_IR_HELPER_BITOP, 0u);
+    } else {
+        static const uint8_t k_bitop[4] = {EMU_IR_BITOP_SET, EMU_IR_BITOP_INV,
+                                           EMU_IR_BITOP_CLR, EMU_IR_BITOP_TST};
+
+        emu_ir_bitop(b, (emu_ir_op_t)k_bitop[sel], addr, bit, disp, 1u);
+    }
+}
 
 const emu_ir_target_t g4mh_ir_target = {
     .reg_offset = g4mh_reg_offset,
@@ -763,23 +823,23 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
      * 32-bit format uses for reg2 -- with the 3-bit bit number below it,
      * so reading a register out of [15:11] here gets nonsense.
      */
-    /*
-     * Not on an SMP host: EMU_IR_BITOP is a load, a computation and a
-     * store, and another core's plain store can land in between and be
-     * lost. Declined there, the instruction goes to the interpreter,
-     * whose implementation is one host atomic (g4mh_interp.c do_bitop).
-     * It ends the block, which is the price of being right.
-     */
-    if (op == 0x3Eu && !EMU_SMP) {
-        static const uint8_t k_bitop[4] = {EMU_IR_BITOP_SET, EMU_IR_BITOP_INV,
-                                           EMU_IR_BITOP_CLR, EMU_IR_BITOP_TST};
-        const uint32_t sel = (w0 >> 14) & 3u;
-        const uint32_t bit = (w0 >> 11) & 7u;
+    if (op == 0x3Eu) {
+        lower_bitop(b, pc, (w0 >> 14) & 3u, emu_ir_get(b, r1),
+                    emu_ir_const(b, (w0 >> 11) & 7u),
+                    (uint32_t)emu_sext(w1, 16));
+        return true;
+    }
 
-        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
-                          pc, 0u);
-        emu_ir_bitop(b, (emu_ir_op_t)k_bitop[sel], emu_ir_get(b, r1),
-                     emu_ir_const(b, bit), (uint32_t)emu_sext(w1, 16), 1u);
+    /*
+     * Format IX, the same four with both operands in registers: the
+     * address in reg1 and the bit number in reg2's low three bits.
+     * Sub-opcodes 0x0E0-0x0E6, the operation in bits[2:1] numbered as
+     * Format VIII numbers it; reg3 is not consulted, as the interpreter
+     * does not consult it.
+     */
+    if (op == 0x3Fu && ((uint32_t)w1 & 0x7F9u) == 0x0E0u) {
+        lower_bitop(b, pc, ((uint32_t)w1 >> 1) & 3u, emu_ir_get(b, r1),
+                    emu_ir_get(b, r2), 0u);
         return true;
     }
 

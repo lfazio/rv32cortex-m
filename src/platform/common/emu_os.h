@@ -58,6 +58,13 @@ uint32_t emu_os_system_step(emu_system_t *sys, uint32_t quantum,
  */
 void emu_os_set_serial(bool serial);
 
+/*
+ * Will a round of `ncores` cores run them at once? Only under an SMP
+ * kernel, with more than one core and fewer than the build has tasks for,
+ * and not --serial -- emu_os_system_step's own conditions.
+ */
+bool emu_os_parallel(unsigned ncores);
+
 /* One line: how much of each task's stack the run used. */
 void emu_os_report(void);
 

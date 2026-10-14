@@ -986,6 +986,16 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
     case EMU_IR_MULHU:
         return true;
 
+    /*
+     * A sixth, found when G4MH started asking: the memory bit operations
+     * have been lowered here since the IR had them.
+     */
+    case EMU_IR_BITOP_SET:
+    case EMU_IR_BITOP_CLR:
+    case EMU_IR_BITOP_INV:
+    case EMU_IR_BITOP_TST:
+        return true;
+
     case EMU_IR_FMIN:
     case EMU_IR_FMAX:
     case EMU_IR_FCLASS:

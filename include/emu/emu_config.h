@@ -32,10 +32,29 @@
 
 /*
  * How many instructions a backend's run function executes before returning
- * to the host so it can service ARM-side work (timers, USB, RTOS ticks).
+ * to the host so it can service host-side work: the console, the guest's
+ * clock, and on a multicore guest the other cores, which meet once per
+ * budget. It is the host runner's --quantum default; the boards pass their
+ * own (EMU_RUN_SLICE in src/platform/stm32/board.c).
+ *
+ * **The guest's clock moves once per budget**, so this is also its
+ * resolution: two reads of `time` less than a budget apart can return the
+ * same value. riscv-arch-test's Zicntr cases read it twice about 11,000
+ * instructions apart and fail from a budget of 11,000 up.
  */
 #ifndef EMU_DEFAULT_BUDGET
 #define EMU_DEFAULT_BUDGET 4096u
+#endif
+
+/*
+ * The default instead when an SMP host runs a multicore guest's cores in
+ * parallel, where every round is a barrier across host threads: three
+ * PEs of independent work went 1.85x at 4096 to 2.67x here translated,
+ * and 65536 bought nothing more. The clock's resolution is the price, as
+ * above; docs/os.md ("the quantum") has what was measured against it.
+ */
+#ifndef EMU_PARALLEL_BUDGET
+#define EMU_PARALLEL_BUDGET 32768u
 #endif
 
 /* ------------------------------------------------------------------ */

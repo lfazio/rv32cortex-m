@@ -921,6 +921,93 @@ void g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg, uint32_t val)
 }
 
 /*
+ * SET1 / NOT1 / CLR1 / TST1, which differ only in what they write back.
+ *
+ * Shared between the two encodings -- Format VIII takes the bit number
+ * from the opcode and the address from a disp16, Format IX takes both
+ * from registers -- and between the interpreter and the JIT's helper,
+ * because the semantics below are the whole instruction and having them
+ * in one place is what keeps the four from drifting.
+ *
+ * Three things here are easy to get wrong and none of them shows up as a
+ * wrong register value:
+ *
+ *   - Z is the *old* value of the bit, complemented, and is set before
+ *     the modification. Computing it from the result makes SET1 always
+ *     clear Z and CLR1 always set it.
+ *   - only Z moves. CY, OV and S keep whatever the previous instruction
+ *     left, which is unlike almost everything else in this file.
+ *   - the access is a byte, and it is a read-modify-write even for NOT1.
+ *     TST1 alone does not store, which also means it alone cannot raise
+ *     a store-side fault.
+ */
+g4mh_exc_t g4mh_bitop(g4mh_cpu_t *c, uint32_t op, uint32_t adr, uint32_t bit)
+{
+    const uint32_t mask = 1u << (bit & 7u);
+    uint32_t token;
+
+#if EMU_SMP
+    /*
+     * With cores really running at once the read and the write-back are
+     * two accesses another core's plain store can land between, losing
+     * it -- so on RAM the whole thing is one host atomic, after the same
+     * checks the two accesses would make. TST1 is a read and stays one.
+     */
+    if (op != G4MH_BITOP_TST) {
+        g4mh_exc_t ex;
+        uint8_t *const hp = g4mh_rmw_ptr(c, adr, 1u, true, &ex);
+
+        if (EMU_UNLIKELY(ex != G4MH_EXC_NONE)) {
+            return ex;
+        }
+        if (hp != NULL) {
+            const uint8_t m = (uint8_t)mask;
+            const uint8_t old =
+                (op == G4MH_BITOP_SET)
+                    ? __atomic_fetch_or(hp, m, __ATOMIC_SEQ_CST)
+                : (op == G4MH_BITOP_CLR)
+                    ? __atomic_fetch_and(hp, (uint8_t)~m, __ATOMIC_SEQ_CST)
+                    : __atomic_fetch_xor(hp, m, __ATOMIC_SEQ_CST);
+
+            if ((old & m) != 0u) {
+                c->psw &= ~G4MH_PSW_Z;
+            } else {
+                c->psw |= G4MH_PSW_Z;
+            }
+            if (EMU_UNLIKELY(g4mh_any_reservation())) {
+                g4mh_ll_break(adr); /* it is a store, as below */
+            }
+            return G4MH_EXC_NONE;
+        }
+    }
+#endif
+    g4mh_exc_t e = g4mh_load(c, adr, 1u, false, &token);
+    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+        return e;
+    }
+
+    if ((token & mask) != 0u) {
+        c->psw &= ~G4MH_PSW_Z;
+    } else {
+        c->psw |= G4MH_PSW_Z;
+    }
+
+    if (op == G4MH_BITOP_TST) {
+        return G4MH_EXC_NONE;
+    }
+
+    uint32_t out = token;
+    if (op == G4MH_BITOP_SET) {
+        out |= mask;
+    } else if (op == G4MH_BITOP_CLR) {
+        out &= ~mask;
+    } else {
+        out ^= mask;
+    }
+    return g4mh_store(c, adr, 1u, out);
+}
+
+/*
  * ADF: reg3 = reg1 + reg2 + (condition ? 1 : 0), defining all four flags.
  *
  * Here rather than in the interpreter because the JIT reaches it too,

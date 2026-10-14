@@ -184,6 +184,16 @@ same order, for the same reason.
 `MOV imm32` is lowered by the JIT as well. It is in the same 48-bit
 width and was ending a block at every large constant.
 
+So are the memory bit operations, `SET1`/`NOT1`/`CLR1`/`TST1`, in both
+encodings -- Format VIII's bit number in the opcode, Format IX's in a
+register. One function, `g4mh_bitop`, is the instruction for the
+interpreter and for the JIT's helper alike. The JIT emits `EMU_IR_BITOP`
+where the backend lowers it (x86-64, one core at a time) and calls the
+helper otherwise: on an SMP host, where `g4mh_bitop` is a host atomic and
+a load-then-store would lose another core's store, and on Thumb-2, which
+does not lower `EMU_IR_BITOP` at all. Before the helper the first case was
+declined and the second lost its whole block at emission.
+
 `tests/guest/g4mh/disp23.asm` is the end-to-end check, and the half
 that is not this project's own encoder: CC-RH produces the bytes, the
 emulator runs them, 8 checks and 0 failures on both backends.

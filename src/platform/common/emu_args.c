@@ -172,8 +172,10 @@ void emu_args_usage(void)
     for (unsigned i = 0; i < sizeof(k_tail) / sizeof(k_tail[0]); i++) {
         emu_console_printf("%s\n", k_tail[i]);
     }
-    emu_console_printf("  (--quantum default %u)\n",
-                       (unsigned)EMU_DEFAULT_BUDGET);
+    emu_console_printf("  (--quantum default %u, or %u when an SMP host "
+                       "runs the cores in parallel)\n",
+                       (unsigned)EMU_DEFAULT_BUDGET,
+                       (unsigned)EMU_PARALLEL_BUDGET);
 }
 
 bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
@@ -184,7 +186,6 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
     opt->ram_size = DEFAULT_RAM_SIZE;
     opt->fb_width = DEFAULT_FB_WIDTH;
     opt->fb_height = DEFAULT_FB_HEIGHT;
-    opt->quantum = EMU_DEFAULT_BUDGET;
     opt->timer_div = 1u;
     opt->trace_count = 64u;
 

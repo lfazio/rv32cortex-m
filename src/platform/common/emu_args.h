@@ -114,6 +114,8 @@ typedef struct emu_args {
     const char *p9_root;
     const char *p9_tag;
 
+    /* 0 unless --quantum was given; emu_main then picks the default,
+     * which depends on whether the cores will run in parallel. */
     uint32_t quantum;
     uint64_t max_insn;
     uint32_t timer_div;

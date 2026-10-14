@@ -41,6 +41,14 @@ The *encoders* are a different matter, and are checked on a host twice:
 Neither reaches `ir_lower.c`'s decisions — which registers, which
 frame slot, which branch gets patched.
 
+**`emu_ir_can_lower` answers yes by default, and every yes is a
+promise.** It has been broken twice, both times found when a frontend
+started asking: the rotations and the four value bit operations, then
+the memory bit operations (`EMU_IR_BITOP_*`), which `lower_one` has never
+lowered. G4MH emitted those anyway and lost each block containing one at
+emission; it asks now, and a no sends each to a helper that keeps the
+block whole.
+
 ## Registers and the frame
 
 | | |

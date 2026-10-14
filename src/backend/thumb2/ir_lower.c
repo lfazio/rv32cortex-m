@@ -772,6 +772,18 @@ bool emu_ir_can_lower(emu_ir_op_t op, uint8_t aux)
     case EMU_IR_ROTL:
         return false;
 
+    /*
+     * And the memory bit operations, which lower_one has always refused
+     * and this default promised -- the same broken promise, found when
+     * G4MH started asking. A frontend told no sends them to a helper and
+     * keeps the block; told yes, it lost the block at emission.
+     */
+    case EMU_IR_BITOP_SET:
+    case EMU_IR_BITOP_CLR:
+    case EMU_IR_BITOP_INV:
+    case EMU_IR_BITOP_TST:
+        return false;
+
     default:
         return true;
     }

@@ -26,16 +26,25 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
         state, locks on G4MH's shared devices and the console, host
         atomics for CAXI, the bit operations and LL/SC, and a stack per
         PE ([os.md](os.md#smp-on-the-host)). `--serial` is the
-        reproducible round-robin. Three PEs of independent work run 2.71x (interpreted) and
-        2.06x (translated) faster at the default quantum on a 20-CPU host.
-      - [ ] **Quantum and SMP.** Every round is a barrier across host
+        reproducible round-robin. Three PEs of independent work run
+        2.79x (interpreted) and 2.67x (translated) faster at the default
+        parallel quantum on a 20-CPU host.
+      - [x] **Quantum and SMP.** Every round is a barrier across host
         threads, so a small quantum costs most of what parallelism buys:
-        the JIT goes 1.33x at 1,024, 2.06x at 4,096 and 2.59x at 65,536.
-        The default stays 4,096 for every guest; whether a parallel run
-        should default larger is the next measurement.
-      - [ ] **The JIT under SMP declines memory bit operations**, so
-        each one ends a block. A helper that is one host atomic would
-        keep the block whole.
+        the JIT goes 1.85x at 4,096, 2.38x at 16,384, 2.67x at 32,768 and
+        2.66x at 65,536. The default is **32,768 when an SMP host runs
+        a multicore guest's cores in parallel** and 4,096 otherwise. A
+        single default of 32,768 failed two Zicntr architecture tests:
+        the guest clock moves once per quantum, and they read `time`
+        twice ~11,000 instructions apart ([os.md](os.md#the-quantum)).
+        The boards keep 4,096 (`EMU_RUN_SLICE`), unmeasured there.
+      - [x] **The JIT under SMP declined memory bit operations**, so
+        each one ended a block. They are a helper call into
+        `g4mh_bitop`, the interpreter's host atomic, and the register
+        form is translated as well as the immediate one. The same helper
+        serves Thumb-2, which cannot lower `EMU_IR_BITOP` and used to
+        lose the whole block to it -- its `emu_ir_can_lower` promised it
+        could, and x86-64's denied what it does.
       - [x] **The N6 runs under FreeRTOS** after the `flash` target was
         fixed: without `VERBATIM` the echo's "(BOOT1)" was a `/bin/sh`
         syntax error, a second load hung in the signing tool's overwrite

@@ -405,4 +405,19 @@ g4mh_exc_t g4mh_prepare(g4mh_cpu_t *c, uint32_t list, uint32_t imm5,
 g4mh_exc_t g4mh_dispose(g4mh_cpu_t *c, uint32_t list, uint32_t imm5,
                         uint32_t rt, uint32_t *target_out);
 
+/*
+ * SET1 / NOT1 / CLR1 / TST1 on the byte at `adr`, shared by the
+ * interpreter's two encodings and the JIT's helper. `op` is numbered as
+ * both encodings number it -- Format VIII's bits[15:14], Format IX's
+ * (sub - 0x0E0) >> 1 -- so a caller passes the field straight through.
+ * On an SMP host the three that write are one host atomic.
+ */
+enum {
+    G4MH_BITOP_SET = 0,
+    G4MH_BITOP_NOT = 1,
+    G4MH_BITOP_CLR = 2,
+    G4MH_BITOP_TST = 3,
+};
+g4mh_exc_t g4mh_bitop(g4mh_cpu_t *c, uint32_t op, uint32_t adr, uint32_t bit);
+
 #endif /* G4MH_G4MH_CPU_H */
