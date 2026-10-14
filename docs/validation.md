@@ -46,6 +46,7 @@ Current state:
 |---|---|---|
 | `riscv-arch-test`, interpreter | **496 / 496** | host |
 | `riscv-arch-test`, `EMU_EXTRA_ARGS=--jit` | **496 / 496** — the whole suite through translated code | host, x86-64 |
+| `riscv-arch-test --misaligned`, both backends | **509 / 509** — the default build, `RV32_MISALIGNED=ON`, and the four `Misalign*` suites it qualifies for | host |
 | `riscv-tests`, interpreter | **77 / 77** | host |
 | `riscv-tests`, `--jit` through an `EMU_HOST` wrapper | **77 / 77** | host, x86-64 |
 | `ctest`, RV32 tree | 20 tests: unit, the guests, most of them again under `--jit`, and `gdb-check` | host |
@@ -60,6 +61,8 @@ Current state:
 because the suite validates the core against a description of it and
 that description says misaligned accesses trap. A stale runner at the
 path a script defaults to once hid a real regression for six days.
+`--misaligned` builds the *default* configuration instead, and runs it
+against a description derived for it; see below.
 
 ### What the host suites do not cover
 
@@ -194,6 +197,39 @@ When the checkout moves, list `tests/rv32i`, `tests/priv` and
 `tests/priv/pmp/pmp32` and account for every directory: the comment
 above the list in `scripts/run-arch-test.sh` names each one that is
 left out and why.
+
+### The default build, and the four suites only it can take
+
+The description above is of an `RV32_MISALIGNED=OFF` core, and the
+emulator's default is ON -- picolibc's word-at-a-time `strcmp` reads
+`lw` off an odd pointer. So for as long as that default has stood, the
+build everybody runs was described by nothing, and `Misalign`,
+`MisalignD`, `MisalignF` and `MisalignZca` -- thirteen tests, each
+requiring `MISALIGNED_LDST: true` -- could not be offered at all. That
+mattered more than the count suggests: the misaligned path had just been
+found wrong under paging, by a hand-written test, with nothing in the
+suite able to see it.
+
+`scripts/run-arch-test.sh --misaligned` builds the default configuration
+into `build/arch-test-host-misaligned` and runs it against a second
+description, `rv32cortex-m-rv32-misaligned`, which
+`tests/arch-test/derive-misaligned.py` *generates* from the first. The
+two differ in one property and agree in every other, and two hand-kept
+copies of an 18 KB Sail config would stop agreeing the first time one of
+them was edited; the script asserts the match count of every line it
+changes, so a base edit that moves one fails there instead of yielding a
+description that still says "raises". What it changes:
+
+| | value | because |
+|---|---|---|
+| `MISALIGNED_LDST` | true; Sail `load_store: None` globally and in every region | loads and stores complete, and the bus hands a device a misaligned access as it is |
+| `MISALIGNED_MAX_ATOMICITY_GRANULE_SIZE` | 0 | `mem_wide` splits an access into aligned bus transactions, and per page under Sv32 |
+| `MISALIGNED_SPLIT_STRATEGY` | `sequential_bytes` | every part is checked before any is performed, and a fault names the lowest part refused |
+| `MISALIGNED_LDST_EXCEPTION_PRIORITY` | high, unchanged | AMOs and LR/SC still raise, and check alignment first; UDB allows high only with a zero granule |
+
+**509/509 on both backends**: the 496 and the thirteen. The thirteen were
+then run against the OFF build and all thirteen failed, which is what
+says they test the property and not merely run.
 
 Two extensions the core implements have **no suite at all**: Zalasr and
 Zawrs. Zalasr is not in Sail 0.13.1 either, so there is no golden model

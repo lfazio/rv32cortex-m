@@ -1376,12 +1376,12 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
             a page boundary was translated at its first byte and taken
             physically contiguous. Both are one checked access now, as
             is `cbo.zero`. See [frontend/rv32.md](frontend/rv32.md).
-      - [ ] **The four `Misalign*` suites.** They are out because the
-            description says `MISALIGNED_LDST: false`, so nothing
-            validates the *default* build's behaviour, which is to
-            complete misaligned accesses -- and that path has just been
-            found wrong under paging by a hand-written test. A second
-            DUT description for `RV32_MISALIGNED=ON` would run them.
+      - [x] **The four `Misalign*` suites.** `run-arch-test.sh
+            --misaligned` builds the default `RV32_MISALIGNED=ON`
+            configuration and runs it against a description derived
+            from the ordinary one: **509/509 on both backends**, and the
+            thirteen Misalign tests fail all thirteen against the OFF
+            build. See [validation.md](validation.md).
       - [ ] **`ctest`'s `arch-test-I` is misnamed.** The runner executes
             every ELF in the work directory whatever `--extensions`
             names, so it runs all 496 once they have been built and

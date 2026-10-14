@@ -14,7 +14,11 @@
 # emulator rather than inside a third-party clone.
 #
 # Usage:
-#   scripts/run-arch-test.sh [--extensions I,M,...] [--jobs N] [-v]
+#   scripts/run-arch-test.sh [--misaligned] [--extensions I,M,...] [--jobs N] [-v]
+#
+# --misaligned validates the *default* build, RV32_MISALIGNED=ON, against
+# a description derived for it, and adds the four Misalign suites that the
+# ordinary description cannot be offered.
 
 set -uo pipefail
 
@@ -42,7 +46,7 @@ suite="${ARCH_TEST_DIR:-$here/build/arch-test}"
 #
 # EMU_HOST still overrides, for bisecting or for testing a binary built
 # elsewhere. It is on the caller to match the config when they do.
-runner="${EMU_HOST:-$here/build/arch-test-host/emu-host}"
+runner="${EMU_HOST:-}"
 
 #
 # Extra arguments for every test, and the reason it exists is `--jit`.
@@ -101,34 +105,59 @@ cfg_src="$here/tests/arch-test/$cfg_name"
 #
 #   Zabha, ZacasZabha, Zbkb, Zbkc, Zbkx, Zcmop, Zfa*, Zfh*, Zfbfmin,
 #   Zimop, Zknd, Zkne, Zknh, Zksed, Zksh             not implemented
-#   Misalign, MisalignD, MisalignF, MisalignZca      this description
-#                                                    says MISALIGNED_LDST
-#                                                    false
+#   Misalign, MisalignD, MisalignF, MisalignZca      --misaligned: this
+#                                                    description says
+#                                                    MISALIGNED_LDST false
 #   Svadu, SvaduPMP, Svinval, Svnapot, Svpbmt        not implemented;
 #                                                    Svade is the choice
 extensions="${ARCH_TEST_EXTENSIONS:-I,M,Zmmul,Zaamo,Zalrsc,Zca,Zicsr,Zicntr,Zifencei,Zicbom,Zicbop,Zicboz,Zicond,Zihintntl,ZihintntlZca,Zihintpause,Zihpm,Zbb,Zba,Zbc,Zbs,Zacas,F,D,Zcb,ZcbM,ZcbZbb,Zcf,Zcd,PMPU,PMPF,PMPS,PMPSm,PMPZaamo,PMPZalrsc,PMPZca,PMPZicbo,Sv,Svbare,Svade,SvZicbo,ExceptionsSv,ExceptionsSvZaamo,ExceptionsSvZalrsc,SvPMP,SvPMPZicbo}"
+[[ -n "${ARCH_TEST_EXTENSIONS:-}" ]] && ext_given=1 || ext_given=0
 jobs="$(nproc)"
 verbose=""
+misaligned=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --extensions) extensions="$2"; shift 2 ;;
+        --extensions) extensions="$2"; ext_given=1; shift 2 ;;
+        --misaligned) misaligned=1; shift ;;
         --jobs|-j) jobs="$2"; shift 2 ;;
         -v|--verbose) verbose="--verbose"; shift ;;
-        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
 
+#
+# The two builds, each with the description that is true of it. The
+# misaligned one is *derived* from the ordinary one by
+# tests/arch-test/derive-misaligned.py, which asserts every line it
+# changes: the two differ in one property, and two hand-kept copies of the
+# Sail config would not stay that way.
+#
+# Its own build directory and its own work directory under the suite, so
+# neither run can be handed the other's binary or ELFs.
+#
+if [[ "$misaligned" == 1 ]]; then
+    misaligned_flag=ON
+    host_dir="$here/build/arch-test-host-misaligned"
+    cfg_name="rv32cortex-m-rv32-misaligned"
+    [[ "$ext_given" == 0 ]] &&
+        extensions="$extensions,Misalign,MisalignD,MisalignF,MisalignZca"
+else
+    misaligned_flag=OFF
+    host_dir="$here/build/arch-test-host"
+fi
+[[ -z "$runner" ]] && runner="$host_dir/emu-host"
+
 if [[ "$build_runner" == 1 ]]; then
-    echo "==> building the runner (RV32_MISALIGNED=OFF, as the config declares)"
-    cmake -S "$here" -B "$here/build/arch-test-host" \
-          -DCMAKE_BUILD_TYPE=Release -DRV32_MISALIGNED=OFF >/dev/null || exit 1
+    echo "==> building the runner (RV32_MISALIGNED=$misaligned_flag, as the config declares)"
+    cmake -S "$here" -B "$host_dir" \
+          -DCMAKE_BUILD_TYPE=Release -DRV32_MISALIGNED=$misaligned_flag >/dev/null || exit 1
     # By exit status, not by grepping for "error": a "No rule to make
     # target" contains neither that word nor any other this script could
     # match, and a failed build leaves the previous binary at exactly the
     # path the tests are about to use.
-    cmake --build "$here/build/arch-test-host" --target emu-host \
+    cmake --build "$host_dir" --target emu-host \
           -j"$(nproc)" >/dev/null || exit 1
 fi
 
@@ -177,7 +206,12 @@ fi
 # Install our DUT description into the suite's config tree.
 dest="$suite/config/cores/rv32cortex-m/$cfg_name"
 mkdir -p "$dest"
-cp "$cfg_src"/* "$dest/"
+if [[ "$misaligned" == 1 ]]; then
+    python3 -I "$here/tests/arch-test/derive-misaligned.py" "$cfg_src" "$dest" ||
+        exit 1
+else
+    cp "$cfg_src"/* "$dest/"
+fi
 
 echo "==> building test ELFs for $extensions"
 (

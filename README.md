@@ -10,7 +10,9 @@ backends (Thumb-2 and x86-64) behind one shared IR; and four platforms
 (a native host runner and STM32F4/F7/N6 firmware).
 Validated against the official
 [RISC-V Architecture Test Suite](https://github.com/riscv/riscv-arch-test)
-at **496/496** and the Berkeley `riscv-tests` at **77/77**, on hardware
+at **496/496** -- **509/509** for the default build, whose misaligned
+accesses complete and so qualify for four more suites -- and the
+Berkeley `riscv-tests` at **77/77**, on hardware
 as well as on a host. The RV32 core implements the **RVI20U32** profile
 and every extension it lists as optional, boots Linux 6.12 under
 OpenSBI, and is described extension by extension -- including how far
@@ -421,6 +423,7 @@ Figures and what they have already disproved are in
 
 ```sh
 ./scripts/run-arch-test.sh      # official riscv-arch-test, 496/496
+./scripts/run-arch-test.sh --misaligned  # the default build: 509/509
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77
 ./scripts/build-matrix.sh --test # every configuration that should build, and its ctest
 ./scripts/report-figures.sh     # every quoted figure, regenerated
@@ -452,7 +455,11 @@ and with `-DRV32_MISALIGNED=OFF`. That is not a spare copy: the suite
 validates the core against `tests/arch-test/*/{*.yaml,sail.json}`, which
 declare that this core reports misaligned accesses rather than splitting
 them, and the emulator's own default is the opposite because picolibc
-needs it. Set `EMU_HOST` to test a binary built elsewhere, and match the
+needs it. `--misaligned` runs the other build, into
+`build/arch-test-host-misaligned`, against a description *derived* from
+that one by `tests/arch-test/derive-misaligned.py` -- the two differ in
+one property, so one is generated from the other rather than kept by
+hand. Set `EMU_HOST` to test a binary built elsewhere, and match the
 config yourself if you do.
 
 ### Debugging

@@ -71,6 +71,7 @@ What belongs here is only what the recipes do not say:
 
 ```sh
 ./scripts/run-arch-test.sh      # 496/496; EMU_EXTRA_ARGS=--jit for the JIT
+./scripts/run-arch-test.sh --misaligned  # 509/509: the *default* build
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77; EMU_HOST=<a wrapper
                                 # adding --jit> for the JIT -- it takes no flag
 ./scripts/build-matrix.sh --test # every configuration, and its ctest
@@ -3159,6 +3160,9 @@ extension at all), `RV32_ISA_STRING`, the configure summary in
 the default suite list in `scripts/run-arch-test.sh` -- **by directory
 name**, so check `ls build/arch-test/tests/rv32i` for a second directory
 with a longer name before believing a suite is covered.
+The `--misaligned` description is generated from the first two by
+`tests/arch-test/derive-misaligned.py`, so edit the base and run both
+modes; the script fails if a line it rewrites has moved.
 
 ### Adding a frontend
 
