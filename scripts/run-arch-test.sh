@@ -230,7 +230,54 @@ if [[ ! -d "$elfs" ]]; then
     echo "error: no ELFs were produced at $elfs" >&2
     exit 1
 fi
-echo "==> $(find "$elfs" -name '*.elf' | wc -l) ELFs built"
+
+#
+# Run the suites that were named, not the directory.
+#
+# run_tests.py executes every ELF under the directory it is given, and
+# the work directory keeps everything any earlier run built. So
+# `--extensions I` -- which is what the `arch-test-I` ctest asks for --
+# ran 39 tests from a fresh checkout and all 496 after one full run, and
+# passed or failed on whichever it happened to hold. The name of a test
+# was a statement about the history of a directory.
+#
+# So the run gets a directory of its own, holding links to the ELFs of
+# exactly the named suites -- a suite being the directory an ELF sits
+# in, which is how ACT selects them too. A named suite with nothing in it
+# is reported: naming offers a suite and the description decides, and a
+# suite that is named and silently empty is the thing this script exists
+# to make visible.
+#
+run_dir="$suite/work/run/$cfg_name"
+rm -rf "$run_dir"
+mkdir -p "$run_dir/elfs"
+declare -A named=() found=()
+IFS=, read -ra _names <<< "$extensions"
+for n in "${_names[@]}"; do
+    named["$n"]=1
+done
+while IFS= read -r -d '' elf; do
+    dir="$(dirname "$elf")"
+    s="$(basename "$dir")"
+    [[ -n "${named[$s]:-}" ]] || continue
+    rel="${elf#"$elfs"/}"
+    mkdir -p "$run_dir/elfs/$(dirname "$rel")"
+    ln -s "$elf" "$run_dir/elfs/$rel"
+    found["$s"]=$(( ${found[$s]:-0} + 1 ))
+done < <(find "$elfs" -name '*.elf' -print0)
+total=0
+empty=""
+for n in "${_names[@]}"; do
+    total=$(( total + ${found[$n]:-0} ))
+    [[ -z "${found[$n]:-}" ]] && empty="$empty $n"
+done
+echo "==> $total ELFs in the ${#_names[@]} named suites" \
+     "($(find "$elfs" -name '*.elf' | wc -l) in the work directory)"
+[[ -n "$empty" ]] && echo "warning: named, and nothing built:$empty" >&2
+if [[ "$total" == 0 ]]; then
+    echo "error: none of the named suites has a test to run" >&2
+    exit 1
+fi
 
 echo "==> running against $runner"
 (
@@ -240,5 +287,5 @@ echo "==> running against $runner"
     # spin forever.
     ./run_tests.py --jobs "$jobs" \
         "$runner $EMU_EXTRA_ARGS --quiet --ram 0x800000 --max-insn 500000000" \
-        "work/$cfg_name/elfs"
+        "work/run/$cfg_name/elfs"
 )

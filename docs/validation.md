@@ -239,9 +239,15 @@ directly -- see [frontend/rv32.md](frontend/rv32.md). And three of the
 defects the 99 led to are held by no architecture test either, only by
 `isatest`: the suite is a floor.
 
-The runner executes every ELF in the work directory, not only the
-suites named on the command line: naming one still runs everything
-that has ever been built there. The list decides what is *built*.
+The run is of the suites named and nothing else. It used not to be:
+`run_tests.py` executes every ELF under the directory it is given, and
+the work directory keeps whatever any earlier run built, so
+`--extensions I` -- the `arch-test-I` ctest -- ran 39 tests from a fresh
+checkout and 496 after one full run, and its name was a statement about
+the history of a directory. The script now hands it a directory of
+links to the named suites' ELFs, prints how many the work directory
+holds besides, warns about a named suite that built nothing, and fails
+if none of them built anything.
 
 ## riscv-tests — 77/77
 

@@ -1382,11 +1382,14 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
             from the ordinary one: **509/509 on both backends**, and the
             thirteen Misalign tests fail all thirteen against the OFF
             build. See [validation.md](validation.md).
-      - [ ] **`ctest`'s `arch-test-I` is misnamed.** The runner executes
-            every ELF in the work directory whatever `--extensions`
-            names, so it runs all 496 once they have been built and
-            the 39 of the `I` suite from a fresh checkout. It passes or
-            fails with whatever the directory holds.
+      - [x] **`ctest`'s `arch-test-I` was misnamed.** The runner
+            executed every ELF in the work directory whatever
+            `--extensions` named -- 39 from a fresh checkout, 496 after
+            one full run. It now runs a directory of links to the named
+            suites' ELFs alone, says how many the work directory holds
+            besides, warns on a named suite that built nothing, and
+            fails when none of them did. `--extensions I` is 39 with
+            496 on disk.
 
 - [ ] **rv32: Zalasr and Zawrs have no second opinion.** No arch-test
       suite for either, and no Sail model for Zalasr at 0.13.1.
