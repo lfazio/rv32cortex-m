@@ -283,7 +283,8 @@ endfunction()
 # keeps the two from drifting.
 #
 add_guest_image(isatest  SOURCES start.S isatest.c
-                FLAGS -DRV32_MISALIGNED=$<BOOL:${RV32_MISALIGNED}>)
+                FLAGS -DRV32_MISALIGNED=$<BOOL:${RV32_MISALIGNED}>
+                      -DRV32_EXT_PMP=$<BOOL:${RV32_EXT_PMP}>)
 add_guest_image(hello    SOURCES start.S hello.c)
 
 #
@@ -349,9 +350,11 @@ add_guest_image(bench    SOURCES start.S bench.c)
 # by privilege alone and is true for anything below M-mode whether or
 # not a PMP entry exists. See the file header.
 add_guest_image(sv32bench-bare
-    SOURCES start.S sv32bench.c FLAGS -DSV32BENCH_PAGING=0)
+    SOURCES start.S sv32bench.c FLAGS -DSV32BENCH_PAGING=0
+            -DRV32_EXT_PMP=$<BOOL:${RV32_EXT_PMP}>)
 add_guest_image(sv32bench-paged
-    SOURCES start.S sv32bench.c FLAGS -DSV32BENCH_PAGING=1)
+    SOURCES start.S sv32bench.c FLAGS -DSV32BENCH_PAGING=1
+            -DRV32_EXT_PMP=$<BOOL:${RV32_EXT_PMP}>)
 
 # Floating point, and deliberately no PMP: isatest arms one early, after
 # which fetch_guard sends everything to the interpreter and no FP change

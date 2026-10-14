@@ -98,6 +98,7 @@ host-ppc|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_PPC=ON|big-endian front
 host-armv7m|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_ARMV7M=ON|the Cortex-M guest alone: its SoftFloat build, the SCS, the guests in tests/guest/armv7m
 host-all|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=ON -DEMU_GUEST_ARCH_PPC=ON -DEMU_GUEST_ARCH_ARMV7M=ON|every frontend in one runner: a flat image runs as the default unless its test names the frontend, which 20 tests did not; and gdb-check reaches all four here
 host-trace|host|-DEMU_GUEST_ARCH_G4MH=ON -DEMU_ENABLE_TRACE=ON -DEMU_JIT=OFF|the trace build, which is how pc deltas get read
+host-nopmp|host|-DEMU_GUEST_ARCH_RV32=ON -DRV32_EXT_PMP=OFF|PMP compiled out: an absent CSR once read as success here unseen, and isatest hung -- it now tests that the PMP CSRs trap instead
 host-net|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON|the IP stack on the host, over a pty -- this row exists because it did not, and the whole EMU_NET path stopped compiling here while every other row passed
 f746-rv32|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF|the shipping firmware: Thumb-2 emitter, lwIP/SLIP/TFTP (EMU_NET defaults ON)
 f746-rv32-nojit|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF -DEMU_JIT=OFF|**the one that was broken**

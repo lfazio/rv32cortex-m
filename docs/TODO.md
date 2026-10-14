@@ -1396,12 +1396,14 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       specification and not a checked one. Revisit when the Sail pin
       moves: Zalasr is in later models.
 
-- [ ] **rv32: `-DRV32_EXT_PMP=OFF` is not a configuration anything
-      checks.** No build-matrix row has it. Its unit tests did not
-      compile (`test_ecall.c` named `pmpaddr`; guarded now) and
-      `isatest` did not finish in five minutes there: the self-test
-      assumes the default core. The CSR defect
-      above lived there for exactly that reason.
+- [x] **rv32: `-DRV32_EXT_PMP=OFF` is a configuration the matrix
+      checks** (`host-nopmp`). `isatest` and `sv32bench` hung there:
+      `test_jit_trap_context` relied on a PMP fetch fault to leave
+      S-mode, and both wrote PMP CSRs that do not exist. The guests now
+      take the option as they take `RV32_MISALIGNED`; without PMP,
+      `isatest` drops what needs it and instead checks that reading and
+      writing a PMP CSR is an illegal instruction -- 711 checks on both
+      backends, against 748.
 
 - [x] **rv32: the new extensions and the rest of the tree.** Both
       halves measured.

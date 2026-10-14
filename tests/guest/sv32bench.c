@@ -35,6 +35,11 @@
 
 #include <stdint.h>
 
+/* Whether this build has PMP; see the same default in isatest.c. */
+#ifndef RV32_EXT_PMP
+#define RV32_EXT_PMP 1
+#endif
+
 #ifndef SV32BENCH_PAGING
 #define SV32BENCH_PAGING 1
 #endif
@@ -189,8 +194,10 @@ int main(void)
      * even without this entry. The fast path is off in this build for
      * two reasons, not one, and that is the point the file header makes.
      */
+#if RV32_EXT_PMP
     csr_write("pmpaddr0", 0xFFFFFFFFu);
     csr_write("pmpcfg0", 0x0Fu); /* NAPOT, RWX, unlocked */
+#endif /* without PMP nothing denies S-mode, and the CSRs do not exist */
 
     /*
      * Let S-mode read the counters. `run_kernel` opens with a read of

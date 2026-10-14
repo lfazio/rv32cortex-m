@@ -14,6 +14,17 @@
 
 #include <stdint.h>
 
+/*
+ * Whether this build has PMP, passed by tests/guest/CMakeLists.txt as
+ * RV32_MISALIGNED is. Without it the PMP CSRs do not exist, nothing
+ * below M-mode is denied, and the tests that use PMP to make something
+ * fault -- including the one that relies on a fetch fault to get out of
+ * S-mode -- are replaced by one that the CSRs trap.
+ */
+#ifndef RV32_EXT_PMP
+#define RV32_EXT_PMP 1
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Platform                                                            */
 /* ------------------------------------------------------------------ */
@@ -1299,6 +1310,28 @@ __attribute__((noinline)) static void pmp_store(volatile uint32_t *p,
     *p = v;
 }
 
+#if !RV32_EXT_PMP
+/*
+ * No PMP: its CSRs are not there, so reading or writing one is an
+ * illegal instruction -- not a read of zero and a write that vanishes,
+ * which is what an `#if` around a `default:` once made every absent CSR
+ * do (CLAUDE.md).
+ */
+static void test_pmp_absent(void)
+{
+    uint32_t before = g_trap_count;
+
+    (void)csr_read("pmpcfg0");
+    check("pmp-absent-read-traps", g_trap_count - before, 1u);
+    check("pmp-absent-read-cause", g_last_cause, 2u);
+
+    before = g_trap_count;
+    csr_write("pmpaddr0", 0x1234u);
+    check("pmp-absent-write-traps", g_trap_count - before, 1u);
+    check("pmp-absent-write-cause", g_last_cause, 2u);
+}
+#endif
+
 static void test_pmp(void)
 {
     /* The address registers are plain read/write while unlocked. */
@@ -2058,9 +2091,11 @@ static void test_smode(void)
      * with no handler reachable to report it. Index 15 is the lowest
      * priority, so the three locked entries keep their meaning.
      */
+#if RV32_EXT_PMP
     csr_write("pmpaddr15", 0xFFFFFFFFu);
     csr_write("pmpcfg3", 0x9F000000u); /* byte 3: L | NAPOT | RWX */
     check("s-pmp-background", (csr_read("pmpcfg3") >> 24) & 0xFFu, 0x9Fu);
+#endif
 
     csr_write("stvec", 0u);
     csr_write("medeleg", 0u); /* everything to M for now */
@@ -3633,9 +3668,11 @@ static void test_warl_widths(void)
      * cannot exist, so they read as zero -- the same rule, and the same
      * mistake, as satp.PPN.
      */
+#if RV32_EXT_PMP
     csr_write("pmpaddr10", 0xFFFFFFFFu);
     check("pmpaddr-30-bits", csr_read("pmpaddr10"), 0x3FFFFFFFu);
     csr_write("pmpaddr10", 0u);
+#endif
 
     /* menvcfg and senvcfg: the three cache-block fields and nothing
      * else, and CBIE cannot hold its reserved value. */
@@ -3749,6 +3786,7 @@ static void test_cbo_below_m(void)
      * entry 9 is one word in the middle of the block, with no
      * permissions at all.
      */
+#if RV32_EXT_PMP
     csr_write("pmpaddr9", ((uint32_t)(uintptr_t)&g_block[4]) >> 2);
     csr_write("pmpcfg2", 0x1000u); /* entry 9: NA4, ---, unlocked */
     check("s-cbo-straddle-cfg", (csr_read("pmpcfg2") >> 8) & 0xFFu, 0x10u);
@@ -3761,6 +3799,7 @@ static void test_cbo_below_m(void)
     csr_write("pmpcfg2", 0u);
     csr_write("pmpaddr9", 0u);
     check("s-cbo-straddle-cleared", cbo_from_smode(0xF0u), 0x0u);
+#endif
 
     /*
      * And under paging the block is named by a *virtual* address. The
@@ -3947,7 +3986,7 @@ static void smode_split(void)
     LEAVE_SMODE();
 }
 
-#if defined(__riscv_flen) && (__riscv_flen >= 32)
+#if defined(__riscv_flen) && (__riscv_flen >= 32) && RV32_EXT_PMP
 /* An aligned double, with PMP over its upper word only. */
 static void smode_fsd_pmp(void)
 {
@@ -4013,7 +4052,7 @@ static void test_split_access(void)
     check("split-hole-nothing-written", *b_tail, 0x0F0E0D0Cu);
 #endif
 
-#if defined(__riscv_flen) && (__riscv_flen >= 32)
+#if defined(__riscv_flen) && (__riscv_flen >= 32) && RV32_EXT_PMP
     /*
      * The same question without paging, and in every build: an aligned
      * double with PMP over its upper word. FSD was two word stores, each
@@ -4053,11 +4092,20 @@ int main(void)
     test_csr();
     test_traps();
     test_cbo();
+#if RV32_EXT_PMP
     test_pmp();
     test_pmp_exec();
+#else
+    test_pmp_absent();
+    (void)test_pmp; /* kept compiled, so the build that has PMP is */
+    (void)test_pmp_exec; /* not the only one that type-checks them   */
+    (void)test_jit_trap_context;
+#endif
     test_smode();
     test_sv32();
+#if RV32_EXT_PMP
     test_jit_trap_context();
+#endif
     test_aplic();
 #if defined(__riscv_zacas)
     test_zacas();
