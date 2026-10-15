@@ -589,6 +589,53 @@ int main(void)
     }
     want("sp-adjust-limit", t2_sp_adjust(true, 512u) ? 1u : 0u, 0u);
 
+    /*
+     * LDR.W (literal), loaded from each halfword alignment: Align(pc, 4)
+     * rounds the two differently, and a patch that ignored it would load
+     * the halfword pair beside the literal. A second word follows the
+     * first so that an offset one word out loads something recognisable.
+     */
+    for (unsigned pad = 0; pad < 2u; pad++) {
+        const char *const tag = pad ? "ldr-literal-at-0mod4" : "ldr-literal-at-2mod4";
+        uint8_t *site;
+        uint8_t *lit;
+
+        emit_begin(); /* a 16-bit PUSH: the cursor is 2 mod 4 */
+        if (pad != 0u) {
+            t2_emit16(0xBF00u);
+        }
+        site = t2_ldr_literal(0u);
+        t2_pop(T2_LIST_PC);
+        if (((uintptr_t)emu_jit_cursor & 3u) != 0u) {
+            t2_emit16(0xBF00u);
+        }
+        lit = emu_jit_cursor;
+        t2_emit16(0x5678u);
+        t2_emit16(0x1234u);
+        t2_emit16(0xDEF0u);
+        t2_emit16(0x9ABCu);
+        want(tag, (uint32_t)((uintptr_t)site & 3u), pad ? 0u : 2u);
+        want(tag, t2_patch_literal(site, lit) ? 1u : 0u, 1u);
+        t2_sync_code(g_code, (uint32_t)(emu_jit_cursor - g_code));
+        {
+            const fn2_t f = (fn2_t)(void *)(uintptr_t)((uintptr_t)g_code | 1u);
+
+            want(tag, f(0u, 0u), 0x12345678u);
+        }
+    }
+
+    /* Refused rather than truncated: behind, past 4095, and unaligned. */
+    emit_begin();
+    {
+        uint8_t *const site = t2_ldr_literal(0u);
+        uint8_t *const pc = (uint8_t *)(((uintptr_t)site + 4u) & ~(uintptr_t)3u);
+
+        want("ldr-literal-behind", t2_patch_literal(site, g_code) ? 1u : 0u, 0u);
+        want("ldr-literal-4092", t2_patch_literal(site, pc + 4092) ? 1u : 0u, 1u);
+        want("ldr-literal-4096", t2_patch_literal(site, pc + 4096) ? 1u : 0u, 0u);
+        want("ldr-literal-unaligned", t2_patch_literal(site, pc + 6) ? 1u : 0u, 0u);
+    }
+
     /* And the emitter must not have overflowed on any of that. */
     want("no-overflow", emu_jit_overflow ? 1u : 0u, 0u);
 

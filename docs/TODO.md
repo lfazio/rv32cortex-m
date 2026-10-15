@@ -183,9 +183,12 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       256,320 → 239,432 either way -- level with the interpreter's
       110.46 on the same tree
       ([backend/thumb2.md](backend/thumb2.md#where-the-bytes-go)).
-      Left: the host pointer, `MOVW`/`MOVT` per access, which cannot be
-      shared because a window may change between translations without
-      a flush; a literal per block would save 4 bytes an access.
+      **Then the host pointer from a pool per block**: `LDR.W` from a
+      word after the block's last instruction rather than `MOVW`/`MOVT`
+      at every access -- a load 38 bytes and a store 47, 31.17 a guest
+      instruction; at 32 KB x650 109.40 → 106.01 and 239,432 → 226,794
+      translations, wall 81.00 → 78.48 s; 96 KB unchanged within
+      layout ([backend/thumb2.md](backend/thumb2.md#where-the-bytes-go)).
 - [x] **`RETIRE` was one operation per guest instruction** -- 11% of
       what the Thumb-2 backend emitted once the accesses had shrunk.
       `pass_merge_retire` keeps one per stretch between observation

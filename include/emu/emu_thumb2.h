@@ -145,6 +145,15 @@ bool t2_patch_branch_n(uint8_t *at, const uint8_t *target, bool conditional);
 void t2_patch_branch(uint8_t *at, const uint8_t *target, bool conditional);
 
 /*
+ * LDR.W rt, [pc, #imm12]: a word from a literal emitted later, in the
+ * same block. Pair with t2_patch_literal once the word's place is known;
+ * it refuses a literal behind the load, more than 4095 bytes ahead of
+ * it, or not word aligned.
+ */
+uint8_t *t2_ldr_literal(uint32_t rt);
+bool t2_patch_literal(uint8_t *at, const uint8_t *literal);
+
+/*
  * Rewrite a branch in code that is already committed -- a chained exit
  * being linked or unlinked, a retired block's entry becoming a jump.
  *

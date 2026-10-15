@@ -445,6 +445,8 @@ static void emit_addr(uint32_t rd, uint32_t rn, uint32_t imm)
  * scratch, holds them as before. The branch is the 16-bit form, because
  * the slow path is the next thing emitted.
  */
+static void emit_pooled(uint32_t rd, uint32_t v);
+
 static uint32_t emit_window_guard(uint32_t base, uint32_t wsize,
                                   uint32_t addr_reg, uint32_t size,
                                   uint8_t **out)
@@ -456,7 +458,7 @@ static uint32_t emit_window_guard(uint32_t base, uint32_t wsize,
     if (t2_expand_imm(base, &enc)) {
         t2_sub_imm(T2_R2, addr_reg, enc);
     } else {
-        t2_imm32(T2_R12, base);
+        emit_pooled(T2_R12, base);
         t2_sub(T2_R2, addr_reg, T2_R12);
     }
     if (k != 0u) {
@@ -465,7 +467,7 @@ static uint32_t emit_window_guard(uint32_t base, uint32_t wsize,
     if (t2_expand_imm(lim, &enc)) {
         t2_cmp_imm(T2_R2, enc);
     } else {
-        t2_imm32(T2_R12, lim);
+        emit_pooled(T2_R12, lim);
         t2_cmp(T2_R2, T2_R12);
     }
     out[0] = t2_bcond_forward_n(0x2u); /* HS: unsigned >= */
@@ -583,6 +585,111 @@ static void patch_branch_n(uint8_t *at, const uint8_t *target, bool cond)
     if (!t2_patch_branch_n(at, target, cond)) {
         g_exits_lost = true;
     }
+}
+
+/*
+ * **The block's constant pool.** The guest-RAM window's host address is
+ * a full 32-bit value -- MOVW and MOVT, eight bytes -- and every inlined
+ * load and store needs it. It cannot come from a shared slot, because a
+ * frontend may move its window between translations without a flush
+ * (ARMv7-M's follows the stack) and each block's guard is baked against
+ * its own. So each block carries its own copy, after its last
+ * instruction, and an access loads it PC-relative: LDR.W, four bytes,
+ * at every access, and four once per block plus two of alignment half
+ * the time.
+ *
+ * Only for a value a block is likely to need more than once. A
+ * constant used once costs the same eight bytes either way, and a load
+ * where MOVW/MOVT had none.
+ *
+ * LDR.W reaches 4095 bytes forward, and how far the end of a block is
+ * from a load is not known when the load is emitted. So the pool is
+ * laid down early -- in line, behind a branch -- once the oldest load
+ * waiting on it is POOL_REACH back; what is left of the reach is for
+ * the IR instruction being lowered when that is checked, and for the
+ * pool. No guest here has a block that long, which is why it is a
+ * margin and not a measurement.
+ */
+#define POOL_VALUES 4u
+#define POOL_SITES 64u
+#define POOL_REACH 3072u
+
+static EMU_PER_CORE uint32_t g_pool_val[POOL_VALUES];
+static EMU_PER_CORE uint32_t g_pool_nval;
+static EMU_PER_CORE uint8_t *g_pool_at[POOL_SITES];
+static EMU_PER_CORE uint8_t g_pool_idx[POOL_SITES];
+static EMU_PER_CORE uint32_t g_pool_nsites;
+
+static void pool_reset(void)
+{
+    g_pool_nval = 0u;
+    g_pool_nsites = 0u;
+}
+
+/*
+ * rd = v, from the pool -- or MOVW/MOVT, when the pool is full, and
+ * MOVW alone when that is all v needs, which is four bytes already.
+ */
+static void emit_pooled(uint32_t rd, uint32_t v)
+{
+    uint32_t i = 0u;
+
+    while (i < g_pool_nval && g_pool_val[i] != v) {
+        i++;
+    }
+    if ((v >> 16) == 0u || g_pool_nsites == POOL_SITES || i == POOL_VALUES) {
+        t2_imm32(rd, v);
+        return;
+    }
+    if (i == g_pool_nval) {
+        g_pool_val[g_pool_nval++] = v;
+    }
+    g_pool_idx[g_pool_nsites] = (uint8_t)i;
+    g_pool_at[g_pool_nsites++] = t2_ldr_literal(rd);
+}
+
+/*
+ * Lay the pool down here and point every load waiting on it at its
+ * word. A load out of reach would be a defect in the margin above, and
+ * is refused like a lost exit rather than left loading the wrong word.
+ */
+static void pool_emit(void)
+{
+    if (g_pool_nsites == 0u) {
+        return;
+    }
+    if (((uintptr_t)emu_jit_here() & 3u) != 0u) {
+        t2_emit16(0xBF00u); /* NOP: the literals are words */
+    }
+
+    uint8_t *const base = emu_jit_here();
+
+    for (uint32_t i = 0; i < g_pool_nval; i++) {
+        t2_emit16((uint16_t)g_pool_val[i]);
+        t2_emit16((uint16_t)(g_pool_val[i] >> 16));
+    }
+    if (!emu_jit_overflowed()) {
+        for (uint32_t i = 0; i < g_pool_nsites; i++) {
+            if (!t2_patch_literal(g_pool_at[i], base + 4u * g_pool_idx[i])) {
+                g_exits_lost = true;
+            }
+        }
+    }
+    pool_reset();
+}
+
+/* The pool, in line, if the oldest load waiting on it is getting far. */
+static void pool_check_reach(void)
+{
+    if (g_pool_nsites == 0u ||
+        (uint32_t)(emu_jit_here() - g_pool_at[0]) < POOL_REACH) {
+        return;
+    }
+
+    uint8_t *const over = t2_b_forward_n();
+
+    pool_emit();
+    patch_branch_n(over, emu_jit_here(), false);
 }
 
 /*
@@ -1957,7 +2064,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             const uint32_t k = emit_fast_guard(T2_R1, sz, slow);
             const uint32_t rt = (pd >= 0) ? (uint32_t)pd : T2_R0;
 
-            t2_imm32(T2_R12, (uint32_t)(uintptr_t)g_fast.host);
+            emit_pooled(T2_R12, (uint32_t)(uintptr_t)g_fast.host);
             if (t2_ld_reg_lsl(rt, T2_R12, T2_R2, k, sz, sign)) {
                 if (pd < 0) {
                     st_slot(T2_R0, in->dst);
@@ -2046,7 +2153,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
             const uint32_t k = emit_fast_guard(T2_R1, sz, slow);
 
-            t2_imm32(T2_R12, (uint32_t)(uintptr_t)g_fast.host);
+            emit_pooled(T2_R12, (uint32_t)(uintptr_t)g_fast.host);
             if (t2_st_reg_lsl(T2_R3, T2_R12, T2_R2, k, sz)) {
                 sdone = t2_b_forward_n();
             }
@@ -2188,6 +2295,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_body = NULL;
     g_start_pc = b->start_pc;
     g_has_start_pc = true;
+    pool_reset();
 
     /*
      * **A uniform save set, so a chained block's epilogue matches
@@ -2334,6 +2442,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
             }
         }
 
+        pool_check_reach();
 #if EMU_JIT_BYTE_STATS
         uint8_t *const at = emu_jit_here();
 #endif
@@ -2384,6 +2493,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     }
     t2_mov(T2_R0, T2_CNT);
     t2_pop(list | T2_LIST_PC);
+    pool_emit();
 
     return !emu_jit_overflowed() && !g_exits_lost;
 }

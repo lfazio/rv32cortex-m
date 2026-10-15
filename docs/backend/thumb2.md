@@ -275,6 +275,7 @@ RV32 CoreMark x120 on the F746 at 96 KB, per translation:
 | ...and the one-compare window guard | **36.0** | 54 | 59 | 3 | 2 | 27 |
 | ...and one RETIRE per stretch | **33.9** | 54 | 59 | 3 | 2 | 27 |
 | ...and one shared slow path | **31.1** | 43 | 51 | 3 | 2 | 27 |
+| ...and the host pointer from a pool | | 38 | 47 | | | |
 
 **The encoders always chose the 32-bit form.** `MOV`, `CMP`, and the
 loads and stores of the frame and of the guest register file were
@@ -397,11 +398,51 @@ CoreMark fits, a slow path that is rarely taken changes nothing. On
 ARMv7-M CoreMark at 32 KB, 238.19 → 226.09 (one layout). isatest, mmiobench and
 every ARMv7-M, G4MH and PowerPC board guest pass through it.
 
-What is left in an access is the host pointer, `MOVW`/`MOVT` per
-access. It cannot come from a shared slot, because a frontend may
-change the window between translations without a flush -- ARMv7-M's is
-wherever the stack is -- and each block's guard is baked against its
-own. A literal per block would be 4 bytes an access less 4 a block.
+**Then the host pointer, from a pool per block.** Every inlined access
+built the window's host address with `MOVW`/`MOVT`, eight bytes. It
+cannot come from a shared slot, because a frontend may change the
+window between translations without a flush -- ARMv7-M's is wherever
+the stack is -- and each block's guard is baked against its own. So
+each block carries its own copy after its last instruction, and an
+access loads it with `LDR.W rt, [pc, #imm12]`: four bytes, and four a
+block for the word plus two of alignment half the time. The same pool
+takes the window's base and limit when they are not modified
+immediates, which is ARMv7-M's stack window. A value that needs only
+`MOVW` stays one, and nothing else is pooled: a constant used once
+costs eight bytes either way, and a load where `MOVW`/`MOVT` had none.
+A block with a single access pays that too, which is why the pool is
+worth 4 bytes an access less 4 to 6 a block rather than 4 an access.
+
+Two things it relies on. **Block starts stay word aligned**, at
+translation and through compaction: `Align(pc, 4)` rounds a load at
+2 mod 4 differently from one at 0 mod 4, so a block moved by a halfword
+would load its neighbour's bytes. And **`LDR.W` reaches 4095 bytes
+forward**, which the end of a block may not be within; once the oldest
+load waiting on the pool is 3 KB back, the pool is laid down in line
+behind a branch, and a load still out of reach refuses the block rather
+than loading the wrong word. No guest here has a block that long.
+`t2exec` checks the load from both halfword alignments with a decoy
+word beside the literal, and the patcher's refusals; a mutant that
+forgets the alignment loads `0x5678bd00` and fails by name.
+
+RV32 CoreMark x650 at 32 KB, `-DEMU_JIT_BYTE_STATS=ON`, against a
+worktree at the commit before -- the table above is 96 KB x120, so
+these are not a row of it:
+
+| | bytes / guest insn | LOAD | STORE | translations | cycles / insn | wall |
+|---|---|---|---|---|---|---|
+| 32 KB, before | 32.12 | 43 | 51 | 239,432 | 109.40 | 81.00 s |
+| 32 KB, after | **31.17** | **38** | **47** | **226,794** | **106.01** | **78.48 s** |
+| 96 KB, before / after | | | | 296 / 296 | 14.16 / 13.95 | 10.48 / 10.31 s |
+
+The translation count is the layout-free figure, and the wall clock
+agrees with the cycle counter. At 96 KB, where CoreMark fits, nothing
+is retranslated and the difference is within layout: what that says is
+that a literal load is not slower than `MOVW`/`MOVT` on the M7. ARMv7-M
+CoreMark x40 at 32 KB, where the window's base is pooled as well:
+226.94 → 223.46, 22,779 → 22,357 translations. isatest, mmiobench,
+`t2exec`, `itblock`, PowerPC `alu` and `mmu` and the G4MH guest all pass
+through it on the board.
 
 ## The guest-RAM window
 

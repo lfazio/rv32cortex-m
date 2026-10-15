@@ -812,6 +812,38 @@ bool t2_patch_branch_n(uint8_t *at, const uint8_t *target, bool conditional)
 }
 
 /*
+ * LDR.W (literal), T2, with U set: the word at Align(pc, 4) + imm12,
+ * where pc reads as the instruction's address plus 4. Forward only,
+ * because the literal follows the code that loads it.
+ *
+ * Align(pc, 4) is why a block must keep its alignment when it moves:
+ * shifted by two bytes, a load at an address that is 2 mod 4 would
+ * round to a different word and every literal would be off by one
+ * halfword. The framework aligns every block start to 4, at
+ * translation and at compaction alike.
+ */
+uint8_t *t2_ldr_literal(uint32_t rt)
+{
+    uint8_t *const at = emu_jit_here();
+
+    t2_emit32(0xF8DFu, (uint16_t)(rt << 12));
+    return at;
+}
+
+bool t2_patch_literal(uint8_t *at, const uint8_t *literal)
+{
+    uint16_t *const hw = (uint16_t *)(void *)at;
+    const uintptr_t pc = ((uintptr_t)at + 4u) & ~(uintptr_t)3u;
+    const intptr_t off = (intptr_t)((uintptr_t)literal - pc);
+
+    if (((uintptr_t)literal & 3u) != 0u || off < 0 || off > 4095) {
+        return false;
+    }
+    hw[1] = (uint16_t)((hw[1] & 0xF000u) | (uint32_t)off);
+    return true;
+}
+
+/*
  * Guarded on overflow because `at` may be past the end of a buffer that
  * stopped accepting emissions -- the block is discarded either way, and
  * writing through the pointer would corrupt whatever follows.
