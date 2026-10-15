@@ -222,11 +222,26 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       `performance.md` are after the fix. The second half of
       `performance.md` and both `stm32f446/` pages are not, and are
       marked as history.
-- [ ] **The driver-shaped workload has not been measured on the IR
-      backends.** The hand-written translator inlined the peripheral
-      window and `mmiobench` was 2.2–3.1× better for it; the IR
-      backends inline guest RAM only. `mmiobench` on the F746 would say
-      what that cost.
+- [ ] **The IR backends do not inline the peripheral window, and a
+      driver pays 6-10x per access for it.** Measured on the F746
+      (`mmiobench`, ticks per kernel, 91df012):
+
+      | kernel | interpreter MMIO / RAM | JIT MMIO / RAM |
+      |---|---|---|
+      | read | 152,233 / 101,144 | 70,009 / 11,532 -- **6.1x** |
+      | write | 94,330 / 70,624 | 42,092 / 6,801 -- **6.2x** |
+      | rmw | 205,154 / 124,091 | 94,044 / 9,206 -- **10.2x** |
+      | poll | 128,149 / 96,248 | 51,188 / 7,307 -- **7.0x** |
+
+      The JIT is still 2.2x the interpreter on peripheral access, but
+      every one leaves the block through the checked accessor and a bus
+      walk. The hand-written translator inlined the window and was
+      2.2-3.1x better for it: the window is an identity map, so it is
+      the guest-RAM fast path with host equal to base, plus a test of
+      the read-only holes on a store (PWR, the RCC clock tree, the
+      flash controller), armed only once a guest has made passthrough
+      accesses, because always-on code grew CoreMark's image past the
+      cache.
 - [x] **Is `-ffp-contract=off` on `rv_fpu.c` still doing anything?
       No, and it is gone.** This entry said the file was "SoftFloat
       throughout", which was not quite true: it still held the
