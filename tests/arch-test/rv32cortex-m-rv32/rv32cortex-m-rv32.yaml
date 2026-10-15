@@ -20,8 +20,8 @@ kind: architecture configuration
 type: fully configured
 name: rv32cortex_m_rv32
 description: >-
-  rv32cortex-m - RV32 interpreter hosted on ARMv6-M/v7E-M/v8.1-M,
-  machine mode only.
+  rv32cortex-m - RV32 interpreter and JIT hosted on ARMv6-M/v7E-M/v8.1-M,
+  with M, S and U modes and Sv32.
 
 implemented_extensions:
   - { name: I, version: "= 2.1" }
@@ -100,6 +100,14 @@ implemented_extensions:
   # SINVAL.VMA and the two fences around it. SFENCE.VMA's invalidation
   # and traps, and fences that one hart has nothing to order.
   - { name: Svinval, version: "= 1.0.0" }
+  # RVA20S's two properties. Sstvala requires every REPORT_*_IN_STVAL
+  # below to be true, and they are; tests/arch-test/probes/sstvala.S
+  # holds the values to Sail and Spike, which no suite here does for the
+  # cases an implementation gets wrong. Ssccptr: the walk reads page
+  # tables through the bus like any load, so RAM -- the only main memory
+  # there is -- supports it.
+  - { name: Sstvala, version: "= 1.0.0" }
+  - { name: Ssccptr, version: "= 1.0.0" }
 
 params:
   # ---- base ----
@@ -247,9 +255,8 @@ params:
 
   # Every trap that carries an address puts it in the tval of whichever
   # mode took it, so the S answers match the M ones already declared
-  # above. The page-fault entries are vacuous -- with Bare translation
-  # nothing can raise one -- but UDB requires a value, and saying "we
-  # would report the address" is the answer consistent with the rest.
+  # above -- the virtual address, under Sv32. Sstvala requires all of
+  # these.
   REPORT_ENCODING_IN_STVAL_ON_ILLEGAL_INSTRUCTION: true
   REPORT_VA_IN_STVAL_ON_BREAKPOINT: true
   REPORT_VA_IN_STVAL_ON_INSTRUCTION_MISALIGNED: true

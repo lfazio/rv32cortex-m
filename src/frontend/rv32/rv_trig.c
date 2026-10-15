@@ -69,15 +69,37 @@ void rv_trig_refresh(rv_hart_t *h)
 {
     h->trig_active = false;
     for (uint32_t i = 0; i < RV_TRIG_COUNT; i++) {
-        /* Armed means mcontrol, enabled for M-mode, and watching something. */
+        /* Armed means mcontrol, enabled in some mode, and watching
+         * something. */
         if ((h->tdata1[i] >> MC_TYPE_SHIFT) == MC_TYPE_MCONTROL &&
-            (h->tdata1[i] & MC_M) != 0u &&
+            (h->tdata1[i] & (MC_M | MC_S | MC_U)) != 0u &&
             (h->tdata1[i] & (MC_EXECUTE | MC_STORE | MC_LOAD)) != 0u) {
             h->trig_active = true;
             break;
         }
     }
     rv_hart_refresh_fetch_guard(h);
+}
+
+/*
+ * m, s and u say which modes a trigger matches in -- the mode the hart is
+ * running in, not the one MPRV lends a load. Only m was read, from when
+ * M was the only mode: a trigger set for S or U never fired, and one set
+ * for M alone fired in all three. tests/arch-test/probes/sstvala.S's
+ * case 23 is an S-only load trigger, held to Spike.
+ */
+static uint32_t mode_bit(uint32_t priv)
+{
+    switch (priv) {
+    case RV_PRIV_M:
+        return MC_M;
+#if RV_EXT_S
+    case RV_PRIV_S:
+        return MC_S;
+#endif
+    default:
+        return MC_U;
+    }
 }
 
 bool rv_trig_check(const rv_hart_t *h, uint32_t addr, emu_access_t acc)
@@ -102,7 +124,7 @@ bool rv_trig_check(const rv_hart_t *h, uint32_t addr, emu_access_t acc)
         if ((d >> MC_TYPE_SHIFT) != MC_TYPE_MCONTROL) {
             continue;
         }
-        if ((d & MC_M) == 0u || (d & want) == 0u) {
+        if ((d & mode_bit(h->priv)) == 0u || (d & want) == 0u) {
             continue;
         }
         /* match == 0: the address must equal tdata2 exactly. */

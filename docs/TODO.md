@@ -1571,7 +1571,7 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       maintenance operations and `clmul`, counted; it never executes
       `wrs.nto`, because one hart has nobody to wait for.
 
-- [ ] **rv32: what the RVA profiles would still need.** RVI20U32 is
+- [x] **rv32: what the RVA profiles would still need.** RVI20U32 is
       met. The RVA families are 64-bit only, so there is nothing to
       claim, but read for RV32 the RVA22 mandatory lists are met now
       ([frontend/rv32.md](frontend/rv32.md#profiles)). **Zic64b is
@@ -1588,9 +1588,28 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       FCVT.D.H and FCVT.H.D, which no suite test covers. FP loads and
       stores the translator does not lower -- FLD, FSD, FLH, FSH -- go
       to the helper now instead of ending the block (D-fld: 514
-      interpreted to 265). **What is left is RVA20's**: Zicclsm is a
-      build option (on by default), and Sstvala and Ssccptr are
-      believed true without a test that says so.
+      interpreted to 265). **Sstvala and Ssccptr are done**, which
+      leaves RVA20 to Zicclsm, a build option on by default: declared
+      to UDB and Sail, and `tests/arch-test/probes/sstvala.S` holds 23
+      values of `stval` to Sail and Spike. Its first run, and
+      `umode.S`'s, found four defects no suite saw: MRET executing in
+      S-mode and U-mode, WFI parking the hart from U-mode, a 16-bit
+      instruction's illegal trap reporting its 32-bit expansion, and
+      triggers matching only on their `m` bit. Each is fixed, held by
+      `isatest` and the probes, and was confirmed by reverting it on
+      both backends ([frontend/rv32.md](frontend/rv32.md#profiles)).
+
+- [ ] **rv32: Sdtrig's reentrancy rules.** A breakpoint trigger that
+      matches inside its own handler fires again for ever unless
+      something stops it. The debug specification's native-trigger
+      section offers `tcontrol.mte` for M-mode, and for S-mode that no
+      breakpoint trigger fires while `medeleg[3]` is set and
+      `sstatus.SIE` is clear -- as remembered, not read: no copy is in
+      `docs/`. Neither is implemented here (there is no `tcontrol`).
+      Spike does the second, measured: `sstvala.S`'s S-mode trigger
+      did not fire on it until SIE was set. So an S-mode trigger with
+      SIE clear is a known difference from Spike, and no probe holds
+      it yet. Get the specification first.
 
 - [x] **gdb: what the four targets did not describe.** Registers have
       their own widths now (`reg_width`, 64-bit accessors), and ARMv7-M

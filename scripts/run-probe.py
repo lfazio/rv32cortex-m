@@ -84,8 +84,11 @@ def run_emu(emu, args, elf):
 
 def run_sail(sail, elf, tmp):
     trace = os.path.join(tmp, "sail.trace")
+    # Sail calls more traps than xRETs a loop and stops; a probe whose
+    # handler resumes with a jump -- sstvala.S, under TSR -- is not one.
     subprocess.run([sail, "--config",
                     os.path.join(ROOT, "tests/arch-test/rv32cortex-m-rv32/sail.json"),
+                    "--disable-trap-loop-detection",
                     "--trace-gpr", "--use-abi-names", "--inst-limit", "5000",
                     "--trace-output", trace, elf],
                    capture_output=True, text=True, timeout=120)

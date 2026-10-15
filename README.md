@@ -15,8 +15,9 @@ accesses complete and so qualify for four more suites -- and the
 Berkeley `riscv-tests` at **77/77**, on hardware
 as well as on a host. The RV32 core implements the **RVI20U32** profile
 and every extension it lists as optional, boots Linux 6.12 under
-OpenSBI, and is described extension by extension -- including how far
-it is from an RV32 reading of RVA20 and RVA22, which are 64-bit only --
+OpenSBI, and is described extension by extension -- including the
+mandatory lists of RVA20 and RVA22, which are 64-bit only and which it
+meets read for RV32 --
 in [docs/frontend/rv32.md](docs/frontend/rv32.md#profiles).
 
 The ARMv7-M frontend began as a way to make the **Thumb-2 backend

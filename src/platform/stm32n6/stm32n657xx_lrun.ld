@@ -120,8 +120,13 @@ _Min_Stack_Size = 0x2000;
  * lower half of it, and AXISRAM3..6 stay available for a guest that
  * wants them -- which is what the enable in SystemInit is now for.
  *
- * 191K/320K rather than ST's 255K/256K because their split is sized for
- * a blinky: the G4MH build overflows `RAM` by 3144 bytes at 256K.
+ * 207K/304K rather than ST's 255K/256K because their split is sized for
+ * a blinky: the G4MH build overflows `RAM` by 3144 bytes at 256K. It was
+ * 191K/320K until the RV32 build with `isatest` -- the guest image is in
+ * ROM -- overflowed it by 1120 bytes; at 191K/320K the RV32 build had
+ * 125 KB of RAM free and the G4MH one 59 KB of ROM. At 207K/304K, RV32
+ * has about 15 KB of ROM and 106 KB of RAM to spare and G4MH about 39 KB
+ * of RAM. Moving the line is free; the two halves are one bank.
  *
  * **ROM must still start at 0x34180400.** The boot ROM loads an FSBL
  * there and nowhere else; it is not a choice this script makes. So ROM
@@ -159,8 +164,8 @@ _Min_Stack_Size = 0x2000;
  */
 MEMORY
 {
-  ROM    (xrw)    : ORIGIN = 0x34180400,   LENGTH = 191K
-  RAM    (xrw)    : ORIGIN = 0x341B0000,   LENGTH = 320K
+  ROM    (xrw)    : ORIGIN = 0x34180400,   LENGTH = 207K
+  RAM    (xrw)    : ORIGIN = 0x341B4000,   LENGTH = 304K
   GUEST  (xrw)    : ORIGIN = 0x34000400,   LENGTH = 1535K
   ITCM   (rwx)    : ORIGIN = 0x10000000,   LENGTH = 64K
 }

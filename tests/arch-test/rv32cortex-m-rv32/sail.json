@@ -89,12 +89,15 @@
       }
     },
     // rv_hart_trap records the faulting address for every address-related
-    // cause, the pc for breakpoints, and the encoding for illegal
-    // instructions. Nothing here is hardwired to zero.
+    // cause, the pc for EBREAK and an execute trigger, the address for a
+    // load or store trigger, and the encoding for illegal instructions --
+    // a 16-bit one's own 16 bits. Nothing here is hardwired to zero.
+    // hardware_breakpoint is inert while this Sail has no Sdtrig; it says
+    // what the emulator does, as Sstvala requires.
     "xtval_nonzero": {
       "illegal_instruction": true,
       "software_breakpoint": true,
-      "hardware_breakpoint": false,
+      "hardware_breakpoint": true,
       "load_address_misaligned": true,
       "load_access_fault": true,
       /* The three page-fault causes report the faulting *virtual* address,
@@ -445,11 +448,11 @@
     "Zkt": { "supported": true },
     "Zhinx": { "supported": false },
     "Zhinxmin": { "supported": false },
-    "Ssccptr": { "supported": false },
+    "Ssccptr": { "supported": true },
     "Sscofpmf": { "supported": true },
     "Sscounterenw": { "supported": false },
     "Sstc": { "supported": false },
-    "Sstvala": { "supported": false },
+    "Sstvala": { "supported": true },
     "Svinval": { "supported": true },
     "Svrsw60t59b": { "supported": false },
     "Smcntrpmf": { "supported": false },

@@ -5,7 +5,7 @@
 #
 # Spike is the second reference model here, beside Sail. It is used the
 # way Sail is -- as an oracle that the emulator's answers are compared
-# with, by scripts/run-probe.sh -- and nothing of it is in this tree: it
+# with, by scripts/run-probe.py -- and nothing of it is in this tree: it
 # is cloned and built under build/, which is not tracked.
 #
 # Why a second one: Sail does not model everything this core implements.

@@ -236,6 +236,44 @@ static bool trap_to_s(const rv_hart_t *h, uint32_t cause)
 }
 #endif
 
+#if RV_EXT_C
+/*
+ * The instruction an illegal-instruction trap reports, as the guest wrote
+ * it.
+ *
+ * Sstvala puts the faulting instruction in tval. A 16-bit one reaches
+ * execution expanded to its 32-bit equivalent, so any rule that refuses
+ * it after decode named the expansion: `c.flwsp ft0, 0(sp)` with
+ * mstatus.FS off reported 0x00012007, the `flw` it becomes, where the
+ * guest wrote 0x6002. Only the decoder's own refusal of a reserved
+ * encoding had the parcel to hand.
+ *
+ * Every illegal-instruction trap comes through here with h->pc on the
+ * instruction, from the interpreter and from a JIT helper alike, so the
+ * parcel is read back here, on the trap path, rather than kept beside
+ * the expansion on the fetch path, where a live register costs every
+ * instruction. It was fetched a moment ago, so the read succeeds; if it
+ * somehow does not, the value handed in stands.
+ */
+static EMU_COLD_NOINLINE uint32_t illegal_tval(rv_hart_t *h, uint32_t tval)
+{
+    uint32_t pa = h->pc;
+    uint16_t parcel;
+
+#if RV_EXT_SV32
+    if (h->vm_active &&
+        rv_mmu_translate(h, h->pc, EMU_ACC_FETCH, &pa) != RV_EXC_NONE) {
+        return tval;
+    }
+#endif
+    if (emu_bus_fetch16(h->bus, pa, &parcel) != EMU_FAULT_NONE ||
+        rv_is_32bit(parcel)) {
+        return tval;
+    }
+    return parcel;
+}
+#endif
+
 void rv_hart_trap(rv_hart_t *h, uint32_t cause, uint32_t tval)
 {
     uint32_t tvec;
@@ -258,6 +296,11 @@ void rv_hart_trap(rv_hart_t *h, uint32_t cause, uint32_t tval)
         }
         h->split_valid = false;
     }
+#if RV_EXT_C
+    if (cause == RV_EXC_ILLEGAL_INSN) {
+        tval = illegal_tval(h, tval);
+    }
+#endif
 
 #if RV_EXT_S
     if (trap_to_s(h, cause)) {

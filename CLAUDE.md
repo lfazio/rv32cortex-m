@@ -3252,6 +3252,22 @@ session, and every one of them recurred:
   second. Same family as the IT-block fault test and the gdb stepi
   check: a mechanism is tested only on the path that reaches it.
 
+- **MRET ran in S-mode and U-mode for as long as there were modes
+  below M.** Its case in the interpreter had no privilege test at all,
+  so from U with MPP = M it was machine mode for the asking. Both
+  suites passed throughout and `isatest` never went below S, so nothing
+  had executed MRET where it is illegal. It surfaced from a probe about
+  something else: `sstvala.S` asks Sail and Spike what `stval` holds,
+  and its `mret` case came back as a page fault from U. `umode.S` --
+  every privileged instruction from U-mode -- then found WFI parking
+  the hart there, and the two between them a 16-bit instruction's
+  illegal trap naming its 32-bit expansion and triggers that read only
+  their `m` bit. **A rule nobody has run from the side that must be
+  refused is not implemented yet.** This file says to grep for the
+  readers of a field and the callers of what you protected; for a
+  privilege rule, run the instruction from every mode that may not,
+  against something that is not this code.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must

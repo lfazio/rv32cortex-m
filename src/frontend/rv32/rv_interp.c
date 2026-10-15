@@ -994,6 +994,20 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
 #endif
 
                 case 0x302u: { /* MRET */
+#if RV_EXT_U
+                    /*
+                     * An M-mode instruction, illegal anywhere else. This
+                     * test was missing for as long as there was a mode
+                     * below M: S-mode and U-mode both ran MRET, returning
+                     * to whatever MPP held -- which from U with MPP = M is
+                     * machine mode for the asking. No suite runs MRET
+                     * below M; tests/arch-test/probes/umode.S and
+                     * sstvala.S do, against Sail and Spike.
+                     */
+                    if (h->priv < RV_PRIV_M) {
+                        TRAP(RV_EXC_ILLEGAL_INSN, insn);
+                    }
+#endif
                     /*
                      * Pop the interrupt-enable stack. MPP selects the
                      * privilege to return to, and is then reset to the
@@ -1114,9 +1128,16 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                      * degenerate legal choice of that bound, and the honest
                      * one on a core where WFI parks until an interrupt
                      * arrives and so has no bound of its own.
+                     *
+                     * U-mode is held to the same bound with TW clear:
+                     * once S-mode exists, a WFI from U is illegal unless
+                     * it completes within it. This one parks, so U-mode
+                     * could sleep the hart until M or S chose to wake
+                     * it, which is what the rule exists to prevent.
                      */
-                    if (h->priv < RV_PRIV_M &&
-                        (h->mstatus & MSTATUS_TW) != 0u) {
+                    if (h->priv == RV_PRIV_U ||
+                        (h->priv < RV_PRIV_M &&
+                         (h->mstatus & MSTATUS_TW) != 0u)) {
                         TRAP(RV_EXC_ILLEGAL_INSN, insn);
                     }
 #endif

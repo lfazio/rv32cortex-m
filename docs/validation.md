@@ -269,6 +269,8 @@ ctest -L probe                                        # all of them, both backen
 | `zawrs.S` | WRS.NTO and WRS.STO in M and below M under TW, with and without a reservation | agrees | differs on one case, permitted |
 | `zalasr.S` | every load-acquire and store-release, sign extension, misaligned, unmapped, the eight reserved encodings, an SC after a store-release | has no Zalasr | differs on one register, permitted |
 | `sscofpmf.S` | which bits of `mhpmevent3h` exist, `mideleg`, `sie`, `scountovf` and `sip` from S, STI against LCOFI | agrees | agrees |
+| `sstvala.S` | `stval` for 23 traps from S to S under Sv32: 16- and 32-bit illegal instructions, ones illegal by FS, TVM, TW, TSR or `mcounteren`, page and access faults on fetch, load and store, an instruction straddling pages, misaligned LR and AMO, an S-mode trigger | agrees but for two, permitted: no Sdtrig, and WFI completes | agrees |
+| `umode.S` | every privileged instruction from U-mode with TW, TSR and TVM clear | agrees | agrees |
 
 **Two models, because one reading is not a check.** Sail is the suite's
 golden model and does not have everything this core implements: Zalasr
@@ -282,10 +284,18 @@ GPL.
 
 **A difference the specification allows is declared, not hidden.** Each
 probe lists them (`probe-permitted:`) with the reason, and the runner
-prints them and passes. Both so far are cases the specification
+prints them and passes. Three so far are cases the specification
 leaves to the implementation: whether an SC fails after the hart's own
-store to the reserved word, and how long a `wrs.nto` below M may take
-before TW makes it illegal. Anything else that differs fails.
+store to the reserved word, and how long a `wrs.nto` or a WFI below M
+may take before TW makes it illegal. The fourth is a model lacking the
+extension: Sail has no Sdtrig. Anything else that differs fails.
+
+**The two newest found four defects on their first run** -- MRET
+executing in S-mode and U-mode, WFI parking the hart from U-mode, a
+16-bit instruction's illegal trap naming its 32-bit expansion, and
+triggers matching only on their `m` bit
+([frontend/rv32.md](frontend/rv32.md#profiles)). Both suites passed
+with all four in place.
 
 **A model's configuration is part of its answer**, as this page already
 says of `sail.json`. Spike makes `mcounteren`'s counter bits writable

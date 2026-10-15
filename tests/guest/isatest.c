@@ -140,6 +140,10 @@ static inline uint32_t opaque(uint32_t v)
 static volatile uint32_t g_trap_count;
 static volatile uint32_t g_last_cause;
 static volatile uint32_t g_last_tval;
+/* The trap before the last: a test that ends in an ECALL reads its own
+ * trap here, after the ECALL has overwritten g_last_*. */
+static volatile uint32_t g_prev_cause;
+static volatile uint32_t g_prev_tval;
 static volatile uint32_t g_last_claim;
 static volatile uint32_t g_ext_count;
 static volatile uint32_t g_lcof_count; /* Sscofpmf overflow interrupts */
@@ -161,6 +165,8 @@ trap_handler(void)
 {
     const uint32_t cause = csr_read("mcause");
 
+    g_prev_cause = g_last_cause;
+    g_prev_tval = g_last_tval;
     g_last_cause = cause;
     g_last_tval = csr_read("mtval");
     g_trap_count++;
@@ -189,9 +195,10 @@ trap_handler(void)
         return;
     }
 
-    if (cause == 9u) {
+    if (cause == 8u || cause == 9u) {
         /*
-         * ECALL from S-mode: how an S-mode test hands control back.
+         * ECALL from S-mode or U-mode: how a test below M hands control
+         * back.
          *
          * MPP is set to M so the mret below returns to machine mode rather
          * than to the supervisor that called, and mepc to the point the
@@ -1219,6 +1226,16 @@ static void test_fpu(void)
         check("fs-off-traps", traps, 3u); /* one per FP insn */
         check("fs-off-cause", g_last_cause, 2u); /* illegal instruction */
 
+        /*
+         * A 16-bit FP instruction reports its own 16 bits in mtval, not
+         * the 32-bit FLW it is expanded to: c.flwsp ft0, 0(sp) is 0x6002,
+         * and the expansion, 0x00012007, is what came back.
+         */
+        csr_clear("mstatus", 3u << 13);
+        __asm__ volatile(".half 0x6002" ::: "memory", "ft0");
+        csr_set("mstatus", 1u << 13);
+        check("fs-off-c-tval", g_last_tval, 0x6002u);
+
         /* And with FS back on it works again. */
         check("fs-restored", fp_site(F1_0), F2_0);
     }
@@ -1562,6 +1579,7 @@ static void test_pmp_exec(void)
 
 #define MSTATUS_MPP_MASK 0x00001800u
 #define MSTATUS_MPP_S 0x00000800u
+#define MSTATUS_SPP 0x00000100u
 #define MSTATUS_SUM 0x00040000u
 #define MSTATUS_TW 0x00200000u
 #define MSTATUS_TSR 0x00400000u
@@ -1745,6 +1763,58 @@ static void enter_smode(void (*fn)(void))
 
 /* Every S-mode test body ends with this. */
 #define LEAVE_SMODE() __asm__ volatile("ecall" ::: "memory")
+
+/*
+ * One instruction below M-mode, then back: a stub entered by SRET.
+ *
+ * The stubs try what a lower mode may not do, MRET among them -- and an
+ * MRET that wrongly runs returns to mepc. Entered by MRET as
+ * enter_smode does, mepc would still be the stub, and a broken MRET
+ * would run it again for ever. So mepc is set to the stub's ECALL first
+ * and the mode is entered by SRET, which M-mode may execute: an MRET
+ * that runs lands on the ECALL, in whatever mode MPP named -- U, set
+ * here -- and the trap count says so. a0 carries an argument.
+ */
+__asm__(".pushsection .text\n"
+        ".balign 4\n"
+        "below_m_mret:\n"
+        "    mret\n"
+        "below_m_exit:\n"
+        "    ecall\n"
+        "below_m_wfi:\n"
+        "    wfi\n"
+        "    ecall\n"
+        "below_m_load:\n"
+        "    lw   t0, 0(a0)\n"
+        "    ecall\n"
+        ".popsection\n");
+extern const char below_m_mret[], below_m_wfi[], below_m_load[];
+
+static void run_below_m(const char *stub, uint32_t to_s, uint32_t arg)
+{
+    __asm__ volatile("la   t0, 1f\n"
+                     "sw   t0, 0(%[resume])\n"
+                     "csrw sepc, %[stub]\n"
+                     "la   t0, below_m_exit\n"
+                     "csrw mepc, t0\n"
+                     "li   t0, %[mpp]\n"
+                     "csrc mstatus, t0\n"
+                     "li   t0, %[spp]\n"
+                     "csrc mstatus, t0\n"
+                     "beqz %[to_s], 2f\n"
+                     "csrs mstatus, t0\n"
+                     "2:\n"
+                     "mv   a0, %[arg]\n"
+                     "sret\n"
+                     "1:\n"
+                     :
+                     : [stub] "r"(stub), [to_s] "r"(to_s), [arg] "r"(arg),
+                       [resume] "r"(&g_smode_resume),
+                       [mpp] "i"(MSTATUS_MPP_MASK), [spp] "i"(MSTATUS_SPP)
+                     : "t0", "a0", "memory");
+}
+
+static volatile uint32_t g_trig_word;
 
 /* ---- the S-mode bodies -------------------------------------------- */
 
@@ -2137,6 +2207,70 @@ static void test_smode(void)
     /* With TSR clear, SRET is legal again -- the trap above was the bit
      * doing its job, not SRET being unimplemented. */
     check("s-tsr-cleared", (csr_read("mstatus") & MSTATUS_TSR), 0u);
+
+    /*
+     * What a lower mode may not execute, from each of them, with TW and
+     * TSR clear so the rule is the instruction's own. MRET ran in S-mode
+     * and U-mode alike, returning to whatever MPP held -- machine mode
+     * for the asking, from U -- and WFI parked the hart from U-mode.
+     * The trap and then the stub's ECALL make two; an MRET that runs
+     * reaches the ECALL alone, from U.
+     */
+    {
+        uint32_t before = g_trap_count;
+
+        run_below_m(below_m_mret, 1u, 0u);
+        check("s-mret-traps", g_trap_count - before, 2u);
+        check("s-mret-cause", g_prev_cause, 2u);
+        check("s-mret-tval", g_prev_tval, 0x30200073u);
+        check("s-mret-stays-s", g_last_cause, 9u);
+
+        before = g_trap_count;
+        run_below_m(below_m_mret, 0u, 0u);
+        check("u-mret-traps", g_trap_count - before, 2u);
+        check("u-mret-cause", g_prev_cause, 2u);
+        check("u-mret-tval", g_prev_tval, 0x30200073u);
+
+        before = g_trap_count;
+        run_below_m(below_m_wfi, 0u, 0u);
+        check("u-wfi-traps", g_trap_count - before, 2u);
+        check("u-wfi-cause", g_prev_cause, 2u);
+        check("u-wfi-tval", g_prev_tval, 0x10500073u);
+    }
+
+    /*
+     * A trigger's m, s and u bits are the modes it matches in. Only m
+     * was read: a trigger set for S never fired, and one set for M alone
+     * fired in every mode. medeleg is clear, so the breakpoint goes to M
+     * and Sdtrig's rule for S -- quiet while breakpoints are delegated
+     * and SIE is clear -- does not come into it.
+     */
+    {
+        const uint32_t word = (uint32_t)(uintptr_t)&g_trig_word;
+        uint32_t before;
+
+        csr_write("tselect", 0u);
+        csr_write("tdata2", word);
+        csr_write("tdata1", 0x20000011u); /* mcontrol: S, load */
+        before = g_trap_count;
+        run_below_m(below_m_load, 1u, word);
+        check("trig-s-fires-in-s", g_trap_count - before, 2u);
+        check("trig-s-cause", g_prev_cause, 3u);
+        check("trig-s-tval", g_prev_tval, word);
+        before = g_trap_count;
+        (void)g_trig_word;
+        check("trig-s-quiet-in-m", g_trap_count - before, 0u);
+
+        csr_write("tdata1", 0x20000041u); /* mcontrol: M, load */
+        before = g_trap_count;
+        run_below_m(below_m_load, 1u, word);
+        check("trig-m-quiet-in-s", g_trap_count - before, 1u);
+        before = g_trap_count;
+        (void)g_trig_word;
+        check("trig-m-fires-in-m", g_trap_count - before, 1u);
+        check("trig-m-cause", g_last_cause, 3u);
+        csr_write("tdata1", 0u);
+    }
 
     /* medeleg and mideleg are real registers now, and WARL. */
     /*
