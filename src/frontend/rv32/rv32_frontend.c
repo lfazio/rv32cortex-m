@@ -189,12 +189,11 @@
  */
 #define RV32_ISA_STRING                                                        \
     "RV32I" RV32_S_M RV32_S_A RV32_S_F RV32_S_D RV32_S_C RV32_S_B              \
-        RV32_S_ZIC64B RV32_S_ZICBOM "_zicbop" RV32_S_ZICBOZ RV32_S_ZICNTR      \
-            RV32_S_ZICOND                                                      \
-        RV32_S_ZICSR                                                           \
+        RV32_S_ZIC64B RV32_S_ZICBOM                                            \
+    "_zicbop" RV32_S_ZICBOZ RV32_S_ZICNTR RV32_S_ZICOND RV32_S_ZICSR           \
         RV32_S_ZIFENCEI RV32_S_ZIHINT RV32_S_ZIHPM RV32_S_ZACAS RV32_S_ZALASR  \
-        RV32_S_ZAWRS RV32_S_ZFHMIN RV32_S_ZCB RV32_S_ZBC RV32_S_ZKT            \
-            RV32_S_SSCOFPMF RV32_S_SVINVAL
+            RV32_S_ZAWRS RV32_S_ZFHMIN RV32_S_ZCB RV32_S_ZBC RV32_S_ZKT        \
+                RV32_S_SSCOFPMF RV32_S_SVINVAL
 
 /* ------------------------------------------------------------------ */
 /* State                                                               */
