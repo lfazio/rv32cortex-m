@@ -155,10 +155,11 @@
              * them; they are here because this is a description of the
              * machine, not of what one kernel can use.
              */
-            riscv,isa = "rv32imafdc_zicbom_zicbop_zicboz_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm_zacas_zalasr_zawrs_zfhmin_zca_zcb_zcd_zcf_zba_zbb_zbc_zbs_zkt_sscofpmf_svinval";
+            riscv,isa = "rv32imafdc_zic64b_zicbom_zicbop_zicboz_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm_zacas_zalasr_zawrs_zfhmin_zca_zcb_zcd_zcf_zba_zbb_zbc_zbs_zkt_sscofpmf_svinval";
             riscv,isa-base = "rv32i";
             riscv,isa-extensions = "i", "m", "a", "f", "d", "c",
-                                   "zicbom", "zicbop", "zicboz", "zicntr",
+                                   "zic64b", "zicbom", "zicbop", "zicboz",
+                                   "zicntr",
                                    "zicond", "zicsr", "zifencei",
                                    "zihintntl", "zihintpause", "zihpm",
                                    "zacas", "zalasr", "zawrs", "zfhmin",
@@ -169,11 +170,11 @@
              * RV_CACHE_BLOCK_SIZE. The kernel will not use cbo.zero or
              * the maintenance operations without being told the block,
              * and steps its loops by this -- so it has to be the size
-             * the emulator zeroes, not the 64 most parts have.
+             * the emulator zeroes. 64, which zic64b above says too.
              */
-            riscv,cbom-block-size = <32>;
-            riscv,cbop-block-size = <32>;
-            riscv,cboz-block-size = <32>;
+            riscv,cbom-block-size = <64>;
+            riscv,cbop-block-size = <64>;
+            riscv,cboz-block-size = <64>;
             mmu-type = "riscv,sv32";
 
             cpu0_intc: interrupt-controller {

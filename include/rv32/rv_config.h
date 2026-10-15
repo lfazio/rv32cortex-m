@@ -280,13 +280,19 @@
 #endif
 
 /*
- * Cache block size reported through the Zicboz CSR and used as the
- * granule for every CBO. 32 bytes matches the Cortex-M7 L1 line size.
- * Must be a power of two.
+ * The cache block: the granule of every CBO, and what cbo.zero zeroes.
+ * 64 bytes is Zic64b, which RVA22 makes mandatory. It was 32 to match
+ * the Cortex-M7's L1 line, and nothing needs it to: maintenance by
+ * address covers as many host lines as the block spans, two here. Must
+ * be a power of two, and equal CACHE_BLOCK_SIZE in the UDB description,
+ * cache_block_size_exp in sail.json and the device tree's
+ * riscv,cbo*-block-size.
  */
 #ifndef RV_CACHE_BLOCK_SIZE
-#define RV_CACHE_BLOCK_SIZE 32u
+#define RV_CACHE_BLOCK_SIZE 64u
 #endif
+/* Zic64b is a statement about the size above, and nothing else. */
+#define RV_EXT_ZIC64B (RV_CACHE_BLOCK_SIZE == 64u)
 
 /* ------------------------------------------------------------------ */
 /* Memory access                                                       */

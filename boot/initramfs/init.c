@@ -155,7 +155,7 @@ static long sys6(long n, long a, long b, long c, long d, long e, long f)
     return a0;
 }
 
-static unsigned char g_block[64] __attribute__((aligned(64)));
+static unsigned char g_block[128] __attribute__((aligned(64)));
 static volatile unsigned long g_word;
 
 static void test_extensions(void)
@@ -238,7 +238,7 @@ static void test_extensions(void)
      * tests cannot arrange: the firmware granting it to the supervisor
      * in menvcfg, and the supervisor granting it to its processes in
      * senvcfg. Either one missing is SIGILL. The second half of the
-     * buffer says the block really is 32 bytes, as the device tree
+     * buffer says the block really is 64 bytes, as the device tree
      * tells the kernel.
      */
     put("RV32-LINUX-EXT: zicboz\n");
@@ -250,12 +250,12 @@ static void test_extensions(void)
     {
         unsigned long lo = 0, hi = 0;
 
-        for (unsigned i = 0; i < 32u; i++) {
+        for (unsigned i = 0; i < 64u; i++) {
             lo |= g_block[i];
-            hi += (g_block[32u + i] == 0xFFu) ? 1u : 0u;
+            hi += (g_block[64u + i] == 0xFFu) ? 1u : 0u;
         }
         expect("cbo.zero-zeroed", lo, 0ul);
-        expect("cbo.zero-one-block", hi, 32ul);
+        expect("cbo.zero-one-block", hi, 64ul);
     }
 
     /*

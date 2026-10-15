@@ -705,36 +705,40 @@ static void test_timer_interrupt(void)
 /* Cache block operations (Zicbom / Zicboz)                            */
 /* ------------------------------------------------------------------ */
 
-/* One cache block, aligned so cbo.* covers exactly this object. */
-static volatile uint32_t g_block[16] __attribute__((aligned(64)));
+/*
+ * One cache block -- 64 bytes, Zic64b -- and the block after it, aligned
+ * so cbo.* on the first covers exactly that half.
+ */
+static volatile uint32_t g_block[32] __attribute__((aligned(64)));
 
 static void test_cbo(void)
 {
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < 32; i++) {
         g_block[i] = 0xFFFFFFFFu;
     }
 
     /*
      * cbo.zero is the only one of these with an architecturally visible
      * effect, so it is the one that can be checked directly. The block
-     * size is 32 bytes, so exactly the first 8 words must be cleared and
-     * the ninth must be untouched.
+     * is 64 bytes, so exactly the first 16 words must be cleared and the
+     * seventeenth on must be untouched -- which also says the block is
+     * not 32, the size it was until Zic64b.
      */
     __asm__ volatile("cbo.zero (%0)" ::"r"(&g_block[0]) : "memory");
 
     uint32_t cleared = 0, intact = 0;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < 16; i++) {
         if (g_block[i] == 0u) {
             cleared++;
         }
     }
-    for (int i = 8; i < 16; i++) {
+    for (int i = 16; i < 32; i++) {
         if (g_block[i] == 0xFFFFFFFFu) {
             intact++;
         }
     }
-    check("cbo.zero-cleared", cleared, 8u);
-    check("cbo.zero-bounded", intact, 8u);
+    check("cbo.zero-cleared", cleared, 16u);
+    check("cbo.zero-bounded", intact, 16u);
 
     /*
      * The maintenance operations have no visible effect on a coherent
@@ -3938,9 +3942,9 @@ static void test_cbo_below_m(void)
      * the check found an entry by the access's first byte -- so an
      * access that began below an entry and ran into it was handed on to
      * the next one, here the background that permits everything. Four
-     * bytes against four-byte entries cannot do that. Thirty-two can:
-     * entry 9 is one word in the middle of the block, with no
-     * permissions at all.
+     * bytes against four-byte entries cannot do that. A block can:
+     * entry 9 is one word in the middle of it, with no permissions at
+     * all.
      */
 #if RV32_EXT_PMP
     csr_write("pmpaddr9", ((uint32_t)(uintptr_t)&g_block[4]) >> 2);

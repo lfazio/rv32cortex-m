@@ -1147,7 +1147,9 @@ if(EMU_GUEST_ARCH_RV32)
     # same reason they are there. Zalasr and Zawrs follow A, as their
     # gates do; Zacas is A's too.
     #
-    string(APPEND _isa "_zicbom_zicbop_zicboz_zicntr_zicond_zicsr_zifencei")
+    # Zic64b is RV_CACHE_BLOCK_SIZE being 64, which has no option either.
+    string(APPEND _isa "_zic64b_zicbom_zicbop_zicboz_zicntr_zicond_zicsr")
+    string(APPEND _isa "_zifencei")
     string(APPEND _isa "_zihintntl_zihintpause_zihpm")
     if(RV32_EXT_A)
         string(APPEND _isa "_zacas_zalasr_zawrs")

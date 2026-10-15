@@ -77,6 +77,8 @@ implemented_extensions:
   # base ISA already executes, so what there is to do is claim them.
   - { name: Zicbop, version: "= 1.0.0" }
   - { name: Zicboz, version: "= 1.0.0" }
+  # 64-byte cache blocks: a statement about CACHE_BLOCK_SIZE below.
+  - { name: Zic64b, version: "= 1.0.0" }
   - { name: Sm, version: "= 1.12.0" }
   # User mode. One ratified version, 1.0.0 -- there is no 1.12.0, and
   # declaring one makes UDB reject the whole configuration so that nothing
@@ -174,9 +176,9 @@ params:
   TIME_CSR_IMPLEMENTED: true
 
   # ---- cache blocks (Zicbom / Zicboz) ----
-  # 32 bytes matches the Cortex-M7 L1 line size, which is what the
-  # maintenance operations map onto. Must equal RV_CACHE_BLOCK_SIZE.
-  CACHE_BLOCK_SIZE: 32
+  # 64 bytes, which Zic64b requires: two of the Cortex-M7's L1 lines,
+  # both maintained by address. Must equal RV_CACHE_BLOCK_SIZE.
+  CACHE_BLOCK_SIZE: 64
   # cbo.inval performs a real invalidate; it is not upgraded to a flush.
   FORCE_UPGRADE_CBO_INVAL_TO_FLUSH: false
 

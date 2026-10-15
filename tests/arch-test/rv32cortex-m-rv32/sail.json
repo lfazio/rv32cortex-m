@@ -312,7 +312,7 @@
     "archid": 0,
     "impid": 65536,
     "hartid": 0,
-    "cache_block_size_exp": 5,
+    "cache_block_size_exp": 6,
     // The reservation is a single word compared by exact address, and any
     // store from this hart to it clears it (see rv_hart_store).
     "reservation": {
@@ -374,7 +374,7 @@
     "Zicbom": { "supported": true },
     "Zicbop": { "supported": true },
     "Zicboz": { "supported": true },
-    "Zic64b": { "supported": false },
+    "Zic64b": { "supported": true },
     "Ziccamoa": { "supported": false },
     "Ziccamoc": { "supported": false },
     "Ziccif": { "supported": false },

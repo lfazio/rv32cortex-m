@@ -1573,11 +1573,12 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
 
 - [ ] **rv32: what the RVA profiles would still need.** RVI20U32 is
       met. The RVA families are 64-bit only, so there is nothing to
-      claim, but read for RV32 the RVA22 mandatory list is short by
-      two things now ([frontend/rv32.md](frontend/rv32.md#profiles)):
-      **Zic64b** (a 64-byte cache block; `RV_CACHE_BLOCK_SIZE` is 32 to
-      match the M7's line, and the device tree and both suite configs
-      would follow it). **Zkt is done**: every instruction it covers was
+      claim, but read for RV32 the RVA22 mandatory lists are met now
+      ([frontend/rv32.md](frontend/rv32.md#profiles)). **Zic64b is
+      done**: the cache block is 64 bytes, two M7 lines maintained by
+      address, and UDB, Sail and the device tree follow it; `isatest`
+      and the Linux init count the words one `cbo.zero` clears.
+      **Zkt is done**: every instruction it covers was
       checked on every path for a test on its operand values, and the
       only one was `clmul`'s per-bit `if` -- compiled to CMOV and IT,
       so it never branched, but by the compilers' choice; it masks
@@ -1587,9 +1588,9 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       FCVT.D.H and FCVT.H.D, which no suite test covers. FP loads and
       stores the translator does not lower -- FLD, FSD, FLH, FSH -- go
       to the helper now instead of ending the block (D-fld: 514
-      interpreted to 265). RVA20's list is met but for Zicclsm being a build
-      option, and Sstvala and Ssccptr being true without a test that
-      says so.
+      interpreted to 265). **What is left is RVA20's**: Zicclsm is a
+      build option (on by default), and Sstvala and Ssccptr are
+      believed true without a test that says so.
 
 - [x] **gdb: what the four targets did not describe.** Registers have
       their own widths now (`reg_width`, 64-bit accessors), and ARMv7-M
