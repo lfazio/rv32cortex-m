@@ -1934,8 +1934,14 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
              * First, so it covers both windows.
              */
             if (g_fast.store_guard_offset != EMU_IR_NO_GUARD) {
-                /* r0 is free until the slow path loads the cpu into it. */
-                t2_ldr_imm(T2_R0, T2_CPU, g_fast.store_guard_offset);
+                /*
+                 * r0 is free until the slow path loads the cpu into it.
+                 * A byte, as emu_ir_fastmem_t says the guard is: this was
+                 * a word load, which read the three bytes after the flag
+                 * as well and so could send every store to the slow path
+                 * on what happened to follow it in the struct.
+                 */
+                t2_ldrb_imm(T2_R0, T2_CPU, g_fast.store_guard_offset);
                 (void)t2_cmp_imm8(T2_R0, 0u);
                 resv = t2_bcond_forward_n(0x1u); /* NE */
             }

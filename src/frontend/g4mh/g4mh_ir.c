@@ -129,6 +129,53 @@ static uint32_t g4mh_ir_store(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
     return 0u;
 }
 
+/*
+ * The guest RAM a block may access without the helpers -- the region the
+ * stack is in, as the ARMv7-M frontend chooses it -- or false.
+ *
+ * Every G4MH load and store was a helper call until this, and what the
+ * helpers do beyond the bus is three things, each answered here:
+ *
+ *   - alignment: the backend's guard sends a misaligned access to the
+ *     helper, which raises MAE with MEA set;
+ *   - the MPU: no window while it is on. Any write to its registers bumps
+ *     jit_gen, so a block built with the window is discarded when the
+ *     MPU is turned on rather than outliving it;
+ *   - reservations: a store has to break any core's LDL.W reservation on
+ *     its word. With one PE that is this core's own, and the store guard
+ *     is ll_valid. With more, a core's inline store would test before it
+ *     stored where the helper stores and then breaks -- the order that
+ *     makes a racing LDL.W see the new value -- so stores are never
+ *     inlined there: the guard names fast_store_never, and only loads are.
+ */
+static bool g4mh_fast_mem(const g4mh_cpu_t *c, emu_ir_fastmem_t *out)
+{
+#if G4MH_EXT_MPU
+    if (c->mpu_active) {
+        return false;
+    }
+#endif
+    if (c->bus == NULL) {
+        return false;
+    }
+
+    emu_region_t *const r = emu_bus_find(c->bus, c->r[3] - 4u);
+
+    if (r == NULL || r->kind != (uint8_t)EMU_MEM_RAM || r->host == NULL ||
+        r->size == 0u ||
+        (r->perm & (EMU_PERM_R | EMU_PERM_W)) != (EMU_PERM_R | EMU_PERM_W)) {
+        return false;
+    }
+    out->base = r->base;
+    out->size = r->size;
+    out->host = r->host;
+    out->store_guard_offset =
+        (G4MH_PE_COUNT == 1u)
+            ? (uint32_t)offsetof(g4mh_cpu_t, ll_valid)
+            : (uint32_t)offsetof(g4mh_cpu_t, fast_store_never);
+    return true;
+}
+
 /* ------------------------------------------------------------------ */
 /* The target descriptor                                               */
 /* ------------------------------------------------------------------ */
@@ -1427,6 +1474,7 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
 
     emu_ir_reset(b);
     b->start_pc = pc;
+    b->has_fast = g4mh_fast_mem(c, &b->fast);
 
     while (count < G4MH_IR_MAX_BLOCK_INSNS && !b->overflow) {
         uint16_t w0;

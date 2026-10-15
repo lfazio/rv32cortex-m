@@ -30,6 +30,7 @@ void g4mh_cpu_init(g4mh_cpu_t *c, emu_bus_t *bus, uint32_t coreid)
     c->coreid = coreid;
 #if G4MH_EXT_MPU
     c->mpu = &g_mpu[coreid < G4MH_PE_COUNT ? coreid : 0u];
+    c->fast_store_never = 1u;
     /*
      * SPID from the core id, so MPIDn discriminates between PEs rather
      * than every core presenting 0 and the SPID group being a no-op.

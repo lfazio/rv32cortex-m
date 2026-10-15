@@ -74,6 +74,8 @@ movs    r2, #66
 ror.w   r2, r2, #2
 sub.w   r2, r1, #0x80000000
 mov.w   r12, #0x40000000
+ldrb    r0, [r4, #31]
+ldrb.w  r0, [r4, #2100]
 add.w   sp, sp, ip
 sub.w   sp, sp, ip
 sdiv    r0, r2, r3
@@ -170,6 +172,8 @@ int main(void)
         (void)t2_expand_imm(0x40000000u, &enc);
         t2_mov_imm(12u, enc);
     }
+    t2_ldrb_imm(0u, 4u, 31u);
+    t2_ldrb_imm(0u, 4u, 2100u);
 
     /*
      * The frame adjust a chained exit and the prologue emit by hand.

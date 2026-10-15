@@ -535,6 +535,46 @@ int main(void)
         }
     }
 
+    /*
+     * LDRB: the store guard is one byte, and a word load of it reads the
+     * three after it too. The neighbours are set here so a word load, or
+     * the wrong byte, gives another answer.
+     */
+    {
+        static uint8_t flags[160];
+
+        for (unsigned i = 0; i < sizeof(flags); i++) {
+            flags[i] = 0xEEu;
+        }
+        flags[31] = 0x00u;
+        flags[100] = 0x5Au;
+
+        emit_begin();
+        {
+            const uint8_t *const at = emu_jit_cursor;
+
+            t2_ldrb_imm(0u, 1u, 31u);
+            want("ldrb-31-len", (uint32_t)(emu_jit_cursor - at), 2u);
+        }
+        {
+            const fn2_t f = (fn2_t)emit_end();
+
+            want("ldrb-31", f(0u, (uint32_t)(uintptr_t)flags), 0x00u);
+        }
+        emit_begin();
+        {
+            const uint8_t *const at = emu_jit_cursor;
+
+            t2_ldrb_imm(0u, 1u, 100u);
+            want("ldrb-100-len", (uint32_t)(emu_jit_cursor - at), 4u);
+        }
+        {
+            const fn2_t f = (fn2_t)emit_end();
+
+            want("ldrb-100", f(0u, (uint32_t)(uintptr_t)flags), 0x5Au);
+        }
+    }
+
     /* SUB/ADD SP, #imm7*4 and ADD rd, SP, #imm8*4, by what sp becomes. */
     emit_begin();
     t2_mov(1u, 13u);

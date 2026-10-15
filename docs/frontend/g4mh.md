@@ -198,6 +198,33 @@ declined and the second lost its whole block at emission.
 that is not this project's own encoder: CC-RH produces the bytes, the
 emulator runs them, 8 checks and 0 failures on both backends.
 
+## Guest RAM in the JIT
+
+Every G4MH load and store under the JIT was a helper call until the IR
+backends were given a RAM window for this frontend too: `g4mh_fast_mem`
+offers the region the stack is in, as ARMv7-M's does, and a block then
+accesses it inline. The helpers do three things beyond the bus, and each
+is answered:
+
+- **alignment** -- the backend's guard sends a misaligned access to the
+  helper, which raises MAE with MEA set;
+- **the MPU** -- no window while it is on, and any MPU register write
+  bumps `jit_gen`, so a block built with one is discarded when the MPU
+  comes on;
+- **reservations** -- a store must break any core's `LDL.W` reservation
+  on its word. With one PE that is this core's own, and the store guard
+  is `ll_valid`; `test_own_store_breaks_reservation` holds it, on both
+  backends, and fails both its JIT checks with the guard removed. With
+  more than one PE an inlined store would test before it stored, where
+  the helper stores and then breaks -- the order that makes a racing
+  `LDL.W` see the new value -- so stores always take the helper there
+  (`fast_store_never`) and only loads are inlined.
+
+G4MH DOOM under the x86-64 JIT, 300M instructions, five interleaved runs
+each: 3.80 s to 3.55 s by median, about 7%. A helper call is cheap on a
+host; on the F746 it is what the Thumb-2 window was built to avoid, and
+the board's G4MH guest passes on both backends with it.
+
 ## The vector table
 
 Every CC-RH-built guest carries one, built by

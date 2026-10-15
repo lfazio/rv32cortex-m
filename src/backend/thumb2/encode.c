@@ -125,6 +125,21 @@ void t2_ldr_imm(uint32_t rt, uint32_t rn, uint32_t off)
               (uint16_t)((rt << 12) | (off & 0xFFFu)));
 }
 
+/*
+ * LDRB rt, [rn, #off]: 16 bits for low registers and an offset to 31,
+ * LDRB.W to 4095 otherwise. For a flag the IR describes as one byte --
+ * a word load reads its neighbours too, and need not be aligned.
+ */
+void t2_ldrb_imm(uint32_t rt, uint32_t rn, uint32_t off)
+{
+    if (rt < 8u && rn < 8u && off <= 31u) {
+        t2_emit16((uint16_t)(0x7800u | (off << 6) | (rn << 3) | rt));
+        return;
+    }
+    t2_emit32((uint16_t)(0xF890u | rn),
+              (uint16_t)((rt << 12) | (off & 0xFFFu)));
+}
+
 void t2_str_imm(uint32_t rt, uint32_t rn, uint32_t off)
 {
     if (ldst_short(rt, rn, off, 0x9000u, 0x6000u)) {

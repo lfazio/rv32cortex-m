@@ -190,6 +190,14 @@ typedef struct g4mh_cpu {
      */
     uint64_t jit_ctx;
     uint32_t jit_gen;
+
+    /*
+     * Never zero. What a translated block's inlined store tests when it
+     * must never be taken -- see g4mh_fast_mem -- because the IR's store
+     * guard is "a byte in the cpu that must be zero", and with more than
+     * one PE no byte here can say that no core holds a reservation.
+     */
+    uint8_t fast_store_never;
 } g4mh_cpu_t;
 
 /* Recompute the JIT's context from PSW; see jit_ctx. */

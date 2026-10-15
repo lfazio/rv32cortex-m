@@ -223,6 +223,13 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       `performance.md` are after the fix. The second half of
       `performance.md` and both `stm32f446/` pages are not, and are
       marked as history.
+- [x] **G4MH had no guest-RAM fast path in the JIT**: every load and
+      store was a helper call. It has the window the others have now,
+      under the MPU off and with the reservation rules in
+      [frontend/g4mh.md](frontend/g4mh.md#guest-ram-in-the-jit); G4MH
+      DOOM 7% faster on the x86-64 JIT. And the Thumb-2 store guard was
+      a word load of a one-byte flag, so whatever followed the flag in
+      the struct could send every store to the slow path; it is `LDRB`.
 - [x] **The IR backends inline the peripheral window again** (Thumb-2,
       RV32), armed after 64 passthrough accesses: `mmiobench` read
       2.47x, write 4.71x, rmw 6.96x, poll 5.47x, now 1.3-2.2x its RAM

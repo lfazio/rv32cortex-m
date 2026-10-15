@@ -2843,6 +2843,54 @@ static void test_mc_reservation_succeeds(void)
     CHECK_EQ(ram32(0x304u), 1u); /* and reported success */
 }
 
+/*
+ * A plain store between LDL.W and STC.W breaks the reservation, so the
+ * STC.W fails and the plain store's value is what memory holds -- on both
+ * backends.
+ *
+ * Under the JIT this is the store guard's whole job: an inlined store into
+ * guest RAM skips the helper that breaks reservations, so the guard sends
+ * a store to the helper while ll_valid is set. Nothing else tested it,
+ * because the only reservation test let STC.W succeed.
+ */
+static void test_own_store_breaks_reservation(void)
+{
+    const uint16_t prog[] = {
+        W0(OP_MOVHI, 0, 11),
+        0x8000u,
+        W0(OP_MOVEA, 11, 11),
+        0x0300u,
+        W0(OP_SYSTEM, 11, 0),
+        (uint16_t)((12u << 11) | SUB_LDLW), /* ldl.w [r11], r12          */
+        F2(OP_MOVI, 5, 14),
+        W0(OP_ST_HW, 11, 14),
+        0x0001u,                            /* st.w r14, 0[r11]          */
+        F2(OP_MOVI, 7, 13),
+        W0(OP_SYSTEM, 11, 0),
+        (uint16_t)((13u << 11) | SUB_STCW), /* stc.w r13, [r11]          */
+        W0(OP_ST_HW, 11, 13),
+        0x0005u,                            /* st.w r13, 4[r11]: verdict */
+        0x07E0u,
+        SUB_HALT,
+    };
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        emu_run_reason_t why;
+        uint32_t retired = 0;
+
+        g_force_backend = (pass == 0u) ? &g4mh_backend_interp : NULL;
+        if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                          &retired)) {
+            CHECK(false);
+            g_force_backend = NULL;
+            return;
+        }
+        CHECK_EQ(ram32(0x300u), 5u); /* the plain store, not STC.W's 7 */
+        CHECK_EQ(ram32(0x304u), 0u); /* and STC.W reported failure    */
+    }
+    g_force_backend = NULL;
+}
+
 static void test_mc_caxi(void)
 {
     /*
@@ -7076,6 +7124,7 @@ void test_g4mh(void)
     test_contract();
     test_mc_caxi();
     test_mc_reservation_succeeds();
+    test_own_store_breaks_reservation();
 #if G4MH_EXT_FPU
     test_fp_arith();
     test_fp_div_sqrt();
