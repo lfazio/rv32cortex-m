@@ -13,19 +13,22 @@
  *   sp   the temp frame; every IR value has exactly one home in it
  *   r0-r3, r12   scratch, and the AAPCS argument registers
  *
- * Every temp has a home in the frame, and r6-r11 -- everything AAPCS
+ *   r11  t2_mem_stub, the slow path every memory access shares
+ *
+ * Every temp has a home in the frame, and r6-r10 -- everything AAPCS
  * makes callee-saved that is not already spoken for -- are handed out on
  * top of that by emu_ir_regalloc. A temp with a register never touches
  * its slot; a temp without one behaves exactly as everything did before
  * there was an allocator.
  *
- * Six registers where x86-64 has four, and they cost less to save: a
+ * Five registers where x86-64 has four, and they cost less to save: a
  * whole list goes in one PUSH, so the second and later ones are free
- * where on x86-64 each is its own instruction. That does not mean six
- * are worth having. On x86-64 the same allocator measured 3.6% of
- * CoreMark's emitted code for the first register and 0.6% for the
- * fourth, which says the live sets in these blocks are small -- as they
- * would be at 4.12 guest instructions a block.
+ * where on x86-64 each is its own instruction. r11 was the sixth until
+ * the memory stub needed a home, and was the cheapest to give up: on
+ * x86-64 the same allocator measured 3.6% of CoreMark's emitted code for
+ * the first register and 0.6% for the fourth, which says the live sets
+ * in these blocks are small -- as they would be at 4.12 guest
+ * instructions a block.
  *
  * Encodings are from ARM DDI 0403E (docs/arm/). Where a 16-bit form
  * exists it is *not* used: the register numbers here are frequently
@@ -318,6 +321,85 @@ static EMU_PER_CORE emu_ir_ptwin_t g_pt;
 static EMU_PER_CORE bool g_has_pt;
 
 /*
+ * The slow path of every LOAD and STORE, in one place.
+ *
+ * It was in line at each access: the cpu into r0, the access's spec into
+ * r2, an out-pointer into r3, MOVW/MOVT/BLX to the accessor, and a
+ * compare for its verdict -- 22 bytes of a load's 54, on the board where
+ * those bytes are the guest's RAM. Now an access says what it is in r2
+ * and calls this through r11, which every block takes from its second
+ * argument (emu_jit_block_arg) in the prologue, before the chain entry,
+ * so a chained block has it from its predecessor.
+ *
+ *   in   r1  the guest address
+ *        r2  the spec, with T2_MEM_STORE set for a store
+ *        r3  a store's value
+ *        r4  the cpu, as in every block
+ *   out  Z   set when the access completed, clear if the accessor
+ *            trapped -- the caller's BNE takes the block's exit
+ *        r0  a load's value
+ *
+ * r1-r3, r12 and the flags are clobbered, as by any call. The push is
+ * two words so sp stays 8-aligned at the accessor, which AAPCS requires
+ * and the block's frame was padded for; the first is the load's out
+ * word, and POP hands it back in r0 with the flags untouched.
+ *
+ * Which accessor is the target's, recorded at every lowering. One table
+ * for the cache, because every block in it belongs to one frontend: a
+ * different one comes with a new session, which flushes.
+ *
+ * Not EMU_PER_CORE-safe, and need not be: the Thumb-2 backend runs only
+ * on a microcontroller, where EMU_SMP is off and that is a plain static.
+ */
+#define T2_MEM_STORE 0x80u
+
+#if EMU_SMP
+#error "t2_mem_stub reads its table by absolute address; no TLS here"
+#endif
+
+#if defined(EMU_HOT_TEXT_SECTION)
+#define T2_STUB_SECTION EMU_HOT_TEXT_SECTION
+#else
+#define T2_STUB_SECTION ".text.t2_mem_stub"
+#endif
+
+/*
+ * `used`: the stub's literal is the only reader, and LTO does not see
+ * into top-level asm -- without it the table is dropped and the link
+ * fails, which is the good outcome.
+ */
+__attribute__((used)) const void *t2_mem_accessor[2]; /* load, store */
+
+__asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
+        "    .syntax unified\n"
+        "    .thumb\n"
+        "    .p2align 2\n"
+        "    .global t2_mem_stub\n"
+        "    .thumb_func\n"
+        "    .type t2_mem_stub, %function\n"
+        "t2_mem_stub:\n"
+        "    push    {r0, lr}\n"
+        "    ldr     r12, =t2_mem_accessor\n"
+        "    lsls    r0, r2, #24\n" /* N: bit 7, a store */
+        "    bmi     1f\n"
+        "    ldr     r12, [r12]\n"
+        "    mov     r0, r4\n"
+        "    add     r3, sp, #0\n"
+        "    blx     r12\n"
+        "    cmp     r0, #0\n"
+        "    pop     {r0, pc}\n"
+        "1:\n"
+        "    ldr     r12, [r12, #4]\n"
+        "    bic     r2, r2, #0x80\n"
+        "    mov     r0, r4\n"
+        "    blx     r12\n"
+        "    cmp     r0, #0\n"
+        "    pop     {r0, pc}\n"
+        "    .ltorg\n"
+        "    .size t2_mem_stub, . - t2_mem_stub\n"
+        ".popsection\n");
+
+/*
  * rd = rn + imm, for an access's address. ADDW/SUBW take any 12-bit
  * magnitude in one instruction, which is every displacement a load or
  * store encodes on these guests; MOVW/MOVT and an ADD was eight bytes
@@ -501,6 +583,25 @@ static void patch_branch_n(uint8_t *at, const uint8_t *target, bool cond)
     if (!t2_patch_branch_n(at, target, cond)) {
         g_exits_lost = true;
     }
+}
+
+/*
+ * The slow path of a LOAD or STORE: what the access was, a call to the
+ * shared stub, and the exit if the accessor trapped. Six bytes and a
+ * conditional branch, where the call had been set up and made in line --
+ * the cpu into r0, the out-pointer into r3, MOVW/MOVT/BLX, a compare --
+ * at every access. The address is in r1 and a store's value in r3.
+ */
+static void note_exit(uint8_t *at, bool conditional);
+
+static void emit_mem_stub(uint32_t spec)
+{
+    /* MOVS: the flags are dead here, and the stub sets them anyway. */
+    if (!t2_movs_imm8(T2_R2, spec)) {
+        t2_imm32(T2_R2, spec);
+    }
+    t2_blx(T2_STUB);
+    note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
 }
 
 /*
@@ -1819,19 +1920,21 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     }
 
     case EMU_IR_LOAD: {
-        if (t->load == NULL) {
+        if (t->load == NULL || (in->aux & T2_MEM_STORE) != 0u) {
             return false;
         }
         /*
-         * The helper writes through a pointer, and a register has no
-         * address -- so an allocated destination lands in the scratch
-         * slot and is fetched from there. That is the one place
-         * allocation can lose: a load result read once pays an extra
-         * LDR.W here to save a MOV.W at the use. Left to the allocator's
-         * own rule rather than special-cased, because a load result read
-         * twice already wins.
+         * Every path leaves the value in r0 when the destination has no
+         * register -- the inlined ones load it there and the stub
+         * returns it there -- so the dead-store rule holds here as it
+         * does for any other operation: a load read once, by the next
+         * instruction, never reaches its slot. Not under a predicate,
+         * whose skip leaves r0 holding something else.
          */
         const int pd = phys(in->dst);
+        if (in->c != EMU_IR_NO_TEMP) {
+            g_dead_store = EMU_IR_NO_TEMP;
+        }
         const uint32_t ra = use_reg(in->a, T2_R1);
 
         /*
@@ -1857,14 +1960,6 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             t2_imm32(T2_R12, (uint32_t)(uintptr_t)g_fast.host);
             if (t2_ld_reg_lsl(rt, T2_R12, T2_R2, k, sz, sign)) {
                 if (pd < 0) {
-                    /*
-                     * The slot has to be written even when the
-                     * dead-store rule says nobody reads it: that rule
-                     * leaves the value in r0 for the next instruction,
-                     * which is true here and false of the helper. The
-                     * two paths converge.
-                     */
-                    g_dead_store = EMU_IR_NO_TEMP;
                     st_slot(T2_R0, in->dst);
                 }
                 ldone = t2_b_forward_n();
@@ -1885,7 +1980,6 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                 emit_pt_base();
                 if (t2_ld_reg_lsl(rt, T2_R12, T2_R2, kp, sz, sign)) {
                     if (pd < 0) {
-                        g_dead_store = EMU_IR_NO_TEMP;
                         st_slot(T2_R0, in->dst);
                     }
                     ldone_pt = t2_b_forward_n();
@@ -1894,50 +1988,22 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             }
         }
 
-        /* The slow path. Flags are dead from here to the call. */
-        t2_mov(T2_R0, T2_CPU);
-        if (!t2_movs_imm8(T2_R2, in->aux)) {
-            t2_imm32(T2_R2, in->aux);
-        }
-        /*
-         * ADDW r3, sp, #slot -- the out-pointer, as the immediate form.
-         *
-         * Not "materialise the offset, then ADD.W r3, r3, sp": SP as the
-         * register operand of a 32-bit data-processing instruction is
-         * UNPREDICTABLE on ARMv7-M, and unpredictable on this part meant
-         * it quietly did something that was not an add. The preceding
-         * ADD.W with a zero immediate was dead alongside it.
-         */
-        {
-            const uint32_t off = slot((pd >= 0) ? SCRATCH_VAL : in->dst);
-
-            if (!t2_add_sp_imm(T2_R3, off)) {
-                t2_emit32((uint16_t)(0xF20Du | (((off >> 11) & 1u) << 10)),
-                          (uint16_t)((((off >> 8) & 7u) << 12) |
-                                     (T2_R3 << 8) | (off & 0xFFu)));
-            }
-        }
-        t2_call((const void *)t->load);
-        (void)t2_cmp_imm8(T2_R0, 0u); /* the accessor's verdict */
-        note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
-        if (pd >= 0) {
-            ld_slot((uint32_t)pd, SCRATCH_VAL);
-        }
+        /* The slow path: the shared stub, which returns the value in r0. */
+        emit_mem_stub(in->aux);
+        st_slot(T2_R0, in->dst);
         patch_branch_n(ldone_pt, emu_jit_here(), false);
-        if (ldone != NULL) {
-            patch_branch_n(ldone, emu_jit_here(), false);
-            /*
-             * Whatever r0 held on the inlined path is not what the
-             * helper leaves there, and the two merge here.
-             */
-            g_r0_holds = EMU_IR_NO_TEMP;
-        }
+        patch_branch_n(ldone, emu_jit_here(), false);
+        /*
+         * The paths merge holding the value in r0 when it has no
+         * register; with one, the inlined paths never touched r0.
+         */
+        g_r0_holds = (pd < 0) ? in->dst : EMU_IR_NO_TEMP;
         end_pred_skip(skip);
         break;
     }
 
     case EMU_IR_STORE: {
-        if (t->store == NULL) {
+        if (t->store == NULL || (in->aux & T2_MEM_STORE) != 0u) {
             return false;
         }
         const uint32_t ra = use_reg(in->a, T2_R1);
@@ -2009,14 +2075,8 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             patch_branch_n(resv, emu_jit_here(), true);
         }
 
-        /* The slow path. Flags are dead from here to the call. */
-        t2_mov(T2_R0, T2_CPU);
-        if (!t2_movs_imm8(T2_R2, in->aux)) {
-            t2_imm32(T2_R2, in->aux);
-        }
-        t2_call((const void *)t->store);
-        (void)t2_cmp_imm8(T2_R0, 0u); /* the accessor's verdict */
-        note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
+        /* The slow path: the shared stub, value already in r3. */
+        emit_mem_stub((uint32_t)in->aux | T2_MEM_STORE);
         patch_branch_n(sdone_pt, emu_jit_here(), false);
         if (sdone != NULL) {
             patch_branch_n(sdone, emu_jit_here(), false);
@@ -2163,11 +2223,16 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         return false;
     }
 
-    uint32_t list = (1u << T2_CPU) | (1u << T2_CNT);
+    uint32_t list = (1u << T2_CPU) | (1u << T2_CNT) | (1u << T2_STUB);
 
     for (uint32_t i = 0; i < g_nsaved; i++) {
         list |= 1u << t2_alloc_regs[i];
     }
+
+    /* What r11 will hold, and what the stub it names will call. */
+    emu_jit_block_arg = (const void *)t2_mem_stub;
+    t2_mem_accessor[0] = (const void *)t->load;
+    t2_mem_accessor[1] = (const void *)t->store;
 
     /*
      * The frame, padded so that sp is 8-byte aligned at a helper call.
@@ -2181,12 +2246,14 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      */
     uint32_t frame = (((b->next_temp + 4u) * 4u) + 7u) & ~7u;
 
-    if ((((g_nsaved + 3u) * 4u) + frame) % 8u != 0u) {
+    /* Pushed: the allocator's, the cpu, the count, the stub, and lr. */
+    if ((((g_nsaved + 4u) * 4u) + frame) % 8u != 0u) {
         frame += 4u;
     }
 
     t2_push(list | T2_LIST_LR);
     t2_mov(T2_CPU, T2_R0);
+    t2_mov(T2_STUB, T2_R1);
     /* MOVS: the flags are dead on entry to a block. */
     if (!t2_movs_imm8(T2_CNT, 0u)) {
         t2_imm32(T2_CNT, 0u);

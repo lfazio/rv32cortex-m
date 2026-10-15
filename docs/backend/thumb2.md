@@ -55,9 +55,10 @@ block whole.
 |---|---|
 | `r4` | the `emu_cpu_t` pointer, callee-saved so it survives a helper |
 | `r5` | the retired count the block returns |
+| `r11` | `t2_mem_stub`, the slow path every load and store shares |
 | `sp` | the temp frame: every IR value has a home in it |
 | `r0`–`r3`, `r12` | scratch, and the AAPCS argument registers |
-| `r6`–`r11` | handed out by `emu_ir_regalloc`, on top of the frame |
+| `r6`–`r10` | handed out by `emu_ir_regalloc`, on top of the frame |
 
 **The guest register file stays in memory.** A guest register is one
 `LDR.W`/`STR.W` off `r4`, and guest state is coherent at every point a
@@ -273,6 +274,7 @@ RV32 CoreMark x120 on the F746 at 96 KB, per translation:
 | Thumb-2, short encodings | **44.6** | 77 | 86 | 3 | 2 | 30 |
 | ...and the one-compare window guard | **36.0** | 54 | 59 | 3 | 2 | 27 |
 | ...and one RETIRE per stretch | **33.9** | 54 | 59 | 3 | 2 | 27 |
+| ...and one shared slow path | **31.1** | 43 | 51 | 3 | 2 | 27 |
 
 **The encoders always chose the 32-bit form.** `MOV`, `CMP`, and the
 loads and stores of the frame and of the guest register file were
@@ -364,10 +366,42 @@ with the base as the host address, plus a test of each read-only hole
 on a store. `mmiobench` 2.5-7x per peripheral access; see
 [../performance.md](../performance.md#driver-performance-the-passthrough-window).
 
-What is left in an access is the host pointer (`MOVW`/`MOVT`, 8 bytes)
-and the call into the checked accessor with its trap exit: `MOVW`/`MOVT`
-and `BLX` for the call, a compare and a branch for the verdict -- once
-per access. See [../TODO.md](../TODO.md).
+**Then the slow path, shared.** Every access carried its own call into
+the checked accessor -- the cpu into r0, the spec into r2, an
+out-pointer into r3, `MOVW`/`MOVT`/`BLX`, a compare for the verdict --
+22 bytes of a load's 54. It is one `t2_mem_stub` now, in the hot
+section, reached by `BLX r11`: an access puts its spec in r2 (bit 7 for
+a store), calls, and takes the exit on `NE`; the stub returns a load's
+value in r0, which is where the inlined path leaves it too, so the
+dead-store rule now holds across a load as it does for anything else.
+r11 comes from the block's second argument (`emu_jit_block_arg`) in a
+`MOV` before the chain entry -- two bytes a block, inherited by a
+chained one -- and is the allocator's sixth register given up; on
+x86-64 the fourth was already worth only 0.6%, and the 32 KB figures
+below include the loss.
+
+x650 against a worktree at the commit before, under two function
+layouts, because 7% is inside what layout alone does on this part:
+
+| | translations | cycles / insn, default | `-falign-functions=32` |
+|---|---|---|---|
+| 32 KB, before | 256,320 | 117.31 | 115.06 |
+| 32 KB, after | **239,432** | **109.17** | **109.30** |
+| 96 KB, before / after | 286 / 296 | 14.02 / 14.02 | |
+| interpreter, same tree | | 110.46 | |
+
+The translation count does not depend on layout, and is what says the
+change is real. **At 32 KB the JIT is level with the interpreter** -- it
+was 22% behind before the short encodings -- and at 96 KB, where
+CoreMark fits, a slow path that is rarely taken changes nothing. On
+ARMv7-M CoreMark at 32 KB, 238.19 → 226.09 (one layout). isatest, mmiobench and
+every ARMv7-M, G4MH and PowerPC board guest pass through it.
+
+What is left in an access is the host pointer, `MOVW`/`MOVT` per
+access. It cannot come from a shared slot, because a frontend may
+change the window between translations without a flush -- ARMv7-M's is
+wherever the stack is -- and each block's guard is baked against its
+own. A literal per block would be 4 bytes an access less 4 a block.
 
 ## The guest-RAM window
 

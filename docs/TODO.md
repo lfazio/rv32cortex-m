@@ -161,7 +161,9 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       smaller, which is the next two items. **Short encodings** took
       32 KB from 151.68 to 135.82 (CoreMark x650, worktree A/B), and the
       one-compare window guard to 117.63 -- 6% behind the interpreter,
-      111.22 measured on the same tree, where it had been 22%.
+      111.22 measured on the same tree, where it had been 22%. The
+      shared slow path took it to 109.2-109.3 against 110.46: **level**,
+      on the F746. The F446 has not been measured since.
 - [~] **A memory access is a hundred bytes of emitted code.** Measured
       on Thumb-2 now, with `-DEMU_JIT_BYTE_STATS=ON`: 60.8 bytes a guest
       instruction on RV32 CoreMark, a load 92 and a store 105, together
@@ -173,11 +175,17 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       by log2(size), so bounds and alignment are one unsigned test):
       36.0 bytes a guest instruction, a load 54 and a store 59; x650
       15.70 → 14.29 at 96 KB and 135.82 → 117.63 at 32 KB, against the
-      interpreter's 111.22 on the same tree. Left: the host pointer
-      (`MOVW`/`MOVT`), and the call to the checked accessor with its
-      trap exit once per access -- one out-of-line slow path per block,
-      or per shape of access, or a veneer in the code buffer so the call
-      is a 4-byte `BL`.
+      interpreter's 111.22 on the same tree. **Then one shared slow
+      path** (`t2_mem_stub`, called through r11, which each block takes
+      from a second argument the framework now passes): 31.1 bytes a
+      guest instruction, a load 43 and a store 51; at 32 KB 117.31 →
+      109.17 and, under a second layout, 115.06 → 109.30, translations
+      256,320 → 239,432 either way -- level with the interpreter's
+      110.46 on the same tree
+      ([backend/thumb2.md](backend/thumb2.md#where-the-bytes-go)).
+      Left: the host pointer, `MOVW`/`MOVT` per access, which cannot be
+      shared because a window may change between translations without
+      a flush; a literal per block would save 4 bytes an access.
 - [x] **`RETIRE` was one operation per guest instruction** -- 11% of
       what the Thumb-2 backend emitted once the accesses had shrunk.
       `pass_merge_retire` keeps one per stretch between observation

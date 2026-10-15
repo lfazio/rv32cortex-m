@@ -92,6 +92,7 @@
 #endif
 
 EMU_PER_CORE emu_jit_layout_t emu_jit_layout;
+EMU_PER_CORE const void *emu_jit_block_arg;
 
 typedef struct {
     uint64_t context; /* see emu_jit_hot_t::context. 64 bytes a
@@ -1127,7 +1128,7 @@ static jit_block_t *translate(emu_cpu_t *cpu, uint32_t pc, uint64_t context,
 /* Dispatch                                                            */
 /* ------------------------------------------------------------------ */
 
-typedef uint32_t (*block_fn_t)(emu_cpu_t *);
+typedef uint32_t (*block_fn_t)(emu_cpu_t *, const void *);
 
 /*
  * Turn the address of a translated block into something callable.
@@ -1190,7 +1191,7 @@ static uint32_t run_block_checked(emu_cpu_t *cpu, const jit_block_t *b,
      */
     if (!fresh || ops->diff_ref == NULL || ops->state_bytes == 0u ||
         ops->state_bytes > EMU_JIT_DIFF_MAX) {
-        return block_entry(b->code)(cpu);
+        return block_entry(b->code)(cpu, emu_jit_block_arg);
     }
 
     const uint32_t pc = b->guest_pc;
@@ -1200,13 +1201,13 @@ static uint32_t run_block_checked(emu_cpu_t *cpu, const jit_block_t *b,
         /* Declined -- restore and run normally, comparing nothing. */
         g_stats.diff_declined++;
         memcpy(cpu, g_diff_before, ops->state_bytes);
-        return block_entry(b->code)(cpu);
+        return block_entry(b->code)(cpu, emu_jit_block_arg);
     }
     g_stats.diff_checked++;
     memcpy(g_diff_want, cpu, ops->state_bytes);
     memcpy(cpu, g_diff_before, ops->state_bytes);
 
-    const uint32_t n = block_entry(b->code)(cpu);
+    const uint32_t n = block_entry(b->code)(cpu, emu_jit_block_arg);
 
     const uint8_t *const got = (const uint8_t *)cpu;
     for (uint32_t off = 0; off + 4u <= ops->state_bytes; off += 4u) {
@@ -1517,7 +1518,7 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
         const uint32_t n = run_block_checked(cpu, b, ops, fresh);
 #else
         (void)fresh; /* read by the differential checker alone */
-        const uint32_t n = block_entry(b->code)(cpu);
+        const uint32_t n = block_entry(b->code)(cpu, emu_jit_block_arg);
 #endif
         g_stats.block_entries++;
 

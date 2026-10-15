@@ -740,7 +740,12 @@ uint32_t t2_cond(uint8_t c)
 void t2_call(const void *fn)
 {
     t2_imm32(T2_R12, (uint32_t)(uintptr_t)fn);
-    t2_emit16((uint16_t)(0x4780u | (T2_R12 << 3))); /* BLX r12 */
+    t2_blx(T2_R12);
+}
+
+void t2_blx(uint32_t rm)
+{
+    t2_emit16((uint16_t)(0x4780u | (rm << 3))); /* BLX rm */
 }
 
 /*
@@ -856,7 +861,7 @@ void t2_write_branch(uint8_t *at, const uint8_t *target, bool conditional)
  * these six are the whole of what is callee-saved and free. Low ones
  * first, because a list confined to r0-r7 fits the 16-bit PUSH.
  */
-const uint32_t t2_alloc_regs[T2_ALLOC_REGS] = {6u, 7u, 8u, 9u, 10u, 11u};
+const uint32_t t2_alloc_regs[T2_ALLOC_REGS] = {6u, 7u, 8u, 9u, 10u};
 
 /*
  * PUSH and POP of an explicit register list, taking the 16-bit form when

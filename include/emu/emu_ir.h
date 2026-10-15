@@ -544,7 +544,12 @@ typedef enum emu_ir_cond {
 #define EMU_IR_FE_DIVBYZERO (1u << 3)
 #define EMU_IR_FE_INVALID (1u << 4)
 
-/* Access widths for LOAD and STORE, in `aux`. */
+/*
+ * Access widths for LOAD and STORE, in `aux`. Bits 4-6 are the
+ * frontend's own, passed through to its accessor (ARMv7-M marks an
+ * access that must be aligned); bit 7 is the backend's, and Thumb-2
+ * uses it to tell its shared slow path a store from a load.
+ */
 #define EMU_IR_MEM_SIZE(aux) ((aux) & 7u)
 #define EMU_IR_MEM_SIGNED (1u << 3)
 #define EMU_IR_MEM_AUX(sz, sg) (uint8_t)((sz) | ((sg) ? EMU_IR_MEM_SIGNED : 0u))

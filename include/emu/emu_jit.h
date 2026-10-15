@@ -343,6 +343,18 @@ typedef struct emu_jit_layout {
  */
 extern EMU_PER_CORE emu_jit_layout_t emu_jit_layout;
 
+/*
+ * The second argument every block is called with, after the cpu: a
+ * pointer the host backend chooses, NULL unless it sets one.
+ *
+ * For state a block needs that is the same for all of them and costs
+ * bytes to materialise in each. Thumb-2's is the shared slow path of a
+ * memory access: one `MOV r11, r1` in the prologue -- before the chain
+ * entry, so a chained block inherits it -- against a `MOVW`/`MOVT` per
+ * access. A host that wants nothing ignores it.
+ */
+extern EMU_PER_CORE const void *emu_jit_block_arg;
+
 typedef struct emu_jit_ops {
     const char *name;
 

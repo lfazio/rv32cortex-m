@@ -32,6 +32,7 @@ extern "C" {
 #define T2_R3 3u
 #define T2_CPU 4u
 #define T2_CNT 5u
+#define T2_STUB 11u /* t2_mem_stub, from the block's second argument */
 #define T2_SP 13u
 #define T2_R12 12u
 
@@ -218,8 +219,17 @@ uint32_t t2_cond(uint8_t c);
  * callee-saved under AAPCS, so a value in one survives a helper call
  * with nothing emitted around it.
  */
-#define T2_ALLOC_REGS 6u
+#define T2_ALLOC_REGS 5u
 extern const uint32_t t2_alloc_regs[T2_ALLOC_REGS];
+
+/*
+ * The slow path every LOAD and STORE shares, reached by `BLX r11`. See
+ * its definition in ir_lower.c for what it takes and returns.
+ */
+void t2_mem_stub(void);
+
+/* BLX to an address in a register. */
+void t2_blx(uint32_t rm);
 
 /*
  * PUSH and POP of a register list. LR is bit 14 and PC bit 15; the

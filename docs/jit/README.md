@@ -60,6 +60,13 @@ stylistic choice: as callbacks they cost 4.99M of the 7.03M host cycles
 the framework added on a Cortex-M7, because the dispatch loop runs once
 per block entry and an M7 cannot predict an indirect call.
 
+A block is called with two arguments, the cpu and `emu_jit_block_arg`
+-- a pointer the host backend chooses, for state every block needs and
+none should pay bytes to materialise. Thumb-2's is the slow path all
+its loads and stores share, kept in r11
+([../backend/thumb2.md](../backend/thumb2.md#where-the-bytes-go));
+x86-64 sets none and ignores it.
+
 ## What a frontend decides, per instruction
 
 Three outcomes, and every frontend counts them:
