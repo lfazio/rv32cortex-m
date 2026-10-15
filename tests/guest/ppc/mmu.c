@@ -49,6 +49,7 @@ typedef unsigned char u8;
 #define K4 TSIZE(2) /* 2^2 KB */
 #define M1 TSIZE(10) /* 2^10 KB */
 #define VLE 0x20u
+#define E 0x01u /* MAS2[E]: true little-endian */
 #define WIMG_I 0x08u
 #define WIMG_G 0x02u
 #define UX 0x20u
@@ -80,6 +81,8 @@ void stub_tlbre(void), stub_tlbwe(void), stub_tlbsx(u32 ea),
 u32 stub_load_ds(u32 a), stub_jump_is(u32 a), stub_load_ds_shared(u32 a);
 u32 stub_jump_is_r5(u32 target, u32 unused, u32 r5);
 void u_tlbwe(void), u_tlbsx(void), u_load(void);
+u32 stub_lhz(u32 a), stub_lbz(u32 a), stub_lwbrx(u32 a), stub_sth(u32 a, u32 v);
+u32 stub_jump_r4(u32 target, u32 r4);
 extern u8 mmu_page0[], mmu_page2[];
 
 static void pc_(char c)
@@ -186,14 +189,14 @@ int main(void)
     check("mas0-impl", rd_mas0() & ~0x30000000u, 0x001F001Fu);
     wr_mas1(0xFFFFFFFFu);
     check("mas1-impl", rd_mas1(), 0xC0FF1F80u); /* V, IPROT, TID, TS, TSIZE */
-    /* EPN, VLE, WIMG -- and E reads 0: the MODEL does not do
-     * little-endian pages, and says so by refusing the bit. */
+    /* EPN, VLE, WIMGE. E read 0 until little-endian pages were
+     * modelled -- refused rather than accepted and ignored. */
     wr_mas2(0xFFFFFFFFu);
-    check("mas2-impl", rd_mas2(), 0xFFFFFC3Eu);
+    check("mas2-impl", rd_mas2(), 0xFFFFFC3Fu);
     wr_mas3(0xFFFFFFFFu);
     check("mas3-impl", rd_mas3(), 0xFFFFFFFFu); /* RPN, U0-U3, perms */
     wr_mas4(0xFFFFFFFFu);
-    check("mas4-impl", rd_mas4(), 0x30030FBEu); /* DE as E, above */
+    check("mas4-impl", rd_mas4(), 0x30030FBFu); /* DE as E, above */
     wr_mas6(0xFFFFFFFFu);
     check("mas6-impl", rd_mas6(), 0x00FF0001u);
     /* PID0 is eight bits on this core (10.2.3). */
@@ -396,6 +399,103 @@ int main(void)
     tlb_write(14u, V | K4, 0x63001000u | VLE,
               ((u32)mmu_page0 + 0x1000u) | SX | SR);
     check("straddle-ok", stub_jump(0x63000FFEu), 0x77u);
+
+    /* --- little-endian pages (MAS2[E], 11.16.5) --------------------- */
+    /*
+     * One physical page mapped twice, big-endian at 0x6F000000 and
+     * little-endian at 0x6F001000: the same bytes, read the other way
+     * round, at each width -- and lwbrx, whose reversal undoes the page's.
+     */
+    wr32(PAGE_B + 0x20u, 0x11223344u);
+    tlb_write(28u, V | K4, 0x6F000000u, PAGE_B | SW | SR);
+    tlb_write(29u, V | K4, 0x6F001000u | E, PAGE_B | SX | SW | SR);
+    tlb_read(29u);
+    check("le-tlbre", rd_mas2() & E, E);
+    check("le-be-alias", stub_load(0x6F000020u), 0x11223344u);
+    check("le-lwz", stub_load(0x6F001020u), 0x44332211u);
+    check("le-lhz", stub_lhz(0x6F001020u), 0x2211u);
+    check("le-lhz-2", stub_lhz(0x6F001022u), 0x4433u);
+    check("le-lbz", stub_lbz(0x6F001021u), 0x22u);
+    check("le-lwbrx", stub_lwbrx(0x6F001020u), 0x11223344u);
+    check("le-stw", stub_store(0x6F001024u, 0xA1B2C3D4u), 0xAAu);
+    check("le-stw-lands", rd32(PAGE_B + 0x24u), 0xD4C3B2A1u);
+    check("le-sth", stub_sth(0x6F001028u, 0xBEEFu), 0xAAu);
+    check("le-sth-lands", rd32(PAGE_B + 0x28u) >> 16, 0xEFBEu);
+    /* Unaligned, within the page: assembled from the low end. */
+    wr32(PAGE_B + 0x30u, 0x00112233u);
+    wr32(PAGE_B + 0x34u, 0x44556677u);
+    check("le-lwz-unaligned", stub_load(0x6F001031u), 0x44332211u);
+    check("le-stw-unaligned", stub_store(0x6F001039u, 0x01020304u), 0xAAu);
+    check("le-stw-unaligned-lands",
+          ((u32)g_pg[4096 + 0x39] << 24) | ((u32)g_pg[4096 + 0x3A] << 16) |
+              ((u32)g_pg[4096 + 0x3B] << 8) | g_pg[4096 + 0x3C],
+          0x04030201u);
+    /*
+     * Across a page boundary. Both pages little-endian: one order, so
+     * the bytes are assembled across it. Big into little: no order at
+     * all -- a DSI with ESR[BO], DEAR a byte on the page that differs,
+     * and a store that writes nothing.
+     */
+    tlb_write(30u, V | K4, 0x6F002000u | E, PAGE_A | SW | SR);
+    tlb_write(31u, V | K4, 0x6F003000u | E, PAGE_B | SW | SR);
+    g_pg[4094] = 0x11u;
+    g_pg[4095] = 0x22u;
+    g_pg[4096] = 0x33u;
+    g_pg[4097] = 0x44u;
+    check("le-cross-both", stub_load(0x6F002FFEu), 0x44332211u);
+    tlb_write(30u, V | K4, 0x6F002000u, PAGE_A | SW | SR);
+    took("le-cross-bo-load", stub_load(0x6F002FFEu), 2u, ESR_BO);
+    check("le-cross-bo-load-dear", g_trap.dear, 0x6F003000u);
+    took("le-cross-bo-store", stub_store(0x6F002FFFu, 0xA1B2C3D4u), 2u,
+         ESR_ST | ESR_BO);
+    check("le-cross-bo-store-dear", g_trap.dear, 0x6F003000u);
+    check("le-cross-bo-store-a", g_pg[4095], 0x22u);
+    check("le-cross-bo-store-b", g_pg[4096], 0x33u);
+    /* And the other way, little into big. */
+    tlb_write(30u, V | K4, 0x6F002000u | E, PAGE_A | SW | SR);
+    tlb_write(31u, V | K4, 0x6F003000u, PAGE_B | SW | SR);
+    took("le-cross-bo-load-2", stub_load(0x6F002FFEu), 2u, ESR_BO);
+    /* ESR[BO] is the access's, not left behind for the next DSI: a
+     * store to a read-only page straight after, with no BO in it. */
+    tlb_write(28u, V | K4, 0x6F000000u, PAGE_B | SR);
+    took("le-bo-not-sticky", stub_store(0x6F000020u, 1u), 2u, ESR_ST);
+    /* A TLB miss takes MAS2[E] from MAS4[DE], as the rest of WIMGE. */
+    wr_mas4(TLBSEL1 | K4 | E);
+    took("le-miss", stub_load(0x5F000000u), 13u, 0u);
+    check("le-miss-mas2-de", rd_mas2() & E, E);
+    wr_mas4(TLBSEL1 | K4);
+    /*
+     * Code. A Book E page marked E holds its instructions as
+     * little-endian words: li r3, 0xA4 and blr, stored reversed. A VLE
+     * page marked E cannot be executed at all (table 7-14).
+     */
+    wr32(PAGE_B + 0x100u, 0xA4006038u);
+    wr32(PAGE_B + 0x104u, 0x2000804Eu);
+    check("le-exec-booke", stub_jump(0x6F001100u), 0xA4u);
+    check("le-exec-booke-again", stub_jump(0x6F001100u), 0xA4u);
+    tlb_write(30u, V | K4, 0x6F006000u | VLE | E, (u32)mmu_page0 | SX | SR);
+    took("le-exec-vle", stub_jump(0x6F006100u), 3u, ESR_BO | ESR_VLEMI);
+    check("le-exec-vle-srr0", g_trap.srr0, 0x6F006100u);
+    /*
+     * The same refusal reached from a translated VLE block. From Book E
+     * the target is fetched by the interpreter, which checks E itself;
+     * only a VLE block's exit brings the translator there with the core
+     * already in VLE. (The loop is translated: `interp` does not move by
+     * its hundred iterations.)
+     *
+     * **This cannot see the translator's own check, and says so.** With
+     * it removed, the JIT reverses the word as for a Book E page, the
+     * VLE halfwords become an encoding it declines at once, and the
+     * interpreter raises this same ISI. The check stays because a 32-bit
+     * VLE instruction can reverse into one that decodes.
+     */
+    tlb_write(31u, V | K4, 0x6F004000u | VLE, (u32)mmu_page0 | SX | SR);
+    took("le-exec-vle-from-block", stub_jump_r4(0x6F004200u, 0x6F006100u), 3u,
+         ESR_BO | ESR_VLEMI);
+    check("le-exec-vle-from-block-srr0", g_trap.srr0, 0x6F006100u);
+    for (u32 e = 28u; e <= 31u; e++) {
+        tlb_write(e, 0u, 0u, 0u);
+    }
 
     /* --- the JIT's assumptions, one at a time ----------------------- */
     /*

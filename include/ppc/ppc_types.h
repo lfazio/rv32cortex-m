@@ -296,15 +296,8 @@ typedef enum {
 #define PPC_MAS2_VLE 0x00000020u    /* bit 26                       */
 #define PPC_MAS2_WIMGE 0x0000001Fu  /* bits 27:31                   */
 #define PPC_MAS2_I 0x00000008u
-#define PPC_MAS2_E 0x00000001u
-/*
- * E -- a little-endian page -- is not modelled, and reads as zero so
- * that a guest can see it was refused: tlbre shows every page
- * big-endian. Accepting it and ignoring it would be a silent wrong
- * answer. See docs/frontend/ppc.md.
- */
-#define PPC_MAS2_IMPL                                                          \
-    (PPC_MAS2_EPN | PPC_MAS2_VLE | (PPC_MAS2_WIMGE & ~PPC_MAS2_E))
+#define PPC_MAS2_E 0x00000001u /* bit 31: true little-endian  */
+#define PPC_MAS2_IMPL (PPC_MAS2_EPN | PPC_MAS2_VLE | PPC_MAS2_WIMGE)
 
 #define PPC_MAS3_RPN 0xFFFFFC00u    /* bits 0:21                    */
 #define PPC_MAS3_U03 0x000003C0u    /* bits 22:25                   */
@@ -324,8 +317,8 @@ typedef enum {
 #define PPC_MAS4_VLED 0x00000020u    /* bit 26                      */
 #define PPC_MAS4_DWIMGE 0x0000001Fu  /* bits 27:31                  */
 #define PPC_MAS4_IMPL                                                          \
-    (PPC_MAS4_TLBSELD | PPC_MAS4_TIDSELD | PPC_MAS4_TSIZED | PPC_MAS4_VLED |    \
-     (PPC_MAS4_DWIMGE & ~PPC_MAS2_E)) /* DE: as MAS2[E] */
+    (PPC_MAS4_TLBSELD | PPC_MAS4_TIDSELD | PPC_MAS4_TSIZED | PPC_MAS4_VLED |   \
+     PPC_MAS4_DWIMGE)
 
 #define PPC_MAS6_SPID_SHIFT 16       /* bits 8:15                   */
 #define PPC_MAS6_SPID 0x00FF0000u

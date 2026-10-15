@@ -638,7 +638,7 @@ endif()
 if(EMU_GUEST_ARCH_PPC)
     foreach(_g "alu:PPC-ALU-END checks=00000044 fails=00000000 ticked"
                "sys:PPC-SYS-END checks=000000b8 fails=00000000"
-               "mmu:PPC-MMU-END checks=000000ad fails=00000000"
+               "mmu:PPC-MMU-END checks=000000da fails=00000000"
                "coremark:Correct operation validated"
                "coremark-tlb:Correct operation validated"
                "crypto:failures 0x00000000")

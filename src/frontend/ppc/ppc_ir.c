@@ -1245,22 +1245,26 @@ static void lower_helper(T *t)
  *
  * Under a programmed TLB through ppc_mmu_probe_exec, which has no side
  * effects: a miss, a page the current mode may not execute, a page of
- * the other encoding, a Book E instruction at an odd halfword, or a
- * 32-bit VLE one straddling into a page that fails any of those -- all
- * stop the block, and the interpreter, arriving there, raises what the
- * manual says. Stopping is enough because every condition here is a
- * property of the page and the context, and the context and the
- * generation say when a block may no longer rely on them.
+ * the other encoding, a VLE page marked little-endian, a Book E
+ * instruction at an odd halfword, or a 32-bit VLE one straddling into a
+ * page that fails any of those -- all stop the block, and the
+ * interpreter, arriving there, raises what the manual says. Stopping is
+ * enough because every condition here is a property of the page and the
+ * context, and the context and the generation say when a block may no
+ * longer rely on them. A Book E page marked E is translated, its words
+ * reversed as the interpreter reverses them.
  */
-static bool fetch_pa(const ppc_cpu_t *c, uint32_t ea, uint32_t *pa)
+static bool fetch_pa(const ppc_cpu_t *c, uint32_t ea, uint32_t *pa, bool *le)
 {
     bool vle = false;
 
+    *le = false;
     if (!c->mmu_on) {
         *pa = ea;
         return true;
     }
-    return ppc_mmu_probe_exec(c, ea, pa, &vle) && vle == c->vle;
+    return ppc_mmu_probe_exec(c, ea, pa, &vle, le) && vle == c->vle &&
+           !(vle && *le);
 }
 
 static bool fetch(const ppc_cpu_t *c, uint32_t pc, uint32_t *insn, uint32_t *len)
@@ -1268,11 +1272,12 @@ static bool fetch(const ppc_cpu_t *c, uint32_t pc, uint32_t *insn, uint32_t *len
     uint16_t w0;
     uint16_t w1 = 0u;
     uint32_t pa;
+    bool le;
 
     if (c->mmu_on && !c->vle && (pc & 2u) != 0u) {
         return false; /* ISI[MIF] */
     }
-    if (!fetch_pa(c, pc, &pa) ||
+    if (!fetch_pa(c, pc, &pa, &le) ||
         emu_bus_fetch16_be(c->bus, pa, &w0) != EMU_FAULT_NONE) {
         return false;
     }
@@ -1281,7 +1286,9 @@ static bool fetch(const ppc_cpu_t *c, uint32_t pc, uint32_t *insn, uint32_t *len
         /* Pages are at least 1 KB, so only a halfword at a 1 KB boundary
          * can be on another one. */
         if (c->mmu_on && ((pc + 2u) & 0x3FFu) == 0u) {
-            if (!fetch_pa(c, pc + 2u, &pa)) {
+            bool le2;
+
+            if (!fetch_pa(c, pc + 2u, &pa, &le2)) {
                 return false;
             }
         } else {
@@ -1292,6 +1299,9 @@ static bool fetch(const ppc_cpu_t *c, uint32_t pc, uint32_t *insn, uint32_t *len
         }
     }
     *insn = ((uint32_t)w0 << 16) | w1;
+    if (le) {
+        *insn = emu_bswap(*insn, 4u); /* Book E: the whole word */
+    }
     return true;
 }
 

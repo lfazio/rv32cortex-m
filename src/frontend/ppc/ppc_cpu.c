@@ -62,6 +62,7 @@ void ppc_cpu_reset(ppc_cpu_t *c, uint32_t reset_pc)
     c->spefscr = 0u;
     c->reserve = false;
     c->esr = 0u;
+    c->dsi_bo = false;
     c->hid0 = c->hid1 = 0u;
     c->l1csr0 = c->l1csr1 = c->l1finv0 = c->l1finv1 = 0u;
     c->bucsr = 0u;
@@ -167,9 +168,12 @@ void ppc_cpu_raise(ppc_cpu_t *c, ppc_ivor_t which, uint32_t ret_pc,
          * to have been a VLE one.
          */
         const bool vlemi = c->vle && which != PPC_IVOR_ITLB_ERROR;
+        /* Table 7-13: a byte-ordering DSI says so in BO. */
+        const bool bo = c->dsi_bo && which == PPC_IVOR_DATA_STORAGE;
 
-        c->esr = esr | (vlemi ? PPC_ESR_VLEMI : 0u);
+        c->esr = esr | (vlemi ? PPC_ESR_VLEMI : 0u) | (bo ? PPC_ESR_BO : 0u);
     }
+    c->dsi_bo = false;
     c->msr &= keep;
     c->pc = handler_address(c, which);
     ppc_mmu_refresh(c); /* the handler runs with IS and DS clear */
@@ -722,15 +726,33 @@ bool ppc_cpu_take_irq(ppc_cpu_t *c)
  * sets DEAR to "the effective address of a byte" of the faulting access,
  * which is the first byte that faults. An aligned access cannot cross a
  * page (the smallest is 1 KB), so it translates once.
+ *
+ * **And in the page's byte order.** A page with MAS2[E] is accessed in
+ * true little-endian order (table 10-11): the same bytes, read the
+ * other way round, so an aligned access swaps what the bus gave and an
+ * unaligned one assembles its bytes from the low end. When the bytes
+ * come from two pages that disagree there is no order to assemble them
+ * in, and the core takes a DSI with ESR[BO] instead (11.16.5) -- DEAR
+ * the first byte on the page that differs, "a byte within the page
+ * whose access caused the violation" (table 7-13).
  */
+static ppc_exc_t byte_order_dsi(ppc_cpu_t *c, uint32_t ea)
+{
+    c->dear = ea;
+    c->dsi_bo = true;
+    return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
+}
+
 static EMU_COLD_NOINLINE ppc_exc_t load_xlate(ppc_cpu_t *c, uint32_t addr,
                                               uint32_t size, uint32_t *out)
 {
     uint32_t v = 0u;
+    bool le = false;
 
     if ((addr & (size - 1u)) == 0u) {
         uint32_t pa;
-        const ppc_exc_t x = ppc_mmu_xlate(c, addr, PPC_ACC_READ, &pa, NULL);
+        const ppc_exc_t x =
+            ppc_mmu_xlate(c, addr, PPC_ACC_READ, &pa, NULL, &le);
 
         if (x != PPC_EXC_NONE) {
             return x;
@@ -739,22 +761,29 @@ static EMU_COLD_NOINLINE ppc_exc_t load_xlate(ppc_cpu_t *c, uint32_t addr,
             c->dear = addr;
             return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
         }
-        *out = v;
+        *out = le ? emu_bswap(v, size) : v;
         return PPC_EXC_NONE;
     }
     for (uint32_t i = 0u; i < size; i++) {
         uint32_t pa;
         uint32_t b = 0u;
-        const ppc_exc_t x = ppc_mmu_xlate(c, addr + i, PPC_ACC_READ, &pa, NULL);
+        bool le_i = false;
+        const ppc_exc_t x =
+            ppc_mmu_xlate(c, addr + i, PPC_ACC_READ, &pa, NULL, &le_i);
 
         if (x != PPC_EXC_NONE) {
             return x;
+        }
+        if (i == 0u) {
+            le = le_i;
+        } else if (le_i != le) {
+            return byte_order_dsi(c, addr + i);
         }
         if (emu_bus_read_be(c->bus, pa, 1u, &b) != EMU_FAULT_NONE) {
             c->dear = addr + i;
             return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
         }
-        v = (v << 8) | (b & 0xFFu);
+        v = le ? (v | ((b & 0xFFu) << (8u * i))) : ((v << 8) | (b & 0xFFu));
     }
     *out = v;
     return PPC_EXC_NONE;
@@ -763,14 +792,19 @@ static EMU_COLD_NOINLINE ppc_exc_t load_xlate(ppc_cpu_t *c, uint32_t addr,
 static EMU_COLD_NOINLINE ppc_exc_t store_xlate(ppc_cpu_t *c, uint32_t addr,
                                                uint32_t size, uint32_t val)
 {
+    bool le = false;
+
     if ((addr & (size - 1u)) == 0u) {
         uint32_t pa;
-        const ppc_exc_t x = ppc_mmu_xlate(c, addr, PPC_ACC_WRITE, &pa, NULL);
+        const ppc_exc_t x =
+            ppc_mmu_xlate(c, addr, PPC_ACC_WRITE, &pa, NULL, &le);
 
         if (x != PPC_EXC_NONE) {
             return x;
         }
-        if (emu_bus_write_be(c->bus, pa, size, val) != EMU_FAULT_NONE) {
+        if (emu_bus_write_be(c->bus, pa, size,
+                             le ? emu_bswap(val, size) : val) !=
+            EMU_FAULT_NONE) {
             c->dear = addr;
             return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
         }
@@ -785,15 +819,21 @@ static EMU_COLD_NOINLINE ppc_exc_t store_xlate(ppc_cpu_t *c, uint32_t addr,
     uint32_t pa[4];
 
     for (uint32_t i = 0u; i < size; i++) {
+        bool le_i = false;
         const ppc_exc_t x =
-            ppc_mmu_xlate(c, addr + i, PPC_ACC_WRITE, &pa[i], NULL);
+            ppc_mmu_xlate(c, addr + i, PPC_ACC_WRITE, &pa[i], NULL, &le_i);
 
         if (x != PPC_EXC_NONE) {
             return x;
         }
+        if (i == 0u) {
+            le = le_i;
+        } else if (le_i != le) {
+            return byte_order_dsi(c, addr + i); /* before any byte lands */
+        }
     }
     for (uint32_t i = 0u; i < size; i++) {
-        const uint32_t b = (val >> (8u * (size - 1u - i))) & 0xFFu;
+        const uint32_t b = (val >> (8u * (le ? i : (size - 1u - i)))) & 0xFFu;
 
         if (emu_bus_write_be(c->bus, pa[i], 1u, b) != EMU_FAULT_NONE) {
             c->dear = addr + i;

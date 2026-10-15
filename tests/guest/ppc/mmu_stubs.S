@@ -134,6 +134,25 @@ stub stub_jump_is			/* r3 = target */
 	mtspr	SPR_SRR1, %r4
 	rfi
 
+stub stub_jump_r4			/* r3 = target, r4 passed through */
+	mtctr	%r3
+	bctr
+
+/* The other widths, for little-endian pages: each has its own swap. */
+stub stub_lhz				/* r3 = address */
+	lhz	%r3, 0(%r3)
+	blr
+stub stub_lbz				/* r3 = address */
+	lbz	%r3, 0(%r3)
+	blr
+stub stub_lwbrx				/* r3 = address */
+	lwbrx	%r3, 0, %r3
+	blr
+stub stub_sth				/* r3 = address, r4 = value */
+	sth	%r4, 0(%r3)
+	li	%r3, 0xAA
+	blr
+
 /*
  * Two pages of code, reached only through mappings mmu.c makes. The
  * first is called from Book E and VLE pages alike, so it holds both
@@ -150,6 +169,19 @@ mmu_page0:
 	.org	mmu_page0 + 0x100
 	.short	0x4D53				/* se_li  r3, 0x55 */
 	.short	0x0004				/* se_blr          */
+
+/*
+ * A VLE jump to r4, after a loop: entered from Book E the first fetch
+ * is interpreted, and the fallback batch would carry on into the target
+ * and check it in the interpreter -- the loop is what makes the jump
+ * leave a *translated* VLE block. Encodings from binutils' -mvle.
+ */
+	.org	mmu_page0 + 0x200
+	.short	0x4E47				/* se_li    r7, 100 */
+	.short	0x00B7				/* se_mtctr r7      */
+	.short	0x7A20, 0x0000			/* e_bdnz   .       */
+	.short	0x00B4				/* se_mtctr r4      */
+	.short	0x0006				/* se_bctr          */
 
 	.org	mmu_page0 + 0xFFE
 	.short	0x7060				/* e_li   r3, 0x77, first half */

@@ -196,7 +196,7 @@ static uint32_t real_of(const ppc_cpu_t *c, int i, uint32_t ea)
 }
 
 bool ppc_mmu_probe_exec(const ppc_cpu_t *c, uint32_t ea, uint32_t *pa,
-                        bool *vle)
+                        bool *vle, bool *le)
 {
     const int i = lookup(c, ea, as_of(c, true), pid_of(c));
     const bool user = (c->msr & PPC_MSR_PR) != 0u;
@@ -205,12 +205,13 @@ bool ppc_mmu_probe_exec(const ppc_cpu_t *c, uint32_t ea, uint32_t *pa,
         return false;
     }
     *vle = (c->tlb[i].mas2 & PPC_MAS2_VLE) != 0u;
+    *le = (c->tlb[i].mas2 & PPC_MAS2_E) != 0u;
     *pa = real_of(c, i, ea);
     return true;
 }
 
 ppc_exc_t ppc_mmu_xlate(ppc_cpu_t *c, uint32_t ea, ppc_acc_t acc, uint32_t *pa,
-                        bool *vle)
+                        bool *vle, bool *le)
 {
     const bool exec = (acc == PPC_ACC_EXEC);
     const uint32_t as = as_of(c, exec);
@@ -232,6 +233,9 @@ ppc_exc_t ppc_mmu_xlate(ppc_cpu_t *c, uint32_t ea, ppc_acc_t acc, uint32_t *pa,
 
     if (vle != NULL) {
         *vle = (m2 & PPC_MAS2_VLE) != 0u;
+    }
+    if (le != NULL) {
+        *le = (m2 & PPC_MAS2_E) != 0u;
     }
     /* Figure 10-3. */
     switch (acc) {

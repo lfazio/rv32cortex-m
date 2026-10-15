@@ -202,6 +202,15 @@ typedef struct ppc_cpu {
      * `vle` follows whichever page is executing.
      */
     uint32_t tlb_reset_mas2;
+    /*
+     * Set by the access path when the data storage interrupt it returns
+     * is a byte-ordering one -- a misaligned access across pages of
+     * different endianness (11.16.5) -- and moved into ESR[BO] by
+     * ppc_cpu_raise, which clears it on every interrupt. The callers
+     * raise with ESR[ST] or nothing, as for any other DSI, so this is
+     * the one bit the access has to carry to them.
+     */
+    bool dsi_bo;
 } ppc_cpu_t;
 
 /* ------------------------------------------------------------------ */
@@ -338,11 +347,12 @@ void ppc_mmu_refresh(ppc_cpu_t *c);
  * Effective to real. PPC_EXC_NONE, or the interrupt to take -- data or
  * instruction TLB error on a miss, data or instruction storage on a
  * permission -- with DEAR and the MAS registers already updated as the
- * manual says that interrupt leaves them. `vle` (may be NULL) is the
- * page's VLE attribute.
+ * manual says that interrupt leaves them. `vle` and `le` (either may be
+ * NULL) are the page's VLE and E attributes: its encoding, and whether
+ * it is accessed in true little-endian byte order.
  */
 ppc_exc_t ppc_mmu_xlate(ppc_cpu_t *c, uint32_t ea, ppc_acc_t acc, uint32_t *pa,
-                        bool *vle);
+                        bool *vle, bool *le);
 
 /*
  * The translator's question: may the core execute at `ea`, and from
@@ -353,7 +363,7 @@ ppc_exc_t ppc_mmu_xlate(ppc_cpu_t *c, uint32_t ea, ppc_acc_t acc, uint32_t *pa,
  * permission; the interpreter, reaching it, takes the interrupt.
  */
 bool ppc_mmu_probe_exec(const ppc_cpu_t *c, uint32_t ea, uint32_t *pa,
-                        bool *vle);
+                        bool *vle, bool *le);
 
 /* The TLB instructions, after the privilege check. */
 void ppc_tlbre(ppc_cpu_t *c);

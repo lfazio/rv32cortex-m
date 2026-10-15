@@ -1662,11 +1662,15 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       already guarding it. And a guest refilling the TLB from a miss
       handler flushes every block per refill; per-entry invalidation is
       what that would need.
-- [ ] **PowerPC: little-endian pages.** MAS2[E] reads 0 today. Doing it
-      means byte-reversed data access per page, ISI[BO] for a VLE page
-      marked E, and DSI[BO] for an access crossing pages of different
-      endianness (11.16.5) -- and a data fault path that can carry
-      ESR[BO].
+- [x] **PowerPC: little-endian pages.** MAS2[E] and MAS4[DE] are held;
+      data is accessed in true little-endian order at every width,
+      Book E code from an E page is fetched as little-endian words,
+      a misaligned access across pages of different byte order takes
+      DSI[BO] (11.16.5) and a VLE page marked E takes ISI[BO]. ESR[BO]
+      reaches a DSI through `dsi_bo`, which the raise consumes.
+      `ppc-mmu` 218 checks on both backends and the F746; 12 of 13
+      mutants caught, the 13th explained in
+      [frontend/ppc.md](frontend/ppc.md#little-endian-pages).
 
 - [~] Finish the ppc emualtor with dual core support and implement a simple driver for the e200z7.
       **The single core is finished and the other two halves are not

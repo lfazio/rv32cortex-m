@@ -29,7 +29,7 @@ of them can catch is a shared misreading of the manual.
 | Interrupts: IVPR and IVOR0–15, 32–35; the four save/restore pairs (SRR, CSRR, DSRR, MCSRR); ESR; `sc`, `tw`, `rfi`/`rfci`/`rfdi`/`rfmci` | implemented |
 | Privilege: MSR[PR], SPR access by number, the user-readable SPRGs | implemented |
 | Time base, decrementer with auto-reload, TSR/TCR, HID0[TBEN] and [SEL_TBCLK], `wait` | implemented |
-| MMU: the 32-entry TLB, MAS0–4 and 6, PID0, MMUCSR0, the `tlb*` instructions, address spaces, per-page VLE | implemented ([below](#the-mmu)); little-endian pages are not, and say so |
+| MMU: the 32-entry TLB, MAS0–4 and 6, PID0, MMUCSR0, the `tlb*` instructions, address spaces, per-page VLE and per-page byte order | implemented ([below](#the-mmu)) |
 | SPE and the vector half of the EFPU (`ev*`) | **not implemented** — SPE-unavailable while MSR[SPE] is clear, as the core does; an illegal-instruction program interrupt once it is set |
 | Classic floating point (`fadd` …) | not on this core |
 | Caches, the debug facility (IAC/DAC/DBCR do hold what is written) | not modelled |
@@ -174,7 +174,7 @@ with its section beside it in the code; nothing here has met an e200.
 | DTLB and ITLB errors; ISI[MIF] for an odd halfword of a Book E page; ITLB[MIF] and ISI[BO] for a 32-bit VLE instruction straddling into a missing page or one of the other encoding | implemented |
 | the encoding per page, MAS2[VLE] | implemented |
 | WIMG | held, and does nothing: no cache is modelled |
-| E, little-endian pages | **not modelled**: MAS2[E] and MAS4[DE] read 0, so `tlbre` shows the guest every page is big-endian |
+| E, little-endian pages: data in true little-endian order at every width, Book E instructions as little-endian words, DSI[BO] for a misaligned access across pages that disagree, ISI[BO] for a VLE page marked E, MAS4[DE] on a miss | implemented ([below](#little-endian-pages)) |
 | cache instructions taking TLB errors (`dcbf`, `dcbst`, `icbi`, `dcbt`, …) | no: they stay no-ops; `dcbz` is translated, because it stores |
 
 **Where the model is not the manual**, each written down where it is
@@ -289,9 +289,46 @@ from a translated block, which is the only path through the dispatcher's
 lookup -- and with that, all ten mutants of the new code fail on the
 check named for them.
 
+### Little-endian pages
+
+MAS2[E] makes a page "accessed in true little-endian byte order"
+(table 10-11): the same bytes, read the other way round. All of it
+lives in the two places a translated access already goes through --
+`load_xlate` and `store_xlate` in `ppc_cpu.c`, and the two fetches --
+so the flat path, which cannot have an E page, pays nothing:
+
+- **Data** swaps at the access's width; an unaligned access assembles
+  its bytes from the low end. `lwbrx` and its relatives come out
+  big-endian on such a page, because their reversal undoes the page's.
+- **Across a page boundary** both pages must agree. When they do not
+  there is no order to put the bytes in, and the core takes a DSI with
+  ESR[BO] (11.16.5) -- DEAR the first byte on the page that differs, and
+  a store writes nothing. The access path has one bit to hand the
+  interrupt that its callers do not know about, so it leaves it in
+  `dsi_bo` and `ppc_cpu_raise` moves it into ESR and clears it.
+- **Code**: a Book E page marked E holds little-endian words, reversed
+  as they are fetched -- by the interpreter, and by the translator,
+  which reads the page's E through the same probe as its VLE bit, so a
+  TLB write's generation covers both. A VLE page marked E cannot be
+  executed: ISI with ESR[BO] (table 7-14), whether the fetch is the
+  first halfword or the second of a straddling instruction.
+- **A TLB miss** loads MAS2[E] from MAS4[DE] with the rest of WIMGE.
+
+E was refused until this -- read as 0, so a guest could see that no
+page was little-endian -- rather than accepted and ignored. `ppc-mmu`
+holds all of it, 45 checks, on both backends and on the F746, and
+twelve of thirteen single-point mutants fail on the check named for
+them. The thirteenth is the translator's own refusal of a VLE page
+marked E: without it, the translator reverses the word as for Book E,
+the VLE halfwords become something it declines at once, and the
+interpreter raises the same ISI. It is kept because a 32-bit VLE
+instruction can reverse into one that decodes; the test that reaches it
+from a translated VLE block says it cannot tell.
+
 **How it was checked.** `ppc-mmu` is 150 checks whose expectations are
 the manual's tables or bytes the guest wrote to physical memory; two
-are marked as the model's choices (the reset entry, MAS2[E]). Then 37
+were marked as the model's choices (the reset entry, and MAS2[E] until
+little-endian pages were modelled). Then 37
 single-point defects — the TS and TID compares, the page mask, the RPN
 mask, each permission, each MAS update, INV_ALL, IPROT, the MIF and BO
 cases, VLEMI on an ITLB error, the per-byte split of a crossing access,
@@ -610,10 +647,6 @@ existing rather than on the frontend being compiled in.
   choice — a negative value converted to unsigned, for one — the code
   documents the choice it made, and the checker agreeing there is two
   readers of one sentence.
-- **No translated block runs under a programmed TLB**, so a guest that
-  programs it — as MPC57xx start-up code does — is interpreted from
-  there on. See [the MMU](#the-mmu) for what lifting that needs.
-- **Little-endian pages** (MAS2[E]) are refused rather than modelled.
 - **No VLE compiler**, so compiled code is Book E and VLE is covered by
   the decoder sweeps, the generated cases and hand-written assembly. An
   NXP S32DS or CodeWarrior build would do for VLE what CC-RH did for

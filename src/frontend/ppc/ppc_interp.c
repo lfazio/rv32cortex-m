@@ -1075,7 +1075,9 @@ static dc_t g_dc[PPC_DECODE_CACHE];
  * 32-bit VLE instruction straddling a page -- SRR0 names the first half
  * and MAS2 the page that missed; an ISI for an execute permission, with
  * MIF for an odd halfword of a Book E page, and with BO for a straddle
- * onto a page whose VLE bit differs.
+ * onto a page whose VLE bit differs -- or for any fetch from a VLE page
+ * marked little-endian (table 7-14). A Book E page marked E holds its
+ * instructions as little-endian words, so the word is reversed.
  *
  * The word and its length come back packed, length in the high half and
  * zero for "an interrupt was taken": out-parameters would take the
@@ -1086,10 +1088,11 @@ static EMU_COLD_NOINLINE uint64_t fetch_xlate(ppc_cpu_t *c, uint32_t pc)
 {
     uint32_t pa;
     bool vle = false;
+    bool le = false;
     uint16_t w0;
     uint32_t insn;
     unsigned len;
-    ppc_exc_t x = ppc_mmu_xlate(c, pc, PPC_ACC_EXEC, &pa, &vle);
+    ppc_exc_t x = ppc_mmu_xlate(c, pc, PPC_ACC_EXEC, &pa, &vle, &le);
 
     if (x == (ppc_exc_t)PPC_IVOR_ITLB_ERROR) {
         ppc_cpu_raise(c, PPC_IVOR_ITLB_ERROR, pc, 0u);
@@ -1098,6 +1101,10 @@ static EMU_COLD_NOINLINE uint64_t fetch_xlate(ppc_cpu_t *c, uint32_t pc)
     c->vle = vle;
     if (x != PPC_EXC_NONE) {
         ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, 0u);
+        return 0u;
+    }
+    if (vle && le) {
+        ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, PPC_ESR_BO);
         return 0u;
     }
     if (!vle && (pc & 2u) != 0u) {
@@ -1117,8 +1124,9 @@ static EMU_COLD_NOINLINE uint64_t fetch_xlate(ppc_cpu_t *c, uint32_t pc)
         /* Every page is a multiple of 1 KB on a boundary of its size. */
         if (((pc + 2u) & 0x3FFu) == 0u) {
             bool vle2 = false;
+            bool le2 = false;
 
-            x = ppc_mmu_xlate(c, pc + 2u, PPC_ACC_EXEC, &pa2, &vle2);
+            x = ppc_mmu_xlate(c, pc + 2u, PPC_ACC_EXEC, &pa2, &vle2, &le2);
             if (x == (ppc_exc_t)PPC_IVOR_ITLB_ERROR) {
                 ppc_cpu_raise(c, PPC_IVOR_ITLB_ERROR, pc, PPC_ESR_MIF);
                 return 0u;
@@ -1127,7 +1135,9 @@ static EMU_COLD_NOINLINE uint64_t fetch_xlate(ppc_cpu_t *c, uint32_t pc)
                 ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, 0u);
                 return 0u;
             }
-            if (vle2 != vle) {
+            /* Only VLE straddles, so a second page marked E is a VLE
+             * page that is little-endian, or not VLE at all. */
+            if (vle2 != vle || le2) {
                 ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, PPC_ESR_BO);
                 return 0u;
             }
@@ -1137,6 +1147,9 @@ static EMU_COLD_NOINLINE uint64_t fetch_xlate(ppc_cpu_t *c, uint32_t pc)
             return 0u;
         }
         insn |= w1;
+    }
+    if (le) {
+        insn = emu_bswap(insn, 4u); /* Book E, so a whole word */
     }
     return ((uint64_t)len << 32) | insn;
 }
