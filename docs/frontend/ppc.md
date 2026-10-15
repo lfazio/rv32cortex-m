@@ -235,15 +235,59 @@ file did it in two steps — everything new except `ppc_interp.c` ran at
 difference is register allocation in the hottest loop; an instruction
 count on another architecture has no way to show that.
 
-**The JIT stands aside under a programmed TLB.** `blocked` points at
-`mmu_on`: the emitted code reaches RAM through a window that does not
-translate, and the translator fetches physical bytes. The TLB
-instructions end a block, so the switch happens between blocks.
-`ppc-mmu --jit` interprets 4,496 of its 25,427 instructions — everything
-after the start-up programs the TLB. Lifting it needs three things: a
-side-effect-free lookup for the translator's fetch, PID0 and MSR[IS]
-in the block's context and TLB writes in its generation, and no inline
-window while translating — or one that translates.
+**The JIT runs under a programmed TLB.** It used to stand aside --
+`blocked` pointed at `mmu_on`, so from the first `tlbwe` everything was
+interpreted -- and three things lifted that:
+
+- **the translator fetches through the TLB**, with `ppc_mmu_probe_exec`:
+  `ppc_mmu_xlate`'s answer for a fetch with none of its side effects,
+  because the translator reads ahead of what will run and a miss there
+  must not touch the MAS registers. A miss, a page the mode may not
+  execute, a page of the other encoding, an odd halfword on a Book E
+  page or a straddle into any of those *stops the block*, and the
+  interpreter, arriving, raises what the manual says;
+- **what a block was fetched under is its identity**: under the MMU the
+  context carries `mmu_on`, MSR[IS], MSR[PR] (execute permission is per
+  mode) and PID0 (`ppc_cpu_ctx`); and **a TLB write moves the
+  generation**, because the mapping itself is not identity but
+  validity. Coarse -- every block goes on a `tlbwe` -- which a start-up
+  pays once and a miss handler refilling the TLB would pay per refill;
+- **no RAM window under the MMU**: every access goes to the helper and
+  is translated there. A block built with the window is never entered
+  with translation on, because `mmu_on` is in the context.
+
+`coremark-tlb` is CoreMark with a start-up that maps RAM and the console
+the MPC57xx way and overwrites the reset entry (`crt0.S` assembled with
+`PPC_CRT0_TLB` defined -- a guest define, not a build option), so the whole benchmark runs under the MMU. x86-64, same
+retired count and CRCs:
+
+| | interpreter | JIT before | JIT now |
+|---|---|---|---|
+| `coremark`, identity | 0.26 s | 0.051 s | 0.052 s |
+| `coremark-tlb` | 0.56 s | 0.596 s, 12,170,424 interpreted | **0.112 s**, 2,480 interpreted |
+
+On the F746 at 96 KB, host cycles an instruction and the wall clock:
+`coremark-tlb` interpreted **582.99** (32.3 s), translated **88.09**
+(4.9 s) -- 6.6x -- while identity `coremark` stays at 50.85, and
+`ppc-mmu` passes all its checks on the Thumb-2 backend.
+
+Under the MMU the JIT is half the identity map's speed, and the
+difference is the helper call per access; a window per TLB entry is
+what would take it back. `ppc-mmu --jit` interprets 734 of its
+instructions where it interpreted 4,496.
+
+**Its checks could not see the machinery at first: six of eight
+single-point defects passed all 150.** Every one of them was written for
+the interpreter, which re-checks the mode on every fetch, so none ran
+one address twice under different conditions -- and a block exists only
+if something runs twice. The `jit-` cases do: each runs code, changes
+one thing the block was built under, and runs it again. Two of those
+first passed too, for a reason worth keeping: after an `rfi` the
+fallback interprets a *batch*, which ran straight into the target and
+checked the mode itself. `mmu_caller` loops first and calls the target
+from a translated block, which is the only path through the dispatcher's
+lookup -- and with that, all ten mutants of the new code fail on the
+check named for them.
 
 **How it was checked.** `ppc-mmu` is 150 checks whose expectations are
 the manual's tables or bytes the guest wrote to physical memory; two
@@ -330,10 +374,11 @@ outcomes per instruction, counted in the run's report:
   dispatcher. A short list and a deliberate one — whatever changes MSR
   (`mtmsr`, `wrtee`, the `rfi` family), takes an interrupt on purpose
   (`sc`, an illegal encoding), reads or writes an SPR other than LR, CTR
-  and XER, waits, or says code moved (`icbi`). That makes the
-  interpreter the single place those happen, which is why a block needs
-  **no generation and no privilege in its context**: the context is the
-  encoding and nothing else.
+  and XER, waits, changes the TLB, or says code moved (`icbi`). That
+  makes the interpreter the single place those happen. On the identity
+  map the context is the encoding and nothing else; under a programmed
+  TLB it carries what the code was fetched under too, and a TLB write
+  moves the generation -- see the MMU section.
 
 CR and XER are guest registers, and an instruction that writes a CR
 field or XER[CA] says so in IR — compares, shifts and an insert; nothing

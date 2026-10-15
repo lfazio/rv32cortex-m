@@ -155,13 +155,11 @@ typedef struct ppc_cpu {
     bool irq_dirty;
 
     /*
-     * The translator's view. `jit_ctx` is what a block is built for,
-     * which is the encoding it was decoded as and nothing else: privilege
-     * and MSR[SPE] decide nothing in lowered code, because everything
-     * that depends on either is left to the interpreter, and with no
-     * MMU there is no permission a block could have been checked
-     * against. `jit_gen` moves when something a block has specialised
-     * on changes; nothing does, so it never moves.
+     * The translator's view. `jit_ctx` is what a block is built for: the
+     * encoding it was decoded as, and under a programmed TLB the address
+     * space, privilege and PID its code was fetched under (ppc_cpu_ctx).
+     * `jit_gen` moves when the TLB changes, because a block holds code
+     * fetched through the mapping that was there.
      */
     uint64_t jit_ctx;
     uint32_t jit_gen;
@@ -344,6 +342,17 @@ void ppc_mmu_refresh(ppc_cpu_t *c);
  * page's VLE attribute.
  */
 ppc_exc_t ppc_mmu_xlate(ppc_cpu_t *c, uint32_t ea, ppc_acc_t acc, uint32_t *pa,
+                        bool *vle);
+
+/*
+ * The translator's question: may the core execute at `ea`, and from
+ * where? ppc_mmu_xlate's answer for a fetch, with none of its side
+ * effects -- a miss touches neither the MAS registers nor anything else,
+ * because the translator reads ahead of what will run and an instruction
+ * it looks at may never execute. False for a miss or no execute
+ * permission; the interpreter, reaching it, takes the interrupt.
+ */
+bool ppc_mmu_probe_exec(const ppc_cpu_t *c, uint32_t ea, uint32_t *pa,
                         bool *vle);
 
 /* The TLB instructions, after the privilege check. */

@@ -596,8 +596,9 @@ endif()
 if(EMU_GUEST_ARCH_PPC)
     foreach(_g "alu:PPC-ALU-END checks=00000044 fails=00000000 ticked"
                "sys:PPC-SYS-END checks=000000b8 fails=00000000"
-               "mmu:PPC-MMU-END checks=00000096 fails=00000000"
+               "mmu:PPC-MMU-END checks=000000ad fails=00000000"
                "coremark:Correct operation validated"
+               "coremark-tlb:Correct operation validated"
                "crypto:failures 0x00000000")
         string(FIND "${_g}" ":" _at)
         string(SUBSTRING "${_g}" 0 ${_at} _name)
@@ -625,6 +626,22 @@ if(EMU_GUEST_ARCH_PPC)
             endif()
         endif()
     endforeach()
+    #
+    # CoreMark under a programmed TLB, translated -- and *translated* is
+    # the claim, so the stats line is part of the pass: fewer than 10,000
+    # instructions interpreted. Its output alone was produced just as well
+    # when the JIT stood aside from the first tlbwe and interpreted all
+    # 12,170,424 of them.
+    #
+    if(TARGET guest-ppc-coremark-tlb AND EMU_JIT)
+        add_test(NAME guest-ppc-coremark-tlb-translated
+                 COMMAND emu-host --jit --max-insn 400000000
+                         "${CMAKE_BINARY_DIR}/guest/ppc-coremark-tlb.elf")
+        set_tests_properties(guest-ppc-coremark-tlb-translated PROPERTIES
+            LABELS fast
+            PASS_REGULAR_EXPRESSION
+            "Correct operation validated.*interp +[0-9][0-9]?[0-9]?[0-9]? instructions fell back")
+    endif()
     #
     # A wait with interrupts masked, which nothing may end. The pass is
     # the line before it; the failure is the line after it, or running

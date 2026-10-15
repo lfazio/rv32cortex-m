@@ -107,7 +107,26 @@ stub stub_load_ds			/* r3 = address */
 	mtmsr	%r5
 	blr
 
+/*
+ * stub_load itself, reached with MSR[DS] set and no TLB write since it
+ * last ran with translation off. Under --jit a block for stub_load
+ * built then reads RAM through a window that does not translate, and
+ * only the context -- not the generation -- can keep it from running
+ * here. The fault returns to the instruction after the bl, with r3 the
+ * IVOR, and r5 and r7 survive the recorder.
+ */
+stub stub_load_ds_shared		/* r3 = address */
+	mflr	%r7
+	mfmsr	%r5
+	ori	%r6, %r5, MSR_DS
+	mtmsr	%r6
+	bl	stub_load
+	mtmsr	%r5
+	mtlr	%r7
+	blr
+
 /* An instruction fetch in address space 1. */
+stub stub_jump_is_r5			/* the same, passing r5 through */
 stub stub_jump_is			/* r3 = target */
 	mtspr	SPR_SRR0, %r3
 	mfmsr	%r4
@@ -137,3 +156,48 @@ mmu_page0:
 	.short	0x0077				/* ...second half: next page   */
 	.short	0x0004				/* se_blr                      */
 	.org	mmu_page0 + 0x2000
+
+/*
+ * A third page, different code at the same offsets as the first, so
+ * that one virtual address can be pointed at either and the answer
+ * says which it ran -- the JIT's cases in mmu.c. Its second routine
+ * leaves by a system call rather than blr, so that running it in
+ * problem state ends where the test can see it.
+ */
+	.globl	mmu_page2
+mmu_page2:
+	li	%r3, 0xA2			/* Book E */
+	blr
+
+	.org	mmu_page2 + 0x200
+	li	%r3, 0xA3
+	leave
+
+/*
+ * A caller, entered by rfi in a new mode -- MSR[IS] set, or problem
+ * state -- that reaches its callee (r5) from a *translated block*.
+ *
+ * The loop is the point. After an rfi the JIT's fallback interprets a
+ * batch of instructions, and a callee reached inside that batch is
+ * fetched by the interpreter, which checks the mode itself; only a call
+ * from a block goes through the dispatcher's lookup, and only there can
+ * a block cached under the old mode be found. The callee's r3 goes to
+ * g_uval -- or the interrupt's number, if it faulted and the recorder
+ * returned here -- and a system call takes the caller back to C.
+ */
+	.org	mmu_page2 + 0x300
+	.globl	mmu_caller
+mmu_caller:
+	mflr	%r9
+	li	%r10, 100
+	mtctr	%r10
+1:	bdnz	1b
+	mtctr	%r5
+	bctrl
+	lis	%r4, g_uval@ha
+	stw	%r3, g_uval@l(%r4)
+	mtlr	%r9
+	li	%r0, 0x7777
+	sc
+2:	b	2b
+	.org	mmu_page2 + 0x1000

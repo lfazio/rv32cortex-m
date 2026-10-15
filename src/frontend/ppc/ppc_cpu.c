@@ -80,9 +80,32 @@ void ppc_cpu_reset(ppc_cpu_t *c, uint32_t reset_pc)
     c->jit_flush = true;
 }
 
+/*
+ * What a block is built for. On the identity map that is the encoding
+ * alone: privilege decides nothing in lowered code, and nothing a block
+ * fetched depends on anything else.
+ *
+ * Under a programmed TLB the block's *code* came through the mapping:
+ * which entry matched depends on MSR[IS] and PID0, and whether the fetch
+ * was allowed on MSR[PR], the X permission being per mode. So all three
+ * are in the key, beside the bit that says translation is on -- a block
+ * from the identity map reads RAM through a window that does not
+ * translate, and must not be found under a mapping. Data needs nothing:
+ * under the MMU every access goes to the helper and is translated there.
+ * TLB contents are not identity but validity, so they move the
+ * generation instead (ppc_mmu.c).
+ */
 uint64_t ppc_cpu_ctx(const ppc_cpu_t *c)
 {
-    return c->vle ? 1u : 0u;
+    uint64_t k = c->vle ? 1u : 0u;
+
+    if (c->mmu_on) {
+        k |= 2u;
+        k |= (c->msr & PPC_MSR_IS) != 0u ? 4u : 0u;
+        k |= (c->msr & PPC_MSR_PR) != 0u ? 8u : 0u;
+        k |= (uint64_t)(c->pid0 & 0xFFu) << 8;
+    }
+    return k;
 }
 
 void ppc_cpu_set_msr(ppc_cpu_t *c, uint32_t v)

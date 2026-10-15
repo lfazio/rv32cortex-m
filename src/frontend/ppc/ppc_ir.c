@@ -261,6 +261,15 @@ static bool ppc_fast_mem(ppc_cpu_t *c, emu_ir_fastmem_t *out)
 {
     emu_region_t *r;
 
+    /*
+     * Not under a programmed TLB: the window is physical, and an access
+     * there has to be translated and permission-checked first -- which
+     * the helper does. mmu_on is in the context, so a block built with
+     * the window is never entered with translation on.
+     */
+    if (c->mmu_on) {
+        return false;
+    }
     if (c->bus == NULL || !emu_ir_can_lower(EMU_IR_BSWAP32, 0u) ||
         !emu_ir_can_lower(EMU_IR_BSWAP16, 0u)) {
         return false;
@@ -1001,7 +1010,12 @@ static bool lower_mem(T *t, const I *d)
 static bool lower_branch(T *t, const I *d)
 {
     B *const b = t->b;
-    const uint32_t mask = t->c->vle ? ~1u : ~3u;
+    /*
+     * The interpreter's target_mask: under a programmed TLB bit 62 is
+     * kept and an odd halfword on a Book E page faults at the fetch.
+     * mmu_on is in the context, so baking either answer is safe.
+     */
+    const uint32_t mask = (t->c->vle || t->c->mmu_on) ? ~1u : ~3u;
 
     switch (d->sem) {
     case PPC_S_B:
@@ -1194,7 +1208,11 @@ static bool must_decline(const I *d)
     case PPC_S_PRIV_NOP:
     case PPC_S_ILLEGAL:
     case PPC_S_PRIV_ILLEGAL:
-    /* They can turn translation on, which stops every block. */
+    /*
+     * They change the mapping every block's code was fetched through,
+     * or the MAS registers a miss handler reads: the interpreter is the
+     * one place that happens, and the generation moves (ppc_mmu.c).
+     */
     case PPC_S_TLBRE:
     case PPC_S_TLBWE:
     case PPC_S_TLBSX:
@@ -1221,17 +1239,57 @@ static void lower_helper(T *t)
                       PPC_HELPER_STEP, 0u);
 }
 
+/*
+ * An instruction's bytes, as the interpreter would fetch them -- or
+ * false, and the block stops before it.
+ *
+ * Under a programmed TLB through ppc_mmu_probe_exec, which has no side
+ * effects: a miss, a page the current mode may not execute, a page of
+ * the other encoding, a Book E instruction at an odd halfword, or a
+ * 32-bit VLE one straddling into a page that fails any of those -- all
+ * stop the block, and the interpreter, arriving there, raises what the
+ * manual says. Stopping is enough because every condition here is a
+ * property of the page and the context, and the context and the
+ * generation say when a block may no longer rely on them.
+ */
+static bool fetch_pa(const ppc_cpu_t *c, uint32_t ea, uint32_t *pa)
+{
+    bool vle = false;
+
+    if (!c->mmu_on) {
+        *pa = ea;
+        return true;
+    }
+    return ppc_mmu_probe_exec(c, ea, pa, &vle) && vle == c->vle;
+}
+
 static bool fetch(const ppc_cpu_t *c, uint32_t pc, uint32_t *insn, uint32_t *len)
 {
     uint16_t w0;
     uint16_t w1 = 0u;
+    uint32_t pa;
 
-    if (emu_bus_fetch16_be(c->bus, pc, &w0) != EMU_FAULT_NONE) {
+    if (c->mmu_on && !c->vle && (pc & 2u) != 0u) {
+        return false; /* ISI[MIF] */
+    }
+    if (!fetch_pa(c, pc, &pa) ||
+        emu_bus_fetch16_be(c->bus, pa, &w0) != EMU_FAULT_NONE) {
         return false;
     }
     *len = c->vle ? ppc_vle_len(w0) : 4u;
-    if (*len == 4u && emu_bus_fetch16_be(c->bus, pc + 2u, &w1) != EMU_FAULT_NONE) {
-        return false;
+    if (*len == 4u) {
+        /* Pages are at least 1 KB, so only a halfword at a 1 KB boundary
+         * can be on another one. */
+        if (c->mmu_on && ((pc + 2u) & 0x3FFu) == 0u) {
+            if (!fetch_pa(c, pc + 2u, &pa)) {
+                return false;
+            }
+        } else {
+            pa += 2u;
+        }
+        if (emu_bus_fetch16_be(c->bus, pa, &w1) != EMU_FAULT_NONE) {
+            return false;
+        }
     }
     *insn = ((uint32_t)w0 << 16) | w1;
     return true;
@@ -1384,12 +1442,13 @@ static void ppc_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
     out->context = &c->jit_ctx;
     out->irq_pending = &c->irq_dirty;
     /*
-     * No block runs under a programmed TLB: the emitted code reaches
-     * guest RAM through a window that does not translate. The
-     * interpreter takes the whole run from the first tlbwe, or from
-     * MSR[IS] or [DS] being set; see docs/frontend/ppc.md.
+     * Nothing blocks. Under a programmed TLB the translator fetches
+     * through it, accesses go to the helper, and the context and the
+     * generation keep a block from outliving what it was built under;
+     * see docs/frontend/ppc.md. This pointed at mmu_on, which sent the
+     * whole run to the interpreter from the first tlbwe.
      */
-    out->blocked = &c->mmu_on;
+    out->blocked = NULL;
 }
 
 const emu_ir_frontend_t ppc_ir_frontend = {

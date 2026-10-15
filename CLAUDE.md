@@ -3216,6 +3216,21 @@ session, and every one of them recurred:
   with N in the tens of millions means one loop head declining forever,
   which a trace then names in one run.
 
+- **A guest written for the interpreter cannot test a JIT's keys, and
+  the fallback batch hides the one way it might have.** PowerPC's MMU
+  guest had 150 checks, every one exact, and six of eight single-point
+  defects in the new JIT-under-the-TLB machinery passed them: the
+  interpreter re-checks the mode on every fetch, so no check ran one
+  address twice under different conditions -- and a block only exists
+  if something runs twice. Run, change one thing the block was built
+  under, run again: that caught four more. The last two (MSR[IS] and
+  MSR[PR] out of the context) still passed, because after an `rfi` the
+  fallback interprets a *batch*, which ran into the target and checked
+  the mode itself. **Only a call from a translated block goes through
+  the dispatcher's lookup**, so the test has to loop first and call
+  second. Same family as the IT-block fault test and the gdb stepi
+  check: a mechanism is tested only on the path that reaches it.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must

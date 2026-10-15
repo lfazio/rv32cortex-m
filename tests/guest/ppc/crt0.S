@@ -195,6 +195,39 @@ _reset:
 	setivor	SPR_IVOR32 + 2, 34
 	setivor	SPR_IVOR32 + 3, 35
 
+#ifdef PPC_CRT0_TLB
+	/*
+	 * The TLB programmed as an MPC57xx start-up does it (mmu.c does the
+	 * same with C around it): RAM -- code, data, stack, the vectors --
+	 * in one protected megabyte with every permission, the console in a
+	 * protected 4 KB page, cache-inhibited and guarded, and the reset
+	 * entry overwritten. From here translation is on for the whole run,
+	 * which is what a guest built with this measures: the same program
+	 * as without, under the MMU. MAS fields as tables 10-9 to 10-12.
+	 */
+	.macro	tlbent esel, mas1, mas2, mas3
+	lis	%r3, (0x10000000 | (\esel << 16))@h	/* TLBSEL1, ESEL */
+	mtspr	624, %r3
+	lis	%r3, (\mas1)@h
+	ori	%r3, %r3, (\mas1)@l
+	mtspr	625, %r3
+	lis	%r3, (\mas2)@h
+	ori	%r3, %r3, (\mas2)@l
+	mtspr	626, %r3
+	lis	%r3, (\mas3)@h
+	ori	%r3, %r3, (\mas3)@l
+	mtspr	627, %r3
+	tlbwe
+	isync
+	.endm
+	/* V | IPROT | TSIZE 1 MB; EPN; RPN | UX SX UW SW UR SR */
+	tlbent	1, 0xC0000500, 0x80000000, 0x8000003F
+	/* V | IPROT | TSIZE 4 KB; EPN | I | G; RPN | SW SR */
+	tlbent	2, 0xC0000100, 0x1000000A, 0x10000005
+	/* entry 0, the reset entry: invalid */
+	tlbent	0, 0x00000000, 0x00000000, 0x00000000
+#endif
+
 	/* .bss, which nothing else will zero for a guest loaded as one blob. */
 	lis	%r3, __bss_start@ha
 	addi	%r3, %r3, __bss_start@l

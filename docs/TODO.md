@@ -1617,15 +1617,25 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       `dcbz` had been ignoring rB since it was written, and `check.py`'s
       list of instructions "not on this core" hid a `tlbld`/`tlbwe`
       naming clash in objdump.
-- [ ] **PowerPC: run the JIT under a programmed TLB.** Today `blocked`
-      is `mmu_on`, so a guest that programs the TLB is interpreted from
-      then on (`ppc-mmu --jit`: 4,496 of 25,427). Needs a lookup with no
-      side effects for the translator's fetch (a miss must not touch the
-      MAS registers), PID0 and MSR[IS]/[DS] in the block's context, TLB
-      writes in its generation, and loads and stores that do not use the
-      untranslated window while `mmu_on` -- the helper path, or a window
-      per TLB entry. Measure on a guest that programs the TLB and then
-      runs CoreMark; none exists yet.
+- [x] **PowerPC: run the JIT under a programmed TLB.** It did not:
+      `blocked` was `mmu_on`. Now the translator fetches through a
+      side-effect-free probe, the context carries `mmu_on`, MSR[IS],
+      MSR[PR] and PID0, a TLB write moves the generation, and accesses
+      take the helper under the MMU. `coremark-tlb` (CoreMark with a
+      start-up that programs the TLB): x86-64 JIT 0.596 s → **0.112 s**,
+      interpreted 12,170,424 → 2,480; `ppc-mmu --jit` 4,496 → 734.
+      `ppc-mmu` gained the `jit-` cases, which run code, change one thing
+      it was built under, and run it again -- six of eight defects in
+      the machinery passed the old checks, and all ten now fail on the
+      one named for them ([frontend/ppc.md](frontend/ppc.md#the-mmu)).
+- [ ] **PowerPC: a window per TLB entry.** Under the MMU every access is
+      a helper call, so `coremark-tlb` runs at half the identity map's
+      speed under the JIT (0.112 s against 0.052). The RAM window could
+      be offered per block when one entry maps the whole of it with
+      read and write for the block's mode, with the TLB generation
+      already guarding it. And a guest refilling the TLB from a miss
+      handler flushes every block per refill; per-entry invalidation is
+      what that would need.
 - [ ] **PowerPC: little-endian pages.** MAS2[E] reads 0 today. Doing it
       means byte-reversed data access per page, ISI[BO] for a VLE page
       marked E, and DSI[BO] for an access crossing pages of different

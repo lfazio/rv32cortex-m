@@ -442,24 +442,33 @@ if(EXISTS "${COREMARK_DIR}/core_main.c")
                 -Wno-unused-parameter -Wno-sign-compare
                 -Wno-implicit-fallthrough)
     endif()
-    # And for the e200z7, with the time base for a clock.
+    # And for the e200z7, with the time base for a clock -- twice: the
+    # second programs the TLB in its start-up and runs the whole benchmark
+    # under it, which is what measures the JIT under a programmed MMU.
     if(EMU_GUEST_ARCH_PPC AND PPC_GCC)
-        add_ppc_guest(coremark
-            OPT -O2
-            EXTRA_SOURCES
-                "${COREMARK_DIR}/core_main.c"
-                "${COREMARK_DIR}/core_list_join.c"
-                "${COREMARK_DIR}/core_matrix.c"
-                "${COREMARK_DIR}/core_state.c"
-                "${COREMARK_DIR}/core_util.c"
-                "${guest_dir}/coremark/core_portme.c"
-            FLAGS
-                -I "${COREMARK_DIR}"
-                -I "${guest_dir}/coremark"
-                -DPERFORMANCE_RUN=1
-                -DITERATIONS=${ARMV7M_COREMARK_ITERATIONS}
-                -Wno-unused-parameter -Wno-sign-compare
-                -Wno-implicit-fallthrough)
+        foreach(_v coremark coremark-tlb)
+            set(_tlb "")
+            if(_v STREQUAL "coremark-tlb")
+                set(_tlb -DPPC_CRT0_TLB)
+            endif()
+            add_ppc_guest(${_v}
+                OPT -O2
+                EXTRA_SOURCES
+                    "${COREMARK_DIR}/core_main.c"
+                    "${COREMARK_DIR}/core_list_join.c"
+                    "${COREMARK_DIR}/core_matrix.c"
+                    "${COREMARK_DIR}/core_state.c"
+                    "${COREMARK_DIR}/core_util.c"
+                    "${guest_dir}/coremark/core_portme.c"
+                FLAGS
+                    -I "${COREMARK_DIR}"
+                    -I "${guest_dir}/coremark"
+                    -DPERFORMANCE_RUN=1
+                    -DITERATIONS=${ARMV7M_COREMARK_ITERATIONS}
+                    ${_tlb}
+                    -Wno-unused-parameter -Wno-sign-compare
+                    -Wno-implicit-fallthrough)
+        endforeach()
     endif()
 else()
     message(STATUS "CoreMark source not available; skipping the coremark image")

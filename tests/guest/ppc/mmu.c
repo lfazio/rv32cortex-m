@@ -12,9 +12,17 @@
  *
  * It programs the TLB the way an MPC57xx start-up does -- RAM and the
  * console in protected entries, the reset entry overwritten -- and then
- * runs with translation on for the rest, so under --jit everything
- * after that is interpreted: no translated block runs under a
- * programmed TLB (ppc_ir.c).
+ * runs with translation on for the rest, under --jit as translated
+ * blocks.
+ *
+ * **The JIT's cases** are the ones marked "jit-": each runs code once,
+ * so that a block of it exists, changes exactly one thing the block was
+ * built under -- the mapping, the address space, the PID, the privilege,
+ * translation itself -- and runs it again. Under the interpreter they
+ * are ordinary checks; under --jit each is the only thing that can see
+ * its mechanism removed. The guest's other checks were written before
+ * any block ran under a programmed TLB, and six of eight single-point
+ * defects in that machinery passed every one of them.
  */
 typedef unsigned int u32;
 typedef unsigned char u8;
@@ -69,9 +77,10 @@ void wr_mas0(u32), wr_mas1(u32), wr_mas2(u32), wr_mas3(u32);
 void wr_mas4(u32), wr_mas6(u32), wr_pid0(u32), wr_mmucsr0(u32);
 void stub_tlbre(void), stub_tlbwe(void), stub_tlbsx(u32 ea),
     stub_tlbivax(u32 ea);
-u32 stub_load_ds(u32 a), stub_jump_is(u32 a);
+u32 stub_load_ds(u32 a), stub_jump_is(u32 a), stub_load_ds_shared(u32 a);
+u32 stub_jump_is_r5(u32 target, u32 unused, u32 r5);
 void u_tlbwe(void), u_tlbsx(void), u_load(void);
-extern u8 mmu_page0[];
+extern u8 mmu_page0[], mmu_page2[];
 
 static void pc_(char c)
 {
@@ -207,6 +216,15 @@ int main(void)
      */
     took("reset-as1-miss", stub_load_ds(PAGE_A), 13u, 0u);
     check("reset-as1-miss-dear", g_trap.dear, PAGE_A);
+    /*
+     * jit-: the same load instructions, run first with translation off
+     * and then with only MSR[DS] set -- no TLB write between, so the
+     * generation does not move and only the context can tell the block
+     * built the first time from the one this needs.
+     */
+    wr32(PAGE_A + 0x20u, 0x0A0A0020u);
+    check("jit-load-identity", stub_load(PAGE_A + 0x20u), 0x0A0A0020u);
+    took("jit-load-ds-same-code", stub_load_ds_shared(PAGE_A + 0x20u), 13u, 0u);
 
     /*
      * --- program the TLB as a start-up does -------------------------
@@ -348,6 +366,10 @@ int main(void)
     check("itlb-srr0", g_trap.srr0, 0x70000000u);
     check("itlb-mas2-epn", rd_mas2() & 0xFFFFFC00u, 0x70000000u);
     took("itlb-is1", stub_jump_is(0x60000000u), 14u, 0u);
+    /* jit-: fetch-va just ran this address in address space 0. The miss
+     * is at the target; a block reused across MSR[IS] runs it and
+     * misses at the return instead, with every other field the same. */
+    check("jit-itlb-is1-srr0", g_trap.srr0, 0x60000000u);
     check("itlb-is1-ts", rd_mas1() & TS, TS);
     check("itlb-is1-srr1", g_trap.srr1 & MSR_IS, MSR_IS);
     tlb_write(11u, V | K4, 0x61000000u, (u32)mmu_page0 | SR);
@@ -374,6 +396,77 @@ int main(void)
     tlb_write(14u, V | K4, 0x63001000u | VLE,
               ((u32)mmu_page0 + 0x1000u) | SX | SR);
     check("straddle-ok", stub_jump(0x63000FFEu), 0x77u);
+
+    /* --- the JIT's assumptions, one at a time ----------------------- */
+    /*
+     * The mapping: an address run through entry 1's identity, then
+     * remapped by entry 0 -- the lowest-numbered entry wins -- to other
+     * code, then back. A block outliving the tlbwe runs the old code; a
+     * translator that fetched the effective address as a physical one
+     * runs page 2's bytes where page 0's are mapped.
+     */
+    check("jit-map-identity", stub_jump((u32)mmu_page2), 0xA2u);
+    tlb_write(0u, V | K4, (u32)mmu_page2, (u32)mmu_page0 | SX | SR);
+    check("jit-map-remapped", stub_jump((u32)mmu_page2), 0x5Au);
+    tlb_write(0u, 0u, 0u, 0u);
+    check("jit-map-back", stub_jump((u32)mmu_page2), 0xA2u);
+    /*
+     * PID0: one address, two entries by TID, two pages. Changing PID0 is
+     * an mtspr, which moves no generation; only the context separates
+     * the two blocks.
+     */
+    tlb_write(21u, V | TID(7) | K4, 0x69000000u, (u32)mmu_page0 | SX | SR);
+    tlb_write(22u, V | TID(8) | K4, 0x69000000u, (u32)mmu_page2 | SX | SR);
+    wr_pid0(7u);
+    check("jit-pid-7", stub_jump(0x69000000u), 0x5Au);
+    wr_pid0(8u);
+    check("jit-pid-8", stub_jump(0x69000000u), 0xA2u);
+    wr_pid0(0u);
+    /*
+     * Problem state: SX and not UX. Run once as supervisor, which leaves
+     * by a system call, then as user, which must not run at all.
+     */
+    tlb_write(23u, V | K4, 0x6B000000u, (u32)mmu_page2 | SX | SR);
+    g_uval = 0u;
+    check("jit-s-exec", stub_jump(0x6B000200u), 8u);
+    check("jit-s-exec-ran", g_uval, 0xA3u);
+    g_uval = 0u;
+    took("jit-u-exec-no-ux", stub_user((void (*)(void))0x6B000200u, 0u, 0u), 3u,
+         0u);
+    check("jit-u-exec-srr0", g_trap.srr0, 0x6B000200u);
+    check("jit-u-exec-not-run", g_uval, 0u);
+    /*
+     * The same two, from a block. jit-u-exec-no-ux above enters the
+     * user routine straight from an rfi, which the fallback interprets
+     * past -- so it cannot see a block cached in supervisor state, and
+     * did not. mmu_caller loops first and then calls; the call is a
+     * lookup, under the new mode. X at 0x6B000000 was run in supervisor
+     * state just now (jit-s-exec) and is SX only.
+     */
+    tlb_write(24u, V | K4, 0x6E000000u, (u32)mmu_page2 | UX | SX | UR | SR);
+    check("jit-s-exec-x", stub_jump(0x6B000000u), 0xA2u);
+    g_uval = 0u;
+    check("jit-u-call-from-block",
+          stub_user((void (*)(void))0x6E000300u, 0u, 0x6B000000u), 8u);
+    /* The ISI's number, stored by the caller the recorder returned to;
+     * its SRR0 is gone by now, overwritten by the closing system call. */
+    check("jit-u-call-isi", g_uval, 3u);
+    /*
+     * Address space: one address, page 0 in TS 0 and page 2 in TS 1.
+     * Run in address space 0, then called from a block in address space
+     * 1. MSR[IS] is changed by an rfi, which moves no generation.
+     */
+    tlb_write(25u, V | K4, 0x6D000000u, (u32)mmu_page0 | SX | SR);
+    tlb_write(26u, V | TS | K4, 0x6D000000u, (u32)mmu_page2 | SX | SR);
+    tlb_write(27u, V | TS | K4, 0x6C000000u, (u32)mmu_page2 | SX | SR);
+    check("jit-is0", stub_jump(0x6D000000u), 0x5Au);
+    g_uval = 0u;
+    check("jit-is1-call-from-block",
+          stub_jump_is_r5(0x6C000300u, 0u, 0x6D000000u), 8u);
+    check("jit-is1-ran-ts1", g_uval, 0xA2u);
+    for (u32 e = 21u; e <= 27u; e++) {
+        tlb_write(e, 0u, 0u, 0u);
+    }
 
     /* --- invalidation (10.5.4, 10.8) -------------------------------- */
     /* By EPN alone: TS and TID are not compared, so both entries for

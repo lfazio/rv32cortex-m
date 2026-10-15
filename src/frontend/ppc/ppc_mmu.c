@@ -132,11 +132,19 @@ void ppc_mmu_reset(ppc_cpu_t *c)
     ppc_mmu_refresh(c);
 }
 
-/* After any change to the TLB itself. */
+/*
+ * After any change to the TLB itself -- and the JIT's generation moves,
+ * because a block holds code fetched through the mapping that was there
+ * when it was translated. Coarse: every block goes, not those under the
+ * entry that changed. A guest that maps its memory at start-up pays it
+ * once; one that refills the TLB from a miss handler would pay it per
+ * refill, and per-entry invalidation is what that would need.
+ */
 static void tlb_changed(ppc_cpu_t *c)
 {
     recompute_default(c);
     ppc_mmu_refresh(c);
+    c->jit_gen++;
 }
 
 /* ------------------------------------------------------------------ */
@@ -172,12 +180,40 @@ static void tlb_error_update(ppc_cpu_t *c, uint32_t ea, uint32_t as)
         (pid_of(c) << PPC_MAS6_SPID_SHIFT) | (as != 0u ? PPC_MAS6_SAS : 0u);
 }
 
+/* The address space an access is in: MSR[IS] for a fetch, [DS] for data. */
+static uint32_t as_of(const ppc_cpu_t *c, bool exec)
+{
+    return (c->msr & (exec ? PPC_MSR_IS : PPC_MSR_DS)) != 0u ? 1u : 0u;
+}
+
+/* The page's real address: RPN on the page's bits, the offset below. */
+static uint32_t real_of(const ppc_cpu_t *c, int i, uint32_t ea)
+{
+    uint32_t mask;
+
+    (void)page_mask(c->tlb[i].mas1, &mask); /* it matched, so it is valid */
+    return (c->tlb[i].mas3 & PPC_MAS3_RPN & mask) | (ea & ~mask);
+}
+
+bool ppc_mmu_probe_exec(const ppc_cpu_t *c, uint32_t ea, uint32_t *pa,
+                        bool *vle)
+{
+    const int i = lookup(c, ea, as_of(c, true), pid_of(c));
+    const bool user = (c->msr & PPC_MSR_PR) != 0u;
+
+    if (i < 0 || (c->tlb[i].mas3 & (user ? PPC_MAS3_UX : PPC_MAS3_SX)) == 0u) {
+        return false;
+    }
+    *vle = (c->tlb[i].mas2 & PPC_MAS2_VLE) != 0u;
+    *pa = real_of(c, i, ea);
+    return true;
+}
+
 ppc_exc_t ppc_mmu_xlate(ppc_cpu_t *c, uint32_t ea, ppc_acc_t acc, uint32_t *pa,
                         bool *vle)
 {
     const bool exec = (acc == PPC_ACC_EXEC);
-    const uint32_t as =
-        (c->msr & (exec ? PPC_MSR_IS : PPC_MSR_DS)) != 0u ? 1u : 0u;
+    const uint32_t as = as_of(c, exec);
     const int i = lookup(c, ea, as, pid_of(c));
 
     if (i < 0) {
@@ -217,10 +253,7 @@ ppc_exc_t ppc_mmu_xlate(ppc_cpu_t *c, uint32_t ea, ppc_acc_t acc, uint32_t *pa,
                     : (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
     }
 
-    uint32_t mask;
-
-    (void)page_mask(c->tlb[i].mas1, &mask); /* it matched, so it is valid */
-    *pa = (m3 & PPC_MAS3_RPN & mask) | (ea & ~mask);
+    *pa = real_of(c, i, ea);
     return PPC_EXC_NONE;
 }
 
