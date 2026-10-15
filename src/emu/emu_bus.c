@@ -227,7 +227,21 @@ void emu_bus_flush(emu_bus_t *bus)
     bus->data_span = 0u;
     bus->fetch_host = NULL;
     bus->data_host = NULL;
+#if EMU_BUS_ANY_BE
+    bus->fetch_be_span = 0u;
+    bus->data_be_span = 0u;
+    bus->fetch_be_host = NULL;
+    bus->data_be_host = NULL;
+#endif
 }
+
+#if EMU_BUS_ANY_BE
+/* Which order a bus's caches are in: see emu_bus_t::fetch_be_base. */
+static bool bus_is_be(const emu_bus_t *bus)
+{
+    return bus->big_endian;
+}
+#endif
 
 /*
  * Arm the data fast path for a plain-memory region.
@@ -239,6 +253,14 @@ void emu_bus_flush(emu_bus_t *bus)
  */
 static void arm_data_cache(emu_bus_t *bus, const emu_region_t *r)
 {
+#if EMU_BUS_ANY_BE
+    if (bus_is_be(bus)) {
+        bus->data_be_base = r->base;
+        bus->data_be_span = r->size;
+        bus->data_be_host = (uint8_t *)r->host;
+        return;
+    }
+#endif
     bus->data_base = r->base;
     bus->data_span = r->size;
     bus->data_host = (uint8_t *)r->host;
@@ -392,6 +414,14 @@ emu_fault_t emu_bus_fetch16_slow(emu_bus_t *bus, uint32_t addr, uint16_t *out)
          * span is size-1, not size: a 16-bit fetch at the final byte of the
          * region would read one byte past its end.
          */
+#if EMU_BUS_ANY_BE
+        if (bus_is_be(bus)) {
+            bus->fetch_be_base = r->base;
+            bus->fetch_be_span = r->size - 1u;
+            bus->fetch_be_host = (const uint8_t *)r->host;
+            return EMU_FAULT_NONE;
+        }
+#endif
         bus->fetch_base = r->base;
         bus->fetch_span = r->size - 1u;
         bus->fetch_host = (const uint8_t *)r->host;

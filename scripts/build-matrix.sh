@@ -89,16 +89,16 @@ done
 # twice by RV32-only assumptions.
 #
 matrix='
-host-both|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=ON|the default: both frontends, JIT, ctest
-host-nojit|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=ON -DEMU_JIT=OFF|interpreter only; where a fetch-path cost lands
-host-g4-x3|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DG4MH_PE_COUNT=3|multicore, in parallel (EMU_OS_SMP); PE_COUNT>1 was untested for years
-host-g4-x3-coop|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DG4MH_PE_COUNT=3 -DEMU_OS_SMP=OFF|multicore on the single-core FreeRTOS port: the cooperative round and its order assertion
-host-g4-mpu8|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DG4MH_MPU_ENTRIES=8|the MPU out-of-range guard is unreachable at 32
-host-ppc|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_PPC=ON|big-endian frontend, alone
-host-armv7m|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_ARMV7M=ON|the Cortex-M guest alone: its SoftFloat build, the SCS, the guests in tests/guest/armv7m
-host-all|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=ON -DEMU_GUEST_ARCH_PPC=ON -DEMU_GUEST_ARCH_ARMV7M=ON|every frontend in one runner: a flat image runs as the default unless its test names the frontend, which 20 tests did not; and gdb-check reaches all four here
-host-trace|host|-DEMU_GUEST_ARCH_G4MH=ON -DEMU_ENABLE_TRACE=ON -DEMU_JIT=OFF|the trace build, which is how pc deltas get read
-host-nopmp|host|-DEMU_GUEST_ARCH_RV32=ON -DRV32_EXT_PMP=OFF|PMP compiled out: an absent CSR once read as success here unseen, and isatest hung -- it now tests that the PMP CSRs trap instead
+host-both|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=ON -DEMU_GUEST_ARCH_PPC=OFF -DEMU_GUEST_ARCH_ARMV7M=OFF|RV32 and G4MH, JIT, ctest -- the default until every frontend was
+host-nojit|host|-DEMU_JIT=OFF|interpreter only; where a fetch-path cost lands
+host-g4-x3|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DEMU_GUEST_ARCH_PPC=OFF -DEMU_GUEST_ARCH_ARMV7M=OFF -DG4MH_PE_COUNT=3|multicore, in parallel (EMU_OS_SMP); PE_COUNT>1 was untested for years
+host-g4-x3-coop|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DEMU_GUEST_ARCH_PPC=OFF -DEMU_GUEST_ARCH_ARMV7M=OFF -DG4MH_PE_COUNT=3 -DEMU_OS_SMP=OFF|multicore on the single-core FreeRTOS port: the cooperative round and its order assertion
+host-g4-mpu8|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DEMU_GUEST_ARCH_PPC=OFF -DEMU_GUEST_ARCH_ARMV7M=OFF -DG4MH_MPU_ENTRIES=8|the MPU out-of-range guard is unreachable at 32
+host-ppc|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=OFF -DEMU_GUEST_ARCH_PPC=ON -DEMU_GUEST_ARCH_ARMV7M=OFF|big-endian frontend, alone
+host-armv7m|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=OFF -DEMU_GUEST_ARCH_PPC=OFF -DEMU_GUEST_ARCH_ARMV7M=ON|the Cortex-M guest alone: its SoftFloat build, the SCS, the guests in tests/guest/armv7m
+host-all|host||**the default**, every frontend in one runner, with no -D naming any: a flat image runs as the default unless its test names the frontend, which 20 tests did not; and gdb-check reaches all four here
+host-trace|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=ON -DEMU_GUEST_ARCH_PPC=OFF -DEMU_GUEST_ARCH_ARMV7M=OFF -DEMU_ENABLE_TRACE=ON -DEMU_JIT=OFF|the trace build, which is how pc deltas get read. RV32 and G4MH, as it always was: a trace line lands between every two bytes of guest output, which splits the OKAAA armv7m-hello looks for
+host-nopmp|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF -DEMU_GUEST_ARCH_PPC=OFF -DEMU_GUEST_ARCH_ARMV7M=OFF -DRV32_EXT_PMP=OFF|PMP compiled out: an absent CSR once read as success here unseen, and isatest hung -- it now tests that the PMP CSRs trap instead
 host-net|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON|the IP stack on the host, over a pty -- this row exists because it did not, and the whole EMU_NET path stopped compiling here while every other row passed
 f746-rv32|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF|the shipping firmware: Thumb-2 emitter, lwIP/SLIP/TFTP (EMU_NET defaults ON)
 f746-rv32-nojit|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF -DEMU_JIT=OFF|**the one that was broken**

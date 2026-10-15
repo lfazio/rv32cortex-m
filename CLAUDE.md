@@ -3189,6 +3189,19 @@ session, and every one of them recurred:
   after the kernels, and passes the first. When a mechanism arms on
   behaviour, run its checks after the behaviour.
 
+- **What a build option costs is paid by every frontend it is compiled
+  beside, and the default decides who notices.** With PowerPC compiled
+  in, the bus tested the guest's byte order on every fetch and every RAM
+  access, so the RV32 interpreter ran 6.1% slower in any build that also
+  had PowerPC -- unseen for as long as PowerPC was off by default, and
+  found the day the host default turned every frontend on, by
+  measuring what RV32 paid for the company (callgrind: 65.15M host
+  instructions alone, 69.15M with all four). The byte order lives in
+  *which cache* an access hits now, not in a test on it, and PowerPC
+  goes to its own cache directly: 65.30M, and PowerPC 5.6% faster too.
+  **When a default changes, measure the configurations it now makes
+  common.**
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must

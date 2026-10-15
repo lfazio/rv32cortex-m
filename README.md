@@ -79,11 +79,15 @@ cmake --build build/host
 ctest --test-dir build/host -L fast
 ```
 
-RV32 is on by default. Add `-DEMU_GUEST_ARCH_G4MH=ON`,
-`-DEMU_GUEST_ARCH_PPC=ON` or `-DEMU_GUEST_ARCH_ARMV7M=ON` to compile
-more frontends into one runner, which then picks with `--frontend` or
-from the image's ELF header; `-DEMU_GUEST_ARCH_RV32=OFF` builds one
-alone. Each has its own page under [docs/frontend/](docs/frontend/).
+**The host builds every frontend**: one `emu-host` runs an RV32, G4MH,
+PowerPC or ARMv7-M guest, choosing from the image's ELF header or
+`--frontend NAME`. A flat `.bin` carries no architecture and runs as
+RV32 unless `--frontend` says otherwise. Turn one off by name --
+`-DEMU_GUEST_ARCH_PPC=OFF`, and likewise for the others; a build
+directory configured before this
+keeps what its cache says, so start one fresh. Firmware builds RV32
+alone unless told otherwise. Each frontend has its own page under
+[docs/frontend/](docs/frontend/).
 
 ### Firmware — Nucleo-F746ZG
 

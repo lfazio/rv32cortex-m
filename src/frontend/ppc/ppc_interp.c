@@ -1103,7 +1103,7 @@ static EMU_COLD_NOINLINE uint64_t fetch_xlate(ppc_cpu_t *c, uint32_t pc)
         ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, PPC_ESR_MIF);
         return 0u;
     }
-    if (emu_bus_fetch16(c->bus, pa, &w0) != EMU_FAULT_NONE) {
+    if (emu_bus_fetch16_be(c->bus, pa, &w0) != EMU_FAULT_NONE) {
         ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, 0u);
         return 0u;
     }
@@ -1131,7 +1131,7 @@ static EMU_COLD_NOINLINE uint64_t fetch_xlate(ppc_cpu_t *c, uint32_t pc)
                 return 0u;
             }
         }
-        if (emu_bus_fetch16(c->bus, pa2, &w1) != EMU_FAULT_NONE) {
+        if (emu_bus_fetch16_be(c->bus, pa2, &w1) != EMU_FAULT_NONE) {
             ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, 0u);
             return 0u;
         }
@@ -1232,7 +1232,7 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
         } else {
             uint16_t w0;
 
-            if (EMU_UNLIKELY(emu_bus_fetch16(c->bus, pc, &w0) !=
+            if (EMU_UNLIKELY(emu_bus_fetch16_be(c->bus, pc, &w0) !=
                              EMU_FAULT_NONE)) {
                 ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, 0u);
                 done++;
@@ -1250,7 +1250,7 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
             if (len == 4u) {
                 uint16_t w1;
 
-                if (EMU_UNLIKELY(emu_bus_fetch16(c->bus, pc + 2u, &w1) !=
+                if (EMU_UNLIKELY(emu_bus_fetch16_be(c->bus, pc + 2u, &w1) !=
                                  EMU_FAULT_NONE)) {
                     ppc_cpu_raise(c, PPC_IVOR_INST_STORAGE, pc, 0u);
                     done++;

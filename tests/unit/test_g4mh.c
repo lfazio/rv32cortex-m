@@ -5806,7 +5806,7 @@ static void test_fp_double_arith(void)
 
     emu_run_reason_t why;
     uint32_t retired = 0;
-    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 128u, &why,
+    if (!load_and_run(prog, k, 128u, &why,
                       &retired)) {
         CHECK(false);
         return;
@@ -5860,7 +5860,7 @@ static void test_fp_double_pairs(void)
 
     emu_run_reason_t why;
     uint32_t retired = 0;
-    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 128u, &why,
+    if (!load_and_run(prog, k, 128u, &why,
                       &retired)) {
         CHECK(false);
         return;
@@ -5923,7 +5923,7 @@ static void test_fp_double_convert(void)
 
     emu_run_reason_t why;
     uint32_t retired = 0;
-    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 128u, &why,
+    if (!load_and_run(prog, k, 128u, &why,
                       &retired)) {
         CHECK(false);
         return;
@@ -5977,7 +5977,7 @@ static void test_fp_long_convert(void)
 
     emu_run_reason_t why;
     uint32_t retired = 0;
-    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 128u, &why,
+    if (!load_and_run(prog, k, 128u, &why,
                       &retired)) {
         CHECK(false);
         return;
@@ -6030,7 +6030,7 @@ static void test_fp_double_compare(void)
 
     emu_run_reason_t why;
     uint32_t retired = 0;
-    if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 128u, &why,
+    if (!load_and_run(prog, k, 128u, &why,
                       &retired)) {
         CHECK(false);
         return;

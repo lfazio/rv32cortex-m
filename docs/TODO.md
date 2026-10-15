@@ -276,8 +276,20 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       status a suite reads against a park loop serving a link). Those are
       genuinely different and merging them would put an `#if` per platform
       inside one `main()`, which is the arrangement all of this undid.
-- [ ] **A host runner that accepts any frontend already supported.** One
-      `emu-host` that runs an RV32, G4MH, PowerPC or ARMv7-M guest
+- [x] **A host runner that accepts any frontend already supported.**
+      Done: every `EMU_GUEST_ARCH_*` defaults ON for `EMU_PLATFORM=host`
+      and OFF but RV32 for a firmware, so a fresh host build is the
+      `host-all` configuration -- 56 ctests -- and the matrix rows that
+      meant "this frontend alone" now say so. A flat image still runs as
+      RV32 unless `--frontend` names another, rather than being refused:
+      every RV32 flat test relies on it, and the runner's banner names
+      the ISA it chose. Measuring what RV32 paid for the company found
+      6.1% on its interpreter: the bus tested the guest's byte order on
+      every fetch and RAM access whenever PowerPC was compiled in. The
+      caches carry the order now, and PowerPC reaches its own directly:
+      RV32 65.30M host instructions on CoreMark with all four against
+      65.15M alone, PowerPC 1,462.8M to 1,381.0M. What the entry said
+      before -- one `emu-host` that runs an RV32, G4MH, PowerPC or ARMv7-M guest
       without reconfiguring. The mechanism exists: the runner picks a
       frontend from the ELF's `e_machine` or from `--frontend NAME`, and
       the `host-all` row of `scripts/build-matrix.sh` builds all four and

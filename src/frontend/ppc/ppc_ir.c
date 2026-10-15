@@ -1226,11 +1226,11 @@ static bool fetch(const ppc_cpu_t *c, uint32_t pc, uint32_t *insn, uint32_t *len
     uint16_t w0;
     uint16_t w1 = 0u;
 
-    if (emu_bus_fetch16(c->bus, pc, &w0) != EMU_FAULT_NONE) {
+    if (emu_bus_fetch16_be(c->bus, pc, &w0) != EMU_FAULT_NONE) {
         return false;
     }
     *len = c->vle ? ppc_vle_len(w0) : 4u;
-    if (*len == 4u && emu_bus_fetch16(c->bus, pc + 2u, &w1) != EMU_FAULT_NONE) {
+    if (*len == 4u && emu_bus_fetch16_be(c->bus, pc + 2u, &w1) != EMU_FAULT_NONE) {
         return false;
     }
     *insn = ((uint32_t)w0 << 16) | w1;

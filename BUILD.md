@@ -44,8 +44,17 @@ no platform *and no ISA* in it, so a frontend and a platform meet only at
 | backend | how it executes | `EMU_JIT=ON\|OFF`, and `--jit` on the host runner |
 
 More than one guest may be on at once; the host runner picks with
-`--frontend` or from the ELF header. Firmware normally builds exactly
-one, because a frontend costs flash only when it is on.
+`--frontend` or from the ELF header, and a flat image runs as the first
+compiled in -- RV32 -- unless `--frontend` names another. **On the host
+all four are on by default**; firmware builds RV32 alone, because a
+frontend costs flash only when it is on. The defaults apply to a fresh
+build directory: an existing one keeps what its cache says.
+
+Compiling a frontend in costs the others nothing measurable now: the
+RV32 interpreter is 65.30M host instructions on CoreMark with all four,
+against 65.15M alone. It was 69.15M -- 6.1% -- until the bus stopped
+testing the guest's byte order on every access, which it did whenever
+PowerPC was compiled in; see `emu_bus_t::fetch_be_base`.
 
 **Every platform runs under FreeRTOS**, which is not an option: the
 runner is a task and so is each further emulated core

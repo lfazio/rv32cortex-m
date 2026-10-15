@@ -712,7 +712,7 @@ static EMU_COLD_NOINLINE ppc_exc_t load_xlate(ppc_cpu_t *c, uint32_t addr,
         if (x != PPC_EXC_NONE) {
             return x;
         }
-        if (emu_bus_read(c->bus, pa, size, &v) != EMU_FAULT_NONE) {
+        if (emu_bus_read_be(c->bus, pa, size, &v) != EMU_FAULT_NONE) {
             c->dear = addr;
             return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
         }
@@ -727,7 +727,7 @@ static EMU_COLD_NOINLINE ppc_exc_t load_xlate(ppc_cpu_t *c, uint32_t addr,
         if (x != PPC_EXC_NONE) {
             return x;
         }
-        if (emu_bus_read(c->bus, pa, 1u, &b) != EMU_FAULT_NONE) {
+        if (emu_bus_read_be(c->bus, pa, 1u, &b) != EMU_FAULT_NONE) {
             c->dear = addr + i;
             return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
         }
@@ -747,7 +747,7 @@ static EMU_COLD_NOINLINE ppc_exc_t store_xlate(ppc_cpu_t *c, uint32_t addr,
         if (x != PPC_EXC_NONE) {
             return x;
         }
-        if (emu_bus_write(c->bus, pa, size, val) != EMU_FAULT_NONE) {
+        if (emu_bus_write_be(c->bus, pa, size, val) != EMU_FAULT_NONE) {
             c->dear = addr;
             return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
         }
@@ -772,7 +772,7 @@ static EMU_COLD_NOINLINE ppc_exc_t store_xlate(ppc_cpu_t *c, uint32_t addr,
     for (uint32_t i = 0u; i < size; i++) {
         const uint32_t b = (val >> (8u * (size - 1u - i))) & 0xFFu;
 
-        if (emu_bus_write(c->bus, pa[i], 1u, b) != EMU_FAULT_NONE) {
+        if (emu_bus_write_be(c->bus, pa[i], 1u, b) != EMU_FAULT_NONE) {
             c->dear = addr + i;
             return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
         }
@@ -792,7 +792,7 @@ ppc_exc_t ppc_load(ppc_cpu_t *c, uint32_t addr, uint32_t size, bool sext,
             return x;
         }
     } else if (EMU_LIKELY((addr & (size - 1u)) == 0u)) {
-        if (EMU_UNLIKELY(emu_bus_read(c->bus, addr, size, &v) != EMU_FAULT_NONE)) {
+        if (EMU_UNLIKELY(emu_bus_read_be(c->bus, addr, size, &v) != EMU_FAULT_NONE)) {
             c->dear = addr;
             return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
         }
@@ -805,7 +805,7 @@ ppc_exc_t ppc_load(ppc_cpu_t *c, uint32_t addr, uint32_t size, bool sext,
         for (uint32_t i = 0u; i < size; i++) {
             uint32_t b = 0u;
 
-            if (emu_bus_read(c->bus, addr + i, 1u, &b) != EMU_FAULT_NONE) {
+            if (emu_bus_read_be(c->bus, addr + i, 1u, &b) != EMU_FAULT_NONE) {
                 c->dear = addr + i;
                 return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
             }
@@ -826,7 +826,7 @@ ppc_exc_t ppc_store(ppc_cpu_t *c, uint32_t addr, uint32_t size, uint32_t val)
         return store_xlate(c, addr, size, val);
     }
     if (EMU_LIKELY((addr & (size - 1u)) == 0u)) {
-        if (EMU_UNLIKELY(emu_bus_write(c->bus, addr, size, val) != EMU_FAULT_NONE)) {
+        if (EMU_UNLIKELY(emu_bus_write_be(c->bus, addr, size, val) != EMU_FAULT_NONE)) {
             c->dear = addr;
             return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
         }
@@ -835,7 +835,7 @@ ppc_exc_t ppc_store(ppc_cpu_t *c, uint32_t addr, uint32_t size, uint32_t val)
     for (uint32_t i = 0u; i < size; i++) {
         const uint32_t b = (val >> (8u * (size - 1u - i))) & 0xFFu;
 
-        if (emu_bus_write(c->bus, addr + i, 1u, b) != EMU_FAULT_NONE) {
+        if (emu_bus_write_be(c->bus, addr + i, 1u, b) != EMU_FAULT_NONE) {
             c->dear = addr + i;
             return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
         }

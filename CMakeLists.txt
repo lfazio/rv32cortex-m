@@ -45,27 +45,39 @@ set_property(CACHE EMU_PLATFORM PROPERTY STRINGS
 #
 # Which guest architectures to build in. More than one may be selected; the
 # host runner picks between them with --frontend or from the image's ELF
-# header, and the first one listed here is the default.
+# header, and the first one listed here is the default for an image that
+# says nothing -- a flat binary carries no architecture.
 #
-# A frontend costs flash only when it is on, so the firmware normally
-# builds exactly one.
+# **On the host every frontend is on**: one emu-host takes an RV32, G4MH,
+# PowerPC or ARMv7-M guest without reconfiguring, and the frontends
+# nobody had asked for are no longer the ones nothing exercises. A
+# firmware builds exactly one, because there a frontend costs flash the
+# guest could have had. Either default yields to an explicit -D, and a
+# build directory configured before this keeps what its cache says --
+# `cmake --fresh`, or name the four.
+if(EMU_PLATFORM STREQUAL "host")
+    set(_fe_default ON)
+else()
+    set(_fe_default OFF)
+endif()
 
 option(EMU_GUEST_ARCH_RV32 "RISC-V RV32 frontend" ON)
-option(EMU_GUEST_ARCH_G4MH "Renesas RH850 G4MH frontend" OFF)
+option(EMU_GUEST_ARCH_G4MH "Renesas RH850 G4MH frontend" ${_fe_default})
 # NXP PowerPC e200z7 (Power ISA 2.06 embedded, VLE). **Big-endian**, the
 # first of those in this tree: see the note by EMU_BUS_ORDER in emu_bus.h
 # for what that costs and, more importantly, for which region kinds it
 # does *not* apply to.
-option(EMU_GUEST_ARCH_PPC "NXP PowerPC e200z7 frontend (VLE, big-endian)" OFF)
+option(EMU_GUEST_ARCH_PPC "NXP PowerPC e200z7 frontend (VLE, big-endian)"
+       ${_fe_default})
 #
 # ARMv7E-M as a *guest*, which is a different thing from the Thumb-2
 # backend and exists for a different reason: the backend can only be
 # validated on hardware today, and a Cortex-M guest lets an x86 host run
-# the firmware that contains it. Off by default -- it is a fraction of
-# the instruction set so far, and says so by faulting rather than by
-# skipping.
+# the firmware that contains it. Where an instruction is not implemented
+# it says so by faulting rather than by skipping.
 #
-option(EMU_GUEST_ARCH_ARMV7M "ARM Cortex-M frontend (ARMv7E-M, Thumb-2)" OFF)
+option(EMU_GUEST_ARCH_ARMV7M "ARM Cortex-M frontend (ARMv7E-M, Thumb-2)"
+       ${_fe_default})
 
 #
 # A list a new frontend falls off, which is why it is written as a count
@@ -1150,6 +1162,14 @@ if(EMU_GUEST_ARCH_RV32)
 endif()
 if(EMU_GUEST_ARCH_G4MH)
     list(APPEND _frontends "g4mh (RH850 G4MH, ${G4MH_PE_COUNT} PE)")
+endif()
+# Each of the four, or the summary under-reports what the runner accepts:
+# it listed two until the host built all four by default.
+if(EMU_GUEST_ARCH_PPC)
+    list(APPEND _frontends "ppc (e200z7, Book E and VLE, big-endian)")
+endif()
+if(EMU_GUEST_ARCH_ARMV7M)
+    list(APPEND _frontends "armv7m (ARMv7E-M, Thumb-2)")
 endif()
 
 message(STATUS "")

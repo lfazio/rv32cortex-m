@@ -49,8 +49,8 @@ Current state:
 | `riscv-arch-test --misaligned`, both backends | **509 / 509** — the default build, `RV32_MISALIGNED=ON`, and the four `Misalign*` suites it qualifies for | host |
 | `riscv-tests`, interpreter | **77 / 77** | host |
 | `riscv-tests`, `--jit` through an `EMU_HOST` wrapper | **77 / 77** | host, x86-64 |
-| `ctest`, RV32 tree | 20 tests: unit, the guests, most of them again under `--jit`, and `gdb-check` | host |
-| `ctest`, all four frontends (`host-all`) | **54 tests**. 20 of them failed in this configuration until their flat images named a frontend: a `.bin` carries no architecture and ran as RV32 | host |
+| `ctest`, the default host tree -- all four frontends (`host-all`) | **56 tests**: unit, the guests of every frontend, most of them again under `--jit`, and `gdb-check`. 20 of them failed in this configuration until their flat images named a frontend: a `.bin` carries no architecture and runs as RV32 | host |
+| `ctest`, RV32 alone | 20 tests | host |
 | `scripts/gdb-check.sh`, the `gdb-check` ctest | a real gdb attached to all four frontends, interpreted and under `--jit`: pc at a breakpoint against the ELF symbol, the stop reply's register number against gdb's, a register round trip, `stepi` landing on the next instruction, a breakpoint ahead hit, memory -- **8 of 8 sessions** | host, x86-64, gdb-multiarch 17.2 |
 | the ARMv7-M guests, both backends | all eight pass, each with the host's retired count to the instruction | Nucleo-F746ZG |
 | `isatest`, JIT | **748 checks**, 1,129 of 65,829 instructions interpreted — the same two numbers the x86-64 host gives | Nucleo-F746ZG, Thumb-2 |

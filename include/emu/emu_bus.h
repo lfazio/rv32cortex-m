@@ -182,6 +182,28 @@ typedef struct emu_bus {
     uint32_t data_span; /* region size; callers guarantee alignment */
     uint8_t *data_host;
 
+#if EMU_BUS_ANY_BE
+    /*
+     * The same two caches for a big-endian bus, which only it fills.
+     *
+     * **Byte order lives in which cache an access hits, not in a test on
+     * it.** The fast paths below try the caches above first and reorder
+     * nothing; only on a miss there do they try these, which reorder. So
+     * a little-endian guest's hit costs exactly what it did before a
+     * big-endian frontend existed, and the big-endian guest pays a failed
+     * compare before its own. The alternative was a test of big_endian on
+     * every fetch and every RAM access, which put RV32's interpreter 6.1%
+     * behind in any build with PowerPC compiled in -- every host build,
+     * once the host built every frontend.
+     */
+    uint32_t fetch_be_base;
+    uint32_t fetch_be_span;
+    const uint8_t *fetch_be_host;
+    uint32_t data_be_base;
+    uint32_t data_be_span;
+    uint8_t *data_be_host;
+#endif
+
     emu_region_t regions[EMU_MAX_REGIONS];
     uint32_t count;
     uint32_t last; /* index of the last region that matched */
@@ -286,17 +308,22 @@ emu_fault_t emu_bus_fetch16_slow(emu_bus_t *bus, uint32_t addr, uint16_t *out);
  * kind and leaves *out untouched. Loads are zero-extended; sign extension
  * is the caller's job.
  */
-static EMU_ALWAYS_INLINE emu_fault_t emu_bus_read(emu_bus_t *bus, uint32_t addr,
+/*
+ * The fast paths, one per cache. A hit returns true with the access done;
+ * a miss returns false and the caller goes on to the next cache or to the
+ * slow path, which handles every region kind and both byte orders.
+ *
+ * Both halves of each range test matter. `off < span` rejects the empty
+ * cache (span 0) and anything below the region; `span - off >= size`
+ * keeps the access from running off the end. Writing it as
+ * `off <= span - size` would underflow when span is 0 and wave every
+ * address through to a NULL host pointer.
+ */
+static EMU_ALWAYS_INLINE bool emu_bus_read_le_hit(emu_bus_t *bus, uint32_t addr,
                                                   uint32_t size, uint32_t *out)
 {
-    /*
-     * Both halves of the test matter. `off < span` rejects the empty cache
-     * (span 0) and anything below the region; `span - off >= size` keeps
-     * the access from running off the end. Writing it as
-     * `off <= span - size` would underflow when span is 0 and wave every
-     * address through to a NULL host pointer.
-     */
     const uint32_t off = addr - bus->data_base;
+
     if (EMU_LIKELY(off < bus->data_span && (bus->data_span - off) >= size)) {
         const uint8_t *p = bus->data_host + off;
         switch (size) {
@@ -310,30 +337,19 @@ static EMU_ALWAYS_INLINE emu_fault_t emu_bus_read(emu_bus_t *bus, uint32_t addr,
             *out = *(const uint32_t *)(const void *)p;
             break;
         }
-        /* The fast-path cache is only ever filled from RAM, so this is
-         * unconditionally the byte-composing case. */
-        *out = EMU_BUS_ORDER(bus, *out, size);
-        return EMU_FAULT_NONE;
+        return true;
     }
-    return emu_bus_read_slow(bus, addr, size, out);
+    return false;
 }
 
-static EMU_ALWAYS_INLINE emu_fault_t emu_bus_write(emu_bus_t *bus,
+static EMU_ALWAYS_INLINE bool emu_bus_write_le_hit(emu_bus_t *bus,
                                                    uint32_t addr, uint32_t size,
                                                    uint32_t val)
 {
-    /*
-     * Both halves of the test matter. `off < span` rejects the empty cache
-     * (span 0) and anything below the region; `span - off >= size` keeps
-     * the access from running off the end. Writing it as
-     * `off <= span - size` would underflow when span is 0 and wave every
-     * address through to a NULL host pointer.
-     */
     const uint32_t off = addr - bus->data_base;
+
     if (EMU_LIKELY(off < bus->data_span && (bus->data_span - off) >= size)) {
         uint8_t *p = bus->data_host + off;
-        /* Same argument as the load: this cache only ever holds RAM. */
-        val = EMU_BUS_ORDER(bus, val, size);
         switch (size) {
         case 1:
             *p = (uint8_t)val;
@@ -345,8 +361,123 @@ static EMU_ALWAYS_INLINE emu_fault_t emu_bus_write(emu_bus_t *bus,
             *(uint32_t *)(void *)p = val;
             break;
         }
+        return true;
+    }
+    return false;
+}
+
+static EMU_ALWAYS_INLINE bool emu_bus_fetch16_le_hit(emu_bus_t *bus,
+                                                     uint32_t addr,
+                                                     uint16_t *out)
+{
+    const uint32_t off = addr - bus->fetch_base;
+
+    if (EMU_LIKELY(off < bus->fetch_span)) {
+        *out = *(const uint16_t *)(const void *)(bus->fetch_host + off);
+        return true;
+    }
+    return false;
+}
+
+#if EMU_BUS_ANY_BE
+static EMU_ALWAYS_INLINE bool emu_bus_read_be_hit(emu_bus_t *bus, uint32_t addr,
+                                                  uint32_t size, uint32_t *out)
+{
+    const uint32_t off = addr - bus->data_be_base;
+
+    if (EMU_LIKELY(off < bus->data_be_span &&
+                   (bus->data_be_span - off) >= size)) {
+        const uint8_t *p = bus->data_be_host + off;
+        switch (size) {
+        case 1:
+            *out = *p;
+            break;
+        case 2:
+            *out = emu_bswap(*(const uint16_t *)(const void *)p, 2u);
+            break;
+        default:
+            *out = emu_bswap(*(const uint32_t *)(const void *)p, 4u);
+            break;
+        }
+        return true;
+    }
+    return false;
+}
+
+static EMU_ALWAYS_INLINE bool emu_bus_write_be_hit(emu_bus_t *bus,
+                                                   uint32_t addr, uint32_t size,
+                                                   uint32_t val)
+{
+    const uint32_t off = addr - bus->data_be_base;
+
+    if (EMU_LIKELY(off < bus->data_be_span &&
+                   (bus->data_be_span - off) >= size)) {
+        uint8_t *p = bus->data_be_host + off;
+        switch (size) {
+        case 1:
+            *p = (uint8_t)val;
+            break;
+        case 2:
+            *(uint16_t *)(void *)p = (uint16_t)emu_bswap(val, 2u);
+            break;
+        default:
+            *(uint32_t *)(void *)p = emu_bswap(val, 4u);
+            break;
+        }
+        return true;
+    }
+    return false;
+}
+
+/* Instructions are in the guest's byte order like anything else in its
+ * image. A VLE parcel read little-endian on a big-endian guest decodes as
+ * a different instruction, not as an error. */
+static EMU_ALWAYS_INLINE bool emu_bus_fetch16_be_hit(emu_bus_t *bus,
+                                                     uint32_t addr,
+                                                     uint16_t *out)
+{
+    const uint32_t off = addr - bus->fetch_be_base;
+
+    if (EMU_LIKELY(off < bus->fetch_be_span)) {
+        *out = (uint16_t)emu_bswap(
+            *(const uint16_t *)(const void *)(bus->fetch_be_host + off), 2u);
+        return true;
+    }
+    return false;
+}
+#endif
+
+/*
+ * Any bus: the little-endian cache, then -- in a build with a big-endian
+ * frontend -- the big-endian one, then the slow path. A little-endian
+ * guest's hit is the first test and nothing else.
+ */
+static EMU_ALWAYS_INLINE emu_fault_t emu_bus_read(emu_bus_t *bus, uint32_t addr,
+                                                  uint32_t size, uint32_t *out)
+{
+    if (emu_bus_read_le_hit(bus, addr, size, out)) {
         return EMU_FAULT_NONE;
     }
+#if EMU_BUS_ANY_BE
+    if (emu_bus_read_be_hit(bus, addr, size, out)) {
+        return EMU_FAULT_NONE;
+    }
+#endif
+    return emu_bus_read_slow(bus, addr, size, out);
+}
+
+static EMU_ALWAYS_INLINE emu_fault_t emu_bus_write(emu_bus_t *bus,
+                                                   uint32_t addr, uint32_t size,
+                                                   uint32_t val)
+{
+    if (emu_bus_write_le_hit(bus, addr, size, val)) {
+        return EMU_FAULT_NONE;
+    }
+#if EMU_BUS_ANY_BE
+    if (emu_bus_write_be_hit(bus, addr, size, val)) {
+        return EMU_FAULT_NONE;
+    }
+#endif
     return emu_bus_write_slow(bus, addr, size, val);
 }
 
@@ -355,17 +486,57 @@ static EMU_ALWAYS_INLINE emu_fault_t emu_bus_fetch16(emu_bus_t *bus,
                                                      uint32_t addr,
                                                      uint16_t *out)
 {
-    const uint32_t off = addr - bus->fetch_base;
-    if (EMU_LIKELY(off < bus->fetch_span)) {
-        *out = *(const uint16_t *)(const void *)(bus->fetch_host + off);
-        /* Instructions are in the guest's byte order like anything else
-         * in its image. A VLE parcel read little-endian on a big-endian
-         * guest decodes as a different instruction, not as an error. */
-        *out = (uint16_t)EMU_BUS_ORDER(bus, *out, 2u);
+    if (emu_bus_fetch16_le_hit(bus, addr, out)) {
+        return EMU_FAULT_NONE;
+    }
+#if EMU_BUS_ANY_BE
+    if (emu_bus_fetch16_be_hit(bus, addr, out)) {
+        return EMU_FAULT_NONE;
+    }
+#endif
+    return emu_bus_fetch16_slow(bus, addr, out);
+}
+
+/*
+ * For a frontend that is big-endian by construction: its own cache first
+ * and only, so it does not pay for the little-endian test the generic
+ * accessors make on its behalf. Correct on a little-endian bus as well --
+ * that bus never fills these caches, so every access takes the slow path,
+ * which orders by the bus's flag.
+ */
+#if EMU_BUS_ANY_BE
+static EMU_ALWAYS_INLINE emu_fault_t emu_bus_read_be(emu_bus_t *bus,
+                                                     uint32_t addr,
+                                                     uint32_t size,
+                                                     uint32_t *out)
+{
+    if (emu_bus_read_be_hit(bus, addr, size, out)) {
+        return EMU_FAULT_NONE;
+    }
+    return emu_bus_read_slow(bus, addr, size, out);
+}
+
+static EMU_ALWAYS_INLINE emu_fault_t emu_bus_write_be(emu_bus_t *bus,
+                                                      uint32_t addr,
+                                                      uint32_t size,
+                                                      uint32_t val)
+{
+    if (emu_bus_write_be_hit(bus, addr, size, val)) {
+        return EMU_FAULT_NONE;
+    }
+    return emu_bus_write_slow(bus, addr, size, val);
+}
+
+static EMU_ALWAYS_INLINE emu_fault_t emu_bus_fetch16_be(emu_bus_t *bus,
+                                                        uint32_t addr,
+                                                        uint16_t *out)
+{
+    if (emu_bus_fetch16_be_hit(bus, addr, out)) {
         return EMU_FAULT_NONE;
     }
     return emu_bus_fetch16_slow(bus, addr, out);
 }
+#endif
 
 /*
  * Translate a guest address to the host address backing it, for regions
