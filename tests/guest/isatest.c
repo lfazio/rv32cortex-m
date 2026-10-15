@@ -142,6 +142,7 @@ static volatile uint32_t g_last_cause;
 static volatile uint32_t g_last_tval;
 static volatile uint32_t g_last_claim;
 static volatile uint32_t g_ext_count;
+static volatile uint32_t g_lcof_count; /* Sscofpmf overflow interrupts */
 
 /* Where to resume after an instruction access fault. See trap_handler. */
 static volatile uint32_t g_fetch_resume;
@@ -176,6 +177,14 @@ trap_handler(void)
              */
             g_last_claim = APLIC_CLAIMI;
             g_ext_count++;
+        } else if ((cause & 0xFFu) == 13u) {
+            /*
+             * A counter overflowed (Sscofpmf). LCOFIP is software's to
+             * clear -- nothing else will -- so without this the hart
+             * would take it again on the mret.
+             */
+            __asm__ volatile("csrc mip, %0" ::"r"(1u << 13));
+            g_lcof_count++;
         }
         return;
     }
@@ -2136,7 +2145,8 @@ static void test_smode(void)
     check("s-medeleg-warl", csr_read("medeleg"), 0xB3FFu);
     csr_write("medeleg", 0u);
     csr_write("mideleg", 0xFFFFFFFFu);
-    check("s-mideleg-warl", csr_read("mideleg"), 0x222u);
+    /* SSIP, STIP, SEIP -- and LCOFIP, bit 13, with Sscofpmf. */
+    check("s-mideleg-warl", csr_read("mideleg"), 0x2222u);
     csr_write("mideleg", 0u);
 }
 
@@ -3585,6 +3595,152 @@ static void test_zihpm(void)
     csr_write("mhpmcounter3h", 0u);
 }
 
+/* ---- Sscofpmf: overflow, and counting by mode ------------------------ */
+
+static volatile uint32_t g_sc_s[2];
+
+/* An ebreak in S-mode: a breakpoint *from* S, which M handles. */
+static void smode_ebreak(void)
+{
+    __asm__ volatile("ebreak");
+    LEAVE_SMODE();
+}
+
+/* What S-mode sees of the overflow machinery, and what it may clear. */
+static void smode_sscof(void)
+{
+    g_sc_s[0] = csr_read("0xda0"); /* scountovf */
+    g_sc_s[1] = csr_read("sip");
+    __asm__ volatile("csrc sip, %0" ::"r"(1u << 13));
+    LEAVE_SMODE();
+}
+
+#define LCOF (1u << 13)
+#define OF (1u << 31)
+#define MINH (1u << 30)
+#define SINH (1u << 29)
+#define UINH (1u << 28)
+
+static void test_sscofpmf(void)
+{
+    uint32_t before;
+
+    /*
+     * mhpmevent3h: OF and the three inhibits this core has. VSINH and
+     * VUINH are the hypervisor's, and EVENT[25:0] -- the selector's top
+     * -- is zero for every event the list above names: read-only zero.
+     */
+    csr_write("0x723", 0xFFFFFFFFu);
+    check("sscof-eventh-warl", csr_read("0x723"), OF | MINH | SINH | UINH);
+    csr_write("0x723", 0u);
+    check("sscof-eventh-clear", csr_read("0x723"), 0u);
+    check("sscof-eventh-last", csr_read("0x73f"), 0u);
+    CSR_ABSENT("sscof-eventh-absent-722", "0x722");
+
+    /* The overflow interrupt is enabled and pended like any other. */
+    csr_write("mie", LCOF);
+    check("sscof-mie-lcofie", csr_read("mie"), LCOF);
+    csr_write("mie", 0u);
+    csr_set("mip", LCOF);
+    check("sscof-mip-writable", csr_read("mip") & LCOF, LCOF);
+    csr_clear("mip", LCOF);
+    check("sscof-mip-clears", csr_read("mip") & LCOF, 0u);
+
+    /*
+     * The wrap. Counter 3 counts breakpoints, starts one short of 2^64
+     * with OF clear and the interrupt disabled: one ebreak, and it is
+     * zero, OF is set and LCOFIP is pending -- and nothing was taken.
+     */
+    csr_write("mhpmevent3", HPM_EV_EXC_CAUSE(3u));
+    csr_write("mhpmcounter3", 0xFFFFFFFFu);
+    csr_write("mhpmcounter3h", 0xFFFFFFFFu);
+    g_lcof_count = 0u;
+    take_breakpoints(1u);
+    check("sscof-wrap-low", csr_read("mhpmcounter3"), 0u);
+    check("sscof-wrap-high", csr_read("mhpmcounter3h"), 0u);
+    check("sscof-wrap-of", csr_read("0x723") & OF, OF);
+    check("sscof-wrap-pending", csr_read("mip") & LCOF, LCOF);
+    check("sscof-wrap-not-taken", g_lcof_count, 0u);
+    check("sscof-scountovf-m", csr_read("0xda0"), 1u << 3);
+
+    /* Enabled, it is taken -- cause 13 -- and the handler clears it. */
+    before = g_trap_count;
+    csr_write("mie", LCOF);
+    csr_set("mstatus", 1u << 3);
+    csr_clear("mstatus", 1u << 3);
+    csr_write("mie", 0u);
+    check("sscof-taken", g_lcof_count, 1u);
+    check("sscof-taken-cause", g_last_cause, 0x8000000Du);
+    check("sscof-taken-once", g_trap_count - before, 1u);
+    check("sscof-cleared", csr_read("mip") & LCOF, 0u);
+
+    /*
+     * OF still set: a second wrap is not a second interrupt. That is the
+     * protocol -- software clears OF when it is ready for another.
+     */
+    csr_write("mhpmcounter3", 0xFFFFFFFFu);
+    csr_write("mhpmcounter3h", 0xFFFFFFFFu);
+    take_breakpoints(1u);
+    check("sscof-of-set-no-pend", csr_read("mip") & LCOF, 0u);
+    check("sscof-of-set-wrapped", csr_read("mhpmcounter3"), 0u);
+    /* Clearing OF re-arms it. */
+    csr_write("0x723", 0u);
+    csr_write("mhpmcounter3", 0xFFFFFFFFu);
+    csr_write("mhpmcounter3h", 0xFFFFFFFFu);
+    take_breakpoints(1u);
+    check("sscof-rearmed-pends", csr_read("mip") & LCOF, LCOF);
+    csr_clear("mip", LCOF);
+
+    /*
+     * Counting by mode: MINH stops M's breakpoints, and an ebreak *in S*
+     * -- which M handles, so the trap ends in M -- is still S's event and
+     * still counts. Then SINH stops that one too.
+     */
+    csr_write("medeleg", 0u);
+    csr_write("mhpmcounter3", 0u);
+    csr_write("mhpmcounter3h", 0u);
+    csr_write("0x723", MINH);
+    take_breakpoints(1u);
+    check("sscof-minh-stops-m", csr_read("mhpmcounter3"), 0u);
+    enter_smode(smode_ebreak);
+    check("sscof-minh-counts-s", csr_read("mhpmcounter3"), 1u);
+    csr_write("0x723", MINH | SINH);
+    enter_smode(smode_ebreak);
+    check("sscof-sinh-stops-s", csr_read("mhpmcounter3"), 1u);
+    csr_write("0x723", UINH);
+    take_breakpoints(1u);
+    check("sscof-uinh-not-m", csr_read("mhpmcounter3"), 2u);
+
+    /*
+     * S-mode's view: scountovf shows only what mcounteren grants, and a
+     * delegated LCOFIP is in sip, where S may clear it.
+     */
+    csr_write("0x723", OF);
+    csr_write("0x727", OF);
+    check("sscof-scountovf-two", csr_read("0xda0"), (1u << 3) | (1u << 7));
+    csr_write("mcounteren", 1u << 7);
+    csr_write("mideleg", LCOF);
+    csr_set("mip", LCOF);
+    enter_smode(smode_sscof);
+    check("sscof-scountovf-s-gated", g_sc_s[0], 1u << 7);
+    check("sscof-sip-shows", g_sc_s[1] & LCOF, LCOF);
+    check("sscof-sip-cleared", csr_read("mip") & LCOF, 0u);
+    /* Not delegated, S sees nothing in sip and its write is dropped. */
+    csr_write("mideleg", 0u);
+    csr_set("mip", LCOF);
+    enter_smode(smode_sscof);
+    check("sscof-sip-hidden", g_sc_s[1] & LCOF, 0u);
+    check("sscof-sip-not-cleared", csr_read("mip") & LCOF, LCOF);
+    csr_clear("mip", LCOF);
+
+    csr_write("mcounteren", 0u);
+    csr_write("0x723", 0u);
+    csr_write("0x727", 0u);
+    csr_write("mhpmevent3", 0u);
+    csr_write("mhpmcounter3", 0u);
+    csr_write("mhpmcounter3h", 0u);
+}
+
 /* ------------------------------------------------------------------ */
 /* What fifteen arch-test suites nobody had named found                */
 /* ------------------------------------------------------------------ */
@@ -4247,6 +4403,7 @@ int main(void)
     test_zalasr();
     test_zawrs();
     test_zihpm();
+    test_sscofpmf();
     test_discarded_reads();
     test_warl_widths();
     test_cbo_below_m();

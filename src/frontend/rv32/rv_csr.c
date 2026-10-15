@@ -169,7 +169,27 @@ void rv_hpm_rearm(rv_hart_t *h)
     h->hpm_armed = armed;
 }
 
-void rv_hpm_note_trap(rv_hart_t *h, uint32_t cause)
+#if RV_EXT_SSCOFPMF
+/* The inhibit bit for counting in `priv`. */
+static EMU_ALWAYS_INLINE uint32_t hpm_inhibit_for(uint32_t priv)
+{
+    return (priv == RV_PRIV_M)   ? MHPMEVENTH_MINH
+           : (priv == RV_PRIV_S) ? MHPMEVENTH_SINH
+                                 : MHPMEVENTH_UINH;
+}
+#endif
+
+/*
+ * A trap happened in `from_priv`: count it on every counter selecting it.
+ *
+ * With Sscofpmf, a counter whose inhibit bit names that mode does not
+ * count it, and one that wraps to zero sets its OF bit -- raising the
+ * overflow interrupt only if OF was clear, which is what lets a handler
+ * leave OF set to mean "seen, do not interrupt me again" (Sscofpmf,
+ * "OF"). The interrupt is pending from here; whether and where it is
+ * taken is mie, mideleg and the enables, as for any other.
+ */
+void rv_hpm_note_trap(rv_hart_t *h, uint32_t cause, uint32_t from_priv)
 {
     const bool irq = (cause & RV_CAUSE_INTERRUPT) != 0u;
     const uint32_t code = cause & ~RV_CAUSE_INTERRUPT;
@@ -183,12 +203,29 @@ void rv_hpm_note_trap(rv_hart_t *h, uint32_t cause)
             ? ((irq ? RV_HPM_EVENT_IRQ_CAUSE : RV_HPM_EVENT_EXC_CAUSE) | code)
             : RV_HPM_EVENT_NONE;
     uint32_t armed = h->hpm_armed;
+#if RV_EXT_SSCOFPMF
+    const uint32_t inh = hpm_inhibit_for(from_priv);
+#else
+    (void)from_priv;
+#endif
 
     for (uint32_t i = 0; armed != 0u; i++, armed >>= 1) {
-        if ((armed & 1u) != 0u &&
-            (h->mhpmevent[i] == any || h->mhpmevent[i] == exact)) {
-            h->mhpmcounter[i]++;
+        if ((armed & 1u) == 0u ||
+            (h->mhpmevent[i] != any && h->mhpmevent[i] != exact)) {
+            continue;
         }
+#if RV_EXT_SSCOFPMF
+        if ((h->mhpmeventh[i] & inh) != 0u) {
+            continue;
+        }
+        if (++h->mhpmcounter[i] == 0u &&
+            (h->mhpmeventh[i] & MHPMEVENTH_OF) == 0u) {
+            h->mhpmeventh[i] |= MHPMEVENTH_OF;
+            rv_hart_set_irq(h, RV_INT_LCOF, true);
+        }
+#else
+        h->mhpmcounter[i]++;
+#endif
     }
 }
 
@@ -211,8 +248,33 @@ static bool hpm_read(const rv_hart_t *h, uint32_t csr, uint32_t *out)
         *out = h->mhpmevent[i];
         return true;
     }
+#if RV_EXT_SSCOFPMF
+    if (hpm_index(csr, CSR_MHPMEVENTH_BASE, &i)) {
+        *out = h->mhpmeventh[i];
+        return true;
+    }
+#endif
     return false;
 }
+
+#if RV_EXT_SSCOFPMF
+/*
+ * scountovf: the OF bits, bit n for counter n. From S-mode only the
+ * counters mcounteren grants are visible, the rest reading zero; from M,
+ * all of them. U-mode cannot reach it -- it is an S-level number.
+ */
+static uint32_t scountovf_read(const rv_hart_t *h)
+{
+    uint32_t v = 0u;
+
+    for (uint32_t i = 0; i < RV_HPM_COUNT; i++) {
+        if ((h->mhpmeventh[i] & MHPMEVENTH_OF) != 0u) {
+            v |= 1u << (i + RV_HPM_FIRST);
+        }
+    }
+    return (h->priv == RV_PRIV_M) ? v : (v & h->mcounteren);
+}
+#endif
 #endif /* RV_EXT_ZIHPM */
 
 /* ------------------------------------------------------------------ */
@@ -317,6 +379,11 @@ rv_exc_t rv_csr_read(rv_hart_t *h, uint32_t csr, uint32_t *out)
     case CSR_SCOUNTEREN:
         *out = h->scounteren;
         break;
+#if RV_EXT_SSCOFPMF
+    case CSR_SCOUNTOVF:
+        *out = scountovf_read(h);
+        break;
+#endif
     case CSR_SENVCFG:
         *out = h->senvcfg;
         break;
@@ -566,12 +633,13 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
 
     case CSR_SIP:
         /*
-         * Of the delegated interrupts a supervisor may only clear its own
-         * software one; the timer and external bits belong to whatever
-         * raises them.
+         * Of the delegated interrupts a supervisor may only write its own
+         * software one and, with Sscofpmf, the overflow one, which it
+         * clears; the timer and external bits belong to whatever raises
+         * them.
          */
-        h->mip =
-            (h->mip & ~(h->mideleg & MIP_SSIP)) | (val & h->mideleg & MIP_SSIP);
+        h->mip = (h->mip & ~(h->mideleg & SIP_WMASK)) |
+                 (val & h->mideleg & SIP_WMASK);
 #if RV_LAZY_IRQ_CHECK
         h->irq_dirty = true;
 #endif
@@ -804,6 +872,17 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
             rv_hpm_rearm(h);
             break;
         }
+#if RV_EXT_SSCOFPMF
+        if (hpm_index(csr, CSR_MHPMEVENTH_BASE, &i)) {
+            /*
+             * OF as written: software clears it to re-arm the interrupt,
+             * and may set it. Neither moves mip -- LCOFIP is cleared by
+             * writing mip or sip, as the extension says.
+             */
+            h->mhpmeventh[i] = val & MHPMEVENTH_WMASK;
+            break;
+        }
+#endif
     }
 #endif
 #if RV_EXT_PMP
@@ -906,6 +985,10 @@ const char *rv_csr_name(uint32_t csr)
         return "stvec";
     case CSR_SCOUNTEREN:
         return "scounteren";
+#if RV_EXT_SSCOFPMF
+    case CSR_SCOUNTOVF:
+        return "scountovf";
+#endif
     case CSR_SENVCFG:
         return "senvcfg";
     case CSR_SSCRATCH:
@@ -989,6 +1072,12 @@ const char *rv_csr_name(uint32_t csr)
         if (csr >= CSR_HPMCOUNTERH_BASE + RV_HPM_FIRST &&
             csr <= CSR_HPMCOUNTERH_BASE + 31u) {
             return "hpmcounterh";
+        }
+#endif
+#if RV_EXT_SSCOFPMF
+        if (csr >= CSR_MHPMEVENTH_BASE + RV_HPM_FIRST &&
+            csr <= CSR_MHPMEVENTH_BASE + 31u) {
+            return "mhpmeventh";
         }
 #endif
         return NULL;

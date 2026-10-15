@@ -80,11 +80,12 @@
         "value": "0xb3ff"
       }
     },
-    // mideleg: the three supervisor interrupts, SSIP/STIP/SEIP.
+    // mideleg: the three supervisor interrupts, SSIP/STIP/SEIP, and the
+    // counter-overflow interrupt LCOFIP (bit 13, Sscofpmf).
     "mideleg": {
       "delegatable_bits": {
         "len": "xlen",
-        "value": "0x222"
+        "value": "0x2222"
       }
     },
     // rv_hart_trap records the faulting address for every address-related
@@ -445,7 +446,7 @@
     "Zhinx": { "supported": false },
     "Zhinxmin": { "supported": false },
     "Ssccptr": { "supported": false },
-    "Sscofpmf": { "supported": false },
+    "Sscofpmf": { "supported": true },
     "Sscounterenw": { "supported": false },
     "Sstc": { "supported": false },
     "Sstvala": { "supported": false },

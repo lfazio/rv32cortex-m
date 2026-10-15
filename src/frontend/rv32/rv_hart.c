@@ -90,6 +90,9 @@ void rv_hart_reset(rv_hart_t *h, uint32_t reset_pc)
 #if RV_EXT_ZIHPM
     memset(h->mhpmcounter, 0, sizeof(h->mhpmcounter));
     memset(h->mhpmevent, 0, sizeof(h->mhpmevent));
+#if RV_EXT_SSCOFPMF
+    memset(h->mhpmeventh, 0, sizeof(h->mhpmeventh));
+#endif
     rv_hpm_rearm(h); /* derived: recomputed, never cleared by hand */
 #endif
     h->split_valid = false;
@@ -236,6 +239,10 @@ static bool trap_to_s(const rv_hart_t *h, uint32_t cause)
 void rv_hart_trap(rv_hart_t *h, uint32_t cause, uint32_t tval)
 {
     uint32_t tvec;
+#if RV_EXT_ZIHPM
+    /* The mode the event happened in, for Sscofpmf's filters. */
+    const uint32_t from = h->priv;
+#endif
 
     /*
      * An access that crossed a page boundary and was refused in the
@@ -337,7 +344,7 @@ void rv_hart_trap(rv_hart_t *h, uint32_t cause, uint32_t tval)
 #if RV_EXT_ZIHPM
     /* One load and a branch, per trap, for a guest counting nothing. */
     if (EMU_UNLIKELY(h->hpm_armed != 0u)) {
-        rv_hpm_note_trap(h, cause);
+        rv_hpm_note_trap(h, cause, from);
     }
 #endif
 
@@ -385,7 +392,8 @@ rv_exc_t rv_hart_pending_irq(const rv_hart_t *h)
 #endif
 
     /* Priority order from the privileged spec: MEI, MSI, MTI, then SEI,
-     * SSI, STI. Machine interrupts outrank supervisor ones throughout. */
+     * SSI, STI, then LCOFI. Machine interrupts outrank supervisor ones
+     * throughout. */
     if (active & MIP_MEIP) {
         return RV_INT_M_EXT;
     }
@@ -402,7 +410,15 @@ rv_exc_t rv_hart_pending_irq(const rv_hart_t *h)
     if (active & MIP_SSIP) {
         return RV_INT_S_SOFT;
     }
+#if RV_EXT_SSCOFPMF
+    /* Below every standard interrupt (Sscofpmf, "LCOFI"). */
+    if (active & MIP_STIP) {
+        return RV_INT_S_TIMER;
+    }
+    return RV_INT_LCOF;
+#else
     return RV_INT_S_TIMER;
+#endif
 #else
     return RV_INT_M_TIMER;
 #endif

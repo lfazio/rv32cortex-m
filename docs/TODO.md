@@ -1583,10 +1583,18 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       program -- RV32's at 0x8000_0000, stale since execute-in-place,
       and G4MH's at 0 ([gdb.md](gdb.md#the-guest-stub)).
 
-- [ ] **rv32: Zihpm counts traps only.** No overflow interrupt
-      (Sscofpmf), no privilege filter bits in `mhpmevent`. Linux finds
-      the 29 counters through OpenSBI ("16 firmware and 31 hardware
-      counters") and says sampling is unsupported for want of sscof.
+- [x] **rv32: Sscofpmf.** Zihpm's counters have an overflow bit and
+      an inhibit per privilege mode in `mhpmevent3h`-`31h`, `scountovf`
+      for S-mode, and local interrupt 13 -- delegatable, pending and
+      clearable through `sip`, below every standard interrupt
+      ([frontend/rv32.md](frontend/rv32.md#the-small-extensions)). No
+      suite: `tests/arch-test/probes/sscofpmf.S` holds the emulator to
+      Sail on eleven values, and `isatest`'s `sscof-*` checks hold the
+      counting -- eight mutants, each failing on both backends. 510 and
+      523 on both backends, riscv-tests 77/77 both ways. OpenSBI now
+      lists `sscofpmf` for the boot hart, and Linux no longer says
+      sampling is unsupported for want of it. What the counters count
+      is still traps.
 
 - [ ] **JIT** - Autovectorisation of the IR pipeline. This is a big task, but it would be a good demonstration of the emulator's capabilities.
 - [ ] Add simple drivers for the rh850u2b6.based on their specification in the reference manual.

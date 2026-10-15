@@ -70,8 +70,8 @@ came to document an `RV32_PLATFORM` option that has never existed.
 What belongs here is only what the recipes do not say:
 
 ```sh
-./scripts/run-arch-test.sh      # 496/496; EMU_EXTRA_ARGS=--jit for the JIT
-./scripts/run-arch-test.sh --misaligned  # 509/509: the *default* build
+./scripts/run-arch-test.sh      # 510/510; EMU_EXTRA_ARGS=--jit for the JIT
+./scripts/run-arch-test.sh --misaligned  # 523/523: the *default* build
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77; EMU_HOST=<a wrapper
                                 # adding --jit> for the JIT -- it takes no flag
 ./scripts/build-matrix.sh --test # every configuration, and its ctest

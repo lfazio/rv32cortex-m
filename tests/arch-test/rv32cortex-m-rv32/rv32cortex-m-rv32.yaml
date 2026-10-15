@@ -85,6 +85,11 @@ implemented_extensions:
   # guest memory atomically.
   - { name: Sv32, version: "= 1.0" }
   - { name: Svade, version: "= 1.0.0" }
+  # Counter overflow and mode filtering: mhpmevent3h-31h (OF and the
+  # M/S/U inhibits), scountovf and the local overflow interrupt, 13.
+  # There is no suite for it; declaring it is what makes the harness
+  # clear mhpmevent*h at start-up, which every test then exercises.
+  - { name: Sscofpmf, version: "= 1.0.0" }
   # SINVAL.VMA and the two fences around it. SFENCE.VMA's invalidation
   # and traps, and fences that one hart has nothing to order.
   - { name: Svinval, version: "= 1.0.0" }

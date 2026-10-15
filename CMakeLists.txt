@@ -1162,8 +1162,9 @@ if(EMU_GUEST_ARCH_RV32)
     if(RV32_EXT_ZBC)
         string(APPEND _isa "_zbc")
     endif()
-    # Svinval follows S, which has no option: rv_config.h turns it on.
-    string(APPEND _isa "_svinval")
+    # Sscofpmf and Svinval follow S and Zihpm, which have no option:
+    # rv_config.h turns them on.
+    string(APPEND _isa "_sscofpmf_svinval")
     if(BUILD_TESTING AND TARGET emu-host AND TARGET guest-hello)
         add_test(NAME rv32-isa-string
                  COMMAND emu-host "${CMAKE_BINARY_DIR}/guest/hello.bin")

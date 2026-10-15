@@ -161,6 +161,23 @@ struct rv_hart;
 #define CSR_MHPMEVENT_BASE 0x320 /* mhpmevent3..31     0x323..0x33F */
 #define CSR_HPMCOUNTER_BASE 0xC00 /* hpmcounter3..31    0xC03..0xC1F */
 #define CSR_HPMCOUNTERH_BASE 0xC80 /* hpmcounter3h..31h  0xC83..0xC9F */
+/* Sscofpmf, RV32: each selector's upper half, and S's view of OF. */
+#define CSR_MHPMEVENTH_BASE 0x720 /* mhpmevent3h..31h   0x723..0x73F */
+#define CSR_SCOUNTOVF 0xDA0
+
+/*
+ * mhpmeventNh. OF is set when the counter wraps and raises LCOFI only on
+ * the transition; MINH, SINH and UINH stop it counting events in that
+ * mode. VSINH and VUINH are the hypervisor's, which this core does not
+ * have: read-only zero. EVENT[25:0], the selector's top, is zero for
+ * every event in the list below, so it is read-only zero too.
+ */
+#define MHPMEVENTH_OF (1u << 31)
+#define MHPMEVENTH_MINH (1u << 30)
+#define MHPMEVENTH_SINH (1u << 29)
+#define MHPMEVENTH_UINH (1u << 28)
+#define MHPMEVENTH_WMASK                                                       \
+    (MHPMEVENTH_OF | MHPMEVENTH_MINH | MHPMEVENTH_SINH | MHPMEVENTH_UINH)
 
 #define RV_HPM_FIRST 3u
 #define RV_HPM_COUNT 29u
@@ -271,6 +288,7 @@ struct rv_hart;
 #define MIP_MSIP (1u << RV_INT_M_SOFT)
 #define MIP_MTIP (1u << RV_INT_M_TIMER)
 #define MIP_MEIP (1u << RV_INT_M_EXT)
+#define MIP_LCOFIP (1u << RV_INT_LCOF)
 
 #define MIE_SSIE MIP_SSIP
 #define MIE_STIE MIP_STIP
@@ -279,14 +297,34 @@ struct rv_hart;
 #define MIE_MTIE MIP_MTIP
 #define MIE_MEIE MIP_MEIP
 
-/* The S bits, as a set. Everything delegable to S-mode. */
+/*
+ * The S bits, as a set: everything delegable to S-mode. With Sscofpmf
+ * that includes the overflow interrupt, which is not an S-mode interrupt
+ * by name but is the one a supervisor's perf driver is built around.
+ */
+#if RV_EXT_SSCOFPMF
+#define MIP_S_ALL (MIP_SSIP | MIP_STIP | MIP_SEIP | MIP_LCOFIP)
+#else
 #define MIP_S_ALL (MIP_SSIP | MIP_STIP | MIP_SEIP)
+#endif
+
+/*
+ * What sip lets a supervisor write, of what is delegated: its own
+ * software interrupt, and the overflow interrupt -- which software
+ * clears once it has dealt with the counters.
+ */
+#if RV_EXT_SSCOFPMF
+#define SIP_WMASK (MIP_SSIP | MIP_LCOFIP)
+#else
+#define SIP_WMASK MIP_SSIP
+#endif
 
 /*
  * mip bits are driven by devices, not by CSR writes -- except the S ones,
  * which have no device behind them here. SSIP and STIP are how M-mode
  * software posts work to a supervisor, so they have to be writable; SEIP
- * is writable in M-mode for the same reason.
+ * is writable in M-mode for the same reason, and LCOFIP because software
+ * clears it.
  */
 #if RV_EXT_S
 #define MIP_WMASK MIP_S_ALL
@@ -368,7 +406,7 @@ void rv_hpm_rearm(struct rv_hart *h);
  * A trap was taken: advance every armed counter whose event it is.
  * Called from rv_hart_trap, and only when something is armed.
  */
-void rv_hpm_note_trap(struct rv_hart *h, uint32_t cause);
+void rv_hpm_note_trap(struct rv_hart *h, uint32_t cause, uint32_t from_priv);
 #endif
 
 /* True if the CSR number exists on this implementation. */

@@ -128,6 +128,15 @@
 #define RV_EXT_ZIHPM RV_EXT_ZICNTR
 #endif
 /*
+ * Sscofpmf: a counter's overflow raises local interrupt 13, and each
+ * counter can be told not to count in M, S or U. mhpmevent3h..31h hold
+ * the OF and inhibit bits on RV32; scountovf shows the OF bits to S. It
+ * needs Zihpm's counters and an S-mode to read scountovf from.
+ */
+#ifndef RV_EXT_SSCOFPMF
+#define RV_EXT_SSCOFPMF (RV_EXT_ZIHPM && RV_EXT_S)
+#endif
+/*
  * Each of the three leans on state another extension owns -- the
  * reservation for the first two, mcounteren and mcountinhibit for the
  * third -- and says so here rather than failing to compile somewhere

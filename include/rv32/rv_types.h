@@ -68,6 +68,7 @@ static EMU_ALWAYS_INLINE rv_exc_t rv_exc_from_fault(emu_fault_t f)
 #define RV_INT_M_SOFT 3u
 #define RV_INT_M_TIMER 7u
 #define RV_INT_M_EXT 11u
+#define RV_INT_LCOF 13u /* Sscofpmf: a counter overflowed */
 
 #define RV_CAUSE_INTERRUPT 0x80000000u
 

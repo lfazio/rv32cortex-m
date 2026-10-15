@@ -44,9 +44,9 @@ Current state:
 
 | | result | runs on |
 |---|---|---|
-| `riscv-arch-test`, interpreter | **496 / 496** | host |
-| `riscv-arch-test`, `EMU_EXTRA_ARGS=--jit` | **496 / 496** — the whole suite through translated code | host, x86-64 |
-| `riscv-arch-test --misaligned`, both backends | **509 / 509** — the default build, `RV32_MISALIGNED=ON`, and the four `Misalign*` suites it qualifies for | host |
+| `riscv-arch-test`, interpreter | **510 / 510** | host |
+| `riscv-arch-test`, `EMU_EXTRA_ARGS=--jit` | **510 / 510** — the whole suite through translated code | host, x86-64 |
+| `riscv-arch-test --misaligned`, both backends | **523 / 523** — the default build, `RV32_MISALIGNED=ON`, and the four `Misalign*` suites it qualifies for | host |
 | `riscv-tests`, interpreter | **77 / 77** | host |
 | `riscv-tests`, `--jit` through an `EMU_HOST` wrapper | **77 / 77** | host, x86-64 |
 | `ctest`, the default host tree -- all four frontends (`host-all`) | **56 tests**: unit, the guests of every frontend, most of them again under `--jit`, and `gdb-check`. 20 of them failed in this configuration until their flat images named a frontend: a `.bin` carries no architecture and runs as RV32 | host |
@@ -152,7 +152,7 @@ Three of the unary ops (`c.sext.b`, `c.zext.h`, `c.sext.h`) expand to Zbb
 instructions, which is why the spec makes Zcb depend on Zbb — without it there
 would be nothing to expand them into.
 
-## Official RISC-V Architecture Test Suite — 496/496
+## Official RISC-V Architecture Test Suite — 510/510
 
 [`riscv/riscv-arch-test`](https://github.com/riscv/riscv-arch-test), the RVCP
 suite governed by RISC-V International. Modern versions are self-checking: the
@@ -170,7 +170,7 @@ and the UDB gems, then builds and runs.
 Prerequisites beyond the normal toolchain: `uv`, Ruby, and Bundler
 (`gem install --user-install bundler`).
 
-**What 496 covers is what the script names.** ACT selects suites by
+**What 510 covers is what the script names.** ACT selects suites by
 *directory name*, so a suite nobody names is a suite nobody runs,
 whatever the core implements. The total stood at 378 for months, and
 that was a statement about thirty directory names:
@@ -181,6 +181,7 @@ that was a statement about thirty directory names:
 | Zicond, Zihintpause, Zihintntl, `ZihintntlZca`, Zihpm | 13 | the extensions were added |
 | `Zcf`, `Zcd`, `ZcbM`, `ZcbZbb`, seven more PMP directories, `SvZicbo`, `SvPMPZicbo`, two `ExceptionsSv*` | 99 | listing the checkout to find `ZihintntlZca` |
 | Zicbop | 6 | claimed -- three in its own directory, and three that had been sitting in `SvZicbo` and `PMPZicbo`, already named, waiting for the description to say the extension was there |
+| Zfhmin, ZfhminD, Svinval | 14 | the extensions were added. Sscofpmf, after them, has no directory: [frontend/rv32.md](frontend/rv32.md#the-small-extensions) has the probe that stands in for one |
 
 That last row is both halves of the mechanism in one line. Naming a
 directory *offers* its tests; each test's own requirements, checked
@@ -227,15 +228,16 @@ description that still says "raises". What it changes:
 | `MISALIGNED_SPLIT_STRATEGY` | `sequential_bytes` | every part is checked before any is performed, and a fault names the lowest part refused |
 | `MISALIGNED_LDST_EXCEPTION_PRIORITY` | high, unchanged | AMOs and LR/SC still raise, and check alignment first; UDB allows high only with a zero granule |
 
-**509/509 on both backends**: the 496 and the thirteen. The thirteen were
+**523/523 on both backends**: the 510 and the thirteen. The thirteen were
 then run against the OFF build and all thirteen failed, which is what
 says they test the property and not merely run.
 
-Two extensions the core implements have **no suite at all**: Zalasr and
-Zawrs. Zalasr is not in Sail 0.13.1 either, so there is no golden model
-for it; it is covered by `tests/guest/isatest.c` alone. Zawrs is in the
-model, and `tests/arch-test/probes/zawrs.S` asks it seven questions
-directly -- see [frontend/rv32.md](frontend/rv32.md). And three of the
+Three extensions the core implements have **no suite at all**: Zalasr,
+Zawrs and Sscofpmf. Zalasr is not in Sail 0.13.1 either, so there is no
+golden model for it; it is covered by `tests/guest/isatest.c` alone.
+The other two are in the model, and a probe asks it directly --
+`tests/arch-test/probes/zawrs.S` seven questions, `sscofpmf.S` eleven
+-- see [frontend/rv32.md](frontend/rv32.md). And three of the
 defects the 99 led to are held by no architecture test either, only by
 `isatest`: the suite is a floor.
 

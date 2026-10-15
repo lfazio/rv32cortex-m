@@ -296,6 +296,9 @@ typedef struct rv_hart {
     uint64_t mhpmcounter[RV_HPM_COUNT];
     uint32_t mhpmevent[RV_HPM_COUNT];
     uint32_t hpm_armed;
+#if RV_EXT_SSCOFPMF
+    uint32_t mhpmeventh[RV_HPM_COUNT]; /* OF and the inhibits; see rv_csr.h */
+#endif
 #endif
 
     /*

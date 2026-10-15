@@ -10,7 +10,7 @@ backends (Thumb-2 and x86-64) behind one shared IR; and four platforms
 (a native host runner and STM32F4/F7/N6 firmware).
 Validated against the official
 [RISC-V Architecture Test Suite](https://github.com/riscv/riscv-arch-test)
-at **496/496** -- **509/509** for the default build, whose misaligned
+at **510/510** -- **523/523** for the default build, whose misaligned
 accesses complete and so qualify for four more suites -- and the
 Berkeley `riscv-tests` at **77/77**, on hardware
 as well as on a host. The RV32 core implements the **RVI20U32** profile
@@ -426,8 +426,8 @@ Figures and what they have already disproved are in
 ### Validation
 
 ```sh
-./scripts/run-arch-test.sh      # official riscv-arch-test, 496/496
-./scripts/run-arch-test.sh --misaligned  # the default build: 509/509
+./scripts/run-arch-test.sh      # official riscv-arch-test, 510/510
+./scripts/run-arch-test.sh --misaligned  # the default build: 523/523
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77
 ./scripts/build-matrix.sh --test # every configuration that should build, and its ctest
 ./scripts/report-figures.sh     # every quoted figure, regenerated

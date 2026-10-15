@@ -158,6 +158,11 @@
 #else
 #define RV32_S_ZFHMIN ""
 #endif
+#if RV_EXT_SSCOFPMF
+#define RV32_S_SSCOFPMF "_sscofpmf"
+#else
+#define RV32_S_SSCOFPMF ""
+#endif
 #if RV_EXT_SVINVAL
 #define RV32_S_SVINVAL "_svinval"
 #else
@@ -177,7 +182,8 @@
         RV32_S_ZICBOM "_zicbop" RV32_S_ZICBOZ RV32_S_ZICNTR RV32_S_ZICOND      \
         RV32_S_ZICSR                                                           \
         RV32_S_ZIFENCEI RV32_S_ZIHINT RV32_S_ZIHPM RV32_S_ZACAS RV32_S_ZALASR  \
-        RV32_S_ZAWRS RV32_S_ZFHMIN RV32_S_ZCB RV32_S_ZBC RV32_S_SVINVAL
+        RV32_S_ZAWRS RV32_S_ZFHMIN RV32_S_ZCB RV32_S_ZBC RV32_S_SSCOFPMF       \
+            RV32_S_SVINVAL
 
 /* ------------------------------------------------------------------ */
 /* State                                                               */
