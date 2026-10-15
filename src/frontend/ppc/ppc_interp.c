@@ -27,6 +27,7 @@
 #include "ppc/ppc_cpu.h"
 #include "ppc/ppc_decode.h"
 #include "ppc/ppc_fpu.h"
+#include "ppc/ppc_pairstats.h"
 
 #include <stdint.h>
 
@@ -1265,6 +1266,9 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
         if (c->trace != NULL) {
             c->trace((emu_cpu_t *)c, pc, insn, len, c->trace_user);
         }
+#endif
+#if EMU_PAIR_STATS
+        emu_pair_note(&ppc_pair_ops, pc, ppc_pair_insn(insn, len, c->vle), len);
 #endif
 
         {

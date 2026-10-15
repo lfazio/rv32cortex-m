@@ -1265,8 +1265,14 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
   - [x] `ppc_gdb.c` — the register layout gdb expects, which is a fixed
         per-architecture order and not a choice. Written with the
         ARMv7-M one; `scripts/gdb-check.sh` attaches gdb-multiarch to it.
-  - [ ] `ppc_pairstats.c` — the histogram that answers "which
+  - [x] `ppc_pairstats.c` — the histogram that answers "which
         instruction next" with a measurement instead of an opinion.
+        Its first run named what the JIT still interprets: two
+        instructions, `mtspr` and `rfi`, on CoreMark and crypto, and
+        everything after the TLB is programmed on `ppc-mmu`
+        ([frontend/ppc.md](frontend/ppc.md#what-it-still-interprets)).
+        No matrix row had ever built with `EMU_PAIR_STATS=ON`;
+        `host-pairs` does now, for all four frontends' tables.
   - [x] **An MMU.** Chapter 10, with a guest that programs the TLB as
         MPC57xx start-up code does; see the entry below.
   - [ ] **Anything to compare it with.** No e200 is attached and no
@@ -1594,7 +1600,7 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
   - [ ] gpio/on emulated on top of stm32 gpio hal, emualated to output the binary state of output on a udp/ip connexion.
   - [ ] kcrc
   - [ ] wdtb
-- [ ] Architecture a serial protocol over UDP/TCP similar to PCIe so a PC host running the emualtor can access the rh850u2b6's peripherals. This is a big task, but it would be a good demonstration of the emulator's capabilities. First over serial, then maybe over USB or rela ethernet device. This is a big task, but it would be a good demonstration of the emulator's capabilities.
+- [ ] Architecture a pcie emulated peripheral over USB for the emulator and a pcie over USB slave firmware to deploy on the various boards to exercise the available peripherals.
 - [ ] Implement an emulated GTM device for the stm32f746zg/stm32n657 to demonstrate the emulator's capabilities.
 - [ ] Implement TAUD peripheral in rh850u2b6 with the remaining stm32 timer availble.
 - [x] **PowerPC: the e200z7 MMU.** Built as designed here, from

@@ -99,6 +99,7 @@ host-armv7m|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=OFF -DEMU_GUEST
 host-all|host||**the default**, every frontend in one runner, with no -D naming any: a flat image runs as the default unless its test names the frontend, which 20 tests did not; and gdb-check reaches all four here
 host-trace|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=ON -DEMU_GUEST_ARCH_PPC=OFF -DEMU_GUEST_ARCH_ARMV7M=OFF -DEMU_ENABLE_TRACE=ON -DEMU_JIT=OFF|the trace build, which is how pc deltas get read. RV32 and G4MH, as it always was: a trace line lands between every two bytes of guest output, which splits the OKAAA armv7m-hello looks for
 host-nopmp|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF -DEMU_GUEST_ARCH_PPC=OFF -DEMU_GUEST_ARCH_ARMV7M=OFF -DRV32_EXT_PMP=OFF|PMP compiled out: an absent CSR once read as success here unseen, and isatest hung -- it now tests that the PMP CSRs trap instead
+host-pairs|host|-DEMU_PAIR_STATS=ON|the instruction histograms of all four frontends -- the instrument that names what a JIT still interprets, and a build option no other row turned on
 host-net|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON|the IP stack on the host, over a pty -- this row exists because it did not, and the whole EMU_NET path stopped compiling here while every other row passed
 f746-rv32|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF|the shipping firmware: Thumb-2 emitter, lwIP/SLIP/TFTP (EMU_NET defaults ON)
 f746-rv32-nojit|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF -DEMU_JIT=OFF|**the one that was broken**

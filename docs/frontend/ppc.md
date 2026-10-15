@@ -379,6 +379,27 @@ PowerPC's guests translate to more code: about 70 bytes per guest
 instruction on x86-64, a quarter to a half of it memory accesses and
 much of the rest condition-register arithmetic.
 
+### What it still interprets
+
+`-DEMU_PAIR_STATS=ON` counts executed instructions by kind and adjacent
+pairs, on the interpreter -- and under `--jit` that is exactly the set
+the translator handed back. `ppc_pairstats.c` is the table that reads an
+e200 encoding for it, over `ppc_decode` and per semantic class, so the
+16-bit VLE forms land on the same register roles as the Book E ones.
+x86-64 JIT:
+
+| guest | retired | interpreted | what |
+|---|---|---|---|
+| CoreMark | 12,170,464 | 2,462 | `mtspr` 1,240, `rfi` 1,215: the decrementer's interrupt |
+| crypto | 2,422,217 | 514 | the same two |
+| sys | 15,209 | 2,194 | `mfspr` 1,687 -- the SPRs under test |
+| mmu | 25,427 | 4,496 | **everything after the TLB is programmed** |
+
+The last row is the one with something to do in it; see
+[../TODO.md](../TODO.md). Interpreted, CoreMark's adjacent pairs are
+26.1% data dependent (6.7% with a dead intermediate) and 2.6% address
+generation feeding an access, which is RV32's shape.
+
 **Blocks are capped at 16 instructions on a microcontroller and 64 on a
 host**, and that was measured rather than argued: while the cache is
 thrashing a long block is the expensive one to lose. At 32 KB the
