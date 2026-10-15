@@ -1615,6 +1615,9 @@ uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
     emu_ir_reset(b);
     b->start_pc = pc;
     b->has_fast = rv_ir_fast_mem(cpu, &b->fast);
+    /* Under exactly the conditions the RAM window is, and once armed. */
+    b->has_pt = b->has_fast && ((rv_hart_t *)cpu)->pt_armed &&
+                emu_ir_pt_window(((rv_hart_t *)cpu)->bus, &b->pt);
 
     while (count < RV_IR_MAX_BLOCK_INSNS && !b->overflow) {
         uint32_t insn;
@@ -1758,6 +1761,19 @@ static void rv_jit_after_interp(emu_cpu_t *cpu)
 static void rv_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
 {
     rv_hart_t *const h = (rv_hart_t *)cpu;
+
+    /*
+     * Arm the peripheral window, once, between slices: nothing is running
+     * here, so flushing is safe, and every block translated from now on
+     * inlines the window. Not from the helper that counted the access --
+     * a block would be running -- and not per dispatch, which is the hot
+     * path. A slice late is a few thousand instructions late.
+     */
+    if (EMU_UNLIKELY(!h->pt_armed) && h->bus != NULL &&
+        h->bus->pt_accesses >= EMU_JIT_PT_ARM_AT) {
+        h->pt_armed = true;
+        emu_jit_flush();
+    }
 
     /*
      * Seeded here as well as maintained by after_interp, so the very

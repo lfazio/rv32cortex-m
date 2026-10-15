@@ -73,6 +73,7 @@ add     r3, sp, #1020
 movs    r2, #66
 ror.w   r2, r2, #2
 sub.w   r2, r1, #0x80000000
+mov.w   r12, #0x40000000
 add.w   sp, sp, ip
 sub.w   sp, sp, ip
 sdiv    r0, r2, r3
@@ -166,6 +167,8 @@ int main(void)
 
         (void)t2_expand_imm(0x80000000u, &enc);
         t2_sub_imm(2u, 1u, enc);
+        (void)t2_expand_imm(0x40000000u, &enc);
+        t2_mov_imm(12u, enc);
     }
 
     /*

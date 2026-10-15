@@ -354,6 +354,11 @@ observation points, carrying the count of the ones it absorbed -- see
 14.29 → 13.94 at 96 KB and 117.63 → 115.24 at 32 KB, against a worktree
 at the commit before.
 
+**The peripheral window is inlined too, once armed**: the same guard
+with the base as the host address, plus a test of each read-only hole
+on a store. `mmiobench` 2.5-7x per peripheral access; see
+[../performance.md](../performance.md#driver-performance-the-passthrough-window).
+
 What is left in an access is the host pointer (`MOVW`/`MOVT`, 8 bytes)
 and the call into the checked accessor with its trap exit: `MOVW`/`MOVT`
 and `BLX` for the call, a compare and a branch for the verdict -- once

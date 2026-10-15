@@ -78,9 +78,13 @@ static emu_region_t *check(emu_bus_t *bus, uint32_t addr, uint32_t size,
 /* Setup                                                               */
 /* ------------------------------------------------------------------ */
 
+/* See emu_bus_t::epoch. Bring-up is single-threaded, as is a reload. */
+static uint32_t g_bus_epoch;
+
 void emu_bus_init(emu_bus_t *bus)
 {
     memset(bus, 0, sizeof(*bus));
+    bus->epoch = ++g_bus_epoch;
 }
 
 unsigned emu_bus_region_count(const emu_bus_t *bus)
@@ -93,6 +97,7 @@ bool emu_bus_add(emu_bus_t *bus, const emu_region_t *r)
     if (bus->count >= EMU_MAX_REGIONS || r->size < 4u) {
         return false;
     }
+    bus->epoch = ++g_bus_epoch;
     /* Overlaps are a configuration bug: reject rather than pick a winner. */
     for (uint32_t i = 0; i < bus->count; i++) {
         const emu_region_t *e = &bus->regions[i];
@@ -281,6 +286,9 @@ emu_fault_t emu_bus_read_slow(emu_bus_t *bus, uint32_t addr, uint32_t size,
     }
 
     case EMU_MEM_PASSTHRU: {
+        if (bus->pt_accesses != UINT32_MAX) {
+            bus->pt_accesses++;
+        }
         volatile const uint8_t *p =
             (volatile const uint8_t *)(r->host_base + off);
         switch (size) {
@@ -337,6 +345,9 @@ emu_fault_t emu_bus_write_slow(emu_bus_t *bus, uint32_t addr, uint32_t size,
     }
 
     case EMU_MEM_PASSTHRU: {
+        if (bus->pt_accesses != UINT32_MAX) {
+            bus->pt_accesses++;
+        }
         volatile uint8_t *p = (volatile uint8_t *)(r->host_base + off);
         switch (size) {
         case 1:

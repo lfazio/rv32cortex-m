@@ -313,6 +313,14 @@ typedef struct rv_hart {
     uint32_t split_req;
     uint32_t split_at;
     bool split_valid;
+
+    /*
+     * Whether translated blocks inline the peripheral window, which they
+     * do once the guest has driven peripherals through the bus
+     * EMU_JIT_PT_ARM_AT times -- see emu_ir_ptwin_t. Set by the JIT's
+     * bind, cleared by reset. Cold, and at the end.
+     */
+    bool pt_armed;
 } rv_hart_t;
 
 /* ------------------------------------------------------------------ */

@@ -11,6 +11,7 @@
  * more than the code it saves is a net loss however good the output.
  */
 
+#include "emu/emu_bus.h"
 #include "emu/emu_ir.h"
 #include "emu/emu_jit.h" /* EMU_HAVE_JIT */
 #include "emu/emu_lock.h"
@@ -30,6 +31,98 @@ void emu_ir_reset(emu_ir_block_t *b)
     b->overflow = false;
     /* A frontend that says nothing gets the helpers, which always work. */
     b->has_fast = false;
+    b->has_pt = false;
+}
+
+/* ------------------------------------------------------------------ */
+/* The peripheral window                                               */
+/* ------------------------------------------------------------------ */
+
+static bool pt_member(const emu_region_t *r)
+{
+    return r->size != 0u && r->kind == (uint8_t)EMU_MEM_PASSTHRU &&
+           r->host_base == (uintptr_t)r->base &&
+           (r->perm & EMU_PERM_R) != 0u &&
+           (r->widths & (EMU_W8 | EMU_W16 | EMU_W32)) ==
+               (EMU_W8 | EMU_W16 | EMU_W32) &&
+           (r->base & 3u) == 0u && (r->size & 3u) == 0u;
+}
+
+static bool pt_build(const emu_bus_t *bus, emu_ir_ptwin_t *out)
+{
+    bool found = false;
+
+    memset(out, 0, sizeof(*out));
+    for (uint32_t i = 0; i < bus->count; i++) {
+        if (!pt_member(&bus->regions[i])) {
+            continue;
+        }
+
+        /* Grow a run from this region upwards, through adjacent members. */
+        emu_ir_ptwin_t run;
+        uint32_t end = bus->regions[i].base;
+
+        memset(&run, 0, sizeof(run));
+        run.base = end;
+        for (;;) {
+            const emu_region_t *next = NULL;
+
+            for (uint32_t j = 0; j < bus->count; j++) {
+                if (pt_member(&bus->regions[j]) &&
+                    bus->regions[j].base == end) {
+                    next = &bus->regions[j];
+                    break;
+                }
+            }
+            if (next == NULL) {
+                break;
+            }
+            if ((next->perm & EMU_PERM_W) == 0u) {
+                if (run.nholes >= EMU_IR_PT_HOLES) {
+                    break; /* end the run before a hole it cannot hold */
+                }
+                run.hole[run.nholes].off = next->base - run.base;
+                run.hole[run.nholes].len = next->size;
+                run.nholes++;
+            }
+            if (next->base + next->size < next->base) {
+                break; /* would wrap the address space */
+            }
+            end = next->base + next->size;
+            run.size = end - run.base;
+        }
+        if (run.size > out->size) {
+            *out = run;
+            found = true;
+        }
+    }
+    return found;
+}
+
+/*
+ * The cache: per core, because each core may have its own bus, and keyed
+ * on the epoch, so a rebuilt table -- a reload -- is never answered from
+ * the one before it.
+ */
+static EMU_PER_CORE const emu_bus_t *g_pt_bus;
+static EMU_PER_CORE uint32_t g_pt_epoch;
+static EMU_PER_CORE bool g_pt_ok;
+static EMU_PER_CORE emu_ir_ptwin_t g_pt_win;
+
+bool emu_ir_pt_window(const emu_bus_t *bus, emu_ir_ptwin_t *out)
+{
+    if (bus == NULL) {
+        return false;
+    }
+    if (bus != g_pt_bus || bus->epoch != g_pt_epoch) {
+        g_pt_ok = pt_build(bus, &g_pt_win);
+        g_pt_bus = bus;
+        g_pt_epoch = bus->epoch;
+    }
+    if (g_pt_ok) {
+        *out = g_pt_win;
+    }
+    return g_pt_ok;
 }
 
 uint16_t emu_ir_temp(emu_ir_block_t *b)

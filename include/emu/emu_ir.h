@@ -681,6 +681,56 @@ typedef struct emu_ir_fastmem {
     uint32_t store_guard_offset;
 } emu_ir_fastmem_t;
 
+/*
+ * The peripheral window, which a backend may also access inline.
+ *
+ * Identity-mapped -- the guest's address *is* the host's -- so it is the
+ * guest-RAM fast path with `host` equal to `base`, and that is why it is
+ * cheap. What differs is the holes: spans a board made read-only because
+ * a guest could take the emulator down through them (the PLL, the power
+ * controller, the flash interface). A store into one has to fault, so an
+ * inlined store tests each hole and leaves for the helper on a match;
+ * a load does not, because every span in the window is readable.
+ *
+ * Only ever filled while armed -- see EMU_JIT_PT_ARM_AT -- and only
+ * where the RAM window is, since the same things that refuse that one
+ * (PMP, paging, triggers) refuse this.
+ */
+#ifndef EMU_IR_PT_HOLES
+#define EMU_IR_PT_HOLES 4u
+#endif
+
+typedef struct emu_ir_ptwin {
+    uint32_t base; /* guest == host address of the first byte */
+    uint32_t size;
+    uint32_t nholes;
+    struct {
+        uint32_t off; /* from base; word aligned */
+        uint32_t len; /* bytes; a multiple of 4  */
+    } hole[EMU_IR_PT_HOLES];
+} emu_ir_ptwin_t;
+
+/*
+ * How many passthrough accesses a guest makes through the bus before its
+ * blocks inline the peripheral window. Always-on cost the hand-written
+ * translator a CoreMark image past its cache, for a window CoreMark never
+ * touches; armed at 64, CoreMark paid 0.66% and drivers gained 2.2-3.1x.
+ */
+#ifndef EMU_JIT_PT_ARM_AT
+#define EMU_JIT_PT_ARM_AT 64u
+#endif
+
+struct emu_bus;
+
+/*
+ * The peripheral window `bus` offers: the longest run of adjacent,
+ * identity-mapped passthrough regions, every one readable at every
+ * width, with the read-only ones as holes. False if there is none, or
+ * if it has more holes than EMU_IR_PT_HOLES. Cached per core against the
+ * bus's epoch, so it is a compare per translation after the first.
+ */
+bool emu_ir_pt_window(const struct emu_bus *bus, emu_ir_ptwin_t *out);
+
 typedef struct emu_ir_block {
     emu_ir_insn_t insn[EMU_IR_MAX_INSNS];
     uint32_t count;
@@ -708,6 +758,10 @@ typedef struct emu_ir_block {
      */
     emu_ir_fastmem_t fast;
     bool has_fast;
+
+    /* The peripheral window, likewise, and only while armed. */
+    emu_ir_ptwin_t pt;
+    bool has_pt;
 
     /* Set when the block ran out of room; it is then discarded. */
     bool overflow;

@@ -17,6 +17,7 @@
 
 #include "tests.h"
 
+#include "emu/emu_bus.h"
 #include "emu/emu_ir.h"
 
 #include <string.h>
@@ -2235,6 +2236,118 @@ static void test_fma_interp_declines(void)
     CHECK_EQ(fp_eval(EMU_IR_FMA, 0u, F_ONE, F_ONE), 0xDEADBEEFu);
 }
 
+/*
+ * The peripheral window, built from a bus laid out as the F746's is:
+ * one contiguous run of identity-mapped passthrough spans, three of them
+ * read-only. Its regions are never accessed here -- they name the board's
+ * real peripheral addresses -- only described.
+ */
+static uint8_t g_pt_ram[64];
+static uint32_t g_pt_target[4];
+
+static void pt_f746(emu_bus_t *bus)
+{
+    static const struct {
+        uint32_t base, size;
+        uint8_t perm;
+    } k[] = {
+        {0x40000000u, 0x00007000u, EMU_PERM_RW},
+        {0x40007000u, 0x00000400u, EMU_PERM_R},
+        {0x40007400u, 0x0001C400u, EMU_PERM_RW},
+        {0x40023800u, 0x00000010u, EMU_PERM_R},
+        {0x40023810u, 0x000003F0u, EMU_PERM_RW},
+        {0x40023C00u, 0x00000400u, EMU_PERM_R},
+        {0x40024000u, 0x1FFDC000u, EMU_PERM_RW},
+    };
+
+    emu_bus_init(bus);
+    CHECK(emu_bus_add_ram(bus, "ram", 0x80000000u, g_pt_ram,
+                          sizeof(g_pt_ram)));
+    /* Out of order on purpose: the run is found by address. */
+    for (unsigned i = sizeof(k) / sizeof(k[0]); i-- > 0;) {
+        CHECK(emu_bus_add_passthru(bus, "p", k[i].base, k[i].size,
+                                   (uintptr_t)k[i].base, k[i].perm, EMU_WANY));
+    }
+}
+
+static void test_pt_window_from_bus(void)
+{
+    emu_bus_t bus;
+    emu_ir_ptwin_t w;
+
+    pt_f746(&bus);
+    CHECK(emu_ir_pt_window(&bus, &w));
+    CHECK_EQ(w.base, 0x40000000u);
+    CHECK_EQ(w.size, 0x20000000u);
+    CHECK_EQ(w.nholes, 3u);
+    CHECK_EQ(w.hole[0].off, 0x7000u);
+    CHECK_EQ(w.hole[0].len, 0x400u);
+    CHECK_EQ(w.hole[1].off, 0x23800u);
+    CHECK_EQ(w.hole[1].len, 0x10u);
+    CHECK_EQ(w.hole[2].off, 0x23C00u);
+    CHECK_EQ(w.hole[2].len, 0x400u);
+
+    /* A gap ends a run: the longer of the two, not both. */
+    emu_bus_init(&bus);
+    CHECK(emu_bus_add_passthru(&bus, "a", 0x40000000u, 0x1000u, 0x40000000u,
+                               EMU_PERM_RW, EMU_WANY));
+    CHECK(emu_bus_add_passthru(&bus, "b", 0x40002000u, 0x3000u, 0x40002000u,
+                               EMU_PERM_RW, EMU_WANY));
+    CHECK(emu_ir_pt_window(&bus, &w));
+    CHECK_EQ(w.base, 0x40002000u);
+    CHECK_EQ(w.size, 0x3000u);
+
+    /* ...and filling the gap is seen at once: the cache is keyed on the
+     * table, not on the bus pointer alone. */
+    CHECK(emu_bus_add_passthru(&bus, "gap", 0x40001000u, 0x1000u, 0x40001000u,
+                               EMU_PERM_RW, EMU_WANY));
+    CHECK(emu_ir_pt_window(&bus, &w));
+    CHECK_EQ(w.base, 0x40000000u);
+    CHECK_EQ(w.size, 0x5000u);
+
+    /* Not identity-mapped -- a host simulating a window -- is not one. */
+    emu_bus_init(&bus);
+    CHECK(emu_bus_add_passthru(&bus, "sim", 0x40000000u, sizeof(g_pt_target),
+                               (uintptr_t)g_pt_target, EMU_PERM_RW, EMU_WANY));
+    CHECK(!emu_ir_pt_window(&bus, &w));
+
+    /* A width restriction is something an inlined access cannot honour. */
+    emu_bus_init(&bus);
+    CHECK(emu_bus_add_passthru(&bus, "w32", 0x40000000u, 0x1000u, 0x40000000u,
+                               EMU_PERM_RW, EMU_W32));
+    CHECK(!emu_ir_pt_window(&bus, &w));
+
+    /* More holes than the window holds: the run stops before the fifth. */
+    emu_bus_init(&bus);
+    for (uint32_t i = 0; i < 6u; i++) {
+        CHECK(emu_bus_add_passthru(&bus, "ro", 0x40000000u + i * 0x100u, 0x100u,
+                                   0x40000000u + i * 0x100u,
+                                   (i == 0u) ? EMU_PERM_RW : EMU_PERM_R,
+                                   EMU_WANY));
+    }
+    CHECK(emu_ir_pt_window(&bus, &w));
+    CHECK_EQ(w.nholes, EMU_IR_PT_HOLES);
+    CHECK_EQ(w.size, 0x100u * (1u + EMU_IR_PT_HOLES));
+
+    /*
+     * And the bus counts what it serves through the window, which is
+     * what arms a translator to inline it -- through a simulated target,
+     * since the identity regions above name real hardware.
+     */
+    emu_bus_init(&bus);
+    CHECK(emu_bus_add_passthru(&bus, "sim", 0x40000000u, sizeof(g_pt_target),
+                               (uintptr_t)g_pt_target, EMU_PERM_RW, EMU_WANY));
+    {
+        uint32_t v = 0u;
+
+        CHECK_EQ(bus.pt_accesses, 0u);
+        CHECK_EQ(emu_bus_write(&bus, 0x40000004u, 4u, 0x55u), EMU_FAULT_NONE);
+        CHECK_EQ(emu_bus_read(&bus, 0x40000004u, 4u, &v), EMU_FAULT_NONE);
+        CHECK_EQ(v, 0x55u);
+        CHECK_EQ(bus.pt_accesses, 2u);
+    }
+}
+
 void test_ir(void)
 {
     test_fma_third_operand();
@@ -2249,6 +2362,7 @@ void test_ir(void)
     test_dead_setpc_removed();
     test_setpc_kept_before_each_observer();
     test_retire_merged_between_observers();
+    test_pt_window_from_bus();
     test_retire_not_merged_across_an_observer();
     test_setpc_dead_before_exit();
     test_setpc_across_conditional_exit();

@@ -310,6 +310,22 @@ int main(void)
     report("poll-mmio ", k_poll, &GPIOB_IDR);
     report("poll-ram  ", k_poll, &g_ram_reg);
 
+    /*
+     * **And again, now that the window is inlined.** A JIT inlines the
+     * peripheral window only once a guest has driven peripherals through
+     * the bus EMU_JIT_PT_ARM_AT times, and arms between slices -- so the
+     * first verify() can finish before any of its blocks is translated
+     * armed, and pass on the helper alone. The kernels above leave no
+     * doubt that the guest drives peripherals; this pass is what puts the
+     * holes, the window's edges and its outside to the inlined path.
+     */
+    verify();
+    puts_("checks ");
+    putu(g_checks);
+    puts_(" failures ");
+    putu(g_fails);
+    puts_("\n");
+
     puts_("MMIOBENCH-END\n");
     return 0;
 }

@@ -222,8 +222,14 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       `performance.md` are after the fix. The second half of
       `performance.md` and both `stm32f446/` pages are not, and are
       marked as history.
-- [ ] **The IR backends do not inline the peripheral window, and a
-      driver pays 6-10x per access for it.** Measured on the F746
+- [x] **The IR backends inline the peripheral window again** (Thumb-2,
+      RV32), armed after 64 passthrough accesses: `mmiobench` read
+      2.47x, write 4.71x, rmw 6.96x, poll 5.47x, now 1.3-2.2x its RAM
+      control ([performance.md](performance.md#driver-performance-the-passthrough-window)).
+      G4MH, PowerPC and ARMv7-M do not opt in yet: each would set
+      `has_pt` beside `has_fast` and arm in its `bind` as RV32 does --
+      PowerPC only for a little-endian window it does not have.
+      Before, measured on the F746
       (`mmiobench`, ticks per kernel, 91df012):
 
       | kernel | interpreter MMIO / RAM | JIT MMIO / RAM |
@@ -233,9 +239,9 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       | rmw | 205,154 / 124,091 | 94,044 / 9,206 -- **10.2x** |
       | poll | 128,149 / 96,248 | 51,188 / 7,307 -- **7.0x** |
 
-      The JIT is still 2.2x the interpreter on peripheral access, but
-      every one leaves the block through the checked accessor and a bus
-      walk. The hand-written translator inlined the window and was
+      The JIT was 2.2x the interpreter on peripheral access, but every
+      one left the block through the checked accessor and a bus walk.
+      The hand-written translator inlined the window and was
       2.2-3.1x better for it: the window is an identity map, so it is
       the guest-RAM fast path with host equal to base, plus a test of
       the read-only holes on a store (PWR, the RCC clock tree, the

@@ -362,6 +362,24 @@ void emu_session_report(emu_system_t *sys, uint64_t retired,
     (void)emu_print_jit_stats();
 
     /*
+     * Peripheral accesses the bus served -- every one the interpreter
+     * made and every one a translated block left to the helper. A JIT
+     * inlines the window once this passes EMU_JIT_PT_ARM_AT, after which
+     * it should stop growing: that is what says the inlined path ran.
+     */
+    {
+        uint32_t pt = 0u;
+
+        for (unsigned i = 0; i < sys->ncores; i++) {
+            pt += sys->core[i].bus->pt_accesses;
+        }
+        if (pt != 0u) {
+            emu_console_printf("  passthru %u accesses through the bus\n",
+                               (unsigned)pt);
+        }
+    }
+
+    /*
      * What the IR optimiser did. Reported because a pass that never fires
      * and a pass that does not pay are indistinguishable otherwise: these
      * counters had no reader at all until a fusion pass needed proving,

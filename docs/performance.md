@@ -393,6 +393,42 @@ they are kept — and not for a figure.
 
 ## Driver performance: the passthrough window
 
+**The IR backends inline it again**, on Thumb-2, for RV32. Measured on
+the F746, ticks per kernel, the JIT before and after, against each
+kernel's RAM control:
+
+| kernel | helper | inlined | speedup | vs its RAM control |
+|---|---|---|---|---|
+| `read` | 70,009 | **28,295** | 2.47x | 2.2x |
+| `write` | 42,092 | **8,938** | 4.71x | 1.41x |
+| `rmw` | 94,044 | **13,509** | 6.96x | 1.46x |
+| `poll` | 51,188 | **9,362** | 5.47x | 1.27x |
+
+38.73 to **13.15** cycles per guest instruction overall, and 724 of the
+run's roughly 800,000 peripheral accesses still reach the bus -- the ones
+made before arming and the refused ones the checks provoke. CoreMark,
+which drives no peripheral and never arms, measures 13.88-14.14 across
+three layouts on both sides of the change.
+
+The window is an identity map, so it is the guest-RAM fast path with
+the host address equal to the base: the same rotate-and-compare guard,
+then the access. A store also tests each read-only hole (PWR, the RCC
+clock tree, the flash controller) and leaves for the helper on a match,
+which faults. It is armed only once a guest has made `EMU_JIT_PT_ARM_AT`
+(64) passthrough accesses through the bus, and arming flushes once
+between slices -- always-on cost the hand-written translator a CoreMark
+image past its cache. The window itself is built from the bus by
+`emu_ir_pt_window`: the longest run of adjacent, identity-mapped,
+readable passthrough regions, at most four holes.
+
+`mmiobench` runs its correctness checks twice now, before the kernels
+and after: the first finishes before arming, on the helper alone, and
+only the second puts the holes to the inlined path. A board mutant that
+drops the hole tests fails exactly the two hole checks, eight times
+each, in the second pass only.
+
+What follows is the hand-written translator's measurement, on the F446.
+
 CoreMark and `bench` are deliberately I/O free, so neither says anything about
 the path a guest *driver* takes. `mmiobench` measures that one. Each kernel
 runs twice with identical machine code, once against the peripheral window and

@@ -79,6 +79,7 @@ bool t2_ld_reg_lsl(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t sh,
 bool t2_st_reg_lsl(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t sh,
                    uint32_t size);
 void t2_cmp_imm(uint32_t rn, uint16_t imm12);
+void t2_mov_imm(uint32_t rd, uint16_t imm12);
 bool t2_sp_adjust(bool sub, uint32_t bytes);
 bool t2_add_sp_imm(uint32_t rd, uint32_t off);
 bool t2_movs_imm8(uint32_t rd, uint32_t imm);

@@ -189,6 +189,23 @@ typedef struct emu_bus {
     uint32_t fault_count;
 #endif
 
+    /*
+     * Passthrough accesses that went through this bus -- every one the
+     * interpreter makes, and every one a translated block leaves to the
+     * helper. A JIT inlines the window only once a guest is seen to drive
+     * peripherals, because the inlined test costs code in every block that
+     * touches memory; this is what it is seen by. Saturates.
+     */
+    uint32_t pt_accesses;
+
+    /*
+     * Changes whenever the region table does (emu_bus_init, emu_bus_add),
+     * process-wide, so anything derived from the table can be cached
+     * against (bus, epoch) and never against a table that has since been
+     * rebuilt with the same number of entries.
+     */
+    uint32_t epoch;
+
 #if EMU_BUS_ANY_BE
     /*
      * Guest byte order, set once by the frontend at init. Not per region:

@@ -408,6 +408,12 @@ bool t2_st_reg_lsl(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t sh,
     return true;
 }
 
+/* MOV.W rd, #<modified immediate> -- no flags, 4 bytes for 0x40000000. */
+void t2_mov_imm(uint32_t rd, uint16_t imm12)
+{
+    t2_dp_imm(0xF040u, rd, 15u, imm12);
+}
+
 /* CMP.W rn, #<modified immediate>, imm12 as t2_expand_imm gave it. */
 void t2_cmp_imm(uint32_t rn, uint16_t imm12)
 {

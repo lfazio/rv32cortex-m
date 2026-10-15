@@ -313,6 +313,9 @@ static EMU_PER_CORE uint32_t g_nexits;
  */
 static EMU_PER_CORE emu_ir_fastmem_t g_fast;
 static EMU_PER_CORE bool g_has_fast;
+/* The peripheral window, when the block was translated armed. */
+static EMU_PER_CORE emu_ir_ptwin_t g_pt;
+static EMU_PER_CORE bool g_has_pt;
 
 /*
  * rd = rn + imm, for an access's address. ADDW/SUBW take any 12-bit
@@ -360,16 +363,18 @@ static void emit_addr(uint32_t rd, uint32_t rn, uint32_t imm)
  * scratch, holds them as before. The branch is the 16-bit form, because
  * the slow path is the next thing emitted.
  */
-static uint32_t emit_fast_guard(uint32_t addr_reg, uint32_t size, uint8_t **out)
+static uint32_t emit_window_guard(uint32_t base, uint32_t wsize,
+                                  uint32_t addr_reg, uint32_t size,
+                                  uint8_t **out)
 {
     const uint32_t k = (size == 4u) ? 2u : (size == 2u) ? 1u : 0u;
-    const uint32_t lim = g_fast.size >> k;
+    const uint32_t lim = wsize >> k;
     uint16_t enc;
 
-    if (t2_expand_imm(g_fast.base, &enc)) {
+    if (t2_expand_imm(base, &enc)) {
         t2_sub_imm(T2_R2, addr_reg, enc);
     } else {
-        t2_imm32(T2_R12, g_fast.base);
+        t2_imm32(T2_R12, base);
         t2_sub(T2_R2, addr_reg, T2_R12);
     }
     if (k != 0u) {
@@ -383,6 +388,57 @@ static uint32_t emit_fast_guard(uint32_t addr_reg, uint32_t size, uint8_t **out)
     }
     out[0] = t2_bcond_forward_n(0x2u); /* HS: unsigned >= */
     return k;
+}
+
+static uint32_t emit_fast_guard(uint32_t addr_reg, uint32_t size, uint8_t **out)
+{
+    return emit_window_guard(g_fast.base, g_fast.size, addr_reg, size, out);
+}
+
+/* r12 = the peripheral window's base, which is also its host address. */
+static void emit_pt_base(void)
+{
+    uint16_t enc;
+
+    if (t2_expand_imm(g_pt.base, &enc)) {
+        t2_mov_imm(T2_R12, enc);
+    } else {
+        t2_imm32(T2_R12, g_pt.base);
+    }
+}
+
+/*
+ * Branch to the slow path if a store's rotated offset (r2, shift k) lands
+ * in one of the window's read-only holes. Unsigned `r2 - off >> k <
+ * len >> k` per hole, in r0, which a store does not need until the slow
+ * path loads the cpu into it. Exact for an aligned access, which is all
+ * the guard lets through, because every hole is word aligned and a
+ * multiple of four long. Returns how many branches it wrote to `out`.
+ */
+static uint32_t emit_pt_holes(uint32_t k, uint8_t **out)
+{
+    uint32_t n = 0u;
+
+    for (uint32_t i = 0; i < g_pt.nholes; i++) {
+        const uint32_t off = g_pt.hole[i].off >> k;
+        const uint32_t len = g_pt.hole[i].len >> k;
+        uint16_t enc;
+
+        if (t2_expand_imm(off, &enc)) {
+            t2_sub_imm(T2_R0, T2_R2, enc);
+        } else {
+            t2_imm32(T2_R12, off);
+            t2_sub(T2_R0, T2_R2, T2_R12);
+        }
+        if (t2_expand_imm(len, &enc)) {
+            t2_cmp_imm(T2_R0, enc);
+        } else {
+            t2_imm32(T2_R12, len);
+            t2_cmp(T2_R0, T2_R12);
+        }
+        out[n++] = t2_bcond_forward_n(0x3u); /* LO: inside the hole */
+    }
+    return n;
 }
 
 static EMU_PER_CORE uint8_t *g_body;
@@ -1760,6 +1816,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
          * memory access, and each was a call into the region walk.
          */
         uint8_t *ldone = NULL;
+        uint8_t *ldone_pt = NULL;
         if (g_has_fast) {
             const uint32_t sz = EMU_IR_MEM_SIZE(in->aux);
             const bool sign = (in->aux & EMU_IR_MEM_SIGNED) != 0u;
@@ -1783,6 +1840,28 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                 ldone = t2_b_forward_n();
             }
             patch_branch_n(slow[0], emu_jit_here(), true);
+
+            /*
+             * Not guest RAM: the peripheral window, if the block is armed
+             * for it. The same guard and the same access, with the base
+             * as the host address, because the window is an identity
+             * map. Every span in it is readable, so a load tests no holes.
+             */
+            if (g_has_pt && sz <= 4u) {
+                uint8_t *pslow[1];
+                const uint32_t kp = emit_window_guard(g_pt.base, g_pt.size,
+                                                      T2_R1, sz, pslow);
+
+                emit_pt_base();
+                if (t2_ld_reg_lsl(rt, T2_R12, T2_R2, kp, sz, sign)) {
+                    if (pd < 0) {
+                        g_dead_store = EMU_IR_NO_TEMP;
+                        st_slot(T2_R0, in->dst);
+                    }
+                    ldone_pt = t2_b_forward_n();
+                }
+                patch_branch_n(pslow[0], emu_jit_here(), true);
+            }
         }
 
         /* The slow path. Flags are dead from here to the call. */
@@ -1814,6 +1893,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         if (pd >= 0) {
             ld_slot((uint32_t)pd, SCRATCH_VAL);
         }
+        patch_branch_n(ldone_pt, emu_jit_here(), false);
         if (ldone != NULL) {
             patch_branch_n(ldone, emu_jit_here(), false);
             /*
@@ -1840,32 +1920,55 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         }
 
         uint8_t *sdone = NULL;
+        uint8_t *sdone_pt = NULL;
         if (g_has_fast) {
             const uint32_t sz = EMU_IR_MEM_SIZE(in->aux);
-            uint8_t *slow[2];
-            uint32_t nslow = 1u;
-            const uint32_t k = emit_fast_guard(T2_R1, sz, slow);
+            uint8_t *resv = NULL;
+            uint8_t *slow[1];
 
             /*
              * A store to the reserved word must break an LR/SC
              * reservation, which an inlined one would not -- so decline
              * while one is outstanding rather than replicating the
              * address compare. That is only between an LR and its SC.
+             * First, so it covers both windows.
              */
             if (g_fast.store_guard_offset != EMU_IR_NO_GUARD) {
                 /* r0 is free until the slow path loads the cpu into it. */
                 t2_ldr_imm(T2_R0, T2_CPU, g_fast.store_guard_offset);
                 (void)t2_cmp_imm8(T2_R0, 0u);
-                slow[nslow++] = t2_bcond_forward_n(0x1u); /* NE */
+                resv = t2_bcond_forward_n(0x1u); /* NE */
             }
+
+            const uint32_t k = emit_fast_guard(T2_R1, sz, slow);
 
             t2_imm32(T2_R12, (uint32_t)(uintptr_t)g_fast.host);
             if (t2_st_reg_lsl(T2_R3, T2_R12, T2_R2, k, sz)) {
                 sdone = t2_b_forward_n();
             }
-            for (uint32_t i = 0; i < nslow; i++) {
-                patch_branch_n(slow[i], emu_jit_here(), true);
+            patch_branch_n(slow[0], emu_jit_here(), true);
+
+            /*
+             * The peripheral window: as for a load, and then each
+             * read-only hole, because a store into one has to fault --
+             * those spans are what stops a guest reconfiguring the PLL or
+             * erasing the flash the emulator runs from.
+             */
+            if (g_has_pt && sz <= 4u) {
+                uint8_t *pslow[1u + EMU_IR_PT_HOLES];
+                const uint32_t kp = emit_window_guard(g_pt.base, g_pt.size,
+                                                      T2_R1, sz, pslow);
+                const uint32_t np = 1u + emit_pt_holes(kp, &pslow[1]);
+
+                emit_pt_base();
+                if (t2_st_reg_lsl(T2_R3, T2_R12, T2_R2, kp, sz)) {
+                    sdone_pt = t2_b_forward_n();
+                }
+                for (uint32_t i = 0; i < np; i++) {
+                    patch_branch_n(pslow[i], emu_jit_here(), true);
+                }
             }
+            patch_branch_n(resv, emu_jit_here(), true);
         }
 
         /* The slow path. Flags are dead from here to the call. */
@@ -1876,6 +1979,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         t2_call((const void *)t->store);
         (void)t2_cmp_imm8(T2_R0, 0u); /* the accessor's verdict */
         note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
+        patch_branch_n(sdone_pt, emu_jit_here(), false);
         if (sdone != NULL) {
             patch_branch_n(sdone, emu_jit_here(), false);
             /* The paths merge; r0 is not the same on both. */
@@ -1978,6 +2082,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_exits_lost = false;
     g_has_fast = b->has_fast;
     g_fast = b->fast;
+    g_has_pt = b->has_fast && b->has_pt;
+    g_pt = b->pt;
     g_block_start = emu_jit_here();
     g_nexits_nf = 0u;
     g_body = NULL;

@@ -3180,6 +3180,15 @@ session, and every one of them recurred:
   commit, which reproduced the previous figures (15.70, 135.82) on the
   first run.
 
+- **A check that runs before the thing it checks has switched on passes
+  by not testing it.** `mmiobench` verifies the peripheral window's
+  read-only holes, and it did so first thing -- before the JIT had seen
+  enough passthrough accesses to inline the window. So against the
+  inlined path it would have passed with the hole tests deleted: a
+  board mutant doing exactly that fails only a *second* `verify()`, run
+  after the kernels, and passes the first. When a mechanism arms on
+  behaviour, run its checks after the behaviour.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must
