@@ -1162,6 +1162,8 @@ if(EMU_GUEST_ARCH_RV32)
     if(RV32_EXT_ZBC)
         string(APPEND _isa "_zbc")
     endif()
+    # Zkt is a promise about timing with no option; rv_config.h makes it.
+    string(APPEND _isa "_zkt")
     # Sscofpmf and Svinval follow S and Zihpm, which have no option:
     # rv_config.h turns them on.
     string(APPEND _isa "_sscofpmf_svinval")

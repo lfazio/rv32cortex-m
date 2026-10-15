@@ -1,6 +1,13 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * sscofpmf.S - what the Sail model does with Sscofpmf's registers.
+ * sscofpmf.S - what Sail and Spike do with Sscofpmf's registers.
+ *
+ * probe-march: rv32ima_zicsr
+ * probe-models: sail spike
+ * probe-spike-isa: rv32ima_zicsr_zicntr_zihpm_sscofpmf
+ * probe-regs: s1 s2 s3 s4 s5 s6 s7 s8 s9 s10 a2 a3 a4
+ *
+ *   scripts/run-probe.py tests/arch-test/probes/sscofpmf.S
  *
  * riscv-arch-test has no Sscofpmf suite, and the model counts no events,
  * so neither can say anything about an overflow. What it can answer is
@@ -32,7 +39,9 @@
  *   a3  mip.LCOFIP after S tried to clear it     0x00002000
  *   a4  the interrupt taken, STIP and LCOFIP     0x80000005
  *
- * The emulator gives the same eleven values; to see them:
+ * Spike (f8a060b) gives the same eleven -- once Zicntr and Zihpm are in
+ * its --isa, without which it makes mcounteren's counter bits read-only
+ * zero and S-mode's scountovf reads 0. So does the emulator; to see them:
  *
  *   build/host/emu-host --ram 0x800000 --max-insn 100000 --dump \
  *       sscofpmf.elf

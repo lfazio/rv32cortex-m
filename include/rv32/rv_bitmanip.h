@@ -63,14 +63,25 @@ static EMU_ALWAYS_INLINE uint32_t zbb_orcb(uint32_t v)
  * bit positions. clmulh takes the high half of the 64-bit product and
  * clmulr the middle 32 bits (63:31), which is why their shifts differ by
  * one.
+ *
+ * **Branch-free by construction, for Zkt**, which promises clmul and
+ * clmulh a latency independent of their operands. Each step masks its
+ * partial product with all-ones or zero from the bit of b, rather than
+ * testing the bit: the `if` this replaced compiled to CMOV on x86-64 and
+ * IT on the M7, so it never actually branched -- but that was the
+ * compilers' choice, and a timing claim should not rest on one. Always
+ * 32 steps either way.
  */
+static inline uint32_t zbc_bit_mask(uint32_t b, unsigned i)
+{
+    return 0u - ((b >> i) & 1u);
+}
+
 static inline uint32_t zbc_clmul(uint32_t a, uint32_t b)
 {
     uint32_t r = 0u;
     for (unsigned i = 0; i < 32u; i++) {
-        if ((b >> i) & 1u) {
-            r ^= a << i;
-        }
+        r ^= (a << i) & zbc_bit_mask(b, i);
     }
     return r;
 }
@@ -79,9 +90,7 @@ static inline uint32_t zbc_clmulh(uint32_t a, uint32_t b)
 {
     uint32_t r = 0u;
     for (unsigned i = 1; i < 32u; i++) {
-        if ((b >> i) & 1u) {
-            r ^= a >> (32u - i);
-        }
+        r ^= (a >> (32u - i)) & zbc_bit_mask(b, i);
     }
     return r;
 }
@@ -90,9 +99,7 @@ static inline uint32_t zbc_clmulr(uint32_t a, uint32_t b)
 {
     uint32_t r = 0u;
     for (unsigned i = 0; i < 32u; i++) {
-        if ((b >> i) & 1u) {
-            r ^= a >> (31u - i);
-        }
+        r ^= (a >> (31u - i)) & zbc_bit_mask(b, i);
     }
     return r;
 }

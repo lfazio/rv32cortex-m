@@ -442,7 +442,7 @@
     },
     "Zksed": { "supported": false },
     "Zksh": { "supported": false },
-    "Zkt": { "supported": false },
+    "Zkt": { "supported": true },
     "Zhinx": { "supported": false },
     "Zhinxmin": { "supported": false },
     "Ssccptr": { "supported": false },

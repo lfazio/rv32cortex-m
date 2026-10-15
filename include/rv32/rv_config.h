@@ -101,6 +101,18 @@
 #define RV_EXT_ZICOND 1
 #endif
 /*
+ * Zkt: no instructions, a promise -- that the integer arithmetic, the
+ * multiplies (not divide), the rotates and logic Zbb shares with Zbkb,
+ * and clmul/clmulh execute in time independent of their operand values.
+ * Each of them is one host instruction or a fixed sequence on both JIT
+ * backends and a branch-free C expression in the interpreter; clmul is a
+ * fixed 32 steps with no test on b (rv_bitmanip.h). Read only by the ISA
+ * string, which is where a promise lives. See docs/frontend/rv32.md.
+ */
+#ifndef RV_EXT_ZKT
+#define RV_EXT_ZKT 1
+#endif
+/*
  * Zalasr: load-acquire and store-release (lb/lh/lw.aq[rl],
  * sb/sh/sw.[aq]rl). One hart and no store buffer, so the ordering they
  * ask for is the ordering there already is; what they add over a plain

@@ -77,6 +77,8 @@ What belongs here is only what the recipes do not say:
 ./scripts/build-matrix.sh --test # every configuration, and its ctest
 ./scripts/report-figures.sh     # figures, with the cache vars that set them
 ./scripts/check-doc-flags.sh    # every -D flag in the docs exists
+./scripts/run-probe.py PROBE.S  # emulator vs Sail and Spike, for what no
+                                # suite covers; scripts/fetch-spike.sh first
 ./scripts/gdb-check.sh BUILD    # a real gdb against each frontend's stub
 ```
 
@@ -3064,10 +3066,29 @@ session, and every one of them recurred:
   the model's instruction trace: six agree, including the one that was
   in doubt (below M with TW set, `wrs.nto` is illegal *only* with a
   live reservation), and the seventh is a permitted difference that no
-  self-checking test can hold. A probe is not a test -- nothing runs it
-  -- but it turns "implemented as I read the specification" into
-  "implemented as the reference model behaves", with the command to
-  check.
+  self-checking test can hold. It turns "implemented as I read the
+  specification" into "implemented as the reference model behaves" --
+  and it is a test now: `ctest -L probe` runs every probe against Sail
+  and Spike where they are installed, and skips rather than passes
+  where they are not.
+
+- **A second reference model is a second reading, and its
+  configuration is part of its answer.** Spike (BSD-3; built by
+  `scripts/fetch-spike.sh`, never vendored) was brought in for Zalasr,
+  which no Sail release has. Its first three answers: Zalasr agreed on
+  12 of 13 and the 13th is a choice the A extension leaves open (an SC
+  after the hart's own store to the reserved word); on Zawrs it
+  *disagreed with Sail*, trapping `wrs.nto` under TW with nothing
+  reserved, as UDB's formal description also does -- a bound of zero is
+  a legal reading; and on Sscofpmf it said S-mode's `scountovf` was 0
+  where Sail and the emulator said 0x80. That last one was the
+  invocation: Spike makes `mcounteren`'s counter bits writable only
+  when Zicntr and Zihpm are in `--isa`, so its answer was about a
+  machine with no counters. **When a model disagrees, read its CSR
+  masks before its semantics**, exactly as this file says of
+  `sail.json` -- and record a permitted difference in the probe
+  (`probe-permitted:`), where the runner will fail anything that is
+  not on the list.
 
 - **A longer quantum is a coarser clock, and the workloads chosen to
   measure that could not see it.** The host's guest clock moves once

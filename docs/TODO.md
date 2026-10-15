@@ -260,7 +260,13 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       ways, and a fault inside `itee eq` returning with the else half
       still skipped; each of the two mechanisms was reverted alone and
       the test named it. Still declined: an IT block ending in a
-      computed branch (`LDR pc`, `POP {pc}`, `BX`).
+      computed branch (`LDR pc`, `POP {pc}`, `BX`) -- **measured and
+      left**: on the x86-64 JIT with `-DEMU_PAIR_STATS=ON` it is
+      `declined IT:19` on Dhrystone, all cold, 1,033 instructions of
+      9.06M, and nothing at all on CoreMark or crypto. The histogram's
+      answer is "none"; lowering them would be a select on the target
+      and a predicated pop, and is worth doing when a guest shows one
+      hot.
 - [x] **G4MH's translator had no ADDI.** Opcode 0x30 fell to the
       `default` and declined, and `LD.HU disp16` was declined on purpose
       and never lowered: together 94% of what a G4MH DOOM run interpreted,
@@ -1522,13 +1528,19 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
             fails when none of them did. `--extensions I` is 39 with
             496 on disk.
 
-- [ ] **rv32: Zalasr and Zawrs have no second opinion.** No arch-test
-      suite for either, and no Sail model for Zalasr at 0.13.1.
-      `isatest` covers both on both backends, with every check
-      confirmed by a mutant, and the Linux test init executes both
-      from user mode -- which makes three consistent readings of the
-      specification and not a checked one. Revisit when the Sail pin
-      moves: Zalasr is in later models.
+- [x] **rv32: Zalasr and Zawrs have a second opinion: Spike.** Sail
+      still has no Zalasr -- not 0.15, not the 2026-10-12 nightly, so
+      "it is in later models" was wrong -- and Spike (BSD-3) has both.
+      `scripts/fetch-spike.sh` builds it at a pinned commit into
+      `build/spike`; `scripts/run-probe.py` runs a probe on the
+      emulator, Sail and Spike and compares registers; `ctest -L probe`
+      runs every probe on both backends and skips when no model is
+      installed. Zalasr: 12 of 13 agree, and the 13th -- an SC after
+      the hart's own store-release -- is a choice the A extension
+      leaves open. Zawrs: Spike traps `wrs.nto` under TW with nothing
+      reserved, as UDB's formal description does, where Sail and this
+      core complete; also allowed. Sscofpmf: all 11 agree
+      ([validation.md](validation.md#probes-and-the-reference-models)).
 
 - [x] **rv32: `-DRV32_EXT_PMP=OFF` is a configuration the matrix
       checks** (`host-nopmp`). `isatest` and `sv32bench` hung there:
@@ -1562,8 +1574,11 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       two things now ([frontend/rv32.md](frontend/rv32.md#profiles)):
       **Zic64b** (a 64-byte cache block; `RV_CACHE_BLOCK_SIZE` is 32 to
       match the M7's line, and the device tree and both suite configs
-      would follow it) and **Zkt**, which is a claim about timing nobody
-      has examined -- the interpreter's `clmul` loops over set bits.
+      would follow it). **Zkt is done**: every instruction it covers was
+      checked on every path for a test on its operand values, and the
+      only one was `clmul`'s per-bit `if` -- compiled to CMOV and IT,
+      so it never branched, but by the compilers' choice; it masks
+      instead now ([frontend/rv32.md](frontend/rv32.md#profiles)).
       **Zfhmin and Svinval are done**: 14 more architecture tests, 510
       and 523 (`--misaligned`) on both backends, and `isatest` holding
       FCVT.D.H and FCVT.H.D, which no suite test covers. FP loads and

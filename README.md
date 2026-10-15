@@ -429,6 +429,8 @@ Figures and what they have already disproved are in
 ./scripts/run-arch-test.sh      # official riscv-arch-test, 510/510
 ./scripts/run-arch-test.sh --misaligned  # the default build: 523/523
 ./scripts/run-riscv-tests.sh    # Berkeley suite, 77/77
+./scripts/fetch-spike.sh && ./scripts/run-probe.py tests/arch-test/probes/zalasr.S
+                                # a probe against Sail and Spike, where no suite exists
 ./scripts/build-matrix.sh --test # every configuration that should build, and its ctest
 ./scripts/report-figures.sh     # every quoted figure, regenerated
 ./scripts/check-doc-flags.sh    # every build flag named in the docs exists

@@ -232,14 +232,13 @@ description that still says "raises". What it changes:
 then run against the OFF build and all thirteen failed, which is what
 says they test the property and not merely run.
 
-Three extensions the core implements have **no suite at all**: Zalasr,
-Zawrs and Sscofpmf. Zalasr is not in Sail 0.13.1 either, so there is no
-golden model for it; it is covered by `tests/guest/isatest.c` alone.
-The other two are in the model, and a probe asks it directly --
-`tests/arch-test/probes/zawrs.S` seven questions, `sscofpmf.S` eleven
--- see [frontend/rv32.md](frontend/rv32.md). And three of the
-defects the 99 led to are held by no architecture test either, only by
-`isatest`: the suite is a floor.
+Four extensions the core implements have **no suite at all**: Zalasr,
+Zawrs, Sscofpmf and Zkt. The first three are held by probes against
+the reference models -- [below](#probes-and-the-reference-models) --
+and Zkt, a promise about timing, by an examination of every path its
+instructions take ([frontend/rv32.md](frontend/rv32.md#profiles)). And
+three of the defects the 99 led to are held by no architecture test
+either, only by `isatest`: the suite is a floor.
 
 The run is of the suites named and nothing else. It used not to be:
 `run_tests.py` executes every ELF under the directory it is given, and
@@ -250,6 +249,52 @@ the history of a directory. The script now hands it a directory of
 links to the named suites' ELFs, prints how many the work directory
 holds besides, warns about a named suite that built nothing, and fails
 if none of them built anything.
+
+## Probes and the reference models
+
+A probe is a short bare-metal program in `tests/arch-test/probes/` that
+asks a question no suite asks, and leaves the answers in registers.
+`scripts/run-probe.py` builds it, runs it on the emulator and on every
+reference model it names that is installed, and compares the registers
+it lists:
+
+```sh
+./scripts/fetch-spike.sh                              # once: build/spike
+./scripts/run-probe.py tests/arch-test/probes/zalasr.S
+ctest -L probe                                        # all of them, both backends
+```
+
+| probe | asks | Sail | Spike |
+|---|---|---|---|
+| `zawrs.S` | WRS.NTO and WRS.STO in M and below M under TW, with and without a reservation | agrees | differs on one case, permitted |
+| `zalasr.S` | every load-acquire and store-release, sign extension, misaligned, unmapped, the eight reserved encodings, an SC after a store-release | has no Zalasr | differs on one register, permitted |
+| `sscofpmf.S` | which bits of `mhpmevent3h` exist, `mideleg`, `sie`, `scountovf` and `sip` from S, STI against LCOFI | agrees | agrees |
+
+**Two models, because one reading is not a check.** Sail is the suite's
+golden model and does not have everything this core implements: Zalasr
+is in neither 0.13.1, 0.15 nor the 2026-10-12 nightly. Spike
+(riscv-isa-sim, BSD-3-Clause) has it, and where both have an extension
+they can disagree with each other -- on Zawrs they do. Neither is in the
+tree: Sail comes from `run-arch-test.sh`, Spike from
+`scripts/fetch-spike.sh` at a pinned commit, both into `build/`. This
+project takes nothing from GPL code, even as an oracle; Spike is not
+GPL.
+
+**A difference the specification allows is declared, not hidden.** Each
+probe lists them (`probe-permitted:`) with the reason, and the runner
+prints them and passes. Both so far are cases the specification
+leaves to the implementation: whether an SC fails after the hart's own
+store to the reserved word, and how long a `wrs.nto` below M may take
+before TW makes it illegal. Anything else that differs fails.
+
+**A model's configuration is part of its answer**, as this page already
+says of `sail.json`. Spike makes `mcounteren`'s counter bits writable
+only when Zicntr and Zihpm are in its `--isa`; without them S-mode's
+`scountovf` read 0 there and 0x80 here, which looked like a defect in
+either until Spike's CSR mask was read. Each probe names Spike's ISA.
+
+The ctest entries skip -- not pass -- when no model the probe names is
+installed: a probe with nothing to compare against has said nothing.
 
 ## riscv-tests — 77/77
 

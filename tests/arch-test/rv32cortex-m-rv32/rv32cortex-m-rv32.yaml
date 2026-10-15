@@ -61,6 +61,11 @@ implemented_extensions:
   # *claim*: an implementation is absent exactly when it traps on them.
   - { name: Zihintntl, version: "= 1.0.0" }
   - { name: Zihintpause, version: "= 2.0.0" }
+  # Data-independent execution latency for the integer arithmetic,
+  # multiplies, rotates, logic and clmul/clmulh. No instructions and no
+  # suite: what it promises is a property of how each is lowered, and
+  # docs/frontend/rv32.md has the examination.
+  - { name: Zkt, version: "= 1.0.0" }
   # mhpmcounter3-31, their events and their shadows. HPM_COUNTER_EN and
   # HPM_EVENTS below say what they count.
   - { name: Zihpm, version: "= 2.0.0" }

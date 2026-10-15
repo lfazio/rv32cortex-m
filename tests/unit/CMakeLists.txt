@@ -289,6 +289,43 @@ set_tests_properties(unit PROPERTIES LABELS fast)
 # emulator that decodes VLE, and -- with no instruction cap -- ran until
 # something killed it. The image existing and the emulator being able to
 # run it are two different questions.
+#
+# The probes (tests/arch-test/probes): one bare-metal program each, run on
+# the emulator and on whichever reference models it names and are
+# installed -- Sail from scripts/run-arch-test.sh, Spike from
+# scripts/fetch-spike.sh -- with the registers compared by
+# scripts/run-probe.py. They hold what the architecture suite has no
+# directory for. **Skipped, not passed, when no model is present**: a
+# probe with nothing to compare against has said nothing, and a green
+# tick would read as if it had.
+#
+# Not without PMP: a probe that enters S-mode programs a PMP entry first,
+# because both models deny S-mode everything without one.
+if(EMU_GUEST_ARCH_RV32 AND RV32_EXT_PMP AND TARGET emu-host)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_FOUND)
+        file(GLOB _probes "${CMAKE_SOURCE_DIR}/tests/arch-test/probes/*.S")
+        foreach(_p IN LISTS _probes)
+            get_filename_component(_n "${_p}" NAME_WE)
+            add_test(NAME probe-${_n}
+                     COMMAND ${Python3_EXECUTABLE}
+                             "${CMAKE_SOURCE_DIR}/scripts/run-probe.py"
+                             --emu $<TARGET_FILE:emu-host> "${_p}")
+            set_tests_properties(probe-${_n} PROPERTIES
+                LABELS "fast;probe" SKIP_RETURN_CODE 77)
+            if(EMU_JIT)
+                add_test(NAME probe-${_n}-jit
+                         COMMAND ${Python3_EXECUTABLE}
+                                 "${CMAKE_SOURCE_DIR}/scripts/run-probe.py"
+                                 --emu $<TARGET_FILE:emu-host> --emu-arg=--jit
+                                 "${_p}")
+                set_tests_properties(probe-${_n}-jit PROPERTIES
+                    LABELS "fast;probe" SKIP_RETURN_CODE 77)
+            endif()
+        endforeach()
+    endif()
+endif()
+
 if(TARGET guest-isatest AND EMU_GUEST_ARCH_RV32)
     #
     # The PASS line, not just the exit status. The status is the failure

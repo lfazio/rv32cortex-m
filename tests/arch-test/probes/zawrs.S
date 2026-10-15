@@ -1,9 +1,18 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * zawrs.S - what the Sail model does with WRS.NTO and WRS.STO.
+ * zawrs.S - what Sail and Spike do with WRS.NTO and WRS.STO.
+ *
+ * probe-march: rv32ima_zicsr_zawrs
+ * probe-models: sail spike
+ * probe-spike-isa: rv32ima_zicsr_zawrs
+ * probe-regs: s1 s2 s3 s6 s7
+ * probe-emu-cflags: -DSKIP_PARKING_CASE
+ * probe-permitted: spike s6 s7 -- Spike traps case 5; see below
+ *
+ *   scripts/run-probe.py tests/arch-test/probes/zawrs.S
  *
  * riscv-arch-test has no Zawrs suite, so there is nothing that compares
- * this emulator with the golden model on it. This asks the model
+ * this emulator with the golden model on it. This asks the models
  * directly, seven cases, and the trace is the answer:
  *
  *   riscv64-unknown-elf-gcc -march=rv32ima_zicsr_zawrs -mabi=ilp32 \
@@ -32,6 +41,17 @@
  * interrupt, as WFI does, where the model carries on; the specification
  * permits both ("may end the stall for any reason"), and that case
  * cannot be put in a self-checking test without one of the two hanging.
+ *
+ * **Spike disagrees with both on the fifth**: below M with TW set it
+ * raises illegal instruction for wrs.nto even with nothing reserved, so
+ * s6 = 3 and s7 = 0x57. UDB's formal description does the same -- its
+ * operation() traps on TW below M before it looks at the reservation --
+ * while the prose says the trap is for a wrs.nto that "does not complete
+ * within an implementation-specific bounded time limit", and with no
+ * reservation there is nothing to wait for. A bound of zero makes
+ * Spike's reading legal too, so it is a permitted difference: two
+ * models, two readings, and the emulator on Sail's side, trapping only
+ * when it would wait. Spike at f8a060b, from scripts/fetch-spike.sh.
  *
  * To see the six on the emulator, leave the fourth out and dump:
  *
