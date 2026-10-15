@@ -123,7 +123,7 @@ The reference frontend: three external models disagree with it
 | `RV32_INTERP_IN_RAM` | OFF | measured *slower* on the F446 |
 | `RV32_LAZY_IRQ` | ON | |
 | `EMU_JIT_BYTE_STATS` | OFF | measurement scaffolding: emitted bytes per IR operation, summed over every translation and printed after the run -- on a board too, because the code cache is the guest's RAM |
-| `EMU_PAIR_STATS` | OFF | measurement scaffolding: adjacent executed pairs, any frontend. On RV32 it also prints **executed instructions by extension** -- interpreted ones, so run it under `--jit` to count exactly what the translator declines |
+| `EMU_PAIR_STATS` | OFF | measurement scaffolding: executed instructions **by kind** and adjacent executed pairs, any frontend; on RV32 also by extension. It counts what the interpreter executes, so under `--jit` it is exactly what the translator declines -- which is the question that picks what to lower next |
 
 ### G4MH — `EMU_GUEST_ARCH_G4MH`
 

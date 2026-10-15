@@ -223,6 +223,14 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       `performance.md` are after the fix. The second half of
       `performance.md` and both `stm32f446/` pages are not, and are
       marked as history.
+- [x] **G4MH's translator had no ADDI.** Opcode 0x30 fell to the
+      `default` and declined, and `LD.HU disp16` was declined on purpose
+      and never lowered: together 94% of what a G4MH DOOM run interpreted,
+      in one rendering loop. Both lowered; interpreted 36.8M → 2.54M of
+      300M, DOOM 3.35x faster on the x86-64 JIT
+      ([frontend/g4mh.md](frontend/g4mh.md#what-the-translator-declined)).
+      Found with `-DEMU_PAIR_STATS=ON`, once it counted every kind rather
+      than adjacent pairs and stopped naming ZXB SATSUBR.
 - [x] **G4MH had no guest-RAM fast path in the JIT**: every load and
       store was a helper call. It has the window the others have now,
       under the MPU off and with the reservation rules in

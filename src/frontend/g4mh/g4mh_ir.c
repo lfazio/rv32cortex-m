@@ -491,6 +491,29 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
     }
 
     /*
+     * ADDI imm16, reg1, reg2: ADD with a sign-extended immediate and the
+     * arithmetic flags.
+     *
+     * **It had no lowering at all**, so every block that met one ended
+     * there and the ADDI itself was interpreted -- 18.7M times in a G4MH
+     * DOOM run, half of everything that run interpreted. CC-RH emits it
+     * for arithmetic and, written to r0, as a compare against a constant:
+     * `addi -800, r8, r0` is `r8 < 800`. That form is still an ADDI --
+     * nothing else lives in reg2 == 0 of this slot, and the interpreter
+     * gives it no special case -- and the write to r0 is discarded by the
+     * target's zero-register rule like any other.
+     */
+    if (op == 0x30u) {
+        const uint16_t x = emu_ir_get(b, r1);
+        const uint16_t y = emu_ir_const(b, (uint32_t)emu_sext(w1, 16));
+        const uint16_t s = emu_ir_alu(b, EMU_IR_ADD, x, y);
+
+        emu_ir_put(b, r2, s);
+        (void)emu_ir_emit(b, EMU_IR_SETF, EMU_IR_FS_ADD, x, y, 0u, F_ARITH);
+        return true;
+    }
+
+    /*
      * Address formation. Both share their slot with a 48-bit encoding
      * selected by reg2 == 0 -- MOVEA with MOV imm32, MOVHI with DISPOSE
      * -- and this frontend has already been caught once by an ISA that
@@ -564,8 +587,23 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
          * trapped where the interpreter -- which tests bit 0 first --
          * ran for 900 million instructions without complaint. Same
          * defect as the branch below, one operand apart.
+         *
+         * **And it is lowered, here, rather than declined**: the test
+         * above is what keeps it out of the sub-opcode tests below, and
+         * declining is a block ending at every one. CC-RH emits it for
+         * every unsigned halfword load with a displacement -- a G4MH
+         * DOOM run interpreted 16.0M of them, 44% of everything it
+         * interpreted. The address is the interpreter's: reg1 plus the
+         * displacement with its marker bit cleared, sign-extended.
          */
-        return false;
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          pc, 0u);
+        emu_ir_put(b, r2,
+                   emu_ir_emit(b, EMU_IR_LOAD, EMU_IR_MEM_AUX(2u, 0u),
+                               emu_ir_get(b, r1), EMU_IR_NO_TEMP,
+                               (uint32_t)emu_sext((uint32_t)w1 & 0xFFFEu, 16),
+                               0u));
+        return true;
     }
 
     if (op == 0x3Fu && r2 == 0u && ((uint32_t)w1 & 1u) != 0u) {

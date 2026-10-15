@@ -36,6 +36,49 @@ static uint64_t g_pairs;
 
 static const emu_pair_ops_t *g_ops;
 
+/*
+ * Every instruction by kind, not only those executed next to another.
+ *
+ * Under a JIT what the interpreter executes is what the translator
+ * declined, and those come mostly one at a time between blocks -- so a
+ * G4MH DOOM run interpreted 36.8M instructions and made 165,829 adjacent
+ * pairs. The pair table answers "what follows what"; this one answers
+ * "which instruction", which is the question that picks what to lower
+ * next. A small open-addressed table: the kinds a guest uses number in
+ * the hundreds.
+ */
+typedef struct {
+    uint32_t k;
+    bool used;
+    uint64_t count;
+} single_t;
+
+static single_t g_single[4096];
+static unsigned g_single_used;
+static uint64_t g_single_lost;
+
+static void note_single(uint32_t k)
+{
+    uint32_t h = (k * 2654435761u) >> 20; /* 12 bits */
+
+    for (unsigned probe = 0; probe < 4096u; probe++) {
+        single_t *const s = &g_single[(h + probe) & 4095u];
+
+        if (s->used && s->k == k) {
+            s->count++;
+            return;
+        }
+        if (!s->used) {
+            s->used = true;
+            s->k = k;
+            s->count = 1u;
+            g_single_used++;
+            return;
+        }
+    }
+    g_single_lost++; /* counted, so a full table is visible */
+}
+
 static uint64_t g_prev_insn;
 static uint32_t g_prev_next_pc;
 static bool g_have_prev;
@@ -45,6 +88,7 @@ void emu_pair_note(const emu_pair_ops_t *ops, uint32_t pc, uint64_t insn,
 {
     g_ops = ops;
     g_total++;
+    note_single(ops->kind(insn));
 
     if (g_have_prev && g_prev_next_pc == pc) {
         const uint32_t prd = ops->rd(g_prev_insn);
@@ -91,6 +135,14 @@ void emu_pair_note(const emu_pair_ops_t *ops, uint32_t pc, uint64_t insn,
 
 /* ------------------------------------------------------------------ */
 
+static int by_single(const void *a, const void *b)
+{
+    const single_t *x = (const single_t *)a;
+    const single_t *y = (const single_t *)b;
+
+    return (y->count > x->count) - (y->count < x->count);
+}
+
 static int by_count(const void *a, const void *b)
 {
     const entry_t *x = (const entry_t *)a;
@@ -101,6 +153,24 @@ static int by_count(const void *a, const void *b)
 
 void emu_pair_report(unsigned top_n)
 {
+    if (g_ops != NULL && g_total != 0u) {
+        qsort(g_single, sizeof(g_single) / sizeof(g_single[0]),
+              sizeof(g_single[0]), by_single);
+        fprintf(stderr,
+                "\n# executed %llu instructions, %u kinds%s -- by kind:\n",
+                (unsigned long long)g_total, g_single_used,
+                (g_single_lost != 0u) ? " (table full: some not counted)"
+                                      : "");
+        for (unsigned i = 0; i < top_n && g_single[i].used; i++) {
+            char nm[24];
+
+            g_ops->kind_name(g_single[i].k, nm, sizeof(nm));
+            fprintf(stderr, "#   %-12s %12llu %6.2f%%\n", nm,
+                    (unsigned long long)g_single[i].count,
+                    100.0 * (double)g_single[i].count / (double)g_total);
+        }
+    }
+
     if (g_ops == NULL || g_pairs == 0u) {
         fprintf(stderr, "\n# no instruction pairs recorded\n");
         return;

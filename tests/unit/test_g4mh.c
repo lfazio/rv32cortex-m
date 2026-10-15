@@ -2391,6 +2391,81 @@ static void test_bit_manipulation_backends(void)
 }
 
 /*
+ * ADDI and LD.HU disp16, both backends, and the JIT translating them.
+ *
+ * Neither had a lowering: ADDI fell to the translator's default and the
+ * load was declined on purpose, so each ended its block and was
+ * interpreted -- 94% of what a G4MH DOOM run interpreted. The awkward
+ * inputs are the ones each is about: a negative imm16 (ADDI sign-extends),
+ * the r0 destination CC-RH uses as a compare (flags, no write), and a
+ * halfword with bit 15 set at a negative displacement (LD.HU zero-extends
+ * and its displacement sign-extends, with the marker bit cleared).
+ */
+static void addi_ldhu_setup(void)
+{
+    g_ram[0x2FEu] = 0xEFu; /* 0xBEEF at RAM + 0x2FE, two below r11 */
+    g_ram[0x2FFu] = 0xBEu;
+}
+
+static void test_addi_and_ldhu_disp16(void)
+{
+    const uint16_t prog[] = {
+        W0(OP_MOVHI, 0, 11),
+        0x8000u,
+        W0(OP_MOVEA, 11, 11),
+        0x0300u,                /* r11 = RAM + 0x300                 */
+        F2(OP_MOVI, 5, 8),      /* r8 = 5                            */
+        W0(0x30u, 8, 12),
+        0xFCE0u,                /* addi -800, r8, r12                */
+        W0(0x30u, 8, 13),
+        0x7FFFu,                /* addi 0x7fff, r8, r13              */
+        W0(0x3Fu, 11, 14),
+        0xFFFFu,                /* ld.hu -2[r11], r14 (bit 0: marker) */
+        W0(0x30u, 8, 0),
+        0xFCE0u,                /* addi -800, r8, r0: flags only     */
+        0x07E0u,
+        SUB_HALT,
+    };
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        emu_run_reason_t why;
+        uint32_t retired = 0;
+#if EMU_HAVE_JIT
+        emu_jit_stats_t before, after;
+
+        emu_jit_get_stats(&before);
+#endif
+        g_force_backend = (pass == 0u) ? &g4mh_backend_interp : NULL;
+        g_pre_run = addi_ldhu_setup;
+        if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                          &retired)) {
+            CHECK(false);
+            g_force_backend = NULL;
+            g_pre_run = NULL;
+            return;
+        }
+        CHECK_EQ(reg(12), 0xFFFFFCE5u); /* 5 - 800                */
+        CHECK_EQ(reg(13), 0x00008004u); /* 5 + 0x7fff             */
+        CHECK_EQ(reg(14), 0x0000BEEFu); /* zero-extended           */
+        CHECK_EQ(reg(0), 0u);
+        CHECK((psw() & G4MH_PSW_S) != 0u); /* from the r0 compare  */
+        CHECK((psw() & G4MH_PSW_Z) == 0u);
+        CHECK((psw() & G4MH_PSW_CY) == 0u);
+        CHECK((psw() & G4MH_PSW_OV) == 0u);
+#if EMU_HAVE_JIT
+        emu_jit_get_stats(&after);
+        if (pass == 1u) {
+            /* Translated: the only fallback is the HALT. */
+            CHECK(after.translations > before.translations);
+            CHECK_EQ(after.interp_fallbacks - before.interp_fallbacks, 1u);
+        }
+#endif
+    }
+    g_force_backend = NULL;
+    g_pre_run = NULL;
+}
+
+/*
  * ops->step is one instruction under the JIT as well.
  *
  * The contract says "exactly one instruction", and every frontend's step
@@ -7125,6 +7200,7 @@ void test_g4mh(void)
     test_mc_caxi();
     test_mc_reservation_succeeds();
     test_own_store_breaks_reservation();
+    test_addi_and_ldhu_disp16();
 #if G4MH_EXT_FPU
     test_fp_arith();
     test_fp_div_sqrt();

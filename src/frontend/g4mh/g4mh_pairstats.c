@@ -61,8 +61,16 @@
  * represent the thing being looked for reads exactly like a histogram of
  * something that is not there.
  */
-#define KIND_FMT4 (1u << 12) /* keyed on op4, not op6 */
-#define KIND_EXT (1u << 13) /* the 0x3F escape       */
+#define KIND_FMT4 (1u << 20) /* keyed on op4, not op6 */
+#define KIND_EXT (1u << 21) /* the 0x3F escape       */
+/*
+ * reg2 == 0 in a format I/II slot that spends it as an opcode extension:
+ * ZXB/SXB/ZXH/SXH share 0x04-0x07 with the saturating ops and MULH,
+ * SWITCH and FETRAP share 0x02 with DIVH, CALLT sits in MOV imm5 and JR
+ * disp32 in MULH imm5. Without this bit a histogram named every ZXB a
+ * SATSUBR -- this frontend's reg2 == 0 lesson, in its instrument.
+ */
+#define KIND_R2Z (1u << 22)
 
 /* Format III/IV occupy op4 0x06..0x0B, i.e. op6 0x18..0x2F. */
 static bool is_fmt34(uint32_t op6)
@@ -95,14 +103,22 @@ static uint32_t g4mh_kind(uint64_t insn)
     if (op == 0x3Fu) {
         const uint32_t w1 = (uint32_t)(insn >> 16) & 0xFFFFu;
 
-        return KIND_EXT | op | ((w1 & 0x1Fu) << 6);
+        /* All eleven sub-opcode bits: five named several instructions. */
+        return KIND_EXT | op | ((w1 & 0x7FFu) << 6);
+    }
+    if (g4mh_reg2(w0) == 0u &&
+        (op == 0x02u || (op >= 0x04u && op <= 0x07u) || op == 0x10u ||
+         op == 0x17u)) {
+        /* 0x02 also needs reg1: zero there is FETRAP, not SWITCH. */
+        return KIND_R2Z | op | ((op == 0x02u && g4mh_reg1(w0) == 0u) << 6);
     }
     return op;
 }
 
 static uint32_t kind_op6(uint32_t k)
 {
-    return ((k & (KIND_FMT4 | KIND_EXT)) != 0u) ? 0xFFu : (k & 0x3Fu);
+    return ((k & (KIND_FMT4 | KIND_EXT | KIND_R2Z)) != 0u) ? 0xFFu
+                                                           : (k & 0x3Fu);
 }
 
 static uint32_t kind_op4(uint32_t k)
@@ -249,7 +265,22 @@ static void g4mh_kind_name(uint32_t k, char *buf, unsigned n)
         }
     }
     if ((k & KIND_EXT) != 0u) {
-        snprintf(buf, n, "ext%02x", (unsigned)((k >> 6) & 0x1Fu));
+        snprintf(buf, n, "ext%03x", (unsigned)((k >> 6) & 0x7FFu));
+        return;
+    }
+    if ((k & KIND_R2Z) != 0u) {
+        static const char *const r2z[8] = {
+            "?", "?", "switch", "?", "zxb", "sxb", "zxh", "sxh",
+        };
+        const uint32_t op = k & 0x3Fu;
+
+        if (op == 0x02u && ((k >> 6) & 1u) != 0u) {
+            snprintf(buf, n, "fetrap");
+        } else if (op < 8u) {
+            snprintf(buf, n, "%s", r2z[op]);
+        } else {
+            snprintf(buf, n, "%s", (op == 0x10u) ? "callt" : "jr32");
+        }
         return;
     }
 

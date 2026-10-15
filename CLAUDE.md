@@ -3202,6 +3202,20 @@ session, and every one of them recurred:
   **When a default changes, measure the configurations it now makes
   common.**
 
+- **The commonest instruction in compiled G4MH code had no lowering, and
+  the instrument that should have said so named it something else.**
+  ADDI fell to the translator's `default`; `LD.HU disp16` was declined
+  deliberately and never lowered. Between them 94% of what a G4MH DOOM
+  run interpreted, and the run went 3.35x faster once both were lowered.
+  The pair histogram had been built for exactly this and could not see
+  it, twice over: its kind ignored `reg2 == 0`, so ZXB read as SATSUBR,
+  and it counted *adjacent pairs* -- under a JIT the interpreted
+  instructions come one at a time between blocks, so 36.8M of them made
+  165,829 pairs. **Count single instructions to ask which one; count
+  pairs only to ask what follows what.** And `declined ... (cached N)`
+  with N in the tens of millions means one loop head declining forever,
+  which a trace then names in one run.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must

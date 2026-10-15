@@ -225,6 +225,34 @@ each: 3.80 s to 3.55 s by median, about 7%. A helper call is cheap on a
 host; on the F746 it is what the Thumb-2 window was built to avoid, and
 the board's G4MH guest passes on both backends with it.
 
+### What the translator declined
+
+A G4MH DOOM run under the JIT interpreted **36.8M of 300M** instructions.
+`-DEMU_PAIR_STATS=ON` said why once it could: 94% of them were two
+instructions, ADDI and `LD.HU disp16`, in a 13-instruction rendering
+loop that the two declines split into three blocks. **ADDI had no
+lowering at all** -- opcode 0x30 fell to the translator's `default` --
+and `LD.HU disp16` was declined deliberately, so that its displacement
+could not be read as a sub-opcode, and then never lowered. Both are now:
+2.54M interpreted, and the run **3.59 s → 1.07 s**, 3.35x, five
+interleaved runs each. `test_addi_and_ldhu_disp16` takes the awkward
+inputs on both backends -- a negative immediate, ADDI to r0 as a compare,
+a halfword with bit 15 set at a negative displacement -- and asserts the
+JIT translated them; a sign-extending LD.HU, a zero-extending ADDI and a
+declined ADDI each fail it.
+
+The instrument had to be fixed to say so. Its kind ignored `reg2 == 0`,
+so every ZXB was counted as SATSUBR and every SWITCH as DIVH, and kept
+five of the extended form's eleven sub-opcode bits; and a histogram of
+*adjacent pairs* cannot answer "which instruction" under a JIT, where
+what is interpreted comes one instruction at a time between blocks --
+36.8M executed made 165,829 pairs. It counts every kind now, for every
+frontend.
+
+What is left at 0.85%: the link forms at sub-opcode 0x372, two `ext2fx`
+forms, ZXB and a few others -- each below the floor this file's own
+rule sets for chasing.
+
 ## The vector table
 
 Every CC-RH-built guest carries one, built by
