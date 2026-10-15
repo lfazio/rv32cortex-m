@@ -345,6 +345,22 @@ void t2_subw(uint32_t rd, uint32_t rn, uint16_t imm12)
  */
 bool t2_ld_reg(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t size, bool sign)
 {
+    return t2_ld_reg_lsl(rt, rn, rm, 0u, size, sign);
+}
+
+bool t2_st_reg(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t size)
+{
+    return t2_st_reg_lsl(rt, rn, rm, 0u, size);
+}
+
+/*
+ * LDR/STR rt, [rn, rm, LSL #sh], sh 0-3. The shift is what lets the
+ * window guard rotate the offset right to fold the alignment test into
+ * its bounds compare: the access shifts it back.
+ */
+bool t2_ld_reg_lsl(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t sh,
+                   uint32_t size, bool sign)
+{
     uint32_t op;
 
     switch (size) {
@@ -360,11 +376,15 @@ bool t2_ld_reg(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t size, bool sign)
     default:
         return false;
     }
-    t2_emit32((uint16_t)(op | rn), (uint16_t)((rt << 12) | rm));
+    if (sh > 3u) {
+        return false;
+    }
+    t2_emit32((uint16_t)(op | rn), (uint16_t)((rt << 12) | (sh << 4) | rm));
     return true;
 }
 
-bool t2_st_reg(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t size)
+bool t2_st_reg_lsl(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t sh,
+                   uint32_t size)
 {
     uint32_t op;
 
@@ -381,7 +401,57 @@ bool t2_st_reg(uint32_t rt, uint32_t rn, uint32_t rm, uint32_t size)
     default:
         return false;
     }
-    t2_emit32((uint16_t)(op | rn), (uint16_t)((rt << 12) | rm));
+    if (sh > 3u) {
+        return false;
+    }
+    t2_emit32((uint16_t)(op | rn), (uint16_t)((rt << 12) | (sh << 4) | rm));
+    return true;
+}
+
+/* CMP.W rn, #<modified immediate>, imm12 as t2_expand_imm gave it. */
+void t2_cmp_imm(uint32_t rn, uint16_t imm12)
+{
+    t2_dp_imm(0xF1B0u, 15u, rn, imm12);
+}
+
+/*
+ * SUB/ADD SP, SP, #imm7*4 -- 16 bits, to 508 bytes, and no flags. The
+ * frame is set up at every block entry and given back at every exit, and
+ * was MOVW and a 32-bit ADD or SUB each time.
+ */
+bool t2_sp_adjust(bool sub, uint32_t bytes)
+{
+    if ((bytes & 3u) != 0u || bytes > 508u) {
+        return false;
+    }
+    t2_emit16((uint16_t)((sub ? 0xB080u : 0xB000u) | (bytes >> 2)));
+    return true;
+}
+
+/* ADD rd, SP, #imm8*4 -- an address in the frame, 16 bits, low rd. */
+bool t2_add_sp_imm(uint32_t rd, uint32_t off)
+{
+    if (rd >= 8u || (off & 3u) != 0u || off > 1020u) {
+        return false;
+    }
+    t2_emit16((uint16_t)(0xA800u | (rd << 8) | (off >> 2)));
+    return true;
+}
+
+/*
+ * MOVS rd, #imm8 -- **sets N and Z**, which is why it is a function of
+ * its own rather than what t2_imm32 does for a small value: a constant
+ * materialised between a compare and the instruction that reads its
+ * flags would destroy them, and that has happened here once. Only for
+ * places where the flags are known dead -- before a call, at a block's
+ * entry.
+ */
+bool t2_movs_imm8(uint32_t rd, uint32_t imm)
+{
+    if (rd >= 8u || imm > 255u) {
+        return false;
+    }
+    t2_emit16((uint16_t)(0x2000u | (rd << 8) | imm));
     return true;
 }
 
@@ -670,6 +740,49 @@ uint8_t *t2_bcond_forward(uint32_t cond)
 
     t2_emit32((uint16_t)(0xF000u | (cond << 6)), 0x8000u); /* B<c>.W (T3) */
     return at;
+}
+
+/*
+ * The 16-bit forms, for a target known to be close: B<c> T1 reaches
+ * -256..+254 bytes and B T2 -2048..+2046. Patched by t2_patch_branch_n,
+ * which refuses a target out of reach rather than truncating it.
+ */
+uint8_t *t2_b_forward_n(void)
+{
+    uint8_t *const at = emu_jit_here();
+
+    t2_emit16(0xE000u);
+    return at;
+}
+
+uint8_t *t2_bcond_forward_n(uint32_t cond)
+{
+    uint8_t *const at = emu_jit_here();
+
+    t2_emit16((uint16_t)(0xD000u | (cond << 8)));
+    return at;
+}
+
+bool t2_patch_branch_n(uint8_t *at, const uint8_t *target, bool conditional)
+{
+    uint16_t *const hw = (uint16_t *)(void *)at;
+    const int32_t off = (int32_t)(target - (at + 4));
+
+    if ((off & 1) != 0) {
+        return false;
+    }
+    if (conditional) {
+        if (off < -256 || off > 254) {
+            return false;
+        }
+        hw[0] = (uint16_t)((hw[0] & 0xFF00u) | (((uint32_t)off >> 1) & 0xFFu));
+    } else {
+        if (off < -2048 || off > 2046) {
+            return false;
+        }
+        hw[0] = (uint16_t)(0xE000u | (((uint32_t)off >> 1) & 0x7FFu));
+    }
+    return true;
 }
 
 /*

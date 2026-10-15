@@ -63,6 +63,16 @@ str     r0, [r1, #12]
 str     r0, [sp, #1020]
 addw    r1, r6, #8
 subw    r1, r6, #8
+ldr.w   r5, [r12, r2, lsl #2]
+ldrh.w  r5, [r12, r2, lsl #1]
+str.w   r3, [r12, r2, lsl #2]
+cmp.w   r2, #41984
+sub     sp, #40
+add     sp, #40
+add     r3, sp, #1020
+movs    r2, #66
+ror.w   r2, r2, #2
+sub.w   r2, r1, #0x80000000
 add.w   sp, sp, ip
 sub.w   sp, sp, ip
 sdiv    r0, r2, r3
@@ -135,6 +145,28 @@ int main(void)
     t2_str_imm(0u, 13u, 1020u);
     t2_addw(1u, 6u, 8u);
     t2_subw(1u, 6u, 8u);
+
+    /* The window guard and the access that undoes its rotation. */
+    (void)t2_ld_reg_lsl(5u, 12u, 2u, 2u, 4u, false);
+    (void)t2_ld_reg_lsl(5u, 12u, 2u, 1u, 2u, false);
+    (void)t2_st_reg_lsl(3u, 12u, 2u, 2u, 4u);
+    {
+        uint16_t enc;
+
+        (void)t2_expand_imm(0xA400u, &enc);
+        t2_cmp_imm(2u, enc);
+    }
+    (void)t2_sp_adjust(true, 40u);
+    (void)t2_sp_adjust(false, 40u);
+    (void)t2_add_sp_imm(3u, 1020u);
+    (void)t2_movs_imm8(2u, 66u);
+    t2_shift_imm(T2_ROR, 2u, 2u, 2u);
+    {
+        uint16_t enc;
+
+        (void)t2_expand_imm(0x80000000u, &enc);
+        t2_sub_imm(2u, 1u, enc);
+    }
 
     /*
      * The frame adjust a chained exit and the prologue emit by hand.

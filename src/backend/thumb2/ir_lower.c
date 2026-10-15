@@ -339,32 +339,50 @@ static void emit_addr(uint32_t rd, uint32_t rn, uint32_t imm)
 }
 
 /*
- * Guard the inlined access: leave the offset from the window's base in
- * r2 and branch to the slow path on anything unusual. Returns the patch
- * sites and how many.
+ * Guard the inlined access and branch to the slow path on anything
+ * unusual. Leaves in r2 what the access indexes with, and returns the
+ * shift the access has to apply to it; the slow-path branch is *out.
  *
- * One *unsigned* compare covers both ends -- an address below the base
- * wraps to a huge offset -- and the alignment test is the other half of
- * what the helper would have decided, because a misaligned access
- * either faults or has to be split.
+ * **One compare for the bounds and the alignment.** r2 is the offset
+ * from the window's base rotated right by log2(size): an aligned offset
+ * becomes offset >> k exactly, a misaligned one carries its low bits to
+ * the top where no in-bounds value has any, and an address below the
+ * base has wrapped to a huge offset already. So `rotated < size >> k`,
+ * unsigned, is the whole test, and the access undoes the rotation with
+ * LSL #k. Exact rather than conservative, because every region's size
+ * is a multiple of the widest access. It was a subtract, a compare, a
+ * TST and two branches, with the base and the limit each a MOVW/MOVT --
+ * 34 bytes on every load and store, half of everything this backend
+ * emits.
  *
- * r12 is the scratch. It is the procedure-call scratch register and
- * nothing in a lowered block holds a value there across an instruction.
+ * The base and the limit are modified immediates when they encode,
+ * which RV32's 0x80000000 does; otherwise r12, the procedure-call
+ * scratch, holds them as before. The branch is the 16-bit form, because
+ * the slow path is the next thing emitted.
  */
 static uint32_t emit_fast_guard(uint32_t addr_reg, uint32_t size, uint8_t **out)
 {
-    uint32_t n = 0u;
+    const uint32_t k = (size == 4u) ? 2u : (size == 2u) ? 1u : 0u;
+    const uint32_t lim = g_fast.size >> k;
+    uint16_t enc;
 
-    t2_imm32(T2_R12, g_fast.base);
-    t2_sub(T2_R2, addr_reg, T2_R12);
-    t2_imm32(T2_R12, g_fast.size - size);
-    t2_cmp(T2_R2, T2_R12);
-    out[n++] = t2_bcond_forward(0x8u); /* HI: unsigned > */
-
-    if (size > 1u && t2_tst_imm8(addr_reg, size - 1u)) {
-        out[n++] = t2_bcond_forward(0x1u); /* NE */
+    if (t2_expand_imm(g_fast.base, &enc)) {
+        t2_sub_imm(T2_R2, addr_reg, enc);
+    } else {
+        t2_imm32(T2_R12, g_fast.base);
+        t2_sub(T2_R2, addr_reg, T2_R12);
     }
-    return n;
+    if (k != 0u) {
+        t2_shift_imm(T2_ROR, T2_R2, T2_R2, k);
+    }
+    if (t2_expand_imm(lim, &enc)) {
+        t2_cmp_imm(T2_R2, enc);
+    } else {
+        t2_imm32(T2_R12, lim);
+        t2_cmp(T2_R2, T2_R12);
+    }
+    out[0] = t2_bcond_forward_n(0x2u); /* HS: unsigned >= */
+    return k;
 }
 
 static EMU_PER_CORE uint8_t *g_body;
@@ -413,6 +431,22 @@ static void patch_branch(uint8_t *at, const uint8_t *target, bool conditional)
  */
 static EMU_PER_CORE bool g_exits_lost;
 
+/*
+ * A 16-bit branch to a target emitted moments later. Out of reach would
+ * be a defect in this file -- the targets are tens of bytes away -- and
+ * is refused like a lost exit rather than truncated into a branch
+ * somewhere else.
+ */
+static void patch_branch_n(uint8_t *at, const uint8_t *target, bool cond)
+{
+    if (at == NULL || emu_jit_overflowed()) {
+        return;
+    }
+    if (!t2_patch_branch_n(at, target, cond)) {
+        g_exits_lost = true;
+    }
+}
+
 static void note_exit(uint8_t *at, bool conditional)
 {
     if (g_nexits < IR_MAX_EXITS) {
@@ -458,7 +492,7 @@ static EMU_PER_CORE uint8_t *g_block_start;
 /* ADD.W sp, sp, #imm -- the epilogue's teardown, emitted at an exit. */
 static void emit_frame_release(uint32_t frame)
 {
-    if (frame != 0u) {
+    if (frame != 0u && !t2_sp_adjust(false, frame)) {
         t2_imm32(T2_R12, frame);
         t2_emit32(0xEB0Du, (uint16_t)((13u << 8) | T2_R12));
     }
@@ -1723,12 +1757,12 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         if (g_has_fast) {
             const uint32_t sz = EMU_IR_MEM_SIZE(in->aux);
             const bool sign = (in->aux & EMU_IR_MEM_SIGNED) != 0u;
-            uint8_t *slow[2];
-            const uint32_t nslow = emit_fast_guard(T2_R1, sz, slow);
+            uint8_t *slow[1];
+            const uint32_t k = emit_fast_guard(T2_R1, sz, slow);
             const uint32_t rt = (pd >= 0) ? (uint32_t)pd : T2_R0;
 
             t2_imm32(T2_R12, (uint32_t)(uintptr_t)g_fast.host);
-            if (t2_ld_reg(rt, T2_R12, T2_R2, sz, sign)) {
+            if (t2_ld_reg_lsl(rt, T2_R12, T2_R2, k, sz, sign)) {
                 if (pd < 0) {
                     /*
                      * The slot has to be written even when the
@@ -1740,15 +1774,16 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                     g_dead_store = EMU_IR_NO_TEMP;
                     st_slot(T2_R0, in->dst);
                 }
-                ldone = t2_b_forward();
+                ldone = t2_b_forward_n();
             }
-            for (uint32_t k = 0; k < nslow; k++) {
-                patch_branch(slow[k], emu_jit_here(), true);
-            }
+            patch_branch_n(slow[0], emu_jit_here(), true);
         }
 
+        /* The slow path. Flags are dead from here to the call. */
         t2_mov(T2_R0, T2_CPU);
-        t2_imm32(T2_R2, in->aux);
+        if (!t2_movs_imm8(T2_R2, in->aux)) {
+            t2_imm32(T2_R2, in->aux);
+        }
         /*
          * ADDW r3, sp, #slot -- the out-pointer, as the immediate form.
          *
@@ -1761,9 +1796,11 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         {
             const uint32_t off = slot((pd >= 0) ? SCRATCH_VAL : in->dst);
 
-            t2_emit32((uint16_t)(0xF20Du | (((off >> 11) & 1u) << 10)),
-                      (uint16_t)((((off >> 8) & 7u) << 12) | (T2_R3 << 8) |
-                                 (off & 0xFFu)));
+            if (!t2_add_sp_imm(T2_R3, off)) {
+                t2_emit32((uint16_t)(0xF20Du | (((off >> 11) & 1u) << 10)),
+                          (uint16_t)((((off >> 8) & 7u) << 12) |
+                                     (T2_R3 << 8) | (off & 0xFFu)));
+            }
         }
         t2_call((const void *)t->load);
         (void)t2_cmp_imm8(T2_R0, 0u); /* the accessor's verdict */
@@ -1772,7 +1809,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             ld_slot((uint32_t)pd, SCRATCH_VAL);
         }
         if (ldone != NULL) {
-            patch_branch(ldone, emu_jit_here(), false);
+            patch_branch_n(ldone, emu_jit_here(), false);
             /*
              * Whatever r0 held on the inlined path is not what the
              * helper leaves there, and the two merge here.
@@ -1799,8 +1836,9 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         uint8_t *sdone = NULL;
         if (g_has_fast) {
             const uint32_t sz = EMU_IR_MEM_SIZE(in->aux);
-            uint8_t *slow[3];
-            uint32_t nslow = emit_fast_guard(T2_R1, sz, slow);
+            uint8_t *slow[2];
+            uint32_t nslow = 1u;
+            const uint32_t k = emit_fast_guard(T2_R1, sz, slow);
 
             /*
              * A store to the reserved word must break an LR/SC
@@ -1809,28 +1847,31 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
              * address compare. That is only between an LR and its SC.
              */
             if (g_fast.store_guard_offset != EMU_IR_NO_GUARD) {
-                t2_ldr_imm(T2_R12, T2_CPU, g_fast.store_guard_offset);
-                t2_imm32(T2_R0, 0u);
-                t2_cmp(T2_R12, T2_R0);
-                slow[nslow++] = t2_bcond_forward(0x1u); /* NE */
+                /* r0 is free until the slow path loads the cpu into it. */
+                t2_ldr_imm(T2_R0, T2_CPU, g_fast.store_guard_offset);
+                (void)t2_cmp_imm8(T2_R0, 0u);
+                slow[nslow++] = t2_bcond_forward_n(0x1u); /* NE */
             }
 
             t2_imm32(T2_R12, (uint32_t)(uintptr_t)g_fast.host);
-            if (t2_st_reg(T2_R3, T2_R12, T2_R2, sz)) {
-                sdone = t2_b_forward();
+            if (t2_st_reg_lsl(T2_R3, T2_R12, T2_R2, k, sz)) {
+                sdone = t2_b_forward_n();
             }
-            for (uint32_t k = 0; k < nslow; k++) {
-                patch_branch(slow[k], emu_jit_here(), true);
+            for (uint32_t i = 0; i < nslow; i++) {
+                patch_branch_n(slow[i], emu_jit_here(), true);
             }
         }
 
+        /* The slow path. Flags are dead from here to the call. */
         t2_mov(T2_R0, T2_CPU);
-        t2_imm32(T2_R2, in->aux);
+        if (!t2_movs_imm8(T2_R2, in->aux)) {
+            t2_imm32(T2_R2, in->aux);
+        }
         t2_call((const void *)t->store);
         (void)t2_cmp_imm8(T2_R0, 0u); /* the accessor's verdict */
         note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
         if (sdone != NULL) {
-            patch_branch(sdone, emu_jit_here(), false);
+            patch_branch_n(sdone, emu_jit_here(), false);
             /* The paths merge; r0 is not the same on both. */
             g_r0_holds = EMU_IR_NO_TEMP;
         }
@@ -1995,7 +2036,10 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
 
     t2_push(list | T2_LIST_LR);
     t2_mov(T2_CPU, T2_R0);
-    t2_imm32(T2_CNT, 0u);
+    /* MOVS: the flags are dead on entry to a block. */
+    if (!t2_movs_imm8(T2_CNT, 0u)) {
+        t2_imm32(T2_CNT, 0u);
+    }
     g_frame = frame;
     /*
      * Where a predecessor branches in: past the push, past the cpu
@@ -2009,8 +2053,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      */
     emu_jit_layout.chain_entry = (uint32_t)(emu_jit_here() - g_block_start);
     emu_jit_layout.chainable = !g_has_fp && !g_fp_written;
-    if (frame != 0u) {
-        /* SUB.W sp, sp, #frame */
+    if (frame != 0u && !t2_sp_adjust(true, frame)) {
+        /* SUB.W sp, sp, r12 -- past the 16-bit form's 508 bytes */
         t2_imm32(T2_R12, frame);
         t2_emit32(0xEBADu, (uint16_t)((13u << 8) | T2_R12));
     }

@@ -432,6 +432,123 @@ int main(void)
         want("ldr-sp-4", f(0u, 0x11111111u, 0x22222222u), 0x22222222u);
     }
 
+    /*
+     * **The window guard**, built from the same encoders in the same
+     * order as emit_fast_guard: subtract the base as a modified
+     * immediate, rotate right by log2(size), compare with size >> k as
+     * another, and take the 16-bit HS branch to the slow path. The
+     * rotation is what folds the alignment test into the bounds test, so
+     * the cases are the edges of both: the first and last aligned slots,
+     * one past the end, below the base, and every misalignment.
+     */
+    {
+        static const uint32_t base = 0x80000000u, size = 0x29000u;
+        static const struct {
+            uint32_t sz, off, slow;
+        } k_g[] = {
+            {4u, 0u, 0u},          {4u, 4u, 0u},
+            {4u, size - 4u, 0u},   {4u, size, 1u},
+            {4u, size - 2u, 1u},   {4u, 1u, 1u},
+            {4u, 2u, 1u},          {4u, 3u, 1u},
+            {4u, 0xFFFFFFFCu, 1u}, /* base - 4 */
+            {2u, 0u, 0u},          {2u, size - 2u, 0u},
+            {2u, size, 1u},        {2u, 1u, 1u},
+            {2u, 0xFFFFFFFEu, 1u}, {1u, 0u, 0u},
+            {1u, size - 1u, 0u},   {1u, size, 1u},
+            {1u, 0xFFFFFFFFu, 1u},
+        };
+
+        for (unsigned i = 0; i < sizeof(k_g) / sizeof(k_g[0]); i++) {
+            const uint32_t sz = k_g[i].sz;
+            const uint32_t k = (sz == 4u) ? 2u : (sz == 2u) ? 1u : 0u;
+            uint16_t enc;
+
+            emit_begin();
+            (void)t2_expand_imm(base, &enc);
+            t2_sub_imm(2u, 0u, enc); /* r2 = addr - base */
+            if (k != 0u) {
+                t2_shift_imm(T2_ROR, 2u, 2u, k);
+            }
+            (void)t2_expand_imm(size >> k, &enc);
+            t2_cmp_imm(2u, enc);
+            uint8_t *const slow = t2_bcond_forward_n(0x2u); /* HS */
+
+            (void)t2_movs_imm8(0u, 0u);
+            uint8_t *const done = t2_b_forward_n();
+
+            want("guard-patch-slow",
+                 t2_patch_branch_n(slow, emu_jit_cursor, true) ? 1u : 0u, 1u);
+            (void)t2_movs_imm8(0u, 1u);
+            want("guard-patch-done",
+                 t2_patch_branch_n(done, emu_jit_cursor, false) ? 1u : 0u,
+                 1u);
+            {
+                const fn1_t f = (fn1_t)emit_end();
+
+                if (f(base + k_g[i].off) != k_g[i].slow) {
+                    g_fail++;
+                    ps_("FAIL guard sz ");
+                    phex(sz);
+                    ps_(" off ");
+                    phex(k_g[i].off);
+                    pc_('\n');
+                }
+            }
+        }
+    }
+
+    /* The access that undoes the rotation: [r12, r2, LSL #k]. */
+    {
+        static uint32_t w[8] = {0x10u, 0x11u, 0x12u, 0x13u,
+                                0x14u, 0x15u, 0x16u, 0x17u};
+        static uint16_t h[8] = {0x20u, 0x21u, 0x22u, 0x23u,
+                                0x24u, 0x25u, 0x26u, 0x27u};
+
+        emit_begin();
+        t2_mov(12u, 0u);
+        t2_mov(2u, 1u);
+        (void)t2_ld_reg_lsl(0u, 12u, 2u, 2u, 4u, false);
+        {
+            const fn2_t f = (fn2_t)emit_end();
+
+            want("ldr-lsl-2", f((uint32_t)(uintptr_t)w, 5u), 0x15u);
+        }
+        emit_begin();
+        t2_mov(12u, 0u);
+        t2_mov(2u, 1u);
+        (void)t2_ld_reg_lsl(0u, 12u, 2u, 1u, 2u, false);
+        {
+            const fn2_t f = (fn2_t)emit_end();
+
+            want("ldrh-lsl-1", f((uint32_t)(uintptr_t)h, 6u), 0x26u);
+        }
+        emit_begin();
+        t2_mov(12u, 1u);
+        t2_mov(2u, 2u);
+        (void)t2_st_reg_lsl(0u, 12u, 2u, 2u, 4u);
+        {
+            const fn3_t f = (fn3_t)emit_end();
+
+            (void)f(0xFEEDu, (uint32_t)(uintptr_t)w, 3u);
+            want("str-lsl-2", w[3], 0xFEEDu);
+            want("str-lsl-2-only", w[2] + w[4], 0x12u + 0x14u);
+        }
+    }
+
+    /* SUB/ADD SP, #imm7*4 and ADD rd, SP, #imm8*4, by what sp becomes. */
+    emit_begin();
+    t2_mov(1u, 13u);
+    want("sp-sub-16", t2_sp_adjust(true, 40u) ? 1u : 0u, 1u);
+    (void)t2_add_sp_imm(2u, 40u); /* r2 = sp + 40 = the old sp */
+    want("sp-add-16", t2_sp_adjust(false, 40u) ? 1u : 0u, 1u);
+    t2_sub(0u, 1u, 2u); /* 0 if both agree */
+    {
+        const fn1_t f = (fn1_t)emit_end();
+
+        want("sp-adjust-round-trip", f(0u), 0u);
+    }
+    want("sp-adjust-limit", t2_sp_adjust(true, 512u) ? 1u : 0u, 0u);
+
     /* And the emitter must not have overflowed on any of that. */
     want("no-overflow", emu_jit_overflow ? 1u : 0u, 0u);
 

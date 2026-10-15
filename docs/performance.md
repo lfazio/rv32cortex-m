@@ -67,7 +67,9 @@ chose the 32-bit form of MOV, CMP, LDR and STR, and choosing by operand
 took emitted code from 60.8 to 44.6 bytes a guest instruction -- enough
 for CoreMark's working set to fit 96 KB, so 29,862 translations became
 294 and x650 went from 19.92 s to 11.65 s against a worktree at the
-commit before ([backend/thumb2.md](backend/thumb2.md#where-the-bytes-go)).
+commit before. **Then 14.29**, folding the window guard's bounds and
+alignment tests into one compare: 36.0 bytes a guest instruction, x650
+in 10.61 s ([backend/thumb2.md](backend/thumb2.md#where-the-bytes-go)).
 
 There was an older table here — native ARM against the JIT at five cache
 sizes on a 180 MHz M4, quoting 15.3× to 32.3× slower than native. It

@@ -271,6 +271,7 @@ RV32 CoreMark x120 on the F746 at 96 KB, per translation:
 | x86-64, for comparison | 59.3 | 100 | 104 | 7 | 7 | 42 |
 | Thumb-2, as it was | **60.8** | 92 | 105 | 5 | 4 | 38 |
 | Thumb-2, short encodings | **44.6** | 77 | 86 | 3 | 2 | 30 |
+| ...and the one-compare window guard | **36.0** | 54 | 59 | 3 | 2 | 27 |
 
 **The encoders always chose the 32-bit form.** `MOV`, `CMP`, and the
 loads and stores of the frame and of the guest register file were
@@ -311,12 +312,44 @@ does not fit and the JIT still loses to the interpreter. `isatest` on the
 board: 748 checks, 1,129 of 65,829 interpreted, as before; `crcfinal
 0x25e3` and "Correct operation validated" in every row.
 
-What a memory access is now: about 30 bytes of window test (`MOVW`/`MOVT`
-for the base and the limit, a subtract, a compare, an alignment test and
-two branches), about 16 of inline access, and about 26 of call into the
-checked accessor and its trap exit -- once per access. Those constants
-and that slow path are the next thing to take; see
-[../TODO.md](../TODO.md).
+**Then the window guard, which was a third of every access.** It
+subtracted the window's base, compared with the limit, tested the
+alignment and branched twice, with the base and the limit each a
+`MOVW`/`MOVT`: 34 bytes on every load and store. Now the offset is
+rotated right by log2(size) after the subtraction, which leaves an
+aligned offset as offset >> k and carries a misaligned one's low bits to
+the top, so one unsigned compare against size >> k is the bounds test and
+the alignment test together -- and the access undoes the rotation with
+`[host, r2, LSL #k]`. The base and the limit are modified immediates
+when they encode (RV32's 0x80000000 and a 164 KiB window both do), the
+branch into the slow path and the one over it are the 16-bit forms
+because each target is a few instructions away, the frame is set up and
+given back with 16-bit `SUB/ADD SP`, and the slow path loads its
+arguments with `MOVS` and `ADD rd, SP, #imm` -- the flags being dead
+before a call. 16 bytes of guard where there were 34.
+
+x650 against a worktree at the commit before:
+
+| | translations | cycles / insn | wall |
+|---|---|---|---|
+| 96 KB, before | 294 | 15.70 | 11.66 s |
+| 96 KB, after | 281 | **14.29** | **10.61 s** |
+| 32 KB, before | 299,402 | 135.82 | 100.62 s |
+| 32 KB, after | 264,568 | **117.63** | **87.18 s** |
+| interpreter, same tree | | 111.22 | 82.42 s |
+
+At 32 KB the JIT is now within 6% of the interpreter, from 22% behind.
+`t2exec` runs the guard sequence at every edge -- the first and last
+aligned slot, one past the end, below the base, each misalignment, at
+all three sizes -- and the shifted access; it is a copy of
+`emit_fast_guard`'s sequence built from the same encoders, not the
+function itself, so the board's `isatest` (748 checks, 1,129
+interpreted, unchanged) is what holds the lowering to it.
+
+What is left in an access is the host pointer (`MOVW`/`MOVT`, 8 bytes)
+and the call into the checked accessor with its trap exit: `MOVW`/`MOVT`
+and `BLX` for the call, a compare and a branch for the verdict -- once
+per access. See [../TODO.md](../TODO.md).
 
 ## The guest-RAM window
 

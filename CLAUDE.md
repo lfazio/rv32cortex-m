@@ -3170,6 +3170,16 @@ session, and every one of them recurred:
   size on the host that pays for it, before choosing which bytes to
   take** -- `-DEMU_JIT_BYTE_STATS=ON` prints it on the board.
 
+- **A "before" build directory configured from the working tree is not
+  a before.** Board runs flash with `cmake --build <dir> --target
+  flash`, which rebuilds first -- so a baseline directory configured
+  with `-S .` silently became the new code the moment the tree changed,
+  and an A/B of the guard rewrite reported both arms at 14.29 with
+  translation counts identical to the digit. This file's loudest signal
+  again; the baseline has to come from a `git worktree` at the named
+  commit, which reproduced the previous figures (15.70, 135.82) on the
+  first run.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must
