@@ -192,6 +192,20 @@ once forwarded a value "written" to RISC-V's `x0`; all three consumers
 of the IR then faithfully compiled a guest reading its own discarded
 result, and the differential checker agreed with all of them.
 
+**A load or store can be predicated**, and the branch round it lives
+*inside* the one IR instruction (`emu_ir_mem_if`: the predicate is the
+`c` operand). A guest whose conditional instructions include memory
+accesses -- ARMv7-M in an IT block -- cannot compute-then-select an
+access the way it does everything else under a condition: the access
+can fault, and a read can change a device. Making it a branch inside
+the instruction means no pass has to know there is control flow in a
+block at all; the passes already walk `c` for the multiply-adds, and
+the dead-value pass keeps every access whatever its predicate. Clear
+means *no access* -- `test_lower_predicated_memory` uses an address the
+target refuses, so an access the predicate failed to stop traps --
+and a skipped load's result is unspecified, for the frontend to select
+against the old value.
+
 **An operation is removable only if it is on a list of pure ones.**
 The dead-value pass deletes anything whose result nothing reads, and it
 used to decide that from a list of operations *with* an effect --

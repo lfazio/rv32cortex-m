@@ -202,6 +202,19 @@ uint16_t emu_ir_emit3(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux,
     return dst;
 }
 
+uint16_t emu_ir_mem_if(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux,
+                       uint16_t addr, uint16_t val, uint32_t disp,
+                       uint16_t pred)
+{
+    const uint32_t before = b->count;
+    const uint16_t dst = emu_ir_emit(b, op, aux, addr, val, disp, 0u);
+
+    if (b->count > before) {
+        b->insn[b->count - 1u].c = pred;
+    }
+    return dst;
+}
+
 uint16_t emu_ir_get(emu_ir_block_t *b, uint32_t guest_reg)
 {
     return emu_ir_emit(b, EMU_IR_GET, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,

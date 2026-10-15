@@ -48,7 +48,7 @@
      * failure for a test that is *about* the handler running.
      */
     .word   .Lunhandled + 1     /* 2  NMI          */
-    .word   .Lunhandled + 1     /* 3  HardFault    */
+    .word   HardFault_Handler + 1 /* 3  HardFault  */
     .word   .Lunhandled + 1     /* 4  MemManage    */
     .word   .Lunhandled + 1     /* 5  BusFault     */
     .word   .Lunhandled + 1     /* 6  UsageFault   */
@@ -120,4 +120,13 @@ SysTick_Handler:
     .weak   IRQ0_Handler
     .thumb_func
 IRQ0_Handler:
+    b       .Lunhandled
+
+/*
+ * Weak for the one guest that takes a fault on purpose (itblock), where
+ * every fault this table does not route elsewhere escalates to.
+ */
+    .weak   HardFault_Handler
+    .thumb_func
+HardFault_Handler:
     b       .Lunhandled

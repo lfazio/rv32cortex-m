@@ -344,6 +344,14 @@ typedef struct {
     bool it_last;
     uint16_t cond;
     uint16_t cmask; /* 0 or ~0 from `cond`, made on first use      */
+    /*
+     * ITSTATE for this member, and xPSR as it was at the IT instruction
+     * -- with ITSTATE zero, since no block begins inside one. What a
+     * member that accesses memory needs to make a fault stack the
+     * right state; see it_access.
+     */
+    uint32_t itstate;
+    uint16_t it_xpsr;
     bool ends;      /* the instruction left the block              */
     bool counted;   /* ...or emitted its own RETIRE                */
 } T;
@@ -436,6 +444,40 @@ static void wreg(T *t, uint32_t n, uint16_t v)
         v = sel(t, v, G(t->b, n));
     }
     emu_ir_put(t->b, n, v);
+}
+
+/*
+ * Around a memory access: the predicate it runs under, and ITSTATE made
+ * real for the length of it.
+ *
+ * Everything else in an IT block is computed and then selected, so
+ * ITSTATE never has to exist at run time. An access is not -- it is
+ * predicated instead (emu_ir_mem_if) -- and it can fault, which is the
+ * one way a member is observed part way: the exception stacks xPSR, and
+ * the handler returns into the rest of the block by the ITSTATE it
+ * finds there. So xPSR carries this member's ITSTATE across the access
+ * and gets its old value back straight after. Between two accesses the
+ * dead-put pass drops the restore; a block with one access pays two
+ * stores.
+ *
+ * Outside an IT block both are free: no predicate, no xPSR traffic.
+ */
+static uint16_t it_access(T *t)
+{
+    if (!t->in_it) {
+        return NOT;
+    }
+    emu_ir_put(t->b, R_XPSR,
+               OP(t->b, EMU_IR_OR, t->it_xpsr,
+                  K(t->b, armv7m_it_put(0u, t->itstate))));
+    return t->cond;
+}
+
+static void it_access_done(T *t)
+{
+    if (t->in_it) {
+        emu_ir_put(t->b, R_XPSR, t->it_xpsr);
+    }
 }
 
 /* One flag word, chosen against its old value inside an IT block. */
@@ -1316,12 +1358,14 @@ static bool lower_ldst(T *t, const I *d)
     uint16_t wb = NOT;
     uint32_t disp = 0u;
 
-    /* A memory access is not something to do and then choose to undo. */
-    if (t->in_it) {
+    /*
+     * LDR pc is a branch, and inside an IT block a conditional one to a
+     * computed address, which nothing here emits. Anything else with the
+     * pc as its destination is not ours either.
+     */
+    if (d->rd == R_PC &&
+        (t->in_it || !load || d->size != 4u || !thread_mode(t))) {
         return false;
-    }
-    if (d->rd == R_PC && (!load || d->size != 4u || !thread_mode(t))) {
-        return false; /* LDR pc is a branch; anything else here is not ours */
     }
     switch (d->addr) {
     case ARMV7M_ADDR_LITERAL: {
@@ -1352,7 +1396,7 @@ static bool lower_ldst(T *t, const I *d)
             if (d->rd == R_PC) {
                 exit_interwork(t, K(b, v));
             } else {
-                emu_ir_put(b, d->rd, K(b, v));
+                wreg(t, d->rd, K(b, v));
             }
             return true;
         }
@@ -1385,21 +1429,28 @@ static bool lower_ldst(T *t, const I *d)
     }
 
     if (load) {
-        const uint16_t v = emu_ir_emit(b, EMU_IR_LOAD, spec, addr, NOT, disp, 0u);
+        const uint16_t p = it_access(t);
+        const uint16_t v =
+            emu_ir_mem_if(b, EMU_IR_LOAD, spec, addr, NOT, disp, p);
 
+        it_access_done(t);
         if (wb != NOT) {
-            emu_ir_put(b, d->rn, wb);
+            wreg(t, d->rn, wb);
         }
         if (d->rd == R_PC) {
             exit_interwork(t, v);
         } else {
-            emu_ir_put(b, d->rd, v);
+            wreg(t, d->rd, v);
         }
     } else {
-        (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(d->size, 0u), addr,
-                          G(b, d->rd), disp, 0u);
+        const uint16_t val = G(b, d->rd);
+        const uint16_t p = it_access(t);
+
+        (void)emu_ir_mem_if(b, EMU_IR_STORE, EMU_IR_MEM_AUX(d->size, 0u), addr,
+                            val, disp, p);
+        it_access_done(t);
         if (wb != NOT) {
-            emu_ir_put(b, d->rn, wb);
+            wreg(t, d->rn, wb);
         }
     }
     return true;
@@ -1415,7 +1466,7 @@ static bool lower_dual(T *t, const I *d)
     uint16_t acc;
     uint32_t disp;
 
-    if (t->in_it || d->rd >= 15u || d->ra >= 15u) {
+    if (d->rd >= 15u || d->ra >= 15u) {
         return false;
     }
     if (d->addr == ARMV7M_ADDR_LITERAL) {
@@ -1436,21 +1487,28 @@ static bool lower_dual(T *t, const I *d)
     /* The offset is a multiple of four, so the base decides alignment. */
     acc = aligned_base(t, addr);
     if (load) {
-        const uint16_t v1 = emu_ir_emit(b, EMU_IR_LOAD, spec, acc, NOT, disp, 0u);
+        const uint16_t p = it_access(t);
+        const uint16_t v1 =
+            emu_ir_mem_if(b, EMU_IR_LOAD, spec, acc, NOT, disp, p);
         const uint16_t v2 =
-            emu_ir_emit(b, EMU_IR_LOAD, spec, acc, NOT, disp + 4u, 0u);
+            emu_ir_mem_if(b, EMU_IR_LOAD, spec, acc, NOT, disp + 4u, p);
 
+        it_access_done(t);
         if (d->wback) {
-            emu_ir_put(b, d->rn, ADDK(b, addr, off));
+            wreg(t, d->rn, ADDK(b, addr, off));
         }
-        emu_ir_put(b, d->rd, v1);
-        emu_ir_put(b, d->ra, v2);
+        wreg(t, d->rd, v1);
+        wreg(t, d->ra, v2);
     } else {
-        (void)emu_ir_emit(b, EMU_IR_STORE, spec, acc, G(b, d->rd), disp, 0u);
-        (void)emu_ir_emit(b, EMU_IR_STORE, spec, acc, G(b, d->ra), disp + 4u,
-                          0u);
+        const uint16_t lo = G(b, d->rd);
+        const uint16_t hi = G(b, d->ra);
+        const uint16_t p = it_access(t);
+
+        (void)emu_ir_mem_if(b, EMU_IR_STORE, spec, acc, lo, disp, p);
+        (void)emu_ir_mem_if(b, EMU_IR_STORE, spec, acc, hi, disp + 4u, p);
+        it_access_done(t);
         if (d->wback) {
-            emu_ir_put(b, d->rn, ADDK(b, addr, off));
+            wreg(t, d->rn, ADDK(b, addr, off));
         }
     }
     return true;
@@ -1479,10 +1537,11 @@ static bool lower_multi(T *t, const I *d)
     uint16_t acc;
     uint32_t k = 0u;
 
-    if (t->in_it || d->rn >= 15u || count == 0u || (list & (1u << 13)) != 0u) {
+    if (d->rn >= 15u || count == 0u || (list & (1u << 13)) != 0u) {
         return false;
     }
-    if ((list & (1u << 15)) != 0u && (!load || !thread_mode(t))) {
+    /* POP {pc} under a condition is a conditional computed branch. */
+    if ((list & (1u << 15)) != 0u && (t->in_it || !load || !thread_mode(t))) {
         return false;
     }
     /* A dozen loads and their writes: leave the helper the long lists
@@ -1492,26 +1551,35 @@ static bool lower_multi(T *t, const I *d)
     }
     base = G(b, d->rn);
     acc = aligned_base(t, base);
+    if (!load) {
+        for (uint32_t i = 0u; i < 15u; i++) {
+            if ((list & (1u << i)) != 0u) {
+                vals[i] = G(b, i);
+            }
+        }
+    }
+    const uint16_t p = it_access(t);
     for (uint32_t i = 0u; i < 16u; i++) {
         if ((list & (1u << i)) == 0u) {
             continue;
         }
         if (load) {
-            vals[i] = emu_ir_emit(b, EMU_IR_LOAD, spec, acc, NOT,
-                                  first + 4u * k, 0u);
+            vals[i] = emu_ir_mem_if(b, EMU_IR_LOAD, spec, acc, NOT,
+                                    first + 4u * k, p);
         } else {
-            (void)emu_ir_emit(b, EMU_IR_STORE, spec, acc, G(b, i),
-                              first + 4u * k, 0u);
+            (void)emu_ir_mem_if(b, EMU_IR_STORE, spec, acc, vals[i],
+                                first + 4u * k, p);
         }
         k++;
     }
+    it_access_done(t);
     if (d->wback) {
-        emu_ir_put(b, d->rn, ADDK(b, base, final));
+        wreg(t, d->rn, ADDK(b, base, final));
     }
     if (load) {
         for (uint32_t i = 0u; i < 15u; i++) {
             if ((list & (1u << i)) != 0u) {
-                emu_ir_put(b, i, vals[i]);
+                wreg(t, i, vals[i]);
             }
         }
         if ((list & (1u << 15)) != 0u) {
@@ -1882,11 +1950,18 @@ static void set_pc(B *b, uint32_t pc)
  *
  * Every member is lowered with its writes made conditional, so the
  * result is straight-line code and ITSTATE never has to exist at run
- * time: nothing inside can fault, call out or be interrupted, so nothing
- * can observe it, and at the far end it is zero either way.
+ * time: a register or flag write cannot fault, call out or be
+ * interrupted, so nothing can observe it, and at the far end it is zero
+ * either way.
  *
- * That only works for members that are *pure* -- registers and flags --
- * plus a direct branch in the last position. Anything else, and the
+ * Loads and stores are the exception, and are predicated rather than
+ * selected: the access is skipped outright when the condition fails, and
+ * xPSR holds the member's ITSTATE while it runs, so a fault stacks it
+ * (it_access). That was 6.4% of Dhrystone interpreted, from 25 blocks
+ * a compiler wrote with a `strbeq` or an `ldrls` in them.
+ *
+ * What is still declined is a computed branch -- LDR pc, POP {pc}, BX --
+ * and anything that is not lowered outside a block either. Then the
  * whole block is given back: the IT instruction is declined and the
  * interpreter runs all of it. Half an IT block lowered is not an option,
  * because the other half would begin inside one.
@@ -1916,6 +1991,8 @@ static uint32_t lower_it(T *t, const I *it, uint32_t room, uint32_t *next_pc,
 
     (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, NOT, NOT, 0u, 0u);
     set_pc(b, cur);
+    /* Swept if no member accesses memory. */
+    const uint16_t xpsr0 = G(b, R_XPSR);
 
     for (uint32_t i = 0u; i < n; i++) {
         uint16_t w0;
@@ -1935,6 +2012,8 @@ static uint32_t lower_it(T *t, const I *it, uint32_t room, uint32_t *next_pc,
         m.it_last = (i + 1u == n);
         m.cond = cond01(b, state >> 4);
         m.cmask = NOT;
+        m.itstate = state;
+        m.it_xpsr = xpsr0;
         m.ends = false;
         m.counted = false;
         if (must_decline(&d) || !lower_native(&m, &d) || m.ends) {

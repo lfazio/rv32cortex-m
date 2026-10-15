@@ -223,21 +223,36 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       `performance.md` are after the fix. The second half of
       `performance.md` and both `stm32f446/` pages are not, and are
       marked as history.
-- [ ] **ARMv7-M declines an IT block that holds a memory access.**
-      `-DEMU_PAIR_STATS=ON` over the x86-64 JIT: CoreMark interprets
-      0.1%, crypto nothing, **Dhrystone 6.4%** (579,310 of 9.06M) -- MOVS
-      immediate, IT, PC-relative LDR, STRB and LDRB, from 25 IT blocks the
-      translator declines (`declined IT:25`). The rule is deliberate: an
+- [x] **ARMv7-M declined an IT block that held a memory access.**
+      `-DEMU_PAIR_STATS=ON` over the x86-64 JIT: CoreMark interpreted
+      0.1%, crypto nothing, **Dhrystone 6.4%** (579,310 of 9.06M), from
+      25 IT blocks the translator declined (`declined IT:25`), because an
       instruction inside IT is lowered as "compute, then select against
-      the old value", and an access cannot be done and then undone. Two
-      ways in, cheapest first: a **literal** load in ROM is a constant at
-      translation and needs no access at all, so it can select like any
-      ALU result; a load or store proper needs either a helper that is
-      told the condition or a conditional skip inside the block, which the
-      IR does not have. Measure which of the 25 the literal case alone
-      takes before building the second. RV32 CoreMark interprets 1
-      instruction and PowerPC CoreMark 2,462 of 12M on the same
-      instrument, so neither has a gap of this kind.
+      the old value" and an access cannot be done and then undone.
+
+      The cheap half was measured first, as this entry said to: a
+      literal load from flash is a constant and can select like any ALU
+      result, and it took **none** of the 25 -- Dhrystone's hot blocks
+      hold real accesses (`ittte eq; ldreq; moveq; strbeq; movne` in
+      Func_1, `strls` and `ldreq` elsewhere). So the second half: a
+      LOAD or STORE takes a **predicate** in its third operand
+      (`emu_ir_mem_if`), and each backend branches round the whole
+      access inside the one IR instruction, so no pass sees control
+      flow ([jit/README.md](jit/README.md#the-passes)). xPSR carries the
+      member's ITSTATE across the access, which is what a fault stacks
+      ([frontend/armv7m.md](frontend/armv7m.md)).
+
+      Dhrystone interprets 1,033 instructions instead of 579,310:
+      x86-64 JIT 0.076 s → 0.050 s, and on the F746 at 32 KB **78.31 →
+      40.17** host cycles an instruction, 3.20 s → 1.63 s, against a
+      worktree at the commit before. CoreMark's 13,114 interpreted fell
+      to 1,115 and its figure moved 234.82 → 238.19 (+1.4%), which is
+      within what layout alone does on that part. `itblock` checks a
+      skipped store, a skipped faulting `LDRD`/`LDM`, writeback both
+      ways, and a fault inside `itee eq` returning with the else half
+      still skipped; each of the two mechanisms was reverted alone and
+      the test named it. Still declined: an IT block ending in a
+      computed branch (`LDR pc`, `POP {pc}`, `BX`).
 - [x] **G4MH's translator had no ADDI.** Opcode 0x30 fell to the
       `default` and declined, and `LD.HU disp16` was declined on purpose
       and never lowered: together 94% of what a G4MH DOOM run interpreted,
@@ -1300,10 +1315,11 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
         reach: it tests the encoder end to end and nothing above it.
         Running `emu_ir_lower` in the guest is the next layer; the
         32-bit space it needed is there now.
-      - **The JIT's own open items**: IT blocks holding a load, a store
-        or a conditional return are given back to the interpreter (6%
-        of Dhrystone), RAM below 0x10000000 gets no inlined access, and
-        interrupt latency is a block. See frontend/armv7m.md.
+      - **The JIT's own open items**: IT blocks ending in a computed
+        branch are given back to the interpreter (those holding a load
+        or store are lowered now, which was 6% of Dhrystone), RAM below
+        0x10000000 gets no inlined access, and interrupt latency is a
+        block. See frontend/armv7m.md.
       - ~~**No gdb target.**~~ Done, with PowerPC's, and a real gdb
         checks all four frontends (`scripts/gdb-check.sh`, the
         `gdb-check` ctest). Writing it found the stub encoding

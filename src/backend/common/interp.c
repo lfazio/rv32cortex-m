@@ -672,9 +672,16 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
             }
             continue;
 
+        /*
+         * A predicate that is zero skips the access whole. The result is
+         * unspecified; zero here, so a reference run is repeatable.
+         */
         case EMU_IR_LOAD:
             if (t->load == NULL) {
                 return false;
+            }
+            if (in->c != EMU_IR_NO_TEMP && tmp[in->c] == 0u) {
+                break;
             }
             if (t->load(cpu, a + in->imm, in->aux, &r) != 0u) {
                 return true; /* trapped; pc is in the handler */
@@ -684,6 +691,9 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
         case EMU_IR_STORE:
             if (t->store == NULL) {
                 return false;
+            }
+            if (in->c != EMU_IR_NO_TEMP && tmp[in->c] == 0u) {
+                continue;
             }
             if (t->store(cpu, a + in->imm, in->aux, bv) != 0u) {
                 return true;

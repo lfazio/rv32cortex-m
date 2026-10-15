@@ -842,6 +842,31 @@ static void emit_addr(const emu_ir_insn_t *in, int dst)
 }
 
 /*
+ * A predicated access (emu_ir_mem_if): branch round all of it while the
+ * predicate is zero. After the address, so the reload elision still
+ * reaches operand `a`; eax is free until the access loads the host base
+ * into it.
+ */
+static uint8_t *emit_pred_skip(const emu_ir_insn_t *in)
+{
+    if (in->c == EMU_IR_NO_TEMP) {
+        return NULL;
+    }
+    ld_operand(T0, in->c);
+    x86_alu_rr(X86_TEST, T0, T0);
+    return x86_jcc32(X86_CC_E);
+}
+
+/* ...and where the skip lands. Whatever eax held, the paths differ. */
+static void end_pred_skip(uint8_t *skip)
+{
+    if (skip != NULL) {
+        x86_patch_rel32(skip, emu_jit_here());
+        g_t0_holds = EMU_IR_NO_TEMP;
+    }
+}
+
+/*
  * Call the target's load or store and leave the block if it trapped.
  * System V: (cpu, addr, spec, out-or-value); esi already holds the
  * address and ecx the fourth argument.
@@ -1646,6 +1671,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         const int pd = phys(in->dst);
 
         emit_addr(in, X86_ESI);
+        uint8_t *const skip = emit_pred_skip(in);
 
         /*
          * The inlined path. Roughly 40% of a guest's instructions are a
@@ -1695,6 +1721,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                  * answers and fbtest looped for ever.
                  */
                 g_t0_holds = EMU_IR_NO_TEMP;
+                end_pred_skip(skip);
                 break;
             }
             /*
@@ -1722,6 +1749,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         if (pd >= 0) {
             ld_slot(pd, SCRATCH_VAL);
         }
+        end_pred_skip(skip);
         break;
     }
 
@@ -1731,6 +1759,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         }
         emit_addr(in, X86_ESI);
         ld_operand(X86_ECX, in->b); /* the value */
+        uint8_t *const skip = emit_pred_skip(in);
 
         if (g_has_fast) {
             const uint32_t sz = EMU_IR_MEM_SIZE(in->aux);
@@ -1761,6 +1790,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                 x86_patch_rel32(done, emu_jit_here());
                 /* See the note in LOAD: the paths converge. */
                 g_t0_holds = EMU_IR_NO_TEMP;
+                end_pred_skip(skip);
                 break;
             }
             for (uint32_t k = 0; k < nslow; k++) {
@@ -1768,6 +1798,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             }
         }
         emit_mem_call((const void *)t->store, in->aux);
+        end_pred_skip(skip);
         break;
     }
 

@@ -503,6 +503,35 @@ static void patch_branch_n(uint8_t *at, const uint8_t *target, bool cond)
     }
 }
 
+/*
+ * A predicated access (emu_ir_mem_if): branch round all of it while the
+ * predicate is zero. Called once the address is in r1 (and a store's
+ * value in r3), so r0 is free -- and is where an unallocated predicate
+ * is loaded, which lets the reload elision hand it over when the
+ * instruction before computed it.
+ */
+static uint8_t *emit_pred_skip(const emu_ir_insn_t *in)
+{
+    if (in->c == EMU_IR_NO_TEMP) {
+        return NULL;
+    }
+    const uint32_t rp = use_reg(in->c, T2_R0);
+
+    if (!t2_cmp_imm8(rp, 0u)) {
+        t2_cmp_imm(rp, 0u);
+    }
+    return t2_bcond_forward(t2_cond((uint8_t)EMU_IR_C_EQ));
+}
+
+/* ...and where the skip lands. Whatever r0 held, the paths differ. */
+static void end_pred_skip(uint8_t *skip)
+{
+    if (skip != NULL) {
+        t2_patch_branch(skip, emu_jit_here(), true);
+        g_r0_holds = EMU_IR_NO_TEMP;
+    }
+}
+
 static void note_exit(uint8_t *at, bool conditional)
 {
     if (g_nexits < IR_MAX_EXITS) {
@@ -1811,6 +1840,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
          * built into r1 rather than back into `ra`.
          */
         emit_addr(T2_R1, ra, in->imm);
+        uint8_t *const skip = emit_pred_skip(in);
         /*
          * The inlined path: about 40% of a guest's instructions are a
          * memory access, and each was a call into the region walk.
@@ -1902,6 +1932,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
              */
             g_r0_holds = EMU_IR_NO_TEMP;
         }
+        end_pred_skip(skip);
         break;
     }
 
@@ -1918,6 +1949,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         if (rv != T2_R3) {
             t2_mov(T2_R3, rv);
         }
+        uint8_t *const skip = emit_pred_skip(in);
 
         uint8_t *sdone = NULL;
         uint8_t *sdone_pt = NULL;
@@ -1991,6 +2023,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             /* The paths merge; r0 is not the same on both. */
             g_r0_holds = EMU_IR_NO_TEMP;
         }
+        end_pred_skip(skip);
         break;
     }
 

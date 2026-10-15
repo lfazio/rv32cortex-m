@@ -35,6 +35,37 @@ static void phex(unsigned v)
 
 static unsigned g_fail;
 
+/*
+ * What the fault handler saw, and what it puts right. See the last
+ * check in main().
+ */
+unsigned g_fault_xpsr;
+unsigned g_fault_fix;
+unsigned g_faults;
+
+/*
+ * Escalated from the UsageFault a misaligned LDRD raises. Records the
+ * stacked xPSR, gives the faulting instruction an aligned base by
+ * rewriting the stacked r0, and returns -- so the same instruction runs
+ * again, under the ITSTATE it was stacked with.
+ */
+__attribute__((naked)) void HardFault_Handler(void)
+{
+    __asm__ volatile("mrs   r0, msp\n\t"
+                     "ldr   r1, [r0, #28]\n\t"
+                     "ldr   r2, =g_fault_xpsr\n\t"
+                     "str   r1, [r2]\n\t"
+                     "ldr   r2, =g_fault_fix\n\t"
+                     "ldr   r1, [r2]\n\t"
+                     "str   r1, [r0]\n\t"
+                     "ldr   r2, =g_faults\n\t"
+                     "ldr   r1, [r2]\n\t"
+                     "adds  r1, r1, #1\n\t"
+                     "str   r1, [r2]\n\t"
+                     "bx    lr\n\t"
+                     ".ltorg\n\t");
+}
+
 static void want(const char *tag, unsigned got, unsigned expect)
 {
     if (got != expect) {
@@ -203,6 +234,164 @@ int main(void)
                      "moveq %0, #0x00FF0000\n\t"
                      : "=&r"(a));
     want("IT-wide", a, 0x00FF0000u);
+
+    /*
+     * **Memory inside a block.** A compiler writes these -- Dhrystone's
+     * Func_1 is `ittte eq; ldreq; moveq; strbeq; movne` -- and the
+     * translator used to give the whole block back to the interpreter
+     * for them, because everything else in a block is computed and then
+     * selected and an access cannot be done and then undone. It is
+     * predicated now, which is what these check: a skipped access must
+     * not happen at all, not happen and be ignored.
+     *
+     * A skipped store is the visible half: the word must be unchanged.
+     */
+    {
+        static volatile unsigned w[4];
+        unsigned *p = (unsigned *)&w[0];
+
+        w[0] = 0x11111111u;
+        __asm__ volatile("movs  %0, #0x55\n\t"
+                         "cmp   %0, #0\n\t"
+                         "it    eq\n\t"
+                         "streq %0, [%1]\n\t"
+                         : "=&r"(a)
+                         : "r"(p)
+                         : "memory", "cc");
+        want("IT-str-skipped", w[0], 0x11111111u);
+
+        __asm__ volatile("movs  %0, #0x55\n\t"
+                         "cmp   %0, #0x55\n\t"
+                         "it    eq\n\t"
+                         "streq %0, [%1]\n\t"
+                         : "=&r"(a)
+                         : "r"(p)
+                         : "memory", "cc");
+        want("IT-str-taken", w[0], 0x55u);
+
+        /*
+         * Then and else, each a byte store to its own address: exactly
+         * one may land. The shape of Dhrystone's block, with the store
+         * on both sides.
+         */
+        w[1] = 0u;
+        __asm__ volatile("movs  %0, #7\n\t"
+                         "cmp   %0, #7\n\t"
+                         "ite   eq\n\t"
+                         "strbeq %0, [%1, #4]\n\t"
+                         "strbne %0, [%1, #5]\n\t"
+                         : "=&r"(a)
+                         : "r"(p)
+                         : "memory", "cc");
+        want("ITE-strb", w[1], 0x00000007u);
+
+        /*
+         * A load with writeback, skipped: neither the destination nor
+         * the base may move. Then taken: both do.
+         */
+        w[2] = 0xCAFEF00Du;
+        {
+            unsigned *q = (unsigned *)&w[2];
+
+            a = 0x99u;
+            __asm__ volatile("cmp   %1, #0\n\t"
+                             "it    eq\n\t"
+                             "ldreq %0, [%1], #4\n\t"
+                             : "+&r"(a), "+&r"(q)
+                             :
+                             : "memory", "cc");
+            want("IT-ldr-wb-skipped", a, 0x99u);
+            want("IT-ldr-wb-base-kept", (unsigned)q, (unsigned)&w[2]);
+
+            __asm__ volatile("cmp   %1, #0\n\t"
+                             "it    ne\n\t"
+                             "ldrne %0, [%1], #4\n\t"
+                             : "+&r"(a), "+&r"(q)
+                             :
+                             : "memory", "cc");
+            want("IT-ldr-wb-taken", a, 0xCAFEF00Du);
+            want("IT-ldr-wb-base-moved", (unsigned)q, (unsigned)&w[3]);
+        }
+    }
+
+    /*
+     * **A skipped access that would have faulted.** LDRD and LDM fault
+     * on a misaligned base on every ARMv7-M, whatever CCR says, so this
+     * needs no address map: if the predicate does not stop the access,
+     * the guest takes a UsageFault it has no reason to expect and the
+     * count below says so.
+     */
+    {
+        static unsigned dw[4] __attribute__((aligned(8)));
+        unsigned char *odd = (unsigned char *)&dw[0] + 1;
+        unsigned lo = 0x1u;
+        unsigned hi = 0x2u;
+
+        g_faults = 0u;
+        __asm__ volatile("cmp    %2, #0\n\t"
+                         "it     eq\n\t"
+                         "ldrdeq %0, %1, [%2]\n\t"
+                         : "+&r"(lo), "+&r"(hi)
+                         : "r"(odd)
+                         : "memory", "cc");
+        want("IT-ldrd-skipped", lo | (hi << 8), 0x201u);
+
+        __asm__ volatile("cmp    %0, #0\n\t"
+                         "it     eq\n\t"
+                         "ldmeq  %0, {r4, r5}\n\t"
+                         :
+                         : "r"(odd)
+                         : "r4", "r5", "memory", "cc");
+        want("IT-ldm-skipped-no-fault", g_faults, 0u);
+    }
+
+    /*
+     * **A fault from inside a block, and the ITSTATE it stacks.** The
+     * translator keeps ITSTATE out of xPSR everywhere else -- nothing
+     * else in a block can be observed part way. An access can, and the
+     * handler returns into the *rest* of the block by the ITSTATE it
+     * finds on the stack. Lose it, and what follows the fault runs
+     * unconditionally.
+     *
+     * `itee eq` with EQ true: the LDRD runs and faults, the two ADDs
+     * are the else half and must not run. ITSTATE at the LDRD is
+     * firstcond 0b0000, mask 0b1110 -- x and y are E, so NOT
+     * firstcond[0], then the terminating 1 -- so 0x0E: IT[1:0] = 0b10
+     * in bits 26:25, IT[7:2] = 0b000011 in bits 15:10.
+     */
+    {
+        static unsigned dw[4]
+            __attribute__((aligned(8))) = {0x0A0A0A0Au, 0x0B0B0B0Bu};
+        register unsigned base __asm__("r0") =
+            (unsigned)((unsigned char *)&dw[0] + 2);
+        register unsigned lo __asm__("r4") = 0u;
+        register unsigned hi __asm__("r5") = 0u;
+        register unsigned n __asm__("r2") = 0u;
+
+        g_faults = 0u;
+        g_fault_xpsr = 0u;
+        g_fault_fix = (unsigned)&dw[0];
+        __asm__ volatile("cmp    %3, #0\n\t"
+                         "itee   eq\n\t"
+                         "ldrdeq %0, %1, [%2]\n\t"
+                         "addne  %3, %3, #1\n\t"
+                         "addne  %3, %3, #2\n\t"
+                         : "+&r"(lo), "+&r"(hi), "+&r"(base), "+&r"(n)
+                         :
+                         : "memory", "cc");
+        /*
+         * Out of the pinned registers before the first call: a local
+         * register variable is only that register at an asm operand,
+         * and r2 is the third argument.
+         */
+        const unsigned got_lo = lo;
+        const unsigned got_n = n;
+
+        want("IT-fault-taken", g_faults, 1u);
+        want("IT-fault-itstate", g_fault_xpsr & 0x0600FC00u, 0x04000C00u);
+        want("IT-fault-retried", got_lo, 0x0A0A0A0Au);
+        want("IT-fault-else-skipped", got_n, 0u);
+    }
 
     if (g_fail == 0u) {
         ps_("ARMV7M-IT-OK\n");

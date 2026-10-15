@@ -261,6 +261,12 @@ typedef enum emu_ir_op {
     /*
      * Memory. `imm` is a byte displacement added to `a`; `b` is the data
      * for a store. Width and signedness travel in `aux`.
+     *
+     * **`c`, when set, is a predicate**: the access happens only if that
+     * temp is non-zero. When it is zero nothing is read or written,
+     * nothing can fault, and a LOAD's result is unspecified -- the
+     * frontend selects against the old value, which is what it does for
+     * every other instruction under a condition. See emu_ir_mem_if.
      */
     EMU_IR_LOAD,
     EMU_IR_STORE,
@@ -576,8 +582,9 @@ typedef struct emu_ir_insn {
     uint16_t a, b; /* temps read, or EMU_IR_NO_TEMP               */
 
     /*
-     * A third operand, for the one class of instruction that needs it:
-     * the fused multiply-adds. EMU_IR_NO_TEMP everywhere else.
+     * A third operand, for the classes of instruction that need one: the
+     * fused multiply-adds and multiply-accumulates, and the predicate of
+     * a conditional LOAD or STORE. EMU_IR_NO_TEMP everywhere else.
      *
      * **It is not free, and the cost is the reason it went unmodelled
      * for so long.** Every pass that walks operands has to walk this one
@@ -790,6 +797,21 @@ uint16_t emu_ir_emit(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux, uint16_t a,
  */
 uint16_t emu_ir_emit3(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux,
                       uint16_t a, uint16_t bb, uint16_t c);
+
+/*
+ * A LOAD or STORE that happens only when `pred` is non-zero; `pred` of
+ * EMU_IR_NO_TEMP is an ordinary access. Returns what emu_ir_emit would.
+ *
+ * For a guest whose conditional instructions include memory accesses --
+ * ARMv7-M inside an IT block. Everything else under a condition is
+ * computed and then selected against the old value, which an access
+ * cannot be: it may fault, and it may be to a device that a read
+ * changes. So the backend branches round it instead, inside the one IR
+ * instruction, where no pass has to know there is a branch at all.
+ */
+uint16_t emu_ir_mem_if(emu_ir_block_t *b, emu_ir_op_t op, uint8_t aux,
+                       uint16_t addr, uint16_t val, uint32_t disp,
+                       uint16_t pred);
 
 /* Shorthands for the shapes that appear most. */
 uint16_t emu_ir_get(emu_ir_block_t *b, uint32_t guest_reg);

@@ -1556,6 +1556,83 @@ static void test_lower_memory_trap(void)
 #endif /* EMU_HOST_JIT_X86_64 -- needs the lowering */
 
 /*
+ * A predicated LOAD and STORE (emu_ir_mem_if), predicate clear and set,
+ * three ways: the IR interpreter, the lowering's helper path, and the
+ * lowering through the inlined window.
+ *
+ * "Clear" has to mean *no access*, not an access whose result is thrown
+ * away -- the second is what selecting would do, and is wrong for a
+ * fault and for a device. So the out-of-range case is the one that
+ * decides it: an access the predicate failed to stop traps, the block
+ * stops, and the marker after it is never written. A store the
+ * predicate failed to stop is visible in memory.
+ */
+#if defined(EMU_HOST_JIT_X86_64)
+static void test_lower_predicated_memory(void)
+{
+    static const char *const k_way[] = {"interp", "helper", "window"};
+
+    for (unsigned way = 0u; way < 3u; way++) {
+        for (uint32_t far = 0u; far < 2u; far++) {
+            for (uint32_t p = 0u; p < 2u; p++) {
+                memset(g_mem, 0, sizeof(g_mem));
+                g_mem[0x40] = 0x5Au;
+
+                emu_ir_reset(&g_b);
+                if (way == 2u) {
+                    g_b.has_fast = true;
+                    g_b.fast.base = 0u;
+                    g_b.fast.size = sizeof(g_mem);
+                    g_b.fast.host = g_mem;
+                    g_b.fast.store_guard_offset = EMU_IR_NO_GUARD;
+                }
+                const uint16_t base = emu_ir_get(&g_b, 1u);
+                const uint16_t pred = emu_ir_get(&g_b, 5u);
+
+                emu_ir_put(&g_b, 2u,
+                           emu_ir_mem_if(&g_b, EMU_IR_LOAD,
+                                         EMU_IR_MEM_AUX(1u, 0u), base,
+                                         EMU_IR_NO_TEMP, 0x40u, pred));
+                (void)emu_ir_mem_if(&g_b, EMU_IR_STORE, EMU_IR_MEM_AUX(4u, 0u),
+                                    base, emu_ir_get(&g_b, 3u), 0x10u, pred);
+                emu_ir_put(&g_b, 4u, emu_ir_const(&g_b, 0xABCDu));
+
+                fake_cpu_t cpu;
+                memset(&cpu, 0, sizeof(cpu));
+                cpu.r[1] = far ? 0x1000u : 0u; /* 0x1000 is refused */
+                cpu.r[3] = 0xDEADBEEFu;
+                cpu.r[5] = p ? 0x80000000u : 0u; /* any non-zero holds */
+
+                bool ok;
+                if (way == 0u) {
+                    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, NULL);
+                    ok = emu_ir_interp(&g_b, (emu_cpu_t *)&cpu, &g_fake_target);
+                } else {
+                    ok = lower_and_run(&cpu);
+                }
+                if (!ok) {
+                    printf("  predicated %s: not run\n", k_way[way]);
+                    CHECK(false);
+                    continue;
+                }
+                if (far) {
+                    /* Clear: nothing tried, so nothing trapped. */
+                    CHECK_EQ(cpu.r[4], p ? 0u : 0xABCDu);
+                } else {
+                    CHECK_EQ(cpu.r[4], 0xABCDu);
+                    CHECK_EQ((uint32_t)g_mem[0x10], p ? 0xEFu : 0u);
+                    CHECK_EQ((uint32_t)g_mem[0x13], p ? 0xDEu : 0u);
+                    if (p) {
+                        CHECK_EQ(cpu.r[2], 0x5Au);
+                    }
+                }
+            }
+        }
+    }
+}
+#endif /* EMU_HOST_JIT_X86_64 -- needs the lowering */
+
+/*
  * The bit ops on memory, both encodings' worth of behaviour: Z reports
  * the bit before the change, TST does not write back, and the bits of
  * the flag word outside Z are left alone.
@@ -2397,6 +2474,7 @@ void test_ir(void)
     test_lower_fp_flags();
     test_lower_memory();
     test_lower_memory_trap();
+    test_lower_predicated_memory();
     test_lower_bitop_memory();
     test_lower_bitop_tst();
 #endif

@@ -382,10 +382,18 @@ asking anyone.
 That is the rule the hand-written backend learned on hardware and it
 still holds: anything `rv_hart_load`/`rv_hart_store` does beyond the
 access itself — a reservation, a permission, a translation — has to be
-answered by whoever inlines the access. The window is guest RAM only.
-Peripheral accesses go to the helper; the hand-written backend's inlined
-peripheral window, and the 2.2–3.1× it bought driver-shaped code, did
-not survive the move to the IR.
+answered by whoever inlines the access. The peripheral window is the
+second one (`emu_ir_ptwin_t`), offered only once a guest has made enough
+passthrough accesses to pay for the bytes; see "Where the bytes go"
+above.
+
+**An access may be predicated** (`emu_ir_mem_if`, the `c` operand), for
+ARMv7-M's loads and stores inside an IT block: `CMP` of the predicate
+against zero and a `BEQ.W` round everything the access emits -- guard,
+inlined path and helper call alike -- placed after the address is in r1
+so the reload elision still reaches operand `a`. Six bytes, and the
+predicate's load where it has no register -- only where a frontend asks
+for it.
 
 ## History: the framework port
 
