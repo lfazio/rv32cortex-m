@@ -1106,9 +1106,15 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     case EMU_IR_NOP:
     case EMU_IR_RETIRE:
         if (in->op == (uint8_t)EMU_IR_RETIRE) {
-            /* ADD.W r5, r5, #1 */
-            t2_emit32((uint16_t)(0xF100u | T2_CNT),
-                      (uint16_t)((T2_CNT << 8) | 1u));
+            /* ADD.W r5, r5, #n -- no flags: they may be live here */
+            const uint32_t n = (in->imm != 0u) ? in->imm : 1u;
+            uint16_t enc;
+
+            if (t2_expand_imm(n, &enc)) {
+                t2_add_imm(T2_CNT, T2_CNT, enc);
+            } else {
+                t2_addw(T2_CNT, T2_CNT, (uint16_t)n);
+            }
         }
         break;
 

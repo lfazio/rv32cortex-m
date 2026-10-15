@@ -272,6 +272,7 @@ RV32 CoreMark x120 on the F746 at 96 KB, per translation:
 | Thumb-2, as it was | **60.8** | 92 | 105 | 5 | 4 | 38 |
 | Thumb-2, short encodings | **44.6** | 77 | 86 | 3 | 2 | 30 |
 | ...and the one-compare window guard | **36.0** | 54 | 59 | 3 | 2 | 27 |
+| ...and one RETIRE per stretch | **33.9** | 54 | 59 | 3 | 2 | 27 |
 
 **The encoders always chose the 32-bit form.** `MOV`, `CMP`, and the
 loads and stores of the frame and of the guest register file were
@@ -345,6 +346,13 @@ all three sizes -- and the shifted access; it is a copy of
 `emit_fast_guard`'s sequence built from the same encoders, not the
 function itself, so the board's `isatest` (748 checks, 1,129
 interpreted, unchanged) is what holds the lowering to it.
+
+**Then `RETIRE`, 11% of what was left**: one 4-byte add per guest
+instruction. `pass_merge_retire` keeps one per stretch between
+observation points, carrying the count of the ones it absorbed -- see
+[../jit/README.md](../jit/README.md). 3,291 adds became 1,429; x650
+14.29 → 13.94 at 96 KB and 117.63 → 115.24 at 32 KB, against a worktree
+at the commit before.
 
 What is left in an access is the host pointer (`MOVW`/`MOVT`, 8 bytes)
 and the call into the checked accessor with its trap exit: `MOVW`/`MOVT`

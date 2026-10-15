@@ -177,10 +177,15 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       trap exit once per access -- one out-of-line slow path per block,
       or per shape of access, or a veneer in the code buffer so the call
       is a 4-byte `BL`.
-- [ ] **`RETIRE` is still one operation per guest instruction**, 5% of
-      emitted code. Consecutive ones with no exit between them could be
-      one addition; it has to stay exact at every point a block can
-      leave, which is the same observer list the dead-store pass uses.
+- [x] **`RETIRE` was one operation per guest instruction** -- 11% of
+      what the Thumb-2 backend emitted once the accesses had shrunk.
+      `pass_merge_retire` keeps one per stretch between observation
+      points, carrying the count; the observer list is now one
+      predicate, `op_observes_state`, shared with `pass_dead_puts`.
+      3,291 adds became 1,429 on CoreMark, 33.9 bytes a guest
+      instruction; x650 14.29 → 13.94 at 96 KB, 117.63 → 115.24 at
+      32 KB. Retired counts under the JIT are what the commit before
+      gave, to the instruction.
 - [x] **Retention ranked blocks by dispatcher lookups, and a chained
       block got none** -- and it cost: at compaction every block a
       linked exit leads to now inherits the count of the block exiting

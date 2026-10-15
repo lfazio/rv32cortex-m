@@ -183,7 +183,8 @@ round the loop.
 `emu_ir_optimise` runs, in order: dead flags, register traffic (a `GET`
 of a register the block has just written becomes a move), constant
 fusion into the immediate forms, **dead stores**, dead values, multiply-
-accumulate fusion, and a use count the backends read. They are
+accumulate fusion, **retirement merging**, and a use count the backends
+read. They are
 host-independent by construction, and they see the guest only through
 `emu_ir_target_t` — which matters, because a pass that rewrites the IR
 has to honour every guest invariant the lowerings do. `pass_reg_traffic`
@@ -240,6 +241,25 @@ a test that fails without it:
 
 `bench` gains far more than the bytes saved because it sits at the edge
 of what a 32 KB cache holds: translations fell from 3,563 to 1,873.
+
+**`RETIRE` is the guest's instruction count, and the same observers
+read it.** One per guest instruction, as with `SETPC`, and each an add
+on the host. The count is read only where the block can be left -- a
+trap out of a load or a helper, an exit, the loop cap a back edge tests
+-- so `pass_merge_retire` keeps one per stretch between observation
+points with `imm` the number it absorbed (0 meaning 1, which is what
+every frontend still emits). Which RETIRE of a stretch carries the sum
+does not matter, since nothing between them reads it; carrying one
+*across* an observer would, and `test_retire_not_merged_across_an_observer`
+has a case per observer. The observer list is one predicate now,
+`op_observes_state`, shared with the dead-store pass -- two copies of
+it were two lists to drift apart.
+
+On the F746 it was 11% of emitted code once the accesses had shrunk:
+3,291 adds became 1,429 on CoreMark, 36.0 → 33.9 bytes a guest
+instruction, x650 14.29 → 13.94 cycles an instruction at 96 KB and
+117.63 → 115.24 at 32 KB. Retired counts under the JIT are what they
+were, to the instruction.
 
 **Which suite could see the rule broken was worth a run of its own.**
 With the observers no longer keeping a `SETPC` alive, riscv-tests still

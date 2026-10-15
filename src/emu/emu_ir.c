@@ -395,6 +395,39 @@ static bool reg_is_pc(const emu_ir_target_t *t, uint32_t n)
     return t->reg_offset != NULL && t->reg_offset(n) == t->pc_offset;
 }
 
+/*
+ * May the block be left here, or its state be read by something other
+ * than the block? Then everything the guest has done so far has to be
+ * true at this point: its registers, its pc and its retired count.
+ *
+ * One list, for every pass that moves or deletes a write of guest state
+ * -- pass_dead_puts for the registers and the pc, pass_merge_retire for
+ * the count. Two copies of it would drift, and the first to lose an
+ * operation would make a trap see a guest that had not done what it had.
+ *
+ * The memory operations belong here and it is not obvious: they can
+ * fault, and a fault leaves the block with everything before it
+ * visible. See the riscv-tests ma_addr note in pass_dead_puts.
+ */
+static bool op_observes_state(uint8_t op)
+{
+    switch ((emu_ir_op_t)op) {
+    case EMU_IR_LOAD:
+    case EMU_IR_STORE:
+    case EMU_IR_BITOP_SET:
+    case EMU_IR_BITOP_CLR:
+    case EMU_IR_BITOP_INV:
+    case EMU_IR_BITOP_TST:
+    case EMU_IR_HELPER:
+    case EMU_IR_HELPER_TRAP:
+    case EMU_IR_EXIT:
+    case EMU_IR_EXIT_IF:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void pass_dead_puts(emu_ir_block_t *b, const emu_ir_target_t *t,
                            emu_ir_opt_stats_t *st)
 {
@@ -463,29 +496,17 @@ static void pass_dead_puts(emu_ir_block_t *b, const emu_ir_target_t *t,
          * left t1 stale, the comparison failed, and every other test in
          * the suite still passed.
          */
-        case EMU_IR_LOAD:
-        case EMU_IR_STORE:
-        case EMU_IR_BITOP_SET:
-        case EMU_IR_BITOP_CLR:
-        case EMU_IR_BITOP_INV:
-        case EMU_IR_BITOP_TST:
-        case EMU_IR_HELPER:
-        case EMU_IR_HELPER_TRAP:
-            /* A fault records the pc, and a helper may read it. */
-            memset(seen, 0, sizeof(seen));
-            pc_rewritten = false;
-            break;
-
-        case EMU_IR_EXIT:
-            memset(seen, 0, sizeof(seen));
-            pc_rewritten = true; /* it writes the pc; see above */
-            break;
-
-        case EMU_IR_EXIT_IF:
-            memset(seen, 0, sizeof(seen));
-            break; /* the pc passes through; see above */
-
         default:
+            if (!op_observes_state(in->op)) {
+                break;
+            }
+            memset(seen, 0, sizeof(seen));
+            if (in->op == (uint8_t)EMU_IR_EXIT) {
+                pc_rewritten = true; /* it writes the pc; see above */
+            } else if (in->op != (uint8_t)EMU_IR_EXIT_IF) {
+                /* A fault records the pc, and a helper may read it. */
+                pc_rewritten = false;
+            } /* EXIT_IF: the pc passes through */
             break;
         }
     }
@@ -1026,6 +1047,54 @@ static void pass_fuse(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* Pass: merge retirements                                             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * One RETIRE per stretch between observation points, carrying the count
+ * of the ones it absorbed.
+ *
+ * Every guest instruction ends in a RETIRE, and each is an add on the
+ * host -- 11% of everything the Thumb-2 backend emitted for CoreMark once
+ * the memory accesses were shrunk. The count is read only where the
+ * block can be left -- a trap out of a load or a helper, an exit, the
+ * loop cap a back edge tests -- so between two of those the adds can be
+ * one, provided it sits *before* the second. Keeping the last RETIRE of
+ * each stretch does that: it is after every instruction it counts and
+ * before anything that can read the total, which is therefore exactly
+ * what it was at every point it could be read.
+ *
+ * `imm` is the count, 0 meaning 1, so a frontend still emits one per
+ * instruction and knows nothing of this.
+ */
+static void pass_merge_retire(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
+{
+    emu_ir_insn_t *carry = NULL;
+
+    for (uint32_t i = 0; i < b->count; i++) {
+        emu_ir_insn_t *const in = &b->insn[i];
+
+        if (in->dead) {
+            continue;
+        }
+        if (in->op == (uint8_t)EMU_IR_RETIRE) {
+            const uint32_t n = (in->imm != 0u) ? in->imm : 1u;
+
+            if (carry != NULL) {
+                in->imm = n + carry->imm;
+                carry->dead = true;
+                st->retires_merged++;
+            } else {
+                in->imm = n;
+            }
+            carry = in;
+        } else if (op_observes_state(in->op)) {
+            carry = NULL;
+        }
+    }
+}
+
 static void pass_count_uses(emu_ir_block_t *b, emu_ir_opt_stats_t *st)
 {
     static EMU_PER_CORE uint8_t uses[EMU_IR_MAX_TEMPS];
@@ -1250,6 +1319,7 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
     pass_dead_puts(b, t, stats);
     pass_dead_values(b, stats);
     pass_mac(b, stats);
+    pass_merge_retire(b, stats);
     pass_count_uses(b, stats);
 
     emu_lock(&g_opt_lock);
@@ -1264,6 +1334,7 @@ void emu_ir_optimise(emu_ir_block_t *b, const emu_ir_target_t *t,
     g_opt_totals.identities += stats->identities;
     g_opt_totals.macs += stats->macs;
     g_opt_totals.dead_removed += stats->dead_removed;
+    g_opt_totals.retires_merged += stats->retires_merged;
     emu_unlock(&g_opt_lock);
 
 #if EMU_JIT_HOT_REG_STATS

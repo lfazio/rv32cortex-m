@@ -418,7 +418,9 @@ typedef enum emu_ir_op {
      * of the block would send every one of them to the wrong address.
      */
     /*
-     * One guest instruction retired.
+     * One guest instruction retired -- or `imm` of them, once
+     * pass_merge_retire has folded a run into one; 0 means 1, which is
+     * what every frontend emits.
      *
      * Emitted by the frontend after each instruction it lowers, and
      * lowered to whatever the host uses to bump the block's retired
@@ -763,6 +765,7 @@ typedef struct emu_ir_opt_stats {
     uint32_t identities; /* no-op arithmetic turned into a move    */
     uint32_t macs; /* multiply+add pairs fused into an MLA   */
     uint32_t dead_removed; /* values nothing consumed               */
+    uint32_t retires_merged; /* RETIREs folded into a later one       */
     uint32_t blocks; /* times emu_ir_optimise ran             */
 } emu_ir_opt_stats_t;
 

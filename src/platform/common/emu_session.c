@@ -375,12 +375,14 @@ void emu_session_report(emu_system_t *sys, uint64_t retired,
             emu_console_printf(
                 "\n-- ir --\n"
                 "  blocks   %u optimised\n"
-                "  elided   gets %u  puts %u  setpc %u  flags %u  dead %u\n"
+                "  elided   gets %u  puts %u  setpc %u  flags %u  dead %u"
+                "  retire %u\n"
                 "  fused    const->imm %u  addr %u  identities %u  mac %u\n",
                 (unsigned)o.blocks, (unsigned)o.gets_removed,
                 (unsigned)o.puts_removed, (unsigned)o.setpcs_removed,
                 (unsigned)o.flags_removed,
-                (unsigned)o.dead_removed, (unsigned)o.folded,
+                (unsigned)o.dead_removed, (unsigned)o.retires_merged,
+                (unsigned)o.folded,
                 (unsigned)o.addr_folded, (unsigned)o.identities,
                 (unsigned)o.macs);
         }

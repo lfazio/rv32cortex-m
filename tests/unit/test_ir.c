@@ -373,6 +373,97 @@ static void test_setpc_kept_before_each_observer(void)
     }
 }
 
+/*
+ * RETIREs between two observation points become one, carrying the sum,
+ * and it sits inside its own stretch -- before the observer that ends
+ * it, where the count is read.
+ *
+ * Which RETIRE of a stretch carries the sum does not matter, and a
+ * mutant keeping the first rather than the last passes this, correctly:
+ * nothing between them reads the count. What matters is that none is
+ * carried across an observer, which is the next test, and that the
+ * totals are right at each one, which is this.
+ */
+static void retire(void)
+{
+    (void)emu_ir_emit(&g_b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                      0u, 0u);
+}
+
+static void test_retire_merged_between_observers(void)
+{
+    emu_ir_reset(&g_b);
+
+    const uint16_t a = emu_ir_get(&g_b, 1u);
+
+    retire();
+    retire();
+    retire();
+    const uint32_t at_load = g_b.count;
+
+    (void)emu_ir_emit(&g_b, EMU_IR_LOAD, EMU_IR_MEM_AUX(4u, 0u), a,
+                      EMU_IR_NO_TEMP, 0u, 0u);
+    retire();
+    retire();
+    const uint32_t at_exit = g_b.count;
+
+    (void)emu_ir_emit(&g_b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                      0x3000u, 0u);
+
+    emu_ir_opt_stats_t st;
+    emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
+    CHECK_EQ(st.retires_merged, 3u);
+
+    uint32_t live = 0u;
+    uint32_t total = 0u;
+
+    for (uint32_t i = 0; i < g_b.count; i++) {
+        const emu_ir_insn_t *const in = &g_b.insn[i];
+
+        if (in->dead || in->op != (uint8_t)EMU_IR_RETIRE) {
+            continue;
+        }
+        live++;
+        total += in->imm;
+        if (live == 1u) {
+            CHECK_EQ(in->imm, 3u);
+            CHECK(i < at_load);
+        } else {
+            CHECK_EQ(in->imm, 2u);
+            CHECK(i > at_load && i < at_exit);
+        }
+    }
+    CHECK_EQ(live, 2u);
+    CHECK_EQ(total, 5u);
+}
+
+/* ...and no RETIRE is carried across any observer, one case for each. */
+static void test_retire_not_merged_across_an_observer(void)
+{
+    static const emu_ir_op_t k_obs[] = {
+        EMU_IR_LOAD,      EMU_IR_STORE,     EMU_IR_HELPER,
+        EMU_IR_HELPER_TRAP, EMU_IR_BITOP_SET, EMU_IR_BITOP_CLR,
+        EMU_IR_BITOP_INV, EMU_IR_BITOP_TST, EMU_IR_EXIT_IF,
+    };
+
+    for (uint32_t k = 0; k < sizeof(k_obs) / sizeof(k_obs[0]); k++) {
+        emu_ir_reset(&g_b);
+
+        const uint16_t a = emu_ir_get(&g_b, 1u);
+        const uint8_t aux = (k_obs[k] == EMU_IR_EXIT_IF)
+                                ? (uint8_t)EMU_IR_C_EQ
+                                : EMU_IR_MEM_AUX(4u, 0u);
+
+        retire();
+        (void)emu_ir_emit(&g_b, k_obs[k], aux, a, a, 0x2000u, 0u);
+        retire();
+
+        emu_ir_opt_stats_t st;
+        emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, &st);
+        CHECK_EQ(st.retires_merged, 0u);
+    }
+}
+
 /* EXIT writes the pc, so a SETPC straight before it wrote it for nobody. */
 static void test_setpc_dead_before_exit(void)
 {
@@ -2157,6 +2248,8 @@ void test_ir(void)
     test_put_kept_across_faulting_load();
     test_dead_setpc_removed();
     test_setpc_kept_before_each_observer();
+    test_retire_merged_between_observers();
+    test_retire_not_merged_across_an_observer();
     test_setpc_dead_before_exit();
     test_setpc_across_conditional_exit();
     test_setpc_kept_when_a_register_reads_it();

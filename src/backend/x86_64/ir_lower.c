@@ -1583,7 +1583,13 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     }
 
     case EMU_IR_RETIRE:
-        x86_count_one();
+        if (in->imm <= 1u) {
+            x86_count_one();
+        } else if (in->imm < 128u) {
+            x86_add_imm8(X86_CNT, (int8_t)in->imm);
+        } else {
+            x86_alu_imm32(0u, X86_CNT, in->imm); /* add */
+        }
         break;
 
     case EMU_IR_SETPC:
