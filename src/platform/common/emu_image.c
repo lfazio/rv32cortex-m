@@ -290,9 +290,8 @@ static bool gdb_flash_done(void)
 }
 
 const emu_gdb_flash_ops_t emu_image_gdb_flash = {
-    gdb_flash_erase,
-    gdb_flash_write,
-    gdb_flash_done,
+    gdb_flash_erase,    gdb_flash_write,        gdb_flash_done,
+    EMU_GUEST_ROM_BASE, board_flash_arena_size,
 };
 
 /*

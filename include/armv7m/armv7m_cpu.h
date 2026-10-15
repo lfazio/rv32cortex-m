@@ -92,6 +92,10 @@ static inline bool armv7m_in_it(uint32_t xpsr)
     return (armv7m_it_get(xpsr) & 0x0Fu) != 0u;
 }
 
+/* FPSCR's bits a write may change: N Z C V, AHP DN FZ RMode, and the
+ * cumulative exception flags (B1.4.3). VMSR and a debugger alike. */
+#define ARMV7M_FPSCR_WRITABLE 0xF7C0009Fu
+
 /* CONTROL */
 #define ARMV7M_CONTROL_NPRIV 1u
 #define ARMV7M_CONTROL_SPSEL 2u
@@ -239,7 +243,7 @@ typedef struct armv7m_cpu {
 
     /* ---- the FPU (FPv5, single precision) ---- */
     uint32_t s[32];
-    uint32_t fpscr;
+    uint32_t fpscr; /* ARMV7M_FPSCR_WRITABLE is what VMSR may change */
     uint32_t fpccr;
     uint32_t fpcar;
     uint32_t fpdscr;

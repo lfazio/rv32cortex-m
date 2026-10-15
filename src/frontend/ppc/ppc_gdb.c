@@ -20,14 +20,17 @@
  * register written and read back cannot, because a swapped encoding is
  * swapped both ways.
  *
- * Not described, and so not visible to gdb:
+ * Then SPEFSCR, the FP unit's status and control, in a feature of its
+ * own -- **not** gdb's "org.gnu.gdb.power.spe", which this core cannot
+ * honestly serve: that feature is the SPE's ev0h..ev31h upper halves and
+ * its 64-bit `acc`, and this model has neither (EFPU2 is scalar; the
+ * vector half is not modelled). Describing them would mean registers
+ * that read zero and drop every write, which a debugger shows as values.
+ * gdb prints a register in a feature it does not know under its name,
+ * so `p $spefscr` works. EFPU2's operands are in r0..r31 already.
  *
- *   - the SPE upper halves and SPEFSCR. gdb's "org.gnu.gdb.power.spe"
- *     requires `acc`, a 64-bit register, and the stub's registers are
- *     all reg_bytes wide. EFPU2 keeps its operands in the GPRs, so the
- *     single-precision values are visible as r0..r31 regardless.
- *   - the SPRs: SRR0/1, CSRR0/1, ESR, DEAR, the IVORs. They are in the
- *     state dump.
+ * Not described: the SPRs -- SRR0/1, CSRR0/1, ESR, DEAR, the IVORs, the
+ * MMU's. They are in the state dump.
  */
 
 #include "emu/emu_gdb.h"
@@ -39,7 +42,8 @@
 #define PPC_GDB_LR 35u
 #define PPC_GDB_CTR 36u
 #define PPC_GDB_XER 37u
-#define PPC_GDB_NREGS 38u
+#define PPC_GDB_SPEFSCR 38u
+#define PPC_GDB_NREGS 39u
 
 static ppc_cpu_t *cpu_of_gdb(const emu_cpu_t *cpu)
 {
@@ -47,7 +51,7 @@ static ppc_cpu_t *cpu_of_gdb(const emu_cpu_t *cpu)
     return (ppc_cpu_t *)(void *)(uintptr_t)cpu;
 }
 
-static uint32_t ppc_gdb_reg_get(const emu_cpu_t *cpu, unsigned n)
+static uint64_t ppc_gdb_reg_get(const emu_cpu_t *cpu, unsigned n)
 {
     const ppc_cpu_t *c = cpu_of_gdb(cpu);
 
@@ -67,13 +71,16 @@ static uint32_t ppc_gdb_reg_get(const emu_cpu_t *cpu, unsigned n)
         return c->ctr;
     case PPC_GDB_XER:
         return c->xer;
+    case PPC_GDB_SPEFSCR:
+        return c->spefscr;
     default:
         return 0u;
     }
 }
 
-static void ppc_gdb_reg_set(emu_cpu_t *cpu, unsigned n, uint32_t v)
+static void ppc_gdb_reg_set(emu_cpu_t *cpu, unsigned n, uint64_t v64)
 {
+    const uint32_t v = (uint32_t)v64; /* every register here is 32 bits */
     ppc_cpu_t *c = cpu_of_gdb(cpu);
 
     if (n < 32u) {
@@ -106,6 +113,9 @@ static void ppc_gdb_reg_set(emu_cpu_t *cpu, unsigned n, uint32_t v)
         break;
     case PPC_GDB_XER:
         c->xer = v;
+        break;
+    case PPC_GDB_SPEFSCR:
+        c->spefscr = v & PPC_SPEFSCR_IMPL; /* as mtspr leaves it */
         break;
     default:
         break;
@@ -173,6 +183,9 @@ static const char k_ppc_xml[] =
     "<reg name=\"ctr\" bitsize=\"32\" type=\"uint32\"/>"
     "<reg name=\"xer\" bitsize=\"32\" type=\"uint32\"/>"
     "</feature>"
+    "<feature name=\"org.rv32cortexm.power.efpu2\">"
+    "<reg name=\"spefscr\" bitsize=\"32\" type=\"uint32\" group=\"float\"/>"
+    "</feature>"
     "</target>";
 
 static const emu_gdb_target_t k_ppc_gdb_target = {
@@ -186,8 +199,6 @@ static const emu_gdb_target_t k_ppc_gdb_target = {
     .stop_signal = 5, /* SIGTRAP: an attach looks like a trap */
     .arch = "powerpc:common",
     .target_xml = k_ppc_xml,
-    /* No memory map, for armv7m_gdb.c's reason. */
-    .memory_map = NULL,
 };
 
 const emu_gdb_target_t *ppc_gdb_target(void);

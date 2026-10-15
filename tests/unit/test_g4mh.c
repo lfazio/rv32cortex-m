@@ -928,7 +928,6 @@ static void test_gdb_layout(void)
      * in order to pick its rh850 backend without being told. */
     CHECK(t->target_xml != NULL);
     CHECK(strstr(t->target_xml, "v850:rh850") != NULL);
-    CHECK(t->memory_map != NULL);
 }
 
 /*

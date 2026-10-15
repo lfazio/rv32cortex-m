@@ -35,7 +35,7 @@ static rv_hart_t *hart_of_gdb(const emu_cpu_t *cpu)
     return (rv_hart_t *)(void *)(uintptr_t)cpu;
 }
 
-static uint32_t rv_gdb_reg_get(const emu_cpu_t *cpu, unsigned n)
+static uint64_t rv_gdb_reg_get(const emu_cpu_t *cpu, unsigned n)
 {
     const rv_hart_t *h = hart_of_gdb(cpu);
 
@@ -48,8 +48,9 @@ static uint32_t rv_gdb_reg_get(const emu_cpu_t *cpu, unsigned n)
     return 0u;
 }
 
-static void rv_gdb_reg_set(emu_cpu_t *cpu, unsigned n, uint32_t v)
+static void rv_gdb_reg_set(emu_cpu_t *cpu, unsigned n, uint64_t v64)
 {
+    const uint32_t v = (uint32_t)v64; /* every register here is 32 bits */
     rv_hart_t *h = hart_of_gdb(cpu);
 
     if (n < 32u) {
@@ -125,26 +126,6 @@ static const char k_rv32_xml[] =
     "</feature>"
     "</target>";
 
-/*
- * The guest's memory map. Naming the low window "flash" is what makes
- * gdb use vFlashErase/vFlashWrite for `load` rather than writing it byte
- * by byte with X -- and on this board that is not a preference: the
- * read-only half really is served out of the part's flash, so an X write
- * to it is refused by the bus.
- *
- * The sizes are the guest's address space, not the board's arena: gdb
- * addresses the program, and where it lands is the platform's business.
- */
-static const char k_rv32_memmap[] =
-    "<?xml version=\"1.0\"?>"
-    "<!DOCTYPE memory-map SYSTEM \"memory-map.dtd\">"
-    "<memory-map>"
-    "<memory type=\"flash\" start=\"0x80000000\" length=\"0x00080000\">"
-    "<property name=\"blocksize\">0x1000</property>"
-    "</memory>"
-    "<memory type=\"ram\" start=\"0x80080000\" length=\"0x00080000\"/>"
-    "</memory-map>";
-
 static const emu_gdb_target_t k_rv32_gdb_target = {
     .nregs = RV_GDB_NREGS,
     .reg_bytes = 4u,
@@ -156,7 +137,6 @@ static const emu_gdb_target_t k_rv32_gdb_target = {
     .stop_signal = 5, /* SIGTRAP: an attach looks like a trap */
     .arch = "riscv:rv32",
     .target_xml = k_rv32_xml,
-    .memory_map = k_rv32_memmap,
 };
 
 const emu_gdb_target_t *rv32_gdb_target(void);

@@ -55,6 +55,7 @@ int main(void)
     test_jit();
     test_cycles();
     test_cpu();
+    test_gdb();
 #if EMU_GUEST_ARCH_RV32
     test_fpu();
 #endif

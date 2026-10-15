@@ -81,9 +81,16 @@ static bool reg_big_endian(const emu_gdb_t *g)
 #endif
 }
 
-static void put_reg_hex(const emu_gdb_t *g, char *dst, uint32_t v)
+/* Register r's width in bytes: its own, or the target's one width. */
+static unsigned reg_width(const emu_gdb_t *g, unsigned r)
 {
-    const unsigned bytes = g->target->reg_bytes;
+    return (g->target->reg_width != NULL) ? g->target->reg_width[r]
+                                          : g->target->reg_bytes;
+}
+
+static void put_reg_hex(const emu_gdb_t *g, char *dst, unsigned r, uint64_t v)
+{
+    const unsigned bytes = reg_width(g, r);
     const bool big = reg_big_endian(g);
 
     for (unsigned b = 0; b < bytes; b++) {
@@ -94,11 +101,11 @@ static void put_reg_hex(const emu_gdb_t *g, char *dst, uint32_t v)
     }
 }
 
-static uint32_t get_reg_hex(const emu_gdb_t *g, const uint8_t *src)
+static uint64_t get_reg_hex(const emu_gdb_t *g, unsigned r, const uint8_t *src)
 {
-    const unsigned bytes = g->target->reg_bytes;
+    const unsigned bytes = reg_width(g, r);
     const bool big = reg_big_endian(g);
-    uint32_t v = 0;
+    uint64_t v = 0;
 
     for (unsigned b = 0; b < bytes; b++) {
         const unsigned at = big ? (bytes - 1u - b) : b;
@@ -108,7 +115,7 @@ static uint32_t get_reg_hex(const emu_gdb_t *g, const uint8_t *src)
         if (hi < 0 || lo < 0) {
             break;
         }
-        v |= (uint32_t)(((unsigned)hi << 4) | (unsigned)lo) << (8u * at);
+        v |= (uint64_t)(((unsigned)hi << 4) | (unsigned)lo) << (8u * at);
     }
     return v;
 }
@@ -199,8 +206,8 @@ static void send_stop(emu_gdb_t *g, int sig)
         }
         b[n++] = hex_digit(pcno & 0xFu);
         b[n++] = ':';
-        put_reg_hex(g, &b[n], g->target->pc_get(g->core->cpu));
-        n += 2u * g->target->reg_bytes;
+        put_reg_hex(g, &b[n], pcno, g->target->pc_get(g->core->cpu));
+        n += 2u * reg_width(g, pcno);
         b[n++] = ';';
     }
     send_packet(g, b, n);
@@ -341,34 +348,167 @@ static bool mem_write(emu_gdb_t *g, uint32_t addr, uint32_t len,
 }
 
 /* ------------------------------------------------------------------ */
+/* The memory map                                                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The guest's address space as gdb's memory-map XML, built from the bus.
+ *
+ * The bus is the platform's description of the address space -- the same
+ * for every frontend, which is why this is here and not in a target --
+ * and the flash ops say which window `load` may program. That window is
+ * described as flash, with a block size, which is what makes gdb send
+ * vFlash* for it; a bus region inside it (the image now running) is left
+ * out, because the map's regions must not overlap and the window is the
+ * one that says what may be written. RAM is "ram", ROM outside the
+ * window "rom", and devices and the passthrough window "ram": gdb may
+ * read them, which is a debugger's business.
+ *
+ * Built on each request, into one buffer: the bus can change -- a new
+ * image, a reload -- between two sessions, and the request is rare.
+ * A bus with more regions than fit stops listing them rather than
+ * truncating the XML, and the last line is always the closing tag.
+ */
+#ifndef EMU_GDB_MAP_BYTES
+#define EMU_GDB_MAP_BYTES 2560u
+#endif
+
+static char g_map[EMU_GDB_MAP_BYTES];
+
+static uint32_t map_put(uint32_t n, const char *s)
+{
+    if (n >= sizeof(g_map)) {
+        n = (uint32_t)sizeof(g_map) - 1u;
+    }
+    while (*s != '\0' && n + 1u < sizeof(g_map)) {
+        g_map[n++] = *s++;
+    }
+    g_map[n] = '\0';
+    return n;
+}
+
+static uint32_t map_hex(uint32_t n, uint32_t v)
+{
+    char h[11];
+
+    h[0] = '0';
+    h[1] = 'x';
+    for (unsigned i = 0; i < 8u; i++) {
+        h[2u + i] = hex_digit((v >> (28u - 4u * i)) & 0xFu);
+    }
+    h[10] = '\0';
+    return map_put(n, h);
+}
+
+static uint32_t map_entry(uint32_t n, const char *type, uint32_t base,
+                          uint32_t len, bool flash)
+{
+    n = map_put(n, "<memory type=\"");
+    n = map_put(n, type);
+    n = map_put(n, "\" start=\"");
+    n = map_hex(n, base);
+    n = map_put(n, "\" length=\"");
+    n = map_hex(n, len);
+    if (flash) {
+        return map_put(n, "\"><property name=\"blocksize\">0x1000</property>"
+                          "</memory>");
+    }
+    return map_put(n, "\"/>");
+}
+
+static const char *build_memory_map(const emu_gdb_t *g)
+{
+    static const char k_close[] = "</memory-map>";
+    const emu_bus_t *const bus = g->core->bus;
+    const uint32_t fbase = (g->flash != NULL) ? g->flash->base : 0u;
+    const uint32_t fsize =
+        (g->flash != NULL && g->flash->size != NULL) ? g->flash->size() : 0u;
+    bool flash_done = (fsize == 0u);
+    uint32_t last = 0u;
+    bool first = true;
+    uint32_t n = 0;
+
+    n = map_put(n, "<?xml version=\"1.0\"?>"
+                   "<!DOCTYPE memory-map SYSTEM \"memory-map.dtd\">"
+                   "<memory-map>");
+    /*
+     * Ascending, as gdb wants it: the bus table is in the order regions
+     * were added, so each pass takes the lowest base above the last.
+     */
+    for (;;) {
+        const emu_region_t *best = NULL;
+
+        for (uint32_t i = 0; bus != NULL && i < bus->count; i++) {
+            const emu_region_t *const r = &bus->regions[i];
+
+            if (r->size == 0u || (!first && r->base <= last)) {
+                continue;
+            }
+            if (best == NULL || r->base < best->base) {
+                best = r;
+            }
+        }
+        if (!flash_done && (best == NULL || fbase <= best->base)) {
+            if (n + 160u + sizeof(k_close) >= sizeof(g_map)) {
+                break;
+            }
+            n = map_entry(n, "flash", fbase, fsize, true);
+            flash_done = true;
+        }
+        if (best == NULL) {
+            break;
+        }
+        first = false;
+        last = best->base;
+        /* Inside the flash window, or overlapping it: the window speaks. */
+        if (fsize != 0u && best->base < fbase + fsize &&
+            fbase < best->base + best->size) {
+            continue;
+        }
+        if (n + 100u + sizeof(k_close) >= sizeof(g_map)) {
+            break;
+        }
+        n = map_entry(n, (best->kind == (uint8_t)EMU_MEM_ROM) ? "rom" : "ram",
+                      best->base, best->size, false);
+    }
+    (void)map_put(n, k_close);
+    return g_map;
+}
+
+/* ------------------------------------------------------------------ */
 /* Commands                                                            */
 /* ------------------------------------------------------------------ */
 
 static void cmd_read_regs(emu_gdb_t *g)
 {
     char body[EMU_GDB_MAX_PACKET];
-    const unsigned w = 2u * g->target->reg_bytes;
     uint32_t n = 0;
 
     for (unsigned r = 0; r < g->target->nregs; r++) {
+        const unsigned w = 2u * reg_width(g, r);
+
         if (n + w >= sizeof(body)) {
             break;
         }
-        put_reg_hex(g, &body[n], g->target->reg_get(g->core->cpu, r));
+        put_reg_hex(g, &body[n], r, g->target->reg_get(g->core->cpu, r));
         n += w;
     }
     send_packet(g, body, n);
 }
 
+/* Each register at its own offset: the sum of the widths before it. */
 static void cmd_write_regs(emu_gdb_t *g, const uint8_t *p, uint32_t len)
 {
-    const unsigned w = 2u * g->target->reg_bytes;
+    uint32_t at = 0;
 
     for (unsigned r = 0; r < g->target->nregs; r++) {
-        if ((r + 1u) * w > len) {
+        const unsigned w = 2u * reg_width(g, r);
+
+        if (at + w > len) {
             break;
         }
-        g->target->reg_set(g->core->cpu, r, get_reg_hex(g, &p[r * w]));
+        g->target->reg_set(g->core->cpu, r, get_reg_hex(g, r, &p[at]));
+        at += w;
     }
     send_ok(g);
 }
@@ -385,8 +525,8 @@ static void cmd_read_one_reg(emu_gdb_t *g, const uint8_t *p, uint32_t len)
         send_err(g, 1);
         return;
     }
-    put_reg_hex(g, body, g->target->reg_get(g->core->cpu, r));
-    send_packet(g, body, 2u * g->target->reg_bytes);
+    put_reg_hex(g, body, r, g->target->reg_get(g->core->cpu, r));
+    send_packet(g, body, 2u * reg_width(g, r));
 }
 
 static void cmd_write_one_reg(emu_gdb_t *g, const uint8_t *p, uint32_t len)
@@ -398,7 +538,7 @@ static void cmd_write_one_reg(emu_gdb_t *g, const uint8_t *p, uint32_t len)
         send_err(g, 1);
         return;
     }
-    g->target->reg_set(g->core->cpu, r, get_reg_hex(g, &p[used + 1u]));
+    g->target->reg_set(g->core->cpu, r, get_reg_hex(g, r, &p[used + 1u]));
     send_ok(g);
 }
 
@@ -596,7 +736,7 @@ static void cmd_query(emu_gdb_t *g, const uint8_t *p, uint32_t len)
                 b[n++] = *ext++;
             }
         }
-        if (g->target->memory_map != NULL && g->flash != NULL) {
+        if (g->flash != NULL) {
             /* Both, or neither: a map naming a flash region makes gdb
              * send vFlash*, and answering those without an
              * implementation loses the image silently. */
@@ -623,8 +763,7 @@ static void cmd_query(emu_gdb_t *g, const uint8_t *p, uint32_t len)
          * plus a chunk when more follows and 'l' plus the last one, and
          * gdb keeps asking until it sees 'l'.
          */
-        const char *xml =
-            is_map ? g->target->memory_map : g->target->target_xml;
+        const char *xml = is_map ? build_memory_map(g) : g->target->target_xml;
         char b[EMU_GDB_MAX_PACKET];
         uint32_t off = 0, want = 0, total = 0, n = 0;
         uint32_t i = 0;

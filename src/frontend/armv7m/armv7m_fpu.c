@@ -41,7 +41,7 @@ typedef armv7m_exc_t X;
 #define FPSCR_AHP (1u << 26)
 #define FPSCR_MODE_MASK 0x07C00000u
 #define FPSCR_NZCV_MASK 0xF0000000u
-#define FPSCR_WRITABLE 0xF7C0009Fu
+#define FPSCR_WRITABLE ARMV7M_FPSCR_WRITABLE
 
 #define FPCCR_ASPEN (1u << 31)
 #define FPCCR_LSPACT 1u

@@ -1573,16 +1573,15 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       option, and Sstvala and Ssccptr being true without a test that
       says so.
 
-- [ ] **gdb: what the four targets still do not describe.** Every
-      register the stub carries is `reg_bytes` wide, and the features
-      gdb has for ARMv7-M's FP registers (`org.gnu.gdb.arm.vfp`, d0..d15)
-      and PowerPC's SPE (`org.gnu.gdb.power.spe`, with a 64-bit `acc`)
-      need 64-bit members -- a per-register width in
-      `emu_gdb_target_t`. Neither new target serves a memory map either,
-      so on the board `load` writes them with `X` rather than through
-      the flash ops; the map is the platform's address space
-      (docs/memory.md), not the frontend's, and RV32's hard-coded one
-      should probably move with them.
+- [x] **gdb: what the four targets did not describe.** Registers have
+      their own widths now (`reg_width`, 64-bit accessors), and ARMv7-M
+      serves gdb's VFP feature -- d0..d15 and fpscr. PowerPC serves
+      SPEFSCR in a feature of its own rather than gdb's SPE feature,
+      whose upper halves and `acc` this model does not have. The memory
+      map is built from the bus and the flash ops for every frontend;
+      the two hard-coded ones named flash where the flash ops could not
+      program -- RV32's at 0x8000_0000, stale since execute-in-place,
+      and G4MH's at 0 ([gdb.md](gdb.md#the-guest-stub)).
 
 - [ ] **rv32: Zihpm counts traps only.** No overflow interrupt
       (Sscofpmf), no privilege filter bits in `mhpmevent`. Linux finds

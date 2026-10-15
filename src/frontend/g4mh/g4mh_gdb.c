@@ -53,7 +53,7 @@ static g4mh_cpu_t *cpu_of_gdb(const emu_cpu_t *cpu)
     return (g4mh_cpu_t *)(void *)(uintptr_t)cpu;
 }
 
-static uint32_t g4mh_gdb_reg_get(const emu_cpu_t *cpu, unsigned n)
+static uint64_t g4mh_gdb_reg_get(const emu_cpu_t *cpu, unsigned n)
 {
     const g4mh_cpu_t *c = cpu_of_gdb(cpu);
 
@@ -72,8 +72,9 @@ static uint32_t g4mh_gdb_reg_get(const emu_cpu_t *cpu, unsigned n)
     return 0u;
 }
 
-static void g4mh_gdb_reg_set(emu_cpu_t *cpu, unsigned n, uint32_t v)
+static void g4mh_gdb_reg_set(emu_cpu_t *cpu, unsigned n, uint64_t v64)
 {
+    const uint32_t v = (uint32_t)v64; /* every register here is 32 bits */
     g4mh_cpu_t *c = cpu_of_gdb(cpu);
 
     if (n < 32u) {
@@ -201,31 +202,6 @@ static const char k_g4mh_xml[] =
     "</feature>"
     "</target>";
 
-/*
- * The guest's memory map, as this frontend backs it.
- *
- * Code flash is named flash, which is what makes gdb use
- * vFlashErase/vFlashWrite for `load` rather than writing it byte by byte
- * with X -- and on the firmware that is not a preference but a
- * requirement, because flash really is served read-only out of the
- * part's own and an X write to it is refused by the bus. See
- * docs/memory.md.
- *
- * Local RAM is the SELF window, which is what a debugger attached to one
- * core should see; the absolute per-PE windows are deliberately left out
- * rather than described three times.
- */
-static const char k_g4mh_memmap[] =
-    "<?xml version=\"1.0\"?>"
-    "<!DOCTYPE memory-map SYSTEM \"memory-map.dtd\">"
-    "<memory-map>"
-    "<memory type=\"flash\" start=\"0x00000000\" length=\"0x00300000\">"
-    "<property name=\"blocksize\">0x1000</property>"
-    "</memory>"
-    "<memory type=\"ram\" start=\"0xFDE00000\" length=\"0x00010000\"/>"
-    "<memory type=\"ram\" start=\"0xFE000000\" length=\"0x00060000\"/>"
-    "</memory-map>";
-
 static const emu_gdb_target_t k_g4mh_gdb_target = {
     .nregs = G4MH_GDB_NREGS,
     .reg_bytes = 4u,
@@ -237,7 +213,6 @@ static const emu_gdb_target_t k_g4mh_gdb_target = {
     .stop_signal = 5, /* SIGTRAP: an attach looks like a trap */
     .arch = "v850:rh850",
     .target_xml = k_g4mh_xml,
-    .memory_map = k_g4mh_memmap,
 };
 
 const emu_gdb_target_t *g4mh_gdb_target(void);

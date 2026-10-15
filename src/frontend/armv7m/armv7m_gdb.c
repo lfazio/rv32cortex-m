@@ -15,14 +15,18 @@
  * pc_regno, and scripts/gdb-check.sh holds that against gdb's own
  * remote number for `pc`.
  *
- * What is not described, and so not visible to gdb:
+ * Then gdb's VFP feature, "org.gnu.gdb.arm.vfp": d0..d15 at 64 bits
+ * and fpscr. Naming it is what makes gdb build s0..s31 as views of the
+ * d registers and print floats as floats. d<n> is s<2n+1>:s<2n>, the
+ * single in the low half -- the pairing the architecture defines and the
+ * one VMOV between a D and two S registers uses. These are the first
+ * registers wider than the stub's 32 bits, which is what reg_width is
+ * for: a `g` packet is each register at its own width, back to back.
  *
- *   - the FP registers. gdb's "org.gnu.gdb.arm.vfp" wants d0..d15 as
- *     64-bit registers, and the stub's registers are all reg_bytes wide.
- *     That is a change to emu_gdb_target_t, not to this file.
- *   - MSP and PSP, PRIMASK, BASEPRI, FAULTMASK and CONTROL. `sp` is the
- *     active stack pointer, which is what a backtrace needs; the banked
- *     copy and the masks are in the state dump.
+ * What is not described, and so not visible to gdb: MSP and PSP,
+ * PRIMASK, BASEPRI, FAULTMASK and CONTROL. `sp` is the active stack
+ * pointer, which is what a backtrace needs; the banked copy and the
+ * masks are in the state dump.
  */
 
 #include "emu/emu_gdb.h"
@@ -31,7 +35,9 @@
 #define A7_GDB_SP 13u
 #define A7_GDB_PC 15u
 #define A7_GDB_XPSR 16u
-#define A7_GDB_NREGS 17u
+#define A7_GDB_D0 17u /* d0..d15, 64 bits each */
+#define A7_GDB_FPSCR 33u
+#define A7_GDB_NREGS 34u
 
 static armv7m_cpu_t *cpu_of_gdb(const emu_cpu_t *cpu)
 {
@@ -57,7 +63,7 @@ static uint32_t a7_gdb_xpsr(const emu_cpu_t *cpu)
     return c->xpsr;
 }
 
-static uint32_t a7_gdb_reg_get(const emu_cpu_t *cpu, unsigned n)
+static uint64_t a7_gdb_reg_get(const emu_cpu_t *cpu, unsigned n)
 {
     const armv7m_cpu_t *c = cpu_of_gdb(cpu);
 
@@ -67,11 +73,20 @@ static uint32_t a7_gdb_reg_get(const emu_cpu_t *cpu, unsigned n)
     if (n == A7_GDB_XPSR) {
         return a7_gdb_xpsr(cpu);
     }
+    if (n >= A7_GDB_D0 && n < A7_GDB_FPSCR) {
+        const unsigned d = n - A7_GDB_D0;
+
+        return (uint64_t)c->s[2u * d] | ((uint64_t)c->s[2u * d + 1u] << 32);
+    }
+    if (n == A7_GDB_FPSCR) {
+        return c->fpscr;
+    }
     return 0u;
 }
 
-static void a7_gdb_reg_set(emu_cpu_t *cpu, unsigned n, uint32_t v)
+static void a7_gdb_reg_set(emu_cpu_t *cpu, unsigned n, uint64_t v64)
 {
+    const uint32_t v = (uint32_t)v64; /* all but d0..d15 */
     armv7m_cpu_t *c = cpu_of_gdb(cpu);
 
     if (n == A7_GDB_PC) {
@@ -92,6 +107,13 @@ static void a7_gdb_reg_set(emu_cpu_t *cpu, unsigned n, uint32_t v)
          */
         armv7m_flags_pack(c);
         c->xpsr = v;
+    } else if (n >= A7_GDB_D0 && n < A7_GDB_FPSCR) {
+        const unsigned d = n - A7_GDB_D0;
+
+        c->s[2u * d] = (uint32_t)v64;
+        c->s[2u * d + 1u] = (uint32_t)(v64 >> 32);
+    } else if (n == A7_GDB_FPSCR) {
+        c->fpscr = v & ARMV7M_FPSCR_WRITABLE; /* what VMSR may change */
     }
 }
 
@@ -136,11 +158,37 @@ static const char k_armv7m_xml[] =
     "<reg name=\"pc\" bitsize=\"32\" type=\"code_ptr\"/>"
     "<reg name=\"xpsr\" bitsize=\"32\"/>"
     "</feature>"
+    "<feature name=\"org.gnu.gdb.arm.vfp\">"
+    "<reg name=\"d0\" bitsize=\"64\" type=\"ieee_double\"/>"
+    "<reg name=\"d1\" bitsize=\"64\" type=\"ieee_double\"/>"
+    "<reg name=\"d2\" bitsize=\"64\" type=\"ieee_double\"/>"
+    "<reg name=\"d3\" bitsize=\"64\" type=\"ieee_double\"/>"
+    "<reg name=\"d4\" bitsize=\"64\" type=\"ieee_double\"/>"
+    "<reg name=\"d5\" bitsize=\"64\" type=\"ieee_double\"/>"
+    "<reg name=\"d6\" bitsize=\"64\" type=\"ieee_double\"/>"
+    "<reg name=\"d7\" bitsize=\"64\" type=\"ieee_double\"/>"
+    "<reg name=\"d8\" bitsize=\"64\" type=\"ieee_double\"/>"
+    "<reg name=\"d9\" bitsize=\"64\" type=\"ieee_double\"/>"
+    "<reg name=\"d10\" bitsize=\"64\" type=\"ieee_double\"/>"
+    "<reg name=\"d11\" bitsize=\"64\" type=\"ieee_double\"/>"
+    "<reg name=\"d12\" bitsize=\"64\" type=\"ieee_double\"/>"
+    "<reg name=\"d13\" bitsize=\"64\" type=\"ieee_double\"/>"
+    "<reg name=\"d14\" bitsize=\"64\" type=\"ieee_double\"/>"
+    "<reg name=\"d15\" bitsize=\"64\" type=\"ieee_double\"/>"
+    "<reg name=\"fpscr\" bitsize=\"32\" type=\"int\" group=\"float\"/>"
+    "</feature>"
     "</target>";
+
+/* r0..r12, sp, lr, pc, xpsr at four bytes; d0..d15 at eight; fpscr. */
+static const uint8_t k_armv7m_width[A7_GDB_NREGS] = {
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 4,
+};
 
 static const emu_gdb_target_t k_armv7m_gdb_target = {
     .nregs = A7_GDB_NREGS,
     .reg_bytes = 4u,
+    .reg_width = k_armv7m_width,
     .pc_regno = A7_GDB_PC, /* not the last: xpsr follows it */
     .reg_get = a7_gdb_reg_get,
     .reg_set = a7_gdb_reg_set,
@@ -149,13 +197,6 @@ static const emu_gdb_target_t k_armv7m_gdb_target = {
     .stop_signal = 5, /* SIGTRAP: an attach looks like a trap */
     .arch = "armv7e-m",
     .target_xml = k_armv7m_xml,
-    /*
-     * No memory map. The image's addresses are the platform's
-     * (docs/memory.md), and a map matters only where the board offers
-     * gdb its flash ops; without one `load` writes with X, which lands
-     * in RAM. Recorded in docs/TODO.md.
-     */
-    .memory_map = NULL,
 };
 
 const emu_gdb_target_t *armv7m_gdb_target(void);

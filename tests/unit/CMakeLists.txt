@@ -25,6 +25,11 @@ add_executable(emu-unit
     #
     test_cycles.c
     test_cpu.c
+    #
+    # The gdb stub through RSP packets: mixed register widths, and the
+    # memory map it builds from the bus.
+    #
+    test_gdb.c
 )
 
 # Frontend tests follow the frontends: a build without one must not try to

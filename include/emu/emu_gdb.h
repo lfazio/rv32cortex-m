@@ -72,7 +72,16 @@ typedef struct emu_gdb_target {
      * the `g` packet in registers.
      */
     unsigned nregs;
-    unsigned reg_bytes; /* per register; 4 on every target */
+    unsigned reg_bytes; /* per register, unless reg_width says otherwise */
+
+    /*
+     * Bytes per register, nregs of them, or NULL when every register is
+     * reg_bytes. gdb's VFP feature has d0..d15 at 64 bits beside a 32-bit
+     * core file, and a `g` packet is their concatenation at each one's
+     * own width -- so a single width cannot describe it, and an offset
+     * computed as `regno * reg_bytes` is wrong from the first wide one.
+     */
+    const uint8_t *reg_width;
 
     /*
      * gdb's number for the pc, which the stop reply sends along so gdb
@@ -92,8 +101,8 @@ typedef struct emu_gdb_target {
      * the one place a big-endian frontend already states it -- rather
      * than from a second flag here that could disagree with it.
      */
-    uint32_t (*reg_get)(const emu_cpu_t *cpu, unsigned gdb_regno);
-    void (*reg_set)(emu_cpu_t *cpu, unsigned gdb_regno, uint32_t v);
+    uint64_t (*reg_get)(const emu_cpu_t *cpu, unsigned gdb_regno);
+    void (*reg_set)(emu_cpu_t *cpu, unsigned gdb_regno, uint64_t v);
 
     /* Where execution is, for breakpoint matching and the stop reply. */
     uint32_t (*pc_get)(const emu_cpu_t *cpu);
@@ -120,10 +129,13 @@ typedef struct emu_gdb_target {
     const char *target_xml;
 
     /*
-     * The guest's memory map, served through qXfer:memory-map:read.
-     * Naming a region as flash is what makes gdb use vFlash* for it.
+     * There is no memory map here. It was one, and only RV32 had one --
+     * a table naming flash at 0x8000_0000, which stopped being where
+     * guest code lives when images moved to execute in place at
+     * EMU_GUEST_ROM_BASE. The address space is the *platform's*
+     * (docs/memory.md), the same for every frontend, so the stub builds
+     * the map from the bus and the flash ops; see build_memory_map.
      */
-    const char *memory_map;
 } emu_gdb_target_t;
 
 /* ------------------------------------------------------------------ */
@@ -137,9 +149,10 @@ typedef struct emu_gdb_target {
  * of only where RAM is, so `load` replaces the TFTP path rather than
  * being a smaller version of it.
  *
- * gdb only sends these if a memory map says a region is flash, so a
- * platform offering them must offer `memory_map` too; without it every
- * write goes through X and lands in RAM.
+ * gdb only sends these if a memory map says a region is flash; the stub
+ * serves one built from the bus whenever these are set, with the window
+ * below described as flash. Without it every write goes through X and
+ * lands in RAM.
  *
  * The board's implementation must reach flash through the routine that
  * runs from ITCM. Programming stalls instruction fetch from the bank
@@ -155,6 +168,14 @@ typedef struct emu_gdb_flash_ops {
     bool (*erase)(uint32_t addr, uint32_t len);
     bool (*write)(uint32_t addr, const void *data, uint32_t len);
     bool (*done)(void);
+    /*
+     * The guest addresses erase and write accept: `base`, for size()
+     * bytes. size() rather than a constant because it is the board's
+     * flash arena, which only the platform knows; 0 means none, and then
+     * the map names no flash.
+     */
+    uint32_t base;
+    uint32_t (*size)(void);
 } emu_gdb_flash_ops_t;
 
 /* ------------------------------------------------------------------ */

@@ -36,18 +36,38 @@ learn what an architecture calls things.
 ```c
 typedef struct emu_gdb_target {
     unsigned nregs;             /* the length of the `g` packet          */
-    unsigned reg_bytes;         /* 4 here                                */
+    unsigned reg_bytes;         /* 4, unless reg_width says otherwise    */
+    const uint8_t *reg_width;   /* bytes per register, or NULL           */
     unsigned pc_regno;          /* gdb's number for pc -- not the last   */
-    uint32_t (*reg_get)(const emu_cpu_t *, unsigned gdb_regno);
-    void     (*reg_set)(emu_cpu_t *, unsigned gdb_regno, uint32_t);
+    uint64_t (*reg_get)(const emu_cpu_t *, unsigned gdb_regno);
+    void     (*reg_set)(emu_cpu_t *, unsigned gdb_regno, uint64_t);
     uint32_t (*pc_get)(const emu_cpu_t *);
     void     (*pc_set)(emu_cpu_t *, uint32_t);
     int         stop_signal;    /* 5 = SIGTRAP                           */
     const char *arch;
     const char *target_xml;     /* qXfer:features:read                   */
-    const char *memory_map;     /* qXfer:memory-map:read                 */
 } emu_gdb_target_t;
 ```
+
+**Registers have their own widths.** A `g` packet is every register at
+its own width, back to back, so ARMv7-M's VFP feature -- d0..d15 at 64
+bits after a 32-bit core file -- needs a width per register and offsets
+that are the sum of the widths before, not `regno * reg_bytes`.
+`tests/unit/test_gdb.c` drives the stub with a 64-bit register between
+two 32-bit ones; the mutant that computes offsets the old way, and the
+one that ignores the table, each fail it.
+
+**The memory map is the platform's, built from the bus.** It used to be
+a string in two targets: RV32's named flash at 0x8000_0000, where guest
+code has not lived since images moved to execute in place at
+`EMU_GUEST_ROM_BASE`, and G4MH's at 0x0000_0000, below anything the
+flash ops accept -- and ARMv7-M and PowerPC had none, so `load` wrote
+them with `X`. The stub now lists the bus's regions in address order --
+RAM as `ram`, ROM as `rom`, devices and the passthrough window as `ram`
+-- and the flash ops' window (`base`, `size()`: the board's arena) as
+`flash` with a block size, leaving out any region inside it. Served when
+the platform offers flash ops, which is the board: there are none on
+the host, so `test_gdb.c` is the map's only test.
 
 Every frontend has one:
 
@@ -55,16 +75,17 @@ Every frontend has one:
 |---|---|---|---|---|
 | RV32 | `src/frontend/rv32/rv_gdb.c` | 33: x0..x31, pc | 32 | `org.gnu.gdb.riscv.cpu` |
 | G4MH | `src/frontend/g4mh/g4mh_gdb.c` | 66: r0..r31, sr0..sr31, pc, fp | 64 | gdb's built-in v850 numbering |
-| ARMv7-M | `src/frontend/armv7m/armv7m_gdb.c` | 17: r0..r12, sp, lr, pc, xpsr | 15 | `org.gnu.gdb.arm.m-profile` |
-| PowerPC | `src/frontend/ppc/ppc_gdb.c` | 38: r0..r31, pc, msr, cr, lr, ctr, xer | 32 | `org.gnu.gdb.power.core` |
+| ARMv7-M | `src/frontend/armv7m/armv7m_gdb.c` | 34: r0..r12, sp, lr, pc, xpsr, d0..d15, fpscr | 15 | `org.gnu.gdb.arm.m-profile`, `org.gnu.gdb.arm.vfp` |
+| PowerPC | `src/frontend/ppc/ppc_gdb.c` | 39: r0..r31, pc, msr, cr, lr, ctr, xer, spefscr | 32 | `org.gnu.gdb.power.core`, and spefscr in a feature of its own |
 
-Not described, because every register here is `reg_bytes` wide and
-gdb's features for them have 64-bit members: the ARMv7-M FP registers
-(`org.gnu.gdb.arm.vfp` is d0..d15) and PowerPC's SPE upper halves
-(`org.gnu.gdb.power.spe` needs the 64-bit `acc`). Nor MSP/PSP and the
-masks on ARMv7-M, or the PowerPC SPRs -- the state dump has those.
-Neither new target serves a memory map, so on the board `load` writes
-with `X` for them rather than through the flash ops.
+ARMv7-M's d<n> is s<2n+1>:s<2n>, and gdb builds s0..s31 from them --
+which is why a gdb session cannot see a swapped pairing and the unit
+test holds it to the s registers instead. PowerPC's SPEFSCR is *not* in
+gdb's SPE feature: that feature is the SPE's upper halves and its
+64-bit `acc`, which this model does not have (EFPU2 is scalar), and
+registers that read zero and drop every write would be shown as values.
+Not described: MSP/PSP and the masks on ARMv7-M, and the PowerPC SPRs --
+the state dump has those.
 
 ### Checked by a real gdb
 

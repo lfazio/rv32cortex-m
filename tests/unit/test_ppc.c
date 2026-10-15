@@ -21,6 +21,7 @@
 #include "tests.h"
 
 #include "emu/emu_cpu.h"
+#include "emu/emu_gdb.h"
 #include "emu/emu_memmap.h"
 #include "ppc/ppc_cpu.h"
 #include "ppc/ppc_decode.h"
@@ -965,8 +966,38 @@ static void test_e_i16_and_rotate(void)
     CHECK_EQ(reg(12), 0x00003400u);
 }
 
+/*
+ * SPEFSCR through gdb: after the core feature, at its own number, and
+ * written as mtspr would write it.
+ */
+const emu_gdb_target_t *ppc_gdb_target(void);
+
+static void test_gdb_spefscr(void)
+{
+    const uint16_t prog[] = {0x4400u};
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+
+    if (!load_and_run_vle(prog, 1u, 1u, &why, &retired)) {
+        CHECK(false);
+        return;
+    }
+    const emu_gdb_target_t *const t = ppc_gdb_target();
+    ppc_cpu_t *const c = ppc_core();
+
+    CHECK_EQ(t->nregs, 39u);
+    CHECK(strstr(t->target_xml, "spefscr") != NULL);
+    /* Not gdb's SPE feature, whose acc and upper halves are not here. */
+    CHECK(strstr(t->target_xml, "org.gnu.gdb.power.spe") == NULL);
+    c->spefscr = 0x00000040u;
+    CHECK_EQ64(t->reg_get(g_core.cpu, 38u), 0x40u);
+    t->reg_set(g_core.cpu, 38u, 0xFFFFFFFFu);
+    CHECK_EQ(c->spefscr, PPC_SPEFSCR_IMPL);
+}
+
 void test_ppc(void)
 {
+    test_gdb_spefscr();
     test_vle_length();
     test_alu();
     test_load_store_byte_order();

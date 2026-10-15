@@ -23,6 +23,7 @@
 #include "armv7m/armv7m_decode.h"
 
 #include "emu/emu_bus.h"
+#include "emu/emu_gdb.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -288,8 +289,45 @@ static void test_decode_agrees_on_undefined(void)
     }
 }
 
+/*
+ * gdb's d registers, against the single-precision file they are made of.
+ *
+ * Not through gdb: gdb builds s0..s31 from d0..d15 itself, so a session
+ * shows a swapped pairing as consistent nonsense -- `p $s0` agrees with
+ * `p $d0` whichever half the stub put first. The architecture's pairing
+ * is the thing to hold it to: D<n> is S<2n+1>:S<2n>.
+ */
+const emu_gdb_target_t *armv7m_gdb_target(void);
+
+static void test_gdb_fp_registers(void)
+{
+    const emu_gdb_target_t *const t = armv7m_gdb_target();
+    armv7m_cpu_t *const c = &g_ua_cpu;
+    emu_cpu_t *const cpu = (emu_cpu_t *)(void *)c;
+
+    memset(c->s, 0, sizeof(c->s));
+    c->s[0] = 0x3F800000u; /* 1.0f, the low half of d0 */
+    c->s[1] = 0x40000000u; /* 2.0f, the high half */
+    c->s[31] = 0xDEADBEEFu;
+    CHECK(t->reg_width != NULL);
+    CHECK_EQ(t->reg_width[17], 8u); /* d0 */
+    CHECK_EQ(t->reg_width[33], 4u); /* fpscr */
+    CHECK_EQ64(t->reg_get(cpu, 17u), 0x400000003F800000ull);
+    CHECK_EQ64(t->reg_get(cpu, 32u) >> 32, 0xDEADBEEFu); /* d15's top */
+
+    t->reg_set(cpu, 18u, 0x1122334455667788ull); /* d1 */
+    CHECK_EQ(c->s[2], 0x55667788u);
+    CHECK_EQ(c->s[3], 0x11223344u);
+
+    /* FPSCR takes what VMSR would: the reserved bits stay clear. */
+    t->reg_set(cpu, 33u, 0xFFFFFFFFu);
+    CHECK_EQ(c->fpscr, ARMV7M_FPSCR_WRITABLE);
+    CHECK_EQ64(t->reg_get(cpu, 33u), ARMV7M_FPSCR_WRITABLE);
+}
+
 void test_armv7m(void)
 {
+    test_gdb_fp_registers();
     test_insn_len_exhaustive();
     test_insn_len_boundary();
     test_decode_agrees_on_undefined();
