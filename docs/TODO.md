@@ -223,6 +223,21 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       `performance.md` are after the fix. The second half of
       `performance.md` and both `stm32f446/` pages are not, and are
       marked as history.
+- [ ] **ARMv7-M declines an IT block that holds a memory access.**
+      `-DEMU_PAIR_STATS=ON` over the x86-64 JIT: CoreMark interprets
+      0.1%, crypto nothing, **Dhrystone 6.4%** (579,310 of 9.06M) -- MOVS
+      immediate, IT, PC-relative LDR, STRB and LDRB, from 25 IT blocks the
+      translator declines (`declined IT:25`). The rule is deliberate: an
+      instruction inside IT is lowered as "compute, then select against
+      the old value", and an access cannot be done and then undone. Two
+      ways in, cheapest first: a **literal** load in ROM is a constant at
+      translation and needs no access at all, so it can select like any
+      ALU result; a load or store proper needs either a helper that is
+      told the condition or a conditional skip inside the block, which the
+      IR does not have. Measure which of the 25 the literal case alone
+      takes before building the second. RV32 CoreMark interprets 1
+      instruction and PowerPC CoreMark 2,462 of 12M on the same
+      instrument, so neither has a gap of this kind.
 - [x] **G4MH's translator had no ADDI.** Opcode 0x30 fell to the
       `default` and declined, and `LD.HU disp16` was declined on purpose
       and never lowered: together 94% of what a G4MH DOOM run interpreted,
