@@ -76,7 +76,7 @@ Every frontend has one:
 | RV32 | `src/frontend/rv32/rv_gdb.c` | 33: x0..x31, pc | 32 | `org.gnu.gdb.riscv.cpu` |
 | G4MH | `src/frontend/g4mh/g4mh_gdb.c` | 66: r0..r31, sr0..sr31, pc, fp | 64 | gdb's built-in v850 numbering |
 | ARMv7-M | `src/frontend/armv7m/armv7m_gdb.c` | 34: r0..r12, sp, lr, pc, xpsr, d0..d15, fpscr | 15 | `org.gnu.gdb.arm.m-profile`, `org.gnu.gdb.arm.vfp` |
-| PowerPC | `src/frontend/ppc/ppc_gdb.c` | 39: r0..r31, pc, msr, cr, lr, ctr, xer, spefscr | 32 | `org.gnu.gdb.power.core`, and spefscr in a feature of its own |
+| PowerPC | `src/frontend/ppc/ppc_gdb.c` | 39: r0..r31, pc, msr, cr, lr, ctr, xer, spefscr | 32 | `org.gnu.gdb.power.core`, and spefscr in a feature of its own; `powerpc:e500` |
 
 ARMv7-M's d<n> is s<2n+1>:s<2n>, and gdb builds s0..s31 from them --
 which is why a gdb session cannot see a swapped pairing and the unit
@@ -86,6 +86,36 @@ gdb's SPE feature: that feature is the SPE's upper halves and its
 registers that read zero and drop every write would be shown as values.
 Not described: MSP/PSP and the masks on ARMv7-M, and the PowerPC SPRs --
 the state dump has those.
+
+**PowerPC's architecture is `powerpc:e500`**, the nearest core gdb has
+to the e200z7: Book E, the SPE and embedded floating point, the MAS
+TLB. It was `powerpc:common`, and gdb, once attached, takes the
+description's architecture over the file's, so this decides how every
+instruction is named. Measured with gdb 18 against the stub:
+
+- **SPRs.** The start-up code's 26 `mtspr`/`mfspr` came out under
+  `common` as the 603's BATs (`mtibatu 0` for IVOR32), a POWER server's
+  `mthmer` for TSR and `mfiamr` for DEAR, or bare numbers -- IVOR0-15,
+  IVPR, DECAR, TCR, ESR. Under `e500` each is the register the code
+  programs.
+- **Instructions at an address no file covers** -- code in RAM, an
+  uploaded image -- where gdb has only the architecture to go on. Of 26
+  e200z7 Book E instructions, `common` named six for other cores:
+  `tlbwe` as the 603e's `tlbld`, `tlbre` as the 4xx `tlbrehi`, and
+  `efsmul`, `evaddw` and `evmergehi` as AltiVec. `e500` names all but
+  `rfdi` and `wait`, which e500 does not have; they print as `.long`.
+- **Branch hints.** Conditional branches print with `+` or `-` --
+  `e500` reads BO's last bit as the classic static hint. The e200z7
+  ignores it ("The BO prediction bit in branch encodings is ignored",
+  `docs/ppc/e200z759CRM.pdf`), so it is the encoding being shown, not
+  a behaviour.
+- **Data read as code** prints `.long` where `common` found classic FPU,
+  POWER and Gekko instructions this core does not have.
+
+Not `powerpc:vle`: the frontend runs Book E images as well as VLE ones.
+And gdb 18 will not load an ELF whose BFD architecture is
+`powerpc:vle` at all ("Architecture of file not recognized"), so a VLE
+image is debugged without its file, whatever the stub says.
 
 ### Checked by a real gdb
 

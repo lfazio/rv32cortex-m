@@ -133,16 +133,20 @@ static void ppc_gdb_pc_set(emu_cpu_t *cpu, uint32_t pc)
 }
 
 /*
- * gdb's core feature, in reg_get's order. `powerpc:common` rather than
- * `powerpc:vle`: the frontend runs Book E images as well as VLE ones,
- * and an ELF tells gdb which it has -- the description should not
- * claim one encoding for both.
+ * gdb's core feature, in reg_get's order, as `powerpc:e500` -- the
+ * nearest core gdb has: Book E, the SPE and embedded floating point, the
+ * MAS TLB. Attached, gdb takes this over the file's architecture, so it
+ * decides every name. Under `powerpc:common` the start-up's IVOR writes
+ * read as 603 BAT writes (`mtibatu 0` for IVOR32), and at an address no
+ * file covers `tlbwe` was the 603e's `tlbld` and `efsmul` AltiVec's
+ * `vmuleud`. e500 lacks `rfdi` and `wait`, which print as `.long`.
+ * Not `powerpc:vle`: the frontend runs Book E images as well as VLE ones.
  */
 static const char k_ppc_xml[] =
     "<?xml version=\"1.0\"?>"
     "<!DOCTYPE target SYSTEM \"gdb-target.dtd\">"
     "<target version=\"1.0\">"
-    "<architecture>powerpc:common</architecture>"
+    "<architecture>powerpc:e500</architecture>"
     "<feature name=\"org.gnu.gdb.power.core\">"
     "<reg name=\"r0\" bitsize=\"32\" type=\"uint32\"/>"
     "<reg name=\"r1\" bitsize=\"32\" type=\"uint32\"/>"
@@ -197,7 +201,7 @@ static const emu_gdb_target_t k_ppc_gdb_target = {
     .pc_get = ppc_gdb_pc_get,
     .pc_set = ppc_gdb_pc_set,
     .stop_signal = 5, /* SIGTRAP: an attach looks like a trap */
-    .arch = "powerpc:common",
+    .arch = "powerpc:e500",
     .target_xml = k_ppc_xml,
 };
 

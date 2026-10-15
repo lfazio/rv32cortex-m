@@ -33,7 +33,7 @@ of them can catch is a shared misreading of the manual.
 | SPE and the vector half of the EFPU (`ev*`) | **not implemented** — SPE-unavailable while MSR[SPE] is clear, as the core does; an illegal-instruction program interrupt once it is set |
 | Classic floating point (`fadd` …) | not on this core |
 | Caches, the debug facility (IAC/DAC/DBCR do hold what is written) | not modelled |
-| gdb stub | `src/frontend/ppc/ppc_gdb.c`: r0..r31, pc, msr, cr, lr, ctr, xer as `org.gnu.gdb.power.core`, big-endian; not the SPE halves or the SPRs ([../gdb.md](../gdb.md)) |
+| gdb stub | `src/frontend/ppc/ppc_gdb.c`: r0..r31, pc, msr, cr, lr, ctr, xer as `org.gnu.gdb.power.core`, big-endian, as `powerpc:e500` -- the nearest core gdb has, which names the Book E SPRs and the SPE where `powerpc:common` named 603 BATs and AltiVec; not the SPE halves or the SPRs ([../gdb.md](../gdb.md#the-guest-stub)) |
 | pair statistics | not written for this frontend |
 | More than one core | no |
 

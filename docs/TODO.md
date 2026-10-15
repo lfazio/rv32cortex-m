@@ -1619,7 +1619,11 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       map is built from the bus and the flash ops for every frontend;
       the two hard-coded ones named flash where the flash ops could not
       program -- RV32's at 0x8000_0000, stale since execute-in-place,
-      and G4MH's at 0 ([gdb.md](gdb.md#the-guest-stub)).
+      and G4MH's at 0 ([gdb.md](gdb.md#the-guest-stub)). PowerPC's
+      architecture is `powerpc:e500` now, not `powerpc:common`: the
+      start-up's IVOR writes had read as 603 BAT writes, and at an
+      address no file covers `efsmul` as AltiVec's `vmuleud`. `rfdi`
+      and `wait`, which e500 lacks, print as `.long`.
 
 - [x] **rv32: Sscofpmf.** Zihpm's counters have an overflow bit and
       an inhibit per privilege mode in `mhpmevent3h`-`31h`, `scountovf`
