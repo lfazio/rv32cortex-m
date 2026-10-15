@@ -255,6 +255,16 @@ At 128 KB the working set fits. A 650-iteration run takes 5.33 s by the
 host's clock and 5.30 s by the firmware's. G4MH builds keep 32 KB in
 ITCM: their RAM leaves no room in AXISRAM2.
 
+**Then the smaller Thumb-2 code** -- short encodings, the one-compare
+window guard and one RETIRE per stretch, 60.8 to 33.9 bytes a guest
+instruction on the F746 ([../backend/thumb2.md](../backend/thumb2.md#where-the-bytes-go)).
+CoreMark already fitted here, so this is the executed code getting
+shorter rather than the cache stopping churning: x1500, a run CoreMark
+accepts as valid at 600 MHz, **19.76 → 17.09** cycles an instruction,
+12.41 s → 10.73 s by the host's clock, 125 → 150 iterations a second,
+against a worktree at 7450c6b. (x650 is 4.6 s on this part, under the
+10 s CoreMark requires; it measured 19.60 → 17.16 the same way.)
+
 ## Retention and chained blocks
 
 `compact()` ranks blocks by dispatcher lookups, and a block entered

@@ -354,6 +354,11 @@ observation points, carrying the count of the ones it absorbed -- see
 14.29 → 13.94 at 96 KB and 117.63 → 115.24 at 32 KB, against a worktree
 at the commit before.
 
+**On the N6's Cortex-M55**, where CoreMark already fitted the 128 KB
+buffer, the same changes are the executed code getting shorter: x1500
+19.76 → 17.09 cycles an instruction, 12.41 s → 10.73 s, against the same
+baseline ([../jit/tuning.md](../jit/tuning.md#the-n6)).
+
 **The peripheral window is inlined too, once armed**: the same guard
 with the base as the host address, plus a test of each read-only hole
 on a store. `mmiobench` 2.5-7x per peripheral access; see

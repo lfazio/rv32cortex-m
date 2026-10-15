@@ -144,7 +144,8 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
 - [ ] **The default code cache makes the JIT slower than the
       interpreter on the F446, and on G4MH builds.** Decided for the
       F746 (915f583: 96 KB, CoreMark 152.85 → 27.82 with chain heat)
-      and the N6 (128 KB in AXISRAM2, 175.46 → 20.21, the guest paying
+      and the N6 (128 KB in AXISRAM2, 175.46 → 20.21, and 17.09 at x1500
+      since the smaller Thumb-2 code, the guest paying
       nothing), each except with G4MH compiled in, whose RAM leaves no
       room. The F446 has 128 KiB of RAM in all. What follows is the
       original entry. At
