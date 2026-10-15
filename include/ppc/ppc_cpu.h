@@ -365,6 +365,19 @@ ppc_exc_t ppc_mmu_xlate(ppc_cpu_t *c, uint32_t ea, ppc_acc_t acc, uint32_t *pa,
 bool ppc_mmu_probe_exec(const ppc_cpu_t *c, uint32_t ea, uint32_t *pa,
                         bool *vle, bool *le);
 
+/*
+ * The translator's other question: is the page holding `ea` one that
+ * loads and stores may treat as plain memory? True, with the page's
+ * effective and real bases and its size (up to 4 GB, hence 64 bits),
+ * when the entry translating `ea` for data in the current address space
+ * and PID grants both read and write in the current mode, is big-endian,
+ * and no lower-numbered entry -- which would win the lookup for some of
+ * its addresses -- overlaps it. Every effective address on the page then
+ * translates the same way with the same permissions. No side effects.
+ */
+bool ppc_mmu_data_page(const ppc_cpu_t *c, uint32_t ea, uint32_t *va,
+                       uint32_t *pa, uint64_t *size);
+
 /* The TLB instructions, after the privilege check. */
 void ppc_tlbre(ppc_cpu_t *c);
 void ppc_tlbwe(ppc_cpu_t *c);

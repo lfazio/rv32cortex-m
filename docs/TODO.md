@@ -1677,14 +1677,20 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       it was built under, and run it again -- six of eight defects in
       the machinery passed the old checks, and all ten now fail on the
       one named for them ([frontend/ppc.md](frontend/ppc.md#the-mmu)).
-- [ ] **PowerPC: a window per TLB entry.** Under the MMU every access is
-      a helper call, so `coremark-tlb` runs at half the identity map's
-      speed under the JIT (0.112 s against 0.052). The RAM window could
-      be offered per block when one entry maps the whole of it with
-      read and write for the block's mode, with the TLB generation
-      already guarding it. And a guest refilling the TLB from a miss
-      handler flushes every block per refill; per-entry invalidation is
-      what that would need.
+- [x] **PowerPC: a window per TLB entry.** Under the MMU a block's RAM
+      window is the page the stack is on, when every address on it
+      translates alike -- read and write for the mode, big-endian, no
+      lower entry overlapping -- and MSR[DS] is in the context beside
+      IS, PR and PID0. `coremark-tlb` on x86-64 0.139 s to **0.047 s**,
+      identity CoreMark's speed (callgrind 853.5M to 258.6M host
+      instructions); on the F746 104.69 to **52.68** host cycles an
+      instruction against identity's 51.66. `ppc-mmu` 234 checks; four
+      mutants of the guards each fail their `jit-win-` check, under
+      `--jit` only ([frontend/ppc.md](frontend/ppc.md#the-mmu)).
+- [ ] **PowerPC: per-entry invalidation.** A TLB write moves the
+      generation and every block goes. A start-up pays that once; a
+      guest refilling the TLB from a miss handler would pay it per
+      refill. No guest here does, so nothing measures it yet.
 - [x] **PowerPC: little-endian pages.** MAS2[E] and MAS4[DE] are held;
       data is accessed in true little-endian order at every width,
       Book E code from an E page is fetched as little-endian words,

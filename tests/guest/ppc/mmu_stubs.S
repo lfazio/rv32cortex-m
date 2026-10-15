@@ -154,6 +154,53 @@ stub stub_sth				/* r3 = address, r4 = value */
 	blr
 
 /*
+ * The JIT's RAM window under the MMU is the page r1 is on, chosen when a
+ * block is translated. These run a loop with r1 moved onto a test page,
+ * so that the loop's block is built with that page as its window: 64
+ * times, store r4 at r5(r1) and load it back. Returns the load, or the
+ * interrupt's number if one was taken -- the recorder returns to the
+ * instruction after the bl, which puts r1 back, so a fault with r1
+ * elsewhere is survivable. r0 and r12 survive the recorder.
+ */
+stub stub_win				/* r3 = sp, r4 = value, r5 = offset */
+	mflr	%r12
+	mr	%r0, %r1
+	bl	win_loop
+	mr	%r1, %r0
+	mtlr	%r12
+	blr
+
+/* The same loop -- the same code, so the same block -- with MSR[DS] set. */
+stub stub_win_ds
+	mflr	%r12
+	mr	%r0, %r1
+	mfmsr	%r6
+	ori	%r7, %r6, MSR_DS
+	mtmsr	%r7
+	bl	win_loop
+	mr	%r1, %r0
+	mtmsr	%r6
+	mtlr	%r12
+	blr
+
+win_loop:
+	mr	%r1, %r3
+	li	%r3, 64
+	mtctr	%r3
+	/*
+	 * A branch ends a block, so the loop is a block of its own from its
+	 * first iteration, built with r1 already on the test page. Falling
+	 * into it instead ran that iteration in this block, whose window is
+	 * the stack's page -- and a store refused there faulted through the
+	 * helper before the loop's block, the one under test, ever ran.
+	 */
+	b	1f
+1:	stwx	%r4, %r1, %r5
+	lwzx	%r3, %r1, %r5
+	bdnz	1b
+	blr
+
+/*
  * Two pages of code, reached only through mappings mmu.c makes. The
  * first is called from Book E and VLE pages alike, so it holds both
  * encodings; its last halfword starts a 32-bit VLE instruction whose

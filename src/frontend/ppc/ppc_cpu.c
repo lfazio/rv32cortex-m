@@ -91,10 +91,11 @@ void ppc_cpu_reset(ppc_cpu_t *c, uint32_t reset_pc)
  * was allowed on MSR[PR], the X permission being per mode. So all three
  * are in the key, beside the bit that says translation is on -- a block
  * from the identity map reads RAM through a window that does not
- * translate, and must not be found under a mapping. Data needs nothing:
- * under the MMU every access goes to the helper and is translated there.
- * TLB contents are not identity but validity, so they move the
- * generation instead (ppc_mmu.c).
+ * translate, and must not be found under a mapping. So is MSR[DS]: a
+ * block's RAM window is a page the TLB maps for data (ppc_fast_mem), and
+ * the address space it was looked up in is DS. TLB contents are not
+ * identity but validity, so they move the generation instead
+ * (ppc_mmu.c).
  */
 uint64_t ppc_cpu_ctx(const ppc_cpu_t *c)
 {
@@ -104,6 +105,7 @@ uint64_t ppc_cpu_ctx(const ppc_cpu_t *c)
         k |= 2u;
         k |= (c->msr & PPC_MSR_IS) != 0u ? 4u : 0u;
         k |= (c->msr & PPC_MSR_PR) != 0u ? 8u : 0u;
+        k |= (c->msr & PPC_MSR_DS) != 0u ? 16u : 0u;
         k |= (uint64_t)(c->pid0 & 0xFFu) << 8;
     }
     return k;

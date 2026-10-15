@@ -23,6 +23,11 @@
  * its mechanism removed. The guest's other checks were written before
  * any block ran under a programmed TLB, and six of eight single-point
  * defects in that machinery passed every one of them.
+ *
+ * "jit-win-" are the same idea for the JIT's RAM window, which under
+ * the MMU is the page r1 is on when a block is built: stub_win moves r1
+ * onto a test page for its loop, and each case is a page the window
+ * must not be taken for.
  */
 typedef unsigned int u32;
 typedef unsigned char u8;
@@ -83,6 +88,7 @@ u32 stub_jump_is_r5(u32 target, u32 unused, u32 r5);
 void u_tlbwe(void), u_tlbsx(void), u_load(void);
 u32 stub_lhz(u32 a), stub_lbz(u32 a), stub_lwbrx(u32 a), stub_sth(u32 a, u32 v);
 u32 stub_jump_r4(u32 target, u32 r4);
+u32 stub_win(u32 sp, u32 v, u32 off), stub_win_ds(u32 sp, u32 v, u32 off);
 extern u8 mmu_page0[], mmu_page2[];
 
 static void pc_(char c)
@@ -129,8 +135,9 @@ static void took(const char *name, u32 ret, u32 ivor, u32 esr)
     check(name, g_trap.esr, esr);
 }
 
-/* Two physical pages the mappings below point into. */
-static volatile u8 g_pg[8192] __attribute__((aligned(4096)));
+/* Two physical pages the mappings below point into -- one 8 KB page,
+ * for the window case that needs one, so aligned to 8 KB. */
+static volatile u8 g_pg[8192] __attribute__((aligned(8192)));
 #define PAGE_A ((u32) & g_pg[0])
 #define PAGE_B ((u32) & g_pg[4096])
 
@@ -589,6 +596,60 @@ int main(void)
     check("fi-reads-0", rd_mmucsr0(), 0u);
     took("fi", stub_load(0x40000010u), 13u, 0u);
     check("fi-iprot", stub_load(0x47000010u), 0xAAAA0010u);
+
+    /*
+     * --- the JIT's RAM window under the MMU --------------------------
+     * jit-win-: a block's loads and stores go straight to RAM when the
+     * page r1 is on lets them -- read and write for the mode, big-endian,
+     * no lower entry overlapping -- and through the helper otherwise.
+     * Only the protected entries survive the invalidations above, and
+     * none is near 0x7C000000. First a page that qualifies.
+     */
+    wr32(PAGE_A + 0x100u, 0u);
+    tlb_write(25u, V | K4, 0x7C000000u, PAGE_A | SW | SR);
+    check("jit-win-be", stub_win(0x7C000100u, 0x11223344u, 0u), 0x11223344u);
+    check("jit-win-be-mem", rd32(PAGE_A + 0x100u), 0x11223344u);
+    /* MAS2[E]: the window is accessed big-endian. */
+    tlb_write(25u, V | K4, 0x7C000000u | E, PAGE_A | SW | SR);
+    check("jit-win-le", stub_win(0x7C000100u, 0x11223344u, 0u), 0x11223344u);
+    check("jit-win-le-mem", rd32(PAGE_A + 0x100u), 0x44332211u);
+    /* Read-only for the mode: the store takes a DSI and writes nothing. */
+    wr32(PAGE_A + 0x100u, 0xCAFEu);
+    tlb_write(25u, V | K4, 0x7C000000u, PAGE_A | SR);
+    took("jit-win-ro", stub_win(0x7C000100u, 0x55555555u, 0u), 2u, ESR_ST);
+    check("jit-win-ro-dear", g_trap.dear, 0x7C000100u);
+    check("jit-win-ro-mem", rd32(PAGE_A + 0x100u), 0xCAFEu);
+    /*
+     * A lower-numbered entry wins where they overlap: entry 24 maps the
+     * upper half of entry 25's 8 KB page onto its lower half, so the
+     * page is not one translation and r1's page is no window.
+     */
+    wr32(PAGE_A + 0x100u, 0u);
+    wr32(PAGE_B + 0x100u, 0u);
+    tlb_write(24u, V | K4, 0x7C001000u, PAGE_A | SW | SR);
+    tlb_write(25u, V | TSIZE(3), 0x7C000000u, PAGE_A | SW | SR);
+    check("jit-win-lower", stub_win(0x7C000100u, 0x66778899u, 0x1000u),
+          0x66778899u);
+    check("jit-win-lower-a", rd32(PAGE_A + 0x100u), 0x66778899u);
+    check("jit-win-lower-b", rd32(PAGE_B + 0x100u), 0u);
+    tlb_write(24u, 0u, 0u, 0u);
+    /*
+     * MSR[DS]: the same loop in address space 1, where the page is
+     * PAGE_B, straight after it ran in address space 0. No TLB write
+     * between, so only the context tells the two blocks apart.
+     */
+    wr32(PAGE_A + 0x100u, 0u);
+    wr32(PAGE_B + 0x100u, 0u);
+    tlb_write(25u, V | K4, 0x7C000000u, PAGE_A | SW | SR);
+    tlb_write(26u, V | TS | K4, 0x7C000000u, PAGE_B | SW | SR);
+    check("jit-win-as0", stub_win(0x7C000100u, 0xA0A0A0A0u, 0u), 0xA0A0A0A0u);
+    check("jit-win-as1", stub_win_ds(0x7C000100u, 0xB1B1B1B1u, 0u),
+          0xB1B1B1B1u);
+    check("jit-win-as0-mem", rd32(PAGE_A + 0x100u), 0xA0A0A0A0u);
+    check("jit-win-as1-mem", rd32(PAGE_B + 0x100u), 0xB1B1B1B1u);
+    for (u32 e = 24u; e <= 26u; e++) {
+        tlb_write(e, 0u, 0u, 0u);
+    }
 
     ps_("PPC-MMU-END checks=");
     phex(g_checks);

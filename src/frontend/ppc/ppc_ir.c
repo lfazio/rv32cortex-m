@@ -251,38 +251,55 @@ const emu_ir_target_t ppc_ir_target = {
  * program's loads and stores overwhelmingly go, found by asking the bus
  * where r1 points so that no memory map is written down here.
  *
- * There is nothing to say no for. This core has no MMU or MPU in this
- * model and performs unaligned accesses, so an access to RAM is a move
- * -- once it has been byte-swapped, which needs the host to have the
- * instruction. A store needs no guard either: the reservation holds no
- * address (the e200 compares none), so a store cannot break one.
+ * On the identity map there is nothing to say no for. This core performs
+ * unaligned accesses, so an access to RAM is a move -- once it has been
+ * byte-swapped, which needs the host to have the instruction. A store
+ * needs no guard either: the reservation holds no address (the e200
+ * compares none), so a store cannot break one.
+ *
+ * Under a programmed TLB the window is the *page* r1 is on, where
+ * ppc_mmu_data_page says loads and stores may treat it as plain memory
+ * -- read and write for the mode, big-endian, no lower entry overlapping
+ * -- clipped to the RAM region its real address lies in. Every address
+ * in it then translates the same way, so the inlined access is the
+ * helper's answer without the call; anything outside goes to the helper
+ * as before. What it was built under is all in the key: the TLB moves
+ * the generation, and MSR[DS], MSR[PR] and PID0 are in the context.
+ * The guards send a misaligned access to the helper, so none straddles
+ * the page's end.
  */
 static bool ppc_fast_mem(ppc_cpu_t *c, emu_ir_fastmem_t *out)
 {
+    const uint32_t ea = c->r[1] - 4u;
+    uint32_t va = 0u;
+    uint32_t pa = 0u;
+    uint64_t n = 0x100000000ull;
     emu_region_t *r;
 
-    /*
-     * Not under a programmed TLB: the window is physical, and an access
-     * there has to be translated and permission-checked first -- which
-     * the helper does. mmu_on is in the context, so a block built with
-     * the window is never entered with translation on.
-     */
-    if (c->mmu_on) {
-        return false;
-    }
     if (c->bus == NULL || !emu_ir_can_lower(EMU_IR_BSWAP32, 0u) ||
         !emu_ir_can_lower(EMU_IR_BSWAP16, 0u)) {
         return false;
     }
-    r = emu_bus_find(c->bus, c->r[1] - 4u);
+    if (c->mmu_on && !ppc_mmu_data_page(c, ea, &va, &pa, &n)) {
+        return false;
+    }
+    r = emu_bus_find(c->bus, pa + (ea - va));
     if (r == NULL || r->kind != (uint8_t)EMU_MEM_RAM || r->host == NULL ||
         r->size == 0u ||
         (r->perm & (EMU_PERM_R | EMU_PERM_W)) != (EMU_PERM_R | EMU_PERM_W)) {
         return false;
     }
-    out->base = r->base;
-    out->size = r->size;
-    out->host = r->host;
+
+    /* The page's real span, clipped to the region: the identity map's
+     * page is the whole 4 GB, which leaves the region itself. */
+    const uint64_t lo = (pa > r->base) ? pa : r->base;
+    const uint64_t page_end = (uint64_t)pa + n;
+    const uint64_t reg_end = (uint64_t)r->base + r->size;
+    const uint64_t hi = (page_end < reg_end) ? page_end : reg_end;
+
+    out->base = va + (uint32_t)(lo - pa);
+    out->size = (uint32_t)(hi - lo);
+    out->host = (uint8_t *)r->host + (lo - r->base);
     out->store_guard_offset = EMU_IR_NO_GUARD;
     return true;
 }
@@ -1453,8 +1470,9 @@ static void ppc_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
     out->irq_pending = &c->irq_dirty;
     /*
      * Nothing blocks. Under a programmed TLB the translator fetches
-     * through it, accesses go to the helper, and the context and the
-     * generation keep a block from outliving what it was built under;
+     * through it, accesses go through a page window or the helper, and
+     * the context and the generation keep a block from outliving what
+     * it was built under;
      * see docs/frontend/ppc.md. This pointed at mmu_on, which sent the
      * whole run to the interpreter from the first tlbwe.
      */

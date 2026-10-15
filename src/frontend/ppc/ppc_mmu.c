@@ -210,6 +210,53 @@ bool ppc_mmu_probe_exec(const ppc_cpu_t *c, uint32_t ea, uint32_t *pa,
     return true;
 }
 
+bool ppc_mmu_data_page(const ppc_cpu_t *c, uint32_t ea, uint32_t *va,
+                       uint32_t *pa, uint64_t *size)
+{
+    const uint32_t as = as_of(c, false);
+    const uint32_t pid = pid_of(c);
+    const int i = lookup(c, ea, as, pid);
+    const bool user = (c->msr & PPC_MSR_PR) != 0u;
+    const uint32_t need =
+        user ? (PPC_MAS3_UR | PPC_MAS3_UW) : (PPC_MAS3_SR | PPC_MAS3_SW);
+    uint32_t mask;
+
+    if (i < 0 || (c->tlb[i].mas3 & need) != need ||
+        (c->tlb[i].mas2 & PPC_MAS2_E) != 0u ||
+        !page_mask(c->tlb[i].mas1, &mask)) {
+        return false;
+    }
+    const uint32_t lo = c->tlb[i].mas2 & PPC_MAS2_EPN & mask;
+    const uint64_t n = (uint64_t)(uint32_t)~mask + 1u;
+
+    /*
+     * The lowest-numbered entry wins (lookup), so one below i that
+     * shares any address with this page would translate that part
+     * differently. Entries above i never win while i matches.
+     */
+    for (int j = 0; j < i; j++) {
+        const uint32_t m1 = c->tlb[j].mas1;
+        const uint32_t tid = (m1 & PPC_MAS1_TID) >> PPC_MAS1_TID_SHIFT;
+        uint32_t mj;
+
+        if ((m1 & PPC_MAS1_V) == 0u ||
+            ((m1 & PPC_MAS1_TS) != 0u) != (as != 0u) ||
+            (tid != 0u && tid != pid) || !page_mask(m1, &mj)) {
+            continue;
+        }
+        const uint32_t jlo = c->tlb[j].mas2 & PPC_MAS2_EPN & mj;
+        const uint64_t jn = (uint64_t)(uint32_t)~mj + 1u;
+
+        if ((uint64_t)jlo < (uint64_t)lo + n && (uint64_t)lo < jlo + jn) {
+            return false;
+        }
+    }
+    *va = lo;
+    *pa = c->tlb[i].mas3 & PPC_MAS3_RPN & mask;
+    *size = n;
+    return true;
+}
+
 ppc_exc_t ppc_mmu_xlate(ppc_cpu_t *c, uint32_t ea, ppc_acc_t acc, uint32_t *pa,
                         bool *vle, bool *le)
 {

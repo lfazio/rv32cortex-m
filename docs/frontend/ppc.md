@@ -252,29 +252,53 @@ interpreted -- and three things lifted that:
   generation**, because the mapping itself is not identity but
   validity. Coarse -- every block goes on a `tlbwe` -- which a start-up
   pays once and a miss handler refilling the TLB would pay per refill;
-- **no RAM window under the MMU**: every access goes to the helper and
-  is translated there. A block built with the window is never entered
-  with translation on, because `mmu_on` is in the context.
+- **the RAM window is a page**: on the identity map a block's loads
+  and stores go straight to the RAM region the stack is in, and under
+  the MMU to the page the stack is on -- when `ppc_mmu_data_page` says
+  every address on it translates alike: read and write for the mode,
+  big-endian, and no lower-numbered entry overlapping it, since the
+  lowest entry wins a multiple hit. Clipped to the RAM region its real
+  address is in. Anything outside, misaligned, or on another page goes
+  to the helper, which translates. What a window was chosen under is in
+  the key: the TLB moves the generation, and MSR[DS] -- the data address
+  space it was looked up in -- joined MSR[IS], MSR[PR] and PID0 in the
+  context for it.
 
 `coremark-tlb` is CoreMark with a start-up that maps RAM and the console
 the MPC57xx way and overwrites the reset entry (`crt0.S` assembled with
 `PPC_CRT0_TLB` defined -- a guest define, not a build option), so the whole benchmark runs under the MMU. x86-64, same
 retired count and CRCs:
 
-| | interpreter | JIT before | JIT now |
-|---|---|---|---|
-| `coremark`, identity | 0.26 s | 0.051 s | 0.052 s |
-| `coremark-tlb` | 0.56 s | 0.596 s, 12,170,424 interpreted | **0.112 s**, 2,480 interpreted |
+| | interpreter | JIT, blocked | JIT, every access a call | JIT, page window |
+|---|---|---|---|---|
+| `coremark`, identity | 0.26 s | 0.051 s | 0.052 s | 0.048 s |
+| `coremark-tlb` | 0.56 s | 0.596 s, 12,170,424 interpreted | 0.112 s, 2,480 interpreted | **0.047 s**, 2,480 interpreted |
+
+The last two columns were measured together, from a worktree at the
+commit before and this one, median of five interleaved runs: 0.139 s
+against 0.047 s that day. Callgrind, which counts and does not time:
+853,507,674 host instructions against 258,631,521 -- within 0.5% of
+identity CoreMark's 257,293,430, which moved by 7,914.
 
 On the F746 at 96 KB, host cycles an instruction and the wall clock:
-`coremark-tlb` interpreted **582.99** (32.3 s), translated **88.09**
-(4.9 s) -- 6.6x -- while identity `coremark` stays at 50.85, and
-`ppc-mmu` passes all its checks on the Thumb-2 backend.
+`coremark-tlb` interpreted **582.99** (32.3 s); translated with every
+access a call **104.69** (5.79 s), and with the page window **52.68**
+(2.89 s), beside identity `coremark` at 51.66 (2.84 s). Same CRC and
+retired count throughout, and `ppc-mmu` passes all its checks on the
+Thumb-2 backend both ways.
 
-Under the MMU the JIT is half the identity map's speed, and the
-difference is the helper call per access; a window per TLB entry is
-what would take it back. `ppc-mmu --jit` interprets 734 of its
-instructions where it interpreted 4,496.
+**The window's checks had to be built so the block under test runs at
+all.** `stub_win` moves r1 onto a test page and loops a store and a load
+there, so that the loop's block is the one whose window is that page.
+The first version fell into the loop, and its first iteration ran in
+the block that moved r1 -- whose window was the stack's page -- so a
+store refused on the test page faulted through the helper before the
+loop's block was ever built, and a mutant dropping the permission test
+passed. A `b` into the loop gives it a block of its own from the first
+iteration; with it each of four mutants -- no permission test, no E
+test, no lower-entry test, MSR[DS] out of the context -- fails the
+`jit-win-` check named for it, under `--jit` only. Same lesson as the
+caller below, from the data side.
 
 **Its checks could not see the machinery at first: six of eight
 single-point defects passed all 150.** Every one of them was written for
