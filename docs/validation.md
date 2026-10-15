@@ -271,6 +271,7 @@ ctest -L probe                                        # all of them, both backen
 | `sscofpmf.S` | which bits of `mhpmevent3h` exist, `mideleg`, `sie`, `scountovf` and `sip` from S, STI against LCOFI | agrees | agrees |
 | `sstvala.S` | `stval` for 23 traps from S to S under Sv32: 16- and 32-bit illegal instructions, ones illegal by FS, TVM, TW, TSR or `mcounteren`, page and access faults on fetch, load and store, an instruction straddling pages, misaligned LR and AMO, an S-mode trigger | agrees but for two, permitted: no Sdtrig, and WFI completes | agrees |
 | `umode.S` | every privileged instruction from U-mode with TW, TSR and TVM clear | agrees | agrees |
+| `sdtrig.S` | when a breakpoint trigger may match: M with MIE clear and set, S with breakpoints to M or to S and SIE clear or set, U | has no Sdtrig | agrees |
 
 **Two models, because one reading is not a check.** Sail is the suite's
 golden model and does not have everything this core implements: Zalasr

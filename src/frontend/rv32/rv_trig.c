@@ -102,10 +102,40 @@ static uint32_t mode_bit(uint32_t priv)
     }
 }
 
+/*
+ * Reentrancy (debug specification 1.0, 5.4; docs/riscv). A trigger
+ * whose action is a breakpoint -- every trigger here -- can fire inside
+ * the handler of its own breakpoint and overwrite the cause and epc it
+ * was entered with. The specification offers two cures and a hart
+ * "should implement one". The second, tcontrol.mte and mpte, needs
+ * medeleg[3] hard-wired to 0, which a core delegating breakpoints to S
+ * cannot have. This is the first: no match in M-mode while mstatus.MIE
+ * is 0, nor in S-mode while breakpoints are delegated and sstatus.SIE is
+ * 0 -- which is what a handler has on entry. U-mode is unaffected.
+ * Spike does the same; tests/arch-test/probes/sdtrig.S holds the two.
+ */
+static bool may_match(const rv_hart_t *h)
+{
+    switch (h->priv) {
+    case RV_PRIV_M:
+        return (h->mstatus & MSTATUS_MIE) != 0u;
+#if RV_EXT_S
+    case RV_PRIV_S:
+        return ((h->medeleg >> RV_EXC_BREAKPOINT) & 1u) == 0u ||
+               (h->mstatus & MSTATUS_SIE) != 0u;
+#endif
+    default:
+        return true;
+    }
+}
+
 bool rv_trig_check(const rv_hart_t *h, uint32_t addr, emu_access_t acc)
 {
     uint32_t want;
 
+    if (!may_match(h)) {
+        return false;
+    }
     switch (acc) {
     case EMU_ACC_FETCH:
         want = MC_EXECUTE;

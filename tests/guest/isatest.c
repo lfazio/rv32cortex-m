@@ -1580,6 +1580,9 @@ static void test_pmp_exec(void)
 #define MSTATUS_MPP_MASK 0x00001800u
 #define MSTATUS_MPP_S 0x00000800u
 #define MSTATUS_SPP 0x00000100u
+#define MSTATUS_SIE 0x00000002u
+#define MSTATUS_SPIE 0x00000020u
+#define MSTATUS_MIE 0x00000008u
 #define MSTATUS_SUM 0x00040000u
 #define MSTATUS_TW 0x00200000u
 #define MSTATUS_TSR 0x00400000u
@@ -1773,7 +1776,9 @@ static void enter_smode(void (*fn)(void))
  * would run it again for ever. So mepc is set to the stub's ECALL first
  * and the mode is entered by SRET, which M-mode may execute: an MRET
  * that runs lands on the ECALL, in whatever mode MPP named -- U, set
- * here -- and the trap count says so. a0 carries an argument.
+ * here -- and the trap count says so. a0 carries an argument in, and
+ * comes back as whatever was in it at the ECALL: below_m_strap, an S-mode
+ * handler for the one test that delegates, leaves 0x200 | scause there.
  */
 __asm__(".pushsection .text\n"
         ".balign 4\n"
@@ -1787,11 +1792,22 @@ __asm__(".pushsection .text\n"
         "below_m_load:\n"
         "    lw   t0, 0(a0)\n"
         "    ecall\n"
+        "    .balign 4\n"
+        "below_m_strap:\n"
+        "    csrr a0, scause\n"
+        "    ori  a0, a0, 0x200\n"
+        "    csrr t0, sepc\n"
+        "    addi t0, t0, 4\n"
+        "    csrw sepc, t0\n"
+        "    sret\n"
         ".popsection\n");
 extern const char below_m_mret[], below_m_wfi[], below_m_load[];
+extern const char below_m_strap[];
 
-static void run_below_m(const char *stub, uint32_t to_s, uint32_t arg)
+static uint32_t run_below_m(const char *stub, uint32_t to_s, uint32_t arg)
 {
+    uint32_t ret;
+
     __asm__ volatile("la   t0, 1f\n"
                      "sw   t0, 0(%[resume])\n"
                      "csrw sepc, %[stub]\n"
@@ -1807,11 +1823,13 @@ static void run_below_m(const char *stub, uint32_t to_s, uint32_t arg)
                      "mv   a0, %[arg]\n"
                      "sret\n"
                      "1:\n"
-                     :
+                     "mv   %[ret], a0\n"
+                     : [ret] "=r"(ret)
                      : [stub] "r"(stub), [to_s] "r"(to_s), [arg] "r"(arg),
                        [resume] "r"(&g_smode_resume),
                        [mpp] "i"(MSTATUS_MPP_MASK), [spp] "i"(MSTATUS_SPP)
                      : "t0", "a0", "memory");
+    return ret;
 }
 
 static volatile uint32_t g_trig_word;
@@ -2252,6 +2270,13 @@ static void test_smode(void)
         csr_write("tselect", 0u);
         csr_write("tdata2", word);
         csr_write("tdata1", 0x20000011u); /* mcontrol: S, load */
+        /*
+         * With SIE clear in S (SRET sets it from SPIE): breakpoints go
+         * to M, so the reentrancy rule below is not in force and the
+         * trigger fires. SIE set would let a rule that forgot the
+         * delegation pass.
+         */
+        csr_clear("mstatus", MSTATUS_SPIE);
         before = g_trap_count;
         run_below_m(below_m_load, 1u, word);
         check("trig-s-fires-in-s", g_trap_count - before, 2u);
@@ -2269,6 +2294,47 @@ static void test_smode(void)
         (void)g_trig_word;
         check("trig-m-fires-in-m", g_trap_count - before, 1u);
         check("trig-m-cause", g_last_cause, 3u);
+
+        /*
+         * Reentrancy (debug spec 1.0, 5.4): no breakpoint trigger
+         * matches in M-mode while MIE is clear, nor in S-mode while
+         * breakpoints go to S and SIE is clear -- the state a handler
+         * is entered in, where firing again would overwrite the cause
+         * and epc it is handling. Spike holds to the same
+         * (tests/arch-test/probes/sdtrig.S). mie is cleared so that
+         * setting MIE takes nothing else.
+         */
+        const uint32_t mstatus_was = csr_read("mstatus");
+        const uint32_t mie_was = csr_read("mie");
+        uint32_t got;
+
+        csr_write("mie", 0u);
+        csr_clear("mstatus", MSTATUS_MIE);
+        before = g_trap_count;
+        (void)g_trig_word;
+        check("trig-m-mie0-quiet", g_trap_count - before, 0u);
+        csr_set("mstatus", MSTATUS_MIE);
+        before = g_trap_count;
+        (void)g_trig_word;
+        check("trig-m-mie1-fires", g_trap_count - before, 1u);
+        csr_clear("mstatus", MSTATUS_MIE);
+
+        csr_write("stvec", (uint32_t)(uintptr_t)below_m_strap);
+        csr_write("medeleg", 1u << 3);
+        csr_write("tdata1", 0x20000011u); /* mcontrol: S, load */
+        /* S is entered by SRET, which sets SIE from SPIE. */
+        csr_clear("mstatus", MSTATUS_SPIE);
+        before = g_trap_count;
+        got = run_below_m(below_m_load, 1u, word);
+        check("trig-s-deleg-sie0-quiet", got, word);
+        check("trig-s-deleg-sie0-traps", g_trap_count - before, 1u);
+        csr_set("mstatus", MSTATUS_SPIE);
+        got = run_below_m(below_m_load, 1u, word);
+        check("trig-s-deleg-sie1-fires", got, 0x203u);
+        csr_write("medeleg", 0u);
+        csr_write("stvec", 0u);
+        csr_write("mstatus", mstatus_was);
+        csr_write("mie", mie_was);
         csr_write("tdata1", 0u);
     }
 

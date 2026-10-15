@@ -1599,17 +1599,15 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       `isatest` and the probes, and was confirmed by reverting it on
       both backends ([frontend/rv32.md](frontend/rv32.md#profiles)).
 
-- [ ] **rv32: Sdtrig's reentrancy rules.** A breakpoint trigger that
-      matches inside its own handler fires again for ever unless
-      something stops it. The debug specification's native-trigger
-      section offers `tcontrol.mte` for M-mode, and for S-mode that no
-      breakpoint trigger fires while `medeleg[3]` is set and
-      `sstatus.SIE` is clear -- as remembered, not read: no copy is in
-      `docs/`. Neither is implemented here (there is no `tcontrol`).
-      Spike does the second, measured: `sstvala.S`'s S-mode trigger
-      did not fire on it until SIE was set. So an S-mode trigger with
-      SIE clear is a known difference from Spike, and no probe holds
-      it yet. Get the specification first.
+- [x] **rv32: Sdtrig's reentrancy rule.** The debug specification
+      1.0 is in `docs/riscv/` now, and section 5.4 offers two cures, of
+      which a hart should implement one; the `tcontrol` one needs
+      `medeleg[3]` hard-wired to 0, which this core's S-mode cannot
+      have. So: no trigger matches in M-mode while MIE is 0, nor in
+      S-mode while breakpoints are delegated and SIE is 0. Spike agrees
+      on all six cases of `tests/arch-test/probes/sdtrig.S`; `isatest`
+      holds them (836 checks, F746 both ways); four mutants, one per
+      clause, each fail both ([frontend/rv32.md](frontend/rv32.md#the-small-extensions)).
 
 - [x] **gdb: what the four targets did not describe.** Registers have
       their own widths now (`reg_width`, 64-bit accessors), and ARMv7-M
