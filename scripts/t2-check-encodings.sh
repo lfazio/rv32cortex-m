@@ -45,7 +45,24 @@ str.w   r3, [r12, r2]
 strb.w  r3, [r12, r2]
 strh.w  r3, [r12, r2]
 tst.w   r1, #3
-cmp.w   r6, #128
+cmp     r6, #128
+cmp.w   r12, #128
+cmp     r0, r1
+cmp     r12, r0
+cmp     r0, r12
+cmp     r12, lr
+mov     r12, r1
+mov     r0, r12
+mov.w   r0, sp
+ldr     r0, [r1, #8]
+ldr     r0, [r1, #124]
+ldr.w   r0, [r1, #128]
+ldr.w   r12, [r1, #8]
+ldr     r0, [sp, #4]
+str     r0, [r1, #12]
+str     r0, [sp, #1020]
+addw    r1, r6, #8
+subw    r1, r6, #8
 add.w   sp, sp, ip
 sub.w   sp, sp, ip
 sdiv    r0, r2, r3
@@ -94,6 +111,30 @@ int main(void)
     (void)t2_st_reg(3u, 12u, 2u, 2u);
     (void)t2_tst_imm8(1u, 3u);
     (void)t2_cmp_imm8(6u, 128u);
+    (void)t2_cmp_imm8(12u, 128u);
+
+    /*
+     * The 16-bit forms MOV, CMP, LDR and STR now choose when the
+     * operands fit -- and the 32-bit ones they fall back to where they
+     * do not. CMP has two 16-bit encodings and which one is right
+     * depends on whether both registers are low.
+     */
+    t2_cmp(0u, 1u);
+    t2_cmp(12u, 0u);
+    t2_cmp(0u, 12u);
+    t2_cmp(12u, 14u);
+    t2_mov(12u, 1u);
+    t2_mov(0u, 12u);
+    t2_mov(0u, 13u);
+    t2_ldr_imm(0u, 1u, 8u);
+    t2_ldr_imm(0u, 1u, 124u);
+    t2_ldr_imm(0u, 1u, 128u);
+    t2_ldr_imm(12u, 1u, 8u);
+    t2_ldr_imm(0u, 13u, 4u);
+    t2_str_imm(0u, 1u, 12u);
+    t2_str_imm(0u, 13u, 1020u);
+    t2_addw(1u, 6u, 8u);
+    t2_subw(1u, 6u, 8u);
 
     /*
      * The frame adjust a chained exit and the prologue emit by hand.

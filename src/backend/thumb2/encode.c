@@ -55,9 +55,31 @@ void t2_imm32(uint32_t rd, uint32_t v)
     }
 }
 
-/* MOV.W rd, rm -- the 32-bit form, so any register pair is encodable. */
+/*
+ * MOV rd, rm. The 16-bit T1 form names any register pair through its D
+ * bit and leaves the flags alone, so it is the form for everything but
+ * SP and PC, which keep MOV.W.
+ *
+ * **Not MOVS**: the other 16-bit move (T2, really LSL #0) writes N and
+ * Z, and zeroing a register between a VMRS and the IT that tests it
+ * destroyed a comparison once already. T1 has no flag form.
+ *
+ * This was always MOV.W, and the cache is where every byte is paid for:
+ * 60.8 bytes per guest instruction on RV32 CoreMark when it was
+ * measured, the first time anyone had on this host.
+ */
+static bool sp_or_pc(uint32_t r)
+{
+    return r == 13u || r == 15u;
+}
+
 void t2_mov(uint32_t rd, uint32_t rm)
 {
+    if (!sp_or_pc(rd) && !sp_or_pc(rm)) {
+        t2_emit16((uint16_t)(0x4600u | ((rd & 8u) << 4) | (rm << 3) |
+                             (rd & 7u)));
+        return;
+    }
     t2_emit32(0xEA4Fu, (uint16_t)((rd << 8) | rm));
 }
 
@@ -70,14 +92,44 @@ void t2_mov(uint32_t rd, uint32_t rm)
  * which covers both a temp frame and every offset inside the guest state
  * these frontends have.
  */
+/*
+ * The 16-bit forms, where the operands fit: a low rt, a word offset, and
+ * either SP as the base (imm8 words, to 1020) or a low base (imm5 words,
+ * to 124). The first is every frame slot a small block has; the second is
+ * the head of the guest register file, which every frontend keeps at the
+ * start of its state and reaches through T2_CPU, r4.
+ */
+static bool ldst_short(uint32_t rt, uint32_t rn, uint32_t off, uint16_t sp_op,
+                       uint16_t lo_op)
+{
+    if (rt >= 8u || (off & 3u) != 0u) {
+        return false;
+    }
+    if (rn == 13u && off <= 1020u) {
+        t2_emit16((uint16_t)(sp_op | (rt << 8) | (off >> 2)));
+        return true;
+    }
+    if (rn < 8u && off <= 124u) {
+        t2_emit16((uint16_t)(lo_op | ((off >> 2) << 6) | (rn << 3) | rt));
+        return true;
+    }
+    return false;
+}
+
 void t2_ldr_imm(uint32_t rt, uint32_t rn, uint32_t off)
 {
+    if (ldst_short(rt, rn, off, 0x9800u, 0x6800u)) {
+        return;
+    }
     t2_emit32((uint16_t)(0xF8D0u | rn),
               (uint16_t)((rt << 12) | (off & 0xFFFu)));
 }
 
 void t2_str_imm(uint32_t rt, uint32_t rn, uint32_t off)
 {
+    if (ldst_short(rt, rn, off, 0x9000u, 0x6000u)) {
+        return;
+    }
     t2_emit32((uint16_t)(0xF8C0u | rn),
               (uint16_t)((rt << 12) | (off & 0xFFFu)));
 }
@@ -348,12 +400,34 @@ bool t2_cmp_imm8(uint32_t rn, uint32_t imm)
     if (imm > 255u) {
         return false;
     }
+    if (rn < 8u) {
+        t2_emit16((uint16_t)(0x2800u | (rn << 8) | imm)); /* CMP T1 */
+        return true;
+    }
     t2_emit32((uint16_t)(0xF1B0u | rn), (uint16_t)(0x0F00u | imm));
     return true;
 }
 
+/*
+ * CMP rn, rm in 16 bits whenever neither is SP or PC -- and in the right
+ * one of the two 16-bit encodings, which is the whole difficulty. T1
+ * holds two *low* registers in three-bit fields; T2 holds any pair and
+ * is UNPREDICTABLE when both are low. The defect this file has already
+ * had was T1 handed r8, whose fourth bit landed in rm's field and made
+ * `CMP r8, r1` into `CMP r0, r1` -- so the choice is by register, and
+ * tests/guest/armv7m/t2exec.c executes every pairing.
+ */
 void t2_cmp(uint32_t rn, uint32_t rm)
 {
+    if (rn < 8u && rm < 8u) {
+        t2_emit16((uint16_t)(0x4280u | (rm << 3) | rn)); /* T1 */
+        return;
+    }
+    if (!sp_or_pc(rn) && !sp_or_pc(rm)) {
+        t2_emit16((uint16_t)(0x4500u | ((rn & 8u) << 4) | (rm << 3) |
+                             (rn & 7u))); /* T2 */
+        return;
+    }
     t2_emit32((uint16_t)(0xEBB0u | rn), (uint16_t)(0x0F00u | rm));
 }
 

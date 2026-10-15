@@ -25,6 +25,7 @@
  */
 
 #include "emu/emu_ir.h"
+#include "emu/emu_ir_bytes.h"
 
 #include <string.h>
 
@@ -207,9 +208,17 @@ static uint32_t ir_translate(emu_cpu_t *cpu, uint32_t pc,
 
     emu_ir_optimise(&g_ir, fe->target, EMU_IR_F_ALL, NULL);
 
+#if EMU_JIT_BYTE_STATS
+    uint8_t *const start = emu_jit_here();
+
+    emu_ir_bytes_begin();
+#endif
     if (!emu_ir_lower(&g_ir, fe->target)) {
         return 0u;
     }
+#if EMU_JIT_BYTE_STATS
+    emu_ir_bytes_commit(n, (uint32_t)(emu_jit_here() - start));
+#endif
     return n;
 }
 

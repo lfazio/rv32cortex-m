@@ -103,11 +103,13 @@ and it finishes in a tenth of a second. Two defects sat behind those
 two facts while it passed: a compaction that moved blocks with their
 chained jumps intact, and a cycle counter that wrapped at 19.9 seconds.
 **Follow it with CoreMark long enough to do both**: 650 iterations
-(`-DRV32_GUEST=coremark -DCOREMARK_ITERATIONS=650 -DEMU_MAX_INSN=0`),
-about 22 s, and time the run from the host end as well as reading the
-firmware's figure. 120 iterations used to be enough, and with the
-96 KB buffer now the F746's default it finishes in 4 s -- under the
-counter's 19.9 s wrap and under the 10 s CoreMark itself requires.
+(`-DRV32_GUEST=coremark -DCOREMARK_ITERATIONS=650 -DEMU_MAX_INSN=0`)
+**at `-DEMU_JIT_CODE_BYTES=32768`**, about 100 s, and time the run from
+the host end as well as reading the firmware's figure. The default no
+longer does it: since the short encodings, x650 at 96 KB takes 11.65 s
+-- under the counter's 19.9 s wrap -- and compacts twice, so it neither
+crosses the wrap nor exercises eviction. That is the right run for a
+*performance* figure and the wrong one for this.
 
 ## Things that have bitten, and will again
 
@@ -3153,6 +3155,20 @@ session, and every one of them recurred:
   `isatest` under PMP. Run against the commit before, the new checks
   fail on RV32 and PowerPC under the JIT and pass on ARMv7-M, whose step
   happened to call its interpreter. See [docs/gdb.md](docs/gdb.md).
+
+- **A size measured on one host is not a size on the other, and a size
+  near the cache is a cliff.** "A memory access is a hundred bytes" was
+  measured on x86-64, stood as the reason to change the Thumb-2 backend,
+  and pointed at the slow path. The first measurement on Thumb-2 said
+  something else as well: its emitters had always chosen the 32-bit
+  `MOV`, `CMP`, `LDR` and `STR` whatever the operands. Choosing by
+  operand took 60.8 bytes a guest instruction to 44.6 -- 27% -- and
+  CoreMark's working set then fitted the 96 KB default, so translations
+  fell from 29,862 to 294 and the run went **1.71x** faster; at 32 KB,
+  where it still does not fit, the same change bought 1.12x. Size and
+  time are not proportional near the cache's capacity, so **measure the
+  size on the host that pays for it, before choosing which bytes to
+  take** -- `-DEMU_JIT_BYTE_STATS=ON` prints it on the board.
 
 ## Conventions
 

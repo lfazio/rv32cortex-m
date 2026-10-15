@@ -113,6 +113,7 @@ The reference frontend: three external models disagree with it
 | `RV32_ENABLE_DISASM` | | the disassembler is **not** a decoder; it lags |
 | `RV32_INTERP_IN_RAM` | OFF | measured *slower* on the F446 |
 | `RV32_LAZY_IRQ` | ON | |
+| `EMU_JIT_BYTE_STATS` | OFF | measurement scaffolding: emitted bytes per IR operation, summed over every translation and printed after the run -- on a board too, because the code cache is the guest's RAM |
 | `EMU_PAIR_STATS` | OFF | measurement scaffolding: adjacent executed pairs, any frontend. On RV32 it also prints **executed instructions by extension** -- interpreted ones, so run it under `--jit` to count exactly what the translator declines |
 
 ### G4MH — `EMU_GUEST_ARCH_G4MH`

@@ -35,6 +35,7 @@
  */
 
 #include "emu/emu_ir.h"
+#include "emu/emu_ir_bytes.h"
 #include "emu/emu_thumb2.h"
 
 #if defined(EMU_HOST_JIT_THUMB2)
@@ -312,6 +313,30 @@ static EMU_PER_CORE uint32_t g_nexits;
  */
 static EMU_PER_CORE emu_ir_fastmem_t g_fast;
 static EMU_PER_CORE bool g_has_fast;
+
+/*
+ * rd = rn + imm, for an access's address. ADDW/SUBW take any 12-bit
+ * magnitude in one instruction, which is every displacement a load or
+ * store encodes on these guests; MOVW/MOVT and an ADD was eight bytes
+ * for the same thing, on half of everything this backend emits.
+ */
+static void emit_addr(uint32_t rd, uint32_t rn, uint32_t imm)
+{
+    const int32_t d = (int32_t)imm;
+
+    if (d == 0) {
+        if (rd != rn) {
+            t2_mov(rd, rn);
+        }
+    } else if (d > 0 && d < 4096) {
+        t2_addw(rd, rn, (uint16_t)d);
+    } else if (d < 0 && d > -4096) {
+        t2_subw(rd, rn, (uint16_t)-d);
+    } else {
+        t2_imm32(T2_R2, imm);
+        t2_add(rd, rn, T2_R2);
+    }
+}
 
 /*
  * Guard the inlined access: leave the offset from the window's base in
@@ -1689,12 +1714,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
          * register a later instruction still reads -- so the sum is
          * built into r1 rather than back into `ra`.
          */
-        if (in->imm != 0u) {
-            t2_imm32(T2_R2, in->imm);
-            t2_add(T2_R1, ra, T2_R2);
-        } else if (ra != T2_R1) {
-            t2_mov(T2_R1, ra);
-        }
+        emit_addr(T2_R1, ra, in->imm);
         /*
          * The inlined path: about 40% of a guest's instructions are a
          * memory access, and each was a call into the region walk.
@@ -1746,8 +1766,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                                  (off & 0xFFu)));
         }
         t2_call((const void *)t->load);
-        t2_imm32(T2_R1, 0u);
-        t2_cmp(T2_R0, T2_R1);
+        (void)t2_cmp_imm8(T2_R0, 0u); /* the accessor's verdict */
         note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
         if (pd >= 0) {
             ld_slot((uint32_t)pd, SCRATCH_VAL);
@@ -1769,12 +1788,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         }
         const uint32_t ra = use_reg(in->a, T2_R1);
 
-        if (in->imm != 0u) {
-            t2_imm32(T2_R2, in->imm);
-            t2_add(T2_R1, ra, T2_R2);
-        } else if (ra != T2_R1) {
-            t2_mov(T2_R1, ra);
-        }
+        emit_addr(T2_R1, ra, in->imm);
 
         const uint32_t rv = use_reg(in->b, T2_R3);
 
@@ -1813,8 +1827,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         t2_mov(T2_R0, T2_CPU);
         t2_imm32(T2_R2, in->aux);
         t2_call((const void *)t->store);
-        t2_imm32(T2_R1, 0u);
-        t2_cmp(T2_R0, T2_R1);
+        (void)t2_cmp_imm8(T2_R0, 0u); /* the accessor's verdict */
         note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
         if (sdone != NULL) {
             patch_branch(sdone, emu_jit_here(), false);
@@ -1874,8 +1887,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
              * Non-zero means it entered a trap: pc is already in the
              * handler and the rest of the block must not run.
              */
-            t2_imm32(T2_R1, 0u);
-            t2_cmp(T2_R0, T2_R1);
+            (void)t2_cmp_imm8(T2_R0, 0u);
             note_exit(t2_bcond_forward(t2_cond(EMU_IR_C_NE)), true);
         }
         if (in->dst != EMU_IR_NO_TEMP) {
@@ -2060,9 +2072,15 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
             }
         }
 
+#if EMU_JIT_BYTE_STATS
+        uint8_t *const at = emu_jit_here();
+#endif
         if (!lower_one(&b->insn[i], t)) {
             return false;
         }
+#if EMU_JIT_BYTE_STATS
+        emu_ir_bytes_op(b->insn[i].op, (uint32_t)(emu_jit_here() - at));
+#endif
         if (emu_jit_overflowed()) {
             return false;
         }

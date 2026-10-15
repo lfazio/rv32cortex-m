@@ -256,6 +256,68 @@ instruction — and the JIT 5× ahead of the interpreter — while taking
 tell, before the wall clock settled it, was a profile that priced a
 translation at 105,000 cycles in one configuration and 865 in another.
 
+## Where the bytes go
+
+`-DEMU_JIT_BYTE_STATS=ON` prints emitted bytes per IR operation after a
+run, on the board as on a host (`include/emu/emu_ir_bytes.h`). It had
+been measured once on x86-64 and not kept, and nobody had measured this
+backend at all -- while code size is the thing the cache, which is the
+guest's RAM, pays for.
+
+RV32 CoreMark x120 on the F746 at 96 KB, per translation:
+
+| | bytes / guest insn | LOAD | STORE | GET | PUT | EXIT_IF |
+|---|---|---|---|---|---|---|
+| x86-64, for comparison | 59.3 | 100 | 104 | 7 | 7 | 42 |
+| Thumb-2, as it was | **60.8** | 92 | 105 | 5 | 4 | 38 |
+| Thumb-2, short encodings | **44.6** | 77 | 86 | 3 | 2 | 30 |
+
+**The encoders always chose the 32-bit form.** `MOV`, `CMP`, and the
+loads and stores of the frame and of the guest register file were
+`MOV.W`, `CMP.W`, `LDR.W` and `STR.W` whatever their operands, though
+Thumb-2 has 16-bit encodings for all four: `MOV` and `CMP` for any pair
+of registers but SP and PC, `LDR`/`STR` for a low register at a word
+offset from SP (to 1020) or from a low base (to 124) -- which is every
+frame slot a small block has and the head of every frontend's register
+file, reached through r4. They choose by operand now, and an access's
+displacement is one `ADDW`/`SUBW` rather than `MOVW` and an `ADD`, and
+a trap check compares with an immediate zero rather than materialising
+one.
+
+**CMP is the one with a trap in it**: T1 holds two low registers and T2
+any pair, UNPREDICTABLE when both are low, and T1 handed r8 is the
+defect this file's encoding hazards already record. `t2exec` executes
+every pairing with values for which a compare of the wrong registers
+gives other flags, and checks each form's *length* as well as its
+answer, so a fall back to 32 bits is seen too; a mutant using T1 for
+every pair fails three cases by name, and one scaling the 16-bit
+offset wrongly fails three more. `t2-check-encodings.sh` holds the new
+forms to `arm-none-eabi-as`.
+
+27% fewer bytes, and **CoreMark's working set went from not fitting the
+96 KB default to fitting it with room** -- which is a cliff, not a
+slope. CoreMark x650, the firmware's count, each against a worktree at
+the commit before and agreeing with the host's clock:
+
+| | translations | compactions | cycles / insn | wall |
+|---|---|---|---|---|
+| 96 KB, before | 29,862 | 816 | 26.86 | 19.92 s |
+| 96 KB, after | **294** | **2** | **15.71** | **11.65 s** |
+| 32 KB, before | 346,178 | 19,453 | 151.68 | 112.56 s |
+| 32 KB, after | 299,402 | 15,273 | 135.82 | 100.73 s |
+
+**1.71x at the default** and 1.12x at 32 KB, where the hot set still
+does not fit and the JIT still loses to the interpreter. `isatest` on the
+board: 748 checks, 1,129 of 65,829 interpreted, as before; `crcfinal
+0x25e3` and "Correct operation validated" in every row.
+
+What a memory access is now: about 30 bytes of window test (`MOVW`/`MOVT`
+for the base and the limit, a subtract, a compare, an alignment test and
+two branches), about 16 of inline access, and about 26 of call into the
+checked accessor and its trap exit -- once per access. Those constants
+and that slow path are the next thing to take; see
+[../TODO.md](../TODO.md).
+
 ## The guest-RAM window
 
 A frontend may offer a window (`emu_ir_fastmem_t`) that a `LOAD` or

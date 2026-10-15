@@ -109,6 +109,7 @@ static uint8_t g_code[512] __attribute__((aligned(8)));
 
 typedef uint32_t (*fn1_t)(uint32_t);
 typedef uint32_t (*fn2_t)(uint32_t, uint32_t);
+typedef uint32_t (*fn3_t)(uint32_t, uint32_t, uint32_t);
 
 /*
  * A block begins by pushing lr and ends by popping it into pc, which is
@@ -249,6 +250,186 @@ int main(void)
         const fn1_t f = (fn1_t)emit_end();
 
         want("mov-imm32", f(0u), 0xCAFEBABEu);
+    }
+
+    /*
+     * **The 16-bit forms.** MOV, CMP and the frame and register-file
+     * loads and stores were always the 32-bit encodings, and code size is
+     * what the board's cache pays for. Each case checks the answer *and*
+     * the length: the answer says the encoding is the right instruction
+     * for those registers, the length says the short form is the one
+     * chosen -- without it, falling back to the 32-bit form would pass.
+     *
+     * CMP is the one to be careful with. T1 holds two low registers in
+     * three-bit fields and T2 any pair, UNPREDICTABLE when both are low;
+     * a high register in T1 is the defect named above. The pairings below
+     * are chosen so a compare of the wrong registers gives other flags.
+     */
+    {
+        static const struct {
+            const char *tag;
+            uint32_t rn, rm; /* 12 and 14 hold the arguments' copies */
+            uint32_t len;
+            uint32_t nzcv; /* for f(5, 2) */
+        } k_cmp[] = {
+            {"cmp-lo-lo", 0u, 1u, 2u, 0x2u},   /* 5 - 2: C          */
+            {"cmp-hi-lo", 12u, 0u, 2u, 0x8u},  /* 2 - 5: N          */
+            {"cmp-lo-hi", 0u, 12u, 2u, 0x2u},  /* 5 - 2: C          */
+            {"cmp-hi-hi", 12u, 14u, 2u, 0x8u}, /* 2 - 5: N          */
+        };
+
+        for (unsigned i = 0; i < sizeof(k_cmp) / sizeof(k_cmp[0]); i++) {
+            emit_begin();
+            t2_mov(12u, 1u); /* r12 = b */
+            t2_mov(14u, 0u); /* lr = a; the real one is on the stack */
+            const uint8_t *const at = emu_jit_cursor;
+
+            t2_cmp(k_cmp[i].rn, k_cmp[i].rm);
+            want(k_cmp[i].tag, (uint32_t)(emu_jit_cursor - at), k_cmp[i].len);
+            t2_mrs_apsr(0u);
+            t2_shift_imm(T2_LSR, 0u, 0u, 28u);
+            {
+                const fn2_t f = (fn2_t)emit_end();
+
+                want(k_cmp[i].tag, f(5u, 2u), k_cmp[i].nzcv);
+            }
+        }
+    }
+
+    /* CMP #imm: 16 bits for a low register, CMP.W for a high one. */
+    emit_begin();
+    {
+        const uint8_t *const at = emu_jit_cursor;
+
+        (void)t2_cmp_imm8(0u, 5u);
+        want("cmp-imm-lo-len", (uint32_t)(emu_jit_cursor - at), 2u);
+    }
+    t2_mrs_apsr(0u);
+    t2_shift_imm(T2_LSR, 0u, 0u, 28u);
+    {
+        const fn2_t f = (fn2_t)emit_end();
+
+        want("cmp-imm-lo", f(5u, 0u), 0x6u); /* 5 - 5: Z, C */
+    }
+    emit_begin();
+    t2_mov(12u, 1u);
+    {
+        const uint8_t *const at = emu_jit_cursor;
+
+        (void)t2_cmp_imm8(12u, 5u);
+        want("cmp-imm-hi-len", (uint32_t)(emu_jit_cursor - at), 4u);
+    }
+    t2_mrs_apsr(0u);
+    t2_shift_imm(T2_LSR, 0u, 0u, 28u);
+    {
+        const fn2_t f = (fn2_t)emit_end();
+
+        want("cmp-imm-hi", f(0u, 2u), 0x8u); /* 2 - 5: N */
+    }
+
+    /* MOV: 16 bits for any pair but SP and PC, and no flags. */
+    emit_begin();
+    {
+        const uint8_t *const at = emu_jit_cursor;
+
+        t2_mov(12u, 1u);
+        t2_mov(0u, 12u);
+        want("mov-short-len", (uint32_t)(emu_jit_cursor - at), 4u);
+    }
+    {
+        const fn2_t f = (fn2_t)emit_end();
+
+        want("mov-through-r12", f(0u, 0x13579BDFu), 0x13579BDFu);
+    }
+    emit_begin();
+    {
+        const uint8_t *const at = emu_jit_cursor;
+
+        t2_mov(0u, 13u); /* r0 = sp */
+        want("mov-sp-len", (uint32_t)(emu_jit_cursor - at), 4u);
+    }
+    {
+        const fn2_t f = (fn2_t)emit_end();
+
+        want("mov-sp-aligned", f(0u, 0u) & 3u, 0u);
+    }
+
+    /*
+     * LDR/STR: [rn, #imm5*4] for a low base up to 124, [sp, #imm8*4] up
+     * to 1020, and the .W form past either or for a high rt.
+     */
+    {
+        static uint32_t arr[40];
+
+        for (unsigned i = 0; i < 40u; i++) {
+            arr[i] = 0xA0000000u + i;
+        }
+
+        static const struct {
+            const char *tag;
+            uint32_t rt, off, len;
+        } k_ld[] = {
+            {"ldr-lo-8", 0u, 8u, 2u},
+            {"ldr-lo-124", 0u, 124u, 2u},
+            {"ldr-lo-128", 0u, 128u, 4u},
+            {"ldr-hi-8", 12u, 8u, 4u},
+        };
+
+        for (unsigned i = 0; i < sizeof(k_ld) / sizeof(k_ld[0]); i++) {
+            emit_begin();
+            const uint8_t *const at = emu_jit_cursor;
+
+            t2_ldr_imm(k_ld[i].rt, 1u, k_ld[i].off);
+            want(k_ld[i].tag, (uint32_t)(emu_jit_cursor - at), k_ld[i].len);
+            if (k_ld[i].rt != 0u) {
+                t2_mov(0u, k_ld[i].rt);
+            }
+            {
+                const fn2_t f = (fn2_t)emit_end();
+
+                want(k_ld[i].tag, f(0u, (uint32_t)(uintptr_t)arr),
+                     0xA0000000u + k_ld[i].off / 4u);
+            }
+        }
+
+        emit_begin();
+        {
+            const uint8_t *const at = emu_jit_cursor;
+
+            t2_str_imm(0u, 1u, 12u);
+            want("str-lo-12-len", (uint32_t)(emu_jit_cursor - at), 2u);
+        }
+        {
+            const fn2_t f = (fn2_t)emit_end();
+
+            (void)f(0x600DF00Du, (uint32_t)(uintptr_t)arr);
+            want("str-lo-12", arr[3], 0x600DF00Du);
+            want("str-lo-12-only", arr[2] + arr[4],
+                 (0xA0000000u + 2u) + (0xA0000000u + 4u));
+        }
+    }
+
+    /*
+     * [sp, #imm8*4]: push r1 and r2 under lr, then read the second word
+     * of the frame, which must be r2 -- a wrong base or scale reads lr
+     * or r1 instead.
+     */
+    emu_jit_cursor = g_code;
+    emu_jit_limit = g_code + sizeof(g_code);
+    emu_jit_overflow = false;
+    t2_push((1u << 1) | (1u << 2) | T2_LIST_LR);
+    {
+        const uint8_t *const at = emu_jit_cursor;
+
+        t2_ldr_imm(0u, 13u, 4u);
+        want("ldr-sp-4-len", (uint32_t)(emu_jit_cursor - at), 2u);
+    }
+    t2_pop((1u << 1) | (1u << 2) | T2_LIST_PC);
+    t2_sync_code(g_code, (uint32_t)(emu_jit_cursor - g_code));
+    {
+        const fn3_t f = (fn3_t)(void *)(uintptr_t)((uintptr_t)g_code | 1u);
+
+        want("ldr-sp-4", f(0u, 0x11111111u, 0x22222222u), 0x22222222u);
     }
 
     /* And the emitter must not have overflowed on any of that. */

@@ -31,6 +31,7 @@
  */
 
 #include "emu/emu_ir.h"
+#include "emu/emu_ir_bytes.h"
 #include "emu/emu_x86_64.h"
 
 #if defined(EMU_HOST_JIT_X86_64)
@@ -2138,9 +2139,15 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
             }
         }
 
+#if EMU_JIT_BYTE_STATS
+        uint8_t *const at = emu_jit_here();
+#endif
         if (!lower_one(&b->insn[i], t)) {
             return false;
         }
+#if EMU_JIT_BYTE_STATS
+        emu_ir_bytes_op(b->insn[i].op, (uint32_t)(emu_jit_here() - at));
+#endif
         if (emu_jit_overflowed()) {
             return false;
         }

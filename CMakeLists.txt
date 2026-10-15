@@ -338,6 +338,12 @@ set(EMU_JIT_LOOP_CAP "128" CACHE STRING
 # per-block register cache could pay. Measurement scaffolding, off by default.
 option(EMU_JIT_HOT_REG_STATS "Count hot-register reads per block" OFF)
 
+# Emitted bytes per IR operation, summed over every block translated and
+# printed in the run report -- on a board as well as a host, because code
+# size is what the board's cache pays for. Measurement scaffolding, off
+# by default; see include/emu/emu_ir_bytes.h.
+option(EMU_JIT_BYTE_STATS "Count emitted bytes per IR operation" OFF)
+
 # Histogram adjacent executed instruction pairs, to decide which are worth
 # fusing in the translator. Measurement scaffolding, off by default.
 #
@@ -528,6 +534,8 @@ add_library(emucore STATIC
     # Self-guarding on EMU_JIT_HOT_REG_STATS, as emu_pairstats.c is on
     # EMU_PAIR_STATS: listed always, compiling to nothing when off.
     src/emu/emu_regstats.c
+    # Self-guarding on EMU_JIT_BYTE_STATS, likewise.
+    src/emu/emu_ir_bytes.c
     # The IR JIT framework and its two host backends. Every one of these
     # guards itself on the host it emits for, so all of them can stay in
     # the list and exactly one backend compiles to anything. They belong
@@ -630,6 +638,7 @@ target_compile_definitions(emucore PUBLIC
     EMU_ENABLE_STATS=$<BOOL:${EMU_ENABLE_STATS}>
     EMU_PAIR_STATS=$<BOOL:${EMU_PAIR_STATS}>
     EMU_JIT_HOT_REG_STATS=$<BOOL:${EMU_JIT_HOT_REG_STATS}>
+    EMU_JIT_BYTE_STATS=$<BOOL:${EMU_JIT_BYTE_STATS}>
     #
     # The IR backend's static code cache.
     #

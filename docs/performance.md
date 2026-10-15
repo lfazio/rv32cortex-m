@@ -62,6 +62,13 @@ the day before, 4.1 s against 20.9 by the host's clock, `crcfinal
 counter's wrap, it is 29.30 and CoreMark validates itself. The guest
 has 164 KiB of RAM where it had 232.
 
+**Then 15.71, from short encodings alone**: the Thumb-2 emitters always
+chose the 32-bit form of MOV, CMP, LDR and STR, and choosing by operand
+took emitted code from 60.8 to 44.6 bytes a guest instruction -- enough
+for CoreMark's working set to fit 96 KB, so 29,862 translations became
+294 and x650 went from 19.92 s to 11.65 s against a worktree at the
+commit before ([backend/thumb2.md](backend/thumb2.md#where-the-bytes-go)).
+
 There was an older table here — native ARM against the JIT at five cache
 sizes on a 180 MHz M4, quoting 15.3× to 32.3× slower than native. It
 described the hand-written Thumb-2 translator, which no longer exists,

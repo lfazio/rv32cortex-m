@@ -405,7 +405,7 @@ uint64_t board_perf_cycles(void)
  * written out here and in the host's board.c -- the same four steps in
  * the same order, differing only in this answer and in what "wait" means.
  */
-#if EMU_PC_PROFILE
+#if defined(EMU_PC_PROFILE) && EMU_PC_PROFILE /* the F746 alone */
 #include "emu_console.h"
 
 /* The tick's samples (stm32f7xx_it.c), printed once after the run. */
@@ -415,7 +415,7 @@ extern volatile uint32_t g_pc_profile_n;
 
 bool board_parks_after_run(void)
 {
-#if EMU_PC_PROFILE
+#if defined(EMU_PC_PROFILE) && EMU_PC_PROFILE
     static bool dumped;
 
     if (!dumped) {

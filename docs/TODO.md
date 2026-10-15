@@ -157,18 +157,22 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       and they are not exclusive: raise the default and say what it
       costs the guest; default the firmware to the interpreter and make
       the JIT a choice for guests known to fit; or make the code
-      smaller, which is the next two items.
-- [ ] **A memory access is a hundred bytes of emitted code**, measured
-      on x86-64, and loads and stores are half of everything emitted for
-      RV32 CoreMark. The window test and the access are inline; so is
-      the call to the checked accessor with its trap exit, once per
-      access. One out-of-line slow path per block, or per shape of
-      access, is the obvious thing to try — on Thumb-2 first, where it
-      is the cache and not the clock that pays. The histogram that says
-      so is thirty lines around the call to `lower_one` and should be
-      an option rather than a patch
-      ([backend/x86_64.md](backend/x86_64.md)). **Nobody has measured
-      bytes per guest instruction on Thumb-2 at all.**
+      smaller, which is the next two items. **Short encodings** took
+      32 KB from 151.68 to 135.82 (CoreMark x650, worktree A/B), still
+      behind the interpreter's 107.4, and made 96 KB 1.71x faster.
+- [~] **A memory access is a hundred bytes of emitted code.** Measured
+      on Thumb-2 now, with `-DEMU_JIT_BYTE_STATS=ON`: 60.8 bytes a guest
+      instruction on RV32 CoreMark, a load 92 and a store 105, together
+      53% of everything emitted. **Short encodings took it to 44.6** --
+      the emitters had always chosen the 32-bit MOV, CMP, LDR and STR --
+      and CoreMark's working set then fits the F746's 96 KB: 1.71x, x650
+      19.92 s to 11.65 s ([backend/thumb2.md](backend/thumb2.md#where-the-bytes-go)).
+      A load is still 77 bytes and a store 86. Left: the window's three
+      32-bit constants (`MOVW`/`MOVT` each; a load from the cpu struct
+      is half), and the call to the checked accessor with its trap exit,
+      once per access -- one out-of-line slow path per block, or per
+      shape of access. Measure at 32 KB, where the hot set still does
+      not fit (135.82 against the interpreter's 107.4).
 - [ ] **`RETIRE` is still one operation per guest instruction**, 5% of
       emitted code. Consecutive ones with no exit between them could be
       one addition; it has to stay exact at every point a block can

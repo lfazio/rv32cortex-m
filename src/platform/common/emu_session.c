@@ -15,6 +15,7 @@
 
 #include "emu/emu_elf.h"
 #include "emu/emu_ir.h"
+#include "emu/emu_ir_bytes.h"
 #include "emu/emu_jit.h"
 #include "emu/emu_memmap.h"
 
@@ -384,6 +385,39 @@ void emu_session_report(emu_system_t *sys, uint64_t retired,
                 (unsigned)o.macs);
         }
     }
+
+#if EMU_JIT_BYTE_STATS
+    /*
+     * Where the emitted bytes went. On the console, not stderr, because
+     * the board is where code size is paid for -- see emu_ir_bytes.h.
+     */
+    {
+        emu_ir_bytes_totals_t tot;
+        emu_ir_bytes_row_t rows[16];
+        const uint32_t n = emu_ir_bytes_report(&tot, rows, 16u);
+
+        if (tot.blocks != 0u && tot.guest != 0u) {
+            emu_console_printf(
+                "\n-- bytes --\n"
+                "  %u blocks, %u guest insns, %u bytes, %u.%02u each\n"
+                "  %-12s %9s %9s %6s %6s\n",
+                (unsigned)tot.blocks, (unsigned)tot.guest,
+                (unsigned)tot.bytes, (unsigned)(tot.bytes / tot.guest),
+                (unsigned)(tot.bytes * 100u / tot.guest % 100u), "op",
+                "count", "bytes", "share", "each");
+            for (uint32_t i = 0; i < n; i++) {
+                emu_console_printf(
+                    "  %-12s %9u %9u %5u%% %6u\n", rows[i].name,
+                    (unsigned)rows[i].count, (unsigned)rows[i].bytes,
+                    (unsigned)(rows[i].bytes * 100u / tot.bytes),
+                    (unsigned)(rows[i].bytes / rows[i].count));
+            }
+            emu_console_printf("  %-12s %9s %9u %5u%%\n", "(frame)", "",
+                               (unsigned)tot.frame,
+                               (unsigned)(tot.frame * 100u / tot.bytes));
+        }
+    }
+#endif
 
     emu_report_frontend(sys->ops);
 

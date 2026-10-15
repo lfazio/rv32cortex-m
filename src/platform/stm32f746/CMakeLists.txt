@@ -208,10 +208,10 @@ endif()
 # A PC profile from the tick, printed after the run: stm32f7xx_it.c.
 set(EMU_PC_PROFILE 0 CACHE STRING
     "pc samples to take at 1 kHz and print after the run (0: none)")
-if(EMU_PC_PROFILE)
-    target_compile_definitions(emu-stm32f746 PRIVATE
-        EMU_PC_PROFILE=${EMU_PC_PROFILE})
-endif()
+# Defined either way, so `#if EMU_PC_PROFILE` reads a value rather than
+# an absent macro -- -Wundef said so on every build of this board.
+target_compile_definitions(emu-stm32f746 PRIVATE
+    EMU_PC_PROFILE=${EMU_PC_PROFILE})
 
 set(EMU_LAYOUT_PAD_RAM 0 CACHE STRING
     "bytes to shift guest RAM by, to measure layout sensitivity (0: none)")
