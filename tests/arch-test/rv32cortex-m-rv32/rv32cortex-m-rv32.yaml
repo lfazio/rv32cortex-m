@@ -32,6 +32,8 @@ implemented_extensions:
   - { name: Zalrsc, version: "= 1.0.0" }
   - { name: F, version: "= 2.2" }
   - { name: D, version: "= 2.2" }
+  # Half precision moved and converted, not computed (rv_fpu.c).
+  - { name: Zfhmin, version: "= 1.0.0" }
   - { name: Zacas, version: "= 1.0.0" }
   # Load-acquire and store-release. UDB knows it; Sail 0.13.1 does not,
   # so there is no golden model for it and no suite: it is declared here
@@ -83,6 +85,9 @@ implemented_extensions:
   # guest memory atomically.
   - { name: Sv32, version: "= 1.0" }
   - { name: Svade, version: "= 1.0.0" }
+  # SINVAL.VMA and the two fences around it. SFENCE.VMA's invalidation
+  # and traps, and fences that one hart has nothing to order.
+  - { name: Svinval, version: "= 1.0.0" }
 
 params:
   # ---- base ----

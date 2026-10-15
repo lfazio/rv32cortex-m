@@ -3844,6 +3844,133 @@ static void test_sc_nowhere(void)
     check("sc-nowhere-rd", rd, 0x5A5A5A5Au);
 }
 
+/* ---- Zfhmin: the double conversions --------------------------------- */
+
+#if defined(__riscv_flen) && (__riscv_flen >= 32)
+/*
+ * FCVT.D.H and FCVT.H.D, which no architecture test covers: ZfhminD is
+ * the same six instructions as Zfhmin, run with FLEN 64, and holds
+ * neither. So these are the only check on them.
+ *
+ * The expectations are IEEE 754's, worked by hand and held to Python's
+ * binary16 (struct format 'e') where it has an answer -- not read off
+ * the emulator, which is how a test comes to encode its bug. Each
+ * boundary is the awkward input: the tie at 65520, which overflows to
+ * nearest and does *not* toward zero; a value below half the smallest
+ * subnormal; a signalling NaN; a register that is not boxed.
+ *
+ * fa0 is loaded with the 64 bits in (hi, lo) and fa1 stored back, so a
+ * result's box is visible in the high word.
+ */
+static volatile uint32_t g_hd[2] __attribute__((aligned(8)));
+
+#define HD_RUN(op, hi, lo)                                                     \
+    do {                                                                       \
+        g_hd[0] = (lo);                                                        \
+        g_hd[1] = (hi);                                                        \
+        csr_write("fflags", 0u);                                               \
+        __asm__ volatile(WITH_EXT("d, +zfhmin", "fld fa0, 0(%0)\n" op "\n"     \
+                                                "fsd fa1, 0(%0)")              \
+                         ::"r"(g_hd)                                           \
+                         : "fa0", "fa1", "memory");                            \
+    } while (0)
+
+static void test_zfhmin(void)
+{
+    uint32_t before;
+
+    csr_set("mstatus", 1u << 13);
+
+    /* Widening is exact: 1.5, and the smallest subnormal half, 2^-24. */
+    HD_RUN("fcvt.d.h fa1, fa0", 0xFFFFFFFFu, 0xFFFF3E00u);
+    check("fcvt.d.h-1.5-hi", g_hd[1], 0x3FF80000u);
+    check("fcvt.d.h-1.5-lo", g_hd[0], 0u);
+    check("fcvt.d.h-exact", csr_read("fflags"), 0u);
+    HD_RUN("fcvt.d.h fa1, fa0", 0xFFFFFFFFu, 0xFFFF0001u);
+    check("fcvt.d.h-subnormal", g_hd[1], 0x3E700000u);
+    HD_RUN("fcvt.d.h fa1, fa0", 0xFFFFFFFFu, 0xFFFF8000u);
+    check("fcvt.d.h-negzero", g_hd[1], 0x80000000u);
+
+    /* A signalling NaN: the canonical double NaN, and invalid. */
+    HD_RUN("fcvt.d.h fa1, fa0", 0xFFFFFFFFu, 0xFFFF7C01u);
+    check("fcvt.d.h-snan", g_hd[1], 0x7FF80000u);
+    check("fcvt.d.h-snan-lo", g_hd[0], 0u);
+    check("fcvt.d.h-snan-nv", csr_read("fflags"), 0x10u);
+
+    /* A double's bits are not a boxed half: the canonical half NaN,
+     * which is quiet, so no flag. */
+    HD_RUN("fcvt.d.h fa1, fa0", 0x3FF00000u, 0x00003E00u);
+    check("fcvt.d.h-unboxed", g_hd[1], 0x7FF80000u);
+    check("fcvt.d.h-unboxed-quiet", csr_read("fflags"), 0u);
+
+    /* 1/3 narrowed three ways, inexact each time, and boxed. */
+    HD_RUN("fcvt.h.d fa1, fa0, rne", 0x3FD55555u, 0x55555555u);
+    check("fcvt.h.d-third-rne", g_hd[0], 0xFFFF3555u);
+    check("fcvt.h.d-third-box", g_hd[1], 0xFFFFFFFFu);
+    check("fcvt.h.d-third-nx", csr_read("fflags"), 0x01u);
+    HD_RUN("fcvt.h.d fa1, fa0, rup", 0x3FD55555u, 0x55555555u);
+    check("fcvt.h.d-third-rup", g_hd[0], 0xFFFF3556u);
+    HD_RUN("fcvt.h.d fa1, fa0, rtz", 0x3FD55555u, 0x55555555u);
+    check("fcvt.h.d-third-rtz", g_hd[0], 0xFFFF3555u);
+
+    /* 70000 is past the largest half: infinity to nearest, the largest
+     * finite toward zero, overflow and inexact either way. */
+    HD_RUN("fcvt.h.d fa1, fa0, rne", 0x40F11700u, 0u);
+    check("fcvt.h.d-big-rne", g_hd[0], 0xFFFF7C00u);
+    check("fcvt.h.d-big-rne-of", csr_read("fflags"), 0x05u);
+    HD_RUN("fcvt.h.d fa1, fa0, rtz", 0x40F11700u, 0u);
+    check("fcvt.h.d-big-rtz", g_hd[0], 0xFFFF7BFFu);
+    check("fcvt.h.d-big-rtz-of", csr_read("fflags"), 0x05u);
+
+    /* 65520 ties 65504 and 2^16. Even is 2^16, which overflows; toward
+     * zero the unbounded result is 65504, which does not -- inexact
+     * alone. */
+    HD_RUN("fcvt.h.d fa1, fa0, rne", 0x40EFFE00u, 0u);
+    check("fcvt.h.d-tie-rne", g_hd[0], 0xFFFF7C00u);
+    check("fcvt.h.d-tie-rne-of", csr_read("fflags"), 0x05u);
+    HD_RUN("fcvt.h.d fa1, fa0, rtz", 0x40EFFE00u, 0u);
+    check("fcvt.h.d-tie-rtz", g_hd[0], 0xFFFF7BFFu);
+    check("fcvt.h.d-tie-rtz-nx", csr_read("fflags"), 0x01u);
+
+    /* 2^-30, under half the smallest subnormal: zero to nearest, the
+     * smallest subnormal upward; underflow and inexact. */
+    HD_RUN("fcvt.h.d fa1, fa0, rne", 0x3E100000u, 0u);
+    check("fcvt.h.d-tiny-rne", g_hd[0], 0xFFFF0000u);
+    check("fcvt.h.d-tiny-uf", csr_read("fflags"), 0x03u);
+    HD_RUN("fcvt.h.d fa1, fa0, rup", 0x3E100000u, 0u);
+    check("fcvt.h.d-tiny-rup", g_hd[0], 0xFFFF0001u);
+
+    /* A signalling NaN double: the canonical half NaN, invalid. */
+    HD_RUN("fcvt.h.d fa1, fa0, rne", 0x7FF00000u, 1u);
+    check("fcvt.h.d-snan", g_hd[0], 0xFFFF7E00u);
+    check("fcvt.h.d-snan-nv", csr_read("fflags"), 0x10u);
+
+    /* FMV.X.H sign-extends the raw bits; FMV.H.X boxes them. */
+    {
+        uint32_t r;
+
+        __asm__ volatile(WITH_EXT("d, +zfhmin", "fmv.h.x fa0, %1\n"
+                                                "fmv.x.h %0, fa0\n"
+                                                "fsd fa0, 0(%2)")
+                         : "=&r"(r)
+                         : "r"(0x1234BC00u), "r"(g_hd)
+                         : "fa0", "memory");
+        check("fmv.x.h-sext", r, 0xFFFFBC00u);
+        check("fmv.h.x-box-lo", g_hd[0], 0xFFFFBC00u);
+        check("fmv.h.x-box-hi", g_hd[1], 0xFFFFFFFFu);
+    }
+
+    /* A reserved rm is illegal, even where the conversion is exact. */
+    before = g_trap_count;
+    __asm__ volatile(".word 0x422555d3"); /* fcvt.d.h f11, f10, rm=5 */
+    check("fcvt.d.h-rm5-taken", g_trap_count - before, 1u);
+    check("fcvt.d.h-rm5-cause", g_last_cause, 2u);
+    before = g_trap_count;
+    __asm__ volatile(".word 0x441555d3"); /* fcvt.h.d f11, f10, rm=5 */
+    check("fcvt.h.d-rm5-taken", g_trap_count - before, 1u);
+}
+#endif
+
 /* ---- eight bytes are aligned to eight ------------------------------ */
 
 #if defined(__riscv_flen) && (__riscv_flen >= 32)
@@ -4112,6 +4239,7 @@ int main(void)
 #endif
 #if defined(__riscv_flen) && (__riscv_flen >= 32)
     test_fpu();
+    test_zfhmin();
 #endif
     test_zicond();
     test_bitmanip();

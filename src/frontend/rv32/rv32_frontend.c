@@ -153,20 +153,31 @@
 #else
 #define RV32_S_ZCB ""
 #endif
+#if RV_EXT_ZFHMIN
+#define RV32_S_ZFHMIN "_zfhmin"
+#else
+#define RV32_S_ZFHMIN ""
+#endif
+#if RV_EXT_SVINVAL
+#define RV32_S_SVINVAL "_svinval"
+#else
+#define RV32_S_SVINVAL ""
+#endif
 
 /*
  * Canonical order, which is not alphabetical: the single letters, then
  * the Z extensions grouped by the letter after the Z in the order the
- * single letters come in -- i, a, c, b -- and alphabetical inside a
- * group. It is the order `sail_riscv_sim --print-isa-string` gives for
- * the same machine, which is what it was checked against.
+ * single letters come in -- i, a, f, c, b -- and alphabetical inside a
+ * group, then the S extensions. It is the order
+ * `sail_riscv_sim --print-isa-string` gives for the same machine, which
+ * is what it was checked against.
  */
 #define RV32_ISA_STRING                                                        \
     "RV32I" RV32_S_M RV32_S_A RV32_S_F RV32_S_D RV32_S_C RV32_S_B              \
         RV32_S_ZICBOM "_zicbop" RV32_S_ZICBOZ RV32_S_ZICNTR RV32_S_ZICOND      \
         RV32_S_ZICSR                                                           \
         RV32_S_ZIFENCEI RV32_S_ZIHINT RV32_S_ZIHPM RV32_S_ZACAS RV32_S_ZALASR  \
-        RV32_S_ZAWRS RV32_S_ZCB RV32_S_ZBC
+        RV32_S_ZAWRS RV32_S_ZFHMIN RV32_S_ZCB RV32_S_ZBC RV32_S_SVINVAL
 
 /* ------------------------------------------------------------------ */
 /* State                                                               */

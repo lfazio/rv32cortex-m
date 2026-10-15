@@ -184,6 +184,26 @@ static void test_disasm(void)
         {0x00256013u, "ori zero, a0, 2"},
         {0x00456013u, "ori zero, a0, 4"},
         {0x00156513u, "ori a0, a0, 1"},
+        /* Svinval. */
+        {0x16B50073u, "sinval.vma a0, a1"},
+        {0x16000073u, "sinval.vma zero, zero"},
+        {0x18000073u, "sfence.w.inval"},
+        {0x18100073u, "sfence.inval.ir"},
+        /*
+         * Zfhmin -- binutils' words, with the f registers numbered
+         * rather than given ABI names, as this disassembler does for
+         * every FP instruction (see rv_disasm.c), and no rounding mode.
+         */
+        {0x00659507u, "flh f10, 6(a1)"},
+        {0xFEC59E27u, "fsh f12, -4(a1)"},
+        {0xE4058553u, "fmv.x.h a0, f11"},
+        {0xF4058553u, "fmv.h.x f10, a1"},
+        {0x40258553u, "fcvt.s.h f10, f11"},
+        {0x4405F553u, "fcvt.h.s f10, f11"},
+        {0x42258553u, "fcvt.d.h f10, f11"},
+        {0x4415F553u, "fcvt.h.d f10, f11"},
+        {0x42058553u, "fcvt.d.s f10, f11"},
+        {0x40158553u, "fcvt.s.d f10, f11"},
     };
 
     for (size_t i = 0; i < sizeof(ref) / sizeof(ref[0]); i++) {
@@ -209,6 +229,8 @@ static void test_disasm(void)
     disasm_is(0x3405B52Fu, "illegal"); /* ld.aq: RV64                    */
     disasm_is(0x38C5A02Fu, "illegal"); /* sw.rl without rl               */
     disasm_is(0x3AC5A0AFu, "illegal"); /* sw.rl with an rd               */
+    disasm_is(0x40358553u, "illegal"); /* fcvt to .s from rs2 3: no Q    */
+    disasm_is(0x40058553u, "illegal"); /* fcvt.s.s                       */
 }
 #endif /* RV_ENABLE_DISASM */
 

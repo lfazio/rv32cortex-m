@@ -414,7 +414,7 @@
     "Zfa": { "supported": false },
     "Zfbfmin": { "supported": false },
     "Zfh": { "supported": false },
-    "Zfhmin": { "supported": false },
+    "Zfhmin": { "supported": true },
     "Zfinx": { "supported": false },
     "Zdinx": { "supported": false },
     "Zca": { "supported": true },
@@ -449,7 +449,7 @@
     "Sscounterenw": { "supported": false },
     "Sstc": { "supported": false },
     "Sstvala": { "supported": false },
-    "Svinval": { "supported": false },
+    "Svinval": { "supported": true },
     "Svrsw60t59b": { "supported": false },
     "Smcntrpmf": { "supported": false },
     "Svbare": {

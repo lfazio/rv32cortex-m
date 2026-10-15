@@ -73,6 +73,26 @@
 #define RV_EXT_ZACAS 1
 #endif
 /*
+ * Zfhmin: half precision moved and converted, never computed -- FLH,
+ * FSH, FMV.X.H, FMV.H.X, and conversion to and from single and, with
+ * D, double. RVA22 mandates it. SoftFloat's f16 conversions are the
+ * implementation, as SoftFloat is for the rest of F.
+ */
+#ifndef RV_EXT_ZFHMIN
+#define RV_EXT_ZFHMIN RV_EXT_F
+#endif
+/*
+ * Svinval: SINVAL.VMA, SFENCE.W.INVAL and SFENCE.INVAL.IR -- an
+ * SFENCE.VMA split into its invalidation and the two fences around it,
+ * so a kernel can batch the invalidations. One hart and no store buffer
+ * make the fences nothing, and the invalidation is SFENCE.VMA's. What
+ * differs is the traps: all three are illegal in U-mode, and TVM, which
+ * stops S-mode issuing SFENCE.VMA, stops SINVAL.VMA and not the fences.
+ */
+#ifndef RV_EXT_SVINVAL
+#define RV_EXT_SVINVAL RV_EXT_S
+#endif
+/*
  * Zicond: czero.eqz and czero.nez. Two instructions, lowered natively by
  * the translator as a compare, a negate and an AND -- there is no branch
  * in it on either host.

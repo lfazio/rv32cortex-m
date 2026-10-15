@@ -879,7 +879,14 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                  * request, and with a direct-mapped TLB of a few dozen
                  * entries it is also the cheap one.
                  */
-                if ((insn >> 25) == 0x09u && rv_rd(insn) == 0u) {
+                /*
+                 * SINVAL.VMA (funct7 0x0B) is the same invalidation with
+                 * the same traps -- Svinval only takes the fences out of
+                 * it, and with one hart they were nothing.
+                 */
+                if (((insn >> 25) == 0x09u ||
+                     (RV_EXT_SVINVAL && (insn >> 25) == 0x0Bu)) &&
+                    rv_rd(insn) == 0u) {
                     if (h->priv < RV_PRIV_S ||
                         (h->priv == RV_PRIV_S &&
                          (h->mstatus & MSTATUS_TVM) != 0u)) {
@@ -969,6 +976,22 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
 
                 case 0x001u: /* EBREAK */
                     TRAP(RV_EXC_BREAKPOINT, pc);
+
+#if RV_EXT_SVINVAL
+                /*
+                 * SFENCE.W.INVAL and SFENCE.INVAL.IR: the orderings
+                 * either side of a batch of SINVAL.VMA. Nothing to order
+                 * on one hart, so the only thing they do is trap in
+                 * U-mode -- and *not* under TVM, which is about the
+                 * invalidation and not the fences.
+                 */
+                case 0x180u: /* SFENCE.W.INVAL  */
+                case 0x181u: /* SFENCE.INVAL.IR */
+                    if (h->priv == RV_PRIV_U) {
+                        TRAP(RV_EXC_ILLEGAL_INSN, insn);
+                    }
+                    break;
+#endif
 
                 case 0x302u: { /* MRET */
                     /*

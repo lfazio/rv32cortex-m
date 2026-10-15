@@ -1241,8 +1241,18 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
      */
     case 0x07u: /* LOAD-FP  */
     case 0x27u: { /* STORE-FP */
-        if (f3 != 2u || (h_fs_off(cpu))) {
-            return false; /* not FLW/FSW, or FS off */
+        if (h_fs_off(cpu)) {
+            return false;
+        }
+        /*
+         * FLD, FSD, FLH and FSH: rv_hart_fp, which does the access the
+         * interpreter does. These ended the block -- every double load
+         * in a D guest was a block boundary and an interpreted
+         * instruction -- and a helper call is a translation, declining
+         * is not.
+         */
+        if (f3 != 2u) {
+            return rv_ir_fp_fallback(b, pc, insn);
         }
         /*
          * **With D, FLEN is 64 and a float in an f register carries a

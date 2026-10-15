@@ -1553,14 +1553,17 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
 - [ ] **rv32: what the RVA profiles would still need.** RVI20U32 is
       met. The RVA families are 64-bit only, so there is nothing to
       claim, but read for RV32 the RVA22 mandatory list is short by
-      four things ([frontend/rv32.md](frontend/rv32.md#profiles)):
-      **Zfhmin** (half-precision load, store and conversion -- SoftFloat
-      has `f16`), **Zic64b** (a 64-byte cache block; `RV_CACHE_BLOCK_SIZE`
-      is 32 to match the M7's line, and the device tree and both suite
-      configs would follow it), **Svinval** (three instructions that
-      are SFENCE.VMA in parts), and **Zkt**, which is a claim about
-      timing nobody has examined -- the interpreter's `clmul` loops
-      over set bits. RVA20's list is met but for Zicclsm being a build
+      two things now ([frontend/rv32.md](frontend/rv32.md#profiles)):
+      **Zic64b** (a 64-byte cache block; `RV_CACHE_BLOCK_SIZE` is 32 to
+      match the M7's line, and the device tree and both suite configs
+      would follow it) and **Zkt**, which is a claim about timing nobody
+      has examined -- the interpreter's `clmul` loops over set bits.
+      **Zfhmin and Svinval are done**: 14 more architecture tests, 510
+      and 523 (`--misaligned`) on both backends, and `isatest` holding
+      FCVT.D.H and FCVT.H.D, which no suite test covers. FP loads and
+      stores the translator does not lower -- FLD, FSD, FLH, FSH -- go
+      to the helper now instead of ending the block (D-fld: 514
+      interpreted to 265). RVA20's list is met but for Zicclsm being a build
       option, and Sstvala and Ssccptr being true without a test that
       says so.
 

@@ -103,14 +103,17 @@ cfg_src="$here/tests/arch-test/$cfg_name"
 # and account for every directory, by adding it here or by saying below
 # why not.
 #
-#   Zabha, ZacasZabha, Zbkb, Zbkc, Zbkx, Zcmop, Zfa*, Zfh*, Zfbfmin,
-#   Zimop, Zknd, Zkne, Zknh, Zksed, Zksh             not implemented
+#   Zabha, ZacasZabha, Zbkb, Zbkc, Zbkx, Zcmop, Zfa*, Zfh, ZfhD,
+#   Zfbfmin, Zimop, Zknd, Zkne, Zknh, Zksed, Zksh    not implemented --
+#                                                    Zfh is the half
+#                                                    arithmetic; Zfhmin
+#                                                    and ZfhminD are named
 #   Misalign, MisalignD, MisalignF, MisalignZca      --misaligned: this
 #                                                    description says
 #                                                    MISALIGNED_LDST false
-#   Svadu, SvaduPMP, Svinval, Svnapot, Svpbmt        not implemented;
+#   Svadu, SvaduPMP, Svnapot, Svpbmt                 not implemented;
 #                                                    Svade is the choice
-extensions="${ARCH_TEST_EXTENSIONS:-I,M,Zmmul,Zaamo,Zalrsc,Zca,Zicsr,Zicntr,Zifencei,Zicbom,Zicbop,Zicboz,Zicond,Zihintntl,ZihintntlZca,Zihintpause,Zihpm,Zbb,Zba,Zbc,Zbs,Zacas,F,D,Zcb,ZcbM,ZcbZbb,Zcf,Zcd,PMPU,PMPF,PMPS,PMPSm,PMPZaamo,PMPZalrsc,PMPZca,PMPZicbo,Sv,Svbare,Svade,SvZicbo,ExceptionsSv,ExceptionsSvZaamo,ExceptionsSvZalrsc,SvPMP,SvPMPZicbo}"
+extensions="${ARCH_TEST_EXTENSIONS:-I,M,Zmmul,Zaamo,Zalrsc,Zca,Zicsr,Zicntr,Zifencei,Zicbom,Zicbop,Zicboz,Zicond,Zihintntl,ZihintntlZca,Zihintpause,Zihpm,Zbb,Zba,Zbc,Zbs,Zacas,F,D,Zcb,ZcbM,ZcbZbb,Zcf,Zcd,PMPU,PMPF,PMPS,PMPSm,PMPZaamo,PMPZalrsc,PMPZca,PMPZicbo,Sv,Svbare,Svade,SvZicbo,ExceptionsSv,ExceptionsSvZaamo,ExceptionsSvZalrsc,SvPMP,SvPMPZicbo,Zfhmin,ZfhminD,Svinval}"
 [[ -n "${ARCH_TEST_EXTENSIONS:-}" ]] && ext_given=1 || ext_given=0
 jobs="$(nproc)"
 verbose=""

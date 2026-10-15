@@ -461,7 +461,7 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
      */
     case OP_LOAD_FP:
     case OP_STORE_FP: {
-        static const char *const w[8] = {NULL, NULL, "w",  "d",
+        static const char *const w[8] = {NULL, "h",  "w",  "d",
                                          NULL, NULL, NULL, NULL};
         char mn[8];
 
@@ -528,7 +528,7 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
          */
         const uint32_t f5v = f7 >> 2;
         const uint32_t fmt = f7 & 3u;
-        const char sfx = (fmt == 1u) ? 'd' : 's';
+        const char sfx = (fmt == 1u) ? 'd' : (fmt == 2u) ? 'h' : 's';
         const char *m = NULL;
         bool rd_is_fp = true, rs1_is_fp = true, two_src = true, sfxd = true;
 
@@ -563,13 +563,25 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
             rd_is_fp = false;
             break;
         }
-        case 0x08u:
-            /* Precision conversion: the *destination* format is in fmt
-             * and rs2 names the source, so the suffix is written out. */
-            m = (fmt == 1u) ? "fcvt.d.s" : "fcvt.s.d";
+        case 0x08u: {
+            /*
+             * Precision conversion: the *destination* format is in fmt
+             * and rs2 names the source, so the name is a table of both.
+             * It was "fcvt.d.s if fmt is D, else fcvt.s.d", whatever rs2
+             * said -- which was right while there were two formats.
+             */
+            static const char *const cv[3][3] = {
+                {NULL, "fcvt.s.d", "fcvt.s.h"},
+                {"fcvt.d.s", NULL, "fcvt.d.h"},
+                {"fcvt.h.s", "fcvt.h.d", NULL},
+            };
+            const uint32_t src = rv_rs2(insn);
+
+            m = (fmt < 3u && src < 3u) ? cv[fmt][src] : NULL;
             two_src = false;
             sfxd = false;
             break;
+        }
         /*
          * The integer conversions name *both* formats, and in opposite
          * orders: fcvt.w.s goes FP to integer and fcvt.s.w the other
@@ -594,13 +606,13 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
             sfxd = false;
             break;
         case 0x1Cu:
-            m = (f3 == 0u) ? "fmv.x.w" : "fclass";
+            m = (f3 != 0u) ? "fclass" : (fmt == 2u) ? "fmv.x.h" : "fmv.x.w";
             rd_is_fp = false;
             two_src = false;
             sfxd = (f3 != 0u);
             break;
         case 0x1Eu:
-            m = "fmv.w.x";
+            m = (fmt == 2u) ? "fmv.h.x" : "fmv.w.x";
             rs1_is_fp = false;
             two_src = false;
             sfxd = false;
@@ -729,9 +741,23 @@ size_t rv_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn64,
                 }
                 break;
             }
+            /* Svinval's, which binutils prints with both operands always. */
+            if (((insn >> 25) & 0x7Fu) == 0x0Bu && rv_rd(insn) == 0u) {
+                emit_str(&o, "sinval.vma ");
+                emit_reg(&o, rv_rs1(insn));
+                emit_str(&o, ", ");
+                emit_reg(&o, rv_rs2(insn));
+                break;
+            }
             switch (insn >> 20) {
             case 0x000u:
                 emit_str(&o, "ecall");
+                break;
+            case 0x180u:
+                emit_str(&o, "sfence.w.inval");
+                break;
+            case 0x181u:
+                emit_str(&o, "sfence.inval.ir");
                 break;
             case 0x001u:
                 emit_str(&o, "ebreak");

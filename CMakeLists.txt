@@ -897,7 +897,18 @@ if((EMU_GUEST_ARCH_RV32 AND RV32_EXT_F) OR (EMU_GUEST_ARCH_G4MH AND G4MH_EXT_FPU
     # Double precision, wanted by either frontend that has it: RV32's D
     # and G4MH's .D operations are the same SoftFloat entry points.
     #
+    #
+    # Half precision, converted and never computed: ARMv7-M's VCVTB/VCVTT
+    # and RV32's Zfhmin, which rv_config.h turns on with F.
+    #
+    set(_need_f16 OFF)
     if(EMU_GUEST_ARCH_ARMV7M)
+        set(_need_f16 ON)
+    endif()
+    if(EMU_GUEST_ARCH_RV32 AND RV32_EXT_F)
+        set(_need_f16 ON)
+    endif()
+    if(_need_f16)
         list(APPEND _sf_names f32_to_f16 f16_to_f32 s_roundPackToF16
                               s_normSubnormalF16Sig s_countLeadingZeros16)
     endif()
@@ -931,6 +942,10 @@ if((EMU_GUEST_ARCH_RV32 AND RV32_EXT_F) OR (EMU_GUEST_ARCH_G4MH AND G4MH_EXT_FPU
             s_shiftRightJam128Extra s_shortShiftRightJam128Extra
             s_le128 s_lt128)
     endif()
+    # Zfhmin's FCVT.D.H and FCVT.H.D.
+    if(_need_f16 AND _need_f64)
+        list(APPEND _sf_names f16_to_f64 f64_to_f16)
+    endif()
 
     set(_sf_src "")
     foreach(_n IN LISTS _sf_names)
@@ -949,7 +964,7 @@ if((EMU_GUEST_ARCH_RV32 AND RV32_EXT_F) OR (EMU_GUEST_ARCH_G4MH AND G4MH_EXT_FPU
         list(APPEND _sf_riscv s_f64UIToCommonNaN s_commonNaNToF64UI
                               s_propagateNaNF64UI)
     endif()
-    if(EMU_GUEST_ARCH_ARMV7M)
+    if(_need_f16)
         list(APPEND _sf_riscv s_f16UIToCommonNaN s_commonNaNToF16UI)
     endif()
     foreach(_n IN LISTS _sf_riscv)
@@ -1136,12 +1151,18 @@ if(EMU_GUEST_ARCH_RV32)
     if(RV32_EXT_A)
         string(APPEND _isa "_zacas_zalasr_zawrs")
     endif()
+    # Zfhmin follows F, as rv_config.h has it.
+    if(RV32_EXT_F)
+        string(APPEND _isa "_zfhmin")
+    endif()
     if(RV32_EXT_C AND RV32_EXT_ZCB)
         string(APPEND _isa "_zcb")
     endif()
     if(RV32_EXT_ZBC)
         string(APPEND _isa "_zbc")
     endif()
+    # Svinval follows S, which has no option: rv_config.h turns it on.
+    string(APPEND _isa "_svinval")
     if(BUILD_TESTING AND TARGET emu-host AND TARGET guest-hello)
         add_test(NAME rv32-isa-string
                  COMMAND emu-host "${CMAKE_BINARY_DIR}/guest/hello.bin")
@@ -1152,12 +1173,11 @@ if(EMU_GUEST_ARCH_RV32)
     # U and S are privilege modes rather than instruction-set
     # extensions, so they are reported here and deliberately absent from
     # the ISA string the banner prints.
-    if(RV32_EXT_U)
-        string(APPEND _isa " +U")
-    endif()
-    if(RV32_EXT_S)
-        string(APPEND _isa " +S")
-    endif()
+    #
+    # Unconditionally. This tested RV32_EXT_U and RV32_EXT_S, which
+    # nothing declares -- both modes are rv_config.h defaults with no
+    # CMake option -- so the summary had never once printed either.
+    string(APPEND _isa " +U +S")
     list(APPEND _frontends "rv32 (${_isa})")
 endif()
 if(EMU_GUEST_ARCH_G4MH)

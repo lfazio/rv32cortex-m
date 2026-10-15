@@ -150,6 +150,56 @@ static void fw32(rv_hart_t *h, unsigned r, uint32_t v)
 #endif
 }
 
+#if RV_EXT_ZFHMIN
+/*
+ * Half precision, Zfhmin: moved and converted, never computed.
+ *
+ * The same box one size down. A half in an f register carries all-ones
+ * in *every* bit above its sixteen -- 48 of them with D, 16 without --
+ * or reads as the canonical half NaN, 0x7E00. And the same asymmetry as
+ * the single forms: FLH and FMV.H.X write boxed, FSH and FMV.X.H move
+ * the low sixteen bits raw, because moving bits is the whole instruction.
+ */
+#define H_CANON_NAN 0x7E00u
+
+static bool h_is_nan(uint32_t x)
+{
+    return ((x >> 10) & 0x1Fu) == 0x1Fu && (x & 0x3FFu) != 0u;
+}
+static bool h_is_snan(uint32_t x)
+{
+    return h_is_nan(x) && (x & 0x200u) == 0u;
+}
+
+static uint32_t fr16(const rv_hart_t *h, unsigned r)
+{
+#if RV_EXT_D
+    const uint64_t v = h->f[r];
+    return ((v >> 16) == UINT64_C(0xFFFFFFFFFFFF)) ? (uint32_t)(v & 0xFFFFu)
+                                                   : H_CANON_NAN;
+#else
+    const uint32_t v = (uint32_t)h->f[r];
+    return ((v >> 16) == 0xFFFFu) ? (v & 0xFFFFu) : H_CANON_NAN;
+#endif
+}
+
+static void fw16(rv_hart_t *h, unsigned r, uint32_t v)
+{
+#if RV_EXT_D
+    h->f[r] = UINT64_C(0xFFFFFFFFFFFF0000) | (v & 0xFFFFu);
+#else
+    h->f[r] = 0xFFFF0000u | (v & 0xFFFFu);
+#endif
+}
+
+static float16_t h_v(uint32_t bits)
+{
+    float16_t f;
+    f.v = (uint16_t)bits;
+    return f;
+}
+#endif /* RV_EXT_ZFHMIN */
+
 #if RV_EXT_D
 
 #define D_CANON_NAN UINT64_C(0x7FF8000000000000)
@@ -504,6 +554,26 @@ static rv_exc_t fp_op_d(rv_hart_t *h, uint32_t insn, uint32_t funct5,
         break;
 
     case 0x08u: /* FCVT.D.S -- widening, in the D group */
+#if RV_EXT_ZFHMIN
+        if (rs2 == 2u) { /* FCVT.D.H */
+            const uint32_t ha = fr16(h, rs1);
+
+            if (!f_rm_valid(f_rm(h, rm))) {
+                *tval = insn;
+                return RV_EXC_ILLEGAL_INSN;
+            }
+            if (h_is_snan(ha)) {
+                flags |= FFLAG_NV;
+                res = D_CANON_NAN;
+            } else if (h_is_nan(ha)) {
+                res = D_CANON_NAN;
+            } else {
+                f_begin(f_rm(h, rm));
+                res = d_end(f16_to_f64(h_v(ha)), &flags);
+            }
+            break;
+        }
+#endif
         if (rs2 != 0u) {
             *tval = insn;
             return RV_EXC_ILLEGAL_INSN;
@@ -535,6 +605,95 @@ static rv_exc_t fp_op_d(rv_hart_t *h, uint32_t insn, uint32_t funct5,
 }
 #endif /* RV_EXT_D */
 
+#if RV_EXT_ZFHMIN
+/*
+ * The half-precision group: Zfhmin's four, which is everything with a
+ * half as its *destination* or a move of one's bits. FCVT.S.H and
+ * FCVT.D.H have a half as their source and live in the S and D groups,
+ * by the rule FCVT.S.D states there.
+ *
+ * Every conversion checks rm, the exact widening ones included -- the
+ * golden model does, so an invalid rm is an illegal instruction whether
+ * or not it could have changed the answer.
+ */
+static rv_exc_t fp_op_h(rv_hart_t *h, uint32_t insn, uint32_t funct5,
+                        uint32_t rd, uint32_t rm, uint32_t rs1, uint32_t rs2,
+                        uint32_t *tval)
+{
+    uint32_t flags = 0u;
+    uint32_t res;
+
+    switch (funct5) {
+    case 0x08u: /* FCVT.H.S, FCVT.H.D -- narrowing, so they round */
+        if (!f_rm_valid(f_rm(h, rm))) {
+            *tval = insn;
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        if (rs2 == 0u) {
+            const uint32_t sa = fr32(h, rs1);
+
+            if (f_is_snan(sa)) {
+                flags |= FFLAG_NV;
+                res = H_CANON_NAN;
+            } else if (f_is_nan(sa)) {
+                res = H_CANON_NAN;
+            } else {
+                f_begin(f_rm(h, rm));
+                res = f32_to_f16(f_v(sa)).v;
+                flags |= (uint32_t)softfloat_exceptionFlags;
+            }
+            break;
+        }
+#if RV_EXT_D
+        if (rs2 == 1u) {
+            const uint64_t da = fr64(h, rs1);
+
+            if (d_is_snan(da)) {
+                flags |= FFLAG_NV;
+                res = H_CANON_NAN;
+            } else if (d_is_nan(da)) {
+                res = H_CANON_NAN;
+            } else {
+                f_begin(f_rm(h, rm));
+                res = f64_to_f16(d_v(da)).v;
+                flags |= (uint32_t)softfloat_exceptionFlags;
+            }
+            break;
+        }
+#endif
+        *tval = insn;
+        return RV_EXC_ILLEGAL_INSN;
+
+    case 0x1Cu: /* FMV.X.H: the low sixteen bits, raw, sign-extended */
+        if (rs2 != 0u || rm != 0u) {
+            *tval = insn;
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        h->x[rd] = (uint32_t)(int32_t)(int16_t)(uint16_t)h->f[rs1];
+        h->x[0] = 0u;
+        return RV_EXC_NONE;
+
+    case 0x1Eu: /* FMV.H.X */
+        if (rs2 != 0u || rm != 0u) {
+            *tval = insn;
+            return RV_EXC_ILLEGAL_INSN;
+        }
+        res = h->x[rs1];
+        break;
+
+    default:
+        /* Zfh's arithmetic, compares and the rest: not Zfhmin. */
+        *tval = insn;
+        return RV_EXC_ILLEGAL_INSN;
+    }
+
+    fw16(h, rd, res);
+    h->fcsr |= flags;
+    f_dirty(h);
+    return RV_EXC_NONE;
+}
+#endif /* RV_EXT_ZFHMIN */
+
 rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
 {
     const uint32_t opcode = insn & 0x7Fu;
@@ -558,16 +717,31 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
 
     /* --- loads and stores ------------------------------------------- */
     if (opcode == OP_LOAD_FP || opcode == OP_STORE_FP) {
-        /* funct3 is the width: 2 is .w and 3 is .d. */
+        /* funct3 is the width: 1 is .h, 2 is .w and 3 is .d. */
         const bool wide = (rm == 3u);
+        const bool half = (rm == 1u);
 
-        if (rm != 2u && !(RV_EXT_D && wide)) {
+        if (rm != 2u && !(RV_EXT_D && wide) && !(RV_EXT_ZFHMIN && half)) {
             *tval = insn;
             return RV_EXC_ILLEGAL_INSN;
         }
         if (opcode == OP_LOAD_FP) {
             const uint32_t addr = h->x[rs1] + (uint32_t)((int32_t)insn >> 20);
             rv_exc_t exc;
+#if RV_EXT_ZFHMIN
+            if (half) {
+                uint32_t hv;
+
+                exc = rv_hart_load(h, addr, 2u, false, &hv);
+                if (exc != RV_EXC_NONE) {
+                    *tval = addr;
+                    return exc;
+                }
+                fw16(h, rd, hv);
+                f_dirty(h);
+                return RV_EXC_NONE;
+            }
+#endif
 
 #if RV_EXT_D
             if (wide) {
@@ -614,6 +788,18 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
                  * can be.
                  */
                 return rv_hart_store64(h, addr, fr64(h, rs2), tval);
+            }
+#endif
+#if RV_EXT_ZFHMIN
+            if (half) {
+                /* The low sixteen bits, raw, as FSW stores its low 32. */
+                const rv_exc_t hexc =
+                    rv_hart_store(h, addr, 2u, (uint32_t)h->f[rs2] & 0xFFFFu);
+
+                if (hexc != RV_EXC_NONE) {
+                    *tval = addr;
+                }
+                return hexc;
             }
 #endif
             /* FSW stores the low half raw -- *not* through fr32, which
@@ -731,12 +917,17 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
     }
 
     /* --- OP-FP ------------------------------------------------------- */
+    const uint32_t funct5 = funct7 >> 2;
+
+#if RV_EXT_ZFHMIN
+    if ((funct7 & 3u) == 2u) {
+        return fp_op_h(h, insn, funct5, rd, rm, rs1, rs2, tval);
+    }
+#endif
     if ((funct7 & 3u) > (RV_EXT_D ? 1u : 0u)) {
         *tval = insn;
         return RV_EXC_ILLEGAL_INSN; /* only S, and D when built in */
     }
-
-    const uint32_t funct5 = funct7 >> 2;
 
 #if RV_EXT_D
     if ((funct7 & 3u) == 1u) {
@@ -787,7 +978,7 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
         break;
     }
 
-#if RV_EXT_D
+#if RV_EXT_D || RV_EXT_ZFHMIN
     case 0x08u: /* FCVT.S.D -- narrowing, and it lives in the S group */
         /*
          * The pair FCVT.S.D / FCVT.D.S is split across the two formats:
@@ -796,10 +987,31 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
          * reads backwards until you notice that fmt is the result type
          * everywhere else too.
          */
-        if (rs2 != 1u) {
+#if RV_EXT_ZFHMIN
+        if (rs2 == 2u) { /* FCVT.S.H: widening, so exact */
+            const uint32_t ha = fr16(h, rs1);
+
+            if (!f_rm_valid(f_rm(h, rm))) {
+                *tval = insn;
+                return RV_EXC_ILLEGAL_INSN;
+            }
+            if (h_is_snan(ha)) {
+                flags |= FFLAG_NV;
+                res = F_CANON_NAN;
+            } else if (h_is_nan(ha)) {
+                res = F_CANON_NAN;
+            } else {
+                f_begin(f_rm(h, rm));
+                res = f_end(f16_to_f32(h_v(ha)), &flags);
+            }
+            break;
+        }
+#endif
+        if (!RV_EXT_D || rs2 != 1u) {
             *tval = insn;
             return RV_EXC_ILLEGAL_INSN;
         }
+#if RV_EXT_D
         {
             const uint64_t da = fr64(h, rs1);
 
@@ -813,6 +1025,7 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
                 res = f_end(f64_to_f32(d_v(da)), &flags);
             }
         }
+#endif
         break;
 #endif
 
