@@ -35,7 +35,7 @@ of them can catch is a shared misreading of the manual.
 | Caches, the debug facility (IAC/DAC/DBCR do hold what is written) | not modelled |
 | gdb stub | `src/frontend/ppc/ppc_gdb.c`: r0..r31, pc, msr, cr, lr, ctr, xer as `org.gnu.gdb.power.core`, big-endian, as `powerpc:e500` -- the nearest core gdb has, which names the Book E SPRs and the SPE where `powerpc:common` named 603 BATs and AltiVec; not the SPE halves or the SPRs ([../gdb.md](../gdb.md#the-guest-stub)) |
 | pair statistics | not written for this frontend |
-| More than one core | **two**, as on the MPC5777C (`PPC_CORE_COUNT`, 2 by default): core 1 held until `SIU_RSTVEC1` releases it, a TLB each, reservations broken by the other core's stores ([below](#two-cores)) |
+| More than one core | **two**, as on the MPC5675K (`PPC_CORE_COUNT`, 2 by default): core 1 held until the SSCM's key sequence releases it, a TLB each, reservations broken by the other core's stores ([below](#two-cores)) |
 
 Both backends run everything in the table: the interpreter, and a JIT
 through the shared IR on x86-64 and on Thumb-2.
@@ -444,31 +444,45 @@ of all five are held to 3.16.4.
 
 ## Two cores
 
-The MPC5777C has two e200z7s, and so does this model by default
-(`PPC_CORE_COUNT`, 1 or 2). **Core 0 runs out of reset and core 1 is
-held** until core 0 writes `SIU_RSTVEC1`. All of what is known about
-that register here is NXP's AN5191 (*MPC5777C Software Initialization
-and Optimization*, 3.9) and the SIU's base address: RSTVEC in bits 0:29,
-the address core 1 starts at; RST, bit 30, holding it in reset; VLE, bit
-31, the encoding it starts in; reset value RSTVEC 0xFFFF_FFFC and RST
-set. The address, 0xC3F9_09B0, is the SIU's 0xC3F9_0000 plus the offset
-NXP's own example writes to. No reference manual for the part is in
-this tree, so `SIU_HLT1` -- the other way to hold the core -- is not
-modelled, and VLE's reset value, which neither source gives, reads 0.
-`ppc_siu.c` is the whole device.
+The MPC5675K has two e200z7 cores, and so does this model by default
+(`PPC_CORE_COUNT`, 1 or 2). In its decoupled parallel mode -- the
+part's default, each core independent -- **core 0 runs out of reset and
+core 1 is held** until core 0 writes the address core 1 starts at to
+`SSCM_DPMBOOT`, with DVLE saying whether in VLE, and then 0x5AF0 and
+0xA50F to `SSCM_DPMKEY` (*MPC5675K Reference Manual*, Rev. 10, in
+`docs/nxp/`: 5.6.2.2 and 49.3.1.6-7). `ppc_sscm.c` is the SSCM, and
+models those two, STATUS reading decoupled mode, MEMCONFIG at its reset
+value, ERROR and DEBUGPORT holding what is written, and the user
+options reading as all zero; not what those registers act on, and not
+lockstep mode.
+
+Two choices where the manual says nothing, each the conservative one:
+**any other key ends the sequence**, and **the sequence releases a core
+in reset and does nothing to one that runs** -- the manual describes
+releasing core 1 from reset, not restarting it, so a start is once per
+reset.
+
+**The cores here are e200z759n3s, and the MPC5675K's are e200z760n3s**
+(1.4.1): a 64-entry TLB where this has 32, and SPE2, which this
+implements none of. The core is the one `docs/ppc/e200z759CRM.pdf`
+describes; the SoC is the one `docs/nxp/` describes, which is where the
+start sequence and the peripherals to come from -- the STM and the SWT,
+chapters 51 and 52 -- are read from.
 
 - **Each core is a whole core**: its own registers, SPRs, time base and
   decrementer, and TLB. `tlbivax` "invalidates local TLB entries only.
-  No broadcast" (10.5.4). PIR is the `p_cpuid` input, 0 and 1 as
-  AN5191 has them.
+  No broadcast" (10.5.4). PIR is the `p_cpuid` input, "defined by a
+  hardwired input vector to the individual cores" (47.6): 0 and 1.
 - **Core 1 starts itself.** The core that writes the register cannot
   reset the other's state while the other's thread may be running, so
-  the write leaves a request -- start at this address in this
-  encoding, or hold -- and core 1 applies it at the top of its next
-  run. The request is also what the scheduler sees, whatever the core's
-  own last slice wrote: a `wait` executing as the release arrived used
-  to write WFI over it, and a waiting core with interrupts off is one
-  the scheduler never runs again.
+  the second key leaves a request -- start at this address in this
+  encoding -- and core 1 applies it at the top of its next run. The
+  request is also what the scheduler sees, whatever the core's own last
+  slice wrote: a `wait` executing as a release arrived used to write WFI
+  over it, and a waiting core with interrupts off is one the scheduler
+  never runs again. (That was found when the model was the MPC5777C's
+  `SIU_RSTVEC1`, which could hold core 1 again and restart it; the
+  MPC5675K's keys release it once.)
 - **The reservation gets an address.** On its own the e200 compares
   none (3.5), and "external reservation logic" on the bus is left to
   the system. While a second core runs, this model is that logic: a
@@ -519,28 +533,32 @@ register across the loop.
 
 ### How it is checked
 
-`ppc-smp` (smp.c, smp_stubs.S, `crt0.S` with `PPC_CRT0_SMP`), 42
+`ppc-smp` (smp.c, smp_stubs.S, `crt0.S` with `PPC_CRT0_SMP`), 40
 checks, run by ctest seven ways: interpreted and translated; in
 parallel (`host-ppc-smp`) and one core after the other on one thread
 (`--serial`), where the two share a block table; and at quanta of 1, 4
 and 64. Core 1 takes commands through shared words and only core 0
 prints. Every wait is bounded, so a core that never answers fails a
-check rather than hanging the run.
+check rather than hanging the run. `ppc-smp-vle` is the same source
+built to start core 1 in VLE instead, which only a reset can choose
+again.
 
 Each mechanism was broken on its own and the run read:
 
 | mutant | fails |
 |---|---|
-| the SIU write releases nothing | `core1-up` and everything after it |
+| the key sequence releases nothing | `core1-up` and everything after it |
+| the second key alone releases it | `held-without-sequence` |
+| a key between the two keeps the sequence | `held-without-sequence` |
+| a sequence restarts a running core | `restart-ignored-vle`, `restart-ignored-answers` |
 | a store breaks no reservation | `resv-broken-same-value` -- a value written back is invisible to the compare-and-swap, so only the break can see it |
 | the core is not in the context | `tlb-code-core1`, under `--serial --jit` only: in parallel each core has its own block table |
 | inlined stores unguarded | `resv-broken-same-value`, under `--jit` only |
 | the start request never applied | `core1-up` |
-| the hold ignored | `held-runs-nothing` -- a command posted to a core that should be stopped |
 | `stwcx.` a plain store, not a compare-and-swap | `race-no-lost-store`, in parallel only, 10 runs of 10 |
 | `lwarx` takes no address | eight checks, `inc-total` among them |
 | core 1 runs from reset | `pir`: it ran `main` too |
-| RSTVEC1's VLE bit ignored | `vle-start`, and a trap |
+| DPMBOOT[DVLE] ignored | `vle-start` in `ppc-smp-vle` |
 
 `race-no-lost-store` exists because the compare-and-swap's mutant
 passed every other check: core 1 stores rising even values and reads
@@ -704,7 +722,7 @@ handle VLE fine. They are built `-m32 -mbig-endian -mcpu=8540
 | `ppc-alu` | compiled C against values from Python's integers (`alu_want.py`): the forms a compiler reaches for unasked — `addc`/`adde` chains, `srawi`+`addze`, `rlwinm`/`rlwimi`, `isel`, update forms, `lmw`/`stmw`, `bctr` through a jump table |
 | `ppc-sys` | the system level, 184 checks with the manual's section beside each: interrupts, privilege, SPRs, reservations, the timers, `wait`, both FP interrupts |
 | `ppc-mmu` | the MMU, 239 checks: the TLB programmed as an MPC57xx start-up does, then translation, address spaces, PIDs, permissions, every TLB interrupt and the MAS registers it leaves, per-page VLE and byte order, invalidation, and the JIT's `jit-` cases |
-| `ppc-smp` | the second core, 42 checks: held at reset and released by `SIU_RSTVEC1`, PIR, atomics and reservations between the cores, a TLB each for data and code, held again and restarted, a VLE start. Run seven ways by ctest |
+| `ppc-smp`, `ppc-smp-vle` | the second core, 40 checks: held at reset and released only by the SSCM's key sequence, PIR, atomics and reservations between the cores, a TLB each for data and code, a second sequence ignored; and, built again, a start in VLE. Run nine ways by ctest |
 | `ppc-coremark-tlbmiss` | CoreMark with the TLB filled on demand by a miss handler in `crt0.S`, two refill entries for a working set of five pages: 26,652 `tlbwe` in a run |
 | `ppc-park` | a `wait` nothing may end: the run must stop there, and the line after it must not print |
 | `ppc-coremark`, `ppc-crypto` | the shared benchmarks |

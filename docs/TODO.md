@@ -1716,16 +1716,12 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       both hosts were in, each checked against something that is not
       this code, and the frontend runs on the F746
       ([frontend/ppc.md](frontend/ppc.md)).
-  - [x] **A second core**, as the MPC5777C's: held until core 0 writes
-        `SIU_RSTVEC1` (NXP AN5191), a TLB each, and the reservation
-        given an address while both run -- broken by the other core's
-        store, `stwcx.` a compare-and-swap on RAM. `ppc-smp`, 42
-        checks, seven ways in ctest; ten single-point mutants each fail
-        a named check. The first parallel runs found two races in state
-        one core never shares: the decode cache and the decoder's
-        lazily built index ([frontend/ppc.md](frontend/ppc.md#two-cores)).
-        Parallel on a host with `-DEMU_OS_SMP=ON`; not on the F746 yet,
-        where no board was attached.
+  - [x] **A second core**, as the MPC5675K's in decoupled parallel
+        mode: held until core 0 writes `SSCM_DPMBOOT` and the two
+        `SSCM_DPMKEY` keys, a TLB each, and the reservation given an
+        address while both run -- broken by the other core's store,
+        `stwcx.` a compare-and-swap on RAM
+        ([frontend/ppc.md](frontend/ppc.md#two-cores)).
   - [ ] A driver, which wants a peripheral model or the passthrough
         window to drive.
         - [ ] Implement driver STM System Timer Module (Chapter 51)

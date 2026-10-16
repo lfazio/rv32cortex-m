@@ -1,14 +1,17 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * smp.c - the MPC5777C's second e200z7.
+ * smp.c - the MPC5675K's second e200z7.
  *
- * Core 1 is held in reset until core 0 writes SIU_RSTVEC1 with RST clear
- * (NXP AN5191, 3.9), and starts at the address in it, in the encoding
- * its VLE bit names, reading 1 from PIR. From then on the two share
- * memory and nothing else: each has its own registers, its own SPRs and
- * its own TLB. What this checks is the part of that two cores can see:
+ * In decoupled parallel mode, the part's default, core 1 is held in reset
+ * until core 0 writes its start address to SSCM_DPMBOOT and then 0x5AF0
+ * and 0xA50F to SSCM_DPMKEY (Reference Manual, 5.6.2.2 and 49.3.1.6-7).
+ * It starts there, in the encoding DPMBOOT[DVLE] names, reading 1 from
+ * PIR. From then on the two share memory and nothing else: each has its
+ * own registers, its own SPRs and its own TLB. What this checks is the
+ * part of that two cores can see:
  *
- *   - that core 1 is held, starts where it is told, and knows who it is;
+ *   - that core 1 is held, starts where it is told and only for the key
+ *     sequence, and knows who it is;
  *   - that lwarx/stwcx. are atomic between the cores -- an increment both
  *     make N times each comes to 2N -- and that a reservation is broken
  *     by the other core's store to its word and by nothing else;
@@ -17,8 +20,10 @@
  *     block, then core 1 calls the same address through its own mapping,
  *     which on a build where the cores share one block table finds core
  *     0's block unless the core is part of what a block is built for;
- *   - that RST set again holds the core, and a second release starts it
- *     afresh -- and in VLE when RSTVEC1 says so.
+ *   - that a second key sequence leaves a running core 1 alone.
+ *
+ * Built a second time with SMP_START_VLE, which starts core 1 in VLE
+ * instead and checks only that: there is one start per reset.
  *
  * Core 1 takes commands through three shared words and reports through
  * a fourth: core 0 is the only one that prints. Every wait is bounded,
@@ -29,9 +34,19 @@ typedef unsigned int u32;
 typedef unsigned char u8;
 
 #define UART (*(volatile unsigned char *)0x10000000u)
-#define SIU_RSTVEC1 (*(volatile u32 *)0xC3F909B0u)
-#define RSTVEC_VLE 0x1u
-#define RSTVEC_RST 0x2u
+#define SSCM_STATUS (*(volatile unsigned short *)0xC3FD8000u)
+#define SSCM_MEMCONFIG (*(volatile unsigned short *)0xC3FD8002u)
+#define SSCM_DPMBOOT (*(volatile u32 *)0xC3FD8018u)
+#define SSCM_DPMKEY (*(volatile u32 *)0xC3FD801Cu)
+#define DPMBOOT_DVLE 0x2u
+
+/* Release core 1 at `at`: section 5.6.2.2's four steps. */
+static void start_core1(u32 at)
+{
+    SSCM_DPMBOOT = at;
+    SSCM_DPMKEY = 0x5AF0u;
+    SSCM_DPMKEY = 0xA50Fu;
+}
 
 /* The MAS fields, tables 10-9 to 10-12. */
 #define V 0x80000000u
@@ -286,29 +301,62 @@ static void post(u32 op, u32 arg, u32 arg2)
 }
 
 /* Post and wait; core 1's result, or 0xDEAD if it never answered. */
-static u32 call1(u32 op, u32 arg, u32 arg2)
+__attribute__((unused)) static u32 call1(u32 op, u32 arg, u32 arg2)
 {
     post(op, arg, arg2);
     return wait_eq(&g_done, g_posted) ? g_res : 0xDEADu;
 }
 
-static void spin(u32 n)
+__attribute__((unused)) static void spin(u32 n)
 {
     for (volatile u32 i = 0u; i < n; i++) {
     }
 }
 
+#ifdef SMP_START_VLE
+/*
+ * The other encoding, which DPMBOOT[DVLE] chooses and only a reset can
+ * choose again: core 1 starts at a VLE stub that stores 0x56 and waits.
+ */
 int main(void)
 {
-    /* Held at reset, and core 0 is core 0. */
+    g_vle_ran = 0u;
+    start_core1((u32)core1_vle | DPMBOOT_DVLE);
+    check("vle-start", wait_eq(&g_vle_ran, 0x56u), 1u);
+    ps_("PPC-SMP-END checks=");
+    phex(g_checks);
+    ps_(" fails=");
+    phex(g_fail);
+    pc_('\n');
+    return (int)g_fail;
+}
+#else
+int main(void)
+{
+    /* Held at reset, and core 0 is core 0, in DPM. */
     check("pir", mfpir(), 0u);
-    check("rstvec1-reset", SIU_RSTVEC1, 0xFFFFFFFEu);
+    check("sscm-status-dpm", SSCM_STATUS & 0x8000u, 0u);
+    check("sscm-memconfig", SSCM_MEMCONFIG, 0xB021u);
+    check("dpmboot-reset", SSCM_DPMBOOT, 0u);
     spin(20000u);
     check("held-at-reset", g_c1.up, 0u);
 
+    /*
+     * Only the sequence releases it: the second key alone, and the two
+     * keys with another between them, leave it held.
+     */
+    SSCM_DPMBOOT = (u32)_start1;
+    check("dpmboot-written", SSCM_DPMBOOT, (u32)_start1);
+    SSCM_DPMKEY = 0xA50Fu;
+    SSCM_DPMKEY = 0x5AF0u;
+    SSCM_DPMKEY = 0x1234u;
+    SSCM_DPMKEY = 0xA50Fu;
+    check("dpmkey-reads-0", SSCM_DPMKEY, 0u);
+    spin(20000u);
+    check("held-without-sequence", g_c1.up, 0u);
+
     /* Start it, Book E, at _start1. */
-    SIU_RSTVEC1 = (u32)_start1;
-    check("rstvec1-written", SIU_RSTVEC1, (u32)_start1);
+    start_core1((u32)_start1);
     check("core1-up", wait_eq(&g_c1.up, 1u), 1u);
     check("core1-pir", g_c1.pir, 1u);
     check("core1-own-stack",
@@ -390,39 +438,17 @@ int main(void)
     check("tlb-code-core1", call1(OP_CALL, 0u, 0u), 0xA2u);
     check("tlb-code-core0-again", call_code(), 0x5Au);
 
-    /* Held again, and started again: a fresh core, PIR still 1. */
-    check("park", call1(OP_PARK, 0u, 0u), 0u);
-    SIU_RSTVEC1 = (u32)_start1 | RSTVEC_RST;
-    check("rstvec1-held", SIU_RSTVEC1, (u32)_start1 | RSTVEC_RST);
-    g_c1.up = 0u;
-    g_posted = g_seq = g_done = 0u;
-    SIU_RSTVEC1 = (u32)_start1;
-    check("restart-up", wait_eq(&g_c1.up, 1u), 1u);
-    check("restart-boots", g_c1.boots, 2u);
-    check("restart-pir", g_c1.pir, 1u);
     /*
-     * Held while it runs, not parked: a command posted now must not be
-     * carried out, and the core has to stop to see that. Then started a
-     * third time.
+     * A second sequence while core 1 runs leaves it running where it
+     * is: the keys release a core from reset and do not restart one.
      */
-    SIU_RSTVEC1 = (u32)_start1 | RSTVEC_RST;
-    spin(20000u);
-    g_y = 0u;
-    post(OP_STORE, (u32)&g_y, 0x99u);
-    spin(200000u);
-    check("held-runs-nothing", g_y, 0u);
-    g_c1.up = 0u;
-    g_posted = g_seq = g_done = 0u;
-    SIU_RSTVEC1 = (u32)_start1;
-    check("restart2-up", wait_eq(&g_c1.up, 1u), 1u);
-    check("restart2-boots", g_c1.boots, 3u);
-
-    /* And in VLE, which is RSTVEC1's to say. */
-    check("park-again", call1(OP_PARK, 0u, 0u), 0u);
-    SIU_RSTVEC1 = (u32)core1_vle | RSTVEC_RST;
     g_vle_ran = 0u;
-    SIU_RSTVEC1 = (u32)core1_vle | RSTVEC_VLE;
-    check("vle-start", wait_eq(&g_vle_ran, 0x56u), 1u);
+    start_core1((u32)core1_vle | DPMBOOT_DVLE);
+    spin(200000u);
+    check("restart-ignored-vle", g_vle_ran, 0u);
+    check("restart-ignored-boots", g_c1.boots, 1u);
+    check("restart-ignored-answers", call1(OP_LOAD, 0u, 0u), 0xB1u);
+    check("park", call1(OP_PARK, 0u, 0u), 0u);
 
     ps_("PPC-SMP-END checks=");
     phex(g_checks);
@@ -431,3 +457,4 @@ int main(void)
     pc_('\n');
     return (int)g_fail;
 }
+#endif

@@ -261,17 +261,17 @@ typedef struct ppc_cpu {
     uint32_t resv_raw;
     bool resv_raw_ok; /* the word is RAM the host can swap */
     /*
-     * What SIU_RSTVEC1 last asked of this core, from another core's
-     * thread: PPC_REQ_START or PPC_REQ_HOLD, until this core acts on it.
+     * What SSCM_DPMKEY asked of this core, from another core's thread:
+     * PPC_REQ_START, until this core acts on it.
      * The writer cannot reset this core's state while this core's thread
      * may be running, so it leaves the address and the encoding here and
      * the core starts itself at the top of its next run.
      *
-     * **A request, not a state.** The core's own last slice may still be
-     * running when it is held or released, and its `wait` then writes
-     * WFI over whatever the request wrote -- and a waiting core with
-     * interrupts off is one the scheduler never runs again, so the start
-     * was lost: smp.c's restart failed one run in twenty. The status
+     * **A request, not a state.** A core's own last slice may still be
+     * running when the request lands, and its `wait` then writes WFI over
+     * whatever the request wrote -- and a waiting core with interrupts
+     * off is one the scheduler never runs again, so the start was lost:
+     * a restart in smp.c failed one run in twenty that way. The status
      * reports the request while it is pending, whatever `state` says.
      */
     uint8_t reset_req;
@@ -281,7 +281,6 @@ typedef struct ppc_cpu {
 
 #define PPC_REQ_NONE 0u
 #define PPC_REQ_START 1u
-#define PPC_REQ_HOLD 2u
 
 /*
  * The JIT's generation: every block goes when it moves. One for every
@@ -347,16 +346,16 @@ void ppc_cpu_set_msr(ppc_cpu_t *c, uint32_t v);
 
 /*
  * Take a held core out of reset at `pc`, decoding VLE or Book E: the
- * SIU_RSTVEC1 write that clears RST (NXP AN5191, 3.9). Called on the
- * thread of the core that wrote the register. From here every core's
- * stores break the others' reservations, and any reservation held now
- * is dropped -- it was taken with no address, and a store-conditional
- * is allowed to fail.
+ * second write of SSCM_DPMKEY (MPC5675K Reference Manual, 5.6.2.2).
+ * Called on the thread of the core that wrote the key. From here every
+ * core's stores break the others' reservations, and any reservation held
+ * now is dropped -- it was taken with no address, and a
+ * store-conditional is allowed to fail.
  */
 void ppc_cpu_start(ppc_cpu_t *c, uint32_t pc, bool vle);
 
-/* Put a core back in reset: RST set again. It stops at its next slice. */
-void ppc_cpu_hold(ppc_cpu_t *c);
+/* Held in reset, and not about to be started. */
+bool ppc_cpu_held(const ppc_cpu_t *c);
 
 /* The start ppc_cpu_start asked for, on the core's own thread. */
 void ppc_cpu_take_start(ppc_cpu_t *c);

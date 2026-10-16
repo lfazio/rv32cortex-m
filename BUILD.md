@@ -168,7 +168,7 @@ arithmetic stand in for one ([docs/frontend/ppc.md](docs/frontend/ppc.md)).
 |---|---|---|
 | `PPC_GUEST` | `alu` | the guest a firmware embeds: `alu`, `sys`, `coremark`, `crypto`. Embedded as an ELF, because the encoding (VLE or Book E) is a flag on its segment |
 | `PPC_ENABLE_DISASM` | ON | checked against binutils, both directions |
-| `PPC_CORE_COUNT` | 2 | the MPC5777C's two cores; core 1 is held until the guest writes `SIU_RSTVEC1`, so a guest that never does runs on core 0 alone. 1 removes the SIU and the JIT's store guard. Parallel on a host only with `-DEMU_OS_SMP=ON` ([docs/frontend/ppc.md](docs/frontend/ppc.md#two-cores)) |
+| `PPC_CORE_COUNT` | 2 | the MPC5675K's two cores; core 1 is held until the guest writes the SSCM's key sequence, so a guest that never does runs on core 0 alone. 1 removes the SSCM and the JIT's store guard. Parallel on a host only with `-DEMU_OS_SMP=ON` ([docs/frontend/ppc.md](docs/frontend/ppc.md#two-cores)) |
 
 Needs SoftFloat, as every frontend with an FP unit does. Blocks are
 capped at 16 guest instructions when the host is Thumb-2 and 64

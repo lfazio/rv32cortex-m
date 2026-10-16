@@ -578,7 +578,7 @@ VLE or Book E:
 | `ppc-alu` | compiled C against values computed in Python: the forms a compiler reaches for unasked |
 | `ppc-sys` | the system level, 184 checks with the manual's section beside each: interrupts, privilege, SPRs, reservations, timers, the FP interrupts |
 | `ppc-mmu` | the MMU, 239 checks: the TLB programmed as an MPC57xx start-up does, then translation, address spaces, permissions, the TLB interrupts, per-page VLE and byte order, and the JIT's view of each |
-| `ppc-smp` | the MPC5777C's second core: held until `SIU_RSTVEC1` starts it, atomics and reservations between the two, a TLB each, a restart in VLE |
+| `ppc-smp`, `ppc-smp-vle` | the MPC5675K's second core: held until the SSCM's key sequence starts it, atomics and reservations between the two, a TLB each; and a start in VLE |
 | `ppc-park` | a `wait` that nothing may end |
 | `ppc-coremark`, `ppc-crypto` | the shared benchmarks, with a decrementer interrupt landing in compiled code throughout |
 | `ppc-coremark-tlb`, `ppc-coremark-tlbmiss` | CoreMark under a TLB the start-up programs, and under one a miss handler refills a page at a time |

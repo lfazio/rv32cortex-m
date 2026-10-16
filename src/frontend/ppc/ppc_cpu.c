@@ -115,7 +115,8 @@ void ppc_cpu_reset(ppc_cpu_t *c, uint32_t reset_pc)
     c->dbsr = 0x10000000u; /* table 17 */
     /*
      * Core 0 runs out of reset and the others are held, as on the
-     * MPC5777C: core 1 waits for SIU_RSTVEC1 (NXP AN5191, 3.9).
+     * MPC5675K in decoupled parallel mode: core 1 waits for SSCM_DPMKEY
+     * (Reference Manual, 5.6).
      */
     c->state = (c->coreid == 0u) ? EMU_STATE_RUNNING : EMU_STATE_HELD;
     c->irq_dirty = false;
@@ -1050,9 +1051,10 @@ void ppc_cpu_start(ppc_cpu_t *c, uint32_t pc, bool vle)
     __atomic_store_n(&c->reset_req, (uint8_t)PPC_REQ_START, __ATOMIC_RELEASE);
 }
 
-void ppc_cpu_hold(ppc_cpu_t *c)
+bool ppc_cpu_held(const ppc_cpu_t *c)
 {
-    __atomic_store_n(&c->reset_req, (uint8_t)PPC_REQ_HOLD, __ATOMIC_RELEASE);
+    return __atomic_load_n(&c->reset_req, __ATOMIC_ACQUIRE) == PPC_REQ_NONE &&
+           __atomic_load_n(&c->state, __ATOMIC_ACQUIRE) == EMU_STATE_HELD;
 }
 
 void ppc_cpu_take_start(ppc_cpu_t *c)
@@ -1064,12 +1066,11 @@ void ppc_cpu_take_start(ppc_cpu_t *c)
     /* A reset, which leaves this core held: it is about to run. */
     ppc_cpu_reset(c, pc);
     c->vle = vle;
-    ppc_mmu_reset(c); /* the reset entry's VLE bit is RSTVEC1's */
+    ppc_mmu_reset(c); /* the reset entry's VLE bit is DPMBOOT[DVLE] */
     c->jit_ctx = ppc_cpu_ctx(c);
     c->smp_live = 1u;
     c->slow_store = true;
     c->state = EMU_STATE_RUNNING;
-    /* Consumed -- unless a hold arrived meanwhile, which then stands. */
     (void)__atomic_compare_exchange_n(&c->reset_req, &want,
                                       (uint8_t)PPC_REQ_NONE, false,
                                       __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);

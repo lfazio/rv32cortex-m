@@ -43,7 +43,7 @@ smp_page_b:
 	.balign	4096
 
 /*
- * Core 1 started in VLE (SIU_RSTVEC1[VLE]): it stores 0x56 to g_vle_ran
+ * Core 1 started in VLE (SSCM_DPMBOOT[DVLE]): it stores 0x56 to g_vle_ran
  * and waits. The address is a literal after the code, reached from the
  * link register, because VLE has nothing pc-relative a store can use.
  * Encodings from binutils' -mvle.

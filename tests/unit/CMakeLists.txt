@@ -701,8 +701,8 @@ if(EMU_GUEST_ARCH_PPC)
             "Correct operation validated.*flushes +[0-9][^0-9]")
     endif()
     #
-    # The MPC5777C's second core (smp.c): held until SIU_RSTVEC1 releases
-    # it, then atomics, reservations and a TLB each. Every mode, because
+    # The MPC5675K's second core (smp.c): held until the SSCM's key
+    # sequence releases it, then atomics, reservations and a TLB each. Every mode, because
     # each puts the cores somewhere else: in parallel, where only a
     # compare-and-swap stops a store being lost; one after another on one
     # thread, where the two share a block table and only the core in a
@@ -718,7 +718,7 @@ if(EMU_GUEST_ARCH_PPC)
                              "${CMAKE_BINARY_DIR}/guest/ppc-smp.elf")
             set_tests_properties(guest-ppc-smp${sfx} PROPERTIES
                 LABELS fast
-                PASS_REGULAR_EXPRESSION "PPC-SMP-END checks=0000002a fails=00000000"
+                PASS_REGULAR_EXPRESSION "PPC-SMP-END checks=00000028 fails=00000000"
                 FAIL_REGULAR_EXPRESSION "TRAP;FAIL")
         endfunction()
         add_ppc_smp_test("")
@@ -730,6 +730,21 @@ if(EMU_GUEST_ARCH_PPC)
             add_ppc_smp_test(-q4-jit --serial --jit --quantum 4)
             add_ppc_smp_test(-q64-jit --serial --jit --quantum 64)
         endif()
+        #
+        # And started in VLE, which DPMBOOT[DVLE] chooses once per reset.
+        #
+        foreach(_m "" "--jit")
+            if(_m STREQUAL "" OR EMU_JIT)
+                string(REPLACE "--" "-" _sfx "${_m}")
+                add_test(NAME guest-ppc-smp-vle${_sfx}
+                         COMMAND emu-host ${_m} --max-insn 50000000
+                                 "${CMAKE_BINARY_DIR}/guest/ppc-smp-vle.elf")
+                set_tests_properties(guest-ppc-smp-vle${_sfx} PROPERTIES
+                    LABELS fast
+                    PASS_REGULAR_EXPRESSION "PPC-SMP-END checks=00000001 fails=00000000"
+                    FAIL_REGULAR_EXPRESSION "TRAP;FAIL")
+            endif()
+        endforeach()
     endif()
     #
     # A wait with interrupts masked, which nothing may end. The pass is

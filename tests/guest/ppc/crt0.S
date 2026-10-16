@@ -435,7 +435,7 @@ _exit:
 /* ------------------------------------------------------------------ */
 
 /*
- * Where core 0 points SIU_RSTVEC1 (smp.c). Core 1 comes out of reset
+ * Where core 0 points SSCM_DPMBOOT (smp.c). Core 1 comes out of reset
  * with nothing set up -- the loader gave core 0 a stack and no one gave
  * this core anything -- so it takes its own stack, installs the same
  * vectors in its own IVPR and IVORs, and runs main1. Everything else

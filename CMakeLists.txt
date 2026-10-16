@@ -458,11 +458,12 @@ option(G4MH_ENABLE_DISASM "Build the G4MH disassembler" ON)
 option(ARMV7M_ENABLE_DISASM "Build the ARMv7-M disassembler" ON)
 option(PPC_ENABLE_DISASM "Build the e200z7 disassembler" ON)
 
-# e200z7 cores to model. The MPC5777C has two, and core 1 is held in reset
-# until core 0 writes its start address to SIU_RSTVEC1 (NXP AN5191, 3.9),
-# so a guest that never does runs on core 0 alone and pays only a core
-# skipped each round. A held core costs a small structure and a bus, so
-# unlike G4MH's PEs -- 64 KiB of local RAM each -- this is not a host-only
+# e200z7 cores to model. The MPC5675K has two, and in its decoupled
+# parallel mode core 1 is held in reset until core 0 writes SSCM_DPMBOOT
+# and the two SSCM_DPMKEY keys (Reference Manual, 5.6, in docs/nxp), so a
+# guest that never does runs on core 0 alone and pays only a core skipped
+# each round. A held core costs a small structure and a bus, so unlike
+# G4MH's PEs -- 64 KiB of local RAM each -- this is not a host-only
 # number. See docs/frontend/ppc.md.
 set(PPC_CORE_COUNT "2" CACHE STRING "e200z7 cores (1..2)")
 
@@ -770,7 +771,7 @@ if(EMU_GUEST_ARCH_PPC)
         src/frontend/ppc/ppc_gdb.c
         src/frontend/ppc/ppc_interp.c
         src/frontend/ppc/ppc_mmu.c
-        src/frontend/ppc/ppc_siu.c
+        src/frontend/ppc/ppc_sscm.c
         $<$<BOOL:${EMU_PAIR_STATS}>:src/frontend/ppc/ppc_pairstats.c>
     )
 

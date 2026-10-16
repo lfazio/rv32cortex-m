@@ -182,6 +182,8 @@ if(EMU_GUEST_ARCH_PPC)
         add_ppc_guest(mmu SOURCES mmu.c sys_stubs.S mmu_stubs.S)
         add_ppc_guest(park SOURCES park.c)
         add_ppc_guest(smp SOURCES smp.c smp_stubs.S FLAGS -DPPC_CRT0_SMP)
+        add_ppc_guest(smp-vle SOURCES smp.c smp_stubs.S
+                      FLAGS -DPPC_CRT0_SMP -DSMP_START_VLE)
     else()
         message(STATUS "No PowerPC compiler: the compiled e200z7 guests will not be built")
     endif()
