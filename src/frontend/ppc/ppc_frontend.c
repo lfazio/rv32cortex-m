@@ -49,6 +49,32 @@ static ppc_sscm_t g_sscm;
  */
 static uint64_t g_tbclk_now;
 
+/*
+ * Atomic only where cores are threads. A Cortex-M has no 64-bit atomic
+ * access -- GCC calls libatomic's __atomic_load_8 for one, which the
+ * firmware does not link, so every board build with PowerPC failed at
+ * the link -- and needs none: there the cores are tasks of one
+ * cooperative scheduler and the board's clock hook runs between slices,
+ * so a store and a load of this cannot interleave.
+ */
+static uint64_t tbclk_load(void)
+{
+#if EMU_SMP
+    return __atomic_load_n(&g_tbclk_now, __ATOMIC_RELAXED);
+#else
+    return g_tbclk_now;
+#endif
+}
+
+static void tbclk_store(uint64_t now)
+{
+#if EMU_SMP
+    __atomic_store_n(&g_tbclk_now, now, __ATOMIC_RELAXED);
+#else
+    g_tbclk_now = now;
+#endif
+}
+
 #if EMU_SMP && PPC_CORE_COUNT > 1
 /*
  * The SSCM is reached from whichever core writes it, so on a host that
@@ -254,7 +280,7 @@ static emu_run_reason_t ppc_ops_run(emu_cpu_t *cpu, uint32_t budget,
     take_request(c);
 #if PPC_CORE_COUNT > 1
     if (c->coreid != 0u) {
-        ppc_cpu_set_time(c, __atomic_load_n(&g_tbclk_now, __ATOMIC_RELAXED));
+        ppc_cpu_set_time(c, tbclk_load());
     }
 #endif
     return ppc_backend->run(cpu, budget, retired);
@@ -338,7 +364,7 @@ static void ppc_ops_advance_time(emu_cpu_t *cpu, uint32_t ticks)
 
 static void ppc_ops_set_time(emu_cpu_t *cpu, uint64_t now)
 {
-    __atomic_store_n(&g_tbclk_now, now, __ATOMIC_RELAXED);
+    tbclk_store(now);
     ppc_cpu_set_time(cpu_of(cpu), now);
 }
 
