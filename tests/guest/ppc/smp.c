@@ -171,6 +171,7 @@ enum {
     OP_LOAD,
     OP_CALL,
     OP_RACE,
+    OP_TB,
     OP_PARK
 };
 
@@ -246,6 +247,24 @@ void main1(void)
         case OP_CALL:
             res = call_code();
             break;
+        case OP_TB: {
+            /*
+             * This core's time base, counting p_tbclk (HID0[TBEN] and
+             * [SEL_TBCLK]): the platform's clock, which is one input for
+             * both cores. The difference across a busy wait is the
+             * answer, and nothing but the platform can move it.
+             */
+            u32 t0;
+            u32 t1;
+
+            __asm__ volatile("mtspr 1008, %0" ::"r"(0x6000u)); /* HID0 */
+            __asm__ volatile("mfspr %0, 268" : "=r"(t0)); /* TBL */
+            for (volatile u32 i = 0u; i < 200000u; i++) {
+            }
+            __asm__ volatile("mfspr %0, 268" : "=r"(t1));
+            res = t1 - t0;
+            break;
+        }
         case OP_RACE:
             /*
              * Plain stores of rising even values, each read back. Core 0
@@ -422,6 +441,9 @@ int main(void)
     }
     check("race-done", wait_eq(&g_done, g_posted), 1u);
     check("race-no-lost-store", g_res, 0u);
+
+    /* Core 1's time base on the platform clock moves. */
+    check("core1-tb-on-tbclk", call1(OP_TB, 0u, 0u) != 0u, 1u);
 
     /* A TLB each: one address, a page each, data and code. */
     *(volatile u32 *)&g_pg[0] = 0xA0u;

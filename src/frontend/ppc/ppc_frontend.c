@@ -39,6 +39,16 @@ const emu_gdb_target_t *ppc_gdb_target(void);
 static ppc_cpu_t g_cpu[PPC_CORE_COUNT];
 static ppc_sscm_t g_sscm;
 
+/*
+ * p_tbclk is one input for the part, and either core's time base may
+ * count it. The platform hands it to core 0 alone, so it is published
+ * here and every core takes it at the top of its own run, on its own
+ * thread -- setting core 1's timers from core 0's thread would race
+ * with core 1 reading them. ppc_cpu_set_time advances by the difference
+ * from the last time it saw, so taking one value twice is harmless.
+ */
+static uint64_t g_tbclk_now;
+
 #if EMU_SMP && PPC_CORE_COUNT > 1
 /*
  * The SSCM is reached from whichever core writes it, so on a host that
@@ -239,7 +249,14 @@ static EMU_ALWAYS_INLINE void take_request(ppc_cpu_t *c)
 static emu_run_reason_t ppc_ops_run(emu_cpu_t *cpu, uint32_t budget,
                                     uint32_t *retired)
 {
-    take_request(cpu_of(cpu));
+    ppc_cpu_t *const c = cpu_of(cpu);
+
+    take_request(c);
+#if PPC_CORE_COUNT > 1
+    if (c->coreid != 0u) {
+        ppc_cpu_set_time(c, __atomic_load_n(&g_tbclk_now, __ATOMIC_RELAXED));
+    }
+#endif
     return ppc_backend->run(cpu, budget, retired);
 }
 
@@ -321,6 +338,7 @@ static void ppc_ops_advance_time(emu_cpu_t *cpu, uint32_t ticks)
 
 static void ppc_ops_set_time(emu_cpu_t *cpu, uint64_t now)
 {
+    __atomic_store_n(&g_tbclk_now, now, __ATOMIC_RELAXED);
     ppc_cpu_set_time(cpu_of(cpu), now);
 }
 

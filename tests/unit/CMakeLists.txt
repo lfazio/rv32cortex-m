@@ -718,7 +718,7 @@ if(EMU_GUEST_ARCH_PPC)
                              "${CMAKE_BINARY_DIR}/guest/ppc-smp.elf")
             set_tests_properties(guest-ppc-smp${sfx} PROPERTIES
                 LABELS fast
-                PASS_REGULAR_EXPRESSION "PPC-SMP-END checks=00000028 fails=00000000"
+                PASS_REGULAR_EXPRESSION "PPC-SMP-END checks=00000029 fails=00000000"
                 FAIL_REGULAR_EXPRESSION "TRAP;FAIL")
         endfunction()
         add_ppc_smp_test("")

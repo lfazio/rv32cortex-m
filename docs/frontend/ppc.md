@@ -473,6 +473,10 @@ chapters 51 and 52 -- are read from.
   decrementer, and TLB. `tlbivax` "invalidates local TLB entries only.
   No broadcast" (10.5.4). PIR is the `p_cpuid` input, "defined by a
   hardwired input vector to the individual cores" (47.6): 0 and 1.
+  `p_tbclk`, which either core's time base may count, is one input for
+  the part: the platform gives it to core 0, and each core takes the
+  latest value at the top of its own run -- core 1's time base did not
+  move at all until it did, which `core1-tb-on-tbclk` now holds.
 - **Core 1 starts itself.** The core that writes the register cannot
   reset the other's state while the other's thread may be running, so
   the second key leaves a request -- start at this address in this
@@ -533,7 +537,7 @@ register across the loop.
 
 ### How it is checked
 
-`ppc-smp` (smp.c, smp_stubs.S, `crt0.S` with `PPC_CRT0_SMP`), 40
+`ppc-smp` (smp.c, smp_stubs.S, `crt0.S` with `PPC_CRT0_SMP`), 41
 checks, run by ctest seven ways: interpreted and translated; in
 parallel (`host-ppc-smp`) and one core after the other on one thread
 (`--serial`), where the two share a block table; and at quanta of 1, 4
@@ -722,7 +726,7 @@ handle VLE fine. They are built `-m32 -mbig-endian -mcpu=8540
 | `ppc-alu` | compiled C against values from Python's integers (`alu_want.py`): the forms a compiler reaches for unasked — `addc`/`adde` chains, `srawi`+`addze`, `rlwinm`/`rlwimi`, `isel`, update forms, `lmw`/`stmw`, `bctr` through a jump table |
 | `ppc-sys` | the system level, 184 checks with the manual's section beside each: interrupts, privilege, SPRs, reservations, the timers, `wait`, both FP interrupts |
 | `ppc-mmu` | the MMU, 239 checks: the TLB programmed as an MPC57xx start-up does, then translation, address spaces, PIDs, permissions, every TLB interrupt and the MAS registers it leaves, per-page VLE and byte order, invalidation, and the JIT's `jit-` cases |
-| `ppc-smp`, `ppc-smp-vle` | the second core, 40 checks: held at reset and released only by the SSCM's key sequence, PIR, atomics and reservations between the cores, a TLB each for data and code, a second sequence ignored; and, built again, a start in VLE. Run nine ways by ctest |
+| `ppc-smp`, `ppc-smp-vle` | the second core, 41 checks: held at reset and released only by the SSCM's key sequence, PIR, atomics and reservations between the cores, a TLB each for data and code, a second sequence ignored; and, built again, a start in VLE. Run nine ways by ctest |
 | `ppc-coremark-tlbmiss` | CoreMark with the TLB filled on demand by a miss handler in `crt0.S`, two refill entries for a working set of five pages: 26,652 `tlbwe` in a run |
 | `ppc-park` | a `wait` nothing may end: the run must stop there, and the line after it must not print |
 | `ppc-coremark`, `ppc-crypto` | the shared benchmarks |
