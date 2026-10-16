@@ -558,6 +558,14 @@ uint32_t emu_system_step(emu_system_t *sys, uint32_t quantum, bool *all_idle);
  */
 uint32_t emu_core_slice(emu_core_t *c, uint32_t quantum, bool *live);
 
+/*
+ * Whether a slice of this core would run anything: not halted, not held
+ * at reset, not waiting with nothing able to wake it -- the cases
+ * emu_core_slice returns from at once. For a scheduler that would
+ * otherwise wake a host thread to be told so.
+ */
+bool emu_core_runnable(emu_core_t *c);
+
 /* Convenience wrappers, so callers read as verbs rather than as tables. */
 
 static inline emu_run_reason_t emu_core_run(emu_core_t *c, uint32_t budget,

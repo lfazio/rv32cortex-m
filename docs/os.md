@@ -11,7 +11,7 @@ and the kernel is fetched by [`cmake/freertos.cmake`](../cmake/freertos.cmake).
 
 | platform | FreeRTOS port | parallel? |
 |---|---|---|
-| host, a build that can run more than one core (`EMU_OS_SMP`, the default) | `src/platform/host/freertos_smp` -- written here; tasks are pthreads, one FreeRTOS core per emulated core | **yes**, unless `--serial` |
+| host, a build that can run more than one core, with `EMU_OS_SMP` -- the default for a multicore G4MH | `src/platform/host/freertos_smp` -- written here; tasks are pthreads, one FreeRTOS core per emulated core | **yes**, unless `--serial` |
 | host, otherwise | `portable/ThirdParty/GCC/Posix` -- tasks are pthreads | no: the POSIX port runs one task at a time |
 | `stm32f746` | `GCC/ARM_CM7/r0p1` | no: one core |
 | `stm32f446` | `GCC/ARM_CM4F` | no: one core |
@@ -351,6 +351,22 @@ with `--serial` in both, nine interleaved runs: **+3.6%** interpreted,
 **+5.4%** translated, against a `-DEMU_OS_SMP=OFF` build -- the JIT's
 thread-local state and the locks that are real now. Not the idle cores'
 spinning: a build that does not spin measures the same.
+
+**Which is why parallel is not the default for PowerPC's two cores.**
+A default host build has PowerPC's second core in it and is mostly run
+for RV32, and callgrind puts what the SMP port costs RV32 under the JIT
+at 1.7% on Dhrystone and 2.1% on crypto. `EMU_OS_SMP` defaults ON only
+where G4MH was configured with several PEs; PowerPC's cores run as tasks
+on the single-core port unless it is asked for
+([frontend/ppc.md](frontend/ppc.md#two-cores)).
+
+**A core that cannot run is not woken.** A round releases only the
+tasks whose core would do something -- not halted, not held at reset,
+not waiting with nothing able to wake it (`emu_core_runnable`) -- and
+runs core 0 inline when there are none. Waking core 1's task to be told
+it was held cost a PowerPC guest that never starts it half a percent of
+everything, in task switches. A core released during a round runs in
+the next, and the order assertion covers the tasks that were released.
 
 And **`--serial` is the fast way to be reproducible.** It runs a round
 inline on one task; the cooperative single-core port sends a three-PE

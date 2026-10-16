@@ -35,7 +35,7 @@ of them can catch is a shared misreading of the manual.
 | Caches, the debug facility (IAC/DAC/DBCR do hold what is written) | not modelled |
 | gdb stub | `src/frontend/ppc/ppc_gdb.c`: r0..r31, pc, msr, cr, lr, ctr, xer as `org.gnu.gdb.power.core`, big-endian, as `powerpc:e500` -- the nearest core gdb has, which names the Book E SPRs and the SPE where `powerpc:common` named 603 BATs and AltiVec; not the SPE halves or the SPRs ([../gdb.md](../gdb.md#the-guest-stub)) |
 | pair statistics | not written for this frontend |
-| More than one core | no |
+| More than one core | **two**, as on the MPC5777C (`PPC_CORE_COUNT`, 2 by default): core 1 held until `SIU_RSTVEC1` releases it, a TLB each, reservations broken by the other core's stores ([below](#two-cores)) |
 
 Both backends run everything in the table: the interpreter, and a JIT
 through the shared IR on x86-64 and on Thumb-2.
@@ -131,7 +131,8 @@ block hands back.
 
 A decode cache keyed on pc, instruction word and encoding is worth 35%
 of the interpreter on a host. It is 1024 entries there and 64 on ARM,
-where 48 KiB of `.bss` would be the guest's memory.
+where 48 KiB of `.bss` would be the guest's memory -- one per core; see
+[two cores](#two-cores) for what one between two cost.
 
 Things the manual settles and a reading of the mnemonics would not:
 
@@ -141,7 +142,9 @@ Things the manual settles and a reading of the mnemonics would not:
 - **The reservation is a flag with no address** (3.5). A store
   conditional to a different address than the load succeeds, and one
   with no reservation is a no-op that raises nothing, whatever its
-  alignment.
+  alignment. That is the core alone; with a second core running, the
+  manual's "external reservation logic" gives it an address -- see
+  [two cores](#two-cores).
 - **SPR privilege goes by number, before existence** (2.5.1, 3.15):
   bit 4 of the SPR number set means privileged, so problem state gets a
   privilege exception for an SPR that does not exist, and supervisor
@@ -248,10 +251,10 @@ interpreted -- and three things lifted that:
   interpreter, arriving, raises what the manual says;
 - **what a block was fetched under is its identity**: under the MMU the
   context carries `mmu_on`, MSR[IS], MSR[PR] (execute permission is per
-  mode) and PID0 (`ppc_cpu_ctx`); and **a TLB write moves the
-  generation**, because the mapping itself is not identity but
-  validity. Coarse -- every block goes on a `tlbwe` -- which a start-up
-  pays once and a miss handler refilling the TLB would pay per refill;
+  mode) and PID0 (`ppc_cpu_ctx`); and **a TLB write retires the blocks
+  whose code the entry mapped**, before the change and after it,
+  because the mapping itself is not identity but validity -- see
+  [per-entry invalidation](#per-entry-invalidation);
 - **the RAM window is a page**: on the identity map a block's loads
   and stores go straight to the RAM region the stack is in, and under
   the MMU to the page the stack is on -- when `ppc_mmu_data_page` says
@@ -260,9 +263,9 @@ interpreted -- and three things lifted that:
   lowest entry wins a multiple hit. Clipped to the RAM region its real
   address is in. Anything outside, misaligned, or on another page goes
   to the helper, which translates. What a window was chosen under is in
-  the key: the TLB moves the generation, and MSR[DS] -- the data address
-  space it was looked up in -- joined MSR[IS], MSR[PR] and PID0 in the
-  context for it.
+  the key: a TLB change touching a window discards every block, and
+  MSR[DS] -- the data address space it was looked up in -- joined
+  MSR[IS], MSR[PR] and PID0 in the context for it.
 
 `coremark-tlb` is CoreMark with a start-up that maps RAM and the console
 the MPC57xx way and overwrites the reset entry (`crt0.S` assembled with
@@ -312,6 +315,61 @@ checked the mode itself. `mmu_caller` loops first and calls the target
 from a translated block, which is the only path through the dispatcher's
 lookup -- and with that, all ten mutants of the new code fail on the
 check named for them.
+
+### Per-entry invalidation
+
+A TLB change used to move the generation, so every block went with
+every `tlbwe`, `tlbivax` and flash invalidate: a start-up pays that
+once, and a guest refilling its TLB from a miss handler paid it for
+each refill. Now a change retires only the blocks whose code the entry
+mapped -- `emu_jit_invalidate_range` over the span the entry covered
+before the change and the span it covers after, because either can be
+the only one: removing an entry changes the first, and writing a
+lower-numbered entry over an address another maps changes only the
+second, the lowest entry winning. TS and TID are not consulted; a few
+more blocks retired is always right.
+
+Two things a block holds are not in its code range. **Its RAM window**
+is a page its loads and stores reach whatever page its code is on, so
+each core remembers the windows it handed out under the MMU, and a
+change touching one moves the generation after all. **Its pc's
+refusal**: a pc whose fetch faulted was declined and remembered, and a
+mapping is what makes it translatable -- so the negative cache forgets
+the refusals in the range, and only those. Forgetting them all at each
+refill made the translator try the miss handler again every time, an
+instruction at a time.
+
+`ppc-coremark-tlbmiss` is the guest that measures it: `crt0.S` with
+`PPC_CRT0_TLBMISS` keeps three protected entries -- the vectors and the
+handler, the stack, the console -- and a miss handler refills two more
+round robin, a 4 KB page at a time, for a working set of five pages.
+26,652 refills in a run. x86-64 JIT, same retired count and CRC:
+
+| | flushes | translations | translation attempts refused | host instructions | wall, median of 5 |
+|---|---|---|---|---|---|
+| every write discards everything | 26,652 | 111,979 | 188,825 | 7,889M | 1.815 s |
+| retire by entry | 8 | 48,255 | 11,802 | 6,828M | **1.409 s** |
+
+**The first version was slower than what it replaced**: 2.41 s
+against 1.97 s, with translations halved. Retiring a range scanned the
+whole block table, and at a refill every few hundred instructions that
+scan was 35% of all host instructions -- more than the flushes had
+cost. The framework indexes blocks by the page they start on now, so a
+page retire walks the blocks on that page and on the few before it
+that could run onto it. With 8 refill entries or more CoreMark's
+working set fits after the first touch and there is nothing to measure,
+which is why the guest has two. ctest's
+`guest-ppc-coremark-tlbmiss-retires` holds the claim by its flush
+count: with every write discarding everything it reads 26652.
+
+The mutants: a `tlbwe` retiring only the old span fails `jit-map-remapped`,
+only the new one `jit-map-back`; a `tlbivax` retiring nothing fails
+`jit-ivax-code`; windows unrecorded or ignored fail `jit-win-le` -- all
+under `--jit` only. In the framework's tests a walk that does not look
+back for blocks running onto the page, a block never indexed, refusals
+kept and refusals all forgotten each fail. One survives by design: the
+index is rebuilt after a wide range, and the walk also drops retired
+blocks it meets, so leaving the rebuild out costs only time.
 
 ### Little-endian pages
 
@@ -384,6 +442,125 @@ option set, which the script's first-name-wins rule then filed as not
 on this core. It maps that name to `tlbwe` now, and the reserved fields
 of all five are held to 3.16.4.
 
+## Two cores
+
+The MPC5777C has two e200z7s, and so does this model by default
+(`PPC_CORE_COUNT`, 1 or 2). **Core 0 runs out of reset and core 1 is
+held** until core 0 writes `SIU_RSTVEC1`. All of what is known about
+that register here is NXP's AN5191 (*MPC5777C Software Initialization
+and Optimization*, 3.9) and the SIU's base address: RSTVEC in bits 0:29,
+the address core 1 starts at; RST, bit 30, holding it in reset; VLE, bit
+31, the encoding it starts in; reset value RSTVEC 0xFFFF_FFFC and RST
+set. The address, 0xC3F9_09B0, is the SIU's 0xC3F9_0000 plus the offset
+NXP's own example writes to. No reference manual for the part is in
+this tree, so `SIU_HLT1` -- the other way to hold the core -- is not
+modelled, and VLE's reset value, which neither source gives, reads 0.
+`ppc_siu.c` is the whole device.
+
+- **Each core is a whole core**: its own registers, SPRs, time base and
+  decrementer, and TLB. `tlbivax` "invalidates local TLB entries only.
+  No broadcast" (10.5.4). PIR is the `p_cpuid` input, 0 and 1 as
+  AN5191 has them.
+- **Core 1 starts itself.** The core that writes the register cannot
+  reset the other's state while the other's thread may be running, so
+  the write leaves a request -- start at this address in this
+  encoding, or hold -- and core 1 applies it at the top of its next
+  run. The request is also what the scheduler sees, whatever the core's
+  own last slice wrote: a `wait` executing as the release arrived used
+  to write WFI over it, and a waiting core with interrupts off is one
+  the scheduler never runs again.
+- **The reservation gets an address.** On its own the e200 compares
+  none (3.5), and "external reservation logic" on the bus is left to
+  the system. While a second core runs, this model is that logic: a
+  reservation is on the word, physical, that `lwarx` read, any other
+  core's store to the word breaks it, and on RAM `stwcx.` is a
+  compare-and-swap against the bytes `lwarx` read -- G4MH's arrangement
+  for `LDL.W`/`STC.W`, because another core's plain store can land
+  between the check and the write when the cores run in parallel. A
+  reservation held when core 1 is started is dropped, which a
+  store-conditional is allowed to see as a failure.
+- **The JIT**: the RAM window's inlined stores test `smp_live` and take
+  the helper once a second core runs, since an inlined store breaks no
+  one's reservation; under a programmed TLB a block's context carries
+  the core, because where the cores share one block table core 1 would
+  otherwise find core 0's block at the same address under a different
+  mapping; and the generation is one counter for all cores, because two
+  that differed would discard everything at every switch between them.
+
+**In parallel only when asked.** The host runs the two as FreeRTOS
+tasks, one after the other on one thread -- deterministic, and the
+round's order is asserted every round -- and in parallel with
+`-DEMU_OS_SMP=ON`. That is the default only for a multicore G4MH,
+because the SMP port makes the JIT's state per thread for every
+frontend in the runner, and callgrind measured RV32 under the JIT
+paying 1.7% on Dhrystone and 2.1% on crypto for it. A core that cannot
+run this round -- held, halted, parked -- is not woken for it, which
+was half a percent of a single-core PowerPC guest's whole run in task
+switches.
+
+What a single-core guest pays for the company, callgrind against the
+commit before (`-DEMU_OS_SMP` at its new default):
+
+| guest | interpreted | JIT |
+|---|---|---|
+| PowerPC CoreMark | -0.02% | +0.84% |
+| RV32 CoreMark | -0.61% | +0.18% |
+| RV32 Dhrystone | -0.58% | +0.05% |
+| RV32 crypto | -0.45% | +0.08% |
+
+The PowerPC JIT's 0.84% is the store guard -- a byte test before every
+inlined store -- in a build that can start a second core; with
+`PPC_CORE_COUNT=1` there is none. The interpreter took four rounds to
+get to nothing: the reservation paths had to be kept out of line (LTO
+folded them into the switch, and `ppc_exec` and `ppc_run` each grew by
+two host instructions per guest instruction), and the decode cache's
+base had to come from the core rather than a local, which held a
+register across the loop.
+
+### How it is checked
+
+`ppc-smp` (smp.c, smp_stubs.S, `crt0.S` with `PPC_CRT0_SMP`), 42
+checks, run by ctest seven ways: interpreted and translated; in
+parallel (`host-ppc-smp`) and one core after the other on one thread
+(`--serial`), where the two share a block table; and at quanta of 1, 4
+and 64. Core 1 takes commands through shared words and only core 0
+prints. Every wait is bounded, so a core that never answers fails a
+check rather than hanging the run.
+
+Each mechanism was broken on its own and the run read:
+
+| mutant | fails |
+|---|---|
+| the SIU write releases nothing | `core1-up` and everything after it |
+| a store breaks no reservation | `resv-broken-same-value` -- a value written back is invisible to the compare-and-swap, so only the break can see it |
+| the core is not in the context | `tlb-code-core1`, under `--serial --jit` only: in parallel each core has its own block table |
+| inlined stores unguarded | `resv-broken-same-value`, under `--jit` only |
+| the start request never applied | `core1-up` |
+| the hold ignored | `held-runs-nothing` -- a command posted to a core that should be stopped |
+| `stwcx.` a plain store, not a compare-and-swap | `race-no-lost-store`, in parallel only, 10 runs of 10 |
+| `lwarx` takes no address | eight checks, `inc-total` among them |
+| core 1 runs from reset | `pir`: it ran `main` too |
+| RSTVEC1's VLE bit ignored | `vle-start`, and a trap |
+
+`race-no-lost-store` exists because the compare-and-swap's mutant
+passed every other check: core 1 stores rising even values and reads
+each back while core 0 adds one to whatever it reserves, and an odd
+read-back below the value just stored is core 0 writing over it from an
+older one. It can only fire when the cores really run at once.
+
+**Two races were in shared state that a single core never reaches.**
+The first parallel runs failed one in five and then one in twenty, and
+neither failure was in the new code: the interpreter's decode cache
+was one array for both cores, so a core found its own pc and bytes in
+an entry whose decoded half the other had just rewritten -- a `beq`
+raised an illegal-instruction interrupt on core 1 -- and the decoder's
+X-form index was built on first use, under a test of one of its
+entries that a second core saw true half way through the build. Each
+core has its own cache now and the index is built before any core
+runs. Neither has a deterministic mutant: they are races, and what
+shows them is repetition -- 40 parallel runs each way, interpreted and
+translated, without a failure.
+
 ## The embedded floating-point unit
 
 `ppc_fpu.c` is EFPU2 in mode 0, the only mode the core has: single
@@ -439,7 +616,7 @@ outcomes per instruction, counted in the run's report:
   makes the interpreter the single place those happen. On the identity
   map the context is the encoding and nothing else; under a programmed
   TLB it carries what the code was fetched under too, and a TLB write
-  moves the generation -- see the MMU section.
+  retires what it mapped -- see the MMU section.
 
 CR and XER are guest registers, and an instruction that writes a CR
 field or XER[CA] says so in IR — compares, shifts and an insert; nothing
@@ -526,7 +703,9 @@ handle VLE fine. They are built `-m32 -mbig-endian -mcpu=8540
 | `isatest.bin` | hand-written **VLE**: the 16-bit forms, the `e_` immediates, the multiple moves, a VLE-only illegal encoding. Exit status is its failure count, and it must print `PPC-ISATEST-END` |
 | `ppc-alu` | compiled C against values from Python's integers (`alu_want.py`): the forms a compiler reaches for unasked — `addc`/`adde` chains, `srawi`+`addze`, `rlwinm`/`rlwimi`, `isel`, update forms, `lmw`/`stmw`, `bctr` through a jump table |
 | `ppc-sys` | the system level, 184 checks with the manual's section beside each: interrupts, privilege, SPRs, reservations, the timers, `wait`, both FP interrupts |
-| `ppc-mmu` | the MMU, 150 checks: the TLB programmed as an MPC57xx start-up does, then translation, address spaces, PIDs, permissions, every TLB interrupt and the MAS registers it leaves, per-page VLE, invalidation |
+| `ppc-mmu` | the MMU, 239 checks: the TLB programmed as an MPC57xx start-up does, then translation, address spaces, PIDs, permissions, every TLB interrupt and the MAS registers it leaves, per-page VLE and byte order, invalidation, and the JIT's `jit-` cases |
+| `ppc-smp` | the second core, 42 checks: held at reset and released by `SIU_RSTVEC1`, PIR, atomics and reservations between the cores, a TLB each for data and code, held again and restarted, a VLE start. Run seven ways by ctest |
+| `ppc-coremark-tlbmiss` | CoreMark with the TLB filled on demand by a miss handler in `crt0.S`, two refill entries for a working set of five pages: 26,652 `tlbwe` in a run |
 | `ppc-park` | a `wait` nothing may end: the run must stop there, and the line after it must not print |
 | `ppc-coremark`, `ppc-crypto` | the shared benchmarks |
 

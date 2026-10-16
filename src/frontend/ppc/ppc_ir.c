@@ -254,8 +254,12 @@ const emu_ir_target_t ppc_ir_target = {
  * On the identity map there is nothing to say no for. This core performs
  * unaligned accesses, so an access to RAM is a move -- once it has been
  * byte-swapped, which needs the host to have the instruction. A store
- * needs no guard either: the reservation holds no address (the e200
- * compares none), so a store cannot break one.
+ * needs no guard while one core runs: the reservation holds no address
+ * (the e200 compares none), so a store cannot break one. Once a second
+ * core has been started it must break that core's reservation on the
+ * word, which the helper does, so the guard is smp_live -- tested by the
+ * inlined store each time, not decided here, because core 1 can start
+ * after a block was built.
  *
  * Under a programmed TLB the window is the *page* r1 is on, where
  * ppc_mmu_data_page says loads and stores may treat it as plain memory
@@ -268,6 +272,28 @@ const emu_ir_target_t ppc_ir_target = {
  * The guards send a misaligned access to the helper, so none straddles
  * the page's end.
  */
+/*
+ * Remember a window handed out under the MMU, so that a TLB change
+ * touching it discards the blocks using it (ppc_mmu.c). The identity
+ * map's windows need no record: no TLB change reaches a block built
+ * with translation off, whose context says so.
+ */
+static void note_window(ppc_cpu_t *c, uint32_t lo, uint32_t hi)
+{
+    for (uint32_t k = 0u; k < c->jit_nwin && k < PPC_JIT_WINDOWS; k++) {
+        if (c->jit_win[k].lo == lo && c->jit_win[k].hi == hi) {
+            return;
+        }
+    }
+    if (c->jit_nwin < PPC_JIT_WINDOWS) {
+        c->jit_win[c->jit_nwin].lo = lo;
+        c->jit_win[c->jit_nwin].hi = hi;
+    }
+    if (c->jit_nwin <= PPC_JIT_WINDOWS) {
+        c->jit_nwin++; /* one past the array: no longer all known */
+    }
+}
+
 static bool ppc_fast_mem(ppc_cpu_t *c, emu_ir_fastmem_t *out)
 {
     const uint32_t ea = c->r[1] - 4u;
@@ -300,7 +326,12 @@ static bool ppc_fast_mem(ppc_cpu_t *c, emu_ir_fastmem_t *out)
     out->base = va + (uint32_t)(lo - pa);
     out->size = (uint32_t)(hi - lo);
     out->host = (uint8_t *)r->host + (lo - r->base);
-    out->store_guard_offset = EMU_IR_NO_GUARD;
+    out->store_guard_offset = (PPC_CORE_COUNT > 1u)
+                                  ? (uint32_t)offsetof(ppc_cpu_t, smp_live)
+                                  : EMU_IR_NO_GUARD;
+    if (c->mmu_on) {
+        note_window(c, out->base, out->base + (out->size - 1u));
+    }
     return true;
 }
 
@@ -1454,6 +1485,7 @@ static void ppc_jit_after_interp(emu_cpu_t *cpu)
     if (c->jit_flush) {
         c->jit_flush = false;
         emu_jit_flush();
+        c->jit_nwin = 0u; /* no block holds a window now */
     }
     c->jit_ctx = ppc_cpu_ctx(c);
 }
@@ -1465,7 +1497,7 @@ static void ppc_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
     c->jit_ctx = ppc_cpu_ctx(c);
     out->pc = &c->pc;
     out->state = (const uint8_t *)&c->state;
-    out->generation = &c->jit_gen;
+    out->generation = &ppc_jit_gen;
     out->context = &c->jit_ctx;
     out->irq_pending = &c->irq_dirty;
     /*

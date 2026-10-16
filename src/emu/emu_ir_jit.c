@@ -25,6 +25,15 @@
  */
 
 #include "emu/emu_ir.h"
+
+/*
+ * The framework keeps a block's instruction count in sixteen bits and
+ * derives the pages a block covers from it, so a block it could not hold
+ * would be invalidated by too few pages. A block is at most this many IR
+ * operations and every guest instruction is at least one.
+ */
+_Static_assert(EMU_IR_MAX_INSNS <= 0xFFFFu,
+               "emu_jit.c's 16-bit instruction count cannot hold a block");
 #include "emu/emu_ir_bytes.h"
 
 #include <string.h>
@@ -462,6 +471,16 @@ EMU_IR_DEFINE_X86_BACKEND(armv7m_backend_jit, armv7m_ir_frontend, a7m);
 #include "ppc/ppc_ir.h"
 /* `ppcj`, for the same reason: ppc_run is the interpreter's. */
 EMU_IR_DEFINE_X86_BACKEND(ppc_backend_jit, ppc_ir_frontend, ppcj);
+
+/*
+ * A TLB entry changed (ppc_mmu.c): the blocks fetched through it go and
+ * no others, which is what a guest refilling the TLB from a miss
+ * handler needs -- every refill was a flush of every block.
+ */
+void ppc_jit_invalidate_range(uint32_t lo, uint32_t hi)
+{
+    emu_jit_invalidate_range(lo, hi, &ppcj_ops_live);
+}
 #endif
 
 #endif /* EMU_HAVE_JIT */

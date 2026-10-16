@@ -91,6 +91,16 @@
 #endif
 #endif
 
+/*
+ * Buckets in the index of blocks by the guest page they start on, which
+ * is what lets a page invalidation visit the blocks on that page instead
+ * of every block there is. A quarter of the pc hash: blocks are a few
+ * to a page.
+ */
+#ifndef EMU_JIT_PAGE_HASH_SIZE
+#define EMU_JIT_PAGE_HASH_SIZE (EMU_JIT_HASH_SIZE / 4u)
+#endif
+
 EMU_PER_CORE emu_jit_layout_t emu_jit_layout;
 EMU_PER_CORE const void *emu_jit_block_arg;
 
@@ -101,10 +111,22 @@ typedef struct {
     emu_jit_layout_t layout; /* how its exits may be chained   */
     uint8_t *code;
     uint32_t len; /* bytes, so compaction can move it      */
-    uint32_t insns; /* guest instructions this block retires */
-    uint32_t hits; /* entries since the last ageing pass    */
+    /*
+     * Both sixteen bits, so the page index's chain fits where they were:
+     * a 76-byte entry made every lookup's index a multiply where a 72-byte
+     * one is two adds, and PowerPC CoreMark paid a million host
+     * instructions for it. A block has at most EMU_IR_MAX_INSNS
+     * operations, so at most that many instructions; the hit count only
+     * ever chooses one of HIT_BINS.
+     */
+    uint16_t insns; /* guest instructions this block retires */
+    uint16_t hits; /* entries since the last ageing pass, saturating */
     int32_t next; /* hash chain, -1 terminates             */
+    int32_t pnext; /* page index chain, -1 terminates       */
 } jit_block_t;
+
+_Static_assert(sizeof(jit_block_t) <= 72u,
+               "a block entry outgrew its 72 bytes");
 
 /*
  * Hit counts are bucketed rather than compared directly, so choosing what
@@ -138,14 +160,19 @@ static EMU_PER_CORE bool g_owned; /* mapped by us, or handed over? */
 typedef struct {
     jit_block_t blocks[EMU_JIT_MAX_BLOCKS];
     int32_t hash[EMU_JIT_HASH_SIZE];
+    int32_t phash[EMU_JIT_PAGE_HASH_SIZE];
 } jit_tables_t;
 static EMU_PER_CORE jit_tables_t *g_tables;
 #define g_blocks (g_tables->blocks)
 #define g_hash (g_tables->hash)
+#define g_phash (g_tables->phash)
 #else
 static jit_block_t g_blocks[EMU_JIT_MAX_BLOCKS];
 static int32_t g_hash[EMU_JIT_HASH_SIZE];
+static int32_t g_phash[EMU_JIT_PAGE_HASH_SIZE];
 #endif
+/* The most pages past its first that any live block reaches. */
+static EMU_PER_CORE uint32_t g_max_span;
 static EMU_PER_CORE uint32_t g_block_count;
 
 EMU_PER_CORE uint8_t *emu_jit_cursor;
@@ -333,9 +360,58 @@ static uint32_t block_page_lo(const jit_block_t *b)
 
 static uint32_t block_page_hi(const jit_block_t *b)
 {
-    const uint32_t span = (b->insns != 0u) ? (b->insns * 4u - 1u) : 0u;
+    const uint64_t span =
+        (b->insns != 0u) ? ((uint64_t)b->insns * 4u - 1u) : 0u;
+    const uint64_t end = (uint64_t)b->guest_pc + span;
 
-    return (b->guest_pc + span) >> JIT_PAGE_SHIFT;
+    /* Clamped, so a block at the top of memory does not wrap to page 0. */
+    return (end > 0xFFFFFFFFull) ? (0xFFFFFFFFu >> JIT_PAGE_SHIFT)
+                                 : (uint32_t)(end >> JIT_PAGE_SHIFT);
+}
+
+/*
+ * The page index: every live block, chained from the bucket of the page
+ * it starts on. A page invalidation walks the buckets of the pages it
+ * names -- and of the pages up to g_max_span before them, whose blocks
+ * may run onto it -- instead of the whole table.
+ *
+ * **It was the whole table**, and for RV32's SFENCE.VMA that is cheap
+ * enough. A PowerPC guest refilling its TLB from a miss handler retires
+ * a page per refill: CoreMark with two refill entries makes 26,652, and
+ * scanning every block for each was 35% of all host instructions --
+ * slower than flushing everything, which is what it replaced.
+ */
+static uint32_t page_bucket(uint32_t page)
+{
+    return page & (EMU_JIT_PAGE_HASH_SIZE - 1u);
+}
+
+static void page_insert(uint32_t index)
+{
+    jit_block_t *const b = &g_blocks[index];
+    const uint32_t lo = block_page_lo(b);
+    const uint32_t span = block_page_hi(b) - lo;
+
+    b->pnext = g_phash[page_bucket(lo)];
+    g_phash[page_bucket(lo)] = (int32_t)index;
+    if (span > g_max_span) {
+        g_max_span = span;
+    }
+}
+
+static void rebuild_pages(void)
+{
+    for (uint32_t i = 0; i < EMU_JIT_PAGE_HASH_SIZE; i++) {
+        g_phash[i] = -1;
+    }
+    g_max_span = 0u;
+    for (uint32_t i = 0; i < g_block_count; i++) {
+        if (g_blocks[i].code != NULL) {
+            page_insert(i);
+        } else {
+            g_blocks[i].pnext = -1;
+        }
+    }
 }
 
 /* Take the block out of its hash bucket so nothing can enter it again. */
@@ -355,10 +431,68 @@ static void unhash(uint32_t idx)
     }
 }
 
-void emu_jit_invalidate_page(uint32_t vaddr, const emu_jit_ops_t *ops)
+/*
+ * Retire every block whose guest bytes may lie on pages page_lo to
+ * page_hi: a block counts as covering every page from its pc's to the
+ * one its last possible byte is on.
+ */
+/*
+ * Retire one block, so nothing can enter it again: unhashed, and its
+ * entry turned into a jump to its own exit for the blocks chained into
+ * it. False if that could not be done one block at a time and every
+ * block went instead.
+ */
+static bool retire_one(uint32_t index, const emu_jit_ops_t *ops)
 {
-    const uint32_t page = vaddr >> JIT_PAGE_SHIFT;
+    jit_block_t *const b = &g_blocks[index];
 
+    /*
+     * A block nothing can jump into needs no patch: link_exit
+     * refuses a target that is not chainable, so unhashing is the
+     * whole of it.
+     */
+    if (b->layout.chainable) {
+        const uint32_t body = (b->layout.tail > b->layout.chain_entry)
+                                  ? b->layout.tail - b->layout.chain_entry
+                                  : 0u;
+
+        if (body < ops->jump_bytes) {
+            /*
+             * No room to turn the entry into a jump, so inbound
+             * links cannot be made harmless one block at a time.
+             * Discarding everything is the correct answer and this
+             * is the only path that needs it.
+             */
+            emu_jit_flush();
+            return false;
+        }
+        ops->emit_jump(b->code + b->layout.chain_entry,
+                       b->code + b->layout.tail);
+    }
+
+    unhash(index);
+    /*
+     * Retired, not reclaimed. The bytes stay until compaction, which
+     * drops anything unreachable; freeing here would need the code
+     * after it to move, and something may be executing it right now.
+     */
+    b->code = NULL;
+    b->hits = 0u;
+    g_stats.page_invalidations++;
+    return true;
+}
+
+/* Wider than this many pages, the walk is longer than the table. */
+#define JIT_PAGE_WALK_MAX 64u
+
+/*
+ * Retire every block whose guest bytes may lie on pages page_lo to
+ * page_hi: a block counts as covering every page from its pc's to the
+ * one its last possible byte is on.
+ */
+static void retire_pages(uint32_t page_lo, uint32_t page_hi,
+                         const emu_jit_ops_t *ops)
+{
     if (ops->emit_jump == NULL || ops->jump_bytes == 0u) {
         emu_jit_flush(); /* the host cannot retire one block */
         return;
@@ -381,48 +515,63 @@ void emu_jit_invalidate_page(uint32_t vaddr, const emu_jit_ops_t *ops)
      */
     g_overflow = false;
 
-    for (uint32_t i = 0; i < g_block_count; i++) {
-        jit_block_t *const b = &g_blocks[i];
+    if (page_hi - page_lo < JIT_PAGE_WALK_MAX) {
+        const uint32_t first =
+            (page_lo > g_max_span) ? page_lo - g_max_span : 0u;
 
-        if (b->code == NULL || page < block_page_lo(b) ||
-            page > block_page_hi(b)) {
+        for (uint32_t p = first;; p++) {
+            int32_t *link = &g_phash[page_bucket(p)];
+
+            while (*link >= 0) {
+                const uint32_t i = (uint32_t)*link;
+                jit_block_t *const b = &g_blocks[i];
+
+                /*
+                 * Retired already, which only a wide range leaves chained
+                 * and rebuild_pages then unchains: dropped here as well,
+                 * because retiring it again would patch through a null
+                 * code pointer.
+                 */
+                if (b->code == NULL) {
+                    *link = b->pnext;
+                    b->pnext = -1;
+                    continue;
+                }
+                /* The bucket also holds pages a multiple of its count away. */
+                if (block_page_lo(b) == p && block_page_hi(b) >= page_lo) {
+                    *link = b->pnext;
+                    b->pnext = -1;
+                    if (!retire_one(i, ops)) {
+                        return; /* flushed, index and all */
+                    }
+                    continue;
+                }
+                link = &b->pnext;
+            }
+            if (p == page_hi) {
+                break;
+            }
+        }
+        return;
+    }
+
+    for (uint32_t i = 0; i < g_block_count; i++) {
+        const jit_block_t *const b = &g_blocks[i];
+
+        if (b->code == NULL || page_hi < block_page_lo(b) ||
+            page_lo > block_page_hi(b)) {
             continue;
         }
-
-        /*
-         * A block nothing can jump into needs no patch: link_exit
-         * refuses a target that is not chainable, so unhashing is the
-         * whole of it.
-         */
-        if (b->layout.chainable) {
-            const uint32_t body = (b->layout.tail > b->layout.chain_entry)
-                                      ? b->layout.tail - b->layout.chain_entry
-                                      : 0u;
-
-            if (body < ops->jump_bytes) {
-                /*
-                 * No room to turn the entry into a jump, so inbound
-                 * links cannot be made harmless one block at a time.
-                 * Discarding everything is the correct answer and this
-                 * is the only path that needs it.
-                 */
-                emu_jit_flush();
-                return;
-            }
-            ops->emit_jump(b->code + b->layout.chain_entry,
-                           b->code + b->layout.tail);
+        if (!retire_one(i, ops)) {
+            return;
         }
-
-        unhash(i);
-        /*
-         * Retired, not reclaimed. The bytes stay until compaction, which
-         * drops anything unreachable; freeing here would need the code
-         * after it to move, and something may be executing it right now.
-         */
-        b->code = NULL;
-        b->hits = 0u;
-        g_stats.page_invalidations++;
     }
+    rebuild_pages(); /* the retired are still chained */
+}
+
+void emu_jit_invalidate_page(uint32_t vaddr, const emu_jit_ops_t *ops)
+{
+    retire_pages(vaddr >> JIT_PAGE_SHIFT, vaddr >> JIT_PAGE_SHIFT, ops);
 }
 
 /* ------------------------------------------------------------------ */
@@ -610,6 +759,10 @@ void emu_jit_flush(void)
     for (uint32_t i = 0; i < EMU_JIT_HASH_SIZE; i++) {
         g_hash[i] = -1;
     }
+    for (uint32_t i = 0; i < EMU_JIT_PAGE_HASH_SIZE; i++) {
+        g_phash[i] = -1;
+    }
+    g_max_span = 0u;
     g_block_count = 0u;
     g_code_used = 0u;
     g_stats.flushes++;
@@ -624,6 +777,40 @@ void emu_jit_flush_all(void)
         1u;
 #endif
     emu_jit_flush();
+}
+
+void emu_jit_invalidate_range(uint32_t lo, uint32_t hi,
+                              const emu_jit_ops_t *ops)
+{
+    if (hi < lo) {
+        return;
+    }
+    retire_pages(lo >> JIT_PAGE_SHIFT, hi >> JIT_PAGE_SHIFT, ops);
+    /*
+     * And what was refused there. A pc whose fetch faulted is declined,
+     * and a mapping is exactly what makes it translatable: a miss
+     * handler maps the page and returns to the instruction that missed.
+     * emu_jit_flush did this for every TLB write when that was all there
+     * was; without it a refilled page would be interpreted until
+     * something else flushed.
+     *
+     * **Only there**, for a narrow range. The epoch would forget every
+     * refusal, the miss handler's own among them -- it is SPR moves the
+     * translator declines -- and each refill would then try to translate
+     * the handler again, instruction by instruction: 188,773 attempts in
+     * CoreMark's 26,652 refills.
+     */
+    if (hi - lo >= (JIT_PAGE_WALK_MAX << JIT_PAGE_SHIFT)) {
+        neg_invalidate();
+        return;
+    }
+    const uint32_t span = hi - lo;
+
+    for (uint32_t k = 0u; k < JIT_NEG_SIZE; k++) {
+        if (g_neg[k].pc - lo <= span) { /* one compare: lo <= pc <= hi */
+            g_neg[k].tag = 0u; /* epoch 0 is never the current one */
+        }
+    }
 }
 
 /*
@@ -658,6 +845,7 @@ static void rebuild_hash(void)
     for (uint32_t i = 0; i < g_block_count; i++) {
         chain_insert(i);
     }
+    rebuild_pages();
 }
 
 /*
@@ -728,7 +916,7 @@ static jit_block_t *lookup(uint32_t pc, uint64_t context)
     for (int32_t i = g_hash[pc_hash(pc, context)]; i >= 0;
          i = g_blocks[i].next) {
         if (g_blocks[i].guest_pc == pc && g_blocks[i].context == context) {
-            if (g_blocks[i].hits != UINT32_MAX) {
+            if (g_blocks[i].hits != UINT16_MAX) {
                 g_blocks[i].hits++;
             }
             return &g_blocks[i];
@@ -1054,10 +1242,11 @@ static jit_block_t *translate_once(emu_cpu_t *cpu, uint32_t pc,
     b->layout = emu_jit_layout;
     b->code = start;
     b->len = (uint32_t)(g_emit - start);
-    b->insns = insns;
+    b->insns = (uint16_t)insns;
     b->hits = 0u;
     g_code_used = (uint32_t)(g_emit - g_code);
     chain_insert(g_block_count - 1u);
+    page_insert(g_block_count - 1u);
 
     /* The code was written as data; make it fetchable. */
     if (ops->sync != NULL) {

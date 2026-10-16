@@ -151,9 +151,10 @@ emulated core, the cores meeting at every quantum boundary
 ([os.md](os.md)). On a board, and on a host running one core, the
 scheduler is cooperative, so a multicore guest's interleaving is the
 round-robin's and is reproducible at any quantum. A multicore guest on a
-host runs its cores **in parallel**, one FreeRTOS core each, on an SMP
-port written for this tree (`EMU_OS_SMP`); `--serial` gives the
-reproducible round back. Nothing in `src/emu/` knows there is an
+host can run its cores **in parallel**, one FreeRTOS core each, on an SMP
+port written for this tree (`EMU_OS_SMP`: the default for a multicore
+G4MH, asked for otherwise); `--serial` gives the reproducible round
+back. Nothing in `src/emu/` knows there is an
 operating system: it knows only `EMU_SMP`, which makes `emu_lock` real and
 `EMU_PER_CORE` thread-local.
 

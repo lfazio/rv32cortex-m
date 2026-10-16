@@ -18,16 +18,56 @@
 #include "emu/emu_gdb.h"
 #include "emu/emu_memmap.h"
 
+#include "emu/emu_lock.h"
+
 #include "ppc/ppc_cpu.h"
 #include "ppc/ppc_decode.h"
 #include "ppc/ppc_disasm.h"
 #include "ppc/ppc_ir.h"
+#include "ppc/ppc_siu.h"
 
 #include <string.h>
 
 const emu_gdb_target_t *ppc_gdb_target(void);
 
-static ppc_cpu_t g_cpu;
+/*
+ * The cores, PPC_CORE_COUNT of them: the MPC5777C's two by default,
+ * core 1 held until core 0 starts it through SIU_RSTVEC1. A guest that
+ * never does runs exactly as on one core, with core 1 skipped each
+ * round.
+ */
+static ppc_cpu_t g_cpu[PPC_CORE_COUNT];
+static ppc_siu_t g_siu;
+
+#if EMU_SMP && PPC_CORE_COUNT > 1
+/*
+ * The SIU is reached from whichever core writes it, so on a host that
+ * runs cores in parallel the access holds a lock -- the twin G4MH gives
+ * each of its shared devices.
+ */
+static emu_lock_t g_siu_lock = EMU_LOCK_INIT;
+
+static emu_fault_t siu_lrd(void *ctx, uint32_t off, uint32_t size,
+                           uint32_t *out)
+{
+    emu_lock(&g_siu_lock);
+    const emu_fault_t f = ppc_siu_ops.read(ctx, off, size, out);
+    emu_unlock(&g_siu_lock);
+    return f;
+}
+
+static emu_fault_t siu_lwr(void *ctx, uint32_t off, uint32_t size, uint32_t val)
+{
+    emu_lock(&g_siu_lock);
+    const emu_fault_t f = ppc_siu_ops.write(ctx, off, size, val);
+    emu_unlock(&g_siu_lock);
+    return f;
+}
+
+static const emu_dev_ops_t k_siu_ops = {siu_lrd, siu_lwr, NULL};
+#else
+#define k_siu_ops ppc_siu_ops
+#endif
 
 /*
  * Which encoding the image's entry point is in.
@@ -95,12 +135,15 @@ static EMU_ALWAYS_INLINE ppc_cpu_t *cpu_of(const emu_cpu_t *cpu)
 
 static emu_cpu_t *ppc_instance(unsigned index)
 {
-    return (index == 0u) ? (emu_cpu_t *)&g_cpu : NULL;
+    return (index < PPC_CORE_COUNT) ? (emu_cpu_t *)&g_cpu[index] : NULL;
 }
 
 static void ppc_ops_init(emu_cpu_t *cpu, emu_bus_t *bus, uint32_t coreid)
 {
     ppc_cpu_init(cpu_of(cpu), bus, coreid);
+    if (coreid == 1u) {
+        g_siu.core1 = cpu_of(cpu);
+    }
 }
 
 static void ppc_ops_reset(emu_cpu_t *cpu, uint32_t reset_pc)
@@ -108,9 +151,30 @@ static void ppc_ops_reset(emu_cpu_t *cpu, uint32_t reset_pc)
     ppc_cpu_t *const c = cpu_of(cpu);
 
     ppc_cpu_reset(c, reset_pc);
+    c->reset_req = PPC_REQ_NONE;
+    if (c->coreid == 0u) {
+        ppc_siu_reset(&g_siu); /* the system's reset, which is core 0's */
+    }
     if (ppc_backend->reset != NULL) {
         ppc_backend->reset(cpu);
     }
+}
+
+/*
+ * SIU_RSTVEC1, on every core's bus: either core may write it, and the
+ * register is one. Only where there is a core 1 to start -- with one
+ * core the address is not mapped and a write to it is a bus error, as
+ * on a part with nothing there.
+ */
+static bool ppc_ops_add_shared_devices(emu_bus_t *bus)
+{
+#if PPC_CORE_COUNT > 1
+    return emu_bus_add_mmio(bus, "siu-rstvec1", PPC_SIU_RSTVEC1_ADDR, 4u,
+                            &k_siu_ops, &g_siu);
+#else
+    (void)bus;
+    return true;
+#endif
 }
 
 /*
@@ -158,14 +222,43 @@ static void ppc_ops_boot(emu_cpu_t *cpu, const emu_boot_info_t *info)
     c->jit_ctx = ppc_cpu_ctx(c);
 }
 
+/*
+ * What SIU_RSTVEC1 asked of this core, applied here on its own thread:
+ * once per budget, which is what the contract allows this hook and
+ * nothing per instruction. False if the core is held and must not run.
+ */
+static EMU_ALWAYS_INLINE bool take_request(ppc_cpu_t *c)
+{
+    const uint8_t r = __atomic_load_n(&c->reset_req, __ATOMIC_ACQUIRE);
+
+    if (EMU_LIKELY(r == PPC_REQ_NONE)) {
+        return true;
+    }
+    if (r == PPC_REQ_START) {
+        ppc_cpu_take_start(c);
+        return true;
+    }
+    c->state = EMU_STATE_HELD;
+    return false;
+}
+
 static emu_run_reason_t ppc_ops_run(emu_cpu_t *cpu, uint32_t budget,
                                     uint32_t *retired)
 {
+    if (!take_request(cpu_of(cpu))) {
+        if (retired != NULL) {
+            *retired = 0u;
+        }
+        return EMU_RUN_WFI;
+    }
     return ppc_backend->run(cpu, budget, retired);
 }
 
 static emu_run_reason_t ppc_ops_step(emu_cpu_t *cpu)
 {
+    if (!take_request(cpu_of(cpu))) {
+        return EMU_RUN_WFI;
+    }
     return ppc_step(cpu_of(cpu));
 }
 
@@ -191,6 +284,22 @@ static void ppc_ops_status(const emu_cpu_t *cpu, emu_cpu_status_t *out)
      * could wake a core that was waiting on its own decrementer.
      */
     out->wakeable = (c->msr & (PPC_MSR_EE | PPC_MSR_CE)) != 0u;
+    /*
+     * A pending SIU request is the core's state as the system sees it,
+     * whatever its own last slice wrote: a started core will run, a
+     * held one will not.
+     */
+    switch (__atomic_load_n(&c->reset_req, __ATOMIC_ACQUIRE)) {
+    case PPC_REQ_START:
+        out->state = EMU_STATE_RUNNING;
+        out->wakeable = true;
+        break;
+    case PPC_REQ_HOLD:
+        out->state = EMU_STATE_HELD;
+        break;
+    default:
+        break;
+    }
 }
 
 /*
@@ -315,7 +424,9 @@ static void ppc_dump(const emu_cpu_t *cpu, emu_print_fn out, void *ctx)
 static size_t ppc_ops_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn,
                              unsigned len)
 {
-    return ppc_disasm_mode(buf, buflen, pc, (uint32_t)insn, len, g_cpu.vle);
+    /* Core 0's: the hook is not told which core, and core 1 starts in
+     * whichever encoding SIU_RSTVEC1 named. */
+    return ppc_disasm_mode(buf, buflen, pc, (uint32_t)insn, len, g_cpu[0].vle);
 }
 #endif
 
@@ -411,7 +522,7 @@ const emu_cpu_ops_t ppc_frontend = {
      */
     .desc = "NXP PowerPC e200z7 (Book E, VLE)",
     .nregs = PPC_NGPR,
-    .ncores = 1u,
+    .ncores = PPC_CORE_COUNT,
     /*
      * EM_PPC. The 64-bit variant has its own number and is a different
      * architecture as far as the loader is concerned, so it is not
@@ -428,6 +539,7 @@ const emu_cpu_ops_t ppc_frontend = {
     .halt = ppc_ops_halt,
     .status = ppc_ops_status,
     .select_backend = ppc_select_backend,
+    .add_shared_devices = ppc_ops_add_shared_devices,
     .invalidate = ppc_ops_invalidate,
     .dump = ppc_dump,
 #if PPC_ENABLE_DISASM

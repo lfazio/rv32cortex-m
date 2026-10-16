@@ -596,6 +596,12 @@ typedef struct ppc_insn {
  * ppc_vle_len, in a Book E page it is always 4. Never fails: an
  * encoding this core does not have comes back as PPC_S_ILLEGAL.
  */
+/*
+ * Build the decoder's tables now rather than at the first decode, which
+ * two cores could otherwise reach together. ppc_cpu_init calls it.
+ */
+void ppc_decode_init(void);
+
 void ppc_decode(uint32_t insn, unsigned len, bool vle, ppc_insn_t *out);
 
 const char *ppc_mn_name(uint32_t id);

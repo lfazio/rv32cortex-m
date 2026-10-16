@@ -62,14 +62,20 @@ runner is a task and so is each further emulated core
 SoftFloat is -- `FREERTOS_KERNEL_TAG` (`V11.1.0`) into
 `FREERTOS_KERNEL_DIR`, a configure error if it cannot be -- and the port
 follows `EMU_PLATFORM`. How many cores get a task, and so a stack, is
-derived: one, or `G4MH_PE_COUNT` in a G4MH build.
+derived: one, or the larger of `G4MH_PE_COUNT` and `PPC_CORE_COUNT` for
+the frontends compiled in.
 
-On a host, a build that can run more than one core runs them **in
-parallel**: `EMU_OS_SMP` (default ON) selects the SMP port in
-`src/platform/host/freertos_smp`, with one FreeRTOS core per emulated
-core, and defines `EMU_SMP` for the emulator. `-DEMU_OS_SMP=OFF` builds
-the kernel's single-core POSIX port instead; `--serial` gets the same
-reproducible round-robin from an SMP binary at run time.
+On a host, `EMU_OS_SMP` runs a multicore guest's cores **in parallel**:
+it selects the SMP port in `src/platform/host/freertos_smp`, with one
+FreeRTOS core per emulated core, and defines `EMU_SMP` for the
+emulator. It defaults ON only for a G4MH build with `G4MH_PE_COUNT > 1`
+-- a build someone configured for several cores -- and OFF otherwise,
+PowerPC's default two cores included, because the SMP port makes the
+JIT's state per thread for every frontend in the runner and that costs
+RV32 under the JIT about 2% ([docs/frontend/ppc.md](docs/frontend/ppc.md#two-cores)).
+OFF builds the kernel's single-core POSIX port, where the cores run as
+tasks one after the other; `--serial` gets the same reproducible
+round-robin from an SMP binary at run time.
 
 ## The JIT gates, and why there is only one answer
 
@@ -137,7 +143,7 @@ wrong.
 | `G4MH_EXT_MPU` | ON | not an option a real part omits |
 | `G4MH_MPU_ENTRIES` | 32 | the out-of-range guard is **unreachable at 32**: MPIDX is five bits. Build 8 to exercise it |
 | `G4MH_PE_COUNT` | 1 | `> 1` was untested for years and the first run found three defects |
-| `EMU_OS_SMP` | ON | host only, and only when `G4MH_PE_COUNT > 1`: the PEs run in parallel ([docs/os.md](docs/os.md#smp-on-the-host)). OFF, or `--serial` at run time, for the reproducible round-robin |
+| `EMU_OS_SMP` | ON when `G4MH_PE_COUNT > 1` | host only: the PEs run in parallel ([docs/os.md](docs/os.md#smp-on-the-host)). OFF, or `--serial` at run time, for the reproducible round-robin |
 | `G4MH_CRAM_KIB`, `G4MH_LRAM_KIB` | 128, 64 | **per PE for LRAM.** See below |
 
 **The RAM arithmetic is what breaks the firmware.** 128 KiB of cluster
@@ -162,6 +168,7 @@ arithmetic stand in for one ([docs/frontend/ppc.md](docs/frontend/ppc.md)).
 |---|---|---|
 | `PPC_GUEST` | `alu` | the guest a firmware embeds: `alu`, `sys`, `coremark`, `crypto`. Embedded as an ELF, because the encoding (VLE or Book E) is a flag on its segment |
 | `PPC_ENABLE_DISASM` | ON | checked against binutils, both directions |
+| `PPC_CORE_COUNT` | 2 | the MPC5777C's two cores; core 1 is held until the guest writes `SIU_RSTVEC1`, so a guest that never does runs on core 0 alone. 1 removes the SIU and the JIT's store guard. Parallel on a host only with `-DEMU_OS_SMP=ON` ([docs/frontend/ppc.md](docs/frontend/ppc.md#two-cores)) |
 
 Needs SoftFloat, as every frontend with an FP unit does. Blocks are
 capped at 16 guest instructions when the host is Thumb-2 and 64

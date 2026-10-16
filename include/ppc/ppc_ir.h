@@ -55,6 +55,14 @@ const ppc_ir_stats_t *ppc_ir_get_stats(void);
 /* The name of a semantic, for that report. */
 const char *ppc_sem_name(uint32_t sem);
 
+/*
+ * Retire the translations of guest code in [lo, hi], inclusive: the
+ * effective addresses a TLB entry mapped before or after it changed.
+ * Defined beside the backend (emu_ir_jit.c), which owns the ops the
+ * framework needs to unlink a block.
+ */
+void ppc_jit_invalidate_range(uint32_t lo, uint32_t hi);
+
 #ifdef __cplusplus
 }
 #endif

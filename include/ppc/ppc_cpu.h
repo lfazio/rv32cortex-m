@@ -48,9 +48,20 @@ typedef struct ppc_cpu {
     /*
      * The reservation, as HID1[ATS] describes it: a flag and no
      * address. The e200 compares no address on a store conditional
-     * (manual 3.5), so neither does this.
+     * (manual 3.5), so neither does this -- with one core. With two, the
+     * manual leaves cross-core reservations to "external reservation
+     * logic" on the bus, and this model is that logic: resv_pa below.
      */
     bool reserve;
+    /*
+     * Another core has been started (ppc_cpu_start), so a store has to
+     * break that core's reservation on the word it writes. The JIT's
+     * inlined stores test this byte and take the helper while it is set;
+     * ppc_store tests slow_store, which is this or mmu_on, so the store
+     * path still has one test. Neither goes back to zero until a reset.
+     */
+    uint8_t smp_live;
+    bool slow_store;
 
     /*
      * Which instruction encoding this core is decoding.
@@ -158,11 +169,11 @@ typedef struct ppc_cpu {
      * The translator's view. `jit_ctx` is what a block is built for: the
      * encoding it was decoded as, and under a programmed TLB the address
      * space, privilege and PID its code was fetched under (ppc_cpu_ctx).
-     * `jit_gen` moves when the TLB changes, because a block holds code
-     * fetched through the mapping that was there.
+     * A TLB change retires the blocks whose code the entry mapped, or
+     * moves ppc_jit_gen when it touches a page a block uses as its RAM
+     * window (ppc_mmu.c).
      */
     uint64_t jit_ctx;
-    uint32_t jit_gen;
     bool jit_flush; /* icbi asked for the translations to go */
 
     emu_syscall_fn syscall;
@@ -211,7 +222,75 @@ typedef struct ppc_cpu {
      * the one bit the access has to carry to them.
      */
     bool dsi_bo;
+
+    /*
+     * The RAM windows blocks were given under a programmed TLB
+     * (ppc_fast_mem), each the span a block reads and writes without
+     * asking the MMU. A window is in no block's code range, so a TLB
+     * change that touches one has to discard every block, where one
+     * that does not discards only those whose code it mapped. A count
+     * past the array means more were handed out than are held, and then
+     * every TLB change discards everything. Cleared when everything is.
+     */
+    struct {
+        uint32_t lo, hi;
+    } jit_win[PPC_JIT_WINDOWS];
+    uint32_t jit_nwin;
+
+    /*
+     * More than one core (ppc_cpu.c). `coreid` is the p_cpuid input PIR
+     * resets to, kept apart from PIR because PIR is writable.
+     *
+     * While another core runs, a reservation has an address: the word,
+     * physical, that lwarx read, and the bytes it read there. A store
+     * from any other core to that word breaks it, and on a host running
+     * cores in parallel stwcx. is a compare-and-swap against those bytes,
+     * because the other core's store can land between the check and the
+     * write -- the arrangement G4MH's LDL.W/STC.W use.
+     */
+    uint32_t coreid;
+    /*
+     * This core's slice of the interpreter's decode cache (ppc_interp.c),
+     * found on its first run. A pointer here rather than a local in the
+     * loop: as a local it held a register across the loop, and the
+     * interpreter's loop paid two host instructions per guest instruction
+     * for it.
+     */
+    void *dcache;
+    uint32_t resv_pa;
+    uint32_t resv_raw;
+    bool resv_raw_ok; /* the word is RAM the host can swap */
+    /*
+     * What SIU_RSTVEC1 last asked of this core, from another core's
+     * thread: PPC_REQ_START or PPC_REQ_HOLD, until this core acts on it.
+     * The writer cannot reset this core's state while this core's thread
+     * may be running, so it leaves the address and the encoding here and
+     * the core starts itself at the top of its next run.
+     *
+     * **A request, not a state.** The core's own last slice may still be
+     * running when it is held or released, and its `wait` then writes
+     * WFI over whatever the request wrote -- and a waiting core with
+     * interrupts off is one the scheduler never runs again, so the start
+     * was lost: smp.c's restart failed one run in twenty. The status
+     * reports the request while it is pending, whatever `state` says.
+     */
+    uint8_t reset_req;
+    uint32_t start_pc;
+    bool start_vle;
 } ppc_cpu_t;
+
+#define PPC_REQ_NONE 0u
+#define PPC_REQ_START 1u
+#define PPC_REQ_HOLD 2u
+
+/*
+ * The JIT's generation: every block goes when it moves. One for every
+ * core rather than one each, because on a build where the cores share
+ * one block table (a board, or --serial) two counters that differed
+ * would discard everything at every switch from one core to the other.
+ * Moved by a TLB change that touches a block's RAM window.
+ */
+extern uint32_t ppc_jit_gen;
 
 /* ------------------------------------------------------------------ */
 /* Lifecycle                                                           */
@@ -261,6 +340,37 @@ bool ppc_cpu_wake(ppc_cpu_t *c);
 /* MSR written by software: keep the implemented bits, refresh what
  * depends on them. */
 void ppc_cpu_set_msr(ppc_cpu_t *c, uint32_t v);
+
+/* ------------------------------------------------------------------ */
+/* More than one core                                                  */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Take a held core out of reset at `pc`, decoding VLE or Book E: the
+ * SIU_RSTVEC1 write that clears RST (NXP AN5191, 3.9). Called on the
+ * thread of the core that wrote the register. From here every core's
+ * stores break the others' reservations, and any reservation held now
+ * is dropped -- it was taken with no address, and a store-conditional
+ * is allowed to fail.
+ */
+void ppc_cpu_start(ppc_cpu_t *c, uint32_t pc, bool vle);
+
+/* Put a core back in reset: RST set again. It stops at its next slice. */
+void ppc_cpu_hold(ppc_cpu_t *c);
+
+/* The start ppc_cpu_start asked for, on the core's own thread. */
+void ppc_cpu_take_start(ppc_cpu_t *c);
+
+/*
+ * lwarx and stwcx. (and the byte and halfword forms) while another core
+ * runs: the reservation takes the word's physical address, and the
+ * store succeeds only if no other core wrote the word since. `stored`
+ * says whether stwcx. wrote. PPC_EXC_NONE or the interrupt to take,
+ * with DEAR set.
+ */
+ppc_exc_t ppc_larx_smp(ppc_cpu_t *c, uint32_t ea, uint32_t size, uint32_t *out);
+ppc_exc_t ppc_stcx_smp(ppc_cpu_t *c, uint32_t ea, uint32_t size, uint32_t val,
+                       bool *stored);
 
 /* ------------------------------------------------------------------ */
 /* Special purpose registers                                           */

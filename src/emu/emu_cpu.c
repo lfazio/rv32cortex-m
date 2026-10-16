@@ -148,6 +148,15 @@ void emu_system_invalidate(emu_system_t *sys, uint32_t addr, uint32_t len)
     }
 }
 
+bool emu_core_runnable(emu_core_t *c)
+{
+    emu_cpu_status_t st;
+
+    emu_core_status(c, &st);
+    return st.state != EMU_STATE_HALTED && st.state != EMU_STATE_HELD &&
+           !(st.state == EMU_STATE_WFI && !st.wakeable);
+}
+
 uint32_t emu_core_slice(emu_core_t *c, uint32_t quantum, bool *live)
 {
     emu_cpu_status_t st;

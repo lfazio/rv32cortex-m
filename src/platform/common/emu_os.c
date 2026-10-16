@@ -203,6 +203,32 @@ uint32_t emu_os_system_step(emu_system_t *sys, uint32_t quantum, bool *all_idle)
         return emu_system_step(sys, quantum, all_idle);
     }
 
+    /*
+     * Only the cores that would run. A core held at reset or parked for
+     * good returns from its slice at once, and waking its task to be
+     * told so cost a PowerPC guest that never starts core 1 half a
+     * percent of everything, in task switches -- once a round for a core
+     * that did nothing. A core released during this round runs in the
+     * next.
+     */
+    unsigned run[EMU_OS_MAX_CORES];
+    unsigned nrun = 0u;
+
+    for (unsigned k = 1u; k < n; k++) {
+        if (emu_core_runnable(&sys->core[k])) {
+            run[nrun++] = k;
+        }
+    }
+    if (nrun == 0u) {
+        bool live0 = false;
+        const uint32_t did = emu_core_slice(&sys->core[0], quantum, &live0);
+
+        if (all_idle != NULL) {
+            *all_idle = !live0;
+        }
+        return did;
+    }
+
     ensure_core_tasks(n);
     g_task_rounds++;
     g_task_cores = n;
@@ -226,8 +252,8 @@ uint32_t emu_os_system_step(emu_system_t *sys, uint32_t quantum, bool *all_idle)
 #if configNUMBER_OF_CORES == 1
     g_round_pos = 0u;
 #endif
-    for (unsigned k = 1u; k < n; k++) {
-        (void)xTaskNotifyGive(g_core[k].handle);
+    for (unsigned i = 0u; i < nrun; i++) {
+        (void)xTaskNotifyGive(g_core[run[i]].handle);
     }
 
     bool live = false;
@@ -237,7 +263,7 @@ uint32_t emu_os_system_step(emu_system_t *sys, uint32_t quantum, bool *all_idle)
     uint32_t total = emu_core_slice(&sys->core[0], quantum, &live);
     bool idle = !live;
 
-    for (unsigned done = 0u; done < n - 1u;) {
+    for (unsigned done = 0u; done < nrun;) {
         done += (unsigned)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     }
 
@@ -255,13 +281,13 @@ uint32_t emu_os_system_step(emu_system_t *sys, uint32_t quantum, bool *all_idle)
      * order to check.
      */
     configASSERT(pos0 == 0u);
-    for (unsigned k = 1u; k < n; k++) {
-        configASSERT(g_core[k].pos == k);
+    for (unsigned i = 0u; i < nrun; i++) {
+        configASSERT(g_core[run[i]].pos == i + 1u);
     }
 #endif
-    for (unsigned k = 1u; k < n; k++) {
-        total += g_core[k].did;
-        idle = idle && !g_core[k].live;
+    for (unsigned i = 0u; i < nrun; i++) {
+        total += g_core[run[i]].did;
+        idle = idle && !g_core[run[i]].live;
     }
     if (all_idle != NULL) {
         *all_idle = idle;

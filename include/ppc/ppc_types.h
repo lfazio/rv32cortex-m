@@ -275,6 +275,13 @@ typedef enum {
  */
 #define PPC_TLB_ENTRIES 32u
 
+/*
+ * RAM windows a core remembers handing to translated blocks. A guest's
+ * windows are the pages its stacks are on, so a handful; past this
+ * every TLB change discards every block, which is right and slow.
+ */
+#define PPC_JIT_WINDOWS 8u
+
 #define PPC_MAS0_TLBSEL 0x30000000u /* bits 2:3, "should be 01"     */
 #define PPC_MAS0_TLBSEL1 0x10000000u
 #define PPC_MAS0_ESEL_SHIFT 16      /* bits 11:15                  */

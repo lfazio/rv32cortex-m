@@ -3268,6 +3268,31 @@ session, and every one of them recurred:
   privilege rule, run the instruction from every mode that may not,
   against something that is not this code.
 
+- **A second core finds the state a first one never shared.** Two
+  PowerPC cores run in parallel failed one run in five, and the new code
+  was not why: the interpreter's decode cache was one array for both,
+  so a core met its own pc and bytes in an entry whose decoded half the
+  other had just rewritten (a `beq` raised illegal-instruction on core
+  1), and the decoder built its X-form index on first use under a test
+  of one entry -- which a second core saw true half way through the
+  build. Then one in twenty: a `wait` from core 1's previous slice wrote
+  WFI over the start the other core had just requested, and a parked
+  core with interrupts off is never scheduled again. **Grep a frontend
+  for file-scope mutable state before running it twice at once**, and
+  run a parallel test forty times, not once: none of the three has a
+  mutant that fails deterministically.
+
+  Three costs from the same work, each measured before it was believed.
+  **Retiring a TLB entry's blocks was slower than flushing them all**
+  (2.41 s against 1.97 s) until blocks were indexed by page: the scan
+  was 35% of host instructions at a refill every few hundred
+  instructions. **A block entry growing from 72 bytes to 76** turned
+  every lookup's index into a multiply, a million host instructions on
+  PowerPC CoreMark. And **two cold paths LTO inlined into the
+  interpreter's switch** cost every instruction two more -- the
+  reservation code CoreMark never runs. Callgrind found all three; none
+  was a guess that turned out right.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must

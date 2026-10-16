@@ -458,6 +458,14 @@ option(G4MH_ENABLE_DISASM "Build the G4MH disassembler" ON)
 option(ARMV7M_ENABLE_DISASM "Build the ARMv7-M disassembler" ON)
 option(PPC_ENABLE_DISASM "Build the e200z7 disassembler" ON)
 
+# e200z7 cores to model. The MPC5777C has two, and core 1 is held in reset
+# until core 0 writes its start address to SIU_RSTVEC1 (NXP AN5191, 3.9),
+# so a guest that never does runs on core 0 alone and pays only a core
+# skipped each round. A held core costs a small structure and a bus, so
+# unlike G4MH's PEs -- 64 KiB of local RAM each -- this is not a host-only
+# number. See docs/frontend/ppc.md.
+set(PPC_CORE_COUNT "2" CACHE STRING "e200z7 cores (1..2)")
+
 # Processing elements to model. The RH850/U2B6 has three; the default is 1
 # because the constraint is memory -- 64 KiB of local RAM per PE does not
 # fit on an F446 -- so multicore is a host-platform feature.
@@ -762,6 +770,7 @@ if(EMU_GUEST_ARCH_PPC)
         src/frontend/ppc/ppc_gdb.c
         src/frontend/ppc/ppc_interp.c
         src/frontend/ppc/ppc_mmu.c
+        src/frontend/ppc/ppc_siu.c
         $<$<BOOL:${EMU_PAIR_STATS}>:src/frontend/ppc/ppc_pairstats.c>
     )
 
@@ -772,6 +781,7 @@ if(EMU_GUEST_ARCH_PPC)
 
     target_compile_definitions(emucore PUBLIC
         PPC_ENABLE_DISASM=$<BOOL:${PPC_ENABLE_DISASM}>
+        PPC_CORE_COUNT=${PPC_CORE_COUNT}u
     )
 endif()
 
@@ -1192,7 +1202,12 @@ endif()
 # Each of the four, or the summary under-reports what the runner accepts:
 # it listed two until the host built all four by default.
 if(EMU_GUEST_ARCH_PPC)
-    list(APPEND _frontends "ppc (e200z7, Book E and VLE, big-endian)")
+    if(PPC_CORE_COUNT EQUAL 1)
+        set(_ppc_cores "1 core")
+    else()
+        set(_ppc_cores "${PPC_CORE_COUNT} cores")
+    endif()
+    list(APPEND _frontends "ppc (e200z7, Book E and VLE, big-endian, ${_ppc_cores})")
 endif()
 if(EMU_GUEST_ARCH_ARMV7M)
     list(APPEND _frontends "armv7m (ARMv7E-M, Thumb-2)")

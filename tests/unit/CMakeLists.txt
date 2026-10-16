@@ -638,9 +638,10 @@ endif()
 if(EMU_GUEST_ARCH_PPC)
     foreach(_g "alu:PPC-ALU-END checks=00000044 fails=00000000 ticked"
                "sys:PPC-SYS-END checks=000000b8 fails=00000000"
-               "mmu:PPC-MMU-END checks=000000ea fails=00000000"
+               "mmu:PPC-MMU-END checks=000000ef fails=00000000"
                "coremark:Correct operation validated"
                "coremark-tlb:Correct operation validated"
+               "coremark-tlbmiss:Correct operation validated"
                "crypto:failures 0x00000000")
         string(FIND "${_g}" ":" _at)
         string(SUBSTRING "${_g}" 0 ${_at} _name)
@@ -683,6 +684,52 @@ if(EMU_GUEST_ARCH_PPC)
             LABELS fast
             PASS_REGULAR_EXPRESSION
             "Correct operation validated.*interp +[0-9][0-9]?[0-9]?[0-9]? instructions fell back")
+    endif()
+    #
+    # CoreMark with its TLB refilled from a miss handler -- 26,652 tlbwe in
+    # a run -- translated, and the claim is in the flush count: a TLB
+    # write retires the blocks under the entry it changed, not all of them.
+    # When every write discarded everything this read 26652.
+    #
+    if(TARGET guest-ppc-coremark-tlbmiss AND EMU_JIT)
+        add_test(NAME guest-ppc-coremark-tlbmiss-retires
+                 COMMAND emu-host --jit --max-insn 400000000
+                         "${CMAKE_BINARY_DIR}/guest/ppc-coremark-tlbmiss.elf")
+        set_tests_properties(guest-ppc-coremark-tlbmiss-retires PROPERTIES
+            LABELS fast
+            PASS_REGULAR_EXPRESSION
+            "Correct operation validated.*flushes +[0-9][^0-9]")
+    endif()
+    #
+    # The MPC5777C's second core (smp.c): held until SIU_RSTVEC1 releases
+    # it, then atomics, reservations and a TLB each. Every mode, because
+    # each puts the cores somewhere else: in parallel, where only a
+    # compare-and-swap stops a store being lost; one after another on one
+    # thread, where the two share a block table and only the core in a
+    # block's context keeps core 1 out of core 0's block; and at quanta
+    # down to one instruction, where the interleaving is finest. A
+    # multicore test that does not pass at every quantum is testing the
+    # scheduler.
+    #
+    if(TARGET guest-ppc-smp AND PPC_CORE_COUNT GREATER 1)
+        function(add_ppc_smp_test sfx)
+            add_test(NAME guest-ppc-smp${sfx}
+                     COMMAND emu-host ${ARGN} --max-insn 600000000
+                             "${CMAKE_BINARY_DIR}/guest/ppc-smp.elf")
+            set_tests_properties(guest-ppc-smp${sfx} PROPERTIES
+                LABELS fast
+                PASS_REGULAR_EXPRESSION "PPC-SMP-END checks=0000002a fails=00000000"
+                FAIL_REGULAR_EXPRESSION "TRAP;FAIL")
+        endfunction()
+        add_ppc_smp_test("")
+        add_ppc_smp_test(-serial --serial)
+        add_ppc_smp_test(-q1 --serial --quantum 1)
+        if(EMU_JIT)
+            add_ppc_smp_test(-jit --jit)
+            add_ppc_smp_test(-serial-jit --serial --jit)
+            add_ppc_smp_test(-q4-jit --serial --jit --quantum 4)
+            add_ppc_smp_test(-q64-jit --serial --jit --quantum 64)
+        endif()
     endif()
     #
     # A wait with interrupts masked, which nothing may end. The pass is

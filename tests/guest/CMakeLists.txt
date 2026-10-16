@@ -181,6 +181,7 @@ if(EMU_GUEST_ARCH_PPC)
         add_ppc_guest(sys SOURCES sys.c sys_stubs.S)
         add_ppc_guest(mmu SOURCES mmu.c sys_stubs.S mmu_stubs.S)
         add_ppc_guest(park SOURCES park.c)
+        add_ppc_guest(smp SOURCES smp.c smp_stubs.S FLAGS -DPPC_CRT0_SMP)
     else()
         message(STATUS "No PowerPC compiler: the compiled e200z7 guests will not be built")
     endif()
@@ -442,14 +443,18 @@ if(EXISTS "${COREMARK_DIR}/core_main.c")
                 -Wno-unused-parameter -Wno-sign-compare
                 -Wno-implicit-fallthrough)
     endif()
-    # And for the e200z7, with the time base for a clock -- twice: the
-    # second programs the TLB in its start-up and runs the whole benchmark
-    # under it, which is what measures the JIT under a programmed MMU.
+    # And for the e200z7, with the time base for a clock -- three times:
+    # the second programs the TLB in its start-up and runs the whole
+    # benchmark under it, which is what measures the JIT under a
+    # programmed MMU, and the third fills the TLB on demand from a miss
+    # handler, a 4 KB page at a time, which is what measures a TLB write.
     if(EMU_GUEST_ARCH_PPC AND PPC_GCC)
-        foreach(_v coremark coremark-tlb)
+        foreach(_v coremark coremark-tlb coremark-tlbmiss)
             set(_tlb "")
             if(_v STREQUAL "coremark-tlb")
                 set(_tlb -DPPC_CRT0_TLB)
+            elseif(_v STREQUAL "coremark-tlbmiss")
+                set(_tlb -DPPC_CRT0_TLBMISS)
             endif()
             add_ppc_guest(${_v}
                 OPT -O2

@@ -539,6 +539,16 @@ void emu_jit_flush_all(void);
  */
 void emu_jit_invalidate_page(uint32_t vaddr, const emu_jit_ops_t *ops);
 
+/*
+ * The same for a range of guest addresses, [lo, hi] inclusive: a
+ * PowerPC TLB entry, which may be anything from 1 KB to the whole 4 GB.
+ * A range covering every block is a flush done the slow way, and is
+ * still right. The negative cache goes too, because a mapping is what
+ * makes a pc whose fetch faulted translatable.
+ */
+void emu_jit_invalidate_range(uint32_t lo, uint32_t hi,
+                              const emu_jit_ops_t *ops);
+
 void emu_jit_get_stats(emu_jit_stats_t *out);
 
 /*

@@ -1254,11 +1254,13 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
         has no floating point at all -- which is what refuted the
         theory that SoftFloat was the cost.
         https://github.com/lfazio/quake-embedded
+  - [ ] Compile picolibc for ppc (https://github.com/picolibc/picolibc)
   - [ ] Doom on ppc. It has a JIT now and runs compiled C; what stops
         it is that the Book E guests are `-nostdlib` with no 32-bit
         `libgcc` in this toolchain (the same reason Dhrystone is not
         built), and that the image lives in guest RAM rather than
         executing in place.
+  - [ ] Quake on ppc
 - [~] **PowerPC debug infrastructure.** It was three files where the
       other frontends had fifteen, and every PowerPC defect was found by
       bisecting by hand with external `objdump`.
@@ -1325,7 +1327,7 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
 
       Still open:
 
-      - **The whole F746 firmware as a guest**, which was the original
+      - [ ] **The whole F746 firmware as a guest**, which was the original
         phrasing and is a much larger job than the encoder. It is
         linked at 0x08000000 with ITCM at 0 and drives **366 distinct
         STM32 peripheral registers** -- RCC, PWR, the flash controller,
@@ -1334,11 +1336,11 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
         peripheral drivers live in the *guest* and reach real silicon
         through passthrough, so adding peripheral *models* is a
         direction change rather than an increment.
-      - **The IR and the register allocator**, which t2exec does not
+      - [ ] **The IR and the register allocator**, which t2exec does not
         reach: it tests the encoder end to end and nothing above it.
         Running `emu_ir_lower` in the guest is the next layer; the
         32-bit space it needed is there now.
-      - **The JIT's own open items**: IT blocks ending in a computed
+      - [ ] **The JIT's own open items**: IT blocks ending in a computed
         branch are given back to the interpreter (those holding a load
         or store are lowered now, which was 6% of Dhrystone), RAM below
         0x10000000 gets no inlined access, and interrupt latency is a
@@ -1352,7 +1354,7 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
         described: the FP registers and MSP/PSP ([gdb.md](gdb.md)).
         The real-silicon comparison it makes possible -- the same gdb
         against the M7 and against the emulator -- has not been run.
-      - **The board's answers live in `build/`**, not the repository.
+      - [ ] **The board's answers live in `build/`**, not the repository.
         Kept as fixtures, `--rerun` would be a regression suite anyone
         could run without the board; that is a decision about 3 MB of
         test data, not a technical one.
@@ -1636,20 +1638,23 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       sampling is unsupported for want of it. What the counters count
       is still traps.
 
-- [ ] **JIT** - Autovectorisation of the IR pipeline. This is a big task, but it would be a good demonstration of the emulator's capabilities.
+- [ ] **JIT** - Autovectorisation of the IR pipeline.
 - [ ] Add simple drivers for the rh850u2b6.based on their specification in the reference manual.
-  - [ ] Option bytes: impact on clocks and startup.
+  - [ ] Option bytes: impact on clocks and startup. Located in flash at a defined address.
   - [ ] Clock tree
-  - [x] ltsc -- modelled in `g4mh_ltsc.c`, driven by the runner's
+  - [x] ltsc (Section 44) -- modelled in `g4mh_ltsc.c`, driven by the runner's
         `set_time`; DOOM's clock runs off it.
-  - [x] ostm -- OSTM0 is in `g4mh_intc.c` with its compare interrupt.
-        One channel; the part has more.
-  - [ ] gpio/on emulated on top of stm32 gpio hal, emualated to output the binary state of output on a udp/ip connexion.
-  - [ ] kcrc
-  - [ ] wdtb
+  - [~] ostm (Section 34) -- OSTM0 is in `g4mh_intc.c` with its compare interrupt.
+        One channel; the part has more: missing one channel per core.
+  - [ ] gpio/on (Section 2) emulated on top of stm32 gpio hal, emualated to output the binary state of output on a udp/ip connexion.
+  - [ ] kcrc (Section 57) peripheral
+  - [ ] wdtb (Section 33): one channel per core
 - [ ] Architecture a pcie emulated peripheral over USB for the emulator and a pcie over USB slave firmware to deploy on the various boards to exercise the available peripherals.
-- [ ] Implement an emulated GTM device for the stm32f746zg/stm32n657 to demonstrate the emulator's capabilities.
-- [ ] Implement TAUD peripheral in rh850u2b6 with the remaining stm32 timer availble.
+- [ ] Implement an emulated GTM device for the stm32f746zg/stm32n657 and plug it in the pcie framework.
+- [ ] Implement TAUD peripheral in rh850u2b6 with the remaining stm32 timer availble qnd plug it into the pcie framework
+- [ ] Add support for armv6-m in frontend armv7-m (rename it armvX-m)
+- [ ] Add support for armv8-m into frontend armvX-m
+- [ ] Finish implementing g4mh and rh850 cpu system (Section 3)
 - [x] **PowerPC: the e200z7 MMU.** Built as designed here, from
       `docs/ppc/e200z759CRM.pdf` chapter 10 and section 7.7 and nothing
       else -- [frontend/ppc.md](frontend/ppc.md#the-mmu) has what is
@@ -1685,10 +1690,16 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       instruction against identity's 51.66. `ppc-mmu` 234 checks; four
       mutants of the guards each fail their `jit-win-` check, under
       `--jit` only ([frontend/ppc.md](frontend/ppc.md#the-mmu)).
-- [ ] **PowerPC: per-entry invalidation.** A TLB write moves the
-      generation and every block goes. A start-up pays that once; a
-      guest refilling the TLB from a miss handler would pay it per
-      refill. No guest here does, so nothing measures it yet.
+- [x] **PowerPC: per-entry invalidation.** A TLB change retires the
+      blocks whose code the entry mapped, over its span before and
+      after, and discards everything only when it touches a page a
+      block uses as its RAM window. `ppc-coremark-tlbmiss` is the guest
+      that measures it -- CoreMark with a miss handler refilling two
+      entries, 26,652 refills a run: flushes 26,652 to 8, translations
+      111,979 to 48,255, 1.815 s to **1.409 s** on x86-64. The first
+      version was slower than flushing (2.41 s), because retiring a
+      range scanned the whole block table; the framework indexes blocks
+      by page now ([frontend/ppc.md](frontend/ppc.md#per-entry-invalidation)).
 - [x] **PowerPC: little-endian pages.** MAS2[E] and MAS4[DE] are held;
       data is accessed in true little-endian order at every width,
       Book E code from an E page is fetched as little-endian words,
@@ -1700,15 +1711,25 @@ standing. Figures are in [jit/tuning.md](jit/tuning.md).
       [frontend/ppc.md](frontend/ppc.md#little-endian-pages).
 
 - [~] Finish the ppc emualtor with dual core support and implement a simple driver for the e200z7.
-      **The single core is finished and the other two halves are not
-      started.** Decoder, disassembler, the embedded FP unit, an IR
-      translator and a JIT on both hosts are in, each checked against
-      something that is not this code, and the frontend runs on the
-      F746 ([frontend/ppc.md](frontend/ppc.md)). Still to do: a second
-      core — `ncores` is 1, and the reservation is a flag with no
-      address, which is the manual's single-core behaviour and needs
-      revisiting for two — and a driver, which wants a peripheral model
-      or the passthrough window to drive.
+      **Two cores now; the driver is not started.** Decoder,
+      disassembler, the embedded FP unit, an IR translator and a JIT on
+      both hosts were in, each checked against something that is not
+      this code, and the frontend runs on the F746
+      ([frontend/ppc.md](frontend/ppc.md)).
+  - [x] **A second core**, as the MPC5777C's: held until core 0 writes
+        `SIU_RSTVEC1` (NXP AN5191), a TLB each, and the reservation
+        given an address while both run -- broken by the other core's
+        store, `stwcx.` a compare-and-swap on RAM. `ppc-smp`, 42
+        checks, seven ways in ctest; ten single-point mutants each fail
+        a named check. The first parallel runs found two races in state
+        one core never shares: the decode cache and the decoder's
+        lazily built index ([frontend/ppc.md](frontend/ppc.md#two-cores)).
+        Parallel on a host with `-DEMU_OS_SMP=ON`; not on the F746 yet,
+        where no board was attached.
+  - [ ] A driver, which wants a peripheral model or the passthrough
+        window to drive.
+        - [ ] Implement driver STM System Timer Module (Chapter 51)
+        - [ ] Implement SWT Software Watchdog Timer (Chapter 52)
 - [x] **Port to the Nucleo-N657X0-Q (STM32N6, board MB1940).** A third
       platform, and the first that is neither ARMv7E-M nor flash-based.
       Facts established from RM0486, PM0273 and UM3417 in `docs/st/stm32n6/`:

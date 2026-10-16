@@ -407,6 +407,135 @@ static void test_blocks_are_per_context(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Invalidating a range                                                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Blocks of a chosen length, so that one can start on a page and run
+ * onto the next. `mov eax, n; ret` retires n and leaves the pc alone.
+ */
+static uint32_t g_len = 1u;
+
+static uint32_t stub_translate_len(emu_cpu_t *cpu, uint32_t pc)
+{
+    (void)cpu;
+    (void)pc;
+    g_built++;
+    emu_jit_emit8(0xB8u);
+    emu_jit_emit32(g_len);
+    emu_jit_emit8(0xC3u);
+    return g_len;
+}
+
+/* Never called -- these blocks are not chainable -- but a host without
+ * it gets a flush instead of a retirement, which is not what is tested. */
+static void stub_emit_jump(uint8_t *at, const uint8_t *to)
+{
+    (void)at;
+    (void)to;
+}
+
+static const emu_jit_ops_t k_stub_len_ops = {
+    .name = "stub-len",
+    .bind = stub_bind_ctx,
+    .translate = stub_translate_len,
+    .interp = &k_stub_interp,
+    .emit_jump = stub_emit_jump,
+    .jump_bytes = 5u,
+    .relocatable = false,
+};
+
+static void build_at(uint32_t pc, uint32_t len)
+{
+    g_pc = pc;
+    g_len = len;
+    (void)run_ctx(64u, &k_stub_len_ops);
+}
+
+/* How many of these are rebuilt by running each again. */
+static uint32_t rebuilt(const uint32_t *pcs, const uint32_t *lens, uint32_t n)
+{
+    const uint32_t before = g_built;
+
+    for (uint32_t i = 0; i < n; i++) {
+        build_at(pcs[i], lens[i]);
+    }
+    return g_built - before;
+}
+
+/*
+ * A PowerPC TLB entry changing: the blocks whose code it covered go, and
+ * no others. The framework indexes blocks by the page they start on, so
+ * the one case the index alone would miss is first here -- a block
+ * starting on the page *before* the range and running onto it, which
+ * only the walk back by the longest span finds.
+ *
+ * Then the same through the path for wide ranges, which scans the table
+ * instead, and the narrow path after it, which needs the index that
+ * path rebuilt.
+ */
+static void test_invalidate_range_retires_only_overlap(void)
+{
+    /* page 0xA0 running onto 0xA1; page 0xA2; page 0xA5 */
+    static const uint32_t pcs[3] = {0x000A0FF0u, 0x000A2000u, 0x000A5000u};
+    static const uint32_t lens[3] = {8u, 1u, 1u};
+    emu_jit_stats_t before;
+    emu_jit_stats_t after;
+
+    emu_jit_flush();
+    g_ctx = CTX_LO;
+    g_built = 0u;
+    CHECK_EQ(rebuilt(pcs, lens, 3u), 3u);
+    CHECK_EQ(rebuilt(pcs, lens, 3u), 0u); /* all found again */
+
+    emu_jit_get_stats(&before);
+    emu_jit_invalidate_range(0x000A1000u, 0x000A1FFFu, &k_stub_len_ops);
+    emu_jit_get_stats(&after);
+    CHECK_EQ(after.page_invalidations - before.page_invalidations, 1u);
+    CHECK_EQ(after.flushes - before.flushes, 0u);
+    CHECK_EQ(rebuilt(pcs, lens, 1u), 1u); /* the spanning one */
+    CHECK_EQ(rebuilt(pcs + 1, lens + 1, 2u), 0u); /* the others stayed */
+
+    /* Wide: a megabyte, past the walk's limit. */
+    emu_jit_invalidate_range(0x000A2000u, 0x001A1FFFu, &k_stub_len_ops);
+    CHECK_EQ(rebuilt(pcs, lens, 1u), 0u);
+    CHECK_EQ(rebuilt(pcs + 1, lens + 1, 2u), 2u);
+
+    /* Narrow again, on the rebuilt index. */
+    emu_jit_invalidate_range(0x000A5000u, 0x000A5FFFu, &k_stub_len_ops);
+    CHECK_EQ(rebuilt(pcs + 2, lens + 2, 1u), 1u);
+    CHECK_EQ(rebuilt(pcs, lens, 2u), 0u);
+}
+
+/*
+ * And what was refused in the range is asked again, while a refusal
+ * outside it is not: the miss handler that maps a page is code the
+ * translator declines, and forgetting that at every refill cost 188,773
+ * translation attempts in one PowerPC CoreMark run.
+ */
+static void test_invalidate_range_reopens_only_its_declines(void)
+{
+    emu_jit_flush();
+    g_ctx = CTX_LO;
+    g_translate_calls = 0u;
+
+    g_pc = 0x000B0010u;
+    (void)run_ctx(64u, &k_stub_ctx_ops);
+    g_pc = 0x000C0010u;
+    (void)run_ctx(64u, &k_stub_ctx_ops);
+    CHECK_EQ(g_translate_calls, 2u);
+
+    emu_jit_invalidate_range(0x000B0000u, 0x000B0FFFu, &k_stub_len_ops);
+    g_pc = 0x000B0010u;
+    (void)run_ctx(64u, &k_stub_ctx_ops);
+    CHECK_EQ(g_translate_calls, 3u); /* in the range: offered again */
+    g_pc = 0x000C0010u;
+    (void)run_ctx(64u, &k_stub_ctx_ops);
+    CHECK_EQ(g_translate_calls, 3u); /* outside it: still refused */
+    g_pc = 0x8000u;
+}
+
+/* ------------------------------------------------------------------ */
 /* Chained blocks across an overflow                                   */
 /* ------------------------------------------------------------------ */
 
@@ -870,6 +999,8 @@ void test_jit(void)
     test_declines_are_per_context();
 #if defined(EMU_HOST_JIT_X86_64)
     test_blocks_are_per_context();
+    test_invalidate_range_retires_only_overlap();
+    test_invalidate_range_reopens_only_its_declines();
     test_overflow_compaction_unlinks();
     test_chain_heat_keeps_chained_blocks();
     test_unchain_runs_one_block();

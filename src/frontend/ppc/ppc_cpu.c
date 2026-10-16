@@ -8,6 +8,9 @@
  */
 
 #include "ppc/ppc_cpu.h"
+#include "ppc/ppc_decode.h"
+
+#include "emu/emu_lock.h"
 
 #include <string.h>
 
@@ -29,11 +32,48 @@
 #define PPC_L1CFG0 0x284D1810u
 #define PPC_L1CFG1 0x084D1810u
 
+uint32_t ppc_jit_gen;
+
+/*
+ * Every core, by id, so that a store can find the reservations it
+ * breaks -- the only state one core reaches in another, beside the
+ * start request. Indexed rather than appended, for the reason G4MH's
+ * table is: every open of the system initialises every core again.
+ */
+static ppc_cpu_t *g_cores[PPC_CORE_COUNT];
+
+/*
+ * Reservations outstanding while cores share memory, so that a store
+ * takes the lock only when there is something to break. A hint read
+ * without the lock: it is never below the truth, because every taking
+ * of a reservation counts it before the reservation can be seen.
+ */
+static unsigned g_resv_held;
+
+static emu_lock_t g_resv_lock = EMU_LOCK_INIT;
+
+/* Only ever under the lock; relaxed, because the lock orders it. */
+static void resv_count(int d)
+{
+    __atomic_store_n(&g_resv_held,
+                     __atomic_load_n(&g_resv_held, __ATOMIC_RELAXED) +
+                         (unsigned)d,
+                     __ATOMIC_RELAXED);
+}
+
 void ppc_cpu_init(ppc_cpu_t *c, struct emu_bus *bus, uint32_t coreid)
 {
     memset(c, 0, sizeof(*c));
     c->bus = bus;
+    c->coreid = coreid;
     c->pir = coreid;
+    if (coreid < PPC_CORE_COUNT) {
+        g_cores[coreid] = c;
+    }
+    if (coreid == 0u) {
+        g_resv_held = 0u;
+    }
+    ppc_decode_init(); /* before any core can decode */
     c->pvr = PPC_PVR_E200Z759N3;
     c->vle = true;
 
@@ -61,6 +101,8 @@ void ppc_cpu_reset(ppc_cpu_t *c, uint32_t reset_pc)
     c->msr = 0u;
     c->spefscr = 0u;
     c->reserve = false;
+    c->smp_live = 0u;
+    c->slow_store = false;
     c->esr = 0u;
     c->dsi_bo = false;
     c->hid0 = c->hid1 = 0u;
@@ -71,7 +113,11 @@ void ppc_cpu_reset(ppc_cpu_t *c, uint32_t reset_pc)
     c->mcsr = 0u;
     memset(c->dbcr, 0, sizeof(c->dbcr));
     c->dbsr = 0x10000000u; /* table 17 */
-    c->state = EMU_STATE_RUNNING;
+    /*
+     * Core 0 runs out of reset and the others are held, as on the
+     * MPC5777C: core 1 waits for SIU_RSTVEC1 (NXP AN5191, 3.9).
+     */
+    c->state = (c->coreid == 0u) ? EMU_STATE_RUNNING : EMU_STATE_HELD;
     c->irq_dirty = false;
     c->retired = 0u;
     c->cycles = 0u;
@@ -79,6 +125,7 @@ void ppc_cpu_reset(ppc_cpu_t *c, uint32_t reset_pc)
     ppc_mmu_reset(c);
     c->jit_ctx = ppc_cpu_ctx(c);
     c->jit_flush = true;
+    c->jit_nwin = 0u;
 }
 
 /*
@@ -94,8 +141,13 @@ void ppc_cpu_reset(ppc_cpu_t *c, uint32_t reset_pc)
  * translate, and must not be found under a mapping. So is MSR[DS]: a
  * block's RAM window is a page the TLB maps for data (ppc_fast_mem), and
  * the address space it was looked up in is DS. TLB contents are not
- * identity but validity, so they move the generation instead
- * (ppc_mmu.c).
+ * identity but validity, so a change retires blocks instead (ppc_mmu.c).
+ *
+ * **And which core.** Each has its own TLB, and where the cores share
+ * one block table -- a board, or --serial -- a block core 0 built
+ * through its mapping would otherwise be found by core 1 at the same
+ * address under a different one. On the identity map the translation is
+ * the same for both, so their blocks are shared there.
  */
 uint64_t ppc_cpu_ctx(const ppc_cpu_t *c)
 {
@@ -107,6 +159,7 @@ uint64_t ppc_cpu_ctx(const ppc_cpu_t *c)
         k |= (c->msr & PPC_MSR_PR) != 0u ? 8u : 0u;
         k |= (c->msr & PPC_MSR_DS) != 0u ? 16u : 0u;
         k |= (uint64_t)(c->pid0 & 0xFFu) << 8;
+        k |= (uint64_t)c->coreid << 16;
     }
     return k;
 }
@@ -738,6 +791,34 @@ bool ppc_cpu_take_irq(ppc_cpu_t *c)
  * the first byte on the page that differs, "a byte within the page
  * whose access caused the violation" (table 7-13).
  */
+/*
+ * A store has landed at real address `pa`: every other core's
+ * reservation on a word it touched is gone. Nothing to do -- and the
+ * lock is not taken -- unless another core runs and some core holds a
+ * reservation.
+ */
+static void resv_break(ppc_cpu_t *c, uint32_t pa, uint32_t size)
+{
+    if (c->smp_live == 0u ||
+        __atomic_load_n(&g_resv_held, __ATOMIC_RELAXED) == 0u) {
+        return;
+    }
+    const uint32_t lo = pa & ~3u;
+    const uint32_t hi = (pa + size - 1u) & ~3u;
+
+    emu_lock(&g_resv_lock);
+    for (unsigned k = 0u; k < PPC_CORE_COUNT; k++) {
+        ppc_cpu_t *const o = g_cores[k];
+
+        if (o != NULL && o != c && o->reserve && o->resv_pa >= lo &&
+            o->resv_pa <= hi) {
+            o->reserve = false;
+            resv_count(-1);
+        }
+    }
+    emu_unlock(&g_resv_lock);
+}
+
 static ppc_exc_t byte_order_dsi(ppc_cpu_t *c, uint32_t ea)
 {
     c->dear = ea;
@@ -810,6 +891,7 @@ static EMU_COLD_NOINLINE ppc_exc_t store_xlate(ppc_cpu_t *c, uint32_t addr,
             c->dear = addr;
             return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
         }
+        resv_break(c, pa, size);
         return PPC_EXC_NONE;
     }
     /*
@@ -841,6 +923,7 @@ static EMU_COLD_NOINLINE ppc_exc_t store_xlate(ppc_cpu_t *c, uint32_t addr,
             c->dear = addr + i;
             return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
         }
+        resv_break(c, pa[i], 1u);
     }
     return PPC_EXC_NONE;
 }
@@ -885,10 +968,39 @@ ppc_exc_t ppc_load(ppc_cpu_t *c, uint32_t addr, uint32_t size, bool sext,
     return PPC_EXC_NONE;
 }
 
+/*
+ * The flat store, and then whatever another core's reservation needs:
+ * the out-of-line path while a second core runs and translation is off.
+ */
+static EMU_COLD_NOINLINE ppc_exc_t store_flat_smp(ppc_cpu_t *c, uint32_t addr,
+                                                  uint32_t size, uint32_t val)
+{
+    if ((addr & (size - 1u)) == 0u) {
+        if (emu_bus_write_be(c->bus, addr, size, val) != EMU_FAULT_NONE) {
+            c->dear = addr;
+            return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
+        }
+        resv_break(c, addr, size);
+        return PPC_EXC_NONE;
+    }
+    for (uint32_t i = 0u; i < size; i++) {
+        const uint32_t b = (val >> (8u * (size - 1u - i))) & 0xFFu;
+
+        if (emu_bus_write_be(c->bus, addr + i, 1u, b) != EMU_FAULT_NONE) {
+            c->dear = addr + i;
+            return (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
+        }
+        resv_break(c, addr + i, 1u);
+    }
+    return PPC_EXC_NONE;
+}
+
 ppc_exc_t ppc_store(ppc_cpu_t *c, uint32_t addr, uint32_t size, uint32_t val)
 {
-    if (EMU_UNLIKELY(c->mmu_on)) {
-        return store_xlate(c, addr, size, val);
+    /* One test for both: translation on, or another core to tell. */
+    if (EMU_UNLIKELY(c->slow_store)) {
+        return c->mmu_on ? store_xlate(c, addr, size, val)
+                         : store_flat_smp(c, addr, size, val);
     }
     if (EMU_LIKELY((addr & (size - 1u)) == 0u)) {
         if (EMU_UNLIKELY(emu_bus_write_be(c->bus, addr, size, val) != EMU_FAULT_NONE)) {
@@ -906,4 +1018,220 @@ ppc_exc_t ppc_store(ppc_cpu_t *c, uint32_t addr, uint32_t size, uint32_t val)
         }
     }
     return PPC_EXC_NONE;
+}
+
+/* ------------------------------------------------------------------ */
+/* More than one core                                                  */
+/* ------------------------------------------------------------------ */
+
+void ppc_cpu_start(ppc_cpu_t *c, uint32_t pc, bool vle)
+{
+    /*
+     * Every core first, while the one being started is still held and
+     * cannot be reading any of this. A reservation taken before now has
+     * no address to be broken by, so it goes: stwcx. may fail.
+     */
+    emu_lock(&g_resv_lock);
+    for (unsigned k = 0u; k < PPC_CORE_COUNT; k++) {
+        ppc_cpu_t *const o = g_cores[k];
+
+        if (o != NULL) {
+            o->reserve = false;
+            o->smp_live = 1u;
+            o->slow_store = true;
+        }
+    }
+    __atomic_store_n(&g_resv_held, 0u, __ATOMIC_RELAXED);
+    emu_unlock(&g_resv_lock);
+
+    c->start_pc = pc;
+    c->start_vle = vle;
+    /* Last, and a release: the core's thread acts on what it reads. */
+    __atomic_store_n(&c->reset_req, (uint8_t)PPC_REQ_START, __ATOMIC_RELEASE);
+}
+
+void ppc_cpu_hold(ppc_cpu_t *c)
+{
+    __atomic_store_n(&c->reset_req, (uint8_t)PPC_REQ_HOLD, __ATOMIC_RELEASE);
+}
+
+void ppc_cpu_take_start(ppc_cpu_t *c)
+{
+    const uint32_t pc = c->start_pc;
+    const bool vle = c->start_vle;
+    uint8_t want = PPC_REQ_START;
+
+    /* A reset, which leaves this core held: it is about to run. */
+    ppc_cpu_reset(c, pc);
+    c->vle = vle;
+    ppc_mmu_reset(c); /* the reset entry's VLE bit is RSTVEC1's */
+    c->jit_ctx = ppc_cpu_ctx(c);
+    c->smp_live = 1u;
+    c->slow_store = true;
+    c->state = EMU_STATE_RUNNING;
+    /* Consumed -- unless a hold arrived meanwhile, which then stands. */
+    (void)__atomic_compare_exchange_n(&c->reset_req, &want,
+                                      (uint8_t)PPC_REQ_NONE, false,
+                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+
+/*
+ * The word holding `pa`, as host memory -- or NULL for anything that is
+ * not plain RAM the host can swap atomically.
+ */
+static uint32_t *resv_host(ppc_cpu_t *c, uint32_t pa)
+{
+    const uint32_t w = pa & ~3u;
+    emu_region_t *const r = emu_bus_find(c->bus, w);
+
+    if (r == NULL || r->kind != (uint8_t)EMU_MEM_RAM || r->host == NULL ||
+        w - r->base > r->size - 4u) {
+        return NULL;
+    }
+    uint8_t *const p = (uint8_t *)r->host + (w - r->base);
+
+    return ((uintptr_t)p & 3u) == 0u ? (uint32_t *)(void *)p : NULL;
+}
+
+/* An access's bytes within a word, in the page's byte order. */
+static uint32_t word_get(uint32_t raw, uint32_t off, uint32_t size, bool le)
+{
+    uint8_t b[4];
+    uint32_t v = 0u;
+
+    memcpy(b, &raw, 4u);
+    for (uint32_t i = 0u; i < size; i++) {
+        const uint32_t at = off + (le ? (size - 1u - i) : i);
+
+        v = (v << 8) | b[at];
+    }
+    return v;
+}
+
+static uint32_t word_put(uint32_t raw, uint32_t off, uint32_t size, bool le,
+                         uint32_t v)
+{
+    uint8_t b[4];
+
+    memcpy(b, &raw, 4u);
+    for (uint32_t i = 0u; i < size; i++) {
+        const uint32_t at = off + (le ? i : (size - 1u - i));
+
+        b[at] = (uint8_t)(v >> (8u * i));
+    }
+    memcpy(&raw, b, 4u);
+    return raw;
+}
+
+/* Where an aligned access goes, translated if translation is on. */
+static ppc_exc_t resv_xlate(ppc_cpu_t *c, uint32_t ea, ppc_acc_t acc,
+                            uint32_t *pa, bool *le)
+{
+    *le = false;
+    if (c->mmu_on) {
+        return ppc_mmu_xlate(c, ea, acc, pa, NULL, le);
+    }
+    *pa = ea;
+    return PPC_EXC_NONE;
+}
+
+/*
+ * Out of line, both: LTO folded them into the interpreter's switch, and
+ * what that cost was every instruction's -- ppc_exec and ppc_run gave up
+ * registers to them and grew by about two host instructions per guest
+ * instruction on CoreMark, which never executes either.
+ */
+EMU_COLD_NOINLINE ppc_exc_t ppc_larx_smp(ppc_cpu_t *c, uint32_t ea,
+                                         uint32_t size, uint32_t *out)
+{
+    uint32_t pa;
+    bool le;
+    ppc_exc_t x = resv_xlate(c, ea, PPC_ACC_READ, &pa, &le);
+
+    if (x != PPC_EXC_NONE) {
+        return x;
+    }
+    /*
+     * The reservation before the read, and both under the lock: a store
+     * that lands before the read is seen by it, and one that lands after
+     * breaks the reservation. **One read**, which is both the value and
+     * the bytes stwcx. compares -- two reads are two values, and G4MH
+     * lost 4 increments in 60,000 that way.
+     */
+    emu_lock(&g_resv_lock);
+    if (!c->reserve) {
+        resv_count(1);
+    }
+    c->reserve = true;
+    c->resv_pa = pa & ~3u;
+
+    uint32_t *const hw = resv_host(c, pa);
+
+    c->resv_raw_ok = hw != NULL;
+    if (hw != NULL) {
+        c->resv_raw = __atomic_load_n(hw, __ATOMIC_SEQ_CST);
+        *out = word_get(c->resv_raw, pa & 3u, size, le);
+    } else {
+        uint32_t v = 0u;
+
+        if (emu_bus_read_be(c->bus, pa, size, &v) != EMU_FAULT_NONE) {
+            c->dear = ea;
+            x = (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
+        }
+        *out = le ? emu_bswap(v, size) : v;
+    }
+    emu_unlock(&g_resv_lock);
+    return x;
+}
+
+EMU_COLD_NOINLINE ppc_exc_t ppc_stcx_smp(ppc_cpu_t *c, uint32_t ea,
+                                         uint32_t size, uint32_t val,
+                                         bool *stored)
+{
+    uint32_t pa;
+    bool le;
+    ppc_exc_t x = resv_xlate(c, ea, PPC_ACC_WRITE, &pa, &le);
+
+    *stored = false;
+    if (x != PPC_EXC_NONE) {
+        return x;
+    }
+    emu_lock(&g_resv_lock);
+    if (c->reserve) {
+        uint32_t *const hw = (c->resv_raw_ok && (pa & ~3u) == c->resv_pa)
+                                 ? resv_host(c, pa)
+                                 : NULL;
+
+        if (hw != NULL) {
+            /*
+             * On RAM a compare-and-swap against the bytes lwarx read: a
+             * store from another core may land after the check above and
+             * before the write, and this is the only way to notice. A
+             * word written and written back between them goes unseen,
+             * which is the usual price of emulating a reservation so.
+             */
+            uint32_t expect = c->resv_raw;
+            const uint32_t want = word_put(expect, pa & 3u, size, le, val);
+
+            *stored = __atomic_compare_exchange_n(
+                hw, &expect, want, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+        } else if (emu_bus_write_be(c->bus, pa, size,
+                                    le ? emu_bswap(val, size) : val) !=
+                   EMU_FAULT_NONE) {
+            c->dear = ea;
+            x = (ppc_exc_t)PPC_IVOR_DATA_STORAGE;
+        } else {
+            *stored = true;
+        }
+        if (*stored) {
+            resv_break(c, pa, size); /* the lock nests */
+        }
+        /* Gone either way, whether or not the store happened. */
+        if (c->reserve) {
+            c->reserve = false;
+            resv_count(-1);
+        }
+    }
+    emu_unlock(&g_resv_lock);
+    return x;
 }

@@ -71,8 +71,17 @@ _vec10:
 	b	_decrementer
 	vector	11
 	vector	12
+#ifdef PPC_CRT0_TLBMISS
+	.balign	16
+_vec13:
+	b	_tlbmiss
+	.balign	16
+_vec14:
+	b	_tlbmiss
+#else
 	vector	13
 	vector	14
+#endif
 	vector	15
 	vector	32
 	vector	33
@@ -88,10 +97,30 @@ _decrementer:
 	stwu	%r1, -16(%r1)
 	stw	%r3, 8(%r1)
 	stw	%r4, 12(%r1)
+#ifdef PPC_CRT0_TLBMISS
+	/*
+	 * The counter's page may be unmapped, and the TLB miss that finds
+	 * out is the same class of interrupt as this one: it would take
+	 * SRR0 and SRR1 for its own return. Saved on the stack, which is
+	 * in a protected entry and cannot miss.
+	 */
+	stwu	%r1, -16(%r1)
+	mfspr	%r3, SPR_SRR0
+	stw	%r3, 8(%r1)
+	mfspr	%r3, SPR_SRR1
+	stw	%r3, 12(%r1)
+#endif
 	lis	%r3, ppc_dec_ticks@ha
 	lwz	%r4, ppc_dec_ticks@l(%r3)
 	addi	%r4, %r4, 1
 	stw	%r4, ppc_dec_ticks@l(%r3)
+#ifdef PPC_CRT0_TLBMISS
+	lwz	%r3, 8(%r1)
+	mtspr	SPR_SRR0, %r3
+	lwz	%r3, 12(%r1)
+	mtspr	SPR_SRR1, %r3
+	addi	%r1, %r1, 16
+#endif
 	lis	%r3, 0x0800		/* TSR[DIS], write one to clear */
 	mtspr	SPR_TSR, %r3
 	lwz	%r4, 12(%r1)
@@ -99,11 +128,86 @@ _decrementer:
 	addi	%r1, %r1, 16
 	rfi
 
+#ifdef PPC_CRT0_TLBMISS
+/* ------------------------------------------------------------------ */
+/* A TLB miss: map the page and return to the instruction that missed */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Both TLB error interrupts, instruction and data, come here. The core
+ * has already set the MAS registers up for the missing page (table
+ * 10-15): MAS1 valid with the access's TID and TS and MAS4's size, MAS2
+ * the page's EPN with MAS4's attributes, MAS3 empty. What is left is
+ * the real address -- the effective one, since everything here is
+ * flat -- the permissions, and which entry to replace, round robin over
+ * TLBMISS_WAYS entries from TLBMISS_FIRST, the victim kept in SPRG3.
+ *
+ * No memory is touched, so this cannot miss itself, and SPRG0-2 hold
+ * what it borrows. It is the operating system's half of a software-
+ * managed TLB, and every refill is a tlbwe -- which is what makes it
+ * the guest that measures what a TLB write costs translated code.
+ */
+/*
+ * Two, which is fewer than CoreMark's working set of pages -- the code
+ * beyond the first 4 KB, the constants and the data -- so it misses all
+ * the way through rather than once per page: 26,652 refills in a run.
+ * With four or more everything fits after the first touch and there is
+ * nothing to measure.
+ */
+#ifndef TLBMISS_WAYS
+#define TLBMISS_WAYS 2
+#endif
+#define TLBMISS_FIRST 4
+#define SPR_SPRG0 272
+#define SPR_SPRG1 273
+#define SPR_SPRG2 274
+#define SPR_SPRG3 275
+#define SPR_MAS0 624
+#define SPR_MAS1 625
+#define SPR_MAS2 626
+#define SPR_MAS3 627
+#define SPR_MAS4 628
+
+_tlbmiss:
+	mtspr	SPR_SPRG0, %r3
+	mtspr	SPR_SPRG1, %r4
+	mfcr	%r3
+	mtspr	SPR_SPRG2, %r3
+	mfspr	%r3, SPR_MAS2
+	rlwinm	%r3, %r3, 0, 0, 19	/* the 4 KB page's EPN */
+	ori	%r3, %r3, 0x3F		/* RPN = EPN; UX SX UW SW UR SR */
+	mtspr	SPR_MAS3, %r3
+	mfspr	%r4, SPR_SPRG3
+	addi	%r4, %r4, 1
+	cmplwi	%r4, TLBMISS_FIRST + TLBMISS_WAYS
+	blt	1f
+	li	%r4, TLBMISS_FIRST
+1:	mtspr	SPR_SPRG3, %r4
+	slwi	%r4, %r4, 16		/* ESEL */
+	oris	%r4, %r4, 0x1000	/* TLBSEL1 */
+	mtspr	SPR_MAS0, %r4
+	tlbwe
+	isync
+	mfspr	%r3, SPR_SPRG2
+	mtcr	%r3
+	mfspr	%r4, SPR_SPRG1
+	mfspr	%r3, SPR_SPRG0
+	rfi
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Anything else: say what, and stop                                   */
 /* ------------------------------------------------------------------ */
 
 _trap:
+	/*
+	 * The syndrome first, before anything that could take another
+	 * interrupt -- with the TLB filled on demand, reading the message
+	 * below can miss, and the miss would write SRR0 for its own return.
+	 */
+	mfspr	%r29, SPR_SRR0
+	mfspr	%r28, SPR_ESR
+	mfspr	%r27, SPR_DEAR
 	mr	%r31, %r3
 	lis	%r30, UART_THR@h
 	lis	%r4, _trap_msg@ha
@@ -114,17 +218,17 @@ _trap:
 	lis	%r4, _at_msg@ha
 	addi	%r4, %r4, _at_msg@l
 	bl	_puts
-	mfspr	%r3, SPR_SRR0
+	mr	%r3, %r29
 	bl	_puthex
 	lis	%r4, _esr_msg@ha
 	addi	%r4, %r4, _esr_msg@l
 	bl	_puts
-	mfspr	%r3, SPR_ESR
+	mr	%r3, %r28
 	bl	_puthex
 	lis	%r4, _dear_msg@ha
 	addi	%r4, %r4, _dear_msg@l
 	bl	_puts
-	mfspr	%r3, SPR_DEAR
+	mr	%r3, %r27
 	bl	_puthex
 	li	%r3, '\n'
 	stb	%r3, 0(%r30)
@@ -158,22 +262,17 @@ _puthex:
 /* Reset                                                               */
 /* ------------------------------------------------------------------ */
 
-_reset:
-	/*
-	 * r1 is the loader's: the top of whatever RAM this machine has,
-	 * which is a megabyte on a host and a fifth of that on a board.
-	 * A link script that named it would be right on one of them.
-	 */
-	li	%r0, 0
-	stwu	%r0, -16(%r1)		/* a terminated back chain */
-
-	/* The vectors: IVPR is the 64 KiB page, each IVOR an offset in it. */
-	lis	%r3, _start@h
-	mtspr	SPR_IVPR, %r3
+/*
+ * IVPR and the IVORs, which every core has its own of: core 1 installs
+ * the same table for itself (_start1).
+ */
 	.macro	setivor spr, n
 	li	%r3, _vec\n - _start
 	mtspr	\spr, %r3
 	.endm
+	.macro	install_vectors
+	lis	%r3, _start@h
+	mtspr	SPR_IVPR, %r3
 	setivor	SPR_IVOR0 + 0, 0
 	setivor	SPR_IVOR0 + 1, 1
 	setivor	SPR_IVOR0 + 2, 2
@@ -194,6 +293,19 @@ _reset:
 	setivor	SPR_IVOR32 + 1, 33
 	setivor	SPR_IVOR32 + 2, 34
 	setivor	SPR_IVOR32 + 3, 35
+	.endm
+
+_reset:
+	/*
+	 * r1 is the loader's: the top of whatever RAM this machine has,
+	 * which is a megabyte on a host and a fifth of that on a board.
+	 * A link script that named it would be right on one of them.
+	 */
+	li	%r0, 0
+	stwu	%r0, -16(%r1)		/* a terminated back chain */
+
+	/* The vectors: IVPR is the 64 KiB page, each IVOR an offset in it. */
+	install_vectors
 
 #ifdef PPC_CRT0_TLB
 	/*
@@ -226,6 +338,54 @@ _reset:
 	tlbent	2, 0xC0000100, 0x1000000A, 0x10000005
 	/* entry 0, the reset entry: invalid */
 	tlbent	0, 0x00000000, 0x00000000, 0x00000000
+#endif
+
+#ifdef PPC_CRT0_TLBMISS
+	/*
+	 * The TLB filled on demand. Three protected entries hold what the
+	 * miss handler cannot fault on -- the image's first 4 KB, which has
+	 * the vectors and the handler; the 16 KB under the stack top; the
+	 * console -- and everything else is mapped a 4 KB page at a time by
+	 * _tlbmiss, as it is touched: the rest of the code, the constants,
+	 * the data. The reset entry goes last, because until then it is
+	 * what this code is running through.
+	 */
+	.macro	tlbreg esel, mas1, mas2, mas3
+	lis	%r3, (0x10000000 | (\esel << 16))@h
+	mtspr	624, %r3
+	lis	%r3, (\mas1)@h
+	ori	%r3, %r3, (\mas1)@l
+	mtspr	625, %r3
+	mtspr	626, \mas2
+	mtspr	627, \mas3
+	tlbwe
+	isync
+	.endm
+	/* V | IPROT | TSIZE 4 KB; EPN; RPN | UX SX UW SW UR SR */
+	lis	%r4, _start@h
+	ori	%r4, %r4, _start@l
+	ori	%r5, %r4, 0x3F
+	tlbreg	1, 0xC0000100, %r4, %r5
+	/* V | IPROT | TSIZE 16 KB: the stack's, below the top */
+	addi	%r4, %r1, -1
+	rlwinm	%r4, %r4, 0, 0, 17
+	ori	%r5, %r4, 0x3F
+	tlbreg	2, 0xC0000200, %r4, %r5
+	/* V | IPROT | TSIZE 4 KB; EPN | I | G; RPN | SW SR */
+	lis	%r4, 0x1000
+	ori	%r4, %r4, 0x000A
+	lis	%r5, 0x1000
+	ori	%r5, %r5, 0x0005
+	tlbreg	3, 0xC0000100, %r4, %r5
+	/* MAS4: TLBSEL1, 4 KB, TID from PID0, no attributes (table 10-13) */
+	lis	%r3, 0x1000
+	ori	%r3, %r3, 0x0100
+	mtspr	628, %r3
+	li	%r3, TLBMISS_FIRST + TLBMISS_WAYS - 1
+	mtspr	275, %r3		/* SPRG3: the last victim */
+	li	%r4, 0
+	li	%r5, 0
+	tlbreg	0, 0x00000000, %r4, %r5
 #endif
 
 	/* .bss, which nothing else will zero for a guest loaded as one blob. */
@@ -268,6 +428,39 @@ _exit:
 	li	%r0, 93
 	sc
 5:	b	5b
+
+#ifdef PPC_CRT0_SMP
+/* ------------------------------------------------------------------ */
+/* Core 1                                                              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Where core 0 points SIU_RSTVEC1 (smp.c). Core 1 comes out of reset
+ * with nothing set up -- the loader gave core 0 a stack and no one gave
+ * this core anything -- so it takes its own stack, installs the same
+ * vectors in its own IVPR and IVORs, and runs main1. Everything else
+ * crt0 does is core 0's: the .bss core 1 relies on was zeroed before it
+ * was started.
+ *
+ * main1 returning parks the core: wait with MSR[EE] clear, which
+ * nothing can end, and which the runner counts as finished.
+ */
+#ifndef PPC_CORE1_STACK
+#define PPC_CORE1_STACK 4096		/* smp.c's ppc_core1_stack */
+#endif
+	.balign	16
+	.globl	_start1
+_start1:
+	lis	%r1, (ppc_core1_stack + PPC_CORE1_STACK)@ha
+	addi	%r1, %r1, (ppc_core1_stack + PPC_CORE1_STACK)@l
+	li	%r0, 0
+	stwu	%r0, -16(%r1)
+	install_vectors
+	bl	main1
+	wrteei	0
+6:	.long	0x7C00007C		/* wait */
+	b	6b
+#endif
 
 	.section .rodata
 _trap_msg:	.asciz	"\nTRAP ivor="

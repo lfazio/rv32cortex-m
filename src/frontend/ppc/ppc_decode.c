@@ -1058,6 +1058,16 @@ static const x_form_t k_x31[] = {
  */
 static uint8_t x31_index[1024];
 
+/*
+ * **Published with a flag of its own, set last.** The test used to be
+ * "is add's entry there yet", which a second core decoding at the same
+ * moment saw true half way through the build -- and every X-form
+ * instruction after add in the table then decoded as illegal on that
+ * core. ppc_decode_init builds it before any core runs; the check
+ * stays for a decode with no core around it.
+ */
+static bool x31_ready;
+
 static void x31_build(void)
 {
     for (uint32_t i = 0u; i < sizeof(k_x31) / sizeof(k_x31[0]); i++) {
@@ -1066,6 +1076,14 @@ static void x31_build(void)
             x31_index[k_x31[i].xo | 0x200u] = (uint8_t)(i + 1u);
         }
     }
+    __atomic_store_n(&x31_ready, true, __ATOMIC_RELEASE);
+}
+
+void ppc_decode_init(void)
+{
+    if (!__atomic_load_n(&x31_ready, __ATOMIC_ACQUIRE)) {
+        x31_build();
+    }
 }
 
 static void d_31(uint32_t w, I *d)
@@ -1073,7 +1091,7 @@ static void d_31(uint32_t w, I *d)
     const uint32_t xo10 = F_XO10(w);
     const uint32_t xo9 = xo10 & 0x1FFu;
 
-    if (EMU_UNLIKELY(x31_index[0x10Au] == 0u)) { /* add: always present */
+    if (EMU_UNLIKELY(!__atomic_load_n(&x31_ready, __ATOMIC_ACQUIRE))) {
         x31_build();
     }
 

@@ -723,10 +723,17 @@ bool ppc_exec(ppc_cpu_t *c, const I *d, uint32_t pc)
         if ((ea & (d->size - 1u)) != 0u) {
             return misaligned(c, pc, ea, false);
         }
-        if ((mx = ppc_load(c, ea, d->size, false, &v)) != PPC_EXC_NONE) {
-            return data_fault(c, pc, false, mx);
+        if (EMU_UNLIKELY(c->smp_live != 0u)) {
+            /* Another core runs: the reservation has an address. */
+            if ((mx = ppc_larx_smp(c, ea, d->size, &v)) != PPC_EXC_NONE) {
+                return data_fault(c, pc, false, mx);
+            }
+        } else {
+            if ((mx = ppc_load(c, ea, d->size, false, &v)) != PPC_EXC_NONE) {
+                return data_fault(c, pc, false, mx);
+            }
+            c->reserve = true;
         }
-        c->reserve = true;
         r[d->rd] = v;
         break;
     }
@@ -744,6 +751,21 @@ bool ppc_exec(ppc_cpu_t *c, const I *d, uint32_t pc)
         }
         if ((ea & (d->size - 1u)) != 0u) {
             return misaligned(c, pc, ea, true);
+        }
+        if (EMU_UNLIKELY(c->smp_live != 0u)) {
+            /*
+             * The external reservation logic of a part with two cores
+             * (3.5): the store fails if the other core wrote the word
+             * since lwarx, which p_xfail_b reports on the part.
+             */
+            bool stored;
+
+            if ((mx = ppc_stcx_smp(c, ea, d->size, r[d->rd], &stored)) !=
+                PPC_EXC_NONE) {
+                return data_fault(c, pc, true, mx);
+            }
+            cr_set(c, 0u, (stored ? PPC_CR_EQ : 0u) | so(c));
+            break;
         }
         if ((mx = ppc_store(c, ea, d->size, r[d->rd])) != PPC_EXC_NONE) {
             return data_fault(c, pc, true, mx);
@@ -1062,7 +1084,14 @@ typedef struct {
     ppc_insn_t d;
 } dc_t;
 
-static dc_t g_dc[PPC_DECODE_CACHE];
+/*
+ * One per core. It was one, which two cores running at once filled
+ * together: a core found its own pc and bytes in an entry whose decoded
+ * half the other had just rewritten, and ran that instead -- a `beq`
+ * raised an illegal-instruction interrupt on core 1. Chosen once per
+ * run, so the per-instruction path is what it was.
+ */
+static dc_t g_dc[PPC_CORE_COUNT][PPC_DECODE_CACHE];
 
 /*
  * A fetch under a programmed TLB, out of line: the identity loop only
@@ -1165,6 +1194,9 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
      * A waiting core leaves its wait for an enabled interrupt (3.12)
      * and for nothing else; with none pending, this slice is empty.
      */
+    if (EMU_UNLIKELY(c->dcache == NULL)) {
+        c->dcache = g_dc[(c->coreid < PPC_CORE_COUNT) ? c->coreid : 0u];
+    }
     if (EMU_UNLIKELY(c->state == EMU_STATE_WFI)) {
         if (!ppc_cpu_wake(c)) {
             if (retired != NULL) {
@@ -1285,7 +1317,8 @@ static emu_run_reason_t ppc_run(emu_cpu_t *cpu, uint32_t budget,
 #endif
 
         {
-            dc_t *const e = &g_dc[(pc >> 1) & (PPC_DECODE_CACHE - 1u)];
+            dc_t *const e =
+                &((dc_t *)c->dcache)[(pc >> 1) & (PPC_DECODE_CACHE - 1u)];
 
             if (EMU_UNLIKELY(e->pc != pc || e->insn != insn ||
                              e->vle != (uint8_t)c->vle || e->d.len == 0u)) {

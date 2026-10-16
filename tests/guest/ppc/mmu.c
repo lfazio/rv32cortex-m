@@ -576,6 +576,17 @@ int main(void)
     }
 
     /* --- invalidation (10.5.4, 10.8) -------------------------------- */
+    /*
+     * jit-: code reached through an entry that tlbivax then takes away.
+     * A TLB change retires only the blocks whose code the entry mapped,
+     * so the block run here has to be one of them -- the miss is the
+     * check, and a block outliving its entry returns 0xA2 instead.
+     */
+    tlb_write(20u, V | K4, 0x6A000000u, (u32)mmu_page2 | SX | SR);
+    check("jit-ivax-code-mapped", stub_jump(0x6A000000u), 0xA2u);
+    stub_tlbivax(0x6A000000u | 0x8u);
+    took("jit-ivax-code", stub_jump(0x6A000000u), 14u, 0u);
+    check("jit-ivax-code-srr0", g_trap.srr0, 0x6A000000u);
     /* By EPN alone: TS and TID are not compared, so both entries for
      * 0x40000000 go. TLBSEL (EA bit 28) set, as the manual asks. */
     stub_tlbivax(0x40000123u | 0x8u);

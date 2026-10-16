@@ -57,10 +57,28 @@ set(_emu_os_cores 1)
 if(EMU_GUEST_ARCH_G4MH AND G4MH_PE_COUNT GREATER 1)
     set(_emu_os_cores ${G4MH_PE_COUNT})
 endif()
+if(EMU_GUEST_ARCH_PPC AND PPC_CORE_COUNT GREATER _emu_os_cores)
+    set(_emu_os_cores ${PPC_CORE_COUNT})
+endif()
 
+#
+# **Parallel by default only where a build asked for several cores.**
+# The SMP port makes the JIT's state per thread for every frontend in the
+# runner, and that costs RV32 under the JIT 1.7% on Dhrystone and 2.1% on
+# crypto (callgrind, same tree, EMU_OS_SMP ON against OFF). A G4MH with
+# more than one PE is a build someone configured for it; PowerPC's two
+# cores are the default, and a default host build is mostly RV32, so
+# there they run as tasks one after another -- deterministically -- and
+# -DEMU_OS_SMP=ON puts them in parallel.
+#
+if(EMU_GUEST_ARCH_G4MH AND G4MH_PE_COUNT GREATER 1)
+    set(_emu_os_smp_default ON)
+else()
+    set(_emu_os_smp_default OFF)
+endif()
 option(EMU_OS_SMP
     "Host: run a multicore guest's cores in parallel (FreeRTOS SMP on pthreads)"
-    ON)
+    ${_emu_os_smp_default})
 
 if(EMU_PLATFORM STREQUAL "host" AND EMU_OS_SMP AND _emu_os_cores GREATER 1)
     #

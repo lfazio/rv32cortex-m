@@ -22,6 +22,9 @@
  */
 
 #include "ppc/ppc_cpu.h"
+#if EMU_HAVE_JIT
+#include "ppc/ppc_ir.h"
+#endif
 
 #include <string.h>
 
@@ -102,6 +105,8 @@ void ppc_mmu_refresh(ppc_cpu_t *c)
     const bool on =
         !c->tlb_default || (c->msr & (PPC_MSR_IS | PPC_MSR_DS)) != 0u;
 
+    c->slow_store = on || c->smp_live != 0u; /* ppc_store's one test */
+
     if (on != c->mmu_on) {
         c->mmu_on = on;
         c->irq_dirty = true; /* the interpreter re-chooses its loop */
@@ -133,18 +138,77 @@ void ppc_mmu_reset(ppc_cpu_t *c)
 }
 
 /*
- * After any change to the TLB itself -- and the JIT's generation moves,
- * because a block holds code fetched through the mapping that was there
- * when it was translated. Coarse: every block goes, not those under the
- * entry that changed. A guest that maps its memory at start-up pays it
- * once; one that refills the TLB from a miss handler would pay it per
- * refill, and per-entry invalidation is what that would need.
+ * The effective addresses an entry translates, if it is valid: from its
+ * EPN to the end of its page, the whole 4 GB for the largest.
  */
+static bool entry_span(uint32_t mas1, uint32_t mas2, uint32_t *lo, uint32_t *hi)
+{
+    uint32_t mask;
+
+    if ((mas1 & PPC_MAS1_V) == 0u || !page_mask(mas1, &mask)) {
+        return false;
+    }
+    *lo = mas2 & PPC_MAS2_EPN & mask;
+    *hi = *lo + ~mask;
+    return true;
+}
+
+/*
+ * The translations an entry's change makes stale, for the span it
+ * covered before or covers after: a block holds code fetched through
+ * the mapping that was there when it was translated.
+ *
+ * **Both spans, because either can be the only one.** Removing an
+ * entry changes the old span; writing a lower-numbered entry over an
+ * address another entry maps changes only the new one, since the lowest
+ * entry wins. Context is ignored -- TS and TID decide which blocks the
+ * entry could have served, and retiring a few more is always right.
+ *
+ * **A RAM window is no block's code.** A block's loads and stores reach
+ * a page through its window (ppc_fast_mem), whatever page its code is
+ * on, so when the change touches one every block goes -- the generation
+ * moves -- and the windows are forgotten with them.
+ *
+ * It was every block for every change, which a guest that maps its
+ * memory once pays once and a guest refilling the TLB from a miss
+ * handler paid for each refill.
+ */
+static void retire(ppc_cpu_t *c, uint32_t lo, uint32_t hi)
+{
+#if EMU_HAVE_JIT
+    bool window = c->jit_nwin > PPC_JIT_WINDOWS;
+
+    for (uint32_t k = 0u; !window && k < c->jit_nwin; k++) {
+        window = c->jit_win[k].lo <= hi && lo <= c->jit_win[k].hi;
+    }
+    if (window) {
+        __atomic_fetch_add(&ppc_jit_gen, 1u, __ATOMIC_RELAXED);
+        c->jit_nwin = 0u;
+        return;
+    }
+    ppc_jit_invalidate_range(lo, hi);
+#else
+    (void)c;
+    (void)lo;
+    (void)hi;
+#endif
+}
+
+static void retire_entry(ppc_cpu_t *c, uint32_t mas1, uint32_t mas2)
+{
+    uint32_t lo;
+    uint32_t hi;
+
+    if (entry_span(mas1, mas2, &lo, &hi)) {
+        retire(c, lo, hi);
+    }
+}
+
+/* After any change to the TLB itself. */
 static void tlb_changed(ppc_cpu_t *c)
 {
     recompute_default(c);
     ppc_mmu_refresh(c);
-    c->jit_gen++;
 }
 
 /* ------------------------------------------------------------------ */
@@ -338,10 +402,14 @@ EMU_COLD_NOINLINE void ppc_tlbre(ppc_cpu_t *c)
 EMU_COLD_NOINLINE void ppc_tlbwe(ppc_cpu_t *c)
 {
     const unsigned i = esel_of(c);
+    const uint32_t old1 = c->tlb[i].mas1;
+    const uint32_t old2 = c->tlb[i].mas2;
 
     c->tlb[i].mas1 = c->mas1 & PPC_MAS1_IMPL;
     c->tlb[i].mas2 = c->mas2 & PPC_MAS2_IMPL;
     c->tlb[i].mas3 = c->mas3 & PPC_MAS3_IMPL;
+    retire_entry(c, old1, old2);
+    retire_entry(c, c->tlb[i].mas1, c->tlb[i].mas2);
     tlb_changed(c);
 }
 
@@ -388,6 +456,7 @@ EMU_COLD_NOINLINE void ppc_tlbivax(ppc_cpu_t *c, uint32_t ea)
         }
         if (all || ea_on_page(m1, c->tlb[i].mas2, ea)) {
             c->tlb[i].mas1 = m1 & ~PPC_MAS1_V;
+            retire_entry(c, m1, c->tlb[i].mas2);
         }
     }
     tlb_changed(c);

@@ -91,10 +91,12 @@ done
 matrix='
 host-both|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=ON -DEMU_GUEST_ARCH_PPC=OFF -DEMU_GUEST_ARCH_ARMV7M=OFF|RV32 and G4MH, JIT, ctest -- the default until every frontend was
 host-nojit|host|-DEMU_JIT=OFF|interpreter only; where a fetch-path cost lands
-host-g4-x3|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DEMU_GUEST_ARCH_PPC=OFF -DEMU_GUEST_ARCH_ARMV7M=OFF -DG4MH_PE_COUNT=3|multicore, in parallel (EMU_OS_SMP); PE_COUNT>1 was untested for years
+host-g4-x3|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DEMU_GUEST_ARCH_PPC=OFF -DEMU_GUEST_ARCH_ARMV7M=OFF -DG4MH_PE_COUNT=3 -DEMU_OS_SMP=ON|multicore, in parallel (EMU_OS_SMP); PE_COUNT>1 was untested for years
 host-g4-x3-coop|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DEMU_GUEST_ARCH_PPC=OFF -DEMU_GUEST_ARCH_ARMV7M=OFF -DG4MH_PE_COUNT=3 -DEMU_OS_SMP=OFF|multicore on the single-core FreeRTOS port: the cooperative round and its order assertion
 host-g4-mpu8|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DEMU_GUEST_ARCH_PPC=OFF -DEMU_GUEST_ARCH_ARMV7M=OFF -DG4MH_MPU_ENTRIES=8|the MPU out-of-range guard is unreachable at 32
-host-ppc|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=OFF -DEMU_GUEST_ARCH_PPC=ON -DEMU_GUEST_ARCH_ARMV7M=OFF|big-endian frontend, alone
+host-ppc|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=OFF -DEMU_GUEST_ARCH_PPC=ON -DEMU_GUEST_ARCH_ARMV7M=OFF|big-endian frontend, alone: its two cores as tasks on the single-core port, one block table for both, the order assertion of each round
+host-ppc-smp|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=OFF -DEMU_GUEST_ARCH_PPC=ON -DEMU_GUEST_ARCH_ARMV7M=OFF -DEMU_OS_SMP=ON|the two PowerPC cores **in parallel**, which only this row does: the compare-and-swap in stwcx., a block table each
+host-ppc-1core|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=OFF -DEMU_GUEST_ARCH_PPC=ON -DEMU_GUEST_ARCH_ARMV7M=OFF -DPPC_CORE_COUNT=1|**the other value**: one e200z7, no SIU, the inlined stores unguarded
 host-armv7m|host|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=OFF -DEMU_GUEST_ARCH_PPC=OFF -DEMU_GUEST_ARCH_ARMV7M=ON|the Cortex-M guest alone: its SoftFloat build, the SCS, the guests in tests/guest/armv7m
 host-all|host||**the default**, every frontend in one runner, with no -D naming any: a flat image runs as the default unless its test names the frontend, which 20 tests did not; and gdb-check reaches all four here
 host-trace|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=ON -DEMU_GUEST_ARCH_PPC=OFF -DEMU_GUEST_ARCH_ARMV7M=OFF -DEMU_ENABLE_TRACE=ON -DEMU_JIT=OFF|the trace build, which is how pc deltas get read. RV32 and G4MH, as it always was: a trace line lands between every two bytes of guest output, which splits the OKAAA armv7m-hello looks for
