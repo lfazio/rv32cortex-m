@@ -150,15 +150,16 @@ foreach(_f IN LISTS _doom_srcs)
     endif()
 endforeach()
 #
-# i_platform_g4mh.c is excluded here and compiled by the G4MH target
-# below: it is the other frontend's platform layer and addresses an
-# LTSC this one has not got. The *video* driver is shared -- the
+# i_platform_g4mh.c and i_platform_ppc.c are excluded here: they are
+# the other frontends' platform layers, compiled by the G4MH target
+# below and by scripts/ppc-build-doom.sh, and they address an LTSC and
+# a time base this one has not got. The *video* driver is shared -- the
 # framebuffer and the two input devices belong to the emulator's
-# platform rather than to the guest ISA, so both frontends drive them
+# platform rather than to the guest ISA, so every frontend drives them
 # with the same file.
 #
 list(FILTER _doom_srcs EXCLUDE REGEX
-     "/(i_video|i_video_console|XDriver|i_net|i_sound|os_generic|i_platform_g4mh)\\.c$")
+     "/(i_video|i_video_console|XDriver|i_net|i_sound|os_generic|i_platform_g4mh|i_platform_ppc)\\.c$")
 
 #
 # DOOM is from 1993 and does not compile as C23: `typedef enum {false,

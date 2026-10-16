@@ -79,14 +79,10 @@ From the last measurements in [linux.md](linux.md).
 
 ## Guests
 
-- [ ] Compile picolibc for ppc (https://github.com/picolibc/picolibc)
-- [ ] Doom on ppc. It has a JIT and runs compiled Book E; what stops it
-      is a runtime library -- no 32-bit `libgcc` sits beside the
-      powerpc64 cross compiler, so 64-bit division and soft-float
-      double have nowhere to come from (the same reason Dhrystone is
-      not built for this frontend) -- a C library, and the image living
-      in guest RAM rather than executing in place.
-- [ ] Quake on ppc
+- [ ] Quake on ppc. The runtime DOOM needed exists now
+      (`scripts/ppc-build-runtime.sh`, [games.md](games.md#doom-on-powerpc));
+      what is left is the port's PowerPC platform layer and a build.
+- [ ] **Dhrystone on ppc**, which the same runtime unblocks.
 - [ ] **ARMv7-M**, from [frontend/armv7m.md](frontend/armv7m.md#not-done):
       the whole F746 firmware as a guest (it needs an STM32F746 machine
       model, which is a direction change), the IR and register allocator

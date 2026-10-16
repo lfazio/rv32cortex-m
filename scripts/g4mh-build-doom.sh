@@ -102,7 +102,7 @@ n=0
 for f in "$SRC"/*.c; do
     b=$(basename "$f" .c)
     case $b in
-    i_video|i_video_console|XDriver|i_net|i_sound|os_generic|i_platform_rv32)
+    i_video|i_video_console|XDriver|i_net|i_sound|os_generic|i_platform_rv32|i_platform_ppc)
         continue
         ;;
     esac

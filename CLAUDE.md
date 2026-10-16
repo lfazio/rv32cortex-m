@@ -3471,6 +3471,16 @@ mistakes get made rather than what the mistakes were:
   address (`0x49420411` is a patch index and the two ASCII bytes of the
   next array), and the fourth as a missing sprite in a WAD that
   contained it.
+
+  **The third target was the first big-endian one, and audited the
+  code rather than the data.** `NAME4` was written for G4MH to read a
+  lump name a byte at a time, little-endian by construction, under a
+  comment saying both sides of every comparison go through it.
+  `W_CheckNumForName` put only one side through it and read the other
+  as a native `int` -- equal on every little-endian target, and on
+  PowerPC no lookup ever matched. **A fix made for one target's rule
+  can be written in another target's assumption**, and the comment
+  claiming symmetry is where to look.
 - **"Runs to the instruction cap" is not "works", and the difference
   was two billion instructions.** With the clock dead, DOOM printed
   every line of its start-up, loaded E1M1 and then span for ever --

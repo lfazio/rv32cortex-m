@@ -720,6 +720,12 @@ Debian's `powerpc-linux-gnu-gcc`) while the assembler and `objdump`
 handle VLE fine. They are built `-m32 -mbig-endian -mcpu=8540
 -msoft-float` and linked without a C library.
 
+A guest that wants one links picolibc and LLVM compiler-rt's builtins,
+which `scripts/ppc-build-runtime.sh` fetches and builds -- the cross
+compiler ships no 32-bit `libgcc`, and neither library is GPL. DOOM is
+the first such guest, and the first big-endian target its port has had
+([games.md](../games.md#doom-on-powerpc)).
+
 | Image | Purpose |
 |---|---|
 | `isatest.bin` | hand-written **VLE**: the 16-bit forms, the `e_` immediates, the multiple moves, a VLE-only illegal encoding. Exit status is its failure count, and it must print `PPC-ISATEST-END` |
@@ -884,5 +890,6 @@ existing rather than on the frontend being compiled in.
 - **No pair statistics.** The gdb target exists; it does not describe
   the SPE upper halves, which gdb wants alongside a 64-bit `acc` the
   stub cannot carry, nor the SPRs.
-- Dhrystone is not built: it needs a 32-bit `libgcc` this toolchain does
-  not ship.
+- Dhrystone is not built. What stopped it -- a 32-bit `libgcc` this
+  toolchain does not ship -- is what `scripts/ppc-build-runtime.sh` now
+  supplies; what is left is a target that links it.

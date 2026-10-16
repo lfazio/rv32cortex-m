@@ -170,6 +170,8 @@ void emu_args_usage(void)
                        (unsigned)DEFAULT_FB_HEIGHT);
     emu_console_printf("                       320x200, 640x400, 640x480, "
                        "800x600, 1024x768\n");
+    emu_console_printf("  --fb-dump FILE       write the last frame presented "
+                       "as a PPM at exit\n");
 
     for (unsigned i = 0; i < sizeof(k_tail) / sizeof(k_tail[0]); i++) {
         emu_console_printf("%s\n", k_tail[i]);
@@ -367,6 +369,15 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
                 }
                 opt->fb_width = (uint32_t)w;
                 opt->fb_height = (uint32_t)h;
+                continue;
+            }
+            if (strcmp(a, "--fb-dump") == 0) {
+                opt->fb_dump = argv[++i];
+                if (opt->fb_dump == NULL) {
+                    emu_args_usage();
+                    *status = 2;
+                    return false;
+                }
                 continue;
             }
             if (strcmp(a, "--max-insn") == 0) {

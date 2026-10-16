@@ -54,6 +54,15 @@ typedef struct emu_args {
     uint32_t fb_height;
 
     /*
+     * --fb-dump FILE: the last frame the guest presented, written as a
+     * PPM image when the runner exits. NULL is no dump. What a run with
+     * no window can show of a guest that draws -- a game on a host
+     * without SDL, a test that wants to see the picture as well as the
+     * console.
+     */
+    const char *fb_dump;
+
+    /*
      * Path to a flattened device tree, or NULL. A supervisor payload --
      * OpenSBI, and Linux behind it -- reads the machine's shape out of
      * this rather than being compiled for one, so it is the difference

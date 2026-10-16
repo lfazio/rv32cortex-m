@@ -2,7 +2,8 @@
 
 Benchmarks with a real frame rate rather than a checksum, and the first
 guests big enough to make the JIT's figures mean something. Both run on
-RV32 and on G4MH at 800x600; recipes are in the README, and the ports --
+RV32 and on G4MH at 800x600, and DOOM on PowerPC too; recipes are in
+the README, and the ports --
 GPL, like the games -- live in their own repositories, never in this
 tree: [embeddedDOOM](https://github.com/lfazio/embeddedDOOM) (branch
 `rv32cortex-m`) and [quake-embedded](https://github.com/lfazio/quake-embedded).
@@ -27,7 +28,7 @@ the work was planned:
 |---|---|---|---|
 | rv32 | yes | yes | none -- CoreMark already runs 1.5G instructions |
 | g4mh | yes | **yes** | none known -- CC-RH is installed, see below |
-| ppc  | yes | **yes, as Book E** | `powerpc-linux-gnu-gcc` is not built with VLE (`-mvle` is rejected), but the core runs classic Book E too and GCC generates that: CoreMark and crypto run on both backends. What is missing for a game is a 32-bit `libgcc` and a C library for that build |
+| ppc  | yes | **yes, as Book E** | `powerpc-linux-gnu-gcc` is not built with VLE (`-mvle` is rejected), but the core runs classic Book E too and GCC generates that: CoreMark and crypto run on both backends. What was missing for a game was a 32-bit `libgcc` and a C library for that build -- [built since](#doom-on-powerpc) |
 
 **CC-RH is installed** -- V2.07.00 and V2.08.00 under
 `/usr/local/Renesas/CC-RH/`, with `ccrh`, `asrh` and `rlink`. Both
@@ -40,8 +41,9 @@ planning around it rather than after.
 
 So rv32 went first because nothing blocked it, and g4mh followed
 with CC-RH (`scripts/g4mh-build-doom.sh`, `g4mh-build-quake.sh`). ppc
-was the far one; it has a JIT now and runs compiled Book E, so what is
-left there is a runtime library and a C library for that build.
+was the far one, and what it lacked was never the emulator: a runtime
+library and a C library, which `scripts/ppc-build-runtime.sh` now
+builds -- see [DOOM on PowerPC](#doom-on-powerpc).
 
 ## The framebuffer, the window and the input
 
@@ -95,6 +97,100 @@ frames a second while `mtime` runs at wall-clock, so DOOM
 advances many world-tics per drawn frame and the game appears to
 fast-forward. Dividing guest time back down matches its own
 rate -- 6 suits this machine, another will differ.
+
+## DOOM on PowerPC
+
+**It plays** -- start-up, E1M1, the demo, frames through the same
+framebuffer -- on the e200z7 as compiled Book E, under the JIT. Built
+by a script rather than a CMake target, for G4MH's reason: the guest
+links a runtime this tree's CMake does not configure.
+
+```sh
+scripts/ppc-build-runtime.sh                 # once: picolibc + compiler-rt
+scripts/ppc-build-doom.sh <doom-src>         # after scripts/doom-gentables.sh
+./build/host/emu-host --jit --ram 0x2000000 --timer-hz 6 \
+                      build/guest/doom-ppc.elf
+```
+
+**The runtime is what was missing, and neither half is GPL.** Debian's
+powerpc64 cross compiler in `-m32` mode ships no 32-bit `libgcc` and no
+C library, so there was nowhere for a 64-bit division, a soft-float
+`double` or `printf` to come from. `ppc-build-runtime.sh` fetches and
+builds both into `build/ppc-runtime/`, never vendored:
+
+| library | licence | what it supplies |
+|---|---|---|
+| picolibc 1.8.10 | BSD | the C library the RV32 guests already use |
+| compiler-rt's builtins, LLVM 19.1.7 | Apache-2.0 WITH LLVM-exception | the generic C builtins GCC calls where `libgcc` would be: 64-bit division and shifts, soft-float `double` and `float`, the conversions |
+
+Both are built with the guests' flags plus `-mlong-double-64`, because
+neither builds IBM's 128-bit `long double` for this target. picolibc
+goes without thread-local storage, so `errno` is a global: nothing sets
+`r2` as a thread pointer, and the F746 has already shown what a
+`__tls` errno does when nobody does (CLAUDE.md, "a C library's thread
+pointer is start-up code"). `fp_mode.c` is in the builtins list because the soft-float
+arithmetic asks it for the rounding mode, and the link says so if it is
+missing.
+
+The image is an ELF linked at 0x80000000 by `tests/guest/ppc/bigguest.ld`
+-- `cguest.ld`'s layout, in 32 MiB -- and runs from guest RAM. The ELF
+loader places it, so it needs no `--load`.
+
+**The first big-endian target the port has had, and three things only
+it could find:**
+
+| what was wrong | why the little-endian targets did not care |
+|---|---|
+| `m_swap.c` carried id's inverted `#ifndef __BIG_ENDIAN__`, and its definitions disagreed with `m_swap.h`'s declarations | `SHORT()` and `LONG()` are the identity there, so the functions were never compiled where they are used |
+| `W_CheckNumForName` read the wanted name as a native `int` and the lump's through `NAME4`, which is little-endian by construction | the two orders agree; here every lookup failed, and the first, `PNAMES`, is fatal |
+| the baked tables hold raw `texture_t` and `node_t` bytes, dumped on a little-endian host | -- |
+
+The first two are fixed in the port. The comment above `NAME4` said
+"both sides of every comparison go through it", and one side did not:
+a comment asserting an invariant is where to look first, again. The
+third is fixed in the build: there is no big-endian host to regenerate
+on, so `ppc-build-doom.sh` swaps each `texture_t`'s three shorts and
+its patches' three ints, and each `node_t`'s twelve ints and two
+shorts, into copies -- 125 texture arrays and 3,414 nodes. Everything
+else baked is C integers and means the same either way, and the 8-bit
+indexed framebuffer has no byte order.
+
+`R_Init` warns about 197 missing patches. RV32 prints the same 197:
+they are what the WAD shrinker removed, not something PowerPC lost.
+
+**What it runs at is DOOM's ceiling, not the emulator's.** On the
+x86-64 JIT at `--timer-hz 1` -- the guest's clock at wall speed, so the
+game is never ahead of it -- 3e9 instructions, twice each:
+
+| frontend | frames a second |
+|---|---|
+| PowerPC | 34.5, 34.4 |
+| RV32 | 34.3, 34.3 |
+
+Both are DOOM's 35 Hz tic rate. The game waits for its clock on either
+frontend, so this host cannot tell them apart, and the figure is a
+ceiling rather than a comparison.
+
+**What it still interprets is the time base, deliberately.** `mfspr`
+of TBU or TBL ends a block (`must_decline` in `ppc_ir.c`): on the
+processor clock the time base counts retired instructions, and a block
+reports how many it ran only when it leaves, so a read from inside one
+would be short by the block so far. DOOM's clock reads it three times a
+call -- 15.2M interpreted instructions and 10.1M declined block entries
+in a 3e9 run, 0.5%. On the platform clock, which DOOM selects
+(`HID0[SEL_TBCLK]`), the read would be exact; but whether a block may
+lower it would then depend on HID0, a translate-time read of mutable
+state, and with the frame rate pinned at 35 on both frontends there is
+nothing to pay for that. Worth revisiting for a guest that is
+CPU-bound *and* polls the time base.
+
+**`--fb-dump FILE`** writes the last frame the guest presented as a PPM
+when the runner exits, which is how this was checked with no window:
+the picture, not just the console. `guest-fbtest-dump` holds it to the
+framebuffer test's own frame count and geometry.
+
+The port layer, `i_platform_ppc.c`, lives in the DOOM port beside the
+other two, for the licence reason the rest of it does.
 
 ## Quake
 

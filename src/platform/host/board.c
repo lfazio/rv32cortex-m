@@ -750,6 +750,23 @@ static emu_fb_t g_fb;
 static uint8_t *g_fb_pixels;
 static bool g_fb_ready;
 
+/*
+ * --fb-dump: the last frame presented, kept as a descriptor -- the
+ * pixels and the palette are the device's, and outlive the call -- and
+ * written as a PPM when the process exits. At exit rather than per
+ * frame, because a game presents tens of frames a second and the file
+ * wanted is the one that shows where it got to.
+ */
+static emu_fb_frame_t g_last_frame;
+static uint64_t g_frames;
+
+static void host_present(void *ctx, const emu_fb_frame_t *frame)
+{
+    g_last_frame = *frame;
+    g_frames++;
+    host_display_present(ctx, frame);
+}
+
 emu_fb_t *board_fb(void)
 {
     return g_fb_ready ? &g_fb : NULL;
@@ -1131,6 +1148,49 @@ uint32_t board_ram_size = 0u;
  */
 static emu_args_t g_opt;
 
+static void fb_dump_at_exit(void)
+{
+    const emu_fb_frame_t *const f = &g_last_frame;
+    FILE *out;
+
+    if (g_opt.fb_dump == NULL) {
+        return;
+    }
+    if (g_frames == 0u || f->pixels == NULL) {
+        fprintf(stderr, "emu: --fb-dump: the guest presented no frame\n");
+        return;
+    }
+    out = fopen(g_opt.fb_dump, "wb");
+    if (out == NULL) {
+        fprintf(stderr, "emu: --fb-dump: cannot write %s\n", g_opt.fb_dump);
+        return;
+    }
+    fprintf(out, "P6\n%u %u\n255\n", (unsigned)f->width, (unsigned)f->height);
+    for (uint32_t y = 0u; y < f->height; y++) {
+        const uint8_t *const row = (const uint8_t *)f->pixels + y * f->stride;
+
+        for (uint32_t x = 0u; x < f->width; x++) {
+            uint32_t rgb;
+            uint8_t px[3];
+
+            if (f->format == EMU_FB_FMT_IDX8) {
+                rgb = (f->palette != NULL) ? f->palette[row[x]] : 0u;
+            } else {
+                memcpy(&rgb, row + 4u * x, 4u); /* XRGB8888, host order */
+            }
+            px[0] = (uint8_t)(rgb >> 16);
+            px[1] = (uint8_t)(rgb >> 8);
+            px[2] = (uint8_t)rgb;
+            (void)fwrite(px, 1u, 3u, out);
+        }
+    }
+    (void)fclose(out);
+    fprintf(stderr, "emu: --fb-dump: %llu frames presented; the last, %ux%u, "
+                    "in %s\n",
+            (unsigned long long)g_frames, (unsigned)f->width,
+            (unsigned)f->height, g_opt.fb_dump);
+}
+
 /*
  * The real command line, which is what a hosted platform has.
  * emu_main.c parses it and hands the result back through board_init.
@@ -1222,7 +1282,10 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
         g_fb_ready = emu_fb_init(&g_fb, g_opt.fb_width, g_opt.fb_height,
                                  EMU_FB_FMT_IDX8, 0u, g_fb_pixels,
                                  EMU_GUEST_FB_PIXELS, fb_bytes,
-                                 host_display_present, NULL);
+                                 host_present, NULL);
+        if (g_fb_ready && g_opt.fb_dump != NULL) {
+            (void)atexit(fb_dump_at_exit);
+        }
     }
 
     if (g_ram == NULL || g_periph == NULL) {

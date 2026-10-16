@@ -204,11 +204,13 @@ that declines everything passes every test while proving nothing.
 
 Useful flags: `--dump` (register file on exit), `--max-insn N`,
 `--trace-skip`/`--trace-count` (with `-DEMU_ENABLE_TRACE=ON`), `--gdb`
-(RSP stub on :1234, waits for a client).
+(RSP stub on :1234, waits for a client), `--fb-dump FILE` (the last
+frame a guest presented, as a PPM at exit -- the picture from a run
+with no window).
 
 ### Games
 
-DOOM runs as a guest on both frontends. It is **fetched, never
+DOOM runs as a guest on three frontends. It is **fetched, never
 vendored**: DOOM is GPL-2.0 and this tree is Apache-2.0, so nothing of
 it lives here and `tests/guest/doom.cmake` is a recipe rather than a
 copy. The platform layer it needs lives in the DOOM port beside the
@@ -236,7 +238,18 @@ cmake --build build/doom --target guest-doom
 cmake --build build/doom --target guest-doom-g4mh
 ./build/doom/emu-host --frontend g4mh --load 0x80000000 --ram 0x4000000 \
                       --jit --timer-hz 6 build/doom/guest/doom-g4mh.bin
+
+# NXP e200z7 -- Debian's powerpc64 cross compiler, and a runtime built once
+scripts/ppc-build-runtime.sh                  # picolibc + compiler-rt
+scripts/ppc-build-doom.sh build/doom/doom-src
+./build/doom/emu-host --jit --ram 0x2000000 --timer-hz 6 \
+                      build/guest/doom-ppc.elf
 ```
+
+The PowerPC runtime is two libraries this tree fetches and builds but
+never vendors, and neither is GPL: picolibc (BSD) and LLVM
+compiler-rt's builtins (Apache-2.0 with the LLVM exception), standing
+in for the 32-bit `libgcc` the cross compiler does not ship.
 
 `--timer-hz` is the dial worth knowing. The guest renders a few frames a
 second while `mtime` and the LTSC run at wall-clock, so DOOM advances
@@ -245,8 +258,10 @@ clock trades simulated time for playability.
 
 `-DDOOM_DIR=<path>` points at an existing checkout instead of fetching.
 
-**Status.** Both frontends run it: start-up, level load and rendering,
+**Status.** All three run it: start-up, level load and rendering,
 with the framebuffer's own frame counter agreeing with the guest's.
+PowerPC is the first big-endian target the port has had; what that
+took is in [docs/games.md](docs/games.md#doom-on-powerpc).
 
 Getting G4MH there needed four fixes in the *generation* stage rather
 than the emulator, and all four were invisible on x86 -- the baked

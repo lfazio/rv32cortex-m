@@ -536,6 +536,19 @@ if(TARGET guest-fbtest AND EMU_GUEST_ARCH_RV32)
         LABELS fast
         PASS_REGULAR_EXPRESSION "is not a mode this device has")
 
+    # --fb-dump, which is how a run with no window shows its picture.
+    # The count is the guest's own -- it presents exactly FBTEST_FRAMES
+    # times -- and the geometry the non-default mode, so a dump that saw
+    # no presents, or took its size from anywhere but the frame, fails.
+    add_test(NAME guest-fbtest-dump
+             COMMAND emu-host --fb 800x600
+                     --fb-dump "${CMAKE_CURRENT_BINARY_DIR}/fbtest-dump.ppm"
+                     "${CMAKE_BINARY_DIR}/guest/fbtest.bin")
+    set_tests_properties(guest-fbtest-dump PROPERTIES
+        LABELS fast
+        PASS_REGULAR_EXPRESSION
+            "--fb-dump: ${FBTEST_FRAMES} frames presented; the last, 800x600")
+
     if(EMU_JIT)
         add_test(NAME guest-fbtest-jit
                  COMMAND emu-host --jit
