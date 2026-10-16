@@ -71,6 +71,13 @@ commit before. **Then 14.29**, folding the window guard's bounds and
 alignment tests into one compare: 36.0 bytes a guest instruction, x650
 in 10.61 s ([backend/thumb2.md](backend/thumb2.md#where-the-bytes-go)).
 
+PowerPC's columns have moved as far, through the same changes. At
+8409e5b, 96 KB, one core: CoreMark **51.82** (5,076 translations, 2.87 s)
+and crypto **25.67** (347), where the table says 125.8 and 35.4 -- and
+crypto moves 12% with nothing but where `.bss` lands
+([frontend/ppc.md](frontend/ppc.md#on-the-f746)), so read its second
+digit as placement.
+
 There was an older table here — native ARM against the JIT at five cache
 sizes on a 180 MHz M4, quoting 15.3× to 32.3× slower than native. It
 described the hand-written Thumb-2 translator, which no longer exists,

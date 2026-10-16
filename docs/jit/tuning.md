@@ -95,6 +95,7 @@ flash each -- the counter repeats to 0.05% on one binary:
 |---|---|---|
 | all of `.text`, by 0-1,536 bytes | `-DEMU_LAYOUT_PAD=N` | 152.67-152.85: **nothing** |
 | guest RAM, by 104 or 512 bytes | `-DEMU_LAYOUT_PAD_RAM=N` | 152.84 both: nothing |
+| everything in `.bss` after `.dtcm` -- the code buffer, its tables, guest RAM | `-DEMU_LAYOUT_PAD_BSS=N` | added later, for PowerPC crypto at 96 KB: 25.67 to **28.74** over 0-8,192 bytes, byte-identical translations ([frontend/ppc.md](../frontend/ppc.md#on-the-f746)) |
 | the order of functions | `-falign-functions` 32 / 64 | pre-FreeRTOS 140.01 → **147.90 / 149.30**; HEAD 152.85 → 148.53 / 150.54 |
 
 So the old 140.0 was a lucky *relative* order of functions, which LTO

@@ -12,9 +12,6 @@ measured at.
 
 ## Needs a board
 
-None was attached for the last round of work, so everything here waits
-for one.
-
 - [ ] **The F446 has built and not run** under FreeRTOS.
 - [ ] **The F446's code cache, and G4MH builds'.** At the 32 KB default
       the JIT used to lose to the interpreter. Decided for the F746
@@ -34,9 +31,6 @@ for one.
       `performance.md` are after the fix. The second half of
       `performance.md` and both `stm32f446/` pages are not, and are
       marked as history.
-- [ ] **Two PowerPC cores on the F746.** `f746-ppc` builds and links
-      with both; neither `ppc-smp` nor the cost of the store guard has
-      been measured on the board ([frontend/ppc.md](frontend/ppc.md#two-cores)).
 - [ ] **ARMv7-M's interpreter costs 2.7x RV32's per instruction** on the
       F746, and nothing has profiled it there
       ([frontend/armv7m.md](frontend/armv7m.md#not-done)).
@@ -87,10 +81,6 @@ From the last measurements in [linux.md](linux.md).
 
 ## Guests
 
-- [ ] **Dhrystone and Whetstone on ppc**, which the runtime and clang's
-      EFPU2 back end now allow ([games.md](games.md#quake-on-powerpc)).
-      Whetstone would be the first FP benchmark for this frontend; Quake
-      is the only guest that measures the FP unit today.
 - [ ] **ARMv7-M**, from [frontend/armv7m.md](frontend/armv7m.md#not-done):
       the whole F746 firmware as a guest (it needs an STM32F746 machine
       model, which is a direction change), the IR and register allocator

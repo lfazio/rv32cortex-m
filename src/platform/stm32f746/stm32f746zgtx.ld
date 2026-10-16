@@ -294,6 +294,11 @@ SECTIONS
         . = ALIGN(8);
         __dtcm_end = .;
 
+        /* The instrument for everything else in .bss -- the JIT's code
+           buffer and tables, the frontend's state, and guest RAM after
+           them: -DEMU_LAYOUT_PAD_BSS=N moves all of it N bytes up and
+           leaves .dtcm and .text where they were. */
+        . = . + (DEFINED(EMU_LAYOUT_PAD_BSS) ? EMU_LAYOUT_PAD_BSS : 0);
         *(.bss)
         *(.bss*)
         *(COMMON)

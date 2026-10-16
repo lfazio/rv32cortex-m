@@ -224,25 +224,21 @@ void free(void *p)
  *                  system's -- interpreter and JIT differ, and that
  *                  difference is the emulator's throughput.
  *
- *   on the host    guest time advances one tick per retired instruction
- *                  (see --timer-hz), so a "second" is a million guest
- *                  instructions. The figure is then a property of the
- *                  guest binary at an assumed IPC of 1: it says how much
- *                  work the frontend's compiler gets done per guest
- *                  clock, and says nothing whatever about how fast this
- *                  emulator runs. Comparing backends with it is the
- *                  mistake it invites -- interpreter and JIT agree to the
- *                  last digit, as they must.
+ *   on the host    mtime is the wall clock too (see --timer-hz in
+ *                  src/platform/host/board.c), so the figure moves with
+ *                  the machine's load. It counted retired instructions
+ *                  until September, when a "second" was a million guest
+ *                  instructions and the two backends agreed to the last
+ *                  digit; figures from then are a property of the guest
+ *                  binary, not of the emulator.
  *
- *                  Not *bit*-identical, though, and the reason is worth
- *                  knowing before reading a difference as a result: the
- *                  run loop advances guest time once per round rather
- *                  than per instruction, and the JIT's rounds end on a
- *                  block boundary rather than exactly on the budget. So
- *                  the tick count at a given guest instruction can differ
- *                  by up to one round. Measured across a five-fold change
- *                  in DHRY_RUNS it moves the last digit of the
- *                  per-second figure and nothing above it.
+ *   ARMv7-M and    SysTick and the time base, which count *instructions*
+ *   PowerPC        in this emulator wherever it runs. There the figure
+ *                  is what the old host figure was: the guest binary's,
+ *                  at an assumed IPC of 1, the same under either backend
+ *                  and on the board -- what the frontend's compiler gets
+ *                  done per instruction, and nothing about this
+ *                  emulator's speed.
  *
  * Neither is comparable with a published DMIPS number, and the second is
  * the one that reads as though it were. Dhrystone does not print DMIPS at
@@ -252,6 +248,10 @@ void free(void *p)
 /* An ARMv7-M guest has no CLINT; its clock is SysTick, in instructions. */
 #include "systick_clock.h"
 #define MTIME_LO systick_clock_now()
+#elif defined(__powerpc__)
+/* Nor has an e200z7; its clock is the time base, in instructions. */
+#include "ppc_clock.h"
+#define MTIME_LO ppc_clock_now()
 #else
 #define MTIME_LO (*(volatile uint32_t *)0x0200BFF8u)
 #endif
@@ -292,3 +292,34 @@ int strcmp(const char *a, const char *b)
     }
     return (int)(unsigned char)*a - (int)(unsigned char)*b;
 }
+
+#if defined(__powerpc__)
+/*
+ * The struct assignments in Proc_1 -- 48 bytes each, on the measured
+ * path. The RV32 and ARMv7-M compilers copy them inline; the e200z7's
+ * GCC calls memcpy, so a library would otherwise decide part of the
+ * figure. Words when the three are aligned, which Dhrystone's records
+ * always are. (Built -ffreestanding, GCC leaves the loops as loops
+ * rather than turning them back into a call to memcpy; the disassembly
+ * has no call in it.)
+ */
+void *memcpy(void *d, const void *s, size_t n)
+{
+    if ((((uintptr_t)d | (uintptr_t)s | n) & 3u) == 0u) {
+        uint32_t *dw = (uint32_t *)d;
+        const uint32_t *sw = (const uint32_t *)s;
+
+        for (; n != 0u; n -= 4u) {
+            *dw++ = *sw++;
+        }
+    } else {
+        unsigned char *db = (unsigned char *)d;
+        const unsigned char *sb = (const unsigned char *)s;
+
+        while (n-- != 0u) {
+            *db++ = *sb++;
+        }
+    }
+    return d;
+}
+#endif

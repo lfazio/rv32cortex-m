@@ -122,6 +122,7 @@ builds both into `build/ppc-runtime/`, never vendored:
 |---|---|---|
 | picolibc 1.8.10 | BSD | the C library the RV32 guests already use |
 | compiler-rt's builtins, LLVM 19.1.7 | Apache-2.0 WITH LLVM-exception | the generic C builtins GCC calls where `libgcc` would be: 64-bit division and shifts, soft-float `double` and `float`, the conversions |
+| picolibc again, in `efpu2/` | BSD | the same library with its C compiled by clang for the core's FPU, where a clang can; `ppc-whetstone` links it ([frontend/ppc.md](frontend/ppc.md#what-uses-it-and-what-it-costs)) |
 
 Both are built with the guests' flags plus `-mlong-double-64`, because
 neither builds IBM's 128-bit `long double` for this target. picolibc

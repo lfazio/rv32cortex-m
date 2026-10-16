@@ -129,9 +129,12 @@ endif()
 # r2 and r13 out of it, so crt0 has no small-data bases to set up.
 #
 # There is no 32-bit libgcc beside a powerpc64 cross compiler, so a
-# guest here cannot use 64-bit division or soft-float: Dhrystone, whose
-# report is in doubles, is not built for this frontend. (The games link
-# one built by scripts/ppc-build-runtime.sh, outside this build.)
+# guest here cannot use 64-bit division or soft-float without a runtime
+# from outside this build: scripts/ppc-build-runtime.sh builds picolibc
+# and compiler-rt's builtins into PPC_RUNTIME, and the guests that need
+# them -- Dhrystone, whose report is in doubles, and Whetstone, which is
+# libm -- are built when it is there and skipped with a message when it
+# is not. The games link the same one.
 #
 # **And GCC cannot emit the core's FPU**: it dropped its SPE back end in
 # version 9, so everything above is soft-float. clang kept it, and
@@ -157,6 +160,8 @@ if(EMU_GUEST_ARCH_PPC)
         # EFPU2 guest instead of failing the build.
         #
         find_program(PPC_CLANG NAMES clang clang-21 clang-20 clang-19)
+        set(PPC_RUNTIME "${PROJECT_SOURCE_DIR}/build/ppc-runtime" CACHE PATH
+            "scripts/ppc-build-runtime.sh's output, for the guests that need a libc")
         file(GLOB _ppc_headers "${_ppc_src}/*.h")
         set(PPC_EFPU2_FLAGS --target=powerpc-unknown-eabi -mcpu=e500 -mspe
                             -mefpu2 -ffp-contract=off)
@@ -174,7 +179,8 @@ if(EMU_GUEST_ARCH_PPC)
         endif()
 
         function(add_ppc_guest name)
-            cmake_parse_arguments(A "" "OPT" "SOURCES;EXTRA_SOURCES;EFPU2_SOURCES;FLAGS"
+            cmake_parse_arguments(A "" "OPT"
+                                  "SOURCES;EXTRA_SOURCES;EFPU2_SOURCES;FLAGS;LIBS"
                                   ${ARGN})
             set(srcs "${_ppc_src}/crt0.S")
             foreach(f IN LISTS A_SOURCES)
@@ -184,19 +190,22 @@ if(EMU_GUEST_ARCH_PPC)
             if(NOT A_OPT)
                 set(A_OPT "-O1")
             endif()
-            set(deps ${srcs})
+            set(deps ${srcs} ${A_LIBS})
             foreach(f IN LISTS A_EFPU2_SOURCES)
                 get_filename_component(stem "${f}" NAME_WE)
+                if(NOT IS_ABSOLUTE "${f}")
+                    set(f "${_ppc_src}/${f}")
+                endif()
                 set(obj "${_ppc_dir}/ppc-${name}-${stem}.o")
                 add_custom_command(
                     OUTPUT "${obj}"
                     COMMAND ${PPC_CLANG} ${PPC_EFPU2_FLAGS} ${A_OPT} -g
                             -ffreestanding -fno-builtin -fno-common -fno-pic
                             -Wall -Wextra -I "${_ppc_src}" ${A_FLAGS}
-                            -c "${_ppc_src}/${f}" -o "${obj}"
+                            -c "${f}" -o "${obj}"
                     # The headers by name: a generated answer table that
                     # changes must rebuild the object that includes it.
-                    DEPENDS "${_ppc_src}/${f}" ${_ppc_headers}
+                    DEPENDS "${f}" ${_ppc_headers}
                     COMMENT "Compiling ${f} for EFPU2"
                     VERBATIM)
                 list(APPEND srcs "${obj}")
@@ -214,7 +223,7 @@ if(EMU_GUEST_ARCH_PPC)
                         -fno-pic -static -Wl,--build-id=none
                         -Wl,-z,max-page-size=0x1000
                         -Wall -Wextra -I "${_ppc_src}" ${A_FLAGS}
-                        -T "${_ppc_src}/cguest.ld" ${srcs}
+                        -T "${_ppc_src}/cguest.ld" ${srcs} ${A_LIBS}
                         -o "${_ppc_dir}/ppc-${name}.elf"
                 COMMAND ${PPC_GUEST_OBJCOPY} --strip-all
                         "${_ppc_dir}/ppc-${name}.elf" "${_ppc_dir}/ppc-${name}.img"
@@ -698,6 +707,34 @@ if(EXISTS "${guest_dir}/dhrystone/dhry_1.c")
                 -Wno-missing-prototypes -Wno-sign-compare
             LIBS -lgcc)
     endif()
+
+    # And for the e200z7, with the time base for a clock. Integer, so
+    # GCC as for CoreMark; the report's doubles are compiler-rt's.
+    if(EMU_GUEST_ARCH_PPC AND PPC_GCC)
+        if(EXISTS "${PPC_RUNTIME}/lib/libbuiltins.a")
+            add_ppc_guest(dhrystone
+                OPT -O2
+                EXTRA_SOURCES
+                    "${guest_dir}/dhrystone/dhry_1.c"
+                    "${guest_dir}/dhrystone/dhry_2.c"
+                    "${guest_dir}/dhrystone/dhry_portme.c"
+                FLAGS
+                    -I "${guest_dir}/dhrystone"
+                    -DHZ=1000000
+                    -DDHRY_RUNS=${DHRY_RUNS}
+                    -DREG=register
+                    -std=gnu89
+                    -Wno-implicit-fallthrough -Wno-implicit-int
+                    -Wno-builtin-declaration-mismatch -Wno-return-type
+                    -Wno-implicit-function-declaration
+                    -Wno-unused-parameter -Wno-old-style-definition
+                    -Wno-missing-prototypes -Wno-sign-compare
+                LIBS "${PPC_RUNTIME}/lib/libbuiltins.a")
+        else()
+            message(STATUS "No PowerPC runtime at ${PPC_RUNTIME} "
+                           "(scripts/ppc-build-runtime.sh); skipping ppc-dhrystone")
+        endif()
+    endif()
 endif()
 
 # ---------------------------------------------------------------------
@@ -712,9 +749,10 @@ endif()
 # would have measured libgcc's soft float instead.
 #
 # LOOP: upstream defaults to 1000, which is 100 million Whetstone
-# instructions -- 800 million guest instructions, and more than an
-# emulated core wants to run. 100 is a tenth of that: 86 million guest
-# instructions, 2.0 s on the host interpreter and 0.4 s on the JIT.
+# instructions. 100 is a tenth of that: 10.7 million guest instructions
+# on RV32 and 8.4 million on the e200z7, 0.30 s on the host interpreter
+# and 0.08 s on the JIT. (It was 86 million while this image's libm was
+# soft-float; see -mabi below.)
 #
 # **The rate is not LOOP-invariant, so any figure has to name its LOOP.**
 # Measured here: 113.6 KIPS at 10, 116.3 at 100, 125.1 at 1000. That is
@@ -776,4 +814,49 @@ if(EXISTS "${guest_dir}/whetstone/whetstone.c")
             # link names.
             #
         LIBS -lc -lgcc)
+    #
+    # The digest build, always: LOOP 10 with upstream's per-module
+    # reports, which tests/guest/whetstone/compare-digest.py holds equal
+    # across frontends and backends. The timed image above stays as
+    # upstream wants a timing run.
+    #
+    add_guest_image(whetstone-digest
+        SOURCES start.S
+        EXTRA_SOURCES
+            "${guest_dir}/whetstone/whetstone.c"
+            "${guest_dir}/whetstone/whetstone_portme.c"
+        FLAGS -DWHET_LOOPS=10 -DPRINTOUT=1 -mabi=ilp32f
+        LIBS -lc -lgcc)
+
+    #
+    # And for the e200z7's FPU, which is the reason to build it: the
+    # benchmark compiled by clang for EFPU2, and libm from the EFPU2
+    # build of picolibc, so sinf and logf are efsmul and efsadd too. The
+    # soft-float picolibc would make modules 7 and 11 -- 99.4% of the
+    # run -- a benchmark of compiler-rt, the mistake the -mabi note
+    # above records for RV32. The report and its doubles are GCC's and
+    # compiler-rt's, outside the timed region.
+    #
+    if(EMU_GUEST_ARCH_PPC AND PPC_GCC)
+        if(PPC_CLANG_EFPU2 AND EXISTS "${PPC_RUNTIME}/efpu2/lib/libc.a")
+            foreach(_v whetstone whetstone-digest)
+                if(_v STREQUAL "whetstone")
+                    set(_wf -DWHET_LOOPS=${WHET_LOOPS} ${_whet_printout})
+                else()
+                    set(_wf -DWHET_LOOPS=10 -DPRINTOUT=1)
+                endif()
+                add_ppc_guest(${_v}
+                    OPT -O2
+                    EFPU2_SOURCES "${guest_dir}/whetstone/whetstone.c"
+                    EXTRA_SOURCES "${guest_dir}/whetstone/whetstone_portme.c"
+                    FLAGS -isystem "${PPC_RUNTIME}/efpu2/include" ${_wf}
+                    LIBS "${PPC_RUNTIME}/efpu2/lib/libc.a"
+                         "${PPC_RUNTIME}/lib/libbuiltins.a")
+            endforeach()
+        else()
+            message(STATUS "No EFPU2 clang or no EFPU2 runtime at "
+                           "${PPC_RUNTIME}/efpu2 (scripts/ppc-build-runtime.sh); "
+                           "skipping ppc-whetstone")
+        endif()
+    endif()
 endif()

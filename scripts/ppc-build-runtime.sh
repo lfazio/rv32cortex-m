@@ -29,6 +29,23 @@
 # Link a guest with -lc -lm libbuiltins.a -lc and the start-up in
 # tests/guest/ppc/crt0.S; it must define __heap_start and __heap_end for
 # picolibc's sbrk, or supply its own.
+#
+# **And picolibc a second time, for the core's FPU**, in <out>/efpu2/
+# (include/ and lib/libc.a), when a clang that can target EFPU2 is
+# there -- PPC_CLANG names it. GCC cannot emit the e200z7's FPU, so
+# the first build's sinf and logf are compiler-rt calls from end to
+# end; this one's are efsmul and efsadd. Its C is clang's, with
+# -mefpu2, and its calling convention the soft-float one, so it links
+# with the same libbuiltins.a, which still does every double. Its
+# assembly is the cross GCC's, as in the first build, for two reasons:
+# setjmp.S includes GCC's ppc-asm.h and uses a `bclr+` clang's
+# assembler rejects, and clang defines __SPE__, under which setjmp
+# saves the registers with evstdd -- an SPE instruction this core
+# model raises as illegal. EFPU2 uses only the low half of a GPR, so
+# the 32-bit save GCC assembles is the right one. The clang half of
+# libc.a contains no ev* and no efd* (the second would be double
+# precision, which EFPU2 lacks); check with objdump -M e500 after a
+# picolibc update.
 
 set -eu
 
@@ -144,4 +161,62 @@ ninja -C "$OUT/picolibc-build" >"$OUT/picolibc-build.log" 2>&1 || {
 }
 ninja -C "$OUT/picolibc-build" install >/dev/null 2>&1
 echo "picolibc: $OUT/lib/libc.a $OUT/lib/libm.a"
+
+# ------------------------------------------------------------------
+# picolibc for EFPU2 -- see the note at the top
+# ------------------------------------------------------------------
+
+CLANG=${PPC_CLANG:-clang}
+EFPU2="--target=powerpc-unknown-eabi -mcpu=e500 -mspe -mefpu2"
+echo 'float f(float a) { return a * a; }' >"$OUT/efpu2-probe.c"
+# shellcheck disable=SC2086
+if ! command -v "$CLANG" >/dev/null 2>&1 ||
+    ! "$CLANG" $EFPU2 -c "$OUT/efpu2-probe.c" -o "$OUT/efpu2-probe.o" 2>/dev/null; then
+    echo "picolibc for EFPU2: skipped, $CLANG cannot target it"
+    echo "wrote $OUT"
+    exit 0
+fi
+
+# One compiler for meson, which picks by file: C to clang, a .S to the
+# cross GCC with the first build's flags in place of clang's. The
+# linker is named only so that meson's detection succeeds; nothing here
+# links.
+WRAP=$OUT/cc-efpu2.sh
+LD=$(command -v "${CC%gcc}ld")
+cat >"$WRAP" <<EOF
+#!/bin/sh
+case " \$* " in
+*".S "*)
+    a=""
+    for x in "\$@"; do
+        case "\$x" in
+        --target=*|-mcpu=e500|-mspe|-mefpu2|--ld-path=*|-ffp-contract=off) ;;
+        *) a="\$a '\$x'" ;;
+        esac
+    done
+    eval exec $CC $FLAGS "\$a" ;;
+*) exec $CLANG $EFPU2 -mlong-double-64 -ffp-contract=off \\
+        --ld-path=$LD "\$@" ;;
+esac
+EOF
+chmod +x "$WRAP"
+
+CROSS2=$OUT/cross-ppc32-e200-efpu2.txt
+sed "s|^c = .*|c = ['$WRAP', '-fno-pic', '-static']|" "$CROSS" >"$CROSS2"
+
+rm -rf "$OUT/picolibc-efpu2-build" "$OUT/efpu2"
+meson setup "$OUT/picolibc-efpu2-build" "$SRC/picolibc" --cross-file "$CROSS2" \
+    --prefix="$OUT/efpu2" -Dbuildtype=release -Dmultilib=false -Dpicocrt=false \
+    -Dsemihost=false -Dtests=false -Dthread-local-storage=false \
+    -Dnewlib-global-errno=true -Dformat-default=double -Dio-long-long=true \
+    -Dspecsdir=none >"$OUT/picolibc-efpu2-configure.log" 2>&1 || {
+    tail -20 "$OUT/picolibc-efpu2-configure.log" >&2
+    exit 1
+}
+ninja -C "$OUT/picolibc-efpu2-build" >"$OUT/picolibc-efpu2-build.log" 2>&1 || {
+    tail -20 "$OUT/picolibc-efpu2-build.log" >&2
+    exit 1
+}
+ninja -C "$OUT/picolibc-efpu2-build" install >/dev/null 2>&1
+echo "picolibc for EFPU2: $OUT/efpu2/lib/libc.a"
 echo "wrote $OUT"

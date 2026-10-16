@@ -656,7 +656,9 @@ if(EMU_GUEST_ARCH_PPC)
                "coremark:Correct operation validated"
                "coremark-tlb:Correct operation validated"
                "coremark-tlbmiss:Correct operation validated"
-               "crypto:failures 0x00000000")
+               "crypto:failures 0x00000000"
+               "dhrystone:Dhrystones per Second"
+               "whetstone:Single Precision Whetstones")
         string(FIND "${_g}" ":" _at)
         string(SUBSTRING "${_g}" 0 ${_at} _name)
         math(EXPR _at "${_at} + 1")
@@ -683,6 +685,22 @@ if(EMU_GUEST_ARCH_PPC)
             endif()
         endif()
     endforeach()
+    #
+    # Whetstone's digest, the same on RV32's F and the e200z7's EFPU2 and
+    # on both backends of each -- see compare-digest.py for what four
+    # digits can and cannot show.
+    #
+    if(TARGET guest-ppc-whetstone-digest AND TARGET guest-whetstone-digest AND
+       EMU_GUEST_ARCH_RV32 AND EMU_JIT)
+        add_test(NAME whetstone-digest-rv32-ppc
+                 COMMAND ${Python3_EXECUTABLE}
+                         "${CMAKE_SOURCE_DIR}/tests/guest/whetstone/compare-digest.py"
+                         $<TARGET_FILE:emu-host>
+                         "${CMAKE_BINARY_DIR}/guest/whetstone-digest.bin"
+                         "${CMAKE_BINARY_DIR}/guest/ppc-whetstone-digest.elf")
+        set_tests_properties(whetstone-digest-rv32-ppc PROPERTIES
+            LABELS fast PASS_REGULAR_EXPRESSION "PASS 4 runs agree")
+    endif()
     #
     # CoreMark under a programmed TLB, translated -- and *translated* is
     # the claim, so the stats line is part of the pass: fewer than 10,000

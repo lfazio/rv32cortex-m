@@ -249,7 +249,10 @@ scripts/ppc-build-doom.sh build/doom/doom-src
 The PowerPC runtime is two libraries this tree fetches and builds but
 never vendors, and neither is GPL: picolibc (BSD) and LLVM
 compiler-rt's builtins (Apache-2.0 with the LLVM exception), standing
-in for the 32-bit `libgcc` the cross compiler does not ship.
+in for the 32-bit `libgcc` the cross compiler does not ship. Where clang
+can target the core's FPU it also builds picolibc a second time for it,
+in `build/ppc-runtime/efpu2/`; and once the runtime is there, a
+configure builds `ppc-dhrystone` and `ppc-whetstone` too.
 
 `--timer-hz` is the dial worth knowing. The guest renders a few frames a
 second while `mtime` and the LTSC run at wall-clock, so DOOM advances
@@ -569,8 +572,8 @@ Guest images (`tests/guest/`):
 | `fptest`  | floating point, and deliberately no PMP |
 | `mmiobench`| driver-shaped workload for the passthrough window |
 | `coremark`| CoreMark, fetched from upstream and built for RV32 |
-| `dhrystone`| netlib's Dhrystone 2.1. On the host its clock is derived from the instruction count, so it compares *frontends* and not backends — see [docs/performance.md](docs/performance.md) |
-| `whetstone`| Whetstone 1.2, single precision — the floating-point counterpart. Same clock caveat, and its rate depends on `WHET_LOOPS` |
+| `dhrystone`| netlib's Dhrystone 2.1. Its clock is the CLINT's, which is the wall clock on the host and on the board, so its figure is this emulator's throughput and moves with the machine's load — see [docs/performance.md](docs/performance.md#dhrystone-and-whetstone-and-which-clock-they-read) |
+| `whetstone`| Whetstone 1.2, single precision — the floating-point counterpart. Same clock, and its rate depends on `WHET_LOOPS`. `whetstone-digest` is the same at LOOP 10 with upstream's per-module reports, which ctest holds equal to the e200z7's |
 | `atomics` | the A extension, LR/SC and the AMOs |
 | `crypto`  | TinyCrypt AES-128 and SHA-256 against their published vectors — a real library, checked against FIPS rather than against itself |
 | `fbtest`  | the framebuffer device |
@@ -608,6 +611,8 @@ VLE or Book E:
 | `ppc-smp`, `ppc-smp-vle` | the MPC5675K's second core: held until the SSCM's key sequence starts it, atomics and reservations between the two, a TLB each; and a start in VLE |
 | `ppc-park` | a `wait` that nothing may end |
 | `ppc-coremark`, `ppc-crypto` | the shared benchmarks, with a decrementer interrupt landing in compiled code throughout |
+| `ppc-dhrystone`, `ppc-whetstone` | the other two, built where `scripts/ppc-build-runtime.sh` has been run: Dhrystone by GCC, Whetstone by clang for the FPU against the EFPU2 picolibc. Timed by the time base, which counts instructions |
+| `ppc-efpu2` | the FP unit as clang uses it, 2,475 checks against an exact model |
 | `ppc-coremark-tlb`, `ppc-coremark-tlbmiss` | CoreMark under a TLB the start-up programs, and under one a miss handler refills a page at a time |
 
 ---

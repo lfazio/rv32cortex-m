@@ -44,15 +44,19 @@
 #define UART_THR (*(volatile uint8_t *)0x10000000u)
 
 /*
- * mtime, at 1 MHz. On the host it advances one tick per retired guest
- * instruction, so a "microsecond" is one guest instruction and the MIPS
- * figure is a property of the guest binary at an assumed IPC of 1 --
- * deterministic, and the same under either backend. On the board it is
- * derived from the DWT cycle counter and is real elapsed time, so there
- * the same image measures this emulator's throughput. The full argument
- * is in dhry_portme.c, which has the same split.
+ * mtime, at 1 MHz, which is real elapsed time on the host and on the
+ * board alike, so the figure measures this emulator's throughput. An
+ * e200z7 guest reads the time base instead, which counts instructions
+ * here: a "microsecond" is one guest instruction, and the figure is the
+ * guest binary's at an assumed IPC of 1, the same under either backend.
+ * The full argument is in dhry_portme.c, which has the same split.
  */
+#if defined(__powerpc__)
+#include "ppc_clock.h"
+#define MTIME_LO ppc_clock_now()
+#else
 #define MTIME_LO (*(volatile uint32_t *)0x0200BFF8u)
+#endif
 
 unsigned long whet_micros(void)
 {

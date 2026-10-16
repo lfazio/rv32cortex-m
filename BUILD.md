@@ -221,7 +221,7 @@ for the readers of a flag, not for the flag.
 | `EMU_MAX_INSN` | 100000000 | boards: stop a guest after this many instructions; 0 never does, for a run past the 19.9 s counter wrap |
 | `EMU_JIT_HOT_THRESHOLD` | 1 | misses before a pc is translated; until then it is interpreted. `--jit-hot N` per run on the host. **Nothing measured gains from more than 1** — [docs/jit/tuning.md](docs/jit/tuning.md) |
 | `EMU_JIT_LOOP_CAP` | 128 | interrupt-latency knob. CoreMark **cannot observe it** |
-| `EMU_LAYOUT_PAD`, `EMU_LAYOUT_PAD_RAM` | 0 | F746 only, instruments: move all of `.text`, or guest RAM, by N bytes and change nothing else — so a figure that moves with them is layout |
+| `EMU_LAYOUT_PAD`, `EMU_LAYOUT_PAD_BSS`, `EMU_LAYOUT_PAD_RAM` | 0 | F746 only, instruments: move all of `.text`, everything in `.bss` after `.dtcm` (the JIT's buffer and tables, the frontend's state, guest RAM), or guest RAM alone, by N bytes and change nothing else — so a figure that moves with them is layout |
 | `EMU_PC_PROFILE` | 0 | F746 only: keep N interrupted pcs from the 1 kHz tick and print them after the run, to say which host code is hot |
 | `EMU_JIT_DIFF` | OFF | checks each block against the IR interpreter — and see its `diff_declined` counter before trusting silence |
 | `EMU_NET` | ON on the F746 | lwIP over PPP or SLIP: telnet, gdb, TFTP. **The UART stops being a console** |

@@ -583,6 +583,51 @@ runs. Neither has a deterministic mutant: they are races, and what
 shows them is repetition -- 40 parallel runs each way, interpreted and
 translated, without a failure.
 
+### On the F746
+
+`ppc-smp` passes all 41 checks on the Nucleo-F746ZG on both backends,
+the cores two tasks of the board's cooperative scheduler as under the
+host's `--serial`, and `ppc-smp-vle` passes too. Measured at 8409e5b,
+96 KB of code cache, and timed from the host end of the UART as well:
+
+| `ppc-smp` | host cycles an instruction | wall clock |
+|---|---|---|
+| interpreter | 258.25 | 10.40 s |
+| JIT | 77.24 | 3.09 s |
+
+8,831,273 and 8,792,828 instructions: the bounded waits spin a
+different number of times on each backend, as on the host.
+
+**What a build that can start core 1 costs a single-core guest is less
+than placement moves it, and the store guard is not what moves.** Host
+cycles an instruction, each at `-falign-functions` default, 32 and 64;
+the same retired counts and checksums throughout:
+
+| build | CoreMark | crypto |
+|---|---|---|
+| one core | 51.82 / 51.35 / 51.35 | 25.67 / 25.25 / 25.27 |
+| two cores | 52.31 / 51.70 / 51.96 | 27.58 / 27.13 / 27.24 |
+| two cores, the store guard removed | 52.04 / 51.38 / 51.61 | 28.65 / 28.43 / 28.47 |
+
+Two cores read as 7.4-7.8% on crypto, consistently across the three --
+and taking the guard out, the one thing a second core adds to
+translated code (2,392 of crypto's 77,872 bytes), made it *slower*. The
+second core's state is 5,472 bytes of `.bss`, which moves the JIT's
+code buffer, its tables and guest RAM; `-falign-functions` moves the
+emulator's functions and none of that. Moving `.bss` alone, in a
+one-core build (`-DEMU_LAYOUT_PAD_BSS`), with byte-identical
+translations:
+
+| `.bss` moved by | 0 | 2,736 | 5,472 | 8,192 |
+|---|---|---|---|---|
+| CoreMark | 51.82 | 51.79 | 52.07 | 52.36 |
+| crypto | 25.67 | 26.35 | 28.74 | 28.00 |
+
+Crypto spans 12% on placement alone, and the two-core builds sit inside
+it. So the guard costs CoreMark at most the half percent between the
+second and third rows of the first table, which callgrind's 0.84% on
+x86-64 agrees with, and on crypto nothing this board can resolve.
+
 ## The embedded floating-point unit
 
 `ppc_fpu.c` is EFPU2 in mode 0, the only mode the core has: single
@@ -632,6 +677,26 @@ clang --target=powerpc-unknown-eabi -mcpu=e500 -mspe -mefpu2
 Quake built that way has 5,421 EFPU2 instructions and no `efd*` or
 `ev*`. Sampled mid-demo, soft-float routines went from **63.2%** of what
 the guest executed (`__addsf3` alone 35.1%) to **0.1%**.
+
+**The C library has a build for the unit too.** Quake calls little of
+libm; Whetstone is libm -- its modules 7 and 11, the transcendental
+ones, are nearly all of its run -- and against the GCC-built picolibc
+it would measure compiler-rt. `scripts/ppc-build-runtime.sh` builds
+picolibc a second time into `efpu2/`, its C by clang with `-mefpu2`
+and its assembly by GCC as before: `setjmp.S` uses a `bclr+` clang's
+assembler refuses, and under the `__SPE__` clang defines it would save
+the registers with `evstdd`, which this model raises as illegal. EFPU2
+uses only the low half of a GPR, so the 32-bit save is the right one.
+The clang half has 1,917 EFPU2 instructions and no `ev*` or `efd*`.
+
+`ppc-whetstone` links it, and its per-module digest at LOOP 10 -- four
+digits of each module's four results -- is identical to RV32's under
+both backends of each (`whetstone-digest-rv32-ppc`): two FP
+implementations in this emulator, through two compilers' builds of one
+libm. Four digits cannot see an ulp. Of three defects in the integer
+fast path the digest fails two -- a sum taking the smaller operand's
+sign, a quotient's exponent off by one -- and passes an inexact quotient
+rounded as exact; `ppc-efpu2` fails all three.
 
 That moved the cost to the host, and three changes took it back,
 measured on Quake under the x86-64 JIT -- callgrind over the same 300 M
@@ -804,6 +869,9 @@ compiler ships no 32-bit `libgcc`, and neither library is GPL. DOOM is
 the first such guest, and the first big-endian target its port has had
 ([games.md](../games.md#doom-on-powerpc)); Quake is the second, and the
 first compiled with clang so that its `float` uses this core's FPU.
+Dhrystone and Whetstone are the ones in this tree: a configure builds
+them when `PPC_RUNTIME` (default `build/ppc-runtime`) holds a runtime,
+and says it skipped them when it does not.
 
 | Image | Purpose |
 |---|---|
@@ -816,6 +884,8 @@ first compiled with clang so that its `float` uses this core's FPU.
 | `ppc-park` | a `wait` nothing may end: the run must stop there, and the line after it must not print |
 | `ppc-efpu2` | **compiled by clang for the FP unit**, the only guest that is: the four operations and three compares over every pair of 22 values chosen for EFPU2's defaults and the fast path's edges, conversions both ways, a polynomial, and the sticky bits -- 2,475 checks against `efpu.py`'s model, through `efpu2_want.py`. Built where a clang can emit EFPU2, skipped with a message where none can |
 | `ppc-coremark`, `ppc-crypto` | the shared benchmarks |
+| `ppc-dhrystone` | Dhrystone 2.1 by GCC, its report's doubles compiler-rt's: 577 instructions a run, where RV32 takes 472 and ARMv7-M 453 (retired over runs). The time base counts instructions, so "microseconds" are instructions and the figure is the same on both backends |
+| `ppc-whetstone` | Whetstone 1.2 by clang for the FPU, against the EFPU2 picolibc: 8,371,269 instructions at LOOP 100, where RV32 with F takes 10,665,816. `ppc-whetstone-digest` is LOOP 10 with the per-module reports |
 
 Every compiled guest links `crt0.S`, which **installs a vector table
 that reports**: an interrupt the guest does not expect prints its IVOR,
@@ -846,6 +916,7 @@ will execute without complaint.
 | `ppc-sys` | the manual, section by section |
 | `ppc-mmu` | chapter 10 and tables 7-13 to 7-24, and memory the guest wrote itself |
 | `ppc-coremark`, `ppc-crypto` | their own checksums — CoreMark's CRCs, FIPS vectors — identical across backends and to RV32's |
+| `whetstone-digest-rv32-ppc` | RV32's F extension and its libm, to the four digits Whetstone prints |
 | `tests/unit/test_ppc.c` | hand-assembled words |
 
 `cases.py` generates instructions with their operands — a quarter from
@@ -970,6 +1041,6 @@ existing rather than on the frontend being compiled in.
 - **No pair statistics.** The gdb target exists; it does not describe
   the SPE upper halves, which gdb wants alongside a 64-bit `acc` the
   stub cannot carry, nor the SPRs.
-- Dhrystone is not built. What stopped it -- a 32-bit `libgcc` this
-  toolchain does not ship -- is what `scripts/ppc-build-runtime.sh` now
-  supplies; what is left is a target that links it.
+- **Dhrystone and Whetstone need a runtime from outside the build**,
+  so a tree where `scripts/ppc-build-runtime.sh` has not been run skips
+  them, and their ctest entries with them.

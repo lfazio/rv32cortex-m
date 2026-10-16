@@ -3328,6 +3328,19 @@ session, and every one of them recurred:
   not finished until a board row that compiles it has linked** --
   `scripts/build-matrix.sh f746` is the few minutes that costs.
 
+- **`-falign-functions` moves the emulator's code, and a translated
+  guest runs from the JIT's.** A build able to start a second PowerPC
+  core read 7.4-7.8% slower on crypto on the F746, at three function
+  alignments -- consistent enough to call a cost. Removing the store
+  guard, the one thing the second core adds to translated code, made it
+  4% *slower* still. The core's state is 5,472 bytes of `.bss`, and
+  `.bss` holds the code buffer, its tables and guest RAM: moving it
+  alone (`-DEMU_LAYOUT_PAD_BSS`) spread a one-core build from 25.67 to
+  28.74 with byte-identical translations, and the two-core figures sit
+  inside that. Three layouts agreeing says something about the three
+  layouts. **Move what the workload runs from** before calling a
+  difference a cost -- for a translated guest, the buffer.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must
