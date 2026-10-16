@@ -49,6 +49,7 @@
 
 #include "ppc/ppc_cpu.h"
 #include "ppc/ppc_decode.h"
+#include "ppc/ppc_fpu.h"
 
 #include "emu/emu_ir.h"
 #include "emu/emu_jit.h"
@@ -202,10 +203,45 @@ static uint32_t ppc_ir_step(emu_cpu_t *cpu, uint32_t insn, uint32_t pc)
     return ppc_exec(c, &d, pc) ? 0u : 1u;
 }
 
+/*
+ * One scalar EFPU instruction, already decoded: the translator packs the
+ * fields ppc_exec would have read (efs_op), so the call goes straight
+ * to the FP unit. ppc_ir_step would decode the word again and pass
+ * through the interpreter's switch, and on Quake built for EFPU2 that
+ * was a third of the helper's cost -- 11% of host instructions in
+ * ppc_decode alone.
+ *
+ * The unit and the interrupts are exactly the interpreter's: this is
+ * the PPC_S_EFS* case of ppc_exec with the decode taken out, and has to
+ * stay beside it. A data interrupt names this instruction, a round
+ * interrupt the next.
+ */
+static uint32_t ppc_ir_efs(emu_cpu_t *cpu, uint32_t op, uint32_t pc)
+{
+    ppc_cpu_t *const c = (ppc_cpu_t *)cpu;
+    const uint32_t next = pc + ((op >> 26) & 7u);
+    const uint32_t e =
+        ppc_fpu_exec(c, op & 0xFFu, (op >> 8) & 31u, (op >> 13) & 31u,
+                     (op >> 18) & 31u, (op >> 23) & 7u);
+
+    if (e == (uint32_t)PPC_IVOR_FP_DATA) {
+        ppc_cpu_raise(c, PPC_IVOR_FP_DATA, pc, PPC_ESR_SPE);
+        return 1u;
+    }
+    if (e == (uint32_t)PPC_IVOR_FP_ROUND) {
+        ppc_cpu_raise(c, PPC_IVOR_FP_ROUND, next, PPC_ESR_SPE);
+        return 1u;
+    }
+    c->pc = next;
+    return 0u;
+}
+
 static const void *const ppc_ir_helpers[] = {
     (const void *)ppc_ir_step,
+    (const void *)ppc_ir_efs,
 };
 #define PPC_HELPER_STEP 0u
+#define PPC_HELPER_EFS 1u
 
 static uint32_t ppc_reg_offset(uint32_t n)
 {
@@ -1287,6 +1323,30 @@ static void lower_helper(T *t)
                       PPC_HELPER_STEP, 0u);
 }
 
+/* The fields ppc_ir_efs unpacks, in one constant. */
+_Static_assert(PPC_S_COUNT <= 256u, "efs_op packs the semantics in eight bits");
+
+static uint32_t efs_op(const I *d)
+{
+    return (uint32_t)d->sem | ((uint32_t)d->rd << 8) | ((uint32_t)d->ra << 13) |
+           ((uint32_t)d->rb << 18) | ((uint32_t)d->crf << 23) |
+           ((uint32_t)d->len << 26);
+}
+
+static bool is_efs(const I *d)
+{
+    return d->sem >= PPC_S_EFSADD && d->sem <= PPC_S_EFSCTH;
+}
+
+/* A scalar EFPU instruction, through the FP unit's own helper. */
+static void lower_efs(T *t, const I *d)
+{
+    B *const b = t->b;
+
+    (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP, 0u, K(b, efs_op(d)), K(b, t->pc),
+                      PPC_HELPER_EFS, 0u);
+}
+
 /*
  * An instruction's bytes, as the interpreter would fetch them -- or
  * false, and the block stops before it.
@@ -1400,7 +1460,11 @@ uint32_t ppc_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
                 b->next_temp = mark_temp;
                 t.ends = false;
                 t.counted = false;
-                lower_helper(&t);
+                if (is_efs(&d)) {
+                    lower_efs(&t, &d);
+                } else {
+                    lower_helper(&t);
+                }
                 g_stats.helper++;
                 g_stats.helper_by_sem[d.sem]++;
             }

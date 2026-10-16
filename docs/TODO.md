@@ -56,6 +56,14 @@ for one.
       made its counter one for all cores for exactly that reason.
       Unmeasured.
 - [ ] **JIT** - Autovectorisation of the IR pipeline.
+- [ ] **PowerPC's FP unit is a call per instruction.** Every EFPU2
+      instruction under the JIT is a helper call into `ppc_fpu_exec`,
+      whose bookkeeping -- SPEFSCR status, sticky bits, FG and FX --
+      was 14.7% of host instructions on Quake after the integer fast
+      path ([frontend/ppc.md](frontend/ppc.md#what-uses-it-and-what-it-costs)).
+      A lowering for normal operands under round-to-nearest with no
+      enables would still have to produce FG and FX exactly; measure
+      what the call costs before writing one.
 
 ## Linux
 
@@ -79,10 +87,10 @@ From the last measurements in [linux.md](linux.md).
 
 ## Guests
 
-- [ ] Quake on ppc. The runtime DOOM needed exists now
-      (`scripts/ppc-build-runtime.sh`, [games.md](games.md#doom-on-powerpc));
-      what is left is the port's PowerPC platform layer and a build.
-- [ ] **Dhrystone on ppc**, which the same runtime unblocks.
+- [ ] **Dhrystone and Whetstone on ppc**, which the runtime and clang's
+      EFPU2 back end now allow ([games.md](games.md#quake-on-powerpc)).
+      Whetstone would be the first FP benchmark for this frontend; Quake
+      is the only guest that measures the FP unit today.
 - [ ] **ARMv7-M**, from [frontend/armv7m.md](frontend/armv7m.md#not-done):
       the whole F746 firmware as a guest (it needs an STM32F746 machine
       model, which is a direction change), the IR and register allocator

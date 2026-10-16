@@ -2,14 +2,14 @@
 
 Benchmarks with a real frame rate rather than a checksum, and the first
 guests big enough to make the JIT's figures mean something. Both run on
-RV32 and on G4MH at 800x600, and DOOM on PowerPC too; recipes are in
-the README, and the ports --
+RV32, on G4MH and on PowerPC at 800x600; recipes are in the README, and
+the ports --
 GPL, like the games -- live in their own repositories, never in this
 tree: [embeddedDOOM](https://github.com/lfazio/embeddedDOOM) (branch
 `rv32cortex-m`) and [quake-embedded](https://github.com/lfazio/quake-embedded).
-What is still open, PowerPC above all, is in [TODO.md](TODO.md#guests).
+What is still open is in [TODO.md](TODO.md#guests).
 
-**DOOM and Quake 1 both run, on rv32 and on G4MH**, at 800x600:
+**DOOM and Quake 1 both run, on rv32, on G4MH and on PowerPC**, at 800x600:
 DOOM loads E1M1 and plays, Quake initialises, loads `demo1.dem`
 and runs it. Recipes are in the README; the game data is supplied
 rather than fetched. What they bought beyond being playable was
@@ -202,3 +202,59 @@ ratio on it (46.6) is *better* than Dhrystone's (52.6), which
 has no floating point at all -- which is what refuted the
 theory that SoftFloat was the cost.
 https://github.com/lfazio/quake-embedded
+
+## Quake on PowerPC
+
+**It runs, and its floats are the e200z7's.** Same port, same board
+layer -- `port/boards/rv32cortexm/` gained a PowerPC branch in its time
+base and its C library glue -- on the runtime DOOM brought:
+
+```sh
+scripts/ppc-build-runtime.sh                     # once, as for DOOM
+scripts/ppc-build-quake.sh <quake-src> /path/to/pak0.pak
+./build/host/emu-host --jit --ram 0x4000000 build/guest/quake-ppc.elf
+```
+
+The PAK goes in through `.incbin` rather than as a C array, the
+counterpart of G4MH's `rlink -Binary`; the image is 19.2 MB and its
+`.bss` ends 43 MB into the 64 MiB `--ram` gives it, which is why
+`bigguest.ld` describes 64 MiB now. Big-endian needed nothing: Quake
+reads every file format through `LittleLong` and friends, chosen at
+compile time from `__BYTE_ORDER__`, and read its PAK correctly on the
+first run -- 339 files, `demo1.dem`, the Necropolis.
+
+**What it first measured was its compiler.** Built with the cross GCC,
+the same demo presented 92 frames in 4e9 instructions where RV32
+presented 260 -- 43 M guest instructions a frame against 15.4 M. A trace
+sampled mid-demo and binned by symbol said why:
+
+| | share of the guest's instructions |
+|---|---|
+| `__addsf3` | 35.1% |
+| `__mulsf3` | 13.0% |
+| `__divsf3` | 8.8% |
+| `__fixsfsi` | 4.1% |
+| all soft-float routines | **63.2%** |
+| `D_DrawSpans8`, the renderer's inner loop | 21.4% |
+
+The e200z7 has an FPU -- EFPU2, single precision in the GPRs -- and GCC
+dropped the back end that emits it in version 9. LLVM kept it, and
+`-mefpu2` is this core's half exactly, so `ppc-build-quake.sh` builds
+with clang by default (`PPC_FPU=efpu2`; `PPC_FPU=soft` for GCC). The
+same trace then put soft-float at **0.1%**, with the renderer's span and
+surface loops as the top four -- where Quake should spend its time.
+
+Frames a second on the x86-64 JIT, over 4e9 instructions:
+
+| build | frames/s | guest instructions a frame |
+|---|---|---|
+| PowerPC, GCC soft-float | 6.6 | 43 M |
+| PowerPC, clang EFPU2 | 14.3-14.6 | 13-14 M |
+| RV32, hard F and D | 17.3 | 15.4 M |
+
+The EFPU2 build does less guest work a frame than RV32 and still runs
+slower, because each FP instruction is a call into a unit that models
+SPEFSCR exactly. The first EFPU2 build ran at 11.3; what took it to
+14.5 -- the unit reached directly from a block, and exact results in
+integers instead of SoftFloat -- is in
+[frontend/ppc.md](frontend/ppc.md#what-uses-it-and-what-it-costs).

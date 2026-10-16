@@ -605,13 +605,89 @@ next instruction). MSR[SPE] does not gate the scalar instructions.
 — Python's `Fraction`, which does not round — and rounds once, itself.
 The two share the manual and nothing else. Every vector compares the
 result, the whole of SPEFSCR, which interrupt was asked for and, for a
-compare, the CR field: 118,208 vectors at `--count 100000`, 0 wrong
-(`ctest` runs 38,208, `ppc-efpu-vs-exact`). `ppc-fpu`
+compare, the CR field: 1.36 M vectors over three seeds, 0 wrong
+(`ctest` runs 74,048, `ppc-efpu-vs-exact`). `ppc-fpu`
 (`tests/tools/ppc_fpu.c`) is the unit as a command.
 
 The first run reported 40 wrong square roots, and the emulator was
 right: the *model's* scaling was too coarse to round correctly. An
 oracle is code too.
+
+### What uses it, and what it costs
+
+**Nothing compiled used the unit until clang.** GCC dropped its SPE
+back end in version 9, so the cross compiler here builds soft-float:
+every `float` operation a call into compiler-rt. LLVM still has the
+back end, and `-mefpu2` is exactly this core's half of it -- single
+precision in the GPRs, `double` through the same compiler-rt calls,
+because EFPU2 has none. Plain `-mspe` would emit `efd*`, which this
+core does not have. Its calling convention is the soft-float one, so a
+clang-built guest links the GCC-built picolibc and compiler-rt
+unchanged ([games.md](../games.md#quake-on-powerpc)):
+
+```
+clang --target=powerpc-unknown-eabi -mcpu=e500 -mspe -mefpu2
+```
+
+Quake built that way has 5,421 EFPU2 instructions and no `efd*` or
+`ev*`. Sampled mid-demo, soft-float routines went from **63.2%** of what
+the guest executed (`__addsf3` alone 35.1%) to **0.1%**.
+
+That moved the cost to the host, and three changes took it back,
+measured on Quake under the x86-64 JIT -- callgrind over the same 300 M
+guest instructions, and frames a second over 4e9:
+
+| | host instructions | frames/s |
+|---|---|---|
+| GCC soft-float | -- | 6.6 |
+| EFPU2, through the generic step helper | 9.14 G | 11.3 |
+| ...its own helper | 8.08 G | 13.2 |
+| ...exact results in integers | 7.48 G | 14.0 |
+| ...zero addends too | -- | 14.3-14.6 |
+
+RV32 runs the same demo at 17.3 on the same host.
+
+- **Its own helper.** A block reached the unit through `ppc_ir_step`,
+  which decodes the word again and passes through the interpreter's
+  switch: `ppc_decode` alone was 11.3% of host instructions.
+  `ppc_ir_efs` takes the fields the translator already decoded, packed
+  into one constant, and calls `ppc_fpu_exec` -- the `PPC_S_EFS*` case
+  of `ppc_exec` with the decode taken out, raising the same two
+  interrupts. Swapping either interrupt's address fails `ppc-sys` under
+  the JIT; dropping `crf` or reading `rb` as `ra` fails the
+  interpreter-against-JIT model.
+- **Exact results in integers.** SoftFloat was asked for the exact
+  result truncated to double, and whether anything was lost below it --
+  two conversions and a general double operation, about four hundred
+  host instructions an operation. For two normal singles that value is
+  small enough to have in integers: a product of 24-bit significands is
+  48 bits; a sum whose exponents are at most 39 apart is exact in 64,
+  the larger significand at bit 62 and the smaller losing nothing until
+  it passes the 39 zeros beneath it; a 40-bit quotient and its remainder
+  hold every bit rounding reads. Each goes to the same `round_f64`, so
+  rounding, FG, FX, overflow and underflow stay one implementation. A
+  zero added to anything is the other operand; a sum further apart than
+  39 bits, the multiply-adds and the square root keep SoftFloat.
+
+  The oracle's random operands almost never meet what that depends on,
+  so `efpu.py` builds **relations** as well: exact and near
+  cancellation at equal and adjacent exponents, a carry out of the top,
+  exponent differences around 24, 39 and 40, 53 and 64, zero sums under
+  every rounding mode, exact quotients, quotients near 1, and inexact
+  quotients whose 40 bits are all zero below the guard -- where only
+  the remainder says so. Ten deliberate defects in the fast path: eight
+  fail it, by 308 to 13,870 vectors, and seven of those also fail
+  `ppc-efpu2`, the compiled guest, on both backends. The other two cannot change a
+  single-precision answer -- a bound of 40 instead of 39, and ignoring
+  what the truncation to 53 bits dropped -- because in both the bits in
+  question sit far enough below the guard that no carry reaches it,
+  and the smaller addend's leading bit keeps the sticky bit set either
+  way.
+
+What is left is the unit's own bookkeeping: `round_f64`, `finish` and
+the dispatch are 14.7% of the host's instructions, which is what
+modelling SPEFSCR exactly -- status, sticky bits, FG and FX, two
+interrupts -- costs, and the reason for having the unit.
 
 ## The JIT
 
@@ -628,8 +704,10 @@ outcomes per instruction, counted in the run's report:
 
 - **lowered** to IR;
 - **helper**: `ppc_exec`, called from inside the block, which keeps the
-  block whole — the multiple moves, the reservations, `tw`, `dcbz`, the
-  FP unit, and a handful of carrying forms;
+  block whole — the multiple moves, the reservations, `tw`, `dcbz` and a
+  handful of carrying forms; the FP unit's instructions go to
+  `ppc_ir_efs`, which calls the unit with the fields already decoded
+  ([above](#what-uses-it-and-what-it-costs));
 - **declined**: the block ends and the interpreter runs it from the
   dispatcher. A short list and a deliberate one — whatever changes MSR
   (`mtmsr`, `wrtee`, the `rfi` family), takes an interrupt on purpose
@@ -724,7 +802,8 @@ A guest that wants one links picolibc and LLVM compiler-rt's builtins,
 which `scripts/ppc-build-runtime.sh` fetches and builds -- the cross
 compiler ships no 32-bit `libgcc`, and neither library is GPL. DOOM is
 the first such guest, and the first big-endian target its port has had
-([games.md](../games.md#doom-on-powerpc)).
+([games.md](../games.md#doom-on-powerpc)); Quake is the second, and the
+first compiled with clang so that its `float` uses this core's FPU.
 
 | Image | Purpose |
 |---|---|
@@ -735,6 +814,7 @@ the first such guest, and the first big-endian target its port has had
 | `ppc-smp`, `ppc-smp-vle` | the second core, 41 checks: held at reset and released only by the SSCM's key sequence, PIR, atomics and reservations between the cores, a TLB each for data and code, a second sequence ignored; and, built again, a start in VLE. Run nine ways by ctest |
 | `ppc-coremark-tlbmiss` | CoreMark with the TLB filled on demand by a miss handler in `crt0.S`, two refill entries for a working set of five pages: 26,652 `tlbwe` in a run |
 | `ppc-park` | a `wait` nothing may end: the run must stop there, and the line after it must not print |
+| `ppc-efpu2` | **compiled by clang for the FP unit**, the only guest that is: the four operations and three compares over every pair of 22 values chosen for EFPU2's defaults and the fast path's edges, conversions both ways, a polynomial, and the sticky bits -- 2,475 checks against `efpu.py`'s model, through `efpu2_want.py`. Built where a clang can emit EFPU2, skipped with a message where none can |
 | `ppc-coremark`, `ppc-crypto` | the shared benchmarks |
 
 Every compiled guest links `crt0.S`, which **installs a vector table

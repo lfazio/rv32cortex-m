@@ -129,8 +129,16 @@ endif()
 # r2 and r13 out of it, so crt0 has no small-data bases to set up.
 #
 # There is no 32-bit libgcc beside a powerpc64 cross compiler, so a
-# guest cannot use 64-bit division or soft-float: Dhrystone, whose
-# report is in doubles, is not built for this frontend.
+# guest here cannot use 64-bit division or soft-float: Dhrystone, whose
+# report is in doubles, is not built for this frontend. (The games link
+# one built by scripts/ppc-build-runtime.sh, outside this build.)
+#
+# **And GCC cannot emit the core's FPU**: it dropped its SPE back end in
+# version 9, so everything above is soft-float. clang kept it, and
+# -mefpu2 is this core's half exactly -- single precision in the GPRs,
+# no double -- so EFPU2_SOURCES are compiled by clang, when there is one
+# that can, and linked by GCC with the rest. Its calling convention is
+# the soft-float one.
 #
 if(EMU_GUEST_ARCH_PPC)
     find_program(PPC_GCC NAMES powerpc-linux-gnu-gcc powerpc64-linux-gnu-gcc
@@ -143,8 +151,31 @@ if(EMU_GUEST_ARCH_PPC)
         set(_ppc_src "${CMAKE_CURRENT_SOURCE_DIR}/ppc")
         file(MAKE_DIRECTORY "${_ppc_dir}")
 
+        #
+        # A clang that can target the e200z7's FPU, asked rather than
+        # assumed: a clang built without the PowerPC back end skips the
+        # EFPU2 guest instead of failing the build.
+        #
+        find_program(PPC_CLANG NAMES clang clang-21 clang-20 clang-19)
+        file(GLOB _ppc_headers "${_ppc_src}/*.h")
+        set(PPC_EFPU2_FLAGS --target=powerpc-unknown-eabi -mcpu=e500 -mspe
+                            -mefpu2 -ffp-contract=off)
+        if(PPC_CLANG AND NOT DEFINED PPC_CLANG_EFPU2)
+            file(WRITE "${_ppc_dir}/efpu2-probe.c" "float f(float a) { return a * a; }\n")
+            execute_process(
+                COMMAND ${PPC_CLANG} ${PPC_EFPU2_FLAGS} -c "${_ppc_dir}/efpu2-probe.c"
+                        -o "${_ppc_dir}/efpu2-probe.o"
+                RESULT_VARIABLE _rc OUTPUT_QUIET ERROR_QUIET)
+            if(_rc EQUAL 0)
+                set(PPC_CLANG_EFPU2 ON CACHE INTERNAL "clang emits EFPU2")
+            else()
+                set(PPC_CLANG_EFPU2 OFF CACHE INTERNAL "clang emits EFPU2")
+            endif()
+        endif()
+
         function(add_ppc_guest name)
-            cmake_parse_arguments(A "" "OPT" "SOURCES;EXTRA_SOURCES;FLAGS" ${ARGN})
+            cmake_parse_arguments(A "" "OPT" "SOURCES;EXTRA_SOURCES;EFPU2_SOURCES;FLAGS"
+                                  ${ARGN})
             set(srcs "${_ppc_src}/crt0.S")
             foreach(f IN LISTS A_SOURCES)
                 list(APPEND srcs "${_ppc_src}/${f}")
@@ -153,6 +184,24 @@ if(EMU_GUEST_ARCH_PPC)
             if(NOT A_OPT)
                 set(A_OPT "-O1")
             endif()
+            set(deps ${srcs})
+            foreach(f IN LISTS A_EFPU2_SOURCES)
+                get_filename_component(stem "${f}" NAME_WE)
+                set(obj "${_ppc_dir}/ppc-${name}-${stem}.o")
+                add_custom_command(
+                    OUTPUT "${obj}"
+                    COMMAND ${PPC_CLANG} ${PPC_EFPU2_FLAGS} ${A_OPT} -g
+                            -ffreestanding -fno-builtin -fno-common -fno-pic
+                            -Wall -Wextra -I "${_ppc_src}" ${A_FLAGS}
+                            -c "${_ppc_src}/${f}" -o "${obj}"
+                    # The headers by name: a generated answer table that
+                    # changes must rebuild the object that includes it.
+                    DEPENDS "${_ppc_src}/${f}" ${_ppc_headers}
+                    COMMENT "Compiling ${f} for EFPU2"
+                    VERBATIM)
+                list(APPEND srcs "${obj}")
+                list(APPEND deps "${obj}")
+            endforeach()
             #
             # .elf is what a host run loads and a debugger reads; .img
             # is the same ELF stripped, which is what a firmware embeds.
@@ -169,7 +218,7 @@ if(EMU_GUEST_ARCH_PPC)
                         -o "${_ppc_dir}/ppc-${name}.elf"
                 COMMAND ${PPC_GUEST_OBJCOPY} --strip-all
                         "${_ppc_dir}/ppc-${name}.elf" "${_ppc_dir}/ppc-${name}.img"
-                DEPENDS ${srcs} "${_ppc_src}/cguest.ld" "${_ppc_src}/ppc_clock.h"
+                DEPENDS ${deps} "${_ppc_src}/cguest.ld" "${_ppc_src}/ppc_clock.h"
                 COMMENT "Building PowerPC guest ppc-${name}.elf"
                 VERBATIM)
             add_custom_target(guest-ppc-${name} ALL
@@ -178,6 +227,11 @@ if(EMU_GUEST_ARCH_PPC)
         endfunction()
 
         add_ppc_guest(alu SOURCES alu.c)
+        if(PPC_CLANG_EFPU2)
+            add_ppc_guest(efpu2 EFPU2_SOURCES efpu2.c)
+        else()
+            message(STATUS "PowerPC: no clang that emits EFPU2; skipping ppc-efpu2")
+        endif()
         add_ppc_guest(sys SOURCES sys.c sys_stubs.S)
         add_ppc_guest(mmu SOURCES mmu.c sys_stubs.S mmu_stubs.S)
         add_ppc_guest(park SOURCES park.c)

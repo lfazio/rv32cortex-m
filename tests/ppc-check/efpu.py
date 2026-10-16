@@ -498,9 +498,103 @@ DIRECTED = [
 ]
 
 
+def fp_bits(s, e, f):
+    return (s << 31) | (e << 23) | f
+
+
+def relations(rng):
+    """Operand pairs related by construction, which random operands
+    almost never are: what ppc_fpu.c's integer fast path depends on.
+
+    It sums exactly when the exponents are at most 39 apart and falls
+    back beyond, so the differences around 39 and 40 are here, and the
+    ones a 24-bit significand, a 53-bit double and a 64-bit word make
+    interesting; exact and near cancellation, at equal exponents and at
+    adjacent ones; carries out of the top bit. Its quotient is 40 bits
+    and a remainder, so: exact quotients, quotients near 1 (the leading
+    bit at 39 or 40), and quotients whose 40 bits are all zero below the
+    guard -- where only the remainder says the result was inexact.
+    """
+    pairs = []
+
+    def norm_f():
+        return rng.getrandbits(23)
+
+    for _ in range(40):
+        e = rng.randrange(60, 190)
+        f = norm_f()
+        x = fp_bits(rng.getrandbits(1), e, f)
+        # Cancellation, exact and by one to three units.
+        pairs.append(("efssub", x, x))
+        pairs.append(("efsadd", x, x ^ 0x80000000))
+        for d in (1, 2, 3):
+            if f + d < (1 << 23):
+                pairs.append(("efssub", x, x + d))
+                pairs.append(("efssub", x + d, x))
+        # A zero added to it, of either sign, either side; and the zero
+        # sums, whose sign depends on the rounding mode.
+        for z in (0x00000000, 0x80000000):
+            for mn in ("efsadd", "efssub"):
+                pairs.append((mn, x, z))
+                pairs.append((mn, z, x))
+                for z2 in (0x00000000, 0x80000000):
+                    pairs.append((mn, z, z2))
+        # Adjacent exponents, the smaller just under the larger.
+        pairs.append(("efssub", fp_bits(0, e, rng.getrandbits(3)),
+                      fp_bits(0, e - 1, (1 << 23) - 1 - rng.getrandbits(3))))
+        # A carry out of the top: both significands near the maximum.
+        pairs.append(("efsadd", fp_bits(0, e, (1 << 23) - 1 - rng.getrandbits(4)),
+                      fp_bits(0, e, (1 << 23) - 1 - rng.getrandbits(4))))
+        # The exponent differences that bound the exact sum.
+        for k in (1, 23, 24, 25, 26, 37, 38, 39, 40, 41, 52, 53, 54, 63, 64, 65):
+            if e - k >= 1:
+                y = fp_bits(rng.getrandbits(1), e - k, norm_f())
+                for mn in ("efsadd", "efssub"):
+                    pairs.append((mn, x, y))
+                    pairs.append((mn, y, x))
+        # Quotients: exact, near 1, and a power of two apart.
+        b = fp_bits(rng.getrandbits(1), rng.randrange(100, 150), norm_f())
+        pairs.append(("efsdiv", b, b))
+        pairs.append(("efsdiv", (b & 0x807FFFFF) | (rng.randrange(60, 190) << 23), b))
+        for d in (-2, -1, 1, 2):
+            fb = b & 0x7FFFFF
+            if 0 <= fb + d < (1 << 23):
+                pairs.append(("efsdiv", b + d, b))
+                pairs.append(("efsdiv", b, b + d))
+        for m in (3, 5, 6, 7, 9, 12):
+            q = rng.randrange(1, 1 << 16)
+            sig_q = (q | 1)
+            n = sig_q * m
+            if n < (1 << 24):
+                def mk(v):
+                    lead = v.bit_length() - 1
+                    return fp_bits(0, 127 + lead, (v << (23 - lead)) & 0x7FFFFF)
+                pairs.append(("efsdiv", mk(n), mk(m)))
+                pairs.append(("efsmul", mk(sig_q), mk(m)))
+    # Inexact quotients whose 40 retained bits are zero below the guard.
+    found = 0
+    while found < 24:
+        sa = rng.getrandbits(23) | (1 << 23)
+        sb = rng.getrandbits(23) | (1 << 23)
+        n = sa << 40
+        q = n // sb
+        lead = q.bit_length() - 1
+        below = lead - 24          # bits under the guard, in q
+        if n % sb and below > 0 and q & ((1 << below) - 1) == 0:
+            pairs.append(("efsdiv", fp_bits(0, 127, sa & 0x7FFFFF),
+                          fp_bits(0, 127, sb & 0x7FFFFF)))
+            found += 1
+    out = []
+    for mn, a, b in pairs:
+        for mode in range(4):
+            for en in (0, FINXE):
+                out.append((mn, mode | en, a, b, 0))
+    return out
+
+
 def vectors(seed, count):
     rng = random.Random(seed)
-    out = []
+    out = relations(rng)
     for mn, a, b, d in DIRECTED:
         for mode in range(4):
             for en in (0, FINXE, FUNFE, FINXE | FUNFE):

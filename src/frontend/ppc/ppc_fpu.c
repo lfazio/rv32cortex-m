@@ -199,16 +199,131 @@ static float64_t f64_of(uint32_t x)
  * sign of its two addends when they agree, otherwise +0, or -0 under
  * RM. `sa` and `sb` are those addends' signs.
  */
-static void finish_sum(res_t *r, float64_t d, uint32_t rm, uint32_t sa,
-                       uint32_t sb, int unf_rule)
+static void finish_sum(res_t *r, float64_t d, bool inexact, uint32_t rm,
+                       uint32_t sa, uint32_t sb, int unf_rule)
 {
-    const bool inexact = sf_inexact();
-
     if ((d.v & 0x7FFFFFFFFFFFFFFFull) == 0u && !inexact) {
         set_default(r, zero_of(sa == sb ? sa : (rm == RM ? 1u : 0u)));
         return;
     }
     round_f64(r, d, inexact, rm, unf_rule);
+}
+
+/* ------------------------------------------------------------------ */
+/* Exact results in integers, for two normal operands                  */
+/* ------------------------------------------------------------------ */
+
+/*
+ * What SoftFloat is asked for above -- the exact result truncated to
+ * double precision, and whether anything was lost -- costs two
+ * conversions and a general double operation, about four hundred host
+ * instructions an operation; on Quake that was a quarter of everything
+ * the host executed. For two normal singles the exact value is small
+ * enough to have in integers:
+ *
+ *   - a product of two 24-bit significands is 48 bits;
+ *   - a sum aligned within 39 bits is exact in 64, since the larger
+ *     significand sits at bit 62 and the smaller loses nothing until it
+ *     is shifted past the 39 zeros beneath it;
+ *   - a 40-bit quotient and its remainder hold every bit round_f64
+ *     reads: 24, the guard, and whether anything below is non-zero.
+ *
+ * Each gives round_f64 the same 24 bits, guard and sticky that the
+ * SoftFloat path does -- the sum and product the same double, bit for
+ * bit; the quotient a shorter one with the rest in the sticky bit --
+ * so rounding, FG, FX and the overflow and underflow rules stay in one
+ * place. A sum whose operands are further apart than that takes the
+ * SoftFloat path, and a zero added to anything is the other operand.
+ */
+
+/* sig * 2^q, truncated toward zero to double precision: sig is non-zero,
+ * and no single-precision operation leaves the double normal range. */
+static float64_t f64_trunc(uint32_t s, int32_t q, uint64_t sig, bool *lost)
+{
+    const int32_t lead = 63 - __builtin_clzll(sig);
+    float64_t d;
+
+    if (lead > 52) {
+        const uint32_t sh = (uint32_t)(lead - 52);
+
+        *lost = (sig & ((1ull << sh) - 1u)) != 0u;
+        sig >>= sh;
+    } else {
+        *lost = false;
+        sig <<= (uint32_t)(52 - lead);
+    }
+    d.v = ((uint64_t)s << 63) | ((uint64_t)(q + lead + 1023) << 52) |
+          (sig & 0x000FFFFFFFFFFFFFull);
+    return d;
+}
+
+static uint64_t sig_of(uint32_t x)
+{
+    return (uint64_t)((x & 0x7FFFFFu) | 0x800000u);
+}
+
+static int32_t exp_of(uint32_t x)
+{
+    return (int32_t)((x >> 23) & 0xFFu) - 127 - 23; /* x = sig * 2^exp */
+}
+
+static float64_t mul_exact(uint32_t a, uint32_t b)
+{
+    bool lost;
+
+    return f64_trunc(sgn(a) ^ sgn(b), exp_of(a) + exp_of(b),
+                     sig_of(a) * sig_of(b), &lost);
+}
+
+/* For normal or zero operands; false when they are too far apart to be
+ * summed exactly. A zero sum -- two zeros, or an exact cancellation --
+ * comes back as +0 and not lost, which finish_sum gives the sign of a
+ * zero sum. */
+static bool add_exact(uint32_t a, uint32_t b, float64_t *d, bool *lost)
+{
+    uint64_t sum;
+    uint32_t k;
+
+    if ((a & 0x7FFFFFFFu) < (b & 0x7FFFFFFFu)) {
+        const uint32_t t = a;
+
+        a = b;
+        b = t;
+    }
+    if ((b & 0x7FFFFFFFu) == 0u) {
+        if ((a & 0x7FFFFFFFu) == 0u) {
+            d->v = 0u;
+            *lost = false;
+        } else {
+            *d = f64_trunc(sgn(a), exp_of(a), sig_of(a), lost);
+        }
+        return true;
+    }
+    k = (uint32_t)(exp_of(a) - exp_of(b));
+    if (k > 39u) {
+        return false;
+    }
+    sum = (sgn(a) == sgn(b)) ? (sig_of(a) << 39) + ((sig_of(b) << 39) >> k)
+                             : (sig_of(a) << 39) - ((sig_of(b) << 39) >> k);
+    if (sum == 0u) {
+        d->v = 0u;
+        *lost = false;
+        return true;
+    }
+    *d = f64_trunc(sgn(a), exp_of(a) - 39, sum, lost);
+    return true;
+}
+
+static float64_t div_exact(uint32_t a, uint32_t b, bool *lost)
+{
+    const uint64_t n = sig_of(a) << 40;
+    const uint64_t q = n / sig_of(b);
+    bool shift_lost;
+    const float64_t d =
+        f64_trunc(sgn(a) ^ sgn(b), exp_of(a) - exp_of(b) - 40, q, &shift_lost);
+
+    *lost = shift_lost || n % sig_of(b) != 0u;
+    return d;
 }
 
 /* ------------------------------------------------------------------ */
@@ -232,8 +347,21 @@ static void op_add(res_t *r, uint32_t a, uint32_t b, bool neg_b, uint32_t rm)
     }
     a = flush(a);
     b = flush(b) ^ (neg_b ? 0x80000000u : 0u);
+    { /* normal or zero now: the specials returned, denormals flushed */
+        float64_t d;
+        bool lost;
+
+        if (add_exact(a, b, &d, &lost)) {
+            finish_sum(r, d, lost, rm, sgn(a), sgn(b), UNF_MODE);
+            return;
+        }
+    }
     sf_begin();
-    finish_sum(r, f64_add(f64_of(a), f64_of(b)), rm, sgn(a), sgn(b), UNF_MODE);
+    {
+        const float64_t d = f64_add(f64_of(a), f64_of(b));
+
+        finish_sum(r, d, sf_inexact(), rm, sgn(a), sgn(b), UNF_MODE);
+    }
 }
 
 /* efsmul: a zero or denormal operand wins over an infinity or a NaN. */
@@ -252,12 +380,8 @@ static void op_mul(res_t *r, uint32_t a, uint32_t b, uint32_t rm)
         set_default(r, max_of(s));
         return;
     }
-    sf_begin();
-    {
-        const float64_t d = f64_mul(f64_of(a), f64_of(b));
-
-        round_f64(r, d, sf_inexact(), rm, UNF_SIGN);
-    }
+    /* Two normals: the product is exact in integers. */
+    round_f64(r, mul_exact(a, b), false, rm, UNF_SIGN);
 }
 
 /* efsdiv (table 5-2): the divisor decides first. */
@@ -290,11 +414,11 @@ static void op_div(res_t *r, uint32_t a, uint32_t b, uint32_t rm)
         set_default(r, zero_of(s));
         return;
     }
-    sf_begin();
     {
-        const float64_t d = f64_div(f64_of(a), f64_of(b));
+        bool lost;
+        const float64_t d = div_exact(a, b, &lost);
 
-        round_f64(r, d, sf_inexact(), rm, UNF_SIGN);
+        round_f64(r, d, lost, rm, UNF_SIGN);
     }
 }
 
@@ -345,7 +469,9 @@ static void op_madd(res_t *r, uint32_t a, uint32_t b, uint32_t d, bool sub,
          * the sum up and then makes it negative.
          */
         sf_begin();
-        finish_sum(r, f64_mulAdd(fa, fb, fd), rm, sp, sgn(fd.v >> 32), UNF_MODE);
+        const float64_t m = f64_mulAdd(fa, fb, fd);
+
+        finish_sum(r, m, sf_inexact(), rm, sp, sgn(fd.v >> 32), UNF_MODE);
     }
     if (neg) {
         r->val ^= 0x80000000u;

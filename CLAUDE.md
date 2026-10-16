@@ -3297,6 +3297,37 @@ session, and every one of them recurred:
   reservation code CoreMark never runs. Callgrind found all three; none
   was a guess that turned out right.
 
+- **Two frontends running one program measure their compilers as well
+  as the emulator.** PowerPC Quake took 2.8x RV32's guest instructions
+  a frame, and the host profile could not say why -- translated code is
+  `???` to callgrind. A trace binned by ELF symbol could, in one run:
+  **63.2%** of what the guest executed was compiler-rt's float routines,
+  `__addsf3` alone 35.1%, because the cross GCC can no longer emit the
+  e200z7's FPU and builds soft-float. Clang's `-mefpu2` took that to
+  0.1% and the game from 6.6 frames a second to 11.3 before the
+  emulator changed at all. **Profile the guest by symbol before
+  comparing frontends**, and read its compiler flags as part of the
+  machine being measured: a soft-float build is a benchmark of the
+  runtime library.
+
+  The host profile was still the right second step, and it found the
+  emulator's half: the block's FP helper decoded each instruction again
+  (11.3% of host instructions) and the unit computed every operation
+  through SoftFloat doubles (about four hundred host instructions).
+  Its own helper, then exact results in integers, made it 14.5.
+
+- **A 64-bit atomic is a library call on a Cortex-M, and the commit
+  that added one was pushed without building a board.** `__atomic_load_n`
+  on PowerPC's published platform clock (b9729d7) is a plain load on
+  x86-64 and on ARMv7-M a call to libatomic's `__atomic_load_8`, which
+  the firmware does not link -- so `f746-ppc`, the one board row with
+  PowerPC in it, stopped linking, and nothing said so until unrelated
+  work built it. The atomic is needed only where cores are threads
+  (`EMU_SMP`); on a board they are tasks of one cooperative scheduler.
+  The matrix row existed and was not run. **A change to a frontend is
+  not finished until a board row that compiles it has linked** --
+  `scripts/build-matrix.sh f746` is the few minutes that costs.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must

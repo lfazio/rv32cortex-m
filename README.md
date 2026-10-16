@@ -289,14 +289,24 @@ heap is a 16 MiB static array, so `.bss` comes to about 17.5 MiB. The
 build checks both and skips with a message naming the flag, rather than
 failing at the link on `region overflowed`.
 
-Both frontends run it, at 800x600:
+All three frontends run it, at 800x600:
 
 ```sh
 # RH850 G4MH -- needs Renesas CC-RH
 scripts/g4mh-build-quake.sh <quake-src> /path/to/pak0.pak
 ./build/quake/emu-host --frontend g4mh --load 0x80000000 --ram 0x4000000 \
                        --jit build/quake-g4mh.bin
+
+# NXP e200z7 -- clang for the core's FPU, and the runtime DOOM uses
+scripts/ppc-build-runtime.sh
+scripts/ppc-build-quake.sh <quake-src> /path/to/pak0.pak
+./build/quake/emu-host --jit --ram 0x4000000 build/guest/quake-ppc.elf
 ```
+
+The PowerPC build is clang's by default, because the e200z7's FPU is
+EFPU2 and GCC no longer emits it: built soft-float, 63% of what Quake
+executed was compiler-rt's float routines. `PPC_FPU=soft` builds with
+GCC anyway ([docs/games.md](docs/games.md#quake-on-powerpc)).
 
 **Status.** rv32 plays: 339 files from the PAK, console, surface cache,
 `demo1.dem` loaded and running, frames the framebuffer counts, no trap
@@ -304,8 +314,10 @@ across four billion instructions. G4MH reaches the same point -- it
 initialises, loads the demo and names the level -- and its build takes
 the PAK in through the linker rather than the compiler, because 18.7 MB
 as a C array is 93 MB of source and CC-RH runs out of memory on it.
+PowerPC plays the demo through the Necropolis at 14.5 frames a second
+on the x86-64 JIT, against RV32's 17.3.
 
-There is no sound on either: the port's audio path is a syscall
+There is no sound on any of them: the port's audio path is a syscall
 belonging to another board, and this one has no audio device.
 
 ### Linux

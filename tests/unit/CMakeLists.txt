@@ -650,6 +650,7 @@ endif()
 #
 if(EMU_GUEST_ARCH_PPC)
     foreach(_g "alu:PPC-ALU-END checks=00000044 fails=00000000 ticked"
+               "efpu2:PPC-EFPU2-END checks=000009ab fails=00000000"
                "sys:PPC-SYS-END checks=000000b8 fails=00000000"
                "mmu:PPC-MMU-END checks=000000ef fails=00000000"
                "coremark:Correct operation validated"
@@ -823,10 +824,12 @@ if(EMU_GUEST_ARCH_PPC)
         #
         # The embedded FP unit against exact rational arithmetic: every
         # pair of special operands for the operations the manual gives
-        # tables for, then random ones, with each interrupt enabled in
-        # turn. 30 deliberate defects in ppc_fpu.c: 28 fail it and the
-        # other two cannot change an answer for single-precision
-        # operands.
+        # tables for, relations random operands never meet, then random
+        # ones, with each interrupt enabled in turn. 30 deliberate
+        # defects in ppc_fpu.c: 28 fail it and the other two cannot
+        # change an answer for single-precision operands. 10 more in the
+        # integer fast path: 8 fail it, and the other two cannot either
+        # (docs/frontend/ppc.md, "What uses it").
         #
         add_test(NAME ppc-efpu-vs-exact
                  COMMAND ${Python3_EXECUTABLE}
