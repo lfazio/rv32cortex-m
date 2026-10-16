@@ -48,6 +48,22 @@ connects is held in a 4 KiB ring and delivered on connect.
 | host | `192.168.7.1` | `EMU_NET_PEER` |
 | mask | `255.255.255.0` | `EMU_NET_MASK` |
 
+### The same stack on the host runner
+
+`emu-host --ppp` (in a `-DEMU_NET=ON` build) opens a pty, and `pppd`
+attaches to it exactly as it attaches to `/dev/ttyACM0` -- so the lwIP,
+telnet, TFTP and gdb stub a board runs become debuggable with the tools
+a development machine already has:
+
+```sh
+./build/hnet/emu-host --ppp <guest>     # prints a /dev/pts/N
+scripts/ppp-host.sh /dev/pts/N          # pppd, which needs root
+```
+
+The runner's default subnet is 192.168.8.x, so it can be up beside a
+board on 192.168.7.x. The matrix's `host-net` row builds it; nothing
+runs it, because `pppd` needs root.
+
 ## What is served
 
 | port | service | use |

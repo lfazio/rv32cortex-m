@@ -194,6 +194,14 @@ a defect in the emulator; they are in the table at the end of this
 page. Both groups were confirmed the usual way, by breaking the
 emulator and watching exactly the right tests fail.
 
+**A build without PMP is a configuration the matrix checks**
+(`host-nopmp`, `-DRV32_EXT_PMP=OFF`). `isatest` and `sv32bench` hung
+there the first time it was built: a test relied on a PMP fetch fault to
+leave S-mode, and both wrote PMP CSRs that do not exist. The guests take
+the option now, as they take `RV32_MISALIGNED`, and without PMP
+`isatest` checks instead that reading and writing a PMP CSR is an
+illegal instruction.
+
 When the checkout moves, list `tests/rv32i`, `tests/priv` and
 `tests/priv/pmp/pmp32` and account for every directory: the comment
 above the list in `scripts/run-arch-test.sh` names each one that is

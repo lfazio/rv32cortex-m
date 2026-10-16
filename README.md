@@ -340,7 +340,7 @@ blocks while the code buffer was a fifth used; and virtio-blk never
 answered the GET_ID request udev sends to read the disk's serial. The
 first two are fixed in the JIT and the third in
 `src/emu/virtio/virtio_tinyemu.c`; the measurements are in
-[docs/TODO.md](docs/TODO.md).
+[docs/linux.md](docs/linux.md#the-udev-stall).
 
 `LINUX_JIT=0` interprets instead of translating, which is what to do
 when a boot misbehaves and the question is whether the translator is
@@ -606,9 +606,11 @@ VLE or Book E:
 | [docs/os.md](docs/os.md) | FreeRTOS on every platform: a task per emulated core, synchronised every quantum -- in parallel on a multicore host |
 | [docs/gdb.md](docs/gdb.md) | the guest stub and the emulator stub -- two connections, different programs |
 | [docs/network.md](docs/network.md) | the board over IP: telnet, gdb and TFTP, and what the handover costs |
+| [docs/linux.md](docs/linux.md) | RV32 Linux: OpenSBI, the kernel, a distribution to a login prompt, and what the JIT had to learn for it |
+| [docs/games.md](docs/games.md) | DOOM and Quake as guests: the framebuffer and input, and which frontends run them |
 | [docs/porting.md](docs/porting.md) | porting to another target |
 | [docs/TODO.md](docs/TODO.md) | open work |
-| [docs/host/](docs/host/README.md), [docs/stm32f446/](docs/stm32f446/README.md), [docs/stm32n6/](docs/stm32n6/itcm.md) | per-platform and per-platform/frontend notes |
+| [docs/host/](docs/host/README.md), [docs/stm32f446/](docs/stm32f446/README.md), [docs/stm32n6/](docs/stm32n6/README.md) | per-platform and per-platform/frontend notes |
 | [BUILD.md](BUILD.md) | every build gate, and which combinations are checked |
 
 Working notes — what has bitten, and will again — are in

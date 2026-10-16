@@ -220,6 +220,10 @@ is answered:
   `LDL.W` see the new value -- so stores always take the helper there
   (`fast_store_never`) and only loads are inlined.
 
+  The guard is a byte, and on Thumb-2 it was read with a word load: the
+  three bytes after the flag in the structure decided whether every
+  store went to the slow path. It is `LDRB` now.
+
 G4MH DOOM under the x86-64 JIT, 300M instructions, five interleaved runs
 each: 3.80 s to 3.55 s by median, about 7%. A helper call is cheap on a
 host; on the F746 it is what the Thumb-2 window was built to avoid, and

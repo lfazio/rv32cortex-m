@@ -166,12 +166,90 @@ arithmetic going to helpers, Whetstone would be the worst of the three
 rather than the best. See [floating-point.md](jit/floating-point.md)
 for what each backend lowers and what it declines.
 
-What the ~50x *is* about is not yet established. 98% of instructions
-run translated in both guests, so it is not interpreter fallback; block
-entries are 7.1 guest instructions apart on Quake, so dispatch is
-amortised over very short blocks. Longer blocks are the thing to
-attack, which is what this file already says about the 4.12-instruction
-average.
+What the ~50x was took two measurements to answer, and the first
+guess -- dispatch over very short blocks, 7.1 guest instructions apart
+on Quake -- was only part of it.
+
+### What the ~50x was
+
+`--rate` reports host instructions per guest instruction directly,
+and on Dhrystone the JIT was **44.21** against the interpreter's
+131. A translated ALU operation should be 4-8.
+
+**40% of guest instructions were a C call.** Every load and store
+went to rv_hart_load/rv_hart_store, which walk the region table:
+3,728,397 calls in a 9.4M-instruction run. Inlining the ones that
+are plain RAM took the ratio to 33.02.
+
+**The rest was the dispatcher**, at about 80 cycles a round trip
+for blocks of a handful of instructions -- measured by differencing
+two runs that differed only in block entries, not by reasoning.
+Linking exits took it to **29.65** and Dhrystone from 0.104 s to
+0.046 s, 2.0x to **5.0x** the interpreter.
+
+What is left at 29.65 is the *register file*: every GET is a load
+from the cpu struct and every PUT a store, because the allocator
+covers temps rather than guest registers.
+
+**Measured, and the answer is no.** `EMU_JIT_HOT_REG_STATS` was
+an option nothing read -- declared in CMakeLists, defaulted in
+`rv_config.h`, consulted by no line of code -- so the histogram
+it names had never existed. It does now, in `emu_regstats.c`,
+counting what a block leaves behind *after* the optimiser:
+
+| | Dhrystone | CoreMark | bench |
+|---|---|---|---|
+| refs to one register in one block: 1 | 67.5% | 67.6% | 54.0% |
+| 2 | 21.1% | 25.0% | 26.9% |
+| **3 or more** | **11.5%** | **7.4%** | **19.1%** |
+| surviving reads | 594 | 1122 | 451 |
+| surviving writes | 1300 | 1678 | 910 |
+| distinct registers per block | 5.79 | 5.61 | 12.27 |
+| busiest register's share | 12.3% | 14.8% | 9.2% |
+
+Pinning costs a load at block entry and a store at exit, so it
+breaks even at two references and only pays above them: **7-19%
+of the traffic can pay for itself and the rest is a loss.**
+
+**And what survives is writes, by 1.5 to 2.2 to one** -- which is
+exactly the traffic a register cache cannot help. This is the
+cost model the Thumb-2 attempt lacked, and it explains the 15.5%
+rather than contradicting it: a cached read is a MOV where an
+uncached one is an LDR, one instruction either way, while a
+write must still be written through. `pass_reg_traffic` has
+already taken the redundant reads; the residue is stores that a
+short block has to make before it exits.
+
+There is also no small hot set to choose: the busiest register is
+9-15% and the top eight reach 46-69%, so a three-register pin
+covers about a third of a third.
+
+**The histogram is weighted per translation, not per block
+entry**, and that limit is stated in the header. It does not
+weaken this conclusion -- benefit and cost both scale with
+entries, so a register that cannot pay in a block cannot pay in a
+hot one -- but it would have to be fixed before any *positive*
+result was believed.
+
+Two things about building it are worth keeping.
+
+**The first version reported RV32's `x0` as the busiest register
+in every guest**, at 19-24% of all references. A GET of x0
+survives the passes deliberately and every backend answers it
+with a constant at lowering, so it is not traffic at all -- the
+instrument was counting a quarter of its own histogram into a
+bucket that cannot be optimised, and would have made a pinned x0
+the obvious first choice. `emu_reg_note_block` takes the target
+and skips hardwired-zero registers now.
+
+**Its `#include` landed inside `#if EMU_PAIR_STATS`**, an
+unrelated option, so the declaration was absent in exactly the
+configuration the header was written for and the build failed on
+an implicit declaration. A conditional include belongs to its own
+condition.
+
+So: **do not build a guest-register allocator.** The lever is longer
+blocks.
 
 ### Two ways these numbers went wrong first
 
@@ -409,6 +487,18 @@ run's roughly 800,000 peripheral accesses still reach the bus -- the ones
 made before arming and the refused ones the checks provoke. CoreMark,
 which drives no peripheral and never arms, measures 13.88-14.14 across
 three layouts on both sides of the change.
+
+Before, at 91df012, against the interpreter on the same board -- the
+JIT was 2.2x the interpreter on peripheral access, and every access left
+the block through the checked accessor and a bus walk (MMIO / RAM
+control, ticks per kernel):
+
+| kernel | interpreter | JIT |
+|---|---|---|
+| read | 152,233 / 101,144 | 70,009 / 11,532 -- **6.1x** |
+| write | 94,330 / 70,624 | 42,092 / 6,801 -- **6.2x** |
+| rmw | 205,154 / 124,091 | 94,044 / 9,206 -- **10.2x** |
+| poll | 128,149 / 96,248 | 51,188 / 7,307 -- **7.0x** |
 
 The window is an identity map, so it is the guest-RAM fast path with
 the host address equal to the base: the same rotate-and-compare guard,
@@ -683,6 +773,10 @@ and the ART accelerator keeps a hot loop effectively wait-state free; moving cod
 into SRAM puts fetch and data on the same interface and serialises them. Kept as
 an option because the trade-off is part-specific.
 
+**PMP mapped onto the ARM MPU** is **not possible**: the MPU cannot tell
+a guest access from an emulator access, because the JIT's inlined load
+*is* both.
+
 **Lazy interrupt evaluation** (`RV32_LAZY_IRQ`, default on) showed no measurable
 gain, which is the expected result: with `mstatus.MIE` clear the eager check
 already returns after one load and one test. It pays when a guest enables
@@ -710,9 +804,10 @@ The two optimisations that mattered:
 Only `bench` is a throughput figure. The other two are dominated by waiting on
 real hardware, which is a property of the workload, not of the emulator.
 
-Remaining headroom, in rough order of expected value: allocating guest registers
-to ARM registers across a block (the JIT still loads and stores every operand,
-which is the bulk of the remaining 25× gap), chaining blocks so a hot loop stops
-returning to the dispatcher, and teaching the translator `DIV`/`REM`/`MULH`.
+Remaining headroom, as this was written in the F446 days, in rough order of
+expected value: allocating guest registers to ARM registers across a block,
+chaining blocks so a hot loop stops returning to the dispatcher, and teaching
+the translator `DIV`/`REM`/`MULH`. Chaining and the divides were done; the
+register allocator was measured and is a loss ([above](#what-the-50x-was)).
 
 ---

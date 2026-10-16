@@ -696,8 +696,8 @@ x86-64 JIT:
 | sys | 15,209 | 2,194 | `mfspr` 1,687 -- the SPRs under test |
 | mmu | 25,427 | 4,496 | **everything after the TLB is programmed** |
 
-The last row is the one with something to do in it; see
-[../TODO.md](../TODO.md). Interpreted, CoreMark's adjacent pairs are
+The last row was the JIT standing aside from the first `tlbwe`, which it
+no longer does -- see [the MMU](#the-mmu). Interpreted, CoreMark's adjacent pairs are
 26.1% data dependent (6.7% with a dead intermediate) and 2.6% address
 generation feeding an access, which is RV32's shape.
 

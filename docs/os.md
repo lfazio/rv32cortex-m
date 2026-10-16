@@ -157,7 +157,8 @@ in flash (`rv_run` 0x0800a590 → 0x0800a758), and this part has been
 measured at up to 10% from layout alone. Two FreeRTOS builds that differ
 only in where a stack lives give 108.6 and 111.4 interpreted. Making the
 hot path insensitive to where the linker puts it -- ITCM, or alignment --
-is open in [TODO.md](TODO.md); it predates this change.
+was the open question; [jit/tuning.md](jit/tuning.md#layout-on-the-f746--what-the-140-to-153-swing-was)
+has what it turned out to be.
 
 ## The host
 

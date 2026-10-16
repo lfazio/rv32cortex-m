@@ -15,8 +15,11 @@ measured, and **to do / investigate / discarded** for each:
 [`docs/frontend/`](docs/frontend/), [`docs/backend/`](docs/backend/),
 [`docs/jit/`](docs/jit/README.md),
 [`docs/host/`](docs/host/README.md),
-[`docs/stm32f446/`](docs/stm32f446/README.md), and
-`docs/<platform>/<frontend>/README.md`.
+[`docs/stm32f446/`](docs/stm32f446/README.md),
+[`docs/stm32n6/`](docs/stm32n6/README.md),
+[`docs/linux.md`](docs/linux.md), [`docs/games.md`](docs/games.md), and
+`docs/<platform>/<frontend>/README.md`. [`docs/TODO.md`](docs/TODO.md)
+holds open work only: what is done is described where it was done.
 
 Three axes, independent of each other:
 
@@ -1141,7 +1144,8 @@ session, and every one of them recurred:
   `pass_reg_traffic` has already taken the redundant reads; what is
   left is stores a short block must make before it exits. There is no
   small hot set either: the busiest register is 9-15% and the top eight
-  reach 46-69%. Full table in [`docs/TODO.md`](docs/TODO.md).
+  reach 46-69%. Full table in
+[`docs/performance.md`](docs/performance.md#what-the-50x-was).
 
   Two things about the instrument, both this file's own rules again.
   **It reported `x0` as the busiest register in every guest** at 19-24%

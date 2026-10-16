@@ -207,6 +207,14 @@ What a block may assume, and what invalidates it:
   checks both: a skipped store that lands, and a misaligned `LDRD`
   that faults inside `itee eq` and must come back with the else half
   still skipped.
+
+  **The cheap half was measured first, and took none of it.** These
+  were 25 blocks the translator declined (`declined IT:25`), 6.4% of
+  Dhrystone under the JIT. A literal load from flash is a constant and
+  could select like any ALU result -- and none of the 25 was that:
+  Dhrystone's hot blocks hold real accesses, `ittte eq; ldreq; moveq;
+  strbeq; movne` in Func_1 and `strls` and `ldreq` elsewhere. With the
+  predicate, x86-64 JIT Dhrystone went 0.076 s to 0.050 s.
 - **r15 is the pc, and the optimiser has to know it.** The pc slot is
   register 15 in this frontend's register file, and a block that ends
   on a computed target does it with `EXIT` on `GET r15` after something
@@ -343,6 +351,85 @@ where the working set fits (Dhrystone 3.4x, `nvic` 3x) and loses where
 it does not (crypto 2.2x slower), the same threshold
 [../jit/tuning.md](../jit/tuning.md) describes for the other frontends.
 
+## How it began: the encoder, executed
+
+hardware.** It began as a way to test the Thumb-2 backend without hardware, and
+that worked first: the real
+`src/backend/thumb2/encode.c` compiles into a Cortex-M guest,
+runs on this frontend on an x86 host, emits instructions into
+guest RAM and **branches to them** --
+`tests/guest/armv7m/t2exec.c`, asserting `T2EXEC-OK`.
+
+That closes a gap this file has complained about since the
+backend existed. `scripts/t2-check-encodings.sh` compares emitted
+bytes against `arm-none-eabi-as`, which catches a wrong
+*encoding* and cannot catch a wrong *choice* of encoding -- an
+emitter that assembles perfectly and is the wrong instruction for
+its operands. Confirmed against the two historical defects by
+reintroducing them: removing the shift-by-zero rewrite gives
+`FAIL lsr-0-is-a-move`, and reversing the imm3:imm2 split kills
+the guest. The first of those originally cost a Nucleo, a flash
+cycle and two architecture tests.
+
+Named `armv7m`, not `thumb2`: `src/backend/thumb2/` owns every
+`t2_` symbol and those are an *encoder*. This is a decoder.
+
+**What it decodes**: the 16-bit integer set, the 32-bit
+encodings a compiler actually emits (chosen by compiling C and
+reading the disassembly rather than by working down the manual),
+IT blocks, SysTick, the NVIC, and exception entry and return.
+Guests in `tests/guest/armv7m/`: hello, alu, itblock, nvic,
+t2exec -- 6/6 in an `EMU_GUEST_ARCH_ARMV7M=ON` tree.
+
+**Five defects, every one found by running a program and none by
+a unit test**, which is this file's most-repeated lesson arriving
+again. Four were the same class -- a field read too few bits wide,
+aliasing one group of instructions onto another:
+
+| | read | needs | symptom |
+|---|---|---|---|
+| shift/add/sub group | 2 bits | 3 | `movs r0,#16` ran as `lsls r0,r2,#0` |
+| modified immediate | bits 10:9 | bit 9 | rejected every immediate with `i` set |
+| extend group | 6 bits | 8 | swallowed **CBZ**; a branch became a zero-extend |
+| MOVW/MOVT | masked 0x7B vs 0x24 | — | provably constant; neither ever decoded |
+
+The fifth is the one worth keeping separately: the whole
+0xE8xx-0xEFxx range sat behind `op1 == 3` and is `op1 == 1`, so
+`add.w r5, r5, r5` reported as unimplemented while its handler
+was forty lines below in a block the decoder could not enter. Two
+more of the same shape followed -- the barriers checked *after*
+the branch test that swallows them, and a dead duplicate of
+MSR/MRS. **An unreachable handler reads exactly like a missing
+one**, and only the fault report tells them apart.
+
+Only MOVW/MOVT was caught by the compiler
+(`-Wtautological-compare`). The other four needed a guest.
+
+And the instruments were wrong more often than the code:
+
+- an A/B harness that grepped the guest for `FAIL` scored a
+  *crashed* guest as a pass, so three real catches read as
+  misses. Detection is `ctest` now, which asserts a line only a
+  completed run prints.
+- the exception-frame check was inline asm and passed with the
+  restore of r0 and of r12 broken, because gcc needs registers
+  for the operands and chose the ones under test. It is
+  `frame.S` now, where nothing is allocated, and it checks `sp`
+  too -- the 8-byte alignment bit is otherwise invisible until a
+  handler takes a *second* exception.
+- three tests used the one input where correct and broken agree:
+  `ITTTT EQ` cannot see an ITAdvance that shifts the whole byte
+  (EQ is condition 0b0000, so the top three bits are already
+  zero), and an IT block with a *true* condition cannot see a
+  handler that inherits ITSTATE. The awkward input is the whole
+  test.
+
+The question the frontend was also meant to answer -- whether a
+Thumb-2 guest on a Thumb-2 host could copy a block rather than
+translate it -- is untouched and still a measurement rather than
+a plan. The register file is in memory and the guest's pc is not
+the host's, so "copy it" is unlikely to survive contact.
+
 ## Not done
 
 - **The interpreter's cost per instruction**, 2.7x RV32's on the F746;
@@ -363,4 +450,14 @@ it does not (crypto 2.2x slower), the same threshold
   on Dhrystone, every one cold, and none on CoreMark or crypto.
 - **The board's answers are not in the repository.** They live under
   `build/armv7m-*` and are regenerated by running the suites with the
-  board attached.
+  board attached. Kept as fixtures, `--rerun` would be a regression
+  suite anyone could run without the board -- a decision about 3 MB of
+  test data, not a technical one.
+- **The IR and the register allocator are not exercised by `t2exec`**,
+  which tests the encoder end to end and nothing above it. Running
+  `emu_ir_lower` in the guest is the next layer.
+- **The whole F746 firmware as a guest**, which was the original
+  phrasing of this frontend's purpose and a much larger job: it drives
+  366 distinct STM32 peripheral registers, so it needs an STM32F746
+  machine model -- a direction change for a tree whose drivers live in
+  the guest and reach real silicon through passthrough.

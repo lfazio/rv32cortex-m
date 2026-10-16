@@ -65,7 +65,8 @@ framebuffer device will help it. If someone wants to run a real
 `i_video.c` against real hardware behaviour, VGA is the honest target and
 a custom framebuffer is a port.
 
-That is not this project's goal. Both games named in `TODO.md` are
+That is not this project's goal. Both games this tree runs
+([games.md](games.md)) are
 already ports -- `embeddedDOOM` and `quake-embedded` exist because their
 video layers were replaced for bare-metal targets. They want "here is a
 buffer, here is a palette, tell me when you have drawn". Implementing

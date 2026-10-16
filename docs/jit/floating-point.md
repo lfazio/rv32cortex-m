@@ -201,3 +201,13 @@ most like a right one.
 
 All of it confirmed by reverting, which is the only thing that says a
 test covers what it claims.
+
+**`-ffp-contract=off` on `rv_fpu.c` is gone, because it no longer did
+anything.** It existed to stop GCC fusing the 2Product/2Sum error term
+of the fused multiply-adds (CLAUDE.md has that story). Once SoftFloat
+was the FP unit throughout -- the last host-float square root sat in a
+`case 0xFF` no seven-bit funct7 can reach, and was removed -- the
+object code was identical with and without the flag on x86-64, x86-64
+with `-mfma` and the Cortex-M7, instruction for instruction, with no
+fused multiply in any. The first comparison hashed CMake's LTO objects,
+which hold no code, and two architectures "matched".

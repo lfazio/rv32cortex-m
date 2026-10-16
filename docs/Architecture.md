@@ -217,10 +217,11 @@ its architecture, so it gets the default.
 
 ## To do
 
-- **Multi-core beyond G4MH.** `ncores` and `instance(index)` are in the
-  contract and G4MH brings up to three PEs, each on its own FreeRTOS
-  task ([`host/g4mh/multicore.md`](host/g4mh/multicore.md),
-  [os.md](os.md)); every other frontend answers one.
+- **Multi-core beyond G4MH and PowerPC.** `ncores` and
+  `instance(index)` are in the contract; G4MH brings up to three PEs
+  ([`host/g4mh/multicore.md`](host/g4mh/multicore.md)) and PowerPC two
+  ([frontend/ppc.md](frontend/ppc.md#two-cores)), each on its own
+  FreeRTOS task ([os.md](os.md)). RV32 and ARMv7-M answer one.
 - **Parallel cores on a board.** A host runs a round's quanta in
   parallel ([os.md](os.md#smp-on-the-host)); every board here is
   single-core, and a dual-core part would need FreeRTOS's SMP port for

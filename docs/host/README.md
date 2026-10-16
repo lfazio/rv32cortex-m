@@ -44,6 +44,33 @@ default. An ELF says more than its machine: PowerPC takes its instruction
 encoding from a segment flag, which is why its compiled guests are
 loaded as ELF.
 
+**Every frontend is compiled in by default on the host** (each
+`EMU_GUEST_ARCH_*` defaults ON for `EMU_PLATFORM=host`, and OFF but RV32
+for a firmware, where a frontend costs flash), so a fresh build is the
+matrix's `host-all` row. A flat image still runs as RV32 unless
+`--frontend` names another: every RV32 flat test relies on it, and the
+banner names the ISA chosen.
+
+**What RV32 paid for the company was measured, and was 6.1%** on its
+interpreter: the bus tested the guest's byte order on every fetch and
+RAM access whenever PowerPC was compiled in. The caches carry the order
+now and PowerPC reaches its own directly -- RV32 CoreMark 65.30M host
+instructions with all four frontends against 65.15M alone, PowerPC
+1,462.8M to 1,381.0M. A new default changes what is common; the
+configurations it makes common are the ones to measure.
+
+## One runner, two kinds of platform
+
+The host and the firmware share their whole middle:
+`src/platform/common/emu_session.c` opens the cores, chooses the
+backend, installs the hooks, places the image, resets, boots and
+reports, and `emu_run.c` is the loop. What stays per platform is
+acquisition -- argv and a file, against an embedded image and TFTP --
+and termination -- an exit status a suite reads, against a park loop
+serving a link. Those are genuinely different, and merging them would
+put an `#if` per platform inside one `main()`, which is the arrangement
+the sharing undid.
+
 ## Choosing a backend
 
 `--jit` selects the translating backend, for any frontend; without it,
