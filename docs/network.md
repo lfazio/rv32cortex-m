@@ -22,6 +22,44 @@ Two link layers, chosen at build time with `EMU_NET_LINK`:
 > a framed link cannot share a wire, so this cannot be a fallback. Build
 > with `-DEMU_NET=OFF` to get the serial console back.
 
+### On a task of its own
+
+lwIP runs on a FreeRTOS task of its own, and every call into it is made
+there: starting the stack, starting gdb's listener, and each poll are
+jobs `emu_os_net_call()` hands to the task. The run loop **waits** for
+each job to finish. The stack still never runs beside a guest
+instruction: it reads and writes guest memory and registers for gdb, and
+programs the flash an image executes from, which is safe only between
+slices -- where the run loop hands over. What the task buys is lwIP's
+own stack (2,444 bytes of 4,096 at peak on the F746, under telnet, gdb
+and TFTP) and a task a future device can wake; it is still `NO_SYS`,
+with no locking in lwIP.
+
+**The hand-off is the cost, so the run loop asks first.** Two switches,
+**1,742 to 1,886 cycles** on the F746 by the board's own count, against
+a slice of 60,000 to 210,000 -- 1 to 3% if it happened every slice,
+which is what the inline poll did. `emu_net_wants_poll()` reads plain
+state on the run loop's task and says yes only for a received byte
+(`board_console_rx_ready()`, which every board now has), console or gdb
+output queued for a client, or a timer due, from lwIP's own
+`sys_timeouts_sleeptime()` and at least once a second. The stack's turn
+comes once there is something to do. In RV32 CoreMark x120, 2.07 s on
+the F746 with telnet connected, that was **12 to 14 hand-offs and
+31,000-36,000 cycles**, 0.008% of the run, at 14.71-14.85 host cycles an
+instruction. The run summary prints both: `os net on its own task: N
+hand-offs, M cycles in switches`.
+
+The gdb stub's replies went to `tcp_write` from wherever the stub was:
+from lwIP's receive path when answering a packet, and from the run loop
+when reporting a stop. They go into a 4 KiB ring now, which the poll
+drains after its input, so a reply to a packet still leaves in the poll
+that brought the packet.
+
+Checked with `scripts/check-host-net.sh` -- the host on the POSIX port
+and on the SMP port, and the F746 over SLIP -- and RV32 CoreMark's CRC on
+the board. PPP differs only in how bytes reach the stack, which this did
+not touch, and was not run: `pppd` wants the real root.
+
 ---
 
 ## Bringing it up

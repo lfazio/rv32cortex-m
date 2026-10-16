@@ -42,28 +42,80 @@ static bool g_ready;
 
 /* ------------------------------------------------------------------ */
 
+/*
+ * Replies go through a ring, not straight to tcp_write. The stub sends
+ * from two places -- from the stack's receive path, answering a packet,
+ * and from emu_net_gdb_run() on the run loop's task, reporting a stop
+ * -- and only the first is on the task that owns lwIP. The ring is
+ * drained by emu_net_gdb_poll(), which the stack's poll calls after its
+ * input, so a reply to a packet goes out in the same poll it arrived in.
+ *
+ * The protocol is synchronous and a reply is at most a packet, so the
+ * ring does not fill; if it ever did, a reply would be cut, and gdb
+ * retransmits a packet whose checksum fails.
+ */
+#define GDB_TX_SIZE 4096u
+#define GDB_TX_MASK (GDB_TX_SIZE - 1u)
+
+static uint8_t g_txq[GDB_TX_SIZE];
+static uint32_t g_txq_head, g_txq_tail; /* free-running */
+
 static void gdb_tx(void *ctx, const uint8_t *data, uint32_t len)
 {
     (void)ctx;
-
     if (g_conn == NULL) {
         return;
     }
-    /*
-     * TCP_WRITE_FLAG_COPY because the buffer is a local in the protocol
-     * code and is gone the moment this returns. The alternative --
-     * keeping it alive until the segment is acknowledged -- would mean
-     * the stub owning a send queue, which is exactly what the note at
-     * the top says it does not need.
-     */
-    if (tcp_write(g_conn, data, (u16_t)len, TCP_WRITE_FLAG_COPY) == ERR_OK) {
-        /*
-         * Push immediately. gdb is synchronous: it sends a packet and
-         * waits, so a reply sitting in the send buffer waiting for more
-         * data to fill a segment is a debugger that appears to hang.
-         */
-        (void)tcp_output(g_conn);
+    for (uint32_t i = 0u; i < len; i++) {
+        if ((g_txq_head - g_txq_tail) >= GDB_TX_SIZE) {
+            return;
+        }
+        g_txq[g_txq_head++ & GDB_TX_MASK] = data[i];
     }
+}
+
+bool emu_net_gdb_pending(void)
+{
+    return g_txq_head != g_txq_tail;
+}
+
+void emu_net_gdb_poll(void)
+{
+    if (g_conn == NULL) {
+        g_txq_tail = g_txq_head;
+        return;
+    }
+    while (g_txq_head != g_txq_tail) {
+        const u16_t space = tcp_sndbuf(g_conn);
+
+        if (space == 0u) {
+            break;
+        }
+        uint32_t n = g_txq_head - g_txq_tail;
+        const uint32_t to_end = GDB_TX_SIZE - (g_txq_tail & GDB_TX_MASK);
+
+        if (n > to_end) {
+            n = to_end;
+        }
+        if (n > space) {
+            n = space;
+        }
+        /*
+         * TCP_WRITE_FLAG_COPY: the ring is written again before the
+         * segment is acknowledged.
+         */
+        if (tcp_write(g_conn, &g_txq[g_txq_tail & GDB_TX_MASK], (u16_t)n,
+                      TCP_WRITE_FLAG_COPY) != ERR_OK) {
+            break;
+        }
+        g_txq_tail += n;
+    }
+    /*
+     * Pushed at once. gdb is synchronous: it sends a packet and waits,
+     * so a reply sitting in the send buffer waiting for more data to
+     * fill a segment is a debugger that appears to hang.
+     */
+    (void)tcp_output(g_conn);
 }
 
 static void gdb_close(struct tcp_pcb *pcb)

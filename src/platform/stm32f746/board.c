@@ -246,6 +246,14 @@ void board_console_rx_irq_enable(void)
     __HAL_UART_ENABLE_IT(&g_console, UART_IT_RXNE);
 }
 
+bool board_console_rx_ready(void)
+{
+    if (g_rx_irq) {
+        return g_rx_head != g_rx_tail;
+    }
+    return __HAL_UART_GET_FLAG(&g_console, UART_FLAG_RXNE) != 0u;
+}
+
 int board_console_getc(void)
 {
     if (g_rx_irq) {

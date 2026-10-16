@@ -309,6 +309,14 @@ void board_console_rx_irq_enable(void)
     HAL_NVIC_EnableIRQ(USART1_IRQn);
 }
 
+bool board_console_rx_ready(void)
+{
+    if (!g_rx_irq) {
+        return (USART1->ISR & USART_ISR_RXNE_RXFNE) != 0u;
+    }
+    return g_rx_tail != g_rx_head;
+}
+
 int board_console_getc(void)
 {
     if (!g_rx_irq) {

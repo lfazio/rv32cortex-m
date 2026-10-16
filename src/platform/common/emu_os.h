@@ -65,6 +65,25 @@ void emu_os_set_serial(bool serial);
  */
 bool emu_os_parallel(unsigned ncores);
 
+/*
+ * The IP stack's own task. Every call into lwIP is made there: `fn(arg)`
+ * runs on it and the caller waits until it returns.
+ *
+ * **Waits, so the stack and the guest still never run at once.** The
+ * stack reads and writes guest state -- gdb's memory and registers, an
+ * uploaded image into the flash the guest executes from -- and each of
+ * those is safe only between slices, which is where the run loop hands
+ * over. What moving it buys is a stack of its own and a task a future
+ * device (USB) can wake, not concurrency.
+ *
+ * The task is created on the first call. A call made from the task
+ * itself runs inline. Only in a build with EMU_NET.
+ */
+void emu_os_net_call(void (*fn)(void *), void *arg);
+
+/* The run starts: what emu_os_report counts is from here. */
+void emu_os_run_begin(void);
+
 /* One line: how much of each task's stack the run used. */
 void emu_os_report(void);
 

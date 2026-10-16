@@ -59,7 +59,9 @@
 #define configSTACK_DEPTH_TYPE uint32_t
 #define configIDLE_SHOULD_YIELD 1
 #define configUSE_TASK_NOTIFICATIONS 1
-#define configTASK_NOTIFICATION_ARRAY_ENTRIES 1
+/* Two: the rounds' own, and EMU_OS_NOTIFY_NET for the IP stack's task,
+ * so a hand-off to it can never be counted as a core finishing. */
+#define configTASK_NOTIFICATION_ARRAY_ENTRIES 2
 #if defined(EMU_OS_PORT_POSIX_SMP)
 #define configNUMBER_OF_CORES EMU_OS_MAX_CORES
 #else

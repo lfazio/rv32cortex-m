@@ -585,6 +585,7 @@ static int emu_main_body(int argc, char **argv)
                            (unsigned)(board_ram_size / 1024u),
                            (unsigned)board_ram_size, st.backend);
 
+        emu_os_run_begin();
         const uint64_t t0 = board_perf_cycles();
         uint64_t retired = 0;
         bool capped = false;

@@ -54,8 +54,24 @@
 #endif
 #endif
 
+/*
+ * The IP stack's task: lwIP's input path into a callback -- telnet, TFTP
+ * writing flash, the gdb stub building a reply in two 1 KiB buffers.
+ */
+#ifndef EMU_OS_NET_STACK_BYTES
+#if defined(EMU_OS_PORT_POSIX)
+#define EMU_OS_NET_STACK_BYTES (1u * 1024u * 1024u)
+#else
+#define EMU_OS_NET_STACK_BYTES (4u * 1024u)
+#endif
+#endif
+
 #define MAIN_WORDS (EMU_OS_MAIN_STACK_BYTES / sizeof(StackType_t))
 #define CORE_WORDS (EMU_OS_CORE_STACK_BYTES / sizeof(StackType_t))
+#define NET_WORDS (EMU_OS_NET_STACK_BYTES / sizeof(StackType_t))
+
+/* Notification slots: 0 is the rounds', 1 the network task's. */
+#define EMU_OS_NOTIFY_NET 1u
 
 /* Equal priorities, so the order a round's tasks become ready in is the
  * order they run in -- see emu_os_system_step. */
@@ -296,6 +312,69 @@ uint32_t emu_os_system_step(emu_system_t *sys, uint32_t quantum, bool *all_idle)
 }
 
 /* ------------------------------------------------------------------ */
+/* The IP stack's task                                                 */
+/* ------------------------------------------------------------------ */
+
+#if EMU_NET
+static StaticTask_t g_net_tcb;
+static StackType_t g_net_stack[NET_WORDS];
+static TaskHandle_t g_net;
+static TaskHandle_t g_net_caller;
+static void (*g_net_fn)(void *);
+static void *g_net_arg;
+static uint64_t g_net_calls;
+/*
+ * What the hand-offs cost, apart from the jobs: board_cycles() from the
+ * caller's release to the job starting, plus from the job's end to the
+ * caller running again. The jobs' own time is the stack's, and would be
+ * spent the same on the caller's task.
+ */
+static uint32_t g_net_t0, g_net_t1, g_net_t2;
+static uint64_t g_net_switch;
+/* Both at the start of the run, so the report is the run's alone. */
+static uint64_t g_net_calls0, g_net_switch0;
+
+/*
+ * One job at a time, handed over and handed back by notification -- the
+ * same pair the round uses, in a slot of their own. The notification is
+ * what orders the caller's writes of the job before the task's reads,
+ * on a single core and, by the kernel's guarantees, under SMP.
+ */
+static void net_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        (void)ulTaskNotifyTakeIndexed(EMU_OS_NOTIFY_NET, pdTRUE, portMAX_DELAY);
+        g_net_t1 = board_cycles();
+        g_net_fn(g_net_arg);
+        g_net_t2 = board_cycles();
+        (void)xTaskNotifyGiveIndexed(g_net_caller, EMU_OS_NOTIFY_NET);
+    }
+}
+
+void emu_os_net_call(void (*fn)(void *), void *arg)
+{
+    if (g_net != NULL && xTaskGetCurrentTaskHandle() == g_net) {
+        fn(arg); /* a job asking for another: it is already here */
+        return;
+    }
+    if (g_net == NULL) {
+        g_net = xTaskCreateStatic(net_task, "net", NET_WORDS, NULL,
+                                  EMU_OS_PRIORITY, g_net_stack, &g_net_tcb);
+    }
+    g_net_fn = fn;
+    g_net_arg = arg;
+    g_net_caller = xTaskGetCurrentTaskHandle();
+    g_net_calls++;
+    g_net_t0 = board_cycles();
+    (void)xTaskNotifyGiveIndexed(g_net, EMU_OS_NOTIFY_NET);
+    (void)ulTaskNotifyTakeIndexed(EMU_OS_NOTIFY_NET, pdTRUE, portMAX_DELAY);
+    g_net_switch +=
+        (uint32_t)(g_net_t1 - g_net_t0) + (uint32_t)(board_cycles() - g_net_t2);
+}
+#endif /* EMU_NET */
+
+/* ------------------------------------------------------------------ */
 /* The first task                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -371,8 +450,36 @@ static unsigned used_bytes(TaskHandle_t t, uint32_t size)
     return (unsigned)((free_bytes < size) ? size - free_bytes : 0u);
 }
 
+void emu_os_run_begin(void)
+{
+#if EMU_NET
+    g_net_calls0 = g_net_calls;
+    g_net_switch0 = g_net_switch;
+#endif
+}
+
 void emu_os_report(void)
 {
+#if EMU_NET
+    /*
+     * The hand-offs during the run: the stack's whole schedule, and the
+     * two switches each costs are what having a task of its own costs
+     * the guest. Not since boot -- a park between runs serves the link
+     * and an upload, and would bury the run's figure.
+     */
+    const uint64_t calls = g_net_calls - g_net_calls0;
+
+    if (g_net != NULL) {
+        char n[21];
+        char c[21];
+
+        emu_console_printf(
+            "  os       net on its own task: %s hand-offs, %s cycles in "
+            "switches\n",
+            emu_u64_str(n, (unsigned long long)calls),
+            emu_u64_str(c, (unsigned long long)(g_net_switch - g_net_switch0)));
+    }
+#endif
     if (g_task_rounds != 0u) {
         char n[21];
 
@@ -400,6 +507,13 @@ void emu_os_report(void)
                 (unsigned)EMU_OS_CORE_STACK_BYTES);
         }
     }
+#if EMU_NET
+    if (g_net != NULL) {
+        emu_console_printf(", net %u of %u",
+                           used_bytes(g_net, EMU_OS_NET_STACK_BYTES),
+                           (unsigned)EMU_OS_NET_STACK_BYTES);
+    }
+#endif
     emu_console_puts("\n");
 #else
     (void)used_bytes;

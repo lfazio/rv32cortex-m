@@ -55,6 +55,15 @@ bool emu_net_active(void);
 void emu_net_poll(void);
 
 /*
+ * Whether emu_net_poll() would do anything now: a byte has arrived,
+ * output is queued, or a timer is due. Reads only plain state, so the
+ * run loop asks it on its own task and hands the stack a turn -- a task
+ * switch each way, 1,742 cycles on the F746 -- only when there is
+ * something to do.
+ */
+bool emu_net_wants_poll(void);
+
+/*
  * The console, once the UART is gone. Output is buffered and delivered
  * to whichever telnet client is connected; input comes from the same
  * connection, and is what the guest's virtual UART reads.
@@ -119,6 +128,8 @@ void emu_net_image_abandon(uint32_t len);
 
 bool emu_net_telnet_init(void);
 void emu_net_telnet_poll(void);
+/* Console output a connected client has not been sent yet. */
+bool emu_net_telnet_pending(void);
 bool emu_net_tftp_init(void);
 
 /*
@@ -158,5 +169,9 @@ bool emu_net_gdb_init(struct emu_core *core,
 bool emu_net_gdb_attached(void);
 
 uint32_t emu_net_gdb_run(uint32_t budget, uint32_t *retired);
+
+/* Send what the stub has queued; the stack's poll calls it. */
+void emu_net_gdb_poll(void);
+bool emu_net_gdb_pending(void);
 
 #endif /* EMU_NET_H */

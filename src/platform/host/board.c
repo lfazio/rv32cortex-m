@@ -261,6 +261,17 @@ void board_console_putc(uint8_t c)
  * A byte in, from the link. Never stdin: this is a batch runner and a
  * guest blocking on input it will never get is a hang, not a prompt.
  */
+bool board_console_rx_ready(void)
+{
+    if (g_fd < 0) {
+        return g_in_tail != g_in_head;
+    }
+
+    struct pollfd p = {g_fd, POLLIN, 0};
+
+    return poll(&p, 1, 0) > 0 && (p.revents & POLLIN) != 0;
+}
+
 int board_console_getc(void)
 {
     uint8_t c;

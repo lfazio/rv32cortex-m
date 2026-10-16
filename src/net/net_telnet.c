@@ -162,6 +162,11 @@ void emu_net_telnet_poll(void)
     telnet_flush();
 }
 
+bool emu_net_telnet_pending(void)
+{
+    return g_conn != NULL && g_tx_head != g_tx_tail;
+}
+
 /* ------------------------------------------------------------------ */
 /* Callbacks                                                           */
 /* ------------------------------------------------------------------ */

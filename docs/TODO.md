@@ -115,10 +115,11 @@ From the last measurements in [linux.md](linux.md).
 
 ## Platforms
 
-- [ ] Add FreeRTOS support to the host emulator, lwip in one task and emulator in another one (it will allow to instanciate later a tinyusb network device over USB). https://github.com/STMicroelectronics/x-cube-freertos/tree/main (https://github.com/hathach/tinyusb)
-      FreeRTOS is on the host and every board already, a task per
-      emulated core ([os.md](os.md)); the stack is still `NO_SYS`,
-      polled between slices.
+- [ ] A tinyusb network device over USB (https://github.com/hathach/tinyusb).
+      What it was waiting for is done: lwIP runs on a FreeRTOS task of
+      its own, given a turn by the run loop when it has work
+      ([network.md](network.md#on-a-task-of-its-own)). A USB device's
+      events would wake that task, which today only the run loop does.
 - [ ] Architecture a pcie emulated peripheral over USB for the emulator and a pcie over USB slave firmware to deploy on the various boards to exercise the available peripherals.
 - [ ] Implement an emulated GTM device for the stm32f746zg/stm32n657 and plug it in the pcie framework.
 - [ ] Add support for armv6-m in frontend armv7-m (rename it armvX-m)

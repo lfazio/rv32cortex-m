@@ -33,6 +33,36 @@
 
 #if EMU_NET
 #include "emu_net.h"
+
+/*
+ * The stack's calls, as jobs for its task (emu_os_net_call). Nothing in
+ * this file calls into lwIP directly any more; everything it used to
+ * call goes through these.
+ */
+static void net_init_job(void *arg)
+{
+    *(bool *)arg = emu_net_init();
+}
+
+typedef struct {
+    emu_core_t *core;
+    const emu_gdb_target_t *target;
+    const emu_gdb_flash_ops_t *flash;
+    bool ok;
+} net_gdb_args_t;
+
+static void net_gdb_job(void *arg)
+{
+    net_gdb_args_t *const a = (net_gdb_args_t *)arg;
+
+    a->ok = emu_net_gdb_init(a->core, a->target, a->flash);
+}
+
+static void net_poll_job(void *arg)
+{
+    (void)arg;
+    emu_net_poll();
+}
 #endif
 
 /*
@@ -73,7 +103,10 @@ bool emu_board_link_start(void)
 #if EMU_NET
     emu_console_printf("net    %s on this port; telnet %s 23\n",
                        EMU_NET_LINK_PPP ? "PPP" : "SLIP", emu_net_addr_str());
-    if (emu_net_init()) {
+    bool ok = false;
+
+    emu_os_net_call(net_init_job, &ok);
+    if (ok) {
         return true;
     }
     emu_console_printf("net    failed to start; staying on the serial "
@@ -145,7 +178,11 @@ void emu_debug_start(emu_system_t *sys, const emu_cpu_ops_t *ops)
          * decide here.
          */
         flash = &emu_image_gdb_flash;
-        if (!emu_net_gdb_init(&sys->core[0], gt, flash)) {
+
+        net_gdb_args_t a = {&sys->core[0], gt, flash, false};
+
+        emu_os_net_call(net_gdb_job, &a);
+        if (!a.ok) {
             emu_console_printf("gdb    stub failed to start\n");
             return;
         }
@@ -269,7 +306,9 @@ void emu_debug_poll(void)
 void emu_board_poll(void)
 {
 #if EMU_NET
-    emu_net_poll();
+    if (net_serving() && emu_net_wants_poll()) {
+        emu_os_net_call(net_poll_job, NULL);
+    }
 #endif
     /*
      * The console's receive line. The transport is polled, so this is

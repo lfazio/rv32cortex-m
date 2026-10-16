@@ -307,6 +307,29 @@ bool emu_net_init(void)
     return true;
 }
 
+/*
+ * When the stack next needs a turn with nothing arriving: the cycle
+ * count at the end of the last poll, and how long after it lwIP's next
+ * timer is due. Written by the poll on the stack's task, read by
+ * emu_net_wants_poll() on the run loop's, never at the same time.
+ */
+static uint32_t g_poll_cycles;
+static uint32_t g_sleep_cycles;
+
+/*
+ * At least once a second whatever the timers say: the TFTP watchdog and
+ * sys_now()'s wrap-correct accumulation both want a regular turn, and
+ * 216 MHz times a second still fits the 32-bit difference.
+ */
+#define EMU_NET_MAX_SLEEP_MS 1000u
+
+bool emu_net_wants_poll(void)
+{
+    return board_console_rx_ready() || emu_net_telnet_pending() ||
+           emu_net_gdb_pending() ||
+           (board_cycles() - g_poll_cycles) >= g_sleep_cycles;
+}
+
 void emu_net_poll(void)
 {
     static uint32_t last_ms;
@@ -334,6 +357,7 @@ void emu_net_poll(void)
     slipif_poll(&g_slip);
 #endif
     emu_net_telnet_poll();
+    emu_net_gdb_poll();
 
     /*
      * The timer wheel is not. sys_check_timeouts() walks a list and is
@@ -349,4 +373,12 @@ void emu_net_poll(void)
         sys_check_timeouts();
         emu_net_tftp_poll();
     }
+
+    u32_t sleep_ms = sys_timeouts_sleeptime();
+
+    if (sleep_ms > EMU_NET_MAX_SLEEP_MS) {
+        sleep_ms = EMU_NET_MAX_SLEEP_MS;
+    }
+    g_poll_cycles = board_cycles();
+    g_sleep_cycles = sleep_ms * (board_clock_hz() / 1000u);
 }

@@ -356,6 +356,13 @@ void board_console_putc(uint8_t c);
 int board_console_getc(void);
 
 /*
+ * Whether getc would return a byte, without taking it. The run loop
+ * asks before handing the IP stack its turn, because the hand-off costs
+ * a task switch each way and most slices have nothing for the stack.
+ */
+bool board_console_rx_ready(void);
+
+/*
  * Arm receive interrupts, where reception needs them.
  *
  * A USART with one byte of holding register and a run loop that reaches

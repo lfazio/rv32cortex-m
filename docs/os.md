@@ -17,6 +17,11 @@ and the kernel is fetched by [`cmake/freertos.cmake`](../cmake/freertos.cmake).
 | `stm32f446` | `GCC/ARM_CM4F` | no: one core |
 | `stm32n6` | `GCC/ARM_CM55_NTZ/non_secure`, secure-only | no: one core |
 
+In a build with the network (`EMU_NET`) the IP stack has a task too,
+`net`, which runs only while the run loop waits for it -- see
+[network.md](network.md#on-a-task-of-its-own). It uses notification
+slot 1, so a hand-off can never be counted as a core finishing a round.
+
 A multicore guest on a multicore host runs its cores in parallel: see
 [SMP on the host](#smp-on-the-host). Everywhere else the cores take turns,
 reproducibly. Kernel: FreeRTOS-Kernel `V11.1.0`, MIT, pinned by
