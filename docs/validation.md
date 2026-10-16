@@ -321,6 +321,24 @@ The older Berkeley suite: `rv32ui`, `rv32um`, `rv32ua`, `rv32uc` and `rv32mi`.
 All of it passes, none skipped — `rv32mi/pmpaddr` once PMP was implemented,
 and `rv32mi/breakpoint` once Sdtrig was.
 
+**From 2026-09-16 to 2026-10-16, 64 of the 77 could not fail.** The
+tests end with an `ecall` carrying the verdict, and the `rv32u*` ones make
+it from U-mode. 1babe4e made the runner's exit call M-mode only, so a
+Linux process's `write(2)` reaches its kernel -- and from then on those
+`ecall`s trapped to the tests' own handler, which writes the verdict to
+`tohost` and loops: the suite's own protocol, which this emulator does not
+watch. The run went to the cap, a capped run exits 0, and a failing test
+loops in the same place with a different value. With `ADD` broken, the
+script reported `rv32ui` 42 of 42.
+
+`run-riscv-tests.sh` reads the verdict where the test leaves it now: a run
+at the cap must be parked in `write_tohost`, and `gp` is what it wrote --
+1 for a pass, `(sub-test << 1) | 1` for a failure, the code the `ecall`
+would have carried. Anywhere else at the cap is a hang. Against the same
+broken `ADD`: 15 failures, `add` at sub-test 8 among them. 77 of 77
+interpreted and under the JIT, and through `scripts/emu-board` over the
+host's link.
+
 It has no `rv32uf`, so it contributes nothing to FP coverage; that comes
 entirely from arch-test's `F` family. Two of its tests are load-bearing in a
 way the count hides: `rv32mi/csr` fails on purpose when the runner's `-march`

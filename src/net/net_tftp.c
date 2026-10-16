@@ -52,6 +52,10 @@
  */
 #define EMU_TFTP_IDLE_MS 8000u
 
+/* TFTP's block: lwIP's TFTP_MAX_PAYLOAD_SIZE, which tftp.c keeps to
+ * itself. A block shorter than this is the last one. */
+#define EMU_TFTP_BLOCK 512u
+
 /*
  * One transfer at a time. TFTP has no notion of concurrent access to the
  * same file and this server has exactly one client by construction --
@@ -60,6 +64,15 @@
 static uint32_t g_written;
 static bool g_busy;
 static bool g_failed;
+/*
+ * Whether the block just written was short, and so the last. lwIP calls
+ * close() when a transfer completes, when its own timer gives up on the
+ * client, and from tftp_cleanup() -- and the callback is told nothing
+ * about which. It calls write() for every block first, the empty one
+ * that ends a multiple of 512 bytes included, so this is what tells the
+ * three apart.
+ */
+static bool g_complete;
 
 /* When this session last saw a packet, for the watchdog below. */
 static uint32_t g_last_ms;
@@ -113,6 +126,7 @@ static void *tftp_open(const char *fname, const char *mode, u8_t write)
     g_written = 0u;
     g_busy = true;
     g_failed = false;
+    g_complete = false;
     g_last_ms = sys_now();
 
     return (void *)&g_handle;
@@ -126,6 +140,7 @@ static int tftp_write(void *handle, struct pbuf *p)
         return -1;
     }
     g_last_ms = sys_now();
+    g_complete = p->tot_len < EMU_TFTP_BLOCK;
 
     /*
      * A pbuf may be chained, and the pieces have to be handed over in
@@ -159,12 +174,24 @@ static void tftp_close(void *handle)
     g_busy = false;
 
     /*
-     * close() is called on the error path too, and committing there
-     * would advance the flash arena past a half-written image and then
-     * try to run it. A failed upload has to leave the board exactly as
-     * it was.
+     * Three outcomes, not two. A write that failed is the arena filling
+     * up, which an erase fixes. A transfer that stopped short of its
+     * last block was abandoned -- lwIP's timer or the reclaim below gave
+     * up on the client -- and is skipped without being run.
+     *
+     * Committing that case was the defect: the first upload after a
+     * reset erased the arena, the board was deaf for seconds, the client
+     * retransmitted its request, was refused ("Only one connection at a
+     * time") and stopped after one block -- and the reclaim committed
+     * the 512 bytes it had and ran them.
      */
-    emu_net_image_end(g_written, !g_failed);
+    if (g_failed) {
+        emu_net_image_end(g_written, false);
+    } else if (g_complete) {
+        emu_net_image_end(g_written, true);
+    } else {
+        emu_net_image_abandon(g_written);
+    }
 }
 
 static void tftp_error(void *handle, int err, const char *msg, int size)
@@ -181,7 +208,7 @@ static void tftp_error(void *handle, int err, const char *msg, int size)
      */
     if (g_busy) {
         g_busy = false;
-        emu_net_image_end(g_written, false);
+        emu_net_image_abandon(g_written);
     }
 }
 

@@ -359,9 +359,47 @@ __attribute__((section(".itcm"), noinline)) static bool arena_erase(void)
     return true;
 }
 
+/*
+ * Where the arena's blank tail starts: one past the last word that is
+ * not all ones. Erased flash reads all ones and a word of them can be
+ * programmed, so everything from here on is as good as erased.
+ */
+static uint32_t arena_blank_from(void)
+{
+    const volatile uint32_t *const w = (const volatile uint32_t *)ARENA_BASE;
+    uint32_t n = ARENA_SIZE / 4u;
+
+    while (n != 0u && w[n - 1u] == 0xFFFFFFFFu) {
+        n--;
+    }
+    return n * 4u;
+}
+
+/*
+ * A tail worth starting in rather than erasing for. Smaller, and the
+ * next upload would run into the end, fail and be erased for anyway.
+ */
+#define ARENA_MIN_TAIL (64u * 1024u)
+
 static bool arena_ensure_erased(void)
 {
     if (g_arena_erased) {
+        return true;
+    }
+
+    /*
+     * **Not on the first upload after a reset, if what the arena holds
+     * leaves room.** Erasing three 256 KiB sectors takes seconds during
+     * which the board hears nothing, and a client retransmitting its
+     * request meanwhile is refused and gives up: every first upload after
+     * a flash failed that way. A reflash leaves the arena as the last
+     * session left it, so its blank tail is usually most of it.
+     */
+    const uint32_t from = arena_blank_from();
+
+    if (ARENA_SIZE - from >= ARENA_MIN_TAIL) {
+        g_arena_used = from;
+        g_arena_erased = true;
         return true;
     }
 

@@ -145,6 +145,10 @@ void emu_args_usage(void)
         "                       block cache N times; until then interpret",
 #endif
         "  --gdb [port]         serve a gdb stub on localhost (default 1234)",
+#if EMU_NET
+        "  --ppp[=DEV]          the IP stack a board runs -- telnet, TFTP",
+        "                       and gdb -- over a new pty, or DEV",
+#endif
         "  --quiet              suppress the exit summary",
         "  --dump               dump register state on exit",
     };
@@ -389,15 +393,20 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
                 continue;
             }
 #if EMU_NET
-            if (strcmp(a, "--ppp") == 0) {
+            if (strcmp(a, "--ppp") == 0 || strncmp(a, "--ppp=", 6) == 0) {
                 /*
                  * The same IP stack the board runs, over a pty instead of
-                 * a UART. An optional argument names an existing device
-                 * for a caller that has already arranged one end.
+                 * a UART -- or over an existing device, for a caller that
+                 * has already arranged one end, named as `--ppp=DEV`.
+                 *
+                 * Not as a separate argument, which is what it was: an
+                 * optional operand cannot be told from the image, so the
+                 * documented `emu-host --ppp <guest>` took the guest for
+                 * a device and printed the usage.
                  */
                 opt->ppp = true;
-                if (i + 1 < argc && argv[i + 1][0] != '-') {
-                    opt->ppp_dev = argv[++i];
+                if (a[5] == '=') {
+                    opt->ppp_dev = a + 6;
                 }
                 continue;
             }

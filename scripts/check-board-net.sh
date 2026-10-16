@@ -122,13 +122,59 @@ if [ ! -f "$img" ]; then
     exit 1
 fi
 
-timeout 60 nc "$ADDR" 23 >"$log" 2>/dev/null &
+timeout 90 nc "$ADDR" 23 >"$log" 2>/dev/null &
 nc_pid=$!
 
 sleep 3
+
+#
+# **An upload the client abandons must run nothing.** One block and
+# then silence, which is what a client refused mid-transfer leaves: the
+# server gives up on it and closes the transfer the way it closes a
+# finished one, and the board used to commit the 512 bytes and run them.
+# Wait for the board to say it dropped them, then upload for real --
+# which also shows a dropped transfer leaves the server usable.
+#
+python3 - "$ADDR" <<'EOF'
+import socket, struct, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(5)
+s.sendto(b"\x00\x02abandoned\x00octet\x00", (sys.argv[1], 69))
+ack, peer = s.recvfrom(516)
+if ack[:4] == b"\x00\x04\x00\x00":
+    s.sendto(struct.pack(">HH", 3, 1) + b"\x13" * 512, peer)
+EOF
+n=0
+while [ $n -lt 200 ] && ! grep -q 'upload abandoned' "$log"; do
+    sleep 0.1
+    n=$((n + 1))
+done
+if grep -q 'running uploaded image, 512 bytes' "$log"; then
+    bad abandoned "the board ran the one block it was sent"
+elif grep -q 'upload abandoned after 512 bytes' "$log"; then
+    ok abandoned "one block, dropped and not run"
+else
+    bad abandoned "the board never said it dropped the transfer"
+fi
+
 printf 'binary\nput %s isatest\nquit\n' "$img" |
     timeout 30 tftp "$ADDR" >"$up" 2>&1 || true
 
+#
+# Until the uploaded run has printed its terminator, not until the
+# timeout: a minute of waiting on every pass was most of what this
+# cost. The half second after it lets the counters behind it arrive.
+#
+n=0
+while [ $n -lt 550 ] && kill -0 $nc_pid 2>/dev/null; do
+    if sed -n '/running uploaded image/,$p' "$log" | grep -q 'emu-result'; then
+        sleep 0.5
+        break
+    fi
+    sleep 0.1
+    n=$((n + 1))
+done
+kill $nc_pid 2>/dev/null || true
 wait $nc_pid 2>/dev/null || true
 
 # Strip the telnet negotiation and the guest's own control bytes.
@@ -157,6 +203,28 @@ printf '%s\n' "$run" | grep -q 'emu-result' \
     || bad terminator "no emu-result -- the run did not finish"
 
 #
+# The debugger, over the same link. It reads the pc of the guest that
+# just finished: a number only the stub can supply, so an answer is the
+# stub answering. RV32, because that is what was uploaded.
+#
+if command -v gdb-multiarch >/dev/null 2>&1; then
+    # shellcheck disable=SC2016 # $pc and $1 are gdb's, not the shell's
+    g=$(timeout 30 gdb-multiarch -batch -nx \
+        -ex 'set architecture riscv:rv32' \
+        -ex "target remote $ADDR:1234" \
+        -ex 'p/x $pc' -ex detach 2>&1 || true)
+    # shellcheck disable=SC2016
+    pc=$(printf '%s\n' "$g" | sed -n 's/^\$1 = \(0x[0-9a-f]*\)$/\1/p')
+    if [ -n "$pc" ]; then
+        ok gdb "pc $pc"
+    else
+        bad gdb "no answer from the stub on $ADDR:1234"
+    fi
+else
+    say gdb "skipped -- no gdb-multiarch"
+fi
+
+#
 # Reported, not asserted. These are cumulative since boot and a single
 # dropped byte across a session of reflashes is not a fault -- while a
 # threshold picked out of the air is the kind of number that gets
@@ -170,7 +238,12 @@ if [ "$fails" -eq 0 ]; then
     echo "check-board-net: all checks passed"
 else
     echo "check-board-net: $fails failure(s)"
-    echo "--- console ---"
-    echo "$text" | sed 's/^/    /' | head -40
+    #
+    # The run that was graded, not the head of the capture: that is the
+    # previous guest's output, which is the part that cannot explain a
+    # failure of this one.
+    #
+    echo "--- console, from the upload ---"
+    printf '%s\n' "$run" | sed 's/^/    /' | head -80
 fi
 exit $((fails == 0 ? 0 : 1))

@@ -60,9 +60,53 @@ a development machine already has:
 scripts/ppp-host.sh /dev/pts/N          # pppd, which needs root
 ```
 
+`--ppp=DEV` uses an existing device instead of a new pty. It took the
+device as the next argument until 2026-10, so the line above took the
+guest for a device and printed the usage -- for as long as nothing ran
+it, which the next paragraph is about.
+
 The runner's default subnet is 192.168.8.x, so it can be up beside a
-board on 192.168.7.x. The matrix's `host-net` row builds it; nothing
-runs it, because `pppd` needs root.
+board on 192.168.7.x.
+
+**And it is tested without root.** `scripts/check-host-net.sh` runs
+`scripts/check-board-net.sh --no-flash` -- ping, a guest uploaded over
+TFTP and graded from the telnet console, and gdb reading the pc --
+against a `-DEMU_NET=ON -DEMU_NET_LINK=slip` runner, from inside
+`unshare -rn`: a network namespace of its own, where a TUN device needs
+no privilege and `scripts/slip-tun.py` bridges it to the runner's pty
+as it does to a board's UART. PPP would need `pppd`, which wants the
+real root; the stack, the console, TFTP and the stub are the same code
+over either link. The matrix's `host-slip` row runs it under `--test`
+(7 s), and `host-net` still only builds the PPP form.
+
+```sh
+cmake -S . -B build/hnet -DEMU_NET=ON -DEMU_NET_LINK=slip
+cmake --build build/hnet
+scripts/check-host-net.sh build/hnet
+```
+
+**The same, against a board.** `--board DEV` flashes a SLIP firmware
+and bridges the namespace's TUN to the board's UART instead -- the port
+opens inside the namespace like any other file -- and `-- CMD` runs a
+command there in place of the checks, with `EMU_NET_ADDR` set. Which
+is how a suite runs on hardware with no root:
+
+```sh
+cmake -S . -B build/f746slip2m -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
+      -DEMU_PLATFORM=stm32f746 -DEMU_NET=ON -DEMU_NET_LINK=slip \
+      -DEMU_MAX_INSN=2000000 -DEMU_PROBE=<vid:pid:serial>
+cmake --build build/f746slip2m --target flash
+scripts/check-host-net.sh --board /dev/serial/by-id/<the board's> build/f746slip2m -- \
+    env EMU_HOST=$PWD/scripts/emu-board scripts/run-riscv-tests.sh
+```
+
+`EMU_MAX_INSN=2000000` because the shim cannot pass `--max-insn`, and
+the Berkeley tests end by looping (docs/validation.md): at the default
+100 M each one would spend twenty seconds parked. `scripts/emu-board`
+uploads one file -- an ELF stripped, or a flat image given `--load`
+wrapped in a one-segment ELF at that address, so the board copies it to
+RAM. It sent two halves, `rom` and `ram`, from before the board took one
+file, so each half had been arriving as an image of its own.
 
 ## What is served
 
@@ -112,30 +156,48 @@ not ask.
 ### Guest images — TFTP
 
 ```sh
-tftp 192.168.7.2 -c put guest.ro rom
-tftp 192.168.7.2 -c put guest.rw ram
+tftp 192.168.7.2 -c put guest.bin       # or an ELF; the name is not read
 ```
 
-Two pseudo-files, `rom` and `ram`, matching the split the baked-in image
-already has. Both halves go to the flash arena back to back, which makes
-an uploaded image identical in shape to a baked-in one — an earlier
-version wrote the writable half straight into guest RAM, where
-`start_guest()` promptly zeroed it.
+One file, into the flash arena, then the guest restarts on it. An ELF
+is placed by its program headers -- text mapped from flash where it
+lies, writable segments copied to RAM -- and a flat image runs in place.
+It used to be two pseudo-files, `rom` and `ram`, while the board had to
+be told where the read-only part ended; the guest copies its own `.data`
+now, so there is nothing to tell it.
 
-Two things that make this fragile in ways worth knowing:
+What makes it fragile, and what each costs:
 
 - **There is no length in a TFTP request**, so running out of arena is
-  how the end of the arena is discovered. Recovery is to erase and let
-  the client retry — and it has to be wired for *both* halves, because
-  the client sends rom then ram and the transfer that overruns is almost
-  always the second.
+  how its end is discovered: the write fails, the board erases, and the
+  client's retry succeeds. One transfer per erase cycle is meant to
+  fail.
 - **lwIP's TFTP server keeps one session and never reclaims it**, so a
   client killed mid-transfer would wedge every later upload behind "Only
   one connection at a time is supported". `emu_net_tftp_poll()` is a
-  watchdog that rebuilds the server on idleness. It triggers on idleness
-  rather than on the server's own state because lwIP refuses a request
-  before `ctx->open()` is ever reached — a watchdog gated on the wrong
-  observable is a watchdog that never fires.
+  watchdog that rebuilds the server after 8 s of silence. It triggers on
+  idleness rather than on the server's own state because lwIP refuses a
+  request before `ctx->open()` is ever reached -- a watchdog gated on
+  the wrong observable is a watchdog that never fires.
+- **lwIP closes a finished transfer and an abandoned one the same way**:
+  `close()` on the last block, on its own timeout, and from the
+  watchdog's `tftp_cleanup()`, with nothing to say which. `write()` sees
+  every block first, the empty one ending a multiple of 512 bytes
+  included, so a transfer is complete exactly when its last block was
+  short. Anything else is skipped -- the bytes are passed over in the
+  arena, not erased -- and the console says `upload abandoned after N
+  bytes; nothing run`.
+
+  The board used to commit an abandoned transfer and run it, and every
+  first upload after a flash was one: that upload erased the arena
+  first, three 256 KiB sectors, during which the board hears nothing;
+  the client retransmitted its request, was refused as a second
+  session, and stopped after one block; and the watchdog committed the
+  512 bytes and ran them. The F746 no longer erases there if the
+  arena's blank tail is at least 64 KiB, which after a reflash it
+  usually is. `check-board-net.sh` sends one block and goes silent, and
+  requires the board to say it dropped it; with the commit put back that
+  check fails, on the host and on the board.
 
 ## Costs, measured
 

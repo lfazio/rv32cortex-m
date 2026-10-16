@@ -1324,10 +1324,18 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
             emu_console_printf("emu: --ppp: no serial device; continuing "
                                "without a network\n");
         } else {
+            /* The line a script reads the device from, either link. */
+#if defined(EMU_NET_LINK_PPP) && EMU_NET_LINK_PPP
             fprintf(stderr,
                     "emu: ppp on %s\n"
                     "emu:   scripts/ppp-host.sh %s\n",
                     slave, slave);
+#else
+            fprintf(stderr,
+                    "emu: slip on %s\n"
+                    "emu:   scripts/slip-tun.py %s --iface <tun>\n",
+                    slave, slave);
+#endif
         }
     }
     return true;

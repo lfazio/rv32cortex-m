@@ -103,6 +103,7 @@ host-trace|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=ON -DEMU_GUEST_AR
 host-nopmp|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF -DEMU_GUEST_ARCH_PPC=OFF -DEMU_GUEST_ARCH_ARMV7M=OFF -DRV32_EXT_PMP=OFF|PMP compiled out: an absent CSR once read as success here unseen, and isatest hung -- it now tests that the PMP CSRs trap instead
 host-pairs|host|-DEMU_PAIR_STATS=ON|the instruction histograms of all four frontends -- the instrument that names what a JIT still interprets, and a build option no other row turned on
 host-net|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON|the IP stack on the host, over a pty -- this row exists because it did not, and the whole EMU_NET path stopped compiling here while every other row passed
+host-slip|host|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON -DEMU_NET_LINK=slip|**the link, exercised without root**: under --test, scripts/check-host-net.sh -- ping, an upload, the console, gdb -- in a network namespace of its own
 f746-rv32|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF|the shipping firmware: Thumb-2 emitter, lwIP/SLIP/TFTP (EMU_NET defaults ON)
 f746-rv32-nojit|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF -DEMU_JIT=OFF|**the one that was broken**
 f746-g4|stm32f746|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON|the contract check: G4MH-only must link
@@ -218,6 +219,19 @@ echo "$matrix" | while IFS='|' read -r name plat opts why; do
     #
     if [ "$run_tests" -eq 1 ] && [ "$plat" = host ] && [ "$name" = host-net ]; then
         echo "ok (built; tests skipped -- the console is the link)"
+    elif [ "$run_tests" -eq 1 ] && [ "$name" = host-slip ]; then
+        rc=0
+        "$ROOT/scripts/check-host-net.sh" "$dir" </dev/null >>"$dir.log" 2>&1 || rc=$?
+        if [ "$rc" -eq 0 ]; then
+            echo "ok (link exercised)"
+        elif [ "$rc" -eq 77 ]; then
+            echo "ok (built; no network namespace to exercise it in)"
+        else
+            echo "LINK FAILED       (see $dir.log)"
+            grep -m4 -E 'FAIL --' "$dir.log" | sed 's/^/    /'
+            echo "$name link" >>"$failures"
+            continue
+        fi
     elif [ "$run_tests" -eq 1 ] && [ "$plat" = host ] && [ "$name" = host-coremark ]; then
         echo "ok (built; tests skipped -- the runner is native CoreMark)"
     elif [ "$run_tests" -eq 1 ] && [ "$plat" = host ]; then

@@ -48,6 +48,7 @@ fi
 
 GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"
+NM="${RISCV_NM:-${GCC%gcc}nm}"
 command -v "$GCC" >/dev/null || { echo "error: $GCC not found" >&2; exit 1; }
 
 if [[ ! -d "$tests/isa" ]]; then
@@ -101,8 +102,37 @@ for suite in $suites; do
         # sw-misaligned all faulted on the write instead, reporting a store
         # access fault where the test expected its own cause. The other 73
         # never write to their image and passed throughout.
-        result="$("$runner" --quiet --load 0x80000000 --max-insn 2000000 "$bin" 2>&1)"
+        result="$("$runner" --quiet --dump --load 0x80000000 --max-insn 2000000 "$bin" 2>&1)"
         rc=$?
+
+        #
+        # **A run that reaches the cap has not passed.** The tests end with
+        # an ecall carrying the verdict in a0 -- from M-mode the runner's
+        # exit call, and from the U-mode the rv32u* tests drop to, a trap
+        # to their own handler, which since the exit call became M-mode
+        # only (so a Linux process's write(2) reaches its kernel) is what
+        # happens: the handler writes the verdict to `tohost` and loops,
+        # which is the suite's own protocol, and the run goes to the cap.
+        # A capped run exits 0. So 64 of these 77 could not fail -- a
+        # failing one loops in the same place, with a different value.
+        #
+        # The verdict is where the test leaves it: parked in write_tohost,
+        # with gp the value written -- 1 for a pass, (sub-test << 1) | 1
+        # for a failure, the code the ecall would have carried. Anywhere
+        # else at the cap is a hang, and a failure.
+        #
+        if grep -qE 'capped=1|instruction cap reached' <<<"$result"; then
+            wt=$("$NM" "$elf" | awk '$3 == "write_tohost" { print $1 }')
+            rv=$("$NM" "$elf" | awk '$3 == "reset_vector" { print $1 }')
+            pc=$(sed -n 's/^  pc  *\([0-9a-f]*\).*/\1/p' <<<"$result" | tail -1)
+            gp=$(grep -oE '\bgp +[0-9a-f]+' <<<"$result" | tail -1 | awk '{ print $2 }')
+            if [[ -n "$wt" && -n "$rv" && -n "$pc" && -n "$gp" ]] &&
+               (( 16#$pc >= 16#$wt && 16#$pc < 16#$rv )); then
+                rc=$(( 16#$gp == 1 ? 0 : (16#$gp & 0xFF) ))
+            else
+                rc=124
+            fi
+        fi
 
         if [[ $rc -eq 0 ]]; then
             passed=$((passed + 1))

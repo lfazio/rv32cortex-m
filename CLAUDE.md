@@ -3341,6 +3341,39 @@ session, and every one of them recurred:
   layouts. **Move what the workload runs from** before calling a
   difference a cost -- for a translated guest, the buffer.
 
+- **A suite whose cap exits 0 cannot fail a test that ends by looping.**
+  64 of riscv-tests' 77 report from U-mode with an `ecall`; once the
+  runner's exit call became M-mode only (1babe4e, for Linux), they
+  trapped to their own handler, wrote the verdict to `tohost` and looped,
+  and every one reached `--max-insn 2000000` and exited 0 -- pass or
+  fail. For a month "77/77" meant 13 tests; with `ADD` broken, `rv32ui`
+  reported 42 of 42. The script now requires a capped run to be parked
+  in `write_tohost` and reads the verdict from `gp`. This file already
+  says a capped run is not a halted one; **a harness must treat the cap
+  as a verdict of its own**, and a change to how a guest ends -- here,
+  who answers an `ecall` -- must be followed by asking which suites
+  ended that way.
+- **A callback that means "done" and "given up" cannot commit.** lwIP's
+  TFTP server calls `close()` when a transfer completes, when its timer
+  gives up on the client, and from `tftp_cleanup()`, and says nothing
+  about which; the board committed all three, so an upload abandoned
+  after one block ran 512 bytes as a guest -- every first upload after a
+  flash, because that one erased the arena, the board went deaf, and the
+  client gave up. What decides it is the data: a transfer is complete
+  when its last block was short. Found by the first test that pointed a
+  client at the board and then stopped talking, which no harness does
+  on purpose.
+- **A test that needs root is a test nobody runs, and a recipe nobody
+  runs is wrong.** The host's copy of the IP stack was built by the
+  matrix and exercised by nothing, "because pppd needs root" -- and the
+  documented `emu-host --ppp <guest>` did not work: `--ppp` took an
+  optional operand, which cannot be told from the image, so it named
+  the guest as its device and printed the usage. `unshare -rn` gives a
+  network namespace where a TUN device needs no privilege, and SLIP
+  over it reaches the same stack: `scripts/check-host-net.sh`, seven
+  seconds, the `host-slip` row. Before calling a check impossible
+  without privilege, ask which namespace the privilege is checked in.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must

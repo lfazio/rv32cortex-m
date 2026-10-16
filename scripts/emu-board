@@ -17,11 +17,18 @@ right because the alternative is every caller special-casing the board.
 
 How a run happens:
 
-  1. the image is split into a read-only prefix and a writable tail
-  2. both halves are pushed over TFTP, `rom` then `ram`
-  3. the console is read over telnet until the board's terminator line
-  4. everything the guest printed goes to stdout, and the guest's exit
+  1. the image is pushed over TFTP, once: an ELF stripped of its debug
+     sections, which the board places by its program headers; a flat
+     image given --load wrapped in an ELF of one segment at that address,
+     so the board copies it to RAM -- riscv-tests are linked there and
+     write to their own image; any other flat image as it is
+  2. the console is read over telnet until the board's terminator line
+  3. everything the guest printed goes to stdout, and the guest's exit
      status becomes this process's
+
+It pushed two halves, `rom` then `ram`, until the board took one file in
+August -- after which each half arrived as an image of its own, and
+nothing ran this to notice.
 
 The board is one piece of hardware, so runs are serialised with a lock
 file. run-arch-test.sh defaults --jobs to nproc, and without the lock
@@ -46,6 +53,8 @@ BOARD = os.environ.get("EMU_NET_ADDR", "192.168.7.2")
 TFTP_PORT = 69
 TELNET_PORT = 23
 LOCK = os.environ.get("EMU_BOARD_LOCK", "/tmp/emu-board.lock")
+# Where a flat image runs in place: EMU_GUEST_ROM_BASE.
+ROM_BASE = 0x20000000
 
 # The board prints this last, for every run. It is the only thing that
 # says a run is over: there is no process to exit.
@@ -54,8 +63,11 @@ RESULT_RE = re.compile(
 
 
 # ------------------------------------------------------------------
-# Splitting the image
+# Preparing the image
 # ------------------------------------------------------------------
+
+EM_RISCV = 243
+
 
 def objcopy():
     for name in ("riscv64-unknown-elf-objcopy", "riscv32-unknown-elf-objcopy",
@@ -66,87 +78,35 @@ def objcopy():
     return None
 
 
-def read_sections(path):
-    """(name, addr, size, is_progbits) for allocated sections, via readelf."""
-    tool = (objcopy() or "riscv64-unknown-elf-objcopy").replace(
-        "objcopy", "readelf")
-    out = subprocess.run([tool, "-S", "-W", path],
-                         capture_output=True, text=True)
-    if out.returncode != 0:
-        return []
-    secs = []
-    for line in out.stdout.splitlines():
-        m = re.match(r"\s*\[\s*\d+\]\s+(\S+)\s+(\S+)\s+([0-9a-f]+)\s+"
-                     r"([0-9a-f]+)\s+([0-9a-f]+)", line)
-        if not m:
-            continue
-        name, typ, addr, off, size = m.groups()
-        secs.append((name, typ, int(addr, 16), int(size, 16)))
-    return secs
+def flat_as_elf(blob, load):
+    """An ELF32 RISC-V executable of one RWX segment: `blob` at `load`."""
+    ehsize, phsize = 52, 32
+    off = ehsize + phsize
+    ident = b"\x7fELF" + bytes([1, 1, 1]) + bytes(9)
+    eh = ident + struct.pack("<HHIIIIIHHHHHH", 2, EM_RISCV, 1, load, ehsize,
+                             0, 0, ehsize, phsize, 1, 40, 0, 0)
+    ph = struct.pack("<IIIIIIII", 1, off, load, load, len(blob), len(blob),
+                     7, 4)
+    return eh + ph + blob
 
 
-def split_image(path, tmpdir):
-    """
-    Produce (ro_bytes, rw_bytes).
-
-    The board serves the read-only prefix straight out of its flash and
-    copies only the tail into guest RAM. That is not an optimisation
-    here, it is what makes the big tests fit at all: the largest
-    architecture tests need ~345 KiB and the board has 276, of which the
-    prefix is ~140.
-
-    The split point is where .data starts. It cannot be "the end of the
-    last read-only section", because the arch-test link script puts
-    .text.rvmodel *after* .data -- the halves are not sorted by
-    permission, and everything from .data on has to be writable whatever
-    it holds.
-
-    A flat binary carries no section table and so no split point. It
-    gets an empty read-only half and is copied whole into RAM, which is
-    what the host runner's --load does and is fine: those images are
-    kilobytes.
-    """
+def prepare_image(path, load, tmpdir):
+    """The bytes to upload, and what they are, for the log."""
     with open(path, "rb") as f:
-        magic = f.read(4)
+        data = f.read()
 
-    if magic != b"\x7fELF":
-        with open(path, "rb") as f:
-            return b"", f.read()
+    if data[:4] == b"\x7fELF":
+        oc = objcopy()
+        if oc is None:
+            return data, "ELF"
+        out = os.path.join(tmpdir, "image.elf")
+        subprocess.run([oc, "--strip-all", path, out], check=True)
+        with open(out, "rb") as f:
+            return f.read(), "ELF, stripped"
 
-    oc = objcopy()
-    if oc is None:
-        sys.exit("emu-board: no riscv objcopy found; cannot split an ELF")
-
-    flat = os.path.join(tmpdir, "image.bin")
-    subprocess.run([oc, "-O", "binary", path, flat], check=True)
-    with open(flat, "rb") as f:
-        blob = f.read()
-
-    secs = read_sections(path)
-
-    # Allocated sections only. Debug sections are PROGBITS too and sit at
-    # address 0, so including them puts `base` at 0 rather than at the
-    # load address -- and the split point then lands past the end of the
-    # image and is quietly discarded, which presents as a board that
-    # copies the whole image into RAM and runs out of room on exactly the
-    # tests the split exists for.
-    progbits = [s for s in secs
-                if s[1] == "PROGBITS" and s[3] > 0 and s[2] != 0]
-    if not progbits:
-        return b"", blob
-
-    base = min(s[2] for s in progbits)
-    data = [s for s in secs
-            if s[0] in (".data", ".sdata") and s[3] > 0 and s[2] != 0]
-    if not data:
-        # Nothing writable with initialised contents: all of it is the
-        # read-only half, and the guest's .bss lives in RAM above it.
-        return blob, b""
-
-    split = min(s[2] for s in data) - base
-    if split < 0 or split > len(blob):
-        return b"", blob
-    return blob[:split], blob[split:]
+    if load is not None and int(load, 0) != ROM_BASE:
+        return flat_as_elf(data, int(load, 0)), "flat, at %s" % load
+    return data, "flat, in place"
 
 
 # ------------------------------------------------------------------
@@ -235,7 +195,7 @@ def strip_iac(buf):
     return bytes(out)
 
 
-def run_on_board(ro, rw, timeout):
+def run_on_board(image, timeout):
     """Upload, then read the console until the board says the run ended."""
     sock = socket.create_connection((BOARD, TELNET_PORT), timeout=10)
     sock.settimeout(1.0)
@@ -266,8 +226,7 @@ def run_on_board(ro, rw, timeout):
         # out. Back off long enough for the server to give up.
         for attempt in (1, 2, 3):
             try:
-                tftp_put("rom", ro)
-                tftp_put("ram", rw)
+                tftp_put("image", image)
                 break
             except RuntimeError as e:
                 if attempt == 3:
@@ -304,11 +263,6 @@ def main():
     ap.add_argument("--trace-count")
     ap.add_argument("--timeout", type=float,
                     default=float(os.environ.get("EMU_BOARD_TIMEOUT", "90")))
-    ap.add_argument("--no-split", action="store_true",
-                    help="send the whole image as the writable half, so the "
-                         "board serves none of it from flash. Costs RAM and "
-                         "so fails on the largest tests, but it is the A/B "
-                         "that separates a bad image from a bad ROM mapping.")
     ap.add_argument("image")
     args, _unknown = ap.parse_known_args()
 
@@ -321,12 +275,10 @@ def main():
 
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            ro, rw = split_image(args.image, tmp)
-        if args.no_split:
-            ro, rw = b"", ro + rw
+            image, _what = prepare_image(args.image, args.load, tmp)
 
         try:
-            text, m = run_on_board(ro, rw, args.timeout)
+            text, m = run_on_board(image, args.timeout)
         except (OSError, RuntimeError) as e:
             print("emu-board: %s" % e, file=sys.stderr)
             return 125
@@ -336,9 +288,13 @@ def main():
         else:
             # Even --quiet has to pass the guest's own output through:
             # the architecture tests self-report with an RVCP-SUMMARY
-            # line and the harness greps stdout for it.
+            # line and the harness greps stdout for it -- and the state
+            # the run ended in, which is where a Berkeley test parked in
+            # write_tohost leaves its verdict (run-riscv-tests.sh).
+            state = False
             for line in text.splitlines():
-                if "RVCP" in line or "SUMMARY" in line:
+                state = state or "-- guest state --" in line
+                if state or "RVCP" in line or "SUMMARY" in line:
                     print(line)
 
         if m is None:

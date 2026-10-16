@@ -100,6 +100,14 @@ bool emu_net_image_begin(void)
         return false; /* this board takes no uploads */
     }
     g_up_addr = board_flash_arena_begin();
+    /*
+     * A full arena refuses here, and nothing else would ever erase it:
+     * the erase-and-retry in end() is reached from a write that fails,
+     * and there is no write without a begin.
+     */
+    if (g_up_addr == 0u && board_flash_arena_reset()) {
+        g_up_addr = board_flash_arena_begin();
+    }
     return g_up_addr != 0u;
 }
 
@@ -141,6 +149,21 @@ void emu_net_image_end(uint32_t len, bool ok)
      * between guest slices, with the current guest's regions live.
      */
     g_reload = true;
+}
+
+void emu_net_image_abandon(uint32_t len)
+{
+    if (g_up_addr == 0u) {
+        return;
+    }
+    /*
+     * Programmed cells cannot be programmed again, so the bytes are
+     * skipped rather than reused, and the next erase reclaims them.
+     */
+    board_flash_arena_commit(len);
+    g_up_addr = 0u;
+    emu_console_printf("\nemu: upload abandoned after %u bytes; nothing run\n",
+                       (unsigned)len);
 }
 #endif /* EMU_NET */
 

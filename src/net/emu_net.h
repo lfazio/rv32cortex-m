@@ -105,6 +105,13 @@ const char *emu_net_addr_str(void);
 bool emu_net_image_begin(void);
 bool emu_net_image_data(const void *data, uint32_t len, uint32_t off);
 void emu_net_image_end(uint32_t len, bool ok);
+/*
+ * A transfer that stopped before its last block: `len` bytes were
+ * written and none of it is an image. Not end(false), which erases --
+ * that is the recovery for a full arena, and an erase leaves the board
+ * deaf for seconds, which is how a transfer comes to be abandoned.
+ */
+void emu_net_image_abandon(uint32_t len);
 
 /* ------------------------------------------------------------------ */
 /* Internal to src/net/                                                */
