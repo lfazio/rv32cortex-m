@@ -13,6 +13,7 @@
  */
 
 #include "emu/emu_cpu.h"
+#include "emu/emu_finisher.h"
 #include "emu/emu_gdb.h"
 #include "emu/emu_memmap.h"
 
@@ -213,6 +214,44 @@ static rv_hart_t g_hart;
 static rv_clint_t g_clint;
 static rv_aplic_t g_aplic;
 
+/*
+ * The test finisher, and what asked for the last reset through it, for
+ * the status -- a reset stops the run, and the run has to say why.
+ */
+static emu_finisher_t g_finisher;
+static const char *g_reset_by;
+
+/*
+ * Power off or fail: the platform's exit, as an M-mode exit(code) is --
+ * the same recorded status and the same summary line -- through the hook
+ * a bare-metal ECALL takes. With no hook, which is a unit test's hart,
+ * the hart just stops.
+ */
+static void rv32_finish(void *ctx, emu_finish_t how, uint32_t code)
+{
+    rv_hart_t *const h = (rv_hart_t *)ctx;
+
+    if (how == EMU_FINISH_RESET) {
+        g_reset_by = "test finisher";
+        h->state = EMU_STATE_HALTED;
+        return;
+    }
+#if RV_ENABLE_ECALL_HOOK
+    if (h->ecall != NULL) {
+        emu_syscall_t sc;
+
+        memset(&sc, 0, sizeof(sc));
+        sc.nr = 93; /* exit */
+        sc.arg[0] = code;
+        if (h->ecall((emu_cpu_t *)(void *)h, &sc, h->ecall_user)) {
+            return;
+        }
+    }
+#endif
+    (void)code;
+    h->state = EMU_STATE_HALTED;
+}
+
 static emu_cpu_t *rv32_instance(unsigned index)
 {
     /* Single-core. A multi-core frontend would index an array here and
@@ -236,6 +275,8 @@ static void rv32_init(emu_cpu_t *cpu, emu_bus_t *bus, uint32_t coreid)
     rv_hart_init(h, bus, coreid);
     rv_clint_init(&g_clint, h);
     rv_aplic_init(&g_aplic, h);
+    g_finisher.finish = rv32_finish;
+    g_finisher.ctx = h;
 
 #if EMU_HAVE_JIT
     /*
@@ -256,6 +297,7 @@ static void rv32_reset(emu_cpu_t *cpu, uint32_t reset_pc)
 {
     rv_hart_t *h = hart_of(cpu);
     rv_hart_reset(h, reset_pc);
+    g_reset_by = NULL;
     if (rv_backend->reset != NULL) {
         rv_backend->reset(cpu);
     }
@@ -344,7 +386,9 @@ static emu_run_reason_t rv32_step(emu_cpu_t *cpu)
 static bool rv32_add_shared_devices(emu_bus_t *bus)
 {
     return emu_bus_add_mmio(bus, "aplic", RV_GUEST_APLIC_BASE, RV_APLIC_SIZE,
-                            &rv_aplic_ops, &g_aplic);
+                            &rv_aplic_ops, &g_aplic) &&
+           emu_bus_add_mmio(bus, "finisher", RV_GUEST_FINISHER_BASE,
+                            EMU_FINISHER_SIZE, &emu_finisher_ops, &g_finisher);
 }
 
 /*
@@ -452,6 +496,7 @@ static void rv32_status(const emu_cpu_t *cpu, emu_cpu_status_t *out)
     const rv_hart_t *h = hart_of(cpu);
 
     out->backend = rv_backend->name;
+    out->reset_by = g_reset_by;
     out->pc = h->pc;
     out->retired = h->minstret;
     out->state = (emu_state_t)h->state;

@@ -24,6 +24,47 @@ kernel inside it. Run bare, with no payload, it still spins to the
 instruction cap, which is the expected outcome rather than a
 failure.
 
+## Powering off
+
+**A run ends when Linux powers off**, and says how:
+
+    RV32-LINUX-EXT: 0x00000011 checks, 0x00000000 failures -- PASS
+    RV32-LINUX-INIT: done
+    [    3.045533] reboot: Power down
+    emu-result exit=0 exited=1 capped=0 retired=128762098
+
+`scripts/run-linux.sh`, initramfs, 33 s with the rebuilds. Until this
+the test init exited, the kernel panicked about killing init, and the
+run went on to its instruction cap -- 20 billion by default -- before
+it printed its figures.
+
+Three pieces:
+
+- **A test finisher** (`include/emu/emu_finisher.h`), the SiFive test
+  device's semantics at QEMU virt's address, 0x0010_0000: 0x5555 stops
+  with a pass, 0x3333 with a failure coded in the high half, 0x7777
+  resets. It ends the run through the platform's exit, as an M-mode
+  `exit(code)` does, so the summary line is the same; a reset is
+  reported as `emu: core 0 stopped: system reset by test finisher`.
+  `guest-finisher-{pass,fail,reset}` hold each to stopping right after
+  the guest's line. Translated, the stop lands where the block holding
+  the store ends -- 99 instructions retired against 89 interpreted, the
+  same on the host and on all three boards -- and nothing after it is
+  printed.
+- **A `syscon` in the device tree**, with `syscon-poweroff` and
+  `syscon-reboot` naming it. OpenSBI 1.9's generic platform has no
+  SiFive test driver; it resets through those two, writing the value to
+  the register -- read-modify-write, which is why the finisher reads as
+  zero rather than faulting -- and offers Linux the SBI system-reset
+  extension once it has found one.
+- **Init powers off** when its checks pass and **restarts** when one
+  fails, so the two end differently: `exit=0 exited=1`, or the reset
+  line. Forced to restart, it ended `reboot: Restarting system` and
+  `system reset by test finisher`. If `reboot` returns, init exits as it
+  used to, and the panic is still an ending.
+
+A distribution's `poweroff` goes the same way.
+
 ## A distribution to a login prompt
 
 **A full distribution boots to a login prompt.** Yocto

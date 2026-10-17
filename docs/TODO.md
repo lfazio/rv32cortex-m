@@ -60,11 +60,9 @@ From the last measurements in [linux.md](linux.md).
       satp, so identical physical pages in two address spaces are two
       sets of blocks. Keying on the physical page would share them, at
       the cost of a translation on every lookup.
-- [ ] **Benchmarks under Linux**, still not run.
-- [ ] **The run ends in a kernel panic**, because the test init exits
-      and there is nothing in the device tree to power off through. It
-      is read as the terminator, so every run goes to the instruction
-      cap or a timeout to print its figures.
+- [ ] **Benchmarks under Linux**, still not run. A run now ends when
+      init powers the machine off ([linux.md](linux.md#powering-off)),
+      so one can end with its figures rather than at a cap.
 - [ ] **A display under Linux.** The framebuffer device exists
       ([games.md](games.md)); nothing in the device tree describes it to
       a kernel.
@@ -112,7 +110,8 @@ From the last measurements in [linux.md](linux.md).
       events would wake that task, which today only the run loop does.
 - [ ] **PCIe over USB**: the design of an emulated PCIe peripheral
       reached over USB, and of a PCIe-over-USB device firmware deployed
-      on each board to exercise the peripherals it has.
+      on each board to exercise the peripherals it has. The use case is:
+      develop firmware on pc while using real peripherals on boards.
 - [ ] **An emulated GTM** for the STM32F746ZG and the STM32N657, plugged
       into the PCIe framework.
 - [ ] **ARMv6-M in the ARMv7-M frontend**, which becomes armvX-m.

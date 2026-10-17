@@ -357,6 +357,12 @@ add_guest_image(isatest  SOURCES start.S isatest.c
                       -DRV32_EXT_PMP=$<BOOL:${RV32_EXT_PMP}>)
 add_guest_image(hello    SOURCES start.S hello.c)
 
+# The test finisher, three ways: what a supervisor payload powers off
+# through, and what a bare guest can stop with too.
+add_guest_image(finisher-pass  SOURCES start.S finisher.c FLAGS -DFINISH=0x5555)
+add_guest_image(finisher-fail  SOURCES start.S finisher.c FLAGS -DFINISH=0x00073333)
+add_guest_image(finisher-reset SOURCES start.S finisher.c FLAGS -DFINISH=0x7777)
+
 #
 # The framebuffer from the guest's side, through the bus at the addresses
 # a real guest uses. The unit test drives the device's ops table

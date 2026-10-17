@@ -326,6 +326,37 @@ if(EMU_GUEST_ARCH_RV32 AND RV32_EXT_PMP AND TARGET emu-host)
     endif()
 endif()
 
+#
+# The test finisher, which a powered-off Linux run ends through: a pass,
+# a failure with its code, and a reset. Each must stop the run before
+# the guest's next line, which says FAIL -- so that line is a failure
+# pattern, and the pass pattern only asks for the stop after the
+# guest's first line. Requiring the two to be *adjacent* said the same
+# thing until the trace build printed every instruction in between.
+#
+if(TARGET guest-finisher-pass AND EMU_GUEST_ARCH_RV32)
+    # A trace build traces the first 64 instructions, and this guest's
+    # line is inside them, split a byte per trace line. No trace here.
+    set(_notrace "")
+    if(EMU_ENABLE_TRACE)
+        set(_notrace --trace-count 0)
+    endif()
+    foreach(_f "pass:FINISHER-WRITE.*emu-result exit=0 exited=1"
+               "fail:FINISHER-WRITE.*emu-result exit=7 exited=1"
+               "reset:FINISHER-WRITE.*emu: core 0 stopped: system reset by test finisher")
+        string(FIND "${_f}" ":" _at)
+        string(SUBSTRING "${_f}" 0 ${_at} _name)
+        math(EXPR _at "${_at} + 1")
+        string(SUBSTRING "${_f}" ${_at} -1 _want)
+        add_test(NAME guest-finisher-${_name}
+                 COMMAND emu-host ${_notrace} --max-insn 1000000
+                         "${CMAKE_BINARY_DIR}/guest/finisher-${_name}.bin")
+        set_tests_properties(guest-finisher-${_name} PROPERTIES
+            LABELS fast PASS_REGULAR_EXPRESSION "${_want}"
+            FAIL_REGULAR_EXPRESSION "still running")
+    endforeach()
+endif()
+
 if(TARGET guest-isatest AND EMU_GUEST_ARCH_RV32)
     #
     # The PASS line, not just the exit status. The status is the failure
@@ -644,9 +675,10 @@ endif()
 # where the image says which of the core's two encodings it is in.
 #
 # Each expression is something only a completed run prints -- for swt,
-# the reset its watchdog makes, *immediately* after its last line: a
-# reset that comes late lets the guest print a FAIL first, and a pattern
-# that allowed anything in between passed against exactly that. For alu that
+# the reset its watchdog makes after its last line, and a reset that
+# comes late lets the guest print "still running" first, which is a
+# failure pattern below: a first version that allowed anything between
+# the two passed against exactly that. For alu that
 # includes the *number* of checks, so a run that skipped half of them is
 # not a pass, and "ticked", so the decrementer interrupt really did land
 # in the middle of it.
@@ -657,7 +689,7 @@ if(EMU_GUEST_ARCH_PPC)
                "sys:PPC-SYS-END checks=000000b8 fails=00000000"
                "mmu:PPC-MMU-END checks=000000ef fails=00000000"
                "intc:PPC-INTC-END checks=00000031 fails=00000000"
-               "swt:PPC-SWT-END checks=0000000f fails=00000000[\r\n]+emu: core 0 stopped: system reset by SWT_0 timeout"
+               "swt:PPC-SWT-END checks=0000000f fails=00000000.*emu: core 0 stopped: system reset by SWT_0 timeout"
                "coremark:Correct operation validated"
                "coremark-tlb:Correct operation validated"
                "coremark-tlbmiss:Correct operation validated"
@@ -674,7 +706,8 @@ if(EMU_GUEST_ARCH_PPC)
                              "${CMAKE_BINARY_DIR}/guest/ppc-${_name}.elf")
             set_tests_properties(guest-ppc-${_name} PROPERTIES
                 LABELS fast
-                PASS_REGULAR_EXPRESSION "${_want}")
+                PASS_REGULAR_EXPRESSION "${_want}"
+                FAIL_REGULAR_EXPRESSION "still running")
             #
             # And translated. A separate test because it is a separate
             # claim: interpreted, a guest checks the frontend; through
@@ -686,7 +719,8 @@ if(EMU_GUEST_ARCH_PPC)
                                  "${CMAKE_BINARY_DIR}/guest/ppc-${_name}.elf")
                 set_tests_properties(guest-ppc-${_name}-jit PROPERTIES
                     LABELS fast
-                    PASS_REGULAR_EXPRESSION "${_want}")
+                    PASS_REGULAR_EXPRESSION "${_want}"
+                    FAIL_REGULAR_EXPRESSION "still running")
             endif()
         endif()
     endforeach()

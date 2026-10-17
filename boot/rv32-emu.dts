@@ -325,5 +325,40 @@
             interrupt-parent = <&aplic>;
             interrupts = <3 4>;
         };
+
+        /*
+         * What the machine powers off through (include/emu/emu_finisher.h):
+         * one register, 0x5555 to stop with a pass, 0x7777 to reset.
+         *
+         * **A `syscon`, because that is what this OpenSBI reads.** Its
+         * generic platform has no SiFive test driver any more; it resets
+         * through `syscon-poweroff` and `syscon-reboot`, below, which
+         * write a value to a syscon's register -- and offer Linux the SBI
+         * system-reset extension once one is found. Without these three
+         * nodes Linux has nothing to power off through: init exiting was
+         * a kernel panic, and every run went to its instruction cap to
+         * print its figures.
+         *
+         * OpenSBI updates the register with a read-modify-write, so the
+         * device reads as zero rather than faulting.
+         */
+        finisher: test@100000 {
+            compatible = "sifive,test0", "syscon";
+            reg = <0x00100000 0x1000>;
+        };
+    };
+
+    poweroff {
+        compatible = "syscon-poweroff";
+        regmap = <&finisher>;
+        offset = <0x0>;
+        value = <0x5555>;
+    };
+
+    reboot {
+        compatible = "syscon-reboot";
+        regmap = <&finisher>;
+        offset = <0x0>;
+        value = <0x7777>;
     };
 };

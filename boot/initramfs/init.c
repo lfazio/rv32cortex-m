@@ -12,7 +12,7 @@
  *
  * The RISC-V Linux syscall convention: a7 is the number, a0-a5 the
  * arguments, `ecall` the trap, a0 the result. rv32 uses the generic
- * numbering, so write is 64 and exit_group is 94.
+ * numbering, so write is 64, exit_group 94 and reboot 142.
  */
 
 static long sys(long n, long a, long b, long c)
@@ -331,12 +331,29 @@ void _start(void)
     put("RV32-LINUX-INIT: done\n");
 
     /*
-     * exit_group, not exit. Leaving init is a kernel panic either way,
-     * and the panic message is the terminator this run is read by -- a
-     * test whose pass condition is "nothing failed" also passes when
-     * nothing ran, so something only a completed boot can produce has to
-     * be printed above.
+     * reboot(2): power off when every check passed, restart when one
+     * failed -- so the run ends at once either way and says which. The
+     * kernel asks OpenSBI, OpenSBI writes the device tree's syscon, and
+     * the emulator stops: `exit=0 exited=1` for the power-off, `system
+     * reset by test finisher` for the restart. Before, init exited and
+     * the kernel panicked, and the run went on to its instruction cap
+     * before it printed anything.
+     *
+     * Something only a completed boot prints is still above: a pass
+     * condition of "the machine powered off" would also be met by a
+     * kernel that powered off without running init.
      */
+    (void)sys5(142, (long)0xfee1dead, 672274793, /* LINUX_REBOOT_MAGIC1, 2 */
+               (g_ext_fails == 0) ? (long)0x4321fedc  /* CMD_POWER_OFF */
+                                  : (long)0x01234567, /* CMD_RESTART */
+               0, 0);
+
+    /*
+     * Still here: the reboot was refused or there was nothing to power
+     * off through. exit_group, which panics the kernel -- the old ending,
+     * and still an ending.
+     */
+    put("RV32-LINUX-INIT: reboot returned; exiting\n");
     (void)sys(94, 0, 0, 0);
     for (;;) {
     }

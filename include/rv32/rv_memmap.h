@@ -20,4 +20,12 @@
 
 #define RV_GUEST_APLIC_BASE 0x0C000000u
 
+/*
+ * The test finisher (include/emu/emu_finisher.h): what a supervisor
+ * payload powers the machine off through, named as a syscon in
+ * boot/rv32-emu.dts. QEMU virt's address for one, as the rest of this
+ * map already is.
+ */
+#define RV_GUEST_FINISHER_BASE 0x00100000u
+
 #endif /* RV32_RV_MEMMAP_H */
