@@ -548,8 +548,9 @@ else()
     set(_regions_platform 10)
 endif()
 if(EMU_GUEST_ARCH_G4MH)
-    # Its shared devices, plus the INTC and timers each PE gets.
-    math(EXPR _regions_frontend "13 + 4 * ${G4MH_PE_COUNT}")
+    # Its shared devices, plus the INTC and timers each PE gets. The
+    # shared ones include the four KCRC units.
+    math(EXPR _regions_frontend "17 + 4 * ${G4MH_PE_COUNT}")
 else()
     set(_regions_frontend 6)
 endif()
@@ -903,6 +904,7 @@ if(EMU_GUEST_ARCH_G4MH)
         src/frontend/g4mh/g4mh_fpu.c
         src/frontend/g4mh/g4mh_tptm.c
         src/frontend/g4mh/g4mh_ltsc.c
+        src/frontend/g4mh/g4mh_kcrc.c
     )
     # JIT-only, as for RV32 above.
     if(EMU_JIT)

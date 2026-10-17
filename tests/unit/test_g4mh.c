@@ -37,6 +37,7 @@
 #include "g4mh/g4mh_intc.h"
 #include "g4mh/g4mh_intercpu.h"
 #include "g4mh/g4mh_memmap.h"
+#include "g4mh/g4mh_kcrc.h"
 #include "g4mh/g4mh_ltsc.h"
 #include "emu/emu_gdb.h"
 #include "emu/emu_jit.h"
@@ -4562,6 +4563,166 @@ static void test_ipir_self_region(void)
  * more.
  */
 /* ------------------------------------------------------------------ */
+/* KCRC -- the data CRC unit                                           */
+/* ------------------------------------------------------------------ */
+
+#define KCRC(n, r) (G4MH_KCRC_BASE(n) + (r))
+
+/*
+ * Table 57.15, every row: the polynomial, mask, initial value and
+ * control word it lists, then "123456789" a byte at a time, and the
+ * check value it gives. The values are the manual's, not computed here
+ * -- which is the only way a table of CRCs can test a CRC engine.
+ */
+typedef struct {
+    const char *name;
+    uint64_t poly, mask, init;
+    uint32_t ctl;
+    uint64_t check;
+} kcrc_row_t;
+
+static const kcrc_row_t k_kcrc_rows[] = {
+    {"0x2F", 0x2Fu, 0xFFu, 0xFFu, 0x00070003u, 0xDFu},
+    {"SAE_J1850", 0x1Du, 0xFFu, 0xFFu, 0x00070003u, 0x4Bu},
+    {"CCITT16", 0x1021u, 0u, 0xFFFFu, 0x000F0003u, 0x29B1u},
+    {"CRC32", 0x04C11DB7u, 0xFFFFFFFFu, 0xFFFFFFFFu, 0x001F0123u, 0xCBF43926u},
+    {"CRC32 reversed", 0xEDB88320u, 0xFFFFFFFFu, 0xFFFFFFFFu, 0x001F0013u,
+     0xCBF43926u},
+    {"CRC32C", 0x1EDC6F41u, 0xFFFFFFFFu, 0xFFFFFFFFu, 0x001F0123u, 0xE3069283u},
+    {"Baicheva00", 0x90D9u, 0u, 0u, 0x000F0003u, 0x913Au},
+    {"CRC32P4", 0xF4ACFB13u, 0xFFFFFFFFu, 0xFFFFFFFFu, 0x001F0123u, 0x1697D06Au},
+    {"ARC", 0x8005u, 0u, 0u, 0x000F0123u, 0xBB3Du},
+    {"CRC15CAN", 0x4599u, 0u, 0u, 0x000E0003u, 0x059Eu},
+    {"CRC64ECMA", 0x42F0E1EBA9EA3693ull, ~0ull, ~0ull, 0x003F0123u,
+     0x995DC9BBDF1939FAull},
+};
+
+static void kcrc_setup(unsigned n, const kcrc_row_t *row)
+{
+    devwr(KCRC(n, G4MH_KCRC_CTL), row->ctl);
+    devwr(KCRC(n, G4MH_KCRC_POLY0), (uint32_t)row->poly);
+    devwr(KCRC(n, G4MH_KCRC_POLY1), (uint32_t)(row->poly >> 32));
+    devwr(KCRC(n, G4MH_KCRC_XOR0), (uint32_t)row->mask);
+    devwr(KCRC(n, G4MH_KCRC_XOR1), (uint32_t)(row->mask >> 32));
+    devwr(KCRC(n, G4MH_KCRC_DOUT0), (uint32_t)row->init);
+    devwr(KCRC(n, G4MH_KCRC_DOUT1), (uint32_t)(row->init >> 32));
+}
+
+static uint64_t kcrc_result(unsigned n, const kcrc_row_t *row)
+{
+    uint64_t v = devrd(KCRC(n, G4MH_KCRC_DOUT0));
+
+    /* DOUT1 is "undefined" below 64 bits, so only a 64-bit row reads it. */
+    if ((row->ctl >> 16) == 0x3Fu) {
+        v |= (uint64_t)devrd(KCRC(n, G4MH_KCRC_DOUT1)) << 32;
+    }
+    return v;
+}
+
+static void test_kcrc_setting_table(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+    for (unsigned i = 0u; i < sizeof(k_kcrc_rows) / sizeof(k_kcrc_rows[0]); i++) {
+        const kcrc_row_t *row = &k_kcrc_rows[i];
+
+        kcrc_setup(0u, row);
+        for (const char *p = "123456789"; *p != '\0'; p++) {
+            (void)emu_bus_write(&g_bus, KCRC(0u, G4MH_KCRC_DIN), 1u, (uint8_t)*p);
+        }
+        CHECK_EQ64(kcrc_result(0u, row), row->check);
+        if (kcrc_result(0u, row) != row->check) {
+            printf("    kcrc row %s\n", row->name);
+        }
+    }
+}
+
+/*
+ * The manual's own sequence (57.4 (3)), which is the only statement of
+ * the byte order: 34333231H, 38373635H, then 39H after switching DW to
+ * 8 bits, gives 29B1H -- the check value -- so the engine takes a word
+ * least significant byte first. Read the other way round the words are
+ * "43218765" and the result is something else entirely.
+ */
+static void test_kcrc_word_order(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+    devwr(KCRC(0u, G4MH_KCRC_CTL), 0x000F0000u); /* 32-bit input */
+    devwr(KCRC(0u, G4MH_KCRC_POLY0), 0x00001021u);
+    devwr(KCRC(0u, G4MH_KCRC_POLY1), 0u);
+    devwr(KCRC(0u, G4MH_KCRC_XOR0), 0u);
+    devwr(KCRC(0u, G4MH_KCRC_XOR1), 0u);
+    devwr(KCRC(0u, G4MH_KCRC_DOUT0), 0x0000FFFFu);
+    devwr(KCRC(0u, G4MH_KCRC_DOUT1), 0u);
+    devwr(KCRC(0u, G4MH_KCRC_DIN), 0x34333231u);
+    devwr(KCRC(0u, G4MH_KCRC_DIN), 0x38373635u);
+    devwr(KCRC(0u, G4MH_KCRC_CTL), 0x000F0003u); /* 8-bit input */
+    (void)emu_bus_write(&g_bus, KCRC(0u, G4MH_KCRC_DIN), 1u, 0x39u);
+    CHECK_EQ(devrd(KCRC(0u, G4MH_KCRC_DOUT0)), 0x29B1u);
+    /* DIN reads back what was last written. */
+    CHECK_EQ(devrd(KCRC(0u, G4MH_KCRC_DIN)) & 0xFFu, 0x39u);
+}
+
+/*
+ * Out of reset the unit is set up for CRC32 and DOUT0 reads 0 -- "the
+ * value is XORed onto FFFF FFFFH by hardware" -- which is only true if
+ * the register holds FFFF_FFFFH and the read applies the mask. A model
+ * that stored the reset value literally would read FFFF_FFFFH here.
+ */
+static void test_kcrc_reset(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+    for (unsigned n = 0u; n < G4MH_KCRC_COUNT; n++) {
+        CHECK_EQ(devrd(KCRC(n, G4MH_KCRC_DOUT0)), 0u);
+        CHECK_EQ(devrd(KCRC(n, G4MH_KCRC_DOUT1)), 0u);
+        CHECK_EQ(devrd(KCRC(n, G4MH_KCRC_CTL)), 0x001F0000u);
+        CHECK_EQ(devrd(KCRC(n, G4MH_KCRC_POLY0)), 0x04C11DB7u);
+        CHECK_EQ(devrd(KCRC(n, G4MH_KCRC_POLY1)), 0u);
+        CHECK_EQ(devrd(KCRC(n, G4MH_KCRC_XOR0)), 0xFFFFFFFFu);
+        CHECK_EQ(devrd(KCRC(n, G4MH_KCRC_XOR1)), 0u);
+    }
+    /* The reserved bits of CTL keep their reset value whatever is written. */
+    devwr(KCRC(0u, G4MH_KCRC_CTL), 0xFFFFFFFFu);
+    CHECK_EQ(devrd(KCRC(0u, G4MH_KCRC_CTL)), G4MH_KCRC_CTL_WRITABLE);
+}
+
+/*
+ * Two units at once, a byte to each in turn, on the two strides: KCRC1
+ * is in the other bus group from KCRC0, and KCRC2 is KCRC0's group one
+ * stride up. A decode that dropped the stride or the group would put
+ * both computations in one register and get both wrong.
+ */
+static void test_kcrc_units_independent(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+    const kcrc_row_t *crc32 = &k_kcrc_rows[3];
+    const kcrc_row_t *ccitt = &k_kcrc_rows[2];
+
+    kcrc_setup(1u, crc32);
+    kcrc_setup(2u, ccitt);
+    for (const char *p = "123456789"; *p != '\0'; p++) {
+        (void)emu_bus_write(&g_bus, KCRC(1u, G4MH_KCRC_DIN), 1u, (uint8_t)*p);
+        (void)emu_bus_write(&g_bus, KCRC(2u, G4MH_KCRC_DIN), 1u, (uint8_t)*p);
+    }
+    CHECK_EQ64(kcrc_result(1u, crc32), crc32->check);
+    CHECK_EQ64(kcrc_result(2u, ccitt), ccitt->check);
+    /* And the two that were not touched are still at reset. */
+    CHECK_EQ(devrd(KCRC(0u, G4MH_KCRC_DOUT0)), 0u);
+    CHECK_EQ(devrd(KCRC(3u, G4MH_KCRC_DOUT0)), 0u);
+}
+
+/* ------------------------------------------------------------------ */
 /* LTSC -- the long-term system counter                                */
 /* ------------------------------------------------------------------ */
 
@@ -7143,6 +7304,10 @@ void test_g4mh(void)
     test_ipir_routing();
     test_ipir_enable_gates_transfer();
     test_ipir_self_region();
+    test_kcrc_setting_table();
+    test_kcrc_word_order();
+    test_kcrc_reset();
+    test_kcrc_units_independent();
     test_ltsc_capture();
     test_ltsc_absolute_time();
     test_ltsc_preset();

@@ -12,6 +12,8 @@
  *   0xFFFC_4000  INTC1 PE0      the same registers named absolutely
  *   0xFFF8_0000  INTC2          global interrupt controller
  *   0xFFEC_0000  OSTM0          a time base
+ *   0xFFC7_8100  LTSC           the long-term system counter
+ *   0xFFD4_0000  KCRC0..3       the data CRC units (g4mh_kcrc.h)
  *
  * Modelled on the RH850/U2B6: three G4MH cores, PE0 to PE2. The manual's
  * base table runs to PE5 because the larger U2B parts have six, and

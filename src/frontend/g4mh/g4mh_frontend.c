@@ -23,6 +23,7 @@
 #include "g4mh/g4mh_intc.h"
 #include "g4mh/g4mh_intercpu.h"
 #include "g4mh/g4mh_memmap.h"
+#include "g4mh/g4mh_kcrc.h"
 #include "g4mh/g4mh_ltsc.h"
 
 #include <string.h>
@@ -56,6 +57,7 @@ static g4mh_ipir_t g_ipir;
 static g4mh_tptm_t g_tptm;
 /* Shared, not per-PE: one counter is the point of a system timebase. */
 static g4mh_ltsc_t g_ltsc;
+static g4mh_kcrc_t g_kcrc[G4MH_KCRC_COUNT];
 static g4mh_intercpu_port_t g_barr_port[G4MH_PE_COUNT];
 static g4mh_intercpu_port_t g_ipir_port[G4MH_PE_COUNT];
 static g4mh_intercpu_port_t g_tptm_port[G4MH_PE_COUNT];
@@ -95,6 +97,7 @@ G4MH_LOCKED_OPS(g4mh_barrier_ops)
 G4MH_LOCKED_OPS(g4mh_ipir_ops)
 G4MH_LOCKED_OPS(g4mh_tptm_ops)
 G4MH_LOCKED_OPS(g4mh_ltsc_ops)
+G4MH_LOCKED_OPS(g4mh_kcrc_ops)
 #define SHARED_OPS(ops) (&ops##_locked)
 #else
 #define SHARED_OPS(ops) (&ops)
@@ -152,6 +155,9 @@ static void g4mh_ops_init(emu_cpu_t *cpu, emu_bus_t *bus, uint32_t coreid)
         g4mh_ipir_init(&g_ipir);
         g4mh_tptm_init(&g_tptm);
         g4mh_ltsc_init(&g_ltsc);
+        for (unsigned i = 0u; i < G4MH_KCRC_COUNT; i++) {
+            g4mh_kcrc_init(&g_kcrc[i]);
+        }
         g4mh_boot_init(&g_boot);
     }
     /*
@@ -383,7 +389,16 @@ static bool g4mh_ops_add_shared_devices(emu_bus_t *bus)
             */
            emu_bus_add_mmio(bus, "bootctrl", G4MH_BOOTCTRL_BASE,
                             G4MH_BOOTCTRL_SIZE, SHARED_OPS(g4mh_boot_ops),
-                            &g_boot);
+                            &g_boot) &&
+           /* KCRC0..3: shared, stateful between writes, raise nothing. */
+           emu_bus_add_mmio(bus, "kcrc0", G4MH_KCRC_BASE(0u), G4MH_KCRC_SIZE,
+                            SHARED_OPS(g4mh_kcrc_ops), &g_kcrc[0]) &&
+           emu_bus_add_mmio(bus, "kcrc1", G4MH_KCRC_BASE(1u), G4MH_KCRC_SIZE,
+                            SHARED_OPS(g4mh_kcrc_ops), &g_kcrc[1]) &&
+           emu_bus_add_mmio(bus, "kcrc2", G4MH_KCRC_BASE(2u), G4MH_KCRC_SIZE,
+                            SHARED_OPS(g4mh_kcrc_ops), &g_kcrc[2]) &&
+           emu_bus_add_mmio(bus, "kcrc3", G4MH_KCRC_BASE(3u), G4MH_KCRC_SIZE,
+                            SHARED_OPS(g4mh_kcrc_ops), &g_kcrc[3]);
 }
 
 /*

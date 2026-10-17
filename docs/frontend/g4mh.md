@@ -1069,6 +1069,50 @@ combination a guest will actually contain, and confirms the operand order
 `reg2 < reg1` that the manual states and that is easy to implement
 backwards.
 
+## The U2B peripherals
+
+Modelled from the RH850/U2B hardware manual (R01UH0923EJ0130) at the
+U2B6's own addresses, so a vendor driver reaches them by the numbers it
+was written against. Each is driven by the platform's time hooks where
+it has a clock, and none is a host passthrough.
+
+| section | device | units on the U2B6 | where |
+|---|---|---|---|
+| 44 | LTSC, the long-term system counter | 1 | `0xFFC7_8100` |
+| 57 | KCRC, the data CRC unit | 4 | `0xFFD4_0000` + 0x200 n for even n, `0xFFD8_E000` + 0x200 n for odd |
+
+### KCRC
+
+A CRC engine with a programmable polynomial of 8, 15, 16, 32 or 64
+bits, input and output reflection and an output XOR mask
+(`g4mh_kcrc.c`). The state is the CRC register before the mask: a write
+to `DOUTn` installs the initial value, each `DIN` write folds 8, 16 or
+32 bits in, and a read of `DOUTn` applies the mask -- which is why
+`DOUT0` reads 0 out of reset, with the register and the mask both at
+FFFF_FFFFH.
+
+Three things the manual says only by example:
+
+- **A word is fed least significant byte first.** Its CCITT16 sequence
+  writes 34333231H, 38373635H and 39H and gets 29B1H, the check value of
+  "123456789".
+- **CMD1 reflects each input byte and CMD0 the result** -- refin and
+  refout.
+- **CMD2 reflects the polynomial, the input and the output together**:
+  the CRC32 row with the reversed polynomial EDB88320H and only CMD2
+  has the same check value as the plain CRC32 row.
+
+The test is table 57.15 itself: all eleven rows, from the polynomial,
+mask, initial value and control word it lists, give its check value.
+Each of the three facts was broken in turn and each failed the check
+that names it, and nothing else:
+
+| mutant | fails |
+|---|---|
+| words fed most significant byte first | the manual's word sequence alone |
+| CMD2 left out of the input reflection | the CRC32-reversed row alone |
+| the read without the mask | 14 checks |
+
 ## INTC1 / INTC2
 
 Implemented from the RH850/U2B hardware manual R01UH0923EJ0130, tables

@@ -96,7 +96,8 @@ From the last measurements in [linux.md](linux.md).
         missing.
   - [ ] GPIO/ON (section 2), emulated on top of the STM32 GPIO HAL, the
         state of each output sent over a UDP/IP connection.
-  - [ ] KCRC (section 57).
+  - [x] KCRC (section 57) -- `g4mh_kcrc.c`, the four units, held to
+        every row of the manual's setting table.
   - [ ] WDTB (section 33), one channel per core.
 - [ ] **TAUD on the RH850/U2B6**, built on the STM32 timers that remain
       free and plugged into the PCIe framework.

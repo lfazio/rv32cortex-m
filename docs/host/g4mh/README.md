@@ -34,6 +34,8 @@ see [multicore.md](multicore.md).
 | `0xFFFC_4000` | INTC1 PE0 | the same registers named absolutely |
 | `0xFFF8_0000` | INTC2 | global controller, channels 32–1023 — the APLIC's role |
 | `0xFFEC_0000` | OSTM0 | time base (a stand-in, not the real OSTM register set) |
+| `0xFFC7_8100` | LTSC | the 64-bit long-term system counter, U2B §44 |
+| `0xFFD4_0000`, `0xFFD8_E000`, `0xFFD4_0200`, `0xFFD8_E200` | KCRC0-3 | the data CRC units, U2B §57 |
 
 The elegant part of the real design: `EICn` is one 16-bit register at
 `base + 0x02 × n` in **both** units, so the channel array is a single
