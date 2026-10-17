@@ -12,16 +12,12 @@ measured at.
 
 ## Needs a board
 
-- [ ] **The F446 has built and not run** under FreeRTOS.
-- [ ] **The F446's code cache, and G4MH builds'.** At the 32 KB default
-      the JIT used to lose to the interpreter. Decided for the F746
-      (96 KB) and the N6 (128 KB in AXISRAM2), each except with G4MH
-      compiled in, whose RAM leaves no room; on the F746 at 32 KB the
-      smaller Thumb-2 code has since made the JIT level with the
-      interpreter (109.2 against 110.46). The F446 has 128 KiB of RAM in
-      all and has not been measured since. The ways out -- a larger
-      default and what it costs the guest, the interpreter as the
-      firmware default, or smaller code -- are in
+- [ ] **The code cache in G4MH builds.** Decided for the F746 (96 KB),
+      the N6 (128 KB in AXISRAM2) and the F446 (32 KB, where the JIT now
+      beats the interpreter 1.26x: [stm32f446/](stm32f446/README.md#measured-on-the-ir-backends)),
+      each except with G4MH compiled in, whose RAM leaves no room. The
+      ways out -- a larger default and what it costs the guest, the
+      interpreter as the firmware default, or smaller code -- are in
       [jit/tuning.md](jit/tuning.md#emu_jit_code_bytes--the-dominant-term)
       and [backend/thumb2.md](backend/thumb2.md#where-the-bytes-go).
 - [ ] **Board figures that predate `emu_cycles.h`.** Any of them from a

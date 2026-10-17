@@ -97,6 +97,41 @@ both architectures permit. The code is written against `__DCACHE_PRESENT`
 so the same file does the right thing on a Cortex-M7, where these become
 real operations on the lines backing the guest block.
 
+## Measured on the IR backends
+
+Re-run at 919caab, under FreeRTOS -- the first time this part ran the
+scheduler -- with the IR backends, the wrap-correct cycle counter and
+`RelWithDebInfo`. RV32 CoreMark, 40 iterations, `crcfinal 0x65c5` in
+every row:
+
+| | guest RAM | host cycles / guest insn | translations | evicted |
+|---|---|---|---|---|
+| interpreter (`-DEMU_JIT=OFF`) | 114 KiB | 177.0 | | |
+| JIT, 16 KB | 51 KiB | 221.4 | 23,930 | 23,901 |
+| JIT, **32 KB** (the default) | 35 KiB | **140.9** | 13,966 | 13,900 |
+| JIT, 48 KB | 19 KiB | 72.4 | 5,968 | 5,860 |
+
+**At the default the JIT now wins**, 1.26x, where under the old
+translator it lost at its 12 KB default. It is still a queue at 32 KB
+-- CoreMark's working set does not fit -- and 48 KB halves the time
+again for 16 KiB of guest RAM, which on this part is most of what the
+guest has. The default stays: 35 KiB is already the smallest guest RAM
+of any board, and the interpreter's 114 KiB is the alternative for a
+guest that needs room more than speed.
+
+Correctness at the default: `isatest` 836 checks, 0 failures; CoreMark
+x150 "Correct operation validated" across 51,610 evictions, 28.6 s by
+the host's clock against 29.2 s by the firmware's -- the counter wraps
+at 23.9 s here, so the run crosses it. `hello` reports the main task's
+stack at 1,336 of 4,096 bytes.
+
+The 40-iteration runs are under CoreMark's 10 seconds and it prints
+"Errors detected" with a correct CRC, as it does anywhere for a run
+that short; x150 is the valid one.
+
+The flash target took no `EMU_PROBE` until this run, which needed one
+with three ST-LINKs attached.
+
 ## Measured, and settled
 
 These are from this part, under the hand-written Thumb-2 translator that
@@ -124,8 +159,6 @@ current figures — current ones, from the F746, are in
 - **DMA from a guest driver.** Zicbom translates guest addresses to the
   host addresses that actually back them, so a guest cleaning a DMA buffer
   cleans the right ARM cache lines — on a part that has a cache. Untested.
-- **Re-measure on this part.** Nothing here has been run on the F446
-  since the IR backends and the cycle-counter fix.
 
 ## Investigate
 

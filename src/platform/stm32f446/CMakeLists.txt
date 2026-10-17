@@ -197,10 +197,23 @@ endif()
 # Flash and debug
 # ---------------------------------------------------------------------
 
+# Which probe, when more than one is attached: EMU_PROBE, as on the F746
+# (src/platform/stm32f746/CMakeLists.txt says why it is needed). The
+# F446 had no such option because it was the only board when this was
+# written, and with three ST-LINKs attached its flash target failed --
+# leaving whatever firmware was there running.
+set(EMU_PROBE "" CACHE STRING "probe-rs --probe selector (VID:PID:serial)")
+if(EMU_PROBE)
+    set(_probe_arg --probe ${EMU_PROBE})
+else()
+    set(_probe_arg)
+endif()
+
 add_custom_target(flash
     COMMAND probe-rs download --chip STM32F446RETx --connect-under-reset
-            $<TARGET_FILE:emu-stm32f446>
+            ${_probe_arg} $<TARGET_FILE:emu-stm32f446>
     COMMAND probe-rs reset --chip STM32F446RETx --connect-under-reset
+            ${_probe_arg}
     DEPENDS emu-stm32f446
     USES_TERMINAL
     COMMENT "Flashing the Nucleo-F446RE over ST-LINK")

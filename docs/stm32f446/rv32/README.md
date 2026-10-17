@@ -6,7 +6,9 @@ began with, and the one most of its early lessons were learned on.
 **Most of what is measured on this page is history.** It was taken on
 this part under the hand-written Thumb-2 translator, which the shared IR
 backends replaced. The lessons hold; the figures, the function names and
-several of the options do not, and each is marked. Current notes:
+several of the options do not, and each is marked. Current figures for
+this part are in [../README.md](../README.md#measured-on-the-ir-backends);
+current notes:
 [../../frontend/rv32.md](../../frontend/rv32.md),
 [../../backend/thumb2.md](../../backend/thumb2.md),
 [../../jit/tuning.md](../../jit/tuning.md).
