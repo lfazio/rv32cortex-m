@@ -19,14 +19,6 @@ measured at.
       `performance.md` are after the fix. The second half of
       `performance.md` and both `stm32f446/` pages are not, and are
       marked as history.
-- [ ] **The other interpreters' run loops in the F746's ITCM.**
-      ARMv7-M's went 11-17% faster there and stopped moving with the
-      link (`EMU_INTERP_TEXT`); RV32's, G4MH's and PowerPC's are still
-      fetched from flash through the 4 KB I-cache. Each is its own
-      measurement, at three alignments: the N6 lost 4.8% from the same
-      move, and 16 KB of ITCM holds the dispatch path and about one
-      loop besides
-      ([frontend/armv7m.md](frontend/armv7m.md#the-run-loop-in-itcm-and-the-decode-cache-that-lost)).
 
 ## JIT
 

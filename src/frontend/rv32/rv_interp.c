@@ -93,11 +93,13 @@ static EMU_ALWAYS_INLINE uint32_t mulh_uu(uint32_t a, uint32_t b)
  * When RV_INTERP_RAMFUNC is set the run loop is placed in .ramfunc, which
  * the link script maps into SRAM with a load address in flash. noinline
  * keeps it from being folded back into a caller that lives in flash.
+ * Otherwise it goes where the platform puts interpreter loops
+ * (EMU_INTERP_TEXT: the F746's ITCM), which is nothing elsewhere.
  */
 #if RV_INTERP_RAMFUNC
 #define RV_INTERP_SECTION __attribute__((section(".ramfunc"), noinline))
 #else
-#define RV_INTERP_SECTION
+#define RV_INTERP_SECTION EMU_INTERP_TEXT
 #endif
 
 static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,

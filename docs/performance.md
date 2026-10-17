@@ -78,6 +78,39 @@ crypto moves 12% with nothing but where `.bss` lands
 ([frontend/ppc.md](frontend/ppc.md#on-the-f746)), so read its second
 digit as placement.
 
+### The interpreters' loops in ITCM
+
+`EMU_INTERP_TEXT_SECTION`, `.itcm` on the F746 only, puts an
+interpreter's run loop in the 16 KB of zero-wait ITCM instead of flash
+behind the 4 KB I-cache. It started with ARMv7-M
+([frontend/armv7m.md](frontend/armv7m.md#the-run-loop-in-itcm-and-the-decode-cache-that-lost))
+and was then measured for each of the other three, interpreted,
+CoreMark, three function alignments against a worktree at c7b4c5a,
+results and `crcfinal` identical:
+
+| interpreted, F746 | flash | ITCM | |
+|---|---|---|---|
+| ARMv7-M (x40) | 161.9 / 172.9 / 164.3 | 143.6 / 143.8 / 144.3 | **kept**, -11 to -17% |
+| RV32 (x40) | 110.25 / 110.29 / 109.88 | 103.06 / 102.96 / 102.92 | **kept**, -6.6% |
+| G4MH | 95.13 / 97.57 / 98.89 | 95.02 / 93.86 / 93.84 | **kept**, -0.1 to -5.1% |
+| PowerPC (x40) | 212.52 / 208.59 / 215.27 | 224.04 / 219.70 / 219.86 | **not**, +2 to +5% |
+| ...with `ppc_load` and `ppc_store` there too | | 214.83 / 214.83 / 216.36 | not |
+
+**What decides it is how much of the loop is inlined.** ITCM is at 0x0
+and flash at 0x0800_0000, out of a branch's reach, so every call from
+code in ITCM to code in flash goes through a veneer. ARMv7-M's and
+RV32's loops have their decode and execute inlined and call out only on
+slow paths; PowerPC's calls `ppc_exec`, `ppc_decode`, `ppc_load` and the
+address translation for every instruction, and moving the loop needed 28
+veneers to reach them. Moving the accessors as well needed 31, because
+their own callees then need them, and was no better than flash. G4MH's
+smaller gain fits the same reading: its loads and stores are calls too.
+
+Under the JIT the interpreter is the fallback and moves with it: RV32
+CoreMark x120 at 96 KB 14.41 to 14.40, G4MH 53.22 to 52.74. ITCM left
+after the move: 5.6 KB in the RV32 firmware with the network stack's
+flash driver, 2.7 KB in a G4MH one, which is the tightest.
+
 There was an older table here — native ARM against the JIT at five cache
 sizes on a 180 MHz M4, quoting 15.3× to 32.3× slower than native. It
 described the hand-written Thumb-2 translator, which no longer exists,

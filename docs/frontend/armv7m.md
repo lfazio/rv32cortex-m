@@ -588,9 +588,8 @@ the host's, so "copy it" is unlikely to survive contact.
 ## Not done
 
 - **The interpreter is still behind RV32's** on the F746 -- CoreMark
-  143.6 host cycles an instruction from ITCM against RV32's 107.5 from
-  flash, a comparison that is not like for like until RV32's own loop
-  has been tried there. A decode cache is not the way to close it; see
+  143.6 host cycles an instruction against RV32's 103.0, both from
+  ITCM now ([performance.md](../performance.md#the-interpreters-loops-in-itcm)). A decode cache is not the way to close it; see
   [the run loop in ITCM](#the-run-loop-in-itcm-and-the-decode-cache-that-lost).
 - **AIRCR.SYSRESETREQ stops the run** rather than restarting the
   guest -- no platform here restarts one -- and the run summary says

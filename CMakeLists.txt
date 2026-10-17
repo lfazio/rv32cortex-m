@@ -330,8 +330,10 @@ set(EMU_HOT_TEXT_SECTION "${_hot_section_default}" CACHE STRING
 # -- 8.6 KB, twice the part's 4 KB I-cache, fetched from flash -- and the
 # spread across three function alignments from 11 cycles to under 1. On
 # the N6, whose M55 has a 32 KB I-cache, the same move was 4.8% *slower*
-# at every alignment, so it is the F746's alone. See
-# docs/frontend/armv7m.md; each frontend that opts in measures its own.
+# at every alignment, so it is the F746's alone. RV32's loop (-6.6%) and
+# G4MH's (up to -5.1%) are there too; PowerPC's is not, because it calls
+# into flash for every instruction and was 2-5% slower -- see
+# docs/performance.md. Each frontend that opts in measures its own.
 #
 if(EMU_PLATFORM STREQUAL "stm32f746")
     set(_interp_section_default ".itcm")

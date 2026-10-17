@@ -372,8 +372,9 @@ static EMU_ALWAYS_INLINE uint32_t do_sar(g4mh_cpu_t *c, uint32_t v, uint32_t n)
         goto next_insn;                                                        \
     } while (0)
 
-static emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
-                                   uint32_t *retired)
+/* In the platform's interpreter memory, the F746's ITCM (EMU_INTERP_TEXT). */
+static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budget,
+                                                   uint32_t *retired)
 {
     emu_run_reason_t reason = EMU_RUN_BUDGET;
     uint32_t pc = c->pc;

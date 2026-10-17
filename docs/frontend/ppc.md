@@ -586,6 +586,13 @@ translated, without a failure.
 
 ### On the F746
 
+**The interpreter stays in flash**, where the other three frontends'
+loops went to ITCM: moved there it was 2-5% slower at every alignment,
+because `ppc_run` calls `ppc_exec`, the decoder, the accessors and the
+address translation for every instruction and each call from ITCM to
+flash goes through a veneer -- 28 of them, 31 with the accessors moved
+too ([performance.md](../performance.md#the-interpreters-loops-in-itcm)).
+
 `ppc-smp` passes all 41 checks on the Nucleo-F746ZG on both backends,
 the cores two tasks of the board's cooperative scheduler as under the
 host's `--serial`, and `ppc-smp-vle` passes too. Measured at 8409e5b,
