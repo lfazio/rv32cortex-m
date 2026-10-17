@@ -426,8 +426,156 @@ static void test_sysresetreq_reported(void)
     CHECK(st.reset_by == NULL); /* and a reset clears it */
 }
 
+/*
+ * `pending_any` is the OR of `pending`, after everything that changes
+ * it: the interpreter tests it instead of the words before each
+ * instruction, so a writer that skipped it would lose an exception. A
+ * random walk over the exception model -- pend, unpend, raise and drop
+ * a level line, take what is pending or a synchronous fault (sometimes
+ * onto a stack that faults, which leaves the original pending), return
+ * (which re-pends a line still asserted) -- checked after every step,
+ * in both directions.
+ *
+ * Bypassing the summary in `armv7m_take`'s stacking-fault path or in
+ * `deactivate` passed every other test in the tree; this is the test
+ * for them, and it counts that it reached both.
+ */
+static bool any_pending(const armv7m_cpu_t *c)
+{
+    uint32_t any = 0u;
+
+    for (uint32_t w = 0u; w < ARMV7M_NEXC_WORDS; w++) {
+        any |= c->pending[w];
+    }
+    return any != 0u;
+}
+
+static void pend_walk_setup(armv7m_cpu_t *c)
+{
+    armv7m_reset_state(c);
+    c->bus = &g_ua_bus;
+    c->state = EMU_STATE_RUNNING;
+    c->vtor = UA_RAM_BASE;
+    c->msp = c->r[ARMV7M_SP] = UA_RAM_BASE + 0xF000u;
+    c->r[ARMV7M_PC] = UA_CODE;
+    /* Every line and the configurable faults enabled, so that what is
+     * pending can be taken. */
+    memset(c->enabled, 0xFF, sizeof(c->enabled));
+    c->shcsr |= 0x00070000u; /* MEMFAULTENA, BUSFAULTENA, USGFAULTENA */
+}
+
+static void test_pending_summary(void)
+{
+    armv7m_cpu_t *const c = &g_ua_cpu;
+    uint32_t seed = 12345u;
+    uint32_t wrong = 0u;
+    uint32_t repends = 0u;
+    uint32_t stack_faults = 0u;
+    uint32_t takes = 0u;
+    uint32_t sync_left = 0u;
+
+    memset(g_ua_ram, 0, sizeof(g_ua_ram));
+    emu_bus_init(&g_ua_bus);
+    CHECK(
+        emu_bus_add_ram(&g_ua_bus, "ram", UA_RAM_BASE, g_ua_ram, UA_RAM_SIZE));
+    for (uint32_t v = 1u; v < ARMV7M_NEXC; v++) {
+        const uint32_t handler = UA_RAM_BASE + 0x801u;
+
+        memcpy(&g_ua_ram[v * 4u], &handler, 4u);
+    }
+    pend_walk_setup(c);
+
+    for (uint32_t i = 0u; i < 20000u; i++) {
+        seed = seed * 1103515245u + 12345u;
+        const uint32_t r = seed >> 8;
+
+        switch (r % 6u) {
+        case 0u:
+            armv7m_set_pending(c, 2u + (r >> 4) % (ARMV7M_NEXC - 2u),
+                               ((r >> 12) & 1u) != 0u);
+            break;
+        case 1u:
+            armv7m_set_irq(c, (r >> 4) % 8u, ((r >> 12) & 3u) != 0u);
+            break;
+        case 2u: {
+            /* Take something pending -- a quarter of the time onto a
+             * stack with no memory under it. */
+            bool preempts = false;
+            const uint32_t exc = armv7m_pending_exc(c, &preempts);
+            const bool bad = ((r >> 4) & 3u) == 0u;
+
+            if (exc == 0u) {
+                break;
+            }
+            if (bad) {
+                c->r[ARMV7M_SP] = 0x00000100u;
+            }
+            takes++;
+            (void)armv7m_take(c, exc, c->r[ARMV7M_PC]);
+            if (bad && armv7m_is_pending(c, exc)) {
+                stack_faults++;
+            }
+            break;
+        }
+        case 4u: {
+            /* A synchronous one, never pending, as armv7m_raise takes a
+             * fault or an SVC -- onto a bad stack half the time, which
+             * is what leaves it pending afterwards. */
+            static const uint32_t sync[] = {3u, 4u, 5u, 6u, 11u};
+            const uint32_t exc = sync[(r >> 4) % 5u];
+
+            if (((r >> 8) & 1u) != 0u) {
+                c->r[ARMV7M_SP] = 0x00000100u;
+            }
+            takes++;
+            (void)armv7m_take(c, exc, c->r[ARMV7M_PC]);
+            if (armv7m_is_pending(c, exc)) {
+                sync_left++;
+            }
+            break;
+        }
+        case 3u:
+            if (armv7m_handler_mode(c) && c->r[ARMV7M_SP] >= UA_RAM_BASE) {
+                const uint32_t exc = c->xpsr & ARMV7M_IPSR_MASK;
+
+                (void)armv7m_exc_return(c, c->r[ARMV7M_LR]);
+                if (exc >= ARMV7M_EXC_EXTERNAL && armv7m_is_pending(c, exc)) {
+                    repends++;
+                }
+            }
+            break;
+        default:
+            if (((r >> 4) & 63u) == 0u) {
+                pend_walk_setup(c);
+            }
+            break;
+        }
+        /* Checked before a lockup is cleared away: a locked-up core runs
+         * nothing, but the summary is still meant to be the OR. */
+        if (c->pending_any != any_pending(c)) {
+            wrong++;
+        }
+        if (c->state != EMU_STATE_RUNNING || c->r[ARMV7M_SP] < UA_RAM_BASE) {
+            pend_walk_setup(c); /* a lockup, or a frame that never was */
+        }
+    }
+    CHECK_EQ(wrong, 0u);
+    if (getenv("ARMV7M_WALK") != NULL) {
+        printf("    pending walk: %u takes, %u re-pends, %u stacking faults, "
+               "%u synchronous left pending\n",
+               (unsigned)takes, (unsigned)repends, (unsigned)stack_faults,
+               (unsigned)sync_left);
+    }
+    /* And that it went where it was meant to. */
+    CHECK(takes > 1000u);
+    CHECK(repends > 50u);
+    CHECK(stack_faults > 50u);
+    CHECK(sync_left > 50u);
+}
+
 void test_armv7m(void)
 {
+    test_pending_summary();
     test_sysresetreq_reported();
     test_fetch_execute_never();
     test_gdb_fp_registers();

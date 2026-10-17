@@ -199,6 +199,14 @@ typedef struct armv7m_cpu {
 
     /* ---- the exception model ---- */
     uint32_t pending[ARMV7M_NEXC_WORDS];
+    /*
+     * Whether any bit of `pending` is set: what the interpreter tests
+     * before each instruction, where scanning the words cost it 6-8% on
+     * the F746. Kept by pending_put in armv7m_exc.c, the one writer of
+     * `pending`, recomputed from the words on every change -- so it can
+     * be wrong only by being true, which costs a scan.
+     */
+    bool pending_any;
     uint32_t active[ARMV7M_NEXC_WORDS];
     uint32_t enabled[ARMV7M_NIRQ / 32u]; /* external lines only */
     uint8_t prio[ARMV7M_NEXC];           /* configured, top 4 bits */
@@ -572,6 +580,38 @@ static inline armv7m_exc_t armv7m_mem_write(armv7m_cpu_t *c, uint32_t addr,
         return ARMV7M_X_NONE;
     }
     return armv7m_mem_write_checked(c, addr, size, unpriv, v);
+}
+
+/*
+ * A whole instruction's fetch, both halfwords at once when both are in
+ * the bus's fetch cache: one test of the MPU and the execute-never space
+ * and one of the window, where a 32-bit instruction through
+ * armv7m_mem_fetch16 made each twice. Returns the length, or 0 for
+ * anything else, and the caller then fetches halfword by halfword
+ * through armv7m_mem_fetch16, which raises the fault if there is one. A
+ * second halfword across a 256 MB boundary, where the execute-never
+ * answer can change, is "anything else".
+ */
+static inline uint32_t armv7m_fetch_insn_hit(armv7m_cpu_t *c, uint32_t pc,
+                                             uint16_t *hw, uint16_t *w1)
+{
+    const emu_bus_t *const bus = c->bus;
+    const uint32_t off = pc - bus->fetch_base;
+
+    if (EMU_UNLIKELY(!armv7m_mpu_off(c) || armv7m_default_xn(pc) ||
+                     off >= bus->fetch_span)) {
+        return 0u;
+    }
+    *hw = *(const uint16_t *)(const void *)(bus->fetch_host + off);
+    if (!armv7m_is_32bit(*hw)) {
+        return 2u;
+    }
+    if (EMU_UNLIKELY(off + 2u >= bus->fetch_span ||
+                     ((pc + 2u) & 0x0FFFFFFFu) == 0u)) {
+        return 0u;
+    }
+    *w1 = *(const uint16_t *)(const void *)(bus->fetch_host + off + 2u);
+    return 4u;
 }
 
 static inline armv7m_exc_t armv7m_mem_fetch16(armv7m_cpu_t *c, uint32_t addr,

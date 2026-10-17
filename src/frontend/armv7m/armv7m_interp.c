@@ -2168,7 +2168,11 @@ emu_run_reason_t armv7m_run(armv7m_cpu_t *c, uint32_t budget, uint32_t *retired)
          * instruction restartable from its ICI state, which none of these
          * are written to be.
          */
-        {
+        /*
+         * Only when something is pending: `pending_any` is one load where
+         * scanning the words was 6-8% of the interpreter on the F746.
+         */
+        if (EMU_UNLIKELY(c->pending_any)) {
             bool preempts = false;
             const uint32_t exc = armv7m_pending_exc(c, &preempts);
 
@@ -2186,29 +2190,28 @@ emu_run_reason_t armv7m_run(armv7m_cpu_t *c, uint32_t budget, uint32_t *retired)
         }
 
         uint16_t hw = 0u;
-        {
-            const X x = armv7m_mem_fetch16(c, pc, &hw);
+        uint16_t w1 = 0u;
+        uint32_t len = armv7m_fetch_insn_hit(c, pc, &hw, &w1);
+
+        if (EMU_UNLIKELY(len == 0u)) {
+            /*
+             * Halfword by halfword, each checked: the second can sit in
+             * a different MPU region from the first -- the straddle case
+             * the RV32 frontend had to learn about separately.
+             */
+            X x = armv7m_mem_fetch16(c, pc, &hw);
 
             if (x != OK) {
                 armv7m_raise(c, x, pc);
                 continue;
             }
-        }
-
-        const uint32_t len = armv7m_insn_len(hw);
-        uint16_t w1 = 0u;
-
-        if (len == 4u) {
-            /*
-             * The second halfword gets its own fetch, because it can sit
-             * in a different MPU region from the first -- the straddle
-             * case the RV32 frontend had to learn about separately.
-             */
-            const X x = armv7m_mem_fetch16(c, pc + 2u, &w1);
-
-            if (x != OK) {
-                armv7m_raise(c, x, pc);
-                continue;
+            len = armv7m_insn_len(hw);
+            if (len == 4u) {
+                x = armv7m_mem_fetch16(c, pc + 2u, &w1);
+                if (x != OK) {
+                    armv7m_raise(c, x, pc);
+                    continue;
+                }
             }
         }
 
@@ -2253,7 +2256,12 @@ emu_run_reason_t armv7m_run(armv7m_cpu_t *c, uint32_t budget, uint32_t *retired)
          * so at most one SysTick could ever be delivered per slice.
          */
         if ((c->systick_ctrl & 1u) != 0u) {
-            armv7m_systick_tick(c, 1u);
+            /* The common tick inline: nothing reloads or pends above 1. */
+            if (EMU_LIKELY(c->systick_value > 1u)) {
+                c->systick_value--;
+            } else {
+                armv7m_systick_tick(c, 1u);
+            }
         }
     }
 

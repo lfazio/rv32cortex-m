@@ -84,6 +84,22 @@ static inline void bit_put(uint32_t *m, uint32_t n, bool on)
     }
 }
 
+/*
+ * Every write of `pending` comes through here, so that `pending_any`
+ * follows it: recomputed from all the words rather than adjusted, so
+ * that it cannot drift from them however the bits change.
+ */
+static void pending_put(armv7m_cpu_t *c, uint32_t exc, bool on)
+{
+    uint32_t any = 0u;
+
+    bit_put(c->pending, exc, on);
+    for (uint32_t w = 0u; w < ARMV7M_NEXC_WORDS; w++) {
+        any |= c->pending[w];
+    }
+    c->pending_any = any != 0u;
+}
+
 bool armv7m_is_pending(const armv7m_cpu_t *c, uint32_t exc)
 {
     return exc < ARMV7M_NEXC && bit_get(c->pending, exc);
@@ -97,7 +113,7 @@ bool armv7m_is_active(const armv7m_cpu_t *c, uint32_t exc)
 void armv7m_set_pending(armv7m_cpu_t *c, uint32_t exc, bool on)
 {
     if (exc >= 2u && exc < ARMV7M_NEXC) {
-        bit_put(c->pending, exc, on);
+        pending_put(c, exc, on);
         if (on) {
             c->irq_maybe = true;
         }
@@ -124,6 +140,7 @@ void armv7m_reset_state(armv7m_cpu_t *c)
     c->faultmask = 0u;
     c->basepri = 0u;
     memset(c->pending, 0, sizeof(c->pending));
+    c->pending_any = false;
     memset(c->active, 0, sizeof(c->active));
     memset(c->enabled, 0, sizeof(c->enabled));
     memset(c->prio, 0, sizeof(c->prio));
@@ -644,7 +661,7 @@ static bool exception_taken(armv7m_cpu_t *c, uint32_t exc)
     sp_load(c);
     c->r[ARMV7M_PC] = vec & ~1u;
     bit_put(c->active, exc, true);
-    bit_put(c->pending, exc, false);
+    pending_put(c, exc, false);
     c->excl_open = false;
     return true;
 }
@@ -661,7 +678,7 @@ bool armv7m_take(armv7m_cpu_t *c, uint32_t exc, uint32_t return_pc)
         const uint32_t f = mm ? ARMV7M_EXC_MEMMANAGE : ARMV7M_EXC_BUSFAULT;
         const uint32_t ena = mm ? SHCSR_MEMFAULTENA : SHCSR_BUSFAULTENA;
 
-        bit_put(c->pending, exc, true); /* the original stays pending */
+        pending_put(c, exc, true); /* the original stays pending */
         if ((c->shcsr & ena) != 0u &&
             group(c, exc_prio(c, f)) < armv7m_exec_priority(c)) {
             exc = f;
@@ -777,7 +794,7 @@ static void deactivate(armv7m_cpu_t *c, uint32_t exc)
     /* A level-sensitive line still asserted pends again. */
     if (exc >= ARMV7M_EXC_EXTERNAL &&
         bit_get(c->line, exc - ARMV7M_EXC_EXTERNAL)) {
-        bit_put(c->pending, exc, true);
+        pending_put(c, exc, true);
     }
 }
 

@@ -400,6 +400,46 @@ the EXC_RETURN test, SysTick -- and the largest of those would need a
 summary of `pending[]` kept by its five writers, which is the derived
 state CLAUDE.md warns about.
 
+**A second round** took three per-instruction costs out of the loop,
+each measured on the board at three `-falign-functions` layouts against
+the one before -- every layout of each step below every layout of the
+step before:
+
+- the **whole instruction in one fetch**, both halfwords from the bus's
+  window at once (`armv7m_fetch_insn_hit`) where a 32-bit instruction
+  made the MPU, execute-never and window tests twice;
+- **SysTick's common tick inline**, a decrement when the counter is
+  above 1, where every instruction called `armv7m_systick_tick`;
+- **no pending-exception scan unless something is pending.** Removing
+  the scan outright, as an upper bound, was worth 6-8% -- more than its
+  3.3% of samples, through the loop's code and registers. It is gated
+  on `pending_any` now, the OR of the pending words, which one helper
+  recomputes on every write of them. `test_pending_summary` walks the
+  exception model at random -- pend, unpend, a level line, takes onto
+  good stacks and bad, returns that re-pend -- and requires the summary
+  to equal the OR after every step; each of the five writers bypassed
+  fails it, two of which nothing else in the tree noticed. Its first
+  version reached none of those paths, because nothing in it was
+  enabled, and said so only because it counts what it reached.
+
+Against a worktree at b6724fd, results and retired counts identical:
+
+| interpreted | host cycles / guest instruction, before | after | |
+|---|---|---|---|
+| `nvic` | 211.7 | 205.9 | -2.7% |
+| `crypto` | 169.0 | 158.9 | -6.0% |
+| `dhrystone` | 206.9 | 192.7 | -6.9% |
+| `coremark`, 40 iterations | 177.9 | 161.9 | -9.0% |
+
+CoreMark has gone 302.5 to 161.9 over both rounds, 1.87x; in the
+profiling configuration ARMv7-M is 165.2 against RV32's 107.5, a gap of
+1.54x where it was 3.1x. What is left, by the same profile: decode and
+execute 53% of samples, the loop and `step` 29%, fetch 9%, data
+accesses 9%. The next lever is the decode itself -- the execute
+functions take raw halfwords and decode as they go, so a cache of
+decoded instructions like PowerPC's means reshaping the interpreter
+around a decoded form.
+
 **The execute-never test on the fast path had nothing that could fail
 it.** `tests/armv7m-diff`'s `xn-default` fetches from the peripherals,
 and passed with the inline test removed: no cache ever holds an address
@@ -492,11 +532,11 @@ the host's, so "copy it" is unlikely to survive contact.
 
 ## Not done
 
-- **The interpreter's remaining 1.7x against RV32's** on the F746
-  (182.5 against 107.5 host cycles an instruction), spread across the
-  per-instruction checks; see
-  [the profile](#the-interpreter-profiled-on-the-board). The pending
-  scan is the largest at about 3%.
+- **The interpreter's remaining 1.54x against RV32's** on the F746
+  (165.2 against 107.5 host cycles an instruction in the profiling
+  configuration), half of it decode and execute; see
+  [the profile](#the-interpreter-profiled-on-the-board). A cache of
+  decoded instructions is the lever, and a reshaping of the interpreter.
 - **AIRCR.SYSRESETREQ stops the run** rather than restarting the
   guest -- no platform here restarts one -- and the run summary says
   so: `emu: core 0 stopped: system reset by SYSRESETREQ`

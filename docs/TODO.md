@@ -27,9 +27,11 @@ measured at.
       `performance.md` are after the fix. The second half of
       `performance.md` and both `stm32f446/` pages are not, and are
       marked as history.
-- [ ] **ARMv7-M's interpreter is still 1.7x RV32's per instruction** on
-      the F746, spread across per-instruction checks of a few percent
-      each, after the fetch and data paths went inline
+- [ ] **ARMv7-M's interpreter is still 1.54x RV32's per instruction** on
+      the F746, after two rounds took it from 3.1x. Half of what is left
+      is decode and execute, from raw halfwords every time: a cache of
+      decoded instructions, as PowerPC has, is the lever, and needs the
+      interpreter reshaped around a decoded form
       ([frontend/armv7m.md](frontend/armv7m.md#the-interpreter-profiled-on-the-board)).
 
 ## JIT
