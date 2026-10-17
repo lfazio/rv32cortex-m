@@ -156,6 +156,20 @@ typedef void (*emu_print_fn)(void *ctx, const char *s);
 #endif
 
 /*
+ * EMU_INTERP_TEXT -- an interpreter's run loop, in the memory the
+ * platform names for it, which is not always the dispatch path's: on the
+ * F746 ITCM made ARMv7-M's interpreter 11-17% faster and on the N6 4.8%
+ * slower. Nothing at all where no section is named, so a platform that
+ * does not opt in builds exactly what it did before. noinline for the
+ * reason EMU_HOT_TEXT gives.
+ */
+#if defined(__GNUC__) && defined(EMU_INTERP_TEXT_SECTION)
+#define EMU_INTERP_TEXT __attribute__((section(EMU_INTERP_TEXT_SECTION), noinline))
+#else
+#define EMU_INTERP_TEXT
+#endif
+
+/*
  * EMU_PER_CORE -- state belonging to whichever core is running, kept per
  * host thread.
  *

@@ -435,10 +435,65 @@ CoreMark has gone 302.5 to 161.9 over both rounds, 1.87x; in the
 profiling configuration ARMv7-M is 165.2 against RV32's 107.5, a gap of
 1.54x where it was 3.1x. What is left, by the same profile: decode and
 execute 53% of samples, the loop and `step` 29%, fetch 9%, data
-accesses 9%. The next lever is the decode itself -- the execute
-functions take raw halfwords and decode as they go, so a cache of
-decoded instructions like PowerPC's means reshaping the interpreter
-around a decoded form.
+accesses 9%. The next lever looked like the decode itself -- the
+execute functions take raw halfwords and decode as they go -- and was
+not: see [the next section](#the-run-loop-in-itcm-and-the-decode-cache-that-lost).
+
+### The run loop in ITCM, and the decode cache that lost
+
+**`armv7m_run` is in the F746's ITCM** (`EMU_INTERP_TEXT_SECTION`, on by
+default there and nowhere else). With the decode it inlines it is
+8.6 KB, twice the part's 4 KB I-cache, and from flash its figure moved
+with where the linker put it. Against a worktree at 22efa80, retired
+counts, checksums and `crcfinal` identical, and the wall clock taken
+from the host end agreeing:
+
+| interpreted, F746 | before | in ITCM | |
+|---|---|---|---|
+| `coremark`, 40 iterations, three function alignments | 161.9 / 172.9 / 164.3 | 143.6 / 143.8 / 144.3 | -11 to -17% |
+| `coremark`, wall clock | 8.23 s | 7.28 s | |
+| `nvic` | 206.0 | 177.8 | -13.7% |
+| `crypto` | 158.9 | 139.8 | -12.0% |
+| `dhrystone` | 192.7, 7.96 s | 169.9, 7.01 s | -11.9% |
+
+The spread across alignments went from 11 cycles to under 1, which is
+the other half of the result: the figure is a property of the code now
+and not of the link. The JIT does not move (CoreMark 34.71 against
+34.61), since it runs from its buffer.
+
+**The N6 is the opposite**, which is why the option is per platform and
+separate from `EMU_HOT_TEXT_SECTION`: 167.2-167.3 from ordinary memory
+and 175.2-175.3 from ITCM, 4.8% slower at all three alignments. Its M55
+has a 32 KB I-cache, which holds the loop; why ITCM then costs is not
+established.
+
+**The decode cache was built three ways and measured worse every time**,
+which is a result about the M7 rather than about the idea: PowerPC's
+cache is worth 35% on a host, and its decode is a table lookup and an
+extended-opcode search. Each version kept the interpreter's own decode
+-- the one checked against the M7 -- and moved the fields a leaf
+extracts into a 16-byte entry keyed on the pc and the bits:
+
+| CoreMark, F746 | host cycles / instruction |
+|---|---|
+| no cache, from flash | 161.9 / 172.9 / 164.3 |
+| 16-bit instructions cached | 178.1 |
+| 32-bit only, inlined into the loop | 182.9 / 184.1 / 182.3 |
+| 32-bit only, out of line | 164.8 / 169.9 / 187.4 |
+| ...the same binary, every entry "run the leaf" | 190.9 / 194.2 / 223.3 |
+| no cache, in ITCM | 143.6 / 143.8 / 144.3 |
+| 32-bit only, in ITCM | 148.7 / 147.7 / 148.8 |
+
+Callgrind said the 32-bit cache saved 3.5% of host instructions (441.2M
+to 425.7M), and the 16-bit one cost 4.6%. On the board the 16-bit
+decode is a few compares and the field extraction is one `UBFX` each,
+which costs less than the lookup and the indirect branch that replace
+them. The decoded forms do save what they were for -- the
+same-binary row, which only toggles whether an entry is decoded, is
+25-35 cycles behind -- but the lookup and the code it adds give it all
+back, and with the I-cache taken out of the question the cache is still
+3% behind. Misses were not the reason: 3.5% of lookups on CoreMark and
+3.1% on Dhrystone at the board's 256 entries.
 
 **The execute-never test on the fast path had nothing that could fail
 it.** `tests/armv7m-diff`'s `xn-default` fetches from the peripherals,
@@ -532,11 +587,11 @@ the host's, so "copy it" is unlikely to survive contact.
 
 ## Not done
 
-- **The interpreter's remaining 1.54x against RV32's** on the F746
-  (165.2 against 107.5 host cycles an instruction in the profiling
-  configuration), half of it decode and execute; see
-  [the profile](#the-interpreter-profiled-on-the-board). A cache of
-  decoded instructions is the lever, and a reshaping of the interpreter.
+- **The interpreter is still behind RV32's** on the F746 -- CoreMark
+  143.6 host cycles an instruction from ITCM against RV32's 107.5 from
+  flash, a comparison that is not like for like until RV32's own loop
+  has been tried there. A decode cache is not the way to close it; see
+  [the run loop in ITCM](#the-run-loop-in-itcm-and-the-decode-cache-that-lost).
 - **AIRCR.SYSRESETREQ stops the run** rather than restarting the
   guest -- no platform here restarts one -- and the run summary says
   so: `emu: core 0 stopped: system reset by SYSRESETREQ`

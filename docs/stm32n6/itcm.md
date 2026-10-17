@@ -49,6 +49,15 @@ ITCM and 20.21 with 128 KiB in AXISRAM2, where this page's ITCM placement
 was worth 1.36%. ITCM keeps the dispatch path either way
 (`EMU_HOT_TEXT_SECTION`). See [../jit/tuning.md](../jit/tuning.md).
 
+**An interpreter's run loop is not here, by measurement.**
+`EMU_INTERP_TEXT_SECTION` puts ARMv7-M's in the F746's ITCM, where it
+is 11-17% faster; on this part the same `-DEMU_INTERP_TEXT_SECTION=.itcm`
+took interpreted CoreMark from 167.2-167.3 host cycles an instruction to
+175.2-175.3 at three function alignments, 4.8% slower, so its default
+here is empty. The M55's 32 KB I-cache already holds the 8.6 KB loop;
+why ITCM is slower than that is not established. See
+[../frontend/armv7m.md](../frontend/armv7m.md#the-run-loop-in-itcm-and-the-decode-cache-that-lost).
+
 ## The fix
 
 `board_itcm_init` fills all 64 KiB with `uint32_t` writes before copying

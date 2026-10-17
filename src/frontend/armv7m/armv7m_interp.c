@@ -2136,7 +2136,16 @@ armv7m_exc_t armv7m_store_u(armv7m_cpu_t *c, uint32_t addr, uint32_t size,
 /* The run loop                                                        */
 /* ------------------------------------------------------------------ */
 
-emu_run_reason_t armv7m_run(armv7m_cpu_t *c, uint32_t budget, uint32_t *retired)
+/*
+ * In ITCM on the F746 (EMU_INTERP_TEXT), with the decode it inlines,
+ * about 8.6 KB. From flash it fetched through a 4 KB I-cache, and the
+ * figure moved with where the linker put it: CoreMark at 161.9, 172.9
+ * and 164.3 host cycles an instruction at three function alignments,
+ * and 143.6 to 144.3 here. Not on the N6, where it was slower. See
+ * docs/frontend/armv7m.md, which also has why there is no decode cache.
+ */
+EMU_INTERP_TEXT emu_run_reason_t armv7m_run(armv7m_cpu_t *c, uint32_t budget,
+                                            uint32_t *retired)
 {
     uint32_t done = 0u;
 

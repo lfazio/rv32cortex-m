@@ -324,6 +324,24 @@ set(EMU_HOT_TEXT_SECTION "${_hot_section_default}" CACHE STRING
     "linker section for the per-dispatch path (empty: ordinary .text)")
 
 #
+# And an interpreter's run loop, which is a third question with its own
+# answer on each part. ARMv7-M's interpreted CoreMark on the F746 went
+# 161.9-172.9 host cycles an instruction to 143.6-144.3 with it in ITCM
+# -- 8.6 KB, twice the part's 4 KB I-cache, fetched from flash -- and the
+# spread across three function alignments from 11 cycles to under 1. On
+# the N6, whose M55 has a 32 KB I-cache, the same move was 4.8% *slower*
+# at every alignment, so it is the F746's alone. See
+# docs/frontend/armv7m.md; each frontend that opts in measures its own.
+#
+if(EMU_PLATFORM STREQUAL "stm32f746")
+    set(_interp_section_default ".itcm")
+else()
+    set(_interp_section_default "")
+endif()
+set(EMU_INTERP_TEXT_SECTION "${_interp_section_default}" CACHE STRING
+    "linker section for an interpreter's run loop (empty: ordinary .text)")
+
+#
 # How many times a pc must miss the block cache before it is translated;
 # until then it is interpreted. 1 translates on the first miss, which is
 # the default because nothing measured gains from more -- see
@@ -724,6 +742,7 @@ target_compile_definitions(emucore PUBLIC
     #
     $<$<BOOL:${EMU_JIT_CODE_SECTION}>:EMU_JIT_CODE_SECTION="${EMU_JIT_CODE_SECTION}">
     $<$<BOOL:${EMU_HOT_TEXT_SECTION}>:EMU_HOT_TEXT_SECTION="${EMU_HOT_TEXT_SECTION}">
+    $<$<BOOL:${EMU_INTERP_TEXT_SECTION}>:EMU_INTERP_TEXT_SECTION="${EMU_INTERP_TEXT_SECTION}">
     EMU_JIT_HOT_THRESHOLD=${EMU_JIT_HOT_THRESHOLD}u
     #
     # Whether a JIT was *asked for*. emu_jit.h reconciles this with what

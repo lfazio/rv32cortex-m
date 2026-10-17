@@ -3428,6 +3428,23 @@ session, and every one of them recurred:
   declined instruction when a test wants the rate, and say in the
   frontend's notes that a translated read is up to a chain behind.
 
+- **A decode cache pays where decoding is expensive, and on a Cortex-M7
+  it was not; the I-cache was the cost nobody had measured.** ARMv7-M's
+  interpreter decodes from raw halfwords, the profile said decode and
+  execute were half its time, and PowerPC's decode cache is worth 35% --
+  so a cache was the obvious lever, and docs/TODO.md called it that. It
+  was built three ways and on the F746 it lost or tied every time --
+  still 3% behind with the I-cache taken out of the question -- while
+  callgrind said the 32-bit version saved 3.5% of host instructions: on
+  the M7 a field is one `UBFX`, and a lookup and an indirect branch cost
+  more than the compares they replace. What the same work found
+  instead was that the 8.6 KB run loop, fetched from flash through a
+  4 KB I-cache, was 11-17% of the run and all of its sensitivity to
+  layout -- in ITCM the three alignments agree to a cycle. And the move
+  is not portable: on the N6, whose 32 KB I-cache holds the loop, ITCM
+  was 4.8% *slower*. **Before optimising the code an interpreter runs,
+  move where it runs from**, and measure that on every part it goes to.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must
