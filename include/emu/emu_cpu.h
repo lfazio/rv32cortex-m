@@ -176,6 +176,14 @@ typedef struct emu_cpu_status {
     bool faulted;
     uint32_t fault_pc;
     uint32_t fault_insn;
+    /*
+     * Set when the core stopped because the guest asked for a system
+     * reset, naming what asked: SYSRESETREQ, a watchdog. No platform
+     * here restarts a guest, so a reset ends the run -- and a run that
+     * ended on one has to say so, or a watchdog that fired reads like a
+     * guest that finished.
+     */
+    const char *reset_by;
 } emu_cpu_status_t;
 
 /* ------------------------------------------------------------------ */

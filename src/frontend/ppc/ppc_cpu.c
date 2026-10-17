@@ -11,6 +11,7 @@
 #include "ppc/ppc_decode.h"
 #include "ppc/ppc_intc.h"
 #include "ppc/ppc_stm.h"
+#include "ppc/ppc_swt.h"
 
 #include "emu/emu_lock.h"
 
@@ -78,7 +79,7 @@ void ppc_cpu_init(ppc_cpu_t *c, struct emu_bus *bus, uint32_t coreid)
     ppc_decode_init(); /* before any core can decode */
     c->pvr = PPC_PVR_E200Z759N3;
     c->vle = true;
-    c->stm_until = 0xFFFFFFFFu;
+    c->soc_until = 0xFFFFFFFFu;
 
     /*
      * The guest is big-endian and the bus is what has to know. Declared
@@ -126,7 +127,8 @@ void ppc_cpu_reset(ppc_cpu_t *c, uint32_t reset_pc)
     c->retired = 0u;
     c->cycles = 0u;
     c->clk_synced = 0u;
-    c->stm_until = 0xFFFFFFFFu; /* until the frontend resets the STM */
+    c->soc_until = 0xFFFFFFFFu; /* until the frontend resets the devices */
+    c->reset_by = NULL;
     ppc_mmu_reset(c);
     c->jit_ctx = ppc_cpu_ctx(c);
     c->jit_flush = true;
@@ -632,6 +634,22 @@ void ppc_cpu_set_time(ppc_cpu_t *c, uint64_t now)
     }
 }
 
+/* `soc_until`, from the devices as they are now. */
+static void soc_recompute(ppc_cpu_t *c)
+{
+    uint32_t u = 0xFFFFFFFFu;
+
+    if (c->stm != NULL) {
+        u = ppc_stm_until(c->stm);
+    }
+    if (c->swt != NULL) {
+        const uint32_t w = ppc_swt_until(c->swt);
+
+        u = (w < u) ? w : u;
+    }
+    c->soc_until = u;
+}
+
 void ppc_cpu_sync_clock(ppc_cpu_t *c)
 {
     const uint64_t n = c->cycles - c->clk_synced;
@@ -643,11 +661,39 @@ void ppc_cpu_sync_clock(ppc_cpu_t *c)
     if (on_core_clock(c)) {
         ppc_cpu_advance(c, (uint32_t)n);
     }
-    /* The STM counts the system clock whatever HID0 says: it is not the
-     * core's timer. */
-    if (c->stm != NULL) {
-        ppc_stm_advance(c->stm, (uint32_t)n);
+    /* The STM and the SWT count the system clock whatever HID0 says:
+     * they are not the core's timers. */
+    if (c->stm != NULL || c->swt != NULL) {
+        if (c->stm != NULL) {
+            ppc_stm_advance(c->stm, (uint32_t)n);
+        }
+        if (c->swt != NULL) {
+            ppc_swt_advance(c->swt, (uint32_t)n);
+        }
+        soc_recompute(c);
     }
+}
+
+void ppc_cpu_soc_changed(ppc_cpu_t *c)
+{
+    soc_recompute(c);
+    /*
+     * And end the stretch, which was bounded by the old value: a timer
+     * enabled or reprogrammed mid-stretch would otherwise be noticed
+     * only when the stretch ran out by itself -- a quantum or a
+     * decrementer period late, so *when* depended on how the run was
+     * sliced. The SWT's writes had exactly that until this was here
+     * rather than in each device: ppc-swt reset at retired 42,924 at
+     * --quantum 512 and 43,000 at 4096.
+     */
+    c->irq_dirty = true;
+}
+
+void ppc_cpu_system_reset(ppc_cpu_t *c, const char *why)
+{
+    c->reset_by = why;
+    c->state = EMU_STATE_HALTED;
+    c->irq_dirty = true; /* end the stretch now */
 }
 
 uint32_t ppc_cpu_clock_until(const ppc_cpu_t *c)
@@ -655,7 +701,7 @@ uint32_t ppc_cpu_clock_until(const ppc_cpu_t *c)
     const uint32_t dec =
         (on_core_clock(c) && c->dec != 0u) ? c->dec : 0xFFFFFFFFu;
 
-    return (c->stm_until < dec) ? c->stm_until : dec;
+    return (c->soc_until < dec) ? c->soc_until : dec;
 }
 
 void ppc_cpu_advance(ppc_cpu_t *c, uint32_t ticks)

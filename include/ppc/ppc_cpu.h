@@ -279,19 +279,26 @@ typedef struct ppc_cpu {
     bool start_vle;
 
     /*
-     * The SoC's interrupt controller and system timer serving this core
-     * (ppc_intc.h, ppc_stm.h), or NULL where nothing has mapped them --
-     * a unit test's bare core. Cold, so at the end.
+     * The SoC's devices serving this core -- the interrupt controller,
+     * the system timer and the watchdog (ppc_intc.h, ppc_stm.h,
+     * ppc_swt.h) -- or NULL where nothing has mapped them: a unit test's
+     * bare core. Cold, so at the end.
      *
-     * `stm_until` is the STM's next match in processor-clock ticks from
-     * `clk_synced`, which the STM keeps whenever it changes, so that
-     * bounding a stretch reads one word rather than four channels.
-     * 0xFFFFFFFF, never 0, when there is none: a stretch of no
-     * instructions would be a loop that never advances.
+     * `soc_until` is the next thing the STM or the SWT will do, in
+     * processor-clock ticks from `clk_synced`: ppc_cpu_soc_changed
+     * keeps it, so that bounding a stretch reads one word rather than
+     * every channel of two devices. 0xFFFFFFFF, never 0, when there is
+     * nothing: a stretch of no instructions would be a loop that never
+     * advances.
+     *
+     * `reset_by` names what asked for a system reset, which stops the
+     * core (ppc_cpu_system_reset), or is NULL.
      */
     struct ppc_intc *intc;
     struct ppc_stm *stm;
-    uint32_t stm_until;
+    struct ppc_swt *swt;
+    uint32_t soc_until;
+    const char *reset_by;
 } ppc_cpu_t;
 
 #define PPC_REQ_NONE 0u
@@ -428,9 +435,20 @@ void ppc_cpu_set_time(ppc_cpu_t *c, uint64_t now);
 void ppc_cpu_sync_clock(ppc_cpu_t *c);
 
 /* Instructions until the decrementer expires on the processor clock or
- * the STM next matches, or UINT32_MAX when neither is what will happen
- * next. */
+ * the SoC's timers next act, or UINT32_MAX when neither is what will
+ * happen next. */
 uint32_t ppc_cpu_clock_until(const ppc_cpu_t *c);
+
+/* The STM or the SWT changed: recompute `soc_until` from both. */
+void ppc_cpu_soc_changed(ppc_cpu_t *c);
+
+/*
+ * A system reset, which a watchdog asks for: the core stops, and its
+ * status names `why`. There is no reset generation module to restart
+ * the part, and a guest that started again silently would hide the
+ * event.
+ */
+void ppc_cpu_system_reset(ppc_cpu_t *c, const char *why);
 
 /* The external input, level. */
 void ppc_cpu_set_ext(ppc_cpu_t *c, bool level);

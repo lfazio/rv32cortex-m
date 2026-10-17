@@ -497,6 +497,11 @@ the host's, so "copy it" is unlikely to survive contact.
   per-instruction checks; see
   [the profile](#the-interpreter-profiled-on-the-board). The pending
   scan is the largest at about 3%.
+- **AIRCR.SYSRESETREQ stops the run** rather than restarting the
+  guest -- no platform here restarts one -- and the run summary says
+  so: `emu: core 0 stopped: system reset by SYSRESETREQ`
+  (`emu_cpu_status_t::reset_by`, which the PowerPC watchdog uses too).
+  It used to halt with nothing printed.
 - **Guests below 0x10000000 get no inlined memory.** The window is the
   RAM the stack is in; a guest whose RAM is mapped low takes the checked
   path for every access.

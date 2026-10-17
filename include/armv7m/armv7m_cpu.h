@@ -346,6 +346,8 @@ typedef struct armv7m_cpu {
     uint32_t fault_insn;
     bool faulted;
     bool lockup;
+    /* What asked for a system reset, which stops the core, or NULL. */
+    const char *reset_by;
 } armv7m_cpu_t;
 
 /* ------------------------------------------------------------------ */

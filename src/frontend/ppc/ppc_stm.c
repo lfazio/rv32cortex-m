@@ -36,11 +36,11 @@ static uint32_t divisor(const ppc_stm_t *s)
     return ((s->cr & PPC_STM_CR_CPS) >> PPC_STM_CR_CPS_SHIFT) + 1u;
 }
 
-/* The core's next stop: the earliest match, from its last clock sync. */
+/* The core's next stop moves with the earliest match. */
 static void publish(ppc_stm_t *s)
 {
     if (s->core != NULL) {
-        s->core->stm_until = ppc_stm_until(s);
+        ppc_cpu_soc_changed(s->core);
     }
 }
 
@@ -119,7 +119,8 @@ void ppc_stm_advance(ppc_stm_t *s, uint32_t ticks)
             }
         }
     }
-    publish(s);
+    /* The core publishes its next stop once its devices have all moved
+     * (ppc_cpu_sync_clock). */
 }
 
 /*
@@ -207,11 +208,9 @@ static emu_fault_t stm_write(void *ctx, uint32_t off, uint32_t size,
     } else {
         s->cmp[chan] = val;
     }
-    /* Any of these moves the next match: the run has to stop again. */
+    /* Any of these moves the next match: the run has to stop again,
+     * which ppc_cpu_soc_changed sees to. */
     publish(s);
-    if (s->core != NULL) {
-        s->core->irq_dirty = true;
-    }
     return EMU_FAULT_NONE;
 }
 

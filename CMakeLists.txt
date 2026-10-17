@@ -774,6 +774,7 @@ if(EMU_GUEST_ARCH_PPC)
         src/frontend/ppc/ppc_mmu.c
         src/frontend/ppc/ppc_sscm.c
         src/frontend/ppc/ppc_stm.c
+        src/frontend/ppc/ppc_swt.c
         $<$<BOOL:${EMU_PAIR_STATS}>:src/frontend/ppc/ppc_pairstats.c>
     )
 

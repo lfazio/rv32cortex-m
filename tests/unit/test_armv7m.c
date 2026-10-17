@@ -395,8 +395,40 @@ static void test_fetch_execute_never(void)
     CHECK_EQ(stacked_pc, 0x40000000u);
 }
 
+/*
+ * AIRCR.SYSRESETREQ stops the core and says why: the status the run
+ * summary prints from names it. Halting with nothing printed made a
+ * guest's reset request read like a guest that finished. And without
+ * VECTKEY the write is ignored (B3.2.6), which is the case that matters
+ * for a reset: nothing else may cause one.
+ */
+extern const emu_cpu_ops_t armv7m_frontend;
+
+static void test_sysresetreq_reported(void)
+{
+    armv7m_cpu_t *const c = &g_ua_cpu;
+    emu_cpu_status_t st;
+
+    armv7m_reset_state(c);
+    c->state = EMU_STATE_RUNNING;
+    c->access_priv = true; /* what armv7m_mem_write sets around a store */
+    CHECK(armv7m_scs_ops.write(c, 0xD0Cu, 4u, 0x00000004u) == EMU_FAULT_NONE);
+    CHECK_EQ(c->state, EMU_STATE_RUNNING); /* no VECTKEY */
+    CHECK(armv7m_scs_ops.write(c, 0xD0Cu, 4u, 0x05FA0004u) == EMU_FAULT_NONE);
+    CHECK_EQ(c->state, EMU_STATE_HALTED);
+    memset(&st, 0xA5, sizeof(st));
+    armv7m_frontend.status((const emu_cpu_t *)(const void *)c, &st);
+    CHECK(st.reset_by != NULL && strcmp(st.reset_by, "SYSRESETREQ") == 0);
+
+    armv7m_reset_state(c);
+    memset(&st, 0xA5, sizeof(st));
+    armv7m_frontend.status((const emu_cpu_t *)(const void *)c, &st);
+    CHECK(st.reset_by == NULL); /* and a reset clears it */
+}
+
 void test_armv7m(void)
 {
+    test_sysresetreq_reported();
     test_fetch_execute_never();
     test_gdb_fp_registers();
     test_insn_len_exhaustive();

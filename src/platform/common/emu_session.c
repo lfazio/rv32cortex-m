@@ -336,6 +336,11 @@ void emu_session_report(emu_system_t *sys, uint64_t retired,
                                i, (unsigned)fs.fault_pc,
                                (unsigned)fs.fault_insn);
         }
+        if (fs.reset_by != NULL) {
+            emu_console_printf("\nemu: core %u stopped: system reset by %s"
+                               ", pc %08x\n",
+                               i, fs.reset_by, (unsigned)fs.pc);
+        }
     }
 
     emu_print_run_summary(retired, host_cycles);

@@ -643,7 +643,10 @@ endif()
 # The compiled e200z7 guests: classic Book E, as ELF, because that is
 # where the image says which of the core's two encodings it is in.
 #
-# Each expression is something only a completed run prints. For alu that
+# Each expression is something only a completed run prints -- for swt,
+# the reset its watchdog makes, *immediately* after its last line: a
+# reset that comes late lets the guest print a FAIL first, and a pattern
+# that allowed anything in between passed against exactly that. For alu that
 # includes the *number* of checks, so a run that skipped half of them is
 # not a pass, and "ticked", so the decrementer interrupt really did land
 # in the middle of it.
@@ -654,6 +657,7 @@ if(EMU_GUEST_ARCH_PPC)
                "sys:PPC-SYS-END checks=000000b8 fails=00000000"
                "mmu:PPC-MMU-END checks=000000ef fails=00000000"
                "intc:PPC-INTC-END checks=00000031 fails=00000000"
+               "swt:PPC-SWT-END checks=0000000f fails=00000000[\r\n]+emu: core 0 stopped: system reset by SWT_0 timeout"
                "coremark:Correct operation validated"
                "coremark-tlb:Correct operation validated"
                "coremark-tlbmiss:Correct operation validated"
@@ -683,6 +687,36 @@ if(EMU_GUEST_ARCH_PPC)
                 set_tests_properties(guest-ppc-${_name}-jit PROPERTIES
                     LABELS fast
                     PASS_REGULAR_EXPRESSION "${_want}")
+            endif()
+        endif()
+    endforeach()
+    #
+    # The SoC's timers count the processor clock, so a guest using them
+    # must give the same run at any quantum -- a property, because the
+    # defect it guards (a timer reprogrammed earlier mid-stretch, noticed
+    # only when the stretch ran out) lands wherever the slicing puts it,
+    # and a latency window caught it only by luck. See the script.
+    #
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    foreach(_g intc swt)
+        if(TARGET guest-ppc-${_g} AND Python3_EXECUTABLE)
+            add_test(NAME guest-ppc-${_g}-quanta
+                     COMMAND ${Python3_EXECUTABLE}
+                             "${CMAKE_SOURCE_DIR}/tests/guest/same-at-any-quantum.py"
+                             $<TARGET_FILE:emu-host>
+                             "${CMAKE_BINARY_DIR}/guest/ppc-${_g}.elf"
+                             --max-insn 400000000)
+            set_tests_properties(guest-ppc-${_g}-quanta PROPERTIES
+                LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
+            if(EMU_JIT)
+                add_test(NAME guest-ppc-${_g}-quanta-jit
+                         COMMAND ${Python3_EXECUTABLE}
+                                 "${CMAKE_SOURCE_DIR}/tests/guest/same-at-any-quantum.py"
+                                 $<TARGET_FILE:emu-host>
+                                 "${CMAKE_BINARY_DIR}/guest/ppc-${_g}.elf"
+                                 --max-insn 400000000 --jit)
+                set_tests_properties(guest-ppc-${_g}-quanta-jit PROPERTIES
+                    LABELS fast PASS_REGULAR_EXPRESSION "^PASS retired")
             endif()
         endif()
     endforeach()

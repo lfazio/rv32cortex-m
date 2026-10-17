@@ -3391,6 +3391,20 @@ session, and every one of them recurred:
   that straddles the boundary, whose lower half fills the cache with all
   of it; `test_fetch_execute_never` builds one, and fails 5 checks
   without the test.
+- **A run on an instruction clock must not depend on how it is sliced,
+  and that is a property to test, not a window.** The PowerPC watchdog's
+  writes recomputed the core's next timer stop without ending the
+  interpreter's stretch, so enabling it -- a deadline moved *earlier* --
+  was noticed when the stretch ran out by itself: the reset landed at
+  retired 42,924 at `--quantum 512` and 43,000 at 4096, and the board
+  agreed with the host at the default, which read as confirmation. A
+  latency check could not find it: a stale bound that ends *early* is
+  harmless, and one that ends late is caught only if the slice boundary
+  falls outside the window -- the INTC guest's check caught the mutant
+  at 4096 and passed at 512. `tests/guest/same-at-any-quantum.py` runs
+  a guest at three quanta and requires the same output and retired
+  count, which catches it wherever it lands. **Two runs agreeing is
+  evidence only if they were sliced differently.**
 - **A device that counts instructions reads a translated chain's start.**
   The PowerPC STM counts the core clock, which the JIT advances only
   when a chain of blocks returns to the dispatcher -- the chain's count

@@ -464,7 +464,8 @@ static bool word_write(armv7m_cpu_t *c, uint32_t off, uint32_t v)
         if ((v >> 16) == 0x05FAu) {
             c->prigroup = (v >> 8) & 7u;
             if ((v & (1u << 2)) != 0u) {
-                c->state = EMU_STATE_HALTED; /* SYSRESETREQ */
+                c->state = EMU_STATE_HALTED;
+                c->reset_by = "SYSRESETREQ";
             }
         }
         return true;

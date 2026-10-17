@@ -18,6 +18,7 @@
 
 #include "ppc/ppc_intc.h"
 #include "ppc/ppc_stm.h"
+#include "ppc/ppc_swt.h"
 
 #include <string.h>
 
@@ -444,6 +445,214 @@ static void test_intc_software_settable(void)
     CHECK_EQ(g_intc.intvec, 1u);
 }
 
+/* ------------------------------------------------------------------ */
+/* SWT                                                                 */
+/* ------------------------------------------------------------------ */
+
+static ppc_swt_t g_swt;
+
+static emu_fault_t swt_wr(uint32_t off, uint32_t v)
+{
+    return ppc_swt_ops.write(&g_swt, off, 4u, v);
+}
+
+static uint32_t swt_rd(uint32_t off)
+{
+    bool ok;
+    const uint32_t v = rd(&ppc_swt_ops, &g_swt, off, 4u, &ok);
+
+    CHECK(ok);
+    return v;
+}
+
+static void swt_fresh(uint32_t index)
+{
+    memset(&g_swt, 0, sizeof(g_swt));
+    fresh();
+    g_swt.index = index;
+    g_swt.intc = &g_intc;
+    ppc_swt_reset(&g_swt);
+}
+
+/* Unlocked, RIA off -- so an invalid access is a bus error -- and on. */
+static void swt_running(uint32_t extra, uint32_t to)
+{
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_UNLOCK1) == EMU_FAULT_NONE);
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_UNLOCK2) == EMU_FAULT_NONE);
+    CHECK(swt_wr(PPC_SWT_TO, to) == EMU_FAULT_NONE);
+    CHECK(swt_wr(PPC_SWT_CR, PPC_SWT_CR_MAP | extra | PPC_SWT_CR_WEN) ==
+          EMU_FAULT_NONE);
+}
+
+/* Table 52-2, with WEN clear (the choice in ppc_swt.c), and 52.3. */
+static void test_swt_registers(void)
+{
+    bool ok;
+
+    swt_fresh(0u);
+    CHECK_EQ(swt_rd(PPC_SWT_CR), 0xFF00011Au);
+    CHECK_EQ(swt_rd(PPC_SWT_IR), 0u);
+    CHECK_EQ(swt_rd(PPC_SWT_TO), 0x0003FDE0u);
+    CHECK_EQ(swt_rd(PPC_SWT_WN), 0u);
+    CHECK_EQ(swt_rd(PPC_SWT_SR), 0u); /* write-only */
+    CHECK_EQ(swt_rd(PPC_SWT_CO), 0u);
+    CHECK_EQ(swt_rd(PPC_SWT_SK), 0u); /* write-only */
+    CHECK_EQ(ppc_swt_until(&g_swt), 0xFFFFFFFFu);
+
+    /* Word accesses only; reserved addresses and CO's write are invalid,
+     * and with WEN clear RIA does not make them a reset. */
+    (void)rd(&ppc_swt_ops, &g_swt, PPC_SWT_CR + 3u, 1u, &ok);
+    CHECK(!ok);
+    (void)rd(&ppc_swt_ops, &g_swt, 0x1Cu, 4u, &ok);
+    CHECK(!ok);
+    CHECK(swt_wr(PPC_SWT_CO, 1u) != EMU_FAULT_NONE);
+    CHECK(!g_swt.reset);
+
+    /* Soft-locked out of reset: CR, TO, WN and SK are read-only, and a
+     * write to one is invalid. */
+    CHECK(swt_wr(PPC_SWT_CR, 0xFF000000u) != EMU_FAULT_NONE);
+    CHECK(swt_wr(PPC_SWT_TO, 0x1234u) != EMU_FAULT_NONE);
+    CHECK_EQ(swt_rd(PPC_SWT_TO), 0x0003FDE0u);
+
+    /* The unlock sequence, which "ignores service sequence writes". */
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_UNLOCK1) == EMU_FAULT_NONE);
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_SERVICE1) == EMU_FAULT_NONE);
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_UNLOCK2) == EMU_FAULT_NONE);
+    CHECK_EQ(swt_rd(PPC_SWT_CR) & PPC_SWT_CR_SLK, 0u);
+    CHECK(swt_wr(PPC_SWT_TO, 0x1234u) == EMU_FAULT_NONE);
+    CHECK_EQ(swt_rd(PPC_SWT_TO), 0x1234u);
+    CHECK(swt_wr(PPC_SWT_CR, 0xFFFFFFFEu) == EMU_FAULT_NONE);
+    CHECK_EQ(swt_rd(PPC_SWT_CR), 0xFF0003FEu); /* reserved bits read 0 */
+
+    /* The hard lock: the unlock sequence clears SLK only. */
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_UNLOCK1) == EMU_FAULT_NONE);
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_UNLOCK2) == EMU_FAULT_NONE);
+    CHECK(swt_wr(PPC_SWT_CR, 0xFF000000u) != EMU_FAULT_NONE);
+    CHECK_EQ(swt_rd(PPC_SWT_CR) & PPC_SWT_CR_HLK, PPC_SWT_CR_HLK);
+}
+
+/* 52.3.2.3 and 52.4: enabling and servicing load max(WTO, 0x100). */
+static void test_swt_counts(void)
+{
+    swt_fresh(0u);
+    swt_running(0u, 0x50u);
+    CHECK_EQ(ppc_swt_until(&g_swt), 0x100u);
+    ppc_swt_advance(&g_swt, 0x30u);
+    CHECK_EQ(swt_rd(PPC_SWT_CO), 0u); /* enabled: CO reads zero */
+    CHECK(swt_wr(PPC_SWT_CR, PPC_SWT_CR_MAP) == EMU_FAULT_NONE);
+    CHECK_EQ(swt_rd(PPC_SWT_CO), 0xD0u); /* disabled: the counter */
+    ppc_swt_advance(&g_swt, 0x30u);
+    CHECK_EQ(swt_rd(PPC_SWT_CO), 0xD0u); /* and it stopped */
+
+    swt_fresh(0u);
+    swt_running(0u, 1000u);
+    ppc_swt_advance(&g_swt, 600u);
+    CHECK_EQ(ppc_swt_until(&g_swt), 400u);
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_SERVICE1) == EMU_FAULT_NONE);
+    CHECK_EQ(ppc_swt_until(&g_swt), 400u); /* half a sequence is not one */
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_SERVICE2) == EMU_FAULT_NONE);
+    CHECK_EQ(ppc_swt_until(&g_swt), 1000u);
+
+    /* An incorrect value while enabled is invalid: the second word
+     * alone, and anything else. */
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_SERVICE2) != EMU_FAULT_NONE);
+    CHECK(swt_wr(PPC_SWT_SR, 0x1234u) != EMU_FAULT_NONE);
+    CHECK(!g_swt.reset);
+
+    /* No ITR: the first timeout is the reset. */
+    ppc_swt_advance(&g_swt, 999u);
+    CHECK(!g_swt.reset);
+    ppc_swt_advance(&g_swt, 1u);
+    CHECK(g_swt.reset);
+    CHECK_EQ(ppc_swt_until(&g_swt), 0xFFFFFFFFu);
+}
+
+/* 52.4: ITR makes the first timeout an interrupt and the second a reset;
+ * the request is TIF, cleared by writing 1, and it is INTC source 28 for
+ * SWT_0 and 29 for SWT_1 (table 32-10). */
+static void test_swt_interrupt_then_reset(void)
+{
+    swt_fresh(1u);
+    swt_running(PPC_SWT_CR_ITR, 500u);
+    ppc_swt_advance(&g_swt, 500u);
+    CHECK(!g_swt.reset);
+    CHECK_EQ(swt_rd(PPC_SWT_IR), 1u);
+    CHECK(source(29u) && !source(28u));
+    CHECK_EQ(ppc_swt_until(&g_swt), 500u); /* reloaded */
+    CHECK(swt_wr(PPC_SWT_IR, 0u) == EMU_FAULT_NONE); /* a 0 does nothing */
+    CHECK(source(29u));
+    CHECK(swt_wr(PPC_SWT_IR, 1u) == EMU_FAULT_NONE);
+    CHECK(!source(29u));
+
+    /* Serviced in between: the next timeout is an "initial" one again. */
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_SERVICE1) == EMU_FAULT_NONE);
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_SERVICE2) == EMU_FAULT_NONE);
+    ppc_swt_advance(&g_swt, 500u);
+    CHECK(!g_swt.reset);
+    CHECK(source(29u));
+
+    /* Not serviced: the second consecutive timeout -- in the same slice
+     * as the first, here -- is the reset. */
+    swt_fresh(0u);
+    swt_running(PPC_SWT_CR_ITR, 500u);
+    ppc_swt_advance(&g_swt, 999u);
+    CHECK(!g_swt.reset);
+    ppc_swt_advance(&g_swt, 1u);
+    CHECK(g_swt.reset);
+    CHECK(source(28u));
+}
+
+/*
+ * 52.4's own example: with SK 0x0100 the keys are 0x1103 and 0x2136,
+ * after which SK is 0x2136 and the next pair is 0x3499 and 0x7E2C.
+ */
+static void test_swt_keyed(void)
+{
+    swt_fresh(0u);
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_UNLOCK1) == EMU_FAULT_NONE);
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_UNLOCK2) == EMU_FAULT_NONE);
+    CHECK(swt_wr(PPC_SWT_SK, 0x0100u) == EMU_FAULT_NONE);
+    swt_running(PPC_SWT_CR_KEY, 1000u);
+    ppc_swt_advance(&g_swt, 900u);
+    CHECK(swt_wr(PPC_SWT_SR, 0x1103u) == EMU_FAULT_NONE);
+    CHECK_EQ(ppc_swt_until(&g_swt), 100u);
+    CHECK(swt_wr(PPC_SWT_SR, 0x2136u) == EMU_FAULT_NONE);
+    CHECK_EQ(ppc_swt_until(&g_swt), 1000u);
+    CHECK_EQ(g_swt.sk, 0x2136u);
+    ppc_swt_advance(&g_swt, 900u);
+    /* The fixed sequence means nothing in keyed mode. */
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_SERVICE1) != EMU_FAULT_NONE);
+    CHECK(swt_wr(PPC_SWT_SR, 0x3499u) == EMU_FAULT_NONE);
+    CHECK(swt_wr(PPC_SWT_SR, 0x7E2Cu) == EMU_FAULT_NONE);
+    CHECK_EQ(ppc_swt_until(&g_swt), 1000u);
+}
+
+/* 52.4: in window mode a service is valid only while the counter is
+ * below SWT_WN; and with RIA an invalid access is a reset. */
+static void test_swt_window_and_ria(void)
+{
+    swt_fresh(0u);
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_UNLOCK1) == EMU_FAULT_NONE);
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_UNLOCK2) == EMU_FAULT_NONE);
+    CHECK(swt_wr(PPC_SWT_WN, 300u) == EMU_FAULT_NONE);
+    swt_running(PPC_SWT_CR_WND, 1000u);
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_SERVICE1) != EMU_FAULT_NONE); /* shut */
+    ppc_swt_advance(&g_swt, 700u); /* 300 left: not below 300 */
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_SERVICE1) != EMU_FAULT_NONE);
+    ppc_swt_advance(&g_swt, 1u);
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_SERVICE1) == EMU_FAULT_NONE);
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_SERVICE2) == EMU_FAULT_NONE);
+    CHECK_EQ(ppc_swt_until(&g_swt), 1000u);
+    /* The unlock sequence is not subject to the window. */
+    CHECK(swt_wr(PPC_SWT_SR, PPC_SWT_UNLOCK1) == EMU_FAULT_NONE);
+
+    /* RIA, enabled: an invalid access is a system reset, not an error. */
+    swt_fresh(0u);
+    swt_running(PPC_SWT_CR_RIA, 1000u);
+    CHECK(swt_wr(PPC_SWT_CO, 0u) == EMU_FAULT_NONE);
+    CHECK(g_swt.reset);
+}
+
 void test_ppc_soc(void)
 {
     test_stm_access();
@@ -456,4 +665,9 @@ void test_ppc_soc(void)
     test_intc_hardware_vector();
     test_intc_lifo();
     test_intc_software_settable();
+    test_swt_registers();
+    test_swt_counts();
+    test_swt_interrupt_then_reset();
+    test_swt_keyed();
+    test_swt_window_and_ria();
 }

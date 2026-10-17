@@ -155,6 +155,7 @@ void armv7m_reset_state(armv7m_cpu_t *c)
     c->fpdscr = 0u;
     c->faulted = false;
     c->lockup = false;
+    c->reset_by = NULL;
     c->fault_pc = 0u;
     c->fault_insn = 0u;
 }

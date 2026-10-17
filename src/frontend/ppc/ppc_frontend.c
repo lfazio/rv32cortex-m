@@ -27,6 +27,7 @@
 #include "ppc/ppc_ir.h"
 #include "ppc/ppc_sscm.h"
 #include "ppc/ppc_stm.h"
+#include "ppc/ppc_swt.h"
 
 #include <string.h>
 
@@ -42,14 +43,15 @@ static ppc_cpu_t g_cpu[PPC_CORE_COUNT];
 static ppc_sscm_t g_sscm;
 
 /*
- * Each core's interrupt controller and system timer: in decoupled
- * parallel mode the part has an INTC and an STM per core, INTC_0/STM_0
- * for core 0 and INTC_1/STM_1 for core 1 (Reference Manual tables 32-1
- * and 51-1). The STM requests through its own core's INTC, as sources
- * 30 to 33.
+ * Each core's interrupt controller, system timer and watchdog: in
+ * decoupled parallel mode the part has one of each per core,
+ * INTC_0/STM_0/SWT_0 for core 0 and the _1s for core 1 (Reference
+ * Manual tables 32-1, 51-1 and 52-1). The STM requests through its own
+ * core's INTC as sources 30 to 33, and the SWT as 28 or 29.
  */
 static ppc_intc_t g_intc[PPC_CORE_COUNT];
 static ppc_stm_t g_stm[PPC_CORE_COUNT];
+static ppc_swt_t g_swt[PPC_CORE_COUNT];
 
 /*
  * p_tbclk is one input for the part, and either core's time base may
@@ -205,6 +207,7 @@ static void ppc_ops_reset(emu_cpu_t *cpu, uint32_t reset_pc)
         /* After the core: the STM publishes its next match to it. */
         ppc_intc_reset(&g_intc[c->coreid]);
         ppc_stm_reset(&g_stm[c->coreid]);
+        ppc_swt_reset(&g_swt[c->coreid]);
     }
     if (c->coreid == 0u) {
         ppc_sscm_reset(&g_sscm); /* the system's reset, which is core 0's */
@@ -237,18 +240,26 @@ static bool ppc_ops_add_core_devices(emu_cpu_t *cpu, emu_bus_t *bus,
     }
     ppc_intc_t *const ic = &g_intc[index];
     ppc_stm_t *const st = &g_stm[index];
+    ppc_swt_t *const wd = &g_swt[index];
 
     ic->core = c;
     st->core = c;
     st->intc = ic;
+    wd->core = c;
+    wd->intc = ic;
+    wd->index = index;
     c->intc = ic;
     c->stm = st;
+    c->swt = wd;
     return emu_bus_add_mmio(bus, "intc",
                             (index == 0u) ? PPC_INTC0_BASE : PPC_INTC1_BASE,
                             PPC_INTC_SIZE, &ppc_intc_ops, ic) &&
            emu_bus_add_mmio(bus, "stm",
                             (index == 0u) ? PPC_STM0_BASE : PPC_STM1_BASE,
-                            PPC_STM_SIZE, &ppc_stm_ops, st);
+                            PPC_STM_SIZE, &ppc_stm_ops, st) &&
+           emu_bus_add_mmio(bus, "swt",
+                            (index == 0u) ? PPC_SWT0_BASE : PPC_SWT1_BASE,
+                            PPC_SWT_SIZE, &ppc_swt_ops, wd);
 }
 
 static bool ppc_ops_add_shared_devices(emu_bus_t *bus)
@@ -354,6 +365,7 @@ static void ppc_ops_status(const emu_cpu_t *cpu, emu_cpu_status_t *out)
     out->retired = c->retired;
     out->state = c->state;
     out->backend = ppc_backend->name;
+    out->reset_by = c->reset_by;
     /*
      * A waiting core leaves its wait for an *enabled* interrupt (3.12),
      * so one waiting with both enables clear is parked for good -- a

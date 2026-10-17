@@ -29,7 +29,7 @@ of them can catch is a shared misreading of the manual.
 | Interrupts: IVPR and IVOR0–15, 32–35; the four save/restore pairs (SRR, CSRR, DSRR, MCSRR); ESR; `sc`, `tw`, `rfi`/`rfci`/`rfdi`/`rfmci` | implemented |
 | Privilege: MSR[PR], SPR access by number, the user-readable SPRGs | implemented |
 | Time base, decrementer with auto-reload, TSR/TCR, HID0[TBEN] and [SEL_TBCLK], `wait` | implemented |
-| The MPC5675K's INTC and STM, one of each per core: priorities, the LIFO, software and hardware vector modes; a counter on the core clock with four compare channels | implemented ([below](#the-interrupt-controller-and-the-system-timer)) |
+| The MPC5675K's INTC, STM and SWT, one of each per core: priorities, the LIFO, software and hardware vector modes; a counter on the core clock with four compare channels; a watchdog with fixed and keyed service, window mode, locks, and interrupt-then-reset | implemented ([below](#the-interrupt-controller-and-the-system-timer)) |
 | MMU: the 32-entry TLB, MAS0–4 and 6, PID0, MMUCSR0, the `tlb*` instructions, address spaces, per-page VLE and per-page byte order | implemented ([below](#the-mmu)) |
 | SPE and the vector half of the EFPU (`ev*`) | **not implemented** — SPE-unavailable while MSR[SPE] is clear, as the core does; an illegal-instruction program interrupt once it is set |
 | Classic floating point (`fadd` …) | not on this core |
@@ -631,14 +631,16 @@ x86-64 agrees with, and on crypto nothing this board can resolve.
 
 ## The interrupt controller and the system timer
 
-The MPC5675K's INTC (chapter 32 of the Reference Manual) and its System
-Timer Module (chapter 51), one of each per core as in decoupled
-parallel mode, each pair mapped on its own core's bus only:
+The MPC5675K's INTC (chapter 32 of the Reference Manual), its System
+Timer Module (chapter 51) and its Software Watchdog Timer (chapter 52),
+one of each per core as in decoupled parallel mode, each set mapped on
+its own core's bus only:
 
 | | core 0 | core 1 | |
 |---|---|---|---|
 | INTC | `0xFFF4_8000` | `0x8FF4_8000` | `ppc_intc.c` |
 | STM | `0xFFF3_C000` | `0x8FF3_C000` | `ppc_stm.c`, INTC sources 30-33 |
+| SWT | `0xFFF3_8000` | `0x8FF3_8000` | `ppc_swt.c`, INTC source 28 or 29 ([below](#the-watchdog)) |
 
 **The INTC** is all of chapter 32 that a single core sees: 337 sources,
 8 of them software-settable through SSCIR, a 4-bit priority each in
@@ -655,9 +657,10 @@ line (`set_irq`), which keeps its old edge-like behaviour.
 
 **The STM counts the core's clock**, one tick per instruction -- the
 same clock HID0 can give the time base -- divided by CPS + 1, and a
-channel matches when the counter *reaches* its compare value. It
-publishes its next match to the core (`stm_until`), so the stretch the
-interpreter runs ends on that instruction, exactly as it ends on the
+channel matches when the counter *reaches* its compare value. Its next
+match, and the watchdog's next expiry, are published to the core as
+one word (`soc_until`), so the stretch the interpreter runs ends on that
+instruction, exactly as it ends on the
 decrementer's expiry, and a core in `wait` is carried to it. Reading
 STM_CNT syncs the clock first, as reading the time base does.
 
@@ -685,13 +688,17 @@ helper call storing that register, on both hosts.
 
 **On the F746** `ppc-intc` passes on both backends with the host's
 retired counts to the instruction, 107,835 interpreted and 107,923
-translated -- so the Thumb-2 path agrees with x86-64's.
+translated, and so does `ppc-swt`, reset included, at 43,119 and
+43,315 -- so the Thumb-2 path agrees with x86-64's.
 
 **What they cost a guest that does not use them**, by callgrind on
-PowerPC CoreMark, the same 12,170,464 instructions either way: +0.017%
-host instructions interpreted and +0.44% translated. The second is
-`ppc_jit_count` comparing one more word after every chain, and it is
-what makes a translated loop stop at a match at all.
+PowerPC CoreMark, the same 12,170,464 instructions either way: +0.035%
+host instructions interpreted and +0.52% translated, the STM and INTC
++0.017% and +0.44% of that and the SWT the rest. The translated cost is
+`ppc_jit_count` comparing one more word after every chain -- one word
+however many devices there are, which is why the STM and the SWT
+publish a single `soc_until` -- and it is what makes a translated loop
+stop at a match or an expiry at all.
 
 **Not in the DTCM, by measurement.** The F746's DTCM is full, and in a
 JIT build the INTC and STM land just past it, behind the D-cache; in an
@@ -707,10 +714,66 @@ costs is the bus's slow path per device access, not where the state
 sits. Interpreted, all three were 273.6. The DTCM's bytes stay with the
 decode cache and the JIT's tables.
 
-`tests/unit/test_ppc_soc.c` holds both devices to the manual register by
-register, 361 checks; `ppc-intc` runs them under a core, interpreted and
-translated (49 checks, below). Each mechanism was broken on its own to
-see that something fails:
+### The watchdog
+
+The SWT is chapter 52 whole: the down-counter loaded with SWT_TO (at
+least 0x100) on enabling and on service, expiry a system reset or with
+ITR an interrupt first and a reset on the second consecutive one, the
+fixed and the keyed service sequences -- the key generator held to
+52.4's own example, SK 0x0100 giving 0x1103 then 0x2136 --, window
+mode, the soft and hard locks, SWT_CO, and the invalid accesses: a
+narrow access, a reserved address, a write to a locked or read-only
+register, an incorrect service value while enabled, a service outside
+the window. Each is a bus error, or with RIA and WEN a reset.
+
+**A system reset stops the core, and the run says so**: `emu: core 0
+stopped: system reset by SWT_0 timeout`. That is
+`emu_cpu_status_t::reset_by`, new for this and generic -- ARMv7-M's
+SYSRESETREQ, which used to halt in silence, names itself through it
+too. There is no reset generation module to restart the part, and a
+guest that started again silently would hide the one event a watchdog
+test is about.
+
+Readings, each stated in `ppc_swt.c`:
+
+- **The service sequence is 0xA602, 0xB480.** Table 52-7 says so and
+  gives 0xC520, 0xD928 as the unlock; SWT_CR[KEY]'s description and a
+  paragraph of 52.4 give 0xC520, 0xD928 for the service too. The same
+  paragraph says the service logic "ignores unlock sequence writes",
+  meaningless if they were the same values.
+- **Off out of reset.** Table 52-2 has WEN set and 52.4 calls it
+  device-specific; on this part a flash option decides it for SWT_0,
+  and SWT_1 "is always off until enabled by software". Off here, or
+  every existing guest would be reset 261,600 instructions in.
+- **Both of CSL's clocks are the processor clock**; there is no
+  oscillator.
+- **Each SWT requests through its own core's INTC.** Table 32-10 gives
+  both timeouts, 28 and 29, to both INTCs (the page has to be read as
+  an image: the text layout loses which column the cell spans).
+  Reaching the other core's INTC would need a lock between cores.
+
+`tests/unit/test_ppc_soc.c` holds the three devices to the manual
+register by register, 486 checks; `ppc-intc` (49 checks) and `ppc-swt`
+(14, then the reset) run them under a core, interpreted and translated.
+`ppc-swt` passes only if `emu: core 0 stopped: system reset by SWT_0
+timeout` follows its last line *directly*: the first pattern allowed
+anything between, and a watchdog left out of the stretch bound reset the
+guest only after it had printed `FAIL still running` -- and passed.
+
+**And both must give the same run at any quantum**, which ctest checks
+as a property (`tests/guest/same-at-any-quantum.py`, at 509, 4096 and
+65536). The first `ppc-swt` failed it: the watchdog's register writes
+recomputed `soc_until` without ending the interpreter's stretch, so a
+deadline moved *earlier* -- enabling it -- was noticed only when the
+stretch ran out by itself, and the reset landed at retired 42,924 at
+`--quantum 512` and 43,000 at 4096. The STM's writes did end it; now
+`ppc_cpu_soc_changed` does, for every device. A latency window did not
+find this: it passes whenever the slice boundary happens to fall
+inside the window -- `ppc-intc` caught the mutant at 4096 and missed it
+at 512 -- and the watchdog's reset, where it showed, is past the end of
+anything the guest can print.
+
+Each mechanism was broken on its own to see that something fails:
 
 | broken | unit | `ppc-intc`, interpreted | translated |
 |---|---|---|---|
@@ -720,12 +783,27 @@ see that something fails:
 | the INTC's request not consulted | -- | hangs | hangs |
 | a match only when the counter lands on CMP | 1 | -- | 10 |
 | `until` ignores the prescaler's count | 2 | -- | -- |
-| an STM write does not end the stretch | -- | `match-latency` | -- |
+| a device write does not end the stretch (`ppc_cpu_soc_changed`) | -- | `match-latency` at 4096 only; `-quanta` fails | -- |
 | equal priorities to the higher vector | 1 | `ties-*` | `ties-*` |
 | the LIFO does not saturate | 1 | -- | -- |
 | an IACKR read does not acknowledge | 49 | never finishes | never finishes |
 | a CPR write does not re-decide | 2 | -- | -- |
 | EOIR does not pop | 20 | hangs | hangs |
+
+| broken | unit | `ppc-swt`, both backends |
+|---|---|---|
+| the service sequence is the unlock's codes | 18 | fails |
+| ITR ignored: every timeout resets | 9 | fails |
+| the clock never reaches the SWT | -- | hangs |
+| the stretch bound ignores the SWT | -- | fails: the reset comes late |
+| the window inverted | 5 | -- |
+| the key generator off by 2 | 7 | -- |
+| RIA resets with WEN clear | 7 | fails |
+| the locks ignored | 5 | `locked-write-faults`, `locked-to-unchanged` |
+| SWT_CO shows the counter while enabled | 1 | -- |
+| enabling does not load the counter | 19 | `serviced-no-irq` |
+| WTO below 0x100 used as it is | 3 | -- |
+| TIF requests the wrong source | 4 | fails |
 
 Each was a single-point change, asserted to match once and to relink
 both binaries; the tree restored passes all three columns.
@@ -983,6 +1061,7 @@ and says it skipped them when it does not.
 | `ppc-mmu` | the MMU, 239 checks: the TLB programmed as an MPC57xx start-up does, then translation, address spaces, PIDs, permissions, every TLB interrupt and the MAS registers it leaves, per-page VLE and byte order, invalidation, and the JIT's `jit-` cases |
 | `ppc-smp`, `ppc-smp-vle` | the second core, 41 checks: held at reset and released only by the SSCM's key sequence, PIR, atomics and reservations between the cores, a TLB each for data and code, a second sequence ignored; and, built again, a start in VLE. Run nine ways by ctest |
 | `ppc-intc` | the INTC and the STM under a core, 49 checks: the access rules, the counter against the processor clock, a match taken through a software-vector handler and a C ISR, preemption and the LIFO both ways round, CPR masking and equal priorities, the hardware vector from a page of its own, and a `wait` only the STM can end |
+| `ppc-swt` | the watchdog under a core, 14 checks and then the reset it ends in: the locks and access rules, servicing in time, the initial timeout's interrupt, a `wait` only the watchdog can end, SWT_CO -- and the second timeout, which must stop the run at once |
 | `ppc-coremark-tlbmiss` | CoreMark with the TLB filled on demand by a miss handler in `crt0.S`, two refill entries for a working set of five pages: 26,652 `tlbwe` in a run |
 | `ppc-park` | a `wait` nothing may end: the run must stop there, and the line after it must not print |
 | `ppc-efpu2` | **compiled by clang for the FP unit**, the only guest that is: the four operations and three compares over every pair of 22 values chosen for EFPU2's defaults and the fast path's edges, conversions both ways, a polynomial, and the sticky bits -- 2,475 checks against `efpu.py`'s model, through `efpu2_want.py`. Built where a clang can emit EFPU2, skipped with a message where none can |
@@ -1144,11 +1223,11 @@ existing rather than on the frontend being compiled in.
 - **No pair statistics.** The gdb target exists; it does not describe
   the SPE upper halves, which gdb wants alongside a 64-bit `acc` the
   stub cannot carry, nor the SPRs.
-- **Only the STM requests through the INTC.** Its other 300-odd sources
-  are peripherals this model does not have, the SWT among them
-  ([TODO](../TODO.md#powerpc)); lockstep mode, where one INTC and one
-  STM serve both cores, is not modelled; STM_CR[FRZ] is held and does
-  nothing, since the debugger stops guest time altogether.
+- **Only the STM and the SWT request through the INTC.** Its other
+  300-odd sources are peripherals this model does not have; lockstep
+  mode, where one set of the three serves both cores, is not modelled;
+  the SWT reaches only its own core's INTC (above); STM_CR[FRZ] and
+  SWT_CR's FRZ, STP and MAPn are held and do nothing.
 - **A translated STM read is a chain behind**
   ([above](#the-interrupt-controller-and-the-system-timer)).
 - **Dhrystone and Whetstone need a runtime from outside the build**,
