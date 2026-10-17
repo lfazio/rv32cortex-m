@@ -972,10 +972,11 @@ have caught the bug above -- no single-backend run can see it.
   `0xFFFC_0000` SELF and `0xFFFC_4000` PE0, INTC2 (global, channels 32 up)
   at `0xFFF8_0000`, with the EICn bit layout from the U2B manual Section
   6.3. Modelled on the **U2B6**, which has three PEs -- the manual's base
-  table runs to PE5 because the larger parts have six. The `OSTM` at
-  `0xFFEC_0000` is still a stand-in rather than the real register set.
-  What is *not* modelled: `EEIC`, table-reference delivery, and `EIBD`
-  is stored but does not route.
+  table runs to PE5 because the larger parts have six. The OS timers are
+  the real ones now; see [the U2B peripherals](#the-u2b-peripherals).
+  `EEIC`, the table reference method and `EIBD`'s PE binding are
+  modelled; the binding groups (`EIBG`, `I2EIBG`) and `EIBD`'s guest
+  machine field are stored and do not route.
 - Exception vectors use the compact offsets in `handler_address()`; a real
   part's table is larger and `RBASE`/`EBASE` flag bits are masked off rather
   than honoured.
@@ -1079,8 +1080,56 @@ it has a clock, and none is a host passthrough.
 
 | section | device | units on the U2B6 | where |
 |---|---|---|---|
+| 34 | OSTM, the OS timer | 3 | `0xFFBF_0000`, `0xFF89_A100`, `0xFFBF_0200`; INTC2 channels 360, 361, 841 |
 | 44 | LTSC, the long-term system counter | 1 | `0xFFC7_8100` |
 | 57 | KCRC, the data CRC unit | 4 | `0xFFD4_0000` + 0x200 n for even n, `0xFFD8_E000` + 0x200 n for odd |
+
+### OSTM
+
+Three 32-bit timers on PCLK, 80 MHz (`g4mh_ostm.c`), counting down from
+`CMP` in interval mode or up from zero in free-run compare mode, with the
+start interrupt (`MD0`), the no-reload start (`MD2`), the forced restart
+and OSTM0's toggling output bit. They replaced a stand-in at
+`0xFFEC_0000` -- a 64-bit counter with a compare, raising channel 0 --
+that no guest here used and no vendor driver could.
+
+**The counter is computed from the time, not ticked.** While a unit
+runs its value is a function of the time since it started, and its
+interrupts are an arithmetic sequence from there -- the zeros, every
+`CMP + 1` counts, or the matches, every 2^32. An update from the
+platform counts the terms up to now and raises if the count moved, so a
+read between updates is exact and a 53-second free-run period costs the
+same as a microsecond one. Several interrupts due between two updates
+are one edge; OSTM0's output bit counts them mod 2 and so comes out the
+same however the platform slices time, which
+`test_ostm_toggle_any_slicing` holds at steps of 1, 7 and 100 us.
+
+One statement of the period serves both the count and the interrupts.
+It was two at first, and the mutant that made the period `CMP` passed
+the interval test: one period cannot tell 799 counts from 800, and the
+counter still read right while only the interrupts drifted. The test
+now looks a hundred periods in, where the counter is back at `CMP` and
+the interrupt keeps its phase only with the reload counted.
+
+The interrupts are INTC2 channels, so `EIBD` decides which core takes
+each -- "one per core" is a convention of the software, not a wire. That
+needed the controller to reach channel 841 and a second core to take a
+global channel correctly; see [INTC1 / INTC2](#intc1--intc2).
+`test_ostm_interrupt_taken` has a guest program take OSTM0's through the
+core's vectoring and checks the cause register reads EIINT + 360.
+
+| mutant | fails |
+|---|---|
+| interval period `CMP`, not `CMP + 1` | the interval test at three places, and the slicing one |
+| a forced restart that honours `MD2` | the start-mode test |
+| a free-run period of 2^31 | the free-run test's second match |
+| the output toggled once an update, not once an event | the slicing test |
+| `CMP` rewritten without rebasing | the free-run test's moved match |
+| `advance_time` not reaching the timers | the guest-taken interrupt |
+| the controller back at 128 channels | 19 checks |
+
+Not modelled: the PIC's simultaneous start (`OSTMnTSST`), and the ECM
+that OSTM0's output and the others' error notifications drive.
 
 ### KCRC
 

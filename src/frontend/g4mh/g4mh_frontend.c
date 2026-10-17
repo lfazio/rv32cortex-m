@@ -25,6 +25,7 @@
 #include "g4mh/g4mh_memmap.h"
 #include "g4mh/g4mh_kcrc.h"
 #include "g4mh/g4mh_ltsc.h"
+#include "g4mh/g4mh_ostm.h"
 
 #include <string.h>
 
@@ -59,6 +60,7 @@ static g4mh_tptm_t g_tptm;
 /* Shared, not per-PE: one counter is the point of a system timebase. */
 static g4mh_ltsc_t g_ltsc;
 static g4mh_kcrc_t g_kcrc[G4MH_KCRC_COUNT];
+static g4mh_ostm_t g_ostm[G4MH_OSTM_COUNT];
 static g4mh_intercpu_port_t g_barr_port[G4MH_PE_COUNT];
 static g4mh_intercpu_port_t g_ipir_port[G4MH_PE_COUNT];
 static g4mh_intercpu_port_t g_tptm_port[G4MH_PE_COUNT];
@@ -159,6 +161,13 @@ static void g4mh_ops_init(emu_cpu_t *cpu, emu_bus_t *bus, uint32_t coreid)
         g4mh_ltsc_init(&g_ltsc);
         for (unsigned i = 0u; i < G4MH_KCRC_COUNT; i++) {
             g4mh_kcrc_init(&g_kcrc[i]);
+        }
+        /*
+         * INTC2 channels, so the controller they go to is the global
+         * one -- and through it whichever core EIBD names.
+         */
+        for (unsigned i = 0u; i < G4MH_OSTM_COUNT; i++) {
+            g4mh_ostm_init(&g_ostm[i], &g_intc[0], G4MH_OSTM_CHANNEL(i));
         }
         g4mh_boot_init(&g_boot);
     }
@@ -376,8 +385,13 @@ static bool g4mh_ops_add_shared_devices(emu_bus_t *bus)
                            (uint32_t)sizeof(g_cram)) &&
            emu_bus_add_mmio(bus, "intc2", G4MH_INTC2_BASE, G4MH_INTC2_SIZE,
                             SHARED_OPS(g4mh_intc2_ops), &g_intc[0]) &&
-           emu_bus_add_mmio(bus, "ostm0", G4MH_OSTM0_BASE, G4MH_OSTM0_SIZE,
-                            SHARED_OPS(g4mh_ostm_ops), &g_intc[0]) &&
+           /* OSTM0..2, at the manual's addresses in two bus groups. */
+           emu_bus_add_mmio(bus, "ostm0", G4MH_OSTM_BASE(0u), G4MH_OSTM_SIZE,
+                            SHARED_OPS(g4mh_ostm_ops), &g_ostm[0]) &&
+           emu_bus_add_mmio(bus, "ostm1", G4MH_OSTM_BASE(1u), G4MH_OSTM_SIZE,
+                            SHARED_OPS(g4mh_ostm_ops), &g_ostm[1]) &&
+           emu_bus_add_mmio(bus, "ostm2", G4MH_OSTM_BASE(2u), G4MH_OSTM_SIZE,
+                            SHARED_OPS(g4mh_ostm_ops), &g_ostm[2]) &&
            /*
             * INTIF, for TPTMSEL. One register for the whole system, so
             * it binds to the global INTC instance like INTC2 does.
@@ -516,15 +530,17 @@ static void g4mh_ops_set_unmask_hook(emu_cpu_t *cpu, emu_unmask_fn fn,
 static void g4mh_ops_advance_time(emu_cpu_t *cpu, uint32_t ticks)
 {
     (void)cpu;
-    g4mh_intc_advance(&g_intc[0], ticks);
     /*
-     * The TPTM runs off cpu_clk while the OSTM above runs off the
-     * platform's 1 MHz tick, and this call hands the same number to
-     * both. That is the platform's tick rate standing in for the CPU
-     * clock: the emulator has no separate cpu_clk to offer, and the
-     * dividers are relative anyway. A guest computing an absolute
-     * period from a datasheet frequency will be wrong by that ratio.
+     * The OSTM is PCLK, 80 MHz, and converts the platform's microseconds
+     * itself, as the LTSC does. The TPTM runs off cpu_clk and is handed
+     * the platform's tick as it stands: the emulator has no separate
+     * cpu_clk to offer, and the dividers are relative anyway. A guest
+     * computing an absolute TPTM period from a datasheet frequency will
+     * be wrong by that ratio.
      */
+    for (unsigned i = 0u; i < G4MH_OSTM_COUNT; i++) {
+        g4mh_ostm_advance(&g_ostm[i], ticks);
+    }
     g4mh_tptm_advance(&g_tptm, ticks);
     /* No divider: LTSC is PCLK direct, so this is one for one. */
     g4mh_ltsc_advance(&g_ltsc, ticks);
@@ -533,7 +549,9 @@ static void g4mh_ops_advance_time(emu_cpu_t *cpu, uint32_t ticks)
 static void g4mh_ops_set_time(emu_cpu_t *cpu, uint64_t now)
 {
     (void)cpu;
-    g4mh_intc_set_time(&g_intc[0], now);
+    for (unsigned i = 0u; i < G4MH_OSTM_COUNT; i++) {
+        g4mh_ostm_set_time(&g_ostm[i], now);
+    }
     /*
      * The LTSC too, and this is the hook that matters on a host: the
      * runner drives guest time by reading a real clock and calling

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * g4mh_intc.h - Interrupt controller (INTC1 + INTC2) and a time base.
+ * g4mh_intc.h - Interrupt controller (INTC1 + INTC2).
  *
  * The G4MH counterpart of the RISC-V frontend's CLINT and APLIC, and the
  * split is the same one for the same reason:
@@ -138,23 +138,6 @@ struct g4mh_cpu;
 #define G4MH_IMR_RESET 0xFFFFFFFFu
 
 /* ------------------------------------------------------------------ */
-/* OS timer                                                            */
-/* ------------------------------------------------------------------ */
-
-/*
- * A minimal free-running counter with a compare match, standing in for the
- * RH850 OSTM. Enough for a guest to have a time base and a periodic
- * interrupt; not the real OSTM register set, which is why it is documented
- * as a stand-in rather than presented as the peripheral.
- */
-#define G4MH_OSTM_CNT 0x0000u /* 64-bit, read-only          */
-#define G4MH_OSTM_CMP 0x0008u /* 64-bit compare             */
-
-#ifndef G4MH_OSTM_CHANNEL
-#define G4MH_OSTM_CHANNEL 0u
-#endif
-
-/* ------------------------------------------------------------------ */
 /* State                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -219,13 +202,6 @@ typedef struct g4mh_intc {
     uint32_t ihvcfg;
 
     /*
-     * Written by the platform's timer interrupt and read by the emulator
-     * loop, so volatile even though there is only one core.
-     */
-    volatile uint64_t ostm_cnt;
-    uint64_t ostm_cmp;
-
-    /*
      * TPTMSEL: bit n picks EIINT31 over FEINT for PE n's TPTM interval
      * interrupt. One register for the whole system, so it lives on the
      * global instance and is reached through `global` from any core --
@@ -269,7 +245,6 @@ typedef struct g4mh_intc {
  */
 extern const emu_dev_ops_t g4mh_intc1_ops;
 extern const emu_dev_ops_t g4mh_intc2_ops;
-extern const emu_dev_ops_t g4mh_ostm_ops;
 extern const emu_dev_ops_t g4mh_intif_ops;
 
 /*
@@ -287,10 +262,6 @@ void g4mh_intc_set_unmask(g4mh_intc_t *ic, emu_unmask_fn fn, void *ctx);
  * interpreter could be midway through.
  */
 void g4mh_intc_raise(g4mh_intc_t *ic, uint32_t channel);
-
-/* Set or advance the time base, then re-evaluate the compare match. */
-void g4mh_intc_set_time(g4mh_intc_t *ic, uint64_t now);
-void g4mh_intc_advance(g4mh_intc_t *ic, uint32_t delta);
 
 /*
  * The highest-priority pending, unmasked channel for PE `pe`, or -1.

@@ -91,9 +91,8 @@ From the last measurements in [linux.md](linux.md).
   - [ ] The clock tree.
   - [x] LTSC (section 44) -- modelled in `g4mh_ltsc.c`, driven by the
         runner's `set_time`; DOOM's clock runs off it.
-  - [~] OSTM (section 34) -- OSTM0 is in `g4mh_intc.c` with its compare
-        interrupt. The part has one channel per core; the others are
-        missing.
+  - [x] OSTM (section 34) -- `g4mh_ostm.c`, the U2B6's three units at
+        their own addresses and channels, replacing the stand-in.
   - [ ] GPIO/ON (section 2), emulated on top of the STM32 GPIO HAL, the
         state of each output sent over a UDP/IP connection.
   - [x] KCRC (section 57) -- `g4mh_kcrc.c`, the four units, held to

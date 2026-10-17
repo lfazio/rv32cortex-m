@@ -39,6 +39,7 @@
 #include "g4mh/g4mh_memmap.h"
 #include "g4mh/g4mh_kcrc.h"
 #include "g4mh/g4mh_ltsc.h"
+#include "g4mh/g4mh_ostm.h"
 #include "emu/emu_gdb.h"
 #include "emu/emu_jit.h"
 
@@ -4723,6 +4724,295 @@ static void test_kcrc_units_independent(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* OSTM -- the OS timers                                               */
+/* ------------------------------------------------------------------ */
+
+#define OSTM(n, r) (G4MH_OSTM_BASE(n) + (r))
+
+/* Counts of PCLK in one platform microsecond: 80. */
+#define OSTM_PER_US (G4MH_OSTM_HZ / G4MH_OSTM_PLATFORM_HZ)
+
+static void ostm_wr8(unsigned n, uint32_t r, uint32_t v)
+{
+    (void)emu_bus_write(&g_bus, OSTM(n, r), 1u, v);
+}
+
+static uint32_t ostm_rd8(unsigned n, uint32_t r)
+{
+    uint32_t v = 0xDEADBEEFu;
+
+    (void)emu_bus_read(&g_bus, OSTM(n, r), 1u, &v);
+    return v & 0xFFu;
+}
+
+/* The unit's channel: requested, through the INTC2 window. */
+static bool ostm_requested(unsigned n)
+{
+    const uint32_t ch = G4MH_OSTM_CHANNEL(n);
+
+    return (devrd(G4MH_INTC2_BASE + G4MH_INTC2_EEIC + 4u * ch) &
+            G4MH_EEIC_EIRF) != 0u;
+}
+
+static void ostm_clear(unsigned n)
+{
+    const uint32_t ch = G4MH_OSTM_CHANNEL(n);
+    const uint32_t a = G4MH_INTC2_BASE + G4MH_INTC2_EEIC + 4u * ch;
+
+    devwr(a, devrd(a) & ~G4MH_EEIC_EIRF);
+}
+
+/*
+ * Reset values, and table 34.12: the counter reads FFFF_FFFFH, the
+ * interval mode's start value, and 0 once free-run is selected -- if
+ * nothing has been written to it since reset.
+ */
+static void test_ostm_reset(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+    for (unsigned n = 0u; n < G4MH_OSTM_COUNT; n++) {
+        CHECK_EQ(devrd(OSTM(n, G4MH_OSTM_CMP)), 0u);
+        CHECK_EQ(devrd(OSTM(n, G4MH_OSTM_CNT)), 0xFFFFFFFFu);
+        CHECK_EQ(ostm_rd8(n, G4MH_OSTM_TE), 0u);
+        CHECK_EQ(ostm_rd8(n, G4MH_OSTM_CTL), 0u);
+        CHECK_EQ(ostm_rd8(n, G4MH_OSTM_TO), 0u);
+        CHECK_EQ(ostm_rd8(n, G4MH_OSTM_TOE), 0u);
+    }
+    ostm_wr8(0u, G4MH_OSTM_CTL, G4MH_OSTM_CTL_MD1);
+    CHECK_EQ(devrd(OSTM(0u, G4MH_OSTM_CNT)), 0u);
+    ostm_wr8(0u, G4MH_OSTM_CTL, 0u);
+    CHECK_EQ(devrd(OSTM(0u, G4MH_OSTM_CNT)), 0xFFFFFFFFu);
+}
+
+/*
+ * Interval mode, from the platform's clock: CMP = 799 is a period of
+ * 800 counts, 10 us. The counter is exact between updates, and the
+ * interrupt is the zero at 799 counts -- 9.9875 us -- so it is raised
+ * by the update at 10 us and not by the one at 9.
+ */
+static void test_ostm_interval(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+    set_now(1000u);
+    devwr(OSTM(0u, G4MH_OSTM_CMP), 799u);
+    ostm_wr8(0u, G4MH_OSTM_CTL, G4MH_OSTM_CTL_IE);
+    ostm_wr8(0u, G4MH_OSTM_TS, 1u);
+    CHECK_EQ(ostm_rd8(0u, G4MH_OSTM_TE), 1u);
+    CHECK_EQ(devrd(OSTM(0u, G4MH_OSTM_CNT)), 799u);
+    CHECK(!ostm_requested(0u)); /* no MD0, no start interrupt */
+
+    set_now(1005u);
+    CHECK_EQ(devrd(OSTM(0u, G4MH_OSTM_CNT)), 799u - 5u * OSTM_PER_US);
+    set_now(1009u);
+    CHECK(!ostm_requested(0u));
+    set_now(1010u);
+    CHECK(ostm_requested(0u));
+    /* 800 counts in: one past the zero, so the reload is showing. */
+    CHECK_EQ(devrd(OSTM(0u, G4MH_OSTM_CNT)), 799u);
+
+    ostm_clear(0u);
+    set_now(1019u);
+    CHECK(!ostm_requested(0u));
+    set_now(1020u);
+    CHECK(ostm_requested(0u));
+
+    /* Stopped, it holds its value and raises nothing more. */
+    ostm_clear(0u);
+    set_now(1025u);
+    ostm_wr8(0u, G4MH_OSTM_TT, 1u);
+    CHECK_EQ(ostm_rd8(0u, G4MH_OSTM_TE), 0u);
+    const uint32_t held = devrd(OSTM(0u, G4MH_OSTM_CNT));
+
+    CHECK_EQ(held, 799u - 5u * OSTM_PER_US);
+    set_now(1100u);
+    CHECK_EQ(devrd(OSTM(0u, G4MH_OSTM_CNT)), held);
+    CHECK(!ostm_requested(0u));
+
+    /*
+     * The period is CMP + 1 counts, the reload being a count of its own
+     * -- which one period cannot show: 799 and 800 both put the second
+     * zero inside the update at 1020. A hundred periods after a restart
+     * the counter is back at CMP only if every one was 800; at 799 it
+     * reads 700. And the interrupt keeps the same phase: the hundred-
+     * and-first zero is at 80,799 counts, inside the update at 2110 and
+     * not the one at 2109 -- where 799-count periods would have put it.
+     */
+    ostm_wr8(0u, G4MH_OSTM_TS, 1u);
+    set_now(2100u);
+    CHECK_EQ(devrd(OSTM(0u, G4MH_OSTM_CNT)), 799u);
+    CHECK(ostm_requested(0u));
+    ostm_clear(0u);
+    set_now(2109u);
+    CHECK(!ostm_requested(0u));
+    set_now(2110u);
+    CHECK(ostm_requested(0u));
+}
+
+/*
+ * The start interrupt (MD0), the no-reload start (MD2), and the forced
+ * restart: TS while counting in interval mode reloads CMP "regardless of
+ * the value of OSTMnCTL.OSTMnMD2", and in free-run mode is ignored.
+ */
+static void test_ostm_start_modes(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+    set_now(0u);
+    devwr(OSTM(1u, G4MH_OSTM_CMP), 1599u);
+    ostm_wr8(1u, G4MH_OSTM_CTL, G4MH_OSTM_CTL_IE | G4MH_OSTM_CTL_MD0);
+    ostm_wr8(1u, G4MH_OSTM_TS, 1u);
+    CHECK(ostm_requested(1u)); /* at the start, before any count */
+    ostm_clear(1u);
+
+    /* Stop at 5 us, then restart without reload from where it stood. */
+    set_now(5u);
+    ostm_wr8(1u, G4MH_OSTM_TT, 1u);
+    CHECK_EQ(devrd(OSTM(1u, G4MH_OSTM_CNT)), 1599u - 5u * OSTM_PER_US);
+    ostm_wr8(1u, G4MH_OSTM_CTL, G4MH_OSTM_CTL_IE | G4MH_OSTM_CTL_MD2);
+    set_now(50u);
+    ostm_wr8(1u, G4MH_OSTM_TS, 1u);
+    CHECK_EQ(devrd(OSTM(1u, G4MH_OSTM_CNT)), 1599u - 5u * OSTM_PER_US);
+
+    /* Forced restart: reloads CMP although MD2 is set. */
+    set_now(52u);
+    ostm_wr8(1u, G4MH_OSTM_TS, 1u);
+    CHECK_EQ(devrd(OSTM(1u, G4MH_OSTM_CNT)), 1599u);
+
+    /* CNT and CTL do not take writes while counting. */
+    devwr(OSTM(1u, G4MH_OSTM_CNT), 7u);
+    ostm_wr8(1u, G4MH_OSTM_CTL, 0u);
+    CHECK_EQ(devrd(OSTM(1u, G4MH_OSTM_CNT)), 1599u);
+    CHECK_EQ(ostm_rd8(1u, G4MH_OSTM_CTL), G4MH_OSTM_CTL_IE | G4MH_OSTM_CTL_MD2);
+    ostm_wr8(1u, G4MH_OSTM_TT, 1u);
+
+    /* Free-run: TS while counting changes nothing. */
+    ostm_wr8(1u, G4MH_OSTM_CTL, G4MH_OSTM_CTL_MD1);
+    ostm_wr8(1u, G4MH_OSTM_TS, 1u);
+    CHECK_EQ(devrd(OSTM(1u, G4MH_OSTM_CNT)), 0u);
+    set_now(62u);
+    ostm_wr8(1u, G4MH_OSTM_TS, 1u);
+    CHECK_EQ(devrd(OSTM(1u, G4MH_OSTM_CNT)), 10u * OSTM_PER_US);
+}
+
+/*
+ * Free-run compare: a match at CMP, and the next one a full 2^32 counts
+ * later -- 53,687,091.2 us at 80 MHz -- not at the next update. And CMP
+ * rewritten while counting is "immediately reflected": a new value
+ * ahead of the counter matches when the counter gets there.
+ */
+static void test_ostm_free_run(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+    set_now(0u);
+    devwr(OSTM(2u, G4MH_OSTM_CMP), 20u * OSTM_PER_US);
+    ostm_wr8(2u, G4MH_OSTM_CTL, G4MH_OSTM_CTL_IE | G4MH_OSTM_CTL_MD1);
+    ostm_wr8(2u, G4MH_OSTM_TS, 1u);
+    CHECK_EQ(devrd(OSTM(2u, G4MH_OSTM_CNT)), 0u);
+    set_now(19u);
+    CHECK(!ostm_requested(2u));
+    set_now(20u);
+    CHECK(ostm_requested(2u));
+    ostm_clear(2u);
+
+    set_now(53687110u); /* 0.8 us short of the wrap's return to CMP */
+    CHECK(!ostm_requested(2u));
+    set_now(53687112u);
+    CHECK(ostm_requested(2u));
+    ostm_clear(2u);
+
+    /* Move the match ahead of the counter: 30 us from now. */
+    const uint32_t cnt = devrd(OSTM(2u, G4MH_OSTM_CNT));
+
+    devwr(OSTM(2u, G4MH_OSTM_CMP), cnt + 30u * OSTM_PER_US);
+    set_now(53687112u + 29u);
+    CHECK(!ostm_requested(2u));
+    set_now(53687112u + 30u);
+    CHECK(ostm_requested(2u));
+}
+
+/*
+ * The three units are three: their own registers, their own channel.
+ * OSTM1 is in the other bus group from OSTM0, and OSTM2 is OSTM0's group
+ * one stride up; channel 841 is OSTM2's, which 128 channels did not
+ * reach.
+ */
+static void test_ostm_units(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+    set_now(0u);
+    for (unsigned n = 0u; n < G4MH_OSTM_COUNT; n++) {
+        devwr(OSTM(n, G4MH_OSTM_CMP), (n + 1u) * 10u * OSTM_PER_US - 1u);
+        ostm_wr8(n, G4MH_OSTM_CTL, G4MH_OSTM_CTL_IE);
+        ostm_wr8(n, G4MH_OSTM_TS, 1u);
+    }
+    set_now(10u);
+    CHECK(ostm_requested(0u));
+    CHECK(!ostm_requested(1u));
+    CHECK(!ostm_requested(2u));
+    set_now(20u);
+    CHECK(ostm_requested(1u));
+    CHECK(!ostm_requested(2u));
+    set_now(30u);
+    CHECK(ostm_requested(2u));
+    CHECK_EQ(G4MH_OSTM_CHANNEL(0u), 360u);
+    CHECK_EQ(G4MH_OSTM_CHANNEL(1u), 361u);
+    CHECK_EQ(G4MH_OSTM_CHANNEL(2u), 841u);
+}
+
+/*
+ * OSTM0's output in toggle mode flips once per interrupt, which makes it
+ * a count of events mod 2 -- so it must come out the same however the
+ * platform slices time. Updated every microsecond, every 7, and once, a
+ * 100 us run of a 1 us period gives the same level and the same counter.
+ */
+static void test_ostm_toggle_any_slicing(void)
+{
+    static const uint32_t k_step[3] = {1u, 7u, 100u};
+    uint32_t level[3];
+    uint32_t cnt[3];
+
+    for (unsigned s = 0u; s < 3u; s++) {
+        if (!devbus_up()) {
+            CHECK(false);
+            return;
+        }
+        set_now(0u);
+        devwr(OSTM(0u, G4MH_OSTM_CMP), OSTM_PER_US - 1u);
+        ostm_wr8(0u, G4MH_OSTM_TOE, 1u);
+        ostm_wr8(0u, G4MH_OSTM_TS, 1u);
+        for (uint32_t t = 0u; t < 100u; t += k_step[s]) {
+            set_now(t);
+        }
+        set_now(100u);
+        level[s] = ostm_rd8(0u, G4MH_OSTM_TO);
+        cnt[s] = devrd(OSTM(0u, G4MH_OSTM_CNT));
+    }
+    CHECK_EQ(level[1], level[0]);
+    CHECK_EQ(level[2], level[0]);
+    CHECK_EQ(cnt[1], cnt[0]);
+    CHECK_EQ(cnt[2], cnt[0]);
+    /* 100 zeros in 100 us: an even count, so the level is back to 0... */
+    CHECK_EQ(level[0], 0u);
+    /* ...and one more microsecond makes it odd. */
+    set_now(101u);
+    CHECK_EQ(ostm_rd8(0u, G4MH_OSTM_TO), 1u);
+}
+
+/* ------------------------------------------------------------------ */
 /* LTSC -- the long-term system counter                                */
 /* ------------------------------------------------------------------ */
 
@@ -5142,6 +5432,79 @@ static void test_tptm_interrupt_ei(void)
     /* And the underflow flag is set whether or not IIEN was: it is the
      * enable that gates the interrupt, not the status. */
     CHECK_EQ(devrd(TPTM_SELF(G4MH_TPTM_IUSTR)) & 1u, 1u);
+}
+
+/*
+ * OSTM0's interrupt taken by the core: channel 360, INTC2's, above the
+ * 128 channels the controller used to stop at. Set up by the guest with
+ * ordinary stores -- EEIC360, then CMP, CTL and TS -- and the clock moved
+ * by the trap hook, so the request arrives inside the run.
+ *
+ * The cause register is the assertion, not the handler: every EI
+ * interrupt lands at the same vector, so a handler that ran says only
+ * that *something* was taken.
+ */
+static void test_ostm_interrupt_taken(void)
+{
+    const uint32_t eeic360 = G4MH_INTC2_EEIC + 4u * G4MH_OSTM_CHANNEL(0u);
+    uint16_t prog[0x120];
+    unsigned k = 0;
+
+    memset(prog, 0, sizeof(prog));
+
+    prog[k++] = MOVI32(11); /* r11 = OSTM0 */
+    prog[k++] = LO(G4MH_OSTM_BASE(0u));
+    prog[k++] = HI(G4MH_OSTM_BASE(0u));
+    prog[k++] = MOVI32(13); /* r13 = INTC2 */
+    prog[k++] = LO(G4MH_INTC2_BASE);
+    prog[k++] = HI(G4MH_INTC2_BASE);
+
+    /* EEIC360 = 0: unmasked, priority 0, direct vector. A word store. */
+    prog[k++] = F2(OP_MOVI, 0, 10);
+    prog[k++] = W0(OP_ST_HW, 13, 10);
+    prog[k++] = (uint16_t)(eeic360 | 1u);
+
+    /* CMP = 79: a period of 80 counts, one microsecond. */
+    prog[k++] = MOVI32(10);
+    prog[k++] = LO(79u);
+    prog[k++] = HI(79u);
+    prog[k++] = W0(OP_ST_HW, 11, 10);
+    prog[k++] = (uint16_t)(G4MH_OSTM_CMP | 1u);
+
+    /* CTL = IE, then TS = 1: byte stores, as the registers are. */
+    prog[k++] = MOVI32(10);
+    prog[k++] = LO(G4MH_OSTM_CTL_IE);
+    prog[k++] = HI(G4MH_OSTM_CTL_IE);
+    prog[k++] = W0(OP_ST_B, 11, 10);
+    prog[k++] = G4MH_OSTM_CTL;
+    prog[k++] = F2(OP_MOVI, 1, 10);
+    prog[k++] = W0(OP_ST_B, 11, 10);
+    prog[k++] = G4MH_OSTM_TS;
+
+    prog[k++] = W0(OP_SYSTEM, 0, 0x10u); /* EI */
+    prog[k++] = SUB_DIEI;
+    prog[k++] = W0(OP_SYSTEM, 0, 0); /* trap 0: the hook moves time */
+    prog[k++] = SUB_TRAP;
+    prog[k++] = 0x07E0u; /* no interrupt: halt with r20 clear */
+    prog[k++] = SUB_HALT;
+
+    prog[0x80] = F2(OP_MOVI, 7, 20); /* the EI handler, RBASE + 0x100 */
+    prog[0x81] = 0x07E0u;
+    prog[0x82] = SUB_HALT;
+
+    g_tick_hook_seen = false;
+
+    emu_run_reason_t why;
+    uint32_t retired = 0;
+    if (!load_and_run_hooked(prog, sizeof(prog) / sizeof(prog[0]), 256u, &why,
+                             &retired, tick_hook)) {
+        CHECK(false);
+        return;
+    }
+    CHECK(g_tick_hook_seen);
+    CHECK_EQ(reg(20), 7u);
+    CHECK_EQ(sreg(0, G4MH_SR_EIIC), G4MH_EXC_EIINT_BASE + G4MH_OSTM_CHANNEL(0u));
+    CHECK_EQ(devrd(G4MH_OSTM_BASE(0u) + G4MH_OSTM_TE) & 1u, 1u);
 }
 
 /*
@@ -7546,6 +7909,12 @@ void test_g4mh(void)
     test_kcrc_word_order();
     test_kcrc_reset();
     test_kcrc_units_independent();
+    test_ostm_reset();
+    test_ostm_interval();
+    test_ostm_start_modes();
+    test_ostm_free_run();
+    test_ostm_units();
+    test_ostm_toggle_any_slicing();
     test_ltsc_capture();
     test_ltsc_absolute_time();
     test_ltsc_preset();
@@ -7554,6 +7923,7 @@ void test_g4mh(void)
     test_tptm_divider_carry();
     test_tptm_up_compare();
     test_tptm_interrupt_ei();
+    test_ostm_interrupt_taken();
     test_tptm_interrupt_feint();
     test_tptm_interrupt_masked();
     test_ipir_delivers();

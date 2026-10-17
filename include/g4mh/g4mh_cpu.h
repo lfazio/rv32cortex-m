@@ -73,12 +73,6 @@ typedef struct g4mh_cpu {
     uint64_t retired;
 
     /*
-     * Guest time, owned by the INTC's timer the way the RISC-V frontend's
-     * is owned by the CLINT. Points at whatever the platform is driving.
-     */
-    const volatile uint64_t *time;
-
-    /*
      * The LL/SC reservation, per core.
      *
      * LDL.W sets it, STC.W consumes it, CLL and any exception drop it, and

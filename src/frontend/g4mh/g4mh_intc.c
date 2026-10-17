@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
- * g4mh_intc.c - INTC1, INTC2 and the time base.
+ * g4mh_intc.c - INTC1 and INTC2.
  *
  * Register offsets and bit positions from the RH850/U2B hardware manual
  * (R01UH0923EJ0130), Section 6.3. One state struct behind three devices,
@@ -184,7 +184,6 @@ void g4mh_intc_init(g4mh_intc_t *ic, g4mh_cpu_t *cpu, g4mh_intc_t *global,
     ic->cpu = cpu;
     ic->global = (global != NULL) ? global : ic;
     ic->intc2 = (global != NULL) ? global->intc2 : intc2;
-    ic->ostm_cmp = UINT64_MAX; /* no compare match until software sets one */
 
     /*
      * Masked, lowest priority, edge detection. This is also IMRm's
@@ -206,7 +205,6 @@ void g4mh_intc_init(g4mh_intc_t *ic, g4mh_cpu_t *cpu, g4mh_intc_t *global,
     }
 
     cpu->intc = ic;
-    cpu->time = &ic->ostm_cnt;
 }
 
 void g4mh_intc_set_unmask(g4mh_intc_t *ic, emu_unmask_fn fn, void *ctx)
@@ -355,20 +353,6 @@ static bool g4mh_intc_wakeable_impl(const g4mh_intc_t *ic, unsigned pe)
         }
     }
     return false;
-}
-
-void g4mh_intc_set_time(g4mh_intc_t *ic, uint64_t now)
-{
-    ic->ostm_cnt = now;
-    /* Unsigned comparison, so a wrap does not fire the channel spuriously. */
-    if (now >= ic->ostm_cmp) {
-        g4mh_intc_raise(ic, G4MH_OSTM_CHANNEL);
-    }
-}
-
-void g4mh_intc_advance(g4mh_intc_t *ic, uint32_t delta)
-{
-    g4mh_intc_set_time(ic, ic->ostm_cnt + delta);
 }
 
 /* ------------------------------------------------------------------ */
@@ -658,56 +642,6 @@ static emu_fault_t intif_write(void *ctx, uint32_t off, uint32_t size,
     return EMU_FAULT_NONE;
 }
 
-/* ------------------------------------------------------------------ */
-/* OS timer                                                            */
-/* ------------------------------------------------------------------ */
-
-static emu_fault_t ostm_read(void *ctx, uint32_t off, uint32_t size,
-                             uint32_t *out)
-{
-    const g4mh_intc_t *ic = (const g4mh_intc_t *)ctx;
-    (void)size;
-
-    switch (off) {
-    case G4MH_OSTM_CNT:
-        *out = (uint32_t)ic->ostm_cnt;
-        break;
-    case G4MH_OSTM_CNT + 4u:
-        *out = (uint32_t)(ic->ostm_cnt >> 32);
-        break;
-    case G4MH_OSTM_CMP:
-        *out = (uint32_t)ic->ostm_cmp;
-        break;
-    case G4MH_OSTM_CMP + 4u:
-        *out = (uint32_t)(ic->ostm_cmp >> 32);
-        break;
-    default:
-        *out = 0u;
-        break;
-    }
-    return EMU_FAULT_NONE;
-}
-
-static emu_fault_t ostm_write(void *ctx, uint32_t off, uint32_t size,
-                              uint32_t val)
-{
-    g4mh_intc_t *ic = (g4mh_intc_t *)ctx;
-    (void)size;
-
-    switch (off) {
-    case G4MH_OSTM_CMP:
-        ic->ostm_cmp = (ic->ostm_cmp & 0xFFFFFFFF00000000ull) | val;
-        break;
-    case G4MH_OSTM_CMP + 4u:
-        ic->ostm_cmp = (ic->ostm_cmp & 0xFFFFFFFFull) | ((uint64_t)val << 32);
-        break;
-    default:
-        /* The counter is read-only; writes are dropped, not faulted. */
-        break;
-    }
-    return EMU_FAULT_NONE;
-}
-
 const emu_dev_ops_t g4mh_intc1_ops = {
     .read = intc1_read,
     .write = intc1_write,
@@ -716,11 +650,6 @@ const emu_dev_ops_t g4mh_intc1_ops = {
 const emu_dev_ops_t g4mh_intc2_ops = {
     .read = intc2_read,
     .write = intc2_write,
-    .tick = NULL,
-};
-const emu_dev_ops_t g4mh_ostm_ops = {
-    .read = ostm_read,
-    .write = ostm_write,
     .tick = NULL,
 };
 const emu_dev_ops_t g4mh_intif_ops = {

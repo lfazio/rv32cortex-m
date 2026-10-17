@@ -11,7 +11,7 @@
  *   0xFFFC_0000  INTC1 SELF     core-local interrupt controller, this PE
  *   0xFFFC_4000  INTC1 PE0      the same registers named absolutely
  *   0xFFF8_0000  INTC2          global interrupt controller
- *   0xFFEC_0000  OSTM0          a time base
+ *   0xFFBF_0000  OSTM0..2       the OS timers (g4mh_ostm.h)
  *   0xFFC7_8100  LTSC           the long-term system counter
  *   0xFFD4_0000  KCRC0..3       the data CRC units (g4mh_kcrc.h)
  *
@@ -48,10 +48,6 @@
 
 #define G4MH_INTC2_BASE 0xFFF80000u
 #define G4MH_INTC2_SIZE 0x00008000u
-
-/* OS timer. Minimal model; see g4mh_intc.h. */
-#define G4MH_OSTM0_BASE 0xFFEC0000u
-#define G4MH_OSTM0_SIZE 0x00000100u
 
 /*
  * The inter-CPU peripherals, hardware manual table 3.145. All three
