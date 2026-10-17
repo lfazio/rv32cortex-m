@@ -243,6 +243,9 @@ if(EMU_GUEST_ARCH_PPC)
         endif()
         add_ppc_guest(sys SOURCES sys.c sys_stubs.S)
         add_ppc_guest(mmu SOURCES mmu.c sys_stubs.S mmu_stubs.S)
+        # intc_stubs.S last: its hardware vector page must follow every
+        # handler that has to stay in the image's first 64 KiB.
+        add_ppc_guest(intc SOURCES intc.c sys_stubs.S intc_stubs.S)
         add_ppc_guest(park SOURCES park.c)
         add_ppc_guest(smp SOURCES smp.c smp_stubs.S FLAGS -DPPC_CRT0_SMP)
         add_ppc_guest(smp-vle SOURCES smp.c smp_stubs.S

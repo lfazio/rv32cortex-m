@@ -23,8 +23,10 @@
 #include "ppc/ppc_cpu.h"
 #include "ppc/ppc_decode.h"
 #include "ppc/ppc_disasm.h"
+#include "ppc/ppc_intc.h"
 #include "ppc/ppc_ir.h"
 #include "ppc/ppc_sscm.h"
+#include "ppc/ppc_stm.h"
 
 #include <string.h>
 
@@ -38,6 +40,16 @@ const emu_gdb_target_t *ppc_gdb_target(void);
  */
 static ppc_cpu_t g_cpu[PPC_CORE_COUNT];
 static ppc_sscm_t g_sscm;
+
+/*
+ * Each core's interrupt controller and system timer: in decoupled
+ * parallel mode the part has an INTC and an STM per core, INTC_0/STM_0
+ * for core 0 and INTC_1/STM_1 for core 1 (Reference Manual tables 32-1
+ * and 51-1). The STM requests through its own core's INTC, as sources
+ * 30 to 33.
+ */
+static ppc_intc_t g_intc[PPC_CORE_COUNT];
+static ppc_stm_t g_stm[PPC_CORE_COUNT];
 
 /*
  * p_tbclk is one input for the part, and either core's time base may
@@ -189,6 +201,11 @@ static void ppc_ops_reset(emu_cpu_t *cpu, uint32_t reset_pc)
 
     ppc_cpu_reset(c, reset_pc);
     c->reset_req = PPC_REQ_NONE;
+    if (c->coreid < PPC_CORE_COUNT) {
+        /* After the core: the STM publishes its next match to it. */
+        ppc_intc_reset(&g_intc[c->coreid]);
+        ppc_stm_reset(&g_stm[c->coreid]);
+    }
     if (c->coreid == 0u) {
         ppc_sscm_reset(&g_sscm); /* the system's reset, which is core 0's */
     }
@@ -203,6 +220,37 @@ static void ppc_ops_reset(emu_cpu_t *cpu, uint32_t reset_pc)
  * the address is not mapped and an access to it is a bus error, as on a
  * part with nothing there.
  */
+/*
+ * A core's INTC and STM, on that core's bus alone. Whether the other
+ * core can reach them on the part is not modelled; mapped only here,
+ * every access to them is made on their own core's thread, so they need
+ * no lock where cores are threads, and the STM can sync its own core's
+ * clock.
+ */
+static bool ppc_ops_add_core_devices(emu_cpu_t *cpu, emu_bus_t *bus,
+                                     unsigned index)
+{
+    ppc_cpu_t *const c = cpu_of(cpu);
+
+    if (index >= PPC_CORE_COUNT || index > 1u) {
+        return true; /* the part has two */
+    }
+    ppc_intc_t *const ic = &g_intc[index];
+    ppc_stm_t *const st = &g_stm[index];
+
+    ic->core = c;
+    st->core = c;
+    st->intc = ic;
+    c->intc = ic;
+    c->stm = st;
+    return emu_bus_add_mmio(bus, "intc",
+                            (index == 0u) ? PPC_INTC0_BASE : PPC_INTC1_BASE,
+                            PPC_INTC_SIZE, &ppc_intc_ops, ic) &&
+           emu_bus_add_mmio(bus, "stm",
+                            (index == 0u) ? PPC_STM0_BASE : PPC_STM1_BASE,
+                            PPC_STM_SIZE, &ppc_stm_ops, st);
+}
+
 static bool ppc_ops_add_shared_devices(emu_bus_t *bus)
 {
 #if PPC_CORE_COUNT > 1
@@ -563,6 +611,7 @@ const emu_cpu_ops_t ppc_frontend = {
     .status = ppc_ops_status,
     .select_backend = ppc_select_backend,
     .add_shared_devices = ppc_ops_add_shared_devices,
+    .add_core_devices = ppc_ops_add_core_devices,
     .invalidate = ppc_ops_invalidate,
     .dump = ppc_dump,
 #if PPC_ENABLE_DISASM

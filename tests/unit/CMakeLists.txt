@@ -56,7 +56,7 @@ if(EMU_GUEST_ARCH_G4MH)
     target_sources(emu-unit PRIVATE test_g4mh.c)
 endif()
 if(EMU_GUEST_ARCH_PPC)
-    target_sources(emu-unit PRIVATE test_ppc.c)
+    target_sources(emu-unit PRIVATE test_ppc.c test_ppc_soc.c)
 endif()
 if(EMU_GUEST_ARCH_ARMV7M)
     target_sources(emu-unit PRIVATE test_armv7m.c)
@@ -653,6 +653,7 @@ if(EMU_GUEST_ARCH_PPC)
                "efpu2:PPC-EFPU2-END checks=000009ab fails=00000000"
                "sys:PPC-SYS-END checks=000000b8 fails=00000000"
                "mmu:PPC-MMU-END checks=000000ef fails=00000000"
+               "intc:PPC-INTC-END checks=00000031 fails=00000000"
                "coremark:Correct operation validated"
                "coremark-tlb:Correct operation validated"
                "coremark-tlbmiss:Correct operation validated"

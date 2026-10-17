@@ -67,6 +67,7 @@ int main(void)
 #endif
 #if EMU_GUEST_ARCH_PPC
     test_ppc();
+    test_ppc_soc();
 #endif
 
     printf("%d checks, %d failures\n", g_checks, g_failures);

@@ -150,10 +150,10 @@ typedef struct ppc_cpu {
     uint64_t tbclk_last;
 
     /*
-     * The external interrupt input, level. Set by the platform through
-     * set_irq and cleared by the guest's interrupt controller -- there
-     * is none here, so it is cleared when the interrupt is taken, which
-     * is what a single edge-triggered source looks like.
+     * The platform's external interrupt line, set through set_irq and
+     * cleared when the interrupt is taken -- nothing holds it, so it
+     * behaves as one edge-triggered source. The SoC's INTC (`intc`,
+     * below) drives the same input beside it, and holds its own request.
      */
     volatile bool ext_pending;
 
@@ -277,6 +277,21 @@ typedef struct ppc_cpu {
     uint8_t reset_req;
     uint32_t start_pc;
     bool start_vle;
+
+    /*
+     * The SoC's interrupt controller and system timer serving this core
+     * (ppc_intc.h, ppc_stm.h), or NULL where nothing has mapped them --
+     * a unit test's bare core. Cold, so at the end.
+     *
+     * `stm_until` is the STM's next match in processor-clock ticks from
+     * `clk_synced`, which the STM keeps whenever it changes, so that
+     * bounding a stretch reads one word rather than four channels.
+     * 0xFFFFFFFF, never 0, when there is none: a stretch of no
+     * instructions would be a loop that never advances.
+     */
+    struct ppc_intc *intc;
+    struct ppc_stm *stm;
+    uint32_t stm_until;
 } ppc_cpu_t;
 
 #define PPC_REQ_NONE 0u
@@ -412,8 +427,9 @@ void ppc_cpu_set_time(ppc_cpu_t *c, uint64_t now);
  */
 void ppc_cpu_sync_clock(ppc_cpu_t *c);
 
-/* Instructions until the decrementer expires on the processor clock,
- * or UINT32_MAX when that is not what will happen next. */
+/* Instructions until the decrementer expires on the processor clock or
+ * the STM next matches, or UINT32_MAX when neither is what will happen
+ * next. */
 uint32_t ppc_cpu_clock_until(const ppc_cpu_t *c);
 
 /* The external input, level. */

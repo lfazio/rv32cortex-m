@@ -770,8 +770,10 @@ if(EMU_GUEST_ARCH_PPC)
         src/frontend/ppc/ppc_frontend.c
         src/frontend/ppc/ppc_gdb.c
         src/frontend/ppc/ppc_interp.c
+        src/frontend/ppc/ppc_intc.c
         src/frontend/ppc/ppc_mmu.c
         src/frontend/ppc/ppc_sscm.c
+        src/frontend/ppc/ppc_stm.c
         $<$<BOOL:${EMU_PAIR_STATS}>:src/frontend/ppc/ppc_pairstats.c>
     )
 

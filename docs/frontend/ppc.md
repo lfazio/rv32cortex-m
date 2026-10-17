@@ -29,6 +29,7 @@ of them can catch is a shared misreading of the manual.
 | Interrupts: IVPR and IVOR0–15, 32–35; the four save/restore pairs (SRR, CSRR, DSRR, MCSRR); ESR; `sc`, `tw`, `rfi`/`rfci`/`rfdi`/`rfmci` | implemented |
 | Privilege: MSR[PR], SPR access by number, the user-readable SPRGs | implemented |
 | Time base, decrementer with auto-reload, TSR/TCR, HID0[TBEN] and [SEL_TBCLK], `wait` | implemented |
+| The MPC5675K's INTC and STM, one of each per core: priorities, the LIFO, software and hardware vector modes; a counter on the core clock with four compare channels | implemented ([below](#the-interrupt-controller-and-the-system-timer)) |
 | MMU: the 32-entry TLB, MAS0–4 and 6, PID0, MMUCSR0, the `tlb*` instructions, address spaces, per-page VLE and per-page byte order | implemented ([below](#the-mmu)) |
 | SPE and the vector half of the EFPU (`ev*`) | **not implemented** — SPE-unavailable while MSR[SPE] is clear, as the core does; an illegal-instruction program interrupt once it is set |
 | Classic floating point (`fadd` …) | not on this core |
@@ -628,6 +629,107 @@ it. So the guard costs CoreMark at most the half percent between the
 second and third rows of the first table, which callgrind's 0.84% on
 x86-64 agrees with, and on crypto nothing this board can resolve.
 
+## The interrupt controller and the system timer
+
+The MPC5675K's INTC (chapter 32 of the Reference Manual) and its System
+Timer Module (chapter 51), one of each per core as in decoupled
+parallel mode, each pair mapped on its own core's bus only:
+
+| | core 0 | core 1 | |
+|---|---|---|---|
+| INTC | `0xFFF4_8000` | `0x8FF4_8000` | `ppc_intc.c` |
+| STM | `0xFFF3_C000` | `0x8FF3_C000` | `ppc_stm.c`, INTC sources 30-33 |
+
+**The INTC** is all of chapter 32 that a single core sees: 337 sources,
+8 of them software-settable through SSCIR, a 4-bit priority each in
+PSR, the current priority in CPR with the 14-entry LIFO behind it --
+which overwrites its oldest entry when pushed full and pops zeros when
+empty, 32.4.2.2 -- and both handshakes. In **software vector mode** the
+core takes the external input through IVOR4 and the handler's read of
+IACKR is the acknowledgement: it pushes CPR, installs the request's
+priority and negates the request. In **hardware vector mode** the
+core's taking the interrupt is the acknowledgement, and it branches to
+IVPR[0:15] || vector << 4 (the core manual's table 7-16) instead of
+IVOR4. EOIR pops. Its request sits beside the platform's own external
+line (`set_irq`), which keeps its old edge-like behaviour.
+
+**The STM counts the core's clock**, one tick per instruction -- the
+same clock HID0 can give the time base -- divided by CPS + 1, and a
+channel matches when the counter *reaches* its compare value. It
+publishes its next match to the core (`stm_until`), so the stretch the
+interpreter runs ends on that instruction, exactly as it ends on the
+decrementer's expiry, and a core in `wait` is carried to it. Reading
+STM_CNT syncs the clock first, as reading the time base does.
+
+Where the manual says nothing, the files state the reading taken: a
+request stays asserted until acknowledged, with the vector it asserted
+with ("no spurious vector support", 32.4.1), and only a CPR write
+re-decides it, which is what the priority ceiling protocol needs; an
+IACKR read with no request has no side effect; writing CNT onto CMP
+matches nothing; CIF is the request whatever CEN says. And one place
+where the manual contradicts itself: two sentences have *SSCIR* writes
+popping the LIFO, against EOIR in 32.3.2.4, 32.4.2.2 and both example
+handlers, read here as a slip for EOIR.
+
+**Translated, a device read is a chain behind.** A chain of blocks
+carries its retired count in a host register until it returns to the
+dispatcher, where it becomes cycles, so a load from STM_CNT inside a
+chained loop sees the clock as of the chain's start -- up to
+`EMU_JIT_LOOP_CAP` iterations, 128. Interpreted it is exact. A match
+still fires, a chain late rather than on its instruction: from a
+2,000-tick compare to the ISR reading the counter, 41 instructions
+interpreted against 97 translated in `ppc-intc`. The time base has no
+such lag only because `mfspr` is one of the instructions the translator
+gives back. Making a translated device read exact would mean every
+helper call storing that register, on both hosts.
+
+**On the F746** `ppc-intc` passes on both backends with the host's
+retired counts to the instruction, 107,835 interpreted and 107,923
+translated -- so the Thumb-2 path agrees with x86-64's.
+
+**What they cost a guest that does not use them**, by callgrind on
+PowerPC CoreMark, the same 12,170,464 instructions either way: +0.017%
+host instructions interpreted and +0.44% translated. The second is
+`ppc_jit_count` comparing one more word after every chain, and it is
+what makes a translated loop stop at a match at all.
+
+**Not in the DTCM, by measurement.** The F746's DTCM is full, and in a
+JIT build the INTC and STM land just past it, behind the D-cache; in an
+interpreter build they are inside it already, by link order. On a
+scratch workload that is nearly all STM and INTC -- an interrupt every
+200 ticks re-arming its channel, then 400,000 polls of STM_CNT -- moving
+them into `.dtcm` measured 98.66 host cycles an instruction against
+99.24 for a control that shifts `.bss` by the same 1 KiB
+(`EMU_LAYOUT_PAD_BSS=1024`) and moves nothing, and 98.91 as built: 0.6%,
+of the order of the shift alone and far inside the 10% placement moves
+on this part. A kilobyte touched that often stays in the D-cache; what
+costs is the bus's slow path per device access, not where the state
+sits. Interpreted, all three were 273.6. The DTCM's bytes stay with the
+decode cache and the JIT's tables.
+
+`tests/unit/test_ppc_soc.c` holds both devices to the manual register by
+register, 361 checks; `ppc-intc` runs them under a core, interpreted and
+translated (49 checks, below). Each mechanism was broken on its own to
+see that something fails:
+
+| broken | unit | `ppc-intc`, interpreted | translated |
+|---|---|---|---|
+| the core's stretch bound ignores the STM | -- | `match-latency`, `wait-latency` | the same |
+| the clock never reaches the STM | -- | hangs in the `wait` | hangs |
+| no hardware vector: IVOR4 always | -- | never finishes | never finishes |
+| the INTC's request not consulted | -- | hangs | hangs |
+| a match only when the counter lands on CMP | 1 | -- | 10 |
+| `until` ignores the prescaler's count | 2 | -- | -- |
+| an STM write does not end the stretch | -- | `match-latency` | -- |
+| equal priorities to the higher vector | 1 | `ties-*` | `ties-*` |
+| the LIFO does not saturate | 1 | -- | -- |
+| an IACKR read does not acknowledge | 49 | never finishes | never finishes |
+| a CPR write does not re-decide | 2 | -- | -- |
+| EOIR does not pop | 20 | hangs | hangs |
+
+Each was a single-point change, asserted to match once and to relink
+both binaries; the tree restored passes all three columns.
+
 ## The embedded floating-point unit
 
 `ppc_fpu.c` is EFPU2 in mode 0, the only mode the core has: single
@@ -880,6 +982,7 @@ and says it skipped them when it does not.
 | `ppc-sys` | the system level, 184 checks with the manual's section beside each: interrupts, privilege, SPRs, reservations, the timers, `wait`, both FP interrupts |
 | `ppc-mmu` | the MMU, 239 checks: the TLB programmed as an MPC57xx start-up does, then translation, address spaces, PIDs, permissions, every TLB interrupt and the MAS registers it leaves, per-page VLE and byte order, invalidation, and the JIT's `jit-` cases |
 | `ppc-smp`, `ppc-smp-vle` | the second core, 41 checks: held at reset and released only by the SSCM's key sequence, PIR, atomics and reservations between the cores, a TLB each for data and code, a second sequence ignored; and, built again, a start in VLE. Run nine ways by ctest |
+| `ppc-intc` | the INTC and the STM under a core, 49 checks: the access rules, the counter against the processor clock, a match taken through a software-vector handler and a C ISR, preemption and the LIFO both ways round, CPR masking and equal priorities, the hardware vector from a page of its own, and a `wait` only the STM can end |
 | `ppc-coremark-tlbmiss` | CoreMark with the TLB filled on demand by a miss handler in `crt0.S`, two refill entries for a working set of five pages: 26,652 `tlbwe` in a run |
 | `ppc-park` | a `wait` nothing may end: the run must stop there, and the line after it must not print |
 | `ppc-efpu2` | **compiled by clang for the FP unit**, the only guest that is: the four operations and three compares over every pair of 22 values chosen for EFPU2's defaults and the fast path's edges, conversions both ways, a polynomial, and the sticky bits -- 2,475 checks against `efpu.py`'s model, through `efpu2_want.py`. Built where a clang can emit EFPU2, skipped with a message where none can |
@@ -1041,6 +1144,13 @@ existing rather than on the frontend being compiled in.
 - **No pair statistics.** The gdb target exists; it does not describe
   the SPE upper halves, which gdb wants alongside a 64-bit `acc` the
   stub cannot carry, nor the SPRs.
+- **Only the STM requests through the INTC.** Its other 300-odd sources
+  are peripherals this model does not have, the SWT among them
+  ([TODO](../TODO.md#powerpc)); lockstep mode, where one INTC and one
+  STM serve both cores, is not modelled; STM_CR[FRZ] is held and does
+  nothing, since the debugger stops guest time altogether.
+- **A translated STM read is a chain behind**
+  ([above](#the-interrupt-controller-and-the-system-timer)).
 - **Dhrystone and Whetstone need a runtime from outside the build**,
   so a tree where `scripts/ppc-build-runtime.sh` has not been run skips
   them, and their ctest entries with them.

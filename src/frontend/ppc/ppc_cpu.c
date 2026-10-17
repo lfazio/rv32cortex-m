@@ -9,6 +9,8 @@
 
 #include "ppc/ppc_cpu.h"
 #include "ppc/ppc_decode.h"
+#include "ppc/ppc_intc.h"
+#include "ppc/ppc_stm.h"
 
 #include "emu/emu_lock.h"
 
@@ -76,6 +78,7 @@ void ppc_cpu_init(ppc_cpu_t *c, struct emu_bus *bus, uint32_t coreid)
     ppc_decode_init(); /* before any core can decode */
     c->pvr = PPC_PVR_E200Z759N3;
     c->vle = true;
+    c->stm_until = 0xFFFFFFFFu;
 
     /*
      * The guest is big-endian and the bus is what has to know. Declared
@@ -123,6 +126,7 @@ void ppc_cpu_reset(ppc_cpu_t *c, uint32_t reset_pc)
     c->retired = 0u;
     c->cycles = 0u;
     c->clk_synced = 0u;
+    c->stm_until = 0xFFFFFFFFu; /* until the frontend resets the STM */
     ppc_mmu_reset(c);
     c->jit_ctx = ppc_cpu_ctx(c);
     c->jit_flush = true;
@@ -633,14 +637,25 @@ void ppc_cpu_sync_clock(ppc_cpu_t *c)
     const uint64_t n = c->cycles - c->clk_synced;
 
     c->clk_synced = c->cycles;
-    if (n != 0u && on_core_clock(c)) {
+    if (n == 0u) {
+        return;
+    }
+    if (on_core_clock(c)) {
         ppc_cpu_advance(c, (uint32_t)n);
+    }
+    /* The STM counts the system clock whatever HID0 says: it is not the
+     * core's timer. */
+    if (c->stm != NULL) {
+        ppc_stm_advance(c->stm, (uint32_t)n);
     }
 }
 
 uint32_t ppc_cpu_clock_until(const ppc_cpu_t *c)
 {
-    return (on_core_clock(c) && c->dec != 0u) ? c->dec : 0xFFFFFFFFu;
+    const uint32_t dec =
+        (on_core_clock(c) && c->dec != 0u) ? c->dec : 0xFFFFFFFFu;
+
+    return (c->stm_until < dec) ? c->stm_until : dec;
 }
 
 void ppc_cpu_advance(ppc_cpu_t *c, uint32_t ticks)
@@ -703,7 +718,7 @@ int ppc_cpu_pending_irq(const ppc_cpu_t *c)
      * attention outranks a periodic tick, which is what a controller
      * with default priorities would do.
      */
-    if (c->ext_pending) {
+    if (c->ext_pending || (c->intc != NULL && c->intc->req)) {
         return (int)PPC_IVOR_EXTERNAL;
     }
     /*
@@ -752,20 +767,39 @@ bool ppc_cpu_take_irq(ppc_cpu_t *c)
         return false;
     }
     /*
-     * The external input is edge-like here because there is no
-     * interrupt controller to hold it: taking the interrupt consumes
-     * it. TSR[DIS] is *not* cleared -- it is write-1-to-clear by the
-     * handler, which is how a guest distinguishes "I took a tick" from
-     * "a tick is pending".
+     * Two things drive the external input. The platform's line
+     * (set_irq) is edge-like, because nothing holds it: taking the
+     * interrupt consumes it. The INTC's request is held by the INTC and
+     * ends when the INTC is acknowledged. TSR[DIS] is *not* cleared --
+     * it is write-1-to-clear by the handler, which is how a guest
+     * distinguishes "I took a tick" from "a tick is pending".
      */
+    uint32_t vectored = 0xFFFFFFFFu;
+
     if (which == (int)PPC_IVOR_EXTERNAL) {
-        c->ext_pending = false;
+        if (c->ext_pending) {
+            c->ext_pending = false;
+        } else if (c->intc != NULL && ppc_intc_hw_vectored(c->intc)) {
+            /*
+             * The INTC's request, in hardware vector mode: taking it is
+             * the acknowledgement (32.2.1.2), and the vector it came with
+             * replaces IVOR4 -- IVPR[0:15] || p_voffset || 0b0000, table
+             * 7-16 of the core manual. In software vector mode nothing
+             * happens here: the request stays asserted until the handler
+             * reads INTC_IACKR, and MSR[EE], now clear, is what keeps it
+             * from being taken again meanwhile.
+             */
+            vectored = (c->ivpr & 0xFFFF0000u) | (ppc_intc_ack(c->intc) << 4);
+        }
         if ((c->hid0 & PPC_HID0_ICR) != 0u) {
             c->reserve = false; /* 3.5, mechanism 3 */
         }
     }
     c->state = EMU_STATE_RUNNING;
     ppc_cpu_raise(c, (ppc_ivor_t)which, c->pc, PPC_ESR_KEEP);
+    if (vectored != 0xFFFFFFFFu) {
+        c->pc = vectored;
+    }
     return true;
 }
 

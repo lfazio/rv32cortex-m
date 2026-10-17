@@ -3391,6 +3391,16 @@ session, and every one of them recurred:
   that straddles the boundary, whose lower half fills the cache with all
   of it; `test_fetch_execute_never` builds one, and fails 5 checks
   without the test.
+- **A device that counts instructions reads a translated chain's start.**
+  The PowerPC STM counts the core clock, which the JIT advances only
+  when a chain of blocks returns to the dispatcher -- the chain's count
+  is in a host register until then. Its first test timed 1,000 loop
+  iterations and read **900**: a clock that is behind reads *short*,
+  and a span shorter than the code that ran is the tell. The time base
+  never showed it, because `mfspr` is declined and so ends the block.
+  ARMv7-M's SysTick has the same shape. Read such a device after a
+  declined instruction when a test wants the rate, and say in the
+  frontend's notes that a translated read is up to a chain behind.
 
 ## Conventions
 

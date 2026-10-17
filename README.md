@@ -609,6 +609,7 @@ VLE or Book E:
 | `ppc-sys` | the system level, 184 checks with the manual's section beside each: interrupts, privilege, SPRs, reservations, timers, the FP interrupts |
 | `ppc-mmu` | the MMU, 239 checks: the TLB programmed as an MPC57xx start-up does, then translation, address spaces, permissions, the TLB interrupts, per-page VLE and byte order, and the JIT's view of each |
 | `ppc-smp`, `ppc-smp-vle` | the MPC5675K's second core: held until the SSCM's key sequence starts it, atomics and reservations between the two, a TLB each; and a start in VLE |
+| `ppc-intc` | the MPC5675K's interrupt controller and system timer, 49 checks: a compare match through the software vector handshake and a C ISR, one priority preempting another, priority masking, the hardware vector, and a `wait` only the timer can end |
 | `ppc-park` | a `wait` that nothing may end |
 | `ppc-coremark`, `ppc-crypto` | the shared benchmarks, with a decrementer interrupt landing in compiled code throughout |
 | `ppc-dhrystone`, `ppc-whetstone` | the other two, built where `scripts/ppc-build-runtime.sh` has been run: Dhrystone by GCC, Whetstone by clang for the FPU against the EFPU2 picolibc. Timed by the time base, which counts instructions |

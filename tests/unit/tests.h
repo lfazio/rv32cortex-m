@@ -62,6 +62,7 @@ void test_armv7m(void);
 #endif
 #if EMU_GUEST_ARCH_PPC
 void test_ppc(void);
+void test_ppc_soc(void);
 #endif
 
 #endif /* RV32_TESTS_H */

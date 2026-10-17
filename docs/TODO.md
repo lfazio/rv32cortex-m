@@ -87,9 +87,14 @@ From the last measurements in [linux.md](linux.md).
 
 - [ ] **Simple drivers for the e200z7**, which want a peripheral model
       or the passthrough window to drive. The SoC is the MPC5675K
-      (`docs/nxp/`), whose SSCM already starts core 1:
-  - [ ] STM, the System Timer Module (chapter 51).
-  - [ ] SWT, the Software Watchdog Timer (chapter 52).
+      (`docs/nxp/`), whose SSCM already starts core 1, and whose INTC
+      and STM are modelled
+      ([frontend/ppc.md](frontend/ppc.md#the-interrupt-controller-and-the-system-timer)):
+  - [ ] SWT, the Software Watchdog Timer (chapter 52): an interrupt or
+        a reset on its first timeout, a reset on the second. Its
+        timeouts are rows 28 and 29 of table 32-10; which INTC each
+        reaches is not legible in the text of that table, so read it in
+        the PDF.
 - [ ] **Anything to compare it with.** No e200 is attached and no
       other emulator is consulted, so a shared misreading of the manual
       is invisible to every check there is.
