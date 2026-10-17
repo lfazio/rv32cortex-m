@@ -43,18 +43,17 @@ measured at.
       G4MH, PowerPC and ARMv7-M would each set `has_pt` beside
       `has_fast` and arm it in their `bind` as RV32 does -- PowerPC only
       for a little-endian window it does not have.
-- [ ] **Investigate G4MH's generation under one block table.** `jit_gen`
-      is per PE, and where the PEs share a table (`--serial`, a board
-      with `G4MH_PE_COUNT > 1`) two PEs whose MPU generations differ
-      would discard every block at every switch between them. PowerPC
-      made its counter one for all cores for exactly that reason.
-      Unmeasured.
-- [ ] **JIT** - Autovectorisation of the IR pipeline.
+- [ ] **G4MH's generation under one block table.** `jit_gen` is per PE,
+      and where the PEs share a table (`--serial`, a board with
+      `G4MH_PE_COUNT > 1`) two PEs whose MPU generations differ would
+      discard every block at every switch between them. PowerPC made
+      its counter one for all cores for exactly that reason. Unmeasured.
+- [ ] **Autovectorisation of the IR pipeline.**
 - [ ] **PowerPC's FP unit is a call per instruction.** Every EFPU2
       instruction under the JIT is a helper call into `ppc_fpu_exec`,
-      whose bookkeeping -- SPEFSCR status, sticky bits, FG and FX --
-      was 14.7% of host instructions on Quake after the integer fast
-      path ([frontend/ppc.md](frontend/ppc.md#what-uses-it-and-what-it-costs)).
+      whose bookkeeping -- SPEFSCR status, sticky bits, FG and FX -- was
+      14.7% of host instructions on Quake after the integer fast path
+      ([frontend/ppc.md](frontend/ppc.md#what-uses-it-and-what-it-costs)).
       A lowering for normal operands under round-to-nearest with no
       enables would still have to produce FG and FX exactly; measure
       what the call costs before writing one.
@@ -72,9 +71,9 @@ From the last measurements in [linux.md](linux.md).
       the cost of a translation on every lookup.
 - [ ] **Benchmarks under Linux**, still not run.
 - [ ] **The run ends in a kernel panic**, because the test init exits
-      and there is nothing in the device tree to power off through. It is
-      read as the terminator, so every run goes to the instruction cap or
-      a timeout to print its figures.
+      and there is nothing in the device tree to power off through. It
+      is read as the terminator, so every run goes to the instruction
+      cap or a timeout to print its figures.
 - [ ] **A display under Linux.** The framebuffer device exists
       ([games.md](games.md)); nothing in the device tree describes it to
       a kernel.
@@ -89,38 +88,46 @@ From the last measurements in [linux.md](linux.md).
 
 ## PowerPC
 
-- [ ] Implement a simple driver for the e200z7, which wants a
-      peripheral model or the passthrough window to drive. The SoC is
-      the MPC5675K (`docs/nxp/`), whose SSCM already starts core 1:
-  - [ ] Implement driver STM System Timer Module (Chapter 51)
-  - [ ] Implement SWT Software Watchdog Timer (Chapter 52)
+- [ ] **Simple drivers for the e200z7**, which want a peripheral model
+      or the passthrough window to drive. The SoC is the MPC5675K
+      (`docs/nxp/`), whose SSCM already starts core 1:
+  - [ ] STM, the System Timer Module (chapter 51).
+  - [ ] SWT, the Software Watchdog Timer (chapter 52).
 - [ ] **Anything to compare it with.** No e200 is attached and no
       other emulator is consulted, so a shared misreading of the manual
       is invisible to every check there is.
 
 ## RH850 / G4MH
 
-- [ ] Add simple drivers for the rh850u2b6.based on their specification in the reference manual.
-  - [ ] Option bytes: impact on clocks and startup. Located in flash at a defined address.
-  - [ ] Clock tree
-  - [x] ltsc (Section 44) -- modelled in `g4mh_ltsc.c`, driven by the runner's
-        `set_time`; DOOM's clock runs off it.
-  - [~] ostm (Section 34) -- OSTM0 is in `g4mh_intc.c` with its compare interrupt.
-        One channel; the part has more: missing one channel per core.
-  - [ ] gpio/on (Section 2) emulated on top of stm32 gpio hal, emualated to output the binary state of output on a udp/ip connexion.
-  - [ ] kcrc (Section 57) peripheral
-  - [ ] wdtb (Section 33): one channel per core
-- [ ] Implement TAUD peripheral in rh850u2b6 with the remaining stm32 timer availble qnd plug it into the pcie framework
-- [ ] Finish implementing g4mh and rh850 cpu system (Section 3)
+- [ ] **Simple drivers for the RH850/U2B6**, from its reference manual:
+  - [ ] Option bytes, and their effect on the clocks and start-up. They
+        sit in flash at a defined address.
+  - [ ] The clock tree.
+  - [x] LTSC (section 44) -- modelled in `g4mh_ltsc.c`, driven by the
+        runner's `set_time`; DOOM's clock runs off it.
+  - [~] OSTM (section 34) -- OSTM0 is in `g4mh_intc.c` with its compare
+        interrupt. The part has one channel per core; the others are
+        missing.
+  - [ ] GPIO/ON (section 2), emulated on top of the STM32 GPIO HAL, the
+        state of each output sent over a UDP/IP connection.
+  - [ ] KCRC (section 57).
+  - [ ] WDTB (section 33), one channel per core.
+- [ ] **TAUD on the RH850/U2B6**, built on the STM32 timers that remain
+      free and plugged into the PCIe framework.
+- [ ] **The G4MH and RH850 CPU system** (section 3), finished.
 
 ## Platforms
 
-- [ ] A tinyusb network device over USB (https://github.com/hathach/tinyusb).
-      What it was waiting for is done: lwIP runs on a FreeRTOS task of
-      its own, given a turn by the run loop when it has work
+- [ ] **A tinyusb network device over USB**
+      (https://github.com/hathach/tinyusb). What it was waiting for is
+      done: lwIP runs on a FreeRTOS task of its own, given a turn by the
+      run loop when it has work
       ([network.md](network.md#on-a-task-of-its-own)). A USB device's
       events would wake that task, which today only the run loop does.
-- [ ] Architecture a pcie emulated peripheral over USB for the emulator and a pcie over USB slave firmware to deploy on the various boards to exercise the available peripherals.
-- [ ] Implement an emulated GTM device for the stm32f746zg/stm32n657 and plug it in the pcie framework.
-- [ ] Add support for armv6-m in frontend armv7-m (rename it armvX-m)
-- [ ] Add support for armv8-m into frontend armvX-m
+- [ ] **PCIe over USB**: the design of an emulated PCIe peripheral
+      reached over USB, and of a PCIe-over-USB device firmware deployed
+      on each board to exercise the peripherals it has.
+- [ ] **An emulated GTM** for the STM32F746ZG and the STM32N657, plugged
+      into the PCIe framework.
+- [ ] **ARMv6-M in the ARMv7-M frontend**, which becomes armvX-m.
+- [ ] **ARMv8-M in the armvX-m frontend.**
