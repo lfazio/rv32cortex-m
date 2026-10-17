@@ -3373,6 +3373,24 @@ session, and every one of them recurred:
   over it reaches the same stack: `scripts/check-host-net.sh`, seven
   seconds, the `host-slip` row. Before calling a check impossible
   without privilege, ask which namespace the privilege is checked in.
+- **A lesson learned in one frontend is not applied in the next.**
+  RV32's fetch path cost 9.3% for one branch before it was folded behind
+  `fetch_guard`. ARMv7-M, written after it, sent every fetched halfword
+  through two out-of-line calls to ask the MPU -- off in every guest --
+  whether the address was execute-never: **a third of the interpreter**
+  on the F746, found by the first board profile. Inline, CoreMark went
+  302.5 to 178.3 host cycles an instruction. Profile a new frontend's
+  interpreter on the board before calling its cost per instruction a
+  property of the ISA.
+- **A check in front of a cache is tested only by an access that hits
+  the cache.** The inline fetch answers from the bus's fetch cache and
+  so tests execute-never itself. The board suite's case fetched from the
+  peripherals, which no cache holds, so the checked path refused it
+  either way -- and the inline test could be deleted with all 54 stored
+  `sys` answers still matching. The only case it decides is a region
+  that straddles the boundary, whose lower half fills the cache with all
+  of it; `test_fetch_execute_never` builds one, and fails 5 checks
+  without the test.
 
 ## Conventions
 

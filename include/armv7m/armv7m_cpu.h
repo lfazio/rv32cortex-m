@@ -384,11 +384,27 @@ static inline bool armv7m_privileged(const armv7m_cpu_t *c)
 #define ARMV7M_ACC_WRITE 1u
 #define ARMV7M_ACC_FETCH 2u
 
-armv7m_exc_t armv7m_mem_read(armv7m_cpu_t *c, uint32_t addr, uint32_t size,
-                             bool unpriv, uint32_t *out);
-armv7m_exc_t armv7m_mem_write(armv7m_cpu_t *c, uint32_t addr, uint32_t size,
-                              bool unpriv, uint32_t v);
-armv7m_exc_t armv7m_mem_fetch16(armv7m_cpu_t *c, uint32_t addr, uint16_t *out);
+armv7m_exc_t armv7m_mem_read_checked(armv7m_cpu_t *c, uint32_t addr,
+                                     uint32_t size, bool unpriv, uint32_t *out);
+armv7m_exc_t armv7m_mem_write_checked(armv7m_cpu_t *c, uint32_t addr,
+                                      uint32_t size, bool unpriv, uint32_t v);
+armv7m_exc_t armv7m_mem_fetch16_checked(armv7m_cpu_t *c, uint32_t addr,
+                                        uint16_t *out);
+
+#define ARMV7M_MPU_CTRL_ENABLE 1u
+
+/*
+ * The default memory map's execute-never regions: the peripheral space,
+ * the device spaces and the system space. Without an MPU these are the
+ * only places a fetch can be refused, and with one they still apply to
+ * any access PRIVDEFENA sends to the default map.
+ */
+static inline bool armv7m_default_xn(uint32_t addr)
+{
+    const uint32_t top = addr >> 28;
+
+    return (top >= 0x4u && top <= 0x5u) || top >= 0xAu;
+}
 
 void armv7m_reset_state(armv7m_cpu_t *c);
 int32_t armv7m_exec_priority(const armv7m_cpu_t *c);
@@ -510,6 +526,60 @@ static inline void armv7m_wrote(armv7m_cpu_t *c, uint32_t addr)
     if (EMU_UNLIKELY((addr - c->smc_lo) < c->smc_span)) {
         armv7m_smc_hit(c, addr);
     }
+}
+
+/*
+ * Memory, with the common case inline: the MPU off and a hit in the
+ * bus's cache, which is then all the checked path would have decided --
+ * with no MPU every data access is permitted, and a fetch is refused
+ * only from the execute-never spaces. Anything else takes the checked
+ * path, which raises the fault if there is one. `access_priv` is left
+ * alone on a hit: only the SCS reads it, and a device is never in the
+ * bus's cache.
+ *
+ * Out of line, the two calls per fetched halfword (this, then
+ * mpu_permits) were a third of the interpreter's time on the F746, and
+ * the data accesses another sixth (docs/frontend/armv7m.md). They read
+ * mpu_ctrl, not a flag derived from it, so there is nothing to keep in
+ * step: its writers, reset and the SCS, change what this sees by
+ * changing the register.
+ */
+static inline bool armv7m_mpu_off(const armv7m_cpu_t *c)
+{
+    return (c->mpu_ctrl & ARMV7M_MPU_CTRL_ENABLE) == 0u;
+}
+
+static inline armv7m_exc_t armv7m_mem_read(armv7m_cpu_t *c, uint32_t addr,
+                                           uint32_t size, bool unpriv,
+                                           uint32_t *out)
+{
+    if (EMU_LIKELY(armv7m_mpu_off(c) &&
+                   emu_bus_read_le_hit(c->bus, addr, size, out))) {
+        return ARMV7M_X_NONE;
+    }
+    return armv7m_mem_read_checked(c, addr, size, unpriv, out);
+}
+
+static inline armv7m_exc_t armv7m_mem_write(armv7m_cpu_t *c, uint32_t addr,
+                                            uint32_t size, bool unpriv,
+                                            uint32_t v)
+{
+    if (EMU_LIKELY(armv7m_mpu_off(c) &&
+                   emu_bus_write_le_hit(c->bus, addr, size, v))) {
+        armv7m_wrote(c, addr);
+        return ARMV7M_X_NONE;
+    }
+    return armv7m_mem_write_checked(c, addr, size, unpriv, v);
+}
+
+static inline armv7m_exc_t armv7m_mem_fetch16(armv7m_cpu_t *c, uint32_t addr,
+                                              uint16_t *out)
+{
+    if (EMU_LIKELY(armv7m_mpu_off(c) && !armv7m_default_xn(addr) &&
+                   emu_bus_fetch16_le_hit(c->bus, addr, out))) {
+        return ARMV7M_X_NONE;
+    }
+    return armv7m_mem_fetch16_checked(c, addr, out);
 }
 
 #ifdef __cplusplus

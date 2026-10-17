@@ -62,7 +62,7 @@ typedef armv7m_exc_t X;
 #define FPCCR_BFRDY (1u << 6)
 #define FPCCR_MONRDY (1u << 8)
 
-#define MPU_CTRL_ENABLE 1u
+#define MPU_CTRL_ENABLE ARMV7M_MPU_CTRL_ENABLE
 #define MPU_CTRL_HFNMIENA 2u
 #define MPU_CTRL_PRIVDEFENA 4u
 
@@ -368,19 +368,6 @@ uint32_t armv7m_rettobase(const armv7m_cpu_t *c)
 /* ------------------------------------------------------------------ */
 
 /*
- * The default memory map's execute-never regions: the peripheral space,
- * the device spaces and the system space. Without an MPU these are the
- * only places a fetch can be refused, and with one they still apply to
- * any access PRIVDEFENA sends to the default map.
- */
-static bool default_xn(uint32_t addr)
-{
-    const uint32_t top = addr >> 28;
-
-    return (top >= 0x4u && top <= 0x5u) || top >= 0xAu;
-}
-
-/*
  * Is this access permitted? `acc` is read, write or fetch.
  *
  * The highest-numbered enabled region that matches decides, with its
@@ -396,7 +383,7 @@ static bool mpu_permits(const armv7m_cpu_t *c, uint32_t addr, bool priv,
         (addr >= 0xE0000000u && addr < 0xE0100000u) ||
         (armv7m_exec_priority(c) < 0 &&
          (c->mpu_ctrl & MPU_CTRL_HFNMIENA) == 0u)) {
-        return !(acc == ARMV7M_ACC_FETCH && default_xn(addr));
+        return !(acc == ARMV7M_ACC_FETCH && armv7m_default_xn(addr));
     }
     for (int32_t r = (int32_t)ARMV7M_MPU_REGIONS - 1; r >= 0; r--) {
         const uint32_t rasr = c->mpu_rasr[r];
@@ -438,7 +425,7 @@ static bool mpu_permits(const armv7m_cpu_t *c, uint32_t addr, bool priv,
         }
     }
     if (priv && (c->mpu_ctrl & MPU_CTRL_PRIVDEFENA) != 0u) {
-        return !(acc == ARMV7M_ACC_FETCH && default_xn(addr));
+        return !(acc == ARMV7M_ACC_FETCH && armv7m_default_xn(addr));
     }
     return false;
 }
@@ -447,8 +434,8 @@ static bool mpu_permits(const armv7m_cpu_t *c, uint32_t addr, bool priv,
 /* The memory path                                                     */
 /* ------------------------------------------------------------------ */
 
-armv7m_exc_t armv7m_mem_read(armv7m_cpu_t *c, uint32_t addr, uint32_t size,
-                             bool unpriv, uint32_t *out)
+armv7m_exc_t armv7m_mem_read_checked(armv7m_cpu_t *c, uint32_t addr,
+                                     uint32_t size, bool unpriv, uint32_t *out)
 {
     const bool priv = !unpriv && armv7m_privileged(c);
 
@@ -468,8 +455,8 @@ armv7m_exc_t armv7m_mem_read(armv7m_cpu_t *c, uint32_t addr, uint32_t size,
     return OK;
 }
 
-armv7m_exc_t armv7m_mem_write(armv7m_cpu_t *c, uint32_t addr, uint32_t size,
-                              bool unpriv, uint32_t v)
+armv7m_exc_t armv7m_mem_write_checked(armv7m_cpu_t *c, uint32_t addr,
+                                      uint32_t size, bool unpriv, uint32_t v)
 {
     const bool priv = !unpriv && armv7m_privileged(c);
 
@@ -502,7 +489,8 @@ bool armv7m_fetch_probe(const armv7m_cpu_t *c, uint32_t addr, uint16_t *out)
 }
 
 /* Instruction fetch: IACCVIOL leaves MMFAR alone, IBUSERR leaves BFAR. */
-armv7m_exc_t armv7m_mem_fetch16(armv7m_cpu_t *c, uint32_t addr, uint16_t *out)
+armv7m_exc_t armv7m_mem_fetch16_checked(armv7m_cpu_t *c, uint32_t addr,
+                                        uint16_t *out)
 {
     uint32_t v = 0u;
 

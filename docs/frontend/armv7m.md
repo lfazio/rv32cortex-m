@@ -344,12 +344,72 @@ that. The table carries 0 now, meaning **the loader's stack** -- the top
 of whatever RAM the machine has, as the RV32 and PowerPC guests already
 take it -- and `boot` keeps that rather than loading zero.
 
-The ARMv7-M interpreter is **2.7x slower per instruction than RV32's**
-on this part (290 host cycles against 107), which is the next thing to
-look at for this frontend; and at the default 32 KB the JIT only wins
-where the working set fits (Dhrystone 3.4x, `nvic` 3x) and loses where
-it does not (crypto 2.2x slower), the same threshold
-[../jit/tuning.md](../jit/tuning.md) describes for the other frontends.
+At the 32 KB of that first run the JIT only won where the working set
+fitted (Dhrystone 3.4x, `nvic` 3x) and lost where it did not (crypto
+2.2x slower), the same threshold [../jit/tuning.md](../jit/tuning.md)
+describes for the other frontends. At the F746's 96 KB default it is
+34.7 host cycles an instruction on CoreMark and 31.3 on crypto.
+
+### The interpreter, profiled on the board
+
+The interpreter cost **2.7x RV32's per instruction** on the F746, and
+the profile said why in one run: **a third of the time was the
+instruction fetch**, which went through two out-of-line calls per
+halfword -- `armv7m_mem_fetch16`, then `mpu_permits`, which re-derived
+the privilege level to answer, with the MPU off, nothing more than "not
+in an execute-never space". The data accesses took the same route for
+another sixth.
+
+Tick-sampled (`-DEMU_PC_PROFILE=8192`), CoreMark interpreted,
+`RelWithDebInfo`, both frontends in the same firmware configuration:
+
+| | share of samples |
+|---|---|
+| `armv7m_run` (the loop, decode and the inlined execute) | 52.3% |
+| `mpu_permits` | 16.7% |
+| `armv7m_mem_fetch16` | 15.8% |
+| `armv7m_mem_read`, `rd_u`, `armv7m_mem_write` | 6.8% |
+| the rest of execute (`add_c`, `cond_holds`, `dp_op`, `ldm_stm`) | 7.0% |
+
+RV32's interpreter met this as `fetch_guard` (CLAUDE.md: 9.3% for one
+branch), and the shape of the answer is the same: the common case
+inline. `armv7m_mem_read`, `armv7m_mem_write` and `armv7m_mem_fetch16`
+are inline now, answering from the bus's cache when the MPU is off --
+every data access permitted, a fetch refused only from the
+execute-never spaces -- and otherwise calling the checked forms, which
+raise the fault. They read `mpu_ctrl` itself rather than a flag derived
+from it, so there is nothing to keep in step.
+
+Against a worktree at the commit before, same configuration, retired
+counts and results identical:
+
+| interpreted | host cycles / guest instruction, before | after | |
+|---|---|---|---|
+| `nvic` | 307.7 | 211.2 | 1.46x |
+| `crypto` | 318.0 | 169.4 | 1.88x |
+| `dhrystone` | 334.9, 13.82 s | 212.5, 8.77 s | 1.58x |
+| `coremark`, 40 iterations | 302.5, 15.38 s | 178.3, 9.07 s | 1.70x |
+
+The JIT does not move (CoreMark 34.4 to 34.7, crypto 31.5 to 31.3),
+which is what to expect: translated code has its own inline RAM path,
+and the helpers it calls are a small share. RV32's interpreter, in the
+profiling configuration, is **107.5**; ARMv7-M's is 182.5 there, so the
+gap is 1.7x now. What is left of it is spread thin -- the scan of the
+pending words before every instruction (about 3%), the IT state and
+the EXC_RETURN test, SysTick -- and the largest of those would need a
+summary of `pending[]` kept by its five writers, which is the derived
+state CLAUDE.md warns about.
+
+**The execute-never test on the fast path had nothing that could fail
+it.** `tests/armv7m-diff`'s `xn-default` fetches from the peripherals,
+and passed with the inline test removed: no cache ever holds an address
+the checked path refused, so a fetch from one always misses and is
+refused there. The only case the inline test decides is a region that
+*straddles* an execute-never boundary -- fetching its lower half fills
+the cache with all of it -- and `test_fetch_execute_never` builds
+exactly that, a RAM region across 0x40000000. With the inline test
+removed it fails 5 checks; with the MPU test removed the stored
+`sys` answers differ on 4.
 
 ## How it began: the encoder, executed
 
@@ -432,8 +492,11 @@ the host's, so "copy it" is unlikely to survive contact.
 
 ## Not done
 
-- **The interpreter's cost per instruction**, 2.7x RV32's on the F746;
-  nothing has profiled it on the board.
+- **The interpreter's remaining 1.7x against RV32's** on the F746
+  (182.5 against 107.5 host cycles an instruction), spread across the
+  per-instruction checks; see
+  [the profile](#the-interpreter-profiled-on-the-board). The pending
+  scan is the largest at about 3%.
 - **Guests below 0x10000000 get no inlined memory.** The window is the
   RAM the stack is in; a guest whose RAM is mapped low takes the checked
   path for every access.

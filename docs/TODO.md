@@ -31,9 +31,10 @@ measured at.
       `performance.md` are after the fix. The second half of
       `performance.md` and both `stm32f446/` pages are not, and are
       marked as history.
-- [ ] **ARMv7-M's interpreter costs 2.7x RV32's per instruction** on the
-      F746, and nothing has profiled it there
-      ([frontend/armv7m.md](frontend/armv7m.md#not-done)).
+- [ ] **ARMv7-M's interpreter is still 1.7x RV32's per instruction** on
+      the F746, spread across per-instruction checks of a few percent
+      each, after the fetch and data paths went inline
+      ([frontend/armv7m.md](frontend/armv7m.md#the-interpreter-profiled-on-the-board)).
 
 ## JIT
 

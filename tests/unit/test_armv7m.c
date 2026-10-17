@@ -325,8 +325,79 @@ static void test_gdb_fp_registers(void)
     CHECK_EQ64(t->reg_get(cpu, 33u), ARMV7M_FPSCR_WRITABLE);
 }
 
+/*
+ * A fetch from the default map's execute-never space faults, even from
+ * memory the bus serves from its cache.
+ *
+ * The inline fetch answers from the bus's fetch cache when the MPU is
+ * off, so it has to apply the execute-never test itself. A fetch that
+ * misses the cache goes to the checked path, which refuses it -- so the
+ * case only the inline test can get wrong is a region that *straddles*
+ * the line: fetching its lower half fills the cache with all of it.
+ * tests/armv7m-diff's `xn-default` fetches from the peripherals, which
+ * no cache holds, and passed with the inline test removed.
+ *
+ * This region runs from 0x3FFFF000 to 0x40001000, with a NOP either
+ * side of 0x40000000. The first two retire; the third faults, MemManage
+ * escalated to HardFault, whose handler is a BKPT.
+ */
+#define XN_RAM_BASE 0x3FFFF000u
+
+static uint8_t g_xn_ram[0x2000];
+static emu_bus_t g_xn_bus;
+
+static void put16(uint8_t *m, uint32_t off, uint16_t v)
+{
+    m[off] = (uint8_t)v;
+    m[off + 1u] = (uint8_t)(v >> 8);
+}
+
+static void test_fetch_execute_never(void)
+{
+    armv7m_cpu_t *const c = &g_ua_cpu;
+    const uint32_t handler = UA_CODE;
+    uint32_t n = 0u;
+    uint32_t stacked_pc = 0u;
+
+    memset(g_ua_ram, 0, sizeof(g_ua_ram));
+    memset(g_xn_ram, 0, sizeof(g_xn_ram));
+    emu_bus_init(&g_xn_bus);
+    CHECK(
+        emu_bus_add_ram(&g_xn_bus, "ram", UA_RAM_BASE, g_ua_ram, UA_RAM_SIZE));
+    CHECK(emu_bus_add_ram(&g_xn_bus, "xn", XN_RAM_BASE, g_xn_ram,
+                          sizeof(g_xn_ram)));
+
+    put16(g_ua_ram, 3u * 4u, (uint16_t)(handler | 1u)); /* HardFault */
+    put16(g_ua_ram, 3u * 4u + 2u, (uint16_t)(handler >> 16));
+    put16(g_ua_ram, handler - UA_RAM_BASE, 0xBE00u); /* bkpt */
+    for (uint32_t pc = 0x3FFFFFFCu; pc <= 0x40000000u; pc += 2u) {
+        put16(g_xn_ram, pc - XN_RAM_BASE, 0xBF00u); /* nop */
+    }
+
+    armv7m_reset_state(c);
+    c->bus = &g_xn_bus;
+    c->state = EMU_STATE_RUNNING;
+    c->vtor = UA_RAM_BASE;
+    c->r[ARMV7M_SP] = UA_RAM_BASE + 0xF000u;
+    c->r[ARMV7M_PC] = 0x3FFFFFFCu;
+
+    (void)armv7m_run(c, 100u, &n);
+
+    CHECK_EQ(c->state, EMU_STATE_HALTED);
+    CHECK_EQ(n, 3u); /* two NOPs, then the handler's BKPT */
+    CHECK_EQ(c->cfsr & 0xFFu, 0x01u); /* IACCVIOL, and MMFAR not valid */
+    CHECK_EQ(c->r[ARMV7M_PC], handler);
+    for (uint32_t i = 0u; i < 4u; i++) {
+        stacked_pc |=
+            (uint32_t)g_ua_ram[c->r[ARMV7M_SP] - UA_RAM_BASE + 24u + i]
+            << (8u * i);
+    }
+    CHECK_EQ(stacked_pc, 0x40000000u);
+}
+
 void test_armv7m(void)
 {
+    test_fetch_execute_never();
     test_gdb_fp_registers();
     test_insn_len_exhaustive();
     test_insn_len_boundary();
