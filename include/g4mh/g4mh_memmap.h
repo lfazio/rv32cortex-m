@@ -12,6 +12,7 @@
  *   0xFFFC_4000  INTC1 PE0      the same registers named absolutely
  *   0xFFF8_0000  INTC2          global interrupt controller
  *   0xFFBF_0000  OSTM0..2       the OS timers (g4mh_ostm.h)
+ *   0xFFBF_1000  WDTB0..2       the window watchdogs (g4mh_wdtb.h)
  *   0xFFC7_8100  LTSC           the long-term system counter
  *   0xFFD4_0000  KCRC0..3       the data CRC units (g4mh_kcrc.h)
  *

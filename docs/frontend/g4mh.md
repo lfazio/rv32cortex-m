@@ -1080,6 +1080,7 @@ it has a clock, and none is a host passthrough.
 
 | section | device | units on the U2B6 | where |
 |---|---|---|---|
+| 33 | WDTB, the window watchdog | 3, one per PE | `0xFFBF_1000`, `0xFF89_9000`, `0xFFBF_1200`; channel 22 on its PE's INTC1 |
 | 34 | OSTM, the OS timer | 3 | `0xFFBF_0000`, `0xFF89_A100`, `0xFFBF_0200`; INTC2 channels 360, 361, 841 |
 | 44 | LTSC, the long-term system counter | 1 | `0xFFC7_8100` |
 | 57 | KCRC, the data CRC unit | 4 | `0xFFD4_0000` + 0x200 n for even n, `0xFFD8_E000` + 0x200 n for odd |
@@ -1130,6 +1131,50 @@ core's vectoring and checks the cause register reads EIINT + 360.
 
 Not modelled: the PIC's simultaneous start (`OSTMnTSST`), and the ECM
 that OSTM0's output and the others' error notifications drive.
+
+### WDTB
+
+One window watchdog per PE (`g4mh_wdtb.c`): a 16-bit counter on
+CLK_WDTB, 10 MHz, overflowing after 2^9 to 2^16 counts, interrupting
+(WDTBnTIT, channel 22 on its PE's INTC1) at 75% of that or at `WIS`,
+and restarted only by the activation code written inside the window --
+the last 25, 50, 75 or 100% of the interval, or from `WOST`. The fixed
+code is ACH; the varying one (VAC) is ACH less a reference that follows
+the expected code rotated, table 33.23, which the test walks.
+
+**What an error does is the ECM's decision, and its default is
+narrower than "the watchdog resets".** Overflow, a wrong code, a
+trigger in the closed window and a changed setting all assert
+WDTBnTRES to the Error Control Module, which raises an interrupt to the
+cores it is configured for, an internal reset, both or neither. Its
+reset configuration enables one thing: `ECMIRCFG7` resets to
+0000 0010H, bit 4 of word 7, error **228 -- WDTB0's** -- is an internal
+reset. WDTB1's and WDTB2's (260, 292) do nothing until software
+configures the ECM, and no interrupt notification is enabled for any.
+The ECM is not modelled, so that configuration is fixed: a WDTB0 error
+stops every core and the run says `system reset by WDTB0`; the other
+units latch, as the manual says a failed unit does, and nothing else
+happens.
+
+NMI mode (`ERM` = 0) changes none of this. It adds WDTBnTNMI, which
+goes to the PIC's Hi-Z control for the motor timers' outputs, not to an
+interrupt controller -- the name says NMI and the signal never reaches
+a core. FENMI, the core's non-maskable interrupt, comes from the
+external NMI pin through FENC, which is not modelled either.
+
+The option bytes that choose the start mode and the code are not
+modelled: the frontend's units use the software trigger start and the
+fixed code, and `g4mh_wdtb_options_t` carries both for tests.
+
+| mutant | fails |
+|---|---|
+| every unit's error a reset | WDTB1's overflow leaving the system running |
+| the interrupt at half the interval | the 75% check, from just before it |
+| the window fraction inverted | the window test and the WOST/WIS one |
+| settings changeable after the first write | the locked-settings test, both halves |
+| REF from the code written, not the one expected | the VAC walk's wrong code |
+| a trigger that ignores the window | the window test and the WOST one |
+| no latch after an error | the latch test |
 
 ### KCRC
 
@@ -1219,7 +1264,12 @@ the devices this frontend models at their own numbers -- the OS timers
 at 360, 361 and 841, the TPTM's up-timers from 413 -- where 128 had
 covered only the host's interrupt numbers. INTC1 is 32 channels a PE
 whatever the width, and INTC2 costs two words a channel once, about
-8 KB. The search for a pending channel walks two bitmaps of requested,
+8 KB -- measured on the F746 as guest RAM, 254 KiB to 246 interpreted
+and 143 to 135 with the JIT. G4MH CoreMark there is unchanged by the
+four commits that added KCRC, the controller, the OS timers and the
+watchdogs: `crcfinal 0x65c5`, the same 525 translations, and 96.56 to
+95.12 host cycles an instruction interpreted, 54.35 to 53.27 translated,
+against a worktree at 1aead44. The search for a pending channel walks two bitmaps of requested,
 unmasked channels instead of the words, kept by the one function that
 writes a channel word; `test_intc_pending_summary` holds them to the
 words, and the search to a brute-force one through the register

@@ -192,6 +192,12 @@ typedef struct g4mh_cpu {
      * one PE no byte here can say that no core holds a reservation.
      */
     uint8_t fast_store_never;
+
+    /*
+     * What asked for a system reset, which stops every core, or NULL.
+     * The run reports it (emu_cpu_status_t::reset_by).
+     */
+    const char *reset_by;
 } g4mh_cpu_t;
 
 /* Recompute the JIT's context from PSW; see jit_ctx. */

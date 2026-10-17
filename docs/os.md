@@ -245,7 +245,7 @@ It was, plus four things that design note could not have seen:
 | what | was | now |
 |---|---|---|
 | the JIT: code buffer, block table, hash, translator scratch | one set of globals | `EMU_PER_CORE` -- `_Thread_local` under `EMU_SMP`, and a cache per core is G4MH's own model, since SYNCI and its I-cache are per PE. A core's thread maps its buffer on its first slice; `emu_jit_flush_all` and a once-per-slice epoch for what changes every core's memory |
-| G4MH's shared devices: INTC1/2, OSTM, INTIF, BOOTCTRL, the barrier, IPIR, TPTM, LTSC, KCRC | unlocked | a locking twin of each device's ops, chosen at registration; the controller's public functions lock too. One recursive `emu_lock`, empty unless `EMU_SMP` |
+| G4MH's shared devices: INTC1/2, OSTM, INTIF, BOOTCTRL, the barrier, IPIR, TPTM, LTSC, KCRC, OSTM0-2, WDTB0-2 | unlocked | a locking twin of each device's ops, chosen at registration; the controller's public functions lock too. One recursive `emu_lock`, empty unless `EMU_SMP` |
 | the reservation table | unlocked | locked |
 | CAXI, SET1/CLR1/NOT1, LDL.W/STC.W | atomic because one core ran at a time | **host atomics on RAM**. A lock cannot do it: another core's plain store takes none. STC.W is a compare-and-swap against the word LDL.W read, with the reservation still checked |
 | the JIT's memory bit operations | a load, a computation and a store | a helper call into the interpreter's atomic (`g4mh_bitop`), so the block stays whole. Declined until the helper existed, which ended a block at every one |

@@ -3458,6 +3458,18 @@ session, and every one of them recurred:
   Hold it once and make every instance reach the same object, and the
   question of which copy is current disappears with the copies.
 
+- **A signal's name is not where it goes.** The U2B's watchdog has an
+  NMI mode, and the obvious model raises an NMI. WDTBnTNMI goes to the
+  PIC's Hi-Z control for the motor timers; the error reaches a core only
+  through WDTBnTRES and the ECM, whose reset configuration enables one
+  thing -- error 228, WDTB0's, as an internal reset -- so out of reset
+  WDTB1 and WDTB2 do nothing at all when they fail. Three tables in
+  three chapters said so (the WDTB's signal list, the PIC's inputs, the
+  ECM's `ECMIRCFG7` reset value), and none of them is in the WDTB
+  section. **Before modelling what a signal does, look up what it is
+  connected to**, and read the destination's reset configuration as
+  part of the answer.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must

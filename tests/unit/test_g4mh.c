@@ -40,6 +40,7 @@
 #include "g4mh/g4mh_kcrc.h"
 #include "g4mh/g4mh_ltsc.h"
 #include "g4mh/g4mh_ostm.h"
+#include "g4mh/g4mh_wdtb.h"
 #include "emu/emu_gdb.h"
 #include "emu/emu_jit.h"
 
@@ -5013,6 +5014,334 @@ static void test_ostm_toggle_any_slicing(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* WDTB -- the window watchdogs                                        */
+/* ------------------------------------------------------------------ */
+
+#define WDTB(n, r) (G4MH_WDTB_BASE(n) + (r))
+
+/*
+ * Ten counts a platform microsecond. With OVF = 0 the interval is 512
+ * counts, 51.2 us, and its 75% is 384 counts, 38.4 us.
+ */
+#define WDTB_MD_FAST (G4MH_WDTB_MD_WIE | G4MH_WDTB_MD_ERM | 3u) /* WS 100% */
+
+static void wdtb_wr8(unsigned n, uint32_t r, uint32_t v)
+{
+    (void)emu_bus_write(&g_bus, WDTB(n, r), 1u, v);
+}
+
+static uint32_t wdtb_rd8(unsigned n, uint32_t r)
+{
+    uint32_t v = 0xDEADBEEFu;
+
+    (void)emu_bus_read(&g_bus, WDTB(n, r), 1u, &v);
+    return v & 0xFFu;
+}
+
+static const char *core_reset_by(void)
+{
+    emu_cpu_status_t st;
+
+    memset(&st, 0, sizeof(st));
+    g_core.ops->status(g_core.cpu, &st);
+    return st.reset_by;
+}
+
+static emu_state_t core_state(void)
+{
+    emu_cpu_status_t st;
+
+    memset(&st, 0, sizeof(st));
+    g_core.ops->status(g_core.cpu, &st);
+    return st.state;
+}
+
+static bool wdtb_tit_requested(void)
+{
+    uint32_t v = 0u;
+
+    (void)emu_bus_read(&g_bus, G4MH_INTC1_SELF_BASE + 2u * G4MH_WDTB_CHANNEL, 2u, &v);
+    return (v & G4MH_EIC_EIRF) != 0u;
+}
+
+/* Reset values: the software trigger start's, table 33.20. */
+static void test_wdtb_reset(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+    for (unsigned n = 0u; n < G4MH_WDTB_COUNT; n++) {
+        CHECK_EQ(wdtb_rd8(n, G4MH_WDTB_WDTE), G4MH_WDTB_IDLE);
+        CHECK_EQ(wdtb_rd8(n, G4MH_WDTB_EVAC), G4MH_WDTB_IDLE);
+        CHECK_EQ(wdtb_rd8(n, G4MH_WDTB_REF), 0u);
+        CHECK_EQ(wdtb_rd8(n, G4MH_WDTB_MD), G4MH_WDTB_MD_RESET);
+        CHECK_EQ(devrd(WDTB(n, G4MH_WDTB_WOST)) & 0xFFFFu, G4MH_WDTB_WOST_RESET);
+        CHECK_EQ(devrd(WDTB(n, G4MH_WDTB_WIS)) & 0xFFFFu, 0u);
+    }
+    CHECK(core_reset_by() == NULL);
+}
+
+/*
+ * The life of one interval: the interrupt at 75%, then the overflow --
+ * and the overflow of WDTB0 is a system reset, because the ECM's reset
+ * configuration enables exactly that error out of reset. Each moment is
+ * checked from just before it, so an off-by-one in either shows.
+ */
+static void test_wdtb_overflow_resets(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+    (void)emu_bus_write(&g_bus, G4MH_INTC1_SELF_BASE + 2u * G4MH_WDTB_CHANNEL, 2u,
+                        0u); /* EIC22: unmasked */
+    set_now(100u);
+    wdtb_wr8(0u, G4MH_WDTB_MD, WDTB_MD_FAST);
+    wdtb_wr8(0u, G4MH_WDTB_WDTE, G4MH_WDTB_CODE); /* starts it */
+    CHECK_EQ(wdtb_rd8(0u, G4MH_WDTB_WDTE), G4MH_WDTB_IDLE | 0x80u);
+
+    set_now(138u); /* 380 counts */
+    CHECK(!wdtb_tit_requested());
+    set_now(139u); /* 390: past 384 */
+    CHECK(wdtb_tit_requested());
+    set_now(151u); /* 510 */
+    CHECK(core_reset_by() == NULL);
+    set_now(152u); /* 520: past 512 */
+    CHECK(core_reset_by() != NULL && strcmp(core_reset_by(), "WDTB0") == 0);
+    CHECK_EQ((uint32_t)core_state(), (uint32_t)EMU_STATE_HALTED);
+}
+
+/* Triggered inside every interval, it never resets. */
+static void test_wdtb_kept_alive(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+    set_now(0u);
+    wdtb_wr8(0u, G4MH_WDTB_MD, WDTB_MD_FAST);
+    for (unsigned t = 0u; t <= 400u; t += 40u) {
+        set_now(t);
+        wdtb_wr8(0u, G4MH_WDTB_WDTE, G4MH_WDTB_CODE);
+    }
+    set_now(450u);
+    CHECK(core_reset_by() == NULL);
+}
+
+/*
+ * The window: WS = 0 opens only the last 25%, from 384 counts. The first
+ * trigger is always allowed -- the window is 100% until then -- and a
+ * trigger at 30 us is inside the closed part.
+ */
+static void test_wdtb_window(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+    set_now(0u);
+    wdtb_wr8(0u, G4MH_WDTB_MD, G4MH_WDTB_MD_WIE | G4MH_WDTB_MD_ERM); /* WS 25% */
+    wdtb_wr8(0u, G4MH_WDTB_WDTE, G4MH_WDTB_CODE);
+    set_now(40u); /* 400 counts: open */
+    wdtb_wr8(0u, G4MH_WDTB_WDTE, G4MH_WDTB_CODE);
+    CHECK(core_reset_by() == NULL);
+    set_now(70u); /* 300 counts after that trigger: closed */
+    wdtb_wr8(0u, G4MH_WDTB_WDTE, G4MH_WDTB_CODE);
+    CHECK(core_reset_by() != NULL);
+}
+
+/* A code that is not ACH is an error, at once. */
+static void test_wdtb_wrong_code(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+    set_now(0u);
+    wdtb_wr8(0u, G4MH_WDTB_WDTE, G4MH_WDTB_CODE);
+    set_now(1u);
+    wdtb_wr8(0u, G4MH_WDTB_WDTE, 0xADu);
+    CHECK(core_reset_by() != NULL);
+}
+
+/*
+ * Table 33.22: before the first trigger MD may be written once freely
+ * and then only with the same value; once counting, any change is an
+ * error. The repeats are checked first, so a check that faulted on
+ * every second write would fail them.
+ */
+static void test_wdtb_settings_locked(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+    set_now(0u);
+    wdtb_wr8(0u, G4MH_WDTB_MD, WDTB_MD_FAST);
+    wdtb_wr8(0u, G4MH_WDTB_MD, WDTB_MD_FAST);
+    CHECK(core_reset_by() == NULL);
+    CHECK_EQ(wdtb_rd8(0u, G4MH_WDTB_MD), WDTB_MD_FAST);
+    wdtb_wr8(0u, G4MH_WDTB_WDTE, G4MH_WDTB_CODE);
+    wdtb_wr8(0u, G4MH_WDTB_MD, WDTB_MD_FAST);
+    CHECK(core_reset_by() == NULL);
+    wdtb_wr8(0u, G4MH_WDTB_MD, G4MH_WDTB_MD_RESET);
+    CHECK(core_reset_by() != NULL);
+
+    /* And a second, different write before the first trigger. */
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+    wdtb_wr8(0u, G4MH_WDTB_MD, WDTB_MD_FAST);
+    CHECK(core_reset_by() == NULL);
+    wdtb_wr8(0u, G4MH_WDTB_MD, G4MH_WDTB_MD_RESET);
+    CHECK(core_reset_by() != NULL);
+}
+
+/*
+ * WDTB1's errors are enabled for nothing in the ECM's reset
+ * configuration, so its overflow leaves the system running. Only error
+ * 228 is a reset, which is the point of modelling the ECM's defaults
+ * rather than resetting on every watchdog; that the unit is latched
+ * afterwards is test_wdtb_latched's.
+ */
+static void test_wdtb_other_unit_no_reset(void)
+{
+    if (!devbus_up()) {
+        CHECK(false);
+        return;
+    }
+    set_now(0u);
+    wdtb_wr8(1u, G4MH_WDTB_MD, WDTB_MD_FAST);
+    wdtb_wr8(1u, G4MH_WDTB_WDTE, G4MH_WDTB_CODE);
+    set_now(100u);
+    CHECK(core_reset_by() == NULL);
+    CHECK((uint32_t)core_state() != (uint32_t)EMU_STATE_HALTED);
+    /* Unit 0 untouched by unit 1's life. */
+    CHECK_EQ(wdtb_rd8(0u, G4MH_WDTB_WDTE), G4MH_WDTB_IDLE);
+}
+
+/*
+ * The varying activation code, from table 33.23: ACH - REF, with REF the
+ * expected code rotated left -- AC, 53, 06 from REF 00, 59, A6. The
+ * option byte selects it, so this builds a unit rather than going
+ * through the frontend's, which has the fixed code.
+ */
+static unsigned g_wdtb_errors;
+
+static void wdtb_count_error(void *ctx, unsigned unit)
+{
+    (void)ctx;
+    (void)unit;
+    g_wdtb_errors++;
+}
+
+static void test_wdtb_vac(void)
+{
+    static const g4mh_wdtb_options_t k_vac = {false, true};
+    g4mh_wdtb_t w;
+    uint32_t v = 0u;
+
+    g_wdtb_errors = 0u;
+    g4mh_wdtb_init(&w, 0u, NULL, &k_vac, wdtb_count_error, NULL);
+    /* The fixed-code register does nothing with VAC on. */
+    (void)g4mh_wdtb_ops.write(&w, G4MH_WDTB_WDTE, 1u, G4MH_WDTB_CODE);
+    CHECK(!w.running);
+    (void)g4mh_wdtb_ops.write(&w, G4MH_WDTB_EVAC, 1u, 0xACu);
+    CHECK(w.running);
+    (void)g4mh_wdtb_ops.read(&w, G4MH_WDTB_REF, 1u, &v);
+    CHECK_EQ(v, 0x59u);
+    (void)g4mh_wdtb_ops.write(&w, G4MH_WDTB_EVAC, 1u, 0x53u);
+    (void)g4mh_wdtb_ops.read(&w, G4MH_WDTB_REF, 1u, &v);
+    CHECK_EQ(v, 0xA6u);
+    (void)g4mh_wdtb_ops.write(&w, G4MH_WDTB_EVAC, 1u, 0x06u);
+    (void)g4mh_wdtb_ops.read(&w, G4MH_WDTB_REF, 1u, &v);
+    CHECK_EQ(v, 0x0Cu);
+    (void)g4mh_wdtb_ops.read(&w, G4MH_WDTB_EVAC, 1u, &v);
+    CHECK_EQ(v, 0x06u); /* the last code written */
+    CHECK_EQ(g_wdtb_errors, 0u);
+    /*
+     * The next is ACH - 0CH = A0H; the fixed code is now wrong. REF still
+     * follows the code that was *expected* -- A0H rotated, 41H -- and not
+     * the one written, which would give 59H.
+     */
+    (void)g4mh_wdtb_ops.write(&w, G4MH_WDTB_EVAC, 1u, G4MH_WDTB_CODE);
+    CHECK_EQ(g_wdtb_errors, 1u);
+    (void)g4mh_wdtb_ops.read(&w, G4MH_WDTB_REF, 1u, &v);
+    CHECK_EQ(v, 0x41u);
+}
+
+/*
+ * After an error "the counter value does not change until internal
+ * reset is generated": WDTBnTRES is reported once, however many updates
+ * follow, and a trigger afterwards starts nothing. Visible only on a
+ * unit the ECM does not reset -- which is every unit but WDTB0 -- so
+ * this is the test that WDTB1's error is not merely ignored.
+ */
+static void test_wdtb_latched(void)
+{
+    static const g4mh_wdtb_options_t k_sw = {false, false};
+    g4mh_wdtb_t w;
+
+    g_wdtb_errors = 0u;
+    g4mh_wdtb_init(&w, 1u, NULL, &k_sw, wdtb_count_error, NULL);
+    (void)g4mh_wdtb_ops.write(&w, G4MH_WDTB_MD, 1u, WDTB_MD_FAST);
+    g4mh_wdtb_set_time(&w, 0u);
+    (void)g4mh_wdtb_ops.write(&w, G4MH_WDTB_WDTE, 1u, G4MH_WDTB_CODE);
+    g4mh_wdtb_set_time(&w, 60u); /* past the 51.2 us overflow */
+    CHECK_EQ(g_wdtb_errors, 1u);
+    g4mh_wdtb_set_time(&w, 70u);
+    g4mh_wdtb_set_time(&w, 80u);
+    CHECK_EQ(g_wdtb_errors, 1u);
+
+    /* A trigger now restarts nothing: no interrupt at its 75%. */
+    (void)g4mh_wdtb_ops.write(&w, G4MH_WDTB_WDTE, 1u, G4MH_WDTB_CODE);
+    const bool tit_before = w.tit_done;
+
+    g4mh_wdtb_set_time(&w, 80u + 40u);
+    CHECK_EQ((uint32_t)w.tit_done, (uint32_t)tit_before);
+    CHECK_EQ(g_wdtb_errors, 1u);
+}
+
+/*
+ * WMS = 1: the interrupt at WIS and the window from WOST, counts rather
+ * than fractions -- and WOST and WIS are only read at the first trigger.
+ */
+static void test_wdtb_wis_wost(void)
+{
+    static const g4mh_wdtb_options_t k_sw = {false, false};
+    g4mh_wdtb_t w;
+
+    g_wdtb_errors = 0u;
+    g4mh_wdtb_init(&w, 0u, NULL, &k_sw, wdtb_count_error, NULL);
+    (void)g4mh_wdtb_ops.write(&w, G4MH_WDTB_MD, 1u,
+                              G4MH_WDTB_MD_WMS | G4MH_WDTB_MD_WIE | G4MH_WDTB_MD_ERM);
+    (void)g4mh_wdtb_ops.write(&w, G4MH_WDTB_WOST, 2u, 200u);
+    (void)g4mh_wdtb_ops.write(&w, G4MH_WDTB_WIS, 2u, 100u);
+    g4mh_wdtb_set_time(&w, 0u);
+    (void)g4mh_wdtb_ops.write(&w, G4MH_WDTB_WDTE, 1u, G4MH_WDTB_CODE);
+    g4mh_wdtb_set_time(&w, 9u); /* 90 counts */
+    CHECK(!w.tit_done);
+    g4mh_wdtb_set_time(&w, 10u); /* 100: WIS */
+    CHECK(w.tit_done);
+    g4mh_wdtb_set_time(&w, 19u); /* 190: before WOST, closed */
+    (void)g4mh_wdtb_ops.write(&w, G4MH_WDTB_WDTE, 1u, G4MH_WDTB_CODE);
+    CHECK_EQ(g_wdtb_errors, 1u);
+
+    g4mh_wdtb_init(&w, 0u, NULL, &k_sw, wdtb_count_error, NULL);
+    g_wdtb_errors = 0u;
+    (void)g4mh_wdtb_ops.write(&w, G4MH_WDTB_MD, 1u,
+                              G4MH_WDTB_MD_WMS | G4MH_WDTB_MD_WIE | G4MH_WDTB_MD_ERM);
+    (void)g4mh_wdtb_ops.write(&w, G4MH_WDTB_WOST, 2u, 200u);
+    g4mh_wdtb_set_time(&w, 0u);
+    (void)g4mh_wdtb_ops.write(&w, G4MH_WDTB_WDTE, 1u, G4MH_WDTB_CODE);
+    g4mh_wdtb_set_time(&w, 20u); /* 200: WOST, open */
+    (void)g4mh_wdtb_ops.write(&w, G4MH_WDTB_WDTE, 1u, G4MH_WDTB_CODE);
+    CHECK_EQ(g_wdtb_errors, 0u);
+}
+
+/* ------------------------------------------------------------------ */
 /* LTSC -- the long-term system counter                                */
 /* ------------------------------------------------------------------ */
 
@@ -7915,6 +8244,16 @@ void test_g4mh(void)
     test_ostm_free_run();
     test_ostm_units();
     test_ostm_toggle_any_slicing();
+    test_wdtb_reset();
+    test_wdtb_overflow_resets();
+    test_wdtb_kept_alive();
+    test_wdtb_window();
+    test_wdtb_wrong_code();
+    test_wdtb_settings_locked();
+    test_wdtb_other_unit_no_reset();
+    test_wdtb_vac();
+    test_wdtb_wis_wost();
+    test_wdtb_latched();
     test_ltsc_capture();
     test_ltsc_absolute_time();
     test_ltsc_preset();

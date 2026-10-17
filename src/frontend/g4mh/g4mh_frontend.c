@@ -26,6 +26,7 @@
 #include "g4mh/g4mh_kcrc.h"
 #include "g4mh/g4mh_ltsc.h"
 #include "g4mh/g4mh_ostm.h"
+#include "g4mh/g4mh_wdtb.h"
 
 #include <string.h>
 
@@ -61,6 +62,31 @@ static g4mh_tptm_t g_tptm;
 static g4mh_ltsc_t g_ltsc;
 static g4mh_kcrc_t g_kcrc[G4MH_KCRC_COUNT];
 static g4mh_ostm_t g_ostm[G4MH_OSTM_COUNT];
+static g4mh_wdtb_t g_wdtb[G4MH_WDTB_COUNT];
+
+/*
+ * The ECM, as it is out of reset, deciding what a watchdog error does.
+ * The ECM is not modelled -- no registers, no flags -- so its
+ * configuration is fixed at the reset one: ECMIRCFG7 = 0000 0010H, bit
+ * 4, error 228, which is WDTB0's. That error is an internal reset; the
+ * other units' are enabled for nothing, and no interrupt notification
+ * is enabled for any.
+ *
+ * A reset stops every core: there is no restart here, as on the other
+ * frontends, and the run says what asked for it.
+ */
+static void g4mh_ecm_wdtb_error(void *ctx, unsigned unit)
+{
+    (void)ctx;
+    if (G4MH_WDTB_ECM_ERROR(unit) != 228u) {
+        return;
+    }
+    g_cpu[0].reset_by = "WDTB0";
+    for (unsigned pe = 0u; pe < G4MH_PE_COUNT; pe++) {
+        __atomic_store_n(&g_cpu[pe].state, (uint8_t)EMU_STATE_HALTED,
+                         __ATOMIC_RELEASE);
+    }
+}
 static g4mh_intercpu_port_t g_barr_port[G4MH_PE_COUNT];
 static g4mh_intercpu_port_t g_ipir_port[G4MH_PE_COUNT];
 static g4mh_intercpu_port_t g_tptm_port[G4MH_PE_COUNT];
@@ -101,6 +127,7 @@ G4MH_LOCKED_OPS(g4mh_ipir_ops)
 G4MH_LOCKED_OPS(g4mh_tptm_ops)
 G4MH_LOCKED_OPS(g4mh_ltsc_ops)
 G4MH_LOCKED_OPS(g4mh_kcrc_ops)
+G4MH_LOCKED_OPS(g4mh_wdtb_ops)
 #define SHARED_OPS(ops) (&ops##_locked)
 #else
 #define SHARED_OPS(ops) (&ops)
@@ -168,6 +195,16 @@ static void g4mh_ops_init(emu_cpu_t *cpu, emu_bus_t *bus, uint32_t coreid)
          */
         for (unsigned i = 0u; i < G4MH_OSTM_COUNT; i++) {
             g4mh_ostm_init(&g_ostm[i], &g_intc[0], G4MH_OSTM_CHANNEL(i));
+        }
+        /*
+         * WDTBn is CPUn's, interrupting on its INTC1. The option bytes
+         * are not modelled: software trigger start, fixed code.
+         */
+        for (unsigned i = 0u; i < G4MH_WDTB_COUNT; i++) {
+            static const g4mh_wdtb_options_t k_opts = {false, false};
+
+            g4mh_wdtb_init(&g_wdtb[i], i, (i < G4MH_PE_COUNT) ? &g_intc[i] : NULL,
+                           &k_opts, g4mh_ecm_wdtb_error, NULL);
         }
         g4mh_boot_init(&g_boot);
     }
@@ -392,6 +429,13 @@ static bool g4mh_ops_add_shared_devices(emu_bus_t *bus)
                             SHARED_OPS(g4mh_ostm_ops), &g_ostm[1]) &&
            emu_bus_add_mmio(bus, "ostm2", G4MH_OSTM_BASE(2u), G4MH_OSTM_SIZE,
                             SHARED_OPS(g4mh_ostm_ops), &g_ostm[2]) &&
+           /* WDTB0..2: one per PE, shared regions like the timers. */
+           emu_bus_add_mmio(bus, "wdtb0", G4MH_WDTB_BASE(0u), G4MH_WDTB_SIZE,
+                            SHARED_OPS(g4mh_wdtb_ops), &g_wdtb[0]) &&
+           emu_bus_add_mmio(bus, "wdtb1", G4MH_WDTB_BASE(1u), G4MH_WDTB_SIZE,
+                            SHARED_OPS(g4mh_wdtb_ops), &g_wdtb[1]) &&
+           emu_bus_add_mmio(bus, "wdtb2", G4MH_WDTB_BASE(2u), G4MH_WDTB_SIZE,
+                            SHARED_OPS(g4mh_wdtb_ops), &g_wdtb[2]) &&
            /*
             * INTIF, for TPTMSEL. One register for the whole system, so
             * it binds to the global INTC instance like INTC2 does.
@@ -541,6 +585,9 @@ static void g4mh_ops_advance_time(emu_cpu_t *cpu, uint32_t ticks)
     for (unsigned i = 0u; i < G4MH_OSTM_COUNT; i++) {
         g4mh_ostm_advance(&g_ostm[i], ticks);
     }
+    for (unsigned i = 0u; i < G4MH_WDTB_COUNT; i++) {
+        g4mh_wdtb_advance(&g_wdtb[i], ticks);
+    }
     g4mh_tptm_advance(&g_tptm, ticks);
     /* No divider: LTSC is PCLK direct, so this is one for one. */
     g4mh_ltsc_advance(&g_ltsc, ticks);
@@ -551,6 +598,9 @@ static void g4mh_ops_set_time(emu_cpu_t *cpu, uint64_t now)
     (void)cpu;
     for (unsigned i = 0u; i < G4MH_OSTM_COUNT; i++) {
         g4mh_ostm_set_time(&g_ostm[i], now);
+    }
+    for (unsigned i = 0u; i < G4MH_WDTB_COUNT; i++) {
+        g4mh_wdtb_set_time(&g_wdtb[i], now);
     }
     /*
      * The LTSC too, and this is the hook that matters on a host: the
@@ -624,6 +674,7 @@ static void g4mh_ops_status(const emu_cpu_t *cpu, emu_cpu_status_t *out)
      * masked at the controller can never become one.
      */
     out->wakeable = g4mh_intc_wakeable(&g_intc[c->coreid], c->coreid);
+    out->reset_by = c->reset_by;
 }
 
 static uint32_t g4mh_ops_reg_read(const emu_cpu_t *cpu, unsigned r)

@@ -97,7 +97,10 @@ From the last measurements in [linux.md](linux.md).
         state of each output sent over a UDP/IP connection.
   - [x] KCRC (section 57) -- `g4mh_kcrc.c`, the four units, held to
         every row of the manual's setting table.
-  - [ ] WDTB (section 33), one channel per core.
+  - [x] WDTB (section 33) -- `g4mh_wdtb.c`, one per PE, with the
+        ECM's reset configuration deciding what an error does.
+  - [ ] The ECM (section 56), so a guest can configure what each error
+        does; and FENC, the external NMI, so FENMI has a source.
 - [ ] **TAUD on the RH850/U2B6**, built on the STM32 timers that remain
       free and plugged into the PCIe framework.
 - [ ] **The G4MH and RH850 CPU system** (section 3), finished.
