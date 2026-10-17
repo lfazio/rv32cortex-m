@@ -80,10 +80,18 @@ function(emu_stage_guest_image out_bin)
         set(_name "ppc-${PPC_GUEST}.img")
     elseif(EMU_GUEST_ARCH_G4MH)
         set(G4MH_GUEST "guest"
-            CACHE STRING "G4MH guest image to embed in the firmware")
-        set(_src "${CMAKE_SOURCE_DIR}/tests/guest/g4mh/${G4MH_GUEST}.bin")
+            CACHE STRING "G4MH guest image to embed in the firmware: a name in tests/guest/g4mh, or an absolute path")
+        if(IS_ABSOLUTE "${G4MH_GUEST}")
+            # A guest built outside the tree -- CoreMark, by
+            # scripts/g4mh-build-coremark.sh, which is not committed
+            # because CoreMark is fetched rather than vendored.
+            set(_src "${G4MH_GUEST}")
+            get_filename_component(_name "${G4MH_GUEST}" NAME)
+        else()
+            set(_src "${CMAKE_SOURCE_DIR}/tests/guest/g4mh/${G4MH_GUEST}.bin")
+            set(_name "g4mh/${G4MH_GUEST}.bin")
+        endif()
         set(_dep "${_src}")
-        set(_name "g4mh/${G4MH_GUEST}.bin")
         #
         # **CC-RH links every one of these at 0x80000000** (`-start=` in
         # scripts/g4mh-build-guest.sh), which is guest RAM. Run in place at

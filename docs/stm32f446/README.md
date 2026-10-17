@@ -130,7 +130,9 @@ The 40-iteration runs are under CoreMark's 10 seconds and it prints
 that short; x150 is the valid one.
 
 The flash target took no `EMU_PROBE` until this run, which needed one
-with three ST-LINKs attached.
+with three ST-LINKs attached. G4MH ran here for the first time the same
+day, once the board staged its guest the shared way:
+[g4mh/](g4mh/README.md).
 
 ## Measured, and settled
 

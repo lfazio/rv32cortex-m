@@ -1,33 +1,39 @@
 # stm32f446 / g4mh
 
-**Not known to have run on this board.** The frontend swap itself is
-checked on the other two: `scripts/build-matrix.sh` builds a G4MH-only
-firmware for the F746 (one PE and three) and for the N6, which is the
-check that the frontend seam holds through the platform layer. There is
-no F446 row for it.
+**It runs**, since 2026-10, and it had not before: this board staged its
+guest image by a copy of its own that always took `RV32_GUEST`, so a
+G4MH firmware embedded RV32's `isatest`, ran it as RH850 code from
+0x2000_0000 and faulted at its first fetch. It stages through
+`cmake/guest-image.cmake` now, as the F746 and the N6 do, with G4MH's
+load address. The small guest passes (15 checks), and G4MH CoreMark x40
+gives CRC 0x65c5 -- "Correct operation validated", 17 s.
 
 ```sh
 cmake -B build/g4mh -DEMU_PLATFORM=stm32f446 \
       -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
-      -DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON \
-      -DG4MH_CRAM_KIB=32 -DG4MH_LRAM_KIB=16 -DEMU_JIT_CODE_BYTES=12288
+      -DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON
 cmake --build build/g4mh
 ```
 
-**The three sizes are not optional on this part.** With the defaults —
-128 KiB of cluster RAM, 64 of local RAM and a 32 KB code cache — the
-link fails with `cannot move location counter backwards`, 159 KiB over a
-board that has 128. Shrinking the two RAMs alone still leaves it 12 KiB
-over, because a JIT build spends 77 KiB before the guest gets a byte;
-the recipe above, or `-DEMU_JIT=OFF` in place of the smaller cache,
-links.
+**The defaults are this part's**: 32 KiB of cluster RAM and 16 of local
+RAM, as on every board, and **the interpreter** -- the one pairing whose
+JIT is off by default. A JIT build spends some 77 KiB before the guest
+gets a byte, and the most that fits beside G4MH is a 12 KB cache, which
+loses: CoreMark at 204.4 host cycles an instruction with 65,142
+evictions and 28 KiB left to the guest, against 143.6 and 62 KiB
+interpreted ([../../jit/tuning.md](../../jit/tuning.md)). With the JIT
+on, the old defaults failed to link with `cannot move location counter
+backwards`.
 
 This page used to say the pair "links, never run" for want of an RH850
 toolchain, and that G4MH had no JIT. Neither is true any more:
 
 - **Renesas CC-RH builds the guests**, driven by
   `scripts/g4mh-build-guest.sh`; the firmware embeds the image named by
-  `G4MH_GUEST` from `tests/guest/g4mh/`.
+  `G4MH_GUEST` from `tests/guest/g4mh/`, or one given by absolute path
+  -- CoreMark, from `scripts/g4mh-build-coremark.sh`, which is not
+  committed. (`EMU_GUEST_BIN` would run it in place at 0x2000_0000;
+  `G4MH_GUEST` keeps G4MH's load address.)
 - **G4MH has a translator** (`g4mh_ir.c`) and so a JIT on both hosts
   through the shared IR. Its small guest has run on a board with the
   host agreeing to the digit ([../../performance.md](../../performance.md)).

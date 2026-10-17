@@ -45,8 +45,13 @@ verified only as far as `tests/unit/test_g4mh.c` reaches.
 
 Runs on a host and as firmware. What it *backs* of the U2B6's memory map
 is a build setting -- 128 KiB of cluster RAM and 64 KiB of local RAM by
-default, and code flash supplied by the platform rather than allocated.
-See [../memory.md](../memory.md).
+default on a host, 32 and 16 on a board, where those bytes are the code
+cache's and the guest's -- and code flash supplied by the platform
+rather than allocated. See [../memory.md](../memory.md), and
+[../jit/tuning.md](../jit/tuning.md) for what the board sizes bought.
+`scripts/g4mh-build-coremark.sh` builds CoreMark with CC-RH, from the
+same port as every other frontend's: 21.9M instructions for 40
+iterations, twice RV32's.
 
 
 **Implemented.** Formats I and II (the 16-bit reg-reg and imm5 ALU),

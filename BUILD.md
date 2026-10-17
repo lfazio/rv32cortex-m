@@ -144,7 +144,7 @@ wrong.
 | `G4MH_MPU_ENTRIES` | 32 | the out-of-range guard is **unreachable at 32**: MPIDX is five bits. Build 8 to exercise it |
 | `G4MH_PE_COUNT` | 1 | `> 1` was untested for years and the first run found three defects |
 | `EMU_OS_SMP` | ON when `G4MH_PE_COUNT > 1` | host only: the PEs run in parallel ([docs/os.md](docs/os.md#smp-on-the-host)). OFF, or `--serial` at run time, for the reproducible round-robin |
-| `G4MH_CRAM_KIB`, `G4MH_LRAM_KIB` | 128, 64 | **per PE for LRAM.** See below |
+| `G4MH_CRAM_KIB`, `G4MH_LRAM_KIB` | 128, 64 on a host; 32, 16 on a board | **per PE for LRAM.** See below |
 
 **The RAM arithmetic is what breaks the firmware.** 128 KiB of cluster
 RAM plus 64 KiB of local RAM *per PE* is 320 KiB at three PEs — the
@@ -152,6 +152,12 @@ F746's entire memory, with nothing left for the emulator. The link fails
 with `cannot move location counter backwards`, which names the symptom
 and not the cause. The 3-PE matrix row therefore carries
 `-DG4MH_CRAM_KIB=64 -DG4MH_LRAM_KIB=16`.
+
+**On a board they default to 32 and 16 KiB**, which is what makes room
+for a G4MH build's code cache: on the F746 the guest gets 144 KiB and
+G4MH CoreMark runs 1.72x faster than at 128/64 with a 32 KB cache. The
+cost is architectural room for a U2B6 program that keeps its data in
+cluster or local RAM; the guests in this tree keep theirs in guest RAM.
 
 `EMU_MAX_REGIONS` is computed from `G4MH_PE_COUNT` — it must be, and a
 design note asking a maintainer to raise it by hand is a constant that
@@ -214,9 +220,10 @@ for the readers of a flag, not for the flag.
 
 | gate | default | notes |
 |---|---|---|
+| `EMU_JIT` | ON, except the F446 with G4MH | that pair has room for a 12 KB cache at most, which loses to the interpreter: G4MH CoreMark 204.4 against 143.6 host cycles an instruction |
 | `EMU_ENABLE_TRACE` | OFF | per-instruction hook. **Read pc deltas, not the disassembly** |
 | `EMU_ENABLE_STATS` | ON | `xlat`/`interp` — read the ratio before believing a pass |
-| `EMU_JIT_CODE_BYTES` | 98304 on the F746 and 131072 on the N6, each without G4MH (whose RAM does not leave room); 32768 elsewhere | the code cache on a microcontroller. A threshold, not a dial: below a guest's translated working set the JIT is **slower** than the interpreter -- CoreMark on the F746 is 152.7 host cycles an instruction at 32 KB and 29.9 at 96 KB, for 64 KiB of guest RAM — [docs/jit/tuning.md](docs/jit/tuning.md) |
+| `EMU_JIT_CODE_BYTES` | 98304 on the F746, 65536 there with G4MH; 131072 on the N6; 32768 elsewhere | the code cache on a microcontroller. A threshold, not a dial: below a guest's translated working set the JIT is **slower** than the interpreter -- CoreMark on the F746 is 152.7 host cycles an instruction at 32 KB and 29.9 at 96 KB, for 64 KiB of guest RAM — [docs/jit/tuning.md](docs/jit/tuning.md) |
 | `EMU_HOT_TEXT_SECTION` | `.itcm` on the F746 and the N6 | where the dispatch path lives; ITCM is uncached and zero-wait. Worth 8% on the F746 at 96 KB |
 | `EMU_MAX_INSN` | 100000000 | boards: stop a guest after this many instructions; 0 never does, for a run past the 19.9 s counter wrap |
 | `EMU_JIT_HOT_THRESHOLD` | 1 | misses before a pc is translated; until then it is interpreted. `--jit-hot N` per run on the host. **Nothing measured gains from more than 1** — [docs/jit/tuning.md](docs/jit/tuning.md) |

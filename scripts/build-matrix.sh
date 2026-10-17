@@ -114,6 +114,7 @@ f746-nonet|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=OFF|**the other value**:
 f746-net|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON|**the link, exercised** with --board: ping, telnet, upload, and the new guest running. Building EMU_NET proves nothing -- see scripts/check-board-net.sh
 f746-slip|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON -DEMU_NET_LINK=slip|**the other link**: SLIP, now that PPP is the default
 f446-rv32|stm32f446|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF|the M4: no caches, no DWT lock
+f446-g4|stm32f446|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON|**the default links**: G4MH on a 128 KiB part, interpreted, at the cluster and local RAM a board backs -- it did not, and a G4MH firmware here ran the RV32 isatest until the shared guest staging
 f446-net|stm32f446|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON|**the other value here**: the M4 with PPP, which it had no option for until the wiring moved to cmake/emu_net.cmake
 n6-rv32|stm32n6|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF|the Armv8.1-M port: cortex-m55, -mcmse, no internal flash, 1471 KiB of guest RAM
 n6-g4|stm32n6|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON|the contract check on the newest platform: a frontend swap must need nothing from src/platform/

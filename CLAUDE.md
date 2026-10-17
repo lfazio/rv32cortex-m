@@ -3391,6 +3391,18 @@ session, and every one of them recurred:
   that straddles the boundary, whose lower half fills the cache with all
   of it; `test_fetch_execute_never` builds one, and fails 5 checks
   without the test.
+- **A platform that keeps its own copy of shared plumbing keeps the
+  bugs the shared one fixed.** The F746 and the N6 stage the guest
+  image through `cmake/guest-image.cmake`, which picks the frontend's
+  image and its load address. The F446 kept a copy from before that
+  function existed, which always took `RV32_GUEST` -- so every G4MH
+  firmware for it embedded RV32's `isatest`, ran it as RH850 code from
+  0x2000_0000 and faulted at its first fetch, and its page said the
+  pair had "never run", as though for want of trying. The matrix had no
+  F446 G4MH row, and the link failed anyway on memory, so nothing ever
+  got far enough to show it. When a function is introduced to share
+  something between platforms, grep every platform for the copy it
+  replaces.
 - **A run on an instruction clock must not depend on how it is sliced,
   and that is a property to test, not a window.** The PowerPC watchdog's
   writes recomputed the core's next timer stop without ending the

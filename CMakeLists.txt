@@ -220,15 +220,30 @@ option(RV32_LAZY_IRQ "Lazy interrupt-delivery evaluation" ON)
 # 4.7x faster, and the 9% swing that function order caused at 32 KB
 # shrinks to 2%. docs/jit/tuning.md has both measurements.
 #
-# **Not with G4MH compiled in**, for the reason the N6 above gives: its
-# default cluster and local RAM are 192 KiB of .bss, and with 64 KiB more
-# buffer a single-PE build overflows the part by 49 KiB. Such a build
-# keeps 32 KB; shrinking G4MH_CRAM_KIB/G4MH_LRAM_KIB, as the three-PE
-# build already must, makes room to ask for more.
+# **With G4MH compiled in, 64 KB on the F746 and still 128 KB on the
+# N6**, now that a board's G4MH cluster and local RAM default to 32 and
+# 16 KiB (below) instead of 128 and 64. At the old sizes there was no
+# room: a G4MH build kept 32 KB, and on G4MH CoreMark x40
+# (scripts/g4mh-build-coremark.sh) that cache was a queue -- 22,369
+# translations, and on the F746 a JIT barely ahead of the interpreter
+# with 32 KiB left to the guest:
+#
+#                     cache   guest RAM   host cycles / insn   xlat
+#   F746, 128/64 KiB  32 KB    32 KiB        92.38            22,369
+#   F746,  32/16 KiB  64 KB   144 KiB        53.66               525
+#   F746,  32/16 KiB  96 KB   112 KiB        54.75               455
+#   N6,   128/64 KiB  32 KB  (1535 KiB)      93.96            23,023
+#   N6,    32/16 KiB 128 KB  (1535 KiB)      50.59               458
+#
+# The F746 stops at 64 KB because more buys nothing and costs the guest
+# 32 KiB a step; the N6's guest RAM is elsewhere, so it takes the size
+# RV32 does.
 #
 if(EMU_PLATFORM STREQUAL "stm32f746" AND NOT EMU_GUEST_ARCH_G4MH)
     set(_jit_bytes_default "98304")
-elseif(EMU_PLATFORM STREQUAL "stm32n6" AND NOT EMU_GUEST_ARCH_G4MH)
+elseif(EMU_PLATFORM STREQUAL "stm32f746")
+    set(_jit_bytes_default "65536")
+elseif(EMU_PLATFORM STREQUAL "stm32n6")
     set(_jit_bytes_default "131072")
 else()
     set(_jit_bytes_default "32768")
@@ -269,12 +284,12 @@ set(EMU_JIT_CODE_BYTES "${_jit_bytes_default}" CACHE STRING
 # It needs board_itcm_init's ECC scrub to work at all. See
 # docs/stm32n6/itcm.md.
 #
-# **Only where the buffer fits**: 32 KB, which is a G4MH build's. A
-# 128 KB buffer cannot be in 64 KiB of ITCM, and is worth 8.7x where
-# ITCM was worth 1.36%, so the larger buffer goes to AXISRAM2 and ITCM
-# keeps the dispatch path.
+# **Only where the buffer fits**: 32 KB or less, which no default asks
+# for any more -- a G4MH build's was the last. A 128 KB buffer cannot be
+# in 64 KiB of ITCM, and is worth 8.7x where ITCM was worth 1.36%, so the
+# larger buffer goes to AXISRAM2 and ITCM keeps the dispatch path.
 #
-if(EMU_PLATFORM STREQUAL "stm32n6" AND EMU_GUEST_ARCH_G4MH)
+if(EMU_PLATFORM STREQUAL "stm32n6" AND EMU_JIT_CODE_BYTES LESS_EQUAL 32768)
     set(_jit_section_default ".jitcode")
 else()
     set(_jit_section_default "")
@@ -332,7 +347,21 @@ set(EMU_JIT_HOT_THRESHOLD 1 CACHE STRING
 set(EMU_JIT_IR ON CACHE INTERNAL "Thumb-2 JIT is IR-based (no longer optional)" FORCE)
 option(EMU_JIT_DIFF
     "Check every translated block against the IR interpreter" OFF)
-option(EMU_JIT "Thumb-2 JIT backend" ON)
+#
+# The interpreter, by default, on the F446 with G4MH compiled in -- the
+# one pairing where the JIT is the wrong default. The part has 128 KiB,
+# a JIT build spends some 77 KiB before the guest gets a byte, and what
+# is left after G4MH's cluster and local RAM fits a 12 KB cache at most:
+# G4MH CoreMark x40 there ran at 204.4 host cycles an instruction with
+# 65,142 evictions and 28 KiB for the guest, against 143.6 and 62 KiB
+# interpreted. With the JIT on, a default build did not link at all.
+#
+if(EMU_PLATFORM STREQUAL "stm32f446" AND EMU_GUEST_ARCH_G4MH)
+    set(_jit_default OFF)
+else()
+    set(_jit_default ON)
+endif()
+option(EMU_JIT "Thumb-2 JIT backend" ${_jit_default})
 
 # EMU_JIT_LOOP_CHAIN, EMU_JIT_INLINE_PERIPH, EMU_JIT_ELIDE_LD and
 # EMU_JIT_ELIDE_ST were options here. Each configured the hand-written
@@ -530,8 +559,25 @@ else()
 endif()
 set(G4MH_FLASH_KIB "${_g4mh_flash_kib}" CACHE STRING
     "G4MH code-flash arena, KiB (0 = the platform supplies it)")
-set(G4MH_CRAM_KIB "128" CACHE STRING "G4MH cluster RAM backed, KiB")
-set(G4MH_LRAM_KIB "64"  CACHE STRING "G4MH local RAM per PE backed, KiB")
+#
+# Cluster and local RAM are .bss too, and on a board the defaults are 32
+# and 16 KiB -- what the F446's G4MH notes already used -- not the 128
+# and 64 a host backs. At those sizes a G4MH build could not link on the
+# F446 at all, kept 32 KiB of guest RAM and a 32 KB code cache on the
+# F746, and overflowed AXISRAM2 on the N6 with anything larger; see
+# EMU_JIT_CODE_BYTES above for what the room bought. What it costs is
+# room for a U2B6 program linked to keep its data there: every guest in
+# this tree links its data into guest RAM.
+#
+if(EMU_PLATFORM STREQUAL "host")
+    set(_g4mh_cram_kib 128)
+    set(_g4mh_lram_kib 64)
+else()
+    set(_g4mh_cram_kib 32)
+    set(_g4mh_lram_kib 16)
+endif()
+set(G4MH_CRAM_KIB "${_g4mh_cram_kib}" CACHE STRING "G4MH cluster RAM backed, KiB")
+set(G4MH_LRAM_KIB "${_g4mh_lram_kib}" CACHE STRING "G4MH local RAM per PE backed, KiB")
 
 # ---------------------------------------------------------------------
 # Runtime library: portable C11, no platform and no ISA dependencies

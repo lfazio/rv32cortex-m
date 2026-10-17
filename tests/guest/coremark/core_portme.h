@@ -20,7 +20,11 @@
 #define HAS_STDIO   0
 #define HAS_PRINTF  0
 
+#if defined(__CCRH__)
+#define COMPILER_VERSION "CC-RH" /* which has no __VERSION__ */
+#else
 #define COMPILER_VERSION "GCC" __VERSION__
+#endif
 #define COMPILER_FLAGS   "-O2"
 #define MEM_LOCATION     "STATIC"
 

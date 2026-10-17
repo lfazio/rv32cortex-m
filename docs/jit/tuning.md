@@ -246,15 +246,37 @@ The same knob on the Nucleo-N657X0-Q, where it costs the guest nothing:
 guest RAM is AXISRAM1, and the buffer goes in AXISRAM2. RV32 CoreMark
 x120 at 600 MHz, the dispatch path in ITCM throughout:
 
-| | 32 KB in ITCM | 64 KB | 96 KB | **128 KB** (the default without G4MH) |
+| | 32 KB in ITCM | 64 KB | 96 KB | **128 KB** (the default) |
 |---|---|---|---|---|
 | cycles / instruction | 175.46 | 110.05 | 36.60 | **20.21** |
 | translations | 63,462 | 35,336 | 6,885 | 301 |
 | compactions | 3,616 | 1,175 | 183 | 2 |
 
 At 128 KB the working set fits. A 650-iteration run takes 5.33 s by the
-host's clock and 5.30 s by the firmware's. G4MH builds keep 32 KB in
-ITCM: their RAM leaves no room in AXISRAM2.
+host's clock and 5.30 s by the firmware's.
+
+**G4MH builds** kept 32 KB in ITCM, because G4MH's cluster and local
+RAM, 128 and 64 KiB of `.bss`, left no room in AXISRAM2 -- and on the
+F746 left the guest 32 KiB beside a 32 KB cache. A board's defaults
+are 32 and 16 KiB now. G4MH CoreMark x40, built by
+`scripts/g4mh-build-coremark.sh` (CRC 0x65c5, as on every frontend):
+
+| | cluster / local RAM | cache | guest RAM | cycles / instruction | translations |
+|---|---|---|---|---|---|
+| F746, before | 128 / 64 KiB | 32 KB | 32 KiB | 92.38 | 22,369 |
+| F746 | 32 / 16 KiB | 32 KB | 176 KiB | 93.11 | 23,089 |
+| F746, **default** | 32 / 16 KiB | **64 KB** | **144 KiB** | **53.66** | 525 |
+| F746 | 32 / 16 KiB | 96 KB | 112 KiB | 54.75 | 455 |
+| F746, interpreter | 128 / 64 KiB | | 110 KiB | 97.01 | |
+| N6, before | 128 / 64 KiB | 32 KB, ITCM | 1535 KiB | 93.96 | 23,023 |
+| N6, **default** | 32 / 16 KiB | **128 KB** | 1535 KiB | **51.33** | 458 |
+| F446, **default** | 32 / 16 KiB | interpreter | 62 KiB | 143.57 | |
+| F446 | 16 / 8 KiB | 12 KB | 28 KiB | 204.36 | 65,179 |
+
+Shrinking the two RAMs alone changes nothing (the second row); 64 KB is
+where G4MH CoreMark's working set fits, and more buys nothing on the
+F746 while costing its guest 32 KiB a step. The F446 cannot hold a
+cache that fits, so its G4MH default is the interpreter.
 
 **Then the smaller Thumb-2 code** -- short encodings, the one-compare
 window guard and one RETIRE per stretch, 60.8 to 33.9 bytes a guest

@@ -101,8 +101,8 @@ The U2B6's map is much larger than any part this runs on:
 | region | on the part | backed here | how |
 |---|---|---|---|
 | code flash `0x0000_0000` | 3 MiB | **nothing** | the platform supplies it |
-| cluster RAM `0xFE00_0000` | 384 KiB | `G4MH_CRAM_KIB`, default 128 | `.bss` |
-| local RAM `0xFDE0_0000` | 64 KiB per PE | `G4MH_LRAM_KIB`, default 64 | `.bss` per PE |
+| cluster RAM `0xFE00_0000` | 384 KiB | `G4MH_CRAM_KIB`, default 128 on a host and 32 on a board | `.bss` |
+| local RAM `0xFDE0_0000` | 64 KiB per PE | `G4MH_LRAM_KIB`, default 64 on a host and 16 on a board | `.bss` per PE |
 
 The architectural sizes stay in `g4mh_memmap.h` as `*_SIZE`, because they
 describe the part. What a build allocates is `*_BACKED`, from the CMake

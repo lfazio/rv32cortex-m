@@ -402,7 +402,7 @@ the porting layer is four functions.
 ### The G4MH toolchain
 
 CC-RH is the only compiler that emits G4MH and a checkout cannot assume
-it. Two scripts drive it, and both take the shared start-up in
+it. Three scripts build guests with it, and all take the shared start-up in
 `tests/guest/g4mh/crt0.asm` -- a vector table, `gp`/`ep`, zeroed `.bss`
 and `PSW.CU0`, every line of which is there because something failed
 without it:
@@ -410,6 +410,7 @@ without it:
 ```sh
 scripts/g4mh-build-guest.sh tests/guest/g4mh/barrier3.c   # one C guest
 scripts/g4mh-build-doom.sh  <doom-src> [out.bin]          # what the target runs
+scripts/g4mh-build-coremark.sh build/<dir>/coremark-src   # the benchmark, x40
 scripts/g4mh-check-encodings.sh                           # assemble, print fields
 ```
 

@@ -22,6 +22,10 @@
 
 #include "coremark.h"
 
+/* Freestanding, so every compiler here has it -- CC-RH has no
+ * __builtin_va_*. */
+#include <stdarg.h>
+
 #if VALIDATION_RUN
 volatile ee_s32 seed1_volatile = 0x3415;
 volatile ee_s32 seed2_volatile = 0x3415;
@@ -66,6 +70,21 @@ static void clock_start(void)
 #define GETMYTIME(_t)        (*_t = ppc_clock_now())
 static void clock_start(void)
 {
+}
+#elif defined(__CCRH__)
+/*
+ * G4MH, by CC-RH (scripts/g4mh-build-coremark.sh): the LTSC, which counts
+ * 80 MHz (include/g4mh/g4mh_ltsc.h) -- so a count over 80 is the
+ * microsecond EE_TICKS_PER_SEC wants. Reading CNTL captures all 64 bits;
+ * the low 32 alone wrap at 53.7 s, longer than a run here.
+ */
+#define LTSC_REG(off) (*(volatile ee_u32 *)(0xFFC78100u + (off)))
+#define GETMYTIME(_t)        (*_t = LTSC_REG(0x40u) / 80u)
+static void clock_start(void)
+{
+    if ((LTSC_REG(0x18u) & 1u) == 0u) { /* CSTR.CST: not yet running */
+        LTSC_REG(0x10u) = 1u;           /* TCS.TS */
+    }
 }
 #else
 #define CLINT_MTIME_LO (*(volatile ee_u32 *)0x0200BFF8u)
@@ -167,8 +186,8 @@ static void emit_num(ee_u32 v, unsigned base, int is_signed,
 
 int ee_printf(const char *fmt, ...)
 {
-    __builtin_va_list ap;
-    __builtin_va_start(ap, fmt);
+    va_list ap;
+    va_start(ap, fmt);
 
     for (const char *p = fmt; *p != '\0'; p++) {
         if (*p != '%') {
@@ -193,27 +212,27 @@ int ee_printf(const char *fmt, ...)
         switch (*p) {
         case 'd':
         case 'i':
-            emit_num((ee_u32)__builtin_va_arg(ap, int), 10u, 1, width, zero_pad, 0);
+            emit_num((ee_u32)va_arg(ap, int), 10u, 1, width, zero_pad, 0);
             break;
         case 'u':
-            emit_num(__builtin_va_arg(ap, ee_u32), 10u, 0, width, zero_pad, 0);
+            emit_num(va_arg(ap, ee_u32), 10u, 0, width, zero_pad, 0);
             break;
         case 'x':
-            emit_num(__builtin_va_arg(ap, ee_u32), 16u, 0, width, zero_pad, 0);
+            emit_num(va_arg(ap, ee_u32), 16u, 0, width, zero_pad, 0);
             break;
         case 'X':
-            emit_num(__builtin_va_arg(ap, ee_u32), 16u, 0, width, zero_pad, 1);
+            emit_num(va_arg(ap, ee_u32), 16u, 0, width, zero_pad, 1);
             break;
         case 'p':
             emit_str("0x");
-            emit_num((ee_u32)(ee_ptr_int)__builtin_va_arg(ap, void *), 16u, 0,
+            emit_num((ee_u32)(ee_ptr_int)va_arg(ap, void *), 16u, 0,
                      8, 1, 0);
             break;
         case 's':
-            emit_str(__builtin_va_arg(ap, const char *));
+            emit_str(va_arg(ap, const char *));
             break;
         case 'c':
-            uart_send_char((char)__builtin_va_arg(ap, int));
+            uart_send_char((char)va_arg(ap, int));
             break;
         case '%':
             uart_send_char('%');
@@ -225,6 +244,6 @@ int ee_printf(const char *fmt, ...)
         }
     }
 
-    __builtin_va_end(ap);
+    va_end(ap);
     return 0;
 }

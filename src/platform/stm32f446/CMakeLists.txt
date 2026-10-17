@@ -9,29 +9,13 @@
 set(STM32CUBE_FAMILY "f4")
 include(${CMAKE_SOURCE_DIR}/cmake/stm32cube.cmake)
 
-set(RV32_GUEST "isatest" CACHE STRING "Guest image to embed in the firmware")
-set(guest_src "${CMAKE_BINARY_DIR}/guest/${RV32_GUEST}.bin")
-
-# The image is produced in tests/guest, and a cross-directory file
-# dependency is where the two generators diverge: OBJECT_DEPENDS on a path
-# in another directory's scope leaves the Makefile generator with "No rule
-# to make target". Copying it here with a local custom command makes the
-# dependency intra-directory, which both handle identically.
-set(guest_bin "${CMAKE_CURRENT_BINARY_DIR}/guest_image.bin")
-#
-# Both the file and the target are named, and both are needed. The target
-# supplies the rule that builds the image; the *file* supplies staleness.
-# Depending on the target alone is an ordering constraint only, so the copy
-# ran once and never again: editing a guest source rebuilt the .bin, left
-# the staged copy untouched, and produced firmware still carrying the
-# previous guest. Nothing failed, which is what made it dangerous.
-add_custom_command(
-    OUTPUT "${guest_bin}"
-    COMMAND ${CMAKE_COMMAND} -E copy "${guest_src}" "${guest_bin}"
-    DEPENDS "${guest_src}" guest-${RV32_GUEST}
-    COMMENT "Staging guest image ${RV32_GUEST}.bin"
-    VERBATIM)
-add_custom_target(guest-image-staged DEPENDS "${guest_bin}")
+# The guest image, by the function the F746 and the N6 use. This board
+# staged its own until 2026-10 -- always ${RV32_GUEST}, whatever frontend
+# was built -- so a G4MH firmware embedded RV32's isatest, ran it as
+# RH850 code from 0x20000000, and faulted at its first fetch: the reason
+# docs/stm32f446/g4mh said the pair had never run.
+include(${CMAKE_SOURCE_DIR}/cmake/guest-image.cmake)
+emu_stage_guest_image(guest_bin)
 
 # ---------------------------------------------------------------------
 # Vendor sources
@@ -118,12 +102,11 @@ set_source_files_properties(guest_image.S PROPERTIES
     COMPILE_DEFINITIONS "EMU_GUEST_IMAGE=${guest_bin}"
     OBJECT_DEPENDS "${guest_bin}")
 
-if(TARGET guest-${RV32_GUEST})
-    add_dependencies(emu-stm32f446 guest-image-staged)
-else()
-    message(WARNING
-        "Guest image '${RV32_GUEST}' is not built (no RISC-V toolchain?); "
-        "the firmware link will fail until ${guest_bin} exists.")
+add_dependencies(emu-stm32f446 guest-image-staged)
+# Where the guest runs, when it is not in place -- cmake/guest-image.cmake.
+if(EMU_GUEST_LOAD_ADDR)
+    target_compile_definitions(emu-stm32f446 PRIVATE
+        EMU_GUEST_LOAD=${EMU_GUEST_LOAD_ADDR}u)
 endif()
 
 # -Wundef with the rest, and it earns its place here rather than being
