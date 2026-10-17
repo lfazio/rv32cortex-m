@@ -158,31 +158,60 @@ struct g4mh_cpu;
 /* State                                                               */
 /* ------------------------------------------------------------------ */
 
-typedef struct g4mh_intc {
-    /*
-     * The global INTC2 state, which every core's controller shares. Self
-     * for the instance that *is* the global one (PE0's), so a lookup never
-     * needs a null check on the hot side.
-     *
-     * The split is the hardware's: EICn is one 16-bit register at
-     * base + 0x02 * n across both units, so channels 0-31 come from this
-     * core's own array and 32 and up from the shared one -- the same array
-     * index, a different object.
-     */
-    struct g4mh_intc *global;
+#define G4MH_INTC2_SLOTS (G4MH_INT_CHANNELS - G4MH_INTC1_CHANNELS)
+#define G4MH_INTC2_WORDS ((G4MH_INTC2_SLOTS + 31u) / 32u)
+
+/* Cores INTC2 can notify; EIBD's PEID is three bits. */
+#define G4MH_INTC2_PES 8u
+
+/*
+ * INTC2: channels 32 and up, one for the whole system.
+ *
+ * **Held once, and reached the same way from every core.** It used to be
+ * the upper part of an array in every core's controller, of which only
+ * PE0's was ever written -- so a request acknowledged, or a priority
+ * looked up, through PE1's controller read PE1's untouched copy, and the
+ * request stayed pending in PE0's after PE1 had taken it.
+ */
+typedef struct g4mh_intc2 {
+    uint32_t chan[G4MH_INTC2_SLOTS]; /* channel 32 + i, EEICn's layout   */
+    uint32_t eibd[G4MH_INTC2_SLOTS]; /* bind: which PE/VM takes it       */
 
     /*
-     * One entry per channel, spanning both units: 0..31 are answered by
-     * INTC1 and the rest by INTC2, but they are the same array because
-     * that is what the register layout says they are.
-     *
-     * In EEICn's layout -- the superset -- so EICn and IMRm are computed
-     * views rather than stored copies. There is no imr[] array any more
-     * and there must not be one: two stores of the same architectural
-     * bit is exactly how the mask came to be ignored.
+     * Bit i of word w: channel 32 + 32 * w + i has EIRF set and EIMK
+     * clear. Kept by the one function that writes a channel word, and
+     * held equal to the words by test_intc_pending_summary.
      */
-    uint32_t chan[G4MH_INT_CHANNELS];
-    uint32_t eibd[G4MH_INT_CHANNELS]; /* bind: which PE/VM takes it   */
+    uint32_t pend[G4MH_INTC2_WORDS];
+
+    /*
+     * The cores whose controllers share this, by PE number. A change to
+     * a global channel is news to whichever core it is bound to, and to
+     * the one it was bound to before an EIBD write, so all of them are
+     * told: a spurious search costs a bitmap walk.
+     */
+    struct g4mh_cpu *cpu[G4MH_INTC2_PES];
+} g4mh_intc2_t;
+
+typedef struct g4mh_intc {
+    /*
+     * The controller holding the global INTC2 state, which every core's
+     * shares. Self for the instance that *is* the global one (PE0's), so
+     * a lookup never needs a null check on the hot side.
+     */
+    struct g4mh_intc *global;
+    g4mh_intc2_t *intc2; /* global->intc2, cached: the same for every core */
+
+    /*
+     * This PE's own channels, 0..31, in EEICn's layout -- the superset
+     * -- so EICn and IMRm are computed views rather than stored copies.
+     * There is no imr[] array and there must not be one: two stores of
+     * the same architectural bit is exactly how the mask came to be
+     * ignored. The same holds for INTC2's half.
+     */
+    uint32_t chan[G4MH_INTC1_CHANNELS];
+    uint32_t eibd[G4MH_INTC1_CHANNELS]; /* bind: which PE/VM takes it */
+    uint32_t pend; /* bit n: chan[n] requested and unmasked, as INTC2's */
 
     uint32_t fibd;
     uint32_t eibg;
@@ -244,10 +273,12 @@ extern const emu_dev_ops_t g4mh_ostm_ops;
 extern const emu_dev_ops_t g4mh_intif_ops;
 
 /*
- * `global` is the instance holding the INTC2 half -- PE0's. Pass NULL when
- * initialising that one itself.
+ * `global` is the instance holding the INTC2 half -- PE0's. Pass NULL
+ * when initialising that one itself, with the storage for INTC2 in
+ * `intc2`, which is reset; it is ignored otherwise.
  */
-void g4mh_intc_init(g4mh_intc_t *ic, struct g4mh_cpu *cpu, g4mh_intc_t *global);
+void g4mh_intc_init(g4mh_intc_t *ic, struct g4mh_cpu *cpu, g4mh_intc_t *global,
+                    g4mh_intc2_t *intc2);
 void g4mh_intc_set_unmask(g4mh_intc_t *ic, emu_unmask_fn fn, void *ctx);
 
 /*
@@ -325,6 +356,12 @@ void g4mh_intc_ack_fe(g4mh_intc_t *ic, unsigned pe);
 
 /* Acknowledge a channel: clears its request flag. */
 void g4mh_intc_ack(g4mh_intc_t *ic, uint32_t channel);
+
+/*
+ * Could anything wake PE `pe` from HALT: is any channel it could take --
+ * its own, or a global one bound to it -- unmasked?
+ */
+bool g4mh_intc_wakeable(const g4mh_intc_t *ic, unsigned pe);
 
 #ifdef __cplusplus
 }

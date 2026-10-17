@@ -6432,12 +6432,13 @@ static void test_fp_fma_rounds_once(void)
  */
 
 static g4mh_intc_t g_tic;
+static g4mh_intc2_t g_tic2;
 static g4mh_cpu_t g_tic_cpu;
 
 static void tic_reset(void)
 {
     memset(&g_tic_cpu, 0, sizeof(g_tic_cpu));
-    g4mh_intc_init(&g_tic, &g_tic_cpu, NULL);
+    g4mh_intc_init(&g_tic, &g_tic_cpu, NULL, &g_tic2);
 }
 
 static uint32_t tic1_rd(uint32_t off)
@@ -6462,6 +6463,241 @@ static uint32_t tic2_rd(uint32_t off)
 static void tic2_wr(uint32_t off, uint32_t v)
 {
     (void)g4mh_intc2_ops.write(&g_tic, off, 4u, v);
+}
+
+/*
+ * Two controllers sharing one INTC2, as PE0 and PE1 do: what the
+ * one-instance tests above cannot be.
+ */
+static g4mh_intc_t g_mic[2];
+static g4mh_intc2_t g_mic2;
+static g4mh_cpu_t g_mic_cpu[2];
+
+static void mic_reset(void)
+{
+    memset(g_mic_cpu, 0, sizeof(g_mic_cpu));
+    g_mic_cpu[1].coreid = 1u;
+    g4mh_intc_init(&g_mic[0], &g_mic_cpu[0], NULL, &g_mic2);
+    g4mh_intc_init(&g_mic[1], &g_mic_cpu[1], &g_mic[0], &g_mic2);
+}
+
+static uint32_t mic_rd(const emu_dev_ops_t *ops, unsigned k, uint32_t off)
+{
+    uint32_t v = 0u;
+
+    (void)ops->read(&g_mic[k], off, 4u, &v);
+    return v;
+}
+
+static void mic_wr(const emu_dev_ops_t *ops, unsigned k, uint32_t off,
+                   uint32_t v, uint32_t size)
+{
+    (void)ops->write(&g_mic[k], off, size, v);
+}
+
+/*
+ * An INTC2 channel bound to PE1, raised the way a host line raises it --
+ * through PE0's controller -- and taken by PE1.
+ *
+ * Three things went wrong here while INTC2 was the upper part of an
+ * array every controller had a copy of, only PE0's ever written: PE1
+ * was not told (only the raising controller's core was), the priority
+ * and the vectoring method PE1's core looked up came from its own
+ * untouched copy, and PE1's acknowledgement cleared that copy -- so the
+ * request stayed set in PE0's and was taken again. Channel 841 too,
+ * OSTM2's, which 128 channels did not reach.
+ *
+ * The method matters more than it looks: each core vectors a
+ * table-reference interrupt through its *own* INTBP, so a global
+ * channel can have a handler table per core -- and PE1 read EITB as its
+ * reset 0 and vectored directly, past its table.
+ */
+static void test_intc_global_from_other_pe(void)
+{
+    static const uint32_t k_ch[2] = {40u, 841u};
+
+    for (unsigned t = 0u; t < 2u; t++) {
+        const uint32_t ch = k_ch[t];
+        unsigned pri = 99u;
+
+        mic_reset();
+        mic_wr(&g4mh_intc2_ops, 0u, G4MH_INTC2_EIBD + 4u * ch, 1u, 4u);
+        mic_wr(&g4mh_intc2_ops, 0u, G4MH_INTC2_EEIC + 4u * ch,
+               3u | G4MH_EEIC_EITB, 4u);
+        g_mic_cpu[0].irq_dirty = false;
+        g_mic_cpu[1].irq_dirty = false;
+
+        g4mh_intc_raise(&g_mic[0], ch);
+        CHECK(g_mic_cpu[1].irq_dirty);
+        CHECK_EQ((uint32_t)g4mh_intc_pending(&g_mic[1], 1u), ch);
+        CHECK_EQ((uint32_t)(g4mh_intc_pending(&g_mic[0], 0u) + 1), 0u);
+        CHECK(g4mh_intc_chan_priority(&g_mic[1], ch, &pri));
+        CHECK_EQ(pri, 3u);
+        CHECK(g4mh_intc_chan_is_table(&g_mic[1], ch));
+
+        g4mh_intc_ack(&g_mic[1], ch);
+        CHECK_EQ((uint32_t)(g4mh_intc_pending(&g_mic[1], 1u) + 1), 0u);
+        CHECK_EQ(mic_rd(&g4mh_intc2_ops, 0u, G4MH_INTC2_EEIC + 4u * ch) &
+                     G4MH_EEIC_EIRF,
+                 0u);
+        CHECK(g4mh_intc_wakeable(&g_mic[1], 1u));
+        CHECK(!g4mh_intc_wakeable(&g_mic[0], 0u));
+    }
+}
+
+/*
+ * The pending bitmaps against the words they summarise, and the search
+ * against a brute-force one, after every step of a random walk through
+ * every way a channel word is written: a raise and an acknowledgement
+ * from either core, EICn and EEICn through both windows, IMRm in both
+ * units, and EIBD moving a channel between the cores.
+ *
+ * The reference reads the words back through the register windows, so
+ * it shares nothing with the search but the definition. And it counts
+ * what it reached, because a walk that never unmasked anything would
+ * hold every invariant by holding no requests.
+ */
+static uint32_t mic_word(unsigned k, uint32_t n)
+{
+    return (n < G4MH_INTC1_CHANNELS)
+               ? mic_rd(&g4mh_intc1_ops, k, G4MH_INTC1_EEIC + 4u * n)
+               : mic_rd(&g4mh_intc2_ops, 0u, G4MH_INTC2_EEIC + 4u * n);
+}
+
+static int mic_reference(unsigned k)
+{
+    int best = -1;
+    unsigned best_pri = 64u;
+
+    for (uint32_t n = 0u; n < G4MH_INT_CHANNELS; n++) {
+        const uint32_t w = mic_word(k, n);
+
+        if ((w & G4MH_EEIC_EIRF) == 0u || (w & G4MH_EEIC_EIMK) != 0u) {
+            continue;
+        }
+        if (n >= G4MH_INTC1_CHANNELS &&
+            (mic_rd(&g4mh_intc2_ops, 0u, G4MH_INTC2_EIBD + 4u * n) &
+             G4MH_EIBD_PEID_MASK) != k) {
+            continue;
+        }
+        if ((w & G4MH_EEIC_EIP_MASK) < best_pri) {
+            best_pri = w & G4MH_EEIC_EIP_MASK;
+            best = (int)n;
+        }
+    }
+    return best;
+}
+
+static bool mic_summary_holds(void)
+{
+    for (unsigned k = 0u; k < 2u; k++) {
+        for (unsigned n = 0u; n < G4MH_INTC1_CHANNELS; n++) {
+            const uint32_t w = g_mic[k].chan[n];
+            const bool want = (w & G4MH_EEIC_EIRF) != 0u && (w & G4MH_EEIC_EIMK) == 0u;
+
+            if ((((g_mic[k].pend >> n) & 1u) != 0u) != want) {
+                return false;
+            }
+        }
+    }
+    for (unsigned i = 0u; i < G4MH_INTC2_SLOTS; i++) {
+        const uint32_t w = g_mic2.chan[i];
+        const bool want = (w & G4MH_EEIC_EIRF) != 0u && (w & G4MH_EEIC_EIMK) == 0u;
+
+        if ((((g_mic2.pend[i / 32u] >> (i % 32u)) & 1u) != 0u) != want) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void test_intc_pending_summary(void)
+{
+    /* Both ends of both units and of a bitmap word, and the OS timers'. */
+    static const uint32_t k_ch[] = {0u,   5u,   31u,  32u,  33u,  63u,
+                                    64u,  95u,  127u, 128u, 360u, 361u,
+                                    841u, 900u, 1023u};
+    const unsigned nch = sizeof(k_ch) / sizeof(k_ch[0]);
+    uint32_t rng = 0x2545F491u;
+    unsigned taken[2] = {0u, 0u};
+    unsigned ops[7] = {0u};
+    unsigned bad_summary = 0u;
+    unsigned bad_search = 0u;
+
+    mic_reset();
+    for (unsigned step = 0u; step < 4000u; step++) {
+        rng = rng * 1664525u + 1013904223u;
+        const uint32_t r = rng >> 8;
+        const unsigned k = (r >> 3) & 1u;
+        const uint32_t ch = k_ch[(r >> 4) % nch];
+        const bool local = ch < G4MH_INTC1_CHANNELS;
+        const uint32_t bits = rng ^ (rng << 7);
+        const unsigned op = r % 7u;
+
+        ops[op]++;
+        switch (op) {
+        case 0u:
+        case 1u: /* the two most common events, so the walk has requests */
+            g4mh_intc_raise(&g_mic[k], ch);
+            break;
+        case 2u:
+            g4mh_intc_ack(&g_mic[k], ch);
+            break;
+        case 3u: { /* EEICn: priority, mask and, in edge mode, the request */
+            const uint32_t v = (bits & (G4MH_EEIC_EIP_MASK | G4MH_EEIC_EIRF)) |
+                               (((bits >> 9) & 3u) == 0u ? G4MH_EEIC_EIMK : 0u);
+
+            if (local) {
+                mic_wr(&g4mh_intc1_ops, k, G4MH_INTC1_EEIC + 4u * ch, v, 4u);
+            } else {
+                mic_wr(&g4mh_intc2_ops, k, G4MH_INTC2_EEIC + 4u * ch, v, 4u);
+            }
+            break;
+        }
+        case 4u: { /* EICn, the 16-bit window */
+            const uint32_t v = (bits & (G4MH_EIC_EIP_MASK | G4MH_EIC_EIRF)) |
+                               (((bits >> 11) & 3u) == 0u ? G4MH_EIC_EIMK : 0u);
+
+            if (local) {
+                mic_wr(&g4mh_intc1_ops, k, G4MH_INTC1_EIC + 2u * ch, v, 2u);
+            } else {
+                mic_wr(&g4mh_intc2_ops, k, G4MH_INTC2_EIC + 2u * ch, v, 2u);
+            }
+            break;
+        }
+        case 5u: { /* IMRm for the channel's group, a sparse mask */
+            const uint32_t v = bits | (bits >> 3) | (bits << 5);
+
+            if (local) {
+                mic_wr(&g4mh_intc1_ops, k, G4MH_INTC1_IMR0, v, 4u);
+            } else {
+                mic_wr(&g4mh_intc2_ops, k, G4MH_INTC2_IMR + 4u * (ch / 32u), v, 4u);
+            }
+            break;
+        }
+        default: /* EIBD: move a global channel to one core or the other */
+            if (!local) {
+                mic_wr(&g4mh_intc2_ops, 0u, G4MH_INTC2_EIBD + 4u * ch, bits & 1u, 4u);
+            }
+            break;
+        }
+
+        bad_summary += mic_summary_holds() ? 0u : 1u;
+        for (unsigned pe = 0u; pe < 2u; pe++) {
+            const int got = g4mh_intc_pending(&g_mic[pe], pe);
+
+            bad_search += (got == mic_reference(pe)) ? 0u : 1u;
+            taken[pe] += (got >= 0) ? 1u : 0u;
+        }
+    }
+    CHECK_EQ(bad_summary, 0u);
+    CHECK_EQ(bad_search, 0u);
+    /* It reached requests on both cores, and every kind of write. */
+    CHECK(taken[0] > 100u);
+    CHECK(taken[1] > 100u);
+    for (unsigned op = 0u; op < 7u; op++) {
+        CHECK(ops[op] > 100u);
+    }
 }
 
 /*
@@ -7274,6 +7510,8 @@ void test_g4mh(void)
     test_mpu_window();
     test_mpu_exec_permission_both_backends();
 #endif
+    test_intc_global_from_other_pe();
+    test_intc_pending_summary();
     test_intc_imr_aliases_eimk();
     test_intc_imr_masks_delivery();
     test_intc_eeic_six_bit_priority();

@@ -165,11 +165,9 @@ void g4mh_ipir_bind(g4mh_ipir_t *p, unsigned pe, struct g4mh_intc *ic);
  * otherwise -- see g4mh_intc.h, which owns TPTMSEL.
  *
  * The up-timer interrupts are EIINT413..416 for PE0 and rise in blocks
- * from there, which is past G4MH_INT_CHANNELS in every configuration
- * this frontend builds. They are raised through g4mh_intc_raise anyway,
- * which drops an out-of-range channel; that is a deliberate no-op and
- * not an oversight, and the flags in UCSTR are set either way, so a
- * guest polling them sees the timer work.
+ * of 128 from there, all inside the controller's 1024 channels. They
+ * were past its old 128 and dropped; the flags in UCSTR are set either
+ * way, so a guest polling them sees the timer work.
  */
 #define G4MH_TPTM_EI_CHANNEL 31u
 #define G4MH_TPTM_U_CHANNEL(pe, m, i)                                          \

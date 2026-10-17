@@ -31,13 +31,24 @@
 #endif
 
 /*
- * Interrupt channels the INTC implements. A channel number is the host's
- * interrupt number, exactly as it is for the RISC-V frontend's APLIC, so
- * this has to be wide enough for the host's vector table rather than for
- * any particular RH850 device.
+ * Interrupt channels the INTC implements: the U2B's whole range, 0 to
+ * 1023, which the IMR registers already span.
+ *
+ * A channel number is two things here. It is the host's interrupt number,
+ * exactly as an APLIC source is for the RISC-V frontend, so a passthrough
+ * driver names a host peripheral's interrupt by its vector -- and every
+ * host here has fewer than 200. And it is the U2B's own number for the
+ * devices this frontend models, which sit higher: the OS timers at 360,
+ * 361 and 841, the TPTM's up-timers from 413. 128 covered the first and
+ * none of the second, so those requests were dropped.
+ *
+ * What the width costs is INTC2's two words a channel, once for the
+ * system (g4mh_intc2_t, about 8 KB); INTC1 is 32 channels a PE whatever
+ * this says, and the search for a pending channel walks a bitmap rather
+ * than the channels.
  */
 #ifndef G4MH_INT_CHANNELS
-#define G4MH_INT_CHANNELS 128u
+#define G4MH_INT_CHANNELS 1024u
 #endif
 
 /*

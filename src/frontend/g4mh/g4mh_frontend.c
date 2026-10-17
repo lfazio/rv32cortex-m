@@ -45,6 +45,7 @@
  */
 static g4mh_cpu_t g_cpu[G4MH_PE_COUNT];
 static g4mh_intc_t g_intc[G4MH_PE_COUNT];
+static g4mh_intc2_t g_intc2; /* INTC2: channels 32 and up, for every PE */
 
 /*
  * The inter-CPU peripherals: one state each for the whole system, and
@@ -138,7 +139,8 @@ static void g4mh_ops_init(emu_cpu_t *cpu, emu_bus_t *bus, uint32_t coreid)
     }
     g4mh_cpu_init(c, bus, coreid);
     /* PE0's instance holds the shared INTC2 half; the others point at it. */
-    g4mh_intc_init(&g_intc[coreid], c, (coreid == 0u) ? NULL : &g_intc[0]);
+    g4mh_intc_init(&g_intc[coreid], c, (coreid == 0u) ? NULL : &g_intc[0],
+                   &g_intc2);
     /* Join the cross-core reservation tracker, so this core's LDL.W can be
      * broken by another core's store. */
     g4mh_ll_register(c);
@@ -603,13 +605,7 @@ static void g4mh_ops_status(const emu_cpu_t *cpu, emu_cpu_status_t *out)
      * request whether or not interrupts are enabled, but a channel that is
      * masked at the controller can never become one.
      */
-    out->wakeable = false;
-    for (unsigned i = 0; i < G4MH_INT_CHANNELS; i++) {
-        if ((g_intc[c->coreid].chan[i] & G4MH_EEIC_EIMK) == 0u) {
-            out->wakeable = true;
-            break;
-        }
-    }
+    out->wakeable = g4mh_intc_wakeable(&g_intc[c->coreid], c->coreid);
 }
 
 static uint32_t g4mh_ops_reg_read(const emu_cpu_t *cpu, unsigned r)

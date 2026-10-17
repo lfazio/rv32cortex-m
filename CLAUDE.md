@@ -3445,6 +3445,19 @@ session, and every one of them recurred:
   was 4.8% *slower*. **Before optimising the code an interpreter runs,
   move where it runs from**, and measure that on every part it goes to.
 
+- **Shared state kept as a copy in every instance is written in one of
+  them.** G4MH's INTC2 -- channels 32 and up, one for the system -- was
+  the upper part of an array in every core's controller. Registers and
+  the host's lines go through PE0's, so only PE0's copy was ever
+  written; the search read it correctly, and the acknowledgement, the
+  priority lookup and the wake-up notice for a channel bound to PE1 used
+  PE1's own untouched copy. The interrupt was taken late, vectored by
+  the reset priority and taken again. Nothing had a second core take a
+  global channel. The tell is structural: **an array whose upper part
+  only one instance's code path can reach is not per-instance state**.
+  Hold it once and make every instance reach the same object, and the
+  question of which copy is current disappears with the copies.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must

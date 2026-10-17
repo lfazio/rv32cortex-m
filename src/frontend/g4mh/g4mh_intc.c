@@ -111,20 +111,98 @@ static uint32_t eeic_to_chan(uint32_t cur, uint32_t v)
     return chan_merge(cur, v & defined, false);
 }
 
-void g4mh_intc_init(g4mh_intc_t *ic, g4mh_cpu_t *cpu, g4mh_intc_t *global)
+/* ------------------------------------------------------------------ */
+/* The channel words, and the one place they are written               */
+/* ------------------------------------------------------------------ */
+
+/* Channels 0..31 are this PE's, 32 and up the system's. */
+static uint32_t chan_get(const g4mh_intc_t *ic, unsigned n)
+{
+    return (n < G4MH_INTC1_CHANNELS) ? ic->chan[n]
+                                     : ic->intc2->chan[n - G4MH_INTC1_CHANNELS];
+}
+
+static bool requested(uint32_t c)
+{
+    return (c & G4MH_EEIC_EIRF) != 0u && (c & G4MH_EEIC_EIMK) == 0u;
+}
+
+/*
+ * Install a channel word and its pending bit with it.
+ *
+ * **Every write of a channel word is through here**, which is what lets
+ * the search walk the bitmaps instead of the words: a request flag set,
+ * cleared or masked anywhere else would leave a bit that disagrees with
+ * its word, and the channel would be taken when it should not be or
+ * never be taken at all. test_intc_pending_summary holds the two equal
+ * after every step of a random walk through every way in.
+ */
+static void chan_put(g4mh_intc_t *ic, unsigned n, uint32_t v)
+{
+    if (n < G4MH_INTC1_CHANNELS) {
+        const uint32_t bit = 1u << n;
+
+        ic->chan[n] = v;
+        ic->pend = requested(v) ? (ic->pend | bit) : (ic->pend & ~bit);
+        return;
+    }
+    {
+        g4mh_intc2_t *const g = ic->intc2;
+        const unsigned i = n - G4MH_INTC1_CHANNELS;
+        const uint32_t bit = 1u << (i % 32u);
+        uint32_t *const w = &g->pend[i / 32u];
+
+        g->chan[i] = v;
+        *w = requested(v) ? (*w | bit) : (*w & ~bit);
+    }
+}
+
+/*
+ * Tell whichever core may now have a different answer to "what is
+ * pending". A core's own channel is its own news; a global one may be
+ * bound to any core, so all of them are told.
+ */
+static void notify(g4mh_intc_t *ic, unsigned n)
+{
+    if (n < G4MH_INTC1_CHANNELS) {
+        if (ic->cpu != NULL) {
+            ic->cpu->irq_dirty = true;
+        }
+        return;
+    }
+    for (unsigned pe = 0u; pe < G4MH_INTC2_PES; pe++) {
+        if (ic->intc2->cpu[pe] != NULL) {
+            ic->intc2->cpu[pe]->irq_dirty = true;
+        }
+    }
+}
+
+void g4mh_intc_init(g4mh_intc_t *ic, g4mh_cpu_t *cpu, g4mh_intc_t *global,
+                    g4mh_intc2_t *intc2)
 {
     memset(ic, 0, sizeof(*ic));
     ic->cpu = cpu;
     ic->global = (global != NULL) ? global : ic;
+    ic->intc2 = (global != NULL) ? global->intc2 : intc2;
     ic->ostm_cmp = UINT64_MAX; /* no compare match until software sets one */
 
     /*
      * Masked, lowest priority, edge detection. This is also IMRm's
      * FFFF_FFFFH reset, because IMRm *is* these EIMK bits -- there is no
      * second array to initialise, which is the point of holding it once.
+     * Masked means not pending, so the bitmaps start clear.
      */
-    for (unsigned i = 0; i < G4MH_INT_CHANNELS; i++) {
+    for (unsigned i = 0; i < G4MH_INTC1_CHANNELS; i++) {
         ic->chan[i] = G4MH_EEIC_RESET;
+    }
+    if (global == NULL) {
+        memset(intc2, 0, sizeof(*intc2));
+        for (unsigned i = 0; i < G4MH_INTC2_SLOTS; i++) {
+            intc2->chan[i] = G4MH_EEIC_RESET;
+        }
+    }
+    if (cpu->coreid < G4MH_INTC2_PES) {
+        ic->intc2->cpu[cpu->coreid] = cpu;
     }
 
     cpu->intc = ic;
@@ -153,15 +231,13 @@ static void g4mh_intc_raise_impl(g4mh_intc_t *ic, uint32_t channel)
      * Only in edge detection. With EICT set the flag tracks the line and
      * there is no second edge to overflow.
      */
-    if ((ic->chan[channel] & G4MH_EEIC_EICT) == 0u &&
-        (ic->chan[channel] & G4MH_EEIC_EIRF) != 0u) {
-        ic->chan[channel] |= G4MH_EEIC_EIOV;
-    }
+    uint32_t c = chan_get(ic, channel);
 
-    ic->chan[channel] |= G4MH_EEIC_EIRF;
-    if (ic->cpu != NULL) {
-        ic->cpu->irq_dirty = true;
+    if ((c & G4MH_EEIC_EICT) == 0u && (c & G4MH_EEIC_EIRF) != 0u) {
+        c |= G4MH_EEIC_EIOV;
     }
+    chan_put(ic, channel, c | G4MH_EEIC_EIRF);
+    notify(ic, channel);
 }
 
 static void g4mh_intc_ack_impl(g4mh_intc_t *ic, uint32_t channel)
@@ -176,8 +252,10 @@ static void g4mh_intc_ack_impl(g4mh_intc_t *ic, uint32_t channel)
      * source drops the line, which is what makes it re-request if the
      * handler returns without servicing the device.
      */
-    if ((ic->chan[channel] & G4MH_EEIC_EICT) == 0u) {
-        ic->chan[channel] &= ~G4MH_EEIC_EIRF;
+    const uint32_t c = chan_get(ic, channel);
+
+    if ((c & G4MH_EEIC_EICT) == 0u) {
+        chan_put(ic, channel, c & ~G4MH_EEIC_EIRF);
     }
 }
 
@@ -192,7 +270,7 @@ static bool g4mh_intc_chan_is_table_impl(const g4mh_intc_t *ic,
     if (ic == NULL || channel >= (uint32_t)G4MH_INT_CHANNELS) {
         return false;
     }
-    return (ic->chan[channel] & G4MH_EEIC_EITB) != 0u;
+    return (chan_get(ic, channel) & G4MH_EEIC_EITB) != 0u;
 }
 
 static bool g4mh_intc_chan_priority_impl(const g4mh_intc_t *ic,
@@ -201,8 +279,29 @@ static bool g4mh_intc_chan_priority_impl(const g4mh_intc_t *ic,
     if (ic == NULL || channel >= (uint32_t)G4MH_INT_CHANNELS) {
         return false;
     }
-    *priority = (unsigned)(ic->chan[channel] & G4MH_EEIC_EIP_MASK);
+    *priority = (unsigned)(chan_get(ic, channel) & G4MH_EEIC_EIP_MASK);
     return true;
+}
+
+/*
+ * EIP 0 is the highest priority, so smaller wins, and the comparison is
+ * strictly less so a tie keeps the lower channel number -- "the channel
+ * with the lowest number is given priority over other channels" (6.4.6)
+ * -- which holds because the bits are visited in channel order, this
+ * PE's own before the global ones.
+ *
+ * Six bits, not four: a channel configured through EEICn in 64-priority
+ * mode carries EIP[5:4], and comparing only the low nibble would rank
+ * priority 16 equal with priority 0.
+ */
+static void consider(uint32_t word, int n, int *best, unsigned *best_pri)
+{
+    const unsigned pri = word & G4MH_EEIC_EIP_MASK;
+
+    if (pri < *best_pri) {
+        *best_pri = pri;
+        *best = n;
+    }
 }
 
 static int g4mh_intc_pending_pri_impl(const g4mh_intc_t *ic, unsigned pe,
@@ -211,44 +310,51 @@ static int g4mh_intc_pending_pri_impl(const g4mh_intc_t *ic, unsigned pe,
     int best = -1;
     /* 64 levels, so no real priority can tie with "nothing found". */
     unsigned best_pri = 64u;
+    const g4mh_intc2_t *const g = ic->intc2;
 
-    for (unsigned i = 0; i < G4MH_INT_CHANNELS; i++) {
-        /*
-         * Below 32 the channel is this core's own and is his by
-         * definition; at 32 and above it lives in the shared INTC2 and is
-         * only a candidate if EIBD binds it to this PE.
-         */
-        const bool local = (i < G4MH_INTC1_CHANNELS);
-        const g4mh_intc_t *src = local ? ic : ic->global;
+    /*
+     * The bitmaps hold exactly the channels with a request and no mask,
+     * so this visits the candidates and nothing else. Below 32 a channel
+     * is this core's own by definition; at 32 and above it is a
+     * candidate only if EIBD binds it to this PE.
+     */
+    for (uint32_t bits = ic->pend; bits != 0u; bits &= bits - 1u) {
+        const unsigned n = (unsigned)__builtin_ctz(bits);
 
-        if (!local && (src->eibd[i] & G4MH_EIBD_PEID_MASK) != (uint32_t)pe) {
-            continue;
-        }
+        consider(ic->chan[n], (int)n, &best, &best_pri);
+    }
+    for (unsigned w = 0u; w < G4MH_INTC2_WORDS; w++) {
+        for (uint32_t bits = g->pend[w]; bits != 0u; bits &= bits - 1u) {
+            const unsigned i = w * 32u + (unsigned)__builtin_ctz(bits);
 
-        const uint32_t e = src->chan[i];
-        if ((e & G4MH_EEIC_EIRF) == 0u || (e & G4MH_EEIC_EIMK) != 0u) {
-            continue;
-        }
-        /*
-         * EIP 0 is the highest priority, so smaller wins, and the
-         * comparison is strictly less so a tie keeps the lower channel
-         * number -- "the channel with the lowest number is given
-         * priority over other channels" (6.4.6).
-         *
-         * Six bits, not four: a channel configured through EEICn in
-         * 64-priority mode carries EIP[5:4], and comparing only the low
-         * nibble would rank priority 16 equal with priority 0.
-         */
-        const unsigned pri = e & G4MH_EEIC_EIP_MASK;
-        if (pri < best_pri) {
-            best_pri = pri;
-            best = (int)i;
+            if ((g->eibd[i] & G4MH_EIBD_PEID_MASK) != (uint32_t)pe) {
+                continue;
+            }
+            consider(g->chan[i], (int)(i + G4MH_INTC1_CHANNELS), &best, &best_pri);
         }
     }
     if (priority != NULL) {
         *priority = best_pri;
     }
     return best;
+}
+
+static bool g4mh_intc_wakeable_impl(const g4mh_intc_t *ic, unsigned pe)
+{
+    const g4mh_intc2_t *const g = ic->intc2;
+
+    for (unsigned n = 0u; n < G4MH_INTC1_CHANNELS; n++) {
+        if ((ic->chan[n] & G4MH_EEIC_EIMK) == 0u) {
+            return true;
+        }
+    }
+    for (unsigned i = 0u; i < G4MH_INTC2_SLOTS; i++) {
+        if ((g->chan[i] & G4MH_EEIC_EIMK) == 0u &&
+            (g->eibd[i] & G4MH_EIBD_PEID_MASK) == (uint32_t)pe) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void g4mh_intc_set_time(g4mh_intc_t *ic, uint64_t now)
@@ -286,26 +392,24 @@ void g4mh_intc_advance(g4mh_intc_t *ic, uint32_t delta)
  */
 static void chan_store(g4mh_intc_t *ic, unsigned ch, uint32_t val)
 {
-    const bool was_masked = (ic->chan[ch] & G4MH_EEIC_EIMK) != 0u;
+    const bool was_masked = (chan_get(ic, ch) & G4MH_EEIC_EIMK) != 0u;
 
-    ic->chan[ch] = val;
+    chan_put(ic, ch, val);
 
     if (was_masked && (val & G4MH_EEIC_EIMK) == 0u && ic->unmask != NULL) {
         ic->unmask(ic->unmask_ctx, ch);
     }
-    if (ic->cpu != NULL) {
-        ic->cpu->irq_dirty = true;
-    }
+    notify(ic, ch);
 }
 
 static void eic_write(g4mh_intc_t *ic, unsigned ch, uint16_t val)
 {
-    chan_store(ic, ch, eic_to_chan(ic->chan[ch], val));
+    chan_store(ic, ch, eic_to_chan(chan_get(ic, ch), val));
 }
 
 static void eeic_write(g4mh_intc_t *ic, unsigned ch, uint32_t val)
 {
-    chan_store(ic, ch, eeic_to_chan(ic->chan[ch], val));
+    chan_store(ic, ch, eeic_to_chan(chan_get(ic, ch), val));
 }
 
 /* ------------------------------------------------------------------ */
@@ -330,7 +434,7 @@ static uint32_t imr_read(const g4mh_intc_t *ic, unsigned m)
          * cannot be pending, so reporting it unmasked would only invite
          * a guest to believe it had enabled something.
          */
-        if (ch >= G4MH_INT_CHANNELS || (ic->chan[ch] & G4MH_EEIC_EIMK) != 0u) {
+        if (ch >= G4MH_INT_CHANNELS || (chan_get(ic, ch) & G4MH_EEIC_EIMK) != 0u) {
             v |= 1u << b;
         }
     }
@@ -345,7 +449,7 @@ static void imr_write(g4mh_intc_t *ic, unsigned m, uint32_t val)
         if (ch >= G4MH_INT_CHANNELS) {
             continue;
         }
-        const uint32_t cur = ic->chan[ch];
+        const uint32_t cur = chan_get(ic, ch);
         const uint32_t want = ((val >> b) & 1u) != 0u ? (cur | G4MH_EEIC_EIMK)
                                                       : (cur & ~G4MH_EEIC_EIMK);
 
@@ -438,7 +542,7 @@ static emu_fault_t intc2_read(void *ctx, uint32_t off, uint32_t size,
     if (off < G4MH_INT_CHANNELS * 2u) {
         *out = (off < G4MH_INTC1_CHANNELS * 2u)
                    ? 0u
-                   : chan_to_eic(ic->chan[off / 2u]);
+                   : chan_to_eic(chan_get(ic, off / 2u));
     } else if (off >= G4MH_INTC2_IMR && off < G4MH_INTC2_IMR + 32u * 4u) {
         /*
          * The address is <INTC2_base> + 1000H + 04H * n for n = 1..31,
@@ -452,11 +556,13 @@ static emu_fault_t intc2_read(void *ctx, uint32_t off, uint32_t size,
     } else if (off >= G4MH_INTC2_EIBD &&
                off < G4MH_INTC2_EIBD + G4MH_INT_CHANNELS * 4u) {
         const unsigned n = (off - G4MH_INTC2_EIBD) / 4u;
-        *out = (n < G4MH_INTC1_CHANNELS) ? 0u : ic->eibd[n];
+        *out = (n < G4MH_INTC1_CHANNELS)
+                   ? 0u
+                   : ic->intc2->eibd[n - G4MH_INTC1_CHANNELS];
     } else if (off >= G4MH_INTC2_EEIC &&
                off < G4MH_INTC2_EEIC + G4MH_INT_CHANNELS * 4u) {
         const unsigned n = (off - G4MH_INTC2_EEIC) / 4u;
-        *out = (n < G4MH_INTC1_CHANNELS) ? 0u : ic->chan[n];
+        *out = (n < G4MH_INTC1_CHANNELS) ? 0u : chan_get(ic, n);
     } else {
         *out = 0u;
     }
@@ -480,7 +586,9 @@ static emu_fault_t intc2_write(void *ctx, uint32_t off, uint32_t size,
                off < G4MH_INTC2_EIBD + G4MH_INT_CHANNELS * 4u) {
         const unsigned n = (off - G4MH_INTC2_EIBD) / 4u;
         if (n >= G4MH_INTC1_CHANNELS) {
-            ic->eibd[n] = val;
+            /* A pending request may now be another core's to take. */
+            ic->intc2->eibd[n - G4MH_INTC1_CHANNELS] = val;
+            notify(ic, n);
         }
     } else if (off >= G4MH_INTC2_EEIC &&
                off < G4MH_INTC2_EEIC + G4MH_INT_CHANNELS * 4u) {
@@ -702,6 +810,15 @@ int g4mh_intc_pending_pri(const g4mh_intc_t *ic, unsigned pe,
 {
     emu_lock(&g4mh_sys_lock);
     const int r = g4mh_intc_pending_pri_impl(ic, pe, priority);
+
+    emu_unlock(&g4mh_sys_lock);
+    return r;
+}
+
+bool g4mh_intc_wakeable(const g4mh_intc_t *ic, unsigned pe)
+{
+    emu_lock(&g4mh_sys_lock);
+    const bool r = g4mh_intc_wakeable_impl(ic, pe);
 
     emu_unlock(&g4mh_sys_lock);
     return r;

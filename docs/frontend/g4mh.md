@@ -878,10 +878,11 @@ Not modelled, in all three: the guard registers
 debug-mode counter stop signals, and the TPTM's global up-timer control
 channels (`TPTMGgURUN` and friends — `UTRG` is stored and read back but
 setting `GTRGEN` does not detach a counter from the local run
-registers). The TPTM's up-timer interrupts are raised on channels
-413 and up, which is past `G4MH_INT_CHANNELS` in every configuration
-built here, so they set their `UCSTR` flags and the raise is dropped;
-that is deliberate and a guest polling the flags sees the timer work.
+registers). The TPTM's up-timer interrupts are raised on their own
+channels, 413 and up. Until the controller spanned the U2B's whole
+range those were past `G4MH_INT_CHANNELS` and dropped, and only the
+`UCSTR` flags showed the timer working; they are delivered now, masked
+out of reset like every channel.
 
 The TPTM runs off the platform's tick rather than a separate `cpu_clk`,
 because the emulator has no separate CPU clock to offer. The dividers
@@ -1147,6 +1148,35 @@ What that fixed, each confirmed by reverting it:
 | EIOV | never set | set when an edge arrives with EIRF already 1 |
 | EIRF on acknowledge | always cleared | cleared only in edge detection |
 | IMRn address | — | `+1000H + 04H*n` for n=1..31; 0x1000 is IMR0's slot and belongs to INTC1 |
+
+**INTC2 is held once, and every core reaches the same words.** It was
+the upper part of an array in every core's controller, of which only
+PE0's was ever written: registers and the host's lines go through PE0's.
+So for a global channel bound to PE1 or PE2, three things went wrong at
+once -- the core it was bound to was not told when it was raised (only
+the raising controller's core was), its core vectored by the priority
+and the method in its own untouched copy, and its acknowledgement
+cleared that copy, so the request stayed set and was taken again. The
+method is the costly one: each core vectors a table-reference interrupt
+through its *own* INTBP, so a global channel can have a handler table
+per core, and PE1 read EITB as its reset 0 and vectored directly, past
+its table. Nothing tested a second core taking a global channel.
+`g4mh_intc2_t` is the one copy now, and `test_intc_global_from_other_pe`
+is that case, for channel 40 and for 841; against the commit before it
+fails 5 checks, one per defect.
+
+**The channel range is the U2B's, 0 to 1023**, which it had to be for
+the devices this frontend models at their own numbers -- the OS timers
+at 360, 361 and 841, the TPTM's up-timers from 413 -- where 128 had
+covered only the host's interrupt numbers. INTC1 is 32 channels a PE
+whatever the width, and INTC2 costs two words a channel once, about
+8 KB. The search for a pending channel walks two bitmaps of requested,
+unmasked channels instead of the words, kept by the one function that
+writes a channel word; `test_intc_pending_summary` holds them to the
+words, and the search to a brute-force one through the register
+windows, across 4,000 random steps through every way in. Each of four
+mutants -- a bit never cleared, the news told to the raising core alone,
+EIBD ignored, ties to the higher channel -- fails it or the PE1 case.
 
 ### The priority ceiling
 
