@@ -3545,6 +3545,33 @@ session, and every one of them recurred:
   appearing, and measure an interpreter change on the board before
   believing a host count, as the PowerPC entry above already says.
 
+- **A comment describing a cache is not the cache, and this one had
+  been wrong since the first commit.** Above the bus's RAM cache it
+  said ROM was "cached for reads only", installed by the read slow
+  path. Nine lines below, the read slow path said "Only RAM is safe to
+  cache", and cached RAM alone. It could not have done otherwise: reads
+  and writes share that cache, so a ROM region in it would let an
+  inlined store write the image. So every read of `.rodata`, on every
+  frontend and both backends, walked the region table for two and a
+  half months. Under the x86-64 JIT that was 38.9% of Dhrystone's host
+  instructions, and 19,867 of 19,870 loads sampled there were string
+  literals. A read-only cache of its own cut 8.9% of host instructions
+  from the run, and 7.8% of cycles on the F746. **Read the code under a
+  comment that names a mechanism**, the same rule as a flag quoted in
+  prose.
+
+  **And where it was first put cost every interpreter.** Tested inline
+  in `emu_bus_read`, beside the RAM cache, it got twice the gain under
+  the JIT. It also took 0.85% more host instructions on ARMv7-M's
+  interpreted CoreMark, which barely reads its image, all of them in
+  `armv7m_run`: two more inlined tests at every read site changed the
+  loop's code. At the top of the out-of-line slow path, the inline
+  paths are what they were, and no row of seventeen rose by more than
+  0.001%. This is
+  the previous entry's rule again, for a header rather than a call
+  site: **an `ALWAYS_INLINE` in the bus is part of every interpreter
+  loop.**
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must

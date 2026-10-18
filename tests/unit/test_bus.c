@@ -121,6 +121,123 @@ static void test_bus_big_endian(void)
 }
 #endif /* EMU_BUS_ANY_BE */
 
+/*
+ * The read-only cache, which serves reads of ROM -- the guest's image --
+ * without the region walk.
+ *
+ * Every case starts from the cache *armed*, because an empty cache sends
+ * everything to the slow path and passes any test whatever the cache does.
+ * And one case shows the cache answered at all: with the region's
+ * permission removed behind its back, the slow path would refuse the
+ * read, so a read that still succeeds was served by the cache.
+ */
+static void test_bus_rodata(void)
+{
+    static uint8_t ram[64];
+    static uint8_t rom[64] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
+    static const uint8_t k_rom_was[8] = {0x11, 0x22, 0x33, 0x44,
+                                         0x55, 0x66, 0x77, 0x88};
+    emu_bus_t bus;
+    uint32_t v;
+
+    emu_bus_init(&bus);
+    CHECK(emu_bus_add_ram(&bus, "ram", 0x80000000u, ram, sizeof(ram)));
+    CHECK(emu_bus_add_rom(&bus, "rom", 0x20000000u, rom, sizeof(rom)));
+
+    /* A read of the image arms it, and leaves the RAM cache to RAM. */
+    CHECK_EQ(emu_bus_write(&bus, 0x80000000u, 4u, 0xA5A5A5A5u), EMU_FAULT_NONE);
+    CHECK_EQ(emu_bus_read(&bus, 0x20000000u, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 0x44332211u);
+    CHECK_EQ(bus.rodata_span, (uint32_t)sizeof(rom));
+    CHECK_EQ(bus.data_base, 0x80000000u);
+
+    /* --- it answers, and the slow path did not --- */
+    emu_region_t *const r = emu_bus_find(&bus, 0x20000000u);
+    CHECK(r != NULL);
+    const uint8_t perm = r->perm;
+    r->perm = 0u;
+    CHECK_EQ(emu_bus_read(&bus, 0x20000004u, 2u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 0x6655u);
+    CHECK_EQ(emu_bus_read(&bus, 0x20000007u, 1u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 0x88u);
+    r->perm = perm;
+
+    /* --- armed, a write to the image is still refused, and changes
+           nothing: no write path consults this cache --- */
+    CHECK_EQ(emu_bus_write(&bus, 0x20000000u, 4u, 0xDEADBEEFu), EMU_FAULT_STORE);
+    CHECK_EQ(emu_bus_write(&bus, 0x20000006u, 1u, 0u), EMU_FAULT_STORE);
+    for (unsigned i = 0; i < sizeof(k_rom_was); i++) {
+        CHECK_EQ(rom[i], k_rom_was[i]);
+    }
+    CHECK_EQ(emu_bus_read(&bus, 0x20000000u, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 0x44332211u);
+
+    /* --- armed, an access off the end of the image still faults --- */
+    CHECK_EQ(emu_bus_read(&bus, 0x2000003Eu, 4u, &v), EMU_FAULT_LOAD);
+    CHECK_EQ(emu_bus_read(&bus, 0x2000003Cu, 4u, &v), EMU_FAULT_NONE);
+
+    /* --- RAM and the image interleaved: each stays in its own --- */
+    CHECK_EQ(emu_bus_read(&bus, 0x80000000u, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 0xA5A5A5A5u);
+    CHECK_EQ(emu_bus_read(&bus, 0x20000000u, 1u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 0x11u);
+    CHECK_EQ(bus.rodata_span, (uint32_t)sizeof(rom));
+    CHECK_EQ(bus.data_span, (uint32_t)sizeof(ram));
+
+    /* --- adding a region drops it, with the other caches --- */
+    static uint8_t more[16];
+    CHECK(emu_bus_add_ram(&bus, "more", 0x90000000u, more, sizeof(more)));
+    CHECK_EQ(bus.rodata_span, 0u);
+    CHECK_EQ(bus.data_span, 0u);
+
+    /* --- a read-only region with a width rule is not cached: the cache
+           has no width test, so a word read must not let a byte through.
+           A passthrough region would not be cached either way; this is a
+           ROM region built by hand, which is the case the rule is for. --- */
+    emu_bus_t wb;
+    static uint8_t w32[16] = {0xEF, 0xBE, 0xAD, 0xDE};
+    const emu_region_t w32_rom = {
+        .base = 0x20000000u,
+        .size = sizeof(w32),
+        .host = w32,
+        .host_base = 0,
+        .ops = NULL,
+        .ctx = NULL,
+        .name = "w32rom",
+        .kind = EMU_MEM_ROM,
+        .perm = EMU_PERM_RX,
+        .widths = EMU_W32,
+        .flags = 0,
+    };
+    emu_bus_init(&wb);
+    CHECK(emu_bus_add(&wb, &w32_rom));
+    CHECK_EQ(emu_bus_read(&wb, 0x20000000u, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 0xDEADBEEFu);
+    CHECK_EQ(emu_bus_read(&wb, 0x20000000u, 1u, &v), EMU_FAULT_LOAD);
+    CHECK_EQ(emu_bus_read(&wb, 0x20000002u, 2u, &v), EMU_FAULT_LOAD);
+
+#if EMU_BUS_ANY_BE
+    /* --- a big-endian guest's image composes in its order, from the
+           slow path and from the cache alike --- */
+    emu_bus_t be;
+    emu_bus_init(&be);
+    CHECK(emu_bus_add_rom(&be, "rom", 0x20000000u, rom, sizeof(rom)));
+    emu_bus_set_big_endian(&be, true);
+    CHECK_EQ(emu_bus_read_be(&be, 0x20000000u, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 0x11223344u);
+    CHECK_EQ(be.rodata_be_span, (uint32_t)sizeof(rom));
+    CHECK_EQ(be.rodata_span, 0u);
+    emu_region_t *const rb = emu_bus_find(&be, 0x20000000u);
+    CHECK(rb != NULL);
+    rb->perm = 0u; /* as above: only the cache can answer now */
+    CHECK_EQ(emu_bus_read_be(&be, 0x20000004u, 4u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 0x55667788u);
+    CHECK_EQ(emu_bus_read(&be, 0x20000004u, 2u, &v), EMU_FAULT_NONE);
+    CHECK_EQ(v, 0x5566u);
+    rb->perm = EMU_PERM_RX;
+#endif
+}
+
 void test_bus(void)
 {
     emu_bus_t bus;
@@ -214,4 +331,5 @@ void test_bus(void)
 #if EMU_BUS_ANY_BE
     test_bus_big_endian();
 #endif
+    test_bus_rodata();
 }

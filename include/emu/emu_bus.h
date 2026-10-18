@@ -182,6 +182,27 @@ typedef struct emu_bus {
     uint32_t data_span; /* region size; callers guarantee alignment */
     uint8_t *data_host;
 
+    /*
+     * Reads of a region that may not be written: in practice the guest's
+     * image, where `.rodata` lives. The cache above serves writes as well
+     * as reads, so a ROM region can never be put in it -- an inlined
+     * store would then write the image -- and until this one existed
+     * every read of a constant took the region walk. On Dhrystone under
+     * the x86-64 JIT that was 38.9% of host instructions, and 19,867 of
+     * 19,870 loads sampled there were string literals.
+     *
+     * **It is the slow path's first test, not an inline one.** Testing it
+     * in emu_bus_read cost every interpreter that inlines that function:
+     * ARMv7-M's CoreMark, which barely reads its image, took 0.85% more
+     * host instructions, all of them in its run loop -- the inline paths
+     * grew and the loop's code changed around them. Behind the call the
+     * inline paths are what they were, and a read of the image costs a
+     * call and a compare where it cost the walk.
+     */
+    uint32_t rodata_base;
+    uint32_t rodata_span;
+    const uint8_t *rodata_host;
+
 #if EMU_BUS_ANY_BE
     /*
      * The same two caches for a big-endian bus, which only it fills.
@@ -202,6 +223,9 @@ typedef struct emu_bus {
     uint32_t data_be_base;
     uint32_t data_be_span;
     uint8_t *data_be_host;
+    uint32_t rodata_be_base;
+    uint32_t rodata_be_span;
+    const uint8_t *rodata_be_host;
 #endif
 
     emu_region_t regions[EMU_MAX_REGIONS];
@@ -450,7 +474,8 @@ static EMU_ALWAYS_INLINE bool emu_bus_fetch16_be_hit(emu_bus_t *bus,
 /*
  * Any bus: the little-endian cache, then -- in a build with a big-endian
  * frontend -- the big-endian one, then the slow path. A little-endian
- * guest's hit is the first test and nothing else.
+ * guest's hit is the first test and nothing else. The read-only cache is
+ * the slow path's first test, not one more here: see emu_bus_t.
  */
 static EMU_ALWAYS_INLINE emu_fault_t emu_bus_read(emu_bus_t *bus, uint32_t addr,
                                                   uint32_t size, uint32_t *out)

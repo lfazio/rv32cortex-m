@@ -309,8 +309,11 @@ measured rather than re-argued. Callgrind over the JIT run
   it. 3,953 of 3,954 addresses sampled at its entry are in the image at
   0x2000_0000, nearly all in `.rodata`: the float constants newlib's
   `sinf` and `logf` load with `auipc`+`flw`. The JIT inlines guest RAM
-  and nothing else, so every one of them is a call. This is open in
-  [TODO.md](TODO.md).
+  and nothing else, so every one of them is a call. The bus walk under
+  that call has gone since, into a read-only cache
+  ([memory.md](memory.md#the-three-kinds-of-region)), for 4.5% of this
+  run's host instructions and 8.9% of Dhrystone's. The call itself is
+  open in [TODO.md](TODO.md).
 - **19.5%** is the dispatch loop's own instructions.
 - **11.1%** is `rv_hart_fp`, the SoftFloat helper, which takes what no
   backend lowers -- the fused multiply-adds among them.

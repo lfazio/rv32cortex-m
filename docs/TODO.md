@@ -34,16 +34,20 @@ measured at.
       discard every block at every switch between them. PowerPC made
       its counter one for all cores for exactly that reason. Unmeasured.
 - [ ] **Autovectorisation of the IR pipeline.**
-- [ ] **Loads from the guest's read-only image are a call.** The inline
-      path covers guest RAM only, and a guest linked execute-in-place
-      keeps `.rodata` in the image at 0x2000_0000. On Whetstone under
-      the x86-64 JIT that is **21.9%** of host instructions in
-      `rv_ir_load` and the bus walk under it, at ce02bd0. 3,953 of 3,954
-      addresses sampled at its entry were in the image, nearly all
-      newlib's float constants loaded with `auipc`+`flw`
-      ([performance.md](performance.md#what-a-guest-instruction-costs-measured-live)).
-      A second window, read-only, on both backends; the board serves the
-      image from flash, so measure it there too.
+- [ ] **Loads from the guest's read-only image are still a call.** The
+      JIT's inline path covers guest RAM only, and a guest linked
+      execute-in-place keeps `.rodata` in the image at 0x2000_0000. The
+      bus walk under the call is gone now: the bus has a read-only cache
+      ([memory.md](memory.md#the-three-kinds-of-region)), which cut
+      Dhrystone's JIT run by 8.9% of host instructions on x86-64 and 7.8%
+      of cycles on the F746. The call itself remains, and it is
+      **26.6%** of Dhrystone's host instructions under the x86-64 JIT:
+      `rv_ir_load` and the slow path's entry. That is a read-only window
+      in the backends. On x86-64 an inline second compare is cheap,
+      because the host buffer is 64 MB. On Thumb-2 an inline one costs
+      every load about 16 bytes, which could push CoreMark back out of
+      the 64 KB default, so the place for it there is the shared memory
+      stub, which is one copy for every access.
 - [ ] **PowerPC's FP unit is a call per instruction.** Every EFPU2
       instruction under the JIT is a helper call into `ppc_fpu_exec`,
       whose bookkeeping -- SPEFSCR status, sticky bits, FG and FX -- was

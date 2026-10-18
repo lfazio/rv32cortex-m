@@ -225,13 +225,17 @@ void emu_bus_flush(emu_bus_t *bus)
 {
     bus->fetch_span = 0u;
     bus->data_span = 0u;
+    bus->rodata_span = 0u;
     bus->fetch_host = NULL;
     bus->data_host = NULL;
+    bus->rodata_host = NULL;
 #if EMU_BUS_ANY_BE
     bus->fetch_be_span = 0u;
     bus->data_be_span = 0u;
+    bus->rodata_be_span = 0u;
     bus->fetch_be_host = NULL;
     bus->data_be_host = NULL;
+    bus->rodata_be_host = NULL;
 #endif
 }
 
@@ -244,12 +248,14 @@ static bool bus_is_be(const emu_bus_t *bus)
 #endif
 
 /*
- * Arm the data fast path for a plain-memory region.
+ * Arm the data fast path for a read-write RAM region.
  *
- * ROM is cached for reads only: caching it for writes would let the
- * inline store path bypass the permission check that makes it read-only.
- * The write slow path therefore never installs a ROM region, and the read
- * slow path installs it knowing emu_bus_write_slow will re-resolve.
+ * Only RAM goes here, because this cache serves writes as well as reads:
+ * a ROM region in it would let the inline store path write the image.
+ * This comment used to say ROM was cached here "for reads only", which
+ * the code never did -- one cache cannot be read-only for one region and
+ * not for another -- so every read of the image took the region walk.
+ * ROM has a cache of its own now, below.
  */
 static void arm_data_cache(emu_bus_t *bus, const emu_region_t *r)
 {
@@ -266,9 +272,100 @@ static void arm_data_cache(emu_bus_t *bus, const emu_region_t *r)
     bus->data_host = (uint8_t *)r->host;
 }
 
+/*
+ * Arm the read-only cache for a ROM region, which only the read slow
+ * path consults -- no write path looks at it, so a write to the image
+ * still reaches emu_bus_write_slow and is refused there.
+ *
+ * Only for a region every read of which the slow path would serve the
+ * same way, which means at any width: check() refuses a byte read of a
+ * word-only region per access, and a cache in front of it must not
+ * answer for that. Readability needs no test here -- the caller is the
+ * read slow path, after check() has passed EMU_PERM_R.
+ */
+static void arm_rodata_cache(emu_bus_t *bus, const emu_region_t *r)
+{
+    if (r->widths != EMU_WANY) {
+        return;
+    }
+#if EMU_BUS_ANY_BE
+    if (bus_is_be(bus)) {
+        bus->rodata_be_base = r->base;
+        bus->rodata_be_span = r->size;
+        bus->rodata_be_host = (const uint8_t *)r->host;
+        return;
+    }
+#endif
+    bus->rodata_base = r->base;
+    bus->rodata_span = r->size;
+    bus->rodata_host = (const uint8_t *)r->host;
+}
+
+/*
+ * The read-only cache's two hits. Here and not in emu_bus.h: they are the
+ * slow path's front, and an inline copy at every emu_bus_read would be
+ * paid by every interpreter loop that inlines it -- see emu_bus_t.
+ */
+static bool rodata_hit(const emu_bus_t *bus, uint32_t addr, uint32_t size,
+                       uint32_t *out)
+{
+    const uint32_t off = addr - bus->rodata_base;
+
+    if (off < bus->rodata_span && (bus->rodata_span - off) >= size) {
+        const uint8_t *p = bus->rodata_host + off;
+        switch (size) {
+        case 1:
+            *out = *p;
+            break;
+        case 2:
+            *out = *(const uint16_t *)(const void *)p;
+            break;
+        default:
+            *out = *(const uint32_t *)(const void *)p;
+            break;
+        }
+        return true;
+    }
+    return false;
+}
+
+#if EMU_BUS_ANY_BE
+static bool rodata_be_hit(const emu_bus_t *bus, uint32_t addr, uint32_t size,
+                          uint32_t *out)
+{
+    const uint32_t off = addr - bus->rodata_be_base;
+
+    if (off < bus->rodata_be_span && (bus->rodata_be_span - off) >= size) {
+        const uint8_t *p = bus->rodata_be_host + off;
+        switch (size) {
+        case 1:
+            *out = *p;
+            break;
+        case 2:
+            *out = emu_bswap(*(const uint16_t *)(const void *)p, 2u);
+            break;
+        default:
+            *out = emu_bswap(*(const uint32_t *)(const void *)p, 4u);
+            break;
+        }
+        return true;
+    }
+    return false;
+}
+#endif
+
 emu_fault_t emu_bus_read_slow(emu_bus_t *bus, uint32_t addr, uint32_t size,
                               uint32_t *out)
 {
+    if (rodata_hit(bus, addr, size, out)) {
+        return EMU_FAULT_NONE;
+    }
+#if EMU_BUS_ANY_BE
+    if (rodata_be_hit(bus, addr, size, out)) {
+        return EMU_FAULT_NONE;
+    }
+#endif
+
     uint32_t off;
     emu_region_t *r = check(bus, addr, size, EMU_PERM_R, &off);
     if (EMU_UNLIKELY(r == NULL)) {
@@ -300,9 +397,11 @@ emu_fault_t emu_bus_read_slow(emu_bus_t *bus, uint32_t addr, uint32_t size,
          * by EMU_BUS_ORDER in emu_bus.h.
          */
         *out = EMU_BUS_ORDER(bus, *out, size);
-        /* Only RAM is safe to cache: see arm_data_cache. */
+        /* RAM in the cache writes use too, ROM in its own: see both. */
         if (r->kind == EMU_MEM_RAM && r->perm == EMU_PERM_RWX) {
             arm_data_cache(bus, r);
+        } else if (r->kind == EMU_MEM_ROM) {
+            arm_rodata_cache(bus, r);
         }
         return EMU_FAULT_NONE;
     }

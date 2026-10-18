@@ -26,6 +26,30 @@ A zero-length region is rejected, which matters more than it sounds:
 several bugs here have been "the size was computed as zero and the region
 silently did not exist".
 
+**How a read gets there.** The bus caches the last region of each kind
+it served, so most accesses are a compare and a load instead of a walk
+of the table. Fetches have their own cache. RAM has one that reads and
+writes share, tested inline by every `emu_bus_read` and `emu_bus_write`.
+ROM has a read-only one, tested first thing in the read slow path. ROM
+cannot share RAM's cache, because writes use that cache and a ROM region
+in it would let an inlined store write the image.
+
+Until October 2026 ROM had no cache at all, so every read of `.rodata`
+walked the table. A comment above the RAM cache had said since the
+first commit that ROM was "cached for reads only", while the code nine
+lines below it cached RAM alone. Under the x86-64 JIT that walk was
+38.9% of Dhrystone's host instructions and 21.9% of Whetstone's. With
+the read-only cache, Dhrystone's JIT run is 8.9% fewer host instructions
+and 7.8% fewer cycles on the F746. Guests that do not read their image
+in a loop, such as CoreMark and `bench`, are unchanged.
+
+The read-only cache is not tested inline, by measurement: in
+`emu_bus_read` it cost ARMv7-M's interpreted CoreMark 0.85%, all of it in
+the interpreter's run loop, whose code changed around the larger inline
+paths. What a read of the image still pays is the call into the slow
+path, plus the JIT's call into its helper. That is open in
+[TODO.md](TODO.md).
+
 ## RV32
 
 Laid out the way a microcontroller is: code and constants execute from
