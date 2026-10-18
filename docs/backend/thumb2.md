@@ -212,12 +212,12 @@ they follow the target (`EMU_HOST_JIT_THUMB2`):
 |---|---|---|
 | blocks, hash buckets | 256, 256 | 65,536 each |
 | block reserve | 512 bytes | 8192 |
-| code buffer | `EMU_JIT_CODE_BYTES`: 96 KB on the F746 (64 with G4MH), 128 on the N6, 32 elsewhere -- see `CMakeLists.txt` | 64 MB |
+| code buffer | `EMU_JIT_CODE_BYTES`: 64 KB on the F746, 128 on the N6, 32 elsewhere -- see `CMakeLists.txt` | 64 MB |
 | IR instructions, temps per block | 512, 256 | 2048, 1024 |
 
-On the F746 an RV32 JIT build at the 96 KB default has 143 KiB less guest
-RAM than an interpreter one, 161 KiB against 304 at ce02bd0. At 32 KB
-the gap is 79 KiB: the buffer, plus about 47 KiB of tables and IR
+On the F746 an RV32 JIT build at the 64 KB default has 111 KiB less
+guest RAM than an interpreter one, 193 KiB against 304 at ce02bd0. At
+32 KB the gap is 79 KiB: the buffer, plus about 47 KiB of tables and IR
 storage that a JIT build pays at any size.
 
 ## Measured
@@ -234,8 +234,8 @@ at ce02bd0:
 | interpreter | **102.27** | — | 304 KiB | **91.87** |
 | JIT, 32 KB | 107.00 | 41,989 | 225 KiB | 15.01 |
 | JIT, 48 KB | 49.49 | 17,103 | 209 KiB | |
-| JIT, 64 KB | 14.55 | 333 | 193 KiB | |
-| JIT, 96 KB (default) | **14.59** | 297 | 161 KiB | **14.50** |
+| JIT, 64 KB (default) | **14.55** | 333 | 193 KiB | |
+| JIT, 96 KB | 14.59 | 297 | 161 KiB | 14.50 |
 
 **CoreMark's translated working set fits 64 KB now**, and from there up
 the JIT is 7.0× the interpreter. At 32 KB the cache is still a queue,
@@ -244,7 +244,10 @@ is 1.05× slower than interpreting. When this table was first written it
 was 1.57× slower there, and needed 96 KB to fit at all (588
 translations at 53.1). The cache did not change; the code that goes into
 it shrank, as [Where the bytes go](#where-the-bytes-go) describes.
-`bench` fits everywhere: 14,648 bytes.
+`bench` fits everywhere: 14,648 bytes. **64 KB is the default
+because of this table**: it gives up nothing here and gives the guest
+32 KiB that 96 KB took. PowerPC CoreMark is what it costs -- see
+[../frontend/ppc.md](../frontend/ppc.md#what-it-is-worth).
 
 From 48 KB up, 120 iterations finish inside CoreMark's ten seconds,
 so the guest calls those runs invalid. The figure is the firmware's

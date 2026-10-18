@@ -50,8 +50,8 @@ the run needed:
 | interpreter | **102.27** | **91.87** | **212.29** | **282.49** | 304 / 294 KiB |
 | JIT, 32 KB | 107.00 (41,989) | 15.01 (62) | 263.95 (35,487) | 336.76 (10,559) | 225 / 214 KiB |
 | JIT, 48 KB | 49.49 (17,103) | | | | 209 KiB |
-| JIT, 64 KB | 14.55 (333) | | 148.35 (18,688) | 29.57 (362) | 193 / 182 KiB |
-| JIT, 96 KB (the default) | **14.59** (297) | **14.50** (61) | **53.63** (5,077) | **29.14** (347) | 161 / 150 KiB |
+| JIT, 64 KB (the default) | **14.55** (333) | | 148.35 (18,688) | **29.57** (362) | 193 / 182 KiB |
+| JIT, 96 KB | 14.59 (297) | **14.50** (61) | **53.63** (5,077) | 29.14 (347) | 161 / 150 KiB |
 
 Guest RAM is RV32's firmware, then PowerPC's. RV32 CoreMark is 120
 iterations, 30,027,635 instructions, `crcfinal 0xd340` in every row;
@@ -74,9 +74,14 @@ firmware and 79.0 s by the host, `crcfinal 0x25e3`.
 
 **The JIT wins wherever the translated working set fits, and RV32
 CoreMark's now fits in 64 KB**: 333 translations there, against 29,682
-when this table was last measured. At the default 96 KB the JIT is
-**7.0×** the interpreter on RV32 CoreMark, 6.3× on `bench`, 4.0× on
-PowerPC CoreMark and 9.7× on crypto. At 32 KB, where none of the
+when this table was last measured. At 96 KB the JIT is **7.0×** the
+interpreter on RV32 CoreMark, 6.3× on `bench`, 4.0× on PowerPC CoreMark
+and 9.7× on crypto. **The default is 64 KB because of the first
+column**: RV32 CoreMark gives up nothing there and the guest gets 32 KiB
+back. PowerPC CoreMark is the price -- 1.4× the interpreter at 64 KB,
+4.0× at 96 KB, which is `-DEMU_JIT_CODE_BYTES=98304` -- and ARMv7-M
+CoreMark the same one, 106.41 at 64 KB against 34.7
+([frontend/armv7m.md](frontend/armv7m.md)). At 32 KB, where none of the
 CoreMarks fits, it is 1.05× *slower* than interpreting on RV32, 1.24×
 on PowerPC CoreMark and 1.19× on crypto -- where this table said 1.57×,
 1.5× and 2.9×. The cache did not grow; what goes into it shrank. PowerPC
@@ -91,7 +96,7 @@ CoreMark went from 222.3 to 212.29. This page has not apportioned that.
 12% with nothing but where `.bss` lands, the same order as this 16%. RV32's
 108.2 to 102.27 is the run loop in ITCM (below).
 
-### How the 96 KB figure got here
+### How the RV32 figure got here
 
 RV32 CoreMark at 96 KB. From the second step on, each was measured
 against a worktree at the commit before it:
@@ -117,6 +122,8 @@ against a worktree at the commit before it:
 - **14.03** at x650 after the data TLB and the fetch table, which an
   M-mode guest does not use: 13.90 against 14.03 across those commits,
   inside the 13.88-14.17 spread that `.bss` layout alone produces.
+- **64 KB the default** once 64 KB served it as well: 14.55 against
+  14.59 at x120.
 
 PowerPC's columns moved through the same changes: 125.8 and 35.4 at
 96 KB when this table was last measured, 53.63 and 29.14 now.

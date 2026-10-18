@@ -156,7 +156,7 @@ and the boards do not. A PowerPC firmware takes `-DPPC_GUEST=` instead
 | Option | Default | Effect |
 |---|---|---|
 | `EMU_JIT` | `ON` | The JIT. `OFF` is smaller, and is how a suspected JIT bug is isolated. |
-| `EMU_JIT_CODE_BYTES` | per board | Code cache, on a microcontroller: 96 KB on the F746 (64 with G4MH), 128 on the N6, 32 on the F446. **The dominant performance term, and a threshold rather than a dial**: below a guest's translated working set the JIT is *slower* than the interpreter -- see [docs/jit/tuning.md](docs/jit/tuning.md). A host has 64 MB. |
+| `EMU_JIT_CODE_BYTES` | per board | Code cache, on a microcontroller: 64 KB on the F746, 128 on the N6, 32 on the F446. **The dominant performance term, and a threshold rather than a dial**: below a guest's translated working set the JIT is *slower* than the interpreter -- see [docs/jit/tuning.md](docs/jit/tuning.md). A host has 64 MB. |
 | `EMU_JIT_LOOP_CAP` | `128` | Guest instructions per block entry: an interrupt-latency knob, not a throughput one. |
 | `EMU_NET` | `ON` on the F746, `OFF` elsewhere | lwIP over PPP (or SLIP, `EMU_NET_LINK`) on the console UART: telnet, gdb and TFTP. **The UART stops being a console** -- `OFF` gets it back. |
 | `EMU_ENABLE_TRACE` | `OFF` | Per-instruction trace hook. Slow, and the fastest way to find where execution diverges. |

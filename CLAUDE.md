@@ -111,8 +111,8 @@ chained jumps intact, and a cycle counter that wrapped at 19.9 seconds.
 (`-DRV32_GUEST=coremark -DCOREMARK_ITERATIONS=650 -DEMU_MAX_INSN=0`)
 **at `-DEMU_JIT_CODE_BYTES=32768`**, about 100 s, and time the run from
 the host end as well as reading the firmware's figure. The default no
-longer does it: since the short encodings, x650 at 96 KB takes 11.65 s
--- under the counter's 19.9 s wrap -- and compacts twice, so it neither
+longer does it: x650 at the 64 KB default takes 10.35 s -- under the
+counter's 19.9 s wrap -- and compacts three times, so it neither
 crosses the wrap nor exercises eviction. That is the right run for a
 *performance* figure and the wrong one for this.
 

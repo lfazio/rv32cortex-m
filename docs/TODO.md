@@ -44,11 +44,6 @@ measured at.
       ([performance.md](performance.md#what-a-guest-instruction-costs-measured-live)).
       A second window, read-only, on both backends; the board serves the
       image from flash, so measure it there too.
-- [ ] **The F746's default code cache against today's code size.** RV32
-      CoreMark x120 is 14.55 at 64 KB and 14.59 at 96 KB, and 64 KB
-      would give the guest 32 KiB back. PowerPC CoreMark is 148.35
-      against 53.63 across the same step, so it is a choice between the
-      two, not a free win ([performance.md](performance.md#on-the-board-at-ce02bd0)).
 - [ ] **PowerPC's FP unit is a call per instruction.** Every EFPU2
       instruction under the JIT is a helper call into `ppc_fpu_exec`,
       whose bookkeeping -- SPEFSCR status, sticky bits, FG and FX -- was
