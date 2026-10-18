@@ -31,6 +31,8 @@ one is its own defect:
 | the page mappings | generation (`vm_gen`) | watching `satp` alone would miss an edited PTE |
 | the PMP configuration | generation (`pmp_gen`) | **permission bypass**: the flush watched a flag, not the configuration |
 | whether accesses may be inlined | follows from the four above and both generations | an inlined store that ignored PMP |
+| the privilege loads and stores are made at | context, bits 37:36 -- it names the data TLB table a block probes, and MPRV moves it apart from the privilege | latent: an M-mode block that inlined the window, entered again under MPRV |
+| what a page allows, below M | not in the block at all: the data TLB, which the frontend clears itself | see [The data TLB](#the-data-tlb) |
 | Sdtrig | `blocked`: nothing translated runs while a trigger is armed | — |
 | bus regions | safe: fixed before execution | — |
 | the guest instruction bytes | safe: `FENCE.I` invalidates, and a store into a translated page retires its blocks | — |
@@ -56,6 +58,52 @@ on the CSR writes that alter an entry, and deliberately not on
 Every one of these was invisible to `riscv-tests` and `riscv-arch-test`
 at the time, because neither then ran the JIT, and each needed a
 hardware run with the fix reverted to demonstrate.
+
+## The data TLB
+
+Below M every load and store was a helper call -- about 190 host
+instructions on sv32bench, `rv_pmp_check` alone a third of the run --
+because the window is legal only while nothing can deny an access.
+`src/frontend/rv32/rv_dtlb.c` caches, per page and per privilege, the
+answer to "is an aligned access here a plain host access", and both
+backends probe it inline; the interpreter's guarded path asks it too.
+
+A block bakes in only *which* table, so this is the one place in the
+JIT where staleness is the frontend's to prevent rather than the
+block's. An entry answers three questions at once and is filled only
+when all three are the same for the whole page:
+
+| depends on | how it is kept right | the check that fails without it |
+|---|---|---|
+| the mapping | `rv_mmu_flush_page` and `rv_mmu_flush_tlb` clear it with the TLB it was built from | `dtlb-sfence-page`, `dtlb-asid1` |
+| the PTE's own bits, A and D included | the same: a changed PTE needs an SFENCE.VMA to be seen | `sv32-nod-store-traps` (write without D) |
+| SUM | nothing to clear: a U page is never cached for S | `dtlb-nosum-traps` |
+| MXR | nothing to clear: a page without R is never cached | `dtlb-nomxr-traps` |
+| the privilege | a table each, U and S; the block's context names one | `dtlb-u-after-s`, `dtlb-s-after-u`, `dtlb-mprv-u` |
+| the PMP configuration | every `pmpcfg` and `pmpaddr` write clears both tables | `dtlb-pmpcfg-traps`, `dtlb-pmpaddr-traps` |
+| PMP over part of the page | not filled: the lowest entry touching the page must hold all of it | `dtlb-pmp-part-traps` |
+| the region | RAM for stores, RAM or ROM for loads, the whole page, every width | `dtlb-rom-store-traps` |
+| an LR/SC reservation | stores probe only while none is outstanding | `dtlb-sc-broken` |
+| alignment | an entry vouches for aligned accesses only | `dtlb-split-value` |
+
+**SUM and MXR are the design decision.** Linux sets and clears SUM
+around every copy to or from user memory, so an entry that depended on
+it would have to be flushed thousands of times a second. Refusing to
+cache what they decide keeps those copies on the slow path instead --
+the kernel's copies, not its own data -- and leaves mstatus writes with
+nothing to invalidate.
+
+Every row was confirmed by breaking it: sixteen mutants, each failing a
+check that names its rule, on the backend that can see it (the inline
+alignment test, the store guard, the store-tag offset and the context
+bits fail only under `--jit`). **Three survived the first version of
+the test, and the fill was right each time**: the reservation case used
+a global in a page holding a locked PMP entry, and the ROM case a
+constant in the image's last page, which the ROM window covers only in
+part. The fill refused both pages, correctly and silently, so the
+checks ran the slow path whatever the probe did. A test of a cache has
+to use an entry the cache will hold, and `-- dtlb -- fills` in the
+stats line is what says it did.
 
 frm, FS, the PMP configuration and satp share a property that makes the
 whole scheme cheap: each changes only through a CSR write, and the

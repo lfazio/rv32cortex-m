@@ -169,6 +169,19 @@ void t2_sub(uint32_t rd, uint32_t rn, uint32_t rm)
 }
 
 /*
+ * ADD.W rd, rn, rm, LSL #sh -- a scaled index, for the data TLB probe.
+ * The shift amount splits imm3:imm2 exactly as in t2_shift_imm, and for
+ * the same reason is worth the check: `add.w r0, r4, r0, lsl #4` is
+ * eb04 1000 by the assembler, which is what this emits.
+ */
+void t2_add_lsl(uint32_t rd, uint32_t rn, uint32_t rm, uint32_t sh)
+{
+    t2_emit32((uint16_t)(0xEB00u | rn),
+              (uint16_t)((((sh >> 2) & 7u) << 12) | (rd << 8) |
+                         ((sh & 3u) << 6) | rm));
+}
+
+/*
  * The flag-setting forms, which are the same encodings with bit 4 of the
  * first halfword set, and MRS to read what they produced.
  *

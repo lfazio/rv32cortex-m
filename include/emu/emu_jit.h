@@ -94,9 +94,20 @@
  * A guest large enough to matter is the reason for the size: a Linux
  * kernel's translated working set is far past 4 MB, and every eviction
  * there is a retranslation of code that was about to run again.
+ *
+ * **64 MB, because the data TLB made blocks half as large again and 32
+ * crossed the cliff.** Inlining the probe below M took Yocto's average
+ * block from 645 bytes to 977, and udev's working set -- some 50,000
+ * blocks, which had fitted with eight compactions to spare -- stopped
+ * fitting: 282 compactions evicting 4.1M blocks, the guest retiring 55%
+ * more instructions on its wall clock while the host retranslated, and
+ * the login prompt at 91 s against the parent's 64. At 64 MB it is 2
+ * compactions and 48.9 s against the parent's 62.9 at the same size.
+ * The buffer is an anonymous mapping, so a guest that needs less
+ * commits less.
  */
 #ifndef EMU_HOST_JIT_CODE_BYTES
-#define EMU_HOST_JIT_CODE_BYTES (32u * 1024u * 1024u)
+#define EMU_HOST_JIT_CODE_BYTES (64u * 1024u * 1024u)
 #endif
 
 #if defined(EMU_HOST_JIT_X86_64) || defined(EMU_HOST_JIT_THUMB2)

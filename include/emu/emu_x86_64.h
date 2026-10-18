@@ -168,6 +168,16 @@ void x86_movzx8_idx(int dst, int base, int index);
 bool x86_ld_idx(int dst, int base, int index, uint32_t size, bool sign);
 bool x86_st_idx(int src, int base, int index, uint32_t size);
 
+/*
+ * The data TLB probe's three: rbx added to a 64-bit register (an entry's
+ * address from its scaled index), a 32-bit compare against memory (the
+ * tag), and a 64-bit load (the addend). `base` is any register; the SIB
+ * that rsp and r12 need is emitted for them.
+ */
+void x86_add_cpu64(int reg);
+void x86_cmp_mem(int reg, int base, uint32_t disp);
+void x86_ld64_mem(int dst, int base, uint32_t disp);
+
 
 /* The F7 group -- /2 not, /3 neg -- and bswap, for any register. */
 void x86_unary(unsigned ext, int reg);

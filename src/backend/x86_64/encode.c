@@ -496,6 +496,41 @@ bool x86_st_idx(int src, int base, int index, uint32_t size)
     }
 }
 
+/*
+ * ModRM for [base + disp32], mod=10. rm=100 means "a SIB follows", so a
+ * base of rsp or r12 needs one saying "no index"; rm=101 with mod=10 is
+ * an ordinary [rbp + disp32] and needs nothing.
+ */
+static void modrm_disp32(unsigned reg, unsigned base, uint32_t disp)
+{
+    emu_jit_emit8((uint8_t)(0x80u | ((reg & 7u) << 3) | (base & 7u)));
+    if ((base & 7u) == 4u) {
+        emu_jit_emit8(0x24);
+    }
+    emu_jit_emit32(disp);
+}
+
+void x86_add_cpu64(int reg)
+{
+    emit_rex(1u, X86_CPU, (unsigned)reg);
+    emu_jit_emit8(0x01); /* add r/m64, r64 */
+    modrm_rr(X86_CPU, reg);
+}
+
+void x86_cmp_mem(int reg, int base, uint32_t disp)
+{
+    emit_rex(0u, (unsigned)reg, (unsigned)base);
+    emu_jit_emit8(0x3B); /* cmp r32, r/m32 */
+    modrm_disp32((unsigned)reg, (unsigned)base, disp);
+}
+
+void x86_ld64_mem(int dst, int base, uint32_t disp)
+{
+    emit_rex(1u, (unsigned)dst, (unsigned)base);
+    emu_jit_emit8(0x8B); /* mov r64, r/m64 */
+    modrm_disp32((unsigned)dst, (unsigned)base, disp);
+}
+
 void x86_prologue(uint32_t nsaved)
 {
     emu_jit_emit8(0x53); /* push rbx     */

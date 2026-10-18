@@ -358,8 +358,10 @@ which builds init, the kernel and OpenSBI before it runs anything;
 `LINUX_JIT` and `LINUX_ZBB` override the pieces. Ctrl-C ends the emulator; it does not
 reach the guest.
 
-Expect about two minutes: **109 s to the login prompt**, translated,
-on an x86-64 host. udev is about half of that.
+Expect under a minute: **48 s to the login prompt**, translated, on
+an x86-64 host, udev about 11 s of it. It was 109 s, then 64 as
+other work landed; the data TLB below M-mode and a 64 MB code buffer
+took it here ([docs/linux.md](docs/linux.md#benchmarks)).
 
 It used to be over fifteen minutes, and this paragraph used to call the
 udev stall "an open question, not a speed problem, and no amount of

@@ -76,27 +76,52 @@ the output, and a `_start` that sets `gp`. No libc, because the cross
 toolchain has none for rv32, and the bare-metal guest's `-march`.
 
 Host JIT, the same CoreMark, `crcfinal` equal where the iteration counts
-are:
+are, every row long enough for CoreMark to call valid:
 
 | | iterations/s | |
 |---|---|---|
 | bare metal, x30000 | **1578** | 19 s, 7.50e9 instructions |
-| a Linux process, x3000 | **250** | 12 s; the whole run 8.98e8 |
+| a Linux process, x20000, before the data TLB | **246** | 81 s |
+| a Linux process, x20000, with it | **1538** | 13 s, 97% of bare metal |
 
-**6.3x slower under Linux, and not for the reasons that come first to
-mind.** Block entries are as frequent as on bare metal -- 33 guest
-instructions a block entry against 30 -- so it is not the dispatcher.
-The kernel is not doing much meanwhile: the run retires 769.2M
-instructions more than the same boot without the benchmark (128.76M),
-256,400 an iteration against bare metal's 250,078, so 2.5% is
-everything else that happened, tick and scheduler included. FENCE.I is
-not it either: 3,033 flushes at 2,000 iterations and 3,035 at 3,000.
-What changes is every load and store: below M-mode `pmp_active` is set and paging is on, so
-the translated code's inlined RAM path is off and each access is a call
-through translation and the PMP check. CLAUDE.md's sv32bench note puts
-that gate alone at 4.0x for the JIT on a kernel built to isolate it;
-CoreMark under a real kernel, with its tick and its scheduler, is the
-6.3x above.
+**It was 6.4x slower under Linux, and not for the reasons that come
+first to mind.** Block entries were as frequent as on bare metal -- 33
+guest instructions a block entry against 30 -- so not the dispatcher;
+the kernel did little meanwhile -- 2.5% of the instructions were
+everything else, tick and scheduler included; and FENCE.I was not it --
+3,033 flushes at 2,000 iterations and 3,035 at 3,000. What changed was
+every load and store. Below M-mode `pmp_active` is set and paging is
+on, so the inlined RAM path was off and each access was a call.
+
+**What the call cost was measured, not argued.** Callgrind over
+sv32bench's paged build -- the same kernel as its bare build, one `-D`
+apart -- said 3.37M accesses cost about 190 host instructions each:
+`rv_pmp_check` 31.6% of the run, `rv_mmu_translate` 19.5%, the load and
+store helpers 36.5%, translated code 10%. So the data TLB
+(`src/frontend/rv32/rv_dtlb.c`, the probe in both backends, the rules in
+[jit/staleness.md](jit/staleness.md#the-data-tlb)) asks all three
+questions once per page. sv32bench paged went 89 ms to 21.4 against
+bare's 21.5 on the host -- 725.7M host instructions to 121.5M -- and on
+the boards [15x on the F746 and 7.8x on the N6](backend/thumb2.md#the-data-tlb-probe).
+
+The rest of Linux, same runner against the parent commit:
+
+| | parent | data TLB |
+|---|---|---|
+| initramfs boot, process wall time | 4.39 / 4.40 s | **2.25 / 2.25 s** |
+| Yocto to the login prompt | 64.0 s | **48.0 s** |
+
+**The login prompt was slower before it was faster: 91 s.** Inlining
+the probe grew Yocto's average block from 645 bytes to 977, and udev's
+working set, about 50,000 blocks, stopped fitting the 32 MB code buffer
+it had fitted with eight compactions: 282 compactions evicting 4.1M
+blocks, and the guest *retiring 55% more instructions* -- its clock is
+the wall clock, so the longer the host spent retranslating, the more
+timer-driven work it did. Every other figure here had improved, and
+sv32bench and CoreMark cannot fill 32 MB, so only the largest workload
+could show it. At 64 MB, now the host default, it is 2 compactions and
+48.0 s; the parent at the same 64 MB is 62.9 s, so the TLB's own share
+of the prompt is 1.29x.
 
 ### FENCE.I: what it costs, and where it comes from
 
@@ -121,8 +146,10 @@ written through a different alias than the one the code runs from --
 and seeing every write to RAM, including inlined M-mode stores, which
 OpenSBI makes on every SBI call, and virtio's DMA. At about 0.1 ms a
 flush, the distribution boot's ~3,770 would be some 0.4 s of 109 (an
-extrapolation, not a measurement). The memory path below M-mode is the
-6.3x above.
+extrapolation, not a measurement). The memory path below M-mode was
+the 6.4x above. **Both figures predate the data TLB**, which halved the
+initramfs boot, so FENCE.I's share of what is left is larger than 10%
+and has not been measured again.
 
 The compilers differ -- the Linux binary is GCC 16.2, the bare-metal
 guest GCC 15.3 -- and the 2.5% above is the most the instruction count
@@ -207,8 +234,9 @@ is a state machine rather than a flag.
 the JIT's.** This entry used to say the guest was "waiting on
 something that never completes rather than grinding -- which
 makes it a device question, not a JIT one". Half right. Boot to
-a login prompt is **109 s** now, from over 900 s (a 15-minute
-run did not reach it):
+a login prompt was **109 s** after it, from over 900 s (a 15-minute
+run did not reach it) -- and is 48 s now, with the data TLB and
+a 64 MB buffer ([Benchmarks](#benchmarks)):
 
 | | 8192 blocks | 65536 blocks |
 |---|---|---|
@@ -768,21 +796,17 @@ dispatch:
 Three interleaved rounds, 21/21/22 against 84/85/85 -- far
 outside the +/-3% this host is noisy by.
 
-**4.0x is the ceiling, and the realistic prize is smaller.**
-The interpreter pays 2.7x for the same move (129 to 351) while
-inlining nothing either way, so a large part of that 4.0x is
-address translation and permission work that an inline probe
-still has to do. Do not quote 4x as what a TLB probe would
-recover; it is what the *call* plus the walk costs together.
-
-The pieces exist: a 32-entry direct-mapped TLB tagged by full
-VPN with the PTE bits stored, and `rv_pmp_simple`, which is
-already written to report a single entry's bounds "so a caller
-can inline a range test instead of calling the full check".
-What is missing is IR surface to express a probe-with-fallback,
-and on Thumb-2 the code-size question is real -- the
-passthrough test alone is ~18 bytes a load and ~48 a store, and
-always-on grew CoreMark past a 12 KB code cache.
+**This said 4.0x was the ceiling and the prize smaller, and it
+was the whole of it.** The argument was that the interpreter
+pays 2.7x for the same move while inlining nothing, so most of
+the gap must be translation and permission work a probe would
+still do. A probe does not do it per access, it does it per
+page: built, the paged JIT run is 21.4 ms against bare's 21.5
+([Benchmarks](#benchmarks)). And the interpreter's 2.7x is
+mostly its *fetch* path, which the same table does not serve:
+data alone took it from 370 ms to 331. The argument compared
+two backends' totals; callgrind, which splits a total by
+function, would have said so before the estimate was written.
 
 **And this configuration now has a test, which it did not.**
 isatest arms PMP early and from then on everything interprets,

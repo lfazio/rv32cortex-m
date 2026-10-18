@@ -71,6 +71,10 @@ void rv_mmu_flush_tlb(rv_hart_t *h)
     for (uint32_t i = 0; i < RV_TLB_ENTRIES; i++) {
         h->tlb[i].valid = false;
     }
+#if RV_HAVE_DTLB
+    /* Built from these entries, so it goes with them. */
+    rv_dtlb_flush(h);
+#endif
 }
 
 void rv_mmu_flush(rv_hart_t *h)
@@ -215,6 +219,9 @@ void rv_mmu_flush_page(rv_hart_t *h, uint32_t vaddr)
     if (h->tlb[slot].valid && h->tlb[slot].vpn == vpn) {
         h->tlb[slot].valid = false;
     }
+#if RV_HAVE_DTLB
+    rv_dtlb_flush_page(h, vaddr);
+#endif
 
     /*
      * And the translated code. **No vm_gen bump**: that is the
@@ -226,6 +233,42 @@ void rv_mmu_flush_page(rv_hart_t *h, uint32_t vaddr)
     rv_jit_invalidate_page(vaddr);
 #endif
 }
+
+#if RV_HAVE_DTLB
+/*
+ * Only what the PTE decides by itself. A U page seen from S is readable
+ * or not by SUM, and a page without R by MXR, so neither is offered: an
+ * entry for them would have to be flushed whenever mstatus moves, and
+ * Linux sets and clears SUM around every copy to or from user memory.
+ * Those accesses keep asking every time instead, which is the cheaper of
+ * the two -- they are the kernel's copies, not its own data.
+ *
+ * A and D are part of the answer because this core checks them rather
+ * than writing them: a store to a clean page faults, and the handler's
+ * SFENCE.VMA after setting D is what clears an entry filled without
+ * write.
+ */
+bool rv_mmu_dtlb_rights(const rv_hart_t *h, uint32_t va, uint32_t priv,
+                        bool *writable)
+{
+    const uint32_t vpn = va >> PAGE_SHIFT;
+    const uint32_t slot = tlb_slot(vpn);
+
+    if (!h->tlb[slot].valid || h->tlb[slot].vpn != vpn) {
+        return false;
+    }
+    const uint32_t pte = h->tlb[slot].pte;
+
+    if (((pte & PTE_U) != 0u) != (priv == RV_PRIV_U)) {
+        return false;
+    }
+    if ((pte & (PTE_R | PTE_A)) != (PTE_R | PTE_A)) {
+        return false;
+    }
+    *writable = (pte & (PTE_W | PTE_D)) == (PTE_W | PTE_D);
+    return true;
+}
+#endif
 
 rv_exc_t rv_mmu_translate(rv_hart_t *h, uint32_t va, emu_access_t acc,
                           uint32_t *pa)

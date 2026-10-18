@@ -167,6 +167,49 @@ static bool rv_ir_fast_mem(emu_cpu_t *cpu, emu_ir_fastmem_t *out)
     return true;
 }
 
+/*
+ * The data TLB a block probes instead, when there is no window: one per
+ * privilege below M, chosen by the privilege the block's loads and stores
+ * are made at -- which rv_jit_ctx_key carries, so a block is never
+ * entered at a privilege whose table it does not name. Everything else
+ * the table depends on, the frontend invalidates in the table itself
+ * (rv_dtlb.c): a block probes it afresh at every access and bakes in
+ * nothing but where it is.
+ *
+ * M-mode gets none. Its accesses are the window's when nothing is armed,
+ * and when PMP has a locked entry they are rare enough -- isatest, not an
+ * operating system -- to leave to the helper.
+ */
+static bool rv_ir_dtlb(emu_cpu_t *cpu, emu_ir_dtlb_t *out)
+{
+#if RV_HAVE_DTLB
+    rv_hart_t *const h = (rv_hart_t *)cpu;
+    const uint32_t priv = rv_hart_data_priv(h);
+
+    if (priv == RV_PRIV_M || h->bus == NULL) {
+        return false;
+    }
+#if RV_EXT_SDTRIG
+    if (h->trig_active) {
+        return false;
+    }
+#endif
+    out->table_offset = (uint32_t)(offsetof(rv_hart_t, dtlb) +
+                                   rv_dtlb_table(priv) * sizeof(h->dtlb[0]));
+    out->index_mask = RV_DTLB_ENTRIES - 1u;
+#if RV_EXT_A
+    out->store_guard_offset = (uint32_t)offsetof(rv_hart_t, resv_valid);
+#else
+    out->store_guard_offset = EMU_IR_NO_GUARD;
+#endif
+    return true;
+#else
+    (void)cpu;
+    (void)out;
+    return false;
+#endif
+}
+
 /* ------------------------------------------------------------------ */
 /* The target descriptor                                               */
 /* ------------------------------------------------------------------ */
@@ -1625,6 +1668,7 @@ uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
     emu_ir_reset(b);
     b->start_pc = pc;
     b->has_fast = rv_ir_fast_mem(cpu, &b->fast);
+    b->has_dtlb = !b->has_fast && rv_ir_dtlb(cpu, &b->dtlb);
     /* Under exactly the conditions the RAM window is, and once armed. */
     b->has_pt = b->has_fast && ((rv_hart_t *)cpu)->pt_armed &&
                 emu_ir_pt_window(((rv_hart_t *)cpu)->bus, &b->pt);

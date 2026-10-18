@@ -263,4 +263,41 @@ bool rv_pmp_check(const rv_hart_t *h, uint32_t addr, uint32_t size,
     return eff == RV_PRIV_M;
 }
 
+void rv_pmp_page_rights(const rv_hart_t *h, uint32_t page, uint32_t priv,
+                        bool *read, bool *write)
+{
+    const uint32_t last = page + (RV_PAGE_SIZE - 1u);
+
+    *read = false;
+    *write = false;
+    if (priv == RV_PRIV_M) {
+        return; /* the data TLB is for accesses below M only */
+    }
+    /*
+     * The same search as rv_pmp_check, asked of the whole page: the
+     * lowest entry holding *any* byte of it decides that byte, so if it
+     * does not hold every byte, some byte is decided elsewhere -- by a
+     * later entry or by none -- and no single answer covers the page.
+     * Below M the lock bit does not matter: every entry binds.
+     */
+    for (uint32_t i = 0; i < RV_PMP_ENTRIES; i++) {
+        const uint32_t cfg = pmp_cfg(h, i);
+        uint32_t lo, hi;
+
+        if (!pmp_range(h, i, cfg, &lo, &hi)) {
+            continue;
+        }
+        if (last < lo || page >= hi) {
+            continue;
+        }
+        if (page < lo || last >= hi) {
+            return; /* partly covered */
+        }
+        *read = (cfg & PMP_R) != 0u;
+        *write = (cfg & PMP_W) != 0u;
+        return;
+    }
+    /* No entry: below M, denied. */
+}
+
 #endif /* RV_EXT_PMP */

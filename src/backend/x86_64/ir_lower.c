@@ -666,6 +666,10 @@ static EMU_PER_CORE uint32_t g_nexits;
 static EMU_PER_CORE emu_ir_fastmem_t g_fast;
 static EMU_PER_CORE bool g_has_fast;
 
+/* Or the data TLB it may probe instead -- see emu_ir_dtlb_t. */
+static EMU_PER_CORE emu_ir_dtlb_t g_dtlb;
+static EMU_PER_CORE bool g_has_dtlb;
+
 static EMU_PER_CORE uint8_t *g_body;
 static EMU_PER_CORE uint32_t g_start_pc;
 static EMU_PER_CORE bool g_has_start_pc;
@@ -828,6 +832,75 @@ static uint32_t emit_fast_guard(int addr_reg, uint32_t size, uint8_t **out)
         x86_and_imm8(X86_EAX, (int8_t)(size - 1u));
         out[n++] = x86_jcc32(X86_CC_NE);
     }
+    return n;
+}
+
+/*
+ * Everything an inlined access decides before the move, by whichever
+ * means this block has: leave the host base in RAX and the index in RDX,
+ * and return the branches to aim at the helper (three at most).
+ *
+ * The window is a range test and a constant base. The data TLB is a
+ * probe -- the page number is both the index and the tag, so one shift
+ * gives the two -- and its "base" is the entry's addend, with the guest
+ * address itself as the index:
+ *
+ *     mov edx, esi ; shr edx, 12 ; mov eax, edx ; and eax, mask
+ *     shl eax, 4 ; add rax, rbx ; cmp edx, [rax + tag] ; jne slow
+ *     mov rax, [rax + addend] ; mov edx, esi
+ *
+ * Alignment comes first in both, and the reservation guard before RAX
+ * is spoken for.
+ */
+static uint32_t emit_inline_guard(int addr_reg, uint32_t size, bool store,
+                                  uint8_t **out)
+{
+    uint32_t n;
+    uint32_t guard;
+
+    if (g_has_fast) {
+        n = emit_fast_guard(addr_reg, size, out);
+        guard = g_fast.store_guard_offset;
+    } else {
+        n = 0u;
+        if (size > 1u) {
+            x86_mov_rr(X86_EAX, addr_reg);
+            x86_and_imm8(X86_EAX, (int8_t)(size - 1u));
+            out[n++] = x86_jcc32(X86_CC_NE);
+        }
+        guard = g_dtlb.store_guard_offset;
+    }
+
+    /*
+     * A store to the reserved word must break an LR/SC reservation,
+     * which an inlined one would not -- so decline while one is
+     * outstanding rather than replicating the address compare. It is
+     * outstanding only between an LR and its SC.
+     */
+    if (store && guard != EMU_IR_NO_GUARD) {
+        x86_ld_cpu(X86_EAX, guard);
+        x86_and_imm8(X86_EAX, (int8_t)0xFF);
+        out[n++] = x86_jcc32(X86_CC_NE);
+    }
+
+    if (g_has_fast) {
+        x86_mov_imm64(X86_EAX, (uint64_t)(uintptr_t)g_fast.host);
+        return n;
+    }
+
+    x86_mov_rr(X86_EDX, addr_reg);
+    x86_shift_imm(X86_EDX, X86_SHR, EMU_DTLB_PAGE_SHIFT);
+    x86_mov_rr(X86_EAX, X86_EDX);
+    x86_alu_imm32(X86_X_AND, X86_EAX, g_dtlb.index_mask);
+    x86_shift_imm(X86_EAX, X86_SHL, 4u); /* sizeof(emu_dtlb_entry_t) */
+    x86_add_cpu64(X86_EAX);
+    x86_cmp_mem(X86_EDX, X86_EAX,
+                g_dtlb.table_offset +
+                    (store ? EMU_DTLB_OFF_WRITE : EMU_DTLB_OFF_READ));
+    out[n++] = x86_jcc32(X86_CC_NE);
+    x86_ld64_mem(X86_EAX, X86_EAX, g_dtlb.table_offset + EMU_DTLB_OFF_ADDEND);
+    /* A 32-bit move zero-extends, so RDX is the address as an index. */
+    x86_mov_rr(X86_EDX, addr_reg);
     return n;
 }
 
@@ -1678,13 +1751,12 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
          * memory access and each was a C call into the region walk;
          * this is a compare, a branch and a move.
          */
-        if (g_has_fast) {
+        if (g_has_fast || g_has_dtlb) {
             const uint32_t sz = EMU_IR_MEM_SIZE(in->aux);
             const bool sign = (in->aux & EMU_IR_MEM_SIGNED) != 0u;
-            uint8_t *slow[2];
-            const uint32_t nslow = emit_fast_guard(X86_ESI, sz, slow);
+            uint8_t *slow[3];
+            const uint32_t nslow = emit_inline_guard(X86_ESI, sz, false, slow);
 
-            x86_mov_imm64(X86_EAX, (uint64_t)(uintptr_t)g_fast.host);
             if (x86_ld_idx((pd >= 0) ? pd : T0, X86_EAX, X86_EDX, sz, sign)) {
                 if (pd < 0) {
                     /*
@@ -1761,25 +1833,11 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         ld_operand(X86_ECX, in->b); /* the value */
         uint8_t *const skip = emit_pred_skip(in);
 
-        if (g_has_fast) {
+        if (g_has_fast || g_has_dtlb) {
             const uint32_t sz = EMU_IR_MEM_SIZE(in->aux);
             uint8_t *slow[3];
-            uint32_t nslow = emit_fast_guard(X86_ESI, sz, slow);
+            const uint32_t nslow = emit_inline_guard(X86_ESI, sz, true, slow);
 
-            /*
-             * A store to the reserved word must break an LR/SC
-             * reservation, which an inlined one would not -- so decline
-             * while one is outstanding rather than replicating the
-             * address compare. It is outstanding only between an LR and
-             * its SC.
-             */
-            if (g_fast.store_guard_offset != EMU_IR_NO_GUARD) {
-                x86_ld_cpu(X86_EAX, g_fast.store_guard_offset);
-                x86_and_imm8(X86_EAX, (int8_t)0xFF);
-                slow[nslow++] = x86_jcc32(X86_CC_NE);
-            }
-
-            x86_mov_imm64(X86_EAX, (uint64_t)(uintptr_t)g_fast.host);
             if (x86_st_idx(X86_ECX, X86_EAX, X86_EDX, sz)) {
                 uint8_t *const done = x86_jmp32();
 
@@ -2085,6 +2143,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_exits_lost = false;
     g_has_fast = b->has_fast;
     g_fast = b->fast;
+    g_has_dtlb = !b->has_fast && b->has_dtlb;
+    g_dtlb = b->dtlb;
     g_block_start = emu_jit_here();
     g_nexits_nf = 0u;
     g_body = NULL;

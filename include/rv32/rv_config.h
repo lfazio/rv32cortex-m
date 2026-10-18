@@ -263,6 +263,31 @@
 #endif
 
 /*
+ * The data TLB in host addresses (include/emu/emu_dtlb.h): one table per
+ * privilege below M, in entries, a power of two. It is what lets a load
+ * or store under paging or PMP be a probe and a host access instead of a
+ * translation, a permission check and a region walk -- and so it exists
+ * only where something below M can arm one of those. 0 compiles it out.
+ *
+ * Sixteen bytes an entry. On a host that is nothing; on a board it is
+ * guest RAM, and only a guest that leaves M-mode can use it.
+ */
+#ifndef RV_DTLB_ENTRIES
+#if defined(__arm__)
+#define RV_DTLB_ENTRIES 32u
+#else
+#define RV_DTLB_ENTRIES 256u
+#endif
+#endif
+#if (RV_DTLB_ENTRIES & (RV_DTLB_ENTRIES - 1u)) != 0u
+#error "RV_DTLB_ENTRIES must be a power of two"
+#endif
+#define RV_HAVE_DTLB                                                           \
+    (RV_DTLB_ENTRIES != 0u && RV_EXT_U && (RV_EXT_PMP || RV_EXT_SV32))
+/* U-mode's, and S-mode's where there is one. */
+#define RV_DTLB_TABLES (RV_EXT_S ? 2u : 1u)
+
+/*
  * Sdtrig debug triggers. Like PMP, free until software arms one.
  */
 #ifndef RV_EXT_SDTRIG

@@ -821,6 +821,9 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
         }
         h->pmpcfg[idx] = cur;
         h->pmp_gen++; /* translated blocks baked this in */
+#if RV_HAVE_DTLB
+        rv_dtlb_flush(h); /* and so did the data TLB */
+#endif
         rv_pmp_refresh(h);
         break;
     }
@@ -908,6 +911,9 @@ rv_exc_t rv_csr_write(rv_hart_t *h, uint32_t csr, uint32_t val)
             }
             h->pmpaddr[i] = val & RV_PMPADDR_MASK;
             h->pmp_gen++; /* translated blocks baked this in */
+#if RV_HAVE_DTLB
+            rv_dtlb_flush(h); /* and so did the data TLB */
+#endif
             break;
         }
 #endif

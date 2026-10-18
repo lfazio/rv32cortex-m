@@ -338,10 +338,10 @@ if [ -n "${LINUX_BOOTARGS:-}" ]; then
     case "$LINUX_BOOTARGS" in
     *root=/dev/vda*)
         echo
-        echo "Booting to a login prompt. Measured at 109 s of wall time,"
-        echo "translated; udev is about half of it. (It was over 15 minutes"
+        echo "Booting to a login prompt. Measured at 48 s of wall time,"
+        echo "translated; udev is about 11 s of it. (It was over 15 minutes"
         echo "until the JIT stopped flushing on every FP-state flip and"
-        echo "virtio-blk started answering GET_ID -- see docs/TODO.md.)"
+        echo "virtio-blk started answering GET_ID -- see docs/linux.md.)"
         echo
         echo "  login: root   (no password)"
         echo "  Ctrl-C ends the emulator; it does not reach the guest."

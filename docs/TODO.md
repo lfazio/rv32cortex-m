@@ -57,14 +57,27 @@ From the last measurements in [linux.md](linux.md).
       satp, so identical physical pages in two address spaces are two
       sets of blocks. Keying on the physical page would share them, at
       the cost of a translation on every lookup.
-- [ ] **Loads and stores below M-mode are calls.** CoreMark as a Linux
-      process is 6.3x slower than bare metal on the host JIT, with
-      block entries as frequent as there
-      ([linux.md](linux.md#benchmarks)): paging and the PMP gate turn
-      the inlined RAM path off for any OS. An inlined probe has to
-      answer both questions -- the translation and the permission --
-      and CLAUDE.md's sv32bench entry says 4.0x is the ceiling for the
-      first alone.
+- [ ] **The interpreter's fetch below M is now its cost.** The data
+      TLB serves the interpreter's loads and stores too, and took
+      sv32bench's paged run from 370 ms to 331 -- against 129 bare --
+      because every fetch still translates and checks PMP. An execute
+      table beside the two data ones would be the same structure;
+      what it would buy has not been measured.
+- [ ] **SFENCE.VMA naming an address leaves a megapage's other pages
+      cached**, in the TLB and the data TLB both. Each caches a
+      megapage a 4 KiB page at a time, and the fence clears the one
+      it names -- where the privileged spec invalidates every entry
+      that *contains the leaf* for that address, which is all of
+      them. Linux changes megapage leaves with range or global
+      flushes, so nothing here has shown it; an isatest case would.
+- [ ] **A probe is about 60 bytes on x86-64** -- a load is 99 with its
+      slow path, of which the call is about 40 -- and grew a Linux
+      guest's blocks by half (645 bytes to
+      977, [linux.md](linux.md#benchmarks)). `rel8` branches, a SIB
+      operand off `rbx` and `movzx` for a 256-entry mask would take
+      roughly a third off; a shared slow-path stub, as Thumb-2 has,
+      more. Measure the login boot at 32 MB after, which is where it
+      showed.
 - [ ] **A display under Linux.** The framebuffer device exists
       ([games.md](games.md)); nothing in the device tree describes it to
       a kernel.

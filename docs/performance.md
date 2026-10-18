@@ -122,7 +122,7 @@ it survives in a new place: then the JIT lost to the interpreter at
 
 The section above is the board. This is the host runner, which is a
 different question: there the JIT competes with a 216 MHz M7 and a code
-cache measured in tens of kilobytes, here it has 32 MB and an
+cache measured in tens of kilobytes, here it has 64 MB and an
 out-of-order superscalar to emit for.
 
 RV32 CoreMark, each row run long enough for CoreMark to call it valid:

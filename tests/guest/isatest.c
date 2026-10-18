@@ -1584,6 +1584,8 @@ static void test_pmp_exec(void)
 #define MSTATUS_SPIE 0x00000020u
 #define MSTATUS_MIE 0x00000008u
 #define MSTATUS_SUM 0x00040000u
+#define MSTATUS_MXR 0x00080000u
+#define MSTATUS_MPRV 0x00020000u
 #define MSTATUS_TW 0x00200000u
 #define MSTATUS_TSR 0x00400000u
 
@@ -4563,6 +4565,305 @@ static void test_split_access(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* The data TLB                                                        */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Below M the emulator caches, per page and per privilege, whether a load
+ * or store is a plain host access -- the translation, PMP and the region
+ * answered once for the whole page (include/emu/emu_dtlb.h). Any access
+ * that succeeds the slow way may fill an entry, on either backend.
+ *
+ * So every case here first *makes* an entry and then changes exactly one
+ * thing it depends on, and asks again. The Sv32 checks above change the
+ * thing first and ask once, which is right for what they test and cannot
+ * see a stale entry: SUM, for one, is tested there in the order -- denied,
+ * then granted -- that passes whether or not a granted answer is kept.
+ */
+#define VA_XO 0x90006000u /* execute-only: readable through MXR alone */
+#define USTUB_OFF 0x100u  /* the U-mode stub in EXEC1, clear of the     */
+                          /* execute test's two words                   */
+
+/*
+ * A second address space: g_root, but with the 4 MiB holding g_page in
+ * 4 KiB pages, page 0 replaced by page 2 and EXEC1 a user page. The
+ * U-mode stub runs from it at its physical address because the trap
+ * handler reads a faulting instruction from M-mode, untranslated: from a
+ * virtual address it takes a second fault of its own.
+ */
+static uint32_t g_root2[1024] __attribute__((aligned(4096)));
+static uint32_t g_leaf2[1024] __attribute__((aligned(4096)));
+
+/*
+ * A word of the image, which is ROM: loads may be cached, stores never.
+ *
+ * The image's *first* word, because an entry is only ever made for a page
+ * that is entirely one thing, and the first page is: all of it is image,
+ * and no PMP entry lies across it. A lone constant lands in the last
+ * page, which is partly outside the ROM window -- and with one there, a
+ * TLB that let ROM be written passed. A page-aligned array of its own
+ * would also do, at up to 12 KB of padding in an image a board embeds.
+ */
+extern const uint32_t _start[]; /* a word array: as a char[] it is not
+                                   known to be aligned, and the store
+                                   below became four byte stores */
+#define ROM_WORD (*(volatile uint32_t *)(uintptr_t)_start)
+
+static volatile uint32_t g_dtlb[24];
+
+/*
+ * The one load the MPRV case runs, out of line so that every call enters
+ * the same translated block: lw a0, 0(a0) ; ret.
+ */
+__asm__(".pushsection .text\n"
+        ".balign 4\n"
+        "dtlb_mprv_load:\n"
+        "    lw   a0, 0(a0)\n"
+        "    ret\n"
+        ".popsection\n");
+extern const char dtlb_mprv_load[];
+
+/* M-mode, loading `addr` as MPRV makes it: at `mpp`, translated. */
+static uint32_t mprv_load(uint32_t addr, uint32_t mpp)
+{
+    uint32_t v;
+
+    __asm__ volatile("csrc mstatus, %[mask]\n"
+                     "csrs mstatus, %[on]\n"
+                     "mv   a0, %[addr]\n"
+                     "jalr ra, 0(%[fn])\n"
+                     "csrc mstatus, %[mprv]\n"
+                     "mv   %[out], a0\n"
+                     : [out] "=r"(v)
+                     : [mask] "r"(MSTATUS_MPP_MASK),
+                       [on] "r"(MSTATUS_MPRV | mpp), [mprv] "r"(MSTATUS_MPRV),
+                       [addr] "r"(addr), [fn] "r"(dtlb_mprv_load)
+                     : "a0", "ra", "memory");
+    return v;
+}
+
+static void smode_dtlb(void)
+{
+    const uint32_t p = page_pa(PAGE_DATA);
+    uint32_t before, v, sc;
+
+    /* An SFENCE.VMA naming the page, after it was used. */
+    g_dtlb[0] = *(volatile uint32_t *)VA_RW;
+    g_leaf[VPN0(VA_RW)] = leaf_pte(page_pa(PAGE_EXEC2),
+                                   PTE_V | PTE_R | PTE_W | PTE_A | PTE_D);
+    __asm__ volatile("sfence.vma %0, zero" ::"r"(VA_RW) : "memory");
+    g_dtlb[1] = *(volatile uint32_t *)VA_RW;
+    g_leaf[VPN0(VA_RW)] =
+        leaf_pte(p, PTE_V | PTE_R | PTE_W | PTE_A | PTE_D);
+    __asm__ volatile("sfence.vma %0, zero" ::"r"(VA_RW) : "memory");
+
+    /* SUM granted, the page read, SUM taken away. */
+    csr_set("sstatus", MSTATUS_SUM);
+    g_dtlb[2] = *(volatile uint32_t *)VA_USER;
+    csr_clear("sstatus", MSTATUS_SUM);
+    before = g_trap_count;
+    (void)*(volatile uint32_t *)VA_USER;
+    g_dtlb[3] = g_trap_count - before;
+    g_dtlb[4] = g_last_cause;
+
+    /* MXR, the same shape. */
+    csr_set("sstatus", MSTATUS_MXR);
+    g_dtlb[5] = *(volatile uint32_t *)VA_XO;
+    csr_clear("sstatus", MSTATUS_MXR);
+    before = g_trap_count;
+    (void)*(volatile uint32_t *)VA_XO;
+    g_dtlb[6] = g_trap_count - before;
+    g_dtlb[7] = g_last_cause;
+
+    /* Another address space, under another ASID: page 0 is page 2 there. */
+    g_dtlb[8] = *(volatile uint32_t *)p;
+    csr_write("satp", SATP_SV32 | (1u << 22) |
+                          ((uint32_t)(uintptr_t)g_root2 >> 12));
+    g_dtlb[9] = *(volatile uint32_t *)p;
+    csr_write("satp", SATP_SV32 | ((uint32_t)(uintptr_t)g_root >> 12));
+
+    /* ROM: read, so there is an entry, and then written. */
+    g_dtlb[10] = ROM_WORD;
+    before = g_trap_count;
+    ROM_WORD = ~g_dtlb[10];
+    g_dtlb[11] = g_trap_count - before;
+    g_dtlb[12] = g_last_cause;
+    g_dtlb[13] = ROM_WORD ^ g_dtlb[10]; /* zero if nothing moved */
+
+    /*
+     * A plain store between LR and SC, to a page with an entry -- page 0
+     * through VA_RW, not a global: the page holding the globals has a
+     * locked PMP entry in it, from test_pmp, and so never gets one.
+     */
+    *(volatile uint32_t *)(VA_RW + 0x40u) = 7u;
+    __asm__ volatile("lr.w %0, (%2)\n\t"
+                     "sw %3, 0(%2)\n\t"
+                     "sc.w %1, %4, (%2)"
+                     : "=&r"(v), "=&r"(sc)
+                     : "r"(VA_RW + 0x40u), "r"(9u), "r"(42u)
+                     : "memory");
+    g_dtlb[14] = sc;
+    g_dtlb[15] = *(volatile uint32_t *)(VA_RW + 0x40u);
+
+    /*
+     * Misaligned, out of a page with an entry and into the next. An
+     * entry vouches for aligned accesses only; taken for this one, it
+     * reads the next *physical* page, which is page 1, not page 0.
+     */
+    (void)*(volatile uint32_t *)VA_SPLIT_A;
+    before = g_trap_count;
+    v = 0x5A5A5A5Au;
+    __asm__ volatile("lw %0, 0(%1)" : "+r"(v) : "r"(VA_SPLIT_B - 2u));
+    g_dtlb[16] = v;
+    g_dtlb[17] = g_trap_count - before;
+
+    LEAVE_SMODE();
+}
+
+static void test_dtlb(void)
+{
+    const uint32_t p = page_pa(PAGE_DATA);
+    const uint32_t rwad = PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
+    const char *const ustub = (const char *)(page_pa(PAGE_EXEC1) + USTUB_OFF);
+    uint32_t before;
+
+    csr_write("medeleg", 0u);
+    csr_clear("mstatus", MSTATUS_SUM | MSTATUS_MXR | MSTATUS_MPRV);
+
+    g_page[0] = 0xD0D0D0D0u;
+    g_page[2048] = 0x2222D2D2u; /* the execute test is done with it */
+    g_page[0x3FF] = 0x0403E1E1u; /* page 0's last word */
+    g_page[1024] = 0x0C0B1111u;  /* page 1's first */
+
+    g_leaf[VPN0(VA_RW)] = leaf_pte(p, rwad);
+    g_leaf[VPN0(VA_USER)] = leaf_pte(p, rwad | PTE_U);
+    g_leaf[VPN0(VA_XO)] = leaf_pte(p, PTE_V | PTE_X | PTE_A);
+    g_leaf[VPN0(VA_SPLIT_A)] = leaf_pte(p, rwad);
+    g_leaf[VPN0(VA_SPLIT_B)] = leaf_pte(page_pa(PAGE_EXEC2), rwad);
+
+    /* below_m_load, for U-mode: lw t0, 0(a0) ; ecall. */
+    g_page[1024 + USTUB_OFF / 4u] = 0x00052283u;
+    g_page[1024 + USTUB_OFF / 4u + 1u] = 0x00000073u;
+    __asm__ volatile("fence.i" ::: "memory");
+
+    for (uint32_t i = 0; i < 1024u; i++) {
+        g_root2[i] = g_root[i];
+        g_leaf2[i] = leaf_pte((p & ~0x3FFFFFu) + (i << 12),
+                              rwad | PTE_X);
+    }
+    g_leaf2[VPN0(p)] = leaf_pte(page_pa(PAGE_EXEC2), rwad);
+    g_leaf2[VPN0(page_pa(PAGE_EXEC1))] =
+        leaf_pte(page_pa(PAGE_EXEC1), PTE_V | PTE_R | PTE_X | PTE_U | PTE_A);
+    g_root2[VPN1(p)] = leaf_pte((uint32_t)(uintptr_t)g_leaf2, PTE_V);
+
+    csr_write("satp", SATP_SV32 | ((uint32_t)(uintptr_t)g_root >> 12));
+    __asm__ volatile("sfence.vma" ::: "memory");
+    enter_smode(smode_dtlb);
+
+    check("dtlb-fill", g_dtlb[0], 0xD0D0D0D0u);
+    check("dtlb-sfence-page", g_dtlb[1], 0x2222D2D2u);
+    check("dtlb-sum-load", g_dtlb[2], 0xD0D0D0D0u);
+    check("dtlb-nosum-traps", g_dtlb[3], 1u);
+    check("dtlb-nosum-cause", g_dtlb[4], 13u);
+    check("dtlb-mxr-load", g_dtlb[5], 0xD0D0D0D0u);
+    check("dtlb-nomxr-traps", g_dtlb[6], 1u);
+    check("dtlb-nomxr-cause", g_dtlb[7], 13u);
+    check("dtlb-asid0", g_dtlb[8], 0xD0D0D0D0u);
+    check("dtlb-asid1", g_dtlb[9], 0x2222D2D2u);
+    check("dtlb-rom-load", g_dtlb[10], _start[0]);
+    check("dtlb-rom-store-traps", g_dtlb[11], 1u);
+    check("dtlb-rom-store-cause", g_dtlb[12], 7u);
+    check("dtlb-rom-unchanged", g_dtlb[13], 0u);
+    check("dtlb-sc-broken", g_dtlb[14] != 0u, 1u);
+    check("dtlb-sc-nostore", g_dtlb[15], 9u);
+#if RV32_MISALIGNED
+    /* Page 0's last two bytes, then page 2's first two -- not page 1's. */
+    check("dtlb-split-value", g_dtlb[16], 0xD2D20403u);
+    check("dtlb-split-notrap", g_dtlb[17], 0u);
+#else
+    check("dtlb-split-traps", g_dtlb[17], 1u);
+#endif
+
+    /*
+     * One table per privilege. S fills its entry for an S page, and U
+     * must not find it; U fills its entry for a U page, and S without
+     * SUM must not find that. Each run ends in an ecall, which is a trap
+     * too: a fault makes it two, and the fault's cause is the previous.
+     * In the second address space, where the U stub can run.
+     */
+    csr_write("satp", SATP_SV32 | (1u << 22) |
+                          ((uint32_t)(uintptr_t)g_root2 >> 12));
+    (void)run_below_m(below_m_load, 1u, VA_RW);
+    before = g_trap_count;
+    (void)run_below_m(ustub, 0u, VA_RW);
+    check("dtlb-u-after-s-traps", g_trap_count - before, 2u);
+    check("dtlb-u-after-s-cause", g_prev_cause, 13u);
+
+    (void)run_below_m(ustub, 0u, VA_USER);
+    before = g_trap_count;
+    (void)run_below_m(below_m_load, 1u, VA_USER);
+    check("dtlb-s-after-u-traps", g_trap_count - before, 2u);
+    check("dtlb-s-after-u-cause", g_prev_cause, 13u);
+
+#if RV32_EXT_PMP
+    /*
+     * PMP taking the page away after S used it, through entry 10, by each
+     * of the two writes that can: the config, with the address already
+     * in place, and then the address, with the config already on. Doing
+     * both at once would let either flush stand in for the other.
+     */
+    csr_write("pmpaddr10", (p >> 2) | 0x1FFu); /* NAPOT 4 KiB, still OFF */
+    (void)run_below_m(below_m_load, 1u, VA_RW);
+    csr_write("pmpcfg2", 0x180000u); /* NAPOT, --- */
+    before = g_trap_count;
+    (void)run_below_m(below_m_load, 1u, VA_RW);
+    check("dtlb-pmpcfg-traps", g_trap_count - before, 2u);
+    check("dtlb-pmpcfg-cause", g_prev_cause, 5u);
+
+    csr_write("pmpaddr10", (page_pa(PAGE_EXEC2) >> 2) | 0x1FFu);
+    before = g_trap_count;
+    (void)run_below_m(below_m_load, 1u, VA_RW);
+    check("dtlb-pmpaddr-away-ok", g_trap_count - before, 1u);
+    csr_write("pmpaddr10", (p >> 2) | 0x1FFu);
+    before = g_trap_count;
+    (void)run_below_m(below_m_load, 1u, VA_RW);
+    check("dtlb-pmpaddr-traps", g_trap_count - before, 2u);
+    check("dtlb-pmpaddr-cause", g_prev_cause, 5u);
+
+    /* ...and over four bytes of it: the rest is allowed, those are not. */
+    csr_write("pmpcfg2", 0u);
+    csr_write("pmpaddr10", (p + 0x800u) >> 2);
+    csr_write("pmpcfg2", 0x100000u); /* NA4, --- */
+    before = g_trap_count;
+    (void)run_below_m(below_m_load, 1u, VA_RW);
+    check("dtlb-pmp-part-ok", g_trap_count - before, 1u);
+    before = g_trap_count;
+    (void)run_below_m(below_m_load, 1u, VA_RW + 0x800u);
+    check("dtlb-pmp-part-traps", g_trap_count - before, 2u);
+    check("dtlb-pmp-part-cause", g_prev_cause, 5u);
+    csr_write("pmpcfg2", 0u);
+    csr_write("pmpaddr10", 0u);
+#endif
+
+    /*
+     * MPRV, in M-mode: the same load, made at S and then at U. A
+     * translated block names the table it probes, so the one built for
+     * S must not be the one run for U -- which the interpreter, asking
+     * the privilege at every access, cannot get wrong.
+     */
+    for (uint32_t i = 0; i < 8u; i++) {
+        (void)mprv_load(VA_RW, MSTATUS_MPP_S);
+    }
+    check("dtlb-mprv-s", mprv_load(VA_RW, MSTATUS_MPP_S), 0xD0D0D0D0u);
+    before = g_trap_count;
+    (void)mprv_load(VA_RW, 0u);
+    check("dtlb-mprv-u-traps", g_trap_count - before, 1u);
+    check("dtlb-mprv-u-cause", g_last_cause, 13u);
+
+    csr_write("satp", 0u);
+}
+
+/* ------------------------------------------------------------------ */
 
 int main(void)
 {
@@ -4616,6 +4917,7 @@ int main(void)
     test_double_alignment();
 #endif
     test_split_access();
+    test_dtlb();
     test_timer_interrupt();
 
     puts_("checks   ");

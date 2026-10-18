@@ -116,6 +116,14 @@ extern const emu_backend_t rv_backend_jit;
  * The accrued flags share fcsr with frm and are not specialised on, so
  * they are not here either.
  *
+ * Bits 37:36 are the privilege loads and stores are made at, which MPRV
+ * can make differ from the one in 21:20. A block names one data TLB
+ * table, and the RAM window is only legal while data accesses are
+ * M-mode's, so both are specialised on it. Before the TLB this was a
+ * latent gap rather than a live one: an M-mode block that inlined the
+ * window, entered again after the guest set MPRV, would have read
+ * physical memory where MPP's translation was due.
+ *
  * **In this header so that rv_hart_trap can call it.** It used to be
  * static in rv_ir.c and refreshed only on the interpreter fallback, on
  * the argument that every privilege change is an instruction the
@@ -136,6 +144,9 @@ static inline uint64_t rv_jit_ctx_key(const rv_hart_t *h)
     const uint32_t frm = (h->fcsr >> 5) & 7u;
 
     key |= (uint64_t)((fs_off << 3) | frm) << 32;
+#endif
+#if RV_EXT_U
+    key |= (uint64_t)rv_hart_data_priv(h) << 36;
 #endif
     return key;
 }

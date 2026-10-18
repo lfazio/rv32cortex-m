@@ -63,6 +63,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "emu/emu_dtlb.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -694,6 +696,27 @@ typedef struct emu_ir_fastmem {
 } emu_ir_fastmem_t;
 
 /*
+ * A data TLB a backend may probe inline -- see emu_dtlb.h.
+ *
+ * The other way to reach guest RAM without a call, for when there is no
+ * window because paging or PMP is armed. One table, chosen by the
+ * frontend at translation from state the block's context already
+ * carries (for RISC-V, the privilege a load or store is made at), so
+ * the probe is a constant offset from the cpu pointer. A miss, a
+ * misaligned access, or a store while the guard byte is set, goes to the
+ * helper -- which is also what fills the table.
+ *
+ * The frontend owns every invalidation. A backend has nothing to keep
+ * consistent: it reads the table each time, so an entry cleared between
+ * two block entries is a miss at the next access.
+ */
+typedef struct emu_ir_dtlb {
+    uint32_t table_offset; /* of entry 0, from the emu_cpu_t pointer */
+    uint32_t index_mask;   /* entries - 1; entries a power of two    */
+    uint32_t store_guard_offset;
+} emu_ir_dtlb_t;
+
+/*
  * The peripheral window, which a backend may also access inline.
  *
  * Identity-mapped -- the guest's address *is* the host's -- so it is the
@@ -770,6 +793,10 @@ typedef struct emu_ir_block {
      */
     emu_ir_fastmem_t fast;
     bool has_fast;
+
+    /* Otherwise, perhaps, a TLB to probe. Never both. */
+    emu_ir_dtlb_t dtlb;
+    bool has_dtlb;
 
     /* The peripheral window, likewise, and only while armed. */
     emu_ir_ptwin_t pt;

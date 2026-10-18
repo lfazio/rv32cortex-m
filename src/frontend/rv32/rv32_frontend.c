@@ -671,6 +671,35 @@ static void rv32_dump(const emu_cpu_t *cpu, emu_print_fn out, void *ctx)
     out(ctx, "\n");
 }
 
+/*
+ * The frontend's own counters, at the end of a run.
+ *
+ * The data TLB first: it is what every load and store below M goes
+ * through, and a fill count of zero on a guest that ran in S-mode means
+ * every one of them took the slow path -- which no test result shows,
+ * because the slow path is correct. Said only when there was something to
+ * fill, so an M-mode guest's report is what it was.
+ */
+static void rv32_report(emu_print_fn out, void *ctx)
+{
+#if RV_HAVE_DTLB
+    if (g_hart.dtlb_fills != 0u) {
+        char db[21];
+
+        out(ctx, "\n-- dtlb --\n  fills    ");
+        out(ctx, dec64(db, g_hart.dtlb_fills));
+        out(ctx, "  flushes ");
+        out(ctx, dec64(db, g_hart.dtlb_flushes));
+        out(ctx, "\n");
+    }
+#endif
+#if EMU_PAIR_STATS
+    rv_ext_report(out, ctx); /* which extensions the guest executed */
+#endif
+    (void)out;
+    (void)ctx;
+}
+
 /* ------------------------------------------------------------------ */
 /* The table                                                           */
 /* ------------------------------------------------------------------ */
@@ -704,9 +733,7 @@ const emu_cpu_ops_t rv32_frontend = {
     .set_cache = rv32_set_cache,
     .halt = rv32_halt,
 
-#if EMU_PAIR_STATS
-    .report = rv_ext_report, /* which extensions the guest executed */
-#endif
+    .report = rv32_report,
     .status = rv32_status,
     .nregs = 32u,
     .reg_name = rv_reg_name,

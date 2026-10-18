@@ -776,6 +776,7 @@ if(EMU_GUEST_ARCH_RV32)
         src/frontend/rv32/rv_interp.c
         src/frontend/rv32/rv_pmp.c
         src/frontend/rv32/rv_mmu.c
+        src/frontend/rv32/rv_dtlb.c
         src/frontend/rv32/rv_trig.c
         src/frontend/rv32/rv_gdb.c
     )

@@ -328,11 +328,20 @@ session, and every one of them recurred:
   twice from one `-D`: the same kernel in M-mode under Bare and in
   S-mode under an identity-mapped Sv32. Identical retired counts and
   block entries, so it isolates the per-access call -- **JIT 21 ms
-  against 85 ms, 4.0x**. But the *interpreter* pays 2.7x across the
-  same move while inlining nothing either way, so most of that gap is
-  translation and permission work a probe would still do. **4.0x is the
-  ceiling, not the prize**, and quoting it as what a TLB probe recovers
-  would be the same error as attributing Quake's ratio to SoftFloat.
+  against 85 ms, 4.0x**.
+
+  **This entry said 4.0x was the ceiling and not the prize, and the
+  prize was all of it.** The argument: the interpreter pays 2.7x across
+  the same move while inlining nothing, so most of the gap must be
+  translation and permission work a probe would still do. A cache does
+  that work per *page*, not per access; built (`rv_dtlb.c`), the paged
+  run is 21.4 ms against bare's 21.5, and 142 to 9.5 host cycles an
+  instruction on the F746. The interpreter's 2.7x was mostly its fetch
+  path, which a data table does not touch. Callgrind would have said
+  so before the estimate was written: 31.6% of the paged run was
+  `rv_pmp_check`, 19.5% `rv_mmu_translate`, 10% translated code. **An
+  estimate built from two backends' totals is a guess about how each
+  total divides** -- split it by function first.
 - **Inlining a memory access is only sound while nothing can deny it.** That
   holds in M-mode with no locked PMP entry, and stops holding below M, where
   matching no entry *denies* rather than permits. `pmp_active` therefore
@@ -3469,6 +3478,46 @@ session, and every one of them recurred:
   section. **Before modelling what a signal does, look up what it is
   connected to**, and read the destination's reset configuration as
   part of the answer.
+
+- **A cache that refuses silently is tested only by an entry it will
+  hold.** The data TLB fills a page only when the whole page has one
+  answer, and refusing is correct and invisible. Three of sixteen
+  mutants passed the first version of its test, and in each case the
+  fill was right: the reservation case used a global in a page holding
+  a locked PMP entry from `test_pmp`, and the ROM case a constant in the
+  image's last page, which the ROM window covers only in part. Both
+  checks ran the slow path whatever the probe did. A fourth defect was
+  the test's own: `extern const char _start[]` read as a word compiled
+  to four byte accesses, because a `char` array is not known to be
+  aligned, and one store became four faults. **Before believing a cache
+  test, show the cache served it** -- `-- dtlb -- fills` is in the stats
+  line for that.
+
+- **Emitted code that grows is a regression only the largest workload
+  can show, and under a wall clock it looks like the guest doing more.**
+  The data TLB improved every figure measured -- sv32bench 4.2x, CoreMark
+  as a Linux process 6.25x, the initramfs boot 2x -- and made Yocto's
+  login prompt slower, 64 s to 91. Inlining the probe grew the average
+  block from 645 bytes to 977, udev's ~50,000-block working set left the
+  32 MB buffer, and compactions went from 8 to 282. The tell was not a
+  JIT counter first: the guest *retired 55% more instructions* to reach
+  the same prompt, because its clock is the host's and every second
+  spent retranslating is a second of timer-driven work. Not contention
+  either: pinned to an idle core it held. At 64 MB it is 48 s, against
+  62.9 for the parent at the same size. **After a change that grows
+  code, run the workload that fills the buffer, and read `compact`
+  before reading the time.**
+
+- **What the interpreter's CSR and SFENCE paths call ends up in its
+  loop.** The TLB's flush functions, reached from `rv_csr_write` and the
+  SFENCE.VMA case, were inlined by LTO into the RV32 interpreter, which
+  is one function; its register allocator then gave the fetched
+  halfword a stack slot, and an M-mode guest that never touches the
+  table paid 2% (65.11M host instructions to 66.47M on CoreMark).
+  `EMU_NOINLINE` on the three entry points: 64.96M. The same shape as
+  PowerPC's reservation code in its switch, in the next frontend. **New
+  code reachable from an interpreter's rare cases goes out of line by
+  default**, and callgrind on an M-mode guest is the check.
 
 ## Conventions
 

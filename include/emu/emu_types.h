@@ -124,12 +124,20 @@ typedef void (*emu_print_fn)(void *ctx, const char *s);
  * them -- 8% more instructions in that function, measured.
  */
 #define EMU_COLD_NOINLINE __attribute__((noinline, cold))
+/*
+ * Out of line and *not* cold: the half of a hot function that one class
+ * of guest runs all the time and another never does -- every access
+ * under an operating system, none in M-mode. Kept out of the caller for
+ * the same reason as above, without telling the compiler it is rare.
+ */
+#define EMU_NOINLINE __attribute__((noinline))
 #else
 #define EMU_LIKELY(x) (x)
 #define EMU_UNLIKELY(x) (x)
 #define EMU_HOT
 #define EMU_ALWAYS_INLINE inline
 #define EMU_COLD_NOINLINE
+#define EMU_NOINLINE
 #endif
 
 /*

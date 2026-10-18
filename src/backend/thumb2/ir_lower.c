@@ -316,6 +316,9 @@ static EMU_PER_CORE uint32_t g_nexits;
  */
 static EMU_PER_CORE emu_ir_fastmem_t g_fast;
 static EMU_PER_CORE bool g_has_fast;
+/* Or the data TLB it may probe instead -- see emu_ir_dtlb_t. */
+static EMU_PER_CORE emu_ir_dtlb_t g_dtlb;
+static EMU_PER_CORE bool g_has_dtlb;
 /* The peripheral window, when the block was translated armed. */
 static EMU_PER_CORE emu_ir_ptwin_t g_pt;
 static EMU_PER_CORE bool g_has_pt;
@@ -477,6 +480,65 @@ static uint32_t emit_window_guard(uint32_t base, uint32_t wsize,
 static uint32_t emit_fast_guard(uint32_t addr_reg, uint32_t size, uint8_t **out)
 {
     return emit_window_guard(g_fast.base, g_fast.size, addr_reg, size, out);
+}
+
+/*
+ * The data TLB probe, for an access whose address is in `addr`: branch to
+ * the slow path on a misaligned address, on a store while the guard byte
+ * is set, or on a miss, and otherwise leave the entry's addend in r12 --
+ * so the access is `[r12, addr]`. Uses r0, r2 and r12, which an access
+ * leaves free until its slow path; returns how many branches it wrote.
+ *
+ *     tst.w addr, #size-1 ; bne slow
+ *     lsr.w r2, addr, #12 ; and.w r0, r2, #mask
+ *     add.w r0, r4, r0, lsl #4
+ *     ldr.w r12, [r0, #table + tag] ; cmp r12, r2 ; bne slow
+ *     ldr.w r12, [r0, #table + addend]
+ *
+ * The page number is the index and the tag at once, which is why it is
+ * computed once into r2 and compared whole.
+ */
+static uint32_t emit_dtlb_probe(uint32_t addr, uint32_t size, bool store,
+                                uint8_t **out)
+{
+    uint32_t n = 0u;
+    uint32_t off = g_dtlb.table_offset;
+    uint16_t enc;
+
+    if (size > 1u) {
+        (void)t2_tst_imm8(addr, size - 1u);
+        out[n++] = t2_bcond_forward_n(0x1u); /* NE */
+    }
+    /* See the same guard in STORE: a byte, and before r0 is spoken for. */
+    if (store && g_dtlb.store_guard_offset != EMU_IR_NO_GUARD) {
+        t2_ldrb_imm(T2_R0, T2_CPU, g_dtlb.store_guard_offset);
+        (void)t2_cmp_imm8(T2_R0, 0u);
+        out[n++] = t2_bcond_forward_n(0x1u); /* NE */
+    }
+
+    t2_shift_imm(T2_LSR, T2_R2, addr, EMU_DTLB_PAGE_SHIFT);
+    if (t2_expand_imm(g_dtlb.index_mask, &enc)) {
+        t2_and_imm(T2_R0, T2_R2, enc);
+    } else {
+        /* A mask too wide for a modified immediate: keep the low bits. */
+        const uint32_t bits = 32u - (uint32_t)__builtin_popcount(g_dtlb.index_mask);
+
+        t2_shift_imm(T2_LSL, T2_R0, T2_R2, bits);
+        t2_shift_imm(T2_LSR, T2_R0, T2_R0, bits);
+    }
+    t2_add_lsl(T2_R0, T2_CPU, T2_R0, 4u); /* sizeof(emu_dtlb_entry_t) */
+    /* LDR.W reaches 4095; past that, move the base instead. */
+    if (off + EMU_DTLB_OFF_ADDEND > 4095u) {
+        emit_pooled(T2_R12, off);
+        t2_add(T2_R0, T2_R0, T2_R12);
+        off = 0u;
+    }
+    t2_ldr_imm(T2_R12, T2_R0,
+               off + (store ? EMU_DTLB_OFF_WRITE : EMU_DTLB_OFF_READ));
+    t2_cmp(T2_R12, T2_R2);
+    out[n++] = t2_bcond_forward_n(0x1u); /* NE */
+    t2_ldr_imm(T2_R12, T2_R0, off + EMU_DTLB_OFF_ADDEND);
+    return n;
 }
 
 /* r12 = the peripheral window's base, which is also its host address. */
@@ -2093,6 +2155,22 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                 }
                 patch_branch_n(pslow[0], emu_jit_here(), true);
             }
+        } else if (g_has_dtlb) {
+            const uint32_t sz = EMU_IR_MEM_SIZE(in->aux);
+            const bool sign = (in->aux & EMU_IR_MEM_SIGNED) != 0u;
+            uint8_t *slow[3];
+            const uint32_t n = emit_dtlb_probe(T2_R1, sz, false, slow);
+            const uint32_t rt = (pd >= 0) ? (uint32_t)pd : T2_R0;
+
+            if (t2_ld_reg(rt, T2_R12, T2_R1, sz, sign)) {
+                if (pd < 0) {
+                    st_slot(T2_R0, in->dst);
+                }
+                ldone = t2_b_forward_n();
+            }
+            for (uint32_t i = 0; i < n; i++) {
+                patch_branch_n(slow[i], emu_jit_here(), true);
+            }
         }
 
         /* The slow path: the shared stub, which returns the value in r0. */
@@ -2180,6 +2258,17 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                 }
             }
             patch_branch_n(resv, emu_jit_here(), true);
+        } else if (g_has_dtlb) {
+            const uint32_t sz = EMU_IR_MEM_SIZE(in->aux);
+            uint8_t *slow[3];
+            const uint32_t n = emit_dtlb_probe(T2_R1, sz, true, slow);
+
+            if (t2_st_reg(T2_R3, T2_R12, T2_R1, sz)) {
+                sdone = t2_b_forward_n();
+            }
+            for (uint32_t i = 0; i < n; i++) {
+                patch_branch_n(slow[i], emu_jit_here(), true);
+            }
         }
 
         /* The slow path: the shared stub, value already in r3. */
@@ -2287,6 +2376,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_nexits = 0u;
     g_exits_lost = false;
     g_has_fast = b->has_fast;
+    g_has_dtlb = !b->has_fast && b->has_dtlb;
+    g_dtlb = b->dtlb;
     g_fast = b->fast;
     g_has_pt = b->has_fast && b->has_pt;
     g_pt = b->pt;

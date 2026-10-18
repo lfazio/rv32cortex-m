@@ -142,6 +142,17 @@ void rv_hart_reset(rv_hart_t *h, uint32_t reset_pc)
     h->pmp_active = false;
 #endif
 
+#if RV_HAVE_DTLB
+    /*
+     * The PMP and translation it was built from are gone, and so may the
+     * region table be: a reload rebuilds the bus before it resets. Its
+     * own counters go too, so a reloaded guest's line is its own.
+     */
+    rv_dtlb_flush(h);
+    h->dtlb_fills = 0u;
+    h->dtlb_flushes = 0u;
+#endif
+
 #if RV_EXT_A
     h->resv_valid = false;
     h->resv_addr = 0u;
@@ -719,6 +730,119 @@ EMU_COLD_NOINLINE static rv_exc_t store_split(rv_hart_t *h, uint32_t va,
 #endif /* RV_MISALIGNED_OK && RV_EXT_SV32 */
 
 /*
+ * Whether a data access has to be translated or checked at all. False for
+ * every guest that stays in M-mode without locking a PMP entry, which is
+ * the case rv_hart_load and rv_hart_store are shaped for.
+ */
+static EMU_ALWAYS_INLINE bool data_guarded(const rv_hart_t *h)
+{
+    bool g = false;
+#if RV_EXT_SV32
+    g = g | h->vm_active;
+#endif
+#if RV_EXT_PMP
+    g = g | h->pmp_active;
+#endif
+    return g;
+}
+
+#if RV_HAVE_DTLB
+/*
+ * The data TLB's entry for `va` at the hart's data privilege, or NULL --
+ * the same probe both JIT backends emit. Misaligned is a miss: an entry
+ * vouches for aligned accesses, which cannot leave its page.
+ */
+static EMU_ALWAYS_INLINE const emu_dtlb_entry_t *
+dtlb_probe(const rv_hart_t *h, uint32_t va, uint32_t size, bool store)
+{
+    const uint32_t priv = rv_hart_data_priv(h);
+    const uint32_t vpn = va >> EMU_DTLB_PAGE_SHIFT;
+
+    if (priv == RV_PRIV_M || (va & (size - 1u)) != 0u) {
+        return NULL;
+    }
+    const emu_dtlb_entry_t *const e =
+        &h->dtlb[rv_dtlb_table(priv)][vpn & (RV_DTLB_ENTRIES - 1u)];
+
+    return ((store ? e->write : e->read) == vpn) ? e : NULL;
+}
+#endif
+
+/*
+ * A load under paging or PMP. Out of line so that the unguarded path --
+ * every access of an M-mode guest -- keeps the frame it had; not cold,
+ * because under an operating system it is every access.
+ */
+EMU_NOINLINE static rv_exc_t load_guarded(rv_hart_t *h, uint32_t addr,
+                                          uint32_t size, bool sign_extend,
+                                          uint32_t *out)
+{
+    uint32_t v;
+
+#if RV_HAVE_DTLB
+    const uint32_t va = addr;
+    const emu_dtlb_entry_t *const e = dtlb_probe(h, va, size, false);
+
+    if (e != NULL) {
+        const uint8_t *const p = (const uint8_t *)(va + e->addend);
+
+        if (size == 1u) {
+            v = *p;
+        } else if (size == 2u) {
+            uint16_t w;
+
+            memcpy(&w, p, 2u);
+            v = w;
+        } else {
+            memcpy(&v, p, 4u);
+        }
+        goto done;
+    }
+#endif
+#if RV_EXT_SV32
+    /*
+     * Translate before PMP: PMP describes physical memory, so it has to
+     * see the address the bus will.
+     */
+    if (h->vm_active) {
+#if RV_MISALIGNED_OK
+        /*
+         * Across a page boundary, which only a misaligned access can
+         * be. Asked here, under vm_active, so a guest that never turns
+         * paging on does not pay for the question.
+         */
+        if (EMU_UNLIKELY((addr & 0xFFFu) + size > 0x1000u)) {
+            return load_split(h, addr, size, sign_extend, out);
+        }
+#endif
+        const rv_exc_t texc = rv_mmu_translate(h, addr, EMU_ACC_LOAD, &addr);
+        if (EMU_UNLIKELY(texc != RV_EXC_NONE)) {
+            return texc;
+        }
+    }
+#endif
+#if RV_EXT_PMP
+    if (h->pmp_active && !rv_pmp_check(h, addr, size, EMU_ACC_LOAD)) {
+        return RV_EXC_LOAD_ACCESS_FAULT;
+    }
+#endif
+
+    const emu_fault_t f = emu_bus_read(h->bus, addr, size, &v);
+    if (EMU_UNLIKELY(f != EMU_FAULT_NONE)) {
+        return rv_exc_from_fault(f);
+    }
+#if RV_HAVE_DTLB
+    rv_dtlb_fill(h, va, addr);
+done:
+#endif
+    if (sign_extend && size < 4u) {
+        v = (uint32_t)emu_sext(v, size * 8u);
+    }
+    *out = v;
+    return RV_EXC_NONE;
+}
+
+/*
  * Alignment is checked here rather than in the bus so the correct
  * misaligned-vs-access-fault cause can be reported, and so the bus can
  * assume aligned accesses on its fast paths.
@@ -737,34 +861,9 @@ rv_exc_t rv_hart_load(rv_hart_t *h, uint32_t addr, uint32_t size,
         return RV_EXC_BREAKPOINT;
     }
 #endif
-#if RV_EXT_SV32
-    /*
-     * Translate before PMP: PMP describes physical memory, so it has to
-     * see the address the bus will.
-     */
-    if (EMU_UNLIKELY(h->vm_active)) {
-#if RV_MISALIGNED_OK
-        /*
-         * Across a page boundary, which only a misaligned access can
-         * be. Asked here, under vm_active, so a guest that never turns
-         * paging on does not pay for the question.
-         */
-        if (EMU_UNLIKELY((addr & 0xFFFu) + size > 0x1000u)) {
-            return load_split(h, addr, size, sign_extend, out);
-        }
-#endif
-        const rv_exc_t texc = rv_mmu_translate(h, addr, EMU_ACC_LOAD, &addr);
-        if (EMU_UNLIKELY(texc != RV_EXC_NONE)) {
-            return texc;
-        }
+    if (EMU_UNLIKELY(data_guarded(h))) {
+        return load_guarded(h, addr, size, sign_extend, out);
     }
-#endif
-#if RV_EXT_PMP
-    if (EMU_UNLIKELY(h->pmp_active) &&
-        !rv_pmp_check(h, addr, size, EMU_ACC_LOAD)) {
-        return RV_EXC_LOAD_ACCESS_FAULT;
-    }
-#endif
 
     uint32_t v;
     const emu_fault_t f = emu_bus_read(h->bus, addr, size, &v);
@@ -1366,23 +1465,43 @@ rv_exc_t rv_hart_cbo(rv_hart_t *h, uint32_t op, uint32_t addr,
 
 #endif /* RV_EXT_ZICBOM || RV_EXT_ZICBOZ */
 
-rv_exc_t rv_hart_store(rv_hart_t *h, uint32_t addr, uint32_t size, uint32_t val)
+/* A store under paging or PMP: see load_guarded. */
+EMU_NOINLINE static rv_exc_t store_guarded(rv_hart_t *h, uint32_t addr,
+                                           uint32_t size, uint32_t val)
 {
-#if !RV_MISALIGNED_OK
-    if (EMU_UNLIKELY((addr & (size - 1u)) != 0u)) {
-        return RV_EXC_STORE_MISALIGNED;
-    }
+#if RV_HAVE_DTLB
+    const uint32_t va = addr;
+    /*
+     * Not while a reservation is outstanding: whether this store breaks
+     * it is a question about the *physical* address, which the entry
+     * does not keep. The JIT's inlined store declines on the same byte.
+     */
+#if RV_EXT_A
+    const emu_dtlb_entry_t *const e =
+        h->resv_valid ? NULL : dtlb_probe(h, va, size, true);
+#else
+    const emu_dtlb_entry_t *const e = dtlb_probe(h, va, size, true);
 #endif
 
-#if RV_EXT_SDTRIG
-    if (EMU_UNLIKELY(h->trig_active) && rv_trig_check(h, addr, EMU_ACC_STORE)) {
-        return RV_EXC_BREAKPOINT;
+    if (e != NULL) {
+        uint8_t *const p = (uint8_t *)(va + e->addend);
+
+        if (size == 1u) {
+            *p = (uint8_t)val;
+        } else if (size == 2u) {
+            const uint16_t w = (uint16_t)val;
+
+            memcpy(p, &w, 2u);
+        } else {
+            memcpy(p, &val, 4u);
+        }
+        return RV_EXC_NONE;
     }
 #endif
 #if RV_EXT_SV32
-    if (EMU_UNLIKELY(h->vm_active)) {
+    if (h->vm_active) {
 #if RV_MISALIGNED_OK
-        /* Across a page boundary: see rv_hart_load, and mem_wide for
+        /* Across a page boundary: see load_guarded, and mem_wide for
          * why this one matters more -- a store has something to leave
          * half done. */
         if (EMU_UNLIKELY((addr & 0xFFFu) + size > 0x1000u)) {
@@ -1396,11 +1515,43 @@ rv_exc_t rv_hart_store(rv_hart_t *h, uint32_t addr, uint32_t size, uint32_t val)
     }
 #endif
 #if RV_EXT_PMP
-    if (EMU_UNLIKELY(h->pmp_active) &&
-        !rv_pmp_check(h, addr, size, EMU_ACC_STORE)) {
+    if (h->pmp_active && !rv_pmp_check(h, addr, size, EMU_ACC_STORE)) {
         return RV_EXC_STORE_ACCESS_FAULT;
     }
 #endif
+
+#if RV_EXT_A
+    if (EMU_UNLIKELY(h->resv_valid && (addr & ~3u) == h->resv_addr)) {
+        h->resv_valid = false; /* as rv_hart_store does */
+    }
+#endif
+
+    const emu_fault_t f = emu_bus_write(h->bus, addr, size, val);
+    if (EMU_UNLIKELY(f != EMU_FAULT_NONE)) {
+        return rv_exc_from_fault(f);
+    }
+#if RV_HAVE_DTLB
+    rv_dtlb_fill(h, va, addr);
+#endif
+    return RV_EXC_NONE;
+}
+
+rv_exc_t rv_hart_store(rv_hart_t *h, uint32_t addr, uint32_t size, uint32_t val)
+{
+#if !RV_MISALIGNED_OK
+    if (EMU_UNLIKELY((addr & (size - 1u)) != 0u)) {
+        return RV_EXC_STORE_MISALIGNED;
+    }
+#endif
+
+#if RV_EXT_SDTRIG
+    if (EMU_UNLIKELY(h->trig_active) && rv_trig_check(h, addr, EMU_ACC_STORE)) {
+        return RV_EXC_BREAKPOINT;
+    }
+#endif
+    if (EMU_UNLIKELY(data_guarded(h))) {
+        return store_guarded(h, addr, size, val);
+    }
 
 #if RV_EXT_A
     /*

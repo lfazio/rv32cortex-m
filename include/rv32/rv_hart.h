@@ -15,6 +15,7 @@
 #include "emu/emu_bus.h"
 #include "emu/emu_cache.h"
 #include "emu/emu_cpu.h"
+#include "emu/emu_dtlb.h"
 #include "rv_csr.h"
 
 #ifdef __cplusplus
@@ -324,7 +325,29 @@ typedef struct rv_hart {
      * bind, cleared by reset. Cold, and at the end.
      */
     bool pt_armed;
+
+#if RV_HAVE_DTLB
+    /*
+     * The data TLB in host addresses, one table per privilege a load or
+     * store is made at below M: [0] U-mode, [1] S-mode -- see rv_dtlb.c
+     * for what may be filled and what clears it. Probed by both JIT
+     * backends inline and by the interpreter's guarded path; never by
+     * an M-mode access, which is why it can sit at the end.
+     */
+    emu_dtlb_entry_t dtlb[RV_DTLB_TABLES][RV_DTLB_ENTRIES];
+    /* What it did, for the stats line: an unread table is not a cache. */
+    uint32_t dtlb_fills;
+    uint32_t dtlb_flushes;
+#endif
 } rv_hart_t;
+
+#if RV_HAVE_DTLB
+/* The table a data access at `priv` (below M) probes. */
+static inline uint32_t rv_dtlb_table(uint32_t priv)
+{
+    return (RV_DTLB_TABLES == 1u || priv == RV_PRIV_U) ? 0u : 1u;
+}
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Lifecycle                                                           */
@@ -611,6 +634,44 @@ bool rv_pmp_check(const rv_hart_t *h, uint32_t addr, uint32_t size,
  * it to keep its inlined memory path when a guest arms PMP.
  */
 bool rv_pmp_simple(const rv_hart_t *h, uint32_t *lo, uint32_t *hi);
+
+/*
+ * What PMP grants every byte of the 4 KiB page at `page`, for a data
+ * access at `priv` below M -- or nothing, if the bytes do not all have
+ * the same answer. For the data TLB, which caches a page at a time.
+ */
+void rv_pmp_page_rights(const rv_hart_t *h, uint32_t page, uint32_t priv,
+                        bool *read, bool *write);
+#endif
+
+#if RV_HAVE_DTLB
+/*
+ * Empty both tables. Everything a data TLB entry depends on lands here
+ * or in rv_dtlb_flush_page when it changes: satp, SFENCE.VMA, the PMP
+ * configuration, reset.
+ */
+void rv_dtlb_flush(rv_hart_t *h);
+
+/* An SFENCE.VMA naming `va`: that page's entries, in every table. */
+void rv_dtlb_flush_page(rv_hart_t *h, uint32_t va);
+
+/*
+ * Offer the page an access just completed in: `va` translated to `pa`,
+ * at the data privilege the hart is at now. Fills an entry only if the
+ * answer is the same for every aligned access in the page and nothing
+ * that could change it goes unseen -- see rv_dtlb.c.
+ */
+void rv_dtlb_fill(rv_hart_t *h, uint32_t va, uint32_t pa);
+#endif
+
+#if RV_EXT_SV32 && RV_HAVE_DTLB
+/*
+ * What the leaf for `va` lets a data TLB cache at `priv`: false if
+ * nothing, else whether stores too. Asked just after `va` translated, so
+ * the leaf is the TLB's.
+ */
+bool rv_mmu_dtlb_rights(const rv_hart_t *h, uint32_t va, uint32_t priv,
+                        bool *writable);
 #endif
 
 #if RV_EXT_F

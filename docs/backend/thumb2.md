@@ -212,7 +212,7 @@ they follow the target (`EMU_HOST_JIT_THUMB2`):
 |---|---|---|
 | blocks, hash buckets | 256, 256 | 65,536 each |
 | block reserve | 512 bytes | 8192 |
-| code buffer | `EMU_JIT_CODE_BYTES`, default 32 KB | 32 MB |
+| code buffer | `EMU_JIT_CODE_BYTES`: 96 KB on the F746 (64 with G4MH), 128 on the N6, 32 elsewhere -- see `CMakeLists.txt` | 64 MB |
 | IR instructions, temps per block | 512, 256 | 2048, 1024 |
 
 On the F746 a JIT build has 77 KiB less guest RAM than an interpreter
@@ -469,6 +469,47 @@ inlined path and helper call alike -- placed after the address is in r1
 so the reload elision still reaches operand `a`. Six bytes, and the
 predicate's load where it has no register -- only where a frontend asks
 for it.
+
+## The data TLB probe
+
+Below M-mode the frontend offers a table instead of a window
+(`emu_ir_dtlb_t`; [x86_64.md](x86_64.md#the-data-tlb-probe) has the
+idea). With the address in r1, and r0, r2 and r12 free until the slow
+path:
+
+    tst.w r1, #size-1 ; bne slow
+    (store) ldrb r0, [r4, #guard] ; cmp r0, #0 ; bne slow
+    lsr.w r2, r1, #12 ; and.w r0, r2, #mask
+    add.w r0, r4, r0, lsl #4
+    ldr.w r12, [r0, #table + tag] ; cmp r12, r2 ; bne slow
+    ldr.w r12, [r0, #table + addend]
+    ldr rt, [r12, r1]
+
+The window's rotate-and-compare cannot serve here, because the tag has
+to be compared whole; alignment is its own `TST`. On the F746, measured
+on sv32bench with `-DEMU_JIT_BYTE_STATS=ON`: a load 40 bytes against
+the window's 35, a store 49 against 44. The hart's table sits about
+1.5 KB in, inside `LDR.W`'s 4095 -- the probe moves the base into r0
+when it does not, so a larger hart costs two instructions rather than
+a wrong offset. `add.w r0, r4, r0, lsl #4` is `eb04 1000` by the
+assembler, which is what `t2_add_lsl` emits: its shift splits imm3:imm2
+like every other here.
+
+What it bought, with the paged kernel's 4.2x gap on the host as the
+figure to beat:
+
+| sv32bench, translated | parent | data TLB |
+|---|---|---|
+| F746, paged | 142.15 cycles/insn, 5.58 s | **9.47**, 0.36 s |
+| F746, bare | 8.18 | 8.22 |
+| N6, paged | 108.70, 1.56 s | **13.92**, 0.18 s |
+| N6, bare | 12.09 | 12.09 |
+
+The seconds are from the host end of the UART. Bare does not use the
+table, and 8.18 against 8.22 is inside what moving `.bss` alone does
+to the parent (13.88-14.17 on CoreMark, `-DEMU_LAYOUT_PAD_BSS`). Three
+mutants of this probe -- no alignment test, no reservation guard, the
+store reading the load tag -- each fail isatest on the board by name.
 
 ## History: the framework port
 
