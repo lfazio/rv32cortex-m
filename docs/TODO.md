@@ -15,8 +15,8 @@ measured at.
 - [ ] **Board figures that predate `emu_cycles.h`.** Any of them from a
       run longer than 19.9 s at 216 MHz (23.9 s on the F446) is a whole
       wrap short, and the documents do not record run lengths. The ones
-      in `jit/tuning.md`, `backend/thumb2.md` and the first section of
-      `performance.md` are after the fix. The second half of
+      in `jit/tuning.md`, `backend/thumb2.md`, `frontend/ppc.md` and the
+      first section of `performance.md` were measured again at ce02bd0. The second half of
       `performance.md` and both `stm32f446/` pages are not, and are
       marked as history.
 
@@ -34,6 +34,21 @@ measured at.
       discard every block at every switch between them. PowerPC made
       its counter one for all cores for exactly that reason. Unmeasured.
 - [ ] **Autovectorisation of the IR pipeline.**
+- [ ] **Loads from the guest's read-only image are a call.** The inline
+      path covers guest RAM only, and a guest linked execute-in-place
+      keeps `.rodata` in the image at 0x2000_0000. On Whetstone under
+      the x86-64 JIT that is **21.9%** of host instructions in
+      `rv_ir_load` and the bus walk under it, at ce02bd0. 3,953 of 3,954
+      addresses sampled at its entry were in the image, nearly all
+      newlib's float constants loaded with `auipc`+`flw`
+      ([performance.md](performance.md#what-a-guest-instruction-costs-measured-live)).
+      A second window, read-only, on both backends; the board serves the
+      image from flash, so measure it there too.
+- [ ] **The F746's default code cache against today's code size.** RV32
+      CoreMark x120 is 14.55 at 64 KB and 14.59 at 96 KB, and 64 KB
+      would give the guest 32 KiB back. PowerPC CoreMark is 148.35
+      against 53.63 across the same step, so it is a choice between the
+      two, not a free win ([performance.md](performance.md#on-the-board-at-ce02bd0)).
 - [ ] **PowerPC's FP unit is a call per instruction.** Every EFPU2
       instruction under the JIT is a helper call into `ppc_fpu_exec`,
       whose bookkeeping -- SPEFSCR status, sticky bits, FG and FX -- was

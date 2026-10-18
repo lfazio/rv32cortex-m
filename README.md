@@ -452,7 +452,7 @@ it names can still be decoded wrongly.
 ### Watching it run
 
 ```
-guest  143.5  host 6681.9  ratio 46.58  cyc 2766.2  c/g 19.28  br 1243.0  miss 17.19 M/s
+  guest  310.4  host 5408.2  ratio 17.42  cyc 2483.5  c/g  8.00  br  878.0  miss 10.29 M/s | jit 3572 blk 3572 built  2917 KiB 14,749,991 exec
 ```
 
 A performance line on stderr, rewritten in place twice a second, and a
@@ -461,7 +461,9 @@ whole-run average at exit. Shown automatically on a terminal, and with
 trick.
 
 `ratio` is host instructions per guest instruction, which is what a
-translation change moves; `c/g` is the same in cycles. The host columns
+translation change moves; `c/g` is the same in cycles. After the bar:
+blocks resident in the JIT, translations so far, the code they occupy,
+and block entries so far. The host columns
 come from `perf_event_open` and need `kernel.perf_event_paranoid` at 2
 or lower; anything derived from a counter that is not there shows a
 dash rather than a number, because zero is a measurement and "the host

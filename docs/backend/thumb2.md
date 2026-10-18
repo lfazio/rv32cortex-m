@@ -215,8 +215,10 @@ they follow the target (`EMU_HOST_JIT_THUMB2`):
 | code buffer | `EMU_JIT_CODE_BYTES`: 96 KB on the F746 (64 with G4MH), 128 on the N6, 32 elsewhere -- see `CMakeLists.txt` | 64 MB |
 | IR instructions, temps per block | 512, 256 | 2048, 1024 |
 
-On the F746 a JIT build has 77 KiB less guest RAM than an interpreter
-one at the default: 232 KiB against 309.
+On the F746 an RV32 JIT build at the 96 KB default has 143 KiB less guest
+RAM than an interpreter one, 161 KiB against 304 at ce02bd0. At 32 KB
+the gap is 79 KiB: the buffer, plus about 47 KiB of tables and IR
+storage that a JIT build pays at any size.
 
 ## Measured
 
@@ -224,28 +226,33 @@ Nucleo-F746ZG, 216 MHz, `RelWithDebInfo`, host cycles per guest
 instruction. Each figure is the firmware's own count and agrees with a
 wall clock on the host end of the UART.
 
-RV32, CoreMark at 120 iterations (30,027,635 instructions, a run
-CoreMark accepts as valid) and `bench`:
+RV32, CoreMark at 120 iterations (30,027,635 instructions) and `bench`,
+at ce02bd0:
 
 | | CoreMark | translations | guest RAM | `bench` |
 |---|---|---|---|---|
-| interpreter | **108.2** | — | 309 KiB | **98.2** |
-| JIT, 32 KB (default) | 169.6 | 82,075 | 232 KiB | 199.5 |
-| JIT, 48 KB | 143.5 | 60,171 | 216 KiB | |
-| JIT, 64 KB | 97.7 | 29,682 | 200 KiB | |
-| JIT, 96 KB | **53.1** | 588 | 168 KiB | |
+| interpreter | **102.27** | — | 304 KiB | **91.87** |
+| JIT, 32 KB | 107.00 | 41,989 | 225 KiB | 15.01 |
+| JIT, 48 KB | 49.49 | 17,103 | 209 KiB | |
+| JIT, 64 KB | 14.55 | 333 | 193 KiB | |
+| JIT, 96 KB (default) | **14.59** | 297 | 161 KiB | **14.50** |
 
-**At the default cache the JIT is slower than the interpreter**, on both
-guests — 1.57× on CoreMark, 2.0× on `bench`. CoreMark's translated
-working set is about 83 KB (82,896 bytes in use at 96 KB), and until it
-fits the cache is a queue: 82,075 translations for a guest with a few
-hundred blocks. Once it fits the JIT is 2.04× the interpreter.
+**CoreMark's translated working set fits 64 KB now**, and from there up
+the JIT is 7.0× the interpreter. At 32 KB the cache is still a queue,
+41,989 translations for a guest with a few hundred blocks, and the JIT
+is 1.05× slower than interpreting. When this table was first written it
+was 1.57× slower there, and needed 96 KB to fit at all (588
+translations at 53.1). The cache did not change; the code that goes into
+it shrank, as [Where the bytes go](#where-the-bytes-go) describes.
+`bench` fits everywhere: 14,648 bytes.
 
-That is the same statement this project once made about a 12 KB cache,
-moved up: the IR backend emits more per guest instruction than the
-hand-written translator it replaced, and the default did not follow.
-PowerPC on the same board has the same shape with larger guests — see
-[../frontend/ppc.md](../frontend/ppc.md).
+From 48 KB up, 120 iterations finish inside CoreMark's ten seconds,
+so the guest calls those runs invalid. The figure is the firmware's
+count, the CRC is `0xd340` in every row, and the host's clock agrees
+(2.00 s against the firmware's 2.03 at 96 KB). PowerPC on the same board
+has the same shape with larger guests: see
+[../frontend/ppc.md](../frontend/ppc.md) and
+[../performance.md](../performance.md#on-the-board-at-ce02bd0).
 
 **Any board figure from a run longer than 19.9 seconds, measured before
 the counter was fixed, is a wrap short.** DWT CYCCNT is 32 bits and the

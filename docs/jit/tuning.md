@@ -27,23 +27,26 @@ well clear of that.
 
 ## `EMU_JIT_CODE_BYTES` — the dominant term
 
-**At the 32 KB default the JIT is slower than the interpreter**, for
-every guest large enough to matter. Host cycles per guest instruction,
-and how many translations the run needed:
+**Below the working set the JIT is slower than the interpreter**, for
+every guest large enough to matter. Host cycles per guest instruction on
+the F746 at ce02bd0, and how many translations the run needed:
 
 | | RV32 CoreMark | RV32 `bench` | PowerPC CoreMark | PowerPC crypto | guest RAM |
 |---|---|---|---|---|---|
-| interpreter | **107.4** | **100.1** | **222.3** | **243.4** | 309 KiB |
-| 32 KB (the F746 default until 96 KB) | 140.0 (63,733) | 194.6 (1,872) | 335.1 (46,199) | 716.5 (28,545) | 232 KiB |
-| 48 KB | 118.9 (51,895) | | | | 216 KiB |
-| 64 KB | 67.4 (26,858) | | 212.1 (27,780) | 373.7 (12,532) | 200 KiB |
-| 96 KB | **31.1** (7,152) | | 125.8 (15,309) | **35.4** (468) | 168 KiB |
+| interpreter | **102.27** | **91.87** | **212.29** | **282.49** | 304 KiB |
+| 32 KB (the F746 default until 96 KB) | 107.00 (41,989) | 15.01 (62) | 263.95 (35,487) | 336.76 (10,559) | 225 KiB |
+| 48 KB | 49.49 (17,103) | | | | 209 KiB |
+| 64 KB | 14.55 (333) | | 148.35 (18,688) | 29.57 (362) | 193 KiB |
+| 96 KB (the default) | **14.59** (297) | **14.50** (61) | **53.63** (5,077) | **29.14** (347) | 161 KiB |
 
-RV32 CoreMark is 120 iterations, 30,027,635 instructions, which CoreMark
-accepts as a valid run; PowerPC's is 40 iterations, 12,170,464. Guest RAM
-is RV32's; PowerPC's is three or four KiB less. The RV32 columns are
-from the tree that lowered the B extension, and the PowerPC ones from
-before it, which that change does not touch.
+RV32 CoreMark is 120 iterations, 30,027,635 instructions; PowerPC's is
+40 iterations, 12,170,464. Guest RAM is RV32's; PowerPC's is eleven KiB
+less. The same table with how each run was checked is in
+[../performance.md](../performance.md#on-the-board-at-ce02bd0). It is
+the second version of this table: the first, before the short
+encodings and the folded window guard, had RV32 CoreMark at 140.0
+(63,733 translations) at 32 KB and 31.1 (7,152) at 96 KB, and PowerPC
+crypto at 716.5 at 32 KB.
 
 **What the B extension was worth here**, the same configuration before
 and after, `crcfinal 0xd340` both times: 32 KB 172.3 → 140.0, 96 KB
@@ -54,29 +57,37 @@ now runs on through it, so there is more code to hold and far fewer
 dispatches to pay for it -- block entries 2,212,003 → 1,025,577.
 
 Read the translation counts before the cycles. A guest with a few
-hundred blocks that needs 63,733 translations is not being translated,
-it is being *re*-translated: the cache is a queue. RV32 CoreMark's
-working set no longer fits even at 96 KB, and that row is the one where
-the JIT is clearly ahead — 3.45× the interpreter. PowerPC crypto
-fits at 96 KB and is 6.9× ahead; PowerPC CoreMark never fits here.
+hundred blocks that needs 41,989 translations is not being translated,
+it is being *re*-translated: the cache is a queue. RV32 CoreMark fits
+from 64 KB and is then 7.0× the interpreter; PowerPC crypto fits from
+64 KB and is 9.7× ahead at 96 KB; PowerPC CoreMark does not fit here,
+and is 4.0× ahead at 96 KB with 97,524 of 98,304 bytes in use.
 
 So the knob is not a dial, it is a threshold per guest, and below the
 threshold the JIT costs more than it saves. This is the statement this
 file once made about a 12 KB cache, when the default was moved to 32 KB.
-It has moved up again: the IR backends emit more per guest instruction
-than the hand-written translator did — a hundred bytes for a memory
-access on x86-64, see [../backend/x86_64.md](../backend/x86_64.md) — and
-the default did not follow.
+The threshold moved up when the IR backends replaced the hand-written
+translator, because they emitted more per guest instruction, and the
+F746's default followed it to 96 KB. Since then it has come back down
+from the other side. The Thumb-2 emitters' short encodings, the folded
+window guard and the merged `RETIRE` took a guest instruction from 60.8
+bytes to 33.9 ([../backend/thumb2.md](../backend/thumb2.md#where-the-bytes-go)),
+and that is what brought RV32 CoreMark inside 64 KB.
 
-Guest RAM pays one for one, and a JIT build is 77 KiB down at the
-default: the 32 KB buffer, and 45 KiB of block table and IR storage that
-it pays at any size. On a microcontroller those bytes are the guest's,
-which is the whole tension — there is no right answer, only a stated
-one. **The stated one, on the F746, is 96 KB with the dispatch path in
-ITCM**: RV32 CoreMark x120 at 29.85 host cycles an instruction against
-152.85, for 64 KiB of guest RAM (232 → 164 KiB). Not when G4MH is
-compiled in, whose RAM does not leave room -- those builds keep 32 KB.
-The other boards keep 32 KB as well.
+Guest RAM pays one for one. An RV32 JIT build at 32 KB is 79 KiB down
+on an interpreter one: the buffer, plus about 47 KiB of block table and
+IR storage that it pays at any size. At the 96 KB default it is 143 KiB
+down, 161 KiB against 304. On a microcontroller those bytes are the
+guest's, which is the whole tension -- there is no right answer, only a
+stated one. **The stated one, on the F746, is 96 KB with the dispatch
+path in ITCM**, chosen when it took RV32 CoreMark x120 from 152.85 host
+cycles an instruction to 29.85. It is 64 KB with G4MH compiled in, which
+is all that build's RAM leaves room for, 128 KB on the N6 and 32 KB on
+the F446; `CMakeLists.txt` has the measurements behind each.
+**On today's figures 64 KB would serve RV32 CoreMark as well as 96 KB
+(14.55 against 14.59) and give the guest 32 KiB back.** PowerPC
+CoreMark would not (148.35 against 53.63), so the default stays until
+something weighs the two.
 
 **Check `CMakeCache.txt` before quoting any of these.** Every performance
 figure in this repo was once measured with a 48 KB cache inherited from

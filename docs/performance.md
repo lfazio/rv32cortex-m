@@ -8,11 +8,18 @@ numbers below was once measured with a 48 KB code cache inherited from an
 old build directory while the declared default was 12 KB; `rm -rf build/`
 moved them by 68% with no code change.
 
-So: **`scripts/report-figures.sh` regenerates the host figures and prints
-the cache variables that produced them.** Board figures need a flash
-cycle and carry the commit they were measured at instead.
+So: **`scripts/report-figures.sh` regenerates a quick set of host
+figures and prints the cache variables that produced them** -- coverage,
+`bench`, a two-iteration CoreMark, Dhrystone and Whetstone. The tables
+below are longer runs than it makes, and each states its settings. Board
+figures need a flash cycle and carry the commit they were measured at
+instead.
 
-Two standing cautions:
+**The current tables were measured at ce02bd0** (18 October 2026), on
+the x86-64 host and on the F746. Anything else on this page names its
+own commit or says it is history.
+
+Three standing cautions:
 
 - The board's tick counter is exactly deterministic. The same CoreMark
   binary reflashed and rerun three times gave 847,616 ticks every time,
@@ -30,53 +37,89 @@ Two standing cautions:
   figures in the next section were taken after the fix, with a wall
   clock on the host end of the UART agreeing.
 
-## On the board, measured again
+## On the board, at ce02bd0
 
 Nucleo-F746ZG, Cortex-M7 at 216 MHz, `RelWithDebInfo`, serial console
-(`-DEMU_NET=OFF`). Host cycles per guest instruction; the JIT rows carry
-the number of translations the run needed.
+(`-DEMU_NET=OFF -DEMU_MAX_INSN=0`), each firmware built from a git
+worktree at ce02bd0. Host cycles per guest instruction from the
+firmware's own counter; the JIT rows carry the number of translations
+the run needed:
 
-| | RV32 CoreMark | RV32 `bench` | PowerPC CoreMark | PowerPC crypto |
-|---|---|---|---|---|
-| interpreter | **108.2** | **98.2** | **222.3** | **243.4** |
-| JIT, 32 KB (the default until 96 KB) | 169.6 (82,075) | 199.5 (1,873) | 335.1 (46,199) | 716.5 (28,545) |
-| JIT, 64 KB | 97.7 (29,682) | | 212.1 (27,780) | 373.7 (12,532) |
-| JIT, 96 KB | **53.1** (588) | | 125.8 (15,309) | **35.4** (468) |
+| | RV32 CoreMark | RV32 `bench` | PowerPC CoreMark | PowerPC crypto | guest RAM |
+|---|---|---|---|---|---|
+| interpreter | **102.27** | **91.87** | **212.29** | **282.49** | 304 / 294 KiB |
+| JIT, 32 KB | 107.00 (41,989) | 15.01 (62) | 263.95 (35,487) | 336.76 (10,559) | 225 / 214 KiB |
+| JIT, 48 KB | 49.49 (17,103) | | | | 209 KiB |
+| JIT, 64 KB | 14.55 (333) | | 148.35 (18,688) | 29.57 (362) | 193 / 182 KiB |
+| JIT, 96 KB (the default) | **14.59** (297) | **14.50** (61) | **53.63** (5,077) | **29.14** (347) | 161 / 150 KiB |
 
-RV32 CoreMark is 120 iterations and 30,027,635 instructions — 14.8 s on
-the interpreter and 7.3 s on the JIT at 96 KB, `crcfinal 0xd340` in every
-row. PowerPC's is 40 iterations and 12,170,464 instructions.
+Guest RAM is RV32's firmware, then PowerPC's. RV32 CoreMark is 120
+iterations, 30,027,635 instructions, `crcfinal 0xd340` in every row;
+PowerPC's is 40 iterations, 12,170,464 instructions, `crcfinal 0x65c5`
+and validated in every row. Crypto prints the same four `ok` lines and
+checksum in every row, and `bench` the same output. The host's clock
+agrees with the firmware's wherever a run is long enough to time: RV32
+CoreMark interpreted is 3.07G cycles, 14.2 s at 216 MHz, against 14.0 s
+from the banner to `-- done --` at the host end of the UART; at 96 KB,
+2.03 s against 2.00.
 
-**The JIT wins only where the translated working set fits the cache, and
-at the default it does not.** RV32 CoreMark's set is about 83 KB; at
-32 KB the run needs 82,075 translations and is 1.57× *slower* than
-interpreting, and at 96 KB it needs 588 and is 2.04× faster. PowerPC
-crypto goes from 2.9× slower to 6.9× faster across the same range.
-The knob, the block-length cap that goes with it, and what was tried are
-in [jit/tuning.md](jit/tuning.md).
+**At 120 iterations RV32 CoreMark is no longer a run CoreMark accepts
+under the JIT.** From 48 KB up it finishes inside ten seconds -- 2.0 s
+at 96 KB -- and CoreMark says so. The figure is still the firmware's
+count and the CRC is still right. For a run CoreMark validates, x650 at
+96 KB measured **14.03** at 5e5a3c3, whose emulator is what ce02bd0
+builds for this board (ce02bd0 touched scripts, documents and the N6's
+configure only). x650 at 32 KB, at the same commit, took 80 s by the
+firmware and 79.0 s by the host, `crcfinal 0x25e3`.
 
-**96 KB is the F746's default now, with the dispatch path in ITCM**:
-RV32 CoreMark x120 at 29.85 host cycles an instruction against 152.85
-the day before, 4.1 s against 20.9 by the host's clock, `crcfinal
-0xd340`; 6,413 translations. At 650 iterations, 22 s and past the
-counter's wrap, it is 29.30 and CoreMark validates itself. The guest
-has 164 KiB of RAM where it had 232.
+**The JIT wins wherever the translated working set fits, and RV32
+CoreMark's now fits in 64 KB**: 333 translations there, against 29,682
+when this table was last measured. At the default 96 KB the JIT is
+**7.0×** the interpreter on RV32 CoreMark, 6.3× on `bench`, 4.0× on
+PowerPC CoreMark and 9.7× on crypto. At 32 KB, where none of the
+CoreMarks fits, it is 1.05× *slower* than interpreting on RV32, 1.24×
+on PowerPC CoreMark and 1.19× on crypto -- where this table said 1.57×,
+1.5× and 2.9×. The cache did not grow; what goes into it shrank. PowerPC
+CoreMark is still being evicted at 96 KB, with 97,524 of 98,304 bytes
+in use. The knob, the block-length cap that goes with it, and what was
+tried are in [jit/tuning.md](jit/tuning.md).
 
-**Then 15.71, from short encodings alone**: the Thumb-2 emitters always
-chose the 32-bit form of MOV, CMP, LDR and STR, and choosing by operand
-took emitted code from 60.8 to 44.6 bytes a guest instruction -- enough
-for CoreMark's working set to fit 96 KB, so 29,862 translations became
-294 and x650 went from 19.92 s to 11.65 s against a worktree at the
-commit before. **Then 14.29**, folding the window guard's bounds and
-alignment tests into one compare: 36.0 bytes a guest instruction, x650
-in 10.61 s ([backend/thumb2.md](backend/thumb2.md#where-the-bytes-go)).
+**The interpreters moved less, and PowerPC crypto's moved the wrong
+way**: 282.49 against the 243.4 this table last showed, while PowerPC
+CoreMark went from 222.3 to 212.29. This page has not apportioned that.
+[frontend/ppc.md](frontend/ppc.md#on-the-f746) records crypto moving
+12% with nothing but where `.bss` lands, the same order as this 16%. RV32's
+108.2 to 102.27 is the run loop in ITCM (below).
 
-PowerPC's columns have moved as far, through the same changes. At
-8409e5b, 96 KB, one core: CoreMark **51.82** (5,076 translations, 2.87 s)
-and crypto **25.67** (347), where the table says 125.8 and 35.4 -- and
-crypto moves 12% with nothing but where `.bss` lands
-([frontend/ppc.md](frontend/ppc.md#on-the-f746)), so read its second
-digit as placement.
+### How the 96 KB figure got here
+
+RV32 CoreMark at 96 KB. From the second step on, each was measured
+against a worktree at the commit before it:
+
+- **53.1** at 96 KB when 32 KB was the default, which ran it at 169.6.
+  Later, at 47.6, lowering the B extension made it **31.1**: 1,366,260
+  instructions handed to the interpreter became 1.
+- **29.85** with 96 KB the default and the dispatch path in ITCM,
+  against 152.85 at the old default the day before -- 4.1 s against
+  20.9 by the host's clock. At 650 iterations, 22 s and past the
+  counter's wrap, it was 29.30 and CoreMark validated itself.
+- **15.71** from short encodings alone. The Thumb-2 emitters always
+  chose the 32-bit form of MOV, CMP, LDR and STR, and choosing by
+  operand took emitted code from 60.8 to 44.6 bytes a guest instruction.
+  That was enough for CoreMark's working set to fit 96 KB: 29,862
+  translations became 294, and x650 went from 19.92 s to 11.65 s.
+- **14.29** from folding the window guard's bounds and alignment tests
+  into one compare: 36.0 bytes a guest instruction, x650 in 10.61 s
+  ([backend/thumb2.md](backend/thumb2.md#where-the-bytes-go)).
+- **13.94** from keeping one `RETIRE` per stretch between observation
+  points: 3,291 four-byte adds became 1,429, 33.9 bytes a guest
+  instruction ([jit/README.md](jit/README.md)).
+- **14.03** at x650 after the data TLB and the fetch table, which an
+  M-mode guest does not use: 13.90 against 14.03 across those commits,
+  inside the 13.88-14.17 spread that `.bss` layout alone produces.
+
+PowerPC's columns moved through the same changes: 125.8 and 35.4 at
+96 KB when this table was last measured, 53.63 and 29.14 now.
 
 ### The interpreters' loops in ITCM
 
@@ -125,41 +168,78 @@ different question: there the JIT competes with a 216 MHz M7 and a code
 cache measured in tens of kilobytes, here it has 64 MB and an
 out-of-order superscalar to emit for.
 
-RV32 CoreMark, each row run long enough for CoreMark to call it valid:
+Measured at ce02bd0 on a Xeon E5-2470 v2 (2.4 GHz, 3.2 GHz turbo),
+`-DCMAKE_BUILD_TYPE=Release` as the README builds it, guests from the
+tree's own `RV_GUEST_MARCH` (`rv32imafc_..._zba_zbb_zbc_zbs_zacas`) with
+riscv64-unknown-elf-gcc 15.3, the runner with gcc 16.2. Medians of
+three. RV32 CoreMark, each row run long enough for CoreMark to call it
+valid:
 
 | | iterations | wall | per second | guest MIPS | vs native |
 |---|---|---|---|---|---|
-| **Native x86-64** | | 11.06 s | 18,181 | — | 1× |
-| **JIT** | 12,000 | 13.69 s | 877 | 219 | 21× slower |
-| Interpreter | 6,000 | 25.50 s | 235 | 59 | 77× slower |
+| **Native x86-64** | 200,000 | 10.94 s | 18,280 | — | 1× |
+| **JIT** | 24,000 | 15.56 s | 1,542 | 386 | 11.9× slower |
+| Interpreter | 6,000 | 25.57 s | 235 | 59 | 77.9× slower |
 
-At 6,000 iterations both backends give `crcfinal 0xa14c`; the JIT row is
-at 12,000 because at 6,000 it finishes in under the ten seconds CoreMark
-requires. 250,073 instructions an iteration on both. Native retires no
-guest instructions, so MIPS is not defined for it; the comparison there
-is the CoreMark score, and the native row was not re-run.
+Native is `-DEMU_NATIVE_COREMARK=ON`, the runner compiled *as* CoreMark
+at `-O3`. The JIT row is at 24,000 iterations because at 6,000 it now
+finishes in four seconds, and CoreMark rejects anything under ten.
+250,073 instructions an iteration on both backends; at 6,000 iterations
+both give `crcfinal 0xa14c`. Native retires no guest instructions, so
+MIPS is not defined for it. `RelWithDebInfo`, the tree's default when
+no build type is given, measured 25.28 s and 3.77 s for 6,000
+iterations against these 25.57 s and 4.00 s. So `Release` is no faster
+here, and on the JIT the two sets overlap (3.63-4.06 s across six
+runs); the build type is not what this table is about.
 
-**The JIT is 3.7× the interpreter.** It was 1.98× when this table was
-first written, with the interpreter where it is now. That is many
-changes to the translator and the backends since, not one, and this page
-does not apportion it.
+**The JIT is 6.6× the interpreter.** It was 3.7× the last time this
+table was written and 1.98× the first, with the interpreter about where
+it is now -- 6.96 s for the 6,000 iterations that now take 4.00. That is
+many changes since, not one, and this page does not apportion them.
 
-4.6% of instructions still fall back: 136.6M of 3,000.9M. That is the
-floor set by what the RV32 translator declines — SYSTEM and MISC-MEM,
-deliberately, so the interpreter fallback stays the one place `frm`,
-`mstatus.FS`, PMP and `satp` can change.
+**One instruction falls back, of 6,001,741,696.** This table used to
+say 4.6% did -- 136.6M of 3,000.9M -- and called that the floor set by
+the SYSTEM and MISC-MEM instructions the translator declines on
+purpose. It was not: it was the B extension, which the translator
+declined for want of a lowering (see CLAUDE.md, "A capability the old
+translator had"), and CoreMark in M-mode reaches SYSTEM only at start-up.
+The run makes 281 translations into 177,432 bytes and enters a block
+202,366,421 times, about thirty guest instructions an entry.
 
 ### All four frontends
 
-Every frontend has a benchmark-sized guest and a JIT now. Host wall
-time, medians, same checksums on both backends:
+Every frontend has a benchmark-sized guest and a JIT. Same runner,
+host wall time, medians of three, same checksums on both backends:
 
 | frontend | guest | instructions | interpreter | JIT | |
 |---|---|---|---|---|---|
-| RV32 | CoreMark, 6,000 iterations | 1,500,449,974 | 25.50 s | 6.96 s | 3.7× |
-| ARMv7-M | CoreMark, 600 iterations | 166,887,432 | 6.12 s | 0.56 s | 11.0× |
-| PowerPC | CoreMark, 40 iterations | 12,170,464 | 258 ms | 43 ms | 6.0× |
-| PowerPC | crypto | 2,422,217 | 58 ms | 12 ms | 5.0× |
+| RV32 | CoreMark, 6,000 iterations | 1,500,449,974 | 25.57 s | 4.00 s | 6.4× |
+| ARMv7-M | CoreMark, 600 iterations | 166,870,755 | 3.60 s | 0.53 s | 6.8× |
+| PowerPC | CoreMark, 600 iterations | 182,243,221 | 3.76 s | 0.58 s | 6.5× |
+| PowerPC | crypto | 2,422,217 | 62 ms | 18 ms | 3.4× |
+
+**Start-up is 6.0 ms interpreted and 6.6 ms under the JIT** (`hello`,
+median of nine), which is most of crypto's JIT row: less start-up the
+row is about 56 ms against 11, 5×. The same ELF measured 16.5-16.9 ms
+under the JIT on runners built at ae5d5bd and 2c6e0c0 as well, so the
+12 ms this table once gave is older than any of them, and this page
+does not know what moved it.
+
+ARMv7-M's two backends retire different counts -- 166,887,441 under the
+JIT, 16,686 more -- and that is a convention rather than a miscount:
+the run total counts one more per interrupt taken under the JIT than the
+interpreter does ([frontend/armv7m.md](frontend/armv7m.md#not-done)),
+and this guest's SysTick fires every ten thousand instructions, which is
+16,687 interrupts. Guests that take none -- crypto, `t2exec`, `itblock`,
+`alu` -- retire identical counts on both.
+PowerPC CoreMark shares ARMv7-M's `ARMV7M_COREMARK_ITERATIONS`, and
+both are at 600 here: the 40 this table once used is 12M instructions,
+a run start-up is a visible part of.
+
+The interpreters have moved as well as the JITs: ARMv7-M's took 6.12 s
+for the same 600 iterations when this table was first written, before
+its fetch path stopped asking the MPU out of line (CLAUDE.md, "A lesson
+learned in one frontend is not applied in the next").
 
 They are not comparable across rows: different compilers, different
 optimisation of the *guest*, and interpreters of different ages. G4MH
@@ -177,33 +257,60 @@ terminal, and with `--rate` anywhere -- plus a whole-run average at
 exit, which is what a guest finishing inside one sample interval gets.
 
 ```
-guest  143.5  host 6681.9  ratio 46.58  cyc 2766.2  c/g 19.28  br 1243.0  miss 17.19 M/s
+  guest  310.4  host 5408.2  ratio 17.42  cyc 2483.5  c/g  8.00  br  878.0  miss 10.29 M/s | jit 3572 blk 3572 built  2917 KiB 14,749,991 exec
 ```
 
 `ratio` is host instructions per guest instruction and is the headline:
 it is what a translation change moves. `c/g` is the same in cycles,
-which is that plus whatever the host is stalling on. Host figures need
+which is that plus whatever the host is stalling on. After the bar are
+the JIT's resident blocks, its translations so far, the code they
+occupy and the block entries so far. Host figures need
 `perf_event_open`; `kernel.perf_event_paranoid` must be 2 or lower, and
 everything derived from an absent counter shows a dash rather than a
 number.
 
-| guest | floating point | translated | ratio |
-|---|---|---|---|
-| dhrystone | none | 98.5% | 52.6 |
-| whetstone | heavy | | 34.2 |
-| quake | heavy | 98.1% | 46.6 |
+At ce02bd0, the Release runner above, the whole-run figure, medians of
+five:
+
+| guest | floating point | interpreted under the JIT | ratio | was |
+|---|---|---|---|---|
+| dhrystone | none | 1 of 9,431,235 | **21.40** | 52.6 |
+| whetstone | heavy | 51,216 of 10,665,594 (0.48%) | **26.06** | 34.2 |
+| quake, its first 2e9 instructions | heavy | 1 | **16.57** | 46.6 |
+
+The interpreter's figures on the same runs are 127.67 and 141.39.
+Quake runs its demo loop until stopped, so it is capped with
+`--max-insn 2000000000`, which takes in start-up, the PAK load and
+`demo1`.
 
 **The first thing these said was that a plausible theory was wrong.**
 The ratio on Quake looked like evidence that SoftFloat dominates --
 this tree routes every FP operation through it unless a backend lowers
-it natively, and Quake is full of them. Dhrystone contains no floating
-point at all and costs *more* per instruction; Whetstone is the most
-FP-heavy of the three and costs least. So the ~50x is the JIT's
-baseline, and it is not about FP.
+it natively, and Quake is full of them. In the first version of this
+table Dhrystone, which contains no floating point at all, cost *more*
+per instruction than Quake. So the ~50x was the JIT's baseline, and it
+was not about FP. Quake still says so: it is the cheapest of the three
+per instruction.
 
-It also confirms the native FP lowering is doing its job: were the
-arithmetic going to helpers, Whetstone would be the worst of the three
-rather than the best. See [floating-point.md](jit/floating-point.md)
+**Whetstone is now the most expensive, and not because of its
+arithmetic.** This paragraph used to say Whetstone being the cheapest
+confirmed the native FP lowering. The order changed, so it was
+measured rather than re-argued. Callgrind over the JIT run
+(RelWithDebInfo, 295M host instructions) gives:
+
+- **21.9%** is `rv_ir_load`, the checked load, with the bus walk under
+  it. 3,953 of 3,954 addresses sampled at its entry are in the image at
+  0x2000_0000, nearly all in `.rodata`: the float constants newlib's
+  `sinf` and `logf` load with `auipc`+`flw`. The JIT inlines guest RAM
+  and nothing else, so every one of them is a call. This is open in
+  [TODO.md](TODO.md).
+- **19.5%** is the dispatch loop's own instructions.
+- **11.1%** is `rv_hart_fp`, the SoftFloat helper, which takes what no
+  backend lowers -- the fused multiply-adds among them.
+- 2.3% is the interpreter, for the 51,215 CSR accesses it is handed.
+
+The arithmetic the backend does lower is in the translated code, the
+part callgrind cannot name. See [floating-point.md](jit/floating-point.md)
 for what each backend lowers and what it declines.
 
 What the ~50x was took two measurements to answer, and the first
@@ -214,7 +321,9 @@ on Quake -- was only part of it.
 
 `--rate` reports host instructions per guest instruction directly,
 and on Dhrystone the JIT was **44.21** against the interpreter's
-131. A translated ALU operation should be 4-8.
+131. A translated ALU operation should be 4-8. (It is 21.40 against
+127.67 at ce02bd0; what follows is how the first half of that came
+about.)
 
 **40% of guest instructions were a C call.** Every load and store
 went to rv_hart_load/rv_hart_store, which walk the region table:
@@ -333,22 +442,26 @@ was replaced because it is wrong for anything that measures time (a
 Linux kernel's watchdogs fired on a machine running perfectly), and the
 statement outlived it.
 
-Today, x86-64 host, medians of five:
+At ce02bd0, the Release runner and machine of the CoreMark table above,
+medians of five:
 
 | | self-reported | host wall |
 |---|---|---|
-| Dhrystone 2.1, `DHRY_RUNS=20000`, interpreter | 9.3 µs/run, 107,271 Dhrystones/s | 193 ms |
-| the same, JIT | 1.7 µs/run, 576,053 Dhrystones/s | 41 ms |
-| Whetstone 1.2, `WHET_LOOPS=100`, interpreter | 30.4 MIPS | 264 ms |
-| the same, JIT | 157.1 MIPS | 66 ms |
+| Dhrystone 2.1, `DHRY_RUNS=20000`, interpreter | 9.8 µs/run, 101,594 Dhrystones/s | 206 ms |
+| the same, JIT | 1.5 µs/run, 657,009 Dhrystones/s | 39 ms |
+| Whetstone 1.2, `WHET_LOOPS=100`, interpreter | 38.4 MIPS | 266 ms |
+| the same, JIT | 158.0 MIPS | 70 ms |
 
-9,431,251 and 10,665,593 guest instructions. The JIT translates
-essentially all of both: 120,566 and 51,238 instructions fell back,
-1.3% and 0.48% — the ratio to read before believing any figure here.
-Dhrystone's 120,566 were all `sh1add`/`sh2add`/`sh3add`, which the
-translator declined until the B extension was lowered; it is **1**
-now, and the same JIT run is 35.8 ms against 42.5 ms on the host
-(medians of fifteen, interleaved with the build before).
+Each wall time includes the runner's start-up, 6.0 ms interpreted and
+6.6 ms under the JIT. 9,431,2xx and 10,665,593 guest instructions. The
+JIT translates essentially all of both: 1 and 51,216 instructions fell
+back -- the ratio to read before believing any figure here. Dhrystone's
+used to be 120,566, all `sh1add`/`sh2add`/`sh3add`, which the
+translator declined until the B extension was lowered; that alone took
+the JIT run from 42.5 ms to 35.8 (medians of fifteen, interleaved with
+the build before). Whetstone's 51,216 are CSR accesses, and are not
+what makes it the costlier of the two per instruction -- see the
+profile in [the section above](#what-a-guest-instruction-costs-measured-live).
 
 Neither rate is comparable with a published number: Dhrystone does not
 print DMIPS, and these are an emulated core on a desktop. For a
@@ -434,26 +547,27 @@ hoped for.
 
 | | measured region |
 |---|---|
-| native x86-64 | 0.653 ms |
-| RV32 on the JIT | ~72 ms (74 less 2 ms of emulator startup) |
-| RV32 on the interpreter | ~252 ms |
+| native x86-64 | 0.653 ms (not re-run) |
+| RV32 on the JIT | ~63 ms (70 less 6.6 ms of start-up, at ce02bd0) |
+| RV32 on the interpreter | ~260 ms (266 less 6.0) |
 
-so **110× native on the JIT and 386× on the interpreter**, and 148 MIPS
-against 42 MIPS in guest instructions retired.
+so **97× native on the JIT and 398× on the interpreter**, and 168 MIPS
+against 41 MIPS in guest instructions retired. The JIT row was 72 ms,
+110× native, when this table was first written.
 
-**That 130× is not an emulation-overhead figure, and reading it as one
+**That 97× is not an emulation-overhead figure, and reading it as one
 would be wrong.** Modules 7 and 11 are 99.4% of the guest instruction
 count and are `sinf`/`logf`/`expf`/`sqrtf`, so the two runs do the same
 *benchmark* work through two different libm implementations on two
 different instruction sets: x86-64 has `sqrtss` as one instruction and a
 vectorising compiler above it, where the guest runs newlib's software
 argument reduction compiled for RV32. The emulator is being asked to
-execute far more instructions for the same result, and 130× is the
+execute far more instructions for the same result, and 97× is the
 product of that and the per-instruction cost.
 
-The figure that isolates the emulator is the second one: **148 million
+The figure that isolates the emulator is the second one: **168 million
 guest instructions a second** on this host, with 99.5% of them
-translated. Comparing that against the interpreter's 42 MIPS is the
+translated. Comparing that against the interpreter's 41 MIPS is the
 like-for-like measurement; comparing either against native measures the
 ISA and the libm as much as the emulator.
 

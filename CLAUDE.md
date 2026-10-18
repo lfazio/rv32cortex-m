@@ -1801,6 +1801,16 @@ session, and every one of them recurred:
   is the other half: a ratio nobody can see is a question nobody can
   answer, and the line that shows it took less time than the argument
   about what it would show.
+
+  **The second conclusion was reasoning, and a later run broke it.** At
+  ce02bd0 Whetstone is the *worst* of the three -- 26.06 against
+  Dhrystone's 21.40 and Quake's 16.57 -- and its arithmetic is not the
+  reason. Callgrind put 21.9% of its host instructions in the checked
+  load: newlib's float constants sit in the read-only image, and the
+  JIT inlines guest RAM and nothing else. The first conclusion, about
+  SoftFloat, still holds, because Quake is still the cheapest. **An
+  ordering of three totals cannot say which part of each total moved**;
+  a profile split by function can.
 - **A guest that runs is worth more than a suite that passes, when the
   suite shares an author with the thing it tests.** G4MH's unit tests are
   hand-assembled halfword arrays, deliberately not sharing an encoder

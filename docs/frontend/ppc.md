@@ -984,29 +984,38 @@ contract by swapping what the bus gave them. One rule on both paths.
 
 ### What it is worth
 
-x86-64 host, medians of seven runs, same retired counts and checksums on
-both backends:
+x86-64 host at ce02bd0, `Release`, medians of three, same retired
+counts and checksums on both backends:
 
 | guest | instructions | interpreter | JIT | |
 |---|---|---|---|---|
-| CoreMark, 40 iterations | 12,170,464 | 258 ms | 43 ms | 6.0x |
-| crypto (AES-128, SHA-256) | 2,422,217 | 58 ms | 12 ms | 5.0x |
+| CoreMark, 600 iterations | 182,243,221 | 3.76 s | 0.58 s | 6.5x |
+| crypto (AES-128, SHA-256) | 2,422,217 | 62 ms | 18 ms | 3.4x |
 
-On the Nucleo-F746ZG it depends entirely on whether the translated
-working set fits the code cache, and at the 32 KB default it does not.
-Host cycles per guest instruction, with the number of translations the
-run needed:
+The runner's start-up is 6-7 ms, which is most of crypto's JIT row --
+less it, about 5x. CoreMark used to be quoted at 40 iterations, 12M
+instructions and 43 ms, where start-up was a sixth of the figure; it
+shares `ARMV7M_COREMARK_ITERATIONS` with the ARMv7-M guest.
+
+On the Nucleo-F746ZG it depends on whether the translated working set
+fits the code cache. Host cycles per guest instruction at ce02bd0, with
+the number of translations the run needed (CoreMark at 40 iterations,
+`crcfinal 0x65c5` and validated in every row):
 
 | | CoreMark | crypto |
 |---|---|---|
-| interpreter | **222.3** | **243.4** |
-| JIT, 32 KB (default) | 335.1 (46,199) | 716.5 (28,545) |
-| JIT, 64 KB | 212.1 (27,780) | 373.7 (12,532) |
-| JIT, 96 KB | 125.8 (15,309) | **35.4** (468) |
+| interpreter | **212.29** | **282.49** |
+| JIT, 32 KB | 263.95 (35,487) | 336.76 (10,559) |
+| JIT, 64 KB | 148.35 (18,688) | 29.57 (362) |
+| JIT, 96 KB (the default) | **53.63** (5,077) | **29.14** (347) |
 
-**At the default the JIT is 1.5x slower than interpreting CoreMark and
-2.9x slower on crypto.** Crypto fits at 96 KB and is then 6.9x *faster*;
-CoreMark is still being evicted there and is 1.8x faster.
+**At the default the JIT is 4.0x the interpreter on CoreMark and 9.7x
+on crypto.** At 32 KB it is 1.24x and 1.19x *slower*, where it was 1.5x
+and 2.9x when 32 KB was the default. Crypto fits from 64 KB now. CoreMark
+is still being evicted at 96 KB, with 97,524 of 98,304 bytes in use. The
+interpreter's crypto figure is 282.49 where it was 243.4, and this page
+has not apportioned that; [On the F746](#on-the-f746) records crypto
+moving 12% with nothing but where `.bss` lands.
 
 This is not a PowerPC result — RV32 CoreMark loses to its interpreter at
 32 KB on the same board too ([../jit/tuning.md](../jit/tuning.md)) — but

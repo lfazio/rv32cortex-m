@@ -206,9 +206,10 @@ other two, for the licence reason the rest of it does.
 and plays it, on rv32 and on G4MH, at 800x600. It was the
 harder target and it answered the question it was set: the JIT
 holds up under floating point at scale, and the host/guest
-ratio on it (46.6) is *better* than Dhrystone's (52.6), which
-has no floating point at all -- which is what refuted the
-theory that SoftFloat was the cost.
+ratio on it (46.6 then) was *better* than Dhrystone's (52.6),
+which has no floating point at all -- which is what refuted the
+theory that SoftFloat was the cost. At ce02bd0 the two are 16.6
+and 21.4 ([performance.md](performance.md#what-a-guest-instruction-costs-measured-live)).
 https://github.com/lfazio/quake-embedded
 
 ## Quake on PowerPC

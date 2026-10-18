@@ -60,6 +60,12 @@ say "host        $(uname -sm)"
 say ""
 
 if [ "$CONFIGURE" = 1 ]; then
+    # From the defaults, every time. A cache left by an earlier run keeps
+    # whatever was set in it, and the figures below would then belong to
+    # that configuration while being printed as this commit's -- the
+    # 48 KB/12 KB confusion again. build-matrix.sh does the same per row.
+    # --build DIR is the way to measure a configuration on purpose.
+    rm -f "$BUILD/CMakeCache.txt"
     say "configuring $BUILD ..."
     cmake -B "$BUILD" -S "$ROOT" -DEMU_PLATFORM=host \
           -DEMU_GUEST_ARCH_G4MH=ON -DCMAKE_BUILD_TYPE=Release >/dev/null
@@ -110,8 +116,9 @@ fi
 say ""
 say "  riscv-tests and riscv-arch-test are separate scripts, because they"
 say "  build a toolchain and a golden model:"
-say "      ./scripts/run-riscv-tests.sh     expect 77/77"
-say "      ./scripts/run-arch-test.sh       expect 274/274"
+say "      ./scripts/run-riscv-tests.sh                 expect 77/77"
+say "      ./scripts/run-arch-test.sh                   expect 510/510"
+say "      ./scripts/run-arch-test.sh --misaligned      expect 523/523"
 say ""
 
 # ------------------------------------------------------------------
@@ -126,14 +133,32 @@ say "  so it interprets most of its run whatever the backend can lower;"
 say "  use bench or coremark to measure translation."
 say ""
 
+# The exit summary is a block of lines on stdout, after the guest's own
+# output: "  retired  N instructions", then "-- jit --" with "blks/xlat",
+# "interp" and "blk entr". It went to stderr once and was a single
+# "emu: jit" line, and this script went on reading that for months after
+# it moved -- printing "<no stats line>" for every guest, which reads as
+# a guest that did not run. Pick the fields out by name, and say so when
+# one is missing rather than printing a blank.
+summary_field() { # FILE PATTERN: the first number after PATTERN
+    sed -n "s/^ *$2 *\([0-9][0-9]*\).*/\1/p" "$1" | head -1
+}
+
 jit_line() {
     _name=$1; _img=$2; shift 2
     [ -f "$_img" ] || { say "  $(printf '%-12s' "$_name") (not built)"; return; }
-    # Not --quiet: the stats line *is* the exit summary. Guest output
-    # goes to stdout and the summary to stderr, so keep only stderr.
-    _out=$("$HOST" --jit "$@" "$_img" 2>&1 >/dev/null |
-           sed -n 's/^emu: jit //p' || true)
-    say "  $(printf '%-12s' "$_name") ${_out:-<no stats line>}"
+    _f=$(mktemp)
+    "$HOST" --jit "$@" "$_img" >"$_f" 2>&1 || true
+    _ret=$(summary_field "$_f" 'retired')
+    _xl=$(summary_field "$_f" 'blks\/xlat')
+    _ent=$(summary_field "$_f" 'blk entr')
+    _int=$(summary_field "$_f" 'interp')
+    rm -f "$_f"
+    if [ -z "$_ret" ] || [ -z "$_xl" ]; then
+        say "  $(printf '%-12s' "$_name") <no jit summary in the output>"
+        return
+    fi
+    say "  $(printf '%-12s' "$_name") xlat $_xl  entries ${_ent:-?}  interp ${_int:-?} of $_ret retired"
 }
 
 for g in isatest bench mmiobench; do
@@ -150,10 +175,12 @@ say ""
 time_guest() {
     _name=$1; _img=$2; shift 2
     [ -f "$_img" ] || { say "  $(printf '%-22s' "$_name") (not built)"; return; }
+    _f=$(mktemp)
     _t0=$(date +%s%N)
-    _r=$("$HOST" "$@" "$_img" 2>&1 >/dev/null |
-         sed -n 's/^  retired  \([0-9]*\) instructions/\1/p' || true)
+    "$HOST" "$@" "$_img" >"$_f" 2>&1 || true
     _t1=$(date +%s%N)
+    _r=$(summary_field "$_f" 'retired')
+    rm -f "$_f"
     say "  $(printf '%-22s' "$_name") $(( (_t1 - _t0) / 1000000 )) ms  ${_r:-?} insns"
 }
 
@@ -165,27 +192,34 @@ done
 if [ "$QUICK" = 0 ] && [ -f "$BUILD/guest/coremark.bin" ]; then
     for mode in "" "--jit"; do
         label=${mode:-interp}
-        time_guest "coremark $label" "$BUILD/guest/coremark.bin" $mode \
-                  
+        time_guest "coremark $label" "$BUILD/guest/coremark.bin" $mode
     done
+    # At the default COREMARK_ITERATIONS this is a smoke run, and CoreMark
+    # itself says so ("Must execute for at least 10 secs"). The tables in
+    # docs/performance.md use images built to run past ten seconds.
+    say "  (CoreMark at $(sed -n 's/^COREMARK_ITERATIONS:STRING=//p' \
+        "$BUILD/CMakeCache.txt") iterations: a timing, not a CoreMark result)"
 else
     say "  coremark               skipped (--quick)"
 fi
 
 # ------------------------------------------------------------------
-# The two standard benchmarks. Their own figures are *guest* figures:
-# guest time here advances one tick per retired instruction, so both
-# report a property of the guest binary and neither can distinguish
-# the backends. What distinguishes the backends is the wall clock
-# above -- so both numbers are printed, and labelled.
+# The two standard benchmarks. Their own figures come from the guest's
+# clock, which on the host is the host's monotonic clock: they measure
+# this emulator on this machine, they differ between the backends, and
+# they move with the machine's load. This comment used to say the guest
+# clock was the retired-instruction count, under which the backends
+# agreed by construction; that clock was replaced and the comment was
+# not. The retired count is the reproducible quantity, and the wall
+# clock is printed beside each figure.
 # ------------------------------------------------------------------
 rule
 say "## Dhrystone and Whetstone (guest figures)"
 say ""
 say "  These come from the guest's own clock, which on the host is the"
-say "  retired-instruction count. So they compare frontends and guest"
-say "  code, and the two backends agree by construction -- the wall"
-say "  clock in the section above is what compares backends."
+say "  wall clock: they measure this emulator on this machine, differ"
+say "  between the backends, and move with the machine's load. Quote"
+say "  medians of several runs; the retired count is what repeats."
 say ""
 say "  Whetstone's rate depends on its LOOP count and Dhrystone's does"
 say "  not; quote WHET_LOOPS with any Whetstone number."
@@ -234,9 +268,17 @@ G4="$ROOT/tests/guest/g4mh/guest.bin"
 if [ -f "$G4" ]; then
     for mode in "" "--jit"; do
         label=${mode:-interp}
-        out=$("$HOST" --frontend g4mh $mode "$G4" \
-              2>/dev/null | tr -cd '[:print:]\n' | tail -3 | tr '\n' ' ')
-        say "  $(printf '%-8s' "$label") $out"
+        # The guest's own lines sit between the banner and "-- done --";
+        # the summary after them is the runner's. `tail -3` took the
+        # summary once it grew, and the two backends then "agreed" on
+        # optimiser counters rather than on the guest's answer.
+        _f=$(mktemp)
+        "$HOST" --frontend g4mh $mode "$G4" >"$_f" 2>&1 || true
+        out=$(sed -n '/^backend /,/^-- done --/p' "$_f" |
+              sed '1d;$d;/^$/d' | tr -cd '[:print:]\n' | tr '\n' ' ')
+        _r=$(summary_field "$_f" 'retired')
+        rm -f "$_f"
+        say "  $(printf '%-8s' "$label") ${out:-<no guest output>} (retired ${_r:-?})"
     done
     say ""
     say "  The two must agree. They are the only cross-check this frontend"
