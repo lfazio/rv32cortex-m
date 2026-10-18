@@ -19,6 +19,8 @@
  * atomically. Software is expected to set them in its fault handler.
  */
 
+#include <string.h>
+
 #include "rv32/rv_hart.h"
 #include "rv32/rv_csr.h"
 #include "rv32/rv_jit.h"
@@ -80,6 +82,8 @@ void rv_mmu_flush_tlb(rv_hart_t *h)
 void rv_mmu_flush(rv_hart_t *h)
 {
     rv_mmu_flush_tlb(h);
+    /* Nothing derived from a megapage survives this, in any space. */
+    memset(h->mega_regions, 0, sizeof(h->mega_regions));
     /* Tells the JIT its blocks may no longer describe the code at the
      * virtual addresses they were built from. */
     h->vm_gen++;
@@ -210,11 +214,32 @@ void rv_mmu_flush_page(rv_hart_t *h, uint32_t vaddr)
 {
     const uint32_t vpn = vaddr >> 12;
     const uint32_t slot = tlb_slot(vpn);
+    const uint32_t vpn1 = vaddr >> 22;
 
     /*
-     * One entry, because the TLB is tagged with the full VPN and this
-     * request names exactly one. Clearing the other thirty-one would be
-     * legal and is what rv_mmu_flush does; there is no reason to here.
+     * **A megapage is cached 4 KiB at a time, and the fence is about the
+     * leaf.** The privileged spec has an SFENCE.VMA naming an address
+     * invalidate every cached entry that *contains the leaf PTE* for it
+     * -- and for a megapage that is the TLB entry, the data TLB entry
+     * and the translated blocks of every 4 KiB page the guest has
+     * touched in those 4 MiB, not only the one it named. Nothing here
+     * records which entries came from one megapage, so a region that
+     * has had a translation through one since the last global flush is
+     * flushed globally: more than asked, which is always legal.
+     *
+     * Linux fences megapage addresses rarely -- its linear map changes
+     * by range and by global flushes -- which is what makes the coarse
+     * answer cheap; see docs/jit/staleness.md for what it was measured
+     * to cost.
+     */
+    if ((h->mega_regions[vpn1 >> 5] & (1u << (vpn1 & 31u))) != 0u) {
+        rv_mmu_flush(h);
+        return;
+    }
+
+    /*
+     * Otherwise one entry, because the TLB is tagged with the full VPN
+     * and this request names exactly one 4 KiB page.
      */
     if (h->tlb[slot].valid && h->tlb[slot].vpn == vpn) {
         h->tlb[slot].valid = false;
@@ -356,6 +381,18 @@ rv_exc_t rv_mmu_translate(rv_hart_t *h, uint32_t va, emu_access_t acc,
 
         if (!leaf_permits(h, pte, acc, priv)) {
             return fault_for(acc);
+        }
+
+        /*
+         * Every cached form of this translation -- the TLB entry below,
+         * a data TLB entry built from it, a block fetched through it --
+         * starts at this walk, so marking the region here marks all of
+         * them. See rv_mmu_flush_page.
+         */
+        if (level == 1) {
+            const uint32_t vpn1 = va >> 22;
+
+            h->mega_regions[vpn1 >> 5] |= 1u << (vpn1 & 31u);
         }
 
         h->tlb[slot].vpn = vpn;

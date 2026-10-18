@@ -326,6 +326,19 @@ typedef struct rv_hart {
      */
     bool pt_armed;
 
+#if RV_EXT_SV32
+    /*
+     * A bit per 4 MiB region -- per VPN[1] -- that has had a translation
+     * through a megapage since the last global flush, so that an
+     * SFENCE.VMA naming one address in it can reach the other pieces;
+     * see rv_mmu_flush_page. Set by the walk, cleared by rv_mmu_flush
+     * and nothing else: not by a satp write, because a fence with an
+     * address applies to every address space, and translated blocks of
+     * the old one survive the switch. Read only by a page fence.
+     */
+    uint32_t mega_regions[32];
+#endif
+
 #if RV_HAVE_DTLB
     /*
      * The data TLB in host addresses, one table per privilege a load or
@@ -568,7 +581,10 @@ static EMU_ALWAYS_INLINE uint32_t rv_rem_u(uint32_t a, uint32_t b)
 void rv_mmu_flush(rv_hart_t *h);
 
 /*
- * SFENCE.VMA naming an address: invalidate that page and nothing else.
+ * SFENCE.VMA naming an address: invalidate that page and nothing else --
+ * unless the address lies in a 4 MiB region something was translated
+ * through a megapage in, where the fence has to reach every piece of the
+ * megapage that is cached and is a global flush instead.
  *
  * **This is the overwhelmingly common case and was treated as the rare
  * one.** A Linux boot issues 8 global SFENCE.VMAs against 131,890

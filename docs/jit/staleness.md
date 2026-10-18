@@ -28,7 +28,7 @@ one is its own defect:
 | `satp` | context | — |
 | `mstatus.FS` off-ness | context | unchecked for OP-FP, stale for loads and stores; then in the generation, flushing twice per Linux system call |
 | `fcsr` frm, for `rm=dyn` | context | `RMM` silently rounded to nearest |
-| the page mappings | generation (`vm_gen`) | watching `satp` alone would miss an edited PTE |
+| the page mappings | generation (`vm_gen`), and per page through the framework's page index | watching `satp` alone would miss an edited PTE; a page fence retired one piece of a megapage and left the others' blocks runnable |
 | the PMP configuration | generation (`pmp_gen`) | **permission bypass**: the flush watched a flag, not the configuration |
 | whether accesses may be inlined | follows from the four above and both generations | an inlined store that ignored PMP |
 | the privilege loads and stores are made at | context, bits 37:36 -- it names the data TLB table a block probes, and MPRV moves it apart from the privilege | latent: an M-mode block that inlined the window, entered again under MPRV |
@@ -76,6 +76,7 @@ when all three are the same for the whole page:
 | depends on | how it is kept right | the check that fails without it |
 |---|---|---|
 | the mapping | `rv_mmu_flush_page` and `rv_mmu_flush_tlb` clear it with the TLB it was built from | `dtlb-sfence-page`, `dtlb-asid1` |
+| a megapage's other pieces | a fence naming an address in a region marked as translated through a megapage is a global flush, blocks included | `mega-sfence-load-traps`, `mega-sfence-fetch-traps` |
 | the PTE's own bits, A and D included | the same: a changed PTE needs an SFENCE.VMA to be seen | `sv32-nod-store-traps` (write without D) |
 | SUM | nothing to clear: a U page is never cached for S | `dtlb-nosum-traps` |
 | MXR | nothing to clear: a page without R is never cached | `dtlb-nomxr-traps` |
@@ -85,6 +86,21 @@ when all three are the same for the whole page:
 | the region | RAM for stores, RAM or ROM for loads, the whole page, every width | `dtlb-rom-store-traps` |
 | an LR/SC reservation | stores probe only while none is outstanding | `dtlb-sc-broken` |
 | alignment | an entry vouches for aligned accesses only | `dtlb-split-value` |
+
+**A megapage is cached a 4 KiB page at a time**, by the TLB, the data
+TLB and the translated blocks alike, and an SFENCE.VMA naming an
+address has to reach every entry holding that leaf -- all of its
+pieces. Nothing records which pieces came from one megapage, so the
+walk marks the 4 MiB region (`mega_regions`, a bit per VPN[1]) and a
+page fence in a marked region is a global flush. The coarse answer
+was measured before it was kept: on the initramfs boot the JIT flushes
+were 3,026 with it and 3,026 without, the data TLB's 82 and 82, and
+Yocto reached its prompt in 47.4 s against 48.0 -- Linux changes its
+megapage leaves by range and by global flush, so no page fence in
+either boot named a marked region. `mega-sfence-*` in isatest takes a
+megapage away and fences a different piece of it; without the region
+test both the load and the fetch succeed, and with the TLBs cleared
+but not the blocks only the fetch does, under `--jit` alone.
 
 **SUM and MXR are the design decision.** Linux sets and clears SUM
 around every copy to or from user memory, so an entry that depended on

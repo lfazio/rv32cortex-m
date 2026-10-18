@@ -4864,6 +4864,100 @@ static void test_dtlb(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* SFENCE.VMA and a megapage                                           */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A megapage is cached a 4 KiB page at a time -- in the TLB, in the data
+ * TLB, as translated blocks -- and an SFENCE.VMA naming one address must
+ * reach every cached entry holding that *leaf*, which is all of them.
+ * So: use one piece of a megapage as data and as code, take the
+ * megapage away, fence an address in a different piece, and both uses
+ * must fault. Fencing only the named 4 KiB left the other piece readable
+ * and its block runnable.
+ */
+#define VA_MEGA 0xA0000000u /* 4 MiB aligned, and nothing of its own */
+#define MEGA_STUB_OFF 0x200u /* in page 2, clear of its first word   */
+
+static volatile uint32_t g_mega[12];
+
+/* The megapage holding g_page, mapped at VA_MEGA. */
+static uint32_t mega_base(void)
+{
+    return page_pa(PAGE_DATA) & ~0x003FFFFFu;
+}
+
+static uint32_t mega_va(uint32_t pa)
+{
+    return VA_MEGA + (pa - mega_base());
+}
+
+static void smode_mega(void)
+{
+    volatile uint32_t *const named =
+        (volatile uint32_t *)mega_va(page_pa(PAGE_DATA));
+    volatile uint32_t *const piece =
+        (volatile uint32_t *)mega_va(page_pa(PAGE_EXEC2));
+    const uint32_t stub_va = mega_va(page_pa(PAGE_EXEC2) + MEGA_STUB_OFF);
+    uint32_t (*const stub)(void) = (uint32_t (*)(void))stub_va;
+    uint32_t before;
+
+    /* One piece, as data and as code; called twice so it is translated. */
+    g_mega[0] = *piece;
+    g_mega[1] = stub();
+    g_mega[2] = stub();
+
+    /* The megapage goes, and the fence names a different piece. */
+    g_root[VPN1(VA_MEGA)] = 0u;
+    __asm__ volatile("sfence.vma %0, zero" ::"r"(named) : "memory");
+
+    before = g_trap_count;
+    (void)*piece;
+    g_mega[3] = g_trap_count - before;
+    g_mega[4] = g_last_cause;
+
+    before = g_trap_count;
+    call_may_fault(stub_va);
+    g_mega[5] = g_trap_count - before;
+    g_mega[6] = g_last_cause;
+    g_mega[7] = g_last_tval;
+
+    LEAVE_SMODE();
+}
+
+static void test_mega_sfence(void)
+{
+    const uint32_t saved = g_root[VPN1(VA_MEGA)];
+    volatile uint32_t *const stub_pa =
+        (volatile uint32_t *)(page_pa(PAGE_EXEC2) + MEGA_STUB_OFF);
+
+    csr_write("medeleg", 0u);
+    g_page[2048] = 0x3333C3C3u;
+    stub_pa[0] = 0x33300513u; /* li a0, 0x333 */
+    stub_pa[1] = 0x00008067u; /* ret          */
+    __asm__ volatile("fence.i" ::: "memory");
+
+    g_root[VPN1(VA_MEGA)] =
+        leaf_pte(mega_base(),
+                 PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D);
+    csr_write("satp", SATP_SV32 | ((uint32_t)(uintptr_t)g_root >> 12));
+    __asm__ volatile("sfence.vma" ::: "memory");
+    enter_smode(smode_mega);
+    csr_write("satp", 0u);
+    g_root[VPN1(VA_MEGA)] = saved;
+
+    check("mega-piece-load", g_mega[0], 0x3333C3C3u);
+    check("mega-piece-runs", g_mega[1], 0x333u);
+    check("mega-piece-runs-again", g_mega[2], 0x333u);
+    check("mega-sfence-load-traps", g_mega[3], 1u);
+    check("mega-sfence-load-cause", g_mega[4], 13u);
+    check("mega-sfence-fetch-traps", g_mega[5], 1u);
+    check("mega-sfence-fetch-cause", g_mega[6], 12u);
+    check("mega-sfence-fetch-tval", g_mega[7],
+          mega_va(page_pa(PAGE_EXEC2) + MEGA_STUB_OFF));
+}
+
+/* ------------------------------------------------------------------ */
 
 int main(void)
 {
@@ -4918,6 +5012,7 @@ int main(void)
 #endif
     test_split_access();
     test_dtlb();
+    test_mega_sfence();
     test_timer_interrupt();
 
     puts_("checks   ");

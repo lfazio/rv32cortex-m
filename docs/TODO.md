@@ -63,13 +63,6 @@ From the last measurements in [linux.md](linux.md).
       because every fetch still translates and checks PMP. An execute
       table beside the two data ones would be the same structure;
       what it would buy has not been measured.
-- [ ] **SFENCE.VMA naming an address leaves a megapage's other pages
-      cached**, in the TLB and the data TLB both. Each caches a
-      megapage a 4 KiB page at a time, and the fence clears the one
-      it names -- where the privileged spec invalidates every entry
-      that *contains the leaf* for that address, which is all of
-      them. Linux changes megapage leaves with range or global
-      flushes, so nothing here has shown it; an isatest case would.
 - [ ] **A probe is about 60 bytes on x86-64** -- a load is 99 with its
       slow path, of which the call is about 40 -- and grew a Linux
       guest's blocks by half (645 bytes to
