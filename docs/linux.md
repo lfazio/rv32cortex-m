@@ -98,6 +98,32 @@ that gate alone at 4.0x for the JIT on a kernel built to isolate it;
 CoreMark under a real kernel, with its tick and its scheduler, is the
 6.3x above.
 
+### FENCE.I: what it costs, and where it comes from
+
+FENCE.I has no address, so it flushes every translation, and docs/TODO.md
+had proposed tracking writes to code pages to make it local. Measured
+first, on the initramfs boot, against a scratch runner whose FENCE.I
+discards nothing -- unsafe, and a ceiling rather than a design:
+
+| | flushes | translations | `reboot: Power down` at |
+|---|---|---|---|
+| FENCE.I flushes | 3,027 / 3,028 | 154,316 / 154,438 | 3.153 / 3.167 s |
+| FENCE.I does nothing | 76 / 76 | 46,546 / 46,333 | 2.867 / 2.833 s |
+
+**About 10% of a three-second boot, and the obvious design would not
+recover it.** 2,945 of the 2,951 FENCE.Is are S-mode at two places:
+`__patch_insn_write` (1,473) and the `flush_icache_all` after it
+(1,467) -- the kernel patching its own text, alternatives and static
+keys, at boot. Every one follows a write to a page that does hold
+translations, so "flush only if a code page was written" changes
+nothing; it would take invalidating by *physical* page -- the patch is
+written through a different alias than the one the code runs from --
+and seeing every write to RAM, including inlined M-mode stores, which
+OpenSBI makes on every SBI call, and virtio's DMA. At about 0.1 ms a
+flush, the distribution boot's ~3,770 would be some 0.4 s of 109 (an
+extrapolation, not a measurement). The memory path below M-mode is the
+6.3x above.
+
 The compilers differ -- the Linux binary is GCC 16.2, the bare-metal
 guest GCC 15.3 -- and the 2.5% above is the most the instruction count
 an iteration can differ by, so that is not the difference either. Building the bare-metal guest with the Linux compiler through

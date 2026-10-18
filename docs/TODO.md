@@ -47,9 +47,12 @@ measured at.
 
 From the last measurements in [linux.md](linux.md).
 
-- [ ] **FENCE.I flushes the whole cache**: ~3,770 a boot, nearly all
-      before udev. A store into a page holding translated code is what
-      it has to catch; tracking that per page would make it local.
+- [ ] **FENCE.I flushes the whole cache**, and measured, it is not
+      worth making local yet ([linux.md](linux.md#fencei-what-it-costs-and-where-it-comes-from)):
+      at most 0.3 s of a 3.15 s initramfs boot, and the flushes are the
+      kernel patching its own, already translated, text -- so it would
+      take invalidation by physical page and every write path tracked,
+      DMA and inlined M-mode stores included, for that.
 - [ ] **Every process translates its own copy of libc.** The key is
       satp, so identical physical pages in two address spaces are two
       sets of blocks. Keying on the physical page would share them, at
