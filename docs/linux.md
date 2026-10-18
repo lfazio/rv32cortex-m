@@ -65,6 +65,44 @@ Three pieces:
 
 A distribution's `poweroff` goes the same way.
 
+## Benchmarks
+
+`LINUX_BENCH=coremark scripts/run-linux.sh` builds CoreMark as a Linux
+process and puts it in the initramfs as `/bench/coremark`; init runs it
+after its checks -- `clone`, `execve`, `waitid` -- and powers off, so the
+run ends with CoreMark's figures. It is the bare-metal guest's port with
+a `COREMARK_LINUX` branch: `clock_gettime64` for the clock, `write` for
+the output, and a `_start` that sets `gp`. No libc, because the cross
+toolchain has none for rv32, and the bare-metal guest's `-march`.
+
+Host JIT, the same CoreMark, `crcfinal` equal where the iteration counts
+are:
+
+| | iterations/s | |
+|---|---|---|
+| bare metal, x30000 | **1578** | 19 s, 7.50e9 instructions |
+| a Linux process, x3000 | **250** | 12 s; the whole run 8.98e8 |
+
+**6.3x slower under Linux, and not for the reasons that come first to
+mind.** Block entries are as frequent as on bare metal -- 33 guest
+instructions a block entry against 30 -- so it is not the dispatcher.
+The kernel is not doing much meanwhile: the run retires 769.2M
+instructions more than the same boot without the benchmark (128.76M),
+256,400 an iteration against bare metal's 250,078, so 2.5% is
+everything else that happened, tick and scheduler included. FENCE.I is
+not it either: 3,033 flushes at 2,000 iterations and 3,035 at 3,000.
+What changes is every load and store: below M-mode `pmp_active` is set and paging is on, so
+the translated code's inlined RAM path is off and each access is a call
+through translation and the PMP check. CLAUDE.md's sv32bench note puts
+that gate alone at 4.0x for the JIT on a kernel built to isolate it;
+CoreMark under a real kernel, with its tick and its scheduler, is the
+6.3x above.
+
+The compilers differ -- the Linux binary is GCC 16.2, the bare-metal
+guest GCC 15.3 -- and the 2.5% above is the most the instruction count
+an iteration can differ by, so that is not the difference either. Building the bare-metal guest with the Linux compiler through
+the guest flow did not give a working image, and was not pursued.
+
 ## A distribution to a login prompt
 
 **A full distribution boots to a login prompt.** Yocto

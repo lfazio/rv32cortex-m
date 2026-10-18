@@ -12,7 +12,8 @@
  *
  * The RISC-V Linux syscall convention: a7 is the number, a0-a5 the
  * arguments, `ecall` the trap, a0 the result. rv32 uses the generic
- * numbering, so write is 64, exit_group 94 and reboot 142.
+ * numbering, so write is 64, exit_group 94 and reboot 142 -- and clone
+ * 220, execve 221, waitid 95 and faccessat 48 for the benchmarks.
  */
 
 static long sys(long n, long a, long b, long c)
@@ -303,6 +304,56 @@ static void test_extensions(void)
     put((g_ext_fails == 0) ? " failures -- PASS\n" : " failures -- FAIL\n");
 }
 
+/*
+ * A benchmark, if the initramfs carries it (scripts/run-linux.sh with
+ * LINUX_BENCH): an ordinary process -- forked, exec'd and waited for --
+ * so it runs in U-mode, under Sv32, with the kernel's tick and its
+ * scheduler, which is what "under Linux" has to mean. Absent, nothing
+ * at all happens: the default boot does not pay for a fork.
+ *
+ * clone with only SIGCHLD in its flags is fork, and the child is a copy
+ * of this process, so it can call execve from here. rv32 has no wait4
+ * -- its rusage carries a time -- so it is waitid, whose siginfo has
+ * the status 20 bytes in.
+ */
+static void run_bench(const char *path)
+{
+    const char *argv[2];
+    const char *envp[1];
+    unsigned int info[32]; /* siginfo_t */
+    long pid;
+
+    if (sys5(48, -100 /* AT_FDCWD */, (long)path, 1 /* X_OK */, 0, 0) != 0) {
+        return;
+    }
+    argv[0] = path;
+    argv[1] = 0;
+    envp[0] = 0;
+    put("RV32-LINUX-INIT: running ");
+    put(path);
+    put("\n");
+    pid = sys5(220, 17 /* SIGCHLD */, 0, 0, 0, 0);
+    if (pid == 0) {
+        (void)sys(221, (long)path, (long)argv, (long)envp);
+        (void)sys(94, 127, 0, 0);
+    }
+    if (pid < 0) {
+        put("RV32-LINUX-INIT: clone failed\n");
+        g_ext_fails++;
+        return;
+    }
+    info[5] = 0xFFFFFFFFu;
+    (void)sys5(95, 1 /* P_PID */, pid, (long)info, 4 /* WEXITED */, 0);
+    put("RV32-LINUX-INIT: ");
+    put(path);
+    put(" exited ");
+    put_hex(info[5]);
+    put("\n");
+    if (info[5] != 0u) {
+        g_ext_fails++;
+    }
+}
+
 void _start(void)
 {
     /*
@@ -328,6 +379,7 @@ void _start(void)
     put("\n");
     put("RV32-LINUX-INIT: userspace is running\n");
     test_extensions();
+    run_bench("/bench/coremark");
     put("RV32-LINUX-INIT: done\n");
 
     /*

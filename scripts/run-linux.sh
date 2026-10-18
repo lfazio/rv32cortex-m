@@ -153,6 +153,48 @@ echo "==> init"
     -o "$WORK/init" "$ROOT/boot/initramfs/init.c"
 
 # ---------------------------------------------------------------------
+# benchmarks, if asked for
+# ---------------------------------------------------------------------
+#
+# LINUX_BENCH=coremark puts CoreMark in the initramfs as /bench/coremark,
+# and init runs it as a process after its checks and before it powers
+# off -- so the run ends with its figures, in U-mode under Sv32 with the
+# kernel's tick, where the bare-metal guest has the machine to itself.
+#
+# Built with the bare-metal guest's -march (RV_GUEST_MARCH's default in
+# tests/guest/CMakeLists.txt) and its port, so the two figures differ by
+# the operating system and not by the compiler. LINUX_BENCH_ITERATIONS
+# sets the count; CoreMark wants at least ten seconds for a valid run,
+# and the guest's clock is the wall clock.
+#
+BENCH_MANIFEST=""
+case " ${LINUX_BENCH:-} " in
+*" coremark "*)
+    CM=${COREMARK_DIR:-$ROOT/build/host/coremark-src}
+    if [ ! -f "$CM/core_main.c" ]; then
+        echo "error: no CoreMark at $CM; set COREMARK_DIR, or configure a" >&2
+        echo "       host build, which fetches it." >&2
+        exit 1
+    fi
+    BENCH_MARCH=${LINUX_BENCH_MARCH:-rv32imafc_zicsr_zifencei_zicbom_zicboz_zba_zbb_zbc_zbs_zacas}
+    echo "==> coremark (${LINUX_BENCH_ITERATIONS:-3000} iterations, $BENCH_MARCH)"
+    "${CROSS}gcc" -march="$BENCH_MARCH" -mabi=ilp32 -static -nostdlib -s \
+        -O2 -ffreestanding -fno-builtin -fno-stack-protector \
+        -fno-tree-loop-distribute-patterns \
+        -Wno-unused-parameter -Wno-sign-compare -Wno-implicit-fallthrough \
+        -I "$CM" -I "$ROOT/tests/guest/coremark" \
+        -DCOREMARK_LINUX -DPERFORMANCE_RUN=1 \
+        -DITERATIONS="${LINUX_BENCH_ITERATIONS:-3000}" \
+        -o "$WORK/coremark" \
+        "$CM/core_main.c" "$CM/core_list_join.c" "$CM/core_matrix.c" \
+        "$CM/core_state.c" "$CM/core_util.c" \
+        "$ROOT/tests/guest/coremark/core_portme.c"
+    BENCH_MANIFEST="dir /bench 0755 0 0
+file /bench/coremark $WORK/coremark 0755 0 0"
+    ;;
+esac
+
+# ---------------------------------------------------------------------
 # the initramfs manifest
 # ---------------------------------------------------------------------
 #
@@ -168,6 +210,7 @@ nod /dev/tty 0666 0 0 c 5 0
 nod /dev/ttyS0 0600 0 0 c 4 64
 nod /dev/kmsg 0600 0 0 c 1 11
 file /init $WORK/init 0755 0 0
+$BENCH_MANIFEST
 EOF
 
 # ---------------------------------------------------------------------

@@ -86,6 +86,47 @@ static void clock_start(void)
         LTSC_REG(0x10u) = 1u;           /* TCS.TS */
     }
 }
+#elif defined(COREMARK_LINUX)
+/*
+ * An RV32 Linux process (scripts/run-linux.sh, LINUX_BENCH=coremark),
+ * chosen by COREMARK_LINUX rather than __linux__: the compiler that
+ * builds a Linux binary also builds bare-metal guests, and defines
+ * __linux__ for both.
+ * no libc -- the cross toolchain has none for rv32 -- so the syscalls are
+ * written out as boot/initramfs/init.c does them. The clock is
+ * clock_gettime64 on CLOCK_MONOTONIC, in microseconds, the
+ * EE_TICKS_PER_SEC this port has everywhere; kept in 32 bits, whose wrap
+ * a difference survives, so no 64-bit division is needed and none of
+ * libgcc either.
+ */
+static long linux_sys(long n, long a, long b, long c)
+{
+    register long a7 __asm__("a7") = n;
+    register long a0 __asm__("a0") = a;
+    register long a1 __asm__("a1") = b;
+    register long a2 __asm__("a2") = c;
+
+    __asm__ volatile("ecall" : "+r"(a0) : "r"(a7), "r"(a1), "r"(a2) : "memory");
+    return a0;
+}
+
+struct linux_timespec64 {
+    long long tv_sec;
+    long long tv_nsec;
+};
+
+static ee_u32 linux_now_us(void)
+{
+    struct linux_timespec64 t;
+
+    (void)linux_sys(403, 1 /* CLOCK_MONOTONIC */, (long)&t, 0);
+    return (ee_u32)t.tv_sec * 1000000u + (ee_u32)t.tv_nsec / 1000u;
+}
+
+#define GETMYTIME(_t)        (*_t = linux_now_us())
+static void clock_start(void)
+{
+}
 #else
 #define CLINT_MTIME_LO (*(volatile ee_u32 *)0x0200BFF8u)
 #define GETMYTIME(_t)        (*_t = CLINT_MTIME_LO)
@@ -133,10 +174,61 @@ void portable_fini(core_portable *p)
 /* Output                                                              */
 /* ------------------------------------------------------------------ */
 
+#if defined(COREMARK_LINUX)
+/*
+ * Out through write(2) a line at a time, and the process's own start:
+ * gp, then main, then exit_group with what main returned. gp has to be
+ * set before any C runs, or the linker's gp-relative globals land near
+ * address 0 -- the init next door died of exactly that.
+ */
+static char g_line[128];
+static unsigned g_line_n;
+
+static void linux_flush(void)
+{
+    if (g_line_n != 0u) {
+        (void)linux_sys(64, 1, (long)g_line, (long)g_line_n);
+        g_line_n = 0u;
+    }
+}
+
+void uart_send_char(char c)
+{
+    g_line[g_line_n++] = c;
+    if (c == '\n' || g_line_n == sizeof(g_line)) {
+        linux_flush();
+    }
+}
+
+void linux_exit(int code);
+
+void linux_exit(int code)
+{
+    linux_flush();
+    (void)linux_sys(94, code, 0, 0);
+    for (;;) {
+    }
+}
+
+__attribute__((naked)) void _start(void);
+
+__attribute__((naked)) void _start(void)
+{
+    __asm__ volatile(".option push\n"
+                     ".option norelax\n"
+                     "la gp, __global_pointer$\n"
+                     ".option pop\n"
+                     "lw a0, 0(sp)\n"
+                     "addi a1, sp, 4\n"
+                     "call main\n"
+                     "call linux_exit\n");
+}
+#else
 void uart_send_char(char c)
 {
     UART_THR = (unsigned char)c;
 }
+#endif
 
 /*
  * CoreMark ships an ee_printf, but its barebones copy *defines*

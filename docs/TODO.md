@@ -54,9 +54,14 @@ From the last measurements in [linux.md](linux.md).
       satp, so identical physical pages in two address spaces are two
       sets of blocks. Keying on the physical page would share them, at
       the cost of a translation on every lookup.
-- [ ] **Benchmarks under Linux**, still not run. A run now ends when
-      init powers the machine off ([linux.md](linux.md#powering-off)),
-      so one can end with its figures rather than at a cap.
+- [ ] **Loads and stores below M-mode are calls.** CoreMark as a Linux
+      process is 6.3x slower than bare metal on the host JIT, with
+      block entries as frequent as there
+      ([linux.md](linux.md#benchmarks)): paging and the PMP gate turn
+      the inlined RAM path off for any OS. An inlined probe has to
+      answer both questions -- the translation and the permission --
+      and CLAUDE.md's sv32bench entry says 4.0x is the ceiling for the
+      first alone.
 - [ ] **A display under Linux.** The framebuffer device exists
       ([games.md](games.md)); nothing in the device tree describes it to
       a kernel.
