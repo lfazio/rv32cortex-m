@@ -90,25 +90,37 @@ keeps what its cache says, so start one fresh. Firmware builds RV32
 alone unless told otherwise. Each frontend has its own page under
 [docs/frontend/](docs/frontend/).
 
-### Firmware — Nucleo-F746ZG
+### Firmware — Nucleo-F746ZG, Nucleo-F446RE, Nucleo-N657X0-Q
 
 ```sh
 cmake -B build/f746 -DEMU_PLATFORM=stm32f746 \
       -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
-      -DCMAKE_BUILD_TYPE=Release -DRV32_GUEST=isatest
+      -DRV32_GUEST=isatest
 cmake --build build/f746 --target flash        # probe-rs over ST-LINK
 ```
 
-The older Nucleo-F446RE is still supported: `-DEMU_PLATFORM=stm32f446`,
-`--chip STM32F446RETx` on `/dev/ttyACM0`. `EMU_PLATFORM` picks the CPU,
-the FPU and the vendor pack.
+`EMU_PLATFORM` picks the CPU, the FPU and the vendor pack:
+`stm32f746`, `stm32f446` or `stm32n6`, each with the same two commands.
+The build type is left at its default, RelWithDebInfo (`-O2`), which is
+what every board figure was measured with. **The N6 refuses Release**:
+at `-O3` GCC 15's MVE vectoriser emits loads the assembler rejects, and
+the image would not fit the 207 KB its boot ROM loads anyway.
 
-Console: the ST-LINK virtual COM port at **921600 8N1** — USART3 on the
-Nucleo-F746ZG (a Nucleo-144 wires the VCP to PD8/PD9), USART2 on the
-F446RE.
+- **More than one probe attached:** name the board's with
+  `-DEMU_PROBE=VID:PID:serial` (`probe-rs list`). Without it the flash
+  target waits for an interactive choice it can never get.
+- **The N6** has no internal flash: `flash` loads the image into RAM
+  through ST-LINK_gdbserver from STM32CubeIDE, found at configure time,
+  and starts it on the core. Jumper JP2 (BOOT1) at 2-3, development boot
+  -- see [docs/stm32n6/](docs/stm32n6/README.md).
+
+Console: the ST-LINK virtual COM port at **921600 8N1** -- USART3 on the
+F746ZG (a Nucleo-144 wires the VCP to PD8/PD9), USART2 on the F446RE,
+USART1 on the N6. Open it by id, not by number: with two boards
+attached the `ttyACM` numbers swap when a probe re-enumerates.
 
 ```sh
-picocom -b 921600 /dev/ttyACM1
+picocom -b 921600 /dev/serial/by-id/usb-STMicroelectronics_*-if0[12]
 ```
 
 On the F746 the network is **on by default**, so that port carries IP
@@ -132,17 +144,21 @@ board result.
 
 ### Options
 
-`-DRV32_GUEST=` selects the embedded guest image: `isatest`, `hello`,
-`bench`, `stm32drv`, `irqtest`, `cmsistest`, `coremark`, `dhrystone`,
-`whetstone`, `fptest` or `mmiobench`. A PowerPC firmware takes
-`-DPPC_GUEST=` instead: `alu`, `sys`, `mmu`, `coremark` or `crypto`.
+`-DRV32_GUEST=` selects the embedded guest image by the name of its
+`.bin` under `tests/guest`: `isatest` (the default), `hello`, `bench`,
+`coremark`, `dhrystone`, `whetstone`, `fptest`, `crypto`, `atomics`,
+`mmiobench`, `stm32drv`, `irqtest`, `cmsistest`, `sv32bench-bare`,
+`sv32bench-paged`; `fbtest` and `virtiotest` want devices the host has
+and the boards do not. A PowerPC firmware takes `-DPPC_GUEST=` instead
+(`alu`, `sys`, `mmu`, `coremark`, `crypto`, `dhrystone`, `whetstone`,
+`intc`, `swt`, `smp` ...: the `ppc-*.img` names).
 
 | Option | Default | Effect |
 |---|---|---|
 | `EMU_JIT` | `ON` | The JIT. `OFF` is smaller, and is how a suspected JIT bug is isolated. |
-| `EMU_JIT_CODE_BYTES` | `32768` | Code cache, on a microcontroller. **The dominant performance term, and a threshold rather than a dial**: below a guest's translated working set the JIT is *slower* than the interpreter, and at the default that is true of CoreMark — see [docs/jit/tuning.md](docs/jit/tuning.md). |
+| `EMU_JIT_CODE_BYTES` | per board | Code cache, on a microcontroller: 96 KB on the F746 (64 with G4MH), 128 on the N6, 32 on the F446. **The dominant performance term, and a threshold rather than a dial**: below a guest's translated working set the JIT is *slower* than the interpreter -- see [docs/jit/tuning.md](docs/jit/tuning.md). A host has 64 MB. |
 | `EMU_JIT_LOOP_CAP` | `128` | Guest instructions per block entry: an interrupt-latency knob, not a throughput one. |
-| `EMU_NET` | `ON` (F746) | lwIP over PPP (or SLIP, `EMU_NET_LINK`) on the console UART: telnet, gdb and TFTP. **The UART stops being a console** -- `OFF` gets it back. |
+| `EMU_NET` | `ON` on the F746, `OFF` elsewhere | lwIP over PPP (or SLIP, `EMU_NET_LINK`) on the console UART: telnet, gdb and TFTP. **The UART stops being a console** -- `OFF` gets it back. |
 | `EMU_ENABLE_TRACE` | `OFF` | Per-instruction trace hook. Slow, and the fastest way to find where execution diverges. |
 | `RV32_EXT_PMP` / `RV32_EXT_SDTRIG` | `ON` | Each costs a little even unused; `OFF` removes it. |
 | `EMU_NATIVE_COREMARK` | `OFF` | Run CoreMark natively on the ARM instead of the emulator, for the baseline. |
@@ -189,7 +205,7 @@ cmake -B build/stm32f446 ... -DSTM32CUBE_LOCAL_DIR=/path/to/checkouts
 ./build/host/emu-host build/host/guest/isatest.bin
 ./build/host/emu-host --jit --quiet build/host/guest/isatest.bin
 ./build/host/emu-host --frontend g4mh guest.bin
-./build/ppc/emu-host --jit build/ppc/guest/ppc-coremark.elf
+./build/host/emu-host --jit build/host/guest/ppc-coremark.elf
 ```
 
 `emu-host` picks a frontend from `--frontend`, else from the image's ELF
@@ -216,21 +232,14 @@ it lives here and `tests/guest/doom.cmake` is a recipe rather than a
 copy. The platform layer it needs lives in the DOOM port beside the
 video driver, for the same reason.
 
-**Two stages, and the first is not optional.** The port bakes its
-texture and map tables and shrinks the WAD on the *host* before any
-guest image can be built, so run the generator once:
-
-```sh
-cmake -S . -B build/doom -DEMU_PLATFORM=host -DEMU_SDL=ON \
-      -DEMU_DOOM=ON -DEMU_GUEST_RAM_KIB=8192
-scripts/doom-gentables.sh            # host stage: needs gcc-multilib
-```
-
-Then the image for whichever frontend, and run it:
+**One script per frontend.** For RV32 it fetches the port, runs the
+host stage that bakes its tables and shrinks the WAD (`gcc -m32`, so
+gcc-multilib), builds the image and the runner, and prints the command
+to run them:
 
 ```sh
 # RISC-V
-cmake --build build/doom --target guest-doom
+scripts/rv32-build-doom.sh              # or: <doom-src-dir> [out.bin]
 ./build/doom/emu-host --jit --ram 0x2000000 --timer-hz 6 \
                       build/doom/guest/doom.bin
 
@@ -259,7 +268,10 @@ second while `mtime` and the LTSC run at wall-clock, so DOOM advances
 many world-tics per drawn frame and plays absurdly fast; dividing its
 clock trades simulated time for playability.
 
-`-DDOOM_DIR=<path>` points at an existing checkout instead of fetching.
+The RV32 build is `tests/guest/doom.cmake` underneath, with `EMU_DOOM=ON`
+and `EMU_GUEST_RAM_KIB=8192`; `DOOM_BUILD` picks the directory, and an
+existing checkout can be passed instead of fetching. The G4MH and
+PowerPC builds use the source the RV32 one fetched, `build/doom/doom-src`.
 
 **Status.** All three run it: start-up, level load and rendering,
 with the framebuffer's own frame counter agreeing with the guest's.
@@ -279,12 +291,13 @@ fetched: id Software made the shareware `pak0.pak` freely
 redistributable and it is still not this repository's to ship.
 
 ```sh
-cmake -S . -B build/quake -DEMU_PLATFORM=host -DEMU_SDL=ON \
-      -DEMU_QUAKE=ON -DQUAKE_PAK=/path/to/pak0.pak \
-      -DEMU_GUEST_ROM_MIB=32 -DEMU_GUEST_RAM_KIB=32768
-cmake --build build/quake --target guest-quake
+scripts/rv32-build-quake.sh - /path/to/pak0.pak   # `-`: fetch the port
 ./build/quake/emu-host --jit --ram 0x4000000 build/quake/guest/quake.bin
 ```
+
+That is `tests/guest/quake.cmake` with `EMU_QUAKE=ON`, `QUAKE_PAK`,
+`EMU_GUEST_ROM_MIB=32` and `EMU_GUEST_RAM_KIB=32768`, the same arguments
+as the other two frontends' scripts; `QUAKE_BUILD` picks the directory.
 
 Neither size is optional. The PAK is 18.7 MiB and lands in `.rodata`,
 so the default 16 MiB flash window cannot hold the image; and Quake's
@@ -358,10 +371,10 @@ which builds init, the kernel and OpenSBI before it runs anything;
 `LINUX_JIT` and `LINUX_ZBB` override the pieces. Ctrl-C ends the emulator; it does not
 reach the guest.
 
-Expect under a minute: **48 s to the login prompt**, translated, on
-an x86-64 host, udev about 11 s of it. It was 109 s, then 64 as
-other work landed; the data TLB below M-mode and a 64 MB code buffer
-took it here ([docs/linux.md](docs/linux.md#benchmarks)).
+Expect under a minute: **44 s to the login prompt**, translated, on
+an x86-64 host. It was 109 s, then 64 as other work landed; the data
+and fetch tables below M-mode and a 64 MB code buffer took it here
+([docs/linux.md](docs/linux.md#benchmarks)).
 
 It used to be over fifteen minutes, and this paragraph used to call the
 udev stall "an open question, not a speed problem, and no amount of

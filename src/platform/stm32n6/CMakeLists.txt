@@ -38,6 +38,22 @@
 #
 # It has to be set *before* the include -- that is when the pack is chosen
 # and fetched. Setting it afterwards is a no-op that reads like a fix.
+#
+# **Not Release.** -O3 does not build here, two ways: GCC 15's MVE
+# auto-vectoriser emits vector loads whose offsets the assembler rejects
+# ("co-processor offset out of range", 30 of them), and with the
+# vectoriser off the image is 237 KB against the 207 KB the boot ROM
+# loads. Both were true before anything recent changed, and README.md
+# had told people to pass Release. The default, RelWithDebInfo, and
+# MinSizeRel both fit; say so at configure time rather than at the link.
+#
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    message(FATAL_ERROR
+        "The N6 cannot be built Release (-O3): GCC's MVE vectoriser emits "
+        "out-of-range loads, and without it the image overflows the 207 KB "
+        "the boot ROM loads. Use the default (RelWithDebInfo) or MinSizeRel.")
+endif()
+
 set(STM32CUBE_FAMILY "n6")
 include(${CMAKE_SOURCE_DIR}/cmake/stm32cube.cmake)
 

@@ -28,7 +28,12 @@ endif()
 
 set(QUAKE_REPO "https://github.com/lfazio/quake-embedded.git"
     CACHE STRING "Quake port to build")
-set(QUAKE_BRANCH "master" CACHE STRING "branch carrying the board")
+#
+# The board is on `rv32emu`, which is the remote's only branch: this said
+# `master`, which does not exist there, so a fresh configure's clone
+# failed, its status was dropped, and the image was skipped as though the
+# source were simply absent.
+set(QUAKE_BRANCH "rv32emu" CACHE STRING "branch carrying the board")
 set(QUAKE_DIR "${CMAKE_BINARY_DIR}/quake-src" CACHE PATH "Quake source")
 
 #
@@ -49,6 +54,12 @@ if(NOT EXISTS "${QUAKE_DIR}/winquake/host.c")
             COMMAND ${GIT_EXECUTABLE} clone --depth 1 -b "${QUAKE_BRANCH}"
                     -q "${QUAKE_REPO}" "${QUAKE_DIR}"
             RESULT_VARIABLE _quake_rc)
+        if(NOT _quake_rc EQUAL 0)
+            message(STATUS
+                "Quake: cloning branch ${QUAKE_BRANCH} of ${QUAKE_REPO} "
+                "failed (${_quake_rc}); set QUAKE_BRANCH, or QUAKE_DIR to "
+                "a checkout")
+        endif()
     endif()
 endif()
 

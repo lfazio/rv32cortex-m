@@ -86,8 +86,15 @@ they cannot disagree about what a key is.
 **DOOM on rv32 -- it plays.** Full startup, E1M1, frames through
 the framebuffer, keyboard and mouse live.
 
-`-DEMU_DOOM=ON`, then `scripts/doom-gentables.sh`, then
-`guest-doom`; run with `--jit --ram 0x2000000 --timer-hz 6`.
+`scripts/rv32-build-doom.sh`, which is `-DEMU_DOOM=ON`, the host stage
+(`scripts/doom-gentables.sh`), a second configure and `guest-doom` in
+one command; run with `--jit --ram 0x2000000 --timer-hz 6`. Quake is
+`scripts/rv32-build-quake.sh - <pak0.pak>`. Running both from a fresh
+fetch found two things nothing else had: the generator compiled the
+PowerPC platform layer for the host, because it excluded platform files
+by name and that one came later, and it never built `shrinkwad`, which
+every earlier run had found left over from a manual build. Quake's
+recipe cloned a `master` branch the port does not have.
 The port layer is GPL and lives in the port
 (https://github.com/lfazio/embeddedDOOM, branch `rv32cortex-m`);
 nothing of DOOM's is in this tree.

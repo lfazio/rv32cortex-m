@@ -63,7 +63,10 @@ cd "$SRC"
 # memory that exists only inside the emulator, and i_video_emu.c is the
 # shared driver both frontends use. The generator runs on the *host* and
 # needs none of them -- i_video_console.c stands in.
-SRCS=$(ls ./*.c | grep -vE '/(i_video|i_video_emu|i_video_rv32|i_platform_rv32|i_platform_g4mh|XDriver)\.c$')
+# Every target's platform layer is left out, by pattern: the list used
+# to name them, and the PowerPC one added later broke the host stage of
+# every fresh fetch while a checkout generated before it kept working.
+SRCS=$(ls ./*.c | grep -vE '/(i_video|i_video_emu|i_video_rv32|i_platform_[a-z0-9]+|XDriver)\.c$')
 
 # The four rawdraw hooks, which i_video.c would otherwise supply.
 STUB=$(mktemp /tmp/cnfg_stub_XXXXXX.c)
@@ -138,6 +141,14 @@ if [ "$sprites" -lt 100 ]; then
 fi
 echo "  keeping all $sprites sprites"
 
+# The port's Makefile builds this host tool and nothing here did, so a
+# fresh fetch stopped at "./shrinkwad: not found" -- every earlier run
+# had a binary left from a manual build. Built as the generator is: for
+# the host, 32-bit, from the one source (it #includes rawwad.c).
+if [ ! -x shrinkwad ] || [ shrinkwad.c -nt shrinkwad ]; then
+    echo "  building shrinkwad (32-bit host)"
+    cc -m32 -std=gnu99 -w -O1 -DNORMALUNIX -DLINUX shrinkwad.c -o shrinkwad
+fi
 ./shrinkwad stripchoice.txt add_sprites.txt rawwad_use.c rawwad_use.h >/dev/null
 
 echo
