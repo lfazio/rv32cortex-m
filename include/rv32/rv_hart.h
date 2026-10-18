@@ -348,9 +348,20 @@ typedef struct rv_hart {
      * an M-mode access, which is why it can sit at the end.
      */
     emu_dtlb_entry_t dtlb[RV_DTLB_TABLES][RV_DTLB_ENTRIES];
+    /*
+     * The same for instruction fetch, by the privilege the hart runs at,
+     * and holding less: `read` is the page number if an instruction may
+     * be fetched there, `addend` takes it to the *physical* page -- the
+     * walk's and PMP's answer, not a host pointer, so the fetch itself
+     * still goes to the bus -- and `write` is the page number if the fill
+     * refused it. Probed by the interpreter's guarded fetch and by the
+     * translator's, cleared with the data tables.
+     */
+    emu_dtlb_entry_t itlb[RV_DTLB_TABLES][RV_DTLB_ENTRIES];
     /* What it did, for the stats line: an unread table is not a cache. */
     uint32_t dtlb_fills;
     uint32_t dtlb_flushes;
+    uint32_t itlb_fills;
 #endif
 } rv_hart_t;
 
@@ -359,6 +370,37 @@ typedef struct rv_hart {
 static inline uint32_t rv_dtlb_table(uint32_t priv)
 {
     return (RV_DTLB_TABLES == 1u || priv == RV_PRIV_U) ? 0u : 1u;
+}
+
+/*
+ * The fetch table's entry for `va` at the privilege the hart runs at, or
+ * NULL in M-mode, which has no table.
+ */
+static inline const emu_dtlb_entry_t *rv_itlb_entry(const rv_hart_t *h,
+                                                    uint32_t va)
+{
+    if (h->priv == RV_PRIV_M) {
+        return NULL;
+    }
+    return &h->itlb[rv_dtlb_table(h->priv)]
+                   [(va >> EMU_DTLB_PAGE_SHIFT) & (RV_DTLB_ENTRIES - 1u)];
+}
+
+/*
+ * The physical address a fetch at `va` goes to, if the table vouches for
+ * its page -- translated, and executable by PMP for all of it -- else
+ * false, and the caller asks the walk and PMP.
+ */
+static inline bool rv_itlb_lookup(const rv_hart_t *h, uint32_t va,
+                                  uint32_t *pa)
+{
+    const emu_dtlb_entry_t *const e = rv_itlb_entry(h, va);
+
+    if (e == NULL || e->read != va >> EMU_DTLB_PAGE_SHIFT) {
+        return false;
+    }
+    *pa = va + (uint32_t)e->addend;
+    return true;
 }
 #endif
 
@@ -657,7 +699,7 @@ bool rv_pmp_simple(const rv_hart_t *h, uint32_t *lo, uint32_t *hi);
  * the same answer. For the data TLB, which caches a page at a time.
  */
 void rv_pmp_page_rights(const rv_hart_t *h, uint32_t page, uint32_t priv,
-                        bool *read, bool *write);
+                        bool *read, bool *write, bool *exec);
 #endif
 
 #if RV_HAVE_DTLB
@@ -678,6 +720,13 @@ void rv_dtlb_flush_page(rv_hart_t *h, uint32_t va);
  * that could change it goes unseen -- see rv_dtlb.c.
  */
 void rv_dtlb_fill(rv_hart_t *h, uint32_t va, uint32_t pa);
+
+/*
+ * The same for a fetch that just succeeded at `va`, translated to `pa`,
+ * at the privilege the hart runs at: fills the instruction table if the
+ * whole page may be executed and is memory.
+ */
+void rv_itlb_fill(rv_hart_t *h, uint32_t va, uint32_t pa);
 #endif
 
 #if RV_EXT_SV32 && RV_HAVE_DTLB
@@ -688,6 +737,9 @@ void rv_dtlb_fill(rv_hart_t *h, uint32_t va, uint32_t pa);
  */
 bool rv_mmu_dtlb_rights(const rv_hart_t *h, uint32_t va, uint32_t priv,
                         bool *writable);
+
+/* Whether the leaf for `va` lets the fetch table cache it at `priv`. */
+bool rv_mmu_itlb_rights(const rv_hart_t *h, uint32_t va, uint32_t priv);
 #endif
 
 #if RV_EXT_F

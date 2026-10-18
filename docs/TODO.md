@@ -57,12 +57,6 @@ From the last measurements in [linux.md](linux.md).
       satp, so identical physical pages in two address spaces are two
       sets of blocks. Keying on the physical page would share them, at
       the cost of a translation on every lookup.
-- [ ] **The interpreter's fetch below M is now its cost.** The data
-      TLB serves the interpreter's loads and stores too, and took
-      sv32bench's paged run from 370 ms to 331 -- against 129 bare --
-      because every fetch still translates and checks PMP. An execute
-      table beside the two data ones would be the same structure;
-      what it would buy has not been measured.
 - [ ] **The slow path of a probed access is a 40-byte call.** The
       probe itself is 34 bytes before the access now
       ([backend/x86_64.md](backend/x86_64.md#the-data-tlb-probe)), and
@@ -76,6 +70,19 @@ From the last measurements in [linux.md](linux.md).
 - [ ] **A display under Linux.** The framebuffer device exists
       ([games.md](games.md)); nothing in the device tree describes it to
       a kernel.
+
+## Platforms
+
+- [ ] **A tinyusb network device over USB**
+      (https://github.com/hathach/tinyusb). What it was waiting for is
+      done: lwIP runs on a FreeRTOS task of its own, given a turn by the
+      run loop when it has work
+      ([network.md](network.md#on-a-task-of-its-own)). A USB device's
+      events would wake that task, which today only the run loop does.
+- [ ] **PCIe over USB**: the design of an emulated PCIe peripheral
+      reached over USB, and of a PCIe-over-USB device firmware deployed
+      on each board to exercise the peripherals it has. The use case is:
+      develop firmware on pc while using real peripherals on boards.
 
 ## Guests
 
@@ -94,6 +101,13 @@ From the last measurements in [linux.md](linux.md).
 - [ ] **Anything to compare it with.** No e200 is attached and no
       other emulator is consulted, so a shared misreading of the manual
       is invisible to every check there is.
+- [ ] **An emulated GTM** for the STM32F746ZG and the STM32N657, plugged
+      into the PCIe framework.
+
+## ArmvX-m
+
+- [ ] **ARMv6-M in the ARMv7-M frontend**, which becomes armvX-m.
+- [ ] **ARMv8-M in the armvX-m frontend.**
 
 ## RH850 / G4MH
 
@@ -116,20 +130,3 @@ From the last measurements in [linux.md](linux.md).
 - [ ] **TAUD on the RH850/U2B6**, built on the STM32 timers that remain
       free and plugged into the PCIe framework.
 - [ ] **The G4MH and RH850 CPU system** (section 3), finished.
-
-## Platforms
-
-- [ ] **A tinyusb network device over USB**
-      (https://github.com/hathach/tinyusb). What it was waiting for is
-      done: lwIP runs on a FreeRTOS task of its own, given a turn by the
-      run loop when it has work
-      ([network.md](network.md#on-a-task-of-its-own)). A USB device's
-      events would wake that task, which today only the run loop does.
-- [ ] **PCIe over USB**: the design of an emulated PCIe peripheral
-      reached over USB, and of a PCIe-over-USB device firmware deployed
-      on each board to exercise the peripherals it has. The use case is:
-      develop firmware on pc while using real peripherals on boards.
-- [ ] **An emulated GTM** for the STM32F746ZG and the STM32N657, plugged
-      into the PCIe framework.
-- [ ] **ARMv6-M in the ARMv7-M frontend**, which becomes armvX-m.
-- [ ] **ARMv8-M in the armvX-m frontend.**

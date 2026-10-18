@@ -264,12 +264,13 @@ bool rv_pmp_check(const rv_hart_t *h, uint32_t addr, uint32_t size,
 }
 
 void rv_pmp_page_rights(const rv_hart_t *h, uint32_t page, uint32_t priv,
-                        bool *read, bool *write)
+                        bool *read, bool *write, bool *exec)
 {
     const uint32_t last = page + (RV_PAGE_SIZE - 1u);
 
     *read = false;
     *write = false;
+    *exec = false;
     if (priv == RV_PRIV_M) {
         return; /* the data TLB is for accesses below M only */
     }
@@ -295,6 +296,7 @@ void rv_pmp_page_rights(const rv_hart_t *h, uint32_t page, uint32_t priv,
         }
         *read = (cfg & PMP_R) != 0u;
         *write = (cfg & PMP_W) != 0u;
+        *exec = (cfg & PMP_X) != 0u;
         return;
     }
     /* No entry: below M, denied. */

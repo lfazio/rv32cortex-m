@@ -111,6 +111,16 @@ The rest of Linux, same runner against the parent commit:
 | initramfs boot, process wall time | 4.39 / 4.40 s | **2.25 / 2.25 s** |
 | Yocto to the login prompt | 64.0 s | **48.0 s** |
 
+Then the fetch table, which caches the walk's and PMP's answer for
+instruction fetch ([jit/staleness.md](jit/staleness.md#the-data-tlb)),
+and the smaller x86-64 probe:
+
+| | before | after |
+|---|---|---|
+| initramfs boot, translated | 2.13 / 2.13 s | **2.02 / 2.02 s** |
+| initramfs boot, interpreted (`LINUX_JIT=0`) | 10.28 / 10.49 s | **4.34 / 4.37 s** |
+| Yocto to the login prompt, translated | 47.3 s | **43.6 s** |
+
 **The login prompt was slower before it was faster: 91 s.** Inlining
 the probe grew Yocto's average block from 645 bytes to 977, and udev's
 working set, about 50,000 blocks, stopped fitting the 32 MB code buffer

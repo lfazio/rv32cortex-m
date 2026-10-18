@@ -44,6 +44,7 @@ EMU_NOINLINE void rv_dtlb_flush(rv_hart_t *h)
 {
     /* EMU_DTLB_NONE in every tag, which no page number equals. */
     memset(h->dtlb, 0xFF, sizeof(h->dtlb));
+    memset(h->itlb, 0xFF, sizeof(h->itlb));
     h->dtlb_flushes++;
 }
 
@@ -58,6 +59,14 @@ EMU_NOINLINE void rv_dtlb_flush_page(rv_hart_t *h, uint32_t va)
         if (e->read == vpn || e->write == vpn) {
             e->read = EMU_DTLB_NONE;
             e->write = EMU_DTLB_NONE;
+        }
+
+        emu_dtlb_entry_t *const x = &h->itlb[t][slot];
+
+        /* A refusal goes too: the mapping it was about may have moved. */
+        if (x->read == vpn || x->write == vpn) {
+            x->read = EMU_DTLB_NONE;
+            x->write = EMU_DTLB_NONE;
         }
     }
 }
@@ -98,9 +107,9 @@ EMU_NOINLINE void rv_dtlb_fill(rv_hart_t *h, uint32_t va, uint32_t pa)
     const uint32_t page = pa & ~(RV_PAGE_SIZE - 1u);
 #if RV_EXT_PMP
     {
-        bool pr, pw;
+        bool pr, pw, px;
 
-        rv_pmp_page_rights(h, page, priv, &pr, &pw);
+        rv_pmp_page_rights(h, page, priv, &pr, &pw, &px);
         rd = rd && pr;
         wr = wr && pw;
     }
@@ -130,6 +139,73 @@ EMU_NOINLINE void rv_dtlb_fill(rv_hart_t *h, uint32_t va, uint32_t pa)
     e->write = wr ? vpn : EMU_DTLB_NONE;
     e->addend = host - (uintptr_t)(va & ~(RV_PAGE_SIZE - 1u));
     h->dtlb_fills++;
+}
+
+/*
+ * The fetch table's fill, on the same three questions asked for execute:
+ * the leaf allows it at the privilege the hart runs at, PMP gives the
+ * whole page X, and the region is memory the bus would fetch from -- X,
+ * RAM or ROM, 16-bit reads, the whole page. A page that fails any of
+ * them is fetched the slow way every time, which is always right.
+ *
+ * **And the refusal is remembered**, in the entry's `write` tag, which a
+ * fetch table does not otherwise use. The fill runs from the slow fetch,
+ * so a page it refuses -- a guest smaller than a page, whose ROM window
+ * covers part of one, is the ordinary case -- would otherwise be asked
+ * again on every instruction: sv32bench's paged run went 0.33 s to 0.45
+ * that way. A refusal is a fact about the page until something clears
+ * the table, and everything that could change it does.
+ */
+EMU_NOINLINE void rv_itlb_fill(rv_hart_t *h, uint32_t va, uint32_t pa)
+{
+    const uint32_t priv = h->priv;
+
+    if (priv == RV_PRIV_M) {
+        return;
+    }
+
+    const uint32_t vpn = va >> EMU_DTLB_PAGE_SHIFT;
+    emu_dtlb_entry_t *const e =
+        &h->itlb[rv_dtlb_table(priv)][vpn & (RV_DTLB_ENTRIES - 1u)];
+
+    if (e->read == vpn || e->write == vpn) {
+        return; /* held, or refused */
+    }
+    e->read = EMU_DTLB_NONE;
+    e->write = vpn; /* refused, unless every question below says yes */
+#if RV_EXT_SV32
+    if ((h->satp & SATP_MODE_SV32) != 0u && !rv_mmu_itlb_rights(h, va, priv)) {
+        return;
+    }
+#endif
+
+    const uint32_t page = pa & ~(RV_PAGE_SIZE - 1u);
+#if RV_EXT_PMP
+    {
+        bool pr, pw, px;
+
+        rv_pmp_page_rights(h, page, priv, &pr, &pw, &px);
+        if (!px) {
+            return;
+        }
+    }
+#endif
+
+    const emu_region_t *const r = emu_bus_find(h->bus, page);
+
+    if (r == NULL || r->host == NULL ||
+        (r->kind != (uint8_t)EMU_MEM_RAM && r->kind != (uint8_t)EMU_MEM_ROM) ||
+        (page - r->base) > r->size || r->size - (page - r->base) < RV_PAGE_SIZE ||
+        (r->widths & EMU_W16) == 0u || (r->perm & EMU_PERM_X) == 0u) {
+        return;
+    }
+
+    e->read = vpn;
+    e->write = EMU_DTLB_NONE;
+    /* The physical page, as a 32-bit distance: the fetch still goes to
+     * the bus, which serves it from its own RAM cache. */
+    e->addend = (uintptr_t)(uint32_t)(page - (va & ~(RV_PAGE_SIZE - 1u)));
+    h->itlb_fills++;
 }
 
 #endif /* RV_HAVE_DTLB */

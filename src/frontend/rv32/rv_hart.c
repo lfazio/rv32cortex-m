@@ -151,6 +151,7 @@ void rv_hart_reset(rv_hart_t *h, uint32_t reset_pc)
     rv_dtlb_flush(h);
     h->dtlb_fills = 0u;
     h->dtlb_flushes = 0u;
+    h->itlb_fills = 0u;
 #endif
 
 #if RV_EXT_A

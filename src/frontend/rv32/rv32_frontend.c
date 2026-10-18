@@ -690,6 +690,8 @@ static void rv32_report(emu_print_fn out, void *ctx)
         out(ctx, dec64(db, g_hart.dtlb_fills));
         out(ctx, "  flushes ");
         out(ctx, dec64(db, g_hart.dtlb_flushes));
+        out(ctx, "  fetch fills ");
+        out(ctx, dec64(db, g_hart.itlb_fills));
         out(ctx, "\n");
     }
 #endif

@@ -3519,6 +3519,22 @@ session, and every one of them recurred:
   code reachable from an interpreter's rare cases goes out of line by
   default**, and callgrind on an M-mode guest is the check.
 
+- **Where an interpreter asks a cache is decided on the board, and the
+  M7 charges for a loop's shape.** The fetch table's first version read
+  instructions through a host pointer inside RV32's interpreter loop:
+  callgrind on x86-64 called it free, and the F746 ran M-mode CoreMark
+  21% slower -- the hit path's 16-bit expansion was a third call site
+  of `rv_decode_expand_c`, LTO stopped inlining it, and every compressed
+  instruction's decode left ITCM for flash through a veneer. Fixed that,
+  7.7% remained with the loop the same size and placement immaterial;
+  reverting `rv_interp.c` alone gave the parent's figure to two digits,
+  which is what named the loop's *shape* -- labels into its decode, a
+  local hoisted for them. The kept version changes only which functions
+  the loop calls. **A new call site of something the loop inlines is a
+  decision you are handing to LTO**: check `nm` for the symbol
+  appearing, and measure an interpreter change on the board before
+  believing a host count, as the PowerPC entry above already says.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must

@@ -102,6 +102,47 @@ megapage away and fences a different piece of it; without the region
 test both the load and the fetch succeed, and with the TLBs cleared
 but not the blocks only the fetch does, under `--jit` alone.
 
+**Fetch has a table of its own** (`h->itlb`), per the privilege the
+hart *runs* at, caching less: the physical page a fetch goes to, once
+the walk and PMP have allowed the whole page -- not a host pointer, so
+the bus still reads the bytes. It is cleared by everything that clears
+the data tables, and depends on nothing they exclude: execute is
+decided by X, A and U alone, which SUM and MXR do not touch. The
+interpreter's two calls for the walk and PMP became one that asks it
+first, and the translator's per-halfword fetch asks it too; a page the
+fill refuses is remembered in the entry's otherwise unused `write`
+tag, or a guest whose code it cannot hold would ask on every
+instruction.
+
+| depends on | the check that fails without it |
+|---|---|
+| the mapping, by page fence | `ft-sfence-page` |
+| the mapping, by global fence or satp | `sv32-exec-remapped`, `sv32-exec-nox-*`, `mega-sfence-fetch-*` |
+| PMP's X over the page | `ft-pmp-denied-*` |
+| PMP over part of the page | `ft-pmp-part-*` |
+| the privilege | `ft-user-page-*` (U fills its table; S must not find it) |
+| a second halfword in another page | `ft-straddle`, `ft-straddle-pmp-tval` |
+
+**Where the table is consulted was decided on the board, and the first
+two answers were wrong there.** Reading instructions through a host
+pointer inside the interpreter's loop measured *free* by callgrind on
+x86-64, and on the F746 cost M-mode CoreMark 21%: the hit path's
+16-bit expansion was a third call site of `rv_decode_expand_c`, LTO
+stopped inlining it into the loop, and every compressed instruction's
+decode moved from ITCM to flash. Routing those through the loop's own
+expansion, by labels into its decode, brought it to 7.7% with the loop
+the same size and `.text` placement making no difference; moving the
+whole guarded fetch out of line left 7%; reverting `rv_interp.c` alone
+gave 102.34 against the parent's 102.28, which is what said it was the
+loop's *shape*. The version kept changes what the loop calls and
+nothing else: 102.15 on the board, CoreMark's host instructions
+identical to two digits (64,973,853 against 64,973,851), an interpreted
+Linux boot 10.28 s to 4.34, and the JIT's Yocto login 47.3 s to 43.6.
+The in-loop reader was faster on that boot (3.5 s) and is the version
+to try again if the host's interpreter ever matters more than the
+boards'. A guest whose code the table cannot hold -- sv32bench, an
+image smaller than a page -- pays 12% interpreted for the asking.
+
 **SUM and MXR are the design decision.** Linux sets and clears SUM
 around every copy to or from user memory, so an entry that depended on
 it would have to be flushed thousands of times a second. Refusing to

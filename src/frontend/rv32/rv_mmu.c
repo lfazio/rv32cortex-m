@@ -295,6 +295,28 @@ bool rv_mmu_dtlb_rights(const rv_hart_t *h, uint32_t va, uint32_t priv,
 }
 #endif
 
+/*
+ * A fetch is decided by the PTE alone: X, A, and U against the privilege
+ * -- SUM never makes a user page executable from S, and MXR is about
+ * loads -- so nothing in mstatus can change the answer and nothing has
+ * to be excluded, unlike the data tables.
+ */
+bool rv_mmu_itlb_rights(const rv_hart_t *h, uint32_t va, uint32_t priv)
+{
+    const uint32_t vpn = va >> PAGE_SHIFT;
+    const uint32_t slot = tlb_slot(vpn);
+
+    if (!h->tlb[slot].valid || h->tlb[slot].vpn != vpn) {
+        return false;
+    }
+    const uint32_t pte = h->tlb[slot].pte;
+
+    if (((pte & PTE_U) != 0u) != (priv == RV_PRIV_U)) {
+        return false;
+    }
+    return (pte & (PTE_X | PTE_A)) == (PTE_X | PTE_A);
+}
+
 rv_exc_t rv_mmu_translate(rv_hart_t *h, uint32_t va, emu_access_t acc,
                           uint32_t *pa)
 {

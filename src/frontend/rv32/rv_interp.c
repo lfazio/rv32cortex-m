@@ -102,6 +102,71 @@ static EMU_ALWAYS_INLINE uint32_t mulh_uu(uint32_t a, uint32_t b)
 #define RV_INTERP_SECTION EMU_INTERP_TEXT
 #endif
 
+#if RV_HAVE_DTLB
+/*
+ * The walk and PMP for a fetch's first halfword, answered from the fetch
+ * table when it holds the page, and the table offered the page when not.
+ *
+ * One call where the loop made two, and nothing else about the loop
+ * changed -- which is the point. A version that read instructions from
+ * the table's host pointer inside the loop, with labels into its decode
+ * to share the 16-bit expansion, cost M-mode CoreMark 7.7% on the F746
+ * (102.28 to 110.16 host cycles an instruction) with the loop the same
+ * size, its placement making no difference, and an instruction count on
+ * x86-64 calling it free. The bus's own RAM cache serves the bytes.
+ */
+static EMU_NOINLINE rv_exc_t fetch_check(rv_hart_t *h, uint32_t pc,
+                                         uint32_t *fpc)
+{
+    const emu_dtlb_entry_t *const e = rv_itlb_entry(h, pc);
+    const uint32_t vpn = pc >> EMU_DTLB_PAGE_SHIFT;
+
+    if (e != NULL && e->read == vpn) {
+        *fpc = pc + (uint32_t)e->addend;
+        return RV_EXC_NONE;
+    }
+#if RV_EXT_SV32
+    if (h->vm_active) {
+        const rv_exc_t t = rv_mmu_translate(h, pc, EMU_ACC_FETCH, fpc);
+        if (t != RV_EXC_NONE) {
+            return t;
+        }
+    }
+#endif
+#if RV_EXT_PMP
+    if (h->pmp_active && !rv_pmp_check(h, *fpc, 2u, EMU_ACC_FETCH)) {
+        return RV_EXC_INSN_ACCESS_FAULT;
+    }
+#endif
+    /*
+     * Allowed the slow way: offer the page, unless the fill has refused
+     * it already -- for code it cannot hold, that is every instruction.
+     */
+    if (e != NULL && e->write != vpn) {
+        rv_itlb_fill(h, pc, *fpc);
+    }
+    return RV_EXC_NONE;
+}
+
+#if RV_EXT_PMP
+/*
+ * PMP for a 32-bit instruction's second halfword: nothing to ask when
+ * the table holds the page and the halfword is in it.
+ */
+static EMU_NOINLINE bool fetch_pmp2(const rv_hart_t *h, uint32_t pc,
+                                    uint32_t fpc2)
+{
+    uint32_t pa;
+
+    if ((pc & (RV_PAGE_SIZE - 1u)) != RV_PAGE_SIZE - 2u &&
+        rv_itlb_lookup(h, pc, &pa)) {
+        return true;
+    }
+    return rv_pmp_check(h, fpc2, 2u, EMU_ACC_FETCH);
+}
+#endif /* RV_EXT_PMP */
+#endif
+
 static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                                                      uint32_t budget,
                                                      uint32_t *retired)
@@ -262,6 +327,15 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                     TRAP(RV_EXC_BREAKPOINT, pc);
                 }
 #endif
+#if RV_HAVE_DTLB
+                /* The walk and PMP, through the fetch table. */
+                {
+                    const rv_exc_t t = fetch_check(h, pc, &fpc);
+                    if (EMU_UNLIKELY(t != RV_EXC_NONE)) {
+                        TRAP(t, pc);
+                    }
+                }
+#else
 #if RV_EXT_SV32
                 if (h->vm_active) {
                     const rv_exc_t t =
@@ -277,6 +351,7 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                 if (h->pmp_active && !rv_pmp_check(h, fpc, 2u, EMU_ACC_FETCH)) {
                     TRAP(RV_EXC_INSN_ACCESS_FAULT, pc);
                 }
+#endif
 #endif
             }
 
@@ -316,8 +391,13 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                  * never is, so this costs an already-live register test
                  * rather than a second walk.
                  */
+#if RV_HAVE_DTLB
+                if (EMU_UNLIKELY(h->pmp_active && (pc & 2u) != 0u) &&
+                    !fetch_pmp2(h, pc, fpc2)) {
+#else
                 if (EMU_UNLIKELY(h->pmp_active && (pc & 2u) != 0u) &&
                     !rv_pmp_check(h, fpc2, 2u, EMU_ACC_FETCH)) {
+#endif
                     TRAP(RV_EXC_INSN_ACCESS_FAULT, pc + 2u);
                 }
 #endif

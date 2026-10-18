@@ -1645,6 +1645,14 @@ static bool ir_fetch16(rv_hart_t *h, uint32_t va, uint16_t *out)
 {
     uint32_t pa = va;
 
+#if RV_HAVE_DTLB
+    /* The interpreter's fetch table answers the walk and PMP for the
+     * translator too. */
+    if (rv_itlb_lookup(h, va, &pa)) {
+        return emu_bus_fetch16(h->bus, pa, out) == EMU_FAULT_NONE;
+    }
+#endif
+
 #if RV_EXT_SV32
     if (h->vm_active &&
         rv_mmu_translate(h, va, EMU_ACC_FETCH, &pa) != RV_EXC_NONE) {
@@ -1656,7 +1664,15 @@ static bool ir_fetch16(rv_hart_t *h, uint32_t va, uint16_t *out)
         return false;
     }
 #endif
-    return emu_bus_fetch16(h->bus, pa, out) == EMU_FAULT_NONE;
+    if (emu_bus_fetch16(h->bus, pa, out) != EMU_FAULT_NONE) {
+        return false;
+    }
+#if RV_HAVE_DTLB
+    if (h->fetch_guard) {
+        rv_itlb_fill(h, va, pa);
+    }
+#endif
+    return true;
 }
 
 uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)

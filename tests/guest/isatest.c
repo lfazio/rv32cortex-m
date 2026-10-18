@@ -4958,6 +4958,230 @@ static void test_mega_sfence(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* The fetch table                                                     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The interpreter, and the JIT's translator, fetch below M through a
+ * table that caches per page whether an instruction may be fetched there
+ * (rv_itlb_fill). Each case runs code first, so its page is in the
+ * table, then changes one thing the entry depends on, and runs it again.
+ *
+ * The stubs are `li a0, imm ; ret`, at addresses that are their own
+ * physical ones wherever the trap handler has to read them back.
+ */
+#define VA_FX 0x90008000u /* a 4 KiB page of code, remapped        */
+#define VA_SA 0x90009000u /* two pages of code, apart in memory    */
+#define FX_STUB 0x400u
+#define FT_A 0x300u /* two stubs in page 2, for PMP over part of it */
+#define FT_B 0x900u
+
+static volatile uint32_t g_ft[16];
+
+static void put_stub(uint32_t pa, uint32_t imm)
+{
+    volatile uint32_t *const w = (volatile uint32_t *)pa;
+
+    w[0] = (imm << 20) | 0x00000513u; /* li a0, imm */
+    w[1] = 0x00008067u;               /* ret        */
+}
+
+static uint32_t call_stub_at(uint32_t va)
+{
+    return ((uint32_t (*)(void))va)();
+}
+
+static void smode_ft_remap(void)
+{
+    g_ft[0] = call_stub_at(VA_FX + FX_STUB);
+    g_ft[1] = call_stub_at(VA_FX + FX_STUB);
+    g_leaf[VPN0(VA_FX)] =
+        leaf_pte(page_pa(PAGE_EXEC2), PTE_V | PTE_R | PTE_X | PTE_A);
+    __asm__ volatile("sfence.vma %0, zero" ::"r"(VA_FX) : "memory");
+    g_ft[2] = call_stub_at(VA_FX + FX_STUB);
+    LEAVE_SMODE();
+}
+
+static void smode_ft_run(void)
+{
+    g_ft[3] = call_stub_at(page_pa(PAGE_EXEC2) + FT_A);
+    g_ft[4] = call_stub_at(page_pa(PAGE_EXEC2) + FT_A);
+    LEAVE_SMODE();
+}
+
+static void smode_ft_denied(void)
+{
+    const uint32_t before = g_trap_count;
+
+    call_may_fault(page_pa(PAGE_EXEC2) + FT_A);
+    g_ft[5] = g_trap_count - before;
+    g_ft[6] = g_last_cause;
+    LEAVE_SMODE();
+}
+
+static void smode_ft_partial(void)
+{
+    g_ft[7] = call_stub_at(page_pa(PAGE_EXEC2) + FT_A);
+    const uint32_t before = g_trap_count;
+
+    call_may_fault(page_pa(PAGE_EXEC2) + FT_B);
+    g_ft[8] = g_trap_count - before;
+    g_ft[9] = g_last_cause;
+    LEAVE_SMODE();
+}
+
+static void smode_ft_trigger(void)
+{
+    const uint32_t before = g_trap_count;
+
+    (void)call_stub_at(page_pa(PAGE_EXEC2) + FT_A);
+    g_ft[10] = g_trap_count - before;
+    g_ft[11] = g_last_cause;
+    LEAVE_SMODE();
+}
+
+static void smode_ft_straddle(void)
+{
+    g_ft[12] = call_stub_at(VA_SA + 0x500u); /* the first page, cached */
+    g_ft[13] = call_stub_at(VA_SA + 0xFFEu);
+    LEAVE_SMODE();
+}
+
+static volatile uint32_t g_ft2[3];
+
+/* The same, with PMP refusing to execute the page the second half is in. */
+static void smode_ft_straddle_denied(void)
+{
+    (void)call_stub_at(VA_SA + 0x500u);
+    const uint32_t before = g_trap_count;
+
+    call_may_fault(VA_SA + 0xFFEu);
+    g_ft2[0] = g_trap_count - before;
+    g_ft2[1] = g_last_cause;
+    g_ft2[2] = g_last_tval;
+    LEAVE_SMODE();
+}
+
+static void smode_ft_user_page(void)
+{
+    const uint32_t before = g_trap_count;
+
+    call_may_fault(page_pa(PAGE_EXEC1) + USTUB_OFF);
+    g_ft[14] = g_trap_count - before;
+    g_ft[15] = g_last_cause;
+    LEAVE_SMODE();
+}
+
+static void test_fetch_table(void)
+{
+    const uint32_t root =
+        SATP_SV32 | ((uint32_t)(uintptr_t)g_root >> 12);
+    const uint32_t root2 =
+        SATP_SV32 | (1u << 22) | ((uint32_t)(uintptr_t)g_root2 >> 12);
+
+    csr_write("medeleg", 0u);
+    put_stub(page_pa(PAGE_EXEC1) + FX_STUB, 0x611u);
+    put_stub(page_pa(PAGE_EXEC2) + FX_STUB, 0x622u);
+    put_stub(page_pa(PAGE_EXEC2) + FT_A, 0x5A1u);
+    put_stub(page_pa(PAGE_EXEC2) + FT_B, 0x5B2u);
+    put_stub(page_pa(PAGE_EXEC2) + 0x500u, 0x001u);
+    /*
+     * `li a0, 0x744` across VA_SA's two pages: its low half is the last
+     * of page 2, its high half and the `ret` after it the first of page
+     * 0. Physically page 2 is followed by page 3, the zero sentinel, so
+     * reading the instruction contiguously gives `li a0, 0`.
+     */
+    g_page[2048 + 1023] = (g_page[2048 + 1023] & 0x0000FFFFu) | 0x05130000u;
+    g_page[0] = 0x80677440u; /* hi half of li ; lo half of ret */
+    g_page[1] = (g_page[1] & 0xFFFF0000u) | 0x00000000u;
+    __asm__ volatile("fence.i" ::: "memory");
+
+    g_leaf[VPN0(VA_FX)] =
+        leaf_pte(page_pa(PAGE_EXEC1), PTE_V | PTE_R | PTE_X | PTE_A);
+    g_leaf[VPN0(VA_SA)] =
+        leaf_pte(page_pa(PAGE_EXEC2), PTE_V | PTE_R | PTE_X | PTE_A);
+    g_leaf[VPN0(VA_SA + 0x1000u)] =
+        leaf_pte(page_pa(PAGE_DATA), PTE_V | PTE_R | PTE_X | PTE_A);
+    csr_write("satp", root);
+    __asm__ volatile("sfence.vma" ::: "memory");
+
+    /* An SFENCE.VMA naming the page, after its code was fetched. */
+    enter_smode(smode_ft_remap);
+    check("ft-first", g_ft[0], 0x611u);
+    check("ft-first-again", g_ft[1], 0x611u);
+    check("ft-sfence-page", g_ft[2], 0x622u);
+
+    /* A 32-bit instruction across two pages that are not adjacent. */
+    enter_smode(smode_ft_straddle);
+    check("ft-straddle-first-page", g_ft[12], 0x001u);
+    check("ft-straddle", g_ft[13], 0x744u);
+
+#if RV32_EXT_PMP
+    /*
+     * The table holds the first page, so its PMP answer is known; the
+     * second half is in another page, whose is not. Entry 10 over page 0
+     * with R and W: the fetch must fault at the second half.
+     */
+    csr_write("pmpaddr10", (page_pa(PAGE_DATA) >> 2) | 0x1FFu);
+    csr_write("pmpcfg2", 0x1B0000u); /* NAPOT, RW- */
+    enter_smode(smode_ft_straddle_denied);
+    csr_write("pmpcfg2", 0u);
+    csr_write("pmpaddr10", 0u);
+    check("ft-straddle-pmp-traps", g_ft2[0], 1u);
+    check("ft-straddle-pmp-cause", g_ft2[1], 1u);
+    check("ft-straddle-pmp-tval", g_ft2[2], VA_SA + 0x1000u);
+#endif
+
+#if RV32_EXT_PMP
+    /* PMP taking X away from a page already run: entry 10, R and W. */
+    enter_smode(smode_ft_run);
+    check("ft-pmp-before", g_ft[3], 0x5A1u);
+    check("ft-pmp-before-again", g_ft[4], 0x5A1u);
+    csr_write("pmpaddr10", (page_pa(PAGE_EXEC2) >> 2) | 0x1FFu);
+    csr_write("pmpcfg2", 0x1B0000u); /* NAPOT, RW- */
+    enter_smode(smode_ft_denied);
+    check("ft-pmp-denied-traps", g_ft[5], 1u);
+    check("ft-pmp-denied-cause", g_ft[6], 1u);
+
+    /* ...and over four bytes of it: B is denied, A next to it is not. */
+    csr_write("pmpcfg2", 0u);
+    csr_write("pmpaddr10", (page_pa(PAGE_EXEC2) + FT_B) >> 2);
+    csr_write("pmpcfg2", 0x100000u); /* NA4, --- */
+    enter_smode(smode_ft_partial);
+    check("ft-pmp-part-ok", g_ft[7], 0x5A1u);
+    check("ft-pmp-part-traps", g_ft[8], 1u);
+    check("ft-pmp-part-cause", g_ft[9], 1u);
+    csr_write("pmpcfg2", 0u);
+    csr_write("pmpaddr10", 0u);
+#endif
+
+    /* An execute trigger on code the table already holds. */
+    enter_smode(smode_ft_run);
+    csr_write("tselect", 0u);
+    csr_write("tdata2", page_pa(PAGE_EXEC2) + FT_A);
+    csr_write("tdata1", 0x20000014u); /* mcontrol: S, execute */
+    enter_smode(smode_ft_trigger);
+    csr_write("tdata1", 0u);
+    check("ft-trigger-traps", g_ft[10], 1u);
+    check("ft-trigger-cause", g_ft[11], 3u);
+
+    /*
+     * One table per privilege: U runs its stub, from a user page of the
+     * second address space, and S must not find that entry for the same
+     * page -- S never executes a user page.
+     */
+    csr_write("satp", root2);
+    __asm__ volatile("sfence.vma" ::: "memory");
+    (void)run_below_m((const char *)(page_pa(PAGE_EXEC1) + USTUB_OFF), 0u,
+                      VA_USER);
+    enter_smode(smode_ft_user_page);
+    check("ft-user-page-traps", g_ft[14], 1u);
+    check("ft-user-page-cause", g_ft[15], 12u);
+
+    csr_write("satp", 0u);
+}
+
+/* ------------------------------------------------------------------ */
 
 int main(void)
 {
@@ -5013,6 +5237,7 @@ int main(void)
     test_split_access();
     test_dtlb();
     test_mega_sfence();
+    test_fetch_table();
     test_timer_interrupt();
 
     puts_("checks   ");
