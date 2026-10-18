@@ -169,14 +169,27 @@ bool x86_ld_idx(int dst, int base, int index, uint32_t size, bool sign);
 bool x86_st_idx(int src, int base, int index, uint32_t size);
 
 /*
- * The data TLB probe's three: rbx added to a 64-bit register (an entry's
- * address from its scaled index), a 32-bit compare against memory (the
- * tag), and a 64-bit load (the addend). `base` is any register; the SIB
- * that rsp and r12 need is emitted for them.
+ * The two-byte branches, for a forward branch known to land within 127
+ * bytes: a guarded access's slow path is the next thing emitted. `cc` is
+ * the X86_CC_* constant, the second byte of the long form. The patch
+ * returns false, writing nothing, when the target is out of reach -- the
+ * caller must then refuse the block rather than run a branch to nowhere.
  */
-void x86_add_cpu64(int reg);
-void x86_cmp_mem(int reg, int base, uint32_t disp);
-void x86_ld64_mem(int dst, int base, uint32_t disp);
+uint8_t *x86_jcc8(uint8_t cc);
+uint8_t *x86_jmp8(void);
+bool x86_patch_rel8(uint8_t *slot, const uint8_t *target);
+
+/* test r8, imm8, of the low byte of `reg` -- sil and dil take a REX. */
+void x86_test8_imm(int reg, uint8_t imm);
+/* cmp byte [rbx + disp32], imm8 */
+void x86_cmp8_cpu_imm(uint32_t disp, uint8_t imm);
+/*
+ * The data TLB probe's two: a 32-bit compare and a 64-bit load at
+ * [rbx + idx + disp32], so an entry is reached from its index without
+ * forming its address first. `idx` below r8.
+ */
+void x86_cmp_cpu_idx(int reg, int idx, uint32_t disp);
+void x86_ld64_cpu_idx(int dst, int idx, uint32_t disp);
 
 
 /* The F7 group -- /2 not, /3 neg -- and bswap, for any register. */

@@ -689,6 +689,22 @@ static EMU_PER_CORE bool g_has_start_pc;
  */
 static EMU_PER_CORE bool g_exits_lost;
 
+/*
+ * Set when a two-byte branch could not reach its target, and it makes
+ * emu_ir_lower refuse the block too. A guarded access's branches are
+ * short because its slow path is the next thing emitted; if that ever
+ * stops being true, the answer is a declined block, never a branch
+ * patched to land somewhere else.
+ */
+static EMU_PER_CORE bool g_short_lost;
+
+static void patch_short(uint8_t *slot, const uint8_t *target)
+{
+    if (!x86_patch_rel8(slot, target)) {
+        g_short_lost = true;
+    }
+}
+
 static void note_exit(uint8_t *slot)
 {
     if (g_nexits < IR_MAX_EXITS) {
@@ -825,35 +841,42 @@ static uint32_t emit_fast_guard(int addr_reg, uint32_t size, uint8_t **out)
      * window too. An access of 4 at base+size-1 must not be inlined.
      */
     x86_alu_imm32(7u, X86_EDX, g_fast.size - size); /* cmp */
-    out[n++] = x86_jcc32(X86_CC_A);
+    out[n++] = x86_jcc8(X86_CC_A);
 
     if (size > 1u) {
-        x86_mov_rr(X86_EAX, addr_reg);
-        x86_and_imm8(X86_EAX, (int8_t)(size - 1u));
-        out[n++] = x86_jcc32(X86_CC_NE);
+        x86_test8_imm(addr_reg, (uint8_t)(size - 1u));
+        out[n++] = x86_jcc8(X86_CC_NE);
     }
     return n;
 }
 
 /*
  * Everything an inlined access decides before the move, by whichever
- * means this block has: leave the host base in RAX and the index in RDX,
- * and return the branches to aim at the helper (three at most).
+ * means this block has: leave the host base in RAX and the register to
+ * index it by in *index, and return the branches to aim at the helper --
+ * three at most, every one a two-byte jcc, since the helper call is the
+ * next thing emitted after the access.
  *
- * The window is a range test and a constant base. The data TLB is a
- * probe -- the page number is both the index and the tag, so one shift
- * gives the two -- and its "base" is the entry's addend, with the guest
- * address itself as the index:
+ * The window is a range test and a constant base, indexed by the offset
+ * in EDX. The data TLB is a probe -- the page number is both the index
+ * and the tag, so one shift gives the two -- and its "base" is the
+ * entry's addend, indexed by the guest address itself:
  *
- *     mov edx, esi ; shr edx, 12 ; mov eax, edx ; and eax, mask
- *     shl eax, 4 ; add rax, rbx ; cmp edx, [rax + tag] ; jne slow
- *     mov rax, [rax + addend] ; mov edx, esi
+ *     test sil, size-1 ; jne slow                       4+2
+ *     (store) cmp byte [rbx + guard], 0 ; jne slow      7+2
+ *     mov edx, esi ; shr edx, 12 ; movzx eax, dl         2+3+3
+ *     shl eax, 4                                         3
+ *     cmp edx, [rbx + rax + table + tag] ; jne slow      7+2
+ *     mov rax, [rbx + rax + table + addend]              8
  *
- * Alignment comes first in both, and the reservation guard before RAX
- * is spoken for.
+ * 34 bytes for a load before the access, where the first version took
+ * 55: it formed the entry's address with an add, tested alignment
+ * through a copy, branched with rel32, and moved the address into RDX
+ * to index by. The reservation guard is a byte compare in place for
+ * the window as well.
  */
 static uint32_t emit_inline_guard(int addr_reg, uint32_t size, bool store,
-                                  uint8_t **out)
+                                  uint8_t **out, int *index)
 {
     uint32_t n;
     uint32_t guard;
@@ -861,14 +884,16 @@ static uint32_t emit_inline_guard(int addr_reg, uint32_t size, bool store,
     if (g_has_fast) {
         n = emit_fast_guard(addr_reg, size, out);
         guard = g_fast.store_guard_offset;
+        *index = X86_EDX;
     } else {
         n = 0u;
         if (size > 1u) {
-            x86_mov_rr(X86_EAX, addr_reg);
-            x86_and_imm8(X86_EAX, (int8_t)(size - 1u));
-            out[n++] = x86_jcc32(X86_CC_NE);
+            x86_test8_imm(addr_reg, (uint8_t)(size - 1u));
+            out[n++] = x86_jcc8(X86_CC_NE);
         }
         guard = g_dtlb.store_guard_offset;
+        /* A 32-bit write zero-extends, so the address is an index. */
+        *index = addr_reg;
     }
 
     /*
@@ -878,9 +903,8 @@ static uint32_t emit_inline_guard(int addr_reg, uint32_t size, bool store,
      * outstanding only between an LR and its SC.
      */
     if (store && guard != EMU_IR_NO_GUARD) {
-        x86_ld_cpu(X86_EAX, guard);
-        x86_and_imm8(X86_EAX, (int8_t)0xFF);
-        out[n++] = x86_jcc32(X86_CC_NE);
+        x86_cmp8_cpu_imm(guard, 0u);
+        out[n++] = x86_jcc8(X86_CC_NE);
     }
 
     if (g_has_fast) {
@@ -890,17 +914,23 @@ static uint32_t emit_inline_guard(int addr_reg, uint32_t size, bool store,
 
     x86_mov_rr(X86_EDX, addr_reg);
     x86_shift_imm(X86_EDX, X86_SHR, EMU_DTLB_PAGE_SHIFT);
-    x86_mov_rr(X86_EAX, X86_EDX);
-    x86_alu_imm32(X86_X_AND, X86_EAX, g_dtlb.index_mask);
+    if (g_dtlb.index_mask == 0xFFu) {
+        x86_movzx8(X86_EAX, X86_EDX); /* the mask, in three bytes */
+    } else {
+        x86_mov_rr(X86_EAX, X86_EDX);
+        if (g_dtlb.index_mask <= 0x7Fu) {
+            x86_and_imm8(X86_EAX, (int8_t)g_dtlb.index_mask);
+        } else {
+            x86_alu_imm32(X86_X_AND, X86_EAX, g_dtlb.index_mask);
+        }
+    }
     x86_shift_imm(X86_EAX, X86_SHL, 4u); /* sizeof(emu_dtlb_entry_t) */
-    x86_add_cpu64(X86_EAX);
-    x86_cmp_mem(X86_EDX, X86_EAX,
-                g_dtlb.table_offset +
-                    (store ? EMU_DTLB_OFF_WRITE : EMU_DTLB_OFF_READ));
-    out[n++] = x86_jcc32(X86_CC_NE);
-    x86_ld64_mem(X86_EAX, X86_EAX, g_dtlb.table_offset + EMU_DTLB_OFF_ADDEND);
-    /* A 32-bit move zero-extends, so RDX is the address as an index. */
-    x86_mov_rr(X86_EDX, addr_reg);
+    x86_cmp_cpu_idx(X86_EDX, X86_EAX,
+                    g_dtlb.table_offset +
+                        (store ? EMU_DTLB_OFF_WRITE : EMU_DTLB_OFF_READ));
+    out[n++] = x86_jcc8(X86_CC_NE);
+    x86_ld64_cpu_idx(X86_EAX, X86_EAX,
+                     g_dtlb.table_offset + EMU_DTLB_OFF_ADDEND);
     return n;
 }
 
@@ -1755,9 +1785,11 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             const uint32_t sz = EMU_IR_MEM_SIZE(in->aux);
             const bool sign = (in->aux & EMU_IR_MEM_SIGNED) != 0u;
             uint8_t *slow[3];
-            const uint32_t nslow = emit_inline_guard(X86_ESI, sz, false, slow);
+            int idx;
+            const uint32_t nslow =
+                emit_inline_guard(X86_ESI, sz, false, slow, &idx);
 
-            if (x86_ld_idx((pd >= 0) ? pd : T0, X86_EAX, X86_EDX, sz, sign)) {
+            if (x86_ld_idx((pd >= 0) ? pd : T0, X86_EAX, idx, sz, sign)) {
                 if (pd < 0) {
                     /*
                      * **The slot has to be written even when the
@@ -1770,17 +1802,17 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                     g_dead_store = EMU_IR_NO_TEMP;
                     st_slot(T0, in->dst);
                 }
-                uint8_t *const done = x86_jmp32();
+                uint8_t *const done = x86_jmp8();
 
                 for (uint32_t k = 0; k < nslow; k++) {
-                    x86_patch_rel32(slow[k], emu_jit_here());
+                    patch_short(slow[k], emu_jit_here());
                 }
                 lea_rcx_slot((pd >= 0) ? SCRATCH_VAL : in->dst);
                 emit_mem_call((const void *)t->load, in->aux);
                 if (pd >= 0) {
                     ld_slot(pd, SCRATCH_VAL);
                 }
-                x86_patch_rel32(done, emu_jit_here());
+                patch_short(done, emu_jit_here());
                 /*
                  * **The two paths converge and only one of them is
                  * modelled.** st_slot above records that T0 holds this
@@ -1803,7 +1835,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
              * register this allocator hands out.
              */
             for (uint32_t k = 0; k < nslow; k++) {
-                x86_patch_rel32(slow[k], emu_jit_here());
+                patch_short(slow[k], emu_jit_here());
             }
         }
         /*
@@ -1836,23 +1868,25 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         if (g_has_fast || g_has_dtlb) {
             const uint32_t sz = EMU_IR_MEM_SIZE(in->aux);
             uint8_t *slow[3];
-            const uint32_t nslow = emit_inline_guard(X86_ESI, sz, true, slow);
+            int idx;
+            const uint32_t nslow =
+                emit_inline_guard(X86_ESI, sz, true, slow, &idx);
 
-            if (x86_st_idx(X86_ECX, X86_EAX, X86_EDX, sz)) {
-                uint8_t *const done = x86_jmp32();
+            if (x86_st_idx(X86_ECX, X86_EAX, idx, sz)) {
+                uint8_t *const done = x86_jmp8();
 
                 for (uint32_t k = 0; k < nslow; k++) {
-                    x86_patch_rel32(slow[k], emu_jit_here());
+                    patch_short(slow[k], emu_jit_here());
                 }
                 emit_mem_call((const void *)t->store, in->aux);
-                x86_patch_rel32(done, emu_jit_here());
+                patch_short(done, emu_jit_here());
                 /* See the note in LOAD: the paths converge. */
                 g_t0_holds = EMU_IR_NO_TEMP;
                 end_pred_skip(skip);
                 break;
             }
             for (uint32_t k = 0; k < nslow; k++) {
-                x86_patch_rel32(slow[k], emu_jit_here());
+                patch_short(slow[k], emu_jit_here());
             }
         }
         emit_mem_call((const void *)t->store, in->aux);
@@ -2141,6 +2175,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
 
     g_nexits = 0u;
     g_exits_lost = false;
+    g_short_lost = false;
     g_has_fast = b->has_fast;
     g_fast = b->fast;
     g_has_dtlb = !b->has_fast && b->has_dtlb;
@@ -2315,7 +2350,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         x86_patch_rel32(g_exits_nf[i], emu_jit_here());
     }
     x86_epilogue(g_nsaved);
-    return !emu_jit_overflowed() && !g_exits_lost;
+    return !emu_jit_overflowed() && !g_exits_lost && !g_short_lost;
 }
 
 #endif /* EMU_HOST_JIT_X86_64 */

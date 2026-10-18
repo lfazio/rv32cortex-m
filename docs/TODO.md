@@ -63,14 +63,16 @@ From the last measurements in [linux.md](linux.md).
       because every fetch still translates and checks PMP. An execute
       table beside the two data ones would be the same structure;
       what it would buy has not been measured.
-- [ ] **A probe is about 60 bytes on x86-64** -- a load is 99 with its
-      slow path, of which the call is about 40 -- and grew a Linux
-      guest's blocks by half (645 bytes to
-      977, [linux.md](linux.md#benchmarks)). `rel8` branches, a SIB
-      operand off `rbx` and `movzx` for a 256-entry mask would take
-      roughly a third off; a shared slow-path stub, as Thumb-2 has,
-      more. Measure the login boot at 32 MB after, which is where it
-      showed.
+- [ ] **The slow path of a probed access is a 40-byte call.** The
+      probe itself is 34 bytes before the access now
+      ([backend/x86_64.md](backend/x86_64.md#the-data-tlb-probe)), and
+      the call it falls back to -- the out-pointer, the cpu, the spec,
+      `movabs` and `call rax`, the trap test -- is most of what is left.
+      A shared stub per access kind, as Thumb-2 has, would make it a
+      `call rel32` -- kept at the head of the code buffer, which a
+      flush would then have to leave alone.
+      Yocto at 32 MB is still 198 compactions, so this is the next
+      lever if 64 MB is ever too much.
 - [ ] **A display under Linux.** The framebuffer device exists
       ([games.md](games.md)); nothing in the device tree describes it to
       a kernel.
@@ -82,6 +84,10 @@ From the last measurements in [linux.md](linux.md).
       model, which is a direction change), the IR and register allocator
       executed in a guest, the JIT's remaining items, and the board's
       answers kept as fixtures.
+
+## RV32
+
+- [ ] Implement V extensions
 
 ## PowerPC
 

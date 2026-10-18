@@ -886,6 +886,9 @@ typedef struct {
      */
     uint64_t f[16];
     uint32_t fe; /* accumulated EMU_IR_FE_* flags */
+    /* A data TLB for the probe test, and the store guard beside it. */
+    emu_dtlb_entry_t tlb[1024];
+    uint8_t guard;
 } fake_cpu_t;
 
 /* All-ones in the upper half: what a single-precision value carries. */
@@ -924,10 +927,15 @@ static void fake_fp_flags(emu_cpu_t *cpu, uint32_t flags)
  */
 static uint8_t g_mem[256];
 
+/* How often the lowering fell back, for the tests that ask whether it did. */
+static unsigned g_fake_loads;
+static unsigned g_fake_stores;
+
 static uint32_t fake_load(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
                           uint32_t *out)
 {
     (void)cpu;
+    g_fake_loads++;
     const uint32_t size = EMU_IR_MEM_SIZE(spec);
 
     if (addr + size > sizeof(g_mem)) {
@@ -951,6 +959,7 @@ static uint32_t fake_store(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
                            uint32_t val)
 {
     (void)cpu;
+    g_fake_stores++;
     const uint32_t size = EMU_IR_MEM_SIZE(spec);
 
     if (addr + size > sizeof(g_mem)) {
@@ -1628,6 +1637,138 @@ static void test_lower_predicated_memory(void)
                 }
             }
         }
+    }
+}
+#endif /* EMU_HOST_JIT_X86_64 -- needs the lowering */
+
+/*
+ * The data TLB probe (emu_ir_dtlb_t), executed: a load and a store
+ * through a table, each case asking whether the helper ran -- at three
+ * sizes, because x86-64 forms the index three ways: `and` with an 8-bit
+ * immediate (4 entries), `movzx` of the low byte (256, RV32's size on a
+ * host) and `and` with a 32-bit one (512).
+ *
+ * The fake helpers trap on any address outside g_mem, and every guest
+ * address here is at 0x5000 or above -- so a probe that falls back when
+ * it should not does not merely count, it stops the block, and a probe
+ * that hits when it should not reaches g_mem through an addend the
+ * entry does not hold for that page. Each case is the one input that
+ * decides one branch of the probe: the tag, a page that aliases the
+ * slot, alignment, the sign of a narrow load, the store guard, and a
+ * read-only entry.
+ */
+#if defined(EMU_HOST_JIT_X86_64)
+static void test_lower_dtlb_probe(void)
+{
+    enum { HIT, TAG, ALIAS, MISALIGNED, SIGNED, GUARD, READONLY, NCASES };
+    static const char *const k_case[] = {"hit",    "tag",   "alias",
+                                         "misaligned", "signed", "guard",
+                                         "read-only"};
+
+    /*
+     * 512, not 1024, for the 32-bit form: the alias case's decoy sits at
+     * the unmasked index, which has to be inside the table to be found.
+     * At 1024 it was past the end, and dropping that mask passed.
+     */
+    static const uint32_t k_mask[] = {3u, 0xFFu, 0x1FFu};
+    static fake_cpu_t cpu; /* 16 KiB of table: not on the stack */
+
+    for (unsigned m = 0u; m < 3u; m++) {
+    const uint32_t mask = k_mask[m];
+
+    for (unsigned c = 0u; c < NCASES; c++) {
+        const uint32_t vpn = 5u;
+        uint32_t va = 0x5010u;
+
+        memset(&cpu, 0, sizeof(cpu));
+        memset(cpu.tlb, 0xFF, sizeof(cpu.tlb));
+        memset(g_mem, 0, sizeof(g_mem));
+        g_mem[0x10] = 0x81u;
+        g_mem[0x11] = 0x22u;
+        g_mem[0x12] = 0x33u;
+        g_mem[0x13] = 0x44u;
+        cpu.tlb[vpn & mask].read = vpn;
+        cpu.tlb[vpn & mask].write = vpn;
+        cpu.tlb[vpn & mask].addend =
+            (uintptr_t)g_mem - (uintptr_t)(vpn << 12);
+
+        if (c == TAG) {
+            cpu.tlb[vpn & mask].read = vpn + 1u;
+            cpu.tlb[vpn & mask].write = vpn + 1u;
+        } else if (c == ALIAS) {
+            /*
+             * The next page to share the slot: tag 5, page 5 + size. And
+             * a decoy where an *unmasked* index would land, valid for that
+             * page -- without it a probe that forgot the mask finds an
+             * empty entry, falls back, and passes.
+             */
+            const uint32_t alias = vpn + mask + 1u;
+
+            va = (alias << 12) | 0x10u;
+            if (alias < 1024u) {
+                cpu.tlb[alias].read = alias;
+                cpu.tlb[alias].write = alias;
+                cpu.tlb[alias].addend =
+                    (uintptr_t)g_mem - (uintptr_t)(alias << 12);
+            }
+        } else if (c == MISALIGNED) {
+            va = 0x5011u;
+        } else if (c == GUARD) {
+            cpu.guard = 1u;
+        } else if (c == READONLY) {
+            cpu.tlb[vpn & mask].write = EMU_DTLB_NONE;
+        }
+
+        emu_ir_reset(&g_b);
+        g_b.has_dtlb = true;
+        g_b.dtlb.table_offset = (uint32_t)offsetof(fake_cpu_t, tlb);
+        g_b.dtlb.index_mask = mask;
+        g_b.dtlb.store_guard_offset = (uint32_t)offsetof(fake_cpu_t, guard);
+
+        const uint16_t base = emu_ir_get(&g_b, 1u);
+        const uint32_t spec =
+            (c == SIGNED) ? EMU_IR_MEM_AUX(1u, 1u) : EMU_IR_MEM_AUX(4u, 0u);
+
+        emu_ir_put(&g_b, 2u,
+                   emu_ir_emit(&g_b, EMU_IR_LOAD, (uint8_t)spec, base,
+                               EMU_IR_NO_TEMP, 0u, 0u));
+        (void)emu_ir_emit(&g_b, EMU_IR_STORE, EMU_IR_MEM_AUX(4u, 0u), base,
+                          emu_ir_get(&g_b, 3u), 4u, 0u);
+        emu_ir_put(&g_b, 4u, emu_ir_const(&g_b, 0xABCDu));
+
+        cpu.r[1] = va;
+        cpu.r[3] = 0xCAFEF00Du;
+        g_fake_loads = 0u;
+        g_fake_stores = 0u;
+        if (!lower_and_run(&cpu)) {
+            printf("  dtlb %s, mask %#x: not run\n", k_case[c], mask);
+            CHECK(false);
+            continue;
+        }
+
+        const bool load_hits = (c == HIT || c == SIGNED || c == GUARD ||
+                                c == READONLY);
+        const bool store_hits = (c == HIT || c == SIGNED);
+
+        if (!load_hits) {
+            /* Fell back, and the helper trapped: nothing after it ran. */
+            CHECK_EQ(g_fake_loads, 1u);
+            CHECK_EQ(cpu.r[4], 0u);
+            continue;
+        }
+        CHECK_EQ(g_fake_loads, 0u);
+        CHECK_EQ(cpu.r[2], (c == SIGNED) ? 0xFFFFFF81u : 0x44332281u);
+        if (store_hits) {
+            CHECK_EQ(g_fake_stores, 0u);
+            CHECK_EQ((uint32_t)g_mem[0x14] | (uint32_t)g_mem[0x17] << 24,
+                     0xCA00000Du);
+            CHECK_EQ(cpu.r[4], 0xABCDu);
+        } else {
+            CHECK_EQ(g_fake_stores, 1u);
+            CHECK_EQ((uint32_t)g_mem[0x14], 0u);
+            CHECK_EQ(cpu.r[4], 0u);
+        }
+    }
     }
 }
 #endif /* EMU_HOST_JIT_X86_64 -- needs the lowering */
@@ -2475,6 +2616,7 @@ void test_ir(void)
     test_lower_memory();
     test_lower_memory_trap();
     test_lower_predicated_memory();
+    test_lower_dtlb_probe();
     test_lower_bitop_memory();
     test_lower_bitop_tst();
 #endif

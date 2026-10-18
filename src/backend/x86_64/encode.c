@@ -5,6 +5,7 @@
 
 #include "emu/emu_x86_64.h"
 
+#include <stddef.h>
 #include <string.h>
 
 #if defined(__x86_64__)
@@ -496,39 +497,80 @@ bool x86_st_idx(int src, int base, int index, uint32_t size)
     }
 }
 
-/*
- * ModRM for [base + disp32], mod=10. rm=100 means "a SIB follows", so a
- * base of rsp or r12 needs one saying "no index"; rm=101 with mod=10 is
- * an ordinary [rbp + disp32] and needs nothing.
- */
-static void modrm_disp32(unsigned reg, unsigned base, uint32_t disp)
+uint8_t *x86_jcc8(uint8_t cc)
 {
-    emu_jit_emit8((uint8_t)(0x80u | ((reg & 7u) << 3) | (base & 7u)));
-    if ((base & 7u) == 4u) {
-        emu_jit_emit8(0x24);
+    emu_jit_emit8((uint8_t)(0x70u | (cc & 0x0Fu))); /* 0F 8x -> 7x */
+    uint8_t *const slot = emu_jit_here();
+    emu_jit_emit8(0u);
+    return slot;
+}
+
+uint8_t *x86_jmp8(void)
+{
+    emu_jit_emit8(0xEB);
+    uint8_t *const slot = emu_jit_here();
+    emu_jit_emit8(0u);
+    return slot;
+}
+
+bool x86_patch_rel8(uint8_t *slot, const uint8_t *target)
+{
+    /* As x86_patch_rel32: past an overflowed end there is nothing to
+     * patch, and the block is discarded anyway. */
+    if (slot == NULL || emu_jit_overflowed()) {
+        return true;
     }
+    const ptrdiff_t rel = target - (slot + 1);
+
+    if (rel < -128 || rel > 127) {
+        return false;
+    }
+    *slot = (uint8_t)(int8_t)rel;
+    return true;
+}
+
+void x86_test8_imm(int reg, uint8_t imm)
+{
+    /*
+     * Without a REX, byte registers 4-7 are ah, ch, dh and bh: `test sil`
+     * written without one tests dh. So the prefix is emitted for them
+     * even when it carries no bits.
+     */
+    if (reg >= 4) {
+        emu_jit_emit8((uint8_t)(0x40u | (((unsigned)reg >> 3) & 1u)));
+    }
+    emu_jit_emit8(0xF6); /* test r/m8, imm8 */
+    modrm_rr(0, reg);
+    emu_jit_emit8(imm);
+}
+
+void x86_cmp8_cpu_imm(uint32_t disp, uint8_t imm)
+{
+    emu_jit_emit8(0x80); /* cmp r/m8, imm8 */
+    modrm_cpu(7, disp);
+    emu_jit_emit8(imm);
+}
+
+/* ModRM and SIB for [rbx + idx + disp32]: mod=10, rm=100, scale 1. */
+static void modrm_cpu_idx(unsigned reg, unsigned idx, uint32_t disp)
+{
+    emu_jit_emit8((uint8_t)(0x84u | ((reg & 7u) << 3)));
+    emu_jit_emit8((uint8_t)(((idx & 7u) << 3) | (X86_CPU & 7u)));
     emu_jit_emit32(disp);
 }
 
-void x86_add_cpu64(int reg)
+void x86_cmp_cpu_idx(int reg, int idx, uint32_t disp)
 {
-    emit_rex(1u, X86_CPU, (unsigned)reg);
-    emu_jit_emit8(0x01); /* add r/m64, r64 */
-    modrm_rr(X86_CPU, reg);
-}
-
-void x86_cmp_mem(int reg, int base, uint32_t disp)
-{
-    emit_rex(0u, (unsigned)reg, (unsigned)base);
+    emit_rex(0u, (unsigned)reg, X86_CPU);
     emu_jit_emit8(0x3B); /* cmp r32, r/m32 */
-    modrm_disp32((unsigned)reg, (unsigned)base, disp);
+    modrm_cpu_idx((unsigned)reg, (unsigned)idx, disp);
 }
 
-void x86_ld64_mem(int dst, int base, uint32_t disp)
+void x86_ld64_cpu_idx(int dst, int idx, uint32_t disp)
 {
-    emit_rex(1u, (unsigned)dst, (unsigned)base);
+    emit_rex(1u, (unsigned)dst, X86_CPU);
     emu_jit_emit8(0x8B); /* mov r64, r/m64 */
-    modrm_disp32((unsigned)dst, (unsigned)base, disp);
+    modrm_cpu_idx((unsigned)dst, (unsigned)idx, disp);
 }
 
 void x86_prologue(uint32_t nsaved)
