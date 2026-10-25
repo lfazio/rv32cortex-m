@@ -322,6 +322,9 @@ static EMU_PER_CORE bool g_has_dtlb;
 /* The peripheral window, when the block was translated armed. */
 static EMU_PER_CORE emu_ir_ptwin_t g_pt;
 static EMU_PER_CORE bool g_has_pt;
+/* And the image, for loads, likewise: see emu_ir_rom_window. */
+static EMU_PER_CORE emu_ir_fastmem_t g_rom;
+static EMU_PER_CORE bool g_has_rom;
 
 /*
  * The slow path of every LOAD and STORE, in one place.
@@ -2118,6 +2121,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
          * memory access, and each was a call into the region walk.
          */
         uint8_t *ldone = NULL;
+        uint8_t *ldone_rom = NULL;
         uint8_t *ldone_pt = NULL;
         if (g_has_fast) {
             const uint32_t sz = EMU_IR_MEM_SIZE(in->aux);
@@ -2134,6 +2138,28 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                 ldone = t2_b_forward_n();
             }
             patch_branch_n(slow[0], emu_jit_here(), true);
+
+            /*
+             * Not guest RAM: the image, if the block is armed for it --
+             * the same guard and access from the image's host address,
+             * which is the board's flash. Ahead of the peripheral window,
+             * because a guest armed for both reads constants far more
+             * often than it reads a register.
+             */
+            if (g_has_rom) {
+                uint8_t *rslow[1];
+                const uint32_t kr = emit_window_guard(g_rom.base, g_rom.size,
+                                                      T2_R1, sz, rslow);
+
+                emit_pooled(T2_R12, (uint32_t)(uintptr_t)g_rom.host);
+                if (t2_ld_reg_lsl(rt, T2_R12, T2_R2, kr, sz, sign)) {
+                    if (pd < 0) {
+                        st_slot(T2_R0, in->dst);
+                    }
+                    ldone_rom = t2_b_forward_n();
+                }
+                patch_branch_n(rslow[0], emu_jit_here(), true);
+            }
 
             /*
              * Not guest RAM: the peripheral window, if the block is armed
@@ -2177,6 +2203,7 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         emit_mem_stub(in->aux);
         st_slot(T2_R0, in->dst);
         patch_branch_n(ldone_pt, emu_jit_here(), false);
+        patch_branch_n(ldone_rom, emu_jit_here(), false);
         patch_branch_n(ldone, emu_jit_here(), false);
         /*
          * The paths merge holding the value in r0 when it has no
@@ -2381,6 +2408,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_fast = b->fast;
     g_has_pt = b->has_fast && b->has_pt;
     g_pt = b->pt;
+    g_has_rom = b->has_fast && b->has_rom;
+    g_rom = b->rom;
     g_block_start = emu_jit_here();
     g_nexits_nf = 0u;
     g_body = NULL;

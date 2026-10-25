@@ -472,25 +472,31 @@ second one (`emu_ir_ptwin_t`), offered only once a guest has made enough
 passthrough accesses to pay for the bytes; see "Where the bytes go"
 above.
 
-**The image window, the third (`emu_ir_rom_window`), is not lowered
-here yet.** x86-64 lowers it ([x86_64.md](x86_64.md#the-image-window)):
-a load that misses the RAM window tries the guest's image before the
-helper, once the guest has left `EMU_JIT_ROM_ARM_AT` image reads to it.
-The Thumb-2 lowering is written. It uses the same folded guard as the
-other two windows, from the image's address in the board's flash, ahead
-of the peripheral window. It is on the branch `wip/thumb2-rom-window`
-and waits for a board, because no host suite runs this backend. What
-it has to show:
+**The image window is the third (`emu_ir_rom_window`).** A load that
+misses the RAM window tries the guest's image before the helper, once
+the guest has left `EMU_JIT_ROM_ARM_AT` image reads to it. It uses the
+same folded guard as the other two, from the image's address in the
+board's flash, ahead of the peripheral window, as on x86-64
+([x86_64.md](x86_64.md#the-image-window)). On the F746 at 64 KB, against
+a worktree at the commit before, host cycles per guest instruction:
 
-- `isatest` passes;
-- Dhrystone arms and gets faster;
-- CoreMark x650 at 32 KB still validates;
-- what an armed load costs here.
+| | before | after | |
+|---|---|---|---|
+| Dhrystone | 27.84 | **14.54** | 1.91x; 1.19 s to 0.62 s by the host's clock |
+| Whetstone | 40.41 | **32.94** | -18.5% |
+| CoreMark x120, which does not arm | 14.66 | 14.51 | 333 translations both |
 
-On x86-64 the window is 40 bytes a load. Here the code cache is the
-guest's RAM, and 64 KB is the default that CoreMark only just fits.
-Until then `EMU_JIT_HAS_ROM_WINDOW` is 0 on this host, so the frontend
-neither counts nor arms, and a board pays nothing for the window.
+Guest output is identical, Dhrystone's 44 "should be" lines included.
+`isatest` passes its 896 checks. CoreMark x650 at 32 KB still validates
+(`crcfinal 0x25e3`, 8,485 compactions, 79.2 s by the host against 80.3
+by the firmware), and Dhrystone at 300,000 runs at 32 KB arms, evicts
+and agrees with the host's clock.
+
+**Arming by use is not optional here.** An armed load is 63-64 bytes
+against 38, so 26 more, where x86-64 pays 40. Armed from the start
+(`EMU_JIT_ROM_ARM_AT` 0), CoreMark goes from 31.38 bytes a guest
+instruction to 39.19, stops fitting 64 KB, and runs at **31.01** with
+7,352 translations against 14.59 with 333. Unarmed, it never pays.
 
 **An access may be predicated** (`emu_ir_mem_if`, the `c` operand), for
 ARMv7-M's loads and stores inside an IT block: `CMP` of the predicate

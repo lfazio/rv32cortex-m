@@ -49,11 +49,13 @@ the interpreter's run loop, whose code changed around the larger inline
 paths. So an interpreter's read of the image still pays a call into the
 slow path, and a compare there.
 
-**Under the x86-64 JIT a read of the image is a move**, once the guest
-has shown it reads its image in its loops: the image window
-([backend/x86_64.md](backend/x86_64.md#the-image-window)). That took
-another 25.9% off Dhrystone's host instructions. Thumb-2 does not lower
-the window yet ([TODO.md](TODO.md)).
+**Under the JIT a read of the image is a move**, once the guest has
+shown it reads its image in its loops: the image window
+([backend/x86_64.md](backend/x86_64.md#the-image-window),
+[backend/thumb2.md](backend/thumb2.md#the-guest-ram-window)). That took
+another 25.9% off Dhrystone's host instructions on x86-64, and on the
+F746 Dhrystone runs at 14.54 host cycles an instruction where it ran at
+31.37 before either change.
 
 ## RV32
 

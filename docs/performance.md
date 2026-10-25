@@ -129,6 +129,13 @@ against a worktree at the commit before it:
 PowerPC's columns moved through the same changes: 125.8 and 35.4 at
 96 KB when this table was last measured, 53.63 and 29.14 now.
 
+**Guests that read their image in their loops moved since, and CoreMark
+did not.** The bus's read-only cache and then the JIT's image window
+([memory.md](memory.md#the-three-kinds-of-region)) took RV32 Dhrystone
+at 64 KB from 31.37 to 28.92 to **14.54**, and Whetstone from 43.99 to
+40.93 to **32.94**. CoreMark x120 stayed at 14.5-14.7 throughout: it
+reads its image 1,143 times a run, so the window never arms for it.
+
 ### The interpreters' loops in ITCM
 
 `EMU_INTERP_TEXT_SECTION`, `.itcm` on the F746 only, puts an

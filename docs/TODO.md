@@ -34,16 +34,6 @@ measured at.
       discard every block at every switch between them. PowerPC made
       its counter one for all cores for exactly that reason. Unmeasured.
 - [ ] **Autovectorisation of the IR pipeline.**
-- [ ] **The image window on Thumb-2** (see
-      [backend/thumb2.md](backend/thumb2.md#the-guest-ram-window)). x86-64
-      inlines a load from the guest's image once armed, for 25.9% of
-      Dhrystone's host instructions. The Thumb-2 lowering is written and
-      is on the branch `wip/thumb2-rom-window`, with
-      `EMU_JIT_HAS_ROM_WINDOW` set for this host. It needs a board run:
-      `isatest`, Dhrystone and Whetstone armed and against a worktree at
-      the commit before, CoreMark x650 at 32 KB, and the emitted bytes
-      with `-DEMU_JIT_BYTE_STATS=ON`. CoreMark does not arm, so its
-      working set should not move.
 - [ ] **ARMv7-M's reads of its image.** Under the x86-64 JIT, ARMv7-M
       CoreMark leaves 57,512 loads to the helper in 11.1M instructions,
       and Dhrystone 621,495. What they are is unmeasured. They are not
