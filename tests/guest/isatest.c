@@ -1600,12 +1600,40 @@ static void test_pmp_exec(void)
 #define SATP_SV32 0x80000000u
 
 /*
+ * Every page-aligned thing this test owns, as one object in a section
+ * the link script puts first in .bss. Seven pages are most of what the
+ * test needs, and as separate arrays the linker padded each one to a
+ * page boundary after whatever small variable preceded it: 11 KiB of
+ * holes, which took the test from 33 KiB to 44 and off the F446.
+ * Packed, it fits the 32 KiB that board's guests are linked for, with
+ * room for the stack that test_stack_depth checks.
+ *
  * Page tables. The root alone would do for an identity map built from
  * megapages; the second level exists so the 4 KiB path is exercised too,
  * and so there is somewhere to change one PTE and watch the effect.
+ * root2 and leaf2 are the second address space, described where it is
+ * built (smode_dtlb).
+ *
+ * Volatile, all of it: the tables are read by the page walker and the
+ * pages are reached through virtual addresses, and the compiler knows
+ * neither. With the arrays separate, smode_paging's check of g_page[0]
+ * happened to be scheduled after the store through VA_RW that it
+ * checks; in one struct GCC hoisted the load above the store -- which
+ * it may, since a constant address and a named object do not alias --
+ * and sv32-4k-write read 0 on every backend.
  */
-static uint32_t g_root[1024] __attribute__((aligned(4096)));
-static uint32_t g_leaf[1024] __attribute__((aligned(4096)));
+static volatile struct {
+    uint32_t root[1024];
+    uint32_t leaf[1024];
+    uint32_t root2[1024];
+    uint32_t leaf2[1024];
+    uint32_t page[3 * 1024 + 16]; /* last: see the sentinel below */
+} g_pt __attribute__((aligned(4096), section(".bss.pages")));
+#define g_root (g_pt.root)
+#define g_leaf (g_pt.leaf)
+#define g_root2 (g_pt.root2)
+#define g_leaf2 (g_pt.leaf2)
+#define g_page (g_pt.page)
 /*
  * Three pages, and they must be three.
  *
@@ -1620,12 +1648,14 @@ static uint32_t g_leaf[1024] __attribute__((aligned(4096)));
 #define PAGE_EXEC1 1u
 #define PAGE_EXEC2 2u
 /*
- * A fourth page nothing maps, after the third. test_split_access asks
- * for memory that runs off the end of the third page; an emulator that
- * takes it physically contiguous lands here, in zeros, rather than in
- * whatever the linker put next.
+ * And 64 bytes nothing maps, after the third. test_split_access and the
+ * fetch table's straddling instruction ask for memory that runs off the
+ * end of the third page; an emulator that takes it physically contiguous
+ * lands here, in zeros, rather than in whatever the linker put next. The
+ * widest such access is an 8-byte fsd two bytes short of the end, so a
+ * whole page of sentinel -- which this used to be -- bought nothing but
+ * the 4 KiB the F446 did not have.
  */
-static uint32_t g_page[4 * 1024] __attribute__((aligned(4096)));
 
 static uint32_t page_pa(uint32_t which)
 {
@@ -4589,10 +4619,9 @@ static void test_split_access(void)
  * 4 KiB pages, page 0 replaced by page 2 and EXEC1 a user page. The
  * U-mode stub runs from it at its physical address because the trap
  * handler reads a faulting instruction from M-mode, untranslated: from a
- * virtual address it takes a second fault of its own.
+ * virtual address it takes a second fault of its own. Its two tables are
+ * g_root2 and g_leaf2, in g_pt with the others.
  */
-static uint32_t g_root2[1024] __attribute__((aligned(4096)));
-static uint32_t g_leaf2[1024] __attribute__((aligned(4096)));
 
 /*
  * A word of the image, which is ROM: loads may be cached, stores never.
@@ -5183,8 +5212,65 @@ static void test_fetch_table(void)
 
 /* ------------------------------------------------------------------ */
 
+/*
+ * How deep the stack went, measured rather than assumed.
+ *
+ * The emulator hands the guest an sp at the top of the RAM it really
+ * has, and nothing between that and _end is checked by anyone: a stack
+ * that grows into .bss overwrites the page tables or a result word and
+ * the run carries on. On the F446 the gap is about 4 KiB. So main
+ * paints the window below its own frame -- STACK_WINDOW bytes, or down
+ * to _end if that is nearer -- and the last test finds the lowest word
+ * anything overwrote. The check is that the stack stayed 256 bytes
+ * clear of the window's floor, which on a small part is .bss itself.
+ *
+ * The window is small on purpose: painting and scanning it is about
+ * 7,000 instructions of the run's 96,000.
+ */
+#define STACK_PAINT 0x5354414Bu /* "STAK" */
+#define STACK_WINDOW 4096u
+extern char _end[];
+static uint32_t g_stack_top;
+static uint32_t g_stack_low;
+
+static __attribute__((noinline)) void paint_stack(void)
+{
+    uint32_t sp;
+    uint32_t low = (uint32_t)(uintptr_t)_end;
+
+    __asm__ volatile("mv %0, sp" : "=r"(sp));
+    if (sp < low + 128u) {
+        return; /* no room at all: test_stack_depth fails on the zero */
+    }
+    if (sp - low > STACK_WINDOW) {
+        low = sp - STACK_WINDOW;
+    }
+    low = (low + 3u) & ~3u;
+    g_stack_top = sp;
+    g_stack_low = low;
+    /* Up to 64 bytes below this frame: nothing runs below it meanwhile. */
+    for (uint32_t a = low; a < sp - 64u; a += 4u) {
+        *(volatile uint32_t *)(uintptr_t)a = STACK_PAINT;
+    }
+}
+
+static void test_stack_depth(void)
+{
+    uint32_t a = g_stack_low;
+
+    while (a < g_stack_top &&
+           *(volatile uint32_t *)(uintptr_t)a == STACK_PAINT) {
+        a += 4u;
+    }
+    puts_("stack    ");
+    puthex(g_stack_top - a);
+    putc_('\n');
+    check("stack-depth", g_stack_top != 0u && a - g_stack_low >= 256u, 1u);
+}
+
 int main(void)
 {
+    paint_stack();
     puts_("emu ISA self-test\n");
 
     install_trap_handler();
@@ -5239,6 +5325,7 @@ int main(void)
     test_mega_sfence();
     test_fetch_table();
     test_timer_interrupt();
+    test_stack_depth(); /* last: everything above has run on the stack */
 
     puts_("checks   ");
     puthex((uint32_t)g_checks);

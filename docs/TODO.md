@@ -80,18 +80,9 @@ measured at.
       What it says about where hot blocks should go -- and whether
       CoreMark, which never flushes, has the same to gain -- is
       unmeasured.
-- [ ] **`isatest` no longer fits the F446.** Its `.bss` is 45,056 bytes
-      and, with the 4 KiB stack, it needs 48 KiB of guest RAM; the F446
-      gives 33.7 KiB. It fitted at 35 KiB when
-      [stm32f446/README.md](stm32f446/README.md) recorded its 836
-      checks, before the Sv32, data TLB and fetch table tests grew it
-      (two pairs of 4 KiB page tables and a 16 KiB page pool) and the
-      hart's 2 KiB of TLB tables shrank the guest. It prints its banner
-      and then nothing. A reduced build for small parts, or smaller
-      tables there, would bring it back. Whetstone on the F446 also
-      does not finish within 120 s, on main as on this tree, which
-      could be double-precision SoftFloat on an M4 and has not been
-      looked at.
+- [ ] **Whetstone on the F446 does not finish within 120 s**, on main
+      as on the image-window tree. It could be double-precision
+      SoftFloat on an M4; it has not been looked at.
 - [ ] **PowerPC's FP unit is a call per instruction.** Every EFPU2
       instruction under the JIT is a helper call into `ppc_fpu_exec`,
       whose bookkeeping -- SPEFSCR status, sticky bits, FG and FX -- was

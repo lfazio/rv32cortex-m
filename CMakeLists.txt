@@ -111,9 +111,20 @@ option(EMU_ENABLE_STATS "Collect run statistics" ON)
 # RV32 frontend configuration
 # ---------------------------------------------------------------------
 
-# Guest RAM size. Shared between the guest link script and the firmware's
-# static carve-out so the two can never disagree; see tests/guest/guest.ld.in.
-set(EMU_GUEST_RAM_KIB "48" CACHE STRING "Guest RAM size in KiB")
+# Guest RAM size the guests are *linked* for: the link script's RAM
+# region, so a guest whose .data and .bss do not fit is a link error;
+# see tests/guest/guest.ld.in. It is a ceiling, not a guest's need: the
+# boards give the guest whatever their firmware leaves, and start.S
+# checks at run time that this guest fits what it was given. The F446
+# leaves 33.7 KiB beside a 32 KB code cache, so its guests are linked
+# for 32 and one that would not fit there fails to link.
+if(EMU_PLATFORM STREQUAL "stm32f446")
+    set(_guest_ram_kib_default "32")
+else()
+    set(_guest_ram_kib_default "48")
+endif()
+set(EMU_GUEST_RAM_KIB "${_guest_ram_kib_default}" CACHE STRING
+    "Guest RAM size in KiB that guests are linked for")
 
 #
 # The guest's read-only window, in MiB, and a *link-time bound* rather

@@ -47,6 +47,37 @@ _start:
 1:
 
     /*
+     * Does the guest fit? sp is the top of the RAM this emulator gave,
+     * and .data and .bss sit at its base; if they and 256 bytes of
+     * stack do not fit below sp, say so on the console and exit with
+     * status 224, before writing a byte of RAM.
+     *
+     * The link script's RAM region is a ceiling for every guest, not
+     * this one's need, and a board leaves the guest whatever its
+     * firmware does not use -- 33.7 KiB on the F446, 5.4 with its IP
+     * stack. Without this a guest too big for the board faults while
+     * clearing its own .bss, with no trap handler yet, and spins:
+     * isatest did on the F446, printing nothing, until it was packed.
+     * The UART takes a byte per store, unpolled, as every guest here
+     * writes it.
+     */
+    la      t0, __bss_end
+    addi    t0, t0, 256
+    bgeu    sp, t0, 9f
+    la      t1, start_too_small
+    li      t2, 0x10000000          /* EMU_GUEST_UART_BASE */
+8:  lbu     t3, 0(t1)
+    beqz    t3, 7f
+    sb      t3, 0(t2)
+    addi    t1, t1, 1
+    j       8b
+7:  li      a0, 224
+    li      a7, 93
+    ecall
+6:  j       6b
+9:
+
+    /*
      * Copy .data from its load address to its run address.
      *
      * **The guest's job, not the emulator's.** This used to be done by
@@ -92,3 +123,7 @@ _start:
     /* The host halts us at the ecall; spin if it ever returns. */
 3:  j       3b
     .size _start, . - _start
+
+    .section .rodata.start, "a"
+start_too_small:
+    .asciz  "guest: .data, .bss and 256 bytes of stack do not fit the RAM this emulator gave\n"

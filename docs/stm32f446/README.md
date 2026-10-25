@@ -119,9 +119,21 @@ guest has. The default stays: 35 KiB is already the smallest guest RAM
 of any board, and the interpreter's 114 KiB is the alternative for a
 guest that needs room more than speed.
 
-Correctness at the default, when measured (3c80a96): `isatest` 836
-checks, 0 failures -- it no longer fits this part's guest RAM, see
-[../TODO.md](../TODO.md); CoreMark
+Correctness at the default: `isatest` **897 checks, 0 failures**, under
+the JIT and the interpreter, with the host's retired counts to the
+instruction (95,924 and 95,812; 2026-10-25). It had stopped fitting:
+its Sv32, data-TLB and fetch-table tests took its `.bss` to 44 KiB,
+11 of them alignment holes around seven pages of tables, while the
+firmware left 33.7. Packed into one `.bss.pages` object, with the
+fourth page of its pool cut to the 64 bytes anything reads, it ends
+at 28.9 KiB, and its own `stack-depth` check says it uses 116 bytes of
+stack. The guests here are linked for 32 KiB now (`EMU_GUEST_RAM_KIB`),
+so one too big for this board fails to link, and `start.S` checks a
+guest fits the RAM it is handed before it writes any, printing a line
+and exiting 224 if not -- which is what an uploaded guest, or this board
+with its IP stack and 5.4 KiB left, needs.
+
+From 3c80a96, before the tables grew: CoreMark
 x150 "Correct operation validated" across 51,610 evictions, 28.6 s by
 the host's clock against 29.2 s by the firmware's -- the counter wraps
 at 23.9 s here, so the run crosses it. `hello` reports the main task's

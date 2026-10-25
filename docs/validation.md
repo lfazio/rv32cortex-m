@@ -53,7 +53,8 @@ Current state:
 | `ctest`, RV32 alone | 20 tests | host |
 | `scripts/gdb-check.sh`, the `gdb-check` ctest | a real gdb attached to all four frontends, interpreted and under `--jit`: pc at a breakpoint against the ELF symbol, the stop reply's register number against gdb's, a register round trip, `stepi` landing on the next instruction, a breakpoint ahead hit, memory -- **8 of 8 sessions** | host, x86-64, gdb-multiarch 17.2 |
 | the ARMv7-M guests, both backends | all eight pass, each with the host's retired count to the instruction | Nucleo-F746ZG |
-| `isatest`, JIT | **748 checks**, 1,129 of 65,829 instructions interpreted — the same two numbers the x86-64 host gives | Nucleo-F746ZG, Thumb-2 |
+| `isatest`, JIT | **897 checks**, 95,924 retired -- the count the x86-64 host gives, which interprets 2,658 of them (2026-10-25) | Nucleo-F746ZG and Nucleo-F446RE, Thumb-2 |
+| `isatest`, interpreter | **897 checks**, 95,812 retired, as on the host | Nucleo-F446RE |
 | Linux 6.12 under OpenSBI, `scripts/run-linux.sh` | boots to userspace; the test init passes **17 checks** from U-mode on the extensions the device tree declares | host, x86-64 JIT |
 | CoreMark, 120 iterations | `crcfinal 0xd340` on the interpreter and on the JIT at four cache sizes | Nucleo-F746ZG |
 

@@ -3,11 +3,15 @@
  * guest.ld - Link script for RV32 guest images.
  *
  * Generated from guest.ld.in: LENGTH is substituted from
- * EMU_GUEST_RAM_KIB so it always matches the RAM the emulator actually
- * maps at RV_GUEST_RAM_BASE. Getting this wrong is not a link error --
- * _stack_top simply ends up past the end of guest RAM, and the guest takes
- * a store access fault on its first push, before it has installed a trap
- * handler that could report it.
+ * EMU_GUEST_RAM_KIB, and it is a *ceiling*, not the RAM a guest will
+ * get: a guest whose .data and .bss exceed it fails to link, while the
+ * emulator hands the guest an sp at the top of the RAM it really has --
+ * a board's is whatever its firmware leaves, 33.7 KiB on the F446.
+ * _stack_top is only the fallback for a loader that passes no sp.
+ * start.S checks that .data, .bss and a little stack fit below the sp
+ * it was given, before writing RAM, and says so if they do not: a guest
+ * that ran off the end would fault clearing its own .bss, before it had
+ * a trap handler that could report it.
  *
  * The layout is a microcontroller's: .text and .rodata in flash, .data
  * and .bss in RAM, and .data's initialiser at a load address in flash for
@@ -139,6 +143,15 @@ SECTIONS
         __bss_start = .;
         /* Immediately after .tdata, and zeroed with the rest: see above. */
         *(.tbss .tbss.*)
+        /*
+         * Page-aligned objects, ahead of everything small. After .sbss
+         * or among a file's other variables, each one costs up to a
+         * page of padding: isatest's page tables and pool left 11 KiB
+         * of holes that way, on a board with 33.7 KiB of guest RAM.
+         * A guest puts an object here with
+         * __attribute__((aligned(4096), section(".bss.pages"))).
+         */
+        *(.bss.pages)
         *(.sbss .sbss.*)
         *(.bss .bss.*)
         *(COMMON)

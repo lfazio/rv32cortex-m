@@ -107,8 +107,9 @@ because this firmware never idles and a plain attach races it. Build
 `-DEMU_NET=OFF` to keep the UART a console.
 
 **`isatest` on the board is necessary and nowhere near sufficient.** It
-measures coverage now -- 1,129 of 65,829 instructions interpreted under
-the JIT, on the board as on x86-64 -- but it never fills the code cache
+measures coverage now -- 2,658 of 95,924 instructions interpreted under
+the JIT, and the same retired count on both boards as on x86-64 -- but it
+never fills the code cache
 and it finishes in a tenth of a second. Two defects sat behind those
 two facts while it passed: a compaction that moved blocks with their
 chained jumps intact, and a cycle counter that wrapped at 19.9 seconds.
@@ -3607,6 +3608,38 @@ session, and every one of them recurred:
   translations 201, as with no flush, was what said so. **When a change
   includes a flush, measure what the flush alone does**, with a trigger
   that does not depend on the change.
+
+- **A guest linked for more RAM than the board has runs off the end
+  before it can say so.** Every guest was linked for the shared 48 KiB
+  and the F446 leaves 33.7, so once `isatest`'s `.bss` reached 44 KiB --
+  11 of them padding around seven page-aligned tables -- it never
+  reached `main` (the host shows it with `--ram 34504`: no output, the
+  instruction cap), and the board's page said "no longer fits" while
+  nothing failed. The F446's guests are linked for 32 KiB now, and
+  `start.S` compares `__bss_end` with the sp it is handed before writing
+  RAM: a guest that does not fit prints a line and exits 224.
+
+  **The first version of that check was in the board's link script,
+  and it was the wrong claim.** It compared the firmware's leftover RAM
+  with `EMU_GUEST_RAM_KIB` and failed `f446-net`, whose IP stack leaves
+  5.4 KiB -- where `hello` runs perfectly. The link region is a ceiling
+  for every guest, not any guest's need; only the guest knows its own.
+  (And GNU ld evaluates both sides of `||`, so `DEFINED(x) || x` is an
+  undefined-symbol error, which is how `f446-g4` failed; use `PROVIDE`.)
+
+  **Packing the tables then failed `sv32-4k-write` on every backend,
+  and the test was wrong, not the layout.** It stores through `VA_RW`
+  and reads the page underneath by name: one location by two names,
+  and the compiler is told about neither. In one struct GCC hoisted
+  the load above the store, which it may; as separate arrays it had
+  happened not to. **Memory a test reaches through a translation is
+  volatile**, because the alias is made by the MMU and no compiler can
+  see it. A layout change is a test of every such assumption at once.
+
+  And the 4 KiB stack every guest assumed was measured for the first
+  time: `stack-depth` paints the window and finds the deepest write,
+  116 bytes. It reads 0x800 against a 2 KiB burn and fails a 4 KiB one,
+  which is what makes 116 believable.
 
 ## Conventions
 
