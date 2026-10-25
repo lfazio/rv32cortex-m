@@ -201,11 +201,14 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
 #endif
     }
 
-/* Enter a trap. mepc must be the faulting instruction, so restore pc. */
+/*
+ * Enter a trap. mepc must be the faulting instruction, so restore pc.
+ * The instruction has not retired: see rv_hart_trap_unretire.
+ */
 #define TRAP(cause_, tval_)                                                    \
     do {                                                                       \
         h->pc = pc;                                                            \
-        rv_hart_trap(h, (cause_), (tval_));                                    \
+        rv_hart_trap_unretire(h, (cause_), (tval_));                           \
         pc = h->pc;                                                            \
         goto retired_insn;                                                     \
     } while (0)
@@ -281,7 +284,8 @@ static RV_INTERP_SECTION emu_run_reason_t interp_run(rv_hart_t *h,
                  */
                 h->state = EMU_STATE_RUNNING;
                 h->pc = pc;
-                rv_hart_trap(h, RV_CAUSE_INTERRUPT | irq, 0u);
+                /* Nothing retired: see rv_hart_trap_unretire. */
+                rv_hart_trap_unretire(h, RV_CAUSE_INTERRUPT | irq, 0u);
                 pc = h->pc;
                 goto retired_insn;
             }

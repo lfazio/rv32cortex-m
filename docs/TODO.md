@@ -22,7 +22,11 @@ measured at.
 
 ## Testing
 
-- [ ] **Fuzz testing.** What the tree has is generation, not fuzzing:
+- [ ] **Fuzz testing.** The first target exists and has paid:
+      `fuzz-rv32-jit`, the RV32 interpreter against the x86-64 JIT
+      ([fuzzing.md](fuzzing.md)), four defects in its first hour. The
+      rest of this item is still open. Before it, the tree had
+      generation, not fuzzing:
       `tests/armv7m-diff/rawgen.py` (raw encodings against the F746),
       the property tests over whole encoding spaces (ARMv7-M's decoder
       over 402,712,576 encodings, G4MH's length over 65,536 halfwords),
@@ -34,9 +38,10 @@ measured at.
       first:
   - **Instruction streams, interpreter against JIT**, per frontend:
     the same bytes run both ways and compared on the register file,
-    memory, trap cause and tval, and `retired`. The interpreter is the
-    oracle, and for RV32 Spike as well (BSD-3, CLAUDE.md). No GPL
-    emulator, not even as a reference.
+    memory, trap cause and tval, and minstret. **Done for RV32**; G4MH,
+    PowerPC and ARMv7-M want the same harness, and RV32 wants Spike as
+    a third side (BSD-3, CLAUDE.md), interrupts, a device, and more
+    than one hart. No GPL emulator, not even as a reference.
   - **The IR**: random blocks through the passes and both lowerings,
     checked against `emu_ir_interp` on the *unoptimised* IR, stores
     included. `ir_diff_ref` runs the optimised IR and declines any
@@ -83,6 +88,23 @@ measured at.
 - [ ] **Whetstone on the F446 does not finish within 120 s**, on main
       as on the image-window tree. It could be double-precision
       SoftFloat on an M4; it has not been looked at.
+- [ ] **Blocks that only move floats no longer chain.** Both backends
+      mark FS dirty from the tail of a block, so a block with an `FPUT`
+      must leave through it, and chaining skipped it -- the defect
+      `fuzz-rv32-jit` found ([fuzzing.md](fuzzing.md)). The fix makes
+      such blocks unchainable, which costs Whetstone under the x86-64
+      JIT 2.09% of host instructions (unmeasured on the board). An OR
+      into the frontend's dirty word inside the block, at the first
+      FPUT, would let them chain again: a word offset and a mask in
+      `emu_ir_target_t`, beside `fp_flags`.
+- [ ] **LTO partitioning moves the host's interpreters by percents.**
+      `-flto-partition=one` runs ARMv7-M's interpreted CoreMark in 4.4%
+      fewer host instructions than the default partitioning and RV32's
+      in 0.4% more, and in the default build an unrelated change to RV32
+      files moved ARMv7-M's by 1.07% (callgrind; [fuzzing.md](fuzzing.md)).
+      So a callgrind A/B of one frontend can be another's partition
+      boundary. Measure the board's firmware the same way, and decide
+      whether the host builds in one partition -- at least for A/Bs.
 - [ ] **PowerPC's FP unit is a call per instruction.** Every EFPU2
       instruction under the JIT is a helper call into `ppc_fpu_exec`,
       whose bookkeeping -- SPEFSCR status, sticky bits, FG and FX -- was

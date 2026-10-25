@@ -303,7 +303,7 @@ their helpers.
 ## Reading a coverage number
 
 Read `interp` against the retired count before believing a passing
-suite. `isatest` under the JIT interprets 2,658 of 95,924 instructions
+suite. `isatest` under the JIT interprets 2,710 of 96,995 instructions
 (2026-10-25), and retires the same count on x86-64, the F746 and the
 F446.
 

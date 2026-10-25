@@ -288,6 +288,21 @@ static EMU_COLD_NOINLINE uint32_t illegal_tval(rv_hart_t *h, uint32_t tval)
 }
 #endif
 
+/* See rv_hart.h. Out of line, so the interpreter's loop is unchanged. */
+EMU_NOIPA void rv_hart_trap_unretire(rv_hart_t *h, uint32_t cause,
+                                     uint32_t tval)
+{
+    rv_hart_trap(h, cause, tval);
+#if RV_EXT_ZICNTR
+    if ((h->mcountinhibit & 0x1u) == 0u) {
+        h->mcycle--;
+    }
+    if ((h->mcountinhibit & 0x4u) == 0u) {
+        h->minstret--;
+    }
+#endif
+}
+
 void rv_hart_trap(rv_hart_t *h, uint32_t cause, uint32_t tval)
 {
     uint32_t tvec;

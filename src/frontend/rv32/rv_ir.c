@@ -1187,6 +1187,17 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
     }
 
     case 0x03u: { /* LOAD */
+        /*
+         * LB LH LW LBU LHU, and nothing else: 3 is LD, 6 LWU and 7
+         * nothing, and RV32 has none of them. Declined, so that the
+         * interpreter raises illegal-instruction. Until fuzz-rv32-jit
+         * asked, the spec below took them as an 8-byte load, a LW and
+         * an 8-byte unsigned load -- on both hosts, since this
+         * translator is theirs.
+         */
+        if (f3 == 3u || f3 >= 6u) {
+            return false;
+        }
         /* pc first: a fault records it. */
         (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
                           pc, 0u);
@@ -1200,6 +1211,10 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
     }
 
     case 0x23u: { /* STORE */
+        /* SB SH SW only; f3 & 3 made 4-7 into those and 3 into SD. */
+        if (f3 > 2u) {
+            return false;
+        }
         (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
                           pc, 0u);
         const uint16_t base = emu_ir_get(b, rs1);
@@ -1252,6 +1267,9 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
         return true;
 
     case 0x67u: { /* JALR */
+        if (f3 != 0u) {
+            return false; /* reserved: the interpreter traps */
+        }
         /*
          * The target is computed *before* the link register is written,
          * because `jalr ra, ra` -- an indirect call through a saved

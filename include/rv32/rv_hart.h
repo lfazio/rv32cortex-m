@@ -458,6 +458,30 @@ uint32_t rv_hart_misa(void);
 void rv_hart_trap(rv_hart_t *h, uint32_t cause, uint32_t tval);
 
 /*
+ * rv_hart_trap for a caller that has already counted the instruction
+ * as retired -- the interpreter's loop, which sends a trap through the
+ * same increment as any other instruction. An instruction that traps
+ * has not retired, ECALL and EBREAK included, so this takes minstret
+ * and mcycle back by one under the same inhibit bits; the loop's
+ * increment then leaves them where they were. Sail and Spike agree on
+ * minstret (tests/arch-test/probes/instret.S); mcycle is the
+ * implementation's to define, and here it follows minstret, as the
+ * JIT's count of what a block retired always has.
+ *
+ * A function of its own rather than a change to the loop, which the
+ * compiler is sensitive to: a label past the increments, suppressing
+ * them through ctr_written and a helper returning the new pc each read
+ * 0.5-1.1% more host instructions on CoreMark (callgrind), for paths no
+ * benchmark takes. This changes only which function the loop calls, and
+ * is EMU_NOIPA because without it GCC cloned it per constant cause and
+ * split the interpreter, for 1.2%. With LTO in one partition it is
+ * 0.00% on every interpreter; in the default partitioning, which an
+ * unrelated change can move, ARMv7-M's read +1.0% -- so the variants'
+ * figures above are an upper bound, not their cost (docs/TODO.md).
+ */
+void rv_hart_trap_unretire(rv_hart_t *h, uint32_t cause, uint32_t tval);
+
+/*
  * Return the pending-and-enabled interrupt cause, or RV_EXC_NONE. Honours
  * mstatus.MIE, so it returns nothing while interrupts are globally masked.
  */

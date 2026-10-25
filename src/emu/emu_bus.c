@@ -318,10 +318,10 @@ static bool rodata_hit(const emu_bus_t *bus, uint32_t addr, uint32_t size,
             *out = *p;
             break;
         case 2:
-            *out = *(const uint16_t *)(const void *)p;
+            *out = emu_host_ld16(p);
             break;
         default:
-            *out = *(const uint32_t *)(const void *)p;
+            *out = emu_host_ld32(p);
             break;
         }
         return true;
@@ -342,10 +342,10 @@ static bool rodata_be_hit(const emu_bus_t *bus, uint32_t addr, uint32_t size,
             *out = *p;
             break;
         case 2:
-            *out = emu_bswap(*(const uint16_t *)(const void *)p, 2u);
+            *out = emu_bswap(emu_host_ld16(p), 2u);
             break;
         default:
-            *out = emu_bswap(*(const uint32_t *)(const void *)p, 4u);
+            *out = emu_bswap(emu_host_ld32(p), 4u);
             break;
         }
         return true;
@@ -379,16 +379,16 @@ emu_fault_t emu_bus_read_slow(emu_bus_t *bus, uint32_t addr, uint32_t size,
     case EMU_MEM_RAM:
     case EMU_MEM_ROM: {
         const uint8_t *p = (const uint8_t *)r->host + off;
-        /* Callers guarantee natural alignment, so these loads are aligned. */
+        /* Any alignment: a misaligned guest access arrives as one access. */
         switch (size) {
         case 1:
             *out = *p;
             break;
         case 2:
-            *out = *(const uint16_t *)(const void *)p;
+            *out = emu_host_ld16(p);
             break;
         default:
-            *out = *(const uint32_t *)(const void *)p;
+            *out = emu_host_ld32(p);
             break;
         }
         /*
@@ -453,10 +453,10 @@ emu_fault_t emu_bus_write_slow(emu_bus_t *bus, uint32_t addr, uint32_t size,
             *p = (uint8_t)val;
             break;
         case 2:
-            *(uint16_t *)(void *)p = (uint16_t)val;
+            emu_host_st16(p, val);
             break;
         default:
-            *(uint32_t *)(void *)p = val;
+            emu_host_st32(p, val);
             break;
         }
         if (r->perm == EMU_PERM_RWX) {

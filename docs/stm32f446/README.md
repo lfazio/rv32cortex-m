@@ -119,9 +119,9 @@ guest has. The default stays: 35 KiB is already the smallest guest RAM
 of any board, and the interpreter's 114 KiB is the alternative for a
 guest that needs room more than speed.
 
-Correctness at the default: `isatest` **897 checks, 0 failures**, under
+Correctness at the default: `isatest` **937 checks, 0 failures**, under
 the JIT and the interpreter, with the host's retired counts to the
-instruction (95,924 and 95,812; 2026-10-25). It had stopped fitting:
+instruction (96,995 and 96,883; 2026-10-25). It had stopped fitting:
 its Sv32, data-TLB and fetch-table tests took its `.bss` to 44 KiB,
 11 of them alignment holes around seven pages of tables, while the
 firmware left 33.7. Packed into one `.bss.pages` object, with the

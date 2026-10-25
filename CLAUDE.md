@@ -88,6 +88,8 @@ What belongs here is only what the recipes do not say:
 BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
                                 # a firmware built from that tree, flashed,
                                 # run: ratio, wall clock, translations, CRC
+./scripts/fuzz.sh SECS          # RV32 interpreter against the x86-64 JIT,
+                                # under ASan/UBSan; docs/fuzzing.md
 ```
 
 **Run both suites.** They cover different things, and a regression that
@@ -107,7 +109,7 @@ because this firmware never idles and a plain attach races it. Build
 `-DEMU_NET=OFF` to keep the UART a console.
 
 **`isatest` on the board is necessary and nowhere near sufficient.** It
-measures coverage now -- 2,658 of 95,924 instructions interpreted under
+measures coverage now -- 2,710 of 96,995 instructions interpreted under
 the JIT, and the same retired count on both boards as on x86-64 -- but it
 never fills the code cache
 and it finishes in a tenth of a second. Two defects sat behind those
@@ -3640,6 +3642,44 @@ session, and every one of them recurred:
   time: `stack-depth` paints the window and finds the deepest write,
   116 bytes. It reads 0x800 against a 2 KiB burn and fails a 4 KiB one,
   which is what makes 116 believable.
+
+- **The first fuzzer found the reference wrong first, and three more
+  things no suite could see.** `fuzz-rv32-jit` runs the same bytes on
+  the interpreter and the x86-64 JIT and compares everything; the
+  details are in [docs/fuzzing.md](docs/fuzzing.md). What generalises:
+
+  - **The oracle is a reading too.** The first disagreement was
+    minstret after a faulting load, and the *interpreter* was wrong --
+    it counted every trap, ECALL and interrupt entry as retired. Sail
+    and Spike settled it in one probe; reasoning about which backend to
+    fix would have fixed the right one by luck.
+  - **A translator that reads a field as an index translates the
+    reserved values.** LOAD's spec was built from `f3 & 3`, so LD, LWU
+    and funct3 7 became real loads, and funct3 4-7 stores became SB, SH
+    and SW; JALR never looked at funct3. The interpreter's `default:`
+    trapped on all of them. A suite of valid instructions cannot see
+    this, which is the raw-encoding lesson from ARMv7-M, again.
+  - **A decision taken before the information it needs is a defect
+    waiting for the case.** Both backends fixed a block's chainability
+    in the prologue and learnt it wrote an f register while lowering
+    the body, so a float-move block left by a chained exit, skipped the
+    tail that marks FS dirty, and an OS would not have saved the
+    register. `isatest` holds it for the board, which shares the bug.
+  - **A comment saying callers guarantee alignment is a claim about
+    every caller.** With misaligned accesses on by default, the bus cast
+    odd addresses to `uint16_t *`; UBSan said so on the first FLH that
+    tried. And a 1% callgrind rise I put down to the fix's memcpy
+    stayed with the old bus restored: it was LTO partitioning, which a
+    change to RV32 files had moved under ARMv7-M's interpreter. **Bisect
+    an attribution by reverting the suspect alone** before writing it
+    into a comment -- it went into three.
+  - **And the harness lied twice before it told the truth.** UBSan's
+    `function` check reads a signature word ahead of every indirect
+    callee, and a JIT block has none, so the first input faulted in the
+    sanitizer. A register variable read after a call -- `check()` takes
+    a0 for its own argument -- reported the name string's address as a
+    JALR's link on both backends. Test the instrument on a case whose
+    answer you know: a 2 KiB stack burn, a mutant, a revert.
 
 ## Conventions
 

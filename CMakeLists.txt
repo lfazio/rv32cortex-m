@@ -140,6 +140,34 @@ set(EMU_GUEST_ROM_MIB "16" CACHE STRING "Guest flash window in MiB")
 # calls, and they are the hottest code in the project.
 option(RV32_LTO "Link-time optimisation" ON)
 
+#
+# Fuzzing: tests/fuzz, libFuzzer targets, clang on the host only. The
+# whole tree is built with ASan and UBSan and with libFuzzer's coverage
+# instrumentation -- the emulator's own decoder compares are what steer
+# the fuzzer towards valid encodings -- so this is a build directory of
+# its own (scripts/fuzz.sh), never the one a figure is measured in.
+# LTO is off because the instrumentation and clang's LTO need lld.
+#
+option(EMU_FUZZ "libFuzzer targets under ASan/UBSan (clang, host)" OFF)
+if(EMU_FUZZ)
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "EMU_FUZZ needs clang for libFuzzer: "
+                            "configure with CC=clang")
+    endif()
+    if(NOT EMU_PLATFORM STREQUAL "host")
+        message(FATAL_ERROR "EMU_FUZZ is for the host platform")
+    endif()
+    set(RV32_LTO OFF CACHE BOOL "Link-time optimisation" FORCE)
+    # Not -fsanitize=function: it checks an indirect call by reading a
+    # signature word ahead of the callee, and a translated block has
+    # none -- the first call into the code buffer reads below its start.
+    add_compile_options(-fsanitize=fuzzer-no-link,address,undefined
+                        -fno-sanitize=function
+                        -fno-sanitize-recover=undefined
+                        -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
+endif()
+
 # Run the interpreter loop from SRAM.
 #
 # Off by default because it was measured *slower* on the STM32F446: 162 vs
@@ -1170,6 +1198,9 @@ if(EMU_PLATFORM STREQUAL "host")
         add_subdirectory(tests/unit)
     endif()
     include(cmake/validation.cmake)
+    if(EMU_FUZZ)
+        add_subdirectory(tests/fuzz)
+    endif()
 endif()
 
 #

@@ -53,8 +53,12 @@ Current state:
 | `ctest`, RV32 alone | 20 tests | host |
 | `scripts/gdb-check.sh`, the `gdb-check` ctest | a real gdb attached to all four frontends, interpreted and under `--jit`: pc at a breakpoint against the ELF symbol, the stop reply's register number against gdb's, a register round trip, `stepi` landing on the next instruction, a breakpoint ahead hit, memory -- **8 of 8 sessions** | host, x86-64, gdb-multiarch 17.2 |
 | the ARMv7-M guests, both backends | all eight pass, each with the host's retired count to the instruction | Nucleo-F746ZG |
-| `isatest`, JIT | **897 checks**, 95,924 retired -- the count the x86-64 host gives, which interprets 2,658 of them (2026-10-25) | Nucleo-F746ZG and Nucleo-F446RE, Thumb-2 |
-| `isatest`, interpreter | **897 checks**, 95,812 retired, as on the host | Nucleo-F446RE |
+| `isatest`, JIT | **937 checks**, 96,995 retired -- the count the x86-64 host gives, which interprets 2,710 of them (2026-10-25) | Nucleo-F746ZG and Nucleo-F446RE, Thumb-2 |
+| `isatest`, interpreter | **937 checks**, 96,883 retired, as on the host | Nucleo-F446RE |
+| `fuzz-rv32-jit`, ten minutes ([fuzzing.md](fuzzing.md)) | 157,768 inputs, 150,680 compared between the interpreter and the JIT, no divergence once four defects were fixed; 7.8M translations and 9.8M block entries, so the JIT ran | host, x86-64, clang 21 under ASan and UBSan |
+| `probes/instret.S` | a trapping instruction does not retire: Sail and Spike agree on minstret; mcycle follows Spike's answer, Sail's is permitted | host, against Sail and Spike |
+| CoreMark x650 at a 32 KB cache, after the chaining fix | "Correct operation validated", `crcfinal 0x25e3`, 8,485 compactions; 78.56 s by the host, 79 by the firmware | Nucleo-F746ZG |
+| `isatest` with the Thumb-2 chaining fix reverted | fails `fs-dirty-flw-chained` (got 2, want 3) and nothing else -- the board had the defect | Nucleo-F746ZG |
 | Linux 6.12 under OpenSBI, `scripts/run-linux.sh` | boots to userspace; the test init passes **17 checks** from U-mode on the extensions the device tree declares | host, x86-64 JIT |
 | CoreMark, 120 iterations | `crcfinal 0xd340` on the interpreter and on the JIT at four cache sizes | Nucleo-F746ZG |
 

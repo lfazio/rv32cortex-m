@@ -86,6 +86,53 @@ typedef enum {
 #define EMU_BUS_ANY_BE 0
 #endif
 
+/*
+ * A RAM or ROM access through a host pointer, at any alignment.
+ *
+ * With RV32_MISALIGNED on -- the default -- a guest's misaligned load or
+ * store reaches the bus as one access at an odd address, and a cast to
+ * uint16_t * or uint32_t * is then undefined behaviour: harmless on
+ * x86-64 and on the M4 and M7, whose LDRH and LDR take any alignment,
+ * and a fault on ARMv6-M, which src/emu/ also builds for. The comment
+ * that stood here said callers guaranteed natural alignment; an FLH at
+ * an odd address under UBSan said otherwise (fuzz-rv32-jit).
+ *
+ * Through a uint16_t or uint32_t whose alignment is 1, not memcpy. The
+ * type is unchanged, so the compiler's aliasing rules are too: memcpy
+ * is a byte access, which may alias anything, and would change what
+ * every interpreter may keep in registers across a guest store. With
+ * the type kept, the F746 firmware's code is what it was but for four
+ * compare-and-branches that became CBNZ in rv_hart_load and
+ * rv_hart_store; where a host does not take unaligned accesses this
+ * becomes bytes. (A 1.07% callgrind rise on ARMv7-M's interpreter was
+ * first put down to memcpy. It stayed with the old bus put back: LTO
+ * partitioning, docs/fuzzing.md.) Not for passthrough or MMIO: a
+ * device register is accessed at exactly its width, through a volatile
+ * pointer.
+ */
+typedef uint16_t emu_u16_any __attribute__((aligned(1)));
+typedef uint32_t emu_u32_any __attribute__((aligned(1)));
+
+static EMU_ALWAYS_INLINE uint32_t emu_host_ld16(const uint8_t *p)
+{
+    return *(const emu_u16_any *)(const void *)p;
+}
+
+static EMU_ALWAYS_INLINE uint32_t emu_host_ld32(const uint8_t *p)
+{
+    return *(const emu_u32_any *)(const void *)p;
+}
+
+static EMU_ALWAYS_INLINE void emu_host_st16(uint8_t *p, uint32_t v)
+{
+    *(emu_u16_any *)(void *)p = (uint16_t)v;
+}
+
+static EMU_ALWAYS_INLINE void emu_host_st32(uint8_t *p, uint32_t v)
+{
+    *(emu_u32_any *)(void *)p = v;
+}
+
 static EMU_ALWAYS_INLINE uint32_t emu_bswap(uint32_t v, uint32_t size)
 {
     switch (size) {
@@ -377,10 +424,10 @@ static EMU_ALWAYS_INLINE bool emu_bus_read_le_hit(emu_bus_t *bus, uint32_t addr,
             *out = *p;
             break;
         case 2:
-            *out = *(const uint16_t *)(const void *)p;
+            *out = emu_host_ld16(p);
             break;
         default:
-            *out = *(const uint32_t *)(const void *)p;
+            *out = emu_host_ld32(p);
             break;
         }
         return true;
@@ -401,10 +448,10 @@ static EMU_ALWAYS_INLINE bool emu_bus_write_le_hit(emu_bus_t *bus,
             *p = (uint8_t)val;
             break;
         case 2:
-            *(uint16_t *)(void *)p = (uint16_t)val;
+            emu_host_st16(p, val);
             break;
         default:
-            *(uint32_t *)(void *)p = val;
+            emu_host_st32(p, val);
             break;
         }
         return true;
@@ -439,10 +486,10 @@ static EMU_ALWAYS_INLINE bool emu_bus_read_be_hit(emu_bus_t *bus, uint32_t addr,
             *out = *p;
             break;
         case 2:
-            *out = emu_bswap(*(const uint16_t *)(const void *)p, 2u);
+            *out = emu_bswap(emu_host_ld16(p), 2u);
             break;
         default:
-            *out = emu_bswap(*(const uint32_t *)(const void *)p, 4u);
+            *out = emu_bswap(emu_host_ld32(p), 4u);
             break;
         }
         return true;
@@ -464,10 +511,10 @@ static EMU_ALWAYS_INLINE bool emu_bus_write_be_hit(emu_bus_t *bus,
             *p = (uint8_t)val;
             break;
         case 2:
-            *(uint16_t *)(void *)p = (uint16_t)emu_bswap(val, 2u);
+            emu_host_st16(p, emu_bswap(val, 2u));
             break;
         default:
-            *(uint32_t *)(void *)p = emu_bswap(val, 4u);
+            emu_host_st32(p, emu_bswap(val, 4u));
             break;
         }
         return true;

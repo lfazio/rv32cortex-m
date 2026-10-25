@@ -131,6 +131,18 @@ typedef void (*emu_print_fn)(void *ctx, const char *s);
  * the same reason as above, without telling the compiler it is rare.
  */
 #define EMU_NOINLINE __attribute__((noinline))
+/*
+ * Out of line and opaque: no clone specialised for a caller's
+ * constants, nothing the caller learns from the body. For a function
+ * whose only purpose is to keep something out of a hot loop that LTO
+ * would otherwise reshape -- see rv_hart_trap_unretire. GCC's noipa;
+ * clang has no equivalent and gets noinline.
+ */
+#if defined(__clang__)
+#define EMU_NOIPA __attribute__((noinline))
+#else
+#define EMU_NOIPA __attribute__((noipa))
+#endif
 #else
 #define EMU_LIKELY(x) (x)
 #define EMU_UNLIKELY(x) (x)
@@ -138,6 +150,7 @@ typedef void (*emu_print_fn)(void *ctx, const char *s);
 #define EMU_ALWAYS_INLINE inline
 #define EMU_COLD_NOINLINE
 #define EMU_NOINLINE
+#define EMU_NOIPA
 #endif
 
 /*

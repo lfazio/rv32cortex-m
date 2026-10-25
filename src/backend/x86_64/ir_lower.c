@@ -2190,10 +2190,23 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      */
     g_has_fp = false;
     g_fp_written = false;
-    for (uint32_t i = 0; i < b->count && !g_has_fp; i++) {
-        if (!b->insn[i].dead && b->insn[i].op >= (uint8_t)EMU_IR_FADD &&
+    /*
+     * Both found here, before the prologue decides whether the block may
+     * chain -- which neither may. g_fp_written used to be set only while
+     * FPUT was lowered, after that decision, so a block that moved a
+     * float and left by a constant exit chained, skipped the fp_flags
+     * call in its tail, and never marked FS dirty: an OS that trusted
+     * FS would not save the register. fuzz-rv32-jit, on c.flw then jal.
+     */
+    for (uint32_t i = 0; i < b->count; i++) {
+        if (b->insn[i].dead) {
+            continue;
+        }
+        if (b->insn[i].op >= (uint8_t)EMU_IR_FADD &&
             b->insn[i].op <= (uint8_t)EMU_IR_FCLASS) {
             g_has_fp = true;
+        } else if (b->insn[i].op == (uint8_t)EMU_IR_FPUT) {
+            g_fp_written = true;
         }
     }
     if (g_has_fp && (t->fp_flags == NULL || t->freg_offset == NULL)) {

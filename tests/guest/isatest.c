@@ -3477,7 +3477,67 @@ static void test_zalasr(void)
     RESERVED("zalasr-store-aq-only", 0x3cc5a02f);
     RESERVED("zalasr-store-rd", 0x3ac5a0af);
     RESERVED("zalasr-store-64", 0x3ac5b02f);
+
+    /*
+     * The same shape for the base ISA's loads, stores and JALR, whose
+     * reserved funct3 values the JIT's translator never checked: it
+     * built an 8-byte load for LD, a LW for LWU, aliased funct3 4-7 of
+     * a store onto SB/SH/SW and SD onto an 8-byte store, and jumped on
+     * any JALR. fuzz-rv32-jit found the first on its second minute.
+     * The interpreter raised illegal-instruction for all of them, and
+     * these run in translated blocks wherever the JIT is.
+     *
+     *   0x0005b503  ld  a0, 0(a1)       0x00c5b023  sd a2, 0(a1)
+     *   0x0005e503  lwu a0, 0(a1)       0x00c5c023  funct3 4 store
+     *   0x0005f503  funct3 7 load       0x00c5f023  funct3 7 store
+     */
+    RESERVED("rv32-ld", 0x0005b503);
+    RESERVED("rv32-lwu", 0x0005e503);
+    RESERVED("rv32-load-f3-7", 0x0005f503);
+    RESERVED("rv32-sd", 0x00c5b023);
+    RESERVED("rv32-store-f3-4", 0x00c5c023);
+    RESERVED("rv32-store-f3-7", 0x00c5f023);
 #undef RESERVED
+
+    /*
+     * JALR with funct3 1 and 7, a0 the link and a1 the instruction
+     * after it: run as a jump, it lands where execution was going
+     * anyway, so only a0 -- the return address written over the
+     * marker -- and the missing trap can tell.
+     */
+/*
+ * a0 is copied out inside the statement expression, as AMO_RAW does: a
+ * register variable is in its register only at the asm, and the first
+ * check() call takes a0 for its own argument. The first version read it
+ * after the calls and reported the name string's address on both
+ * backends.
+ */
+#define JALR_RAW(word)                                                         \
+    ({                                                                         \
+        register uint32_t a0_ __asm__("a0") = 0x5A5A5A5Au;                     \
+        register uint32_t a1_ __asm__("a1");                                   \
+        __asm__ volatile("la   %1, 1f\n"                                       \
+                         ".word " #word "\n"                                   \
+                         "1:\n"                                                \
+                         : "+r"(a0_), "=&r"(a1_)                               \
+                         :                                                     \
+                         : "memory");                                          \
+        a0_;                                                                   \
+    })
+#define JALR_RESERVED(name, word)                                              \
+    do {                                                                       \
+        const uint32_t b_ = g_trap_count;                                      \
+        const uint32_t a0_ = JALR_RAW(word);                                   \
+        check(name, g_trap_count - b_, 1u);                                    \
+        check(name, g_last_cause, 2u);                                         \
+        check(name, g_last_tval, word##u);                                     \
+        check(name, a0_, 0x5A5A5A5Au);                                         \
+    } while (0)
+
+    JALR_RESERVED("rv32-jalr-f3-1", 0x00059567);
+    JALR_RESERVED("rv32-jalr-f3-7", 0x0005f567);
+#undef JALR_RESERVED
+#undef JALR_RAW
 }
 
 /* ---- Zawrs --------------------------------------------------------- */
@@ -4266,6 +4326,34 @@ static volatile uint32_t g_hd[2] __attribute__((aligned(8)));
                          ::"r"(g_hd)                                           \
                          : "fa0", "fa1", "memory");                            \
     } while (0)
+
+/*
+ * A block that only moves a float, and leaves by a constant exit, marks
+ * FS dirty.
+ *
+ * Both JIT backends decided whether a block may chain before lowering
+ * it, and learned it wrote an f register only while lowering the FPUT.
+ * So `flw` then `j` chained, the chained exit skipped the tail call that
+ * marks FS dirty, and FS stayed Clean with f-state changed -- the state
+ * a context switch reads to decide whether to save the registers.
+ * fuzz-rv32-jit found it on x86-64; this is for the board, which no host
+ * suite reaches. FS is set to Clean first, so Initial and Dirty differ
+ * from the starting value and from each other.
+ */
+static void test_fs_dirty_chained(void)
+{
+    /* const: in .rodata, not .data -- see test_stack_depth's check. */
+    static const float one = 1.0f;
+    const uint32_t fs = 3u << 13;
+
+    csr_clear("mstatus", fs);
+    csr_set("mstatus", 2u << 13); /* Clean */
+    __asm__ volatile("flw  ft0, 0(%0)\n"
+                     "j    1f\n"
+                     "1:\n" ::"r"(&one)
+                     : "ft0", "memory");
+    check("fs-dirty-flw-chained", (csr_read("mstatus") & fs) >> 13, 3u);
+}
 
 static void test_zfhmin(void)
 {
@@ -5266,6 +5354,17 @@ static void test_stack_depth(void)
     puthex(g_stack_top - a);
     putc_('\n');
     check("stack-depth", g_stack_top != 0u && a - g_stack_low >= 256u, 1u);
+
+    /*
+     * And the page tables are where the link script put them, at the
+     * base of RAM. The first initialised static in this file -- a float
+     * for test_fs_dirty_chained -- gave .data four bytes, the 4 KiB
+     * alignment of .bss.pages then pushed every table up a page, and
+     * the F446 build stopped linking: "region RAM overflowed by 948
+     * bytes". That shows only where RAM is 32 KiB; this shows it on
+     * every host. Keep isatest's .data empty.
+     */
+    check("pages-at-ram-base", (uint32_t)(uintptr_t)&g_pt, 0x80000000u);
 }
 
 int main(void)
@@ -5305,6 +5404,7 @@ int main(void)
 #if defined(__riscv_flen) && (__riscv_flen >= 32)
     test_fpu();
     test_zfhmin();
+    test_fs_dirty_chained();
 #endif
     test_zicond();
     test_bitmanip();

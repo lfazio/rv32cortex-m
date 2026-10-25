@@ -166,6 +166,7 @@ and the boards do not. A PowerPC firmware takes `-DPPC_GUEST=` instead
 | `EMU_SDL_SCALE` | auto | Window scale, stepped down until the window fits a conventional screen -- 3x suits 320x200 and 1x suits the 1024x768 default. Set it to override either way. |
 | `EMU_DOOM` | `OFF` | Fetch and build DOOM as a guest. The fetch is large -- the WAD is compiled in as a C array -- so a checkout that does not ask for it does not pay. |
 | `EMU_GUEST_RAM_KIB` | `48`; `32` on the F446 | Guest RAM region the images are linked against, so a guest whose `.data` and `.bss` do not fit fails to link. A ceiling, not a guest's need: a board gives the guest what its firmware leaves (33.7 KiB on the F446), and `start.S` checks the guest fits that, printing a line and exiting with status 224 if not. DOOM needs `8192`; below that its rv32 image is skipped with a message naming this flag. |
+| `EMU_FUZZ` | `OFF` | libFuzzer targets in `tests/fuzz`, with the whole tree under ASan and UBSan. Needs clang and the host platform, and a build directory of its own: `scripts/fuzz.sh` makes one. See [docs/fuzzing.md](docs/fuzzing.md). |
 | `RV_GUEST_MARCH` | see below | Guest ISA. A **cache variable**, so pass it explicitly when changing it. |
 
 Guest images are built
