@@ -123,7 +123,7 @@
  * cost for nothing. x86-64 lowers it. Thumb-2's lowering is written and
  * waits for a board to validate it -- see docs/TODO.md.
  */
-#if defined(EMU_HOST_JIT_X86_64)
+#if defined(EMU_HOST_JIT_X86_64) || defined(EMU_HOST_JIT_THUMB2)
 #define EMU_JIT_HAS_ROM_WINDOW 1
 #else
 #define EMU_JIT_HAS_ROM_WINDOW 0
