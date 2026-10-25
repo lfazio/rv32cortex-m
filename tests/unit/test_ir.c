@@ -1642,6 +1642,125 @@ static void test_lower_predicated_memory(void)
 #endif /* EMU_HOST_JIT_X86_64 -- needs the lowering */
 
 /*
+ * The image window (emu_ir_rom_window), executed: a load that misses the
+ * RAM window and lands in the image is a move from the image's host
+ * address, and everything else is still the helper's.
+ *
+ * As in the TLB test below, the fake helpers trap on any address outside
+ * g_mem and every guest address here is outside it -- so a load that
+ * falls back stops the block (r4 stays 0), and one inlined when it should
+ * not have been reads the wrong host bytes. Each case is the input that
+ * decides one branch: inside, the last aligned slot, one past the end,
+ * below the base, misaligned, a signed byte, RAM still first, a store to
+ * the image (never inlined: it has to fault), and the window not armed.
+ */
+#if defined(EMU_HOST_JIT_X86_64)
+static void test_lower_rom_window(void)
+{
+    enum {
+        INSIDE, LAST, PAST, BELOW, MISALIGNED, SIGNED, RAM, STORE, UNARMED,
+        NCASES
+    };
+    static const char *const k_case[] = {"inside", "last",   "past",
+                                         "below",  "misaligned", "signed",
+                                         "ram",    "store",  "unarmed"};
+    static uint8_t ram[64];
+    static uint8_t rom[32];
+
+    for (unsigned c = 0u; c < NCASES; c++) {
+        fake_cpu_t cpu;
+
+        memset(&cpu, 0, sizeof(cpu));
+        for (unsigned i = 0; i < sizeof(rom); i++) {
+            rom[i] = (uint8_t)(0xA0u + i);
+        }
+        rom[5] = 0x80u; /* the signed byte */
+        memset(ram, 0, sizeof(ram));
+        ram[8] = 0x11u;
+        ram[9] = 0x22u;
+        ram[10] = 0x33u;
+        ram[11] = 0x44u;
+
+        emu_ir_reset(&g_b);
+        g_b.has_fast = true;
+        g_b.fast.base = 0x80000000u;
+        g_b.fast.size = sizeof(ram);
+        g_b.fast.host = ram;
+        g_b.fast.store_guard_offset = EMU_IR_NO_GUARD;
+        g_b.has_rom = (c != UNARMED);
+        g_b.rom.base = 0x20000000u;
+        g_b.rom.size = sizeof(rom);
+        g_b.rom.host = rom;
+        g_b.rom.store_guard_offset = EMU_IR_NO_GUARD;
+
+        uint32_t va = 0x20000004u;
+        uint32_t spec = EMU_IR_MEM_AUX(4u, 0u);
+
+        if (c == LAST) {
+            va = 0x2000001Cu;
+        } else if (c == PAST) {
+            va = 0x20000020u;
+        } else if (c == BELOW) {
+            va = 0x1FFFFFFCu;
+        } else if (c == MISALIGNED) {
+            va = 0x20000002u;
+        } else if (c == SIGNED) {
+            va = 0x20000005u;
+            spec = EMU_IR_MEM_AUX(1u, 1u);
+        } else if (c == RAM) {
+            va = 0x80000008u;
+        }
+
+        const uint16_t base = emu_ir_get(&g_b, 1u);
+        if (c == STORE) {
+            (void)emu_ir_emit(&g_b, EMU_IR_STORE, (uint8_t)spec, base,
+                              emu_ir_get(&g_b, 3u), 0u, 0u);
+        } else {
+            emu_ir_put(&g_b, 2u,
+                       emu_ir_emit(&g_b, EMU_IR_LOAD, (uint8_t)spec, base,
+                                   EMU_IR_NO_TEMP, 0u, 0u));
+        }
+        emu_ir_put(&g_b, 4u, emu_ir_const(&g_b, 0xABCDu));
+
+        cpu.r[1] = va;
+        cpu.r[3] = 0xCAFEF00Du;
+        g_fake_loads = 0u;
+        g_fake_stores = 0u;
+        if (!lower_and_run(&cpu)) {
+            printf("  rom window %s: not run\n", k_case[c]);
+            CHECK(false);
+            continue;
+        }
+
+        if (c == STORE) {
+            CHECK_EQ(g_fake_stores, 1u);
+            CHECK_EQ(cpu.r[4], 0u);
+            CHECK_EQ((uint32_t)rom[4], 0xA4u);
+            continue;
+        }
+        const bool inline_ok = (c == INSIDE || c == LAST || c == SIGNED ||
+                                c == RAM);
+        if (!inline_ok) {
+            CHECK_EQ(g_fake_loads, 1u);
+            CHECK_EQ(cpu.r[4], 0u);
+            continue;
+        }
+        CHECK_EQ(g_fake_loads, 0u);
+        CHECK_EQ(cpu.r[4], 0xABCDu);
+        if (c == INSIDE) {
+            CHECK_EQ(cpu.r[2], 0xA7A680A4u);
+        } else if (c == LAST) {
+            CHECK_EQ(cpu.r[2], 0xBFBEBDBCu);
+        } else if (c == SIGNED) {
+            CHECK_EQ(cpu.r[2], 0xFFFFFF80u);
+        } else {
+            CHECK_EQ(cpu.r[2], 0x44332211u);
+        }
+    }
+}
+#endif /* EMU_HOST_JIT_X86_64 */
+
+/*
  * The data TLB probe (emu_ir_dtlb_t), executed: a load and a store
  * through a table, each case asking whether the helper ran -- at three
  * sizes, because x86-64 forms the index three ways: `and` with an 8-bit
@@ -2617,6 +2736,7 @@ void test_ir(void)
     test_lower_memory_trap();
     test_lower_predicated_memory();
     test_lower_dtlb_probe();
+    test_lower_rom_window();
     test_lower_bitop_memory();
     test_lower_bitop_tst();
 #endif

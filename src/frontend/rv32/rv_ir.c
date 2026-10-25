@@ -28,6 +28,7 @@
  * interpreter, which is where the state they touch can be observed.
  */
 
+#include "emu/emu_jit.h" /* EMU_JIT_HAS_ROM_WINDOW */
 #include "emu/emu_memmap.h"
 
 #include "rv32/rv_hart.h"
@@ -81,6 +82,12 @@ EMU_HOT_TEXT static uint32_t rv_ir_load(emu_cpu_t *cpu, uint32_t addr,
         rv_hart_trap(h, exc, addr);
         return 1u;
     }
+#if EMU_JIT_HAS_ROM_WINDOW
+    /* A read of the image a block could not inline: see rom_armed. */
+    if (EMU_UNLIKELY(!h->rom_armed) && emu_bus_in_rodata(h->bus, addr)) {
+        h->rom_reads++;
+    }
+#endif
     return 0u;
 }
 
@@ -1688,6 +1695,8 @@ uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
     /* Under exactly the conditions the RAM window is, and once armed. */
     b->has_pt = b->has_fast && ((rv_hart_t *)cpu)->pt_armed &&
                 emu_ir_pt_window(((rv_hart_t *)cpu)->bus, &b->pt);
+    b->has_rom = b->has_fast && h->rom_armed &&
+                 emu_ir_rom_window(h->bus, EMU_GUEST_ROM_BASE, &b->rom);
 
     while (count < RV_IR_MAX_BLOCK_INSNS && !b->overflow) {
         uint32_t insn;
@@ -1842,6 +1851,11 @@ static void rv_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
     if (EMU_UNLIKELY(!h->pt_armed) && h->bus != NULL &&
         h->bus->pt_accesses >= EMU_JIT_PT_ARM_AT) {
         h->pt_armed = true;
+        emu_jit_flush();
+    }
+    /* And the image window, by the same rule: see EMU_JIT_ROM_ARM_AT. */
+    if (EMU_UNLIKELY(!h->rom_armed) && h->rom_reads >= EMU_JIT_ROM_ARM_AT) {
+        h->rom_armed = true;
         emu_jit_flush();
     }
 

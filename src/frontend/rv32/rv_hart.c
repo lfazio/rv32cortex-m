@@ -68,8 +68,10 @@ void rv_hart_reset(rv_hart_t *h, uint32_t reset_pc)
 {
     memset(h->x, 0, sizeof(h->x));
     h->pc = reset_pc;
-    /* A new guest earns the peripheral window afresh. */
+    /* A new guest earns the peripheral and image windows afresh. */
     h->pt_armed = false;
+    h->rom_armed = false;
+    h->rom_reads = 0u;
 
     /*
      * Reset values per the privileged spec: the only architecturally

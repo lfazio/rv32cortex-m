@@ -766,6 +766,41 @@ struct emu_bus;
  */
 bool emu_ir_pt_window(const struct emu_bus *bus, emu_ir_ptwin_t *out);
 
+/*
+ * The guest's image, which a backend may *load* from inline: `.text` and
+ * `.rodata` of a guest linked execute-in-place, in a ROM region. A block
+ * tests it after the RAM window misses, so the order costs a RAM access
+ * nothing, and never for a store -- a store to the image must fault, and
+ * the helper is what faults it.
+ *
+ * Armed by use, as the peripheral window is, because it costs every
+ * load in every block a second guard: a guest whose blocks have left
+ * EMU_JIT_ROM_ARM_AT reads of the image to the load helper is one that
+ * reads constants in its loops. The frontend counts them, in its helper
+ * (emu_bus_in_rodata), and only where the backend lowers the window
+ * (EMU_JIT_HAS_ROM_WINDOW). Dhrystone reads its image 31 times a
+ * run, CoreMark 1,143 times in a whole run of any length -- start-up and
+ * printing -- and `bench` 41. So the threshold arms the first within a
+ * fraction of a percent of its run and the others never, which on the
+ * board keeps a guest that does not need the guard from paying code
+ * cache for it.
+ *
+ * Only where the RAM window is, for the same reason as the peripheral
+ * window: the things that refuse that one (PMP, paging, triggers) refuse
+ * this.
+ */
+#ifndef EMU_JIT_ROM_ARM_AT
+#define EMU_JIT_ROM_ARM_AT 4096u
+#endif
+
+/*
+ * The ROM region `bus` holds at `base`, as a window: readable at every
+ * width, with a host address. False if there is none. Cached per core
+ * against the bus's epoch, as the peripheral window is.
+ */
+bool emu_ir_rom_window(const struct emu_bus *bus, uint32_t base,
+                       emu_ir_fastmem_t *out);
+
 typedef struct emu_ir_block {
     emu_ir_insn_t insn[EMU_IR_MAX_INSNS];
     uint32_t count;
@@ -801,6 +836,10 @@ typedef struct emu_ir_block {
     /* The peripheral window, likewise, and only while armed. */
     emu_ir_ptwin_t pt;
     bool has_pt;
+
+    /* The image, for loads, likewise: see emu_ir_rom_window. */
+    emu_ir_fastmem_t rom;
+    bool has_rom;
 
     /* Set when the block ran out of room; it is then discarded. */
     bool overflow;

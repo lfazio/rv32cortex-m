@@ -309,6 +309,28 @@ bool emu_bus_add_passthru(emu_bus_t *bus, const char *name, uint32_t base,
                           uint32_t size, uintptr_t host_base, uint8_t perm,
                           uint8_t widths);
 
+/*
+ * Whether `addr` is in the region the read-only cache holds now -- in
+ * practice, whether a read just served at `addr` was a read of the image.
+ * For a JIT's load helper, which counts those to decide whether to inline
+ * the image (EMU_JIT_ROM_ARM_AT). Not for any path an interpreter takes:
+ * the counting used to be in the read slow path itself, and cost every
+ * interpreter's image reads -- 0.31% on RV32 Dhrystone, and 1.39% on
+ * ARMv7-M's JIT, whose frontend never asks.
+ */
+static inline bool emu_bus_in_rodata(const emu_bus_t *bus, uint32_t addr)
+{
+    if (addr - bus->rodata_base < bus->rodata_span) {
+        return true;
+    }
+#if EMU_BUS_ANY_BE
+    if (addr - bus->rodata_be_base < bus->rodata_be_span) {
+        return true;
+    }
+#endif
+    return false;
+}
+
 /* Look up the region containing addr, or NULL. Updates the hit cache. */
 emu_region_t *emu_bus_find(emu_bus_t *bus, uint32_t addr);
 

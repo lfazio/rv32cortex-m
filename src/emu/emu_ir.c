@@ -33,6 +33,7 @@ void emu_ir_reset(emu_ir_block_t *b)
     b->has_fast = false;
     b->has_dtlb = false;
     b->has_pt = false;
+    b->has_rom = false;
 }
 
 /* ------------------------------------------------------------------ */
@@ -124,6 +125,62 @@ bool emu_ir_pt_window(const emu_bus_t *bus, emu_ir_ptwin_t *out)
         *out = g_pt_win;
     }
     return g_pt_ok;
+}
+
+/* ------------------------------------------------------------------ */
+/* The image                                                           */
+/* ------------------------------------------------------------------ */
+
+/* Per core and per epoch, for the reasons the peripheral window's is. */
+static EMU_PER_CORE const emu_bus_t *g_rom_bus;
+static EMU_PER_CORE uint32_t g_rom_epoch;
+static EMU_PER_CORE uint32_t g_rom_base;
+static EMU_PER_CORE bool g_rom_ok;
+static EMU_PER_CORE emu_ir_fastmem_t g_rom_win;
+
+static bool rom_build(const emu_bus_t *bus, uint32_t base,
+                      emu_ir_fastmem_t *out)
+{
+    for (uint32_t i = 0; i < bus->count; i++) {
+        const emu_region_t *const r = &bus->regions[i];
+
+        if (r->kind != (uint8_t)EMU_MEM_ROM || r->host == NULL ||
+            r->size == 0u || base - r->base >= r->size) {
+            continue;
+        }
+        /*
+         * Every read the helper would serve, and only those: a region
+         * with a width rule or without read permission is the helper's,
+         * because an inlined load tests neither.
+         */
+        if ((r->perm & EMU_PERM_R) == 0u || r->widths != EMU_WANY) {
+            return false;
+        }
+        out->base = r->base;
+        out->size = r->size;
+        out->host = r->host;
+        out->store_guard_offset = EMU_IR_NO_GUARD;
+        return true;
+    }
+    return false;
+}
+
+bool emu_ir_rom_window(const emu_bus_t *bus, uint32_t base,
+                       emu_ir_fastmem_t *out)
+{
+    if (bus == NULL) {
+        return false;
+    }
+    if (bus != g_rom_bus || bus->epoch != g_rom_epoch || base != g_rom_base) {
+        g_rom_ok = rom_build(bus, base, &g_rom_win);
+        g_rom_bus = bus;
+        g_rom_epoch = bus->epoch;
+        g_rom_base = base;
+    }
+    if (g_rom_ok) {
+        *out = g_rom_win;
+    }
+    return g_rom_ok;
 }
 
 uint16_t emu_ir_temp(emu_ir_block_t *b)

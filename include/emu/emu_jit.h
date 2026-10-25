@@ -116,6 +116,19 @@
 #define EMU_HAVE_JIT 0
 #endif
 
+/*
+ * **Does this host's backend lower the image window** (emu_ir_rom_window)?
+ * A frontend arms the window with a flush, so arming for a backend that
+ * ignores it is a flush for nothing, and the count that decides it is a
+ * cost for nothing. x86-64 lowers it. Thumb-2's lowering is written and
+ * waits for a board to validate it -- see docs/TODO.md.
+ */
+#if defined(EMU_HOST_JIT_X86_64)
+#define EMU_JIT_HAS_ROM_WINDOW 1
+#else
+#define EMU_JIT_HAS_ROM_WINDOW 0
+#endif
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

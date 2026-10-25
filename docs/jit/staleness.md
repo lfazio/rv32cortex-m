@@ -34,6 +34,7 @@ one is its own defect:
 | the privilege loads and stores are made at | context, bits 37:36 -- it names the data TLB table a block probes, and MPRV moves it apart from the privilege | latent: an M-mode block that inlined the window, entered again under MPRV |
 | what a page allows, below M | not in the block at all: the data TLB, which the frontend clears itself | see [The data TLB](#the-data-tlb) |
 | Sdtrig | `blocked`: nothing translated runs while a trigger is armed | — |
+| whether the peripheral and image windows are inlined (`pt_armed`, `rom_armed`) | safe: each moves once, false to true, and flushes as it does; a reset clears them for the next guest | — |
 | bus regions | safe: fixed before execution | — |
 | the guest instruction bytes | safe: `FENCE.I` invalidates, and a store into a translated page retires its blocks | — |
 

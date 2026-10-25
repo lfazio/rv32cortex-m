@@ -326,6 +326,15 @@ typedef struct rv_hart {
      */
     bool pt_armed;
 
+    /*
+     * The image window, the same way: see EMU_JIT_ROM_ARM_AT. Its count
+     * is of reads of the image a block left to the JIT's load helper,
+     * kept here rather than on the bus because only this frontend's JIT
+     * asks -- on the bus it was paid by every interpreter.
+     */
+    bool rom_armed;
+    uint32_t rom_reads;
+
 #if RV_EXT_SV32
     /*
      * A bit per 4 MiB region -- per VPN[1] -- that has had a translation

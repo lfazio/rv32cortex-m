@@ -3572,6 +3572,14 @@ session, and every one of them recurred:
   site: **an `ALWAYS_INLINE` in the bus is part of every interpreter
   loop.**
 
+  **A counter costs everyone who never reads it.** The JIT's window
+  over the image arms on a count of image reads, and the first place
+  for the count was beside the cache, in the read slow path. That cost
+  RV32's interpreted Dhrystone 0.31% of host instructions and ARMv7-M's
+  JIT 1.39%, and neither of them ever reads it. Moved to RV32's JIT
+  load helper, the one place whose blocks the count decides, both are
+  0.00%. **Keep a count where its question is asked.**
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must

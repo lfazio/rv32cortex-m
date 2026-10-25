@@ -46,9 +46,14 @@ in a loop, such as CoreMark and `bench`, are unchanged.
 The read-only cache is not tested inline, by measurement: in
 `emu_bus_read` it cost ARMv7-M's interpreted CoreMark 0.85%, all of it in
 the interpreter's run loop, whose code changed around the larger inline
-paths. What a read of the image still pays is the call into the slow
-path, plus the JIT's call into its helper. That is open in
-[TODO.md](TODO.md).
+paths. So an interpreter's read of the image still pays a call into the
+slow path, and a compare there.
+
+**Under the x86-64 JIT a read of the image is a move**, once the guest
+has shown it reads its image in its loops: the image window
+([backend/x86_64.md](backend/x86_64.md#the-image-window)). That took
+another 25.9% off Dhrystone's host instructions. Thumb-2 does not lower
+the window yet ([TODO.md](TODO.md)).
 
 ## RV32
 

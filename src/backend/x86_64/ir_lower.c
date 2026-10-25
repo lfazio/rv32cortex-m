@@ -670,6 +670,10 @@ static EMU_PER_CORE bool g_has_fast;
 static EMU_PER_CORE emu_ir_dtlb_t g_dtlb;
 static EMU_PER_CORE bool g_has_dtlb;
 
+/* And the image, for loads that miss the RAM window: emu_ir_rom_window. */
+static EMU_PER_CORE emu_ir_fastmem_t g_rom;
+static EMU_PER_CORE bool g_has_rom;
+
 static EMU_PER_CORE uint8_t *g_body;
 static EMU_PER_CORE uint32_t g_start_pc;
 static EMU_PER_CORE bool g_has_start_pc;
@@ -830,17 +834,18 @@ static void lea_rcx_slot(uint16_t n)
  * misaligned access either faults or has to be split and neither is a
  * single instruction.
  */
-static uint32_t emit_fast_guard(int addr_reg, uint32_t size, uint8_t **out)
+static uint32_t emit_window_guard(const emu_ir_fastmem_t *w, int addr_reg,
+                                  uint32_t size, uint8_t **out)
 {
     uint32_t n = 0u;
 
     x86_mov_rr(X86_EDX, addr_reg);
-    x86_alu_imm32(5u, X86_EDX, g_fast.base); /* sub edx, base */
+    x86_alu_imm32(5u, X86_EDX, w->base); /* sub edx, base */
     /*
      * size - 1 subtracted from the limit so the *last* byte is in the
      * window too. An access of 4 at base+size-1 must not be inlined.
      */
-    x86_alu_imm32(7u, X86_EDX, g_fast.size - size); /* cmp */
+    x86_alu_imm32(7u, X86_EDX, w->size - size); /* cmp */
     out[n++] = x86_jcc8(X86_CC_A);
 
     if (size > 1u) {
@@ -848,6 +853,12 @@ static uint32_t emit_fast_guard(int addr_reg, uint32_t size, uint8_t **out)
         out[n++] = x86_jcc8(X86_CC_NE);
     }
     return n;
+}
+
+/* The RAM window's guard; out[0] is always the out-of-range branch. */
+static uint32_t emit_fast_guard(int addr_reg, uint32_t size, uint8_t **out)
+{
+    return emit_window_guard(&g_fast, addr_reg, size, out);
 }
 
 /*
@@ -1803,8 +1814,40 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                     st_slot(T0, in->dst);
                 }
                 uint8_t *const done = x86_jmp8();
+                uint8_t *done_rom = NULL;
 
-                for (uint32_t k = 0; k < nslow; k++) {
+                /*
+                 * Not guest RAM: the image, if the block is armed for it.
+                 * Only the RAM window's out-of-range branch comes here --
+                 * its misaligned one is misaligned in the image too -- and
+                 * the same guard and move follow, from the image's host
+                 * address. Under the TLB there is no RAM window and so no
+                 * image window either: see emu_ir_rom_window.
+                 */
+                uint32_t k0 = 0u;
+                if (g_has_rom) {
+                    patch_short(slow[0], emu_jit_here());
+                    k0 = 1u;
+
+                    uint8_t *rslow[2];
+                    const uint32_t nr =
+                        emit_window_guard(&g_rom, X86_ESI, sz, rslow);
+
+                    x86_mov_imm64(X86_EAX, (uint64_t)(uintptr_t)g_rom.host);
+                    if (x86_ld_idx((pd >= 0) ? pd : T0, X86_EAX, X86_EDX, sz,
+                                   sign)) {
+                        if (pd < 0) {
+                            g_dead_store = EMU_IR_NO_TEMP;
+                            st_slot(T0, in->dst);
+                        }
+                        done_rom = x86_jmp8();
+                    }
+                    for (uint32_t k = 0; k < nr; k++) {
+                        patch_short(rslow[k], emu_jit_here());
+                    }
+                }
+
+                for (uint32_t k = k0; k < nslow; k++) {
                     patch_short(slow[k], emu_jit_here());
                 }
                 lea_rcx_slot((pd >= 0) ? SCRATCH_VAL : in->dst);
@@ -1813,6 +1856,9 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                     ld_slot(pd, SCRATCH_VAL);
                 }
                 patch_short(done, emu_jit_here());
+                if (done_rom != NULL) {
+                    patch_short(done_rom, emu_jit_here());
+                }
                 /*
                  * **The two paths converge and only one of them is
                  * modelled.** st_slot above records that T0 holds this
@@ -2180,6 +2226,8 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     g_fast = b->fast;
     g_has_dtlb = !b->has_fast && b->has_dtlb;
     g_dtlb = b->dtlb;
+    g_has_rom = b->has_fast && b->has_rom;
+    g_rom = b->rom;
     g_block_start = emu_jit_here();
     g_nexits_nf = 0u;
     g_body = NULL;

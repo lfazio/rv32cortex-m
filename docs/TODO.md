@@ -34,20 +34,23 @@ measured at.
       discard every block at every switch between them. PowerPC made
       its counter one for all cores for exactly that reason. Unmeasured.
 - [ ] **Autovectorisation of the IR pipeline.**
-- [ ] **Loads from the guest's read-only image are still a call.** The
-      JIT's inline path covers guest RAM only, and a guest linked
-      execute-in-place keeps `.rodata` in the image at 0x2000_0000. The
-      bus walk under the call is gone now: the bus has a read-only cache
-      ([memory.md](memory.md#the-three-kinds-of-region)), which cut
-      Dhrystone's JIT run by 8.9% of host instructions on x86-64 and 7.8%
-      of cycles on the F746. The call itself remains, and it is
-      **26.6%** of Dhrystone's host instructions under the x86-64 JIT:
-      `rv_ir_load` and the slow path's entry. That is a read-only window
-      in the backends. On x86-64 an inline second compare is cheap,
-      because the host buffer is 64 MB. On Thumb-2 an inline one costs
-      every load about 16 bytes, which could push CoreMark back out of
-      the 64 KB default, so the place for it there is the shared memory
-      stub, which is one copy for every access.
+- [ ] **The image window on Thumb-2** (see
+      [backend/thumb2.md](backend/thumb2.md#the-guest-ram-window)). x86-64
+      inlines a load from the guest's image once armed, for 25.9% of
+      Dhrystone's host instructions. The Thumb-2 lowering is written and
+      is on the branch `wip/thumb2-rom-window`, with
+      `EMU_JIT_HAS_ROM_WINDOW` set for this host. It needs a board run:
+      `isatest`, Dhrystone and Whetstone armed and against a worktree at
+      the commit before, CoreMark x650 at 32 KB, and the emitted bytes
+      with `-DEMU_JIT_BYTE_STATS=ON`. CoreMark does not arm, so its
+      working set should not move.
+- [ ] **ARMv7-M's reads of its image.** Under the x86-64 JIT, ARMv7-M
+      CoreMark leaves 57,512 loads to the helper in 11.1M instructions,
+      and Dhrystone 621,495. What they are is unmeasured. They are not
+      literal-pool loads, which `lower_ldst` already folds to constants.
+      Sample their addresses at the helper's entry, as RV32's were,
+      before choosing between RV32's armed window and something else.
+      The frontend does not count or arm today.
 - [ ] **PowerPC's FP unit is a call per instruction.** Every EFPU2
       instruction under the JIT is a helper call into `ppc_fpu_exec`,
       whose bookkeeping -- SPEFSCR status, sticky bits, FG and FX -- was

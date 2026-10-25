@@ -308,12 +308,16 @@ measured rather than re-argued. Callgrind over the JIT run
 - **21.9%** is `rv_ir_load`, the checked load, with the bus walk under
   it. 3,953 of 3,954 addresses sampled at its entry are in the image at
   0x2000_0000, nearly all in `.rodata`: the float constants newlib's
-  `sinf` and `logf` load with `auipc`+`flw`. The JIT inlines guest RAM
-  and nothing else, so every one of them is a call. The bus walk under
-  that call has gone since, into a read-only cache
+  `sinf` and `logf` load with `auipc`+`flw`. The JIT inlined guest RAM
+  and nothing else, so every one of them was a call. Both halves are
+  gone since. The bus walk under the call went into a read-only cache
   ([memory.md](memory.md#the-three-kinds-of-region)), for 4.5% of this
-  run's host instructions and 8.9% of Dhrystone's. The call itself is
-  open in [TODO.md](TODO.md).
+  run's host instructions and 8.9% of Dhrystone's. The call went into
+  an inline window over the image
+  ([backend/x86_64.md](backend/x86_64.md#the-image-window)), for 11.8%
+  more here and 25.9% more on Dhrystone. Measured by callgrind, that is
+  about 22.1 and 14.5 host instructions a guest instruction, where this
+  table says 26.06 and 21.40.
 - **19.5%** is the dispatch loop's own instructions.
 - **11.1%** is `rv_hart_fp`, the SoftFloat helper, which takes what no
   backend lowers -- the fused multiply-adds among them.

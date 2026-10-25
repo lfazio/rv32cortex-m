@@ -472,6 +472,26 @@ second one (`emu_ir_ptwin_t`), offered only once a guest has made enough
 passthrough accesses to pay for the bytes; see "Where the bytes go"
 above.
 
+**The image window, the third (`emu_ir_rom_window`), is not lowered
+here yet.** x86-64 lowers it ([x86_64.md](x86_64.md#the-image-window)):
+a load that misses the RAM window tries the guest's image before the
+helper, once the guest has left `EMU_JIT_ROM_ARM_AT` image reads to it.
+The Thumb-2 lowering is written. It uses the same folded guard as the
+other two windows, from the image's address in the board's flash, ahead
+of the peripheral window. It is on the branch `wip/thumb2-rom-window`
+and waits for a board, because no host suite runs this backend. What
+it has to show:
+
+- `isatest` passes;
+- Dhrystone arms and gets faster;
+- CoreMark x650 at 32 KB still validates;
+- what an armed load costs here.
+
+On x86-64 the window is 40 bytes a load. Here the code cache is the
+guest's RAM, and 64 KB is the default that CoreMark only just fits.
+Until then `EMU_JIT_HAS_ROM_WINDOW` is 0 on this host, so the frontend
+neither counts nor arms, and a board pays nothing for the window.
+
 **An access may be predicated** (`emu_ir_mem_if`, the `c` operand), for
 ARMv7-M's loads and stores inside an IT block: `CMP` of the predicate
 against zero and a `BEQ.W` round everything the access emits -- guard,
