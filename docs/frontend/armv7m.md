@@ -348,11 +348,11 @@ At the 32 KB of that first run the JIT only won where the working set
 fitted (Dhrystone 3.4x, `nvic` 3x) and lost where it did not (crypto
 2.2x slower), the same threshold [../jit/tuning.md](../jit/tuning.md)
 describes for the other frontends. At 96 KB it is 34.7 host cycles an
-instruction on CoreMark and 31.3 on crypto. **At the 64 KB default
-CoreMark no longer fits**: 106.41, with 10,226 translations and 289
-compactions in a 40-iteration run, still ahead of the interpreter's
-178.3, while crypto is 32.39. The default is set by RV32, whose CoreMark
-fits 64 KB; `-DEMU_JIT_CODE_BYTES=98304` is the build for this one.
+instruction on CoreMark and 31.3 on crypto. **At 64 KB CoreMark does
+not fit**: 106.41, with 10,226 translations and 289 compactions in a
+40-iteration run, still ahead of the interpreter's 178.3, while crypto
+is 32.39. So an ARMv7-M firmware defaults to 96 KB, where an RV32 one,
+whose CoreMark fits 64, takes 64.
 
 ### The interpreter, profiled on the board
 

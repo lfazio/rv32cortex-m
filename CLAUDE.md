@@ -83,6 +83,11 @@ What belongs here is only what the recipes do not say:
 ./scripts/run-probe.py PROBE.S  # emulator vs Sail and Spike, for what no
                                 # suite covers; scripts/fetch-spike.sh first
 ./scripts/gdb-check.sh BUILD    # a real gdb against each frontend's stub
+./scripts/callgrind-ab.sh OLD NEW [ROW...]  # host instructions, two runners;
+                                # exact, so one run a side
+BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
+                                # a firmware built from that tree, flashed,
+                                # run: ratio, wall clock, translations, CRC
 ```
 
 **Run both suites.** They cover different things, and a regression that

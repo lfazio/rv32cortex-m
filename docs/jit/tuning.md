@@ -36,8 +36,8 @@ the F746 at ce02bd0, and how many translations the run needed:
 | interpreter | **102.27** | **91.87** | **212.29** | **282.49** | 304 KiB |
 | 32 KB (the F746 default until 96 KB) | 107.00 (41,989) | 15.01 (62) | 263.95 (35,487) | 336.76 (10,559) | 225 KiB |
 | 48 KB | 49.49 (17,103) | | | | 209 KiB |
-| 64 KB (the default) | **14.55** (333) | | 148.35 (18,688) | **29.57** (362) | 193 KiB |
-| 96 KB (the default until 64 KB) | 14.59 (297) | **14.50** (61) | **53.63** (5,077) | 29.14 (347) | 161 KiB |
+| 64 KB (RV32's default) | **14.55** (333) | | 148.35 (18,688) | 29.57 (362) | 193 KiB |
+| 96 KB (PowerPC's and ARMv7-M's default) | 14.59 (297) | **14.50** (61) | **53.63** (5,077) | **29.14** (347) | 161 KiB |
 
 RV32 CoreMark is 120 iterations, 30,027,635 instructions; PowerPC's is
 40 iterations, 12,170,464. Guest RAM is RV32's; PowerPC's is eleven KiB
@@ -79,15 +79,16 @@ on an interpreter one: the buffer, plus about 47 KiB of block table and
 IR storage that it pays at any size. At the 96 KB default it is 143 KiB
 down, 161 KiB against 304. On a microcontroller those bytes are the
 guest's, which is the whole tension -- there is no right answer, only a
-stated one. **The stated one, on the F746, is 64 KB with the dispatch
-path in ITCM**, for every frontend. It was 96 KB from when that took
-RV32 CoreMark x120 from 152.85 host cycles an instruction to 29.85, and
-came down once the emitted code had shrunk enough for 64 KB to serve
-RV32 CoreMark as well (14.55 against 14.59), giving the guest 32 KiB
-back. **PowerPC and ARMv7-M CoreMark are the price**: neither fits
-64 KB, and they run at 148.35 and 106.41 there against 53.63 and 34.7 at
-96 KB, which is a build with `-DEMU_JIT_CODE_BYTES=98304`. The N6 takes 128 KB and the F446 32 KB;
-`CMakeLists.txt` has the measurements behind each.
+stated one. **The stated one, on the F746, depends on the frontend,
+with the dispatch path in ITCM.** RV32 takes 64 KB. It took 96 KB from
+when that took RV32 CoreMark x120 from 152.85 host cycles an instruction
+to 29.85, and came down once the emitted code had shrunk enough for
+64 KB to serve RV32 CoreMark as well (14.55 against 14.59), giving the
+guest 32 KiB back. PowerPC and ARMv7-M take 96 KB, because neither
+CoreMark fits 64: they run at 148.35 and 106.41 there, against 53.63
+and 34.7 at 96. G4MH takes 64, which is all its RAM leaves, and decides
+when it is compiled in beside the others. The N6 takes 128 KB and the
+F446 32 KB; `CMakeLists.txt` has the measurements behind each.
 
 **Check `CMakeCache.txt` before quoting any of these.** Every performance
 figure in this repo was once measured with a 48 KB cache inherited from

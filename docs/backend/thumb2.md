@@ -212,7 +212,7 @@ they follow the target (`EMU_HOST_JIT_THUMB2`):
 |---|---|---|
 | blocks, hash buckets | 256, 256 | 65,536 each |
 | block reserve | 512 bytes | 8192 |
-| code buffer | `EMU_JIT_CODE_BYTES`: 64 KB on the F746, 128 on the N6, 32 elsewhere -- see `CMakeLists.txt` | 64 MB |
+| code buffer | `EMU_JIT_CODE_BYTES`: 64 KB on the F746 (96 with PowerPC or ARMv7-M, 64 with G4MH), 128 on the N6, 32 elsewhere -- see `CMakeLists.txt` | 64 MB |
 | IR instructions, temps per block | 512, 256 | 2048, 1024 |
 
 On the F746 an RV32 JIT build at the 64 KB default has 111 KiB less
@@ -234,7 +234,7 @@ at ce02bd0:
 | interpreter | **102.27** | — | 304 KiB | **91.87** |
 | JIT, 32 KB | 107.00 | 41,989 | 225 KiB | 15.01 |
 | JIT, 48 KB | 49.49 | 17,103 | 209 KiB | |
-| JIT, 64 KB (default) | **14.55** | 333 | 193 KiB | |
+| JIT, 64 KB (RV32's default) | **14.55** | 333 | 193 KiB | |
 | JIT, 96 KB | 14.59 | 297 | 161 KiB | 14.50 |
 
 **CoreMark's translated working set fits 64 KB now**, and from there up

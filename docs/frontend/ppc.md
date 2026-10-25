@@ -1006,14 +1006,13 @@ the number of translations the run needed (CoreMark at 40 iterations,
 |---|---|---|
 | interpreter | **212.29** | **282.49** |
 | JIT, 32 KB | 263.95 (35,487) | 336.76 (10,559) |
-| JIT, 64 KB (the default) | 148.35 (18,688) | **29.57** (362) |
-| JIT, 96 KB | **53.63** (5,077) | 29.14 (347) |
+| JIT, 64 KB | 148.35 (18,688) | 29.57 (362) |
+| JIT, 96 KB (the default) | **53.63** (5,077) | **29.14** (347) |
 
-**At the 64 KB default the JIT is 1.4x the interpreter on CoreMark and
-9.6x on crypto; at 96 KB, 4.0x and 9.7x.** The default is set by RV32,
-whose CoreMark is as fast at 64 KB as at 96, and the guest's 32 KiB was
-chosen over PowerPC CoreMark: build `-DEMU_JIT_CODE_BYTES=98304` to run
-it at 53.63. At 32 KB the JIT is 1.24x and 1.19x *slower* than
+**At the 96 KB default the JIT is 4.0x the interpreter on CoreMark and
+9.7x on crypto; at 64 KB, 1.4x and 9.6x.** A PowerPC firmware takes
+96 KB for that, where an RV32 one, whose CoreMark is as fast at 64 KB
+as at 96, takes 64 and gives its guest the 32 KiB. At 32 KB the JIT is 1.24x and 1.19x *slower* than
 interpreting, where it was 1.5x and 2.9x when 32 KB was the default.
 Crypto fits from 64 KB. CoreMark is still being evicted at 96 KB, with
 97,524 of 98,304 bytes in use. The

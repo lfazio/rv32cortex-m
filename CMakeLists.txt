@@ -213,8 +213,9 @@ option(RV32_LAZY_IRQ "Lazy interrupt-delivery evaluation" ON)
 # set() there is a no-op that reads exactly like a setting. Same trap as
 # STM32CUBE_FAMILY having to precede the include.
 #
-# **The F746 takes 64 KB**, whatever is compiled in. It took 96 KB
-# first, when that was the smallest size RV32 CoreMark fitted: at 32 KB
+# **The F746 takes 64 KB for RV32**, and 96 KB with PowerPC or ARMv7-M
+# compiled in. It took 96 KB for everything first, when that was the
+# smallest size RV32 CoreMark fitted: at 32 KB
 # the run was translation-bound -- 63,733 translations, 70% of the time
 # in the translator by a PC profile, and slower than the interpreter
 # (152.7 against 107.4) -- and at 96 KB it was 32.5, 4.7x faster.
@@ -223,11 +224,11 @@ option(RV32_LAZY_IRQ "Lazy interrupt-delivery evaluation" ON)
 # ce02bd0 RV32 CoreMark x120 is 14.55 at 64 KB against 14.59 at 96 KB
 # (333 and 297 translations), with 193 KiB of guest RAM against 161.
 #
-# **PowerPC and ARMv7-M CoreMark pay for it**: neither fits 64 KB.
-# PowerPC's is 148.35 host cycles an instruction there against 53.63 at
-# 96 KB, ARMv7-M's 106.41 against 34.7; both cryptos fit either size
-# (29.57 and 29.14, 32.39 and 31.3). The guest's 32 KiB was chosen over
-# that; -DEMU_JIT_CODE_BYTES=98304 is the build for those two.
+# **PowerPC and ARMv7-M CoreMark do not fit 64 KB**, so they keep 96.
+# PowerPC's is 148.35 host cycles an instruction at 64 KB against 53.63
+# at 96, ARMv7-M's 106.41 against 34.7. Both cryptos fit either size
+# (29.57 and 29.14, 32.39 and 31.3), so the choice is made for the
+# CoreMarks: 32 KiB of guest RAM against a 2.8x and a 3.1x.
 #
 # **With G4MH compiled in, 64 KB on the F746 too and still 128 KB on the
 # N6**, now that a board's G4MH cluster and local RAM default to 32 and
@@ -244,11 +245,17 @@ option(RV32_LAZY_IRQ "Lazy interrupt-delivery evaluation" ON)
 #   N6,   128/64 KiB  32 KB  (1535 KiB)      93.96            23,023
 #   N6,    32/16 KiB 128 KB  (1535 KiB)      50.59               458
 #
-# For G4MH, too, more than 64 KB buys nothing and costs the guest 32 KiB
-# a step; the N6's guest RAM is elsewhere, so it takes the size RV32
-# does.
+# For G4MH more than 64 KB buys nothing and costs the guest 32 KiB a
+# step, and its RAM is the tightest, so it decides when it is compiled
+# in beside the others. The N6's guest RAM is elsewhere, so it takes
+# the size RV32 does.
 #
-if(EMU_PLATFORM STREQUAL "stm32f746")
+if(EMU_PLATFORM STREQUAL "stm32f746" AND EMU_GUEST_ARCH_G4MH)
+    set(_jit_bytes_default "65536")
+elseif(EMU_PLATFORM STREQUAL "stm32f746" AND
+       (EMU_GUEST_ARCH_PPC OR EMU_GUEST_ARCH_ARMV7M))
+    set(_jit_bytes_default "98304")
+elseif(EMU_PLATFORM STREQUAL "stm32f746")
     set(_jit_bytes_default "65536")
 elseif(EMU_PLATFORM STREQUAL "stm32n6")
     set(_jit_bytes_default "131072")
