@@ -767,23 +767,30 @@ struct emu_bus;
 bool emu_ir_pt_window(const struct emu_bus *bus, emu_ir_ptwin_t *out);
 
 /*
- * The guest's image, which a backend may *load* from inline: `.text` and
- * `.rodata` of a guest linked execute-in-place, in a ROM region. A block
- * tests it after the RAM window misses, so the order costs a RAM access
- * nothing, and never for a store -- a store to the image must fault, and
- * the helper is what faults it.
+ * The guest's image, which a backend may *load* from without the helper:
+ * `.text` and `.rodata` of a guest linked execute-in-place, in a ROM
+ * region. A block tries it after the RAM window misses, so the order
+ * costs a RAM access nothing, and never for a store -- a store to the
+ * image must fault, and the helper is what faults it. x86-64 tests it in
+ * line, 40 bytes on every load; Thumb-2 in its shared memory stub, no
+ * bytes per load, because 26 in line pushed ARMv7-M CoreMark out of its
+ * 96 KB cache (34.65 host cycles an instruction to 49.19).
  *
- * Armed by use, as the peripheral window is, because it costs every
- * load in every block a second guard: a guest whose blocks have left
- * EMU_JIT_ROM_ARM_AT reads of the image to the load helper is one that
- * reads constants in its loops. The frontend counts them, in its helper
- * (emu_bus_in_rodata), and only where the backend lowers the window
- * (EMU_JIT_HAS_ROM_WINDOW). Dhrystone reads its image 31 times a
- * run, CoreMark 1,143 times in a whole run of any length -- start-up and
- * printing -- and `bench` 41. So the threshold arms the first within a
- * fraction of a percent of its run and the others never, which on the
- * board keeps a guest that does not need the guard from paying code
- * cache for it.
+ * Armed by use, as the peripheral window is: a guest whose blocks have
+ * left EMU_JIT_ROM_ARM_AT reads of the image to the load helper is one
+ * that reads constants in its loops. The frontend counts them in its
+ * helper (emu_bus_in_rodata), only where the backend lowers the window
+ * (EMU_JIT_HAS_ROM_WINDOW). Dhrystone reads its image 31 times a run,
+ * RV32 CoreMark 1,143 times in a whole run of any length -- start-up and
+ * printing -- and `bench` 41, so the threshold arms the first within a
+ * fraction of a percent of its run and the others never. On x86-64 that
+ * keeps the guard's bytes out of guests that would not use it.
+ *
+ * On Thumb-2 the window costs no bytes, and arming is kept for what its
+ * one flush does: the steady-state loop is retranslated into an empty
+ * buffer, in order. With the window from the start and no flush, RV32
+ * Dhrystone on the F746 is 19.19 host cycles an instruction; armed by
+ * use, 16.41; from the start with one forced flush, 15.96.
  *
  * Only where the RAM window is, for the same reason as the peripheral
  * window: the things that refuse that one (PMP, paging, triggers) refuse

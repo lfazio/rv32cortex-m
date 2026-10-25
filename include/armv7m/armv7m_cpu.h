@@ -356,6 +356,16 @@ typedef struct armv7m_cpu {
     bool lockup;
     /* What asked for a system reset, which stops the core, or NULL. */
     const char *reset_by;
+
+    /*
+     * Whether translated blocks inline the guest's image
+     * (emu_ir_rom_window), and the count that decides it: reads of the
+     * image a block left to the JIT's load helper, EMU_JIT_ROM_ARM_AT of
+     * them. Dhrystone reads its string literals and CoreMark a constant
+     * table that way. Set by bind, cleared by reset. Cold, and at the end.
+     */
+    bool rom_armed;
+    uint32_t rom_reads;
 } armv7m_cpu_t;
 
 /* ------------------------------------------------------------------ */

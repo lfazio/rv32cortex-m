@@ -54,8 +54,8 @@ shown it reads its image in its loops: the image window
 ([backend/x86_64.md](backend/x86_64.md#the-image-window),
 [backend/thumb2.md](backend/thumb2.md#the-guest-ram-window)). That took
 another 25.9% off Dhrystone's host instructions on x86-64, and on the
-F746 Dhrystone runs at 14.54 host cycles an instruction where it ran at
-31.37 before either change.
+F746 Dhrystone runs at 16.41 host cycles an instruction where it ran at
+31.37 before either change. ARMv7-M uses the same window.
 
 ## RV32
 

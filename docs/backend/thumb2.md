@@ -472,31 +472,50 @@ second one (`emu_ir_ptwin_t`), offered only once a guest has made enough
 passthrough accesses to pay for the bytes; see "Where the bytes go"
 above.
 
-**The image window is the third (`emu_ir_rom_window`).** A load that
-misses the RAM window tries the guest's image before the helper, once
-the guest has left `EMU_JIT_ROM_ARM_AT` image reads to it. It uses the
-same folded guard as the other two, from the image's address in the
-board's flash, ahead of the peripheral window, as on x86-64
-([x86_64.md](x86_64.md#the-image-window)). On the F746 at 64 KB, against
-a worktree at the commit before, host cycles per guest instruction:
+**The image window is the third (`emu_ir_rom_window`), and here it is
+not in line.** A load that misses the RAM window ends in the shared
+memory stub, as before, and the block marks it `T2_MEM_ROM_OK` when it
+was lowered with the window. The stub then tries the image first --
+inside it and aligned, a move from the image's address in the board's
+flash -- and calls the accessor otherwise. The mark is per access
+because the window is only sound where the RAM window is: a block lowered
+under PMP, paging or an MPU has its image reads checked as before.
 
-| | before | after | |
+It was in line first, as on x86-64 ([x86_64.md](x86_64.md#the-image-window)),
+and was measured both ways. Host cycles per guest instruction, against a
+worktree at the commit before, guest output identical in every row:
+
+| | no window | in line | in the stub |
 |---|---|---|---|
-| Dhrystone | 27.84 | **14.54** | 1.91x; 1.19 s to 0.62 s by the host's clock |
-| Whetstone | 40.41 | **32.94** | -18.5% |
-| CoreMark x120, which does not arm | 14.66 | 14.51 | 333 translations both |
+| F746 RV32 Dhrystone | 27.84 | 14.54 | **16.41** |
+| F746 RV32 Whetstone | 40.41 | 32.94 | **32.96** |
+| F746 RV32 CoreMark x120 | 14.66 | 14.51 | **14.56** |
+| F746 ARMv7-M Dhrystone | 36.78 | 22.58 | **22.73** |
+| F746 ARMv7-M CoreMark | 34.65 | 49.19 | **33.51** |
+| F746 ARMv7-M crypto | 30.27 | 27.54 | **26.81** |
+| F446 RV32 Dhrystone | 38.97 | 30.15 | **32.95** |
 
-Guest output is identical, Dhrystone's 44 "should be" lines included.
+**In line is 9-13% faster on Dhrystone and 42% slower on ARMv7-M
+CoreMark**, which reads a constant table in `.text` often enough to arm
+and was already near the edge of its 96 KB cache: 26 bytes more on
+every load took it from 1,653 translations to 3,615. In the stub a load
+is 38 bytes armed or not -- CoreMark armed from the start is 31.38
+bytes a guest instruction, as unarmed -- so the window cannot push a
+working set out of the cache. The stub was kept for that.
+
 `isatest` passes its 896 checks. CoreMark x650 at 32 KB still validates
-(`crcfinal 0x25e3`, 8,485 compactions, 79.2 s by the host against 80.3
-by the firmware), and Dhrystone at 300,000 runs at 32 KB arms, evicts
-and agrees with the host's clock.
+(`crcfinal 0x25e3`, 8,485 compactions, 78.7 s by the host against 79.8
+by the firmware). ARMv7-M's `t2exec`, `itblock` and `nvic` print what
+they printed before.
 
-**Arming by use is not optional here.** An armed load is 63-64 bytes
-against 38, so 26 more, where x86-64 pays 40. Armed from the start
-(`EMU_JIT_ROM_ARM_AT` 0), CoreMark goes from 31.38 bytes a guest
-instruction to 39.19, stops fitting 64 KB, and runs at **31.01** with
-7,352 translations against 14.59 with 333. Unarmed, it never pays.
+**And the flush that arms it is worth more than the arming.** With the
+window from the start, so that there is nothing to arm, RV32 Dhrystone
+runs at 19.19. With one flush forced after start-up and nothing else
+changed, 15.96. Arming by use flushes at about that point, and the
+steady-state loop is retranslated into an empty buffer, in order; that
+is most of the difference between 16.41 and 19.19. It is open in
+[../TODO.md](../TODO.md) as a question about layout, not about the
+window.
 
 **An access may be predicated** (`emu_ir_mem_if`, the `c` operand), for
 ARMv7-M's loads and stores inside an IT block: `CMP` of the predicate

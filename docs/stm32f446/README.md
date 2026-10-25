@@ -119,7 +119,9 @@ guest has. The default stays: 35 KiB is already the smallest guest RAM
 of any board, and the interpreter's 114 KiB is the alternative for a
 guest that needs room more than speed.
 
-Correctness at the default: `isatest` 836 checks, 0 failures; CoreMark
+Correctness at the default, when measured (3c80a96): `isatest` 836
+checks, 0 failures -- it no longer fits this part's guest RAM, see
+[../TODO.md](../TODO.md); CoreMark
 x150 "Correct operation validated" across 51,610 evictions, 28.6 s by
 the host's clock against 29.2 s by the firmware's -- the counter wraps
 at 23.9 s here, so the run crosses it. `hello` reports the main task's

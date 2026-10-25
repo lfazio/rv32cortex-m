@@ -222,6 +222,18 @@ What a block may assume, and what invalidates it:
   delete that one — `EXIT` overwrites the pc — unless a `GET` of the
   register whose slot is the pc counts as an observer. It does, and
   `test_setpc_kept_when_a_register_reads_it` is that case.
+- **Reads of the image that are not literals go through the image
+  window.** A literal from flash is folded to a constant; what is left
+  is reads through a pointer -- Dhrystone's string literals byte by
+  byte, CoreMark's constant table in `.text` as halfwords -- and they
+  used to be a helper call each: 621,495 on Dhrystone, 57,512 on
+  CoreMark x40. The frontend counts them and arms the window as RV32
+  does ([../backend/x86_64.md](../backend/x86_64.md#the-image-window)).
+  On the F746 at 96 KB, Dhrystone 36.78 host cycles an instruction to
+  22.73, crypto 30.27 to 26.81, CoreMark 34.65 to 33.51. On Thumb-2 the
+  window is in the memory stub rather than in line, because in line it
+  took this CoreMark to 49.19
+  ([../backend/thumb2.md](../backend/thumb2.md#the-guest-ram-window)).
 
 How it is checked: every stored board run again under `--jit`
 (`--rerun --emu-args=--jit`), the `armv7m-jit-vs-interp` ctest, which

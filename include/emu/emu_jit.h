@@ -120,8 +120,10 @@
  * **Does this host's backend lower the image window** (emu_ir_rom_window)?
  * A frontend arms the window with a flush, so arming for a backend that
  * ignores it is a flush for nothing, and the count that decides it is a
- * cost for nothing. Both backends lower it; a backend added without it
- * says 0 here, and the frontend then neither counts nor arms.
+ * cost for nothing. Both backends lower it: x86-64 inline, at 40 bytes a
+ * load, and Thumb-2 in its shared memory stub, at none -- see
+ * emu_ir_rom_window. A backend added without it says 0 here, and the
+ * frontend then neither counts nor arms.
  */
 #if defined(EMU_HOST_JIT_X86_64) || defined(EMU_HOST_JIT_THUMB2)
 #define EMU_JIT_HAS_ROM_WINDOW 1

@@ -132,9 +132,12 @@ PowerPC's columns moved through the same changes: 125.8 and 35.4 at
 **Guests that read their image in their loops moved since, and CoreMark
 did not.** The bus's read-only cache and then the JIT's image window
 ([memory.md](memory.md#the-three-kinds-of-region)) took RV32 Dhrystone
-at 64 KB from 31.37 to 28.92 to **14.54**, and Whetstone from 43.99 to
-40.93 to **32.94**. CoreMark x120 stayed at 14.5-14.7 throughout: it
-reads its image 1,143 times a run, so the window never arms for it.
+at 64 KB from 31.37 to 28.92 to **16.41**, and Whetstone from 43.99 to
+40.93 to **32.96**. CoreMark x120 stayed at 14.5-14.7 throughout: it
+reads its image 1,143 times a run, so the window never arms for it. The
+window was in line for a commit and Dhrystone ran at 14.54; it moved
+into the memory stub because in line it cost ARMv7-M CoreMark 42%
+([backend/thumb2.md](backend/thumb2.md#the-guest-ram-window)).
 
 ### The interpreters' loops in ITCM
 

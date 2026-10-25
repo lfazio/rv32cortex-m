@@ -68,7 +68,10 @@
 #include "armv7m/armv7m_cpu.h"
 #include "armv7m/armv7m_decode.h"
 
+#include "emu/emu_bus.h"
 #include "emu/emu_ir.h"
+#include "emu/emu_jit.h" /* EMU_JIT_HAS_ROM_WINDOW */
+#include "emu/emu_memmap.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -177,6 +180,12 @@ static uint32_t a7_ir_load(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
             : (size == 2u) ? (uint32_t)(int32_t)(int16_t)v
                            : v;
     }
+#if EMU_JIT_HAS_ROM_WINDOW
+    /* A read of the image a block could not inline: see rom_armed. */
+    if (EMU_UNLIKELY(!c->rom_armed) && emu_bus_in_rodata(c->bus, addr)) {
+        c->rom_reads++;
+    }
+#endif
     *out = v;
     return 0u;
 }
@@ -2090,6 +2099,9 @@ uint32_t armv7m_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
     emu_ir_reset(b);
     b->start_pc = pc;
     b->has_fast = a7_fast_mem(c, &b->fast);
+    /* Under exactly the RAM window's conditions, and once armed. */
+    b->has_rom = b->has_fast && c->rom_armed &&
+                 emu_ir_rom_window(c->bus, EMU_GUEST_ROM_BASE, &b->rom);
 
     /*
      * No block for a core that is not in Thumb state, or is part way
@@ -2296,6 +2308,16 @@ static void a7_after_interp(emu_cpu_t *cpu)
 static void a7_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
 {
     armv7m_cpu_t *const c = (armv7m_cpu_t *)cpu;
+
+    /*
+     * Arm the image window, once, between slices -- nothing translated is
+     * running, so the flush is safe -- as RV32 does; see
+     * EMU_JIT_ROM_ARM_AT.
+     */
+    if (EMU_UNLIKELY(!c->rom_armed) && c->rom_reads >= EMU_JIT_ROM_ARM_AT) {
+        c->rom_armed = true;
+        emu_jit_flush();
+    }
 
     armv7m_flags_unpack(c);
     c->jit_ctx = armv7m_jit_ctx(c);

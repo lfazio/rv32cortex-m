@@ -359,6 +359,16 @@ static EMU_PER_CORE bool g_has_rom;
  */
 #define T2_MEM_STORE 0x80u
 
+/*
+ * A load the stub may serve from the guest's image (emu_ir_rom_window),
+ * set by a block lowered with the window. Per access, not per stub: the
+ * window is only sound where the RAM window is -- PMP, paging, an MPU or
+ * a trigger refuse both -- so a block lowered without it must not have
+ * its image reads answered here, and the stub cannot tell the blocks
+ * apart any other way.
+ */
+#define T2_MEM_ROM_OK 0x40u
+
 #if EMU_SMP
 #error "t2_mem_stub reads its table by absolute address; no TLS here"
 #endif
@@ -376,6 +386,14 @@ static EMU_PER_CORE bool g_has_rom;
  */
 __attribute__((used)) const void *t2_mem_accessor[2]; /* load, store */
 
+/*
+ * The image window the stub serves T2_MEM_ROM_OK loads from: base, size
+ * and host address, written whenever a block lowered with the window is.
+ * One for the cache, for the reason the accessor table is: a bus change
+ * flushes. Size 0 until then, which the stub's bound refuses.
+ */
+__attribute__((used)) uint32_t t2_rom_window[3];
+
 __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
         "    .syntax unified\n"
         "    .thumb\n"
@@ -385,16 +403,60 @@ __asm__(".pushsection " T2_STUB_SECTION ", \"ax\", %progbits\n"
         "    .type t2_mem_stub, %function\n"
         "t2_mem_stub:\n"
         "    push    {r0, lr}\n"
-        "    ldr     r12, =t2_mem_accessor\n"
         "    lsls    r0, r2, #24\n" /* N: bit 7, a store */
         "    bmi     1f\n"
+        /*
+         * A load the block let use the image: in the window, aligned,
+         * then a move from its host address. Anything else is the
+         * accessor's. r0, r3, r12 and lr are free here -- lr is on the
+         * stack -- and r1 and r2 survive for the accessor.
+         */
+        "    lsls    r0, r2, #25\n" /* N: bit 6, T2_MEM_ROM_OK */
+        "    bpl     2f\n"
+        "    ldr     r12, =t2_rom_window\n"
+        "    ldr     r0, [r12]\n"
+        "    subs    r0, r1, r0\n" /* offset; below the base wraps high */
+        "    ldr     r3, [r12, #4]\n"
+        "    and     lr, r2, #7\n" /* the access's size */
+        "    subs    r3, r3, lr\n" /* last offset it may start at */
+        "    bcc     2f\n"         /* no window yet: size 0 */
+        "    cmp     r0, r3\n"
+        "    bhi     2f\n"
+        "    sub     r3, lr, #1\n"
+        "    tst     r1, r3\n"
+        "    bne     2f\n"         /* misaligned */
+        "    ldr     r12, [r12, #8]\n"
+        "    cmp     lr, #2\n"
+        "    beq     3f\n"
+        "    bhi     4f\n"
+        "    tst     r2, #8\n"     /* EMU_IR_MEM_SIGNED */
+        "    ite     ne\n"
+        "    ldrsbne r0, [r12, r0]\n"
+        "    ldrbeq  r0, [r12, r0]\n"
+        "    b       5f\n"
+        "3:\n"
+        "    tst     r2, #8\n"
+        "    ite     ne\n"
+        "    ldrshne r0, [r12, r0]\n"
+        "    ldrheq  r0, [r12, r0]\n"
+        "    b       5f\n"
+        "4:\n"
+        "    ldr     r0, [r12, r0]\n"
+        "5:\n"
+        "    str     r0, [sp]\n"   /* the out word POP returns in r0 */
+        "    cmp     r0, r0\n"     /* Z: the access completed */
+        "    pop     {r0, pc}\n"
+        "2:\n"
+        "    ldr     r12, =t2_mem_accessor\n"
         "    ldr     r12, [r12]\n"
+        "    bic     r2, r2, #0x40\n"
         "    mov     r0, r4\n"
         "    add     r3, sp, #0\n"
         "    blx     r12\n"
         "    cmp     r0, #0\n"
         "    pop     {r0, pc}\n"
         "1:\n"
+        "    ldr     r12, =t2_mem_accessor\n"
         "    ldr     r12, [r12, #4]\n"
         "    bic     r2, r2, #0x80\n"
         "    mov     r0, r4\n"
@@ -2121,7 +2183,6 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
          * memory access, and each was a call into the region walk.
          */
         uint8_t *ldone = NULL;
-        uint8_t *ldone_rom = NULL;
         uint8_t *ldone_pt = NULL;
         if (g_has_fast) {
             const uint32_t sz = EMU_IR_MEM_SIZE(in->aux);
@@ -2138,28 +2199,6 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
                 ldone = t2_b_forward_n();
             }
             patch_branch_n(slow[0], emu_jit_here(), true);
-
-            /*
-             * Not guest RAM: the image, if the block is armed for it --
-             * the same guard and access from the image's host address,
-             * which is the board's flash. Ahead of the peripheral window,
-             * because a guest armed for both reads constants far more
-             * often than it reads a register.
-             */
-            if (g_has_rom) {
-                uint8_t *rslow[1];
-                const uint32_t kr = emit_window_guard(g_rom.base, g_rom.size,
-                                                      T2_R1, sz, rslow);
-
-                emit_pooled(T2_R12, (uint32_t)(uintptr_t)g_rom.host);
-                if (t2_ld_reg_lsl(rt, T2_R12, T2_R2, kr, sz, sign)) {
-                    if (pd < 0) {
-                        st_slot(T2_R0, in->dst);
-                    }
-                    ldone_rom = t2_b_forward_n();
-                }
-                patch_branch_n(rslow[0], emu_jit_here(), true);
-            }
 
             /*
              * Not guest RAM: the peripheral window, if the block is armed
@@ -2199,11 +2238,17 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             }
         }
 
-        /* The slow path: the shared stub, which returns the value in r0. */
-        emit_mem_stub(in->aux);
+        /*
+         * The slow path: the shared stub, which returns the value in r0
+         * -- and which serves a read of the image itself when the block
+         * is armed for one. Not in line, as on x86-64: an inline test is
+         * 26 bytes on every load, and that pushed ARMv7-M CoreMark out of
+         * the 96 KB cache (34.65 host cycles an instruction to 49.19)
+         * where in the stub it is no bytes at all.
+         */
+        emit_mem_stub((uint32_t)in->aux | (g_has_rom ? T2_MEM_ROM_OK : 0u));
         st_slot(T2_R0, in->dst);
         patch_branch_n(ldone_pt, emu_jit_here(), false);
-        patch_branch_n(ldone_rom, emu_jit_here(), false);
         patch_branch_n(ldone, emu_jit_here(), false);
         /*
          * The paths merge holding the value in r0 when it has no
@@ -2461,6 +2506,11 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
     emu_jit_block_arg = (const void *)t2_mem_stub;
     t2_mem_accessor[0] = (const void *)t->load;
     t2_mem_accessor[1] = (const void *)t->store;
+    if (g_has_rom) {
+        t2_rom_window[0] = g_rom.base;
+        t2_rom_window[1] = g_rom.size;
+        t2_rom_window[2] = (uint32_t)(uintptr_t)g_rom.host;
+    }
 
     /*
      * The frame, padded so that sp is 8-byte aligned at a helper call.

@@ -34,13 +34,28 @@ measured at.
       discard every block at every switch between them. PowerPC made
       its counter one for all cores for exactly that reason. Unmeasured.
 - [ ] **Autovectorisation of the IR pipeline.**
-- [ ] **ARMv7-M's reads of its image.** Under the x86-64 JIT, ARMv7-M
-      CoreMark leaves 57,512 loads to the helper in 11.1M instructions,
-      and Dhrystone 621,495. What they are is unmeasured. They are not
-      literal-pool loads, which `lower_ldst` already folds to constants.
-      Sample their addresses at the helper's entry, as RV32's were,
-      before choosing between RV32's armed window and something else.
-      The frontend does not count or arm today.
+- [ ] **A flush after start-up is worth 17% on the F746, by itself.**
+      RV32 Dhrystone runs at 19.19 host cycles an instruction with the
+      image window from the start, and at 15.96 with one flush forced
+      at the 20th slice and nothing else changed: the steady-state loop
+      is retranslated into an empty buffer, in order, instead of among
+      start-up's blocks. Arming the image window gets this by accident
+      ([backend/thumb2.md](backend/thumb2.md#the-guest-ram-window)).
+      What it says about where hot blocks should go -- and whether
+      CoreMark, which never flushes, has the same to gain -- is
+      unmeasured.
+- [ ] **`isatest` no longer fits the F446.** Its `.bss` is 45,056 bytes
+      and, with the 4 KiB stack, it needs 48 KiB of guest RAM; the F446
+      gives 33.7 KiB. It fitted at 35 KiB when
+      [stm32f446/README.md](stm32f446/README.md) recorded its 836
+      checks, before the Sv32, data TLB and fetch table tests grew it
+      (two pairs of 4 KiB page tables and a 16 KiB page pool) and the
+      hart's 2 KiB of TLB tables shrank the guest. It prints its banner
+      and then nothing. A reduced build for small parts, or smaller
+      tables there, would bring it back. Whetstone on the F446 also
+      does not finish within 120 s, on main as on this tree, which
+      could be double-precision SoftFloat on an M4 and has not been
+      looked at.
 - [ ] **PowerPC's FP unit is a call per instruction.** Every EFPU2
       instruction under the JIT is a helper call into `ppc_fpu_exec`,
       whose bookkeeping -- SPEFSCR status, sticky bits, FG and FX -- was

@@ -3585,6 +3585,29 @@ session, and every one of them recurred:
   load helper, the one place whose blocks the count decides, both are
   0.00%. **Keep a count where its question is asked.**
 
+- **A threshold protects only the guests that stay under it, and a cost
+  paid in code is paid by the guest at its cache's edge.** On Thumb-2
+  the image window was in line first: 26 bytes on every load, armed at
+  4,096 image reads so that RV32 CoreMark, at 1,143, never paid. ARMv7-M
+  CoreMark reads a constant table 57,512 times and arms. It was already
+  filling its 96 KB, so translations went from 1,653 to 3,615 and it ran
+  42% slower, while Dhrystone ran 38% faster on the same build. In the
+  shared memory stub the window costs no bytes per load, and that
+  CoreMark is 3% faster instead. **When a fast path's cost is code on a
+  fixed cache, put it out of line before gating it.**
+
+  **And the flush that armed it was worth more than the window.** With
+  the window from the start, RV32 Dhrystone on the F746 ran at 19.19
+  host cycles an instruction; armed by use, 16.41. That read as "arming
+  matters" until one flush was forced into the always-on build and
+  nothing else changed: 15.96. The flush retranslates the steady-state
+  loop into an empty buffer, in order, and that was the difference. The
+  first attempt to test it could not: it flushed on the same count,
+  which the window had stopped feeding, so the flush never fired --
+  translations 201, as with no flush, was what said so. **When a change
+  includes a flush, measure what the flush alone does**, with a trigger
+  that does not depend on the change.
+
 ## Conventions
 
 `src/emu/` is portable C11 with no platform *and no ISA* dependencies, and must
