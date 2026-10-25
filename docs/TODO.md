@@ -20,6 +20,42 @@ measured at.
       `performance.md` and both `stm32f446/` pages are not, and are
       marked as history.
 
+## Testing
+
+- [ ] **Fuzz testing.** What the tree has is generation, not fuzzing:
+      `tests/armv7m-diff/rawgen.py` (raw encodings against the F746),
+      the property tests over whole encoding spaces (ARMv7-M's decoder
+      over 402,712,576 encodings, G4MH's length over 65,536 halfwords),
+      `tests/ppc-check/` against binutils and a Python model, the
+      Spike/Sail probes, and `ir_diff_ref`. None is coverage-guided, and
+      none reaches what a guest controls beyond the instruction word.
+      clang 21 links `-fsanitize=fuzzer,address` on the host, so each of
+      these is a libFuzzer target behind an option, smallest oracle
+      first:
+  - **Instruction streams, interpreter against JIT**, per frontend:
+    the same bytes run both ways and compared on the register file,
+    memory, trap cause and tval, and `retired`. The interpreter is the
+    oracle, and for RV32 Spike as well (BSD-3, CLAUDE.md). No GPL
+    emulator, not even as a reference.
+  - **The IR**: random blocks through the passes and both lowerings,
+    checked against `emu_ir_interp` on the *unoptimised* IR, stores
+    included. `ir_diff_ref` runs the optimised IR and declines any
+    block with a store, which is how the x0 forwarding bug passed it.
+  - **Translation and protection**: Sv32 page tables, PMP and the
+    data TLB, G4MH's and ARMv7-M's MPUs, PowerPC's TLB, each against
+    a brute-force reference walk. A cache must agree with what it
+    caches for every input; that is a fuzzing property.
+  - **What arrives from outside the guest**: the ELF loader, the gdb
+    stub's packet parser, the TFTP upload path, and the virtio
+    descriptors and rings, which a guest writes.
+  - **ARMv7-M on the board**: feed a fuzzer's corpus to rawgen's
+    harness, so the F746 stays the oracle for what it alone can
+    answer.
+
+      Every target needs a mutant it finds before it counts, as every
+      test here does: a fuzzer that runs for an hour and reports nothing
+      can mean the code is right or that the target never reaches it.
+
 ## JIT
 
 - [ ] **The peripheral window for the other frontends.** It is inlined
