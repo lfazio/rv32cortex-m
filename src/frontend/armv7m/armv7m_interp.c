@@ -2157,7 +2157,9 @@ static EMU_ALWAYS_INLINE bool it_ignores_condition(uint16_t hw, uint16_t w1,
  * Whether an encoding can write the pc: every branch, and the loads, pops
  * and hi-register moves and adds that name it. The 32-bit data-processing
  * forms that name pc are UNDEFINED before this is asked, and a narrow
- * load into pc is a preload hint.
+ * load into pc is a preload hint. Every form here has been asked of the
+ * F746 inside a block, skipped and taken, and ends it either way
+ * (test_it_pc_writers_board_answers).
  */
 static EMU_ALWAYS_INLINE bool it_writes_pc(uint16_t hw, uint16_t w1,
                                            uint32_t len)

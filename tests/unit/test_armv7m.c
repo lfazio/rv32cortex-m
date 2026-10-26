@@ -482,6 +482,121 @@ static void test_it_board_answers(void)
 }
 
 /*
+ * Every other instruction that can write the pc, inside an IT block and
+ * not last: ADD pc, POP and POP.W, LDM.W and LDR.W into pc, TBB, TBH,
+ * and BX, BLX and MOV pc *taken* -- the ones test_it_board_answers did
+ * not ask. The F746's answer is the same for all ten: the block ends
+ * whether the instruction is skipped by the condition or taken
+ * (tests/armv7m-diff, build/armv7m-it7, 2026-10-26).
+ *
+ * Each sequence sets Z itself -- movs r2, #1 to skip under `itt eq`,
+ * movs r2, #0 to take -- and computes any target from `mov r5, pc`, so
+ * it runs anywhere. A taken branch lands on movs r1, #7, which clears Z
+ * only if it runs outside the block; a skipped one is followed by
+ * movs r0, #1, which runs only if the block ended there. For TBB and
+ * TBH skipped, the instruction after is the table, 0x0002 -- movs r2,
+ * r0 -- and r2 says which. The stack pushes are balanced by add sp.
+ */
+static void test_it_pc_writers_board_answers(void)
+{
+    static const struct {
+        uint16_t hw[11];
+        uint32_t n;
+        uint32_t r0, r2; /* as the board left them; r1 is always 7 */
+    } k[] = {
+        /* skipped: the next instruction runs, outside the block */
+        {{0x467d, 0x3509, 0x2201, 0xbf04, 0x4728, 0x2001, 0x2107}, 7u, 1u, 1u},
+        {{0x467d, 0x3509, 0x2201, 0xbf04, 0x47a8, 0x2001, 0x2107}, 7u, 1u, 1u},
+        {{0x467d, 0x3509, 0x2201, 0xbf04, 0x46af, 0x2001, 0x2107}, 7u, 1u, 1u},
+        {{0x2300, 0x2201, 0xbf04, 0x449f, 0x2001, 0x2107}, 6u, 1u, 1u},
+        {{0x467d, 0x350b, 0xb420, 0x2201, 0xbf04, 0xbd00, 0x2001, 0x2107,
+          0xb001},
+         9u,
+         1u,
+         1u},
+        {{0x467d, 0x350d, 0xb430, 0x2201, 0xbf04, 0xe8bd, 0x8010, 0x2001,
+          0x2107, 0xb002},
+         10u,
+         1u,
+         1u},
+        {{0x467d, 0x350d, 0xb430, 0x2201, 0xbf04, 0xe89d, 0x8010, 0x2001,
+          0x2107, 0xb002},
+         10u,
+         1u,
+         1u},
+        {{0x467d, 0x350d, 0xb420, 0x2201, 0xbf04, 0xf8dd, 0xf000, 0x2001,
+          0x2107, 0xb001},
+         10u,
+         1u,
+         1u},
+        {{0x2700, 0x2201, 0xbf04, 0xe8df, 0xf007, 0x0002, 0x2001, 0x2107},
+         8u,
+         1u,
+         0x55u}, /* the table ran: movs r2, r0 */
+        {{0x2700, 0x2201, 0xbf04, 0xe8df, 0xf017, 0x0002, 0x2001, 0x2107},
+         8u,
+         1u,
+         0x55u},
+        /* taken: lands on movs r1, #7, outside the block */
+        {{0x467d, 0x3509, 0x2200, 0xbf04, 0x4728, 0x2001, 0x2107},
+         7u,
+         0x55u,
+         0u},
+        {{0x467d, 0x3509, 0x2200, 0xbf04, 0x47a8, 0x2001, 0x2107},
+         7u,
+         0x55u,
+         0u},
+        {{0x467d, 0x3509, 0x2200, 0xbf04, 0x46af, 0x2001, 0x2107},
+         7u,
+         0x55u,
+         0u},
+        {{0x2300, 0x2200, 0xbf04, 0x449f, 0x2001, 0x2107}, 6u, 0x55u, 0u},
+        {{0x467d, 0x350b, 0xb420, 0x2200, 0xbf04, 0xbd00, 0x2001, 0x2107},
+         8u,
+         0x55u,
+         0u},
+        {{0x467d, 0x350d, 0xb430, 0x2200, 0xbf04, 0xe8bd, 0x8010, 0x2001,
+          0x2107},
+         9u,
+         0x55u,
+         0u},
+        {{0x467d, 0x350d, 0xb430, 0x2200, 0xbf04, 0xe89d, 0x8010, 0x2001,
+          0x2107, 0xb002},
+         10u,
+         0x55u,
+         0u},
+        {{0x467d, 0x350d, 0xb420, 0x2200, 0xbf04, 0xf8dd, 0xf000, 0x2001,
+          0x2107, 0xb001},
+         10u,
+         0x55u,
+         0u},
+        {{0x2700, 0x2200, 0xbf04, 0xe8df, 0xf007, 0x0002, 0x2001, 0x2107},
+         8u,
+         0x55u,
+         0u},
+        {{0x2700, 0x2200, 0xbf04, 0xe8df, 0xf017, 0x0002, 0x2001, 0x2107},
+         8u,
+         0x55u,
+         0u},
+    };
+
+    memset(g_ua_ram, 0, sizeof(g_ua_ram));
+    emu_bus_init(&g_ua_bus);
+    CHECK(
+        emu_bus_add_ram(&g_ua_bus, "ram", UA_RAM_BASE, g_ua_ram, UA_RAM_SIZE));
+    for (uint32_t i = 0u; i < sizeof(k) / sizeof(k[0]); i++) {
+        run_seq(k[i].hw, k[i].n, false, 0x55u);
+        CHECK_EQ(g_ua_cpu.cfsr, 0u);
+        CHECK_EQ(g_ua_cpu.r[0], k[i].r0);
+        CHECK_EQ(g_ua_cpu.r[1], 7u);
+        CHECK_EQ(g_ua_cpu.r[2], k[i].r2);
+        CHECK_EQ(g_ua_cpu.xpsr & ARMV7M_Z, 0u); /* movs r1 set the flags */
+        CHECK_EQ(g_ua_cpu.r[ARMV7M_SP], UA_RAM_BASE + 0xF000u);
+        CHECK(!armv7m_in_it(g_ua_cpu.xpsr));
+    }
+}
+
+/*
  * A vector that looks like EXC_RETURN is an address, not a return.
  *
  * Exception entry *branches* to the vector (ExceptionTaken, BranchTo);
@@ -826,5 +941,6 @@ void test_armv7m(void)
     test_decode_agrees_on_undefined();
     test_sp_pc_board_answers();
     test_it_board_answers();
+    test_it_pc_writers_board_answers();
     test_vector_shaped_like_exc_return();
 }

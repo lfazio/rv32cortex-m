@@ -129,7 +129,7 @@ generated suites:
 | **IT, every encoding**: firstcond 1111, AL with an else, an IT inside an IT block | execute: 1110 and 1111 both mean always, and an inner IT replaces the block. The frontend refused all of them (2026-10-26) |
 | B\<cond\> (16- and 32-bit) and CBZ/CBNZ inside an IT block | execute **on their own condition**, ignoring the block's: under `it eq` with Z clear, `bne` branches |
 | B, B.W and BL inside an IT block but not last | execute under the block's condition |
-| **any instruction that can write the pc, inside an IT block** | ends the block whatever happens to it -- taken, not taken, or skipped by the block's condition. Under `itt eq` with Z clear, a skipped `bx`, `blx`, `mov pc`, `pop {pc}`, `ldr pc` or `bl` is followed by an instruction that runs outside the block, unconditionally and setting flags; so is an untaken `bne` or `cbz` |
+| **any instruction that can write the pc, inside an IT block** | ends the block whatever happens to it -- taken, not taken, or skipped by the block's condition. Under `itt eq` with Z clear, a skipped `bx`, `blx`, `mov pc`, `add pc`, `pop {pc}`, `pop.w {..,pc}`, `ldm.w {..,pc}`, `ldr pc`, `bl`, `tbb` or `tbh` is followed by an instruction that runs outside the block, unconditionally and setting flags; so is an untaken `bne` or `cbz`; and every one of them *taken* lands on an instruction that runs outside it too |
 
 The IT rules are `it_ignores_condition`, `it_writes_pc` and `it_after`
 beside `step()` in the interpreter, which decides them all: the
@@ -140,7 +140,16 @@ that the flags differ between repetitions, with a `mov` placed to show
 which way a branch went; `test_it_board_answers` holds eleven of them
 for both values of Z and checks the flags after an untaken `bne`, and
 the sp/pc table seven 16-bit ones (29 and 5 failures against ad70a01,
-the commit before). The harness resumes a faulting probe at
+the commit before). The ten pc-writers the first runs left out -- ADD
+pc, POP and POP.W, LDM.W and LDR.W into pc, TBB, TBH, and BX, BLX and
+MOV pc *taken* -- were asked afterwards (`build/armv7m-it7`), skipped
+and taken, every target computed from `mov r5, pc` and the stack
+balanced, so they run wherever the probe lands: the board ends the
+block for all twenty, as `it_writes_pc` had by analogy, and the
+emulator agrees on every field but r5, the address it took from the
+pc. `test_it_pc_writers_board_answers` holds them; with the encoding
+test removed the ten skipped ones fail, and with the pc test as well
+the ten taken ones. The harness resumes a faulting probe at
 its end now, not four bytes on, which inside a 16-bit probe was the
 middle of the next instruction.
 
@@ -699,13 +708,6 @@ the host's, so "copy it" is unlikely to survive contact.
   stacked return address of that shape, which it fetches. The vector
   case was a hang before: a failed "return" took a fault into the same
   vector for ever, retiring nothing (`armv7m-jit/vector-exc-return-shape`).
-- **Not every pc-writer has been asked inside an IT block.** Skipped
-  BX, BLX, MOV pc, POP {pc}, LDR pc and BL, untaken B\<cond\> and CBZ,
-  and a taken B were; ADD pc, LDM.W/POP.W with pc and TBB/TBH were not,
-  and neither was a computed branch *taken* from the middle of a block,
-  which needs a target set up to land somewhere safe -- `pop {pc}` ended
-  the first run that tried. `it_writes_pc` gives them the same rule by
-  analogy.
 - **The IR and the register allocator are not exercised by `t2exec`**,
   which tests the encoder end to end and nothing above it. Running
   `emu_ir_lower` in the guest is the next layer.
