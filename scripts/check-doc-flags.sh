@@ -3,7 +3,7 @@
 #
 # check-doc-flags.sh - every -D<OPTION> named in the docs must exist.
 #
-# Why this exists, in one sentence from CLAUDE.md: "The option that hid
+# Why this exists, in one sentence from docs/lessons.md: "The option that hid
 # this named a variable that does not exist." The notes documented
 # `-DEMU_FPU_SOFTFLOAT=ON` against a real `RV32_FPU_SOFTFLOAT`, so every
 # default build had an FP unit failing two thirds of the F suite and the

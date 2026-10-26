@@ -769,7 +769,7 @@ disagreement means the caller and the decoder have diverged. That
 prints `.short` with both numbers rather than an authoritative-looking
 mnemonic.
 
-What it must not do is *guess*, and it did. CLAUDE.md already records
+What it must not do is *guess*, and it did. [lessons.md](../lessons.md) already records
 this file printing "confident nonsense"; there was more of it, all in
 slots where `reg2 == 0` selects a different instruction:
 

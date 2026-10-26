@@ -219,7 +219,7 @@ many changes since, not one, and this page does not apportion them.
 say 4.6% did -- 136.6M of 3,000.9M -- and called that the floor set by
 the SYSTEM and MISC-MEM instructions the translator declines on
 purpose. It was not: it was the B extension, which the translator
-declined for want of a lowering (see CLAUDE.md, "A capability the old
+declined for want of a lowering (see [lessons.md](lessons.md), "A capability the old
 translator had"), and CoreMark in M-mode reaches SYSTEM only at start-up.
 The run makes 281 translations into 177,432 bytes and enters a block
 202,366,421 times, about thirty guest instructions an entry.
@@ -256,7 +256,7 @@ a run start-up is a visible part of.
 
 The interpreters have moved as well as the JITs: ARMv7-M's took 6.12 s
 for the same 600 iterations when this table was first written, before
-its fetch path stopped asking the MPU out of line (CLAUDE.md, "A lesson
+its fetch path stopped asking the MPU out of line ([lessons.md](lessons.md), "A lesson
 learned in one frontend is not applied in the next").
 
 They are not comparable across rows: different compilers, different

@@ -5,8 +5,8 @@ changed -- a frontend's in [frontend/](frontend/), the JIT's in
 [jit/](jit/README.md), the scheduler's in [os.md](os.md), Linux's in
 [linux.md](linux.md), the games' in [games.md](games.md), the N6 port's
 in [stm32n6/](stm32n6/README.md) -- and what was learned the hard way
-is in CLAUDE.md. Status lines here are claims about the code, so they
-go stale: `scripts/report-figures.sh` regenerates the ones a host can
+is in CLAUDE.md, as rules, and [lessons.md](lessons.md) at length.
+Status lines here are claims about the code, so they go stale: `scripts/report-figures.sh` regenerates the ones a host can
 check, and anything measured on hardware carries the commit it was
 measured at.
 

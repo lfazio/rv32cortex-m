@@ -669,7 +669,8 @@ VLE or Book E:
 | [BUILD.md](BUILD.md) | every build gate, and which combinations are checked |
 
 Working notes — what has bitten, and will again — are in
-[CLAUDE.md](CLAUDE.md).
+[CLAUDE.md](CLAUDE.md), as rules, and in
+[docs/lessons.md](docs/lessons.md) at full length.
 
 ---
 

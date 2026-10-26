@@ -135,7 +135,7 @@ Both are built with the guests' flags plus `-mlong-double-64`, because
 neither builds IBM's 128-bit `long double` for this target. picolibc
 goes without thread-local storage, so `errno` is a global: nothing sets
 `r2` as a thread pointer, and the F746 has already shown what a
-`__tls` errno does when nobody does (CLAUDE.md, "a C library's thread
+`__tls` errno does when nobody does ([lessons.md](lessons.md), "a C library's thread
 pointer is start-up code"). `fp_mode.c` is in the builtins list because the soft-float
 arithmetic asks it for the rounding mode, and the link says so if it is
 missing.
