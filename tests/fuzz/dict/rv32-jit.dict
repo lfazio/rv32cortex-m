@@ -12,9 +12,11 @@
 # mie with MSIE and MTIE set.
 #
 # The `#!` line is the claim that they compose: in that order they
-# take a software interrupt that both backends compare. The fuzz tree's
+# take a software interrupt that both backends compare, with translated
+# code after the enable -- so that a dispatcher which never takes an
+# interrupt disagrees (docs/fuzzing.md, mutant A). The fuzz tree's
 # fuzz-rv32-jit-dict test runs it (scripts/fuzz-dict.py --compose).
-#! clint_msip one_t1 store_t1 mie_on
+#! clint_msip one_t1 store_t1 mie_on_then_add
 
 # The CLINT's msip word, and its mtimecmp page.
 #: lui t0, 0x2000
@@ -34,6 +36,12 @@ store_zero="\x23\xa0\x02\x00"
 store_zero_hi="\x23\xa2\x02\x00"
 
 # The enable, and the rest of what decides whether one is taken.
+# The enable with translated code after it: an interrupt the enable
+# admits is taken by whichever backend runs that code, which is where
+# a dispatcher's mistake shows. With only the ECALL fill after it, both
+# take it in the interpreter, and a mutant of the dispatcher passes.
+#: csrsi mstatus, 8 | addi a1, a1, 1
+mie_on_then_add="\x73\x60\x04\x30\x93\x85\x15\x00"
 #: csrsi mstatus, 8
 mie_on="\x73\x60\x04\x30"
 #: csrci mstatus, 8

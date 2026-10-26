@@ -12,10 +12,12 @@
 # are the seeds' -- r10 the address, r11 the value -- so that tokens
 # dropped into one input compose. PSW.ID starts set.
 #
-# The `#!` line is the claim that they compose: in that order they
-# take EIINT3, compared on both backends. The fuzz tree's
+# The `#!` line is the claim that they compose: in that order they take
+# EIINT3, compared on both backends, with translated code after the
+# enable -- so that a dispatcher which never takes an interrupt
+# disagrees (docs/fuzzing.md, mutant A). The fuzz tree's
 # fuzz-g4mh-jit-dict test runs it (scripts/fuzz-dict.py --compose).
-#! cfg_plain intc1_self eic_request eic3 ei
+#! cfg_plain intc1_self eic_request eic3 ei_then_add
 
 # The configuration word with nothing set: supervisor, the FPU on, one
 # PE. Not assembly: the input's first four bytes.
@@ -52,6 +54,10 @@ ipiens0="\x4a\x5f\x00\x00"
 ipireqs0="\x4a\x5f\x10\x00"
 
 # The enable, and the priority ceiling.
+# The enable with translated code after it, where a dispatcher's
+# mistake shows (see rv32-jit.dict).
+#: ei | add 1, r14
+ei_then_add="\xe0\x87\x60\x01\x41\x72"
 #: ei
 ei="\xe0\x87\x60\x01"
 #: di

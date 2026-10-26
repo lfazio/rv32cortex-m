@@ -10,10 +10,12 @@
 # r11-r13 the values -- so that tokens dropped into one input compose.
 # MSR[EE] starts clear and CPR at its highest.
 #
-# The `#!` line is the claim that they compose: in that order they
-# take software interrupt 0, compared on both backends. The fuzz tree's
+# The `#!` line is the claim that they compose: in that order they take
+# software interrupt 0, compared on both backends, with translated code
+# after the enable -- so that a dispatcher which never takes an
+# interrupt disagrees (docs/fuzzing.md, mutant A). The fuzz tree's
 # fuzz-ppc-jit-dict test runs it (scripts/fuzz-dict.py --compose).
-#! cfg_booke intc0 zero_r11 cpr five_r12 psr0 two_r13 sscir0 wrteei_1
+#! cfg_booke intc0 zero_r11 cpr five_r12 psr0 two_r13 sscir0 wrteei_1_then_add
 #
 # Book E only, as the device seeds are: the configuration word below
 # selects it. The timers are not here, because a timer interrupt is set
@@ -46,7 +48,10 @@ iackr="\x81\xea\x00\x10"
 #: stw %r0, 0x18(%r10)
 eoir="\x90\x0a\x00\x18"
 
-# The enable.
+# The enable with translated code after it, where a dispatcher's
+# mistake shows (see rv32-jit.dict).
+#: wrteei 1 | addi %r14, %r14, 1
+wrteei_1_then_add="\x7c\x00\x81\x46\x39\xce\x00\x01"
 #: wrteei 1
 wrteei_1="\x7c\x00\x81\x46"
 #: wrteei 0

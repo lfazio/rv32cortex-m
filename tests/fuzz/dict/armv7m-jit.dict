@@ -12,10 +12,12 @@
 # seeds' -- r0 the address, r1 the value -- so that tokens dropped into
 # one input compose. r1 starts at 0x80002020: IRQs 5, 13 and 31.
 #
-# The `#!` line is the claim that they compose: in that order they
-# take IRQ 5, compared on both backends. The fuzz tree's
+# The `#!` line is the claim that they compose: in that order they take
+# IRQ 5, compared on both backends, with translated code after the
+# enable -- so that a dispatcher which never takes an interrupt
+# disagrees (docs/fuzzing.md, mutant A). The fuzz tree's
 # fuzz-armv7m-jit-dict test runs it (scripts/fuzz-dict.py --compose).
-#! cfg_primask nvic_iser0 store_r1 nvic_ispr0 cpsie_i
+#! cfg_primask nvic_iser0 store_r1 nvic_ispr0 cpsie_i_then_add
 
 # The configuration word with PRIMASK set (CFG_PRIMASK), so a pended
 # interrupt waits for CPSIE. Not assembly: the input's first four bytes.
@@ -45,6 +47,10 @@ pendstset="\x4f\xf0\x80\x61"
 # The masks: the enables are declined, so taken at the same boundary.
 #: cpsid i
 cpsid_i="\x72\xb6"
+# The enable with translated code after it, where a dispatcher's
+# mistake shows (see rv32-jit.dict).
+#: cpsie i | adds r5, #1
+cpsie_i_then_add="\x62\xb6\x01\x35"
 #: cpsie i
 cpsie_i="\x62\xb6"
 #: cpsie f
