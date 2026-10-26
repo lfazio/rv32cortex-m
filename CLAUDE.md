@@ -97,6 +97,8 @@ BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
                                 # x86-64 JIT, under ASan/UBSan; docs/fuzzing.md
 ./scripts/fuzz-mutant.sh SECS ISA FILE OLD NEW  # break a line on purpose
                                 # and see whether that fuzzer notices
+./scripts/fuzz-dict.py [--check] # the device dictionaries' tokens, from
+                                # the assembly written above each
 tests/armv7m-diff/run.py ...    # the ARMv7-M frontend against a real M7
 ```
 

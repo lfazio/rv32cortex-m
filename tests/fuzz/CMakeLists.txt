@@ -25,6 +25,14 @@ endif()
 # Both with a ten-second limit on any one input: libFuzzer's default is
 # twenty minutes, and a hang is a finding to report, not a wait.
 #
+# And the dictionary's claim, where it has one (dict/<isa>-jit.dict,
+# which scripts/fuzz.sh passes to every run): its `#!` tokens, in that
+# order, must reach a device and take an interrupt the two backends
+# compare. A harness change that moves an initial register or a device
+# would leave every token valid and the dictionary meaning nothing.
+#
+find_package(Python3 COMPONENTS Interpreter QUIET)
+
 function(emu_fuzz_jit_target isa)
     set(t fuzz-${isa}-jit)
     add_executable(${t} fuzz_${isa}_jit.c)
@@ -48,6 +56,20 @@ function(emu_fuzz_jit_target isa)
                  COMMAND $<TARGET_FILE:${t}> -runs=0 -timeout=10 ${dir})
         set_tests_properties(${t}-regressions PROPERTIES
             PASS_REGULAR_EXPRESSION "Done [0-9]+ runs"
+            LABELS fuzz)
+    endif()
+
+    set(dict ${CMAKE_CURRENT_SOURCE_DIR}/dict/${isa}-jit.dict)
+    set(in ${CMAKE_CURRENT_BINARY_DIR}/dict-${isa})
+    if(EXISTS ${dict} AND Python3_FOUND)
+        add_test(NAME ${t}-dict
+                 COMMAND sh -c "\"$1\" \"$2\" --compose \"$3\" ${isa} && FUZZ_STATS=1 exec \"$4\" -runs=0 -timeout=10 \"$3/${isa}-jit-taken\""
+                         sh ${Python3_EXECUTABLE}
+                         ${PROJECT_SOURCE_DIR}/scripts/fuzz-dict.py ${in}
+                         $<TARGET_FILE:${t}>)
+        set_tests_properties(${t}-dict PROPERTIES
+            PASS_REGULAR_EXPRESSION
+                "1 inputs, 1 compared \\(1 touched a device, 1 took an interrupt\\)"
             LABELS fuzz)
     endif()
 endfunction()

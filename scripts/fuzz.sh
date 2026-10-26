@@ -19,7 +19,10 @@
 # and with 256-byte slices of real guest code, so the fuzzer starts from
 # instruction streams a compiler wrote rather than from nothing -- for
 # the three targets whose input begins with a configuration word, behind
-# four zero bytes, and PowerPC's both as VLE and as Book E. A divergence
+# four zero bytes, and PowerPC's both as VLE and as Book E -- and with the
+# hand-written device seeds (FUZZ_NO_DEVICE_SEEDS=1 leaves them out).
+# Each run gets the target's dictionary of device instructions,
+# tests/fuzz/dict/ (FUZZ_NO_DICT=1 leaves it out). A divergence
 # prints both sides and the program, and libFuzzer writes the input to
 # build/fuzz/artifacts/<TARGET>/crash-*.
 #
@@ -214,6 +217,15 @@ esac
 # default is twenty minutes, which is most of a run spent on one input
 # while the time limit says it fuzzed. A hang is reported like any other
 # finding, as timeout-* beside the crashes; a later -timeout wins.
+#
+# -dict: the target's dictionary, tests/fuzz/dict/, unless FUZZ_NO_DICT=1
+# -- the instructions that reach its devices, which mutating guest code
+# does not happen on (docs/fuzzing.md, "Dictionaries").
+DICT=
+if [ -z "${FUZZ_NO_DICT:-}" ] && [ -f "$ROOT/tests/fuzz/dict/$ISA-jit.dict" ]; then
+    DICT=-dict=$ROOT/tests/fuzz/dict/$ISA-jit.dict
+fi
 cd "$B/artifacts/$T"
+# shellcheck disable=SC2086 # DICT is empty or one word
 FUZZ_STATS=1 exec "$B/tests/fuzz/fuzz-$ISA-jit" -max_len=1024 \
-    -max_total_time="$SECS" -timeout=10 "$@" "$C"
+    -max_total_time="$SECS" -timeout=10 $DICT "$@" "$C"

@@ -11,7 +11,8 @@
 # so one mutant's finds cannot help the next -- and puts FILE back.
 # TARGET is any of fuzz.sh's: rv32, armv7m, g4mh, g4mh-smp, ppc.
 # FUZZ_NO_DEVICE_SEEDS=1 leaves the hand-written device seeds out, to ask
-# whether fuzzing reaches the mutant without being shown the way.
+# whether fuzzing reaches the mutant without being shown the way, and
+# FUZZ_NO_DICT=1 the dictionary of device instructions (fuzz.sh).
 #
 # Prints one verdict and the log:
 #

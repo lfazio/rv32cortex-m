@@ -1,0 +1,55 @@
+# fuzz-ppc-jit's dictionary: the instructions that reach the INTC.
+#
+# The input is a configuration word and the program, so a device's
+# address is no use as bytes: it has to be built in a register and
+# stored through, and an interrupt the store raises has to wait,
+# masked, for an enable the translator declines -- wrteei -- or the run
+# is set aside as asynchronous (fuzz_harness.h). Each token is one
+# step, as the assembly on the `#:` line above it, assembled by
+# scripts/fuzz-dict.py; the registers are the seeds' -- r10 the address,
+# r11-r13 the values -- so that tokens dropped into one input compose.
+# MSR[EE] starts clear and CPR at its highest.
+#
+# The `#!` line is the claim that they compose: in that order they
+# take software interrupt 0, compared on both backends. The fuzz tree's
+# fuzz-ppc-jit-dict test runs it (scripts/fuzz-dict.py --compose).
+#! cfg_booke intc0 zero_r11 cpr five_r12 psr0 two_r13 sscir0 wrteei_1
+#
+# Book E only, as the device seeds are: the configuration word below
+# selects it. The timers are not here, because a timer interrupt is set
+# aside (fuzz_ppc_jit.c).
+
+# The configuration word for Book E (CFG_BOOKE). Not assembly: the
+# input's first four bytes.
+cfg_booke="\x01\x00\x00\x00"
+
+# INTC0.
+#: lis %r10, 0xFFF4 | ori %r10, %r10, 0x8000
+intc0="\x3d\x40\xff\xf4\x61\x4a\x80\x00"
+
+# CPR to 0, a source's priority, its software set.
+#: li %r11, 0
+zero_r11="\x39\x60\x00\x00"
+#: stw %r11, 8(%r10)
+cpr="\x91\x6a\x00\x08"
+#: li %r12, 5
+five_r12="\x39\x80\x00\x05"
+#: stb %r12, 0x40(%r10)
+psr0="\x99\x8a\x00\x40"
+#: li %r13, 2
+two_r13="\x39\xa0\x00\x02"
+#: stb %r13, 0x20(%r10)
+sscir0="\x99\xaa\x00\x20"
+# The acknowledgement and the end of interrupt.
+#: lwz %r15, 0x10(%r10)
+iackr="\x81\xea\x00\x10"
+#: stw %r0, 0x18(%r10)
+eoir="\x90\x0a\x00\x18"
+
+# The enable.
+#: wrteei 1
+wrteei_1="\x7c\x00\x81\x46"
+#: wrteei 0
+wrteei_0="\x7c\x00\x01\x46"
+#: wait
+wait="\x7c\x00\x00\x7c"

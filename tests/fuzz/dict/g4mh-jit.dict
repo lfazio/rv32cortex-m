@@ -1,0 +1,64 @@
+# fuzz-g4mh-jit's dictionary: the instructions that reach INTC1, INTC2
+# and the IPIR.
+#
+# The input is a configuration word and the program, so a device's
+# address is no use as bytes: it has to be built in a register and
+# stored through, and an interrupt the store requests has to wait,
+# masked, for an enable the translator declines -- EI, LDSR -- or the
+# run is set aside as asynchronous (fuzz_harness.h). Without the device
+# seeds the fuzzer did not get there in 300 s (docs/fuzzing.md,
+# "Mutants"). Each token is one step, as the assembly on the `#:` line
+# above it, assembled by scripts/fuzz-dict.py with CC-RH; the registers
+# are the seeds' -- r10 the address, r11 the value -- so that tokens
+# dropped into one input compose. PSW.ID starts set.
+#
+# The `#!` line is the claim that they compose: in that order they
+# take EIINT3, compared on both backends. The fuzz tree's
+# fuzz-g4mh-jit-dict test runs it (scripts/fuzz-dict.py --compose).
+#! cfg_plain intc1_self eic_request eic3 ei
+
+# The configuration word with nothing set: supervisor, the FPU on, one
+# PE. Not assembly: the input's first four bytes.
+cfg_plain="\x00\x00\x00\x00"
+
+# INTC1 for this PE, INTC2, the IPIR.
+#: mov 0xFFFC0000, r10
+intc1_self="\x40\x56\xfc\xff"
+#: mov 0xFFF80000, r10
+intc2="\x40\x56\xf8\xff"
+#: mov 0xFFFB9000, r10
+ipir="\x2a\x06\x00\x90\xfb\xff"
+
+# An EIC value: EIRF, unmasked, priority 2; INTC2's 32-bit EEIC form.
+#: mov 0x1002, r11
+eic_request="\x20\x5e\x02\x10"
+#: mov 0x10000007, r11
+eeic_request="\x2b\x06\x07\x00\x00\x10"
+#: st.h r11, 0[r10]
+eic0="\x6a\x5f\x00\x00"
+#: st.h r11, 6[r10]
+eic3="\x6a\x5f\x06\x00"
+# INTC2 channel 40: bound to PE0, then requested.
+#: st.w r0, 0x20A0[r10]
+eibd40_pe0="\x6a\x07\xa1\x20"
+#: st.w r11, 0x40A0[r10]
+eeic40="\x6a\x5f\xa1\x40"
+# The IPIR: channel 0 accepted from PE0, then requested.
+#: mov 1, r11
+one_r11="\x01\x5a"
+#: st.b r11, 0[r10]
+ipiens0="\x4a\x5f\x00\x00"
+#: st.b r11, 0x10[r10]
+ipireqs0="\x4a\x5f\x10\x00"
+
+# The enable, and the priority ceiling.
+#: ei
+ei="\xe0\x87\x60\x01"
+#: di
+di="\xe0\x07\x60\x01"
+#: mov 16, r12
+sixteen_r12="\x20\x66\x10\x00"
+#: ldsr r12, 14, 2
+plmr_r12="\xec\x77\x20\x10"
+#: halt
+halt="\xe0\x07\x20\x01"

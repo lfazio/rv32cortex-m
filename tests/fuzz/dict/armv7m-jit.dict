@@ -1,0 +1,63 @@
+# fuzz-armv7m-jit's dictionary: the instructions that reach the NVIC
+# and the SCB.
+#
+# The input is a configuration word and the program, so a device's
+# address is no use as bytes: it has to be built in a register and
+# stored through, and an interrupt the store makes pending has to wait,
+# masked, for an enable the translator declines -- CPSIE, MSR -- or the
+# run is set aside as asynchronous (fuzz_harness.h). Without the device
+# seeds the fuzzer did not get there in 300 s (docs/fuzzing.md,
+# "Mutants"). Each token is one step, as the assembly on the `#:` line
+# above it, assembled by scripts/fuzz-dict.py; the registers are the
+# seeds' -- r0 the address, r1 the value -- so that tokens dropped into
+# one input compose. r1 starts at 0x80002020: IRQs 5, 13 and 31.
+#
+# The `#!` line is the claim that they compose: in that order they
+# take IRQ 5, compared on both backends. The fuzz tree's
+# fuzz-armv7m-jit-dict test runs it (scripts/fuzz-dict.py --compose).
+#! cfg_primask nvic_iser0 store_r1 nvic_ispr0 cpsie_i
+
+# The configuration word with PRIMASK set (CFG_PRIMASK), so a pended
+# interrupt waits for CPSIE. Not assembly: the input's first four bytes.
+cfg_primask="\x00\x04\x00\x00"
+
+# NVIC_ISER0, the SCB's ICSR, and STIR.
+#: movw r0, #0xE100 | movt r0, #0xE000
+nvic_iser0="\x4e\xf2\x00\x10\xce\xf2\x00\x00"
+#: movw r0, #0xED04 | movt r0, #0xE000
+scb_icsr="\x4e\xf6\x04\x50\xce\xf2\x00\x00"
+#: movw r0, #0xEF00 | movt r0, #0xE000
+nvic_stir="\x4e\xf6\x00\x70\xce\xf2\x00\x00"
+
+# Enable, pend and clear-pending, relative to ISER0.
+#: str r1, [r0]
+store_r1="\x01\x60"
+#: str.w r1, [r0, #0x100]
+nvic_ispr0="\xc0\xf8\x00\x11"
+#: str.w r1, [r0, #0x180]
+nvic_icpr0="\xc0\xf8\x80\x11"
+# ICSR's PENDSVSET and PENDSTSET.
+#: mov.w r1, #0x10000000
+pendsvset="\x4f\xf0\x80\x51"
+#: mov.w r1, #0x04000000
+pendstset="\x4f\xf0\x80\x61"
+
+# The masks: the enables are declined, so taken at the same boundary.
+#: cpsid i
+cpsid_i="\x72\xb6"
+#: cpsie i
+cpsie_i="\x62\xb6"
+#: cpsie f
+cpsie_f="\x61\xb6"
+#: msr basepri, r1
+basepri_r1="\x81\xf3\x11\x88"
+#: movs r2, #0
+zero_r2="\x00\x22"
+#: msr basepri, r2
+basepri_r2="\x82\xf3\x11\x88"
+#: msr primask, r2
+primask_r2="\x82\xf3\x10\x88"
+#: isb
+isb="\xbf\xf3\x6f\x8f"
+#: wfi
+wfi="\x30\xbf"

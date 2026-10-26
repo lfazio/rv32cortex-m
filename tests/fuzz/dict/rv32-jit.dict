@@ -1,0 +1,48 @@
+# fuzz-rv32-jit's dictionary: the instructions that reach the CLINT.
+#
+# The input is the program, so a device's address is no use as bytes:
+# it has to be built in a register and stored through, and an interrupt
+# the store raises has to wait, masked, for an enable the translator
+# declines -- or the run is set aside as asynchronous (fuzz_harness.h).
+# Without the device seeds the fuzzer did not get there in 300 s
+# (docs/fuzzing.md, "Mutants"). Each token is one step, as the assembly
+# on the `#:` line above it, assembled by scripts/fuzz-dict.py; the
+# registers are the seeds' -- t0 the address, t1 the value -- so that
+# tokens dropped into one input compose. mstatus.MIE starts clear and
+# mie with MSIE and MTIE set.
+#
+# The `#!` line is the claim that they compose: in that order they
+# take a software interrupt that both backends compare. The fuzz tree's
+# fuzz-rv32-jit-dict test runs it (scripts/fuzz-dict.py --compose).
+#! clint_msip one_t1 store_t1 mie_on
+
+# The CLINT's msip word, and its mtimecmp page.
+#: lui t0, 0x2000
+clint_msip="\xb7\x02\x00\x02"
+#: lui t0, 0x2004
+clint_mtimecmp="\xb7\x42\x00\x02"
+
+# msip reads bit 0, and t1 starts even.
+#: addi t1, zero, 1
+one_t1="\x13\x03\x10\x00"
+#: sw t1, 0(t0)
+store_t1="\x23\xa0\x62\x00"
+#: sw zero, 0(t0)
+store_zero="\x23\xa0\x02\x00"
+# mtimecmp's high word to zero puts it below mtime: MTIP.
+#: sw zero, 4(t0)
+store_zero_hi="\x23\xa2\x02\x00"
+
+# The enable, and the rest of what decides whether one is taken.
+#: csrsi mstatus, 8
+mie_on="\x73\x60\x04\x30"
+#: csrci mstatus, 8
+mie_off="\x73\x70\x04\x30"
+#: csrci mie, 8
+msie_off="\x73\x70\x44\x30"
+#: csrr a0, mip
+read_mip="\x73\x25\x40\x34"
+#: wfi
+wfi="\x73\x00\x50\x10"
+#: mret
+mret="\x73\x00\x20\x30"

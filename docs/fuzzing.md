@@ -174,6 +174,31 @@ region that `0x2000_0000` is not in, so the first five-minute run was
 seeded with nothing and its stats line said 0 of 37,617 compared runs
 had touched a device. That count is in the line for exactly this.
 
+### Dictionaries
+
+The seeds show the fuzzer whole programs; a dictionary gives it the
+words. `tests/fuzz/dict/<isa>-jit.dict` is a libFuzzer dictionary of
+the instructions that reach a target's devices -- an address built in
+a register, a store through it, a value, the enable the translator
+declines -- and `scripts/fuzz.sh` passes it to every run
+(`FUZZ_NO_DICT=1` leaves it out). The input is the program, so an
+address is no use as bytes: it has to arrive as the instructions that
+build it.
+
+Every token is written as assembly on the `#:` line above it, and
+`scripts/fuzz-dict.py` assembles them with the seeds' toolchains --
+CC-RH for G4MH -- and rewrites the bytes (`--check` compares, and
+fails a token that would need the linker). The `.dict` files are
+committed, as the G4MH seeds are. The tokens share the seeds'
+registers, so that two dropped into one input compose, and each
+dictionary's `#!` line names a sequence of them that takes an
+interrupt: `fuzz-<isa>-jit-dict`, in the fuzz tree's ctest, composes it
+(`fuzz-dict.py --compose`) and requires the run to be compared, to
+touch a device and to take an interrupt. A harness change that moved an
+initial register would leave every token valid and the dictionary
+meaning nothing; that test is what notices. Dropping the enable from
+RV32's sequence fails it.
+
 ## More than one core
 
 G4MH and PowerPC can give each side a second core, chosen per input by
