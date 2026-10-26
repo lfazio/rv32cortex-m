@@ -53,7 +53,13 @@ shift 5
 ISA=${T%-smp} # the binary: g4mh-smp is fuzz-g4mh-jit
 B=${FUZZ_BUILD:-$ROOT/build/fuzz-mutant}
 LOG=$B.$T.log
-BIN=$B/tests/fuzz/fuzz-$ISA-jit
+NAME=fuzz-$ISA-jit
+SET=$T-jit
+if [ "$T" = ir ]; then # the IR's own target, which has no frontend
+    NAME=fuzz-ir
+    SET=ir
+fi
+BIN=$B/tests/fuzz/$NAME
 ART=$B/artifacts/$T
 
 backup=$(mktemp)
@@ -84,7 +90,7 @@ open(path, "w").write(text.replace(old, new))
 PY
 
 mkdir -p "$B" # and its parent, where the log goes: a fresh checkout has no build/
-rm -rf "$B/corpus/$T-jit" "$ART"
+rm -rf "$B/corpus/$SET" "$ART"
 start=$(date +%s)
 status=0
 FUZZ_BUILD=$B FUZZ_SMP_BUILD=$B "$ROOT/scripts/fuzz.sh" "$SECS" "$T" "$@" \
@@ -118,7 +124,7 @@ if [ -z "$input" ]; then
     echo "found ($found), but no input was written to $ART; $LOG"
     exit 1
 fi
-if ! cmake --build "$B" --target "fuzz-$ISA-jit" >"$LOG.base" 2>&1; then
+if ! cmake --build "$B" --target "$NAME" >"$LOG.base" 2>&1; then
     echo "found ($found), but the unmutated build failed; $LOG.base"
     exit 1
 fi

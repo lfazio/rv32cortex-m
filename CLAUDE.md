@@ -94,8 +94,10 @@ BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
                                 # run: ratio, wall clock, translations, CRC
 ./scripts/board-pc-profile.py ELF  # where a -DEMU_PC_PROFILE=N firmware
                                 # spent its time, by function and line
-./scripts/fuzz.sh SECS [ISA|all]  # a frontend's interpreter against the
-                                # x86-64 JIT, under ASan/UBSan; docs/fuzzing.md
+./scripts/fuzz.sh SECS [ISA|ir|all]  # a frontend's interpreter against the
+                                # x86-64 JIT, under ASan/UBSan; `ir`: random
+                                # IR blocks, before the passes against the
+                                # compiled code; docs/fuzzing.md
 ./scripts/fuzz-mutant.sh SECS ISA FILE OLD NEW  # break a line on purpose
                                 # and see whether that fuzzer notices
 ./scripts/fuzz-dict.py [--check] # the device dictionaries' tokens, from
@@ -215,9 +217,17 @@ Each has cost more than one session, and every one recurred.
 - **A filter that keeps a harness safe decides what it can never ask.**
   rawgen kept ARMv7-M operands in r0-r12, so 557 sp/pc encodings the M7
   refuses had never been asked, and the frontend executed them all.
-- **The fuzzers find what the suites share a blind spot for**: thirteen
-  defects, six in an interpreter (docs/fuzzing.md). A UBSan report in
+- **The fuzzers find what the suites share a blind spot for**: sixteen
+  defects, eight in an interpreter (docs/fuzzing.md). A UBSan report in
   the interpreter is a finding even when both backends agree.
+- **A reference that declines what it does not model checks only what
+  is left -- and modelling more tests the checker.** `emu_ir_interp`
+  had no ADDI or multiply, so `EMU_JIT_DIFF` checked almost no real
+  block; given them, it showed a loop it ran once, FP state and mstatus
+  it never put back, and a device register it read before the compiled
+  code did. And a contract the passes state is a contract a frontend
+  may rely on later: `fuzz-ir` built the r15-is-the-pc block no
+  frontend emits yet, and a pass forwarded the old pc.
 - **A test input is checked against the mutant it is for**: a
   dictionary's own sequence took its interrupt and passed under a
   dispatcher that never takes one -- only interpreted code followed the
@@ -693,7 +703,7 @@ The SMP design is in [docs/os.md](docs/os.md#smp-on-the-host).
 - **No GPL emulator, even as a reference.** The references are the real
   boards, Sail, and Spike (BSD-3, built by `scripts/fetch-spike.sh`).
 - **The oracle is a reading too**: the interpreter was the wrong side
-  six times of thirteen; ask Sail and Spike or the board rather than reason
+  eight times of sixteen; ask Sail and Spike or the board rather than reason
   which to fix. Where no suite exists, write a probe
   (`tests/arch-test/probes/`, run by `scripts/run-probe.py` and
   `ctest -L probe`), with any permitted difference listed in it

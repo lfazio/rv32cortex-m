@@ -1425,7 +1425,11 @@ static block_fn_t block_entry(const uint8_t *code)
 static EMU_PER_CORE uint8_t g_diff_before[EMU_JIT_DIFF_MAX];
 static EMU_PER_CORE uint8_t g_diff_want[EMU_JIT_DIFF_MAX];
 
-/* Reported by the platform; see the host runner. */
+/*
+ * Reported by the platform; see the host runner. `off` is a byte offset
+ * into the guest state, or EMU_JIT_DIFF_RETIRED for the retired count.
+ */
+#define EMU_JIT_DIFF_RETIRED 0xFFFFFFFFu
 void emu_jit_diff_report(uint32_t pc, uint32_t off, uint32_t want,
                          uint32_t got);
 
@@ -1449,8 +1453,10 @@ static uint32_t run_block_checked(emu_cpu_t *cpu, const jit_block_t *b,
 
     const uint32_t pc = b->guest_pc;
 
+    uint32_t want_n = 0u;
+
     memcpy(g_diff_before, cpu, ops->state_bytes);
-    if (!ops->diff_ref(cpu)) {
+    if (!ops->diff_ref(cpu, &want_n)) {
         /* Declined -- restore and run normally, comparing nothing. */
         g_stats.diff_declined++;
         memcpy(cpu, g_diff_before, ops->state_bytes);
@@ -1470,8 +1476,11 @@ static uint32_t run_block_checked(emu_cpu_t *cpu, const jit_block_t *b,
         memcpy(&e, g_diff_want + off, 4u);
         if (a != e) {
             emu_jit_diff_report(pc, off, e, a);
-            break; /* the first divergence is the one */
+            return n; /* the first divergence is the one */
         }
+    }
+    if (n != want_n) {
+        emu_jit_diff_report(pc, EMU_JIT_DIFF_RETIRED, want_n, n);
     }
     return n;
 }

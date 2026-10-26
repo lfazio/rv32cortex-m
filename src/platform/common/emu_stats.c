@@ -133,6 +133,17 @@ bool emu_print_jit_stats(void)
                        (unsigned)js.thrashed, (unsigned)js.thrash_cached,
                        (unsigned)js.thrash_retries);
 
+#ifdef EMU_JIT_DIFF
+    /*
+     * Both, because "declined everything" and "agreed with everything"
+     * are the same silence. The line went missing when the board's and
+     * the host's reports became one (8f55ed0), and the documents went on
+     * saying it was here.
+     */
+    emu_console_printf("  jit-diff checked %u declined %u\n",
+                       (unsigned)js.diff_checked, (unsigned)js.diff_declined);
+#endif
+
 #ifdef EMU_JIT_PROFILE
     /*
      * Host cycles by phase, and the framework's rather than a frontend's:

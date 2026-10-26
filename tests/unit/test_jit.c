@@ -107,6 +107,30 @@ static const emu_jit_ops_t k_stub_ops = {
 /* A non-NULL cookie; the stub never dereferences it. */
 static emu_cpu_t *const k_cpu = (emu_cpu_t *)(uintptr_t)0x1000u;
 
+#if defined(EMU_JIT_DIFF)
+/*
+ * The platform's report, which the framework's check calls when a fresh
+ * block and the reference disagree -- recorded, so a test can ask what
+ * was said. Without a definition here no EMU_JIT_DIFF build of the tree
+ * linked: emu-host has the platform's, and no build-matrix row built the
+ * option until host-jitdiff.
+ */
+static unsigned g_diff_reports;
+static uint32_t g_diff_off, g_diff_want, g_diff_got;
+
+void emu_jit_diff_report(uint32_t pc, uint32_t off, uint32_t want,
+                         uint32_t got);
+void emu_jit_diff_report(uint32_t pc, uint32_t off, uint32_t want,
+                         uint32_t got)
+{
+    (void)pc;
+    g_diff_reports++;
+    g_diff_off = off;
+    g_diff_want = want;
+    g_diff_got = got;
+}
+#endif
+
 static uint32_t run_budget(uint32_t budget)
 {
     uint32_t retired = 0u;
@@ -405,6 +429,54 @@ static void test_blocks_are_per_context(void)
     CHECK_EQ(after.flushes - before.flushes, 0u);
     CHECK_EQ(after.blocks, 2u);
 }
+
+#if defined(EMU_JIT_DIFF)
+/*
+ * The check compares the retired count as well as the state: a reference
+ * that retired two where the block retired one is reported, as the count
+ * (EMU_JIT_DIFF_RETIRED, ~0) and not as a word of state. And one that
+ * agrees is not. A real cpu, because the check copies state_bytes of it.
+ */
+static uint32_t g_ref_retired;
+static uint32_t g_diff_cpu[4];
+
+static bool stub_diff_ref(emu_cpu_t *cpu, uint32_t *retired)
+{
+    (void)cpu;
+    *retired = g_ref_retired;
+    return true;
+}
+
+static const emu_jit_ops_t k_stub_diff_ops = {
+    .name = "stub-diff",
+    .bind = stub_bind_ctx,
+    .translate = stub_translate_ret1,
+    .interp = &k_stub_interp,
+    .diff_ref = stub_diff_ref,
+    .state_bytes = sizeof(g_diff_cpu),
+    .relocatable = false,
+};
+
+static void test_diff_compares_retired(void)
+{
+    for (uint32_t want = 1u; want <= 2u; want++) {
+        uint32_t retired = 0u;
+
+        emu_jit_flush();
+        g_ref_retired = want;
+        g_diff_reports = 0u;
+        g_ctx = CTX_LO;
+        (void)emu_jit_run((emu_cpu_t *)(void *)g_diff_cpu, 64u, &retired,
+                          &k_stub_diff_ops);
+        CHECK_EQ(g_diff_reports, want == 1u ? 0u : 1u);
+        if (want == 2u) {
+            CHECK_EQ(g_diff_off, 0xFFFFFFFFu);
+            CHECK_EQ(g_diff_want, 2u);
+            CHECK_EQ(g_diff_got, 1u);
+        }
+    }
+}
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Invalidating a range                                                */
@@ -1152,6 +1224,9 @@ void test_jit(void)
     test_declines_are_per_context();
 #if defined(EMU_HOST_JIT_X86_64)
     test_blocks_are_per_context();
+#if defined(EMU_JIT_DIFF)
+    test_diff_compares_retired();
+#endif
     test_invalidate_range_retires_only_overlap();
     test_invalidate_range_reopens_only_its_declines();
     test_overflow_compaction_unlinks();

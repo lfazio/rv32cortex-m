@@ -4,13 +4,16 @@
 # fuzz.sh - build the fuzz tree and run an interpreter-against-JIT
 # fuzzer.
 #
-#   scripts/fuzz.sh [SECONDS] [rv32|armv7m|g4mh|g4mh-smp|ppc|all] [libFuzzer options...]
+#   scripts/fuzz.sh [SECONDS] [rv32|armv7m|g4mh|g4mh-smp|ppc|ir|all] [libFuzzer options...]
 #
 # Configures build/fuzz (FUZZ_BUILD overrides) with clang and
 # -DEMU_FUZZ=ON, which builds the whole tree under ASan and UBSan with
 # libFuzzer's coverage instrumentation, and runs fuzz-<TARGET>-jit for
 # SECONDS (default 60; target default rv32; `all` runs the five in
-# turn, SECONDS each). g4mh-smp is fuzz-g4mh-jit built with three PEs,
+# turn, SECONDS each, and then ir). `ir` is fuzz-ir, which has no
+# frontend: random IR blocks through the passes and the x86-64 lowering,
+# against the IR interpreter on the block as built -- no seeds, no
+# dictionary, its regressions in tests/fuzz/regressions/ir/. g4mh-smp is fuzz-g4mh-jit built with three PEs,
 # in build/fuzz-smp (FUZZ_SMP_BUILD overrides): G4MH's translated stores
 # are built differently for one PE and for several, so a second PE is
 # only meaningful in a build that has one, and the configuration word
@@ -38,14 +41,14 @@ T=${1:-rv32}
 [ $# -gt 0 ] && shift
 
 case $T in
-rv32 | armv7m | g4mh | g4mh-smp | ppc | all) ;;
+rv32 | armv7m | g4mh | g4mh-smp | ppc | ir | all) ;;
 *)
-    echo "fuzz: no target '$T' (rv32, armv7m, g4mh, g4mh-smp, ppc or all)"
+    echo "fuzz: no target '$T' (rv32, armv7m, g4mh, g4mh-smp, ppc, ir or all)"
     exit 2
     ;;
 esac
 if [ "$T" = all ]; then
-    for t in rv32 armv7m g4mh ppc g4mh-smp; do
+    for t in rv32 armv7m g4mh ppc g4mh-smp ir; do
         "$0" "$SECS" "$t" "$@" || exit 1
     done
     exit 0
@@ -55,8 +58,16 @@ fi
 ISA=$T
 EXTRA=
 B=${FUZZ_BUILD:-$ROOT/build/fuzz}
+# The binary, and the name its corpus and regressions go under.
+BIN=fuzz-$T-jit
+SET=$T-jit
+if [ "$T" = ir ]; then
+    BIN=fuzz-ir
+    SET=ir
+fi
 if [ "$T" = g4mh-smp ]; then
     ISA=g4mh
+    BIN=fuzz-g4mh-jit
     EXTRA=-DG4MH_PE_COUNT=3
     B=${FUZZ_SMP_BUILD:-$ROOT/build/fuzz-smp}
 fi
@@ -75,7 +86,7 @@ ppc) GUESTS="guest-ppc-coremark guest-ppc-dhrystone guest-ppc-alu" ;;
 *) GUESTS="" ;;
 esac
 JOBS=$(nproc 2>/dev/null || echo 4)
-if ! cmake --build "$B" -j"$JOBS" --target "fuzz-$ISA-jit" \
+if ! cmake --build "$B" -j"$JOBS" --target "$BIN" \
         >"$B.build.log" 2>&1; then
     echo "fuzz: build failed, see $B.build.log"
     tail -n 5 "$B.build.log"
@@ -90,9 +101,11 @@ for g in $GUESTS; do
     fi
 done
 
-C=$B/corpus/$T-jit
+C=$B/corpus/$SET
 mkdir -p "$C" "$B/artifacts/$T"
-cp "$ROOT"/tests/fuzz/regressions/"$ISA"-jit/* "$C"/ 2>/dev/null || true
+REG=$ISA-jit
+[ "$T" = ir ] && REG=ir
+cp "$ROOT"/tests/fuzz/regressions/"$REG"/* "$C"/ 2>/dev/null || true
 
 # seed IMAGE NAME [CONFIG...]: 256-byte slices of IMAGE, each behind
 # each 4-byte configuration word given as octal escapes for printf.
@@ -227,5 +240,5 @@ if [ -z "${FUZZ_NO_DICT:-}" ] && [ -f "$ROOT/tests/fuzz/dict/$ISA-jit.dict" ]; t
 fi
 cd "$B/artifacts/$T"
 # shellcheck disable=SC2086 # DICT is empty or one word
-FUZZ_STATS=1 exec "$B/tests/fuzz/fuzz-$ISA-jit" -max_len=1024 \
+FUZZ_STATS=1 exec "$B/tests/fuzz/$BIN" -max_len=1024 \
     -max_total_time="$SECS" -timeout=10 $DICT "$@" "$C"

@@ -24,9 +24,9 @@ measured at.
 
 - [ ] **Fuzz testing.** The first target exists for every frontend
       and has paid: `fuzz-<isa>-jit`, the interpreter against the
-      x86-64 JIT ([fuzzing.md](fuzzing.md)), thirteen defects, six of
-      them in an interpreter, one a whole class of ARMv7-M encodings the
-      board then answered. The rest of this item is still open. Before
+      x86-64 JIT, and `fuzz-ir` for the IR alone ([fuzzing.md](fuzzing.md)):
+      sixteen defects, eight of them in an interpreter, one a whole
+      class of ARMv7-M encodings the board then answered. The rest of this item is still open. Before
       it, the tree had generation, not fuzzing:
       `tests/armv7m-diff/rawgen.py` (raw encodings against the F746),
       the property tests over whole encoding spaces (ARMv7-M's decoder
@@ -50,10 +50,12 @@ measured at.
     fuzzed. Interrupt controllers are mapped for every frontend, and
     G4MH and PowerPC run two cores ([fuzzing.md](fuzzing.md#more-than-one-core)).
     No GPL emulator, not even as a reference.
-  - **The IR**: random blocks through the passes and both lowerings,
-    checked against `emu_ir_interp` on the *unoptimised* IR, stores
-    included. `ir_diff_ref` runs the optimised IR and declines any
-    block with a store, which is how the x0 forwarding bug passed it.
+  - **The IR**: done for the passes and the x86-64 lowering
+    (`fuzz-ir`). Not reached: the Thumb-2 lowering, which runs only on
+    a board -- its corpus replayed there would be the way; `pass_mac`,
+    which forms a multiply-accumulate only where the backend lowers
+    one, and x86-64 does not; and the FP exception flags, which the
+    reference does not compute.
   - **Translation and protection**: Sv32 page tables, PMP and the
     data TLB, G4MH's and ARMv7-M's MPUs, PowerPC's TLB, each against
     a brute-force reference walk. A cache must agree with what it

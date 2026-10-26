@@ -508,9 +508,11 @@ typedef struct emu_jit_ops {
      * compiled code would each perform those effects, and a store
      * cannot be undone by restoring registers.
      *
-     * state_bytes is how much of emu_cpu_t to snapshot and compare.
+     * state_bytes is how much of emu_cpu_t to snapshot and compare,
+     * and `retired` receives the instructions the reference retired,
+     * which the compiled block's return value must equal.
      */
-    bool (*diff_ref)(emu_cpu_t *cpu);
+    bool (*diff_ref)(emu_cpu_t *cpu, uint32_t *retired);
     uint32_t state_bytes;
 
     /*

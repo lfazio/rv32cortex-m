@@ -550,6 +550,34 @@ static void test_setpc_kept_when_a_register_reads_it(void)
     CHECK_EQ(live_setpcs(), 0x0u);
 }
 
+/*
+ * The register that is the pc, read on both sides of a SETPC: the second
+ * read is the new pc and must not be forwarded from the first. It was
+ * -- pass_reg_traffic knew SETPC as nothing but a pc write -- and then
+ * pass_dead_puts, seeing no read of r15 after it, deleted the SETPC as
+ * overwritten. fuzz-ir's `pc-register-forwarded-across-setpc`.
+ *
+ * Register 14 is the control: read twice across the same SETPC, it is
+ * forwarded, and the SETPC goes.
+ */
+static void test_pc_register_not_forwarded_across_setpc(void)
+{
+    for (uint32_t r = 14u; r <= 15u; r++) {
+        emu_ir_opt_stats_t st;
+
+        emu_ir_reset(&g_b);
+        emu_ir_put(&g_b, 1u, emu_ir_get(&g_b, r));
+        setpc(0x7004u);
+        emu_ir_put(&g_b, 2u, emu_ir_get(&g_b, r));
+        (void)emu_ir_emit(&g_b, EMU_IR_EXIT, 0u, NOT, NOT, 0x7008u, 0u);
+        emu_ir_optimise(&g_b, &g_pcreg_target, EMU_IR_F_ALL, &st);
+
+        CHECK_EQ(st.gets_removed, r == 15u ? 0u : 1u);
+        CHECK_EQ(count_op(EMU_IR_GET), r == 15u ? 2u : 1u);
+        CHECK_EQ(live_setpcs(), r == 15u ? 0x1u : 0x0u);
+    }
+}
+
 /* With no target there is no telling which GET reads the pc. */
 static void test_setpc_untouched_without_a_target(void)
 {
@@ -1348,7 +1376,7 @@ static void diff_one(uint32_t seed_r1, uint32_t seed_r2)
 
     /* The block is optimised in place, so interpret first. */
     emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, NULL);
-    if (!emu_ir_interp(&g_b, (emu_cpu_t *)&a, &g_fake_target)) {
+    if (!emu_ir_interp(&g_b, (emu_cpu_t *)&a, &g_fake_target, NULL)) {
         CHECK(false);
         return;
     }
@@ -1619,7 +1647,8 @@ static void test_lower_predicated_memory(void)
                 bool ok;
                 if (way == 0u) {
                     emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, NULL);
-                    ok = emu_ir_interp(&g_b, (emu_cpu_t *)&cpu, &g_fake_target);
+                    ok = emu_ir_interp(&g_b, (emu_cpu_t *)&cpu, &g_fake_target,
+                                       NULL);
                 } else {
                     ok = lower_and_run(&cpu);
                 }
@@ -2071,7 +2100,8 @@ static uint32_t fp_eval(emu_ir_op_t op, uint8_t aux, uint32_t x, uint32_t y)
     }
     emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, NULL);
 
-    if (!emu_ir_interp(&g_b, (emu_cpu_t *)(void *)&cpu, &g_fake_target)) {
+    if (!emu_ir_interp(&g_b, (emu_cpu_t *)(void *)&cpu, &g_fake_target,
+                       NULL)) {
         return 0xDEADBEEFu;
     }
     return (uint32_t)cpu.f[3];
@@ -2110,7 +2140,8 @@ static void test_fp_box_reference(void)
                           4u, 0u);
     }
     emu_ir_optimise(&g_b, &g_fake_target, EMU_IR_F_ALL, NULL);
-    if (!emu_ir_interp(&g_b, (emu_cpu_t *)(void *)&cpu, &g_fake_target)) {
+    if (!emu_ir_interp(&g_b, (emu_cpu_t *)(void *)&cpu, &g_fake_target,
+                       NULL)) {
         CHECK(false);
         return;
     }
@@ -2763,6 +2794,7 @@ void test_ir(void)
     test_setpc_dead_before_exit();
     test_setpc_across_conditional_exit();
     test_setpc_kept_when_a_register_reads_it();
+    test_pc_register_not_forwarded_across_setpc();
     test_setpc_untouched_without_a_target();
     test_get_not_elided_across_helper();
     test_dead_values();

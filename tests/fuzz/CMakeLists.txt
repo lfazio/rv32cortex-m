@@ -86,3 +86,37 @@ endif()
 if(EMU_GUEST_ARCH_PPC)
     emu_fuzz_jit_target(ppc)
 endif()
+
+#
+# The IR itself, with no frontend: random blocks through the passes and
+# the x86-64 lowering, against the IR interpreter on the block as built
+# (fuzz_ir.c). The smoke test must show blocks compared *and* the passes
+# doing something to them -- a generator whose blocks no pass touched
+# would compare two copies of one program. Not `mac`: x86-64 lowers no
+# multiply-accumulate, so pass_mac forms none here.
+#
+add_executable(fuzz-ir fuzz_ir.c)
+target_link_libraries(fuzz-ir PRIVATE emucore)
+target_link_options(fuzz-ir PRIVATE -fsanitize=fuzzer)
+target_compile_options(fuzz-ir PRIVATE -Wall -Wextra -Wundef)
+# From a copy of the regressions, as scripts/fuzz.sh starts: from nothing,
+# three thousand runs never grow past the inputs that build one-line
+# blocks. A copy, because libFuzzer writes what it finds into the first
+# corpus directory it is given.
+add_test(NAME fuzz-ir-smoke
+         COMMAND sh -c "rm -rf ir-smoke && mkdir ir-smoke && cp \"$1\"/* ir-smoke/ && FUZZ_STATS=1 exec \"$2\" -runs=3000 -seed=1 -max_len=512 -timeout=10 ir-smoke"
+                 sh ${CMAKE_CURRENT_SOURCE_DIR}/regressions/ir
+                 $<TARGET_FILE:fuzz-ir>)
+set_tests_properties(fuzz-ir-smoke PROPERTIES
+    PASS_REGULAR_EXPRESSION
+        "[1-9][0-9]* compared.*[1-9][0-9]* looped.*[1-9][0-9]* trapped.*\n.*puts [1-9][0-9]* .*folded [1-9][0-9]* addr [1-9][0-9]* .*retires [1-9]"
+    LABELS fuzz)
+file(GLOB _ir_saved ${CMAKE_CURRENT_SOURCE_DIR}/regressions/ir/*)
+if(_ir_saved)
+    add_test(NAME fuzz-ir-regressions
+             COMMAND $<TARGET_FILE:fuzz-ir> -runs=0 -timeout=10
+                     ${CMAKE_CURRENT_SOURCE_DIR}/regressions/ir)
+    set_tests_properties(fuzz-ir-regressions PROPERTIES
+        PASS_REGULAR_EXPRESSION "Done [0-9]+ runs"
+        LABELS fuzz)
+endif()

@@ -37,6 +37,11 @@ void emu_jit_diff_report(uint32_t pc, uint32_t off, uint32_t want, uint32_t got)
     if (reported++ >= 12u) {
         return;
     }
+    if (off == 0xFFFFFFFFu) { /* EMU_JIT_DIFF_RETIRED */
+        emu_console_printf("jit-diff pc 0x%08x retired want %u got %u\n",
+                           (unsigned)pc, (unsigned)want, (unsigned)got);
+        return;
+    }
     emu_console_printf("jit-diff pc 0x%08x +%u want 0x%08x got 0x%08x\n",
                        (unsigned)pc, (unsigned)off, (unsigned)want,
                        (unsigned)got);

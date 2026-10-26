@@ -3830,6 +3830,44 @@ session, and every one of them recurred:
   in it is worth 21% on that row, twice what this file had said layout
   could do.
 
+- **A reference that declines what it does not model checks only what
+  is left, and modelling more is a test of the checker.** `fuzz-ir`
+  needed `emu_ir_interp` to run the IR before the passes, so it had to
+  model everything a block holds -- and it had never had ADDI, ANDI,
+  ORI, XORI, the rotates or the multiplies. Every block holding one, which
+  is most of them, had been declined by `EMU_JIT_DIFF` for as long as it
+  existed. Given them, the checker reported mismatches on guests that are
+  right, and each was the checker: a block closing on itself ran once in
+  the reference and to the loop cap in compiled code (HEAD already
+  reported these on CoreMark, on loops with no ADDI); the framework put
+  back only the integer registers and the pc, so the FP registers and
+  mstatus the reference wrote were still there when the compiled block
+  ran, and Whetstone's `__kernel_cosf` took the other branch; and the
+  reference read isatest's APLIC claim register before the compiled code
+  did, which then read 0. Its counters were not even printed: the line
+  went when the board's and the host's reports became one, and three
+  documents went on quoting it. And no build-matrix row built the
+  option: the first that did found the unit tests no longer linked.
+
+  The fuzzer itself found three in its first twenty minutes of runs. Two were the
+  reference -- a NaN that was the host's instead of the canonical one
+  both lowerings produce, and `-(int32_t)` of INT_MIN -- and one a pass:
+  a read of the register that is the pc forwarded across a SETPC, after
+  which `pass_dead_puts`, seeing no read of the pc, deleted the SETPC.
+  No frontend reads r15 twice across a SETPC today; `emu_ir.h` says a
+  register may be the pc, and that is a promise to the next frontend.
+  **A contract is tested by building what it allows, not what today's
+  callers happen to emit.**
+
+  And the first mutants said as much about the generator as about the
+  code. A zero-register mutant that took the check out of one side of
+  the pass changed nothing, because the other side still refused; a
+  window guard bounded by the last aligned slot instead of the last byte
+  is the same test whenever the window's size is a multiple of four, so
+  it could not be found until the machine had RAM of 4,093 bytes in a
+  buffer that ends there. **A mutant not found is first a question
+  about the mutant.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

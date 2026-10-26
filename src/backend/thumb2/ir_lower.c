@@ -1648,11 +1648,11 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
 
         if (in->op == (uint8_t)EMU_IR_ADDI && v <= 0xFFFu) {
             t2_addw(rd, ra, (uint16_t)v);
-        } else if (in->op == (uint8_t)EMU_IR_ADDI &&
-                   (uint32_t)(-(int32_t)v) <= 0xFFFu) {
+        } else if (in->op == (uint8_t)EMU_IR_ADDI && 0u - v <= 0xFFFu) {
             /* A negative addend is a subtraction, and SUBW reaches the
-             * same 4096 downwards that ADDW reaches upwards. */
-            t2_subw(rd, ra, (uint16_t)(-(int32_t)v));
+             * same 4096 downwards that ADDW reaches upwards. Negated as
+             * unsigned: -(int32_t)v is undefined for 0x80000000. */
+            t2_subw(rd, ra, (uint16_t)(0u - v));
         } else if (t2_expand_imm(v, &i12)) {
             switch ((emu_ir_op_t)in->op) {
             case EMU_IR_ADDI:

@@ -227,6 +227,18 @@ static EMU_ALWAYS_INLINE bool ir_isnan(float v)
     return v != v;
 }
 
+/*
+ * An arithmetic result that is a NaN is the canonical one, whatever the
+ * operands were (emu_ir.h). Both lowerings make it so -- x86-64 tests
+ * each result, Thumb-2 runs with FPSCR.DN -- and C on x86 does not: 0/0
+ * is the "real indefinite" 0xFFC00000 and a NaN operand's payload comes
+ * through. fuzz-ir found the reference disagreeing on its first FDIV.
+ */
+static EMU_ALWAYS_INLINE uint32_t canon(float v)
+{
+    return ir_isnan(v) ? 0x7FC00000u : f2b(v);
+}
+
 /* Round to an integral float under an EMU_IR_FRM_* mode. */
 static float ir_round(float v, uint8_t aux)
 {
@@ -292,13 +304,120 @@ static uint32_t ir_fclass(uint32_t bits)
     return neg ? (1u << 1) : (1u << 6);
 }
 
+/* How one pass over the block ended. */
+typedef enum {
+    IR_RUN_DECLINED, /* something it does not model; nothing changed */
+    IR_RUN_DONE,     /* fell off the end, left, or trapped            */
+    IR_RUN_LOOP      /* a constant exit to the block's own start      */
+} ir_run_t;
+
+static ir_run_t interp_once(const emu_ir_block_t *b, emu_cpu_t *cpu,
+                            const emu_ir_target_t *t, uint32_t *retired);
+
+/*
+ * A constant exit to the block's own start is a back edge in both
+ * lowerings, taken while fewer than EMU_JIT_LOOP_CAP instructions have
+ * retired since the block was entered -- so compiled code that closes on
+ * itself runs the body again, and a reference that stopped after one
+ * pass would disagree with it on every loop. A computed exit is never
+ * one: the address is not known when the code is emitted.
+ */
 bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
-                   const emu_ir_target_t *t)
+                   const emu_ir_target_t *t, uint32_t *retired)
 {
-    static uint32_t tmp[EMU_IR_MAX_TEMPS];
+    uint32_t n = 0u;
+    ir_run_t r;
 
     if (b->overflow) {
         return false;
+    }
+    do {
+        r = interp_once(b, cpu, t, &n);
+        if (r == IR_RUN_DECLINED) {
+            return false;
+        }
+    } while (r == IR_RUN_LOOP && n < EMU_JIT_LOOP_CAP);
+    if (retired != NULL) {
+        *retired = n;
+    }
+    return true;
+}
+
+/*
+ * One pass. Declining is decided before anything is written, so a
+ * declined block has changed nothing -- which a loop's second pass could
+ * not promise, and why everything that declines is found up front.
+ */
+static bool interp_models(const emu_ir_block_t *b, const emu_ir_target_t *t)
+{
+    for (uint32_t i = 0; i < b->count; i++) {
+        const emu_ir_insn_t *const in = &b->insn[i];
+
+        if (in->dead) {
+            continue;
+        }
+        switch ((emu_ir_op_t)in->op) {
+        case EMU_IR_FSQRT:
+        case EMU_IR_FMA:
+            return false; /* see their cases below */
+        case EMU_IR_FGET:
+        case EMU_IR_FPUT:
+            if (t->freg_offset == NULL) {
+                return false;
+            }
+            break;
+        case EMU_IR_LOAD:
+            if (t->load == NULL) {
+                return false;
+            }
+            break;
+        case EMU_IR_STORE:
+            if (t->store == NULL) {
+                return false;
+            }
+            break;
+        case EMU_IR_BITOP_SET:
+        case EMU_IR_BITOP_CLR:
+        case EMU_IR_BITOP_INV:
+        case EMU_IR_BITOP_TST:
+            if (t->load == NULL || t->store == NULL) {
+                return false;
+            }
+            break;
+        case EMU_IR_HELPER:
+        case EMU_IR_HELPER_TRAP:
+            if (t->helpers == NULL || in->imm >= t->helper_count) {
+                return false;
+            }
+            break;
+        case EMU_IR_OP_COUNT:
+            return false;
+        default:
+            if (in->op >= (uint8_t)EMU_IR_OP_COUNT) {
+                return false;
+            }
+            break;
+        }
+    }
+    return true;
+}
+
+/*
+ * The helper convention, which is the lowerings' and not a guess: both
+ * pass the cpu and the two operands, and take the result from the
+ * return register (x86-64 rdi, esi, edx -> eax; Thumb-2 r0, r1, r2 ->
+ * r0). A helper declared with fewer parameters ignores the rest under
+ * both conventions, as it does when compiled code calls it.
+ */
+typedef uint32_t (*ir_helper_fn)(emu_cpu_t *cpu, uint32_t a, uint32_t b);
+
+static ir_run_t interp_once(const emu_ir_block_t *b, emu_cpu_t *cpu,
+                            const emu_ir_target_t *t, uint32_t *retired)
+{
+    static uint32_t tmp[EMU_IR_MAX_TEMPS];
+
+    if (!interp_models(b, t)) {
+        return IR_RUN_DECLINED;
     }
 
     for (uint32_t i = 0; i < b->count; i++) {
@@ -313,7 +432,10 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
 
         switch ((emu_ir_op_t)in->op) {
         case EMU_IR_NOP:
+            continue;
+        /* `imm` instructions, 0 meaning 1: pass_merge_retire folds runs. */
         case EMU_IR_RETIRE:
+            *retired += (in->imm != 0u) ? in->imm : 1u;
             continue;
 
         case EMU_IR_GET:
@@ -344,6 +466,48 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
         case EMU_IR_AND:
             r = a & bv;
             break;
+        /*
+         * The immediate forms, the rotates and the multiplies were
+         * missing here, so every block holding one -- an ADDI is most
+         * blocks -- was declined, and EMU_JIT_DIFF checked what was left.
+         */
+        case EMU_IR_ADDI:
+            r = a + in->imm;
+            break;
+        case EMU_IR_ANDI:
+            r = a & in->imm;
+            break;
+        case EMU_IR_ORI:
+            r = a | in->imm;
+            break;
+        case EMU_IR_XORI:
+            r = a ^ in->imm;
+            break;
+        case EMU_IR_ROTL: {
+            const uint32_t k = bv & 31u;
+            r = (k == 0u) ? a : ((a << k) | (a >> (32u - k)));
+            break;
+        }
+        case EMU_IR_ROTLI: {
+            const uint32_t k = in->imm & 31u;
+            r = (k == 0u) ? a : ((a << k) | (a >> (32u - k)));
+            break;
+        }
+        case EMU_IR_MUL:
+            r = a * bv;
+            break;
+        case EMU_IR_MULHS:
+            r = (uint32_t)((uint64_t)((int64_t)(int32_t)a *
+                                      (int64_t)(int32_t)bv) >> 32);
+            break;
+        case EMU_IR_MULHU:
+            r = (uint32_t)(((uint64_t)a * (uint64_t)bv) >> 32);
+            break;
+        case EMU_IR_MAC: {
+            const uint32_t c = (in->c != EMU_IR_NO_TEMP) ? tmp[in->c] : 0u;
+            r = ((in->aux & EMU_IR_MAC_SUB) != 0u) ? c - a * bv : c + a * bv;
+            break;
+        }
         /*
          * The divides carry a precondition -- non-zero divisor, and no
          * INT_MIN / -1 -- which the frontend guarantees by substituting
@@ -397,7 +561,7 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
             break;
 
         case EMU_IR_NEG:
-            r = (uint32_t)(-(int32_t)a);
+            r = 0u - a; /* not -(int32_t)a, undefined for INT_MIN (fuzz-ir) */
             break;
         case EMU_IR_NOT:
             r = ~a;
@@ -456,9 +620,6 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
          * is not guaranteed to be 8-aligned inside emu_cpu_t.
          */
         case EMU_IR_FGET: {
-            if (t->freg_offset == NULL) {
-                return false;
-            }
             const uint8_t *const p =
                 (const uint8_t *)cpu + t->freg_offset(in->imm);
 
@@ -471,9 +632,6 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
         }
 
         case EMU_IR_FPUT: {
-            if (t->freg_offset == NULL) {
-                return false;
-            }
             uint8_t *const p = (uint8_t *)cpu + t->freg_offset(in->imm);
 
             *(uint32_t *)p = a;
@@ -484,16 +642,16 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
         }
 
         case EMU_IR_FADD:
-            r = f2b(b2f(a) + b2f(bv));
+            r = canon(b2f(a) + b2f(bv));
             break;
         case EMU_IR_FSUB:
-            r = f2b(b2f(a) - b2f(bv));
+            r = canon(b2f(a) - b2f(bv));
             break;
         case EMU_IR_FMUL:
-            r = f2b(b2f(a) * b2f(bv));
+            r = canon(b2f(a) * b2f(bv));
             break;
         case EMU_IR_FDIV:
-            r = f2b(b2f(a) / b2f(bv));
+            r = canon(b2f(a) / b2f(bv));
             break;
         /*
          * Square root is declined here, not approximated.
@@ -509,7 +667,7 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
          * as blocks containing a store already do.
          */
         case EMU_IR_FSQRT:
-            return false;
+            return IR_RUN_DECLINED; /* interp_models said so first */
 
         /*
          * The fused multiply-adds, declined for the same reason and with
@@ -528,7 +686,7 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
          * with a store or a square root already do.
          */
         case EMU_IR_FMA:
-            return false;
+            return IR_RUN_DECLINED; /* likewise */
 
         /*
          * A NaN operand gives the *other* operand, which is what both
@@ -647,7 +805,9 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
         case EMU_IR_EXIT:
             *word_at(cpu, t->pc_offset) =
                 (in->a != EMU_IR_NO_TEMP) ? a : in->imm;
-            return true;
+            return (emu_ir_exit_is_const(in) && in->imm == b->start_pc)
+                       ? IR_RUN_LOOP
+                       : IR_RUN_DONE;
 
         case EMU_IR_EXIT_IF:
             /*
@@ -668,7 +828,7 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
              */
             if (eval_value_cond(a, bv, in->aux)) {
                 *word_at(cpu, t->pc_offset) = in->imm;
-                return true;
+                return (in->imm == b->start_pc) ? IR_RUN_LOOP : IR_RUN_DONE;
             }
             continue;
 
@@ -677,26 +837,20 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
          * unspecified; zero here, so a reference run is repeatable.
          */
         case EMU_IR_LOAD:
-            if (t->load == NULL) {
-                return false;
-            }
             if (in->c != EMU_IR_NO_TEMP && tmp[in->c] == 0u) {
                 break;
             }
             if (t->load(cpu, a + in->imm, in->aux, &r) != 0u) {
-                return true; /* trapped; pc is in the handler */
+                return IR_RUN_DONE; /* trapped; pc is in the handler */
             }
             break;
 
         case EMU_IR_STORE:
-            if (t->store == NULL) {
-                return false;
-            }
             if (in->c != EMU_IR_NO_TEMP && tmp[in->c] == 0u) {
                 continue;
             }
             if (t->store(cpu, a + in->imm, in->aux, bv) != 0u) {
-                return true;
+                return IR_RUN_DONE;
             }
             continue;
 
@@ -709,16 +863,13 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
         case EMU_IR_BITOP_CLR:
         case EMU_IR_BITOP_INV:
         case EMU_IR_BITOP_TST: {
-            if (t->load == NULL || t->store == NULL) {
-                return false;
-            }
             const uint32_t adr = a + in->imm;
             const uint32_t mask = 1u << (bv & 7u);
             const uint32_t spec = EMU_IR_MEM_AUX(1u, 0u);
             uint32_t token = 0u;
 
             if (t->load(cpu, adr, spec, &token) != 0u) {
-                return true;
+                return IR_RUN_DONE;
             }
 
             uint32_t *const fw = word_at(cpu, t->flags_offset);
@@ -740,25 +891,31 @@ bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
                 out ^= mask;
             }
             if (t->store(cpu, adr, spec, out) != 0u) {
-                return true;
+                return IR_RUN_DONE;
             }
             continue;
         }
 
         /*
-         * A helper still needs the frontend's own signature, which
-         * emu_ir_target_t exposes only as opaque pointers. Refusing is
-         * honest; guessing a signature is not.
+         * Called as the lowerings call it (ir_helper_fn). A non-zero
+         * return from the trapping form means the helper entered a trap,
+         * and the block stops there, its result unwritten.
          */
         case EMU_IR_HELPER:
         case EMU_IR_HELPER_TRAP:
+            r = ((ir_helper_fn)(uintptr_t)t->helpers[in->imm])(cpu, a, bv);
+            if (in->op == (uint8_t)EMU_IR_HELPER_TRAP && r != 0u) {
+                return IR_RUN_DONE;
+            }
+            break;
+
         default:
-            return false;
+            return IR_RUN_DECLINED; /* interp_models said so first */
         }
 
         if (in->dst != EMU_IR_NO_TEMP && in->dst < EMU_IR_MAX_TEMPS) {
             tmp[in->dst] = r;
         }
     }
-    return true;
+    return IR_RUN_DONE;
 }

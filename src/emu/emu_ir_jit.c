@@ -246,14 +246,59 @@ static uint32_t ir_translate(emu_cpu_t *cpu, uint32_t pc,
  * reference and the compiled code would perform those effects, and
  * restoring registers does not undo a store -- least of all to a
  * peripheral.
+ *
+ * And any block that writes guest state past `diff_state_bytes`, which
+ * is all the framework snapshots and puts back: an FP register, or a
+ * register or flag word the frontend keeps further on (RV32 marks FS in
+ * mstatus). The reference's write would still be there when the
+ * compiled code ran, which then started from a state the guest was never
+ * in: Whetstone's __kernel_cosf read back the fa0 the reference had
+ * just multiplied and took the other branch. These were declined only
+ * by accident until the reference modelled ORI.
+ *
+ * And a load is the reference's only where it is plain memory: the
+ * block's RAM window or its image (diff_load). Anywhere else may be a
+ * device, where a read is an action -- isatest's read of the APLIC's
+ * claim register acknowledged the interrupt, and the compiled code,
+ * reading second, got 0 -- or may fault, and a fault writes trap state
+ * nothing puts back. So such a load stops the reference and the block
+ * is declined, after it has run as far as that.
  */
-static bool ir_diff_ref(emu_cpu_t *cpu, const emu_ir_frontend_t *fe)
+static EMU_PER_CORE const emu_ir_target_t *g_diff_target;
+static EMU_PER_CORE bool g_diff_left;
+
+static bool in_window(const emu_ir_fastmem_t *w, bool has, uint32_t addr,
+                      uint32_t size)
 {
+    return has && size <= w->size && addr - w->base <= w->size - size;
+}
+
+static uint32_t diff_load(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
+                          uint32_t *out)
+{
+    const uint32_t size = EMU_IR_MEM_SIZE(spec);
+
+    if (in_window(&g_ir.fast, g_ir.has_fast, addr, size) ||
+        in_window(&g_ir.rom, g_ir.has_fast && g_ir.has_rom, addr, size)) {
+        return g_diff_target->load(cpu, addr, spec, out);
+    }
+    g_diff_left = true;
+    return 1u; /* "trapped": the reference stops here */
+}
+
+static bool ir_diff_ref(emu_cpu_t *cpu, uint32_t *retired,
+                        const emu_ir_frontend_t *fe)
+{
+    const emu_ir_target_t *const t = fe->target;
+    static EMU_PER_CORE emu_ir_target_t plain;
+
     for (uint32_t i = 0; i < g_ir.count; i++) {
-        if (g_ir.insn[i].dead) {
+        const emu_ir_insn_t *const in = &g_ir.insn[i];
+
+        if (in->dead) {
             continue;
         }
-        switch ((emu_ir_op_t)g_ir.insn[i].op) {
+        switch ((emu_ir_op_t)in->op) {
         case EMU_IR_STORE:
         case EMU_IR_HELPER:
         case EMU_IR_HELPER_TRAP:
@@ -261,12 +306,30 @@ static bool ir_diff_ref(emu_cpu_t *cpu, const emu_ir_frontend_t *fe)
         case EMU_IR_BITOP_CLR:
         case EMU_IR_BITOP_INV:
         case EMU_IR_BITOP_TST:
+        case EMU_IR_FPUT:
             return false;
+        case EMU_IR_PUT:
+            if (t->reg_offset(in->imm) + 4u > fe->diff_state_bytes) {
+                return false;
+            }
+            break;
+        case EMU_IR_SETF:
+            if (t->flags_offset + 4u > fe->diff_state_bytes) {
+                return false;
+            }
+            break;
         default:
             break;
         }
     }
-    return emu_ir_interp(&g_ir, cpu, fe->target);
+    plain = *t;
+    plain.load = diff_load;
+    g_diff_target = t;
+    g_diff_left = false;
+    if (!emu_ir_interp(&g_ir, cpu, &plain, retired)) {
+        return false;
+    }
+    return !g_diff_left;
 }
 #endif
 
@@ -278,9 +341,9 @@ static bool ir_diff_ref(emu_cpu_t *cpu, const emu_ir_frontend_t *fe)
  */
 #ifdef EMU_JIT_DIFF
 #define EMU_IR_DIFF_HOOK(fe, prefix)                                           \
-    static bool prefix##_diff_ref(emu_cpu_t *cpu)                              \
+    static bool prefix##_diff_ref(emu_cpu_t *cpu, uint32_t *retired)          \
     {                                                                          \
-        return ir_diff_ref(cpu, &(fe));                                        \
+        return ir_diff_ref(cpu, retired, &(fe));                               \
     }
 #define EMU_IR_DIFF_FIELDS(prefix)                                             \
     .diff_ref = prefix##_diff_ref,                                             \

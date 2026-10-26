@@ -435,10 +435,37 @@ static bool reg_is_zero(const emu_ir_target_t *t, uint32_t n)
     return t != NULL && t->reg_is_zero != NULL && t->reg_is_zero(n);
 }
 
+/*
+ * The guest register that *is* the pc, if one is -- ARMv7-M's r15 --
+ * or IR_MAX_GUEST_REGS. Found once per target, since the passes run per
+ * translation and the answer is fixed.
+ */
+static uint32_t pc_reg(const emu_ir_target_t *t)
+{
+    static EMU_PER_CORE const emu_ir_target_t *seen;
+    static EMU_PER_CORE uint32_t reg;
+
+    if (t == NULL || t->reg_offset == NULL) {
+        return IR_MAX_GUEST_REGS;
+    }
+    if (t != seen) {
+        reg = IR_MAX_GUEST_REGS;
+        for (uint32_t n = 0; n < IR_MAX_GUEST_REGS; n++) {
+            if (t->reg_offset(n) == t->pc_offset) {
+                reg = n;
+                break;
+            }
+        }
+        seen = t;
+    }
+    return reg;
+}
+
 static void pass_reg_traffic(emu_ir_block_t *b, const emu_ir_target_t *t,
                              emu_ir_opt_stats_t *st)
 {
     uint16_t cur[IR_MAX_GUEST_REGS];
+    const uint32_t pcr = pc_reg(t);
     static EMU_PER_CORE uint16_t copy[EMU_IR_MAX_TEMPS];
 
     for (uint32_t i = 0; i < IR_MAX_GUEST_REGS; i++) {
@@ -501,6 +528,20 @@ static void pass_reg_traffic(emu_ir_block_t *b, const emu_ir_target_t *t,
             /* May touch anything. */
             for (uint32_t r = 0; r < IR_MAX_GUEST_REGS; r++) {
                 cur[r] = EMU_IR_NO_TEMP;
+            }
+            break;
+
+        /*
+         * A write of the pc is a write of the register that is the pc.
+         * Forwarding a read of r15 from before a SETPC to one after it
+         * gave the old pc -- and then pass_dead_puts, seeing no read of
+         * the pc left, deleted the SETPC as overwritten. No frontend
+         * reads that register twice across a SETPC today (ARMv7-M reads
+         * it only after a helper); fuzz-ir built the block that does.
+         */
+        case EMU_IR_SETPC:
+            if (pcr < IR_MAX_GUEST_REGS) {
+                cur[pcr] = EMU_IR_NO_TEMP;
             }
             break;
 

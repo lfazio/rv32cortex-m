@@ -1,12 +1,14 @@
 # Fuzzing
 
-Four targets, one per frontend, each the interpreter against the x86-64
-JIT on whatever bytes libFuzzer produces. Between them they found
-thirteen defects in code that every suite passed -- six of them in an
-interpreter, which is the reference -- and one of those turned out to
-be a whole class, which a board then answered encoding by encoding. One
-more, in G4MH's interrupt ceiling, was found by writing a seed for the
-interrupt controllers each target now maps: both backends shared it.
+Five targets: one per frontend, each the interpreter against the
+x86-64 JIT on whatever bytes libFuzzer produces, and one for the IR
+itself, with no frontend ([below](#the-ir-with-no-frontend)). Between
+them they found sixteen defects in code that every suite passed --
+eight of them in an interpreter, which is the reference -- and one of
+those turned out to be a whole class, which a board then answered
+encoding by encoding. One more, in G4MH's interrupt ceiling, was found
+by writing a seed for the interrupt controllers each target now maps:
+both backends shared it.
 
 | target | the reference, when the two disagree |
 |---|---|
@@ -14,12 +16,13 @@ interrupt controllers each target now maps: both backends shared it.
 | `fuzz-armv7m-jit` | the interpreter; the Nucleo-F746ZG for what it might have wrong (`tests/armv7m-diff/`) |
 | `fuzz-g4mh-jit` | the interpreter and the manual, and nothing else: no RH850 is attached |
 | `fuzz-ppc-jit` | the interpreter and the manual, and nothing else: no e200 is attached |
+| `fuzz-ir` | the IR interpreter on the block as built, before any pass; the rules both lowerings state in `emu_ir.h` for what it might have wrong |
 
 No GPL emulator is consulted, by any of them.
 
 ```sh
 scripts/fuzz.sh 600 armv7m   # build build/fuzz, seed it, fuzz ten minutes
-scripts/fuzz.sh 600 all      # the four in turn
+scripts/fuzz.sh 600 all      # the five in turn, and G4MH on three PEs
 FUZZ_STATS=1 build/fuzz/tests/fuzz/fuzz-armv7m-jit crash-...   # replay one
 cd build/fuzz && ctest -L fuzz   # each target's smoke run and saved regressions
 ```
@@ -243,6 +246,97 @@ parked; what its second core exercises is the blocks, the reservation
 path and the shared memory. A G4MH PE can wake the other through the
 IPIR (`pe1-wakes-pe0`).
 
+## The IR, with no frontend
+
+`fuzz-ir` (`tests/fuzz/fuzz_ir.c`) builds IR blocks itself, from the
+input, rather than through a translator, and runs each three ways from
+one initial state:
+
+| run | what | a difference from `want` means |
+|---|---|---|
+| `want` | `emu_ir_interp` on the block as built, before any pass | -- |
+| `opt` | `emu_ir_interp` on the block after `emu_ir_optimise` | a pass is wrong |
+| `got` | the optimised block lowered to x86-64 and called | the lowering is wrong, if `opt` agrees |
+
+`EMU_JIT_DIFF` runs the reference on the *optimised* IR, which cannot
+see a defect in a pass -- the zero-register forwarding passed it
+([lessons.md](lessons.md)). Here the reference runs the block before any
+pass touched it.
+
+The machine is made up, and small on purpose: sixteen registers, a flag
+word in one of three layouts (low bits, ARM's N Z C V at the top, none),
+eight FP registers held 64 bits wide so the NaN box means something, a
+page of RAM, a page of read-only image, a four-byte device whose reads
+count and whose writes are logged -- so an access deleted or repeated
+shows -- and four helpers which between them read the registers, the pc
+and the flags and write a register and the flags. The input chooses
+whether r0 reads as zero and whether r15 *is* the pc, as on ARMv7-M, and
+how memory is reached: through the target's load and store, the RAM
+window whole or in part, the image window, or a four-entry data TLB
+with RAM writable or not, and the store guard up or down. Compared:
+every register, the flags, the pc, the FP registers, all of RAM, the
+device's count and log, every helper call in order, the trap and the
+pc it was taken at, and the retired count.
+
+It builds only what the contract in [emu_ir.h](../include/emu/emu_ir.h)
+allows, in the orders the frontends use, since anything else would
+report a difference no translator can cause. Each instruction writes the
+pc first and retires before any exit (a back edge that retires nothing
+loops for ever, in compiled code too); a divisor is never zero or -1; a
+predicated load's result is selected away with a mask, as ARMv7-M's IT
+blocks do. It asks `emu_ir_can_lower` exactly where a frontend would,
+and not otherwise -- its default is false, so asked about ADD it says
+no. SELECT, POPCNT and ROTL with a register amount are left out: no
+backend lowers all of them and no frontend emits them.
+
+```sh
+scripts/fuzz.sh 600 ir     # its regressions are tests/fuzz/regressions/ir/
+FUZZ_SHOW=1 build/fuzz/tests/fuzz/fuzz-ir crash-...   # print the block, both ways
+```
+
+What it found, in its first hour -- all three by fuzzing from nothing:
+
+| defect | where | held by |
+|---|---|---|
+| a NaN result was the host's -- 0/0 is x86's 0xFFC00000, and a NaN operand's payload came through -- where both lowerings produce the canonical 0x7FC00000 | the IR **interpreter**, `interp.c`; the rule is in `emu_ir.h` now | `ir/fdiv-nan-not-canonical-in-reference` |
+| NEG computed `-(int32_t)a`, undefined for INT_MIN; the Thumb-2 lowering's ADDI had the same expression (by reading, not run) | the IR **interpreter**; `thumb2/ir_lower.c` | `ir/neg-int-min-undefined-in-reference` (UBSan) |
+| **a read of the register that is the pc was forwarded across a SETPC**, giving the old pc; and `pass_dead_puts`, seeing no read of it left, deleted the SETPC as overwritten. `emu_ir.h` says a guest register may be the pc; no frontend reads it twice across a SETPC today -- ARMv7-M reads r15 only straight after a helper -- so it waited for the next one that did | `pass_reg_traffic` | `test_pc_register_not_forwarded_across_setpc`, `ir/pc-register-forwarded-across-setpc` |
+
+After the fixes, ten minutes on four workers (`-jobs=4`), from the
+regressions: 5,658,718 blocks built, 5,595,340 compared, 63,378 not
+lowered; 1,279,298 ran their body more than once and 1,523,363
+trapped; 10.1M helper calls and 13.2M accesses through the
+target's functions, 907,097 of them to the device. The passes elided
+10.6M reloads and 10.5M stores, folded 3.0M constants and 1.9M
+displacements and merged 28.1M retirements -- and formed no
+multiply-accumulate, below. Nothing found.
+
+Mutants (`scripts/fuzz-mutant.sh 120 ir ...`), each a defect this tree
+has had or a guard a lowering keeps, all found:
+
+| mutant | where | found |
+|---|---|---|
+| the zero register forwarded, as before 2b35810 (`reg_is_zero` answering no) | `pass_reg_traffic` | by fuzzing, 3 s |
+| a load not an observer, so a PUT before a faulting load is dropped (riscv-tests' `ma_addr`) | `op_observes_state` | by fuzzing, 4 s |
+| a load counted pure, so an unread one is deleted (the device read `pmpsm_cfg_A_tor_zero` caught) | `op_is_pure` | by fuzzing, 3 s |
+| RETIREs merged across an observer, so an early exit is charged for what it skipped | `pass_merge_retire` | by fuzzing, 4 s |
+| a helper not an observer of the pc, so the SETPC before it is deleted | `pass_dead_puts` | by fuzzing, 3 s |
+| an address fold that replaces the displacement instead of adding to it | `pass_fuse` | by fuzzing, 4 s |
+| a store probing the data TLB with the load tag, so a read-only page takes it | x86-64 `emit_inline_guard` | by fuzzing, 6 s |
+| the window guard bounding the last aligned slot instead of the last byte | x86-64 `emit_window_guard` | by `ram-window-last-byte-held`, 3 s; not by 120 s of fuzzing without it |
+
+The last is the same test as the right one whenever a window's size is
+a multiple of four, and the bytes past a window are the same either way
+when it is part of a larger buffer -- so the machine has a mode with
+4,093 bytes of RAM ending where its buffer does, and the input that
+loads across that end is kept, since fuzzing did not build it in two
+minutes.
+
+What it cannot see: the FP exception flags, which the reference does not
+compute; FSQRT and FMA, which it declines; the Thumb-2 lowering, which
+needs a board; and `pass_mac`, which forms a multiply-accumulate only
+where the backend lowers one, and x86-64 does not.
+
 ## What it found
 
 Each fix was confirmed by reverting it with its regression in place.
@@ -362,8 +456,9 @@ in the scripts:
 ## Things worth keeping from finding them
 
 - **The interpreter is the reference, and was the one that was wrong
-  -- six times out of thirteen.** The RV32 probe asked Sail and
-  Spike rather than reasoning about which backend to fix. On mcycle they
+  -- eight times out of sixteen**, two of them the IR's own. The RV32
+  probe asked Sail and Spike rather than reasoning about which backend
+  to fix. On mcycle they
   disagree with each other -- Sail charges a trap a cycle, Spike does
   not -- and cycles are the implementation's to define, so mcycle
   follows minstret on both backends.
@@ -420,8 +515,9 @@ in the scripts:
 ## Adding a finding
 
 Fix it, confirm the fix by reverting it, and copy the input to
-`tests/fuzz/regressions/<isa>-jit/` under a name that says what it found;
-`fuzz-<isa>-jit-regressions` replays the directory. Where the defect can
+`tests/fuzz/regressions/<isa>-jit/` -- `regressions/ir/` for `fuzz-ir`
+-- under a name that says what it found; `fuzz-<isa>-jit-regressions`
+and `fuzz-ir-regressions` replay the directories. Where the defect can
 reach a board -- a translator or a backend -- add a guest check as well:
 the fuzzers run only on x86-64. Where the two backends agree and the
 reference might be wrong, ask whatever can answer: Sail and Spike for

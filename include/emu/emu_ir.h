@@ -327,6 +327,11 @@ typedef enum emu_ir_op {
      * ARM, where the old run-time table mapped RISC-V's ties-away to
      * ties-even and no test noticed.
      *
+     * **A NaN result is the canonical one, 0x7FC00000**, whatever the
+     * operands were -- the rule both guests with floats have. x86-64
+     * tests each arithmetic result for it, Thumb-2 runs with FPSCR.DN
+     * set, and emu_ir_interp canonicalises too, where host C would not.
+     *
      * A block that contains any of these accumulates the host's sticky
      * exception flags and hands them to the frontend once, at the block
      * epilogue -- see emu_ir_target_t.fp_flags. Per-operation would be
@@ -1178,9 +1183,19 @@ typedef struct emu_ir_frontend {
  *
  * Returns false for a block containing something it does not model, in
  * which case the caller has made no progress and nothing was changed.
+ * That is EMU_IR_FSQRT and EMU_IR_FMA, which it cannot round as a host
+ * does without libm, and an access or a helper the target has no
+ * function for.
+ *
+ * It runs a block as the lowerings do, not merely its instructions:
+ * a constant exit to `b->start_pc` is a back edge taken while fewer than
+ * EMU_JIT_LOOP_CAP instructions have retired since entry, and helpers
+ * are called as `uint32_t (*)(emu_cpu_t *, uint32_t a, uint32_t b)`,
+ * the convention both lowerings use. `retired`, if not NULL, receives
+ * the count a compiled block returns.
  */
 bool emu_ir_interp(const emu_ir_block_t *b, emu_cpu_t *cpu,
-                   const emu_ir_target_t *t);
+                   const emu_ir_target_t *t, uint32_t *retired);
 
 #ifdef __cplusplus
 }
