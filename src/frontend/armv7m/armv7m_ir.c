@@ -354,10 +354,10 @@ typedef struct {
     uint16_t cond;
     uint16_t cmask; /* 0 or ~0 from `cond`, made on first use      */
     /*
-     * ITSTATE for this member, and xPSR as it was at the IT instruction
-     * -- with ITSTATE zero, since no block begins inside one. What a
-     * member that accesses memory needs to make a fault stack the
-     * right state; see it_access.
+     * ITSTATE for this member, and xPSR as it was just before its
+     * access -- with ITSTATE zero, since no block begins inside one and
+     * every access puts it back. What a member that accesses memory
+     * needs to make a fault stack the right state; see it_access.
      */
     uint32_t itstate;
     uint16_t it_xpsr;
@@ -470,12 +470,22 @@ static void wreg(T *t, uint32_t n, uint16_t v)
  * stores.
  *
  * Outside an IT block both are free: no predicate, no xPSR traffic.
+ *
+ * **xPSR as it is at this access, not as the block found it.** An
+ * earlier member can have written it -- SMLABT, QADD and SSAT set Q --
+ * and a value read once at the IT instruction put the old one back
+ * around every later access, so Q set inside an IT block was lost as
+ * soon as a load or a store followed it there. fuzz-armv7m-jit, with
+ * the device dictionary: `smlabtcs` then `ldrhcs` that faulted, the
+ * exception stacking xPSR without Q
+ * (armv7m-jit/q-set-in-it-lost-at-access).
  */
 static uint16_t it_access(T *t)
 {
     if (!t->in_it) {
         return NOT;
     }
+    t->it_xpsr = G(t->b, R_XPSR);
     emu_ir_put(t->b, R_XPSR,
                OP(t->b, EMU_IR_OR, t->it_xpsr,
                   K(t->b, armv7m_it_put(0u, t->itstate))));
@@ -2010,9 +2020,6 @@ static uint32_t lower_it(T *t, const I *it, uint32_t room, uint32_t *next_pc,
 
     (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, NOT, NOT, 0u, 0u);
     set_pc(b, cur);
-    /* Swept if no member accesses memory. */
-    const uint16_t xpsr0 = G(b, R_XPSR);
-
     for (uint32_t i = 0u; i < n; i++) {
         uint16_t w0;
         uint16_t w1;
@@ -2032,7 +2039,7 @@ static uint32_t lower_it(T *t, const I *it, uint32_t room, uint32_t *next_pc,
         m.cond = cond01(b, state >> 4);
         m.cmask = NOT;
         m.itstate = state;
-        m.it_xpsr = xpsr0;
+        m.it_xpsr = NOT; /* read at the access: see it_access */
         m.ends = false;
         m.counted = false;
         if (must_decline(&d) || !lower_native(&m, &d) || m.ends) {

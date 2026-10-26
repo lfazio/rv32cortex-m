@@ -24,8 +24,8 @@ measured at.
 
 - [ ] **Fuzz testing.** The first target exists for every frontend
       and has paid: `fuzz-<isa>-jit`, the interpreter against the
-      x86-64 JIT ([fuzzing.md](fuzzing.md)), nine defects, four of them
-      in an interpreter, one a whole class of ARMv7-M encodings the
+      x86-64 JIT ([fuzzing.md](fuzzing.md)), thirteen defects, six of
+      them in an interpreter, one a whole class of ARMv7-M encodings the
       board then answered. The rest of this item is still open. Before
       it, the tree had generation, not fuzzing:
       `tests/armv7m-diff/rawgen.py` (raw encodings against the F746),
@@ -81,10 +81,15 @@ measured at.
       and where the PEs share a table (`--serial`, a board with
       `G4MH_PE_COUNT > 1`) two PEs whose MPU generations differ would
       discard every block at every switch between them. PowerPC made
-      its counter one for all cores for exactly that reason. Unmeasured.
-      The PE is part of a block's context now (each PE its own blocks,
-      since a block bakes in its PE's local RAM), so the generation
-      could be per PE too, in the context or the key.
+      its counter one for all cores for exactly that reason. Measured at
+      8979eec: none today. The three-PE `smp.bin` under `--serial --jit`
+      flushes 7 times and none of them is the generation's (a print at
+      the generation flush, confirmed in the binary, never fired) --
+      no G4MH guest writes the MPU, so every PE's count stays at its
+      reset's. It bites the first multi-PE guest that programs its PEs'
+      MPUs differently. The PE is part of a block's context now (each
+      PE its own blocks, since a block bakes in its PE's local RAM), so
+      the generation could be per PE too, in the context or the key.
 - [ ] **Autovectorisation of the IR pipeline.**
 - [ ] **A flush after start-up is worth 17% on the F746, by itself.**
       RV32 Dhrystone runs at 19.19 host cycles an instruction with the

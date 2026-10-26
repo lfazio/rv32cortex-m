@@ -1,11 +1,11 @@
 # Fuzzing
 
 Four targets, one per frontend, each the interpreter against the x86-64
-JIT on whatever bytes libFuzzer produces. Between them they found nine
-defects in code that every suite passed -- four of them in an
+JIT on whatever bytes libFuzzer produces. Between them they found
+thirteen defects in code that every suite passed -- six of them in an
 interpreter, which is the reference -- and one of those turned out to
-be a whole class, which a board then answered encoding by encoding. A
-tenth, in G4MH's interrupt ceiling, was found by writing a seed for the
+be a whole class, which a board then answered encoding by encoding. One
+more, in G4MH's interrupt ceiling, was found by writing a seed for the
 interrupt controllers each target now maps: both backends shared it.
 
 | target | the reference, when the two disagree |
@@ -197,7 +197,8 @@ interrupt: `fuzz-<isa>-jit-dict`, in the fuzz tree's ctest, composes it
 touch a device and to take an interrupt. A harness change that moved an
 initial register would leave every token valid and the dictionary
 meaning nothing; that test is what notices. Dropping the enable from
-RV32's sequence fails it.
+RV32's sequence fails it. What they buy is measured under
+[Mutants](#mutants): reach, not finds.
 
 ## More than one core
 
@@ -243,6 +244,7 @@ Each fix was confirmed by reverting it with its regression in place.
 | **a block one PE built ran on another and read the first PE's memory**: the translator inlines accesses to the region the stack is in by host address, the stack was in local RAM through the SELF window, and the block's context was the user-mode bit alone, so PE1 found PE0's loop and read PE0's stack. Wherever PEs share a table -- `--serial`, a board with more than one -- as soon as a guest keeps its stack where a U2B program does. Found on the first run of the two-PE target, by the seed written for it | `g4mh_jit_ctx_refresh`: the PE is in the context now | `test_mc_self_window_blocks`, `g4mh-jit/stack-through-self` |
 | a block holding an FP operation made FS Dirty on every exit, even a side exit taken before it -- permitted by the spec, until the program cleared one FS bit (`csrrc mstatus`) and the JIT showed Clean where the interpreter showed Off. And the interpreter left FS Clean when a compare or a conversion to integer raised a flag, where Sail and Spike both go Dirty (`probes/fsdirty.S`) | `rv_ir.c` (`rv_ir_fp_flags`, FS marked at a block's first f write, `fput`) and the RV32 **interpreter** (`f_accrue`) | `probes/fsdirty.S`, `rv32-jit/side-exit-fs-dirty`; the target now compares mstatus exactly |
 | an LDSR lowering the interrupt ceiling (PLMR, ISPR, INTCFG) never made the core look again, so the channel it admitted stayed pending; the manual says the next instruction sees it. **Found by writing a seed, not by a divergence**: both backends run LDSR in the interpreter | the G4MH core, `g4mh_sr_write` | `test_ldsr_lowers_ceiling` |
+| **Q set inside an IT block was lost at the next load or store in it**: the translator put xPSR back, as the IT instruction had found it, around every access in the block, so a multiply-accumulate's saturation vanished -- from the live xPSR and from the frame a fault stacked. Found during the dictionary sessions (below), in an input that touches no device | `armv7m_ir.c`, `it_access` | the `itblock` guest's `IT-Q-across-access` (on the F746 it fails with the old translator), `armv7m-jit/q-set-in-it-lost-at-access` |
 
 And inputs held for the permitted differences above:
 `rv32-jit/flw-fault-fs-dirtier` (no longer a difference: FS is exact), `rv32-jit/trap-first-in-block-run-count`
@@ -297,6 +299,35 @@ when the interrupt became deliverable *inside* translated code -- a
 store to the NVIC -- and those runs are set aside as asynchronous. The
 set-aside rule's blind spot is exactly where B lives.
 
+**A dictionary raises reach; it did not find a mutant.** The same three
+mutants, without the seeds, 300 s, libFuzzer seeds 1 and 2: without a
+dictionary and with the first one at 20a104a, and with the second at
+c264744. Compared runs that touched a device, and that took an
+interrupt:
+
+| mutant | device: none / first / second | interrupt: none / first / second | found |
+|---|---|---|---|
+| A, RV32 | 10, 95 / 855, 148 / 83, 657 | 0 / 28 / 0 | no |
+| A, ARMv7-M | 972, 748 / 2,956, 2,468 / -, 2,898 | 0 / 0 / 0 | no |
+| A, G4MH | 667, 239 / 703, 582 / 1,070, 696 | 0 / 0 / 28 | no |
+| C, G4MH | 16, 2,629 / 1,215, 3,998 / 617, 502 | 0 / 20 / 47 | no |
+
+The first dictionary's own `#!` sequence passed under mutant A: its
+enable was followed by the ECALL fill, which runs in the interpreter,
+so both backends took the interrupt there and a dispatcher that never
+takes one went unseen. One translated instruction after the enable and
+they disagree. The second form carries that pair as one token, and each
+dictionary's sequence was shown by hand to disagree under A on all four
+targets and under C on G4MH (the ctest shows only that it takes its
+interrupt on the unmutated build). Still, 300 s did not put four or
+five tokens in order with nothing between them that traps. **A
+dictionary gives the words; the seeds give the sentence**, and they
+remain what finds a device mutant. The dictionaries stay: they are
+cheap and multiply the runs that reach a device. ARMv7-M's first
+session with the second form stopped at a JIT defect instead (the Q
+flag, above), in an input with no device in it, so not to the
+dictionary's credit that anyone can show.
+
 Three things made the first session's verdicts worthless, each fixed
 in the scripts:
 
@@ -313,7 +344,7 @@ in the scripts:
 ## Things worth keeping from finding them
 
 - **The interpreter is the reference, and was the one that was wrong
-  -- four times out of nine.** The RV32 probe asked Sail and
+  -- six times out of thirteen.** The RV32 probe asked Sail and
   Spike rather than reasoning about which backend to fix. On mcycle they
   disagree with each other -- Sail charges a trap a cycle, Spike does
   not -- and cycles are the implementation's to define, so mcycle

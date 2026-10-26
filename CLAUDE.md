@@ -214,9 +214,14 @@ Each has cost more than one session, and every one recurred.
 - **A filter that keeps a harness safe decides what it can never ask.**
   rawgen kept ARMv7-M operands in r0-r12, so 557 sp/pc encodings the M7
   refuses had never been asked, and the frontend executed them all.
-- **The fuzzers find what the suites share a blind spot for**: nine
-  defects, four in an interpreter (docs/fuzzing.md). A UBSan report in
+- **The fuzzers find what the suites share a blind spot for**: thirteen
+  defects, six in an interpreter (docs/fuzzing.md). A UBSan report in
   the interpreter is a finding even when both backends agree.
+- **A test input is checked against the mutant it is for**: a
+  dictionary's own sequence took its interrupt and passed under a
+  dispatcher that never takes one -- only interpreted code followed the
+  enable. And a dictionary gives the words, not the sentence: it
+  multiplied device reach and found no mutant the seeds find.
 - **A differential fuzzer cannot see what both sides share, and a seed
   is a test: run each alone and read what it did** (`FUZZ_SHOW=1`).
   G4MH's LDSR to PLMR never made the core look for an interrupt; both
@@ -353,6 +358,9 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   late, which the architecture permits.
 - **A decision needs the information it depends on**: chainability fixed
   in the prologue missed an `FPUT` in the body, and FS stayed Clean.
+- **A value read once for a span is stale for every write inside it**:
+  a translated IT block put back xPSR as the IT found it around each
+  access, losing Q a member had set (`armv7m-jit/q-set-in-it-lost-at-access`).
 
 ### The JIT: lowering, declining, the framework
 
@@ -678,7 +686,7 @@ The SMP design is in [docs/os.md](docs/os.md#smp-on-the-host).
 - **No GPL emulator, even as a reference.** The references are the real
   boards, Sail, and Spike (BSD-3, built by `scripts/fetch-spike.sh`).
 - **The oracle is a reading too**: the interpreter was the wrong side
-  four times of nine; ask Sail and Spike or the board rather than reason
+  six times of thirteen; ask Sail and Spike or the board rather than reason
   which to fix. Where no suite exists, write a probe
   (`tests/arch-test/probes/`, run by `scripts/run-probe.py` and
   `ctest -L probe`), with any permitted difference listed in it

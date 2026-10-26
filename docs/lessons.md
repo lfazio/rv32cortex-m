@@ -3749,6 +3749,38 @@ session, and every one of them recurred:
   earlier tests had used the FPU. **A strange number from the reference
   is a question about the test's own state first.**
 
+- **A dictionary gives the words; the seeds give the sentence.** Without
+  the hand-written device seeds no fuzzer found a device mutant in
+  300 s, so each target got a libFuzzer dictionary of the instructions
+  that reach its devices. Sixteen sessions later the dictionaries had
+  multiplied the compared runs that touched a device (RV32 from 10 to
+  855 in one pair) and produced the only runs that took an interrupt
+  -- and found nothing. Then the dictionaries' own composed sequence,
+  the proof that the tokens fit together, turned out to pass under the
+  mutant it was meant to catch: it ended at the enable, the rest of the
+  program was the ECALL fill, which the JIT also runs in the
+  interpreter, and the interpreter took the interrupt on both sides.
+  One translated instruction after the enable and the backends
+  disagreed. **A test input is checked against the mutant it is for**,
+  not only against the unmutated build; the fixed tokens still found
+  nothing in another eight sessions. Reach is not detection: the
+  relation the mutant hides behind -- enable, then translated code --
+  has to be in the input, and four tokens in order with nothing between
+  them that traps is a sentence random mutation does not write in five
+  minutes.
+
+- **A value read once for a span is stale for every write inside it.**
+  A translated IT block read xPSR at the IT instruction and, around
+  every member that accessed memory, put that value back with the
+  member's ITSTATE -- so that a fault inside the block would stack the
+  right state. A member before the access that wrote xPSR itself
+  (SMLABT setting Q) was undone at the access, in the live register and
+  in the stacked frame alike. It needed a Q-setter, an IT block and a
+  memory access in one block; the fuzzer found it during the dictionary
+  sessions, in an input with no device in it, where a fault made the
+  stacked copy differ. The `itblock` guest now checks Q across an
+  access, and on the F746 it fails with the old translator.
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

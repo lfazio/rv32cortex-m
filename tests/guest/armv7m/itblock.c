@@ -393,6 +393,32 @@ int main(void)
         want("IT-fault-else-skipped", got_n, 0u);
     }
 
+    /*
+     * Q set inside an IT block survives an access later in it. The
+     * translator put xPSR back as the IT instruction found it around
+     * each access, so a multiply-accumulate's Q was lost to the load
+     * after it (armv7m-jit/q-set-in-it-lost-at-access). SMLABB because
+     * it is what the translator lowers with Q: 0x7FFF squared plus
+     * 0x7FFFFFFF overflows.
+     */
+    {
+        static volatile unsigned word = 5u;
+        unsigned v;
+        unsigned apsr;
+
+        __asm__ volatile("msr      apsr_nzcvq, %2\n\t"
+                         "cmp      %2, #0\n\t"
+                         "itt      eq\n\t"
+                         "smlabbeq %0, %3, %3, %4\n\t"
+                         "ldreq    %0, [%5]\n\t"
+                         "mrs      %1, apsr\n\t"
+                         : "=&r"(v), "=&r"(apsr)
+                         : "r"(0u), "r"(0x7FFFu), "r"(0x7FFFFFFFu), "r"(&word)
+                         : "cc", "memory");
+        want("IT-Q-across-access", (apsr >> 27) & 1u, 1u);
+        want("IT-Q-load", v, 5u);
+    }
+
     if (g_fail == 0u) {
         ps_("ARMV7M-IT-OK\n");
     }
