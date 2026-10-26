@@ -156,3 +156,69 @@ sys_pendsv_misaligned:
     sub     r0, r4, r0          /* 4 if sp came back exactly */
     add     sp, sp, #4
     pop     {r4, pc}
+
+/*
+ * SVCall handlers that each return by one pc-writer, the value being
+ * lr's EXC_RETURN: does that instruction make an exception return in
+ * Handler mode? The manual names BX, LDR, POP and LDM; MOV and ADD to the
+ * pc go through ALUWritePC, a plain branch that clears bit 0, and BLX
+ * through BLXWritePC. Each keeps EXC_RETURN in r1, so that a fault
+ * handler can send it on to sys_excret_resume, which returns as a
+ * handler should whatever the instruction did to lr.
+ */
+    .thumb_func
+    .global sys_svc_ret_bx
+sys_svc_ret_bx:
+    mov     r1, lr
+    bx      lr
+
+    .thumb_func
+    .global sys_svc_ret_ldr
+sys_svc_ret_ldr:
+    mov     r1, lr
+    str     lr, [sp, #-8]!
+    ldr     pc, [sp], #8
+
+    .thumb_func
+    .global sys_svc_ret_pop
+sys_svc_ret_pop:
+    mov     r1, lr
+    push    {r0, lr}
+    pop     {r0, pc}
+
+    .thumb_func
+    .global sys_svc_ret_mov
+sys_svc_ret_mov:
+    mov     r1, lr
+    mov     pc, lr
+
+    /* ADD pc, Rm: pc reads as this add's address + 4. */
+    .thumb_func
+    .global sys_svc_ret_add
+sys_svc_ret_add:
+    mov     r1, lr
+    mov     r2, pc              /* r2 = (address of this mov) + 4      */
+    sub.w   r0, lr, r2
+    subs    r0, #8              /* the add is 8 bytes past that mov    */
+    add     pc, r0              /* pc = (mov + 8) + 4 + r0 = lr        */
+
+    .thumb_func
+    .global sys_svc_ret_blx
+sys_svc_ret_blx:
+    mov     r1, lr
+    blx     r1
+
+    .thumb_func
+    .global sys_excret_resume
+sys_excret_resume:
+    bx      r1
+
+/* As sys_svc_ret_mov, to the address in sys_mov_target instead of lr. */
+    .thumb_func
+    .global sys_svc_mov_target
+sys_svc_mov_target:
+    mov     r1, lr
+    ldr     r0, =sys_mov_target
+    ldr     r0, [r0]
+    mov     pc, r0
+    .ltorg

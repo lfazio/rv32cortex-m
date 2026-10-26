@@ -3726,6 +3726,29 @@ session, and every one of them recurred:
   every write cost Whetstone under the JIT 3.00% of host instructions;
   at the first, 0.38%.
 
+- **A rule the manual states per instruction cannot be enforced per
+  value.** ARMv7-M's exception return is a property of the instruction
+  that writes the pc -- BX, LDR, POP and LDM return; MOV pc, ADD pc and
+  BLX branch -- but the run loop recognised EXC_RETURN by its value,
+  before the fetch, whatever had written it. The status table said
+  "implemented from the manual's pseudocode; not asked of the board",
+  and the last session had already found the same mistake from the
+  other end (a vector shaped like EXC_RETURN, fixed with a flag the
+  producers set). Asked, the F746 branched for all three and took
+  IACCVIOL. The emulator hung, and not where it was wrong: `mov pc, lr`
+  with an FP frame's 0xFFFFFFE9 became a "return" to 0xFFFFFFE8, which
+  is invalid, so INVPC deactivated SVCall under its own handler, and
+  the test's recovery -- written for the board's behaviour -- looped.
+  **A value-shaped check needs every producer to say whether it meant
+  it**: the three writers now set the flag the vector and the frame
+  already set.
+
+  The board's first answer also looked like a quirk: it stacked
+  0xFFFFFFE8, not the 0xFFFFFFF8 branched to. A scan of ten targets
+  from both modes stacked each exactly; lr had been 0xFFFFFFE9 because
+  earlier tests had used the FPU. **A strange number from the reference
+  is a question about the test's own state first.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

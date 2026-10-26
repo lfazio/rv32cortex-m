@@ -27,7 +27,7 @@ silicon was asked.
 | Fault status: CFSR, HFSR, MMFAR, BFAR | implemented |
 | MPU: 8 regions, subregions, AP/XN, PRIVDEFENA, HFNMIENA | implemented |
 | Lazy FP stacking: FPCCR, FPCAR, FPDSCR, EXC_RETURN bit 4 | implemented |
-| Exception return from a 0xFxxxxxxx pc in Handler mode -- but not when exception entry or unstacking put it there: those branch, and the fetch faults (`pc_not_exc_return`) | implemented from the manual's pseudocode; not asked of the board |
+| Exception return from a 0xFxxxxxxx pc in Handler mode, written by BX, LDR, POP or LDM -- and only those: MOV pc, ADD pc and BLX branch to it, as exception entry and unstacking do, and the fetch faults (`pc_not_exc_return`) | asked of the F746 (`sys.c`, `excret-*`) |
 | NVIC (98 lines, 4 priority bits), SysTick | implemented |
 | Local exclusive monitor | implemented; keeps no address, as the M7's does |
 | Caches, the debug architecture, DWT/ITM | not modelled |
@@ -72,7 +72,7 @@ IT, and the FPU — and a growing set written because the random ones
 | `qflag` | Q, which a random APSR has set half the time already |
 | `adr` | `Align(PC, 4)`, at both pc alignments |
 
-**The system suite** (`sys.c`/`sys.S`): 54 tests of what an instruction
+**The system suite** (`sys.c`/`sys.S`): 62 tests of what an instruction
 generator cannot reach — the identification and writable bits of every
 configuration register, exception ordering and preemption, BASEPRI and
 FAULTMASK, every fault and its status bits, escalation, the MPU, the
@@ -129,6 +129,7 @@ generated suites:
 | **IT, every encoding**: firstcond 1111, AL with an else, an IT inside an IT block | execute: 1110 and 1111 both mean always, and an inner IT replaces the block. The frontend refused all of them (2026-10-26) |
 | B\<cond\> (16- and 32-bit) and CBZ/CBNZ inside an IT block | execute **on their own condition**, ignoring the block's: under `it eq` with Z clear, `bne` branches |
 | B, B.W and BL inside an IT block but not last | execute under the block's condition |
+| **MOV pc, ADD pc and BLX to EXC_RETURN in Handler mode** | branch: the fetch takes IACCVIOL with the target, bit 0 clear, stacked, and the handler is still active. Only BX, LDR, POP and LDM return, as the manual says. The frontend read the value as a return wherever it came from, and hung (2026-10-26) |
 | **any instruction that can write the pc, inside an IT block** | ends the block whatever happens to it -- taken, not taken, or skipped by the block's condition. Under `itt eq` with Z clear, a skipped `bx`, `blx`, `mov pc`, `add pc`, `pop {pc}`, `pop.w {..,pc}`, `ldm.w {..,pc}`, `ldr pc`, `bl`, `tbb` or `tbh` is followed by an instruction that runs outside the block, unconditionally and setting flags; so is an untaken `bne` or `cbz`; and every one of them *taken* lands on an instruction that runs outside it too |
 
 The IT rules are `it_ignores_condition`, `it_writes_pc` and `it_after`
@@ -152,6 +153,27 @@ test removed the ten skipped ones fail, and with the pc test as well
 the ten taken ones. The harness resumes a faulting probe at
 its end now, not four bytes on, which inside a 16-bit probe was the
 middle of the next instruction.
+
+**Exception return is decided by the instruction, not the value.** The
+run loop recognises EXC_RETURN in the pc before fetching, so it took
+any 0xFxxxxxxx value in Handler mode as a return, whatever wrote it.
+The manual names BX, LDR, POP and LDM; MOV pc and ADD pc are
+ALUWritePC and BLX is BLXWritePC, plain branches. `sys.c` asks each
+from an SVCall handler with lr's EXC_RETURN: the board returns for the
+first three and, for the others, fetches the address and takes
+IACCVIOL, the target stacked with bit 0 cleared and SVCall still
+active (`excret-*`; `xn-fetch` and `excret-mov-scan` show the stacked
+pc is the target for ten System-region addresses, from either mode).
+The frontend read `mov pc, lr` as a return to 0xFFFFFFE8 -- lr held
+0xFFFFFFE9, an FP frame, less bit 0 -- which is invalid, so it raised
+INVPC and deactivated SVCall under its own handler, and the suite's
+recovery then looped. Those three writers now set `pc_not_exc_return`,
+out of line (`branch_not_exc_return`), and the run loop fetches; the
+JIT declines all three in Handler mode, so the interpreter decides for
+both backends. `test_handler_pc_writers_branch` holds it (13 failures
+with the fix reverted); interpreted CoreMark on the F746 read +0.35%,
+-0.14% and +0.08% at three layouts, which move the old build by 0.22%
+on their own.
 
 The sp and pc rules are one predicate per group in `armv7m_decode.h`,
 called by both decoders, and the board's answers to 36 of them are
@@ -702,12 +724,6 @@ the host's, so "copy it" is unlikely to survive contact.
   suite anyone could run without the board -- a decision about 3 MB of
   test data, not a technical one. The sp and pc answers are the
   exception, as a table in `test_sp_pc_board_answers`.
-- **Which writes of 0xFxxxxxxx make an exception return has not been
-  asked.** B1.5.8 names POP, LDM, LDR and BX; this core also returns for
-  MOV and ADD to the pc in Handler mode, and does not for a vector or a
-  stacked return address of that shape, which it fetches. The vector
-  case was a hang before: a failed "return" took a fault into the same
-  vector for ever, retiring nothing (`armv7m-jit/vector-exc-return-shape`).
 - **The IR and the register allocator are not exercised by `t2exec`**,
   which tests the encoder end to end and nothing above it. Running
   `emu_ir_lower` in the guest is the next layer.

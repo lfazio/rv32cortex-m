@@ -753,6 +753,88 @@ static void test_fetch_execute_never(void)
 }
 
 /*
+ * In Handler mode only BX, LDR, POP and LDM make an exception return
+ * (B1.5.8). MOV pc and ADD pc (ALUWritePC) and BLX (BLXWritePC) branch
+ * to the value, and its fetch faults -- the F746's answer, asked by
+ * tests/armv7m-diff (sys.c, excret-mov, -add and -blx): MemManage,
+ * IACCVIOL, the target stacked with bit 0 clear, SVCall still active.
+ * The run loop read any 0xFxxxxxxx pc in Handler mode as EXC_RETURN, so
+ * `mov pc, lr` returned to 0xFFFFFFF8 -- invalid, INVPC, and SVCall
+ * deactivated under its own handler.
+ *
+ * Each case is `svc #0` from Thread mode into a handler of one
+ * instruction, with SVCall below MemManage as the board test has it.
+ * BX is the control: it returns, to the BKPT after the SVC.
+ */
+static void test_handler_pc_writers_branch(void)
+{
+    static const struct {
+        uint16_t insn;
+        bool returns;
+    } k[] = {
+        {0x4770u, true},  /* bx lr      */
+        {0x46F7u, false}, /* mov pc, lr */
+        {0x4487u, false}, /* add pc, r0 */
+        {0x47F0u, false}, /* blx lr     */
+    };
+    armv7m_cpu_t *const c = &g_ua_cpu;
+    const uint32_t thread = UA_CODE;
+    const uint32_t svc = UA_CODE + 0x100u;
+    const uint32_t fault = UA_CODE + 0x200u;
+
+    for (uint32_t i = 0u; i < sizeof(k) / sizeof(k[0]); i++) {
+        uint32_t n = 0u;
+        uint32_t stacked_pc = 0u;
+
+        memset(g_ua_ram, 0, sizeof(g_ua_ram));
+        emu_bus_init(&g_ua_bus);
+        CHECK(emu_bus_add_ram(&g_ua_bus, "ram", UA_RAM_BASE, g_ua_ram,
+                              UA_RAM_SIZE));
+        for (uint32_t v = 2u; v < 16u; v++) {
+            const uint32_t to = ((v == 11u) ? svc : fault) | 1u;
+
+            put16(g_ua_ram, 4u * v, (uint16_t)to);
+            put16(g_ua_ram, 4u * v + 2u, (uint16_t)(to >> 16));
+        }
+        put16(g_ua_ram, thread - UA_RAM_BASE, 0xDF00u);      /* svc #0 */
+        put16(g_ua_ram, thread - UA_RAM_BASE + 2u, 0xBE00u); /* bkpt */
+        put16(g_ua_ram, svc - UA_RAM_BASE, k[i].insn);
+        put16(g_ua_ram, fault - UA_RAM_BASE, 0xBE00u);
+
+        armv7m_reset_state(c);
+        c->bus = &g_ua_bus;
+        c->state = EMU_STATE_RUNNING;
+        c->vtor = UA_RAM_BASE;
+        c->r[ARMV7M_SP] = UA_RAM_BASE + 0xF000u;
+        c->msp = UA_RAM_BASE + 0xF000u;
+        c->r[ARMV7M_PC] = thread;
+        c->prio[11] = 0x80u;      /* SVCall below the faults */
+        c->shcsr |= 1u << 16;     /* MEMFAULTENA */
+        c->r[0] = 0xFFFFFFF9u - (svc + 4u); /* so add pc, r0 lands on lr */
+
+        (void)armv7m_run(c, 100u, &n);
+
+        CHECK_EQ(c->state, EMU_STATE_HALTED);
+        if (k[i].returns) {
+            CHECK_EQ(c->r[ARMV7M_PC], thread + 2u);
+            CHECK_EQ(c->xpsr & 0x1FFu, 0u);
+            CHECK_EQ(c->cfsr, 0u);
+            continue;
+        }
+        CHECK_EQ(c->r[ARMV7M_PC], fault);
+        CHECK_EQ(c->xpsr & 0x1FFu, 4u);   /* MemManage */
+        CHECK_EQ(c->cfsr & 0xFFFFu, 0x01u); /* IACCVIOL, no INVPC */
+        CHECK_EQ((c->active[0] >> 11) & 1u, 1u); /* SVCall still active */
+        for (uint32_t b = 0u; b < 4u; b++) {
+            stacked_pc |=
+                (uint32_t)g_ua_ram[c->r[ARMV7M_SP] - UA_RAM_BASE + 24u + b]
+                << (8u * b);
+        }
+        CHECK_EQ(stacked_pc, 0xFFFFFFF8u);
+    }
+}
+
+/*
  * AIRCR.SYSRESETREQ stops the core and says why: the status the run
  * summary prints from names it. Halting with nothing printed made a
  * guest's reset request read like a guest that finished. And without
@@ -943,4 +1025,5 @@ void test_armv7m(void)
     test_it_board_answers();
     test_it_pc_writers_board_answers();
     test_vector_shaped_like_exc_return();
+    test_handler_pc_writers_branch();
 }

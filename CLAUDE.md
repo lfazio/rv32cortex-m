@@ -489,6 +489,10 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   turns latent M-mode bugs into failures.
 - **A privilege rule nobody has run from the refused side is not
   implemented** (MRET ran in U-mode until `umode.S`).
+- **A rule stated per instruction is not enforced per value**: the
+  ARMv7-M run loop took any 0xFxxxxxxx pc in Handler mode as
+  EXC_RETURN; MOV pc, ADD pc and BLX branch, and the F746 faults them
+  (`sys.c` `excret-*`, `pc_not_exc_return`).
 - **A permitted imprecision is permitted until a program computes with
   it.** FS "may be dirtier" held until a program cleared one FS bit and
   read Clean against Off: mark FS Dirty where an f register is written

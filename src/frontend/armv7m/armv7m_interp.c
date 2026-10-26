@@ -188,6 +188,52 @@ static inline void branch_to(armv7m_cpu_t *c, uint32_t addr)
 }
 
 /*
+ * A branch to 0xFxxxxxxx in Handler mode, which the run loop must fetch
+ * rather than read as EXC_RETURN: it recognises the value before any
+ * fetch, whatever wrote it, so it is told (pc_not_exc_return, as for
+ * exception entry and unstacking).
+ *
+ * Only BX, LDR, POP and LDM return (B1.5.8). MOV pc and ADD pc
+ * (ALUWritePC) and BLX (BLXWritePC) branch, and the F746 agrees: each
+ * takes IACCVIOL at the address with bit 0 clear (sys.c, excret-mov,
+ * -add and -blx). Read as a return instead, 0xFFFFFFE9 less its bit 0
+ * was an invalid EXC_RETURN, and the INVPC that followed deactivated
+ * SVCall under the handler's feet.
+ *
+ * Out of line: only those three instructions, in Handler mode, reach
+ * it, and the interpreter's loop pays for what LTO inlines into it.
+ */
+static EMU_NOINLINE void branch_not_exc_return(armv7m_cpu_t *c)
+{
+    c->pc_not_exc_return = true;
+}
+
+static inline bool handler_branch_to_exc_return(const armv7m_cpu_t *c)
+{
+    return armv7m_handler_mode(c) && (c->r[ARMV7M_PC] & ARMV7M_EXC_RETURN_MASK) ==
+                                         ARMV7M_EXC_RETURN_MASK;
+}
+
+/* ALUWritePC, for MOV pc and ADD pc. */
+static inline void alu_write_pc(armv7m_cpu_t *c, uint32_t addr)
+{
+    branch_to(c, addr);
+    if (EMU_UNLIKELY(handler_branch_to_exc_return(c))) {
+        branch_not_exc_return(c);
+    }
+}
+
+/* BLXWritePC: bit 0 becomes EPSR.T, as for BX, but never a return. */
+static inline void blx_write_pc(armv7m_cpu_t *c, uint32_t addr)
+{
+    c->xpsr = (c->xpsr & ~ARMV7M_T) | ((addr & 1u) ? ARMV7M_T : 0u);
+    branch_to(c, addr);
+    if (EMU_UNLIKELY(handler_branch_to_exc_return(c))) {
+        branch_not_exc_return(c);
+    }
+}
+
+/*
  * BXWritePC / LoadWritePC.
  *
  * In Handler mode a value of the form 0xFxxxxxxx is an exception return,
@@ -603,7 +649,7 @@ static X t16_special(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
         const uint32_t v = reg_pc(c, rd, pc) + reg_pc(c, rm, pc);
 
         if (rd == ARMV7M_PC) {
-            branch_to(c, v);
+            alu_write_pc(c, v);
         } else {
             c->r[rd] = v;
         }
@@ -619,7 +665,7 @@ static X t16_special(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
         const uint32_t v = reg_pc(c, rm, pc);
 
         if (rd == ARMV7M_PC) {
-            branch_to(c, v);
+            alu_write_pc(c, v);
         } else {
             c->r[rd] = v;
         }
@@ -638,6 +684,8 @@ static X t16_special(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
         }
         if ((op & 2u) != 0u) { /* BLX */
             c->r[ARMV7M_LR] = (pc + 2u) | 1u;
+            blx_write_pc(c, target);
+            return OK;
         }
         bx_write_pc(c, target);
         return OK;

@@ -1011,6 +1011,169 @@ static void t_probe(void)
 
 /* ------------------------------------------------------------------ */
 
+/*
+ * Which instructions make an exception return in Handler mode.
+ *
+ * Each SVCall handler in sys.S writes lr's EXC_RETURN (0xFFFFFFF9) to
+ * the pc with one instruction. The manual names BX, LDR, POP and LDM as
+ * the ones that return; MOV and ADD to the pc are ALUWritePC, a branch
+ * that clears bit 0, and BLX is BLXWritePC -- so for those three it
+ * describes a fetch from 0xFFFFFFF8 or 0xFFFFFFF9, in the System region,
+ * which is never executable. The emulator's run loop recognised the
+ * value whatever wrote it. Asked here, last, because a wrong guess may
+ * not come back.
+ *
+ * SVCall runs below the faults so that one can preempt it; a fault is
+ * logged -- CFSR, HFSR, and the pc it stacked -- and resumed at
+ * sys_excret_resume, which returns from SVCall with `bx r1`. Each line
+ * ends with SVCALLACT and IPSR from Thread mode afterwards: zero both,
+ * or the return did not complete.
+ */
+extern void sys_svc_ret_bx(void);
+extern void sys_svc_ret_ldr(void);
+extern void sys_svc_ret_pop(void);
+extern void sys_svc_ret_mov(void);
+extern void sys_svc_ret_add(void);
+extern void sys_svc_ret_blx(void);
+extern char sys_excret_resume[];
+
+static void hook_excret(uint32_t *frame, uint32_t excret, uint32_t exc)
+{
+    (void)excret;
+    if (exc >= 3u && exc <= 6u) {
+        const uint32_t pc = frame[6];
+
+        logv(CFSR);
+        logv(HFSR);
+        /* A System-region pc as it is; a code address relative to the
+         * handler, which is where the two memory maps differ. */
+        logv(pc >= 0xE0000000u ? pc : pc - g_phase);
+        CFSR = CFSR;
+        HFSR = HFSR;
+        frame[6] = (uint32_t)sys_excret_resume & ~1u;
+        frame[7] |= 1u << 24;
+    }
+}
+
+static void t_excret(void)
+{
+    static void (*const k_ret[])(void) = {
+        sys_svc_ret_bx,  sys_svc_ret_ldr, sys_svc_ret_pop,
+        sys_svc_ret_mov, sys_svc_ret_add, sys_svc_ret_blx,
+    };
+    static const char *const k_name[] = {
+        "excret-bx",  "excret-ldr", "excret-pop",
+        "excret-mov", "excret-add", "excret-blx",
+    };
+
+    irqs_reset();
+    g_hook = hook_excret;
+    SHCSR |= 7u << 16; /* MEMFAULTENA, BUSFAULTENA, USGFAULTENA */
+    SHPR8(11) = 0x80u;
+    for (uint32_t i = 0u; i < sizeof(k_ret) / sizeof(k_ret[0]); i++) {
+        g_phase = (uint32_t)k_ret[i] & ~1u;
+        g_vtab[11] = k_ret[i];
+        barrier();
+        sys_do_svc();
+        logv(SHCSR & 0x80u); /* SVCALLACT */
+        logv(MRS(ipsr));
+        emit(k_name[i]);
+    }
+    g_vtab[11] = sys_exc_entry;
+    SHPR8(11) = 0u;
+    SHCSR &= ~(7u << 16);
+    g_hook = 0;
+}
+
+/*
+ * What pc a fetch from the System region stacks. The M7 stacked
+ * 0xFFFFFFE8 for a branch to 0xFFFFFFF8 (above), not the address
+ * branched to, so each target here is a BX from Thread mode -- bit 0
+ * set, so no INVSTATE -- and the line holds the CFSR and the stacked pc
+ * of each, resumed at the caller.
+ */
+static void hook_xn(uint32_t *frame, uint32_t excret, uint32_t exc)
+{
+    (void)excret;
+    if (exc >= 3u && exc <= 6u) {
+        logv(exc);
+        logv(CFSR);
+        logv(frame[6]);
+        CFSR = CFSR;
+        HFSR = HFSR;
+        frame[6] = frame[5] & ~1u;
+        frame[7] |= 1u << 24;
+    }
+}
+
+static void t_xn_fetch(void)
+{
+    static const uint32_t k_target[] = {
+        0xFFFFFFF9u, 0xFFFFFFF1u, 0xFFFFFFE9u, 0xFFFFFFE1u, 0xFFFFFFD9u,
+        0xFFFFFF01u, 0xFFFF0001u, 0xF0000001u, 0xE0100001u, 0xE0000001u,
+    };
+
+    irqs_reset();
+    g_hook = hook_xn;
+    SHCSR |= 7u << 16;
+    for (uint32_t i = 0u; i < sizeof(k_target) / sizeof(k_target[0]); i++) {
+        logv(k_target[i]);
+        sys_do_bx(k_target[i]);
+    }
+    emit("xn-fetch");
+    SHCSR &= ~(7u << 16);
+    g_hook = 0;
+}
+
+/*
+ * And MOV pc to each of t_xn_fetch's targets from Handler mode, where
+ * the M7 stacked 0xFFFFFFE8 for 0xFFFFFFF8: target, then the fault.
+ */
+extern void sys_svc_mov_target(void);
+volatile uint32_t sys_mov_target;
+
+/* hook_xn's log, resumed where SVCall can return from (r1). */
+static void hook_xn_handler(uint32_t *frame, uint32_t excret, uint32_t exc)
+{
+    (void)excret;
+    if (exc >= 3u && exc <= 6u) {
+        logv(exc);
+        logv(CFSR);
+        logv(frame[6]);
+        CFSR = CFSR;
+        HFSR = HFSR;
+        frame[6] = (uint32_t)sys_excret_resume & ~1u;
+        frame[7] |= 1u << 24;
+    }
+}
+
+static void t_excret_mov_scan(void)
+{
+    static const uint32_t k_target[] = {
+        0xFFFFFFF9u, 0xFFFFFFF1u, 0xFFFFFFE9u, 0xFFFFFFE1u, 0xFFFFFFD9u,
+        0xFFFFFF01u, 0xFFFF0001u, 0xF0000001u, 0xE0100001u, 0xE0000001u,
+    };
+
+    irqs_reset();
+    g_hook = hook_xn_handler;
+    SHCSR |= 7u << 16;
+    SHPR8(11) = 0x80u;
+    g_vtab[11] = sys_svc_mov_target;
+    for (uint32_t i = 0u; i < sizeof(k_target) / sizeof(k_target[0]); i++) {
+        logv(k_target[i]);
+        sys_mov_target = k_target[i];
+        barrier();
+        sys_do_svc();
+    }
+    emit("excret-mov-scan");
+    g_vtab[11] = sys_exc_entry;
+    SHPR8(11) = 0u;
+    SHCSR &= ~(7u << 16);
+    g_hook = 0;
+}
+
+/* ------------------------------------------------------------------ */
+
 int main(void)
 {
     for (uint32_t i = 0u; i < sizeof(g_vtab) / sizeof(g_vtab[0]); i++) {
@@ -1034,6 +1197,9 @@ int main(void)
     t_systick();
     t_fpctx();
     t_probe();
+    t_xn_fetch();
+    t_excret();
+    t_excret_mov_scan();
     puts_("SYS-END\nDIFF-END\n");
     return 0;
 }
