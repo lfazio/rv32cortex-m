@@ -186,6 +186,15 @@ typedef struct g4mh_cpu {
      * a block can reach through a helper, and the interpreter fallback,
      * where LDSR, EIRET and FERET run.
      *
+     * **And, with more than one PE, the PE.** A block inlines accesses to
+     * the region the stack was in when it was built, by host address
+     * (g4mh_fast_mem), and the stack of a U2B program is in local RAM
+     * through the SELF window: one guest address, a different memory on
+     * each PE. Where the PEs share a table of blocks -- one thread taking
+     * turns, `--serial` or a board -- PE1 found the block PE0 built and
+     * read PE0's stack (test_mc_self_window_blocks). So each PE runs its
+     * own blocks; with a thread each, they never shared.
+     *
      * `jit_gen` counts writes to the MPU's registers, so every block is
      * discarded when the configuration it was checked against changes.
      */
@@ -207,10 +216,13 @@ typedef struct g4mh_cpu {
     const char *reset_by;
 } g4mh_cpu_t;
 
-/* Recompute the JIT's context from PSW; see jit_ctx. */
+/* Recompute the JIT's context from PSW and the PE; see jit_ctx. */
 static inline void g4mh_jit_ctx_refresh(g4mh_cpu_t *c)
 {
     c->jit_ctx = ((c->psw & G4MH_PSW_UM) != 0u) ? 1u : 0u;
+#if G4MH_PE_COUNT > 1
+    c->jit_ctx |= (uint64_t)c->coreid << 1;
+#endif
 }
 
 /* ------------------------------------------------------------------ */

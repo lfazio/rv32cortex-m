@@ -60,6 +60,7 @@ open(path, "w").write(text.replace(old, new))
 PY
 
 start=$(date +%s)
+mkdir -p "$B" # and its parent, where the log goes: a fresh checkout has no build/
 rm -rf "$B/corpus/$ISA-jit"
 FUZZ_BUILD=$B "$ROOT/scripts/fuzz.sh" "$SECS" "$ISA" "$@" >"$LOG" 2>&1 || true
 end=$(date +%s)

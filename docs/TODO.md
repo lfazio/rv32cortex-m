@@ -42,16 +42,14 @@ measured at.
     memory, trap state and the counters. **Done for all four**
     (`tests/fuzz/fuzz_harness.h` and a target each). What is left:
     Spike as a third side for RV32 (BSD-3, CLAUDE.md) -- **set aside
-    until late in the project**, by decision (2026-10-26); more than one
-    core, for G4MH and PowerPC, switching cores only where one parks so
-    that both backends interleave alike -- the case that matters is a
-    block one core built running on another, since G4MH's context is
-    the user-mode bit alone; timers, and whether an ISB or an
+    until late in the project**, by decision (2026-10-26); timers, and
+    whether an ISB or an
     interrupt raised by a store is honoured *in time* -- both set aside
     today ([fuzzing.md](fuzzing.md#devices-and-interrupts)); and
     self-modifying code, which ARMv7-M detects exactly and nothing has
-    fuzzed. Interrupt controllers are mapped for every frontend. No GPL
-    emulator, not even as a reference.
+    fuzzed. Interrupt controllers are mapped for every frontend, and
+    G4MH and PowerPC run two cores ([fuzzing.md](fuzzing.md#more-than-one-core)).
+    No GPL emulator, not even as a reference.
   - **The IR**: random blocks through the passes and both lowerings,
     checked against `emu_ir_interp` on the *unoptimised* IR, stores
     included. `ir_diff_ref` runs the optimised IR and declines any
@@ -84,6 +82,9 @@ measured at.
       `G4MH_PE_COUNT > 1`) two PEs whose MPU generations differ would
       discard every block at every switch between them. PowerPC made
       its counter one for all cores for exactly that reason. Unmeasured.
+      The PE is part of a block's context now (each PE its own blocks,
+      since a block bakes in its PE's local RAM), so the generation
+      could be per PE too, in the context or the key.
 - [ ] **Autovectorisation of the IR pipeline.**
 - [ ] **A flush after start-up is worth 17% on the F746, by itself.**
       RV32 Dhrystone runs at 19.19 host cycles an instruction with the

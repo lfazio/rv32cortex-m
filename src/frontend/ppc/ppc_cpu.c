@@ -64,6 +64,13 @@ static void resv_count(int d)
                      __ATOMIC_RELAXED);
 }
 
+void ppc_cpu_register(ppc_cpu_t *c)
+{
+    if (c->coreid < PPC_CORE_COUNT) {
+        g_cores[c->coreid] = c;
+    }
+}
+
 void ppc_cpu_init(ppc_cpu_t *c, struct emu_bus *bus, uint32_t coreid)
 {
     memset(c, 0, sizeof(*c));

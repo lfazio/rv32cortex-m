@@ -320,6 +320,14 @@ extern uint32_t ppc_jit_gen;
 void ppc_cpu_init(ppc_cpu_t *c, struct emu_bus *bus, uint32_t coreid);
 void ppc_cpu_reset(ppc_cpu_t *c, uint32_t reset_pc);
 
+/*
+ * Make `c` the core a store looks up by its id, to break its reservation.
+ * ppc_cpu_init does this; a caller keeping two sets of cores -- the fuzz
+ * targets, one per backend -- names the set about to run. G4MH's
+ * g4mh_ll_register is the same thing.
+ */
+void ppc_cpu_register(ppc_cpu_t *c);
+
 /* ------------------------------------------------------------------ */
 /* Interrupts                                                          */
 /* ------------------------------------------------------------------ */

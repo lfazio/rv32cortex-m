@@ -3085,6 +3085,71 @@ static bool run_system(const uint16_t *hw, unsigned n, uint32_t quantum,
 }
 
 /*
+ * A block one PE built, run by another, through the SELF window.
+ *
+ * Each PE puts its stack in its own local RAM by the SELF alias -- one
+ * address, a different memory on every PE, where a U2B program keeps its
+ * stack -- writes 0x50 + its id there, and sums it sixteen times in a
+ * loop that is hot enough to translate. The cores take turns on one
+ * thread, so they share one table of blocks, and the translator inlines
+ * accesses to the region the stack is in by its host address. With the
+ * PE not in the block's context, PE1 found PE0's loop and read PE0's
+ * stack: fuzz-g4mh-jit with three PEs, g4mh-jit/stack-through-self.
+ *
+ *   stsr  htcfg0, r10
+ *   mov   LRAM_SELF + 0x100, sp
+ *   movea 0x50, r10, r12 ; st.w r12, 0[sp]
+ *   movea 16, r0, r13 ; mov 0, r14
+ * loop:
+ *   ld.w  0[sp], r15 ; add r15, r14
+ *   add   -1, r13 ; cmp 0, r13 ; bne loop
+ *   shl 2, r10 ; RAM + 0x200 + r10 <- r14 ; halt
+ */
+static void test_mc_self_window_blocks(void)
+{
+    const uint32_t stack = G4MH_LRAM_SELF_BASE + 0x100u;
+    const uint16_t prog[] = {
+        W0(OP_SYSTEM, G4MH_SR_HTCFG0, 10),
+        (uint16_t)((2u << 11) | SUB_STSR),
+        W0(OP_MOVEA, 3, 0), /* mov imm32, sp */
+        (uint16_t)(stack & 0xFFFFu),
+        (uint16_t)(stack >> 16),
+        W0(OP_MOVEA, 10, 12),
+        0x0050u,
+        W0(OP_ST_HW, 3, 12),
+        0x0001u, /* st.w */
+        W0(OP_MOVEA, 0, 13),
+        16u,
+        F2(OP_MOVI, 0, 14),
+        /* loop, halfword 12 */
+        W0(OP_LD_HW, 3, 15),
+        0x0001u, /* ld.w */
+        F1(OP_ADD, 15, 14),
+        F2(OP_ADDI5, -1, 13),
+        F2(OP_CMPI5, 0, 13),
+        BCOND(0xAu, -10), /* bne loop */
+        F2(OP_SHL, 2, 10),
+        W0(OP_MOVHI, 0, 11),
+        0x8000u,
+        W0(OP_MOVEA, 11, 11),
+        0x0200u,
+        F1(OP_ADD, 10, 11),
+        W0(OP_ST_HW, 11, 14),
+        0x0001u, /* st.w */
+        0x07E0u,
+        SUB_HALT,
+    };
+
+    if (!run_system(prog, sizeof(prog) / sizeof(prog[0]), 64u, 64u, NULL)) {
+        CHECK(false);
+        return;
+    }
+    for (unsigned i = 0; i < G4MH_PE_COUNT; i++) {
+        CHECK_EQ(ram32(0x200u + i * 4u), 16u * (0x50u + i));
+    }
+}
+
+/*
  * Each core writes its own id to its own slot and halts.
  *
  *   stsr  htcfg0, r10        ; r10 = this core's id  (sel 2, reg 0)
@@ -8409,6 +8474,7 @@ void test_g4mh(void)
 #endif
 #if G4MH_PE_COUNT > 1
     test_mc_dispatch();
+    test_mc_self_window_blocks();
     test_mc_quantum_invariance();
     test_mc_reservation();
 #endif

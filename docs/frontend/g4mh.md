@@ -228,6 +228,18 @@ is answered:
   The guard is a byte, and on Thumb-2 it was read with a word load: the
   three bytes after the flag in the structure decided whether every
   store went to the slow path. It is `LDRB` now.
+- **which PE** -- the window is the stack's region *by host address*,
+  and a U2B program keeps its stack in local RAM through the SELF
+  window: one guest address, a different memory on each PE. Where the
+  PEs share a table of blocks (`--serial`, a board with more than one),
+  PE1 found the loop PE0 had built and read PE0's stack. So with more
+  than one PE the PE is part of a block's context
+  (`g4mh_jit_ctx_refresh`), and each PE runs its own blocks. The guests
+  in the tree keep their stacks in shared RAM, which is why nothing saw
+  it until the two-PE fuzz target put a stack in local RAM
+  (`test_mc_self_window_blocks`). The SMP guest under `--serial --jit`
+  translates 123 blocks where it translated 62, at the same 46,551,936
+  retired.
 
 G4MH DOOM under the x86-64 JIT, 300M instructions, five interleaved runs
 each: 3.80 s to 3.55 s by median, about 7%. A helper call is cheap on a

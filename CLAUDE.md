@@ -326,6 +326,11 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   mixed into the hash; what makes every block wrong goes in the
   generation. Put identity in the generation and every trap flushes
   (129,293 flushes a Linux boot). When a key is full, widen it.
+- **A block bakes in the core that built it, wherever cores share a
+  table.** G4MH inlines the stack's region by host address, and the SELF
+  window is a different memory on each PE: PE1 ran PE0's loop on PE0's
+  stack. The PE is in the context now; the guests kept stacks in shared
+  RAM, so only a two-PE fuzz run with a stack in local RAM saw it.
 - **Re-derive on the interpreter fallback, never per dispatch**, and
   remember a trap is not always an instruction the interpreter ran:
   `rv_hart_trap` refreshes the context.

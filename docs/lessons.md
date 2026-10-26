@@ -3671,6 +3671,33 @@ session, and every one of them recurred:
   one failed, and the first five-minute run said 0 of 37,617 compared
   runs had touched a device.
 
+- **A block one core built ran on another, and the comparison that
+  found it took one seed.** The fuzz targets got a second core, taking
+  turns with the first on one thread -- which is how `--serial` and every
+  board with more than one core run them, sharing one table of blocks.
+  G4MH's translator inlines the region the stack is in by its host
+  address, and a U2B program keeps its stack in local RAM through the
+  SELF window: one guest address, a different memory on each PE. The
+  block's context was the user-mode bit alone, so PE1 looked up the loop
+  PE0 had translated and summed PE0's stack -- 0x501 where 0x510 was
+  right, one cold iteration on its own memory and fifteen on PE0's.
+
+  Nothing in the tree could have seen it, and not for want of
+  multicore tests: the SMP guests take the stack the boot protocol
+  hands them, in shared RAM, where every PE's window is the same memory.
+  **A per-core alias is only tested by a program that uses it the way
+  the part's own software would**, and the stack is the first thing a
+  U2B program puts there. The fix is the rule already in this file --
+  what a block is *for* goes in its context -- with the PE added; the
+  SMP guest under `--serial --jit` translates 123 blocks where it
+  translated 62, at the same retired count.
+
+  And PowerPC's second core ran nothing at first, with every comparison
+  agreeing: a core other than 0 comes out of reset held until another
+  core starts it, and the harness had not started it. `FUZZ_SHOW=1`
+  showed `core1.pc` at the reset address. **Agreement between two sides
+  of a core that never ran is agreement about its reset state.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

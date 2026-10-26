@@ -172,6 +172,31 @@ region that `0x2000_0000` is not in, so the first five-minute run was
 seeded with nothing and its stats line said 0 of 37,617 compared runs
 had touched a device. That count is in the line for exactly this.
 
+## More than one core
+
+G4MH and PowerPC can give each side a second core, chosen per input by
+bit 11 of the configuration word: both cores run the same program, each
+on its own bus over shared memory, and a core gives way only where it
+parks -- WFI or halt -- never at a budget or a block boundary, so both
+backends interleave the cores identically. A parked core runs again
+when something wakes it; the run ends when a whole round retires
+nothing (`fz_run` in the harness).
+
+What it is for is the JIT's one table of blocks, which every core on a
+thread shares -- as `--serial` and every board with more than one core
+share it. A block one core built is found and run by the next, under
+whatever that block took from the core that built it.
+
+| | the second core | reached by |
+|---|---|---|
+| G4MH | PE1, with its own MPU, INTC1 and local RAM, and its stack in that local RAM through the SELF window -- one address, a different memory on each PE | `scripts/fuzz.sh SECS g4mh-smp`: `fuzz-g4mh-jit` built with three PEs, in `build/fuzz-smp`, because G4MH's translated stores are built differently for one PE and for several |
+| PowerPC | core 1, with its own INTC; both marked as running together, so stores take the path that breaks the other's reservation | the default build, which has two cores |
+
+PowerPC's cores cannot reach each other's INTC, so a parked core stays
+parked; what its second core exercises is the blocks, the reservation
+path and the shared memory. A G4MH PE can wake the other through the
+IPIR (`pe1-wakes-pe0`).
+
 ## What it found
 
 Each fix was confirmed by reverting it with its regression in place.
@@ -188,6 +213,7 @@ Each fix was confirmed by reverting it with its regression in place.
 | MAC summed a 64-bit product and accumulator in `int64_t` | the G4MH **interpreter** | `g4mh-jit/mac-signed-overflow` (UBSan) |
 | an interrupt a block raised or took cost the interpreter a cycle and the JIT none, so the time base -- which counts cycles once HID0[TBEN] is set -- drifted between them | `ppc_ir.c`, every raise path | `ppc-jit/interrupt-cycle-uncharged` |
 | a vector holding a value shaped like EXC_RETURN was read as an exception return; the return failed, the UsageFault went back into the same vector, nothing retired, and the slice **never ended** -- a hang, under both backends | the ARMv7-M **interpreter**, `armv7m_exc_return` | `test_vector_shaped_like_exc_return`, `armv7m-jit/vector-exc-return-shape` |
+| **a block one PE built ran on another and read the first PE's memory**: the translator inlines accesses to the region the stack is in by host address, the stack was in local RAM through the SELF window, and the block's context was the user-mode bit alone, so PE1 found PE0's loop and read PE0's stack. Wherever PEs share a table -- `--serial`, a board with more than one -- as soon as a guest keeps its stack where a U2B program does. Found on the first run of the two-PE target, by the seed written for it | `g4mh_jit_ctx_refresh`: the PE is in the context now | `test_mc_self_window_blocks`, `g4mh-jit/stack-through-self` |
 | an LDSR lowering the interrupt ceiling (PLMR, ISPR, INTCFG) never made the core look again, so the channel it admitted stayed pending; the manual says the next instruction sees it. **Found by writing a seed, not by a divergence**: both backends run LDSR in the interpreter | the G4MH core, `g4mh_sr_write` | `test_ldsr_lowers_ceiling` |
 
 And inputs held for the permitted differences above:
@@ -273,6 +299,7 @@ cannot be enabled, and PowerPC's core timers are set aside); whether a
 JIT takes an interrupt by the point the architecture requires -- an
 interrupt made deliverable by a store, and ARMv7-M's CCR and MPU before
 the ISB, are set aside rather than compared, so ISB's synchronisation
-is untested here; more than one core; runs longer than 20,000
+is untested here; a third core, and PowerPC's cores waking each
+other, which its INTCs cannot do; runs longer than 20,000
 instructions; and self-modifying code. RV32 does not yet have Spike as a
 third side. The other targets are in [TODO.md](TODO.md).

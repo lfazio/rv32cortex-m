@@ -4,13 +4,18 @@
 # fuzz.sh - build the fuzz tree and run an interpreter-against-JIT
 # fuzzer.
 #
-#   scripts/fuzz.sh [SECONDS] [rv32|armv7m|g4mh|ppc|all] [libFuzzer options...]
+#   scripts/fuzz.sh [SECONDS] [rv32|armv7m|g4mh|g4mh-smp|ppc|all] [libFuzzer options...]
 #
 # Configures build/fuzz (FUZZ_BUILD overrides) with clang and
 # -DEMU_FUZZ=ON, which builds the whole tree under ASan and UBSan with
 # libFuzzer's coverage instrumentation, and runs fuzz-<TARGET>-jit for
-# SECONDS (default 60; target default rv32; `all` runs the four in
-# turn, SECONDS each). The corpus is seeded with every saved regression
+# SECONDS (default 60; target default rv32; `all` runs the five in
+# turn, SECONDS each). g4mh-smp is fuzz-g4mh-jit built with three PEs,
+# in build/fuzz-smp (FUZZ_SMP_BUILD overrides): G4MH's translated stores
+# are built differently for one PE and for several, so a second PE is
+# only meaningful in a build that has one, and the configuration word
+# chooses one PE or two per input. PowerPC's default build has two
+# cores already. The corpus is seeded with every saved regression
 # and with 256-byte slices of real guest code, so the fuzzer starts from
 # instruction streams a compiler wrote rather than from nothing -- for
 # the three targets whose input begins with a configuration word, behind
@@ -24,28 +29,38 @@
 set -eu
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-B=${FUZZ_BUILD:-$ROOT/build/fuzz}
 SECS=${1:-60}
 [ $# -gt 0 ] && shift
 T=${1:-rv32}
 [ $# -gt 0 ] && shift
 
 case $T in
-rv32 | armv7m | g4mh | ppc | all) ;;
+rv32 | armv7m | g4mh | g4mh-smp | ppc | all) ;;
 *)
-    echo "fuzz: no target '$T' (rv32, armv7m, g4mh, ppc or all)"
+    echo "fuzz: no target '$T' (rv32, armv7m, g4mh, g4mh-smp, ppc or all)"
     exit 2
     ;;
 esac
 if [ "$T" = all ]; then
-    for t in rv32 armv7m g4mh ppc; do
-        FUZZ_BUILD=$B "$0" "$SECS" "$t" "$@" || exit 1
+    for t in rv32 armv7m g4mh ppc g4mh-smp; do
+        "$0" "$SECS" "$t" "$@" || exit 1
     done
     exit 0
 fi
 
+# ISA names the fuzz target, T the run: its corpus and its artifacts.
+ISA=$T
+EXTRA=
+B=${FUZZ_BUILD:-$ROOT/build/fuzz}
+if [ "$T" = g4mh-smp ]; then
+    ISA=g4mh
+    EXTRA=-DG4MH_PE_COUNT=3
+    B=${FUZZ_SMP_BUILD:-$ROOT/build/fuzz-smp}
+fi
+
 mkdir -p "$B"
-if ! CC=${CC:-clang} cmake -S "$ROOT" -B "$B" -DEMU_FUZZ=ON \
+# shellcheck disable=SC2086 # EXTRA is empty or one word
+if ! CC=${CC:-clang} cmake -S "$ROOT" -B "$B" -DEMU_FUZZ=ON $EXTRA \
         -DCMAKE_BUILD_TYPE=RelWithDebInfo >"$B.cfg.log" 2>&1; then
     echo "fuzz: configure failed, see $B.cfg.log"
     exit 1
@@ -58,7 +73,7 @@ ppc) GUESTS="guest-ppc-coremark guest-ppc-dhrystone guest-ppc-alu" ;;
 esac
 # shellcheck disable=SC2086 # a word list on purpose
 if ! cmake --build "$B" -j"$(nproc 2>/dev/null || echo 4)" \
-        --target "fuzz-$T-jit" $GUESTS >"$B.build.log" 2>&1; then
+        --target "fuzz-$ISA-jit" $GUESTS >"$B.build.log" 2>&1; then
     echo "fuzz: build failed, see $B.build.log"
     tail -n 5 "$B.build.log"
     exit 1
@@ -66,7 +81,7 @@ fi
 
 C=$B/corpus/$T-jit
 mkdir -p "$C" "$B/artifacts/$T"
-cp "$ROOT"/tests/fuzz/regressions/"$T"-jit/* "$C"/ 2>/dev/null || true
+cp "$ROOT"/tests/fuzz/regressions/"$ISA"-jit/* "$C"/ 2>/dev/null || true
 
 # seed IMAGE NAME [CONFIG...]: 256-byte slices of IMAGE, each behind
 # each 4-byte configuration word given as octal escapes for printf.
@@ -134,7 +149,7 @@ asm() {
 # without being shown the way (scripts/fuzz-mutant.sh).
 seeds() {
     [ -z "${FUZZ_NO_DEVICE_SEEDS:-}" ] || return 0
-    for src in "$ROOT"/tests/fuzz/seeds/"$T"-jit/*.S; do
+    for src in "$ROOT"/tests/fuzz/seeds/"$ISA"-jit/*.S; do
         [ -f "$src" ] || continue
         n=$(basename "$src" .S)
         if asm "$src" "$B/corpus/$n.bin"; then
@@ -161,21 +176,28 @@ armv7m)
     seeds "$Z"
     ;;
 ppc)
+    # VLE, Book E, and VLE on two cores (CFG_CORE1, bit 11).
     for g in coremark dhrystone alu; do
         text "$B/guest/ppc-$g.elf" "$B/corpus/ppc-$g.text" &&
-            seed "$B/corpus/ppc-$g.text" "$g" "$Z" '\001\000\000\000'
+            seed "$B/corpus/ppc-$g.text" "$g" "$Z" '\001\000\000\000' \
+                '\000\010\000\000'
     done
-    seeds '\001\000\000\000'
+    seeds '\001\000\000\000' '\001\010\000\000'
     ;;
-g4mh)
+g4mh | g4mh-smp)
     # CC-RH's images are committed: the toolchain is not free to install.
-    # So are the device seeds, from scripts/g4mh-build-seeds.sh.
+    # So are the device seeds, from scripts/g4mh-build-seeds.sh. With
+    # three PEs, each behind one PE and two (CFG_PE1, bit 11).
+    CFGS=$Z
+    [ "$T" = g4mh-smp ] && CFGS="$Z \000\010\000\000"
     for f in "$ROOT"/tests/guest/g4mh/*.bin; do
-        seed "$f" "$(basename "$f" .bin)" "$Z"
+        # shellcheck disable=SC2086 # a word list on purpose
+        seed "$f" "$(basename "$f" .bin)" $CFGS
     done
     for f in "$ROOT"/tests/fuzz/seeds/g4mh-jit/*.bin; do
         [ -z "${FUZZ_NO_DEVICE_SEEDS:-}" ] || break
-        seed "$f" "dev-$(basename "$f" .bin)" "$Z"
+        # shellcheck disable=SC2086
+        seed "$f" "dev-$(basename "$f" .bin)" $CFGS
     done
     ;;
 esac
@@ -185,5 +207,5 @@ esac
 # while the time limit says it fuzzed. A hang is reported like any other
 # finding, as timeout-* beside the crashes; a later -timeout wins.
 cd "$B/artifacts/$T"
-FUZZ_STATS=1 exec "$B/tests/fuzz/fuzz-$T-jit" -max_len=1024 \
+FUZZ_STATS=1 exec "$B/tests/fuzz/fuzz-$ISA-jit" -max_len=1024 \
     -max_total_time="$SECS" -timeout=10 "$@" "$C"

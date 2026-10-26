@@ -43,6 +43,20 @@
  * exception return -- because every frontend's translator declines
  * those, so the interpreter runs them on both sides and takes the
  * interrupt at the same boundary.
+ *
+ * More than one core
+ * ------------------
+ * A target may give a side up to FZ_MAX_CORES cores, on one bus each
+ * over shared memory. They run in turn, and a core gives way only where
+ * it parks -- WFI or halt -- never at a budget or a block boundary, so
+ * both backends interleave the cores identically and the comparison
+ * still means what it says. A parked core runs again once something
+ * wakes it, typically another core's interrupt. The run ends when a
+ * whole round retires nothing.
+ *
+ * What it is for is the JIT's one table of blocks, which every core on
+ * the thread shares: a block one core built is found and run by the
+ * next, under whatever that block assumed about the first.
  */
 #ifndef FUZZ_HARNESS_H
 #define FUZZ_HARNESS_H
@@ -58,6 +72,8 @@
 #include "emu/emu_cpu.h"
 #include "emu/emu_jit.h"
 
+#define FZ_MAX_CORES 2u
+
 /* Why a run is set aside rather than compared; see the header. */
 #define FZ_ASIDE_ASYNC (1u << 0)
 #define FZ_ASIDE_UNSYNC (1u << 1)
@@ -65,7 +81,10 @@
 typedef struct fz_side {
     const char *name;
     const emu_backend_t *backend;
-    emu_cpu_t *cpu;
+    emu_cpu_t *cpu; /* core 0, which every target has */
+    /* Every core this input runs, cores[0] == cpu; ncores 0 means 1. */
+    emu_cpu_t *cores[FZ_MAX_CORES];
+    unsigned ncores;
     emu_run_reason_t reason;
     uint64_t retired; /* what run() reported: budget bookkeeping */
     unsigned aside; /* FZ_ASIDE_*, from the devices during the run */
@@ -85,8 +104,8 @@ typedef struct fz_target {
     uint32_t budget;
     uint32_t slice;
     /* Before each backend's run: what the frontend keeps outside the
-     * core, pointed at the side about to run. NULL if nothing. */
-    void (*before_run)(emu_cpu_t *cpu);
+     * cores, pointed at the side about to run. NULL if nothing. */
+    void (*before_run)(struct fz_side *sd);
     /* After each backend's run: state a frontend keeps elsewhere while
      * translated code runs, put back where the comparison reads it. */
     void (*after_run)(emu_cpu_t *cpu);
@@ -212,8 +231,28 @@ static inline bool fz_finished(const fz_side_t *sd)
     return sd->reason == EMU_RUN_HALTED || sd->reason == EMU_RUN_WFI;
 }
 
+/* One core until it parks or the budget runs out. */
+static inline emu_run_reason_t fz_run_core(const fz_target_t *t,
+                                           const fz_side_t *sd, emu_cpu_t *cpu,
+                                           uint64_t *total)
+{
+    emu_run_reason_t r = EMU_RUN_BUDGET;
+
+    while (*total < t->budget) {
+        uint32_t n = 0;
+
+        r = sd->backend->run(cpu, t->slice, &n);
+        *total += n;
+        if (r == EMU_RUN_HALTED || r == EMU_RUN_WFI) {
+            break;
+        }
+    }
+    return r;
+}
+
 static inline void fz_run(const fz_target_t *t, fz_side_t *sd)
 {
+    const unsigned ncores = (sd->ncores > 1u) ? sd->ncores : 1u;
     emu_run_reason_t r = EMU_RUN_BUDGET;
     uint64_t total = 0;
 
@@ -221,18 +260,40 @@ static inline void fz_run(const fz_target_t *t, fz_side_t *sd)
     sd->aside = 0u;
     sd->device_accesses = 0u;
     if (t->before_run != NULL) {
-        t->before_run(sd->cpu);
+        t->before_run(sd);
     }
+    /* Once a side, not once a core: the blocks are every core's. */
     if (sd->backend->reset != NULL) {
         sd->backend->reset(sd->cpu);
     }
-    while (total < t->budget) {
-        uint32_t n = 0;
+    if (ncores == 1u) {
+        r = fz_run_core(t, sd, sd->cpu, &total);
+    } else {
+        /*
+         * In turn, each until it parks; finished when a whole round
+         * retires nothing, which is every core parked with nothing to
+         * wake it. A round that is cut short by the budget is not
+         * finished, whatever the last core did.
+         */
+        unsigned quiet = 0u;
+        unsigned k = 0u;
 
-        r = sd->backend->run(sd->cpu, t->slice, &n);
-        total += n;
-        if (r == EMU_RUN_HALTED || r == EMU_RUN_WFI) {
-            break;
+        while (total < t->budget && quiet < ncores) {
+            const uint64_t before = total;
+            const emu_run_reason_t rk =
+                fz_run_core(t, sd, sd->cores[k], &total);
+
+            if (rk != EMU_RUN_HALTED && rk != EMU_RUN_WFI) {
+                r = rk; /* the budget, mid-core */
+                break;
+            }
+            quiet = (total == before) ? quiet + 1u : 0u;
+            k = (k + 1u) % ncores;
+        }
+        if (quiet >= ncores) {
+            r = EMU_RUN_WFI;
+        } else if (r == EMU_RUN_HALTED || r == EMU_RUN_WFI) {
+            r = EMU_RUN_BUDGET;
         }
     }
     if (t->after_run != NULL) {
@@ -334,6 +395,13 @@ struct fz_dev {
     const emu_dev_ops_t *ops;
     void *ctx;
     fz_side_t *side;
+    /*
+     * The core whose bus this mapping is on, which is the core making
+     * any access through it; NULL means the side's core 0. Only that
+     * core can take an interrupt "at once": another learns of one when
+     * its turn comes, which is the same instruction on both backends.
+     */
+    emu_cpu_t *cpu;
     /* Before the device sees a write: may change it. NULL: unchanged. */
     void (*filter)(fz_dev_t *d, uint32_t off, uint32_t size, uint32_t *val);
     /* After the device took a write: the FZ_ASIDE_* it implies. */
@@ -364,6 +432,12 @@ static emu_fault_t fz_dev_write(void *ctx, uint32_t off, uint32_t size,
         d->side->aside |= d->after_write(d, off, size);
     }
     return f;
+}
+
+/* The core a write through `d` came from. */
+static inline emu_cpu_t *fz_dev_core(const fz_dev_t *d)
+{
+    return (d->cpu != NULL) ? d->cpu : d->side->cpu;
 }
 
 static const emu_dev_ops_t fz_dev_ops = {
