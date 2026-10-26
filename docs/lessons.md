@@ -3781,6 +3781,22 @@ session, and every one of them recurred:
   stacked copy differ. The `itblock` guest now checks Q across an
   access, and on the F746 it fails with the old translator.
 
+- **A run that never finishes may be a cliff, not a hang -- and size the
+  working set before changing the policy.** Whetstone did not finish in
+  120 s on the F746 at a 32 KB code cache and ran in 1.65 s at 64 KB;
+  CoreMark at 32 KB completed with 8,485 compactions, so "eviction" was
+  not the answer by itself. A host runner with the board's tables
+  reproduced it in five seconds (1.9 MIPS, 516,732 translations). Two
+  readings of compaction's histogram were wrong in turn -- first that
+  the hottest bin overflowed the budget and nothing was kept, then that
+  the running loop was evicted for want of counts, which keeping the
+  youngest blocks would cure: it tripled the compactions and cured
+  nothing. Logging every translation's pc and length answered it: one
+  cycle of 68 blocks, 57.6 KB of x86-64 against a 24 KB budget, each
+  block translated 6,400 times. No order of eviction holds a cyclic set
+  larger than the cache; only translating less of it can, and that is
+  the fix the TODO now describes.
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

@@ -101,14 +101,28 @@ measured at.
       What it says about where hot blocks should go -- and whether
       CoreMark, which never flushes, has the same to gain -- is
       unmeasured.
-- [ ] **Whetstone does not finish within 120 s below a 64 KB code
-      cache.** First seen on the F446 (12 KB), where it was put down to
-      double-precision SoftFloat on an M4; the F746 stalls the same way
-      at 32 KB, 16 KB and 8 KB, at 1d6e0ee and after, and at 64 KB runs
-      it in 1.65 s holding 41 KB of code. It is not eviction as such:
-      CoreMark x650 at 32 KB, also past its working set, completes with
-      8,485 compactions. Something about Whetstone's blocks and a full
-      buffer; not looked at.
+- [ ] **Below its working set the JIT is far slower than the
+      interpreter**, and Whetstone shows it worst: it does not finish in
+      120 s on the F746 at 32, 16 or 8 KB of code cache, nor on the F446
+      at its 12 KB (once put down to SoftFloat on an M4), where 64 KB
+      runs it in 1.65 s. Reproduced on the host with the board's tables
+      (`-DCMAKE_C_FLAGS="-DEMU_JIT_MAX_BLOCKS=256u -DEMU_JIT_HASH_SIZE=256u
+      -DEMU_JIT_BLOCK_RESERVE=512u -DEMU_HOST_JIT_CODE_BYTES=32768u"`):
+      one module's hot cycle is 68 blocks, 1,199 guest instructions and
+      57.6 KB of x86-64 code, and at 32 KB every one of them is evicted
+      and retranslated about 6,400 times -- 516,732 translations, 13,960
+      compactions, 1.9 MIPS against the interpreter's 39 and 163 at
+      128 KB. A cyclic working set larger than the cache defeats any
+      retention order: keeping the youngest blocks in the unused budget
+      changed nothing but tripled the compactions, and the hot
+      threshold does not apply to an evicted block by design
+      (`--jit-hot 32`: 456,826 translations). What would: stop
+      translating a pc that keeps being evicted, and interpret it until
+      something changes, so the JIT degrades towards the interpreter
+      rather than 20 times below it. It needs a count that survives
+      eviction (the seen table's), a way to forget it that is not a
+      flush, and the board's CoreMark at 32 KB (8,485 compactions,
+      completes) measured beside Whetstone, since it thrashes too.
 - [ ] **LTO partitioning moves the host's interpreters by percents.**
       `-flto-partition=one` runs ARMv7-M's interpreted CoreMark in 4.4%
       fewer host instructions than the default partitioning and RV32's

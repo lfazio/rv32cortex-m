@@ -402,7 +402,8 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   fallback**: Thumb-2 declined `EMU_IR_HELPER_TRAP`, so every honest "no"
   cost the whole block. Two hosts disagreeing completely is the tell.
 - **The code cache dominates JIT performance**: below the working set the
-  JIT loses to the interpreter (12 KB on the F446). The MCU's sizes on a
+  JIT loses to the interpreter (12 KB on the F446) -- by 20x on a cyclic
+  hot set, which no retention order can hold (Whetstone at 32 KB; TODO). The MCU's sizes on a
   host retranslate constantly and mask translator bugs, so the x86-64
   backend sets its own -- and its stats line is what proves a pass
   exercised it (`interp 7807` of 8527 on the first run).
