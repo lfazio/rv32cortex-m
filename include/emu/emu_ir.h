@@ -1024,12 +1024,14 @@ typedef struct emu_ir_target {
      * `freg_offset` locates the FP register file inside emu_cpu_t.
      * `fp_flags` accumulates one block's worth of host sticky flags,
      * given in EMU_IR_FE_* terms, into wherever the guest keeps them;
-     * it is called once per block that used any FP operation, on the
-     * single path every exit takes.
+     * it is called once per block that holds an operation from FADD to
+     * FCLASS, on the single path every exit takes -- so such a block
+     * does not chain.
      *
-     * `fp_dirty` is the hook for guests that track extension state --
-     * RISC-V's mstatus.FS -- and is called from the same place. A
-     * frontend without one leaves it NULL.
+     * FGET and FPUT are register moves and call nothing: a block of
+     * only those chains. A guest that tracks extension state (RISC-V's
+     * mstatus.FS) marks it in the block it translates, where the
+     * register is written -- RV32's `fput` -- not through this hook.
      */
     uint32_t (*freg_offset)(uint32_t n);
     void (*fp_flags)(emu_cpu_t *cpu, uint32_t flags);

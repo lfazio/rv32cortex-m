@@ -914,8 +914,12 @@ static uint32_t fake_freg_offset(uint32_t n)
     return (uint32_t)(offsetof(fake_cpu_t, f) + n * sizeof(uint64_t));
 }
 
+/* How often a block handed its flags over: a call with none changes no `fe`. */
+static unsigned g_fake_fp_flag_calls;
+
 static void fake_fp_flags(emu_cpu_t *cpu, uint32_t flags)
 {
+    g_fake_fp_flag_calls++;
     ((fake_cpu_t *)(void *)cpu)->fe |= flags;
 }
 
@@ -2497,6 +2501,61 @@ static void test_lower_fp_flags(void)
     CHECK_EQ(cpu.f[3], F_TWO);
     CHECK_EQ(cpu.fe, 0u);
 }
+
+/*
+ * Which FP blocks may chain.
+ *
+ * A block with FP arithmetic hands its flags over in the tail, so every
+ * exit must pass through it and the block may not chain. A block that
+ * only moves floats owes the tail nothing: FGET and FPUT are register
+ * moves, and RV32 marks FS Dirty inside the block (`fput` in rv_ir.c).
+ * Before it did, a zero-flag fp_flags call in the tail was that mark,
+ * and these blocks could not chain -- 2.09% of Whetstone's host
+ * instructions under this backend. The calls are counted because a
+ * zero-flag call leaves `fe` as it found it.
+ */
+static void test_lower_fp_move_chains(void)
+{
+    fake_cpu_t cpu;
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.f[1] = F_ONE;
+    g_fake_fp_flag_calls = 0u;
+    emu_ir_reset(&g_b);
+    {
+        const uint16_t a = emu_ir_emit(&g_b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                                       EMU_IR_NO_TEMP, 1u, 0u);
+
+        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, 0u, a, EMU_IR_NO_TEMP, 3u, 0u);
+    }
+    if (!lower_and_run(&cpu)) {
+        CHECK(false);
+        return;
+    }
+    CHECK_EQ64(cpu.f[3], F_ONE);
+    CHECK(emu_jit_layout.chainable);
+    CHECK_EQ(g_fake_fp_flag_calls, 0u);
+
+    /* The same move after an add: the tail is owed, and runs once. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.f[1] = F_ONE;
+    g_fake_fp_flag_calls = 0u;
+    emu_ir_reset(&g_b);
+    {
+        const uint16_t a = emu_ir_emit(&g_b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
+                                       EMU_IR_NO_TEMP, 1u, 0u);
+        const uint16_t r = emu_ir_emit(&g_b, EMU_IR_FADD, 0u, a, a, 0u, 0u);
+
+        (void)emu_ir_emit(&g_b, EMU_IR_FPUT, 0u, r, EMU_IR_NO_TEMP, 3u, 0u);
+    }
+    if (!lower_and_run(&cpu)) {
+        CHECK(false);
+        return;
+    }
+    CHECK_EQ64(cpu.f[3], F_TWO);
+    CHECK(!emu_jit_layout.chainable);
+    CHECK_EQ(g_fake_fp_flag_calls, 1u);
+}
 #endif /* EMU_HOST_JIT_X86_64 */
 
 /*
@@ -2732,6 +2791,7 @@ void test_ir(void)
     test_lower_fp_nan_canonical();
     test_lower_fp_box();
     test_lower_fp_flags();
+    test_lower_fp_move_chains();
     test_lower_memory();
     test_lower_memory_trap();
     test_lower_predicated_memory();

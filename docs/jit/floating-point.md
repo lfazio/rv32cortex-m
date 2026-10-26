@@ -94,6 +94,34 @@ unboxing read would turn an unboxed register into a canonical NaN, and
 "no interpretation" is the whole instruction. `rv_fpu.c` makes the same
 distinction in the same places through `fr32`/`fw32`.
 
+## FS Dirty, and which blocks chain
+
+A block holding an operation from `FADD` to `FCLASS` frames the host's
+FP state and hands its flags over in the tail, so every exit passes
+through the tail and the block does not chain. `FGET` and `FPUT` are
+register moves and need neither: a block of only those chains like any
+other.
+
+FS is marked where the FP state changes, as the interpreter marks it
+(Sail's rule; `tests/arch-test/probes/fsdirty.S`): at a block's first
+f write, by IR the frontend emits (`fput` in `rv_ir.c`), and in the
+tail only when fflags changed. The tail used to mark it for any block
+with an `FPUT` -- which is why blocks that only moved floats could not
+chain: a chained exit skipped the mark (`flw-chained-fs-clean`, in
+`tests/fuzz/regressions/rv32-jit/`). Chaining them again, against
+1d6e0ee:
+
+| | before | after |
+|---|---|---|
+| Whetstone, x86-64 JIT, host instructions (callgrind) | 241,221,981 | 236,041,849 (−2.15%) |
+| Whetstone, F746, host cycles per guest instruction, `EMU_LAYOUT_PAD_BSS` 0 / 1024 / 4096 | 34.39 / 34.40 / 35.45 | 34.08 / 33.71 / 35.23 |
+| block entries through the dispatcher, F746 | 606,454 | 566,675 |
+
+The layout alone moves the "before" column by 3%, so the board says
+faster at all three, not by how much. `test_lower_fp_move_chains` holds
+the decision (two failures with the old rule), and
+`flw-chained-fs-clean` still fails if `fput` stops marking FS.
+
 ## What each backend answers
 
 `emu_ir_can_lower(op, aux)` is the query, and a frontend that gets `false`

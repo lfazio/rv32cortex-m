@@ -141,20 +141,6 @@ static EMU_PER_CORE uint8_t g_fe_map[64];
 static EMU_PER_CORE bool g_fe_map_ready;
 static EMU_PER_CORE bool g_has_fp;
 
-/*
- * Did this block write an FP register without doing any arithmetic?
- *
- * fp_flags carries two things, and only one of them is flags: it also
- * marks the frontend's extension state dirty, which is what tells a
- * context switch the FP file needs saving. A block that only moves
- * floats about -- an FLW, an FMV.W.X -- owes the guest that mark and
- * needs none of MXCSR, so it cannot be folded into g_has_fp without
- * paying the framing for nothing.
- *
- * Set by FPUT rather than by FGET: reading a register dirties nothing.
- */
-static EMU_PER_CORE bool g_fp_written;
-
 static void fe_map_init(void)
 {
     if (g_fe_map_ready) {
@@ -1489,7 +1475,6 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             x86_mov_imm32(T1, 0xFFFFFFFFu);
             x86_st_cpu(T1, t->freg_offset(in->imm) + 4u);
         }
-        g_fp_written = true;
         break;
 
     case EMU_IR_FADD:
@@ -2189,14 +2174,17 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      * must not be paid by the blocks that never look at a float.
      */
     g_has_fp = false;
-    g_fp_written = false;
     /*
-     * Both found here, before the prologue decides whether the block may
-     * chain -- which neither may. g_fp_written used to be set only while
-     * FPUT was lowered, after that decision, so a block that moved a
-     * float and left by a constant exit chained, skipped the fp_flags
-     * call in its tail, and never marked FS dirty: an OS that trusted
-     * FS would not save the register. fuzz-rv32-jit, on c.flw then jal.
+     * Found here, before the prologue decides whether the block may
+     * chain -- which it may not, since every exit must pass through the
+     * flag accumulation in the tail.
+     *
+     * An FPUT alone does not count: it is a register write, and needs
+     * neither MXCSR nor the tail. It used to, when the tail's fp_flags
+     * call was how RV32 marked FS Dirty, and so blocks that only moved
+     * floats could not chain (fuzz-rv32-jit, on c.flw then jal: one
+     * that did skipped the call). RV32 marks FS in the block itself now,
+     * at its first f write (`fput` in rv_ir.c).
      */
     for (uint32_t i = 0; i < b->count; i++) {
         if (b->insn[i].dead) {
@@ -2205,8 +2193,6 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         if (b->insn[i].op >= (uint8_t)EMU_IR_FADD &&
             b->insn[i].op <= (uint8_t)EMU_IR_FCLASS) {
             g_has_fp = true;
-        } else if (b->insn[i].op == (uint8_t)EMU_IR_FPUT) {
-            g_fp_written = true;
         }
     }
     if (g_has_fp && (t->fp_flags == NULL || t->freg_offset == NULL)) {
@@ -2261,7 +2247,7 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
      * accumulation in the tail and a chained one would skip it.
      */
     emu_jit_layout.chain_entry = (uint32_t)(emu_jit_here() - g_block_start);
-    emu_jit_layout.chainable = !g_has_fp && !g_fp_written;
+    emu_jit_layout.chainable = !g_has_fp;
 
     if (frame != 0u) {
         emu_jit_emit8(0x48);
@@ -2377,17 +2363,6 @@ bool emu_ir_lower(const emu_ir_block_t *b, const emu_ir_target_t *t)
         x86_mov_imm64(X86_EAX, (uint64_t)(uintptr_t)t->fp_flags);
         x86_call_rax();
         x86_ldmxcsr(slot(SCRATCH_MXOLD));
-    } else if (g_fp_written && t->fp_flags != NULL) {
-        /*
-         * No arithmetic, so no flags -- but the write still has to be
-         * declared. Zero says exactly that, and fp_flags does the rest.
-         */
-        x86_mov_imm32(X86_ESI, 0u);
-        emu_jit_emit8(0x48);
-        emu_jit_emit8(0x89);
-        emu_jit_emit8(0xDF); /* mov rdi, rbx */
-        x86_mov_imm64(X86_EAX, (uint64_t)(uintptr_t)t->fp_flags);
-        x86_call_rax();
     }
 
     if (frame != 0u) {

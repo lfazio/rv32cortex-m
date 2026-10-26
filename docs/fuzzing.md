@@ -335,9 +335,11 @@ in the scripts:
   compare-and-branches that became `cbnz`.
 - **The FS defect was a decision taken before the information it
   needed.** Chainability is fixed in the prologue; "this block writes an
-  f register" was learnt while lowering its body. The fix costs
+  f register" was learnt while lowering its body. The fix cost
   Whetstone under the x86-64 JIT 2.09% of host instructions, because
-  those blocks no longer chain -- see [TODO.md](TODO.md).
+  those blocks no longer chained -- until RV32 marked FS in the block
+  itself, after which they chain again
+  ([jit/floating-point.md](jit/floating-point.md#fs-dirty-and-which-blocks-chain)).
 
 ## Adding a finding
 

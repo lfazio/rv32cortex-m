@@ -96,20 +96,14 @@ measured at.
       What it says about where hot blocks should go -- and whether
       CoreMark, which never flushes, has the same to gain -- is
       unmeasured.
-- [ ] **Whetstone on the F446 does not finish within 120 s**, on main
-      as on the image-window tree. It could be double-precision
-      SoftFloat on an M4; it has not been looked at.
-- [ ] **Blocks that only move floats no longer chain.** Both backends
-      marked FS dirty from the tail of a block, so a block with an
-      `FPUT` had to leave through it, and chaining skipped it -- the
-      defect `fuzz-rv32-jit` found ([fuzzing.md](fuzzing.md)). The fix
-      made such blocks unchainable, which costs Whetstone under the
-      x86-64 JIT 2.09% of host instructions (unmeasured on the board).
-      RV32 now marks FS Dirty in the block itself, at its first f write
-      (`fput` in `rv_ir.c`, for precision rather than speed), and the
-      tail only for a change to fflags -- so a block with an `FPUT` and
-      no FP arithmetic no longer needs its tail, and could chain again:
-      the backends' `g_fp_written` rule is what is left to relax.
+- [ ] **Whetstone does not finish within 120 s below a 64 KB code
+      cache.** First seen on the F446 (12 KB), where it was put down to
+      double-precision SoftFloat on an M4; the F746 stalls the same way
+      at 32 KB, 16 KB and 8 KB, at 1d6e0ee and after, and at 64 KB runs
+      it in 1.65 s holding 41 KB of code. It is not eviction as such:
+      CoreMark x650 at 32 KB, also past its working set, completes with
+      8,485 compactions. Something about Whetstone's blocks and a full
+      buffer; not looked at.
 - [ ] **LTO partitioning moves the host's interpreters by percents.**
       `-flto-partition=one` runs ARMv7-M's interpreted CoreMark in 4.4%
       fewer host instructions than the default partitioning and RV32's

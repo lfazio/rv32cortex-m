@@ -273,24 +273,21 @@ static uint32_t rv_freg_offset(uint32_t n)
 #endif
 
 /*
- * One block's worth of floating-point side effects.
+ * One block's worth of floating-point flags, on the one path every exit
+ * takes.
  *
  * The IR hands over its own neutral flag encoding, which is deliberately
  * RISC-V's fflags order -- so the accumulate is a mask and an OR, and
  * the two backends that had to reorder theirs did it once each rather
  * than the frontend doing it per host.
  *
- * FS is set to Dirty here too, which is the other thing an FP operation
- * owes the guest: a context switch reads FS to decide whether the
- * register file needs saving, and a block that computed floats without
- * marking them dirty loses them. Dirty is *not* part of the generation
- * key -- the key tracks off-ness -- which is what stops this write from
- * flushing the code cache every time a block uses a float.
- */
-/*
- * A block's flags, on the one path every exit takes. FS goes Dirty here
- * only if fflags changed -- the interpreter's rule (f_accrue), and
- * Sail's. An f register written marks it where it is written (fput).
+ * FS goes Dirty here only if fflags changed -- the interpreter's rule
+ * (f_accrue), and Sail's. An f register written marks it where it is
+ * written (fput), so a block that only moves floats calls nothing here
+ * and may chain. A context switch reads FS to decide whether the
+ * register file needs saving; Dirty is *not* part of the generation
+ * key -- the key tracks off-ness -- which is what stops either write
+ * from flushing the code cache every time a block uses a float.
  *
  * This used to mark FS Dirty for every block that held any FP
  * operation, on every exit: a block that left by a side exit before
@@ -744,7 +741,9 @@ static EMU_PER_CORE bool g_fs_marked;
  * An f register written: the FPUT, and FS made Dirty on the path that
  * wrote it -- the interpreter's rule, which marks it as it writes. A
  * side exit taken before this never reaches it. Through mstatus as an IR
- * register, three ordinary operations the passes can see.
+ * register, three ordinary operations the passes can see. **It is the
+ * only mark an f write gets**: the backends call nothing for an FPUT,
+ * which is what lets a block that only moves floats chain.
  *
  * **At the block's first write only.** A block is straight-line with
  * side exits and no joins, so a later write on any path means the first
