@@ -3593,6 +3593,54 @@ session, and every one of them recurred:
   same lesson as RV32's minstret fix: **measure every variant**, since
   at this size the compiler's choices move a row as much as the code.
 
+- **The emulator was too strict as often as too lax, and the IT block
+  was all strictness.** Asked about the 16-bit forms naming sp and pc,
+  the F746 refused `cmp pc, r1`, `cmp r0, pc` and `blx pc`, which the
+  frontend executed -- and *ran* `itt al`, which the frontend refused.
+  That one refusal had hidden the rest: four cases about branches inside
+  an IT block all "agreed" that something was UNDEFINED, because the
+  emulator never got past their first halfword. Asked properly -- every
+  mask of IT AL, firstcond 1111, and sequences built so a `mov` shows
+  which way a branch went, six repetitions so the flags differ -- the
+  M7 runs every IT encoding, lets an inner IT replace the block, runs
+  B\<cond\> and CBZ inside a block on their own condition whatever the
+  block's, and ends the block on any instruction that can write the pc
+  -- taken, not taken, or skipped by the block's condition, so the
+  instruction after a skipped `bx` runs outside the block and sets
+  flags. It is the encoding that ends it, not what it did. The
+  frontend refused all of it, under a comment that called each case
+  UNPREDICTABLE "and reported rather than given an answer".
+
+  Two things about the instrument, which failed first. The harness
+  resumed a faulting probe four bytes on, which inside a one-halfword
+  probe is the middle of the next instruction: both the board and the
+  emulator ran off the end of the first faulting case, and the run said
+  "board ran 1". And the first sequences ended their branches on the
+  next member, so a taken branch and an untaken one looked the same --
+  **when asking which way something went, make the two ways leave
+  different state.** An ITE whose else-member writes r0, after a branch
+  that skips it, is what separated "the branch obeys the block" from
+  "the branch ignores it", and an instruction placed after a taken
+  branch is what showed the block had ended: left running, the
+  emulator's harness ran its next store conditionally and bus-faulted.
+
+- **Callgrind said 2.3%, the board 10.3%, and both were right about
+  their own machine.** ARMv7-M's sp/pc rules were written as inline
+  predicates, measured on x86-64, committed with that figure -- and
+  the F746, asked later, ran interpreted CoreMark at 158.27 host cycles
+  an instruction against 143.44 before. `arm-none-eabi-nm` on the two
+  firmwares said why in one command: `armv7m_dp_regs_ok` and
+  `t32_dp_plain` had become functions in flash, called from the loop in
+  ITCM through veneers, where before the plain-immediate handler had
+  been inlined into it. x86-64 has no ITCM, no flash and no veneer, so
+  no instruction count there could show it. Forcing the common test
+  inline and the rules out of line won back most of it (153.69); the
+  rest a PC profile spread across the loop, unchanged handlers included,
+  which is code shape. And the profile reader's first version read the
+  count and the samples in two probe attaches, each a reset, so the
+  start-up had zeroed the samples by the second: 96% of them at address
+  0. **One attach, one read**, when the target restarts on release.
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

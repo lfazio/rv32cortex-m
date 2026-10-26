@@ -42,7 +42,8 @@ typedef struct {
     uint32_t mem_lo;
     uint32_t mem_hi;
     uint32_t flags;
-    uint32_t probe; /* a raw case: where its one instruction is */
+    uint32_t probe; /* a raw case: where its instruction is      */
+    uint32_t resume; /* ...and where it ends, which a fault skips to */
 } diff_meta_t;
 
 #define DIFF_FLAG_FP 1u
@@ -50,8 +51,9 @@ typedef struct {
  * A raw case is an *encoding* rather than an instruction: four bytes the
  * assembler was told to emit, which the core may run, or refuse with
  * UNDEFINSTR or NOCP. The harness takes the fault, records what it was,
- * and resumes after the four bytes -- so "this encoding is UNDEFINED" is
- * a result like any other and is compared like any other.
+ * and resumes after the probe -- four bytes, or a 16-bit encoding, or an
+ * IT block and its members -- so "this encoding is UNDEFINED" is a
+ * result like any other and is compared like any other.
  */
 #define DIFF_FLAG_RAW 2u
 

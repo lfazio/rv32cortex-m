@@ -610,6 +610,9 @@ static X t16_special(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
         return OK;
     }
     case 1u: /* CMP (register) */
+        if (rd == ARMV7M_PC || rm == ARMV7M_PC) {
+            return ARMV7M_X_UNDEF; /* the M7 refuses pc; two low ones run */
+        }
         (void)add_c(c, reg_pc(c, rd, pc), ~reg_pc(c, rm, pc), 1u, true);
         return OK;
     case 2u: { /* MOV (register), no flags */
@@ -630,8 +633,8 @@ static X t16_special(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
          */
         const uint32_t target = reg_pc(c, rm, pc);
 
-        if ((insn & 7u) != 0u) {
-            return ARMV7M_X_UNDEF;
+        if ((insn & 7u) != 0u || ((op & 2u) != 0u && rm == ARMV7M_PC)) {
+            return ARMV7M_X_UNDEF; /* ...and BLX pc, which the M7 refuses */
         }
         if ((op & 2u) != 0u) { /* BLX */
             c->r[ARMV7M_LR] = (pc + 2u) | 1u;
@@ -813,19 +816,14 @@ static X t16_misc(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
          * mask bits become the condition's low bit as the field shifts,
          * so ITT and ITE need no decoding of their own.
          *
-         * firstcond 0b1111 does not exist, and AL with an else branch
-         * would need its inverse, which also does not: both are
-         * UNPREDICTABLE and are reported rather than given an answer.
+         * **Every mask is an IT on a Cortex-M7**, where the manual calls
+         * several UNPREDICTABLE: firstcond 0b1111, AL with an else, and
+         * an IT inside an IT block. Asked one by one, the board ran all
+         * of them: conditions 1110 and 1111 both mean always, and an IT
+         * inside a block replaces it -- step() then leaves the new state
+         * alone. This frontend refused them all until then.
          */
         if (mask != 0u) {
-            if (firstcond == 0x0Fu ||
-                (firstcond == 0x0Eu && (mask & 7u) != 0u &&
-                 (mask & 0x0Eu) != 0x0Au)) {
-                return ARMV7M_X_UNDEF;
-            }
-            if (armv7m_in_it(c->xpsr)) {
-                return ARMV7M_X_UNDEF; /* IT inside IT */
-            }
             c->xpsr = armv7m_it_put(c->xpsr, (firstcond << 4) | mask);
             return OK;
         }
@@ -902,9 +900,7 @@ static X exec16(armv7m_cpu_t *c, uint16_t insn, uint32_t pc)
         if (cond == 14u) {
             return ARMV7M_X_UNDEF;
         }
-        if (armv7m_in_it(c->xpsr)) {
-            return ARMV7M_X_UNDEF; /* a conditional branch inside IT */
-        }
+        /* Inside an IT block too, on its own condition: see step(). */
         if (cond_holds(c, cond)) {
             c->r[ARMV7M_PC] =
                 (uint32_t)((int32_t)(pc + 4u) + (int32_t)(int8_t)(insn & 0xFFu) * 2);
@@ -1020,8 +1016,16 @@ static X t32_dp_imm(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
     return dp_op(c, sel, rd, rn, b, cy, s);
 }
 
-/* Data processing (plain binary immediate): 11110 x1 xxxxx | 0 */
-static X t32_dp_plain(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
+/*
+ * Data processing (plain binary immediate): 11110 x1 xxxxx | 0
+ *
+ * Inlined, forced: it was inlined into the loop until the sp/pc rules
+ * grew it, and out of line it cost every MOVW, MOVT, ADDW and bit field
+ * a call -- 6% of interpreted CoreMark on the F746, from flash or from
+ * ITCM alike, which callgrind on x86-64 could not see.
+ */
+static EMU_ALWAYS_INLINE X t32_dp_plain(armv7m_cpu_t *c, uint16_t w0,
+                                        uint16_t w1, uint32_t pc)
 {
     const uint32_t op = (w0 >> 4) & 31u;
     const uint32_t rn = w0 & 15u;
@@ -1957,9 +1961,7 @@ static X t32_branch_misc(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
                                     ((uint32_t)(w0 & 0x3Fu) << 12) |
                                     ((uint32_t)(w1 & 0x7FFu) << 1));
 
-            if (armv7m_in_it(c->xpsr)) {
-                return ARMV7M_X_UNDEF;
-            }
+            /* Inside an IT block too, on its own condition: see step(). */
             if (s != 0u) {
                 off -= 0x200000;
             }
@@ -2030,12 +2032,9 @@ static X t32_branch_misc(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
         if (s != 0u) {
             off -= 0x2000000;
         }
+        /* Anywhere in an IT block, not only last: the branch ends it. */
         if ((op1 & 4u) != 0u) {
             c->r[ARMV7M_LR] = (pc + 4u) | 1u;
-        } else if (armv7m_in_it(c->xpsr) &&
-                   (armv7m_it_get(c->xpsr) & 7u) != 0u) {
-            /* B inside an IT block must be its last instruction. */
-            return ARMV7M_X_UNDEF;
         }
         c->r[ARMV7M_PC] = (uint32_t)((int32_t)(pc + 4u) + off);
         return OK;
@@ -2122,6 +2121,80 @@ static X exec32(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
  * translated path and has been bitten by it three times. Inlined into
  * the loop, so sharing it costs the interpreter nothing.
  */
+/*
+ * Inside an IT block, as a Cortex-M7 does it. The manual calls all of
+ * this UNPREDICTABLE, so the board was asked, encoding by encoding
+ * (tests/armv7m-diff/rawgen.py, named halfword sequences):
+ *
+ *   - B<cond>, 16- and 32-bit, and CBZ/CBNZ run on their own condition
+ *     whatever the block's: under `it eq` with Z clear, `bne` branches.
+ *   - Every other instruction obeys the block's condition, B and BL as
+ *     much as anything, and need not be last.
+ *   - **An instruction that can write the pc ends the block, whatever
+ *     happens to it**: taken, not taken, or skipped by the block's
+ *     condition. Under `itt eq` with Z clear, a skipped `bx`, `pop {pc}`
+ *     or `ldr pc` is followed by an instruction that runs outside the
+ *     block -- unconditionally, and setting flags. It is the encoding
+ *     that ends it, not the outcome (it_writes_pc).
+ *   - An IT inside the block replaces it.
+ *
+ * Inline, forced, as is everything it_after calls: every member of every
+ * IT block comes through here, and out of line on the F746 they were
+ * calls out of ITCM into flash.
+ */
+static EMU_ALWAYS_INLINE bool it_ignores_condition(uint16_t hw, uint16_t w1,
+                                                   uint32_t len)
+{
+    if (len == 2u) {
+        return ((hw & 0xF000u) == 0xD000u && ((hw >> 9) & 7u) != 7u) ||
+               (hw & 0xF500u) == 0xB100u; /* B<cond> T1, CBZ, CBNZ */
+    }
+    return (hw & 0xF800u) == 0xF000u && (w1 & 0xD000u) == 0x8000u &&
+           ((hw >> 7) & 7u) != 7u; /* B<cond> T3 */
+}
+
+/*
+ * Whether an encoding can write the pc: every branch, and the loads, pops
+ * and hi-register moves and adds that name it. The 32-bit data-processing
+ * forms that name pc are UNDEFINED before this is asked, and a narrow
+ * load into pc is a preload hint.
+ */
+static EMU_ALWAYS_INLINE bool it_writes_pc(uint16_t hw, uint16_t w1,
+                                           uint32_t len)
+{
+    if (len == 2u) {
+        return ((hw & 0xF000u) == 0xD000u && ((hw >> 9) & 7u) != 7u) ||
+               (hw & 0xF800u) == 0xE000u || /* B<cond> T1, B T2      */
+               (hw & 0xF500u) == 0xB100u || /* CBZ, CBNZ              */
+               (hw & 0xFF00u) == 0x4700u || /* BX, BLX                */
+               (hw & 0xFF87u) == 0x4487u || /* ADD pc, rm             */
+               (hw & 0xFF87u) == 0x4687u || /* MOV pc, rm             */
+               (hw & 0xFF00u) == 0xBD00u; /* POP {..., pc}          */
+    }
+    if ((hw & 0xF800u) == 0xF000u && (w1 & 0x8000u) != 0u) {
+        /* B T4 and BL; B T3 where the condition is not 111x */
+        return (w1 & 0x1000u) != 0u ||
+               ((w1 & 0x5000u) == 0u && ((hw >> 7) & 7u) != 7u);
+    }
+    return ((hw & 0xFF70u) == 0xF850u && (w1 >> 12) == 15u) || /* LDR pc */
+           (((hw & 0xFFD0u) == 0xE890u || (hw & 0xFFD0u) == 0xE910u) &&
+            (w1 & 0x8000u) != 0u) || /* LDM {pc}     */
+           ((hw & 0xFFF0u) == 0xE8D0u && (w1 & 0xFFE0u) == 0xF000u); /* TB */
+}
+
+/* After an instruction that ran -- or failed its condition -- in a block. */
+static EMU_ALWAYS_INLINE void it_after(armv7m_cpu_t *c, uint16_t hw,
+                                       uint16_t w1, uint32_t len, bool ran,
+                                       uint32_t next)
+{
+    if (c->r[ARMV7M_PC] != next || it_writes_pc(hw, w1, len)) {
+        c->xpsr = armv7m_it_put(c->xpsr, 0u); /* a pc-writer ends it */
+    } else if (!(ran && len == 2u && (hw & 0xFF00u) == 0xBF00u &&
+                 (hw & 0x0Fu) != 0u)) {
+        it_advance(c); /* not an IT that ran: that one's state stands */
+    }
+}
+
 static inline X step(armv7m_cpu_t *c, uint16_t hw, uint16_t w1, uint32_t pc,
                      uint32_t len)
 {
@@ -2133,7 +2206,9 @@ static inline X step(armv7m_cpu_t *c, uint16_t hw, uint16_t w1, uint32_t pc,
      * executed-as-a-NOP, not skipped.
      */
     const bool was_in_it = armv7m_in_it(c->xpsr);
-    const bool runs = !was_in_it || cond_holds(c, armv7m_it_get(c->xpsr) >> 4);
+    const bool runs = !was_in_it ||
+                      cond_holds(c, armv7m_it_get(c->xpsr) >> 4) ||
+                      it_ignores_condition(hw, w1, len);
     X x = OK;
 
     c->r[ARMV7M_PC] = pc + len;
@@ -2143,7 +2218,7 @@ static inline X step(armv7m_cpu_t *c, uint16_t hw, uint16_t w1, uint32_t pc,
     if (x == OK || x == ARMV7M_X_SVC) {
         /* SVC completes; the exception it raises returns to the next one. */
         if (was_in_it) {
-            it_advance(c);
+            it_after(c, hw, w1, len, runs, pc + len);
         }
         return x;
     }

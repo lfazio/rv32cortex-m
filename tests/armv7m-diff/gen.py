@@ -1101,6 +1101,8 @@ def emit(cases, seed, out):
             s.append("probe_%d:" % i)
         for line in c.lines:
             s.append("    " + line)
+        if c.raw:
+            s.append("probe_end_%d:" % i)
         s.append("    push {r12}")
         s.append("    ldr r12, [sp, #4]")
         s.append("    stm r12, {r0-r11}")
@@ -1126,10 +1128,11 @@ def emit(cases, seed, out):
     s.append("    .global diff_meta")
     s.append("diff_meta:")
     for i, c in enumerate(cases):
-        s.append("    .word 0x%x, %d, %d, %d, %s"
+        s.append("    .word 0x%x, %d, %d, %d, %s, %s"
                  % (c.addr, c.mem[0], c.mem[1],
                     (1 if c.fp else 0) | (2 if c.raw else 0),
-                    "probe_%d" % i if c.raw else "0"))
+                    "probe_%d" % i if c.raw else "0",
+                    "probe_end_%d" % i if c.raw else "0"))
     s.append("    .global diff_ncases")
     s.append("diff_ncases: .word %d" % len(cases))
     s.append("    .global diff_seed")

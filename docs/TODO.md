@@ -112,10 +112,13 @@ measured at.
       So a callgrind A/B of one frontend can be another's partition
       boundary. Measure the board's firmware the same way, and decide
       whether the host builds in one partition -- at least for A/Bs.
-- [ ] **ARMv7-M's sp/pc rules cost its interpreter 2.3-3.6%**
-      ([frontend/armv7m.md](frontend/armv7m.md#what-the-board-corrected)),
-      measured by callgrind only. The board figure is not taken, and
-      three attempts to make it cheaper made it dearer.
+- [ ] **ARMv7-M's sp/pc and IT rules cost its interpreter 7.1% on the
+      F746** (143.44 to 153.69 host cycles an instruction on CoreMark;
+      [frontend/armv7m.md](frontend/armv7m.md#what-the-board-corrected)),
+      about 2% in the predicates by a PC profile and the rest code shape.
+      The JIT, the default, pays nothing. Six variants were measured; a
+      decode cache is the one lever not tried again, and it lost before
+      ([frontend/armv7m.md](frontend/armv7m.md#the-run-loop-in-itcm-and-the-decode-cache-that-lost)).
 - [ ] **PowerPC's FP unit is a call per instruction.** Every EFPU2
       instruction under the JIT is a helper call into `ppc_fpu_exec`,
       whose bookkeeping -- SPEFSCR status, sticky bits, FG and FX -- was

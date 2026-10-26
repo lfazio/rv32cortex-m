@@ -37,7 +37,9 @@ other than the probe, and the harness reports the address.
 
     rawgen.py --seed N --count N --dis armv7m-dis --from a.elf --out DIR
 
-`--enc f3af8000,e8510f00:r1` adds named encodings without the filter --
+`--enc f3af8000,e8510f00:r1,nbf04+f000+b800+bf00` adds named encodings
+without the filter -- `n` for halfwords, a 16-bit encoding or a sequence
+whose first halfword is the probe --
 for a question the filter would refuse to ask, such as what a hint or an
 exclusive load does with a should-be bit wrong. `:rN` points that
 register at diff_mem first. Each is repeated a few times, because a case
@@ -268,6 +270,22 @@ def main():
     named = []
     for item in [x for x in a.enc.split(",") if x]:
         h, _, base = item.partition(":")
+        if h.startswith("n"):
+            # Halfwords, as `.inst.n`: a 16-bit encoding, or a sequence --
+            # an IT and its members, say -- of which the first is the
+            # probe. `n4508`, `nbf04+f000+b800+bf00`.
+            hws = [int(x, 16) for x in h[1:].split("+")]
+            text = "halfwords " + " ".join("%04x" % hw for hw in hws)
+            for _ in range(a.repeat):
+                c = gen.Case([".inst.n 0x%04x" % hw for hw in hws], fp=True,
+                             text="%s    <- named" % text)
+                if base:
+                    c.setup = ["ldr %s, =diff_mem+%d" % (base, gen.MEM_BASE)]
+                    c.mem = (gen.MEM_BASE - 16, gen.MEM_BASE + 24)
+                    c.addr = 1 << int(base[1:])
+                c.raw = True
+                named.append(c)
+            continue
         enc = int(h, 16)
         text = disassemble([enc], a.dis, a.out)[0]
         for _ in range(a.repeat):

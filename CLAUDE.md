@@ -91,6 +91,8 @@ What belongs here is only what the recipes do not say:
 BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
                                 # a firmware built from that tree, flashed,
                                 # run: ratio, wall clock, translations, CRC
+./scripts/board-pc-profile.py ELF  # where a -DEMU_PC_PROFILE=N firmware
+                                # spent its time, by function and line
 ./scripts/fuzz.sh SECS [ISA|all]  # a frontend's interpreter against the
                                 # x86-64 JIT, under ASan/UBSan; docs/fuzzing.md
 tests/armv7m-diff/run.py ...    # the ARMv7-M frontend against a real M7
@@ -222,9 +224,12 @@ Each has cost more than one session, and every one recurred.
   best-of-five wall clock is not a measurement.
 - **Callgrind cannot see what an M7 charges for a loop's shape.** An
   interpreter change is measured on the board (PowerPC's `stretch()`:
-  +0.10% callgrind, +10% F746). LTO partitioning alone moves a row by
-  1%: quote one-partition figures (`-flto-partition=one`) beside the
-  default.
+  +0.10% callgrind, +10% F746; ARMv7-M's sp/pc rules: +2.3% callgrind,
+  +10.3% F746, where GCC moved a predicate out of ITCM into flash). Read
+  the firmware's `nm` for what left the loop, and profile with
+  `-DEMU_PC_PROFILE` and `scripts/board-pc-profile.py`. LTO
+  partitioning alone moves a row by 1%: quote one-partition figures
+  (`-flto-partition=one`) beside the default.
 - **Time a board run from the host end too.** A 32-bit cycle counter less
   an epoch is a wrap short after 19.9 s; `emu_cycles.h` accumulates
   wrap-correct deltas. A sweep taken with a broken instrument points the
@@ -415,7 +420,10 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
 - **The board's table is not the manual's.** The M7 raises UNDEFINSTR for
   wrong should-be bits and for every UNPREDICTABLE sp/pc choice asked,
   but executes an LDM of one register and REV/CLZ with Rm copies
-  differing. Ask, keep the answers (`test_sp_pc_board_answers`), and ask
+  differing -- and every UNPREDICTABLE IT form: a nested IT replaces the
+  block, B\<cond\> and CBZ inside one ignore its condition, and any
+  pc-writer ends it even when skipped. Ask, keep the
+  answers (`test_sp_pc_board_answers`, `test_it_board_answers`), and ask
   dangerous encodings last.
 - **A register field reused as an opcode extension will not tell you**
   (G4MH `reg2 == 0`, five instances, the last stopping every C guest);
@@ -633,8 +641,9 @@ The SMP design is in [docs/os.md](docs/os.md#smp-on-the-host).
   question is asked; remove one nothing reads (G4MH's `cycles`: 4.5%
   interpreted on the F446).
 - **At this size the compiler's choices move a row as much as the code**:
-  measure every variant (three cheaper forms of ARMv7-M's sp/pc rules
-  each read dearer).
+  measure every variant, on the machine whose cost it is (of six forms
+  of ARMv7-M's sp/pc rules, the cheapest on x86-64 was not the cheapest
+  on the board).
 - **Compressed guest code is slower to interpret** (Zcb in the guest's
   march, 9%); `-Os` is 33% smaller and 8.8% slower; a last-block cache in
   front of the hash was 1.2% slower.

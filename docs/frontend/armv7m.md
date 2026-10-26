@@ -124,18 +124,49 @@ generated suites:
 | ...and a write-back onto the transfer register, LDRD with W through pc, STM writing back over a base it stores, VSTR through pc | UNDEFINSTR |
 | except the forms that may name sp: ADD, SUB, CMP and CMN of sp, MOV to or from it, `str sp` | execute |
 | except an LDM of one register, or one writing back over a base in its list, and REV/CLZ with their two Rm copies differing | execute -- UNPREDICTABLE, and not refused |
+| 16-bit CMP naming pc, and BLX pc | UNDEFINSTR; CMP with two low registers in the hi-register form executes, as does `add pc, pc` |
+| **IT, every encoding**: firstcond 1111, AL with an else, an IT inside an IT block | execute: 1110 and 1111 both mean always, and an inner IT replaces the block. The frontend refused all of them (2026-10-26) |
+| B\<cond\> (16- and 32-bit) and CBZ/CBNZ inside an IT block | execute **on their own condition**, ignoring the block's: under `it eq` with Z clear, `bne` branches |
+| B, B.W and BL inside an IT block but not last | execute under the block's condition |
+| **any instruction that can write the pc, inside an IT block** | ends the block whatever happens to it -- taken, not taken, or skipped by the block's condition. Under `itt eq` with Z clear, a skipped `bx`, `blx`, `mov pc`, `pop {pc}`, `ldr pc` or `bl` is followed by an instruction that runs outside the block, unconditionally and setting flags; so is an untaken `bne` or `cbz` |
+
+The IT rules are `it_ignores_condition`, `it_writes_pc` and `it_after`
+beside `step()` in the interpreter, which decides them all: the
+translator gives back any IT block holding a branch other than a last
+B, a CBZ or another IT. Each was asked as
+a named halfword sequence (`--enc nbfe4+bf08+2001`), six times over, so
+that the flags differ between repetitions, with a `mov` placed to show
+which way a branch went; `test_it_board_answers` holds eleven of them
+for both values of Z and checks the flags after an untaken `bne`, and
+the sp/pc table seven 16-bit ones (29 and 5 failures against ad70a01,
+the commit before). The harness resumes a faulting probe at
+its end now, not four bytes on, which inside a 16-bit probe was the
+middle of the next instruction.
 
 The sp and pc rules are one predicate per group in `armv7m_decode.h`,
 called by both decoders, and the board's answers to 36 of them are
 held without the board by `test_sp_pc_board_answers` (26 fail with the
-rules removed). They cost the interpreter 2.3% of its host
-instructions on CoreMark and 1.3% on Dhrystone -- 3.6% and 2.4% in a
-one-partition build, which is the honest figure -- and the JIT nothing,
-since a block is checked once. Three ways of making it cheaper each
-made it dearer: the rules out of line (+3.27%), the plain-immediate
-handler forced inline (+2.91%), and a pre-filter testing the OR of the
-fields (+3.70%). What is left is an exact test of the fields for sp or
-pc in front of each rule, which almost no compiled instruction fails.
+rules removed).
+
+**What they cost was measured twice, and the two instruments
+disagreed by a factor of four.** Callgrind on x86-64 said 2.3% of the
+interpreter's host instructions on CoreMark. The F746 said 10.3%:
+143.44 host cycles an instruction at 375f9bf, 158.27 with the rules as
+first written, 160.65 with the IT rules beside them, the wall clock
+agreeing every time. GCC had moved `armv7m_dp_regs_ok` and the
+plain-immediate handler out of the loop, which runs from ITCM, into
+calls in flash -- a cost x86-64 has no counterpart for. The fast test
+is inline and forced now, the rules out of line and called only by an
+encoding naming sp or pc, the handler inlined again: 153.69, so 7.1%
+above 375f9bf. A PC profile (`scripts/board-pc-profile.py`) puts about
+2% in the predicates and the rest in the loop and the handlers around
+them, unchanged code among them (`t16_shift_add` +97 samples), which
+is code shape. Callgrind against 375f9bf: +4.45% on CoreMark and
++3.37% on Dhrystone interpreted, +3.67% and +2.52% in one partition,
++0.04% and +0.02% under the JIT -- which is this frontend's default
+backend and checks a block once. Variants that read dearer on the
+board: the handler placed in ITCM out of line (153.65, no better than
+in flash), and a pre-filter on the pc-writer test (155.13).
 
 ---
 
@@ -661,11 +692,13 @@ the host's, so "copy it" is unlikely to survive contact.
   suite anyone could run without the board -- a decision about 3 MB of
   test data, not a technical one. The sp and pc answers are the
   exception, as a table in `test_sp_pc_board_answers`.
-- **The 16-bit forms with sp or pc have not been asked**: the
-  hi-register ADD, CMP and MOV (`cmp r0, r1` written with both low
-  registers in the hi form is UNPREDICTABLE), BLX pc, and BX or a pc
-  write inside an IT block but not last. `rawgen` writes `.inst.w`
-  only.
+- **Not every pc-writer has been asked inside an IT block.** Skipped
+  BX, BLX, MOV pc, POP {pc}, LDR pc and BL, untaken B\<cond\> and CBZ,
+  and a taken B were; ADD pc, LDM.W/POP.W with pc and TBB/TBH were not,
+  and neither was a computed branch *taken* from the middle of a block,
+  which needs a target set up to land somewhere safe -- `pop {pc}` ended
+  the first run that tried. `it_writes_pc` gives them the same rule by
+  analogy.
 - **The IR and the register allocator are not exercised by `t2exec`**,
   which tests the encoder end to end and nothing above it. Running
   `emu_ir_lower` in the guest is the next layer.

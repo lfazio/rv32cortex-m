@@ -345,6 +345,14 @@ static void test_sp_pc_board_answers(void)
         {0xe8b00003u, false}, /* ldm.w r0!, {r0, r1}            */
         {0xfab2f081u, false}, /* clz r0, r1, its two Rm copies differing */
         {0xee100b10u, false}, /* vmov.32 r0, d0[0]              */
+        /* 16-bit, the second halfword ignored */
+        {0x458f0000u, true}, /* cmp pc, r1                     */
+        {0x45780000u, true}, /* cmp r0, pc                     */
+        {0x47f80000u, true}, /* blx pc                         */
+        {0x45080000u, false}, /* cmp r0, r1, both low in the hi form */
+        {0x458d0000u, false}, /* cmp sp, r1                     */
+        {0xbfe40000u, false}, /* itt al                         */
+        {0xbff80000u, false}, /* it with firstcond 1111         */
     };
 
     memset(g_ua_ram, 0, sizeof(g_ua_ram));
@@ -372,6 +380,104 @@ static void test_sp_pc_board_answers(void)
                    armv7m_op_name(d.op));
             CHECK(false);
         }
+    }
+}
+
+/*
+ * IT blocks, as a Cortex-M7 runs what the manual calls UNPREDICTABLE in
+ * them: a branch that is not last, a conditional branch or CBZ inside
+ * one, an IT inside one, AL with an else and firstcond 1111. Each
+ * sequence is the board's, from rawgen's named halfwords, with the
+ * board's r0 and r1 for both values of Z -- see it_ignores_condition and
+ * it_after. Until then the frontend raised UNDEFINSTR for all of them.
+ */
+static void run_seq(const uint16_t *hw, uint32_t n, bool z, uint32_t r0)
+{
+    armv7m_cpu_t *const c = &g_ua_cpu;
+    uint32_t done = 0u;
+
+    armv7m_reset_state(c);
+    c->bus = &g_ua_bus;
+    c->state = EMU_STATE_RUNNING;
+    c->vtor = UA_RAM_BASE;
+    c->r[0] = r0;
+    c->r[1] = 0x11u;
+    c->r[ARMV7M_SP] = UA_RAM_BASE + 0xF000u;
+    c->r[ARMV7M_PC] = UA_CODE;
+    c->xpsr |= z ? ARMV7M_Z : 0u;
+    for (uint32_t i = 0u; i < n + 1u; i++) {
+        const uint16_t v = (i < n) ? hw[i] : 0xBE00u; /* then BKPT */
+
+        g_ua_ram[0x1000u + 2u * i] = (uint8_t)v;
+        g_ua_ram[0x1001u + 2u * i] = (uint8_t)(v >> 8);
+    }
+    (void)armv7m_run(c, 16u, &done);
+}
+
+static void test_it_board_answers(void)
+{
+    static const struct {
+        uint16_t hw[4];
+        uint32_t n;
+        uint32_t r0; /* in */
+        uint32_t r0_z0, r0_z1; /* out, as the board left it */
+        uint32_t r1_z0, r1_z1;
+    } k[] = {
+        /* itt al; it eq; mov r0, #1 -- the inner IT replaces the block */
+        {{0xbfe4, 0xbf08, 0x2001}, 3u, 0x55u, 0x55u, 1u, 0x11u, 0x11u},
+        /* it eq; bne +0; movs r0, #1 -- bne on its own condition */
+        {{0xbf08, 0xd100, 0x2001}, 3u, 0x55u, 0x55u, 1u, 0x11u, 0x11u},
+        /* it al; beq +0; movs r0, #1 */
+        {{0xbfe8, 0xd000, 0x2001}, 3u, 0x55u, 1u, 0x55u, 0x11u, 0x11u},
+        /* it eq; cbnz r0, +0; movs r0, #1 -- cbnz ignores the block */
+        {{0xbf08, 0xb900, 0x2001}, 3u, 0x55u, 0x55u, 0x55u, 0x11u, 0x11u},
+        /* ite eq; b +0; mov r0, #1; movs r1, #7 -- a taken branch ends
+         * the block, so the movs it lands on is not a member */
+        {{0xbf0c, 0xe000, 0x2001, 0x2107}, 4u, 0x55u, 1u, 0x55u, 7u, 7u},
+        /* it with firstcond 1111: always */
+        {{0xbff8, 0x2001}, 2u, 0x55u, 1u, 1u, 0x11u, 0x11u},
+        /* ite al; mov r0, #1; mov r1, #2: the else is 1111, also always */
+        {{0xbfec, 0x2001, 0x2102}, 3u, 0x55u, 1u, 1u, 2u, 2u},
+        /* itt eq; bx r0; mov r0, #1 under movs r2, #1 (Z clear): the bx
+         * is skipped and still ends the block, so the mov runs */
+        {{0x2201, 0xbf04, 0x4700, 0x2001}, 4u, 0x55u, 1u, 1u, 0x11u, 0x11u},
+        /* the same for pop {pc}, and for a skipped b */
+        {{0x2201, 0xbf04, 0xbd00, 0x2001}, 4u, 0x55u, 1u, 1u, 0x11u, 0x11u},
+        {{0x2201, 0xbf04, 0xe000, 0x2001}, 4u, 0x55u, 1u, 1u, 0x11u, 0x11u},
+        /* and a skipped ordinary member does not: the mov stays a member */
+        {{0x2201, 0xbf04, 0x2102, 0x2001},
+         4u,
+         0x55u,
+         0x55u,
+         0x55u,
+         0x11u,
+         0x11u},
+    };
+
+    memset(g_ua_ram, 0, sizeof(g_ua_ram));
+    emu_bus_init(&g_ua_bus);
+    CHECK(
+        emu_bus_add_ram(&g_ua_bus, "ram", UA_RAM_BASE, g_ua_ram, UA_RAM_SIZE));
+    for (uint32_t i = 0u; i < sizeof(k) / sizeof(k[0]); i++) {
+        for (uint32_t z = 0u; z < 2u; z++) {
+            run_seq(k[i].hw, k[i].n, z != 0u, k[i].r0);
+            CHECK_EQ(g_ua_cpu.cfsr, 0u);
+            CHECK_EQ(g_ua_cpu.r[0], z ? k[i].r0_z1 : k[i].r0_z0);
+            CHECK_EQ(g_ua_cpu.r[1], z ? k[i].r1_z1 : k[i].r1_z0);
+            CHECK(!armv7m_in_it(g_ua_cpu.xpsr));
+        }
+    }
+    /*
+     * itt eq; bne +0; movs r0, #1 with Z set: the bne is not taken and
+     * still ends the block, so the movs runs outside it and clears Z --
+     * a member would have left the flags alone. The board's answer.
+     */
+    {
+        static const uint16_t hw[3] = {0xbf04, 0xd100, 0x2001};
+
+        run_seq(hw, 3u, true, 0x55u);
+        CHECK_EQ(g_ua_cpu.r[0], 1u);
+        CHECK_EQ(g_ua_cpu.xpsr & ARMV7M_Z, 0u);
     }
 }
 
@@ -669,4 +775,5 @@ void test_armv7m(void)
     test_insn_len_boundary();
     test_decode_agrees_on_undefined();
     test_sp_pc_board_answers();
+    test_it_board_answers();
 }

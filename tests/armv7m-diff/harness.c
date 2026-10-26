@@ -114,7 +114,9 @@ static volatile uint32_t g_fault_at; /* its pc, relative to the probe     */
 
 /*
  * A fault inside a raw case is the case's result: record it and resume
- * after the four bytes. The status registers are sticky, so they are
+ * where the probe ends -- which was "four bytes on" until a probe could
+ * be one halfword, when it resumed inside the next instruction and the
+ * run never finished. The status registers are sticky, so they are
  * cleared here or every later case would report this one's fault.
  *
  * The pc is recorded relative to the probe and is zero whenever the
@@ -136,7 +138,7 @@ void diff_fault(uint32_t *frame)
         g_fault_at = frame[6] - at;
         CFSR = g_fault;
         HFSR = HFSR;
-        frame[6] = at + 4u;
+        frame[6] = diff_meta[n].resume;
         frame[7] = (frame[7] & ~0x0600FC00u) | (1u << 24); /* Thumb, no IT */
         return;
     }

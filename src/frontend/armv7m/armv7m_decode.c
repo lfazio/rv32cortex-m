@@ -38,6 +38,96 @@ static void set(I *d, uint32_t op)
     d->op = (uint16_t)op;
 }
 
+/*
+ * The sp and pc rules, for the encodings armv7m_decode.h's inline tests
+ * cannot clear: one copy, which both decoders call. Each is a table of
+ * the manual's, as the board answered it.
+ */
+EMU_COLD_NOINLINE bool armv7m_dp_regs_rule(uint32_t sel, uint32_t d, uint32_t n,
+                                           bool reg, uint32_t m, uint32_t t,
+                                           uint32_t sh, bool s)
+{
+    const bool bad_m = reg && armv7m_sp_or_pc(m);
+
+    switch (sel) {
+    case 0u: /* AND, TST */
+    case 4u: /* EOR, TEQ */
+        return !armv7m_sp_or_pc(n) && !bad_m &&
+               (s && d == 15u ? true : !armv7m_sp_or_pc(d));
+    case 1u: /* BIC */
+    case 10u: /* ADC */
+    case 11u: /* SBC */
+    case 14u: /* RSB */
+        return !armv7m_sp_or_pc(d) && !armv7m_sp_or_pc(n) && !bad_m;
+    case 2u: /* ORR; MOV and the shifts by an immediate when n is pc */
+        if (n != 15u) {
+            return !armv7m_sp_or_pc(d) && n != 13u && !bad_m;
+        }
+        if (reg && t == ARMV7M_SH_LSL && sh == 0u && !s) {
+            /* MOV (register): sp may be named once, not twice. */
+            return d != 15u && m != 15u && !(d == 13u && m == 13u);
+        }
+        return !armv7m_sp_or_pc(d) && !bad_m;
+    case 3u: /* ORN; MVN when n is pc */
+        return !armv7m_sp_or_pc(d) && n != 13u && !bad_m;
+    case 8u: /* ADD, CMN */
+    case 13u: /* SUB, CMP */
+        if (s && d == 15u) {
+            return n != 15u && !bad_m; /* CMN and CMP may compare sp */
+        }
+        if (n == 13u) { /* sp plus or minus: the one that may write sp */
+            return d != 15u && !bad_m &&
+                   !(reg && d == 13u && (t != ARMV7M_SH_LSL || sh > 3u));
+        }
+        return !armv7m_sp_or_pc(d) && n != 15u && !bad_m;
+    default:
+        return true; /* no such op: UNDEFINED for another reason */
+    }
+}
+
+EMU_COLD_NOINLINE bool armv7m_plain_regs_rule(uint32_t op, uint32_t d,
+                                              uint32_t n)
+{
+    switch (op) {
+    case 0x00u: /* ADDW, ADR */
+    case 0x0Au: /* SUBW, ADR */
+        return (n == 13u) ? d != 15u : !armv7m_sp_or_pc(d);
+    case 0x04u: /* MOVW */
+    case 0x0Cu: /* MOVT */
+        return !armv7m_sp_or_pc(d);
+    case 0x16u: /* BFI, and BFC when n is pc */
+        return !armv7m_sp_or_pc(d) && n != 13u;
+    default: /* SSAT, USAT and their 16-bit forms, SBFX, UBFX */
+        return !armv7m_sp_or_pc(d) && !armv7m_sp_or_pc(n);
+    }
+}
+
+EMU_COLD_NOINLINE bool armv7m_ldst_regs_rule(bool load, uint32_t size,
+                                             uint32_t t, uint32_t n, uint32_t m,
+                                             bool wback, bool unpriv)
+{
+    if (armv7m_sp_or_pc(m) || (wback && n == t)) { /* NOREG is neither */
+        return false;
+    }
+    if (unpriv) {
+        return !armv7m_sp_or_pc(t);
+    }
+    if (load) {
+        return size == 4u || (t != 13u && !(t == 15u && wback));
+    }
+    return (size == 4u) ? t != 15u : !armv7m_sp_or_pc(t);
+}
+
+EMU_COLD_NOINLINE bool armv7m_dual_regs_rule(bool load, uint32_t t, uint32_t t2,
+                                             uint32_t n, bool wback)
+{
+    if (armv7m_sp_or_pc(t) || armv7m_sp_or_pc(t2) ||
+        (wback && (n == t || n == t2))) {
+        return false;
+    }
+    return n != 15u || (load && !wback);
+}
+
 /* The sixteen data-processing operations, by their four-bit selector. */
 static const uint16_t k_dp[16] = {
     ARMV7M_OP_AND,   ARMV7M_OP_BIC,   ARMV7M_OP_ORR, ARMV7M_OP_ORN,
@@ -214,6 +304,9 @@ static void d16(uint16_t w, I *d)
             d->rn = (uint8_t)rd;
             return;
         case 1u:
+            if (rd == 15u || rm == 15u) {
+                return; /* the M7 refuses pc; two low registers run */
+            }
             set(d, ARMV7M_OP_CMP);
             d->rn = (uint8_t)rd;
             d->setflags = ARMV7M_SF_YES;
@@ -223,8 +316,8 @@ static void d16(uint16_t w, I *d)
             d->rd = (uint8_t)rd;
             return;
         default:
-            if ((w & 7u) != 0u) {
-                return;
+            if ((w & 7u) != 0u || ((op & 2u) != 0u && rm == 15u)) {
+                return; /* (0)(0)(0), and BLX pc */
             }
             set(d, (op & 2u) ? ARMV7M_OP_BLX : ARMV7M_OP_BX);
             d->opnd = ARMV7M_OPND_NONE;
@@ -372,11 +465,7 @@ static void d16(uint16_t w, I *d)
             const uint32_t mask = w & 15u;
             const uint32_t first = (w >> 4) & 15u;
 
-            if (mask != 0u) {
-                if (first == 15u ||
-                    (first == 14u && (mask & 7u) != 0u && (mask & 0xEu) != 0xAu)) {
-                    return;
-                }
+            if (mask != 0u) { /* every mask: the M7 runs them all */
                 set(d, ARMV7M_OP_IT);
                 d->cond = (uint8_t)first;
                 d->imm = mask;
