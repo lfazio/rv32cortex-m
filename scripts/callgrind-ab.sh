@@ -80,6 +80,31 @@ guestout() { # LOG: a hash of the guest's own lines, less its timing
         md5sum | cut -c1-8
 }
 
+# How each runner was linked, from the cache beside it: GCC's default LTO
+# partitioning moved one frontend's row by 1.07% for a change to another's
+# files (docs/performance.md, "One LTO partition, for A/Bs"), so an A/B
+# builds both sides -DEMU_LTO_PARTITION=one, and two that differ are
+# measuring the partitioning as well.
+partition() { # RUNNER
+    c=$(dirname -- "$1")/CMakeCache.txt
+    if [ ! -f "$c" ]; then
+        echo "unknown"
+    elif grep -q '^RV32_LTO:BOOL=OFF' "$c"; then
+        echo "no-lto"
+    else
+        p=$(sed -n 's/^EMU_LTO_PARTITION:STRING=//p' "$c")
+        [ -n "$p" ] || p=$(sed -n 's/^CMAKE_EXE_LINKER_FLAGS:STRING=.*-flto-partition=\([a-z0-9]*\).*/\1/p' "$c")
+        echo "${p:-default}"
+    fi
+}
+po=$(partition "$OLD")
+pn=$(partition "$NEW")
+if [ "$po" = "$pn" ]; then
+    echo "lto partition: $po on both sides"
+else
+    echo "lto partition: old $po, new $pn -- these differ, so the rows measure that too"
+fi
+
 # A row asked for and not in the table is a typo, and silence would read
 # as "nothing to report".
 for r in "$@"; do

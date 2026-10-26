@@ -100,7 +100,13 @@ measured at.
       ([backend/thumb2.md](backend/thumb2.md#the-guest-ram-window)).
       What it says about where hot blocks should go -- and whether
       CoreMark, which never flushes, has the same to gain -- is
-      unmeasured.
+      unmeasured. And it may be placement rather than order: the same
+      row reads 16.42 or 19.30 with nothing changed but where `.bss`
+      starts (one LTO partition reorders it; `EMU_LAYOUT_PAD_BSS` 8,
+      64 and 256 then read 19.66, 19.90 and 16.53 --
+      [performance.md](performance.md#one-lto-partition-for-abs)).
+      Find which object's placement that is before tuning anything on
+      this row.
 - [ ] **Below 32 KB the JIT is still slower than the interpreter.**
       Giving up on pcs that keep being evicted
       ([jit/tuning.md](jit/tuning.md#emu_jit_thrash_evictions--giving-up-on-what-does-not-fit))
@@ -112,14 +118,6 @@ measured at.
       grows each time it is undone, or that forgets only marks older
       than the last, is the next thing to try -- measured on the board,
       where a translation costs tens of thousands of cycles.
-- [ ] **LTO partitioning moves the host's interpreters by percents.**
-      `-flto-partition=one` runs ARMv7-M's interpreted CoreMark in 4.4%
-      fewer host instructions than the default partitioning and RV32's
-      in 0.4% more, and in the default build an unrelated change to RV32
-      files moved ARMv7-M's by 1.07% (callgrind; [fuzzing.md](fuzzing.md)).
-      So a callgrind A/B of one frontend can be another's partition
-      boundary. Measure the board's firmware the same way, and decide
-      whether the host builds in one partition -- at least for A/Bs.
 - [ ] **ARMv7-M's sp/pc and IT rules cost its interpreter 7.1% on the
       F746** (143.44 to 153.69 host cycles an instruction on CoreMark;
       [frontend/armv7m.md](frontend/armv7m.md#what-the-board-corrected)),

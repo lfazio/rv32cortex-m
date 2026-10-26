@@ -402,7 +402,9 @@ in the scripts:
   change at 0.00% in a one-partition build (`-flto-partition=one`), the
   default build read ARMv7-M's interpreter 1.07% slower: a change in
   RV32 files moved where the partitions fell. The ARMv7-M cost above is
-  quoted both ways for that reason. See [TODO.md](TODO.md).
+  quoted both ways for that reason. A host A/B now builds both sides
+  `-DEMU_LTO_PARTITION=one`
+  ([performance.md](performance.md#one-lto-partition-for-abs)).
 - **The bus fix keeps the type.** `memcpy` makes an access a byte
   access, which may alias anything; the alignment-1 typedef keeps
   `uint16_t` and `uint32_t`, and the F746 firmware differs only in four

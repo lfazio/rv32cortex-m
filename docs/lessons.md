@@ -3812,6 +3812,24 @@ session, and every one of them recurred:
   qualifies at once**; and the fallback's own side effects -- where it
   leaves the pc -- are part of the load it was meant to relieve.
 
+- **A build setting that changes the layout is measured as a layout
+  change, and the hazard it insures against is tested before every
+  build pays for it.** One LTO partition was the TODO's answer to a
+  1.07% move of ARMv7-M's interpreter for a change to RV32 files. On
+  the host it is a different program -- ARMv7-M's interpreter 5.5-5.9%
+  fewer instructions, RV32's 0.2-0.5% more -- and a link of 29.6 s
+  instead of 5.5. The hazard did not recur in four A/Bs built both ways
+  (two ARMv7-M-only commits, cold code added to RV32 and to G4MH): no
+  other frontend's row moved by more than 0.09%. So it became what an
+  A/B builds, `-DEMU_LTO_PARTITION=one`, with `callgrind-ab.sh` printing
+  each side's -- not the default. On the F746 it read within 1.3% on
+  four rows and 17.5% slower on RV32 Dhrystone under the JIT, with the
+  same translations and flushes; `EMU_LAYOUT_PAD_BSS` moved that figure
+  between 19.90 and 16.53 and left the default build's alone. One
+  partition orders `.bss` differently, and the placement of something
+  in it is worth 21% on that row, twice what this file had said layout
+  could do.
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

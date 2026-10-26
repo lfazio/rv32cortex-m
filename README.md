@@ -485,7 +485,8 @@ Figures and what they have already disproved are in
 ./scripts/report-figures.sh     # every quoted figure, regenerated
 ./scripts/check-doc-flags.sh    # every build flag named in the docs exists
 ./scripts/t2-check-encodings.sh # Thumb-2 emitters against arm-none-eabi-as
-./scripts/callgrind-ab.sh OLD NEW  # host instructions of two runners, guest by guest
+./scripts/callgrind-ab.sh OLD NEW  # host instructions of two runners, guest by guest;
+                                # build both -DEMU_LTO_PARTITION=one
 EMU_PROBE=<probe> ./scripts/board-measure.sh NAME 90 -DRV32_GUEST=coremark
                                 # one firmware built, flashed and run: one line of figures
 ```

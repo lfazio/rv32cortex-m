@@ -87,7 +87,8 @@ What belongs here is only what the recipes do not say:
                                 # suite covers; scripts/fetch-spike.sh first
 ./scripts/gdb-check.sh BUILD    # a real gdb against each frontend's stub
 ./scripts/callgrind-ab.sh OLD NEW [ROW...]  # host instructions, two runners;
-                                # exact, so one run a side
+                                # exact, so one run a side; both built
+                                # -DEMU_LTO_PARTITION=one
 BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
                                 # a firmware built from that tree, flashed,
                                 # run: ratio, wall clock, translations, CRC
@@ -230,7 +231,7 @@ Each has cost more than one session, and every one recurred.
 
 ### Measuring
 
-- **On the board, the counter is exact and layout is worth up to 10%.**
+- **On the board, the counter is exact and layout is worth up to 21%.**
   Rerun the same binary before calling a difference noise; move the
   layout (`EMU_LAYOUT_PAD`, `-falign-functions`) and see whether the
   figure follows; for translated code move the buffer
@@ -242,8 +243,10 @@ Each has cost more than one session, and every one recurred.
   +10.3% F746, where GCC moved a predicate out of ITCM into flash). Read
   the firmware's `nm` for what left the loop, and profile with
   `-DEMU_PC_PROFILE` and `scripts/board-pc-profile.py`. LTO
-  partitioning alone moves a row by 1%: quote one-partition figures
-  (`-flto-partition=one`) beside the default.
+  partitioning alone moved a row by 1%: a host A/B builds both runners
+  `-DEMU_LTO_PARTITION=one` (`callgrind-ab.sh` prints each side's). On
+  the board one partition reorders `.bss`, a layout change worth 21% on
+  RV32 Dhrystone's JIT, so the firmware keeps the default.
 - **Time a board run from the host end too.** A 32-bit cycle counter less
   an epoch is a wrap short after 19.9 s; `emu_cycles.h` accumulates
   wrap-correct deltas. A sweep taken with a broken instrument points the

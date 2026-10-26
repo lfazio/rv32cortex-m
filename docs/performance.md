@@ -268,6 +268,61 @@ This subsection used to be titled "the other two frontends cannot be
 measured", and said PowerPC had no translator and a 212-instruction
 guest. Both were true.
 
+### One LTO partition, for A/Bs
+
+GCC compiles a link-time-optimised program in partitions, and where one
+ends is decided by the sizes of everything in it. So a change to one
+frontend's files can move another frontend's code between partitions,
+and its figure with it: once, a change to RV32 files read ARMv7-M's
+interpreter 1.07% slower in the default build and 0.00% in one
+partition ([fuzzing.md](fuzzing.md#things-worth-keeping-from-finding-them)).
+`-DEMU_LTO_PARTITION=one` builds that way; `scripts/callgrind-ab.sh`
+prints each runner's partitioning, and says so when the two differ.
+
+**A host A/B builds both runners with `-DEMU_LTO_PARTITION=one`.
+Nothing else does**, from these measurements at 308869c (gcc 16.2,
+`Release`, callgrind):
+
+| row | one partition against the default |
+|---|---|
+| ARMv7-M CoreMark, Dhrystone, interpreted | −5.85%, −5.54% |
+| RV32 CoreMark, Dhrystone, Whetstone, interpreted | +0.41%, +0.46%, +0.24% |
+| every JIT row, all four frontends | −0.72% to −0.06% |
+| G4MH CoreMark interpreted | +0.00% |
+
+It is a different program, not a noisier one, and it costs the link:
+`emu-host` relinks in 29.6 s rather than 5.5 s, since one partition is
+compiled on one core. And the hazard it removes did not recur. Four
+A/Bs were run both ways and measured on the rows of every frontend they
+did not touch: 8979eec and 5ef89b4, which changed only ARMv7-M files,
+and two copies of HEAD with 27 lines of cold code added to
+`rv_interp.c` and to `g4mh_interp.c`. No such row moved by more than
+0.09% in either build, and the ones that moved at all are the guests
+that read the wall clock. So it is insurance for the measurement where a
+percent decides something, not a reason to make every build pay 24 s.
+
+**On the board it is a layout change, and the board keeps the
+default.** One partition orders `.bss` differently -- the code buffer
+first instead of last -- and moves the guest's RAM, the code buffer and
+the register file against the boundary between the DTCM and the cached
+SRAM1 behind it. On the F746, CoreMark interpreted read −0.6% (RV32) and
+−0.9% (ARMv7-M), and under the JIT +0.8% and +1.3%. RV32 Dhrystone under
+the JIT read 16.42 host cycles an instruction in the default build and
+19.30 in one partition: the same 242 translations and four flushes,
+and 27M more cycles. Moving `.bss` (`EMU_LAYOUT_PAD_BSS`) moved that
+figure, and not the default build's:
+
+| `EMU_LAYOUT_PAD_BSS` | default | one partition |
+|---|---|---|
+| 8 | 16.41 | 19.66 |
+| 64 | 16.43 | 19.90 |
+| 256 | 16.66 | 16.53 |
+
+That is 21% from where `.bss` starts, twice the 10% this tree has said
+layout is worth on the board, and on the same row a flush after start-up
+moves by 17% ([TODO.md](TODO.md)). Which object's placement it is has
+not been measured.
+
 ## What a guest instruction costs, measured live
 
 The runner draws a performance line on stderr -- automatically on a

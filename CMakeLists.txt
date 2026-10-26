@@ -139,6 +139,18 @@ set(EMU_GUEST_ROM_MIB "16" CACHE STRING "Guest flash window in MiB")
 # every emulated instruction; without cross-TU inlining those stay real
 # calls, and they are the hottest code in the project.
 option(RV32_LTO "Link-time optimisation" ON)
+# Where GCC cuts the LTO program into units. Empty is GCC's own choice,
+# which follows the sizes of everything linked, so a change to one
+# frontend can move another's code between units: `one` is what a host
+# A/B builds both runners with, and nothing else does -- it links in
+# 30 s rather than 5, and on the board it reorders .bss, which is a
+# layout change (docs/performance.md, "One LTO partition, for A/Bs").
+set(EMU_LTO_PARTITION "" CACHE STRING
+    "GCC's -flto-partition= (one, balanced, ...); empty for GCC's own")
+if(RV32_LTO AND NOT EMU_LTO_PARTITION STREQUAL ""
+   AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    add_link_options(-flto-partition=${EMU_LTO_PARTITION})
+endif()
 
 #
 # Fuzzing: tests/fuzz, libFuzzer targets, clang on the host only. The
