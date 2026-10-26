@@ -98,33 +98,92 @@ text() {
     [ -f "$1" ] && [ -n "$OBJCOPY" ] && "$OBJCOPY" -O binary -j .text "$1" "$2"
 }
 
+# asm SRC OUT: one of tests/fuzz/seeds/<TARGET>-jit/*.S, linked at the
+# program's address and cut to its bytes. These are what reach the
+# devices: a compiled guest's code addresses a CLINT or an NVIC through
+# constants the fuzzer would take a long time to happen on.
+asm() {
+    case $T in
+    rv32)
+        CC_SEED=$(grep -m1 '^RISCV_GCC:' "$B/CMakeCache.txt" | cut -d= -f2)
+        FLAGS="-march=rv32imac_zicsr -mabi=ilp32"
+        ;;
+    armv7m)
+        CC_SEED=$(command -v arm-none-eabi-gcc || true)
+        FLAGS="-mcpu=cortex-m7 -mthumb"
+        ;;
+    ppc) # Book E: the seeds run behind configuration word 1
+        CC_SEED=$(grep -m1 '^PPC_GCC:' "$B/CMakeCache.txt" | cut -d= -f2)
+        FLAGS="-m32 -Wa,-a32,-mbig,-mregnames,-me500mc"
+        ;;
+    *) return 1 ;;
+    esac
+    [ -n "$CC_SEED" ] || return 1
+    # Assembled by the driver, linked by ld itself: the drivers' default
+    # link scripts carry a `flash` region that 0x2000_0000 is not in.
+    LD_EMU=
+    [ "$T" = rv32 ] && LD_EMU="-m elf32lriscv"
+    [ "$T" = ppc ] && LD_EMU="-m elf32ppc"
+    # shellcheck disable=SC2086 # FLAGS and LD_EMU are word lists
+    "$CC_SEED" $FLAGS -c -o "$2.o" "$1" &&
+        "${CC_SEED%gcc}ld" $LD_EMU -Ttext=0x20000000 -e 0x20000000 \
+            -o "$2.elf" "$2.o" &&
+        "${CC_SEED%gcc}objcopy" -O binary -j .text "$2.elf" "$2"
+}
+# FUZZ_NO_DEVICE_SEEDS=1 leaves them out, to see what fuzzing reaches
+# without being shown the way (scripts/fuzz-mutant.sh).
+seeds() {
+    [ -z "${FUZZ_NO_DEVICE_SEEDS:-}" ] || return 0
+    for src in "$ROOT"/tests/fuzz/seeds/"$T"-jit/*.S; do
+        [ -f "$src" ] || continue
+        n=$(basename "$src" .S)
+        if asm "$src" "$B/corpus/$n.bin"; then
+            seed "$B/corpus/$n.bin" "dev-$n" "$@"
+        else
+            echo "fuzz: could not assemble $src; the devices start unseeded"
+        fi
+    done
+}
+
 Z='\000\000\000\000'
 case $T in
 rv32)
     for g in isatest coremark dhrystone; do
         text "$B/guest/$g.elf" "$B/corpus/$g.text" && seed "$B/corpus/$g.text" "$g"
     done
+    seeds
     ;;
 armv7m)
     for g in coremark dhrystone crypto; do
         text "$B/guest/armv7m-$g.elf" "$B/corpus/a7-$g.text" &&
             seed "$B/corpus/a7-$g.text" "$g" "$Z"
     done
+    seeds "$Z"
     ;;
 ppc)
     for g in coremark dhrystone alu; do
         text "$B/guest/ppc-$g.elf" "$B/corpus/ppc-$g.text" &&
             seed "$B/corpus/ppc-$g.text" "$g" "$Z" '\001\000\000\000'
     done
+    seeds '\001\000\000\000'
     ;;
 g4mh)
     # CC-RH's images are committed: the toolchain is not free to install.
+    # So are the device seeds, from scripts/g4mh-build-seeds.sh.
     for f in "$ROOT"/tests/guest/g4mh/*.bin; do
         seed "$f" "$(basename "$f" .bin)" "$Z"
+    done
+    for f in "$ROOT"/tests/fuzz/seeds/g4mh-jit/*.bin; do
+        [ -z "${FUZZ_NO_DEVICE_SEEDS:-}" ] || break
+        seed "$f" "dev-$(basename "$f" .bin)" "$Z"
     done
     ;;
 esac
 
+# -timeout: an input running ten seconds has hung -- libFuzzer's own
+# default is twenty minutes, which is most of a run spent on one input
+# while the time limit says it fuzzed. A hang is reported like any other
+# finding, as timeout-* beside the crashes; a later -timeout wins.
 cd "$B/artifacts/$T"
 FUZZ_STATS=1 exec "$B/tests/fuzz/fuzz-$T-jit" -max_len=1024 \
-    -max_total_time="$SECS" "$@" "$C"
+    -max_total_time="$SECS" -timeout=10 "$@" "$C"

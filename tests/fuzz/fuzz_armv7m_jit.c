@@ -28,17 +28,25 @@
  *     RV32 target gives: self-modifying code is the one thing an
  *     interpreter and a translator may legally disagree on, and a jump
  *     into data must fault rather than run what the program wrote.
- *   - The System Control Space is not mapped, so a program cannot
- *     enable SysTick or pend an interrupt. Both are taken at a block
- *     boundary under the JIT and an instruction boundary interpreted,
- *     which the architecture permits; with them reachable every run
- *     that used one would be a report. A configuration word is how the
- *     registers there that change instructions are reached instead.
+ *   - The System Control Space is mapped, through fz_dev_t, so a
+ *     program can enable, prioritise and pend interrupts, move VTOR,
+ *     set CCR and the MPU. Three kinds of write are allowed to come out
+ *     differently on the two backends, and set the run aside
+ *     (fuzz_harness.h): one after which an exception preempts at once,
+ *     which the interpreter takes at the next instruction and the JIT
+ *     at a block boundary; SYSRESETREQ, which is asynchronous too; and
+ *     one that moves the JIT's generation -- CCR's trap bits, the MPU --
+ *     whose effect the architecture defers to an ISB. SysTick cannot be
+ *     enabled: the JIT ticks it once a block, by design. An exception
+ *     made to preempt by an *instruction* -- CPSIE, MSR, an exception
+ *     return -- is compared, since the translator declines those and
+ *     the interpreter takes it at the same boundary on both sides.
  *
  * Built only with -DEMU_FUZZ=ON; see scripts/fuzz.sh, docs/fuzzing.md
  * and fuzz_harness.h.
  */
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -90,6 +98,8 @@
 typedef struct side {
     fz_side_t run;
     armv7m_cpu_t cpu;
+    fz_dev_t scs_dev;
+    uint32_t scs_gen; /* jit_gen before the write in progress */
     emu_bus_t bus;
     uint8_t ram[RAM_SIZE];
 } side_t;
@@ -158,6 +168,38 @@ static void once(void)
     fz_start(&g_target, &armv7m_backend_jit, g_jit.run.cpu);
 }
 
+#define SYST_CSR 0x010u /* SysTick's control word, in the SCS */
+#define SCS_SIDE(d)                                                            \
+    ((side_t *)(void *)((char *)(d) - offsetof(side_t, scs_dev)))
+
+/* SysTick's ENABLE never reaches the device; see the header. */
+static void scs_filter(fz_dev_t *d, uint32_t off, uint32_t size, uint32_t *val)
+{
+    if (off <= SYST_CSR && SYST_CSR < off + size) {
+        *val &= ~(1u << (8u * (SYST_CSR - off)));
+    }
+    SCS_SIDE(d)->scs_gen = SCS_SIDE(d)->cpu.jit_gen;
+}
+
+static unsigned scs_after_write(fz_dev_t *d, uint32_t off, uint32_t size)
+{
+    side_t *const sd = SCS_SIDE(d);
+    const armv7m_cpu_t *const c = &sd->cpu;
+    bool preempts = false;
+    unsigned why = 0u;
+
+    (void)off;
+    (void)size;
+    (void)armv7m_pending_exc(c, &preempts);
+    if (preempts || c->state == EMU_STATE_HALTED) {
+        why |= FZ_ASIDE_ASYNC; /* taken, or reset, at a block boundary */
+    }
+    if (c->jit_gen != sd->scs_gen) {
+        why |= FZ_ASIDE_UNSYNC; /* in force from the next ISB */
+    }
+    return why;
+}
+
 /* The same machine on each side, from the same state. */
 static void build(side_t *sd)
 {
@@ -176,7 +218,9 @@ static void build(side_t *sd)
     memcpy(sd->ram, g_ram_init, RAM_SIZE);
     if (!emu_bus_add(&sd->bus, &ram) ||
         !emu_bus_add_rom(&sd->bus, "code", CODE_BASE, g_code, CODE_SIZE) ||
-        !emu_bus_add_rom(&sd->bus, "vectors", VEC_BASE, g_vec, VEC_SIZE)) {
+        !emu_bus_add_rom(&sd->bus, "vectors", VEC_BASE, g_vec, VEC_SIZE) ||
+        !emu_bus_add_mmio(&sd->bus, "scs", ARMV7M_SCS_BASE, ARMV7M_SCS_SIZE,
+                          &fz_dev_ops, &sd->scs_dev)) {
         fprintf(stderr, "%s: could not build the bus\n", g_target.name);
         abort();
     }
@@ -188,6 +232,13 @@ static void build(side_t *sd)
     c->access_priv = true;
     c->state = EMU_STATE_RUNNING;
     c->vtor = VEC_BASE;
+    sd->scs_dev = (fz_dev_t){
+        .ops = &armv7m_scs_ops,
+        .ctx = c,
+        .side = &sd->run,
+        .filter = scs_filter,
+        .after_write = scs_after_write,
+    };
 
     for (uint32_t i = 0; i < 13u; i++) {
         c->r[i] = REG_BASE + i * 32u;
@@ -277,6 +328,26 @@ static void compare(void)
         SAME_AT(pending, i);
         SAME_AT(active, i);
     }
+    for (unsigned i = 0; i < ARMV7M_NIRQ / 32u; i++) {
+        SAME_AT(enabled, i);
+        SAME_AT(line, i);
+    }
+    for (unsigned i = 0; i < ARMV7M_NEXC; i++) {
+        SAME_AT(prio, i);
+    }
+    SAME(prigroup);
+    SAME(scr);
+    SAME(systick_ctrl);
+    SAME(systick_reload);
+    SAME(systick_value);
+    SAME(systick_countflag);
+    SAME(mpu_ctrl);
+    SAME(mpu_rnr);
+    for (unsigned i = 0; i < ARMV7M_MPU_REGIONS; i++) {
+        SAME_AT(mpu_rbar, i);
+        SAME_AT(mpu_rasr, i);
+    }
+    SAME(fpdscr);
     SAME(vtor);
     SAME(ccr);
     SAME(shcsr);
@@ -302,6 +373,10 @@ static void compare(void)
     SAME(lockup);
     fz_diff_mem(&g_target, "ram", g_interp.ram, g_jit.ram, RAM_SIZE);
     fz_verdict(&g_target, &g_interp.run, &g_jit.run);
+    /* Stopped in PendSV's, SysTick's or an external interrupt's handler. */
+    if ((g_interp.cpu.xpsr & 0x1FFu) >= ARMV7M_EXC_PENDSV) {
+        fz_took_interrupt();
+    }
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)

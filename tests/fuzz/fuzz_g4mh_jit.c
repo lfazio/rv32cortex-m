@@ -17,8 +17,7 @@
  *
  * How every run ends at the same instruction on both sides:
  *
- *   - HALT parks the core, and the run reports WFI. Nothing can wake
- *     it: there is no interrupt controller.
+ *   - HALT parks the core, and the run reports WFI.
  *   - RBASE and EBASE name a 512-byte table in ROM that is HALTs from
  *     end to end, so every exception -- RIE, the traps, FPE, MAE, MDP
  *     -- lands on one and parks there.
@@ -27,11 +26,24 @@
  *   - Code is ROM and data RAM is not executable, for the reasons the
  *     RV32 target gives.
  *   - TRAP reaches no syscall hook: it is the architectural trap.
+ *   - INTC1 (at the SELF alias and at PE0's address), INTC2 and the
+ *     IPIR are mapped, each side its own, so a program can configure,
+ *     bind and raise channels and interrupt itself through the IPIR.
+ *     PSW.ID starts set. A write after which the core would take an
+ *     interrupt at once sets the run aside (fuzz_harness.h); one made
+ *     takeable by EI, LDSR or EIRET is compared, since the translator
+ *     declines all three. That matters more here than anywhere: the
+ *     JIT takes an interrupt through its own copy of the run loop's
+ *     code (g4mh_jit_take_irq), which has drifted from the interpreter's
+ *     three times, so the two copies are what this compares.
+ *   - No timer is mapped: the OSTM and TPTM count time, which does not
+ *     pass here.
  *
  * Built only with -DEMU_FUZZ=ON; see scripts/fuzz.sh, docs/fuzzing.md
  * and fuzz_harness.h.
  */
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,6 +54,9 @@
 #include "g4mh/g4mh_cpu.h"
 #include "g4mh/g4mh_decode.h"
 #include "g4mh/g4mh_disasm.h"
+#include "g4mh/g4mh_intc.h"
+#include "g4mh/g4mh_intercpu.h"
+#include "g4mh/g4mh_memmap.h"
 #include "g4mh/g4mh_mpu.h"
 
 #include "fuzz_harness.h"
@@ -69,6 +84,11 @@ typedef struct side {
     fz_side_t run;
     g4mh_cpu_t cpu;
     g4mh_mpu_t mpu; /* its own: the frontend's is one per PE id */
+    g4mh_intc_t intc; /* and its own controllers, likewise */
+    g4mh_intc2_t intc2;
+    g4mh_ipir_t ipir;
+    g4mh_intercpu_port_t ipir_port;
+    fz_dev_t intc1_dev, intc2_dev, ipir_dev;
     emu_bus_t bus;
     uint8_t ram[RAM_SIZE];
 } side_t;
@@ -136,6 +156,32 @@ static void once(void)
     fz_start(&g_target, &g4mh_backend_jit, g_jit.run.cpu);
 }
 
+/*
+ * After a write to a controller: whether the core would now take an
+ * interrupt before its next instruction. See fuzz_harness.h.
+ */
+static unsigned intc_after_write(fz_dev_t *d, uint32_t off, uint32_t size)
+{
+    const g4mh_cpu_t *const c = (const g4mh_cpu_t *)(void *)d->side->cpu;
+
+    (void)off;
+    (void)size;
+    return (g4mh_cpu_pending_fe(c) || g4mh_cpu_pending_irq(c) >= 0)
+               ? FZ_ASIDE_ASYNC
+               : 0u;
+}
+
+static void map_device(side_t *sd, fz_dev_t *d, const emu_dev_ops_t *ops,
+                       void *ctx)
+{
+    *d = (fz_dev_t){
+        .ops = ops,
+        .ctx = ctx,
+        .side = &sd->run,
+        .after_write = intc_after_write,
+    };
+}
+
 /* The same machine on each side, from the same state. */
 static void build(side_t *sd)
 {
@@ -152,9 +198,20 @@ static void build(side_t *sd)
 
     emu_bus_init(&sd->bus);
     memcpy(sd->ram, g_ram_init, RAM_SIZE);
+    map_device(sd, &sd->intc1_dev, &g4mh_intc1_ops, &sd->intc);
+    map_device(sd, &sd->intc2_dev, &g4mh_intc2_ops, &sd->intc);
+    map_device(sd, &sd->ipir_dev, &g4mh_ipir_ops, &sd->ipir_port);
     if (!emu_bus_add(&sd->bus, &ram) ||
         !emu_bus_add_rom(&sd->bus, "code", CODE_BASE, g_code, CODE_SIZE) ||
-        !emu_bus_add_rom(&sd->bus, "trap", TRAP_BASE, g_trap, TRAP_SIZE)) {
+        !emu_bus_add_rom(&sd->bus, "trap", TRAP_BASE, g_trap, TRAP_SIZE) ||
+        !emu_bus_add_mmio(&sd->bus, "intc1-self", G4MH_INTC1_SELF_BASE,
+                          G4MH_INTC1_SIZE, &fz_dev_ops, &sd->intc1_dev) ||
+        !emu_bus_add_mmio(&sd->bus, "intc1-pe0", G4MH_INTC1_PE0_BASE,
+                          G4MH_INTC1_SIZE, &fz_dev_ops, &sd->intc1_dev) ||
+        !emu_bus_add_mmio(&sd->bus, "intc2", G4MH_INTC2_BASE, G4MH_INTC2_SIZE,
+                          &fz_dev_ops, &sd->intc2_dev) ||
+        !emu_bus_add_mmio(&sd->bus, "ipir", G4MH_IPIR_BASE, G4MH_IPIR_SIZE,
+                          &fz_dev_ops, &sd->ipir_dev)) {
         fprintf(stderr, "%s: could not build the bus\n", g_target.name);
         abort();
     }
@@ -167,6 +224,10 @@ static void build(side_t *sd)
     g4mh_ll_drop(c); /* the last input's, so the tracker's count is true */
     g4mh_cpu_init(c, &sd->bus, 0u);
     c->mpu = &sd->mpu;
+    g4mh_intc_init(&sd->intc, c, NULL, &sd->intc2); /* sets c->intc */
+    g4mh_ipir_init(&sd->ipir);
+    g4mh_ipir_bind(&sd->ipir, 0u, &sd->intc);
+    sd->ipir_port = (g4mh_intercpu_port_t){.state = &sd->ipir, .pe = 0u};
     g4mh_cpu_reset(c, CODE_BASE);
     c->state = EMU_STATE_RUNNING;
     c->sr[1][G4MH_SR_RBASE] = TRAP_BASE;
@@ -249,11 +310,33 @@ static void compare(void)
         SAME(ll_addr);
     }
     SAME(mpu_active);
+    fz_diff_mem(&g_target, "intc.chan", (const uint8_t *)g_interp.intc.chan,
+                (const uint8_t *)g_jit.intc.chan, sizeof(g_jit.intc.chan));
+    fz_diff_mem(&g_target, "intc.eibd", (const uint8_t *)g_interp.intc.eibd,
+                (const uint8_t *)g_jit.intc.eibd, sizeof(g_jit.intc.eibd));
+    SAME(intc->pend);
+    SAME(intc->fibd);
+    SAME(intc->eibg);
+    SAME(intc->fibg);
+    SAME(intc->ihvcfg);
+    SAME(intc->feint);
+    fz_diff_mem(&g_target, "intc2.chan", (const uint8_t *)g_interp.intc2.chan,
+                (const uint8_t *)g_jit.intc2.chan, sizeof(g_jit.intc2.chan));
+    fz_diff_mem(&g_target, "intc2.eibd", (const uint8_t *)g_interp.intc2.eibd,
+                (const uint8_t *)g_jit.intc2.eibd, sizeof(g_jit.intc2.eibd));
+    fz_diff_mem(&g_target, "ipir", (const uint8_t *)&g_interp.ipir,
+                (const uint8_t *)&g_jit.ipir,
+                offsetof(g4mh_ipir_t, intc) & ~(size_t)3);
     fz_diff_mem(&g_target, "ram", g_interp.ram, g_jit.ram, RAM_SIZE);
     if (fz_diffs != 0u) {
         fprintf(stderr, "  (sr[100b + n] is selID b, regID n)\n");
     }
     fz_verdict(&g_target, &g_interp.run, &g_jit.run);
+    /* EIIC names an EIINT channel from 0x1000; FEIC 0xF0 is FEINT. */
+    if (g_interp.cpu.sr[0][G4MH_SR_EIIC] >= 0x1000u ||
+        g_interp.cpu.sr[0][G4MH_SR_FEIC] == 0xF0u) {
+        fz_took_interrupt();
+    }
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)

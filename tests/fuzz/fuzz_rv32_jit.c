@@ -23,10 +23,18 @@
  *     an interpreter and a translator, and is the one thing that would.
  *   - Data RAM is readable and writable and not executable, so a jump
  *     into data faults rather than running bytes the program wrote.
- *   - mtvec points at an ECALL in ROM, and the ECALL hook halts the
- *     hart. Any trap, an ECALL in the program, and falling off its end
- *     (the rest of the code region is ECALLs) all stop the run there.
- *   - mtime is a constant, so `rdtime` reads the same on both.
+ *   - mtvec points at a table of ECALLs in ROM, and the ECALL hook
+ *     halts the hart. Any trap or interrupt, vectored or not, an ECALL in
+ *     the program, and falling off its end (the rest of the code region
+ *     is ECALLs) all stop the run there.
+ *   - The CLINT is mapped where the frontend puts it (0x0200_0000), so a
+ *     program can raise a software interrupt and set mtimecmp; mie starts
+ *     with both enabled and mstatus.MIE clear. mtime does not advance,
+ *     so `rdtime` reads the same on both and a timer interrupt comes
+ *     only from a write. A write that makes an interrupt deliverable at
+ *     once sets the run aside (fuzz_harness.h); one made deliverable by
+ *     a CSR write or an MRET is compared, because the translator declines
+ *     both and the interpreter takes it at the same boundary on each side.
  *
  * A run that has not finished at the budget is not compared; the rule,
  * the run loop and the report are in fuzz_harness.h, which every
@@ -43,16 +51,19 @@
 
 #include "emu/emu_bus.h"
 #include "rv32/rv_backend.h"
+#include "rv32/rv_clint.h"
 #include "rv32/rv_decode.h"
 #include "rv32/rv_disasm.h"
 #include "rv32/rv_hart.h"
 #include "rv32/rv_jit.h"
+#include "rv32/rv_memmap.h"
 
 #include "fuzz_harness.h"
 
 #define CODE_BASE 0x20000000u
 #define CODE_SIZE 0x1000u /* the program, then ECALLs */
 #define TRAP_BASE 0x20010000u
+#define TRAP_WORDS 16u /* vectored: base + 4 * cause, up to 11 */
 #define RAM_BASE 0x80000000u
 #define RAM_SIZE 0x4000u
 #define REG_BASE (RAM_BASE + 0x2000u) /* registers start pointing here */
@@ -63,15 +74,17 @@
 typedef struct side {
     fz_side_t run;
     rv_hart_t hart;
+    rv_clint_t clint;
+    fz_dev_t clint_dev;
     emu_bus_t bus;
     uint8_t ram[RAM_SIZE];
 } side_t;
 
 static uint8_t g_code[CODE_SIZE];
 static size_t g_len;
-static uint32_t g_trap[4];
+static uint32_t g_trap[TRAP_WORDS];
 static uint8_t g_ram_init[RAM_SIZE];
-static const uint64_t g_mtime = 0x0000000123456789ull;
+#define MTIME_INIT 0x0000000123456789ull
 
 static side_t g_interp = {
     .run = {.name = "interp", .backend = &rv_backend_interp}};
@@ -104,7 +117,7 @@ static void once(void)
         return;
     }
     done = true;
-    for (uint32_t i = 0; i < 4u; i++) {
+    for (uint32_t i = 0; i < TRAP_WORDS; i++) {
         g_trap[i] = ECALL;
     }
     fz_fill(g_ram_init, RAM_SIZE, 0x9E3779B9u);
@@ -112,6 +125,19 @@ static void once(void)
     g_jit.run.cpu = (emu_cpu_t *)&g_jit.hart;
     /* The JIT's code buffer is per process; map it once. */
     fz_start(&g_target, &rv_backend_jit, g_jit.run.cpu);
+}
+
+/*
+ * After a write to the CLINT: whether the hart would now take an
+ * interrupt before its next instruction. See fuzz_harness.h.
+ */
+static unsigned clint_after_write(fz_dev_t *d, uint32_t off, uint32_t size)
+{
+    const rv_clint_t *const c = (const rv_clint_t *)d->ctx;
+
+    (void)off;
+    (void)size;
+    return (rv_hart_pending_irq(c->hart) != RV_EXC_NONE) ? FZ_ASIDE_ASYNC : 0u;
 }
 
 /* The same machine on each side, from the same state. */
@@ -132,7 +158,9 @@ static void build(side_t *sd)
     memcpy(sd->ram, g_ram_init, RAM_SIZE);
     if (!emu_bus_add(&sd->bus, &ram) ||
         !emu_bus_add_rom(&sd->bus, "code", CODE_BASE, g_code, CODE_SIZE) ||
-        !emu_bus_add_rom(&sd->bus, "trap", TRAP_BASE, g_trap, sizeof(g_trap))) {
+        !emu_bus_add_rom(&sd->bus, "trap", TRAP_BASE, g_trap, sizeof(g_trap)) ||
+        !emu_bus_add_mmio(&sd->bus, "clint", RV_GUEST_CLINT_BASE, RV_CLINT_SIZE,
+                          &fz_dev_ops, &sd->clint_dev)) {
         fprintf(stderr, "fuzz-rv32-jit: could not build the bus\n");
         abort();
     }
@@ -155,7 +183,15 @@ static void build(side_t *sd)
     }
     h->mstatus |= FS_INITIAL;
     h->mtvec = TRAP_BASE;
-    h->mtime = &g_mtime;
+    h->mie = (1u << RV_INT_M_SOFT) | (1u << RV_INT_M_TIMER);
+    rv_clint_init(&sd->clint, h); /* and points h->mtime at its mtime */
+    sd->clint.mtime = MTIME_INIT;
+    sd->clint_dev = (fz_dev_t){
+        .ops = &rv_clint_ops,
+        .ctx = &sd->clint,
+        .side = &sd->run,
+        .after_write = clint_after_write,
+    };
     h->ecall = halt_hook;
     h->ecall_user = NULL;
 }
@@ -278,8 +314,17 @@ static void compare(void)
         SAME_AT(mhpmcounter, i);
         SAME_AT(mhpmevent, i);
     }
+    fz_diff(&g_target, "clint.msip", 0u, g_interp.clint.msip, g_jit.clint.msip);
+    fz_diff(&g_target, "clint.mtimecmp", 0u, g_interp.clint.mtimecmp,
+            g_jit.clint.mtimecmp);
+    fz_diff(&g_target, "clint.mtime", 0u, g_interp.clint.mtime,
+            g_jit.clint.mtime);
     fz_diff_mem(&g_target, "ram", g_interp.ram, g_jit.ram, RAM_SIZE);
     fz_verdict(&g_target, &g_interp.run, &g_jit.run);
+    /* mcause says so, unless the program wrote it: near enough to count. */
+    if ((a->mcause & RV_CAUSE_INTERRUPT) != 0u) {
+        fz_took_interrupt();
+    }
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)

@@ -42,12 +42,15 @@ measured at.
     memory, trap state and the counters. **Done for all four**
     (`tests/fuzz/fuzz_harness.h` and a target each). What is left:
     Spike as a third side for RV32 (BSD-3, CLAUDE.md) -- **set aside
-    until late in the project**, by decision (2026-10-26); interrupts and
-    a device for every frontend -- each core runs without its
-    controller and timers, and asynchronous interrupts would need to be
-    taken at points both backends agree on, or set aside as PowerPC's
-    timer interrupts are; more than one core; and self-modifying code,
-    which ARMv7-M detects exactly and nothing has fuzzed. No GPL
+    until late in the project**, by decision (2026-10-26); more than one
+    core, for G4MH and PowerPC, switching cores only where one parks so
+    that both backends interleave alike -- the case that matters is a
+    block one core built running on another, since G4MH's context is
+    the user-mode bit alone; timers, and whether an ISB or an
+    interrupt raised by a store is honoured *in time* -- both set aside
+    today ([fuzzing.md](fuzzing.md#devices-and-interrupts)); and
+    self-modifying code, which ARMv7-M detects exactly and nothing has
+    fuzzed. Interrupt controllers are mapped for every frontend. No GPL
     emulator, not even as a reference.
   - **The IR**: random blocks through the passes and both lowerings,
     checked against `emu_ir_interp` on the *unoptimised* IR, stores

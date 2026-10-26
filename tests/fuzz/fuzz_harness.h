@@ -20,6 +20,29 @@
  * stops at a different instruction on each side. Those are not
  * compared. Every target arranges for a trap of any kind to stop the
  * core, so that a run that ends ends at the same instruction on both.
+ *
+ * Devices
+ * -------
+ * Each target maps its frontend's interrupt controller and timers,
+ * through fz_dev_t, which sits between the bus and the real device. The
+ * device is the frontend's own; the wrapper only watches. Two things a
+ * device write can do are allowed to come out differently on the two
+ * backends, and the wrapper notices both while the run is under way:
+ *
+ *   - **make an interrupt deliverable at once.** The interpreter takes
+ *     it before the next instruction and a JIT when the block returns to
+ *     its dispatcher -- or later still, across a chain. The architecture
+ *     allows either, for an interrupt raised by a store. FZ_ASIDE_ASYNC.
+ *   - **change what a translated block assumed**, where the architecture
+ *     defers the change to a synchronising instruction (ARMv7-M's CCR and
+ *     MPU before an ISB). FZ_ASIDE_UNSYNC.
+ *
+ * Either sets the run aside, finished or not, before anything is
+ * compared or reported. What stays comparable is an interrupt made
+ * deliverable by an instruction -- an enable, a mask lowered, an
+ * exception return -- because every frontend's translator declines
+ * those, so the interpreter runs them on both sides and takes the
+ * interrupt at the same boundary.
  */
 #ifndef FUZZ_HARNESS_H
 #define FUZZ_HARNESS_H
@@ -31,8 +54,13 @@
 #include <string.h>
 
 #include "emu/emu_backend.h"
+#include "emu/emu_bus.h"
 #include "emu/emu_cpu.h"
 #include "emu/emu_jit.h"
+
+/* Why a run is set aside rather than compared; see the header. */
+#define FZ_ASIDE_ASYNC (1u << 0)
+#define FZ_ASIDE_UNSYNC (1u << 1)
 
 typedef struct fz_side {
     const char *name;
@@ -40,6 +68,8 @@ typedef struct fz_side {
     emu_cpu_t *cpu;
     emu_run_reason_t reason;
     uint64_t retired; /* what run() reported: budget bookkeeping */
+    unsigned aside; /* FZ_ASIDE_*, from the devices during the run */
+    uint32_t device_accesses; /* through every fz_dev_t of this side */
 } fz_side_t;
 
 typedef struct fz_target {
@@ -70,7 +100,10 @@ static struct {
     uint64_t inputs;
     uint64_t compared;
     uint64_t unfinished;
-    uint64_t asynchronous; /* compared nothing: see fz_asynchronous */
+    uint64_t asynchronous; /* set aside: FZ_ASIDE_ASYNC, fz_asynchronous */
+    uint64_t unsynchronised; /* set aside: FZ_ASIDE_UNSYNC */
+    uint64_t with_device; /* compared, and touched a device */
+    uint64_t with_interrupt; /* compared, and took an interrupt */
     uint64_t retired;
     uint64_t translations;
     uint64_t block_entries;
@@ -78,6 +111,11 @@ static struct {
 } fz_stats;
 
 static unsigned fz_diffs;
+/*
+ * FUZZ_SHOW set: print every register compared, equal or not, and how
+ * each side ended -- for writing a seed and seeing what it did.
+ */
+static bool fz_show;
 
 /* xorshift32, so data RAM's initial bytes are arbitrary but fixed. */
 static inline uint32_t fz_prng(uint32_t *s)
@@ -102,14 +140,19 @@ static inline void fz_fill(uint8_t *buf, size_t n, uint32_t seed)
 static void fz_print_stats(void)
 {
     fprintf(stderr,
-            "%s: %llu inputs, %llu compared, %llu unfinished, "
-            "%llu ended in an asynchronous interrupt; "
+            "%s: %llu inputs, %llu compared (%llu touched a device, "
+            "%llu took an interrupt), %llu unfinished, "
+            "%llu set aside for an asynchronous interrupt and %llu for "
+            "an unsynchronised write; "
             "%llu retired, %llu translations, %llu block entries, "
             "%llu interpreted under the JIT\n",
             fz_stats.name, (unsigned long long)fz_stats.inputs,
             (unsigned long long)fz_stats.compared,
+            (unsigned long long)fz_stats.with_device,
+            (unsigned long long)fz_stats.with_interrupt,
             (unsigned long long)fz_stats.unfinished,
             (unsigned long long)fz_stats.asynchronous,
+            (unsigned long long)fz_stats.unsynchronised,
             (unsigned long long)fz_stats.retired,
             (unsigned long long)fz_stats.translations,
             (unsigned long long)fz_stats.block_entries,
@@ -128,6 +171,7 @@ static inline void fz_start(const fz_target_t *t, const emu_backend_t *jit,
     if (getenv("FUZZ_STATS") != NULL) {
         atexit(fz_print_stats);
     }
+    fz_show = getenv("FUZZ_SHOW") != NULL;
 }
 
 /* One difference; the first prints the heading. */
@@ -135,6 +179,10 @@ static inline void fz_diff(const fz_target_t *t, const char *what, unsigned idx,
                            uint64_t a, uint64_t b)
 {
     if (a == b) {
+        if (fz_show && a != 0u) {
+            fprintf(stderr, "  %-12s[%3u] 0x%016llx\n", what, idx,
+                    (unsigned long long)a);
+        }
         return;
     }
     if (fz_diffs++ == 0u) {
@@ -153,7 +201,9 @@ static inline void fz_diff_mem(const fz_target_t *t, const char *what,
 
         memcpy(&va, &a[i], 4u);
         memcpy(&vb, &b[i], 4u);
-        fz_diff(t, what, (unsigned)(i / 4u), va, vb);
+        if (va != vb) { /* even under FUZZ_SHOW: 4,096 words */
+            fz_diff(t, what, (unsigned)(i / 4u), va, vb);
+        }
     }
 }
 
@@ -168,6 +218,8 @@ static inline void fz_run(const fz_target_t *t, fz_side_t *sd)
     uint64_t total = 0;
 
     *t->active = sd->backend;
+    sd->aside = 0u;
+    sd->device_accesses = 0u;
     if (t->before_run != NULL) {
         t->before_run(sd->cpu);
     }
@@ -210,6 +262,9 @@ static inline void fz_report(const fz_target_t *t, const fz_side_t *a,
  * A JIT returns at a block boundary, so it can reach the budget a
  * little short of an interpreter's halt as easily as beyond it, and
  * only beyond is wrong.
+ *
+ * A run a device set aside is neither: it may have been allowed to end
+ * differently, so it is not checked for running past either.
  */
 static inline bool fz_pair(const fz_target_t *t, fz_side_t *interp,
                            fz_side_t *jit)
@@ -226,10 +281,31 @@ static inline bool fz_pair(const fz_target_t *t, fz_side_t *interp,
     fz_stats.block_entries += after.block_entries - before.block_entries;
     fz_stats.interp_fallbacks +=
         after.interp_fallbacks - before.interp_fallbacks;
+    if (fz_show) {
+        fprintf(stderr,
+                "%s: %s reason %d retired %llu aside %u devices %u; "
+                "%s reason %d retired %llu aside %u devices %u\n",
+                t->name, interp->name, (int)interp->reason,
+                (unsigned long long)interp->retired, interp->aside,
+                interp->device_accesses, jit->name, (int)jit->reason,
+                (unsigned long long)jit->retired, jit->aside,
+                jit->device_accesses);
+    }
 
+    if ((interp->aside | jit->aside) != 0u) {
+        if (((interp->aside | jit->aside) & FZ_ASIDE_ASYNC) != 0u) {
+            fz_stats.asynchronous++;
+        } else {
+            fz_stats.unsynchronised++;
+        }
+        return false;
+    }
     if (fz_finished(interp) && fz_finished(jit)) {
         fz_stats.compared++;
         fz_stats.retired += interp->retired;
+        if (interp->device_accesses != 0u || jit->device_accesses != 0u) {
+            fz_stats.with_device++;
+        }
         fz_diffs = 0;
         return true;
     }
@@ -246,6 +322,60 @@ static inline bool fz_pair(const fz_target_t *t, fz_side_t *interp,
     }
     fz_stats.unfinished++;
     return false;
+}
+
+/*
+ * A device as one side sees it: the frontend's own ops and context,
+ * and what the target wants to know about each write. Mapped with
+ * emu_bus_add_mmio(bus, name, base, size, &fz_dev_ops, &the_fz_dev_t).
+ */
+typedef struct fz_dev fz_dev_t;
+struct fz_dev {
+    const emu_dev_ops_t *ops;
+    void *ctx;
+    fz_side_t *side;
+    /* Before the device sees a write: may change it. NULL: unchanged. */
+    void (*filter)(fz_dev_t *d, uint32_t off, uint32_t size, uint32_t *val);
+    /* After the device took a write: the FZ_ASIDE_* it implies. */
+    unsigned (*after_write)(fz_dev_t *d, uint32_t off, uint32_t size);
+};
+
+static emu_fault_t fz_dev_read(void *ctx, uint32_t off, uint32_t size,
+                               uint32_t *out)
+{
+    fz_dev_t *const d = (fz_dev_t *)ctx;
+
+    d->side->device_accesses++;
+    return d->ops->read(d->ctx, off, size, out);
+}
+
+static emu_fault_t fz_dev_write(void *ctx, uint32_t off, uint32_t size,
+                                uint32_t val)
+{
+    fz_dev_t *const d = (fz_dev_t *)ctx;
+    emu_fault_t f;
+
+    d->side->device_accesses++;
+    if (d->filter != NULL) {
+        d->filter(d, off, size, &val);
+    }
+    f = d->ops->write(d->ctx, off, size, val);
+    if (f == EMU_FAULT_NONE && d->after_write != NULL) {
+        d->side->aside |= d->after_write(d, off, size);
+    }
+    return f;
+}
+
+static const emu_dev_ops_t fz_dev_ops = {
+    .read = fz_dev_read,
+    .write = fz_dev_write,
+    .tick = NULL, /* time is the target's to move, and it does not */
+};
+
+/* After a comparison that agreed: the run took an interrupt. */
+static inline void fz_took_interrupt(void)
+{
+    fz_stats.with_interrupt++;
 }
 
 /*

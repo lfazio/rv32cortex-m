@@ -18,13 +18,21 @@
  *
  * How every run ends at the same instruction on both sides:
  *
- *   - `wait` parks the core and the run reports WFI. Nothing can wake
- *     it: no interrupt controller, and MSR[EE] starts clear.
- *     0x7C00007C is `wait` in both encodings, VLE keeping opcode 31's
- *     X-forms as they are.
+ *   - `wait` parks the core and the run reports WFI. MSR[EE] starts
+ *     clear. 0x7C00007C is `wait` in both encodings, VLE keeping opcode
+ *     31's X-forms as they are.
  *   - IVPR names a table in ROM that is `wait` from end to end, and
  *     IVORn is 16n, so every interrupt parks one instruction into its
- *     own slot and the pc says which it was.
+ *     own slot and the pc says which it was. The table runs on to
+ *     cover the INTC's 337 hardware vectors too (IVPR | vector << 4),
+ *     which therefore share the low slots' addresses.
+ *   - The core's INTC is mapped where the frontend puts it, so a
+ *     program can set priorities, raise its eight software-settable
+ *     sources, acknowledge through IACKR and end through EOIR, in
+ *     either vector mode. A write after which the core would take an
+ *     interrupt at once sets the run aside (fuzz_harness.h); one made
+ *     takeable by wrteei, mtmsr or an rfi is compared, because the
+ *     translator declines all three.
  *   - lr starts at a `wait` too, so `blr` ends a program that reads
  *     like a function.
  *   - Code is ROM and data RAM is not executable, for the reasons the
@@ -44,13 +52,14 @@
 #include "ppc/ppc_cpu.h"
 #include "ppc/ppc_decode.h"
 #include "ppc/ppc_disasm.h"
+#include "ppc/ppc_intc.h"
 
 #include "fuzz_harness.h"
 
 #define CODE_BASE 0x20000000u
 #define CODE_SIZE 0x1000u /* the program, then `wait` */
 #define TRAP_BASE 0x20010000u
-#define TRAP_SIZE 0x400u /* IVOR 0..35 at 16 bytes each, and lr's */
+#define TRAP_SIZE 0x1800u /* IVOR 0..35 and the INTC's vectors, 16 each */
 #define LR_INIT (TRAP_BASE + 0x3F0u)
 #define RAM_BASE 0x80000000u
 #define RAM_SIZE 0x4000u
@@ -69,6 +78,8 @@
 typedef struct side {
     fz_side_t run;
     ppc_cpu_t cpu;
+    ppc_intc_t intc;
+    fz_dev_t intc_dev;
     emu_bus_t bus;
     uint8_t ram[RAM_SIZE];
 } side_t;
@@ -125,6 +136,19 @@ static void once(void)
     fz_start(&g_target, &ppc_backend_jit, g_jit.run.cpu);
 }
 
+/*
+ * After a write to the INTC: whether the core would now take an
+ * interrupt before its next instruction. See fuzz_harness.h.
+ */
+static unsigned intc_after_write(fz_dev_t *d, uint32_t off, uint32_t size)
+{
+    (void)off;
+    (void)size;
+    return (ppc_cpu_pending_irq((const ppc_cpu_t *)(void *)d->side->cpu) >= 0)
+               ? FZ_ASIDE_ASYNC
+               : 0u;
+}
+
 /* The same machine on each side, from the same state. */
 static void build(side_t *sd)
 {
@@ -144,7 +168,9 @@ static void build(side_t *sd)
     memcpy(sd->ram, g_ram_init, RAM_SIZE);
     if (!emu_bus_add(&sd->bus, &ram) ||
         !emu_bus_add_rom(&sd->bus, "code", CODE_BASE, g_code, CODE_SIZE) ||
-        !emu_bus_add_rom(&sd->bus, "trap", TRAP_BASE, g_trap, TRAP_SIZE)) {
+        !emu_bus_add_rom(&sd->bus, "trap", TRAP_BASE, g_trap, TRAP_SIZE) ||
+        !emu_bus_add_mmio(&sd->bus, "intc", PPC_INTC0_BASE, PPC_INTC_SIZE,
+                          &fz_dev_ops, &sd->intc_dev)) {
         fprintf(stderr, "%s: could not build the bus\n", g_target.name);
         abort();
     }
@@ -159,6 +185,15 @@ static void build(side_t *sd)
     ppc_cpu_reset(c, CODE_BASE);
     c->vle = (g_cfg & CFG_BOOKE) == 0u;
     ppc_mmu_reset(c);
+    ppc_intc_reset(&sd->intc);
+    sd->intc.core = c;
+    c->intc = &sd->intc;
+    sd->intc_dev = (fz_dev_t){
+        .ops = &ppc_intc_ops,
+        .ctx = &sd->intc,
+        .side = &sd->run,
+        .after_write = intc_after_write,
+    };
 
     for (uint32_t i = 0; i < PPC_NGPR; i++) {
         c->r[i] = REG_BASE + i * 32u;
@@ -305,8 +340,39 @@ static void compare(void)
     SAME(mas4);
     SAME(mas6);
     SAME(mmu_on);
+    SAME(ext_pending);
+    fz_diff(&g_target, "intc.bcr", 0u, g_interp.intc.bcr, g_jit.intc.bcr);
+    fz_diff(&g_target, "intc.cpr", 0u, g_interp.intc.cpr, g_jit.intc.cpr);
+    fz_diff(&g_target, "intc.vtba", 0u, g_interp.intc.vtba, g_jit.intc.vtba);
+    fz_diff(&g_target, "intc.intvec", 0u, g_interp.intc.intvec,
+            g_jit.intc.intvec);
+    fz_diff(&g_target, "intc.intpri", 0u, g_interp.intc.intpri,
+            g_jit.intc.intpri);
+    fz_diff(&g_target, "intc.req", 0u, g_interp.intc.req, g_jit.intc.req);
+    fz_diff(&g_target, "intc.lifo_head", 0u, g_interp.intc.lifo_head,
+            g_jit.intc.lifo_head);
+    fz_diff(&g_target, "intc.lifo_depth", 0u, g_interp.intc.lifo_depth,
+            g_jit.intc.lifo_depth);
+    for (unsigned i = 0; i < PPC_INTC_LIFO; i++) {
+        fz_diff(&g_target, "intc.lifo", i, g_interp.intc.lifo[i],
+                g_jit.intc.lifo[i]);
+    }
+    fz_diff_mem(&g_target, "intc.psr", g_interp.intc.psr, g_jit.intc.psr,
+                sizeof(g_jit.intc.psr) & ~(size_t)3);
+    fz_diff(&g_target, "intc.psr", PPC_INTC_NSRC - 1u,
+            g_interp.intc.psr[PPC_INTC_NSRC - 1u],
+            g_jit.intc.psr[PPC_INTC_NSRC - 1u]); /* the odd one out */
+    for (unsigned i = 0; i < (PPC_INTC_NSRC + 31u) / 32u; i++) {
+        fz_diff(&g_target, "intc.flag", i, g_interp.intc.flag[i],
+                g_jit.intc.flag[i]);
+    }
     fz_diff_mem(&g_target, "ram", g_interp.ram, g_jit.ram, RAM_SIZE);
     fz_verdict(&g_target, &g_interp.run, &g_jit.run);
+    /* Stopped in External Input's slot, or acknowledged something. */
+    if (g_interp.cpu.pc == TRAP_BASE + PPC_IVOR_EXTERNAL * 16u + 4u ||
+        g_interp.intc.lifo_depth != 0u) {
+        fz_took_interrupt();
+    }
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)

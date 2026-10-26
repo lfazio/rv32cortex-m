@@ -482,6 +482,56 @@ static void test_it_board_answers(void)
 }
 
 /*
+ * A vector that looks like EXC_RETURN is an address, not a return.
+ *
+ * Exception entry *branches* to the vector (ExceptionTaken, BranchTo);
+ * only POP, LDM, LDR and BX make an exception return. So a handler
+ * address of 0xFFFFB88E is fetched, and the fetch faults on the
+ * execute-never region: UDF -> HardFault (UsageFault not enabled) -> a
+ * fetch fault at HardFault's priority -> lockup. The run loop read it
+ * as a return instead, the return failed, the fault went back to the
+ * same vector, and the slice never ended -- fuzz-armv7m-jit found it as
+ * a hang, armv7m-jit/vector-exc-return-shape.
+ *
+ * **With the fix reverted this test does not fail, it does not return**:
+ * the unit binary hangs here, which is the defect. Run it under a
+ * timeout when checking that.
+ */
+static void test_vector_shaped_like_exc_return(void)
+{
+    armv7m_cpu_t *const c = &g_ua_cpu;
+    uint32_t done = 0u;
+    emu_run_reason_t why;
+
+    memset(g_ua_ram, 0, sizeof(g_ua_ram));
+    emu_bus_init(&g_ua_bus);
+    CHECK(
+        emu_bus_add_ram(&g_ua_bus, "ram", UA_RAM_BASE, g_ua_ram, UA_RAM_SIZE));
+    for (uint32_t i = 1u; i < 16u; i++) { /* every vector but the SP */
+        const uint32_t v = 0xFFFFB88Fu;
+
+        memcpy(&g_ua_ram[4u * i], &v, 4u);
+    }
+    g_ua_ram[0x1000u] = 0x00u; /* udf #0 */
+    g_ua_ram[0x1001u] = 0xDEu;
+
+    armv7m_reset_state(c);
+    c->bus = &g_ua_bus;
+    c->state = EMU_STATE_RUNNING;
+    c->vtor = UA_RAM_BASE;
+    c->r[ARMV7M_SP] = UA_RAM_BASE + 0xF000u;
+    c->msp = UA_RAM_BASE + 0xF000u;
+    c->r[ARMV7M_PC] = UA_CODE;
+    why = armv7m_run(c, 64u, &done);
+
+    CHECK(why != EMU_RUN_BUDGET); /* it ended, and not by running out */
+    CHECK(c->lockup);
+    CHECK_EQ(c->xpsr & 0x1FFu, 3u); /* in HardFault */
+    CHECK_EQ(c->cfsr & 0x00010001u, 0x00010001u); /* UNDEFINSTR, IACCVIOL */
+    CHECK_EQ(c->hfsr & 0x40000000u, 0x40000000u); /* FORCED */
+}
+
+/*
  * gdb's d registers, against the single-precision file they are made of.
  *
  * Not through gdb: gdb builds s0..s31 from d0..d15 itself, so a session
@@ -776,4 +826,5 @@ void test_armv7m(void)
     test_decode_agrees_on_undefined();
     test_sp_pc_board_answers();
     test_it_board_answers();
+    test_vector_shaped_like_exc_return();
 }

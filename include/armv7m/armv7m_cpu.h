@@ -366,6 +366,17 @@ typedef struct armv7m_cpu {
      */
     bool rom_armed;
     uint32_t rom_reads;
+
+    /*
+     * The pc was set by exception entry or by unstacking a frame, not by
+     * an instruction -- so a value of the form 0xFxxxxxxx in it is an
+     * address to fetch, which faults, and not EXC_RETURN. Only POP, LDM,
+     * LDR and BX make an exception return (B1.5.8); ExceptionTaken and
+     * PopStack *branch* to the address they load. Read and cleared by
+     * the next look at the pc in Handler mode, which is the run loop's
+     * very next step. Cold, and at the end.
+     */
+    bool pc_not_exc_return;
 } armv7m_cpu_t;
 
 /* ------------------------------------------------------------------ */

@@ -27,6 +27,7 @@ silicon was asked.
 | Fault status: CFSR, HFSR, MMFAR, BFAR | implemented |
 | MPU: 8 regions, subregions, AP/XN, PRIVDEFENA, HFNMIENA | implemented |
 | Lazy FP stacking: FPCCR, FPCAR, FPDSCR, EXC_RETURN bit 4 | implemented |
+| Exception return from a 0xFxxxxxxx pc in Handler mode -- but not when exception entry or unstacking put it there: those branch, and the fetch faults (`pc_not_exc_return`) | implemented from the manual's pseudocode; not asked of the board |
 | NVIC (98 lines, 4 priority bits), SysTick | implemented |
 | Local exclusive monitor | implemented; keeps no address, as the M7's does |
 | Caches, the debug architecture, DWT/ITM | not modelled |
@@ -692,6 +693,12 @@ the host's, so "copy it" is unlikely to survive contact.
   suite anyone could run without the board -- a decision about 3 MB of
   test data, not a technical one. The sp and pc answers are the
   exception, as a table in `test_sp_pc_board_answers`.
+- **Which writes of 0xFxxxxxxx make an exception return has not been
+  asked.** B1.5.8 names POP, LDM, LDR and BX; this core also returns for
+  MOV and ADD to the pc in Handler mode, and does not for a vector or a
+  stacked return address of that shape, which it fetches. The vector
+  case was a hang before: a failed "return" took a fault into the same
+  vector for ever, retiring nothing (`armv7m-jit/vector-exc-return-shape`).
 - **Not every pc-writer has been asked inside an IT block.** Skipped
   BX, BLX, MOV pc, POP {pc}, LDR pc and BL, untaken B\<cond\> and CBZ,
   and a taken B were; ADD pc, LDM.W/POP.W with pc and TBB/TBH were not,

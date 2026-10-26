@@ -172,6 +172,7 @@ void armv7m_reset_state(armv7m_cpu_t *c)
     c->fpdscr = 0u;
     c->faulted = false;
     c->lockup = false;
+    c->pc_not_exc_return = false;
     c->reset_by = NULL;
     c->fault_pc = 0u;
     c->fault_insn = 0u;
@@ -660,6 +661,8 @@ static bool exception_taken(armv7m_cpu_t *c, uint32_t exc)
     c->control &= ~(ARMV7M_CONTROL_FPCA | ARMV7M_CONTROL_SPSEL);
     sp_load(c);
     c->r[ARMV7M_PC] = vec & ~1u;
+    c->pc_not_exc_return = (c->r[ARMV7M_PC] & ARMV7M_EXC_RETURN_MASK) ==
+                           ARMV7M_EXC_RETURN_MASK; /* a branch: see the flag */
     bit_put(c->active, exc, true);
     pending_put(c, exc, false);
     c->excl_open = false;
@@ -834,6 +837,31 @@ static bool pop_word(armv7m_cpu_t *c, uint32_t addr, uint32_t *v)
 
 armv7m_exc_t armv7m_exc_return(armv7m_cpu_t *c, uint32_t excret)
 {
+    /*
+     * Not a return at all, when exception entry or a frame put the
+     * value in the pc: those *branch* to what they load, and only POP,
+     * LDM, LDR and BX return (B1.5.8). So the address is fetched, and
+     * the fetch faults -- execute-never, or INVSTATE first if the vector
+     * left EPSR.T clear, in the run loop's own order. Read as a return
+     * instead, a vector table of such values made a failed return take
+     * a fault into the same vector for ever, retiring nothing, and the
+     * slice never ended (armv7m-jit/vector-exc-return-shape).
+     *
+     * Here rather than in the run loop, whose only caller this is: the
+     * same test written there cost interpreted CoreMark 1.3% on the
+     * F746 with the branch never taken, and out of line as a helper of
+     * its own, 17%.
+     */
+    if (EMU_UNLIKELY(c->pc_not_exc_return)) {
+        uint16_t hw;
+
+        c->pc_not_exc_return = false;
+        if ((c->xpsr & ARMV7M_T) == 0u) {
+            return ARMV7M_X_INVSTATE;
+        }
+        return armv7m_mem_fetch16_checked(c, excret, &hw);
+    }
+
     const uint32_t ret_exc = c->xpsr & ARMV7M_IPSR_MASK;
     uint32_t nested = 0u;
 
@@ -922,6 +950,8 @@ armv7m_exc_t armv7m_exc_return(armv7m_cpu_t *c, uint32_t excret)
         c->r[12] = w[4];
         c->r[ARMV7M_LR] = w[5];
         c->r[ARMV7M_PC] = w[6] & ~1u;
+        c->pc_not_exc_return = (c->r[ARMV7M_PC] & ARMV7M_EXC_RETURN_MASK) ==
+                               ARMV7M_EXC_RETURN_MASK;
         /* APSR, IPSR and EPSR from the frame; bit 9 was only the aligner. */
         c->xpsr = w[7] & 0xFF0FFDFFu;
         c->control = (c->control & ~ARMV7M_CONTROL_SPSEL) |

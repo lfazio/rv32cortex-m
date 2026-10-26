@@ -95,6 +95,8 @@ BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
                                 # spent its time, by function and line
 ./scripts/fuzz.sh SECS [ISA|all]  # a frontend's interpreter against the
                                 # x86-64 JIT, under ASan/UBSan; docs/fuzzing.md
+./scripts/fuzz-mutant.sh SECS ISA FILE OLD NEW  # break a line on purpose
+                                # and see whether that fuzzer notices
 tests/armv7m-diff/run.py ...    # the ARMv7-M frontend against a real M7
 ```
 
@@ -213,6 +215,11 @@ Each has cost more than one session, and every one recurred.
 - **The fuzzers find what the suites share a blind spot for**: nine
   defects, four in an interpreter (docs/fuzzing.md). A UBSan report in
   the interpreter is a finding even when both backends agree.
+- **A differential fuzzer cannot see what both sides share, and a seed
+  is a test: run each alone and read what it did** (`FUZZ_SHOW=1`).
+  G4MH's LDSR to PLMR never made the core look for an interrupt; both
+  backends run LDSR in the interpreter, so they agreed, and the seed
+  written to reach it took no interrupt.
 
 ### Measuring
 

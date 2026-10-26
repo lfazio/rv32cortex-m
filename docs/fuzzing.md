@@ -4,7 +4,9 @@ Four targets, one per frontend, each the interpreter against the x86-64
 JIT on whatever bytes libFuzzer produces. Between them they found nine
 defects in code that every suite passed -- four of them in an
 interpreter, which is the reference -- and one of those turned out to
-be a whole class, which a board then answered encoding by encoding.
+be a whole class, which a board then answered encoding by encoding. A
+tenth, in G4MH's interrupt ceiling, was found by writing a seed for the
+interrupt controllers each target now maps: both backends shared it.
 
 | target | the reference, when the two disagree |
 |---|---|
@@ -43,6 +45,7 @@ state and runs one under each backend:
 | code, read-only | `0x2000_0000`, 4 KiB | the program, then the frontend's stop instruction to the end |
 | traps, read-only | `0x2001_0000` | every vector, filled with the stop instruction |
 | data RAM, read-write, **not executable** | `0x8000_0000`, 16 KiB | a fixed pseudo-random fill |
+| the interrupt controller | where the frontend puts it | each side its own; see [Devices](#devices-and-interrupts) |
 
 | | stops the core | traps go to | lr starts at | first four bytes |
 |---|---|---|---|---|
@@ -82,15 +85,13 @@ keeps, and all of data RAM. Then, per target:
   cleaner would be a defect -- an OS reading Clean does not save the
   registers, and it was one. And not the run's own instruction count,
   which is budget bookkeeping; minstret is compared.
-- **ARMv7-M.** The System Control Space is not mapped, so no program can
-  enable SysTick or pend an interrupt: both are taken at a block
-  boundary translated and an instruction boundary interpreted, which
-  the architecture permits. The flags translated code keeps in four
-  words are packed into xPSR before comparing. The core's own retired
-  count is compared, because SysTick counts it.
-- **G4MH.** The reservation tracker is the frontend's, by PE id, so the side about to
-  run is registered as PE0 -- a core's own store must break its own
-  reservation.
+- **ARMv7-M.** The flags translated code keeps in four words are packed
+  into xPSR before comparing. The core's own retired count is compared,
+  because SysTick counts it -- though SysTick itself cannot be enabled
+  (below).
+- **G4MH.** The reservation tracker is the frontend's, by PE id, so the
+  side about to run is registered as PE0 -- a core's own store must
+  break its own reservation.
 - **PowerPC.** A run that ends in the decrementer's, the fixed-interval
   timer's or the watchdog's slot is not compared. A guest's own start-up
   arms the decrementer, and the interpreter takes it on the instruction
@@ -104,6 +105,72 @@ The smoke tests (`fuzz-<isa>-jit-smoke`) require the stats line to show
 runs compared *and* blocks translated: a harness whose runs never
 finish, or whose JIT declines everything, passes every input and tests
 nothing.
+
+## Devices and interrupts
+
+Each target maps its frontend's own interrupt controller, a separate
+instance per side, through `fz_dev_t` in the harness, which sits between
+the bus and the device and only watches:
+
+| target | mapped | how a program raises an interrupt |
+|---|---|---|
+| RV32 | the CLINT at `0x0200_0000`; `mtime` does not advance | `msip`, or `mtimecmp` at or below `mtime`; `mie` starts with both enabled |
+| ARMv7-M | the System Control Space: NVIC, SCB, SysTick, MPU | NVIC_ISPR, STIR, ICSR's PendSV and NMI bits |
+| G4MH | INTC1 (SELF and PE0's window), INTC2, the IPIR | a channel's EIRF, or the core interrupting itself through the IPIR |
+| PowerPC | the core's INTC, both vector modes | the eight software-settable sources (SSCIR) |
+
+Two things a device write can do are allowed to come out differently on
+the two backends, and the wrapper notices both as they happen. Either
+sets the run aside, finished or not, before anything is compared --
+the stats line counts each:
+
+- **make an interrupt deliverable at once.** The interpreter takes it
+  before the next instruction; a JIT when the block returns to its
+  dispatcher, or later across a chain. The architecture allows either
+  for an interrupt raised by a store. ARMv7-M's SYSRESETREQ is the same
+  case.
+- **change what a translated block assumed, where the architecture
+  defers the change to a synchronising instruction**: ARMv7-M's CCR trap
+  bits and MPU, which move the JIT's generation and are in force from
+  the next ISB.
+
+What stays comparable is an interrupt made deliverable by an
+*instruction* -- an enable, a lowered mask, an exception return --
+because every translator declines all of those (RV32's CSR writes and
+MRET, ARMv7-M's CPS and MSR, G4MH's EI, LDSR and EIRET, PowerPC's
+wrteei, mtmsr and the rfis). The interpreter runs them on both sides and
+takes the interrupt at the same boundary, through the interpreter's
+check or, after a fallback that ends there, the JIT's own -- which for
+G4MH is a separate copy of the code (`g4mh_jit_take_irq`) that has
+drifted from the interpreter's three times.
+
+**SysTick cannot be enabled on ARMv7-M**, and no timer is mapped on G4MH:
+the JIT counts time by the block, by design, and the G4MH timers count
+time, which does not pass here. PowerPC's own core timers stay as they
+were: a run that stops in their slots is set aside after the fact.
+
+### Seeds
+
+A compiled guest addresses a CLINT or an NVIC through constants the
+fuzzer would take a long time to happen on, so each target starts from
+hand-written programs that reach its devices:
+`tests/fuzz/seeds/<isa>-jit/`. `scripts/fuzz.sh` assembles RV32's,
+ARMv7-M's and PowerPC's (Book E, behind configuration word 1) with the
+same cross toolchains the guests use; G4MH's are CC-RH assembly with
+their binaries committed beside them, as the G4MH guests are, built by
+`scripts/g4mh-build-seeds.sh` (`--check` compares).
+
+**Run each seed alone before trusting it.** `FUZZ_SHOW=1` prints every
+register the comparison read and how each side ended. Of the first 24,
+one computed an address wrong and never reached its device; the first
+check of ARMv7-M's seven read their code as the configuration word,
+because `objcopy` writing to `/dev/stdout` truncated the four bytes
+already there; and one did exactly what it was written for and found a
+defect both backends shared (next section). And `fuzz.sh` first linked
+them through the gcc drivers, whose default scripts have a `flash`
+region that `0x2000_0000` is not in, so the first five-minute run was
+seeded with nothing and its stats line said 0 of 37,617 compared runs
+had touched a device. That count is in the line for exactly this.
 
 ## What it found
 
@@ -120,6 +187,8 @@ Each fix was confirmed by reverting it with its regression in place.
 | **sp or pc where the manual says UNPREDICTABLE executed**: `bfi pc, lr, #0, #13` wrote an odd pc, and the next fetch read the host buffer at an odd address. A Cortex-M7 raises UNDEFINSTR for all of them -- see below | the ARMv7-M **interpreter** and decoder | `test_sp_pc_board_answers`, `armv7m-jit/bfi-pc-odd-fetch` |
 | MAC summed a 64-bit product and accumulator in `int64_t` | the G4MH **interpreter** | `g4mh-jit/mac-signed-overflow` (UBSan) |
 | an interrupt a block raised or took cost the interpreter a cycle and the JIT none, so the time base -- which counts cycles once HID0[TBEN] is set -- drifted between them | `ppc_ir.c`, every raise path | `ppc-jit/interrupt-cycle-uncharged` |
+| a vector holding a value shaped like EXC_RETURN was read as an exception return; the return failed, the UsageFault went back into the same vector, nothing retired, and the slice **never ended** -- a hang, under both backends | the ARMv7-M **interpreter**, `armv7m_exc_return` | `test_vector_shaped_like_exc_return`, `armv7m-jit/vector-exc-return-shape` |
+| an LDSR lowering the interrupt ceiling (PLMR, ISPR, INTCFG) never made the core look again, so the channel it admitted stayed pending; the manual says the next instruction sees it. **Found by writing a seed, not by a divergence**: both backends run LDSR in the interpreter | the G4MH core, `g4mh_sr_write` | `test_ldsr_lowers_ceiling` |
 
 And inputs held for the permitted differences above:
 `rv32-jit/flw-fault-fs-dirtier`, `rv32-jit/trap-first-in-block-run-count`
@@ -199,8 +268,11 @@ reference might be wrong, ask whatever can answer: Sail and Spike for
 RV32, the F746 for ARMv7-M, and for G4MH and PowerPC say in the fix that
 the manual is the only authority it had.
 
-What none of them reaches yet: interrupts and devices (each core runs
-without its interrupt controller and timers, except PowerPC's own
-timers, whose runs are set aside), more than one core, runs longer than
-20,000 instructions, and self-modifying code. RV32 does not yet have
-Spike as a third side. The other targets are in [TODO.md](TODO.md).
+What none of them reaches yet: timers (time does not pass, SysTick
+cannot be enabled, and PowerPC's core timers are set aside); whether a
+JIT takes an interrupt by the point the architecture requires -- an
+interrupt made deliverable by a store, and ARMv7-M's CCR and MPU before
+the ISB, are set aside rather than compared, so ISB's synchronisation
+is untested here; more than one core; runs longer than 20,000
+instructions; and self-modifying code. RV32 does not yet have Spike as a
+third side. The other targets are in [TODO.md](TODO.md).

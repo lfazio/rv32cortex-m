@@ -18,9 +18,12 @@ endif()
 # runs and translated blocks: a harness whose JIT declined everything,
 # or whose runs never finished, passes every input and tests nothing.
 #
-# And every input that has ever made the two backends disagree,
-# replayed, from regressions/<isa>-jit/. Each file is named for what it
-# found; docs/fuzzing.md has the list.
+# And every input that has ever made the two backends disagree, or hung
+# them, replayed, from regressions/<isa>-jit/. Each file is named for
+# what it found; docs/fuzzing.md has the list.
+#
+# Both with a ten-second limit on any one input: libFuzzer's default is
+# twenty minutes, and a hang is a finding to report, not a wait.
 #
 function(emu_fuzz_jit_target isa)
     set(t fuzz-${isa}-jit)
@@ -31,7 +34,8 @@ function(emu_fuzz_jit_target isa)
 
     add_test(NAME ${t}-smoke
              COMMAND ${CMAKE_COMMAND} -E env FUZZ_STATS=1
-                     $<TARGET_FILE:${t}> -runs=3000 -seed=1 -max_len=512)
+                     $<TARGET_FILE:${t}> -runs=3000 -seed=1 -max_len=512
+                     -timeout=10)
     set_tests_properties(${t}-smoke PROPERTIES
         PASS_REGULAR_EXPRESSION
             "[1-9][0-9]* compared.*[1-9][0-9]* translations"
@@ -41,7 +45,7 @@ function(emu_fuzz_jit_target isa)
     file(GLOB saved ${dir}/*)
     if(saved)
         add_test(NAME ${t}-regressions
-                 COMMAND $<TARGET_FILE:${t}> -runs=0 ${dir})
+                 COMMAND $<TARGET_FILE:${t}> -runs=0 -timeout=10 ${dir})
         set_tests_properties(${t}-regressions PROPERTIES
             PASS_REGULAR_EXPRESSION "Done [0-9]+ runs"
             LABELS fuzz)

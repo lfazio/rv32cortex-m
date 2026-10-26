@@ -3641,6 +3641,36 @@ session, and every one of them recurred:
   start-up had zeroed the samples by the second: 96% of them at address
   0. **One attach, one read**, when the target restarts on release.
 
+- **A differential fuzzer cannot see what both of its sides share, and
+  the seed written to reach a device found what the comparison could
+  not.** Mapping each frontend's interrupt controller into the fuzzers
+  needed programs that reach it, so 24 were written, and each was run
+  alone with `FUZZ_SHOW=1` to see that it did what it said. G4MH's
+  `plmr-lowered` -- a channel refused by PLMR after EI, then admitted
+  by an LDSR lowering PLMR -- compared perfectly and took no interrupt.
+  Nothing was wrong with either backend: `g4mh_sr_write` dirtied the
+  interrupt check for PSW alone, so a ceiling lowered through PLMR,
+  ISPR or INTCFG was never looked at again, and the manual says the
+  very next instruction sees it. Both backends run LDSR in the
+  interpreter, which is exactly why the comparison agreed.
+
+  Three things about the instrument, each of which reads as a result.
+  **What can legally differ has to be noticed as it happens**, not
+  guessed from the end state: an interrupt a store makes deliverable is
+  taken at the next instruction interpreted and at a block boundary
+  translated, so the wrapper between the bus and each device asks the
+  core, after every write, whether it would now take one, and sets the
+  run aside before anything is compared -- or before the "ran past"
+  check, which a late interrupt would otherwise trip. **The obvious
+  check of a seed can be the broken part**: the first look at
+  ARMv7-M's seven read their code as the configuration word, because
+  `objcopy` writing to `/dev/stdout` truncated the four bytes already
+  in the file. And **a stats line that counts the thing is how a
+  silent failure shows**: `fuzz.sh` linked the seeds through gcc
+  drivers whose default scripts put `.text` in a `flash` region, every
+  one failed, and the first five-minute run said 0 of 37,617 compared
+  runs had touched a device.
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status
