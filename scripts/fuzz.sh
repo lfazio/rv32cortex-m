@@ -71,13 +71,21 @@ armv7m) GUESTS="guest-armv7m-coremark guest-armv7m-dhrystone guest-armv7m-crypto
 ppc) GUESTS="guest-ppc-coremark guest-ppc-dhrystone guest-ppc-alu" ;;
 *) GUESTS="" ;;
 esac
-# shellcheck disable=SC2086 # a word list on purpose
-if ! cmake --build "$B" -j"$(nproc 2>/dev/null || echo 4)" \
-        --target "fuzz-$ISA-jit" $GUESTS >"$B.build.log" 2>&1; then
+JOBS=$(nproc 2>/dev/null || echo 4)
+if ! cmake --build "$B" -j"$JOBS" --target "fuzz-$ISA-jit" \
+        >"$B.build.log" 2>&1; then
     echo "fuzz: build failed, see $B.build.log"
     tail -n 5 "$B.build.log"
     exit 1
 fi
+# The guests only seed the corpus, so one that will not build -- a
+# fresh worktree without a third-party source a guest fetches, say --
+# costs its slices and nothing else. Said, not silent.
+for g in $GUESTS; do
+    if ! cmake --build "$B" -j"$JOBS" --target "$g" >>"$B.build.log" 2>&1; then
+        echo "fuzz: could not build $g; its code is not in the corpus"
+    fi
+done
 
 C=$B/corpus/$T-jit
 mkdir -p "$C" "$B/artifacts/$T"

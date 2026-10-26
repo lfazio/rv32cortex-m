@@ -3,18 +3,35 @@
 #
 # fuzz-mutant.sh - break the emulator on purpose and ask a fuzzer to notice.
 #
-#   scripts/fuzz-mutant.sh SECS ISA FILE OLD NEW [libFuzzer options...]
+#   scripts/fuzz-mutant.sh SECS TARGET FILE OLD NEW [libFuzzer options...]
 #
 # Replaces the one occurrence of the string OLD in FILE with NEW, builds
-# fuzz-ISA-jit in build/fuzz-mutant (FUZZ_BUILD overrides) through
-# scripts/fuzz.sh, fuzzes for SECS seconds from the seeds alone -- a
-# fresh corpus each time, so one mutant's finds cannot help the next --
-# and puts FILE back. Prints `found` or `not found`, and the log.
+# the fuzz target through scripts/fuzz.sh in build/fuzz-mutant
+# (FUZZ_BUILD overrides), fuzzes for SECS seconds from a fresh corpus --
+# so one mutant's finds cannot help the next -- and puts FILE back.
+# TARGET is any of fuzz.sh's: rv32, armv7m, g4mh, g4mh-smp, ppc.
+# FUZZ_NO_DEVICE_SEEDS=1 leaves the hand-written device seeds out, to ask
+# whether fuzzing reaches the mutant without being shown the way.
+#
+# Prints one verdict and the log:
+#
+#   found, by fuzzing, at input #N    an input libFuzzer made
+#   found by an input it started from a seed or a saved regression
+#   pre-existing: ...                 the find is not the mutant's: the
+#                                     restored build fails on it too
+#   not found in SECS s
+#   the build failed / not rebuilt    nothing was measured
+#
+# **Every find is replayed on the unmutated build before it is believed.**
+# The first session's "found by fuzzing" on RV32 was a difference the
+# tree already had -- mstatus.FS, nothing to do with the mutant -- and
+# read exactly like a success.
 #
 # A target counts only once a mutant of the code it is meant to reach is
 # found (docs/fuzzing.md). Run nothing else that builds from this tree
 # meanwhile: the mutation is in the sources, and any build of any
-# directory in that window compiles it.
+# directory in that window compiles it. A git worktree is the way to keep
+# working beside it.
 #
 # What CLAUDE.md asks of a mutation driver, which is why this is a script
 # and not a loop typed into a shell: the backup is taken in the run, the
@@ -27,17 +44,23 @@ set -eu
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 [ $# -ge 5 ] || {
-    echo "usage: fuzz-mutant.sh SECS ISA FILE OLD NEW [libFuzzer options...]" >&2
+    echo "usage: fuzz-mutant.sh SECS TARGET FILE OLD NEW [libFuzzer options...]" >&2
     exit 2
 }
-SECS=$1 ISA=$2 FILE=$3 OLD=$4 NEW=$5
+SECS=$1 T=$2 FILE=$3 OLD=$4 NEW=$5
 shift 5
+ISA=${T%-smp} # the binary: g4mh-smp is fuzz-g4mh-jit
 B=${FUZZ_BUILD:-$ROOT/build/fuzz-mutant}
-LOG=$B.$ISA.log
+LOG=$B.$T.log
+BIN=$B/tests/fuzz/fuzz-$ISA-jit
+ART=$B/artifacts/$T
 
 backup=$(mktemp)
 cp "$FILE" "$backup"
+restored=0
 restore() {
+    [ "$restored" -eq 0 ] || return 0
+    restored=1
     cp "$backup" "$FILE"
     touch "$FILE"
     if ! cmp -s "$backup" "$FILE"; then
@@ -59,30 +82,52 @@ if n != 1:
 open(path, "w").write(text.replace(old, new))
 PY
 
-start=$(date +%s)
 mkdir -p "$B" # and its parent, where the log goes: a fresh checkout has no build/
-rm -rf "$B/corpus/$ISA-jit"
-FUZZ_BUILD=$B "$ROOT/scripts/fuzz.sh" "$SECS" "$ISA" "$@" >"$LOG" 2>&1 || true
+rm -rf "$B/corpus/$T-jit" "$ART"
+start=$(date +%s)
+status=0
+FUZZ_BUILD=$B FUZZ_SMP_BUILD=$B "$ROOT/scripts/fuzz.sh" "$SECS" "$T" "$@" \
+    >"$LOG" 2>&1 || status=$?
 end=$(date +%s)
 
-bin=$B/tests/fuzz/fuzz-$ISA-jit
-if [ ! -f "$bin" ] || [ "$(stat -c %Y "$bin")" -lt "$start" ]; then
-    echo "fuzz-mutant: $bin was not rebuilt; see $LOG" >&2
+if grep -q "^fuzz: .*failed" "$LOG"; then
+    echo "the build failed; nothing was measured; $LOG"
     exit 1
 fi
+if [ ! -f "$BIN" ] || [ "$(stat -c %Y "$BIN")" -lt "$start" ]; then
+    echo "fuzz-mutant: $BIN was not rebuilt; see $LOG" >&2
+    exit 1
+fi
+
+found=
 if grep -q "disagree\|runtime error\|deadly signal" "$LOG"; then
-    # Before libFuzzer's INITED line, the find was an input it started
-    # with -- a seed or a saved regression -- not one it made.
+    found=diverged
+elif grep -q "ERROR: libFuzzer: timeout" "$LOG"; then
+    found=hung
+fi
+if [ -z "$found" ]; then
+    echo "not found in $SECS s (exit $status); $LOG"
+    exit 0
+fi
+
+# The input that did it, replayed on the unmutated build.
+input=$(ls -t "$ART"/crash-* "$ART"/timeout-* 2>/dev/null | head -n 1 || true)
+restore
+if [ -z "$input" ]; then
+    echo "found ($found), but no input was written to $ART; $LOG"
+    exit 1
+fi
+if ! cmake --build "$B" --target "fuzz-$ISA-jit" >"$LOG.base" 2>&1; then
+    echo "found ($found), but the unmutated build failed; $LOG.base"
+    exit 1
+fi
+if "$BIN" -runs=0 -timeout=10 "$input" >>"$LOG.base" 2>&1; then
     if grep -q "INITED" "$LOG"; then
         n=$(grep -o '^#[0-9]*' "$LOG" | tail -n 1)
-        echo "found, by fuzzing, at input $n ($((end - start)) s with the build); $LOG"
+        echo "found ($found), by fuzzing, at input $n ($((end - start)) s with the build); $input"
     else
-        echo "found by an input it started from ($((end - start)) s); $LOG"
+        echo "found ($found) by an input it started from ($((end - start)) s); $input"
     fi
-elif grep -q "ERROR: libFuzzer: timeout" "$LOG"; then
-    # A hang is a finding, but not necessarily the mutant's: replay the
-    # timeout-* input on the unmutated build before believing either.
-    echo "an input hung; check it against the unmutated build; $LOG"
 else
-    echo "not found in $SECS s; $LOG"
+    echo "pre-existing: the unmutated build fails on the same input; $input, $LOG.base"
 fi

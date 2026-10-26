@@ -80,11 +80,13 @@ target's source lists the bits.
 Every register, the state, the status and system registers each core
 keeps, and all of data RAM. Then, per target:
 
-- **RV32.** mstatus.FS may be dirtier under the JIT, never cleaner: the
-  privileged spec lets an implementation track it imprecisely, and
-  cleaner would be a defect -- an OS reading Clean does not save the
-  registers, and it was one. And not the run's own instruction count,
-  which is budget bookkeeping; minstret is compared.
+- **RV32.** mstatus is compared whole, FS included. FS was allowed to
+  be dirtier under the JIT -- the spec permits tracking it imprecisely,
+  and the JIT marked every block holding an FP operation Dirty on every
+  exit -- until a program cleared one FS bit and saw Clean against Off,
+  with FP traps differing after. Both backends now mark it where the
+  state changes, so it is exact (below). Not the run's own instruction
+  count, which is budget bookkeeping; minstret is compared.
 - **ARMv7-M.** The flags translated code keeps in four words are packed
   into xPSR before comparing. The core's own retired count is compared,
   because SysTick counts it -- though SysTick itself cannot be enabled
@@ -214,10 +216,11 @@ Each fix was confirmed by reverting it with its regression in place.
 | an interrupt a block raised or took cost the interpreter a cycle and the JIT none, so the time base -- which counts cycles once HID0[TBEN] is set -- drifted between them | `ppc_ir.c`, every raise path | `ppc-jit/interrupt-cycle-uncharged` |
 | a vector holding a value shaped like EXC_RETURN was read as an exception return; the return failed, the UsageFault went back into the same vector, nothing retired, and the slice **never ended** -- a hang, under both backends | the ARMv7-M **interpreter**, `armv7m_exc_return` | `test_vector_shaped_like_exc_return`, `armv7m-jit/vector-exc-return-shape` |
 | **a block one PE built ran on another and read the first PE's memory**: the translator inlines accesses to the region the stack is in by host address, the stack was in local RAM through the SELF window, and the block's context was the user-mode bit alone, so PE1 found PE0's loop and read PE0's stack. Wherever PEs share a table -- `--serial`, a board with more than one -- as soon as a guest keeps its stack where a U2B program does. Found on the first run of the two-PE target, by the seed written for it | `g4mh_jit_ctx_refresh`: the PE is in the context now | `test_mc_self_window_blocks`, `g4mh-jit/stack-through-self` |
+| a block holding an FP operation made FS Dirty on every exit, even a side exit taken before it -- permitted by the spec, until the program cleared one FS bit (`csrrc mstatus`) and the JIT showed Clean where the interpreter showed Off. And the interpreter left FS Clean when a compare or a conversion to integer raised a flag, where Sail and Spike both go Dirty (`probes/fsdirty.S`) | `rv_ir.c` (`rv_ir_fp_flags`, FS marked at a block's first f write, `fput`) and the RV32 **interpreter** (`f_accrue`) | `probes/fsdirty.S`, `rv32-jit/side-exit-fs-dirty`; the target now compares mstatus exactly |
 | an LDSR lowering the interrupt ceiling (PLMR, ISPR, INTCFG) never made the core look again, so the channel it admitted stayed pending; the manual says the next instruction sees it. **Found by writing a seed, not by a divergence**: both backends run LDSR in the interpreter | the G4MH core, `g4mh_sr_write` | `test_ldsr_lowers_ceiling` |
 
 And inputs held for the permitted differences above:
-`rv32-jit/flw-fault-fs-dirtier`, `rv32-jit/trap-first-in-block-run-count`
+`rv32-jit/flw-fault-fs-dirtier` (no longer a difference: FS is exact), `rv32-jit/trap-first-in-block-run-count`
 and `ppc-jit/decrementer-taken-a-block-late`.
 
 Each run below is after its target's fixes, and found nothing more:

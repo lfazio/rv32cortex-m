@@ -3698,6 +3698,34 @@ session, and every one of them recurred:
   showed `core1.pc` at the reset address. **Agreement between two sides
   of a core that never ran is agreement about its reset state.**
 
+- **A permitted difference stays permitted only while nothing
+  computes with it.** The RV32 fuzz target allowed mstatus.FS to be
+  dirtier under the JIT, because the privileged spec lets an
+  implementation report Dirty when nothing changed, and the JIT marked
+  every block holding an FP operation Dirty on every exit -- including a
+  side exit taken before the FP instruction. Then a fuzzed program
+  cleared bit 13 with `csrrc`: Dirty became Clean, Initial became Off,
+  and the comparison saw Clean against Off, from which FP instructions
+  trap on one side and run on the other. Both readings were legal; the
+  difference between them was not one any rule about FS alone could
+  absorb.
+
+  It surfaced as a mutant "found by fuzzing", which is the second
+  lesson: **a find is the mutant's only if the unmutated build does not
+  make it too.** fuzz-mutant.sh replays every find on the restored
+  build now, and the first verdict that would have been reported as a
+  success was this.
+
+  Making the JIT precise also exposed the interpreter: it left FS Clean
+  when a compare or a conversion to integer raised a flag, and a probe
+  (`probes/fsdirty.S`) had Sail and Spike both going Dirty -- and
+  disagreeing with each other only when fflags did not change, which
+  "potentially modified" admits both ways. Both backends now mark FS
+  where the state changes: an f register written, at a block's first
+  write (a later one implies it ran), or fflags changed. Marking at
+  every write cost Whetstone under the JIT 3.00% of host instructions;
+  at the first, 0.38%.
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

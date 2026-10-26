@@ -372,6 +372,23 @@ static void f_dirty(rv_hart_t *h)
     h->mstatus |= MSTATUS_FS_MASK;
 }
 
+/*
+ * An instruction's exception flags, accrued. fcsr is FP state, so a
+ * change to fflags makes FS Dirty -- for the compares and conversions
+ * that write no f register too, which until 2026-10-26 left FS Clean
+ * with NV set. Sail and Spike both say Dirty (tests/arch-test/probes/
+ * fsdirty.S); when the flags were already set, Sail keeps Clean and
+ * Spike goes Dirty, and this is Sail's rule -- as is the JIT's,
+ * rv_ir_fp_flags.
+ */
+static void f_accrue(rv_hart_t *h, uint32_t flags)
+{
+    if ((h->fcsr | flags) != h->fcsr) {
+        h->fcsr |= flags;
+        f_dirty(h);
+    }
+}
+
 #if RV_EXT_D
 /*
  * The D half of OP-FP.
@@ -505,7 +522,7 @@ static rv_exc_t fp_op_d(rv_hart_t *h, uint32_t insn, uint32_t funct5,
                 return RV_EXC_ILLEGAL_INSN;
             }
         }
-        h->fcsr |= flags;
+        f_accrue(h, flags);
         h->x[rd] = r;
         h->x[0] = 0u;
         return RV_EXC_NONE;
@@ -524,7 +541,7 @@ static rv_exc_t fp_op_d(rv_hart_t *h, uint32_t insn, uint32_t funct5,
                 ? (uint32_t)f64_to_i32(d_v(a), softfloat_roundingMode, true)
                 : (uint32_t)f64_to_ui32(d_v(a), softfloat_roundingMode, true);
         flags |= (uint32_t)softfloat_exceptionFlags;
-        h->fcsr |= flags;
+        f_accrue(h, flags);
         h->x[rd] = r;
         h->x[0] = 0u;
         return RV_EXC_NONE;
@@ -1107,7 +1124,7 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
                 return RV_EXC_ILLEGAL_INSN;
             }
         }
-        h->fcsr |= flags;
+        f_accrue(h, flags);
         h->x[rd] = r;
         h->x[0] = 0u;
         return RV_EXC_NONE;
@@ -1119,7 +1136,7 @@ rv_exc_t rv_hart_fp(rv_hart_t *h, uint32_t insn, uint32_t *tval)
             return RV_EXC_ILLEGAL_INSN;
         }
         const uint32_t r = f_to_int(a, rs2 == 0u, f_rm(h, rm), &flags);
-        h->fcsr |= flags;
+        f_accrue(h, flags);
         h->x[rd] = r;
         h->x[0] = 0u;
         return RV_EXC_NONE;

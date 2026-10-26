@@ -221,8 +221,18 @@ static bool rv_ir_dtlb(emu_cpu_t *cpu, emu_ir_dtlb_t *out)
 /* The target descriptor                                               */
 /* ------------------------------------------------------------------ */
 
+/*
+ * mstatus, as the IR's register 32: x0-x31 are 0-31, and the IR names up
+ * to 64. Read and written by fput alone, to make FS Dirty where an f
+ * register is written.
+ */
+#define RV_IR_MSTATUS 32u
+
 static uint32_t rv_reg_offset(uint32_t n)
 {
+    if (n == RV_IR_MSTATUS) {
+        return (uint32_t)offsetof(rv_hart_t, mstatus);
+    }
     return (uint32_t)offsetof(rv_hart_t, x) + n * 4u;
 }
 
@@ -277,12 +287,27 @@ static uint32_t rv_freg_offset(uint32_t n)
  * key -- the key tracks off-ness -- which is what stops this write from
  * flushing the code cache every time a block uses a float.
  */
+/*
+ * A block's flags, on the one path every exit takes. FS goes Dirty here
+ * only if fflags changed -- the interpreter's rule (f_accrue), and
+ * Sail's. An f register written marks it where it is written (fput).
+ *
+ * This used to mark FS Dirty for every block that held any FP
+ * operation, on every exit: a block that left by a side exit before
+ * its flw still made FS Dirty, which the spec permits ("may report
+ * dirty even when not modified") and a program clearing one FS bit
+ * then saw as Clean where the interpreter gave Off -- found by
+ * fuzz-rv32-jit, rv32-jit/side-exit-fs-dirty.
+ */
 static void rv_ir_fp_flags(emu_cpu_t *cpu, uint32_t flags)
 {
     rv_hart_t *const h = (rv_hart_t *)cpu;
+    const uint32_t f = flags & 0x1Fu;
 
-    h->fcsr |= flags & 0x1Fu;
-    h->mstatus |= MSTATUS_FS_MASK;
+    if ((h->fcsr | f) != h->fcsr) {
+        h->fcsr |= f;
+        h->mstatus |= MSTATUS_FS_MASK;
+    }
 }
 
 /*
@@ -707,6 +732,36 @@ const emu_ir_target_t rv_ir_target = {
 static bool h_fs_off(const emu_cpu_t *cpu)
 {
     return (((const rv_hart_t *)cpu)->mstatus & MSTATUS_FS_MASK) == 0u;
+}
+
+/*
+ * Whether this block has made FS Dirty yet: set by its first f-register
+ * write, cleared where translation of a block begins.
+ */
+static EMU_PER_CORE bool g_fs_marked;
+
+/*
+ * An f register written: the FPUT, and FS made Dirty on the path that
+ * wrote it -- the interpreter's rule, which marks it as it writes. A
+ * side exit taken before this never reaches it. Through mstatus as an IR
+ * register, three ordinary operations the passes can see.
+ *
+ * **At the block's first write only.** A block is straight-line with
+ * side exits and no joins, so a later write on any path means the first
+ * ran too; marking at every write cost Whetstone under the JIT 3.00% of
+ * host instructions, and at the first 0.38%. A declined instruction is
+ * rolled back, which could discard the mark this sets -- and ends the
+ * block, so no later write leans on it.
+ */
+static void fput(emu_ir_block_t *b, uint32_t aux, uint16_t v, uint32_t rd)
+{
+    (void)emu_ir_emit(b, EMU_IR_FPUT, aux, v, EMU_IR_NO_TEMP, rd, 0u);
+    if (!g_fs_marked) {
+        g_fs_marked = true;
+        emu_ir_put(b, RV_IR_MSTATUS,
+                   emu_ir_emit(b, EMU_IR_ORI, 0u, emu_ir_get(b, RV_IR_MSTATUS),
+                               EMU_IR_NO_TEMP, MSTATUS_FS_MASK, 0u));
+    }
 }
 
 /* fcsr's frm, for resolving a "dynamic" rounding mode at translation. */
@@ -1347,8 +1402,7 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
             const uint16_t v =
                 emu_ir_emit(b, EMU_IR_LOAD, EMU_IR_MEM_AUX(4u, 0u), base,
                             EMU_IR_NO_TEMP, (uint32_t)rv_imm_i(insn), 0u);
-            (void)emu_ir_emit(b, EMU_IR_FPUT, RV_IR_BOX, v, EMU_IR_NO_TEMP, rd,
-                              0u);
+            fput(b, RV_IR_BOX, v, rd);
         } else {
             const uint16_t v = emu_ir_emit(b, EMU_IR_FGET, 0u, EMU_IR_NO_TEMP,
                                            EMU_IR_NO_TEMP, rs2, 0u);
@@ -1418,8 +1472,7 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
                         EMU_IR_NO_TEMP, rv_rs3(insn), 0u);
         const uint16_t r = emu_ir_emit3(b, EMU_IR_FMA, fma_aux, fa, fb, fc);
 
-        (void)emu_ir_emit(b, EMU_IR_FPUT, EMU_IR_FP_BOX, r, EMU_IR_NO_TEMP,
-                          rv_rd(insn), 0u);
+        fput(b, EMU_IR_FP_BOX, r, rv_rd(insn));
         return true;
     }
 
@@ -1483,8 +1536,7 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
             return true;
         }
         if (f7 == 0x78u && f3 == 0u && rs2 == 0u) { /* FMV.W.X */
-            (void)emu_ir_emit(b, EMU_IR_FPUT, RV_IR_BOX, emu_ir_get(b, rs1),
-                              EMU_IR_NO_TEMP, rd, 0u);
+            fput(b, RV_IR_BOX, emu_ir_get(b, rs1), rd);
             return true;
         }
         /*
@@ -1540,8 +1592,7 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
                 const uint16_t r = emu_ir_emit(b, (emu_ir_op_t)k_fp[i].op,
                                                (uint8_t)rm, x, y, 0u, 0u);
 
-                (void)emu_ir_emit(b, EMU_IR_FPUT, RV_IR_BOX, r, EMU_IR_NO_TEMP,
-                                  rd, 0u);
+                fput(b, RV_IR_BOX, r, rd);
                 return true;
             }
             break;
@@ -1564,8 +1615,7 @@ static bool lower_one(emu_cpu_t *cpu, emu_ir_block_t *b, uint32_t insn,
                 const uint16_t r = emu_ir_emit(b, EMU_IR_FSQRT, (uint8_t)rm, x,
                                                EMU_IR_NO_TEMP, 0u, 0u);
 
-                (void)emu_ir_emit(b, EMU_IR_FPUT, RV_IR_BOX, r, EMU_IR_NO_TEMP,
-                                  rd, 0u);
+                fput(b, RV_IR_BOX, r, rd);
                 return true;
             }
         }
@@ -1707,6 +1757,9 @@ uint32_t rv_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
     uint32_t count = 0u;
 
     emu_ir_reset(b);
+#if RV_EXT_F
+    g_fs_marked = false;
+#endif
     b->start_pc = pc;
     b->has_fast = rv_ir_fast_mem(cpu, &b->fast);
     b->has_dtlb = !b->has_fast && rv_ir_dtlb(cpu, &b->dtlb);

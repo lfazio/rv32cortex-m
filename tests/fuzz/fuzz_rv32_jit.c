@@ -253,26 +253,16 @@ static void compare(void)
     SAME(state);
     SAME(trap_count);
     /*
-     * mstatus.FS may be dirtier under the JIT, never cleaner. "Imple-
-     * mentations may choose to track the dirtiness of the floating-point
-     * register state imprecisely by reporting the state to be dirty even
-     * when it has not been modified" (the privileged spec; SmF's
-     * mstatus_fs_imprecise, which the arch tests call untestable) -- and
-     * the JIT marks a block's FP writes dirty before a load in it can
-     * fault. Cleaner would be a bug: an OS that reads Clean does not save
-     * the registers. SD summarises FS and goes with it.
+     * mstatus whole, FS included. FS was allowed to be dirtier under the
+     * JIT, because the spec permits tracking it imprecisely and the JIT
+     * marked every block holding an FP operation Dirty on every exit.
+     * A program that clears one FS bit then sees Clean against Off, and
+     * from there FP traps that differ -- so both backends now mark it
+     * where the state changes, an f register written or fflags changed
+     * (rv_fpu.c f_accrue, rv_ir.c fput), and it is compared exactly.
+     * SD is computed on read, from FS.
      */
-    {
-        const uint32_t fs = 0x6000u, sd = 0x80000000u;
-        const uint32_t fa = (a->mstatus & fs) >> 13;
-        const uint32_t fb = (g_jit.hart.mstatus & fs) >> 13;
-
-        fz_diff(&g_target, "mstatus", 0u, a->mstatus & ~(fs | sd),
-                g_jit.hart.mstatus & ~(fs | sd));
-        if (fa != fb && !(fa != 0u && fb == 3u)) {
-            fz_diff(&g_target, "mstatus.FS", 0u, fa, fb);
-        }
-    }
+    SAME(mstatus);
     SAME(mie);
     SAME(mip);
     SAME(mtvec);

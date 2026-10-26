@@ -100,14 +100,16 @@ measured at.
       as on the image-window tree. It could be double-precision
       SoftFloat on an M4; it has not been looked at.
 - [ ] **Blocks that only move floats no longer chain.** Both backends
-      mark FS dirty from the tail of a block, so a block with an `FPUT`
-      must leave through it, and chaining skipped it -- the defect
-      `fuzz-rv32-jit` found ([fuzzing.md](fuzzing.md)). The fix makes
-      such blocks unchainable, which costs Whetstone under the x86-64
-      JIT 2.09% of host instructions (unmeasured on the board). An OR
-      into the frontend's dirty word inside the block, at the first
-      FPUT, would let them chain again: a word offset and a mask in
-      `emu_ir_target_t`, beside `fp_flags`.
+      marked FS dirty from the tail of a block, so a block with an
+      `FPUT` had to leave through it, and chaining skipped it -- the
+      defect `fuzz-rv32-jit` found ([fuzzing.md](fuzzing.md)). The fix
+      made such blocks unchainable, which costs Whetstone under the
+      x86-64 JIT 2.09% of host instructions (unmeasured on the board).
+      RV32 now marks FS Dirty in the block itself, at its first f write
+      (`fput` in `rv_ir.c`, for precision rather than speed), and the
+      tail only for a change to fflags -- so a block with an `FPUT` and
+      no FP arithmetic no longer needs its tail, and could chain again:
+      the backends' `g_fp_written` rule is what is left to relax.
 - [ ] **LTO partitioning moves the host's interpreters by percents.**
       `-flto-partition=one` runs ARMv7-M's interpreted CoreMark in 4.4%
       fewer host instructions than the default partitioning and RV32's
