@@ -186,9 +186,18 @@ From the last measurements in [linux.md](linux.md).
 ## RV32
 
 - [ ] Implement V extensions
+- [ ] Implement Crypto extensions: Zbk[bcx], Zknd, Zkne, Zknh, Zksed, Zkr, Zkn, Zks, Zk, Zkt
+
+## RV64
+
+- [ ] Propose a plan to extend rv32 to handle rv64, and implement it. The plan should include a way to
+      handle the 64-bit registers in the IR and the JIT, and a way to
+      handle the 64-bit memory accesses in the frontend and the JIT.
+- [ ] Implement the profiles: RVI20, RVA20 (in riscv-spec.pdf)
 
 ## PowerPC
 
+- [ ] Implement vectorial extensions
 - [ ] **Anything to compare it with.** No e200 is attached and no
       other emulator is consulted, so a shared misreading of the manual
       is invisible to every check there is.
@@ -197,6 +206,12 @@ From the last measurements in [linux.md](linux.md).
 
 ## ArmvX-m
 
+- [ ] Implement neon extensions if available
+- [ ] **The ARMv7-M frontend is a model of the F746's ITCM and DTCM**,
+      and the ARMv8-M frontend is a model of the N657's TCMs. The
+      frontends' `bind` functions are the only place where a guest can
+      see what the board has, so they must be extended to describe the
+      TCMs to their guests.
 - [ ] **ARMv6-M in the ARMv7-M frontend**, which becomes armvX-m.
 - [ ] **ARMv8-M in the armvX-m frontend.**
 
