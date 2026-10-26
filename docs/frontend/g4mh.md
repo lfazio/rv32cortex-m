@@ -1319,6 +1319,17 @@ which a `memset` would — masks every priority, so a guest that never
 writes it would take no interrupt at all while every EIC register said
 it should.
 
+**An LDSR that lowers the ceiling is seen by the next instruction** —
+"the new PLMR value is reflected in the instructions following that LDSR
+instruction" — so `g4mh_sr_write` dirties the interrupt check for every
+register of selID 2, not for PSW alone. Until 2026-10-26 it did the
+latter, and a channel that an LDSR to PLMR, ISPR or INTCFG had just
+admitted stayed pending until something unrelated looked again; a core
+that halted next never took it. Both backends run LDSR in the
+interpreter, so they agreed and the fuzzer could not see it — a seed
+written for it did (`test_ldsr_lowers_ceiling`, 8 failures with the fix
+reverted).
+
 The ceiling is raised in **two** places, because this frontend keeps a
 separate copy of the run loop's interrupt check for the JIT: the
 interpreter's path and `g4mh_jit_take_irq`. That file has now needed the

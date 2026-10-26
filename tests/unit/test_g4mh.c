@@ -8188,8 +8188,87 @@ static void test_int_ceiling_edges(void)
     CHECK_EQ(g_tic_cpu.sr[G4MH_SELID_INT][G4MH_SR_ISPR], 1u << 6);
 }
 
+/*
+ * An LDSR that lowers the ceiling is seen by the next instruction: "If
+ * the value of PLMR is altered by the LDSR instruction, the new PLMR
+ * value is reflected in the instructions following that LDSR
+ * instruction" (G4MH manual, PLMR).
+ *
+ * Through a guest, on both backends, because the decision was never the
+ * problem -- the tests above hold it -- and the defect was that nothing
+ * *asked* again: g4mh_sr_write dirtied the interrupt check for PSW only,
+ * so the channel this LDSR admits stayed pending until something
+ * unrelated happened, and here the core halted first. Both backends run
+ * LDSR in the interpreter, so they agreed, and fuzz-g4mh-jit could not
+ * see it; writing a seed for it did.
+ *
+ *   mov   INTC1, r13
+ *   movea 0x1000, r0, r10 ; st.h r10, 8[r13]   EIC4: requested, EIP 0
+ *   mov   0, r11 ; ldsr r11, PLMR               nothing admitted
+ *   ei
+ *   add   1, r14                                runs: still refused
+ *   movea 16, r0, r11 ; ldsr r11, PLMR          priority 0 admitted
+ *   add   1, r15                                must not run first
+ *   halt
+ */
+static void test_ldsr_lowers_ceiling(void)
+{
+    uint16_t prog[0x84];
+    const uint16_t ldsr_plmr = (uint16_t)((G4MH_SELID_INT << 11) | SUB_LDSR);
+    const uint32_t after = EMU_GUEST_RAM_BASE + 17u * 2u; /* add 1, r15 */
+    unsigned k = 0;
+
+    memset(prog, 0, sizeof(prog));
+    prog[k++] = MOVI32(13);
+    prog[k++] = LO(G4MH_INTC1_SELF_BASE);
+    prog[k++] = HI(G4MH_INTC1_SELF_BASE);
+    prog[k++] = W0(OP_MOVEA, 0, 10);
+    prog[k++] = G4MH_EIC_EIRF;
+    prog[k++] = W0(OP_ST_HW, 13, 10);
+    prog[k++] = 4u * 2u; /* EIC4 */
+    prog[k++] = F2(OP_MOVI, 0, 11);
+    prog[k++] = W0(OP_SYSTEM, 11, G4MH_SR_PLMR);
+    prog[k++] = ldsr_plmr;
+    prog[k++] = W0(OP_SYSTEM, 0, 0x10u); /* EI */
+    prog[k++] = SUB_DIEI;
+    prog[k++] = F2(OP_ADDI5, 1, 14);
+    prog[k++] = W0(OP_MOVEA, 0, 11);
+    prog[k++] = 16u;
+    prog[k++] = W0(OP_SYSTEM, 11, G4MH_SR_PLMR);
+    prog[k++] = ldsr_plmr;
+    prog[k++] = F2(OP_ADDI5, 1, 15); /* halfword 17 */
+    prog[k++] = 0x07E0u;
+    prog[k++] = SUB_HALT;
+
+    /* The handler for priority 0, at RBASE + 0x100. */
+    prog[0x80] = F2(OP_MOVI, 7, 20);
+    prog[0x81] = 0x07E0u;
+    prog[0x82] = SUB_HALT;
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        emu_run_reason_t why;
+        uint32_t retired = 0;
+
+        g_force_backend = (pass == 1u) ? &g4mh_backend_interp : NULL;
+        if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                          &retired)) {
+            CHECK(false);
+            g_force_backend = NULL;
+            return;
+        }
+        CHECK_EQ(reg(14), 1u); /* refused under PLMR 0             */
+        CHECK_EQ(reg(20), 7u); /* then taken                       */
+        CHECK_EQ(sreg(0, G4MH_SR_EIIC), G4MH_EXC_EIINT_BASE + 4u);
+        CHECK_EQ(sreg(0, G4MH_SR_EIPC), after); /* right after the LDSR */
+        CHECK_EQ(reg(15), 0u); /* and before the next instruction  */
+        CHECK_EQ(why, EMU_RUN_WFI);
+    }
+    g_force_backend = NULL;
+}
+
 void test_g4mh(void)
 {
+    test_ldsr_lowers_ceiling();
     test_int_ceiling_ispr();
     test_int_ceiling_plmr();
     test_int_ceiling_eimask();

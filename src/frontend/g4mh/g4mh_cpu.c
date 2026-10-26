@@ -929,6 +929,17 @@ void g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg, uint32_t val)
     c->sr[bank][reg] = val;
 
     /*
+     * PLMR, ISPR and INTCFG set the interrupt ceiling, and "the new PLMR
+     * value is reflected in the instructions following that LDSR" (G4MH
+     * manual, PLMR). Without this, an interrupt the write admitted stayed
+     * pending until something unrelated dirtied the flag -- on both
+     * backends, so no comparison of the two could see it; a fuzz seed did.
+     */
+    if (bank == G4MH_SELID_INT) {
+        c->irq_dirty = true;
+    }
+
+    /*
      * Enabling a channel is the only thing that can turn counting on, so
      * the flag is maintained here rather than tested per instruction.
      * Same shape as the RV32 side's fetch_guard: the check that costs is
