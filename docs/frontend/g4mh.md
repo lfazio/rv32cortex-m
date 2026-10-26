@@ -239,7 +239,9 @@ is answered:
   it until the two-PE fuzz target put a stack in local RAM
   (`test_mc_self_window_blocks`). The SMP guest under `--serial --jit`
   translates 123 blocks where it translated 62, at the same 46,551,936
-  retired.
+  retired; on the F746 with three PEs (the `f746-g4-x3` flags,
+  `-DG4MH_GUEST=smp`) it prints the host's line under the Thumb-2 JIT,
+  in the same 123 translations.
 
 G4MH DOOM under the x86-64 JIT, 300M instructions, five interleaved runs
 each: 3.80 s to 3.55 s by median, about 7%. A helper call is cheap on a

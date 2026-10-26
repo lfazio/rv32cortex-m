@@ -232,6 +232,59 @@ Each run below is after its target's fixes, and found nothing more:
 | G4MH | 20 min | 134,211 | 119,843 | 12.5M | 32.8M |
 | PowerPC | 20 min | 1,845,065 | 1,771,551 (113 asynchronous) | 2.1M | 112M |
 
+And with the interrupt controllers mapped and two cores where there are
+two, at 3ad607b, five minutes each, nothing found:
+
+| target | inputs | compared | touched a device | took an interrupt | set aside |
+|---|---|---|---|---|---|
+| RV32 | 34,944 | 31,884 | 127 | 46 | 9 |
+| ARMv7-M | 117,931 | 106,074 | 121 | 11 | 22 (7 unsynchronised) |
+| G4MH | 26,966 | 23,695 | 107 | 23 | 0 |
+| G4MH, three-PE build | 152,704 | 143,576 | 15,631 | 731 | 194 |
+| PowerPC | 260,183 | 243,055 | 827 | 60 | 19 |
+
+## Mutants
+
+`scripts/fuzz-mutant.sh SECS TARGET FILE OLD NEW` breaks one line,
+fuzzes from a fresh corpus, puts the line back -- and replays whatever
+it found on the restored build, because a find the unmutated build
+makes too is not the mutant's. Each mutant below ran twice, 300 s,
+with the device seeds and without (`FUZZ_NO_DEVICE_SEEDS=1`), in a
+worktree so the tree could go on being worked in:
+
+| mutant | with the seeds | without |
+|---|---|---|
+| A: the dispatcher never takes an interrupt (`emu_jit.c`) | all four targets, by a seed, in 3-7 s | PowerPC, by a saved regression (`decrementer-taken-a-block-late`), 3 s; the other three not in 300 s |
+| B: ARMv7-M's dispatcher stacks xPSR without packing the flags translated code keeps apart (`a7_take_irq`) | not found | not found |
+| C: G4MH's JIT copy of the interrupt path does not raise the ISPR ceiling (`g4mh_jit_take_irq`) | by a seed, 4 s | not found |
+
+**What the seeds are worth is all of it**: no device mutant was found
+by fuzzing that started without them. The interrupt has to be raised
+while masked and then enabled by an instruction the translator
+declines, with translated code after it; a mutation of guest code does
+not stumble on that in five minutes.
+
+**B cannot be found by this design, and that is the result.** An
+interrupt the dispatcher takes right after an enable finds the flags
+just packed by the interpreter fallback that ran the enable, so not
+packing them again changes nothing. Stale flags reach the stack only
+when the interrupt became deliverable *inside* translated code -- a
+store to the NVIC -- and those runs are set aside as asynchronous. The
+set-aside rule's blind spot is exactly where B lives.
+
+Three things made the first session's verdicts worthless, each fixed
+in the scripts:
+
+- **one input hung for 1,711 s** of a 300 s run -- libFuzzer's default
+  timeout is twenty minutes -- and it was a real hang in the ARMv7-M
+  interpreter, mutant or not (above). Every run has `-timeout=10` now.
+- **a "found by fuzzing" was the FS difference**, which the unmutated
+  build made too -- hence the replay.
+- **a guest that would not build in a fresh worktree failed the whole
+  build**, after the fuzz binary had linked, and the empty log read as
+  "not found". Guests only seed the corpus now, and a failed build is
+  reported as one.
+
 ## Things worth keeping from finding them
 
 - **The interpreter is the reference, and was the one that was wrong
