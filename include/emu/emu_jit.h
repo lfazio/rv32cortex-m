@@ -202,6 +202,16 @@ typedef struct emu_jit_stats {
      */
     uint32_t cold;
     /*
+     * The thrash fallback (emu_jit_set_thrash_evictions): pcs given up
+     * on, dispatches interpreted because of it, and how often the marks
+     * were forgotten to try again. `thrashed` at zero is what a run whose
+     * hot set fits looks like; most of the run in `thrash_cached` is a
+     * JIT that has stopped translating.
+     */
+    uint32_t thrashed;
+    uint32_t thrash_cached;
+    uint32_t thrash_retries;
+    /*
      * Blocks retired by emu_jit_invalidate_page rather than by a flush.
      * Beside `flushes` for the same reason `cached` sits beside
      * `declined`: the claim is that almost every SFENCE.VMA names one
@@ -587,13 +597,51 @@ void emu_jit_get_stats(emu_jit_stats_t *out);
  * which on a microcontroller is the scarce thing: a translation there
  * costs tens of thousands of cycles and a block evicted to make room is
  * one that has to be translated again. Counts live with the declined-pc
- * cache and reset with it on every flush. Clamped to 1..254.
+ * cache and reset with it on every flush. Clamped to 1..127: the counts
+ * share a byte with the eviction counts below.
  */
 #ifndef EMU_JIT_HOT_THRESHOLD
 #define EMU_JIT_HOT_THRESHOLD 1u
 #endif
 void emu_jit_set_hot_threshold(uint32_t misses);
 uint32_t emu_jit_hot_threshold(void);
+
+/*
+ * Give up on a pc whose block keeps being evicted: after this many
+ * evictions of one (pc, context) it is interpreted instead of translated
+ * again. 0 never gives up.
+ *
+ * A hot set larger than the buffer is a cycle no retention order can
+ * hold -- every block is evicted before its turn comes round again --
+ * and retranslating it made the JIT far slower than no JIT: Whetstone
+ * with the F746's tables at 32 KB ran 1.9 MIPS against the
+ * interpreter's 39. Interpreting the part that does not fit lets the
+ * rest stay, and degrades towards the interpreter rather than below it.
+ *
+ * The marks live in the declined-pc table, and are forgotten with all
+ * of it after EMU_JIT_THRASH_RETRY dispatches have been interpreted for
+ * them, so code that stopped thrashing is translated again. A run that
+ * never thrashes never reaches that count. Clamped to 0..125.
+ */
+#ifndef EMU_JIT_THRASH_EVICTIONS
+#define EMU_JIT_THRASH_EVICTIONS 4u
+#endif
+#ifndef EMU_JIT_THRASH_RETRY
+#define EMU_JIT_THRASH_RETRY 65536u
+#endif
+/*
+ * And at most this many given up at each compaction. A cycle too large
+ * for the buffer evicts all its blocks at the same rate, so they reach
+ * the limit together; given up all at once, more of the cycle goes to
+ * the interpreter than had to. A few at a time, compaction by
+ * compaction, stops once what is left fits, because then it stops being
+ * evicted: Whetstone at 32 KB ran 33.4 MIPS marking all at once and
+ * 42.3 four at a time, the interpreter 39.
+ */
+#ifndef EMU_JIT_THRASH_MARKS
+#define EMU_JIT_THRASH_MARKS 4u
+#endif
+void emu_jit_set_thrash_evictions(uint32_t evictions);
 
 /*
  * At compaction, let a block a retained block chains into inherit that

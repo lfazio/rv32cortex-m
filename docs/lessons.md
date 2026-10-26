@@ -3797,6 +3797,21 @@ session, and every one of them recurred:
   larger than the cache; only translating less of it can, and that is
   the fix the TODO now describes.
 
+  The fix took three tries, each measured on the host with the board's
+  tables. Giving up on a pc after it had been evicted four times took
+  Whetstone at 32 KB from 1.9 to 24 MIPS -- and no further, because the
+  fallback interpreted a *batch* of instructions, the batch stopped
+  mid-block, and the dispatcher translated a new block from there:
+  1,412 marks for a cycle of 68 blocks. Interpreting to the first jump
+  instead brought translations from 19,666 to 4,350 and the speed only
+  to the interpreter's, because the cycle's blocks reach the limit
+  together and were all given up. Four marks per compaction let it stop
+  when the rest fitted: 42 MIPS, and on the F746 4.06 s where it had not
+  finished, CoreMark x650 at 32 KB 78 s to 44. **A remedy that acts on
+  everything that qualifies at once overshoots when everything
+  qualifies at once**; and the fallback's own side effects -- where it
+  leaves the pc -- are part of the load it was meant to relieve.
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

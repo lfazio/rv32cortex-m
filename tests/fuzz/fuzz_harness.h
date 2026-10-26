@@ -127,6 +127,10 @@ static struct {
     uint64_t translations;
     uint64_t block_entries;
     uint64_t interp_fallbacks;
+    /* What only a small code cache reaches: a build with the board's
+     * tables (docs/fuzzing.md) shows here whether it did. */
+    uint64_t compactions;
+    uint64_t thrashed;
 } fz_stats;
 
 static unsigned fz_diffs;
@@ -164,7 +168,8 @@ static void fz_print_stats(void)
             "%llu set aside for an asynchronous interrupt and %llu for "
             "an unsynchronised write; "
             "%llu retired, %llu translations, %llu block entries, "
-            "%llu interpreted under the JIT\n",
+            "%llu interpreted under the JIT, %llu compactions, "
+            "%llu pcs given up\n",
             fz_stats.name, (unsigned long long)fz_stats.inputs,
             (unsigned long long)fz_stats.compared,
             (unsigned long long)fz_stats.with_device,
@@ -175,7 +180,9 @@ static void fz_print_stats(void)
             (unsigned long long)fz_stats.retired,
             (unsigned long long)fz_stats.translations,
             (unsigned long long)fz_stats.block_entries,
-            (unsigned long long)fz_stats.interp_fallbacks);
+            (unsigned long long)fz_stats.interp_fallbacks,
+            (unsigned long long)fz_stats.compactions,
+            (unsigned long long)fz_stats.thrashed);
 }
 
 /* Once per process: the JIT's code buffer, and the stats line. */
@@ -342,6 +349,8 @@ static inline bool fz_pair(const fz_target_t *t, fz_side_t *interp,
     fz_stats.block_entries += after.block_entries - before.block_entries;
     fz_stats.interp_fallbacks +=
         after.interp_fallbacks - before.interp_fallbacks;
+    fz_stats.compactions += after.compactions - before.compactions;
+    fz_stats.thrashed += after.thrashed - before.thrashed;
     if (fz_show) {
         fprintf(stderr,
                 "%s: %s reason %d retired %llu aside %u devices %u; "

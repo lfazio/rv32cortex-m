@@ -618,6 +618,16 @@ void emu_jit_invalidate_page(uint32_t vaddr, const emu_jit_ops_t *ops)
  */
 #define JIT_SEEN_DECLINED 0xFFu
 #define JIT_SEEN_EPOCH_MAX 0x00FFFFFFu
+/*
+ * And a third: how often compaction has evicted this pc's block, as
+ * JIT_SEEN_EVICTED | count, until the count reaches the thrash limit and
+ * the entry becomes JIT_SEEN_THRASH -- interpreted, as a declined pc is,
+ * until the marks are forgotten (emu_jit_set_thrash_evictions). Miss
+ * counts stay below 0x80, which is why the hot threshold is 127 at most.
+ */
+#define JIT_SEEN_THRASH 0xFEu
+#define JIT_SEEN_EVICTED 0x80u
+#define JIT_SEEN_EVICTED_MAX 0x7Du
 
 static EMU_PER_CORE struct {
     uint32_t pc;
@@ -636,7 +646,23 @@ static uint32_t g_hot_threshold = EMU_JIT_HOT_THRESHOLD;
 
 void emu_jit_set_hot_threshold(uint32_t misses)
 {
-    g_hot_threshold = (misses < 1u) ? 1u : (misses > 254u) ? 254u : misses;
+    g_hot_threshold = (misses < 1u) ? 1u : (misses > 127u) ? 127u : misses;
+}
+
+/* Shared by every core, as the hot threshold is. */
+static uint32_t g_thrash_evictions = EMU_JIT_THRASH_EVICTIONS;
+
+/* Dispatches interpreted for thrashing pcs since the marks were last
+ * forgotten. */
+static EMU_PER_CORE uint32_t g_thrash_interps;
+
+/* Marks this compaction may still make: EMU_JIT_THRASH_MARKS each. */
+static EMU_PER_CORE uint32_t g_thrash_marks_left;
+
+void emu_jit_set_thrash_evictions(uint32_t evictions)
+{
+    g_thrash_evictions =
+        (evictions > JIT_SEEN_EVICTED_MAX) ? JIT_SEEN_EVICTED_MAX : evictions;
 }
 
 uint32_t emu_jit_hot_threshold(void)
@@ -691,11 +717,46 @@ static void seen_set(uint32_t s, uint32_t pc, uint32_t context, uint32_t v)
     g_neg[s].tag = (g_neg_epoch << 8) | v;
 }
 
-static bool neg_hit(uint32_t pc, uint64_t key)
+/* This epoch's entry for the pc: JIT_SEEN_DECLINED and JIT_SEEN_THRASH
+ * say interpret it, anything else is a count. */
+static uint32_t seen_of(uint32_t pc, uint64_t key)
 {
     const uint32_t context = ctx_fold(key);
 
-    return seen_get(neg_slot(pc, context), pc, context) == JIT_SEEN_DECLINED;
+    return seen_get(neg_slot(pc, context), pc, context);
+}
+
+/*
+ * Compaction has evicted this block: count it, and give the pc up once
+ * it has been evicted often enough. A collision costs another pc's entry,
+ * as everywhere in this table; never a wrong answer. Out of line:
+ * compaction is inlined into the dispatcher, which runs from ITCM.
+ */
+static EMU_NOINLINE void evict_note(uint32_t pc, uint64_t key)
+{
+    if (g_thrash_evictions == 0u) {
+        return;
+    }
+
+    const uint32_t context = ctx_fold(key);
+    const uint32_t s = neg_slot(pc, context);
+    const uint32_t v = seen_get(s, pc, context);
+    uint32_t n;
+
+    if (v == JIT_SEEN_DECLINED || v == JIT_SEEN_THRASH) {
+        return;
+    }
+    n = ((v & JIT_SEEN_EVICTED) != 0u) ? (v & ~JIT_SEEN_EVICTED) + 1u : 1u;
+    if (n >= g_thrash_evictions && g_thrash_marks_left != 0u) {
+        g_thrash_marks_left--;
+        seen_set(s, pc, context, JIT_SEEN_THRASH);
+        g_stats.thrashed++;
+    } else if (n >= g_thrash_evictions) {
+        /* At the limit: marked at a later compaction if still evicted. */
+        seen_set(s, pc, context, JIT_SEEN_EVICTED | (n - 1u));
+    } else {
+        seen_set(s, pc, context, JIT_SEEN_EVICTED | n);
+    }
 }
 
 static void neg_note(uint32_t pc, uint64_t key)
@@ -1057,6 +1118,8 @@ static void compact(const emu_jit_ops_t *ops)
         threshold = 2u;
     }
 
+    g_thrash_marks_left = EMU_JIT_THRASH_MARKS;
+
     /*
      * Before anything moves. A surviving block's chained jump points
      * into another block's code, and compaction relocates or discards
@@ -1084,6 +1147,7 @@ static void compact(const emu_jit_ops_t *ops)
         }
         if (hit_bin(b.hits) < threshold) {
             g_stats.evictions++;
+            evict_note(b.guest_pc, b.context);
             continue;
         }
         dst = (uint8_t *)(((uintptr_t)dst + 3u) & ~(uintptr_t)3u);
@@ -1470,6 +1534,74 @@ static emu_run_reason_t run_interp_batch(emu_cpu_t *cpu,
     return r;
 }
 
+/*
+ * A thrashing pc, interpreted up to its first jump.
+ *
+ * Not a batch of N: a batch stops wherever its count runs out, which is
+ * the middle of a block, and the dispatcher then translates a new block
+ * from there -- fresh code crowding the buffer the pc was given up to
+ * relieve, and marked in its turn. Whetstone at 32 KB with batches gave
+ * 1,412 marks for a cycle of 68 blocks, and ran no faster than the
+ * interpreter. Stepping to the jump leaves the dispatcher at a block's
+ * start, which is resident, marked, or worth translating.
+ *
+ * "A jump" is any step that does not move the pc forward by one
+ * instruction -- at most 6 bytes in every frontend here -- so a trap or
+ * an interrupt ends it too. A short forward branch reads as straight
+ * on, which costs nothing.
+ */
+#define JIT_THRASH_RUN_MAX 256u
+
+/*
+ * Out of line, with the accounting: only a thrashing run reaches it, and
+ * inlined into the dispatcher it cost Dhrystone -- which never thrashes
+ * -- 0.8-1.1% on the F746 at three layouts.
+ */
+static EMU_NOINLINE emu_run_reason_t run_interp_to_jump(emu_cpu_t *cpu,
+                                           const emu_jit_ops_t *ops,
+                                           const uint32_t *pcp, uint32_t *done,
+                                           uint32_t budget)
+{
+    emu_run_reason_t r = EMU_RUN_BUDGET;
+    uint32_t total = 0u;
+
+    g_stats.thrash_cached++;
+    /*
+     * Forget, after a while, so that code which stopped thrashing -- the
+     * program moved on, or what crowded it out did -- is translated
+     * again. All the marks go together, by the epoch, as a flush takes
+     * them.
+     */
+    if (++g_thrash_interps >= EMU_JIT_THRASH_RETRY) {
+        g_thrash_interps = 0u;
+        g_stats.thrash_retries++;
+        neg_invalidate();
+    }
+
+    for (;;) {
+        const uint32_t before = *pcp;
+        uint32_t n = 0u;
+
+        r = ops->interp->run(cpu, 1u, &n);
+        total += n;
+        if (r == EMU_RUN_HALTED || r == EMU_RUN_WFI || n == 0u) {
+            break;
+        }
+        const uint32_t step = *pcp - before;
+
+        if (step == 0u || step > 6u || *done + total >= budget ||
+            total >= JIT_THRASH_RUN_MAX) {
+            break;
+        }
+    }
+    *done += total;
+    g_stats.interp_fallbacks += total;
+    if (ops->after_interp != NULL) {
+        ops->after_interp(cpu);
+    }
+    return r;
+}
+
 EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
                                           uint32_t *retired,
                                           const emu_jit_ops_t *ops)
@@ -1624,14 +1756,20 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
              * and that work was 99.7% of the interpreted instructions in
              * a Linux boot.
              */
-            if (neg_hit(pc, context)) {
-                g_stats.declined_cached++;
+            const uint32_t seen = seen_of(pc, context);
+
+            if (seen == JIT_SEEN_DECLINED || seen == JIT_SEEN_THRASH) {
+                if (seen == JIT_SEEN_DECLINED) {
+                    g_stats.declined_cached++;
+                }
 
                 const emu_run_reason_t r =
-                    run_interp_batch(cpu, ops, &done, budget, batch);
+                    (seen == JIT_SEEN_THRASH)
+                        ? run_interp_to_jump(cpu, ops, hot.pc, &done, budget)
+                        : run_interp_batch(cpu, ops, &done, budget, batch);
 
                 prev = NULL;
-                if (batch < EMU_JIT_FALLBACK_MAX) {
+                if (seen == JIT_SEEN_DECLINED && batch < EMU_JIT_FALLBACK_MAX) {
                     batch *= 2u;
                 }
                 if (r == EMU_RUN_HALTED || r == EMU_RUN_WFI) {

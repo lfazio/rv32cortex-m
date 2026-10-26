@@ -128,6 +128,10 @@ typedef struct emu_args {
     uint32_t quantum;
     /* --jit-hot: misses before a pc is translated; 0 keeps the build's. */
     uint32_t jit_hot;
+    /* --jit-thrash: evictions before a pc is interpreted instead; only
+     * when given, since 0 is a value (never give up). */
+    uint32_t jit_thrash;
+    bool jit_thrash_set;
     uint64_t max_insn;
     uint32_t timer_div;
 

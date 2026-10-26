@@ -471,6 +471,9 @@ static int emu_main_body(int argc, char **argv)
     if (args.jit_hot != 0u) {
         emu_jit_set_hot_threshold(args.jit_hot);
     }
+    if (args.jit_thrash_set) {
+        emu_jit_set_thrash_evictions(args.jit_thrash);
+    }
 #endif
 
     /*

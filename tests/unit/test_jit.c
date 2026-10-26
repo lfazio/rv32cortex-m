@@ -218,7 +218,7 @@ static void test_hot_threshold_delays_translation(void)
     emu_jit_set_hot_threshold(0u);
     CHECK_EQ(emu_jit_hot_threshold(), 1u);
     emu_jit_set_hot_threshold(1000u);
-    CHECK_EQ(emu_jit_hot_threshold(), 254u);
+    CHECK_EQ(emu_jit_hot_threshold(), 127u); /* below the eviction counts */
 
     emu_jit_set_hot_threshold(EMU_JIT_HOT_THRESHOLD);
 }
@@ -920,6 +920,159 @@ static void test_unchain_runs_one_block(void)
     (void)emu_jit_run(k_cpu, 64u, &retired, &k_stub_chain_ops);
     CHECK(ch_a_rel32() != (int32_t)(g_ch_a_tail - (g_ch_a_site + 4u)));
 }
+
+/* ------------------------------------------------------------------ */
+/* A hot set larger than the buffer                                    */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Eight blocks of 12 KB run in a cycle, 96 KB against the 64 KB buffer:
+ * every block is evicted before its turn comes round, whatever compaction
+ * keeps. Each sets the pc to the next and retires one; the interpreter
+ * stub does the same, so an interpreted turn and a translated one are the
+ * same step of the cycle.
+ */
+#define TH_N 8u
+#define TH_BASE 0xA000u
+#define TH_PAD 12000u
+
+static uint32_t g_th_built;
+
+static uint32_t th_next(uint32_t pc)
+{
+    return TH_BASE + ((((pc - TH_BASE) >> 8) + 1u) % TH_N << 8);
+}
+
+static uint32_t stub_translate_thrash(emu_cpu_t *cpu, uint32_t pc)
+{
+    const uint64_t pc_addr = (uint64_t)(uintptr_t)&g_pc;
+
+    (void)cpu;
+    if (pc < TH_BASE || pc >= TH_BASE + (TH_N << 8)) {
+        return 0u;
+    }
+    g_th_built++;
+    for (uint32_t i = 0; i < TH_PAD; i++) {
+        emu_jit_emit8(0x90u); /* nop */
+    }
+    emu_jit_emit8(0x48u); /* mov rax, &g_pc */
+    emu_jit_emit8(0xB8u);
+    emu_jit_emit32((uint32_t)pc_addr);
+    emu_jit_emit32((uint32_t)(pc_addr >> 32));
+    emu_jit_emit8(0xC7u); /* mov dword [rax], next */
+    emu_jit_emit8(0x00u);
+    emu_jit_emit32(th_next(pc));
+    emu_jit_emit8(0xB8u); /* mov eax, 1 */
+    emu_jit_emit32(1u);
+    emu_jit_emit8(0xC3u); /* ret */
+    return 1u;
+}
+
+static emu_run_reason_t stub_interp_thrash(emu_cpu_t *cpu, uint32_t budget,
+                                           uint32_t *retired)
+{
+    (void)cpu;
+    (void)budget;
+    g_pc = th_next(g_pc);
+    if (retired != NULL) {
+        *retired = 1u;
+    }
+    return EMU_RUN_BUDGET;
+}
+
+static const emu_backend_t k_stub_interp_thrash = {
+    .name = "stub-interp-thrash",
+    .run = stub_interp_thrash,
+};
+
+static const emu_jit_ops_t k_stub_thrash_ops = {
+    .name = "stub-thrash",
+    .bind = stub_bind,
+    .translate = stub_translate_thrash,
+    .interp = &k_stub_interp_thrash,
+    .relocatable = true,
+};
+
+/* Translations made by `turns` steps of the cycle. */
+static uint32_t th_run(uint32_t turns)
+{
+    const uint32_t before = g_th_built;
+    uint32_t retired = 0u;
+
+    (void)emu_jit_run(k_cpu, turns, &retired, &k_stub_thrash_ops);
+    return g_th_built - before;
+}
+
+/*
+ * A pc whose block keeps being evicted is given up on, a few at a time,
+ * until what is left fits -- and then nothing is translated at all.
+ *
+ * Off, every turn is a translation, for ever: Whetstone with the F746's
+ * tables at 32 KB, 516,732 translations, 20 times slower than the
+ * interpreter. On, translation stops while some of the cycle is still
+ * translated (the marks went in fours, not all at once), the pcs given
+ * up are interpreted, and once the retry count is reached the marks are
+ * forgotten and the cycle is tried again.
+ */
+static void test_thrash_gives_up_on_evicted_pcs(void)
+{
+    emu_jit_stats_t before;
+    emu_jit_stats_t after;
+
+    /* Off: the old behaviour, a translation per turn. */
+    emu_jit_flush();
+    emu_jit_set_thrash_evictions(0u);
+    g_pc = TH_BASE;
+    g_th_built = 0u;
+    (void)th_run(TH_N * 10u);
+    CHECK_EQ(th_run(TH_N * 40u), TH_N * 40u);
+
+    /*
+     * On, one turn at a time: no compaction may make more than its
+     * share of marks. All at once, the blocks a compaction evicts reach
+     * the limit together and are all given up, more than had to be.
+     */
+    emu_jit_flush();
+    emu_jit_set_thrash_evictions(EMU_JIT_THRASH_EVICTIONS);
+    g_pc = TH_BASE;
+    emu_jit_get_stats(&before);
+    {
+        emu_jit_stats_t prev = before;
+        uint32_t worst = 0u;
+
+        for (uint32_t t = 0u; t < TH_N * 40u; t++) {
+            emu_jit_stats_t now;
+
+            (void)th_run(1u);
+            emu_jit_get_stats(&now);
+            const uint32_t marks = now.thrashed - prev.thrashed;
+            const uint32_t compactions = now.compactions - prev.compactions;
+
+            if (marks > EMU_JIT_THRASH_MARKS * compactions + worst) {
+                worst = marks - EMU_JIT_THRASH_MARKS * compactions;
+            }
+            prev = now;
+        }
+        CHECK_EQ(worst, 0u);
+    }
+    CHECK_EQ(th_run(TH_N * 40u), 0u); /* settled: nothing translated */
+    emu_jit_get_stats(&after);
+    CHECK(after.thrashed - before.thrashed >= TH_N - 3u);
+    CHECK(after.thrashed - before.thrashed < TH_N); /* not all of it */
+    CHECK(after.blocks >= 1u);
+    CHECK(after.thrash_cached - before.thrash_cached > 0u);
+    CHECK_EQ(after.thrash_retries - before.thrash_retries, 0u);
+
+    /* The retry count reached: the marks go, and it is tried again. */
+    emu_jit_get_stats(&before);
+    const uint32_t retranslated = th_run(EMU_JIT_THRASH_RETRY * 2u);
+    emu_jit_get_stats(&after);
+    CHECK(after.thrash_retries - before.thrash_retries >= 1u);
+    CHECK(retranslated > 0u);
+
+    emu_jit_set_thrash_evictions(EMU_JIT_THRASH_EVICTIONS);
+    emu_jit_flush();
+}
 #endif
 
 /*
@@ -1004,6 +1157,7 @@ void test_jit(void)
     test_overflow_compaction_unlinks();
     test_chain_heat_keeps_chained_blocks();
     test_unchain_runs_one_block();
+    test_thrash_gives_up_on_evicted_pcs();
 #endif
     test_step_is_interpreted_and_followed();
 

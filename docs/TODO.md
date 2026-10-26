@@ -101,28 +101,17 @@ measured at.
       What it says about where hot blocks should go -- and whether
       CoreMark, which never flushes, has the same to gain -- is
       unmeasured.
-- [ ] **Below its working set the JIT is far slower than the
-      interpreter**, and Whetstone shows it worst: it does not finish in
-      120 s on the F746 at 32, 16 or 8 KB of code cache, nor on the F446
-      at its 12 KB (once put down to SoftFloat on an M4), where 64 KB
-      runs it in 1.65 s. Reproduced on the host with the board's tables
-      (`-DCMAKE_C_FLAGS="-DEMU_JIT_MAX_BLOCKS=256u -DEMU_JIT_HASH_SIZE=256u
-      -DEMU_JIT_BLOCK_RESERVE=512u -DEMU_HOST_JIT_CODE_BYTES=32768u"`):
-      one module's hot cycle is 68 blocks, 1,199 guest instructions and
-      57.6 KB of x86-64 code, and at 32 KB every one of them is evicted
-      and retranslated about 6,400 times -- 516,732 translations, 13,960
-      compactions, 1.9 MIPS against the interpreter's 39 and 163 at
-      128 KB. A cyclic working set larger than the cache defeats any
-      retention order: keeping the youngest blocks in the unused budget
-      changed nothing but tripled the compactions, and the hot
-      threshold does not apply to an evicted block by design
-      (`--jit-hot 32`: 456,826 translations). What would: stop
-      translating a pc that keeps being evicted, and interpret it until
-      something changes, so the JIT degrades towards the interpreter
-      rather than 20 times below it. It needs a count that survives
-      eviction (the seen table's), a way to forget it that is not a
-      flush, and the board's CoreMark at 32 KB (8,485 compactions,
-      completes) measured beside Whetstone, since it thrashes too.
+- [ ] **Below 32 KB the JIT is still slower than the interpreter.**
+      Giving up on pcs that keep being evicted
+      ([jit/tuning.md](jit/tuning.md#emu_jit_thrash_evictions--giving-up-on-what-does-not-fit))
+      took Whetstone on the F746 from not finishing to 4.06 s at 32 KB,
+      ahead of the interpreter's 6.29 s, but 16 KB is 8.30 s and 8 KB
+      17.87 s. There the retries are what is left: every 65,536
+      interpreted dispatches all the marks are forgotten and the cycle
+      thrashes again until re-marked (6 and 11 retries). A retry that
+      grows each time it is undone, or that forgets only marks older
+      than the last, is the next thing to try -- measured on the board,
+      where a translation costs tens of thousands of cycles.
 - [ ] **LTO partitioning moves the host's interpreters by percents.**
       `-flto-partition=one` runs ARMv7-M's interpreted CoreMark in 4.4%
       fewer host instructions than the default partitioning and RV32's

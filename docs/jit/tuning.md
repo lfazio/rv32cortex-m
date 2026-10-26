@@ -163,7 +163,7 @@ Three reasons, each visible in the counters:
 
 - **The F746's problem is a hot set larger than the buffer**, not cold
   code in it. Translations do not fall at any threshold, because the
-  blocks being retranslated are the ones that were evicted while hot.
+  blocks being retranslated are the ones that were evicted while hot. The answer to that is the next section.
 - **Single-stepping cold code lets the middle of a block cross the
   threshold first**, and its block then overlaps the one translated
   later from the real start: 96 KB at 4 is 10,241 translations against
@@ -177,6 +177,79 @@ Host CoreMark at two iterations does translate less -- 278 blocks at 1,
 it is simply not where the time goes in anything measured here. Try it
 on a guest whose translated set is mostly run-once code before
 believing it pays.
+
+## `EMU_JIT_THRASH_EVICTIONS` — giving up on what does not fit
+
+**A hot set larger than the buffer is not a retention problem.** Each
+block of a cycle is evicted before its turn comes round, whatever
+compaction keeps, so every turn is a translation. Whetstone has such a
+cycle -- 68 blocks, 1,199 guest instructions, 57.6 KB of x86-64 -- and
+before this it did not finish in 120 s on the F746 at 32 KB, nor on the
+F446, where 64 KB runs it in 1.65 s. On the host with the board's tables
+(the recipe below) it ran at 1.9 MIPS against the interpreter's 39:
+516,732 translations, each block about 6,400 times. Neither keeping the
+youngest blocks in compaction's unused budget nor the hot threshold
+(which deliberately does not apply to an evicted block) changed that.
+
+So the framework counts how often compaction evicts each (pc, context)
+-- in the declined-pc table, which survives eviction -- and after
+`EMU_JIT_THRASH_EVICTIONS` (4) gives the pc up: the dispatcher
+interprets it, as it does a pc the translator refused. Two details are
+what made it pay rather than merely stop the bleeding:
+
+- **A given-up pc is interpreted to its first jump**, not by the
+  fallback's batch of 1 to 64 instructions. A batch stops mid-block, the
+  dispatcher translates a new block from there, and that fresh code
+  crowds the buffer in its turn: 1,412 marks for a cycle of 68 blocks,
+  and no faster than the interpreter.
+- **At most `EMU_JIT_THRASH_MARKS` (4) pcs are given up per
+  compaction.** A cycle's blocks are evicted at the same rate and reach
+  the limit together; given up all at once, the whole cycle went to the
+  interpreter (33.4 MIPS). Four at a time stops once what is left fits,
+  because then it stops being evicted (42.3 MIPS).
+
+The marks are forgotten -- the table's epoch moved, as a flush moves it
+-- after `EMU_JIT_THRASH_RETRY` (65,536) interpreted dispatches of them,
+so code that stopped thrashing is translated again; a run that never
+thrashes never gets there. `--jit-thrash N` sets the limit on the host,
+0 turning it off. The stats line reports it as `thrash N (cached N,
+retries N)`.
+
+On the F746, against e41b775:
+
+| | before | after |
+|---|---|---|
+| Whetstone, 32 KB | did not finish in 120 s | **4.06 s** (83.68 cycles / instruction) |
+| Whetstone, 16 KB / 8 KB | did not finish | 8.30 s / 17.87 s |
+| Whetstone, the F446's default | did not finish | 6.83 s |
+| Whetstone, interpreted | 6.29 s (129.27) | |
+| CoreMark x650, 32 KB | 78.4 s, 105.82 | **44.4 s, 59.84**, valid, `crcfinal 0x25e3` |
+| ARMv7-M CoreMark, its default 96 KB | 33.57, 1,901 translations | **29.99**, 1,372 |
+| Whetstone 64 KB / RV32 CoreMark / Dhrystone, defaults | 34.08 / 56.04 / 16.27 | 33.63 / 56.21 / 16.45 |
+
+The last row has no compaction and no mark in it, and Dhrystone's
++0.8% followed the layout: with the code buffer moved by 12, 1,024 and
+4,096 bytes the differences were +0.5%, +0.1% and +0.2%, where the move
+alone shifted the old build 2.3%. Inlined into the dispatcher, which
+runs from ITCM, the fallback and the eviction count had grown it by 304
+bytes; both are out of line now. Below 32 KB the JIT is still slower
+than the interpreter -- 1.3 times at 16 KB, 2.8 at 8 -- where it was more
+than 19 times slower; see [TODO.md](../TODO.md).
+
+On the host at its own sizes nothing thrashes: callgrind reads every
+JIT row 0.02-0.71% lower against e41b775, with identical output, and a
+Linux boot makes no compaction and no mark. The board's case is
+reproduced on the host by building with the board's tables:
+
+```sh
+cmake -S . -B build/whet-32 -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  "-DCMAKE_C_FLAGS=-DEMU_JIT_MAX_BLOCKS=256u -DEMU_JIT_HASH_SIZE=256u \
+   -DEMU_JIT_BLOCK_RESERVE=512u -DEMU_HOST_JIT_CODE_BYTES=32768u"
+build/whet-32/emu-host --jit --jit-thrash 0 build/figures/guest/whetstone.bin
+```
+
+`test_thrash_gives_up_on_evicted_pcs` holds the three parts: removing
+the marking fails 4 checks, the per-compaction cap 1, the retry 1.
 
 ## Block length — per frontend, and shorter where the cache is small
 

@@ -143,6 +143,8 @@ void emu_args_usage(void)
         "  --jit                use the JIT backend, not the interpreter",
         "  --jit-hot N          translate a pc only once it has missed the",
         "                       block cache N times; until then interpret",
+        "  --jit-thrash N       interpret a pc once its block has been",
+        "                       evicted N times; 0 never gives up",
 #endif
         "  --gdb [port]         serve a gdb stub on localhost (default 1234)",
 #if EMU_NET
@@ -508,6 +510,15 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
                     *status = 2;
                     return false;
                 }
+                continue;
+            }
+            if (strcmp(a, "--jit-thrash") == 0) {
+                if (!parse_u32(argv[++i], &opt->jit_thrash)) {
+                    emu_args_usage();
+                    *status = 2;
+                    return false;
+                }
+                opt->jit_thrash_set = true;
                 continue;
             }
 #endif

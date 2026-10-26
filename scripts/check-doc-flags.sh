@@ -38,11 +38,22 @@ find . -name build -prune -o -path ./docs/renesas -prune -o \
 # CMake's own well-known ones, which the docs legitimately mention.
 cat >> "$known" <<'EOF'
 CMAKE_BUILD_TYPE
+CMAKE_C_FLAGS
 CMAKE_TOOLCHAIN_FILE
 CMAKE_EXPORT_COMPILE_COMMANDS
 STM32CUBE_LOCAL_DIR
 STM32CUBE_FAMILY
 EOF
+# And the C macros a build may override through CMAKE_C_FLAGS: a default
+# the sources give under `#ifndef NAME` / `#define NAME`. The board's JIT
+# tables on a host runner are the case (docs/jit/tuning.md); a name
+# spelled wrong there still fails, since nothing defines it.
+find src include -name '*.[ch]' -print 2>/dev/null |
+    xargs awk 'prev ~ /^#ifndef [A-Za-z_][A-Za-z0-9_]*[[:space:]]*$/ {
+                   split(prev, a, " ")
+                   if ($1 == "#define" && $2 == a[2]) print a[2]
+               }
+               { prev = $0 }' >> "$known"
 sort -u -o "$known" "$known"
 
 # Every -DNAME the documentation mentions, with where it was found.

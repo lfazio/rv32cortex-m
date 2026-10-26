@@ -200,6 +200,24 @@ meaning nothing; that test is what notices. Dropping the enable from
 RV32's sequence fails it. What they buy is measured under
 [Mutants](#mutants): reach, not finds.
 
+### A small code cache
+
+At the host's own sizes a fuzz program never fills the code buffer, so
+compaction and everything behind it -- eviction, chain unlinking, the
+thrash fallback -- is never fuzzed. A fuzz tree configured with the
+board's tables first reaches it, since `fuzz.sh` keeps a cache it finds:
+
+```sh
+CC=clang cmake -S . -B build/fuzz-small -DEMU_FUZZ=ON \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo "-DCMAKE_C_FLAGS=-DEMU_JIT_MAX_BLOCKS=256u \
+  -DEMU_JIT_HASH_SIZE=256u -DEMU_JIT_BLOCK_RESERVE=512u -DEMU_HOST_JIT_CODE_BYTES=8192u"
+FUZZ_BUILD=$PWD/build/fuzz-small scripts/fuzz.sh 300 rv32
+```
+
+The stats line counts compactions and pcs given up, which is what says
+it did: five minutes of RV32 made 188,272 compactions and gave up on
+799 pcs, and found nothing.
+
 ## More than one core
 
 G4MH and PowerPC can give each side a second core, chosen per input by

@@ -124,6 +124,14 @@ bool emu_print_jit_stats(void)
                        (unsigned)js.declined, (unsigned)js.declined_cached,
                        (unsigned)js.overflowed, (unsigned)js.block_entries,
                        (unsigned)js.links);
+    /*
+     * The thrash fallback, beside the same counts for a declined pc: a
+     * hot set larger than the buffer shows as pcs given up on and their
+     * dispatches interpreted, where it used to show only as compactions.
+     */
+    emu_console_printf("  thrash   %u (cached %u, retries %u)\n",
+                       (unsigned)js.thrashed, (unsigned)js.thrash_cached,
+                       (unsigned)js.thrash_retries);
 
 #ifdef EMU_JIT_PROFILE
     /*
