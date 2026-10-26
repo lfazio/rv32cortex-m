@@ -6,7 +6,9 @@ G4MH firmware embedded RV32's `isatest`, ran it as RH850 code from
 0x2000_0000 and faulted at its first fetch. It stages through
 `cmake/guest-image.cmake` now, as the F746 and the N6 do, with G4MH's
 load address. The small guest passes (15 checks), and G4MH CoreMark x40
-gives CRC 0x65c5 -- "Correct operation validated", 17 s.
+gives CRC 0x65c5 -- "Correct operation validated", 17.2 s by the host's
+clock, at 143.65 host cycles an instruction interpreted (150.42 before
+the unread `cycles` counter went, 2026-10-26).
 
 ```sh
 cmake -B build/g4mh -DEMU_PLATFORM=stm32f446 \

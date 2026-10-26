@@ -105,7 +105,6 @@ void g4mh_cpu_reset(g4mh_cpu_t *c, uint32_t reset_pc)
     c->sr[G4MH_SELID_INT][G4MH_SR_INTCFG] = G4MH_INTCFG_RESET;
 
     g4mh_ll_drop(c);
-    c->cycles = 0u;
     c->retired = 0u;
     /*
      * **Only PE0 starts at reset release.** The others are held until

@@ -2578,7 +2578,6 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
     retired_insn:
         done++;
         c->retired++;
-        c->cycles++;
         /*
          * The performance counters are *not* ticked here. They are ticked
          * once per run slice by g4mh_ops_run, from the retired delta,
@@ -2591,7 +2590,6 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
     next_insn:
         /* Reached after an exception; pc already points at the handler. */
         done++;
-        c->cycles++;
     }
 
 out:

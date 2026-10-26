@@ -41,7 +41,8 @@ measured at.
     the same bytes run both ways and compared on the register file,
     memory, trap state and the counters. **Done for all four**
     (`tests/fuzz/fuzz_harness.h` and a target each). What is left:
-    Spike as a third side for RV32 (BSD-3, CLAUDE.md); interrupts and
+    Spike as a third side for RV32 (BSD-3, CLAUDE.md) -- **set aside
+    until late in the project**, by decision (2026-10-26); interrupts and
     a device for every frontend -- each core runs without its
     controller and timers, and asynchronous interrupts would need to be
     taken at points both backends agree on, or set aside as PowerPC's
@@ -111,13 +112,6 @@ measured at.
       So a callgrind A/B of one frontend can be another's partition
       boundary. Measure the board's firmware the same way, and decide
       whether the host builds in one partition -- at least for A/Bs.
-- [ ] **G4MH's `cycles` is read by nothing**, and its interpreter
-      increments it on every instruction and every exception -- found
-      when `fuzz-g4mh-jit` reported the two backends counting it
-      differently, which could not matter ([fuzzing.md](fuzzing.md)).
-      The PMU counts in PMCOUNTn. Removing it is a per-instruction
-      store saved; measure it on the board, since it is the
-      interpreter's loop.
 - [ ] **ARMv7-M's sp/pc rules cost its interpreter 2.3-3.6%**
       ([frontend/armv7m.md](frontend/armv7m.md#what-the-board-corrected)),
       measured by callgrind only. The board figure is not taken, and

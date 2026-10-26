@@ -1705,7 +1705,6 @@ static void g4mh_jit_count(emu_cpu_t *cpu, uint32_t n)
 {
     g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
 
-    c->cycles += n;
     c->retired += n;
 }
 

@@ -243,13 +243,7 @@ static void compare(void)
                     g_jit.cpu.sr[b][i]);
         }
     }
-    SAME(retired);
-    /*
-     * Not `cycles`: nothing in the tree reads it. The interpreter counts
-     * an exception entry there and the JIT does not, and no guest can
-     * tell -- the PMU's cycle event counts in PMCOUNTn, which is a
-     * system register and compared above.
-     */
+    SAME(retired); /* the PMU counts from it, into PMCOUNTn, above */
     SAME(ll_valid);
     if (g_interp.cpu.ll_valid) {
         SAME(ll_addr);

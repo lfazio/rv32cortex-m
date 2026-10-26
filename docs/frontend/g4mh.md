@@ -1269,7 +1269,12 @@ and 143 to 135 with the JIT. G4MH CoreMark there is unchanged by the
 four commits that added KCRC, the controller, the OS timers and the
 watchdogs: `crcfinal 0x65c5`, the same 525 translations, and 96.56 to
 95.12 host cycles an instruction interpreted, 54.35 to 53.27 translated,
-against a worktree at 1aead44. The search for a pending channel walks two bitmaps of requested,
+against a worktree at 1aead44. **Removing a counter nothing read**
+(`cycles`, incremented on every instruction and exception entry) then
+took it to 91.58 interpreted, from 95.00 at b52b828, and the F446 from
+150.42 to 143.65; callgrind says 2.42% fewer host instructions
+interpreted and 1.35% under the JIT, to the same retired count
+(2026-10-26). The search for a pending channel walks two bitmaps of requested,
 unmasked channels instead of the words, kept by the one function that
 writes a channel word; `test_intc_pending_summary` holds them to the
 words, and the search to a brute-force one through the register

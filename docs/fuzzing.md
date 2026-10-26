@@ -88,10 +88,7 @@ keeps, and all of data RAM. Then, per target:
   the architecture permits. The flags translated code keeps in four
   words are packed into xPSR before comparing. The core's own retired
   count is compared, because SysTick counts it.
-- **G4MH.** Not `cycles`, which nothing in the tree reads: the
-  interpreter counts an exception entry there and the JIT does not, and
-  the PMU's cycle event counts in PMCOUNTn, which is compared. The
-  reservation tracker is the frontend's, by PE id, so the side about to
+- **G4MH.** The reservation tracker is the frontend's, by PE id, so the side about to
   run is registered as PE0 -- a core's own store must break its own
   reservation.
 - **PowerPC.** A run that ends in the decrementer's, the fixed-interval
@@ -165,10 +162,13 @@ Each run below is after its target's fixes, and found nothing more:
   or it cannot be excluded without excluding everything near it. Every
   PowerPC vector has its own slot and stops there, so a timer interrupt
   says it was one.
-- **A counter nothing reads is not a comparison.** G4MH's `cycles`
-  differed between backends and could not matter; PowerPC's `cycles`
-  differed in the same way and could, because the time base counts
-  them. The question is the readers, which a grep answers.
+- **A counter nothing reads is not a comparison -- and is a cost.**
+  G4MH's `cycles` differed between backends and could not matter;
+  PowerPC's differed in the same way and could, because the time base
+  counts them. The question is the readers, which a grep answers. G4MH's
+  had none, and its interpreter incremented it on every instruction:
+  removed, CoreMark runs 4.5% faster interpreted on the F446 and 3.6% on
+  the F746.
 - **Fixing the RV32 interpreter's count without moving its loop took
   five tries**; each read 0.5-1.1% more host instructions on CoreMark,
   for paths no benchmark takes, until only the function the trap path

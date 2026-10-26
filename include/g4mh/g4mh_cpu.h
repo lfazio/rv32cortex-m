@@ -68,8 +68,15 @@ typedef struct g4mh_cpu {
      */
     uint32_t sr[G4MH_SR_BANKS][G4MH_SR_PER_BANK];
 
-    /* --- counters --- */
-    uint64_t cycles;
+    /*
+     * --- counters ---
+     *
+     * Instructions only. There was a `cycles` beside it, incremented on
+     * every instruction and every exception entry and read by nothing:
+     * the PMU's cycle event counts in PMCOUNTn, from `retired`.
+     * fuzz-g4mh-jit found it because the two backends counted it
+     * differently and no guest could tell.
+     */
     uint64_t retired;
 
     /*

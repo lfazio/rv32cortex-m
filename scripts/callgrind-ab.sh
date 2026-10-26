@@ -27,6 +27,9 @@
 # code the moment it is rebuilt (CLAUDE.md).
 #
 # Rows are LABEL names from the table below; with none, all of them.
+# g4mh-coremark.bin is not built by the tree -- it needs CC-RH: build it
+# with scripts/g4mh-build-coremark.sh and copy it into GUESTS, or its
+# rows say the image is missing.
 # Guest images come from GUESTS (default build/figures/guest, which
 # scripts/report-figures.sh builds at the defaults); profiles and logs go
 # to OUT (default build/callgrind-ab).
@@ -56,7 +59,9 @@ a7-dhry-jit|--frontend armv7m --jit armv7m-dhrystone.bin
 a7-cm-interp|--frontend armv7m armv7m-coremark.bin
 a7-cm-jit|--frontend armv7m --jit armv7m-coremark.bin
 ppc-dhry-jit|--jit ppc-dhrystone.elf
-ppc-cm-jit|--jit ppc-coremark.elf'
+ppc-cm-jit|--jit ppc-coremark.elf
+g4-cm-interp|--frontend g4mh --load 0x80000000 g4mh-coremark.bin
+g4-cm-jit|--frontend g4mh --load 0x80000000 --jit g4mh-coremark.bin'
 
 total() { # PREFIX RUNNER ARGS...: host instructions of one run
     p=$1 b=$2
