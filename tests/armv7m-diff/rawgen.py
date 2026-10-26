@@ -117,6 +117,55 @@ def candidates(rng, n_random, sources):
     return out
 
 
+# The register fields of a 32-bit Thumb data-processing, multiply or
+# misc instruction: Rn in the first halfword, then Rm, Rd and Ra/RdLo in
+# the second. Not every nibble is a register in every form -- in an
+# immediate form the low one is immediate bits -- which only makes the
+# variant another encoding to ask about.
+REG_NIBBLES = (("rn", 16), ("rm", 0), ("rd", 8), ("ra", 12))
+
+
+def reg_variants(rng, n, sources, sp_writes=False):
+    """Register-only instructions with one register field set to sp or pc.
+
+    The board diff's filter keeps every operand in r0-r12, because an
+    arbitrary write to sp or pc wanders off, so the encodings that name
+    them were never asked -- and that is where the M7 and the frontend
+    were found to disagree: `bfi pc, ...`, `add.w pc, ...` and `ldrd
+    ..., [pc]!` are UNDEFINSTR on the board and were executed here. The
+    variants that would *write* sp are left out unless `sp_writes`: the
+    case reads its own stack straight after the probe, so a write to sp
+    the board executes ends the run. With it, they are marked, and the
+    caller keeps only those the decoder already calls UNDEFINED -- the
+    question being whether the board agrees. A write to pc that the
+    board does execute shows up as a fault somewhere other than the
+    probe.
+    """
+    forms = {}
+    for enc, text in sources:
+        mnem, _, ops = text.split("  ;")[0].partition(" ")
+        if (REG_ONLY.match(mnem) and "[" not in ops and "{" not in ops and
+                not re.search(r"\b(sp|lr|pc|r13|r14|r15)\b", ops)):
+            forms.setdefault(mnem, []).append((enc, text))
+    names = sorted(forms)
+    out = []
+    for _ in range(n):
+        if not names:
+            break
+        enc, text = rng.choice(forms[rng.choice(names)])
+        for field, shift in REG_NIBBLES:
+            for reg in (13, 15):
+                sp_write = reg == 13 and field in ("rd", "ra")
+                if sp_write and not sp_writes:
+                    continue
+                v = (enc & ~(0xF << shift)) | (reg << shift)
+                if v != enc:
+                    out.append((v, "%s with %s=%d%s" % (
+                        text.split("  ;")[0], field, reg,
+                        " (sp-write)" if sp_write else "")))
+    return out
+
+
 def corpus(elfs, dis):
     """Every 32-bit instruction in the ELFs' code ranges, with its text."""
     out = []
@@ -203,6 +252,12 @@ def main():
     ap.add_argument("--enc", default="",
                     help="encodings to run unfiltered: hex[:rN],...")
     ap.add_argument("--repeat", type=int, default=4)
+    ap.add_argument("--regs", type=int, default=0,
+                    help="this many corpus instructions, each with sp or "
+                         "pc put in its register fields, run unfiltered")
+    ap.add_argument("--regs-sp", action="store_true",
+                    help="--regs: sp as a destination too, where the "
+                         "decoder says UNDEFINED")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     rng = random.Random(a.seed)
@@ -232,6 +287,29 @@ def main():
                               re.search(r"\b%s\b" % base, dests))
                 if not loads_base:
                     c.addr = 1 << int(base[1:])
+            c.raw = True
+            named.append(c)
+    if a.regs:
+        if not sources:
+            sys.exit("--regs needs --from")
+        variants = [v for v in reg_variants(rng, a.regs, sources, a.regs_sp)
+                    if v[0] not in seen and not seen.add(v[0])]
+        texts = disassemble([e for e, _ in variants], a.dis, a.out)
+        for (enc, why), text in zip(variants, texts):
+            # A register field set to 15 can move an encoding into
+            # another class -- `and.w` with the top nibble of its second
+            # halfword set is `bl` -- and a branch goes wherever it goes.
+            # So only what still decodes as a register-only operation,
+            # or as nothing, is asked.
+            mnem = text.split(" ")[0]
+            if "(sp-write)" in why and not text.startswith(".inst"):
+                continue
+            if not (text.startswith(".inst") or
+                    ("[" not in text and "{" not in text and
+                     REG_ONLY.match(mnem))):
+                continue
+            c = gen.Case([".inst.w 0x%08x" % enc], fp=True,
+                         text="%08x  %s    <- %s" % (enc, text, why))
             c.raw = True
             named.append(c)
     while len(cases) < a.count:

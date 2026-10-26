@@ -88,8 +88,8 @@ What belongs here is only what the recipes do not say:
 BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
                                 # a firmware built from that tree, flashed,
                                 # run: ratio, wall clock, translations, CRC
-./scripts/fuzz.sh SECS          # RV32 interpreter against the x86-64 JIT,
-                                # under ASan/UBSan; docs/fuzzing.md
+./scripts/fuzz.sh SECS [ISA|all]  # a frontend's interpreter against the
+                                # x86-64 JIT, under ASan/UBSan; docs/fuzzing.md
 ```
 
 **Run both suites.** They cover different things, and a regression that
@@ -3680,6 +3680,33 @@ session, and every one of them recurred:
     a0 for its own argument -- reported the name string's address as a
     JALR's link on both backends. Test the instrument on a case whose
     answer you know: a 2 KiB stack burn, a mutant, a revert.
+
+- **A filter that keeps a harness safe also decides what it can never
+  ask.** rawgen's filter kept every ARMv7-M operand in r0-r12, because
+  an arbitrary write to sp or pc wanders off -- so no encoding naming
+  either had been put to the board, and the frontend executed all 557
+  that `--regs` then found the M7 refuses: `bfi pc` wrote an odd pc,
+  `add.w r0, pc, #8` added. `fuzz-armv7m-jit` found it through UBSan,
+  not a divergence -- both backends agreed, which is what a shared
+  reference error looks like. G4MH's and PowerPC's fuzzers found one
+  defect each: UB in G4MH's interpreter, and a cycle PowerPC's JIT did
+  not charge for an interrupt, which its time base counts.
+
+  **The board's table is not the manual's.** The M7 raises UNDEFINSTR
+  for every UNPREDICTABLE register choice it was asked but three, which
+  it executes: an LDM of one register, an LDM writing back over a base
+  in its list, and REV or CLZ with their two Rm copies differing. A rule
+  transcribed from the pseudocode would have been wrong both ways, so
+  ask, and keep the answers (`test_sp_pc_board_answers`) where a host
+  run can hold them. Ask the dangerous ones last: a load into sp that
+  the board executed would have ended the run, and the emulator, which
+  did execute it, stopped there instead.
+
+  The rules cost the interpreter 2.3% on CoreMark (3.6% in one
+  partition) and the JIT nothing. Three attempts at cheaper each read
+  dearer -- out of line, forced inline, a pre-filter -- which is the
+  same lesson as RV32's minstret fix: **measure every variant**, since
+  at this size the compiler's choices move a row as much as the code.
 
 ## Conventions
 

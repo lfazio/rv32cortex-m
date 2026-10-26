@@ -148,6 +148,21 @@ static uint32_t swap(uint32_t v, uint32_t size)
 }
 
 /*
+ * An instruction that raised, from inside a block: the interrupt has
+ * been entered and the block stops without counting the instruction, as
+ * the interpreter does not retire it -- but the interpreter does charge
+ * it the cycle every pass of its loop costs, and the time base counts
+ * cycles once HID0[TBEN] is set. So the cycle is charged here, on the
+ * path only a fault takes. fuzz-ppc-jit found the two a cycle apart for
+ * every interrupt a block raised.
+ */
+static uint32_t raised(ppc_cpu_t *c)
+{
+    c->cycles++;
+    return 1u;
+}
+
+/*
  * Outside the window. pc already names the instruction: the translator
  * writes it after every one, so it is this one's until this one is
  * done. The value goes back byte-swapped -- see the note at the top.
@@ -163,7 +178,7 @@ static uint32_t ppc_ir_load(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
 
     if (EMU_UNLIKELY(x != PPC_EXC_NONE)) {
         ppc_cpu_raise(c, (ppc_ivor_t)x, c->pc, 0u);
-        return 1u;
+        return raised(c);
     }
     *out = swap(v, size);
     return 0u;
@@ -179,7 +194,7 @@ static uint32_t ppc_ir_store(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
 
     if (EMU_UNLIKELY(x != PPC_EXC_NONE)) {
         ppc_cpu_raise(c, (ppc_ivor_t)x, c->pc, PPC_ESR_ST);
-        return 1u;
+        return raised(c);
     }
     return 0u;
 }
@@ -200,7 +215,7 @@ static uint32_t ppc_ir_step(emu_cpu_t *cpu, uint32_t insn, uint32_t pc)
     ppc_insn_t d;
 
     ppc_decode(insn, len, c->vle, &d);
-    return ppc_exec(c, &d, pc) ? 0u : 1u;
+    return ppc_exec(c, &d, pc) ? 0u : raised(c);
 }
 
 /*
@@ -226,11 +241,11 @@ static uint32_t ppc_ir_efs(emu_cpu_t *cpu, uint32_t op, uint32_t pc)
 
     if (e == (uint32_t)PPC_IVOR_FP_DATA) {
         ppc_cpu_raise(c, PPC_IVOR_FP_DATA, pc, PPC_ESR_SPE);
-        return 1u;
+        return raised(c);
     }
     if (e == (uint32_t)PPC_IVOR_FP_ROUND) {
         ppc_cpu_raise(c, PPC_IVOR_FP_ROUND, next, PPC_ESR_SPE);
-        return 1u;
+        return raised(c);
     }
     c->pc = next;
     return 0u;
@@ -1510,7 +1525,7 @@ static bool ppc_jit_wake(emu_cpu_t *cpu)
 
 /*
  * An interrupt, between blocks -- the same function the interpreter
- * calls between instructions.
+ * calls between instructions, and the same cycle it charges for one.
  */
 static bool ppc_jit_take_irq(emu_cpu_t *cpu)
 {
@@ -1519,7 +1534,11 @@ static bool ppc_jit_take_irq(emu_cpu_t *cpu)
     /* Cleared before the look, not after: a line raised by a host
      * interrupt during it must not be lost to the clear. */
     c->irq_dirty = false;
-    return ppc_cpu_take_irq(c);
+    if (!ppc_cpu_take_irq(c)) {
+        return false;
+    }
+    c->cycles++;
+    return true;
 }
 
 /*

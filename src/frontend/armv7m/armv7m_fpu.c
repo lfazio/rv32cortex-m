@@ -941,7 +941,8 @@ static X fp_ldst(armv7m_cpu_t *c, uint16_t w0, uint16_t w1, uint32_t pc)
         const uint32_t addr = u ? base + imm8 * 4u : base - imm8 * 4u;
         const uint32_t nwords = dbl ? 2u : 1u;
 
-        if (first + nwords > 32u) {
+        /* VLDR may be pc-relative; VSTR may not (the M7 refuses it). */
+        if (first + nwords > 32u || (!load && rn == ARMV7M_PC)) {
             return ARMV7M_X_UNDEF;
         }
         for (uint32_t i = 0u; i < nwords; i++) {
@@ -1018,6 +1019,9 @@ static X fp_xfer32(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
     if (!cbit && a == 0u) { /* VMOV Sn <-> Rt */
         const uint32_t sn = (vn << 1) | nbit;
 
+        if (armv7m_sp_or_pc(rt)) {
+            return ARMV7M_X_UNDEF; /* as the M7 does, either way */
+        }
         if (l) {
             c->r[rt] = c->s[sn];
         } else {
@@ -1026,7 +1030,10 @@ static X fp_xfer32(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
         return OK;
     }
     if (!cbit && a == 7u) { /* VMRS / VMSR: FPSCR only on M-profile */
-        if (vn != 1u || nbit != 0u) {
+        /* VMRS to pc is APSR_nzcv; to sp, and VMSR from either, the
+         * M7 refuses. */
+        if (vn != 1u || nbit != 0u || rt == ARMV7M_SP ||
+            (!l && rt == ARMV7M_PC)) {
             return ARMV7M_X_UNDEF;
         }
         if (l) {
@@ -1044,7 +1051,7 @@ static X fp_xfer32(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
         const uint32_t dn = (nbit << 4) | vn;
         const uint32_t idx = 2u * dn + (a & 1u);
 
-        if (idx >= 32u) {
+        if (idx >= 32u || armv7m_sp_or_pc(rt)) {
             return ARMV7M_X_UNDEF;
         }
         if (l) {
@@ -1072,7 +1079,8 @@ static X fp_xfer64(armv7m_cpu_t *c, uint16_t w0, uint16_t w1)
     if (x != OK) {
         return x;
     }
-    if ((w1 & 0xD0u) != 0x10u || first > 30u || (l && rt == rt2)) {
+    if ((w1 & 0xD0u) != 0x10u || first > 30u || (l && rt == rt2) ||
+        armv7m_sp_or_pc(rt) || armv7m_sp_or_pc(rt2)) {
         return ARMV7M_X_UNDEF; /* ...or both halves into one register */
     }
     if (l) {

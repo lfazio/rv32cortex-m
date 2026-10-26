@@ -460,6 +460,9 @@ static void d32_dp_plain(uint16_t w0, uint16_t w1, I *d)
     const uint32_t lsb = (imm3 << 2) | imm2;
     const uint32_t field = w1 & 31u;
 
+    if (!armv7m_plain_regs_ok(op, rd, rn)) {
+        return; /* sp or pc where the M7 refuses them */
+    }
     d->rd = (uint8_t)rd;
     d->rn = (uint8_t)rn;
     switch (op) {
@@ -551,7 +554,8 @@ static void d32_dp_reg(uint16_t w0, uint16_t w1, I *d)
     if (sel == 6u) {
         const bool tb = ((w1 >> 5) & 1u) != 0u;
 
-        if (((w0 >> 4) & 1u) != 0u || ((w1 >> 4) & 1u) != 0u) {
+        if (((w0 >> 4) & 1u) != 0u || ((w1 >> 4) & 1u) != 0u ||
+            !armv7m_dnm_ok((w1 >> 8) & 15u, w0 & 15u, w1 & 15u)) {
             return; /* PKH has no S, and its T bit is zero */
         }
 
@@ -563,6 +567,10 @@ static void d32_dp_reg(uint16_t w0, uint16_t w1, I *d)
         return;
     }
     armv7m_decode_imm_shift((w1 >> 4) & 3u, imm5, &t, &n);
+    if (!armv7m_dp_regs_ok(sel, (w1 >> 8) & 15u, w0 & 15u, true, w1 & 15u, t, n,
+                           ((w0 >> 4) & 1u) != 0u)) {
+        return; /* sp or pc where the M7 refuses them */
+    }
     d->opnd = ARMV7M_OPND_REG;
     d->shift_t = (uint8_t)t;
     d->shift_n = (uint8_t)n;
@@ -595,6 +603,9 @@ static void d32_dp_register(uint16_t w0, uint16_t w1, I *d)
     d->rn = (uint8_t)rn;
     d->rm = w1 & 15u;
     if ((op1 >> 3) == 0u && op2 == 0u) {
+        if (!armv7m_dnm_ok(d->rd, rn, d->rm)) {
+            return;
+        }
         set(d, ARMV7M_OP_LSL + ((op1 >> 1) & 3u));
         d->opnd = ARMV7M_OPND_REGSHIFT;
         d->setflags = (op1 & 1u) ? ARMV7M_SF_YES : ARMV7M_SF_NO;
@@ -611,7 +622,8 @@ static void d32_dp_register(uint16_t w0, uint16_t w1, I *d)
             {ARMV7M_OP_UXTAB, ARMV7M_OP_UXTB},
         };
 
-        if (op1 > 5u || (w1 & 0x0040u) != 0u) {
+        if (op1 > 5u || (w1 & 0x0040u) != 0u ||
+            !armv7m_extend_regs_ok(d->rd, rn, d->rm)) {
             return;
         }
         set(d, k[op1][rn == 15u ? 1 : 0]);
@@ -626,7 +638,8 @@ static void d32_dp_register(uint16_t w0, uint16_t w1, I *d)
     if ((op1 >> 3) == 1u && (op2 >> 3) == 0u) {
         const uint32_t o = op1 & 7u;
 
-        if ((op2 & 3u) == 3u || o == 3u || o == 7u) {
+        if ((op2 & 3u) == 3u || o == 3u || o == 7u ||
+            !armv7m_dnm_ok(d->rd, rn, d->rm)) {
             return;
         }
         set(d, ARMV7M_OP_PARALLEL);
@@ -642,6 +655,11 @@ static void d32_dp_register(uint16_t w0, uint16_t w1, I *d)
         };
         const uint32_t sel = ((op1 & 3u) << 2) | (op2 & 3u);
 
+        /* QADD to QDSUB and SEL read rn; the rest have one operand. */
+        if ((sel <= 3u || sel == 8u) ? !armv7m_dnm_ok(d->rd, rn, d->rm)
+                                     : !armv7m_dm_ok(d->rd, d->rm)) {
+            return;
+        }
         set(d, k[sel]);
         d->wide = (sel == 4u || sel == 5u || sel == 7u) ? 1u : 0u;
         if (sel >= 4u && sel != 8u) {
@@ -658,8 +676,9 @@ static void d32_mul(uint16_t w0, uint16_t w1, I *d)
     const uint32_t ra = (w1 >> 12) & 15u;
     const bool acc = ra != 15u;
 
-    if ((w1 & 0x00C0u) != 0u) {
-        return;
+    if ((w1 & 0x00C0u) != 0u ||
+        !armv7m_dnm_ok((w1 >> 8) & 15u, w0 & 15u, w1 & 15u) || ra == 13u) {
+        return; /* and sp or pc, which the M7 refuses */
     }
     d->rd = (w1 >> 8) & 15u;
     d->rn = w0 & 15u;
@@ -721,6 +740,11 @@ static void d32_mull(uint16_t w0, uint16_t w1, I *d)
     d->rm = w1 & 15u;
     if (op1 != 1u && op1 != 3u && d->rd == d->ra) {
         return; /* a 64-bit result needs two registers */
+    }
+    /* Nor sp or pc in any of them. A divide's RdLo is (1)(1)(1)(1). */
+    if (!armv7m_dnm_ok(d->ra, d->rn, d->rm) ||
+        (op1 != 1u && op1 != 3u && armv7m_sp_or_pc(d->rd))) {
+        return;
     }
     switch (op1) {
     case 0u:
@@ -820,6 +844,10 @@ static void d32_ldst(uint16_t w0, uint16_t w1, I *d)
     } else {
         return;
     }
+    if (!armv7m_ldst_regs_ok(load, 1u << sz, rt, rn, d->rm, d->wback != 0u,
+                             unpriv)) {
+        return; /* sp or pc where the M7 refuses them */
+    }
     if (load && rt == 15u && sz < 2u) {
         /* Rt == pc on a narrow load: a preload hint. */
         set(d, sext ? ARMV7M_OP_PLI : ARMV7M_OP_PLD);
@@ -859,6 +887,10 @@ static void d32_dual_excl(uint16_t w0, uint16_t w1, I *d)
         if ((op2 & 1u) != 0u && d->rd == d->ra) {
             return; /* two words into one register */
         }
+        if (!armv7m_dual_regs_ok((op2 & 1u) != 0u, d->rd, d->ra, d->rn,
+                                 ((w0 >> 5) & 1u) != 0u)) {
+            return; /* sp or pc where the M7 refuses them */
+        }
         set(d, (op2 & 1u) ? ARMV7M_OP_LDRD : ARMV7M_OP_STRD);
         d->addr = (d->rn == 15u) ? ARMV7M_ADDR_LITERAL : ARMV7M_ADDR_IMM;
         d->index = (w0 >> 8) & 1u;
@@ -869,13 +901,16 @@ static void d32_dual_excl(uint16_t w0, uint16_t w1, I *d)
     }
     if (op1 == 0u) {
         if (op2 == 1u) {
-            if (d->ra != 15u) {
-                return; /* (1)(1)(1)(1) */
+            if (d->ra != 15u || !armv7m_ldrex_regs_ok(d->rd, d->rn)) {
+                return; /* (1)(1)(1)(1); and sp or pc */
             }
             set(d, ARMV7M_OP_LDREX);
             d->ra = ARMV7M_NOREG;
         } else {
             /* STREX rd, rt, [rn, #imm]: the status register is Rd. */
+            if (!armv7m_strex_regs_ok(d->ra, d->rd, d->rn)) {
+                return;
+            }
             set(d, ARMV7M_OP_STREX);
             d->rm = d->rd;
             d->rd = d->ra;
@@ -886,8 +921,8 @@ static void d32_dual_excl(uint16_t w0, uint16_t w1, I *d)
     }
     d->imm = 0u;
     if (op2 == 1u && (op3 == 0u || op3 == 1u)) {
-        if ((w1 & 0xFF00u) != 0xF000u) {
-            return; /* (1)(1)(1)(1) (0)(0)(0)(0) */
+        if ((w1 & 0xFF00u) != 0xF000u || !armv7m_tb_regs_ok(d->rn, w1 & 15u)) {
+            return; /* (1)(1)(1)(1) (0)(0)(0)(0); and sp or pc */
         }
         set(d, (op3 == 0u) ? ARMV7M_OP_TBB : ARMV7M_OP_TBH);
         d->rm = w1 & 15u;
@@ -897,7 +932,9 @@ static void d32_dual_excl(uint16_t w0, uint16_t w1, I *d)
     }
     if (op3 == 4u || op3 == 5u) {
         d->size = (op3 == 4u) ? 1u : 2u;
-        if (d->ra != 15u || (op2 == 1u && (w1 & 15u) != 15u)) {
+        if (d->ra != 15u || (op2 == 1u && (w1 & 15u) != 15u) ||
+            (op2 == 1u ? !armv7m_ldrex_regs_ok(d->rd, d->rn)
+                       : !armv7m_strex_regs_ok(w1 & 15u, d->rd, d->rn))) {
             return; /* (1)(1)(1)(1), and again in place of Rd on a load */
         }
         if (op2 == 1u) {
@@ -936,8 +973,9 @@ static void d32_branch_misc(uint16_t w0, uint16_t w1, I *d)
             return;
         }
         if ((op & 0x7Eu) == 0x38u) {
-            if (op != 0x38u || (w1 & 0x2300u) != 0u || ((w1 >> 10) & 3u) == 0u ||
-                !armv7m_sysm_valid(w1 & 0xFFu)) {
+            if (op != 0x38u || (w1 & 0x2300u) != 0u ||
+                ((w1 >> 10) & 3u) == 0u || !armv7m_sysm_valid(w1 & 0xFFu) ||
+                armv7m_sp_or_pc(w0 & 15u)) {
                 return;
             }
             set(d, ARMV7M_OP_MSR);
@@ -1198,15 +1236,21 @@ static void d32_fp(uint16_t w0, uint16_t w1, I *d)
             return; /* everything below the coprocessor number but N and 1 */
         }
         if (!dbl && a == 0u) {
-            set(d, ARMV7M_OP_VMOV_CORE);
+            if (!armv7m_sp_or_pc(vd)) {
+                set(d, ARMV7M_OP_VMOV_CORE);
+            }
             return;
         }
         if (!dbl && a == 7u && vn == 1u && nbit == 0u) {
+            /* VMRS to pc is APSR_nzcv; to sp, and VMSR from either, no. */
+            if (vd == 13u || (!l && vd == 15u)) {
+                return;
+            }
             set(d, l ? ARMV7M_OP_VMRS : ARMV7M_OP_VMSR);
             d->rn = ARMV7M_NOREG;
             return;
         }
-        if (dbl && (a & 6u) == 0u && nbit == 0u) {
+        if (dbl && (a & 6u) == 0u && nbit == 0u && !armv7m_sp_or_pc(vd)) {
             /* N is the top bit of a D register this bank does not reach. */
             set(d, ARMV7M_OP_VMOV_SCALAR);
             d->rn = (uint8_t)((nbit << 4) | vn); /* D register */
@@ -1221,8 +1265,9 @@ static void d32_fp(uint16_t w0, uint16_t w1, I *d)
         if ((dbl && mbit != 0u) || (!dbl && vm == 15u && mbit != 0u)) {
             return; /* d16 and up, or a pair starting at s31 */
         }
-        if (((w0 >> 4) & 1u) != 0u && vd == vn) {
-            return; /* two halves into one core register */
+        if ((((w0 >> 4) & 1u) != 0u && vd == vn) || armv7m_sp_or_pc(vd) ||
+            armv7m_sp_or_pc(vn)) {
+            return; /* two halves into one core register; sp or pc */
         }
         set(d, ARMV7M_OP_VMOV_CORE2);
         d->rd = vd;
@@ -1251,6 +1296,9 @@ static void d32_fp(uint16_t w0, uint16_t w1, I *d)
         d->add = u ? 1u : 0u;
         d->wback = w ? 1u : 0u;
         if (p && !w) {
+            if (!load && vn == 15u) {
+                return; /* VSTR may not be pc-relative */
+            }
             set(d, load ? ARMV7M_OP_VLDR : ARMV7M_OP_VSTR);
             d->addr = (vn == 15u) ? ARMV7M_ADDR_LITERAL : ARMV7M_ADDR_IMM;
             d->index = 1u;
@@ -1288,8 +1336,9 @@ static void d32(uint16_t w0, uint16_t w1, I *d)
             const uint32_t rn = w0 & 15u;
 
             if ((op != 1u && op != 2u) || (w1 & (1u << 13)) != 0u ||
-                (!load && (w1 & (1u << 15)) != 0u) || rn == 15u) {
-                return;
+                (!load && (w1 & (1u << 15)) != 0u) || rn == 15u ||
+                (!load && ((w0 >> 5) & 1u) != 0u && ((w1 >> rn) & 1u) != 0u)) {
+                return; /* the last: a store writing back over its base */
             }
             d->rn = (uint8_t)rn;
             d->imm = w1;
@@ -1331,6 +1380,10 @@ static void d32(uint16_t w0, uint16_t w1, I *d)
             d->imm_carry = (uint8_t)cy;
             d->opnd = ARMV7M_OPND_IMM;
             d->wide = 1u;
+            if (!armv7m_dp_regs_ok((w0 >> 5) & 15u, (w1 >> 8) & 15u, w0 & 15u,
+                                   false, 0u, 0u, 0u, ((w0 >> 4) & 1u) != 0u)) {
+                return; /* sp or pc where the M7 refuses them */
+            }
             dp_finish(d, (w0 >> 5) & 15u, (w1 >> 8) & 15u, w0 & 15u,
                       ((w0 >> 4) & 1u) != 0u);
             return;

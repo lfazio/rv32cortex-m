@@ -22,11 +22,12 @@ measured at.
 
 ## Testing
 
-- [ ] **Fuzz testing.** The first target exists and has paid:
-      `fuzz-rv32-jit`, the RV32 interpreter against the x86-64 JIT
-      ([fuzzing.md](fuzzing.md)), four defects in its first hour. The
-      rest of this item is still open. Before it, the tree had
-      generation, not fuzzing:
+- [ ] **Fuzz testing.** The first target exists for every frontend
+      and has paid: `fuzz-<isa>-jit`, the interpreter against the
+      x86-64 JIT ([fuzzing.md](fuzzing.md)), nine defects, four of them
+      in an interpreter, one a whole class of ARMv7-M encodings the
+      board then answered. The rest of this item is still open. Before
+      it, the tree had generation, not fuzzing:
       `tests/armv7m-diff/rawgen.py` (raw encodings against the F746),
       the property tests over whole encoding spaces (ARMv7-M's decoder
       over 402,712,576 encodings, G4MH's length over 65,536 halfwords),
@@ -38,10 +39,15 @@ measured at.
       first:
   - **Instruction streams, interpreter against JIT**, per frontend:
     the same bytes run both ways and compared on the register file,
-    memory, trap cause and tval, and minstret. **Done for RV32**; G4MH,
-    PowerPC and ARMv7-M want the same harness, and RV32 wants Spike as
-    a third side (BSD-3, CLAUDE.md), interrupts, a device, and more
-    than one hart. No GPL emulator, not even as a reference.
+    memory, trap state and the counters. **Done for all four**
+    (`tests/fuzz/fuzz_harness.h` and a target each). What is left:
+    Spike as a third side for RV32 (BSD-3, CLAUDE.md); interrupts and
+    a device for every frontend -- each core runs without its
+    controller and timers, and asynchronous interrupts would need to be
+    taken at points both backends agree on, or set aside as PowerPC's
+    timer interrupts are; more than one core; and self-modifying code,
+    which ARMv7-M detects exactly and nothing has fuzzed. No GPL
+    emulator, not even as a reference.
   - **The IR**: random blocks through the passes and both lowerings,
     checked against `emu_ir_interp` on the *unoptimised* IR, stores
     included. `ir_diff_ref` runs the optimised IR and declines any
@@ -105,6 +111,17 @@ measured at.
       So a callgrind A/B of one frontend can be another's partition
       boundary. Measure the board's firmware the same way, and decide
       whether the host builds in one partition -- at least for A/Bs.
+- [ ] **G4MH's `cycles` is read by nothing**, and its interpreter
+      increments it on every instruction and every exception -- found
+      when `fuzz-g4mh-jit` reported the two backends counting it
+      differently, which could not matter ([fuzzing.md](fuzzing.md)).
+      The PMU counts in PMCOUNTn. Removing it is a per-instruction
+      store saved; measure it on the board, since it is the
+      interpreter's loop.
+- [ ] **ARMv7-M's sp/pc rules cost its interpreter 2.3-3.6%**
+      ([frontend/armv7m.md](frontend/armv7m.md#what-the-board-corrected)),
+      measured by callgrind only. The board figure is not taken, and
+      three attempts to make it cheaper made it dearer.
 - [ ] **PowerPC's FP unit is a call per instruction.** Every EFPU2
       instruction under the JIT is a helper call into `ppc_fpu_exec`,
       whose bookkeeping -- SPEFSCR status, sticky bits, FG and FX -- was

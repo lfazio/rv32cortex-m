@@ -27,6 +27,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "emu/emu_types.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -210,6 +212,210 @@ static inline bool armv7m_sysm_valid(uint32_t sysm)
 {
     return sysm <= 3u || (sysm >= 5u && sysm <= 9u) ||
            (sysm >= 16u && sysm <= 20u);
+}
+
+/* ------------------------------------------------------------------ */
+/* sp and pc as operands                                               */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Which register choices a 32-bit instruction may make. The manual calls
+ * the others UNPREDICTABLE -- `if d IN {13,15} || n IN {13,15} ...` at
+ * the top of nearly every encoding's pseudocode -- and **a Cortex-M7
+ * raises UNDEFINSTR for every one**: 557 of 557 encodings the board was
+ * asked (tests/armv7m-diff/rawgen.py --regs), against 26 forms that may
+ * name sp and do, and none the other way. Until then this frontend
+ * executed them: `bfi pc, ...` wrote an odd pc, which the next fetch
+ * read at an odd host address, and `add.w r0, pc, #8` added.
+ *
+ * Each predicate is one table of the manual's, transcribed, and both
+ * decoders call it, so they make one rule. True means the choice is
+ * allowed; false that the encoding is UNDEFINED.
+ */
+static inline bool armv7m_sp_or_pc(uint32_t r)
+{
+    return (r | 2u) == 15u; /* 13 and 15 -- and not ARMV7M_NOREG */
+}
+
+/*
+ * **Each rule refuses only an encoding that names sp or pc** -- or, for
+ * a load or store, writes back onto its transfer register -- so one that
+ * names neither is allowed before asking which rule applies, and that is
+ * nearly every instruction a compiler writes. Without the test in front,
+ * the rules cost ARMv7-M's interpreter 2.9% of its host instructions on
+ * CoreMark, 11M of them in the switch on the data-processing op.
+ */
+static inline bool armv7m_none_sp_pc(uint32_t a, uint32_t b, uint32_t c)
+{
+    /* Bitwise, not ||: three compares and no branches between them. */
+    return ((uint32_t)armv7m_sp_or_pc(a) | (uint32_t)armv7m_sp_or_pc(b) |
+            (uint32_t)armv7m_sp_or_pc(c)) == 0u;
+}
+
+/*
+ * AND to RSB: `sel` is the op field, bits 8:5 of the first halfword.
+ * `reg` says whether the second operand is a register, `m`, shifted by
+ * `t` and `n` (the decoded shift); otherwise it is an immediate.
+ * Including the aliases each op has: TST, TEQ, CMN and CMP when S is set
+ * and d is pc, MOV, MVN and the shifts when n is pc, and ADD and SUB of
+ * sp, which may write sp.
+ */
+static inline bool armv7m_dp_regs_ok(uint32_t sel, uint32_t d, uint32_t n,
+                                     bool reg, uint32_t m, uint32_t t,
+                                     uint32_t sh, bool s)
+{
+    if (EMU_LIKELY(armv7m_none_sp_pc(d, n, reg ? m : 0u))) {
+        return true;
+    }
+    const bool bad_m = reg && armv7m_sp_or_pc(m);
+
+    switch (sel) {
+    case 0u: /* AND, TST */
+    case 4u: /* EOR, TEQ */
+        return !armv7m_sp_or_pc(n) && !bad_m &&
+               (s && d == 15u ? true : !armv7m_sp_or_pc(d));
+    case 1u: /* BIC */
+    case 10u: /* ADC */
+    case 11u: /* SBC */
+    case 14u: /* RSB */
+        return !armv7m_sp_or_pc(d) && !armv7m_sp_or_pc(n) && !bad_m;
+    case 2u: /* ORR; MOV and the shifts by an immediate when n is pc */
+        if (n != 15u) {
+            return !armv7m_sp_or_pc(d) && n != 13u && !bad_m;
+        }
+        if (reg && t == ARMV7M_SH_LSL && sh == 0u && !s) {
+            /* MOV (register): sp may be named once, not twice. */
+            return d != 15u && m != 15u && !(d == 13u && m == 13u);
+        }
+        return !armv7m_sp_or_pc(d) && !bad_m;
+    case 3u: /* ORN; MVN when n is pc */
+        return !armv7m_sp_or_pc(d) && n != 13u && !bad_m;
+    case 8u: /* ADD, CMN */
+    case 13u: /* SUB, CMP */
+        if (s && d == 15u) {
+            return n != 15u && !bad_m; /* CMN and CMP may compare sp */
+        }
+        if (n == 13u) { /* sp plus or minus: the one that may write sp */
+            return d != 15u && !bad_m &&
+                   !(reg && d == 13u && (t != ARMV7M_SH_LSL || sh > 3u));
+        }
+        return !armv7m_sp_or_pc(d) && n != 15u && !bad_m;
+    default:
+        return true; /* no such op: UNDEFINED for another reason */
+    }
+}
+
+/*
+ * The plain binary immediates: `op` is bits 8:4 of the first halfword.
+ * ADDW and SUBW of sp may write sp; of pc they are ADR.
+ */
+static inline bool armv7m_plain_regs_ok(uint32_t op, uint32_t d, uint32_t n)
+{
+    if (EMU_LIKELY(armv7m_none_sp_pc(d, n, 0u))) {
+        return true;
+    }
+    switch (op) {
+    case 0x00u: /* ADDW, ADR */
+    case 0x0Au: /* SUBW, ADR */
+        return (n == 13u) ? d != 15u : !armv7m_sp_or_pc(d);
+    case 0x04u: /* MOVW */
+    case 0x0Cu: /* MOVT */
+        return !armv7m_sp_or_pc(d);
+    case 0x16u: /* BFI, and BFC when n is pc */
+        return !armv7m_sp_or_pc(d) && n != 13u;
+    default: /* SSAT, USAT and their 16-bit forms, SBFX, UBFX */
+        return !armv7m_sp_or_pc(d) && !armv7m_sp_or_pc(n);
+    }
+}
+
+/*
+ * Three general-purpose registers: the shifts by a register, the
+ * parallel adds and subtracts, QADD to QDSUB and SEL, the divides, and
+ * the multiplies' d, n and m -- whose accumulator, where there is one,
+ * may not be sp either (pc there means "no accumulator").
+ */
+static inline bool armv7m_dnm_ok(uint32_t d, uint32_t n, uint32_t m)
+{
+    return !armv7m_sp_or_pc(d) && !armv7m_sp_or_pc(n) && !armv7m_sp_or_pc(m);
+}
+
+/* The extends: n is pc for the forms without an accumulate. */
+static inline bool armv7m_extend_regs_ok(uint32_t d, uint32_t n, uint32_t m)
+{
+    return !armv7m_sp_or_pc(d) && n != 13u && !armv7m_sp_or_pc(m);
+}
+
+/*
+ * REV, REV16, RBIT, REVSH and CLZ: one operand, encoded twice. The two
+ * copies disagreeing is UNPREDICTABLE too, and *that* the M7 executes --
+ * asked, and it agreed with this frontend, which reads the second.
+ */
+static inline bool armv7m_dm_ok(uint32_t d, uint32_t m)
+{
+    return !armv7m_sp_or_pc(d) && !armv7m_sp_or_pc(m);
+}
+
+/*
+ * A single load or store of `size` bytes: `t` the transfer register,
+ * `n` the base, `m` the offset register or ARMV7M_NOREG, `wback` and
+ * `unpriv` the T4 form's write-back and the LDRT family. A word load may
+ * name sp, and pc as a branch; a narrow load into pc that does not write
+ * back is a preload hint, which this allows and the caller recognises.
+ * All of it asked on the board (rawgen --enc), stores and loads both.
+ */
+static inline bool armv7m_ldst_regs_ok(bool load, uint32_t size, uint32_t t,
+                                       uint32_t n, uint32_t m, bool wback,
+                                       bool unpriv)
+{
+    /* No offset register (ARMV7M_NOREG) is register 0 to the test. */
+    if (EMU_LIKELY(armv7m_none_sp_pc(t, (m > 15u) ? 0u : m, 0u) &&
+                   !(wback && n == t))) {
+        return true;
+    }
+    if (armv7m_sp_or_pc(m) || (wback && n == t)) { /* NOREG is neither */
+        return false;
+    }
+    if (unpriv) {
+        return !armv7m_sp_or_pc(t);
+    }
+    if (load) {
+        return size == 4u || (t != 13u && !(t == 15u && wback));
+    }
+    return (size == 4u) ? t != 15u : !armv7m_sp_or_pc(t);
+}
+
+/* LDRD and STRD. Through pc only an LDRD that does not write back. */
+static inline bool armv7m_dual_regs_ok(bool load, uint32_t t, uint32_t t2,
+                                       uint32_t n, bool wback)
+{
+    if (EMU_LIKELY(armv7m_none_sp_pc(t, t2, n) &&
+                   !(wback && (n == t || n == t2)))) {
+        return true;
+    }
+    if (armv7m_sp_or_pc(t) || armv7m_sp_or_pc(t2) ||
+        (wback && (n == t || n == t2))) {
+        return false;
+    }
+    return n != 15u || (load && !wback);
+}
+
+/* LDREX, LDREXB, LDREXH; and the stores, whose status register `d` may
+ * be neither the base nor the value. */
+static inline bool armv7m_ldrex_regs_ok(uint32_t t, uint32_t n)
+{
+    return !armv7m_sp_or_pc(t) && n != 15u;
+}
+
+static inline bool armv7m_strex_regs_ok(uint32_t d, uint32_t t, uint32_t n)
+{
+    return !armv7m_sp_or_pc(d) && !armv7m_sp_or_pc(t) && n != 15u && d != n &&
+           d != t;
+}
+
+/* TBB and TBH: a table may not be based on sp, nor indexed by sp or pc. */
+static inline bool armv7m_tb_regs_ok(uint32_t n, uint32_t m)
+{
+    return n != 13u && !armv7m_sp_or_pc(m);
 }
 
 /* ------------------------------------------------------------------ */

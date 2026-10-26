@@ -14,6 +14,8 @@ explain.
                                                 # board's answers as stored
     tests/armv7m-diff/run.py --self ...         # no board: the JIT against
                                                 # the interpreter
+    tests/armv7m-diff/run.py --suite raw --count 0 --regs 300 --from x.elf
+                                                # sp and pc in register fields
 
 `--rerun` is what makes the board's answers a regression suite: once a
 directory holds `emu.bin` and `board.out`, any later emulator -- or the
@@ -252,6 +254,12 @@ def main():
                     help="raw: encodings to run unfiltered, hex[:rN],...")
     ap.add_argument("--repeat", type=int, default=4,
                     help="raw: how many times each --enc encoding runs")
+    ap.add_argument("--regs", type=int, default=0,
+                    help="raw: corpus instructions to rerun with sp or pc "
+                         "in their register fields (needs --from)")
+    ap.add_argument("--regs-sp", action="store_true",
+                    help="raw: with --regs, sp as a destination as well, "
+                         "where the decoder calls the encoding UNDEFINED")
     ap.add_argument("--reuse", action="store_true",
                     help="compare the outputs already in --out")
     ap.add_argument("--rerun", action="store_true",
@@ -301,6 +309,10 @@ def main():
             gen += ["--from", src]
         if a.enc:
             gen += ["--enc", a.enc, "--repeat", str(a.repeat)]
+        if a.regs:
+            gen += ["--regs", str(a.regs)]
+        if a.regs_sp:
+            gen += ["--regs-sp"]
         sh(gen)
         a.suite = "cases"   # the same harness; only the cases differ
     build(a.out, "emu", a.suite)

@@ -56,6 +56,12 @@ Current state:
 | `isatest`, JIT | **937 checks**, 96,995 retired -- the count the x86-64 host gives, which interprets 2,710 of them (2026-10-25) | Nucleo-F746ZG and Nucleo-F446RE, Thumb-2 |
 | `isatest`, interpreter | **937 checks**, 96,883 retired, as on the host | Nucleo-F446RE |
 | `fuzz-rv32-jit`, ten minutes ([fuzzing.md](fuzzing.md)) | 157,768 inputs, 150,680 compared between the interpreter and the JIT, no divergence once four defects were fixed; 7.8M translations and 9.8M block entries, so the JIT ran | host, x86-64, clang 21 under ASan and UBSan |
+| `fuzz-armv7m-jit`, twenty minutes | 666,479 inputs, 622,915 compared, no divergence once three defects were fixed; 827,853 translations, 12.1M block entries (2026-10-26) | host, x86-64, ASan and UBSan |
+| `fuzz-g4mh-jit`, twenty minutes | 134,211 inputs, 119,843 compared, no divergence once one defect was fixed; 12.5M translations, 32.8M block entries | host, x86-64, ASan and UBSan |
+| `fuzz-ppc-jit`, twenty minutes | 1,845,065 inputs, 1,771,551 compared, no divergence once one defect was fixed; 113 ended in a timer interrupt and are not compared; 2.1M translations, 112M block entries | host, x86-64, ASan and UBSan |
+| ARMv7-M, sp and pc as operands ([frontend/armv7m.md](frontend/armv7m.md#what-the-board-corrected)) | 1,935 register variants and 69 named encodings asked: every one the board refuses, both decoders now refuse; what still differs is a value derived from sp or a code address, which the two images place differently. 36 answers held by `test_sp_pc_board_answers` | Nucleo-F746ZG |
+| ARMv7-M's two decoders, `ARMV7M_UNDEF_FULL=1` | all 402,712,576 encodings agree, 215,972,741 of them UNDEFINED | host |
+| after the sp/pc rules and the fuzzers' fixes (2026-10-26) | ARMv7-M `alu`, `t2exec`, `crypto` and CoreMark (`crcfinal 0x65c5`, 11,145,477 retired, the host's count) under the JIT and `alu` interpreted; PowerPC `sys` 184 checks and `intc` 49, no failures, and CoreMark valid at 12,170,464 retired, the host's count | Nucleo-F746ZG, Thumb-2 |
 | `probes/instret.S` | a trapping instruction does not retire: Sail and Spike agree on minstret; mcycle follows Spike's answer, Sail's is permitted | host, against Sail and Spike |
 | CoreMark x650 at a 32 KB cache, after the chaining fix | "Correct operation validated", `crcfinal 0x25e3`, 8,485 compactions; 78.56 s by the host, 79 by the firmware | Nucleo-F746ZG |
 | `isatest` with the Thumb-2 chaining fix reverted | fails `fs-dirty-flw-chained` (got 2, want 3) and nothing else -- the board had the defect | Nucleo-F746ZG |

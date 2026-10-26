@@ -2115,9 +2115,16 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                     uint64_t res;
 
                     if ((sub & 0x20u) == 0u) { /* MAC: signed      */
-                        res = (uint64_t)(((int64_t)(int32_t)c->r[r2] *
-                                          (int64_t)(int32_t)c->r[r1]) +
-                                         (int64_t)acc);
+                        /*
+                         * The product fits in 64 bits signed; the sum
+                         * is the accumulator's, mod 2^64, so unsigned.
+                         * As int64_t it overflowed for accumulators
+                         * near the ends of the range, which is
+                         * undefined behaviour (fuzz-g4mh-jit).
+                         */
+                        res = (uint64_t)((int64_t)(int32_t)c->r[r2] *
+                                         (int64_t)(int32_t)c->r[r1]) +
+                              acc;
                     } else { /* MACU: unsigned   */
                         res = (uint64_t)c->r[r2] * (uint64_t)c->r[r1] + acc;
                     }

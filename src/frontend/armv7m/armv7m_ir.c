@@ -1881,6 +1881,16 @@ static bool helper_falls_through(const I *d)
 {
     const uint32_t op = d->op;
 
+    /*
+     * A writeback to the pc is a branch whatever the destination is.
+     * LDRD, STRD, VLDM and VSTM with Rn = 15 and W set are UNPREDICTABLE,
+     * and the interpreter writes the address into r15 -- so the block
+     * carried on past `ldrd r10, r4, [pc, #248]!` as though it had not
+     * branched, where the interpreter ran from 0x...fc. fuzz-armv7m-jit.
+     */
+    if (d->wback && d->rn == R_PC) {
+        return false;
+    }
     if (op >= ARMV7M_OP_VADD) {
         /* The FPU, except a move into a core register named as the pc. */
         const bool to_core =

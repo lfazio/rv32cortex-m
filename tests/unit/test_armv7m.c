@@ -290,6 +290,92 @@ static void test_decode_agrees_on_undefined(void)
 }
 
 /*
+ * sp and pc as operands, as a Cortex-M7 answered: every register choice
+ * the manual calls UNPREDICTABLE is UNDEFINSTR on the board, 557 of 557
+ * in one sweep and every named encoding after -- but not every
+ * UNPREDICTABLE encoding, which is why this is a table of answers and
+ * not a rule: an LDM of one register, or one that writes back over a
+ * base in its list, executes. Collected by tests/armv7m-diff/rawgen.py
+ * --regs and --enc; the frontend executed all of the UNDEFINSTR ones,
+ * and `bfi pc, ...` left an odd pc that the next fetch read at an odd
+ * host address (fuzz-armv7m-jit).
+ *
+ * Both decoders are held to the board here, not only to each other:
+ * test_decode_agrees_on_undefined would pass if both executed these.
+ */
+static void test_sp_pc_board_answers(void)
+{
+    static const struct {
+        uint32_t enc;
+        bool undef;
+    } k[] = {
+        {0xf36e0f0cu, true}, /* bfi pc, lr, #0, #13            */
+        {0xe9ff0100u, true}, /* ldrd r0, r1, [pc, #0]!         */
+        {0xeb000f01u, true}, /* add.w pc, r0, r1               */
+        {0xea4f0f00u, true}, /* mov.w pc, r0                   */
+        {0xf3c00f00u, true}, /* ubfx pc, r0, #0, #1            */
+        {0xfb0d3303u, true}, /* mla r3, sp, r3, r3             */
+        {0xea1d5411u, true}, /* ands.w r4, sp, r1, lsr #20     */
+        {0xf10f0008u, true}, /* add.w r0, pc, #8               */
+        {0xf2480f80u, true}, /* movw pc, #32896                */
+        {0xfb9df2f3u, true}, /* sdiv r2, sp, r3                */
+        {0xe9cf0100u, true}, /* strd r0, r1, [pc, #0]          */
+        {0xf8c0f000u, true}, /* str.w pc, [r0]                 */
+        {0xf880d000u, true}, /* strb.w sp, [r0]                */
+        {0xf890d000u, true}, /* ldrb.w sp, [r0]                */
+        {0xf851000du, true}, /* ldr.w r0, [r1, sp]             */
+        {0xf8111b01u, true}, /* ldrb.w r1, [r1], #1            */
+        {0xe85f0f00u, true}, /* ldrex r0, [pc]                 */
+        {0xe8420000u, true}, /* strex r0, r0, [r2]             */
+        {0xe8a00003u, true}, /* stm.w r0!, {r0, r1}            */
+        {0xe8d0f00du, true}, /* tbb [r0, sp]                   */
+        {0xee00da10u, true}, /* vmov s0, sp                    */
+        {0xeee1da10u, true}, /* vmsr fpscr, sp                 */
+        {0xeef1da10u, true}, /* vmrs sp, fpscr                 */
+        {0xec4d0a10u, true}, /* vmov s0, s1, r0, sp            */
+        {0xed8f0a00u, true}, /* vstr s0, [pc, #0]              */
+        {0xf38d8800u, true}, /* msr APSR_nzcvq, sp             */
+        {0xf60d71fcu, false}, /* addw r1, sp, #4092             */
+        {0xf10d0008u, false}, /* add.w r0, sp, #8               */
+        {0xebad0340u, false}, /* sub.w r3, sp, r0, lsl #1       */
+        {0xf1bd0f00u, false}, /* cmp.w sp, #0                   */
+        {0xea4f010du, false}, /* mov.w r1, sp                   */
+        {0xf8c0d000u, false}, /* str.w sp, [r0]                 */
+        {0xe8900002u, false}, /* ldm.w r0, {r1}: one register   */
+        {0xe8b00003u, false}, /* ldm.w r0!, {r0, r1}            */
+        {0xfab2f081u, false}, /* clz r0, r1, its two Rm copies differing */
+        {0xee100b10u, false}, /* vmov.32 r0, d0[0]              */
+    };
+
+    memset(g_ua_ram, 0, sizeof(g_ua_ram));
+    emu_bus_init(&g_ua_bus);
+    CHECK(
+        emu_bus_add_ram(&g_ua_bus, "ram", UA_RAM_BASE, g_ua_ram, UA_RAM_SIZE));
+    for (uint32_t v = 1u; v < 16u; v++) {
+        const uint32_t handler = UA_RAM_BASE + 0x801u;
+
+        memcpy(&g_ua_ram[v * 4u], &handler, 4u);
+    }
+    g_ua_ram[0x801] = 0xBEu;
+    for (uint32_t i = 0u; i < sizeof(k) / sizeof(k[0]); i++) {
+        const uint16_t w0 = (uint16_t)(k[i].enc >> 16);
+        const uint16_t w1 = (uint16_t)k[i].enc;
+        armv7m_insn_t d;
+
+        armv7m_decode(w0, w1, &d);
+        if ((interp_outcome(w0, w1) == UA_UNDEF) != k[i].undef ||
+            (d.op == ARMV7M_OP_UNDEF) != k[i].undef) {
+            printf("    %08x: board %s, interpreter %s, decoder %s\n",
+                   (unsigned)k[i].enc, k[i].undef ? "UNDEFINED" : "executes",
+                   interp_outcome(w0, w1) == UA_UNDEF ? "UNDEFINED"
+                                                      : "executes",
+                   armv7m_op_name(d.op));
+            CHECK(false);
+        }
+    }
+}
+
+/*
  * gdb's d registers, against the single-precision file they are made of.
  *
  * Not through gdb: gdb builds s0..s31 from d0..d15 itself, so a session
@@ -582,4 +668,5 @@ void test_armv7m(void)
     test_insn_len_exhaustive();
     test_insn_len_boundary();
     test_decode_agrees_on_undefined();
+    test_sp_pc_board_answers();
 }
