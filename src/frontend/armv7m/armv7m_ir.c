@@ -2119,6 +2119,8 @@ uint32_t armv7m_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
     /* Under exactly the RAM window's conditions, and once armed. */
     b->has_rom = b->has_fast && c->rom_armed &&
                  emu_ir_rom_window(c->bus, EMU_GUEST_ROM_BASE, &b->rom);
+    b->has_pt = b->has_fast && c->pt_armed &&
+                emu_ir_pt_window(c->bus, &b->pt);
 
     /*
      * No block for a core that is not in Thumb state, or is part way
@@ -2333,6 +2335,17 @@ static void a7_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
      */
     if (EMU_UNLIKELY(!c->rom_armed) && c->rom_reads >= EMU_JIT_ROM_ARM_AT) {
         c->rom_armed = true;
+        emu_jit_flush();
+    }
+    /*
+     * And the peripheral window, by RV32's rule (EMU_JIT_PT_ARM_AT): the
+     * bus counts the accesses blocks leave to the helper. Only a backend
+     * that inlines the window reads has_pt -- Thumb-2 -- so on x86-64
+     * this costs one flush and changes nothing translated.
+     */
+    if (EMU_UNLIKELY(!c->pt_armed) && c->bus != NULL &&
+        c->bus->pt_accesses >= EMU_JIT_PT_ARM_AT) {
+        c->pt_armed = true;
         emu_jit_flush();
     }
 

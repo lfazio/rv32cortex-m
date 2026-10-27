@@ -75,6 +75,8 @@ if(EMU_GUEST_ARCH_ARMV7M)
         add_armv7m_guest(alu   SOURCES start.S alu.c)
         add_armv7m_guest(itblock SOURCES start.S itblock.c)
         add_armv7m_guest(nvic  SOURCES start.S nvic.c frame.S)
+        # The driver-shaped workload: the peripheral window, against RAM.
+        add_armv7m_guest(mmiobench SOURCES start.S mmiobench.c)
 
         #
         # **The Thumb-2 encoder, as a guest, executing what it emits.**

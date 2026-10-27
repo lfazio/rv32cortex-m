@@ -424,12 +424,14 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   backend sets its own -- and its stats line is what proves a pass
   exercised it (`interp 7807` of 8527 on the first run).
 - **A knob is tuned on a workload that can observe it**:
-  `RV_JIT_LOOP_CAP` bounds interrupt latency, which mmiobench sees and
-  CoreMark cannot; 128 is the knee.
+  `EMU_JIT_LOOP_CAP` (`RV_JIT_LOOP_CAP` in lessons.md, which the IR
+  replaced) bounds interrupt latency, which mmiobench sees and CoreMark
+  cannot; 128 is the knee.
 - **The bus is scanned once per flush, not per translation** (8% on
   CoreMark), and the peripheral window is inlined only once the guest
-  has used it (`RV_JIT_PT_ARM_AT`): 2.2-3.1x for drivers, and always-on
-  cost compute 53% in cache pressure. Flushing from inside a helper is
+  has used it (`EMU_JIT_PT_ARM_AT`, once `RV_JIT_PT_ARM_AT`): 2.5-7x for
+  RV32's drivers and 5.5-13x for ARMv7-M's, and always-on cost compute
+  53% in cache pressure. Flushing from inside a helper is
   safe; a per-dispatch pending flag is not free.
 - **An instruction-sync is a flush, a barrier is nothing**: FENCE.I,
   SYNCI and G4MH's CACHE discard translations; FENCE, SYNCM and the rest

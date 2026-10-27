@@ -3868,6 +3868,18 @@ session, and every one of them recurred:
   buffer that ends there. **A mutant not found is first a question
   about the mutant.**
 
+- **A guest with no clock can run the board's.** ARMv7-M's peripheral
+  window was RV32's change in three lines, and measuring it was the
+  work: in this emulator SysTick counts instructions, so a guest's
+  timings of its own kernels are equal by construction. The guest
+  starts TIM2 through the window it is measuring and reads it around
+  each kernel -- 5.5x to 13x on GPIOB, the RAM controls within 3%. And
+  the checks ask for BFAR, not only for a fault: with the backend's
+  hole tests removed, a store that should have faulted left BFAR
+  holding the previous round's address, which a count of faults alone
+  would have taken for this one. **A fault test checks the address**,
+  again.
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

@@ -368,6 +368,14 @@ typedef struct armv7m_cpu {
     uint32_t rom_reads;
 
     /*
+     * Whether translated blocks inline the peripheral window
+     * (emu_ir_pt_window), which they do once the guest has driven
+     * peripherals through the bus EMU_JIT_PT_ARM_AT times, as RV32's do.
+     * Set by bind, cleared by reset. Cold, and at the end.
+     */
+    bool pt_armed;
+
+    /*
      * The pc was set by exception entry or by unstacking a frame, not by
      * an instruction -- so a value of the form 0xFxxxxxxx in it is an
      * address to fetch, which faults, and not EXC_RETURN. Only POP, LDM,

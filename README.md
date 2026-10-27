@@ -614,6 +614,7 @@ built with the ARM toolchain rather than the RISC-V one and run on the
 | `itblock` | IT, ITT, ITE, ITTTT and the in-block flag rule |
 | `nvic` | SysTick, exception entry and return, PRIMASK, an external source |
 | `t2exec` | **the real Thumb-2 encoder, emitting into RAM and executing it** |
+| `mmiobench` | a driver's accesses to GPIOB against the same code on RAM, timed by TIM2, and the read-only holes checked before and after the JIT inlines the peripheral window; its checks are the board's |
 | `coremark`, `dhrystone`, `crypto` | the shared benchmarks, timed by SysTick -- which lands an interrupt in compiled code thousands of times a run |
 
 Instruction-level conformance is not a guest: it is

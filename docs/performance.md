@@ -705,9 +705,12 @@ they are kept — and not for a figure.
 
 ## Driver performance: the passthrough window
 
-**The IR backends inline it again**, on Thumb-2, for RV32. Measured on
-the F746, ticks per kernel, the JIT before and after, against each
-kernel's RAM control:
+**The IR backends inline it again**, on Thumb-2, for RV32 and ARMv7-M.
+ARMv7-M's figures -- 5.5x to 13x per kernel, timed by a TIM2 the guest
+runs, since its SysTick counts instructions -- are in
+[frontend/armv7m.md](frontend/armv7m.md#the-peripheral-window). RV32's,
+measured on the F746, ticks per kernel, the JIT before and after,
+against each kernel's RAM control:
 
 | kernel | helper | inlined | speedup | vs its RAM control |
 |---|---|---|---|---|

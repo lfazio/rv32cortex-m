@@ -327,6 +327,44 @@ What a block may assume, and what invalidates it:
   took this CoreMark to 49.19
   ([../backend/thumb2.md](../backend/thumb2.md#the-guest-ram-window)).
 
+### The peripheral window
+
+A guest on this frontend is a Cortex-M program, and on the F746 the
+peripherals it drives are the board's own, identity-mapped. Translated
+blocks inline them on Thumb-2 once the guest has made
+`EMU_JIT_PT_ARM_AT` (64) accesses through the bus -- RV32's rule and the
+backend's lowering unchanged; the frontend sets `has_pt`, and arms in
+`bind` with one flush between slices. The window is under the RAM
+window's conditions, so an enabled MPU refuses both.
+
+`mmiobench` (`tests/guest/armv7m/`) runs RV32's four kernels on GPIOB
+and on a RAM word with the same code, timed by TIM2, which the guest
+starts itself: SysTick counts instructions here, so no guest clock
+could tell the kernels apart. TIM2 ticks per kernel on the F746 at
+aff384e and after, at three buffer offsets (`EMU_LAYOUT_PAD_BSS` 0, 64,
+256):
+
+| kernel | helper | inlined | speedup | after, against its RAM control |
+|---|---|---|---|---|
+| read | 9.02-9.19M | 1.64M | 5.5-5.6x | 1.22x |
+| write | 7.19-7.20M | 1.23M | 5.8x | 1.36x |
+| rmw | 21.4-22.8M | 1.76M | 12.2-13.0x | 1.30-1.36x |
+| poll | 9.12-9.13M | 1.63-1.66M | 5.5-5.6x | 1.17-1.18x |
+
+62.87-64.78 host cycles an instruction to 16.40-16.52 over the run; the
+interpreter is 170.16. The RAM controls move by -1.2% to +2.7% with the
+buffer offset, and ARMv7-M CoreMark, which drives no peripheral and
+never arms, read 30.60-30.70 before and 29.89-30.01 after -- inside the
+29.64-30.86 that the code offset alone gives it at aff384e.
+
+Its checks run before arming and after: a store into a read-only hole
+(the RCC clock tree) and one past the window must each raise a precise
+BusFault with BFAR the address stored to; the hole's readable, and the
+word above it writable. 208 checks, 0 failures, both builds. With the
+backend's hole tests removed, the second round alone fails, on exactly
+the two hole checks, eight times each -- and BFAR is what showed it,
+holding the address of the previous round's fault.
+
 How it is checked: every stored board run again under `--jit`
 (`--rerun --emu-args=--jit`), the `armv7m-jit-vs-interp` ctest, which
 runs 3,000 generated cases both ways *and requires block entries*, and
@@ -351,6 +389,7 @@ of them.
 | `nvic` | SysTick, exception entry and return, PRIMASK, an external source |
 | `t2exec` | the real Thumb-2 encoder, emitting into RAM and executing it |
 | `coremark`, `dhrystone`, `crypto` | the shared benchmarks, with SysTick as the clock |
+| `mmiobench` | GPIOB against RAM through the passthrough window, timed by TIM2 -- see [the peripheral window](#the-peripheral-window) |
 
 The benchmarks keep time with SysTick (`systick_clock.h`), which in this
 emulator counts instructions. That makes them tests as well: the
@@ -399,7 +438,7 @@ cmake --build build/f746-armv7m --target flash
 ```
 
 `ARMV7M_GUEST` is `hello`, `alu`, `itblock`, `nvic`, `t2exec`,
-`crypto`, `dhrystone` or `coremark`, embedded as the flat `.bin`: the
+`mmiobench`, `crypto`, `dhrystone` or `coremark`, embedded as the flat `.bin`: the
 vector table is its first word, so the load address is VTOR.
 
 Run on the Nucleo-F746ZG -- an emulated Cortex-M7 on a real one -- on

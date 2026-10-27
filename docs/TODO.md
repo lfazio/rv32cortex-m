@@ -73,12 +73,16 @@ measured at.
 
 ## JIT
 
-- [ ] **The peripheral window for the other frontends.** It is inlined
-      on Thumb-2 for RV32 only, where it is worth 2.5-7x on driver code
-      ([performance.md](performance.md#driver-performance-the-passthrough-window)).
-      G4MH, PowerPC and ARMv7-M would each set `has_pt` beside
-      `has_fast` and arm it in their `bind` as RV32 does -- PowerPC only
-      for a little-endian window it does not have.
+- [ ] **The peripheral window for G4MH and PowerPC.** It is inlined on
+      Thumb-2 for RV32, where it is worth 2.5-7x on driver code
+      ([performance.md](performance.md#driver-performance-the-passthrough-window)),
+      and for ARMv7-M, 5.5-13x
+      ([frontend/armv7m.md](frontend/armv7m.md#the-peripheral-window)).
+      G4MH would set `has_pt` beside `has_fast` and arm it in its `bind`
+      as those two do, and needs a driver-shaped guest to measure it
+      with -- its own clock or a board timer, as ARMv7-M's `mmiobench`
+      runs TIM2; PowerPC only for a little-endian window it does not
+      have.
 - [ ] **G4MH's generation under one block table.** `jit_gen` is per PE,
       and where the PEs share a table (`--serial`, a board with
       `G4MH_PE_COUNT > 1`) two PEs whose MPU generations differ would

@@ -107,9 +107,10 @@ static void armv7m_ops_reset(emu_cpu_t *cpu, uint32_t reset_pc)
     c->smc_wide = false;
     c->smc_watch = 0u;
     memset(c->smc_bits, 0, sizeof(c->smc_bits));
-    /* A new guest earns the image window afresh. */
+    /* A new guest earns the image and peripheral windows afresh. */
     c->rom_armed = false;
     c->rom_reads = 0u;
+    c->pt_armed = false;
     if (armv7m_backend->reset != NULL) {
         armv7m_backend->reset(cpu);
     }
