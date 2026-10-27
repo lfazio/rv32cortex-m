@@ -3880,6 +3880,39 @@ session, and every one of them recurred:
   would have taken for this one. **A fault test checks the address**,
   again.
 
+- **A comment that names a limit is half a rule: read what the code
+  does at the limit.** `rv_mmu.c` said the top two bits of a PPN
+  "cannot address anything here", and masked them -- so a PTE naming
+  8 GiB up read the page 8 GiB down. Every suite passed, because no
+  suite's page table names memory a 32-bit bus does not have, and the
+  interpreter-against-JIT fuzzer could not see it, because both backends
+  walk with the same code. A reference written from the spec, sharing
+  nothing with `rv_mmu.c`, said "access fault" in its first minute,
+  and Sail and Spike agreed (`sv32ppn.S`).
+
+  It also asked two questions the spec leaves open, and the probe is
+  how they were answered rather than argued: whether a page table may
+  sit in a device -- Spike's walk reads it, as this core's does; Sail's
+  refuses it, so it is the platform's to say -- and which part of a
+  split access reports first. **Where the models disagree with each
+  other, the difference is permitted, in the probe, in writing**; where
+  they agree, the emulator moves.
+
+  The second defect came only after the generator was made to reach
+  RAM untranslated: an M-mode access half inside an unlocked PMP entry
+  went through, because the hart skipped PMP in M whenever nothing was
+  locked -- "an unlocked entry does not restrict M", which the spec's
+  matching rule, stated first, contradicts for an access straddling one.
+  The shortcut was right for every aligned word, which is why the fix
+  kept it for them. Two mutants had gone unfound for the same reason
+  the defect had: the addresses an M-mode access used were the ones the
+  page tables were built for, which are not RAM untranslated. **A
+  generator's address choices decide which half of the machine it
+  tests.** And the isatest check written for it first passed against the
+  defect: C split the known-misaligned word load into two halfwords,
+  neither half inside the entry. A test of an access shape is written in
+  assembly.
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

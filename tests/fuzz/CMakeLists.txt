@@ -120,3 +120,34 @@ if(_ir_saved)
         PASS_REGULAR_EXPRESSION "Done [0-9]+ runs"
         LABELS fuzz)
 endif()
+
+#
+# RV32's translation and protection -- Sv32, PMP and the data TLB in front
+# of both -- against a walk written from the privileged spec, which shares
+# nothing with rv_mmu.c or rv_pmp.c (fuzz_rv32_mmu.c). The smoke test must
+# show loads and stores done *and* refused, and data TLB entries checked:
+# a run that never filled one asked the cache nothing.
+#
+if(EMU_GUEST_ARCH_RV32)
+    add_executable(fuzz-rv32-mmu fuzz_rv32_mmu.c)
+    target_link_libraries(fuzz-rv32-mmu PRIVATE emucore)
+    target_link_options(fuzz-rv32-mmu PRIVATE -fsanitize=fuzzer)
+    target_compile_options(fuzz-rv32-mmu PRIVATE -Wall -Wextra -Wundef)
+    add_test(NAME fuzz-rv32-mmu-smoke
+             COMMAND ${CMAKE_COMMAND} -E env FUZZ_STATS=1
+                     $<TARGET_FILE:fuzz-rv32-mmu> -runs=20000 -seed=1
+                     -max_len=512 -timeout=10)
+    set_tests_properties(fuzz-rv32-mmu-smoke PROPERTIES
+        PASS_REGULAR_EXPRESSION
+            "[1-9][0-9]* loads and [1-9][0-9]* stores done, [1-9][0-9]* faults\\), [1-9][0-9]* data TLB entries checked"
+        LABELS fuzz)
+    file(GLOB _mmu_saved ${CMAKE_CURRENT_SOURCE_DIR}/regressions/rv32-mmu/*)
+    if(_mmu_saved)
+        add_test(NAME fuzz-rv32-mmu-regressions
+                 COMMAND $<TARGET_FILE:fuzz-rv32-mmu> -runs=0 -timeout=10
+                         ${CMAKE_CURRENT_SOURCE_DIR}/regressions/rv32-mmu)
+        set_tests_properties(fuzz-rv32-mmu-regressions PROPERTIES
+            PASS_REGULAR_EXPRESSION "Done [0-9]+ runs"
+            LABELS fuzz)
+    endif()
+endif()

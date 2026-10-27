@@ -3,16 +3,21 @@
  * rv_pmp.c - Physical memory protection.
  *
  * The thing that makes PMP affordable here is a detail of the privileged
- * spec: an *unlocked* PMP entry does not restrict M-mode. A guest that
- * stays in M-mode and never sets a lock bit therefore cannot be denied
- * anything, and the checks are pure overhead -- which is the common case,
- * since U-mode is optional and most guests here never leave M.
+ * spec: an *unlocked* PMP entry does not restrict M-mode -- almost. A
+ * guest that stays in M-mode and never sets a lock bit can be denied only
+ * an access half inside an entry, which the spec fails "irrespective of
+ * the L, R, W, and X bits"; with four-byte granules only an access that
+ * crosses one can be (rv_pmp_needed). Everything else is pure overhead --
+ * the common case, since U-mode is optional and most guests here never
+ * leave M.
  *
  * rv_hart_t::pmp_active records whether any entry is both locked and
- * enabled. While it is false -- which is the state at reset and stays the
- * state for every guest that never touches PMP -- the access path skips
- * this file entirely, and the bus fast paths keep the cost that two rounds
- * of optimisation bought them.
+ * enabled, or the hart is below M; pmp_any whether any is enabled at all.
+ * While both are false -- the state at reset, and for every guest that
+ * never touches PMP -- the access path skips this file entirely, and the
+ * bus fast paths keep the cost that two rounds of optimisation bought
+ * them. The straddle rule was skipped with them until fuzz-rv32-mmu's
+ * reference walk asked (probes/pmpstraddle.S: Sail and Spike agree).
  */
 
 #include "rv32/rv_hart.h"
@@ -136,6 +141,13 @@ void rv_pmp_refresh(rv_hart_t *h)
      * below M while the first is still M.
      */
     h->pmp_active = false;
+    h->pmp_any = false;
+    for (uint32_t i = 0; i < RV_PMP_ENTRIES; i++) {
+        if ((pmp_cfg(h, i) & PMP_A) != 0u) {
+            h->pmp_any = true;
+            break;
+        }
+    }
     if (h->priv != RV_PRIV_M || rv_hart_data_priv(h) != RV_PRIV_M) {
         h->pmp_active = true;
     } else {

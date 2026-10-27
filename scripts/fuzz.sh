@@ -4,7 +4,7 @@
 # fuzz.sh - build the fuzz tree and run an interpreter-against-JIT
 # fuzzer.
 #
-#   scripts/fuzz.sh [SECONDS] [rv32|armv7m|g4mh|g4mh-smp|ppc|ir|all] [libFuzzer options...]
+#   scripts/fuzz.sh [SECONDS] [rv32|armv7m|g4mh|g4mh-smp|ppc|ir|rv32-mmu|all] [libFuzzer options...]
 #
 # Configures build/fuzz (FUZZ_BUILD overrides) with clang and
 # -DEMU_FUZZ=ON, which builds the whole tree under ASan and UBSan with
@@ -13,7 +13,10 @@
 # turn, SECONDS each, and then ir). `ir` is fuzz-ir, which has no
 # frontend: random IR blocks through the passes and the x86-64 lowering,
 # against the IR interpreter on the block as built -- no seeds, no
-# dictionary, its regressions in tests/fuzz/regressions/ir/. g4mh-smp is fuzz-g4mh-jit built with three PEs,
+# dictionary, its regressions in tests/fuzz/regressions/ir/. `rv32-mmu`
+# is fuzz-rv32-mmu: Sv32, PMP and the data TLB against a walk written
+# from the spec, its regressions in tests/fuzz/regressions/rv32-mmu/.
+# g4mh-smp is fuzz-g4mh-jit built with three PEs,
 # in build/fuzz-smp (FUZZ_SMP_BUILD overrides): G4MH's translated stores
 # are built differently for one PE and for several, so a second PE is
 # only meaningful in a build that has one, and the configuration word
@@ -41,14 +44,14 @@ T=${1:-rv32}
 [ $# -gt 0 ] && shift
 
 case $T in
-rv32 | armv7m | g4mh | g4mh-smp | ppc | ir | all) ;;
+rv32 | armv7m | g4mh | g4mh-smp | ppc | ir | rv32-mmu | all) ;;
 *)
-    echo "fuzz: no target '$T' (rv32, armv7m, g4mh, g4mh-smp, ppc, ir or all)"
+    echo "fuzz: no target '$T' (rv32, armv7m, g4mh, g4mh-smp, ppc, ir, rv32-mmu or all)"
     exit 2
     ;;
 esac
 if [ "$T" = all ]; then
-    for t in rv32 armv7m g4mh ppc g4mh-smp ir; do
+    for t in rv32 armv7m g4mh ppc g4mh-smp ir rv32-mmu; do
         "$0" "$SECS" "$t" "$@" || exit 1
     done
     exit 0
@@ -61,9 +64,9 @@ B=${FUZZ_BUILD:-$ROOT/build/fuzz}
 # The binary, and the name its corpus and regressions go under.
 BIN=fuzz-$T-jit
 SET=$T-jit
-if [ "$T" = ir ]; then
-    BIN=fuzz-ir
-    SET=ir
+if [ "$T" = ir ] || [ "$T" = rv32-mmu ]; then
+    BIN=fuzz-$T
+    SET=$T
 fi
 if [ "$T" = g4mh-smp ]; then
     ISA=g4mh
@@ -104,7 +107,7 @@ done
 C=$B/corpus/$SET
 mkdir -p "$C" "$B/artifacts/$T"
 REG=$ISA-jit
-[ "$T" = ir ] && REG=ir
+[ "$SET" = "$T" ] && REG=$T
 cp "$ROOT"/tests/fuzz/regressions/"$REG"/* "$C"/ 2>/dev/null || true
 
 # seed IMAGE NAME [CONFIG...]: 256-byte slices of IMAGE, each behind

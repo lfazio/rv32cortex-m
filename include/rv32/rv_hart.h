@@ -177,11 +177,19 @@ typedef struct rv_hart {
     uint32_t pmpcfg[RV_PMP_ENTRIES / 4u];
     uint32_t pmpaddr[RV_PMP_ENTRIES];
     /*
-     * True when some entry is both locked and enabled. Only then can PMP
-     * deny an M-mode access, so this gates the check out of the hot path
-     * for every guest that does not use it.
+     * True when some entry is both locked and enabled, or the hart runs
+     * below M. Then PMP can deny any access, so this gates the check out
+     * of the hot path for every guest that does not use it.
      */
     bool pmp_active;
+    /*
+     * True when some entry is enabled at all. An unlocked entry can still
+     * refuse M an access: the one that matches must hold every byte,
+     * "irrespective of the L, R, W and X bits" -- so an access half in
+     * it fails. With four-byte granules only an access crossing one can
+     * be half in an entry: see rv_pmp_needed.
+     */
+    bool pmp_any;
 #endif
 
 #if RV_EXT_A
@@ -228,6 +236,11 @@ typedef struct rv_hart {
      * the fetch path does not need to know which are configured in.
      */
     bool fetch_guard;
+    /*
+     * The data path's one flag: vm_active, pmp_active or pmp_any. One
+     * load where testing two had been, and maintained with fetch_guard.
+     */
+    bool data_guard;
 
     uint32_t hartid;
     uint8_t priv; /* always RV_PRIV_M on this implementation */
@@ -584,7 +597,32 @@ static EMU_ALWAYS_INLINE void rv_hart_refresh_fetch_guard(rv_hart_t *h)
     g = g || h->vm_active;
 #endif
     h->fetch_guard = g;
+
+    bool d = false;
+#if RV_EXT_PMP
+    d = d || h->pmp_active || h->pmp_any;
+#endif
+#if RV_EXT_SV32
+    d = d || h->vm_active;
+#endif
+    h->data_guard = d;
 }
+
+#if RV_EXT_PMP
+/*
+ * Whether a data access must ask PMP. Below M, or with an entry locked,
+ * always (pmp_active). Otherwise only one that crosses a four-byte
+ * granule, since only that can be half inside an entry -- which fails
+ * even an unlocked one, in M (probes/pmpstraddle.S): a misaligned access,
+ * a doubleword, a cache block. An aligned word cannot; nor can a fetch,
+ * which is checked a halfword at a time.
+ */
+static EMU_ALWAYS_INLINE bool rv_pmp_needed(const rv_hart_t *h, uint32_t addr,
+                                           uint32_t size)
+{
+    return h->pmp_active || (h->pmp_any && (addr & 3u) + size > 4u);
+}
+#endif
 
 static EMU_ALWAYS_INLINE uint32_t rv_hart_data_priv(const rv_hart_t *h)
 {

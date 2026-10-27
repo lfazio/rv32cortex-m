@@ -40,9 +40,13 @@
 /*
  * A physical page number, as it fits this core's 32-bit bus: PA[31:12].
  * Both satp and a PTE carry 22 architectural bits, and the top two of
- * those cannot address anything here.
+ * those cannot address anything here -- so a PTE that sets them names
+ * memory that does not exist, and the access is an access fault (Sail and
+ * Spike, tests/arch-test/probes/sv32ppn.S). They were masked off instead,
+ * which read the page 4 or 8 GiB below. satp's are WARL, dropped on write.
  */
 #define PPN_MASK 0x000FFFFFu
+#define PTE_PPN_PAST_BUS 0xC0000000u /* PPN[21:20]: PA bits 33 and 32 */
 
 #define PAGE_SHIFT 12u
 #define PAGE_SIZE (1u << PAGE_SHIFT)
@@ -384,6 +388,10 @@ rv_exc_t rv_mmu_translate(rv_hart_t *h, uint32_t va, emu_access_t acc,
             if ((pte & (PTE_D | PTE_A | PTE_U)) != 0u) {
                 return fault_for(acc);
             }
+            /* The next table is past the bus: reading it faults. */
+            if ((pte & PTE_PPN_PAST_BUS) != 0u) {
+                return access_fault_for(acc);
+            }
             table = ((pte >> 10) & PPN_MASK) << PAGE_SHIFT;
             continue;
         }
@@ -403,6 +411,15 @@ rv_exc_t rv_mmu_translate(rv_hart_t *h, uint32_t va, emu_access_t acc,
 
         if (!leaf_permits(h, pte, acc, priv)) {
             return fault_for(acc);
+        }
+        /*
+         * Every page-fault check has passed, and the page is past the
+         * bus: what the access finds there is nothing, which is an
+         * access fault -- after the page faults, as for any other
+         * physical address with no memory behind it.
+         */
+        if ((pte & PTE_PPN_PAST_BUS) != 0u) {
+            return access_fault_for(acc);
         }
 
         /*

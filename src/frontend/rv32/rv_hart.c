@@ -142,6 +142,7 @@ void rv_hart_reset(rv_hart_t *h, uint32_t reset_pc)
     memset(h->pmpcfg, 0, sizeof(h->pmpcfg));
     memset(h->pmpaddr, 0, sizeof(h->pmpaddr));
     h->pmp_active = false;
+    h->pmp_any = false;
 #endif
 
 #if RV_HAVE_DTLB
@@ -592,7 +593,8 @@ static rv_exc_t mem_wide(rv_hart_t *h, uint32_t va, uint32_t size,
         const uint32_t part = va + ((i != 0u) ? len[0] : 0u);
 
 #if RV_EXT_PMP
-        if (h->pmp_active && !rv_pmp_check(h, pa[i], len[i], acc)) {
+        if (rv_pmp_needed(h, pa[i], len[i]) &&
+            !rv_pmp_check(h, pa[i], len[i], acc)) {
             return mem_fault(tval, part, refused);
         }
 #endif
@@ -754,14 +756,7 @@ EMU_COLD_NOINLINE static rv_exc_t store_split(rv_hart_t *h, uint32_t va,
  */
 static EMU_ALWAYS_INLINE bool data_guarded(const rv_hart_t *h)
 {
-    bool g = false;
-#if RV_EXT_SV32
-    g = g | h->vm_active;
-#endif
-#if RV_EXT_PMP
-    g = g | h->pmp_active;
-#endif
-    return g;
+    return h->data_guard;
 }
 
 #if RV_HAVE_DTLB
@@ -840,7 +835,8 @@ EMU_NOINLINE static rv_exc_t load_guarded(rv_hart_t *h, uint32_t addr,
     }
 #endif
 #if RV_EXT_PMP
-    if (h->pmp_active && !rv_pmp_check(h, addr, size, EMU_ACC_LOAD)) {
+    if (rv_pmp_needed(h, addr, size) &&
+        !rv_pmp_check(h, addr, size, EMU_ACC_LOAD)) {
         return RV_EXC_LOAD_ACCESS_FAULT;
     }
 #endif
@@ -1115,7 +1111,7 @@ rv_exc_t rv_hart_amocas_d(rv_hart_t *h, uint32_t rd, uint32_t rs2,
     }
 #endif
 #if RV_EXT_PMP
-    if (EMU_UNLIKELY(h->pmp_active) &&
+    if (EMU_UNLIKELY(rv_pmp_needed(h, addr, 8u)) &&
         !rv_pmp_check(h, addr, 8u, EMU_ACC_STORE)) {
         return RV_EXC_STORE_ACCESS_FAULT;
     }
@@ -1388,7 +1384,7 @@ rv_exc_t rv_hart_cbo(rv_hart_t *h, uint32_t op, uint32_t addr,
         }
 #endif
 #if RV_EXT_PMP
-        if (EMU_UNLIKELY(h->pmp_active) &&
+        if (EMU_UNLIKELY(rv_pmp_needed(h, pa, RV_CACHE_BLOCK_SIZE)) &&
             !rv_pmp_check(h, pa, RV_CACHE_BLOCK_SIZE, EMU_ACC_STORE)) {
             return RV_EXC_STORE_ACCESS_FAULT;
         }
@@ -1449,7 +1445,7 @@ rv_exc_t rv_hart_cbo(rv_hart_t *h, uint32_t op, uint32_t addr,
         }
 #endif
 #if RV_EXT_PMP
-        if (EMU_UNLIKELY(h->pmp_active) &&
+        if (EMU_UNLIKELY(rv_pmp_needed(h, pa, RV_CACHE_BLOCK_SIZE)) &&
             !rv_pmp_check(h, pa, RV_CACHE_BLOCK_SIZE, EMU_ACC_LOAD) &&
             !rv_pmp_check(h, pa, RV_CACHE_BLOCK_SIZE, EMU_ACC_STORE)) {
             return RV_EXC_STORE_ACCESS_FAULT;
@@ -1533,7 +1529,8 @@ EMU_NOINLINE static rv_exc_t store_guarded(rv_hart_t *h, uint32_t addr,
     }
 #endif
 #if RV_EXT_PMP
-    if (h->pmp_active && !rv_pmp_check(h, addr, size, EMU_ACC_STORE)) {
+    if (rv_pmp_needed(h, addr, size) &&
+        !rv_pmp_check(h, addr, size, EMU_ACC_STORE)) {
         return RV_EXC_STORE_ACCESS_FAULT;
     }
 #endif

@@ -1,9 +1,11 @@
 # Fuzzing
 
-Five targets: one per frontend, each the interpreter against the
-x86-64 JIT on whatever bytes libFuzzer produces, and one for the IR
-itself, with no frontend ([below](#the-ir-with-no-frontend)). Between
-them they found sixteen defects in code that every suite passed --
+Six targets: one per frontend, each the interpreter against the
+x86-64 JIT on whatever bytes libFuzzer produces; one for the IR itself,
+with no frontend ([below](#the-ir-with-no-frontend)); and one for RV32's
+translation and protection against a walk written from the spec
+([below](#translation-and-protection-rv32)). Between them they found
+eighteen defects in code that every suite passed --
 eight of them in an interpreter, which is the reference -- and one of
 those turned out to be a whole class, which a board then answered
 encoding by encoding. One more, in G4MH's interrupt ceiling, was found
@@ -17,12 +19,13 @@ both backends shared it.
 | `fuzz-g4mh-jit` | the interpreter and the manual, and nothing else: no RH850 is attached |
 | `fuzz-ppc-jit` | the interpreter and the manual, and nothing else: no e200 is attached |
 | `fuzz-ir` | the IR interpreter on the block as built, before any pass; the rules both lowerings state in `emu_ir.h` for what it might have wrong |
+| `fuzz-rv32-mmu` | a Sv32 walk and PMP written from the privileged spec, sharing nothing with `rv_mmu.c`; Sail and Spike, through a probe, for what it might have wrong |
 
 No GPL emulator is consulted, by any of them.
 
 ```sh
 scripts/fuzz.sh 600 armv7m   # build build/fuzz, seed it, fuzz ten minutes
-scripts/fuzz.sh 600 all      # the five in turn, and G4MH on three PEs
+scripts/fuzz.sh 600 all      # the six in turn, and G4MH on three PEs
 FUZZ_STATS=1 build/fuzz/tests/fuzz/fuzz-armv7m-jit crash-...   # replay one
 cd build/fuzz && ctest -L fuzz   # each target's smoke run and saved regressions
 ```
@@ -337,6 +340,95 @@ compute; FSQRT and FMA, which it declines; the Thumb-2 lowering, which
 needs a board; and `pass_mac`, which forms a multiply-accumulate only
 where the backend lowers one, and x86-64 does not.
 
+## Translation and protection: RV32
+
+`fuzz-rv32-mmu` (`tests/fuzz/fuzz_rv32_mmu.c`) asks a question no other
+target can: both of RV32's backends walk page tables and check PMP with
+the same `rv_mmu.c` and `rv_pmp.c`, so a misreading there is agreed
+with. Its reference is a Sv32 walk and a PMP check written from the
+privileged spec, in 34-bit physical addresses, sharing nothing with them.
+
+The input builds page tables in a page of RAM -- two roots, two
+second-level tables, megapages and pointers, leaves naming RAM, a
+read-only image, a device, nothing, or a page past 4 GiB -- and then runs
+a sequence of loads and stores through `rv_hart_load` and
+`rv_hart_store`, which is the whole chain: the data TLB probe, the TLB,
+the walk, PMP, the bus, the data TLB fill. Between them it writes satp,
+SUM, MXR, MPRV and MPP, PMP entries and PTEs, and fences. Each access is
+compared on its cause, or on the value at the physical address the
+reference computed, and after a store on all of RAM and the device's log.
+And after every step **every data TLB entry is checked against what it
+claims**: that each aligned access to its page at its table's privilege
+is a plain access at the host address it holds -- a load, and a store if
+it says so. The data privilege comes from MPRV, as a kernel's copy
+routines get it, so the hart stays in M.
+
+Where the spec lets an implementation be stale, the harness does what
+software must: a global SFENCE.VMA after a PTE changes -- a store to a
+page a walk has read is one -- and after a PMP write. satp, SUM, MXR and
+MPRV take effect at once. The reference reads the CSRs back after each
+write, so their WARL rules are the CSR file's business, not this one's.
+Three choices the spec leaves to the implementation are modelled as this
+core makes them, each found by a disagreement first:
+
+- **Svade**: A and D are checked, not written.
+- **A table is read wherever a load would read**, a device included:
+  which regions may hold page tables is a PMA. Spike reads a table in
+  the CLINT as this core does; Sail refuses it (`sv32ppn.S`, case 7).
+- **A misaligned access splits at a page only when it is translated**,
+  and then each part is its own physical access to PMP; untranslated it
+  is one access, held to one entry. And a page past the bus is refused
+  by the walk, before a split access's second page is translated.
+
+```sh
+scripts/fuzz.sh 600 rv32-mmu   # its regressions are tests/fuzz/regressions/rv32-mmu/
+```
+
+What it found:
+
+| defect | where | held by |
+|---|---|---|
+| **a PTE's PPN reaching past 4 GiB was masked to the bus**, so a leaf naming 0x2_8000_1000 read 0x8000_1000 -- another page, by an alias -- and a pointer past the bus read a table below it. Sv32 addresses 34 bits; nothing is there: an access fault. Found in its first minute; Sail and Spike agree | `rv_mmu.c` | `probes/sv32ppn.S`, `isatest` `sv32-past-bus-*` (both backends and the F746), `rv32-mmu/leaf-past-the-bus-aliased` |
+| **an M-mode access half inside an unlocked PMP entry succeeded.** The entry that matches must hold every byte "irrespective of the L, R, W, and X bits", and only then does an unlocked one exempt M; the hart skipped PMP in M whenever nothing was locked. Only an access crossing a four-byte granule can be half in an entry -- misaligned, a doubleword, a cache block -- so those ask now (`rv_pmp_needed`, `pmp_any`) and aligned words still do not; the data path tests one flag where it tested two. Found once the generator reached RAM untranslated; Sail and Spike agree | `rv_pmp.c`, `rv_hart.c` | `probes/pmpstraddle.S`, `isatest` `pmp-straddle-unlocked-*` (both backends and the F746), `rv32-mmu/m-mode-straddle-into-unlocked-entry` |
+
+After both fixes, ten minutes on four workers, from the regressions:
+6,196,844 inputs, 65.9M accesses -- 11.1M loads and 6.4M stores done,
+48.4M refused -- and 17.6M data TLB entries checked against their claims,
+27.4M fences; 584,528 device accesses compared by cause only. Nothing.
+
+Mutants (`scripts/fuzz-mutant.sh 120 rv32-mmu ...`), each a rule these
+files keep, all found by fuzzing from an empty corpus:
+
+| mutant | where | found |
+|---|---|---|
+| SUM ignored: S reads U pages | `leaf_permits` | 5 s |
+| MXR ignored | `leaf_permits` | 6 s |
+| D not checked for a store (Svade) | `leaf_permits` | 7 s |
+| a megapage's misalignment not checked | the walk | 3 s |
+| a pointer's reserved D, A, U not checked | the walk | 5 s |
+| PMP's straddle rule dropped | `rv_pmp_check` | 35 s |
+| unlocked entries binding M | `rv_pmp_check` | 7 s |
+| the walk's own reads not PMP-checked | `read_pte` | 4 s |
+| a U page filled into S's data TLB | `rv_mmu_dtlb_rights` | 9 s |
+| PMP's write permission ignored by a fill | `rv_dtlb_fill` | 10 s |
+| the TLB's tag not compared | `rv_mmu_translate` | 6 s |
+| the PPN past the bus masked again | the walk | 2 s |
+| the M-mode straddle fix taken out | `rv_pmp_refresh` | 125 s, in a 300 s run; not in 120 |
+
+Four of them first went unfound, and each time it was the generator: a
+straddle needs an access across a PMP edge, which only half-page
+regions and offsets near them made likely; MXR needs execute-only
+leaves, which the bias towards readable ones had made rare; and the M
+lock rule and the straddle in M need an M-mode access to reach RAM,
+which the addresses the tables were built for never were. The last
+of these was the defect, found the same way once the generator could
+reach it.
+
+What it does not reach: fetch -- the hart never leaves M, so the fetch
+table is never filled; the JIT's inlined probe, which reads the same
+data TLB (its entries are checked, the probe is not); and the other
+frontends' MPUs and PowerPC's TLB, which want references of their own.
+
 ## What it found
 
 Each fix was confirmed by reverting it with its regression in place.
@@ -456,7 +548,7 @@ in the scripts:
 ## Things worth keeping from finding them
 
 - **The interpreter is the reference, and was the one that was wrong
-  -- eight times out of sixteen**, two of them the IR's own. The RV32
+  -- eight times out of eighteen**, two of them the IR's own. The RV32
   probe asked Sail and Spike rather than reasoning about which backend
   to fix. On mcycle they
   disagree with each other -- Sail charges a trap a cycle, Spike does
@@ -515,9 +607,9 @@ in the scripts:
 ## Adding a finding
 
 Fix it, confirm the fix by reverting it, and copy the input to
-`tests/fuzz/regressions/<isa>-jit/` -- `regressions/ir/` for `fuzz-ir`
--- under a name that says what it found; `fuzz-<isa>-jit-regressions`
-and `fuzz-ir-regressions` replay the directories. Where the defect can
+`tests/fuzz/regressions/<isa>-jit/` -- `regressions/ir/` for `fuzz-ir`,
+`regressions/rv32-mmu/` for `fuzz-rv32-mmu` -- under a name that says
+what it found; each target's `-regressions` test replays its directory. Where the defect can
 reach a board -- a translator or a backend -- add a guest check as well:
 the fuzzers run only on x86-64. Where the two backends agree and the
 reference might be wrong, ask whatever can answer: Sail and Spike for

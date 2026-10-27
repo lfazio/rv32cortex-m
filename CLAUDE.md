@@ -94,10 +94,12 @@ BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
                                 # run: ratio, wall clock, translations, CRC
 ./scripts/board-pc-profile.py ELF  # where a -DEMU_PC_PROFILE=N firmware
                                 # spent its time, by function and line
-./scripts/fuzz.sh SECS [ISA|ir|all]  # a frontend's interpreter against the
-                                # x86-64 JIT, under ASan/UBSan; `ir`: random
-                                # IR blocks, before the passes against the
-                                # compiled code; docs/fuzzing.md
+./scripts/fuzz.sh SECS [ISA|ir|rv32-mmu|all]  # a frontend's interpreter
+                                # against the x86-64 JIT, under ASan/UBSan;
+                                # `ir`: random IR blocks, before the passes
+                                # against the compiled code; `rv32-mmu`:
+                                # Sv32, PMP and the data TLB against a walk
+                                # from the spec; docs/fuzzing.md
 ./scripts/fuzz-mutant.sh SECS ISA FILE OLD NEW  # break a line on purpose
                                 # and see whether that fuzzer notices
 ./scripts/fuzz-dict.py [--check] # the device dictionaries' tokens, from
@@ -217,7 +219,7 @@ Each has cost more than one session, and every one recurred.
 - **A filter that keeps a harness safe decides what it can never ask.**
   rawgen kept ARMv7-M operands in r0-r12, so 557 sp/pc encodings the M7
   refuses had never been asked, and the frontend executed them all.
-- **The fuzzers find what the suites share a blind spot for**: sixteen
+- **The fuzzers find what the suites share a blind spot for**: eighteen
   defects, eight in an interpreter (docs/fuzzing.md). A UBSan report in
   the interpreter is a finding even when both backends agree.
 - **A reference that declines what it does not model checks only what
@@ -513,7 +515,9 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
 - **PMP**: the lock bit says who an entry binds, not whether; `1u << 32`
   made the widest region the narrowest; execute permission was checked
   nowhere (grep for the enumerator); it applies per halfword. U-mode
-  turns latent M-mode bugs into failures.
+  turns latent M-mode bugs into failures. And an access half inside an
+  entry fails even an unlocked one, in M: the matching rule comes before
+  the lock rule (`pmpstraddle.S`, `rv_pmp_needed`).
 - **A privilege rule nobody has run from the refused side is not
   implemented** (MRET ran in U-mode until `umode.S`).
 - **A rule stated per instruction is not enforced per value**: the
@@ -530,7 +534,9 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
 - **A failing operation must still ask whether it could have succeeded**
   (`sc.w` to no memory).
 - **Sv32**: blocks are keyed on virtual addresses; `satp.PPN` follows the
-  physical width; a 32-bit instruction can straddle a page.
+  physical width, and a PTE's PPN past it is an access fault, not an
+  alias (it was masked: `sv32ppn.S`); a 32-bit instruction can straddle
+  a page.
 - **Semihosting answers M-mode only**: answering U-mode `write()`
   imitated success and hid the kernel.
 - **Two registers that are views of one thing are held as one thing**
@@ -705,7 +711,7 @@ The SMP design is in [docs/os.md](docs/os.md#smp-on-the-host).
 - **No GPL emulator, even as a reference.** The references are the real
   boards, Sail, and Spike (BSD-3, built by `scripts/fetch-spike.sh`).
 - **The oracle is a reading too**: the interpreter was the wrong side
-  eight times of sixteen; ask Sail and Spike or the board rather than reason
+  eight times of eighteen; ask Sail and Spike or the board rather than reason
   which to fix. Where no suite exists, write a probe
   (`tests/arch-test/probes/`, run by `scripts/run-probe.py` and
   `ctest -L probe`), with any permitted difference listed in it

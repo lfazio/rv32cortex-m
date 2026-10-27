@@ -25,7 +25,7 @@ measured at.
 - [ ] **Fuzz testing.** The first target exists for every frontend
       and has paid: `fuzz-<isa>-jit`, the interpreter against the
       x86-64 JIT, and `fuzz-ir` for the IR alone ([fuzzing.md](fuzzing.md)):
-      sixteen defects, eight of them in an interpreter, one a whole
+      eighteen defects, eight of them in an interpreter, one a whole
       class of ARMv7-M encodings the board then answered. The rest of this item is still open. Before
       it, the tree had generation, not fuzzing:
       `tests/armv7m-diff/rawgen.py` (raw encodings against the F746),
@@ -56,10 +56,15 @@ measured at.
     which forms a multiply-accumulate only where the backend lowers
     one, and x86-64 does not; and the FP exception flags, which the
     reference does not compute.
-  - **Translation and protection**: Sv32 page tables, PMP and the
-    data TLB, G4MH's and ARMv7-M's MPUs, PowerPC's TLB, each against
-    a brute-force reference walk. A cache must agree with what it
-    caches for every input; that is a fuzzing property.
+  - **Translation and protection**: done for RV32 -- Sv32, PMP and
+    the data TLB against a walk written from the spec
+    (`fuzz-rv32-mmu`), which found a PPN past the bus read as an alias
+    and an M-mode access half in an unlocked PMP entry let through.
+    Left: G4MH's and ARMv7-M's MPUs and PowerPC's TLB, each against its
+    own reference; and RV32's fetch side -- the hart never leaves M
+    there, so the fetch table is never filled -- and its JIT, whose
+    inlined probe reads the same table (the entries are checked, the
+    probe is not).
   - **What arrives from outside the guest**: the ELF loader, the gdb
     stub's packet parser, the TFTP upload path, and the virtio
     descriptors and rings, which a guest writes.

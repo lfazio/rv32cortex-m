@@ -55,9 +55,9 @@ B=${FUZZ_BUILD:-$ROOT/build/fuzz-mutant}
 LOG=$B.$T.log
 NAME=fuzz-$ISA-jit
 SET=$T-jit
-if [ "$T" = ir ]; then # the IR's own target, which has no frontend
-    NAME=fuzz-ir
-    SET=ir
+if [ "$T" = ir ] || [ "$T" = rv32-mmu ]; then # targets with no -jit
+    NAME=fuzz-$T
+    SET=$T
 fi
 BIN=$B/tests/fuzz/$NAME
 ART=$B/artifacts/$T

@@ -1378,6 +1378,40 @@ static void test_pmp(void)
     g_pmp_area[1] = 0x5A5A5A5Au;
 
     /*
+     * An unlocked entry does not restrict M -- except an access half in
+     * it, which fails "irrespective of the L, R, W, and X bits". NA4 over
+     * the upper word, R W, unlocked, nothing locked anywhere, and a word
+     * load from two bytes below it. The hart skipped PMP in M with no
+     * entry locked, so it read (fuzz-rv32-mmu; Sail and Spike agree,
+     * probes/pmpstraddle.S). The word the entry holds still reads.
+     */
+    const uintptr_t straddle = (uintptr_t)g_pmp_area + 2u;
+    uint32_t before;
+
+    csr_write("pmpaddr0", ((uint32_t)(uintptr_t)&g_pmp_area[1]) >> 2);
+    csr_write("pmpcfg0", 0x13u); /* NA4 | W | R, unlocked */
+    before = g_trap_count;
+    /* One lw, in asm: C split this known-misaligned load into two lhu,
+     * neither of which is half in the entry. */
+    {
+        uint32_t tmp;
+
+        __asm__ volatile("lw %0, 0(%1)" : "=r"(tmp) : "r"(straddle) : "memory");
+        (void)tmp;
+    }
+    check("pmp-straddle-unlocked-traps", g_trap_count - before, 1u);
+#if RV32_MISALIGNED
+    check("pmp-straddle-unlocked-cause", g_last_cause, 5u);
+#else
+    check("pmp-straddle-unlocked-cause", g_last_cause, 4u);
+#endif
+    check("pmp-straddle-unlocked-tval", g_last_tval, (uint32_t)straddle);
+    before = g_trap_count;
+    check("pmp-whole-unlocked-read", g_pmp_area[1], 0x5A5A5A5Au);
+    check("pmp-whole-unlocked-notrap", g_trap_count - before, 0u);
+    csr_write("pmpcfg0", 0u);
+
+    /*
      * Entry 0: NAPOT over the eight bytes, locked, readable but not
      * writable. Locked is what makes it apply to M-mode at all.
      */
@@ -1388,7 +1422,7 @@ static void test_pmp(void)
     check("pmp-read-ok", g_pmp_area[0], 0xA5A5A5A5u);
 
     /* Writes now fault, and report a store access fault at the address. */
-    uint32_t before = g_trap_count;
+    before = g_trap_count;
     __asm__ volatile("sw %0, 0(%1)" ::"r"(0xDEADBEEFu), "r"(g_pmp_area)
                      : "memory");
     check("pmp-write-traps", g_trap_count - before, 1u);
@@ -2027,6 +2061,25 @@ static void smode_paging(void)
     check("sv32-wnor-traps", g_trap_count - before, 1u);
     check("sv32-wnor-cause", g_last_cause, 13u);
     g_root[VPN1(VA_RW)] = saved_root;
+    __asm__ volatile("sfence.vma" ::: "memory");
+
+    /*
+     * A leaf whose PPN reaches past 4 GiB -- PTE bit 31 is physical bit
+     * 33. Nothing is there on a 32-bit bus, so the load is an access
+     * fault; the walk used to drop the bit and read the page 8 GiB below,
+     * which is this one (fuzz-rv32-mmu; Sail and Spike agree, probe
+     * sv32ppn.S). The page's own word must come back unread.
+     */
+    const uint32_t saved_hole = g_leaf[VPN0(VA_HOLE)];
+
+    g_leaf[VPN0(VA_HOLE)] = saved_hole | 0x80000000u;
+    __asm__ volatile("sfence.vma" ::: "memory");
+    before = g_trap_count;
+    (void)*(volatile uint32_t *)VA_HOLE;
+    check("sv32-past-bus-traps", g_trap_count - before, 1u);
+    check("sv32-past-bus-cause", g_last_cause, 5u);
+    check("sv32-past-bus-tval", g_last_tval, VA_HOLE);
+    g_leaf[VPN0(VA_HOLE)] = saved_hole;
     __asm__ volatile("sfence.vma" ::: "memory");
 
     /*
