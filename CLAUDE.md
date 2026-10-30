@@ -94,12 +94,14 @@ BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
                                 # run: ratio, wall clock, translations, CRC
 ./scripts/board-pc-profile.py ELF  # where a -DEMU_PC_PROFILE=N firmware
                                 # spent its time, by function and line
-./scripts/fuzz.sh SECS [ISA|ir|rv32-mmu|all]  # a frontend's interpreter
-                                # against the x86-64 JIT, under ASan/UBSan;
-                                # `ir`: random IR blocks, before the passes
-                                # against the compiled code; `rv32-mmu`:
-                                # Sv32, PMP and the data TLB against a walk
-                                # from the spec; docs/fuzzing.md
+./scripts/fuzz.sh SECS [ISA|ir|rv32-mmu|g4mh-mpu|armv7m-mpu|all]
+                                # a frontend's interpreter against the
+                                # x86-64 JIT, under ASan/UBSan; `ir`: random
+                                # IR blocks, before the passes against the
+                                # compiled code; `rv32-mmu`: Sv32, PMP and
+                                # the data TLB against a walk from the spec;
+                                # `*-mpu`: an MPU against its manual, one
+                                # instruction a step; docs/fuzzing.md
 ./scripts/fuzz-mutant.sh SECS ISA FILE OLD NEW  # break a line on purpose
                                 # and see whether that fuzzer notices
 ./scripts/fuzz-dict.py [--check] # the device dictionaries' tokens, from
@@ -230,6 +232,12 @@ Each has cost more than one session, and every one recurred.
   code did. And a contract the passes state is a contract a frontend
   may rely on later: `fuzz-ir` built the r15-is-the-pc block no
   frontend emits yet, and a pass forwarded the old pc.
+- **Writing a reference is its first test.** Every G4MH MPU defect --
+  cause codes, a doubleword checked a word at a time, a fetch checked at
+  its first halfword, CAXI's flags -- was found writing fuzz-g4mh-mpu's
+  reference from the manual, none by running it; 24 mutants show the
+  run would have. A null result (fuzz-armv7m-mpu) is the mutants' to
+  vouch for.
 - **A test input is checked against the mutant it is for**: a
   dictionary's own sequence took its interrupt and passed under a
   dispatcher that never takes one -- only interpreted code followed the
@@ -302,6 +310,10 @@ Each has cost more than one session, and every one recurred.
 - **CMake cache variables outlive the tree you set them in** (every figure
   once used an inherited 48 KB cache). Check `CMakeCache.txt` before
   quoting; `build-matrix.sh` removes each row's cache.
+- **An unpinned checkout is a configuration nobody chose**: a fresh
+  worktree cloned riscv-arch-test's head, which on 2026-10-30 wanted
+  Sail 0.16 against this host's 0.13.1, and arch-test-I failed in every
+  row of the matrix for a reason not the emulator's (`ARCH_TEST_REF`).
 - **Name the artefact, not the target.** A stale `emu-host` at a script's
   default path gave a session of false 77/77s; `--target emu-host` does
   not rebuild guests; `md5sum` across two trees localises a difference.
@@ -332,7 +344,10 @@ Each has cost more than one session, and every one recurred.
   `-nostdlib`, the core calls no libm, and the FPU uses `float` only.
 - **A comment asserting an invariant is where to look first** -- the
   image split "concatenates to the `.bin`", ROM "cached for reads only",
-  Zacas "unfinished" were all false.
+  Zacas "unfinished" were all false, and G4MH's "cannot happen for a
+  halfword-aligned pc" let a 32-bit instruction at `...E` run from a
+  refused area. A constant chosen to avoid another (FETRAP at `90H`,
+  dodging an MDP that was itself wrong) is a reason to check the other.
 - **Prose telling a maintainer to change a constant is a constant that
   will not be changed**: compute it (`EMU_MAX_REGIONS` from the PE count,
   after "raise it to 24" sat in a design note).
@@ -482,6 +497,9 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   BO32), and a translator that reads a field as an index translates the
   reserved values (RV32 LOAD's `f3 & 3`).
 - **A mode flag whose only writer is a unit test is not a mode** (`vle`).
+- **The disassembler repeats the decoder's old mistakes**: G4MH's
+  printed PUSHSP and POPSP as `di` from bit 15 alone, long after the
+  interpreter's comment said why that was wrong.
 - **The disassembler is not a decoder.** `.short` cannot tell a gap from
   a correct decode; read a trace's pc deltas, and confirm a tool's
   "unsupported" was said, not omitted (CC-RH's listing parser).
@@ -528,6 +546,10 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   ARMv7-M run loop took any 0xFxxxxxxx pc in Handler mode as
   EXC_RETURN; MOV pc, ADD pc and BLX branch, and the F746 faults them
   (`sys.c` `excret-*`, `pc_not_exc_return`).
+- **A refused instruction has not happened**: MDP is resumable, so a
+  SET1 whose store is refused must not have moved Z (FEPSW held it), a
+  doubleword refused on its second word must not have stored its first,
+  and a POPSP stopped partway must not have loaded sp.
 - **A permitted imprecision is permitted until a program computes with
   it.** FS "may be dirtier" held until a program cleared one FS bit and
   read Clean against Off: mark FS Dirty where an f register is written

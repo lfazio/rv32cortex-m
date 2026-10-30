@@ -102,6 +102,16 @@ struct g4mh_cpu;
 /* MPIDn holds a five-bit SPID. */
 #define G4MH_MPID_SPID_MASK 0x1Fu
 
+/* MCR, the setting check's result (table 3.70). */
+#define G4MH_MCR_URE (1u << 0)
+#define G4MH_MCR_UWE (1u << 1)
+#define G4MH_MCR_UXE (1u << 2)
+#define G4MH_MCR_SRE (1u << 3)
+#define G4MH_MCR_SWE (1u << 4)
+#define G4MH_MCR_SXE (1u << 5)
+#define G4MH_MCR_ATTR 0x3Fu
+#define G4MH_MCR_OV (1u << 8)
+
 /* ------------------------------------------------------------------ */
 /* State                                                               */
 /* ------------------------------------------------------------------ */
@@ -122,8 +132,8 @@ typedef struct g4mh_mpu {
     uint32_t mpm;
     uint32_t mpidx;
 
-    /* The setting-check function, which is state and not a check. */
-    uint32_t mca, mcs, mcc, mcr, mci;
+    /* The setting-check function: a write to MCC computes MCR. */
+    uint32_t mca, mcs, mcr, mci;
 } g4mh_mpu_t;
 
 /* ------------------------------------------------------------------ */
@@ -172,6 +182,15 @@ bool g4mh_mpu_is_active(const g4mh_mpu_t *m);
  */
 bool g4mh_mpu_sr_read(const g4mh_mpu_t *m, unsigned reg, uint32_t *out);
 bool g4mh_mpu_sr_write(g4mh_mpu_t *m, unsigned reg, uint32_t val);
+
+/*
+ * Whether a write to `reg` can change what an access is allowed: MPM,
+ * an entry's three registers, MPIDn. Not MPIDX, which only moves the
+ * window, and not the setting-check registers -- an OS calls the check
+ * on every service request, and each call discarding every translation
+ * would be a flush per system call.
+ */
+bool g4mh_mpu_reg_protects(unsigned reg);
 
 #ifdef __cplusplus
 }

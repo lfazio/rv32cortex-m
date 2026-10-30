@@ -21,17 +21,28 @@
  * EIIC or FEIC depending on the level the exception is taken at. As with
  * rv_exc_t, 0 is a real cause, so the sentinel sits outside the encodable
  * range and callers branch on != G4MH_EXC_NONE.
+ *
+ * **A cause is the whole 32-bit code**, as the manual defines it: the low
+ * 16 bits say which exception, the high 16 a detail the exception
+ * defines (R01UH0923EJ0130 table 3.103 note 2) -- for MIP and MDP, which
+ * permission failed and how (table 3.115). So a g4mh_exc_t can carry
+ * detail bits, and anything that asks *which* exception reads
+ * G4MH_EXC_CODE(cause). The values below are the low halves, from table
+ * 3.103; four of them were not, until fuzz-g4mh-mpu's reference was
+ * written from that table (MIP 0x30, MDP 0x31, MAE 0x62, FETRAP 0x90).
  */
 typedef uint32_t g4mh_exc_t;
+
+#define G4MH_EXC_CODE(cause) ((cause) & 0xFFFFu)
 
 #define G4MH_EXC_NONE 0xFFFFFFFFu
 
 /* FE level: taken to FEPC/FEPSW/FEIC, and not maskable by PSW.ID. */
 #define G4MH_EXC_SYSERR 0x0010u /* system error                 */
-#define G4MH_EXC_MIP 0x0030u /* instruction-fetch protection */
-#define G4MH_EXC_MDP 0x0031u /* data protection              */
+#define G4MH_EXC_MIP 0x0090u /* instruction-fetch protection */
+#define G4MH_EXC_MDP 0x0091u /* data protection              */
 #define G4MH_EXC_RIE 0x0060u /* reserved instruction         */
-#define G4MH_EXC_MAE 0x0062u /* misaligned access            */
+#define G4MH_EXC_MAE 0x00C0u /* misaligned access            */
 #define G4MH_EXC_FPP 0x0071u /* FP operation                 */
 #define G4MH_EXC_UCPOP 0x0080u /* coprocessor unusable         */
 /*
@@ -52,14 +63,26 @@ typedef uint32_t g4mh_exc_t;
 #define G4MH_EXC_TRAP1 0x0050u /* TRAP 16..31, +vector         */
 #define G4MH_EXC_SYSCALL 0x8000u /* SYSCALL, +vector             */
 /*
- * FETRAP 1..15. The architecture leaves the cause code to the part ("see
- * the hardware manual of the product used"), and this frontend's codes are
- * internal identifiers anyway -- handler_address maps them to the compact
- * offsets it uses. 0x0090 is chosen only because it collides with nothing:
- * the obvious reading of the real table would put FETRAP at 0x0031..0x003F,
- * on top of MDP.
+ * FETRAP 1..15: 0x31..0x3F, table 3.103 of both the U2B manual and the
+ * virtualization manual. This was 0x90 + vector, chosen "because it
+ * collides with nothing" when MDP was 0x31 here -- the collision was this
+ * file's, not the table's, whose MDP is 0x91 and MIP 0x90.
  */
-#define G4MH_EXC_FETRAP 0x0090u /* FETRAP 1..15, +vector        */
+#define G4MH_EXC_FETRAP 0x0030u /* FETRAP 1..15, +vector        */
+
+/*
+ * The detail half of MIP's and MDP's cause, table 3.115: which mode and
+ * permission the violation was of, and for MDP what kind of instruction
+ * made it. Bits 31:16 of the cause, so these are already shifted.
+ */
+#define G4MH_EXC_D_UR (1u << 16) /* MDP: a read, user mode          */
+#define G4MH_EXC_D_UW (1u << 17) /* MDP: a write, user mode         */
+#define G4MH_EXC_D_UX (1u << 18) /* MIP: execution, user mode       */
+#define G4MH_EXC_D_SR (1u << 19) /* MDP: a read, supervisor mode    */
+#define G4MH_EXC_D_SW (1u << 20) /* MDP: a write, supervisor mode   */
+#define G4MH_EXC_D_SX (1u << 21) /* MIP: execution, supervisor mode */
+#define G4MH_EXC_D_RMW (1u << 22) /* SET1, NOT1, CLR1, CAXI          */
+#define G4MH_EXC_D_BL (1u << 23) /* PREPARE, DISPOSE, PUSHSP, POPSP */
 
 /*
  * FEINT, the FE-level maskable interrupt. The U2B gives it cause codes

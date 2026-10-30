@@ -1,14 +1,17 @@
 # Fuzzing
 
-Six targets: one per frontend, each the interpreter against the
+Eight targets: one per frontend, each the interpreter against the
 x86-64 JIT on whatever bytes libFuzzer produces; one for the IR itself,
-with no frontend ([below](#the-ir-with-no-frontend)); and one for RV32's
+with no frontend ([below](#the-ir-with-no-frontend)); one for RV32's
 translation and protection against a walk written from the spec
-([below](#translation-and-protection-rv32)). Between them they found
+([below](#translation-and-protection-rv32)); and one each for G4MH's
+and ARMv7-M's MPUs, against references written from their manuals
+([G4MH](#protection-g4mh), [ARMv7-M](#protection-armv7-m)). Between them they found
 eighteen defects in code that every suite passed --
 eight of them in an interpreter, which is the reference -- and one of
 those turned out to be a whole class, which a board then answered
-encoding by encoding. One more, in G4MH's interrupt ceiling, was found
+encoding by encoding. Writing fuzz-g4mh-mpu's reference found seven
+more before it ran ([below](#protection-g4mh)). One more, in G4MH's interrupt ceiling, was found
 by writing a seed for the interrupt controllers each target now maps:
 both backends shared it.
 
@@ -20,12 +23,14 @@ both backends shared it.
 | `fuzz-ppc-jit` | the interpreter and the manual, and nothing else: no e200 is attached |
 | `fuzz-ir` | the IR interpreter on the block as built, before any pass; the rules both lowerings state in `emu_ir.h` for what it might have wrong |
 | `fuzz-rv32-mmu` | a Sv32 walk and PMP written from the privileged spec, sharing nothing with `rv_mmu.c`; Sail and Spike, through a probe, for what it might have wrong |
+| `fuzz-g4mh-mpu` | the MPU's check, the cause codes and the instructions' pages, written from the U2B and G4MH manuals; the manual and nothing else |
+| `fuzz-armv7m-mpu` | the architecture's MPU pseudocode, with the F746's answers where it leaves room (`tests/armv7m-diff/sys.c`) |
 
 No GPL emulator is consulted, by any of them.
 
 ```sh
 scripts/fuzz.sh 600 armv7m   # build build/fuzz, seed it, fuzz ten minutes
-scripts/fuzz.sh 600 all      # the six in turn, and G4MH on three PEs
+scripts/fuzz.sh 600 all      # the eight in turn, and G4MH on three PEs
 FUZZ_STATS=1 build/fuzz/tests/fuzz/fuzz-armv7m-jit crash-...   # replay one
 cd build/fuzz && ctest -L fuzz   # each target's smoke run and saved regressions
 ```
@@ -426,8 +431,157 @@ reach it.
 
 What it does not reach: fetch -- the hart never leaves M, so the fetch
 table is never filled; the JIT's inlined probe, which reads the same
-data TLB (its entries are checked, the probe is not); and the other
-frontends' MPUs and PowerPC's TLB, which want references of their own.
+data TLB (its entries are checked, the probe is not); and PowerPC's
+TLB, which wants a reference of its own. G4MH's and ARMv7-M's MPUs have
+theirs ([G4MH](#protection-g4mh), [ARMv7-M](#protection-armv7-m)).
+
+## Protection: G4MH
+
+`fuzz-g4mh-mpu` (`tests/fuzz/fuzz_g4mh_mpu.c`) holds G4MH's MPU to a
+reference written from R01UH0923EJ0130 section 3.2.5.1 -- the check,
+tables 3.111 to 3.116 -- table 3.103's cause codes, and the instruction
+pages of the G4MH software manual, sharing nothing with `g4mh_mpu.c`.
+For this frontend the manual is the only authority: no RH850 is
+attached, and a reading this file and the core share is invisible here.
+
+Unlike fuzz-rv32-mmu it runs instructions, because what it is after is
+in them: one a step, placed in RAM at a pc chosen near an area's end and
+followed by HALT, on registers pointing near an area's ends -- loads and
+stores of every width, LD.DW and ST.DW, the bit operations, CAXI,
+PUSHSP, POPSP, PREPARE, DISPOSE, SLD/SST, a 48-bit MOV, NOP, and the
+setting check (`LDSR` to `MCC`, `STSR` from `MCR`). Between them the
+input writes entries through the `MPIDX` window, `MPM`, `MPIDn`, the
+core's SPID and mode, or builds the areas a program would have:
+executable code, readable-writable data, two areas end to end, one over
+all of memory. Each step runs on two cores, one per backend, with the
+JIT's blocks discarded first, and is compared with the reference on
+where the core stopped, PSW, FEPC, FEPSW, FEIC with its detail half,
+MEA, the registers, MCR and all of memory. Entry 31 is the harness's,
+supervisor-executable over the vector table, so every exception reaches
+its handler's HALT.
+
+Readings the reference makes where the manual leaves room, each written
+in it: an instruction that both reads and writes, refused, names each
+permission it was refused (table 3.115's notes speak of a read violation
+and a write violation, not of both); `MCR.OV` is a span passing
+`FFFF FFFFH` to 0 or `7FFF FFFFH` to `8000 0000H`, not one that merely
+includes either; and DISPOSE restores r31 first, from the lowest
+address, PREPARE's inverse, which its page does not spell out.
+
+```sh
+scripts/fuzz.sh 600 g4mh-mpu   # its regressions are tests/fuzz/regressions/g4mh-mpu/
+```
+
+What it found -- and a note on *how*: every one of these was found
+**while writing the reference**, by reading the manual's rule next to
+the code that should keep it. The running fuzzer then found none of the
+core's -- it found its own harness starting both cores from the
+reference's finished registers, and the disassembler printing POPSP as
+`di` -- and each fix reverted was found by it in seconds to a minute,
+which is what the mutants below are.
+
+| defect | where | held by |
+|---|---|---|
+| **the cause codes were not table 3.103's**: MIP `30H` for `90H`, MDP `31H` for `91H`, MAE `62H` for `C0H`, FETRAP `90H`+n for `31H`+n -- the last chosen to avoid MDP, a collision of this file's making. A handler reading FEIC was told the wrong exception; the vectors were right | `g4mh_types.h` | `g4mh-mpu/mip-cause-without-detail` |
+| **MIP and MDP carried no detail**: table 3.115's `UR`/`UW`/`SR`/`SW`, `UX`/`SX`, `RMW` and `BL` in FEIC's top half | `g4mh_cpu.c`, `g4mh_interp.c` | `test_mpu_manual_rules`, `g4mh-mpu/prepare-mdp-without-bl`, `dispose-mdp-without-bl` |
+| **an instruction ran with its second halfword in a refused area**: the check was on the first halfword, argued safe in a comment because bounds are 4-byte aligned -- and a 32-bit instruction at `...E` crosses one anyway; both backends | `g4mh_interp.c`, `g4mh_ir.c` | `test_mpu_manual_rules`, `g4mh-mpu/fetch-32-bit-insn-half-past-its-area`, `jit-fetch-...` |
+| **LD.DW and ST.DW were two word accesses to the MPU**, so one across two permitted areas went through, one wrapping past `FFFF FFFFH` under an area over everything went through, and ST.DW refused on its second word had written its first (tables 3.112, 3.114); both backends | `g4mh_cpu.c`, `g4mh_ir.c`, `g4mh_mpu.c` | `test_mpu_manual_rules`, `g4mh-mpu/ld-dw-across-two-areas`, `doubleword-wrapping-past-ffffffff`, `jit-doubleword-as-two-word-accesses` |
+| **SET1, NOT1 and CLR1 moved Z before their store was refused**, so FEPSW held the instruction's Z for a resumable exception; and neither they nor CAXI were refused as a read-modify-write | `g4mh_cpu.c`, `g4mh_interp.c`, `g4mh_ir.c` | `test_mpu_manual_rules`, `g4mh-mpu/set1-z-moved-before-refused-store`, `jit-bit-op-inlined-under-mpu`, `caxi-refused-without-rmw` |
+| **POPSP loaded sp** partway and put the final value over it, so an MDP between left the handler a loaded sp; the manual never loads it, which is what makes the instruction restartable | `g4mh_interp.c` | `test_mpu_manual_rules`, `g4mh-mpu/popsp-loads-sp-partway` |
+| **CAXI set no flags**; the manual sets CY, OV, S and Z from reg2 - token. The translator declines CAXI, so both backends shared it | `g4mh_interp.c` | `test_mpu_manual_rules`, `g4mh-mpu/caxi-sets-no-flags` |
+
+And one thing documented as missing, now there: the setting check
+(`MCC` computes `MCR`), with its writes, and `MPIDX`'s, no longer
+discarding every translation (`g4mh-mpu/setting-check-not-computed`,
+`setting-check-ignores-mci`).
+
+Mutants (`scripts/fuzz-mutant.sh 120 g4mh-mpu ...`), all found by
+fuzzing from an empty corpus:
+
+| mutant | where | found |
+|---|---|---|
+| the fetch asks the first halfword only | `g4mh_fetch_permitted` | 24 s |
+| the translator's fetch, likewise | `g4mh_ir_translate` | 6 s |
+| a doubleword checked a word at a time | `dw_refused` | 63 s |
+| an access wrapping past `FFFF FFFFH` allowed | `g4mh_mpu_permits` | 47 s |
+| the JIT's doubleword as two IR accesses under the MPU | `lower_one48` | not in 120 s; 13 s once the generator built adjacent areas |
+| a bit operation's Z moved before its refusal | `g4mh_bitop` | 7 s |
+| the JIT's EMU_IR_BITOP under the MPU | `lower_bitop` | 12 s |
+| CAXI's flags | the interpreter | 7 s |
+| CAXI refused a permission at a time | the interpreter | 22 s |
+| POPSP loads sp | the interpreter | 24 s |
+| PUSHSP's, PREPARE's, DISPOSE's BL dropped | the interpreter, `g4mh_prepare`, `g4mh_dispose` | 6 s, 3 s, 6 s |
+| the setting check not computed | `g4mh_mpu_sr_write` | 2 s |
+| the setting check ignores MCI's SPID gate | `check_span` | not in 120 s; 152 s once spans were put inside areas |
+| the setting check asks only the span's start | `check_span` | 37 s |
+| MDP's mode bits swapped, MIP's detail dropped | `g4mh_mdp`, the interpreter | 4 s, 5 s |
+| the two gates as alternatives | `g4mh_mpu_permits` | 5 s |
+| MPUA exclusive | `g4mh_mpu_permits` | 5 s |
+| SVP opening user mode too | `g4mh_mpu_permits` | 3 s |
+| a fetch asking the write group | `g4mh_mpu_permits` | 3 s |
+| the first matching area decides | `g4mh_mpu_permits` | 7 s |
+| a store's check dropped | `g4mh_store` | 7 s |
+
+
+## Protection: ARMv7-M
+
+`fuzz-armv7m-mpu` (`tests/fuzz/fuzz_armv7m_mpu.c`) holds ARMv7-M's MPU
+to `ValidateAddress()`, `CheckPermission()`, `DefaultPermissions()` and
+`MemU_with_priv[]` from the architecture manual (DDI 0403E B3.5.8,
+B2.3), sharing nothing with `mpu_permits`, and to what the F746 answered
+where those leave the implementation room. The shape is fuzz-g4mh-mpu's:
+one instruction a step -- every load and store width, LDRSH, the
+immediate-offset forms, LDRD, STRD, LDM, STM, LDRT, STRT, LDREX, LDR
+from a literal, two NOPs -- placed in ROM at a pc chosen near a region's
+end and followed by BKPT, with r0 near a region's end; regions and
+MPU_CTRL written through the System Control Space; Thread mode's
+privilege and which faults are enabled from the input. Each step runs
+on both backends and is compared with the reference on the exception
+taken, CFSR, HFSR, MMFAR and BFAR where valid, the stacked return
+address, the registers and the RAM. Regions 6 and 7 are the harness's
+-- the handlers' BKPT and the stack -- and, being the highest numbered,
+nothing the input writes overrides them.
+
+The board was asked first (`tests/armv7m-diff/sys.c`, `mpu-ua-*`): an
+unaligned word or halfword across the end of a region into one that
+refuses it is a MemManage with MMFAR at the first refused byte, and a
+store's bytes before it are written -- MemU's byte-at-a-time sequence,
+which is also what the interpreter does. The emulator agreed on every
+case, interpreted and under the JIT. The pseudocode's UNPREDICTABLE
+cases are not asked: AP `100`, regions under 32 bytes, subregions below
+256, HFNMIENA without ENABLE, an unaligned access to anything but
+Normal memory. Two things are left unasserted until the board says:
+BFAR for an unaligned access that faults partway into unmapped memory
+(the manual says "the address requested by the instruction"; this
+emulator reports the byte), and the registers of an LDM or LDRD
+abandoned partway, which are UNKNOWN.
+
+```sh
+scripts/fuzz.sh 600 armv7m-mpu
+```
+
+It found nothing: the MPU agrees with the architecture. That is a
+result only because every rule below, broken on purpose, was found by
+fuzzing from an empty corpus:
+
+| mutant | where | found |
+|---|---|---|
+| the lowest-numbered region wins | `mpu_permits` | 16 s |
+| subregions from 512 bytes, not 256 | `mpu_permits` | 14 s |
+| a quarter of a region per subregion bit | `mpu_permits` | 5 s |
+| every region half its size | `mpu_permits` | 3 s |
+| PRIVDEFENA's background for unprivileged too | `mpu_permits` | 4 s |
+| AP `010` refusing unprivileged reads | `mpu_permits` | 20 s |
+| AP `101` letting unprivileged code read | `mpu_permits` | 9 s |
+| XN ignored | `mpu_permits` | 3 s |
+| LDRT checked as privileged | `armv7m_mem_read_checked` | 4 s |
+| MMFAR aligned down | `armv7m_mem_read_checked` | 5 s |
+| a disabled fault never escalating | `armv7m_raise` | 3 s |
+| an unaligned read checked at its start only | `rd_u` | 29 s |
+| a 32-bit instruction's second halfword unchecked | the interpreter | 13 s |
+| the translator's, likewise | `fetch` (`armv7m_ir.c`) | 11 s |
+| a literal read from ROM folded to a constant under the MPU | `literal_const` | not in 120 s, until the generator had LDR literal; then 17 s |
+
 
 ## What it found
 

@@ -320,6 +320,40 @@ g4mh_exc_t g4mh_load(g4mh_cpu_t *c, uint32_t addr, uint32_t size,
 g4mh_exc_t g4mh_store(g4mh_cpu_t *c, uint32_t addr, uint32_t size,
                       uint32_t val);
 
+/*
+ * LD.DW and ST.DW: word-aligned, and one eight-byte span to the MPU,
+ * which must lie in a single area and not wrap past 0xFFFFFFFF. Nothing
+ * is written or loaded when the MPU refuses. Shared with the JIT's
+ * helper, which takes these while the MPU is on.
+ */
+g4mh_exc_t g4mh_load_dw(g4mh_cpu_t *c, uint32_t addr, uint32_t *lo,
+                        uint32_t *hi);
+g4mh_exc_t g4mh_store_dw(g4mh_cpu_t *c, uint32_t addr, uint32_t lo,
+                         uint32_t hi);
+
+/*
+ * The MDP cause for a refusal, with table 3.115's detail: the read and
+ * write bits of the current mode for what was refused, and `kind`
+ * (G4MH_EXC_D_RMW, G4MH_EXC_D_BL or 0) for the instruction.
+ */
+g4mh_exc_t g4mh_mdp(const g4mh_cpu_t *c, bool rd_bad, bool wr_bad,
+                    uint32_t kind);
+
+/* An exception from one word of PREPARE, DISPOSE, PUSHSP or POPSP. */
+static inline g4mh_exc_t g4mh_exc_block(g4mh_exc_t e)
+{
+    return (G4MH_EXC_CODE(e) == G4MH_EXC_MDP) ? (e | G4MH_EXC_D_BL) : e;
+}
+
+#if G4MH_EXT_MPU
+/*
+ * Whether the MPU lets the instruction at `pc` execute in the mode
+ * given: every halfword of it, which may lie in two areas. Call only with
+ * the MPU on; the caller raises MIP with MEA = pc.
+ */
+bool g4mh_fetch_permitted(const g4mh_cpu_t *c, uint32_t pc, bool user);
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Reservations                                                        */
 /* ------------------------------------------------------------------ */

@@ -55,7 +55,7 @@ B=${FUZZ_BUILD:-$ROOT/build/fuzz-mutant}
 LOG=$B.$T.log
 NAME=fuzz-$ISA-jit
 SET=$T-jit
-if [ "$T" = ir ] || [ "$T" = rv32-mmu ]; then # targets with no -jit
+if [ "$T" = ir ] || [ "$T" = rv32-mmu ] || [ "$T" = g4mh-mpu ] || [ "$T" = armv7m-mpu ]; then # targets with no -jit
     NAME=fuzz-$T
     SET=$T
 fi

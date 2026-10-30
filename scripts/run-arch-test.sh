@@ -200,10 +200,24 @@ fi
 # root. Keep the gems inside the build tree instead.
 export BUNDLE_PATH="${BUNDLE_PATH:-$suite/.bundle}"
 
+# The suite at the commit every figure here was taken with. Unpinned, a
+# fresh tree took upstream's head, which on 2026-10-30 required Sail
+# 0.16 where this host has 0.13.1, and arch-test-I failed in every row of
+# a build matrix run from a new worktree -- for a reason that was not the
+# emulator's. Move the pin on purpose, with Sail, and rerun both modes.
+ARCH_TEST_REF=${ARCH_TEST_REF:-d261a799762ffb94eea486d4adfe7632006d2b4a}
 if [[ ! -d "$suite/tests" ]]; then
-    echo "==> cloning riscv-arch-test into $suite"
-    mkdir -p "$(dirname "$suite")"
-    git clone --depth 1 -q https://github.com/riscv/riscv-arch-test.git "$suite" || exit 1
+    echo "==> fetching riscv-arch-test $ARCH_TEST_REF into $suite"
+    mkdir -p "$suite"
+    { git -C "$suite" init -q &&
+        git -C "$suite" remote add origin \
+            https://github.com/riscv/riscv-arch-test.git &&
+        git -C "$suite" fetch --depth 1 -q origin "$ARCH_TEST_REF" &&
+        git -C "$suite" checkout -q FETCH_HEAD; } || exit 1
+fi
+have=$(git -C "$suite" rev-parse HEAD 2>/dev/null || echo none)
+if [[ "$have" != "$ARCH_TEST_REF" ]]; then
+    echo "warning: $suite is at $have, not the pinned $ARCH_TEST_REF" >&2
 fi
 
 # Install our DUT description into the suite's config tree.

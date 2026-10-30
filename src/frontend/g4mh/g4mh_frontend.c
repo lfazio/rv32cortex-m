@@ -697,6 +697,7 @@ static void g4mh_ops_reg_write(emu_cpu_t *cpu, unsigned r, uint32_t v)
 
 static const char *cause_name(uint32_t cause)
 {
+    cause = G4MH_EXC_CODE(cause); /* MIP and MDP carry detail above */
     if (cause >= G4MH_EXC_EIINT_BASE && cause < G4MH_EXC_SYSCALL) {
         return "external interrupt";
     }
@@ -705,6 +706,9 @@ static const char *cause_name(uint32_t cause)
     }
     if (cause >= G4MH_EXC_TRAP1 && cause < G4MH_EXC_TRAP1 + 0x10u) {
         return "trap 16-31";
+    }
+    if (cause > G4MH_EXC_FETRAP && cause < G4MH_EXC_FETRAP + 0x10u) {
+        return "fetrap";
     }
     switch (cause) {
     case G4MH_EXC_SYSERR:
@@ -721,6 +725,8 @@ static const char *cause_name(uint32_t cause)
         return "floating-point operation";
     case G4MH_EXC_UCPOP:
         return "coprocessor unusable";
+    case G4MH_EXC_PIE:
+        return "privileged instruction";
     default:
         return "none or unknown";
     }

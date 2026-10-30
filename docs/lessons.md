@@ -3934,6 +3934,53 @@ session, and every one of them recurred:
   (`EMU_HOT_DATA`), and in the default build nothing moved, which is
   what an accident that had not happened looks like.
 
+- **Writing the reference is the first test it runs.** fuzz-g4mh-mpu's
+  reference was written from the U2B manual's protection section, its
+  cause table and the instruction pages, one rule at a time beside the
+  code that should keep it -- and that found every defect it has: cause
+  codes that were not the table's (MIP `30H` for `90H`, MDP `31H` for
+  `91H`, MAE `62H` for `C0H`, FETRAP moved to `90H` "because it
+  collides with nothing" when the collision was with this file's own
+  wrong MDP), no detail in FEIC's top half, a doubleword checked a word
+  at a time, a fetch checked at its first halfword, SET1's Z moved
+  before its refused store, POPSP loading sp, CAXI setting no flags.
+  When it first ran it found none of the core's -- it found its own
+  harness starting the cores from the reference's finished registers,
+  and the disassembler printing POPSP as `di`. Then every fix, reverted,
+  was found in seconds to two minutes (24 mutants). **A reference earns
+  its keep twice: once in the reading, and once in the mutants that
+  show the run would have caught each reading's absence.**
+
+  Two of the defects sat under comments that argued them away. The
+  fetch: "every MPU bound is 4-byte aligned ... so the straddle case
+  ... cannot happen for a halfword-aligned pc" -- a 32-bit instruction
+  at `...E` crosses a word boundary, and the comment's own premise is
+  the boundary. FETRAP: a constant chosen to avoid another is a reason
+  to check the other against the table first.
+
+- **A suspicion read from code is a question for the board, not a
+  fix.** ARMv7-M's `mpu_permits` checks an access's first address only,
+  and the ARM ARM says an unaligned access faults at "the actual
+  address that faulted". The F746, asked across a region's end into one
+  that refuses it, faulted at the first refused byte and had written a
+  store's bytes before it -- and so had the emulator, interpreted and
+  translated, because the interpreter already splits an unaligned
+  access into bytes before the check, as MemU does. fuzz-armv7m-mpu
+  then found nothing, which is a result only because fifteen mutants of
+  the rules it holds were each found. **A null result is the mutants'
+  to vouch for.**
+
+- **An unpinned checkout is a configuration nobody chose.** The build
+  matrix, run from a fresh worktree to keep this tree free, failed
+  arch-test-I in seven rows. Nothing in the change touched RV32: the
+  worktree had cloned riscv-arch-test anew, at a head committed that
+  morning, whose framework refuses Sail older than 0.16, and this host
+  has 0.13.1. The main tree's checkout was from August and every figure
+  quoted here came from it. `run-arch-test.sh` fetches that commit now
+  (`ARCH_TEST_REF`) and warns when a checkout is anything else. **A
+  third-party input is pinned the day it is first used, or a fresh tree
+  is a different experiment.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

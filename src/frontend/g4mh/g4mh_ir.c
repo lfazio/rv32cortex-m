@@ -358,18 +358,64 @@ static uint32_t g4mh_ir_bitop_helper(emu_cpu_t *cpu, uint32_t adr,
     return 1u;
 }
 
+/*
+ * LD.DW / ST.DW while the MPU is on: one eight-byte span to it, through
+ * the g4mh_load_dw/g4mh_store_dw the interpreter calls. Two IR word
+ * accesses would ask it twice, one word each, and allow an access split
+ * across two areas -- or wrapping past 0xFFFFFFFF -- that the manual
+ * refuses whole. With the MPU off nothing can refuse, and the two IR
+ * accesses stay; any MPU write discards the block.
+ *
+ * `rd_st` is the even register, with bit 5 set for the store.
+ */
+static uint32_t g4mh_ir_dw_helper(emu_cpu_t *cpu, uint32_t addr,
+                                  uint32_t rd_st)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
+    const uint32_t rd = rd_st & 0x1Eu;
+    g4mh_exc_t e;
+
+    if ((rd_st & 0x20u) != 0u) {
+        e = g4mh_store_dw(c, addr, c->r[rd], c->r[rd + 1u]);
+    } else {
+        uint32_t lo, hi;
+
+        e = g4mh_load_dw(c, addr, &lo, &hi);
+        if (e == G4MH_EXC_NONE) {
+            if (rd != 0u) {
+                c->r[rd] = lo;
+            }
+            c->r[rd + 1u] = hi;
+        }
+    }
+    if (e == G4MH_EXC_NONE) {
+        return 0u;
+    }
+    g4mh_cpu_exception(c, e, c->pc);
+    return 1u;
+}
+
 static const void *const g4mh_ir_helpers[] = {
     (const void *)g4mh_ir_dispose_helper,
     (const void *)g4mh_ir_adf_helper,
     (const void *)g4mh_ir_prepare_helper,
     (const void *)g4mh_ir_fpu_helper,
     (const void *)g4mh_ir_bitop_helper,
+    (const void *)g4mh_ir_dw_helper,
 };
 #define G4MH_IR_HELPER_DISPOSE 0u
 #define G4MH_IR_HELPER_ADF 1u
 #define G4MH_IR_HELPER_PREPARE 2u
 #define G4MH_IR_HELPER_FPU 3u
 #define G4MH_IR_HELPER_BITOP 4u
+#define G4MH_IR_HELPER_DW 5u
+
+/*
+ * Whether the MPU was on for the block being translated. Any MPU write
+ * discards every block (jit_gen), so this is a property of the block.
+ * Per core because cores translate at once under EMU_SMP.
+ */
+static EMU_PER_CORE bool g_xl_mpu;
 
 /*
  * One memory bit operation, either encoding: `sel` is the operation as
@@ -381,7 +427,12 @@ static void lower_bitop(emu_ir_block_t *b, uint32_t pc, uint32_t sel,
 {
     (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, pc,
                       0u);
-    if (EMU_SMP || !emu_ir_can_lower(EMU_IR_BITOP_SET, 1u)) {
+    /*
+     * And with the MPU on: EMU_IR_BITOP's load sets Z before its store is
+     * refused, and the refusal must name the read-modify-write; the
+     * helper checks both permissions first (g4mh_bitop).
+     */
+    if (EMU_SMP || g_xl_mpu || !emu_ir_can_lower(EMU_IR_BITOP_SET, 1u)) {
         const uint16_t at =
             disp != 0u ? emu_ir_alu(b, EMU_IR_ADD, addr, emu_ir_const(b, disp))
                        : addr;
@@ -1112,7 +1163,28 @@ static bool lower_one48(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
         return true;
     }
 
-    case (0x9u << 1) | 1u: { /* LD.DW */
+    case (0x9u << 1) | 1u: /* LD.DW */
+    case (0xFu << 1) | 1u: /* ST.DW */
+        if (g_xl_mpu) {
+            const uint32_t st = ((sub << 1) | (op & 1u)) == ((0xFu << 1) | 1u);
+
+            (void)emu_ir_emit(
+                b, EMU_IR_HELPER_TRAP, 0u,
+                emu_ir_alu(b, EMU_IR_ADD, base, emu_ir_const(b, disp)),
+                emu_ir_const(b, (r3 & 0x1Eu) | (st ? 0x20u : 0u)),
+                G4MH_IR_HELPER_DW, 0u);
+            return true;
+        }
+        if (((sub << 1) | (op & 1u)) == ((0xFu << 1) | 1u)) {
+            const uint32_t rs = r3 & ~1u;
+
+            (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(4u, 0u), base,
+                              emu_ir_get(b, rs), disp, 0u);
+            (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(4u, 0u), base,
+                              emu_ir_get(b, rs + 1u), disp + 4u, 0u);
+            return true;
+        }
+        {
         /*
          * Both loads, then both writes -- not load/write/load/write.
          * The interpreter leaves the first register untouched when the
@@ -1138,16 +1210,6 @@ static bool lower_one48(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
 
         (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(size, 0u), base,
                           emu_ir_get(b, r3), disp, 0u);
-        return true;
-    }
-
-    case (0xFu << 1) | 1u: { /* ST.DW */
-        const uint32_t rs = r3 & ~1u;
-
-        (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(4u, 0u), base,
-                          emu_ir_get(b, rs), disp, 0u);
-        (void)emu_ir_emit(b, EMU_IR_STORE, EMU_IR_MEM_AUX(4u, 0u), base,
-                          emu_ir_get(b, rs + 1u), disp + 4u, 0u);
         return true;
     }
 
@@ -1513,6 +1575,11 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
     emu_ir_reset(b);
     b->start_pc = pc;
     b->has_fast = g4mh_fast_mem(c, &b->fast);
+#if G4MH_EXT_MPU
+    g_xl_mpu = c->mpu_active;
+#else
+    g_xl_mpu = false;
+#endif
 
     while (count < G4MH_IR_MAX_BLOCK_INSNS && !b->overflow) {
         uint16_t w0;
@@ -1527,8 +1594,7 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
          * an area lost its execute bit kept running.
          */
         if (EMU_UNLIKELY(c->mpu_active) &&
-            !g4mh_mpu_permits(c->mpu, cur, 2u, G4MH_MPU_FETCH,
-                              (c->jit_ctx & 1u) != 0u, c->spid)) {
+            !g4mh_fetch_permitted(c, cur, (c->jit_ctx & 1u) != 0u)) {
             break;
         }
 #endif

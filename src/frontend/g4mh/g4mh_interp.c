@@ -468,25 +468,22 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
         /* --- fetch ------------------------------------------------- */
 #if G4MH_EXT_MPU
         /*
-         * Execute permission, and the one branch every guest pays.
+         * Execute permission, and the one branch every guest pays: the
+         * rest is out of line, behind it.
          *
-         * Checked on the *first halfword only*, deliberately. An
-         * instruction here is 2 to 8 bytes and could in principle
-         * straddle an area boundary, but every MPU bound is 4-byte
-         * aligned (MPLA and MPUA keep bits 31:2) and the areas that
-         * matter are pages -- so the straddle case is a 4-byte-aligned
-         * boundary inside an instruction, which cannot happen for a
-         * halfword-aligned pc without the first halfword already being
-         * on the far side. The RISC-V side checks per halfword because
-         * its PMP grew a case where that was not true; if a G4MH area
-         * ever becomes finer than 4 bytes, this needs the same
-         * treatment.
+         * Every halfword of the instruction, not the first alone. That
+         * was argued enough because area bounds are 4-byte aligned, and
+         * a 32-bit instruction at ...FE crosses one regardless; the
+         * manual refuses an instruction with any part in a disabled
+         * area (3.2.5.1(3)(d)). fuzz-g4mh-mpu found it.
          */
-        if (EMU_UNLIKELY(c->mpu_active) &&
-            !g4mh_mpu_permits(c->mpu, pc, 2u, G4MH_MPU_FETCH,
-                              (c->psw & G4MH_PSW_UM) != 0u, c->spid)) {
-            c->sr[2][G4MH_SR_MEA] = pc;
-            EXC(G4MH_EXC_MIP);
+        if (EMU_UNLIKELY(c->mpu_active)) {
+            const bool um = (c->psw & G4MH_PSW_UM) != 0u;
+
+            if (!g4mh_fetch_permitted(c, pc, um)) {
+                c->sr[2][G4MH_SR_MEA] = pc;
+                EXC(G4MH_EXC_MIP | (um ? G4MH_EXC_D_UX : G4MH_EXC_D_SX));
+            }
         }
 #endif
         uint16_t w0;
@@ -1454,6 +1451,18 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                 } else
 #endif
                 {
+#if G4MH_EXT_MPU
+                    /* Both permissions first, as one read-modify-write
+                     * (table 3.115's RMW bit); see g4mh_bitop. */
+                    if (EMU_UNLIKELY(c->mpu_active)) {
+                        g4mh_exc_t ex;
+
+                        (void)g4mh_rmw_ptr(c, adr, 4u, true, &ex);
+                        if (ex != G4MH_EXC_NONE) {
+                            EXC(ex);
+                        }
+                    }
+#endif
                     g4mh_exc_t e = g4mh_load(c, adr, 4u, false, &token);
                     if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
                         EXC(e);
@@ -1465,6 +1474,14 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                         EXC(e);
                     }
                 }
+                /*
+                 * "The result is indicated by flags in the PSW": CY, OV,
+                 * S and Z from reg2 - token, as CMP. This set none, on
+                 * both backends -- the translator declines CAXI -- until
+                 * fuzz-g4mh-mpu's reference was written from the manual.
+                 * Before reg3 is written: reg2 may be reg3.
+                 */
+                (void)do_sub(c, c->r[r2], token);
                 wr(c, r3, token);
 
                 if (!match) {
@@ -1986,7 +2003,7 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                         const g4mh_exc_t e =
                             g4mh_store(c, tmp & ~3u, 4u, c->r[cur]);
                         if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
-                            EXC(e);
+                            EXC(g4mh_exc_block(e));
                         }
                     }
                     c->r[3] = tmp;
@@ -2002,9 +2019,19 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                             const g4mh_exc_t e =
                                 g4mh_load(c, tmp & ~3u, 4u, false, &v);
                             if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
-                                EXC(e);
+                                EXC(g4mh_exc_block(e));
                             }
-                            c->r[cur] = v;
+                            /*
+                             * Not sp: "the sp is not loaded with the
+                             * value that is read from memory", which is
+                             * what lets a POPSP an MDP stopped partway
+                             * run again. Writing it here and putting
+                             * the final value over it after the loop
+                             * left a loaded sp for the handler.
+                             */
+                            if (cur != 3u) {
+                                c->r[cur] = v;
+                            }
                             tmp += 4u;
                         }
                     }
@@ -2460,21 +2487,15 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                          * from compiled code and the manual is the only
                          * statement of what it does.
                          *
-                         * Two word accesses, not one eight-byte one:
-                         * the caution under LD.DW says no MAE occurs when
-                         * the address is on a *word* boundary, so the
-                         * alignment required is 4 and each half checks
-                         * it. Both loads complete before either register
-                         * is written, so a fault on the second leaves the
-                         * first untouched for the handler.
+                         * Word alignment -- the caution under LD.DW says
+                         * no MAE occurs on a *word* boundary -- and one
+                         * eight-byte span to the MPU (g4mh_load_dw). Both
+                         * words are read before either register is
+                         * written, so a fault leaves both untouched.
                          */
                         const uint32_t rd = r3 & ~1u;
                         uint32_t lo, hi;
-                        e = g4mh_load(c, addr, 4u, false, &lo);
-                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
-                            EXC(e);
-                        }
-                        e = g4mh_load(c, addr + 4u, 4u, false, &hi);
+                        e = g4mh_load_dw(c, addr, &lo, &hi);
                         if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
                             EXC(e);
                         }
@@ -2502,11 +2523,7 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                         break;
                     case (0xFu << 1) | 1u: { /* ST.DW disp23 */
                         const uint32_t rs = r3 & ~1u;
-                        e = g4mh_store(c, addr, 4u, c->r[rs]);
-                        if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
-                            EXC(e);
-                        }
-                        e = g4mh_store(c, addr + 4u, 4u, c->r[rs + 1u]);
+                        e = g4mh_store_dw(c, addr, c->r[rs], c->r[rs + 1u]);
                         if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
                             EXC(e);
                         }

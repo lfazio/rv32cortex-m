@@ -68,6 +68,28 @@ sys_store_insn:
 sys_after_store:
     bx      lr
 
+    /* r0 = address; loads a halfword from it. */
+    .thumb_func
+    .global sys_do_loadh
+sys_do_loadh:
+    .global sys_loadh_insn
+sys_loadh_insn:
+    ldrh    r0, [r0]
+    .global sys_after_loadh
+sys_after_loadh:
+    bx      lr
+
+    /* r0 = address, r1 = value; stores a halfword. */
+    .thumb_func
+    .global sys_do_storeh
+sys_do_storeh:
+    .global sys_storeh_insn
+sys_storeh_insn:
+    strh    r1, [r0]
+    .global sys_after_storeh
+sys_after_storeh:
+    bx      lr
+
     /* r0 = address; LDRD from it, which must be word aligned. */
     .thumb_func
     .global sys_do_ldrd

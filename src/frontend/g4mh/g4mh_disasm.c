@@ -403,7 +403,34 @@ size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn,
             n = snprintf(buf, buflen, "reti");
             break;
         case 0x160:
-            n = snprintf(buf, buflen, (w0 & 0x8000u) ? "ei" : "di");
+            /*
+             * DI, EI, PUSHSP, POPSP, CLL and RESBANK, told apart by the
+             * whole reg2 field (and reg3 for RESBANK) -- the decode the
+             * interpreter learned the hard way and this file had not:
+             * bit 15 alone printed POPSP as `di` in fuzz-g4mh-mpu's
+             * first report.
+             */
+            switch (r2) {
+            case 0x00u:
+                n = snprintf(buf, buflen, sel == 0x10u ? "resbank" : "di");
+                break;
+            case 0x10u:
+                n = snprintf(buf, buflen, "ei");
+                break;
+            case 0x08u:
+            case 0x0Cu:
+                n = snprintf(buf, buflen, "%s r%u-r%u",
+                             r2 == 0x08u ? "pushsp" : "popsp", (unsigned)r1,
+                             (unsigned)sel);
+                break;
+            case 0x1Fu:
+                n = snprintf(buf, buflen, "cll");
+                break;
+            default:
+                n = snprintf(buf, buflen, ".short 0x%04x, 0x%04x",
+                             (unsigned)w0, (unsigned)w1);
+                break;
+            }
             break;
         /*
          * The link/pointer-update slot. reg2 is an opcode extension here

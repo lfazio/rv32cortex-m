@@ -7887,7 +7887,7 @@ static void test_mpu_exec_permission_both_backends(void)
         }
         why = mpu_test_rerun(true);
         CHECK_EQ(reg(10), 0u); /* not one instruction of it ran */
-        CHECK_EQ(sreg(0, G4MH_SR_FEIC), (uint32_t)G4MH_EXC_MIP);
+        CHECK_EQ(sreg(0, G4MH_SR_FEIC), (uint32_t)(G4MH_EXC_MIP | G4MH_EXC_D_UX));
         CHECK_EQ(sreg(0, G4MH_SR_FEPC), EMU_GUEST_RAM_BASE);
         CHECK((sreg(0, G4MH_SR_FEPSW) & G4MH_PSW_UM) != 0u);
         CHECK((psw() & G4MH_PSW_UM) == 0u); /* the handler is supervisor */
@@ -7915,11 +7915,255 @@ static void test_mpu_exec_permission_both_backends(void)
         CHECK_EQ(why, EMU_RUN_WFI); /* HALT parks */
         why = mpu_test_rerun(true);
         CHECK_EQ(reg(10), 0u);
-        CHECK_EQ(sreg(0, G4MH_SR_FEIC), (uint32_t)G4MH_EXC_MIP);
+        CHECK_EQ(sreg(0, G4MH_SR_FEIC), (uint32_t)(G4MH_EXC_MIP | G4MH_EXC_D_UX));
         CHECK_EQ(why, EMU_RUN_WFI); /* HALT parks */
     }
     g_force_backend = NULL;
     g_pre_run = NULL;
+}
+
+/*
+ * The rules fuzz-g4mh-mpu found broken, each from R01UH0923EJ0130
+ * 3.2.5.1 or the G4MH software manual, on both backends. Each program
+ * runs from the start of RAM with the MIP/MDP handler a HALT at +0x90;
+ * the MPU, mode and registers come from mt_setup.
+ */
+static struct {
+    uint32_t la[3], ua[3], at[3];
+    unsigned n;
+    uint32_t mpm;
+    bool user;
+    uint32_t r[32]; /* nonzero entries are set */
+    uint32_t mca, mcs, mci;
+    uint32_t d0; /* the first data word, at RAM + 0x400 */
+} g_mt;
+
+static void mt_setup(void)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+
+    for (unsigned i = 0; i < g_mt.n; i++) {
+        g4mh_sr_write(c, G4MH_SR_SEL_MPU, G4MH_SR_MPIDX, i);
+        g4mh_sr_write(c, G4MH_SR_SEL_MPU, G4MH_SR_MPLA, g_mt.la[i]);
+        g4mh_sr_write(c, G4MH_SR_SEL_MPU, G4MH_SR_MPUA, g_mt.ua[i]);
+        g4mh_sr_write(c, G4MH_SR_SEL_MPU, G4MH_SR_MPAT, g_mt.at[i]);
+    }
+    g4mh_sr_write(c, G4MH_SR_SEL_MPU, G4MH_SR_MCA, g_mt.mca);
+    g4mh_sr_write(c, G4MH_SR_SEL_MPU, G4MH_SR_MCS, g_mt.mcs);
+    g4mh_sr_write(c, G4MH_SR_SEL_MPU, G4MH_SR_MCI, g_mt.mci);
+    g4mh_sr_write(c, G4MH_SR_SEL_MPU, G4MH_SR_MPM, g_mt.mpm);
+    for (unsigned i = 0; i < 4u; i++) {
+        g_ram[0x400u + i] = (uint8_t)(g_mt.d0 >> (8u * i));
+    }
+    for (unsigned i = 1; i < 32u; i++) {
+        if (g_mt.r[i] != 0u) {
+            c->r[i] = g_mt.r[i];
+        }
+    }
+    c->psw = (c->psw & ~(G4MH_PSW_UM | G4MH_PSW_FLAGS)) |
+             (g_mt.user ? G4MH_PSW_UM : 0u);
+    c->sr[0][G4MH_SR_PSW] = c->psw;
+    g4mh_jit_ctx_refresh(c);
+}
+
+static bool mt_run(const uint16_t *code, unsigned n, unsigned pass)
+{
+    uint16_t prog[0x80];
+    emu_run_reason_t why;
+    uint32_t retired = 0u;
+
+    memset(prog, 0, sizeof(prog));
+    memcpy(prog, code, n * sizeof(code[0]));
+    prog[0x48] = 0x07E0u; /* MIP and MDP: halt */
+    prog[0x49] = SUB_HALT;
+    prog[0x60] = 0x07E0u; /* MAE: halt */
+    prog[0x61] = SUB_HALT;
+    g_force_backend = (pass == 0u) ? &g4mh_backend_interp : NULL;
+    g_pre_run = mt_setup;
+    const bool ok = load_and_run(prog, 0x80u, 64u, &why, &retired);
+
+    g_pre_run = NULL;
+    g_force_backend = NULL;
+    CHECK(ok);
+    return ok;
+}
+
+static void test_mpu_manual_rules(void)
+{
+    const uint32_t B = EMU_GUEST_RAM_BASE;
+    const uint32_t D = B + 0x400u; /* data */
+    const uint32_t RG = G4MH_MPAT_RG | G4MH_MPAT_WG | G4MH_MPAT_E;
+    const uint32_t user_code = RG | G4MH_MPAT_UX | G4MH_MPAT_UR;
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        /*
+         * A 32-bit instruction whose second halfword is past the only
+         * executable area: MIP at the instruction, which did not run.
+         * Every area bound is 4-byte aligned, and an instruction at
+         * ...E crosses one anyway; the first halfword alone said yes.
+         */
+        {
+            const uint16_t code[] = {0, 0, 0, 0, 0, 0, 0,
+                                     0x5620u, 0x1234u, /* movea 0x1234, r0, r10 */
+                                     0x07E0u, SUB_HALT};
+
+            memset(&g_mt, 0, sizeof(g_mt));
+            g_mt.n = 1u;
+            g_mt.la[0] = B;
+            g_mt.ua[0] = B + 0x0Cu;
+            g_mt.at[0] = user_code;
+            g_mt.mpm = G4MH_MPM_MPE;
+            g_mt.user = true;
+            if (mt_run(code, 11u, pass)) {
+                CHECK_EQ(sreg(0, G4MH_SR_FEIC),
+                         (uint32_t)(G4MH_EXC_MIP | G4MH_EXC_D_UX));
+                CHECK_EQ(sreg(0, G4MH_SR_FEPC), B + 0x0Eu);
+                CHECK_EQ(sreg(2, G4MH_SR_MEA), B + 0x0Eu);
+                CHECK_EQ(reg(10), 0u);
+            }
+        }
+        /*
+         * LD.DW over two adjacent readable areas, and ST.DW over two
+         * adjacent writable ones: one access to the MPU, which must lie
+         * in one area -- MDP, nothing loaded, nothing stored.
+         */
+        for (unsigned st = 0; st < 2u; st++) {
+            const uint16_t code[] = {
+                0x07AAu, (uint16_t)(st ? 0x600Fu : 0x6009u), 0x0000u,
+                0x07E0u, SUB_HALT}; /* ld.dw / st.dw 0[r10], r12 */
+            const uint32_t rw = RG | G4MH_MPAT_UR | G4MH_MPAT_UW;
+
+            memset(&g_mt, 0, sizeof(g_mt));
+            g_mt.n = 3u;
+            g_mt.la[0] = B;
+            g_mt.ua[0] = B + 0xFCu;
+            g_mt.at[0] = user_code;
+            g_mt.la[1] = D;
+            g_mt.ua[1] = D;
+            g_mt.at[1] = rw;
+            g_mt.la[2] = D + 4u;
+            g_mt.ua[2] = D + 4u;
+            g_mt.at[2] = rw;
+            g_mt.mpm = G4MH_MPM_MPE;
+            g_mt.user = true;
+            g_mt.r[10] = D;
+            g_mt.r[12] = 0x11111111u;
+            g_mt.r[13] = 0x22222222u;
+            if (mt_run(code, 5u, pass)) {
+                CHECK_EQ(sreg(0, G4MH_SR_FEIC),
+                         (uint32_t)(G4MH_EXC_MDP |
+                                    (st ? G4MH_EXC_D_UW : G4MH_EXC_D_UR)));
+                CHECK_EQ(sreg(2, G4MH_SR_MEA), D);
+                CHECK_EQ(ram32(0x400u), 0u);
+                CHECK_EQ(reg(12), 0x11111111u);
+            }
+        }
+        /*
+         * SET1 where the byte may be read and not written: refused
+         * before anything moves, and named a read-modify-write. Z was
+         * set from the read first, so FEPSW carried the new Z.
+         */
+        {
+            const uint16_t code[] = {0x07CAu, 0x0000u, /* set1 0, 0[r10] */
+                                     0x07E0u, SUB_HALT};
+
+            memset(&g_mt, 0, sizeof(g_mt));
+            g_mt.n = 2u;
+            g_mt.la[0] = B;
+            g_mt.ua[0] = B + 0xFCu;
+            g_mt.at[0] = user_code;
+            g_mt.la[1] = D;
+            g_mt.ua[1] = D;
+            g_mt.at[1] = RG | G4MH_MPAT_UR;
+            g_mt.mpm = G4MH_MPM_MPE;
+            g_mt.user = true;
+            g_mt.r[10] = D;
+            if (mt_run(code, 4u, pass)) {
+                CHECK_EQ(sreg(0, G4MH_SR_FEIC),
+                         (uint32_t)(G4MH_EXC_MDP | G4MH_EXC_D_UW |
+                                    G4MH_EXC_D_RMW));
+                CHECK_EQ(sreg(0, G4MH_SR_FEPSW) & G4MH_PSW_Z, 0u);
+            }
+        }
+        /*
+         * POPSP r2-r4 stopped at r2's word: r4 loaded, r3 -- sp -- not
+         * loaded at all ("the sp is not loaded with the value that is
+         * read from memory"), so the handler sees the sp it started with.
+         */
+        {
+            const uint16_t code[] = {0x67E2u, 0x2160u, /* popsp r2-r4 */
+                                     0x07E0u, SUB_HALT};
+
+            memset(&g_mt, 0, sizeof(g_mt));
+            g_mt.n = 2u;
+            g_mt.la[0] = B;
+            g_mt.ua[0] = B + 0xFCu;
+            g_mt.at[0] = user_code;
+            g_mt.la[1] = D;
+            g_mt.ua[1] = D + 4u;
+            g_mt.at[1] = RG | G4MH_MPAT_UR;
+            g_mt.mpm = G4MH_MPM_MPE;
+            g_mt.user = true;
+            g_mt.r[2] = 0x5A5A5A5Au;
+            g_mt.r[3] = D;
+            if (mt_run(code, 4u, pass)) {
+                CHECK_EQ(sreg(0, G4MH_SR_FEIC),
+                         (uint32_t)(G4MH_EXC_MDP | G4MH_EXC_D_UR |
+                                    G4MH_EXC_D_BL));
+                CHECK_EQ(sreg(2, G4MH_SR_MEA), D + 8u);
+                CHECK_EQ(reg(3), D);
+                CHECK_EQ(reg(2), 0x5A5A5A5Au);
+            }
+        }
+        /*
+         * CAXI sets CY, OV, S and Z from reg2 - token, as CMP: 3 - 5
+         * borrows and is negative. It set none.
+         */
+        {
+            const uint16_t code[] = {0x5FEAu, 0x60EEu, /* caxi [r10], r11, r12 */
+                                     0x07E0u, SUB_HALT};
+
+            memset(&g_mt, 0, sizeof(g_mt));
+            g_mt.r[10] = D;
+            g_mt.r[11] = 3u;
+            g_mt.r[12] = 9u;
+            g_mt.d0 = 5u;
+            if (mt_run(code, 4u, pass)) {
+                CHECK_EQ(psw() & G4MH_PSW_FLAGS,
+                         (uint32_t)(G4MH_PSW_S | G4MH_PSW_CY));
+                CHECK_EQ(reg(12), 5u); /* the token */
+                CHECK_EQ(ram32(0x400u), 5u); /* unequal: written back */
+            }
+        }
+        /*
+         * The setting check: a span inside an area the user may read and
+         * write, in supervisor mode with SVP set; then one crossing
+         * 0x7FFFFFFF, an area setting error.
+         */
+        for (unsigned ov = 0; ov < 2u; ov++) {
+            const uint16_t code[] = {0x57E0u, 0x2820u, /* ldsr r0, mcc, 5 */
+                                     0x6FEBu, 0x2840u, /* stsr mcr, r13, 5 */
+                                     0x07E0u, SUB_HALT};
+
+            memset(&g_mt, 0, sizeof(g_mt));
+            g_mt.n = 2u;
+            g_mt.la[0] = B;
+            g_mt.ua[0] = B + 0xFCu;
+            g_mt.at[0] = RG | G4MH_MPAT_SX | G4MH_MPAT_SR;
+            g_mt.la[1] = D;
+            g_mt.ua[1] = D + 0xFCu;
+            g_mt.at[1] = RG | G4MH_MPAT_UR | G4MH_MPAT_UW | G4MH_MPAT_SR;
+            g_mt.mpm = G4MH_MPM_MPE | G4MH_MPM_SVP;
+            g_mt.mca = ov ? 0x7FFFFFF0u : D + 0x10u;
+            g_mt.mcs = 0x20u;
+            g_mt.r[13] = 0xDEADu;
+            if (mt_run(code, 6u, pass)) {
+                CHECK_EQ(reg(13),
+                         ov ? G4MH_MCR_OV
+                            : (G4MH_MCR_URE | G4MH_MCR_UWE | G4MH_MCR_SRE));
+            }
+        }
+    }
 }
 
 static void test_mpu_window(void)
@@ -8345,6 +8589,7 @@ void test_g4mh(void)
     test_mpu_spid_group();
     test_mpu_window();
     test_mpu_exec_permission_both_backends();
+    test_mpu_manual_rules();
 #endif
     test_intc_global_from_other_pe();
     test_intc_pending_summary();

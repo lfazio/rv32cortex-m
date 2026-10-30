@@ -60,11 +60,20 @@ measured at.
     the data TLB against a walk written from the spec
     (`fuzz-rv32-mmu`), which found a PPN past the bus read as an alias
     and an M-mode access half in an unlocked PMP entry let through.
-    Left: G4MH's and ARMv7-M's MPUs and PowerPC's TLB, each against its
-    own reference; and RV32's fetch side -- the hart never leaves M
+    G4MH's MPU (`fuzz-g4mh-mpu`, from the U2B manual: seven defects,
+    all found writing the reference) and ARMv7-M's (`fuzz-armv7m-mpu`,
+    from the ARM ARM and the F746: none). Left: PowerPC's TLB against
+    its own reference; and RV32's fetch side -- the hart never leaves M
     there, so the fetch table is never filled -- and its JIT, whose
     inlined probe reads the same table (the entries are checked, the
     probe is not).
+  - **Asked of the F746 and not yet answered**: BFAR for an unaligned
+    access that faults partway into unmapped memory -- the ARM ARM
+    says the address the instruction requested, the emulator reports
+    the byte; fuzz-armv7m-mpu leaves it unasserted until `sys.c` asks.
+  - **G4MH's MEI** (table 3.38) is not written on MDP or MAE, and
+    `LDSR`/`STSR` to the MPU are not refused in user mode
+    ([frontend/g4mh.md](frontend/g4mh.md#not-implemented)).
   - **What arrives from outside the guest**: the ELF loader, the gdb
     stub's packet parser, the TFTP upload path, and the virtio
     descriptors and rings, which a guest writes.

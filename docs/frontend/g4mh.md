@@ -1399,7 +1399,36 @@ Other rules worth stating because each has a test that fails without it:
   sets `MPM.MPE` with no entry covering its own code stops immediately.
 
 Violations raise `MIP` on a fetch and `MDP` on an operand access, with
-the address in `MEA` -- both already existed.
+the address in `MEA`, and the cause as table 3.103 numbers it -- MIP
+`90H`, MDP `91H` -- with table 3.115's detail in its top half: which
+permission was refused in which mode (`UR`/`UW`/`SR`/`SW`, `UX`/`SX`),
+`RMW` for SET1/NOT1/CLR1/CAXI and `BL` for PREPARE/DISPOSE/PUSHSP/POPSP.
+The codes were `30H`/`31H` here, MAE `62H` for `C0H` and FETRAP `90H+n`
+for `31H+n`, with no detail at all, until a reference was written from
+the tables (`G4MH_EXC_CODE` reads the low half). A refused bit operation
+or CAXI is refused with both permissions known and before Z moves: MDP
+is resumable, so FEPSW must hold the PSW from before the instruction.
+
+Rules the core had wrong until fuzz-g4mh-mpu's reference was written
+from 3.2.5.1 ([docs/fuzzing.md](../fuzzing.md#protection-g4mh)):
+
+- **An instruction executes only if every halfword of it is in an
+  executable area** -- in two areas is fine, any part refused is MIP
+  (3.2.5.1(3)(d)). The check was on the first halfword alone, argued
+  safe because bounds are 4-byte aligned; a 32-bit instruction at `...E`
+  crosses one regardless, and every 48-bit one spans two words.
+  `g4mh_fetch_permitted` reads the length and asks for the rest, out of
+  line behind the one `mpu_active` branch; the translator asks the same.
+- **LD.DW and ST.DW are one eight-byte access to the MPU**: inside one
+  area, never wrapping past `FFFF FFFFH` (tables 3.112, 3.114). Two word
+  checks allowed a doubleword across two permitted areas, and a refused
+  second word left ST.DW's first written. `g4mh_load_dw` and
+  `g4mh_store_dw`; the JIT takes them by a helper while the MPU is on.
+- **POPSP never loads sp** ("the sp is not loaded with the value that is
+  read from memory"), so a POPSP stopped by an MDP re-executes; r3 was
+  loaded and then overwritten at the end, which an MDP between the two
+  left for the handler.
+- **CAXI sets CY, OV, S and Z** from reg2 - token, as CMP. It set none.
 
 ### What it costs when off
 
@@ -1409,11 +1438,9 @@ may join it: the RISC-V side measured **9.3% of CoreMark** on an
 unguarded second condition in the fetch sequence and had to fold two
 flags into one `fetch_guard` to get it back.
 
-The fetch check covers the first halfword only. Every MPU bound is
-4-byte aligned (`MPLA` and `MPUA` keep bits 31:2), so an instruction
-cannot straddle a boundary that its first halfword is on the right side
-of. If an area ever becomes finer than 4 bytes this needs the per-halfword
-treatment the RISC-V fetch guard already has.
+The fetch check covers every halfword of the instruction, out of line
+once `mpu_active` has said the MPU is on; the cost when it is off is the
+one branch, as before.
 
 `-DG4MH_EXT_MPU=0` compiles it out; `-DG4MH_MPU_ENTRIES=n` shrinks the
 entry file. Both are C macros with defaults in `g4mh_config.h`, not CMake
@@ -1428,11 +1455,30 @@ wrong neighbour: with the guard removed `mpla[N]` runs off the end and
 lands on `mpua[0]`, which the test never read. It now snapshots every
 entry and requires that none moved.
 
+### The setting check
+
+A write to `MCC` computes `MCR` from `MCA`, `MCS` and `MCI` (3.2.5.1(6),
+tables 3.67-3.71 and 3.116): the span `MCA` to `MCA + MCS - 1`, modulo
+2^32, judged as an access would be -- one enabled area holding it, the
+mode bit, the SPID gate with `MCI` as the SPID -- for both modes at
+once, whatever `PSW.UM` is. `MCC` reads 0. `OV` marks a span "crossing
+`0000 0000H` or `7FFF FFFFH`", read here as passing from `FFFF FFFFH` to
+0 or from `7FFF FFFFH` to `8000 0000H`, the sense 3.2.5.1(3)(e) gives
+"spans over"; `MCR`'s own table says "includes", which would make every
+span starting at 0 an error. The manual is the only authority, and this
+is a reading of it.
+
+Writing the setting-check registers -- or `MPIDX` -- does not discard
+translations: only `MPM`, an entry and `MPIDn` change what an access may
+do (`g4mh_mpu_reg_protects`). An OS calls the check per service request.
+
 ### Not implemented
 
-The setting-check function (`MCA`/`MCS`/`MCC`/`MCR`/`MCI`) is stored and
-readable but performs no check -- a guest can write the command and will
-read back whatever it wrote rather than a result. `MPBK` reads 0 (one
-bank, which is what `MPCFG.NBK` reports). The host/guest entry split
-(`MPCFG.HBE`) is not enforced, because there is no hypervisor mode here
-to enforce it against.
+`MEI`, the memory error information an MDP or MAE leaves for a handler
+emulating the access (table 3.38: length, register, data type, kind of
+instruction), is not written. `MPBK` reads 0 (one bank, which is what
+`MPCFG.NBK` reports). The host/guest entry split (`MPCFG.HBE`) is not
+enforced, because there is no hypervisor mode here to enforce it
+against. `LDSR` and `STSR` to the MPU's registers are not refused in
+user mode (PIE), so user code can turn the MPU off: see the user-mode
+gaps above.

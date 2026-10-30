@@ -684,6 +684,135 @@ static void t_mpu(void)
 
 /* ------------------------------------------------------------------ */
 
+/*
+ * An unaligned access across the end of an MPU region into one that
+ * refuses it. The ARM ARM lets an implementation split such an access
+ * into aligned parts and report "the actual address that faulted ...
+ * any offset in the range of the requested size" (MMFAR); what the M7
+ * reports, and whether a store's first part lands, is the board's to
+ * say. Both regions are Normal memory: an unaligned access spanning two
+ * memory types is UNPREDICTABLE, and one to Strongly-ordered memory is
+ * too, so the background region is not the one crossed into.
+ */
+extern uint32_t sys_do_loadh(uint32_t addr);
+extern char sys_loadh_insn[];
+extern char sys_after_loadh[];
+extern void sys_do_storeh(uint32_t addr, uint32_t v);
+extern char sys_storeh_insn[];
+extern char sys_after_storeh[];
+
+static void hook_mpu_ua(uint32_t *frame, uint32_t excret, uint32_t exc)
+{
+    static const struct {
+        const char *insn, *after;
+    } k[] = {
+        {sys_load_insn, sys_after_load},   {sys_store_insn, sys_after_store},
+        {sys_loadh_insn, sys_after_loadh}, {sys_storeh_insn, sys_after_storeh},
+        {sys_ldrd_insn, sys_after_ldrd},
+    };
+    const uint32_t pc = frame[6];
+    const uint32_t cfsr = CFSR;
+
+    (void)excret;
+    logv(exc);
+    logv(cfsr);
+    logv((cfsr & 0x80u) ? MMFAR - (uint32_t)g_mpubuf : 0xFFFFFFFFu);
+    logv((cfsr & 0x8000u) ? BFAR - (uint32_t)g_mpubuf : 0xFFFFFFFFu);
+    CFSR = cfsr;
+    for (uint32_t i = 0u; i < sizeof(k) / sizeof(k[0]); i++) {
+        if (pc == ((uint32_t)k[i].insn & ~1u)) {
+            logv(i);
+            frame[6] = (uint32_t)k[i].after & ~1u;
+            return;
+        }
+    }
+    logv(0xBADu);
+}
+
+/*
+ * A load's result: the value, or -- when the hook ran and resumed after
+ * the load, leaving r0 the address -- that address as an offset, since
+ * the buffer is not at the same address on the board and the emulator.
+ */
+static uint32_t ua_load(uint32_t (*fn)(uint32_t), uint32_t addr)
+{
+    const uint32_t n = g_nlog;
+    const uint32_t v = fn(addr);
+
+    return (g_nlog != n) ? v - (uint32_t)g_mpubuf : v;
+}
+
+/* The two words around the boundary, read with the MPU off. */
+static void log_boundary(void)
+{
+    MPU_CTRL = 0u;
+    barrier();
+    logv(*(volatile uint32_t *)(g_mpubuf + 28));
+    logv(*(volatile uint32_t *)(g_mpubuf + 32));
+    *(volatile uint32_t *)(g_mpubuf + 28) = 0x1F1E1D1Cu;
+    *(volatile uint32_t *)(g_mpubuf + 32) = 0x23222120u;
+    MPU_CTRL = 1u;
+    barrier();
+}
+
+static void t_mpu_unaligned(void)
+{
+    const uint32_t b = (uint32_t)g_mpubuf;
+    const uint32_t normal = 1u << 19; /* TEX 001, C 0, B 0 */
+
+    g_hook = hook_mpu_ua;
+    SHCSR |= (1u << 16) | (1u << 17) | (1u << 18);
+    for (uint32_t i = 0u; i < sizeof(g_mpubuf); i++) {
+        g_mpubuf[i] = (uint8_t)i;
+    }
+    mpu_region(0u, 0u, 32u, 3u, 0u, 0u);
+    /* The buffer, Normal, read-write; its second 32 bytes no access. */
+    mpu_region(1u, b, 10u, 3u, 1u, 0u);
+    MPU_RASR |= normal;
+    mpu_region(2u, b + 32u, 5u, 0u, 1u, 0u);
+    MPU_RASR |= normal;
+    MPU_CTRL = 1u;
+    barrier();
+
+    logv(ua_load(sys_do_load, b + 28u)); /* control: aligned, inside */
+    emit("mpu-ua-control");
+    logv(ua_load(sys_do_load, b + 30u)); /* two bytes in, two in region 2 */
+    emit("mpu-ua-ldr-into");
+    logv(ua_load(sys_do_load, b + 62u)); /* two bytes in region 2, two out */
+    emit("mpu-ua-ldr-from");
+    logv(ua_load(sys_do_loadh, b + 31u));
+    emit("mpu-ua-ldrh-into");
+    sys_do_store(b + 30u, 0xA5A5A5A5u);
+    log_boundary();
+    emit("mpu-ua-str-into");
+    sys_do_storeh(b + 31u, 0x5A5Au);
+    log_boundary();
+    emit("mpu-ua-strh-into");
+    sys_do_store(b + 29u, 0x77777777u); /* three bytes in, one out */
+    log_boundary();
+    emit("mpu-ua-str-into-3");
+
+    /* Region 2 read-write too: the same accesses go through. */
+    MPU_RNR = 2u;
+    MPU_RASR = (MPU_RASR & ~(7u << 24)) | (3u << 24);
+    barrier();
+    logv(ua_load(sys_do_load, b + 30u));
+    sys_do_store(b + 30u, 0xA5A5A5A5u);
+    log_boundary();
+    emit("mpu-ua-both-allowed");
+
+    MPU_CTRL = 0u;
+    for (uint32_t i = 0u; i < 3u; i++) {
+        MPU_RNR = i;
+        MPU_RASR = 0u;
+    }
+    barrier();
+    SHCSR &= ~((1u << 16) | (1u << 17) | (1u << 18));
+    g_hook = 0;
+}
+
+/* ------------------------------------------------------------------ */
+
 static volatile uint32_t g_psp_seen;
 
 static void hook_psp(uint32_t *frame, uint32_t excret, uint32_t exc)
@@ -1192,6 +1321,7 @@ int main(void)
     t_usage();
     t_bus();
     t_mpu();
+    t_mpu_unaligned();
     t_psp();
     t_misc();
     t_systick();

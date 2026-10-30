@@ -151,3 +151,65 @@ if(EMU_GUEST_ARCH_RV32)
             LABELS fuzz)
     endif()
 endif()
+
+#
+# ARMv7-M's MPU against ValidateAddress(), CheckPermission() and MemU[]
+# from the architecture manual, with what the board answered where they
+# leave room (fuzz_armv7m_mpu.c). The smoke test must show instructions
+# completed, refused on fetch and on data, a fault escalated, an
+# unaligned access across a region's end, and blocks translated.
+#
+if(EMU_GUEST_ARCH_ARMV7M)
+    add_executable(fuzz-armv7m-mpu fuzz_armv7m_mpu.c)
+    target_link_libraries(fuzz-armv7m-mpu PRIVATE emucore)
+    target_link_options(fuzz-armv7m-mpu PRIVATE -fsanitize=fuzzer)
+    target_compile_options(fuzz-armv7m-mpu PRIVATE -Wall -Wextra -Wundef)
+    add_test(NAME fuzz-armv7m-mpu-smoke
+             COMMAND ${CMAKE_COMMAND} -E env FUZZ_STATS=1
+                     $<TARGET_FILE:fuzz-armv7m-mpu> -runs=20000 -seed=1
+                     -max_len=512 -timeout=10)
+    set_tests_properties(fuzz-armv7m-mpu-smoke PROPERTIES
+        PASS_REGULAR_EXPRESSION
+            "[1-9][0-9]* completed, [1-9][0-9]* MemManage \\([1-9][0-9]* IACCVIOL, [1-9][0-9]* DACCVIOL\\).*[1-9][0-9]* forced\\); [1-9][0-9]* unaligned.*jit [1-9][0-9]* translations"
+        LABELS fuzz)
+    file(GLOB _a7mpu_saved ${CMAKE_CURRENT_SOURCE_DIR}/regressions/armv7m-mpu/*)
+    if(_a7mpu_saved)
+        add_test(NAME fuzz-armv7m-mpu-regressions
+                 COMMAND $<TARGET_FILE:fuzz-armv7m-mpu> -runs=0 -timeout=10
+                         ${CMAKE_CURRENT_SOURCE_DIR}/regressions/armv7m-mpu)
+        set_tests_properties(fuzz-armv7m-mpu-regressions PROPERTIES
+            PASS_REGULAR_EXPRESSION "Done [0-9]+ runs"
+            LABELS fuzz)
+    endif()
+endif()
+
+#
+# G4MH's memory protection against a reference written from the U2B
+# manual, sharing nothing with g4mh_mpu.c (fuzz_g4mh_mpu.c): one
+# instruction a step, under both backends. The smoke test must show
+# instructions completed *and* refused by fetch and by data protection,
+# the setting check run, and blocks translated.
+#
+if(EMU_GUEST_ARCH_G4MH)
+    add_executable(fuzz-g4mh-mpu fuzz_g4mh_mpu.c)
+    target_link_libraries(fuzz-g4mh-mpu PRIVATE emucore)
+    target_link_options(fuzz-g4mh-mpu PRIVATE -fsanitize=fuzzer)
+    target_compile_options(fuzz-g4mh-mpu PRIVATE -Wall -Wextra -Wundef)
+    add_test(NAME fuzz-g4mh-mpu-smoke
+             COMMAND ${CMAKE_COMMAND} -E env FUZZ_STATS=1
+                     $<TARGET_FILE:fuzz-g4mh-mpu> -runs=20000 -seed=1
+                     -max_len=512 -timeout=10)
+    set_tests_properties(fuzz-g4mh-mpu-smoke PROPERTIES
+        PASS_REGULAR_EXPRESSION
+            "[1-9][0-9]* completed, [1-9][0-9]* MIP, [0-9]+ MDP \\([1-9][0-9]* by the MPU\\).*[1-9][0-9]* setting checks.*jit [1-9][0-9]* translations"
+        LABELS fuzz)
+    file(GLOB _g4mpu_saved ${CMAKE_CURRENT_SOURCE_DIR}/regressions/g4mh-mpu/*)
+    if(_g4mpu_saved)
+        add_test(NAME fuzz-g4mh-mpu-regressions
+                 COMMAND $<TARGET_FILE:fuzz-g4mh-mpu> -runs=0 -timeout=10
+                         ${CMAKE_CURRENT_SOURCE_DIR}/regressions/g4mh-mpu)
+        set_tests_properties(fuzz-g4mh-mpu-regressions PROPERTIES
+            PASS_REGULAR_EXPRESSION "Done [0-9]+ runs"
+            LABELS fuzz)
+    endif()
+endif()

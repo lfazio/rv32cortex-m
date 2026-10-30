@@ -151,7 +151,10 @@ bool g4mh_exc_is_fe(g4mh_exc_t cause)
      * a system error, a protection violation, a reserved instruction, a
      * misaligned access, an FP fault, an unusable coprocessor. Everything
      * else -- TRAP, SYSCALL and the interrupts -- is EI level.
+     *
+     * By the code alone: MIP and MDP carry detail in the top half.
      */
+    cause = G4MH_EXC_CODE(cause);
     switch (cause) {
     case G4MH_EXC_SYSERR:
     case G4MH_EXC_MIP:
@@ -208,6 +211,7 @@ static uint32_t handler_address(const g4mh_cpu_t *c, g4mh_exc_t cause)
     /* RBASE/EBASE carry flags in the low bits; the table is 512-aligned. */
     const uint32_t table = base & ~0x1FFu;
 
+    cause = G4MH_EXC_CODE(cause); /* MIP and MDP carry detail above */
     if (cause >= G4MH_EXC_EIINT_BASE && cause < G4MH_EXC_SYSCALL) {
         /*
          * Only reached for the direct vector method -- the table
@@ -683,6 +687,74 @@ void g4mh_ll_drop(g4mh_cpu_t *c)
     emu_unlock(&g4mh_sys_lock);
 }
 
+/*
+ * MDP, with the detail table 3.115 puts in the cause's top half: which
+ * permission was refused, in the mode the access was made in, and what
+ * kind of instruction made it (`kind`: G4MH_EXC_D_RMW, _BL or 0). An
+ * instruction that both reads and writes sets a bit for each it was
+ * refused -- the table's notes 1 and 2 say the R bit for "a read
+ * violation" and the W bit for "a write violation", and a read-modify-
+ * write can be both; that both appear together is this file's reading.
+ */
+g4mh_exc_t g4mh_mdp(const g4mh_cpu_t *c, bool rd_bad, bool wr_bad,
+                    uint32_t kind)
+{
+    const bool um = (c->psw & G4MH_PSW_UM) != 0u;
+    uint32_t d = kind;
+
+    if (rd_bad) {
+        d |= um ? G4MH_EXC_D_UR : G4MH_EXC_D_SR;
+    }
+    if (wr_bad) {
+        d |= um ? G4MH_EXC_D_UW : G4MH_EXC_D_SW;
+    }
+    return G4MH_EXC_MDP | d;
+}
+
+#if G4MH_EXT_MPU
+/*
+ * May the instruction at `pc` execute: every halfword of it in an area
+ * that permits execution, in the mode given.
+ *
+ * Not one area: "the instruction may be executed if both areas are
+ * enabled. If one area is disabled, however, the instruction cannot be
+ * executed even if the other area is enabled" (3.2.5.1(3)(d)). Checking
+ * the first halfword alone was argued safe because every area bound is
+ * 4-byte aligned -- and a 32-bit instruction at ...FE has its second
+ * halfword in the next word all the same, so it executed from an area
+ * that refused it. A 48-bit one always spans two words.
+ *
+ * The length comes from the code, so this reads it. Only ever called
+ * with the MPU on; a halfword the bus cannot fetch is left to the fetch
+ * that follows, which reports it.
+ */
+EMU_NOINLINE bool g4mh_fetch_permitted(const g4mh_cpu_t *c, uint32_t pc,
+                                       bool user)
+{
+    uint16_t w0, w1;
+
+    if (!g4mh_mpu_permits(c->mpu, pc, 2u, G4MH_MPU_FETCH, user, c->spid)) {
+        return false;
+    }
+    if (emu_bus_fetch16(c->bus, pc, &w0) != EMU_FAULT_NONE ||
+        g4mh_insn_len(w0) == 2u ||
+        emu_bus_fetch16(c->bus, pc + 2u, &w1) != EMU_FAULT_NONE) {
+        return true;
+    }
+    const uint32_t len = !g4mh_insn_is_48(w0, w1) ? 4u
+                         : g4mh_insn_is_64(w0, w1) ? 8u
+                                                   : 6u;
+
+    for (uint32_t off = 2u; off < len; off += 2u) {
+        if (!g4mh_mpu_permits(c->mpu, pc + off, 2u, G4MH_MPU_FETCH, user,
+                              c->spid)) {
+            return false;
+        }
+    }
+    return true;
+}
+#endif
+
 uint8_t *g4mh_rmw_ptr(g4mh_cpu_t *c, uint32_t addr, uint32_t size, bool write,
                       g4mh_exc_t *exc)
 {
@@ -695,12 +767,17 @@ uint8_t *g4mh_rmw_ptr(g4mh_cpu_t *c, uint32_t addr, uint32_t size, bool write,
 #if G4MH_EXT_MPU
     if (EMU_UNLIKELY(c->mpu_active)) {
         const bool um = (c->psw & G4MH_PSW_UM) != 0u;
+        const bool rd_bad =
+            !g4mh_mpu_permits(c->mpu, addr, size, G4MH_MPU_READ, um, c->spid);
+        const bool wr_bad = write && !g4mh_mpu_permits(c->mpu, addr, size,
+                                                       G4MH_MPU_WRITE, um,
+                                                       c->spid);
 
-        if (!g4mh_mpu_permits(c->mpu, addr, size, G4MH_MPU_READ, um, c->spid) ||
-            (write && !g4mh_mpu_permits(c->mpu, addr, size, G4MH_MPU_WRITE, um,
-                                        c->spid))) {
+        if (rd_bad || wr_bad) {
             c->sr[2][G4MH_SR_MEA] = addr;
-            *exc = G4MH_EXC_MDP;
+            /* Only SET1/NOT1/CLR1 and CAXI raise what this reports:
+             * STC's caller takes the ordinary store on a refusal. */
+            *exc = g4mh_mdp(c, rd_bad, wr_bad, G4MH_EXC_D_RMW);
             return NULL;
         }
     }
@@ -737,7 +814,7 @@ g4mh_exc_t g4mh_load(g4mh_cpu_t *c, uint32_t addr, uint32_t size,
         !g4mh_mpu_permits(c->mpu, addr, size, G4MH_MPU_READ,
                           (c->psw & G4MH_PSW_UM) != 0u, c->spid)) {
         c->sr[2][G4MH_SR_MEA] = addr;
-        return G4MH_EXC_MDP;
+        return g4mh_mdp(c, true, false, 0u);
     }
 #endif
 
@@ -772,7 +849,7 @@ g4mh_exc_t g4mh_store(g4mh_cpu_t *c, uint32_t addr, uint32_t size, uint32_t val)
         !g4mh_mpu_permits(c->mpu, addr, size, G4MH_MPU_WRITE,
                           (c->psw & G4MH_PSW_UM) != 0u, c->spid)) {
         c->sr[2][G4MH_SR_MEA] = addr;
-        return G4MH_EXC_MDP;
+        return g4mh_mdp(c, false, true, 0u);
     }
 #endif
 
@@ -792,6 +869,79 @@ g4mh_exc_t g4mh_store(g4mh_cpu_t *c, uint32_t addr, uint32_t size, uint32_t val)
         g4mh_ll_break(addr);
     }
     return G4MH_EXC_NONE;
+}
+
+/*
+ * LD.DW and ST.DW: one eight-byte access, as the MPU sees it.
+ *
+ * "It is necessary that the associated memory access is encompassed
+ * entirely in a single access enabled area. No accesses that span over
+ * two or more areas are allowed even when the access enabled areas are
+ * allocated in contiguous spaces" -- with LD.DW and ST.DW named as where
+ * that happens (3.2.5.1(3)(d), table 3.112), and one spanning
+ * 0xFFFFFFFF to 0 raises MDP even under an area covering everything
+ * (table 3.114). Two word accesses each checked alone allowed both, and
+ * a refused second word left ST.DW's first written.
+ *
+ * Word alignment, not doubleword: no MAE on a word boundary (the
+ * caution under LD.DW). The bus sees two words, low first.
+ */
+static bool dw_refused(g4mh_cpu_t *c, uint32_t addr, g4mh_mpu_acc_t acc)
+{
+#if G4MH_EXT_MPU
+    if (EMU_UNLIKELY(c->mpu_active) &&
+        !g4mh_mpu_permits(c->mpu, addr, 8u, acc, (c->psw & G4MH_PSW_UM) != 0u,
+                          c->spid)) {
+        c->sr[2][G4MH_SR_MEA] = addr;
+        return true;
+    }
+#else
+    (void)c;
+    (void)addr;
+    (void)acc;
+#endif
+    return false;
+}
+
+g4mh_exc_t g4mh_load_dw(g4mh_cpu_t *c, uint32_t addr, uint32_t *lo,
+                        uint32_t *hi)
+{
+    if (EMU_UNLIKELY((addr & 3u) != 0u)) {
+        c->sr[2][G4MH_SR_MEA] = addr;
+        return G4MH_EXC_MAE;
+    }
+    if (dw_refused(c, addr, G4MH_MPU_READ)) {
+        return g4mh_mdp(c, true, false, 0u);
+    }
+    emu_fault_t f = emu_bus_read(c->bus, addr, 4u, lo);
+    if (EMU_UNLIKELY(f != EMU_FAULT_NONE)) {
+        c->sr[2][G4MH_SR_MEA] = addr;
+        return g4mh_exc_from_fault(f);
+    }
+    f = emu_bus_read(c->bus, addr + 4u, 4u, hi);
+    if (EMU_UNLIKELY(f != EMU_FAULT_NONE)) {
+        c->sr[2][G4MH_SR_MEA] = addr + 4u;
+        return g4mh_exc_from_fault(f);
+    }
+    return G4MH_EXC_NONE;
+}
+
+g4mh_exc_t g4mh_store_dw(g4mh_cpu_t *c, uint32_t addr, uint32_t lo,
+                         uint32_t hi)
+{
+    if (EMU_UNLIKELY((addr & 3u) != 0u)) {
+        c->sr[2][G4MH_SR_MEA] = addr;
+        return G4MH_EXC_MAE;
+    }
+    if (dw_refused(c, addr, G4MH_MPU_WRITE)) {
+        return g4mh_mdp(c, false, true, 0u);
+    }
+    /* The MPU has passed both words; the bus decides each. */
+    g4mh_exc_t e = g4mh_store(c, addr, 4u, lo);
+    if (e == G4MH_EXC_NONE) {
+        e = g4mh_store(c, addr + 4u, 4u, hi);
+    }
+    return e;
 }
 
 /* ------------------------------------------------------------------ */
@@ -917,11 +1067,15 @@ void g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg, uint32_t val)
          */
         c->mpu_active = g4mh_mpu_is_active(c->mpu);
         /*
-         * Any MPU register, not only MPM: an area's bounds or attributes
-         * change what a translated block was allowed to fetch. A guest
-         * reprograms the MPU at a task switch, not per instruction.
+         * Any register that decides an access, not only MPM: an area's
+         * bounds or attributes change what a translated block was
+         * allowed to fetch. A guest reprograms the MPU at a task switch,
+         * not per instruction -- but it may run the setting check per
+         * system call, and that changes nothing a block depends on.
          */
-        c->jit_gen++;
+        if (g4mh_mpu_reg_protects(reg)) {
+            c->jit_gen++;
+        }
         return;
     }
 #endif
@@ -1009,6 +1163,22 @@ g4mh_exc_t g4mh_bitop(g4mh_cpu_t *c, uint32_t op, uint32_t adr, uint32_t bit)
                 g4mh_ll_break(adr); /* it is a store, as below */
             }
             return G4MH_EXC_NONE;
+        }
+    }
+#endif
+#if G4MH_EXT_MPU
+    /*
+     * Both permissions before anything moves. The load below sets Z and
+     * then the store can be refused -- MDP is resumable, so the
+     * instruction must not have happened, and FEPSW had the new Z. And
+     * the refusal is a read-modify-write's (table 3.115's RMW bit).
+     */
+    if (op != G4MH_BITOP_TST && EMU_UNLIKELY(c->mpu_active)) {
+        g4mh_exc_t ex;
+
+        (void)g4mh_rmw_ptr(c, adr, 1u, true, &ex);
+        if (ex != G4MH_EXC_NONE) {
+            return ex;
         }
     }
 #endif
@@ -1136,7 +1306,7 @@ g4mh_exc_t g4mh_prepare(g4mh_cpu_t *c, uint32_t list, uint32_t imm5,
     const g4mh_exc_t e = prepare_save(c, list, &sp);
 
     if (e != G4MH_EXC_NONE) {
-        return e;
+        return g4mh_exc_block(e);
     }
     sp -= imm5 << 2;
     c->r[3] = sp;
@@ -1190,7 +1360,7 @@ g4mh_exc_t g4mh_dispose(g4mh_cpu_t *c, uint32_t list, uint32_t imm5,
     const g4mh_exc_t e = dispose_load(c, list, imm5, &sp);
 
     if (e != G4MH_EXC_NONE) {
-        return e;
+        return g4mh_exc_block(e);
     }
     *target_out = c->r[rt] & ~1u;
     c->r[3] = sp;

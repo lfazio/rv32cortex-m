@@ -84,10 +84,18 @@ bool g4mh_mpu_permits(const g4mh_mpu_t *m, uint32_t addr, uint32_t size,
      *
      * An access straddling the top of an area is a violation even
      * though its first byte is inside, which is why `last` is compared
-     * rather than `addr` alone. Sizes here are 1, 2 or 4 and the
-     * alignment check has already run, so the addition cannot wrap.
+     * rather than `addr` alone.
+     *
+     * And one that wraps past 0xFFFFFFFF is refused whatever the areas
+     * say -- LD.DW at 0xFFFFFFFC raises MDP under an area covering all
+     * of memory (table 3.114). Only the doubleword can: the narrower
+     * sizes are aligned, and a fetch is asked a halfword at a time.
      */
     const uint32_t last = addr + size - 1u;
+
+    if (last < addr) {
+        return false;
+    }
 
     for (unsigned i = 0; i < G4MH_MPU_ENTRIES; i++) {
         const uint32_t at = m->mpat[i];
@@ -146,6 +154,73 @@ bool g4mh_mpu_permits(const g4mh_mpu_t *m, uint32_t addr, uint32_t size,
 }
 
 /* ------------------------------------------------------------------ */
+/* The setting-check function                                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * What MCR holds after a write to MCC: R01UH0923EJ0130 3.2.5.1(6), the
+ * registers in 3.2.3 (tables 3.67-3.71) and the results in table 3.116.
+ *
+ * The span is MCA to MCA + MCS - 1, modulo 2^32 (MCS 0 is 2^32 bytes).
+ * Each bit is "the same memory protection judgement" an access gets --
+ * the span inside one enabled area, the mode bit, the SPID gate with MCI
+ * as the SPID, any area permitting -- for both modes at once, whatever
+ * PSW.UM is. With MPM.MPE clear everything is permitted; with SVP clear
+ * the three supervisor bits are, OV or not.
+ *
+ * OV is "an area setting error": a span that "crosses 0000 0000H or
+ * 7FFF FFFFH". Read here as passing from 0xFFFFFFFF to 0 or from
+ * 0x7FFFFFFF to 0x80000000 -- the sense 3.2.5.1(3)(e) gives "spans over
+ * address 0000 0000H". MCR's own table says "includes" the address
+ * instead, which would make every span starting at 0 an error; the
+ * manual is the only authority here and this is a reading of it.
+ */
+static uint32_t check_span(const g4mh_mpu_t *m)
+{
+    if ((m->mpm & G4MH_MPM_MPE) == 0u) {
+        return G4MH_MCR_ATTR;
+    }
+    const uint32_t lo = m->mca;
+    const uint32_t hi = m->mca + (m->mcs - 1u);
+    const uint32_t sv_free = ((m->mpm & G4MH_MPM_SVP) == 0u)
+                                 ? (G4MH_MCR_SXE | G4MH_MCR_SWE | G4MH_MCR_SRE)
+                                 : 0u;
+
+    if (hi < lo || (lo <= 0x7FFFFFFFu && hi >= 0x80000000u)) {
+        return G4MH_MCR_OV | sv_free;
+    }
+
+    uint32_t r = 0u;
+
+    for (unsigned i = 0; i < G4MH_MPU_ENTRIES; i++) {
+        const uint32_t at = m->mpat[i];
+
+        if ((at & G4MH_MPAT_E) == 0u || lo < (m->mpla[i] & ~3u) ||
+            hi > (m->mpua[i] | 3u)) {
+            continue;
+        }
+        if (spid_permits(m, at, false, m->mci)) {
+            r |= ((at & G4MH_MPAT_SX) ? G4MH_MCR_SXE : 0u) |
+                 ((at & G4MH_MPAT_SR) ? G4MH_MCR_SRE : 0u) |
+                 ((at & G4MH_MPAT_UX) ? G4MH_MCR_UXE : 0u) |
+                 ((at & G4MH_MPAT_UR) ? G4MH_MCR_URE : 0u);
+        }
+        if (spid_permits(m, at, true, m->mci)) {
+            r |= ((at & G4MH_MPAT_SW) ? G4MH_MCR_SWE : 0u) |
+                 ((at & G4MH_MPAT_UW) ? G4MH_MCR_UWE : 0u);
+        }
+    }
+    return r | sv_free;
+}
+
+bool g4mh_mpu_reg_protects(unsigned reg)
+{
+    return reg == G4MH_SR_MPM || reg == G4MH_SR_MPLA ||
+           reg == G4MH_SR_MPUA || reg == G4MH_SR_MPAT ||
+           (reg >= G4MH_SR_MPID0 && reg < G4MH_SR_MPID0 + 8u);
+}
+
+/* ------------------------------------------------------------------ */
 /* The selID-5 window                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -191,7 +266,7 @@ bool g4mh_mpu_sr_read(const g4mh_mpu_t *m, unsigned reg, uint32_t *out)
         *out = m->mcs;
         return true;
     case G4MH_SR_MCC:
-        *out = m->mcc;
+        *out = 0u; /* "When the MCC register is read, 0 is always returned" */
         return true;
     case G4MH_SR_MCR:
         *out = m->mcr;
@@ -242,10 +317,11 @@ bool g4mh_mpu_sr_write(g4mh_mpu_t *m, unsigned reg, uint32_t val)
         m->mcs = val;
         return true;
     case G4MH_SR_MCC:
-        m->mcc = val;
+        /* Any value starts the check; r0 is the recommended source. */
+        m->mcr = check_span(m);
         return true;
     case G4MH_SR_MCR:
-        m->mcr = val;
+        m->mcr = val & (G4MH_MCR_OV | G4MH_MCR_ATTR); /* R/W, table 3.70 */
         return true;
     case G4MH_SR_MCI:
         m->mci = val & G4MH_MPID_SPID_MASK;
