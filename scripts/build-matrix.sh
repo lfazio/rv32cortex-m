@@ -178,6 +178,10 @@ echo "$matrix" | while IFS='|' read -r name plat opts why; do
     # one. Removing the cache keeps the objects; a row's options are
     # exactly what this table says and nothing an older tree said.
     rm -f "$dir/CMakeCache.txt"
+    # The log sits beside the directory, so its parent must exist before
+    # cmake makes the directory: a fresh worktree has no build/, and every
+    # row "failed to configure" without cmake having run at all.
+    mkdir -p "$dir"
     # shellcheck disable=SC2086
     if ! cmake -S . -B "$dir" -DEMU_PLATFORM="$plat" $tc $opts >"$dir.log" 2>&1; then
         echo "CONFIGURE FAILED  (see $dir.log)"
