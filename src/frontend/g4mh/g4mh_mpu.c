@@ -294,6 +294,38 @@ bool g4mh_mpu_sr_read(const g4mh_mpu_t *m, unsigned reg, uint32_t *out)
     }
 }
 
+/*
+ * One word of entry `e`: MPLA, MPUA or MPAT as `reg` names it, with the
+ * bits each reads back. The window and LDM.MP both write through this,
+ * so an entry LDM.MP loads holds what an LDSR of the same words would.
+ */
+EMU_NOINLINE void g4mh_mpu_entry_write(g4mh_mpu_t *m, unsigned e,
+                                       unsigned reg, uint32_t val)
+{
+    if (e >= G4MH_MPU_ENTRIES) {
+        return;
+    }
+    switch (reg) {
+    /*
+     * The addresses keep bits 31:2; bits 1:0 are reserved and read back
+     * as zero. Storing them as written would make an entry whose MPLA
+     * was set from an unaligned pointer refuse its own first word.
+     */
+    case G4MH_SR_MPLA:
+        m->mpla[e] = val & ~3u;
+        break;
+    case G4MH_SR_MPUA:
+        m->mpua[e] = val & ~3u;
+        break;
+    case G4MH_SR_MPAT:
+        /* Bits 13:8 and 6 are reserved and read back zero. */
+        m->mpat[e] = val & 0xFFFFC0BFu;
+        break;
+    default:
+        break;
+    }
+}
+
 bool g4mh_mpu_sr_write(g4mh_mpu_t *m, unsigned reg, uint32_t val)
 {
     unsigned e;
@@ -327,25 +359,11 @@ bool g4mh_mpu_sr_write(g4mh_mpu_t *m, unsigned reg, uint32_t val)
         m->mci = val & G4MH_MPID_SPID_MASK;
         return true;
 
-    /*
-     * The addresses keep bits 31:2; bits 1:0 are reserved and read back
-     * as zero. Storing them as written would make an entry whose MPLA
-     * was set from an unaligned pointer refuse its own first word.
-     */
     case G4MH_SR_MPLA:
-        if (entry_index(m, &e)) {
-            m->mpla[e] = val & ~3u;
-        }
-        return true;
     case G4MH_SR_MPUA:
-        if (entry_index(m, &e)) {
-            m->mpua[e] = val & ~3u;
-        }
-        return true;
     case G4MH_SR_MPAT:
         if (entry_index(m, &e)) {
-            /* Bits 13:8 and 6 are reserved and read back zero. */
-            m->mpat[e] = val & 0xFFFFC0BFu;
+            g4mh_mpu_entry_write(m, e, reg, val);
         }
         return true;
 

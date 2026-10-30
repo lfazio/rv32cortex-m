@@ -101,6 +101,19 @@ bool g4mh_insn_is_48(uint16_t w0, uint16_t w1);
  */
 bool g4mh_insn_is_64(uint16_t w0, uint16_t w1);
 
+/*
+ * MEI for the instruction in `hw` (up to four halfwords, as fetched)
+ * having raised MDP or MAE: table 3.38 of R01UH0923EJ0130. `block_reg` is
+ * the register a block transfer was moving (g4mh_cpu_t::mei_reg), which
+ * the encoding cannot say. False if `hw` is no instruction that reaches
+ * memory, which an MDP or MAE never comes from.
+ *
+ * A second decoder, of the memory instructions only, and it must agree
+ * with the interpreter's on every encoding that reaches memory: the unit
+ * tests take one of each through the interpreter and read MEI back.
+ */
+bool g4mh_mei(const uint16_t *hw, uint32_t block_reg, uint32_t *out);
+
 /* True if the first halfword starts a 16-bit instruction. */
 /*
  * Deferring to g4mh_insn_len rather than repeating its rule, because

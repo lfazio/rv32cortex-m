@@ -72,7 +72,7 @@ IT, and the FPU — and a growing set written because the random ones
 | `qflag` | Q, which a random APSR has set half the time already |
 | `adr` | `Align(PC, 4)`, at both pc alignments |
 
-**The system suite** (`sys.c`/`sys.S`): 62 tests of what an instruction
+**The system suite** (`sys.c`/`sys.S`): 82 tests of what an instruction
 generator cannot reach — the identification and writable bits of every
 configuration register, exception ordering and preemption, BASEPRI and
 FAULTMASK, every fault and its status bits, escalation, the MPU, the
@@ -130,6 +130,8 @@ generated suites:
 | B\<cond\> (16- and 32-bit) and CBZ/CBNZ inside an IT block | execute **on their own condition**, ignoring the block's: under `it eq` with Z clear, `bne` branches |
 | B, B.W and BL inside an IT block but not last | execute under the block's condition |
 | **MOV pc, ADD pc and BLX to EXC_RETURN in Handler mode** | branch: the fetch takes IACCVIOL with the target, bit 0 clear, stacked, and the handler is still active. Only BX, LDR, POP and LDM return, as the manual says. The frontend read the value as a return wherever it came from, and hung (2026-10-26) |
+| **a store's BusFault**: into memory that is not there, aligned or not, word or halfword | **imprecise**: IMPRECISERR, BFAR not valid, taken after the instruction *after* the store; an unaligned store's bytes inside RAM are written. The frontend raised it precisely, at the store, with BFAR (2026-10-30) |
+| a load's BusFault partway -- an unaligned word or halfword running off the end of RAM, LDRD's second word | precise, BFAR **the first byte past the end** whichever byte the access started at -- where the manual says "the address requested by the instruction". The frontend agreed |
 | **any instruction that can write the pc, inside an IT block** | ends the block whatever happens to it -- taken, not taken, or skipped by the block's condition. Under `itt eq` with Z clear, a skipped `bx`, `blx`, `mov pc`, `add pc`, `pop {pc}`, `pop.w {..,pc}`, `ldm.w {..,pc}`, `ldr pc`, `bl`, `tbb` or `tbh` is followed by an instruction that runs outside the block, unconditionally and setting flags; so is an untaken `bne` or `cbz`; and every one of them *taken* lands on an instruction that runs outside it too |
 
 The IT rules are `it_ignores_condition`, `it_writes_pc` and `it_after`
@@ -174,6 +176,42 @@ both backends. `test_handler_pc_writers_branch` holds it (13 failures
 with the fix reverted); interpreted CoreMark on the F746 read +0.35%,
 -0.14% and +0.08% at three layouts, which move the old build by 0.22%
 on their own.
+
+**A store's bus error is imprecise.** `sys.c`'s `bus-*` tests run loads
+and stores across the end of RAM -- SRAM2's end on the board, the host
+runner's megabyte in the emulator -- with no MPU. Every load faulted
+precisely with BFAR at the first byte outside; every store raised
+IMPRECISERR, no BFAR, taken somewhere after the instruction following
+it. So a store's bus error now retires the store, sets IMPRECISERR and
+pends the BusFault -- or HardFault with FORCED when BusFault is
+disabled, "treated as HardFault exceptions when disabled" (B1.5.4) --
+and nothing locks up (`bus_error_imprecise`). The architecture makes no
+promise how far after, so the test asks only "at the store or after
+it". The interpreter takes it before the next instruction; the JIT must
+take it there too, or the two backends disagree on every register the
+block goes on to write, and a trapping helper can only stop a block
+*before* an instruction retires. So the store helper, and the
+interpreter fallback, stop the block after it: the helper runs the
+instruction again whole through the interpreter -- its earlier stores
+write the same bytes again, its registers are written once, since a
+store's writeback follows its accesses, which is what made a precise
+fault restartable -- counts it, and returns; the dispatcher takes the
+pending fault. A store to a device register in the same instruction as
+one into nothing is written twice; nothing else is. fuzz-armv7m-jit
+found the fallback path first (`armv7m-jit/imprecise-store-in-a-stepped-insn`).
+On the F746 under the JIT, against e8ae834: CoreMark 29.89 to 29.92 host
+cycles an instruction, Dhrystone 22.90 to 22.88, the retired counts the
+same.
+
+**`t_ids` had been turning on the caches.** It writes `0xFFFFFFFF` to
+CCR to see which bits stick, and on the M7 that sets DC, IC and BP: the
+caches on, never invalidated. The `logv()` after it wrote into the
+D-cache and was lost when CCR was put back -- the board logged one
+value twice, a difference every run had shown -- and whatever the
+I-cache held ran as code, with an effect that moved with the layout:
+adding the `bus-*` tests further down the file hung the board, in a
+HardFault loop at an address inside `t_ids` that was the middle of a
+`bl`. It writes `0xFFF8FFFF` now, and asks nothing about bits 18:16.
 
 The sp and pc rules are one predicate per group in `armv7m_decode.h`,
 called by both decoders, and the board's answers to 36 of them are

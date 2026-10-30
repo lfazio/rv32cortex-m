@@ -459,7 +459,11 @@ executable code, readable-writable data, two areas end to end, one over
 all of memory. Each step runs on two cores, one per backend, with the
 JIT's blocks discarded first, and is compared with the reference on
 where the core stopped, PSW, FEPC, FEPSW, FEIC with its detail half,
-MEA, the registers, MCR and all of memory. Entry 31 is the harness's,
+MEA, MEI, the registers, MCR and all of memory. MEI is the reference's
+own: table 3.38's row for the instruction it encoded, with the register
+a block transfer was moving when it was refused. HALT is SV-privileged,
+so a step run in user mode ends in PIE at its HALT, and the SPID is set
+through LDSR's path, masked to five bits. Entry 31 is the harness's,
 supervisor-executable over the vector table, so every exception reaches
 its handler's HALT.
 
@@ -469,7 +473,13 @@ permission it was refused (table 3.115's notes speak of a read violation
 and a write violation, not of both); `MCR.OV` is a span passing
 `FFFF FFFFH` to 0 or `7FFF FFFFH` to `8000 0000H`, not one that merely
 includes either; and DISPOSE restores r31 first, from the lowest
-address, PREPARE's inverse, which its page does not spell out.
+address, PREPARE's inverse, which its page does not spell out. For MEI:
+LD.DW and ST.DW name the even register of their pair, and CAXI and the
+bit operations report a read (note 2). MS is set for a doubleword
+refused at a word boundary that is not a doubleword one, which the
+virtualization manual's table 5.6 says and the U2B's does not.
+[frontend/g4mh.md](frontend/g4mh.md#what-rests-on-the-manuals-alone)
+holds each reading against the second document where there is one.
 
 ```sh
 scripts/fuzz.sh 600 g4mh-mpu   # its regressions are tests/fuzz/regressions/g4mh-mpu/
@@ -524,6 +534,9 @@ fuzzing from an empty corpus:
 | a fetch asking the write group | `g4mh_mpu_permits` | 3 s |
 | the first matching area decides | `g4mh_mpu_permits` | 7 s |
 | a store's check dropped | `g4mh_store` | 7 s |
+| MEI not written | `exception_to` | 7 s |
+| POPSP's MEI naming r3 for r3 (note 3 says 0) | the interpreter | 7 s |
+| MS dropped from a doubleword at a word boundary | `g4mh_load_dw` | 3 s |
 
 
 ## Protection: ARMv7-M
@@ -550,17 +563,22 @@ unaligned word or halfword across the end of a region into one that
 refuses it is a MemManage with MMFAR at the first refused byte, and a
 store's bytes before it are written -- MemU's byte-at-a-time sequence,
 which is also what the interpreter does. The emulator agreed on every
-case, interpreted and under the JIT. The pseudocode's UNPREDICTABLE
-cases are not asked: AP `100`, regions under 32 bytes, subregions below
-256, HFNMIENA without ENABLE, an unaligned access to anything but
-Normal memory. Two things are left unasserted until the board says:
-BFAR for an unaligned access that faults partway into unmapped memory
-(the manual says "the address requested by the instruction"; this
-emulator reports the byte), and the registers of an LDM or LDRD
-abandoned partway, which are UNKNOWN.
+case, interpreted and under the JIT. Then into nothing (`bus-*`): a
+load running off the end of RAM is a precise BusFault with BFAR the
+first byte outside, whichever byte it started at -- where the manual
+says "the address requested by the instruction" -- and the reference
+asserts BFAR there now; a store's BusFault is **imprecise**: the store
+retires, IMPRECISERR, no BFAR, the BusFault taken after the instruction
+-- or HardFault, FORCED, when BusFault is disabled. The emulator took it
+precisely at the store, and the reference had the same reading; both
+changed (4,245 of the corpus's steps take one). The pseudocode's
+UNPREDICTABLE cases are not asked: AP `100`, regions under 32 bytes,
+subregions below 256, HFNMIENA without ENABLE, an unaligned access to
+anything but Normal memory. Left unasserted: the registers of an LDM or
+LDRD abandoned partway, which are UNKNOWN.
 
 ```sh
-scripts/fuzz.sh 600 armv7m-mpu
+scripts/fuzz.sh 600 armv7m-mpu   # its regressions are tests/fuzz/regressions/armv7m-mpu/
 ```
 
 It found nothing: the MPU agrees with the architecture. That is a
@@ -584,6 +602,15 @@ fuzzing from an empty corpus:
 | a 32-bit instruction's second halfword unchecked | the interpreter | 13 s |
 | the translator's, likewise | `fetch` (`armv7m_ir.c`) | 11 s |
 | a literal read from ROM folded to a constant under the MPU | `literal_const` | not in 120 s, until the generator had LDR literal; then 17 s |
+| a store's bus error precise again, with BFAR | `armv7m_mem_write_checked` | 4 s |
+| a disabled BusFault not escalated for an imprecise store | `bus_error_imprecise` | 4 s |
+
+And for the imprecise store under the JIT, fuzz-armv7m-jit: the store
+helper not stopping its block after the instruction, and the
+interpreter fallback not stopping it, each found within seconds by a
+saved input (`armv7m-jit/imprecise-store-in-a-translated-insn`,
+`imprecise-store-in-a-stepped-insn`); the second is how the fallback
+was found missing in the first place.
 
 
 ## Translation: PowerPC
@@ -713,6 +740,7 @@ Each fix was confirmed by reverting it with its regression in place.
 | **a block one PE built ran on another and read the first PE's memory**: the translator inlines accesses to the region the stack is in by host address, the stack was in local RAM through the SELF window, and the block's context was the user-mode bit alone, so PE1 found PE0's loop and read PE0's stack. Wherever PEs share a table -- `--serial`, a board with more than one -- as soon as a guest keeps its stack where a U2B program does. Found on the first run of the two-PE target, by the seed written for it | `g4mh_jit_ctx_refresh`: the PE is in the context now | `test_mc_self_window_blocks`, `g4mh-jit/stack-through-self` |
 | a block holding an FP operation made FS Dirty on every exit, even a side exit taken before it -- permitted by the spec, until the program cleared one FS bit (`csrrc mstatus`) and the JIT showed Clean where the interpreter showed Off. And the interpreter left FS Clean when a compare or a conversion to integer raised a flag, where Sail and Spike both go Dirty (`probes/fsdirty.S`) | `rv_ir.c` (`rv_ir_fp_flags`, FS marked at a block's first f write, `fput`) and the RV32 **interpreter** (`f_accrue`) | `probes/fsdirty.S`, `rv32-jit/side-exit-fs-dirty`; the target now compares mstatus exactly |
 | an LDSR lowering the interrupt ceiling (PLMR, ISPR, INTCFG) never made the core look again, so the channel it admitted stayed pending; the manual says the next instruction sees it. **Found by writing a seed, not by a divergence**: both backends run LDSR in the interpreter | the G4MH core, `g4mh_sr_write` | `test_ldsr_lowers_ceiling` |
+| a store whose bus error is imprecise, run by the interpreter fallback inside a block, let the block go on: the JIT took the BusFault 68 instructions after the interpreter. Found the hour the imprecise model was written, before it was committed -- the store helper had been taught to stop its block and the fallback had not | `armv7m_ir.c`, `a7_ir_step` | `armv7m-jit/imprecise-store-in-a-stepped-insn` |
 | **Q set inside an IT block was lost at the next load or store in it**: the translator put xPSR back, as the IT instruction had found it, around every access in the block, so a multiply-accumulate's saturation vanished -- from the live xPSR and from the frame a fault stacked. Found during the dictionary sessions (below), in an input that touches no device | `armv7m_ir.c`, `it_access` | the `itblock` guest's `IT-Q-across-access` (on the F746 it fails with the old translator), `armv7m-jit/q-set-in-it-lost-at-access` |
 
 And inputs held for the permitted differences above:

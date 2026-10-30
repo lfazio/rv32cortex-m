@@ -167,6 +167,18 @@ entries, fully associative, pages of 2^TSIZE KB from 1 KB to 4 GB, the
 MAS registers and the five TLB instructions. Every rule is the manual's,
 with its section beside it in the code; nothing here has met an e200.
 
+**The MPC5675K's own core is not this one.** Its reference manual
+(Rev. 10, `docs/nxp/`) gives its e200z7 "64-entry, fully associative
+TLB" -- the revision history says "Corrected number of MMU TLB entries
+to 64" -- and an SPE unit beside the EFPU, where the e200z759n3 manual
+this frontend follows gives 32 entries (TLB1CFG NENTRY `0x20`) and
+EFPU2. The peripherals (INTC, STM, SWT, two cores) are the MPC5675K's.
+So a guest written for that part that uses TLB entries 32 to 63 fails
+here; that the two agree on everything else about the MMU -- the 8-bit
+PID, pages from 1 KB to 4 GB, IPROT, the five instructions -- is the
+whole of what the chip manual can be held against, since it defers the
+rest to the core's.
+
 | | |
 |---|---|
 | TLB1, 32 entries; TLB0 null; MMUCFG, TLB0CFG, TLB1CFG as tables 10-3 and 10-5 | implemented |

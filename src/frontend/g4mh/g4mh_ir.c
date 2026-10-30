@@ -1757,8 +1757,9 @@ static bool g4mh_jit_take_irq(emu_cpu_t *cpu)
      * before the read would discard an interrupt meant to be retried.
      */
     uint32_t vec;
-    if (!g4mh_cpu_irq_vector(c, (uint32_t)ch, &vec)) {
-        g4mh_cpu_exception(c, G4MH_EXC_MDP, c->pc);
+    const g4mh_exc_t ve = g4mh_cpu_irq_vector(c, (uint32_t)ch, &vec);
+    if (ve != G4MH_EXC_NONE) {
+        g4mh_cpu_exception(c, ve, c->pc);
         return true;
     }
     g4mh_intc_ack(c->intc, (uint32_t)ch);

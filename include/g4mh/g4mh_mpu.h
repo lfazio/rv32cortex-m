@@ -183,6 +183,11 @@ bool g4mh_mpu_is_active(const g4mh_mpu_t *m);
 bool g4mh_mpu_sr_read(const g4mh_mpu_t *m, unsigned reg, uint32_t *out);
 bool g4mh_mpu_sr_write(g4mh_mpu_t *m, unsigned reg, uint32_t val);
 
+/* Entry `e`'s MPLA, MPUA or MPAT (`reg`), masked as the window masks
+ * them: LDM.MP's path to the array, which does not go through MPIDX. */
+void g4mh_mpu_entry_write(g4mh_mpu_t *m, unsigned e, unsigned reg,
+                          uint32_t val);
+
 /*
  * Whether a write to `reg` can change what an access is allowed: MPM,
  * an entry's three registers, MPIDn. Not MPIDX, which only moves the

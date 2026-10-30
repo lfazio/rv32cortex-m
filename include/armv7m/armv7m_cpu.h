@@ -385,6 +385,14 @@ typedef struct armv7m_cpu {
      * very next step. Cold, and at the end.
      */
     bool pc_not_exc_return;
+
+    /*
+     * Set by a store whose bus error was made imprecise (see
+     * armv7m_mem_write_checked), for the JIT's store helper, which has to
+     * stop its block after that instruction. Cleared by the helper before
+     * each store it makes. Cold, and at the end.
+     */
+    bool imprecise;
 } armv7m_cpu_t;
 
 /* ------------------------------------------------------------------ */

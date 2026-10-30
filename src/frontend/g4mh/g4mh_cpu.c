@@ -31,11 +31,6 @@ void g4mh_cpu_init(g4mh_cpu_t *c, emu_bus_t *bus, uint32_t coreid)
 #if G4MH_EXT_MPU
     c->mpu = &g_mpu[coreid < G4MH_PE_COUNT ? coreid : 0u];
     c->fast_store_never = 1u;
-    /*
-     * SPID from the core id, so MPIDn discriminates between PEs rather
-     * than every core presenting 0 and the SPID group being a no-op.
-     */
-    c->spid = coreid & G4MH_MPID_SPID_MASK;
 #endif
     g4mh_cpu_reset(c, 0u);
 }
@@ -54,6 +49,17 @@ void g4mh_cpu_reset(g4mh_cpu_t *c, uint32_t reset_pc)
      */
     c->psw = G4MH_PSW_ID;
     c->sr[0][G4MH_SR_PSW] = c->psw;
+
+    /*
+     * SPID from the core id, so MPIDn discriminates between PEs rather
+     * than every core presenting 0 and the SPID group being a no-op --
+     * the product's own reset value, which section 3.10.7 leaves to the
+     * part. SVLOCK resets clear, with the rest of sr.
+     */
+    c->sr[1][G4MH_SR_SPID] = c->coreid & 0x1Fu;
+#if G4MH_EXT_MPU
+    c->spid = c->sr[1][G4MH_SR_SPID];
+#endif
 
 #if G4MH_EXT_MPU
     /*
@@ -149,8 +155,14 @@ bool g4mh_exc_is_fe(g4mh_exc_t cause)
     /*
      * FE-level causes are the ones the core cannot be asked to ignore:
      * a system error, a protection violation, a reserved instruction, a
-     * misaligned access, an FP fault, an unusable coprocessor. Everything
-     * else -- TRAP, SYSCALL and the interrupts -- is EI level.
+     * misaligned access, an unusable coprocessor. Everything else --
+     * TRAP, SYSCALL, the interrupts, and the FP exceptions -- is EI
+     * level.
+     *
+     * **FPE and FXE are EI level**: table 3.103 of R01UH0923EJ0130 saves
+     * them to EIPC/EIPSW/EIIC, and table 4.5 of the virtualization manual
+     * R01UH0865EJ0140 to HMEI, with NP kept -- two documents agreeing.
+     * This listed FPP here, so an FP exception wrote FEPC and set NP.
      *
      * By the code alone: MIP and MDP carry detail in the top half.
      */
@@ -159,10 +171,12 @@ bool g4mh_exc_is_fe(g4mh_exc_t cause)
     case G4MH_EXC_SYSERR:
     case G4MH_EXC_MIP:
     case G4MH_EXC_MDP:
+    case G4MH_EXC_MDP_TABLE:
     case G4MH_EXC_RIE:
     case G4MH_EXC_MAE:
-    case G4MH_EXC_FPP:
     case G4MH_EXC_UCPOP:
+    case G4MH_EXC_UCPOP + 1u: /* CU1, the FXU             */
+    case G4MH_EXC_UCPOP + 2u: /* CU2, reserved            */
     case G4MH_EXC_PIE:
         return true;
     default:
@@ -261,11 +275,14 @@ static uint32_t handler_address(const g4mh_cpu_t *c, g4mh_exc_t cause)
         return table + 0x0060u;
     case G4MH_EXC_FPP:
         return table + 0x0070u; /* FPE/FXE           */
-    case G4MH_EXC_UCPOP:
+    case G4MH_EXC_UCPOP: /* 80H-82H, one per CUn (table 3.103) */
+    case G4MH_EXC_UCPOP + 1u:
+    case G4MH_EXC_UCPOP + 2u:
         return table + 0x0080u;
     case G4MH_EXC_MIP:
         return table + 0x0090u;
     case G4MH_EXC_MDP:
+    case G4MH_EXC_MDP_TABLE:
         return table + 0x0090u;
     case G4MH_EXC_PIE:
         return table + 0x00A0u;
@@ -283,7 +300,8 @@ static uint32_t handler_address(const g4mh_cpu_t *c, g4mh_exc_t cause)
     }
 }
 
-bool g4mh_cpu_irq_vector(g4mh_cpu_t *c, uint32_t channel, uint32_t *out)
+g4mh_exc_t g4mh_cpu_irq_vector(g4mh_cpu_t *c, uint32_t channel,
+                               uint32_t *out)
 {
     const uint32_t base = (c->psw & G4MH_PSW_EBV) ? c->sr[1][G4MH_SR_EBASE]
                                                   : c->sr[1][G4MH_SR_RBASE];
@@ -300,7 +318,7 @@ bool g4mh_cpu_irq_vector(g4mh_cpu_t *c, uint32_t channel, uint32_t *out)
         unsigned pri = 15u;
         (void)g4mh_intc_chan_priority(c->intc, channel, &pri);
         *out = (base & ~0x1FFu) + direct_vector_offset(base, pri);
-        return true;
+        return G4MH_EXC_NONE;
     }
 
     /*
@@ -310,8 +328,9 @@ bool g4mh_cpu_irq_vector(g4mh_cpu_t *c, uint32_t channel, uint32_t *out)
      */
     const uint32_t at = (c->sr[1][G4MH_SR_INTBP] & ~0x1FFu) + channel * 4u;
     uint32_t v;
+    const g4mh_exc_t e = g4mh_load_sv(c, at, &v);
 
-    if (g4mh_load(c, at, 4u, false, &v) != G4MH_EXC_NONE) {
+    if (e != G4MH_EXC_NONE) {
         /*
          * MDP while reading the table. The manual is specific: acceptance
          * is cancelled, no response goes to the controller, and the
@@ -319,11 +338,46 @@ bool g4mh_cpu_irq_vector(g4mh_cpu_t *c, uint32_t channel, uint32_t *out)
          * returns. That is why the caller acknowledges the channel only
          * once this has succeeded -- moving the ack earlier would drop
          * the interrupt on a fault that is meant to be retried.
+         *
+         * Its own code, 95H, with the detail of a supervisor read: "these
+         * are executed only in supervisor mode" (table 3.115 note 6). It
+         * was 91H with no detail, the code an instruction's access gets.
          */
-        return false;
+        return G4MH_EXC_MDP_TABLE | (e & ~0xFFFFu);
     }
     *out = v;
-    return true;
+    return G4MH_EXC_NONE;
+}
+
+/*
+ * MEI for an MDP or MAE (tables 3.37 and 3.38): read back from the
+ * instruction at `pc`, which is the one that faulted -- both are
+ * resumable, so FEPC is that instruction -- except for the table read of
+ * an interrupt, which has no instruction. On the exception path only, so
+ * neither backend pays for it per access; and one decoder for both.
+ */
+static EMU_NOINLINE uint32_t mei_for(const g4mh_cpu_t *c, g4mh_exc_t cause,
+                                     uint32_t pc)
+{
+    uint16_t hw[4] = {0u, 0u, 0u, 0u};
+    uint32_t mei;
+
+    if (G4MH_EXC_CODE(cause) == G4MH_EXC_MDP_TABLE) {
+        return G4MH_MEI(0u, 0u, 2u, 0u, G4MH_MEI_TABLE, 0u);
+    }
+    if (c->bus == NULL) { /* a core raised by hand, with no memory */
+        return c->sr[2][G4MH_SR_MEI];
+    }
+    for (unsigned i = 0; i < 4u; i++) {
+        if (emu_bus_fetch16(c->bus, pc + 2u * i, &hw[i]) != EMU_FAULT_NONE) {
+            break;
+        }
+    }
+    if (!g4mh_mei(hw, c->mei_reg, &mei)) {
+        /* Nothing that reaches memory: leave MEI as it was. */
+        return c->sr[2][G4MH_SR_MEI];
+    }
+    return mei;
 }
 
 /*
@@ -336,6 +390,16 @@ static void exception_to(g4mh_cpu_t *c, g4mh_exc_t cause, uint32_t ret_pc,
                          uint32_t handler)
 {
     const bool fe = g4mh_exc_is_fe(cause);
+
+    switch (G4MH_EXC_CODE(cause)) {
+    case G4MH_EXC_MDP:
+    case G4MH_EXC_MAE:
+    case G4MH_EXC_MDP_TABLE:
+        c->sr[2][G4MH_SR_MEI] = mei_for(c, cause, ret_pc);
+        break;
+    default:
+        break;
+    }
 
     if (fe) {
         c->sr[0][G4MH_SR_FEPC] = ret_pc;
@@ -781,6 +845,8 @@ uint8_t *g4mh_rmw_ptr(g4mh_cpu_t *c, uint32_t addr, uint32_t size, bool write,
             return NULL;
         }
     }
+#else
+    (void)write;
 #endif
     const emu_region_t *const r = emu_bus_find(c->bus, addr);
 
@@ -872,6 +938,22 @@ g4mh_exc_t g4mh_store(g4mh_cpu_t *c, uint32_t addr, uint32_t size, uint32_t val)
 }
 
 /*
+ * A table read made as supervisor: the MPU is asked about mode SV and
+ * PSW is left as it was, so an exception from it saves the PSW the
+ * program had. Only the mode moves; the SPID is the core's.
+ */
+g4mh_exc_t g4mh_load_sv(g4mh_cpu_t *c, uint32_t addr, uint32_t *out)
+{
+    const uint32_t psw = c->psw;
+    g4mh_exc_t e;
+
+    c->psw = psw & ~G4MH_PSW_UM;
+    e = g4mh_load(c, addr, 4u, false, out);
+    c->psw = psw;
+    return e;
+}
+
+/*
  * LD.DW and ST.DW: one eight-byte access, as the MPU sees it.
  *
  * "It is necessary that the associated memory access is encompassed
@@ -911,7 +993,7 @@ g4mh_exc_t g4mh_load_dw(g4mh_cpu_t *c, uint32_t addr, uint32_t *lo,
         return G4MH_EXC_MAE;
     }
     if (dw_refused(c, addr, G4MH_MPU_READ)) {
-        return g4mh_mdp(c, true, false, 0u);
+        return g4mh_mdp(c, true, false, (addr & 4u) ? G4MH_EXC_D_MS : 0u);
     }
     emu_fault_t f = emu_bus_read(c->bus, addr, 4u, lo);
     if (EMU_UNLIKELY(f != EMU_FAULT_NONE)) {
@@ -934,7 +1016,7 @@ g4mh_exc_t g4mh_store_dw(g4mh_cpu_t *c, uint32_t addr, uint32_t lo,
         return G4MH_EXC_MAE;
     }
     if (dw_refused(c, addr, G4MH_MPU_WRITE)) {
-        return g4mh_mdp(c, false, true, 0u);
+        return g4mh_mdp(c, false, true, (addr & 4u) ? G4MH_EXC_D_MS : 0u);
     }
     /* The MPU has passed both words; the bus decides each. */
     g4mh_exc_t e = g4mh_store(c, addr, 4u, lo);
@@ -1009,6 +1091,106 @@ static void pm_refresh(g4mh_cpu_t *c)
     c->pm_active = on;
 }
 
+/*
+ * Figure 3.3, before the register is reached: is it a coprocessor's
+ * whose CUn is clear (UCPOP), then is it SV in user mode (PIE). The
+ * permissions are tables 3.9, 3.43, 3.50, 3.57, 3.64, 3.78, 3.86, 3.94
+ * and 3.102 of R01UH0923EJ0130; every register not named as UM there is
+ * SV, and one not listed at all "is handled as having the SV
+ * permission" (3.2.2.5(4)). So this lists what user mode may reach.
+ */
+g4mh_exc_t g4mh_sr_access(const g4mh_cpu_t *c, unsigned bank, unsigned reg,
+                          bool write)
+{
+    unsigned cu = 3u; /* none */
+    bool user_ok = false;
+
+    switch (bank) {
+    case 0u:
+        if (reg == G4MH_SR_FPSR || reg == G4MH_SR_FPEPC) {
+            cu = 0u; /* CU0 and SV */
+        } else if (reg >= G4MH_SR_FPST && reg <= G4MH_SR_FPCFG) {
+            cu = 0u;
+            user_ok = true;
+        } else {
+            user_ok = reg == G4MH_SR_PSW || reg == G4MH_SR_CTPC ||
+                      reg == G4MH_SR_CTPSW || reg == G4MH_SR_CTBP;
+        }
+        break;
+    case 2u: /* PEID and BMID */
+        user_ok = reg <= 1u;
+        break;
+    case G4MH_SELID_FXU:
+        if (reg == 6u) { /* FXSR: CU1 and SV */
+            cu = 1u;
+        } else if (reg == 8u || reg == 9u || reg == 10u || reg == 12u ||
+                   reg == 13u) {
+            cu = 1u;
+            user_ok = true;
+        }
+        break;
+    case G4MH_SELID_PMU: /* TSCOUNTL/H: read UM, write SV */
+        user_ok = !write && (reg == G4MH_SR_TSCOUNTL || reg == G4MH_SR_TSCOUNTH);
+        break;
+    case G4MH_SELID_PM: /* PMCTRLn, PMCOUNTn: as PMUMCTRL.PMUEn says */
+    case G4MH_SELID_PMSUB: /* PMSUBCNDn */
+        if ((reg & 7u) == reg ||
+            (bank == G4MH_SELID_PM && reg >= G4MH_SR_PMCOUNT0 &&
+             reg < G4MH_SR_PMCOUNT0 + G4MH_PM_CHANNELS)) {
+            user_ok = ((c->sr[G4MH_SELID_PMU][G4MH_SR_PMUMCTRL] >> (reg & 7u)) &
+                       1u) != 0u;
+        }
+        break;
+    default:
+        break;
+    }
+
+    if (cu < 3u && (c->psw & (G4MH_PSW_CU0 << cu)) == 0u) {
+        return G4MH_EXC_UCPOP + cu;
+    }
+    if ((c->psw & G4MH_PSW_UM) != 0u && !user_ok) {
+        return G4MH_EXC_PIE;
+    }
+    return G4MH_EXC_NONE;
+}
+
+/*
+ * **Out of line, all three.** Inlined -- LDSR's checks in the
+ * interpreter's switch, and GCC splitting g4mh_sr_write to put its head
+ * at every call -- they grew the run loop by 1.5 KB and cost interpreted
+ * CoreMark 2.2% on the F746 (91.20 to 93.20 host cycles an instruction,
+ * at three layouts), for instructions CoreMark never runs.
+ */
+EMU_NOINLINE g4mh_exc_t g4mh_ldsr(g4mh_cpu_t *c, unsigned bank, unsigned reg,
+                                  uint32_t val)
+{
+    const g4mh_exc_t e = g4mh_sr_access(c, bank, reg, true);
+
+    if (e != G4MH_EXC_NONE) {
+        return e;
+    }
+    /*
+     * PSW's permission is per bit: in user mode an LDSR writes the five
+     * flags and ignores the rest, with no PIE (table 3.14).
+     */
+    if (bank == 0u && reg == G4MH_SR_PSW && (c->psw & G4MH_PSW_UM) != 0u) {
+        val = (c->psw & ~0x1Fu) | (val & 0x1Fu);
+    }
+    g4mh_sr_write(c, bank, reg, val);
+    return G4MH_EXC_NONE;
+}
+
+EMU_NOINLINE g4mh_exc_t g4mh_stsr(const g4mh_cpu_t *c, unsigned bank,
+                                  unsigned reg, uint32_t *out)
+{
+    const g4mh_exc_t e = g4mh_sr_access(c, bank, reg, false);
+
+    if (e == G4MH_EXC_NONE) {
+        *out = g4mh_sr_read(c, bank, reg);
+    }
+    return e;
+}
+
 uint32_t g4mh_sr_read(const g4mh_cpu_t *c, unsigned bank, unsigned reg)
 {
     if (bank >= G4MH_SR_BANKS || reg >= G4MH_SR_PER_BANK) {
@@ -1017,6 +1199,14 @@ uint32_t g4mh_sr_read(const g4mh_cpu_t *c, unsigned bank, unsigned reg)
     if (bank == 0u && reg == G4MH_SR_PSW) {
         return c->psw;
     }
+    if (bank == 1u && reg == G4MH_SR_SPIDLIST) {
+        return G4MH_SPIDLIST_VALUE;
+    }
+#if G4MH_EXT_MPU
+    if (bank == 1u && reg == G4MH_SR_SPID) {
+        return c->spid;
+    }
+#endif
 #if G4MH_EXT_MPU
     {
         uint32_t v;
@@ -1029,7 +1219,8 @@ uint32_t g4mh_sr_read(const g4mh_cpu_t *c, unsigned bank, unsigned reg)
     return c->sr[bank][reg];
 }
 
-void g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg, uint32_t val)
+EMU_NOINLINE void g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg,
+                                uint32_t val)
 {
     if (bank >= G4MH_SR_BANKS || reg >= G4MH_SR_PER_BANK) {
         return; /* reserved: writes dropped */
@@ -1046,6 +1237,55 @@ void g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg, uint32_t val)
         c->sr[0][G4MH_SR_PSW] = val;
         c->irq_dirty = true;
         return;
+    }
+
+    /*
+     * SVLOCK.SVL: "SPID, MPM, MPLA, MPUA, MPAT, MPIDn, and MPBK" are not
+     * updated even in supervisor mode, and the attempt raises nothing
+     * (3.2.2.5(5)). The setting check's registers and MPIDX stay
+     * writable: they change nothing an access is judged by.
+     */
+    if ((c->sr[1][G4MH_SR_SVLOCK] & G4MH_SVLOCK_SVL) != 0u &&
+        ((bank == 1u && reg == G4MH_SR_SPID) ||
+          (bank == G4MH_SR_SEL_MPU &&
+          (reg == G4MH_SR_MPM || reg == G4MH_SR_MPBK ||
+           (reg >= G4MH_SR_MPLA && reg <= G4MH_SR_MPAT) ||
+           reg >= G4MH_SR_MPID0)))) {
+        return;
+    }
+
+    if (bank == 1u) {
+        switch (reg) {
+        case G4MH_SR_SPID: {
+            /*
+             * Five bits, and only an identifier SPIDLIST lists; "if an
+             * attempt is made to set an illegal system protection
+             * identifier, the SPID register is not updated" (table
+             * 3.24). It is what the MPU's SPID group compares, so a
+             * change is a change to every block's fetch decision.
+             */
+            const uint32_t v = val & 0x1Fu;
+
+            if (((G4MH_SPIDLIST_VALUE >> v) & 1u) == 0u) {
+                return;
+            }
+            c->sr[1][G4MH_SR_SPID] = v;
+#if G4MH_EXT_MPU
+            if (c->spid != v) {
+                c->spid = v;
+                c->jit_gen++;
+            }
+#endif
+            return;
+        }
+        case G4MH_SR_SPIDLIST:
+            return; /* read-only, set outside the CPU */
+        case G4MH_SR_SVLOCK:
+            c->sr[1][G4MH_SR_SVLOCK] = val & G4MH_SVLOCK_SVL;
+            return;
+        default:
+            break;
+        }
     }
 
 #if G4MH_EXT_MPU
@@ -1079,6 +1319,11 @@ void g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg, uint32_t val)
         return;
     }
 #endif
+
+    /* CTPSW keeps PSW's five flags; bits 31:5 read zero (table 3.19). */
+    if (bank == 0u && reg == G4MH_SR_CTPSW) {
+        val &= 0x1Fu;
+    }
 
     c->sr[bank][reg] = val;
 
@@ -1281,7 +1526,7 @@ static g4mh_exc_t prepare_save(g4mh_cpu_t *c, uint32_t list,
         tmp -= 4u;
         const g4mh_exc_t e = g4mh_store(c, tmp & ~3u, 4u, c->r[reg]);
         if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
-            return e;
+            return g4mh_exc_block(c, e, reg);
         }
     }
     *sp_out = tmp;
@@ -1306,7 +1551,7 @@ g4mh_exc_t g4mh_prepare(g4mh_cpu_t *c, uint32_t list, uint32_t imm5,
     const g4mh_exc_t e = prepare_save(c, list, &sp);
 
     if (e != G4MH_EXC_NONE) {
-        return g4mh_exc_block(e);
+        return e;
     }
     sp -= imm5 << 2;
     c->r[3] = sp;
@@ -1328,7 +1573,7 @@ static g4mh_exc_t dispose_load(g4mh_cpu_t *c, uint32_t list, uint32_t imm5,
         uint32_t v;
         const g4mh_exc_t e = g4mh_load(c, tmp & ~3u, 4u, false, &v);
         if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
-            return e;
+            return g4mh_exc_block(c, e, reg);
         }
         c->r[reg] = v;
         tmp += 4u;
@@ -1360,7 +1605,7 @@ g4mh_exc_t g4mh_dispose(g4mh_cpu_t *c, uint32_t list, uint32_t imm5,
     const g4mh_exc_t e = dispose_load(c, list, imm5, &sp);
 
     if (e != G4MH_EXC_NONE) {
-        return g4mh_exc_block(e);
+        return e;
     }
     *target_out = c->r[rt] & ~1u;
     c->r[3] = sp;

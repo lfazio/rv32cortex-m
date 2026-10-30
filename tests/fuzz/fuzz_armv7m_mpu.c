@@ -11,7 +11,10 @@
  * ARMv7-M ARM (DDI 0403E, B3.5.8 and B2.3), with the details the board
  * answered where the pseudocode leaves the implementation room
  * (tests/armv7m-diff/sys.c `mpu-ua-*`: an unaligned access is bytes in
- * ascending order, MMFAR the first refused, the bytes before it stored).
+ * ascending order, MMFAR the first refused, the bytes before it stored;
+ * `bus-*`: a load's BusFault is precise with BFAR the first byte the bus
+ * refused, a store's is imprecise -- the store retires, IMPRECISERR, no
+ * BFAR, the BusFault taken after the instruction).
  *
  * The input is a sequence of steps. A step writes an MPU region or
  * MPU_CTRL through the System Control Space -- the registers a program
@@ -81,6 +84,7 @@
 #define CFSR_DACCVIOL (1u << 1)
 #define CFSR_MMARVALID (1u << 7)
 #define CFSR_PRECISERR (1u << 9)
+#define CFSR_IMPRECISERR (1u << 10)
 #define CFSR_BFARVALID (1u << 15)
 #define CFSR_UNALIGNED (1u << 24)
 #define HFSR_FORCED (1u << 30)
@@ -119,7 +123,7 @@ static struct {
     uint32_t ret; /* its stacked return address */
     uint32_t cfsr, hfsr, mmfar, bfar;
     bool unknown_regs; /* an abandoned LDM or LDRD: UNKNOWN registers */
-    bool bfar_unasked; /* a BusFault partway through an unaligned access */
+    uint32_t pend; /* what an imprecise BusFault left pending, or 0 */
     uint8_t ram[RAM_SIZE];
     /* What software reads back. */
     uint32_t rbar[8], rasr[8], ctrl;
@@ -137,6 +141,7 @@ static struct {
 } g_cur;
 
 static struct {
+    uint64_t imprecise;
     uint64_t inputs, steps, insns, completed, memmanage, busfault, usage,
         hardfault, forced, iacc, dacc, split, partial, translations, entries;
 } g_st;
@@ -148,7 +153,8 @@ static void print_stats(void)
             "%llu completed, %llu MemManage (%llu IACCVIOL, %llu DACCVIOL), "
             "%llu BusFault, %llu UsageFault, %llu HardFault (%llu forced); "
             "%llu unaligned accesses across a region's end, %llu stopped "
-            "partway; jit %llu translations, %llu block entries\n",
+            "partway; %llu stores' BusFaults taken after them; jit %llu "
+            "translations, %llu block entries\n",
             (unsigned long long)g_st.inputs, (unsigned long long)g_st.steps,
             (unsigned long long)g_st.insns, (unsigned long long)g_st.completed,
             (unsigned long long)g_st.memmanage, (unsigned long long)g_st.iacc,
@@ -156,6 +162,7 @@ static void print_stats(void)
             (unsigned long long)g_st.usage, (unsigned long long)g_st.hardfault,
             (unsigned long long)g_st.forced, (unsigned long long)g_st.split,
             (unsigned long long)g_st.partial,
+            (unsigned long long)g_st.imprecise,
             (unsigned long long)g_st.translations,
             (unsigned long long)g_st.entries);
 }
@@ -300,6 +307,24 @@ static bool ref_mema(uint32_t pc, uint32_t addr, uint32_t size, acc_t acc,
     }
     if (ref_byte(addr, acc == A_WRITE) == NULL ||
         ref_byte(addr + size - 1u, acc == A_WRITE) == NULL) {
+        if (acc == A_WRITE) {
+            /*
+             * Imprecise, as the F746 has it: the store retires, BFAR is
+             * not written, and the BusFault is pending -- escalated to a
+             * pending HardFault, FORCED, when BusFault is disabled, which
+             * is "treated as HardFault ... when disabled" (B1.5.4) read
+             * as happening at the error. A precise fault later in the
+             * same instruction is still taken first.
+             */
+            R.cfsr |= CFSR_IMPRECISERR;
+            if ((R.shcsr & SHCSR_BUSFAULTENA) != 0u) {
+                R.pend = 5u;
+            } else if (R.pend == 0u) {
+                R.hfsr |= HFSR_FORCED;
+                R.pend = 3u;
+            }
+            return true;
+        }
         R.cfsr |= CFSR_PRECISERR | CFSR_BFARVALID;
         R.bfar = addr;
         ref_take(5u, pc);
@@ -339,10 +364,9 @@ static bool ref_memu(uint32_t pc, uint32_t addr, uint32_t size, acc_t acc,
 
         if (!ref_mema(pc, addr + i, 1u, acc, unpriv, &b)) {
             g_st.partial += i != 0u;
-            /* "For unaligned access faults, the value returned is the
-             * address requested by the instruction" (BFAR) -- or the
-             * byte's: not yet asked of the board. */
-            R.bfar_unasked = (i != 0u) && (R.cfsr & CFSR_BFARVALID) != 0u;
+            /* BFAR the byte's address, not the instruction's: the F746
+             * reports the first byte past the end of RAM whichever byte
+             * the access started at (sys.c `bus-ua-ldr-*`). */
             return false;
         }
         v |= (b & 0xFFu) << (8u * i);
@@ -798,10 +822,8 @@ static void compare(const side_t *sd)
     expect(sd, "hfsr", 0u, c->hfsr, R.hfsr);
     expect(sd, "mmfar", 0u, c->mmfar,
            (R.cfsr & CFSR_MMARVALID) ? R.mmfar : SENT_MMFAR);
-    if (!R.bfar_unasked) {
-        expect(sd, "bfar", 0u, c->bfar,
-               (R.cfsr & CFSR_BFARVALID) ? R.bfar : SENT_BFAR);
-    }
+    expect(sd, "bfar", 0u, c->bfar,
+           (R.cfsr & CFSR_BFARVALID) ? R.bfar : SENT_BFAR);
     if (R.exc != 0u) {
         uint32_t ret = 0u;
         const uint32_t sp = c->r[ARMV7M_SP];
@@ -888,7 +910,7 @@ static void do_insn(in_t *in, unsigned k)
     R.exc = 0u;
     R.cfsr = R.hfsr = 0u;
     R.unknown_regs = false;
-    R.bfar_unasked = false;
+    R.pend = 0u;
     {
         const bool priv = !R.npriv;
         bool ok = true;
@@ -905,7 +927,20 @@ static void do_insn(in_t *in, unsigned k)
         if (ok) {
             ok = ref_exec(k, pc, imm);
         }
-        if (ok) {
+        if (ok && R.pend != 0u) {
+            /* Taken before the next instruction, in Thread mode. */
+            ref_take(R.pend, pc + len);
+            g_st.imprecise++;
+            g_st.completed++;
+        } else if (!ok && R.pend == 3u && R.exc != 3u) {
+            /*
+             * A precise fault later in the same instruction was taken
+             * first, and the pending HardFault, at -1, preempts its
+             * handler before the handler's first instruction.
+             */
+            ref_take(3u, VEC_BASE + VEC_STUB);
+            g_st.imprecise++;
+        } else if (ok) {
             if (!ref_permits(pc + len, A_FETCH, priv, false)) {
                 R.cfsr |= CFSR_IACCVIOL;
                 g_st.iacc++;

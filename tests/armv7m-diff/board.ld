@@ -8,6 +8,7 @@ MEMORY {
 }
 
 __stack_top = ORIGIN(RAM) + LENGTH(RAM);
+__ram_end = ORIGIN(RAM) + LENGTH(RAM); /* SRAM2 ends: reserved after */
 
 SECTIONS {
     .vectors : { KEEP(*(.vectors)) } > FLASH

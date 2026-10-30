@@ -210,6 +210,14 @@ typedef struct g4mh_cpu {
     uint8_t fast_store_never;
 
     /*
+     * MEI's REG for a block transfer: which register of PREPARE's,
+     * DISPOSE's, PUSHSP's or POPSP's list the refused word belonged to,
+     * which the instruction's encoding cannot say. Written only where one
+     * of those raises an exception, read only when MEI is built for one.
+     */
+    uint8_t mei_reg;
+
+    /*
      * What asked for a system reset, which stops every core, or NULL.
      * The run reports it (emu_cpu_status_t::reset_by).
      */
@@ -268,12 +276,15 @@ void g4mh_cpu_exception_at(g4mh_cpu_t *c, g4mh_exc_t cause, uint32_t ret_pc,
  * two methods applies: direct vector (base + an offset chosen by
  * *priority*), or table reference (the word at INTBP + channel * 4).
  *
- * Returns false if the table read faulted, in which case nothing has been
- * modified and the caller must **not** acknowledge the channel: the
- * architecture cancels acceptance and leaves the request pending so it is
- * taken again once the protection exception has been handled.
+ * Returns the exception if the table read faulted -- MDP 95H, to be
+ * raised at the interrupted pc -- in which case nothing has been modified
+ * and the caller must **not** acknowledge the channel: the architecture
+ * cancels acceptance and leaves the request pending so it is taken again
+ * once the protection exception has been handled. G4MH_EXC_NONE
+ * otherwise.
  */
-bool g4mh_cpu_irq_vector(g4mh_cpu_t *c, uint32_t channel, uint32_t *out);
+g4mh_exc_t g4mh_cpu_irq_vector(g4mh_cpu_t *c, uint32_t channel,
+                               uint32_t *out);
 
 /* True if `cause` is taken at FE level rather than EI. */
 bool g4mh_exc_is_fe(g4mh_exc_t cause);
@@ -339,11 +350,23 @@ g4mh_exc_t g4mh_store_dw(g4mh_cpu_t *c, uint32_t addr, uint32_t lo,
 g4mh_exc_t g4mh_mdp(const g4mh_cpu_t *c, bool rd_bad, bool wr_bad,
                     uint32_t kind);
 
-/* An exception from one word of PREPARE, DISPOSE, PUSHSP or POPSP. */
-static inline g4mh_exc_t g4mh_exc_block(g4mh_exc_t e)
+/*
+ * An exception from one word of PREPARE, DISPOSE, PUSHSP or POPSP, while
+ * moving register `reg` (0 for POPSP's r3, table 3.38 note 3).
+ */
+static inline g4mh_exc_t g4mh_exc_block(g4mh_cpu_t *c, g4mh_exc_t e,
+                                        uint32_t reg)
 {
+    c->mei_reg = (uint8_t)reg;
     return (G4MH_EXC_CODE(e) == G4MH_EXC_MDP) ? (e | G4MH_EXC_D_BL) : e;
 }
+
+/*
+ * A word read "subject to memory protection with the supervisor
+ * privilege" whatever PSW.UM is: SYSCALL's table and an interrupt's
+ * (R01US0209EJ0220 SYSCALL caution 2; R01UH0923EJ0130 table 3.76 note 2).
+ */
+g4mh_exc_t g4mh_load_sv(g4mh_cpu_t *c, uint32_t addr, uint32_t *out);
 
 #if G4MH_EXT_MPU
 /*
@@ -412,6 +435,27 @@ void g4mh_ll_drop(g4mh_cpu_t *c);
  */
 uint32_t g4mh_sr_read(const g4mh_cpu_t *c, unsigned bank, unsigned reg);
 void g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg, uint32_t val);
+
+/*
+ * May LDSR (`write`) or STSR reach (bank, reg) in the current mode:
+ * G4MH_EXC_NONE, UCPOP for a coprocessor register whose PSW.CUn is clear,
+ * or PIE for an SV register in user mode -- in that order, figure 3.3.
+ * A register the manual does not list counts as SV. What an allowed
+ * write then does is g4mh_sr_write's (SVLOCK, PSW in user mode is the
+ * caller's: only LDSR has a mode).
+ */
+g4mh_exc_t g4mh_sr_access(const g4mh_cpu_t *c, unsigned bank, unsigned reg,
+                          bool write);
+
+/*
+ * LDSR and STSR as an instruction makes them: g4mh_sr_access, then the
+ * write -- PSW's five flags only, from user mode -- or the read. Out of
+ * line, so the interpreter's loop carries a call for each and not their
+ * bodies.
+ */
+g4mh_exc_t g4mh_ldsr(g4mh_cpu_t *c, unsigned bank, unsigned reg, uint32_t val);
+g4mh_exc_t g4mh_stsr(const g4mh_cpu_t *c, unsigned bank, unsigned reg,
+                     uint32_t *out);
 
 /* ------------------------------------------------------------------ */
 /* Floating point                                                      */

@@ -717,6 +717,8 @@ static const char *cause_name(uint32_t cause)
         return "instruction-fetch protection";
     case G4MH_EXC_MDP:
         return "data protection";
+    case G4MH_EXC_MDP_TABLE:
+        return "data protection, interrupt table";
     case G4MH_EXC_RIE:
         return "reserved instruction";
     case G4MH_EXC_MAE:
@@ -724,6 +726,8 @@ static const char *cause_name(uint32_t cause)
     case G4MH_EXC_FPP:
         return "floating-point operation";
     case G4MH_EXC_UCPOP:
+    case G4MH_EXC_UCPOP + 1u:
+    case G4MH_EXC_UCPOP + 2u:
         return "coprocessor unusable";
     case G4MH_EXC_PIE:
         return "privileged instruction";

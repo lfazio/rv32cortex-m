@@ -27,6 +27,9 @@ MEMORY {
     RAM (rwx) : ORIGIN = 0x80000000, LENGTH = 1M
 }
 
+/* The host runner maps a megabyte (emu_args.c), and nothing after it. */
+__ram_end = ORIGIN(RAM) + LENGTH(RAM);
+
 SECTIONS {
     /* sys.c executes from this under an MPU region; RAM is executable here. */
     .sram1 (NOLOAD) : { . = ALIGN(1024); *(.sram1*) } > RAM

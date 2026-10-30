@@ -4007,6 +4007,100 @@ session, and every one of them recurred:
   from findings; the reference now aborts with "the harness let slot
   code translate" rather than reporting a disagreement.
 
+- **A return that restores state from a register restores only what the
+  manual names, and a register user code may write is an input to every
+  instruction that reads it.** G4MH's CTRET put all of CTPSW into PSW.
+  The manual restores PSW's five flags; CTPSW is a UM register; so user
+  code could load it with 0 and CTRET into supervisor mode. Nothing had
+  noticed because nothing checked privilege anywhere -- LDSR could
+  write PSW's UM bit directly -- and the first privilege check written
+  (for LDSR) is what made the second door visible. **When privilege
+  arrives, list every instruction that writes the mode bit and every
+  register it reads from.**
+
+- **A field's top bits may live in another field.** CACHE's cacheop is
+  seven bits, and its top two are reg2's low two: the interpreter
+  decoded reg2 `0x1C` alone, so four of the five cache operations were
+  reserved instructions. Its comment listed all five by name, from the
+  manual's table -- correct prose over a decode that reached one. CC-RH
+  settled it in one line (`cache 0x20, [r6]` is reg2 29). This is
+  "enumerate the slot against the vendor's assembler" again, for an
+  instruction whose slot the comment said it had read.
+
+- **A cause that is a range is a range at every reader.** UCPOP is `80H`
+  to `82H`, one per coprocessor. `g4mh_exc_is_fe` and `handler_address`
+  listed `80H`, the only one anything raised, so the first `81H` -- an
+  FXU register read with CU1 clear, which arrived with the permission
+  check -- was taken at EI level and vectored to SYSERR's slot. The
+  test that found it was a row of the permission table written as data.
+
+- **A second path to an array goes through the first path's function.**
+  LDM.MP loads MPU entries "regardless of the value of MPIDX", so it
+  was written to the entry array directly -- and so skipped everything
+  the window's write does: the masks (an entry held bits an LDSR of the
+  same word drops), the generation (a translated block kept running
+  after LDM.MP took execute away), and later SVLOCK. Its own unit test
+  asserted the unmasked words: a value the implementation computed.
+  `g4mh_mpu_entry_write` is now the one function both reach.
+
+- **Two documents from one vendor are still two readings.** The G4MH
+  frontend was built from the U2B hardware manual; the virtualization
+  manual restates the same CPU system. Held against each other: FPE and
+  FXE are EI level in both tables (this frontend took them at FE level,
+  and no test asked which save registers an FP exception used); MDP's
+  MS bit is "a misaligned access" in one and "LD.DW or ST.DW at a word
+  boundary" in the other, which is the only case MS can occur here at
+  all; and MCR.OV is "includes" in both register descriptions and
+  "crosses" in both results tables, which is the reading kept. Where
+  they agree word for word (MEI, the permissions) the agreement rules
+  out a transcription, not a misreading. And a chip's manual can
+  describe a different core than the one modelled: the MPC5675K's e200z7
+  has 64 TLB entries, the e200z759n3 this PowerPC frontend follows 32.
+
+- **The board answers what was asked, and the next question is in the
+  answer.** Asked for BFAR when an unaligned load runs off the end of
+  RAM, the F746 said: the first byte outside, as the emulator had it.
+  Asked the same of a store, it said something nobody had asked: the
+  fault is imprecise -- IMPRECISERR, no BFAR, taken later -- and the
+  emulator had raised every store's bus error precisely at the store.
+  Modelling it on two backends was the work: the interpreter takes a
+  pending fault between instructions and the JIT between blocks, and a
+  trapping helper stops a block *before* its instruction retires. The
+  store helper now runs its instruction again through the interpreter,
+  counts it and stops the block; the interpreter fallback had to be
+  taught the same, which fuzz-armv7m-jit showed within the hour (68
+  instructions apart). **An asynchronous event made deterministic must
+  be made so on every path that can raise it.**
+
+- **A test that enables what it never set up makes every later result
+  depend on the layout.** `sys.c`'s `t_ids` wrote `0xFFFFFFFF` to CCR to
+  see which bits stick; on the M7 that turns on both caches without
+  invalidating them. The board had logged one value twice in every run
+  since -- a write lost in the D-cache when CCR was put back -- and that
+  was read as a board quirk. Adding tests 1,000 lines further down then
+  hung the board in a HardFault loop at the middle of a `bl` inside
+  `t_ids`: the I-cache's contents, whatever they were, ran as code at
+  that layout. The console, polled and stuck behind a looping fault,
+  showed only the first line, which pointed at the wrong test; `gdb`
+  through probe-rs showed the frame, and the stacked pc being half an
+  instruction showed it was not code anyone wrote. **A difference that
+  every run shows is a defect until it is explained, and "the board
+  hangs after the first test" is a question for the core, not the
+  console.**
+
+- **A privilege check is a rare path, and a rare path inlined is paid
+  by every instruction.** G4MH's LDSR permission check, written in the
+  interpreter's switch, and GCC splitting `g4mh_sr_write` to put its
+  head at every caller, grew the run loop by 1.5 KB; CoreMark, which
+  executes none of it, read 2.2% slower interpreted on the F746 at three
+  layouts -- the loop sits in ITCM, so moving `.text` could not move it,
+  and the number not following the pad was the sign it was code. Out of
+  line (`g4mh_ldsr`, `g4mh_stsr`, `cache_op`, `EMU_NOINLINE` on the
+  write), 0.4%. The JIT's figure did follow the pad (-0.4% to +2.8%):
+  the same A/B, two different answers, told apart only by moving the
+  layout. This is the `EMU_NOINLINE` rule again, for a check this
+  session added on purpose.
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

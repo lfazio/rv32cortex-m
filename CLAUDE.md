@@ -106,6 +106,8 @@ BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
                                 # instruction a step; docs/fuzzing.md
 ./scripts/fuzz-mutant.sh SECS ISA FILE OLD NEW  # break a line on purpose
                                 # and see whether that fuzzer notices
+./scripts/unit-mutant.sh BUILD FILE OLD NEW  # the same, for the unit
+                                # tests: a fix reverted, the failures named
 ./scripts/fuzz-dict.py [--check] # the device dictionaries' tokens, from
                                 # the assembly written above each
 tests/armv7m-diff/run.py ...    # the ARMv7-M frontend against a real M7
@@ -397,6 +399,10 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   late, which the architecture permits.
 - **A decision needs the information it depends on**: chainability fixed
   in the prologue missed an `FPUT` in the body, and FS stayed Clean.
+- **A second path to an array goes through the first path's function**:
+  LDM.MP wrote MPU entries directly and skipped the window's masks, the
+  generation (a block outlived the execute permission it lost) and
+  SVLOCK; its test asserted the unmasked words.
 - **A value read once for a span is stale for every write inside it**:
   a translated IT block put back xPSR as the IT found it around each
   access, losing Q a member had set (`armv7m-jit/q-set-in-it-lost-at-access`).
@@ -502,6 +508,9 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   BO32), and a translator that reads a field as an index translates the
   reserved values (RV32 LOAD's `f3 & 3`).
 - **A mode flag whose only writer is a unit test is not a mode** (`vle`).
+- **A field's top bits may live in another field**: CACHE's cacheop takes
+  reg2's low two, so four of G4MH's five cache operations were RIE --
+  under a comment naming all five.
 - **The disassembler repeats the decoder's old mistakes**: G4MH's
   printed PUSHSP and POPSP as `di` from bit 15 alone, long after the
   interpreter's comment said why that was wrong.
@@ -547,6 +556,18 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   the lock rule (`pmpstraddle.S`, `rv_pmp_needed`).
 - **A privilege rule nobody has run from the refused side is not
   implemented** (MRET ran in U-mode until `umode.S`).
+- **A return restores only what the manual names**: G4MH's CTRET put all
+  of CTPSW -- a register user code may write -- into PSW, and user code
+  returned to supervisor mode. When privilege arrives, list every
+  writer of the mode bit and every register each reads from.
+- **A cause that is a range is a range at every reader**: UCPOP is
+  `80H`-`82H`, and `81H` went to SYSERR's vector at EI level because two
+  switches knew `80H`.
+- **An M7 store's bus error is imprecise** (`sys.c` `bus-*`; a load's is
+  precise, BFAR the first byte refused): the store retires and the
+  BusFault pends. Made deterministic, it must be so on every path that
+  can raise it -- the JIT's store helper stopped its block, the
+  interpreter fallback did not, 68 instructions apart.
 - **A rule stated per instruction is not enforced per value**: the
   ARMv7-M run loop took any 0xFxxxxxxx pc in Handler mode as
   EXC_RETURN; MOV pc, ADD pc and BLX branch, and the F746 faults them
@@ -600,6 +621,12 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   probes, open consoles by-id, replug (or `usbreset`) when a console goes
   quiet with no firmware change, and **ask the core where it is** before
   believing a tool that says it started it (the N6 programmer).
+- **A test that turns on what it never set up makes later results depend
+  on the layout**: `t_ids` wrote CCR = 0xFFFFFFFF, which enables the M7's
+  caches uninvalidated -- one value logged twice in every run, then a
+  HardFault loop once code moved. A difference every run shows is a
+  defect until explained; ask the core (gdb through probe-rs), not a
+  polled console stuck behind the fault.
 - **Read the peripheral before suspecting the code**: a UART configured,
   enabled and muxed with nothing arriving is a wire.
 - **Diff the code memory against the image** when code misbehaves on
@@ -719,7 +746,8 @@ The SMP design is in [docs/os.md](docs/os.md#smp-on-the-host).
   in the bus is part of every interpreter loop.
 - **Code reachable from an interpreter's rare cases goes out of line**
   (`EMU_NOINLINE`): LTO inlines it and costs the loop (TLB flushes 2%,
-  PowerPC's reservation code).
+  PowerPC's reservation code, G4MH's LDSR permission checks 2.2% on the
+  F746 -- 0.4% once out of line).
 - **A new call site of something the loop inlines is a decision handed to
   LTO**; check `nm` and measure on the board (21% on the F746).
 - **An out-parameter on a hot function is not free** (+1.3%), and cold
@@ -754,6 +782,10 @@ The SMP design is in [docs/os.md](docs/os.md#smp-on-the-host).
 - **For G4MH and PowerPC the manual is the only authority**: a shared
   misreading is invisible to every check, so say so wherever a result is
   quoted.
+- **Two documents from one vendor are still two readings**: the G4MH
+  virtualization manual put FPE at EI level (the frontend had FE) and
+  said when MDP's MS applies; and a chip manual can describe a different
+  core (the MPC5675K's e200z7: 64 TLB entries, against 32).
 
 ### Editing hazards
 

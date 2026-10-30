@@ -41,10 +41,17 @@ typedef uint32_t g4mh_exc_t;
 #define G4MH_EXC_SYSERR 0x0010u /* system error                 */
 #define G4MH_EXC_MIP 0x0090u /* instruction-fetch protection */
 #define G4MH_EXC_MDP 0x0091u /* data protection              */
+/*
+ * MDP from the table read of an interrupt using the table reference
+ * method -- a separate code, 95H, "terminating" rather than resumable,
+ * and taken to MIP/MDP's vector (table 3.103; table 3.115 note 6). The
+ * read is made with the supervisor privilege whatever PSW.UM was, so its
+ * detail is SR.
+ */
+#define G4MH_EXC_MDP_TABLE 0x0095u
 #define G4MH_EXC_RIE 0x0060u /* reserved instruction         */
 #define G4MH_EXC_MAE 0x00C0u /* misaligned access            */
-#define G4MH_EXC_FPP 0x0071u /* FP operation                 */
-#define G4MH_EXC_UCPOP 0x0080u /* coprocessor unusable         */
+#define G4MH_EXC_UCPOP 0x0080u /* coprocessor unusable, +CUn   */
 /*
  * Privileged instruction. R01UH0923EJ0130 table 3.103 "Exception Cause
  * List" gives A0H, FE level, resumable -- and it is the only cause here
@@ -52,13 +59,19 @@ typedef uint32_t g4mh_exc_t;
  * one, because the software manual describes the *instructions* that
  * raise it without ever naming the code.
  *
- * Only LDM.MP and STM.MP raise it today. LDSR and STSR are SV-privileged
- * too and this frontend does not check them, which is a real gap rather
- * than a decision -- see docs/frontend/g4mh.md.
+ * Raised by the SV-privileged instructions in user mode (DI and EI
+ * unless MCTL.UIC, EIRET, FERET, HALT, RESBANK, LDM.MP, STM.MP and the
+ * CACHE operations other than CHBII), and by LDSR and STSR to a register
+ * whose permission is SV -- figure 3.3 and tables 3.3, 3.4 and 3.9 of
+ * R01UH0923EJ0130; see g4mh_sr_access.
  */
 #define G4MH_EXC_PIE 0x00A0u /* privileged instruction       */
 
-/* EI level: taken to EIPC/EIPSW/EIIC, maskable by PSW.ID. */
+/*
+ * EI level: taken to EIPC/EIPSW/EIIC. The synchronous ones are taken
+ * whatever PSW.ID says; only the interrupts are masked by it.
+ */
+#define G4MH_EXC_FPP 0x0071u /* FPE, precise FP operation    */
 #define G4MH_EXC_TRAP0 0x0040u /* TRAP 0..15,  +vector         */
 #define G4MH_EXC_TRAP1 0x0050u /* TRAP 16..31, +vector         */
 #define G4MH_EXC_SYSCALL 0x8000u /* SYSCALL, +vector             */
@@ -83,6 +96,14 @@ typedef uint32_t g4mh_exc_t;
 #define G4MH_EXC_D_SX (1u << 21) /* MIP: execution, supervisor mode */
 #define G4MH_EXC_D_RMW (1u << 22) /* SET1, NOT1, CLR1, CAXI          */
 #define G4MH_EXC_D_BL (1u << 23) /* PREPARE, DISPOSE, PUSHSP, POPSP */
+/*
+ * MDP: a misaligned access -- which, MAE being raised for every other
+ * one, is LD.DW or ST.DW on a word boundary that is not a doubleword
+ * one: "applicable when the LD.DW or ST.DW accesses the word boundary
+ * address" (R01UH0865EJ0140 table 5.6 note 5; the U2B's table 3.115
+ * says only "a misaligned access").
+ */
+#define G4MH_EXC_D_MS (1u << 24)
 
 /*
  * FEINT, the FE-level maskable interrupt. The U2B gives it cause codes
@@ -185,7 +206,20 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
 #define G4MH_SR_BSEL 31u
 
 /* selID 1 */
-#define G4MH_SR_MCFG0 0u
+/*
+ * SPID, the system protection identifier the MPU's SPID group compares
+ * (table 3.24): five bits, written only with a value SPIDLIST lists.
+ * SPIDLIST is read-only and set outside the CPU; this model lists every
+ * identifier (section 3.10.7's product values). SVLOCK.SVL makes SPID
+ * and the MPU's area registers read-only even to supervisor code, with
+ * no exception (3.2.2.5(5)). MCTL.UIC lets user mode run DI and EI.
+ */
+#define G4MH_SR_SPID 0u
+#define G4MH_SR_SPIDLIST 1u
+#define G4MH_SR_SVLOCK 8u
+#define G4MH_SPIDLIST_VALUE 0xFFFFFFFFu
+#define G4MH_SVLOCK_SVL (1u << 0)
+#define G4MH_MCTL_UIC (1u << 0)
 #define G4MH_SR_RBASE 2u
 #define G4MH_SR_EBASE 3u
 #define G4MH_SR_INTBP 4u
@@ -214,10 +248,37 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
 #define G4MH_SR_SCBP 12u
 
 /* selID 2 */
-#define G4MH_SR_HTCFG0 0u
+#define G4MH_SR_HTCFG0 0u /* the manual's PEID                  */
 #define G4MH_SR_MEA 6u
 #define G4MH_SR_ASID 7u
 #define G4MH_SR_MEI 8u
+
+/*
+ * MEI, what an MDP or MAE leaves for a handler emulating the access
+ * (tables 3.37 and 3.38): the instruction's length in bytes, the
+ * register it loads or stores, the data size, signedness, a kind and
+ * read or write. ITYPE values are table 3.38's.
+ */
+#define G4MH_MEI(len, reg, ds, u, itype, rw)                                   \
+    (((uint32_t)(len) << 28) | ((uint32_t)(reg) << 16) |                       \
+     ((uint32_t)(ds) << 9) | ((uint32_t)(u) << 8) |                            \
+     ((uint32_t)(itype) << 1) | (uint32_t)(rw))
+#define G4MH_MEI_SLD 0x00u /* SLD / SST                          */
+#define G4MH_MEI_DISP16 0x01u /* LD / ST disp16                     */
+#define G4MH_MEI_DISP23 0x02u /* LD / ST disp23                     */
+#define G4MH_MEI_POSTINC 0x04u /* LD / ST [reg1]+                    */
+#define G4MH_MEI_POSTDEC 0x05u /* LD / ST [reg1]-                    */
+#define G4MH_MEI_LINK 0x07u /* LDL / STC                          */
+#define G4MH_MEI_CAXI 0x08u
+#define G4MH_MEI_BIT 0x09u /* SET1 / CLR1 / NOT1 / TST1          */
+#define G4MH_MEI_PREPARE 0x0Cu /* PREPARE / DISPOSE                  */
+#define G4MH_MEI_PUSHSP 0x0Du /* PUSHSP / POPSP                     */
+#define G4MH_MEI_MP 0x0Fu /* STM.MP / LDM.MP                    */
+#define G4MH_MEI_SWITCH 0x10u
+#define G4MH_MEI_CALLT 0x11u
+#define G4MH_MEI_SYSCALL 0x12u
+#define G4MH_MEI_CACHE 0x14u
+#define G4MH_MEI_TABLE 0x15u /* an interrupt's table read          */
 #define G4MH_SR_ISPR 10u
 #define G4MH_SR_PMR 11u /* the manual calls this IMSR         */
 #define G4MH_SR_ICSR 12u
@@ -274,9 +335,13 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
 #define G4MH_SR_PMCTRL0 0u /* .. PMCTRL7 at 7, selID 14         */
 #define G4MH_SR_PMCOUNT0 16u /* .. PMCOUNT7 at 23, selID 14       */
 #define G4MH_SR_PMUMCTRL 8u /* selID 11                          */
+#define G4MH_SR_TSCOUNTL 0u /* selID 11: user may read            */
+#define G4MH_SR_TSCOUNTH 1u /* selID 11: user may read            */
 #define G4MH_PM_CHANNELS 8u
 #define G4MH_SELID_PMU 11u
 #define G4MH_SELID_PM 14u
+#define G4MH_SELID_PMSUB 15u /* PMSUBCND0..7                     */
+#define G4MH_SELID_FXU 10u /* the FXU's registers, CU1         */
 
 /*
  * PMCTRLn. CND selects what the channel counts; CE enables it. The event

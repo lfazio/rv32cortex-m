@@ -1536,7 +1536,7 @@ static void test_ldm_stm_mp(void)
         WORD(0x1111FFFFu),
         STW(6, 7, 4),
         W0(OP_MOVEA, 7, 0),
-        WORD(0x00000007u),
+        WORD(0x00000147u), /* bits 8 and 6 reserved */
         STW(6, 7, 8),
         W0(OP_MOVEA, 7, 0),
         WORD(0x22220000u),
@@ -1580,12 +1580,17 @@ static void test_ldm_stm_mp(void)
 
     CHECK_EQ(why, EMU_RUN_WFI);
 
-    /* The entries themselves, reached directly rather than through MPIDX. */
+    /*
+     * The entries themselves, reached directly rather than through MPIDX
+     * -- and holding what an LDSR of the same words leaves: MPUA's bits
+     * 1:0 and MPAT's reserved bits read zero. LDM.MP stored them raw,
+     * and this test asserted the raw words.
+     */
     CHECK_EQ(m->mpla[2], 0x11110000u);
-    CHECK_EQ(m->mpua[2], 0x1111FFFFu);
+    CHECK_EQ(m->mpua[2], 0x1111FFFCu);
     CHECK_EQ(m->mpat[2], 0x00000007u);
     CHECK_EQ(m->mpla[3], 0x22220000u);
-    CHECK_EQ(m->mpua[3], 0x2222FFFFu);
+    CHECK_EQ(m->mpua[3], 0x2222FFFCu);
     CHECK_EQ(m->mpat[3], 0x00000005u);
 
     /* Neighbours untouched -- eh..et is inclusive and must not overrun. */
@@ -1596,10 +1601,18 @@ static void test_ldm_stm_mp(void)
     CHECK_EQ(m->mpua[4], 0u);
     CHECK_EQ(m->mpat[4], 0u);
 
-    /* The round trip: six words, same order, at the new address. */
-    for (unsigned k = 0; k < 6u; k++) {
-        CHECK_EQ(ram32((TEST_SCRATCH - EMU_GUEST_RAM_BASE) + 64u + k * 4u),
-                 ram32((TEST_SCRATCH - EMU_GUEST_RAM_BASE) + k * 4u));
+    /* The round trip: six words, same order, at the new address, as the
+     * entries hold them. */
+    {
+        static const uint32_t want[6] = {0x11110000u, 0x1111FFFCu,
+                                         0x00000007u, 0x22220000u,
+                                         0x2222FFFCu, 0x00000005u};
+
+        for (unsigned k = 0; k < 6u; k++) {
+            CHECK_EQ(
+                ram32((TEST_SCRATCH - EMU_GUEST_RAM_BASE) + 64u + k * 4u),
+                want[k]);
+        }
     }
 
     /* "The general-purpose register reg1 retains the original value." */
@@ -1698,7 +1711,7 @@ static void test_irq_vector_methods(void)
     c->sr[1][G4MH_SR_RBASE] = base;
     c->psw &= ~(uint32_t)G4MH_PSW_EBV;
 
-    CHECK(g4mh_cpu_irq_vector(c, chan, &vec));
+    CHECK_EQ(g4mh_cpu_irq_vector(c, chan, &vec), G4MH_EXC_NONE);
     CHECK_EQ(vec, base + 0x100u + pri * 0x10u);
 
     /*
@@ -1707,13 +1720,13 @@ static void test_irq_vector_methods(void)
      * small priorities passes against an implementation with no cap.
      */
     (void)g4mh_intc1_ops.write(c->intc, G4MH_INTC1_EEIC + chan * 4u, 4u, 20u);
-    CHECK(g4mh_cpu_irq_vector(c, chan, &vec));
+    CHECK_EQ(g4mh_cpu_irq_vector(c, chan, &vec), G4MH_EXC_NONE);
     CHECK_EQ(vec, base + 0x100u + 15u * 0x10u);
 
     /* RINT collapses every priority onto 0x100. */
     (void)g4mh_intc1_ops.write(c->intc, G4MH_INTC1_EEIC + chan * 4u, 4u, pri);
     c->sr[1][G4MH_SR_RBASE] = base | G4MH_BASE_RINT;
-    CHECK(g4mh_cpu_irq_vector(c, chan, &vec));
+    CHECK_EQ(g4mh_cpu_irq_vector(c, chan, &vec), G4MH_EXC_NONE);
     CHECK_EQ(vec, base + 0x100u);
 
     /*
@@ -1735,7 +1748,7 @@ static void test_irq_vector_methods(void)
     (void)g4mh_intc1_ops.write(c->intc, G4MH_INTC1_EEIC + chan * 4u, 4u,
                                pri | G4MH_EEIC_EITB);
 
-    CHECK(g4mh_cpu_irq_vector(c, chan, &vec));
+    CHECK_EQ(g4mh_cpu_irq_vector(c, chan, &vec), G4MH_EXC_NONE);
     CHECK_EQ(vec, handler);
 
     /*
@@ -1744,22 +1757,25 @@ static void test_irq_vector_methods(void)
      * DV *selecting* the table -- would pass every check above.
      */
     c->sr[1][G4MH_SR_RBASE] = base | G4MH_BASE_DV;
-    CHECK(g4mh_cpu_irq_vector(c, chan, &vec));
+    CHECK_EQ(g4mh_cpu_irq_vector(c, chan, &vec), G4MH_EXC_NONE);
     CHECK_EQ(vec, base + 0x100u + pri * 0x10u);
 
     /*
      * A table read that faults reports rather than vectoring somewhere.
      * The caller must not acknowledge the channel in that case, which is
-     * why this returns a bool at all.
+     * why this returns a cause at all: 95H, the table read's own code
+     * (U2B table 3.103), with MEA the entry's address. Nothing mapped
+     * is a bus fault, so no permission detail.
      */
     c->sr[1][G4MH_SR_RBASE] = base;
     c->sr[1][G4MH_SR_INTBP] = 0xE0000000u; /* nothing mapped here */
-    CHECK(!g4mh_cpu_irq_vector(c, chan, &vec));
+    CHECK_EQ(g4mh_cpu_irq_vector(c, chan, &vec), G4MH_EXC_MDP_TABLE);
+    CHECK_EQ(c->sr[2][G4MH_SR_MEA], 0xE0000000u + chan * 4u);
 
     /* A channel not set to table reference never reads memory, so an
      * unmapped INTBP cannot affect it. */
     (void)g4mh_intc1_ops.write(c->intc, G4MH_INTC1_EEIC + chan * 4u, 4u, pri);
-    CHECK(g4mh_cpu_irq_vector(c, chan, &vec));
+    CHECK_EQ(g4mh_cpu_irq_vector(c, chan, &vec), G4MH_EXC_NONE);
     CHECK_EQ(vec, base + 0x100u + pri * 0x10u);
 }
 
@@ -6757,6 +6773,53 @@ static void test_fp_compare_and_move(void)
  * every other one above could be passing because the prologue happens to
  * work rather than because the arithmetic does.
  */
+/*
+ * An enabled FP exception is FPE, 71H, at **EI level**: EIPC, EIPSW,
+ * EIIC and the 0x70 vector, NP left alone (R01UH0923EJ0130 table 3.103;
+ * R01UH0865EJ0140 table 4.5). It was taken at FE level -- FEPC, NP set
+ * -- and nothing asked which save registers it used.
+ */
+static void test_fp_exception_is_ei_level(void)
+{
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        uint16_t prog[0x40];
+        unsigned k = 0;
+
+        memset(prog, 0, sizeof(prog));
+        k = fp_prologue(prog, k);
+        k = fp_ldi(prog, k, 21, 1u << 8); /* FPSR.XE.Z: divide by zero */
+        prog[k++] = FP0(21, G4MH_SR_FPSR);
+        prog[k++] = SUB_LDSR;
+        k = fp_ldi(prog, k, 10, 0u); /* reg1: 0.0 */
+        k = fp_ldi(prog, k, 11, F_1_0); /* reg2: 1.0 */
+        k = fp_ldi(prog, k, 12, 0x5A5A5A5Au);
+        const uint32_t at = k * 2u;
+        prog[k++] = FP0(10, 11);
+        prog[k++] = FP1(12, FSUB_DIV); /* 1.0 / 0.0 */
+        prog[0x38] = 0x07E0u; /* RBASE + 0x70: FPE/FXE */
+        prog[0x39] = SUB_HALT;
+
+        emu_run_reason_t why;
+        uint32_t retired = 0;
+
+        g_force_backend = (pass == 0u) ? &g4mh_backend_interp : NULL;
+        if (!load_and_run(prog, 0x40u, 64u, &why, &retired)) {
+            g_force_backend = NULL;
+            CHECK(false);
+            return;
+        }
+        g_force_backend = NULL;
+        CHECK_EQ(why, EMU_RUN_WFI);
+        CHECK_EQ(sreg(0, G4MH_SR_EIIC), G4MH_EXC_FPP);
+        CHECK_EQ(sreg(0, G4MH_SR_EIPC), EMU_GUEST_RAM_BASE + at);
+        CHECK_EQ(sreg(0, G4MH_SR_FEIC), 0u);
+        CHECK_EQ(sreg(0, G4MH_SR_FEPC), 0u);
+        CHECK_EQ(psw() & G4MH_PSW_NP, 0u);
+        CHECK((psw() & G4MH_PSW_EP) != 0u);
+        CHECK_EQ(reg(12), 0x5A5A5A5Au); /* the destination is not written */
+    }
+}
+
 static void test_fp_disabled(void)
 {
     /* UCPOP vectors to RBASE + 0x80; a HALT there proves control arrived. */
@@ -7848,9 +7911,13 @@ static void test_mpu_exec_permission_both_backends(void)
 {
     const uint32_t user_rw =
         G4MH_MPAT_E | G4MH_MPAT_UR | G4MH_MPAT_UW | G4MH_MPAT_RG | G4MH_MPAT_WG;
-    uint16_t prog[0x50];
+    uint16_t prog[0x58];
 
     memset(prog, 0, sizeof(prog));
+    /* HALT is SV-privileged: in user mode it raises PIE, whose handler
+     * at RBASE + 0xA0 halts as supervisor. */
+    prog[0x50] = 0x07E0u;
+    prog[0x51] = SUB_HALT;
     prog[0] = F2(OP_MOVI, 5, 10); /* mov 5, r10              */
     prog[1] = F2(OP_ADDI5, 1, 10); /* add 1, r10 -- three times */
     prog[2] = F2(OP_ADDI5, 1, 10);
@@ -7877,6 +7944,8 @@ static void test_mpu_exec_permission_both_backends(void)
         g_pre_run = NULL;
         CHECK_EQ(reg(10), 8u);
         CHECK_EQ(why, EMU_RUN_WFI); /* HALT parks */
+        CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_PIE); /* user to the end */
+        CHECK_EQ(sreg(0, G4MH_SR_FEPC), EMU_GUEST_RAM_BASE + 8u);
 
         /* 2: execute withdrawn; the mode is unchanged. */
         {
@@ -7917,6 +7986,81 @@ static void test_mpu_exec_permission_both_backends(void)
         CHECK_EQ(reg(10), 0u);
         CHECK_EQ(sreg(0, G4MH_SR_FEIC), (uint32_t)(G4MH_EXC_MIP | G4MH_EXC_D_UX));
         CHECK_EQ(why, EMU_RUN_WFI); /* HALT parks */
+    }
+    g_force_backend = NULL;
+    g_pre_run = NULL;
+}
+
+/*
+ * LDM.MP changes what a block may fetch, as an LDSR to MPAT does, and
+ * must discard translations as that does. It wrote the entry array
+ * directly and bumped nothing: user code translated while executable
+ * ran again from its cached block after LDM.MP took execute away. The
+ * JIT pass is the one that can fail; the interpreter asks the MPU at
+ * every fetch.
+ */
+static void test_ldm_mp_discards_blocks(void)
+{
+    const uint32_t user_rw =
+        G4MH_MPAT_E | G4MH_MPAT_UR | G4MH_MPAT_UW | G4MH_MPAT_RG | G4MH_MPAT_WG;
+    uint16_t prog[0x90];
+
+    memset(prog, 0, sizeof(prog));
+    prog[0] = F2(OP_MOVI, 5, 10); /* mov 5, r10              */
+    prog[1] = F2(OP_ADDI5, 1, 10); /* add 1, r10 -- three times */
+    prog[2] = F2(OP_ADDI5, 1, 10);
+    prog[3] = F2(OP_ADDI5, 1, 10);
+    prog[4] = 0x07E0u; /* halt: PIE in user mode  */
+    prog[5] = SUB_HALT;
+    prog[0x48] = 0x07E0u; /* MIP, RBASE + 0x90       */
+    prog[0x49] = SUB_HALT;
+    prog[0x50] = 0x07E0u; /* PIE, RBASE + 0xA0       */
+    prog[0x51] = SUB_HALT;
+    prog[0x80] = (uint16_t)(0x07E0u | 6u); /* +0x100: ldm.mp [r6], 0-0 */
+    prog[0x81] = 0x0166u;
+    prog[0x82] = 0x07E0u;
+    prog[0x83] = SUB_HALT;
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        emu_run_reason_t why;
+        uint32_t retired = 0u;
+
+        g_force_backend = (pass == 0u) ? &g4mh_backend_interp : NULL;
+        mpu_test_attr = user_rw | G4MH_MPAT_UX;
+        g_pre_run = mpu_test_setup;
+        if (!load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 64u, &why,
+                          &retired)) {
+            CHECK(false);
+            break;
+        }
+        g_pre_run = NULL;
+        CHECK_EQ(reg(10), 8u); /* ran, and was translated */
+
+        /* Supervisor: LDM.MP loads entry 0 without UX. */
+        {
+            g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+            const uint32_t words[3] = {EMU_GUEST_RAM_BASE,
+                                       EMU_GUEST_RAM_BASE + TEST_RAM_SIZE - 4u,
+                                       user_rw};
+
+            for (unsigned w = 0; w < 3u; w++) {
+                for (unsigned b = 0; b < 4u; b++) {
+                    g_ram[0x300u + w * 4u + b] = (uint8_t)(words[w] >> (8u * b));
+                }
+            }
+            c->pc = EMU_GUEST_RAM_BASE + 0x100u;
+            c->r[6] = EMU_GUEST_RAM_BASE + 0x300u;
+            c->psw &= ~G4MH_PSW_UM;
+            c->state = EMU_STATE_RUNNING;
+            why = emu_core_run(&g_core, 16u, &retired);
+            CHECK_EQ(why, EMU_RUN_WFI);
+            CHECK_EQ(c->mpu->mpat[0], user_rw);
+        }
+
+        why = mpu_test_rerun(true);
+        CHECK_EQ(reg(10), 0u); /* not one instruction of it ran */
+        CHECK_EQ(sreg(0, G4MH_SR_FEIC), (uint32_t)(G4MH_EXC_MIP | G4MH_EXC_D_UX));
+        CHECK_EQ(sreg(0, G4MH_SR_FEPC), EMU_GUEST_RAM_BASE);
     }
     g_force_backend = NULL;
     g_pre_run = NULL;
@@ -8055,6 +8199,28 @@ static void test_mpu_manual_rules(void)
                                     (st ? G4MH_EXC_D_UW : G4MH_EXC_D_UR)));
                 CHECK_EQ(sreg(2, G4MH_SR_MEA), D);
                 CHECK_EQ(ram32(0x400u), 0u);
+                CHECK_EQ(reg(12), 0x11111111u);
+            }
+
+            /*
+             * The same across a word boundary that is not a doubleword
+             * one: MS as well, "applicable when the LD.DW or ST.DW
+             * accesses the word boundary address" (R01UH0865EJ0140 table
+             * 5.6 note 5) -- and no MAE, the access being word-aligned.
+             */
+            g_mt.la[1] = D + 4u;
+            g_mt.ua[1] = D + 4u;
+            g_mt.la[2] = D + 8u;
+            g_mt.ua[2] = D + 8u;
+            g_mt.r[10] = D + 4u;
+            if (mt_run(code, 5u, pass)) {
+                CHECK_EQ(sreg(0, G4MH_SR_FEIC),
+                         (uint32_t)(G4MH_EXC_MDP | G4MH_EXC_D_MS |
+                                    (st ? G4MH_EXC_D_UW : G4MH_EXC_D_UR)));
+                CHECK_EQ(sreg(2, G4MH_SR_MEA), D + 4u);
+                CHECK_EQ(sreg(2, G4MH_SR_MEI),
+                         st ? 0x600C0605u : 0x600C0604u); /* r12, DS 3 */
+                CHECK_EQ(ram32(0x404u), 0u);
                 CHECK_EQ(reg(12), 0x11111111u);
             }
         }
@@ -8268,6 +8434,699 @@ static void test_mpu_window(void)
     (void)g4mh_mpu_sr_write(&g_tm, G4MH_SR_MPLA, 0x9003u);
     CHECK(g4mh_mpu_sr_read(&g_tm, G4MH_SR_MPLA, &v));
     CHECK_EQ(v, 0x9000u);
+}
+#endif /* G4MH_EXT_MPU */
+
+/* ------------------------------------------------------------------ */
+/* MEI, privilege and the supervisor lock                              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A program at the reset address with a HALT at each handler a test here
+ * can reach -- TRAP (0x40), RIE (0x60), UCPOP (0x80), MIP/MDP (0x90), PIE
+ * (0xA0), MAE (0xC0) -- off RBASE, which is the reset address. FEIC,
+ * EIIC and MEI start as sentinels, so a field the run did not write
+ * shows as itself.
+ */
+#define PRIV_SENT_FEIC 0x0000DEADu
+#define PRIV_SENT_EIIC 0x0000BEEFu
+#define PRIV_SENT_MEI 0x0BADBAD0u /* reserved bits set: never a result */
+#define UNMAPPED 0x70000000u
+
+static void (*g_priv_setup)(g4mh_cpu_t *c);
+
+static void priv_pre_run(void)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+
+    c->sr[0][G4MH_SR_FEIC] = PRIV_SENT_FEIC;
+    c->sr[0][G4MH_SR_EIIC] = PRIV_SENT_EIIC;
+    c->sr[2][G4MH_SR_MEI] = PRIV_SENT_MEI;
+    if (g_priv_setup != NULL) {
+        g_priv_setup(c);
+    }
+    c->sr[0][G4MH_SR_PSW] = c->psw;
+    g4mh_jit_ctx_refresh(c);
+}
+
+static bool priv_run(const uint16_t *code, unsigned n, unsigned pass,
+                     void (*setup)(g4mh_cpu_t *c))
+{
+    uint16_t prog[0x70];
+    emu_run_reason_t why;
+    uint32_t retired = 0u;
+    static const unsigned slot[6] = {0x40u, 0x60u, 0x80u, 0x90u, 0xA0u,
+                                     0xC0u};
+
+    memset(prog, 0, sizeof(prog));
+    memcpy(prog, code, n * sizeof(code[0]));
+    for (unsigned i = 0; i < 6u; i++) {
+        prog[slot[i] / 2u] = 0x07E0u;
+        prog[slot[i] / 2u + 1u] = SUB_HALT;
+    }
+    g_force_backend = (pass == 0u) ? &g4mh_backend_interp : NULL;
+    g_priv_setup = setup;
+    g_pre_run = priv_pre_run;
+    const bool ok = load_and_run(prog, 0x70u, 64u, &why, &retired);
+
+    g_pre_run = NULL;
+    g_priv_setup = NULL;
+    g_force_backend = NULL;
+    CHECK(ok);
+    return ok;
+}
+
+/*
+ * MEI after an MDP or MAE, from each memory instruction table 3.38 lists
+ * that this frontend implements -- through the interpreter and the JIT.
+ * The encodings are CC-RH's (scripts/g4mh-check-encodings.sh), except
+ * PUSHSP, POPSP, STM.MP and LDM.MP, which it will not assemble and which
+ * are written from R01US0209EJ0220's opcode diagrams; the expected words
+ * are table 3.38's fields, packed by hand. MDP comes from an unmapped
+ * address (UNMAPPED), MAE from a misaligned one.
+ *
+ * The block transfers are the cases the encoding cannot answer: REG is
+ * the register whose word was refused, and two are refused partway --
+ * DISPOSE at its second register, POPSP at r3 (stored as 0, note 3) and
+ * at r2.
+ */
+static const struct mei_case {
+    const char *name;
+    uint16_t hw[8];
+    unsigned n;
+    struct {
+        unsigned r;
+        uint32_t v;
+    } set[2];
+    uint32_t at; /* offset of the instruction that faults */
+    uint32_t code; /* FEIC's low half */
+    uint32_t mei;
+} k_mei_cases[] = {
+    {"ld.b disp16", {0x3F06u, 0x0010u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x40070002u},
+    {"ld.bu disp16", {0x3FA6u, 0x0011u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x40070102u},
+    {"ld.h disp16", {0x3F26u, 0x0010u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x40070202u},
+    {"ld.hu disp16", {0x3FE6u, 0x0011u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x40070302u},
+    {"ld.w disp16", {0x3F26u, 0x0011u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x40070402u},
+    {"st.b disp16", {0x3F46u, 0x0010u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x40070003u},
+    {"st.h disp16", {0x3F66u, 0x0010u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x40070203u},
+    {"st.w disp16", {0x3F66u, 0x0011u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x40070403u},
+    {"ld.b disp23", {0x0786u, 0x4455u, 0x0246u}, 3u, {{6, 0x70000000u}}, 0u, 0x91u, 0x60080004u},
+    {"ld.bu disp23", {0x07A6u, 0x4455u, 0x0246u}, 3u, {{6, 0x70000000u}}, 0u, 0x91u, 0x60080104u},
+    {"ld.h disp23", {0x0786u, 0x4447u, 0x0246u}, 3u, {{6, 0x70000000u}}, 0u, 0x91u, 0x60080204u},
+    {"ld.hu disp23", {0x07A6u, 0x4447u, 0x0246u}, 3u, {{6, 0x70000000u}}, 0u, 0x91u, 0x60080304u},
+    {"ld.w disp23", {0x0786u, 0x4449u, 0x0246u}, 3u, {{6, 0x70000000u}}, 0u, 0x91u, 0x60080404u},
+    {"ld.dw disp23", {0x07A6u, 0x5449u, 0x0246u}, 3u, {{6, 0x70000000u}}, 0u, 0x91u, 0x600A0604u},
+    {"st.b disp23", {0x0786u, 0x445Du, 0x0246u}, 3u, {{6, 0x70000000u}}, 0u, 0x91u, 0x60080005u},
+    {"st.h disp23", {0x07A6u, 0x444Du, 0x0246u}, 3u, {{6, 0x70000000u}}, 0u, 0x91u, 0x60080205u},
+    {"st.w disp23", {0x0786u, 0x444Fu, 0x0246u}, 3u, {{6, 0x70000000u}}, 0u, 0x91u, 0x60080405u},
+    {"st.dw disp23", {0x07A6u, 0x544Fu, 0x0246u}, 3u, {{6, 0x70000000u}}, 0u, 0x91u, 0x600A0605u},
+    {"sld.b", {0x4B10u}, 1u, {{30, 0x70000000u}}, 0u, 0x91u, 0x20090000u},
+    {"sld.bu", {0x4861u}, 1u, {{30, 0x70000000u}}, 0u, 0x91u, 0x20090100u},
+    {"sld.h", {0x4C08u}, 1u, {{30, 0x70000000u}}, 0u, 0x91u, 0x20090200u},
+    {"sld.hu", {0x4871u}, 1u, {{30, 0x70000000u}}, 0u, 0x91u, 0x20090300u},
+    {"sld.w", {0x4D08u}, 1u, {{30, 0x70000000u}}, 0u, 0x91u, 0x20090400u},
+    {"sst.b", {0x4B90u}, 1u, {{30, 0x70000000u}}, 0u, 0x91u, 0x20090001u},
+    {"sst.h", {0x4C88u}, 1u, {{30, 0x70000000u}}, 0u, 0x91u, 0x20090201u},
+    {"sst.w", {0x4D09u}, 1u, {{30, 0x70000000u}}, 0u, 0x91u, 0x20090401u},
+    {"ld.b [r6]+", {0x17E6u, 0x5B70u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x400B0008u},
+    {"ld.bu [r6]+", {0x1FE6u, 0x5B70u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x400B0108u},
+    {"ld.h [r6]-", {0x27E6u, 0x5B74u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x400B020Au},
+    {"ld.hu [r6]-", {0x2FE6u, 0x5B74u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x400B030Au},
+    {"ld.w [r6]+", {0x17E6u, 0x5B78u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x400B0408u},
+    {"st.b [r6]+", {0x17E6u, 0x5B72u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x400B0009u},
+    {"st.h [r6]-", {0x27E6u, 0x5B76u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x400B020Bu},
+    {"st.w [r6]-", {0x27E6u, 0x5B7Au}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x400B040Bu},
+    {"ldl.w", {0x07E6u, 0x6378u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x400C040Eu},
+    {"ldl.bu", {0x0FE6u, 0x6370u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x400C010Eu},
+    {"ldl.hu", {0x0FE6u, 0x6374u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x400C030Eu},
+    {"stc.h (MAE)", {0x07E7u, 0x6378u, 0x07E6u, 0x6376u}, 4u, {{6, 0x80000401u}, {7, 0x80000400u}}, 4u, 0xC0u, 0x400C020Fu},
+    {"caxi", {0x6FE6u, 0x70EEu}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x400E0410u},
+    {"set1 bit#3, disp16", {0x1FC6u, 0x0010u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x40000012u},
+    {"clr1 reg2, [reg1]", {0x3FE6u, 0x00E4u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x40000012u},
+    {"tst1 reg2, [reg1]", {0x3FE6u, 0x00E6u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x40000012u},
+    {"prepare {r24,r30}", {0x0781u, 0x8001u}, 2u, {{3, 0x70000000u}}, 0u, 0x91u, 0x40180419u},
+    {"prepare ..., sp", {0x0781u, 0x0003u}, 2u, {{3, 0x70000000u}}, 0u, 0x91u, 0x401E0419u},
+    {"prepare ..., imm16", {0x0781u, 0x000Bu, 0x1234u}, 3u, {{3, 0x70000000u}}, 0u, 0x91u, 0x601E0419u},
+    {"prepare ..., imm16<<16", {0x0781u, 0x0013u, 0x1234u}, 3u, {{3, 0x70000000u}}, 0u, 0x91u, 0x601E0419u},
+    {"prepare ..., imm32", {0x0781u, 0x001Bu, 0x5678u, 0x1234u}, 4u, {{3, 0x70000000u}}, 0u, 0x91u, 0x801E0419u},
+    {"dispose, the second word", {0x0641u, 0x8000u}, 2u, {{3, 0x80000FFCu}}, 0u, 0x91u, 0x40180418u},
+    {"dispose ..., [lp]", {0x0641u, 0x003Fu}, 2u, {{3, 0x70000000u}}, 0u, 0x91u, 0x401F0418u},
+    {"pushsp", {0x47F4u, 0xC160u}, 2u, {{3, 0x70000000u}}, 0u, 0x91u, 0x4014041Bu},
+    {"popsp, refused at r3", {0x67E2u, 0x2160u}, 2u, {{3, 0x80000FFCu}}, 0u, 0x91u, 0x4000041Au},
+    {"popsp, refused at r2", {0x67E2u, 0x2160u}, 2u, {{3, 0x80000FF8u}}, 0u, 0x91u, 0x4002041Au},
+#if G4MH_EXT_MPU
+    {"stm.mp", {0x07E6u, 0x0164u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x4000041Fu},
+    {"ldm.mp", {0x07E6u, 0x0166u}, 2u, {{6, 0x70000000u}}, 0u, 0x91u, 0x4000041Eu},
+#endif
+    {"switch", {0x0046u}, 1u, {{6, 0x78000000u}}, 0u, 0x91u, 0x20000220u},
+    {"callt", {0x0205u}, 1u, {}, 0u, 0x91u, 0x20000322u},
+    {"syscall", {0xD7E3u, 0x0160u}, 2u, {}, 0u, 0x91u, 0x40000424u},
+    {"ld.w disp16 (MAE)", {0x3F26u, 0x0011u}, 2u, {{6, 0x80000402u}}, 0u, 0xC0u, 0x40070402u},
+    {"sld.h (MAE)", {0x4C08u}, 1u, {{30, 0x80000401u}}, 0u, 0xC0u, 0x20090200u},
+    {"st.dw disp23 (MAE)", {0x07A6u, 0x544Fu, 0x0246u}, 3u, {{6, 0x80000002u}}, 0u, 0xC0u, 0x600A0605u},
+};
+
+static const struct mei_case *g_mei_case;
+
+static void mei_setup(g4mh_cpu_t *c)
+{
+    for (unsigned i = 0; i < 2u; i++) {
+        if (g_mei_case->set[i].r != 0u) {
+            c->r[g_mei_case->set[i].r] = g_mei_case->set[i].v;
+        }
+    }
+    c->sr[0][G4MH_SR_CTBP] = UNMAPPED;
+    c->sr[1][G4MH_SR_SCBP] = UNMAPPED;
+    c->sr[1][G4MH_SR_SCCFG] = 0xFFu;
+}
+
+static void test_mei(void)
+{
+    /* The packing, once, against hand arithmetic: LD.W disp16 into r7. */
+    CHECK_EQ(G4MH_MEI(4u, 7u, 2u, 0u, G4MH_MEI_DISP16, 0u), 0x40070402u);
+
+    for (size_t i = 0; i < sizeof(k_mei_cases) / sizeof(k_mei_cases[0]);
+         i++) {
+        for (unsigned pass = 0; pass < 2u; pass++) {
+            g_mei_case = &k_mei_cases[i];
+            if (!priv_run(g_mei_case->hw, g_mei_case->n, pass, mei_setup)) {
+                return;
+            }
+            const uint32_t feic = sreg(0, G4MH_SR_FEIC) & 0xFFFFu;
+            const uint32_t fepc = sreg(0, G4MH_SR_FEPC);
+            const uint32_t mei = sreg(2, G4MH_SR_MEI);
+
+            if (feic != g_mei_case->code ||
+                fepc != EMU_GUEST_RAM_BASE + g_mei_case->at ||
+                mei != g_mei_case->mei) {
+                fprintf(stderr, "  mei: %s (%s)\n", g_mei_case->name,
+                        pass == 0u ? "interp" : "jit");
+            }
+            CHECK_EQ(feic, g_mei_case->code);
+            CHECK_EQ(fepc, EMU_GUEST_RAM_BASE + g_mei_case->at);
+            CHECK_EQ(mei, g_mei_case->mei);
+        }
+    }
+
+    /*
+     * The table read of an interrupt has no instruction: LEN 0, word,
+     * ITYPE 10101. And an exception that is neither MDP nor MAE leaves
+     * MEI alone.
+     */
+    {
+        const uint16_t halt[] = {0x07E0u, SUB_HALT};
+        emu_run_reason_t why;
+        uint32_t retired = 0u;
+
+        if (!load_and_run(halt, 2u, 4u, &why, &retired)) {
+            CHECK(false);
+            return;
+        }
+        g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+
+        c->sr[2][G4MH_SR_MEI] = PRIV_SENT_MEI;
+        g4mh_cpu_exception(c, G4MH_EXC_MDP_TABLE | G4MH_EXC_D_SR,
+                           EMU_GUEST_RAM_BASE + 0x20u);
+        CHECK_EQ(sreg(2, G4MH_SR_MEI), 0x0000042Au);
+        CHECK_EQ(sreg(0, G4MH_SR_FEIC), 0x00080095u);
+        CHECK_EQ(sreg(0, G4MH_SR_FEPC), EMU_GUEST_RAM_BASE + 0x20u);
+        CHECK_EQ(c->pc, EMU_GUEST_RAM_BASE + 0x90u); /* MIP/MDP's vector */
+
+        c->sr[2][G4MH_SR_MEI] = PRIV_SENT_MEI;
+        g4mh_cpu_exception(c, G4MH_EXC_MIP | G4MH_EXC_D_SX,
+                           EMU_GUEST_RAM_BASE);
+        g4mh_cpu_exception(c, G4MH_EXC_RIE, EMU_GUEST_RAM_BASE);
+        CHECK_EQ(sreg(2, G4MH_SR_MEI), PRIV_SENT_MEI);
+    }
+}
+
+/*
+ * LDSR and STSR against each register's permission, from the U2B
+ * manual's tables (3.9, 3.43, 3.50, 3.57, 3.64, 3.86) -- written here as
+ * data, not derived from g4mh_sr_access. One instruction in user mode
+ * (or supervisor, `sv`), then TRAP 0: a refused one leaves FEIC the
+ * cause and FEPC the instruction; an allowed one reaches the TRAP.
+ */
+static const struct {
+    uint8_t bank, reg;
+    bool write, sv;
+    uint32_t psw; /* CU bits */
+    uint32_t pmumctrl;
+    uint32_t want; /* 0: allowed */
+} k_sr_perm[] = {
+    {0, 0, false, false, 0, 0, G4MH_EXC_PIE}, /* EIPC          */
+    {0, 0, true, false, 0, 0, G4MH_EXC_PIE},
+    {0, 3, false, false, 0, 0, G4MH_EXC_PIE}, /* FEPSW         */
+    {0, 5, false, false, 0, 0, 0u}, /* PSW: UM            */
+    {0, 5, true, false, 0, 0, 0u},
+    {0, 6, false, false, G4MH_PSW_CU0, 0, G4MH_EXC_PIE}, /* FPSR: CU0+SV */
+    {0, 6, false, false, 0, 0, G4MH_EXC_UCPOP}, /* CU0 first   */
+    {0, 7, true, false, G4MH_PSW_CU0, 0, G4MH_EXC_PIE}, /* FPEPC */
+    {0, 8, false, false, G4MH_PSW_CU0, 0, 0u}, /* FPST: CU0      */
+    {0, 8, true, false, 0, 0, G4MH_EXC_UCPOP},
+    {0, 8, false, true, 0, 0, G4MH_EXC_UCPOP}, /* even as SV     */
+    {0, 10, true, false, G4MH_PSW_CU0, 0, 0u}, /* FPCFG          */
+    {0, 13, false, false, 0, 0, G4MH_EXC_PIE}, /* EIIC           */
+    {0, 14, false, false, 0, 0, G4MH_EXC_PIE}, /* FEIC           */
+    {0, 16, true, false, 0, 0, 0u}, /* CTPC: UM              */
+    {0, 17, false, false, 0, 0, 0u}, /* CTPSW              */
+    {0, 20, true, false, 0, 0, 0u}, /* CTBP                  */
+    {0, 21, false, false, 0, 0, G4MH_EXC_PIE}, /* SNZCFG         */
+    {0, 28, true, false, 0, 0, G4MH_EXC_PIE}, /* EIWR            */
+    {1, 0, true, false, 0, 0, G4MH_EXC_PIE}, /* SPID            */
+    {1, 1, false, false, 0, 0, G4MH_EXC_PIE}, /* SPIDLIST       */
+    {1, 2, true, false, 0, 0, G4MH_EXC_PIE}, /* RBASE           */
+    {1, 5, true, false, 0, 0, G4MH_EXC_PIE}, /* MCTL            */
+    {1, 8, true, false, 0, 0, G4MH_EXC_PIE}, /* SVLOCK          */
+    {1, 12, false, false, 0, 0, G4MH_EXC_PIE}, /* SCBP          */
+    {2, 0, false, false, 0, 0, 0u}, /* PEID: UM              */
+    {2, 1, false, false, 0, 0, 0u}, /* BMID                  */
+    {2, 6, false, false, 0, 0, G4MH_EXC_PIE}, /* MEA            */
+    {2, 8, false, false, 0, 0, G4MH_EXC_PIE}, /* MEI            */
+    {2, 14, true, false, 0, 0, G4MH_EXC_PIE}, /* PLMR           */
+    {5, 0, true, false, 0, 0, G4MH_EXC_PIE}, /* MPM: the MPU off */
+    {5, 20, true, false, 0, 0, G4MH_EXC_PIE}, /* MPLA           */
+    {5, 24, true, false, 0, 0, G4MH_EXC_PIE}, /* MPID0          */
+    {10, 6, false, false, G4MH_PSW_CU1, 0, G4MH_EXC_PIE}, /* FXSR */
+    {10, 6, false, true, 0, 0, G4MH_EXC_UCPOP + 1u}, /* CU1      */
+    {10, 8, false, false, G4MH_PSW_CU1, 0, 0u}, /* FXST: CU1      */
+    {11, 0, false, false, 0, 0, 0u}, /* TSCOUNTL: read UM    */
+    {11, 1, true, false, 0, 0, G4MH_EXC_PIE}, /* ... write SV   */
+    {11, 2, false, false, 0, 0, G4MH_EXC_PIE}, /* TSCTRL        */
+    {11, 8, false, false, 0, 0, G4MH_EXC_PIE}, /* PMUMCTRL      */
+    {14, 0, false, false, 0, 0, G4MH_EXC_PIE}, /* PMCTRL0      */
+    {14, 0, true, false, 0, 1u, 0u}, /* ... PMUE0               */
+    {14, 1, false, false, 0, 1u, G4MH_EXC_PIE}, /* PMCTRL1, PMUE0 */
+    {14, 16, false, false, 0, 1u, 0u}, /* PMCOUNT0            */
+    {14, 23, true, false, 0, 0x80u, 0u}, /* PMCOUNT7, PMUE7   */
+    {15, 0, false, false, 0, 1u, 0u}, /* PMSUBCND0            */
+    {15, 1, false, false, 0, 1u, G4MH_EXC_PIE}, /* PMSUBCND1    */
+    {9, 31, false, false, 0, 0, G4MH_EXC_PIE}, /* listed nowhere */
+    {0, 0, true, true, 0, 0, 0u}, /* EIPC as SV                */
+};
+
+static unsigned g_perm_i;
+
+static void perm_setup(g4mh_cpu_t *c)
+{
+    c->psw = (c->psw & ~(G4MH_PSW_CU0 | G4MH_PSW_CU1)) | k_sr_perm[g_perm_i].psw;
+    if (!k_sr_perm[g_perm_i].sv) {
+        c->psw |= G4MH_PSW_UM;
+    }
+    c->sr[G4MH_SELID_PMU][G4MH_SR_PMUMCTRL] = k_sr_perm[g_perm_i].pmumctrl;
+    c->r[7] = 0u; /* what LDSR writes: harmless everywhere */
+}
+
+static void test_sr_permissions(void)
+{
+    for (g_perm_i = 0; g_perm_i < sizeof(k_sr_perm) / sizeof(k_sr_perm[0]);
+         g_perm_i++) {
+        const unsigned b = k_sr_perm[g_perm_i].bank;
+        const unsigned r = k_sr_perm[g_perm_i].reg;
+        const uint16_t prog[] = {
+            k_sr_perm[g_perm_i].write ? W0(OP_SYSTEM, 7, r) /* ldsr r7 */
+                                      : W0(OP_SYSTEM, r, 8), /* stsr -> r8 */
+            (uint16_t)((b << 11) |
+                       (k_sr_perm[g_perm_i].write ? SUB_LDSR : SUB_STSR)),
+            0x07E0u, /* trap 0 */
+            SUB_TRAP,
+        };
+        const uint32_t want = k_sr_perm[g_perm_i].want;
+
+        if (!priv_run(prog, 4u, 0u, perm_setup)) {
+            return;
+        }
+        const uint32_t feic = sreg(0, G4MH_SR_FEIC);
+        const uint32_t eiic = sreg(0, G4MH_SR_EIIC);
+
+        if ((want != 0u && feic != want) || (want == 0u && eiic != 0x40u)) {
+            fprintf(stderr, "  %s (%u, %u) as %s: FEIC 0x%x EIIC 0x%x\n",
+                    k_sr_perm[g_perm_i].write ? "ldsr" : "stsr", r, b,
+                    k_sr_perm[g_perm_i].sv ? "SV" : "UM", feic, eiic);
+        }
+        if (want != 0u) {
+            CHECK_EQ(feic, want);
+            CHECK_EQ(sreg(0, G4MH_SR_FEPC), EMU_GUEST_RAM_BASE);
+            CHECK_EQ(eiic, PRIV_SENT_EIIC);
+        } else {
+            CHECK_EQ(eiic, 0x40u);
+            CHECK_EQ(feic, PRIV_SENT_FEIC);
+        }
+    }
+}
+
+/*
+ * What a refused LDSR leaves -- the register as it was -- and the one
+ * register whose user-mode write is partial: PSW, whose five flags user
+ * code may write and whose UM it may not (table 3.14, no PIE).
+ */
+static void psw_user_setup(g4mh_cpu_t *c)
+{
+    c->psw |= G4MH_PSW_UM;
+    c->r[7] = 0x0000001Fu; /* every flag, UM clear */
+    c->r[9] = 0x12345600u;
+}
+
+static void test_ldsr_user_effects(void)
+{
+    const uint16_t prog[] = {
+        W0(OP_SYSTEM, 7, G4MH_SR_PSW), /* ldsr r7, psw  */
+        (uint16_t)((0u << 11) | SUB_LDSR),
+        0x07E0u, /* trap 0 */
+        SUB_TRAP,
+    };
+    const uint16_t rbase[] = {
+        W0(OP_SYSTEM, 9, G4MH_SR_RBASE), /* ldsr r9, rbase: PIE */
+        (uint16_t)((1u << 11) | SUB_LDSR),
+    };
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        if (!priv_run(prog, 4u, pass, psw_user_setup)) {
+            return;
+        }
+        CHECK_EQ(sreg(0, G4MH_SR_EIIC), 0x40u);
+        CHECK((sreg(0, G4MH_SR_EIPSW) & G4MH_PSW_UM) != 0u); /* still user */
+        CHECK_EQ(sreg(0, G4MH_SR_EIPSW) & 0x1Fu, 0x1Fu); /* flags written */
+
+        if (!priv_run(rbase, 2u, pass, psw_user_setup)) {
+            return;
+        }
+        CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_PIE);
+        CHECK_EQ(sreg(1, G4MH_SR_RBASE), EMU_GUEST_RAM_BASE);
+    }
+}
+
+/*
+ * The SV-privileged instructions, each in user mode then TRAP 0: PIE at
+ * the instruction (table 3.3), or it ran. DI and EI are SV unless
+ * MCTL.UIC; CACHE's operations other than CHBII are SV (U2B 3.4.2.1(2))
+ * and run as supervisor -- they were RIE, four of five cacheops being
+ * outside the one reg2 value decoded; an undefined cacheop is a NOP.
+ */
+static uint32_t g_priv_mctl;
+static bool g_priv_sv;
+
+static void priv_insn_setup(g4mh_cpu_t *c)
+{
+    if (!g_priv_sv) {
+        c->psw |= G4MH_PSW_UM;
+    }
+    c->sr[1][G4MH_SR_MCTL] = g_priv_mctl;
+    c->r[6] = EMU_GUEST_RAM_BASE + 0x400u;
+}
+
+static void test_privileged_instructions(void)
+{
+#define CACHEOP(op) (uint16_t)(((0x1Cu | ((op) >> 5)) << 11) | 0x07E0u | 6u),                     (uint16_t)((((op) & 0x1Fu) << 11) | 0x0160u)
+    static const struct {
+        const char *name;
+        uint16_t w0, w1;
+        uint32_t mctl;
+        bool sv;
+        uint32_t want; /* 0: ran */
+    } k[] = {
+        {"di", 0x07E0u, 0x0160u, 0u, false, G4MH_EXC_PIE},
+        {"ei", 0x87E0u, 0x0160u, 0u, false, G4MH_EXC_PIE},
+        {"di, UIC", 0x07E0u, 0x0160u, G4MH_MCTL_UIC, false, 0u},
+        {"ei, UIC", 0x87E0u, 0x0160u, G4MH_MCTL_UIC, false, 0u},
+        {"halt", 0x07E0u, SUB_HALT, 0u, false, G4MH_EXC_PIE},
+        {"eiret", 0x07E0u, SUB_EIRET, 0u, false, G4MH_EXC_PIE},
+        {"feret", 0x07E0u, SUB_FERET, 0u, false, G4MH_EXC_PIE},
+        {"resbank", 0x07E0u, 0x8160u, 0u, false, G4MH_EXC_PIE},
+        {"resbank, SV", 0x07E0u, 0x8160u, 0u, true, G4MH_EXC_RIE},
+        {"chbii", CACHEOP(0x00u), 0u, false, 0u},
+        {"cibii", CACHEOP(0x20u), 0u, false, G4MH_EXC_PIE},
+        {"cfali", CACHEOP(0x40u), 0u, false, G4MH_EXC_PIE},
+        {"cisti", CACHEOP(0x60u), 0u, false, G4MH_EXC_PIE},
+        {"cildi", CACHEOP(0x61u), 0u, false, G4MH_EXC_PIE},
+        {"cibii, SV", CACHEOP(0x20u), 0u, true, 0u},
+        {"cfali, SV", CACHEOP(0x40u), 0u, true, 0u},
+        {"cisti, SV", CACHEOP(0x60u), 0u, true, 0u},
+        {"cildi, SV", CACHEOP(0x61u), 0u, true, 0u},
+        {"cacheop 0x01", CACHEOP(0x01u), 0u, false, 0u},
+        {"cacheop 0x7F", CACHEOP(0x7Fu), 0u, false, 0u},
+        {"cll", 0xFFFFu, 0xF160u, 0u, false, 0u},
+    };
+#undef CACHEOP
+
+    /* The encodings, against CC-RH: cache 0x20, [r6] is E6EF6001. */
+    CHECK_EQ(k[10].w0, 0xEFE6u);
+    CHECK_EQ(k[10].w1, 0x0160u);
+    CHECK_EQ(k[13].w0, 0xFFE6u); /* cache 0x61: E6FF6009 */
+    CHECK_EQ(k[13].w1, 0x0960u);
+
+    for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
+        const uint16_t prog[] = {k[i].w0, k[i].w1, 0x07E0u, SUB_TRAP};
+
+        for (unsigned pass = 0; pass < 2u; pass++) {
+            g_priv_mctl = k[i].mctl;
+            g_priv_sv = k[i].sv;
+            if (!priv_run(prog, 4u, pass, priv_insn_setup)) {
+                return;
+            }
+            const uint32_t feic = sreg(0, G4MH_SR_FEIC);
+            const uint32_t eiic = sreg(0, G4MH_SR_EIIC);
+
+            if ((k[i].want != 0u && feic != k[i].want) ||
+                (k[i].want == 0u && eiic != 0x40u)) {
+                fprintf(stderr, "  %s: FEIC 0x%x EIIC 0x%x\n", k[i].name,
+                        feic, eiic);
+            }
+            if (k[i].want != 0u) {
+                CHECK_EQ(feic, k[i].want);
+                CHECK_EQ(sreg(0, G4MH_SR_FEPC), EMU_GUEST_RAM_BASE);
+            } else {
+                CHECK_EQ(eiic, 0x40u);
+                CHECK_EQ(feic, PRIV_SENT_FEIC);
+            }
+        }
+    }
+    g_priv_mctl = 0u;
+    g_priv_sv = false;
+}
+
+/*
+ * CTRET restores PSW's five flags and nothing else. CTPSW is a UM
+ * register, so a CTRET restoring all of PSW from it returned user code
+ * to supervisor mode. And CTPSW keeps five bits.
+ */
+static void ctret_setup(g4mh_cpu_t *c)
+{
+    c->psw |= G4MH_PSW_UM;
+    c->r[7] = 0xFFFFFFFFu;
+    c->sr[0][G4MH_SR_CTPC] = EMU_GUEST_RAM_BASE + 0x10u;
+}
+
+static void test_ctret_restores_flags_only(void)
+{
+    const uint16_t prog[] = {
+        W0(OP_SYSTEM, 7, G4MH_SR_CTPSW), /* ldsr r7, ctpsw */
+        (uint16_t)((0u << 11) | SUB_LDSR),
+        0x07E0u, /* ctret */
+        SUB_CTRET,
+        0x07E0u, /* halt: not reached */
+        SUB_HALT,
+        0u,
+        0u,
+        0x07E0u, /* +0x10: trap 0 */
+        SUB_TRAP,
+    };
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        if (!priv_run(prog, 10u, pass, ctret_setup)) {
+            return;
+        }
+        CHECK_EQ(sreg(0, G4MH_SR_CTPSW), 0x1Fu);
+        CHECK_EQ(sreg(0, G4MH_SR_EIIC), 0x40u);
+        CHECK_EQ(sreg(0, G4MH_SR_EIPC), EMU_GUEST_RAM_BASE + 0x14u);
+        CHECK((sreg(0, G4MH_SR_EIPSW) & G4MH_PSW_UM) != 0u);
+        CHECK_EQ(sreg(0, G4MH_SR_EIPSW) & 0x1Fu, 0x1Fu);
+    }
+}
+
+/*
+ * SPID: five bits, read back, and a change discards translations (the
+ * MPU's SPID group compares it). SPIDLIST reads every identifier.
+ */
+static uint32_t g_spid_gen;
+
+static void spid_setup(g4mh_cpu_t *c)
+{
+    c->r[7] = 0x25u;
+    g_spid_gen = c->jit_gen;
+}
+
+static void test_spid_register(void)
+{
+    const uint16_t prog[] = {
+        W0(OP_SYSTEM, 7, G4MH_SR_SPID), /* ldsr r7, spid      */
+        (uint16_t)((1u << 11) | SUB_LDSR),
+        W0(OP_SYSTEM, G4MH_SR_SPID, 8), /* stsr spid, r8      */
+        (uint16_t)((1u << 11) | SUB_STSR),
+        W0(OP_SYSTEM, G4MH_SR_SPIDLIST, 9), /* stsr spidlist, r9 */
+        (uint16_t)((1u << 11) | SUB_STSR),
+        0x07E0u, /* trap 0 */
+        SUB_TRAP,
+    };
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        if (!priv_run(prog, 8u, pass, spid_setup)) {
+            return;
+        }
+        CHECK_EQ(reg(8), 5u);
+        CHECK_EQ(reg(9), 0xFFFFFFFFu);
+#if G4MH_EXT_MPU
+        CHECK_EQ(((const g4mh_cpu_t *)(const void *)g_core.cpu)->spid, 5u);
+        CHECK(((const g4mh_cpu_t *)(const void *)g_core.cpu)->jit_gen !=
+              g_spid_gen);
+#endif
+    }
+}
+
+#if G4MH_EXT_MPU
+/*
+ * SVLOCK.SVL: SPID, MPM, the area registers and MPIDn ignore supervisor
+ * writes, with no exception; MPIDX and SVLOCK itself still take them;
+ * and LDM.MP leaves the entries -- a reading, since the manual names
+ * the registers and not the instructions.
+ */
+static void svlock_setup(g4mh_cpu_t *c)
+{
+    c->r[7] = 1u; /* SVL, MPM.MPE */
+    c->r[8] = 7u; /* MPIDX, SPID */
+    c->r[6] = EMU_GUEST_RAM_BASE + 0x400u;
+    for (unsigned i = 0; i < 12u; i++) {
+        g_ram[0x400u + i] = 0x55u;
+    }
+}
+
+static void test_svlock(void)
+{
+    const uint16_t prog[] = {
+        W0(OP_SYSTEM, 7, G4MH_SR_SVLOCK), /* ldsr r7, svlock  */
+        (uint16_t)((1u << 11) | SUB_LDSR),
+        W0(OP_SYSTEM, 7, G4MH_SR_MPM), /* ldsr r7, mpm: dropped */
+        (uint16_t)((5u << 11) | SUB_LDSR),
+        W0(OP_SYSTEM, 8, G4MH_SR_MPIDX), /* ldsr r8, mpidx   */
+        (uint16_t)((5u << 11) | SUB_LDSR),
+        W0(OP_SYSTEM, 8, G4MH_SR_MPLA), /* ldsr r8, mpla: dropped */
+        (uint16_t)((5u << 11) | SUB_LDSR),
+        W0(OP_SYSTEM, 8, G4MH_SR_SPID), /* ldsr r8, spid: dropped */
+        (uint16_t)((1u << 11) | SUB_LDSR),
+        (uint16_t)(0x07E0u | 6u), /* ldm.mp [r6], 0-0: dropped */
+        0x0166u,
+        W0(OP_SYSTEM, G4MH_SR_SVLOCK, 11), /* stsr svlock, r11 */
+        (uint16_t)((1u << 11) | SUB_STSR),
+        0x07E0u, /* trap 0 */
+        SUB_TRAP,
+    };
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        if (!priv_run(prog, 16u, pass, svlock_setup)) {
+            return;
+        }
+        g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+
+        CHECK_EQ(sreg(0, G4MH_SR_EIIC), 0x40u);
+        CHECK_EQ(sreg(0, G4MH_SR_FEIC), PRIV_SENT_FEIC);
+        CHECK_EQ(reg(11), 1u);
+        CHECK_EQ(g4mh_sr_read(c, 5u, G4MH_SR_MPM), 0u);
+        CHECK_EQ(g4mh_sr_read(c, 5u, G4MH_SR_MPIDX), 7u);
+        CHECK_EQ(c->mpu->mpla[7], 0u);
+        CHECK_EQ(c->mpu->mpla[0], 0u);
+        CHECK_EQ(c->mpu->mpua[0], 0u);
+        CHECK_EQ(c->mpu->mpat[0], 0u);
+        CHECK_EQ(g4mh_sr_read(c, 1u, G4MH_SR_SPID), 0u);
+    }
+}
+
+/*
+ * The table reads SYSCALL and a table-reference interrupt make are
+ * judged as supervisor, whatever mode the program was in (R01US0209EJ0220
+ * SYSCALL caution 2; R01UH0923EJ0130 table 3.76 note 2). A table only
+ * SR may read is read from user mode; one only UR may read is refused,
+ * with SR in the detail -- and the PSW saved is the user's.
+ */
+static uint32_t g_tbl_attr;
+
+static void syscall_mpu_setup(g4mh_cpu_t *c)
+{
+    const uint32_t code_at = G4MH_MPAT_E | G4MH_MPAT_RG | G4MH_MPAT_WG |
+                             G4MH_MPAT_UX | G4MH_MPAT_UR | G4MH_MPAT_SX |
+                             G4MH_MPAT_SR;
+
+    g4mh_sr_write(c, 5u, G4MH_SR_MPIDX, 0u);
+    g4mh_sr_write(c, 5u, G4MH_SR_MPLA, EMU_GUEST_RAM_BASE);
+    g4mh_sr_write(c, 5u, G4MH_SR_MPUA, EMU_GUEST_RAM_BASE + 0x7FFu);
+    g4mh_sr_write(c, 5u, G4MH_SR_MPAT, code_at);
+    g4mh_sr_write(c, 5u, G4MH_SR_MPIDX, 1u);
+    g4mh_sr_write(c, 5u, G4MH_SR_MPLA, EMU_GUEST_RAM_BASE + 0x800u);
+    g4mh_sr_write(c, 5u, G4MH_SR_MPUA, EMU_GUEST_RAM_BASE + 0x8FFu);
+    g4mh_sr_write(c, 5u, G4MH_SR_MPAT,
+                  G4MH_MPAT_E | G4MH_MPAT_RG | G4MH_MPAT_SX | g_tbl_attr);
+    g4mh_sr_write(c, 5u, G4MH_SR_MPM, G4MH_MPM_MPE | G4MH_MPM_SVP);
+    c->sr[1][G4MH_SR_SCBP] = EMU_GUEST_RAM_BASE + 0x800u;
+    c->sr[1][G4MH_SR_SCCFG] = 0xFFu;
+    /* Entry 3 at SCBP + 12: the handler at SCBP + 0x40, a HALT. */
+    g_ram[0x80Cu] = 0x40u;
+    g_ram[0x840u] = 0xE0u;
+    g_ram[0x841u] = 0x07u;
+    g_ram[0x842u] = 0x20u;
+    g_ram[0x843u] = 0x01u;
+    c->psw |= G4MH_PSW_UM;
+}
+
+static void test_table_reads_as_supervisor(void)
+{
+    const uint16_t prog[] = {0xD7E3u, 0x0160u}; /* syscall 3: E3D76001 */
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        g_tbl_attr = G4MH_MPAT_SR;
+        if (!priv_run(prog, 2u, pass, syscall_mpu_setup)) {
+            return;
+        }
+        CHECK_EQ(sreg(0, G4MH_SR_EIIC), G4MH_EXC_SYSCALL + 3u);
+        CHECK_EQ(sreg(0, G4MH_SR_FEIC), PRIV_SENT_FEIC);
+        CHECK_EQ(((const g4mh_cpu_t *)(const void *)g_core.cpu)->pc,
+                 EMU_GUEST_RAM_BASE + 0x844u); /* parked past the HALT */
+
+        g_tbl_attr = G4MH_MPAT_UR;
+        if (!priv_run(prog, 2u, pass, syscall_mpu_setup)) {
+            return;
+        }
+        CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_MDP | G4MH_EXC_D_SR);
+        CHECK_EQ(sreg(0, G4MH_SR_FEPC), EMU_GUEST_RAM_BASE);
+        CHECK((sreg(0, G4MH_SR_FEPSW) & G4MH_PSW_UM) != 0u);
+        CHECK_EQ(sreg(2, G4MH_SR_MEA), EMU_GUEST_RAM_BASE + 0x80Cu);
+        CHECK_EQ(sreg(2, G4MH_SR_MEI), 0x40000424u);
+        CHECK_EQ(sreg(0, G4MH_SR_EIIC), PRIV_SENT_EIIC);
+    }
+
+    /* The interrupt's table, read with the core in user mode. */
+    {
+        const uint32_t chan = 6u;
+        uint32_t vec = 0u;
+        g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+
+        g_tbl_attr = G4MH_MPAT_SR;
+        syscall_mpu_setup(c);
+        c->sr[1][G4MH_SR_INTBP] = EMU_GUEST_RAM_BASE + 0x800u;
+        g_ram[0x800u + chan * 4u] = 0x78u;
+        g_ram[0x801u + chan * 4u] = 0x56u;
+        g_ram[0x802u + chan * 4u] = 0x34u;
+        g_ram[0x803u + chan * 4u] = 0x12u;
+        (void)g4mh_intc1_ops.write(c->intc, G4MH_INTC1_EEIC + chan * 4u, 4u,
+                                   3u | G4MH_EEIC_EITB);
+        CHECK_EQ(g4mh_cpu_irq_vector(c, chan, &vec), G4MH_EXC_NONE);
+        CHECK_EQ(vec, 0x12345678u);
+
+        g_tbl_attr = G4MH_MPAT_UR;
+        syscall_mpu_setup(c);
+        CHECK_EQ(g4mh_cpu_irq_vector(c, chan, &vec),
+                 G4MH_EXC_MDP_TABLE | G4MH_EXC_D_SR);
+        CHECK_EQ(sreg(2, G4MH_SR_MEA), EMU_GUEST_RAM_BASE + 0x800u + chan * 4u);
+        CHECK((c->psw & G4MH_PSW_UM) != 0u); /* the mode is put back */
+    }
 }
 #endif /* G4MH_EXT_MPU */
 
@@ -8589,8 +9448,17 @@ void test_g4mh(void)
     test_mpu_spid_group();
     test_mpu_window();
     test_mpu_exec_permission_both_backends();
+    test_ldm_mp_discards_blocks();
     test_mpu_manual_rules();
+    test_svlock();
+    test_table_reads_as_supervisor();
 #endif
+    test_mei();
+    test_sr_permissions();
+    test_ldsr_user_effects();
+    test_privileged_instructions();
+    test_ctret_restores_flags_only();
+    test_spid_register();
     test_intc_global_from_other_pe();
     test_intc_pending_summary();
     test_intc_imr_aliases_eimk();
@@ -8709,6 +9577,7 @@ void test_g4mh(void)
     test_fp_convert();
     test_fp_compare_and_move();
     test_fp_disabled();
+    test_fp_exception_is_ei_level();
     test_fp_double_arith();
     test_fp_double_pairs();
     test_fp_double_convert();

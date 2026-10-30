@@ -235,10 +235,18 @@ static void t_ids(void)
     MPU_RNR = 0xFFu;
     logv(MPU_RNR);
     MPU_RNR = 0u;
+    /*
+     * Every bit but the M7's DC, IC and BP (18:16): setting those turns
+     * the caches on without their being invalidated, and the logv() that
+     * follows wrote into the D-cache and was lost when CCR was put back --
+     * the board logged CCR twice -- while whatever the I-cache held ran
+     * as code. Where that landed moved with the layout: a test added
+     * further down the file hung the board here.
+     */
     save = CCR;
     CCR = 0u;
     logv(CCR);
-    CCR = 0xFFFFFFFFu;
+    CCR = 0xFFF8FFFFu;
     logv(CCR);
     CCR = save;
     NVIC_ISER(3) = 0xFFFFFFFFu;
@@ -701,6 +709,10 @@ extern void sys_do_storeh(uint32_t addr, uint32_t v);
 extern char sys_storeh_insn[];
 extern char sys_after_storeh[];
 
+/* What the fault addresses are logged relative to: the buffer, or the
+ * end of RAM. */
+static uint32_t g_ua_base;
+
 static void hook_mpu_ua(uint32_t *frame, uint32_t excret, uint32_t exc)
 {
     static const struct {
@@ -716,8 +728,8 @@ static void hook_mpu_ua(uint32_t *frame, uint32_t excret, uint32_t exc)
     (void)excret;
     logv(exc);
     logv(cfsr);
-    logv((cfsr & 0x80u) ? MMFAR - (uint32_t)g_mpubuf : 0xFFFFFFFFu);
-    logv((cfsr & 0x8000u) ? BFAR - (uint32_t)g_mpubuf : 0xFFFFFFFFu);
+    logv((cfsr & 0x80u) ? MMFAR - g_ua_base : 0xFFFFFFFFu);
+    logv((cfsr & 0x8000u) ? BFAR - g_ua_base : 0xFFFFFFFFu);
     CFSR = cfsr;
     for (uint32_t i = 0u; i < sizeof(k) / sizeof(k[0]); i++) {
         if (pc == ((uint32_t)k[i].insn & ~1u)) {
@@ -739,7 +751,7 @@ static uint32_t ua_load(uint32_t (*fn)(uint32_t), uint32_t addr)
     const uint32_t n = g_nlog;
     const uint32_t v = fn(addr);
 
-    return (g_nlog != n) ? v - (uint32_t)g_mpubuf : v;
+    return (g_nlog != n) ? v - g_ua_base : v;
 }
 
 /* The two words around the boundary, read with the MPU off. */
@@ -761,6 +773,7 @@ static void t_mpu_unaligned(void)
     const uint32_t normal = 1u << 19; /* TEX 001, C 0, B 0 */
 
     g_hook = hook_mpu_ua;
+    g_ua_base = b;
     SHCSR |= (1u << 16) | (1u << 17) | (1u << 18);
     for (uint32_t i = 0u; i < sizeof(g_mpubuf); i++) {
         g_mpubuf[i] = (uint8_t)i;
@@ -807,6 +820,114 @@ static void t_mpu_unaligned(void)
         MPU_RASR = 0u;
     }
     barrier();
+    SHCSR &= ~((1u << 16) | (1u << 17) | (1u << 18));
+    g_hook = 0;
+}
+
+/* ------------------------------------------------------------------ */
+
+/*
+ * An unaligned access that runs off the end of RAM into nothing -- a
+ * BusFault partway through, with no MPU involved. The ARM ARM says BFAR
+ * holds "the address requested by the instruction" for an unaligned
+ * access; the emulator splits the access a byte at a time (MemU) and
+ * reported the first byte that faulted. Which it is, whether the fault
+ * is precise, and whether a store's bytes inside RAM land, are the M7's
+ * to say. The end of RAM is __ram_end in both linker scripts: SRAM2's
+ * end on the board, the host runner's megabyte in the emulator. The
+ * last word is the top of the main stack in both, so it is set to a
+ * known value around each store and put back.
+ */
+extern char __ram_end[];
+
+/*
+ * Where a store's BusFault was taken: 0 at the store (precise), 1 after
+ * it. How far after is not asked: "the architecture makes no guarantee
+ * about how an asynchronous fault is reported relative to the
+ * instruction that caused it", and the M7 took them past the instruction
+ * after the store, where the emulator takes them at it. Then CFSR, and
+ * BFAR relative to the end of RAM when valid.
+ */
+static void hook_bus_store(uint32_t *frame, uint32_t excret, uint32_t exc)
+{
+    static const struct {
+        const char *insn, *after;
+    } k[] = {
+        {sys_store_insn, sys_after_store},
+        {sys_storeh_insn, sys_after_storeh},
+    };
+    const uint32_t pc = frame[6];
+    const uint32_t cfsr = CFSR;
+    uint32_t where = 1u;
+
+    (void)excret;
+    for (uint32_t i = 0u; i < sizeof(k) / sizeof(k[0]); i++) {
+        if (pc == ((uint32_t)k[i].insn & ~1u)) {
+            where = 0u;
+            frame[6] = (uint32_t)k[i].after & ~1u;
+        }
+    }
+    logv(exc);
+    logv(where);
+    logv(cfsr);
+    logv((cfsr & 0x8000u) ? BFAR - g_ua_base : 0xFFFFFFFFu);
+    CFSR = cfsr;
+}
+
+static void t_bus_unaligned(void)
+{
+    const uint32_t end = (uint32_t)__ram_end;
+    volatile uint32_t *const last = (volatile uint32_t *)(end - 4u);
+    const uint32_t keep = *last;
+
+    g_hook = hook_mpu_ua;
+    g_ua_base = end;
+    SHCSR |= (1u << 16) | (1u << 17) | (1u << 18);
+    MPU_CTRL = 0u;
+    barrier();
+
+    logv(ua_load(sys_do_load, end - 4u) == keep); /* control: inside */
+    emit("bus-ua-control");
+    logv(ua_load(sys_do_load, end)); /* wholly outside */
+    emit("bus-ua-ldr-out");
+    logv(ua_load(sys_do_load, end - 3u)); /* one byte in, three out */
+    emit("bus-ua-ldr-1");
+    logv(ua_load(sys_do_load, end - 2u));
+    emit("bus-ua-ldr-2");
+    logv(ua_load(sys_do_load, end - 1u)); /* three in, one out */
+    emit("bus-ua-ldr-3");
+    logv(ua_load(sys_do_loadh, end - 1u));
+    emit("bus-ua-ldrh");
+    /* Word-aligned, so no unaligned access: its second word is out. */
+    sys_do_ldrd(end - 4u);
+    emit("bus-ldrd-second");
+
+    g_hook = hook_bus_store;
+    sys_do_store(end, 0xA5A5A5A5u); /* aligned, wholly outside */
+    barrier();
+    emit("bus-str-out");
+    sys_do_storeh(end, 0x5A5Au);
+    barrier();
+    emit("bus-strh-out");
+
+    *last = 0x11223344u;
+    sys_do_store(end - 2u, 0xA5A5A5A5u);
+    barrier();
+    logv(*last);
+    emit("bus-ua-str-2");
+    *last = 0x11223344u;
+    sys_do_store(end - 3u, 0xA5A5A5A5u);
+    barrier();
+    logv(*last);
+    emit("bus-ua-str-1");
+    *last = 0x11223344u;
+    sys_do_storeh(end - 1u, 0x5A5Au);
+    barrier();
+    logv(*last);
+    emit("bus-ua-strh");
+    *last = keep;
+    barrier();
+
     SHCSR &= ~((1u << 16) | (1u << 17) | (1u << 18));
     g_hook = 0;
 }
@@ -1322,6 +1443,7 @@ int main(void)
     t_bus();
     t_mpu();
     t_mpu_unaligned();
+    t_bus_unaligned();
     t_psp();
     t_misc();
     t_systick();

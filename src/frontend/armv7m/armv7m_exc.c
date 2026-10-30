@@ -30,6 +30,7 @@ typedef armv7m_exc_t X;
 #define MMFSR_MMARVALID (1u << 7)
 #define BFSR_IBUSERR (1u << 8)
 #define BFSR_PRECISERR (1u << 9)
+#define BFSR_IMPRECISERR (1u << 10)
 #define BFSR_UNSTKERR (1u << 11)
 #define BFSR_STKERR (1u << 12)
 #define BFSR_LSPERR (1u << 13)
@@ -474,6 +475,30 @@ armv7m_exc_t armv7m_mem_read_checked(armv7m_cpu_t *c, uint32_t addr,
     return OK;
 }
 
+/*
+ * A store's bus error, as the F746 reports it: **imprecise**. Every store
+ * sys.c made into nothing past the end of RAM -- aligned or not, word or
+ * halfword -- raised IMPRECISERR with BFAR not valid, taken after the
+ * instruction after the store, and an unaligned one's bytes inside RAM
+ * were written (`bus-str-*`, `bus-ua-str-*`); loads stay precise. So the
+ * store retires and the BusFault is set pending, entered "according to
+ * normal priority rules" and "treated as HardFault ... when disabled",
+ * never a lockup (ARM DDI 0403E B1.5.4, B1.5.15). The interpreter takes
+ * it before the next instruction; the JIT's store helper reads
+ * `imprecise` to do the same.
+ */
+static void bus_error_imprecise(armv7m_cpu_t *c)
+{
+    c->cfsr |= BFSR_IMPRECISERR;
+    if ((c->shcsr & SHCSR_BUSFAULTENA) != 0u) {
+        armv7m_set_pending(c, ARMV7M_EXC_BUSFAULT, true);
+    } else {
+        c->hfsr |= HFSR_FORCED;
+        armv7m_set_pending(c, ARMV7M_EXC_HARDFAULT, true);
+    }
+    c->imprecise = true;
+}
+
 armv7m_exc_t armv7m_mem_write_checked(armv7m_cpu_t *c, uint32_t addr,
                                       uint32_t size, bool unpriv, uint32_t v)
 {
@@ -492,9 +517,8 @@ armv7m_exc_t armv7m_mem_write_checked(armv7m_cpu_t *c, uint32_t addr,
     c->access_priv = priv;
     if (emu_bus_write(c->bus, addr, size, v) != EMU_FAULT_NONE) {
         c->access_priv = true;
-        c->cfsr |= BFSR_PRECISERR | BFSR_BFARVALID;
-        c->bfar = addr;
-        return ARMV7M_X_BUSFAULT;
+        bus_error_imprecise(c);
+        return OK;
     }
     c->access_priv = true;
     armv7m_wrote(c, addr);

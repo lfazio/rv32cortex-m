@@ -111,6 +111,231 @@ bool g4mh_insn_is_64(uint16_t w0, uint16_t w1)
            (w1 & 0x07u) == 0x03u && ((w1 >> 3) & 3u) == 3u;
 }
 
+/*
+ * The 16-bit memory instructions: SLD and SST through ep (format IV,
+ * with the unsigned short loads at op6 0x03), SWITCH and CALLT, whose
+ * table reads are halfwords (table 3.38's DS and U for each).
+ */
+static bool mei16(uint32_t w0, uint32_t *out)
+{
+    const uint32_t op = g4mh_op6(w0);
+    const uint32_t r1 = g4mh_reg1(w0);
+    const uint32_t r2 = g4mh_reg2(w0);
+
+    if (op == 0x02u && r2 == 0u && r1 != 0u) {
+        *out = G4MH_MEI(2u, 0u, 1u, 0u, G4MH_MEI_SWITCH, 0u);
+        return true;
+    }
+    if (op == 0x03u && r2 != 0u) { /* SLD.BU, SLD.HU: bit 4 is the width */
+        *out = G4MH_MEI(2u, r2, (w0 >> 4) & 1u, 1u, G4MH_MEI_SLD, 0u);
+        return true;
+    }
+    if ((op == 0x10u || op == 0x11u) && r2 == 0u) {
+        *out = G4MH_MEI(2u, 0u, 1u, 1u, G4MH_MEI_CALLT, 0u);
+        return true;
+    }
+    if (op < 0x18u) {
+        return false;
+    }
+    switch (g4mh_op4(w0)) {
+    case 0x06u: /* SLD.B */
+    case 0x07u: /* SST.B */
+        *out = G4MH_MEI(2u, r2, 0u, 0u, G4MH_MEI_SLD, g4mh_op4(w0) & 1u);
+        return true;
+    case 0x08u: /* SLD.H */
+    case 0x09u: /* SST.H */
+        *out = G4MH_MEI(2u, r2, 1u, 0u, G4MH_MEI_SLD, g4mh_op4(w0) & 1u);
+        return true;
+    case 0x0Au: /* SLD.W / SST.W by bit 0 */
+        *out = G4MH_MEI(2u, r2, 2u, 0u, G4MH_MEI_SLD, w0 & 1u);
+        return true;
+    default:
+        return false;
+    }
+}
+
+/*
+ * The disp23 group (format XIV) and the rest of the 0x3C/0x3D slot, in
+ * the interpreter's order: JR/JARL by w1 bit 0, LD.BU disp16 by reg2,
+ * PREPARE by w1's low bits, then the disp23 key.
+ */
+static bool mei_3c(uint32_t w0, uint32_t w1, uint32_t block_reg,
+                   uint32_t *out)
+{
+    const uint32_t r2 = g4mh_reg2(w0);
+
+    if ((w1 & 1u) == 0u) {
+        return false; /* JR / JARL disp22 */
+    }
+    if (r2 != 0u) {
+        *out = G4MH_MEI(4u, r2, 0u, 1u, G4MH_MEI_DISP16, 0u);
+        return true;
+    }
+    if ((w1 & 0x1Fu) == 0x01u) { /* PREPARE list12, imm5 */
+        *out = G4MH_MEI(4u, block_reg, 2u, 0u, G4MH_MEI_PREPARE, 1u);
+        return true;
+    }
+    if ((w1 & 0x07u) == 0x03u) { /* PREPARE ..., sp/imm: table 3.38 note 6 */
+        const uint32_t ff = (w1 >> 3) & 3u;
+        const uint32_t len = (ff == 0u) ? 4u : (ff == 3u) ? 8u : 6u;
+
+        *out = G4MH_MEI(len, block_reg, 2u, 0u, G4MH_MEI_PREPARE, 1u);
+        return true;
+    }
+
+    const uint32_t r3 = (w1 >> 11) & 0x1Fu;
+    const uint32_t odd = g4mh_op6(w0) & 1u;
+
+    switch ((w1 & 0xFu) << 1 | odd) {
+    case (0x5u << 1) | 0u: /* LD.B  */
+    case (0x5u << 1) | 1u: /* LD.BU */
+        *out = G4MH_MEI(6u, r3, 0u, odd, G4MH_MEI_DISP23, 0u);
+        return true;
+    case (0x7u << 1) | 0u: /* LD.H  */
+    case (0x7u << 1) | 1u: /* LD.HU */
+        *out = G4MH_MEI(6u, r3, 1u, odd, G4MH_MEI_DISP23, 0u);
+        return true;
+    case (0x9u << 1) | 0u: /* LD.W  */
+        *out = G4MH_MEI(6u, r3, 2u, 0u, G4MH_MEI_DISP23, 0u);
+        return true;
+    case (0x9u << 1) | 1u: /* LD.DW: the even register it loads */
+        *out = G4MH_MEI(6u, r3 & ~1u, 3u, 0u, G4MH_MEI_DISP23, 0u);
+        return true;
+    case (0xDu << 1) | 0u: /* ST.B  */
+        *out = G4MH_MEI(6u, r3, 0u, 0u, G4MH_MEI_DISP23, 1u);
+        return true;
+    case (0xDu << 1) | 1u: /* ST.H  */
+        *out = G4MH_MEI(6u, r3, 1u, 0u, G4MH_MEI_DISP23, 1u);
+        return true;
+    case (0xFu << 1) | 0u: /* ST.W  */
+        *out = G4MH_MEI(6u, r3, 2u, 0u, G4MH_MEI_DISP23, 1u);
+        return true;
+    case (0xFu << 1) | 1u: /* ST.DW */
+        *out = G4MH_MEI(6u, r3 & ~1u, 3u, 0u, G4MH_MEI_DISP23, 1u);
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Formats IX-XI under op6 0x3F: the sub-opcode in w1[10:0]. */
+static bool mei_3f(uint32_t w0, uint32_t w1, uint32_t block_reg,
+                   uint32_t *out)
+{
+    const uint32_t r2 = g4mh_reg2(w0);
+    const uint32_t sub = w1 & 0x7FFu;
+    const uint32_t r3 = (w1 >> 11) & 0x1Fu;
+
+    if ((w1 & 1u) != 0u) { /* LD.HU disp16, or Bcond disp17 at reg2 0 */
+        if (r2 == 0u) {
+            return false;
+        }
+        *out = G4MH_MEI(4u, r2, 1u, 1u, G4MH_MEI_DISP16, 0u);
+        return true;
+    }
+    switch (sub) {
+    case 0x0E0u: /* SET1 / NOT1 / CLR1 / TST1 reg2, [reg1] */
+    case 0x0E2u:
+    case 0x0E4u:
+    case 0x0E6u:
+        *out = G4MH_MEI(4u, 0u, 0u, 0u, G4MH_MEI_BIT, 0u);
+        return true;
+    case 0x0EEu: /* CAXI: reg3, the destination; a read, note 2 */
+        *out = G4MH_MEI(4u, r3, 2u, 0u, G4MH_MEI_CAXI, 0u);
+        return true;
+    case 0x370u: /* LDL.BU / LD.B(U) [reg1]+ [reg1]- */
+    case 0x374u: /* LDL.HU / LD.H(U) */
+    case 0x378u: /* LDL.W  / LD.W    */
+    case 0x372u: /* STC.B  / ST.B    */
+    case 0x376u: /* STC.H  / ST.H    */
+    case 0x37Au: { /* STC.W / ST.W    */
+        static const uint8_t itype[3] = {G4MH_MEI_LINK, G4MH_MEI_POSTINC,
+                                         G4MH_MEI_POSTDEC};
+        const uint32_t ds = (sub & 0xCu) >> 2; /* 0, 1, 2 */
+        const uint32_t mode = r2 >> 1;
+        const bool store = (sub & 2u) != 0u;
+        uint32_t u = 0u;
+
+        if (mode > 2u) {
+            return false;
+        }
+        if (!store && ds < 2u) {
+            u = (mode == 0u) ? 1u : (r2 & 1u); /* LDL.BU/HU are unsigned */
+        }
+        *out = G4MH_MEI(4u, r3, ds, u, itype[mode], store ? 1u : 0u);
+        return true;
+    }
+    case 0x164u: /* STM.MP */
+    case 0x166u: /* LDM.MP */
+        *out = G4MH_MEI(4u, 0u, 2u, 0u, G4MH_MEI_MP, sub == 0x164u ? 1u : 0u);
+        return true;
+    case 0x160u:
+        switch (r2) {
+        case 0x08u: /* PUSHSP */
+            *out = G4MH_MEI(4u, block_reg, 2u, 0u, G4MH_MEI_PUSHSP, 1u);
+            return true;
+        case 0x0Cu: /* POPSP */
+            *out = G4MH_MEI(4u, block_reg, 2u, 0u, G4MH_MEI_PUSHSP, 0u);
+            return true;
+        case 0x1Au: /* SYSCALL */
+            *out = G4MH_MEI(4u, 0u, 2u, 0u, G4MH_MEI_SYSCALL, 0u);
+            return true;
+        case 0x1Cu: /* CACHE, cacheop's top bits in reg2[1:0] */
+        case 0x1Du:
+        case 0x1Eu:
+        case 0x1Fu:
+            *out = G4MH_MEI(4u, 0u, 0u, 0u, G4MH_MEI_CACHE, 0u);
+            return true;
+        default:
+            return false;
+        }
+    default:
+        return false;
+    }
+}
+
+bool g4mh_mei(const uint16_t *hw, uint32_t block_reg, uint32_t *out)
+{
+    const uint32_t w0 = hw[0];
+    const uint32_t w1 = hw[1];
+    const uint32_t r2 = g4mh_reg2(w0);
+
+    if (g4mh_insn_len(hw[0]) == 2u) {
+        return mei16(w0, out);
+    }
+    switch (g4mh_op6(w0)) {
+    case 0x38u: /* LD.B disp16 */
+        *out = G4MH_MEI(4u, r2, 0u, 0u, G4MH_MEI_DISP16, 0u);
+        return true;
+    case 0x39u: /* LD.H / LD.W disp16 by w1 bit 0 */
+        *out = G4MH_MEI(4u, r2, (w1 & 1u) ? 2u : 1u, 0u, G4MH_MEI_DISP16, 0u);
+        return true;
+    case 0x3Au: /* ST.B disp16 */
+        *out = G4MH_MEI(4u, r2, 0u, 0u, G4MH_MEI_DISP16, 1u);
+        return true;
+    case 0x3Bu: /* ST.H / ST.W disp16 */
+        *out = G4MH_MEI(4u, r2, (w1 & 1u) ? 2u : 1u, 0u, G4MH_MEI_DISP16, 1u);
+        return true;
+    case 0x32u: /* DISPOSE, at reg2 0 of MOVHI's and SATSUBI's slots */
+    case 0x33u:
+        if (r2 != 0u) {
+            return false;
+        }
+        *out = G4MH_MEI(4u, block_reg, 2u, 0u, G4MH_MEI_PREPARE, 0u);
+        return true;
+    case 0x3Cu:
+    case 0x3Du:
+        return mei_3c(w0, w1, block_reg, out);
+    case 0x3Eu: /* SET1 / NOT1 / CLR1 / TST1 bit#3, disp16[reg1] */
+        *out = G4MH_MEI(4u, 0u, 0u, 0u, G4MH_MEI_BIT, 0u);
+        return true;
+    case 0x3Fu:
+        return mei_3f(w0, w1, block_reg, out);
+    default:
+        return false;
+    }
+}
+
 bool g4mh_cond(uint32_t cond, uint32_t psw)
 {
     const bool z = (psw & G4MH_PSW_Z) != 0u;
@@ -216,8 +441,12 @@ const char *g4mh_sr_name(unsigned bank, unsigned reg)
         }
     } else if (bank == 1u) {
         switch (reg) {
-        case G4MH_SR_MCFG0:
-            return "mcfg0";
+        case G4MH_SR_SPID:
+            return "spid";
+        case G4MH_SR_SPIDLIST:
+            return "spidlist";
+        case G4MH_SR_SVLOCK:
+            return "svlock";
         case G4MH_SR_RBASE:
             return "rbase";
         case G4MH_SR_EBASE:

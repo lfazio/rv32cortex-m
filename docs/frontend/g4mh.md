@@ -92,7 +92,6 @@ life of this frontend it did not report anything at all.
 | gap | why it matters |
 |---|---|
 | the `.S4` SIMD group and `LDV`/`STV`/`MOVV`/`SHFLV`/`TRFSRV` | 59 encodings taking `wreg` operands — a second register file, i.e. a coprocessor rather than a handful of instructions. Out of scope rather than missing |
-| `LDSR` / `STSR` privilege | both are SV-privileged and nothing checks `PSW.UM` before either. `G4MH_EXC_PIE` exists now, and only `LDM.MP`/`STM.MP` raise it |
 | `RESBANK` | needs the register banks modelled. Decoded and reports RIE rather than being mistaken for `DI` |
 | `DIVQ`/`DIVQU` with `reg2 == reg3` | the manual leaves the flags undefined there; this treats it as the ordinary case |
 
@@ -110,11 +109,11 @@ the address running on across entries rather than restarting. `reg1`
 keeps its value, which the manual states outright and which would
 otherwise be inferred from the loop.
 
-They are also the frontend's **first privilege check**: SV-privileged, so
-`PSW.UM` set raises PIE. That cause code (`A0H`, FE level) is the only one
-here taken from the U2B hardware manual rather than the G4MH software
-manual, because the software manual describes the instructions that raise
-it without ever naming the code.
+They were also the frontend's **first privilege check**: SV-privileged, so
+`PSW.UM` set raises PIE (`A0H`, FE level, a code from the U2B hardware
+manual: the software manual describes the instructions that raise it
+without naming it). Every SV-privileged instruction and every system
+register's permission is checked now ([Privilege](#privilege)).
 
 **`PREPARE list12, imm5, imm32` is implemented** — the ISA's only 64-bit
 encoding, and the last thing the length decoder could not reach.
@@ -301,7 +300,7 @@ was copied.
 | 0x040 | TRAP 0-15 | 0x0D0 | reserved |
 | 0x050 | TRAP 16-31 | 0x0E0 | FENMI |
 | 0x060 | RIE | 0x0F0 | FEINT |
-| 0x070 | FPE / FXE | 0x100 + p*0x10 | EIINT, priority p |
+| 0x070 | FPE / FXE (EI level) | 0x100 + p*0x10 | EIINT, priority p |
 | 0x080 | UCPOP | | |
 
 **Three of these were wrong in the emulator** and nothing had ever
@@ -380,6 +379,15 @@ warning — that too coarse an invalidation is a correctness-preserving way
 to have no JIT — does not bite. `FENCE.I` on the RV32 side makes the same
 choice for the same reason.
 
+**Four of the five were reserved instructions.** cacheop is seven bits,
+`ppPPPPP`, and its top two are reg2's low two: CACHE is reg2 `0x1C` to
+`0x1F`, and CLL is the cacheop `1111110` inside it. Only `0x1C` was
+decoded, so CIBII, CFALI, CISTI and CILDI raised RIE (CC-RH: `cache 0x20,
+[r6]` is `E6EF6001`, reg2 29). CHBII and CIBII flush; CFALI, CISTI and
+CILDI do nothing, there being no cache; an undefined cacheop is a NOP,
+"privilege and memory protection" included; all but CHBII are SV
+([Privilege](#privilege)).
+
 ## Where an interrupt handler lives
 
 Two methods, two overrides, and they answer different questions — the
@@ -456,7 +464,6 @@ number that has never been shown to be able to fall.**
 | `PUSHSP`, `POPSP` | implemented; CC-RH rejects both under every syntax tried, same class of gap |
 | `RESBANK` | the one RIE below, and deliberate: register banks are not modelled, and running it as `DI` -- which decoding on reg2 alone did -- is worse than reporting it |
 | the `.S4` SIMD group, `LDV`/`STV`/`MOVV`/`SHFLV`/`TRFSRV` | they take `wreg` operands, a second register file this frontend does not model. 59 encodings, deliberately out of scope rather than missing |
-| `LDSR`/`STSR` privilege | both are SV-privileged and this frontend does not check them. `G4MH_EXC_PIE` exists now and only LDM.MP/STM.MP raise it -- a real gap, not a decision |
 
 ```
 instruction                   encoding          status
@@ -941,21 +948,9 @@ have caught the bug above -- no single-backend run can see it.
 
 **Architectural features not modelled:**
 
-- **The MPU.** `MPLA`/`MPUA`/`MPAT`/`MPM` and the protection checks behind
-  them — the analogue of RISC-V PMP. `MIP` and `MDP` are raised today only
-  by a bus fault, never by a protection region.
-- **User mode.** `PSW.UM` is defined and nothing enforces it: `LDSR`,
-  `STSR`, `DI`, `EI`, `HALT` and `RETI` do not check privilege. Note what
-  the RISC-V side of this repo learned the hard way — U-mode turned three
-  latent M-mode PMP bugs into failures at once. Expect the same here.
-- **Coprocessor gating, beyond CU0.** `PSW.CU0` *is* consulted: the FPU
-  raises `UCPOP` when it is clear, which is what a part without the
-  option does. `CU1` and `CU2` have no unit behind them and are not
-  checked.
-- **Interrupt priority.** The INTC has a 4-bit priority per channel but does
-  not maintain `ISPR` or honour `PMR`, so nesting is not modelled. `INTBP`
-  and the table-reference entry method are absent; entry uses the single
-  direct vector only.
+- **The FXU.** No extended floating-point instructions. Its system
+  registers answer `CU1` as the FPU's answer `CU0` -- `UCPOP` `81H` when
+  clear ([Privilege](#privilege)) -- and hold what is written.
 - **Register banks and hardware context save**, `GMCFG`, the guest modes.
 - **Debug level.** No `DBPC`/`DBPSW`, `DBTRAP`/`DBRET` — the analogue of
   Sdtrig.
@@ -1474,11 +1469,139 @@ do (`g4mh_mpu_reg_protects`). An OS calls the check per service request.
 
 ### Not implemented
 
-`MEI`, the memory error information an MDP or MAE leaves for a handler
-emulating the access (table 3.38: length, register, data type, kind of
-instruction), is not written. `MPBK` reads 0 (one bank, which is what
-`MPCFG.NBK` reports). The host/guest entry split (`MPCFG.HBE`) is not
-enforced, because there is no hypervisor mode here to enforce it
-against. `LDSR` and `STSR` to the MPU's registers are not refused in
-user mode (PIE), so user code can turn the MPU off: see the user-mode
-gaps above.
+`MPBK` reads 0 (one bank, which is what `MPCFG.NBK` reports). The
+host/guest entry split (`MPCFG.HBE`) is not enforced, because there is
+no hypervisor mode here to enforce it against. `CFALI` does not load or
+lock anything, and is not checked against the MPU: there is no cache.
+
+## MEI
+
+What an MDP or MAE leaves for a handler emulating the access (tables
+3.37 and 3.38): the instruction's length, the register it loads or
+stores, the data size and signedness, which kind of instruction, and
+read or write. It is written at exception entry from the instruction at
+FEPC -- both exceptions are resumable, so that is the one that faulted
+-- by `g4mh_mei`, a second decoder of the memory instructions only, on
+the exception path: neither backend pays for it per access, and both
+get it from one place. What the encoding cannot say is which register of
+a block transfer was being moved when the word was refused, so PREPARE,
+DISPOSE, PUSHSP and POPSP record it as they fault (`mei_reg`); POPSP's r3
+is reported as 0 (note 3).
+
+`test_mei` takes one of each memory instruction -- 60 encodings, all but
+the four CC-RH will not assemble taken from CC-RH's listing -- through
+the interpreter and the JIT, into unmapped memory for MDP and to a
+misaligned address for MAE, and compares MEI with table 3.38's fields
+packed by hand; fuzz-g4mh-mpu's reference computes it from what it
+encoded. Readings, each in `g4mh_decode.c`: LD.DW and ST.DW with an odd
+reg3 report the even register they use, and CAXI and the bit operations
+report a read, as note 2 has it.
+
+The table read of an interrupt using the table reference method has no
+instruction: MDP `95H`, not `91H` (table 3.103), MEI LEN 0, word, ITYPE
+`10101`. That read, and SYSCALL's, is made **as supervisor** whatever
+PSW.UM was -- "the memory reads for table lookup during the SYSCALL
+instruction are subject to memory protection with the supervisor
+privilege" (R01US0209EJ0220), and table 3.76 note 2 says the same of
+both -- so a table only SR may read is read from user mode, and a
+refusal carries SR. Both were read in the mode the program was in, and
+the interrupt's refusal was `91H` with no detail.
+
+`MS` (bit 24 of MDP's cause) is set for LD.DW and ST.DW refused at a
+word boundary that is not a doubleword one: the U2B's table 3.115 says
+only "a misaligned access", which with MAE raised for every other one
+would never occur; the virtualization manual's table 5.6 says when.
+
+## Privilege
+
+R01UH0923EJ0130 figure 3.3 and tables 3.3, 3.4 and 3.9, with the
+permission of each system register from the tables of its group (3.43,
+3.50, 3.57, 3.64, 3.78, 3.86, 3.94). User code could do anything here
+until this: write `MPM` and turn the MPU off, write PSW's UM bit, `HALT`
+the core, `EIRET` into supervisor mode.
+
+- **LDSR and STSR**: a coprocessor register whose `PSW.CUn` is clear is
+  `UCPOP` `80H+n` (FPSR, FPEPC, FPST, FPCC, FPCFG for CU0; the FXU's
+  for CU1, in either mode), then an SV register in user mode is `PIE`.
+  User mode may reach CTPC, CTPSW, CTBP, PEID, BMID, PSW, FPST, FPCC,
+  FPCFG, the FXU's status registers, TSCOUNTL/H for reading, and a
+  performance channel's registers once `PMUMCTRL` allows it; anything
+  unlisted "is handled as having the SV permission". PSW's permission
+  is per bit (table 3.14): user mode writes the five flags and nothing
+  else, with no exception. `g4mh_sr_access`.
+- **The SV-privileged instructions** raise `PIE` in user mode: `DI` and
+  `EI` (unless `MCTL.UIC`), `HALT`, `EIRET`, `FERET`, `RESBANK` (before
+  the RIE that says it is not modelled), `LDM.MP`, `STM.MP`, and every
+  `CACHE` operation but CHBII.
+- **`SVLOCK.SVL`** makes `SPID`, `MPM`, `MPLA`, `MPUA`, `MPAT`, `MPIDn`
+  and `MPBK` ignore writes even from supervisor code, with no exception
+  (3.2.2.5(5)); the setting check and `MPIDX` stay writable. `LDM.MP`
+  is held to it too -- a reading: the manual names the registers, not
+  the instructions.
+- **`SPID`** is a register: five bits, written only with an identifier
+  `SPIDLIST` lists (every one, here), and a change discards
+  translations, since the MPU's SPID group compares it. It reset to the
+  core id and nothing could change it.
+
+Found on the way, each with a test that fails without it:
+
+- **CTRET restored all of PSW from CTPSW**, which is a UM register --
+  so user code could load it with 0 and return into supervisor mode.
+  It restores the five flags ("only the lower 5 bits of the PSW register
+  are updated"), and CTPSW keeps five bits.
+- **UCPOP `81H` was taken at EI level and vectored to SYSERR's slot**:
+  `g4mh_exc_is_fe` and `handler_address` knew `80H` only.
+- **FPE and FXE (`71H`, `75H`) are EI level**: EIPC, EIPSW, EIIC, NP
+  kept. They were taken at FE level. The U2B's table 3.103 and the
+  virtualization manual's table 4.5 agree.
+- **LDM.MP wrote the entry array directly**: no masks, so an entry held
+  bits an LDSR of the same word would have dropped, and no new
+  generation, so a block translated before it kept running after it
+  took execute away (`test_ldm_mp_discards_blocks`). It writes through
+  the window's function now.
+
+**What it costs, on the F746** (CoreMark, which runs none of it, against
+a worktree at e8ae834; the board's counter, the wall clock agreeing):
+written inline, LDSR's checks and a split `g4mh_sr_write` grew the
+interpreter's loop by 1.5 KB and cost it 2.2% -- 91.20 to 93.20 host
+cycles an instruction at three layouts, the loop being in ITCM where the
+layout pad cannot move it. With LDSR, STSR and CACHE out of line
+(`g4mh_ldsr`, `g4mh_stsr`, `cache_op`) it is 91.59, +0.4%, at two
+layouts; one PIE site shared by every SV-only instruction changed
+nothing (91.60) and was not kept. Under the JIT, 51.97 against the old
+build's 51.59 to 52.20 at the same three layouts: inside layout.
+
+`test_sr_permissions` holds 49 (register, mode, CU, PMUMCTRL) cases to
+the tables, written as data; `test_privileged_instructions`, `test_svlock`,
+`test_spid_register`, `test_ctret_restores_flags_only`,
+`test_table_reads_as_supervisor` and `test_fp_exception_is_ei_level` the
+rest, each on both backends. 28 mutants of this work, each a fix
+reverted or a rule broken, were each failed by them
+(`scripts/unit-mutant.sh`).
+
+## What rests on the manuals alone
+
+No RH850 is attached, so every rule here is a reading of Renesas'
+documents, and a misreading this code and its tests share is invisible
+to every check. Three documents are in the tree: the U2B hardware
+manual R01UH0923EJ0130, the G4MH software manual R01US0209EJ0220 (the
+only one for instructions -- `rh850g4mh-users-manual-software.pdf` is
+the same file), and the virtualization manuals R01UH0865EJ0140 and
+R01US0432EJ0110, which restate the CPU system with a hypervisor added.
+CC-RH checks encodings, not semantics. Where two documents could be
+held against each other:
+
+| reading | U2B | virtualization manual | held |
+|---|---|---|---|
+| MEI, every row this frontend implements | table 3.38 | table 3.47, identical | as both say |
+| FPE and FXE are EI level | table 3.103 | table 4.5 | fixed to agree |
+| MS for a doubleword at a word boundary | "a misaligned access" | table 5.6 note 5 names LD.DW/ST.DW | fixed to agree |
+| `MCR.OV`: a span *crossing* `0000 0000H` or `7FFF FFFFH`, not one including either | register table says "includes", its results table "crosses" | the same split: "includes" in the register, "It crosses" in table 5.7 | crosses, as both results tables |
+| a read-modify-write refused for read and write sets both bits | notes 1 and 2 of table 3.115 | notes 1 and 2 of table 5.6, identical | both bits: a reading neither settles |
+| system register permissions | table 3.9 and its groups | table 3.1, identical | as both say |
+| SYSCALL's and an interrupt's table read as supervisor | table 3.76 note 2 | -- | and the software manual's SYSCALL caution 2 |
+
+What only an RH850 can settle stays open: the reading in the fifth row,
+DISPOSE's order (r31 first, PREPARE's inverse, which its page does not
+spell out), LD.DW's odd register in MEI, `SVLOCK` binding `LDM.MP`, and
+what the core does with the encodings the manual calls reserved.

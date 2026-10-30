@@ -17,8 +17,10 @@
  * placed in RAM at a pc chosen near an area's end, followed by a HALT,
  * on registers pointing near an area's ends. Each runs on two cores, one
  * per backend, and every step is compared with the reference: where the
- * core stopped, PSW, FEPC/FEPSW/FEIC (with its detail half) and MEA, the
- * registers, MCR, and all of memory.
+ * core stopped, PSW, FEPC/FEPSW/FEIC (with its detail half), MEA and MEI
+ * (table 3.38, from what the reference knows it encoded), the registers,
+ * MCR, and all of memory. HALT is SV-privileged, so a step run in user
+ * mode ends in PIE at its HALT.
  *
  * What the reference reads from the cores is only what software can: the
  * MPU's registers through the window after each write, so their masks
@@ -74,6 +76,7 @@
 #define HALT_W0 0x07E0u
 #define HALT_W1 0x0120u
 #define VEC_MPU 0x090u /* MIP and MDP's handler, from RBASE */
+#define VEC_PIE 0x0A0u
 #define VEC_MAE 0x0C0u
 
 #define TRAP_ENTRY 31u /* the harness's own entry */
@@ -83,6 +86,7 @@
 #define SENT_FEPSW 0x00000000u
 #define SENT_FEIC 0x0000DEADu
 #define SENT_MEA 0x0BAD0BADu
+#define SENT_MEI 0x0BADBAD0u /* reserved bits set: never a result */
 
 typedef struct side {
     const char *name;
@@ -109,7 +113,7 @@ static bool g_um; /* the mode the input last chose */
 static struct {
     uint32_t r[32];
     uint32_t pc, psw;
-    uint32_t fepc, fepsw, feic, mea;
+    uint32_t fepc, fepsw, feic, mea, mei;
     uint32_t mcr;
     uint8_t low[LOW_SIZE], code[CODE_SIZE], data[DATA_SIZE], top[TOP_SIZE];
     /* The MPU as software reads it back. */
@@ -127,7 +131,7 @@ static struct {
 } g_cur;
 
 static struct {
-    uint64_t inputs, steps, insns, completed, mip, mdp, mdp_detail, mae;
+    uint64_t inputs, steps, insns, completed, mip, mdp, mdp_detail, mae, pie;
     uint64_t straddles, mcc, mcc_ov, mcc_some, translations, entries;
     uint64_t partial;
 } g_st;
@@ -136,7 +140,8 @@ static void print_stats(void)
 {
     fprintf(stderr,
             "fuzz-g4mh-mpu: %llu inputs, %llu steps, %llu instructions: "
-            "%llu completed, %llu MIP, %llu MDP (%llu by the MPU), %llu MAE; "
+            "%llu completed, %llu MIP, %llu MDP (%llu by the MPU), %llu MAE, "
+            "%llu PIE at a user HALT; "
             "%llu fetches across a word into another area's decision, "
             "%llu block transfers stopped partway; "
             "%llu setting checks (%llu OV, %llu with a bit set); "
@@ -145,7 +150,7 @@ static void print_stats(void)
             (unsigned long long)g_st.insns, (unsigned long long)g_st.completed,
             (unsigned long long)g_st.mip, (unsigned long long)g_st.mdp,
             (unsigned long long)g_st.mdp_detail, (unsigned long long)g_st.mae,
-            (unsigned long long)g_st.straddles,
+            (unsigned long long)g_st.pie, (unsigned long long)g_st.straddles,
             (unsigned long long)g_st.partial, (unsigned long long)g_st.mcc,
             (unsigned long long)g_st.mcc_ov, (unsigned long long)g_st.mcc_some,
             (unsigned long long)g_st.translations,
@@ -323,23 +328,51 @@ static uint32_t mdp_cause(bool rd, bool wr, uint32_t kind)
            (wr ? (um ? 1u << 17 : 1u << 20) : 0u);
 }
 
-/* FE-level entry (R01UH0865EJ0140 2.1.3.3), then the handler's HALT. */
+/*
+ * MEI as table 3.37 packs it: LEN 31:28, REG 20:16, DS 11:9, U 8,
+ * ITYPE 5:1, RW 0. Written out here rather than taken from g4mh_types.h.
+ */
+static uint32_t mei_pack(uint32_t len, uint32_t reg, uint32_t ds, uint32_t u,
+                         uint32_t itype, uint32_t rw)
+{
+    return (len << 28) | (reg << 16) | (ds << 9) | (u << 8) | (itype << 1) |
+           rw;
+}
+
+/* What the instruction being run leaves in MEI if it raises MDP or MAE. */
+static uint32_t g_mei;
+
+/*
+ * FE-level entry (R01UH0865EJ0140 2.1.3.3), then the handler's HALT. MDP
+ * and MAE leave MEI (table 3.37); MIP and PIE do not.
+ */
 static void ref_trap(uint32_t cause, uint32_t ret_pc, bool set_mea,
                      uint32_t mea)
 {
+    const uint32_t code = cause & 0xFFFFu;
+
     R.fepc = ret_pc;
     R.fepsw = R.psw;
     R.feic = cause;
     if (set_mea) {
         R.mea = mea;
     }
+    if (code == 0x91u || code == 0xC0u) {
+        R.mei = g_mei;
+    }
     R.psw = (R.psw | G4MH_PSW_NP | G4MH_PSW_EP | G4MH_PSW_ID) & ~G4MH_PSW_UM;
-    R.pc = TRAP_BASE + (((cause & 0xFFFFu) == 0xC0u) ? VEC_MAE : VEC_MPU) + 4u;
-    if ((cause & 0xFFFFu) == 0x90u) {
+    R.pc = TRAP_BASE +
+           ((code == 0xC0u)   ? VEC_MAE
+            : (code == 0xA0u) ? VEC_PIE
+                              : VEC_MPU) +
+           4u;
+    if (code == 0x90u) {
         g_st.mip++;
-    } else if ((cause & 0xFFFFu) == 0x91u) {
+    } else if (code == 0x91u) {
         g_st.mdp++;
         g_st.mdp_detail += (cause >> 16) != 0u;
+    } else if (code == 0xA0u) {
+        g_st.pie++;
     } else {
         g_st.mae++;
     }
@@ -701,7 +734,10 @@ static bool ref_dw(uint32_t pc, uint32_t addr, bool store, uint32_t rd)
         return false;
     }
     if (!ref_permits(addr, 8u, acc)) {
-        ref_trap(mdp_cause(!store, store, 0u), pc, true, addr);
+        /* MS for a word boundary that is not a doubleword one
+         * (R01UH0865EJ0140 table 5.6 note 5). */
+        ref_trap(mdp_cause(!store, store, (addr & 4u) ? 1u << 24 : 0u), pc,
+                 true, addr);
         return false;
     }
     if (store ? !ref_write(addr, 4u, lo) : !ref_read(addr, 4u, &lo)) {
@@ -743,12 +779,69 @@ static bool ref_rmw_ok(uint32_t pc, uint32_t addr, uint32_t size)
     return true;
 }
 
+/*
+ * Table 3.38's row for kind `k` as encode() builds it: length, the
+ * register named, data size, signedness, ITYPE, read or write. The block
+ * transfers' REG is the register being moved, set per word below.
+ */
+static uint32_t mei_of(unsigned k, uint32_t a)
+{
+    switch (k) {
+    case K_LDB:
+        return mei_pack(4u, a, 0u, 0u, 1u, 0u);
+    case K_LDBU:
+        return mei_pack(4u, a, 0u, 1u, 1u, 0u);
+    case K_LDH:
+        return mei_pack(4u, a, 1u, 0u, 1u, 0u);
+    case K_LDHU:
+        return mei_pack(4u, a, 1u, 1u, 1u, 0u);
+    case K_LDW:
+        return mei_pack(4u, a, 2u, 0u, 1u, 0u);
+    case K_STB:
+        return mei_pack(4u, a, 0u, 0u, 1u, 1u);
+    case K_STH:
+        return mei_pack(4u, a, 1u, 0u, 1u, 1u);
+    case K_STW:
+        return mei_pack(4u, a, 2u, 0u, 1u, 1u);
+    case K_LDDW:
+        return mei_pack(6u, a & 0x1Eu, 3u, 0u, 2u, 0u);
+    case K_STDW:
+        return mei_pack(6u, a & 0x1Eu, 3u, 0u, 2u, 1u);
+    case K_BIT: /* REG, DS, U 0; a read (note 2) */
+        return mei_pack(4u, 0u, 0u, 0u, 9u, 0u);
+    case K_CAXI: /* reg3, the destination; a read */
+        return mei_pack(4u, a, 2u, 0u, 8u, 0u);
+    case K_SLDW:
+        return mei_pack(2u, a, 2u, 0u, 0u, 0u);
+    case K_SSTW:
+        return mei_pack(2u, a, 2u, 0u, 0u, 1u);
+    case K_PUSHSP:
+        return mei_pack(4u, 0u, 2u, 0u, 0xDu, 1u);
+    case K_POPSP:
+        return mei_pack(4u, 0u, 2u, 0u, 0xDu, 0u);
+    case K_PREPARE:
+        return mei_pack(4u, 0u, 2u, 0u, 0xCu, 1u);
+    case K_DISPOSE:
+        return mei_pack(4u, 0u, 2u, 0u, 0xCu, 0u);
+    default:
+        return SENT_MEI; /* never asked: nothing here reaches memory */
+    }
+}
+
+/* REG for a block transfer's word: the register; 0 for POPSP's r3. */
+static void mei_block_reg(uint32_t reg)
+{
+    g_mei = (g_mei & ~(0x1Fu << 16)) | (reg << 16);
+}
+
 /* Execute instruction `k` at `pc`; false if it trapped. */
 static bool ref_exec(unsigned k, uint32_t pc, uint32_t a, uint32_t b,
                      uint32_t d)
 {
     const uint32_t ea = R.r[10] + (uint32_t)emu_sext(d & 0xFFFFu, 16);
     uint32_t v = 0u;
+
+    g_mei = mei_of(k, a);
 
     switch (k) {
     case K_LDB:
@@ -834,6 +927,7 @@ static bool ref_exec(unsigned k, uint32_t pc, uint32_t a, uint32_t b,
                 tmp -= 4u;
                 v = R.r[cur];
             }
+            mei_block_reg((k == K_POPSP && cur == 3u) ? 0u : cur); /* note 3 */
             if (!ref_access(pc, tmp & ~3u, 4u, 1u,
                             k == K_PUSHSP ? A_WRITE : A_READ, 1u << 23, &v)) {
                 g_st.partial += n != 0u;
@@ -879,6 +973,7 @@ static bool ref_exec(unsigned k, uint32_t pc, uint32_t a, uint32_t b,
                 tmp -= 4u;
                 v = R.r[reg];
             }
+            mei_block_reg(reg);
             if (!ref_access(pc, tmp & ~3u, 4u, 1u,
                             k == K_PREPARE ? A_WRITE : A_READ, 1u << 23, &v)) {
                 g_st.partial += done != 0u;
@@ -979,6 +1074,7 @@ static void run_side(side_t *sd, uint32_t pc, uint32_t psw,
     c->sr[0][G4MH_SR_FEPSW] = SENT_FEPSW;
     c->sr[0][G4MH_SR_FEIC] = SENT_FEIC;
     c->sr[2][G4MH_SR_MEA] = SENT_MEA;
+    c->sr[2][G4MH_SR_MEI] = SENT_MEI;
     c->state = EMU_STATE_RUNNING;
     memcpy(c->r, regs, sizeof(c->r));
     g4mh_jit_ctx_refresh(c);
@@ -1016,6 +1112,7 @@ static void compare(const side_t *sd)
     expect(sd, "fepsw", 0u, c->sr[0][G4MH_SR_FEPSW], R.fepsw);
     expect(sd, "feic", 0u, c->sr[0][G4MH_SR_FEIC], R.feic);
     expect(sd, "mea", 0u, c->sr[2][G4MH_SR_MEA], R.mea);
+    expect(sd, "mei", 0u, c->sr[2][G4MH_SR_MEI], R.mei);
     expect(sd, "mcr", 0u, g4mh_sr_read(c, 5u, G4MH_SR_MCR), R.mcr);
     for (unsigned i = 1; i < 32u; i++) {
         expect(sd, "r", i, c->r[i], R.r[i]);
@@ -1161,6 +1258,7 @@ static void do_insn(in_t *in, unsigned k, uint32_t flags)
     R.fepsw = SENT_FEPSW;
     R.feic = SENT_FEIC;
     R.mea = SENT_MEA;
+    R.mei = SENT_MEI;
     {
         const bool um = (R.psw & G4MH_PSW_UM) != 0u;
         /* Its halfwords, or (for MCC) the two instructions' each. */
@@ -1195,6 +1293,9 @@ static void do_insn(in_t *in, unsigned k, uint32_t flags)
 
             if (!ref_fetch_ok(halt, 4u)) {
                 ref_trap(0x90u | (um ? 1u << 18 : 1u << 21), halt, true, halt);
+            } else if (um) {
+                ref_trap(0xA0u, halt, false, 0u); /* HALT is SV's */
+                g_st.completed++;
             } else {
                 R.pc = halt + 4u;
                 g_st.completed++;
@@ -1286,9 +1387,13 @@ static void do_step(in_t *in)
     case 5: { /* the core's SPID and mode */
         const uint32_t sel = byte(in);
 
-        R.spid = (sel & 0x80u) ? (sel >> 2) & 0x1Fu : (sel >> 2) & 3u;
+        /* Through LDSR's path, as a program sets it: five bits, and
+         * every identifier in SPIDLIST. */
+        const uint32_t v = (sel & 0x80u) ? (sel >> 2) : (sel >> 2) & 3u;
+
+        R.spid = v & 0x1Fu;
         for (unsigned s = 0; s < 2u; s++) {
-            g_side[s].cpu.spid = R.spid;
+            g4mh_sr_write(&g_side[s].cpu, 1u, G4MH_SR_SPID, v);
         }
         g_um = (sel & 1u) != 0u;
         break;

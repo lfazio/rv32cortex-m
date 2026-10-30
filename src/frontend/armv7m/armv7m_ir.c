@@ -190,6 +190,45 @@ static uint32_t a7_ir_load(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
     return 0u;
 }
 
+static void a7_count(emu_cpu_t *cpu, uint32_t n);
+
+/*
+ * A store whose bus error was imprecise: the instruction retires and the
+ * BusFault is taken after it, before the next -- where the interpreter
+ * takes it. A trapping helper can only stop its block *before* the
+ * instruction retires, and the rest of this one (an STM's later words, a
+ * writeback) is still to come in the block. So the interpreter runs the
+ * instruction again, whole: its earlier stores write the same bytes
+ * again, and its registers are written once, since a store's writeback
+ * follows its accesses -- what made a precise fault restartable. It is
+ * counted here, and the block stops with the pc after it; the dispatcher
+ * then takes what is pending. A store to a device register in the same
+ * instruction as one into nothing is written twice; nothing else is.
+ */
+static EMU_NOINLINE uint32_t finish_imprecise(armv7m_cpu_t *c)
+{
+    const uint32_t pc = c->r[R_PC];
+    uint16_t w0 = 0u;
+    uint16_t w1 = 0u;
+    bool ok;
+
+    c->imprecise = false;
+    if (!armv7m_fetch_probe(c, pc, &w0) ||
+        (armv7m_is_32bit(w0) && !armv7m_fetch_probe(c, pc + 2u, &w1))) {
+        return 0u; /* not reachable: the block was translated from it */
+    }
+    armv7m_flags_pack(c);
+    ok = armv7m_step_insn(c, w0, w1, pc);
+    armv7m_flags_unpack(c);
+    c->imprecise = false;
+    c->jit_ctx = armv7m_jit_ctx(c);
+    c->irq_maybe = true;
+    if (ok) {
+        a7_count((emu_cpu_t *)c, 1u);
+    }
+    return 1u;
+}
+
 static uint32_t a7_ir_store(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
                             uint32_t val)
 {
@@ -200,7 +239,11 @@ static uint32_t a7_ir_store(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
     if ((spec & A7_MEM_ALIGNED) != 0u && (addr & (size - 1u)) != 0u) {
         x = ARMV7M_X_UNALIGNED;
     } else {
+        c->imprecise = false;
         x = armv7m_store_u(c, addr, size, val);
+        if (EMU_UNLIKELY(c->imprecise)) {
+            return finish_imprecise(c);
+        }
     }
     if (EMU_UNLIKELY(x != ARMV7M_X_NONE)) {
         return ir_fault(c, x);
@@ -224,10 +267,19 @@ static uint32_t a7_ir_step(emu_cpu_t *cpu, uint32_t insn, uint32_t pc)
     bool ok;
 
     armv7m_flags_pack(c);
+    c->imprecise = false;
     ok = armv7m_step_insn(c, (uint16_t)insn, (uint16_t)(insn >> 16), pc);
     armv7m_flags_unpack(c);
     c->jit_ctx = armv7m_jit_ctx(c);
     c->irq_maybe = true;
+    if (EMU_UNLIKELY(ok && c->imprecise)) {
+        /* A store in it was imprecise: it retired, so count it, and stop
+         * the block for the dispatcher to take the BusFault before the
+         * next instruction -- see finish_imprecise. */
+        c->imprecise = false;
+        a7_count(cpu, 1u);
+        return 1u;
+    }
     return ok ? 0u : 1u;
 }
 

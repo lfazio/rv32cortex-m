@@ -71,13 +71,6 @@ measured at.
     another's blocks; RV32 compressed code and anything but loads and
     stores, which `fuzz-rv32-vm` compares between the backends only;
     G4MH's and ARMv7-M's MPUs on a second core.
-  - **Asked of the F746 and not yet answered**: BFAR for an unaligned
-    access that faults partway into unmapped memory -- the ARM ARM
-    says the address the instruction requested, the emulator reports
-    the byte; fuzz-armv7m-mpu leaves it unasserted until `sys.c` asks.
-  - **G4MH's MEI** (table 3.38) is not written on MDP or MAE, and
-    `LDSR`/`STSR` to the MPU are not refused in user mode
-    ([frontend/g4mh.md](frontend/g4mh.md#not-implemented)).
   - **What arrives from outside the guest**: the ELF loader, the gdb
     stub's packet parser, the TFTP upload path, and the virtio
     descriptors and rings, which a guest writes.
@@ -223,7 +216,12 @@ From the last measurements in [linux.md](linux.md).
 - [ ] Implement vectorial extensions
 - [ ] **Anything to compare it with.** No e200 is attached and no
       other emulator is consulted, so a shared misreading of the manual
-      is invisible to every check there is.
+      is invisible to every check there is. The only second document,
+      the MPC5675K reference manual, agrees on the MMU except where it
+      describes a different core: its e200z7 has 64 TLB entries and
+      SPE, this frontend's e200z759n3 32 and EFPU2
+      ([frontend/ppc.md](frontend/ppc.md#the-mmu)). Whether to model the
+      MPC5675K's core, whose peripherals are already here, is open.
 - [ ] **An emulated GTM** for the STM32F746ZG and the STM32N657, plugged
       into the PCIe framework.
 
@@ -258,4 +256,18 @@ From the last measurements in [linux.md](linux.md).
         does; and FENC, the external NMI, so FENMI has a source.
 - [ ] **TAUD on the RH850/U2B6**, built on the STM32 timers that remain
       free and plugged into the PCIe framework.
-- [ ] **The G4MH and RH850 CPU system** (section 3), finished.
+- [ ] **The G4MH and RH850 CPU system** (section 3), finished. What is
+      left of it: register banks (`RESBANK`, `RBCR0/1`, `RBNR`, `RBIP`,
+      SYSERR `1CH`/`1DH`) -- `RESBANK` is RIE today; the FXU's
+      instructions (its registers answer `CU1` already); the reserved
+      bits of the save registers, which are stored as written (only
+      CTPSW is masked); `CFALI` against the MPU and a cache to lock;
+      the debug level; FENMI.
+- [ ] **The readings only an RH850 can settle.** Every G4MH result rests
+      on Renesas' documents, cross-checked where a second one exists
+      ([frontend/g4mh.md](frontend/g4mh.md#what-rests-on-the-manuals-alone));
+      what none settles: a read-modify-write refused for both read and
+      write setting both detail bits, DISPOSE's order, LD.DW's odd
+      register in MEI, `SVLOCK` binding `LDM.MP`, and the reserved
+      encodings. A U2B board, asked the way `tests/armv7m-diff/` asks
+      the F746, is the way to close it.

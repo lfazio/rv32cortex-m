@@ -362,6 +362,42 @@ static EMU_ALWAYS_INLINE uint32_t do_sar(g4mh_cpu_t *c, uint32_t v, uint32_t n)
         goto next_insn;                                                        \
     } while (0)
 
+/*
+ * An SV-privileged instruction: PIE in user mode (R01UH0923EJ0130 table
+ * 3.3). Before anything else the instruction does, including the RIE a
+ * model that does not implement it would otherwise raise.
+ */
+#define SV_ONLY()                                                              \
+    do {                                                                       \
+        if (EMU_UNLIKELY((c->psw & G4MH_PSW_UM) != 0u)) {                      \
+            EXC(G4MH_EXC_PIE);                                                 \
+        }                                                                      \
+    } while (0)
+
+/*
+ * CACHE (and CLL, a cacheop inside it), out of the loop: rare, and the
+ * loop's size is the F746 interpreter's cost (g4mh_ldsr). PIE for an SV
+ * operation in user mode, or none.
+ */
+static EMU_NOINLINE g4mh_exc_t cache_op(g4mh_cpu_t *c, uint32_t r2,
+                                        uint32_t sel)
+{
+    const uint32_t cop = ((r2 & 3u) << 5) | sel;
+
+    if (cop == 0x7Eu) { /* CLL */
+        g4mh_ll_drop(c);
+        return G4MH_EXC_NONE;
+    }
+    if ((cop == 0x20u || cop == 0x40u || cop == 0x60u || cop == 0x61u) &&
+        (c->psw & G4MH_PSW_UM) != 0u) {
+        return G4MH_EXC_PIE; /* CIBII CFALI CISTI CILDI */
+    }
+    if (cop == 0x00u || cop == 0x20u) { /* CHBII CIBII */
+        g4mh_invalidate(c, 0u, 0xFFFFFFFFu);
+    }
+    return G4MH_EXC_NONE;
+}
+
 /* An exception whose return address is the *following* instruction:
  * TRAP and SYSCALL, which are meant to resume after the call. */
 #define EXC_AFTER(cause)                                                       \
@@ -439,8 +475,10 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                  * the request pending -- which an ack would have thrown
                  * away.
                  */
-                if (!g4mh_cpu_irq_vector(c, (uint32_t)ch, &vec)) {
-                    g4mh_cpu_exception(c, G4MH_EXC_MDP, pc);
+                const g4mh_exc_t ve =
+                    g4mh_cpu_irq_vector(c, (uint32_t)ch, &vec);
+                if (ve != G4MH_EXC_NONE) {
+                    g4mh_cpu_exception(c, ve, pc);
                     pc = c->pc;
                     continue;
                 }
@@ -1217,13 +1255,31 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
              * general register in the other. Implementing LDSR by analogy
              * with STSR gets it backwards, which is what this did.
              */
-            case 0x020: /* LDSR reg2, regID */
-                g4mh_sr_write(c, sel, r2, c->r[r1]);
-                break;
+            /*
+             * Each register has a permission -- UM, SV, CUn, or a mix
+             * (figure 3.3) -- and nothing checked it: user code could
+             * turn the MPU off, or write the PSW's UM bit. g4mh_ldsr and
+             * g4mh_stsr check it, out of this loop.
+             */
+            case 0x020: { /* LDSR reg2, regID */
+                const g4mh_exc_t e = g4mh_ldsr(c, sel, r2, c->r[r1]);
 
-            case 0x040: /* STSR regID, reg2 */
-                wr(c, r2, g4mh_sr_read(c, sel, r1));
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                    EXC(e);
+                }
                 break;
+            }
+
+            case 0x040: { /* STSR regID, reg2 */
+                uint32_t v = 0u;
+                const g4mh_exc_t e = g4mh_stsr(c, sel, r1, &v);
+
+                if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                    EXC(e);
+                }
+                wr(c, r2, v);
+                break;
+            }
 
             /*
              * The register forms of the bit-manipulation group. The bit
@@ -1745,12 +1801,26 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                 /* eh > et transfers nothing -- the manual's `if (eh <= et)`
                  * has an empty else, so it is a defined no-op and not a
                  * fault. */
+                /*
+                 * LDM.MP writes through the window's masks, so an entry
+                 * it loads holds what an LDSR of the same word would --
+                 * it stored the words raw, reserved bits and all -- and
+                 * not at all under SVLOCK.SVL, which makes MPLA, MPUA and
+                 * MPAT read-only to supervisor code (3.2.2.5(5); that it
+                 * binds LDM.MP as it binds LDSR is a reading: the manual
+                 * names the registers, not the instructions). The loads
+                 * are made either way and may fault.
+                 */
                 if (c->mpu != NULL && eh <= et &&
                     et < (uint32_t)G4MH_MPU_ENTRIES) {
+                    static const uint8_t which[3] = {
+                        G4MH_SR_MPLA, G4MH_SR_MPUA, G4MH_SR_MPAT};
+                    const bool locked =
+                        (c->sr[1][G4MH_SR_SVLOCK] & G4MH_SVLOCK_SVL) != 0u;
                     uint32_t adr = c->r[r1] & ~3u;
 
                     for (uint32_t cur = eh; cur <= et; cur++) {
-                        uint32_t *const ent[3] = {
+                        const uint32_t *const ent[3] = {
                             &c->mpu->mpla[cur],
                             &c->mpu->mpua[cur],
                             &c->mpu->mpat[cur],
@@ -1763,7 +1833,19 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                                 if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
                                     EXC(e);
                                 }
-                                *ent[k] = v;
+                                if (!locked) {
+                                    g4mh_mpu_entry_write(c->mpu, cur,
+                                                         which[k], v);
+                                    /*
+                                     * An entry decides what a block may
+                                     * fetch, as an LDSR to MPLA does --
+                                     * and this did not discard them. Per
+                                     * word, so an MDP partway leaves no
+                                     * block built on the half-written
+                                     * entry.
+                                     */
+                                    c->jit_gen++;
+                                }
                             } else {
                                 e = g4mh_store(c, adr, 4u, *ent[k]);
                                 if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
@@ -1773,10 +1855,6 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                             adr += 4u;
                         }
                     }
-                    /* Nothing to refresh: `mpu_active` is MPM.MPE alone,
-                     * and the check reads the entries directly. If that
-                     * ever caches anything derived from them, this is the
-                     * third writer that has to invalidate it. */
                 }
                 break;
             }
@@ -1842,6 +1920,7 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                 if (w0 != 0x07E0u) {
                     EXC(G4MH_EXC_RIE);
                 }
+                SV_ONLY();
                 c->state = EMU_STATE_WFI;
                 c->pc = next;
                 pc = next;
@@ -1857,12 +1936,21 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
              * it, which is what this used to do, is wrong even when it
              * happens to pick the same pair.
              */
+            /*
+             * CTRET restores PSW's five flags and nothing else: "only the
+             * lower 5 bits of the PSW register are updated". CTPSW is a
+             * UM register, so restoring all of it let user code load it
+             * with 0 and return into supervisor mode.
+             */
             case 0x144: /* CTRET            */
                 pc = c->sr[0][G4MH_SR_CTPC];
-                g4mh_sr_write(c, 0u, G4MH_SR_PSW, c->sr[0][G4MH_SR_CTPSW]);
+                g4mh_sr_write(c, 0u, G4MH_SR_PSW,
+                              (c->psw & ~0x1Fu) |
+                                  (c->sr[0][G4MH_SR_CTPSW] & 0x1Fu));
                 goto retired_insn;
 
             case 0x148: /* EIRET            */
+                SV_ONLY();
                 /*
                  * The ceiling comes down *before* the PSW is restored,
                  * because the ISPR rule is conditional on PSW.EP as it
@@ -1876,6 +1964,7 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                 goto retired_insn;
 
             case 0x14A: /* FERET            */
+                SV_ONLY();
                 pc = c->sr[0][G4MH_SR_FEPC];
                 g4mh_sr_write(c, 0u, G4MH_SR_PSW, c->sr[0][G4MH_SR_FEPSW]);
                 goto retired_insn;
@@ -1900,16 +1989,23 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                      * rather than approximated.
                      */
                     if (sel == 0x10u) { /* RESBANK          */
+                        SV_ONLY();
                         EXC(G4MH_EXC_RIE);
                     }
                     if (sel != 0u) {
                         EXC(G4MH_EXC_RIE);
+                    }
+                    if ((c->sr[1][G4MH_SR_MCTL] & G4MH_MCTL_UIC) == 0u) {
+                        SV_ONLY(); /* unless MCTL.UIC lets user code */
                     }
                     c->psw |= G4MH_PSW_ID; /* DI               */
                     break;
                 case 0x10u: /* EI               */
                     if (sel != 0u) {
                         EXC(G4MH_EXC_RIE);
+                    }
+                    if ((c->sr[1][G4MH_SR_MCTL] & G4MH_MCTL_UIC) == 0u) {
+                        SV_ONLY();
                     }
                     c->psw &= ~G4MH_PSW_ID;
                     c->irq_dirty = true;
@@ -1937,10 +2033,27 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                  * about.
                  *
                  * PREF stays a hint with nothing to do.
+                 *
+                 * cacheop is seven bits, ppPPPPP, and its top two are
+                 * reg2's low two -- so CACHE is reg2 0x1C to 0x1F, and
+                 * CLL is the cacheop 1111110 inside it. Decoding 0x1C
+                 * alone made CIBII, CFALI, CISTI and CILDI reserved
+                 * instructions (CC-RH: `cache 0x20, [r6]` is E6EF6001,
+                 * reg2 29). Only CHBII may run in user mode (U2B
+                 * 3.4.2.1(2)); an undefined cacheop "is performed ...
+                 * like a NOP instruction", privilege and all.
                  */
                 case 0x1Cu: /* CACHE op,[reg1]  */
-                    g4mh_invalidate(c, 0u, 0xFFFFFFFFu);
+                case 0x1Du:
+                case 0x1Eu:
+                case 0x1Fu: {
+                    const g4mh_exc_t e = cache_op(c, r2, sel);
+
+                    if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
+                        EXC(e);
+                    }
                     break;
+                }
                 case 0x1Bu: /* PREF  op,[reg1]  */
                     break;
                 case 0x1Au: { /* SYSCALL vector8  */
@@ -1966,7 +2079,9 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                         (vec <= size) ? (scbp + (vec << 2)) : scbp;
                     const uint32_t tmp = c->psw;
                     uint32_t ent;
-                    const g4mh_exc_t e = g4mh_load(c, adr, 4u, false, &ent);
+                    /* "subject to memory protection with the supervisor
+                     * privilege" (caution 2): the mode moves first. */
+                    const g4mh_exc_t e = g4mh_load_sv(c, adr, &ent);
 
                     if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
                         EXC(e);
@@ -1981,12 +2096,6 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                     goto retired_insn;
                 }
 
-                case 0x1Fu: /* CLL              */
-                    if (sel != 0x1Eu) {
-                        EXC(G4MH_EXC_RIE);
-                    }
-                    g4mh_ll_drop(c);
-                    break;
                 /*
                  * PUSHSP and POPSP move a *range* of registers, rh
                  * through rt, rather than a list -- so unlike PREPARE
@@ -2003,7 +2112,7 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                         const g4mh_exc_t e =
                             g4mh_store(c, tmp & ~3u, 4u, c->r[cur]);
                         if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
-                            EXC(g4mh_exc_block(e));
+                            EXC(g4mh_exc_block(c, e, cur));
                         }
                     }
                     c->r[3] = tmp;
@@ -2019,7 +2128,7 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                             const g4mh_exc_t e =
                                 g4mh_load(c, tmp & ~3u, 4u, false, &v);
                             if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
-                                EXC(g4mh_exc_block(e));
+                                EXC(g4mh_exc_block(c, e, cur == 3u ? 0u : cur));
                             }
                             /*
                              * Not sp: "the sp is not loaded with the
