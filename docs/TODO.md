@@ -61,12 +61,16 @@ measured at.
     (`fuzz-rv32-mmu`), which found a PPN past the bus read as an alias
     and an M-mode access half in an unlocked PMP entry let through.
     G4MH's MPU (`fuzz-g4mh-mpu`, from the U2B manual: seven defects,
-    all found writing the reference) and ARMv7-M's (`fuzz-armv7m-mpu`,
-    from the ARM ARM and the F746: none). Left: PowerPC's TLB against
-    its own reference; and RV32's fetch side -- the hart never leaves M
-    there, so the fetch table is never filled -- and its JIT, whose
-    inlined probe reads the same table (the entries are checked, the
-    probe is not).
+    all found writing the reference), ARMv7-M's (`fuzz-armv7m-mpu`,
+    from the ARM ARM and the F746: none), PowerPC's TLB with the JIT's
+    blocks kept across TLB, MSR and PID changes (`fuzz-ppc-tlb`: none),
+    and RV32's fetch side and the JIT's inline data TLB probe, code
+    running in S and U (`fuzz-rv32-vm`: none). Not reached by any of
+    them: PowerPC VLE pages, `lwarx`/`stwcx.`, `dcbz` and the cache
+    instructions under the MMU, and a TLB change on one core retiring
+    another's blocks; RV32 compressed code and anything but loads and
+    stores, which `fuzz-rv32-vm` compares between the backends only;
+    G4MH's and ARMv7-M's MPUs on a second core.
   - **Asked of the F746 and not yet answered**: BFAR for an unaligned
     access that faults partway into unmapped memory -- the ARM ARM
     says the address the instruction requested, the emulator reports

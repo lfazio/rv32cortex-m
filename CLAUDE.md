@@ -94,13 +94,15 @@ BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
                                 # run: ratio, wall clock, translations, CRC
 ./scripts/board-pc-profile.py ELF  # where a -DEMU_PC_PROFILE=N firmware
                                 # spent its time, by function and line
-./scripts/fuzz.sh SECS [ISA|ir|rv32-mmu|g4mh-mpu|armv7m-mpu|all]
+./scripts/fuzz.sh SECS [ISA|ir|rv32-mmu|rv32-vm|g4mh-mpu|armv7m-mpu|ppc-tlb|all]
                                 # a frontend's interpreter against the
                                 # x86-64 JIT, under ASan/UBSan; `ir`: random
                                 # IR blocks, before the passes against the
                                 # compiled code; `rv32-mmu`: Sv32, PMP and
                                 # the data TLB against a walk from the spec;
-                                # `*-mpu`: an MPU against its manual, one
+                                # `rv32-vm`: the same in S/U code, fetch and
+                                # the JIT's probe; `*-mpu`, `ppc-tlb`: an
+                                # MPU or TLB against its manual, one
                                 # instruction a step; docs/fuzzing.md
 ./scripts/fuzz-mutant.sh SECS ISA FILE OLD NEW  # break a line on purpose
                                 # and see whether that fuzzer notices
@@ -185,6 +187,9 @@ Each has cost more than one session, and every one recurred.
 - **A conditional test must be shown to compile somewhere you run it**
   (`#if G4MH_MPU_ENTRIES <= 31` was false at the default); and when
   asserting nothing was corrupted, snapshot all of it.
+- **A staleness test shows reuse in its counters, or it has not
+  asked**: fuzz-rv32-vm fenced after every run and reported 76,295
+  translations and 76,295 block entries -- nothing found twice.
 - **Put the event where the behaviours differ.** A fault at a block's
   first instruction cannot see a translator's mistake about the middle;
   a reserved PTE at the leaf cannot see a skipped check; a cache test
@@ -673,7 +678,8 @@ The design is in [docs/network.md](docs/network.md).
 - **A block backend may retire more than its budget**: compare
   `total >= max_insn`, never subtract.
 - **`emu_fault_t` and `rv_exc_t` are both `uint32_t`**: grep the calls
-  when a success value changes.
+  when a success value changes -- and `PPC_EXC_NONE`, like `RV_EXC_NONE`,
+  is 0xFFFFFFFF: a harness checking for zero aborted on every success.
 - **A platform's own copy of shared plumbing keeps the bugs** the shared
   one fixed (the F446's guest staging).
 - **`set_image` runs on a reload, never on the first start**: per-image

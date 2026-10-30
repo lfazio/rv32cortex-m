@@ -4,7 +4,7 @@
 # fuzz.sh - build the fuzz tree and run an interpreter-against-JIT
 # fuzzer.
 #
-#   scripts/fuzz.sh [SECONDS] [rv32|armv7m|g4mh|g4mh-smp|ppc|ir|rv32-mmu|g4mh-mpu|armv7m-mpu|all] [libFuzzer options...]
+#   scripts/fuzz.sh [SECONDS] [rv32|armv7m|g4mh|g4mh-smp|ppc|ir|rv32-mmu|g4mh-mpu|armv7m-mpu|ppc-tlb|rv32-vm|all] [libFuzzer options...]
 #
 # Configures build/fuzz (FUZZ_BUILD overrides) with clang and
 # -DEMU_FUZZ=ON, which builds the whole tree under ASan and UBSan with
@@ -18,7 +18,9 @@
 # from the spec, its regressions in tests/fuzz/regressions/rv32-mmu/.
 # `g4mh-mpu` is fuzz-g4mh-mpu: G4MH's MPU against a reference from the
 # U2B manual, its regressions in tests/fuzz/regressions/g4mh-mpu/;
-# `armv7m-mpu` the same for ARMv7-M's MPU, from the ARM ARM.
+# `armv7m-mpu` the same for ARMv7-M's MPU, from the ARM ARM; `ppc-tlb`
+# the e200z7's TLB, from its manual, with the JIT's blocks kept;
+# `rv32-vm` RV32 code in S and U, fetch and the JIT's TLB probe.
 # g4mh-smp is fuzz-g4mh-jit built with three PEs,
 # in build/fuzz-smp (FUZZ_SMP_BUILD overrides): G4MH's translated stores
 # are built differently for one PE and for several, so a second PE is
@@ -47,14 +49,14 @@ T=${1:-rv32}
 [ $# -gt 0 ] && shift
 
 case $T in
-rv32 | armv7m | g4mh | g4mh-smp | ppc | ir | rv32-mmu | g4mh-mpu | armv7m-mpu | all) ;;
+rv32 | armv7m | g4mh | g4mh-smp | ppc | ir | rv32-mmu | g4mh-mpu | armv7m-mpu | ppc-tlb | rv32-vm | all) ;;
 *)
-    echo "fuzz: no target '$T' (rv32, armv7m, g4mh, g4mh-smp, ppc, ir, rv32-mmu, g4mh-mpu, armv7m-mpu or all)"
+    echo "fuzz: no target '$T' (rv32, armv7m, g4mh, g4mh-smp, ppc, ir, rv32-mmu, g4mh-mpu, armv7m-mpu, ppc-tlb, rv32-vm or all)"
     exit 2
     ;;
 esac
 if [ "$T" = all ]; then
-    for t in rv32 armv7m g4mh ppc g4mh-smp ir rv32-mmu g4mh-mpu armv7m-mpu; do
+    for t in rv32 armv7m g4mh ppc g4mh-smp ir rv32-mmu g4mh-mpu armv7m-mpu ppc-tlb rv32-vm; do
         "$0" "$SECS" "$t" "$@" || exit 1
     done
     exit 0
@@ -67,7 +69,7 @@ B=${FUZZ_BUILD:-$ROOT/build/fuzz}
 # The binary, and the name its corpus and regressions go under.
 BIN=fuzz-$T-jit
 SET=$T-jit
-if [ "$T" = ir ] || [ "$T" = rv32-mmu ] || [ "$T" = g4mh-mpu ] || [ "$T" = armv7m-mpu ]; then
+if [ "$T" = ir ] || [ "$T" = rv32-mmu ] || [ "$T" = g4mh-mpu ] || [ "$T" = armv7m-mpu ] || [ "$T" = ppc-tlb ] || [ "$T" = rv32-vm ]; then
     BIN=fuzz-$T
     SET=$T
 fi

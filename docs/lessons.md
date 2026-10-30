@@ -3981,6 +3981,32 @@ session, and every one of them recurred:
   third-party input is pinned the day it is first used, or a fresh tree
   is a different experiment.**
 
+- **A harness's own steps follow the core's conventions, or they test
+  the harness.** Every early report from fuzz-ppc-tlb and fuzz-rv32-vm
+  was the harness: `ppc_spr_write` returns `PPC_EXC_NONE`, which is
+  0xFFFFFFFF, and a check for zero aborted on every success; the same
+  call, made after a run had left the core in user mode, was refused as
+  privileged while the reference counted the PID as written; RV32's
+  ECALL hook, which ends a run, writes its result to a0; and a fence
+  after every run -- harmless to correctness -- moved the JIT's
+  generation each time, so no block was ever entered twice. That last
+  one reported nothing at all: the stats line said 76,295 translations
+  and 76,295 block entries. **A staleness test shows reuse in its
+  counters, or it has not asked** -- the same rule as a cache test that
+  must hit the cache.
+
+  And a mutant reported "pre-existing" four times over -- the unmutated
+  core failing the mutant's input -- and each time it was the harness
+  again: a run whose own store rewrote a live PTE, with no fence before
+  the next fetch, where the spec lets either mapping answer and the two
+  backends chose differently; a megapage over RAM that reached the
+  M-mode trampoline the reference did not know was memory; and a new
+  step that wrote an entry over the code without the rule that keeps
+  code the identity, so the cores ran RAM while the reference ran the
+  slot. The driver's replay on the unmutated build is what told these
+  from findings; the reference now aborts with "the harness let slot
+  code translate" rather than reporting a disagreement.
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

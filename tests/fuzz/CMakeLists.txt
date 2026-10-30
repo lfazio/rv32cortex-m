@@ -153,6 +153,36 @@ if(EMU_GUEST_ARCH_RV32)
 endif()
 
 #
+# The e200z7's TLB against chapter 10 and the interrupt tables of its
+# manual, with the JIT's blocks kept across TLB, MSR and PID changes
+# (fuzz_ppc_tlb.c). The smoke test must show runs completed and every
+# kind of refusal, a translated access, and blocks found again.
+#
+if(EMU_GUEST_ARCH_PPC)
+    add_executable(fuzz-ppc-tlb fuzz_ppc_tlb.c)
+    target_link_libraries(fuzz-ppc-tlb PRIVATE emucore)
+    target_link_options(fuzz-ppc-tlb PRIVATE -fsanitize=fuzzer)
+    target_compile_options(fuzz-ppc-tlb PRIVATE -Wall -Wextra -Wundef)
+    add_test(NAME fuzz-ppc-tlb-smoke
+             COMMAND ${CMAKE_COMMAND} -E env FUZZ_STATS=1
+                     $<TARGET_FILE:fuzz-ppc-tlb> -runs=20000 -seed=1
+                     -max_len=512 -timeout=10)
+    set_tests_properties(fuzz-ppc-tlb-smoke PROPERTIES
+        PASS_REGULAR_EXPRESSION
+            "[1-9][0-9]* completed, [1-9][0-9]* DTLB, [1-9][0-9]* ITLB, [1-9][0-9]* DSI, [1-9][0-9]* ISI.*[1-9][0-9]* accesses through a mapping.*jit [1-9][0-9]* translations, [1-9][0-9]* block entries"
+        LABELS fuzz)
+    file(GLOB _ppctlb_saved ${CMAKE_CURRENT_SOURCE_DIR}/regressions/ppc-tlb/*)
+    if(_ppctlb_saved)
+        add_test(NAME fuzz-ppc-tlb-regressions
+                 COMMAND $<TARGET_FILE:fuzz-ppc-tlb> -runs=0 -timeout=10
+                         ${CMAKE_CURRENT_SOURCE_DIR}/regressions/ppc-tlb)
+        set_tests_properties(fuzz-ppc-tlb-regressions PROPERTIES
+            PASS_REGULAR_EXPRESSION "Done [0-9]+ runs"
+            LABELS fuzz)
+    endif()
+endif()
+
+#
 # ARMv7-M's MPU against ValidateAddress(), CheckPermission() and MemU[]
 # from the architecture manual, with what the board answered where they
 # leave room (fuzz_armv7m_mpu.c). The smoke test must show instructions
@@ -178,6 +208,37 @@ if(EMU_GUEST_ARCH_ARMV7M)
                  COMMAND $<TARGET_FILE:fuzz-armv7m-mpu> -runs=0 -timeout=10
                          ${CMAKE_CURRENT_SOURCE_DIR}/regressions/armv7m-mpu)
         set_tests_properties(fuzz-armv7m-mpu-regressions PROPERTIES
+            PASS_REGULAR_EXPRESSION "Done [0-9]+ runs"
+            LABELS fuzz)
+    endif()
+endif()
+
+#
+# RV32 code running in S and U under Sv32 and PMP, on both backends,
+# against rv32_ref.h: the fetch side and the JIT's inline data TLB
+# probe, which fuzz-rv32-mmu cannot reach (fuzz_rv32_vm.c). The smoke
+# test must show runs held to the spec, completed and refused on fetch
+# and on data, and blocks found again.
+#
+if(EMU_GUEST_ARCH_RV32)
+    add_executable(fuzz-rv32-vm fuzz_rv32_vm.c)
+    target_link_libraries(fuzz-rv32-vm PRIVATE emucore)
+    target_link_options(fuzz-rv32-vm PRIVATE -fsanitize=fuzzer)
+    target_compile_options(fuzz-rv32-vm PRIVATE -Wall -Wextra -Wundef)
+    add_test(NAME fuzz-rv32-vm-smoke
+             COMMAND ${CMAKE_COMMAND} -E env FUZZ_STATS=1
+                     $<TARGET_FILE:fuzz-rv32-vm> -runs=20000 -seed=1
+                     -max_len=512 -timeout=10)
+    set_tests_properties(fuzz-rv32-vm-smoke PROPERTIES
+        PASS_REGULAR_EXPRESSION
+            "[1-9][0-9]* against the spec \\([1-9][0-9]* completed, [1-9][0-9]* fetch faults.*[1-9][0-9]* data faults\\).*jit [1-9][0-9]* translations, [1-9][0-9]* block entries"
+        LABELS fuzz)
+    file(GLOB _rv32vm_saved ${CMAKE_CURRENT_SOURCE_DIR}/regressions/rv32-vm/*)
+    if(_rv32vm_saved)
+        add_test(NAME fuzz-rv32-vm-regressions
+                 COMMAND $<TARGET_FILE:fuzz-rv32-vm> -runs=0 -timeout=10
+                         ${CMAKE_CURRENT_SOURCE_DIR}/regressions/rv32-vm)
+        set_tests_properties(fuzz-rv32-vm-regressions PROPERTIES
             PASS_REGULAR_EXPRESSION "Done [0-9]+ runs"
             LABELS fuzz)
     endif()

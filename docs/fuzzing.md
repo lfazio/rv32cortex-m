@@ -1,12 +1,14 @@
 # Fuzzing
 
-Eight targets: one per frontend, each the interpreter against the
+Ten targets: one per frontend, each the interpreter against the
 x86-64 JIT on whatever bytes libFuzzer produces; one for the IR itself,
-with no frontend ([below](#the-ir-with-no-frontend)); one for RV32's
-translation and protection against a walk written from the spec
-([below](#translation-and-protection-rv32)); and one each for G4MH's
-and ARMv7-M's MPUs, against references written from their manuals
-([G4MH](#protection-g4mh), [ARMv7-M](#protection-armv7-m)). Between them they found
+with no frontend ([below](#the-ir-with-no-frontend)); RV32's
+translation and protection against a walk written from the spec, from
+M-mode ([below](#translation-and-protection-rv32)) and in running code
+([below](#fetch-and-the-jits-data-tlb-rv32)); and one each for G4MH's
+and ARMv7-M's MPUs and PowerPC's TLB, against references written from
+their manuals ([G4MH](#protection-g4mh),
+[ARMv7-M](#protection-armv7-m), [PowerPC](#translation-powerpc)). Between them they found
 eighteen defects in code that every suite passed --
 eight of them in an interpreter, which is the reference -- and one of
 those turned out to be a whole class, which a board then answered
@@ -25,12 +27,14 @@ both backends shared it.
 | `fuzz-rv32-mmu` | a Sv32 walk and PMP written from the privileged spec, sharing nothing with `rv_mmu.c`; Sail and Spike, through a probe, for what it might have wrong |
 | `fuzz-g4mh-mpu` | the MPU's check, the cause codes and the instructions' pages, written from the U2B and G4MH manuals; the manual and nothing else |
 | `fuzz-armv7m-mpu` | the architecture's MPU pseudocode, with the F746's answers where it leaves room (`tests/armv7m-diff/sys.c`) |
+| `fuzz-ppc-tlb` | chapter 10 and the interrupt tables of the e200z7 manual; the manual and nothing else |
+| `fuzz-rv32-vm` | `rv32_ref.h`, the same walk as `fuzz-rv32-mmu`'s, with fetch; Sail and Spike, through a probe, for what it might have wrong |
 
 No GPL emulator is consulted, by any of them.
 
 ```sh
 scripts/fuzz.sh 600 armv7m   # build build/fuzz, seed it, fuzz ten minutes
-scripts/fuzz.sh 600 all      # the eight in turn, and G4MH on three PEs
+scripts/fuzz.sh 600 all      # the ten in turn, and G4MH on three PEs
 FUZZ_STATS=1 build/fuzz/tests/fuzz/fuzz-armv7m-jit crash-...   # replay one
 cd build/fuzz && ctest -L fuzz   # each target's smoke run and saved regressions
 ```
@@ -431,9 +435,8 @@ reach it.
 
 What it does not reach: fetch -- the hart never leaves M, so the fetch
 table is never filled; the JIT's inlined probe, which reads the same
-data TLB (its entries are checked, the probe is not); and PowerPC's
-TLB, which wants a reference of its own. G4MH's and ARMv7-M's MPUs have
-theirs ([G4MH](#protection-g4mh), [ARMv7-M](#protection-armv7-m)).
+data TLB (its entries are checked, the probe is not). fuzz-rv32-vm
+reaches both ([below](#fetch-and-the-jits-data-tlb-rv32)).
 
 ## Protection: G4MH
 
@@ -581,6 +584,114 @@ fuzzing from an empty corpus:
 | a 32-bit instruction's second halfword unchecked | the interpreter | 13 s |
 | the translator's, likewise | `fetch` (`armv7m_ir.c`) | 11 s |
 | a literal read from ROM folded to a constant under the MPU | `literal_const` | not in 120 s, until the generator had LDR literal; then 17 s |
+
+
+## Translation: PowerPC
+
+`fuzz-ppc-tlb` (`tests/fuzz/fuzz_ppc_tlb.c`) holds the e200z7's TLB to
+chapter 10 of its manual -- the match of figure 10-1 and table 10-1,
+the permissions of figure 10-3, the MAS updates of table 10-15 -- and to
+the register settings of tables 7-13, 7-15, 7-23 and 7-24, sharing
+nothing with `ppc_mmu.c`. As for G4MH, the manual is the only
+authority; no e200 is attached.
+
+It asks what fuzz-ppc-jit cannot: whether a translated block outlives
+what it was built under. The input writes up to eight one-instruction
+programs (loads and stores of each width, `lmw`, `stmw`) into ROM once;
+each step then changes the TLB -- an entry through MAS0-3 and `tlbwe`,
+`tlbivax`, MAS4's defaults, `tlbsx` -- or MSR's PR, IS and DS, or PID0,
+or runs a slot with r3 near a page's end and r1, whose page a block
+takes as its RAM window, chosen afresh. The JIT's blocks are kept across
+steps, and its counters show they are found again. Entries 0, 30 and 31
+are the harness's: the vectors, and the code in both address spaces,
+below anything the input writes, which is made the identity over them.
+Every system instruction is made as software makes it -- `ppc_spr_write`
+and the TLB instructions' own functions, in supervisor mode, then the
+context recomputed as the JIT does after any interpreted instruction.
+
+It found nothing in the core: `ppc_mmu.c` agrees with the manual, and
+the JIT's windows and retirement agree with it under every change the
+input made. What it found first, five times, was its own harness (see
+the lesson on harnesses in [lessons.md](lessons.md)); every rule below,
+broken on purpose, it finds.
+
+Mutants (`scripts/fuzz-mutant.sh 120 ppc-tlb ...`):
+
+| mutant | where | found |
+|---|---|---|
+| TS ignored in the match | `lookup` | 16 s |
+| TID 0 not shared | `lookup` | 3 s |
+| the highest entry wins | `lookup` | 7 s |
+| every page twice its size | `page_mask` | 3 s |
+| user stores checked against SW | `ppc_mmu_xlate` | 73 s |
+| a TLB error's MAS1 TID always 0 | `tlb_error_update` | 3 s |
+| a TLB error's MAS6 without SAS | `tlb_error_update` | 4 s |
+| a tlbsx miss's MAS1 without TS | `ppc_tlbsx` | 10 s |
+| tlbivax ignoring IPROT | `ppc_tlbivax` | 5 s |
+| DEAR written on an ITLB error | `ppc_mmu_xlate` | 3 s |
+| tlbwe retiring the old span only | `ppc_tlbwe` | 20 s |
+| tlbwe retiring the new span only | `ppc_tlbwe` | 13 s |
+| a window over a page a lower entry overlaps | `ppc_mmu_data_page` | 36 s, once the generator put small pages inside others |
+| a window over a read-only page | `ppc_mmu_data_page` | 30 s |
+| a window not recorded, so a TLB change keeps its blocks | `ppc_fast_mem` | 31 s |
+| the block key without PID | `ppc_cpu_ctx` | 93 s, once data pages could be private |
+| the block key without DS | `ppc_cpu_ctx` | 21 s, once a step flipped DS alone |
+| the block key without PR | `ppc_cpu_ctx` | 61 s |
+| a misaligned load across pages of two byte orders | `load_xlate` | 26 s, once a step built such a pair and aimed at its boundary |
+
+## Fetch, and the JIT's data TLB: RV32
+
+`fuzz-rv32-vm` (`tests/fuzz/fuzz_rv32_vm.c`) reaches what fuzz-rv32-mmu
+cannot: instruction fetch below M, and the JIT, whose translated loads
+and stores probe the data TLB inline. Its reference is fuzz-rv32-mmu's,
+moved into `tests/fuzz/rv32_ref.h` so the two cannot drift, with
+execute added -- X, U against the mode, SUM never for a fetch -- and a
+fetch by 16-bit parcel, each translated and PMP-checked, mtval the
+parcel that faulted.
+
+The input's page tables map virtual pages onto a two-page code ROM
+whose slots each hold a load or store and an ECALL, one straddling the
+ROM's page boundary. A run enters a slot in S or U by MRET from an
+M-mode trampoline, and every trap, the slot's ECALL included, goes to
+an M-mode ECALL that stops the hart; mcause, mepc, mtval, the registers
+and RAM are compared. Between runs the steps change PTEs (then fence),
+satp, SUM and MXR, and PMP, and the JIT's blocks are kept: a block, and
+the data TLB its probes read, built under one is found again under the
+next. The reference decodes what the fetch returned, so a page mapped
+onto the wrong part of the ROM is still predicted; what it does not
+model -- two instructions' halves a straddle can join, a compressed
+parcel -- is compared between the backends only. After a store that
+rewrote a live PTE, with no fence, the next fetch may use the old
+translation or the new, and the interpreter (its fetch table) and the
+JIT (a fresh walk) were seen to choose differently: the store's effect
+is still checked, how the run ends is not. And a run the reference does
+not model can loop: a side still running at the budget gets 16,384
+instructions more, so that a JIT looping where the interpreter stops
+is a finding; only a run neither finishes is set aside, as
+fuzz_harness.h sets one aside.
+
+It found nothing in the core.
+
+Mutants (`scripts/fuzz-mutant.sh 120 rv32-vm ...`), the late ones found
+only after the generator could reach them:
+
+| mutant | where | found |
+|---|---|---|
+| S's data TLB holding user pages (SUM's) | `rv_mmu_dtlb_rights` | 88 s |
+| the data TLB holding execute-only pages (MXR's) | `rv_mmu_dtlb_rights` | 45 s |
+| one data table for S and U | `rv_dtlb_table` | 6 s |
+| a straddle's second half not translated | the interpreter | 12 s |
+| its mtval the instruction's address | the interpreter | 5 s |
+| its PMP check skipped | the interpreter | 98 s, once PMP could cover the code's second page and a step mapped the two pages in order |
+| SFENCE.VMA keeping the JIT's blocks | `rv_mmu_flush` | 10 s |
+| the translator's fetch without PMP | `ir_fetch16` | 14 s |
+
+Two more, on the fetch table's rights -- S running user pages, X ignored
+-- are equivalent: `rv_itlb_fill` is called only after the same fetch's
+translation succeeded at the same privilege, so the rights it asks of
+the TLB entry were established by that walk. That is read from the
+code, not measured; a caller that fills the table without a walk would
+make them matter.
 
 
 ## What it found

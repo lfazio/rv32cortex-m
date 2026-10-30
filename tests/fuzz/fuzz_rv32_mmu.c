@@ -47,6 +47,8 @@
 #include "rv32/rv_csr.h"
 #include "rv32/rv_hart.h"
 
+#include "rv32_ref.h"
+
 #if !RV_EXT_SV32 || !RV_EXT_PMP || !RV_HAVE_DTLB || !RV_EXT_U || !RV_EXT_S
 #error "fuzz-rv32-mmu needs Sv32, PMP, U, S and the data TLB"
 #endif
@@ -61,20 +63,6 @@
 #define RAM_SIZE (RAM_PAGES * PG)
 #define ROM_BASE 0x80100000u
 #define DEV_BASE 0x80200000u
-
-#define PTE_V 0x001u
-#define PTE_R 0x002u
-#define PTE_W 0x004u
-#define PTE_X 0x008u
-#define PTE_U 0x010u
-#define PTE_A 0x040u
-#define PTE_D 0x080u
-
-#define PRIV_U 0u
-#define PRIV_S 1u
-#define PRIV_M 3u
-
-typedef enum { ACC_LOAD, ACC_STORE } acc_t;
 
 static emu_bus_t g_bus;
 static rv_hart_t g_h;
@@ -115,22 +103,28 @@ static const emu_dev_ops_t k_dev_ops = {.read = dev_read, .write = dev_write};
 /* The reference                                                       */
 /* ------------------------------------------------------------------ */
 
-/* What software can read back, after each write. */
-static struct {
-    uint32_t satp, mstatus;
-    uint32_t pmpcfg[4], pmpaddr[16];
-} g_csr;
+/*
+ * The reference is rv32_ref.h's, shared with fuzz-rv32-vm: Sv32 and PMP
+ * from the spec, over this machine. What it takes from the hart is only
+ * what software can read: satp, mstatus and the PMP CSRs, read back
+ * after each write, so their WARL rules are the CSR file's.
+ */
+static rv32_ref_t g_csr = {
+    .ram = g_shadow,
+    .ram_base = RAM_BASE,
+    .ram_size = RAM_SIZE,
+    .rom = g_rom,
+    .rom_base = ROM_BASE,
+    .rom_size = PG,
+    .dev_base = DEV_BASE,
+    .dev_size = PG,
+    .dev_value = dev_value,
+    .table_page = g_table_page,
+};
 
 static void read_back(void)
 {
-    (void)rv_csr_read(&g_h, CSR_SATP, &g_csr.satp);
-    (void)rv_csr_read(&g_h, CSR_MSTATUS, &g_csr.mstatus);
-    for (uint32_t i = 0; i < 4u; i++) {
-        (void)rv_csr_read(&g_h, CSR_PMPCFG0 + i, &g_csr.pmpcfg[i]);
-    }
-    for (uint32_t i = 0; i < 16u; i++) {
-        (void)rv_csr_read(&g_h, CSR_PMPADDR0 + i, &g_csr.pmpaddr[i]);
-    }
+    rv32_ref_read_csrs(&g_csr, &g_h);
 }
 
 static uint32_t data_priv(void)
@@ -140,74 +134,6 @@ static uint32_t data_priv(void)
                : PRIV_M;
 }
 
-/*
- * PMP, section 3.7 of the privileged spec, in 34-bit physical
- * addresses: the lowest entry holding any byte decides, and must hold
- * them all; no match permits M only.
- */
-static bool ref_pmp(uint64_t pa, uint32_t size, acc_t acc, uint32_t priv)
-{
-    const uint64_t last = pa + size - 1u;
-
-    for (uint32_t i = 0; i < 16u; i++) {
-        const uint32_t cfg = (g_csr.pmpcfg[i / 4u] >> (8u * (i % 4u))) & 0xFFu;
-        const uint32_t a = (cfg >> 3) & 3u;
-        uint64_t lo, hi; /* [lo, hi) */
-
-        if (a == 0u) {
-            continue;
-        }
-        if (a == 1u) { /* TOR */
-            lo = (i == 0u) ? 0u : (uint64_t)g_csr.pmpaddr[i - 1u] << 2;
-            hi = (uint64_t)g_csr.pmpaddr[i] << 2;
-            if (hi <= lo) {
-                continue;
-            }
-        } else if (a == 2u) { /* NA4 */
-            lo = (uint64_t)g_csr.pmpaddr[i] << 2;
-            hi = lo + 4u;
-        } else { /* NAPOT: k trailing ones in pmpaddr, 2^(k+3) bytes */
-            const uint64_t v = ((uint64_t)g_csr.pmpaddr[i] << 2) | 3u;
-            uint64_t ones = 0u;
-
-            while (((v >> ones) & 1u) != 0u && ones < 34u) {
-                ones++;
-            }
-            const uint64_t sz = (uint64_t)1 << (ones + 1u);
-
-            lo = v & ~(sz - 1u);
-            hi = lo + sz;
-        }
-        if (last < lo || pa >= hi) {
-            continue;
-        }
-        if (pa < lo || last >= hi) {
-            return false; /* straddles: fails whatever the entry says */
-        }
-        if ((cfg & 0x80u) == 0u && priv == PRIV_M) {
-            return true; /* unlocked binds below M only */
-        }
-        return (acc == ACC_LOAD) ? (cfg & 1u) != 0u : (cfg & 2u) != 0u;
-    }
-    return priv == PRIV_M;
-}
-
-typedef enum { MEM_NONE, MEM_RAM, MEM_ROM, MEM_DEV } mem_t;
-
-static mem_t ref_mem(uint64_t pa, uint32_t size)
-{
-    if (pa >= RAM_BASE && pa + size <= (uint64_t)RAM_BASE + RAM_SIZE) {
-        return MEM_RAM;
-    }
-    if (pa >= ROM_BASE && pa + size <= (uint64_t)ROM_BASE + PG) {
-        return MEM_ROM;
-    }
-    if (pa >= DEV_BASE && pa + size <= (uint64_t)DEV_BASE + PG) {
-        return MEM_DEV;
-    }
-    return MEM_NONE;
-}
-
 static uint32_t shadow_word(uint64_t pa)
 {
     uint32_t v;
@@ -215,174 +141,6 @@ static uint32_t shadow_word(uint64_t pa)
     memcpy(&v, &g_shadow[pa - RAM_BASE], 4u);
     return v;
 }
-
-static uint32_t ref_read(uint64_t pa, uint32_t len)
-{
-    uint32_t v = 0u;
-
-    switch (ref_mem(pa, len)) {
-    case MEM_RAM:
-        for (uint32_t i = 0; i < len; i++) {
-            v |= (uint32_t)g_shadow[pa - RAM_BASE + i] << (8u * i);
-        }
-        return v;
-    case MEM_ROM:
-        for (uint32_t i = 0; i < len; i++) {
-            v |= (uint32_t)g_rom[pa - ROM_BASE + i] << (8u * i);
-        }
-        return v;
-    default:
-        return dev_value(pa, len);
-    }
-}
-
-#define C_LOAD_ACCESS 5u
-#define C_STORE_ACCESS 7u
-#define C_LOAD_PAGE 13u
-#define C_STORE_PAGE 15u
-
-/*
- * Sv32, section 4.3.2, with Svade: A and D are checked, never written,
- * which this core implements and the spec permits. A non-leaf PTE with
- * D, A or U set holds bits reserved for future use, which the current
- * spec makes a page fault. Physical addresses are 34 bits.
- */
-static uint32_t ref_translate(uint32_t va, acc_t acc, uint32_t priv,
-                              uint64_t *pa)
-{
-    const uint32_t pf = (acc == ACC_LOAD) ? C_LOAD_PAGE : C_STORE_PAGE;
-    const uint32_t af = (acc == ACC_LOAD) ? C_LOAD_ACCESS : C_STORE_ACCESS;
-
-    if (priv == PRIV_M || (g_csr.satp & SATP_MODE_SV32) == 0u) {
-        *pa = va;
-        return RV_EXC_NONE;
-    }
-    uint64_t a = (uint64_t)(g_csr.satp & 0x3FFFFFu) * PG;
-
-    for (int i = 1; i >= 0; i--) {
-        const uint64_t pte_at = a + ((va >> (12u + 10u * (unsigned)i)) & 0x3FFu) * 4u;
-
-        /*
-         * The walk's reads are PMP-checked at S, and read from wherever a
-         * load would: a table in the image or the device is read there.
-         * Which regions may hold page tables is a PMA, the platform's to
-         * say -- Spike's walk reads a device as this core's does, Sail's
-         * refuses it (tests/arch-test/probes/sv32ppn.S, case 7).
-         */
-        if (!ref_pmp(pte_at, 4u, ACC_LOAD, PRIV_S) ||
-            ref_mem(pte_at, 4u) == MEM_NONE) {
-            return af;
-        }
-        const uint32_t pte = ref_read(pte_at, 4u);
-
-        /* A page a walk has read is a table: a store to it is a PTE write. */
-        if (ref_mem(pte_at, 4u) == MEM_RAM) {
-            g_table_page[(pte_at - RAM_BASE) / PG] = true;
-        }
-
-        if ((pte & PTE_V) == 0u || ((pte & PTE_W) && !(pte & PTE_R))) {
-            return pf;
-        }
-        if ((pte & (PTE_R | PTE_X)) == 0u) {
-            if (i == 0 || (pte & (PTE_D | PTE_A | PTE_U)) != 0u) {
-                return pf;
-            }
-            a = (uint64_t)(pte >> 10) * PG;
-            continue;
-        }
-        /* A leaf. */
-        if (priv == PRIV_U) {
-            if ((pte & PTE_U) == 0u) {
-                return pf;
-            }
-        } else if ((pte & PTE_U) != 0u && !(g_csr.mstatus & MSTATUS_SUM)) {
-            return pf;
-        }
-        if (acc == ACC_LOAD) {
-            if (!(pte & PTE_R) &&
-                !((g_csr.mstatus & MSTATUS_MXR) && (pte & PTE_X))) {
-                return pf;
-            }
-        } else if (!(pte & PTE_W)) {
-            return pf;
-        }
-        if (i == 1 && ((pte >> 10) & 0x3FFu) != 0u) {
-            return pf; /* a misaligned megapage */
-        }
-        if (!(pte & PTE_A) || (acc == ACC_STORE && !(pte & PTE_D))) {
-            return pf;
-        }
-        const uint64_t ppn1 = pte >> 20;
-        const uint64_t ppn0 = (i == 1) ? ((va >> 12) & 0x3FFu)
-                                       : ((pte >> 10) & 0x3FFu);
-
-        *pa = (ppn1 << 22) | (ppn0 << 12) | (va & 0xFFFu);
-        /*
-         * Past the 32-bit bus there is nothing: an access fault, found by
-         * the walk as a table past it is -- so before a split access's
-         * second page is translated. The spec leaves the order of a
-         * misaligned access's parts to the implementation; this is this
-         * core's, the one rv_mmu.c gives.
-         */
-        if ((*pa >> 32) != 0u) {
-            return af;
-        }
-        return RV_EXC_NONE;
-    }
-    return pf;
-}
-
-/*
- * One access, all of it or none: each page it touches is translated, in
- * order, then each physical part is checked by PMP and must be memory.
- * Returns the cause, RV_EXC_NONE for success, with the parts' addresses.
- */
-static uint32_t ref_access(uint32_t va, uint32_t size, acc_t acc,
-                           uint64_t pa[2], uint32_t len[2], uint32_t *nparts)
-{
-    const uint32_t priv = data_priv();
-    const uint32_t af = (acc == ACC_LOAD) ? C_LOAD_ACCESS : C_STORE_ACCESS;
-    uint32_t va2;
-
-#if !RV_MISALIGNED_OK
-    if ((va & (size - 1u)) != 0u) {
-        return (acc == ACC_LOAD) ? 4u : 6u; /* misaligned, before anything */
-    }
-#endif
-    len[0] = size;
-    *nparts = 1u;
-    /*
-     * Split at a page boundary only when translating: then each page is
-     * its own physical access, checked by PMP on its own. Untranslated,
-     * the access is one, and PMP holds all of it to one entry. The spec
-     * lets an implementation decompose a misaligned access or not; this
-     * core's choice is these two (fuzz-rv32-mmu's first sessions asked).
-     */
-    if (priv != PRIV_M && (g_csr.satp & SATP_MODE_SV32) != 0u &&
-        (va & (PG - 1u)) + size > PG) {
-        len[0] = PG - (va & (PG - 1u));
-        len[1] = size - len[0];
-        *nparts = 2u;
-    }
-    va2 = va + len[0];
-    for (uint32_t p = 0; p < *nparts; p++) {
-        const uint32_t c = ref_translate(p ? va2 : va, acc, priv, &pa[p]);
-
-        if (c != RV_EXC_NONE) {
-            return c;
-        }
-    }
-    for (uint32_t p = 0; p < *nparts; p++) {
-        const mem_t m = ref_mem(pa[p], len[p]);
-
-        if (!ref_pmp(pa[p], len[p], acc, priv) || m == MEM_NONE ||
-            (acc == ACC_STORE && m == MEM_ROM)) {
-            return af;
-        }
-    }
-    return RV_EXC_NONE;
-}
-
 
 /* ------------------------------------------------------------------ */
 /* Input                                                               */
@@ -616,16 +374,16 @@ static void check_dtlb(void)
                 g_csr.mstatus = (save & ~(MSTATUS_MPRV | MSTATUS_MPP_MASK |
                                           MSTATUS_SUM | MSTATUS_MXR)) |
                                 MSTATUS_MPRV | (priv << MSTATUS_MPP_SHIFT);
-                const uint32_t c = ref_translate(va, acc, priv, &pa);
+                const uint32_t c = rv32_ref_translate(&g_csr, va, acc, priv, &pa);
                 g_csr.mstatus = save;
                 if (c != RV_EXC_NONE) {
                     fail(st ? "data TLB grants a store the walk refuses"
                             : "data TLB grants a load the walk refuses",
                          va, 0u, c);
                 }
-                const mem_t m = ref_mem(pa, PG);
+                const mem_t m = rv32_ref_mem(&g_csr, pa, PG);
 
-                if (!ref_pmp(pa, PG, acc, priv) ||
+                if (!rv32_ref_pmp(&g_csr, pa, PG, acc, priv) ||
                     (m != MEM_RAM && m != MEM_ROM) ||
                     (st && m != MEM_RAM)) {
                     fail(st ? "data TLB grants a store PMP or the bus refuses"
@@ -660,7 +418,7 @@ static bool dev_uncomparable(const uint64_t pa[2], const uint32_t len[2],
                              uint32_t nparts)
 {
     for (uint32_t p = 0; p < nparts; p++) {
-        if (ref_mem(pa[p], len[p]) == MEM_DEV &&
+        if (rv32_ref_mem(&g_csr, pa[p], len[p]) == MEM_DEV &&
             (nparts > 1u || (pa[p] & (len[p] - 1u)) != 0u)) {
             return true;
         }
@@ -677,7 +435,8 @@ static void do_access(in_t *in)
     const uint32_t va = pick_va(in);
     uint64_t pa[2];
     uint32_t len[2], nparts;
-    const uint32_t want = ref_access(va, size, acc, pa, len, &nparts);
+    const uint32_t want = rv32_ref_access(&g_csr, va, size, acc, data_priv(), RV_MISALIGNED_OK != 0, pa, len,
+                        &nparts, NULL);
     uint32_t got;
 
     g_steps++;
@@ -689,10 +448,10 @@ static void do_access(in_t *in)
             fail("load cause", va, got, want);
         }
         if (got == RV_EXC_NONE) {
-            uint32_t ref = ref_read(pa[0], len[0]);
+            uint32_t ref = rv32_ref_read(&g_csr, pa[0], len[0]);
 
             if (nparts == 2u) {
-                ref |= ref_read(pa[1], len[1]) << (8u * len[0]);
+                ref |= rv32_ref_read(&g_csr, pa[1], len[1]) << (8u * len[0]);
             }
             if (dev_uncomparable(pa, len, nparts)) {
                 g_dev_skipped++;
@@ -723,7 +482,7 @@ static void do_access(in_t *in)
     for (uint32_t p = 0; p < nparts; p++) {
         const uint32_t part = val >> (8u * done);
 
-        if (ref_mem(pa[p], len[p]) == MEM_DEV) {
+        if (rv32_ref_mem(&g_csr, pa[p], len[p]) == MEM_DEV) {
             g_ref_dev_log = (g_ref_dev_log ^ (uint32_t)(pa[p] - DEV_BASE) ^
                              (part << 3) ^ len[p]) *
                             0x01000193u;
