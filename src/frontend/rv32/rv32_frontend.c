@@ -210,7 +210,7 @@
  * part of the RISC-V privileged platform, not of the board, and what they
  * do is write this hart's mip.
  */
-static rv_hart_t g_hart;
+static rv_hart_t g_hart EMU_HOT_DATA;
 static rv_clint_t g_clint;
 static rv_aplic_t g_aplic;
 

@@ -28,7 +28,7 @@
 
 const emu_gdb_target_t *armv7m_gdb_target(void);
 
-static armv7m_cpu_t g_cpu;
+static armv7m_cpu_t g_cpu EMU_HOT_DATA;
 
 /* ------------------------------------------------------------------ */
 /* Backends                                                            */

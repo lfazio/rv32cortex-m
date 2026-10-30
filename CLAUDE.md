@@ -259,6 +259,10 @@ Each has cost more than one session, and every one recurred.
   `-DEMU_LTO_PARTITION=one` (`callgrind-ab.sh` prints each side's). On
   the board one partition reorders `.bss`, a layout change worth 21% on
   RV32 Dhrystone's JIT, so the firmware keeps the default.
+- **Pin what every block touches.** Core state goes where the platform
+  says (`EMU_HOT_DATA`: the F746's DTCM); left to the linker, RV32's
+  hart slid into SRAM1 behind the 4 KB D-cache in a one-partition build
+  and Dhrystone moved 21% with where `.bss` started.
 - **Time a board run from the host end too.** A 32-bit cycle counter less
   an epoch is a wrap short after 19.9 s; `emu_cycles.h` accumulates
   wrap-correct deltas. A sweep taken with a broken instrument points the

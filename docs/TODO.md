@@ -111,13 +111,12 @@ measured at.
       ([backend/thumb2.md](backend/thumb2.md#the-guest-ram-window)).
       What it says about where hot blocks should go -- and whether
       CoreMark, which never flushes, has the same to gain -- is
-      unmeasured. And it may be placement rather than order: the same
-      row reads 16.42 or 19.30 with nothing changed but where `.bss`
-      starts (one LTO partition reorders it; `EMU_LAYOUT_PAD_BSS` 8,
-      64 and 256 then read 19.66, 19.90 and 16.53 --
-      [performance.md](performance.md#one-lto-partition-for-abs)).
-      Find which object's placement that is before tuning anything on
-      this row.
+      unmeasured. The `.bss` half of this row's layout sensitivity
+      (16.42 or 19.30 by where `.bss` starts) was the hart in SRAM1,
+      and the core state is pinned in the DTCM now
+      ([performance.md](performance.md#one-lto-partition-for-abs));
+      the 19.19 against 15.96 above was measured before that, so
+      measure the flush again against the pinned layout first.
 - [ ] **Below 32 KB the JIT is still slower than the interpreter.**
       Giving up on pcs that keep being evicted
       ([jit/tuning.md](jit/tuning.md#emu_jit_thrash_evictions--giving-up-on-what-does-not-fit))

@@ -45,7 +45,7 @@
  * INTC2. The state is one g4mh_intc_t per core for the local half plus a
  * shared one for the global half; see docs/host/g4mh/multicore.md.
  */
-static g4mh_cpu_t g_cpu[G4MH_PE_COUNT];
+static g4mh_cpu_t g_cpu[G4MH_PE_COUNT] EMU_HOT_DATA;
 static g4mh_intc_t g_intc[G4MH_PE_COUNT];
 static g4mh_intc2_t g_intc2; /* INTC2: channels 32 and up, for every PE */
 

@@ -390,6 +390,22 @@ set(EMU_HOT_TEXT_SECTION "${_hot_section_default}" CACHE STRING
     "linker section for the per-dispatch path (empty: ordinary .text)")
 
 #
+# And for data: each frontend's core state, which translated code reads
+# and writes on every block. The F746 names its DTCM. RV32 Dhrystone
+# under the JIT read 16.42 host cycles an instruction with the hart in
+# DTCM by luck and 19.30 in a build that ordered .bss so it was not;
+# pinned, 16.19-16.25 at three .bss starts (docs/performance.md). Must
+# be NOBITS: GCC makes a section NOBITS by a ".bss." prefix.
+#
+if(EMU_PLATFORM STREQUAL "stm32f746")
+    set(_hot_data_default ".bss.dtcm")
+else()
+    set(_hot_data_default "")
+endif()
+set(EMU_HOT_DATA_SECTION "${_hot_data_default}" CACHE STRING
+    "linker section for each frontend's core state (empty: ordinary .bss)")
+
+#
 # And an interpreter's run loop, which is a third question with its own
 # answer on each part. ARMv7-M's interpreted CoreMark on the F746 went
 # 161.9-172.9 host cycles an instruction to 143.6-144.3 with it in ITCM
@@ -812,6 +828,7 @@ target_compile_definitions(emucore PUBLIC
     #
     $<$<BOOL:${EMU_JIT_CODE_SECTION}>:EMU_JIT_CODE_SECTION="${EMU_JIT_CODE_SECTION}">
     $<$<BOOL:${EMU_HOT_TEXT_SECTION}>:EMU_HOT_TEXT_SECTION="${EMU_HOT_TEXT_SECTION}">
+    $<$<BOOL:${EMU_HOT_DATA_SECTION}>:EMU_HOT_DATA_SECTION="${EMU_HOT_DATA_SECTION}">
     $<$<BOOL:${EMU_INTERP_TEXT_SECTION}>:EMU_INTERP_TEXT_SECTION="${EMU_INTERP_TEXT_SECTION}">
     EMU_JIT_HOT_THRESHOLD=${EMU_JIT_HOT_THRESHOLD}u
     #

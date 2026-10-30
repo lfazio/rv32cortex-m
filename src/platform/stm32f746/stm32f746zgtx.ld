@@ -291,6 +291,10 @@ SECTIONS
         __dtcm_start = .;
         *(.dtcm)
         *(.dtcm*)
+        /* EMU_HOT_DATA: each frontend's core state. Named .bss.dtcm so
+           GCC makes it NOBITS; matched here, before *(.bss*) below. It
+           was empty until RV32's hart slid into SRAM1 and cost 19%. */
+        *(.bss.dtcm*)
         . = ALIGN(8);
         __dtcm_end = .;
 

@@ -3913,6 +3913,27 @@ session, and every one of them recurred:
   neither half inside the entry. A test of an access shape is written in
   assembly.
 
+- **Pin what every block touches; the linker's order is not a
+  placement.** One LTO partition made RV32 Dhrystone under the JIT
+  read 19.30 host cycles an instruction against 16.42, and a 256-byte
+  shift of `.bss` brought it back -- 21%, twice what this tree said
+  layout was worth on the board. Moving the guest's RAM alone, five
+  ways, moved nothing. `nm` on the two builds had the answer: the
+  default put the hart in the DTCM by luck, and one partition, ordering
+  `.bss` with the code buffer first, filled the DTCM with it and left
+  the hart in SRAM1, behind a 4 KB D-cache that translated code goes
+  through for every guest register. The shift had only moved which
+  cache sets the hart shared. Pinned, it read 16.19-16.25 at every
+  shift, and the wall clock agreed.
+
+  The linker script had a `.dtcm` block for exactly this, with a
+  comment predicting "the day the hart struct or the JIT code cache
+  slid past the boundary into SRAM1" -- and nothing was ever put in it.
+  **A placement the source never asks for is an accident that has not
+  happened yet**: all four frontends' core state now asks
+  (`EMU_HOT_DATA`), and in the default build nothing moved, which is
+  what an accident that had not happened looks like.
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

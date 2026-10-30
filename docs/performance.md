@@ -320,8 +320,36 @@ figure, and not the default build's:
 
 That is 21% from where `.bss` starts, twice the 10% this tree has said
 layout is worth on the board, and on the same row a flush after start-up
-moves by 17% ([TODO.md](TODO.md)). Which object's placement it is has
-not been measured.
+moves by 17% ([TODO.md](TODO.md)).
+
+**It was the hart.** The default build had RV32's `g_hart` in the DTCM
+(0x2000cdc8) and most of the code buffer behind it in SRAM1; one
+partition put the code buffer first, filling the DTCM, and the hart in
+SRAM1 (0x20010628) -- behind the M7's 4 KB D-cache, which translated
+code goes through for every guest register it loads or stores. Moving
+the guest's RAM alone (`EMU_LAYOUT_PAD_RAM` 0, 8, 64, 248, 1024) left
+the row at 19.23-19.32; pinning the hart in the DTCM took it to 16.25,
+16.22 and 16.19 at `EMU_LAYOUT_PAD_BSS` 8, 64 and 256, and the wall
+clock with it (0.81 s to 0.69 s). So the 21% was the hart's D-cache
+sets against whatever else was hot, which is what a shift of `.bss`
+moves; `EMU_LAYOUT_PAD_BSS` 256 happened to find sets nothing shared.
+The change as committed reads 16.26 and 16.23 at 8 and 256.
+
+Each frontend's core state is now placed by the platform
+(`EMU_HOT_DATA`, `-DEMU_HOT_DATA_SECTION`, `.bss.dtcm` on the F746)
+rather than by the linker's order. In the default build all four were
+in the DTCM already, by luck, and nothing moved:
+
+| F746, default build | before | pinned |
+|---|---|---|
+| RV32 Dhrystone, JIT | 16.59 | 16.54 |
+| RV32 CoreMark, JIT / interpreted | 56.47 / 103.28 | 56.46 / 103.28 |
+| ARMv7-M CoreMark, JIT / interpreted | 29.89 / 154.65 | 29.89 / 154.66 |
+| G4MH CoreMark, JIT / interpreted | 52.24 / 91.47 | 52.24 / 91.47 |
+| PowerPC CoreMark, JIT | 36.69 | 36.58 |
+
+PowerPC's `g_cpu` had been at 0x2000fc70, 400 bytes short of the end
+of the DTCM.
 
 ## What a guest instruction costs, measured live
 

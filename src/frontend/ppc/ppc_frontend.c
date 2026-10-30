@@ -39,7 +39,7 @@ const emu_gdb_target_t *ppc_gdb_target(void);
  * through the SSCM. A guest that never does runs exactly as on one core,
  * with core 1 skipped each round.
  */
-static ppc_cpu_t g_cpu[PPC_CORE_COUNT];
+static ppc_cpu_t g_cpu[PPC_CORE_COUNT] EMU_HOT_DATA;
 static ppc_sscm_t g_sscm;
 
 /*

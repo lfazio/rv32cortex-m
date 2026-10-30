@@ -177,6 +177,29 @@ typedef void (*emu_print_fn)(void *ctx, const char *s);
 #endif
 
 /*
+ * EMU_HOT_DATA -- a frontend's core state, in the memory the platform
+ * names for data that every guest instruction touches.
+ *
+ * Translated code loads and stores guest registers in that struct, so
+ * where it lands is a cost on every block. On the F746 the platform
+ * names its DTCM: one cycle, never behind the 4 KB D-cache. Left to the
+ * linker, the RV32 hart slid into the cached SRAM1 in a build whose
+ * `.bss` was ordered differently, and Dhrystone under the JIT read 19.3
+ * host cycles an instruction against 16.4, moving with the start of
+ * `.bss` because the hart then shared D-cache sets with whatever else
+ * was hot; pinned, it read 16.2 at every start (docs/performance.md).
+ *
+ * For a zero-initialised static only: the platform's section is NOBITS
+ * (the F746's is `.bss.dtcm`, which GCC makes NOBITS by its name), and
+ * an initialised object there would be silently zeroed by the start-up.
+ */
+#if defined(__GNUC__) && defined(EMU_HOT_DATA_SECTION)
+#define EMU_HOT_DATA __attribute__((section(EMU_HOT_DATA_SECTION)))
+#else
+#define EMU_HOT_DATA
+#endif
+
+/*
  * EMU_INTERP_TEXT -- an interpreter's run loop, in the memory the
  * platform names for it, which is not always the dispatch path's: on the
  * F746 ITCM made ARMv7-M's interpreter 11-17% faster and on the N6 4.8%
