@@ -94,7 +94,13 @@ unsigned emu_bus_region_count(const emu_bus_t *bus)
 
 bool emu_bus_add(emu_bus_t *bus, const emu_region_t *r)
 {
-    if (bus->count >= EMU_MAX_REGIONS || r->size < 4u) {
+    /*
+     * A region past 4 GB wraps: in_region() would match it at address 0
+     * too, and the overlap test below, computing its end in 32 bits,
+     * would see none -- so it would shadow whatever is there.
+     */
+    if (bus->count >= EMU_MAX_REGIONS || r->size < 4u ||
+        (uint64_t)r->base + r->size > 0x100000000ull) {
         return false;
     }
     bus->epoch = ++g_bus_epoch;
@@ -569,6 +575,11 @@ bool emu_bus_load(emu_bus_t *bus, uint32_t addr, const void *src, uint32_t len)
 {
     const uint8_t *s = (const uint8_t *)src;
 
+    /* A range past 4 GB is not one range: the copy would go on at 0. */
+    if ((uint64_t)addr + len > 0x100000000ull) {
+        return false;
+    }
+
     /* Writing guest memory behind the emulator's back invalidates any
      * cached instruction mapping. */
     emu_bus_flush(bus);
@@ -594,6 +605,10 @@ bool emu_bus_load(emu_bus_t *bus, uint32_t addr, const void *src, uint32_t len)
 bool emu_bus_dump(emu_bus_t *bus, uint32_t addr, void *dst, uint32_t len)
 {
     uint8_t *d = (uint8_t *)dst;
+
+    if ((uint64_t)addr + len > 0x100000000ull) {
+        return false;
+    }
 
     while (len != 0u) {
         emu_region_t *r = emu_bus_find(bus, addr);

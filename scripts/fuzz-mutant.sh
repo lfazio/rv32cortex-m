@@ -55,10 +55,12 @@ B=${FUZZ_BUILD:-$ROOT/build/fuzz-mutant}
 LOG=$B.$T.log
 NAME=fuzz-$ISA-jit
 SET=$T-jit
-if [ "$T" = ir ] || [ "$T" = rv32-mmu ] || [ "$T" = g4mh-mpu ] || [ "$T" = armv7m-mpu ] || [ "$T" = ppc-tlb ] || [ "$T" = rv32-vm ]; then # targets with no -jit
+case $T in # targets with no -jit
+ir | rv32-mmu | g4mh-mpu | armv7m-mpu | ppc-tlb | rv32-vm | elf | gdb | upload | virtio)
     NAME=fuzz-$T
     SET=$T
-fi
+    ;;
+esac
 BIN=$B/tests/fuzz/$NAME
 ART=$B/artifacts/$T
 
@@ -107,7 +109,9 @@ if [ ! -f "$BIN" ] || [ "$(stat -c %Y "$BIN")" -lt "$start" ]; then
 fi
 
 found=
-if grep -q "disagree\|runtime error\|deadly signal" "$LOG"; then
+# A sanitizer's report counts: it ends the run without a signal, so
+# "deadly signal" alone missed an out-of-bounds read the mutant made.
+if grep -q "disagree\|runtime error\|deadly signal\|ERROR: AddressSanitizer" "$LOG"; then
     found=diverged
 elif grep -q "ERROR: libFuzzer: timeout" "$LOG"; then
     found=hung
@@ -124,6 +128,13 @@ if [ -z "$input" ]; then
     echo "found ($found), but no input was written to $ART; $LOG"
     exit 1
 fi
+# Kept where the next run will not delete it: each run empties $ART,
+# and an input that found a mutant -- the one a regression is made of --
+# was lost twice to the run after it.
+mkdir -p "$B/found"
+kept=$B/found/$T-$(date +%Y%m%d-%H%M%S)-$(basename "$input")
+cp "$input" "$kept"
+input=$kept
 if ! cmake --build "$B" --target "$NAME" >"$LOG.base" 2>&1; then
     echo "found ($found), but the unmutated build failed; $LOG.base"
     exit 1

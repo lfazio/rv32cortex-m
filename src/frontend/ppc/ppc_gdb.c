@@ -89,7 +89,7 @@ static void ppc_gdb_reg_set(emu_cpu_t *cpu, unsigned n, uint64_t v64)
     }
     switch (n) {
     case PPC_GDB_PC:
-        c->pc = v;
+        c->pc = v & ~1u; /* see ppc_gdb_pc_set */
         break;
     case PPC_GDB_MSR:
         /*
@@ -127,9 +127,11 @@ static uint32_t ppc_gdb_pc_get(const emu_cpu_t *cpu)
     return cpu_of_gdb(cpu)->pc;
 }
 
+/* Bit 0 is 0 in Book E and in VLE alike; only a debugger's write could
+ * make it 1 (fuzz-gdb). */
 static void ppc_gdb_pc_set(emu_cpu_t *cpu, uint32_t pc)
 {
-    cpu_of_gdb(cpu)->pc = pc;
+    cpu_of_gdb(cpu)->pc = pc & ~1u;
 }
 
 /*

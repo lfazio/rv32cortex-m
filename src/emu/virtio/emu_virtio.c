@@ -552,7 +552,7 @@ bool emu_virtio_add_net(uint32_t base, int irq_num, const char *spec)
         return false;
     }
 
-    dev = virtio_net_init(&def, &g_net.es);
+    dev = emu_virtio_net_init(&def, &g_net.es);
     if (!remember(dev, "net", base)) {
         return false;
     }

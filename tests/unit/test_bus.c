@@ -11,6 +11,8 @@
 
 #include "emu/emu_bus.h"
 
+#include <string.h>
+
 static uint8_t ram_buf[256];
 static uint8_t rom_buf[256];
 static uint32_t passthru_target[16];
@@ -238,11 +240,42 @@ static void test_bus_rodata(void)
 #endif
 }
 
+/*
+ * Nothing wraps past 4 GB. A region at 0xFFFFF000 of 8 KB was accepted:
+ * its end, computed in 32 bits, was 0x00000FFF, below its base, so the
+ * overlap test saw no overlap with a region at 0 -- and in_region()
+ * then matched it at 0x0..0xFFF too. And a load or dump that ran past
+ * 0xFFFFFFFF went on at 0: an ELF segment at 0xFFFFFFEA with 2 KB of
+ * .bss zeroed the start of the address space (fuzz-elf).
+ */
+static void test_bus_no_wrap(void)
+{
+    static uint8_t low[0x1000], top[0x2000];
+    static const uint8_t zeros[0x40];
+    emu_bus_t bus;
+    uint8_t got[0x40];
+
+    emu_bus_init(&bus);
+    CHECK(emu_bus_add_ram(&bus, "low", 0x00000000u, low, sizeof(low)));
+    CHECK(!emu_bus_add_ram(&bus, "wraps", 0xFFFFF000u, top, 0x2000u));
+    CHECK(!emu_bus_add_rom(&bus, "wraps", 0xFFFFFFFCu, top, 8u));
+    /* Ending exactly at 4 GB is not wrapping. */
+    CHECK(emu_bus_add_ram(&bus, "top", 0xFFFFF000u, top, 0x1000u));
+
+    memset(low, 0xA5, sizeof(low));
+    CHECK(!emu_bus_load(&bus, 0xFFFFFFE0u, zeros, sizeof(zeros)));
+    CHECK_EQ(low[0], 0xA5u); /* nothing landed at 0 */
+    CHECK(!emu_bus_dump(&bus, 0xFFFFFFE0u, got, sizeof(got)));
+    CHECK(emu_bus_load(&bus, 0xFFFFFFC0u, zeros, sizeof(zeros)));
+    CHECK(emu_bus_dump(&bus, 0xFFFFFFC0u, got, sizeof(got)));
+}
+
 void test_bus(void)
 {
     emu_bus_t bus;
     uint32_t v;
 
+    test_bus_no_wrap();
     emu_bus_init(&bus);
 
     CHECK(emu_bus_add_ram(&bus, "ram", 0x80000000u, ram_buf, sizeof(ram_buf)));

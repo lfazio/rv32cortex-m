@@ -257,6 +257,40 @@ static emu_fault_t dev_write(void *ctx, uint32_t off, uint32_t size,
     return EMU_FAULT_NONE;
 }
 
+/*
+ * Lengths a packet states and does not carry. "M...,80000000:" doubled
+ * its count past 32 bits and wrote what an earlier packet had left in
+ * the buffer; "P1=11" read a 64-bit register's other fourteen digits
+ * from there. Both are refused now, and the earlier packet that leaves
+ * hex behind is part of each case.
+ */
+static void test_short_packets(emu_gdb_t *g, uint8_t *ram)
+{
+    char fill[600];
+
+    memset(fill, 'a', sizeof(fill) - 1u);
+    fill[0] = 'm';
+    fill[sizeof(fill) - 1u] = '\0';
+    ram[0x100] = 0x5A;
+
+    (void)rsp(g, fill);
+    CHECK(strcmp(rsp(g, "M80000100,80000000:"), "E01") == 0);
+    CHECK_EQ(ram[0x100], 0x5Au); /* nothing written */
+    (void)rsp(g, fill);
+    CHECK(strcmp(rsp(g, "M80000100,2:aa"), "E01") == 0);
+    CHECK(strcmp(rsp(g, "M80000100,1:a5"), "OK") == 0);
+    CHECK_EQ(ram[0x100], 0xA5u);
+
+    /* A read whose length doubles past 32 bits is capped, not trusted. */
+    CHECK_EQ((uint32_t)strlen(rsp(g, "m80000000,80000080")),
+             2u * (EMU_GDB_MAX_PACKET / 2u - 1u));
+
+    g_regs[1] = 7u;
+    (void)rsp(g, fill);
+    CHECK(strcmp(rsp(g, "P1=11"), "E01") == 0);
+    CHECK_EQ64(g_regs[1], 7u);
+}
+
 void test_gdb(void)
 {
     static emu_bus_t bus;
@@ -264,7 +298,10 @@ void test_gdb(void)
     static const uint8_t rom[0x1000] = {0};
     static const emu_dev_ops_t dev = {dev_read, dev_write, NULL};
     static emu_gdb_t g;
-    emu_core_t core = {NULL, NULL, &bus};
+    /* No hooks, but an ops table: a successful M write asks it for
+     * invalidate, and no case before test_short_packets made one. */
+    static const emu_cpu_ops_t ops = {0};
+    emu_core_t core = {&ops, NULL, &bus};
 
     emu_bus_init(&bus);
     CHECK(emu_bus_add_ram(&bus, "ram", 0x80000000u, ram, sizeof(ram)));
@@ -278,4 +315,5 @@ void test_gdb(void)
 
     test_mixed_widths(&g);
     test_memory_map(&g);
+    test_short_packets(&g, ram);
 }

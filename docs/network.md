@@ -236,6 +236,15 @@ What makes it fragile, and what each costs:
   usually is. `check-board-net.sh` sends one block and goes silent, and
   requires the board to say it dropped it; with the commit put back that
   check fails, on the host and on the board.
+- **TFTP and gdb's `load` share the arena, and one upload at a time
+  owns it.** Whichever client begins takes the upload over: the other's
+  later writes are refused, and whatever the abandoned one programmed is
+  skipped like any abandoned transfer. They had shared the upload's
+  start with no owner, and gdb's bytes inside a TFTP transfer's space
+  ran as part of the next image (`fuzz-upload`). A gdb write must fit
+  the arena -- one of nothing at a large offset had set the image's
+  length past it, and on the F746 the arena ends where flash does -- and
+  a gdb load into a full arena is erased and retried, as TFTP's is.
 
 ## Costs, measured
 

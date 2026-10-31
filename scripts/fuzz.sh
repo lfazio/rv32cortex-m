@@ -4,7 +4,7 @@
 # fuzz.sh - build the fuzz tree and run an interpreter-against-JIT
 # fuzzer.
 #
-#   scripts/fuzz.sh [SECONDS] [rv32|armv7m|g4mh|g4mh-smp|ppc|ir|rv32-mmu|g4mh-mpu|armv7m-mpu|ppc-tlb|rv32-vm|all] [libFuzzer options...]
+#   scripts/fuzz.sh [SECONDS] [rv32|armv7m|g4mh|g4mh-smp|ppc|ir|rv32-mmu|g4mh-mpu|armv7m-mpu|ppc-tlb|rv32-vm|elf|upload|gdb|virtio|all] [libFuzzer options...]
 #
 # Configures build/fuzz (FUZZ_BUILD overrides) with clang and
 # -DEMU_FUZZ=ON, which builds the whole tree under ASan and UBSan with
@@ -21,6 +21,12 @@
 # `armv7m-mpu` the same for ARMv7-M's MPU, from the ARM ARM; `ppc-tlb`
 # the e200z7's TLB, from its manual, with the JIT's blocks kept;
 # `rv32-vm` RV32 code in S and U, fetch and the JIT's TLB probe.
+# `elf` is fuzz-elf: the ELF loader, both ways in, against a reference,
+# seeded with the build's own guest images. `upload` is fuzz-upload:
+# TFTP's callbacks and gdb's vFlash* into the flash arena, and what then
+# runs. `gdb` is fuzz-gdb: the gdb stub's packets, as a board serves
+# them. `virtio` is fuzz-virtio: the virtio devices, following rings a
+# guest wrote.
 # g4mh-smp is fuzz-g4mh-jit built with three PEs,
 # in build/fuzz-smp (FUZZ_SMP_BUILD overrides): G4MH's translated stores
 # are built differently for one PE and for several, so a second PE is
@@ -49,14 +55,14 @@ T=${1:-rv32}
 [ $# -gt 0 ] && shift
 
 case $T in
-rv32 | armv7m | g4mh | g4mh-smp | ppc | ir | rv32-mmu | g4mh-mpu | armv7m-mpu | ppc-tlb | rv32-vm | all) ;;
+rv32 | armv7m | g4mh | g4mh-smp | ppc | ir | rv32-mmu | g4mh-mpu | armv7m-mpu | ppc-tlb | rv32-vm | elf | upload | gdb | virtio | all) ;;
 *)
-    echo "fuzz: no target '$T' (rv32, armv7m, g4mh, g4mh-smp, ppc, ir, rv32-mmu, g4mh-mpu, armv7m-mpu, ppc-tlb, rv32-vm or all)"
+    echo "fuzz: no target '$T' (rv32, armv7m, g4mh, g4mh-smp, ppc, ir, rv32-mmu, g4mh-mpu, armv7m-mpu, ppc-tlb, rv32-vm, elf, upload, gdb, virtio or all)"
     exit 2
     ;;
 esac
 if [ "$T" = all ]; then
-    for t in rv32 armv7m g4mh ppc g4mh-smp ir rv32-mmu g4mh-mpu armv7m-mpu ppc-tlb rv32-vm; do
+    for t in rv32 armv7m g4mh ppc g4mh-smp ir rv32-mmu g4mh-mpu armv7m-mpu ppc-tlb rv32-vm elf upload gdb virtio; do
         "$0" "$SECS" "$t" "$@" || exit 1
     done
     exit 0
@@ -69,10 +75,16 @@ B=${FUZZ_BUILD:-$ROOT/build/fuzz}
 # The binary, and the name its corpus and regressions go under.
 BIN=fuzz-$T-jit
 SET=$T-jit
-if [ "$T" = ir ] || [ "$T" = rv32-mmu ] || [ "$T" = g4mh-mpu ] || [ "$T" = armv7m-mpu ] || [ "$T" = ppc-tlb ] || [ "$T" = rv32-vm ]; then
+# The longest input libFuzzer makes. An image is longer than an
+# instruction stream: the guests that seed fuzz-elf are tens of KB.
+MAXLEN=1024
+case $T in
+ir | rv32-mmu | g4mh-mpu | armv7m-mpu | ppc-tlb | rv32-vm | elf | upload | gdb | virtio)
     BIN=fuzz-$T
     SET=$T
-fi
+    ;;
+esac
+[ "$T" = elf ] && MAXLEN=65536
 if [ "$T" = g4mh-smp ]; then
     ISA=g4mh
     BIN=fuzz-g4mh-jit
@@ -88,7 +100,7 @@ if ! CC=${CC:-clang} cmake -S "$ROOT" -B "$B" -DEMU_FUZZ=ON $EXTRA \
     exit 1
 fi
 case $T in
-rv32) GUESTS="guest-isatest guest-coremark guest-dhrystone" ;;
+rv32 | elf) GUESTS="guest-isatest guest-coremark guest-dhrystone" ;;
 armv7m) GUESTS="guest-armv7m-coremark guest-armv7m-dhrystone guest-armv7m-crypto" ;;
 ppc) GUESTS="guest-ppc-coremark guest-ppc-dhrystone guest-ppc-alu" ;;
 *) GUESTS="" ;;
@@ -216,6 +228,18 @@ ppc)
     done
     seeds '\001\000\000\000' '\001\010\000\000'
     ;;
+virtio)
+    # A driver's whole request, which random bytes seldom make.
+    cp "$ROOT"/tests/fuzz/seeds/virtio/* "$C"/ 2>/dev/null || true
+    ;;
+elf)
+    # Whole images, raw (the leading 1), from the build and the tree:
+    # what a toolchain writes, for the fuzzer to take apart.
+    for f in "$B"/guest/*.elf "$ROOT"/tests/guest/g4mh/*.elf; do
+        [ -f "$f" ] || continue
+        { printf '\001'; cat "$f"; } >"$C/seed-$(basename "$f" .elf)"
+    done
+    ;;
 g4mh | g4mh-smp)
     # CC-RH's images are committed: the toolchain is not free to install.
     # So are the device seeds, from scripts/g4mh-build-seeds.sh. With
@@ -248,5 +272,5 @@ if [ -z "${FUZZ_NO_DICT:-}" ] && [ -f "$ROOT/tests/fuzz/dict/$ISA-jit.dict" ]; t
 fi
 cd "$B/artifacts/$T"
 # shellcheck disable=SC2086 # DICT is empty or one word
-FUZZ_STATS=1 exec "$B/tests/fuzz/$BIN" -max_len=1024 \
+FUZZ_STATS=1 exec "$B/tests/fuzz/$BIN" -max_len="$MAXLEN" \
     -max_total_time="$SECS" -timeout=10 $DICT "$@" "$C"

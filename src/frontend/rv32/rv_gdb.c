@@ -57,7 +57,7 @@ static void rv_gdb_reg_set(emu_cpu_t *cpu, unsigned n, uint64_t v64)
         h->x[n] = v;
         h->x[0] = 0u; /* x0 stays hardwired whatever gdb says */
     } else if (n == RV_GDB_PC) {
-        h->pc = v;
+        h->pc = v & ~1u; /* see rv_gdb_pc_set */
     }
 }
 
@@ -66,9 +66,11 @@ static uint32_t rv_gdb_pc_get(const emu_cpu_t *cpu)
     return hart_of_gdb(cpu)->pc;
 }
 
+/* pc bit 0 is always 0, as the debug spec has dpc's: no instruction
+ * makes it 1, and only a debugger's write could (fuzz-gdb). */
 static void rv_gdb_pc_set(emu_cpu_t *cpu, uint32_t pc)
 {
-    hart_of_gdb(cpu)->pc = pc;
+    hart_of_gdb(cpu)->pc = pc & ~1u;
 }
 
 /*

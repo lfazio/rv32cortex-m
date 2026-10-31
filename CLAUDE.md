@@ -94,7 +94,7 @@ BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
                                 # run: ratio, wall clock, translations, CRC
 ./scripts/board-pc-profile.py ELF  # where a -DEMU_PC_PROFILE=N firmware
                                 # spent its time, by function and line
-./scripts/fuzz.sh SECS [ISA|ir|rv32-mmu|rv32-vm|g4mh-mpu|armv7m-mpu|ppc-tlb|all]
+./scripts/fuzz.sh SECS [ISA|ir|rv32-mmu|rv32-vm|g4mh-mpu|armv7m-mpu|ppc-tlb|elf|upload|gdb|virtio|all]
                                 # a frontend's interpreter against the
                                 # x86-64 JIT, under ASan/UBSan; `ir`: random
                                 # IR blocks, before the passes against the
@@ -103,7 +103,9 @@ BOARD_SRC=<worktree> ./scripts/board-measure.sh NAME SECS -D...
                                 # `rv32-vm`: the same in S/U code, fetch and
                                 # the JIT's probe; `*-mpu`, `ppc-tlb`: an
                                 # MPU or TLB against its manual, one
-                                # instruction a step; docs/fuzzing.md
+                                # instruction a step; `elf`, `upload`,
+                                # `gdb`, `virtio`: what arrives from outside
+                                # the guest; docs/fuzzing.md
 ./scripts/fuzz-mutant.sh SECS ISA FILE OLD NEW  # break a line on purpose
                                 # and see whether that fuzzer notices
 ./scripts/unit-mutant.sh BUILD FILE OLD NEW  # the same, for the unit
@@ -232,7 +234,8 @@ Each has cost more than one session, and every one recurred.
   faulted, and three stacking behaviours were wrong. A status bit no
   test reads (STKERR) is the same blind spot: grep for its readers.
 - **The fuzzers find what the suites share a blind spot for**: eighteen
-  defects, eight in an interpreter (docs/fuzzing.md). A UBSan report in
+  defects, eight in an interpreter, and sixteen in what arrives from
+  outside the guest (docs/fuzzing.md). A UBSan report in
   the interpreter is a finding even when both backends agree.
 - **A reference that declines what it does not model checks only what
   is left -- and modelling more tests the checker.** `emu_ir_interp`
@@ -677,6 +680,29 @@ The design is in [docs/network.md](docs/network.md).
 - **Things that happen between slices must be seen where the firmware
   is**: the park loop takes uploads too; lwIP timeouts need slots it does
   not reserve.
+
+### What arrives from outside the guest
+
+An image, a debugger's packets, an upload, a guest's virtio rings
+([fuzzing.md](docs/fuzzing.md#what-arrives-from-outside-the-guest)):
+sixteen defects the first time anything fuzzed them.
+
+- **A count from the wire is compared halved, never doubled**: `2u * n`
+  wrapped in gdb's `m` and `M` -- a stack overflow from one packet, and
+  490 bytes written by a 19-byte one. Compute an end in 64 bits
+  (`emu_bus_add` took a region past 4 GB for one ending below its base).
+- **A buffer sized for the configuration a test had** is too small for
+  the one that ships: `qSupported` fitted test_gdb's (no description)
+  and gdb-check's (no flash), and every board, which has both, wrote 12
+  bytes past it.
+- **Two clients of one resource need an owner**: TFTP and gdb shared
+  the upload's start, and one's uncommitted bytes ran as part of the
+  other's image. And a deferred write is counted when it is accepted
+  (gdb's carry cut an image short).
+- **A pointer handed out without a length is bounded by what the
+  callee promises**: TinyEMU copies to a page's end, the glue checked
+  one byte. Vendored code whose walkers are `static` can only be
+  patched -- keep the patch beside it (`bounded-chains.patch`).
 
 ### Guests and their start-up
 

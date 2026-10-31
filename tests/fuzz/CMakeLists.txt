@@ -274,3 +274,133 @@ if(EMU_GUEST_ARCH_G4MH)
             LABELS fuzz)
     endif()
 endif()
+
+#
+# What arrives from outside the guest. No frontend's semantics here: each
+# of these takes bytes a person or a program sends -- an image, a
+# debugger's packets, an upload, a guest's virtio rings -- and is held to
+# a reference written beside it. The smoke tests must show both outcomes
+# reached, so a generator that only ever produced garbage, or only ever
+# produced the happy path, cannot pass.
+#
+# fuzz-elf: emu_elf_load and emu_elf_map against an ELF32 reference, on a
+# bus with memory at both ends of the address space (fuzz_elf.c).
+#
+add_executable(fuzz-elf fuzz_elf.c)
+target_link_libraries(fuzz-elf PRIVATE emucore)
+target_link_options(fuzz-elf PRIVATE -fsanitize=fuzzer)
+target_compile_options(fuzz-elf PRIVATE -Wall -Wextra -Wundef)
+add_test(NAME fuzz-elf-smoke
+         COMMAND ${CMAKE_COMMAND} -E env FUZZ_STATS=1
+                 $<TARGET_FILE:fuzz-elf> -runs=20000 -seed=1 -max_len=512
+                 -timeout=10)
+set_tests_properties(fuzz-elf-smoke PROPERTIES
+    PASS_REGULAR_EXPRESSION
+        "load [1-9][0-9]* accepted, [1-9][0-9]* refused; map [1-9][0-9]* accepted, [1-9][0-9]* refused; [1-9][0-9]* segments mapped, [1-9][0-9]* .bss tails, [1-9][0-9]* near 4 GB"
+    LABELS fuzz)
+file(GLOB _elf_saved ${CMAKE_CURRENT_SOURCE_DIR}/regressions/elf/*)
+if(_elf_saved)
+    add_test(NAME fuzz-elf-regressions
+             COMMAND $<TARGET_FILE:fuzz-elf> -runs=0 -timeout=10
+                     ${CMAKE_CURRENT_SOURCE_DIR}/regressions/elf)
+    set_tests_properties(fuzz-elf-regressions PROPERTIES
+        PASS_REGULAR_EXPRESSION "Done [0-9]+ runs"
+        LABELS fuzz)
+endif()
+
+#
+# fuzz-upload: an image arriving at run time -- TFTP through net_tftp.c's
+# callbacks, gdb's vFlash* through emu_image_gdb_flash -- into an arena
+# that behaves as the F746's, held to what a completed upload should run
+# (fuzz_upload.c). Both sources are #included, so that their statics can
+# be reset per input; lwIP's headers are stood in for (lwip-stub/).
+#
+add_executable(fuzz-upload fuzz_upload.c)
+target_link_libraries(fuzz-upload PRIVATE emucore)
+target_link_options(fuzz-upload PRIVATE -fsanitize=fuzzer)
+target_compile_options(fuzz-upload PRIVATE -Wall -Wextra -Wundef)
+target_compile_definitions(fuzz-upload PRIVATE EMU_NET=1)
+target_include_directories(fuzz-upload PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/lwip-stub
+    ${PROJECT_SOURCE_DIR}/src/platform/common
+    ${PROJECT_SOURCE_DIR}/src/net)
+add_test(NAME fuzz-upload-smoke
+         COMMAND ${CMAKE_COMMAND} -E env FUZZ_STATS=1
+                 $<TARGET_FILE:fuzz-upload> -runs=20000 -seed=1 -max_len=1024
+                 -timeout=10)
+set_tests_properties(fuzz-upload-smoke PROPERTIES
+    PASS_REGULAR_EXPRESSION
+        "[1-9][0-9]* completed, [1-9][0-9]* failed, [1-9][0-9]* abandoned.*gdb [1-9][0-9]* erases, [1-9][0-9]* writes.*[1-9][0-9]* done; [1-9][0-9]* reloads, [1-9][0-9]* checked byte for byte"
+    LABELS fuzz)
+file(GLOB _upload_saved ${CMAKE_CURRENT_SOURCE_DIR}/regressions/upload/*)
+if(_upload_saved)
+    add_test(NAME fuzz-upload-regressions
+             COMMAND $<TARGET_FILE:fuzz-upload> -runs=0 -timeout=10
+                     ${CMAKE_CURRENT_SOURCE_DIR}/regressions/upload)
+    set_tests_properties(fuzz-upload-regressions PROPERTIES
+        PASS_REGULAR_EXPRESSION "Done [0-9]+ runs"
+        LABELS fuzz)
+endif()
+
+#
+# fuzz-gdb: the gdb stub, as a TCP peer can drive it -- packets framed or
+# not, escaped or not, past the buffer, ^C between -- configured as a
+# board's is, with a real frontend's description and flash ops
+# (fuzz_gdb.c). Replies must be framed, and a packet may write no more
+# memory than it carried.
+#
+add_executable(fuzz-gdb fuzz_gdb.c)
+target_link_libraries(fuzz-gdb PRIVATE emucore)
+target_link_options(fuzz-gdb PRIVATE -fsanitize=fuzzer)
+target_compile_options(fuzz-gdb PRIVATE -Wall -Wextra -Wundef)
+add_test(NAME fuzz-gdb-smoke
+         COMMAND ${CMAKE_COMMAND} -E env FUZZ_STATS=1
+                 $<TARGET_FILE:fuzz-gdb> -runs=20000 -seed=1 -max_len=1024
+                 -timeout=10)
+set_tests_properties(fuzz-gdb-smoke PROPERTIES
+    PASS_REGULAR_EXPRESSION
+        "[1-9][0-9]* packets \\([1-9][0-9]* bad checksums, [1-9][0-9]* past the buffer, [1-9][0-9]* \\^C\\), [1-9][0-9]* replies; [1-9][0-9]* runs \\([1-9][0-9]* stepping\\); [1-9][0-9]* packets wrote memory"
+    LABELS fuzz)
+file(GLOB _gdb_saved ${CMAKE_CURRENT_SOURCE_DIR}/regressions/gdb/*)
+if(_gdb_saved)
+    add_test(NAME fuzz-gdb-regressions
+             COMMAND $<TARGET_FILE:fuzz-gdb> -runs=0 -timeout=10
+                     ${CMAKE_CURRENT_SOURCE_DIR}/regressions/gdb)
+    set_tests_properties(fuzz-gdb-regressions PROPERTIES
+        PASS_REGULAR_EXPRESSION "Done [0-9]+ runs"
+        LABELS fuzz)
+endif()
+
+#
+# fuzz-virtio: TinyEMU's virtio devices following descriptors and rings a
+# guest wrote -- console, read-only disk, loopback network, keyboard,
+# mouse -- in a guest RAM that ends on no page boundary (fuzz_virtio.c).
+# Host builds only: virtio is.
+#
+if(EMU_VIRTIO_BUILT)
+    add_executable(fuzz-virtio fuzz_virtio.c)
+    target_link_libraries(fuzz-virtio PRIVATE emucore)
+    target_link_options(fuzz-virtio PRIVATE -fsanitize=fuzzer)
+    target_compile_options(fuzz-virtio PRIVATE -Wall -Wextra -Wundef)
+    # From the seeds and the regressions, as fuzz-ir's starts: from
+    # nothing, 20,000 runs never complete a request, and no interrupt is
+    # raised to count.
+    add_test(NAME fuzz-virtio-smoke
+             COMMAND sh -c "rm -rf virtio-smoke && mkdir virtio-smoke && cp \"$1\"/* \"$2\"/* virtio-smoke/ && FUZZ_STATS=1 exec \"$3\" -runs=20000 -seed=1 -max_len=1024 -timeout=10 virtio-smoke"
+                     sh ${CMAKE_CURRENT_SOURCE_DIR}/seeds/virtio
+                     ${CMAKE_CURRENT_SOURCE_DIR}/regressions/virtio
+                     $<TARGET_FILE:fuzz-virtio>)
+    set_tests_properties(fuzz-virtio-smoke PROPERTIES
+        PASS_REGULAR_EXPRESSION
+            "[1-9][0-9]* queues set up, [1-9][0-9]* buffers posted \\([1-9][0-9]* with a chain\\), [1-9][0-9]* input events, [1-9][0-9]* interrupts raised"
+        LABELS fuzz)
+    file(GLOB _virtio_saved ${CMAKE_CURRENT_SOURCE_DIR}/regressions/virtio/*)
+    if(_virtio_saved)
+        add_test(NAME fuzz-virtio-regressions
+                 COMMAND $<TARGET_FILE:fuzz-virtio> -runs=0 -timeout=10
+                         ${CMAKE_CURRENT_SOURCE_DIR}/regressions/virtio)
+        set_tests_properties(fuzz-virtio-regressions PROPERTIES
+            PASS_REGULAR_EXPRESSION "Done [0-9]+ runs"
+            LABELS fuzz)
+    endif()
+endif()

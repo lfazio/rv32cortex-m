@@ -19,6 +19,7 @@
  */
 
 #include "virtio_glue.h"
+#include "virtio.h" /* VIRTIO_PAGE_SIZE: the bound its accesses keep */
 
 #include <stdio.h>
 
@@ -180,19 +181,30 @@ uint8_t *phys_mem_get_ram_ptr(PhysMemoryMap *map, uint64_t paddr, BOOL is_rw)
     (void)is_rw;
 
     /*
-     * One byte, because the caller asks for a *pointer* and then reads
-     * or writes a length this function is never told. That is TinyEMU's
-     * interface and it is the weak point of it: the bounds check here
-     * can only say the address is in RAM, not that the access fits.
+     * The caller asks for a *pointer* and then reads or writes a length
+     * this function is never told -- TinyEMU's interface. What it does
+     * promise is the bound: every caller in virtio.c stays inside the
+     * page the address is in (its copies stop at the page's end and ask
+     * again; its 16- and 32-bit ring accesses are aligned). So the rest
+     * of the page must be in the region, and a pointer is given only
+     * then.
      *
-     * What makes that tolerable is the other end -- virtio.c walks a
-     * descriptor at a time and each is bounded by the ring -- and what
-     * would make it wrong is a guest that lies about a descriptor
-     * length. A malicious guest is not in this emulator's threat model;
-     * a *buggy* one gets a NULL here the moment it points outside RAM,
-     * which is the common case and the one worth catching.
+     * It checked one byte. A guest whose RAM ends mid-page -- `--ram`
+     * takes any size -- put a descriptor table at its last bytes, and
+     * get_desc copied 16 bytes from past the end of the host's buffer
+     * (fuzz-virtio). The cost is that a partial last page is not
+     * reachable by a device, which no driver places rings in.
+     *
+     * And an address past 4 GB is not one: a guest that set a queue's
+     * high word had it truncated onto its own RAM.
      */
-    return (uint8_t *)emu_bus_host_ptr(map->bus, (uint32_t)paddr, 1u);
+    const uint32_t rest =
+        VIRTIO_PAGE_SIZE - (uint32_t)(paddr & (VIRTIO_PAGE_SIZE - 1u));
+
+    if ((paddr >> 32) != 0u) {
+        return NULL;
+    }
+    return (uint8_t *)emu_bus_host_ptr(map->bus, (uint32_t)paddr, rest);
 }
 
 void irq_init(IRQSignal *irq, SetIRQFunc *set_irq_fn, void *opaque,

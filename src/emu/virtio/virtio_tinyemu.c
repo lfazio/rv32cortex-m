@@ -63,6 +63,21 @@ static int block_recv(VIRTIODevice *s, int queue_idx, int desc_idx,
     if (memcpy_from_queue(s, &h, queue_idx, desc_idx, 0, sizeof(h)) < 0) {
         return 0;
     }
+    /*
+     * Upstream assumes a status byte: an IN with nothing writable had
+     * malloc(0) and wrote its status at buf[-1], and an OUT asserted --
+     * a guest could corrupt the heap or abort the emulator with one
+     * descriptor (fuzz-virtio). Such a chain is returned unanswered, as
+     * below for the other types.
+     */
+    if ((h.type == VIRTIO_BLK_T_IN || h.type == VIRTIO_BLK_T_OUT) &&
+        write_size < 1) {
+        if (s1->req_in_progress) {
+            return -1;
+        }
+        virtio_consume_desc(s, queue_idx, desc_idx, 0);
+        return 0;
+    }
     if (h.type == VIRTIO_BLK_T_IN || h.type == VIRTIO_BLK_T_OUT) {
         return virtio_block_recv_request(s, queue_idx, desc_idx, read_size,
                                          write_size);
@@ -111,6 +126,34 @@ static int block_recv(VIRTIODevice *s, int queue_idx, int desc_idx,
         virtio_consume_desc(s, queue_idx, desc_idx, 1);
     }
     return 0;
+}
+
+/*
+ * A frame to send is a header and then the frame: upstream took the
+ * length as what was readable less the header, negative for a chain
+ * shorter than one, and allocated that. Returned unanswered instead.
+ */
+static int net_recv(VIRTIODevice *s, int queue_idx, int desc_idx,
+                    int read_size, int write_size)
+{
+    const VIRTIONetDevice *const s1 = (const VIRTIONetDevice *)s;
+
+    if (queue_idx == 1 && read_size < s1->header_size) {
+        virtio_consume_desc(s, queue_idx, desc_idx, 0);
+        return 0;
+    }
+    return virtio_net_recv_request(s, queue_idx, desc_idx, read_size,
+                                   write_size);
+}
+
+VIRTIODevice *emu_virtio_net_init(VIRTIOBusDef *bus, EthernetDevice *es)
+{
+    VIRTIODevice *const s = virtio_net_init(bus, es);
+
+    if (s != NULL) {
+        s->device_recv = net_recv;
+    }
+    return s;
 }
 
 VIRTIODevice *emu_virtio_block_init(VIRTIOBusDef *bus, BlockDevice *bs)

@@ -189,6 +189,20 @@ static const char *elf_walk(emu_bus_t *bus, const void *image, size_t len,
             ram_size != 0u && p_paddr >= ram_base &&
             (uint64_t)p_paddr + p_memsz <= (uint64_t)ram_base + ram_size;
 
+        /*
+         * Inside the 32-bit address space, where the segment's bytes go:
+         * a mapped segment's file bytes at p_paddr (its .bss is checked
+         * at p_vaddr below), a copied segment all of it at p_paddr. A
+         * segment at 0xFFFFFFEA with 2 KiB of .bss was zeroed to the top
+         * and then on from address 0 -- the copy's address wrapped, and
+         * whatever the bus had at 0 was written (fuzz-elf).
+         */
+        if ((uint64_t)p_paddr +
+                ((ram_size != 0u && !in_ram) ? p_filesz : p_memsz) >
+            0x100000000ull) {
+            return "segment runs past the end of the address space";
+        }
+
         if (ram_size != 0u && !in_ram) {
             /*
              * Mapped, not copied. This is a guest's .text and .rodata on

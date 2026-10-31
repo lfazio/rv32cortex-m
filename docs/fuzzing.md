@@ -1,14 +1,19 @@
 # Fuzzing
 
-Ten targets: one per frontend, each the interpreter against the
+Fourteen targets: one per frontend, each the interpreter against the
 x86-64 JIT on whatever bytes libFuzzer produces; one for the IR itself,
 with no frontend ([below](#the-ir-with-no-frontend)); RV32's
 translation and protection against a walk written from the spec, from
 M-mode ([below](#translation-and-protection-rv32)) and in running code
-([below](#fetch-and-the-jits-data-tlb-rv32)); and one each for G4MH's
+([below](#fetch-and-the-jits-data-tlb-rv32)); one each for G4MH's
 and ARMv7-M's MPUs and PowerPC's TLB, against references written from
 their manuals ([G4MH](#protection-g4mh),
-[ARMv7-M](#protection-armv7-m), [PowerPC](#translation-powerpc)). Between them they found
+[ARMv7-M](#protection-armv7-m), [PowerPC](#translation-powerpc)); and
+four for what arrives from outside the guest -- an image, a debugger's
+packets, an upload, a guest's virtio rings
+([below](#what-arrives-from-outside-the-guest)), which found sixteen
+defects of their own, ten by running and six by being written. The
+first ten found
 eighteen defects in code that every suite passed --
 eight of them in an interpreter, which is the reference -- and one of
 those turned out to be a whole class, which a board then answered
@@ -29,12 +34,16 @@ both backends shared it.
 | `fuzz-armv7m-mpu` | the architecture's MPU pseudocode, with the F746's answers where it leaves room (`tests/armv7m-diff/sys.c`) |
 | `fuzz-ppc-tlb` | chapter 10 and the interrupt tables of the e200z7 manual; the manual and nothing else |
 | `fuzz-rv32-vm` | `rv32_ref.h`, the same walk as `fuzz-rv32-mmu`'s, with fetch; Sail and Spike, through a probe, for what it might have wrong |
+| `fuzz-elf` | an ELF32 loader written from the specification, sharing nothing with `emu_elf.c`, applied to a shadow of every buffer the bus has |
+| `fuzz-upload` | what a completed TFTP transfer or gdb `load` should run, byte for byte, in an arena that behaves as the F746's |
+| `fuzz-gdb` | the protocol's framing, and that a packet writes no more memory than it carries; the sanitizers for the rest |
+| `fuzz-virtio` | the sanitizers and the timeout: a device must neither reach past guest RAM nor follow a chain for ever |
 
 No GPL emulator is consulted, by any of them.
 
 ```sh
 scripts/fuzz.sh 600 armv7m   # build build/fuzz, seed it, fuzz ten minutes
-scripts/fuzz.sh 600 all      # the ten in turn, and G4MH on three PEs
+scripts/fuzz.sh 600 all      # the fourteen in turn, and G4MH on three PEs
 FUZZ_STATS=1 build/fuzz/tests/fuzz/fuzz-armv7m-jit crash-...   # replay one
 cd build/fuzz && ctest -L fuzz   # each target's smoke run and saved regressions
 ```
@@ -731,6 +740,118 @@ code, not measured; a caller that fills the table without a walk would
 make them matter.
 
 
+## What arrives from outside the guest
+
+Everything above takes a guest's instructions. These four take what a
+person or a program hands the emulator: an image to run, a debugger's
+packets, an upload over the network, and the descriptor rings a guest's
+virtio driver writes -- the inputs nothing in the tree had fuzzed, and
+on a board the network ones arrive from whoever is on the link.
+
+**`fuzz-elf`** (`tests/fuzz/fuzz_elf.c`) runs `emu_elf_load` (the host:
+every segment copied) and `emu_elf_map` (a board: segments in guest RAM
+copied, the rest mapped read-only out of the image) on each input, each
+on a fresh bus, against a loader written from the ELF32 specification:
+whether the image is accepted, every byte of every RAM and ROM buffer
+afterwards, a mapped segment read back through the bus, and the bus
+itself -- no region past 4 GB, none overlapping, no device written. The
+bus has RAM at 0 and at the top of the address space, which no platform
+maps, so that an address computed past 0xFFFFFFFF lands where a
+comparison sees it. An input is the image (first byte odd), or a
+description serialised to one with addresses near the bus's edges and
+the header's table fields at theirs. Seeded with the build's own guests.
+
+**`fuzz-upload`** (`fuzz_upload.c`) drives `src/net/net_tftp.c`'s
+callbacks as lwIP's server calls them -- open, a write per DATA block
+as a pbuf chain, close when a short block completes the transfer or a
+write fails or lwIP's timer gives up, error on an ERROR packet, and the
+file's own idle watchdog by a clock the input advances -- and gdb's
+vFlashErase, vFlashWrite and vFlashDone at any address and length,
+interleaved, with `emu_image_take_pending()` after every event. The
+arena is the F746's (begin refuses when it is used up, a byte is
+programmed only while erased, commit trusts its length) in a heap
+buffer of exactly its size. Held to: a reload after every completed
+upload and after nothing else, the image inside the arena, and its
+bytes -- TFTP's blocks in order, gdb's accepted writes at their offsets
+with erased bytes between. Both sources are `#include`d so their statics
+can be reset per input, and lwIP's headers are stood in for
+(`tests/fuzz/lwip-stub/`, whose README says what they must match).
+
+**`fuzz-gdb`** (`fuzz_gdb.c`) feeds the stub what a TCP peer can send:
+packets from a table of the stub's and gdb's commands with input
+appended, framed with the right checksum or the wrong one, escaped or
+not, longer than the receive buffer, with raw bytes and ^C between, and
+runs the guest where a packet says continue or step. It is configured
+as a board's stub is: a real frontend (the first byte picks it), its
+target description, and flash ops. Every reply must be framed and no
+longer than the advertised PacketSize, and a packet of L bytes may
+write at most L bytes of guest memory -- a device stands in for memory
+and counts.
+
+**`fuzz-virtio`** (`fuzz_virtio.c`) is a guest driver written by the
+fuzzer: it programs the virtio-mmio registers of a console, a read-only
+disk, a loopback network interface, a keyboard and a mouse, sets up
+queues, writes descriptors and rings into guest RAM, posts and
+notifies. Guest RAM ends on no page and no word, which `--ram` allows.
+Held to the sanitizers and the timeout. Not virtio-9p, which carries
+out a guest's file operations on a host directory: fuzzing it is
+fuzzing the host's filesystem. Seeded with one complete console write.
+
+```sh
+scripts/fuzz.sh 300 elf      # and upload, gdb, virtio
+```
+
+| defect | found | where | held by |
+|---|---|---|---|
+| an ELF segment at 0xFFFFFFEA with 2 KiB of `.bss` was zeroed to the top of the address space and on from 0 | running | `emu_elf.c`; `emu_bus_load`/`emu_bus_dump` wrapped too | `elf/segment-past-4gb-wraps-to-0`, `test_bus_no_wrap` |
+| a region past 4 GB was accepted: its end, in 32 bits, fell below its base, the overlap test saw nothing, and `in_region` matched it at address 0 | writing | `emu_bus_add` | `test_bus_no_wrap` |
+| a gdb write of nothing at offset 0x1501 set the image's length, and vFlashDone committed 5,377 bytes of a 4,096-byte arena: the next guest was read from past its end -- on the F746, past the end of flash | running | `emu_image.c`, `fits_arena` | `upload/gdb-empty-write-sets-length-past-arena` |
+| TFTP and gdb shared one upload with no owner: gdb's bytes inside a TFTP transfer's space outlived it, and the next load ran with them | running | `emu_image.c`, `up_begin`/`up_abandon` | `upload/tftp-and-gdb-share-the-upload` |
+| a write of one to three bytes that only topped up gdb's carry returned before counting them, so the image was cut short -- gdb's 975-byte packets leave two carried after the second | running | `gdb_flash_write` | `upload/gdb-short-write-into-carry-cut-off-image` |
+| a gdb load abandoned before vFlashDone left its length for the next; a gdb load into a full arena had no erase-and-retry | writing | `gdb_flash_erase`, now `up_begin` | -- |
+| `qSupported`'s reply was built in 64 bytes and is 76 with a target description and flash ops, which is every board's stub with the network up: each gdb that connected wrote 12 bytes past it | running | `emu_gdb.c`, `cmd_query` | `gdb/qsupported-overruns-its-buffer` |
+| `c 0xbb` gave G4MH an odd pc, and its translator fetched a halfword from an odd address; RV32 and PowerPC took one too | running | the `pc_set` and `reg_set` of three gdb targets | `gdb/odd-pc-from-continue` |
+| `m0,80000080` doubled its length past 32 bits, passed the cap, and wrote hex past a 1 KB stack buffer | running | `cmd_mem_read` | `gdb/m-read-length-doubles-past-32-bits`, `test_short_packets` |
+| `M30000000,80000000:` did the same in the length check, and wrote whatever hex an earlier packet had left in the buffer: 490 bytes from a 19-byte packet | writing, then a hand-made input | `cmd_mem_write` | `gdb/m-length-doubles-past-32-bits`, `test_short_packets` |
+| `P1=11` read a 64-bit register's other fourteen digits from past the packet | writing | `cmd_write_one_reg` | `test_short_packets` |
+| a descriptor table at the last bytes of a RAM ending mid-page was copied from past the end of the host's buffer: the glue checked one byte, and TinyEMU copies to the page's end | running | `phys_mem_get_ram_ptr`, `virtio_glue.c` | `virtio/descriptor-read-past-ram-end` |
+| a block read with nothing writable allocated nothing and wrote its status at `buf[-1]`; a write asserted -- heap corruption or an abort, from one descriptor | running | TinyEMU's block device, refused in `virtio_tinyemu.c` | `virtio/block-read-with-no-status-byte` |
+| **a descriptor linked to itself hung the emulator**: TinyEMU follows `next` with no bound | running (the mutant that removes the bound is the original code: found in 22 s) | `virtio.c`'s two walkers, patched (`third_party/tinyemu/bounded-chains.patch`) | `virtio/descriptor-chain-cycle` |
+| a network frame shorter than its header had a negative length, which was allocated; a queue address above 4 GB was truncated onto guest RAM | writing | `virtio_tinyemu.c`, `virtio_glue.c` | -- |
+
+Mutants, each a fix reverted (`scripts/fuzz-mutant.sh`):
+
+| mutant | found |
+|---|---|
+| ELF: no 4 GB check | by fuzzing, 37 s and 14 s |
+| ELF: the program header table bounded in 32 bits | by fuzzing, 7 s -- once the generator moved the table's fields; before, not in 60 s |
+| ELF: no check that a segment's bytes are in the file | by an input it started from (ASan) |
+| ELF: "in guest RAM" computed in 32 bits | by fuzzing, 28 s |
+| upload: TFTP writes whoever owns the upload | by an input it started from |
+| upload: an abandoned upload's bytes are not skipped | by fuzzing, 3 s |
+| upload: a gdb write may run past the arena | not found: vFlashDone's own check catches the same input, and either alone suffices; with neither (the old code) the regression fails |
+| virtio: no bound on a chain's length | by fuzzing, 22 s (hung); a second 120 s run did not, and the regression was then written by hand |
+| virtio: the glue checks one byte | by an input it started from |
+
+The gdb fixes are held by unit tests as well (`test_short_packets`,
+each reverted: 1-2 failures, or a crash). `fuzz-mutant.sh` counts an
+AddressSanitizer report as a find now -- it ends a run with no signal,
+and the "no segment-in-file check" mutant read as not found until it
+did -- and keeps each input that found a mutant in
+`build/fuzz-mutant/found/`, since the next run empties the artifacts
+directory and twice took the input a regression was to be made of.
+
+Clean runs after the fixes: `fuzz-elf` 400,000 inputs; `fuzz-upload`
+3,000,000 (151 million events, 4.7 million reloads checked byte for
+byte); `fuzz-gdb` 2,000,000 (11 million packets); `fuzz-virtio` 133,648
+in 150 s (286,253 buffers posted).
+
+Not reached: lwIP's TFTP packet parsing, which is lwIP's (only the
+callbacks are ours); the telnet console and SLIP framing; virtio-9p;
+and two clients at once on the gdb stub, which the transport does not
+allow. Found and not fixed: a reload rebuilds the bus without the
+virtio devices ([TODO.md](TODO.md)).
+
 ## What it found
 
 Each fix was confirmed by reverting it with its regression in place.
@@ -910,8 +1031,8 @@ in the scripts:
 ## Adding a finding
 
 Fix it, confirm the fix by reverting it, and copy the input to
-`tests/fuzz/regressions/<isa>-jit/` -- `regressions/ir/` for `fuzz-ir`,
-`regressions/rv32-mmu/` for `fuzz-rv32-mmu` -- under a name that says
+`tests/fuzz/regressions/<isa>-jit/` -- `regressions/<target>/` for the
+targets with no `-jit` in their name -- under a name that says
 what it found; each target's `-regressions` test replays its directory. Where the defect can
 reach a board -- a translator or a backend -- add a guest check as well:
 the fuzzers run only on x86-64. Where the two backends agree and the

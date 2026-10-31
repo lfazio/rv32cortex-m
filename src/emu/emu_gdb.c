@@ -534,7 +534,10 @@ static void cmd_write_one_reg(emu_gdb_t *g, const uint8_t *p, uint32_t len)
     uint32_t r = 0;
     const uint32_t used = hex_to_u32(p, len, &r);
 
-    if (used >= len || p[used] != '=' || r >= g->target->nregs) {
+    /* A whole register's worth of hex, or the rest was read from past
+     * the packet -- whatever an earlier one left in the buffer. */
+    if (used >= len || p[used] != '=' || r >= g->target->nregs ||
+        len - used - 1u < 2u * reg_width(g, r)) {
         send_err(g, 1);
         return;
     }
@@ -554,7 +557,9 @@ static void cmd_mem_read(emu_gdb_t *g, const uint8_t *p, uint32_t len)
     }
     (void)hex_to_u32(&p[used + 1u], len - used - 1u, &n);
 
-    if (n == 0u || (2u * n) >= sizeof(body)) {
+    /* Halved, not doubled, as in M: "m0,80000080" doubled to 0x100,
+     * passed, and mem_read wrote hex past the end of `body` (fuzz-gdb). */
+    if (n == 0u || n >= sizeof(body) / 2u) {
         n = (uint32_t)(sizeof(body) / 2u) - 1u;
     }
     if (!mem_read(g, addr, n, body)) {
@@ -581,7 +586,13 @@ static void cmd_mem_write(emu_gdb_t *g, const uint8_t *p, uint32_t len)
     }
     used += 1u;
 
-    if ((len - used) < (2u * n)) {
+    /*
+     * Halved, not doubled: 2 * n wrapped for n of 0x80000000 and up, so
+     * "M30000000,80000000:" passed with no data and wrote whatever hex
+     * an earlier, longer packet had left in the buffer -- 490 bytes from
+     * a 19-byte packet (fuzz-gdb).
+     */
+    if (n > (len - used) / 2u) {
         send_err(g, 1);
         return;
     }
@@ -688,6 +699,14 @@ static void cmd_breakpoint(emu_gdb_t *g, const uint8_t *p, uint32_t len,
     send_ok(g);
 }
 
+/* Append s to b[*n], within cap bytes. */
+static void put_str(char *b, int *n, int cap, const char *s)
+{
+    while (*s != '\0' && *n < cap) {
+        b[(*n)++] = *s++;
+    }
+}
+
 static bool starts_with(const uint8_t *p, uint32_t len, const char *s)
 {
     const uint32_t n = (uint32_t)strlen(s);
@@ -698,7 +717,14 @@ static bool starts_with(const uint8_t *p, uint32_t len, const char *s)
 static void cmd_query(emu_gdb_t *g, const uint8_t *p, uint32_t len)
 {
     if (starts_with(p, len, "qSupported")) {
-        char b[64];
+        /*
+         * 76 bytes with everything: a target description and flash ops,
+         * which is every board's stub with the network up. It was 64, and
+         * each gdb that connected wrote 12 past it (fuzz-gdb); no test had
+         * both -- test_gdb's target has no description, and gdb-check.sh
+         * runs where there is no flash.
+         */
+        char b[128];
 
         /*
          * PacketSize is the one that matters: without it gdb assumes a
@@ -707,16 +733,13 @@ static void cmd_query(emu_gdb_t *g, const uint8_t *p, uint32_t len)
          * backtrace crawling.
          */
         int n = 0;
-        const char *pre = "PacketSize=";
-        while (*pre != '\0') {
-            b[n++] = *pre++;
-        }
-        {
-            const uint32_t sz = EMU_GDB_MAX_PACKET;
-            b[n++] = hex_digit((sz >> 8) & 0xFu);
-            b[n++] = hex_digit((sz >> 4) & 0xFu);
-            b[n++] = hex_digit(sz & 0xFu);
-        }
+        const char size[4] = {hex_digit((EMU_GDB_MAX_PACKET >> 8) & 0xFu),
+                              hex_digit((EMU_GDB_MAX_PACKET >> 4) & 0xFu),
+                              hex_digit(EMU_GDB_MAX_PACKET & 0xFu), '\0'};
+
+        /* Every byte through put_str, so none can pass the end. */
+        put_str(b, &n, (int)sizeof(b), "PacketSize=");
+        put_str(b, &n, (int)sizeof(b), size);
         /*
          * swbreak+ tells gdb the stop reply will say when a breakpoint
          * was the reason, which is how it distinguishes its own
@@ -724,26 +747,15 @@ static void cmd_query(emu_gdb_t *g, const uint8_t *p, uint32_t len)
          * guess by comparing the pc against its breakpoint list, and
          * guesses wrong when both happen at once.
          */
-        {
-            const char *ext = ";swbreak+;hwbreak+";
-            while (*ext != '\0') {
-                b[n++] = *ext++;
-            }
-        }
+        put_str(b, &n, (int)sizeof(b), ";swbreak+;hwbreak+");
         if (g->target->target_xml != NULL) {
-            const char *ext = ";qXfer:features:read+";
-            while (*ext != '\0') {
-                b[n++] = *ext++;
-            }
+            put_str(b, &n, (int)sizeof(b), ";qXfer:features:read+");
         }
         if (g->flash != NULL) {
             /* Both, or neither: a map naming a flash region makes gdb
              * send vFlash*, and answering those without an
              * implementation loses the image silently. */
-            const char *ext = ";qXfer:memory-map:read+";
-            while (*ext != '\0') {
-                b[n++] = *ext++;
-            }
+            put_str(b, &n, (int)sizeof(b), ";qXfer:memory-map:read+");
         }
         send_packet(g, b, (uint32_t)n);
         return;

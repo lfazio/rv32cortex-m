@@ -21,9 +21,27 @@ what the DOOM and Quake ports could not do.
 
 ## What is modified
 
-**Nothing.** The files are byte-identical to upstream, so a future
-update is a copy rather than a merge. Everything this emulator needs to
-supply -- a bus, a memory map, an interrupt line -- is in
+**`virtio.c`'s two descriptor-chain walkers, and nothing else.**
+`get_desc_rw_size` and `memcpy_to_from_queue` follow `next` links the
+guest wrote, and upstream follows them with no bound, uses a descriptor
+whose read failed as if it had succeeded, and sums the guest's lengths
+into an `int`. A guest that links a descriptor to itself hangs the
+emulator in the first of them -- `fuzz-virtio` found it, and
+`tests/fuzz/regressions/virtio/descriptor-chain-cycle` is the five
+lines of driver that do it. Both now stop after 256 descriptors (a
+chain may not be longer than its queue, virtio 1.1 2.6.5, and TinyEMU
+offers 16), at a descriptor that cannot be read, and at 64 MiB, through
+one helper, `get_desc_checked`. A bad chain is dropped, as upstream
+already drops one it cannot size.
+
+`bounded-chains.patch` is that change, so an update is a copy of the
+three files and `git apply third_party/tinyemu/bounded-chains.patch`.
+Not done in the wrapper below because it cannot be: the walkers are
+`static` and called from inside `virtio.c`, so a replacement can be
+neither linked in nor reached by a call from outside.
+
+Everything else this emulator needs to supply -- a bus, a memory map,
+an interrupt line -- is in
 `src/emu/virtio/virtio_glue.[ch]`, which implements the four functions
 `virtio.c` calls into its host:
 
@@ -39,7 +57,7 @@ worth importing rather than writing.
 
 ## What is wrapped
 
-One behaviour, without touching the file. `virtio.c` is not compiled on
+Three behaviours, without touching the file. `virtio.c` is not compiled on
 its own: `src/emu/virtio/virtio_tinyemu.c` `#include`s it, which puts its
 `static` device struct and queue helpers in reach, and replaces the
 block device's request handler with one that delegates IN and OUT and
@@ -50,6 +68,19 @@ and Linux sends one on every boot: `VIRTIO_BLK_T_GET_ID`, to read
 kernel and `udevadm settle` waited out its 120 seconds. GET_ID now
 answers with an empty serial, as QEMU does for a disk configured without
 one; anything else unknown gets `VIRTIO_BLK_S_UNSUPP`.
+
+The same handler refuses an IN or OUT with no writable byte for its
+status: upstream allocated nothing and wrote the status at `buf[-1]`,
+or asserted -- one descriptor from a guest corrupted the host's heap or
+aborted the emulator (`fuzz-virtio`). And the network device's handler
+is wrapped too (`emu_virtio_net_init`): a frame to send shorter than its
+header had a negative length, which upstream allocated.
+
+`phys_mem_get_ram_ptr`, in the glue, gives a pointer only when the rest
+of its page is RAM: every access `virtio.c` makes through it stays in
+that page, and the glue checked one byte, so a guest whose RAM ends
+mid-page -- `--ram` takes any size -- had a 16-byte descriptor read from
+past the end of the host's buffer.
 
 An update is still a copy. If upstream reshapes what the wrapper uses,
 it stops compiling -- the same failure the glue relies on.

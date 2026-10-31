@@ -93,36 +93,125 @@ void emu_image_set(const uint8_t *img, uint32_t len)
 static uintptr_t g_up_addr;
 static bool g_reload;
 
-#if EMU_NET
-bool emu_net_image_begin(void)
+/*
+ * Whose upload is under way. TFTP and gdb share the arena and the
+ * address an upload starts at, and nothing said which of them had it:
+ * gdb wrote 64 bytes into a TFTP transfer's space, the transfer ended
+ * without committing them, and the next gdb load began on that
+ * "erased" space and ran with them inside its image (fuzz-upload). A
+ * client that begins now takes the upload over -- the other's later
+ * calls are refused -- and what the abandoned one programmed is skipped.
+ */
+typedef enum { UP_NONE, UP_TFTP, UP_GDB } up_owner_t;
+static up_owner_t g_up_owner;
+/* How far past g_up_addr this upload has programmed, or tried to. */
+static uint32_t g_up_hwm;
+
+/* gdb's load: see "Images arriving through gdb's `load`" below. */
+static uint8_t g_gf_carry[4];
+static uint32_t g_gf_carry_len;
+static uint32_t g_gf_carry_off; /* guest offset of g_gf_carry[0] */
+static uint32_t g_gf_len; /* highest byte gdb has written  */
+
+/*
+ * Whether `len` bytes from the upload's start lie inside the arena. A
+ * gdb client chooses its addresses, and a write of nothing at offset
+ * 0x1501 was accepted -- no flash written, so nothing refused it -- and
+ * set the image's length: vFlashDone then committed 5,377 bytes of a
+ * 4,096-byte arena and the next guest was read from past its end
+ * (fuzz-upload). On the F746 the arena ends where flash does.
+ */
+static bool fits_arena(uint64_t len)
 {
-    if (board_flash_arena_size() == 0u) {
-        return false; /* this board takes no uploads */
-    }
-    g_up_addr = board_flash_arena_begin();
-    /*
-     * A full arena refuses here, and nothing else would ever erase it:
-     * the erase-and-retry in end() is reached from a write that fails,
-     * and there is no write without a begin.
-     */
-    if (g_up_addr == 0u && board_flash_arena_reset()) {
-        g_up_addr = board_flash_arena_begin();
-    }
-    return g_up_addr != 0u;
+    const uintptr_t end = board_flash_arena_base() + board_flash_arena_size();
+
+    return g_up_addr != 0u && g_up_addr <= end && len <= end - g_up_addr;
 }
 
-bool emu_net_image_data(const void *data, uint32_t len, uint32_t off)
+/* Program `len` bytes at `off` from the upload's start. */
+static bool up_write(uint32_t off, const void *data, uint32_t len)
 {
-    if (g_up_addr == 0u) {
+    if (!fits_arena((uint64_t)off + len)) {
         return false;
+    }
+    if (off + len > g_up_hwm) {
+        g_up_hwm = off + len; /* tried: a refused program may have begun */
     }
     return board_flash_write(g_up_addr + off, data, len);
 }
 
+/*
+ * Give up an upload that did not finish. Programmed cells cannot be
+ * programmed again, so its bytes are skipped rather than reused, and the
+ * next erase reclaims them.
+ */
+static void up_abandon(void)
+{
+    if (g_up_owner != UP_NONE) {
+        board_flash_arena_commit(g_up_hwm);
+    }
+    g_up_owner = UP_NONE;
+    g_up_addr = 0u;
+    g_up_hwm = 0u;
+    g_gf_carry_len = 0u;
+    g_gf_len = 0u;
+}
+
+/*
+ * Start an upload for `who`, abandoning any under way. A full arena
+ * refuses, and nothing else would ever erase it -- TFTP's erase-and-retry
+ * is reached from a write that fails, and there is no write without a
+ * begin -- so a full one is erased here and asked again. gdb's `load`
+ * had no such retry, and could not load into a full arena at all.
+ */
+static bool up_begin(up_owner_t who)
+{
+    up_abandon();
+    if (board_flash_arena_size() == 0u) {
+        return false; /* this board takes no uploads */
+    }
+    g_up_addr = board_flash_arena_begin();
+    if (g_up_addr == 0u && board_flash_arena_reset()) {
+        g_up_addr = board_flash_arena_begin();
+    }
+    g_up_owner = (g_up_addr != 0u) ? who : UP_NONE;
+    return g_up_addr != 0u;
+}
+
+/*
+ * The upload is complete and its first `len` bytes are the next image.
+ *
+ * Flagged, not acted on. The address space has to be rebuilt around the
+ * new image and the core reset, and neither can happen from inside a
+ * TFTP callback or a gdb packet -- which run between guest slices, with
+ * the current guest's regions live.
+ */
+static void up_commit(uint32_t len)
+{
+    board_flash_arena_commit(len > g_up_hwm ? len : g_up_hwm);
+    g_cur = (const uint8_t *)g_up_addr;
+    g_cur_size = len;
+    g_up_owner = UP_NONE;
+    g_up_addr = 0u;
+    g_up_hwm = 0u;
+    g_reload = true;
+}
+
+#if EMU_NET
+bool emu_net_image_begin(void)
+{
+    return up_begin(UP_TFTP);
+}
+
+bool emu_net_image_data(const void *data, uint32_t len, uint32_t off)
+{
+    return g_up_owner == UP_TFTP && up_write(off, data, len);
+}
+
 void emu_net_image_end(uint32_t len, bool ok)
 {
-    if (g_up_addr == 0u) {
-        return;
+    if (g_up_owner != UP_TFTP) {
+        return; /* gdb took the upload over; this one is gone */
     }
     if (!ok) {
         /*
@@ -132,36 +221,27 @@ void emu_net_image_end(uint32_t len, bool ok)
          * retry succeed rather than fail identically for ever.
          */
         (void)board_flash_arena_reset();
+        g_up_owner = UP_NONE; /* nothing to skip: all of it is erased */
         g_up_addr = 0u;
+        g_up_hwm = 0u;
         emu_console_printf("\nemu: upload failed\n");
         return;
     }
-
-    board_flash_arena_commit(len);
-    g_cur = (const uint8_t *)g_up_addr;
-    g_cur_size = len;
-    g_up_addr = 0u;
-
-    /*
-     * Flagged, not acted on. The address space has to be rebuilt around
-     * the new image and the core reset, and neither can happen from
-     * inside a TFTP callback -- which runs from emu_net_poll(), called
-     * between guest slices, with the current guest's regions live.
-     */
-    g_reload = true;
+    if (!fits_arena(len)) {
+        /* Not reachable from net_tftp.c, whose length is what it wrote;
+         * refused rather than run past the arena if that changes. */
+        up_abandon();
+        return;
+    }
+    up_commit(len);
 }
 
 void emu_net_image_abandon(uint32_t len)
 {
-    if (g_up_addr == 0u) {
+    if (g_up_owner != UP_TFTP) {
         return;
     }
-    /*
-     * Programmed cells cannot be programmed again, so the bytes are
-     * skipped rather than reused, and the next erase reclaims them.
-     */
-    board_flash_arena_commit(len);
-    g_up_addr = 0u;
+    up_abandon();
     emu_console_printf("\nemu: upload abandoned after %u bytes; nothing run\n",
                        (unsigned)len);
 }
@@ -183,28 +263,25 @@ void emu_net_image_abandon(uint32_t len)
  * here; the guest's view is what its ELF says and the arena is an
  * implementation detail of where that lands.
  */
-static uint8_t g_gf_carry[4];
-static uint32_t g_gf_carry_len;
-static uint32_t g_gf_carry_off; /* guest offset of g_gf_carry[0] */
-static uint32_t g_gf_len; /* highest byte gdb has written  */
 
 static bool gdb_flash_erase(uint32_t addr, uint32_t len)
 {
     (void)len;
 
-    if (board_flash_arena_size() == 0u || addr < EMU_GUEST_ROM_BASE) {
+    if (addr < EMU_GUEST_ROM_BASE) {
         return false;
     }
     /*
      * gdb erases before writing, and it is the first erase that decides
-     * where this image starts. Later ones inside the same load are
-     * already covered: the arena is handed out erased.
+     * where this image starts -- abandoning any other upload, TFTP's or
+     * a load gdb never finished, whose length and carry go with it. Later
+     * ones inside the same load are already covered: the arena is handed
+     * out erased.
      */
-    if (g_up_addr == 0u) {
-        g_up_addr = board_flash_arena_begin();
-        g_gf_carry_len = 0u;
+    if (g_up_owner != UP_GDB) {
+        return up_begin(UP_GDB);
     }
-    return g_up_addr != 0u;
+    return true;
 }
 
 /*
@@ -231,8 +308,7 @@ static bool gf_flush(void)
     if (g_gf_carry_len != 0u) {
         /* board_flash_write pads a short tail with 0xFF, which is the
          * erased state, so a final partial word is safe here. */
-        ok = board_flash_write(g_up_addr + g_gf_carry_off, g_gf_carry,
-                               g_gf_carry_len);
+        ok = up_write(g_gf_carry_off, g_gf_carry, g_gf_carry_len);
         g_gf_carry_len = 0u;
     }
     return ok;
@@ -244,8 +320,22 @@ static bool gdb_flash_write(uint32_t addr, const void *data, uint32_t len)
     const uint32_t off = addr - EMU_GUEST_ROM_BASE;
     uint32_t pos = 0u;
 
-    if (g_up_addr == 0u || addr < EMU_GUEST_ROM_BASE) {
+    if (g_up_owner != UP_GDB || addr < EMU_GUEST_ROM_BASE ||
+        !fits_arena((uint64_t)off + len)) {
         return false;
+    }
+
+    /*
+     * The highest byte seen is the image's length: gdb writes segments in
+     * whatever order it likes and never says how much there is. Counted
+     * first: a write of one to three bytes that only tops up the carry
+     * returns early, and counted at the end its bytes were cut off the
+     * image -- gdb's ~975-byte packets leave two carried after the
+     * second, so a one-byte third that ends the image lost it
+     * (fuzz-upload).
+     */
+    if (off + len > g_gf_len) {
+        g_gf_len = off + len;
     }
 
     /* A jump to a new section abandons whatever partial word was held for
@@ -263,7 +353,7 @@ static bool gdb_flash_write(uint32_t addr, const void *data, uint32_t len)
         if (g_gf_carry_len < 4u) {
             return true; /* still short of a word */
         }
-        if (!board_flash_write(g_up_addr + g_gf_carry_off, g_gf_carry, 4u)) {
+        if (!up_write(g_gf_carry_off, g_gf_carry, 4u)) {
             return false;
         }
         g_gf_carry_len = 0u;
@@ -274,8 +364,7 @@ static bool gdb_flash_write(uint32_t addr, const void *data, uint32_t len)
         const uint32_t whole = rest & ~3u;
         const uint32_t tail = rest - whole;
 
-        if (whole != 0u &&
-            !board_flash_write(g_up_addr + off + pos, &src[pos], whole)) {
+        if (whole != 0u && !up_write(off + pos, &src[pos], whole)) {
             return false;
         }
         if (tail != 0u) {
@@ -286,29 +375,19 @@ static bool gdb_flash_write(uint32_t addr, const void *data, uint32_t len)
             g_gf_carry_off = off + pos + whole;
         }
     }
-
-    /* The highest byte seen is the image's length: gdb writes segments in
-     * whatever order it likes and never says how much there is. */
-    if (off + len > g_gf_len) {
-        g_gf_len = off + len;
-    }
     return true;
 }
 
 static bool gdb_flash_done(void)
 {
-    if (g_up_addr == 0u || g_gf_len == 0u) {
+    if (g_up_owner != UP_GDB || g_gf_len == 0u || !fits_arena(g_gf_len)) {
         return false;
     }
     if (!gf_flush()) { /* the last partial word */
         return false;
     }
-    board_flash_arena_commit(g_gf_len);
-    g_cur = (const uint8_t *)g_up_addr;
-    g_cur_size = g_gf_len;
+    up_commit(g_gf_len);
     g_gf_len = 0u;
-    g_up_addr = 0u;
-    g_reload = true;
     return true;
 }
 

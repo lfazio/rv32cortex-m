@@ -74,9 +74,14 @@ measured at.
     frames, whose stack `fuzz-armv7m-mpu` keeps open to every access --
     the board's answers on stacking faults (`stk-*`, `unstk-*`) are
     held by `test_stacking_board_answers` instead.
-  - **What arrives from outside the guest**: the ELF loader, the gdb
-    stub's packet parser, the TFTP upload path, and the virtio
-    descriptors and rings, which a guest writes.
+  - **What arrives from outside the guest**: done for the ELF loader,
+    the gdb stub, the upload paths and the virtio rings (`fuzz-elf`,
+    `fuzz-gdb`, `fuzz-upload`, `fuzz-virtio`: sixteen defects,
+    [fuzzing.md](fuzzing.md#what-arrives-from-outside-the-guest)). Not
+    reached: lwIP's own TFTP packet parsing, the telnet console and
+    SLIP's framing, and virtio-9p, whose fuzzing would be the host's
+    filesystem's -- a scratch directory in a mount namespace would make
+    it safe to try.
   - **ARMv7-M on the board**: feed a fuzzer's corpus to rawgen's
     harness, so the F746 stays the oracle for what it alone can
     answer.
@@ -177,6 +182,12 @@ From the last measurements in [linux.md](linux.md).
       flush would then have to leave alone.
       Yocto at 32 MB is still 198 compactions, so this is the next
       lever if 64 MB is ever too much.
+- [ ] **A reload loses the virtio devices.** `emu_main_reload`, which
+      runs a guest uploaded over TFTP or gdb, rebuilds the bus and never
+      adds them back (`virtio_attach` runs once, in `emu_main`); the
+      glue's port table cannot be refilled either, having no reset, and
+      TinyEMU has no way to free a device. Found writing `fuzz-virtio`;
+      host network builds only.
 - [ ] **A display under Linux.** The framebuffer device exists
       ([games.md](games.md)); nothing in the device tree describes it to
       a kernel.

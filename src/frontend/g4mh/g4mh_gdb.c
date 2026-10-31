@@ -90,7 +90,7 @@ static void g4mh_gdb_reg_set(emu_cpu_t *cpu, unsigned n, uint64_t v64)
             c->psw = v;
         }
     } else if (n == G4MH_GDB_PC) {
-        c->pc = v;
+        c->pc = v & ~1u; /* see g4mh_gdb_pc_set */
     } else if (n == G4MH_GDB_FP) {
         c->r[G4MH_ABI_FP_REG] = v;
     }
@@ -101,9 +101,14 @@ static uint32_t g4mh_gdb_pc_get(const emu_cpu_t *cpu)
     return cpu_of_gdb(cpu)->pc;
 }
 
+/*
+ * PC bit 0 is always 0. gdb's `c 0xbb` set it, and the translator then
+ * fetched a halfword from an odd address (fuzz-gdb, UBSan); no guest
+ * instruction can make one, so only a debugger could.
+ */
 static void g4mh_gdb_pc_set(emu_cpu_t *cpu, uint32_t pc)
 {
-    cpu_of_gdb(cpu)->pc = pc;
+    cpu_of_gdb(cpu)->pc = pc & ~1u;
 }
 
 /*

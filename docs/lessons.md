@@ -4131,6 +4131,33 @@ session, and every one of them recurred:
   (`objdump` of `armv7m_run`, its `bl` targets counted) said which
   handler had left.
 
+- **The input nobody fuzzed held the worst defects in the tree.** Four
+  targets for what arrives from outside the guest -- an image, gdb's
+  packets, a TFTP or gdb upload, a guest's virtio rings -- found sixteen
+  defects, ten by running and six while being written, against eighteen
+  in all the CPU targets before them. Three are memory corruption a
+  peer on the board's link could cause: `qSupported`'s reply overran a
+  64-byte stack buffer on *every* gdb connection to a board, because
+  the only configurations ever tested lacked either the target
+  description (test_gdb) or the flash ops (gdb-check, with no network);
+  `m0,80000080` doubled its length past 32 bits and wrote hex past a
+  1 KB stack buffer; and an upload could commit an image longer than
+  the arena, which on the F746 ends where flash does. The same `2u * n`
+  was in `M` as well, and wrote 490 bytes of an earlier packet's
+  leftovers from a 19-byte one -- found by reading, since the fuzzer
+  needed a length of 0x80000000 *and* a long hex packet before it.
+  What made the targets work: an oracle that counts something only the
+  bug changes (bytes of guest memory written per packet, a reload per
+  completed upload, every byte of every buffer against a shadow);
+  inputs that carry a checksum and a command, or a driver's whole
+  request, since random bytes reach neither; and state reset per input
+  -- `emu_image.c` and `net_tftp.c` keep theirs in statics with no
+  reset, so the target `#include`s them. And one decision: TinyEMU's
+  chain walkers, which a self-linked descriptor sent round for ever, are
+  `static` and can only be patched; the patch is kept beside the file.
+  **Fuzz the bytes that cross a trust boundary first; they were the
+  last.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status
