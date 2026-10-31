@@ -768,8 +768,9 @@ The SMP design is in [docs/os.md](docs/os.md#smp-on-the-host).
   increments), and every PE once booted onto one stack.
 - **Count the system calls**: `pthread_sigmask` around critical sections
   was most of what made the parallel run slower (0.88x to 2.06x).
-- **Duplicate interrupt paths drift**: G4MH's JIT has its own, so grep
-  for the other copy before an interrupt change is done.
+- **Duplicate interrupt paths drift**: G4MH's JIT had its own, and three
+  features reached one copy only. Both call `g4mh_cpu_take_eiint` and
+  `g4mh_cpu_take_fe` now; merge a copy before the next change, not after.
 
 ### Performance costs and where they land
 

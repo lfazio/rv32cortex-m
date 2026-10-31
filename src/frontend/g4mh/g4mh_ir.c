@@ -1728,8 +1728,7 @@ static bool g4mh_jit_take_irq(emu_cpu_t *cpu)
      */
     if (g4mh_cpu_pending_fe(c)) {
         c->state = EMU_STATE_RUNNING;
-        g4mh_intc_ack_fe(c->intc, c->coreid);
-        g4mh_cpu_exception(c, G4MH_EXC_FEINT, c->pc);
+        (void)g4mh_cpu_take_fe(c, c->pc);
         return true;
     }
 
@@ -1750,21 +1749,13 @@ static bool g4mh_jit_take_irq(emu_cpu_t *cpu)
     c->state = EMU_STATE_RUNNING;
 
     /*
-     * Vector first, acknowledge second -- the third thing this separate
-     * copy has needed. A table-reference channel resolves its handler by
-     * reading memory, which can take an MDP, and the architecture then
-     * cancels acceptance and leaves the request pending; acknowledging
-     * before the read would discard an interrupt meant to be retried.
+     * The rest is no longer a copy: the vector, the register bank, the
+     * acknowledgement and the ceiling are g4mh_cpu_take_eiint's, which
+     * the interpreter calls too. This file had needed three things added
+     * to it after the interpreter had them; the bank would have been the
+     * fourth.
      */
-    uint32_t vec;
-    const g4mh_exc_t ve = g4mh_cpu_irq_vector(c, (uint32_t)ch, &vec);
-    if (ve != G4MH_EXC_NONE) {
-        g4mh_cpu_exception(c, ve, c->pc);
-        return true;
-    }
-    g4mh_intc_ack(c->intc, (uint32_t)ch);
-    g4mh_cpu_exception_at(c, G4MH_EXC_EIINT_BASE + (uint32_t)ch, c->pc, vec);
-    g4mh_cpu_ack_priority(c, ipri);
+    g4mh_cpu_take_eiint(c, (uint32_t)ch, ipri, c->pc);
     return true;
 }
 

@@ -68,6 +68,16 @@ struct g4mh_cpu;
 #define G4MH_INTIF_SIZE 0x00000400u
 #define G4MH_INTIF_TPTMSEL 0x0200u
 
+/*
+ * FENC, the FENMI control (6.3.16, 6.3.17): FENMIF reads NMIF, set when
+ * the NMI pin is asserted; writing 1 to FENMIC's NMIC clears it. One for
+ * the system; the pin reaches every PE (figure 6.1).
+ */
+#define G4MH_FENC_BASE 0xFF9A3A00u
+#define G4MH_FENC_SIZE 0x00000010u
+#define G4MH_FENC_FENMIF 0x0u
+#define G4MH_FENC_FENMIC 0x8u
+
 /* The channel at which INTC2 takes over from INTC1. */
 #define G4MH_INTC1_CHANNELS 32u
 
@@ -226,6 +236,12 @@ typedef struct g4mh_intc {
      */
     volatile uint8_t feint;
 
+    /* FENMI requested of this PE by the NMI pin, until it is taken. */
+    volatile uint8_t fenmi;
+
+    /* FENMIF.NMIF; on the global instance. */
+    uint32_t fenc_nmif;
+
     struct g4mh_cpu *cpu;
 
     /*
@@ -246,6 +262,7 @@ typedef struct g4mh_intc {
 extern const emu_dev_ops_t g4mh_intc1_ops;
 extern const emu_dev_ops_t g4mh_intc2_ops;
 extern const emu_dev_ops_t g4mh_intif_ops;
+extern const emu_dev_ops_t g4mh_fenc_ops; /* ctx: the global instance */
 
 /*
  * `global` is the instance holding the INTC2 half -- PE0's. Pass NULL
@@ -324,6 +341,15 @@ void g4mh_intc_raise_tptm(g4mh_intc_t *ic, unsigned pe);
  */
 bool g4mh_intc_fe_pending(const g4mh_intc_t *ic, unsigned pe);
 void g4mh_intc_ack_fe(g4mh_intc_t *ic, unsigned pe);
+
+/*
+ * The NMI pin, asserted: FENMIF.NMIF set, and FENMI requested of every
+ * PE the system has. Nothing in this tree drives the pin yet; a platform
+ * would, from a button or a host signal.
+ */
+void g4mh_intc_raise_nmi(g4mh_intc_t *ic);
+bool g4mh_intc_fenmi_pending(const g4mh_intc_t *ic);
+void g4mh_intc_ack_fenmi(g4mh_intc_t *ic);
 
 /* Acknowledge a channel: clears its request flag. */
 void g4mh_intc_ack(g4mh_intc_t *ic, uint32_t channel);

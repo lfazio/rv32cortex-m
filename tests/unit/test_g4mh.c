@@ -1286,7 +1286,7 @@ static void test_resbank_is_not_di(void)
 {
     /*
      *   ei                  ; clear PSW.ID so a stray DI is visible
-     *   resbank             ; must raise RIE, not set ID
+     *   resbank             ; no bank in use: SYSERR 1DH, not DI
      *   halt
      */
     const uint16_t prog[] = {
@@ -1306,9 +1306,10 @@ static void test_resbank_is_not_di(void)
         return;
     }
 
-    /* RIE is FE level, so the cause lands in FEIC. Decoded as DI it would
-     * have set PSW.ID and fallen through to the halt with FEIC zero. */
-    CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_RIE);
+    /* SYSERR is FE level, so the cause lands in FEIC. Decoded as DI it
+     * would have set PSW.ID and fallen through to the halt with FEIC
+     * zero. (Before register banks were modelled, it was RIE.) */
+    CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_SYSERR_RESBANK);
 }
 
 /*
@@ -5992,6 +5993,10 @@ static void test_tptm_interrupt_feint(void)
     /* PSW.ID was set and did not stop it -- which is the whole point
      * of the level, and is what an EI-only implementation gets wrong. */
     CHECK((sreg(0, G4MH_SR_FEPSW) & G4MH_PSW_ID) != 0u);
+    /* An interrupt clears EP; any other FE cause sets it (3.2.4.1). It
+     * was set, as for an exception. */
+    CHECK_EQ(sreg(0, G4MH_SR_PSW) & G4MH_PSW_EP, 0u);
+    CHECK((sreg(0, G4MH_SR_PSW) & G4MH_PSW_NP) != 0u);
 }
 
 /*
@@ -8853,7 +8858,8 @@ static void test_privileged_instructions(void)
         {"eiret", 0x07E0u, SUB_EIRET, 0u, false, G4MH_EXC_PIE},
         {"feret", 0x07E0u, SUB_FERET, 0u, false, G4MH_EXC_PIE},
         {"resbank", 0x07E0u, 0x8160u, 0u, false, G4MH_EXC_PIE},
-        {"resbank, SV", 0x07E0u, 0x8160u, 0u, true, G4MH_EXC_RIE},
+        /* Supervisor, with no bank in use: SYSERR 1DH, resumable. */
+        {"resbank, SV", 0x07E0u, 0x8160u, 0u, true, G4MH_EXC_SYSERR_RESBANK},
         {"chbii", CACHEOP(0x00u), 0u, false, 0u},
         {"cibii", CACHEOP(0x20u), 0u, false, G4MH_EXC_PIE},
         {"cfali", CACHEOP(0x40u), 0u, false, G4MH_EXC_PIE},
@@ -9129,6 +9135,579 @@ static void test_table_reads_as_supervisor(void)
     }
 }
 #endif /* G4MH_EXT_MPU */
+
+/* ------------------------------------------------------------------ */
+/* Register banks (U2B 3.2.4.5)                                        */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Written from the manual: figure 3.24's conditions, table 3.109's
+ * layout and orders, tables 3.39 to 3.42's registers, and SYSERR 1CH and
+ * 1DH from table 3.104. RBIP sits at the top of the test RAM, so bank 0
+ * is RAM 0xFA0..0xFFF in save mode 0 and 0xF70..0xFFF in mode 1.
+ */
+#define BANK_RBIP (EMU_GUEST_RAM_BASE + 0x1000u)
+#define BANK_TBL (EMU_GUEST_RAM_BASE + 0x800u)
+#define BANK_HANDLER (EMU_GUEST_RAM_BASE + 0xD0u)
+#define BANK_CH 6u
+#define BANK_FPSR (G4MH_FPSR_FS | (2u << G4MH_FPSR_RM_SHIFT))
+
+static uint32_t bank_word(uint32_t addr)
+{
+    const uint32_t o = addr - EMU_GUEST_RAM_BASE;
+
+    return (uint32_t)g_ram[o] | ((uint32_t)g_ram[o + 1u] << 8) |
+           ((uint32_t)g_ram[o + 2u] << 16) | ((uint32_t)g_ram[o + 3u] << 24);
+}
+
+static void ram_put32(uint32_t addr, uint32_t v)
+{
+    const uint32_t o = addr - EMU_GUEST_RAM_BASE;
+
+    for (unsigned i = 0; i < 4u; i++) {
+        g_ram[o + i] = (uint8_t)(v >> (8u * i));
+    }
+}
+
+/* Is the channel's request still pending (EEICn.EIRF)? */
+static bool bank_ch_pending(g4mh_cpu_t *c)
+{
+    uint32_t v = 0u;
+
+    (void)g4mh_intc1_ops.read(c->intc, G4MH_INTC1_EEIC + BANK_CH * 4u, 4u, &v);
+    return (v & G4MH_EEIC_EIRF) != 0u;
+}
+
+/* Channel BANK_CH, priority `pri`, by the table, pending; a bank for
+ * that priority; registers r1..r31 = 0x0101..1F1F-ish markers. */
+static void bank_arm(g4mh_cpu_t *c, unsigned pri)
+{
+    (void)g4mh_intc1_ops.write(c->intc, G4MH_INTC1_EEIC + BANK_CH * 4u, 4u,
+                               pri | G4MH_EEIC_EITB);
+    g4mh_intc_raise(c->intc, BANK_CH);
+    c->sr[1][G4MH_SR_INTBP] = BANK_TBL;
+    ram_put32(BANK_TBL + BANK_CH * 4u, BANK_HANDLER);
+    c->sr[G4MH_SELID_INT][G4MH_SR_RBCR0] = 1u << (pri < 15u ? pri : 15u);
+    c->sr[G4MH_SELID_INT][G4MH_SR_RBIP] = BANK_RBIP;
+    c->sr[0][G4MH_SR_FPSR] = BANK_FPSR;
+    for (unsigned r = 1u; r < 32u; r++) {
+        c->r[r] = 0x01010101u * r;
+    }
+}
+
+static void bank_guest_setup(g4mh_cpu_t *c)
+{
+    memset(&g_ram[0xF00u], 0xA5, 0x100u); /* after the load clears RAM */
+    bank_arm(c, 3u);
+}
+
+/*
+ * The whole round trip as a guest, through both backends -- the JIT
+ * takes interrupts through a path of its own: EI admits a pending
+ * table-reference interrupt that uses a bank; its handler clears r1,
+ * runs RESBANK and returns. The bank holds the interrupted context, and
+ * RESBANK puts r1 back.
+ */
+static void test_register_bank_round_trip(void)
+{
+    uint16_t prog[0x70];
+
+    memset(prog, 0, sizeof(prog));
+    prog[0] = W0(OP_SYSTEM, 0, 0x10u); /* ei      */
+    prog[1] = SUB_DIEI;
+    prog[2] = 0x07E0u; /* halt                    */
+    prog[3] = SUB_HALT;
+    prog[0x68] = 0x0800u; /* mov r0, r1 (at 0xD0) */
+    prog[0x69] = 0x07E0u; /* resbank              */
+    prog[0x6A] = 0x8160u;
+    prog[0x6B] = 0x07E0u; /* eiret                */
+    prog[0x6C] = SUB_EIRET;
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        if (!priv_run(prog, 0x70u, pass, bank_guest_setup)) {
+            return;
+        }
+        g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+
+        CHECK_EQ(c->pc, EMU_GUEST_RAM_BASE + 8u); /* parked past the halt */
+        CHECK_EQ(c->r[1], 0x01010101u);           /* restored            */
+        CHECK_EQ(sreg(G4MH_SELID_INT, G4MH_SR_RBNR), 0u);
+        CHECK_EQ(sreg(0, G4MH_SR_FEIC), PRIV_SENT_FEIC);
+        /* Bank 0, table 3.109: PC, PSW, EIIC, FPSR, r1..r19, r30. */
+        CHECK_EQ(bank_word(BANK_RBIP - 0x04u), EMU_GUEST_RAM_BASE + 4u);
+        CHECK_EQ(bank_word(BANK_RBIP - 0x08u) & G4MH_PSW_ID, 0u); /* after EI */
+        CHECK_EQ(bank_word(BANK_RBIP - 0x0Cu), G4MH_EXC_EIINT_BASE + BANK_CH);
+        CHECK_EQ(bank_word(BANK_RBIP - 0x10u), BANK_FPSR);
+        CHECK_EQ(bank_word(BANK_RBIP - 0x14u), 0x01010101u);
+        CHECK_EQ(bank_word(BANK_RBIP - 0x5Cu), 0x01010101u * 19u);
+        CHECK_EQ(bank_word(BANK_RBIP - 0x60u), 0x01010101u * 30u);
+        CHECK_EQ(bank_word(BANK_RBIP - 0x64u), 0xA5A5A5A5u); /* bank 1's */
+        CHECK_EQ(sreg(0, G4MH_SR_EIPC), EMU_GUEST_RAM_BASE + 4u);
+    }
+}
+
+/*
+ * RESBANK whose bank is not there, as a guest on both backends: an MDP
+ * at the RESBANK (resumable), with MEI's RESBANK row -- the length of
+ * the instruction, a word, type 10110B, a read. Only an instruction can
+ * show it: MEI is decoded from the faulting one.
+ */
+static void resbank_unmapped_setup(g4mh_cpu_t *c)
+{
+    c->sr[G4MH_SELID_INT][G4MH_SR_RBNR] = 1u;
+    c->sr[G4MH_SELID_INT][G4MH_SR_RBIP] = UNMAPPED + 0x100u;
+}
+
+static void test_resbank_mei(void)
+{
+    static const uint16_t prog[] = {0x07E0u, 0x8160u}; /* resbank */
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        if (!priv_run(prog, 2u, pass, resbank_unmapped_setup)) {
+            return;
+        }
+        CHECK_EQ(G4MH_EXC_CODE(sreg(0, G4MH_SR_FEIC)), G4MH_EXC_MDP);
+        CHECK_EQ(sreg(0, G4MH_SR_FEPC), EMU_GUEST_RAM_BASE);
+        CHECK_EQ(sreg(2, G4MH_SR_MEI),
+                 G4MH_MEI(4u, 0u, 2u, 0u, G4MH_MEI_BANK, 0u));
+        CHECK_EQ(sreg(G4MH_SELID_INT, G4MH_SR_RBNR), 1u);
+    }
+}
+
+/*
+ * FENMI, from the NMI pin through FENC (6.2.2, 6.3.16-17; table 3.103):
+ * taken at the first instruction though PSW.NP and ID are both set,
+ * ahead of a pending FEINT, cause E0H at offset E0H, NP and ID set, EP
+ * and UM clear; FENMIF says so until FENMIC clears it. On both backends.
+ */
+static bool g_fenmi_with_feint;
+
+static void fenmi_pre_run(void)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+
+    c->psw |= G4MH_PSW_NP | G4MH_PSW_ID | G4MH_PSW_UM;
+    c->sr[0][G4MH_SR_PSW] = c->psw;
+    g4mh_jit_ctx_refresh(c);
+    c->sr[0][G4MH_SR_FEIC] = PRIV_SENT_FEIC;
+    if (g_fenmi_with_feint) {
+        g4mh_intc_raise_tptm(c->intc, c->coreid); /* FEINT, TPTMSEL 0 */
+    }
+    g4mh_intc_raise_nmi(c->intc);
+}
+
+static void test_fenmi(void)
+{
+    uint16_t prog[0x80];
+
+    memset(prog, 0, sizeof(prog));
+    prog[0] = 0x07E0u; /* halt: not reached first */
+    prog[1] = SUB_HALT;
+    prog[0x70] = 0x07E0u; /* the FENMI handler, at 0xE0 */
+    prog[0x71] = SUB_HALT;
+
+    for (unsigned k = 0; k < 4u; k++) {
+        emu_run_reason_t why;
+        uint32_t retired = 0u, v = 0u;
+
+        g_fenmi_with_feint = (k & 2u) != 0u;
+        g_force_backend = (k & 1u) == 0u ? &g4mh_backend_interp : NULL;
+        g_pre_run = fenmi_pre_run;
+        const bool ok = load_and_run(prog, 0x80u, 64u, &why, &retired);
+
+        g_pre_run = NULL;
+        g_force_backend = NULL;
+        if (!ok) {
+            CHECK(false);
+            return;
+        }
+        g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+
+        CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_FENMI);
+        CHECK_EQ(sreg(0, G4MH_SR_FEPC), EMU_GUEST_RAM_BASE);
+        CHECK((sreg(0, G4MH_SR_FEPSW) & G4MH_PSW_NP) != 0u);
+        CHECK_EQ(c->pc, EMU_GUEST_RAM_BASE + 0xE4u);
+        CHECK_EQ(c->psw & (G4MH_PSW_UM | G4MH_PSW_EP), 0u);
+        CHECK_EQ(c->psw & (G4MH_PSW_NP | G4MH_PSW_ID),
+                 G4MH_PSW_NP | G4MH_PSW_ID);
+        CHECK(!g4mh_intc_fenmi_pending(c->intc)); /* taken once */
+        CHECK(emu_bus_read(c->bus, G4MH_FENC_BASE + G4MH_FENC_FENMIF, 4u,
+                           &v) == EMU_FAULT_NONE);
+        CHECK_EQ(v, 1u);
+        CHECK(emu_bus_write(c->bus, G4MH_FENC_BASE + G4MH_FENC_FENMIC, 4u,
+                            1u) == EMU_FAULT_NONE);
+        (void)emu_bus_read(c->bus, G4MH_FENC_BASE + G4MH_FENC_FENMIF, 4u, &v);
+        CHECK_EQ(v, 0u);
+        if (g_fenmi_with_feint) {
+            /* FEINT waits: NP is set, and FENMI went first. */
+            CHECK(g4mh_intc_fe_pending(c->intc, c->coreid));
+        }
+    }
+}
+
+/* A core from priv_run, halted, to drive directly. */
+static g4mh_cpu_t *bank_core(void)
+{
+    static const uint16_t halt[] = {0x07E0u, SUB_HALT};
+
+    if (!priv_run(halt, 2u, 0u, NULL)) {
+        return NULL;
+    }
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+
+    c->state = EMU_STATE_RUNNING;
+    c->psw &= ~G4MH_PSW_ID;
+    c->sr[0][G4MH_SR_PSW] = c->psw;
+    memset(&g_ram[0xE00u], 0xA5, 0x200u);
+    return c;
+}
+
+static void test_register_bank_rules(void)
+{
+    const uint32_t pc0 = EMU_GUEST_RAM_BASE + 0x20u;
+    g4mh_cpu_t *c;
+
+    /* Save mode 1: every register, r20..r31 below r19; bank 90H. */
+    if ((c = bank_core()) == NULL) {
+        return;
+    }
+    bank_arm(c, 3u);
+    c->sr[G4MH_SELID_INT][G4MH_SR_RBCR0] |= G4MH_RBCR0_MD;
+    g4mh_cpu_take_eiint(c, BANK_CH, 3u, pc0);
+    CHECK_EQ(c->pc, BANK_HANDLER);
+    CHECK_EQ(sreg(G4MH_SELID_INT, G4MH_SR_RBNR), 1u);
+    CHECK_EQ(bank_word(BANK_RBIP - 0x60u), 0x01010101u * 20u);
+    CHECK_EQ(bank_word(BANK_RBIP - 0x84u), 0x01010101u * 29u);
+    CHECK_EQ(bank_word(BANK_RBIP - 0x88u), 0x01010101u * 30u);
+    CHECK_EQ(bank_word(BANK_RBIP - 0x8Cu), 0x01010101u * 31u);
+    CHECK_EQ(bank_word(BANK_RBIP - 0x90u), 0xA5A5A5A5u); /* unused */
+    CHECK((c->psw & G4MH_PSW_ID) != 0u); /* RBCR1.NC3 at reset: 1 */
+
+    /* RESBANK in mode 1 puts r20..r31 back too, and EIPC, EIPSW, EIIC,
+     * FPSR; the count comes down. */
+    for (unsigned r = 1u; r < 32u; r++) {
+        c->r[r] = 0u;
+    }
+    c->sr[0][G4MH_SR_EIPC] = 0u;
+    c->sr[0][G4MH_SR_EIIC] = 0u;
+    c->sr[0][G4MH_SR_FPSR] = 0u;
+    CHECK_EQ(g4mh_resbank(c), G4MH_EXC_NONE);
+    CHECK_EQ(c->r[25], 0x01010101u * 25u);
+    CHECK_EQ(c->r[31], 0x01010101u * 31u);
+    CHECK_EQ(c->r[30], 0x01010101u * 30u);
+    CHECK_EQ(sreg(0, G4MH_SR_EIPC), pc0);
+    CHECK_EQ(sreg(0, G4MH_SR_EIIC), G4MH_EXC_EIINT_BASE + BANK_CH);
+    CHECK_EQ(sreg(0, G4MH_SR_FPSR), BANK_FPSR);
+    CHECK_EQ(sreg(G4MH_SELID_INT, G4MH_SR_RBNR), 0u);
+
+    /* NC clear: the handler runs with interrupts on; and a second one
+     * nests onto bank 1, 60H below. */
+    if ((c = bank_core()) == NULL) {
+        return;
+    }
+    bank_arm(c, 3u);
+    c->sr[G4MH_SELID_INT][G4MH_SR_RBCR1] &= ~(1u << 3);
+    g4mh_cpu_take_eiint(c, BANK_CH, 3u, pc0);
+    CHECK_EQ(c->psw & G4MH_PSW_ID, 0u);
+    c->r[1] = 0x77u;
+    g4mh_intc_raise(c->intc, BANK_CH);
+    g4mh_cpu_take_eiint(c, BANK_CH, 3u, BANK_HANDLER);
+    CHECK_EQ(sreg(G4MH_SELID_INT, G4MH_SR_RBNR), 2u);
+    CHECK_EQ(bank_word(BANK_RBIP - 0x60u - 0x04u), BANK_HANDLER);
+    CHECK_EQ(bank_word(BANK_RBIP - 0x60u - 0x14u), 0x77u);
+
+    /* More banks than ULNR allows: SYSERR 1CH, terminating -- FEPC the
+     * interrupted pc -- with nothing saved and the interrupt held. */
+    if ((c = bank_core()) == NULL) {
+        return;
+    }
+    bank_arm(c, 3u);
+    c->sr[G4MH_SELID_INT][G4MH_SR_INTCFG] =
+        (c->sr[G4MH_SELID_INT][G4MH_SR_INTCFG] & ~(0x3Fu << 16)) | (2u << 16);
+    c->sr[G4MH_SELID_INT][G4MH_SR_RBNR] = 3u;
+    g4mh_cpu_take_eiint(c, BANK_CH, 3u, pc0);
+    CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_SYSERR_BANK);
+    CHECK_EQ(sreg(0, G4MH_SR_FEPC), pc0);
+    CHECK_EQ(c->pc, EMU_GUEST_RAM_BASE + 0x10u); /* SYSERR's slot */
+    CHECK_EQ(sreg(G4MH_SELID_INT, G4MH_SR_RBNR), 3u);
+    CHECK_EQ(bank_word(BANK_RBIP - 3u * 0x60u - 4u), 0xA5A5A5A5u);
+    CHECK(bank_ch_pending(c));
+    /* At ULNR it is still a bank to use. */
+    c->sr[G4MH_SELID_INT][G4MH_SR_RBNR] = 2u;
+    c->psw &= ~(G4MH_PSW_ID | G4MH_PSW_NP);
+    g4mh_cpu_take_eiint(c, BANK_CH, 3u, pc0);
+    CHECK_EQ(sreg(G4MH_SELID_INT, G4MH_SR_RBNR), 3u);
+    CHECK_EQ(c->pc, BANK_HANDLER);
+
+    /* BN 63 overflows whatever ULNR says. */
+    if ((c = bank_core()) == NULL) {
+        return;
+    }
+    bank_arm(c, 3u);
+    c->sr[G4MH_SELID_INT][G4MH_SR_INTCFG] |= 0x3Fu << 16;
+    c->sr[G4MH_SELID_INT][G4MH_SR_RBNR] = 63u;
+    g4mh_cpu_take_eiint(c, BANK_CH, 3u, pc0);
+    CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_SYSERR_BANK);
+
+    /* No bank: the direct vector method, or BE clear for the priority. */
+    if ((c = bank_core()) == NULL) {
+        return;
+    }
+    bank_arm(c, 3u);
+    c->sr[1][G4MH_SR_RBASE] |= G4MH_BASE_DV;
+    g4mh_cpu_take_eiint(c, BANK_CH, 3u, pc0);
+    CHECK_EQ(sreg(G4MH_SELID_INT, G4MH_SR_RBNR), 0u);
+    CHECK_EQ(bank_word(BANK_RBIP - 4u), 0xA5A5A5A5u);
+    if ((c = bank_core()) == NULL) {
+        return;
+    }
+    bank_arm(c, 3u);
+    c->sr[G4MH_SELID_INT][G4MH_SR_RBCR0] = 1u << 4; /* not priority 3 */
+    g4mh_cpu_take_eiint(c, BANK_CH, 3u, pc0);
+    CHECK_EQ(sreg(G4MH_SELID_INT, G4MH_SR_RBNR), 0u);
+
+    /* Priority 15 and up share BE15 (with 64 priorities, EPL). */
+    if ((c = bank_core()) == NULL) {
+        return;
+    }
+    bank_arm(c, 40u);
+    CHECK_EQ(sreg(G4MH_SELID_INT, G4MH_SR_RBCR0), 1u << 15);
+    g4mh_cpu_take_eiint(c, BANK_CH, 40u, pc0);
+    CHECK_EQ(sreg(G4MH_SELID_INT, G4MH_SR_RBNR), 1u);
+
+    /* RESBANK with no bank in use: SYSERR 1DH, and nothing restored. */
+    if ((c = bank_core()) == NULL) {
+        return;
+    }
+    c->r[1] = 0x55u;
+    CHECK_EQ(g4mh_resbank(c), G4MH_EXC_SYSERR_RESBANK);
+    CHECK_EQ(c->r[1], 0x55u);
+
+    /* RBNR: writes of 16 and up read 16 (table 3.41). */
+    g4mh_sr_write(c, G4MH_SELID_INT, G4MH_SR_RBNR, 40u);
+    CHECK_EQ(sreg(G4MH_SELID_INT, G4MH_SR_RBNR), 16u);
+    g4mh_sr_write(c, G4MH_SELID_INT, G4MH_SR_RBIP, 0xFFFFFFFFu);
+    CHECK_EQ(sreg(G4MH_SELID_INT, G4MH_SR_RBIP), 0xFFFFFFF0u);
+    g4mh_sr_write(c, G4MH_SELID_INT, G4MH_SR_RBCR0, 0xFFFFFFFFu);
+    CHECK_EQ(sreg(G4MH_SELID_INT, G4MH_SR_RBCR0), 0x0001FFFFu);
+    g4mh_sr_write(c, G4MH_SELID_INT, G4MH_SR_RBCR1, 0xFFFFFFFFu);
+    CHECK_EQ(sreg(G4MH_SELID_INT, G4MH_SR_RBCR1), 0x0000FFFFu);
+}
+
+#if G4MH_EXT_MPU
+/*
+ * The bank's memory is MPU-checked, as supervisor: a refused save is an
+ * MDP 95H (terminating), MEI's type 10110B and a write, with the
+ * interrupt held and nothing counted; a refused RESBANK read is an MDP
+ * 91H (resumable) with the instruction's MEI, and nothing restored.
+ */
+static void test_register_bank_mpu(void)
+{
+    const uint32_t pc0 = EMU_GUEST_RAM_BASE + 0x20u;
+    g4mh_cpu_t *c;
+
+    if ((c = bank_core()) == NULL) {
+        return;
+    }
+    bank_arm(c, 3u);
+    /* Area 0: all of RAM, SV read and execute but not write. */
+    g4mh_sr_write(c, 5u, G4MH_SR_MPIDX, 0u);
+    g4mh_sr_write(c, 5u, G4MH_SR_MPLA, EMU_GUEST_RAM_BASE);
+    g4mh_sr_write(c, 5u, G4MH_SR_MPUA, EMU_GUEST_RAM_BASE + 0xFFFu);
+    g4mh_sr_write(c, 5u, G4MH_SR_MPAT,
+                  G4MH_MPAT_E | G4MH_MPAT_RG | G4MH_MPAT_SX | G4MH_MPAT_SR);
+    g4mh_sr_write(c, 5u, G4MH_SR_MPM, G4MH_MPM_MPE | G4MH_MPM_SVP);
+    g4mh_cpu_take_eiint(c, BANK_CH, 3u, pc0);
+    CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_MDP_TABLE | G4MH_EXC_D_SW);
+    CHECK_EQ(sreg(0, G4MH_SR_FEPC), pc0);
+    CHECK_EQ(sreg(2, G4MH_SR_MEI), G4MH_MEI(0u, 0u, 2u, 0u, G4MH_MEI_BANK, 1u));
+    CHECK_EQ(sreg(2, G4MH_SR_MEA), BANK_RBIP - 4u);
+    CHECK_EQ(sreg(G4MH_SELID_INT, G4MH_SR_RBNR), 0u);
+    CHECK(bank_ch_pending(c));
+    CHECK_EQ(c->mei_bank, 0u);
+
+    /* RESBANK where the bank may not be read. */
+    g4mh_sr_write(c, 5u, G4MH_SR_MPAT,
+                  G4MH_MPAT_E | G4MH_MPAT_RG | G4MH_MPAT_SX | G4MH_MPAT_SW);
+    c->sr[G4MH_SELID_INT][G4MH_SR_RBNR] = 1u;
+    c->r[1] = 0x55u;
+    CHECK_EQ(g4mh_resbank(c), G4MH_EXC_MDP | G4MH_EXC_D_SR);
+    CHECK_EQ(c->r[1], 0x55u);
+    CHECK_EQ(sreg(G4MH_SELID_INT, G4MH_SR_RBNR), 1u);
+}
+#endif
+
+/*
+ * The bits an LDSR may set (section 3.2.3), on a bare core. They were
+ * stored as written: PSW.CU2 could be set, a reserved bit of EIPSW, all
+ * of RBASE and PID. And PID, which nothing set, read 0: it is the U2B's,
+ * with the FXU on PE0 alone -- and CU1, the FXU's permission, is fixed
+ * to 0 where there is none.
+ */
+static void test_sr_writable_bits(void)
+{
+    static g4mh_cpu_t pe[2];
+
+    for (unsigned id = 0; id < 2u; id++) {
+        g4mh_cpu_t *const c = &pe[id];
+        const uint32_t cu1 = (id == 0u) ? (1u << 17) : 0u;
+
+        g4mh_cpu_init(c, NULL, id);
+        CHECK_EQ(c->sr[1][G4MH_SR_PID],
+                 id == 0u ? G4MH_PID_FXU : G4MH_PID_NO_FXU);
+        g4mh_sr_write(c, 1u, G4MH_SR_PID, 0u);
+        CHECK_EQ(c->sr[1][G4MH_SR_PID],
+                 id == 0u ? G4MH_PID_FXU : G4MH_PID_NO_FXU);
+
+        /* PSW, EIPSW, FEPSW: UM, CU1 (FXU), CU0, EBV, bits 7..0; EIMASK
+         * only while INTCFG.EPL is set; CU2 and the rest never. */
+        g4mh_sr_write(c, 0u, G4MH_SR_PSW, 0xFFFFFFFFu);
+        CHECK_EQ(c->psw, 0x400180FFu | cu1);
+        g4mh_sr_write(c, 0u, G4MH_SR_EIPSW, 0xFFFFFFFFu);
+        CHECK_EQ(c->sr[0][G4MH_SR_EIPSW], 0x400180FFu | cu1);
+        g4mh_sr_write(c, 0u, G4MH_SR_FEPSW, 0xFFFFFFFFu);
+        CHECK_EQ(c->sr[0][G4MH_SR_FEPSW], 0x400180FFu | cu1);
+        g4mh_sr_write(c, G4MH_SELID_INT, G4MH_SR_INTCFG, 0xFFFFFFFFu);
+        CHECK_EQ(c->sr[G4MH_SELID_INT][G4MH_SR_INTCFG], 0x003F0003u);
+        g4mh_sr_write(c, 0u, G4MH_SR_PSW, 0xFFFFFFFFu);
+        g4mh_sr_write(c, 0u, G4MH_SR_EIPSW, 0xFFFFFFFFu);
+        g4mh_sr_write(c, 0u, G4MH_SR_FEPSW, 0xFFFFFFFFu);
+        CHECK_EQ(c->psw, 0x43F180FFu | cu1);
+        /* Clearing EPL clears EIMASK wherever it is held. */
+        g4mh_sr_write(c, G4MH_SELID_INT, G4MH_SR_INTCFG, 0u);
+        CHECK_EQ(c->psw & (0x3Fu << 20), 0u);
+        CHECK_EQ(c->sr[0][G4MH_SR_PSW] & (0x3Fu << 20), 0u);
+        CHECK_EQ(c->sr[0][G4MH_SR_EIPSW] & (0x3Fu << 20), 0u);
+        CHECK_EQ(c->sr[0][G4MH_SR_FEPSW] & (0x3Fu << 20), 0u);
+
+        g4mh_sr_write(c, 0u, G4MH_SR_CTBP, 0xFFFFFFFFu);
+        CHECK_EQ(c->sr[0][G4MH_SR_CTBP], 0xFFFFFFFEu);
+        g4mh_sr_write(c, 0u, G4MH_SR_CTPSW, 0xFFFFFFFFu);
+        CHECK_EQ(c->sr[0][G4MH_SR_CTPSW], 0x1Fu);
+        g4mh_sr_write(c, 0u, G4MH_SR_EIPC, 0xFFFFFFFFu); /* all R/W */
+        CHECK_EQ(c->sr[0][G4MH_SR_EIPC], 0xFFFFFFFFu);
+
+        c->sr[1][G4MH_SR_RBASE] = 0x00200000u;
+        g4mh_sr_write(c, 1u, G4MH_SR_RBASE, 0xFFFFFFFFu);
+        CHECK_EQ(c->sr[1][G4MH_SR_RBASE], 0x00200000u);
+        g4mh_sr_write(c, 1u, G4MH_SR_EBASE, 0xFFFFFFFFu);
+        CHECK_EQ(c->sr[1][G4MH_SR_EBASE], 0xFFFFFE03u);
+        g4mh_sr_write(c, 1u, G4MH_SR_INTBP, 0xFFFFFFFFu);
+        CHECK_EQ(c->sr[1][G4MH_SR_INTBP], 0xFFFFFE00u);
+        g4mh_sr_write(c, 1u, G4MH_SR_MCTL, 0xFFFFFFFFu);
+        CHECK_EQ(c->sr[1][G4MH_SR_MCTL], 1u);
+        g4mh_sr_write(c, 1u, G4MH_SR_SCCFG, 0xFFFFFFFFu);
+        CHECK_EQ(c->sr[1][G4MH_SR_SCCFG], 0xFFu);
+        g4mh_sr_write(c, 1u, G4MH_SR_SCBP, 0xFFFFFFFFu);
+        CHECK_EQ(c->sr[1][G4MH_SR_SCBP], 0xFFFFFFFCu);
+        g4mh_sr_write(c, G4MH_SELID_INT, G4MH_SR_HTCFG0, 7u);
+        CHECK_EQ(c->sr[G4MH_SELID_INT][G4MH_SR_HTCFG0], id);
+    }
+}
+
+/*
+ * EIRET, FERET and CTRET with bit 0 of the saved PC set: "the value
+ * transferred to the PC ... is 0" (tables 3.10, 3.12, 3.18). It went to
+ * the odd address. A HALT at 0x20 is where each must land.
+ */
+static uint32_t g_ret_kind;
+
+static void ret_odd_setup(g4mh_cpu_t *c)
+{
+    const uint32_t odd = EMU_GUEST_RAM_BASE + 0x21u;
+
+    c->sr[0][g_ret_kind == 0u ? G4MH_SR_EIPC
+             : g_ret_kind == 1u ? G4MH_SR_FEPC
+                                : G4MH_SR_CTPC] = odd;
+    c->sr[0][G4MH_SR_EIPSW] = G4MH_PSW_ID;
+    c->sr[0][G4MH_SR_FEPSW] = G4MH_PSW_ID;
+}
+
+static void test_return_clears_pc_bit0(void)
+{
+    static const uint16_t sub[3] = {SUB_EIRET, SUB_FERET, SUB_CTRET};
+
+    for (g_ret_kind = 0; g_ret_kind < 3u; g_ret_kind++) {
+        uint16_t prog[0x14];
+
+        memset(prog, 0, sizeof(prog));
+        prog[0] = 0x07E0u;
+        prog[1] = sub[g_ret_kind];
+        prog[0x10] = 0x07E0u; /* halt at 0x20 */
+        prog[0x11] = SUB_HALT;
+        for (unsigned pass = 0; pass < 2u; pass++) {
+            if (!priv_run(prog, 0x14u, pass, ret_odd_setup)) {
+                return;
+            }
+            CHECK_EQ(((const g4mh_cpu_t *)(const void *)g_core.cpu)->pc,
+                     EMU_GUEST_RAM_BASE + 0x24u);
+            CHECK_EQ(sreg(0, G4MH_SR_FEIC), PRIV_SENT_FEIC);
+        }
+    }
+}
+
+#if G4MH_EXT_MPU
+/*
+ * CHBII and CFALI judge their address as a read of its 32-byte line
+ * (tables 3.111, 3.117): refused, an MDP 91H with MEA the line's start
+ * and the CACHE row of MEI. CIBII names an index, not memory, and is not
+ * checked. None of the three was: the address never reached cache_op.
+ */
+static void cache_mpu_setup(g4mh_cpu_t *c)
+{
+    g4mh_sr_write(c, 5u, G4MH_SR_MPIDX, 0u);
+    g4mh_sr_write(c, 5u, G4MH_SR_MPLA, EMU_GUEST_RAM_BASE);
+    g4mh_sr_write(c, 5u, G4MH_SR_MPUA, EMU_GUEST_RAM_BASE + 0x7FFu);
+    g4mh_sr_write(c, 5u, G4MH_SR_MPAT, G4MH_MPAT_E | G4MH_MPAT_RG |
+                                           G4MH_MPAT_SX | G4MH_MPAT_SR |
+                                           G4MH_MPAT_SW);
+    g4mh_sr_write(c, 5u, G4MH_SR_MPIDX, 1u);
+    g4mh_sr_write(c, 5u, G4MH_SR_MPLA, EMU_GUEST_RAM_BASE + 0x800u);
+    g4mh_sr_write(c, 5u, G4MH_SR_MPUA, EMU_GUEST_RAM_BASE + 0xFFFu);
+    g4mh_sr_write(c, 5u, G4MH_SR_MPAT,
+                  G4MH_MPAT_E | G4MH_MPAT_RG | G4MH_MPAT_SW); /* no read */
+    g4mh_sr_write(c, 5u, G4MH_SR_MPM, G4MH_MPM_MPE | G4MH_MPM_SVP);
+    c->r[6] = EMU_GUEST_RAM_BASE + 0x834u;
+}
+
+static void test_cache_ops_against_mpu(void)
+{
+    static const struct {
+        const char *name;
+        uint32_t op;
+        bool refused;
+    } k[] = {
+        {"chbii", 0x00u, true},
+        {"cfali", 0x40u, true},
+        {"cibii", 0x20u, false},
+    };
+
+    for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
+        const uint16_t prog[] = {
+            (uint16_t)(((0x1Cu | (k[i].op >> 5)) << 11) | 0x07E0u | 6u),
+            (uint16_t)(((k[i].op & 0x1Fu) << 11) | 0x0160u),
+            0x07E0u,
+            SUB_TRAP,
+        };
+
+        for (unsigned pass = 0; pass < 2u; pass++) {
+            if (!priv_run(prog, 4u, pass, cache_mpu_setup)) {
+                return;
+            }
+            if (k[i].refused) {
+                CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_MDP | G4MH_EXC_D_SR);
+                CHECK_EQ(sreg(0, G4MH_SR_FEPC), EMU_GUEST_RAM_BASE);
+                CHECK_EQ(sreg(2, G4MH_SR_MEA), EMU_GUEST_RAM_BASE + 0x820u);
+                CHECK_EQ(sreg(2, G4MH_SR_MEI),
+                         G4MH_MEI(4u, 0u, 0u, 0u, G4MH_MEI_CACHE, 0u));
+            } else {
+                CHECK_EQ(sreg(0, G4MH_SR_FEIC), PRIV_SENT_FEIC);
+                CHECK_EQ(sreg(0, G4MH_SR_EIIC), 0x40u); /* reached the trap */
+            }
+        }
+    }
+}
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Interrupt priority ceiling: ISPR, PSW.EIMASK, PLMR                  */
@@ -9540,6 +10119,18 @@ void test_g4mh(void)
     test_perf_counters_agree();
     test_fetrap();
     test_resbank_is_not_di();
+    test_sr_writable_bits();
+    test_return_clears_pc_bit0();
+#if G4MH_EXT_MPU
+    test_cache_ops_against_mpu();
+#endif
+    test_register_bank_round_trip();
+    test_register_bank_rules();
+    test_resbank_mei();
+    test_fenmi();
+#if G4MH_EXT_MPU
+    test_register_bank_mpu();
+#endif
     test_narrow_atomics();
     test_pointer_update_addressing();
     test_irq_vector_methods();

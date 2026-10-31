@@ -4158,6 +4158,22 @@ session, and every one of them recurred:
   **Fuzz the bytes that cross a trust boundary first; they were the
   last.**
 
+- **Give the next change to the copy before writing it twice.** G4MH's
+  JIT had its own copy of interrupt acceptance, and three features had
+  each landed in the interpreter's and been found missing from it; the
+  register banks would have been the fourth. They went into one
+  function both call, `g4mh_cpu_take_eiint`, written first -- and FENMI
+  into `g4mh_cpu_take_fe` the same way. Writing the banks from the
+  manual found what nothing had read: every system register was stored
+  as written (PSW.CU2 settable, RBASE movable, PID read 0 because
+  nothing set it), EIRET and FERET jumped to an odd saved PC, CHBII and
+  CFALI never saw their address, and FEINT set PSW.EP, which an
+  interrupt clears -- no test had looked at EP after one. And one of
+  sixteen mutants survived a test that called `g4mh_resbank` directly:
+  MEI is decoded from the faulting *instruction*, so only a guest
+  running RESBANK could see its row was missing. **A field derived from
+  the instruction is tested by an instruction.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

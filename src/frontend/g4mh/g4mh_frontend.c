@@ -128,6 +128,7 @@ G4MH_LOCKED_OPS(g4mh_tptm_ops)
 G4MH_LOCKED_OPS(g4mh_ltsc_ops)
 G4MH_LOCKED_OPS(g4mh_kcrc_ops)
 G4MH_LOCKED_OPS(g4mh_wdtb_ops)
+G4MH_LOCKED_OPS(g4mh_fenc_ops)
 #define SHARED_OPS(ops) (&ops##_locked)
 #else
 #define SHARED_OPS(ops) (&ops)
@@ -442,6 +443,9 @@ static bool g4mh_ops_add_shared_devices(emu_bus_t *bus)
             */
            emu_bus_add_mmio(bus, "intif", G4MH_INTIF_BASE, G4MH_INTIF_SIZE,
                             SHARED_OPS(g4mh_intif_ops), &g_intc[0]) &&
+           /* FENC: FENMIF and FENMIC, one for the system. */
+           emu_bus_add_mmio(bus, "fenc", G4MH_FENC_BASE, G4MH_FENC_SIZE,
+                            SHARED_OPS(g4mh_fenc_ops), &g_intc[0]) &&
            /*
             * BOOTCTRL: which PEs are running. Shared rather than per
             * core, because it is one register describing the whole
@@ -710,9 +714,19 @@ static const char *cause_name(uint32_t cause)
     if (cause > G4MH_EXC_FETRAP && cause < G4MH_EXC_FETRAP + 0x10u) {
         return "fetrap";
     }
-    switch (cause) {
-    case G4MH_EXC_SYSERR:
+    if (cause == G4MH_EXC_FENMI) {
+        return "FENMI, the non-maskable interrupt";
+    }
+    if (cause == G4MH_EXC_SYSERR_BANK) {
+        return "system error, saving to a register bank";
+    }
+    if (cause == G4MH_EXC_SYSERR_RESBANK) {
+        return "system error, RESBANK with no bank in use";
+    }
+    if (G4MH_EXC_IS_SYSERR(cause)) {
         return "system error";
+    }
+    switch (cause) {
     case G4MH_EXC_MIP:
         return "instruction-fetch protection";
     case G4MH_EXC_MDP:

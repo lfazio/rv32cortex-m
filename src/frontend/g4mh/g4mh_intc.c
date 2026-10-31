@@ -642,6 +642,34 @@ static emu_fault_t intif_write(void *ctx, uint32_t off, uint32_t size,
     return EMU_FAULT_NONE;
 }
 
+static emu_fault_t fenc_read(void *ctx, uint32_t off, uint32_t size,
+                             uint32_t *out)
+{
+    const g4mh_intc_t *ic = (const g4mh_intc_t *)ctx;
+    (void)size;
+
+    *out = (off == G4MH_FENC_FENMIF) ? (ic->global->fenc_nmif & 1u) : 0u;
+    return EMU_FAULT_NONE;
+}
+
+static emu_fault_t fenc_write(void *ctx, uint32_t off, uint32_t size,
+                              uint32_t val)
+{
+    g4mh_intc_t *ic = (g4mh_intc_t *)ctx;
+    (void)size;
+
+    if (off == G4MH_FENC_FENMIC && (val & 1u) != 0u) {
+        ic->global->fenc_nmif = 0u;
+    }
+    return EMU_FAULT_NONE;
+}
+
+const emu_dev_ops_t g4mh_fenc_ops = {
+    .read = fenc_read,
+    .write = fenc_write,
+    .tick = NULL,
+};
+
 const emu_dev_ops_t g4mh_intc1_ops = {
     .read = intc1_read,
     .write = intc1_write,
@@ -721,6 +749,39 @@ void g4mh_intc_ack_fe(g4mh_intc_t *ic, unsigned pe)
 {
     emu_lock(&g4mh_sys_lock);
     g4mh_intc_ack_fe_impl(ic, pe);
+    emu_unlock(&g4mh_sys_lock);
+}
+
+void g4mh_intc_raise_nmi(g4mh_intc_t *ic)
+{
+    g4mh_intc_t *const g = ic->global;
+
+    emu_lock(&g4mh_sys_lock);
+    g->fenc_nmif = 1u;
+    for (unsigned pe = 0; pe < G4MH_INTC2_PES; pe++) {
+        struct g4mh_cpu *const cpu = g->intc2->cpu[pe];
+
+        if (cpu != NULL && cpu->intc != NULL) {
+            cpu->intc->fenmi = 1u;
+            cpu->irq_dirty = true;
+        }
+    }
+    if (g->intc2->cpu[0] == NULL && g->cpu != NULL) {
+        g->fenmi = 1u; /* a lone controller with no system around it */
+        g->cpu->irq_dirty = true;
+    }
+    emu_unlock(&g4mh_sys_lock);
+}
+
+bool g4mh_intc_fenmi_pending(const g4mh_intc_t *ic)
+{
+    return ic->fenmi != 0u;
+}
+
+void g4mh_intc_ack_fenmi(g4mh_intc_t *ic)
+{
+    emu_lock(&g4mh_sys_lock);
+    ic->fenmi = 0u;
     emu_unlock(&g4mh_sys_lock);
 }
 

@@ -78,9 +78,9 @@ floating point is implemented on SoftFloat behind `G4MH_EXT_FPU`.
 Then the slots that had to be *enumerated* rather than extended:
 `CLIP.B`/`.BU`/`.H`/`.HU`, the narrow atomics `LDL.BU`/`LDL.HU` and
 `STC.B`/`STC.H`, `FETRAP`, `SYSCALL`, and `CACHE`/`PREF` as no-ops.
-`RESBANK` is decoded and reports RIE, because register banks are not
-modelled and running it as `DI` -- which is what decoding on reg2 alone
-did -- is worse than saying so.
+`RESBANK` restores from a register bank ([Register banks](#register-banks));
+it used to report RIE, because running it as `DI` -- which is what
+decoding on reg2 alone did -- was worse than saying so.
 
 Everything else raises `G4MH_EXC_RIE` -- which is the correct report for
 an unimplemented encoding **only if something catches it**. See the entry
@@ -92,7 +92,6 @@ life of this frontend it did not report anything at all.
 | gap | why it matters |
 |---|---|
 | the `.S4` SIMD group and `LDV`/`STV`/`MOVV`/`SHFLV`/`TRFSRV` | 59 encodings taking `wreg` operands — a second register file, i.e. a coprocessor rather than a handful of instructions. Out of scope rather than missing |
-| `RESBANK` | needs the register banks modelled. Decoded and reports RIE rather than being mistaken for `DI` |
 | `DIVQ`/`DIVQU` with `reg2 == reg3` | the manual leaves the flags undefined there; this treats it as the ordinary case |
 
 **`LDM.MP` and `STM.MP` are implemented**, and were the last two
@@ -462,7 +461,7 @@ number that has never been shown to be able to fall.**
 |---|---|
 | `LDM.MP`, `STM.MP` | implemented, but **CC-RH V2.08 cannot assemble them** -- the manual marks them G4MH2-only (PID[31:24] = 07) and there is no `-Xcpu=g4mh2`. Their encodings are the only two here taken from the manual's opcode diagram alone, so they are covered by unit tests instead |
 | `PUSHSP`, `POPSP` | implemented; CC-RH rejects both under every syntax tried, same class of gap |
-| `RESBANK` | the one RIE below, and deliberate: register banks are not modelled, and running it as `DI` -- which decoding on reg2 alone did -- is worse than reporting it |
+| `RESBANK` | implemented with the register banks; it was the one RIE below until they were |
 | the `.S4` SIMD group, `LDV`/`STV`/`MOVV`/`SHFLV`/`TRFSRV` | they take `wreg` operands, a second register file this frontend does not model. 59 encodings, deliberately out of scope rather than missing |
 
 ```
@@ -717,10 +716,10 @@ divq r6, r8, r10              E647FC52          ok
 divqu r6, r8, r10             E647FE52          ok
 divu r6, r8, r10              E647C252          ok
 fetrap 1                      4008              ok
-resbank                       E0076081          RIE
+resbank                       E0076081          ok
 jr 0x10                       80071000          ok
 
-251 instructions: 250 executed, 1 raised RIE
+251 instructions: 251 executed, 0 raised RIE
 ```
 
 ## Floating point
@@ -951,7 +950,7 @@ have caught the bug above -- no single-backend run can see it.
 - **The FXU.** No extended floating-point instructions. Its system
   registers answer `CU1` as the FPU's answer `CU0` -- `UCPOP` `81H` when
   clear ([Privilege](#privilege)) -- and hold what is written.
-- **Register banks and hardware context save**, `GMCFG`, the guest modes.
+- **`GMCFG` and the guest modes** (virtualization).
 - **Debug level.** No `DBPC`/`DBPSW`, `DBTRAP`/`DBRET` — the analogue of
   Sdtrig.
 - **The JIT's keys.** `g4mh_backend_jit` comes from the shared IR
@@ -1169,7 +1168,8 @@ NMI mode (`ERM` = 0) changes none of this. It adds WDTBnTNMI, which
 goes to the PIC's Hi-Z control for the motor timers' outputs, not to an
 interrupt controller -- the name says NMI and the signal never reaches
 a core. FENMI, the core's non-maskable interrupt, comes from the
-external NMI pin through FENC, which is not modelled either.
+external NMI pin through FENC ([FENMI](#fenmi)), which nothing here
+drives yet.
 
 The option bytes that choose the start mode and the code are not
 modelled: the frontend's units use the software trigger start and the
@@ -1472,7 +1472,82 @@ do (`g4mh_mpu_reg_protects`). An OS calls the check per service request.
 `MPBK` reads 0 (one bank, which is what `MPCFG.NBK` reports). The
 host/guest entry split (`MPCFG.HBE`) is not enforced, because there is
 no hypervisor mode here to enforce it against. `CFALI` does not load or
-lock anything, and is not checked against the MPU: there is no cache.
+lock anything, there being no cache; but it and `CHBII` are checked
+against the MPU, as a read of the 32-byte line their address falls in
+(tables 3.111, 3.117) -- an MDP with MEA the line's start. Neither was:
+the address never reached the cache operation.
+
+## Register banks
+
+R01UH0923EJ0130 3.2.4.5. An interrupt using the table reference method,
+at a priority whose `RBCR0.BE` bit is set (bit 15 for 15 and up), saves
+PC, PSW, EIIC, FPSR, r1-r19 and r30 -- or every general register, with
+`RBCR0.MD` -- to memory below `RBIP`, bank `RBNR.BN` at
+`RBIP - BN x 60H` (90H in mode 1), in table 3.109's order, and counts
+it. `RESBANK` reads bank `BN - 1` back into EIPC, EIPSW, EIIC, FPSR and
+the registers, and counts it off. The handler runs with PSW.ID as
+`RBCR1.NC` says, so it can take higher interrupts at once.
+
+| condition | what happens |
+|---|---|
+| BN above `INTCFG.ULNR`, or 63 | SYSERR 1CH, terminating: FEPC the interrupted pc, the interrupt held |
+| the table read or a save refused by the MPU | MDP 95H, terminating, the interrupt held; MEI's type 10110B (save) where the table read's is 10101B |
+| `RESBANK` with BN 0 | SYSERR 1DH, resumable: FEPC the `RESBANK` |
+| `RESBANK` whose read is refused | MDP 91H, resumable, with `RESBANK`'s MEI row; nothing restored |
+
+The save and restore are made as supervisor and checked by the MPU;
+FPSR moves even with `PSW.CU0` clear, as the manual says. `RESBANK`
+reads every word before it writes a register, so a fault leaves nothing
+half restored -- the manual permits a partial restore there and asks
+only that the instruction can run again. Writing `RBNR` with 16 or more
+gives 16 (table 3.41).
+
+**Both backends accept interrupts through one function now,
+`g4mh_cpu_take_eiint`** (FE level: `g4mh_cpu_take_fe`). The JIT had its
+own copy of the acceptance path, and three things -- FEINT delivery, the
+ISPR ceiling, the table read before the acknowledgement -- had each been
+added to the interpreter's and found missing from it; the bank would
+have been a fourth. SYSERR is a range at every reader, 10H-1FH, as UCPOP
+is 80H-82H. `test_register_bank_round_trip` runs a bank's whole life as a
+guest on both backends; `test_register_bank_rules`,
+`test_register_bank_mpu` and `test_resbank_mei` hold table 3.109, the
+conditions and the faults (each of sixteen pieces reverted is found).
+
+What it costs, on the F746 (CoreMark, which takes no interrupt, against
+a worktree at e90c475; the board's counter, the wall clock agreeing):
+91.64 to 90.58 host cycles an instruction interpreted and 52.22 to
+51.83 under the JIT, the same retired count and CRC -- nothing; both
+acceptance paths are out of line.
+
+## FENMI
+
+The non-maskable interrupt from the NMI pin (6.2.2; table 3.103), raised
+through `g4mh_intc_raise_nmi`: FENC's `FENMIF.NMIF` is set and every PE
+is asked. A PE takes it ahead of FEINT and whatever PSW.NP and ID say,
+cause E0H at offset E0H, with NP and ID set and UM and EP clear; it is
+not returnable. `FENMIC` clears NMIF. No platform drives the pin yet.
+
+**EP is cleared by an interrupt** -- EIINT, FEINT, FENMI -- and set by
+every other exception (3.2.4.1 caution 1). FEINT set it, so its handler
+ran as if an exception were being serviced and an FERET from it would
+not have told the interrupt controller the interrupt was done.
+
+## The writable bits of the system registers
+
+They were stored as written. Now PSW, EIPSW and FEPSW keep UM, CU0, CU1
+where the PE has an FXU, EBV, NP, EP, ID and the flags, with EIMASK
+only while `INTCFG.EPL` is set -- and clearing EPL clears EIMASK in all
+three (table 3.11 note 1). CU2 is fixed to 0, and so is a CU bit whose
+coprocessor the PE lacks: on the U2B6 only PE0 has the FXU, so on PE1
+and PE2 an FXU instruction is always UCPOP 81H. RBASE, PID and PEID are
+read-only; EBASE, INTBP, SCBP, CTBP, MCTL, SCCFG, INTCFG and the bank
+registers keep their defined bits. PID is the U2B's, `0784 0F01H` on PE0
+and `0784 0701H` on the others (table 3.256); it read 0.
+
+EIRET, FERET and CTRET leave the saved PC's bit 0 behind: "even if it
+is set to 1, the value transferred to the PC ... is 0" (tables 3.10,
+3.12, 3.18). An LDSR of an odd value and a return fetched from an odd
+address.
 
 ## MEI
 

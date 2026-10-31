@@ -278,13 +278,14 @@ From the last measurements in [linux.md](linux.md).
         does; and FENC, the external NMI, so FENMI has a source.
 - [ ] **TAUD on the RH850/U2B6**, built on the STM32 timers that remain
       free and plugged into the PCIe framework.
-- [ ] **The G4MH and RH850 CPU system** (section 3), finished. What is
-      left of it: register banks (`RESBANK`, `RBCR0/1`, `RBNR`, `RBIP`,
-      SYSERR `1CH`/`1DH`) -- `RESBANK` is RIE today; the FXU's
-      instructions (its registers answer `CU1` already); the reserved
-      bits of the save registers, which are stored as written (only
-      CTPSW is masked); `CFALI` against the MPU and a cache to lock;
-      the debug level; FENMI.
+- [ ] **The G4MH and RH850 CPU system** (section 3), finished. Done:
+      register banks and `RESBANK`, the system registers' writable
+      bits, `CFALI` and `CHBII` against the MPU, FENMI and FENC
+      ([frontend/g4mh.md](frontend/g4mh.md#register-banks)). Left: the
+      FXU's instructions, on PE0 (in progress); a cache for `CFALI` to
+      lock; something to drive the NMI pin; and the debug level --
+      `DBTRAP`, `DBRET`, `DBPC`, `DBPSW` -- which no manual in
+      `docs/renesas/` describes: the Emulation manual is needed.
 - [ ] **The readings only an RH850 can settle.** Every G4MH result rests
       on Renesas' documents, cross-checked where a second one exists
       ([frontend/g4mh.md](frontend/g4mh.md#what-rests-on-the-manuals-alone));

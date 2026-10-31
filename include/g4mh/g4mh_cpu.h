@@ -217,6 +217,10 @@ typedef struct g4mh_cpu {
      */
     uint8_t mei_reg;
 
+    /* Set while an MDP from saving onto a register bank is entered:
+     * MEI's type for it differs from the table read's, with one code. */
+    uint8_t mei_bank;
+
     /*
      * What asked for a system reset, which stops every core, or NULL.
      * The run reports it (emu_cpu_status_t::reset_by).
@@ -286,6 +290,18 @@ void g4mh_cpu_exception_at(g4mh_cpu_t *c, g4mh_exc_t cause, uint32_t ret_pc,
 g4mh_exc_t g4mh_cpu_irq_vector(g4mh_cpu_t *c, uint32_t channel,
                                uint32_t *out);
 
+/*
+ * Accept EI interrupt `ch` of priority `pri` at `pc`: its vector, the
+ * register bank if it uses one, the controller's acknowledgement and the
+ * priority ceiling -- or the exception one of those raised, with the
+ * interrupt left pending. Both backends call this; it was two copies.
+ */
+void g4mh_cpu_take_eiint(g4mh_cpu_t *c, uint32_t ch, unsigned pri, uint32_t pc);
+
+/* RESBANK, after its privilege check: G4MH_EXC_NONE, or SYSERR 1DH with
+ * no bank in use, or the MDP a read took. */
+g4mh_exc_t g4mh_resbank(g4mh_cpu_t *c);
+
 /* True if `cause` is taken at FE level rather than EI. */
 bool g4mh_exc_is_fe(g4mh_exc_t cause);
 
@@ -314,6 +330,9 @@ void g4mh_cpu_eiret_priority(g4mh_cpu_t *c);
  * has masked EI interrupts still takes this one.
  */
 bool g4mh_cpu_pending_fe(const g4mh_cpu_t *c);
+
+/* Take a pending FENMI or FEINT at `pc`, both backends; false if none. */
+bool g4mh_cpu_take_fe(g4mh_cpu_t *c, uint32_t pc);
 
 /* ------------------------------------------------------------------ */
 /* Memory (permission-checked, used by the interpreter)                */

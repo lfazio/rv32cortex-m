@@ -271,6 +271,12 @@ static bool mei_3f(uint32_t w0, uint32_t w1, uint32_t block_reg,
         return true;
     case 0x160u:
         switch (r2) {
+        case 0x00u: /* RESBANK (reg3 16): a read of the bank; DI is not */
+            if (r3 != 0x10u) {
+                return false;
+            }
+            *out = G4MH_MEI(4u, 0u, 2u, 0u, G4MH_MEI_BANK, 0u);
+            return true;
         case 0x08u: /* PUSHSP */
             *out = G4MH_MEI(4u, block_reg, 2u, 0u, G4MH_MEI_PUSHSP, 1u);
             return true;

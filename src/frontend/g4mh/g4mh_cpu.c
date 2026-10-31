@@ -109,6 +109,13 @@ void g4mh_cpu_reset(g4mh_cpu_t *c, uint32_t reset_pc)
      */
     c->sr[G4MH_SELID_INT][G4MH_SR_PLMR] = G4MH_PLMR_RESET;
     c->sr[G4MH_SELID_INT][G4MH_SR_INTCFG] = G4MH_INTCFG_RESET;
+    /* NC15..NC0 set: an interrupt using a bank runs with PSW.ID = 1, as
+     * any other does, until software says otherwise (table 3.40). */
+    c->sr[G4MH_SELID_INT][G4MH_SR_RBCR1] = G4MH_RBCR1_RESET;
+
+    /* PID, read-only: the FXU on PE0 alone (table 3.256 note 3, for the
+     * U2B6's public cores). */
+    c->sr[1][G4MH_SR_PID] = (c->coreid == 0u) ? G4MH_PID_FXU : G4MH_PID_NO_FXU;
 
     g4mh_ll_drop(c);
     c->retired = 0u;
@@ -167,8 +174,10 @@ bool g4mh_exc_is_fe(g4mh_exc_t cause)
      * By the code alone: MIP and MDP carry detail in the top half.
      */
     cause = G4MH_EXC_CODE(cause);
+    if (G4MH_EXC_IS_SYSERR(cause)) {
+        return true;
+    }
     switch (cause) {
-    case G4MH_EXC_SYSERR:
     case G4MH_EXC_MIP:
     case G4MH_EXC_MDP:
     case G4MH_EXC_MDP_TABLE:
@@ -185,7 +194,8 @@ bool g4mh_exc_is_fe(g4mh_exc_t cause)
          * asynchronous one, and is FE level for the reason that makes it
          * useful -- PSW.ID does not reach it. */
         return (cause >= G4MH_EXC_FETRAP && cause < G4MH_EXC_FETRAP + 0x10u) ||
-               (cause >= G4MH_EXC_FEINT && cause < G4MH_EXC_FEINT + 0x10u);
+               (cause >= G4MH_EXC_FEINT && cause < G4MH_EXC_FEINT + 0x10u) ||
+               cause == G4MH_EXC_FENMI;
     }
 }
 
@@ -254,6 +264,12 @@ static uint32_t handler_address(const g4mh_cpu_t *c, g4mh_exc_t cause)
     if (cause >= G4MH_EXC_FEINT && cause < G4MH_EXC_FEINT + 0x10u) {
         return table + 0x00F0u; /* FEINT 0..15                   */
     }
+    if (G4MH_EXC_IS_SYSERR(cause)) {
+        return table + 0x0010u; /* SYSERR 10H..1FH               */
+    }
+    if (cause == G4MH_EXC_FENMI) {
+        return table + 0x00E0u;
+    }
     /*
      * R01UH0923EJ0130 table 3.106, and confirmed against the vector table
      * in Renesas' own board package, which is the thing a real guest is
@@ -266,11 +282,9 @@ static uint32_t handler_address(const g4mh_cpu_t *c, g4mh_exc_t cause)
      * That is the worst shape a vector bug takes: the handler exists, so
      * something runs and the guest carries on reporting the wrong cause,
      * rather than failing where the mistake is. 0x20, 0xB0 and 0xD0 are
-     * reserved, 0xE0 is FENMI, which this frontend does not raise.
+     * reserved; 0xE0 is FENMI's, above.
      */
     switch (cause) {
-    case G4MH_EXC_SYSERR:
-        return table + 0x0010u;
     case G4MH_EXC_RIE:
         return table + 0x0060u;
     case G4MH_EXC_FPP:
@@ -363,7 +377,11 @@ static EMU_NOINLINE uint32_t mei_for(const g4mh_cpu_t *c, g4mh_exc_t cause,
     uint32_t mei;
 
     if (G4MH_EXC_CODE(cause) == G4MH_EXC_MDP_TABLE) {
-        return G4MH_MEI(0u, 0u, 2u, 0u, G4MH_MEI_TABLE, 0u);
+        /* The table read, or the save onto a register bank after it:
+         * the same code, 95H, and the same kind of access but for its
+         * type and direction (table 3.38). */
+        return c->mei_bank ? G4MH_MEI(0u, 0u, 2u, 0u, G4MH_MEI_BANK, 1u)
+                           : G4MH_MEI(0u, 0u, 2u, 0u, G4MH_MEI_TABLE, 0u);
     }
     if (c->bus == NULL) { /* a core raised by hand, with no memory */
         return c->sr[2][G4MH_SR_MEI];
@@ -414,6 +432,17 @@ static void exception_to(g4mh_cpu_t *c, g4mh_exc_t cause, uint32_t ret_pc,
          */
         c->psw |= G4MH_PSW_NP | G4MH_PSW_EP | G4MH_PSW_ID;
         c->psw &= ~G4MH_PSW_UM;
+        /*
+         * Except an interrupt: "the PSW.EP bit is cleared to 0 only when
+         * an interrupt (EIINTn, FEINT, or FENMI) is acknowledged"
+         * (3.2.4.1; table 3.103). FEINT set it, so its handler ran as if
+         * an exception were being serviced.
+         */
+        if (G4MH_EXC_CODE(cause) == G4MH_EXC_FENMI ||
+            (G4MH_EXC_CODE(cause) >= G4MH_EXC_FEINT &&
+             G4MH_EXC_CODE(cause) < G4MH_EXC_FEINT + 0x10u)) {
+            c->psw &= ~G4MH_PSW_EP;
+        }
     } else {
         c->sr[0][G4MH_SR_EIPC] = ret_pc;
         c->sr[0][G4MH_SR_EIPSW] = c->psw;
@@ -640,10 +669,41 @@ bool g4mh_cpu_pending_fe(const g4mh_cpu_t *c)
      *
      * Checked before the EI path by the run loop, since FE outranks EI.
      */
-    if ((c->psw & G4MH_PSW_NP) != 0u || c->intc == NULL) {
+    if (c->intc == NULL) {
+        return false;
+    }
+    /* FENMI is refused by nothing: not NP, not ID (6.2.2). */
+    if (g4mh_intc_fenmi_pending(c->intc)) {
+        return true;
+    }
+    if ((c->psw & G4MH_PSW_NP) != 0u) {
         return false;
     }
     return g4mh_intc_fe_pending(c->intc, c->coreid);
+}
+
+/*
+ * Take a pending FE-level interrupt at `pc`, FENMI ahead of FEINT, for
+ * both backends; false if there is none. The JIT's copy of the FEINT
+ * delivery was the first thing to drift from the interpreter's.
+ */
+bool g4mh_cpu_take_fe(g4mh_cpu_t *c, uint32_t pc)
+{
+    if (c->intc == NULL) {
+        return false;
+    }
+    if (g4mh_intc_fenmi_pending(c->intc)) {
+        g4mh_intc_ack_fenmi(c->intc);
+        g4mh_cpu_exception(c, G4MH_EXC_FENMI, pc);
+        return true;
+    }
+    if ((c->psw & G4MH_PSW_NP) == 0u &&
+        g4mh_intc_fe_pending(c->intc, c->coreid)) {
+        g4mh_intc_ack_fe(c->intc, c->coreid);
+        g4mh_cpu_exception(c, G4MH_EXC_FEINT, pc);
+        return true;
+    }
+    return false;
 }
 
 /* ------------------------------------------------------------------ */
@@ -953,6 +1013,202 @@ g4mh_exc_t g4mh_load_sv(g4mh_cpu_t *c, uint32_t addr, uint32_t *out)
     return e;
 }
 
+static g4mh_exc_t store_sv(g4mh_cpu_t *c, uint32_t addr, uint32_t val)
+{
+    const uint32_t psw = c->psw;
+    g4mh_exc_t e;
+
+    c->psw = psw & ~G4MH_PSW_UM;
+    e = g4mh_store(c, addr, 4u, val);
+    c->psw = psw;
+    return e;
+}
+
+/* ------------------------------------------------------------------ */
+/* Register banks (3.2.4.5)                                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A bank's words, highest address first: PC, PSW, EIIC, FPSR, r1-r19,
+ * then r30 (save mode 0, 60H a bank) or r20-r29, r30, r31 (save mode
+ * 1, 90H) -- table 3.109. Bank n's first word is at RBIP - n x size - 4.
+ */
+#define BANK_WORDS_MD0 24u
+#define BANK_WORDS_MD1 35u
+
+static unsigned bank_layout(const g4mh_cpu_t *c, uint32_t *size)
+{
+    const bool md1 = (c->sr[G4MH_SELID_INT][G4MH_SR_RBCR0] & G4MH_RBCR0_MD) != 0u;
+
+    *size = md1 ? 0x90u : 0x60u;
+    return md1 ? BANK_WORDS_MD1 : BANK_WORDS_MD0;
+}
+
+/*
+ * The general register in word k (k >= 4) of a bank: r1..r19 in words
+ * 4..22, and then r30 in save mode 0, or r20..r31 in order in mode 1.
+ */
+static unsigned bank_reg(unsigned k, unsigned words)
+{
+    return (words == BANK_WORDS_MD0 && k == 23u) ? 30u : k - 3u;
+}
+
+/*
+ * Does an interrupt on `ch` of priority `pri` use a register bank: the
+ * table reference method (the controller asks for it and DV does not
+ * override it), and RBCR0.BE for its priority -- bit 15 for 15 and up.
+ */
+static bool irq_uses_bank(const g4mh_cpu_t *c, uint32_t ch, unsigned pri)
+{
+    const uint32_t base = (c->psw & G4MH_PSW_EBV) ? c->sr[1][G4MH_SR_EBASE]
+                                                  : c->sr[1][G4MH_SR_RBASE];
+    const unsigned bit = pri < 15u ? pri : 15u;
+
+    return (base & G4MH_BASE_DV) == 0u &&
+           g4mh_intc_chan_is_table(c->intc, ch) &&
+           ((c->sr[G4MH_SELID_INT][G4MH_SR_RBCR0] >> bit) & 1u) != 0u;
+}
+
+/*
+ * Save the context onto bank RBNR.BN and count it, or return the MDP a
+ * write took. The PSW saved is the interrupted one: this runs before
+ * the entry. Written as supervisor, whatever PSW.UM was.
+ */
+static g4mh_exc_t bank_save(g4mh_cpu_t *c, uint32_t pc, uint32_t cause)
+{
+    uint32_t size;
+    const unsigned words = bank_layout(c, &size);
+    const uint32_t bn = c->sr[G4MH_SELID_INT][G4MH_SR_RBNR] & 0x3Fu;
+    const uint32_t top =
+        (c->sr[G4MH_SELID_INT][G4MH_SR_RBIP] & ~0xFu) - bn * size;
+
+    for (unsigned k = 0u; k < words; k++) {
+        const uint32_t v = (k == 0u)   ? pc
+                           : (k == 1u) ? c->psw
+                           : (k == 2u) ? cause
+                           : (k == 3u) ? c->sr[0][G4MH_SR_FPSR]
+                                       : c->r[bank_reg(k, words)];
+        const g4mh_exc_t e = store_sv(c, top - 4u * (k + 1u), v);
+
+        if (e != G4MH_EXC_NONE) {
+            /* Terminating, 95H, as the table read's: "the exception
+             * cause code of this MDP exception differs from that of
+             * resumable-type MDP exceptions" (table 3.110 note 2). */
+            return (G4MH_EXC_CODE(e) == G4MH_EXC_MDP)
+                       ? (G4MH_EXC_MDP_TABLE | (e & ~0xFFFFu))
+                       : e;
+        }
+    }
+    c->sr[G4MH_SELID_INT][G4MH_SR_RBNR] = bn + 1u;
+    return G4MH_EXC_NONE;
+}
+
+/*
+ * Accept EI interrupt `ch`, of priority `pri`, at `pc` -- one function
+ * for both backends. The interpreter and the JIT each had their own
+ * copy of this, and three things had been added to one and found
+ * missing from the other (FE delivery, the ISPR ceiling, the order of
+ * the table read and the acknowledgement); the register bank would have
+ * been a fourth.
+ *
+ * In the order of figure 3.24: a bank that would overflow is a
+ * terminating SYSERR 1CH with the interrupt held; the table read and
+ * then the save can each take an MDP 95H, with the interrupt held too
+ * -- so the controller is acknowledged only once all of it succeeded.
+ * An interrupt that saved onto a bank runs with PSW.ID as RBCR1.NC says.
+ */
+EMU_NOINLINE void g4mh_cpu_take_eiint(g4mh_cpu_t *c, uint32_t ch, unsigned pri,
+                                      uint32_t pc)
+{
+    const bool bank = irq_uses_bank(c, ch, pri);
+    uint32_t vec;
+    g4mh_exc_t e;
+
+    if (bank) {
+        const uint32_t bn = c->sr[G4MH_SELID_INT][G4MH_SR_RBNR] & 0x3Fu;
+        const uint32_t ulnr =
+            G4MH_INTCFG_ULNR(c->sr[G4MH_SELID_INT][G4MH_SR_INTCFG]);
+
+        if (bn > ulnr || bn == 63u) {
+            g4mh_cpu_exception(c, G4MH_EXC_SYSERR_BANK, pc);
+            return;
+        }
+    }
+    e = g4mh_cpu_irq_vector(c, ch, &vec);
+    if (e == G4MH_EXC_NONE && bank) {
+        e = bank_save(c, pc, G4MH_EXC_EIINT_BASE + ch);
+        if (e != G4MH_EXC_NONE) {
+            c->mei_bank = 1u;
+            g4mh_cpu_exception(c, e, pc);
+            c->mei_bank = 0u;
+            return;
+        }
+    }
+    if (e != G4MH_EXC_NONE) {
+        g4mh_cpu_exception(c, e, pc);
+        return;
+    }
+    g4mh_intc_ack(c->intc, ch);
+    exception_to(c, G4MH_EXC_EIINT_BASE + ch, pc, vec);
+    if (bank &&
+        ((c->sr[G4MH_SELID_INT][G4MH_SR_RBCR1] >> (pri < 15u ? pri : 15u)) &
+         1u) == 0u) {
+        c->psw &= ~G4MH_PSW_ID;
+        c->sr[0][G4MH_SR_PSW] = c->psw;
+    }
+    /*
+     * After the entry, because it reads the PSW the entry has updated and
+     * writes the ceiling the handler runs under: done first, EIPSW would
+     * save the raised ceiling and EIRET restore it.
+     */
+    g4mh_cpu_ack_priority(c, pri);
+}
+
+/*
+ * RESBANK: put back what the last interrupt saved onto bank BN - 1, into
+ * EIPC, EIPSW, EIIC, FPSR and the registers, and count it off. With no
+ * bank in use, SYSERR 1DH, resumable. Every word is read before any
+ * register is written, so an MDP -- resumable, at the RESBANK -- leaves
+ * nothing half restored: the manual allows a partial restore there
+ * (3.2.4.5(3)(a) note 2) and requires only that the instruction can be
+ * run again, which it can either way.
+ */
+EMU_NOINLINE g4mh_exc_t g4mh_resbank(g4mh_cpu_t *c)
+{
+    uint32_t size;
+    const unsigned words = bank_layout(c, &size);
+    const uint32_t bn = c->sr[G4MH_SELID_INT][G4MH_SR_RBNR] & 0x3Fu;
+    uint32_t w[BANK_WORDS_MD1];
+
+    if (bn == 0u) {
+        return G4MH_EXC_SYSERR_RESBANK;
+    }
+    {
+        /* Bank BN - 1 ends where bank BN begins: RBIP - (BN - 1) x size. */
+        const uint32_t top =
+            (c->sr[G4MH_SELID_INT][G4MH_SR_RBIP] & ~0xFu) - (bn - 1u) * size;
+
+        /* In the restore order, from the lowest word up (table 3.109). */
+        for (unsigned k = words; k-- > 0u;) {
+            const g4mh_exc_t e =
+                g4mh_load(c, top - 4u * (k + 1u), 4u, false, &w[k]);
+
+            if (e != G4MH_EXC_NONE) {
+                return e;
+            }
+        }
+    }
+    c->sr[0][G4MH_SR_EIPC] = w[0];
+    g4mh_sr_write(c, 0u, G4MH_SR_EIPSW, w[1]);
+    c->sr[0][G4MH_SR_EIIC] = w[2];
+    g4mh_sr_write(c, 0u, G4MH_SR_FPSR, w[3]);
+    for (unsigned k = 4u; k < words; k++) {
+        c->r[bank_reg(k, words)] = w[k];
+    }
+    c->sr[G4MH_SELID_INT][G4MH_SR_RBNR] = bn - 1u;
+    return G4MH_EXC_NONE;
+}
+
 /*
  * LD.DW and ST.DW: one eight-byte access, as the MPU sees it.
  *
@@ -1219,11 +1475,97 @@ uint32_t g4mh_sr_read(const g4mh_cpu_t *c, unsigned bank, unsigned reg)
     return c->sr[bank][reg];
 }
 
+/*
+ * PSW's writable bits, which EIPSW and FEPSW share (tables 3.11, 3.13,
+ * 3.14): UM, EIMASK while INTCFG.EPL is set, CU1 where there is an FXU,
+ * CU0, EBV, NP, EP, ID and the five flags. CU2 is fixed to 0, as is a
+ * CU bit whose coprocessor the PE does not have.
+ */
+static uint32_t psw_writable(const g4mh_cpu_t *c)
+{
+    uint32_t m = G4MH_PSW_UM | (1u << 16) | G4MH_PSW_EBV | 0xFFu;
+
+    if ((c->sr[1][G4MH_SR_PID] & (1u << 11)) != 0u) {
+        m |= 1u << 17; /* CU1: the FXU */
+    }
+    if ((c->sr[G4MH_SELID_INT][G4MH_SR_INTCFG] & G4MH_INTCFG_EPL) != 0u) {
+        m |= 0x3Fu << 20; /* EIMASK */
+    }
+    return m;
+}
+
+/*
+ * The bits an LDSR may change in the registers that have read-only or
+ * reserved ones (section 3.2.3), or ~0. They were stored as written, so a
+ * guest could set PSW.CU2, a reserved bit of EIPSW, or move RBASE.
+ */
+static uint32_t sr_writable(const g4mh_cpu_t *c, unsigned bank, unsigned reg)
+{
+    switch (bank) {
+    case 0u:
+        switch (reg) {
+        case G4MH_SR_PSW:
+        case G4MH_SR_EIPSW:
+        case G4MH_SR_FEPSW:
+            return psw_writable(c);
+        case G4MH_SR_CTPSW:
+            return 0x1Fu; /* PSW's five flags (table 3.19) */
+        case G4MH_SR_CTBP:
+            return ~1u;
+        default:
+            return ~0u;
+        }
+    case 1u:
+        switch (reg) {
+        case G4MH_SR_RBASE: /* set at reset, read-only (table 3.26) */
+        case G4MH_SR_PID:
+            return 0u;
+        case G4MH_SR_EBASE:
+            return 0xFFFFFE03u;
+        case G4MH_SR_INTBP:
+            return 0xFFFFFE00u;
+        case G4MH_SR_MCTL:
+            return G4MH_MCTL_UIC;
+        case G4MH_SR_SCCFG:
+            return 0xFFu;
+        case G4MH_SR_SCBP:
+            return ~3u;
+        default:
+            return ~0u;
+        }
+    case G4MH_SELID_INT:
+        switch (reg) {
+        case G4MH_SR_HTCFG0: /* PEID */
+            return 0u;
+        case G4MH_SR_INTCFG:
+            return 0x003F0003u; /* ULNR, EPL, ISPC */
+        case G4MH_SR_RBCR0:
+            return G4MH_RBCR0_MD | 0xFFFFu;
+        case G4MH_SR_RBCR1:
+            return 0xFFFFu;
+        case G4MH_SR_RBNR:
+            return 0x3Fu;
+        case G4MH_SR_RBIP:
+            return ~0xFu;
+        default:
+            return ~0u;
+        }
+    default:
+        return ~0u;
+    }
+}
+
 EMU_NOINLINE void g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg,
                                 uint32_t val)
 {
     if (bank >= G4MH_SR_BANKS || reg >= G4MH_SR_PER_BANK) {
         return; /* reserved: writes dropped */
+    }
+
+    {
+        const uint32_t m = sr_writable(c, bank, reg);
+
+        val = (g4mh_sr_read(c, bank, reg) & ~m) | (val & m);
     }
 
     if (bank == 0u && reg == G4MH_SR_PSW) {
@@ -1320,9 +1662,22 @@ EMU_NOINLINE void g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg,
     }
 #endif
 
-    /* CTPSW keeps PSW's five flags; bits 31:5 read zero (table 3.19). */
-    if (bank == 0u && reg == G4MH_SR_CTPSW) {
-        val &= 0x1Fu;
+    if (bank == G4MH_SELID_INT) {
+        if (reg == G4MH_SR_RBNR && val > 16u) {
+            val = 16u; /* "the value of BN becomes 16" (table 3.41) */
+        }
+        /*
+         * EIMASK holds a value only while EPL is set: clearing EPL clears
+         * it in PSW, EIPSW and FEPSW (table 3.11 note 1).
+         */
+        if (reg == G4MH_SR_INTCFG && (val & G4MH_INTCFG_EPL) == 0u) {
+            const uint32_t eimask = 0x3Fu << 20;
+
+            c->psw &= ~eimask;
+            c->sr[0][G4MH_SR_PSW] = c->psw;
+            c->sr[0][G4MH_SR_EIPSW] &= ~eimask;
+            c->sr[0][G4MH_SR_FEPSW] &= ~eimask;
+        }
     }
 
     c->sr[bank][reg] = val;

@@ -39,6 +39,16 @@ typedef uint32_t g4mh_exc_t;
 
 /* FE level: taken to FEPC/FEPSW/FEIC, and not maskable by PSW.ID. */
 #define G4MH_EXC_SYSERR 0x0010u /* system error                 */
+/*
+ * SYSERR is a range, 10H-1FH (table 3.104), and every reader of a cause
+ * must treat it as one -- UCPOP's 81H went to the wrong vector at the
+ * wrong level because two switches knew 80H. These two are the register
+ * banks': saving onto one at an interrupt (terminating; the interrupt is
+ * held) and RESBANK with none in use (resumable).
+ */
+#define G4MH_EXC_SYSERR_BANK 0x001Cu
+#define G4MH_EXC_SYSERR_RESBANK 0x001Du
+#define G4MH_EXC_IS_SYSERR(code) (((code) & 0xFFF0u) == G4MH_EXC_SYSERR)
 #define G4MH_EXC_MIP 0x0090u /* instruction-fetch protection */
 #define G4MH_EXC_MDP 0x0091u /* data protection              */
 /*
@@ -114,6 +124,14 @@ typedef uint32_t g4mh_exc_t;
  * source is the first thing that would need the rest of it.
  */
 #define G4MH_EXC_FEINT 0x00F0u /* FEINT 0..15, +channel        */
+
+/*
+ * FENMI, the FE-level non-maskable interrupt from the NMI pin, through
+ * FENC (table 3.103; 6.2.2): taken even with PSW.NP set, ahead of FEINT,
+ * at offset E0H, and not returnable -- its handler resets or rebuilds
+ * FEPC and FEPSW itself.
+ */
+#define G4MH_EXC_FENMI 0x00E0u
 
 /*
  * An EI interrupt's cause is 0x1000 + channel. The frontend's INTC raises
@@ -279,11 +297,36 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
 #define G4MH_MEI_SYSCALL 0x12u
 #define G4MH_MEI_CACHE 0x14u
 #define G4MH_MEI_TABLE 0x15u /* an interrupt's table read          */
+#define G4MH_MEI_BANK 0x16u /* saving onto a register bank, RESBANK */
 #define G4MH_SR_ISPR 10u
 #define G4MH_SR_PMR 11u /* the manual calls this IMSR         */
 #define G4MH_SR_ICSR 12u
 #define G4MH_SR_INTCFG 13u
 #define G4MH_SR_PLMR 14u
+
+/*
+ * Register banks (3.2.4.5; tables 3.39 to 3.42): an interrupt using the
+ * table reference method may save PC, PSW, EIIC, FPSR and r1-r19 and r30
+ * -- or every general register, with RBCR0.MD -- to memory below RBIP,
+ * one bank per nesting level counted by RBNR.BN, and RESBANK puts them
+ * back. RBCR0.BEi chooses the priorities that use a bank and RBCR1.NCi
+ * the PSW.ID they run with; priorities 15 and up share bit 15.
+ */
+#define G4MH_SR_RBCR0 15u
+#define G4MH_SR_RBCR1 16u
+#define G4MH_SR_RBNR 17u
+#define G4MH_SR_RBIP 18u
+#define G4MH_RBCR0_MD (1u << 16)
+#define G4MH_RBCR1_RESET 0x0000FFFFu
+#define G4MH_INTCFG_ULNR(cfg) (((cfg) >> 16) & 0x3Fu)
+
+/*
+ * PID (table 3.30), as the U2B's PEs report it (table 3.256 note 3):
+ * bit 18 register banks, 11 the FXU, 10 and 9 double and single
+ * precision, 8 the MPU. On the U2B6 only PE0 has the FXU.
+ */
+#define G4MH_PID_FXU 0x07840F01u
+#define G4MH_PID_NO_FXU 0x07840701u
 
 /* The bank all five of the above live in. */
 #define G4MH_SELID_INT 2u

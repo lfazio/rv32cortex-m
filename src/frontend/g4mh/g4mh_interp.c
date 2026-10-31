@@ -380,7 +380,7 @@ static EMU_ALWAYS_INLINE uint32_t do_sar(g4mh_cpu_t *c, uint32_t v, uint32_t n)
  * operation in user mode, or none.
  */
 static EMU_NOINLINE g4mh_exc_t cache_op(g4mh_cpu_t *c, uint32_t r2,
-                                        uint32_t sel)
+                                        uint32_t sel, uint32_t addr)
 {
     const uint32_t cop = ((r2 & 3u) << 5) | sel;
 
@@ -392,6 +392,26 @@ static EMU_NOINLINE g4mh_exc_t cache_op(g4mh_cpu_t *c, uint32_t r2,
         (c->psw & G4MH_PSW_UM) != 0u) {
         return G4MH_EXC_PIE; /* CIBII CFALI CISTI CILDI */
     }
+#if G4MH_EXT_MPU
+    /*
+     * CHBII and CFALI name an address, and the MPU judges it as a read of
+     * the whole 32-byte line it falls in (tables 3.111 and 3.117): MDP if
+     * refused, MEA the line's start. The index forms are not memory
+     * accesses. Neither was checked: there is no cache here, but the
+     * permission is the architecture's, not the cache's.
+     */
+    if ((cop == 0x00u || cop == 0x40u) && c->mpu_active) {
+        const uint32_t line = addr & ~31u;
+        const bool um = (c->psw & G4MH_PSW_UM) != 0u;
+
+        if (!g4mh_mpu_permits(c->mpu, line, 32u, G4MH_MPU_READ, um, c->spid)) {
+            c->sr[2][G4MH_SR_MEA] = line;
+            return g4mh_mdp(c, true, false, 0u);
+        }
+    }
+#else
+    (void)addr;
+#endif
     if (cop == 0x00u || cop == 0x20u) { /* CHBII CIBII */
         g4mh_invalidate(c, 0u, 0xFFFFFFFFu);
     }
@@ -454,8 +474,7 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
             if (EMU_UNLIKELY(g4mh_cpu_pending_fe(c))) {
                 c->state = EMU_STATE_RUNNING;
                 c->pc = pc;
-                g4mh_intc_ack_fe(c->intc, c->coreid);
-                g4mh_cpu_exception(c, G4MH_EXC_FEINT, pc);
+                (void)g4mh_cpu_take_fe(c, pc);
                 pc = c->pc;
                 continue;
             }
@@ -463,36 +482,11 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
             unsigned ipri = 64u;
             const int ch = g4mh_cpu_pending_irq_pri(c, &ipri);
             if (ch >= 0) {
-                uint32_t vec;
-
                 c->state = EMU_STATE_RUNNING;
                 c->pc = pc;
-
-                /*
-                 * Resolve the vector *before* acknowledging. A table
-                 * reference reads it out of memory and can take an MDP,
-                 * and the architecture then cancels acceptance and leaves
-                 * the request pending -- which an ack would have thrown
-                 * away.
-                 */
-                const g4mh_exc_t ve =
-                    g4mh_cpu_irq_vector(c, (uint32_t)ch, &vec);
-                if (ve != G4MH_EXC_NONE) {
-                    g4mh_cpu_exception(c, ve, pc);
-                    pc = c->pc;
-                    continue;
-                }
-                g4mh_intc_ack(c->intc, (uint32_t)ch);
-                g4mh_cpu_exception_at(c, G4MH_EXC_EIINT_BASE + (uint32_t)ch, pc,
-                                      vec);
-                /*
-                 * *After* the exception, because it reads the PSW that
-                 * entry has already updated and writes the ceiling the
-                 * handler runs under. Doing it first would have EIPSW
-                 * save the raised ceiling and EIRET restore it, so the
-                 * ceiling would never come down.
-                 */
-                g4mh_cpu_ack_priority(c, ipri);
+                /* The vector, the register bank, the acknowledgement and
+                 * the ceiling, in the one place the JIT uses too. */
+                g4mh_cpu_take_eiint(c, (uint32_t)ch, ipri, pc);
                 pc = c->pc;
                 continue;
             }
@@ -1511,11 +1505,11 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                     /* Both permissions first, as one read-modify-write
                      * (table 3.115's RMW bit); see g4mh_bitop. */
                     if (EMU_UNLIKELY(c->mpu_active)) {
-                        g4mh_exc_t ex;
+                        g4mh_exc_t rex;
 
-                        (void)g4mh_rmw_ptr(c, adr, 4u, true, &ex);
-                        if (ex != G4MH_EXC_NONE) {
-                            EXC(ex);
+                        (void)g4mh_rmw_ptr(c, adr, 4u, true, &rex);
+                        if (rex != G4MH_EXC_NONE) {
+                            EXC(rex);
                         }
                     }
 #endif
@@ -1942,8 +1936,14 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
              * UM register, so restoring all of it let user code load it
              * with 0 and return into supervisor mode.
              */
+            /*
+             * The saved PC's bit 0 is not transferred: "even if it is set
+             * to 1, the value transferred to the PC ... is 0" (tables
+             * 3.10, 3.12, 3.18). An LDSR of an odd value and a return
+             * otherwise fetched from an odd address.
+             */
             case 0x144: /* CTRET            */
-                pc = c->sr[0][G4MH_SR_CTPC];
+                pc = c->sr[0][G4MH_SR_CTPC] & ~1u;
                 g4mh_sr_write(c, 0u, G4MH_SR_PSW,
                               (c->psw & ~0x1Fu) |
                                   (c->sr[0][G4MH_SR_CTPSW] & 0x1Fu));
@@ -1959,13 +1959,13 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                  * not the one being returned to.
                  */
                 g4mh_cpu_eiret_priority(c);
-                pc = c->sr[0][G4MH_SR_EIPC];
+                pc = c->sr[0][G4MH_SR_EIPC] & ~1u;
                 g4mh_sr_write(c, 0u, G4MH_SR_PSW, c->sr[0][G4MH_SR_EIPSW]);
                 goto retired_insn;
 
             case 0x14A: /* FERET            */
                 SV_ONLY();
-                pc = c->sr[0][G4MH_SR_FEPC];
+                pc = c->sr[0][G4MH_SR_FEPC] & ~1u;
                 g4mh_sr_write(c, 0u, G4MH_SR_PSW, c->sr[0][G4MH_SR_FEPSW]);
                 goto retired_insn;
 
@@ -1983,14 +1983,18 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                      * DI and RESBANK share reg2 == 0 and are told apart by
                      * reg3 -- 0 and 16. Decoding on reg2 alone ran RESBANK
                      * as DI: it masked interrupts and returned, having
-                     * restored no bank at all, which is the silent wrong
-                     * answer this slot keeps producing. Register banks are
-                     * not modelled, so RESBANK is reported unimplemented
-                     * rather than approximated.
+                     * restored no bank at all.
                      */
                     if (sel == 0x10u) { /* RESBANK          */
                         SV_ONLY();
-                        EXC(G4MH_EXC_RIE);
+                        {
+                            const g4mh_exc_t e = g4mh_resbank(c);
+
+                            if (e != G4MH_EXC_NONE) {
+                                EXC(e);
+                            }
+                        }
+                        break;
                     }
                     if (sel != 0u) {
                         EXC(G4MH_EXC_RIE);
@@ -2047,7 +2051,7 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                 case 0x1Du:
                 case 0x1Eu:
                 case 0x1Fu: {
-                    const g4mh_exc_t e = cache_op(c, r2, sel);
+                    const g4mh_exc_t e = cache_op(c, r2, sel, c->r[r1]);
 
                     if (EMU_UNLIKELY(e != G4MH_EXC_NONE)) {
                         EXC(e);
