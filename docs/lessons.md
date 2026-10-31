@@ -4122,7 +4122,14 @@ session, and every one of them recurred:
   way: `MSR faultmask, 0` is ignored at priority -1, which FAULTMASK
   sets, so the test never cleared it and the next SVC locked the core
   up -- in the emulator, which said "an instruction it could not
-  execute" at a perfectly good `msr`.
+  execute" at a perfectly good `msr`. And code no benchmark runs still
+  cost one: the fix made `return_fault` small enough to inline into
+  `armv7m_exc_return`, itself inlined into the run loop, and LTO moved
+  `t32_dp_reg` out to keep the loop's size -- interpreted CoreMark 1.5%
+  slower on the F746 at three layouts, back within layout noise with
+  the rare paths `EMU_NOINLINE`. The loop's call list before and after
+  (`objdump` of `armv7m_run`, its `bl` targets counted) said which
+  handler had left.
 
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
