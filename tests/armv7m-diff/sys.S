@@ -244,3 +244,67 @@ sys_svc_mov_target:
     ldr     r0, [r0]
     mov     pc, r0
     .ltorg
+
+/*
+ * An exception entry onto a process stack the test chose, to see what
+ * a stacking fault does. r0 = the value for the PSP; r1 = 0 to enter by
+ * SVC, else ICSR's address, and PendSV is pended; r2 = 1 to run the
+ * entry unprivileged. Thread mode on the PSP with FPCA clear, so the
+ * frame is the basic eight words, and r0-r3, r12 and lr hold markers so
+ * the words that landed can be told apart. Whatever handler takes the
+ * fault leaves a frame of its own on the PSP whose pc is
+ * sys_after_stacking, and privilege back; this puts CONTROL and the PSP
+ * back as they were.
+ */
+    .thumb_func
+    .global sys_stacking
+sys_stacking:
+    push    {r4-r7, lr}
+    mov     r4, r1
+    mrs     r5, control
+    mrs     r6, psp
+    msr     psp, r0
+    bic     r3, r5, #5          /* FPCA off: a basic frame; nPRIV off */
+    orr     r3, r3, #2          /* SPSEL: the PSP */
+    orr     r3, r3, r2          /* nPRIV, if asked */
+    msr     control, r3
+    isb
+    mov     r7, #(1 << 28)      /* ICSR.PENDSVSET */
+    ldr     r0, =0xA0A0A0A0
+    ldr     r1, =0xA1A1A1A1
+    ldr     r2, =0xA2A2A2A2
+    ldr     r3, =0xA3A3A3A3
+    ldr     r12, =0xACACACAC
+    ldr     lr, =0xAEAEAEAE
+    cbz     r4, 1f
+    str     r7, [r4]
+    dsb
+    isb
+    b       2f
+1:  svc     #0x45
+    .thumb_func
+    .global sys_after_stacking
+sys_after_stacking:
+2:
+    msr     control, r5
+    isb
+    msr     psp, r6
+    pop     {r4-r7, pc}
+    .ltorg
+
+/*
+ * Where a frame sys_stacking's handler built resumes when the return
+ * that pops it leaves the thread unprivileged: a stack that is the
+ * thread's own, then SVC #0x46 for privilege back, then the way out.
+ */
+    .thumb_func
+    .global sys_unpriv_land
+sys_unpriv_land:
+    ldr     r0, =sys_land_sp
+    ldr     r0, [r0]
+    mov     sp, r0
+    svc     #0x46
+    .global sys_land_after
+sys_land_after:
+    b       sys_after_stacking
+    .ltorg

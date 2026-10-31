@@ -49,6 +49,7 @@ static void test_status_starts_clear(void)
         CHECK(!st.faulted);
         CHECK_EQ(st.fault_pc, 0u);
         CHECK_EQ(st.fault_insn, 0u);
+        CHECK(st.fault_why == NULL);
         /* And it really did answer: the name is the frontend's own. */
         CHECK(st.backend != NULL);
     }

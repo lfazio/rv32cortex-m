@@ -1424,6 +1424,312 @@ static void t_excret_mov_scan(void)
 
 /* ------------------------------------------------------------------ */
 
+/*
+ * A store's bus error, pended where the BusFault cannot be taken yet:
+ * under BASEPRI, inside a handler of higher priority, under FAULTMASK,
+ * and with BusFault disabled. A precise fault would escalate to a
+ * HardFault in the first three; the question is whether an imprecise
+ * one waits. hook_bus_store logs it when it is taken; the test logs
+ * BUSFAULTPENDED, and CFSR, before that.
+ */
+static void hook_bus_pend(uint32_t *frame, uint32_t excret, uint32_t exc)
+{
+    if (exc == 11u) {
+        sys_do_store((uint32_t)__ram_end, 0xA5A5A5A5u);
+        barrier();
+        logv((SHCSR >> 14) & 1u);
+        logv(CFSR);
+        return;
+    }
+    if (exc == 3u) {
+        logv(HFSR);
+        HFSR = HFSR;
+    }
+    hook_bus_store(frame, excret, exc);
+}
+
+static void t_bus_pending(void)
+{
+    const uint32_t end = (uint32_t)__ram_end;
+
+    g_hook = hook_bus_pend;
+    g_ua_base = end;
+    SHCSR |= (1u << 16) | (1u << 17) | (1u << 18);
+    SHPR8(5) = 0x80u;
+    MPU_CTRL = 0u;
+    barrier();
+
+    MSR(basepri, 0x80u);
+    sys_do_store(end, 0xA5A5A5A5u);
+    barrier();
+    logv((SHCSR >> 14) & 1u);
+    logv(CFSR);
+    MSR(basepri, 0u);
+    barrier();
+    emit("bus-str-basepri");
+
+    sys_do_svc(); /* SVC at 0x00: the store is made in its handler */
+    barrier();
+    emit("bus-str-in-handler");
+
+    /* CPSIE, not MSR: MSR cannot clear FAULTMASK at priority -1. */
+    __asm__ volatile("cpsid f" ::: "memory");
+    sys_do_store(end, 0xA5A5A5A5u);
+    barrier();
+    logv((SHCSR >> 14) & 1u);
+    logv(CFSR);
+    __asm__ volatile("cpsie f" ::: "memory");
+    barrier();
+    emit("bus-str-faultmask");
+
+    SHCSR &= ~(1u << 17);
+    sys_do_store(end, 0xA5A5A5A5u);
+    barrier();
+    emit("bus-str-disabled");
+
+    SHPR8(5) = 0u;
+    SHCSR &= ~(7u << 16);
+    g_hook = 0;
+}
+
+/* ------------------------------------------------------------------ */
+
+/*
+ * Stacking and unstacking faults: an exception entry whose frame goes
+ * where it cannot (STKERR, MSTKERR), and a return whose frame comes
+ * from where it cannot (UNSTKERR, MUNSTKERR). Which exception is taken,
+ * with what EXC_RETURN and frame, whether the original stays pending,
+ * which of a half-pushed frame's words land, whether a fault address
+ * is recorded, and whether stacking for unprivileged code is checked as
+ * unprivileged: none of it was asked of the board, and nothing else
+ * tested any of the four status bits.
+ *
+ * The thread runs on the PSP (sys_stacking), so the fault handler runs
+ * on a good MSP; it never reads a frame it was not given whole, and
+ * leaves a frame of its own on the PSP that resumes sys_stacking.
+ */
+extern void sys_stacking(uint32_t psp, uint32_t icsr, uint32_t npriv);
+extern char sys_after_stacking[];
+extern char sys_unpriv_land[];
+extern char sys_land_after[];
+uint32_t sys_land_sp; /* read by sys_unpriv_land */
+
+#define GOOD_FRAME (PSTACK_TOP - 8)
+
+/* Where an SVC handler sends the PSP before returning: an unstacking
+ * fault. 0: nowhere. With g_unstack_build, a frame resuming at
+ * sys_unpriv_land is written there first. */
+static volatile uint32_t g_unstack_to;
+static volatile uint32_t g_unstack_build;
+
+static void stk_repair(void)
+{
+    uint32_t *const f = GOOD_FRAME;
+
+    for (uint32_t i = 0u; i < 6u; i++) {
+        f[i] = 0u;
+    }
+    f[6] = (uint32_t)sys_after_stacking & ~1u;
+    f[7] = 1u << 24;
+    MSR(psp, (uint32_t)f);
+    MSR(control, MRS(control) & ~1u); /* the thread privileged again */
+}
+
+static void hook_stk(uint32_t *frame, uint32_t excret, uint32_t exc)
+{
+    const int good = frame == GOOD_FRAME;
+
+    logv(excret);
+    if ((excret & 4u) == 0u) {
+        logv(0xE0u); /* a frame on the main stack: not where it is */
+    } else if (good) {
+        logv(frame[6] - ((uint32_t)sys_after_stacking & ~1u));
+    } else {
+        logv((uint32_t)frame - g_ua_base);
+    }
+    if (exc == 3u || exc == 4u || exc == 5u) {
+        const uint32_t cfsr = CFSR;
+
+        logv(cfsr);
+        logv(HFSR);
+        logv((cfsr & 0x8000u) ? BFAR - g_ua_base : 0xFFFFFFFFu);
+        logv((cfsr & 0x80u) ? MMFAR - g_ua_base : 0xFFFFFFFFu);
+        logv(SHCSR & 0xFFFFu); /* what is active and pending now */
+        logv((ICSR >> 28) & 1u);
+        CFSR = cfsr;
+        HFSR = HFSR;
+    }
+    if (exc == 11u && good && frame[6] == ((uint32_t)sys_land_after & ~1u)) {
+        MSR(control, MRS(control) & ~1u); /* SVC #0x46 */
+        return;
+    }
+    if (exc == 11u && g_unstack_to != 0u) {
+        if (g_unstack_build != 0u) {
+            uint32_t *const f = (uint32_t *)g_unstack_to;
+
+            for (uint32_t i = 0u; i < 6u; i++) {
+                f[i] = 0u;
+            }
+            f[6] = (uint32_t)sys_unpriv_land & ~1u;
+            f[7] = 1u << 24;
+            g_unstack_build = 0u;
+        }
+        MSR(psp, g_unstack_to);
+        g_unstack_to = 0u;
+        return;
+    }
+    /*
+     * A fault taken over another handler (EXC_RETURN to Handler mode)
+     * leaves the PSP to that handler: an imprecise fault arrives a few
+     * instructions into it, after its entry code may have read the PSP,
+     * and what it then logs must not depend on exactly where.
+     */
+    if (!good && (excret & 8u) != 0u) {
+        stk_repair();
+    }
+}
+
+/* After each case: anything left pending, logged and cleared. */
+static void stk_emit(const char *name)
+{
+    logv((SHCSR >> 15) & 1u);
+    logv((ICSR >> 28) & 1u);
+    SHCSR &= ~(1u << 15);
+    ICSR = 1u << 27; /* PENDSVCLR */
+    barrier();
+    emit(name);
+}
+
+static void t_stacking(void)
+{
+    const uint32_t end = (uint32_t)__ram_end;
+    const uint32_t b = (uint32_t)g_mpubuf;
+    volatile uint32_t *const top = (volatile uint32_t *)(end - 16u);
+    uint32_t keep[4];
+
+    g_hook = hook_stk;
+    g_ua_base = end;
+    SHCSR |= (1u << 16) | (1u << 17) | (1u << 18);
+    MPU_CTRL = 0u;
+    barrier();
+
+    /* The whole frame outside RAM: entered by SVC, and by PendSV. */
+    sys_stacking(end + 0x40u, 0u, 0u);
+    stk_emit("stk-bus-svc");
+    sys_stacking(end + 0x40u, (uint32_t)&ICSR, 0u);
+    stk_emit("stk-bus-pendsv");
+
+    /*
+     * Half the frame inside: r0-r3 below the end of RAM, the rest past
+     * it. Those four words are the top of the main stack in both
+     * builds, put back after.
+     */
+    for (uint32_t i = 0u; i < 4u; i++) {
+        keep[i] = top[i];
+        top[i] = 0x5A5A5A50u + i;
+    }
+    sys_stacking(end + 16u, 0u, 0u);
+    for (uint32_t i = 0u; i < 4u; i++) {
+        logv(top[i]);
+        top[i] = keep[i];
+    }
+    barrier();
+    stk_emit("stk-bus-straddle");
+
+    /* The original's priority above the derived exception's. */
+    SHPR8(5) = 0x80u;
+    SHPR8(11) = 0x40u;
+    sys_stacking(end + 0x40u, 0u, 0u);
+    stk_emit("stk-bus-prio");
+    SHPR8(5) = 0u;
+    SHPR8(11) = 0u;
+
+    /* BusFault disabled. */
+    SHCSR &= ~(1u << 17);
+    sys_stacking(end + 0x40u, 0u, 0u);
+    stk_emit("stk-bus-disabled");
+    SHCSR |= 1u << 17;
+    sys_land_sp = (uint32_t)PSTACK_TOP;
+
+    /* The same against the MPU: the buffer read-write, its second 32
+     * bytes no access. */
+    g_ua_base = b;
+    for (uint32_t i = 0u; i < sizeof(g_mpubuf); i++) {
+        g_mpubuf[i] = 0u;
+    }
+    mpu_region(0u, 0u, 32u, 3u, 0u, 0u);
+    mpu_region(1u, b, 10u, 3u, 1u, 0u);
+    mpu_region(2u, b + 32u, 5u, 0u, 1u, 0u);
+    MPU_CTRL = 1u;
+    barrier();
+    sys_stacking(b + 64u, 0u, 0u);
+    stk_emit("stk-mm");
+    sys_stacking(b + 48u, 0u, 0u);
+    for (uint32_t i = 0u; i < 4u; i++) {
+        logv(*(volatile uint32_t *)(g_mpubuf + 16u + 4u * i));
+    }
+    stk_emit("stk-mm-straddle");
+    SHPR8(4) = 0x80u;
+    SHPR8(11) = 0x40u;
+    sys_stacking(b + 64u, 0u, 0u);
+    stk_emit("stk-mm-prio");
+    SHPR8(4) = 0u;
+    SHPR8(11) = 0u;
+    SHCSR &= ~(1u << 16);
+    sys_stacking(b + 64u, 0u, 0u);
+    stk_emit("stk-mm-disabled");
+    SHCSR |= 1u << 16;
+
+    /*
+     * Region 1 privileged read-write, unprivileged read-only: is an
+     * unprivileged thread's frame pushed as unprivileged?
+     */
+    MPU_RNR = 1u;
+    MPU_RASR = (MPU_RASR & ~(7u << 24)) | (2u << 24);
+    barrier();
+    sys_stacking(b + 256u, 0u, 1u);
+    stk_emit("stk-mm-unpriv");
+
+    /* Unstacking: an SVC handler sends the PSP where a frame cannot
+     * be read, and returns. */
+    g_unstack_to = b + 32u;
+    sys_stacking((uint32_t)PSTACK_TOP, 0u, 0u);
+    stk_emit("unstk-mm");
+
+    /*
+     * Region 1 privileged read-write, unprivileged no access: is a
+     * frame popped for an unprivileged thread read as unprivileged? If
+     * not, the return lands at sys_unpriv_land, still unprivileged.
+     */
+    MPU_RNR = 1u;
+    MPU_RASR = (MPU_RASR & ~(7u << 24)) | (1u << 24);
+    barrier();
+    g_unstack_to = b + 256u;
+    g_unstack_build = 1u;
+    sys_stacking((uint32_t)PSTACK_TOP, 0u, 1u);
+    stk_emit("unstk-mm-unpriv");
+
+    MPU_CTRL = 0u;
+    for (uint32_t i = 0u; i < 3u; i++) {
+        MPU_RNR = i;
+        MPU_RASR = 0u;
+    }
+    barrier();
+    g_ua_base = end;
+    g_unstack_to = end + 0x40u;
+    sys_stacking((uint32_t)PSTACK_TOP, 0u, 0u);
+    stk_emit("unstk-bus");
+    SHCSR &= ~(1u << 17);
+    g_unstack_to = end + 0x40u;
+    sys_stacking((uint32_t)PSTACK_TOP, 0u, 0u);
+    stk_emit("unstk-bus-disabled");
+
+    SHCSR &= ~(7u << 16);
+    g_hook = 0;
+}
+
+/* ------------------------------------------------------------------ */
+
 int main(void)
 {
     for (uint32_t i = 0u; i < sizeof(g_vtab) / sizeof(g_vtab[0]); i++) {
@@ -1452,6 +1758,8 @@ int main(void)
     t_xn_fetch();
     t_excret();
     t_excret_mov_scan();
+    t_bus_pending();
+    t_stacking(); /* last: the one most likely to stop the board */
     puts_("SYS-END\nDIFF-END\n");
     return 0;
 }

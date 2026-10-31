@@ -227,7 +227,10 @@ Each has cost more than one session, and every one recurred.
   test compares two backends, print which two it used.
 - **A filter that keeps a harness safe decides what it can never ask.**
   rawgen kept ARMv7-M operands in r0-r12, so 557 sp/pc encodings the M7
-  refuses had never been asked, and the frontend executed them all.
+  refuses had never been asked, and the frontend executed them all;
+  fuzz-armv7m-mpu's stack in a region open to all meant no frame ever
+  faulted, and three stacking behaviours were wrong. A status bit no
+  test reads (STKERR) is the same blind spot: grep for its readers.
 - **The fuzzers find what the suites share a blind spot for**: eighteen
   defects, eight in an interpreter (docs/fuzzing.md). A UBSan report in
   the interpreter is a finding even when both backends agree.
@@ -567,7 +570,14 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   precise, BFAR the first byte refused): the store retires and the
   BusFault pends. Made deterministic, it must be so on every path that
   can raise it -- the JIT's store helper stopped its block, the
-  interpreter fallback did not, 68 instructions apart.
+  interpreter fallback did not, 68 instructions apart. **So is an
+  exception frame's** (`stk-*`): the exception is entered, STKERR never
+  set.
+- **A frame belongs to the code it saves**: the MPU checks a push with
+  the interrupted code's privilege and a pop with the returning code's;
+  a failed pop tail-chains, the frame left in place and LR the
+  EXC_RETURN that failed; a refused push's MemManage is ranked against
+  the original like any pending pair (`test_stacking_board_answers`).
 - **A rule stated per instruction is not enforced per value**: the
   ARMv7-M run loop took any 0xFxxxxxxx pc in Handler mode as
   EXC_RETURN; MOV pc, ADD pc and BLX branch, and the F746 faults them

@@ -485,9 +485,10 @@ armv7m_exc_t armv7m_mem_read_checked(armv7m_cpu_t *c, uint32_t addr,
  * normal priority rules" and "treated as HardFault ... when disabled",
  * never a lockup (ARM DDI 0403E B1.5.4, B1.5.15). The interpreter takes
  * it before the next instruction; the JIT's store helper reads
- * `imprecise` to do the same.
+ * `imprecise` to do the same. Exception entry's stores are made the same
+ * way (pend_imprecise, from push_word).
  */
-static void bus_error_imprecise(armv7m_cpu_t *c)
+static void pend_imprecise(armv7m_cpu_t *c)
 {
     c->cfsr |= BFSR_IMPRECISERR;
     if ((c->shcsr & SHCSR_BUSFAULTENA) != 0u) {
@@ -496,6 +497,11 @@ static void bus_error_imprecise(armv7m_cpu_t *c)
         c->hfsr |= HFSR_FORCED;
         armv7m_set_pending(c, ARMV7M_EXC_HARDFAULT, true);
     }
+}
+
+static void bus_error_imprecise(armv7m_cpu_t *c)
+{
+    pend_imprecise(c);
     c->imprecise = true;
 }
 
@@ -572,15 +578,23 @@ static void lockup(armv7m_cpu_t *c, uint32_t pc)
 /* Entry                                                               */
 /* ------------------------------------------------------------------ */
 
-static bool push_word(armv7m_cpu_t *c, uint32_t addr, uint32_t v)
+/*
+ * One word of a frame, as the F746 pushes it (sys.c `stk-*`): checked
+ * by the MPU with the privilege of the code being interrupted -- an
+ * unprivileged thread's frame into memory it may only read is MSTKERR
+ * -- and a bus error is a store's, imprecise: IMPRECISERR, not STKERR,
+ * the rest of the frame still pushed and the entry completed, the
+ * BusFault pending behind the exception being entered.
+ */
+static bool push_word(armv7m_cpu_t *c, uint32_t addr, uint32_t v, bool priv)
 {
-    if (!mpu_permits(c, addr, true, ARMV7M_ACC_WRITE)) {
+    if (!mpu_permits(c, addr, priv, ARMV7M_ACC_WRITE)) {
         c->cfsr |= MMFSR_MSTKERR;
         return false;
     }
     if (emu_bus_write(c->bus, addr, 4u, v) != EMU_FAULT_NONE) {
-        c->cfsr |= BFSR_STKERR;
-        return false;
+        pend_imprecise(c);
+        return true;
     }
     armv7m_wrote(c, addr);
     return true;
@@ -609,6 +623,7 @@ static bool push_stack(armv7m_cpu_t *c, uint32_t return_pc)
         (c->xpsr & ~(1u << 9)) | (align << 9);
     const uint32_t words[8] = {c->r[0],  c->r[1],         c->r[2],   c->r[3],
                                c->r[12], c->r[ARMV7M_LR], return_pc, xpsr};
+    const bool priv = armv7m_privileged(c);
     bool ok = true;
 
     /* The new SP is committed even if a store faults, as on silicon. */
@@ -619,15 +634,15 @@ static bool push_stack(armv7m_cpu_t *c, uint32_t return_pc)
         c->msp = frame;
     }
     for (uint32_t i = 0u; i < 8u && ok; i++) {
-        ok = push_word(c, frame + 4u * i, words[i]);
+        ok = push_word(c, frame + 4u * i, words[i], priv);
     }
     if (fp && ok) {
         if ((c->fpccr & FPCCR_LSPEN) == 0u) {
             for (uint32_t i = 0u; i < 16u && ok; i++) {
-                ok = push_word(c, frame + 0x20u + 4u * i, c->s[i]);
+                ok = push_word(c, frame + 0x20u + 4u * i, c->s[i], priv);
             }
             if (ok) {
-                ok = push_word(c, frame + 0x60u, c->fpscr);
+                ok = push_word(c, frame + 0x60u, c->fpscr, priv);
             }
         } else {
             /*
@@ -694,27 +709,35 @@ static bool exception_taken(armv7m_cpu_t *c, uint32_t exc)
 }
 
 /*
- * Take an exception: push, then vector. A stacking fault is a derived
- * exception, MemManage or BusFault -- taken in place of the original,
- * with the frame as far as it got -- and a bad vector is a HardFault.
+ * Take an exception: push, then vector. A stacking fault -- MSTKERR;
+ * a bus error is imprecise and already pending -- is a derived
+ * MemManage, escalated as any fault is, and then ranked against the
+ * original as two pending exceptions are: priority, then the lower
+ * number. The winner is entered on the frame as far as it got, the
+ * other left pending. The F746 took the SVC first when it outranked the
+ * MemManage, and the MemManage first at equal priority (sys.c
+ * `stk-mm-prio`, `stk-mm`). A bad vector is a HardFault.
  */
 bool armv7m_take(armv7m_cpu_t *c, uint32_t exc, uint32_t return_pc)
 {
     if (!push_stack(c, return_pc)) {
-        const bool mm = (c->cfsr & MMFSR_MSTKERR) != 0u;
-        const uint32_t f = mm ? ARMV7M_EXC_MEMMANAGE : ARMV7M_EXC_BUSFAULT;
-        const uint32_t ena = mm ? SHCSR_MEMFAULTENA : SHCSR_BUSFAULTENA;
+        uint32_t d = ARMV7M_EXC_MEMMANAGE;
 
-        pending_put(c, exc, true); /* the original stays pending */
-        if ((c->shcsr & ena) != 0u &&
-            group(c, exc_prio(c, f)) < armv7m_exec_priority(c)) {
-            exc = f;
-        } else if (armv7m_exec_priority(c) > -1) {
+        if ((c->shcsr & SHCSR_MEMFAULTENA) == 0u ||
+            group(c, exc_prio(c, d)) >= armv7m_exec_priority(c)) {
+            if (armv7m_exec_priority(c) <= -1) {
+                lockup(c, return_pc);
+                return false;
+            }
             c->hfsr |= HFSR_FORCED;
-            exc = ARMV7M_EXC_HARDFAULT;
+            d = ARMV7M_EXC_HARDFAULT;
+        }
+        if (exc_prio(c, d) < exc_prio(c, exc) ||
+            (exc_prio(c, d) == exc_prio(c, exc) && d < exc)) {
+            armv7m_set_pending(c, exc, true);
+            exc = d;
         } else {
-            lockup(c, return_pc);
-            return false;
+            armv7m_set_pending(c, d, true);
         }
     }
     if (!exception_taken(c, exc)) {
@@ -826,18 +849,19 @@ static void deactivate(armv7m_cpu_t *c, uint32_t exc)
 }
 
 /*
- * The INVPC cases of ExceptionReturn: the UsageFault is taken *without* a
- * new frame -- the one being returned through is still on the stack --
- * and LR holds the EXC_RETURN value that failed.
+ * A fault in ExceptionReturn, taken *without* a new frame -- the one
+ * being returned through is still on the stack, where it was -- with LR
+ * the EXC_RETURN value that failed: a tail-chain from the return. The
+ * fault is escalated as any other, against the priority left once the
+ * returning exception is no longer active.
  */
-static void return_fault(armv7m_cpu_t *c, uint32_t ret_exc, uint32_t excret)
+static void return_chain(armv7m_cpu_t *c, uint32_t f, uint32_t ena,
+                         uint32_t excret)
 {
-    deactivate(c, ret_exc);
-    c->cfsr |= UFSR_INVPC;
     c->r[ARMV7M_LR] = excret;
-    if ((c->shcsr & SHCSR_USGFAULTENA) != 0u &&
-        group(c, exc_prio(c, ARMV7M_EXC_USAGEFAULT)) < armv7m_exec_priority(c)) {
-        (void)exception_taken(c, ARMV7M_EXC_USAGEFAULT);
+    if ((c->shcsr & ena) != 0u &&
+        group(c, exc_prio(c, f)) < armv7m_exec_priority(c)) {
+        (void)exception_taken(c, f);
     } else if (armv7m_exec_priority(c) > -1) {
         c->hfsr |= HFSR_FORCED;
         (void)exception_taken(c, ARMV7M_EXC_HARDFAULT);
@@ -846,9 +870,23 @@ static void return_fault(armv7m_cpu_t *c, uint32_t ret_exc, uint32_t excret)
     }
 }
 
-static bool pop_word(armv7m_cpu_t *c, uint32_t addr, uint32_t *v)
+/* The INVPC cases of ExceptionReturn. */
+static void return_fault(armv7m_cpu_t *c, uint32_t ret_exc, uint32_t excret)
 {
-    if (!mpu_permits(c, addr, true, ARMV7M_ACC_READ)) {
+    deactivate(c, ret_exc);
+    c->cfsr |= UFSR_INVPC;
+    return_chain(c, ARMV7M_EXC_USAGEFAULT, SHCSR_USGFAULTENA, excret);
+}
+
+/*
+ * One word of a frame, read with the privilege of the code being
+ * returned to: an unprivileged thread's frame where it may not read is
+ * MUNSTKERR (sys.c `unstk-mm-unpriv`). Reads are precise, so a bus
+ * error is UNSTKERR (`unstk-bus`).
+ */
+static bool pop_word(armv7m_cpu_t *c, uint32_t addr, uint32_t *v, bool priv)
+{
+    if (!mpu_permits(c, addr, priv, ARMV7M_ACC_READ)) {
         c->cfsr |= MMFSR_MUNSTKERR;
         return false;
     }
@@ -932,17 +970,29 @@ armv7m_exc_t armv7m_exc_return(armv7m_cpu_t *c, uint32_t excret)
         const uint32_t framesize = fp ? 0x68u : 0x20u;
         const bool forcealign = fp || (c->ccr & CCR_STKALIGN) != 0u;
         const uint32_t frame = process ? c->psp : c->msp;
+        const bool priv =
+            !to_thread || (c->control & ARMV7M_CONTROL_NPRIV) == 0u;
         uint32_t w[8];
 
         for (uint32_t i = 0u; i < 8u; i++) {
-            if (!pop_word(c, frame + 4u * i, &w[i])) {
-                /* An unstacking fault: taken from Handler mode, with the
-                 * frame left where it was. */
+            if (!pop_word(c, frame + 4u * i, &w[i], priv)) {
+                /*
+                 * An unstacking fault, as the F746 takes it (sys.c
+                 * `unstk-*`): a tail-chain from this return, the stack
+                 * pointer and the frame left as they were, EXC_RETURN
+                 * still in LR -- so the handler can mend the frame and
+                 * return through it.
+                 */
                 const bool mm = (c->cfsr & MMFSR_MUNSTKERR) != 0u;
 
                 sp_load(c);
-                armv7m_raise(c, mm ? ARMV7M_X_MEMMANAGE : ARMV7M_X_BUSFAULT,
-                             excret);
+                if (mm) {
+                    return_chain(c, ARMV7M_EXC_MEMMANAGE, SHCSR_MEMFAULTENA,
+                                 excret);
+                } else {
+                    return_chain(c, ARMV7M_EXC_BUSFAULT, SHCSR_BUSFAULTENA,
+                                 excret);
+                }
                 return OK;
             }
         }
@@ -951,9 +1001,9 @@ armv7m_exc_t armv7m_exc_return(armv7m_cpu_t *c, uint32_t excret)
                 c->fpccr &= ~FPCCR_LSPACT; /* the registers are still live */
             } else {
                 for (uint32_t i = 0u; i < 16u; i++) {
-                    (void)pop_word(c, frame + 0x20u + 4u * i, &c->s[i]);
+                    (void)pop_word(c, frame + 0x20u + 4u * i, &c->s[i], priv);
                 }
-                (void)pop_word(c, frame + 0x60u, &c->fpscr);
+                (void)pop_word(c, frame + 0x60u, &c->fpscr, priv);
             }
         }
         c->control = (c->control & ~ARMV7M_CONTROL_FPCA) |

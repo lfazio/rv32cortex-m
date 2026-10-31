@@ -866,6 +866,36 @@ static void test_sysresetreq_reported(void)
 }
 
 /*
+ * A lockup says it is one. It was reported as "an instruction it could
+ * not execute" with the encoding of the last fault taken -- a VMOV the
+ * guest had handled long before -- beside the lockup's pc. A UsageFault
+ * under FAULTMASK, after a handled one at another pc, is the case.
+ */
+static void test_lockup_reported(void)
+{
+    armv7m_cpu_t *const c = &g_ua_cpu;
+    emu_cpu_status_t st;
+
+    armv7m_reset_state(c);
+    c->state = EMU_STATE_RUNNING;
+    c->fault_pc = UA_CODE + 0x40u; /* the earlier, handled fault */
+    c->fault_insn = 0xEC510B30u;
+    c->faultmask = 1u; /* priority -1: nothing can be taken */
+    armv7m_raise(c, ARMV7M_X_UNDEF, UA_CODE);
+    CHECK_EQ(c->state, EMU_STATE_HALTED);
+    memset(&st, 0xA5, sizeof(st));
+    armv7m_frontend.status((const emu_cpu_t *)(const void *)c, &st);
+    CHECK(st.faulted);
+    CHECK(st.fault_why != NULL && strncmp(st.fault_why, "lockup", 6) == 0);
+    CHECK_EQ(st.fault_pc, UA_CODE);
+
+    armv7m_reset_state(c);
+    memset(&st, 0xA5, sizeof(st));
+    armv7m_frontend.status((const emu_cpu_t *)(const void *)c, &st);
+    CHECK(st.fault_why == NULL);
+}
+
+/*
  * `pending_any` is the OR of `pending`, after everything that changes
  * it: the interpreter tests it instead of the words before each
  * instruction, so a writer that skipped it would lose an exception. A
@@ -889,6 +919,15 @@ static bool any_pending(const armv7m_cpu_t *c)
     return any != 0u;
 }
 
+/*
+ * A stack can be bad two ways, and they leave different things pending:
+ * with no memory under it the frame's stores are imprecise and the
+ * BusFault waits behind the exception entered; refused by the MPU, the
+ * MemManage is ranked against the exception being entered and the loser
+ * waits. 4 KB at WALK_REFUSED is no access, the rest the default map.
+ */
+#define WALK_REFUSED (UA_RAM_BASE + 0x4000u)
+
 static void pend_walk_setup(armv7m_cpu_t *c)
 {
     armv7m_reset_state(c);
@@ -901,6 +940,15 @@ static void pend_walk_setup(armv7m_cpu_t *c)
      * pending can be taken. */
     memset(c->enabled, 0xFF, sizeof(c->enabled));
     c->shcsr |= 0x00070000u; /* MEMFAULTENA, BUSFAULTENA, USGFAULTENA */
+    c->mpu_rbar[0] = WALK_REFUSED;
+    c->mpu_rasr[0] = (1u << 28) | (11u << 1) | 1u; /* XN, 4 KB, AP 0 */
+    c->mpu_ctrl = 1u | 4u;                         /* ENABLE, PRIVDEFENA */
+}
+
+/* A bad stack, one of the two kinds, by a bit of r. */
+static uint32_t walk_bad_sp(uint32_t r)
+{
+    return ((r >> 7) & 1u) != 0u ? 0x00000100u : WALK_REFUSED + 0x800u;
 }
 
 static void test_pending_summary(void)
@@ -912,6 +960,7 @@ static void test_pending_summary(void)
     uint32_t stack_faults = 0u;
     uint32_t takes = 0u;
     uint32_t sync_left = 0u;
+    uint32_t imprecise = 0u;
 
     memset(g_ua_ram, 0, sizeof(g_ua_ram));
     emu_bus_init(&g_ua_bus);
@@ -947,12 +996,16 @@ static void test_pending_summary(void)
                 break;
             }
             if (bad) {
-                c->r[ARMV7M_SP] = 0x00000100u;
+                c->r[ARMV7M_SP] = walk_bad_sp(r);
+                c->cfsr = 0u;
             }
             takes++;
             (void)armv7m_take(c, exc, c->r[ARMV7M_PC]);
             if (bad && armv7m_is_pending(c, exc)) {
                 stack_faults++;
+            }
+            if (bad && (c->cfsr & (1u << 10)) != 0u) {
+                imprecise++;
             }
             break;
         }
@@ -964,7 +1017,7 @@ static void test_pending_summary(void)
             const uint32_t exc = sync[(r >> 4) % 5u];
 
             if (((r >> 8) & 1u) != 0u) {
-                c->r[ARMV7M_SP] = 0x00000100u;
+                c->r[ARMV7M_SP] = walk_bad_sp(r);
             }
             takes++;
             (void)armv7m_take(c, exc, c->r[ARMV7M_PC]);
@@ -994,28 +1047,231 @@ static void test_pending_summary(void)
         if (c->pending_any != any_pending(c)) {
             wrong++;
         }
-        if (c->state != EMU_STATE_RUNNING || c->r[ARMV7M_SP] < UA_RAM_BASE) {
+        if (c->state != EMU_STATE_RUNNING || c->r[ARMV7M_SP] < UA_RAM_BASE ||
+            c->r[ARMV7M_SP] - WALK_REFUSED < 0x1000u) {
             pend_walk_setup(c); /* a lockup, or a frame that never was */
         }
     }
     CHECK_EQ(wrong, 0u);
     if (getenv("ARMV7M_WALK") != NULL) {
         printf("    pending walk: %u takes, %u re-pends, %u stacking faults, "
-               "%u synchronous left pending\n",
+               "%u synchronous left pending, %u imprecise\n",
                (unsigned)takes, (unsigned)repends, (unsigned)stack_faults,
-               (unsigned)sync_left);
+               (unsigned)sync_left, (unsigned)imprecise);
     }
     /* And that it went where it was meant to. */
     CHECK(takes > 1000u);
     CHECK(repends > 50u);
     CHECK(stack_faults > 50u);
     CHECK(sync_left > 50u);
+    CHECK(imprecise > 50u);
+}
+
+/*
+ * Stacking and unstacking faults, as the F746 answered them
+ * (tests/armv7m-diff, sys.c `stk-*` and `unstk-*`). Nothing tested any
+ * of the four status bits before, and the emulator had three of the
+ * answers wrong:
+ *
+ *   - a frame pushed into no memory is a store's bus error, imprecise:
+ *     the exception is entered on the frame as far as it got, IMPRECISERR
+ *     (not STKERR) with BFAR not valid, and the BusFault waits -- a
+ *     HardFault, FORCED, when it is disabled. The words inside RAM land.
+ *   - a frame the MPU refuses is MSTKERR, checked with the interrupted
+ *     code's privilege, and the MemManage is ranked against the
+ *     exception being entered: whichever outranks the other is entered,
+ *     the MemManage at equal priority, and the loser waits.
+ *   - a frame that cannot be popped is a tail-chain from the return: no
+ *     new frame, the stack pointer where it was, LR the EXC_RETURN that
+ *     failed, UNSTKERR or MUNSTKERR, read with the privilege of the code
+ *     being returned to.
+ *
+ * Driven through armv7m_take and armv7m_exc_return, the two places a
+ * frame moves, from a thread on the PSP as the board test has it.
+ */
+#define STK_END (UA_RAM_BASE + UA_RAM_SIZE)
+#define STK_BUF (UA_RAM_BASE + 0x4000u) /* a 1 KB MPU region */
+#define STK_MSP (UA_RAM_BASE + 0xE000u)
+
+static void stk_setup(armv7m_cpu_t *c, uint32_t psp, bool npriv)
+{
+    memset(g_ua_ram, 0, sizeof(g_ua_ram));
+    emu_bus_init(&g_ua_bus);
+    CHECK(
+        emu_bus_add_ram(&g_ua_bus, "ram", UA_RAM_BASE, g_ua_ram, UA_RAM_SIZE));
+    for (uint32_t v = 2u; v < 16u; v++) {
+        const uint32_t to = UA_CODE | 1u;
+
+        memcpy(&g_ua_ram[4u * v], &to, 4u);
+    }
+    armv7m_reset_state(c);
+    c->bus = &g_ua_bus;
+    c->state = EMU_STATE_RUNNING;
+    c->vtor = UA_RAM_BASE;
+    c->shcsr |= 0x00070000u;
+    c->msp = STK_MSP;
+    c->psp = psp;
+    c->r[ARMV7M_SP] = psp;
+    c->control = 2u | (npriv ? 1u : 0u); /* SPSEL, nPRIV */
+    for (uint32_t i = 0u; i < 4u; i++) {
+        c->r[i] = 0xA0A0A0A0u + 0x01010101u * i;
+    }
+}
+
+/* Region 6: STK_BUF, 1 KB, access permission ap. Region 0 under it,
+ * everything, full access -- the higher number wins. */
+static void stk_mpu(armv7m_cpu_t *c, uint32_t ap)
+{
+    c->mpu_rbar[0] = 0u;
+    c->mpu_rasr[0] = (3u << 24) | (31u << 1) | 1u; /* 4 GB, full access */
+    c->mpu_rbar[6] = STK_BUF;
+    c->mpu_rasr[6] = (1u << 28) | (ap << 24) | (9u << 1) | 1u;
+    c->mpu_ctrl = 1u;
+}
+
+static uint32_t stk_word(uint32_t addr)
+{
+    uint32_t v;
+
+    memcpy(&v, &g_ua_ram[addr - UA_RAM_BASE], 4u);
+    return v;
+}
+
+static void test_stacking_board_answers(void)
+{
+    armv7m_cpu_t *const c = &g_ua_cpu;
+
+    /* stk-bus-svc: the SVC entered, the BusFault waiting. */
+    stk_setup(c, STK_END + 0x40u, false);
+    CHECK(armv7m_take(c, 11u, UA_CODE));
+    CHECK_EQ(c->xpsr & 0x1FFu, 11u);
+    CHECK_EQ(c->cfsr, 0x400u); /* IMPRECISERR, BFAR not valid */
+    CHECK_EQ(c->hfsr, 0u);
+    CHECK(armv7m_is_pending(c, 5u));
+    CHECK(!armv7m_is_pending(c, 11u));
+    CHECK_EQ(c->psp, STK_END + 0x20u);
+    CHECK_EQ(c->r[ARMV7M_LR], 0xFFFFFFFDu);
+
+    /* stk-bus-straddle: r0-r3 land below the end of RAM. */
+    stk_setup(c, STK_END + 16u, false);
+    CHECK(armv7m_take(c, 11u, UA_CODE));
+    CHECK_EQ(c->xpsr & 0x1FFu, 11u);
+    for (uint32_t i = 0u; i < 4u; i++) {
+        CHECK_EQ(stk_word(STK_END - 16u + 4u * i),
+                 0xA0A0A0A0u + 0x01010101u * i);
+    }
+
+    /* stk-bus-disabled: a HardFault waiting, FORCED. */
+    stk_setup(c, STK_END + 0x40u, false);
+    c->shcsr &= ~(1u << 17);
+    CHECK(armv7m_take(c, 11u, UA_CODE));
+    CHECK_EQ(c->xpsr & 0x1FFu, 11u);
+    CHECK_EQ(c->cfsr, 0x400u);
+    CHECK_EQ(c->hfsr, 0x40000000u);
+    CHECK(armv7m_is_pending(c, 3u));
+    CHECK(!armv7m_is_pending(c, 5u));
+
+    /* stk-mm: equal priority, the MemManage entered, the SVC waiting. */
+    stk_setup(c, STK_BUF + 64u, false);
+    stk_mpu(c, 0u);
+    CHECK(armv7m_take(c, 11u, UA_CODE));
+    CHECK_EQ(c->xpsr & 0x1FFu, 4u);
+    CHECK_EQ(c->cfsr, 0x10u); /* MSTKERR, MMFAR not valid */
+    CHECK(armv7m_is_pending(c, 11u));
+    CHECK_EQ(c->psp, STK_BUF + 32u);
+
+    /* stk-mm-prio: the SVC outranks the MemManage, and is entered. */
+    stk_setup(c, STK_BUF + 64u, false);
+    stk_mpu(c, 0u);
+    c->prio[4] = 0x80u;
+    c->prio[11] = 0x40u;
+    CHECK(armv7m_take(c, 11u, UA_CODE));
+    CHECK_EQ(c->xpsr & 0x1FFu, 11u);
+    CHECK_EQ(c->cfsr, 0x10u);
+    CHECK(armv7m_is_pending(c, 4u));
+    CHECK(!armv7m_is_pending(c, 11u));
+
+    /* stk-mm-disabled: a HardFault outranks anything, the SVC waits. */
+    stk_setup(c, STK_BUF + 64u, false);
+    stk_mpu(c, 0u);
+    c->shcsr &= ~(1u << 16);
+    CHECK(armv7m_take(c, 11u, UA_CODE));
+    CHECK_EQ(c->xpsr & 0x1FFu, 3u);
+    CHECK_EQ(c->hfsr, 0x40000000u);
+    CHECK(armv7m_is_pending(c, 11u));
+
+    /* stk-mm-unpriv: privileged read-write, unprivileged read-only. */
+    stk_setup(c, STK_BUF + 256u, true);
+    stk_mpu(c, 2u);
+    CHECK(armv7m_take(c, 11u, UA_CODE));
+    CHECK_EQ(c->xpsr & 0x1FFu, 4u);
+    CHECK_EQ(c->cfsr, 0x10u);
+    stk_setup(c, STK_BUF + 256u, false); /* the control: privileged */
+    stk_mpu(c, 2u);
+    CHECK(armv7m_take(c, 11u, UA_CODE));
+    CHECK_EQ(c->xpsr & 0x1FFu, 11u);
+    CHECK_EQ(c->cfsr, 0u);
+
+    /*
+     * unstk-bus: an SVC entered on a good stack, its PSP sent past the
+     * end of RAM, and the return.
+     */
+    stk_setup(c, UA_RAM_BASE + 0x8000u, false);
+    CHECK(armv7m_take(c, 11u, UA_CODE));
+    c->psp = STK_END + 0x40u;
+    (void)armv7m_exc_return(c, 0xFFFFFFFDu);
+    CHECK_EQ(c->state, EMU_STATE_RUNNING);
+    CHECK_EQ(c->xpsr & 0x1FFu, 5u);
+    CHECK_EQ(c->cfsr, 0x800u); /* UNSTKERR */
+    CHECK_EQ(c->r[ARMV7M_LR], 0xFFFFFFFDu);
+    CHECK_EQ(c->psp, STK_END + 0x40u);
+    CHECK_EQ(c->r[ARMV7M_SP], STK_MSP); /* nothing pushed */
+    CHECK(!armv7m_is_active(c, 11u));
+    CHECK_EQ(c->r[ARMV7M_PC], UA_CODE);
+
+    /* unstk-bus-disabled. */
+    stk_setup(c, UA_RAM_BASE + 0x8000u, false);
+    c->shcsr &= ~(1u << 17);
+    CHECK(armv7m_take(c, 11u, UA_CODE));
+    c->psp = STK_END + 0x40u;
+    (void)armv7m_exc_return(c, 0xFFFFFFFDu);
+    CHECK_EQ(c->xpsr & 0x1FFu, 3u);
+    CHECK_EQ(c->cfsr, 0x800u);
+    CHECK_EQ(c->hfsr, 0x40000000u);
+    CHECK_EQ(c->r[ARMV7M_LR], 0xFFFFFFFDu);
+    CHECK_EQ(c->r[ARMV7M_SP], STK_MSP);
+
+    /*
+     * unstk-mm-unpriv: a frame where the thread being returned to may
+     * not read, but its handler may. Built by hand, as the board
+     * test's handler builds it.
+     */
+    for (uint32_t npriv = 0u; npriv < 2u; npriv++) {
+        uint32_t f[8] = {0u, 0u, 0u, 0u, 0u, 0u, UA_CODE + 0x20u, 1u << 24};
+
+        stk_setup(c, UA_RAM_BASE + 0x8000u, npriv != 0u);
+        stk_mpu(c, 1u); /* privileged read-write, unprivileged none */
+        CHECK(armv7m_take(c, 11u, UA_CODE));
+        memcpy(&g_ua_ram[STK_BUF + 256u - UA_RAM_BASE], f, sizeof(f));
+        c->psp = STK_BUF + 256u;
+        (void)armv7m_exc_return(c, 0xFFFFFFFDu);
+        if (npriv != 0u) {
+            CHECK_EQ(c->xpsr & 0x1FFu, 4u);
+            CHECK_EQ(c->cfsr, 0x08u); /* MUNSTKERR */
+            CHECK_EQ(c->psp, STK_BUF + 256u);
+        } else {
+            CHECK_EQ(c->xpsr & 0x1FFu, 0u); /* returned, to the thread */
+            CHECK_EQ(c->cfsr, 0u);
+            CHECK_EQ(c->r[ARMV7M_PC], UA_CODE + 0x20u);
+        }
+    }
 }
 
 void test_armv7m(void)
 {
     test_pending_summary();
     test_sysresetreq_reported();
+    test_lockup_reported();
     test_fetch_execute_never();
     test_gdb_fp_registers();
     test_insn_len_exhaustive();
@@ -1026,4 +1282,5 @@ void test_armv7m(void)
     test_it_pc_writers_board_answers();
     test_vector_shaped_like_exc_return();
     test_handler_pc_writers_branch();
+    test_stacking_board_answers();
 }

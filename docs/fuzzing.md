@@ -577,6 +577,16 @@ subregions below 256, HFNMIENA without ENABLE, an unaligned access to
 anything but Normal memory. Left unasserted: the registers of an LDM or
 LDRD abandoned partway, which are UNKNOWN.
 
+**Out of its reach: the frame.** The stack is region 7, read-write for
+everyone, so that every fault can be stacked and its handler run -- and
+so no exception entry or return here ever faulted. That is a filter
+deciding what cannot be asked, and stacking and unstacking faults went
+unasked until the board was (`stk-*`, `unstk-*`, in
+[frontend/armv7m.md](frontend/armv7m.md#what-the-board-corrected)):
+three behaviours were wrong. `test_stacking_board_answers` holds them;
+a stack the input may place, with the derived exception's ranking in
+the reference, would be this target's next step.
+
 ```sh
 scripts/fuzz.sh 600 armv7m-mpu   # its regressions are tests/fuzz/regressions/armv7m-mpu/
 ```

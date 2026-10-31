@@ -329,7 +329,11 @@ void emu_session_report(emu_system_t *sys, uint64_t retired,
         emu_cpu_status_t fs;
 
         emu_core_status(&sys->core[i], &fs);
-        if (fs.faulted) {
+        if (fs.faulted && fs.fault_why != NULL) {
+            emu_console_printf("\nemu: core %u stopped: %s\n"
+                               "     pc %08x\n",
+                               i, fs.fault_why, (unsigned)fs.fault_pc);
+        } else if (fs.faulted) {
             emu_console_printf("\nemu: core %u stopped on an instruction it "
                                "could not execute\n"
                                "     pc %08x  encoding %08x\n",

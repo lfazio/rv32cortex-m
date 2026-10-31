@@ -70,7 +70,10 @@ measured at.
     instructions under the MMU, and a TLB change on one core retiring
     another's blocks; RV32 compressed code and anything but loads and
     stores, which `fuzz-rv32-vm` compares between the backends only;
-    G4MH's and ARMv7-M's MPUs on a second core.
+    G4MH's and ARMv7-M's MPUs on a second core; and ARMv7-M's exception
+    frames, whose stack `fuzz-armv7m-mpu` keeps open to every access --
+    the board's answers on stacking faults (`stk-*`, `unstk-*`) are
+    held by `test_stacking_board_answers` instead.
   - **What arrives from outside the guest**: the ELF loader, the gdb
     stub's packet parser, the TFTP upload path, and the virtio
     descriptors and rings, which a guest writes.
@@ -226,6 +229,14 @@ From the last measurements in [linux.md](linux.md).
       into the PCIe framework.
 
 ## ArmvX-m
+
+- [ ] **The lazy FP save is neither checked nor asked.** The deferred
+      half of an FP frame is written by the first FP instruction in the
+      handler (`armv7m_fpu.c`) straight to the bus: no MPU check
+      (MLSPERR) and a bus error ignored (LSPERR). The board has answered
+      every other frame question (`stk-*`): ask it this one the same way,
+      a thread with FPCA set on a PSP whose FP half is refused or past
+      the end of RAM.
 
 - [ ] Implement neon extensions if available
 - [ ] **The ARMv7-M frontend is a model of the F746's ITCM and DTCM**,

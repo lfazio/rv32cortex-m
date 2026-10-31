@@ -177,6 +177,14 @@ typedef struct emu_cpu_status {
     uint32_t fault_pc;
     uint32_t fault_insn;
     /*
+     * What stopped it, when `faulted` and it was not an instruction:
+     * ARMv7-M's lockup, a fault at a priority that cannot take one.
+     * `fault_insn` means nothing then. The lockup was reported as "an
+     * instruction it could not execute", at the lockup's pc with the
+     * encoding of an earlier fault the guest had handled.
+     */
+    const char *fault_why;
+    /*
      * Set when the core stopped because the guest asked for a system
      * reset, naming what asked: SYSRESETREQ, a watchdog. No platform
      * here restarts a guest, so a reset ends the run -- and a run that

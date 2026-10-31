@@ -4101,6 +4101,29 @@ session, and every one of them recurred:
   layout. This is the `EMU_NOINLINE` rule again, for a check this
   session added on purpose.
 
+- **Code that sets a status bit no test reads is a reading nobody has
+  checked.** The ARMv7-M frontend set STKERR, MSTKERR, UNSTKERR and
+  MUNSTKERR on paths no unit test, fuzzer or board test reached --
+  `fuzz-armv7m-mpu` keeps its stack in a region every access may use,
+  so that every fault can be stacked, which is exactly the filter that
+  made a stacking fault impossible to ask. Asked, the F746 disagreed
+  three ways: a frame pushed into nothing is a store's bus error,
+  imprecise, and the exception it was for is entered anyway (STKERR is
+  never set); a frame is checked by the MPU with the privilege of the
+  code it belongs to, pushed and popped; and a frame that cannot be
+  popped is a tail-chain leaving it where it was, where the frontend
+  pushed one of its own and the recovery looped. What it had half
+  right -- a refused frame's MemManage against the original -- is the
+  ordinary ranking of two pending exceptions, which the code had
+  replaced by a comparison with the interrupted priority alone. **Grep
+  for the readers of a status bit as for a flag's; a bit with none is
+  untested behaviour, and the filter that keeps a harness safe is where
+  to look for it.** And the harness's own reading was wrong once on the
+  way: `MSR faultmask, 0` is ignored at priority -1, which FAULTMASK
+  sets, so the test never cleared it and the next SVC locked the core
+  up -- in the emulator, which said "an instruction it could not
+  execute" at a perfectly good `msr`.
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

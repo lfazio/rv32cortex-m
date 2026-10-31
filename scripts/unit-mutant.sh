@@ -23,7 +23,8 @@
 # What CLAUDE.md asks of a mutation driver: the backup is taken in the
 # run, the edit must match exactly once, the binary must have been
 # relinked after the edit, the restored file gets a new mtime so the next
-# build sees it, and the restore is compared with the backup. The
+# build sees it, the restore is compared with the backup, and emu-unit
+# is rebuilt from it, so BUILD is not left holding the mutant. The
 # baseline -- the unmutated build passing -- is the caller's to have
 # shown first.
 
@@ -50,6 +51,11 @@ restore() {
         exit 1
     fi
     rm -f "$backup"
+    # And the binary with it: left as the mutant's, the next ctest in
+    # BUILD ran it and reported the mutant's failure as the tree's.
+    if ! cmake --build "$B" --target emu-unit >"$LOG.restore" 2>&1; then
+        echo "unit-mutant: rebuilding $BIN after the restore failed; $LOG.restore" >&2
+    fi
 }
 trap restore EXIT INT TERM
 

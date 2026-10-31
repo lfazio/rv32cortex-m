@@ -377,6 +377,8 @@ static void armv7m_ops_status(const emu_cpu_t *cpu, emu_cpu_status_t *out)
     out->faulted = c->faulted;
     out->fault_pc = c->fault_pc;
     out->fault_insn = c->fault_insn;
+    out->fault_why =
+        c->lockup ? "lockup, a fault at a priority that cannot take one" : NULL;
     out->reset_by = c->reset_by;
 }
 

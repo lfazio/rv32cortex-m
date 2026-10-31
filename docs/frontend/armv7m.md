@@ -26,7 +26,8 @@ silicon was asked.
 | MSP/PSP, CONTROL, unprivileged execution, LDRT/STRT | implemented |
 | Fault status: CFSR, HFSR, MMFAR, BFAR | implemented |
 | MPU: 8 regions, subregions, AP/XN, PRIVDEFENA, HFNMIENA | implemented |
-| Lazy FP stacking: FPCCR, FPCAR, FPDSCR, EXC_RETURN bit 4 | implemented |
+| Lazy FP stacking: FPCCR, FPCAR, FPDSCR, EXC_RETURN bit 4 | implemented; the deferred save itself is not checked by the MPU and ignores a bus error (MLSPERR, LSPERR: not modelled, not asked) |
+| Stacking and unstacking faults: a frame into no memory, refused by the MPU, popped from either; the derived exception ranked against the original | asked of the F746 (`sys.c`, `stk-*`, `unstk-*`) |
 | Exception return from a 0xFxxxxxxx pc in Handler mode, written by BX, LDR, POP or LDM -- and only those: MOV pc, ADD pc and BLX branch to it, as exception entry and unstacking do, and the fetch faults (`pc_not_exc_return`) | asked of the F746 (`sys.c`, `excret-*`) |
 | NVIC (98 lines, 4 priority bits), SysTick | implemented |
 | Local exclusive monitor | implemented; keeps no address, as the M7's does |
@@ -72,11 +73,12 @@ IT, and the FPU — and a growing set written because the random ones
 | `qflag` | Q, which a random APSR has set half the time already |
 | `adr` | `Align(PC, 4)`, at both pc alignments |
 
-**The system suite** (`sys.c`/`sys.S`): 82 tests of what an instruction
+**The system suite** (`sys.c`/`sys.S`): 100 tests of what an instruction
 generator cannot reach — the identification and writable bits of every
 configuration register, exception ordering and preemption, BASEPRI and
 FAULTMASK, every fault and its status bits, escalation, the MPU, the
-process stack, lazy FP stacking, and a set of *encoding probes*.
+process stack, lazy FP stacking, stacking and unstacking faults, and a
+set of *encoding probes*.
 
 **Raw encodings** (`rawgen.py`). The generated suite only contains what
 an assembler writes, so it says nothing about the rest of the encoding
@@ -132,6 +134,11 @@ generated suites:
 | **MOV pc, ADD pc and BLX to EXC_RETURN in Handler mode** | branch: the fetch takes IACCVIOL with the target, bit 0 clear, stacked, and the handler is still active. Only BX, LDR, POP and LDM return, as the manual says. The frontend read the value as a return wherever it came from, and hung (2026-10-26) |
 | **a store's BusFault**: into memory that is not there, aligned or not, word or halfword | **imprecise**: IMPRECISERR, BFAR not valid, taken after the instruction *after* the store; an unaligned store's bytes inside RAM are written. The frontend raised it precisely, at the store, with BFAR (2026-10-30) |
 | a load's BusFault partway -- an unaligned word or halfword running off the end of RAM, LDRD's second word | precise, BFAR **the first byte past the end** whichever byte the access started at -- where the manual says "the address requested by the instruction". The frontend agreed |
+| a store's bus error that cannot be taken yet: under BASEPRI, in a higher-priority handler, under FAULTMASK; and with BusFault disabled | waits, pending, and is taken when the priority falls; disabled, a HardFault with FORCED. The frontend agreed |
+| **an exception's frame pushed into memory that is not there**, whole or half | **imprecise, as a store's**: the exception is entered on the frame as far as it got, IMPRECISERR -- never STKERR -- with BFAR not valid, and the BusFault taken after it; the words inside RAM land. The frontend took a precise BusFault, STKERR, in place of the exception (2026-10-31) |
+| a frame the MPU refuses | MSTKERR, MMFAR not valid, the words inside the allowed region pushed; **checked with the interrupted code's privilege** -- an unprivileged thread's frame into memory it may only read is refused. The frontend pushed every frame as privileged |
+| the MemManage from a refused frame against the exception being entered | ranked as two pending exceptions are: the MemManage entered at equal priority (the lower number), **the original entered when it outranks the MemManage**, the loser left pending. The frontend always entered the MemManage, which an outranking original then preempted before its first instruction |
+| **a frame that cannot be popped** on exception return, from no memory or a refused region | a **tail-chain** from the return: no frame pushed, the stack pointer and the frame where they were, LR the EXC_RETURN that failed, UNSTKERR (precise) or MUNSTKERR; a HardFault with FORCED when disabled. Read with the privilege of the code being returned to. The frontend pushed a frame onto the main stack and returned through it, and its recovery looped (2026-10-31) |
 | **any instruction that can write the pc, inside an IT block** | ends the block whatever happens to it -- taken, not taken, or skipped by the block's condition. Under `itt eq` with Z clear, a skipped `bx`, `blx`, `mov pc`, `add pc`, `pop {pc}`, `pop.w {..,pc}`, `ldm.w {..,pc}`, `ldr pc`, `bl`, `tbb` or `tbh` is followed by an instruction that runs outside the block, unconditionally and setting flags; so is an untaken `bne` or `cbz`; and every one of them *taken* lands on an instruction that runs outside it too |
 
 The IT rules are `it_ignores_condition`, `it_writes_pc` and `it_after`
@@ -202,6 +209,33 @@ found the fallback path first (`armv7m-jit/imprecise-store-in-a-stepped-insn`).
 On the F746 under the JIT, against e8ae834: CoreMark 29.89 to 29.92 host
 cycles an instruction, Dhrystone 22.90 to 22.88, the retired counts the
 same.
+
+**Stacking and unstacking faults had never been asked.** The frontend
+set STKERR, MSTKERR, UNSTKERR and MUNSTKERR, and no test anywhere --
+unit, fuzzer or board -- read any of them; `fuzz-armv7m-mpu` keeps its
+stack in a region every access may use, so that every fault can be
+stacked. `sys.c`'s `stk-*` and `unstk-*` run a thread on the process
+stack (`sys_stacking`) and point it past the end of RAM or into an MPU
+region, enter by SVC or PendSV, and log which handler ran first, its
+EXC_RETURN and frame, the status, and what is left pending; the handler
+leaves a good frame on the PSP that resumes the thread. The board
+answered three things the frontend had wrong (the table above): a
+frame's bus error is a store's, imprecise, so the entry completes and
+STKERR is never set; the MPU checks a frame with the privilege of the
+code it belongs to, both ways; and a failed pop is a tail-chain
+leaving the frame where it was, so a handler can mend it and return --
+which is how the board test recovers, and why the frontend's version,
+pushing a frame of its own, looped. The ranking of a refused frame's
+MemManage against the original, which the frontend got half right, is
+the pending exceptions' own rule: the higher priority, then the lower
+number. `test_stacking_board_answers` holds every case (2 to 10
+failures for each of the five changes reverted), and the pending
+walk in `test_pending_summary` now pushes onto both kinds of bad stack.
+One case first ran with a mistake of the harness's: `MSR faultmask, 0`
+is ignored at priority -1, which FAULTMASK itself sets, so it stayed
+set and the next SVC locked the core up -- CPSIE clears it. Not asked:
+the lazy FP save, which the frontend makes without the MPU and whose
+bus error it ignores (MLSPERR, LSPERR).
 
 **`t_ids` had been turning on the caches.** It writes `0xFFFFFFFF` to
 CCR to see which bits stick, and on the M7 that sets DC, IC and BP: the
