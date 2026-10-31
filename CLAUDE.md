@@ -757,7 +757,8 @@ The SMP design is in [docs/os.md](docs/os.md#smp-on-the-host).
 - **Code reachable from an interpreter's rare cases goes out of line**
   (`EMU_NOINLINE`): LTO inlines it and costs the loop (TLB flushes 2%,
   PowerPC's reservation code, G4MH's LDSR permission checks 2.2% on the
-  F746 -- 0.4% once out of line).
+  F746 -- 0.4% once out of line; ARMv7-M's exception-return faults,
+  1.5%, by pushing `t32_dp_reg` out of the loop in their place).
 - **A new call site of something the loop inlines is a decision handed to
   LTO**; check `nm` and measure on the board (21% on the F746).
 - **An out-parameter on a hot function is not free** (+1.3%), and cold

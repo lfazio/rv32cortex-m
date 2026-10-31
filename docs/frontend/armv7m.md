@@ -237,6 +237,17 @@ set and the next SVC locked the core up -- CPSIE clears it. Not asked:
 the lazy FP save, which the frontend makes without the MPU and whose
 bus error it ignores (MLSPERR, LSPERR).
 
+None of it runs on CoreMark, and it still cost interpreted CoreMark
+1.5% on the F746 as first written -- 155.10 to 157.63 host cycles an
+instruction, 155.15 to 157.26 and 155.08 to 157.45 with the layout
+moved, the wall clock agreeing. `armv7m_exc_return` is inlined into the
+run loop, and `return_fault`, smaller now, was inlined into it at four
+sites; LTO balanced the loop's size by moving `t32_dp_reg` out, into a
+call through a veneer to flash. With `return_fault` and the new
+`unstack_fault` out of line (`EMU_NOINLINE`) the loop calls what it
+called before, and the figure is 155.57 and 155.36 -- inside the 0.22%
+layout moves this row. Under the JIT, 29.92 to 29.88.
+
 **`t_ids` had been turning on the caches.** It writes `0xFFFFFFFF` to
 CCR to see which bits stick, and on the M7 that sets DC, IC and BP: the
 caches on, never invalidated. The `logv()` after it wrote into the

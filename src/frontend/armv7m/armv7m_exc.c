@@ -855,8 +855,8 @@ static void deactivate(armv7m_cpu_t *c, uint32_t exc)
  * fault is escalated as any other, against the priority left once the
  * returning exception is no longer active.
  */
-static void return_chain(armv7m_cpu_t *c, uint32_t f, uint32_t ena,
-                         uint32_t excret)
+static EMU_NOINLINE void return_chain(armv7m_cpu_t *c, uint32_t f,
+                                      uint32_t ena, uint32_t excret)
 {
     c->r[ARMV7M_LR] = excret;
     if ((c->shcsr & ena) != 0u &&
@@ -870,8 +870,14 @@ static void return_chain(armv7m_cpu_t *c, uint32_t f, uint32_t ena,
     }
 }
 
-/* The INVPC cases of ExceptionReturn. */
-static void return_fault(armv7m_cpu_t *c, uint32_t ret_exc, uint32_t excret)
+/*
+ * The INVPC cases of ExceptionReturn. Out of line, as unstack_fault is:
+ * armv7m_exc_return is inlined into the run loop, and with this inlined
+ * at its four call sites LTO moved t32_dp_reg out of the loop instead --
+ * interpreted CoreMark 1.5% slower on the F746 at every layout.
+ */
+static EMU_NOINLINE void return_fault(armv7m_cpu_t *c, uint32_t ret_exc,
+                                      uint32_t excret)
 {
     deactivate(c, ret_exc);
     c->cfsr |= UFSR_INVPC;
@@ -895,6 +901,16 @@ static bool pop_word(armv7m_cpu_t *c, uint32_t addr, uint32_t *v, bool priv)
         return false;
     }
     return true;
+}
+
+/* Which fault an unstacking fault is, and the tail-chain to it. */
+static EMU_NOINLINE void unstack_fault(armv7m_cpu_t *c, uint32_t excret)
+{
+    if ((c->cfsr & MMFSR_MUNSTKERR) != 0u) {
+        return_chain(c, ARMV7M_EXC_MEMMANAGE, SHCSR_MEMFAULTENA, excret);
+    } else {
+        return_chain(c, ARMV7M_EXC_BUSFAULT, SHCSR_BUSFAULTENA, excret);
+    }
 }
 
 armv7m_exc_t armv7m_exc_return(armv7m_cpu_t *c, uint32_t excret)
@@ -983,16 +999,8 @@ armv7m_exc_t armv7m_exc_return(armv7m_cpu_t *c, uint32_t excret)
                  * still in LR -- so the handler can mend the frame and
                  * return through it.
                  */
-                const bool mm = (c->cfsr & MMFSR_MUNSTKERR) != 0u;
-
                 sp_load(c);
-                if (mm) {
-                    return_chain(c, ARMV7M_EXC_MEMMANAGE, SHCSR_MEMFAULTENA,
-                                 excret);
-                } else {
-                    return_chain(c, ARMV7M_EXC_BUSFAULT, SHCSR_BUSFAULTENA,
-                                 excret);
-                }
+                unstack_fault(c, excret);
                 return OK;
             }
         }
