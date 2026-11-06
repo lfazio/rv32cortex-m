@@ -274,10 +274,6 @@ From the last measurements in [linux.md](linux.md).
       and the debug level -- `DBTRAP`, `DBRET`, `DBPC`, `DBPSW` -- which
       no manual in `docs/renesas/` describes: the Emulation manual is
       needed.
-- [ ] **VLE code on a little-endian page.** The core refuses it, an ISI
-      with ESR[BO] (`fetch_xlate`), and nothing asks: fuzz-ppc-tlb keeps
-      `MAS2[E]` off its code, and `cases.py`'s VLE build runs no code
-      from its alias (its Book E build does, and checks the fetch).
 - [ ] **The readings only an RH850 can settle.** Every G4MH result rests
       on Renesas' documents, cross-checked where a second one exists
       ([frontend/g4mh.md](frontend/g4mh.md#what-rests-on-the-manuals-alone));

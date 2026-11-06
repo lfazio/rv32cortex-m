@@ -1163,7 +1163,12 @@ order. The routine's first word is chosen for its reversal: 0x38A3C338
 is `addi 5,3,-15560` and reversed `addi 6,3,-23752`, a valid instruction
 with another effect -- with `add` there, a JIT that forgot to swap
 decoded an invalid word, declined it, and the interpreter it fell back
-to got it right, so the mutant passed.
+to got it right, so the mutant passed. A fifth build, `vf`, branches
+VLE code to a page marked VLE *and* E: the core refuses it, an ISI at
+the target with ESR[BO] and [VLEMI] (table 7-14; 2.4.6.1, "attempted
+execution of a PowerPC VLE instruction"). Its first version branched to
+the plain alias, which is Book E, and took a program interrupt for the
+zero word there -- right, and not the question.
 They agree with the manual, 3,000 cases a build, and six mutants -- the
 swap on the aligned and the misaligned path, each way, and each
 straddle's DSI -- are each found (the straddles only by the build that
@@ -1174,7 +1179,7 @@ probes them).
 | deliberate defects | caught |
 |---|---|
 | 44 in the translator and the interpreter, against `cases.py` | 44 |
-| 8 in the little-endian page's path, against `cases.py`'s `bl` and `vl` | 8, the JIT's fetch only once its wrong reading was a valid instruction |
+| 9 in the little-endian page's path, against `cases.py`'s `bl`, `vl` and `vf` | 9, the JIT's fetch only once its wrong reading was a valid instruction |
 | 30 in the FP unit, against `efpu.py` | 28; the other two change nothing observable |
 | 22 in the system level, against `ppc-sys` | 21; the other wakes a `wait` with nothing pending |
 | 37 in the MMU, the fetch path and the JIT's gate, against `ppc-mmu` | 37, after one was found surviving (below) |

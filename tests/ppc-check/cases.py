@@ -158,7 +158,9 @@ class State:
 class Asm:
     def __init__(self, mode):
         self.v = mode[0] == "v"
-        self.le = mode.endswith("l")  # bl, vl: the little-endian alias
+        # bl, vl, vf: the little-endian alias; vf's probe is a fetch
+        self.le = mode[1:] in ("l", "f")
+        self.fetch_probe = mode == "vf"
         self.out = []
         self.label = 0
 
@@ -270,6 +272,7 @@ def harness_head(a):
 
 
 LE_ALIAS = 0x90000000
+LE_VLE_ALIAS = 0x90010000  # vf: the page again, VLE and little-endian
 # addi 5,3,-15560 ; xor 6,3,4 ; blr, at buf + 0x800 -- binutils' words.
 # The first is chosen for its byte-reversal, 0x38C3A338, which is
 # addi 6,3,-23752 (and blr's is a subfic): a fetch that forgets to swap
@@ -287,9 +290,17 @@ def le_alias(a):
     entry 0 a 4 KB page with MAS2[E], RPN buf's (page-aligned here).
     """
     isync = "se_isync" if a.v else "isync"
-    for mas0, mas1, mas2, mas3 in (
-            (0x10010000, 0xC0000B00, 0x08 | (0x20 if a.v else 0), 0x3F),
-            (0x10000000, 0x80000100, LE_ALIAS | 0x09, None)):
+    entries = [(0x10010000, 0xC0000B00, 0x08 | (0x20 if a.v else 0), 0x3F),
+               (0x10000000, 0x80000100, LE_ALIAS | 0x09, None)]
+    if a.fetch_probe:
+        # The identity moves to entry 2, and entry 1 is the same page
+        # again at LE_VLE_ALIAS, marked VLE as well as E: the page the
+        # fetch probe branches to. (The plain alias is Book E, where a
+        # branch from VLE code runs Book E code: a zero word, illegal.)
+        entries = [(0x10020000,) + entries[0][1:],
+                   (0x10010000, 0x80000100, LE_VLE_ALIAS | 0x29, None),
+                   entries[1]]
+    for mas0, mas1, mas2, mas3 in entries:
         a.li32(12, mas0)
         a.emit("mtspr 624,12")
         a.li32(12, mas1)
@@ -322,7 +333,14 @@ def harness_tail(a):
         # big-endian: a byte-ordering DSI, before any byte moves. The
         # trap handler prints the vector, SRR0 and ESR, and exits.
         a.out.append("probe:")
-        a.emit(("e_stw 3,0xFFE(14)" if a.v else "lwz 3,0xFFE(14)"))
+        if a.fetch_probe:
+            # VLE code on a little-endian page: an ISI with BO, and
+            # VLEMI -- "attempted execution of a PowerPC VLE
+            # instruction" (2.4.6.1, table 7-14) -- at the target.
+            a.li32(12, LE_VLE_ALIAS + LE_CODE_AT)
+            a.emit("mtspr 9,12", "se_bctr")
+        else:
+            a.emit(("e_stw 3,0xFFE(14)" if a.v else "lwz 3,0xFFE(14)"))
     a.li(3, 0)
     a.li(0, 93)
     a.emit("se_sc" if a.v else "sc")
@@ -1251,7 +1269,7 @@ def run_emu(emu, elf, jit, cap):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--emu", required=True)
-    ap.add_argument("--mode", default="b,v,bl,vl")
+    ap.add_argument("--mode", default="b,v,bl,vl,vf")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--count", type=int, default=2000)
     ap.add_argument("--out", default="/tmp/ppc-cases")
@@ -1262,7 +1280,9 @@ def main():
     only = [x for x in a.only.split(",") if x]
     failed = False
     for mode in a.mode.split(","):
-        src, want, info = build(mode, a.seed, a.count, only)
+        # vf exists for its probe, and its cases would repeat vl's.
+        count = min(a.count, 200) if mode == "vf" else a.count
+        src, want, info = build(mode, a.seed, count, only)
         if src is None:
             continue  # no class of this build was asked for
         base = os.path.join(a.out, "cases-%s-%d" % (mode, a.seed))
@@ -1282,13 +1302,13 @@ def main():
             continue
         subprocess.run([LD, "-m", "elf32ppc", "--build-id=none", "-T", base + ".ld",
                         "-o", base + ".elf", base + ".o"], check=True)
-        cap = 2000 * a.count + 100000
+        cap = 2000 * count + 100000
         interp, raw_i = run_emu(a.emu, base + ".elf", False, cap)
         jit, raw_j = run_emu(a.emu, base + ".elf", True, cap)
         entries = re.search(r"blk entr\s+(\d+)", raw_j)
         bad_model = bad_jit = modelled = 0
         shown = 0
-        for i in range(a.count):
+        for i in range(count):
             li = interp[i] if i < len(interp) else None
             lj = jit[i] if i < len(jit) else None
             if li is None or lj is None:
@@ -1310,9 +1330,13 @@ def main():
                             i, info[i], li, " ".join(
                                 "--------" if w is None else "%08x" % w
                                 for w in want[i])))
-        short = len(interp) != a.count or len(jit) != a.count
+        short = len(interp) != count or len(jit) != count
         probe_bad = False
-        if mode.endswith("l"):
+        if mode == "vf":
+            # The fetch from the alias: ISI (vector 3) at the target,
+            # ESR[BO] and [VLEMI].
+            want_trap = "TRAP 00000003 %08x %08x " % (LE_VLE_ALIAS + LE_CODE_AT, 0x00020020)
+        elif mode.endswith("l"):
             # The straddling access: DSI (vector 2) at the probe, ESR[BO],
             # with VLE's store ST and VLEMI (a VLE instruction) as well,
             # and Book E's load neither.
@@ -1321,6 +1345,7 @@ def main():
             addr = int(re.search(r"^([0-9a-f]+) . probe$", nm, re.M).group(1), 16)
             esr = 0x00020000 | (0x00800020 if mode[0] == "v" else 0)
             want_trap = "TRAP 00000002 %08x %08x " % (addr, esr)
+        if mode[1:] in ("l", "f"):
             for name, raw in (("interp", raw_i), ("jit", raw_j)):
                 got = [l for l in raw.splitlines() if l.startswith("TRAP")]
                 if got != [want_trap]:
@@ -1330,10 +1355,11 @@ def main():
                   int(entries.group(1)) == 0)
         print("mode %s seed %d: %d cases, %d modelled; interp vs model %d wrong, "
               "jit vs interp %d wrong; %s block entries%s%s" % (
-                  mode, a.seed, a.count, modelled, bad_model, bad_jit,
+                  mode, a.seed, count, modelled, bad_model, bad_jit,
                   entries.group(1) if entries else "no",
-                  "" if not mode.endswith("l") else
-                  ("; the straddle %s" % ("WRONG" if probe_bad else "took its DSI")),
+                  "" if mode[1:] not in ("l", "f") else
+                  ("; the %s %s" % ("fetch" if mode == "vf" else "straddle",
+                                    "WRONG" if probe_bad else "took its interrupt")),
                   "" if not short else
                   "; RAN SHORT: interp %d lines, jit %d" % (len(interp), len(jit))))
         if short:
