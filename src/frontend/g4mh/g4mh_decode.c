@@ -186,6 +186,39 @@ static bool mei_3c(uint32_t w0, uint32_t w1, uint32_t block_reg,
     const uint32_t r3 = (w1 >> 11) & 0x1Fu;
     const uint32_t odd = g4mh_op6(w0) & 1u;
 
+    /*
+     * The FXU's loads and stores, at ST.H disp23 with disp[0] set (table
+     * 3.38): REG is the vector register, DS 4 a quad-word, ITYPE 11101B
+     * or 11111B for the zero-extending halves. k = w1[10:5], as
+     * g4mh_fxu_exec48 decodes it; CMOVF.W4 and SHFLV.W4 touch no memory.
+     */
+    if (odd && (w1 & 0x1Fu) == 0x1Du) {
+        const uint32_t k = (w1 >> 5) & 0x3Fu;
+        uint32_t ds = 3u;
+        uint32_t rw = k & 1u;
+        uint32_t it = G4MH_MEI_FXV;
+
+        if ((k & 0x30u) == 0u) { /* LDV.W  */
+            ds = 2u;
+            rw = 0u;
+        } else if ((k & 0x3Cu) == 0x10u) { /* STV.W  */
+            ds = 2u;
+            rw = 1u;
+        } else if ((k & 0x3Eu) == 0x14u) { /* LDV.QW, STV.QW */
+            ds = 4u;
+        } else if ((k & 0x3Cu) == 0x18u) { /* LDV.DW */
+            rw = 0u;
+        } else if ((k & 0x3Eu) == 0x1Cu) { /* STV.DW */
+            rw = 1u;
+        } else if ((k & 0x3Eu) == 0x1Eu) { /* LDVZ.H4, STVZ.H4 */
+            it = G4MH_MEI_FXVZ;
+        } else {
+            return false;
+        }
+        *out = G4MH_MEI(6u, r3, ds, 0u, it, rw);
+        return true;
+    }
+
     switch ((w1 & 0xFu) << 1 | odd) {
     case (0x5u << 1) | 0u: /* LD.B  */
     case (0x5u << 1) | 1u: /* LD.BU */

@@ -2547,6 +2547,21 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                     uint32_t v;
                     g4mh_exc_t e;
 
+#if G4MH_EXT_FXU
+                    /*
+                     * The FXU's 48-bit forms, at w1[4:0] = 11101B under
+                     * 0x3D: ST.H disp23 with disp[0] set, which ST.H
+                     * cannot have -- the hole the RIE below answered.
+                     */
+                    if (op == 0x3Du && (w1 & 0x1Fu) == 0x1Du) {
+                        const g4mh_exc_t fx = g4mh_fxu_exec48(c, w0, w1, w2);
+
+                        if (EMU_UNLIKELY(fx != G4MH_EXC_NONE)) {
+                            EXC(fx);
+                        }
+                        break;
+                    }
+#endif
                     if (!is_b && d0 != 0u) {
                         EXC(G4MH_EXC_RIE); /* opcode bit, not disp */
                     }

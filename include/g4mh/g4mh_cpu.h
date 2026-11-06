@@ -226,6 +226,16 @@ typedef struct g4mh_cpu {
      * The run reports it (emu_cpu_status_t::reset_by).
      */
     const char *reset_by;
+
+#if G4MH_EXT_FXU
+    /*
+     * The FXU's vector registers, wr0-wr31, 128 bits each as four ways:
+     * wr[n][0] is w0, bits 31:0 (table 3.56). Last, because it is cold
+     * and large and nothing hot may sit behind it. Every PE has the
+     * array and only PE0 can reach it: CU1 is fixed to 0 elsewhere.
+     */
+    uint32_t wr[32][4];
+#endif
 } g4mh_cpu_t;
 
 /* Recompute the JIT's context from PSW and the PE; see jit_ctx. */
@@ -362,6 +372,14 @@ g4mh_exc_t g4mh_store_dw(g4mh_cpu_t *c, uint32_t addr, uint32_t lo,
                          uint32_t hi);
 
 /*
+ * The FXU's quad-word: 16-byte aligned (MAE otherwise, unlike a
+ * double-word's word alignment) and one 16-byte span to the MPU, w[0] at
+ * the lowest address. Nothing loaded or written when refused.
+ */
+g4mh_exc_t g4mh_load_qw(g4mh_cpu_t *c, uint32_t addr, uint32_t w[4]);
+g4mh_exc_t g4mh_store_qw(g4mh_cpu_t *c, uint32_t addr, const uint32_t w[4]);
+
+/*
  * The MDP cause for a refusal, with table 3.115's detail: the read and
  * write bits of the current mode for what was refused, and `kind`
  * (G4MH_EXC_D_RMW, G4MH_EXC_D_BL or 0) for the instruction.
@@ -494,6 +512,25 @@ g4mh_exc_t g4mh_stsr(const g4mh_cpu_t *c, unsigned bank, unsigned reg,
  */
 g4mh_exc_t g4mh_fpu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
                          uint32_t reg2, uint32_t reg3);
+#endif
+
+#if G4MH_EXT_FXU
+/*
+ * The FXU's 32-bit instructions sit in the FPU's sub-opcode range --
+ * FMAF.S4 and its family at 0x4C0-0x4C6, CMPF.S4 at 0x580-0x59E, the
+ * rest at 0x5A0-0x5DE -- and g4mh_fpu_exec hands them on; its 48-bit
+ * ones (LDV, STV, CMOVF.W4, SHFLV.W4) share ST.H disp23's slot, at
+ * w1[4:0] = 11101B, where ST.H's displacement bit 0 cannot be 1. Both
+ * check CU1 first: UCPOP 81H on a PE without the FXU.
+ */
+static inline bool g4mh_fxu_owns(uint32_t sub)
+{
+    return (sub & 0x7F8u) == 0x4C0u || (sub >= 0x580u && sub < 0x5E0u);
+}
+g4mh_exc_t g4mh_fxu_exec(g4mh_cpu_t *c, uint32_t sub, uint32_t reg1,
+                         uint32_t reg2, uint32_t reg3);
+g4mh_exc_t g4mh_fxu_exec48(g4mh_cpu_t *c, uint32_t w0, uint32_t w1,
+                           uint32_t w2);
 #endif
 
 /* ------------------------------------------------------------------ */

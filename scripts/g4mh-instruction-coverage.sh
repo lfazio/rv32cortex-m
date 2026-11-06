@@ -42,9 +42,12 @@
 #     the manual marks G4MH2-only) cannot be assembled here at all, and
 #     neither can `PUSHSP`/`POPSP`. They are absent from the list rather
 #     than reported missing -- confirm those by hand.
-#   - The `.S4` SIMD group and the `LDV`/`STV`/`MOVV`/`SHFLV` vector
-#     loads take `wreg` operands, a second register file this frontend
-#     does not model. They are deliberately out of the list.
+#
+# **Each image turns the coprocessors on first** (PSW.CU0 and CU1, by
+# LDSR), and UCPOP counts as not executed. Out of reset both are clear,
+# so every FP and FXU instruction raised UCPOP before it was decoded --
+# and this script counted that as executed, so the scalar CVTF.HS and
+# CVTF.SH, which the FPU declined behind it, sat in a 251/251.
 #
 # Needs the `ccrh` image from docs/renesas/Dockerfile and a G4MH build
 # of emu-host.
@@ -112,6 +115,8 @@ for line in open(sys.argv[1], errors='replace'):
     rows.append((src, bytes.fromhex(hexs)))
 
 HALT = b'\xE0\x07\x20\x01'
+# mov 0x30020, r1; ldsr r1, psw -- ID, CU0 and CU1
+PROLOGUE = bytes([0x21, 0x06, 0x20, 0x00, 0x03, 0x00, 0xE1, 0x2F, 0x20, 0x00])
 img = os.path.join(work, 't.bin')
 ok = bad = 0
 out = []
@@ -119,7 +124,8 @@ for src, code in rows:
     # A field of HALT so any branch, call or trap vector stops rather
     # than running on into the next test's bytes.
     buf = bytearray(HALT * 64)
-    buf[0:len(code)] = code
+    buf[0:len(PROLOGUE)] = PROLOGUE
+    buf[len(PROLOGUE):len(PROLOGUE) + len(code)] = code
     open(img, 'wb').write(bytes(buf))
     r = subprocess.run([emu, '--quiet', '--frontend', 'g4mh',
                         '--load', '0x80000000', '--max-insn', '64', '--dump', img],
@@ -128,16 +134,21 @@ for src, code in rows:
     # look implemented -- 237 of 237, which is what prompted the A/B that
     # found this: breaking BSW on purpose changed the report not at all.
     dump = r.stdout + r.stderr
-    rie = re.search(r'^\s*feic\s+0*60\b', dump, re.M) is not None
-    out.append((src, code.hex().upper(), not rie))
-    if rie: bad += 1
-    else:   ok += 1
+    m = re.search(r'^\s*feic\s+(?:0x)?([0-9a-fA-F]+)\b', dump, re.M)
+    if m is None:
+        sys.exit(f"g4mh-instruction-coverage: no FEIC in the dump for {src}")
+    feic = int(m.group(1), 16) & 0xFFFF
+    verdict = ('RIE' if feic == 0x60 else
+               'UCPOP' if 0x80 <= feic <= 0x82 else 'ok')
+    out.append((src, code.hex().upper(), verdict))
+    if verdict == 'ok': ok += 1
+    else:               bad += 1
 
 w = max(len(s) for s, _, _ in out)
 print(f"{'instruction'.ljust(w)}  {'encoding'.ljust(16)}  status")
 print('-' * (w + 28))
-for src, hx, good in out:
-    print(f"{src.ljust(w)}  {hx.ljust(16)}  {'ok' if good else 'RIE'}")
+for src, hx, verdict in out:
+    print(f"{src.ljust(w)}  {hx.ljust(16)}  {verdict}")
 print()
-print(f"{len(out)} instructions: {ok} executed, {bad} raised RIE")
+print(f"{len(out)} instructions: {ok} executed, {bad} raised RIE or UCPOP")
 PY

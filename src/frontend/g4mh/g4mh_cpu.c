@@ -114,8 +114,21 @@ void g4mh_cpu_reset(g4mh_cpu_t *c, uint32_t reset_pc)
     c->sr[G4MH_SELID_INT][G4MH_SR_RBCR1] = G4MH_RBCR1_RESET;
 
     /* PID, read-only: the FXU on PE0 alone (table 3.256 note 3, for the
-     * U2B6's public cores). */
-    c->sr[1][G4MH_SR_PID] = (c->coreid == 0u) ? G4MH_PID_FXU : G4MH_PID_NO_FXU;
+     * U2B6's public cores) -- and only where it is built. */
+    c->sr[1][G4MH_SR_PID] = (G4MH_EXT_FXU && c->coreid == 0u)
+                                ? G4MH_PID_FXU
+                                : G4MH_PID_NO_FXU;
+
+    /*
+     * FS set and bit 21 reading 1 (tables 3.51 and 3.58). FPSR came out
+     * of reset 0, so every subnormal was an E exception until a guest set
+     * FS -- while the FPU's comments said FS was set out of reset.
+     */
+    c->sr[0][G4MH_SR_FPSR] = G4MH_FPSR_RESET;
+    c->sr[G4MH_SELID_FXU][G4MH_SR_FXSR] = G4MH_FXSR_RESET;
+#if G4MH_EXT_FXU
+    memset(c->wr, 0, sizeof(c->wr));
+#endif
 
     g4mh_ll_drop(c);
     c->retired = 0u;
@@ -288,6 +301,7 @@ static uint32_t handler_address(const g4mh_cpu_t *c, g4mh_exc_t cause)
     case G4MH_EXC_RIE:
         return table + 0x0060u;
     case G4MH_EXC_FPP:
+    case G4MH_EXC_FXE:
         return table + 0x0070u; /* FPE/FXE           */
     case G4MH_EXC_UCPOP: /* 80H-82H, one per CUn (table 3.103) */
     case G4MH_EXC_UCPOP + 1u:
@@ -414,6 +428,12 @@ static void exception_to(g4mh_cpu_t *c, g4mh_exc_t cause, uint32_t ret_pc,
     case G4MH_EXC_MAE:
     case G4MH_EXC_MDP_TABLE:
         c->sr[2][G4MH_SR_MEI] = mei_for(c, cause, ret_pc);
+        break;
+    case G4MH_EXC_FPP:
+        /* "The PC of the floating-point instruction that caused the
+         * exception" (table 3.52); bit 0 reads 0. Nothing wrote it. The
+         * FXU has no counterpart. */
+        c->sr[0][G4MH_SR_FPEPC] = ret_pc & ~1u;
         break;
     default:
         break;
@@ -1224,21 +1244,28 @@ EMU_NOINLINE g4mh_exc_t g4mh_resbank(g4mh_cpu_t *c)
  * Word alignment, not doubleword: no MAE on a word boundary (the
  * caution under LD.DW). The bus sees two words, low first.
  */
-static bool dw_refused(g4mh_cpu_t *c, uint32_t addr, g4mh_mpu_acc_t acc)
+static bool span_refused(g4mh_cpu_t *c, uint32_t addr, uint32_t size,
+                         g4mh_mpu_acc_t acc)
 {
 #if G4MH_EXT_MPU
     if (EMU_UNLIKELY(c->mpu_active) &&
-        !g4mh_mpu_permits(c->mpu, addr, 8u, acc, (c->psw & G4MH_PSW_UM) != 0u,
-                          c->spid)) {
+        !g4mh_mpu_permits(c->mpu, addr, size, acc,
+                          (c->psw & G4MH_PSW_UM) != 0u, c->spid)) {
         c->sr[2][G4MH_SR_MEA] = addr;
         return true;
     }
 #else
     (void)c;
     (void)addr;
+    (void)size;
     (void)acc;
 #endif
     return false;
+}
+
+static bool dw_refused(g4mh_cpu_t *c, uint32_t addr, g4mh_mpu_acc_t acc)
+{
+    return span_refused(c, addr, 8u, acc);
 }
 
 g4mh_exc_t g4mh_load_dw(g4mh_cpu_t *c, uint32_t addr, uint32_t *lo,
@@ -1280,6 +1307,51 @@ g4mh_exc_t g4mh_store_dw(g4mh_cpu_t *c, uint32_t addr, uint32_t lo,
         e = g4mh_store(c, addr + 4u, 4u, hi);
     }
     return e;
+}
+
+/*
+ * LDV.QW and STV.QW: "the access to an address that is not at the
+ * quad-word boundary" is MAE (3.2.2.1(3)) -- only the double-word is let
+ * off with word alignment -- and the MPU sees the sixteen bytes as one
+ * access in one area (table 3.111). The bus sees four words, low first.
+ */
+g4mh_exc_t g4mh_load_qw(g4mh_cpu_t *c, uint32_t addr, uint32_t w[4])
+{
+    if (EMU_UNLIKELY((addr & 15u) != 0u)) {
+        c->sr[2][G4MH_SR_MEA] = addr;
+        return G4MH_EXC_MAE;
+    }
+    if (span_refused(c, addr, 16u, G4MH_MPU_READ)) {
+        return g4mh_mdp(c, true, false, 0u);
+    }
+    for (unsigned n = 0u; n < 4u; n++) {
+        const emu_fault_t f = emu_bus_read(c->bus, addr + 4u * n, 4u, &w[n]);
+
+        if (EMU_UNLIKELY(f != EMU_FAULT_NONE)) {
+            c->sr[2][G4MH_SR_MEA] = addr + 4u * n;
+            return g4mh_exc_from_fault(f);
+        }
+    }
+    return G4MH_EXC_NONE;
+}
+
+g4mh_exc_t g4mh_store_qw(g4mh_cpu_t *c, uint32_t addr, const uint32_t w[4])
+{
+    if (EMU_UNLIKELY((addr & 15u) != 0u)) {
+        c->sr[2][G4MH_SR_MEA] = addr;
+        return G4MH_EXC_MAE;
+    }
+    if (span_refused(c, addr, 16u, G4MH_MPU_WRITE)) {
+        return g4mh_mdp(c, false, true, 0u);
+    }
+    for (unsigned n = 0u; n < 4u; n++) {
+        const g4mh_exc_t e = g4mh_store(c, addr + 4u * n, 4u, w[n]);
+
+        if (e != G4MH_EXC_NONE) {
+            return e;
+        }
+    }
+    return G4MH_EXC_NONE;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1447,6 +1519,55 @@ EMU_NOINLINE g4mh_exc_t g4mh_stsr(const g4mh_cpu_t *c, unsigned bank,
     return e;
 }
 
+/*
+ * FPST, FPCC and FPCFG are windows onto FPSR, and FXST and FXCFG onto
+ * FXSR (tables 3.53-3.55, 3.59 and 3.61): each shows some of its bits in
+ * other places, and "values written to these bits are reflected in" it.
+ * They were stored on their own, so FPCC never showed a comparison and a
+ * write to FPCFG changed no rounding -- under a comment in g4mh_types.h
+ * saying that g4mh_sr_read and g4mh_sr_write routed them. The window
+ * numbers are the same in both banks: ST at 8, CC at 9, CFG at 10.
+ */
+static bool fp_window(unsigned bank, unsigned reg, unsigned *backing)
+{
+    if (bank == 0u && reg >= G4MH_SR_FPST && reg <= G4MH_SR_FPCFG) {
+        *backing = G4MH_SR_FPSR;
+        return true;
+    }
+    if (bank == G4MH_SELID_FXU &&
+        (reg == G4MH_SR_FXST || reg == G4MH_SR_FXCFG)) {
+        *backing = G4MH_SR_FXSR;
+        return true;
+    }
+    return false;
+}
+
+static uint32_t window_read(uint32_t sr, unsigned reg)
+{
+    switch (reg) {
+    case G4MH_SR_FPST: /* XC at 13:8, IF at 5, XP at 4:0 */
+        return ((sr >> 2) & 0x3F00u) | ((sr >> 17) & 0x20u) | (sr & 0x1Fu);
+    case G4MH_SR_FPCC: /* CC7-CC0 at 7:0 */
+        return sr >> 24;
+    default: /* CFG: RM at 9:8, XE at 4:0 */
+        return ((sr >> 10) & 0x300u) | ((sr >> 5) & 0x1Fu);
+    }
+}
+
+static uint32_t window_write(uint32_t sr, unsigned reg, uint32_t v)
+{
+    switch (reg) {
+    case G4MH_SR_FPST:
+        return (sr & ~(G4MH_FPSR_XC_MASK | G4MH_FPSR_IF | G4MH_FPSR_XP_MASK)) |
+               ((v & 0x3F00u) << 2) | ((v & 0x20u) << 17) | (v & 0x1Fu);
+    case G4MH_SR_FPCC:
+        return (sr & ~G4MH_FPSR_CC_MASK) | ((v & 0xFFu) << 24);
+    default:
+        return (sr & ~(G4MH_FPSR_RM_MASK | G4MH_FPSR_XE_MASK)) |
+               ((v & 0x300u) << 10) | ((v & 0x1Fu) << 5);
+    }
+}
+
 uint32_t g4mh_sr_read(const g4mh_cpu_t *c, unsigned bank, unsigned reg)
 {
     if (bank >= G4MH_SR_BANKS || reg >= G4MH_SR_PER_BANK) {
@@ -1472,6 +1593,16 @@ uint32_t g4mh_sr_read(const g4mh_cpu_t *c, unsigned bank, unsigned reg)
         }
     }
 #endif
+    {
+        unsigned backing;
+
+        if (fp_window(bank, reg, &backing)) {
+            return window_read(c->sr[bank][backing], reg);
+        }
+    }
+    if (bank == G4MH_SELID_FXU && reg == G4MH_SR_FXINFO) {
+        return G4MH_FXINFO_VALUE;
+    }
     return c->sr[bank][reg];
 }
 
@@ -1483,10 +1614,13 @@ uint32_t g4mh_sr_read(const g4mh_cpu_t *c, unsigned bank, unsigned reg)
  */
 static uint32_t psw_writable(const g4mh_cpu_t *c)
 {
-    uint32_t m = G4MH_PSW_UM | (1u << 16) | G4MH_PSW_EBV | 0xFFu;
+    uint32_t m = G4MH_PSW_UM | G4MH_PSW_EBV | 0xFFu;
 
-    if ((c->sr[1][G4MH_SR_PID] & (1u << 11)) != 0u) {
-        m |= 1u << 17; /* CU1: the FXU */
+    if (G4MH_EXT_FPU) {
+        m |= G4MH_PSW_CU0;
+    }
+    if (G4MH_EXT_FXU && (c->sr[1][G4MH_SR_PID] & (1u << 11)) != 0u) {
+        m |= G4MH_PSW_CU1;
     }
     if ((c->sr[G4MH_SELID_INT][G4MH_SR_INTCFG] & G4MH_INTCFG_EPL) != 0u) {
         m |= 0x3Fu << 20; /* EIMASK */
@@ -1512,6 +1646,23 @@ static uint32_t sr_writable(const g4mh_cpu_t *c, unsigned bank, unsigned reg)
             return 0x1Fu; /* PSW's five flags (table 3.19) */
         case G4MH_SR_CTBP:
             return ~1u;
+        case G4MH_SR_FPSR:
+            return G4MH_FPSR_WRITABLE;
+        case G4MH_SR_FPEPC:
+            return ~1u;
+        default:
+            return ~0u;
+        }
+    case G4MH_SELID_FXU:
+        switch (reg) {
+        case G4MH_SR_FXSR:
+            return G4MH_FXSR_WRITABLE;
+        case G4MH_SR_FXXC:
+            return G4MH_FXXC_WRITABLE;
+        case G4MH_SR_FXXP:
+            return G4MH_FXXP_WRITABLE;
+        case G4MH_SR_FXINFO: /* read as a constant: g4mh_sr_read */
+            return 0u;
         default:
             return ~0u;
         }
@@ -1662,6 +1813,14 @@ EMU_NOINLINE void g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg,
     }
 #endif
 
+    {
+        unsigned backing;
+
+        if (fp_window(bank, reg, &backing)) {
+            c->sr[bank][backing] = window_write(c->sr[bank][backing], reg, val);
+            return;
+        }
+    }
     if (bank == G4MH_SELID_INT) {
         if (reg == G4MH_SR_RBNR && val > 16u) {
             val = 16u; /* "the value of BN becomes 16" (table 3.41) */

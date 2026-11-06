@@ -3,6 +3,7 @@
 """board-pc-profile.py - read a firmware's PC profile and bucket it.
 
     scripts/board-pc-profile.py ELF [--probe VID:PID:SERIAL] [--lines N]
+                                    [--addresses N]
 
 A firmware built with -DEMU_PC_PROFILE=<samples> (F746) keeps the pc the
 SysTick interrupted, once a millisecond. After a run, this reads the
@@ -10,6 +11,11 @@ samples over the probe -- under reset, before the start-up code can
 clear them -- and prints the hottest functions and source lines, by
 addr2line on ELF. A cycle count says how long; this says where, which
 is what a difference between two firmwares needs.
+
+--addresses N also prints the N hottest pcs themselves: addr2line says
+`??` for code no symbol covers -- the JIT's buffer, a veneer, a stub --
+and a share of `??` that moves between two firmwares needs its
+addresses to be told apart.
 """
 import argparse
 import collections
@@ -51,6 +57,7 @@ def main():
     ap.add_argument("--chip", default="STM32F746ZGTx")
     ap.add_argument("--lines", type=int, default=30)
     ap.add_argument("--functions", type=int, default=15)
+    ap.add_argument("--addresses", type=int, default=0)
     a = ap.parse_args()
 
     # **One read.** Each attach is under reset, and the firmware's start-up
@@ -82,6 +89,10 @@ def main():
     print("hottest lines:")
     for name, k in by_line.most_common(a.lines):
         print("  %6.2f%%  %s" % (100.0 * k / total, name))
+    if a.addresses:
+        print("hottest pcs:")
+        for pc, k in collections.Counter(pcs).most_common(a.addresses):
+            print("  %6.2f%%  0x%08x  %s" % (100.0 * k / total, pc, where[pc][0]))
 
 
 if __name__ == "__main__":

@@ -455,6 +455,14 @@ purpose and check the report moved -- it did not, which is what found it.
 It reports 1 RIE now with that break in place. **Do not trust a coverage
 number that has never been shown to be able to fall.**
 
+**And it could not see a coprocessor.** Out of reset `PSW.CU0` and
+`CU1` are clear, so every FP and FXU instruction raised UCPOP before it
+was decoded, and anything but RIE counted as executed: the scalar
+`CVTF.HS` and `CVTF.SH`, which the FPU declined, sat in a 251/251. Each
+image sets both bits by LDSR first now, and UCPOP counts against. Run
+against the commit before the FXU, the same script reports 249 of 310,
+those two among the 61; against this tree, 310 of 310.
+
 ### What is not in the list, and why
 
 | absent | reason |
@@ -462,264 +470,322 @@ number that has never been shown to be able to fall.**
 | `LDM.MP`, `STM.MP` | implemented, but **CC-RH V2.08 cannot assemble them** -- the manual marks them G4MH2-only (PID[31:24] = 07) and there is no `-Xcpu=g4mh2`. Their encodings are the only two here taken from the manual's opcode diagram alone, so they are covered by unit tests instead |
 | `PUSHSP`, `POPSP` | implemented; CC-RH rejects both under every syntax tried, same class of gap |
 | `RESBANK` | implemented with the register banks; it was the one RIE below until they were |
-| the `.S4` SIMD group, `LDV`/`STV`/`MOVV`/`SHFLV`/`TRFSRV` | they take `wreg` operands, a second register file this frontend does not model. 59 encodings, deliberately out of scope rather than missing |
 
 ```
-instruction                   encoding          status
---------------------------------------------------------
-ld.b 0x10[r6],r8              06471000          ok
-ld.b 0x1000[r6],r10           06570010          ok
-ld.b [r6]+,r10                E6177053          ok
-ld.b [r6]-,r10                E6277053          ok
-ld.bu 0x10[r6],r8             86471100          ok
-ld.bu 0x1000[r6],r10          86570110          ok
-ld.bu [r6]+,r10               E61F7053          ok
-ld.bu [r6]-,r10               E62F7053          ok
-ld.dw 0x1000[r6],r10          A60709502000      ok
-ld.h 0x10[r6],r8              26471000          ok
-ld.h 0x1000[r6],r10           26570010          ok
-ld.h [r6]+,r10                E6177453          ok
-ld.h [r6]-,r10                E6277453          ok
-ld.hu 0x10[r6],r8             E6471100          ok
-ld.hu 0x1000[r6],r10          E6570110          ok
-ld.hu [r6]+,r10               E61F7453          ok
-ld.hu [r6]-,r10               E62F7453          ok
-ld.w 0x10[r6],r8              26471100          ok
-ld.w 0x1000[r6],r10           26570110          ok
-ld.w [r6]+,r10                E6177853          ok
-ld.w [r6]-,r10                E6277853          ok
-sld.b 0x8[ep],r8              0843              ok
-sld.bu 0x4[ep],r8             6440              ok
-sld.h 0x8[ep],r8              0444              ok
-sld.hu 0x4[ep],r8             7240              ok
-sld.w 0x8[ep],r8              0445              ok
-st.b r8,0x10[r6]              46471000          ok
-st.b r10,0x1000[r6]           46570010          ok
-st.b r10,[r6]+                E6177253          ok
-st.b r10,[r6]-                E6277253          ok
-st.dw r10,0x1000[r6]          A6070F502000      ok
-st.h r8,0x10[r6]              66471000          ok
-st.h r10,0x1000[r6]           66570010          ok
-st.h r10,[r6]+                E6177653          ok
-st.h r10,[r6]-                E6277653          ok
-st.w r8,0x10[r6]              66471100          ok
-st.w r10,0x1000[r6]           66570110          ok
-st.w r10,[r6]+                E6177A53          ok
-st.w r10,[r6]-                E6277A53          ok
-sst.b r8,0x8[ep]              8843              ok
-sst.h r8,0x8[ep]              8444              ok
-sst.w r8,0x8[ep]              0545              ok
-set1 3,0x10[r6]               C61F1000          ok
-set1 r8,[r6]                  E647E000          ok
-tst1 3,0x10[r6]               C6DF1000          ok
-tst1 r8,[r6]                  E647E600          ok
-caxi [r6],r8,r10              E647EE50          ok
-ldl.bu [r6],r10               E60F7053          ok
-ldl.hu [r6],r10               E60F7453          ok
-ldl.w [r6],r10                E6077853          ok
-prepare 0x3,4                 82076100          ok
-prepare 0x3,4,sp              82076300          ok
-prepare     0x3,0x4,0x10      82076B001000      ok
-prepare     0x3,0x4,0x100000  820773001000      ok
-prepare     0x3,0x4,0x10000   820773000100      ok
-stc.b r10,[r6]                E6077253          ok
-stc.h r10,[r6]                E6077653          ok
-stc.w r10,[r6]                E6077A53          ok
-mul r6,r8,r10                 E6472052          ok
-mul 8,r8,r10                  E8474052          ok
-mulh r6,r8                    E640              ok
-mulh 4,r8                     E442              ok
-mulhi 0x10,r6,r8              E6461000          ok
-mulu r6,r8,r10                E6472252          ok
-mulu 8,r8,r10                 E8474252          ok
-mac r6,r8,r10,r12             E647CC53          ok
-macu r6,r8,r10,r12            E647EC53          ok
-add r6,r8                     C641              ok
-add 4,r8                      4442              ok
-addi 0x10,r6,r8               06461000          ok
-cmp r6,r8                     E641              ok
-cmp 4,r8                      6442              ok
-mov r6,r8                     0640              ok
-mov 4,r8                      0442              ok
-movhi       0x1,zero,r6       40360100          ok
-movea 0x10,r6,r8              26461000          ok
-movhi 0x10,r6,r8              46461000          ok
-sub r6,r8                     A641              ok
-subr r6,r8                    8641              ok
-adf 0x1,r6,r8,r10             E647A253          ok
-sbf 0x1,r6,r8,r10             E6478253          ok
-satadd r6,r8                  C640              ok
-satadd 4,r8                   2442              ok
-satadd r6,r8,r10              E647BA53          ok
-satsub r6,r8                  A640              ok
-satsub r6,r8,r10              E6479A53          ok
-satsubi 0x10,r6,r8            66461000          ok
-satsubr r6,r8                 8640              ok
-and r6,r8                     4641              ok
-andi 0x10,r6,r8               C6461000          ok
-not r6,r8                     2640              ok
-or r6,r8                      0641              ok
-ori 0x10,r6,r8                86461000          ok
-tst r6,r8                     6641              ok
-xor r6,r8                     2641              ok
-xori 0x10,r6,r8               A6461000          ok
-bsh r8,r10                    E0474253          ok
-bsw r8,r10                    E0474053          ok
-clip.b r6,r8                  E6470800          ok
-clip.bu r6,r8                 E6470A00          ok
-clip.h r6,r8                  E6470C00          ok
-clip.hu r6,r8                 E6470E00          ok
-cmov 0x1,r6,r8,r10            E6472253          ok
-cmov 0x1,4,r8,r10             E4470253          ok
-hsh r8,r10                    E0474653          ok
-hsw r8,r10                    E0474453          ok
-rotl 4,r8,r10                 E447C450          ok
-rotl r6,r8,r10                E647C650          ok
-sar r6,r8                     E647A000          ok
-sar 4,r8                      A442              ok
-sar r6,r8,r10                 E647A250          ok
-sasf 0x1,r8                   E1470002          ok
-setf 0x1,r8                   E1470000          ok
-shl r6,r8                     E647C000          ok
-shl 4,r8                      C442              ok
-shl r6,r8,r10                 E647C250          ok
-shr r6,r8                     E6478000          ok
-shr 4,r8                      8442              ok
-shr r6,r8,r10                 E6478250          ok
-sxb r6                        A600              ok
-sxh r6                        E600              ok
-zxb r6                        8600              ok
-zxh r6                        C600              ok
-sch0l r8,r10                  E0476453          ok
-sch0r r8,r10                  E0476053          ok
-sch1l r8,r10                  E0476653          ok
-sch1r r8,r10                  E0476253          ok
-div r6,r8,r10                 E647C052          ok
-divh r6,r8                    4640              ok
-divh r6,r8,r10                E6478052          ok
-divhu r6,r8,r10               E6478252          ok
-jarl _lbl,r6                  80370000          ok
-jarl [r6],r10                 E6C76051          ok
-jmp [r6]                      6600              ok
-jmp 0x10[r6]                  E60610000000      ok
-ctret                         E0074401          ok
-eiret                         E0074801          ok
-feret                         E0074A01          ok
-trap 1                        E1070001          ok
-switch r6                     4600              ok
-syscall 1                     E1D76001          ok
-di                            E0076001          ok
-ei                            E0876001          ok
-halt                          E0072001          ok
-ldsr r8,0,0                   E8072000          ok
-nop                           0000              ok
-snooze                        E00F2001          ok
-stsr 0,r8,0                   E0474000          ok
-synce                         1D00              ok
-synci                         1C00              ok
-syncm                         1E00              ok
-syncp                         1F00              ok
-cache 0x0, [r6]               E6E76001          ok
-pref 0x0, [r6]                E6DF6001          ok
-absf.s r8,r10                 E0474854          ok
-addf.s r6,r8,r10              E6476054          ok
-ceilf.sl r8,r10               E2474454          ok
-ceilf.sul r8,r10              F2474454          ok
-ceilf.suw r8,r10              F2474054          ok
-ceilf.sw r8,r10               E2474054          ok
-cmovf.s 0,r6,r8,r10           E6470054          ok
-cmpf.s 0x1,r6,r8,0            E837200C          ok
-cvtf.hs r8,r10                E2474254          ok
-cvtf.ls r8,r10                E1474254          ok
-cvtf.sh r8,r10                E3474254          ok
-cvtf.sl r8,r10                E4474454          ok
-cvtf.sul r8,r10               F4474454          ok
-cvtf.suw r8,r10               F4474054          ok
-cvtf.sw r8,r10                E4474054          ok
-cvtf.uls r8,r10               F1474254          ok
-cvtf.uws r8,r10               F0474254          ok
-cvtf.ws r8,r10                E0474254          ok
-divf.s r6,r8,r10              E6476E54          ok
-floorf.sl r8,r10              E3474454          ok
-floorf.sul r8,r10             F3474454          ok
-floorf.suw r8,r10             F3474054          ok
-floorf.sw r8,r10              E3474054          ok
-fmaf.s r6,r8,r10              E647E054          ok
-fmsf.s r6,r8,r10              E647E254          ok
-fnmaf.s r6,r8,r10             E647E454          ok
-fnmsf.s r6,r8,r10             E647E654          ok
-maxf.s r6,r8,r10              E6476854          ok
-minf.s r6,r8,r10              E6476A54          ok
-mulf.s r6,r8,r10              E6476454          ok
-negf.s r8,r10                 E1474854          ok
-recipf.s r8,r10               E1474E54          ok
-roundf.sl r8,r10              E0474454          ok
-roundf.sul r8,r10             F0474454          ok
-roundf.suw r8,r10             F0474054          ok
-roundf.sw r8,r10              E0474054          ok
-rsqrtf.s r8,r10               E2474E54          ok
-sqrtf.s r8,r10                E0474E54          ok
-subf.s r6,r8,r10              E6476254          ok
-trfsr 0                       E0070004          ok
-trncf.sl r8,r10               E1474454          ok
-trncf.sul r8,r10              F1474454          ok
-trncf.suw r8,r10              F1474054          ok
-trncf.sw r8,r10               E1474054          ok
-absf.d r8,r10                 E0475854          ok
-addf.d r6,r8,r10              E6477054          ok
-ceilf.dl r8,r10               E2475454          ok
-ceilf.dul r8,r10              F2475454          ok
-ceilf.duw r8,r10              F2475054          ok
-ceilf.dw r8,r10               E2475054          ok
-cmovf.d 0,r6,r8,r10           E6471054          ok
-cmpf.d 0x1,r6,r8,0            E837300C          ok
-cvtf.dl r8,r10                E4475454          ok
-cvtf.ds r8,r10                E3475254          ok
-cvtf.dul r8,r10               F4475454          ok
-cvtf.duw r8,r10               F4475054          ok
-cvtf.dw r8,r10                E4475054          ok
-cvtf.ld r8,r10                E1475254          ok
-cvtf.sd r8,r10                E2475254          ok
-cvtf.uld r8,r10               F1475254          ok
-cvtf.uwd r8,r10               F0475254          ok
-cvtf.wd r8,r10                E0475254          ok
-divf.d r6,r8,r10              E6477E54          ok
-floorf.dl r8,r10              E3475454          ok
-floorf.dul r8,r10             F3475454          ok
-floorf.duw r8,r10             F3475054          ok
-floorf.dw r8,r10              E3475054          ok
-maxf.d r6,r8,r10              E6477854          ok
-minf.d r6,r8,r10              E6477A54          ok
-mulf.d r6,r8,r10              E6477454          ok
-negf.d r8,r10                 E1475854          ok
-recipf.d r8,r10               E1475E54          ok
-roundf.dl r8,r10              E0475454          ok
-roundf.dul r8,r10             F0475454          ok
-roundf.duw r8,r10             F0475054          ok
-roundf.dw r8,r10              E0475054          ok
-rsqrtf.d r8,r10               E2475E54          ok
-sqrtf.d r8,r10                E0475E54          ok
-subf.d r6,r8,r10              E6477254          ok
-trncf.dl r8,r10               E1475454          ok
-trncf.dul r8,r10              F1475454          ok
-trncf.duw r8,r10              F1475054          ok
-trncf.dw r8,r10               E1475054          ok
-bins r6, 4, 8, r8             E647D8B0          ok
-callt 5                       0502              ok
-clr1 3, 0x10[r6]              C69F1000          ok
-clr1 r8, [r6]                 E647E400          ok
-not1 3, 0x10[r6]              C65F1000          ok
-not1 r8, [r6]                 E647E200          ok
-dispose 4, 0x3                42066000          ok
-dispose 4, 0x3, [r31]         42067F00          ok
-divq r6, r8, r10              E647FC52          ok
-divqu r6, r8, r10             E647FE52          ok
-divu r6, r8, r10              E647C252          ok
-fetrap 1                      4008              ok
-resbank                       E0076081          ok
-jr 0x10                       80071000          ok
+instruction                     encoding          status
+----------------------------------------------------------
+ld.b 0x10[r6],r8                06471000          ok
+ld.b 0x1000[r6],r10             06570010          ok
+ld.b [r6]+,r10                  E6177053          ok
+ld.b [r6]-,r10                  E6277053          ok
+ld.bu 0x10[r6],r8               86471100          ok
+ld.bu 0x1000[r6],r10            86570110          ok
+ld.bu [r6]+,r10                 E61F7053          ok
+ld.bu [r6]-,r10                 E62F7053          ok
+ld.dw 0x1000[r6],r10            A60709502000      ok
+ld.h 0x10[r6],r8                26471000          ok
+ld.h 0x1000[r6],r10             26570010          ok
+ld.h [r6]+,r10                  E6177453          ok
+ld.h [r6]-,r10                  E6277453          ok
+ld.hu 0x10[r6],r8               E6471100          ok
+ld.hu 0x1000[r6],r10            E6570110          ok
+ld.hu [r6]+,r10                 E61F7453          ok
+ld.hu [r6]-,r10                 E62F7453          ok
+ld.w 0x10[r6],r8                26471100          ok
+ld.w 0x1000[r6],r10             26570110          ok
+ld.w [r6]+,r10                  E6177853          ok
+ld.w [r6]-,r10                  E6277853          ok
+sld.b 0x8[ep],r8                0843              ok
+sld.bu 0x4[ep],r8               6440              ok
+sld.h 0x8[ep],r8                0444              ok
+sld.hu 0x4[ep],r8               7240              ok
+sld.w 0x8[ep],r8                0445              ok
+st.b r8,0x10[r6]                46471000          ok
+st.b r10,0x1000[r6]             46570010          ok
+st.b r10,[r6]+                  E6177253          ok
+st.b r10,[r6]-                  E6277253          ok
+st.dw r10,0x1000[r6]            A6070F502000      ok
+st.h r8,0x10[r6]                66471000          ok
+st.h r10,0x1000[r6]             66570010          ok
+st.h r10,[r6]+                  E6177653          ok
+st.h r10,[r6]-                  E6277653          ok
+st.w r8,0x10[r6]                66471100          ok
+st.w r10,0x1000[r6]             66570110          ok
+st.w r10,[r6]+                  E6177A53          ok
+st.w r10,[r6]-                  E6277A53          ok
+sst.b r8,0x8[ep]                8843              ok
+sst.h r8,0x8[ep]                8444              ok
+sst.w r8,0x8[ep]                0545              ok
+set1 3,0x10[r6]                 C61F1000          ok
+set1 r8,[r6]                    E647E000          ok
+tst1 3,0x10[r6]                 C6DF1000          ok
+tst1 r8,[r6]                    E647E600          ok
+caxi [r6],r8,r10                E647EE50          ok
+ldl.bu [r6],r10                 E60F7053          ok
+ldl.hu [r6],r10                 E60F7453          ok
+ldl.w [r6],r10                  E6077853          ok
+prepare 0x3,4                   82076100          ok
+prepare 0x3,4,sp                82076300          ok
+prepare     0x3,0x4,0x10        82076B001000      ok
+prepare     0x3,0x4,0x100000    820773001000      ok
+prepare     0x3,0x4,0x10000     820773000100      ok
+stc.b r10,[r6]                  E6077253          ok
+stc.h r10,[r6]                  E6077653          ok
+stc.w r10,[r6]                  E6077A53          ok
+mul r6,r8,r10                   E6472052          ok
+mul 8,r8,r10                    E8474052          ok
+mulh r6,r8                      E640              ok
+mulh 4,r8                       E442              ok
+mulhi 0x10,r6,r8                E6461000          ok
+mulu r6,r8,r10                  E6472252          ok
+mulu 8,r8,r10                   E8474252          ok
+mac r6,r8,r10,r12               E647CC53          ok
+macu r6,r8,r10,r12              E647EC53          ok
+add r6,r8                       C641              ok
+add 4,r8                        4442              ok
+addi 0x10,r6,r8                 06461000          ok
+cmp r6,r8                       E641              ok
+cmp 4,r8                        6442              ok
+mov r6,r8                       0640              ok
+mov 4,r8                        0442              ok
+movhi       0x1,zero,r6         40360100          ok
+movea 0x10,r6,r8                26461000          ok
+movhi 0x10,r6,r8                46461000          ok
+sub r6,r8                       A641              ok
+subr r6,r8                      8641              ok
+adf 0x1,r6,r8,r10               E647A253          ok
+sbf 0x1,r6,r8,r10               E6478253          ok
+satadd r6,r8                    C640              ok
+satadd 4,r8                     2442              ok
+satadd r6,r8,r10                E647BA53          ok
+satsub r6,r8                    A640              ok
+satsub r6,r8,r10                E6479A53          ok
+satsubi 0x10,r6,r8              66461000          ok
+satsubr r6,r8                   8640              ok
+and r6,r8                       4641              ok
+andi 0x10,r6,r8                 C6461000          ok
+not r6,r8                       2640              ok
+or r6,r8                        0641              ok
+ori 0x10,r6,r8                  86461000          ok
+tst r6,r8                       6641              ok
+xor r6,r8                       2641              ok
+xori 0x10,r6,r8                 A6461000          ok
+bsh r8,r10                      E0474253          ok
+bsw r8,r10                      E0474053          ok
+clip.b r6,r8                    E6470800          ok
+clip.bu r6,r8                   E6470A00          ok
+clip.h r6,r8                    E6470C00          ok
+clip.hu r6,r8                   E6470E00          ok
+cmov 0x1,r6,r8,r10              E6472253          ok
+cmov 0x1,4,r8,r10               E4470253          ok
+hsh r8,r10                      E0474653          ok
+hsw r8,r10                      E0474453          ok
+rotl 4,r8,r10                   E447C450          ok
+rotl r6,r8,r10                  E647C650          ok
+sar r6,r8                       E647A000          ok
+sar 4,r8                        A442              ok
+sar r6,r8,r10                   E647A250          ok
+sasf 0x1,r8                     E1470002          ok
+setf 0x1,r8                     E1470000          ok
+shl r6,r8                       E647C000          ok
+shl 4,r8                        C442              ok
+shl r6,r8,r10                   E647C250          ok
+shr r6,r8                       E6478000          ok
+shr 4,r8                        8442              ok
+shr r6,r8,r10                   E6478250          ok
+sxb r6                          A600              ok
+sxh r6                          E600              ok
+zxb r6                          8600              ok
+zxh r6                          C600              ok
+sch0l r8,r10                    E0476453          ok
+sch0r r8,r10                    E0476053          ok
+sch1l r8,r10                    E0476653          ok
+sch1r r8,r10                    E0476253          ok
+div r6,r8,r10                   E647C052          ok
+divh r6,r8                      4640              ok
+divh r6,r8,r10                  E6478052          ok
+divhu r6,r8,r10                 E6478252          ok
+jarl _lbl,r6                    80370000          ok
+jarl [r6],r10                   E6C76051          ok
+jmp [r6]                        6600              ok
+jmp 0x10[r6]                    E60610000000      ok
+ctret                           E0074401          ok
+eiret                           E0074801          ok
+feret                           E0074A01          ok
+trap 1                          E1070001          ok
+switch r6                       4600              ok
+syscall 1                       E1D76001          ok
+di                              E0076001          ok
+ei                              E0876001          ok
+halt                            E0072001          ok
+ldsr r8,0,0                     E8072000          ok
+nop                             0000              ok
+snooze                          E00F2001          ok
+stsr 0,r8,0                     E0474000          ok
+synce                           1D00              ok
+synci                           1C00              ok
+syncm                           1E00              ok
+syncp                           1F00              ok
+cache 0x0, [r6]                 E6E76001          ok
+pref 0x0, [r6]                  E6DF6001          ok
+absf.s r8,r10                   E0474854          ok
+addf.s r6,r8,r10                E6476054          ok
+ceilf.sl r8,r10                 E2474454          ok
+ceilf.sul r8,r10                F2474454          ok
+ceilf.suw r8,r10                F2474054          ok
+ceilf.sw r8,r10                 E2474054          ok
+cmovf.s 0,r6,r8,r10             E6470054          ok
+cmpf.s 0x1,r6,r8,0              E837200C          ok
+cvtf.hs r8,r10                  E2474254          ok
+cvtf.ls r8,r10                  E1474254          ok
+cvtf.sh r8,r10                  E3474254          ok
+cvtf.sl r8,r10                  E4474454          ok
+cvtf.sul r8,r10                 F4474454          ok
+cvtf.suw r8,r10                 F4474054          ok
+cvtf.sw r8,r10                  E4474054          ok
+cvtf.uls r8,r10                 F1474254          ok
+cvtf.uws r8,r10                 F0474254          ok
+cvtf.ws r8,r10                  E0474254          ok
+divf.s r6,r8,r10                E6476E54          ok
+floorf.sl r8,r10                E3474454          ok
+floorf.sul r8,r10               F3474454          ok
+floorf.suw r8,r10               F3474054          ok
+floorf.sw r8,r10                E3474054          ok
+fmaf.s r6,r8,r10                E647E054          ok
+fmsf.s r6,r8,r10                E647E254          ok
+fnmaf.s r6,r8,r10               E647E454          ok
+fnmsf.s r6,r8,r10               E647E654          ok
+maxf.s r6,r8,r10                E6476854          ok
+minf.s r6,r8,r10                E6476A54          ok
+mulf.s r6,r8,r10                E6476454          ok
+negf.s r8,r10                   E1474854          ok
+recipf.s r8,r10                 E1474E54          ok
+roundf.sl r8,r10                E0474454          ok
+roundf.sul r8,r10               F0474454          ok
+roundf.suw r8,r10               F0474054          ok
+roundf.sw r8,r10                E0474054          ok
+rsqrtf.s r8,r10                 E2474E54          ok
+sqrtf.s r8,r10                  E0474E54          ok
+subf.s r6,r8,r10                E6476254          ok
+trfsr 0                         E0070004          ok
+trncf.sl r8,r10                 E1474454          ok
+trncf.sul r8,r10                F1474454          ok
+trncf.suw r8,r10                F1474054          ok
+trncf.sw r8,r10                 E1474054          ok
+absf.d r8,r10                   E0475854          ok
+addf.d r6,r8,r10                E6477054          ok
+ceilf.dl r8,r10                 E2475454          ok
+ceilf.dul r8,r10                F2475454          ok
+ceilf.duw r8,r10                F2475054          ok
+ceilf.dw r8,r10                 E2475054          ok
+cmovf.d 0,r6,r8,r10             E6471054          ok
+cmpf.d 0x1,r6,r8,0              E837300C          ok
+cvtf.dl r8,r10                  E4475454          ok
+cvtf.ds r8,r10                  E3475254          ok
+cvtf.dul r8,r10                 F4475454          ok
+cvtf.duw r8,r10                 F4475054          ok
+cvtf.dw r8,r10                  E4475054          ok
+cvtf.ld r8,r10                  E1475254          ok
+cvtf.sd r8,r10                  E2475254          ok
+cvtf.uld r8,r10                 F1475254          ok
+cvtf.uwd r8,r10                 F0475254          ok
+cvtf.wd r8,r10                  E0475254          ok
+divf.d r6,r8,r10                E6477E54          ok
+floorf.dl r8,r10                E3475454          ok
+floorf.dul r8,r10               F3475454          ok
+floorf.duw r8,r10               F3475054          ok
+floorf.dw r8,r10                E3475054          ok
+maxf.d r6,r8,r10                E6477854          ok
+minf.d r6,r8,r10                E6477A54          ok
+mulf.d r6,r8,r10                E6477454          ok
+negf.d r8,r10                   E1475854          ok
+recipf.d r8,r10                 E1475E54          ok
+roundf.dl r8,r10                E0475454          ok
+roundf.dul r8,r10               F0475454          ok
+roundf.duw r8,r10               F0475054          ok
+roundf.dw r8,r10                E0475054          ok
+rsqrtf.d r8,r10                 E2475E54          ok
+sqrtf.d r8,r10                  E0475E54          ok
+subf.d r6,r8,r10                E6477254          ok
+trncf.dl r8,r10                 E1475454          ok
+trncf.dul r8,r10                F1475454          ok
+trncf.duw r8,r10                F1475054          ok
+trncf.dw r8,r10                 E1475054          ok
+bins r6, 4, 8, r8               E647D8B0          ok
+callt 5                         0502              ok
+clr1 3, 0x10[r6]                C69F1000          ok
+clr1 r8, [r6]                   E647E400          ok
+not1 3, 0x10[r6]                C65F1000          ok
+not1 r8, [r6]                   E647E200          ok
+dispose 4, 0x3                  42066000          ok
+dispose 4, 0x3, [r31]           42067F00          ok
+divq r6, r8, r10                E647FC52          ok
+divqu r6, r8, r10               E647FE52          ok
+divu r6, r8, r10                E647C252          ok
+fetrap 1                        4008              ok
+resbank                         E0076081          ok
+jr 0x10                         80071000          ok
+absf.s4 wr6, wr10               F037A055          ok
+negf.s4 wr6, wr10               F137A055          ok
+sqrtf.s4 wr6, wr10              F237A055          ok
+recipf.s4 wr6, wr10             F337A055          ok
+rsqrtf.s4 wr6, wr10             F437A055          ok
+roundf.sw4 wr6, wr10            E037A055          ok
+roundf.suw4 wr6, wr10           E137A055          ok
+trncf.sw4 wr6, wr10             E237A055          ok
+trncf.suw4 wr6, wr10            E337A055          ok
+ceilf.sw4 wr6, wr10             E437A055          ok
+ceilf.suw4 wr6, wr10            E537A055          ok
+floorf.sw4 wr6, wr10            E637A055          ok
+floorf.suw4 wr6, wr10           E737A055          ok
+cvtf.sw4 wr6, wr10              E837A055          ok
+cvtf.suw4 wr6, wr10             E937A055          ok
+cvtf.ws4 wr6, wr10              EA37A055          ok
+cvtf.uws4 wr6, wr10             EB37A055          ok
+cvtf.hs4 wr6, wr10              EC37A055          ok
+cvtf.sh4 wr6, wr10              ED37A055          ok
+flpv.s4 0, wr6, wr10            F837A055          ok
+movv.w4 wr6, wr10               FE37A055          ok
+trfsrv.w4 0, wr6                FF37A005          ok
+addf.s4 wr7, wr6, wr10          E737A455          ok
+subf.s4 wr7, wr6, wr10          E737A655          ok
+mulf.s4 wr7, wr6, wr10          E737A855          ok
+maxf.s4 wr7, wr6, wr10          E737AA55          ok
+minf.s4 wr7, wr6, wr10          E737AC55          ok
+divf.s4 wr7, wr6, wr10          E737AE55          ok
+addrf.s4 wr7, wr6, wr10         E737B455          ok
+subrf.s4 wr7, wr6, wr10         E737B655          ok
+mulrf.s4 wr7, wr6, wr10         E737B855          ok
+maxrf.s4 wr7, wr6, wr10         E737BA55          ok
+minrf.s4 wr7, wr6, wr10         E737BC55          ok
+addxf.s4 wr7, wr6, wr10         E737C455          ok
+subxf.s4 wr7, wr6, wr10         E737C655          ok
+mulxf.s4 wr7, wr6, wr10         E737C855          ok
+addsubf.s4 wr7, wr6, wr10       E737D055          ok
+subaddf.s4 wr7, wr6, wr10       E737D255          ok
+addsubxf.s4 wr7, wr6, wr10      E737D455          ok
+subaddxf.s4 wr7, wr6, wr10      E737D655          ok
+addsubnf.s4 wr7, wr6, wr10      E737D855          ok
+subaddnf.s4 wr7, wr6, wr10      E737DA55          ok
+addsubnxf.s4 wr7, wr6, wr10     E737DC55          ok
+subaddnxf.s4 wr7, wr6, wr10     E737DE55          ok
+fmaf.s4 wr7, wr6, wr10          E737C054          ok
+fmsf.s4 wr7, wr6, wr10          E737C254          ok
+fnmaf.s4 wr7, wr6, wr10         E737C454          ok
+fnmsf.s4 wr7, wr6, wr10         E737C654          ok
+cmpf.s4 0, wr7, wr6, wr10       E7378055          ok
+ldv.w 5, 8[r5], wr10            A507BD500800      ok
+ldv.dw 1, 8[r5], wr10           A5073D530800      ok
+ldv.qw -16[r5], wr10            A5079D52F0FF      ok
+ldvz.h4 24[r5], wr10            A507DD531800      ok
+stv.w 0, wr10, 12[r5]           A5071D520C00      ok
+stv.dw 0, wr10, -24[r5]         A5079D53E8FF      ok
+stv.qw wr10, 32[r5]             A507BD522000      ok
+stvz.h4 wr10, 40[r5]            A507FD532800      ok
+cmovf.w4 wr12, wr7, wr6, wr10   A7071D560C30      ok
+shflv.w4 0x000, wr7, wr6, wr10  A7079D560030      ok
 
-251 instructions: 251 executed, 0 raised RIE
+310 instructions: 310 executed, 0 raised RIE or UCPOP
 ```
 
 ## Floating point
@@ -747,10 +813,67 @@ The four float-to-integer groups share one `reg1` encoding: the low
 nibble selects the rounding (0 nearest, 1 truncate, 2 ceil, 3 floor,
 4 whatever FPSR says) and bit 4 selects the unsigned form. Which
 widths are involved comes from the sub-opcode — `0x440` single→word,
-`0x444` single→long, `0x450` double→word, `0x454` double→long.
+`0x444` single→long, `0x450` double→word, `0x454` double→long. The
+half-precision conversions sit at `reg1` `0x02` (CVTF.HS, from reg2's
+low half) and `0x03` (CVTF.SH, zero-extended) of `0x442`, off CC-RH.
 
-Still declined: the half-precision conversions at `reg1` `0x02`/`0x03`
-of sub `0x442`, whose storage format has no other use here.
+### One element, two units
+
+What one element does is `g4mh_fp.c`'s, and both the FPU and each of
+the FXU's four ways call it: R01UH0923EJ0130 states the rules twice,
+3.2.6.1 for FPSR and 3.2.6.2 for FXSR, in the same words.
+
+- **NaNs**, from the product's own "Limitation on the Floating-Point
+  Operation Result" (tables 3.128, 3.129, 3.134, 3.135): a signalling
+  NaN anywhere, or an invalid operation on numbers, gives
+  `7FFF FFFFH` (`7FFFFFFF FFFFFFFFH` for a double) — not IEEE's
+  canonical `7FC0 0000H`, which this returned under a comment calling
+  payloads unverified; otherwise the first quiet NaN by operand
+  priority reg2, reg1, reg3, unchanged. A NaN converted to an integer
+  is the most negative signed integer, or 0 unsigned; between
+  precisions a quiet NaN keeps its sign and the top of its payload, a
+  signalling one becomes the destination's invalid result with V.
+- **Subnormal operands**: with FPSR.FS clear an unimplemented-operation
+  exception (E), which has no enable bit and always traps; with FS set
+  flushed to a zero of their sign, recorded in IF, and **inexact**
+  unless the operation was invalid or a division by zero
+  (3.2.6.1(6)(a)).
+- **Subnormal results, judged before rounding**: E with FS clear; with
+  FS set the value of table 3.126 — a zero, or ±2^Emin toward a
+  directed rounding — with U and I, and under RN with FN set the nearer
+  of zero and 2^Emin (table 3.127). SoftFloat is asked to detect
+  tininess before rounding for each operation and put back after: the
+  specialization this tree builds detects it after, for RISC-V.
+- **Exempt from both**: MAXF, MINF, CMPF, ABSF, NEGF, CMOVF and CVTF.HS
+  (3.2.6.1(8)(c),(d)). MAXF and MINF flushed and raised E here. Of two
+  zeros MAXF returns reg2 and MINF reg1 (table 3.129 (c)) — an operand,
+  not a sign rule, which is what this had.
+- **An unsigned conversion of any negative number is invalid**, 0 with
+  V — "−Normal: 0[V]" on every `.SUW`/`.DUW` page, −0.5 included.
+
+**FPSR's cause bits change only when an exception is taken**, and then
+hold everything detected, enabled or not: "the previous results are held
+until the next enabled exception occurs" (3.2.6.1(7)). They were
+rewritten by every FP instruction. Otherwise the preservation bits
+accumulate; IF accumulates either way. FPEPC takes the faulting
+instruction's address on FPE — it was never written — and CMPF writes no
+CC bit when it takes its exception.
+
+**FPSR comes out of reset `0022 0000H`**, FS set and bit 21 reading 1
+(table 3.51); it came out 0, so every subnormal was E until a guest set
+FS, while this file's comments said FS was set out of reset. Bits 21,
+20 and 16 are read-only. **FPST, FPCC and FPCFG are windows onto FPSR**
+(tables 3.53-3.55): each reads its bits from FPSR and writes them there.
+They were stored on their own — FPCC never showed a comparison — under
+a comment in `g4mh_types.h` saying they were routed.
+
+`test_fp_rules` holds 39 cases to the tables on both backends, one
+instruction a run with FPSR set first, and `test_fp_status_registers`
+the reset value and the windows. One case is there for the
+before-rounding detection alone: `2^-63 (1 + 2^-23)` times
+`2^-63 (1 - 2^-23)` is `2^-126 (1 - 2^-46)`, which rounds to `2^-126`
+— tiny before rounding, not after — found by an exact search over
+mantissa pairs rather than by trying values.
 
 Double precision costs the F746 firmware **9,680 bytes** — 129,560 to
 139,240 of text — which is why CMakeLists.txt adds SoftFloat's f64
@@ -765,6 +888,86 @@ assertion about a double compared only its low half. Six tests of the
 arithmetic passed with `SUBF.D`'s operands reversed — 2.0 against -2.0
 differ in the sign bit, which is the top of the *high* word. `CHECK_EQ64`
 exists now; use it for anything wider than a register.
+
+## The FXU
+
+The extended floating-point unit, R01US0209EJ0220 section 2.5: 32
+registers of 128 bits, `wr0`-`wr31`, each four ways of single precision,
+and 59 instructions, behind `G4MH_EXT_FXU` (which needs the FPU: a way
+*is* an FPU element). **On the U2B6 only PE0 has one** — PID bit 11
+(`0784 0F01H` against `0784 0701H`), and `PSW.CU1` fixed to 0 on the
+other PEs, so there every FXU instruction is UCPOP 81H, as it is on PE0
+until CU1 is set. Built without it, CU1 is fixed on every PE and the
+encodings are RIE. The registers are the core's last field, 512 bytes a
+PE.
+
+**Every encoding came off CC-RH before it was written** — 81 forms,
+the immediates included — and agreed with the manual's bit diagrams
+throughout: the 32-bit forms are format M in the FPU's sub-opcode range
+(the FMA family at `0x4C0`, CMPF.S4 at `0x580` with fcond in bits 4:1,
+the rest at `0x5A0`-`0x5DE`, the one-operand group at `0x5A0` with its
+operation in the wreg1 field), and `g4mh_fpu_exec` hands them on before
+its CU0 check. The 48-bit ones — LDV, STV, LDVZ, STVZ, CMOVF.W4,
+SHFLV.W4 — sit in `ST.H disp23`'s slot at `w1[4:0] = 11101B`: ST.H
+with disp bit 0 set, which ST.H cannot have, and which was RIE.
+SHFLV.W4 splits its immediate, bit 11 in `w1[5]` and bits 10:0 in w2.
+
+| form | ways |
+|---|---|
+| plain | `w_n <- wreg2_n OP wreg1_n` |
+| R (ADDRF ... MINRF) | `w3 = B3.B2, w2 = A3.A2, w1 = B1.B0, w0 = A1.A0` |
+| X (ADDXF, SUBXF, MULXF) | `w_n <- wreg2_n OP wreg1_(n^1)` |
+| ADDSUB / SUBADD | add in the odd ways and subtract in the even, or the reverse; X pairs as above, N negates each result that is not a NaN |
+
+**Flags are kept per way.** Each way's element raises its own; their OR
+goes to FXSR, and each way's to FXXC (on FXE, rewritten) or FXXP
+(otherwise, accumulated), a byte a way. One FXE (`75H`, EI level, FPE's
+vector `70H`) for the instruction if any way raised E or an enabled
+exception, and then no way is written. FXSR is FPSR without the CC bits
+and resets the same; FXST and FXCFG are its windows, FXINFO reads 3.
+
+The loads and stores: a quad-word is 16-byte aligned (MAE otherwise —
+only a double-word is let off with word alignment) and one 16-byte span
+to the MPU (`g4mh_load_qw`, `g4mh_store_qw`); a double-word uses
+`g4mh_load_dw`'s word alignment and span. The displacement's low bits
+are opcode, fixed to zero by the access size, and RIE when set, as the
+`disp23` forms' are. MEI has a row for each (table 3.38: LEN 6, the
+vector register, DS 4 for a quad-word, ITYPE `11101B`, `11111B` for the
+zero-extending halves).
+
+**The JIT runs all of it through helpers**: the 32-bit forms through
+the FPU's, which already took the whole sub-opcode range, the 48-bit
+ones through `G4MH_IR_HELPER_FXU48`. Declined, each would have ended a
+block, and vector code is loops of exactly these; the unit tests assert
+the JIT ran each one without handing it to the interpreter.
+
+`test_fxu_instructions` runs all 59, CC-RH's encodings with results
+worked out by hand from the manual, on both backends;
+`test_fxu_loads_stores` the memory forms and what they refuse,
+`test_fxu_flags` the per-way flags and FXE, `test_fxu_unusable` UCPOP on
+PE0 with CU1 clear and on a PE without the FXU, `test_fxu_registers`
+the system registers. fuzz-g4mh-jit sets CU1 on PE0, fills the vector
+registers and compares them, with a seed (`fxu.asm`) that runs a vector
+kernel through both backends.
+
+**What it costs, on the F746** (CoreMark, which runs no FP, against a
+worktree at ac8d44f; the board's counter, the wall clock agreeing): the
+firmware's text grows 5,376 bytes -- the FXU, the shared element and
+SoftFloat's half-precision conversions -- its ITCM 112 and its `.bss`
+512, the vector registers. Interpreted, 90.58 to 90.74 host cycles an
+instruction: within layout. **Under the JIT it first cost 2.7%**, 51.72
+to 53.11 as medians of five layouts each (`EMU_LAYOUT_PAD_BSS` 0, 512,
+2048, `EMU_LAYOUT_PAD` 256, 1024), the two ranges apart -- with the same
+525 translations and the same 33,452 bytes of code, and the FXU compiled
+out still 52.70. A PC profile (`scripts/board-pc-profile.py`, which
+prints raw addresses now with `--addresses`) found it: `g4mh_jit_count`
+and `g4mh_jit_take_irq`, which the framework calls once a block through
+the backend's wrappers, had been inlined into them by LTO and no longer
+were, so every block paid a call into flash -- LTO's decision, tipped by
+code CoreMark never runs. The per-block test is forced inline now and
+the acceptance after a dirty flag out of line: 50.92, 51.08 and 50.99
+at three layouts, below the old tree's 51.24-52.34 and a tenth as
+sensitive to layout.
 
 ## The disassembler
 
@@ -805,6 +1008,11 @@ slots where `reg2 == 0` selects a different instruction:
   everything else.
 - **`mulh` and `mulhi` for `JR`/`JMP disp32`**, which share those two
   slots at `reg2 == 0`.
+- **`st.h` for the FXU's loads and stores**, with an odd displacement:
+  the disp23 group's `disp[0]` is opcode for all but the byte forms, so
+  set it is the FXU's slot at `11101B` -- printed by name now -- or a
+  reserved encoding, which printed as an instruction and prints
+  `.short`, as the interpreter's RIE.
 
 The rule this leaves: **the disassembler has to make the same
 discrimination the interpreter does, in the same order.** It is not a
@@ -1563,8 +1771,9 @@ a block transfer was being moved when the word was refused, so PREPARE,
 DISPOSE, PUSHSP and POPSP record it as they fault (`mei_reg`); POPSP's r3
 is reported as 0 (note 3).
 
-`test_mei` takes one of each memory instruction -- 60 encodings, all but
-the four CC-RH will not assemble taken from CC-RH's listing -- through
+`test_mei` takes one of each memory instruction -- 69 encodings, the
+FXU's nine included, all but the four CC-RH will not assemble taken from
+CC-RH's listing -- through
 the interpreter and the JIT, into unmapped memory for MDP and to a
 misaligned address for MAE, and compares MEI with table 3.38's fields
 packed by hand; fuzz-g4mh-mpu's reference computes it from what it
@@ -1675,8 +1884,14 @@ held against each other:
 | a read-modify-write refused for read and write sets both bits | notes 1 and 2 of table 3.115 | notes 1 and 2 of table 5.6, identical | both bits: a reading neither settles |
 | system register permissions | table 3.9 and its groups | table 3.1, identical | as both say |
 | SYSCALL's and an interrupt's table read as supervisor | table 3.76 note 2 | -- | and the software manual's SYSCALL caution 2 |
+| FP results on NaNs, subnormals and flushing | 3.2.6.1 for the FPU, 3.2.6.2 for the FXU, in the same words | -- | one implementation, `g4mh_fp.c` |
 
-What only an RH850 can settle stays open: the reading in the fifth row,
+Where the FP rules are silent `g4mh_fp.c` chose, and says so: an
+operand NaN is decided before an operand subnormal (so a signalling NaN
+beside a subnormal is V, not E), FNMAF and FNMSF flush the fused result
+before negating it as their pseudocode reads, RSQRTF rounds twice, and
+an FXE rewrites FXXC whole. What only an RH850 can settle stays open: the
+reading in the fifth row,
 DISPOSE's order (r31 first, PREPARE's inverse, which its page does not
 spell out), LD.DW's odd register in MEI, `SVLOCK` binding `LDM.MP`, and
 what the core does with the encodings the manual calls reserved.

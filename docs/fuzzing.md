@@ -95,9 +95,14 @@ permits:
 **The configuration word** chooses state no program in this machine can
 change, because a block built under one value of it is exactly what to
 check: ARMv7-M's privilege, stack, CCR traps, FPU access and modes,
-Handler mode, masks and fault enables; G4MH's user mode, FPU and FPSR;
-PowerPC's encoding (VLE or Book E), user state, SPE and SPEFSCR. Each
-target's source lists the bits.
+Handler mode, masks and fault enables; G4MH's user mode, FPU and FPSR
+-- and with them PE0's FXU and FXSR, whose 32 vector registers start
+full of numbers and are compared like the rest; PowerPC's encoding (VLE
+or Book E), user state, SPE and SPEFSCR. Each target's source lists the
+bits. `seeds/g4mh-jit/fxu.asm` is a vector kernel -- the loads and
+stores, the pairing forms, a comparison, a mask, a shuffle, TRFSRV --
+run on its own once to see it reach the HALT with per-way flags in
+FXXP.
 
 ## What each compares, and may differ in
 

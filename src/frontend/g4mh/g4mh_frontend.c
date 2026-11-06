@@ -739,6 +739,8 @@ static const char *cause_name(uint32_t cause)
         return "misaligned access";
     case G4MH_EXC_FPP:
         return "floating-point operation";
+    case G4MH_EXC_FXE:
+        return "extended floating-point operation";
     case G4MH_EXC_UCPOP:
     case G4MH_EXC_UCPOP + 1u:
     case G4MH_EXC_UCPOP + 2u:

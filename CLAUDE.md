@@ -210,7 +210,12 @@ Each has cost more than one session, and every one recurred.
 - **A test of a fault checks the address and the cause**, not that it
   faulted or that some handler ran: `dcbz` reported DEAR 0, a fetch fault
   arrived at +8, and an unrelated exception reaching the same handler
-  passed three versions of one test.
+  passed three versions of one test -- and where it stopped: FXE without
+  its vector ran NOPs into another HALT.
+- **A coverage instrument must get past the gate it measures behind**:
+  out of reset CU0 is clear, every FP instruction was UCPOP, counted as
+  executed, and two declined ones sat in a 251/251
+  (`g4mh-instruction-coverage.sh` sets CU0 and CU1 first now).
 - **A compiled guest finds what hand-assembled tests by the same author
   cannot**: one 90-line C guest found three G4MH defects in a row, and an
   expectation written from the shape of a number disagreed with a correct
@@ -359,8 +364,10 @@ Each has cost more than one session, and every one recurred.
   image split "concatenates to the `.bin`", ROM "cached for reads only",
   Zacas "unfinished" were all false, and G4MH's "cannot happen for a
   halfword-aligned pc" let a 32-bit instruction at `...E` run from a
-  refused area. A constant chosen to avoid another (FETRAP at `90H`,
-  dodging an MDP that was itself wrong) is a reason to check the other.
+  refused area, FPSR's FS "set out of reset" was 0 and its windows
+  "routed" were plain storage. A constant chosen to avoid another
+  (FETRAP at `90H`, dodging an MDP that was itself wrong) is a reason to
+  check the other.
 - **Prose telling a maintainer to change a constant is a constant that
   will not be changed**: compute it (`EMU_MAX_REGIONS` from the PE count,
   after "raise it to 24" sat in a design note).
@@ -604,9 +611,15 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   a page.
 - **Semihosting answers M-mode only**: answering U-mode `write()`
   imitated success and hid the kernel.
+- **The product manual's limitations section is the spec where the
+  standard is silent**: the U2B's says an invalid result is `7FFF FFFFH`
+  and which quiet NaN wins; the FPU returned RISC-V's `7FC0 0000H` under
+  a comment calling payloads unverified, and broke eight more of its
+  rules -- flushing, E, tininess before rounding, cause bits only on an
+  exception (`g4mh_fp.c`, both units).
 - **Two registers that are views of one thing are held as one thing**
-  (G4MH IMR and EIC), and a threshold that counts what is *allowed* is
-  `p < value` (PLMR, EIMASK).
+  (G4MH IMR and EIC, FPSR and FPST/FPCC/FPCFG), and a threshold that
+  counts what is *allowed* is `p < value` (PLMR, EIMASK).
 - **A signal's name is not where it goes** (WDTB's NMI): read the
   destination and its reset configuration.
 - **Shared state kept per instance is written in one** (G4MH INTC2).
@@ -787,7 +800,10 @@ The SMP design is in [docs/os.md](docs/os.md#smp-on-the-host).
   F746 -- 0.4% once out of line; ARMv7-M's exception-return faults,
   1.5%, by pushing `t32_dp_reg` out of the loop in their place).
 - **A new call site of something the loop inlines is a decision handed to
-  LTO**; check `nm` and measure on the board (21% on the F746).
+  LTO**; check `nm` and measure on the board (21% on the F746). Code
+  nothing runs can tip it too: G4MH's FXU un-inlined the JIT's per-block
+  `count` and `take_irq`, 2.7% on CoreMark; a hook called once a block
+  is forced inline, its rare half `EMU_NOINLINE`.
 - **An out-parameter on a hot function is not free** (+1.3%), and cold
   state goes at the end of a hot struct.
 - **A counter costs everyone who never reads it**: keep it where its

@@ -281,11 +281,25 @@ From the last measurements in [linux.md](linux.md).
 - [ ] **The G4MH and RH850 CPU system** (section 3), finished. Done:
       register banks and `RESBANK`, the system registers' writable
       bits, `CFALI` and `CHBII` against the MPU, FENMI and FENC
-      ([frontend/g4mh.md](frontend/g4mh.md#register-banks)). Left: the
-      FXU's instructions, on PE0 (in progress); a cache for `CFALI` to
-      lock; something to drive the NMI pin; and the debug level --
-      `DBTRAP`, `DBRET`, `DBPC`, `DBPSW` -- which no manual in
-      `docs/renesas/` describes: the Emulation manual is needed.
+      ([frontend/g4mh.md](frontend/g4mh.md#register-banks)), the FXU on
+      PE0 and the FPU's rules ([frontend/g4mh.md](frontend/g4mh.md#the-fxu)).
+      Left: a cache for `CFALI` to lock; something to drive the NMI pin;
+      and the debug level -- `DBTRAP`, `DBRET`, `DBPC`, `DBPSW` -- which
+      no manual in `docs/renesas/` describes: the Emulation manual is
+      needed.
+- [ ] **The other frontends' per-block hooks are still LTO's to
+      inline.** RV32's, PowerPC's and ARMv7-M's `take_irq` and `count`
+      go through the same backend wrappers G4MH's did, and G4MH's cost
+      2.7% of JIT CoreMark on the F746 when LTO stopped inlining them
+      ([frontend/g4mh.md](frontend/g4mh.md#the-fxu)). Read each
+      firmware's `nm` for the hooks and measure forcing them inline.
+- [ ] **SoftFloat's state is one per process.** `softfloat_roundingMode`,
+      `softfloat_exceptionFlags` and `softfloat_detectTininess` are
+      globals (`THREAD_LOCAL` is empty in this tree's `platform.h`), so
+      under `EMU_SMP` two G4MH or PowerPC cores computing at once share
+      them -- and `g4mh_fp.c` now sets the tininess mode for each
+      operation. Nothing in the SMP guests uses FP. `_Thread_local` on
+      the host would do; a board has one thread.
 - [ ] **The readings only an RH850 can settle.** Every G4MH result rests
       on Renesas' documents, cross-checked where a second one exists
       ([frontend/g4mh.md](frontend/g4mh.md#what-rests-on-the-manuals-alone));

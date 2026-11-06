@@ -4,7 +4,9 @@
  *
  * The input is a configuration word and a program. The first four
  * bytes (little-endian) choose user or supervisor mode, whether the
- * FPU is usable, and FPSR's rounding, flush and exception-enable bits;
+ * FPU is usable -- and on PE0 the FXU, whose 32 vector registers start
+ * full of numbers and are compared -- and the rounding, flush and
+ * exception-enable bits of FPSR and FXSR alike;
  * the rest is RH850 code, copied to the start of a read-only region
  * that is otherwise HALT, and both backends run it from there on cores
  * and buses built identically.
@@ -312,7 +314,12 @@ static void build(side_t *sd)
             c->r[3] = G4MH_LRAM_SELF_BASE + LRAM_SIZE - 0x40u;
         }
 
-        c->psw = G4MH_PSW_ID | ((g_cfg & CFG_NOFPU) ? 0u : G4MH_PSW_CU0) |
+        /* CU1 with CU0, on PE0 alone: the FXU is PE0's (PID). */
+        c->psw = G4MH_PSW_ID |
+                 ((g_cfg & CFG_NOFPU) ? 0u : G4MH_PSW_CU0) |
+                 ((G4MH_EXT_FXU && k == 0u && !(g_cfg & CFG_NOFPU))
+                      ? G4MH_PSW_CU1
+                      : 0u) |
                  ((g_cfg & CFG_UM) ? G4MH_PSW_UM : 0u);
         c->sr[0][G4MH_SR_PSW] = c->psw;
         c->sr[0][G4MH_SR_FPSR] =
@@ -320,6 +327,21 @@ static void build(side_t *sd)
             ((g_cfg & CFG_FS) ? G4MH_FPSR_FS : 0u) |
             ((g_cfg & CFG_FN) ? G4MH_FPSR_FN : 0u) |
             (((g_cfg >> CFG_XE_SHIFT) & 0x1Fu) << G4MH_FPSR_XE_SHIFT);
+        /* FXSR is laid out as FPSR without the CC bits: the same
+         * configuration, so FS, FN, RM and the enables reach both. */
+        c->sr[G4MH_SELID_FXU][G4MH_SR_FXSR] = c->sr[0][G4MH_SR_FPSR];
+#if G4MH_EXT_FXU
+        /* Numbers in every way of every vector register, positive and
+         * negative, so an FXU instruction has something to compute. */
+        for (uint32_t i = 0; i < 32u; i++) {
+            for (uint32_t n = 0; n < 4u; n++) {
+                const uint32_t j = i * 4u + n;
+
+                c->wr[i][n] = (j & 1u) ? 0x3F800000u + (j << 19)
+                                       : 0xC0000000u + (j << 18);
+            }
+        }
+#endif
         g4mh_jit_ctx_refresh(c);
     }
     sd->run.ncores = g_ncores;
@@ -399,6 +421,10 @@ static void compare_pe(unsigned k)
         SAME(ll_addr);
     }
     SAME(mpu_active);
+#if G4MH_EXT_FXU
+    fz_diff_mem(&g_target, pe(k, "wr"), (const uint8_t *)g_interp.cpu[k].wr,
+                (const uint8_t *)g_jit.cpu[k].wr, sizeof(g_jit.cpu[k].wr));
+#endif
     fz_diff_mem(
         &g_target, pe(k, "intc.chan"), (const uint8_t *)g_interp.intc[k].chan,
         (const uint8_t *)g_jit.intc[k].chan, sizeof(g_jit.intc[k].chan));

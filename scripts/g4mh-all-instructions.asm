@@ -253,3 +253,63 @@ _lbl:
 	fetrap 1
 	resbank
 	jr 0x10
+	; The FXU (R01US0209EJ0220 2.5): wreg operands, PE0 only, CU1.
+	absf.s4 wr6, wr10
+	negf.s4 wr6, wr10
+	sqrtf.s4 wr6, wr10
+	recipf.s4 wr6, wr10
+	rsqrtf.s4 wr6, wr10
+	roundf.sw4 wr6, wr10
+	roundf.suw4 wr6, wr10
+	trncf.sw4 wr6, wr10
+	trncf.suw4 wr6, wr10
+	ceilf.sw4 wr6, wr10
+	ceilf.suw4 wr6, wr10
+	floorf.sw4 wr6, wr10
+	floorf.suw4 wr6, wr10
+	cvtf.sw4 wr6, wr10
+	cvtf.suw4 wr6, wr10
+	cvtf.ws4 wr6, wr10
+	cvtf.uws4 wr6, wr10
+	cvtf.hs4 wr6, wr10
+	cvtf.sh4 wr6, wr10
+	flpv.s4 0, wr6, wr10
+	movv.w4 wr6, wr10
+	trfsrv.w4 0, wr6
+	addf.s4 wr7, wr6, wr10
+	subf.s4 wr7, wr6, wr10
+	mulf.s4 wr7, wr6, wr10
+	maxf.s4 wr7, wr6, wr10
+	minf.s4 wr7, wr6, wr10
+	divf.s4 wr7, wr6, wr10
+	addrf.s4 wr7, wr6, wr10
+	subrf.s4 wr7, wr6, wr10
+	mulrf.s4 wr7, wr6, wr10
+	maxrf.s4 wr7, wr6, wr10
+	minrf.s4 wr7, wr6, wr10
+	addxf.s4 wr7, wr6, wr10
+	subxf.s4 wr7, wr6, wr10
+	mulxf.s4 wr7, wr6, wr10
+	addsubf.s4 wr7, wr6, wr10
+	subaddf.s4 wr7, wr6, wr10
+	addsubxf.s4 wr7, wr6, wr10
+	subaddxf.s4 wr7, wr6, wr10
+	addsubnf.s4 wr7, wr6, wr10
+	subaddnf.s4 wr7, wr6, wr10
+	addsubnxf.s4 wr7, wr6, wr10
+	subaddnxf.s4 wr7, wr6, wr10
+	fmaf.s4 wr7, wr6, wr10
+	fmsf.s4 wr7, wr6, wr10
+	fnmaf.s4 wr7, wr6, wr10
+	fnmsf.s4 wr7, wr6, wr10
+	cmpf.s4 0, wr7, wr6, wr10
+	ldv.w 5, 8[r5], wr10
+	ldv.dw 1, 8[r5], wr10
+	ldv.qw -16[r5], wr10
+	ldvz.h4 24[r5], wr10
+	stv.w 0, wr10, 12[r5]
+	stv.dw 0, wr10, -24[r5]
+	stv.qw wr10, 32[r5]
+	stvz.h4 wr10, 40[r5]
+	cmovf.w4 wr12, wr7, wr6, wr10
+	shflv.w4 0x000, wr7, wr6, wr10

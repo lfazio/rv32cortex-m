@@ -82,6 +82,7 @@ typedef uint32_t g4mh_exc_t;
  * whatever PSW.ID says; only the interrupts are masked by it.
  */
 #define G4MH_EXC_FPP 0x0071u /* FPE, precise FP operation    */
+#define G4MH_EXC_FXE 0x0075u /* FXE, the FXU's; FPE's vector */
 #define G4MH_EXC_TRAP0 0x0040u /* TRAP 0..15,  +vector         */
 #define G4MH_EXC_TRAP1 0x0050u /* TRAP 16..31, +vector         */
 #define G4MH_EXC_SYSCALL 0x8000u /* SYSCALL, +vector             */
@@ -298,6 +299,8 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
 #define G4MH_MEI_CACHE 0x14u
 #define G4MH_MEI_TABLE 0x15u /* an interrupt's table read          */
 #define G4MH_MEI_BANK 0x16u /* saving onto a register bank, RESBANK */
+#define G4MH_MEI_FXV 0x1Du /* LDV / STV                          */
+#define G4MH_MEI_FXVZ 0x1Fu /* LDVZ.H4 / STVZ.H4                 */
 #define G4MH_SR_ISPR 10u
 #define G4MH_SR_PMR 11u /* the manual calls this IMSR         */
 #define G4MH_SR_ICSR 12u
@@ -387,6 +390,24 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
 #define G4MH_SELID_FXU 10u /* the FXU's registers, CU1         */
 
 /*
+ * The FXU's registers, selID 10 (R01UH0923EJ0130 table 3.57). FXSR is
+ * laid out as FPSR without the CC bits; FXST and FXCFG are windows onto
+ * it, as FPST and FPCFG are onto FPSR; FXINFO is a constant; FXXC and
+ * FXXP hold the cause and preservation bits per way, a byte each.
+ */
+#define G4MH_SR_FXSR 6u
+#define G4MH_SR_FXST 8u
+#define G4MH_SR_FXINFO 9u
+#define G4MH_SR_FXCFG 10u
+#define G4MH_SR_FXXC 12u
+#define G4MH_SR_FXXP 13u
+#define G4MH_FXSR_RESET 0x00220000u /* FS, and bit 21 reads 1  */
+#define G4MH_FXSR_WRITABLE 0x00CEFFFFu /* FN IF RM FS XC XE XP  */
+#define G4MH_FXINFO_VALUE 0x00000003u /* 4-way SIMD, 32 registers */
+#define G4MH_FXXC_WRITABLE 0x3F3F3F3Fu
+#define G4MH_FXXP_WRITABLE 0x1F1F1F1Fu
+
+/*
  * PMCTRLn. CND selects what the channel counts; CE enables it. The event
  * numbering is the part's, and only the two this emulator can source
  * honestly are implemented -- see g4mh_pm_tick().
@@ -430,6 +451,11 @@ static EMU_ALWAYS_INLINE g4mh_exc_t g4mh_exc_from_fault(emu_fault_t f)
 #define G4MH_FPSR_XE_MASK (0x1Fu << 5)
 #define G4MH_FPSR_XP_SHIFT 0u
 #define G4MH_FPSR_XP_MASK 0x1Fu
+/* Out of reset: FS set, bit 21 reading 1 (table 3.51); the cause and
+ * preservation bits are undefined there and 0 here. */
+#define G4MH_FPSR_RESET 0x00220000u
+/* The bits an LDSR may change: not 21, 20 or 16. */
+#define G4MH_FPSR_WRITABLE 0xFFCEFFFFu
 
 /*
  * The five exception bits, in the order the XE and XP groups use them:

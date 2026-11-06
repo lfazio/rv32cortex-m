@@ -285,6 +285,7 @@ static uint32_t g4mh_ir_fpu_helper(emu_cpu_t *cpu, uint32_t insn,
     }
 #else
     /* Unreachable: the translator declines the group without an FPU. */
+    (void)insn;
     g4mh_cpu_exception(c, G4MH_EXC_RIE, c->pc);
     return 1u;
 #endif
@@ -395,6 +396,32 @@ static uint32_t g4mh_ir_dw_helper(emu_cpu_t *cpu, uint32_t addr,
     return 1u;
 }
 
+/*
+ * The FXU's 48-bit forms -- LDV, STV, CMOVF.W4, SHFLV.W4 -- through the
+ * g4mh_fxu_exec48 the interpreter calls: `insn` is w0 and w1, `w2` the
+ * third halfword. Declined, each ended its block, and these are what a
+ * vector loop is made of. HELPER_TRAP: they raise UCPOP, MAE and MDP.
+ * Guarded in the body, as the FPU's, so the indices never move.
+ */
+static uint32_t g4mh_ir_fxu48_helper(emu_cpu_t *cpu, uint32_t insn,
+                                     uint32_t w2)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
+#if G4MH_EXT_FXU
+    const g4mh_exc_t e = g4mh_fxu_exec48(c, insn & 0xFFFFu, insn >> 16, w2);
+
+    if (e == G4MH_EXC_NONE) {
+        return 0u;
+    }
+    g4mh_cpu_exception(c, e, c->pc);
+#else
+    (void)insn;
+    (void)w2;
+    g4mh_cpu_exception(c, G4MH_EXC_RIE, c->pc);
+#endif
+    return 1u;
+}
+
 static const void *const g4mh_ir_helpers[] = {
     (const void *)g4mh_ir_dispose_helper,
     (const void *)g4mh_ir_adf_helper,
@@ -402,6 +429,7 @@ static const void *const g4mh_ir_helpers[] = {
     (const void *)g4mh_ir_fpu_helper,
     (const void *)g4mh_ir_bitop_helper,
     (const void *)g4mh_ir_dw_helper,
+    (const void *)g4mh_ir_fxu48_helper,
 };
 #define G4MH_IR_HELPER_DISPOSE 0u
 #define G4MH_IR_HELPER_ADF 1u
@@ -409,6 +437,7 @@ static const void *const g4mh_ir_helpers[] = {
 #define G4MH_IR_HELPER_FPU 3u
 #define G4MH_IR_HELPER_BITOP 4u
 #define G4MH_IR_HELPER_DW 5u
+#define G4MH_IR_HELPER_FXU48 6u
 
 /*
  * Whether the MPU was on for the block being translated. Any MPU write
@@ -1134,6 +1163,17 @@ static bool lower_one48(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
     if (op != 0x3Cu && op != 0x3Du) {
         return false;
     }
+#if G4MH_EXT_FXU
+    /* The FXU's, in ST.H disp23's hole: see the interpreter. */
+    if (op == 0x3Du && (w1 & 0x1Fu) == 0x1Du) {
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          pc, 0u);
+        (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP, 0u,
+                          emu_ir_const(b, (uint32_t)w0 | ((uint32_t)w1 << 16)),
+                          emu_ir_const(b, w2), G4MH_IR_HELPER_FXU48, 0u);
+        return true;
+    }
+#endif
     if (!is_b && d0 != 0u) {
         return false; /* reserved: RIE, on the interp */
     }
@@ -1706,15 +1746,17 @@ static bool g4mh_jit_wake(emu_cpu_t *cpu)
     return true;
 }
 
-static bool g4mh_jit_take_irq(emu_cpu_t *cpu)
+/*
+ * The framework calls take_irq and count once a block, through its
+ * backend's wrappers, and whether those inline these was LTO's call: the
+ * FXU's code, which CoreMark never runs, tipped it, and JIT CoreMark on
+ * the F746 went from 51.72 to 53.11 host cycles an instruction (medians
+ * of five layouts) with g4mh_jit_count a call of its own from flash. So
+ * the test every block makes is forced inline, and the acceptance that
+ * follows a dirty flag is out of line.
+ */
+static EMU_NOINLINE bool g4mh_jit_accept_irq(g4mh_cpu_t *c)
 {
-    g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
-
-    if (!c->irq_dirty) {
-        return false;
-    }
-    /* Cleared before the evaluation, not after; see the interpreter. */
-    c->irq_dirty = false;
 
     /*
      * FE level first, exactly as the interpreter does it -- and the
@@ -1759,7 +1801,19 @@ static bool g4mh_jit_take_irq(emu_cpu_t *cpu)
     return true;
 }
 
-static void g4mh_jit_count(emu_cpu_t *cpu, uint32_t n)
+static EMU_ALWAYS_INLINE bool g4mh_jit_take_irq(emu_cpu_t *cpu)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
+
+    if (!c->irq_dirty) {
+        return false;
+    }
+    /* Cleared before the evaluation, not after; see the interpreter. */
+    c->irq_dirty = false;
+    return g4mh_jit_accept_irq(c);
+}
+
+static EMU_ALWAYS_INLINE void g4mh_jit_count(emu_cpu_t *cpu, uint32_t n)
 {
     g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
 

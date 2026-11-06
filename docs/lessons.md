@@ -4174,6 +4174,47 @@ session, and every one of them recurred:
   running RESBANK could see its row was missing. **A field derived from
   the instruction is tested by an instruction.**
 
+- **The product manual's limitations section was the FPU's
+  specification.** Writing the FXU from R01UH0923EJ0130 3.2.6.2 meant
+  reading 3.2.6.1, which it repeats for the FPU -- and the FPU broke it
+  nine ways, each under a comment that said otherwise or called the
+  answer unknowable. An invalid result was RISC-V's canonical
+  `7FC0 0000H` ("payload propagation is unverified") where table 3.128
+  says `7FFF FFFFH`, and says which quiet NaN wins; a NaN converted to
+  an integer was `7FFF FFFFH` where it is the most negative one; MAXF
+  and MINF flushed subnormals and raised E, which the manual exempts,
+  and chose between zeros by sign where it names an operand; subnormal
+  results were never flushed, tininess was detected after rounding, and
+  FN did nothing; FPSR's cause bits were rewritten by every instruction
+  where they change only on an exception; FPEPC was never written;
+  FPSR came out of reset 0 under a comment saying FS was set out of
+  reset; and FPST, FPCC and FPCFG were plain storage under a comment
+  saying `g4mh_sr_read` routed them. One element, `g4mh_fp.c`, does all
+  of it for both units. The instrument that should have seen part of it
+  could not: the instruction-coverage script counted every result but
+  RIE as executed, and out of reset CU0 is clear, so every FP
+  instruction was UCPOP before it was decoded -- the declined CVTF.HS
+  and CVTF.SH sat in its 251/251. With the coprocessors on, the commit
+  before scores 249 of 310. Of 66 mutants of the work, 61 were found at
+  once; three more once a test asserted what the first set only implied
+  -- a comparison's signalling NaN, FXXP accumulating, and *where* FXE
+  went: without its vector it reached a HALT through 0x10's NOPs, and
+  the test had checked only that the run stopped -- one once a NaN met a
+  CMPF.S4 fcond above 7, and one, FXINFO's write guard, was equivalent
+  and went. And the board found a cost no FXU instruction caused: JIT
+  CoreMark 2.7% slower, consistent across five layouts each side, with
+  identical translations -- and 1.9% with the FXU compiled out. The PC
+  profile said `g4mh_jit_count` had become a function of its own, called
+  from flash once a block: LTO had stopped inlining the framework's
+  per-block hooks into the backend's wrappers, a decision the added code
+  tipped. Forced inline, with the interrupt acceptance out of line, the
+  row is faster than before at every layout and a tenth as
+  layout-sensitive. **Where a manual has a section on what the product
+  does where the standard is silent, that is the specification: read it
+  before writing "unverified". A coverage instrument must get past the
+  gate it is measuring behind. And a hook called once a block is not
+  LTO's to decide.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

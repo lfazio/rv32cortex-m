@@ -574,6 +574,19 @@ option(RV32_ENABLE_DISASM "Build the RV32 disassembler" ON)
 # precision only" excludes.
 option(G4MH_EXT_FPU "G4MH single-precision FPU" ON)
 
+# The FXU: 4-way single-precision SIMD and 32 128-bit registers, on
+# PE0 only -- the U2B6's public cores (PID bit 11; CU1 is fixed to 0
+# on the others, so every FXU instruction there is UCPOP 81H). Its
+# arithmetic is the FPU's, element by element (g4mh_fp.c), so it needs
+# the FPU. Off, CU1 stays 0 on every PE. 512 bytes of registers a PE.
+option(G4MH_EXT_FXU "G4MH extended FPU (FXU) on PE0" ON)
+# Off with the FPU, in this scope only: forcing the cache would outlive
+# the build that asked for it.
+if(G4MH_EXT_FXU AND NOT G4MH_EXT_FPU)
+    message(STATUS "G4MH_EXT_FXU is off: it needs G4MH_EXT_FPU")
+    set(G4MH_EXT_FXU OFF)
+endif()
+
 # The memory protection unit. On by default, unlike the FPU: a real G4MH
 # reports 32 entries in MPCFG and does not omit it, and a guest that never
 # sets MPM.MPE pays one predicted branch per fetch and per data access.
@@ -988,7 +1001,9 @@ if(EMU_GUEST_ARCH_G4MH)
         src/frontend/g4mh/g4mh_mpu.c
         src/frontend/g4mh/g4mh_ipir.c
         src/frontend/g4mh/g4mh_interp.c
+        src/frontend/g4mh/g4mh_fp.c
         src/frontend/g4mh/g4mh_fpu.c
+        src/frontend/g4mh/g4mh_fxu.c
         src/frontend/g4mh/g4mh_tptm.c
         src/frontend/g4mh/g4mh_ltsc.c
         src/frontend/g4mh/g4mh_kcrc.c
@@ -1004,6 +1019,7 @@ if(EMU_GUEST_ARCH_G4MH)
         G4MH_ENABLE_DISASM=$<BOOL:${G4MH_ENABLE_DISASM}>
         G4MH_PE_COUNT=${G4MH_PE_COUNT}u
         G4MH_EXT_FPU=$<BOOL:${G4MH_EXT_FPU}>
+        G4MH_EXT_FXU=$<BOOL:${G4MH_EXT_FXU}>
         G4MH_EXT_MPU=$<BOOL:${G4MH_EXT_MPU}>
         G4MH_MPU_ENTRIES=${G4MH_MPU_ENTRIES}u
         G4MH_FLASH_KIB=${G4MH_FLASH_KIB}u
@@ -1078,6 +1094,10 @@ if((EMU_GUEST_ARCH_RV32 AND RV32_EXT_F) OR (EMU_GUEST_ARCH_G4MH AND G4MH_EXT_FPU
         set(_need_f16 ON)
     endif()
     if(EMU_GUEST_ARCH_RV32 AND RV32_EXT_F)
+        set(_need_f16 ON)
+    endif()
+    # G4MH's CVTF.HS/SH and the FXU's CVTF.HS4/SH4.
+    if(EMU_GUEST_ARCH_G4MH AND G4MH_EXT_FPU)
         set(_need_f16 ON)
     endif()
     if(_need_f16)

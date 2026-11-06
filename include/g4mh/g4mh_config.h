@@ -52,14 +52,17 @@
 #endif
 
 /*
- * Coprocessor usage. The G4MH FPU is an option on real parts and is not
- * implemented here: an FP instruction raises a coprocessor-unusable
- * exception, which is what a part without the option does when PSW.CU1 is
- * clear. Kept as a macro so the check has a name rather than being an
- * unexplained "always trap".
+ * The coprocessors: the FPU (PSW.CU0; src/frontend/g4mh/g4mh_fpu.c) and
+ * the FXU (PSW.CU1, PE0 only; g4mh_fxu.c), both on in CMakeLists.txt.
+ * A PE without the FXU fixes CU1 to 0, so its instructions there are
+ * UCPOP 81H. Built without one, its CU bit is fixed to 0 as well and its
+ * encodings decode as nothing: RIE.
  */
 #ifndef G4MH_EXT_FPU
 #define G4MH_EXT_FPU 0
+#endif
+#ifndef G4MH_EXT_FXU
+#define G4MH_EXT_FXU 0
 #endif
 
 /*

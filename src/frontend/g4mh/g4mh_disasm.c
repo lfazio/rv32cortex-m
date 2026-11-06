@@ -16,6 +16,64 @@
 
 #include <stdio.h>
 
+/*
+ * The FXU's 48-bit forms, as g4mh_fxu_exec48 decodes them: k = w1[10:5],
+ * the vector register in w1[15:11], disp16 in w2 with its low bits
+ * required zero by the access size -- `.short` where they are not, as
+ * the interpreter's RIE.
+ */
+static int fxu48(char *buf, size_t buflen, uint32_t w0, uint32_t w1,
+                 uint32_t w2)
+{
+    const unsigned k = (w1 >> 5) & 0x3Fu;
+    const unsigned v = (w1 >> 11) & 0x1Fu;
+    const char *const base = g4mh_reg_name(w0 & 0x1Fu);
+    const int d = (int)(int16_t)w2;
+    const unsigned zero = ((k & 0x30u) == 0u || (k & 0x3Cu) == 0x10u) ? 3u
+                          : ((k & 0x3Eu) == 0x14u)                    ? 15u
+                                                                      : 7u;
+
+    if (k == 0x30u) {
+        return snprintf(buf, buflen, "cmovf.w4 wr%u, wr%u, wr%u, wr%u",
+                        (unsigned)(w2 & 0x1Fu), (unsigned)(w0 & 0x1Fu),
+                        (unsigned)((w2 >> 11) & 0x1Fu), v);
+    }
+    if ((k & 0x3Eu) == 0x34u) {
+        return snprintf(buf, buflen, "shflv.w4 0x%03x, wr%u, wr%u, wr%u",
+                        (unsigned)(((k & 1u) << 11) | (w2 & 0x7FFu)),
+                        (unsigned)(w0 & 0x1Fu),
+                        (unsigned)((w2 >> 11) & 0x1Fu), v);
+    }
+    if (k > 0x1Fu || k == 0x16u || k == 0x17u || (w2 & zero) != 0u) {
+        return snprintf(buf, buflen, ".short 0x%04x, 0x%04x", (unsigned)w0,
+                        (unsigned)w1);
+    }
+    if ((k & 0x30u) == 0u) {
+        return snprintf(buf, buflen, "ldv.w %u, %d[%s], wr%u", k & 0xFu, d,
+                        base, v);
+    }
+    if ((k & 0x3Cu) == 0x10u) {
+        return snprintf(buf, buflen, "stv.w %u, wr%u, %d[%s]", k & 3u, v, d,
+                        base);
+    }
+    if (k == 0x14u || k == 0x15u) {
+        return (k == 0x14u)
+                   ? snprintf(buf, buflen, "ldv.qw %d[%s], wr%u", d, base, v)
+                   : snprintf(buf, buflen, "stv.qw wr%u, %d[%s]", v, d, base);
+    }
+    if ((k & 0x3Cu) == 0x18u) {
+        return snprintf(buf, buflen, "ldv.dw %u, %d[%s], wr%u", k & 3u, d,
+                        base, v);
+    }
+    if ((k & 0x3Eu) == 0x1Cu) {
+        return snprintf(buf, buflen, "stv.dw %u, wr%u, %d[%s]", k & 1u, v, d,
+                        base);
+    }
+    return (k == 0x1Eu)
+               ? snprintf(buf, buflen, "ldvz.h4 %d[%s], wr%u", d, base, v)
+               : snprintf(buf, buflen, "stvz.h4 wr%u, %d[%s]", v, d, base);
+}
+
 size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn,
                    unsigned len)
 {
@@ -301,10 +359,19 @@ size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn,
                     NULL, "ld.dw", NULL, NULL, NULL, "st.h",  NULL, "st.dw"};
                 const char *const *tab = (op & 1u) ? nmu : nm;
                 const char *mn = tab[w1 & 0xFu];
+                /* disp[0] is opcode for all but the byte forms: set,
+                 * it is the FXU's slot at 11101B or reserved. */
+                const bool is_b = (w1 & 0xFu) == 0x5u ||
+                                  ((w1 & 0xFu) == 0xDu && op == 0x3Cu);
 
                 const int32_t disp = (int32_t)emu_sext(d23, 23);
 
-                if (mn == NULL) {
+                if (!is_b && ((w1 >> 4) & 1u) != 0u) {
+                    n = (op == 0x3Du && (w1 & 0x1Fu) == 0x1Du)
+                            ? fxu48(buf, buflen, w0, w1, w2)
+                            : snprintf(buf, buflen, ".short 0x%04x, 0x%04x",
+                                       (unsigned)w0, (unsigned)w1);
+                } else if (mn == NULL) {
                     n = snprintf(buf, buflen, ".short 0x%04x, 0x%04x",
                                  (unsigned)w0, (unsigned)w1);
                 } else if ((w1 & 0xFu) == 0xDu || (w1 & 0xFu) == 0xFu) {

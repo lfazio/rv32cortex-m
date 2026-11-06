@@ -3803,6 +3803,34 @@ static void test_disasm_crowded_slots(void)
                 0x0786u | (0x3D65ull << 16) | (0x2468ull << 32), 6u);
     CHECK(strncmp(buf, "ld.b 1193046[r6], r7", 20u) == 0);
 
+    /*
+     * The FXU's 48-bit forms, at ST.H disp23 with disp[0] set: this
+     * printed them as `st.h` with an odd displacement, and printed the
+     * slot's reserved encodings as instructions too. CC-RH's bytes; r5
+     * prints as tp.
+     */
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                0x07A5u | (0x529Dull << 16) | (0xFFF0ull << 32), 6u);
+    CHECK(strcmp(buf, "ldv.qw -16[tp], wr10") == 0);
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                0x07A5u | (0x53FDull << 16) | (0x0028ull << 32), 6u);
+    CHECK(strcmp(buf, "stvz.h4 wr10, 40[tp]") == 0);
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                0x07A7u | (0x56BDull << 16) | (0x364Bull << 32), 6u);
+    CHECK(strcmp(buf, "shflv.w4 0xe4b, wr7, wr6, wr10") == 0);
+    /* ldv.qw with displacement bit 3 set: RIE, so not an instruction. */
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                0x07A5u | (0x529Dull << 16) | (0xFFF8ull << 32), 6u);
+    CHECK(strncmp(buf, ".short", 6u) == 0);
+    /* st.dw disp23 with disp[0] set: reserved. */
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                0x07A6u | (0x545Full << 16) | (0x0246ull << 32), 6u);
+    CHECK(strncmp(buf, ".short", 6u) == 0);
+    /* and st.h disp23 itself, disp[0] clear, is still st.h. */
+    g4mh_disasm(buf, sizeof(buf), 0x1000u,
+                0x07A6u | (0x444Dull << 16) | (0x0246ull << 32), 6u);
+    CHECK(strncmp(buf, "st.h ", 5u) == 0);
+
     /* ld.dw, which is the op6 low bit away from ld.w. */
     g4mh_disasm(buf, sizeof(buf), 0x1000u,
                 0x07A6u | (0x4569ull << 16) | (0x2468ull << 32), 6u);
@@ -7236,6 +7264,1228 @@ static void test_fp_fma_rounds_once(void)
     CHECK(reg(12) != 0u); /* the unfused answer   */
 }
 
+
+/* ------------------------------------------------------------------ */
+/* The FP rules both units share (g4mh_fp.c)                           */
+/* ------------------------------------------------------------------ */
+
+/*
+ * One instruction at the reset address and a HALT after it, with HALTs
+ * at the RIE (0x60), FPE/FXE (0x70), UCPOP (0x80), MDP (0x90) and MAE
+ * (0xC0) vectors; the
+ * registers, PSW, FPSR and FXSR written directly after boot, the save
+ * registers and FPEPC as sentinels. A table of cases each running alone
+ * is what keeps a flag one case raised from passing the next.
+ */
+#define FP_SENT 0x5A5A5A5Au
+
+typedef struct {
+    uint32_t r[32];
+    uint32_t rmask; /* which of r[] to write */
+    uint32_t psw;
+    uint32_t fpsr;
+    uint32_t fxsr;
+    uint32_t fxxp; /* FXXP before: what accumulates onto it */
+#if G4MH_EXT_FXU
+    uint32_t wr[32][4];
+    uint32_t wmask;
+#endif
+} fp_state_t;
+
+static const fp_state_t *g_fp_set;
+/* Instructions the last fp_run handed to the interpreter under the JIT. */
+static uint64_t g_fp_fallbacks;
+/* Fill TEST_SCRATCH's first 256 bytes with each word's own address. */
+static bool g_pre_ram_fill;
+
+static fp_state_t fp_state(void)
+{
+    fp_state_t s;
+
+    memset(&s, 0, sizeof(s));
+    s.psw = G4MH_PSW_ID | G4MH_PSW_CU0 | G4MH_PSW_CU1;
+    s.fpsr = G4MH_FPSR_RESET;
+    s.fxsr = G4MH_FXSR_RESET;
+    return s;
+}
+
+static void fp_r(fp_state_t *s, unsigned r, uint32_t v)
+{
+    s->r[r] = v;
+    s->rmask |= 1u << r;
+}
+
+static void fp_pre_run(void)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+
+    for (unsigned r = 1u; r < 32u; r++) {
+        if ((g_fp_set->rmask >> r) & 1u) {
+            c->r[r] = g_fp_set->r[r];
+        }
+    }
+#if G4MH_EXT_FXU
+    for (unsigned r = 0u; r < 32u; r++) {
+        if ((g_fp_set->wmask >> r) & 1u) {
+            memcpy(c->wr[r], g_fp_set->wr[r], 16u);
+        }
+    }
+#endif
+    c->psw = g_fp_set->psw;
+    c->sr[0][G4MH_SR_PSW] = c->psw;
+    c->sr[0][G4MH_SR_FPSR] = g_fp_set->fpsr;
+    c->sr[G4MH_SELID_FXU][G4MH_SR_FXSR] = g_fp_set->fxsr;
+    c->sr[G4MH_SELID_FXU][G4MH_SR_FXXP] = g_fp_set->fxxp;
+    c->sr[0][G4MH_SR_EIIC] = FP_SENT;
+    c->sr[0][G4MH_SR_EIPC] = FP_SENT;
+    c->sr[0][G4MH_SR_FEIC] = FP_SENT;
+    c->sr[0][G4MH_SR_FPEPC] = FP_SENT;
+    g4mh_jit_ctx_refresh(c);
+    if (g_pre_ram_fill) {
+        for (uint32_t a = TEST_SCRATCH; a < TEST_SCRATCH + 0x100u; a += 4u) {
+            const uint32_t o = a - EMU_GUEST_RAM_BASE;
+
+            for (unsigned i = 0; i < 4u; i++) {
+                g_ram[o + i] = (uint8_t)(a >> (8u * i));
+            }
+        }
+    }
+}
+
+static g4mh_cpu_t *fp_run(const uint16_t *hw, unsigned n, const fp_state_t *s,
+                          unsigned pass)
+{
+    static const unsigned vec[5] = {0x60u, 0x70u, 0x80u, 0x90u, 0xC0u};
+    uint16_t prog[0x68];
+    emu_run_reason_t why;
+    uint32_t retired = 0u;
+
+    memset(prog, 0, sizeof(prog));
+    memcpy(prog, hw, n * sizeof(hw[0]));
+    prog[n] = 0x07E0u;
+    prog[n + 1u] = SUB_HALT;
+    for (unsigned v = 0; v < 5u; v++) {
+        prog[vec[v] / 2u] = 0x07E0u;
+        prog[vec[v] / 2u + 1u] = SUB_HALT;
+    }
+#if EMU_HAVE_JIT
+    emu_jit_stats_t before, after;
+
+    emu_jit_get_stats(&before);
+#endif
+    g_force_backend = (pass == 0u) ? &g4mh_backend_interp : NULL;
+    g_fp_set = s;
+    g_pre_run = fp_pre_run;
+    const bool ok = load_and_run(prog, 0x68u, 64u, &why, &retired);
+#if EMU_HAVE_JIT
+    emu_jit_get_stats(&after);
+    g_fp_fallbacks = after.interp_fallbacks - before.interp_fallbacks;
+#endif
+
+    g_pre_run = NULL;
+    g_fp_set = NULL;
+    g_force_backend = NULL;
+    CHECK(ok);
+    if (!ok) {
+        return NULL;
+    }
+    CHECK_EQ(why, EMU_RUN_WFI);
+    return (g4mh_cpu_t *)(void *)g_core.cpu;
+}
+
+#define FPSR_RM(rm) ((uint32_t)(rm) << G4MH_FPSR_RM_SHIFT)
+#define FPSR_XE(x) ((uint32_t)(x) << G4MH_FPSR_XE_SHIFT)
+#define FPSR_XC(x) ((uint32_t)(x) << G4MH_FPSR_XC_SHIFT)
+
+/*
+ * A scalar case: reg2 is r11 (or r12:r13 for a double), reg1 r10 (or
+ * r10:r11), the result in r14 (r14:r15). `xc` is FPSR.XC after, `xp`
+ * FPSR.XP, and `exc` whether FPE was taken -- which leaves r14 alone.
+ */
+typedef struct {
+    const char *name;
+    uint16_t w0, w1;
+    uint32_t fpsr;
+    uint32_t r10, r11, r12, r13, r14;
+    uint32_t want, want_hi; /* r14, r15 */
+    uint32_t xc, xp;
+    bool exc;
+    bool wide;
+} fp_case_t;
+
+#define F_INF 0x7F800000u
+#define F_MAX 0x7F7FFFFFu
+#define F_2M70 0x1C800000u /* 2^-70: squared, 2^-140, a subnormal */
+#define F_M2M70 0x9C800000u
+#define F_MINN 0x00800000u /* 2^-126, the smallest normal */
+
+static const fp_case_t k_fp_cases[] = {
+    /* ---- NaNs: tables 3.128 and 3.129 ---- */
+    {"mulf.s 0 x inf", FP0(10, 11), FP1(14, FSUB_MUL), G4MH_FPSR_RESET,
+     F_INF, 0u, 0, 0, FP_SENT, 0x7FFFFFFFu, 0, 0u, G4MH_FPX_V, false, false},
+    {"addf.s qnan, qnan: reg2's", FP0(10, 11), FP1(14, FSUB_ADD),
+     G4MH_FPSR_RESET, 0x7FC00001u, 0x7FC12345u, 0, 0, FP_SENT, 0x7FC12345u, 0,
+     0u, 0u, false, false},
+    {"addf.s 1.0, qnan: unchanged", FP0(10, 11), FP1(14, FSUB_ADD),
+     G4MH_FPSR_RESET, 0xFFC0ABCDu, F_1_0, 0, 0, FP_SENT, 0xFFC0ABCDu, 0, 0u,
+     0u, false, false},
+    {"addf.s snan", FP0(10, 11), FP1(14, FSUB_ADD), G4MH_FPSR_RESET, F_SNAN,
+     F_1_0, 0, 0, FP_SENT, 0x7FFFFFFFu, 0, 0u, G4MH_FPX_V, false, false},
+    {"sqrtf.s -1", FP0(0, 11), FP1(14, FSUB_SQRT), G4MH_FPSR_RESET, 0,
+     0xBF800000u, 0, 0, FP_SENT, 0x7FFFFFFFu, 0, 0u, G4MH_FPX_V, false, false},
+    {"mulf.d 0 x inf", FP0(10, 12), FP1(14, 0x474u), G4MH_FPSR_RESET, 0u,
+     0x7FF00000u, 0u, 0u, FP_SENT, 0xFFFFFFFFu, 0x7FFFFFFFu, 0u, G4MH_FPX_V,
+     false, true},
+    /* ---- the cause bits change only on an exception ---- */
+    {"addf.s inexact, XC held", FP0(10, 11), FP1(14, FSUB_ADD),
+     G4MH_FPSR_RESET | FPSR_XC(G4MH_FPX_V), 0x30800000u, F_1_0, 0, 0, FP_SENT,
+     F_1_0, 0, G4MH_FPX_V, G4MH_FPX_I, false, false},
+    {"addf.s inexact, I enabled", FP0(10, 11), FP1(14, FSUB_ADD),
+     G4MH_FPSR_RESET | FPSR_XE(G4MH_FPX_I), 0x30800000u, F_1_0, 0, 0, FP_SENT,
+     FP_SENT, 0, G4MH_FPX_I, 0u, true, false},
+    {"mulf.s overflow, O enabled: O and I", FP0(10, 11), FP1(14, FSUB_MUL),
+     G4MH_FPSR_RESET | FPSR_XE(G4MH_FPX_O), F_2_0, F_MAX, 0, 0, FP_SENT,
+     FP_SENT, 0, G4MH_FPX_O | G4MH_FPX_I, 0u, true, false},
+    /* ---- subnormal operands ---- */
+    {"addf.s subnormal, FS: flushed, I", FP0(10, 11), FP1(14, FSUB_ADD),
+     G4MH_FPSR_RESET, 0x80000001u, F_1_0, 0, 0, FP_SENT, F_1_0, 0, 0u,
+     G4MH_FPX_I, false, false},
+    {"addf.s subnormal, no FS: E", FP0(10, 11), FP1(14, FSUB_ADD),
+     G4MH_FPSR_RESET & ~G4MH_FPSR_FS, 0x00000001u, F_1_0, 0, 0, FP_SENT,
+     FP_SENT, 0, G4MH_FPX_E, 0u, true, false},
+    {"maxf.s subnormal, no FS: no E", FP0(10, 11), FP1(14, FSUB_MAX),
+     G4MH_FPSR_RESET & ~G4MH_FPSR_FS, 0u, 0x00000005u, 0, 0, FP_SENT,
+     0x00000005u, 0, 0u, 0u, false, false},
+    {"maxf.s subnormal, FS: not flushed", FP0(10, 11), FP1(14, FSUB_MAX),
+     G4MH_FPSR_RESET, 0u, 0x00000005u, 0, 0, FP_SENT, 0x00000005u, 0, 0u, 0u,
+     false, false},
+    {"maxf.s -0, +0: reg2's", FP0(10, 11), FP1(14, FSUB_MAX), G4MH_FPSR_RESET,
+     0u, 0x80000000u, 0, 0, FP_SENT, 0x80000000u, 0, 0u, 0u, false, false},
+    {"minf.s -0, +0: reg1's", FP0(10, 11), FP1(14, FSUB_MIN), G4MH_FPSR_RESET,
+     0u, 0x80000000u, 0, 0, FP_SENT, 0u, 0, 0u, 0u, false, false},
+    {"maxf.d +0, -0: reg2's", FP0(10, 12), FP1(14, 0x478u), G4MH_FPSR_RESET, 0u,
+     0u, 0u, 0x80000000u, FP_SENT, 0u, 0x80000000u, 0u, 0u, false, true},
+    /* ---- subnormal results, judged before rounding ---- */
+    {"mulf.s to 2^-140, RN: +0", FP0(10, 11), FP1(14, FSUB_MUL),
+     G4MH_FPSR_RESET, F_2M70, F_2M70, 0, 0, FP_SENT, 0u, 0, 0u,
+     G4MH_FPX_U | G4MH_FPX_I, false, false},
+    {"mulf.s to 2^-140, RP: 2^-126", FP0(10, 11), FP1(14, FSUB_MUL),
+     G4MH_FPSR_RESET | FPSR_RM(G4MH_RM_RP), F_2M70, F_2M70, 0, 0, FP_SENT,
+     F_MINN, 0, 0u, G4MH_FPX_U | G4MH_FPX_I, false, false},
+    {"mulf.s to -2^-140, RP: -0", FP0(10, 11), FP1(14, FSUB_MUL),
+     G4MH_FPSR_RESET | FPSR_RM(G4MH_RM_RP), F_2M70, F_M2M70, 0, 0, FP_SENT,
+     0x80000000u, 0, 0u, G4MH_FPX_U | G4MH_FPX_I, false, false},
+    {"mulf.s to -2^-140, RM: -2^-126", FP0(10, 11), FP1(14, FSUB_MUL),
+     G4MH_FPSR_RESET | FPSR_RM(G4MH_RM_RM), F_2M70, F_M2M70, 0, 0, FP_SENT,
+     0x80800000u, 0, 0u, G4MH_FPX_U | G4MH_FPX_I, false, false},
+    {"mulf.s to 2^-127, RN: +0", FP0(10, 11), FP1(14, FSUB_MUL),
+     G4MH_FPSR_RESET, 0x20000000u, 0x1F800000u, 0, 0, FP_SENT, 0u, 0, 0u,
+     G4MH_FPX_U | G4MH_FPX_I, false, false},
+    {"mulf.s to 2^-127, RN and FN: 2^-126", FP0(10, 11), FP1(14, FSUB_MUL),
+     G4MH_FPSR_RESET | G4MH_FPSR_FN, 0x20000000u, 0x1F800000u, 0, 0, FP_SENT,
+     F_MINN, 0, 0u, G4MH_FPX_U | G4MH_FPX_I, false, false},
+    {"mulf.s to 2^-140, RN and FN: +0", FP0(10, 11), FP1(14, FSUB_MUL),
+     G4MH_FPSR_RESET | G4MH_FPSR_FN, F_2M70, F_2M70, 0, 0, FP_SENT, 0u, 0, 0u,
+     G4MH_FPX_U | G4MH_FPX_I, false, false},
+    /* 2^-126 (1 - 2^-46): rounds to 2^-126, so tiny only *before*
+     * rounding -- the one input that tells the two detections apart. */
+    {"mulf.s to just under 2^-126: tiny", FP0(10, 11), FP1(14, FSUB_MUL),
+     G4MH_FPSR_RESET, 0x20000001u, 0x1FFFFFFEu, 0, 0, FP_SENT, 0u, 0, 0u,
+     G4MH_FPX_U | G4MH_FPX_I, false, false},
+    {"mulf.s to 2^-140, no FS: E", FP0(10, 11), FP1(14, FSUB_MUL),
+     G4MH_FPSR_RESET & ~G4MH_FPSR_FS, F_2M70, F_2M70, 0, 0, FP_SENT, FP_SENT,
+     0, G4MH_FPX_E, 0u, true, false},
+    /* ---- conversions ---- */
+    {"cvtf.sw qnan: -2^31", FP0(4, 11), FP1(14, FSUB_CVT_TOI), G4MH_FPSR_RESET,
+     0, F_QNAN, 0, 0, FP_SENT, 0x80000000u, 0, 0u, G4MH_FPX_V, false, false},
+    {"cvtf.suw qnan: 0", FP0(0x14, 11), FP1(14, FSUB_CVT_TOI),
+     G4MH_FPSR_RESET, 0, F_QNAN, 0, 0, FP_SENT, 0u, 0, 0u, G4MH_FPX_V, false,
+     false},
+    {"trncf.suw -0.5: 0, V", FP0(0x11, 11), FP1(14, FSUB_CVT_TOI),
+     G4MH_FPSR_RESET, 0, 0xBF000000u, 0, 0, FP_SENT, 0u, 0, 0u, G4MH_FPX_V,
+     false, false},
+    {"cvtf.sw 3e9: 2^31-1", FP0(4, 11), FP1(14, FSUB_CVT_TOI),
+     G4MH_FPSR_RESET, 0, 0x4F32D05Eu, 0, 0, FP_SENT, 0x7FFFFFFFu, 0, 0u,
+     G4MH_FPX_V, false, false},
+    {"cvtf.dw qnan: -2^31", FP0(4, 12), FP1(14, 0x450u), G4MH_FPSR_RESET, 0, 0,
+     0u, 0x7FF80000u, FP_SENT, 0x80000000u, 0, 0u, G4MH_FPX_V, false, false},
+    {"cvtf.hs subnormal half: exact", FP0(2, 11), FP1(14, FSUB_CVT_FROMI),
+     G4MH_FPSR_RESET, 0, 0xFFFF0001u, 0, 0, FP_SENT, 0x33800000u, 0, 0u, 0u,
+     false, false},
+    {"cvtf.hs quiet half", FP0(2, 11), FP1(14, FSUB_CVT_FROMI),
+     G4MH_FPSR_RESET, 0, 0x7E01u, 0, 0, FP_SENT, 0x7FC02000u, 0, 0u, 0u, false,
+     false},
+    {"cvtf.hs signalling half", FP0(2, 11), FP1(14, FSUB_CVT_FROMI),
+     G4MH_FPSR_RESET, 0, 0x7C01u, 0, 0, FP_SENT, 0x7FFFFFFFu, 0, 0u,
+     G4MH_FPX_V, false, false},
+    {"cvtf.sh 1.0", FP0(3, 11), FP1(14, FSUB_CVT_FROMI), G4MH_FPSR_RESET, 0,
+     F_1_0, 0, 0, FP_SENT, 0x3C00u, 0, 0u, 0u, false, false},
+    {"cvtf.sh quiet: truncated", FP0(3, 11), FP1(14, FSUB_CVT_FROMI),
+     G4MH_FPSR_RESET, 0, 0xFFC03FFFu, 0, 0, FP_SENT, 0xFE01u, 0, 0u, 0u, false,
+     false},
+    {"cvtf.sh 65520: overflow", FP0(3, 11), FP1(14, FSUB_CVT_FROMI),
+     G4MH_FPSR_RESET, 0, 0x477FF000u, 0, 0, FP_SENT, 0x7C00u, 0, 0u,
+     G4MH_FPX_O | G4MH_FPX_I, false, false},
+    {"cvtf.ds quiet: truncated", FP0(3, 12), FP1(14, 0x452u), G4MH_FPSR_RESET,
+     0, 0, 0x20000000u, 0x7FF80000u, FP_SENT, 0x7FC00001u, 0, 0u, 0u, false,
+     false},
+    /* ---- a signalling NaN is invalid to every comparison ---- */
+    {"cmpf.s 4 snan: V", FP0(10, 11), FP1(4, FSUB_CMP), G4MH_FPSR_RESET,
+     F_1_0, F_SNAN, 0, 0, FP_SENT, FP_SENT, 0, 0u, G4MH_FPX_V, false, false},
+    /* ---- CMPF writes no CC when it takes its exception ---- */
+    {"cmpf.s 0xC unordered, V enabled", FP0(10, 11), FP1(0xC, FSUB_CMP),
+     G4MH_FPSR_RESET | FPSR_XE(G4MH_FPX_V) | (1u << G4MH_FPSR_CC_SHIFT), F_1_0,
+     F_QNAN, 0, 0, FP_SENT, FP_SENT, 0, G4MH_FPX_V, 0u, true, false},
+};
+
+static void test_fp_rules(void)
+{
+    for (size_t i = 0; i < sizeof(k_fp_cases) / sizeof(k_fp_cases[0]); i++) {
+        const fp_case_t *const k = &k_fp_cases[i];
+
+        for (unsigned pass = 0; pass < 2u; pass++) {
+            fp_state_t s = fp_state();
+            const uint16_t hw[2] = {k->w0, k->w1};
+
+            s.fpsr = k->fpsr;
+            fp_r(&s, 10, k->r10);
+            fp_r(&s, 11, k->r11);
+            fp_r(&s, 12, k->r12);
+            fp_r(&s, 13, k->r13);
+            fp_r(&s, 14, k->r14);
+            fp_r(&s, 15, FP_SENT);
+
+            const g4mh_cpu_t *const c = fp_run(hw, 2u, &s, pass);
+            if (c == NULL) {
+                return;
+            }
+            const uint32_t fpsr = c->sr[0][G4MH_SR_FPSR];
+            const uint32_t xc =
+                (fpsr & G4MH_FPSR_XC_MASK) >> G4MH_FPSR_XC_SHIFT;
+            const uint32_t xp = fpsr & G4MH_FPSR_XP_MASK;
+            const bool took = c->sr[0][G4MH_SR_EIIC] == G4MH_EXC_FPP;
+
+            if (c->r[14] != k->want || xc != k->xc || xp != k->xp ||
+                took != k->exc ||
+                (k->wide && c->r[15] != k->want_hi)) {
+                fprintf(stderr,
+                        "  fp: %s (%s): r14 %08x xc %02x xp %02x exc %d\n",
+                        k->name, pass ? "jit" : "interp", c->r[14], xc, xp,
+                        took);
+            }
+            CHECK_EQ(c->r[14], k->want);
+            if (k->wide) {
+                CHECK_EQ(c->r[15], k->want_hi);
+            }
+            CHECK_EQ(xc, k->xc);
+            CHECK_EQ(xp, k->xp);
+            CHECK_EQ(took, k->exc);
+            if (k->exc) {
+                /* FPE, EI level, at the instruction, and FPEPC with it. */
+                CHECK_EQ(c->sr[0][G4MH_SR_EIPC], EMU_GUEST_RAM_BASE);
+                CHECK_EQ(c->sr[0][G4MH_SR_FPEPC], EMU_GUEST_RAM_BASE);
+                CHECK_EQ(c->sr[0][G4MH_SR_FEIC], FP_SENT);
+                CHECK_EQ(c->pc, EMU_GUEST_RAM_BASE + 0x74u); /* vector 70H */
+            } else {
+                CHECK_EQ(c->sr[0][G4MH_SR_FPEPC], FP_SENT);
+            }
+            if (k->fpsr == (G4MH_FPSR_RESET | FPSR_XE(G4MH_FPX_V) |
+                            (1u << G4MH_FPSR_CC_SHIFT))) {
+                CHECK_EQ(fpsr >> G4MH_FPSR_CC_SHIFT, 1u); /* CC0 kept */
+            }
+        }
+    }
+}
+
+/*
+ * An input flushed is recorded in IF, an exception or not (3.2.6.1(8)
+ * caution 4).
+ */
+static void test_fp_input_flag(void)
+{
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        fp_state_t s = fp_state();
+        const uint16_t hw[2] = {FP0(10, 11), FP1(14, FSUB_ADD)};
+
+        fp_r(&s, 10, 0x00000003u);
+        fp_r(&s, 11, F_1_0);
+        const g4mh_cpu_t *const c = fp_run(hw, 2u, &s, pass);
+        if (c == NULL) {
+            return;
+        }
+        CHECK((c->sr[0][G4MH_SR_FPSR] & G4MH_FPSR_IF) != 0u);
+    }
+}
+
+/*
+ * FPSR out of reset, its reserved bits, FPEPC's bit 0, and the windows
+ * FPST, FPCC and FPCFG -- each read from FPSR and written into it.
+ */
+static void test_fp_status_registers(void)
+{
+    static const uint16_t halt[] = {0x07E0u, SUB_HALT};
+    emu_run_reason_t why;
+    uint32_t retired = 0u;
+
+    if (!load_and_run(halt, 2u, 8u, &why, &retired)) {
+        CHECK(false);
+        return;
+    }
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+
+    CHECK_EQ(c->sr[0][G4MH_SR_FPSR], G4MH_FPSR_RESET);
+    g4mh_sr_write(c, 0u, G4MH_SR_FPSR, 0xFFFFFFFFu);
+    CHECK_EQ(g4mh_sr_read(c, 0u, G4MH_SR_FPSR), 0xFFEEFFFFu);
+    CHECK_EQ(g4mh_sr_read(c, 0u, G4MH_SR_FPST), 0x3F3Fu);
+    CHECK_EQ(g4mh_sr_read(c, 0u, G4MH_SR_FPCC), 0xFFu);
+    CHECK_EQ(g4mh_sr_read(c, 0u, G4MH_SR_FPCFG), 0x31Fu);
+
+    g4mh_sr_write(c, 0u, G4MH_SR_FPSR, G4MH_FPSR_RESET);
+    g4mh_sr_write(c, 0u, G4MH_SR_FPCC, 0xFFFFFFA5u);
+    CHECK_EQ(g4mh_sr_read(c, 0u, G4MH_SR_FPSR), 0xA5220000u);
+    g4mh_sr_write(c, 0u, G4MH_SR_FPCFG, 0xFFFF0201u);
+    CHECK_EQ(g4mh_sr_read(c, 0u, G4MH_SR_FPSR), 0xA52A0020u);
+    g4mh_sr_write(c, 0u, G4MH_SR_FPST, 0xFFFF2021u);
+    CHECK_EQ(g4mh_sr_read(c, 0u, G4MH_SR_FPSR), 0xA56A8021u);
+    CHECK_EQ(g4mh_sr_read(c, 0u, G4MH_SR_FPST), 0x2021u);
+    CHECK_EQ(g4mh_sr_read(c, 0u, G4MH_SR_FPCFG), 0x201u);
+    CHECK_EQ(g4mh_sr_read(c, 0u, G4MH_SR_FPCC), 0xA5u);
+
+    g4mh_sr_write(c, 0u, G4MH_SR_FPEPC, 0x80001235u);
+    CHECK_EQ(g4mh_sr_read(c, 0u, G4MH_SR_FPEPC), 0x80001234u);
+}
+
+#if G4MH_EXT_FXU
+/* ------------------------------------------------------------------ */
+/* The FXU                                                             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Every FXU instruction once, as CC-RH encodes it (scripts/
+ * g4mh-check-encodings.sh: the halfwords below are its listing's, not
+ * an encoder's here), with wreg1 = wr7, wreg2 = wr6, wreg3 = wr10 and
+ * wreg4 = wr12, and what wr10 must hold after -- worked out by hand from
+ * R01US0209EJ0220 2.5 and spelled as single-precision bits. The inputs
+ * differ in every way and the operations differ in sign, so a way read
+ * from the wrong place, a pair added the wrong way round or an operand
+ * swapped shows. Through both backends: the JIT reaches the 32-bit
+ * forms through the FPU's helper and the 48-bit ones through its own.
+ */
+typedef struct {
+    const char *name;
+    uint16_t hw[3];
+    unsigned n;
+    uint32_t fxsr;
+    uint32_t a[4], b[4], c[4], m[4];
+    uint32_t want[4];
+} fxu_case_t;
+
+static const fxu_case_t k_fxu_cases[] = {
+    {"absf.s4 wr6, wr10",
+     {0x37F0u, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x41800000u, 0x42000000u, 0x42800000u, 0x43000000u}},
+    {"negf.s4 wr6, wr10",
+     {0x37F1u, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0xC1800000u, 0x42000000u, 0xC2800000u, 0x43000000u}},
+    {"sqrtf.s4 wr6, wr10",
+     {0x37F2u, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x40800000u, 0x7FFFFFFFu, 0x41000000u, 0x7FFFFFFFu}},
+    {"recipf.s4 wr6, wr10",
+     {0x37F3u, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x3D800000u, 0xBD000000u, 0x3C800000u, 0xBC000000u}},
+    {"rsqrtf.s4 wr6, wr10",
+     {0x37F4u, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x3E800000u, 0x7FFFFFFFu, 0x3E000000u, 0x7FFFFFFFu}},
+    {"roundf.sw4 wr6, wr10",
+     {0x37E0u, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x40200000u, 0xC0200000u, 0x40600000u, 0xBF000000u},
+     {0},
+     {0},
+     {0x00000002u, 0xFFFFFFFEu, 0x00000004u, 0x00000000u}},
+    {"roundf.suw4 wr6, wr10",
+     {0x37E1u, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x40200000u, 0xC0200000u, 0x40600000u, 0xBF000000u},
+     {0},
+     {0},
+     {0x00000002u, 0x00000000u, 0x00000004u, 0x00000000u}},
+    {"trncf.sw4 wr6, wr10",
+     {0x37E2u, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x40200000u, 0xC0200000u, 0x40600000u, 0xBF000000u},
+     {0},
+     {0},
+     {0x00000002u, 0xFFFFFFFEu, 0x00000003u, 0x00000000u}},
+    {"trncf.suw4 wr6, wr10",
+     {0x37E3u, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x40200000u, 0xC0200000u, 0x40600000u, 0xBF000000u},
+     {0},
+     {0},
+     {0x00000002u, 0x00000000u, 0x00000003u, 0x00000000u}},
+    {"ceilf.sw4 wr6, wr10",
+     {0x37E4u, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x40200000u, 0xC0200000u, 0x40600000u, 0xBF000000u},
+     {0},
+     {0},
+     {0x00000003u, 0xFFFFFFFEu, 0x00000004u, 0x00000000u}},
+    {"ceilf.suw4 wr6, wr10",
+     {0x37E5u, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x40200000u, 0xC0200000u, 0x40600000u, 0xBF000000u},
+     {0},
+     {0},
+     {0x00000003u, 0x00000000u, 0x00000004u, 0x00000000u}},
+    {"floorf.sw4 wr6, wr10",
+     {0x37E6u, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x40200000u, 0xC0200000u, 0x40600000u, 0xBF000000u},
+     {0},
+     {0},
+     {0x00000002u, 0xFFFFFFFDu, 0x00000003u, 0xFFFFFFFFu}},
+    {"floorf.suw4 wr6, wr10",
+     {0x37E7u, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x40200000u, 0xC0200000u, 0x40600000u, 0xBF000000u},
+     {0},
+     {0},
+     {0x00000002u, 0x00000000u, 0x00000003u, 0x00000000u}},
+    {"cvtf.sw4 wr6, wr10",
+     {0x37E8u, 0x55A0u}, 2u, G4MH_FXSR_RESET | (G4MH_RM_RZ << 18),
+     {0},
+     {0x40200000u, 0xC0200000u, 0x40600000u, 0xBF000000u},
+     {0},
+     {0},
+     {0x00000002u, 0xFFFFFFFEu, 0x00000003u, 0x00000000u}},
+    {"cvtf.suw4 wr6, wr10",
+     {0x37E9u, 0x55A0u}, 2u, G4MH_FXSR_RESET | (G4MH_RM_RZ << 18),
+     {0},
+     {0x40200000u, 0xC0200000u, 0x40600000u, 0xBF000000u},
+     {0},
+     {0},
+     {0x00000002u, 0x00000000u, 0x00000003u, 0x00000000u}},
+    {"cvtf.ws4 wr6, wr10",
+     {0x37EAu, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x00000007u, 0xFFFFFFF9u, 0x80000000u, 0x00000001u},
+     {0},
+     {0},
+     {0x40E00000u, 0xC0E00000u, 0xCF000000u, 0x3F800000u}},
+    {"cvtf.uws4 wr6, wr10",
+     {0x37EBu, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x00000007u, 0xFFFFFFF9u, 0x80000000u, 0x00000001u},
+     {0},
+     {0},
+     {0x40E00000u, 0x4F800000u, 0x4F000000u, 0x3F800000u}},
+    {"cvtf.hs4 wr6, wr10",
+     {0x37ECu, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0xABCD3C00u, 0x00000001u, 0x00007E01u, 0x0000C000u},
+     {0},
+     {0},
+     {0x3F800000u, 0x33800000u, 0x7FC02000u, 0xC0000000u}},
+    {"cvtf.sh4 wr6, wr10",
+     {0x37EDu, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x00004C00u, 0x0000D000u, 0x00005400u, 0x0000D800u}},
+    {"flpv.s4 0, wr6, wr10",
+     {0x37F8u, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0xC1800000u, 0xC2000000u, 0xC2800000u, 0xC3000000u}},
+    {"flpv.s4 1, wr6, wr10",
+     {0x37F9u, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x42000000u, 0x41800000u, 0x43000000u, 0x42800000u}},
+    {"flpv.s4 2, wr6, wr10",
+     {0x37FAu, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x41800000u, 0x42000000u, 0x42800000u, 0x43000000u}},
+    {"flpv.s4 3, wr6, wr10",
+     {0x37FBu, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0xC2000000u, 0xC1800000u, 0xC3000000u, 0xC2800000u}},
+    {"movv.w4 wr6, wr10",
+     {0x37FEu, 0x55A0u}, 2u, G4MH_FXSR_RESET,
+     {0},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u}},
+    {"addf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55A4u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x41880000u, 0xC1F00000u, 0x42880000u, 0xC2F00000u}},
+    {"subf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55A6u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x41700000u, 0xC2080000u, 0x42700000u, 0xC3080000u}},
+    {"mulf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55A8u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x41800000u, 0xC2800000u, 0x43800000u, 0xC4800000u}},
+    {"maxf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55AAu}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x41800000u, 0x40000000u, 0x42800000u, 0x41000000u}},
+    {"minf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55ACu}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x3F800000u, 0xC2000000u, 0x40800000u, 0xC3000000u}},
+    {"divf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55AEu}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x40A00000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x41800000u, 0xC1800000u, 0x41800000u, 0xC1CCCCCDu}},
+    {"addrf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55B4u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x40400000u, 0xC1800000u, 0x41400000u, 0xC2800000u}},
+    {"subrf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55B6u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x3F800000u, 0xC2400000u, 0x40800000u, 0xC3400000u}},
+    {"mulrf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55B8u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x40000000u, 0xC4000000u, 0x42000000u, 0xC6000000u}},
+    {"maxrf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55BAu}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x40000000u, 0x41800000u, 0x41000000u, 0x42800000u}},
+    {"minrf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55BCu}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x3F800000u, 0xC2000000u, 0x40800000u, 0xC3000000u}},
+    {"addxf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55C4u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x41900000u, 0xC1F80000u, 0x42900000u, 0xC2F80000u}},
+    {"subxf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55C6u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x41600000u, 0xC2040000u, 0x42600000u, 0xC3040000u}},
+    {"mulxf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55C8u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x42000000u, 0xC2000000u, 0x44000000u, 0xC4000000u}},
+    {"addsubf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55D0u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x41700000u, 0xC1F00000u, 0x42700000u, 0xC2F00000u}},
+    {"subaddf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55D2u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x41880000u, 0xC2080000u, 0x42880000u, 0xC3080000u}},
+    {"addsubxf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55D4u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x41600000u, 0xC1F80000u, 0x42600000u, 0xC2F80000u}},
+    {"subaddxf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55D6u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x41900000u, 0xC2040000u, 0x42900000u, 0xC3040000u}},
+    {"addsubnf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55D8u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0xC1700000u, 0x41F00000u, 0xC2700000u, 0x42F00000u}},
+    {"subaddnf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55DAu}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0xC1880000u, 0x42080000u, 0xC2880000u, 0x43080000u}},
+    {"addsubnxf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55DCu}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0xC1600000u, 0x41F80000u, 0xC2600000u, 0x42F80000u}},
+    {"subaddnxf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x55DEu}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0xC1900000u, 0x42040000u, 0xC2900000u, 0x43040000u}},
+    {"fmaf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x54C0u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0x3F000000u, 0x3E800000u, 0x3E000000u, 0x3F800000u},
+     {0},
+     {0x41840000u, 0xC27F0000u, 0x43801000u, 0xC47FC000u}},
+    {"fmsf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x54C2u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0x3F000000u, 0x3E800000u, 0x3E000000u, 0x3F800000u},
+     {0},
+     {0x41780000u, 0xC2808000u, 0x437FE000u, 0xC4802000u}},
+    {"fnmaf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x54C4u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0x3F000000u, 0x3E800000u, 0x3E000000u, 0x3F800000u},
+     {0},
+     {0xC1840000u, 0x427F0000u, 0xC3801000u, 0x447FC000u}},
+    {"fnmsf.s4 wr7, wr6, wr10",
+     {0x37E7u, 0x54C6u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0x3F000000u, 0x3E800000u, 0x3E000000u, 0x3F800000u},
+     {0},
+     {0xC1780000u, 0x42808000u, 0xC37FE000u, 0x44802000u}},
+    {"cmpf.s4 0, wr7, wr6, wr10",
+     {0x37E7u, 0x5580u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u}},
+    {"cmpf.s4 4, wr7, wr6, wr10",
+     {0x37E7u, 0x5588u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x00000000u, 0xFFFFFFFFu, 0x00000000u, 0xFFFFFFFFu}},
+    {"cmpf.s4 9, wr7, wr6, wr10",
+     {0x37E7u, 0x5592u}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u}},
+    {"cmpf.s4 15, wr7, wr6, wr10",
+     {0x37E7u, 0x559Eu}, 2u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x00000000u, 0xFFFFFFFFu, 0x00000000u, 0xFFFFFFFFu}},
+    {"cmovf.w4 wr12, wr7, wr6, wr10",
+     {0x07A7u, 0x561Du, 0x300Cu}, 3u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0x00000000u, 0x00000001u, 0x00000000u, 0xFFFFFFFFu},
+     {0x41800000u, 0x40000000u, 0x42800000u, 0x41000000u}},
+    {"shflv.w4 0x000, wr7, wr6, wr10",
+     {0x07A7u, 0x569Du, 0x3000u}, 3u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x3F800000u, 0x3F800000u, 0x3F800000u, 0x3F800000u}},
+    {"shflv.w4 0x7FF, wr7, wr6, wr10",
+     {0x07A7u, 0x569Du, 0x37FFu}, 3u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0xC3000000u, 0xC3000000u, 0xC3000000u, 0x41000000u}},
+    {"shflv.w4 0x800, wr7, wr6, wr10",
+     {0x07A7u, 0x56BDu, 0x3000u}, 3u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x3F800000u, 0x3F800000u, 0x3F800000u, 0x41800000u}},
+    {"shflv.w4 0xE4B, wr7, wr6, wr10",
+     {0x07A7u, 0x56BDu, 0x364Bu}, 3u, G4MH_FXSR_RESET,
+     {0x3F800000u, 0x40000000u, 0x40800000u, 0x41000000u},
+     {0x41800000u, 0xC2000000u, 0x42800000u, 0xC3000000u},
+     {0},
+     {0},
+     {0x41000000u, 0x40000000u, 0x40000000u, 0xC3000000u}},
+};
+
+static void fxu_setw(fp_state_t *s, unsigned r, const uint32_t v[4])
+{
+    memcpy(s->wr[r], v, 16u);
+    s->wmask |= 1u << r;
+}
+
+static void test_fxu_instructions(void)
+{
+    for (size_t i = 0; i < sizeof(k_fxu_cases) / sizeof(k_fxu_cases[0]);
+         i++) {
+        const fxu_case_t *const k = &k_fxu_cases[i];
+
+        for (unsigned pass = 0; pass < 2u; pass++) {
+            fp_state_t s = fp_state();
+
+            s.fxsr = k->fxsr;
+            fxu_setw(&s, 7, k->a);
+            fxu_setw(&s, 6, k->b);
+            fxu_setw(&s, 10, k->c);
+            fxu_setw(&s, 12, k->m);
+
+            const g4mh_cpu_t *const c = fp_run(k->hw, k->n, &s, pass);
+            if (c == NULL) {
+                return;
+            }
+            if (memcmp(c->wr[10], k->want, 16u) != 0 ||
+                c->sr[0][G4MH_SR_FEIC] != FP_SENT ||
+                c->sr[0][G4MH_SR_EIIC] != FP_SENT) {
+                fprintf(stderr,
+                        "  fxu: %s (%s): %08x %08x %08x %08x feic %x eiic %x\n",
+                        k->name, pass ? "jit" : "interp", c->wr[10][0],
+                        c->wr[10][1], c->wr[10][2], c->wr[10][3],
+                        c->sr[0][G4MH_SR_FEIC], c->sr[0][G4MH_SR_EIIC]);
+            }
+            for (unsigned n = 0; n < 4u; n++) {
+                CHECK_EQ(c->wr[10][n], k->want[n]);
+            }
+            CHECK_EQ(c->sr[0][G4MH_SR_FEIC], FP_SENT);
+            CHECK_EQ(c->sr[0][G4MH_SR_EIIC], FP_SENT);
+#if EMU_HAVE_JIT
+            if (pass == 1u) {
+                CHECK_EQ(g_fp_fallbacks, 1u); /* the HALT alone */
+            }
+#endif
+        }
+    }
+}
+
+/*
+ * TRFSRV.W4 imm3, wr6: PSW.Z from wr6's ways being non-zero, way imm3
+ * for 0-3, all of them at 4, any at 5 -- with wr6 = {0, 1, 0, ~0}, and
+ * Z set the other way first so that every case is seen to write it.
+ * imm3 6 and 7 are RIE (the field's top bits are 0 in the diagram).
+ */
+static void test_fxu_trfsrv(void)
+{
+    static const uint32_t m[4] = {0u, 1u, 0u, 0xFFFFFFFFu};
+    static const bool want[6] = {false, true, false, true, false, true};
+
+    for (unsigned imm = 0; imm < 8u; imm++) {
+        for (unsigned pass = 0; pass < 2u; pass++) {
+            fp_state_t s = fp_state();
+            const uint16_t hw[2] = {0x37FFu,
+                                    (uint16_t)((imm << 11) | 0x05A0u)};
+
+            fxu_setw(&s, 6, m);
+            if (imm < 6u && !want[imm]) {
+                s.psw |= G4MH_PSW_Z;
+            }
+            const g4mh_cpu_t *const c = fp_run(hw, 2u, &s, pass);
+            if (c == NULL) {
+                return;
+            }
+            if (imm >= 6u) {
+                CHECK_EQ(c->sr[0][G4MH_SR_FEIC], G4MH_EXC_RIE);
+                continue;
+            }
+            CHECK_EQ((c->psw & G4MH_PSW_Z) != 0u, want[imm]);
+            CHECK_EQ(c->sr[0][G4MH_SR_FEIC], FP_SENT);
+        }
+    }
+}
+
+/*
+ * The loads and stores, at r5 = TEST_SCRATCH + 0x40 (16-aligned), over
+ * RAM whose every word is its own address. LDV.W and LDV.DW write only
+ * the ways their immediate selects; LDVZ.H4 and STVZ.H4 move each way's
+ * low half. A double-word needs word alignment only, a quad-word
+ * sixteen; a displacement's low bits are opcode, RIE when set.
+ */
+#define FXM_R5 (TEST_SCRATCH + 0x40u)
+
+typedef struct {
+    const char *name;
+    uint16_t hw[3];
+    uint32_t r5;
+    uint32_t want[4]; /* wr10 after, for a load            */
+    uint32_t at; /* where a store lands, or 0          */
+    uint32_t mem[4]; /* the words there, for a store       */
+    unsigned words;
+    uint32_t feic; /* FP_SENT, or the FE cause expected  */
+} fxu_mem_case_t;
+
+#define FXC0 0x11112222u
+#define FXC1 0x33334444u
+#define FXC2 0x55556666u
+#define FXC3 0x77778888u
+#define FXA(off) (FXM_R5 + (uint32_t)(off))
+
+static const fxu_mem_case_t k_fxu_mem[] = {
+    {"ldv.w 5, 8[r5]", {0x07A5u, 0x50BDu, 0x0008u}, FXM_R5,
+     {FXA(8), FXC1, FXA(8), FXC3}, 0u, {0}, 0u, FP_SENT},
+    {"ldv.w 10, -4[r5]", {0x07A5u, 0x515Du, 0xFFFCu}, FXM_R5,
+     {FXC0, FXA(-4), FXC2, FXA(-4)}, 0u, {0}, 0u, FP_SENT},
+    {"ldv.dw 1, 8[r5]", {0x07A5u, 0x533Du, 0x0008u}, FXM_R5,
+     {FXA(8), FXA(12), FXC2, FXC3}, 0u, {0}, 0u, FP_SENT},
+    {"ldv.dw 2, -8[r5]", {0x07A5u, 0x535Du, 0xFFF8u}, FXM_R5,
+     {FXC0, FXC1, FXA(-8), FXA(-4)}, 0u, {0}, 0u, FP_SENT},
+    {"ldv.dw 3, 16[r5], word-aligned", {0x07A5u, 0x537Du, 0x0010u},
+     FXM_R5 + 4u, {FXA(20), FXA(24), FXA(20), FXA(24)}, 0u, {0}, 0u, FP_SENT},
+    {"ldv.qw -16[r5]", {0x07A5u, 0x529Du, 0xFFF0u}, FXM_R5,
+     {FXA(-16), FXA(-12), FXA(-8), FXA(-4)}, 0u, {0}, 0u, FP_SENT},
+    {"ldvz.h4 24[r5]", {0x07A5u, 0x53DDu, 0x0018u}, FXM_R5,
+     {FXA(24) & 0xFFFFu, FXA(24) >> 16, FXA(28) & 0xFFFFu, FXA(28) >> 16}, 0u,
+     {0}, 0u, FP_SENT},
+    {"stv.w 1, 12[r5]", {0x07A5u, 0x523Du, 0x000Cu}, FXM_R5,
+     {FXC0, FXC1, FXC2, FXC3}, FXA(12), {FXC1}, 1u, FP_SENT},
+    {"stv.w 3, 12[r5]", {0x07A5u, 0x527Du, 0x000Cu}, FXM_R5,
+     {FXC0, FXC1, FXC2, FXC3}, FXA(12), {FXC3}, 1u, FP_SENT},
+    {"stv.dw 0, -24[r5]", {0x07A5u, 0x539Du, 0xFFE8u}, FXM_R5,
+     {FXC0, FXC1, FXC2, FXC3}, FXA(-24), {FXC0, FXC1}, 2u, FP_SENT},
+    {"stv.dw 1, -24[r5]", {0x07A5u, 0x53BDu, 0xFFE8u}, FXM_R5,
+     {FXC0, FXC1, FXC2, FXC3}, FXA(-24), {FXC2, FXC3}, 2u, FP_SENT},
+    {"stv.qw 32[r5]", {0x07A5u, 0x52BDu, 0x0020u}, FXM_R5,
+     {FXC0, FXC1, FXC2, FXC3}, FXA(32), {FXC0, FXC1, FXC2, FXC3}, 4u, FP_SENT},
+    {"stvz.h4 40[r5]", {0x07A5u, 0x53FDu, 0x0028u}, FXM_R5,
+     {FXC0, FXC1, FXC2, FXC3}, FXA(40), {0x44442222u, 0x88886666u}, 2u,
+     FP_SENT},
+    /* What is refused, and refuses with nothing moved. */
+    {"ldv.qw, 8-aligned: MAE", {0x07A5u, 0x529Du, 0xFFF0u}, FXM_R5 + 8u,
+     {FXC0, FXC1, FXC2, FXC3}, 0u, {0}, 0u, G4MH_EXC_MAE},
+    {"stv.qw, 4-aligned: MAE", {0x07A5u, 0x52BDu, 0x0020u}, FXM_R5 + 4u,
+     {FXC0, FXC1, FXC2, FXC3}, FXA(36), {FXA(36), FXA(40), FXA(44), FXA(48)},
+     4u, G4MH_EXC_MAE},
+    {"ldv.w, 2-aligned: MAE", {0x07A5u, 0x50BDu, 0x0008u}, FXM_R5 + 2u,
+     {FXC0, FXC1, FXC2, FXC3}, 0u, {0}, 0u, G4MH_EXC_MAE},
+    {"ldv.qw, disp bit 3 set: RIE", {0x07A5u, 0x529Du, 0xFFF8u}, FXM_R5,
+     {FXC0, FXC1, FXC2, FXC3}, 0u, {0}, 0u, G4MH_EXC_RIE},
+    {"ldv.w, disp bit 0 set: RIE", {0x07A5u, 0x50BDu, 0x0009u}, FXM_R5,
+     {FXC0, FXC1, FXC2, FXC3}, 0u, {0}, 0u, G4MH_EXC_RIE},
+    {"k = 0x20, nothing: RIE", {0x07A5u, 0x541Du, 0x0000u}, FXM_R5,
+     {FXC0, FXC1, FXC2, FXC3}, 0u, {0}, 0u, G4MH_EXC_RIE},
+};
+
+static void test_fxu_loads_stores(void)
+{
+    static const uint32_t c0[4] = {FXC0, FXC1, FXC2, FXC3};
+
+    for (size_t i = 0; i < sizeof(k_fxu_mem) / sizeof(k_fxu_mem[0]); i++) {
+        const fxu_mem_case_t *const k = &k_fxu_mem[i];
+
+        for (unsigned pass = 0; pass < 2u; pass++) {
+            fp_state_t s = fp_state();
+
+            fxu_setw(&s, 10, c0);
+            fp_r(&s, 5, k->r5);
+            g_pre_ram_fill = true;
+            const g4mh_cpu_t *const c = fp_run(k->hw, 3u, &s, pass);
+            g_pre_ram_fill = false;
+            if (c == NULL) {
+                return;
+            }
+            if (memcmp(c->wr[10], k->want, 16u) != 0 ||
+                c->sr[0][G4MH_SR_FEIC] != k->feic) {
+                fprintf(stderr, "  fxu mem: %s (%s): %08x %08x %08x %08x feic %x\n",
+                        k->name, pass ? "jit" : "interp", c->wr[10][0],
+                        c->wr[10][1], c->wr[10][2], c->wr[10][3],
+                        c->sr[0][G4MH_SR_FEIC]);
+            }
+            for (unsigned n = 0; n < 4u; n++) {
+                CHECK_EQ(c->wr[10][n], k->want[n]);
+            }
+            for (unsigned n = 0; n < k->words; n++) {
+                CHECK_EQ(ram32(k->at - EMU_GUEST_RAM_BASE + 4u * n), k->mem[n]);
+            }
+            CHECK_EQ(c->sr[0][G4MH_SR_FEIC], k->feic);
+#if EMU_HAVE_JIT
+            if (pass == 1u && k->feic == FP_SENT) {
+                CHECK_EQ(g_fp_fallbacks, 1u); /* translated, by its helper */
+            }
+#endif
+        }
+    }
+}
+
+/*
+ * The four ways' flags. wr6 - wr7 with way 1 inexact and way 2 invalid
+ * (inf - inf): disabled, FXXP gets each way's and FXSR.XP their OR, and
+ * the cause bits are untouched; with V enabled, FXE 75H at EI level and
+ * FPE's vector, FXXC each way's and FXSR.XC their OR -- way 1's I as
+ * well, which is not enabled -- and wr10 not written.
+ */
+static void test_fxu_flags(void)
+{
+    static const uint32_t a[4] = {F_1_0, 0xB3800000u /* -2^-24 */, F_INF,
+                                  F_1_0};
+    static const uint32_t b[4] = {F_2_0, F_1_0, F_INF, F_3_0};
+    static const uint32_t c0[4] = {FXC0, FXC1, FXC2, FXC3};
+    /* subf.s4 wr7, wr6, wr10: wr6 - wr7 */
+    static const uint16_t hw[2] = {0x37E7u, 0x55A6u};
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        for (unsigned enabled = 0; enabled < 2u; enabled++) {
+            fp_state_t s = fp_state();
+
+            fxu_setw(&s, 7, a);
+            fxu_setw(&s, 6, b);
+            fxu_setw(&s, 10, c0);
+            if (enabled) {
+                s.fxsr |= FPSR_XE(G4MH_FPX_V);
+            }
+            /* Way 3's I from before, which accumulates and is kept. */
+            s.fxxp = (uint32_t)G4MH_FPX_I << 24;
+            const g4mh_cpu_t *const c = fp_run(hw, 2u, &s, pass);
+            if (c == NULL) {
+                return;
+            }
+            const uint32_t fxsr = c->sr[G4MH_SELID_FXU][G4MH_SR_FXSR];
+            const uint32_t per_way = ((uint32_t)G4MH_FPX_I << 8) |
+                                     ((uint32_t)G4MH_FPX_V << 16);
+
+            if (!enabled) {
+                CHECK_EQ(c->sr[0][G4MH_SR_EIIC], FP_SENT);
+                CHECK_EQ(c->sr[G4MH_SELID_FXU][G4MH_SR_FXXP],
+                         per_way | ((uint32_t)G4MH_FPX_I << 24));
+                CHECK_EQ(c->sr[G4MH_SELID_FXU][G4MH_SR_FXXC], 0u);
+                CHECK_EQ(fxsr & G4MH_FPSR_XP_MASK, G4MH_FPX_I | G4MH_FPX_V);
+                CHECK_EQ(fxsr & G4MH_FPSR_XC_MASK, 0u);
+                CHECK_EQ(c->wr[10][0], F_1_0);
+                CHECK_EQ(c->wr[10][1], F_1_0); /* 1 + 2^-24, a tie, to even */
+                CHECK_EQ(c->wr[10][2], 0x7FFFFFFFu);
+                CHECK_EQ(c->wr[10][3], F_2_0);
+                continue;
+            }
+            CHECK_EQ(c->sr[0][G4MH_SR_EIIC], G4MH_EXC_FXE);
+            CHECK_EQ(c->sr[0][G4MH_SR_EIPC], EMU_GUEST_RAM_BASE);
+            CHECK_EQ(c->sr[0][G4MH_SR_FEIC], FP_SENT);
+            CHECK_EQ(c->sr[0][G4MH_SR_FPEPC], FP_SENT); /* FPE's alone */
+            CHECK_EQ(c->pc, EMU_GUEST_RAM_BASE + 0x74u); /* FPE's vector */
+            CHECK_EQ(c->sr[G4MH_SELID_FXU][G4MH_SR_FXXC], per_way);
+            CHECK_EQ(c->sr[G4MH_SELID_FXU][G4MH_SR_FXXP],
+                     (uint32_t)G4MH_FPX_I << 24); /* untouched */
+            CHECK_EQ((fxsr & G4MH_FPSR_XC_MASK) >> G4MH_FPSR_XC_SHIFT,
+                     G4MH_FPX_I | G4MH_FPX_V);
+            CHECK_EQ(fxsr & G4MH_FPSR_XP_MASK, 0u);
+            CHECK(memcmp(c->wr[10], c0, 16u) == 0);
+            CHECK((c->psw & G4MH_PSW_EP) != 0u);
+        }
+    }
+
+    /* E in one way, with FS clear: always FXE, XC holds E alone. */
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        static const uint32_t sub[4] = {F_1_0, F_1_0, 0x00000001u, F_1_0};
+        fp_state_t s = fp_state();
+
+        fxu_setw(&s, 7, sub);
+        fxu_setw(&s, 6, b);
+        fxu_setw(&s, 10, c0);
+        s.fxsr &= ~G4MH_FPSR_FS;
+        const g4mh_cpu_t *const c = fp_run(hw, 2u, &s, pass);
+        if (c == NULL) {
+            return;
+        }
+        CHECK_EQ(c->sr[0][G4MH_SR_EIIC], G4MH_EXC_FXE);
+        CHECK_EQ(c->sr[G4MH_SELID_FXU][G4MH_SR_FXXC],
+                 (uint32_t)G4MH_FPX_E << 16);
+        CHECK(memcmp(c->wr[10], c0, 16u) == 0);
+    }
+
+    /*
+     * CMPF.S4's fcond is four bits, and the fourth is the one that makes
+     * an unordered comparison invalid: fcond 9 against a quiet NaN in
+     * way 2 is true there and V there, where fcond 1 would be quiet.
+     */
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        static const uint32_t x[4] = {F_1_0, F_1_0, F_QNAN, F_1_0};
+        static const uint16_t cmp9[2] = {0x37E7u, 0x5592u};
+        fp_state_t s = fp_state();
+
+        fxu_setw(&s, 7, x);
+        fxu_setw(&s, 6, b);
+        const g4mh_cpu_t *const c = fp_run(cmp9, 2u, &s, pass);
+        if (c == NULL) {
+            return;
+        }
+        CHECK_EQ(c->wr[10][0], 0u);
+        CHECK_EQ(c->wr[10][2], 0xFFFFFFFFu);
+        CHECK_EQ(c->sr[G4MH_SELID_FXU][G4MH_SR_FXXP],
+                 (uint32_t)G4MH_FPX_V << 16);
+    }
+}
+
+/*
+ * CU1 clear: UCPOP 81H, FE level, for a 32-bit form and a 48-bit one --
+ * and on a PE without the FXU CU1 cannot be set, so that is all an FXU
+ * instruction can do there (the U2B6's PE1 and PE2).
+ */
+static void test_fxu_unusable(void)
+{
+    static const uint16_t add[2] = {0x37E7u, 0x55A4u};
+    static const uint16_t ldv[3] = {0x07A5u, 0x529Du, 0xFFF0u};
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        for (unsigned form = 0; form < 2u; form++) {
+            fp_state_t s = fp_state();
+
+            s.psw &= ~G4MH_PSW_CU1;
+            fp_r(&s, 5, FXM_R5);
+            const g4mh_cpu_t *const c = (form == 0u)
+                                            ? fp_run(add, 2u, &s, pass)
+                                            : fp_run(ldv, 3u, &s, pass);
+            if (c == NULL) {
+                return;
+            }
+            CHECK_EQ(c->sr[0][G4MH_SR_FEIC], G4MH_EXC_UCPOP + 1u);
+            CHECK_EQ(c->sr[0][G4MH_SR_FEPC], EMU_GUEST_RAM_BASE);
+        }
+    }
+
+    {
+        static g4mh_cpu_t pe1;
+        emu_bus_t bus;
+
+        emu_bus_init(&bus);
+        g4mh_cpu_init(&pe1, &bus, 1u);
+        CHECK_EQ(pe1.sr[1][G4MH_SR_PID], G4MH_PID_NO_FXU);
+        g4mh_sr_write(&pe1, 0u, G4MH_SR_PSW,
+                      pe1.psw | G4MH_PSW_CU0 | G4MH_PSW_CU1);
+        CHECK_EQ(pe1.psw & G4MH_PSW_CU1, 0u);
+        CHECK((pe1.psw & G4MH_PSW_CU0) != 0u);
+        CHECK_EQ(g4mh_fxu_exec(&pe1, 0x5A4u, 7u, 6u, 10u),
+                 G4MH_EXC_UCPOP + 1u);
+        CHECK_EQ(g4mh_fxu_exec48(&pe1, 0x07A5u, 0x529Du, 0xFFF0u),
+                 G4MH_EXC_UCPOP + 1u);
+    }
+}
+
+/*
+ * FXSR out of reset and its writable bits, the windows FXST and FXCFG,
+ * FXINFO's constant, and FXXC's and FXXP's per-way fields.
+ */
+static void test_fxu_registers(void)
+{
+    static const uint16_t halt[] = {0x07E0u, SUB_HALT};
+    emu_run_reason_t why;
+    uint32_t retired = 0u;
+
+    if (!load_and_run(halt, 2u, 8u, &why, &retired)) {
+        CHECK(false);
+        return;
+    }
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+    const unsigned fx = G4MH_SELID_FXU;
+
+    CHECK_EQ(c->sr[1][G4MH_SR_PID], G4MH_PID_FXU);
+    CHECK_EQ(c->sr[fx][G4MH_SR_FXSR], G4MH_FXSR_RESET);
+    g4mh_sr_write(c, fx, G4MH_SR_FXSR, 0xFFFFFFFFu);
+    CHECK_EQ(g4mh_sr_read(c, fx, G4MH_SR_FXSR), 0x00EEFFFFu);
+    CHECK_EQ(g4mh_sr_read(c, fx, G4MH_SR_FXST), 0x3F3Fu);
+    CHECK_EQ(g4mh_sr_read(c, fx, G4MH_SR_FXCFG), 0x31Fu);
+
+    g4mh_sr_write(c, fx, G4MH_SR_FXSR, G4MH_FXSR_RESET);
+    g4mh_sr_write(c, fx, G4MH_SR_FXCFG, 0x0201u);
+    CHECK_EQ(g4mh_sr_read(c, fx, G4MH_SR_FXSR), 0x002A0020u);
+    g4mh_sr_write(c, fx, G4MH_SR_FXST, 0x2021u);
+    CHECK_EQ(g4mh_sr_read(c, fx, G4MH_SR_FXSR), 0x006A8021u);
+
+    CHECK_EQ(g4mh_sr_read(c, fx, G4MH_SR_FXINFO), G4MH_FXINFO_VALUE);
+    g4mh_sr_write(c, fx, G4MH_SR_FXINFO, 0u);
+    CHECK_EQ(g4mh_sr_read(c, fx, G4MH_SR_FXINFO), 3u);
+
+    g4mh_sr_write(c, fx, G4MH_SR_FXXC, 0xFFFFFFFFu);
+    CHECK_EQ(g4mh_sr_read(c, fx, G4MH_SR_FXXC), 0x3F3F3F3Fu);
+    g4mh_sr_write(c, fx, G4MH_SR_FXXP, 0xFFFFFFFFu);
+    CHECK_EQ(g4mh_sr_read(c, fx, G4MH_SR_FXXP), 0x1F1F1F1Fu);
+    /* "Any attempts to write this register will not affect ... FXSR". */
+    CHECK_EQ(g4mh_sr_read(c, fx, G4MH_SR_FXSR), 0x006A8021u);
+}
+#endif /* G4MH_EXT_FXU */
+
 #endif /* G4MH_EXT_FPU */
 
 /* ------------------------------------------------------------------ */
@@ -8589,6 +9839,18 @@ static const struct mei_case {
     {"ld.w disp16 (MAE)", {0x3F26u, 0x0011u}, 2u, {{6, 0x80000402u}}, 0u, 0xC0u, 0x40070402u},
     {"sld.h (MAE)", {0x4C08u}, 1u, {{30, 0x80000401u}}, 0u, 0xC0u, 0x20090200u},
     {"st.dw disp23 (MAE)", {0x07A6u, 0x544Fu, 0x0246u}, 3u, {{6, 0x80000002u}}, 0u, 0xC0u, 0x600A0605u},
+#if G4MH_EXT_FXU
+    /* The FXU's: LEN 6, wr10, DS 2/3/4, ITYPE 11101B or 11111B. */
+    {"ldv.w", {0x07A5u, 0x50BDu, 0x0008u}, 3u, {{5, 0x70000000u}}, 0u, 0x91u, 0x600A043Au},
+    {"stv.w", {0x07A5u, 0x523Du, 0x000Cu}, 3u, {{5, 0x70000000u}}, 0u, 0x91u, 0x600A043Bu},
+    {"ldv.dw", {0x07A5u, 0x533Du, 0x0008u}, 3u, {{5, 0x70000000u}}, 0u, 0x91u, 0x600A063Au},
+    {"stv.dw", {0x07A5u, 0x539Du, 0xFFE8u}, 3u, {{5, 0x70000000u}}, 0u, 0x91u, 0x600A063Bu},
+    {"ldv.qw", {0x07A5u, 0x529Du, 0xFFF0u}, 3u, {{5, 0x70000000u}}, 0u, 0x91u, 0x600A083Au},
+    {"stv.qw", {0x07A5u, 0x52BDu, 0x0020u}, 3u, {{5, 0x70000000u}}, 0u, 0x91u, 0x600A083Bu},
+    {"ldvz.h4", {0x07A5u, 0x53DDu, 0x0018u}, 3u, {{5, 0x70000000u}}, 0u, 0x91u, 0x600A063Eu},
+    {"stvz.h4", {0x07A5u, 0x53FDu, 0x0028u}, 3u, {{5, 0x70000000u}}, 0u, 0x91u, 0x600A063Fu},
+    {"ldv.qw (MAE)", {0x07A5u, 0x529Du, 0xFFF0u}, 3u, {{5, 0x80000008u}}, 0u, 0xC0u, 0x600A083Au},
+#endif
 };
 
 static const struct mei_case *g_mei_case;
@@ -8603,6 +9865,9 @@ static void mei_setup(g4mh_cpu_t *c)
     c->sr[0][G4MH_SR_CTBP] = UNMAPPED;
     c->sr[1][G4MH_SR_SCBP] = UNMAPPED;
     c->sr[1][G4MH_SR_SCCFG] = 0xFFu;
+#if G4MH_EXT_FXU
+    c->psw |= G4MH_PSW_CU1; /* the FXU's rows */
+#endif
 }
 
 static void test_mei(void)
@@ -9550,29 +10815,36 @@ static void test_sr_writable_bits(void)
 
     for (unsigned id = 0; id < 2u; id++) {
         g4mh_cpu_t *const c = &pe[id];
-        const uint32_t cu1 = (id == 0u) ? (1u << 17) : 0u;
+        /*
+         * CU1 where the PE has an FXU -- PE0, and only when it is built
+         * -- and CU0 where the FPU is built: a CU bit whose coprocessor
+         * is absent is fixed to 0. This test was written in the default
+         * build and failed in host-g4-nofxu and host-g4-nofpu.
+         */
+        const bool fxu = G4MH_EXT_FXU && id == 0u;
+        const uint32_t cu = (fxu ? G4MH_PSW_CU1 : 0u) |
+                            (G4MH_EXT_FPU ? G4MH_PSW_CU0 : 0u);
+        const uint32_t pid = fxu ? G4MH_PID_FXU : G4MH_PID_NO_FXU;
 
         g4mh_cpu_init(c, NULL, id);
-        CHECK_EQ(c->sr[1][G4MH_SR_PID],
-                 id == 0u ? G4MH_PID_FXU : G4MH_PID_NO_FXU);
+        CHECK_EQ(c->sr[1][G4MH_SR_PID], pid);
         g4mh_sr_write(c, 1u, G4MH_SR_PID, 0u);
-        CHECK_EQ(c->sr[1][G4MH_SR_PID],
-                 id == 0u ? G4MH_PID_FXU : G4MH_PID_NO_FXU);
+        CHECK_EQ(c->sr[1][G4MH_SR_PID], pid);
 
         /* PSW, EIPSW, FEPSW: UM, CU1 (FXU), CU0, EBV, bits 7..0; EIMASK
          * only while INTCFG.EPL is set; CU2 and the rest never. */
         g4mh_sr_write(c, 0u, G4MH_SR_PSW, 0xFFFFFFFFu);
-        CHECK_EQ(c->psw, 0x400180FFu | cu1);
+        CHECK_EQ(c->psw, 0x400080FFu | cu);
         g4mh_sr_write(c, 0u, G4MH_SR_EIPSW, 0xFFFFFFFFu);
-        CHECK_EQ(c->sr[0][G4MH_SR_EIPSW], 0x400180FFu | cu1);
+        CHECK_EQ(c->sr[0][G4MH_SR_EIPSW], 0x400080FFu | cu);
         g4mh_sr_write(c, 0u, G4MH_SR_FEPSW, 0xFFFFFFFFu);
-        CHECK_EQ(c->sr[0][G4MH_SR_FEPSW], 0x400180FFu | cu1);
+        CHECK_EQ(c->sr[0][G4MH_SR_FEPSW], 0x400080FFu | cu);
         g4mh_sr_write(c, G4MH_SELID_INT, G4MH_SR_INTCFG, 0xFFFFFFFFu);
         CHECK_EQ(c->sr[G4MH_SELID_INT][G4MH_SR_INTCFG], 0x003F0003u);
         g4mh_sr_write(c, 0u, G4MH_SR_PSW, 0xFFFFFFFFu);
         g4mh_sr_write(c, 0u, G4MH_SR_EIPSW, 0xFFFFFFFFu);
         g4mh_sr_write(c, 0u, G4MH_SR_FEPSW, 0xFFFFFFFFu);
-        CHECK_EQ(c->psw, 0x43F180FFu | cu1);
+        CHECK_EQ(c->psw, 0x43F080FFu | cu);
         /* Clearing EPL clears EIMASK wherever it is held. */
         g4mh_sr_write(c, G4MH_SELID_INT, G4MH_SR_INTCFG, 0u);
         CHECK_EQ(c->psw & (0x3Fu << 20), 0u);
@@ -10176,6 +11448,17 @@ void test_g4mh(void)
     test_fp_double_compare();
     test_fp_double_gaps();
     test_fp_fma_rounds_once();
+    test_fp_rules();
+    test_fp_input_flag();
+    test_fp_status_registers();
+#if G4MH_EXT_FXU
+    test_fxu_instructions();
+    test_fxu_trfsrv();
+    test_fxu_loads_stores();
+    test_fxu_flags();
+    test_fxu_unusable();
+    test_fxu_registers();
+#endif
 #endif
 #if G4MH_PE_COUNT > 1
     test_mc_dispatch();
