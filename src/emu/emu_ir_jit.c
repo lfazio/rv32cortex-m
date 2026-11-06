@@ -171,7 +171,12 @@ static EMU_PER_CORE emu_ir_block_t g_ir;
  *
  * Left undefined, this is an ordinary .bss array, which is what a host
  * and a part with no TCM both want. `EMU_JIT_CODE_SECTION` is a string
- * so the linker script chooses the name.
+ * so the linker script chooses the name: the N6's ITCM (`.jitcode`), and
+ * the F746's DTCM, first after the core state (`.bss.jitcode`, NOBITS by
+ * its name and zeroed with the rest of .bss). The F746 can fetch from
+ * its DTCM, and code there is not behind the 4 KB I-cache; left to .bss
+ * ordering, which code had the 9 KB of DTCM the buffer then reached was
+ * worth 19% of Dhrystone.
  */
 #ifdef EMU_JIT_CODE_SECTION
 __attribute__((section(EMU_JIT_CODE_SECTION)))

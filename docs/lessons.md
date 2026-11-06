@@ -4319,6 +4319,30 @@ session, and every one of them recurred:
   one probe contradicts another in the same image, suspect the probe
   that has no barrier.**
 
+- **A flush worth 17% was an address.** "One flush after start-up
+  makes RV32 Dhrystone 17% faster" read as a question about translation
+  order -- the steady-state loop retranslated in order, away from
+  start-up's blocks. Re-measured against the pinned layout it was still
+  there, and larger on a longer run, so not a start-up cost. The code
+  buffer began 9,008 bytes before the end of the DTCM, after the JIT's
+  tables, and the flush put the loop in those 9 KB; moved wholly into
+  SRAM1 by a pad, the flush was worth 1.5%. On the way, a PC-profile
+  build compared against a plain one said "a fixed tenth of a second":
+  the profile's 32 KB of samples had moved the buffer out of the DTCM
+  and erased what it was profiling. Placed first in the DTCM, the buffer
+  is worth 3.5-6.8% to three frontends' CoreMark and the flush nothing.
+  **A layout control comes before a mechanism: move the thing, see
+  whether the effect follows -- and a profiling build is a different
+  layout, so read `nm` for where the hot things went.**
+
+- **Pinning trades one memory between its users.** With the buffer
+  first, the JIT's tables went behind the D-cache and RV32 CoreMark
+  moved 2.7% with `.bss`. Pinning the 18 KB block array cured that and
+  cost PowerPC and ARMv7-M, whose larger working sets wanted those 18 KB
+  as code; pinning only the 1.3 KB of hash tables, which every
+  unchained dispatch reads, kept both. **What goes in a TCM is chosen
+  per byte, on every frontend: one row's best is another's loss.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

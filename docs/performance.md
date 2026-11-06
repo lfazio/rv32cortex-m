@@ -320,7 +320,8 @@ figure, and not the default build's:
 
 That is 21% from where `.bss` starts, twice the 10% this tree has said
 layout is worth on the board, and on the same row a flush after start-up
-moves by 17% ([TODO.md](TODO.md)).
+moved it by 17% -- which was where translated code landed, below
+([the JIT buffer in DTCM](#the-jit-buffer-in-dtcm)).
 
 **It was the hart.** The default build had RV32's `g_hart` in the DTCM
 (0x2000cdc8) and most of the code buffer behind it in SRAM1; one
@@ -350,6 +351,60 @@ in the DTCM already, by luck, and nothing moved:
 
 PowerPC's `g_cpu` had been at 0x2000fc70, 400 bytes short of the end
 of the DTCM.
+
+### The JIT buffer in DTCM
+
+**A flush after start-up was worth 17% because of where code landed.**
+RV32 Dhrystone under the JIT ran at 19.19 host cycles an instruction
+with the image window from the start and at 15.96 with one flush forced
+at the 20th slice. Against the pinned layout, with patched worktrees and
+nothing else changed, it still did: 18.85 and 15.90 at 20,000 runs,
+17.46 and 14.14 at 200,000, the wall clock agreeing (7.50 s, 6.07 s),
+and the flush shown to fire by its translations (241 against 201). Not a
+start-up cost, then, but the steady state. The 64 KB code buffer began
+at 0x2000DCD0, after the JIT's tables, so its first 9,008 bytes were
+DTCM and the rest SRAM1, behind the 4 KB I-cache; a flush retranslates
+the steady-state loop into the start of the buffer, and into the DTCM.
+Moved wholly into SRAM1 (`EMU_LAYOUT_PAD_BSS=10000`) the flush is worth
+1.5% (17.82, 17.56), and arming by use, which flushes once, gives the
+same 17.85. RV32 CoreMark gains nothing from a flush (13.58 against
+13.72): its 17.7 KB of code is translated early, and partly in the
+DTCM already, which is worth 1.9% to it (13.84 in SRAM1).
+
+**The profile hid it first.** A `-DEMU_PC_PROFILE=8192` build adds 32 KB
+of samples to `.bss`, which put the whole buffer in SRAM1: the two
+variants read 19.25 and 19.36 there, and comparing a long profiled run
+with a short plain one made the difference look like a fixed tenth of
+a second. The samples, read as a timeline
+(`scripts/board-pc-profile.py --timeline`), and `nm` of both builds
+are what said where the code was.
+
+So the buffer goes first in what the DTCM has left after the core
+state -- `EMU_JIT_CODE_SECTION` `.bss.jitcode` on the F746, placed by
+the linker script before the rest of `.bss` -- about 59 KB of it now.
+Three placements, CoreMark (RV32 at 700 iterations) and Dhrystone at
+200,000 runs, `EMU_LAYOUT_PAD_BSS` 0 and 256, under the JIT:
+
+| F746 | before | buffer first | and the blocks pinned | **and the hashes pinned** |
+|---|---|---|---|---|
+| RV32 CoreMark | 13.57 / 13.59 | 13.23 / 13.59 | 13.06 / 13.07 | **13.10 / 13.09** |
+| PowerPC CoreMark | 35.59 / 35.63 | 33.57 / 33.64 | 34.49 / 34.55 | **33.57** |
+| G4MH CoreMark | 47.41 / 47.05 | 44.06 / 44.50 | 43.58 / 43.67 | **44.15 / 44.11** |
+| ARMv7-M CoreMark | 29.40 / 29.43 | 29.34 / 29.34 | 29.66 / 29.64 | **29.29** |
+| RV32 Dhrystone | 14.56 / 14.76 | 14.41 | 14.53 / 14.55 | **14.33 / 14.35** |
+
+With the buffer first, the JIT's tables fall behind the D-cache, and
+RV32 CoreMark moved 2.7% with the start of `.bss`. Pinning the 18 KB of
+blocks with the core state cured that and took 18 KB from the code:
+PowerPC and ARMv7-M, whose 96 KB buffers want every byte of DTCM, lost
+2.7% and 1.1%. Pinning only the two hash tables (1.3 KB), which every
+unchained dispatch reads, keeps both -- the last column, committed. And
+the flush no longer matters: with the window from the start Dhrystone
+reads 14.33, armed by use 14.41. RV32 Dhrystone at 20,000 runs went
+16.32 to 16.10; `isatest` passes; CoreMark x650 at
+`EMU_JIT_CODE_BYTES=32768` validates (`crcfinal 0x25e3`, 1,335
+compactions, 43.3 s by the host against the firmware's 43.9), 58.86 to
+58.36.
 
 ## What a guest instruction costs, measured live
 

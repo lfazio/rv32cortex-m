@@ -103,21 +103,17 @@ measured at.
       runs TIM2; PowerPC only for a little-endian window it does not
       have.
 - [ ] **Autovectorisation of the IR pipeline.**
-- [ ] **A flush after start-up is worth 17% on the F746, by itself.**
-      RV32 Dhrystone runs at 19.19 host cycles an instruction with the
-      image window from the start, and at 15.96 with one flush forced
-      at the 20th slice and nothing else changed: the steady-state loop
-      is retranslated into an empty buffer, in order, instead of among
-      start-up's blocks. Arming the image window gets this by accident
-      ([backend/thumb2.md](backend/thumb2.md#the-guest-ram-window)).
-      What it says about where hot blocks should go -- and whether
-      CoreMark, which never flushes, has the same to gain -- is
-      unmeasured. The `.bss` half of this row's layout sensitivity
-      (16.42 or 19.30 by where `.bss` starts) was the hart in SRAM1,
-      and the core state is pinned in the DTCM now
-      ([performance.md](performance.md#one-lto-partition-for-abs));
-      the 19.19 against 15.96 above was measured before that, so
-      measure the flush again against the pinned layout first.
+- [ ] **A third of a 96 KB buffer is still behind the I-cache.** With
+      the JIT's buffer first in the F746's DTCM, about 59 KB of it is
+      DTCM and the rest SRAM1, and which code gets the DTCM is whatever
+      is translated first. The bound is RV32 Dhrystone's loop: 17.56
+      host cycles an instruction in SRAM1, 14.14 in DTCM
+      ([performance.md](performance.md#the-jit-buffer-in-dtcm)).
+      ARMv7-M and PowerPC run 96 KB buffers, so their hot blocks may sit
+      in either; promoting a block that keeps being entered into the
+      DTCM half -- a second buffer, compacted on its own -- is the
+      lever, and asking which of their hot blocks are in SRAM1 today
+      (`--timeline`, by address) comes first.
 - [ ] **Below 32 KB the JIT is still slower than the interpreter.**
       Giving up on pcs that keep being evicted
       ([jit/tuning.md](jit/tuning.md#emu_jit_thrash_evictions--giving-up-on-what-does-not-fit))

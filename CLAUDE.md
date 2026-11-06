@@ -288,6 +288,12 @@ Each has cost more than one session, and every one recurred.
   `-DEMU_LTO_PARTITION=one` (`callgrind-ab.sh` prints each side's). On
   the board one partition reorders `.bss`, a layout change worth 21% on
   RV32 Dhrystone's JIT, so the firmware keeps the default.
+- **Translated code goes in the F746's DTCM first** (`.bss.jitcode`,
+  after the core state): a "flush after start-up worth 17%" was the
+  steady-state loop landing in the 9 KB of DTCM the buffer then reached.
+  Placed first, CoreMark under the JIT is 3.5-6.8% faster on three
+  frontends; and a `-DEMU_PC_PROFILE` build moves `.bss` by 32 KB,
+  which took the buffer out of DTCM and erased the effect under study.
 - **Pin what every block touches.** Core state goes where the platform
   says (`EMU_HOT_DATA`: the F746's DTCM); left to the linker, RV32's
   hart slid into SRAM1 behind the 4 KB D-cache in a one-partition build

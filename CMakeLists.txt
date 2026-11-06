@@ -354,8 +354,22 @@ set(EMU_JIT_CODE_BYTES "${_jit_bytes_default}" CACHE STRING
 # in 64 KiB of ITCM, and is worth 8.7x where ITCM was worth 1.36%, so the
 # larger buffer goes to AXISRAM2 and ITCM keeps the dispatch path.
 #
+#
+# The F746 puts it first in what its DTCM has left after the core state
+# (`.bss.jitcode`, placed by the linker script before the rest of .bss):
+# about 59 KB of DTCM where the buffer had had 9 KB, by the accident of
+# what preceded it. Translated code in DTCM runs without the 4 KB
+# I-cache SRAM1 sits behind, and the 9 KB was the whole of a "flush
+# after start-up is worth 17%": RV32 Dhrystone's steady-state loop,
+# retranslated into the start of the buffer, landed in it. Placed first,
+# CoreMark under the JIT is 3.5% (RV32), 5.7% (PowerPC), 6.8% (G4MH)
+# and 0.4% (ARMv7-M) faster, and Dhrystone no longer needs the flush
+# (docs/performance.md#the-jit-buffer-in-dtcm).
+#
 if(EMU_PLATFORM STREQUAL "stm32n6" AND EMU_JIT_CODE_BYTES LESS_EQUAL 32768)
     set(_jit_section_default ".jitcode")
+elseif(EMU_PLATFORM STREQUAL "stm32f746")
+    set(_jit_section_default ".bss.jitcode")
 else()
     set(_jit_section_default "")
 endif()

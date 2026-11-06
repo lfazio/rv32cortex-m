@@ -791,11 +791,13 @@ bool emu_ir_pt_window(const struct emu_bus *bus, emu_ir_ptwin_t *out);
  * fraction of a percent of its run and the others never. On x86-64 that
  * keeps the guard's bytes out of guests that would not use it.
  *
- * On Thumb-2 the window costs no bytes, and arming is kept for what its
- * one flush does: the steady-state loop is retranslated into an empty
- * buffer, in order. With the window from the start and no flush, RV32
- * Dhrystone on the F746 is 19.19 host cycles an instruction; armed by
- * use, 16.41; from the start with one forced flush, 15.96.
+ * On Thumb-2 the window costs no bytes, and arming was kept for what its
+ * one flush did: RV32 Dhrystone on the F746 read 19.19 host cycles an
+ * instruction with the window from the start, 16.41 armed by use. The
+ * flush put the steady-state loop at the start of the buffer, which was
+ * the 9 KB of it then in DTCM; with the buffer first in DTCM, 14.33 from
+ * the start and 14.41 armed (docs/performance.md#the-jit-buffer-in-dtcm),
+ * and arming stays as on x86-64.
  *
  * Only where the RAM window is, for the same reason as the peripheral
  * window: the things that refuse that one (PMP, paging, triggers) refuse

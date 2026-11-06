@@ -16,6 +16,12 @@ is what a difference between two firmwares needs.
 `??` for code no symbol covers -- the JIT's buffer, a veneer, a stub --
 and a share of `??` that moves between two firmwares needs its
 addresses to be told apart.
+
+--timeline MS prints the samples in order, MS at a time (a sample is a
+millisecond): the hottest functions of each window. The buffer fills
+from the start of the run, so this says *when*, which a total cannot --
+two firmwares a fixed tenth of a second apart whatever the run length
+differ in one phase, and the totals of a long run hide it.
 """
 import argparse
 import collections
@@ -58,6 +64,8 @@ def main():
     ap.add_argument("--lines", type=int, default=30)
     ap.add_argument("--functions", type=int, default=15)
     ap.add_argument("--addresses", type=int, default=0)
+    ap.add_argument("--timeline", type=int, default=0,
+                    help="samples a window, printed in order")
     a = ap.parse_args()
 
     # **One read.** Each attach is under reset, and the firmware's start-up
@@ -89,6 +97,15 @@ def main():
     print("hottest lines:")
     for name, k in by_line.most_common(a.lines):
         print("  %6.2f%%  %s" % (100.0 * k / total, name))
+    if a.timeline:
+        print("timeline, %d samples a window:" % a.timeline)
+        for at in range(0, total, a.timeline):
+            win = collections.Counter(where[pc][0]
+                                      for pc in pcs[at:at + a.timeline])
+            n = sum(win.values())
+            print("  %6d  " % at + "  ".join(
+                "%s %d%%" % (name[:22], 100 * k // n)
+                for name, k in win.most_common(4)))
     if a.addresses:
         print("hottest pcs:")
         for pc, k in collections.Counter(pcs).most_common(a.addresses):

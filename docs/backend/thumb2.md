@@ -513,9 +513,11 @@ window from the start, so that there is nothing to arm, RV32 Dhrystone
 runs at 19.19. With one flush forced after start-up and nothing else
 changed, 15.96. Arming by use flushes at about that point, and the
 steady-state loop is retranslated into an empty buffer, in order; that
-is most of the difference between 16.41 and 19.19. It is open in
-[../TODO.md](../TODO.md) as a question about layout, not about the
-window.
+is most of the difference between 16.41 and 19.19. It was a question
+about layout, not about the window: the start of the buffer was the 9 KB
+of it in DTCM, and with the buffer placed first in DTCM the flush no
+longer matters (14.33 from the start, 14.41 armed;
+[../performance.md](../performance.md#the-jit-buffer-in-dtcm)).
 
 **An access may be predicated** (`emu_ir_mem_if`, the `c` operand), for
 ARMv7-M's loads and stores inside an IT block: `CMP` of the predicate

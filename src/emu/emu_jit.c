@@ -167,9 +167,19 @@ static EMU_PER_CORE jit_tables_t *g_tables;
 #define g_hash (g_tables->hash)
 #define g_phash (g_tables->phash)
 #else
+/*
+ * The two hash tables are read by every dispatch that is not chained,
+ * and are pinned with the core state (EMU_HOT_DATA, the F746's DTCM):
+ * with the code buffer first in DTCM they would otherwise fall behind
+ * the 4 KB D-cache, and RV32 CoreMark moved 2.7% with where .bss began
+ * (13.23 and 13.59 host cycles an instruction; pinned, 13.10 and
+ * 13.09). The blocks themselves stay in .bss: pinned too, their 18 KB
+ * came out of the code's share of DTCM and cost PowerPC and ARMv7-M,
+ * whose working sets are larger, 2.7% and 1.1%.
+ */
 static jit_block_t g_blocks[EMU_JIT_MAX_BLOCKS];
-static int32_t g_hash[EMU_JIT_HASH_SIZE];
-static int32_t g_phash[EMU_JIT_PAGE_HASH_SIZE];
+static int32_t g_hash[EMU_JIT_HASH_SIZE] EMU_HOT_DATA;
+static int32_t g_phash[EMU_JIT_PAGE_HASH_SIZE] EMU_HOT_DATA;
 #endif
 /* The most pages past its first that any live block reaches. */
 static EMU_PER_CORE uint32_t g_max_span;

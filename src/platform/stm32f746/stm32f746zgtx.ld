@@ -303,6 +303,13 @@ SECTIONS
            them: -DEMU_LAYOUT_PAD_BSS=N moves all of it N bytes up and
            leaves .dtcm and .text where they were. */
         . = . + (DEFINED(EMU_LAYOUT_PAD_BSS) ? EMU_LAYOUT_PAD_BSS : 0);
+
+        /* The JIT's code buffer (EMU_JIT_CODE_SECTION), first: as much of
+           it in DTCM as the core state leaves, and the rest in SRAM1.
+           Where .bss ordering put it, 9 KB of it was DTCM, and which code
+           landed there decided 19% of Dhrystone. */
+        . = ALIGN(8);
+        *(.bss.jitcode*)
         *(.bss)
         *(.bss*)
         *(COMMON)
