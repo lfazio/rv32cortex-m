@@ -673,13 +673,11 @@ static X fp_check(armv7m_cpu_t *c)
         return ARMV7M_X_NOCP;
     }
     if ((c->fpccr & FPCCR_LSPACT) != 0u) {
-        for (uint32_t i = 0u; i < 16u; i++) {
-            (void)emu_bus_write(c->bus, c->fpcar + 4u * i, 4u, c->s[i]);
-            armv7m_wrote(c, c->fpcar + 4u * i);
+        const X x = armv7m_fp_lazy_save(c);
+
+        if (x != OK) {
+            return x;
         }
-        (void)emu_bus_write(c->bus, c->fpcar + 0x40u, 4u, c->fpscr);
-        armv7m_wrote(c, c->fpcar + 0x40u);
-        c->fpccr &= ~FPCCR_LSPACT;
     }
     if ((c->fpccr & FPCCR_ASPEN) != 0u &&
         (c->control & ARMV7M_CONTROL_FPCA) == 0u) {

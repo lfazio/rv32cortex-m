@@ -1267,6 +1267,220 @@ static void test_stacking_board_answers(void)
     }
 }
 
+/*
+ * Lazy FP state preservation where it fails, as the F746 answered it
+ * (sys.c `lazy-*`, `fpccr-writable`, `fault-pend-disabled`). The
+ * emulator wrote the deferred half straight to the bus, with no MPU
+ * check and no fault, and FPCCR's status bits were read-only:
+ *
+ *   - the save is checked with the reservation's privilege (USER) and
+ *     stops at the first word refused, MLSPERR, MMFAR not recorded;
+ *   - which exception is MMRDY's (MemManage, or a FORCED HardFault),
+ *     taken at the FP instruction if it can preempt, pended if not --
+ *     even disabled, and a disabled fault pending waits;
+ *   - LSPACT stays set only if a MemManage could be taken now;
+ *   - a bus error is a store's: imprecise, the instruction completes;
+ *   - an exception pending at a return tail-chains, the frame and its
+ *     reserved half left where they are.
+ *
+ * A thread on the PSP with FPCA set takes an SVC (the reservation), and
+ * `vmov s0, r0` is the handler's first FP instruction.
+ */
+#define LZ_VMOV_W0 0xEE00u /* vmov s0, r0 */
+#define LZ_VMOV_W1 0x0A10u
+#define LZ_PC (UA_CODE + 0x40u)
+
+static void lz_setup(armv7m_cpu_t *c, uint32_t psp, bool npriv)
+{
+    stk_setup(c, psp, npriv);
+    c->control |= ARMV7M_CONTROL_FPCA;
+    c->cpacr = 0x00F00000u;
+    for (uint32_t i = 0u; i < 32u; i++) {
+        c->s[i] = 0xF5F5F500u + i;
+    }
+    c->fpscr = 0x6140001Fu;
+    c->prio[11] = 0x80u; /* the SVC below the faults */
+}
+
+/* Region 7, the hole: `size` bytes at STK_BUF + off, permission ap. */
+static void lz_hole(armv7m_cpu_t *c, uint32_t off, uint32_t sizelog2,
+                    uint32_t ap)
+{
+    stk_mpu(c, 3u);
+    c->mpu_rbar[7] = STK_BUF + off;
+    c->mpu_rasr[7] = (1u << 28) | (ap << 24) | ((sizelog2 - 1u) << 1) | 1u;
+}
+
+/* The SVC, then the handler's FP instruction; true if it completed. */
+static bool lz_run(armv7m_cpu_t *c)
+{
+    CHECK(armv7m_take(c, 11u, UA_CODE));
+    CHECK_EQ(c->fpccr & 1u, 1u); /* reserved, not saved */
+    c->r[0] = 0x11111111u;
+    return armv7m_step_insn(c, LZ_VMOV_W0, LZ_VMOV_W1, LZ_PC);
+}
+
+/* The 17 words of the FP half at `at`: n saved, the rest untouched. */
+static void lz_saved(uint32_t at, uint32_t n)
+{
+    for (uint32_t i = 0u; i < 17u; i++) {
+        const uint32_t want =
+            i >= n ? 0u : (i < 16u ? 0xF5F5F500u + i : 0x6140001Fu);
+
+        CHECK_EQ(stk_word(at + 4u * i), want);
+    }
+}
+
+static void test_lazy_board_answers(void)
+{
+    armv7m_cpu_t *const c = &g_ua_cpu;
+    bool pre;
+
+    /* lazy-control: saved whole, LSPACT clear, the vmov done. */
+    lz_setup(c, STK_BUF + 0x168u, false);
+    lz_hole(c, 0x200u, 7u, 0u);
+    CHECK(lz_run(c));
+    lz_saved(STK_BUF + 0x120u, 17u);
+    CHECK_EQ(c->fpccr, 0xC0000078u);
+    CHECK_EQ(c->s[0], 0x11111111u);
+
+    /* lazy-mm: MemManage at the vmov, before it, LSPACT kept. */
+    lz_setup(c, STK_BUF + 0x248u, false);
+    lz_hole(c, 0x200u, 7u, 0u);
+    CHECK(!lz_run(c));
+    CHECK_EQ(c->xpsr & 0x1FFu, 4u);
+    CHECK_EQ(c->cfsr, 0x20u); /* MLSPERR, no MMARVALID */
+    CHECK_EQ(c->hfsr, 0u);
+    CHECK_EQ(c->fpccr, 0xC0000079u);
+    CHECK_EQ(c->r[ARMV7M_LR], 0xFFFFFFF1u); /* a basic frame: no FPCA */
+    CHECK_EQ(stk_word(c->msp + 24u), LZ_PC);
+    CHECK_EQ(c->s[0], 0xF5F5F500u);
+    lz_saved(STK_BUF + 0x200u, 0u);
+
+    /* lazy-mm-part: s0-s7 land, s8 refused, FPSCR after it not. */
+    lz_setup(c, STK_BUF + 0x328u, false);
+    lz_hole(c, 0x300u, 5u, 0u);
+    CHECK(!lz_run(c));
+    CHECK_EQ(c->xpsr & 0x1FFu, 4u);
+    lz_saved(STK_BUF + 0x2E0u, 8u);
+
+    /* lazy-mm-pend, -part-pend: one priority, so pended; LSPACT clear,
+     * the vmov done; the same eight words. Then the return tail-chains:
+     * the frame stays, the half is not reserved again. */
+    lz_setup(c, STK_BUF + 0x328u, false);
+    lz_hole(c, 0x300u, 5u, 0u);
+    c->prio[11] = 0u;
+    CHECK(lz_run(c));
+    CHECK_EQ(c->xpsr & 0x1FFu, 11u);
+    CHECK_EQ(c->cfsr, 0x20u);
+    CHECK_EQ(c->fpccr, 0xC0000078u);
+    CHECK(armv7m_is_pending(c, 4u));
+    CHECK_EQ(c->control & ARMV7M_CONTROL_FPCA, ARMV7M_CONTROL_FPCA);
+    CHECK_EQ(c->s[0], 0x11111111u);
+    lz_saved(STK_BUF + 0x2E0u, 8u);
+    /* Returned as `pop {pc}` does, LR used meanwhile: the chained
+     * handler's LR is the EXC_RETURN, not what LR held. */
+    c->r[ARMV7M_LR] = 0x12345678u;
+    CHECK_EQ(armv7m_exc_return(c, 0xFFFFFFEDu), ARMV7M_X_NONE);
+    CHECK_EQ(c->xpsr & 0x1FFu, 4u);
+    CHECK_EQ(c->r[ARMV7M_LR], 0xFFFFFFEDu);
+    CHECK_EQ(c->psp, STK_BUF + 0x2C0u); /* not popped */
+    CHECK_EQ(c->fpccr, 0xC0000078u);    /* not reserved again */
+
+    /* lazy-mm-disabled: MMRDY clear, a FORCED HardFault at the vmov,
+     * and LSPACT cleared -- no MemManage could be taken now. */
+    lz_setup(c, STK_BUF + 0x248u, false);
+    lz_hole(c, 0x200u, 7u, 0u);
+    c->shcsr &= ~(1u << 16);
+    CHECK(!lz_run(c));
+    CHECK_EQ(c->xpsr & 0x1FFu, 3u);
+    CHECK_EQ(c->cfsr, 0x20u);
+    CHECK_EQ(c->hfsr, 0x40000000u);
+    CHECK_EQ(c->fpccr, 0xC0000058u);
+    CHECK_EQ(stk_word(c->msp + 24u), LZ_PC);
+
+    /* lazy-mm-on-at-save: disabled at the reservation, enabled at the
+     * save: still a HardFault (MMRDY), and LSPACT kept (now). */
+    lz_setup(c, STK_BUF + 0x248u, false);
+    lz_hole(c, 0x200u, 7u, 0u);
+    c->shcsr &= ~(1u << 16);
+    CHECK(armv7m_take(c, 11u, UA_CODE));
+    c->shcsr |= 1u << 16;
+    CHECK(!armv7m_step_insn(c, LZ_VMOV_W0, LZ_VMOV_W1, LZ_PC));
+    CHECK_EQ(c->xpsr & 0x1FFu, 3u);
+    CHECK_EQ(c->hfsr, 0x40000000u);
+    CHECK_EQ(c->fpccr, 0xC0000059u);
+
+    /* lazy-mm-off-at-save: the other way round: a MemManage pended
+     * though disabled, no escalation, and it waits. */
+    lz_setup(c, STK_BUF + 0x248u, false);
+    lz_hole(c, 0x200u, 7u, 0u);
+    CHECK(armv7m_take(c, 11u, UA_CODE));
+    c->shcsr &= ~(1u << 16);
+    CHECK(armv7m_step_insn(c, LZ_VMOV_W0, LZ_VMOV_W1, LZ_PC));
+    CHECK_EQ(c->xpsr & 0x1FFu, 11u);
+    CHECK_EQ(c->cfsr, 0x20u);
+    CHECK_EQ(c->hfsr, 0u);
+    CHECK_EQ(c->fpccr, 0xC0000078u);
+    CHECK(armv7m_is_pending(c, 4u));
+    CHECK_EQ(armv7m_pending_exc(c, &pre), 0u);
+
+    /* lazy-mm-unpriv: the half privileged read-write, unprivileged
+     * read-only: refused for an unprivileged thread, from a handler. */
+    for (uint32_t npriv = 0u; npriv < 2u; npriv++) {
+        lz_setup(c, STK_BUF + 0x248u, npriv != 0u);
+        lz_hole(c, 0x200u, 7u, 2u);
+        CHECK_EQ(lz_run(c), npriv == 0u);
+        CHECK_EQ(c->cfsr, npriv != 0u ? 0x20u : 0u);
+        lz_saved(STK_BUF + 0x200u, npriv != 0u ? 0u : 17u);
+    }
+
+    /* lazy-bus, -part: past the end of RAM, a store's bus error: the
+     * vmov done, IMPRECISERR, the BusFault waiting, LSPACT clear, and
+     * what is inside RAM written. */
+    lz_setup(c, STK_END + 0x38u, false);
+    CHECK(lz_run(c));
+    CHECK_EQ(c->cfsr, 0x400u);
+    CHECK_EQ(c->hfsr, 0u);
+    CHECK(armv7m_is_pending(c, 5u));
+    CHECK_EQ(c->fpccr, 0xC0000078u);
+    CHECK_EQ(c->s[0], 0x11111111u);
+    for (uint32_t i = 0u; i < 4u; i++) {
+        CHECK_EQ(stk_word(STK_END - 16u + 4u * i), 0xF5F5F500u + i);
+    }
+    CHECK_EQ(armv7m_pending_exc(c, &pre), 5u);
+    CHECK(pre);
+
+    /* lazy-bus-disabled: a FORCED HardFault waiting instead. */
+    lz_setup(c, STK_END + 0x48u, false);
+    c->shcsr &= ~(1u << 17);
+    CHECK(lz_run(c));
+    CHECK_EQ(c->cfsr, 0x400u);
+    CHECK_EQ(c->hfsr, 0x40000000u);
+    CHECK(armv7m_is_pending(c, 3u));
+    CHECK(!armv7m_is_pending(c, 5u));
+
+    /* fpccr-writable: every bit the register defines. */
+    armv7m_reset_state(c);
+    c->access_priv = true;
+    CHECK(armv7m_scs_ops.write(c, 0xF34u, 4u, 0xFFFFFFFFu) == EMU_FAULT_NONE);
+    CHECK_EQ(c->fpccr, 0xC000017Bu);
+    CHECK(armv7m_scs_ops.write(c, 0xF34u, 4u, 0xC0000000u) == EMU_FAULT_NONE);
+    CHECK_EQ(c->fpccr, 0xC0000000u);
+
+    /* fault-pend-disabled: each of the three waits for its enable. */
+    for (uint32_t i = 0u; i < 3u; i++) {
+        const uint32_t exc = 4u + i;
+
+        armv7m_reset_state(c);
+        armv7m_set_pending(c, exc, true);
+        CHECK_EQ(armv7m_pending_exc(c, &pre), 0u);
+        c->shcsr |= 1u << (16u + i);
+        CHECK_EQ(armv7m_pending_exc(c, &pre), exc);
+        CHECK(pre);
+    }
+}
+
 void test_armv7m(void)
 {
     test_pending_summary();
@@ -1283,4 +1497,5 @@ void test_armv7m(void)
     test_vector_shaped_like_exc_return();
     test_handler_pc_writers_branch();
     test_stacking_board_answers();
+    test_lazy_board_answers();
 }

@@ -308,3 +308,86 @@ sys_unpriv_land:
 sys_land_after:
     b       sys_after_stacking
     .ltorg
+
+/*
+ * Lazy FP state preservation where it can fail. A thread on the PSP
+ * that has used the FPU takes SVC #0x47; its frame reserves the FP half
+ * wherever r0 puts it, and the handler's first FP instruction
+ * (sys_lazy_insn) saves the thread's registers into it. r0 = the PSP,
+ * r1 = 1 to run the thread unprivileged, r2 = the top of a main stack
+ * of the test's own for the handlers. s0-s15 and FPSCR come from
+ * sys_lazy_regs.
+ *
+ * The 64 bytes at the end of RAM -- where the bus cases put a frame,
+ * and where the main stack starts -- are kept in sys_lazy_keep and zero
+ * during the case; what the case left there is copied to sys_lazy_seen
+ * before they are put back. Nothing between uses the main stack.
+ * Returns s0 as the thread has it after the return; s15 and FPSCR go to
+ * sys_lazy_out.
+ */
+    .thumb_func
+    .global sys_lazy
+sys_lazy:
+    push    {r4-r7, lr}
+    mov     r7, sp
+    ldr     r4, =__ram_end
+    sub     r4, r4, #64
+    ldr     r3, =sys_lazy_keep
+    movs    r6, #0
+1:  ldr     r5, [r4, r6]
+    str     r5, [r3, r6]
+    movs    r5, #0
+    str     r5, [r4, r6]
+    adds    r6, #4
+    cmp     r6, #64
+    bne     1b
+    mrs     r5, control
+    mrs     r6, psp
+    msr     msp, r2             /* the handlers' stack, from here on */
+    msr     psp, r0
+    bic     r3, r5, #5          /* FPCA off, nPRIV off */
+    orr     r3, r3, #2          /* SPSEL: the PSP */
+    orr     r3, r3, r1          /* nPRIV, if asked */
+    msr     control, r3
+    isb
+    ldr     r3, =sys_lazy_regs
+    vldmia  r3!, {s0-s15}       /* the thread's first FP instruction */
+    ldr     r3, [r3]
+    vmsr    fpscr, r3
+    svc     #0x47
+    .global sys_lazy_after
+sys_lazy_after:
+    ldr     r3, =sys_lazy_out
+    vmov    r0, s0
+    vstr    s15, [r3]
+    vmrs    r1, fpscr
+    str     r1, [r3, #4]
+    msr     msp, r7             /* the handler made the thread privileged */
+    msr     control, r5
+    isb
+    msr     psp, r6
+    ldr     r4, =__ram_end
+    sub     r4, r4, #64
+    ldr     r3, =sys_lazy_seen
+    ldr     r2, =sys_lazy_keep
+    movs    r6, #0
+2:  ldr     r1, [r4, r6]
+    str     r1, [r3, r6]
+    ldr     r1, [r2, r6]
+    str     r1, [r4, r6]
+    adds    r6, #4
+    cmp     r6, #64
+    bne     2b
+    pop     {r4-r7, pc}
+    .ltorg
+
+    /* The handler's first FP instruction, and what follows it. */
+    .thumb_func
+    .global sys_lazy_touch
+sys_lazy_touch:
+    .global sys_lazy_insn
+sys_lazy_insn:
+    vmov    s0, r0
+    dsb
+    isb
+    bx      lr

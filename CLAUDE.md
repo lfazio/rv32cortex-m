@@ -581,6 +581,12 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
 - **A cause that is a range is a range at every reader**: UCPOP is
   `80H`-`82H`, and `81H` went to SYSERR's vector at EI level because two
   switches knew `80H`.
+- **The M7's lazy FP save takes its exception from the reservation and
+  its LSPACT from now**: MMRDY picks MemManage or a FORCED HardFault,
+  LSPACT survives only if a MemManage could be taken at the save; the
+  save stops at the first refused word, and a bus error is a store's
+  (`lazy-*`, `armv7m_fp_lazy_save`). A return with something pending
+  tail-chains, which only the FP reservation shows (`lazy-mm-pend`).
 - **An M7 store's bus error is imprecise** (`sys.c` `bus-*`; a load's is
   precise, BFAR the first byte refused): the store retires and the
   BusFault pends. Made deterministic, it must be so on every path that
@@ -658,6 +664,10 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   HardFault loop once code moved. A difference every run shows is a
   defect until explained; ask the core (gdb through probe-rs), not a
   polled console stuck behind the fault.
+- **Read a control register back after a barrier**: straight after
+  the write, the F746 returned LSPACT's old value beside every other
+  bit's new one, which read as "LSPACT cannot be cleared"
+  (`fpccr-writable`).
 - **Read the peripheral before suspecting the code**: a UART configured,
   enabled and muxed with nothing arriving is a wire.
 - **Diff the code memory against the image** when code misbehaves on

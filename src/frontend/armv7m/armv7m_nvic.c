@@ -535,7 +535,9 @@ static bool word_write(armv7m_cpu_t *c, uint32_t off, uint32_t v)
         }
         return true;
     case FP_FPCCR:
-        c->fpccr = (c->fpccr & ~0xC0000000u) | (v & 0xC0000000u);
+        /* Every bit the register defines: a handler clears LSPACT to
+         * drop a deferred save (sys.c `fpccr-writable`). */
+        c->fpccr = v & 0xC000017Bu;
         return true;
     case FP_FPCAR:
         c->fpcar = v & ~7u;

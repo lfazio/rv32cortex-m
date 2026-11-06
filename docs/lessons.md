@@ -4280,6 +4280,45 @@ session, and every one of them recurred:
   whose garbage is still an instruction: a JIT falls back from what it
   cannot read, and the fallback hides it.**
 
+- **The M7's lazy save answers two questions from two times.** The
+  deferred FP half (`sys.c` `lazy-*`) went straight to the bus; asked,
+  the board took the exception from MMRDY -- what could be taken when
+  the space was reserved -- and decided LSPACT from now: kept for a
+  retry only if a MemManage could be taken at that moment. Five cases
+  fit that and no simpler rule; `lazy-mm-disabled` and
+  `lazy-mm-on-at-save` take the same FORCED HardFault at the same
+  instruction and differ only in LSPACT, the one place the M7 departs
+  from ARMv8-M's pseudocode, which the first version followed. The
+  second run was there because the first had a case where the two
+  readings agreed. **When a rule may come from recorded state or
+  current state, ask a case where only one of them changed.**
+
+- **An optimisation the manual permits is visible through state the
+  stack does not hold.** The frontend never tail-chained: a return
+  popped the frame, and the pending exception pushed it again. 109
+  board tests agreed, since the frame pushed is the frame popped -- but
+  the push also reserves the FP half again, and the one case that read
+  FPCCR in the chained handler saw LSPACT set where the board had it
+  clear. The same run showed a MemManage pended while disabled being
+  taken by the frontend and left waiting by the board. And the unit
+  test's first tail-chain check passed with the LR assignment deleted:
+  it returned through LR, which already held the EXC_RETURN. **A
+  "permitted" implementation choice is still the board's to answer;
+  and a check starts from a value the bug would leave, not the value
+  it computes.**
+
+- **A read straight after a write measured the pipeline, not the
+  register.** The first FPCCR probe set every status bit, read
+  `c000017b`, cleared them, and read `c0000001`: LSPACT, apparently,
+  could be set and never cleared -- while the lazy handlers in the same
+  image cleared it every time. With a barrier before each read, every
+  bit is writable; without one, LSPACT reads its old value beside every
+  other bit's new one (`c000017a` right after setting them all). The
+  emulator had taken the manual's mask, and would have been "fixed" to
+  the hazard. **Read a control register back after a barrier, and when
+  one probe contradicts another in the same image, suspect the probe
+  that has no barrier.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

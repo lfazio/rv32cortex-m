@@ -228,13 +228,12 @@ From the last measurements in [linux.md](linux.md).
 
 ## ArmvX-m
 
-- [ ] **The lazy FP save is neither checked nor asked.** The deferred
-      half of an FP frame is written by the first FP instruction in the
-      handler (`armv7m_fpu.c`) straight to the bus: no MPU check
-      (MLSPERR) and a bus error ignored (LSPERR). The board has answered
-      every other frame question (`stk-*`): ask it this one the same way,
-      a thread with FPCA set on a PSP whose FP half is refused or past
-      the end of RAM.
+- [ ] **The lazy save's lockup is not asked.** A refused save whose
+      space was reserved at priority -1 or below (HFRDY clear) locks
+      the core up when nothing can preempt, as ARMv8-M's pseudocode
+      says (`armv7m_fp_lazy_save`); every other branch was the F746's
+      answer (`lazy-*`). Asking it means locking the board up on
+      purpose and reading the core through the probe, so it goes last.
 
 - [ ] Implement neon extensions if available
 - [ ] **The ARMv7-M frontend is a model of the F746's ITCM and DTCM**,

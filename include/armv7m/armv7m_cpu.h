@@ -156,6 +156,7 @@ typedef enum {
     ARMV7M_X_BUSFAULT,   /* BFSR bits already set                  */
     ARMV7M_X_SVC,        /* SVCall, raised by SVC                  */
     ARMV7M_X_BKPT,       /* BKPT: the emulator's "stop here"       */
+    ARMV7M_X_HARDFAULT,  /* escalated already, HFSR.FORCED set     */
     ARMV7M_X_LOCKUP,     /* a fault nothing can take               */
 } armv7m_exc_t;
 
@@ -473,6 +474,9 @@ void armv7m_set_irq(armv7m_cpu_t *c, uint32_t source, bool level);
 armv7m_exc_t armv7m_fpu_exec(armv7m_cpu_t *c, uint16_t w0, uint16_t w1,
                              uint32_t pc);
 bool armv7m_fpu_enabled(const armv7m_cpu_t *c);
+/* The deferred half of an FP frame, saved by an FP instruction's check
+ * while FPCCR.LSPACT is set; anything but OK ends that instruction. */
+armv7m_exc_t armv7m_fp_lazy_save(armv7m_cpu_t *c);
 
 emu_run_reason_t armv7m_run(armv7m_cpu_t *c, uint32_t budget,
                             uint32_t *retired);

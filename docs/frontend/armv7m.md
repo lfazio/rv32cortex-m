@@ -26,7 +26,8 @@ silicon was asked.
 | MSP/PSP, CONTROL, unprivileged execution, LDRT/STRT | implemented |
 | Fault status: CFSR, HFSR, MMFAR, BFAR | implemented |
 | MPU: 8 regions, subregions, AP/XN, PRIVDEFENA, HFNMIENA | implemented |
-| Lazy FP stacking: FPCCR, FPCAR, FPDSCR, EXC_RETURN bit 4 | implemented; the deferred save itself is not checked by the MPU and ignores a bus error (MLSPERR, LSPERR: not modelled, not asked) |
+| Lazy FP stacking: FPCCR, FPCAR, FPDSCR, EXC_RETURN bit 4, and the deferred save refused by the MPU (MLSPERR) or made into no memory | asked of the F746 (`sys.c`, `lazy-*`) |
+| Tail-chaining: an exception pending at a return is entered on the frame in place | asked of the F746 (`lazy-mm-pend`, `unstk-*`) |
 | Stacking and unstacking faults: a frame into no memory, refused by the MPU, popped from either; the derived exception ranked against the original | asked of the F746 (`sys.c`, `stk-*`, `unstk-*`) |
 | Exception return from a 0xFxxxxxxx pc in Handler mode, written by BX, LDR, POP or LDM -- and only those: MOV pc, ADD pc and BLX branch to it, as exception entry and unstacking do, and the fetch faults (`pc_not_exc_return`) | asked of the F746 (`sys.c`, `excret-*`) |
 | NVIC (98 lines, 4 priority bits), SysTick | implemented |
@@ -139,6 +140,11 @@ generated suites:
 | a frame the MPU refuses | MSTKERR, MMFAR not valid, the words inside the allowed region pushed; **checked with the interrupted code's privilege** -- an unprivileged thread's frame into memory it may only read is refused. The frontend pushed every frame as privileged |
 | the MemManage from a refused frame against the exception being entered | ranked as two pending exceptions are: the MemManage entered at equal priority (the lower number), **the original entered when it outranks the MemManage**, the loser left pending. The frontend always entered the MemManage, which an outranking original then preempted before its first instruction |
 | **a frame that cannot be popped** on exception return, from no memory or a refused region | a **tail-chain** from the return: no frame pushed, the stack pointer and the frame where they were, LR the EXC_RETURN that failed, UNSTKERR (precise) or MUNSTKERR; a HardFault with FORCED when disabled. Read with the privilege of the code being returned to. The frontend pushed a frame onto the main stack and returned through it, and its recovery looped (2026-10-31) |
+| **the deferred FP save refused by the MPU** (MLSPERR, MMFAR not valid) | checked with the privilege recorded at the reservation (FPCCR.USER), and **stopped at the first word refused**: those before it land, FPSCR after it does not. The exception is MMRDY's -- a MemManage, or a FORCED HardFault if none could have been taken when the space was reserved, whatever SHCSR says now -- entered **at the FP instruction**, which has not executed, if it can preempt; pended if not, even disabled, while the instruction goes on. **LSPACT stays set only if a MemManage could be taken now**: an escalated HardFault keeps it when MemManage has been enabled since, and clears it when not. The frontend wrote the half straight to the bus (2026-11-06) |
+| the deferred FP save into memory that is not there, whole or half | **a store's bus error**: imprecise, IMPRECISERR -- never LSPERR -- the instruction completed and the BusFault taken after it; the words inside RAM land. A FORCED HardFault when BusFault is disabled |
+| **an exception pending at an exception return** | a **tail-chain**: no pop and no push, the frame where it was, and the FP half reserved for the code below still reserved -- LSPACT as the returning handler left it. The frontend popped the frame and pushed it again, which reserved the half again (2026-11-06) |
+| a MemManage, BusFault or UsageFault pending while SHCSR has it disabled -- by the lazy save, or by its PENDED bit | waits for its enable, then is taken. The frontend took it at once |
+| FPCCR's LSPACT, USER, THREAD and RDY bits | writable, as the manual says, so a handler can drop a deferred save -- but a read straight after the write returns LSPACT's old value beside every other bit's new one; after a barrier, the new. The frontend kept them read-only (`fpccr-writable`) |
 | **any instruction that can write the pc, inside an IT block** | ends the block whatever happens to it -- taken, not taken, or skipped by the block's condition. Under `itt eq` with Z clear, a skipped `bx`, `blx`, `mov pc`, `add pc`, `pop {pc}`, `pop.w {..,pc}`, `ldm.w {..,pc}`, `ldr pc`, `bl`, `tbb` or `tbh` is followed by an instruction that runs outside the block, unconditionally and setting flags; so is an untaken `bne` or `cbz`; and every one of them *taken* lands on an instruction that runs outside it too |
 
 The IT rules are `it_ignores_condition`, `it_writes_pc` and `it_after`
@@ -233,9 +239,49 @@ failures for each of the five changes reverted), and the pending
 walk in `test_pending_summary` now pushes onto both kinds of bad stack.
 One case first ran with a mistake of the harness's: `MSR faultmask, 0`
 is ignored at priority -1, which FAULTMASK itself sets, so it stayed
-set and the next SVC locked the core up -- CPSIE clears it. Not asked:
-the lazy FP save, which the frontend makes without the MPU and whose
-bus error it ignores (MLSPERR, LSPERR).
+set and the next SVC locked the core up -- CPSIE clears it.
+
+**The lazy FP save was the one frame nobody had asked about**, and the
+frontend wrote it straight to the bus. `sys.c`'s `lazy-*` run a thread
+on the PSP that has used the FPU (`sys_lazy`), with its handlers on a
+stack of the test's own: the bus cases put a frame in the last bytes
+of RAM, where the main stack starts, which the assembly keeps and puts
+back. The thread takes an SVC whose frame reserves the FP half where
+it cannot be saved, refused by the MPU (whole, from s8 on, or for
+unprivileged code only) or past the end of RAM. The handler's first FP
+instruction (`sys_lazy_insn`) makes the save, and then the handler
+moves the thread onto a whole frame in good memory so that the return
+can unstack. The answers are the table's, and ARMv8-M's pseudocode
+(`PreserveFPState`, `TakePreserveFPException`) gives all but one: the
+stores in order up to the first fault; a fault that can preempt ends
+the instruction, and one that cannot pends while it goes on. The M7
+departs from it on LSPACT, which it keeps exactly when a MemManage
+could be taken now, where ARMv8-M keeps it whenever the fault
+preempts: two cases, `lazy-mm-disabled` and `lazy-mm-on-at-save`, take
+the same HardFault at the same instruction and differ only in that.
+The bus cases never reach any of it: the M7's stores are imprecise, so
+LSPERR is never set.
+
+Three other things came out of it. The return the pended MemManage was
+taken from showed that the M7 **tail-chains** where the frontend popped
+and pushed again: invisible to the 109 tests before it, since the frame
+pushed again is the one popped, but not to LSPACT, which the fresh push
+set. `tail_chain` takes it in `armv7m_exc_return`, out of line behind
+`pending_any`. A MemManage pended while disabled waited on the board
+and was taken by the frontend, so `takeable` leaves out a disabled
+fault (`fault-pend-disabled` asked all three). And FPCCR's status bits
+were read-only, so the first handler to clear LSPACT for a retry
+looped: the board says every defined bit is writable. Its first answer
+said LSPACT could not be cleared, because the read came straight after
+the write: without a barrier, LSPACT reads its old value.
+`test_lazy_board_answers` holds every case, and the 19 mutants in
+`tests/mutants/armv7m-lazy.py` are each found by it -- after one, the
+tail-chain's LR, needed a check that did not start with LR already
+holding the value. 114 of 114 system tests, interpreted and under the
+JIT. On the F746, interpreted CoreMark went 155.65, 155.25 and 155.17
+host cycles an instruction to 154.51, 154.46 and 154.35 at three
+layouts (pads 0, 64, 256), the retired count and CRC the same; under
+the JIT, 29.39-29.41 both sides.
 
 None of it runs on CoreMark, and it still cost interpreted CoreMark
 1.5% on the F746 as first written -- 155.10 to 157.63 host cycles an

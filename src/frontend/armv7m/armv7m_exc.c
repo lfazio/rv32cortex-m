@@ -318,7 +318,11 @@ static uint32_t takeable(const armv7m_cpu_t *c, uint32_t w)
     const uint32_t lo = (w >= 1u && w - 1u < nbank) ? c->enabled[w - 1u] >> 16 : 0u;
     const uint32_t hi = (w < nbank) ? c->enabled[w] << 16 : 0u;
 
-    return (w == 0u) ? (0xFFFFu | hi) : (lo | hi);
+    /* A fault pending while SHCSR has it disabled waits (sys.c
+     * `lazy-mm-off-at-save`): MemManage, BusFault, UsageFault. */
+    const uint32_t off = (~c->shcsr >> 12) & 0x70u;
+
+    return (w == 0u) ? ((0xFFFFu & ~off) | hi) : (lo | hi);
 }
 
 /*
@@ -601,6 +605,83 @@ static bool push_word(armv7m_cpu_t *c, uint32_t addr, uint32_t v, bool priv)
 }
 
 /*
+ * PreserveFPState: the FP half an exception entry reserved, saved when
+ * the handler's first FP instruction runs -- as the F746 does it (sys.c
+ * `lazy-*`), which is ARMv8-M's pseudocode in all but one place.
+ *
+ * The words go to FPCAR in order, checked by the MPU with the privilege
+ * recorded at the reservation (FPCCR.USER), and the save stops at the
+ * first one refused: those before it land, FPSCR after it does not. A
+ * bus error is a store's -- imprecise, IMPRECISERR and not LSPERR, the
+ * save carried on and the instruction completed (`lazy-bus*`).
+ *
+ * A refusal is MLSPERR, MMFAR not recorded, and two decisions the M7
+ * makes from different state:
+ *
+ *   - which exception, from MMRDY -- what could have been taken when the
+ *     space was reserved: MemManage, or a HardFault (FORCED) if not,
+ *     whatever SHCSR says now (`lazy-mm-on-at-save`). If it can preempt,
+ *     it is taken at the FP instruction, which has not executed; if not,
+ *     it pends -- even disabled, and then waits (`lazy-mm-off-at-save`)
+ *     -- and the instruction goes on (`lazy-mm-pend`).
+ *   - whether LSPACT stays set for a retry, from now: only if a
+ *     MemManage is enabled and could preempt (`lazy-mm`). An escalated
+ *     HardFault keeps it when MemManage has been enabled since
+ *     (`lazy-mm-on-at-save`) and clears it when not (`lazy-mm-disabled`),
+ *     where ARMv8-M's pseudocode keeps it whenever the fault preempts.
+ *
+ * The MPU applies as at priority -1 if the space was reserved there
+ * (HFRDY clear), and a HardFault nothing could take then is a lockup.
+ * Out of line: it runs only while a save is outstanding.
+ */
+EMU_NOINLINE armv7m_exc_t armv7m_fp_lazy_save(armv7m_cpu_t *c)
+{
+    const bool priv = (c->fpccr & FPCCR_USER) == 0u;
+    const bool hfrdy = (c->fpccr & FPCCR_HFRDY) != 0u;
+    const bool mpu = hfrdy || (c->mpu_ctrl & MPU_CTRL_HFNMIENA) != 0u;
+    int32_t now;
+
+    for (uint32_t i = 0u; i < 17u; i++) {
+        const uint32_t addr = c->fpcar + 4u * i;
+
+        if (mpu && !mpu_permits(c, addr, priv, ARMV7M_ACC_WRITE)) {
+            goto refused;
+        }
+        if (emu_bus_write(c->bus, addr, 4u, i < 16u ? c->s[i] : c->fpscr) !=
+            EMU_FAULT_NONE) {
+            bus_error_imprecise(c);
+        } else {
+            armv7m_wrote(c, addr);
+        }
+    }
+    c->fpccr &= ~FPCCR_LSPACT;
+    return OK;
+
+refused:
+    c->cfsr |= MMFSR_MLSPERR;
+    now = armv7m_exec_priority(c);
+    if ((c->shcsr & SHCSR_MEMFAULTENA) == 0u ||
+        group(c, exc_prio(c, ARMV7M_EXC_MEMMANAGE)) >= now) {
+        c->fpccr &= ~FPCCR_LSPACT;
+    } else if ((c->fpccr & FPCCR_MMRDY) != 0u) {
+        return ARMV7M_X_MEMMANAGE;
+    }
+    if ((c->fpccr & FPCCR_MMRDY) != 0u) {
+        armv7m_set_pending(c, ARMV7M_EXC_MEMMANAGE, true);
+        return OK;
+    }
+    if (now <= -1 && !hfrdy) {
+        return ARMV7M_X_LOCKUP;
+    }
+    c->hfsr |= HFSR_FORCED;
+    if (now > -1) {
+        return ARMV7M_X_HARDFAULT;
+    }
+    armv7m_set_pending(c, ARMV7M_EXC_HARDFAULT, true);
+    return OK;
+}
+
+/*
  * PushStack. The frame goes on the stack the interrupted code was
  * using, eight words -- or twenty-six with the FP state, when the
  * interrupted context had used the FPU (CONTROL.FPCA). With lazy state
@@ -718,6 +799,22 @@ static bool exception_taken(armv7m_cpu_t *c, uint32_t exc)
  * MemManage, and the MemManage first at equal priority (sys.c
  * `stk-mm-prio`, `stk-mm`). A bad vector is a HardFault.
  */
+/* ExceptionTaken on a frame already in place; a vector that cannot be
+ * read is a HardFault (VECTTBL), or a lockup from one. */
+static bool vector_to(armv7m_cpu_t *c, uint32_t exc, uint32_t pc)
+{
+    if (!exception_taken(c, exc)) {
+        if (exc == ARMV7M_EXC_HARDFAULT || armv7m_exec_priority(c) <= -1) {
+            lockup(c, pc);
+            return false;
+        }
+        c->hfsr |= HFSR_VECTTBL;
+        return exception_taken(c, ARMV7M_EXC_HARDFAULT) ||
+               (lockup(c, pc), false);
+    }
+    return true;
+}
+
 bool armv7m_take(armv7m_cpu_t *c, uint32_t exc, uint32_t return_pc)
 {
     if (!push_stack(c, return_pc)) {
@@ -740,16 +837,7 @@ bool armv7m_take(armv7m_cpu_t *c, uint32_t exc, uint32_t return_pc)
             armv7m_set_pending(c, d, true);
         }
     }
-    if (!exception_taken(c, exc)) {
-        if (exc == ARMV7M_EXC_HARDFAULT || armv7m_exec_priority(c) <= -1) {
-            lockup(c, return_pc);
-            return false;
-        }
-        c->hfsr |= HFSR_VECTTBL;
-        return exception_taken(c, ARMV7M_EXC_HARDFAULT) ||
-               (lockup(c, return_pc), false);
-    }
-    return true;
+    return vector_to(c, exc, return_pc);
 }
 
 /*
@@ -796,6 +884,9 @@ void armv7m_raise(armv7m_cpu_t *c, armv7m_exc_t x, uint32_t pc)
         break;
     case ARMV7M_X_SVC:
         exc = ARMV7M_EXC_SVCALL;
+        break;
+    case ARMV7M_X_HARDFAULT:
+        exc = ARMV7M_EXC_HARDFAULT;
         break;
     default:
         lockup(c, pc);
@@ -903,6 +994,30 @@ static bool pop_word(armv7m_cpu_t *c, uint32_t addr, uint32_t *v, bool priv)
     return true;
 }
 
+/*
+ * TailChain (B1.5.12), once the returning exception is deactivated: an
+ * exception pending that can preempt what the return goes back to is
+ * entered on the frame where it is, LR the EXC_RETURN -- no pop and no
+ * push. The manual leaves it to the implementation and the M7 does it:
+ * the FP half reserved for the code below is still reserved, as it was
+ * (sys.c `lazy-mm-pend`: LSPACT clear in the chained handler, where a
+ * pop and a fresh push reserved it again), as an unstacking fault
+ * tail-chains (`unstk-*`). Out of line, behind `pending_any`: the
+ * return is inlined into the run loop.
+ */
+static EMU_NOINLINE bool tail_chain(armv7m_cpu_t *c, uint32_t excret)
+{
+    bool preempts = false;
+    const uint32_t exc = armv7m_pending_exc(c, &preempts);
+
+    if (!preempts) {
+        return false;
+    }
+    c->r[ARMV7M_LR] = excret;
+    (void)vector_to(c, exc, excret);
+    return true;
+}
+
 /* Which fault an unstacking fault is, and the tail-chain to it. */
 static EMU_NOINLINE void unstack_fault(armv7m_cpu_t *c, uint32_t excret)
 {
@@ -978,6 +1093,9 @@ armv7m_exc_t armv7m_exc_return(armv7m_cpu_t *c, uint32_t excret)
     }
 
     deactivate(c, ret_exc);
+    if (EMU_UNLIKELY(c->pending_any) && tail_chain(c, excret)) {
+        return OK;
+    }
 
     /* PopStack. */
     sp_save(c);

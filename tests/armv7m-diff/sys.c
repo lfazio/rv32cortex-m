@@ -267,6 +267,34 @@ static void t_ids(void)
     CPACR = 0x00F00000u;
     barrier();
     emit("writable");
+
+    /*
+     * FPCCR's status bits, which the manual makes writable: clearing
+     * LSPACT is how a handler drops a deferred save. Set and cleared
+     * with no FP instruction between them, FPCAR being stale.
+     *
+     * **Read only after a barrier.** Without one the F746 read LSPACT's
+     * old value back with every other bit's new one -- c000017a after
+     * setting all of them, c0000001 after clearing -- and a first
+     * version of this, its reads a call later, saw c000017b: a hazard
+     * of the moment, not a register's behaviour.
+     */
+    save = FPCCR;
+    FPCCR = save | 0x17Bu;
+    barrier();
+    logv(FPCCR);
+    FPCCR = save & ~0x17Bu;
+    barrier();
+    logv(FPCCR);
+    FPCCR = save | 1u; /* LSPACT alone */
+    barrier();
+    logv(FPCCR);
+    FPCCR = save & ~1u;
+    barrier();
+    logv(FPCCR);
+    FPCCR = save;
+    barrier();
+    emit("fpccr-writable");
 }
 
 /* ------------------------------------------------------------------ */
@@ -1730,6 +1758,266 @@ static void t_stacking(void)
 
 /* ------------------------------------------------------------------ */
 
+/*
+ * Lazy FP state preservation, where it fails: the FP half of a thread's
+ * frame refused by the MPU (MLSPERR) or past the end of RAM (LSPERR),
+ * the save made when the handler's first FP instruction runs. Whether
+ * that instruction runs or is retried, whether LSPACT survives a failed
+ * save, which words of a half-refused one land, which privilege the
+ * save is checked with (FPCCR.USER), and how the fault is taken or
+ * escalated (MMRDY, BFRDY): the manual leaves part of it to the
+ * implementation, and the emulator wrote the half straight to the bus.
+ *
+ * sys_lazy runs the thread; hook_lazy is the SVC's handler and every
+ * fault's. The SVC handler logs the reservation, touches the FPU, logs
+ * again, and then moves the thread onto a whole frame in good memory
+ * (LAZY_GOOD, its FP half 0x5000000n, FPSCR DN) with the MPU off, so
+ * the return can unstack. A fault handler logs where it was taken --
+ * the FP instruction's offset, 0xAA at the thread's return, 0xEE
+ * anywhere else -- and clears LSPACT, or the retried instruction would
+ * fault again.
+ */
+extern uint32_t sys_lazy(uint32_t psp, uint32_t npriv, uint32_t msp);
+extern void sys_lazy_touch(uint32_t v);
+extern char sys_lazy_insn[];
+extern char sys_lazy_after[];
+const uint32_t sys_lazy_regs[17] = {
+    0xF5F5F500u, 0xF5F5F501u, 0xF5F5F502u, 0xF5F5F503u, 0xF5F5F504u,
+    0xF5F5F505u, 0xF5F5F506u, 0xF5F5F507u, 0xF5F5F508u, 0xF5F5F509u,
+    0xF5F5F50Au, 0xF5F5F50Bu, 0xF5F5F50Cu, 0xF5F5F50Du, 0xF5F5F50Eu,
+    0xF5F5F50Fu, 0x6140001Fu, /* FPSCR: Z C FZ RP, every cumulative flag */
+};
+uint32_t sys_lazy_keep[16];
+uint32_t sys_lazy_seen[16];
+uint32_t sys_lazy_out[2];
+static uint32_t g_lazy_msp[512] __attribute__((aligned(8)));
+/* SHCSR bits the SVC handler flips before it touches the FPU: the
+ * enables when the space was reserved against the enables at the save. */
+static volatile uint32_t g_lazy_flip;
+#define LAZY_MSP ((uint32_t)(g_lazy_msp + 512))
+#define LAZY_GOOD (PSTACK_TOP - 28)
+
+static void hook_lazy(uint32_t *frame, uint32_t excret, uint32_t exc)
+{
+    logv(excret);
+    if (exc == 11u) {
+        uint32_t *const g = LAZY_GOOD;
+
+        logv((uint32_t)frame - g_ua_base);
+        logv(FPCCR);
+        logv(FPCAR - (uint32_t)frame);
+        SHCSR ^= g_lazy_flip;
+        barrier();
+        sys_lazy_touch(0x11111111u);
+        logv(FPCCR);
+        logv(CFSR);
+        logv(HFSR);
+        logv(SHCSR & 0xFFFFu);
+        logv(MRS(control) & 4u);
+        MPU_CTRL = 0u;
+        barrier();
+        for (uint32_t i = 0u; i < 26u; i++) {
+            g[i] = 0x50000000u + i;
+        }
+        for (uint32_t i = 0u; i < 6u; i++) {
+            g[i] = 0u;
+        }
+        g[6] = (uint32_t)sys_lazy_after & ~1u;
+        g[7] = 1u << 24;
+        g[24] = 0x02000000u;
+        MSR(psp, (uint32_t)g);
+        MSR(control, MRS(control) & ~1u);
+        return;
+    }
+    {
+        const uint32_t cfsr = CFSR;
+        const uint32_t d = frame[6] - ((uint32_t)sys_lazy_insn & ~1u);
+
+        if (d <= 16u) {
+            logv(d);
+        } else if (frame[6] == ((uint32_t)sys_lazy_after & ~1u)) {
+            logv(0xAAu);
+        } else {
+            logv(0xEEu);
+        }
+        logv(cfsr);
+        logv(HFSR);
+        logv((cfsr & 0x8000u) ? BFAR - g_ua_base : 0xFFFFFFFFu);
+        logv((cfsr & 0x80u) ? MMFAR - g_ua_base : 0xFFFFFFFFu);
+        logv(FPCCR);
+        logv(SHCSR & 0xFFFFu);
+        CFSR = cfsr;
+        HFSR = HFSR;
+        FPCCR = FPCCR & ~1u;
+        barrier();
+    }
+}
+
+/*
+ * One case: the thread, then what it has after the return (s0, s15,
+ * FPSCR), the n words at `area` (the FP half, or what of it is RAM),
+ * and whatever was left pending or set.
+ */
+static void lazy_case(const char *name, uint32_t psp, uint32_t npriv,
+                      const volatile uint32_t *area, uint32_t n)
+{
+    logv(sys_lazy(psp, npriv, LAZY_MSP));
+    logv(sys_lazy_out[0]);
+    logv(sys_lazy_out[1]);
+    MPU_CTRL = 0u;
+    barrier();
+    for (uint32_t i = 0u; i < n; i++) {
+        logv(area[i]);
+    }
+    logv((SHCSR >> 13) & 7u);
+    logv(CFSR);
+    logv(HFSR);
+    logv(FPCCR);
+    CFSR = CFSR;
+    HFSR = HFSR;
+    FPCCR = FPCCR & ~1u;
+    SHCSR &= ~(7u << 13);
+    barrier();
+    emit(name);
+}
+
+static void lazy_mpu(uint32_t hole, uint32_t sizelog2, uint32_t ap)
+{
+    const uint32_t b = (uint32_t)g_mpubuf;
+
+    for (uint32_t i = 0u; i < sizeof(g_mpubuf); i++) {
+        g_mpubuf[i] = 0u;
+    }
+    mpu_region(0u, 0u, 32u, 3u, 0u, 0u);
+    mpu_region(1u, b, 10u, 3u, 1u, 0u);
+    if (hole != 0u) {
+        mpu_region(2u, b + hole, sizelog2, ap, 1u, 0u);
+    } else {
+        MPU_RNR = 2u;
+        MPU_RASR = 0u;
+    }
+    MPU_CTRL = 1u;
+    barrier();
+}
+
+/*
+ * A configurable fault set pending while SHCSR has it disabled, by
+ * software: is it taken, escalated, or left to wait for the enable?
+ * The lazy save pends a disabled MemManage (`lazy-mm-off-at-save`);
+ * this asks the same of all three, one at a time.
+ */
+static void hook_pend_off(uint32_t *frame, uint32_t excret, uint32_t exc)
+{
+    (void)frame;
+    (void)excret;
+    (void)exc;
+    logv(SHCSR & 0xF07Fu);
+}
+
+static void t_pend_disabled(void)
+{
+    static const uint8_t pend[3] = {13u, 14u, 12u}; /* MM, BF, UF */
+
+    g_hook = hook_pend_off;
+    SHCSR &= ~(7u << 16);
+    barrier();
+    for (uint32_t i = 0u; i < 3u; i++) {
+        SHCSR |= 1u << pend[i];
+        barrier();
+        logv(SHCSR & 0xF07Fu);
+        SHCSR |= 1u << (16u + i);
+        barrier();
+        logv(SHCSR & 0xF07Fu);
+        SHCSR &= ~((1u << (16u + i)) | (1u << pend[i]));
+        barrier();
+    }
+    g_hook = 0;
+    emit("fault-pend-disabled");
+}
+
+static void t_lazy(void)
+{
+    const uint32_t b = (uint32_t)g_mpubuf;
+    const uint32_t end = (uint32_t)__ram_end;
+    const volatile uint32_t *const buf = (const volatile uint32_t *)g_mpubuf;
+
+    g_hook = hook_lazy;
+    CPACR = 0x00F00000u;
+    FPCCR = (1u << 31) | (1u << 30); /* ASPEN, LSPEN: the reset value */
+    SHCSR |= (1u << 16) | (1u << 17) | (1u << 18);
+    SHPR8(11) = 0x80u; /* SVC below the faults: they preempt it */
+    barrier();
+
+    /* The control: the whole frame in memory the MPU allows. */
+    g_ua_base = b;
+    lazy_mpu(0u, 0u, 0u);
+    lazy_case("lazy-control", b + 0x168u, 0u, buf + 0x120u / 4u, 17u);
+
+    /* The FP half refused, all of it: frame at +0x1E0, hole at +0x200. */
+    lazy_mpu(0x200u, 7u, 0u);
+    lazy_case("lazy-mm", b + 0x248u, 0u, buf + 0x200u / 4u, 17u);
+
+    /* s8-s15 refused, s0-s7 and FPSCR allowed: frame at +0x2C0. */
+    lazy_mpu(0x300u, 5u, 0u);
+    lazy_case("lazy-mm-part", b + 0x328u, 0u, buf + 0x2E0u / 4u, 17u);
+
+    /* SVC and MemManage at one priority: the fault cannot preempt. */
+    SHPR8(11) = 0u;
+    lazy_mpu(0x200u, 7u, 0u);
+    lazy_case("lazy-mm-pend", b + 0x248u, 0u, buf + 0x200u / 4u, 17u);
+    /* ...with s0-s7 and FPSCR allowed: does a save that cannot fault
+     * now go past the word it was refused? */
+    lazy_mpu(0x300u, 5u, 0u);
+    lazy_case("lazy-mm-part-pend", b + 0x328u, 0u, buf + 0x2E0u / 4u, 17u);
+    SHPR8(11) = 0x80u;
+
+    /* MemManage disabled when the space was reserved: MMRDY clear. */
+    SHCSR &= ~(1u << 16);
+    lazy_mpu(0x200u, 7u, 0u);
+    lazy_case("lazy-mm-disabled", b + 0x248u, 0u, buf + 0x200u / 4u, 17u);
+    SHCSR |= 1u << 16;
+
+    /* Enabled at the reservation (MMRDY set), disabled at the save; and
+     * the other way round. Which does the escalation follow? */
+    g_lazy_flip = 1u << 16;
+    lazy_mpu(0x200u, 7u, 0u);
+    lazy_case("lazy-mm-off-at-save", b + 0x248u, 0u, buf + 0x200u / 4u, 17u);
+    SHCSR |= 1u << 16;
+    SHCSR &= ~(1u << 16);
+    lazy_mpu(0x200u, 7u, 0u);
+    lazy_case("lazy-mm-on-at-save", b + 0x248u, 0u, buf + 0x200u / 4u, 17u);
+    SHCSR |= 1u << 16;
+    g_lazy_flip = 0u;
+
+    /*
+     * The FP half privileged read-write, unprivileged read-only, the
+     * thread unprivileged and the handler not: whose privilege is the
+     * save checked with?
+     */
+    lazy_mpu(0x200u, 7u, 2u);
+    lazy_case("lazy-mm-unpriv", b + 0x248u, 1u, buf + 0x200u / 4u, 17u);
+
+    /* Past the end of RAM: the frame's eight words are its last 32. */
+    MPU_CTRL = 0u;
+    for (uint32_t i = 0u; i < 3u; i++) {
+        MPU_RNR = i;
+        MPU_RASR = 0u;
+    }
+    barrier();
+    g_ua_base = end;
+    lazy_case("lazy-bus", end + 0x48u, 0u, sys_lazy_seen, 0u);
+    /* s0-s3 the last 16 bytes of RAM, s4 onward past it. */
+    lazy_case("lazy-bus-part", end + 0x38u, 0u, sys_lazy_seen + 12, 4u);
+    SHCSR &= ~(1u << 17);
+    lazy_case("lazy-bus-disabled", end + 0x48u, 0u, sys_lazy_seen, 0u);
+
+    SHPR8(11) = 0u;
+    SHCSR &= ~(7u << 16);
+    g_hook = 0;
+}
+
+/* ------------------------------------------------------------------ */
+
 int main(void)
 {
     for (uint32_t i = 0u; i < sizeof(g_vtab) / sizeof(g_vtab[0]); i++) {
@@ -1759,6 +2047,8 @@ int main(void)
     t_excret();
     t_excret_mov_scan();
     t_bus_pending();
+    t_pend_disabled();
+    t_lazy();
     t_stacking(); /* last: the one most likely to stop the board */
     puts_("SYS-END\nDIFF-END\n");
     return 0;
