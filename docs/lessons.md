@@ -4250,6 +4250,24 @@ session, and every one of them recurred:
   to it once: a per-core value in a per-thread slot is a value that
   changes at every switch.**
 
+- **An attribute that did nothing was credited with a gain.** The FXU
+  commit said G4MH's per-block JIT hooks were "forced inline", and the
+  board said the row was faster. `nm` on that very firmware showed both
+  hooks still functions behind 4-byte wrappers: `EMU_ALWAYS_INLINE`
+  does not reach through the frontend's function pointer, and the gain
+  came from the same change's other half, a smaller `take_irq`. Checked
+  across the other frontends, the shape was everywhere -- a tail branch
+  in flash into a hook in flash, once a block -- and the framework had
+  the remedy for half of it already: an `irq_pending` flag it tests
+  inline, which RV32, PowerPC and ARMv7-M bound and G4MH did not. With
+  that bound and the `count` hooks in ITCM, CoreMark under the JIT is
+  1.4% (ARMv7-M) to 6.3% (G4MH) faster at every layout. And one figure
+  looked like a defect: G4MH retired 25 more instructions -- its
+  CoreMark prints a speed measured by a timer that follows the host's
+  clock, and a faster firmware prints a longer number. **Read `nm`
+  after an attribute, not only before; and where a frontend differs
+  from the other three, ask why before working around it.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

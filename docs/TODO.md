@@ -274,12 +274,6 @@ From the last measurements in [linux.md](linux.md).
       and the debug level -- `DBTRAP`, `DBRET`, `DBPC`, `DBPSW` -- which
       no manual in `docs/renesas/` describes: the Emulation manual is
       needed.
-- [ ] **The other frontends' per-block hooks are still LTO's to
-      inline.** RV32's, PowerPC's and ARMv7-M's `take_irq` and `count`
-      go through the same backend wrappers G4MH's did, and G4MH's cost
-      2.7% of JIT CoreMark on the F746 when LTO stopped inlining them
-      ([frontend/g4mh.md](frontend/g4mh.md#the-fxu)). Read each
-      firmware's `nm` for the hooks and measure forcing them inline.
 - [ ] **Code fetched from a little-endian page.** fuzz-ppc-tlb keeps
       `MAS2[E]` off the entries over its code (`make_safe`), so nothing
       runs a Book E instruction from a little-endian page -- which the

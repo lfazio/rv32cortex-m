@@ -2023,7 +2023,8 @@ static bool rv_jit_take_irq(emu_cpu_t *cpu)
     return true;
 }
 
-static void rv_jit_count(emu_cpu_t *cpu, uint32_t n)
+/* Once a block, from emu_jit_run: in ITCM beside it (EMU_HOT_TEXT). */
+EMU_HOT_TEXT static void rv_jit_count(emu_cpu_t *cpu, uint32_t n)
 {
 #if RV_EXT_ZICNTR
     rv_hart_t *const h = (rv_hart_t *)cpu;

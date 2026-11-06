@@ -380,7 +380,10 @@ static bool ir_diff_ref(emu_cpu_t *cpu, uint32_t *retired,
         return (fe).take_irq != NULL && (fe).take_irq(cpu);                                             \
     }                                                                                                   \
                                                                                                         \
-    static void prefix##_count(emu_cpu_t *cpu, uint32_t n)                                              \
+    /* Once a block: in the platform's fastest memory, as emu_jit_run.                                \
+     * In flash it was a tail branch to the frontend's hook, two hops                                  \
+     * a block whose cost moved with the layout (docs/jit/tuning.md). */                              \
+    EMU_HOT_TEXT static void prefix##_count(emu_cpu_t *cpu, uint32_t n)                                 \
     {                                                                                                   \
         if ((fe).count != NULL) {                                                                       \
             (fe).count(cpu, n);                                                                         \

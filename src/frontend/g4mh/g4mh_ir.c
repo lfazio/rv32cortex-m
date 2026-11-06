@@ -1747,16 +1747,22 @@ static bool g4mh_jit_wake(emu_cpu_t *cpu)
 }
 
 /*
- * The framework calls take_irq and count once a block, through its
- * backend's wrappers, and whether those inline these was LTO's call: the
- * FXU's code, which CoreMark never runs, tipped it, and JIT CoreMark on
- * the F746 went from 51.72 to 53.11 host cycles an instruction (medians
- * of five layouts) with g4mh_jit_count a call of its own from flash. So
- * the test every block makes is forced inline, and the acceptance that
- * follows a dirty flag is out of line.
+ * Called only when irq_dirty is set: the flag is bound as the
+ * framework's irq_pending (g4mh_jit_bind), which emu_jit_run tests inline
+ * -- as every other frontend's is. This frontend called take_irq once a
+ * block to test it itself, a call into flash whose cost moved with what
+ * else the firmware held: the FXU, which CoreMark never runs, made JIT
+ * CoreMark on the F746 2.7% slower by it (docs/frontend/g4mh.md).
  */
-static EMU_NOINLINE bool g4mh_jit_accept_irq(g4mh_cpu_t *c)
+static bool g4mh_jit_take_irq(emu_cpu_t *cpu)
 {
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
+
+    if (!c->irq_dirty) {
+        return false;
+    }
+    /* Cleared before the evaluation, not after; see the interpreter. */
+    c->irq_dirty = false;
 
     /*
      * FE level first, exactly as the interpreter does it -- and the
@@ -1801,19 +1807,8 @@ static EMU_NOINLINE bool g4mh_jit_accept_irq(g4mh_cpu_t *c)
     return true;
 }
 
-static EMU_ALWAYS_INLINE bool g4mh_jit_take_irq(emu_cpu_t *cpu)
-{
-    g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
-
-    if (!c->irq_dirty) {
-        return false;
-    }
-    /* Cleared before the evaluation, not after; see the interpreter. */
-    c->irq_dirty = false;
-    return g4mh_jit_accept_irq(c);
-}
-
-static EMU_ALWAYS_INLINE void g4mh_jit_count(emu_cpu_t *cpu, uint32_t n)
+/* Once a block, from emu_jit_run: in ITCM beside it (EMU_HOT_TEXT). */
+EMU_HOT_TEXT static void g4mh_jit_count(emu_cpu_t *cpu, uint32_t n)
 {
     g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
 
@@ -1843,6 +1838,7 @@ static void g4mh_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
     out->state = &c->state;
     out->context = &c->jit_ctx;
     out->generation = &g4mh_jit_gen;
+    out->irq_pending = &c->irq_dirty;
 }
 
 /*

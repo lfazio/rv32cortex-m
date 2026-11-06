@@ -1549,7 +1549,8 @@ static bool ppc_jit_take_irq(emu_cpu_t *cpu)
  * interrupt arrives at the end of the chain of blocks that passed the
  * expiry rather than on the instruction, where the interpreter puts it.
  */
-static void ppc_jit_count(emu_cpu_t *cpu, uint32_t n)
+/* Once a block, from emu_jit_run: in ITCM beside it (EMU_HOT_TEXT). */
+EMU_HOT_TEXT static void ppc_jit_count(emu_cpu_t *cpu, uint32_t n)
 {
     ppc_cpu_t *const c = (ppc_cpu_t *)cpu;
 

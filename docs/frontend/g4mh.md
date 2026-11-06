@@ -974,10 +974,17 @@ prints raw addresses now with `--addresses`) found it: `g4mh_jit_count`
 and `g4mh_jit_take_irq`, which the framework calls once a block through
 the backend's wrappers, had been inlined into them by LTO and no longer
 were, so every block paid a call into flash -- LTO's decision, tipped by
-code CoreMark never runs. The per-block test is forced inline now and
-the acceptance after a dirty flag out of line: 50.92, 51.08 and 50.99
-at three layouts, below the old tree's 51.24-52.34 and a tenth as
-sensitive to layout.
+code CoreMark never runs. Splitting `take_irq` so its every-block half
+was a few instructions gave 50.92, 51.08 and 50.99 at three layouts --
+though `EMU_ALWAYS_INLINE` on the hooks, which that change also added,
+inlined nothing: `nm` showed both still functions behind 4-byte
+wrappers, the attribute does not reach through the frontend's function
+pointer. **The fix that holds is the framework's own**: G4MH binds its
+`irq_dirty` as `irq_pending`, which the dispatcher tests inline and
+which every other frontend already bound, so `take_irq` is called only
+when something may be pending; and the `count` hook and its wrapper are
+in ITCM (`EMU_HOT_TEXT`), for every frontend ([../jit/tuning.md](../jit/tuning.md#the-hooks-a-block-calls)).
+47.41, 47.67 and 47.36 at the same three layouts.
 
 ## The disassembler
 

@@ -190,7 +190,8 @@ static uint32_t a7_ir_load(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
     return 0u;
 }
 
-static void a7_count(emu_cpu_t *cpu, uint32_t n);
+/* Once a block, from emu_jit_run: in ITCM beside it (EMU_HOT_TEXT). */
+EMU_HOT_TEXT static void a7_count(emu_cpu_t *cpu, uint32_t n);
 
 /*
  * A store whose bus error was imprecise: the instruction retires and the

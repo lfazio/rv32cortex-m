@@ -236,6 +236,33 @@ bytes; both are out of line now. Below 32 KB the JIT is still slower
 than the interpreter -- 1.3 times at 16 KB, 2.8 at 8 -- where it was more
 than 19 times slower; see [TODO.md](../TODO.md).
 
+### The hooks a block calls
+
+Every block ends in the frontend's `count` hook (retired instructions,
+cycle counters, a timer), called by `emu_jit_run` through the backend's
+wrapper. On the F746 each wrapper was a 4-byte tail branch in flash into
+the hook, also in flash: two hops a block, from ITCM, whose cost moved
+with whatever else the firmware held -- G4MH's FXU, which CoreMark never
+runs, made G4MH's row 2.7% slower by it. Both are in ITCM now
+(`EMU_HOT_TEXT`, so they also stay out of line: inlining a placed
+function silently undoes the placement). CoreMark under the JIT, host
+cycles an instruction at three layouts each (`EMU_LAYOUT_PAD` 0 and
+256, `EMU_LAYOUT_PAD_BSS` 2048), against d97bc59:
+
+| | before | after | |
+|---|---|---|---|
+| RV32 (50 iterations) | 15.45-15.48 | 15.15-15.17 | -2.0% |
+| PowerPC | 36.81-36.90 | 35.57-35.62 | -3.4% |
+| ARMv7-M | 29.83-30.03 | 29.40-29.65 | -1.4% |
+| G4MH | 50.48-50.83 | 47.36-47.67 | -6.3% |
+
+G4MH's includes `take_irq`, which it alone called every block to test
+its own flag; it binds the flag as the framework's `irq_pending` now,
+as the other three did. Identical translations everywhere; G4MH's run
+retires 25 more instructions, because its CoreMark times itself by the
+LTSC, which follows the host's clock, and prints "Iterations/Sec : 10"
+where the old firmware printed 8 -- the same CRC, a different number.
+
 On the host at its own sizes nothing thrashes: callgrind reads every
 JIT row 0.02-0.71% lower against e41b775, with identical output, and a
 Linux boot makes no compaction and no mark. The board's case is
