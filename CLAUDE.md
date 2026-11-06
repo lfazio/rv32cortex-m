@@ -236,8 +236,7 @@ Each has cost more than one session, and every one recurred.
   rawgen kept ARMv7-M operands in r0-r12, so 557 sp/pc encodings the M7
   refuses had never been asked, and the frontend executed them all;
   fuzz-armv7m-mpu's stack in a region open to all meant no frame ever
-  faulted, and three stacking behaviours were wrong; fuzz-ppc-tlb
-  clears `MAS2[E]`, and no test had run a little-endian page. A status bit no
+  faulted, and three stacking behaviours were wrong. A status bit no
   test reads (STKERR) is the same blind spot: grep for its readers.
 - **The fuzzers find what the suites share a blind spot for**: eighteen
   defects, eight in an interpreter, and sixteen in what arrives from
@@ -846,6 +845,10 @@ The SMP design is in [docs/os.md](docs/os.md#smp-on-the-host).
 
 ### Editing hazards
 
+- **A grep hit is a line, not a behaviour**: one masked bit in
+  fuzz-ppc-tlb's `make_safe` became "it never sets `MAS2[E]`" in a
+  commit, its docs and a lesson -- the function masks it only over the
+  code. Read the function before the line becomes a sentence.
 - **Replace the smallest unique string**, never a span between markers
   (one edit removed 99 lines of `docs/TODO.md`); assert the line count.
 - **Never `git checkout -- <file>` with uncommitted work in it**; copy to

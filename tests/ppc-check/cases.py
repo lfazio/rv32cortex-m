@@ -47,9 +47,11 @@ MAS2[E] set, and the memory cases store and load through either mapping
 model that knows only which order each access reads the bytes in. Each
 of those builds ends with an access straddling the alias page's end into
 a big-endian one, which must take a data storage interrupt with
-ESR[BO] (and ESR[ST] for the store) at that instruction. Nothing else
-in the tree asks this: fuzz-ppc-tlb clears MAS2[E] in every entry it
-writes, and no unit test sets it. Separate builds, because a TLB other
+ESR[BO] (and ESR[ST] and ESR[VLEMI] for VLE's store) at that
+instruction. fuzz-ppc-tlb holds nine load and store kinds on
+little-endian pages to its own reference; what these add is the
+byte-reversed and indexed forms, the reservations and VLE's encodings
+there, in ctest. Separate builds, because a TLB other
 than the reset one sends every access through translation, and the
 other cases are worth running on the identity path the guests use.
 """

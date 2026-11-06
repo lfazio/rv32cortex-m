@@ -1151,12 +1151,15 @@ page's order -- the e200z7 refuses load/store multiple only unaligned
 (7.7.6). The model knows only which order each access reads its bytes
 in. Each build ends with an access straddling the alias page's end into
 a big-endian page: a DSI with ESR[BO] at it, and ST and VLEMI for VLE's
-store (11.16.5). fuzz-ppc-tlb clears `MAS2[E]` in every entry it writes
-and no unit test set it, so the per-page byte order, the misaligned
-assembly across it and the straddle had never been run; they agree with
-the manual, 3,000 cases a build, and six mutants of them -- the swap on
-the aligned and the misaligned path, each way, and each straddle's DSI
--- are each found (the straddles only by the build that probes them).
+store (11.16.5). fuzz-ppc-tlb already holds nine load and store kinds
+-- `lwz`, `lbz`, `lhz`, `lha`, `stw`, `stb`, `sth`, `lmw`, `stmw` -- on
+little-endian data pages to its reference, the straddle included; what
+these builds add is the byte-reversed and indexed forms, the
+reservations and VLE's encodings there, deterministically and in ctest.
+They agree with the manual, 3,000 cases a build, and six mutants -- the
+swap on the aligned and the misaligned path, each way, and each
+straddle's DSI -- are each found (the straddles only by the build that
+probes them).
 
 **Each instrument was itself tested, by breaking the thing it checks.**
 

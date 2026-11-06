@@ -4215,23 +4215,22 @@ session, and every one of them recurred:
   gate it is measuring behind. And a hook called once a block is not
   LTO's to decide.**
 
-- **The filter that kept a fuzzer's reference simple kept a whole
-  mechanism unasked.** Asked to check the PowerPC frontend's
-  big-endian behaviour without a GPL emulator, the question became what
-  in byte order nothing yet ran -- and the answer was the e200z7's
-  per-page little-endian attribute. The frontend implements it: swaps
-  by access size, assembles a misaligned access byte by byte in the
-  page's order, takes a DSI with ESR[BO] when an access straddles pages
-  of different endianness. fuzz-ppc-tlb clears `MAS2[E]` in every entry
-  it writes, so its reference never had to model it, and no unit test
-  set the bit. `cases.py` now maps its buffer a second time,
-  little-endian, and runs 3,000 stores and loads a build through both
-  mappings against a model that knows only which order each access
-  reads; it agrees with the core manual (11.16.5, 7.7.6), and each of
-  six mutants is found. **When a harness clears a bit to keep its
-  reference small, the bit is a list of questions nobody is asking:
-  grep the harnesses for what they mask, not only the code for what
-  reads it.**
+- **Read the harness before saying what it cannot ask.** Asked to check
+  the PowerPC frontend's byte order without a GPL emulator, I widened
+  `cases.py` to a little-endian alias page -- and wrote, in a commit,
+  its docs and a lesson, that nothing had ever run one because
+  fuzz-ppc-tlb "clears `MAS2[E]` in every entry it writes". It clears
+  the bit only on the entries over its code and vectors (`make_safe`),
+  so the program it runs is itself; its data pages keep E, and its
+  reference already modelled the byte order, the misaligned assembly
+  and the straddle's DSI, with a count of little-endian accesses in its
+  stats line. One line read out of its function -- `*m2 &= ~(... |
+  PPC_MAS2_E)` -- became a claim about the whole harness, and the
+  claim went into four documents before the function was read. The new
+  cases were still worth having (the byte-reversed, indexed and
+  reservation forms and VLE on such a page, in ctest), but the finding
+  was not a finding. **A grep hit is a line, not a behaviour: read the
+  function it is in before it becomes a sentence.**
 
 - **A key the framework keeps once was handed per core.** G4MH's JIT
   generation was a field of each PE, and the framework compares the

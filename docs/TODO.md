@@ -280,14 +280,13 @@ From the last measurements in [linux.md](linux.md).
       2.7% of JIT CoreMark on the F746 when LTO stopped inlining them
       ([frontend/g4mh.md](frontend/g4mh.md#the-fxu)). Read each
       firmware's `nm` for the hooks and measure forcing them inline.
-- [ ] **fuzz-ppc-tlb never sets `MAS2[E]`**: it clears the bit in every
-      entry it writes, so its reference has no little-endian page to
-      check a translation against. `cases.py`'s `bl`/`vl` builds now
-      hold the byte order of one alias page and the straddle's DSI
-      ([frontend/ppc.md](frontend/ppc.md#how-it-is-checked)); the
-      fuzzer, with E in its reference, would ask it of every entry, the
-      instruction fetch from a little-endian Book E page included,
-      which nothing yet runs.
+- [ ] **Code fetched from a little-endian page.** fuzz-ppc-tlb keeps
+      `MAS2[E]` off the entries over its code (`make_safe`), so nothing
+      runs a Book E instruction from a little-endian page -- which the
+      core fetches word-swapped -- or tries VLE there, which is an ISI
+      with ESR[BO] (`fetch_xlate`). Its data pages do have E, and the
+      reference models them; `cases.py`'s `bl`/`vl` builds add the
+      byte-reversed, indexed and reservation forms there.
 - [ ] **SoftFloat's state is one per process.** `softfloat_roundingMode`,
       `softfloat_exceptionFlags` and `softfloat_detectTininess` are
       globals (`THREAD_LOCAL` is empty in this tree's `platform.h`), so
