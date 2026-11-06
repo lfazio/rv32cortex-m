@@ -392,7 +392,9 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   table.** G4MH inlines the stack's region by host address, and the SELF
   window is a different memory on each PE: PE1 ran PE0's loop on PE0's
   stack. The PE is in the context now; the guests kept stacks in shared
-  RAM, so only a two-PE fuzz run with a stack in local RAM saw it.
+  RAM, so only a two-PE fuzz run with a stack in local RAM saw it. And
+  a generation per core, handed to a framework that keeps one, flushes
+  at every switch once two differ (19 flushes against 3): one counter.
 - **Re-derive on the interpreter fallback, never per dispatch**, and
   remember a trap is not always an instruction the interpreter ran:
   `rv_hart_trap` refreshes the context.

@@ -3167,6 +3167,84 @@ static void test_mc_self_window_blocks(void)
 }
 
 /*
+ * One JIT generation for every PE.
+ *
+ * Where the PEs take turns on one thread they share a table of blocks,
+ * and the framework compares the generation it is handed with the last
+ * it saw, flushing on a difference. Each PE handed its own counter: once
+ * PE0 wrote an MPU register, PE0's was ahead of the others' and every
+ * switch between it and another PE flushed every block. PE0 writes MPM
+ * once -- MPE stays clear, so no access is decided differently -- and
+ * then all of them run a loop of 200 at a quantum of 16.
+ *
+ *   stsr htcfg0, r10 ; cmp 0, r10 ; bne 1f
+ *   ldsr r0, mpm                      ; PE0 alone
+ * 1: movea 200, r0, r13
+ * 2: add 1, r14 ; add -1, r13 ; cmp 0, r13 ; bne 2b
+ *   halt
+ */
+static uint32_t one_generation_run(bool write_mpm, uint64_t *retired)
+{
+    uint16_t prog[] = {
+        W0(OP_SYSTEM, G4MH_SR_HTCFG0, 10),
+        (uint16_t)((2u << 11) | SUB_STSR),
+        F2(OP_CMPI5, 0, 10),
+        BCOND(0xAu, 6), /* bne past the ldsr */
+        W0(OP_SYSTEM, 0, G4MH_SR_MPM),
+        (uint16_t)((G4MH_SR_SEL_MPU << 11) | SUB_LDSR),
+        W0(OP_MOVEA, 0, 13),
+        200u,
+        F2(OP_ADDI5, 1, 14), /* loop, halfword 8 */
+        F2(OP_ADDI5, -1, 13),
+        F2(OP_CMPI5, 0, 13),
+        BCOND(0xAu, -6), /* bne loop */
+        0x07E0u,
+        SUB_HALT,
+    };
+    uint32_t flushes = 0u;
+
+    if (!write_mpm) {
+        prog[4] = prog[5] = 0x0000u; /* two NOPs */
+    }
+#if EMU_HAVE_JIT
+    emu_jit_stats_t before, after;
+
+    emu_jit_get_stats(&before);
+#endif
+    if (!run_system(prog, sizeof(prog) / sizeof(prog[0]), 16u, 400u,
+                    retired)) {
+        CHECK(false);
+        return 0u;
+    }
+#if EMU_HAVE_JIT
+    emu_jit_get_stats(&after);
+    CHECK(after.translations > before.translations);
+    flushes = after.flushes - before.flushes;
+#endif
+    return flushes;
+}
+
+static void test_mc_one_generation(void)
+{
+    uint64_t base_retired = 0, retired = 0;
+    /* Bringing the PEs up flushes too: the difference is the write's. */
+    const uint32_t base = one_generation_run(false, &base_retired);
+    const uint32_t with = one_generation_run(true, &retired);
+
+    /* Every PE ran its loop to the HALT: stsr, cmp, bne, movea, 200 x
+     * 4 and the halt -- and PE0 the LDSR, or the two NOPs in its place. */
+    CHECK_EQ64(base_retired, G4MH_PE_COUNT * 805u + 2u);
+    CHECK_EQ64(retired, G4MH_PE_COUNT * 805u + 1u);
+#if EMU_HAVE_JIT
+    if (with > base + 1u) {
+        fprintf(stderr, "  one generation: %u flushes against %u\n", with,
+                base);
+    }
+    CHECK(with == base + 1u);
+#endif
+}
+
+/*
  * Each core writes its own id to its own slot and halts.
  *
  *   stsr  htcfg0, r10        ; r10 = this core's id  (sel 2, reg 0)
@@ -10224,7 +10302,7 @@ static uint32_t g_spid_gen;
 static void spid_setup(g4mh_cpu_t *c)
 {
     c->r[7] = 0x25u;
-    g_spid_gen = c->jit_gen;
+    g_spid_gen = g4mh_jit_gen;
 }
 
 static void test_spid_register(void)
@@ -10248,7 +10326,7 @@ static void test_spid_register(void)
         CHECK_EQ(reg(9), 0xFFFFFFFFu);
 #if G4MH_EXT_MPU
         CHECK_EQ(((const g4mh_cpu_t *)(const void *)g_core.cpu)->spid, 5u);
-        CHECK(((const g4mh_cpu_t *)(const void *)g_core.cpu)->jit_gen !=
+        CHECK(g4mh_jit_gen !=
               g_spid_gen);
 #endif
     }
@@ -11464,6 +11542,7 @@ void test_g4mh(void)
     test_mc_dispatch();
     test_mc_self_window_blocks();
     test_mc_quantum_invariance();
+    test_mc_one_generation();
     test_mc_reservation();
 #endif
 }

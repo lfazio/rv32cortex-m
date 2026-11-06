@@ -4233,6 +4233,24 @@ session, and every one of them recurred:
   grep the harnesses for what they mask, not only the code for what
   reads it.**
 
+- **A key the framework keeps once was handed per core.** G4MH's JIT
+  generation was a field of each PE, and the framework compares the
+  one it is given with the one it last saw, flushing on a difference.
+  Where the PEs take turns on one thread -- `--serial`, a board -- they
+  share a table of blocks and that one comparison, so as soon as one PE
+  wrote an MPU register its counter was ahead and every switch to
+  another PE flushed every block: 19 flushes in 2,416 instructions of
+  `test_mc_one_generation`, against 3 without the write. No guest had
+  written the MPU, and the TODO's measurement said "none today" for
+  that reason. PowerPC had made its counter one for all cores for
+  exactly this; G4MH's is the same now, atomic for `EMU_SMP`, and in
+  hot data beside the cores. The test is a difference -- the run with
+  the write against the run with two NOPs in its place -- because
+  bringing the PEs up flushes too, and an absolute bound written first
+  failed against the fix. **What the framework holds once must be handed
+  to it once: a per-core value in a per-thread slot is a value that
+  changes at every switch.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

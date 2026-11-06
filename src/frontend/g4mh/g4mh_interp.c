@@ -1838,7 +1838,7 @@ static EMU_INTERP_TEXT emu_run_reason_t interp_run(g4mh_cpu_t *c, uint32_t budge
                                      * block built on the half-written
                                      * entry.
                                      */
-                                    c->jit_gen++;
+                                    g4mh_jit_gen_bump();
                                 }
                             } else {
                                 e = g4mh_store(c, adr, 4u, *ent[k]);

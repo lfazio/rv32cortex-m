@@ -23,6 +23,9 @@
 static g4mh_mpu_t g_mpu[G4MH_PE_COUNT];
 #endif
 
+/* Read by the JIT once a block, so beside the cores (g4mh_frontend.c). */
+uint32_t g4mh_jit_gen EMU_HOT_DATA;
+
 void g4mh_cpu_init(g4mh_cpu_t *c, emu_bus_t *bus, uint32_t coreid)
 {
     memset(c, 0, sizeof(*c));
@@ -75,7 +78,7 @@ void g4mh_cpu_reset(g4mh_cpu_t *c, uint32_t reset_pc)
     c->mpu_active = false;
 #endif
     g4mh_jit_ctx_refresh(c);
-    c->jit_gen++;
+    g4mh_jit_gen_bump();
 
     /*
      * RBASE is where the reset vector and the exception handlers live.
@@ -1766,7 +1769,7 @@ EMU_NOINLINE void g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg,
 #if G4MH_EXT_MPU
             if (c->spid != v) {
                 c->spid = v;
-                c->jit_gen++;
+                g4mh_jit_gen_bump();
             }
 #endif
             return;
@@ -1807,7 +1810,7 @@ EMU_NOINLINE void g4mh_sr_write(g4mh_cpu_t *c, unsigned bank, unsigned reg,
          * system call, and that changes nothing a block depends on.
          */
         if (g4mh_mpu_reg_protects(reg)) {
-            c->jit_gen++;
+            g4mh_jit_gen_bump();
         }
         return;
     }

@@ -212,8 +212,18 @@ is answered:
 - **alignment** -- the backend's guard sends a misaligned access to the
   helper, which raises MAE with MEA set;
 - **the MPU** -- no window while it is on, and any MPU register write
-  bumps `jit_gen`, so a block built with one is discarded when the MPU
-  comes on;
+  bumps `g4mh_jit_gen`, so a block built with one is discarded when the
+  MPU comes on. **One counter for every PE**, as PowerPC's is: it was a
+  field of each core, and where the PEs take turns they share a table
+  of blocks while the framework keeps one generation -- so once one PE
+  wrote an MPU register, every switch between it and another flushed
+  every block. `test_mc_one_generation`, three PEs at a quantum of 16:
+  19 flushes against 3 without the write; now 5 against 4, the write's
+  one. No guest wrote the MPU
+  yet, which is why nothing had shown it; a write on one PE discards
+  the others' blocks too, which is rare and correct. On the F746 with
+  one PE, CoreMark under the JIT 50.59 to 50.83 and 50.46 to 50.48 at a
+  second layout, interpreted 90.50 to 90.49: nothing;
 - **reservations** -- a store must break any core's `LDL.W` reservation
   on its word. With one PE that is this core's own, and the store guard
   is `ll_valid`; `test_own_store_breaks_reservation` holds it, on both

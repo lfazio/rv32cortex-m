@@ -139,7 +139,7 @@ static uint32_t g4mh_ir_store(emu_cpu_t *cpu, uint32_t addr, uint32_t spec,
  *   - alignment: the backend's guard sends a misaligned access to the
  *     helper, which raises MAE with MEA set;
  *   - the MPU: no window while it is on. Any write to its registers bumps
- *     jit_gen, so a block built with the window is discarded when the
+ *     g4mh_jit_gen, so a block built with the window is discarded when the
  *     MPU is turned on rather than outliving it;
  *   - reservations: a store has to break any core's LDL.W reservation on
  *     its word. With one PE that is this core's own, and the store guard
@@ -441,7 +441,7 @@ static const void *const g4mh_ir_helpers[] = {
 
 /*
  * Whether the MPU was on for the block being translated. Any MPU write
- * discards every block (jit_gen), so this is a property of the block.
+ * discards every block (g4mh_jit_gen), so this is a property of the block.
  * Per core because cores translate at once under EMU_SMP.
  */
 static EMU_PER_CORE bool g_xl_mpu;
@@ -1842,7 +1842,7 @@ static void g4mh_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
     out->pc = &c->pc;
     out->state = &c->state;
     out->context = &c->jit_ctx;
-    out->generation = &c->jit_gen;
+    out->generation = &g4mh_jit_gen;
 }
 
 /*

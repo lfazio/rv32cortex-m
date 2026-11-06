@@ -195,11 +195,10 @@ typedef struct g4mh_cpu {
      * read PE0's stack (test_mc_self_window_blocks). So each PE runs its
      * own blocks; with a thread each, they never shared.
      *
-     * `jit_gen` counts writes to the MPU's registers, so every block is
-     * discarded when the configuration it was checked against changes.
+     * What makes every block wrong -- a write to an MPU register, SPID,
+     * a reset -- is g4mh_jit_gen, one for all the PEs; see there.
      */
     uint64_t jit_ctx;
-    uint32_t jit_gen;
 
     /*
      * Never zero. What a translated block's inlined store tests when it
@@ -237,6 +236,25 @@ typedef struct g4mh_cpu {
     uint32_t wr[32][4];
 #endif
 } g4mh_cpu_t;
+
+/*
+ * The JIT's generation: writes to the MPU's registers, SPID and resets,
+ * on any PE, so every block is discarded when the configuration it was
+ * checked against changes. **One for all of them**, as PowerPC's is:
+ * where the PEs take turns they share a table of blocks, and the
+ * framework compares the generation each binds with the last it saw --
+ * each PE handing its own, once PE0 wrote an MPU register every switch
+ * between it and another PE flushed every block (19 in
+ * test_mc_one_generation's 2,416 instructions). A write on one PE
+ * discards the others' blocks too: rare, and correct. Atomic, because
+ * under EMU_SMP the PEs are threads.
+ */
+extern uint32_t g4mh_jit_gen;
+
+static inline void g4mh_jit_gen_bump(void)
+{
+    __atomic_fetch_add(&g4mh_jit_gen, 1u, __ATOMIC_RELAXED);
+}
 
 /* Recompute the JIT's context from PSW and the PE; see jit_ctx. */
 static inline void g4mh_jit_ctx_refresh(g4mh_cpu_t *c)

@@ -102,19 +102,6 @@ measured at.
       with -- its own clock or a board timer, as ARMv7-M's `mmiobench`
       runs TIM2; PowerPC only for a little-endian window it does not
       have.
-- [ ] **G4MH's generation under one block table.** `jit_gen` is per PE,
-      and where the PEs share a table (`--serial`, a board with
-      `G4MH_PE_COUNT > 1`) two PEs whose MPU generations differ would
-      discard every block at every switch between them. PowerPC made
-      its counter one for all cores for exactly that reason. Measured at
-      8979eec: none today. The three-PE `smp.bin` under `--serial --jit`
-      flushes 7 times and none of them is the generation's (a print at
-      the generation flush, confirmed in the binary, never fired) --
-      no G4MH guest writes the MPU, so every PE's count stays at its
-      reset's. It bites the first multi-PE guest that programs its PEs'
-      MPUs differently. The PE is part of a block's context now (each
-      PE its own blocks, since a block bakes in its PE's local RAM), so
-      the generation could be per PE too, in the context or the key.
 - [ ] **Autovectorisation of the IR pipeline.**
 - [ ] **A flush after start-up is worth 17% on the F746, by itself.**
       RV32 Dhrystone runs at 19.19 host cycles an instruction with the
