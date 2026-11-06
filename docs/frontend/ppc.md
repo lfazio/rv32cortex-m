@@ -1155,7 +1155,15 @@ store (11.16.5). fuzz-ppc-tlb already holds nine load and store kinds
 -- `lwz`, `lbz`, `lhz`, `lha`, `stw`, `stb`, `sth`, `lmw`, `stmw` -- on
 little-endian data pages to its reference, the straddle included; what
 these builds add is the byte-reversed and indexed forms, the
-reservations and VLE's encodings there, deterministically and in ctest.
+reservations and VLE's encodings there, deterministically and in ctest
+-- and **code run from such a page**, which nothing ran: the Book E
+build writes a routine onto it byte-reversed through the big-endian
+mapping and calls it, since the core fetches a whole word in the page's
+order. The routine's first word is chosen for its reversal: 0x38A3C338
+is `addi 5,3,-15560` and reversed `addi 6,3,-23752`, a valid instruction
+with another effect -- with `add` there, a JIT that forgot to swap
+decoded an invalid word, declined it, and the interpreter it fell back
+to got it right, so the mutant passed.
 They agree with the manual, 3,000 cases a build, and six mutants -- the
 swap on the aligned and the misaligned path, each way, and each
 straddle's DSI -- are each found (the straddles only by the build that
@@ -1166,7 +1174,7 @@ probes them).
 | deliberate defects | caught |
 |---|---|
 | 44 in the translator and the interpreter, against `cases.py` | 44 |
-| 6 in the little-endian page's path, against `cases.py`'s `bl` and `vl` | 6 |
+| 8 in the little-endian page's path, against `cases.py`'s `bl` and `vl` | 8, the JIT's fetch only once its wrong reading was a valid instruction |
 | 30 in the FP unit, against `efpu.py` | 28; the other two change nothing observable |
 | 22 in the system level, against `ppc-sys` | 21; the other wakes a `wait` with nothing pending |
 | 37 in the MMU, the fetch path and the JIT's gate, against `ppc-mmu` | 37, after one was found surviving (below) |

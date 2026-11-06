@@ -4268,6 +4268,18 @@ session, and every one of them recurred:
   after an attribute, not only before; and where a frontend differs
   from the other three, ask why before working around it.**
 
+- **A wrong decode that declines is invisible.** The PowerPC cases
+  call a routine on a little-endian page, which the core fetches
+  word-swapped. Breaking the interpreter's swap failed them at once;
+  breaking the JIT translator's passed all 3,000, with 142 fewer block
+  entries. The unswapped `add` was an invalid word, so the translator
+  declined the routine and the interpreter, which still swapped, ran it
+  right. Rewritten with `addi 5,3,-15560`, whose reversal is
+  `addi 6,3,-23752` -- valid, and different -- the JIT mutant fails.
+  **When the mistake under test would produce garbage, choose the input
+  whose garbage is still an instruction: a JIT falls back from what it
+  cannot read, and the fallback hides it.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

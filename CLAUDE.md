@@ -198,7 +198,10 @@ Each has cost more than one session, and every one recurred.
   first instruction cannot see a translator's mistake about the middle;
   a reserved PTE at the leaf cannot see a skipped check; a cache test
   must hit the cache (`-- dtlb -- fills`); a check must run after the
-  mechanism arms (mmiobench's second `verify()`).
+  mechanism arms (mmiobench's second `verify()`). A JIT that misreads
+  an instruction into an invalid one only declines it, and the
+  interpreter gets it right: test with code whose wrong reading is
+  another valid instruction (`cases.py`'s little-endian routine).
 - **A test of "re-decide when X changes" needs X to be the only change**
   (PowerPC's TLB write followed straight by a branch), and a JIT's keys
   are tested only by running an address twice under different state --

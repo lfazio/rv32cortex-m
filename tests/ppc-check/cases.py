@@ -270,6 +270,13 @@ def harness_head(a):
 
 
 LE_ALIAS = 0x90000000
+# addi 5,3,-15560 ; xor 6,3,4 ; blr, at buf + 0x800 -- binutils' words.
+# The first is chosen for its byte-reversal, 0x38C3A338, which is
+# addi 6,3,-23752 (and blr's is a subfic): a fetch that forgets to swap
+# runs other instructions, not invalid ones -- an invalid word is only
+# declined, and the interpreter it falls back to gets it right.
+LE_CODE = [0x38A3C338, 0x7C662278, 0x4E800020]
+LE_CODE_AT = 0x800
 
 
 def le_alias(a):
@@ -296,6 +303,17 @@ def le_alias(a):
             a.li32(12, mas3)
         a.emit("mtspr 627,12", "tlbwe", isync)
     a.li32(14, LE_ALIAS)
+    if not a.v:
+        # A routine to run from the little-endian page: a Book E core
+        # fetches a whole word there in that page's order, so it is
+        # written byte-reversed through the big-endian mapping and comes
+        # back as itself through the alias. VLE code there is an ISI
+        # (BO), so the VLE build has none.
+        for i, w in enumerate(LE_CODE):
+            a.li32(12, w)
+            a.li(13, LE_CODE_AT + 4 * i)
+            a.emit("stwbrx 12,11,13")
+        a.emit("isync")
 
 
 def harness_tail(a):
@@ -1082,6 +1100,16 @@ def g_mem_le(rng, st, v):
         return g_resv_le(rng, st, v, order)
     if k < 0.4:
         return g_multi_le(rng, st, v, order)
+    if not v and k < 0.5:
+        # A call into the routine the harness put on the little-endian
+        # page: what it computes says its words were fetched right.
+        def model(s):
+            s.r[5] = (s.r[3] - 15560) & M
+            s.r[6] = s.r[3] ^ s.r[4]
+            s.ctr = LE_ALIAS + LE_CODE_AT
+            s.lr = None  # the return address
+        return ["lis 12,%d" % sx((LE_ALIAS + LE_CODE_AT) >> 16, 16),
+                "ori 12,12,%d" % (LE_CODE_AT & 0xFFFF), "mtspr 9,12", "bctrl"], model
     s_, d = R(rng), R(rng)
     off = rng.randrange(0, BUF - 8)
     at = off + rng.randrange(0, 4)
