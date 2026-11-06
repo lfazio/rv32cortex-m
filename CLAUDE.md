@@ -236,7 +236,8 @@ Each has cost more than one session, and every one recurred.
   rawgen kept ARMv7-M operands in r0-r12, so 557 sp/pc encodings the M7
   refuses had never been asked, and the frontend executed them all;
   fuzz-armv7m-mpu's stack in a region open to all meant no frame ever
-  faulted, and three stacking behaviours were wrong. A status bit no
+  faulted, and three stacking behaviours were wrong; fuzz-ppc-tlb
+  clears `MAS2[E]`, and no test had run a little-endian page. A status bit no
   test reads (STKERR) is the same blind spot: grep for its readers.
 - **The fuzzers find what the suites share a blind spot for**: eighteen
   defects, eight in an interpreter, and sixteen in what arrives from

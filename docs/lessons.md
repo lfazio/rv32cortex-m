@@ -4215,6 +4215,24 @@ session, and every one of them recurred:
   gate it is measuring behind. And a hook called once a block is not
   LTO's to decide.**
 
+- **The filter that kept a fuzzer's reference simple kept a whole
+  mechanism unasked.** Asked to check the PowerPC frontend's
+  big-endian behaviour without a GPL emulator, the question became what
+  in byte order nothing yet ran -- and the answer was the e200z7's
+  per-page little-endian attribute. The frontend implements it: swaps
+  by access size, assembles a misaligned access byte by byte in the
+  page's order, takes a DSI with ESR[BO] when an access straddles pages
+  of different endianness. fuzz-ppc-tlb clears `MAS2[E]` in every entry
+  it writes, so its reference never had to model it, and no unit test
+  set the bit. `cases.py` now maps its buffer a second time,
+  little-endian, and runs 3,000 stores and loads a build through both
+  mappings against a model that knows only which order each access
+  reads; it agrees with the core manual (11.16.5, 7.7.6), and each of
+  six mutants is found. **When a harness clears a bit to keep its
+  reference small, the bit is a list of questions nobody is asking:
+  grep the harnesses for what they mask, not only the code for what
+  reads it.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

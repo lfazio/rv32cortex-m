@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """cases.py - generated e200z7 instructions, three ways.
 
-    tests/ppc-check/cases.py --emu build/x/emu-host [--mode b|v] [--seed N]
+    tests/ppc-check/cases.py --emu build/x/emu-host [--mode b,v,bl,vl] [--seed N]
                              [--count N] [--out DIR] [--only CLASS,...]
 
 Each case loads five registers, CR, XER, CTR and LR from a seeded
@@ -39,6 +39,19 @@ cases agree with it.
 Mode b is classic Book E and mode v is VLE; the encodings differ and the
 semantics are shared, so most classes exist in both and the VLE-only
 forms (se_*, the SCI8 and I16 immediates) in v alone.
+
+Modes bl and vl are the same two encodings with **a little-endian page**:
+the harness maps the scratch buffer a second time, at 0x90000000, with
+MAS2[E] set, and the memory cases store and load through either mapping
+-- every width, the byte-reversed forms, any byte offset -- against a
+model that knows only which order each access reads the bytes in. Each
+of those builds ends with an access straddling the alias page's end into
+a big-endian one, which must take a data storage interrupt with
+ESR[BO] (and ESR[ST] for the store) at that instruction. Nothing else
+in the tree asks this: fuzz-ppc-tlb clears MAS2[E] in every entry it
+writes, and no unit test sets it. Separate builds, because a TLB other
+than the reset one sends every access through translation, and the
+other cases are worth running on the identity path the guests use.
 """
 
 import argparse
@@ -142,7 +155,8 @@ class State:
 
 class Asm:
     def __init__(self, mode):
-        self.v = mode == "v"
+        self.v = mode[0] == "v"
+        self.le = mode.endswith("l")  # bl, vl: the little-endian alias
         self.out = []
         self.label = 0
 
@@ -249,13 +263,53 @@ def harness_head(a):
                "mtspr %d,12" % (528 + n - 32))
     a.la(30, "0x10000000")
     a.la(11, "buf")
+    if a.le:
+        le_alias(a)
+
+
+LE_ALIAS = 0x90000000
+
+
+def le_alias(a):
+    """
+    buf's page again at LE_ALIAS, little-endian, in r14. TLB1 entry 1
+    becomes the reset identity first -- the lowest-numbered match wins,
+    so entry 0 can then be the alias without unmapping the code -- and
+    entry 0 a 4 KB page with MAS2[E], RPN buf's (page-aligned here).
+    """
+    isync = "se_isync" if a.v else "isync"
+    for mas0, mas1, mas2, mas3 in (
+            (0x10010000, 0xC0000B00, 0x08 | (0x20 if a.v else 0), 0x3F),
+            (0x10000000, 0x80000100, LE_ALIAS | 0x09, None)):
+        a.li32(12, mas0)
+        a.emit("mtspr 624,12")
+        a.li32(12, mas1)
+        a.emit("mtspr 625,12")
+        a.li32(12, mas2)
+        a.emit("mtspr 626,12")
+        if mas3 is None:
+            a.la(12, "buf")
+            a.emit("e_or2i 12,0x3F" if a.v else "ori 12,12,0x3F")
+        else:
+            a.li32(12, mas3)
+        a.emit("mtspr 627,12", "tlbwe", isync)
+    a.li32(14, LE_ALIAS)
 
 
 def harness_tail(a):
+    if a.le:
+        # Across the alias page's end into the identity, which is
+        # big-endian: a byte-ordering DSI, before any byte moves. The
+        # trap handler prints the vector, SRR0 and ESR, and exits.
+        a.out.append("probe:")
+        a.emit(("e_stw 3,0xFFE(14)" if a.v else "lwz 3,0xFFE(14)"))
     a.li(3, 0)
     a.li(0, 93)
     a.emit("se_sc" if a.v else "sc")
-    a.out.append("\t.balign 8\nbuf:\t.space %d\n\t.space 4096\nstack_top:" % (BUF + 16))
+    if a.le:
+        a.out.append("\t.balign 4096\nbuf:\t.space 4096\n\t.space 4096\nstack_top:")
+    else:
+        a.out.append("\t.balign 8\nbuf:\t.space %d\n\t.space 4096\nstack_top:" % (BUF + 16))
 
 
 LDS = """ENTRY(_start)
@@ -940,6 +994,126 @@ def g_mem(rng, st, v):
     return lines, model
 
 
+def x_form(rt, ra, rb, xo, rc):
+    """An opcode-31 X-form word, for the enhanced reservations VLE's
+    assembler will not take; the same word in both encodings, and
+    checked against binutils' Book E assembly of each."""
+    return "\t.long 0x%08x" % ((31 << 26) | (rt << 21) | (ra << 16) | (rb << 11) |
+                               (xo << 1) | rc)
+
+
+RESV = {1: ("lbarx", 52, "stbcx.", 694), 2: ("lharx", 116, "sthcx.", 726),
+        4: ("lwarx", 20, "stwcx.", 150)}
+
+
+def g_resv_le(rng, st, v, order):
+    """A reservation and its store-conditional through either mapping:
+    aligned to the size (an alignment interrupt otherwise, 7.7.6), and
+    the store succeeds -- the e200z7 does not require the two to share
+    a granule (3.5) -- so CR0 is EQ and SO."""
+    s_, d = R(rng), R(rng)
+    n = pick(rng, [1, 2, 4])
+    off = rng.randrange(0, (BUF - 8) // n) * n
+    lbase, sbase = pick(rng, [11, 14]), pick(rng, [11, 14])
+    lmn, lxo, smn, sxo = RESV[n]
+    lines = ["%s 12,%d" % ("e_li" if v else "li", off)]
+    if v and n < 4:
+        lines += [x_form(d, lbase, 12, lxo, 0), x_form(s_, sbase, 12, sxo, 1)]
+    else:
+        lines += ["%s %d,%d,12" % (lmn, d, lbase), "%s %d,%d,12" % (smn, s_, sbase)]
+
+    def model(s):
+        s.r[d] = int.from_bytes(bytes(s.mem[off:off + n]), order(lbase, 0))
+        s.mem[off:off + n] = (s.r[s_] & ((1 << (8 * n)) - 1)).to_bytes(n, order(sbase, 0))
+        s.set_crf(0, 2 | s.so())
+    return lines, model
+
+
+def g_multi_le(rng, st, v, order):
+    """stmw of r28-r31 through either mapping, each word in that page's
+    order -- the e200z7 refuses load/store multiple only unaligned
+    (7.7.6) -- then a load of any width through either, or lmw of r31
+    alone, which is the one lmw the harness can afford (r30 is its
+    console). r28, r29 and r31 are set here; r30 is 0x10000000."""
+    d = R(rng)
+    off = rng.randrange(0, (BUF - 20) // 4) * 4
+    words = [rng.getrandbits(32), rng.getrandbits(32), 0x10000000, rng.getrandbits(32)]
+    sbase, lbase = pick(rng, [11, 14]), pick(rng, [11, 14])
+    e = "e_" if v else ""
+    lines = []
+    for r, w in ((28, words[0]), (29, words[1]), (31, words[3])):
+        if v:
+            lines += ["e_lis %d,%d" % (r, w >> 16), "e_or2i %d,%d" % (r, w & 0xFFFF)]
+        else:
+            lines += ["lis %d,%d" % (r, sx(w >> 16, 16)), "ori %d,%d,%d" % (r, r, w & 0xFFFF)]
+    lines.append("%sstmw 28,%d(%d)" % (e, off, sbase))
+    lmw = rng.random() < 0.3
+    if lmw:
+        at = off + 4 * rng.randrange(4)
+        lines += ["%slmw 31,%d(%d)" % (e, at, lbase), "or %d,31,31" % d]
+        ln, lsx = 4, 0
+    else:
+        lmn, ln, lsx = pick(rng, [("lwz", 4, 0), ("lhz", 2, 0), ("lha", 2, 1), ("lbz", 1, 0)])
+        at = off + rng.randrange(0, 16 - ln + 1)
+        lines.append("%s%s %d,%d(%d)" % (e, lmn, d, at, lbase))
+
+    def model(s):
+        for i, w in enumerate(words):
+            s.mem[off + 4 * i:off + 4 * i + 4] = w.to_bytes(4, order(sbase, 0))
+        val = int.from_bytes(bytes(s.mem[at:at + ln]), order(lbase, 0))
+        s.r[d] = sx(val, 16) & M if lsx else val
+    return lines, model
+
+
+def g_mem_le(rng, st, v):
+    """A store and a load through either mapping of the same bytes: buf
+    (r11), big-endian, and its little-endian alias (r14). A byte-reversed
+    form reverses whichever order its page has. Indexed forms take their
+    offsets in r12 (the store) and r13 (the load). One case in five is a
+    reservation pair, one in five a store multiple."""
+
+    def order(base, rev):
+        return "little" if (base == 14) != bool(rev) else "big"
+
+    k = rng.random()
+    if k < 0.2:
+        return g_resv_le(rng, st, v, order)
+    if k < 0.4:
+        return g_multi_le(rng, st, v, order)
+    s_, d = R(rng), R(rng)
+    off = rng.randrange(0, BUF - 8)
+    at = off + rng.randrange(0, 4)
+    e = "e_" if v else ""
+    # mnemonic, bytes, byte-reversed, indexed, sign-extending
+    stores = [("stw", 4, 0, 0), ("sth", 2, 0, 0), ("stb", 1, 0, 0),
+              ("stwx", 4, 0, 1), ("sthx", 2, 0, 1), ("stbx", 1, 0, 1),
+              ("stwbrx", 4, 1, 1), ("sthbrx", 2, 1, 1)]
+    loads = [("lwz", 4, 0, 0, 0), ("lhz", 2, 0, 0, 0), ("lha", 2, 0, 0, 1),
+             ("lbz", 1, 0, 0, 0), ("lwzx", 4, 0, 1, 0), ("lhax", 2, 0, 1, 1),
+             ("lbzx", 1, 0, 1, 0), ("lwbrx", 4, 1, 1, 0), ("lhbrx", 2, 1, 1, 0)]
+    smn, sn, sbr, sx_ = pick(rng, stores)
+    lmn, ln, lbr, lx, lsx = pick(rng, loads)
+    sbase, lbase = pick(rng, [11, 14]), pick(rng, [11, 14])
+    lines = []
+    if sx_:
+        lines += ["%s 12,%d" % ("e_li" if v else "li", off),
+                  "%s %d,%d,12" % (smn, s_, sbase)]
+    else:
+        lines.append("%s%s %d,%d(%d)" % (e, smn, s_, off, sbase))
+    if lx:
+        lines += ["%s 13,%d" % ("e_li" if v else "li", at),
+                  "%s %d,%d,13" % (lmn, d, lbase)]
+    else:
+        lines.append("%s%s %d,%d(%d)" % (e, lmn, d, at, lbase))
+
+    def model(s):
+        x = s.r[s_] & ((1 << (8 * sn)) - 1)
+        s.mem[off:off + sn] = x.to_bytes(sn, order(sbase, sbr))
+        val = int.from_bytes(bytes(s.mem[at:at + ln]), order(lbase, lbr))
+        s.r[d] = sx(val, 16) & M if lsx else val
+    return lines, model
+
+
 FP_SPECIAL = [0x00000000, 0x80000000, 0x3F800000, 0xBF800000, 0x7F800000,
               0xFF800000, 0x7FC00000, 0x00000001, 0x007FFFFF, 0x00800000,
               0x7F7FFFFF, 0xFF7FFFFF, 0x3F000000, 0x40490FDB, 0x4B800000,
@@ -974,10 +1148,14 @@ CLASSES = {
     "arith": g_arith, "muldiv": g_muldiv, "imm": g_imm, "logic": g_logic,
     "logic_imm": g_logic_imm, "unary": g_unary, "shift": g_shift, "cmp": g_cmp,
     "cr": g_cr, "spr": g_spr, "branch": g_branch, "mem": g_mem, "efp": g_efp,
+    "mem_le": g_mem_le,
 }
+# The classes a little-endian build runs, and the ones that need its
+# alias: mem as well, so big-endian accesses run translated beside them.
+LE_CLASSES = ("mem_le", "mem")
 WEIGHT = {"arith": 5, "shift": 5, "mem": 4, "branch": 4, "imm": 3, "cmp": 3,
           "cr": 3, "muldiv": 2, "logic": 2, "logic_imm": 2, "unary": 2, "spr": 1,
-          "efp": 2}
+          "efp": 2, "mem_le": 3}
 
 
 def build(mode, seed, count, only):
@@ -985,6 +1163,12 @@ def build(mode, seed, count, only):
     a = Asm(mode)
     harness_head(a)
     names = [n for n in sorted(CLASSES) if not only or n in only]
+    if a.le:
+        names = [n for n in names if n in LE_CLASSES]
+    else:
+        names = [n for n in names if n != "mem_le"]
+    if not names:
+        return None, None, None
     bag = [n for n in names for _ in range(WEIGHT[n])]
     mem = bytearray(BUF + 16)
     want = []
@@ -1009,7 +1193,7 @@ def build(mode, seed, count, only):
         a.li32(12, st.lr)
         a.emit("mtspr 8,12")
         for l in lines:
-            if l.endswith(":"):
+            if l.endswith(":") or l.startswith("\t"):
                 a.out.append(l)
             else:
                 a.emit(l)
@@ -1037,7 +1221,7 @@ def run_emu(emu, elf, jit, cap):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--emu", required=True)
-    ap.add_argument("--mode", default="b,v")
+    ap.add_argument("--mode", default="b,v,bl,vl")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--count", type=int, default=2000)
     ap.add_argument("--out", default="/tmp/ppc-cases")
@@ -1049,10 +1233,12 @@ def main():
     failed = False
     for mode in a.mode.split(","):
         src, want, info = build(mode, a.seed, a.count, only)
+        if src is None:
+            continue  # no class of this build was asked for
         base = os.path.join(a.out, "cases-%s-%d" % (mode, a.seed))
         open(base + ".s", "w").write(src)
         open(base + ".ld", "w").write(LDS)
-        asf = ["-a32", "-mbig"] + (["-mvle"] if mode == "v" else ["-me500", "-many"])
+        asf = ["-a32", "-mbig"] + (["-mvle"] if mode[0] == "v" else ["-me500", "-many"])
         r = subprocess.run([AS] + asf + ["-o", base + ".o", base + ".s"],
                            stderr=subprocess.PIPE, universal_newlines=True)
         if r.returncode != 0:
@@ -1095,12 +1281,29 @@ def main():
                                 "--------" if w is None else "%08x" % w
                                 for w in want[i])))
         short = len(interp) != a.count or len(jit) != a.count
-        ok = not (bad_model or bad_jit or short or not entries or
+        probe_bad = False
+        if mode.endswith("l"):
+            # The straddling access: DSI (vector 2) at the probe, ESR[BO],
+            # with VLE's store ST and VLEMI (a VLE instruction) as well,
+            # and Book E's load neither.
+            nm = subprocess.run([AS[:-2] + "nm", base + ".elf"], stdout=subprocess.PIPE,
+                                universal_newlines=True, check=True).stdout
+            addr = int(re.search(r"^([0-9a-f]+) . probe$", nm, re.M).group(1), 16)
+            esr = 0x00020000 | (0x00800020 if mode[0] == "v" else 0)
+            want_trap = "TRAP 00000002 %08x %08x " % (addr, esr)
+            for name, raw in (("interp", raw_i), ("jit", raw_j)):
+                got = [l for l in raw.splitlines() if l.startswith("TRAP")]
+                if got != [want_trap]:
+                    probe_bad = True
+                    print("  probe (%s): want %r, got %r" % (name, want_trap, got[:2]))
+        ok = not (bad_model or bad_jit or short or probe_bad or not entries or
                   int(entries.group(1)) == 0)
         print("mode %s seed %d: %d cases, %d modelled; interp vs model %d wrong, "
-              "jit vs interp %d wrong; %s block entries%s" % (
+              "jit vs interp %d wrong; %s block entries%s%s" % (
                   mode, a.seed, a.count, modelled, bad_model, bad_jit,
                   entries.group(1) if entries else "no",
+                  "" if not mode.endswith("l") else
+                  ("; the straddle %s" % ("WRONG" if probe_bad else "took its DSI")),
                   "" if not short else
                   "; RAN SHORT: interp %d lines, jit %d" % (len(interp), len(jit))))
         if short:
