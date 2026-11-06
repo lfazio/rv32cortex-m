@@ -272,8 +272,10 @@ From the last measurements in [linux.md](linux.md).
       PE0 and the FPU's rules ([frontend/g4mh.md](frontend/g4mh.md#the-fxu)).
       Left: a cache for `CFALI` to lock; something to drive the NMI pin;
       and the debug level -- `DBTRAP`, `DBRET`, `DBPC`, `DBPSW` -- which
-      no manual in `docs/renesas/` describes: the Emulation manual is
-      needed.
+      no manual in `docs/renesas/` describes. The E2 emulator manual
+      (R20UT3538, added 2026-11-06) is the probe's hardware and does not
+      either; what is needed is a description of the G4MH's debug
+      functions themselves.
 - [ ] **The readings only an RH850 can settle.** Every G4MH result rests
       on Renesas' documents, cross-checked where a second one exists
       ([frontend/g4mh.md](frontend/g4mh.md#what-rests-on-the-manuals-alone));

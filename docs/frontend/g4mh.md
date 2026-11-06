@@ -1172,12 +1172,12 @@ have caught the bug above -- no single-backend run can see it.
 
 **Architectural features not modelled:**
 
-- **The FXU.** No extended floating-point instructions. Its system
-  registers answer `CU1` as the FPU's answer `CU0` -- `UCPOP` `81H` when
-  clear ([Privilege](#privilege)) -- and hold what is written.
 - **`GMCFG` and the guest modes** (virtualization).
 - **Debug level.** No `DBPC`/`DBPSW`, `DBTRAP`/`DBRET` — the analogue of
-  Sdtrig.
+  Sdtrig. No document in `docs/renesas/` describes them: the software
+  manual never names them, and the E2 emulator manual (R20UT3538) is
+  the probe's hardware -- connectors, setup, specifications -- and
+  defers to device supplements.
 - **The JIT's keys.** `g4mh_backend_jit` comes from the shared IR
   framework, on x86-64 (`emu-host --jit`) and on Thumb-2 alike. A block
   is keyed on PSW.UM and discarded on any MPU register write, and the
