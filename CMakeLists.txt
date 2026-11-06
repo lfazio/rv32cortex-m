@@ -1246,6 +1246,15 @@ if(EMU_PLATFORM STREQUAL "host")
     if(BUILD_TESTING)
         add_subdirectory(tests/unit)
     endif()
+    # SoftFloat's state per thread where cores are threads, asserted in
+    # the binary: its three globals must be TLS (cmake/freertos.cmake).
+    if(BUILD_TESTING AND EMU_SMP_THREADS)
+        add_test(NAME softfloat-state-per-thread
+                 COMMAND sh -c "readelf -sW \"$1\" | grep -cE ' TLS .* softfloat_(roundingMode|exceptionFlags|detectTininess)$'"
+                         sh $<TARGET_FILE:emu-host>)
+        set_tests_properties(softfloat-state-per-thread PROPERTIES
+            LABELS fast PASS_REGULAR_EXPRESSION "^3\n")
+    endif()
     include(cmake/validation.cmake)
     if(EMU_FUZZ)
         add_subdirectory(tests/fuzz)

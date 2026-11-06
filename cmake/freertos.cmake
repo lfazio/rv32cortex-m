@@ -95,6 +95,18 @@ if(EMU_PLATFORM STREQUAL "host" AND EMU_OS_SMP AND _emu_os_cores GREATER 1)
     # thread (include/emu/emu_lock.h, emu_types.h).
     #
     target_compile_definitions(emucore PUBLIC EMU_SMP=1)
+    #
+    # And so does SoftFloat's state -- the rounding mode, the flags and
+    # the tininess mode are globals its operations read and write, and
+    # two cores computing at once would take each other's. Every user is
+    # in emucore, so one definition keeps the declarations in
+    # softfloat.h and the definitions in softfloat_state.c alike
+    # (src/frontend/rv32/softfloat/platform.h defers to it).
+    #
+    target_compile_definitions(emucore PRIVATE THREAD_LOCAL=_Thread_local)
+    # Its test is in CMakeLists.txt, after include(CTest): BUILD_TESTING
+    # does not exist yet here.
+    set(EMU_SMP_THREADS ON)
 elseif(EMU_PLATFORM STREQUAL "host")
     set(_frt_port "${_frt}/portable/ThirdParty/GCC/Posix")
     list(APPEND _frt_port_srcs "${_frt_port}/port.c"

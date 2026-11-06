@@ -22,6 +22,15 @@
 #define INLINE_LEVEL 1
 #define INLINE static inline
 
+/*
+ * SoftFloat's rounding mode, flags and tininess mode are globals. Where
+ * cores run as threads (EMU_SMP) they must be each thread's, and
+ * cmake/freertos.cmake defines THREAD_LOCAL for the whole of emucore so
+ * that every declaration of them agrees with the definition; anywhere
+ * else they are the one global they always were.
+ */
+#ifndef THREAD_LOCAL
 #define THREAD_LOCAL
+#endif
 
 #endif /* RV32_SOFTFLOAT_PLATFORM_H */

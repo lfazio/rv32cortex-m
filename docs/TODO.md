@@ -281,13 +281,6 @@ From the last measurements in [linux.md](linux.md).
       with ESR[BO] (`fetch_xlate`). Its data pages do have E, and the
       reference models them; `cases.py`'s `bl`/`vl` builds add the
       byte-reversed, indexed and reservation forms there.
-- [ ] **SoftFloat's state is one per process.** `softfloat_roundingMode`,
-      `softfloat_exceptionFlags` and `softfloat_detectTininess` are
-      globals (`THREAD_LOCAL` is empty in this tree's `platform.h`), so
-      under `EMU_SMP` two G4MH or PowerPC cores computing at once share
-      them -- and `g4mh_fp.c` now sets the tininess mode for each
-      operation. Nothing in the SMP guests uses FP. `_Thread_local` on
-      the host would do; a board has one thread.
 - [ ] **The readings only an RH850 can settle.** Every G4MH result rests
       on Renesas' documents, cross-checked where a second one exists
       ([frontend/g4mh.md](frontend/g4mh.md#what-rests-on-the-manuals-alone));
