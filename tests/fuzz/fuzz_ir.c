@@ -311,6 +311,18 @@ static uint32_t pick(in_t *in, uint32_t n)
     return byte(in) % n;
 }
 
+/*
+ * A condition comparing two values: any but ALWAYS, which SETCC and
+ * EXIT_IF do not take. One byte, as every draw, so that widening the
+ * set (MI/PL/VS/VC, 2026-11-07) left older inputs' streams aligned.
+ */
+static uint8_t value_cond(in_t *in)
+{
+    const uint32_t c = pick(in, (uint32_t)EMU_IR_C_COUNT - 1u);
+
+    return (uint8_t)((c < (uint32_t)EMU_IR_C_ALWAYS) ? c : c + 1u);
+}
+
 static uint32_t word(in_t *in)
 {
     uint32_t v = byte(in);
@@ -604,7 +616,7 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
     case 5: { /* compare to a value */
         const uint16_t a = val(in), b = val(in);
 
-        d = E(EMU_IR_SETCC, (uint8_t)pick(in, 10u), a, b, 0u, 0u);
+        d = E(EMU_IR_SETCC, value_cond(in), a, b, 0u, 0u);
         break;
     }
     case 6: { /* divide, with the divisor the contract asks for */
@@ -625,7 +637,7 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
         const uint16_t a = addr_of(in, &disp);
 
         if (byte(in) < 64u) {
-            const uint8_t cond = (uint8_t)pick(in, 11u);
+            const uint8_t cond = (uint8_t)pick(in, (uint32_t)EMU_IR_C_COUNT);
             const uint16_t old = val(in);
             const uint16_t p =
                 E(EMU_IR_GETCOND, cond, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 0u, 0u);
@@ -646,8 +658,8 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
         uint16_t p = EMU_IR_NO_TEMP;
 
         if (byte(in) < 64u) {
-            p = E(EMU_IR_GETCOND, (uint8_t)pick(in, 11u), EMU_IR_NO_TEMP,
-                  EMU_IR_NO_TEMP, 0u, 0u);
+            p = E(EMU_IR_GETCOND, (uint8_t)pick(in, (uint32_t)EMU_IR_C_COUNT),
+                  EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 0u, 0u);
         }
         (void)emu_ir_mem_if(&g_built, EMU_IR_STORE, aux, a, v, disp, p);
         break;
@@ -668,8 +680,8 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
         const uint16_t a = val(in), b = val(in);
 
         setf(in, a, b);
-        d = E(EMU_IR_GETCOND, (uint8_t)pick(in, 11u), EMU_IR_NO_TEMP,
-              EMU_IR_NO_TEMP, 0u, 0u);
+        d = E(EMU_IR_GETCOND, (uint8_t)pick(in, (uint32_t)EMU_IR_C_COUNT),
+              EMU_IR_NO_TEMP, EMU_IR_NO_TEMP, 0u, 0u);
         if (byte(in) & 1u) {
             const uint16_t x = val(in), y = val(in);
 
@@ -777,7 +789,7 @@ static bool one(in_t *in, uint32_t pc, uint32_t next)
         const uint32_t to = (sel == 0u) ? next : sel;
         const uint16_t a = val(in), b = val(in);
 
-        (void)E(EMU_IR_EXIT_IF, (uint8_t)pick(in, 10u), a, b, to, 0u);
+        (void)E(EMU_IR_EXIT_IF, value_cond(in), a, b, to, 0u);
     }
     return true;
 }

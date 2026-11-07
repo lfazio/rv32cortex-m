@@ -423,6 +423,13 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
 - **Derived state goes stale where code clears its inputs by hand**
   (`fetch_guard` after reset sent every later guest to the interpreter);
   compute summaries on read (`mstatus.SD`).
+- **An interrupt's entry retires nothing in ARMv7-M and G4MH, and one
+  in RV32 and PowerPC**; the dispatcher follows the frontend
+  (`irq_not_retired`), and counted one for all four until a test asked
+  (ARMv7-M CoreMark: 1,114 more under the JIT, a SysTick each). Compare
+  a JIT run's retired count with the interpreter's, not only its output.
+- **A link is made the second time an exit is followed**: a test of
+  what a chained exit would skip follows the edge three times first.
 - **A device counting instructions reads a chain's start** under the JIT
   (PowerPC STM read 900 of 1,000); asynchronous interrupts arrive a block
   late, which the architecture permits.

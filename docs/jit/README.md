@@ -150,10 +150,21 @@ back passes every suite while proving nothing.
 
 A block's exit to a constant target is emitted as a jump to the block's
 own tail, and patched to land in the successor once both exist and the
-edge has been taken (`EMU_JIT_MAX_CHAIN` exits per block). A chain never
-reaches the dispatcher, so each link carries the same bound a self-loop
-does — `EMU_JIT_LOOP_CAP` retired instructions — or nothing would check
-for a pending interrupt.
+edge has been taken (`EMU_JIT_MAX_CHAIN` exits per block). **A link is
+made the second time an exit is followed**: after translating a block
+the dispatcher forgets the one it came from, since translating may have
+compacted, so the first traversal of an edge translates and the second
+links. A chain never reaches the dispatcher, so each link carries the
+same bound a self-loop does — `EMU_JIT_LOOP_CAP` retired instructions —
+or nothing would check for a pending interrupt; an instruction that
+must reach the dispatcher at once, as G4MH's EI must for what it
+unmasks, exits to a target held in a value, which never chains.
+
+An interrupt the dispatcher takes is counted as a retired instruction
+only where the frontend's interpreter counts one: RV32's and PowerPC's
+do, ARMv7-M's and G4MH's do not (`emu_ir_frontend_t::irq_not_retired`).
+It was counted for all four, and ARMv7-M CoreMark retired 1,114 more
+under the JIT than interpreted, a SysTick each.
 
 When the buffer fills, `compact()` keeps the blocks that have been
 looked up more than once, slides them down, and drops the rest. **A

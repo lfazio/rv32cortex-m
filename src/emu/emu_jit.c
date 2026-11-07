@@ -1709,7 +1709,9 @@ EMU_HOT_TEXT emu_run_reason_t emu_jit_run(emu_cpu_t *cpu, uint32_t budget,
         if (ops->take_irq != NULL &&
             (hot.irq_pending == NULL || *hot.irq_pending) &&
             ops->take_irq(cpu)) {
-            done++;
+            if (!ops->irq_not_retired) {
+                done++; /* as RV32's and PowerPC's interpreters count it */
+            }
             continue;
         }
 

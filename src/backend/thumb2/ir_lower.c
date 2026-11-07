@@ -1483,6 +1483,16 @@ static void emit_getcond(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         t2_orr(rd, rd, T2_R1); /* C || Z */
         break;
 
+    case EMU_IR_C_MI:
+    case EMU_IR_C_PL:
+        setf_flag_bit(rd, T2_R12, t, 1); /* S */
+        break;
+
+    case EMU_IR_C_VS:
+    case EMU_IR_C_VC:
+        setf_flag_bit(rd, T2_R12, t, 2); /* V */
+        break;
+
     default:
         t2_imm32(rd, 1u);
         st_slot(rd, in->dst);
@@ -1490,11 +1500,12 @@ static void emit_getcond(const emu_ir_insn_t *in, const emu_ir_target_t *t)
     }
 
     /*
-     * The five negated forms are the positive one with bit 0 flipped,
+     * The seven negated forms are the positive one with bit 0 flipped,
      * which is exact because everything above is already 0 or 1.
      */
     if (c == EMU_IR_C_NE || c == EMU_IR_C_GEU || c == EMU_IR_C_GE ||
-        c == EMU_IR_C_GT || c == EMU_IR_C_GTU) {
+        c == EMU_IR_C_GT || c == EMU_IR_C_GTU || c == EMU_IR_C_PL ||
+        c == EMU_IR_C_VC) {
         t2_eor_imm(rd, rd, 1u);
     }
     st_slot(rd, in->dst);

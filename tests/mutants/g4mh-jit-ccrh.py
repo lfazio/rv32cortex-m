@@ -18,7 +18,7 @@ F = "src/frontend/g4mh/g4mh_ir.c"
 M = [
     ("loop-declined", F, "        if (((uint32_t)w1 & 1u) == 0u) {\n            return false;\n        }\n\n        const uint16_t x = emu_ir_get(b, r1);", "        if (true) {\n            return false;\n        }\n\n        const uint16_t x = emu_ir_get(b, r1);"),
     ("loop-no-flags", F, "        (void)emu_ir_emit(b, EMU_IR_SETF, EMU_IR_FS_ADD, x, m1, 0u, F_ARITH);\n        (void)emu_ir_emit(b, EMU_IR_RETIRE,", "        (void)emu_ir_emit(b, EMU_IR_RETIRE,"),
-    ("loop-target-off", F, "pc - ((uint32_t)w1 & 0xFFFEu), 0u);", "pc - ((uint32_t)w1 & 0xFFFCu), 0u);"),
+    ("loop-target-off", F, "emu_ir_const(b, 0u), pc - ((uint32_t)w1 & 0xFFFEu),", "emu_ir_const(b, 0u), pc - ((uint32_t)w1 & 0xFFFCu),"),
     ("loop-cond-eq", F, "        (void)emu_ir_emit(b, EMU_IR_EXIT_IF, EMU_IR_C_NE, v,", "        (void)emu_ir_emit(b, EMU_IR_EXIT_IF, EMU_IR_C_EQ, v,"),
     ("loop-not-counted", F, "        *counted = true;\n        (void)emu_ir_emit(b, EMU_IR_EXIT_IF, EMU_IR_C_NE, v,", "        (void)emu_ir_emit(b, EMU_IR_EXIT_IF, EMU_IR_C_NE, v,"),
     ("ext-table-swapped", F, "static const uint8_t k_ext[4] = {EMU_IR_ZEXT8, EMU_IR_SEXT8,\n                                             EMU_IR_ZEXT16, EMU_IR_SEXT16};", "static const uint8_t k_ext[4] = {EMU_IR_ZEXT8, EMU_IR_SEXT8,\n                                             EMU_IR_SEXT16, EMU_IR_ZEXT16};"),

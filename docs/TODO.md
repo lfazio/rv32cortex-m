@@ -102,10 +102,6 @@ measured at.
       crt0 halts on any trap, so the hole and out-of-window checks the
       ARMv7-M guest makes need a guest-specific vector for SYSERR that
       records the cause and MEA and steps over the store.
-- [ ] **What G4MH CoreMark still declines**: 29,522 instructions under
-      the JIT, DI/EI/PUSHSP/POPSP (sub-opcode 0x160) and BP/BN, which
-      branch on S alone -- a condition the IR does not name
-      ([frontend/g4mh.md](frontend/g4mh.md#what-the-translator-declined)).
 - [ ] **Autovectorisation of the IR pipeline.**
 - [ ] **A third of a 96 KB buffer is still behind the I-cache.** With
       the JIT's buffer first in the F746's DTCM, about 59 KB of it is

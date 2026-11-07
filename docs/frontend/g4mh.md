@@ -301,8 +301,40 @@ the saturating slots (the saturating halves still decline); MULH in
 both forms and MULHI, SUBR; LOOP, an ADD of -1 with its flags and a
 backward exit; and the 48-bit JR/JARL disp32 and JMP disp32[reg1],
 which had stayed on the interpreter "since they end a block anyway".
-CoreMark interprets **29,522**: DI/EI/PUSHSP/POPSP at sub-opcode 0x160
-and BP/BN, whose sign-alone conditions the IR does not name. On the
+CoreMark interpreted **29,522** then: BN and BP, and 12,892 calls at
+sub-opcode 0x160.
+
+**The last of it** (2026-11-07). BN and BP branch on the sign alone, and
+BV and BNV on the overflow alone, which the IR's ten conditions could
+not say; it has `EMU_IR_C_MI`, `PL`, `VS` and `VC` now, in both backends
+and the reference -- as flags S or V, comparing values the sign or
+overflow of `a - b` -- so only BSA, on the saturation flag the IR does
+not have, declines. The 0x160 calls were `JARL [reg1], reg3`, the
+register-indirect call CoreMark makes through its list comparisons. A
+trace from a stale build named them `ei` -- that build's disassembler
+still decoded the slot by bit 15, the mistake `docs/lessons.md`
+records for PUSHSP and POPSP -- and the disassembler here printed
+`.short`; it names them now. DI
+and EI are lowered too, through a helper that reads MCTL.UIC at run
+time, and EI leaves its block by an exit whose target is a value, which
+never chains, so the dispatcher takes what it unmasked at the next
+instruction. CoreMark interprets **215**; on the F746 under the JIT
+22.47 to **21.94** host cycles an instruction, 21.93 at a second
+layout, the CRC the same. `test_jit_sign_overflow_jarl_ei` takes each
+condition under the four settings of S and V, the call with reg1 and
+reg3 apart and the same, and EI four times round a LOOP -- an exit is
+linked only the second time it is followed, so the fourth is where a
+chained EI shows; the 14 mutants in `tests/mutants/g4mh-jit-branches.py`
+each fail it.
+
+**And the JIT counted every interrupt it took as a retired
+instruction**, where this interpreter, like ARMv7-M's, counts none: the
+EI test retired 8 under the JIT against 7. The dispatcher's `take_irq`
+path charged one for every frontend, which is what RV32's and
+PowerPC's interpreters do; `emu_ir_frontend_t::irq_not_retired` now
+says which. ARMv7-M CoreMark, whose SysTick counts instructions,
+retired 11,145,477 under the JIT and 11,144,363 interpreted -- one per
+SysTick -- and retires 11,144,363 on both, on the host and the board. On the
 F746 under the JIT, CoreMark went **44.15 to 22.47** host cycles an
 instruction (44.10 to 22.37 at a second layout), the CRC and the
 retired count the same: 4.0x the interpreter's 90.51, where it had

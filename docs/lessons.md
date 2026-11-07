@@ -4388,6 +4388,37 @@ session, and every one of them recurred:
   JIT's. **An address says where code is, not what fetching it costs:
   move it and measure before crediting the memory.**
 
+- **A stale build's disassembler named the wrong instruction.** What
+  G4MH CoreMark still declined sat at sub-opcode 0x160, and a trace said
+  `ei`, so EI was lowered -- and the count did not move. The trace came
+  from `build/mx-host-trace`, a matrix row built from an older commit,
+  whose disassembler still decoded that slot by bit 15; the instruction
+  was JARL [reg1], reg3, and today's disassembler printed `.short` for
+  it. **Name the artefact before reading what it says, and when a fix
+  for what the instrument named does not move the count, ask the
+  encoding, not the mnemonic.**
+
+- **The JIT counted every interrupt it took.** The dispatcher charged a
+  retired instruction for each `take_irq`, as its contract said, and
+  RV32's and PowerPC's interpreters do the same -- ARMv7-M's and G4MH's
+  do not. A G4MH unit test asserting the retired count found it (8
+  against 7), and then ARMv7-M CoreMark explained itself: 11,145,477
+  under the JIT, 11,144,363 interpreted, a difference that had been on
+  the board's summary line all day, one per SysTick. The fuzzers set
+  interrupt-taking runs aside, so nothing compared it. **When two
+  backends' counts differ, the difference is a finding until each unit
+  of it is accounted for -- and a convention one frontend chose is not
+  the framework's to assume for the others.**
+
+- **An exit is linked the second time it is followed.** A test that an
+  EI's exit does not chain -- so an interrupt it unmasks is not
+  overtaken by the next block -- passed with the exit made chainable:
+  the dispatcher drops its record of the previous block after
+  translating, so a link is made on the second traversal and used on
+  the third. Run four times round a LOOP, the chained version ran the
+  guarded add once too often. **A test of what a chain skips needs the
+  edge followed three times before the event.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

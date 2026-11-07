@@ -474,8 +474,11 @@ typedef struct emu_jit_ops {
     bool (*wake)(emu_cpu_t *cpu);
 
     /* Deliver a pending interrupt between blocks, if any. Returns true if
-     * one was taken, which costs a retired instruction. */
+     * one was taken, which costs a retired instruction unless
+     * `irq_not_retired` says the frontend's interpreter does not count one
+     * -- the two backends must agree on what a run retired. */
     bool (*take_irq)(emu_cpu_t *cpu);
+    bool irq_not_retired;
 
     /* Add `n` to whatever counts retired instructions and cycles. */
     void (*count)(emu_cpu_t *cpu, uint32_t n);

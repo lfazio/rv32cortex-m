@@ -102,6 +102,10 @@ enum {
 #define X86_CC_AE 0x83u
 #define X86_CC_LE 0x8Eu
 #define X86_CC_G 0x8Fu
+#define X86_CC_O 0x80u
+#define X86_CC_NO 0x81u
+#define X86_CC_S 0x88u
+#define X86_CC_NS 0x89u
 #define X86_CC_BE 0x86u
 #define X86_CC_A 0x87u
 /* Parity, which after a ucomiss is set exactly for an unordered compare. */

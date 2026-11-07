@@ -146,6 +146,14 @@ static bool eval_value_cond(uint32_t a, uint32_t b, uint8_t cond)
         return a <= b;
     case EMU_IR_C_GTU:
         return a > b;
+    case EMU_IR_C_MI:
+        return (int32_t)(a - b) < 0;
+    case EMU_IR_C_PL:
+        return (int32_t)(a - b) >= 0;
+    case EMU_IR_C_VS:
+        return (((a ^ b) & (a ^ (a - b))) >> 31) != 0u;
+    case EMU_IR_C_VC:
+        return (((a ^ b) & (a ^ (a - b))) >> 31) == 0u;
     case EMU_IR_C_ALWAYS:
     default:
         return true;
@@ -181,6 +189,14 @@ static bool eval_cond(emu_cpu_t *cpu, const emu_ir_target_t *t, uint8_t cond)
         return c || z;
     case EMU_IR_C_GTU:
         return !c && !z;
+    case EMU_IR_C_MI:
+        return s;
+    case EMU_IR_C_PL:
+        return !s;
+    case EMU_IR_C_VS:
+        return v;
+    case EMU_IR_C_VC:
+        return !v;
     case EMU_IR_C_ALWAYS:
     default:
         return true;

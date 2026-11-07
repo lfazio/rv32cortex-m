@@ -740,6 +740,14 @@ uint32_t t2_cond(uint8_t c)
         return 0x9u; /* LS */
     case EMU_IR_C_GTU:
         return 0x8u; /* HI */
+    case EMU_IR_C_MI:
+        return 0x4u;
+    case EMU_IR_C_PL:
+        return 0x5u;
+    case EMU_IR_C_VS:
+        return 0x6u;
+    case EMU_IR_C_VC:
+        return 0x7u;
     default:
         return 0xEu; /* AL */
     }

@@ -411,6 +411,17 @@ static void compare_pe(unsigned k)
     SAME(state);
     for (unsigned b = 0; b < G4MH_SR_BANKS; b++) {
         for (unsigned i = 0; i < G4MH_SR_PER_BANK; i++) {
+            /*
+             * Not sr[0][PSW]: PSW is `psw`, compared above, and every
+             * read of the system register -- STSR, the gdb stub -- goes
+             * through g4mh_sr_read, which returns it. The array's word is
+             * a copy the interpreter refreshes in places and translated
+             * code does not, so comparing it reported where it was last
+             * refreshed: JARL [reg1] after a flag-setting instruction.
+             */
+            if (b == 0u && i == G4MH_SR_PSW) {
+                continue;
+            }
             fz_diff(&g_target, pe(k, "sr"), b * 100u + i,
                     g_interp.cpu[k].sr[b][i], g_jit.cpu[k].sr[b][i]);
         }

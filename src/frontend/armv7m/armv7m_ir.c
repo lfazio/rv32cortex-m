@@ -2421,6 +2421,7 @@ const emu_ir_frontend_t armv7m_ir_frontend = {
     .is_idle = NULL,
     .wake = NULL,
     .take_irq = a7_take_irq,
+    .irq_not_retired = true, /* as armv7m_run: an entry retires nothing */
     .count = a7_count,
     .after_interp = a7_after_interp,
     .code_bytes = EMU_HOST_JIT_CODE_BYTES,

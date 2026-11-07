@@ -60,8 +60,14 @@ static uint64_t g4mh_gdb_reg_get(const emu_cpu_t *cpu, unsigned n)
     if (n < 32u) {
         return c->r[n];
     }
+    /*
+     * Through g4mh_sr_read, which computes PSW from c->psw: sr[0][PSW]
+     * is a copy the interpreter refreshes in places and translated code
+     * never does, so read directly a debugger stopped under the JIT saw
+     * flags from whenever it was last refreshed.
+     */
     if (n < G4MH_GDB_PC) {
-        return c->sr[0][n - G4MH_GDB_SR_BASE];
+        return g4mh_sr_read(c, 0u, n - G4MH_GDB_SR_BASE);
     }
     if (n == G4MH_GDB_PC) {
         return c->pc;

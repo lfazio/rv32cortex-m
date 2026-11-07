@@ -932,6 +932,22 @@ when the interrupt became deliverable *inside* translated code -- a
 store to the NVIC -- and those runs are set aside as asynchronous. The
 set-aside rule's blind spot is exactly where B lives.
 
+**And it hid a count the backends disagreed on** (2026-11-07). The
+dispatcher charged every interrupt it took a retired instruction;
+ARMv7-M's and G4MH's interpreters charge none. Every run that took an
+interrupt where the two could differ was one of those set aside, so
+no target compared it, and ARMv7-M CoreMark had been retiring 1,114
+more under the JIT -- a SysTick each -- on every summary line. A G4MH
+unit test that asserts the retired count of an EI followed by an
+interrupt found it (`irq_not_retired`, [jit/README.md](jit/README.md)).
+The same day fuzz-g4mh-jit stopped comparing `sr[0][PSW]`, the system
+register array's copy of PSW: every read of it goes through
+`g4mh_sr_read`, which returns `psw`, compared already, and the copy is
+refreshed by some interpreter paths and no translated code, so EI
+lowered without refreshing it read as a divergence
+(`g4mh-jit/ei-after-device-store-psw-copy`). The gdb stub had read the
+copy directly, and does not now.
+
 **A dictionary raises reach; it did not find a mutant.** The same three
 mutants, without the seeds, 300 s, libFuzzer seeds 1 and 2: without a
 dictionary and with the first one at 20a104a, and with the second at

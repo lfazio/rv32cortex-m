@@ -62,24 +62,27 @@
  * At file scope because both the branches and CMOV select on it, and a
  * second copy is a second thing to get wrong. **The table is indexed by
  * the architecture's encoding, so a hole must be a hole**: 0xFF marks
- * the six with no IR spelling -- BV, BNV, BN, BP, BSA -- and is tested
- * before use, because mapping an unrepresentable condition onto a near
- * neighbour is a silently wrong branch.
+ * what has no IR spelling -- BSA alone now, the saturation flag, which
+ * the IR does not have -- and is tested before use, because mapping an
+ * unrepresentable condition onto a near neighbour is a silently wrong
+ * branch. BV, BN, BNV and BP declined until the IR named the sign and
+ * the overflow alone (EMU_IR_C_MI/PL/VS/VC): BN and BP were 16,414 of
+ * the 29,522 instructions CoreMark still interpreted under the JIT.
  */
 static const uint8_t k_g4mh_cond[16] = {
-            0xFFu, /* 0 BV   overflow      -- no IR spelling  */
+            EMU_IR_C_VS, /* 0 BV   overflow                       */
             EMU_IR_C_LTU, /* 1 BL   carry set                        */
             EMU_IR_C_EQ, /* 2 BE   zero                             */
             EMU_IR_C_LEU, /* 3 BNH  carry or zero                    */
-            0xFFu, /* 4 BN   negative      -- no IR spelling  */
+            EMU_IR_C_MI, /* 4 BN   negative                       */
             EMU_IR_C_ALWAYS, /* 5 BR   unconditional                */
             EMU_IR_C_LT, /* 6 BLT  signed less                      */
             EMU_IR_C_LE, /* 7 BLE  signed less or equal             */
-            0xFFu, /* 8 BNV                -- no IR spelling  */
+            EMU_IR_C_VC, /* 8 BNV  no overflow                    */
             EMU_IR_C_GEU, /* 9 BNL  carry clear                      */
             EMU_IR_C_NE, /* A BNE  not zero                         */
             EMU_IR_C_GTU, /* B BH   higher                           */
-            0xFFu, /* C BP   positive      -- no IR spelling  */
+            EMU_IR_C_PL, /* C BP   positive                       */
             0xFFu, /* D BSA  saturated     -- no IR spelling  */
             EMU_IR_C_GE, /* E BGE  signed greater or equal          */
             EMU_IR_C_GT /* F BGT  signed greater                   */
@@ -422,6 +425,35 @@ static uint32_t g4mh_ir_fxu48_helper(emu_cpu_t *cpu, uint32_t insn,
     return 1u;
 }
 
+/*
+ * DI and EI: PSW.ID set or cleared, privileged unless MCTL.UIC lets user
+ * code run them. MCTL is read here, at run time, not by the translator:
+ * a guest writes it, and a block outlives a translate-time reading. `ei`
+ * is 1 for EI, whose lowering then leaves the block through the
+ * dispatcher, so an interrupt it unmasks is taken before the next
+ * instruction, where the interpreter takes it.
+ */
+static uint32_t g4mh_ir_diei_helper(emu_cpu_t *cpu, uint32_t ei,
+                                    uint32_t unused)
+{
+    g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
+
+    (void)unused;
+    if ((c->sr[1][G4MH_SR_MCTL] & G4MH_MCTL_UIC) == 0u &&
+        (c->psw & G4MH_PSW_UM) != 0u) {
+        g4mh_cpu_exception(c, G4MH_EXC_PIE, c->pc);
+        return 1u;
+    }
+    if (ei != 0u) {
+        c->psw &= ~G4MH_PSW_ID;
+        c->irq_dirty = true;
+    } else {
+        c->psw |= G4MH_PSW_ID;
+    }
+    c->sr[0][G4MH_SR_PSW] = c->psw; /* as the interpreter's group does */
+    return 0u;
+}
+
 static const void *const g4mh_ir_helpers[] = {
     (const void *)g4mh_ir_dispose_helper,
     (const void *)g4mh_ir_adf_helper,
@@ -430,6 +462,7 @@ static const void *const g4mh_ir_helpers[] = {
     (const void *)g4mh_ir_bitop_helper,
     (const void *)g4mh_ir_dw_helper,
     (const void *)g4mh_ir_fxu48_helper,
+    (const void *)g4mh_ir_diei_helper,
 };
 #define G4MH_IR_HELPER_DISPOSE 0u
 #define G4MH_IR_HELPER_ADF 1u
@@ -438,6 +471,7 @@ static const void *const g4mh_ir_helpers[] = {
 #define G4MH_IR_HELPER_BITOP 4u
 #define G4MH_IR_HELPER_DW 5u
 #define G4MH_IR_HELPER_FXU48 6u
+#define G4MH_IR_HELPER_DIEI 7u
 
 /*
  * Whether the MPU was on for the block being translated. Any MPU write
@@ -529,6 +563,56 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
     const uint32_t r1 = g4mh_reg1(w0);
     const uint32_t r2 = g4mh_reg2(w0);
     const uint32_t op = g4mh_op6(w0);
+
+    /*
+     * JARL [reg1], reg3 (sub-opcode 0x160, reg2 24): the register-indirect
+     * call, which is how CoreMark reaches its list comparisons -- 12,892
+     * calls interpreted a run, each ending its block. The target is read
+     * before the link is written, since reg1 and reg3 may be one
+     * register, and its bit 0 is dropped as JMP [reg1] drops it.
+     */
+    if (op == 0x3Fu && ((uint32_t)w1 & 0x07FFu) == 0x160u && r2 == 0x18u) {
+        const uint16_t tgt =
+            emu_ir_alu(b, EMU_IR_AND, emu_ir_get(b, r1), emu_ir_const(b, ~1u));
+
+        emu_ir_put(b, ((uint32_t)w1 >> 11) & 0x1Fu, emu_ir_const(b, pc + 4u));
+        (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          0u, 0u);
+        (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, tgt, EMU_IR_NO_TEMP, 0u, 0u);
+        *counted = true;
+        *ends = true;
+        return true;
+    }
+
+    /*
+     * DI (reg2 0) and EI (reg2 16) at sub-opcode 0x160, reg3 zero: RESBANK
+     * is reg2 0 with reg3 16, any other reg3 is RIE, and PUSHSP, POPSP and
+     * CLL share the slot -- all of those decline. What an RTOS's critical
+     * sections are made of; no measured guest here runs them in a loop
+     * (the "ei" a stale trace build printed for CoreMark was JARL [reg1],
+     * above). EI ends the block with an exit whose target is a value,
+     * which never chains: through the dispatcher, which takes what EI
+     * unmasked before the next instruction, as the interpreter does.
+     */
+    if (op == 0x3Fu && ((uint32_t)w1 & 0x07FFu) == 0x160u &&
+        (r2 == 0x00u || r2 == 0x10u) && ((uint32_t)w1 >> 11) == 0u) {
+        const bool ei = (r2 == 0x10u);
+
+        (void)emu_ir_emit(b, EMU_IR_SETPC, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          pc, 0u);
+        (void)emu_ir_emit(b, EMU_IR_HELPER_TRAP, 0u,
+                          emu_ir_const(b, ei ? 1u : 0u), EMU_IR_NO_TEMP,
+                          G4MH_IR_HELPER_DIEI, 0u);
+        if (ei) {
+            (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP,
+                              EMU_IR_NO_TEMP, 0u, 0u);
+            (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, emu_ir_const(b, pc + 4u),
+                              EMU_IR_NO_TEMP, 0u, 0u);
+            *counted = true;
+            *ends = true;
+        }
+        return true;
+    }
 
     /*
      * The 0x37 slot: MULHI with reg2, and with reg2 == 0 two instructions
@@ -1407,16 +1491,16 @@ static bool lower_one(emu_ir_block_t *b, uint16_t w0, uint32_t pc,
          * translator paid a full translation for a handful of
          * instructions and handed the branch back to the interpreter.
          *
-         * G4MH names sixteen conditions and the IR names ten, and the
-         * ten are exactly the ones a compiler emits -- equality, both
-         * signed orderings, both unsigned. The six left out (BV, BNV,
-         * BN, BP, BSA, and the saturation flag) have no IR spelling
-         * because no other frontend has them; they decline, which is
-         * correct and costs a block each time a guest uses one.
+         * G4MH names sixteen conditions. The IR named ten -- equality,
+         * both signed orderings, both unsigned -- on the reasoning that
+         * those are what a compiler emits, and CC-RH emits BN and BP
+         * too: 16,414 declined in a CoreMark run, each costing a block.
+         * The sign and overflow conditions are in the IR now; BSA, on
+         * the saturation flag the IR does not have, still declines.
          *
          * **The condition table is indexed by the architecture's
          * encoding, so a hole in it must be a hole and not a wrong
-         * answer.** 0xFF marks the six, and is tested before use --
+         * answer.** 0xFF marks BSA, and is tested before use --
          * mapping an unrepresentable condition onto a near neighbour
          * would be a silently wrong branch, which is the worst thing
          * available here.
@@ -2012,6 +2096,7 @@ const emu_ir_frontend_t g4mh_ir_frontend = {
     .is_idle = g4mh_jit_is_idle,
     .wake = g4mh_jit_wake,
     .take_irq = g4mh_jit_take_irq,
+    .irq_not_retired = true, /* as g4mh_run: an entry retires nothing */
     .count = g4mh_jit_count,
     .after_interp = g4mh_jit_after_interp,
     .code_bytes = G4MH_JIT_CODE_BYTES,

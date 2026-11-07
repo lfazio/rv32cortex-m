@@ -490,6 +490,10 @@ size_t g4mh_disasm(char *buf, size_t buflen, uint32_t pc, uint64_t insn,
                              r2 == 0x08u ? "pushsp" : "popsp", (unsigned)r1,
                              (unsigned)sel);
                 break;
+            case 0x18u:
+                n = snprintf(buf, buflen, "jarl [r%u], r%u", (unsigned)r1,
+                             (unsigned)sel);
+                break;
             case 0x1Fu:
                 n = snprintf(buf, buflen, "cll");
                 break;

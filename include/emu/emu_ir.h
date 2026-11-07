@@ -491,7 +491,20 @@ typedef enum emu_ir_cond {
     EMU_IR_C_GT,
     EMU_IR_C_LEU,
     EMU_IR_C_GTU,
-    EMU_IR_C_ALWAYS
+    EMU_IR_C_ALWAYS,
+    /*
+     * The sign and the overflow alone -- G4MH's BN/BP and BV/BNV, which
+     * declined without them. As flags: S set, S clear, V set, V clear.
+     * Comparing two values: the sign, or the signed overflow, of a - b,
+     * which is what a host's compare leaves. After ALWAYS so that the
+     * ten older values keep theirs; each pair is still positive then
+     * negated.
+     */
+    EMU_IR_C_MI,
+    EMU_IR_C_PL,
+    EMU_IR_C_VS,
+    EMU_IR_C_VC,
+    EMU_IR_C_COUNT
 } emu_ir_cond_t;
 
 /*
@@ -1159,6 +1172,14 @@ typedef struct emu_ir_frontend {
     bool (*is_idle)(emu_cpu_t *cpu);
     bool (*wake)(emu_cpu_t *cpu);
     bool (*take_irq)(emu_cpu_t *cpu);
+    /*
+     * Whether this frontend's interpreter leaves an interrupt's entry
+     * uncounted, so that the JIT's dispatcher does too. RV32's and
+     * PowerPC's count one, ARMv7-M's and G4MH's do not; the dispatcher
+     * counted one for all four, and ARMv7-M CoreMark retired 11,145,477
+     * under the JIT against 11,144,363 interpreted -- a SysTick each.
+     */
+    bool irq_not_retired;
     void (*count)(emu_cpu_t *cpu, uint32_t n);
     void (*after_interp)(emu_cpu_t *cpu);
 

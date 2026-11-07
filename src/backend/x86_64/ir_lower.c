@@ -596,17 +596,28 @@ static void emit_getcond(const emu_ir_insn_t *in, const emu_ir_target_t *t)
         x86_alu_rr(X86_OR, T0, T2); /* C || Z */
         break;
 
+    case EMU_IR_C_MI:
+    case EMU_IR_C_PL:
+        flag_bit_to(T0, T1, t, 1); /* S */
+        break;
+
+    case EMU_IR_C_VS:
+    case EMU_IR_C_VC:
+        flag_bit_to(T0, T1, t, 2); /* V */
+        break;
+
     default:
         x86_mov_imm32(T0, 1u);
         return;
     }
 
     /*
-     * The five negated forms are the positive one with bit 0 flipped,
+     * The seven negated forms are the positive one with bit 0 flipped,
      * which is exact because everything above is already 0 or 1.
      */
     if (c == EMU_IR_C_NE || c == EMU_IR_C_GEU || c == EMU_IR_C_GE ||
-        c == EMU_IR_C_GT || c == EMU_IR_C_GTU) {
+        c == EMU_IR_C_GT || c == EMU_IR_C_GTU || c == EMU_IR_C_PL ||
+        c == EMU_IR_C_VC) {
         x86_alu_imm32(X86_X_XOR, T0, 1u);
     }
 }
@@ -1633,6 +1644,8 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             [EMU_IR_C_LTU] = X86_CC_B,  [EMU_IR_C_GEU] = X86_CC_AE,
             [EMU_IR_C_LE] = X86_CC_LE,  [EMU_IR_C_GT] = X86_CC_G,
             [EMU_IR_C_LEU] = X86_CC_BE, [EMU_IR_C_GTU] = X86_CC_A,
+            [EMU_IR_C_MI] = X86_CC_S,   [EMU_IR_C_PL] = X86_CC_NS,
+            [EMU_IR_C_VS] = X86_CC_O,   [EMU_IR_C_VC] = X86_CC_NO,
         };
         if (in->aux == (uint8_t)EMU_IR_C_ALWAYS) {
             x86_mov_imm32(T0, 1u);
@@ -1686,6 +1699,8 @@ static bool lower_one(const emu_ir_insn_t *in, const emu_ir_target_t *t)
             [EMU_IR_C_LTU] = X86_CC_B,  [EMU_IR_C_GEU] = X86_CC_AE,
             [EMU_IR_C_LE] = X86_CC_LE,  [EMU_IR_C_GT] = X86_CC_G,
             [EMU_IR_C_LEU] = X86_CC_BE, [EMU_IR_C_GTU] = X86_CC_A,
+            [EMU_IR_C_MI] = X86_CC_S,   [EMU_IR_C_PL] = X86_CC_NS,
+            [EMU_IR_C_VS] = X86_CC_O,   [EMU_IR_C_VC] = X86_CC_NO,
         };
         /*
          * `a` and `b` are compared directly rather than through the

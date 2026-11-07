@@ -8354,6 +8354,176 @@ static void test_jit_cc_rh_loops_and_extensions(void)
     }
 }
 
+/*
+ * What CoreMark's blocks still declined after the loops and extensions:
+ * BN and BP, whose sign-alone conditions the IR did not name (BV and BNV,
+ * the overflow alone, with them), and JARL [reg1], reg3, the
+ * register-indirect call. And EI, which unmasks: the interrupt pending
+ * behind it must be taken at the next instruction under the JIT as under
+ * the interpreter. CC-RH's encodings, both backends, the JIT handing the
+ * interpreter only what is named.
+ */
+static void test_jit_sign_overflow_jarl_ei(void)
+{
+    /* Each condition with each of S and V: BV, BN, BNV, BP +4 over a
+     * `mov 1, r20`, then `mov 2, r21`. */
+    static const struct {
+        uint16_t op;
+        bool on_s, on_v, inverted;
+    } k[4] = {
+        {0x05A0u, false, true, false}, /* bv  */
+        {0x05A4u, true, false, false}, /* bn  */
+        {0x05A8u, false, true, true}, /* bnv */
+        {0x05ACu, true, false, true}, /* bp  */
+    };
+
+    for (unsigned i = 0; i < 4u; i++) {
+        for (unsigned f = 0; f < 4u; f++) {
+            const bool s_on = (f & 1u) != 0u, v_on = (f & 2u) != 0u;
+            const bool hit = k[i].on_s ? s_on : v_on;
+            const bool taken = k[i].inverted ? !hit : hit;
+            const uint16_t prog[] = {k[i].op, F2(OP_MOVI, 1, 20),
+                                     F2(OP_MOVI, 2, 21)};
+
+            for (unsigned pass = 0; pass < 2u; pass++) {
+                fp_state_t st = fp_state();
+                const g4mh_cpu_t *c;
+
+                st.psw |= (s_on ? G4MH_PSW_S : 0u) | (v_on ? G4MH_PSW_OV : 0u);
+                fp_r(&st, 20, 0u);
+                fp_r(&st, 21, 0u);
+                c = fp_run(prog, 3u, &st, pass);
+                if (c == NULL) {
+                    return;
+                }
+                CHECK_EQ(c->r[20], taken ? 0u : 1u);
+                CHECK_EQ(c->r[21], 2u);
+#if EMU_HAVE_JIT
+                if (pass == 1u) {
+                    CHECK_EQ(g_fp_fallbacks, 1u); /* the HALT alone */
+                }
+#endif
+            }
+        }
+    }
+
+    /*
+     * jarl [r6], r31 and jarl [r6], r6 to r6 + 16 with r6 odd: over three
+     * `add 1, r16` to `add 2, r17`. The link is the address after the
+     * call; with reg1 == reg3 the target is the old r6.
+     */
+    for (unsigned same = 0; same < 2u; same++) {
+        const uint16_t prog[] = {0xC7E6u, same ? 0x3160u : 0xF960u,
+                                 0x8241u, 0x8241u,
+                                 0x8241u, 0x8A42u};
+
+        for (unsigned pass = 0; pass < 2u; pass++) {
+            fp_state_t st = fp_state();
+            const g4mh_cpu_t *c;
+
+            fp_r(&st, 6, EMU_GUEST_RAM_BASE + 11u);
+            fp_r(&st, 16, 0u);
+            fp_r(&st, 17, 0u);
+            fp_r(&st, 31, FP_SENT);
+            c = fp_run(prog, 6u, &st, pass);
+            if (c == NULL) {
+                return;
+            }
+            CHECK_EQ(c->r[16], 0u);
+            CHECK_EQ(c->r[17], 2u);
+            CHECK_EQ(c->r[same ? 6 : 31], EMU_GUEST_RAM_BASE + 4u);
+            CHECK_EQ(g_fp_retired, 3u);
+#if EMU_HAVE_JIT
+            if (pass == 1u) {
+                CHECK_EQ(g_fp_fallbacks, 1u);
+            }
+#endif
+        }
+    }
+
+    /*
+     * EI four times, the last with EIINT31 pending behind PSW.ID --
+     * raised by software through EIC31's EIRF after a DI. **An exit is
+     * linked only the second time it is followed** (the dispatcher drops
+     * `prev` after translating, which may compact), so the third is the
+     * first to use a link, and an EI whose exit could chain shows on the
+     * fourth: the `add 1, r21` it guards runs once more. Taken at the
+     * instruction after EI, the add ran three times and EIPC names it.
+     * The handler at RBASE + 0x100 records EIPC and halts.
+     *
+     *   0  movi32 r13, INTC1        6  movi32 r10, EIRF
+     *  12  mov 3, r12              14  ei
+     *  18  add 1, r21              20  di
+     *  24  loop r12, 14            28  st.h r10, 62[r13]
+     *  32  br 14                   34  halt
+     */
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        uint16_t prog[0x120];
+        unsigned n = 0;
+        emu_run_reason_t why;
+        uint32_t retired = 0u;
+#if EMU_HAVE_JIT
+        emu_jit_stats_t before, after;
+#endif
+
+        memset(prog, 0, sizeof(prog));
+        prog[n++] = MOVI32(13);
+        prog[n++] = LO(G4MH_INTC1_SELF_BASE);
+        prog[n++] = HI(G4MH_INTC1_SELF_BASE);
+        prog[n++] = MOVI32(10);
+        prog[n++] = LO(G4MH_EIC_EIRF);
+        prog[n++] = HI(G4MH_EIC_EIRF);
+        prog[n++] = F2(OP_MOVI, 3, 12);
+        prog[n++] = 0x87E0u; /* ei */
+        prog[n++] = 0x0160u;
+        prog[n++] = (uint16_t)((21u << 11) | (0x12u << 5) | 1u); /* add */
+        prog[n++] = 0x07E0u; /* di */
+        prog[n++] = 0x0160u;
+        prog[n++] = 0x06ECu; /* loop r12, back 10 to the ei */
+        prog[n++] = 0x000Bu;
+        prog[n++] = W0(OP_ST_HW, 13, 10); /* st.h r10, 62[r13]: EIC31 */
+        prog[n++] = (uint16_t)(31u * 2u);
+        prog[n++] = 0xF5F5u; /* br -18, to the ei */
+        prog[n++] = 0x07E0u;
+        prog[n++] = SUB_HALT;
+        prog[0x80] = W0(OP_SYSTEM, G4MH_SR_EIPC, 22); /* stsr eipc, r22 */
+        prog[0x81] = SUB_STSR;
+        prog[0x82] = F2(OP_MOVI, 7, 20);
+        prog[0x83] = 0x07E0u;
+        prog[0x84] = SUB_HALT;
+
+#if EMU_HAVE_JIT
+        emu_jit_get_stats(&before);
+#endif
+        g_force_backend = (pass == 0u) ? &g4mh_backend_interp : NULL;
+        const bool ok = load_and_run(prog, sizeof(prog) / sizeof(prog[0]), 256u,
+                                     &why, &retired);
+        g_force_backend = NULL;
+#if EMU_HAVE_JIT
+        emu_jit_get_stats(&after);
+#endif
+        CHECK(ok);
+        if (!ok) {
+            return;
+        }
+        CHECK_EQ(reg(20), 7u);
+        CHECK_EQ(reg(21), 3u);
+        CHECK_EQ(reg(22), EMU_GUEST_RAM_BASE + 18u);
+        CHECK_EQ(sreg(0, G4MH_SR_EIIC), G4MH_EXC_EIINT_BASE + 31u);
+        /* Three before the loop, four round it three times, the store,
+         * the branch and EI again, then STSR, MOV and the HALT: 21. The
+         * entry retires nothing, under the JIT as interpreted
+         * (irq_not_retired). */
+        CHECK_EQ(retired, 21u);
+#if EMU_HAVE_JIT
+        if (pass == 1u) {
+            /* STSR and the HALT: EI and DI translated. */
+            CHECK_EQ(after.interp_fallbacks - before.interp_fallbacks, 2u);
+        }
+#endif
+    }
+}
+
 static void test_fxu_instructions(void)
 {
     for (size_t i = 0; i < sizeof(k_fxu_cases) / sizeof(k_fxu_cases[0]);
@@ -11705,6 +11875,7 @@ void test_g4mh(void)
     test_fp_status_registers();
 #if G4MH_EXT_FXU
     test_jit_cc_rh_loops_and_extensions();
+    test_jit_sign_overflow_jarl_ei();
     test_fxu_instructions();
     test_fxu_trfsrv();
     test_fxu_loads_stores();
