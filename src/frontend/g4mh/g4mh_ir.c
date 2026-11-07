@@ -517,12 +517,56 @@ const emu_ir_target_t g4mh_ir_target = {
  * it is not merely wasted buffer: the bytes after a call are frequently
  * not instructions at all.
  */
+/* The low half of a value, sign-extended: MULH's and MULHI's operands. */
+static uint16_t sext16(emu_ir_block_t *b, uint16_t v)
+{
+    return emu_ir_emit(b, EMU_IR_SEXT16, 0u, v, EMU_IR_NO_TEMP, 0u, 0u);
+}
+
 static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
                         uint32_t pc, bool *ends, bool *counted)
 {
     const uint32_t r1 = g4mh_reg1(w0);
     const uint32_t r2 = g4mh_reg2(w0);
     const uint32_t op = g4mh_op6(w0);
+
+    /*
+     * The 0x37 slot: MULHI with reg2, and with reg2 == 0 two instructions
+     * of different lengths told apart by bit 0 of the second halfword --
+     * set, the 32-bit LOOP; clear, the 48-bit JMP disp32, which the
+     * translate loop sizes and sends elsewhere.
+     *
+     * **LOOP is every counted loop CC-RH writes**, and it declined, so a
+     * loop body was a block entered once an iteration with LOOP between
+     * entries interpreted. It decrements reg1 with the flags an ADD of -1
+     * leaves and branches *back* by an unsigned displacement while the
+     * result is not zero; the fall-through goes on in the block.
+     */
+    if (op == 0x37u) {
+        if (r2 != 0u) { /* MULHI imm16, reg1, reg2 */
+            emu_ir_put(b, r2,
+                       emu_ir_alu(b, EMU_IR_MUL, sext16(b, emu_ir_get(b, r1)),
+                                  emu_ir_const(b, (uint32_t)emu_sext(w1, 16))));
+            return true;
+        }
+        if (((uint32_t)w1 & 1u) == 0u) {
+            return false;
+        }
+
+        const uint16_t x = emu_ir_get(b, r1);
+        const uint16_t m1 = emu_ir_const(b, 0xFFFFFFFFu);
+        const uint16_t v = emu_ir_alu(b, EMU_IR_ADD, x, m1);
+
+        emu_ir_put(b, r1, v);
+        (void)emu_ir_emit(b, EMU_IR_SETF, EMU_IR_FS_ADD, x, m1, 0u, F_ARITH);
+        (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          0u, 0u);
+        *counted = true;
+        (void)emu_ir_emit(b, EMU_IR_EXIT_IF, EMU_IR_C_NE, v,
+                          emu_ir_const(b, 0u),
+                          pc - ((uint32_t)w1 & 0xFFFEu), 0u);
+        return true;
+    }
 
     /*
      * DISPOSE, which is what reg2 == 0 means in the MOVHI and SATSUBI
@@ -1120,9 +1164,14 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
  * Lower one 48-bit instruction: MOV imm32, and Format XIV's disp23
  * loads and stores.
  *
- * Those are the ones worth lowering. What is left at this width is
- * JR/JMP disp32, which ends a block anyway, and PREPARE's wide forms,
- * which write sp, ep and a register list; both stay on the interpreter.
+ * Those are the ones worth lowering, with JR/JARL disp32 and JMP
+ * disp32[reg1], which end the block. Those stayed on the interpreter on
+ * the grounds that they end a block anyway -- but a declined instruction
+ * is an interpreter dispatch and a block lookup every time: CC-RH's
+ * `jmp disp32[r0]`, a far jump to a function, was 86% of what CoreMark's
+ * blocks still declined once LOOP and the extensions were lowered.
+ * PREPARE's wide forms, which write sp, ep and a register list, stay on
+ * the interpreter.
  *
  * Field split and sub-opcode table: see the interpreter, which carries
  * the note about where they came from. Anything this declines lands
@@ -1131,7 +1180,7 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
  * that is the one being fallen back to.
  */
 static bool lower_one48(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
-                        uint16_t w2, uint32_t pc)
+                        uint16_t w2, uint32_t pc, bool *ends, bool *counted)
 {
     const uint32_t op = g4mh_op6(w0);
     const uint32_t r1 = g4mh_reg1(w0);
@@ -1144,6 +1193,41 @@ static bool lower_one48(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
 
     if (g4mh_reg2(w0) != 0u) {
         return false;
+    }
+
+    /*
+     * JR and JARL disp32 (0x17) and JMP disp32[reg1] (0x37, bit 0 of
+     * the second halfword clear): the displacement's high half is in the
+     * *third* halfword, as the interpreter's note says. JARL's link is
+     * reg1 -- r0 for JR, the write discarded -- and the address after
+     * these six bytes; JMP adds reg1, and the target's bit 0 is dropped
+     * as for JMP [reg1]. Retired before the exit, as the branches are.
+     */
+    if (op == 0x17u || (op == 0x37u && ((uint32_t)w1 & 1u) == 0u)) {
+        const uint32_t d = ((uint32_t)w2 << 16) | ((uint32_t)w1 & 0xFFFEu);
+
+        if (op == 0x17u) {
+            emu_ir_put(b, r1, emu_ir_const(b, pc + 6u));
+        }
+        (void)emu_ir_emit(b, EMU_IR_RETIRE, 0u, EMU_IR_NO_TEMP, EMU_IR_NO_TEMP,
+                          0u, 0u);
+        if (op == 0x17u) {
+            (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP,
+                              EMU_IR_NO_TEMP, pc + d, 0u);
+        } else if (r1 == 0u) {
+            (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP,
+                              EMU_IR_NO_TEMP, d & ~1u, 0u);
+        } else {
+            const uint16_t tgt = emu_ir_alu(
+                b, EMU_IR_AND,
+                emu_ir_alu(b, EMU_IR_ADD, emu_ir_get(b, r1), emu_ir_const(b, d)),
+                emu_ir_const(b, ~1u));
+
+            (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, tgt, EMU_IR_NO_TEMP, 0u, 0u);
+        }
+        *counted = true;
+        *ends = true;
+        return true;
     }
 
     /*
@@ -1465,6 +1549,55 @@ static bool lower_one(emu_ir_block_t *b, uint16_t w0, uint32_t pc,
         }
         return true;
 
+    case 0x04: /* SATSUBR / ZXB    */
+    case 0x05: /* SATSUB / SXB     */
+    case 0x06: /* SATADD / ZXH     */
+    case 0x07: { /* MULH / SXH       */
+        /*
+         * **reg2 == 0 is a different instruction in each slot**: the
+         * extensions of reg1 in place, flags untouched. They were 72% of
+         * what CoreMark's blocks declined (ZXB, ZXH, SXH), each ending
+         * its block. The saturating forms beside them set SAT and still
+         * decline; MULH, signed 16 by 16 into 32 with no flags, is
+         * lowered.
+         */
+        if (r2 == 0u) {
+            static const uint8_t k_ext[4] = {EMU_IR_ZEXT8, EMU_IR_SEXT8,
+                                             EMU_IR_ZEXT16, EMU_IR_SEXT16};
+
+            emu_ir_put(b, r1,
+                       emu_ir_emit(b, (emu_ir_op_t)k_ext[op - 0x04u], 0u,
+                                   emu_ir_get(b, r1), EMU_IR_NO_TEMP, 0u, 0u));
+            return true;
+        }
+        if (op != 0x07u) {
+            return false;
+        }
+        emu_ir_put(b, r2,
+                   emu_ir_alu(b, EMU_IR_MUL, sext16(b, emu_ir_get(b, r2)),
+                              sext16(b, emu_ir_get(b, r1))));
+        return true;
+    }
+
+    case 0x0C: { /* SUBR reg1, reg2: reg2 = reg1 - reg2 */
+        const uint16_t x = emu_ir_get(b, r1);
+        const uint16_t y = emu_ir_get(b, r2);
+
+        emu_ir_put(b, r2, emu_ir_alu(b, EMU_IR_SUB, x, y));
+        (void)emu_ir_emit(b, EMU_IR_SETF, EMU_IR_FS_SUB, x, y, 0u, F_ARITH);
+        return true;
+    }
+
+    case 0x17: /* MULH imm5, reg2 / JR disp32 */
+        /* reg2 == 0 is the 48-bit jump, which never arrives here. */
+        if (r2 == 0u) {
+            return false;
+        }
+        emu_ir_put(b, r2,
+                   emu_ir_alu(b, EMU_IR_MUL, sext16(b, emu_ir_get(b, r2)),
+                              emu_ir_const(b, (uint32_t)g4mh_imm5(w0))));
+        return true;
+
     case 0x08: /* OR  reg1, reg2   */
     case 0x09: /* XOR reg1, reg2   */
     case 0x0A: { /* AND reg1, reg2   */
@@ -1615,6 +1748,13 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
     emu_ir_reset(b);
     b->start_pc = pc;
     b->has_fast = g4mh_fast_mem(c, &b->fast);
+    /*
+     * The peripheral window, under the RAM window's conditions -- the MPU
+     * refuses both -- and once armed (g4mh_jit_bind). Stores keep the RAM
+     * window's guard, which the backend tests first for both: with more
+     * than one PE it is never clear, so only loads use the window then.
+     */
+    b->has_pt = b->has_fast && c->pt_armed && emu_ir_pt_window(c->bus, &b->pt);
 #if G4MH_EXT_MPU
     g_xl_mpu = c->mpu_active;
 #else
@@ -1680,7 +1820,7 @@ uint32_t g4mh_ir_translate(emu_cpu_t *cpu, uint32_t pc, emu_ir_block_t *b)
                     break;
                 }
                 len = 6u;
-                ok = lower_one48(b, w0, w1, w2, cur);
+                ok = lower_one48(b, w0, w1, w2, cur, &ends, &counted);
             } else {
                 len = 4u;
                 ok = lower_one32(b, w0, w1, cur, &ends, &counted);
@@ -1832,6 +1972,17 @@ static void g4mh_jit_bind(emu_cpu_t *cpu, emu_jit_hot_t *out)
 {
     g4mh_cpu_t *const c = (g4mh_cpu_t *)cpu;
 
+    /*
+     * Arm the peripheral window, once, between slices -- nothing
+     * translated is running, so the flush is safe -- by RV32's rule
+     * (EMU_JIT_PT_ARM_AT). Only a backend that inlines the window reads
+     * has_pt -- Thumb-2 -- so on x86-64 this costs one flush.
+     */
+    if (EMU_UNLIKELY(!c->pt_armed) && c->bus != NULL &&
+        c->bus->pt_accesses >= EMU_JIT_PT_ARM_AT) {
+        c->pt_armed = true;
+        emu_jit_flush();
+    }
     /* A platform may have written PSW between slices. */
     g4mh_jit_ctx_refresh(c);
     out->pc = &c->pc;

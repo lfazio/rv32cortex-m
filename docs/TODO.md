@@ -92,16 +92,20 @@ measured at.
 
 ## JIT
 
-- [ ] **The peripheral window for G4MH and PowerPC.** It is inlined on
-      Thumb-2 for RV32, where it is worth 2.5-7x on driver code
-      ([performance.md](performance.md#driver-performance-the-passthrough-window)),
-      and for ARMv7-M, 5.5-13x
-      ([frontend/armv7m.md](frontend/armv7m.md#the-peripheral-window)).
-      G4MH would set `has_pt` beside `has_fast` and arm it in its `bind`
-      as those two do, and needs a driver-shaped guest to measure it
-      with -- its own clock or a board timer, as ARMv7-M's `mmiobench`
-      runs TIM2; PowerPC only for a little-endian window it does not
-      have.
+- [ ] **The peripheral window for PowerPC**, only for a little-endian
+      window it does not have. It is inlined on Thumb-2 for RV32
+      (2.5-7x on driver code,
+      [performance.md](performance.md#driver-performance-the-passthrough-window)),
+      ARMv7-M (5.5-13x) and G4MH (2.5-4.2x,
+      [frontend/g4mh.md](frontend/g4mh.md#the-peripheral-window)).
+- [ ] **G4MH's mmiobench does not ask a refused store.** The shared
+      crt0 halts on any trap, so the hole and out-of-window checks the
+      ARMv7-M guest makes need a guest-specific vector for SYSERR that
+      records the cause and MEA and steps over the store.
+- [ ] **What G4MH CoreMark still declines**: 29,522 instructions under
+      the JIT, DI/EI/PUSHSP/POPSP (sub-opcode 0x160) and BP/BN, which
+      branch on S alone -- a condition the IR does not name
+      ([frontend/g4mh.md](frontend/g4mh.md#what-the-translator-declined)).
 - [ ] **Autovectorisation of the IR pipeline.**
 - [ ] **A third of a 96 KB buffer is still behind the I-cache.** With
       the JIT's buffer first in the F746's DTCM, about 59 KB of it is

@@ -311,6 +311,11 @@ Each has cost more than one session, and every one recurred.
   disassembler had no FP (reported 0 of a 60% share); the pair histogram
   read one funct7 bit; `xlat`/`interp` cannot tell a helper call from a
   lowering; a histogram's x0 bucket was a quarter of its counts.
+- **Read a JIT run's `interp` line before its figure.** G4MH CoreMark
+  had interpreted 1,057,113 of 21.9M instructions under the JIT in
+  every run -- ZXB, MULH, ZXH, a far jump, and in CC-RH's loops LOOP --
+  and lowering them halved its cycles on the F746; a benchmark whose
+  RAM control is slow is measuring that, not the thing under test.
 - **Break `interp` down before acting on it.** Count single
   instructions to ask which one, and pairs only to ask what follows what
   (under a JIT the interpreted ones arrive alone); run the count under

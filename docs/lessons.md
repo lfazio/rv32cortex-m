@@ -4343,6 +4343,30 @@ session, and every one of them recurred:
   unchained dispatch reads, kept both. **What goes in a TCM is chosen
   per byte, on every frontend: one row's best is another's loss.**
 
+- **A slow control says the loop is not translated.** The first board
+  run of G4MH's peripheral window said 1.3-1.6x, where RV32 and ARMv7-M
+  had 2.5-13x. The RAM controls were the tell: 280,000 TIM2 ticks per
+  thousand accesses, ten times what a translated loop costs. The JIT's
+  `interp` line said 400,875 of 1.3M instructions fell back -- CC-RH
+  writes every counted loop with LOOP, which the translator declined,
+  so each iteration was a block entry and an interpreted instruction.
+  The same line, in every G4MH CoreMark run anyone had made, said
+  1,057,113 of 21.9M: ZXB, MULH, ZXH and a far jump, each ending its
+  block. Lowered, CoreMark under the JIT took half the cycles (44.15
+  to 22.47 on the F746), and the window, measured again, was 2.5-4.2x.
+  **Read a JIT run's fallback count before its figure, and a
+  benchmark's control before its ratio: when the control is slow, the
+  thing under test is not what is being measured.**
+
+- **A histogram that names by opcode sends you to the instruction
+  already fixed.** With LOOP and the extensions lowered, 86% of what
+  CoreMark still declined was "mulhi" -- lowered an hour before, and
+  the unit test said translated. The kind was the 0x37 slot alone,
+  where reg2 == 0 is LOOP or the 48-bit JMP disp32 by one bit of the
+  second halfword; a trace of the guest said `jmp disp32[r1]`. The
+  instrument names them apart now. **When an instrument says a fixed
+  thing still happens, ask the program what instruction it ran.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

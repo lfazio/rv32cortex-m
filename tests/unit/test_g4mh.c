@@ -7373,6 +7373,8 @@ typedef struct {
 static const fp_state_t *g_fp_set;
 /* Instructions the last fp_run handed to the interpreter under the JIT. */
 static uint64_t g_fp_fallbacks;
+/* And how many it retired, which both backends must agree on. */
+static uint32_t g_fp_retired;
 /* Fill TEST_SCRATCH's first 256 bytes with each word's own address. */
 static bool g_pre_ram_fill;
 
@@ -7463,6 +7465,7 @@ static g4mh_cpu_t *fp_run(const uint16_t *hw, unsigned n, const fp_state_t *s,
     g_pre_run = NULL;
     g_fp_set = NULL;
     g_force_backend = NULL;
+    g_fp_retired = retired;
     CHECK(ok);
     if (!ok) {
         return NULL;
@@ -8178,6 +8181,177 @@ static void fxu_setw(fp_state_t *s, unsigned r, const uint32_t v[4])
 {
     memcpy(s->wr[r], v, 16u);
     s->wmask |= 1u << r;
+}
+
+/*
+ * What CC-RH's code made the JIT decline (2026-11-06): ZXB, ZXH, SXH, MULH
+ * and MULHI were 95% of CoreMark's interpreted instructions under the
+ * JIT, each ending its block, and LOOP -- every counted loop CC-RH
+ * writes -- left a driver's poll loop a block entered once an iteration.
+ * Encodings from CC-RH's assembler; results worked out by hand; every
+ * case on both backends, the JIT handing the interpreter nothing but the
+ * HALT.
+ */
+static void test_jit_cc_rh_loops_and_extensions(void)
+{
+    /* zxb r5, sxb r6, zxh r7, sxh r8, mulh r9,r10, mulh -3,r11,
+     * mulhi -2,r12,r13, mulh 15,r14, subr r16,r15 */
+    static const uint16_t straight[] = {
+        0x0085u, 0x00A6u, 0x00C7u, 0x00E8u, 0x50E9u, 0x5AFDu,
+        0x6EECu, 0xFFFEu, 0x72EFu, 0x7990u,
+    };
+    /* add 1, r16; loop r17, 2 -- back to the add */
+    static const uint16_t loop[] = {0x8241u, 0x06F1u, 0x0003u};
+    /* satsubr r18,r19; satsub r18,r20; satadd r18,r21: the slots' other
+     * halves, which still decline */
+    static const uint16_t sat[] = {0x9892u, 0xA0B2u, 0xA8D2u};
+    uint32_t want_retired[4] = {0u, 0u, 0u, 0u};
+
+    for (unsigned pass = 0; pass < 2u; pass++) {
+        fp_state_t s = fp_state();
+        const g4mh_cpu_t *c;
+
+        fp_r(&s, 5, 0x12345687u);
+        fp_r(&s, 6, 0x000000F0u);
+        fp_r(&s, 7, 0xABCD8001u);
+        fp_r(&s, 8, 0x00008001u);
+        fp_r(&s, 9, 0x0001FFFDu);  /* low half -3 */
+        fp_r(&s, 10, 0xFFFF0007u); /* low half 7, the high half ignored */
+        fp_r(&s, 11, 0x12340100u); /* low half 256 */
+        fp_r(&s, 12, 0x5555C000u); /* low half -16384 */
+        fp_r(&s, 13, 0xDEADBEEFu);
+        fp_r(&s, 14, 0x7FFF8000u); /* low half -32768 */
+        fp_r(&s, 15, 7u);
+        fp_r(&s, 16, 5u);
+        c = fp_run(straight, sizeof(straight) / sizeof(straight[0]), &s, pass);
+        if (c == NULL) {
+            return;
+        }
+        CHECK_EQ(c->r[5], 0x87u);
+        CHECK_EQ(c->r[6], 0xFFFFFFF0u);
+        CHECK_EQ(c->r[7], 0x8001u);
+        CHECK_EQ(c->r[8], 0xFFFF8001u);
+        CHECK_EQ(c->r[10], 0xFFFFFFEBu); /* 7 * -3 */
+        CHECK_EQ(c->r[11], 0xFFFFFD00u); /* 256 * -3 */
+        CHECK_EQ(c->r[13], 0x00008000u); /* -16384 * -2 */
+        CHECK_EQ(c->r[14], 0xFFF88000u); /* -32768 * 15 */
+        /* subr r16, r15: r15 = 5 - 7, borrow and negative */
+        CHECK_EQ(c->r[15], 0xFFFFFFFEu);
+        CHECK_EQ(c->psw & G4MH_PSW_FLAGS, G4MH_PSW_S | G4MH_PSW_CY);
+#if EMU_HAVE_JIT
+        if (pass == 1u) {
+            CHECK_EQ(g_fp_fallbacks, 1u); /* the HALT alone */
+        }
+#endif
+        if (pass == 0u) {
+            want_retired[0] = g_fp_retired;
+        }
+        CHECK_EQ(g_fp_retired, want_retired[0]);
+
+        /* Five times round: the count, the branch's target, and the
+         * flags of the last decrement, 1 + -1 (Z and CY). */
+        s = fp_state();
+        fp_r(&s, 16, 0u);
+        fp_r(&s, 17, 5u);
+        c = fp_run(loop, sizeof(loop) / sizeof(loop[0]), &s, pass);
+        if (c == NULL) {
+            return;
+        }
+        CHECK_EQ(c->r[16], 5u);
+        CHECK_EQ(c->r[17], 0u);
+        CHECK_EQ(c->psw & G4MH_PSW_FLAGS, G4MH_PSW_Z | G4MH_PSW_CY);
+#if EMU_HAVE_JIT
+        if (pass == 1u) {
+            CHECK_EQ(g_fp_fallbacks, 1u);
+        }
+#endif
+        /* Ten instructions before the HALT, counted once each: a LOOP
+         * retired twice on its way out is what `counted` prevents. */
+        if (pass == 0u) {
+            want_retired[1] = g_fp_retired;
+        }
+        CHECK_EQ(g_fp_retired, want_retired[1]);
+
+        /* Once: 1 counts down to 0 and falls through at once. */
+        s = fp_state();
+        fp_r(&s, 16, 0u);
+        fp_r(&s, 17, 1u);
+        c = fp_run(loop, sizeof(loop) / sizeof(loop[0]), &s, pass);
+        if (c == NULL) {
+            return;
+        }
+        CHECK_EQ(c->r[16], 1u);
+        CHECK_EQ(c->r[17], 0u);
+        if (pass == 0u) {
+            want_retired[2] = g_fp_retired;
+        }
+        CHECK_EQ(g_fp_retired, want_retired[2]);
+
+        /* The saturating forms: 3 - 10, 10 - 3, 5 + 3, none saturating,
+         * none of them r18 -- what a lowering as the extension's move
+         * would leave. */
+        s = fp_state();
+        fp_r(&s, 18, 3u);
+        fp_r(&s, 19, 10u);
+        fp_r(&s, 20, 10u);
+        fp_r(&s, 21, 5u);
+        c = fp_run(sat, sizeof(sat) / sizeof(sat[0]), &s, pass);
+        if (c == NULL) {
+            return;
+        }
+        CHECK_EQ(c->r[19], 0xFFFFFFF9u);
+        CHECK_EQ(c->r[20], 7u);
+        CHECK_EQ(c->r[21], 8u);
+        CHECK_EQ(c->psw & G4MH_PSW_SAT, 0u);
+        if (pass == 0u) {
+            want_retired[3] = g_fp_retired;
+        }
+        CHECK_EQ(g_fp_retired, want_retired[3]);
+#if EMU_HAVE_JIT
+        if (pass == 1u) {
+            CHECK_EQ(g_fp_fallbacks, 4u); /* each of the three, and HALT */
+        }
+#endif
+    }
+
+    /*
+     * The 48-bit jumps, which declined: CoreMark's `jmp disp32[r1]` was
+     * most of what was left. Each jumps over three `add 1, r16` to an
+     * `add 2, r17` twelve bytes in (CC-RH's encodings, the displacement's
+     * halves after the opcode). JMP disp32[r0] is absolute; JMP
+     * disp32[r6] with r6 odd shows the target's bit 0 dropped; JARL
+     * links the address six bytes on, JR links nothing.
+     */
+    for (unsigned form = 0; form < 4u; form++) {
+        static const uint16_t op[4] = {0x06E0u, 0x06E6u, 0x02E5u, 0x02E0u};
+        const uint32_t d = (form == 0u) ? EMU_GUEST_RAM_BASE + 12u : 12u;
+        const uint16_t jump[] = {op[form],      (uint16_t)d, (uint16_t)(d >> 16),
+                                 0x8241u,       0x8241u,     0x8241u,
+                                 0x8A42u /* add 2, r17 */};
+
+        for (unsigned pass = 0; pass < 2u; pass++) {
+            fp_state_t s = fp_state();
+            const g4mh_cpu_t *c;
+
+            fp_r(&s, 5, FP_SENT);
+            fp_r(&s, 6, EMU_GUEST_RAM_BASE + 1u);
+            fp_r(&s, 16, 0u);
+            fp_r(&s, 17, 0u);
+            c = fp_run(jump, sizeof(jump) / sizeof(jump[0]), &s, pass);
+            if (c == NULL) {
+                return;
+            }
+            CHECK_EQ(c->r[16], 0u);
+            CHECK_EQ(c->r[17], 2u);
+            CHECK_EQ(c->r[5], form == 2u ? EMU_GUEST_RAM_BASE + 6u : FP_SENT);
+            CHECK_EQ(g_fp_retired, 3u); /* the jump, the add, the HALT */
+#if EMU_HAVE_JIT
+            if (pass == 1u) {
+                CHECK_EQ(g_fp_fallbacks, 1u);
+            }
+#endif
+        }
+    }
 }
 
 static void test_fxu_instructions(void)
@@ -11530,6 +11704,7 @@ void test_g4mh(void)
     test_fp_input_flag();
     test_fp_status_registers();
 #if G4MH_EXT_FXU
+    test_jit_cc_rh_loops_and_extensions();
     test_fxu_instructions();
     test_fxu_trfsrv();
     test_fxu_loads_stores();

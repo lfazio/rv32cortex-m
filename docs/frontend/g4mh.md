@@ -284,6 +284,75 @@ What is left at 0.85%: the link forms at sub-opcode 0x372, two `ext2fx`
 forms, ZXB and a few others -- each below the floor this file's own
 rule sets for chasing.
 
+**CoreMark was a different program, and nobody had asked it.** Built by
+CC-RH it interpreted **1,057,113 of 21.9M** instructions under the JIT,
+in every run's `interp` line: ZXB 32.5%, MULH 24.5%, ZXH 21.3%, and
+17.3% that the histogram called MULHI -- the slot's 48-bit `jmp
+disp32[r1]`, a far jump CC-RH uses to reach a function, which the
+instrument named by its opcode alone and now does not. Each of them
+ended its block. And the driver-shaped guest written for the
+peripheral window ([below](#the-peripheral-window)) interpreted
+400,875 of 1.3M: **LOOP**, the decrement-and-branch CC-RH writes for
+every counted loop, so that a loop body was a block entered once an
+iteration with LOOP between.
+
+Lowered now: ZXB, SXB, ZXH and SXH, which are the `reg2 == 0` halves of
+the saturating slots (the saturating halves still decline); MULH in
+both forms and MULHI, SUBR; LOOP, an ADD of -1 with its flags and a
+backward exit; and the 48-bit JR/JARL disp32 and JMP disp32[reg1],
+which had stayed on the interpreter "since they end a block anyway".
+CoreMark interprets **29,522**: DI/EI/PUSHSP/POPSP at sub-opcode 0x160
+and BP/BN, whose sign-alone conditions the IR does not name. On the
+F746 under the JIT, CoreMark went **44.15 to 22.47** host cycles an
+instruction (44.10 to 22.37 at a second layout), the CRC and the
+retired count the same: 4.0x the interpreter's 90.51, where it had
+been 2.0x. The three-PE SMP guest prints the host's line.
+`test_jit_cc_rh_loops_and_extensions` runs each on both backends with
+CC-RH's encodings and hand-worked results, the retired count compared
+and the JIT handing the interpreter nothing but the HALT; the 19
+mutants in `tests/mutants/g4mh-jit-ccrh.py` each fail it, after two
+did not -- LOOP counted twice on its way out, which needed the retired
+count, and the saturating forms lowered as the extensions, which
+needed them in the test. fuzz-g4mh-jit, five minutes twice, no
+divergence, and it finds a LOOP without its flags and a swapped
+extension in seconds.
+
+## The peripheral window
+
+**Inlined under the JIT once armed**, as RV32's and ARMv7-M's are:
+`has_pt` beside `has_fast` in the translator, and `g4mh_jit_bind` arms
+it once the core's bus has counted `EMU_JIT_PT_ARM_AT` accesses that
+blocks left to the helper, flushing between slices. Stores keep the RAM
+window's guard, which the backend tests first for both windows: with
+one PE that is `ll_valid`, and with more than one it is never clear,
+so only loads use the window there.
+
+`tests/guest/g4mh/mmiobench.c`, CC-RH's build committed beside it, is
+the RV32 and ARMv7-M guests' four kernels, each against GPIOB and
+against a RAM word with the same code, timed by TIM2, which the guest
+ungates and runs; BSRR's set and clear checked through ODR before the
+kernels and after, on the helper's path and on the inlined one. **Not
+asked here**: a store the window refuses. The crt0 every G4MH guest
+shares reports a trap and halts, so the check would stop the guest;
+the inlined path that sends those stores to the helper is the Thumb-2
+backend's, which the ARMv7-M guest checks for cause and address. On
+the host the window is memory, so the hardware checks fail there by
+design, as the ARMv7-M guest's do.
+
+On the F746, TIM2 ticks per thousand accesses, both builds with LOOP
+lowered -- without it the RAM controls were 280,000 and the window
+measured 1.3-1.6x of an interpreted loop:
+
+| kernel | helper | inlined | speedup | vs its RAM control |
+|---|---|---|---|---|
+| `read` | 117,917 | **42,126** | 2.80x | 1.17x |
+| `write` | 100,389 | **32,045** | 3.13x | 1.20x |
+| `rmw` | 228,481 | **54,500** | 4.19x | 1.21x |
+| `poll` | 129,645 | **51,491** | 2.52x | 1.09x |
+
+The same to 0.1% at a second `.bss` layout, 64 checks and no failures
+in every run.
+
 ## The vector table
 
 Every CC-RH-built guest carries one, built by

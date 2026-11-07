@@ -226,6 +226,14 @@ typedef struct g4mh_cpu {
      */
     const char *reset_by;
 
+    /*
+     * Whether blocks inline the peripheral window: set by the JIT's bind
+     * once this core's bus has counted EMU_JIT_PT_ARM_AT accesses the
+     * blocks left to the helper, as RV32 and ARMv7-M do. Cleared at
+     * reset: a new guest earns it afresh.
+     */
+    bool pt_armed;
+
 #if G4MH_EXT_FXU
     /*
      * The FXU's vector registers, wr0-wr31, 128 bits each as four ways:

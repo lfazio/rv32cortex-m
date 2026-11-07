@@ -66,9 +66,12 @@
 /*
  * reg2 == 0 in a format I/II slot that spends it as an opcode extension:
  * ZXB/SXB/ZXH/SXH share 0x04-0x07 with the saturating ops and MULH,
- * SWITCH and FETRAP share 0x02 with DIVH, CALLT sits in MOV imm5 and JR
- * disp32 in MULH imm5. Without this bit a histogram named every ZXB a
- * SATSUBR -- this frontend's reg2 == 0 lesson, in its instrument.
+ * SWITCH and FETRAP share 0x02 with DIVH, CALLT sits in MOV imm5, JR
+ * disp32 in MULH imm5, and LOOP and the 48-bit JMP disp32 in MULHI.
+ * Without this bit a histogram named every ZXB a SATSUBR -- this
+ * frontend's reg2 == 0 lesson, in its instrument -- and, without 0x37
+ * in it, CoreMark's 183,134 declined `jmp disp32[r1]` read as MULHI,
+ * which was lowered already.
  */
 #define KIND_R2Z (1u << 22)
 
@@ -108,9 +111,15 @@ static uint32_t g4mh_kind(uint64_t insn)
     }
     if (g4mh_reg2(w0) == 0u &&
         (op == 0x02u || (op >= 0x04u && op <= 0x07u) || op == 0x10u ||
-         op == 0x17u)) {
-        /* 0x02 also needs reg1: zero there is FETRAP, not SWITCH. */
-        return KIND_R2Z | op | ((op == 0x02u && g4mh_reg1(w0) == 0u) << 6);
+         op == 0x17u || op == 0x37u)) {
+        const uint32_t w1 = (uint32_t)(insn >> 16) & 0xFFFFu;
+        /* 0x02 also needs reg1: zero there is FETRAP, not SWITCH. 0x37
+         * needs bit 0 of the second halfword: set is LOOP, clear JMP. */
+        const uint32_t x = (op == 0x02u)   ? (uint32_t)(g4mh_reg1(w0) == 0u)
+                           : (op == 0x37u) ? (w1 & 1u)
+                                           : 0u;
+
+        return KIND_R2Z | op | (x << 6);
     }
     return op;
 }
@@ -278,6 +287,8 @@ static void g4mh_kind_name(uint32_t k, char *buf, unsigned n)
             snprintf(buf, n, "fetrap");
         } else if (op < 8u) {
             snprintf(buf, n, "%s", r2z[op]);
+        } else if (op == 0x37u) {
+            snprintf(buf, n, "%s", ((k >> 6) & 1u) ? "loop" : "jmp32");
         } else {
             snprintf(buf, n, "%s", (op == 0x10u) ? "callt" : "jr32");
         }
