@@ -130,12 +130,20 @@ measured at.
       than the last, is the next thing to try -- measured on the board,
       where a translation costs tens of thousands of cycles.
 - [ ] **ARMv7-M's sp/pc and IT rules cost its interpreter 7.1% on the
-      F746** (143.44 to 153.69 host cycles an instruction on CoreMark;
+      F746** (143.44 to 153.69 host cycles an instruction on CoreMark,
+      154.52 today;
       [frontend/armv7m.md](frontend/armv7m.md#what-the-board-corrected)),
       about 2% in the predicates by a PC profile and the rest code shape.
-      The JIT, the default, pays nothing. Six variants were measured; a
-      decode cache is the one lever not tried again, and it lost before
-      ([frontend/armv7m.md](frontend/armv7m.md#the-run-loop-in-itcm-and-the-decode-cache-that-lost)).
+      The JIT, the default, pays nothing. Eight variants were measured,
+      the last two on 2026-11-07: the flash-resident helpers moved into
+      ITCM (154.88) and the EXC_RETURN test reordered (noise). A decode
+      cache is the one lever not tried since the rules exist, and the
+      reason it might win now where it lost by 3% before
+      ([frontend/armv7m.md](frontend/armv7m.md#the-run-loop-in-itcm-and-the-decode-cache-that-lost))
+      is that a hit would skip the sp/pc predicates as well as the
+      decode; it has to keep the interpreter's decode as the one
+      checked against the M7, and be invalidated by the stores the JIT's
+      `smc_bits` already watch.
 - [ ] **PowerPC's FP unit is a call per instruction**, now from ITCM.
       Measured
       ([frontend/ppc.md](frontend/ppc.md#what-uses-it-and-what-it-costs)):

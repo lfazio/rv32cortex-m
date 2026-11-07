@@ -4378,6 +4378,16 @@ session, and every one of them recurred:
   the M7 is mostly where its callee runs from; check `nm` for the
   callee's address before writing the code that removes the call.**
 
+- **Samples in flash are not samples waiting on flash.** A PC profile
+  put 22% of ARMv7-M's interpreted CoreMark in helpers the ITCM loop
+  reaches through veneers into flash, which read as the "code shape"
+  half of the sp/pc rules' 7.1%. All eight moved into ITCM, `nm`
+  confirming it: no change, 154.88 against 154.52 -- the 4 KB I-cache
+  already held them. PowerPC's FP path, the same move the same day, was
+  worth 17%, because Whetstone's working set did not fit beside the
+  JIT's. **An address says where code is, not what fetching it costs:
+  move it and measure before crediting the memory.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

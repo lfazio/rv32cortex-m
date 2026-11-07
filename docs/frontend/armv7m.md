@@ -329,6 +329,19 @@ backend and checks a block once. Variants that read dearer on the
 board: the handler placed in ITCM out of line (153.65, no better than
 in flash), and a pre-filter on the pc-writer test (155.13).
 
+**Asked again on 2026-11-07, at 154.52, two more did nothing.** A PC
+profile put 25.5% of interpreted CoreMark's samples in flash -- 22%
+once the console's waiting is set aside -- in helpers the ITCM loop
+calls through veneers: `cond_holds` 3.05%, `add_c` 2.96%, `dp_op`
+2.75%, `rd_u` 2.65%, `ldm_stm` 1.76%, `t32_mul`, `t32_branch_misc`,
+`wr_u`. All eight in ITCM beside the loop (`EMU_INTERP_TEXT`, 2.9 KB;
+`nm` showed them there and the loop 630 bytes smaller): 154.88, so the
+I-cache already held them. And the run loop's EXC_RETURN test with the
+pc compared first, so that Thread mode never reads xPSR for it:
+154.21, 155.22 and 154.26 against 154.51, 154.46 and 154.35 at three
+layouts -- noise. What is left of the 7.1% is not where the code lives
+or which test comes first.
+
 ---
 
 ## The decoder, twice
