@@ -1819,7 +1819,16 @@ The non-maskable interrupt from the NMI pin (6.2.2; table 3.103), raised
 through `g4mh_intc_raise_nmi`: FENC's `FENMIF.NMIF` is set and every PE
 is asked. A PE takes it ahead of FEINT and whatever PSW.NP and ID say,
 cause E0H at offset E0H, with NP and ID set and UM and EP clear; it is
-not returnable. `FENMIC` clears NMIF. No platform drives the pin yet.
+not returnable. `FENMIC` clears NMIF.
+
+**The pin is driven by `--nmi-at N`**: the shared run loop asserts it
+through `emu_cpu_ops_t::set_nmi` once N instructions have retired,
+clamping the slice so that the interpreter raises it at exactly that
+count (the JIT may be a block past, which an asynchronous input
+permits). `g4mh-nmi-pin` and `-jit` raise it at 500 in `guest.bin` and
+require the crt0's report of cause E0H at slot E0H; each fails with the
+hook removed or the clamp gone. No board source drives it yet: a
+button would, but a source nobody can exercise from here is not one.
 
 **EP is cleared by an interrupt** -- EIINT, FEINT, FENMI -- and set by
 every other exception (3.2.4.1 caution 1). FEINT set it, so its handler

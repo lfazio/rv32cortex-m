@@ -223,7 +223,9 @@ Useful flags: `--dump` (register file on exit), `--max-insn N`,
 `--trace-skip`/`--trace-count` (with `-DEMU_ENABLE_TRACE=ON`), `--gdb`
 (RSP stub on :1234, waits for a client), `--fb-dump FILE` (the last
 frame a guest presented, as a PPM at exit -- the picture from a run
-with no window).
+with no window), `--nmi-at N` (assert the NMI pin once N instructions
+have retired: G4MH's FENMI, ARMv7-M's NMI; a frontend without the pin
+says so).
 
 ### Games
 

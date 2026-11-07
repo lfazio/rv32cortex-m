@@ -568,6 +568,13 @@ static void g4mh_ops_set_irq(emu_cpu_t *cpu, uint32_t source, bool level)
     }
 }
 
+/* The NMI pin: FENC's NMIF set and every PE asked (6.2.2). */
+static void g4mh_ops_set_nmi(emu_cpu_t *cpu)
+{
+    (void)cpu;
+    g4mh_intc_raise_nmi(&g_intc[0]);
+}
+
 static void g4mh_ops_set_unmask_hook(emu_cpu_t *cpu, emu_unmask_fn fn,
                                      void *ctx)
 {
@@ -861,6 +868,7 @@ const emu_cpu_ops_t g4mh_frontend = {
     .select_backend = g4mh_select_backend,
     .add_core_devices = g4mh_ops_add_core_devices,
     .set_irq = g4mh_ops_set_irq,
+    .set_nmi = g4mh_ops_set_nmi,
     .set_unmask_hook = g4mh_ops_set_unmask_hook,
     .advance_time = g4mh_ops_advance_time,
     .set_time = g4mh_ops_set_time,

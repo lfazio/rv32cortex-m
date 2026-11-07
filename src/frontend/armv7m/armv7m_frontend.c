@@ -286,6 +286,12 @@ static void armv7m_ops_set_irq(emu_cpu_t *cpu, uint32_t source, bool level)
     armv7m_set_irq(cpu_of(cpu), source, level);
 }
 
+/* The NMI pin: the exception pended, as ICSR.NMIPENDSET does. */
+static void armv7m_ops_set_nmi(emu_cpu_t *cpu)
+{
+    armv7m_set_pending(cpu_of(cpu), ARMV7M_EXC_NMI, true);
+}
+
 static emu_run_reason_t armv7m_ops_run(emu_cpu_t *cpu, uint32_t budget,
                                        uint32_t *retired)
 {
@@ -569,6 +575,7 @@ const emu_cpu_ops_t armv7m_frontend = {
 
     .add_core_devices = armv7m_add_core_devices,
     .set_irq = armv7m_ops_set_irq,
+    .set_nmi = armv7m_ops_set_nmi,
 
     .dump = armv7m_dump,
     .reg_name = armv7m_reg_name,

@@ -108,6 +108,61 @@ if(TARGET guest-armv7m-alu)
     set_tests_properties(guest-armv7m-alu-elf PROPERTIES
         LABELS fast
         PASS_REGULAR_EXPRESSION "ARMV7M-ALU-OK")
+    #
+    # The NMI pin (--nmi-at, emu_cpu_ops_t::set_nmi), which nothing drove
+    # before: asserted at instruction 50 of a 190-instruction run, taken
+    # on both backends -- the guest's unhandled vector stops it with IPSR
+    # in r0 -- so the run never prints its OK line.
+    #
+    set(_nmi_modes "none")
+    if(EMU_JIT)
+        list(APPEND _nmi_modes "--jit")
+    endif()
+    foreach(_m IN LISTS _nmi_modes)
+        string(REPLACE "none" "" _args "${_m}")
+        string(REPLACE "--" "-" _sfx "${_m}")
+        string(REPLACE "none" "" _sfx "${_sfx}")
+        add_test(NAME "guest-armv7m-nmi-pin${_sfx}"
+                 COMMAND emu-host ${_args} --dump --frontend armv7m
+                         --nmi-at 50 --max-insn 200000
+                         "${CMAKE_BINARY_DIR}/guest/armv7m-alu.bin")
+        set_tests_properties("guest-armv7m-nmi-pin${_sfx}" PROPERTIES
+            LABELS fast
+            PASS_REGULAR_EXPRESSION "ipsr 00000002"
+            FAIL_REGULAR_EXPRESSION "ARMV7M-ALU-OK")
+    endforeach()
+endif()
+
+#
+# The same pin on G4MH: FENC's NMIF, FENMI taken at its vector, which the
+# shared crt0 reports as cause E0H at slot E0H. And a frontend without
+# one says so rather than ignoring the option (RV32).
+#
+if(EMU_GUEST_ARCH_G4MH AND TARGET emu-host)
+    set(_nmi_modes "none")
+    if(EMU_JIT)
+        list(APPEND _nmi_modes "--jit")
+    endif()
+    foreach(_m IN LISTS _nmi_modes)
+        string(REPLACE "none" "" _args "${_m}")
+        string(REPLACE "--" "-" _sfx "${_m}")
+        string(REPLACE "none" "" _sfx "${_sfx}")
+        add_test(NAME "g4mh-nmi-pin${_sfx}"
+                 COMMAND emu-host ${_args} --frontend g4mh --load 0x80000000
+                         --nmi-at 500 --max-insn 2000000
+                         "${CMAKE_SOURCE_DIR}/tests/guest/g4mh/guest.bin")
+        set_tests_properties("g4mh-nmi-pin${_sfx}" PROPERTIES
+            LABELS fast
+            PASS_REGULAR_EXPRESSION "!TRAP 000000E0 @[0-9A-F]+ #000000E0")
+    endforeach()
+endif()
+if(EMU_GUEST_ARCH_RV32 AND TARGET emu-host AND EXISTS "${CMAKE_BINARY_DIR}/guest")
+    add_test(NAME rv32-no-nmi-pin
+             COMMAND emu-host --nmi-at 50 --max-insn 200000
+                     "${CMAKE_BINARY_DIR}/guest/hello.bin")
+    set_tests_properties(rv32-no-nmi-pin PROPERTIES
+        LABELS fast
+        PASS_REGULAR_EXPRESSION "has no NMI pin")
 endif()
 
 #

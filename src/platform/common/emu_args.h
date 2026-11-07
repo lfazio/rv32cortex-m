@@ -133,6 +133,7 @@ typedef struct emu_args {
     uint32_t jit_thrash;
     bool jit_thrash_set;
     uint64_t max_insn;
+    uint64_t nmi_at; /* --nmi-at: the NMI pin at this count, 0 = never */
     uint32_t timer_div;
 
     bool want_jit;

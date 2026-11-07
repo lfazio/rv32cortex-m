@@ -24,10 +24,13 @@
 #include "emu_run.h"
 #include "emu_debug.h"
 #include "emu_board.h"
+#include "emu_console.h"
 
 emu_run_outcome_t emu_run_system(emu_system_t *sys, const emu_run_env_t *env,
                                  uint64_t *retired_total)
 {
+    uint64_t nmi_at = env->nmi_at;
+
     for (;;) {
         uint32_t did = 0u;
         uint32_t slice = env->slice;
@@ -46,9 +49,24 @@ emu_run_outcome_t emu_run_system(emu_system_t *sys, const emu_run_env_t *env,
                 slice = (uint32_t)left;
             }
         }
+        if (nmi_at != 0u && nmi_at > *retired_total &&
+            (uint64_t)slice > nmi_at - *retired_total) {
+            slice = (uint32_t)(nmi_at - *retired_total);
+        }
 
         (void)emu_debug_run(sys, slice, &did, &all_idle);
         *retired_total += did;
+
+        /* The NMI pin, once, at the count asked (--nmi-at). */
+        if (nmi_at != 0u && *retired_total >= nmi_at) {
+            nmi_at = 0u;
+            if (!emu_core_set_nmi(&sys->core[0])) {
+                emu_console_printf(
+                    "emu: --nmi-at: this frontend has no NMI pin\n");
+            }
+            /* An idle core may now have an interrupt to take. */
+            all_idle = false;
+        }
 
         /*
          * The platform's own work, then the debugger's. Two calls

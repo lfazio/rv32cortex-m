@@ -395,6 +395,14 @@ typedef struct emu_cpu_ops {
      */
     void (*set_irq)(emu_cpu_t *cpu, uint32_t source, bool level);
 
+    /*
+     * The non-maskable interrupt pin, asserted: an edge, latched by the
+     * frontend's interrupt controller, taken when the architecture says.
+     * System-wide as set_irq is -- G4MH's FENC asks every PE -- and
+     * optional: NULL where the architecture has no such pin.
+     */
+    void (*set_nmi)(emu_cpu_t *cpu);
+
     /* Called when the guest enables a source. May be left uninstalled. */
     void (*set_unmask_hook)(emu_cpu_t *cpu, emu_unmask_fn fn, void *ctx);
 
@@ -641,6 +649,16 @@ static inline void emu_core_set_irq(emu_core_t *c, uint32_t source, bool level)
     if (c->ops->set_irq != NULL) {
         c->ops->set_irq(c->cpu, source, level);
     }
+}
+
+/* False if the frontend has no NMI pin, which the caller reports. */
+static inline bool emu_core_set_nmi(emu_core_t *c)
+{
+    if (c->ops->set_nmi == NULL) {
+        return false;
+    }
+    c->ops->set_nmi(c->cpu);
+    return true;
 }
 
 #ifdef __cplusplus

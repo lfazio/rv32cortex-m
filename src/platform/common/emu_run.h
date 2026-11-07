@@ -50,6 +50,14 @@ typedef struct emu_run_env {
     uint64_t max_insn;
 
     /*
+     * Assert the NMI pin once the run has retired this many, 0 = never
+     * (--nmi-at). The slice is clamped to it as to the cap, so the
+     * interpreter raises it at exactly that count -- a block backend
+     * may be a block past, which an asynchronous input permits.
+     */
+    uint64_t nmi_at;
+
+    /*
      * What used to be here: `poll`, `gdb_attached` and `gdb_run`.
      *
      * They existed because the two platforms named the same three things

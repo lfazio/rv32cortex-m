@@ -466,6 +466,7 @@ static int emu_main_body(int argc, char **argv)
     g_cfg.dump_state = args.dump;
     env.slice = args.quantum;
     env.max_insn = args.max_insn;
+    env.nmi_at = args.nmi_at;
     emu_os_set_serial(args.serial);
 #if EMU_HAVE_JIT
     if (args.jit_hot != 0u) {

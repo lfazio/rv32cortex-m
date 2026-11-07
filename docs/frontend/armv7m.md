@@ -31,6 +31,7 @@ silicon was asked.
 | Stacking and unstacking faults: a frame into no memory, refused by the MPU, popped from either; the derived exception ranked against the original | asked of the F746 (`sys.c`, `stk-*`, `unstk-*`) |
 | Exception return from a 0xFxxxxxxx pc in Handler mode, written by BX, LDR, POP or LDM -- and only those: MOV pc, ADD pc and BLX branch to it, as exception entry and unstacking do, and the fetch faults (`pc_not_exc_return`) | asked of the F746 (`sys.c`, `excret-*`) |
 | NVIC (98 lines, 4 priority bits), SysTick | implemented |
+| The NMI pin, from outside: `--nmi-at N` (`emu_cpu_ops_t::set_nmi`), pending the NMI as ICSR.NMIPENDSET does | implemented; `guest-armv7m-nmi-pin` on both backends |
 | Local exclusive monitor | implemented; keeps no address, as the M7's does |
 | Caches, the debug architecture, DWT/ITM | not modelled |
 

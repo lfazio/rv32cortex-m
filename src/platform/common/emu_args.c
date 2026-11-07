@@ -133,6 +133,7 @@ void emu_args_usage(void)
         "                       RAM with its address in a1 (RISC-V) -- what",
         "                       OpenSBI and Linux read the machine out of",
         "  --max-insn N         stop after N instructions (0 = unlimited)",
+        "  --nmi-at N           assert the NMI pin once N have retired",
         "  --timer-hz N         timer ticks per second of guest time",
         "  --quantum N          instructions per core per round;",
         "                       1 is instruction-interleaved lockstep",
@@ -388,6 +389,14 @@ bool emu_args_parse(int argc, char **argv, emu_args_t *opt, int *status)
             }
             if (strcmp(a, "--max-insn") == 0) {
                 if (!parse_u64(argv[++i], &opt->max_insn)) {
+                    emu_args_usage();
+                    *status = 2;
+                    return false;
+                }
+                continue;
+            }
+            if (strcmp(a, "--nmi-at") == 0) {
+                if (!parse_u64(argv[++i], &opt->nmi_at) || opt->nmi_at == 0u) {
                     emu_args_usage();
                     *status = 2;
                     return false;
