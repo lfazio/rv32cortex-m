@@ -4477,6 +4477,18 @@ session, and every one of them recurred:
   status register before asking what the event sets, and vary the
   conditions until one bit has a single cause.**
 
+- **A capture printed at the end cannot time an event in the middle.**
+  The first presses of the NMI button were made after watching
+  `board-run.py`'s output for the banner -- which it writes only once
+  the run is over -- so every press landed on a parked firmware, and
+  the WFI that parked it was also why the probe could not attach. Two
+  wrong diagnoses followed from one timing mistake: "a running
+  firmware cannot be attached" and "the press is never polled". The
+  hook belongs in the script that owns the console (`BOARD_AT`), and a
+  second guest that waits rather than runs found the real defect:
+  G4MH's FENMI did not wake a HALT. **Put the event where the
+  behaviours differ, and time it from the thing that sees the run.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

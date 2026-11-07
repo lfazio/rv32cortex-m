@@ -89,6 +89,30 @@ controller, and the two numbering spaces never have to be reconciled.
 
 Adding a peripheral is one table entry (`g_bridged`) and one handler.
 
+**The user button as the guest's NMI pin** (F746, `-DEMU_NMI_BUTTON=ON`,
+off by default because it takes PC13 and the EXTI from the guest). B1
+on PC13 raises EXTI13 on its rising edge; the handler notes the press,
+and the run loop asserts the pin between slices, as `--nmi-at` does
+(`emu_run_env_t::nmi_pending`) -- G4MH's FENMI, ARMv7-M's NMI. With it
+armed, a core parked in WFI or HALT no longer ends the run: a press may
+yet wake it. `scripts/check-nmi-button.sh` presses it without a finger,
+by writing EXTI's SWIER through the probe mid-run (`board-run.py`'s
+`BOARD_AT`), twice: into ARMv7-M CoreMark while it runs (it stops at
+ipsr 2, its result unprinted), and into G4MH's test guest parked in its
+final HALT, which reports FENMI, cause E0H. That second one found that
+a pending FENMI did not make a parked G4MH core wakeable, so the press
+waited for ever (`test_fenmi_wakes_halt`); with the idle rule taken out,
+the run ends 0.01 s in, before the press. Not an ARMv7-M guest for it:
+that frontend runs WFI as a NOP, which the architecture permits, so its
+guests never park.
+
+The probe has to reach a firmware in WFI for that, and could not: a
+running emulator firmware is attached with `--connect-under-reset`
+everywhere because neither probe-rs nor OpenOCD gets through while the
+core waits in WFI with HCLK gated (OpenOCD reads CPUID as 0). The
+button build sets DBGMCU_CR.DBG_SLEEP; whether every firmware should is
+open ([TODO](../TODO.md)).
+
 ## Cache maintenance
 
 The M4 in the F446 has no data cache — only the ART flash accelerator,

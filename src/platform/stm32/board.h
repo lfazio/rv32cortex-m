@@ -86,6 +86,14 @@ void board_wfi(void);
  */
 void board_ram_init(void);
 
+/*
+ * The F746's user button as the guest's NMI pin, when the build asks
+ * for it (-DEMU_NMI_BUTTON=ON; platform.c): set up the EXTI line, and
+ * then report each press once, for emu_run_env_t::nmi_pending.
+ */
+void board_nmi_button_init(void);
+bool board_nmi_pending(void);
+
 /* ------------------------------------------------------------------ */
 /* Cache maintenance -- two of them, and they are not the same           */
 /* ------------------------------------------------------------------ */

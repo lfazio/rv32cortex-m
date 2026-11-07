@@ -125,6 +125,14 @@ measured at.
       interpreter (now cleared by words). Dropping `-Os` from
       `CMAKE_C_FLAGS_INIT` selects the speed variant; it wants every
       frontend measured at two layouts, and the F446's flash checked.
+- [ ] **A firmware in WFI cannot be attached.** HCLK is gated in
+      Sleep unless DBGMCU_CR.DBG_SLEEP is set, and then neither probe-rs
+      nor OpenOCD reaches the core, so every live question is asked
+      with `--connect-under-reset`, which destroys the state asked
+      about. The NMI-button build sets it
+      ([stm32f446/README.md](stm32f446/README.md#interrupts)); for
+      every firmware, measure what it moves first -- CYCCNT across a
+      WFI, which lwIP tells the time by.
 - [ ] **Why a profiled PowerPC run is a different run.** The PC
       profile's 32 KB come out of the guest's RAM (118 KiB against 150),
       and PowerPC CoreMark under the JIT went from 37.66 to 65.32 host
@@ -271,7 +279,7 @@ From the last measurements in [linux.md](linux.md).
         ECM's reset configuration deciding what an error does.
   - [ ] The ECM (section 56), so a guest can configure what each error
         does and a WDTB error can reach FENMI. FENC's external NMI has
-        a source now, `--nmi-at`.
+        a source now, `--nmi-at` and the F746's button.
 - [ ] **TAUD on the RH850/U2B6**, built on the STM32 timers that remain
       free and plugged into the PCIe framework.
 - [ ] **The G4MH and RH850 CPU system** (section 3), finished. Done:
@@ -279,9 +287,9 @@ From the last measurements in [linux.md](linux.md).
       bits, `CFALI` and `CHBII` against the MPU, FENMI and FENC
       ([frontend/g4mh.md](frontend/g4mh.md#register-banks)), the FXU on
       PE0 and the FPU's rules ([frontend/g4mh.md](frontend/g4mh.md#the-fxu)).
-      The NMI pin is driven by `--nmi-at N` (`emu_cpu_ops_t::set_nmi`);
-      a board source -- the Nucleo's button -- is not, being nothing
-      this tree can exercise. Left: the debug level -- `DBTRAP`, `DBRET`, `DBPC`, `DBPSW` -- which
+      The NMI pin is driven by `--nmi-at N` (`emu_cpu_ops_t::set_nmi`)
+      and, on the F746, by the user button (`-DEMU_NMI_BUTTON=ON`).
+      Left: the debug level -- `DBTRAP`, `DBRET`, `DBPC`, `DBPSW` -- which
       no manual in `docs/renesas/` describes. The E2 emulator manual
       (R20UT3538, added 2026-11-06) is the probe's hardware and does not
       either; what is needed is a description of the G4MH's debug

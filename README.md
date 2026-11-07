@@ -225,7 +225,8 @@ Useful flags: `--dump` (register file on exit), `--max-insn N`,
 frame a guest presented, as a PPM at exit -- the picture from a run
 with no window), `--nmi-at N` (assert the NMI pin once N instructions
 have retired: G4MH's FENMI, ARMv7-M's NMI; a frontend without the pin
-says so).
+says so). On the F746, `-DEMU_NMI_BUTTON=ON` makes the user button the
+pin (docs/stm32f446/README.md).
 
 ### Games
 

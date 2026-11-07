@@ -37,6 +37,12 @@ opened by /dev/serial/by-id -- ttyACM numbers swap when a probe
 re-enumerates. Override any of them with BOARD_PROBE, BOARD_CHIP and
 BOARD_CONSOLE.
 
+BOARD_AT=SECS:CMD runs the shell command CMD SECS after the banner's
+`backend` line arrives, while the capture goes on -- something done to
+the board in the middle of a run, as scripts/check-nmi-button.sh
+presses the user button through the probe. Its exit status is reported
+after WALL, as `AT SECS rc=N`, and its output goes to stderr.
+
 The N6 is not covered: it loads through scripts/n6-load.sh, not a
 probe-rs flash. Needs pyserial and probe-rs.
 """
@@ -115,6 +121,10 @@ def main():
         sys.exit(3)
     print("flash rc=0 (and reset)")
 
+    at_secs, _, at_cmd = os.environ.get("BOARD_AT", "").partition(":")
+    at_proc = None
+    banner_at = None
+
     chunks = []  # (arrival time, offset into buf)
     buf = b""
     end = time.time() + secs
@@ -123,6 +133,14 @@ def main():
         if d:
             chunks.append((time.time(), len(buf)))
             buf += d
+        if at_cmd and banner_at is None and b"backend " in buf:
+            banner_at = time.time()
+        if (at_cmd and at_proc is None and banner_at is not None and
+                time.time() - banner_at >= float(at_secs)):
+            # Not waited for here: the console keeps being read.
+            at_proc = subprocess.Popen(at_cmd, shell=True,
+                                       stdout=sys.stderr, stderr=sys.stderr)
+        if d:
             # The run is over: a second's grace for whatever follows.
             if b"emu-result" in buf[-4096:] and time.time() + 1.0 < end:
                 end = time.time() + 1.0
@@ -147,6 +165,11 @@ def main():
     else:
         print("WALL ?  (banner %d, done %d) -- the run did not finish "
               "inside the capture" % (start, done))
+    if at_cmd:
+        if at_proc is None:
+            print("AT %s never ran: no banner inside the capture" % at_secs)
+        else:
+            print("AT %s rc=%d" % (at_secs, at_proc.wait()))
     sys.stdout.write(buf.decode("latin-1", "replace"))
     return 0
 

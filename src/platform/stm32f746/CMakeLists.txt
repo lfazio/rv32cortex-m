@@ -205,6 +205,12 @@ if(EMU_LAYOUT_PAD)
     target_link_options(emu-stm32f746 PRIVATE
         -Wl,--defsym=EMU_LAYOUT_PAD=${EMU_LAYOUT_PAD})
 endif()
+# The user button (B1, PC13) as the guest's NMI pin: platform.c. Off by
+# default, because it takes GPIOC's line 13 and the EXTI from the guest.
+option(EMU_NMI_BUTTON "The user button (PC13) as the guest's NMI pin" OFF)
+target_compile_definitions(emu-stm32f746 PRIVATE
+    EMU_NMI_BUTTON=$<BOOL:${EMU_NMI_BUTTON}>)
+
 # A PC profile from the tick, printed after the run: stm32f7xx_it.c.
 set(EMU_PC_PROFILE 0 CACHE STRING
     "pc samples to take at 1 kHz and print after the run (0: none)")

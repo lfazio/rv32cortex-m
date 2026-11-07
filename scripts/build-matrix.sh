@@ -112,6 +112,7 @@ f746-rv32-nojit|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_GUEST_ARCH_G4MH=OFF -DE
 f746-g4|stm32f746|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON|the contract check: G4MH-only must link
 f746-ppc|stm32f746|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_PPC=ON -DEMU_NET=OFF|the contract check for the big-endian frontend, and its translator through the Thumb-2 emitter: every other PowerPC row is x86-64
 f746-armv7m|stm32f746|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_ARMV7M=ON -DEMU_NET=OFF|the Cortex-M guest on a Cortex-M: its staging, and a frontend with no set_time -- the boards called it unconditionally
+f746-nmi-button|stm32f746|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DEMU_NMI_BUTTON=ON -DEMU_NET=OFF|**the other value** of the user button as the NMI pin: built here, pressed by scripts/check-nmi-button.sh
 f746-g4-x3|stm32f746|-DEMU_GUEST_ARCH_RV32=OFF -DEMU_GUEST_ARCH_G4MH=ON -DG4MH_PE_COUNT=3 -DG4MH_CRAM_KIB=64 -DG4MH_LRAM_KIB=16|3 PEs of .bss on a 320 KB part -- see the sizing note
 f746-nonet|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=OFF|**the other value**: serial console, no lwIP
 f746-net|stm32f746|-DEMU_GUEST_ARCH_RV32=ON -DEMU_NET=ON|**the link, exercised** with --board: ping, telnet, upload, and the new guest running. Building EMU_NET proves nothing -- see scripts/check-board-net.sh

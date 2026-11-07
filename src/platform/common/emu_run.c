@@ -26,6 +26,22 @@
 #include "emu_board.h"
 #include "emu_console.h"
 
+/*
+ * Idle is the end of the run unless a pin can still wake it: with the
+ * board's NMI source armed, a core parked in WFI waits for a press. A
+ * halted one is finished whatever arrives.
+ */
+static bool waits_for_nmi(emu_system_t *sys, const emu_run_env_t *env)
+{
+    emu_cpu_status_t st;
+
+    if (env->nmi_pending == NULL) {
+        return false;
+    }
+    emu_core_status(&sys->core[0], &st);
+    return st.state == EMU_STATE_WFI;
+}
+
 emu_run_outcome_t emu_run_system(emu_system_t *sys, const emu_run_env_t *env,
                                  uint64_t *retired_total)
 {
@@ -67,6 +83,14 @@ emu_run_outcome_t emu_run_system(emu_system_t *sys, const emu_run_env_t *env,
             /* An idle core may now have an interrupt to take. */
             all_idle = false;
         }
+        /* And the board's own pin, a press since the last slice. */
+        if (env->nmi_pending != NULL && env->nmi_pending()) {
+            if (!emu_core_set_nmi(&sys->core[0])) {
+                emu_console_printf(
+                    "emu: the NMI button: this frontend has no NMI pin\n");
+            }
+            all_idle = false;
+        }
 
         /*
          * The platform's own work, then the debugger's. Two calls
@@ -102,7 +126,7 @@ emu_run_outcome_t emu_run_system(emu_system_t *sys, const emu_run_env_t *env,
          * and reports the conjunction, so a multicore guest ends when the
          * last live core does rather than when the first stops.
          */
-        if (all_idle) {
+        if (all_idle && !waits_for_nmi(sys, env)) {
             return EMU_RUN_OUTCOME_HALTED;
         }
     }

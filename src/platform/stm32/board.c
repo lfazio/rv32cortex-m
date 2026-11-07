@@ -385,6 +385,10 @@ bool board_init(const emu_args_t *args, emu_session_cfg_t *cfg,
     cfg->cache_ops = &board_cache_ops;
     cfg->unmask_fn = board_irq_unmask;
     env->advance_time = advance_guest_time;
+#if defined(EMU_NMI_BUTTON) && EMU_NMI_BUTTON
+    board_nmi_button_init();
+    env->nmi_pending = board_nmi_pending;
+#endif
     return true;
 }
 

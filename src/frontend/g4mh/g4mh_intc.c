@@ -341,6 +341,16 @@ static bool g4mh_intc_wakeable_impl(const g4mh_intc_t *ic, unsigned pe)
 {
     const g4mh_intc2_t *const g = ic->intc2;
 
+    /*
+     * FENMI and FEINT are masked at no channel, so one pending is a
+     * request HALT resumes on. FENMI was missed: the NMI pin raised at a
+     * parked core -- the board's button -- found it "not wakeable", and
+     * emu_core_slice never ran it again (test_fenmi_wakes_halt).
+     */
+    if (ic->fenmi != 0u || ic->feint != 0u) {
+        return true;
+    }
+
     for (unsigned n = 0u; n < G4MH_INTC1_CHANNELS; n++) {
         if ((ic->chan[n] & G4MH_EEIC_EIMK) == 0u) {
             return true;

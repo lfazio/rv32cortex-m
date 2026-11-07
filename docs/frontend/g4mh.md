@@ -1886,8 +1886,15 @@ clamping the slice so that the interpreter raises it at exactly that
 count (the JIT may be a block past, which an asynchronous input
 permits). `g4mh-nmi-pin` and `-jit` raise it at 500 in `guest.bin` and
 require the crt0's report of cause E0H at slot E0H; each fails with the
-hook removed or the clamp gone. No board source drives it yet: a
-button would, but a source nobody can exercise from here is not one.
+hook removed or the clamp gone. **On the F746 the user button drives
+it** (`-DEMU_NMI_BUTTON=ON`, [stm32f446/README.md](../stm32f446/README.md#interrupts)),
+pressed through the probe by `scripts/check-nmi-button.sh` at
+`guest.bin` parked in its final HALT -- which found that a pending
+FENMI did not make a parked core wakeable. `g4mh_intc_wakeable` counted
+unmasked channels only, and FENMI and FEINT are masked at none, so
+`emu_core_slice` never ran the core again and the press waited for ever;
+one pending is a request HALT resumes on now (`test_fenmi_wakes_halt`,
+both backends).
 
 **EP is cleared by an interrupt** -- EIINT, FEINT, FENMI -- and set by
 every other exception (3.2.4.1 caution 1). FEINT set it, so its handler

@@ -11032,6 +11032,53 @@ static void test_fenmi(void)
     }
 }
 
+/*
+ * FENMI at a core already parked in HALT, every channel masked: the
+ * board's NMI button arrives that way (emu_run.c waits_for_nmi). Parked,
+ * nothing can wake it, and the run would end there; with FENMI pending
+ * it is wakeable -- it was not, so emu_core_slice never ran it and the
+ * press waited for ever -- and the next run takes it at the instruction
+ * after HALT. On both backends.
+ */
+static void test_fenmi_wakes_halt(void)
+{
+    uint16_t prog[0x80];
+
+    memset(prog, 0, sizeof(prog));
+    prog[0] = 0x07E0u; /* halt: where the guest parks */
+    prog[1] = SUB_HALT;
+    prog[0x70] = 0x07E0u; /* the FENMI handler, at 0xE0 */
+    prog[0x71] = SUB_HALT;
+
+    for (unsigned k = 0; k < 2u; k++) {
+        emu_run_reason_t why;
+        emu_cpu_status_t st;
+        uint32_t retired = 0u;
+
+        g_force_backend = k == 0u ? &g4mh_backend_interp : NULL;
+        const bool ok = load_and_run(prog, 0x80u, 64u, &why, &retired);
+
+        g_force_backend = NULL;
+        if (!ok) {
+            CHECK(false);
+            return;
+        }
+        g4mh_cpu_t *const c = (g4mh_cpu_t *)(void *)g_core.cpu;
+
+        CHECK_EQ(c->state, EMU_STATE_WFI);
+        emu_core_status(&g_core, &st);
+        CHECK(!st.wakeable);
+        g4mh_intc_raise_nmi(c->intc);
+        emu_core_status(&g_core, &st);
+        CHECK(st.wakeable);
+        (void)emu_core_run(&g_core, 64u, &retired);
+        CHECK_EQ(sreg(0, G4MH_SR_FEIC), G4MH_EXC_FENMI);
+        CHECK_EQ(sreg(0, G4MH_SR_FEPC), EMU_GUEST_RAM_BASE + 4u);
+        CHECK_EQ(c->pc, EMU_GUEST_RAM_BASE + 0xE4u);
+        CHECK(!g4mh_intc_fenmi_pending(c->intc));
+    }
+}
+
 /* A core from priv_run, halted, to drive directly. */
 static g4mh_cpu_t *bank_core(void)
 {
@@ -11822,6 +11869,7 @@ void test_g4mh(void)
     test_register_bank_rules();
     test_resbank_mei();
     test_fenmi();
+    test_fenmi_wakes_halt();
 #if G4MH_EXT_MPU
     test_register_bank_mpu();
 #endif

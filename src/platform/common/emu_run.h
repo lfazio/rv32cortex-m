@@ -93,6 +93,14 @@ typedef struct emu_run_env {
      * branch instead of a call.
      */
     bool (*take_upload)(void);
+
+    /*
+     * A board's own NMI source -- the F746's user button, opt-in
+     * (-DEMU_NMI_BUTTON=ON): true once for each press, asked between
+     * slices as --nmi-at is. NULL where there is none. With one, a core
+     * parked in WFI does not end the run: a press may yet wake it.
+     */
+    bool (*nmi_pending)(void);
 } emu_run_env_t;
 
 /*

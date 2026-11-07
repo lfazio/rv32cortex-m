@@ -691,6 +691,10 @@ The sweep is [docs/jit/staleness.md](docs/jit/staleness.md).
   HardFault loop once code moved. A difference every run shows is a
   defect until explained; ask the core (gdb through probe-rs), not a
   polled console stuck behind the fault.
+- **A firmware in WFI cannot be attached** unless DBGMCU_CR.DBG_SLEEP
+  keeps HCLK on (only the NMI-button build sets it); and to act on a
+  board mid-run, time it from the console as it arrives (`board-run.py`
+  `BOARD_AT`) -- its capture is printed only once the run is over.
 - **Read a control register back after a barrier**: straight after
   the write, the F746 returned LSPACT's old value beside every other
   bit's new one, which read as "LSPACT cannot be cleared"

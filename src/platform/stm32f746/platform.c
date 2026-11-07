@@ -171,6 +171,61 @@ void TIM6_DAC_IRQHandler(void)
 {
     irq_line_entry(TIM6_DAC_IRQn);
 }
+
+#if defined(EMU_NMI_BUTTON) && EMU_NMI_BUTTON
+/*
+ * The user button, B1 on PC13 (UM1974), as the guest's NMI pin: EXTI13
+ * on its rising edge, which is a press -- the board pulls it down.
+ * Opt-in, because a guest that drives GPIOC or the EXTI through the
+ * peripheral window would be fighting the board for them.
+ *
+ * Without a finger: EXTI's SWIER is the same request in software, and
+ * scripts/check-nmi-button.sh writes it through the probe while a long
+ * guest runs.
+ */
+static volatile bool g_nmi_pressed;
+
+void board_nmi_button_init(void)
+{
+    /*
+     * HCLK on in Sleep, so that the probe reaches the core while the
+     * firmware waits in WFI -- parked after a run, or waiting for this
+     * very press: without it neither probe-rs nor OpenOCD attaches to a
+     * firmware in WFI (OpenOCD reads CPUID as 0), and the press cannot be
+     * made through the probe. Only here, because what else it moves --
+     * CYCCNT across a WFI, which lwIP tells the time by -- has not been
+     * measured.
+     */
+    DBGMCU->CR |= DBGMCU_CR_DBG_SLEEP;
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_SYSCFG_CLK_ENABLE();
+    GPIOC->MODER &= ~(3u << (13u * 2u)); /* input, as out of reset */
+    SYSCFG->EXTICR[3] = (SYSCFG->EXTICR[3] & ~(0xFu << 4)) | (2u << 4);
+    EXTI->RTSR |= 1u << 13;
+    EXTI->FTSR &= ~(1u << 13);
+    EXTI->PR = 1u << 13;
+    EXTI->IMR |= 1u << 13;
+    NVIC_ClearPendingIRQ(EXTI15_10_IRQn);
+    NVIC_EnableIRQ(EXTI15_10_IRQn);
+}
+
+void EXTI15_10_IRQHandler(void)
+{
+    if ((EXTI->PR & (1u << 13)) != 0u) {
+        EXTI->PR = 1u << 13;
+        g_nmi_pressed = true;
+    }
+}
+
+bool board_nmi_pending(void)
+{
+    if (!g_nmi_pressed) {
+        return false;
+    }
+    g_nmi_pressed = false;
+    return true;
+}
+#endif
 /*
  * The passthrough windows. Identity-mapped, so a guest driver writing
  * what its datasheet says reaches the real peripheral -- the point of
