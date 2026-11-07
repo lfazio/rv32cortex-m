@@ -109,9 +109,8 @@ static uint32_t g4mh_kind(uint64_t insn)
         /* All eleven sub-opcode bits: five named several instructions. */
         return KIND_EXT | op | ((w1 & 0x7FFu) << 6);
     }
-    if (g4mh_reg2(w0) == 0u &&
-        (op == 0x02u || (op >= 0x04u && op <= 0x07u) || op == 0x10u ||
-         op == 0x17u || op == 0x37u)) {
+    if (g4mh_reg2(w0) == 0u && (op == 0x02u || (op >= 0x04u && op <= 0x07u) ||
+                                op == 0x10u || op == 0x17u || op == 0x37u)) {
         const uint32_t w1 = (uint32_t)(insn >> 16) & 0xFFFFu;
         /* 0x02 also needs reg1: zero there is FETRAP, not SWITCH. 0x37
          * needs bit 0 of the second halfword: set is LOOP, clear JMP. */

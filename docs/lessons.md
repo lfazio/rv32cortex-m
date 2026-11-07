@@ -4367,6 +4367,17 @@ session, and every one of them recurred:
   instrument names them apart now. **When an instrument says a fixed
   thing still happens, ask the program what instruction it ran.**
 
+- **Measure the call before lowering it, and where it goes.** The TODO
+  said to measure what PowerPC's FP helper call costs before writing a
+  lowering. Asked the way an A/B asks -- one more call of the same
+  shape per FP instruction, with the block's shape held equal (a
+  second *trapping* call broke a per-block limit first and measured the
+  interpreter) -- it was 55 cycles on the F746, 11% of Whetstone. The
+  3.7 KB it called into was in flash, and moving that to ITCM was worth
+  17%: more than the call, for an attribute. **The cost of a call on
+  the M7 is mostly where its callee runs from; check `nm` for the
+  callee's address before writing the code that removes the call.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

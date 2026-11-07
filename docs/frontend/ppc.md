@@ -953,6 +953,34 @@ the dispatch are 14.7% of the host's instructions, which is what
 modelling SPEFSCR exactly -- status, sticky bits, FG and FX, two
 interrupts -- costs, and the reason for having the unit.
 
+**What the call costs**, measured before writing a lowering, on
+PowerPC Whetstone under the JIT (8.4M instructions, 1,293,253 of them
+EFPU calls). By callgrind on x86-64, an FP instruction is 279 host
+instructions: 7 in the block (the arguments, the call, the test of the
+result), 33 in `ppc_ir_efs` unpacking the fields, about 30 in
+`ppc_fpu_exec`'s entry, operand loads and switch, and the rest the
+arithmetic, `round_f64` (81 a call) and SPEFSCR's bookkeeping. On the
+F746 the bare call was asked by adding one more: a no-op helper called
+the same way before every EFPU helper, the block's shape kept (the same
+fallbacks and entries; a second *trapping* call had broken a per-block
+limit and sent 164,719 instructions to the interpreter). 78.60 and
+78.47 host cycles an instruction became 87.36 and 87.63: **about 55
+cycles a call**, after the 6.5 KB the extra calls added to the code and
+the one compaction that cost. On x86-64 the same call is 11 host
+instructions.
+
+**Where the callee lived cost more than the call.** `ppc_ir_efs`,
+`ppc_fpu_exec`, `round_f64` and `op_add`, 3.7 KB, were in flash behind
+the 4 KB I-cache; `EMU_HOT_TEXT` puts them in ITCM. Whetstone under the
+JIT 78.60 to 65.15 and 78.47 to 65.68 at a second layout, 17%, the wall
+clock agreeing (3.00 s, 2.48 s); interpreted, CoreMark 213.43 to 208.22
+and Whetstone 416.00 to 400.87. CoreMark under the JIT, which runs
+none of it, 33.56 to 33.83 -- the same 0.7% at three layouts, so not
+noise: the flash it vacated moves what follows, and nothing in ITCM
+that CoreMark uses moved. A lowering would now save the 55-cycle call
+and the unpacking and dispatch, and still owe FG, FX and the sticky
+bits exactly.
+
 ## The JIT
 
 `--jit` selects `ppc_backend_jit`, built from `ppc_ir.c` through the

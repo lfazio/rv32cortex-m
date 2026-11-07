@@ -231,7 +231,9 @@ static uint32_t ppc_ir_step(emu_cpu_t *cpu, uint32_t insn, uint32_t pc)
  * stay beside it. A data interrupt names this instruction, a round
  * interrupt the next.
  */
-static uint32_t ppc_ir_efs(emu_cpu_t *cpu, uint32_t op, uint32_t pc)
+/* In ITCM with the unit it calls: see round_f64 in ppc_fpu.c. */
+EMU_HOT_TEXT static uint32_t ppc_ir_efs(emu_cpu_t *cpu, uint32_t op,
+                                        uint32_t pc)
 {
     ppc_cpu_t *const c = (ppc_cpu_t *)cpu;
     const uint32_t next = pc + ((op >> 26) & 7u);

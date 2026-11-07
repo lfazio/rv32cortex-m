@@ -136,14 +136,19 @@ measured at.
       The JIT, the default, pays nothing. Six variants were measured; a
       decode cache is the one lever not tried again, and it lost before
       ([frontend/armv7m.md](frontend/armv7m.md#the-run-loop-in-itcm-and-the-decode-cache-that-lost)).
-- [ ] **PowerPC's FP unit is a call per instruction.** Every EFPU2
-      instruction under the JIT is a helper call into `ppc_fpu_exec`,
-      whose bookkeeping -- SPEFSCR status, sticky bits, FG and FX -- was
-      14.7% of host instructions on Quake after the integer fast path
-      ([frontend/ppc.md](frontend/ppc.md#what-uses-it-and-what-it-costs)).
-      A lowering for normal operands under round-to-nearest with no
-      enables would still have to produce FG and FX exactly; measure
-      what the call costs before writing one.
+- [ ] **PowerPC's FP unit is a call per instruction**, now from ITCM.
+      Measured
+      ([frontend/ppc.md](frontend/ppc.md#what-uses-it-and-what-it-costs)):
+      the bare call is about 55 cycles on the F746, 11% of PowerPC
+      Whetstone under the JIT, and 11 host instructions on x86-64; the
+      helper's unpacking and the unit's dispatch are about 63 more host
+      instructions of the 279 an FP instruction costs there. Moving the
+      path into ITCM was worth 17% and is done. What a lowering could
+      still take: the call, the unpacking and the switch -- a helper
+      per operation, its operands as IR values, first, since it keeps
+      the one implementation of FG, FX and the sticky bits -- and then
+      the arithmetic itself for normal operands under round-to-nearest
+      with no enables, which must produce FG and FX exactly.
 
 ## Linux
 

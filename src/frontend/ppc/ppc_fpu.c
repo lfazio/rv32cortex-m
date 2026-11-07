@@ -111,8 +111,19 @@ enum { UNF_SIGN, UNF_MODE };
  * operation on single-precision normals reaches the double denormal
  * range.
  */
-static void round_f64(res_t *r, float64_t d, bool sticky, uint32_t rm,
-                      int unf_rule)
+/*
+ * The FP path a translated block calls once an EFPU instruction --
+ * ppc_ir_efs, ppc_fpu_exec, round_f64, op_add, 3.7 KB -- is EMU_HOT_TEXT:
+ * the F746's ITCM, where it had been in flash behind the I-cache. On the
+ * F746, PowerPC Whetstone under the JIT 78.60 to 65.15 host cycles an
+ * instruction, 78.47 to 65.68 at a second layout; interpreted, CoreMark
+ * 213.43 to 208.22 and Whetstone 416.00 to 400.87. CoreMark under the
+ * JIT, which runs none of it, 33.56 to 33.83, the same 0.7% at three
+ * layouts: the flash it vacated moves the rest. A bare call into the
+ * unit is 55 cycles there (docs/frontend/ppc.md).
+ */
+EMU_HOT_TEXT static void round_f64(res_t *r, float64_t d, bool sticky,
+                                   uint32_t rm, int unf_rule)
 {
     const uint64_t bits = d.v;
     const uint32_t s = (uint32_t)(bits >> 63);
@@ -331,7 +342,9 @@ static float64_t div_exact(uint32_t a, uint32_t b, bool *lost)
 /* ------------------------------------------------------------------ */
 
 /* efsadd and efssub (table 5-2): `neg_b` makes it a subtraction. */
-static void op_add(res_t *r, uint32_t a, uint32_t b, bool neg_b, uint32_t rm)
+/* In ITCM, as round_f64 says. */
+EMU_HOT_TEXT static void op_add(res_t *r, uint32_t a, uint32_t b, bool neg_b,
+                                uint32_t rm)
 {
     const int ka = kind(a);
     const int kb = kind(b);
@@ -836,8 +849,9 @@ static uint32_t finish(ppc_cpu_t *c, const res_t *r, uint32_t *dst)
     return PPC_EXC_NONE;
 }
 
-uint32_t ppc_fpu_exec(ppc_cpu_t *c, uint32_t sem, uint32_t rd, uint32_t ra,
-                      uint32_t rb, uint32_t crf)
+/* In ITCM, as round_f64 says. */
+EMU_HOT_TEXT uint32_t ppc_fpu_exec(ppc_cpu_t *c, uint32_t sem, uint32_t rd,
+                                   uint32_t ra, uint32_t rb, uint32_t crf)
 {
     const uint32_t a = c->r[ra];
     const uint32_t b = c->r[rb];

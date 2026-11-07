@@ -8197,8 +8197,8 @@ static void test_jit_cc_rh_loops_and_extensions(void)
     /* zxb r5, sxb r6, zxh r7, sxh r8, mulh r9,r10, mulh -3,r11,
      * mulhi -2,r12,r13, mulh 15,r14, subr r16,r15 */
     static const uint16_t straight[] = {
-        0x0085u, 0x00A6u, 0x00C7u, 0x00E8u, 0x50E9u, 0x5AFDu,
-        0x6EECu, 0xFFFEu, 0x72EFu, 0x7990u,
+        0x0085u, 0x00A6u, 0x00C7u, 0x00E8u, 0x50E9u,
+        0x5AFDu, 0x6EECu, 0xFFFEu, 0x72EFu, 0x7990u,
     };
     /* add 1, r16; loop r17, 2 -- back to the add */
     static const uint16_t loop[] = {0x8241u, 0x06F1u, 0x0003u};
@@ -8215,7 +8215,7 @@ static void test_jit_cc_rh_loops_and_extensions(void)
         fp_r(&s, 6, 0x000000F0u);
         fp_r(&s, 7, 0xABCD8001u);
         fp_r(&s, 8, 0x00008001u);
-        fp_r(&s, 9, 0x0001FFFDu);  /* low half -3 */
+        fp_r(&s, 9, 0x0001FFFDu); /* low half -3 */
         fp_r(&s, 10, 0xFFFF0007u); /* low half 7, the high half ignored */
         fp_r(&s, 11, 0x12340100u); /* low half 256 */
         fp_r(&s, 12, 0x5555C000u); /* low half -16384 */
@@ -8325,8 +8325,8 @@ static void test_jit_cc_rh_loops_and_extensions(void)
     for (unsigned form = 0; form < 4u; form++) {
         static const uint16_t op[4] = {0x06E0u, 0x06E6u, 0x02E5u, 0x02E0u};
         const uint32_t d = (form == 0u) ? EMU_GUEST_RAM_BASE + 12u : 12u;
-        const uint16_t jump[] = {op[form],      (uint16_t)d, (uint16_t)(d >> 16),
-                                 0x8241u,       0x8241u,     0x8241u,
+        const uint16_t jump[] = {op[form], (uint16_t)d, (uint16_t)(d >> 16),
+                                 0x8241u,  0x8241u,     0x8241u,
                                  0x8A42u /* add 2, r17 */};
 
         for (unsigned pass = 0; pass < 2u; pass++) {

@@ -563,8 +563,8 @@ static bool lower_one32(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
                           0u, 0u);
         *counted = true;
         (void)emu_ir_emit(b, EMU_IR_EXIT_IF, EMU_IR_C_NE, v,
-                          emu_ir_const(b, 0u),
-                          pc - ((uint32_t)w1 & 0xFFFEu), 0u);
+                          emu_ir_const(b, 0u), pc - ((uint32_t)w1 & 0xFFFEu),
+                          0u);
         return true;
     }
 
@@ -1218,10 +1218,11 @@ static bool lower_one48(emu_ir_block_t *b, uint16_t w0, uint16_t w1,
             (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, EMU_IR_NO_TEMP,
                               EMU_IR_NO_TEMP, d & ~1u, 0u);
         } else {
-            const uint16_t tgt = emu_ir_alu(
-                b, EMU_IR_AND,
-                emu_ir_alu(b, EMU_IR_ADD, emu_ir_get(b, r1), emu_ir_const(b, d)),
-                emu_ir_const(b, ~1u));
+            const uint16_t tgt =
+                emu_ir_alu(b, EMU_IR_AND,
+                           emu_ir_alu(b, EMU_IR_ADD, emu_ir_get(b, r1),
+                                      emu_ir_const(b, d)),
+                           emu_ir_const(b, ~1u));
 
             (void)emu_ir_emit(b, EMU_IR_EXIT, 0u, tgt, EMU_IR_NO_TEMP, 0u, 0u);
         }

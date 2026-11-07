@@ -1385,7 +1385,7 @@ static void test_lazy_board_answers(void)
     CHECK_EQ(c->xpsr & 0x1FFu, 4u);
     CHECK_EQ(c->r[ARMV7M_LR], 0xFFFFFFEDu);
     CHECK_EQ(c->psp, STK_BUF + 0x2C0u); /* not popped */
-    CHECK_EQ(c->fpccr, 0xC0000078u);    /* not reserved again */
+    CHECK_EQ(c->fpccr, 0xC0000078u); /* not reserved again */
 
     /* lazy-mm-disabled: MMRDY clear, a FORCED HardFault at the vmov,
      * and LSPACT cleared -- no MemManage could be taken now. */

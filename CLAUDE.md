@@ -830,7 +830,10 @@ The SMP design is in [docs/os.md](docs/os.md#smp-on-the-host).
   nothing runs can tip it too: G4MH's FXU moved the JIT's per-block
   hooks, 2.7% on CoreMark. A hook called once a block goes in ITCM
   (`EMU_HOT_TEXT`): `EMU_ALWAYS_INLINE` does not reach through a
-  function pointer, and `nm` said so (1.4-6.3% on four frontends).
+  function pointer, and `nm` said so (1.4-6.3% on four frontends). A
+  helper called once an instruction goes there too: PowerPC's FP path,
+  3.7 KB in flash, was worth 17% of Whetstone in ITCM, where the call
+  itself was 11%.
 - **An out-parameter on a hot function is not free** (+1.3%), and cold
   state goes at the end of a hot struct.
 - **A counter costs everyone who never reads it**: keep it where its
