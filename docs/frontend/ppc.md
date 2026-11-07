@@ -135,6 +135,18 @@ of the interpreter on a host. It is 1024 entries there and 64 on ARM,
 where 48 KiB of `.bss` would be the guest's memory -- one per core; see
 [two cores](#two-cores) for what one between two cost.
 
+**A miss cleared its 32 bytes one at a time.** `ppc_decode` began with
+`memset`, and the firmware links picolibc's size variant, whose
+`memset` is a byte loop -- 10% of a profiled CoreMark run on the F746,
+every miss of the 64 entries. A struct assignment compiled to the same
+call. Eight word stores now: interpreted CoreMark 203.39 to 152.00 host
+cycles an instruction, 203.40 to 151.99 at a second layout (25%, the
+wall clock 11.30 s to 8.45 s), and under the JIT, whose helper decodes
+too, 34.43 to 33.48 and 34.53 to 33.53 with the translations
+unchanged. `test_decode_clears_everything` decodes into a record of
+0xFF and one of zeros; a store left out fails it, for every word the
+decoder does not always write.
+
 Things the manual settles and a reading of the mnemonics would not:
 
 - **Unaligned accesses are performed** (3.4), a byte at a time; only the

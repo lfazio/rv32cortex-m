@@ -4431,6 +4431,27 @@ session, and every one of them recurred:
   drives a device, twice. **Removing a device's address does not remove
   its reach: a reload resets what it keeps.**
 
+- **The firmware's `memset` was a byte loop, chosen by a flag nobody
+  set for it.** The toolchain file puts `-Os` in the default flags,
+  every firmware build's `-O2` comes after it and wins for the
+  compiler -- and the `-Os` still reaches the link, where it picks
+  picolibc's size variant. A PC profile of PowerPC CoreMark put 10% in
+  four instructions of `memset`, called by `ppc_decode` to clear 32
+  bytes on every miss of the board's 64-entry decode cache; a struct
+  assignment compiled to the same call, which an identical figure
+  (203.39 twice) said before the disassembly did. Eight word stores
+  took the interpreter 25%. **A library is part of the configuration:
+  read which multilib a build linked, and a hot path's disassembly for
+  the calls the compiler made on its behalf.**
+
+- **A profiled firmware is a different program for the JIT.** The PC
+  profile's 32 KB of samples come out of guest RAM, and PowerPC
+  CoreMark under the JIT ran at 65.32 host cycles an instruction
+  profiled against 37.66 plain, 68 compactions against 40 -- so the
+  first reading, "the JIT halves over a long run", was the profile.
+  **Take where the time goes from the profile and how much from the
+  plain build, and check the two agree on the counters first.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

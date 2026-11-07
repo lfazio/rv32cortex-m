@@ -103,17 +103,33 @@ measured at.
       ARMv7-M guest makes need a guest-specific vector for SYSERR that
       records the cause and MEA and steps over the store.
 - [ ] **Autovectorisation of the IR pipeline.**
-- [ ] **A third of a 96 KB buffer is still behind the I-cache.** With
-      the JIT's buffer first in the F746's DTCM, about 59 KB of it is
-      DTCM and the rest SRAM1, and which code gets the DTCM is whatever
-      is translated first. The bound is RV32 Dhrystone's loop: 17.56
-      host cycles an instruction in SRAM1, 14.14 in DTCM
-      ([performance.md](performance.md#the-jit-buffer-in-dtcm)).
-      ARMv7-M and PowerPC run 96 KB buffers, so their hot blocks may sit
-      in either; promoting a block that keeps being entered into the
-      DTCM half -- a second buffer, compacted on its own -- is the
-      lever, and asking which of their hot blocks are in SRAM1 today
-      (`--timeline`, by address) comes first.
+- [ ] **ARMv7-M's and PowerPC's CoreMark do not fit their 96 KB
+      buffers.** At 200 iterations ARMv7-M compacts 32 times, translates
+      2,596 blocks for 198 resident, and interprets 1,467,796
+      instructions at the 100 pcs it gave up on; PowerPC compacts 40
+      times and runs at 37.66 host cycles an instruction against 34.43
+      at 40 iterations. Blocks average about 490 bytes, and RV32's
+      CoreMark fitted only once its encodings shrank 27% (1.71x,
+      [lessons.md](lessons.md)). Where the bytes go comes first:
+      `-DEMU_JIT_BYTE_STATS=ON` on the board, by IR operation, and
+      whether blocks entered part-way duplicate their neighbours' tails
+      ([performance.md](performance.md#which-blocks-get-the-dtcm-and-why-promoting-them-was-not-built)).
+- [ ] **The firmware links picolibc's size variant.** Every firmware
+      compiles at `-O2` -- RelWithDebInfo's flags come after the
+      toolchain's `-Os` -- but the `-Os` reaches the link line too, and
+      picks the `space` multilib, whose `memset` and `memcpy` are byte
+      loops. GCC calls them for any struct cleared or copied past a few
+      words: `emu_ir_optimise` clears 17 tables of 64-512 bytes per
+      translation, ARMv7-M's VLDM and VSTM copy through `memcpy`, and
+      PowerPC's decode, one call per decode-cache miss, was 25% of its
+      interpreter (now cleared by words). Dropping `-Os` from
+      `CMAKE_C_FLAGS_INIT` selects the speed variant; it wants every
+      frontend measured at two layouts, and the F446's flash checked.
+- [ ] **Why a profiled PowerPC run is a different run.** The PC
+      profile's 32 KB come out of the guest's RAM (118 KiB against 150),
+      and PowerPC CoreMark under the JIT went from 37.66 to 65.32 host
+      cycles an instruction with it, 68 compactions against 40. Nothing
+      in the JIT should depend on the RAM's size.
 - [ ] **Below 32 KB the JIT is still slower than the interpreter.**
       Giving up on pcs that keep being evicted
       ([jit/tuning.md](jit/tuning.md#emu_jit_thrash_evictions--giving-up-on-what-does-not-fit))

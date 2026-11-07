@@ -406,6 +406,46 @@ reads 14.33, armed by use 14.41. RV32 Dhrystone at 20,000 runs went
 compactions, 43.3 s by the host against the firmware's 43.9), 58.86 to
 58.36.
 
+### Which blocks get the DTCM, and why promoting them was not built
+
+The buffer is about 62 KB of DTCM and 34 KB of SRAM1 behind the
+I-cache, and which code lands in which is whatever is translated first.
+Promoting the blocks that keep being entered into the DTCM half -- a
+second buffer, compacted on its own -- was the lever left, and the
+question first was how much time the SRAM1 half takes.
+`scripts/board-pc-profile.py --regions N` answers it: the samples by
+the memory they ran from, the JIT's buffer (`g_static_code`) split
+where the DTCM ends. CoreMark at 200 iterations, under the JIT,
+`-DEMU_PC_PROFILE=8192`:
+
+| F746 | in translated code | of that, in DTCM | in SRAM1 | of the run, in SRAM1 |
+|---|---|---|---|---|
+| ARMv7-M | 31.5% | 85.7% | 14.3% | 4.5% |
+| PowerPC | 22.1% | 69.3% | 30.7% | 6.8% |
+
+Code in SRAM1 costs about 1.24 times the same code in DTCM (RV32
+Dhrystone's loop, 17.56 against 14.14, above), so moving every SRAM1
+sample into the DTCM would save at most 0.9% and 1.3%. Not built.
+
+**What the profile found instead is that neither buffer holds its
+CoreMark.** ARMv7-M at 200 iterations compacted 32 times, translated
+2,596 blocks for 198 resident, and interpreted 1,467,796 instructions
+at 100 pcs it had given up on (`thrash`); at 40 iterations it had
+already compacted 16 times. Its blocks average about 490 bytes, where
+RV32's whole CoreMark is 17.7 KB. The time not in translated code is
+the translator (`pass_*`, `emu_ir_lower`, `lower_one`, the register
+allocator) and the interpreter running what the JIT gave up on (`step`,
+`dp_op`, `exec32`). PowerPC, plain rather than profiled, compacted 40
+times at 200 iterations and ran at 37.66 host cycles an instruction
+against 34.43 at 40 ([TODO.md](TODO.md)).
+
+**And a profiled run is not the plain one.** The profile's 32 KB of
+samples come out of the guest's RAM (118 KiB against 150 for PowerPC),
+and PowerPC CoreMark under the JIT went from 37.66 to 65.32 with it --
+68 compactions against 40 -- for a reason not yet known. The split above
+is from the profiled runs; the ratios quoted beside it are the plain
+builds'.
+
 ## What a guest instruction costs, measured live
 
 The runner draws a performance line on stderr -- automatically on a

@@ -995,9 +995,44 @@ static void test_gdb_spefscr(void)
     CHECK_EQ(c->spefscr, PPC_SPEFSCR_IMPL);
 }
 
+/*
+ * ppc_decode clears the whole record before filling it, and the
+ * interpreter depends on it: the decode cache decodes over the entry's
+ * previous instruction, so a byte left behind is a field the last
+ * instruction set. The clear is word stores rather than memset
+ * (ppc_decode.c), so each word is decoded into a record full of 0xFF
+ * and into one full of zeros, and the two must come out the same. The
+ * illegal word is the one that matters: it sets almost nothing.
+ */
+static void test_decode_clears_everything(void)
+{
+    static const struct {
+        uint32_t insn;
+        unsigned len;
+        bool vle;
+    } k[] = {
+        {0x00000000u, 4u, false}, /* illegal: id, sem and len only */
+        {0x7C642A14u, 4u, false}, /* add r3,r4,r5 */
+        {0x106422C0u, 4u, false}, /* efsadd r3,r4,r5 */
+        {0x01430000u, 2u, true}, /* se_mr r3,r4 */
+    };
+
+    for (unsigned i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
+        ppc_insn_t dirty;
+        ppc_insn_t clean;
+
+        memset(&dirty, 0xFF, sizeof(dirty));
+        memset(&clean, 0, sizeof(clean));
+        ppc_decode(k[i].insn, k[i].len, k[i].vle, &dirty);
+        ppc_decode(k[i].insn, k[i].len, k[i].vle, &clean);
+        CHECK(memcmp(&dirty, &clean, sizeof(dirty)) == 0);
+    }
+}
+
 void test_ppc(void)
 {
     test_gdb_spefscr();
+    test_decode_clears_everything();
     test_vle_length();
     test_alu();
     test_load_store_byte_order();

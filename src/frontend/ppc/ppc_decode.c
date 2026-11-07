@@ -27,8 +27,6 @@
 
 #include "ppc/ppc_decode.h"
 
-#include <string.h>
-
 typedef ppc_insn_t I;
 
 static const struct {
@@ -1310,9 +1308,32 @@ static void d_4(uint32_t w, I *d)
 /* Entry                                                               */
 /* ------------------------------------------------------------------ */
 
+/*
+ * A word at a time, and not by memset. The firmware links picolibc's
+ * size variant, whose memset is a byte loop, and GCC turns a struct
+ * assignment or a zeroing loop into a call to it; this runs on every
+ * miss of the interpreter's decode cache, 64 entries on the board.
+ */
+_Static_assert(sizeof(ppc_insn_t) == 32u, "clear_insn stores eight words");
+typedef uint32_t __attribute__((may_alias)) insn_word_t;
+
+static inline void clear_insn(ppc_insn_t *out)
+{
+    insn_word_t *const w = (insn_word_t *)out;
+
+    w[0] = 0u;
+    w[1] = 0u;
+    w[2] = 0u;
+    w[3] = 0u;
+    w[4] = 0u;
+    w[5] = 0u;
+    w[6] = 0u;
+    w[7] = 0u;
+}
+
 void ppc_decode(uint32_t insn, unsigned len, bool vle, ppc_insn_t *out)
 {
-    memset(out, 0, sizeof(*out));
+    clear_insn(out);
     out->len = (uint8_t)len;
     set(out, PPC_M_UNKNOWN);
 

@@ -293,7 +293,10 @@ Each has cost more than one session, and every one recurred.
   steady-state loop landing in the 9 KB of DTCM the buffer then reached.
   Placed first, CoreMark under the JIT is 3.5-6.8% faster on three
   frontends; and a `-DEMU_PC_PROFILE` build moves `.bss` by 32 KB,
-  which took the buffer out of DTCM and erased the effect under study.
+  which took the buffer out of DTCM and erased the effect under study
+  -- and takes 32 KB of guest RAM, which moved PowerPC CoreMark's JIT
+  from 37.66 to 65.32. Where from the profile, how much from the plain
+  build.
 - **Pin what every block touches.** Core state goes where the platform
   says (`EMU_HOT_DATA`: the F746's DTCM); left to the linker, RV32's
   hart slid into SRAM1 behind the 4 KB D-cache in a one-partition build
@@ -855,6 +858,10 @@ The SMP design is in [docs/os.md](docs/os.md#smp-on-the-host).
   measure every variant, on the machine whose cost it is (of six forms
   of ARMv7-M's sp/pc rules, the cheapest on x86-64 was not the cheapest
   on the board).
+- **The firmware links picolibc's size variant**, whose `memset` and
+  `memcpy` are byte loops, and GCC calls them for a struct assignment
+  too: PowerPC's decode clear was 25% of its interpreter. Grep a hot
+  path's disassembly for `bl memset`.
 - **Compressed guest code is slower to interpret** (Zcb in the guest's
   march, 9%); `-Os` is 33% smaller and 8.8% slower; a last-block cache in
   front of the hash was 1.2% slower.
