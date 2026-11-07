@@ -498,6 +498,33 @@ CILDI do nothing, there being no cache; an undefined cacheop is a NOP,
 "privilege and memory protection" included; all but CHBII are SV
 ([Privilege](#privilege)).
 
+### No instruction cache, by decision
+
+Decided 2026-11-07, after the TODO had carried it as "a decision before
+code". The U2B manual (3.2.5.2, 3.2.3.7) describes the cache whole:
+16 KB, four ways in two groups chosen by the parity of address bits
+24-12, LRU within a group, 32-byte lines whose data RAM orders halfwords
+unlike memory (figure 3.31), ICTAGL's LPN/LRU/L/V, CISTI and CILDI
+through ICTAGL/H and ICDATL/H, ICCTRL's ICHCLR, ICCFG and ICERR.
+
+Two things stop a model being exact here, and either is enough:
+
+- **Every fetch fills lines on the chip** -- every fetch from
+  0-0FFF FFFFH -- and a model fed from the fetch path is a cost every
+  instruction pays, which this emulator does not put there
+  ([`emu_cpu.h`](../../include/emu/emu_cpu.h)). Without it, CILDI reads
+  a line invalid where a real core reads the code it just ran.
+- **ICTAGH's TAGECC and DATAECC** come from an ECC that no document in
+  `docs/renesas/` defines.
+
+A model updated only by the CACHE instructions -- tags, lock bits, data
+copied at CFALI -- would answer a guest that checks its own locks, and
+answer the rest plausibly and wrongly: the kind of result that reads as
+coverage. So CFALI, CISTI and CILDI stay what they are above, checked
+for privilege and (CFALI) against the MPU, and doing nothing else.
+What would reopen it is a guest that depends on what a locked line
+reads back, with an RH850 to say what it should be.
+
 ## Where an interrupt handler lives
 
 Two methods, two overrides, and they answer different questions — the

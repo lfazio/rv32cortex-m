@@ -275,26 +275,11 @@ From the last measurements in [linux.md](linux.md).
       PE0 and the FPU's rules ([frontend/g4mh.md](frontend/g4mh.md#the-fxu)).
       The NMI pin is driven by `--nmi-at N` (`emu_cpu_ops_t::set_nmi`);
       a board source -- the Nucleo's button -- is not, being nothing
-      this tree can exercise. Left: a cache for `CFALI` to lock, and the
-      debug level -- `DBTRAP`, `DBRET`, `DBPC`, `DBPSW` -- which
+      this tree can exercise. Left: the debug level -- `DBTRAP`, `DBRET`, `DBPC`, `DBPSW` -- which
       no manual in `docs/renesas/` describes. The E2 emulator manual
       (R20UT3538, added 2026-11-06) is the probe's hardware and does not
       either; what is needed is a description of the G4MH's debug
       functions themselves.
-- [ ] **A G4MH instruction cache, for CFALI to lock lines into: a
-      decision before code.** The U2B manual (3.2.5.2, 3.2.3.7) gives
-      it whole: 16 KB, four ways in two groups chosen by the parity of
-      address bits 24-12, LRU within a group, 32-byte lines whose data
-      RAM orders halfwords unlike memory (figure 3.31), ICTAGL's
-      LPN/LRU/L/V, CISTI/CILDI through ICTAGL/H and ICDATL/H, ICCTRL's
-      ICHCLR, ICCFG, ICERR. Two things stop it being exact here: on the
-      chip every fetch from 0-0FFF FFFFH fills lines too, which this
-      emulator cannot model off its fetch path, so CILDI would read
-      invalid where a real core reads what it ran; and ICTAGH's TAGECC
-      and DATAECC come from an ECC that no document in `docs/renesas/`
-      defines. A model updated only by the CACHE instructions -- tags,
-      lock bits, data copied at CFALI -- answers a guest that checks its
-      own locks, and answers the rest plausibly and wrongly.
 - [ ] **The readings only an RH850 can settle.** Every G4MH result rests
       on Renesas' documents, cross-checked where a second one exists
       ([frontend/g4mh.md](frontend/g4mh.md#what-rests-on-the-manuals-alone));
