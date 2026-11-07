@@ -745,6 +745,11 @@ sixteen defects the first time anything fuzzed them.
   the upload's start, and one's uncommitted bytes ran as part of the
   other's image. And a deferred write is counted when it is accepted
   (gdb's carry cut an image short).
+- **A device taken off the bus still writes RAM**: TinyEMU's reach
+  memory through their own map, so the virtio devices a reload forgot
+  kept the old guest's queues, and a key press landed in the new
+  guest's RAM. A reload maps them again and resets each
+  (`emu_virtio_remap`).
 - **A pointer handed out without a length is bounded by what the
   callee promises**: TinyEMU copies to a page's end, the glue checked
   one byte. Vendored code whose walkers are `static` can only be

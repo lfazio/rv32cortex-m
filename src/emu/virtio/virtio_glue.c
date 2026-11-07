@@ -162,6 +162,32 @@ PhysMemoryRange *cpu_register_device(PhysMemoryMap *s, uint64_t addr,
     return range;
 }
 
+/* virtio 1.1, 4.2.2: Status, where writing 0 resets the device. */
+#define VIRTIO_MMIO_STATUS_OFF 0x070u
+
+bool virtio_glue_remap(PhysMemoryMap *s)
+{
+    for (unsigned i = 0; i < g_nports; i++) {
+        virtio_port_t *port = &g_ports[i];
+
+        if (!emu_bus_add_mmio(s->bus, "virtio", g_ranges[i].addr,
+                              g_ranges[i].size, &k_virtio_port_ops, port)) {
+            fprintf(stderr, "virtio: could not map a device at 0x%08x\n",
+                    (unsigned)g_ranges[i].addr);
+            return false;
+        }
+
+        /*
+         * Reset it the way a driver does. The previous guest's queues
+         * point into RAM the new guest now owns, and a frame or a key
+         * arriving before the new driver resets the device would be
+         * written there.
+         */
+        port->write(port->opaque, VIRTIO_MMIO_STATUS_OFF, 0u, 2);
+    }
+    return true;
+}
+
 /*
  * PCI only, and this tree has no PCI bus: virtio-mmio devices sit where
  * the device tree says and never move. Reached only through the PCI

@@ -52,6 +52,19 @@ typedef void (*emu_virtio_irq_fn)(void *ctx, int irq_num, int level);
 bool emu_virtio_init(emu_bus_t *bus, emu_virtio_irq_fn irq, void *irq_ctx);
 
 /*
+ * Put the devices back on a bus that has been rebuilt empty, as a reload
+ * does (a guest uploaded over TFTP or gdb): emu_bus_init forgets every
+ * region, and TinyEMU has no way to free a device and make it again.
+ * The device set is the command line's, which a reload does not change,
+ * so the same devices go back at the same addresses -- each reset, as
+ * the new guest's driver would do at probe, so that nothing the previous
+ * guest set up reaches the new one's RAM.
+ *
+ * True with nothing to do when no device was ever added.
+ */
+bool emu_virtio_remap(emu_bus_t *bus);
+
+/*
  * A console on virtio-mmio.
  *
  * Separate from the NS16550 the platform already provides, and not a

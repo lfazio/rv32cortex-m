@@ -225,6 +225,44 @@ else
 fi
 
 #
+# **A reload keeps the virtio devices** -- the host runner's, since a
+# board has none; check-host-net.sh starts it with a virtio console and
+# says so in EMU_NET_VIRTIO. A reload rebuilds the bus from empty, and
+# for as long as nothing put them back the uploaded guest found no
+# device where the device tree said one was. Uploaded twice, so the
+# second run finds a device the first one drove to completion.
+#
+if [ "${EMU_NET_VIRTIO:-0}" = 1 ]; then
+    vimg=$BUILD/guest/virtiotest.bin
+    for pass in 1 2; do
+        timeout 60 nc "$ADDR" 23 >"$log" 2>/dev/null &
+        nc_pid=$!
+        sleep 2
+        printf 'binary\nput %s virtiotest\nquit\n' "$vimg" |
+            timeout 30 tftp "$ADDR" >"$up" 2>&1 || true
+        n=0
+        while [ $n -lt 300 ] && kill -0 $nc_pid 2>/dev/null; do
+            if sed -n '/running uploaded image/,$p' "$log" |
+                grep -q 'emu-result'; then
+                break
+            fi
+            sleep 0.1
+            n=$((n + 1))
+        done
+        kill $nc_pid 2>/dev/null || true
+        wait $nc_pid 2>/dev/null || true
+        vrun=$(tr -d '\000-\010\013\014\016-\037' <"$log" |
+            sed -n '/running uploaded image/,$p')
+        if printf '%s\n' "$vrun" | grep -q 'VIRTIOTEST-PASS'; then
+            ok "virtio reload $pass" "the uploaded guest drove the device"
+        else
+            bad "virtio reload $pass" "no VIRTIOTEST-PASS after the upload"
+            printf '%s\n' "$vrun" | sed 's/^/    /' | head -20
+        fi
+    done
+fi
+
+#
 # Reported, not asserted. These are cumulative since boot and a single
 # dropped byte across a session of reflashes is not a fault -- while a
 # threshold picked out of the air is the kind of number that gets

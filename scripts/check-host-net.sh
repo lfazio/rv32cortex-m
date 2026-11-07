@@ -117,7 +117,15 @@ if [ -n "$DEV" ]; then
 else
     # As a board runs: its cap, EMU_MAX_INSN, and the state dump every
     # run ends with -- where run-riscv-tests.sh reads a parked verdict.
-    "$BUILD/emu-host" --ppp --dump --max-insn 100000000 \
+    # And with a virtio console where the build has virtio, which a
+    # board does not: check-board-net.sh then uploads a guest that
+    # drives it, which is what shows a reload keeps the devices.
+    virtio=
+    if [ "$(cache EMU_VIRTIO)" = ON ]; then
+        virtio=--virtio-console
+    fi
+    # shellcheck disable=SC2086
+    "$BUILD/emu-host" --ppp --dump --max-insn 100000000 $virtio \
         "$BUILD/guest/hello.bin" \
         >"$work/emu.out" 2>"$work/emu.err" &
     emu_pid=$!
@@ -156,6 +164,7 @@ flash=--no-flash
 
 # shellcheck disable=SC2086
 EMU_BOARD_BUILD=$BUILD EMU_NET_ADDR=$ADDR \
+    EMU_NET_VIRTIO=$([ -n "${virtio:-}" ] && echo 1 || echo 0) \
     "$ROOT/scripts/check-board-net.sh" $flash || rc=$?
 
 if [ "$rc" -ne 0 ]; then

@@ -178,12 +178,6 @@ From the last measurements in [linux.md](linux.md).
       flush would then have to leave alone.
       Yocto at 32 MB is still 198 compactions, so this is the next
       lever if 64 MB is ever too much.
-- [ ] **A reload loses the virtio devices.** `emu_main_reload`, which
-      runs a guest uploaded over TFTP or gdb, rebuilds the bus and never
-      adds them back (`virtio_attach` runs once, in `emu_main`); the
-      glue's port table cannot be refilled either, having no reset, and
-      TinyEMU has no way to free a device. Found writing `fuzz-virtio`;
-      host network builds only.
 - [ ] **A display under Linux.** The framebuffer device exists
       ([games.md](games.md)); nothing in the device tree describes it to
       a kernel.

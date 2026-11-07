@@ -108,7 +108,9 @@ board on 192.168.7.x.
 
 **And it is tested without root.** `scripts/check-host-net.sh` runs
 `scripts/check-board-net.sh --no-flash` -- ping, a guest uploaded over
-TFTP and graded from the telnet console, and gdb reading the pc --
+TFTP and graded from the telnet console, gdb reading the pc, and
+`virtiotest` uploaded twice to a runner started with a virtio console
+(a reload must keep the devices: [host/README.md](host/README.md)) --
 against a `-DEMU_NET=ON -DEMU_NET_LINK=slip` runner, from inside
 `unshare -rn`: a network namespace of its own, where a TUN device needs
 no privilege and `scripts/slip-tun.py` bridges it to the runner's pty

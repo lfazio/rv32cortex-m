@@ -4419,6 +4419,18 @@ session, and every one of them recurred:
   guarded add once too often. **A test of what a chain skips needs the
   edge followed three times before the event.**
 
+- **A device off the bus still writes RAM.** A reload rebuilt the bus
+  from empty and never put the virtio devices back, which was in the
+  TODO as "the uploaded guest finds no device". Writing the test showed
+  the other half: TinyEMU's devices reach guest memory through their
+  own map, not through the bus, so a keyboard nobody could address any
+  more still had the old guest's event queue, and a key press after the
+  reload wrote into the new guest's RAM. The fix maps the devices again
+  and resets each, as a driver does at probe; the unit test compares all
+  of RAM around a key press, and the network check uploads a guest that
+  drives a device, twice. **Removing a device's address does not remove
+  its reach: a reload resets what it keeps.**
+
 ## G4MH, from the frontend's scope notes
 Moved to [`docs/frontend/g4mh.md`](frontend/g4mh.md) -- what is
 implemented, what is not, and what is *simplified* is project status

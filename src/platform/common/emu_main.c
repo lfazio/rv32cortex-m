@@ -132,6 +132,12 @@ bool emu_main_reload(void)
             return false;
         }
     }
+#if EMU_HAVE_VIRTIO
+    /* Start-up's order: the address space, the devices, the session. */
+    if (!emu_virtio_remap(&g_buses[0])) {
+        return false;
+    }
+#endif
     return emu_session_reload(&g_sys, &g_cfg);
 }
 

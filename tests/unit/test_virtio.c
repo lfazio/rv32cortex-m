@@ -36,6 +36,15 @@
 
 #define TEST_VIRTIO_BASE 0x10001000u
 
+/* And the ones a driver writes to set up a queue (virtio 1.1, 4.2.2). */
+#define VIRTIO_MMIO_QUEUE_SEL 0x030u
+#define VIRTIO_MMIO_QUEUE_NUM 0x038u
+#define VIRTIO_MMIO_QUEUE_READY 0x044u
+#define VIRTIO_MMIO_STATUS 0x070u
+#define VIRTIO_MMIO_QUEUE_DESC_LOW 0x080u
+#define VIRTIO_MMIO_QUEUE_AVAIL_LOW 0x090u
+#define VIRTIO_MMIO_QUEUE_USED_LOW 0x0A0u
+
 /*
  * The bus needs RAM as well as the device: virtio walks its descriptor
  * rings through emu_bus_host_ptr, so a map with no host-backed RAM
@@ -52,6 +61,110 @@ static void count_irq(void *ctx, int irq_num, int level)
     (void)irq_num;
     (void)level;
     g_irq_calls++;
+}
+
+static void put16(uint32_t off, uint16_t v)
+{
+    g_ram[off] = (uint8_t)v;
+    g_ram[off + 1u] = (uint8_t)(v >> 8);
+}
+
+static void put32(uint32_t off, uint32_t v)
+{
+    put16(off, (uint16_t)v);
+    put16(off + 2u, (uint16_t)(v >> 16));
+}
+
+static void wr(emu_bus_t *bus, uint32_t addr, uint32_t v)
+{
+    CHECK_EQ(emu_bus_write(bus, addr, 4u, v), EMU_FAULT_NONE);
+}
+
+static uint32_t rd(emu_bus_t *bus, uint32_t addr)
+{
+    uint32_t v = 0xDEADBEEFu;
+
+    CHECK_EQ(emu_bus_read(bus, addr, 4u, &v), EMU_FAULT_NONE);
+    return v;
+}
+
+/*
+ * A reload: a guest uploaded over TFTP or gdb replaces the running one.
+ * emu_main_reload rebuilds the bus from empty, which forgets the
+ * devices, and TinyEMU cannot free one to make it again -- so the same
+ * devices have to go back on the new bus (emu_virtio_remap).
+ *
+ * Back, and **reset**: the previous guest's queues point into RAM the
+ * new guest now owns. So the old guest here sets up the keyboard's
+ * event queue with four buffers and takes a key press (two events,
+ * checked to have arrived, so the queue is shown to work), leaving two
+ * buffers posted. After the reload, a key press must write nothing
+ * anywhere in RAM -- the case a frame or a key arriving between the
+ * upload and the new driver's probe would be.
+ */
+static void test_virtio_reload(emu_bus_t *bus)
+{
+    static uint8_t before[sizeof(g_ram)];
+    const uint32_t kb = TEST_VIRTIO_BASE + 0x1000u;
+    const uint32_t ram = 0x80000000u;
+    uint32_t v = 0;
+
+    /* Descriptors at 0, avail at 0x100, used at 0x200, buffers at 0x400. */
+    memset(g_ram, 0, sizeof(g_ram));
+    for (uint32_t i = 0; i < 4u; i++) {
+        put32(i * 16u, ram + 0x400u + i * 8u); /* addr, low half */
+        put32(i * 16u + 8u, 8u);               /* len */
+        put16(i * 16u + 12u, 2u);              /* VRING_DESC_F_WRITE */
+        put16(0x104u + i * 2u, (uint16_t)i);   /* avail ring[i] */
+    }
+    put16(0x102u, 4u); /* avail idx: four buffers posted */
+
+    wr(bus, kb + VIRTIO_MMIO_STATUS, 0x3u); /* ACKNOWLEDGE | DRIVER */
+    wr(bus, kb + VIRTIO_MMIO_QUEUE_SEL, 0u);
+    wr(bus, kb + VIRTIO_MMIO_QUEUE_NUM, 16u);
+    wr(bus, kb + VIRTIO_MMIO_QUEUE_DESC_LOW, ram);
+    wr(bus, kb + VIRTIO_MMIO_QUEUE_AVAIL_LOW, ram + 0x100u);
+    wr(bus, kb + VIRTIO_MMIO_QUEUE_USED_LOW, ram + 0x200u);
+    wr(bus, kb + VIRTIO_MMIO_QUEUE_READY, 1u);
+    wr(bus, kb + VIRTIO_MMIO_STATUS, 0xFu); /* ... | FEATURES_OK | DRIVER_OK */
+
+    emu_virtio_key_event(true, 30u);
+    CHECK_EQ(g_ram[0x400], 1u);  /* EV_KEY */
+    CHECK_EQ(g_ram[0x402], 30u); /* KEY_A */
+    CHECK_EQ(g_ram[0x404], 1u);  /* down */
+    CHECK_EQ(g_ram[0x202], 2u);  /* used idx: KEY and SYN */
+
+    /* The reload: the bus from empty, then RAM, as emu_main_reload. */
+    emu_bus_init(bus);
+    if (!emu_bus_add_ram(bus, "ram", ram, g_ram, sizeof(g_ram))) {
+        CHECK(false);
+        return;
+    }
+    /* That it forgot them, or the remap below would prove nothing. */
+    CHECK(emu_bus_read(bus, TEST_VIRTIO_BASE + VIRTIO_MMIO_MAGIC, 4u, &v) !=
+          EMU_FAULT_NONE);
+
+    CHECK(emu_virtio_remap(bus));
+
+    /* All three back, each where it was. */
+    CHECK_EQ(rd(bus, TEST_VIRTIO_BASE + VIRTIO_MMIO_MAGIC),
+             VIRTIO_MAGIC_VALUE);
+    CHECK_EQ(rd(bus, TEST_VIRTIO_BASE + VIRTIO_MMIO_DEVICE_ID), VIRTIO_ID_9P);
+    CHECK_EQ(rd(bus, kb + VIRTIO_MMIO_DEVICE_ID), VIRTIO_ID_INPUT);
+    CHECK_EQ(rd(bus, TEST_VIRTIO_BASE + 0x2000u + VIRTIO_MMIO_DEVICE_ID),
+             VIRTIO_ID_INPUT);
+
+    /* Reset: nothing the old driver wrote survives. */
+    CHECK_EQ(rd(bus, kb + VIRTIO_MMIO_STATUS), 0u);
+    wr(bus, kb + VIRTIO_MMIO_QUEUE_SEL, 0u);
+    CHECK_EQ(rd(bus, kb + VIRTIO_MMIO_QUEUE_READY), 0u);
+    CHECK_EQ(rd(bus, kb + VIRTIO_MMIO_QUEUE_DESC_LOW), 0u);
+
+    /* And a key press after it reaches nothing: all of RAM compared. */
+    memcpy(before, g_ram, sizeof(g_ram));
+    emu_virtio_key_event(true, 31u);
+    emu_virtio_key_event(false, 31u);
+    CHECK(memcmp(before, g_ram, sizeof(g_ram)) == 0);
 }
 
 void test_virtio(void)
@@ -182,4 +295,6 @@ void test_virtio(void)
      * stuck high before the guest has even probed it.
      */
     CHECK_EQ((uint32_t)g_irq_calls, 0u);
+
+    test_virtio_reload(&bus);
 }

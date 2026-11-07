@@ -31,6 +31,22 @@ faults on the first store every real guest driver makes.
 virtio-mmio devices — block, network, console, input, 9p — are added on
 request from `0x1000_1000` upwards; see the README.
 
+**A reload keeps them.** A guest uploaded over TFTP replaces the running
+one through `emu_main_reload`, which rebuilds the bus from empty, and
+the devices were added once, in `emu_main`: the uploaded guest found
+nothing where its device tree said a device was. TinyEMU cannot free a
+device to make it again, and the device set is the command line's,
+which a reload does not change -- so `emu_virtio_remap` maps the same
+devices at the same addresses, and resets each the way a driver does
+at probe. The reset is not tidiness: a device reaches RAM through its
+own map, not through the bus, so one left off the bus kept the old
+guest's queues and a key press landed in the new guest's RAM
+(`test_virtio`, which the mutant without the reset fails four ways).
+`scripts/check-host-net.sh` uploads `virtiotest` twice to a runner with
+a virtio console and grades both runs; with the call taken out of
+`emu_main_reload`, both stop at the first register read. A board has no
+virtio devices, so this is the host's.
+
 ## Choosing a frontend
 
 ```

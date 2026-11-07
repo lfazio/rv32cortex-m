@@ -166,6 +166,12 @@ PhysMemoryRange *cpu_register_device(PhysMemoryMap *s, uint64_t addr,
 void phys_mem_set_addr(PhysMemoryRange *pr, uint64_t addr, BOOL enabled);
 
 /*
+ * Not TinyEMU's: map every registered device again on s->bus, which has
+ * been rebuilt empty, and reset each. For a reload (emu_virtio_remap).
+ */
+bool virtio_glue_remap(PhysMemoryMap *s);
+
+/*
  * A host pointer to guest memory.
  *
  * This is how the virtqueue is reached: the guest publishes descriptor

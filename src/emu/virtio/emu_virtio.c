@@ -86,6 +86,18 @@ bool emu_virtio_init(emu_bus_t *bus, emu_virtio_irq_fn irq, void *irq_ctx)
     return true;
 }
 
+bool emu_virtio_remap(emu_bus_t *bus)
+{
+    if (!g_ready) {
+        return true; /* nothing was ever added */
+    }
+    if (bus == NULL) {
+        return false;
+    }
+    g_map.bus = bus;
+    return virtio_glue_remap(&g_map);
+}
+
 unsigned emu_virtio_count(void)
 {
     return g_ndevs;

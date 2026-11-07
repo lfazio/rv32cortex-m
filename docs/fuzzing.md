@@ -854,8 +854,8 @@ in 150 s (286,253 buffers posted).
 Not reached: lwIP's TFTP packet parsing, which is lwIP's (only the
 callbacks are ours); the telnet console and SLIP framing; virtio-9p;
 and two clients at once on the gdb stub, which the transport does not
-allow. Found and not fixed: a reload rebuilds the bus without the
-virtio devices ([TODO.md](TODO.md)).
+allow. Found writing it, and fixed since: a reload rebuilt the bus
+without the virtio devices ([host/README.md](host/README.md)).
 
 ## What it found
 
